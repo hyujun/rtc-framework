@@ -35,8 +35,7 @@ RtControllerNode::RtControllerNode(const std::string &node_name)
     : LifecycleNode(
           node_name,
           rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(
-              true)),
-      logger_(nullptr) {}
+              true)) {}
 
 RtControllerNode::~RtControllerNode() {
   // Safety net — idempotent cleanup in case lifecycle callbacks were not
@@ -47,11 +46,6 @@ RtControllerNode::~RtControllerNode() {
   if (publish_eventfd_ >= 0) {
     close(publish_eventfd_);
     publish_eventfd_ = -1;
-  }
-
-  if (logger_) {
-    logger_->DrainBuffer(log_buffer_);
-    logger_->Flush();
   }
 }
 
@@ -73,8 +67,9 @@ void RtControllerNode::CreateCallbackGroups() {
 }
 
 void RtControllerNode::CreateTimers() {
-  // Drain the SPSC log ring buffer from the log thread (Core 4).
-  // File I/O stays entirely out of the 500 Hz RT thread.
+  // CM's drain timer (log thread, Core 4) handles cm_timing_log.csv +
+  // deferred E-STOP RCLCPP messages. Controller data CSVs are owned by
+  // each controller's own ControllerLogSet (Phase C), not by CM.
   static constexpr auto kLogDrainPeriod = 10ms;
   drain_timer_ = create_wall_timer(
       kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_log_);
@@ -246,11 +241,9 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   // 3. subscribers
   topic_subscriptions_.clear();
 
-  // 2. parameters / controllers / logger
-  if (logger_) {
-    logger_->DrainBuffer(log_buffer_);
-    logger_->Flush();
-  }
+  // 2. parameters / controllers
+  // (Controller-owned CSV loggers are released inside each controller's
+  // own on_cleanup via log_drain_timer_/log_set_; nothing to drain here.)
   // Drive each controller's lifecycle on_cleanup before destruction so any
   // sub/pub they created in on_configure is released deterministically.  The
   // injected LifecycleNode is reset inside the controller; we then drop our
@@ -278,7 +271,6 @@ RtControllerNode::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   device_timeouts_.clear();
   list_controllers_srv_.reset();
   switch_controller_srv_.reset();
-  logger_.reset();
 
   // 1. callback groups — kept alive (executor may still reference them)
 
@@ -330,10 +322,6 @@ RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
   topic_subscriptions_.clear();
-  if (logger_) {
-    logger_->DrainBuffer(log_buffer_);
-    logger_->Flush();
-  }
   controllers_.clear();
   controller_states_.clear();
   controller_topic_configs_.clear();
@@ -347,7 +335,6 @@ RtControllerNode::on_error(const rclcpp_lifecycle::State & /*state*/) {
   list_controllers_srv_.reset();
   switch_controller_srv_.reset();
   device_timeouts_.clear();
-  logger_.reset();
 
   // SUCCESS → recovers to Unconfigured (can be reconfigured)
   return CallbackReturn::SUCCESS;

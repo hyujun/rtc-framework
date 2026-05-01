@@ -193,7 +193,6 @@ void RtControllerNode::ControlLoop() {
   state.t_relative_s =
       std::chrono::duration<double>(t0 - log_start_time_).count();
 
-  const auto t1 = std::chrono::steady_clock::now(); // end of state acquisition
   rt_loop_.StampStateAcquired();
 
   // ── Phase 2: compute control law ───────────────────────────────────────
@@ -201,7 +200,6 @@ void RtControllerNode::ControlLoop() {
   const urtc::ControllerOutput output = timing_profiler_.MeasuredCompute(
       *controllers_[static_cast<std::size_t>(active_idx)], state);
 
-  const auto t2 = std::chrono::steady_clock::now(); // end of compute
   rt_loop_.StampComputeDone();
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
@@ -301,73 +299,10 @@ void RtControllerNode::ControlLoop() {
     compute_overrun_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  // Push log entry to the SPSC ring buffer — O(1), no syscall.
-  // DrainLog() (log thread, Core 4) pops entries and writes the CSV file.
-  if (enable_logging_) {
-    urtc::LogEntry entry{};
-    entry.timestamp = state.t_relative_s;
-    entry.actual_task_positions = output.actual_task_positions;
-    entry.task_goal_positions = output.task_goal_positions;
-    entry.trajectory_task_positions = output.trajectory_task_positions;
-    entry.trajectory_task_velocities = output.trajectory_task_velocities;
-    entry.command_type = output.command_type;
-
-    // Per-device logging
-    for (std::size_t dvi = 0; dvi < static_cast<std::size_t>(state.num_devices);
-         ++dvi) {
-      auto &dl = entry.devices[dvi];
-      const auto &dout = output.devices[dvi];
-      const auto &dstate = state.devices[dvi];
-      dl.num_channels = dout.num_channels;
-      dl.valid = dstate.valid;
-      for (std::size_t j = 0; j < static_cast<std::size_t>(dout.num_channels);
-           ++j) {
-        dl.goal_positions[j] = dout.goal_positions[j];
-        dl.actual_positions[j] = dstate.positions[j];
-        dl.actual_velocities[j] = dstate.velocities[j];
-        dl.efforts[j] = dstate.efforts[j];
-        dl.commands[j] = dout.commands[j];
-        dl.trajectory_positions[j] = dout.trajectory_positions[j];
-        dl.trajectory_velocities[j] = dout.trajectory_velocities[j];
-      }
-      dl.goal_type = dout.goal_type;
-      dl.num_motor_channels = dstate.num_motor_channels;
-      for (std::size_t j = 0;
-           j < static_cast<std::size_t>(dstate.num_motor_channels); ++j) {
-        dl.motor_positions[j] = dstate.motor_positions[j];
-        dl.motor_velocities[j] = dstate.motor_velocities[j];
-        dl.motor_efforts[j] = dstate.motor_efforts[j];
-      }
-      dl.num_sensor_channels = dstate.num_sensor_channels;
-      for (std::size_t j = 0;
-           j < static_cast<std::size_t>(dstate.num_sensor_channels); ++j) {
-        dl.sensor_data[j] = static_cast<float>(dstate.sensor_data[j]);
-        dl.sensor_data_raw[j] = static_cast<float>(dstate.sensor_data_raw[j]);
-      }
-    }
-    entry.num_devices = state.num_devices;
-
-    // Inference output for sensor log (from hand device, typically device index
-    // 1)
-    for (std::size_t dvi = 0; dvi < static_cast<std::size_t>(state.num_devices);
-         ++dvi) {
-      const auto &dstate = state.devices[dvi];
-      if (dstate.num_inference_fingertips > 0) {
-        entry.inference_valid = true;
-        entry.num_inference_values =
-            dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
-        const auto niv = static_cast<std::size_t>(entry.num_inference_values);
-        for (std::size_t j = 0; j < niv && j < entry.inference_output.size();
-             ++j) {
-          entry.inference_output[j] = dstate.inference_data[j];
-        }
-        break; // only one device has inference
-      }
-    }
-
-    static_cast<void>(
-        log_buffer_.Push(entry)); // silently drops if buffer is full
-  }
+  // CM no longer fills LogEntry (controller-owned logging path lives on
+  // each controller's ControllerLogSet — Phase C). cm_timing_log.csv is
+  // still produced via cm_timing_producer_ → cm_timing_logger_ in
+  // DrainLog().
 
   ++loop_count_;
   // Signal the log thread to print timing summary every 1 000 iterations.
@@ -379,14 +314,10 @@ void RtControllerNode::ControlLoop() {
 
 // File I/O and diagnostic logging stay exclusively in the log thread (Core 4).
 void RtControllerNode::DrainLog() {
-  if (logger_) {
-    logger_->DrainBuffer(log_buffer_);
-  }
-
-  // Drain per-tick timing samples → CSV. Producer is the RT thread; this
+  // Drain per-tick CM timing samples → CSV. Producer is the RT thread; this
   // drain runs at the log-thread cadence (10 ms timer ⇒ ≤5 samples/drain
-  // at 500 Hz). On disabled logging the logger is closed and Log() is a
-  // no-op, so we still drain to keep the SPSC ring from filling.
+  // at 500 Hz). Controller-owned data CSVs are drained by each controller's
+  // own ControllerLogSet timer (Phase C) — not from here.
   cm_timing_producer_.Drain(
       [this](const urtc::RtTickTimingSample &s) { cm_timing_logger_.Log(s); });
 
@@ -408,7 +339,7 @@ void RtControllerNode::DrainLog() {
   // recent kTimingSummaryInterval ticks (~2 s at 500 Hz), not the whole
   // session — old start-up spikes would otherwise permanently skew p99.
   // The rt_controller_node owns cumulative counters (overruns, skips,
-  // log_drops, pub_drops, timing_drops) separately, so they are unaffected
+  // pub_drops, timing_drops) separately, so they are unaffected
   // by the reset.
   if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
@@ -416,12 +347,11 @@ void RtControllerNode::DrainLog() {
     const auto compute_overruns =
         compute_overrun_count_.load(std::memory_order_relaxed);
     const auto skips = rt_loop_.SkipCount();
-    const auto log_drops = log_buffer_.drop_count();
     const auto pub_drops = publish_buffer_.drop_count();
     const auto timing_drops = cm_timing_producer_.DropCount();
     RCLCPP_INFO(get_logger(),
                 "%s  overruns=%lu  compute_overruns=%lu  skips=%lu  "
-                "log_drops=%lu  pub_drops=%lu  timing_drops=%lu",
+                "pub_drops=%lu  timing_drops=%lu",
                 timing_profiler_
                     .Summary(std::string(
                         controllers_[static_cast<std::size_t>(idx)]->Name()))
@@ -429,7 +359,6 @@ void RtControllerNode::DrainLog() {
                 static_cast<unsigned long>(overruns),
                 static_cast<unsigned long>(compute_overruns),
                 static_cast<unsigned long>(skips),
-                static_cast<unsigned long>(log_drops),
                 static_cast<unsigned long>(pub_drops),
                 static_cast<unsigned long>(timing_drops));
     timing_profiler_.Reset();

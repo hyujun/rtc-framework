@@ -446,7 +446,12 @@ void RtControllerNode::DeclareAndLoadParameters() {
     ctrl->SetDeviceNameConfigs(device_name_configs_);
   }
 
-  // ── Deferred logging setup (needs active_groups_ + device_name_configs_) ─
+  // ── Deferred logging setup ───────────────────────────────────────────────
+  // Phase C: CM only owns cm_timing_log.csv (its own per-tick scheduling
+  // timing). Controller data CSVs are produced by each controller's own
+  // ControllerLogSet under <session>/controllers/<config_key>/. The legacy
+  // CM-side DataLogger and `<session>/controller/` directory have been
+  // removed.
   if (enable_logging_) {
     const std::string log_dir_param = get_parameter("log_dir").as_string();
     const int max_sessions =
@@ -464,10 +469,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
     urtc::CleanupOldSessions(logging_root, max_sessions);
 
     const bool enable_timing = get_parameter("enable_timing_log").as_bool();
-    const bool enable_device = get_parameter("enable_device_log").as_bool();
-    const auto ctrl_dir = session_dir / "controller";
-    std::filesystem::create_directories(ctrl_dir);
-
     if (enable_timing) {
       const auto timing_dir = urtc::TimingDir(session_dir);
       std::filesystem::create_directories(timing_dir);
@@ -481,64 +482,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
       }
     }
 
-    std::vector<urtc::DeviceLogConfig> log_configs;
-    if (enable_device && !controller_topic_configs_.empty()) {
-      const int init_idx =
-          active_controller_idx_.load(std::memory_order_relaxed);
-      const auto &init_tc =
-          controller_topic_configs_[static_cast<std::size_t>(init_idx)];
-
-      int gi = 0;
-      for (const auto &[gname, group] : init_tc.groups) {
-        for (const auto &pt : group.publish) {
-          if (pt.role != urtc::PublishRole::kDeviceStateLog &&
-              pt.role != urtc::PublishRole::kDeviceSensorLog)
-            continue;
-
-          urtc::DeviceLogConfig dlc;
-          dlc.device_name = gname;
-          dlc.role = pt.role;
-          dlc.device_index = gi;
-
-          std::string fname = pt.topic_name;
-          std::replace(fname.begin(), fname.end(), '/', '_');
-          if (!fname.empty() && fname.front() == '_')
-            fname.erase(0, 1);
-          dlc.path = ctrl_dir / (fname + ".csv");
-
-          auto it = device_name_configs_.find(gname);
-          if (it != device_name_configs_.end()) {
-            dlc.joint_names = it->second.joint_state_names;
-            dlc.motor_names = it->second.motor_state_names;
-            dlc.sensor_names = it->second.sensor_names;
-            dlc.num_channels =
-                static_cast<int>(it->second.joint_state_names.size());
-            dlc.num_motor_channels =
-                static_cast<int>(it->second.motor_state_names.size());
-            dlc.num_sensor_channels =
-                static_cast<int>(it->second.sensor_names.size() *
-                                 urtc::kSensorValuesPerFingertip);
-          }
-          log_configs.push_back(std::move(dlc));
-        }
-        ++gi;
-      }
-    }
-
-    int max_inference = 0;
-    for (const auto &lc : log_configs) {
-      if (lc.role == urtc::PublishRole::kDeviceSensorLog &&
-          !lc.sensor_names.empty()) {
-        const int niv = static_cast<int>(lc.sensor_names.size()) *
-                        urtc::kFTValuesPerFingertip;
-        if (niv > max_inference)
-          max_inference = niv;
-      }
-    }
-
-    logger_ = std::make_unique<urtc::DataLogger>(std::move(log_configs),
-                                                 max_inference);
-    RCLCPP_INFO(get_logger(), "Logging to: %s/controller/ (max_sessions=%d)",
+    RCLCPP_INFO(get_logger(), "Session dir: %s (max_sessions=%d)",
                 session_dir.string().c_str(), max_sessions);
   }
 

@@ -415,8 +415,6 @@ private:
   // active is enforced by SwitchActiveController; the vector permits a
   // future relaxation to multi-active without a schema change.
   std::vector<std::atomic<int>> controller_states_;
-  std::unique_ptr<rtc::DataLogger> logger_;
-  rtc::ControlLogBuffer log_buffer_{};              // SPSC ring buffer
   rtc::ControllerTimingProfiler timing_profiler_{}; // Compute() timing
 
   // Per-tick RT-loop timing → <session>/timing/cm_timing_log.csv.
