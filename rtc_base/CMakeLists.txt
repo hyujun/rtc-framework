@@ -64,6 +64,11 @@ if(BUILD_TESTING)
     target_include_directories(test_thread_timing PRIVATE include)
   endif()
 
+  ament_add_gtest(test_thread_csv test/test_thread_csv.cpp)
+  if(TARGET test_thread_csv)
+    target_include_directories(test_thread_csv PRIVATE include)
+  endif()
+
   ament_add_gtest(test_periodic_rt_thread test/test_periodic_rt_thread.cpp)
   if(TARGET test_periodic_rt_thread)
     target_include_directories(test_periodic_rt_thread PRIVATE include)

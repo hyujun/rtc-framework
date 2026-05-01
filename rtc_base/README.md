@@ -28,9 +28,11 @@ rtc_base/
     ├── types/
     │   └── types.hpp              <- 공유 데이터 타입, 상수, 열거형, 캐시 라인 상수
     ├── logging/
-    │   ├── log_buffer.hpp         <- 락-프리 SPSC 로그 링 버퍼
-    │   ├── data_logger.hpp        <- CSV 파일 로거
-    │   └── session_dir.hpp        <- 세션 디렉토리 관리
+    │   ├── log_buffer.hpp           <- 락-프리 SPSC 로그 링 버퍼 (Phase C에서 정리 예정)
+    │   ├── data_logger.hpp          <- CSV 파일 로거 (Phase C에서 정리 예정)
+    │   ├── thread_csv_producer.hpp  <- ThreadCsvProducer<Payload,N>: payload-owns-row SPSC
+    │   ├── thread_csv_logger.hpp    <- ThreadCsvLogger<Payload>: 헤더/행 writer 모두 caller가 결정
+    │   └── session_dir.hpp          <- 세션 디렉토리 관리
     ├── filters/
     │   ├── bessel_filter.hpp          <- 4차 Bessel 저역통과 필터
     │   ├── kalman_filter.hpp          <- 이산시간 칼만 필터
@@ -502,6 +504,53 @@ CM, MPC, ur5e_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. 
 | `DrainBuffer(ControlLogBuffer&)` | SPSC 버퍼 전체 드레인 -> CSV 기록 |
 | `Flush()` | 파일 버퍼 플러시 |
 | `IsOpen()` | 파일 열림 상태 확인 |
+
+#### Generic CSV 인프라 (`thread_csv_producer.hpp` + `thread_csv_logger.hpp`)
+
+Controller-owned 데이터 CSV 를 위한 generic 페어. `timing/thread_timing_*` 와 의도적으로 분리되어 있다 — 차이점:
+
+| 항목 | `timing/thread_timing_*` | `logging/thread_csv_*` |
+|------|-------------------------|------------------------|
+| 자동 컬럼 | `t_wall_ns, tick_count` 두 개 emit | 없음 — payload 가 행 전체 소유 |
+| 용도 | per-tick timing CSV (CM/MPC/hand_udp) | controller-owned data CSV (state/sensor/inference 등) |
+| Schema 결정 | `WriteRtTickTimingHeader/Row` 단일 schema | caller 가 매 payload 마다 자유롭게 결정 |
+| Timestamp | `t_wall_ns` (steady_clock) | `state.t_relative_s` 를 payload 안에 embed |
+
+API:
+
+| 클래스 | 메서드 | 설명 |
+|--------|--------|------|
+| `ThreadCsvProducer<Payload, N>` | `Push(payload)` | RT thread 에서 SPSC 에 push (wait-free, drop-on-full) |
+| | `Drain(fn)` | 비-RT consumer 에서 FIFO 드레인 |
+| | `DropCount()` | 누적 drop count |
+| `ThreadCsvLogger<Payload>` | `Open(path, hdr, row)` | 헤더/행 writer 와 함께 파일 열기 (append-on-reopen) |
+| | `Log(payload)` | row writer 호출 + flush |
+
+전형적 사용 패턴 (`ControllerLogSet` 가 묶어 제공할 예정):
+
+```cpp
+struct StateLogPod {
+  double t_relative_s{0.0};
+  std::array<double, 16> actual_positions{};
+  // … (rest mirrors rtc_msgs/DeviceStateLog)
+};
+static_assert(std::is_trivially_copyable_v<StateLogPod>);
+
+void WriteHeader(std::ostream &os) { os << "t_relative_s,actual_pos_0,…"; }
+void WriteRow(std::ostream &os, const StateLogPod &p) {
+  os << p.t_relative_s << ',' << p.actual_positions[0] /*…*/;
+}
+
+rtc::ThreadCsvProducer<StateLogPod, 512> producer;
+rtc::ThreadCsvLogger<StateLogPod> logger;
+logger.Open(path, &WriteHeader, &WriteRow);
+
+// RT tick:
+producer.Push(pod);
+
+// non-RT drain timer:
+producer.Drain([&](const StateLogPod &p) { logger.Log(p); });
+```
 
 #### 세션 디렉토리 (`session_dir.hpp`)
 
