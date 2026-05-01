@@ -971,11 +971,9 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         return CallbackReturn::FAILURE;
       }
       if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
-        // Choose names span by instance: ur5e arm vs hand.
-        // Q-MSG-3 (Option A): instance "hand_state" maps to the hand
-        // device — distinct from "hand_sensor" so the CSV file paths
-        // do not collide.
-        const bool is_hand = (entry.instance == "hand_state" || entry.instance == "hand");
+        // Q-MSG-3: ur5e_state vs hand_state instance names. The CSV file
+        // paths must not collide so each device gets a distinct instance.
+        const bool is_hand = (entry.instance == "hand_state");
         const auto& joint_names = is_hand ? hand_joint_names_ : ur5e_joint_names_;
         const auto& motor_names = is_hand ? hand_motor_names_ : std::vector<std::string>{};
         // Capture by value into the writers (header runs once at Open).
@@ -992,7 +990,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         if (!handle) {
           RCLCPP_WARN(logger_, "Failed to open device_state CSV for instance=%s",
                       entry.instance.c_str());
-        } else if (entry.instance == "ur5e") {
+        } else if (entry.instance == "ur5e_state") {
           ur5e_state_log_handle_ = handle;
         } else if (is_hand) {
           hand_state_log_handle_ = handle;
@@ -1011,7 +1009,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         if (!handle) {
           RCLCPP_WARN(logger_, "Failed to open device_sensor CSV for instance=%s",
                       entry.instance.c_str());
-        } else if (entry.instance == "hand_sensor" || entry.instance == "hand") {
+        } else if (entry.instance == "hand_sensor") {
           hand_sensor_log_handle_ = handle;
         }
       }

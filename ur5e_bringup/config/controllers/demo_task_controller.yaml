@@ -103,7 +103,7 @@ demo_task_controller:
   # ── Controller-owned CSV logs (Phase C) ────────────────────────────────────
   logs:
     - msg_type: rtc_msgs/DeviceStateLog
-      instance: ur5e
+      instance: ur5e_state
     - msg_type: rtc_msgs/DeviceStateLog
       instance: hand_state
     - msg_type: rtc_msgs/DeviceSensorLog

@@ -106,13 +106,13 @@ TEST(ControllerLogSet, EmptyByDefault) {
 TEST(ControllerLogSet, RegisterLogResolvesPathUnderConfigKey) {
   ScopedSessionDir scope;
   rtc::ControllerLogSet set{"my_controller"};
-  auto handle = set.RegisterLog<PodA>("ur5e", &HeaderA, &RowA);
+  auto handle = set.RegisterLog<PodA>("dev_state", &HeaderA, &RowA);
   ASSERT_TRUE(static_cast<bool>(handle));
   ASSERT_EQ(set.size(), 1u);
 
   const auto channels = set.Channels();
   ASSERT_EQ(channels.size(), 1u);
-  const auto expected = scope.dir() / "controllers" / "my_controller" / "ur5e.csv";
+  const auto expected = scope.dir() / "controllers" / "my_controller" / "dev_state.csv";
   EXPECT_EQ(channels[0].second, expected);
   EXPECT_TRUE(fs::exists(expected));
 }
@@ -209,6 +209,26 @@ TEST(ControllerLogSet, ReopenAppendDoesNotDuplicateHeader) {
   EXPECT_EQ(lines[0], "t_relative_s,a");
   EXPECT_EQ(lines[1], "1,1");
   EXPECT_EQ(lines[2], "2,2");
+}
+
+TEST(ControllerLogSet, DuplicateInstanceRegistrationReturnsUnbound) {
+  // Q-MSG-3 path-uniqueness: two RegisterLog calls with the same instance
+  // inside one LogSet would silently interleave into the same CSV file.
+  // The second call must return an unbound handle without disturbing the
+  // first channel.
+  ScopedSessionDir scope;
+  rtc::ControllerLogSet set{"c"};
+
+  auto first = set.RegisterLog<PodA>("inst", &HeaderA, &RowA);
+  ASSERT_TRUE(static_cast<bool>(first));
+
+  auto second = set.RegisterLog<PodA>("inst", &HeaderA, &RowA);
+  EXPECT_FALSE(static_cast<bool>(second));
+
+  // First handle still works; only one channel registered.
+  EXPECT_EQ(set.size(), 1u);
+  EXPECT_TRUE(first.Push(PodA{1.0, 1}));
+  set.DrainAll();
 }
 
 TEST(ControllerLogSet, DropCountsTrackPerChannelOverflow) {

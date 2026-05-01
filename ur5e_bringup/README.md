@@ -174,7 +174,8 @@ demo_task_controller:
 | `grasp_state` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/hand/grasp_state` 등 |
 | `wbc_state` (hand; wbc 데모만) | 컨트롤러 | `/demo_wbc_controller/hand/wbc_state` |
 | `tof_snapshot` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/tof/snapshot` 등 |
-| `state`, `joint_command`, `ros2_command`, `device_state_log`, `device_sensor_log` | CM (매니저) | 기존 경로 유지 (`/joint_states`, `/ur5e/joint_command`, ...) |
+| `state`, `joint_command`, `ros2_command` | CM (매니저) | 기존 경로 유지 (`/joint_states`, `/ur5e/joint_command`, ...) |
+| `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/{ur5e_state,hand_state,hand_sensor}.csv` — Phase C 이후 controller 가 직접 소유 (CM 은 logging authority 아님) |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
 

@@ -148,10 +148,21 @@ class ControllerLogSet {
   /// open; existing files are appended without duplicate header.
   /// Returns an unbound LogHandle on filesystem error — `if (handle)` is
   /// the caller's check.
+  ///
+  /// Q-MSG-3 path-uniqueness rule: registering twice with the same
+  /// `instance` inside one LogSet is a config bug (two channels writing to
+  /// the same `<config_key>/<instance>.csv` would interleave silently).
+  /// The second call returns an unbound handle — caller's `if (handle)`
+  /// path treats it as a registration failure.
   template <typename PodT, std::size_t Capacity = 512>
   LogHandle<PodT, Capacity> RegisterLog(
       std::string_view instance, typename detail::LogChannel<PodT, Capacity>::HeaderWriter hdr,
       typename detail::LogChannel<PodT, Capacity>::RowWriter row) {
+    for (const auto& existing : channels_) {
+      if (existing->Instance() == instance) {
+        return LogHandle<PodT, Capacity>{};  // duplicate — unbound
+      }
+    }
     auto channel = std::make_unique<detail::LogChannel<PodT, Capacity>>(
         std::string(instance), std::move(hdr), std::move(row));
     auto* raw = channel.get();

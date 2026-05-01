@@ -1736,8 +1736,8 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         return CallbackReturn::FAILURE;
       }
       if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
-        // Q-MSG-3 (Option A): hand_state vs hand_sensor instance names.
-        const bool is_hand = (entry.instance == "hand_state" || entry.instance == "hand");
+        // Q-MSG-3: ur5e_state vs hand_state instance names.
+        const bool is_hand = (entry.instance == "hand_state");
         const std::vector<std::string> joint_names_copy =
             is_hand ? hand_joint_names_ : ur5e_joint_names_;
         const std::vector<std::string> motor_names_copy =
@@ -1753,7 +1753,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         if (!handle) {
           RCLCPP_WARN(logger_, "Failed to open device_state CSV for instance=%s",
                       entry.instance.c_str());
-        } else if (entry.instance == "ur5e") {
+        } else if (entry.instance == "ur5e_state") {
           ur5e_state_log_handle_ = handle;
         } else if (is_hand) {
           hand_state_log_handle_ = handle;
@@ -1771,7 +1771,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         if (!handle) {
           RCLCPP_WARN(logger_, "Failed to open device_sensor CSV for instance=%s",
                       entry.instance.c_str());
-        } else if (entry.instance == "hand_sensor" || entry.instance == "hand") {
+        } else if (entry.instance == "hand_sensor") {
           hand_sensor_log_handle_ = handle;
         }
       }
