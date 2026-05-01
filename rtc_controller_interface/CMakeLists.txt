@@ -94,6 +94,10 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_controller_log_set test/test_controller_log_set.cpp)
   target_link_libraries(test_controller_log_set rtc_controller_interface)
+
+  ament_add_gtest(test_controller_log_set_switch
+    test/test_controller_log_set_switch.cpp)
+  target_link_libraries(test_controller_log_set_switch rtc_controller_interface)
 endif()
 
 ament_package()
