@@ -42,7 +42,7 @@
 ///   `sensor_scratch_`, and `prev_out_` are pre-allocated in `Configure`.
 /// - `std::fprintf(stderr, …)` inside the null-handler guard fires at most
 ///   once per thread lifetime (gated by `null_logged_`). The MPC thread runs
-///   off the 500 Hz RT loop so a one-time stderr write is acceptable;
+///   off the RT loop so a one-time stderr write is acceptable;
 ///   SPSC-queue logging is a Phase 7 concern.
 ///
 /// Observability — `Last*` / `Total*` / `Failed*` atomics expose solve-loop

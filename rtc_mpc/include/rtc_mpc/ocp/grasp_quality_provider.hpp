@@ -65,7 +65,7 @@
 ///
 /// All methods execute on the **off-RT build / reconfigure path** (same
 /// context as `OCPHandlerBase::Build` / `UpdateReferences`). They never
-/// run on the 500 Hz solve loop. `noexcept` is still required on every
+/// run on the RT solve loop. `noexcept` is still required on every
 /// override so that Aligator's no-throw contract for stage construction
 /// propagates through the provider.
 

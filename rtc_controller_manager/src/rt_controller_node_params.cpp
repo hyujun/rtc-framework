@@ -158,7 +158,11 @@ void RtControllerNode::DeclareAndLoadParameters() {
     }
   };
 
-  safe_declare("control_rate", rclcpp::ParameterValue(500.0));
+  // RT loop rate. Framework supports kMin..kMaxControlRateHz; 500 Hz is the
+  // declare_parameter default only — robot bringups should set this in YAML
+  // (e.g. 1000.0 / 2000.0 for higher-bandwidth devices, lower for ToF-rich
+  // sensing loops).
+  safe_declare("control_rate", rclcpp::ParameterValue(rtc::kDefaultControlRateHz));
   safe_declare("kp", rclcpp::ParameterValue(5.0));
   safe_declare("kd", rclcpp::ParameterValue(0.5));
   safe_declare("enable_logging", rclcpp::ParameterValue(true));
@@ -183,8 +187,17 @@ void RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("device_timeout_values", rclcpp::ParameterValue(std::vector<double>{}));
 
   control_rate_ = get_parameter("control_rate").as_double();
+  if (!(control_rate_ >= rtc::kMinControlRateHz && control_rate_ <= rtc::kMaxControlRateHz)) {
+    RCLCPP_WARN(get_logger(),
+                "control_rate=%.1f Hz is outside the design range [%.0f, %.0f]; "
+                "proceeding but timing tests may not pass.",
+                control_rate_, rtc::kMinControlRateHz, rtc::kMaxControlRateHz);
+  }
   budget_us_ = 1.0e6 / control_rate_;
 
+  // init_timeout_ticks_ is rate-dependent — recomputed here so that the
+  // wall-clock window stays at `init_timeout_sec` regardless of the
+  // configured loop rate.
   const double init_timeout_sec = get_parameter("init_timeout_sec").as_double();
   init_timeout_ticks_ = static_cast<uint64_t>(init_timeout_sec * control_rate_);
   auto_hold_position_ = get_parameter("auto_hold_position").as_bool();

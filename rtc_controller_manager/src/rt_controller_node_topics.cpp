@@ -124,7 +124,7 @@ void RtControllerNode::CreateSubscriptions() {
 }
 
 void RtControllerNode::CreatePublishers() {
-  // BEST_EFFORT + depth 1: minimises DDS overhead on the 500 Hz RT path.
+  // BEST_EFFORT + depth 1: minimises DDS overhead on the RT path.
   rclcpp::QoS cmd_qos{1};
   cmd_qos.best_effort();
 
@@ -459,9 +459,11 @@ bool RtControllerNode::SwitchActiveController(const std::string& name, std::stri
   active_controller_idx_.store(target_idx, std::memory_order_release);
 
   // Step 5: let one RT tick observe the new idx before deactivating prev.
-  // 1.5 × dt at default 500 Hz ≈ 3 ms. PREEMPT_RT missed deadlines surface
+  // Sleep 1.5 × dt at the *configured* rate (≈ 3 ms at the default rate;
+  // 0.75 ms at 2 kHz, 15 ms at 100 Hz). PREEMPT_RT missed deadlines surface
   // as overrun_count_ regression, not as a wrong-controller dispatch.
-  const auto dt_us = static_cast<long>(1'500'000.0 / (control_rate_ > 0.0 ? control_rate_ : 500.0));
+  const double rate_hz = (control_rate_ > 0.0) ? control_rate_ : rtc::kDefaultControlRateHz;
+  const auto dt_us = static_cast<long>(1'500'000.0 / rate_hz);
   std::this_thread::sleep_for(std::chrono::microseconds(dt_us));
 
   // Step 6: deactivate prev (only if it was Active — defensive against

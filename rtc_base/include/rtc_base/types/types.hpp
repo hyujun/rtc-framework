@@ -50,6 +50,26 @@ inline constexpr int kTaskSpaceDim = 6;         // SE(3) DOF — geometry consta
 inline constexpr double kDefaultMaxJointVelocity = 2.0;  // rad/s
 inline constexpr double kDefaultMaxJointTorque = 150.0;  // N·m
 
+// ── RT control loop rate ────────────────────────────────────────────────────
+//
+// The RT control loop rate is a runtime YAML parameter (`control_rate`) — the
+// framework is rate-agnostic and supports the entire range below. The values
+// here are *defaults / bounds*, not assumptions. Code on the RT path that
+// needs a per-tick dt MUST derive it from the configured rate (e.g. via
+// `RTControllerInterface::GetDefaultDt()` or `ControllerState::dt` filled by
+// the controller manager). Hard-coding `0.002` or `500.0` anywhere on the RT
+// path violates the rate-agnostic contract.
+//
+// kDefaultControlRateHz is *only* used when:
+//   1. YAML omits `control_rate` (declare_parameter default), or
+//   2. A defensive fallback fires because `control_rate_` was somehow zero.
+// The fallback path (2) is a misconfiguration signal — see callers for the
+// log/error each invocation produces.
+inline constexpr double kDefaultControlRateHz = 500.0;
+inline constexpr double kMinControlRateHz = 100.0;                           // lower design bound
+inline constexpr double kMaxControlRateHz = 5000.0;                          // upper design bound
+inline constexpr double kDefaultControlDtSec = 1.0 / kDefaultControlRateHz;  // 2 ms
+
 // Fingertip 수: YAML에서 런타임 설정 가능. 배열 크기는 kMaxFingertips로 고정.
 inline constexpr int kDefaultNumFingertips = 4;  // YAML 미설정 시 기본값
 inline constexpr int kMaxFingertips = 8;         // 배열 상한 (RT 경로 힙 할당 방지)
@@ -135,7 +155,11 @@ struct ControllerState {
   static constexpr int kMaxDevices = 8;
   std::array<DeviceState, kMaxDevices> devices{};
   int num_devices{0};
-  double dt{0.002};
+  // Per-tick period [s]. Filled by RtControllerNode each tick from the
+  // configured `control_rate` YAML parameter (1 / control_rate). The
+  // initialiser here is a placeholder; controllers must NOT assume the
+  // default value reflects the runtime rate. See kDefaultControlDtSec.
+  double dt{kDefaultControlDtSec};
   uint64_t iteration{0};
 
   // Session-relative wall time in seconds (current_tick - first-tick origin),
@@ -431,7 +455,7 @@ struct TopicConfig {
   // or an empty string if not found.
   //
   // WARNING: NOT RT-safe — returns std::string (potential heap allocation).
-  // Call only during initialisation, not from the 500 Hz control loop.
+  // Call only during initialisation, not from the RT control loop.
   [[nodiscard]] std::string GetSubscribeTopicName(const std::string& group_name,
                                                   SubscribeRole role) const {
     for (const auto& [n, g] : groups) {

@@ -3,7 +3,8 @@
 **MPC ↔ RT control interface layer** for the RTC framework.
 
 Robot-agnostic library providing the plumbing between a soft-RT MPC thread
-(20 Hz) and the hard-RT control loop (500 Hz): lock-free solution delivery,
+(typ. 20 Hz) and the hard-RT control loop (`control_rate`, default 500 Hz,
+design 100 Hz–5 kHz): lock-free solution delivery,
 cubic Hermite trajectory interpolation, Riccati feedback, and an MPC thread
 skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 `rtc::mpc::MPCThread` + `PhaseManagerBase` (Phase 2+).

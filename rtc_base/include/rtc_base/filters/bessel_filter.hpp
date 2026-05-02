@@ -19,7 +19,7 @@
 //
 // RT safety:
 //   - Init() performs all computation and may throw on invalid parameters.
-//   - Apply() / ApplyScalar() are noexcept — safe to call on the 500 Hz RT path.
+//   - Apply() / ApplyScalar() are noexcept — safe to call on the RT path.
 //   - No heap allocation after Init().
 //
 // Template parameter N: number of independent channels (e.g. 6 for robot joints).
@@ -28,7 +28,7 @@
 //   BesselFilterN<6> filter;
 //   filter.Init(100.0, 500.0);          // 100 Hz cutoff, 500 Hz sample rate
 //
-//   // Inside the 500 Hz ControlLoop():
+//   // Inside the ControlLoop():
 //   std::array<double,6> filtered = filter.Apply(raw_positions);
 
 #include <array>
@@ -94,7 +94,7 @@ class BesselFilterN {
   }
 
   // Filter an N-channel input sample.  Returns the filtered output array.
-  // noexcept — safe to call on the 500 Hz RT path.
+  // noexcept — safe to call on the RT path.
   [[nodiscard]] std::array<double, N> Apply(const std::array<double, N>& input) noexcept {
     std::array<double, N> out{};
     for (std::size_t i = 0; i < N; ++i) {

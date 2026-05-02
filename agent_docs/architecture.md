@@ -15,7 +15,7 @@ Key types (all trivially copyable, RT-safe):
 
 | Thread | Core | Sched | Prio | Role |
 |--------|------|-------|------|------|
-| rt_loop | 2 | FIFO | 90 | 500Hz ControlLoop + 50Hz CheckTimeouts |
+| rt_loop | 2 | FIFO | 90 | ControlLoop @ `control_rate` Hz (default 500 Hz, design 100 Hz–5 kHz) + 50 Hz CheckTimeouts |
 | sensor_executor | 3 | FIFO | 70 | JointState/MotorState/SensorState/Target subs |
 | log_executor | 4 | OTHER | nice -5 | CSV logging (SPSC drain) |
 | mpc_main | 4 | FIFO | 60 | 20Hz MPC solve, publishes via `TripleBuffer`. Concrete driver is `rtc::mpc::HandlerMPCThread` (Phase 6): per-tick FK → `PhaseManagerBase::Update` → `MPCHandlerBase::Solve` → `MPCSolutionManager::PublishSolution`; cross-mode swap via `MPCFactory::Create` + `SeedWarmStart`. `MockMPCThread` remains the no-solver baseline. |
@@ -30,7 +30,7 @@ Hybrid-CPU detection (Stage A, 2026-04-22): `rtc_base/threading/cpu_topology.hpp
 
 ### Per-thread timing CSV infrastructure (`rtc_base/timing/thread_timing_*`)
 
-CM RT loop (500 Hz `cm_timing_log.csv`) and MPC thread (`mpc_timing_log.csv`) share the *same* generic transport **and** the *same* unified 5-column `RtTickTimingPayload` (`rtc_base/timing/rt_tick_timing_sample.hpp`). The fixed-frequency loop, lifecycle (Start / RequestStop / Pause / Resume), `clock_nanosleep(TIMER_ABSTIME)` cadence, overrun detection, and per-tick t0~t3 capture all live on `rtc::PeriodicRtThread` (`rtc_base/threading/periodic_rt_thread.hpp`). Both threads inherit / compose this base, override only their channel-specific hooks (sim-CV wakeup, E-STOP escalation), and share a single set of analysis tooling. Adding a third per-tick timing channel (e.g. ONNX inference) reuses the same payload + buffer alias + base class — no `RTControllerInterface` virtuals, no new SPSC class, no new logger class.
+CM RT loop (rate-configurable, `cm_timing_log.csv`) and MPC thread (`mpc_timing_log.csv`) share the *same* generic transport **and** the *same* unified 5-column `RtTickTimingPayload` (`rtc_base/timing/rt_tick_timing_sample.hpp`). The fixed-frequency loop, lifecycle (Start / RequestStop / Pause / Resume), `clock_nanosleep(TIMER_ABSTIME)` cadence, overrun detection, and per-tick t0~t3 capture all live on `rtc::PeriodicRtThread` (`rtc_base/threading/periodic_rt_thread.hpp`). Both threads inherit / compose this base, override only their channel-specific hooks (sim-CV wakeup, E-STOP escalation), and share a single set of analysis tooling. Adding a third per-tick timing channel (e.g. ONNX inference) reuses the same payload + buffer alias + base class — no `RTControllerInterface` virtuals, no new SPSC class, no new logger class.
 
 | Layer | Type | Owner |
 |-------|------|-------|
@@ -70,7 +70,7 @@ Channel-specific instantiations:
 
 **RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to sensor/log/aux dedicated executors.
 
-- **ControlLoop** (500Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> SPSC publish + log
+- **ControlLoop** (configurable rate, default 500 Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> SPSC publish + log
 - **CheckTimeouts** (50Hz): per-group device timeout -> `TriggerGlobalEstop("{group}_timeout")`
 - **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout
 - **TriggerGlobalEstop**: idempotent (`compare_exchange_strong`), propagates to all controllers
@@ -78,7 +78,7 @@ Channel-specific instantiations:
 ## Data Flow
 
 ```
-[Robot HW / MuJoCo Sim] --JointState--> [RtControllerNode: 500Hz RT loop]
+[Robot HW / MuJoCo Sim] --JointState--> [RtControllerNode: RT loop @ control_rate]
     +--SPSC--> [publish_thread] --> /forward_position_controller/commands
     |                           +-> /{group}/digital_twin/joint_states
     +--SPSC--> [log_executor]   --> CSV (timing + per-device state + sensor)
@@ -97,7 +97,7 @@ YAML `ownership:` field (per `<topic>` entry in controller config) drives a 2-ti
                             ┌────────────────────────────────────────────────┐
                             │       RtControllerNode (CM, exec process)      │
                             │  ┌────────────────────────────────────────┐    │
-ownership: "manager"  ──►   │  │ RT loop (500 Hz, SCHED_FIFO)           │    │
+ownership: "manager"  ──►   │  │ RT loop (control_rate Hz, SCHED_FIFO)  │    │
 (default)                   │  │   sub: state / motor_state / sensor    │    │
                             │  │   pub: ros2_command, joint_command,    │    │
                             │  │        device_state_log, sensor_log,   │    │

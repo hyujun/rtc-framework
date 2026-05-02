@@ -1,4 +1,4 @@
-// ── 500 Hz RT control loop, timeout watchdog, log drain ──────────────────────
+// ── RT control loop, timeout watchdog, log drain ──────────────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/threading/thread_utils.hpp>
 
@@ -35,7 +35,7 @@ bool RtControllerNode::AllTimeoutDevicesReceived() const noexcept {
   return true;
 }
 
-// ── 500 Hz control loop
+// ── RT control loop (period = 1 / control_rate)
 // ───────────────────────────────────────────────────────
 void RtControllerNode::ControlLoop() {
   // ── Phase 0: tick start + readiness check ──────────────────────────────
@@ -292,7 +292,8 @@ void RtControllerNode::ControlLoop() {
 void RtControllerNode::DrainLog() {
   // Drain per-tick CM timing samples → CSV. Producer is the RT thread; this
   // drain runs at the log-thread cadence (10 ms timer ⇒ ≤5 samples/drain
-  // at 500 Hz). Controller-owned data CSVs are drained by each controller's
+  // at the default 500 Hz; scales as control_rate / 100). Controller-owned
+  // data CSVs are drained by each controller's
   // own ControllerLogSet timer (Phase C) — not from here.
   cm_timing_producer_.Drain(
       [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
@@ -310,7 +311,8 @@ void RtControllerNode::DrainLog() {
 
   // Print timing summary when signalled by the RT thread. Each print is
   // followed by a Reset() so the reported mean/p95/p99 reflect the most
-  // recent kTimingSummaryInterval ticks (~2 s at 500 Hz), not the whole
+  // recent kTimingSummaryInterval ticks (≈2 s at the default 500 Hz; scales
+  // inversely with control_rate), not the whole
   // session — old start-up spikes would otherwise permanently skew p99.
   // The rt_controller_node owns cumulative counters (overruns, skips,
   // pub_drops, timing_drops) separately, so they are unaffected
@@ -347,7 +349,8 @@ void RtControllerNode::DrainLog() {
 
 void RtControllerNode::ControlLoopThread::OnTick() noexcept {
   owner_->ControlLoop();
-  // 50 Hz watchdog — every 10th tick at 500 Hz.
+  // 50 Hz watchdog — every 10th tick at the default 500 Hz (the divisor is
+  // control_rate / 50; tuned for the typical default).
   static thread_local std::uint32_t timeout_tick = 0;
   static constexpr int kWatchdogCheckDivisor = 10;
   if (owner_->enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {

@@ -2,8 +2,8 @@
 #define RTC_BASE_TIMING_RT_TICK_TIMING_SAMPLE_HPP_
 
 // Unified per-tick timing payload shared by every RT / soft-RT thread that
-// publishes timing CSV output (CM 500 Hz loop, MPC solve thread, future
-// channels). The transport (SPSC ring) and CSV shell are generic — see
+// publishes timing CSV output (CM RT loop @ control_rate, MPC solve thread,
+// hand UDP EventLoop, future channels). The transport (SPSC ring) and CSV shell are generic — see
 // thread_timing_producer.hpp / thread_timing_csv_logger.hpp.
 //
 // One row per tick is appended to a thread-specific CSV path with schema
@@ -56,16 +56,18 @@ inline void WriteRtTickTimingRow(std::ostream& os, const RtTickTimingPayload& p)
      << ',' << p.jitter_us;
 }
 
-/// SPSC ring capacity for the CM RT loop (500 Hz). 512 slots ≈ 1 s of
-/// headroom — drained at 100 Hz by the log thread.
+/// SPSC ring capacity for the CM RT loop. 512 slots ≈ 1 s of headroom at the
+/// default 500 Hz `control_rate` (proportionally less at higher rates; e.g.
+/// ~250 ms at 2 kHz). Drained at 100 Hz by the log thread.
 inline constexpr std::size_t kCmTimingBufferCapacity = 512;
 
 /// SPSC ring capacity for the MPC solve thread (≤ 100 Hz). 128 slots ≈
 /// 6 s of headroom at 20 Hz, comfortably covering a 1 s drain interval.
 inline constexpr std::size_t kMpcTimingBufferCapacity = 128;
 
-/// SPSC ring capacity for the hand UDP EventLoop (~500 Hz). 512 slots ≈
-/// 1 s of headroom — drained at 1 Hz by the node's aux timer.
+/// SPSC ring capacity for the hand UDP EventLoop (typically driven by the
+/// CM at `control_rate`, default 500 Hz). 512 slots ≈ 1 s of headroom at
+/// 500 Hz; drained at 1 Hz by the node's aux timer.
 inline constexpr std::size_t kHandUdpTimingBufferCapacity = 512;
 
 using RtTickTimingSample = ThreadTimingSample<RtTickTimingPayload>;

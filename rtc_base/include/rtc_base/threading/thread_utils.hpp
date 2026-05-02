@@ -343,7 +343,7 @@ inline ThreadMetrics GetThreadMetrics(const std::vector<double>& latencies_us) n
 }
 
 // RT-safe thread health check using bitfield flags instead of strings.
-// Zero heap allocation — safe to call periodically from the 500 Hz RT path.
+// Zero heap allocation — safe to call periodically from the RT path.
 //
 // Usage:
 //   auto flags = CheckThreadHealthFast(&kRtControlConfig);

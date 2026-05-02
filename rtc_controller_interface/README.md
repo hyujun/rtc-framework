@@ -283,7 +283,7 @@ my_controller:
 
 | YAML 값 | enum 값 | 주체 | 용도 |
 |---------|---------|------|------|
-| `manager` (default) | `kManager` | `RtControllerNode` (CM) | RT-adjacent HW 트래픽 (state/command/log). 500 Hz 루프와 SPSC 드레인을 경유 |
+| `manager` (default) | `kManager` | `RtControllerNode` (CM) | RT-adjacent HW 트래픽 (state/command/log). RT 정기 tick (`control_rate`, default 500 Hz) 루프와 SPSC 드레인을 경유 |
 | `controller` | `kController` | 컨트롤러별 `LifecycleNode` | 외부 GUI/BT/planner용 non-RT 트래픽. 상대 경로는 노드 namespace `/<config_key>/...`로 자동 해석 |
 
 Controller-owned 토픽은 on_configure에서 컨트롤러가 직접 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 생성합니다. CM의 publish thread는 SPSC snapshot을 드레인한 뒤 `controllers_[active]->PublishNonRtSnapshot(snap)` 을 호출해 controller-owned 발행을 위임합니다.

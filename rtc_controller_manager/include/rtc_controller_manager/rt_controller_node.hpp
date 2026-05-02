@@ -48,7 +48,8 @@
 // ── RtControllerNode
 // ──────────────────────────────────────────────────────────
 //
-// 500 Hz position controller node.
+// Configurable-rate (`control_rate` YAML, default 500 Hz) RT position
+// controller node.
 //
 // Threading model:
 //   - rt_loop (jthread):   clock_nanosleep RT loop — ControlLoop() +
@@ -170,7 +171,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   };
 
   void CheckTimeouts();  // 50 Hz watchdog — called inline from RT loop
-  void ControlLoop();    // 500 Hz control loop
+  void ControlLoop();    // RT control loop (period = 1 / control_rate)
 
   // ── Publish offload (SPSC drain → publish) ──────────────────────────────
   void PublishLoopEntry(const rtc::ThreadConfig& cfg);
@@ -443,7 +444,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::atomic<bool> state_fresh_{false};
 
   // ── Parameters ────────────────────────────────────────────────────────────
-  double control_rate_{500.0};
+  // RT loop rate [Hz]. Loaded from the YAML `control_rate` parameter in
+  // DeclareAndLoadParameters(); kDefaultControlRateHz is only the
+  // declare_parameter default (used when YAML omits the field). The
+  // framework is rate-agnostic — any kMin..kMaxControlRateHz value is
+  // valid, and all derived quantities (budget_us_, init_timeout_ticks_,
+  // ControllerState::dt, PeriodicRtThread::frequency_hz) are recomputed
+  // from this rate at parameter load time.
+  double control_rate_{rtc::kDefaultControlRateHz};
   bool enable_logging_{true};
   bool enable_estop_{true};
   std::string robot_ns_{};  // robot namespace for manager-level topics
@@ -454,7 +462,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ──────────────────────────────────────────────────
   bool init_complete_{false};
   uint64_t init_wait_ticks_{0};
-  uint64_t init_timeout_ticks_{2500};  // default 5s at 500Hz
+  // Placeholder default; overwritten in DeclareAndLoadParameters() with
+  // `init_timeout_sec * control_rate_` once the runtime rate is known.
+  // (5 s × kDefaultControlRateHz at the default rate.)
+  uint64_t init_timeout_ticks_{static_cast<uint64_t>(5.0 * rtc::kDefaultControlRateHz)};
 
   // ── Auto-hold position ─────────────────────────────────────────────────────
   bool auto_hold_position_{true};

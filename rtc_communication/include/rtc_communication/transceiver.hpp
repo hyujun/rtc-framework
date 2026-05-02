@@ -98,7 +98,7 @@ class Transceiver {
   // Sends a pre-built packet. Allocation-free.
   //
   // @note **RT-safe.** Performs one stack-buffer memcpy + a single sendto()
-  // syscall, no locks taken, noexcept. Suitable for the 500 Hz RT loop.
+  // syscall, no locks taken, noexcept. Suitable for the RT loop.
   // The caller owns the timing budget — sendto() may still block if the
   // kernel send buffer is full and the socket is configured blocking.
   [[nodiscard]] bool Send(const SendPacket& pkt) noexcept {

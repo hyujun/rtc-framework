@@ -73,8 +73,8 @@ void MPCThread::OnTick() noexcept {
   const bool ok = Solve(state, scratch_, worker_span);
   MarkComputeDone();
 
-  // Phase 3: publish. PublishSolution is noexcept and runs off the 500 Hz
-  // RT loop, so the SPSC handoff is RT-safe for the controller side.
+  // Phase 3: publish. PublishSolution is noexcept and runs off the RT
+  // control loop, so the SPSC handoff is RT-safe for the controller side.
   if (ok) {
     manager_->PublishSolution(scratch_);
   }

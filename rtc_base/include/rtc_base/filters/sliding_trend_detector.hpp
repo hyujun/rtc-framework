@@ -96,7 +96,8 @@ class SlidingTrendDetector {
   }
 
   // Feed one multi-channel sample and return the current detection result.
-  // O(1) time complexity.  Called once per tick (e.g. every 2 ms at 500 Hz).
+  // O(1) time complexity.  Called once per RT tick (period = 1 / control_rate;
+  // e.g. 2 ms at the default 500 Hz).
   [[nodiscard]] Result Update(const std::array<double, NumChannels>& sample) noexcept {
     if (count_ < n_) {
       // ── Warmup phase: accumulate sums, no removal ─────────────────────

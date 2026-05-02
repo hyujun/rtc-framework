@@ -8,7 +8,7 @@
 //   - A monotonic tick counter that the producer increments once per push.
 //   - Drain callbacks the non-RT consumer uses to write CSV rows.
 //
-// One template covers the CM 500 Hz RT loop, the MPC main solve thread,
+// One template covers the CM RT loop (@ control_rate), the MPC main solve thread,
 // and any future RT/soft-RT thread that wants per-tick CSV output. Both
 // CM and MPC bind it with rtc::RtTickTimingPayload (see
 // rtc_base/timing/rt_tick_timing_sample.hpp) so analysis scripts can join

@@ -4,7 +4,7 @@
 
 **RTC (Real-Time Control) Framework** — Robot-agnostic real-time control for URDF-based manipulators.
 
-- `rtc_*` packages (13): variable-DOF, 500 Hz–2 kHz, transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP
+- `rtc_*` packages (13): variable-DOF, configurable RT loop rate (`control_rate` YAML; design range 100 Hz – 5 kHz, default 500 Hz), transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP
 - `ur5e_*` packages (4): UR5e + 10-DOF hand drivers, demo controllers, BT coordinator (reference integration)
 - `shape_estimation*` packages (2): ToF-based surface estimation (msgs + node)
 - `repo_scripts` (1): repo-local convenience tooling (PREEMPT_RT, CPU shield, deps build, env activation) — not part of the rtc_* runtime libraries
@@ -40,7 +40,7 @@
 
 전체: [agent_docs/invariants.md](agent_docs/invariants.md). 아래는 RT path에서 자주 위반되는 핵심만.
 
-### RT path 절대 금지 (500 Hz 정기 tick)
+### RT path 절대 금지 (정기 tick — `control_rate` YAML, 100 Hz–5 kHz, default 500 Hz)
 
 1. `new` / `malloc` / `push_back` / `emplace_back` / `resize` — pre-allocated fixed-size 사용
 2. `throw` / `catch` — error code, `std::optional`, `std::expected`
@@ -227,7 +227,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 | `rtc_communication` | TransportInterface, UdpSocket, PacketCodec, Transceiver |
 | `rtc_controller_interface` | RTControllerInterface base, ControllerRegistry, RTC_REGISTER_CONTROLLER |
 | `rtc_controllers` | PController, JointPD, CLIK, OSC, GraspController |
-| `rtc_controller_manager` | RtControllerNode: 500 Hz RT loop, SPSC publish, E-STOP |
+| `rtc_controller_manager` | RtControllerNode: configurable-rate RT loop (`control_rate`, default 500 Hz), SPSC publish, E-STOP |
 | `rtc_inference` | InferenceEngine, OnnxEngine |
 | `rtc_msgs` | ROS 2 message definitions |
 | `rtc_mujoco_sim` | MuJoCo 3.x wrapper |

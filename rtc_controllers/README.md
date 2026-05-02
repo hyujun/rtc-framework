@@ -387,7 +387,7 @@ q[j] = (1 - s) * q_open[j] + s * q_close[j]       (j = 0..2, MCP_AA/MCP_FE/DIP_F
 
 **RT 안전성:**
 
-- `Update()` 메서드: `noexcept`, 매 제어 주기(500Hz) 호출
+- `Update()` 메서드: `noexcept`, 매 제어 주기 (`control_rate` Hz; default 500) 호출
 - 4차 Bessel LPF (`BesselFilterN<3>`)로 힘 신호 필터링 (RT 경로에서 동적 할당 없음)
 - `CommandGrasp()` / `CommandRelease()`: `std::atomic<bool>` + `memory_order_release/acq_rel`로 크로스 스레드 명령 전달
 - 모든 상태 (`FingerState`, `GraspParams`)는 `trivially_copyable` 구조체

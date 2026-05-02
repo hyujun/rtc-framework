@@ -249,7 +249,7 @@ while (!stop_requested):
 
 | 메서드 | RT-safe? | 사유 |
 |--------|----------|------|
-| `Send(pkt)` | ✅ Yes | 스택 memcpy + 단일 `sendto()` syscall, `noexcept`. 500 Hz 루프에서 직접 호출 가능 |
+| `Send(pkt)` | ✅ Yes | 스택 memcpy + 단일 `sendto()` syscall, `noexcept`. RT 정기 tick 루프 (default 500 Hz, `control_rate`로 가변)에서 직접 호출 가능 |
 | `IsRunning()` / `recv_count()` / `send_count()` | ✅ Yes | atomic load만 수행 |
 | `GetLatestState()` | ❌ **No** | `std::mutex` 획득 — non-RT 컨텍스트(진단 스레드, ROS2 콜백)에서만 호출 |
 | `StartRecv()` / `Stop()` / `SetCallback()` | ❌ No | 초기화/셧다운 경로 (jthread 생성·조인) |

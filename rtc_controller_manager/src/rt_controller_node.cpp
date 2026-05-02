@@ -353,7 +353,9 @@ rtc::ControllerState RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx)
     ++di;
   }
   snapshot.num_devices = static_cast<int>(di);
-  snapshot.dt = (control_rate_ > 0.0) ? (1.0 / control_rate_) : 0.002;
+  // The fallback only fires if control_rate_ was misconfigured (LoadParameters
+  // guarantees > 0). Real RT ticks always observe 1 / configured rate.
+  snapshot.dt = (control_rate_ > 0.0) ? (1.0 / control_rate_) : rtc::kDefaultControlDtSec;
   return snapshot;
 }
 

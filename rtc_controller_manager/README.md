@@ -7,10 +7,10 @@
 
 ## 개요
 
-RTC 프레임워크의 **500 Hz 실시간 제어 루프 매니저** 패키지입니다. 컨트롤러 수명 관리, 결정론적 제어 루프, 퍼블리시 오프로드, CSV 로깅, E-STOP 안전 메커니즘을 통합 관리합니다. Phase 3 구조 개편을 통해 로봇에 독립적(robot-agnostic)으로 설계되었습니다.
+RTC 프레임워크의 **설정 가능한 RT 제어 루프 매니저** 패키지입니다 (`control_rate` YAML; 설계 범위 100 Hz–5 kHz, default 500 Hz). 컨트롤러 수명 관리, 결정론적 제어 루프, 퍼블리시 오프로드, CSV 로깅, E-STOP 안전 메커니즘을 통합 관리합니다. Phase 3 구조 개편을 통해 로봇에 독립적(robot-agnostic)으로 설계되었습니다.
 
 **핵심 기능:**
-- `clock_nanosleep` 기반 500 Hz 결정론적 제어 루프 (실제 로봇) / CV 기반 동기 루프 (시뮬레이션)
+- `clock_nanosleep` 기반 결정론적 제어 루프 — 주기는 `control_rate` YAML 파라미터로 설정 (default 500 Hz, 설계 범위 100 Hz–5 kHz; 상수 `rtc::kMin/kMax/kDefaultControlRateHz`) (실제 로봇) / CV 기반 동기 루프 (시뮬레이션)
 - 락-프리 SPSC 버퍼를 통한 퍼블리시/로깅 오프로드
 - 런타임 컨트롤러 전환 (atomic index swap, 컨트롤러 이름 문자열 기반)
 - 멀티 코어 스레드 분리 (5개 스레드, CPU 어피니티)
@@ -36,7 +36,7 @@ rtc_controller_manager/
 │   ├── rt_controller_node_device_config.cpp <- URDF/모델 파싱, 디바이스 이름 설정
 │   ├── rt_controller_node_topics.cpp      <- 구독/퍼블리셔 생성, 컨트롤러 전환
 │   ├── rt_controller_node_callbacks.cpp   <- 디바이스 센서/타겟 콜백 (SeqLock writer)
-│   ├── rt_controller_node_rt_loop.cpp     <- 500 Hz RT 루프, 워치독, 로그 드레인
+│   ├── rt_controller_node_rt_loop.cpp     <- RT 루프 (@ control_rate), 워치독, 로그 드레인
 │   ├── rt_controller_node_publish.cpp     <- SPSC 드레인 → ROS2 publish (eventfd wakeup)
 │   ├── rt_controller_node_estop.cpp       <- E-STOP 트리거/클리어/퍼블리시
 │   └── rt_controller_main_impl.cpp        <- RtControllerMain() 구현 (라이브러리)
@@ -53,7 +53,7 @@ rtc_controller_manager/
 
 | 스레드 | 코어 | 스케줄러 | 주파수 | 역할 |
 |--------|------|----------|--------|------|
-| **rt_loop** | 2 | SCHED_FIFO 90 | 500 Hz + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독 |
+| **rt_loop** | 2 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독 |
 | **sensor_executor** | 3 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState, Target 구독 |
 | **log_executor** | 4 | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 (Phase C 이후 controller 데이터 CSV 는 각 controller LifecycleNode 가 자체 드레인) |
 | **publish_thread** | 5 | SCHED_OTHER -3 | 이벤트 | SPSC 드레인 → ROS2 `publish()` (eventfd wakeup, 모든 DDS 직렬화/시스콜 처리) |
@@ -92,7 +92,7 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 
 ---
 
-## 제어 루프 흐름 (500 Hz, 2 ms/tick)
+## 제어 루프 흐름 (정기 tick @ `control_rate`; 예: 500 Hz → 2 ms/tick, 1 kHz → 1 ms, 2 kHz → 0.5 ms)
 
 ### Phase 0: 준비 검사
 - `state_received_` 플래그 확인 -> 타임아웃 시 E-STOP + 노드 종료
@@ -269,7 +269,7 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 |------|------|
 | 히스토그램 | 200개 버킷 (10 us 간격, 0-2000 us) + 오버플로 버킷 |
 | 통계 | min, max, mean, stddev, p95, p99 |
-| 예산 초과 | 2000 us (500 Hz = 2 ms) 초과 횟수 |
+| 예산 초과 | `1e6 / control_rate` µs (예: 500 Hz → 2000 µs) 초과 횟수 |
 | 리셋 주기 | RT 루프가 1 000 tick(≈ 2 s)마다 로그 스레드에 Summary 출력 요청 → 로그 스레드는 `RCLCPP_INFO` 직후 `timing_profiler_.Reset()`을 호출. 따라서 각 출력은 **최근 ~2 s 윈도우**의 통계이며, 세션 시작 시점의 스파이크가 p99에 영구 반영되지 않음 |
 | p95/p99 정확도 | (1) bucket 폭(10 µs)이 일반적인 Compute 시간(10–100 µs)보다 작아 단일 bucket 클러스터로 인한 외삽 오류 없음. (2) 오버플로 버킷(≥ 2 ms)에서 p99가 떨어질 경우 `[2000 µs, max_us]` 구간의 선형 보간값을 반환. (3) 모든 보간 결과는 `max_us`로 clamp (정의상 p95, p99 ≤ max). 이전에는 `<20, 100, 2000>` 설정에서 mean=27 µs / max=50 µs 같은 작은 값에서 p95/p99가 95/99 µs로 고정 출력되는 버그가 있었음 |
 
@@ -281,7 +281,7 @@ CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [
 
 | 채널 | Producer 멤버 | Logger | CSV 경로 | Schema (payload 컬럼) |
 |------|--------------|--------|----------|----------------------|
-| CM RT loop (500 Hz) | `cm_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `cm_timing_logger_` | `<session>/timing/cm_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
+| CM RT loop (@ `control_rate`) | `cm_timing_producer_` (`ThreadTimingProducer<RtTickTimingPayload, 512>`) | `cm_timing_logger_` | `<session>/timing/cm_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 | MPC thread (≤ 100 Hz, per-controller) | `MPCThread::TimingProducer()` (`ThreadTimingProducer<RtTickTimingPayload, 128>`) | `MpcTimingLogger` (controller-owned) | `<session>/timing/mpc_timing_log.csv` | `t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` |
 
 공통 컬럼 `t_wall_ns, tick_count`는 `ThreadTimingCsvLogger`가 자동으로 emit. `tick_count`는 producer-side monotonic 시퀀스 번호 (drop 검증용). CM/MPC 두 thread가 동일한 5-컬럼 payload schema (`rtc_base/timing/rt_tick_timing_sample.hpp`)를 공유하므로 cross-thread 분석 도구 한 세트가 두 CSV를 모두 처리한다.
@@ -504,7 +504,7 @@ source install/setup.bash
 ```
 rtc_base + rtc_controller_interface + rtc_controllers + rtc_communication
     |
-rtc_controller_manager  <- 500 Hz RT 제어 실행 엔진
+rtc_controller_manager  <- RT 제어 실행 엔진 (@ control_rate)
     ^
     +-- ur5e_bringup  (로봇별 진입점 + launch 파일)
 ```

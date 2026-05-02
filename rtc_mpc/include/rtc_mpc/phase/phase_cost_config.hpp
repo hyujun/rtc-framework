@@ -8,7 +8,7 @@
 /// Concrete phase managers (e.g. `ur5e_bringup::GraspPhaseManager`) pick a
 /// pre-loaded config per phase and hand it to the OCP builder via
 /// `PhaseContext`. The container lives on the **OCP build / reconfigure
-/// path**, not the 500Hz RT loop, so `Eigen::VectorXd` and `std::map` are
+/// path**, not the RT loop, so `Eigen::VectorXd` and `std::map` are
 /// permitted here — RT-path interchange goes through
 /// `rtc_mpc/types/mpc_solution_types.hpp`.
 ///

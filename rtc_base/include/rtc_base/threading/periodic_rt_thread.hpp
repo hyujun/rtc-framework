@@ -3,7 +3,8 @@
 
 // PeriodicRtThread — shared skeleton for fixed-frequency RT/soft-RT loops.
 //
-// Both the controller-manager 500 Hz RT loop and the MPC solve thread used
+// Both the controller-manager RT loop (configurable `control_rate`,
+// default 500 Hz) and the MPC solve thread used
 // to carry their own bespoke jthread + clock_nanosleep + overrun-detection
 // + (in MPC's case) Pause/Resume scaffolding. The shape was identical:
 //

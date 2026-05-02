@@ -5,7 +5,7 @@
 /// @brief Contact-plan description types for OCP construction (non-RT).
 ///
 /// These types live on the **OCP build / reconfigure path** (phase change),
-/// NOT the 500Hz RT loop. `std::vector` / `std::string` are therefore allowed
+/// NOT the RT loop. `std::vector` / `std::string` are therefore allowed
 /// — RT-path interchange uses the fixed-capacity structs in
 /// @ref rtc_mpc/types/mpc_solution_types.hpp instead.
 ///

@@ -54,7 +54,7 @@ rtc_digital_twin/
 ## 데이터 흐름
 
 ```
-[rtc_controller_manager (C++, 500Hz)]
+[rtc_controller_manager (C++, RT @ control_rate; default 500Hz)]
   /joint_states (BE/2) -> DeviceJointStateCallback
        ├── device_states_ 업데이트 (기존)
        └── forward -> /{group}/digital_twin/joint_states (RELIABLE/10)

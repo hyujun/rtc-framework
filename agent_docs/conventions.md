@@ -27,7 +27,7 @@
 - **`noexcept`** on all RT paths
 - **`[[nodiscard]]`** on status-returning functions; **`static_assert`** on template params
 - **Include order**: project → ROS 2 / third-party → C++ stdlib (alphabetical)
-- **Eigen**: pre-allocated buffers, `noalias()`, zero heap on 500 Hz. `auto`로 Eigen expression 받지 말 것 ([invariants.md](invariants.md) RT-5)
+- **Eigen**: pre-allocated buffers, `noalias()`, zero heap on the RT path (any configured `control_rate`). `auto`로 Eigen expression 받지 말 것 ([invariants.md](invariants.md) RT-5)
 - **Lifecycle**: 5 C++ nodes는 `rclcpp_lifecycle::LifecycleNode`. Empty constructor; `on_configure` (Tier 1) / `on_activate` (Tier 2). Safety publishers은 standalone `rclcpp::create_publisher` 사용
 - **ROS 2 API**: 명시 `rclcpp::QoS`, `MutuallyExclusiveCallbackGroup`, 범위 지정 `ParameterDescriptor`
 

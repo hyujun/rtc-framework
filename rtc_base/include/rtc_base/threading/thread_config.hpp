@@ -37,7 +37,7 @@ struct MpcThreadConfig {
 
 // ── 6-core configuration ────────────────────────────────────────────────────
 // Core 0-1: OS / DDS / NIC IRQ  (isolated by isolcpus=2-5)
-// Core 2:   RT Control           (500 Hz ControlLoop + 50 Hz E-STOP watchdog)
+// Core 2:   RT Control           (ControlLoop @ control_rate + 50 Hz E-STOP watchdog)
 // Core 3:   Sensor I/O           (joint_state, target, hand callbacks —
 // dedicated) Core 4:   Logging              (100 Hz CSV drain) Core 5:   UDP
 // recv + Aux       (udp_recv FIFO 65, aux SCHED_OTHER 0)
@@ -106,7 +106,7 @@ inline const MpcThreadConfig kMpcConfig6Core{
 
 // ── 8-core configuration (Phase 5: MPC dedicated core) ─────────────────────
 // Core 0-1: OS / DDS / NIC IRQ  (isolated by cset shield)
-// Core 2:   RT Control           (500 Hz ControlLoop + 50 Hz E-STOP watchdog)
+// Core 2:   RT Control           (ControlLoop @ control_rate + 50 Hz E-STOP watchdog)
 // Core 3:   Sensor I/O           (joint_state, target, hand callbacks)
 // Core 4:   MPC main             (Phase 5, FIFO 60 — below sensor's 70)
 // Core 5:   UDP recv             (dedicated — previously Core 4)

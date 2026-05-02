@@ -100,11 +100,13 @@ SimLoop → 모든 robot 그룹의 state 퍼블리시
 
 `n_substeps` 파라미터로 한 제어 주기 내 물리 스텝 횟수를 제어합니다. 제어 주기(`physics_timestep`)는 변하지 않고, MuJoCo의 실제 step 크기(`substep_dt`)만 작아집니다.
 
+아래 표는 default `control_rate=500Hz` (2 ms 제어 주기) 기준 예시. 실제 제어 주기는 `control_rate` YAML로 설정되며, `substep_dt = 제어 주기 / n_substeps` 관계는 모든 rate에서 성립.
+
 | n_substeps | substep_dt | 제어 주기 | 효과 |
 |-----------|-----------|----------|------|
-| `1` (기본) | 2.0ms | 2.0ms (500Hz) | 기존 동작과 동일 |
-| `4` | 0.5ms | 2.0ms (500Hz) | 물리 해상도 4배 향상 |
-| `10` | 0.2ms | 2.0ms (500Hz) | contact-rich 시나리오 안정성 극대화 |
+| `1` (기본) | 2.0ms | 2.0ms (default 500Hz) | 기존 동작과 동일 |
+| `4` | 0.5ms | 2.0ms (default 500Hz) | 물리 해상도 4배 향상 |
+| `10` | 0.2ms | 2.0ms (default 500Hz) | contact-rich 시나리오 안정성 극대화 |
 
 - `ApplyCommand()`는 루프 밖에서 1회만 호출 — 서브스텝 중간에 ctrl 값 변경 없음
 - `StepOnce` (`>` 버튼)은 N substeps 전부 실행 = 1 제어 주기 진행

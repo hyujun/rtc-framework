@@ -7,7 +7,7 @@
 /// `OCPHandlerBase` is the boundary between the phase-agnostic MPC
 /// orchestration layer (Phase 5 `MPCHandler`) and concrete solver-specific
 /// OCP assembly (Aligator-backed `LightContactOCP`, `ContactRichOCP`). It
-/// lives on the **OCP build / reconfigure path**, not the 500Hz RT loop.
+/// lives on the **OCP build / reconfigure path**, not the RT loop.
 ///
 /// Two-method API split:
 /// - `Build` — full topology rebuild (allocates). Called on first init and

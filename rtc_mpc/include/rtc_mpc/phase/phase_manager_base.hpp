@@ -13,8 +13,8 @@
 /// 1. @ref Init once, with a YAML config tree.
 /// 2. Optionally @ref SetTaskTarget when the upstream planner updates the
 ///    goal (non-RT, event-driven — topic callback, BT leaf, etc.).
-/// 3. Each MPC tick (non-RT — phase decisions are evaluated off the 500Hz
-///    loop): call @ref Update with the current state + elapsed time.
+/// 3. Each MPC tick (non-RT — phase decisions are evaluated off the RT
+///    control loop): call @ref Update with the current state + elapsed time.
 /// 4. Observe @ref PhaseContext::phase_changed to decide OCP rebuild vs
 ///    warm-start.
 ///

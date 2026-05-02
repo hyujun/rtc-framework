@@ -7,7 +7,7 @@
 
 **Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 모듈형 rtc_* 프레임워크 기반 UR5e 실시간 제어 시스템**
 
-로봇 비의존적(robot-agnostic) RTC 프레임워크 위에 구축된 실시간 제어 솔루션입니다. 가변 DOF, 설정 가능한 제어 주기(500Hz–2kHz), 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/TSID-WBC), TSID QP 전신 제어 (`rtc_tsid` + ProxSuite), **MPC↔RT 인터페이스 계층 (`rtc_mpc`: zero-copy TripleBuffer + cubic-Hermite 보간 + Riccati 피드백, dedicated-core MPC thread)**, 전송 계층 추상화(UDP/CAN-FD/EtherCAT/RS485), RT-안전 ONNX 추론 엔진, MuJoCo 3.x 물리 시뮬레이터, E-STOP 안전 시스템, CSV 데이터 로깅, GUI 도구를 포함합니다.
+로봇 비의존적(robot-agnostic) RTC 프레임워크 위에 구축된 실시간 제어 솔루션입니다. 가변 DOF, 설정 가능한 RT 루프 주기 (`control_rate` YAML; 설계 범위 100Hz–5kHz, default 500Hz), 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/TSID-WBC), TSID QP 전신 제어 (`rtc_tsid` + ProxSuite), **MPC↔RT 인터페이스 계층 (`rtc_mpc`: zero-copy TripleBuffer + cubic-Hermite 보간 + Riccati 피드백, dedicated-core MPC thread)**, 전송 계층 추상화(UDP/CAN-FD/EtherCAT/RS485), RT-안전 ONNX 추론 엔진, MuJoCo 3.x 물리 시뮬레이터, E-STOP 안전 시스템, CSV 데이터 로깅, GUI 도구를 포함합니다.
 
 ---
 
@@ -26,7 +26,7 @@
 | [`rtc_controllers`](rtc_controllers/) | 5.17.0 | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
 | [`rtc_tsid`](rtc_tsid/) | 0.1.0 | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
 | [`rtc_mpc`](rtc_mpc/) | 0.1.0 | MPC↔RT 인터페이스: zero-copy `TripleBuffer<T>` (single-atomic publish/acquire), cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton (solver-agnostic; Aligator는 후속 패키지) | ament_cmake |
-| [`rtc_controller_manager`](rtc_controller_manager/) | 5.17.0 | 500Hz RT 루프 (clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
+| [`rtc_controller_manager`](rtc_controller_manager/) | 5.17.0 | 설정 가능한 RT 루프 (`control_rate`, default 500Hz, clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
 | [`rtc_inference`](rtc_inference/) | 5.17.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.18.0 | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
 | [`rtc_digital_twin`](rtc_digital_twin/) | 5.17.0 | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
@@ -88,7 +88,7 @@ ur5e_description (독립)
 ## 주요 기능
 
 ### RT 제어 코어
-- **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 500Hz–2kHz RT 루프, CPU 코어 자동 할당 (4/6/8/10/12/16코어)
+- **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 RT 루프 (`control_rate` YAML로 100Hz–5kHz 설정, default 500Hz), CPU 코어 자동 할당 (4/6/8/10/12/16코어)
 - **Lock-Free SPSC 아키텍처**: RT 스레드 → SPSC 버퍼 → 비-RT 퍼블리시/로깅 (wait-free push, cache-line 정렬)
 - **SeqLock 동기화**: 단일 Writer / 다중 Reader lock-free 상태 공유 (trivially copyable 타입 전용)
 - **컨트롤러 계층 분리**: `rtc_controller_interface` (추상) → `rtc_controllers` (범용 4종) → `ur5e_bringup` (데모 2종)
@@ -171,7 +171,7 @@ ros2 launch ur5e_hand_driver hand_udp.launch.py target_ip:=192.168.1.2
 ### 모니터링
 
 ```bash
-ros2 topic hz /forward_position_controller/commands   # RT 루프 주기 (~500Hz)
+ros2 topic hz /forward_position_controller/commands   # RT 루프 주기 (= 설정된 control_rate, default ~500Hz)
 ros2 topic echo /system/estop_status                  # E-STOP 상태 (true = 활성)
 ros2 topic echo /sim/status                           # MuJoCo: [step, time, rtf, paused]
 ros2 param list /ur5e_rt_controller | grep controllers  # 토픽 파라미터 확인
@@ -191,7 +191,7 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
     │  /joint_states (sensor_msgs/JointState)
     ▼
 [ur5e_rt_controller]  ←  /target_joint_positions (goal)
-    │  RT 루프 (clock_nanosleep 500Hz)
+    │  RT 루프 (clock_nanosleep @ control_rate)
     │  제어기: rtc_controllers (P / JointPD / CLIK / OSC)
     │  전송: rtc_communication (UDP)
     ├──→ SPSC ──→ [publish_thread] ──→ /forward_position_controller/commands
@@ -207,7 +207,7 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
 
 | 스레드 | 타입 | 코어 | 스케줄러 | 우선순위 | 역할 |
 |--------|------|------|----------|----------|------|
-| `rt_loop` | jthread (clock_nanosleep) | 2 | SCHED_FIFO | 90 | ControlLoop 500Hz + CheckTimeouts 50Hz |
+| `rt_loop` | jthread (clock_nanosleep) | 2 | SCHED_FIFO | 90 | ControlLoop @ `control_rate` (default 500Hz, design 100Hz–5kHz) + CheckTimeouts 50Hz |
 | `sensor_executor` | ROS2 Executor | 3 | SCHED_FIFO | 70 | /joint_states, /target_joint_positions 구독 |
 | `log_executor` | ROS2 Executor | 4 | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 (Phase C 이후 controller-owned CSV 는 각 controller LifecycleNode 소유) |
 | `mpc_main` (Phase 5) | jthread | 4 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (6코어는 logging과 공유; 8+코어는 dedicated) |

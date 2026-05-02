@@ -3,8 +3,8 @@
 
 // Generic per-tick timing sample. One instance is pushed onto a
 // ThreadTimingProducer's SPSC ring every iteration of an RT or soft-RT
-// thread (CM 500 Hz loop, MPC 20 Hz loop, hand UDP cycle, ONNX inference,
-// etc.). A non-RT consumer drains the ring and writes one CSV row per
+// thread (CM RT loop @ control_rate, MPC ~20 Hz loop, hand UDP cycle, ONNX
+// inference, etc.). A non-RT consumer drains the ring and writes one CSV row per
 // sample — preserving full per-tick granularity.
 //
 // The sample is split into a fixed-shape header (`t_wall_ns`, `tick_count`)

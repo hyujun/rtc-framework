@@ -130,7 +130,7 @@ class MPCHandlerBase {
                                           const RobotModelHandler& model, const OCPLimits& limits,
                                           const PhaseContext& initial_ctx) noexcept = 0;
 
-  /// @brief Run one MPC tick. Called off the 500 Hz RT path, but on a
+  /// @brief Run one MPC tick. Called off the RT path, but on a
   ///        latency-sensitive MPC thread — must be `noexcept` and must not
   ///        allocate after the first call on steady-state topology.
   ///

@@ -175,7 +175,7 @@ class MPCSolutionManager {
   // Solve-timing probe state. The ring buffer is written inside
   // `PublishSolution` (single producer, MPC thread) and copied under the
   // mutex inside `GetSolveStats` (non-RT caller). The producer path keeps
-  // the mutex: PublishSolution is already off the 500 Hz RT loop.
+  // the mutex: PublishSolution is already off the RT loop.
   mutable std::mutex solve_stats_mutex_;
   std::array<std::uint64_t, kSolveStatsWindow> solve_stats_ring_{};
   std::uint32_t solve_stats_next_{0};    // next write slot, wraps at kSolveStatsWindow

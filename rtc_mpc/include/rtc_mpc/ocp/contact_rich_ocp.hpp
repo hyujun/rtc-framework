@@ -164,7 +164,7 @@ class ContactRichOCP : public OCPHandlerBase {
   /// Ownership: the caller retains the provider and MUST guarantee it
   /// outlives every subsequent `Build`/`UpdateReferences` call on this
   /// handler. Passing `nullptr` detaches the provider. Never called on
-  /// the 500 Hz RT solve path — only during off-RT reconfigure.
+  /// the RT solve path — only during off-RT reconfigure.
   void SetGraspQualityProvider(GraspQualityResidualProvider* provider) noexcept {
     grasp_quality_provider_ = provider;
   }

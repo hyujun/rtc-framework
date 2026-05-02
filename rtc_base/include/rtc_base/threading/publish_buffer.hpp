@@ -6,7 +6,7 @@
 // dedicated non-RT publish thread.
 //
 // Constraints:
-//   - Exactly ONE producer thread (the 500 Hz RT loop).
+//   - Exactly ONE producer thread (the RT loop).
 //   - Exactly ONE consumer thread (the publish thread).
 //   - Push() called only from the producer; Pop() called only from the
 //   consumer.
@@ -142,7 +142,8 @@ class SpscPublishBuffer {
   alignas(kCacheLineSize) std::atomic<uint64_t> drop_count_{0};
 };
 
-// 512 slots ≈ 1 s at 500 Hz.  Matches ControlLogBuffer capacity.
+// 512 slots ≈ 1 s at the default 500 Hz `control_rate` (proportionally less
+// at higher rates; e.g. ~250 ms at 2 kHz).  Matches ControlLogBuffer capacity.
 inline constexpr std::size_t kPublishBufferCapacity = 512;
 using ControlPublishBuffer = SpscPublishBuffer<kPublishBufferCapacity>;
 

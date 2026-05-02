@@ -8,7 +8,7 @@ globs: ["rtc_controller_manager/**/*.cpp", "rtc_controller_manager/**/*.hpp", "r
 
 **전체 규칙**: [../../agent_docs/invariants.md](../../agent_docs/invariants.md)
 
-RT path (500 Hz loop)에서 금지되는 패턴 요약:
+RT path 정의: `control_rate` YAML 파라미터로 설정된 정기 tick (설계 범위 100 Hz–5 kHz, default 500 Hz)에서 실행되는 모든 코드. 아래는 금지되는 패턴 요약:
 
 1. Heap (`new` / `malloc` / `push_back` / `emplace_back` / `resize`) — RT-1
 2. `throw` / `catch` — RT-2

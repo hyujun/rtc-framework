@@ -41,7 +41,7 @@
 // RT safety:
 //   - Init() performs parameter validation and may throw.
 //   - Predict() / Update() / UpdateScalar() are noexcept — safe on the
-//     500 Hz RT path.  No heap allocation after Init().
+//     RT path (any configured control_rate).  No heap allocation after Init().
 //
 // Template parameter N: number of independent channels.
 //
@@ -49,7 +49,7 @@
 //   KalmanFilterN<6> kf;
 //   kf.Init(0.001, 0.01, 0.1, 0.002);   // q_pos, q_vel, r, dt=2ms
 //
-//   // Inside the 500 Hz ControlLoop():
+//   // Inside the ControlLoop():
 //   kf.Predict();                        // propagate model (always call)
 //   std::array<double,6> pos = kf.Update(raw_positions);   // fuse measurement
 //
@@ -143,7 +143,7 @@ class KalmanFilterN {
   // constant-velocity model.  Always call once per control tick, regardless
   // of whether a new measurement is available.
   //
-  // noexcept — safe on the 500 Hz RT path.
+  // noexcept — safe on the RT path.
   void Predict() noexcept {
     const double dt = params_.dt;
     const double dt2 = dt * dt;
@@ -181,7 +181,7 @@ class KalmanFilterN {
   // The Kalman gain blends model prediction and sensor reading optimally.
   //
   // Call after Predict() each tick.  Returns filtered position array.
-  // noexcept — safe on the 500 Hz RT path.
+  // noexcept — safe on the RT path.
   [[nodiscard]] std::array<double, N> Update(const std::array<double, N>& measurements) noexcept {
     std::array<double, N> out{};
     for (std::size_t i = 0; i < N; ++i) {

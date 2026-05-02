@@ -32,7 +32,7 @@ namespace rtc {
 // ─────────────────────────────────────
 //
 // All virtual methods are noexcept to guarantee real-time safety: any
-// exception thrown inside a 500 Hz timer would terminate the process.
+// exception thrown inside the RT timer would terminate the process.
 class RTControllerInterface {
  public:
   ~RTControllerInterface();
@@ -261,11 +261,17 @@ class RTControllerInterface {
   [[nodiscard]] std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> GetSharedModelBuilder()
       const noexcept;
 
-  // Set the control loop rate (Hz). Called by the manager at init time.
+  // Set the control loop rate (Hz). Called by the manager at init time from
+  // the YAML `control_rate` parameter. The framework is rate-agnostic
+  // (typically kMinControlRateHz..kMaxControlRateHz); controllers must
+  // derive any per-tick dt from this rate, never from a hard-coded constant.
   void SetControlRate(double hz) noexcept { control_rate_ = hz; }
 
   [[nodiscard]] double GetDefaultDt() const noexcept {
-    return (control_rate_ > 0.0) ? (1.0 / control_rate_) : 0.002;
+    // The fallback to kDefaultControlDtSec only fires if SetControlRate()
+    // was never called — a misconfiguration. Normal callers always observe
+    // 1/control_rate_ at the runtime-configured rate.
+    return (control_rate_ > 0.0) ? (1.0 / control_rate_) : kDefaultControlDtSec;
   }
 
  protected:
@@ -293,7 +299,12 @@ class RTControllerInterface {
   std::map<std::string, DeviceNameConfig> device_name_configs_;
   std::unique_ptr<rtc_urdf_bridge::ModelConfig> system_model_config_;
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> shared_model_builder_;
-  double control_rate_{500.0};
+  // Configured RT loop rate [Hz]. Initialised to kDefaultControlRateHz so
+  // that controllers used in unit tests (without CM) see a sensible dt; in
+  // production CM always overrides this via SetControlRate() during
+  // PreConfigure. The framework supports the full kMin..kMaxControlRateHz
+  // range — never hard-code 500 Hz here or in derived classes.
+  double control_rate_{kDefaultControlRateHz};
 
   // Controller-owned LifecycleNode injected by RtControllerNode in
   // on_configure.  Subclasses use `node_->create_subscription(...)` etc. for

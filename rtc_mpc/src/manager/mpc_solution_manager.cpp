@@ -48,7 +48,7 @@ void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
 
   // Timing probe — record the just-published solve_duration into the
   // bounded ring. Locking here is fine: PublishSolution runs on the MPC
-  // thread (off the 500 Hz RT loop) and contention with GetSolveStats /
+  // thread (off the RT loop) and contention with GetSolveStats /
   // ResetSolveStats is bounded to a single consumer at a time.
   try {
     std::lock_guard<std::mutex> lock(solve_stats_mutex_);

@@ -12,7 +12,7 @@
 
 ### AP-RT-1: 정기 tick에서 `RCLCPP_*` 직접 호출 ([invariants.md](invariants.md#L24) RT-3 위반)
 
-- **증상**: 500 Hz 루프에서 지터 스파이크, rosout queue 포화 시 RT overrun → E-STOP
+- **증상**: 정기 tick (`control_rate`, default 500 Hz) 루프에서 지터 스파이크, rosout queue 포화 시 RT overrun → E-STOP. 더 높은 rate (1–5 kHz)에서 증상이 더 빨리 폭주
 - **원인**: `RCLCPP_*` 매크로가 내부적으로 string format + rosout IPC publish → heap + blocking
 - **탐지**: `grep -nE 'RCLCPP_(INFO|WARN|ERROR|DEBUG|FATAL)\(' <RT file>` — 단 one-shot init / THROTTLE 변종은 제외
 - **복구**:
@@ -42,7 +42,7 @@
 
 ### AP-RT-5: 정기 tick에서 unguarded log
 
-- **증상**: 1 tick당 여러 줄 로그 × 500 Hz = 초당 수천 줄
+- **증상**: 1 tick당 여러 줄 로그 × 정기 tick 주파수 = 초당 수천 줄 (default 500 Hz 기준; 2 kHz면 4배)
 - **복구**: `RCLCPP_*_THROTTLE(logger, clock, period_ms, "fmt", args...)` — msg는 [invariants.md](invariants.md#L41) RT-3 세부 스펙 준수
 
 ### AP-RT-6: torn-read snapshot (1dcee69 fix 근거)
