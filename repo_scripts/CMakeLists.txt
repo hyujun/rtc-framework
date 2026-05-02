@@ -16,6 +16,8 @@ install(PROGRAMS
   scripts/cpu_shield.sh
   scripts/verify_rt_runtime.sh
   scripts/perf_record.sh
+  scripts/flame.sh
+  scripts/timeline.sh
   # Dependency isolation (see README.md "격리 환경 배포 가이드")
   scripts/setup_env.sh
   scripts/build_deps.sh

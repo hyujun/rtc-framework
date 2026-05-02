@@ -172,6 +172,48 @@ def generate_launch_description():
         ),
     )
 
+    perf_start_delay_arg = DeclareLaunchArgument(
+        "perf_start_delay",
+        default_value="0",
+        description=(
+            "Seconds to wait after launch before invoking perf. Default 0 = "
+            "start immediately (captures lifecycle bring-up). Set 5+ to skip "
+            "configure/activate noise and only profile steady-state."
+        ),
+    )
+
+    perf_stack_size_arg = DeclareLaunchArgument(
+        "perf_stack_size",
+        default_value="4096",
+        description=(
+            "DWARF unwind stack size (bytes) per sample. Default 4096 keeps "
+            "Hotspot loading fast; raise to 8192/16384 if deep template stacks "
+            "appear truncated in flame graphs. Trace size scales linearly."
+        ),
+    )
+
+    perf_frequency_arg = DeclareLaunchArgument(
+        "perf_frequency",
+        default_value="999",
+        description=(
+            "perf sampling frequency in Hz. Default 999 gives sub-millisecond "
+            "resolution suitable for RT tick analysis. Lower to 99 for lighter "
+            "exploratory captures (~10× smaller trace)."
+        ),
+    )
+
+    perf_event_arg = DeclareLaunchArgument(
+        "perf_event",
+        default_value="cycles:P",
+        description=(
+            "perf event to sample on. Default 'cycles:P' weights samples by CPU "
+            "cycles consumed — accurate for hot CPU users (mpc_main, hand_udp) "
+            "but under-samples burst-then-sleep RT loops (rt_control 30 µs / 2 ms). "
+            "Use 'task-clock' for periodic RT loops to get more uniform sampling "
+            "across active intervals regardless of CPU intensity."
+        ),
+    )
+
     # Closure-bound helper: perf_action.make_perf_action needs a launch context.
     # session_dir is captured from the enclosing scope.
     def _build_perf_action(context):
@@ -456,6 +498,10 @@ def generate_launch_description():
             enable_perf_arg,
             perf_targets_arg,
             perf_duration_arg,
+            perf_start_delay_arg,
+            perf_stack_size_arg,
+            perf_frequency_arg,
+            perf_event_arg,
             # 2) Environment
             set_session_dir,
             set_rmw,

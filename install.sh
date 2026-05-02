@@ -742,6 +742,24 @@ install_perf_tools() {
     warn "hotspot binary not on PATH after apt install"
   fi
 
+  # ── FlameGraph (browser-based viewer; faster than Hotspot for large traces) ──
+  # Clone into <ws>/deps/FlameGraph/ — same isolation tier as fmt/mimalloc/aligator.
+  # Idempotent: skip clone if already present, otherwise `git pull` to refresh.
+  local FG_DIR="${WORKSPACE}/deps/FlameGraph"
+  if [[ -d "$FG_DIR/.git" ]]; then
+    info "FlameGraph already cloned at $FG_DIR — pulling latest..."
+    (cd "$FG_DIR" && git pull --quiet 2>/dev/null) || warn "git pull failed in $FG_DIR (continuing)"
+  else
+    info "Cloning brendangregg/FlameGraph → $FG_DIR..."
+    mkdir -p "${WORKSPACE}/deps"
+    if git clone --depth=1 --quiet \
+        https://github.com/brendangregg/FlameGraph "$FG_DIR" 2>&1 | tail -5; then
+      success "FlameGraph cloned (run: ./repo_scripts/scripts/flame.sh)"
+    else
+      warn "FlameGraph clone failed — flame.sh will be unavailable"
+    fi
+  fi
+
   # ── L2: sysctl perf_event_paranoid (mirrors ptrace_scope policy) ────────
   local PARANOID_CURRENT
   PARANOID_CURRENT="$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo unknown)"

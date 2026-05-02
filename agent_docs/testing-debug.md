@@ -149,21 +149,148 @@ ros2 launch ur5e_bringup robot.launch.py enable_perf:=true
 
 * `perf_targets:='regex|of|process|names'` — 기본은 `ur5e_rt_controller|mujoco_simulator_node`
   (sim) / `ur5e_rt_controller|hand_udp_node|ur_ros2_control_node` (robot).
-  `pgrep -f` 로 매칭됨.
+  `pgrep -f` 로 매칭됨. shell wrapper(bash/sh/dash/zsh) 는 자동 제외.
 * `perf_duration:=30` — 초 단위. 빈 값(기본)이면 launch SIGINT 까지 record.
+* `perf_start_delay:=N` — perf 시작까지 대기. **기본 `0` = 시작부터 캡처**
+  (lifecycle bring-up 포함). steady-state 만 보고 싶으면 `5` 이상.
+* `perf_stack_size:=N` — DWARF unwind stack 크기 (바이트). **기본 `4096` =
+  Hotspot 로딩 빠름**. 깊은 C++ 템플릿 스택이 잘리면 `8192` / `16384` 로 상향.
+  trace 파일 크기는 stack 크기에 선형 비례 (4096 → 8192 = 2× 큼).
+* `perf_frequency:=N` — 샘플링 주파수 Hz, **기본 `999`**. RT tick (2 ms) /
+  MPC tick (8 ms) 분석에 충분한 sub-ms 분해능. 가벼운 탐색용으로 `99` 로
+  하향하면 trace 가 ~10× 작아짐.
+* `perf_event:=<event>` — 샘플링 이벤트, **기본 `cycles:P`** (CPU cycle 기반).
+  burst-then-sleep RT 루프 (`rt_control` 30 µs/2 ms) 분석 시 cycles:P 는
+  CPU 점유율에 비례 샘플링이라 **자고 있는 동안의 주기성을 못 잡는다**. 그런
+  RT 타이밍을 보고 싶으면 **`perf_event:=task-clock`** 으로 변경 — wall-clock
+  CPU 시간 기반 샘플링이라 짧은 burst 마다 균일하게 잡힘.
 
-### View
+### Sampling event 선택 가이드
+
+`cycles:P` 와 `task-clock` 은 같은 perf 가 다른 시각을 제공한다:
+
+| 시나리오 | 추천 event | 근거 |
+|---|---|---|
+| MPC / mujoco 같은 CPU-heavy thread 의 hot path | `cycles:P` (default) | CPU 사용 시간에 비례 — hot 함수가 많이 잡힘 |
+| `rt_control` 의 500 Hz 주기성 검증 | **`task-clock`** | 30 µs work × 1.5 % CPU 라 cycles:P 로는 거의 못 잡음 |
+| timeline 에서 thread 간 주기성 비교 | **`task-clock`** | 모든 thread 가 active 시간 기반으로 균일 샘플링 |
+| Hot function flame graph (집계 통계) | `cycles:P` | CPU cycle 기준 % 가 더 직관적 |
+
+```bash
+# RT 주기성 분석 — task-clock 사용
+ros2 launch ur5e_bringup sim.launch.py enable_perf:=true perf_event:=task-clock
+
+# 결과를 timeline 으로
+./repo_scripts/scripts/timeline.sh
+```
+
+### Examples
+
+```bash
+# 기본 (시작부터 캡처, stack 4 KB, 999 Hz)
+ros2 launch ur5e_bringup sim.launch.py enable_perf:=true
+
+# 30 초만 캡처 + steady-state 만 (lifecycle 5 초 후 시작)
+ros2 launch ur5e_bringup sim.launch.py enable_perf:=true \
+    perf_start_delay:=5 perf_duration:=30
+
+# 가벼운 탐색 (낮은 빈도 + 작은 stack)
+ros2 launch ur5e_bringup sim.launch.py enable_perf:=true \
+    perf_frequency:=99
+
+# deep template 스택 보존 (큰 trace)
+ros2 launch ur5e_bringup sim.launch.py enable_perf:=true \
+    perf_stack_size:=16384
+```
+
+### View — 두 가지 옵션
+
+#### A. **flame.sh** (권장 — 빠름, Hotspot 우회)
+
+```bash
+./repo_scripts/scripts/flame.sh                # 가장 최근 perf.data, mode=mixed
+./repo_scripts/scripts/flame.sh --by thread    # 스레드별 분리 (top frame = comm-pid/tid)
+./repo_scripts/scripts/flame.sh --by cpu       # CPU 코어별 분리 (top frame ends with [cpu_NNN])
+./repo_scripts/scripts/flame.sh <perf.data>    # 명시 입력
+./repo_scripts/scripts/flame.sh --by cpu <perf.data> [output.svg]
+```
+
+* 출력: `<session>/perf/flame.svg` (mixed) / `flame-thread.svg` / `flame-cpu.svg`
+  — 인터랙티브 SVG, 브라우저 자동 열림
+* **로딩 시간: 1–2 초** (Hotspot 1.3.0 perfparser 병목 우회)
+* 모드 선택 가이드:
+  - `mixed` (default) — "전체에서 어디가 hot?" — 함수별 self %를 한 화면
+  - `--by thread` — "MPC 가 mpc_main 안에서 어디 쓰나?" / "rt_control 의 WBC tick
+    안 분포는?" — 각 thread 의 분포를 분리해서 봄
+  - `--by cpu` — "CPU 4 (MPC core) 가 정말 mpc_main 만 쓰나?" / "RT core 2 가
+    의도대로 rt_control 전용인가?" — pinning 검증, IRQ leak 확인
+* 기능:
+  - **Search** (우상단) → `^rtc::|^ur5e_bringup::` 입력 시 워크스페이스 함수 highlight
+  - 프레임 클릭 → 해당 subtree zoom (thread/CPU 모드에서는 top row 클릭으로 한
+    스레드/코어 안으로 drill-down)
+  - 스택 hover → self / total samples
+* 한계: timeline / off-CPU 같은 Hotspot 전용 뷰는 없음 (flame graph 만)
+
+#### B. **timeline.sh + Perfetto** (시간순 — 누가 언제 어느 코어에서 돌았나)
+
+`flame.sh` 가 "어디가 hot 한가" 를 본다면, `timeline.sh` 는 **"언제 어느 순서로
+구동했나"** 를 본다. x축 시간, y축 thread/CPU swimlane.
+
+두 가지 모드:
+
+* **`--mode flamechart`** (default) — **함수 이름이 박힌 가로 bar**. 인접 샘플의
+  공통 callstack prefix 가 유지되는 동안 그 함수가 실행 중이었다고 추정해
+  begin/end pair 로 변환. width = 함수가 stack 에 머문 시간. 사용자가 보고 싶은
+  "thread별로 어떤 함수가 어떤 순서로 구동했나" 가 이 형태.
+* **`--mode instant`** — 각 sample 이 vertical marker. hover 시 callstack 노출.
+  bar 가 없으니 시각화는 듬성하지만 timestamp 정확도가 sample 단위.
+
+```bash
+./repo_scripts/scripts/timeline.sh                       # 기본: flamechart, max-depth=10
+./repo_scripts/scripts/timeline.sh --mode instant        # 마커 모드
+./repo_scripts/scripts/timeline.sh --max-depth 5         # 얕은 stack → 작은 JSON
+./repo_scripts/scripts/timeline.sh <perf.data>           # 명시 입력
+```
+
+**Sampling 한계 (flamechart 모드)**: perf 는 99–999 Hz snapshot 이라 진짜
+begin/end 가 아니다. 인접 샘플의 stack 비교로 함수 지속 구간을 추정하므로
+**한 sample period (1–10 ms) 이내 오차** 가 있을 수 있다. 예: 0.5 ms 만 실행된
+함수가 아예 누락되거나, 인접 두 sample 모두에 같은 함수가 잡혀서 실제보다
+긴 bar 로 그려질 수 있음. WBC tick 30 µs / MPC tick 8 ms 같은 큰 단위에는
+충분히 정확하나, sub-ms 함수는 신뢰하지 말 것. 정확한 begin/end 가 필요하면
+별도 uprobe / USDT instrumentation 도입이 필요.
+
+* 출력: `<session>/perf/trace.json` (Chrome Trace JSON)
+* **변환 시간: 1–2 초** (1k–10k samples 기준). JSON 크기는 sample 수 × max-depth 에 비례.
+* 보기: https://ui.perfetto.dev 열고 JSON drag-drop. 설치 0, 브라우저만 있으면 됨.
+* 두 가지 swimlane 그룹이 동시에 보임:
+  - **Threads (by TID)** — `mpc_main-NNNN`, `rt_control-NNNN`, `mujoco_simulato-NNNN` 등
+    각 thread 의 sample 시퀀스. WBC tick 의 주기성, MPC 8 ms 주기 등을 시간축에서 직접 확인.
+  - **Cpus** — `Cpu 000` ~ `Cpu 011` 코어별. ApplyThreadConfig pinning 의 의도대로
+    rt_control 이 Core 2 에 고정됐는지, mpc_main 이 MPC 코어에 머물렀는지 검증.
+* Perfetto UI tip: 좌측 swimlane 헤더 클릭 → 그 thread 만 펼침. 마우스 휠로 zoom,
+  shift+드래그로 범위 측정. 검색 (Ctrl+F) 으로 callstack 안 함수 이름 찾기.
+* 한계:
+  - perf 는 sampling 이라 begin/end pair 없음 — slice 폭은 1 µs marker, **gap 이
+    실제 작업 시간**.
+  - default capture 에는 sched_switch / off-CPU 가 없음. mutex 대기 등 off-CPU 분석은
+    perfetto traced_perf 또는 perf record `--off-cpu` 가 필요 (별도 워크플로).
+
+#### C. **Hotspot** (멀티-뷰, 느림)
 
 ```bash
 hotspot <ws>/logging_data/<session>/perf/perf.data
 ```
 
-탭 별 용도:
-* **Timeline** — 스레드별 가로 막대로 어느 코어에서 언제 활성/대기였는지. RT 스레드가
-  off-CPU 로 빠지는 구간이 mutex/syscall 후보.
-* **Bottom-Up / Top-Down** — 스레드 필터 후 함수별 self/inclusive %. WBC tick 안에서
-  Pinocchio FK / ProxSuite QP / SPSC push 의 비율 측정.
-* **Flame Graph** — 같은 데이터를 stack 단위로 본다.
+* Ubuntu 24.04 apt 의 hotspot 1.3.0 은 **큰 trace에서 perfparser 가 5–10 분
+  걸리는 알려진 버그** 가 있다. trace 가 작거나(< 5 MB) 시간 여유 있을 때만 권장.
+  최신 1.5.x AppImage (https://github.com/KDAB/hotspot/releases) 가 훨씬 빠름.
+* 탭 별 용도:
+  - **Timeline** — 스레드별 가로 막대로 어느 코어에서 언제 활성/대기였는지. RT 스레드가
+    off-CPU 로 빠지는 구간이 mutex/syscall 후보.
+  - **Bottom-Up / Top-Down** — 스레드 필터 후 함수별 self/inclusive %. WBC tick 안에서
+    Pinocchio FK / ProxSuite QP / SPSC push 의 비율 측정.
+  - **Flame Graph** — 같은 데이터를 stack 단위로 본다 (= flame.sh 와 동일 정보).
 
 ### Permissions
 

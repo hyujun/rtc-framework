@@ -37,11 +37,15 @@ shift 2
 
 DURATION=""
 FREQUENCY="999"
+STACK_SIZE="4096"
+EVENT="cycles:P"
 OFF_CPU=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --duration) DURATION="$2"; shift 2 ;;
     --frequency) FREQUENCY="$2"; shift 2 ;;
+    --stack-size) STACK_SIZE="$2"; shift 2 ;;
+    --event) EVENT="$2"; shift 2 ;;
     --off-cpu) OFF_CPU=1; shift ;;
     *) echo "[perf_record] unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -58,10 +62,22 @@ fi
 
 # ── Pre-flight: target PIDs (poll for up to 30 s while lifecycle activates) ──
 # `pgrep -f` matches the full command line — but the pattern itself is in OUR
-# argv (and possibly our parent shell's argv that invoked us via `bash -c`),
-# so naive matches include self / parent / sibling shells. Filter those out by
-# rejecting any PID whose cmdline contains "perf_record.sh".
+# argv (and possibly sibling bash wrappers spawned by ros2 launch), so naive
+# matches include shells whose argv carries the pattern as literal text.
+# Three layers of defense:
+#   1. drop any cmdline mentioning our wrapper or the pattern verbatim
+#   2. drop processes whose `comm` is a known shell (bash/sh/dash/zsh) — these
+#      are short-lived launch helpers (e.g. pin_rt_controller_dds in sim.launch.py)
+#      that may exit between match-time and perf-attach-time
+#   3. immediately before perf invocation, re-check `kill -0 $pid`
 SCRIPT_NAME="$(basename -- "$0")"
+
+is_shell_comm() {
+  case "$1" in
+    bash|sh|dash|zsh|ksh|fish) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 PIDS=""
 for _ in $(seq 1 30); do
@@ -72,10 +88,12 @@ for _ in $(seq 1 30); do
       continue  # PID gone or unreadable — race with pgrep
     fi
     cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || echo '')"
-    # Drop matches that reference our wrapper script or are bash subshells
-    # carrying our pattern as a literal arg (Claude/CI invocation style).
     if [[ "$cmdline" == *"$SCRIPT_NAME"* ]] || [[ "$cmdline" == *"$PID_PATTERN"* ]]; then
       continue
+    fi
+    comm="$(cat "/proc/$pid/comm" 2>/dev/null || echo '')"
+    if is_shell_comm "$comm"; then
+      continue  # short-lived bash wrapper — never our profile target
     fi
     FILTERED="${FILTERED:+$FILTERED,}$pid"
   done
@@ -89,6 +107,25 @@ if [[ -z "$PIDS" ]]; then
   exit 0
 fi
 
+# ── Alive re-check immediately before perf invocation ────────────────────────
+# Wrapper PIDs (and any short-lived process) may die between the polling loop
+# and the actual perf record start. perf aborts the entire capture if even one
+# of the -p PIDs is dead, so re-validate.
+ALIVE=""
+for pid in ${PIDS//,/ }; do
+  if kill -0 "$pid" 2>/dev/null; then
+    ALIVE="${ALIVE:+$ALIVE,}$pid"
+  else
+    log "PID $pid died before perf could attach — dropping"
+  fi
+done
+
+if [[ -z "$ALIVE" ]]; then
+  log "all matched PIDs died before perf attach — skipping capture"
+  exit 0
+fi
+
+PIDS="$ALIVE"
 log "matched PIDs: $PIDS"
 
 # ── Pre-flight: privilege model ───────────────────────────────────────────────
@@ -113,10 +150,12 @@ mkdir -p "$OUT_DIR" || { log "cannot create $OUT_DIR"; exit 0; }
 
 # ── Build command ─────────────────────────────────────────────────────────────
 PERF_ARGS=(record
+  -e "$EVENT"
   -F "$FREQUENCY"
-  --call-graph dwarf,16384
+  --call-graph "dwarf,$STACK_SIZE"
   -p "$PIDS"
   --timestamp
+  --sample-cpu
   -o "$OUTPUT"
 )
 

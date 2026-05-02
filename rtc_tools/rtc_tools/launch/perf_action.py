@@ -1,13 +1,16 @@
 """perf_action.py — robot-agnostic launch helper that wraps ``perf record``.
 
-Bringup packages declare their own ``enable_perf`` / ``perf_targets`` /
-``perf_duration`` LaunchArguments and call :func:`make_perf_action` from inside
-an ``OpaqueFunction`` once the session directory is known.
+Bringup packages declare their own LaunchArguments
+(``enable_perf`` / ``perf_targets`` / ``perf_duration`` /
+``perf_start_delay`` / ``perf_stack_size`` / ``perf_frequency``)
+and call :func:`make_perf_action` from inside an ``OpaqueFunction``
+once the session directory is known.
 
 The helper:
     * resolves ``perf_record.sh`` from the installed ``repo_scripts`` share
     * writes ``<session_dir>/perf/perf.data``
     * is a no-op when ``enable_perf:=false`` (returns ``[]``)
+    * starts perf immediately when ``perf_start_delay:=0`` (no TimerAction wrap)
 """
 
 from __future__ import annotations
@@ -41,6 +44,18 @@ def _resolve_perf_record_script() -> str | None:
     return None
 
 
+def _read_float_arg(context, name: str, default: float) -> float:
+    """LaunchConfiguration → float, falling back on parse failure."""
+    raw = LaunchConfiguration(name).perform(context)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[perf_action] {name}={raw!r} is not numeric — using {default}")
+        return default
+
+
 def make_perf_action(
     context,
     *,
@@ -48,7 +63,10 @@ def make_perf_action(
     targets_arg: str = "perf_targets",
     duration_arg: str = "perf_duration",
     enable_arg: str = "enable_perf",
-    start_delay_sec: float = 5.0,
+    start_delay_arg: str = "perf_start_delay",
+    stack_size_arg: str = "perf_stack_size",
+    frequency_arg: str = "perf_frequency",
+    event_arg: str = "perf_event",
     output_filename: str = "perf.data",
 ):
     """Build the perf-capture action list to extend onto a launch description.
@@ -57,13 +75,20 @@ def make_perf_action(
         context: Launch context (from inside an ``OpaqueFunction``).
         session_dir: Session directory (created with ``perf/`` subdir already).
         targets_arg: LaunchArgument name carrying a regex of process names
-            to attach to (e.g. ``"ur5e_rt_controller|mpc_main"``).
+            to attach to (e.g. ``"my_rt_controller|my_worker"``).
         duration_arg: LaunchArgument name carrying capture duration in seconds.
             Empty/0 = run until launch SIGINT.
         enable_arg: LaunchArgument that gates the whole capture.
-        start_delay_sec: Wait this long after launch start before invoking perf,
-            so that lifecycle nodes have transitioned to ``active`` and RT
-            threads have spawned.
+        start_delay_arg: LaunchArgument carrying seconds to wait before invoking
+            perf. ``0`` = start immediately (default — captures lifecycle bring-up).
+        stack_size_arg: LaunchArgument carrying DWARF unwind stack size in bytes.
+            Smaller is faster to load in Hotspot at the cost of deeper truncation
+            risk (4096 covers typical C++ stacks; 8192/16384 for deep templates).
+        frequency_arg: LaunchArgument carrying perf sampling frequency in Hz.
+        event_arg: LaunchArgument carrying the perf event spec (e.g. ``cycles:P``,
+            ``task-clock``). cycles:P samples on CPU cycles (good for hot CPU
+            users); task-clock samples on wall-clock CPU time (better for
+            burst-then-sleep RT loops where cycles:P under-samples).
         output_filename: Filename written under ``<session_dir>/perf/``.
 
     Returns:
@@ -94,6 +119,18 @@ def make_perf_action(
     if duration and duration not in ("0", "0.0", ""):
         cmd.extend(["--duration", duration])
 
+    frequency = LaunchConfiguration(frequency_arg).perform(context)
+    if frequency:
+        cmd.extend(["--frequency", frequency])
+
+    stack_size = LaunchConfiguration(stack_size_arg).perform(context)
+    if stack_size:
+        cmd.extend(["--stack-size", stack_size])
+
+    event = LaunchConfiguration(event_arg).perform(context)
+    if event:
+        cmd.extend(["--event", event])
+
     perf_proc = ExecuteProcess(
         cmd=cmd,
         output="screen",
@@ -102,4 +139,7 @@ def make_perf_action(
         sigkill_timeout="20",
     )
 
-    return [TimerAction(period=start_delay_sec, actions=[perf_proc])]
+    start_delay = _read_float_arg(context, start_delay_arg, 0.0)
+    if start_delay <= 0.0:
+        return [perf_proc]
+    return [TimerAction(period=start_delay, actions=[perf_proc])]
