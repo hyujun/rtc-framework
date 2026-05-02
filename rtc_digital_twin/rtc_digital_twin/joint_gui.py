@@ -18,7 +18,7 @@ Usage (standalone)::
 Usage (via launch)::
 
     ros2 launch rtc_digital_twin digital_twin.launch.py \\
-        robot_description_package:=ur5e_description \\
+        robot_description_package:=robot_descriptions \\
         robot_description_path:=robots/ur5e/urdf/ur5e_with_hand.urdf.xacro \\
         use_joint_gui:=true
 """

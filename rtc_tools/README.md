@@ -186,7 +186,7 @@ robot_dir/
 
 ### `compare_mjcf_urdf.py` — MJCF vs URDF 파라미터 비교 검증
 
-`ur5e_description` 패키지의 MJCF와 URDF를 파싱하여 물리 파라미터 동일성을 검증합니다.
+`robot_descriptions` 패키지의 MJCF와 URDF를 파싱하여 물리 파라미터 동일성을 검증합니다.
 
 ```bash
 # 자동 경로 탐색 (ament_index 또는 상대 경로)

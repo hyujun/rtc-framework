@@ -148,6 +148,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base
-ur5e_bringup <-- rtc_controller_manager, ur5e_hand_driver, ur5e_description,
+robot_descriptions (data-only, no code deps)
+ur5e_bringup <-- rtc_controller_manager, ur5e_hand_driver, robot_descriptions,
                  rtc_tsid, rtc_mpc
 ```

@@ -7,10 +7,10 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5e_with_hand">
 
   <!-- UR5e base robot (pre-generated URDF, included as-is) -->
-  <xacro:include filename="$(find ur5e_description)/robots/ur5e/urdf/ur5e.urdf"/>
+  <xacro:include filename="$(find robot_descriptions)/robots/ur5e/urdf/ur5e.urdf"/>
 
   <!-- Custom Hand model -->
-  <xacro:include filename="$(find ur5e_description)/robots/hand_tmp/urdf/hand.urdf.xacro"/>
+  <xacro:include filename="$(find robot_descriptions)/robots/assm_v1/urdf/hand.urdf.xacro"/>
 
   <!-- Attach hand to tool0 -->
   <joint name="tool0_to_hand" type="fixed">

@@ -1,4 +1,4 @@
-# ur5e_description
+# robot_descriptions
 
 ![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
@@ -11,34 +11,46 @@
 
 | 항목 | 내용 |
 |------|------|
-| **패키지 이름** | `ur5e_description` |
+| **패키지 이름** | `robot_descriptions` |
 | **버전** | 5.17.0 |
 | **빌드 시스템** | ament_cmake |
 | **라이선스** | MIT |
 | **관리자** | Junho Park (jeryblueput@gmail.com) |
 
-UR5e 로봇의 모델 description 파일을 제공하는 **독립 데이터 패키지**입니다. 외부 ROS2 패키지 런타임 의존성이 없으며, URDF 생성 시에만 `xacro`와 `ur_description`이 필요합니다.
+> **이 패키지는 robot-specific 패키지가 아니다.** URDF / MJCF / mesh 자산을 담는 **robot-agnostic data hub**이며, 한 robot/hand 당 하나의 `robots/<name>/` 서브디렉토리를 두는 단일 규칙으로 동작한다. C++ 헤더, robot-specific 상수, 프레임워크 의존 코드는 일체 들어 있지 않다 (모두 각 driver/bringup 패키지가 보유). UR5e + assm_v1 hand는 첫 입주자일 뿐, 추후 allegro / leap / schunk / iiwa7 등이 같은 레이아웃으로 추가될 예정이다.
 
-`rtc_mujoco_sim`, `rtc_controller_manager`, `rtc_controllers` 등 프레임워크 내 모든 패키지가 이 단일 소스에서 로봇 모델을 참조합니다.
+다운스트림은 ament share 경로 또는 `package://robot_descriptions/robots/<name>/...` URL로 자산을 참조하며, 새 robot 추가 시 본 패키지의 빌드/설치 규칙은 변경되지 않는다 (`install(DIRECTORY robots/)` 한 줄로 충분).
+
+런타임 외부 의존: `xacro` (xacro 파일을 로드하는 robot에 한해).  코드 의존: 없음.
 
 ---
 
 ## 2. 개요
 
-이 패키지는 UR5e 6축 산업용 로봇 팔과 10-DOF 커스텀 핸드에 대한 세 가지 유형의 모델 파일을 포함합니다.
+이 패키지는 자산을 세 가지 카테고리로 정리한다.
 
-| 모델 유형 | 용도 | 위치 |
+| 모델 유형 | 용도 | 위치 (per robot) |
 |-----------|------|------|
-| **MJCF** (MuJoCo XML) | MuJoCo 물리 시뮬레이션 | `robots/ur5e/mjcf/`, `robots/hand_tmp/mjcf/`, `robots/ur5e_hand_tmp/mjcf/` |
-| **URDF** (Unified Robot Description Format) | Pinocchio, RViz, ros2_control | `robots/ur5e/urdf/`, `robots/hand_tmp/urdf/`, `robots/ur5e_hand_tmp/urdf/` |
-| **Mesh** (3D 형상 파일) | 시각화 및 충돌 감지 | `robots/ur5e/meshes/` |
+| **MJCF** (MuJoCo XML) | MuJoCo 물리 시뮬레이션 | `robots/<name>/mjcf/` |
+| **URDF** (`.urdf`, `.urdf.xacro`) | Pinocchio, RViz, ros2_control | `robots/<name>/urdf/` |
+| **Mesh** (DAE / STL / OBJ) | 시각화 및 충돌 감지 | `robots/<name>/meshes/` |
+
+현재 입주한 robots:
+
+| 디렉토리 | 내용 |
+|---------|------|
+| `robots/ur5e/` | UR5e 6-DoF arm — URDF (xacro 사전 생성), MJCF, full mesh set |
+| `robots/assm_v1/` | 10-DoF custom hand "assm v1" — URDF xacro, MJCF (cylinder geom) |
+| `robots/ur5e_assm_v1/` | UR5e arm + assm_v1 hand 결합 — URDF xacro, MJCF scene (wrist3 말단 부착) |
+
+향후 robot 추가는 `robots/<new_name>/` 서브디렉토리 추가만으로 끝난다 — 본 패키지의 `CMakeLists.txt` / `package.xml`은 손대지 않는다.
 
 ---
 
 ## 3. 디렉토리 구조
 
 ```
-ur5e_description/
+robot_descriptions/
 ├── CMakeLists.txt
 ├── package.xml
 ├── README.md
@@ -57,13 +69,13 @@ ur5e_description/
     │       └── assets/                    # OBJ MJCF 시각화용 (20개)
     │           ├── base_0.obj ~ wrist3.obj
     │
-    ├── hand_tmp/                          # 10-DOF 커스텀 핸드 (단독)
+    ├── assm_v1/                           # 10-DOF 커스텀 핸드 "assm v1" (단독)
     │   ├── mjcf/
     │   │   └── hand.xml                   # 핸드 단독 MJCF 모델
     │   └── urdf/
     │       └── hand.urdf.xacro            # 핸드 xacro 매크로
     │
-    └── ur5e_hand_tmp/                     # 로봇 + 핸드 통합
+    └── ur5e_assm_v1/                      # UR5e + assm_v1 통합
         ├── mjcf/
         │   ├── ur5e_with_hand.xml         # 로봇 + 핸드 통합 MJCF
         │   └── scene_with_hand.xml        # 씬 (지면 + 조명 + 통합 모델)
@@ -81,9 +93,9 @@ ur5e_description/
 |------|------|------|
 | `ur5e.xml` | `robots/ur5e/mjcf/` | UR5e 로봇 단독 모델. capsule collision geometry, position actuator (PD 제어), OBJ 메시 시각화. `implicitfast` 적분기 사용. |
 | `scene.xml` | `robots/ur5e/mjcf/` | 시뮬레이션 진입점. `ur5e.xml`을 include하고 지면(checker 평면), 조명, 스카이박스를 추가한 씬 파일. |
-| `hand.xml` | `robots/hand_tmp/mjcf/` | 10-DOF 커스텀 핸드 단독 모델. cylinder geometry 기반 간소화 형상. 4개 손가락(thumb, index, middle, ring) 포함. |
-| `ur5e_with_hand.xml` | `robots/ur5e_hand_tmp/mjcf/` | UR5e 로봇과 커스텀 핸드를 하나의 모델로 통합. wrist3 말단에 핸드가 부착됨. |
-| `scene_with_hand.xml` | `robots/ur5e_hand_tmp/mjcf/` | 시뮬레이션 진입점. `ur5e_with_hand.xml`을 include하고 지면, 조명, 스카이박스를 추가한 씬 파일. |
+| `hand.xml` | `robots/assm_v1/mjcf/` | 10-DOF 커스텀 핸드 단독 모델. cylinder geometry 기반 간소화 형상. 4개 손가락(thumb, index, middle, ring) 포함. |
+| `ur5e_with_hand.xml` | `robots/ur5e_assm_v1/mjcf/` | UR5e 로봇과 커스텀 핸드를 하나의 모델로 통합. wrist3 말단에 핸드가 부착됨. |
+| `scene_with_hand.xml` | `robots/ur5e_assm_v1/mjcf/` | 시뮬레이션 진입점. `ur5e_with_hand.xml`을 include하고 지면, 조명, 스카이박스를 추가한 씬 파일. |
 
 ### MJCF 액추에이터 설정
 
@@ -100,8 +112,8 @@ ur5e_description/
 | 파일 | 경로 | 설명 |
 |------|------|------|
 | `ur5e.urdf` | `robots/ur5e/urdf/` | UR5e 로봇 사전 생성 URDF. UR 공식 `ur_description` 패키지의 `ur.urdf.xacro`를 `ur_type:=ur5e`로 변환하여 생성. DAE/STL 메시 참조. Pinocchio 모델 빌드의 진입점. |
-| `hand.urdf.xacro` | `robots/hand_tmp/urdf/` | 10-DOF 커스텀 핸드 xacro. 기하학적 프리미티브(box, cylinder, sphere)만 사용하며 메시 파일 불필요. 4개 핑거팁 프레임 정의. |
-| `ur5e_with_hand.urdf.xacro` | `robots/ur5e_hand_tmp/urdf/` | `ur5e.urdf`와 `hand.urdf.xacro`를 결합. tool0 링크에 fixed joint로 핸드를 부착. `xacro` 처리 필요. |
+| `hand.urdf.xacro` | `robots/assm_v1/urdf/` | 10-DOF 커스텀 핸드 xacro. 기하학적 프리미티브(box, cylinder, sphere)만 사용하며 메시 파일 불필요. 4개 핑거팁 프레임 정의. |
+| `ur5e_with_hand.urdf.xacro` | `robots/ur5e_assm_v1/urdf/` | `ur5e.urdf`와 `hand.urdf.xacro`를 결합. tool0 링크에 fixed joint로 핸드를 부착. `xacro` 처리 필요. |
 
 ---
 
@@ -188,10 +200,10 @@ sudo apt install -y ros-jazzy-ur-description ros-jazzy-xacro
 
 ```bash
 cd ~/ur_ws
-colcon build --packages-select ur5e_description --symlink-install
+colcon build --packages-select robot_descriptions --symlink-install
 ```
 
-빌드 후 `install/ur5e_description/share/ur5e_description/robots/` 아래에 모든 모델 파일이 설치됩니다.
+빌드 후 `install/robot_descriptions/share/robot_descriptions/robots/` 아래에 모든 모델 파일이 설치됩니다.
 
 ---
 
@@ -199,19 +211,19 @@ colcon build --packages-select ur5e_description --symlink-install
 
 ```bash
 # ament_index로 share 경로 획득
-$(ros2 pkg prefix ur5e_description)/share/ur5e_description/
+$(ros2 pkg prefix robot_descriptions)/share/robot_descriptions/
 
 # MJCF
 robots/ur5e/mjcf/ur5e.xml                       # 로봇 모델
 robots/ur5e/mjcf/scene.xml                      # MuJoCo 시뮬레이션 진입점 (로봇 단독)
-robots/hand_tmp/mjcf/hand.xml                   # 핸드 단독 모델
-robots/ur5e_hand_tmp/mjcf/ur5e_with_hand.xml    # 로봇 + 핸드 모델
-robots/ur5e_hand_tmp/mjcf/scene_with_hand.xml   # MuJoCo 시뮬레이션 진입점 (로봇 + 핸드)
+robots/assm_v1/mjcf/hand.xml                   # 핸드 단독 모델
+robots/ur5e_assm_v1/mjcf/ur5e_with_hand.xml    # 로봇 + 핸드 모델
+robots/ur5e_assm_v1/mjcf/scene_with_hand.xml   # MuJoCo 시뮬레이션 진입점 (로봇 + 핸드)
 
 # URDF
 robots/ur5e/urdf/ur5e.urdf                      # Pinocchio 진입점 (로봇 팔만)
-robots/hand_tmp/urdf/hand.urdf.xacro            # 10-DOF 커스텀 핸드
-robots/ur5e_hand_tmp/urdf/ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 조합
+robots/assm_v1/urdf/hand.urdf.xacro            # 10-DOF 커스텀 핸드
+robots/ur5e_assm_v1/urdf/ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 조합
 
 # Mesh
 robots/ur5e/meshes/visual/*.dae                 # 시각화용 (7 files)
@@ -251,7 +263,7 @@ ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 **독립 패키지** -- 외부 ROS2 패키지 런타임 의존성 없음 (URDF 생성에 `xacro`, `ur_description` 필요).
 
 ```
-ur5e_description  <-- 독립 (MJCF/URDF/메시 제공)
+robot_descriptions  <-- 독립 (MJCF/URDF/메시 제공)
     ^
     |-- rtc_mujoco_sim         (MJCF scene.xml 참조, ament_index + package:// URI)
     |-- rtc_controller_manager (URDF ur5e.urdf 참조, Pinocchio 모델 빌드)
@@ -262,6 +274,14 @@ ur5e_description  <-- 독립 (MJCF/URDF/메시 제공)
 ---
 
 ## 변경 내역
+
+### Unreleased
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **패키지 rename** | `ur5e_description` → `robot_descriptions`. 더 이상 robot-specific 패키지가 아니라 multi-robot data hub임을 이름이 반영. UR5e는 첫 입주자일 뿐. |
+| **서브디렉토리 rename** | `robots/hand_tmp/` → `robots/assm_v1/`, `robots/ur5e_hand_tmp/` → `robots/ur5e_assm_v1/`. `_tmp` 접미사 제거 — 이제 정식 이름. |
+| **README 톤 변경** | 1절을 robot-agnostic hub 선언으로 다시 작성. 추가 robot/hand 입주 절차(서브디렉토리 추가만으로 충분, 본 패키지 빌드 변경 없음) 명시. |
 
 ### v5.17.0
 

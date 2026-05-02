@@ -913,7 +913,7 @@ def main():
         epilog="""\
 Examples:
   # Directory convention (auto-discover URDF, output to mjcf/, resolve meshes)
-  ros2 run rtc_tools urdf_to_mjcf --robot-dir ur5e_description/robots/ur5e
+  ros2 run rtc_tools urdf_to_mjcf --robot-dir robot_descriptions/robots/ur5e
 
   # Specify URDF within robot directory
   ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/ur5e --urdf-file ur5e_with_hand.urdf.xacro

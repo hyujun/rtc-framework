@@ -212,7 +212,7 @@ YAML의 `joint_gui.enabled: true` 또는 launch arg `use_joint_gui:=true` 시 �
 /**:
   ros__parameters:
     # -- 로봇 기술 파일 (robot bringup yaml이 채움) --
-    robot_description_package: ""               # 예: "ur5e_description"
+    robot_description_package: ""               # 예: "robot_descriptions"
     robot_description_path: ""                  # 패키지 내 상대 경로
     robot_description_file: ""                  # 또는 절대 경로
 
@@ -267,7 +267,7 @@ YAML의 `joint_gui.enabled: true` 또는 launch arg `use_joint_gui:=true` 시 �
 ```bash
 # UR5e + 핸드 (패키지 기반 xacro)
 ros2 launch rtc_digital_twin digital_twin.launch.py \
-    robot_description_package:=ur5e_description \
+    robot_description_package:=robot_descriptions \
     robot_description_path:=robots/ur5e/urdf/ur5e_with_hand.urdf.xacro
 
 # 임의의 로봇 (절대 경로 URDF)
@@ -276,20 +276,20 @@ ros2 launch rtc_digital_twin digital_twin.launch.py \
 
 # 커스텀 설정 + RViz 비활성화
 ros2 launch rtc_digital_twin digital_twin.launch.py \
-    robot_description_package:=ur5e_description \
+    robot_description_package:=robot_descriptions \
     robot_description_path:=robots/ur5e/urdf/ur5e.urdf \
     config_file:=/path/to/my_config.yaml \
     use_rviz:=false
 
 # 디스플레이 레이트 변경
 ros2 launch rtc_digital_twin digital_twin.launch.py \
-    robot_description_package:=ur5e_description \
+    robot_description_package:=robot_descriptions \
     robot_description_path:=robots/ur5e/urdf/ur5e.urdf \
     display_rate:=30.0
 
 # Joint State Publisher GUI 활성화
 ros2 launch rtc_digital_twin digital_twin.launch.py \
-    robot_description_package:=ur5e_description \
+    robot_description_package:=robot_descriptions \
     robot_description_path:=robots/ur5e/urdf/ur5e_with_hand.urdf.xacro \
     use_joint_gui:=true
 ```

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_descriptions</name>
+  <version>5.17.0</version>
+  <description>
+    Robot-agnostic data hub for URDF, MJCF, and mesh assets.  Holds one
+    subdirectory per robot or hand under robots/.  No C++ headers, no
+    framework-specific code; downstream packages consume files via
+    ament share path or package://robot_descriptions/robots/&lt;name&gt;/...
+
+    Currently shipped:
+    - robots/ur5e/         -- UR5e 6-DoF arm (URDF, MJCF, meshes)
+    - robots/assm_v1/      -- 10-DoF custom hand "assm v1" (URDF xacro, MJCF)
+    - robots/ur5e_assm_v1/ -- UR5e arm + assm_v1 hand combined
+                              (URDF xacro, MJCF scene)
+
+    Future robots/hands (allegro, leap, schunk, iiwa7, ...) drop in as
+    additional robots/&lt;name&gt;/ subdirectories without touching downstream
+    build graphs beyond their own YAML/launch references.
+  </description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- xacro needed at runtime to process *.urdf.xacro files -->
+  <exec_depend>xacro</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

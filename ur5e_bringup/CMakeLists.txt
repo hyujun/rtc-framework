@@ -44,7 +44,7 @@ find_package(rtc_urdf_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
 find_package(rtc_tsid REQUIRED)
 find_package(rtc_mpc REQUIRED)
-find_package(ur5e_description REQUIRED)
+find_package(robot_descriptions REQUIRED)
 find_package(ur5e_hand_driver REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
@@ -76,7 +76,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_urdf_bridge
   rtc_tsid
   rtc_mpc
-  ur5e_description
+  robot_descriptions
   ur5e_hand_driver
 )
 

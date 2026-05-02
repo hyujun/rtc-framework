@@ -10,7 +10,7 @@ Launches:
 Usage:
   # Package-based URDF (UR5e + hand)
   ros2 launch rtc_digital_twin digital_twin.launch.py \
-      robot_description_package:=ur5e_description \
+      robot_description_package:=robot_descriptions \
       robot_description_path:=robots/ur5e/urdf/ur5e_with_hand.urdf.xacro
 
   # Absolute path URDF
@@ -19,7 +19,7 @@ Usage:
 
   # Custom config + no RViz
   ros2 launch rtc_digital_twin digital_twin.launch.py \
-      robot_description_package:=ur5e_description \
+      robot_description_package:=robot_descriptions \
       robot_description_path:=robots/ur5e/urdf/ur5e.urdf \
       config_file:=/path/to/my_config.yaml \
       use_rviz:=false

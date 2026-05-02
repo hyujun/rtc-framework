@@ -50,7 +50,7 @@
 
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
-| [`ur5e_description`](ur5e_description/) | 5.17.0 | UR5e URDF/MJCF/메시 — Pinocchio/RViz/MuJoCo 겸용 | ament_cmake |
+| [`robot_descriptions`](robot_descriptions/) | 5.17.0 | Robot-agnostic data hub — robots/&lt;name&gt;/ 당 URDF/MJCF/mesh (현재 ur5e + assm_v1 hand) | ament_cmake |
 | [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | 0.1.0 | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
 | [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 8-phase WBC + **Phase 5 MPC 통합 경로**, `enable_mpc` launch arg, 9-entry gains) + CPU 격리/DDS 핀닝 | ament_cmake |
@@ -76,11 +76,12 @@ rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 shape_estimation_msgs (독립)
   └── shape_estimation ← shape_estimation_msgs, Eigen3
 
-ur5e_description (독립)
-  ├── ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
-  ├── ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
+robot_descriptions (독립, data-only)
   └── ur5e_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
-                    ur5e_hand_driver, ur5e_description
+                    ur5e_hand_driver, robot_descriptions
+
+ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
+ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
 ```
 
 ---

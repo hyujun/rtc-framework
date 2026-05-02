@@ -21,7 +21,7 @@ Usage:
   # Auto-detect via ament package + canonical layout
   # (<robot-pkg>/robots/<robot-name>/{mjcf,urdf}/<robot-name>.{xml,urdf}):
   ros2 run rtc_tools compare_mjcf_urdf \\
-      --robot-pkg ur5e_description --robot-name ur5e
+      --robot-pkg robot_descriptions --robot-name ur5e
 
   # Override the MJCF default class root if it differs from the model name:
   ros2 run rtc_tools compare_mjcf_urdf --mjcf-class my_robot ...
@@ -605,7 +605,7 @@ def main():
         type=str,
         default=None,
         help="ament package containing the robot description (e.g. "
-        "'ur5e_description'). Used with --robot-name to resolve "
+        "'robot_descriptions'). Used with --robot-name to resolve "
         "<pkg>/robots/<robot>/{mjcf,urdf}/<robot>.{xml,urdf}.",
     )
     parser.add_argument(

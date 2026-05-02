@@ -643,7 +643,7 @@ rtc::RegisterRos2ResourceProvider();
 
 MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 ```xml
-<mesh file="package://ur5e_description/robots/ur5e/meshes/ur5e.dae"/>
+<mesh file="package://robot_descriptions/robots/ur5e/meshes/ur5e.dae"/>
 ```
 
 내부적으로 `ament_index_cpp::get_package_share_directory()`를 사용하여 패키지 경로를 해석하고, `mjpResourceProvider` 콜백(open/read/close/getdir)을 통해 MuJoCo에 파일 데이터를 제공합니다.
@@ -668,7 +668,7 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 
 | 패키지 | 용도 |
 |--------|------|
-| `ur5e_description` | MJCF 모델, URDF, 메시 파일 |
+| `robot_descriptions` | MJCF 모델, URDF, 메시 파일 |
 | `ur5e_hand_driver` | hand_udp_node.yaml 참조 (선택) |
 | `rtc_controller_manager` | 런치 파일에서 rtc_controller_manager 노드 실행 (실행 파일: `rt_controller`) |
 

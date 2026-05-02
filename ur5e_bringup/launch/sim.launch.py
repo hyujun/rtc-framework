@@ -377,7 +377,7 @@ def generate_launch_description():
         default_value="",
         description=(
             "Override model_path from YAML. "
-            "Empty -> use YAML value (ur5e_description/scene.xml). "
+            "Empty -> use YAML value (robot_descriptions/scene.xml). "
             "Absolute path -> use specified MuJoCo scene.xml"
         ),
     )

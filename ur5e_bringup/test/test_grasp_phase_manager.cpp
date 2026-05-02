@@ -3,7 +3,7 @@
 ///
 /// Panda 9-DoF + 2 fingertips is used as a generic fixture (same convention
 /// as rtc_mpc/test — keeps the tests robot-agnostic and avoids pulling in
-/// the ur5e_description + hand URDF macros). The FSM logic itself is
+/// the robot_descriptions + hand URDF macros). The FSM logic itself is
 /// independent of the robot: edges fire on TCP distances + sensor sums +
 /// external commands, never on joint counts or frame names.
 

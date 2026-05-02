@@ -428,7 +428,7 @@ UR5e bringup의 예시 YAML 구조 (`ur5e_bringup/config/ur5e_sim.yaml`):
 
     # System URDF (shared by all controllers) — robot-specific
     urdf:
-      package: "ur5e_description"
+      package: "robot_descriptions"
       path: "robots/ur5e/urdf/ur5e.urdf"
       root_joint_type: "fixed"
 

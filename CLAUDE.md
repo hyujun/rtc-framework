@@ -5,7 +5,8 @@
 **RTC (Real-Time Control) Framework** — Robot-agnostic real-time control for URDF-based manipulators.
 
 - `rtc_*` packages (13): variable-DOF, configurable RT loop rate (`control_rate` YAML; design range 100 Hz – 5 kHz, default 500 Hz), transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP
-- `ur5e_*` packages (4): UR5e + 10-DOF hand drivers, demo controllers, BT coordinator (reference integration)
+- `ur5e_*` packages (3): UR5e hand driver, demo controllers + BT coordinator (reference integration on top of `rtc_*`)
+- `robot_descriptions` (1): robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (ur5e + assm_v1 hand 입주, 추가 robot/hand는 서브디렉토리 추가만으로)
 - `shape_estimation*` packages (2): ToF-based surface estimation (msgs + node)
 - `repo_scripts` (1): repo-local convenience tooling (PREEMPT_RT, CPU shield, deps build, env activation) — not part of the rtc_* runtime libraries
 - **Total: 20 ROS 2 packages**
@@ -239,7 +240,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 | `rtc_digital_twin` | RViz2 JointState merge |
 | `shape_estimation_msgs` | Shape estimation message/action definitions |
 | `shape_estimation` | ToF-based surface estimation node |
-| `ur5e_description` | URDF + MJCF + meshes |
+| `robot_descriptions` | URDF + MJCF + meshes (multi-robot data hub, `robots/<name>/` 단위) |
 | `ur5e_hand_driver` | UDP hand driver, ONNX F/T inference |
 | `ur5e_bt_coordinator` | BehaviorTree.CPP v4 coordinator |
 | `ur5e_bringup` | Launch files, demo controllers, config |
