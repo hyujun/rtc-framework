@@ -407,6 +407,18 @@ void RtControllerNode::ControlLoopThread::OnRequestStop() noexcept {
   owner_->state_cv_.notify_all();
 }
 
+bool RtControllerNode::ControlLoopThread::JitterMeaningful() const noexcept {
+  // Real-robot mode uses the deadline-driven default wait → |actual_period
+  // − budget| is true RT jitter. Sim mode blocks on state_cv_ until the
+  // simulator publishes /joint_states, so the cadence is dictated by
+  // MuJoCo step completion (max_rtf, viewer load, OS schedule) rather than
+  // a fixed period — comparing against a 2 ms budget would just report
+  // sim-cadence noise as jitter. The base then leaves jitter_us at 0.0
+  // for sim CSVs while the t_state/compute/publish/total_us measurements
+  // (which run identically in both modes) stay live.
+  return !owner_->use_sim_time_sync_;
+}
+
 void RtControllerNode::StartRtLoop(const urtc::ThreadConfig& rt_cfg) {
   rt_loop_.SetTimingProducer<urtc::kCmTimingBufferCapacity>(&cm_timing_producer_);
   if (use_sim_time_sync_) {

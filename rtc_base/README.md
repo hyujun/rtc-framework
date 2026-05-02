@@ -470,6 +470,8 @@ CM, MPC, ur5e_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. 
 ### 로깅 (`logging/`)
 
 > **Phase C 정리 (2026-05-01)**: 기존 CM-side `data_logger.hpp` / `log_buffer.hpp` 는 삭제됐다. 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `ur5e_bringup/include/ur5e_bringup/logging/`) 로 이전. CM 은 `cm_timing_log.csv` (per-tick scheduling timing) 만 자체 소유한다. `cm_timing_log` 의 schema 는 `t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 7-col `RtTickTimingPayload` 사용 (`rtc_base/timing/rt_tick_timing_sample.hpp`).
+>
+> **Sim 모드 (2026-05-02)**: `PeriodicRtThread::JitterMeaningful()` 가상 함수로 producer가 자기 wakeup이 deadline-driven 인지 선언한다. CM `ControlLoopThread` 는 `use_sim_time_sync=true` 일 때 `false` 반환 → base 가 `jitter_us` 를 0.0 으로 둔다 (CV cadence 대비 budget 차이는 RT 잡음 지표가 아니므로). MPC / hand_udp 는 default `true` 유지 → 기존 동작 그대로. 다른 6 개 컬럼은 두 모드 동일.
 
 #### Generic CSV 인프라 (`thread_csv_producer.hpp` + `thread_csv_logger.hpp`)
 

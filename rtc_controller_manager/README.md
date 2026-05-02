@@ -288,6 +288,8 @@ CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [
 
 CM은 `StartRtLoop`에서 `rt_loop_.SetTimingProducer<>` 한 줄로 base에 ring을 위임 — base가 매 tick payload를 push한다. `ControlLoop()` 내부의 t1/t2 마킹은 `rt_loop_.StampStateAcquired()` / `StampComputeDone()` 두 줄. `DrainLog()`가 `cm_timing_producer_.Drain(...)`로 CSV에 기록. 1초 INFO summary에 `timing_drops` (producer overflow 카운터)가 `log_drops` / `pub_drops`와 함께 출력된다.
 
+Sim 모드 (`use_sim_time_sync=true`) 에서는 `ControlLoopThread::JitterMeaningful()` 가 `false` 를 반환하여 base 가 `jitter_us` 를 0.0 으로 둔다 — wakeup 이 `state_cv_` (= MuJoCo step 완료) 이라 `|actual_period − 2 ms|` 는 sim cadence 잡음일 뿐 RT 지표가 아니다. 다른 6개 컬럼 (`t_state_us` / `t_compute_us` / `t_publish_us` / `t_total_us` / `t_wall_ns` / `tick_count`) 은 robot/sim 동일 의미 — body code path 가 wakeup 매커니즘과 무관하게 동일하기 때문. MPC / hand_udp producer 는 default `JitterMeaningful()=true` 유지.
+
 MPC 측은 컨트롤러가 자체 1 Hz aux 타이머에서 `mpc_thread_->TimingProducer().Drain(...)`을 호출. 컨트롤러별 `<config_key>` 서브디렉토리에 쓰므로 전환이 발생해도 stream이 섞이지 않는다. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (handler self-report `solve_duration_ns`의 256-sample sliding 윈도우)로 10초마다 aggregate INFO 라인을 출력 — 디스크에는 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산.
 
 새 RT/soft-RT thread (예: ONNX inference)를 추가하려면 `PeriodicRtThread` 상속/composition + `OnTick` body 정의면 끝. `RTControllerInterface` 변경 없음.

@@ -31,6 +31,10 @@
 //   - Subclasses may override WaitForNextTick (e.g. simulation CV wakeup)
 //     and OnOverrun (E-STOP trigger). Defaults preserve the
 //     deterministic clock_nanosleep + counter-only behaviour.
+//   - Subclasses with non-deadline wakeups should also override
+//     JitterMeaningful() to return false; the base will then emit
+//     `jitter_us = 0.0` instead of reporting sim-cadence noise as RT
+//     jitter against the configured budget.
 
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -214,6 +218,16 @@ class PeriodicRtThread {
   /// RequestStop(), not the loop thread. Default no-op.
   virtual void OnRequestStop() noexcept {}
 
+  /// Whether `jitter_us` (|actual_period − budget|) is meaningful for this
+  /// loop. Default true — the deadline-driven default wait makes
+  /// `actual_period` comparable to the configured budget. Subclasses with
+  /// non-deadline wakeups (e.g. CM sim mode blocking on a CV until the
+  /// simulator publishes /joint_states) should override to return false;
+  /// the base then leaves `jitter_us` at its default 0.0 instead of
+  /// reporting sim-cadence noise as RT jitter. Called once per tick from
+  /// the loop thread.
+  [[nodiscard]] virtual bool JitterMeaningful() const noexcept { return true; }
+
   /// Period in nanoseconds, derived from cfg.frequency_hz. Available to
   /// subclasses that override WaitForNextTick.
   [[nodiscard]] std::uint64_t PeriodNs() const noexcept { return period_ns_; }
@@ -270,7 +284,7 @@ class PeriodicRtThread {
         p.t_compute_us = std::chrono::duration<double, std::micro>(t2_ - t1_).count();
         p.t_publish_us = std::chrono::duration<double, std::micro>(t3 - t2_).count();
         p.t_total_us = std::chrono::duration<double, std::micro>(t3 - t0_).count();
-        if (have_prev_t0_) {
+        if (have_prev_t0_ && JitterMeaningful()) {
           const double actual_period_us =
               std::chrono::duration<double, std::micro>(t0_ - prev_t0_).count();
           p.jitter_us = std::abs(actual_period_us - budget_us_);

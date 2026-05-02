@@ -142,9 +142,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // The RT loop itself is owned by a nested PeriodicRtThread subclass that
   // forwards OnTick() into ControlLoop(), and overrides WaitForNextTick()
   // for the simulation-mode CV wakeup, OnOverrun() for E-STOP escalation,
-  // OnLoopAborted() for sim-sync timeouts, and OnRequestStop() to wake the
-  // CV. RtControllerNode itself only owns the tick body and the
-  // CM-specific counters / readiness gates.
+  // OnLoopAborted() for sim-sync timeouts, OnRequestStop() to wake the
+  // CV, and JitterMeaningful() to suppress jitter measurement in sim mode
+  // where the CV cadence makes |actual_period − budget| meaningless.
+  // RtControllerNode itself only owns the tick body and the CM-specific
+  // counters / readiness gates.
   class ControlLoopThread : public rtc::PeriodicRtThread {
    public:
     explicit ControlLoopThread(RtControllerNode* owner) noexcept : owner_(owner) {}
@@ -161,6 +163,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     void OnOverrun(std::uint64_t consecutive) noexcept override;
     void OnLoopAborted() noexcept override;
     void OnRequestStop() noexcept override;
+    [[nodiscard]] bool JitterMeaningful() const noexcept override;
 
    private:
     RtControllerNode* owner_;

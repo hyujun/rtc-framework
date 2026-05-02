@@ -235,6 +235,49 @@ class OverrunThread : public rtc::PeriodicRtThread {
 
 }  // namespace
 
+namespace {
+
+// Subclass that disables jitter measurement (mirrors CM sim mode where the
+// CV wakeup makes |actual_period − budget| meaningless).
+class NoJitterTimingThread : public rtc::PeriodicRtThread {
+ public:
+  rtc::CmTimingBuffer producer;
+
+  NoJitterTimingThread() { SetTimingProducer<rtc::kCmTimingBufferCapacity>(&producer); }
+
+ protected:
+  void OnTick() noexcept override {
+    MarkStateAcquired();
+    std::this_thread::sleep_for(100us);
+    MarkComputeDone();
+    std::this_thread::sleep_for(50us);
+  }
+
+  [[nodiscard]] bool JitterMeaningful() const noexcept override { return false; }
+};
+
+}  // namespace
+
+TEST(PeriodicRtThread, JitterZeroWhenSubclassDisablesIt) {
+  NoJitterTimingThread thr;
+  thr.Start(MakeCfg("rtc_test_nj", 100.0));
+  std::this_thread::sleep_for(150ms);
+  thr.RequestStop();
+  thr.Join();
+
+  std::vector<rtc::RtTickTimingSample> samples;
+  thr.producer.Drain([&](const rtc::RtTickTimingSample& smp) { samples.push_back(smp); });
+  ASSERT_GE(samples.size(), 5U);
+  for (const auto& smp : samples) {
+    // Phase measurements remain real — only jitter is suppressed.
+    EXPECT_GT(smp.payload.t_total_us, 0.0);
+    EXPECT_GE(smp.payload.t_state_us, 0.0);
+    EXPECT_GE(smp.payload.t_compute_us, 0.0);
+    EXPECT_EQ(smp.payload.jitter_us, 0.0)
+        << "JitterMeaningful()==false must zero jitter_us on every tick";
+  }
+}
+
 TEST(PeriodicRtThread, OverrunHookFiresOnDeadlineMiss) {
   OverrunThread t;
   // 200 Hz → 5 ms period; OnTick sleeps 15 ms so every tick overruns.

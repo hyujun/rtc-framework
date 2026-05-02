@@ -17,7 +17,10 @@
 //   t_compute_us  controller Compute() / MPC Solve() phase
 //   t_publish_us  publish phase (SPSC push / TripleBuffer write / etc.)
 //   t_total_us    end-of-tick − start-of-tick
-//   jitter_us     |actual_period − expected_period| against the previous tick
+//   jitter_us     |actual_period − expected_period| against the previous tick;
+//                 producers with non-deadline wakeups (e.g. CM sim mode that
+//                 blocks on a CV until /joint_states arrives) emit 0.0 — see
+//                 PeriodicRtThread::JitterMeaningful()
 //
 // Producers may leave fields zero when not applicable to their thread (e.g.
 // a thread without a publish phase sets t_publish_us = 0). The schema stays
