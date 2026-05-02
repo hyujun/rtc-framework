@@ -200,7 +200,7 @@ demo_wbc_controller:
     # MPC solve-loop frequency (Hz). Tune per host: lower if solve time
     # exceeds 1/freq on the target machine. Falls back to 20 Hz if missing
     # or non-positive.
-    target_frequency_hz: 20.0
+    target_frequency_hz: 10.0
 
     # Handler-mode inputs — ignored when engine == "mock".
     # Paths are resolved relative to the ur5e_bringup package share dir
