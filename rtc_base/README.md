@@ -92,7 +92,7 @@ rtc_base/
 | `kDefaultMaxJointVelocity` | 2.0 | 기본 최대 관절 속도 (rad/s) |
 | `kDefaultMaxJointTorque` | 150.0 | 기본 최대 관절 토크 (N-m) |
 
-> **참고:** `kNumHandMotors`, `kNumHandJoints`, `kDefaultRobotJointNames`, `kDefaultHandMotorNames`, `kDefaultFingertipNames`는 UR5e 전용 상수로 `ur5e_description/ur5e_constants.hpp`로 이동되었습니다.
+> **참고:** UR5e custom hand 전용 상수 (`kNumHandMotors`, `kDefaultHandMotorNames`, `kDefaultFingertipNames`)는 `ur5e_hand_driver/hand_constants.hpp`로 이동되었습니다. `kNumHandJoints`, `kDefaultRobotJointNames`, `RobotState`는 사용처가 없어 삭제되었습니다.
 
 #### C++20 Concepts
 
@@ -115,7 +115,7 @@ rtc_base/
 
 #### 주요 구조체
 
-> **참고:** 레거시 타입 `RobotState`, `HandState`는 `ur5e_description/ur5e_constants.hpp`로 이동되었습니다.
+> **참고:** 레거시 타입 `HandState`는 `ur5e_hand_driver/hand_state.hpp`로 이동되었습니다. `RobotState`는 사용처가 없어 삭제되었습니다.
 
 **일반화된 디바이스 타입 (가변 DOF):**
 

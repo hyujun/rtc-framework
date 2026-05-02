@@ -45,6 +45,7 @@ find_package(rtc_controller_manager REQUIRED)
 find_package(rtc_tsid REQUIRED)
 find_package(rtc_mpc REQUIRED)
 find_package(ur5e_description REQUIRED)
+find_package(ur5e_hand_driver REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
@@ -76,6 +77,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_tsid
   rtc_mpc
   ur5e_description
+  ur5e_hand_driver
 )
 
 target_link_libraries(${PROJECT_NAME}_demo_controllers

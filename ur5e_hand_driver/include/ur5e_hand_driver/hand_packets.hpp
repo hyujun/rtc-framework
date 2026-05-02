@@ -17,7 +17,7 @@
 //     Layout per fingertip: barometer[8] + reserved[5] + tof[3]
 
 #include "rtc_base/types/types.hpp"
-#include "ur5e_description/ur5e_constants.hpp"
+#include "ur5e_hand_driver/hand_constants.hpp"
 
 #include <array>
 #include <cstddef>

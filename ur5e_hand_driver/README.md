@@ -416,6 +416,16 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 
 ---
 
+## 변경 내역
+
+### Unreleased
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **Hand 상수 흡수** | `ur5e_description/ur5e_constants.hpp` 폐기에 따라 hand 전용 상수와 타입을 본 패키지로 흡수: `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `include/ur5e_hand_driver/hand_constants.hpp`, `HandState` → `include/ur5e_hand_driver/hand_state.hpp`. 이에 따라 `package.xml`/`CMakeLists.txt`에서 `ur5e_description` 의존을 제거 (이 패키지는 더 이상 description 헤더가 필요 없음). 다운스트림(`ur5e_bringup`)은 `ur5e_hand_driver/hand_constants.hpp`를 include. |
+
+---
+
 ## 라이선스
 
 MIT License -- [LICENSE](../LICENSE)

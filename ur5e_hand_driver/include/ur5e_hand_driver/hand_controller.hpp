@@ -28,11 +28,12 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
-#include "ur5e_description/ur5e_constants.hpp"
 #include "ur5e_hand_driver/fingertip_ft_inferencer.hpp"
+#include "ur5e_hand_driver/hand_constants.hpp"
 #include "ur5e_hand_driver/hand_logging.hpp"
 #include "ur5e_hand_driver/hand_packets.hpp"
 #include "ur5e_hand_driver/hand_sensor_processor.hpp"
+#include "ur5e_hand_driver/hand_state.hpp"
 #include "ur5e_hand_driver/hand_timing_profiler.hpp"
 #include "ur5e_hand_driver/hand_udp_transport.hpp"
 

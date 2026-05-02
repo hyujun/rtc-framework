@@ -88,12 +88,6 @@ inline constexpr int kMaxHandSensors = kMaxFingertips * kSensorValuesPerFingerti
 inline constexpr int kNumFingertips = kDefaultNumFingertips;                        // 4
 inline constexpr int kNumHandSensors = kNumFingertips * kSensorValuesPerFingertip;  // 44
 
-// kNumHandMotors, kNumHandJoints, RobotState, HandState moved to
-// ur5e_description/ur5e_constants.hpp (UR5e-specific).
-
-// ── Default joint/motor/fingertip names ─────────────────────────────────────
-// UR5e-specific names moved to ur5e_description/ur5e_constants.hpp.
-
 // ── C++20 Concepts
 // ───────────────────────────────────────────────────────────── Constrains
 // template parameters to floating-point types (double, float, etc.). Used for
@@ -125,8 +119,6 @@ struct FingertipFTState {
   int num_fingertips{0};
   bool valid{false};
 };
-
-// RobotState, HandState moved to ur5e_description/ur5e_constants.hpp.
 
 // Unified device state — used for all device groups (robot arm, hand, gripper,
 // …)
@@ -285,8 +277,8 @@ struct ControllerOutput {
 // ── Per-device name + URDF configuration ─────────────────────────────────────
 
 struct DeviceUrdfConfig {
-  std::string package;    // ament package name (e.g. "ur5e_description")
-  std::string path;       // relative to package share dir (e.g. "robots/ur5e/urdf/ur5e.urdf")
+  std::string package;    // ament package name providing the URDF
+  std::string path;       // relative to package share dir (e.g. "robots/<name>/urdf/<name>.urdf")
   std::string root_link;  // kinematic chain root link name
   std::string tip_link;   // end-effector link name (for FK/IK frame)
 };
@@ -336,9 +328,8 @@ enum class DeviceCapability : uint16_t {
 // ── Topic configuration for per-controller subscribe/publish routing ─────────
 
 enum class SubscribeRole {
-  kState,        // sensor_msgs/JointState (ur5e & hand 공통)
-  kMotorState,   // sensor_msgs/JointState (motor-space state, e.g.
-                 // /hand/motor_states)
+  kState,        // sensor_msgs/JointState (joint-space state, all device groups)
+  kMotorState,   // sensor_msgs/JointState (motor-space state, optional secondary read)
   kSensorState,  // Float64MultiArray (센서 전용, e.g. 촉각)
   kTarget,       // Float64MultiArray (외부 목표)
 };
@@ -409,7 +400,8 @@ struct DeviceTopicGroup {
   uint16_t capability{0};  ///< DeviceCapability bitmask, auto-inferred from subscribe roles
 };
 
-// Dynamic topic configuration: groups keyed by device name ("ur5e", "hand", …)
+// Dynamic topic configuration: groups keyed by device name (arbitrary strings
+// chosen by YAML, e.g. arm/hand/gripper).
 // Uses a vector of pairs to preserve YAML insertion order.  Device indices
 // throughout the system (ControllerState, ControllerOutput, LogEntry, CSV)
 // are derived from the iteration order of this container, so alphabetical
