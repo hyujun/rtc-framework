@@ -533,6 +533,7 @@ logging_data/YYMMDD_HHMM/
   sim/                       -- mujoco 스크린샷
   plots/                     -- 플롯 출력
   motions/                   -- 모션 에디터 JSON
+  perf/                      -- Linux perf record 출력 (perf.data; Hotspot 으로 뷰)
 ```
 
 | 함수 | 설명 |
@@ -540,7 +541,7 @@ logging_data/YYMMDD_HHMM/
 | `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 형식 타임스탬프 생성 |
 | `ResolveLoggingRoot()` | 3단 체인으로 `logging_data` 루트 경로 결정 (아래 참고) |
 | `ResolveSessionDir()` | env → `ResolveLoggingRoot()` → `YYMMDD_HHMM` 세션 디렉토리 생성 |
-| `EnsureSessionSubdirs(session_dir)` | controller, timing, monitor, device, sim, plots, motions 하위 폴더 생성 |
+| `EnsureSessionSubdirs(session_dir)` | controller, timing, monitor, device, sim, plots, motions, perf 하위 폴더 생성 |
 | `TimingDir(session_dir)` | per-tick timing CSV 들이 모이는 `<session>/timing/` 경로 반환 |
 | `ListSessionDirs(logging_root)` | `YYMMDD_HHMM` 패턴 디렉토리 정렬 목록 반환 |
 | `CleanupOldSessions(logging_root, max)` | 최대 세션 수 초과 시 오래된 세션 삭제 |

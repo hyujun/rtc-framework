@@ -27,6 +27,7 @@
 | `ur5e_bt_coordinator/` | BT gtest (tree_validation, condition_nodes, hand_nodes 등) | 실제 grasp 시나리오 smoke |
 | Launch / YAML | `ros2 launch ... --print` + 짧은 smoke | config 로드 검증 |
 | Threading (`ApplyThreadConfig`) | `rtc_base` thread-config gtest + RT perms | `check_rt_setup.sh --summary` |
+| RT 회귀 의심 / hot path 미상 | `mpc_timing_log.csv`·`cm_timing_log.csv` p99 검사 | `enable_perf:=true` + Hotspot 분석 (§Profiling) |
 
 ## Test Commands
 
@@ -114,3 +115,69 @@ echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf
 echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 # Re-login required. Optional: isolcpus, nohz_full, or cpu_shield.sh
 ```
+
+## Profiling — Hotspot + perf (function attribution per thread)
+
+CSV timing logs (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv`)
+은 **per-tick 총 시간**만 기록한다. RT 회귀가 보이지만 어떤 함수가 시간을 쓰는지 모를 때
+샘플링 프로파일을 캡처해 [Hotspot](https://github.com/KDAB/hotspot) 으로 본다.
+
+### One-time setup (Fresh Ubuntu 24.04)
+
+```bash
+./install.sh --perf       # apt: linux-tools + hotspot, sysctl: perf_event_paranoid=1
+# 또는 수동 동등 명령:
+sudo apt install linux-tools-generic linux-tools-$(uname -r) hotspot
+echo 'kernel.perf_event_paranoid = 1' | sudo tee /etc/sysctl.d/99-perf.conf
+sudo sysctl --system
+```
+
+검증: `./repo_scripts/scripts/check_rt_setup.sh --summary` → `Perf Profiling [PASS]`.
+
+### Capture (sim 또는 robot)
+
+```bash
+ros2 launch ur5e_bringup sim.launch.py enable_perf:=true
+# 또는
+ros2 launch ur5e_bringup robot.launch.py enable_perf:=true
+
+# 출력: <ws>/logging_data/<YYMMDD_HHMM>/perf/perf.data
+# Ctrl+C 로 launch 종료 시 perf 가 SIGINT 받아 정상 flush.
+```
+
+선택 인자:
+
+* `perf_targets:='regex|of|process|names'` — 기본은 `ur5e_rt_controller|mujoco_simulator_node`
+  (sim) / `ur5e_rt_controller|hand_udp_node|ur_ros2_control_node` (robot).
+  `pgrep -f` 로 매칭됨.
+* `perf_duration:=30` — 초 단위. 빈 값(기본)이면 launch SIGINT 까지 record.
+
+### View
+
+```bash
+hotspot <ws>/logging_data/<session>/perf/perf.data
+```
+
+탭 별 용도:
+* **Timeline** — 스레드별 가로 막대로 어느 코어에서 언제 활성/대기였는지. RT 스레드가
+  off-CPU 로 빠지는 구간이 mutex/syscall 후보.
+* **Bottom-Up / Top-Down** — 스레드 필터 후 함수별 self/inclusive %. WBC tick 안에서
+  Pinocchio FK / ProxSuite QP / SPSC push 의 비율 측정.
+* **Flame Graph** — 같은 데이터를 stack 단위로 본다.
+
+### Permissions
+
+스크립트 (`repo_scripts/scripts/perf_record.sh`) 가 자동 분기:
+
+| `perf_event_paranoid` | 동작 |
+|---|---|
+| ≤ 1 | user 권한으로 perf record (`./install.sh --perf` 적용 후 기본 상태) |
+| > 1, passwordless sudo OK | sudo perf record + 결과 파일 user-owned 로 chown |
+| > 1, sudo 패스워드 필요 | warn 후 캡처 skip — launch 는 정상 진행 |
+
+### Limits
+
+* perf 는 sampling profiler — tick 안의 통계 분포는 보이지만 **특정 spike 의 ground truth**
+  는 아니다. 단발 jitter 원인 추적은 향후 Perfetto/RTLA 도입 시 보강.
+* dwarf call-graph 는 디스크 IO 가 크다. 30 s 캡처 = 약 50–500 MB. 장기간 캡처는
+  `perf_duration:=N` 으로 제한 권장.

@@ -143,6 +143,42 @@ def generate_launch_description():
         ),
     )
 
+    enable_perf_arg = DeclareLaunchArgument(
+        "enable_perf",
+        default_value="false",
+        description=(
+            "Capture Linux perf data for the rt-controller, MPC and hand UDP threads. "
+            "Output: <session>/perf/perf.data (open with `hotspot <path>`). "
+            "Requires perf_event_paranoid<=1 OR passwordless sudo — "
+            "run ./install.sh --perf for one-time setup."
+        ),
+    )
+
+    perf_targets_arg = DeclareLaunchArgument(
+        "perf_targets",
+        default_value="ur5e_rt_controller|hand_udp_node|ur_ros2_control_node",
+        description=(
+            "Regex of process names to attach perf record to. "
+            "Matched via `pgrep -f`. Only used when enable_perf:=true."
+        ),
+    )
+
+    perf_duration_arg = DeclareLaunchArgument(
+        "perf_duration",
+        default_value="",
+        description=(
+            "Capture duration in seconds. Empty = run until launch SIGINT "
+            "(perf flushes on Ctrl+C)."
+        ),
+    )
+
+    # Closure-bound helper: perf_action.make_perf_action needs a launch context.
+    # session_dir is captured from the enclosing scope.
+    def _build_perf_action(context):
+        return make_perf_action(context, session_dir=session_dir)
+
+    perf_action = OpaqueFunction(function=_build_perf_action)
+
     # ── Paths ──────────────────────────────────────────────────────────────────
     ur_control_config = PathJoinSubstitution(
         [FindPackageShare("ur5e_bringup"), "config", "ur5e_robot.yaml"]
@@ -417,6 +453,9 @@ def generate_launch_description():
             use_fake_hardware_arg,
             use_cpu_affinity_arg,
             enable_mpc_arg,
+            enable_perf_arg,
+            perf_targets_arg,
+            perf_duration_arg,
             # 2) Environment
             set_session_dir,
             set_rmw,
@@ -435,5 +474,7 @@ def generate_launch_description():
             start_gate_after_hand,
             start_rt_after_gate,
             start_dds_pin_after_rt,
+            # 5) Profiling (no-op when enable_perf:=false)
+            perf_action,
         ]
     )

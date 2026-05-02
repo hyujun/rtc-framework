@@ -1005,6 +1005,44 @@ check_cpu_frequency() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# [10/N] Perf profiling — perf binary + paranoid level + hotspot
+# ══════════════════════════════════════════════════════════════════════════════
+check_perf_setup() {
+  _section "10" "Perf Profiling"
+  _category_start "perf_setup"
+
+  local perf_ok=0 hotspot_ok=0
+  if command -v perf >/dev/null 2>&1; then
+    perf_ok=1
+    _pass "perf: $(perf --version 2>&1 | head -1)"
+  else
+    _warn "perf 미설치"
+    _fix "./install.sh --perf  # 또는 sudo apt install linux-tools-\$(uname -r)"
+    _category_update "perf_setup" "WARN"
+  fi
+
+  local paranoid
+  paranoid="$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo unknown)"
+  if [[ "$paranoid" =~ ^-?[0-9]+$ ]] && [[ "$paranoid" -le 1 ]]; then
+    _pass "perf_event_paranoid=${paranoid} (non-root profiling OK)"
+  else
+    _warn "perf_event_paranoid=${paranoid} (>1 → enable_perf:=true requires sudo)"
+    _fix "./install.sh --perf  # sets paranoid=1 via /etc/sysctl.d/99-perf.conf"
+    _category_update "perf_setup" "WARN"
+  fi
+
+  if command -v hotspot >/dev/null 2>&1; then
+    hotspot_ok=1
+    _pass "hotspot installed"
+  else
+    _skip "hotspot 미설치 (viewer만 — 캡처에는 영향 없음). sudo apt install hotspot"
+  fi
+
+  _category_set_detail "perf_setup" \
+    "perf=${perf_ok} paranoid=${paranoid} hotspot=${hotspot_ok}"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # [B] Benchmark — cyclictest RT 지터 실측 (--benchmark 옵션)
 # ══════════════════════════════════════════════════════════════════════════════
 check_benchmark() {
@@ -1071,9 +1109,11 @@ check_benchmark() {
 # ══════════════════════════════════════════════════════════════════════════════
 print_summary() {
   local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
-                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency")
+                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency"
+                    "perf_setup")
   local labels=("RT Kernel" "CPU Isolation" "Sched/Memory" "GRUB Params"
-                "RT Permissions" "IRQ Affinity" "Network/UDP" "NVIDIA" "CPU Frequency")
+                "RT Permissions" "IRQ Affinity" "Network/UDP" "NVIDIA" "CPU Frequency"
+                "Perf Profiling")
 
   if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
     categories+=("benchmark")
@@ -1171,6 +1211,7 @@ main() {
   check_network_udp
   check_nvidia
   check_cpu_frequency
+  check_perf_setup
 
   if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
     check_benchmark

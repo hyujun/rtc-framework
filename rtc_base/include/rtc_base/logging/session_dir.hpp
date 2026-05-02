@@ -31,6 +31,7 @@ namespace rtc {
 //     sim/          — mujoco 스크린샷
 //     plots/        — 플롯 출력
 //     motions/      — 모션 에디터 JSON
+//     perf/         — Linux perf record 출력 (perf.data; Hotspot 으로 뷰)
 //
 // 로깅 루트 결정 체인 (ResolveLoggingRoot):
 //   1) $COLCON_PREFIX_PATH 첫 entry 의 parent  (ws/logging_data)
@@ -57,7 +58,7 @@ inline std::string GenerateSessionTimestamp() {
 /// 세션 디렉토리 내 표준 서브디렉토리 생성
 inline void EnsureSessionSubdirs(const std::filesystem::path& session_dir) {
   static constexpr const char* kSubdirs[] = {"controller", "timing", "monitor", "device",
-                                             "sim",        "plots",  "motions"};
+                                             "sim",        "plots",  "motions", "perf"};
   for (const auto* sub : kSubdirs) {
     std::filesystem::create_directories(session_dir / sub);
   }

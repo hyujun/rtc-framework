@@ -106,7 +106,7 @@ def test_logging_root_final_fallback_is_cwd(tmp_path, chdir):
 # create_session_dir — 서브디렉토리 생성
 # ─────────────────────────────────────────────────────────────────────────────
 
-_EXPECTED_SUBDIRS = ("controller", "monitor", "device", "sim", "plots", "motions")
+_EXPECTED_SUBDIRS = ("controller", "monitor", "device", "sim", "plots", "motions", "perf")
 
 
 def test_create_session_dir_makes_all_subdirs(tmp_path):

@@ -44,6 +44,7 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch.perf_action import make_perf_action
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
     create_session_dir,
@@ -363,6 +364,9 @@ def launch_setup(context, *args, **kwargs):
         )
         actions.append(pin_rt_controller_dds)
 
+    # ── perf record (Hotspot-friendly profiling, opt-in) ─────────────────────
+    actions.extend(make_perf_action(context, session_dir=session_dir))
+
     return actions
 
 
@@ -483,6 +487,35 @@ def generate_launch_description():
         ),
     )
 
+    enable_perf_arg = DeclareLaunchArgument(
+        "enable_perf",
+        default_value="false",
+        description=(
+            "Capture Linux perf data for the rt-controller and MuJoCo simulator. "
+            "Output: <session>/perf/perf.data (open with `hotspot <path>`). "
+            "Requires perf_event_paranoid<=1 OR passwordless sudo — "
+            "run ./install.sh --perf for one-time setup."
+        ),
+    )
+
+    perf_targets_arg = DeclareLaunchArgument(
+        "perf_targets",
+        default_value="ur5e_rt_controller|mujoco_simulator_node",
+        description=(
+            "Regex of process names to attach perf record to. "
+            "Matched via `pgrep -f`. Only used when enable_perf:=true."
+        ),
+    )
+
+    perf_duration_arg = DeclareLaunchArgument(
+        "perf_duration",
+        default_value="",
+        description=(
+            "Capture duration in seconds. Empty = run until launch SIGINT "
+            "(perf flushes on Ctrl+C)."
+        ),
+    )
+
     return LaunchDescription(
         [
             # Arguments
@@ -498,6 +531,9 @@ def generate_launch_description():
             initial_controller_arg,
             enable_mpc_arg,
             mpc_engine_arg,
+            enable_perf_arg,
+            perf_targets_arg,
+            perf_duration_arg,
             # Nodes (via OpaqueFunction for conditional parameter loading)
             OpaqueFunction(function=launch_setup),
         ]
