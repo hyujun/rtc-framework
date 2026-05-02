@@ -107,6 +107,16 @@ class DemoWbcController final : public RTControllerInterface {
 
   explicit DemoWbcController(std::string_view urdf_path);
 
+  // Destructor stops the MPC solve thread *before* member auto-destruction
+  // begins. Default destructor would tear down `mpc_model_handler_` /
+  // `phase_manager_owned_` / `mpc_manager_` first (member declaration order
+  // → reverse-order destruction), leaving the still-running `mpc_main`
+  // thread reading freed Pinocchio model memory inside `Solve()`. Observed
+  // shutdown SEGVs (sim Ctrl+C) all faulted in `pinocchio::CATForwardStep`
+  // visitors with use-after-free addresses. Joining first eliminates the
+  // race; subsequent member destruction is then safe.
+  ~DemoWbcController() override;
+
   // ── RTControllerInterface overrides ──────────────────────────────────────
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 

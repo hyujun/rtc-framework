@@ -36,6 +36,14 @@ DemoWbcController::DemoWbcController(std::string_view urdf_path) : urdf_path_(ur
   // Model is built in LoadConfig() using system model config.
 }
 
+DemoWbcController::~DemoWbcController() {
+  // Stop the MPC solve thread before any member auto-destruction. See header
+  // comment for the use-after-free race this prevents.
+  if (mpc_thread_) {
+    mpc_thread_->StopAndJoin();
+  }
+}
+
 // ── Model initialization ─────────────────────────────────────────────────────
 
 void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {

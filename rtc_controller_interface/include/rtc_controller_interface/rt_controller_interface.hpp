@@ -35,7 +35,14 @@ namespace rtc {
 // exception thrown inside the RT timer would terminate the process.
 class RTControllerInterface {
  public:
-  ~RTControllerInterface();
+  // Polymorphic base — controllers are owned via
+  // `std::vector<std::unique_ptr<RTControllerInterface>>` in
+  // RtControllerNode and deleted through the base pointer. A non-virtual
+  // dtor here makes that delete UB and silently skips derived destructors,
+  // which leaks owned threads/buffers and was the root cause of the sim
+  // shutdown SEGV in `mpc_main` (Pinocchio model torn down by base-only
+  // teardown while the still-running solve thread dereferenced it).
+  virtual ~RTControllerInterface();
 
   RTControllerInterface(const RTControllerInterface&) = delete;
   RTControllerInterface& operator=(const RTControllerInterface&) = delete;

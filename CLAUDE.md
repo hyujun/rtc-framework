@@ -302,4 +302,3 @@ Commit 완료 또는 사용자가 task 종료를 알린 후:
 - [agent_docs/invariants.md](agent_docs/invariants.md) — RT / ARCH / PROC / NUM invariants (escalation triggers)
 - [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — Recurring mistakes with detection + recovery
 - [agent_docs/archive/controller-safety-improvements.md](agent_docs/archive/controller-safety-improvements.md) — Controller safety improvements (Phase 0~4 closed; Q-7 E-STOP ramp + Q-8 `contact_stop_release_eps` → YAML done 2026-04-26)
-- [agent_docs/sim-shutdown-segv-analysis.md](agent_docs/sim-shutdown-segv-analysis.md) — **Status: Open** — 5s/15s hang fixed (`07ffc70`); `mpc_main` SEGV at exit unresolved. Resume from §3 "Remaining"
