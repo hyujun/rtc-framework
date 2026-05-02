@@ -619,3 +619,149 @@ class TestStatistics:
         print_motor_statistics(df)
         captured = capsys.readouterr()
         assert "Motor State Statistics" in captured.out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Timing outlier detection — first-tick init spike must not poison stats
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTimingOutlierFilter:
+    """`detect_outlier_indices` / `filter_outliers` / `print_timing_statistics`
+    behaviour around the first-tick init spike (auto-hold + lazy RCLCPP_INFO)
+    observed in CM sim mode. Raw CSV must remain untouched; only stats
+    excludes the spike.
+    """
+
+    @staticmethod
+    def _make_steady_df(n=500, total_us=30.0):
+        # Steady-state: t_total ~= total_us with mild noise.
+        rng = np.random.default_rng(42)
+        return pd.DataFrame(
+            {
+                "timestamp": np.arange(n) * 0.002,
+                "tick_count": np.arange(1, n + 1),
+                "t_state_us": rng.uniform(0.5, 2.0, n),
+                "t_compute_us": rng.uniform(15.0, 30.0, n),
+                "t_publish_us": rng.uniform(3.0, 10.0, n),
+                "t_total_us": rng.uniform(total_us - 5, total_us + 5, n),
+                "jitter_us": np.zeros(n),
+            }
+        )
+
+    def test_no_outliers_on_clean_steady_state(self):
+        from rtc_tools.plotting.plotters.timing import detect_outlier_indices
+
+        df = self._make_steady_df()
+        idx = detect_outlier_indices(df)
+        assert len(idx) == 0
+
+    def test_first_tick_spike_is_flagged(self):
+        from rtc_tools.plotting.plotters.timing import (
+            detect_outlier_indices,
+            filter_outliers,
+        )
+
+        df = self._make_steady_df()
+        # Inject the observed sim-mode signature: tick 2 t_total = 340 ms.
+        df.loc[1, "t_total_us"] = 340_469.0
+        df.loc[1, "t_state_us"] = 340_335.0
+
+        idx = detect_outlier_indices(df)
+        assert list(idx) == [1], f"expected only row 1 flagged, got {list(idx)}"
+
+        clean, outliers = filter_outliers(df)
+        assert len(clean) == len(df) - 1
+        assert len(outliers) == 1
+        # Cleaned p99 must reflect steady-state (~35 µs), not the 340 ms spike.
+        assert clean["t_total_us"].quantile(0.99) < 100.0
+
+    def test_mid_run_spike_also_flagged(self):
+        from rtc_tools.plotting.plotters.timing import detect_outlier_indices
+
+        df = self._make_steady_df()
+        # Anomaly far past the first_ticks window.
+        df.loc[300, "t_total_us"] = 50_000.0
+
+        idx = detect_outlier_indices(df)
+        assert 300 in list(idx)
+
+    def test_filter_does_not_mutate_input(self):
+        from rtc_tools.plotting.plotters.timing import filter_outliers
+
+        df = self._make_steady_df()
+        df.loc[0, "t_total_us"] = 200_000.0
+        before = df.copy()
+        filter_outliers(df)
+        # filter_outliers must return new frames; raw stays intact.
+        pd.testing.assert_frame_equal(df, before)
+
+    def test_print_statistics_lists_outlier_and_excludes_from_stats(self, capsys):
+        from rtc_tools.plotting.plotters.timing import print_timing_statistics
+
+        df = self._make_steady_df()
+        df.loc[1, "t_total_us"] = 340_469.0
+        df.loc[1, "t_state_us"] = 340_335.0
+        df.loc[1, "t_compute_us"] = 121.2
+        df.loc[1, "t_publish_us"] = 12.6
+
+        print_timing_statistics(df)
+        out = capsys.readouterr().out
+
+        assert "Outliers excluded from stats: 1" in out
+        # The outlier row's tick + t_total must appear in the listing.
+        assert "tick=" in out
+        assert "340469" in out.replace(" ", "") or "340469.0" in out
+        # Steady-state Total Loop p99 must NOT carry the spike.
+        # Sloppy parsing: just ensure "340" doesn't appear in the Total Loop
+        # block's numeric stats (it's only in the outlier list above).
+        total_block = out.split("Total Loop:")[1].split("\n\n")[0]
+        assert "340" not in total_block, (
+            f"steady-state stats appear contaminated by outlier:\n{total_block}"
+        )
+
+    def test_empty_df_returns_no_outliers(self):
+        from rtc_tools.plotting.plotters.timing import detect_outlier_indices
+
+        df = pd.DataFrame(columns=["timestamp", "tick_count", "t_total_us"])
+        idx = detect_outlier_indices(df)
+        assert len(idx) == 0
+
+
+class TestInferBudget:
+    """`infer_budget_us` must use median(diff) so a first-tick gap (340 ms
+    in observed sim mode) does not poison the inferred period budget that
+    `plot_timing_*` and `print_timing_statistics` use for the budget line
+    and overrun count.
+    """
+
+    def test_steady_state_returns_period(self):
+        from rtc_tools.plotting.plotters.timing import infer_budget_us
+
+        # 500 Hz steady cadence -> 2000 µs.
+        df = pd.DataFrame({"timestamp": np.arange(500) * 0.002})
+        assert abs(infer_budget_us(df) - 2000.0) < 1e-6
+
+    def test_first_tick_gap_is_ignored(self):
+        from rtc_tools.plotting.plotters.timing import infer_budget_us
+
+        # tick 0 → tick 1 = 340 ms (sim init), tick 1 → onwards = 2 ms.
+        timestamps = [0.0, 0.340488] + [0.340488 + i * 0.002 for i in range(1, 500)]
+        df = pd.DataFrame({"timestamp": timestamps})
+        budget = infer_budget_us(df)
+        # Must be ~2000 µs (steady cadence), not 340 488 µs.
+        assert 1900.0 < budget < 2100.0, f"budget contaminated by first-tick gap: {budget}"
+
+    def test_fallback_when_too_few_rows(self):
+        from rtc_tools.plotting.plotters.timing import infer_budget_us
+
+        assert infer_budget_us(pd.DataFrame({"timestamp": []})) == 2000.0
+        assert infer_budget_us(pd.DataFrame({"timestamp": [0.0]})) == 2000.0
+        assert infer_budget_us(pd.DataFrame()) == 2000.0
+
+    def test_fallback_on_non_monotonic(self):
+        from rtc_tools.plotting.plotters.timing import infer_budget_us
+
+        # All-equal timestamps → no positive diffs → fallback.
+        df = pd.DataFrame({"timestamp": [1.0, 1.0, 1.0]})
+        assert infer_budget_us(df, fallback_us=1234.0) == 1234.0
