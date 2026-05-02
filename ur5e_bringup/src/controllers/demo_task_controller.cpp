@@ -87,7 +87,11 @@ void DemoTaskController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*con
 
   // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
   if (auto* hand_cfg = GetDeviceNameConfig("hand"); hand_cfg) {
-    hand_handle_->SetJointOrder(hand_cfg->joint_state_names);
+    if (!hand_handle_->SetJointOrder(hand_cfg->joint_state_names)) {
+      RCLCPP_WARN(logger_,
+                  "DemoTaskController: hand SetJointOrder failed — "
+                  "joint_state_names not all in Pinocchio model");
+    }
   }
 
   const auto* sys_cfg = GetSystemModelConfig();

@@ -558,12 +558,16 @@ inline int GetPhysicalCpuCount() noexcept {
     int period = 0;
     FILE* fq = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
     if (fq) {
-      std::fscanf(fq, "%d", &quota);
+      if (std::fscanf(fq, "%d", &quota) != 1) {
+        quota = -1;
+      }
       std::fclose(fq);
     }
     FILE* fp = std::fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
     if (fp) {
-      std::fscanf(fp, "%d", &period);
+      if (std::fscanf(fp, "%d", &period) != 1) {
+        period = 0;
+      }
       std::fclose(fp);
     }
     if (quota > 0 && period > 0) {

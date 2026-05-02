@@ -29,7 +29,7 @@ int EomConstraint::ineq_dim(const ContactState& /*contacts*/) const noexcept {
 }
 
 void EomConstraint::compute_equality(const PinocchioCache& cache, const ContactState& contacts,
-                                     const RobotModelInfo& robot_info, int n_vars,
+                                     const RobotModelInfo& robot_info, int /*n_vars*/,
                                      Eigen::Ref<Eigen::MatrixXd> A_block,
                                      Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
   if (!floating_base_ || n_unactuated_ == 0)

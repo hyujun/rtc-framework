@@ -65,7 +65,7 @@ void PostureTask::compute_residual(const PinocchioCache& cache, const ControlRef
   // Note: q 공간에서의 차이는 nv 차원
   // Floating-base의 경우 q (nq) ≠ v (nv), pinocchio::difference 필요
   // 여기서는 간단히 head(nv) 사용 (fixed-base에서는 nq==nv)
-  const int nq = cache.q.size();
+  const int nq = static_cast<int>(cache.q.size());
   const int nv = nv_;
 
   if (nq == nv) {

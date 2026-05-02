@@ -502,7 +502,7 @@ bool RtControllerNode::SwitchActiveController(const std::string& name, std::stri
 //   underlying switch helper is sync and bounded by sleep_for(1.5×dt) +
 //   controller hooks (~ms). M-1 will measure actual latency in Phase 4.
 void RtControllerNode::CreateServices() {
-  const rmw_qos_profile_t srv_qos = rmw_qos_profile_services_default;
+  const rclcpp::QoS srv_qos = rclcpp::ServicesQoS();
 
   list_controllers_srv_ = create_service<rtc_msgs::srv::ListControllers>(
       "/rtc_cm/list_controllers",

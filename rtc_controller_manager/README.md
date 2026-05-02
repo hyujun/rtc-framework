@@ -513,6 +513,12 @@ rtc_controller_manager  <- RT 제어 실행 엔진 (@ control_rate)
 
 ## 변경 내역
 
+### Build hygiene (post-v5.21.0)
+
+| 영역 | 변경 내용 |
+|------|----------|
+| **Deprecated rmw QoS** | `CreateServices()`의 `rmw_qos_profile_services_default` → `rclcpp::ServicesQoS()` 로 마이그레이션 (`-Wdeprecated-declarations` 제거). Behavior 동일. |
+
 ### v5.21.0
 
 | 영역 | 변경 내용 |

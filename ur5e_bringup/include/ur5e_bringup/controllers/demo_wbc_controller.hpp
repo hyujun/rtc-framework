@@ -434,7 +434,7 @@ class DemoWbcController final : public RTControllerInterface {
   rclcpp::Clock log_clock_{RCL_STEADY_TIME};
 
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
-  ControllerTopicHandles owned_topics_{};
+  ControllerTopicHandles owned_topics_;
 
   // ── Phase D (gain→parameter migration): per-controller ROS 2 parameters ──
   //

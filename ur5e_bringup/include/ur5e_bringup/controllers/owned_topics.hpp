@@ -40,7 +40,7 @@ struct ControllerTopicHandles {
   std::array<rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::GuiPosition>::SharedPtr,
              kMaxOwnedGroups>
       gui_pubs{};
-  std::array<rtc_msgs::msg::GuiPosition, kMaxOwnedGroups> gui_msgs{};
+  std::array<rtc_msgs::msg::GuiPosition, kMaxOwnedGroups> gui_msgs;
   // Group index that owns the gui publisher (so PublishNonRtSnapshot can
   // pick the correct snapshot slot). -1 when unused.
   std::array<int, kMaxOwnedGroups> gui_group_idx{{-1, -1}};

@@ -295,6 +295,8 @@ colcon test-result --verbose
 | `test_tsid_performance` | 성능 벤치마크 |
 | `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
 
+> Build hygiene: `EomConstraint::compute_equality`의 미사용 인자 `n_vars`를 `/*n_vars*/`로 표시 (`-Wunused-parameter` 제거), `PostureTask`의 `cache.q.size()` (Eigen `Index` = `long`) → `int` 변환에 `static_cast<int>` 명시 (`-Wconversion` 제거), `test_tsid_performance` warm-up 호출에 `(void)` 캐스트 추가 (nodiscard `-Wunused-result` 제거). Behavior 동일.
+
 ---
 
 ## 라이선스

@@ -244,10 +244,16 @@ if [[ -n "$PARALLEL_JOBS" ]]; then
   info "Limiting parallel workers to $PARALLEL_JOBS"
 fi
 
-# ONNX Runtime: /opt/onnxruntime 수동 설치 경로 cmake 전파
+# ONNX Runtime: /opt/onnxruntime 수동 설치 경로 cmake 전파.
+# `-DCMAKE_PREFIX_PATH` 로 주면 onnxruntime 을 안 쓰는 패키지에서 "Manually-specified
+# variables were not used" 경고가 발생하므로 환경변수로 export 한다 (colcon 이
+# 각 패키지에 전파, 사용 안 해도 경고 없음).
 if [[ -d "/opt/onnxruntime" ]]; then
-  existing_prefix="${CMAKE_PREFIX_PATH:-}"
-  CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=${existing_prefix:+${existing_prefix};}/opt/onnxruntime")
+  if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+    export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}:/opt/onnxruntime"
+  else
+    export CMAKE_PREFIX_PATH="/opt/onnxruntime"
+  fi
 fi
 
 COLCON_ARGS+=("--cmake-args" "${CMAKE_ARGS[@]}")

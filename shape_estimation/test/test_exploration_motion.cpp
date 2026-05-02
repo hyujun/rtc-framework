@@ -638,17 +638,17 @@ TEST_F(ExplorationMotionTest, TiltPrioritizesPitch) {
   auto est = MakeEstimate(0.0, 0);
 
   // Approach → Servo
-  gen.Step(snap, est, home_pose_, 0.1);
+  (void)gen.Step(snap, est, home_pose_, 0.1);
   // Servo → SweepX (timeout)
   config_.servo_timeout_sec = 0.0;
   gen.SetConfig(config_);
-  gen.Step(snap, est, home_pose_, 0.1);
+  (void)gen.Step(snap, est, home_pose_, 0.1);
 
   // SweepX → SweepY → Tilt (edge 도달 반복)
   config_.sweep_width = 0.001;  // 즉시 edge
   gen.SetConfig(config_);
   for (int i = 0; i < 10; ++i) {
-    gen.Step(snap, est, home_pose_, 0.1);
+    (void)gen.Step(snap, est, home_pose_, 0.1);
   }
 
   // Tilt phase에서 pose 변화 패턴 확인은 복잡하므로

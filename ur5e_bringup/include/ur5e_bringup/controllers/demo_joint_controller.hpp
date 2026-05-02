@@ -240,7 +240,7 @@ class DemoJointController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
-  ControllerTopicHandles owned_topics_{};
+  ControllerTopicHandles owned_topics_;
 
   // ── Phase D (gain→parameter migration): per-controller ROS 2 parameters ──
   //

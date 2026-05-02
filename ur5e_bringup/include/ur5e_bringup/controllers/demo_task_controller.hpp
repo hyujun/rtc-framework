@@ -331,7 +331,7 @@ class DemoTaskController final : public RTControllerInterface {
                             const std::vector<double>& upper) noexcept;
 
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
-  ControllerTopicHandles owned_topics_{};
+  ControllerTopicHandles owned_topics_;
 
   // ── Phase B (gain→parameter migration): per-controller ROS 2 parameters ──
   //

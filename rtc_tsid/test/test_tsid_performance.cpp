@@ -208,7 +208,7 @@ TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
   // Warm-up
   for (int i = 0; i < 5; ++i) {
     cache_.update(q_, v_, contacts_);
-    ctrl.compute(state, ref_, cache_, contacts_);
+    (void)ctrl.compute(state, ref_, cache_, contacts_);
   }
 
   for (int i = 0; i < n_iters; ++i) {
