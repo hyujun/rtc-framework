@@ -23,7 +23,6 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
-#include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 
 // ── C++ stdlib
@@ -123,7 +122,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Subscription callbacks (unified per-device) ──────────────────────────
   void DeviceJointStateCallback(int device_slot, sensor_msgs::msg::JointState::SharedPtr msg);
   void DeviceMotorStateCallback(int device_slot, sensor_msgs::msg::JointState::SharedPtr msg);
-  void DeviceSensorCallback(int device_slot, std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void HandSensorStateCallback(int device_slot, rtc_msgs::msg::HandSensorState::SharedPtr msg);
   void DeviceTargetCallback(int device_slot, rtc_msgs::msg::RobotTarget::SharedPtr msg);
 
@@ -219,9 +217,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // lifetime)
   std::vector<rclcpp::SubscriptionBase::SharedPtr> topic_subscriptions_;
 
-  // ── Configurable topic publishers (created from controller YAML) ──────────
-  // Key = topic name, value = publisher + pre-allocated message
-  struct PublisherEntry {
+  // ── ros2_control forward bridge publishers (kRos2Command role) ───────────
+  // Float64MultiArray to a ros2_control forward command controller (sim).
+  // Key = topic name, value = publisher + pre-allocated message.
+  struct Ros2CommandPublisherEntry {
     rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
     std_msgs::msg::Float64MultiArray msg;
     // Reorder map: output index → input (gc.commands) index.
@@ -230,7 +229,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     std::vector<int> reorder_map;
   };
 
-  std::unordered_map<std::string, PublisherEntry> topic_publishers_;
+  std::unordered_map<std::string, Ros2CommandPublisherEntry> ros2_command_publishers_;
 
   // Fixed publishers (always present)
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;

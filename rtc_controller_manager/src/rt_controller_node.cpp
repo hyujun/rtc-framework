@@ -214,7 +214,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   param_callback_handle_.reset();
 
   // 4. publishers (all maps + fixed)
-  topic_publishers_.clear();
+  ros2_command_publishers_.clear();
   joint_command_publishers_.clear();
   digital_twin_publishers_.clear();
   slot_to_dt_topic_.clear();
@@ -292,7 +292,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   }
   drain_timer_.reset();
   param_callback_handle_.reset();
-  topic_publishers_.clear();
+  ros2_command_publishers_.clear();
   joint_command_publishers_.clear();
   digital_twin_publishers_.clear();
   slot_to_dt_topic_.clear();

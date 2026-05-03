@@ -469,7 +469,7 @@ CycloneDDS RT 성능 최적화 설정입니다. `CYCLONEDDS_URI` 환경변수로
 | `ament_cmake` | 빌드 시스템 |
 | `rclcpp` | ROS2 클라이언트 라이브러리 |
 | `sensor_msgs` | JointState 메시지 |
-| `std_msgs` | Bool, Int32, String, Float64MultiArray |
+| `std_msgs` | Bool (E-STOP), String (active controller name), Float64MultiArray (kRos2Command sim bridge) |
 | `rtc_controller_interface` | 컨트롤러 추상 인터페이스 + 레지스트리 |
 | `rtc_controllers` | 내장 컨트롤러 (팩토리 등록) |
 | `rtc_base` | 로깅, 스레딩, 타입, SPSC 버퍼, 세션 디렉토리 |

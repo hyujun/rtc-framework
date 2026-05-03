@@ -90,8 +90,8 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
           return;
         }
         case urtc::PublishRole::kRos2Command: {
-          auto it = topic_publishers_.find(pt.topic_name);
-          if (it == topic_publishers_.end()) {
+          auto it = ros2_command_publishers_.find(pt.topic_name);
+          if (it == ros2_command_publishers_.end()) {
             return;
           }
           auto& pe = it->second;
@@ -116,6 +116,9 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
           // kGraspState / kToFSnapshot / kWbcState) are owned by the
           // active controller's LifecycleNode and forwarded via
           // PublishNonRtSnapshot below — CM has no publisher for them.
+          // CreatePublishers() throws on misconfigured manager-owned
+          // controller-output roles, so reaching here means an entry that
+          // CM correctly skipped at publisher creation time.
           break;
       }
     };

@@ -159,20 +159,6 @@ void RtControllerNode::DeviceTargetCallback(int device_slot,
       device_slot, std::span<const double>(ordered_ptr, static_cast<std::size_t>(ordered_size)));
 }
 
-// ── Device sensor callback (unified per-device) ──────────────────────────────
-void RtControllerNode::DeviceSensorCallback(int device_slot,
-                                            std_msgs::msg::Float64MultiArray::SharedPtr msg) {
-  const auto uslot = static_cast<std::size_t>(device_slot);
-  auto ds = device_states_[uslot].Load();
-  for (std::size_t i = 0;
-       i < msg->data.size() && i < static_cast<std::size_t>(urtc::kMaxSensorChannels); ++i) {
-    ds.sensor_data[i] = static_cast<int32_t>(msg->data[i]);
-  }
-  ds.num_sensor_channels = static_cast<int>(
-      std::min(msg->data.size(), static_cast<std::size_t>(urtc::kMaxSensorChannels)));
-  device_states_[uslot].Store(ds);
-}
-
 void RtControllerNode::HandSensorStateCallback(int device_slot,
                                                rtc_msgs::msg::HandSensorState::SharedPtr msg) {
   const auto uslot = static_cast<std::size_t>(device_slot);
