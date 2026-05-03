@@ -2,6 +2,12 @@
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_WBC_CONTROLLER_H_
 
 // Project headers (order: RTC base → interface → controllers → bridge → tsid)
+#include "integrated_bringup/controllers/hand_sensor_layout.hpp"
+#include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"
+#include "integrated_bringup/logging/device_sensor_log_pod.hpp"
+#include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -19,12 +25,6 @@
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
-#include "integrated_bringup/support/bringup_logging.hpp"
-#include "integrated_bringup/support/owned_topics.hpp"
-#include "integrated_bringup/logging/device_sensor_log_pod.hpp"
-#include "integrated_bringup/logging/device_state_log_pod.hpp"
-#include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"
-#include "udp_hand_driver/udp_hand_constants.hpp"
 
 // Third-party
 #include <rtc_msgs/srv/grasp_command.hpp>
@@ -53,7 +53,6 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::GoalType;
 using rtc::kMaxDeviceChannels;
-using udp_hand_driver::kNumHandMotors;
 using rtc::kNumRobotJoints;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
@@ -89,9 +88,9 @@ enum class WbcPhase : uint8_t {
 //   gains.grasp_target_force, which the FSM consumes.
 class DemoWbcController final : public RTControllerInterface {
  public:
-  static constexpr int kArmDof = static_cast<int>(kNumRobotJoints);  // 6
-  static constexpr int kHandDof = static_cast<int>(kNumHandMotors);  // 10
-  static constexpr int kFullDof = kArmDof + kHandDof;                // 16
+  static constexpr int kArmDof = static_cast<int>(kNumRobotJoints);   // 6
+  static constexpr int kHandDof = static_cast<int>(kHandMotorCount);  // 10
+  static constexpr int kFullDof = kArmDof + kHandDof;                 // 16
   static constexpr int kNumPhases = 8;
 
   struct Gains {
@@ -267,7 +266,7 @@ class DemoWbcController final : public RTControllerInterface {
   // Consumed by contact detection (kClosure -> kHold) and anomaly monitoring
   // (kHold slip/deformation -> kFallback).
   struct FingertipSensorData {
-    std::array<int32_t, rtc::kBarometerCount> baro{};
+    std::array<int32_t, kHandBaroChannelsCapacity> baro{};
     std::array<int32_t, 3> tof{};
     std::array<float, 3> force{};
     std::array<float, 3> displacement{};
@@ -310,7 +309,7 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── Trajectory (position mode phases) ───────────────────────────────────
   trajectory::JointSpaceTrajectory<kNumRobotJoints> robot_trajectory_;
-  trajectory::JointSpaceTrajectory<kNumHandMotors> hand_trajectory_;
+  trajectory::JointSpaceTrajectory<kHandMotorCount> hand_trajectory_;
   double robot_trajectory_time_{0.0};
   double hand_trajectory_time_{0.0};
 

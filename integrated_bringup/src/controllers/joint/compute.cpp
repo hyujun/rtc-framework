@@ -31,23 +31,23 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
     const int num_sensor_ch = dev1.num_sensor_channels;
-    const int num_fingertips = num_sensor_ch / rtc::kSensorValuesPerFingertip;
+    const int num_fingertips = num_sensor_ch / kHandSensorValuesPerFingertipCapacity;
     num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
     for (int f = 0; f < num_active_fingertips_; ++f) {
       auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
-      const int base = f * rtc::kSensorValuesPerFingertip;
+      const int base = f * kHandSensorValuesPerFingertipCapacity;
 
-      for (std::size_t j = 0; j < rtc::kBarometerCount; ++j) {
+      for (std::size_t j = 0; j < kHandBaroChannelsCapacity; ++j) {
         ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
       }
       for (std::size_t j = 0; j < 3; ++j) {
-        ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + rtc::kBarometerCount + j];
+        ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + kHandBaroChannelsCapacity + j];
       }
 
       ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
       if (ft.valid) {
-        const int ft_base = f * rtc::kFTValuesPerFingertip;
+        const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
         ft.contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
         for (int j = 0; j < 3; ++j) {
           ft.force[static_cast<std::size_t>(j)] =
@@ -154,11 +154,11 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     if (hand_new_target_.load(std::memory_order_acquire)) {
       std::unique_lock lock(target_mutex_, std::try_to_lock);
       if (lock.owns_lock()) {
-        trajectory::JointSpaceTrajectory<kNumHandMotors>::State start_state;
-        trajectory::JointSpaceTrajectory<kNumHandMotors>::State goal_state;
+        trajectory::JointSpaceTrajectory<kHandMotorCount>::State start_state;
+        trajectory::JointSpaceTrajectory<kHandMotorCount>::State goal_state;
 
         double max_dist = 0.0;
-        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
           start_state.positions[i] = dev1.positions[i];
           start_state.velocities[i] = 0.0;
           start_state.accelerations[i] = 0.0;
@@ -184,7 +184,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     const auto hand_traj = hand_trajectory_.compute(hand_trajectory_time_);
     hand_trajectory_time_ += dt;
 
-    for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+    for (std::size_t i = 0; i < kHandMotorCount; ++i) {
       hand_computed_.positions[i] = hand_traj.positions[i];
       hand_computed_.velocities[i] = hand_traj.velocities[i];
     }
@@ -333,7 +333,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
                                "dindex_fe=%+.3f dmid_fe=%+.3f",
                                d_thumb, d_index, d_middle);
         } else if (active_count > 0 && max_force > force_thresh) {
-          for (std::size_t i = 0; i < static_cast<std::size_t>(kNumHandMotors); ++i) {
+          for (std::size_t i = 0; i < static_cast<std::size_t>(kHandMotorCount); ++i) {
             hand_computed_.positions[i] = dev1.positions[i];
             hand_computed_.velocities[i] = 0.0;
           }

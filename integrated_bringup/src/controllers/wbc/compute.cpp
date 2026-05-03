@@ -29,25 +29,25 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   const auto& dev1 = state.devices[1];
   const int num_sensor_ch = dev1.num_sensor_channels;
   const int num_fingertips =
-      (rtc::kSensorValuesPerFingertip > 0) ? (num_sensor_ch / rtc::kSensorValuesPerFingertip) : 0;
+      (kHandSensorValuesPerFingertipCapacity > 0) ? (num_sensor_ch / kHandSensorValuesPerFingertipCapacity) : 0;
   num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
 
   for (int f = 0; f < num_active_fingertips_; ++f) {
     auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
-    const int base = f * rtc::kSensorValuesPerFingertip;
+    const int base = f * kHandSensorValuesPerFingertipCapacity;
 
-    for (std::size_t j = 0; j < rtc::kBarometerCount; ++j) {
+    for (std::size_t j = 0; j < kHandBaroChannelsCapacity; ++j) {
       ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
     }
     for (std::size_t j = 0; j < 3; ++j) {
-      ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + rtc::kBarometerCount + j];
+      ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + kHandBaroChannelsCapacity + j];
     }
 
     ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
     if (ft.valid) {
-      const int ft_base = f * rtc::kFTValuesPerFingertip;
+      const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
       ft.contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
       for (int j = 0; j < 3; ++j) {
         ft.force[static_cast<std::size_t>(j)] =
@@ -140,7 +140,7 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
   hand_trajectory_time_ += dt;
   const auto hstate =
       hand_trajectory_.compute(std::min(hand_trajectory_time_, hand_trajectory_.duration()));
-  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+  for (std::size_t i = 0; i < kHandMotorCount; ++i) {
     hand_computed_.positions[i] = hstate.positions[i];
     hand_computed_.velocities[i] = hstate.velocities[i];
   }
@@ -258,7 +258,7 @@ void DemoWbcController::ComputeFallback() noexcept {
   for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
     robot_computed_.velocities[i] = 0.0;
   }
-  for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+  for (std::size_t i = 0; i < kHandMotorCount; ++i) {
     hand_computed_.velocities[i] = 0.0;
   }
 }

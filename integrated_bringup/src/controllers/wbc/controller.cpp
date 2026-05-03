@@ -708,8 +708,8 @@ void DemoWbcController::InitializeHoldPosition(const ControllerState& state) noe
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
-      trajectory::JointSpaceTrajectory<kNumHandMotors>::State hold{};
-      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      trajectory::JointSpaceTrajectory<kHandMotorCount>::State hold{};
+      for (std::size_t i = 0; i < kHandMotorCount; ++i) {
         hold.positions[i] = dev.positions[i];
         hand_computed_.positions[i] = dev.positions[i];
         hand_computed_.velocities[i] = 0.0;

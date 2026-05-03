@@ -1,6 +1,12 @@
 #ifndef UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 #define UR5E_BRINGUP_CONTROLLERS_DEMO_JOINT_CONTROLLER_H_
 
+#include "integrated_bringup/controllers/hand_sensor_layout.hpp"
+#include "integrated_bringup/logging/device_sensor_log_pod.hpp"
+#include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -8,12 +14,6 @@
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
-#include "integrated_bringup/support/bringup_logging.hpp"
-#include "integrated_bringup/support/owned_topics.hpp"
-#include "integrated_bringup/support/virtual_tcp.hpp"
-#include "integrated_bringup/logging/device_sensor_log_pod.hpp"
-#include "integrated_bringup/logging/device_state_log_pod.hpp"
-#include "udp_hand_driver/udp_hand_constants.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
 
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
@@ -41,7 +41,6 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::GoalType;
 using rtc::kMaxDeviceChannels;
-using udp_hand_driver::kNumHandMotors;
 using rtc::kNumRobotJoints;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
@@ -125,7 +124,7 @@ class DemoJointController final : public RTControllerInterface {
  private:
   // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
   struct FingertipSensorData {
-    std::array<int32_t, rtc::kBarometerCount> baro{};
+    std::array<int32_t, kHandBaroChannelsCapacity> baro{};
     std::array<int32_t, 3> tof{};
     std::array<float, 3> force{};
     std::array<float, 3> displacement{};
@@ -191,7 +190,7 @@ class DemoJointController final : public RTControllerInterface {
   std::atomic<bool> robot_new_target_{false};
   std::atomic<bool> hand_new_target_{false};
   trajectory::JointSpaceTrajectory<kNumRobotJoints> robot_trajectory_;
-  trajectory::JointSpaceTrajectory<kNumHandMotors> hand_trajectory_;
+  trajectory::JointSpaceTrajectory<kHandMotorCount> hand_trajectory_;
   double robot_trajectory_time_{0.0};
   double hand_trajectory_time_{0.0};
 

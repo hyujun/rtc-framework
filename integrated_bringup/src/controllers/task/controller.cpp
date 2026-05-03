@@ -292,8 +292,8 @@ void DemoTaskController::InitializeHoldPosition(const ControllerState& state) no
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
-      trajectory::JointSpaceTrajectory<kNumHandMotors>::State hold_state;
-      for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+      trajectory::JointSpaceTrajectory<kHandMotorCount>::State hold_state;
+      for (std::size_t i = 0; i < kHandMotorCount; ++i) {
         hold_state.positions[i] = dev.positions[i];
         hold_state.velocities[i] = 0.0;
         hold_state.accelerations[i] = 0.0;

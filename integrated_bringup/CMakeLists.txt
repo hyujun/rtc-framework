@@ -45,7 +45,6 @@ find_package(rtc_controller_manager REQUIRED)
 find_package(rtc_tsid REQUIRED)
 find_package(rtc_mpc REQUIRED)
 find_package(robot_descriptions REQUIRED)
-find_package(udp_hand_driver REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
@@ -87,7 +86,6 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_tsid
   rtc_mpc
   robot_descriptions
-  udp_hand_driver
 )
 
 target_link_libraries(${PROJECT_NAME}_demo_controllers

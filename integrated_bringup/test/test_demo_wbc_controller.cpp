@@ -14,10 +14,12 @@
 
 namespace {
 
+using integrated_bringup::DemoWbcController;
+using integrated_bringup::kHandInferenceValuesPerFingertipCapacity;
+using integrated_bringup::kHandSensorValuesPerFingertipCapacity;
+using integrated_bringup::WbcPhase;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
-using integrated_bringup::DemoWbcController;
-using integrated_bringup::WbcPhase;
 
 // ── Helper: build a minimal ControllerState ──────────────────────────────────
 ControllerState MakeState(double dt = 0.002) {
@@ -194,10 +196,10 @@ TEST_F(WbcFSMTest, WbcStateAggregatesContactFromFingertipForce) {
   // First need to extend the helper; use direct injection here.
   auto& dev1 = state_.devices[1];
   dev1.valid = true;
-  dev1.num_sensor_channels = 2 * rtc::kSensorValuesPerFingertip;
+  dev1.num_sensor_channels = 2 * kHandSensorValuesPerFingertipCapacity;
   for (int f = 0; f < 2; ++f) {
     dev1.inference_enable[static_cast<std::size_t>(f)] = true;
-    const int ft_base = f * rtc::kFTValuesPerFingertip;
+    const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
     dev1.inference_data[static_cast<std::size_t>(ft_base)] = 1.0f;      // contact
     dev1.inference_data[static_cast<std::size_t>(ft_base + 1)] = 0.0f;  // Fx
     dev1.inference_data[static_cast<std::size_t>(ft_base + 2)] = 0.0f;  // Fy
@@ -256,10 +258,10 @@ static void InjectFingertipForce(ControllerState& s, int f, float fx, float fy, 
   dev1.valid = true;
   // Ensure enough sensor channels for f+1 fingertips so parser reports it
   dev1.num_sensor_channels =
-      std::max<int>(dev1.num_sensor_channels, (f + 1) * rtc::kSensorValuesPerFingertip);
+      std::max<int>(dev1.num_sensor_channels, (f + 1) * kHandSensorValuesPerFingertipCapacity);
   dev1.inference_enable[static_cast<std::size_t>(f)] = true;
 
-  const int ft_base = f * rtc::kFTValuesPerFingertip;
+  const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
   dev1.inference_data[static_cast<std::size_t>(ft_base)] = contact;
   dev1.inference_data[static_cast<std::size_t>(ft_base + 1)] = fx;
   dev1.inference_data[static_cast<std::size_t>(ft_base + 2)] = fy;
@@ -376,7 +378,7 @@ TEST_F(WbcFSMTest, ReleaseReturnsToIdleOnTrajectoryComplete) {
 
 TEST_F(WbcFSMTest, ReadStateHandlesDisabledFingertip) {
   // inference_enable=false for fingertip 0
-  state_.devices[1].num_sensor_channels = 1 * rtc::kSensorValuesPerFingertip;
+  state_.devices[1].num_sensor_channels = 1 * kHandSensorValuesPerFingertipCapacity;
   state_.devices[1].inference_enable[0] = false;
   (void)ctrl_.Compute(state_);
 
@@ -390,10 +392,10 @@ static void InjectFingertipDisplacement(ControllerState& s, int f, float dx, flo
   auto& dev1 = s.devices[1];
   dev1.valid = true;
   dev1.num_sensor_channels =
-      std::max<int>(dev1.num_sensor_channels, (f + 1) * rtc::kSensorValuesPerFingertip);
+      std::max<int>(dev1.num_sensor_channels, (f + 1) * kHandSensorValuesPerFingertipCapacity);
   dev1.inference_enable[static_cast<std::size_t>(f)] = true;
 
-  const int ft_base = f * rtc::kFTValuesPerFingertip;
+  const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
   dev1.inference_data[static_cast<std::size_t>(ft_base + 4)] = dx;
   dev1.inference_data[static_cast<std::size_t>(ft_base + 5)] = dy;
   dev1.inference_data[static_cast<std::size_t>(ft_base + 6)] = dz;
@@ -505,11 +507,11 @@ TEST_F(WbcFSMTest, GetFingertipReportOutOfBoundsReturnsDefault) {
 
 TEST_F(WbcFSMTest, NumActiveFingertipsScalesWithSensorChannels) {
   // 3 fingertips' worth of channels
-  state_.devices[1].num_sensor_channels = 3 * rtc::kSensorValuesPerFingertip;
+  state_.devices[1].num_sensor_channels = 3 * kHandSensorValuesPerFingertipCapacity;
   (void)ctrl_.Compute(state_);
   EXPECT_EQ(ctrl_.GetNumActiveFingertipsForTesting(), 3);
   // Increase to 5
-  state_.devices[1].num_sensor_channels = 5 * rtc::kSensorValuesPerFingertip;
+  state_.devices[1].num_sensor_channels = 5 * kHandSensorValuesPerFingertipCapacity;
   (void)ctrl_.Compute(state_);
   EXPECT_EQ(ctrl_.GetNumActiveFingertipsForTesting(), 5);
 }

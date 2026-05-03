@@ -154,7 +154,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         robot_computed_.velocities[i] = 0.0;
       }
       if (state.num_devices > 1 && dev1.valid) {
-        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
           hand_computed_.positions[i] = dev1.positions[i];
           hand_computed_.velocities[i] = 0.0;
         }
@@ -202,10 +202,10 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
       // Hand trajectory (pre-shape)
       if (hand_new_target_.load(std::memory_order_acquire) && state.num_devices > 1 && dev1.valid) {
-        trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
-        trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
+        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hstart{};
+        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hgoal{};
         double hmax = 0.0;
-        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
           hstart.positions[i] = dev1.positions[i];
           hgoal.positions[i] = device_targets_[1][i];
           const double hd = std::abs(hgoal.positions[i] - hstart.positions[i]);
@@ -275,10 +275,10 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
         // Ramp hand joint target toward stored target (user-provided close pose)
         if (state.num_devices > 1 && dev1.valid) {
-          trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
-          trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
+          trajectory::JointSpaceTrajectory<kHandMotorCount>::State hstart{};
+          trajectory::JointSpaceTrajectory<kHandMotorCount>::State hgoal{};
           double hmax = 0.0;
-          for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+          for (std::size_t i = 0; i < kHandMotorCount; ++i) {
             hstart.positions[i] = dev1.positions[i];
             hgoal.positions[i] = device_targets_[1][i];
             const double hd = std::abs(hgoal.positions[i] - hstart.positions[i]);
@@ -325,10 +325,10 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     case WbcPhase::kRelease: {
       // Hand open: all motors → 0
       if (state.num_devices > 1 && dev1.valid) {
-        trajectory::JointSpaceTrajectory<kNumHandMotors>::State hstart{};
-        trajectory::JointSpaceTrajectory<kNumHandMotors>::State hgoal{};
+        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hstart{};
+        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hgoal{};
         double hmax = 0.0;
-        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
           hstart.positions[i] = dev1.positions[i];
           hgoal.positions[i] = 0.0;
           const double hd = std::abs(hstart.positions[i]);
@@ -362,7 +362,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         robot_computed_.velocities[i] = 0.0;
       }
       if (state.num_devices > 1 && dev1.valid) {
-        for (std::size_t i = 0; i < kNumHandMotors; ++i) {
+        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
           hand_computed_.positions[i] = dev1.positions[i];
           hand_computed_.velocities[i] = 0.0;
         }
