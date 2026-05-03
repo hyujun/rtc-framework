@@ -13,18 +13,17 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace rtc {
-namespace hand_udp_codec {
+namespace udp_hand_driver::codec {
 
 // ── Protocol constants ───────────────────────────────────────────────────
-inline constexpr std::size_t kMotorPacketBytes = hand_packets::kMotorPacketSize;              // 43
-inline constexpr std::size_t kSensorRequestBytes = hand_packets::kSensorRequestSize;          // 3
-inline constexpr std::size_t kSensorResponseBytes = hand_packets::kSensorResponseSize;        // 67
-inline constexpr std::size_t kAllMotorRequestBytes = hand_packets::kAllMotorRequestSize;      // 3
-inline constexpr std::size_t kAllMotorResponseBytes = hand_packets::kAllMotorResponseSize;    // 123
-inline constexpr std::size_t kAllSensorRequestBytes = hand_packets::kAllSensorRequestSize;    // 3
-inline constexpr std::size_t kAllSensorResponseBytes = hand_packets::kAllSensorResponseSize;  // 259
-inline constexpr std::size_t kMaxPacketBytes = hand_packets::kMaxPacketSize;                  // 259
+inline constexpr std::size_t kMotorPacketBytes = packets::kMotorPacketSize;              // 43
+inline constexpr std::size_t kSensorRequestBytes = packets::kSensorRequestSize;          // 3
+inline constexpr std::size_t kSensorResponseBytes = packets::kSensorResponseSize;        // 67
+inline constexpr std::size_t kAllMotorRequestBytes = packets::kAllMotorRequestSize;      // 3
+inline constexpr std::size_t kAllMotorResponseBytes = packets::kAllMotorResponseSize;    // 123
+inline constexpr std::size_t kAllSensorRequestBytes = packets::kAllSensorRequestSize;    // 3
+inline constexpr std::size_t kAllSensorResponseBytes = packets::kAllSensorResponseSize;  // 259
+inline constexpr std::size_t kMaxPacketBytes = packets::kMaxPacketSize;                  // 259
 
 // Legacy alias
 inline constexpr std::size_t kPacketBytes = kMotorPacketBytes;
@@ -33,63 +32,63 @@ inline constexpr std::size_t kPacketBytes = kMotorPacketBytes;
 
 // Encode a motor read-request packet (43 bytes).
 // Legacy: sends full MotorPacket with zero data. Prefer EncodeMotorReadRequest() (3 bytes).
-inline void EncodeReadRequest(hand_packets::Command cmd,
+inline void EncodeReadRequest(packets::Command cmd,
                               std::array<uint8_t, kMotorPacketBytes>& out) noexcept {
-  auto pkt = hand_packets::MakeReadRequest(cmd);
-  hand_packets::SerializePacket(pkt, out);
+  auto pkt = packets::MakeReadRequest(cmd);
+  packets::SerializePacket(pkt, out);
 }
 
 // Encode a motor read-request packet (3 bytes, header only).
 // Read position/velocity requests only need the header — no data payload required.
 // joint_mode selects motor (0x00) or joint (0x01) data from firmware.
 inline void EncodeMotorReadRequest(
-    hand_packets::Command cmd, std::array<uint8_t, kSensorRequestBytes>& out,
-    hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
-  auto pkt = hand_packets::MakeMotorReadRequest(cmd, joint_mode);
-  hand_packets::SerializeSensorRequest(pkt, out);
+    packets::Command cmd, std::array<uint8_t, kSensorRequestBytes>& out,
+    packets::JointMode joint_mode = packets::JointMode::kMotor) noexcept {
+  auto pkt = packets::MakeMotorReadRequest(cmd, joint_mode);
+  packets::SerializeSensorRequest(pkt, out);
 }
 
 // Encode a sensor read-request packet (3 bytes, header only).
 // MODE field carries the desired sensor mode (kRaw=0 or kNn=1, default kRaw).
 inline void EncodeSensorReadRequest(
-    hand_packets::Command cmd, std::array<uint8_t, kSensorRequestBytes>& out,
-    hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
-  auto pkt = hand_packets::MakeSensorReadRequest(cmd, sensor_mode);
-  hand_packets::SerializeSensorRequest(pkt, out);
+    packets::Command cmd, std::array<uint8_t, kSensorRequestBytes>& out,
+    packets::SensorMode sensor_mode = packets::SensorMode::kRaw) noexcept {
+  auto pkt = packets::MakeSensorReadRequest(cmd, sensor_mode);
+  packets::SerializeSensorRequest(pkt, out);
 }
 
 // Encode a set-sensor-mode request packet (3 bytes).
 // CMD=0x04, MODE field = desired SensorMode. Sensor init before reading data.
-inline void EncodeSetSensorMode(hand_packets::SensorMode sensor_mode,
+inline void EncodeSetSensorMode(packets::SensorMode sensor_mode,
                                 std::array<uint8_t, kSensorRequestBytes>& out) noexcept {
-  auto pkt = hand_packets::MakeSetSensorMode(sensor_mode);
-  hand_packets::SerializeSensorRequest(pkt, out);
+  auto pkt = packets::MakeSetSensorMode(sensor_mode);
+  packets::SerializeSensorRequest(pkt, out);
 }
 
 // Encode a bulk motor read-request packet (3 bytes, cmd=0x10).
 // joint_mode selects motor (0x00) or joint (0x01) data from firmware.
 inline void EncodeReadAllMotorsRequest(
     std::array<uint8_t, kAllMotorRequestBytes>& out,
-    hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
-  auto pkt = hand_packets::MakeReadAllMotorsRequest(joint_mode);
-  hand_packets::SerializeSensorRequest(pkt, out);
+    packets::JointMode joint_mode = packets::JointMode::kMotor) noexcept {
+  auto pkt = packets::MakeReadAllMotorsRequest(joint_mode);
+  packets::SerializeSensorRequest(pkt, out);
 }
 
 // Encode a bulk sensor read-request packet (3 bytes, cmd=0x19).
 inline void EncodeReadAllSensorsRequest(
     std::array<uint8_t, kAllSensorRequestBytes>& out,
-    hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
-  auto pkt = hand_packets::MakeReadAllSensorsRequest(sensor_mode);
-  hand_packets::SerializeSensorRequest(pkt, out);
+    packets::SensorMode sensor_mode = packets::SensorMode::kRaw) noexcept {
+  auto pkt = packets::MakeReadAllSensorsRequest(sensor_mode);
+  packets::SerializeSensorRequest(pkt, out);
 }
 
 // Encode a write-position packet (43 bytes).
 // joint_mode selects motor (0x00, default) or joint (0x01) position interpretation.
 inline void EncodeWritePosition(
     const std::array<float, kNumHandMotors>& positions, std::array<uint8_t, kMotorPacketBytes>& out,
-    hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
-  auto pkt = hand_packets::MakeWritePosition(positions, joint_mode);
-  hand_packets::SerializePacket(pkt, out);
+    packets::JointMode joint_mode = packets::JointMode::kMotor) noexcept {
+  auto pkt = packets::MakeWritePosition(positions, joint_mode);
+  packets::SerializePacket(pkt, out);
 }
 
 // ── Decode responses ─────────────────────────────────────────────────────
@@ -97,13 +96,13 @@ inline void EncodeWritePosition(
 // Decode a motor response packet (43 bytes), extracting 10 float values.
 [[nodiscard]] inline bool DecodeMotorResponse(
     const uint8_t* buf, std::size_t len, uint8_t& cmd_out, uint8_t& mode_out,
-    std::array<float, hand_packets::kMotorDataCount>& data_out) noexcept {
-  hand_packets::MotorPacket pkt{};
-  if (!hand_packets::DecodeMotorPacket(buf, len, pkt))
+    std::array<float, packets::kMotorDataCount>& data_out) noexcept {
+  packets::MotorPacket pkt{};
+  if (!packets::DecodeMotorPacket(buf, len, pkt))
     return false;
   cmd_out = pkt.cmd;
   mode_out = pkt.mode;
-  hand_packets::ExtractMotorFloats(pkt, data_out);
+  packets::ExtractMotorFloats(pkt, data_out);
   return true;
 }
 
@@ -111,13 +110,13 @@ inline void EncodeWritePosition(
 // (barometer[8] + tof[3], skipping reserved[5]).
 [[nodiscard]] inline bool DecodeSensorResponse(
     const uint8_t* buf, std::size_t len, uint8_t& cmd_out, uint8_t& mode_out,
-    std::array<float, kSensorValuesPerFingertip>& data_out) noexcept {
-  hand_packets::SensorResponsePacket pkt{};
-  if (!hand_packets::DecodeSensorResponse(buf, len, pkt))
+    std::array<float, rtc::kSensorValuesPerFingertip>& data_out) noexcept {
+  packets::SensorResponsePacket pkt{};
+  if (!packets::DecodeSensorResponse(buf, len, pkt))
     return false;
   cmd_out = pkt.cmd;
   mode_out = pkt.mode;
-  hand_packets::ExtractSensorValues(pkt, data_out);
+  packets::ExtractSensorValues(pkt, data_out);
   return true;
 }
 
@@ -125,13 +124,13 @@ inline void EncodeWritePosition(
 // (barometer[8] + tof[3], skipping reserved[5]). No float conversion.
 [[nodiscard]] inline bool DecodeSensorResponseRaw(
     const uint8_t* buf, std::size_t len, uint8_t& cmd_out, uint8_t& mode_out,
-    std::array<int32_t, kSensorValuesPerFingertip>& data_out) noexcept {
-  hand_packets::SensorResponsePacket pkt{};
-  if (!hand_packets::DecodeSensorResponse(buf, len, pkt))
+    std::array<int32_t, rtc::kSensorValuesPerFingertip>& data_out) noexcept {
+  packets::SensorResponsePacket pkt{};
+  if (!packets::DecodeSensorResponse(buf, len, pkt))
     return false;
   cmd_out = pkt.cmd;
   mode_out = pkt.mode;
-  hand_packets::ExtractSensorValuesRaw(pkt, data_out);
+  packets::ExtractSensorValuesRaw(pkt, data_out);
   return true;
 }
 
@@ -139,15 +138,15 @@ inline void EncodeWritePosition(
 // Data layout: grouped [pos0..9, vel0..9, cur0..9].
 [[nodiscard]] inline bool DecodeAllMotorResponse(
     const uint8_t* buf, std::size_t len, uint8_t& cmd_out, uint8_t& mode_out,
-    std::array<float, hand_packets::kMotorDataCount>& positions,
-    std::array<float, hand_packets::kMotorDataCount>& velocities,
-    std::array<float, hand_packets::kMotorDataCount>& currents) noexcept {
-  hand_packets::AllMotorResponsePacket pkt{};
-  if (!hand_packets::DecodeAllMotorResponse(buf, len, pkt))
+    std::array<float, packets::kMotorDataCount>& positions,
+    std::array<float, packets::kMotorDataCount>& velocities,
+    std::array<float, packets::kMotorDataCount>& currents) noexcept {
+  packets::AllMotorResponsePacket pkt{};
+  if (!packets::DecodeAllMotorResponse(buf, len, pkt))
     return false;
   cmd_out = pkt.cmd;
   mode_out = pkt.mode;
-  hand_packets::ExtractAllMotorFloats(pkt, positions, velocities, currents);
+  packets::ExtractAllMotorFloats(pkt, positions, velocities, currents);
   return true;
 }
 
@@ -156,24 +155,23 @@ inline void EncodeWritePosition(
 [[nodiscard]] inline bool DecodeAllSensorResponseRaw(const uint8_t* buf, std::size_t len,
                                                      uint8_t& cmd_out, uint8_t& mode_out,
                                                      int32_t* out, int num_fingertips) noexcept {
-  hand_packets::AllSensorResponsePacket pkt{};
-  if (!hand_packets::DecodeAllSensorResponse(buf, len, pkt))
+  packets::AllSensorResponsePacket pkt{};
+  if (!packets::DecodeAllSensorResponse(buf, len, pkt))
     return false;
   cmd_out = pkt.cmd;
   mode_out = pkt.mode;
-  hand_packets::ExtractAllSensorValuesRaw(pkt, out, num_fingertips);
+  packets::ExtractAllSensorValuesRaw(pkt, out, num_fingertips);
   return true;
 }
 
 // Legacy: Decode a motor response (without mode output).
 [[nodiscard]] inline bool DecodeResponse(
     const uint8_t* buf, std::size_t len, uint8_t& cmd_out,
-    std::array<float, hand_packets::kMotorDataCount>& data_out) noexcept {
+    std::array<float, packets::kMotorDataCount>& data_out) noexcept {
   uint8_t mode_unused;
   return DecodeMotorResponse(buf, len, cmd_out, mode_unused, data_out);
 }
 
-}  // namespace hand_udp_codec
-}  // namespace rtc
+}  // namespace udp_hand_driver::codec
 
 #endif  // UDP_HAND_DRIVER_HAND_UDP_CODEC_HPP_

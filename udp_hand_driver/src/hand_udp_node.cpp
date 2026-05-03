@@ -35,7 +35,6 @@
 #include <system_error>
 
 using namespace std::chrono_literals;
-namespace urtc = rtc;
 
 // Unified hand UDP node using request-response protocol.
 //
@@ -113,7 +112,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
     declare_parameter("ft_inferencer.enabled", false);
     declare_parameter("ft_inferencer.num_fingertips", 4);
-    declare_parameter("ft_inferencer.history_length", urtc::kFTHistoryLength);
+    declare_parameter("ft_inferencer.history_length", rtc::kFTHistoryLength);
     declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
     declare_parameter("ft_inferencer.calibration_enabled", true);
     declare_parameter("ft_inferencer.calibration_samples", 500);
@@ -126,15 +125,15 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     const int target_port = static_cast<int>(get_parameter("target_port").as_int());
     const double recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
     const std::string comm_mode_str = get_parameter("communication_mode").as_string();
-    const auto comm_mode = (comm_mode_str == "bulk") ? urtc::HandCommunicationMode::kBulk
-                                                     : urtc::HandCommunicationMode::kIndividual;
+    const auto comm_mode = (comm_mode_str == "bulk") ? udp_hand_driver::HandCommunicationMode::kBulk
+                                                     : udp_hand_driver::HandCommunicationMode::kIndividual;
 
     const bool baro_lpf_enabled = get_parameter("baro_lpf_enabled").as_bool();
     const double baro_lpf_cutoff_hz = get_parameter("baro_lpf_cutoff_hz").as_double();
     const bool tof_lpf_enabled = get_parameter("tof_lpf_enabled").as_bool();
     const double tof_lpf_cutoff_hz = get_parameter("tof_lpf_cutoff_hz").as_double();
 
-    urtc::FingertipFTInferencer::Config ft_config;
+    udp_hand_driver::FingertipFTInferencer::Config ft_config;
     ft_config.enabled = get_parameter("ft_inferencer.enabled").as_bool();
     ft_config.num_fingertips =
         static_cast<int>(get_parameter("ft_inferencer.num_fingertips").as_int());
@@ -162,7 +161,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
           get_parameter("ft_inferencer." +
                         std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_max")
               .as_double_array();
-      for (int b = 0; b < urtc::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
+      for (int b = 0; b < rtc::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
         ft_config.input_max[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
             static_cast<float>(max_vec[static_cast<std::size_t>(b)]);
       }
@@ -174,10 +173,10 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
     // ── HandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
-    num_fingertips_ = urtc::kDefaultNumFingertips;
+    num_fingertips_ = rtc::kDefaultNumFingertips;
     use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
-    controller_ = std::make_unique<urtc::HandController>(
-        target_ip, target_port, urtc::kUdpRecvConfig, recv_timeout_ms,
+    controller_ = std::make_unique<udp_hand_driver::HandController>(
+        target_ip, target_port, rtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1, num_fingertips_, use_fake_hand_, ft_names,
         comm_mode, tof_lpf_enabled, tof_lpf_cutoff_hz, baro_lpf_enabled, baro_lpf_cutoff_hz,
         ft_config, drift_enabled, drift_threshold, drift_window_size);
@@ -228,17 +227,17 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     // ── Hand joint/motor/fingertip names ────────────────────────────────
     auto joint_names = get_parameter("joint_state_names").as_string_array();
     if (joint_names.empty()) {
-      joint_names = urtc::kDefaultHandMotorNames;
+      joint_names = udp_hand_driver::kDefaultHandMotorNames;
     }
     joint_names_ = joint_names;
     auto motor_names = get_parameter("motor_state_names").as_string_array();
     if (motor_names.empty()) {
-      motor_names = urtc::kDefaultHandMotorNames;
+      motor_names = udp_hand_driver::kDefaultHandMotorNames;
     }
     motor_names_ = motor_names;
     auto fingertip_names = get_parameter("hand_fingertip_names").as_string_array();
     if (fingertip_names.empty()) {
-      fingertip_names = urtc::kDefaultFingertipNames;
+      fingertip_names = udp_hand_driver::kDefaultFingertipNames;
     }
     fingertip_names_ = fingertip_names;
 
@@ -251,7 +250,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
     // ── EventLoop callback ─────────────────────────────────────────────
     controller_->SetCallback(
-        [this](const urtc::HandState& state, const urtc::FingertipFTState& ft_state) {
+        [this](const udp_hand_driver::HandState& state, const rtc::FingertipFTState& ft_state) {
           PublishFromEventLoop(state, ft_state);
         });
 
@@ -264,14 +263,14 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
           if (!controller_->IsRunning()) {
             return;
           }
-          if (msg->values.size() < static_cast<std::size_t>(urtc::kNumHandMotors)) {
+          if (msg->values.size() < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors)) {
             RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                         "JointCommand values size %zu (expected %d)", msg->values.size(),
-                        urtc::kNumHandMotors);
+                        udp_hand_driver::kNumHandMotors);
             return;
           }
-          std::array<float, urtc::kNumHandMotors> cmd;
-          for (std::size_t i = 0; i < static_cast<std::size_t>(urtc::kNumHandMotors); ++i) {
+          std::array<float, udp_hand_driver::kNumHandMotors> cmd;
+          for (std::size_t i = 0; i < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors); ++i) {
             cmd[i] = static_cast<float>(msg->values[i]);
           }
           if (use_fake_hand_) {
@@ -360,7 +359,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
         fake_tick_timer_ = create_wall_timer(period, [this]() {
           if (!controller_ || !controller_->IsRunning())
             return;
-          std::array<float, urtc::kNumHandMotors> cmd;
+          std::array<float, udp_hand_driver::kNumHandMotors> cmd;
           {
             std::lock_guard lock(last_cmd_mutex_);
             cmd = last_cmd_;
@@ -381,7 +380,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     // Failure Detector (skipped in fake mode)
     const bool enable_fd = get_parameter("enable_failure_detector").as_bool() && !use_fake_hand_;
     if (enable_fd) {
-      urtc::HandFailureDetector::Config fd_cfg;
+      udp_hand_driver::HandFailureDetector::Config fd_cfg;
       fd_cfg.failure_threshold = static_cast<int>(get_parameter("failure_threshold").as_int());
       fd_cfg.check_motor = get_parameter("check_motor").as_bool();
       fd_cfg.check_sensor = get_parameter("check_sensor").as_bool();
@@ -390,9 +389,9 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
       fd_cfg.check_link = get_parameter("check_link").as_bool();
       fd_cfg.link_fail_threshold = static_cast<int>(get_parameter("link_fail_threshold").as_int());
 
-      const auto cfgs = urtc::SelectThreadConfigs();
+      const auto cfgs = rtc::SelectThreadConfigs();
       failure_detector_ =
-          std::make_unique<urtc::HandFailureDetector>(*controller_, fd_cfg, cfgs.logging);
+          std::make_unique<udp_hand_driver::HandFailureDetector>(*controller_, fd_cfg, cfgs.logging);
       failure_detector_->SetFailureCallback([this](const std::string& reason) {
         RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Hand failure detected: %s",
                      reason.c_str());
@@ -426,7 +425,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     if (!controller_)
       return;
     hand_udp_timing_producer_.Drain(
-        [this](const urtc::RtTickTimingSample& s) { hand_udp_timing_logger_.Log(s); });
+        [this](const rtc::RtTickTimingSample& s) { hand_udp_timing_logger_.Log(s); });
     const std::uint64_t drops = hand_udp_timing_producer_.DropCount();
     if (drops > hand_udp_timing_drop_baseline_) {
       const std::uint64_t delta = drops - hand_udp_timing_drop_baseline_;
@@ -531,14 +530,14 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
   // This avoids dynamic allocation on the EventLoop publish path.
   void PreallocateMessages() {
     joint_js_msg_.name = joint_names_;
-    joint_js_msg_.position.resize(urtc::kNumHandMotors);
-    joint_js_msg_.velocity.resize(urtc::kNumHandMotors);
-    joint_js_msg_.effort.resize(urtc::kNumHandMotors);
+    joint_js_msg_.position.resize(udp_hand_driver::kNumHandMotors);
+    joint_js_msg_.velocity.resize(udp_hand_driver::kNumHandMotors);
+    joint_js_msg_.effort.resize(udp_hand_driver::kNumHandMotors);
 
     motor_js_msg_.name = motor_names_;
-    motor_js_msg_.position.resize(urtc::kNumHandMotors);
-    motor_js_msg_.velocity.resize(urtc::kNumHandMotors);
-    motor_js_msg_.effort.resize(urtc::kNumHandMotors);
+    motor_js_msg_.position.resize(udp_hand_driver::kNumHandMotors);
+    motor_js_msg_.velocity.resize(udp_hand_driver::kNumHandMotors);
+    motor_js_msg_.effort.resize(udp_hand_driver::kNumHandMotors);
 
     sensor_msg_.fingertips.resize(static_cast<std::size_t>(num_fingertips_));
     for (int f = 0; f < num_fingertips_; ++f) {
@@ -551,12 +550,12 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
   // Called directly from EventLoop thread — publishes state at EventLoop rate.
   // Uses pre-allocated messages to avoid dynamic allocation.
-  void PublishFromEventLoop(const urtc::HandState& state, const urtc::FingertipFTState& ft_state) {
+  void PublishFromEventLoop(const udp_hand_driver::HandState& state, const rtc::FingertipFTState& ft_state) {
     const auto stamp = this->now();
 
     if (state.joint_valid) {
       joint_js_msg_.header.stamp = stamp;
-      for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+      for (int i = 0; i < udp_hand_driver::kNumHandMotors; ++i) {
         const auto iu = static_cast<std::size_t>(i);
         joint_js_msg_.position[iu] = static_cast<double>(state.joint_positions[iu]);
         joint_js_msg_.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
@@ -567,7 +566,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
     if (state.motor_valid) {
       motor_js_msg_.header.stamp = stamp;
-      for (int i = 0; i < urtc::kNumHandMotors; ++i) {
+      for (int i = 0; i < udp_hand_driver::kNumHandMotors; ++i) {
         const auto iu = static_cast<std::size_t>(i);
         motor_js_msg_.position[iu] = static_cast<double>(state.motor_positions[iu]);
         motor_js_msg_.velocity[iu] = static_cast<double>(state.motor_velocities[iu]);
@@ -585,23 +584,23 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
            f < state.num_fingertips && f < static_cast<int>(sensor_msg_.fingertips.size()); ++f) {
         auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
 
-        const int sensor_base = f * urtc::kSensorValuesPerFingertip;
-        for (int b = 0; b < urtc::kBarometerCount; ++b) {
+        const int sensor_base = f * rtc::kSensorValuesPerFingertip;
+        for (int b = 0; b < rtc::kBarometerCount; ++b) {
           const auto bu = static_cast<std::size_t>(b);
           const auto si = static_cast<std::size_t>(sensor_base + b);
           fs.barometer[bu] = static_cast<float>(state.sensor_data[si]);
           fs.barometer_raw[bu] = static_cast<float>(state.sensor_data_raw[si]);
         }
-        for (int t = 0; t < urtc::kTofCount; ++t) {
+        for (int t = 0; t < rtc::kTofCount; ++t) {
           const auto tu = static_cast<std::size_t>(t);
-          const auto si = static_cast<std::size_t>(sensor_base + urtc::kBarometerCount + t);
+          const auto si = static_cast<std::size_t>(sensor_base + rtc::kBarometerCount + t);
           fs.tof[tu] = static_cast<float>(state.sensor_data[si]);
           fs.tof_raw[tu] = static_cast<float>(state.sensor_data_raw[si]);
         }
 
         if (ft_valid && f < ft_state.num_fingertips &&
             ft_state.per_fingertip_valid[static_cast<std::size_t>(f)]) {
-          const int ft_base = f * urtc::kFTValuesPerFingertip;
+          const int ft_base = f * rtc::kFTValuesPerFingertip;
           fs.inference_enable = true;
           fs.contact_flag = ft_state.ft_data[static_cast<std::size_t>(ft_base)];
           for (int j = 0; j < 3; ++j) {
@@ -653,7 +652,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
       return;
 
     static constexpr std::array<uint8_t, 1> kTrackedSensors = {
-        urtc::hand_calibration::kSensorBarometer,
+        udp_hand_driver::calibration::kSensorBarometer,
     };
 
     for (const auto sensor_type : kTrackedSensors) {
@@ -680,7 +679,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     const double avg_rate_hz =
         (elapsed_sec > 0.0) ? static_cast<double>(stats.total_cycles) / elapsed_sec : 0.0;
 
-    const std::filesystem::path session = urtc::ResolveSessionDir();
+    const std::filesystem::path session = rtc::ResolveSessionDir();
     std::filesystem::path output_dir_path = session / "device";
     std::error_code dir_ec;
     std::filesystem::create_directories(output_dir_path, dir_ec);
@@ -696,7 +695,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
     const auto ts = controller_->timing_stats();
 
-    const bool is_bulk = (controller_->communication_mode() == urtc::HandCommunicationMode::kBulk);
+    const bool is_bulk = (controller_->communication_mode() == udp_hand_driver::HandCommunicationMode::kBulk);
     const char* mode_str = is_bulk ? "bulk" : "individual";
 
     ofs << "{\n"
@@ -785,8 +784,8 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
                 avg_rate_hz, ok_pct, timeout_pct, error_pct, fd_failed ? 1 : 0);
   }
 
-  std::unique_ptr<urtc::HandController> controller_;
-  std::unique_ptr<urtc::HandFailureDetector> failure_detector_;
+  std::unique_ptr<udp_hand_driver::HandController> controller_;
+  std::unique_ptr<udp_hand_driver::HandFailureDetector> failure_detector_;
 
   // Data publishers — LifecyclePublisher (gated by lifecycle state).
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
@@ -802,7 +801,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<std::string> joint_names_;
   std::vector<std::string> motor_names_;
   std::vector<std::string> fingertip_names_;
-  int num_fingertips_{urtc::kDefaultNumFingertips};
+  int num_fingertips_{rtc::kDefaultNumFingertips};
 
   // Link status — standalone rclcpp::Publisher (NOT LifecyclePublisher).
   // Safety-relevant: must remain publishable in any lifecycle state.
@@ -827,7 +826,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
   bool use_fake_hand_{false};
   rclcpp::TimerBase::SharedPtr fake_tick_timer_;
   std::mutex last_cmd_mutex_;
-  std::array<float, urtc::kNumHandMotors> last_cmd_{};
+  std::array<float, udp_hand_driver::kNumHandMotors> last_cmd_{};
 
   std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};
 
@@ -838,12 +837,12 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── Per-EventLoop-tick timing CSV (mpc_timing_log pattern) ─────────────
   // Producer (filled on the EventLoop thread) → 1 Hz drain on aux timer →
-  // ThreadTimingCsvLogger writes one row per tick to
+  // rtc::ThreadTimingCsvLogger writes one row per tick to
   // <session>/timing/hand_udp_timing_log.csv. Open() runs once on the first
   // on_activate and is gated by `hand_udp_timing_initialized_` so reactivation
   // does not truncate or re-write the header.
-  urtc::HandUdpTimingBuffer hand_udp_timing_producer_;
-  rtc::hand::HandUdpTimingLogger hand_udp_timing_logger_;
+  rtc::HandUdpTimingBuffer hand_udp_timing_producer_;
+  udp_hand_driver::HandUdpTimingLogger hand_udp_timing_logger_;
   rclcpp::TimerBase::SharedPtr hand_udp_timing_timer_;
   bool hand_udp_timing_initialized_{false};
   std::uint64_t hand_udp_timing_drop_baseline_{0};

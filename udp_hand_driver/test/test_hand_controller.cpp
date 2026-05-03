@@ -14,7 +14,7 @@
 #include <string>
 #include <thread>
 
-namespace rtc::test {
+namespace udp_hand_driver::test {
 
 // ── Test fixture: FakeHand HandController ───────────────────────────────────
 
@@ -23,7 +23,7 @@ class FakeHandControllerTest : public ::testing::Test {
   void SetUp() override {
     controller_ = std::make_unique<HandController>("127.0.0.1",  // target_ip (unused in fake mode)
                                                    55151,        // target_port
-                                                   kUdpRecvConfig,  // thread_cfg
+                                                   rtc::kUdpRecvConfig,  // thread_cfg
                                                    10.0,            // recv_timeout_ms
                                                    false,           // enable_write_ack (deprecated)
                                                    1,               // sensor_decimation
@@ -139,7 +139,7 @@ TEST_F(FakeHandControllerTest, Callback_Invoked) {
 
   int callback_count = 0;
   HandState last_state{};
-  controller_->SetCallback([&](const HandState& state, const FingertipFTState& /*ft*/) {
+  controller_->SetCallback([&](const HandState& state, const rtc::FingertipFTState& /*ft*/) {
     ++callback_count;
     last_state = state;
   });
@@ -158,7 +158,7 @@ TEST_F(FakeHandControllerTest, Callback_MultipleInvocations) {
 
   int callback_count = 0;
   controller_->SetCallback(
-      [&](const HandState& /*state*/, const FingertipFTState& /*ft*/) { ++callback_count; });
+      [&](const HandState& /*state*/, const rtc::FingertipFTState& /*ft*/) { ++callback_count; });
 
   std::array<float, kNumHandMotors> cmd{};
   for (int i = 0; i < 5; ++i) {
@@ -188,7 +188,7 @@ TEST_F(FakeHandControllerTest, CommunicationMode_DefaultIndividual) {
 
 TEST(HandControllerConfig, BulkMode) {
   auto ctrl =
-      std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false, 1, 4, true,
+      std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false, 1, 4, true,
                                        std::vector<std::string>{}, HandCommunicationMode::kBulk);
 
   EXPECT_EQ(ctrl->communication_mode(), HandCommunicationMode::kBulk);
@@ -264,7 +264,7 @@ TEST_F(FakeHandControllerTest, SensorInit_FakeModeNotInitialized) {
 
 TEST(HandControllerConfig, NumFingertips_ClampedToNames) {
   // If fingertip_names has fewer entries than num_fingertips, it should be clamped
-  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false, 1,
+  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false, 1,
                                                10,  // num_fingertips = 10 (but only 2 names below)
                                                true,  // fake_hand
                                                std::vector<std::string>{"thumb", "index"});
@@ -280,7 +280,7 @@ TEST(HandControllerConfig, NumFingertips_ClampedToNames) {
 }
 
 TEST(HandControllerConfig, NumFingertips_NegativeClamped) {
-  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false, 1,
+  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false, 1,
                                                -1,  // negative
                                                true);
 
@@ -311,7 +311,7 @@ TEST_F(FakeHandControllerTest, HasStateBeenRead_TrueAfterCommand) {
 
 TEST(HandControllerConfig, BulkMode_FakeEchoBack) {
   auto ctrl =
-      std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false, 1, 4, true,
+      std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false, 1, 4, true,
                                        std::vector<std::string>{}, HandCommunicationMode::kBulk);
 
   ASSERT_TRUE(ctrl->Start());
@@ -368,7 +368,7 @@ TEST_F(FakeHandControllerTest, ActualSensorRateHz_NonNegative) {
 // ── Zero fingertips mode ───────────────────────────────────────────────────
 
 TEST(HandControllerConfig, ZeroFingertips_NoSensor) {
-  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false, 1,
+  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false, 1,
                                                0,      // num_fingertips = 0
                                                true);  // fake_hand
 
@@ -388,8 +388,8 @@ TEST(HandControllerConfig, ZeroFingertips_NoSensor) {
 // ── Max fingertips clamping ────────────────────────────────────────────────
 
 TEST(HandControllerConfig, MaxFingertips_Clamped) {
-  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false, 1,
-                                               100,  // num_fingertips > kMaxFingertips
+  auto ctrl = std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false, 1,
+                                               100,  // num_fingertips > rtc::kMaxFingertips
                                                true);
 
   ASSERT_TRUE(ctrl->Start());
@@ -398,9 +398,9 @@ TEST(HandControllerConfig, MaxFingertips_Clamped) {
   ctrl->SendCommandAndRequestStates(cmd);
 
   const auto state = ctrl->GetLatestState();
-  // Clamped to kMaxFingertips (8), but further clamped by default fingertip_names (4)
-  EXPECT_LE(state.num_fingertips, kMaxFingertips);
+  // Clamped to rtc::kMaxFingertips (8), but further clamped by default fingertip_names (4)
+  EXPECT_LE(state.num_fingertips, rtc::kMaxFingertips);
   ctrl->Stop();
 }
 
-}  // namespace rtc::test
+}  // namespace udp_hand_driver::test

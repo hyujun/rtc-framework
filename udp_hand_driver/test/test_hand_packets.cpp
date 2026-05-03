@@ -12,7 +12,7 @@
 #include <cstring>
 #include <limits>
 
-namespace rtc::hand_packets::test {
+namespace udp_hand_driver::packets::test {
 
 // ── Protocol constants ──────────────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ TEST(HandPacketsConstants, PacketSizes) {
 
 TEST(HandPacketsConstants, DataCounts) {
   EXPECT_EQ(kMotorDataCount, 10u);
-  EXPECT_EQ(kSensorResponseDataCount, static_cast<std::size_t>(kSensorDataPerPacket));
+  EXPECT_EQ(kSensorResponseDataCount, static_cast<std::size_t>(rtc::kSensorDataPerPacket));
   EXPECT_EQ(kAllMotorDataCount, 30u);   // 10 * 3
   EXPECT_EQ(kAllSensorDataCount, 64u);  // 4 * 16
 }
@@ -352,52 +352,52 @@ TEST(HandPacketsExtract, ExtractSensorValues_SkipsReserved) {
   SensorResponsePacket pkt{};
   pkt.data.fill(0);
   // barometer
-  for (int i = 0; i < kBarometerCount; ++i) {
+  for (int i = 0; i < rtc::kBarometerCount; ++i) {
     pkt.data[static_cast<std::size_t>(i)] = (i + 1) * 1000;
   }
   // reserved
-  for (int i = kBarometerCount; i < kBarometerCount + kReservedCount; ++i) {
+  for (int i = rtc::kBarometerCount; i < rtc::kBarometerCount + rtc::kReservedCount; ++i) {
     pkt.data[static_cast<std::size_t>(i)] = 99999;  // should be skipped
   }
   // tof
-  for (int i = 0; i < kTofCount; ++i) {
-    pkt.data[static_cast<std::size_t>(kBarometerCount + kReservedCount + i)] = (i + 1) * 500;
+  for (int i = 0; i < rtc::kTofCount; ++i) {
+    pkt.data[static_cast<std::size_t>(rtc::kBarometerCount + rtc::kReservedCount + i)] = (i + 1) * 500;
   }
 
-  std::array<float, kSensorValuesPerFingertip> out{};
+  std::array<float, rtc::kSensorValuesPerFingertip> out{};
   ExtractSensorValues(pkt, out);
 
   // barometer: out[0..7]
-  for (int i = 0; i < kBarometerCount; ++i) {
+  for (int i = 0; i < rtc::kBarometerCount; ++i) {
     EXPECT_FLOAT_EQ(out[static_cast<std::size_t>(i)], static_cast<float>((i + 1) * 1000));
   }
   // tof: out[8..10]
-  for (int i = 0; i < kTofCount; ++i) {
-    EXPECT_FLOAT_EQ(out[static_cast<std::size_t>(kBarometerCount + i)],
+  for (int i = 0; i < rtc::kTofCount; ++i) {
+    EXPECT_FLOAT_EQ(out[static_cast<std::size_t>(rtc::kBarometerCount + i)],
                     static_cast<float>((i + 1) * 500));
   }
 }
 
 TEST(HandPacketsExtract, ExtractSensorValuesRaw_SkipsReserved) {
   SensorResponsePacket pkt{};
-  for (int i = 0; i < kBarometerCount; ++i) {
+  for (int i = 0; i < rtc::kBarometerCount; ++i) {
     pkt.data[static_cast<std::size_t>(i)] = i + 10;
   }
-  for (int i = 0; i < kReservedCount; ++i) {
-    pkt.data[static_cast<std::size_t>(kBarometerCount + i)] = -1;
+  for (int i = 0; i < rtc::kReservedCount; ++i) {
+    pkt.data[static_cast<std::size_t>(rtc::kBarometerCount + i)] = -1;
   }
-  for (int i = 0; i < kTofCount; ++i) {
-    pkt.data[static_cast<std::size_t>(kBarometerCount + kReservedCount + i)] = i + 100;
+  for (int i = 0; i < rtc::kTofCount; ++i) {
+    pkt.data[static_cast<std::size_t>(rtc::kBarometerCount + rtc::kReservedCount + i)] = i + 100;
   }
 
-  std::array<int32_t, kSensorValuesPerFingertip> out{};
+  std::array<int32_t, rtc::kSensorValuesPerFingertip> out{};
   ExtractSensorValuesRaw(pkt, out);
 
-  for (int i = 0; i < kBarometerCount; ++i) {
+  for (int i = 0; i < rtc::kBarometerCount; ++i) {
     EXPECT_EQ(out[static_cast<std::size_t>(i)], i + 10);
   }
-  for (int i = 0; i < kTofCount; ++i) {
-    EXPECT_EQ(out[static_cast<std::size_t>(kBarometerCount + i)], i + 100);
+  for (int i = 0; i < rtc::kTofCount; ++i) {
+    EXPECT_EQ(out[static_cast<std::size_t>(rtc::kBarometerCount + i)], i + 100);
   }
 }
 
@@ -423,31 +423,31 @@ TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_MultiFingerSkipsReserved) {
   pkt.data.fill(0);
 
   // Fill 4 fingers: per finger = [baro0..7, reserved0..4, tof0..2]
-  for (int f = 0; f < kDefaultNumFingertips; ++f) {
-    const auto base = static_cast<std::size_t>(f) * kSensorDataPerPacket;
-    for (int b = 0; b < kBarometerCount; ++b) {
+  for (int f = 0; f < rtc::kDefaultNumFingertips; ++f) {
+    const auto base = static_cast<std::size_t>(f) * rtc::kSensorDataPerPacket;
+    for (int b = 0; b < rtc::kBarometerCount; ++b) {
       pkt.data[base + static_cast<std::size_t>(b)] = static_cast<int32_t>(f * 100 + b);
     }
-    for (int r = 0; r < kReservedCount; ++r) {
-      pkt.data[base + static_cast<std::size_t>(kBarometerCount + r)] = -999;
+    for (int r = 0; r < rtc::kReservedCount; ++r) {
+      pkt.data[base + static_cast<std::size_t>(rtc::kBarometerCount + r)] = -999;
     }
-    for (int t = 0; t < kTofCount; ++t) {
-      pkt.data[base + static_cast<std::size_t>(kBarometerCount + kReservedCount + t)] =
+    for (int t = 0; t < rtc::kTofCount; ++t) {
+      pkt.data[base + static_cast<std::size_t>(rtc::kBarometerCount + rtc::kReservedCount + t)] =
           static_cast<int32_t>(f * 1000 + t);
     }
   }
 
-  // Output: 4 * kSensorValuesPerFingertip = 4 * 11 = 44
+  // Output: 4 * rtc::kSensorValuesPerFingertip = 4 * 11 = 44
   std::array<int32_t, 44> out{};
-  ExtractAllSensorValuesRaw(pkt, out.data(), kDefaultNumFingertips);
+  ExtractAllSensorValuesRaw(pkt, out.data(), rtc::kDefaultNumFingertips);
 
-  for (int f = 0; f < kDefaultNumFingertips; ++f) {
-    const auto out_base = static_cast<std::size_t>(f) * kSensorValuesPerFingertip;
-    for (int b = 0; b < kBarometerCount; ++b) {
+  for (int f = 0; f < rtc::kDefaultNumFingertips; ++f) {
+    const auto out_base = static_cast<std::size_t>(f) * rtc::kSensorValuesPerFingertip;
+    for (int b = 0; b < rtc::kBarometerCount; ++b) {
       EXPECT_EQ(out[out_base + static_cast<std::size_t>(b)], f * 100 + b);
     }
-    for (int t = 0; t < kTofCount; ++t) {
-      EXPECT_EQ(out[out_base + static_cast<std::size_t>(kBarometerCount + t)], f * 1000 + t);
+    for (int t = 0; t < rtc::kTofCount; ++t) {
+      EXPECT_EQ(out[out_base + static_cast<std::size_t>(rtc::kBarometerCount + t)], f * 1000 + t);
     }
   }
 }
@@ -576,22 +576,22 @@ TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_SingleFinger) {
   pkt.data.fill(0);
 
   // Fill only finger 0
-  for (int b = 0; b < kBarometerCount; ++b) {
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     pkt.data[static_cast<std::size_t>(b)] = static_cast<int32_t>(b + 1);
   }
-  for (int t = 0; t < kTofCount; ++t) {
-    pkt.data[static_cast<std::size_t>(kBarometerCount + kReservedCount + t)] =
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    pkt.data[static_cast<std::size_t>(rtc::kBarometerCount + rtc::kReservedCount + t)] =
         static_cast<int32_t>((t + 1) * 10);
   }
 
-  std::array<int32_t, kSensorValuesPerFingertip> out{};
+  std::array<int32_t, rtc::kSensorValuesPerFingertip> out{};
   ExtractAllSensorValuesRaw(pkt, out.data(), 1);  // only 1 finger
 
-  for (int b = 0; b < kBarometerCount; ++b) {
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     EXPECT_EQ(out[static_cast<std::size_t>(b)], b + 1);
   }
-  for (int t = 0; t < kTofCount; ++t) {
-    EXPECT_EQ(out[static_cast<std::size_t>(kBarometerCount + t)], (t + 1) * 10);
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    EXPECT_EQ(out[static_cast<std::size_t>(rtc::kBarometerCount + t)], (t + 1) * 10);
   }
 }
 
@@ -606,4 +606,4 @@ TEST(HandPacketsExtract, ExtractAllSensorValuesRaw_ZeroFingertips) {
   EXPECT_EQ(out, -1);
 }
 
-}  // namespace rtc::hand_packets::test
+}  // namespace udp_hand_driver_packets::test

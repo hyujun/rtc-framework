@@ -12,7 +12,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace rtc::test {
+namespace udp_hand_driver::test {
 
 // ── Construction & Init ─────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ TEST(HandSensorProcessor, DefaultConfig_ZeroFingertips) {
   HandSensorProcessor proc(cfg);
 
   // Init with zero fingertips should be a no-op (no crash).
-  // SensorRateEstimator defaults to 500Hz nominal before Init().
+  // rtc::SensorRateEstimator defaults to 500Hz nominal before Init().
   proc.Init();
   EXPECT_GE(proc.actual_sensor_rate_hz(), 0.0);
 }
@@ -49,11 +49,11 @@ TEST(HandSensorProcessor, NoFilters_Passthrough) {
   HandSensorProcessor proc(cfg);
   proc.Init();
 
-  std::array<int32_t, kMaxHandSensors> data{};
+  std::array<int32_t, rtc::kMaxHandSensors> data{};
   // Fill finger 0 and finger 1 sensor data
   for (int f = 0; f < 2; ++f) {
-    const int base = f * kSensorValuesPerFingertip;
-    for (int i = 0; i < kSensorValuesPerFingertip; ++i) {
+    const int base = f * rtc::kSensorValuesPerFingertip;
+    for (int i = 0; i < rtc::kSensorValuesPerFingertip; ++i) {
       data[static_cast<std::size_t>(base + i)] = static_cast<int32_t>(f * 100 + i + 1);
     }
   }
@@ -85,7 +85,7 @@ class BaroLPFTest : public ::testing::Test {
 
 TEST_F(BaroLPFTest, StepInput_Smoothed) {
   // Feed constant zero for a few cycles to settle filter, then step
-  std::array<int32_t, kMaxHandSensors> data{};
+  std::array<int32_t, rtc::kMaxHandSensors> data{};
 
   // Settle with zeros
   for (int i = 0; i < 10; ++i) {
@@ -95,14 +95,14 @@ TEST_F(BaroLPFTest, StepInput_Smoothed) {
 
   // Step to 10000 on all barometer channels
   data.fill(0);
-  for (int b = 0; b < kBarometerCount; ++b) {
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     data[static_cast<std::size_t>(b)] = 10000;
   }
   proc_->ApplyFilters(data);
 
   // After one step, the filter output should be less than the step value
   // (LPF attenuates sudden changes)
-  for (int b = 0; b < kBarometerCount; ++b) {
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     EXPECT_LT(data[static_cast<std::size_t>(b)], 10000);
     EXPECT_GE(data[static_cast<std::size_t>(b)], 0);
   }
@@ -110,16 +110,16 @@ TEST_F(BaroLPFTest, StepInput_Smoothed) {
 
 TEST_F(BaroLPFTest, TofUnchanged) {
   // ToF filter is disabled — ToF values should pass through
-  std::array<int32_t, kMaxHandSensors> data{};
-  for (int t = 0; t < kTofCount; ++t) {
-    data[static_cast<std::size_t>(kBarometerCount + t)] = 5000;
+  std::array<int32_t, rtc::kMaxHandSensors> data{};
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    data[static_cast<std::size_t>(rtc::kBarometerCount + t)] = 5000;
   }
 
   proc_->ApplyFilters(data);
 
   // ToF values should remain unchanged (no ToF filter)
-  for (int t = 0; t < kTofCount; ++t) {
-    EXPECT_EQ(data[static_cast<std::size_t>(kBarometerCount + t)], 5000);
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    EXPECT_EQ(data[static_cast<std::size_t>(rtc::kBarometerCount + t)], 5000);
   }
 }
 
@@ -135,7 +135,7 @@ TEST(HandSensorProcessor, TofLPF_StepInput_Smoothed) {
   HandSensorProcessor proc(cfg);
   proc.Init();
 
-  std::array<int32_t, kMaxHandSensors> data{};
+  std::array<int32_t, rtc::kMaxHandSensors> data{};
 
   // Settle
   for (int i = 0; i < 10; ++i) {
@@ -145,14 +145,14 @@ TEST(HandSensorProcessor, TofLPF_StepInput_Smoothed) {
 
   // Step on ToF channels
   data.fill(0);
-  for (int t = 0; t < kTofCount; ++t) {
-    data[static_cast<std::size_t>(kBarometerCount + t)] = 8000;
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    data[static_cast<std::size_t>(rtc::kBarometerCount + t)] = 8000;
   }
   proc.ApplyFilters(data);
 
-  for (int t = 0; t < kTofCount; ++t) {
-    EXPECT_LT(data[static_cast<std::size_t>(kBarometerCount + t)], 8000);
-    EXPECT_GE(data[static_cast<std::size_t>(kBarometerCount + t)], 0);
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    EXPECT_LT(data[static_cast<std::size_t>(rtc::kBarometerCount + t)], 8000);
+    EXPECT_GE(data[static_cast<std::size_t>(rtc::kBarometerCount + t)], 0);
   }
 }
 
@@ -169,7 +169,7 @@ TEST(HandSensorProcessor, BothFilters_Applied) {
   HandSensorProcessor proc(cfg);
   proc.Init();
 
-  std::array<int32_t, kMaxHandSensors> data{};
+  std::array<int32_t, rtc::kMaxHandSensors> data{};
 
   // Settle
   for (int i = 0; i < 10; ++i) {
@@ -178,20 +178,20 @@ TEST(HandSensorProcessor, BothFilters_Applied) {
   }
 
   // Step both
-  for (int b = 0; b < kBarometerCount; ++b) {
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     data[static_cast<std::size_t>(b)] = 10000;
   }
-  for (int t = 0; t < kTofCount; ++t) {
-    data[static_cast<std::size_t>(kBarometerCount + t)] = 8000;
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    data[static_cast<std::size_t>(rtc::kBarometerCount + t)] = 8000;
   }
   proc.ApplyFilters(data);
 
   // Both should be attenuated
-  for (int b = 0; b < kBarometerCount; ++b) {
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     EXPECT_LT(data[static_cast<std::size_t>(b)], 10000);
   }
-  for (int t = 0; t < kTofCount; ++t) {
-    EXPECT_LT(data[static_cast<std::size_t>(kBarometerCount + t)], 8000);
+  for (int t = 0; t < rtc::kTofCount; ++t) {
+    EXPECT_LT(data[static_cast<std::size_t>(rtc::kBarometerCount + t)], 8000);
   }
 }
 
@@ -207,7 +207,7 @@ TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
   HandSensorProcessor proc(cfg);
   proc.Init();
 
-  std::array<int32_t, kMaxHandSensors> data{};
+  std::array<int32_t, rtc::kMaxHandSensors> data{};
 
   // Settle
   for (int i = 0; i < 10; ++i) {
@@ -217,8 +217,8 @@ TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
 
   // Set different values per finger
   for (int f = 0; f < 4; ++f) {
-    const int base = f * kSensorValuesPerFingertip;
-    for (int b = 0; b < kBarometerCount; ++b) {
+    const int base = f * rtc::kSensorValuesPerFingertip;
+    for (int b = 0; b < rtc::kBarometerCount; ++b) {
       data[static_cast<std::size_t>(base + b)] = static_cast<int32_t>((f + 1) * 1000);
     }
   }
@@ -227,9 +227,9 @@ TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
 
   // Each finger should have attenuated values, and finger ordering preserved
   for (int f = 0; f < 4; ++f) {
-    const int base = f * kSensorValuesPerFingertip;
+    const int base = f * rtc::kSensorValuesPerFingertip;
     const int step_val = (f + 1) * 1000;
-    for (int b = 0; b < kBarometerCount; ++b) {
+    for (int b = 0; b < rtc::kBarometerCount; ++b) {
       const auto idx = static_cast<std::size_t>(base + b);
       EXPECT_LT(data[idx], step_val);
       EXPECT_GE(data[idx], 0);
@@ -238,8 +238,8 @@ TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
 
   // Larger step → larger (or equal) filtered value per finger
   for (int f = 1; f < 4; ++f) {
-    const auto idx_prev = static_cast<std::size_t>((f - 1) * kSensorValuesPerFingertip);
-    const auto idx_curr = static_cast<std::size_t>(f * kSensorValuesPerFingertip);
+    const auto idx_prev = static_cast<std::size_t>((f - 1) * rtc::kSensorValuesPerFingertip);
+    const auto idx_curr = static_cast<std::size_t>(f * rtc::kSensorValuesPerFingertip);
     EXPECT_GE(data[idx_curr], data[idx_prev]);
   }
 }
@@ -255,20 +255,20 @@ TEST(HandSensorProcessor, BaroLPF_ConvergesToSteadyState) {
   HandSensorProcessor proc(cfg);
   proc.Init();
 
-  std::array<int32_t, kMaxHandSensors> data{};
+  std::array<int32_t, rtc::kMaxHandSensors> data{};
   constexpr int32_t kTarget = 5000;
 
   // Feed constant value for many cycles
   for (int i = 0; i < 500; ++i) {
     data.fill(0);
-    for (int b = 0; b < kBarometerCount; ++b) {
+    for (int b = 0; b < rtc::kBarometerCount; ++b) {
       data[static_cast<std::size_t>(b)] = kTarget;
     }
     proc.ApplyFilters(data);
   }
 
   // After convergence, output should be very close to target
-  for (int b = 0; b < kBarometerCount; ++b) {
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     EXPECT_NEAR(data[static_cast<std::size_t>(b)], kTarget, 10);
   }
 }
@@ -282,10 +282,10 @@ TEST(HandSensorProcessor, DetectDrift_Disabled_NoOp) {
   HandSensorProcessor proc(cfg);
   proc.Init();
 
-  std::array<int32_t, kMaxHandSensors> raw{};
+  std::array<int32_t, rtc::kMaxHandSensors> raw{};
   // Should not crash even with drift-like data
   for (int i = 0; i < 100; ++i) {
-    for (int b = 0; b < kBarometerCount; ++b) {
+    for (int b = 0; b < rtc::kBarometerCount; ++b) {
       raw[static_cast<std::size_t>(b)] = i * 100;  // linear ramp
     }
     proc.DetectDrift(raw);
@@ -301,8 +301,8 @@ TEST(HandSensorProcessor, DetectDrift_ConstantData_NoDrift) {
   HandSensorProcessor proc(cfg);
   proc.Init();
 
-  std::array<int32_t, kMaxHandSensors> raw{};
-  for (int b = 0; b < kBarometerCount; ++b) {
+  std::array<int32_t, rtc::kMaxHandSensors> raw{};
+  for (int b = 0; b < rtc::kBarometerCount; ++b) {
     raw[static_cast<std::size_t>(b)] = 1000;  // constant
   }
 
@@ -319,7 +319,7 @@ TEST(HandSensorProcessor, ActualSensorRateHz_DefaultNominal) {
   cfg.num_fingertips = 1;
   HandSensorProcessor proc(cfg);
 
-  // Before Init(), SensorRateEstimator returns its default nominal rate (500Hz)
+  // Before Init(), rtc::SensorRateEstimator returns its default nominal rate (500Hz)
   EXPECT_DOUBLE_EQ(proc.actual_sensor_rate_hz(), 500.0);
 }
 
@@ -339,4 +339,4 @@ TEST(HandSensorProcessor, PreFilter_TicksRateEstimator) {
   EXPECT_GE(proc.actual_sensor_rate_hz(), 0.0);
 }
 
-}  // namespace rtc::test
+}  // namespace udp_hand_driver::test

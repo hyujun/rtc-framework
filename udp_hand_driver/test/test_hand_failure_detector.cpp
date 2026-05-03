@@ -13,7 +13,7 @@
 #include <string>
 #include <thread>
 
-namespace rtc::test {
+namespace udp_hand_driver::test {
 
 using namespace std::chrono_literals;
 
@@ -22,7 +22,7 @@ using namespace std::chrono_literals;
 class HandFailureDetectorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    controller_ = std::make_unique<HandController>("127.0.0.1", 55151, kUdpRecvConfig, 10.0, false,
+    controller_ = std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false,
                                                    1, 4, true);  // fake_hand=true
     ASSERT_TRUE(controller_->Start());
   }
@@ -300,4 +300,4 @@ TEST_F(HandFailureDetectorTest, LinkCheck_FakeHandNoFailure) {
   EXPECT_FALSE(callback_called);
 }
 
-}  // namespace rtc::test
+}  // namespace udp_hand_driver::test

@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace rtc {
+namespace udp_hand_driver {
 
 inline constexpr int kNumHandMotors = 10;
 
@@ -14,6 +14,6 @@ inline const std::vector<std::string> kDefaultHandMotorNames = {
 
 inline const std::vector<std::string> kDefaultFingertipNames = {"thumb", "index", "middle", "ring"};
 
-}  // namespace rtc
+}  // namespace udp_hand_driver
 
 #endif  // UDP_HAND_DRIVER_HAND_CONSTANTS_HPP_

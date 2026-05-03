@@ -3,8 +3,8 @@
 
 // HandSensorProcessor: sensor post-processing pipeline.
 //
-// Owns BesselFilter (baro/tof LPF), SensorRateEstimator, and
-// SlidingTrendDetector (one-shot drift detection).
+// Owns BesselFilter (baro/tof LPF), rtc::SensorRateEstimator, and
+// rtc::SlidingTrendDetector (one-shot drift detection).
 //
 // Called from HandController's EventLoop on every sensor cycle.
 // All hot-path methods are noexcept (RT-safe).
@@ -23,7 +23,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace rtc {
+namespace udp_hand_driver {
 
 struct HandSensorProcessorConfig {
   int num_fingertips{0};
@@ -128,22 +128,22 @@ class HandSensorProcessor {
   }
 
   // Apply baro/tof LPF in-place.
-  void ApplyFilters(std::array<int32_t, kMaxHandSensors>& sensor_data) noexcept {
+  void ApplyFilters(std::array<int32_t, rtc::kMaxHandSensors>& sensor_data) noexcept {
     // Barometer LPF (8 channels per fingertip)
     if (baro_filter_active_) {
-      std::array<double, kMaxBaroChannels> baro_input{};
+      std::array<double, rtc::kMaxBaroChannels> baro_input{};
       for (int f = 0; f < num_fingertips_; ++f) {
-        const int base = f * kSensorValuesPerFingertip;
-        for (int b = 0; b < kBarometerCount; ++b) {
-          baro_input[static_cast<std::size_t>(f * kBarometerCount + b)] =
+        const int base = f * rtc::kSensorValuesPerFingertip;
+        for (int b = 0; b < rtc::kBarometerCount; ++b) {
+          baro_input[static_cast<std::size_t>(f * rtc::kBarometerCount + b)] =
               static_cast<double>(sensor_data[static_cast<std::size_t>(base + b)]);
         }
       }
       const auto filtered = baro_filter_.Apply(baro_input);
       for (int f = 0; f < num_fingertips_; ++f) {
-        const int base = f * kSensorValuesPerFingertip;
-        for (int b = 0; b < kBarometerCount; ++b) {
-          const double v = filtered[static_cast<std::size_t>(f * kBarometerCount + b)];
+        const int base = f * rtc::kSensorValuesPerFingertip;
+        for (int b = 0; b < rtc::kBarometerCount; ++b) {
+          const double v = filtered[static_cast<std::size_t>(f * rtc::kBarometerCount + b)];
           sensor_data[static_cast<std::size_t>(base + b)] = static_cast<int32_t>(std::round(v));
         }
       }
@@ -151,19 +151,19 @@ class HandSensorProcessor {
 
     // TOF LPF (3 channels per fingertip)
     if (tof_filter_active_) {
-      std::array<double, kMaxTofChannels> tof_input{};
+      std::array<double, rtc::kMaxTofChannels> tof_input{};
       for (int f = 0; f < num_fingertips_; ++f) {
-        const int base = f * kSensorValuesPerFingertip + kBarometerCount;
-        for (int t = 0; t < kTofCount; ++t) {
-          tof_input[static_cast<std::size_t>(f * kTofCount + t)] =
+        const int base = f * rtc::kSensorValuesPerFingertip + rtc::kBarometerCount;
+        for (int t = 0; t < rtc::kTofCount; ++t) {
+          tof_input[static_cast<std::size_t>(f * rtc::kTofCount + t)] =
               static_cast<double>(sensor_data[static_cast<std::size_t>(base + t)]);
         }
       }
       const auto filtered = tof_filter_.Apply(tof_input);
       for (int f = 0; f < num_fingertips_; ++f) {
-        const int base = f * kSensorValuesPerFingertip + kBarometerCount;
-        for (int t = 0; t < kTofCount; ++t) {
-          const double v = filtered[static_cast<std::size_t>(f * kTofCount + t)];
+        const int base = f * rtc::kSensorValuesPerFingertip + rtc::kBarometerCount;
+        for (int t = 0; t < rtc::kTofCount; ++t) {
+          const double v = filtered[static_cast<std::size_t>(f * rtc::kTofCount + t)];
           sensor_data[static_cast<std::size_t>(base + t)] = static_cast<int32_t>(std::round(v));
         }
       }
@@ -171,17 +171,17 @@ class HandSensorProcessor {
   }
 
   // One-shot drift detection on raw baro data.
-  void DetectDrift(const std::array<int32_t, kMaxHandSensors>& sensor_data_raw) noexcept {
+  void DetectDrift(const std::array<int32_t, rtc::kMaxHandSensors>& sensor_data_raw) noexcept {
     if (!drift_detection_enabled_)
       return;
 
     // Phase 1: accumulate until window full
     if (!drift_detector_.window_full()) {
-      std::array<double, kMaxBaroChannels> baro_raw{};
+      std::array<double, rtc::kMaxBaroChannels> baro_raw{};
       for (int f = 0; f < num_fingertips_; ++f) {
-        const int sensor_base = f * kSensorValuesPerFingertip;
-        const int baro_base = f * kBarometerCount;
-        for (int b = 0; b < kBarometerCount; ++b) {
+        const int sensor_base = f * rtc::kSensorValuesPerFingertip;
+        const int baro_base = f * rtc::kBarometerCount;
+        for (int b = 0; b < rtc::kBarometerCount; ++b) {
           baro_raw[static_cast<std::size_t>(baro_base + b)] =
               static_cast<double>(sensor_data_raw[static_cast<std::size_t>(sensor_base + b)]);
         }
@@ -192,7 +192,7 @@ class HandSensorProcessor {
       // Phase 2: window full -> cache result (one-shot)
       if (result.window_full) {
         drift_result_ = result;
-        const int num_baro = num_fingertips_ * kBarometerCount;
+        const int num_baro = num_fingertips_ * rtc::kBarometerCount;
         drift_detected_ = false;
         for (int i = 0; i < num_baro; ++i) {
           if (result.drift_flags[static_cast<std::size_t>(i)]) {
@@ -217,13 +217,13 @@ class HandSensorProcessor {
 
  private:
   // RT hot path (EventLoop thread). A single aggregated WARN (3 args, fixed
-  // length) replaces the former per-channel loop of up to kMaxBaroChannels
+  // length) replaces the former per-channel loop of up to rtc::kMaxBaroChannels
   // RCLCPP_WARN calls. Only the count and the first flagged channel are
   // reported so the format string has a bounded length and never truncates;
   // full per-channel slopes are available via drift_result_ for any consumer
   // that needs them outside the log stream.
   void ThrottledDriftWarning() noexcept {
-    const int num_baro = num_fingertips_ * kBarometerCount;
+    const int num_baro = num_fingertips_ * rtc::kBarometerCount;
     int flagged_count = 0;
     int first_id = -1;
     double first_slope = 0.0;
@@ -256,20 +256,20 @@ class HandSensorProcessor {
 
   // LPF state
   bool baro_filter_active_{false};
-  BesselFilterN<kMaxBaroChannels> baro_filter_{};
+  rtc::BesselFilterN<rtc::kMaxBaroChannels> baro_filter_{};
   bool tof_filter_active_{false};
-  BesselFilterN<kMaxTofChannels> tof_filter_{};
+  rtc::BesselFilterN<rtc::kMaxTofChannels> tof_filter_{};
 
   // Rate estimator
-  SensorRateEstimator sensor_rate_estimator_;
+  rtc::SensorRateEstimator sensor_rate_estimator_;
   bool filter_reinited_{false};
 
   // Drift detection
   bool drift_detection_enabled_;
   double drift_threshold_;
   int drift_window_size_;
-  SlidingTrendDetector<kMaxBaroChannels, 2500> drift_detector_;
-  SlidingTrendDetector<kMaxBaroChannels, 2500>::Result drift_result_{};
+  rtc::SlidingTrendDetector<rtc::kMaxBaroChannels, 2500> drift_detector_;
+  rtc::SlidingTrendDetector<rtc::kMaxBaroChannels, 2500>::Result drift_result_{};
   bool drift_detected_{false};
 
   // Throttle clocks for RT-path warnings. filter_warn_clock_ replaces
@@ -279,6 +279,6 @@ class HandSensorProcessor {
   rclcpp::Clock drift_warn_clock_{RCL_STEADY_TIME};
 };
 
-}  // namespace rtc
+}  // namespace udp_hand_driver
 
 #endif  // UDP_HAND_DRIVER_HAND_SENSOR_PROCESSOR_HPP_

@@ -33,7 +33,7 @@
 #include <thread>
 #include <utility>
 
-namespace rtc {
+namespace udp_hand_driver {
 
 // Communication statistics (recv success/timeout/error and total cycles)
 struct HandCommStats {
@@ -121,17 +121,17 @@ class HandUdpTransport {
   // Write position command + recv echo. Returns true if echo cmd matches.
   [[nodiscard]] bool WritePositionWithEcho(
       const std::array<float, kNumHandMotors>& cmd,
-      std::array<uint8_t, hand_packets::kMotorPacketSize>& send_buf,
-      std::array<uint8_t, hand_packets::kMotorPacketSize>& echo_buf,
-      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
-    hand_udp_codec::EncodeWritePosition(cmd, send_buf, joint_mode);
+      std::array<uint8_t, packets::kMotorPacketSize>& send_buf,
+      std::array<uint8_t, packets::kMotorPacketSize>& echo_buf,
+      packets::JointMode joint_mode = packets::JointMode::kMotor) noexcept {
+    codec::EncodeWritePosition(cmd, send_buf, joint_mode);
     sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
            reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
 
     const ssize_t recvd = RecvWithTimeout(echo_buf.data(), echo_buf.size());
-    if (recvd >= static_cast<ssize_t>(hand_packets::kHeaderSize)) {
+    if (recvd >= static_cast<ssize_t>(packets::kHeaderSize)) {
       const bool echo_ok =
-          (echo_buf[1] == static_cast<uint8_t>(hand_packets::Command::kWritePosition));
+          (echo_buf[1] == static_cast<uint8_t>(packets::Command::kWritePosition));
       if (!echo_ok) {
         ++comm_stats_.cmd_mismatch;
       }
@@ -152,22 +152,22 @@ class HandUdpTransport {
   // Send a fire-and-forget write position (e.g. for E-Stop zero command).
   void WritePositionFireAndForget(
       const std::array<float, kNumHandMotors>& cmd,
-      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor) noexcept {
-    std::array<uint8_t, hand_packets::kMotorPacketSize> buf{};
-    hand_udp_codec::EncodeWritePosition(cmd, buf, joint_mode);
+      packets::JointMode joint_mode = packets::JointMode::kMotor) noexcept {
+    std::array<uint8_t, packets::kMotorPacketSize> buf{};
+    codec::EncodeWritePosition(cmd, buf, joint_mode);
     sendto(socket_fd_, buf.data(), buf.size(), 0, reinterpret_cast<const sockaddr*>(&target_addr_),
            sizeof(target_addr_));
   }
 
   // Request motor read (individual: 0x11 pos, 0x12 vel). 3B send, 43B recv.
   [[nodiscard]] bool RequestMotorRead(
-      hand_packets::Command cmd, std::array<float, hand_packets::kMotorDataCount>& out,
-      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor,
-      hand_packets::JointMode* received_mode = nullptr) noexcept {
-    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
-    std::array<uint8_t, hand_packets::kMotorPacketSize> recv_buf{};
+      packets::Command cmd, std::array<float, packets::kMotorDataCount>& out,
+      packets::JointMode joint_mode = packets::JointMode::kMotor,
+      packets::JointMode* received_mode = nullptr) noexcept {
+    std::array<uint8_t, packets::kSensorRequestSize> send_buf{};
+    std::array<uint8_t, packets::kMotorPacketSize> recv_buf{};
 
-    hand_udp_codec::EncodeMotorReadRequest(cmd, send_buf, joint_mode);
+    codec::EncodeMotorReadRequest(cmd, send_buf, joint_mode);
 
     const ssize_t sent =
         sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
@@ -195,11 +195,11 @@ class HandUdpTransport {
         ++comm_stats_.recv_ok;
       }
 
-      if (recvd < static_cast<ssize_t>(hand_packets::kMotorPacketSize))
+      if (recvd < static_cast<ssize_t>(packets::kMotorPacketSize))
         continue;
 
       uint8_t cmd_out, mode_out;
-      if (!hand_udp_codec::DecodeMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
+      if (!codec::DecodeMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
                                                cmd_out, mode_out, out)) {
         continue;
       }
@@ -212,7 +212,7 @@ class HandUdpTransport {
         return false;
       }
       if (received_mode) {
-        *received_mode = static_cast<hand_packets::JointMode>(mode_out);
+        *received_mode = static_cast<packets::JointMode>(mode_out);
       }
       return true;
     }
@@ -221,12 +221,12 @@ class HandUdpTransport {
 
   // Request sensor read (individual: 0x14~0x17). 3B send, 67B recv.
   [[nodiscard]] bool RequestSensorRead(
-      hand_packets::Command cmd, std::array<int32_t, kSensorValuesPerFingertip>& out,
-      hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
-    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
-    std::array<uint8_t, hand_packets::kSensorResponseSize> recv_buf{};
+      packets::Command cmd, std::array<int32_t, rtc::kSensorValuesPerFingertip>& out,
+      packets::SensorMode sensor_mode = packets::SensorMode::kRaw) noexcept {
+    std::array<uint8_t, packets::kSensorRequestSize> send_buf{};
+    std::array<uint8_t, packets::kSensorResponseSize> recv_buf{};
 
-    hand_udp_codec::EncodeSensorReadRequest(cmd, send_buf, sensor_mode);
+    codec::EncodeSensorReadRequest(cmd, send_buf, sensor_mode);
 
     const ssize_t sent =
         sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
@@ -254,11 +254,11 @@ class HandUdpTransport {
         ++comm_stats_.recv_ok;
       }
 
-      if (recvd < static_cast<ssize_t>(hand_packets::kSensorResponseSize))
+      if (recvd < static_cast<ssize_t>(packets::kSensorResponseSize))
         continue;
 
       uint8_t cmd_out, mode_out;
-      const bool ok = hand_udp_codec::DecodeSensorResponseRaw(
+      const bool ok = codec::DecodeSensorResponseRaw(
           recv_buf.data(), static_cast<std::size_t>(recvd), cmd_out, mode_out, out);
       if (!ok)
         continue;
@@ -278,15 +278,15 @@ class HandUdpTransport {
 
   // Request bulk motor read (cmd=0x10). 3B send, 123B recv.
   [[nodiscard]] bool RequestAllMotorRead(
-      std::array<float, hand_packets::kMotorDataCount>& positions,
-      std::array<float, hand_packets::kMotorDataCount>& velocities,
-      std::array<float, hand_packets::kMotorDataCount>& currents,
-      hand_packets::JointMode joint_mode = hand_packets::JointMode::kMotor,
-      hand_packets::JointMode* received_mode = nullptr) noexcept {
-    std::array<uint8_t, hand_packets::kAllMotorRequestSize> send_buf{};
-    std::array<uint8_t, hand_packets::kAllMotorResponseSize> recv_buf{};
+      std::array<float, packets::kMotorDataCount>& positions,
+      std::array<float, packets::kMotorDataCount>& velocities,
+      std::array<float, packets::kMotorDataCount>& currents,
+      packets::JointMode joint_mode = packets::JointMode::kMotor,
+      packets::JointMode* received_mode = nullptr) noexcept {
+    std::array<uint8_t, packets::kAllMotorRequestSize> send_buf{};
+    std::array<uint8_t, packets::kAllMotorResponseSize> recv_buf{};
 
-    hand_udp_codec::EncodeReadAllMotorsRequest(send_buf, joint_mode);
+    codec::EncodeReadAllMotorsRequest(send_buf, joint_mode);
 
     const ssize_t sent =
         sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
@@ -314,16 +314,16 @@ class HandUdpTransport {
         ++comm_stats_.recv_ok;
       }
 
-      if (recvd < static_cast<ssize_t>(hand_packets::kAllMotorResponseSize))
+      if (recvd < static_cast<ssize_t>(packets::kAllMotorResponseSize))
         continue;
 
       uint8_t cmd_out, mode_out;
-      if (!hand_udp_codec::DecodeAllMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
+      if (!codec::DecodeAllMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
                                                   cmd_out, mode_out, positions, velocities,
                                                   currents)) {
         continue;
       }
-      if (cmd_out != static_cast<uint8_t>(hand_packets::Command::kReadAllMotors)) {
+      if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllMotors)) {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
@@ -332,7 +332,7 @@ class HandUdpTransport {
         return false;
       }
       if (received_mode) {
-        *received_mode = static_cast<hand_packets::JointMode>(mode_out);
+        *received_mode = static_cast<packets::JointMode>(mode_out);
       }
       return true;
     }
@@ -342,11 +342,11 @@ class HandUdpTransport {
   // Request bulk sensor read (cmd=0x19). 3B send, 259B recv.
   [[nodiscard]] bool RequestAllSensorRead(
       int32_t* out, int num_fingertips,
-      hand_packets::SensorMode sensor_mode = hand_packets::SensorMode::kRaw) noexcept {
-    std::array<uint8_t, hand_packets::kAllSensorRequestSize> send_buf{};
-    std::array<uint8_t, hand_packets::kAllSensorResponseSize> recv_buf{};
+      packets::SensorMode sensor_mode = packets::SensorMode::kRaw) noexcept {
+    std::array<uint8_t, packets::kAllSensorRequestSize> send_buf{};
+    std::array<uint8_t, packets::kAllSensorResponseSize> recv_buf{};
 
-    hand_udp_codec::EncodeReadAllSensorsRequest(send_buf, sensor_mode);
+    codec::EncodeReadAllSensorsRequest(send_buf, sensor_mode);
 
     const ssize_t sent =
         sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
@@ -374,16 +374,16 @@ class HandUdpTransport {
         ++comm_stats_.recv_ok;
       }
 
-      if (recvd < static_cast<ssize_t>(hand_packets::kAllSensorResponseSize))
+      if (recvd < static_cast<ssize_t>(packets::kAllSensorResponseSize))
         continue;
 
       uint8_t cmd_out, mode_out;
-      if (!hand_udp_codec::DecodeAllSensorResponseRaw(recv_buf.data(),
+      if (!codec::DecodeAllSensorResponseRaw(recv_buf.data(),
                                                       static_cast<std::size_t>(recvd), cmd_out,
                                                       mode_out, out, num_fingertips)) {
         continue;
       }
-      if (cmd_out != static_cast<uint8_t>(hand_packets::Command::kReadAllSensors)) {
+      if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
@@ -397,14 +397,14 @@ class HandUdpTransport {
   }
 
   // Set sensor mode (CMD=0x04, 3B send, 3B recv echo).
-  [[nodiscard]] bool RequestSetSensorMode(hand_packets::SensorMode sensor_mode) noexcept {
-    std::array<uint8_t, hand_packets::kSensorRequestSize> send_buf{};
-    std::array<uint8_t, hand_packets::kSensorRequestSize> recv_buf{};
+  [[nodiscard]] bool RequestSetSensorMode(packets::SensorMode sensor_mode) noexcept {
+    std::array<uint8_t, packets::kSensorRequestSize> send_buf{};
+    std::array<uint8_t, packets::kSensorRequestSize> recv_buf{};
 
-    hand_udp_codec::EncodeSetSensorMode(sensor_mode, send_buf);
+    codec::EncodeSetSensorMode(sensor_mode, send_buf);
     const ssize_t recvd =
         SendAndRecvRaw(send_buf.data(), send_buf.size(), recv_buf.data(), recv_buf.size());
-    if (recvd < static_cast<ssize_t>(hand_packets::kSensorRequestSize)) {
+    if (recvd < static_cast<ssize_t>(packets::kSensorRequestSize)) {
       return false;
     }
     return recv_buf[2] == static_cast<uint8_t>(sensor_mode);
@@ -414,7 +414,7 @@ class HandUdpTransport {
   [[nodiscard]] bool InitializeSensors(int max_retries = 5, int retry_interval_ms = 100) noexcept {
     const auto logger = ::udp_hand_driver::logging::TransportLogger();
     for (int attempt = 0; attempt < max_retries; ++attempt) {
-      if (RequestSetSensorMode(hand_packets::SensorMode::kRaw)) {
+      if (RequestSetSensorMode(packets::SensorMode::kRaw)) {
         RCLCPP_INFO(logger, "Sensor mode set to RAW (attempt %d/%d)", attempt + 1, max_retries);
         return true;
       }
@@ -427,7 +427,7 @@ class HandUdpTransport {
 
   // Drain stale UDP responses from the socket buffer (non-blocking).
   void DrainStaleResponses() noexcept {
-    std::array<uint8_t, hand_packets::kMaxPacketSize> discard{};
+    std::array<uint8_t, packets::kMaxPacketSize> discard{};
     for (int i = 0; i < 8; ++i) {
       const ssize_t r = ::recv(socket_fd_, discard.data(), discard.size(), MSG_DONTWAIT);
       if (r <= 0)
@@ -502,6 +502,6 @@ class HandUdpTransport {
   std::atomic<uint64_t> recv_error_count_{0};
 };
 
-}  // namespace rtc
+}  // namespace udp_hand_driver
 
 #endif  // UDP_HAND_DRIVER_HAND_UDP_TRANSPORT_HPP_

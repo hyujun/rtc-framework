@@ -25,7 +25,7 @@
 #include <thread>
 #include <utility>
 
-namespace rtc {
+namespace udp_hand_driver {
 
 struct HandFailureDetectorConfig {
   int failure_threshold{5};     ///< 연속 감지 횟수 임계값
@@ -46,7 +46,7 @@ class HandFailureDetector {
   /// @param cfg          Detection configuration.
   /// @param thread_cfg   Thread scheduling / CPU affinity configuration.
   explicit HandFailureDetector(HandController& controller, Config cfg = Config{},
-                               ThreadConfig thread_cfg = kLoggingConfig)
+                               rtc::ThreadConfig thread_cfg = rtc::kLoggingConfig)
       : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
 
   ~HandFailureDetector() { Stop(); }
@@ -83,7 +83,7 @@ class HandFailureDetector {
   void DetectLoop(std::stop_token st) {
     using std::chrono_literals::operator""ms;
     {
-      auto [ok, msg] = ApplyThreadConfigWithFallback(thread_cfg_);
+      auto [ok, msg] = rtc::ApplyThreadConfigWithFallback(thread_cfg_);
       if (!ok) {
         RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "Thread config apply failed: %s",
                     msg.c_str());
@@ -158,7 +158,7 @@ class HandFailureDetector {
     const auto& sens = state.sensor_data;
 
     bool all_zero = true;
-    const int num_sensors = state.num_fingertips * kSensorValuesPerFingertip;
+    const int num_sensors = state.num_fingertips * rtc::kSensorValuesPerFingertip;
     for (int i = 0; i < num_sensors; ++i) {
       if (sens[static_cast<std::size_t>(i)] != 0u) {
         all_zero = false;
@@ -242,7 +242,7 @@ class HandFailureDetector {
 
   HandController& controller_;
   Config cfg_;
-  ThreadConfig thread_cfg_;
+  rtc::ThreadConfig thread_cfg_;
   FailureCallback on_failure_;
 
   std::jthread thread_;
@@ -256,7 +256,7 @@ class HandFailureDetector {
   int motor_dup_count_{0};
 
   // Sensor state
-  std::array<int32_t, kMaxHandSensors> prev_sensor_{};
+  std::array<int32_t, rtc::kMaxHandSensors> prev_sensor_{};
   bool prev_sensor_valid_{false};
   int sensor_zero_count_{0};
   int sensor_dup_count_{0};
@@ -267,6 +267,6 @@ class HandFailureDetector {
   std::chrono::steady_clock::time_point prev_rate_check_{};
 };
 
-}  // namespace rtc
+}  // namespace udp_hand_driver
 
 #endif  // UDP_HAND_DRIVER_HAND_FAILURE_DETECTOR_HPP_

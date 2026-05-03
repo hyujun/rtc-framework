@@ -8,7 +8,7 @@
 
 #include <string>
 
-namespace rtc::test {
+namespace udp_hand_driver::test {
 
 // ── Initial state ───────────────────────────────────────────────────────────
 
@@ -298,4 +298,4 @@ TEST(HandTimingProfiler, Summary_WithFTInfer) {
   EXPECT_NE(summary.find("ft="), std::string::npos);
 }
 
-}  // namespace rtc::test
+}  // namespace udp_hand_driver::test

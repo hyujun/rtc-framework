@@ -4,7 +4,7 @@
 // HandTimingProfiler: EventLoop per-phase timing measurement.
 //
 // Measures and accumulates per-phase durations for the HandController
-// EventLoop. Inherits TimingProfilerBase<250,20,2000> for histogram/percentile
+// EventLoop. Inherits rtc::TimingProfilerBase<250,20,2000> for histogram/percentile
 // logic (covers [0,5000) µs at 20 µs resolution; overflow bucket catches the
 // rest).
 //
@@ -24,11 +24,11 @@
 #include <cstring>
 #include <string>
 
-namespace rtc {
+namespace udp_hand_driver {
 
-class HandTimingProfiler : public TimingProfilerBase<250, 20, 2000> {
+class HandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
  public:
-  using PhaseStats = typename TimingProfilerBase<250, 20, 2000>::PhaseStats;
+  using PhaseStats = typename rtc::TimingProfilerBase<250, 20, 2000>::PhaseStats;
 
   struct Stats : BaseStats {
     // Per-phase (individual mode)
@@ -270,6 +270,6 @@ class HandTimingProfiler : public TimingProfilerBase<250, 20, 2000> {
   std::atomic<uint64_t> ft_infer_count_{0};
 };
 
-}  // namespace rtc
+}  // namespace udp_hand_driver
 
 #endif  // UDP_HAND_DRIVER_HAND_TIMING_PROFILER_HPP_

@@ -15,9 +15,9 @@
 #include <string>
 #include <thread>
 
-namespace rtc::test {
+namespace udp_hand_driver::test {
 
-using namespace hand_packets;
+using namespace packets;
 
 // ── Helper: loopback UDP device simulator ──────────────────────────────────────
 
@@ -177,9 +177,9 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMismatch_ReturnsFalse) {
 
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
-  std::array<int32_t, kDefaultNumFingertips * kSensorValuesPerFingertip> out{};
+  std::array<int32_t, rtc::kDefaultNumFingertips * rtc::kSensorValuesPerFingertip> out{};
   const bool result =
-      transport.RequestAllSensorRead(out.data(), kDefaultNumFingertips, SensorMode::kRaw);
+      transport.RequestAllSensorRead(out.data(), rtc::kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -200,9 +200,9 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
 
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
-  std::array<int32_t, kDefaultNumFingertips * kSensorValuesPerFingertip> out{};
+  std::array<int32_t, rtc::kDefaultNumFingertips * rtc::kSensorValuesPerFingertip> out{};
   const bool result =
-      transport.RequestAllSensorRead(out.data(), kDefaultNumFingertips, SensorMode::kRaw);
+      transport.RequestAllSensorRead(out.data(), rtc::kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_TRUE(result);
@@ -312,4 +312,4 @@ TEST(HandUdpTransport, WritePositionFireAndForget_NoRecv) {
   transport.Close();
 }
 
-}  // namespace rtc::test
+}  // namespace udp_hand_driver::test

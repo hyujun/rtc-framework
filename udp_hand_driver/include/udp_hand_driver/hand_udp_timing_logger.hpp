@@ -4,15 +4,15 @@
 // Per-EventLoop-tick timing CSV writer for the hand UDP node.
 //
 // Mirrors rtc::mpc::MpcTimingLogger structurally: a thin wrapper around
-// rtc::ThreadTimingCsvLogger<RtTickTimingPayload> that resolves the canonical
+// rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> that resolves the canonical
 // `<session>/timing/hand_udp_timing_log.csv` path and pre-binds the unified
-// RtTickTimingPayload header / row writers (the same schema CM and MPC emit,
+// rtc::RtTickTimingPayload header / row writers (the same schema CM and MPC emit,
 // so analysis scripts can join across threads).
 //
 // Phase mapping for the hand UDP loop (see hand_controller.hpp::EventLoop):
 //   t_state_us    UDP write + read phase (post-condvar to post-sensor-read)
 //   t_compute_us  sensor processing + F/T inference
-//   t_publish_us  state SeqLock store + EventLoop callback
+//   t_publish_us  state rtc::SeqLock store + EventLoop callback
 //   t_total_us    end-of-tick − start-of-tick
 //   jitter_us     |actual_period − expected_period| against previous tick
 
@@ -23,7 +23,7 @@
 #include <filesystem>
 #include <system_error>
 
-namespace rtc::hand {
+namespace udp_hand_driver {
 
 class HandUdpTimingLogger {
  public:
@@ -39,8 +39,8 @@ class HandUdpTimingLogger {
   /// Returns false on filesystem errors.
   [[nodiscard]] bool Open() noexcept {
     try {
-      const auto session = ResolveSessionDir();
-      const auto timing_dir = TimingDir(session);
+      const auto session = rtc::ResolveSessionDir();
+      const auto timing_dir = rtc::TimingDir(session);
       std::error_code ec;
       std::filesystem::create_directories(timing_dir, ec);
       const auto path = timing_dir / "hand_udp_timing_log.csv";
@@ -61,6 +61,6 @@ class HandUdpTimingLogger {
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> inner_;
 };
 
-}  // namespace rtc::hand
+}  // namespace udp_hand_driver
 
 #endif  // UDP_HAND_DRIVER_HAND_UDP_TIMING_LOGGER_HPP_
