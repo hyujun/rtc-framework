@@ -9,8 +9,35 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace urtc = rtc;
+
+namespace {
+
+// Build a reorder map from controller command order (`cmd_names`) to device
+// state order (`state_names`). Returns an empty vector when no reorder is
+// needed — both lists empty, or already aligned. Used by kJointCommand and
+// kRos2Command publishers; the empty-vector convention is checked by the RT
+// publish path to skip the reorder step.
+std::vector<int> BuildPublisherReorderMap(const std::vector<std::string>& state_names,
+                                          const std::vector<std::string>& cmd_names) {
+  if (state_names.empty() || cmd_names.empty() || state_names == cmd_names) {
+    return {};
+  }
+  std::vector<int> map(cmd_names.size(), -1);
+  for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
+    for (std::size_t si = 0; si < state_names.size(); ++si) {
+      if (cmd_names[ci] == state_names[si]) {
+        map[ci] = static_cast<int>(si);
+        break;
+      }
+    }
+  }
+  return map;
+}
+
+}  // namespace
 
 void RtControllerNode::CreatePublishers() {
   // BEST_EFFORT + depth 1: minimises DDS overhead on the RT path.
@@ -32,26 +59,16 @@ void RtControllerNode::CreatePublishers() {
         }
         JointCommandPublisherEntry jce;
         jce.publisher = create_publisher<rtc_msgs::msg::JointCommand>(entry.topic_name, cmd_qos);
-        {
-          auto cfg_it = device_name_configs_.find(group_name);
-          if (cfg_it != device_name_configs_.end()) {
-            const auto& state_names = cfg_it->second.joint_state_names;
-            const auto& cmd_names = cfg_it->second.joint_command_names;
-            jce.msg.joint_names = cmd_names;
-            jce.msg.values.resize(cmd_names.size(), 0.0);
-            if (!state_names.empty() && !cmd_names.empty() && state_names != cmd_names) {
-              jce.reorder_map.resize(cmd_names.size(), -1);
-              for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
-                for (std::size_t si = 0; si < state_names.size(); ++si) {
-                  if (cmd_names[ci] == state_names[si]) {
-                    jce.reorder_map[ci] = static_cast<int>(si);
-                    break;
-                  }
-                }
-              }
-              RCLCPP_INFO(get_logger(), "  [%s] kJointCommand reorder map built (%zu → %zu)",
-                          group_name.c_str(), state_names.size(), cmd_names.size());
-            }
+        if (auto cfg_it = device_name_configs_.find(group_name);
+            cfg_it != device_name_configs_.end()) {
+          const auto& state_names = cfg_it->second.joint_state_names;
+          const auto& cmd_names = cfg_it->second.joint_command_names;
+          jce.msg.joint_names = cmd_names;
+          jce.msg.values.resize(cmd_names.size(), 0.0);
+          jce.reorder_map = BuildPublisherReorderMap(state_names, cmd_names);
+          if (!jce.reorder_map.empty()) {
+            RCLCPP_INFO(get_logger(), "  [%s] kJointCommand reorder map built (%zu → %zu)",
+                        group_name.c_str(), state_names.size(), cmd_names.size());
           }
         }
         jce.msg.command_type = "position";
@@ -80,20 +97,12 @@ void RtControllerNode::CreatePublishers() {
             create_publisher<std_msgs::msg::Float64MultiArray>(entry.topic_name, ros2_cmd_qos);
         pe.msg.data.resize(static_cast<std::size_t>(data_size), 0.0);
 
-        auto cfg_it = device_name_configs_.find(group_name);
-        if (cfg_it != device_name_configs_.end()) {
+        if (auto cfg_it = device_name_configs_.find(group_name);
+            cfg_it != device_name_configs_.end()) {
           const auto& state_names = cfg_it->second.joint_state_names;
           const auto& cmd_names = cfg_it->second.joint_command_names;
-          if (!state_names.empty() && !cmd_names.empty() && state_names != cmd_names) {
-            pe.reorder_map.resize(cmd_names.size(), -1);
-            for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
-              for (std::size_t si = 0; si < state_names.size(); ++si) {
-                if (cmd_names[ci] == state_names[si]) {
-                  pe.reorder_map[ci] = static_cast<int>(si);
-                  break;
-                }
-              }
-            }
+          pe.reorder_map = BuildPublisherReorderMap(state_names, cmd_names);
+          if (!pe.reorder_map.empty()) {
             RCLCPP_INFO(get_logger(), "  [%s] kRos2Command reorder map built (%zu → %zu)",
                         group_name.c_str(), state_names.size(), cmd_names.size());
           }
