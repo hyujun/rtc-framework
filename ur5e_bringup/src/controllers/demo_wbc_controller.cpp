@@ -362,25 +362,12 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     gains_lock_.Store(g);
   }
 
-  // ── 4b. E-STOP arm safe position (required) ──────────────────────────
-  if (!cfg["estop"] || !cfg["estop"].IsMap()) {
-    throw std::runtime_error("demo_wbc_controller: required 'estop' section is missing");
-  }
+  // ── 4b. Lift L2: E-STOP arm safe position (required) ─────────────────
   {
-    const auto estop_node = cfg["estop"];
-    if (!estop_node["arm_safe_position"] || !estop_node["arm_safe_position"].IsSequence()) {
-      throw std::runtime_error(
-          "demo_wbc_controller: required 'estop.arm_safe_position' "
-          "must be a sequence");
-    }
-    const auto sp = estop_node["arm_safe_position"];
-    if (sp.size() != static_cast<std::size_t>(kArmDof)) {
-      throw std::runtime_error("demo_wbc_controller: 'estop.arm_safe_position' length " +
-                               std::to_string(sp.size()) + " != expected " +
-                               std::to_string(kArmDof));
-    }
+    const auto sp =
+        ParseArmSafePosition(cfg, static_cast<std::size_t>(kArmDof), "demo_wbc_controller");
     for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
-      safe_position_[i] = sp[i].as<double>();
+      safe_position_[i] = sp[i];
     }
   }
 
@@ -586,45 +573,13 @@ void DemoWbcController::OnDeviceConfigsSet() {
         use_root_frame_ = true;
       }
     }
-    if (cfg->joint_limits) {
-      if (!cfg->joint_limits->max_velocity.empty()) {
-        device_max_velocity_[0] = cfg->joint_limits->max_velocity;
-      }
-      if (!cfg->joint_limits->position_lower.empty()) {
-        device_position_lower_[0] = cfg->joint_limits->position_lower;
-      }
-      if (!cfg->joint_limits->position_upper.empty()) {
-        device_position_upper_[0] = cfg->joint_limits->position_upper;
-      }
-    }
   }
 
-  // ── Hand limits ───────────────────────────────────────────────────────
-  if (auto* cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
-    if (!cfg->joint_limits->max_velocity.empty()) {
-      device_max_velocity_[1] = cfg->joint_limits->max_velocity;
-    }
-    if (!cfg->joint_limits->position_lower.empty()) {
-      device_position_lower_[1] = cfg->joint_limits->position_lower;
-    }
-    if (!cfg->joint_limits->position_upper.empty()) {
-      device_position_upper_[1] = cfg->joint_limits->position_upper;
-    }
-  }
-
-  // Fallback defaults
-  for (auto& v : device_max_velocity_) {
-    if (v.empty())
-      v.assign(kMaxDeviceChannels, 2.0);
-  }
-  for (auto& v : device_position_lower_) {
-    if (v.empty())
-      v.assign(kMaxDeviceChannels, -6.2832);
-  }
-  for (auto& v : device_position_upper_) {
-    if (v.empty())
-      v.assign(kMaxDeviceChannels, 6.2832);
-  }
+  // ── Lift L1: per-device joint limits loaded from device_name_configs_ ──
+  // in topic_config_ group order; missing slots get ±2π / 2 rad/s fallbacks
+  // so RT clamping always has valid bounds.
+  LoadDeviceLimitsFromConfig(device_position_lower_, device_position_upper_, device_max_velocity_,
+                             -6.2832, 6.2832, 2.0);
 
   // ── Joint reorder map ─────────────────────────────────────────────────
   BuildJointReorderMap();
@@ -1385,7 +1340,8 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     out0.trajectory_velocities[i] = robot_computed_.velocities[i];
     out0.goal_positions[i] = device_targets_[0][i];
   }
-  ClampCommands(out0.commands, nc0, device_position_lower_[0], device_position_upper_[0]);
+  rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
+                         std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
 
   // ── Task-space logging (FK) ───────────────────────────────────────────
   if (arm_handle_) {
@@ -1432,7 +1388,8 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = device_targets_[1][i];
     }
-    ClampCommands(out1.commands, nc1, device_position_lower_[1], device_position_upper_[1]);
+    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
   }
 
   // ── WBC state (per-fingertip aggregates + FSM phase) ─────────────────
@@ -1714,13 +1671,6 @@ double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept
   }
   const pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
   return (tcp.translation() - target.translation()).norm();
-}
-
-void DemoWbcController::ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n,
-                                      const std::vector<double>& lower,
-                                      const std::vector<double>& upper) noexcept {
-  rtc::utils::ClampRange(commands, n, std::span<const double>(lower),
-                         std::span<const double>(upper), -6.2832, 6.2832);
 }
 
 // ── Controller-owned topic lifecycle ──────────────────────────────────────

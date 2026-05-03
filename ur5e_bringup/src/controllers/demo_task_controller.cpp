@@ -134,41 +134,12 @@ void DemoTaskController::OnDeviceConfigsSet() {
         use_root_frame_ = true;
       }
     }
-    if (cfg->joint_limits) {
-      if (!cfg->joint_limits->max_velocity.empty()) {
-        device_max_velocity_[0] = cfg->joint_limits->max_velocity;
-      }
-      if (!cfg->joint_limits->position_lower.empty()) {
-        device_position_lower_[0] = cfg->joint_limits->position_lower;
-      }
-      if (!cfg->joint_limits->position_upper.empty()) {
-        device_position_upper_[0] = cfg->joint_limits->position_upper;
-      }
-    }
   }
-  if (auto* cfg = GetDeviceNameConfig("hand"); cfg && cfg->joint_limits) {
-    if (!cfg->joint_limits->max_velocity.empty()) {
-      device_max_velocity_[1] = cfg->joint_limits->max_velocity;
-    }
-    if (!cfg->joint_limits->position_lower.empty()) {
-      device_position_lower_[1] = cfg->joint_limits->position_lower;
-    }
-    if (!cfg->joint_limits->position_upper.empty()) {
-      device_position_upper_[1] = cfg->joint_limits->position_upper;
-    }
-  }
-  for (auto& v : device_max_velocity_) {
-    if (v.empty())
-      v.assign(kMaxDeviceChannels, 2.0);
-  }
-  for (auto& v : device_position_lower_) {
-    if (v.empty())
-      v.assign(kMaxDeviceChannels, -6.2832);
-  }
-  for (auto& v : device_position_upper_) {
-    if (v.empty())
-      v.assign(kMaxDeviceChannels, 6.2832);
-  }
+  // Lift L1: per-device joint limits (position + velocity) loaded from
+  // device_name_configs_ in topic_config_ group order; missing slots get
+  // ±2π / 2 rad/s fallbacks so RT clamping always has valid bounds.
+  LoadDeviceLimitsFromConfig(device_position_lower_, device_position_upper_, device_max_velocity_,
+                             -6.2832, 6.2832, 2.0);
 
   // Phase C: capture joint/sensor names for CSV header expansion.
   if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
@@ -921,7 +892,8 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = device_targets_[1][i];
     }
-    ClampCommands(out1.commands, nc1, device_position_lower_[1], device_position_upper_[1]);
+    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
   }
 
   // Populate force-PI grasp state if active
@@ -1113,13 +1085,6 @@ ControllerOutput DemoTaskController::ComputeEstop(const ControllerState& state) 
   return output;
 }
 
-void DemoTaskController::ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n,
-                                       const std::vector<double>& lower,
-                                       const std::vector<double>& upper) noexcept {
-  rtc::utils::ClampRange(commands, n, std::span<const double>(lower),
-                         std::span<const double>(upper), -6.2832, 6.2832);
-}
-
 // ── Controller registry hooks ────────────────────────────────────────────────
 
 void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
@@ -1157,24 +1122,11 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── E-STOP arm safe position (required) ─────────────────────────────
-  if (!cfg["estop"] || !cfg["estop"].IsMap()) {
-    throw std::runtime_error("demo_task_controller: required 'estop' section is missing");
-  }
+  // Lift L2: estop arm safe position parsing.
   {
-    const auto estop_node = cfg["estop"];
-    if (!estop_node["arm_safe_position"] || !estop_node["arm_safe_position"].IsSequence()) {
-      throw std::runtime_error(
-          "demo_task_controller: required 'estop.arm_safe_position' "
-          "must be a sequence");
-    }
-    const auto sp = estop_node["arm_safe_position"];
-    if (sp.size() != static_cast<std::size_t>(kNumRobotJoints)) {
-      throw std::runtime_error("demo_task_controller: 'estop.arm_safe_position' length " +
-                               std::to_string(sp.size()) + " != expected " +
-                               std::to_string(kNumRobotJoints));
-    }
+    const auto sp = ParseArmSafePosition(cfg, kNumRobotJoints, "demo_task_controller");
     for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      safe_position_[i] = sp[i].as<double>();
+      safe_position_[i] = sp[i];
     }
   }
 

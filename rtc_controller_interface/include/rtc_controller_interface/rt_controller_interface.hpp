@@ -302,6 +302,41 @@ class RTControllerInterface {
   // robot-specific bringups own the device name).
   static TopicConfig MakeDefaultTopicConfig(const std::string& device_name);
 
+  // ── L1: Device limits loader ───────────────────────────────────────────
+  //   Populates per-device joint limit vectors from the resolved
+  //   device_name_configs_, using `topic_config_.groups` order as the
+  //   controller-local device index. Each output array slot `i` corresponds
+  //   to the i-th group in topic_config_; slots without a matching device
+  //   config (or with empty joint_limits) are filled with `default_*` of
+  //   length kMaxDeviceChannels so RT-path clamping always has valid bounds.
+  //
+  //   Robot-agnostic: never references "ur5e" / "hand" / robot joint count.
+  //   Call from OnDeviceConfigsSet() after CM has injected device configs.
+  //
+  //   Caller supplies fallback values explicitly — the base intentionally
+  //   does not provide defaults so that each controller's safety envelope
+  //   is visible at the call site (no hidden ±2π / 2 rad/s assumptions).
+  void LoadDeviceLimitsFromConfig(
+      std::array<std::vector<double>, ControllerState::kMaxDevices>& position_lower,
+      std::array<std::vector<double>, ControllerState::kMaxDevices>& position_upper,
+      std::array<std::vector<double>, ControllerState::kMaxDevices>& max_velocity,
+      double default_lower, double default_upper, double default_velocity) const;
+
+  // ── L2: E-STOP safe-position YAML parser ───────────────────────────────
+  //   Extracts and validates a fixed-length sequence under
+  //   `cfg["estop"]["arm_safe_position"]`. `expected_size` is the controller's
+  //   own arm DOF (caller-supplied — base does not assume any specific count;
+  //   6-DOF UR5/UR10, 7-DOF KUKA iiwa, etc. all valid).
+  //
+  //   `controller_name` is included in error messages so users can locate
+  //   the offending YAML quickly.
+  //
+  //   Throws std::runtime_error on missing / wrong-type / wrong-length input.
+  //   Non-throwing in the steady state — designed to be called from
+  //   LoadConfig() inside the controller's existing try/catch.
+  static std::vector<double> ParseArmSafePosition(const YAML::Node& cfg, std::size_t expected_size,
+                                                  const std::string& controller_name);
+
   TopicConfig topic_config_;
   std::map<std::string, DeviceNameConfig> device_name_configs_;
   std::unique_ptr<rtc_urdf_bridge::ModelConfig> system_model_config_;

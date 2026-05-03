@@ -314,6 +314,78 @@ void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, 
   NotifyTargetReceived();
 }
 
+void RTControllerInterface::LoadDeviceLimitsFromConfig(
+    std::array<std::vector<double>, ControllerState::kMaxDevices>& position_lower,
+    std::array<std::vector<double>, ControllerState::kMaxDevices>& position_upper,
+    std::array<std::vector<double>, ControllerState::kMaxDevices>& max_velocity,
+    double default_lower, double default_upper, double default_velocity) const {
+  // Walk topic_config_.groups in declaration order so the controller-local
+  // device index matches the rest of the controller's data layout
+  // (state.devices[i], device_max_velocity_[i], …).
+  const std::size_t n_groups =
+      std::min<std::size_t>(topic_config_.groups.size(), ControllerState::kMaxDevices);
+
+  for (std::size_t i = 0; i < n_groups; ++i) {
+    const auto& [device_name, _group] = topic_config_.groups[i];
+    auto cfg_it = device_name_configs_.find(device_name);
+    if (cfg_it != device_name_configs_.end() && cfg_it->second.joint_limits) {
+      const auto& limits = *cfg_it->second.joint_limits;
+      if (!limits.position_lower.empty()) {
+        position_lower[i] = limits.position_lower;
+      }
+      if (!limits.position_upper.empty()) {
+        position_upper[i] = limits.position_upper;
+      }
+      if (!limits.max_velocity.empty()) {
+        max_velocity[i] = limits.max_velocity;
+      }
+    }
+  }
+
+  // Fill remaining empty slots (slots without matching DeviceNameConfig, or
+  // with empty joint_limits) with caller-supplied fallbacks so RT-path
+  // clamping always has valid bounds of length kMaxDeviceChannels.
+  for (auto& slot : position_lower) {
+    if (slot.empty()) {
+      slot.assign(kMaxDeviceChannels, default_lower);
+    }
+  }
+  for (auto& slot : position_upper) {
+    if (slot.empty()) {
+      slot.assign(kMaxDeviceChannels, default_upper);
+    }
+  }
+  for (auto& slot : max_velocity) {
+    if (slot.empty()) {
+      slot.assign(kMaxDeviceChannels, default_velocity);
+    }
+  }
+}
+
+std::vector<double> RTControllerInterface::ParseArmSafePosition(
+    const YAML::Node& cfg, std::size_t expected_size, const std::string& controller_name) {
+  if (!cfg["estop"] || !cfg["estop"].IsMap()) {
+    throw std::runtime_error(controller_name + ": required 'estop' section is missing");
+  }
+  const auto estop_node = cfg["estop"];
+  if (!estop_node["arm_safe_position"] || !estop_node["arm_safe_position"].IsSequence()) {
+    throw std::runtime_error(controller_name +
+                             ": required 'estop.arm_safe_position' must be a sequence");
+  }
+  const auto safe_seq = estop_node["arm_safe_position"];
+  if (safe_seq.size() != expected_size) {
+    throw std::runtime_error(controller_name + ": 'estop.arm_safe_position' length " +
+                             std::to_string(safe_seq.size()) + " != expected " +
+                             std::to_string(expected_size));
+  }
+  std::vector<double> out;
+  out.reserve(expected_size);
+  for (std::size_t i = 0; i < expected_size; ++i) {
+    out.push_back(safe_seq[i].as<double>());
+  }
+  return out;
+}
+
 void RTControllerInterface::LoadConfig(const YAML::Node& cfg) {
   if (!cfg) {
     return;

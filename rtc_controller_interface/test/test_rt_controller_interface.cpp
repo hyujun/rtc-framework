@@ -44,7 +44,9 @@ class StubController : public rtc::RTControllerInterface {
   void InitializeHoldPosition(const rtc::ControllerState&) noexcept override {}
 
   // Expose protected statics for direct testing.
+  using RTControllerInterface::LoadDeviceLimitsFromConfig;
   using RTControllerInterface::MakeDefaultTopicConfig;
+  using RTControllerInterface::ParseArmSafePosition;
   using RTControllerInterface::ParseTopicConfig;
 
   // Callback counters.
@@ -774,6 +776,158 @@ TEST(RTControllerInterfaceTest, OnConfigureLegacyDirectCallStillWorks) {
   ASSERT_EQ(ctrl.on_configure(unconfigured, node, yaml),
             rtc::RTControllerInterface::CallbackReturn::SUCCESS);
   EXPECT_FALSE(ctrl.GetTopicConfig().groups.empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// L1: LoadDeviceLimitsFromConfig — robot-agnostic device limits loader
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(LoadDeviceLimitsFromConfig, RespectsTopicConfigGroupOrder) {
+  // Group order in topic_config_ decides controller-local device index —
+  // independent of std::map<std::string,DeviceNameConfig> alphabetical order.
+  StubController ctrl;
+  YAML::Node yaml;
+  yaml["topics"]["wrist"]["subscribe"][0]["topic"] = "/wrist/state";
+  yaml["topics"]["wrist"]["subscribe"][0]["role"] = "state";
+  yaml["topics"]["base"]["subscribe"][0]["topic"] = "/base/state";
+  yaml["topics"]["base"]["subscribe"][0]["role"] = "state";
+  ctrl.LoadConfig(yaml);
+
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  rtc::DeviceJointLimits wrist_limits;
+  wrist_limits.position_lower = {-1.0, -1.0};
+  wrist_limits.position_upper = {1.0, 1.0};
+  wrist_limits.max_velocity = {0.5, 0.5};
+  configs["wrist"].joint_limits = wrist_limits;
+  rtc::DeviceJointLimits base_limits;
+  base_limits.position_lower = {-3.0};
+  base_limits.position_upper = {3.0};
+  base_limits.max_velocity = {1.5};
+  configs["base"].joint_limits = base_limits;
+  ctrl.SetDeviceNameConfigs(std::move(configs));
+
+  std::array<std::vector<double>, rtc::ControllerState::kMaxDevices> lower, upper, vel;
+  ctrl.LoadDeviceLimitsFromConfig(lower, upper, vel, -10.0, 10.0, 5.0);
+
+  EXPECT_EQ(lower[0], (std::vector<double>{-1.0, -1.0}));
+  EXPECT_EQ(upper[0], (std::vector<double>{1.0, 1.0}));
+  EXPECT_EQ(vel[0], (std::vector<double>{0.5, 0.5}));
+  EXPECT_EQ(lower[1], (std::vector<double>{-3.0}));
+  EXPECT_EQ(upper[1], (std::vector<double>{3.0}));
+  EXPECT_EQ(vel[1], (std::vector<double>{1.5}));
+}
+
+TEST(LoadDeviceLimitsFromConfig, FillsEmptySlotsWithFallbacks) {
+  StubController ctrl;
+  YAML::Node yaml;
+  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/state";
+  yaml["topics"]["arm"]["subscribe"][0]["role"] = "state";
+  ctrl.LoadConfig(yaml);
+
+  std::array<std::vector<double>, rtc::ControllerState::kMaxDevices> lower, upper, vel;
+  ctrl.LoadDeviceLimitsFromConfig(lower, upper, vel, -7.0, 7.0, 3.0);
+
+  for (const auto& slot : lower) {
+    ASSERT_EQ(slot.size(), static_cast<std::size_t>(rtc::kMaxDeviceChannels));
+    EXPECT_DOUBLE_EQ(slot[0], -7.0);
+  }
+  for (const auto& slot : upper) {
+    ASSERT_EQ(slot.size(), static_cast<std::size_t>(rtc::kMaxDeviceChannels));
+    EXPECT_DOUBLE_EQ(slot[0], 7.0);
+  }
+  for (const auto& slot : vel) {
+    ASSERT_EQ(slot.size(), static_cast<std::size_t>(rtc::kMaxDeviceChannels));
+    EXPECT_DOUBLE_EQ(slot[0], 3.0);
+  }
+}
+
+TEST(LoadDeviceLimitsFromConfig, EmptyJointLimitVectorsTreatedAsMissing) {
+  // joint_limits present but with empty inner vectors → fallback per-vector,
+  // not per-device.
+  StubController ctrl;
+  YAML::Node yaml;
+  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/state";
+  yaml["topics"]["arm"]["subscribe"][0]["role"] = "state";
+  ctrl.LoadConfig(yaml);
+
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  rtc::DeviceJointLimits limits;
+  limits.position_lower = {-2.0};  // upper + velocity intentionally empty
+  configs["arm"].joint_limits = limits;
+  ctrl.SetDeviceNameConfigs(std::move(configs));
+
+  std::array<std::vector<double>, rtc::ControllerState::kMaxDevices> lower, upper, vel;
+  ctrl.LoadDeviceLimitsFromConfig(lower, upper, vel, -9.0, 9.0, 4.0);
+
+  EXPECT_EQ(lower[0], (std::vector<double>{-2.0}));
+  ASSERT_EQ(upper[0].size(), static_cast<std::size_t>(rtc::kMaxDeviceChannels));
+  EXPECT_DOUBLE_EQ(upper[0][0], 9.0);
+  ASSERT_EQ(vel[0].size(), static_cast<std::size_t>(rtc::kMaxDeviceChannels));
+  EXPECT_DOUBLE_EQ(vel[0][0], 4.0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// L2: ParseArmSafePosition — robot-agnostic estop YAML parser
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(ParseArmSafePosition, ParsesValidSequence) {
+  YAML::Node cfg;
+  cfg["estop"]["arm_safe_position"].push_back(0.0);
+  cfg["estop"]["arm_safe_position"].push_back(-1.57);
+  cfg["estop"]["arm_safe_position"].push_back(1.57);
+  const auto sp = StubController::ParseArmSafePosition(cfg, 3, "test_ctrl");
+  ASSERT_EQ(sp.size(), 3u);
+  EXPECT_DOUBLE_EQ(sp[0], 0.0);
+  EXPECT_DOUBLE_EQ(sp[1], -1.57);
+  EXPECT_DOUBLE_EQ(sp[2], 1.57);
+}
+
+TEST(ParseArmSafePosition, AcceptsArbitraryDof) {
+  // KUKA iiwa7-style 7-DOF arm — base must not assume any specific count.
+  YAML::Node cfg;
+  for (int i = 0; i < 7; ++i) {
+    cfg["estop"]["arm_safe_position"].push_back(0.1 * i);
+  }
+  const auto sp = StubController::ParseArmSafePosition(cfg, 7, "test_ctrl");
+  ASSERT_EQ(sp.size(), 7u);
+  EXPECT_DOUBLE_EQ(sp[6], 0.6);
+}
+
+TEST(ParseArmSafePosition, ThrowsOnMissingEstopSection) {
+  YAML::Node cfg;
+  cfg["other_section"] = "value";
+  EXPECT_THROW(StubController::ParseArmSafePosition(cfg, 6, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmSafePosition, ThrowsOnMissingArmSafePosition) {
+  YAML::Node cfg;
+  cfg["estop"]["something_else"] = 0.0;
+  EXPECT_THROW(StubController::ParseArmSafePosition(cfg, 6, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmSafePosition, ThrowsOnNonSequence) {
+  YAML::Node cfg;
+  cfg["estop"]["arm_safe_position"] = 0.0;
+  EXPECT_THROW(StubController::ParseArmSafePosition(cfg, 6, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmSafePosition, ThrowsOnLengthMismatch) {
+  YAML::Node cfg;
+  for (int i = 0; i < 5; ++i) {
+    cfg["estop"]["arm_safe_position"].push_back(0.0);
+  }
+  EXPECT_THROW(StubController::ParseArmSafePosition(cfg, 6, "test_ctrl"), std::runtime_error);
+}
+
+TEST(ParseArmSafePosition, ErrorMessageIncludesControllerName) {
+  YAML::Node cfg;
+  cfg["estop"]["arm_safe_position"] = 0.0;
+  try {
+    StubController::ParseArmSafePosition(cfg, 6, "my_special_ctrl");
+    FAIL() << "Expected runtime_error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_NE(std::string(e.what()).find("my_special_ctrl"), std::string::npos);
+  }
 }
 
 }  // namespace

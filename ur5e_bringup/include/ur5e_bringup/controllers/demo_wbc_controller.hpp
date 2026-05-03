@@ -319,10 +319,6 @@ class DemoWbcController final : public RTControllerInterface {
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_upper_;
 
-  static void ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n,
-                            const std::vector<double>& lower,
-                            const std::vector<double>& upper) noexcept;
-
   // ── Computed output (intermediate) ──────────────────────────────────────
   struct ComputedTrajectory {
     std::array<double, kMaxDeviceChannels> positions{};

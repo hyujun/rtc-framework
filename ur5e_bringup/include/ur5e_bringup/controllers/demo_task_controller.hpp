@@ -326,10 +326,6 @@ class DemoTaskController final : public RTControllerInterface {
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
-  static void ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n,
-                            const std::vector<double>& lower,
-                            const std::vector<double>& upper) noexcept;
-
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
   ControllerTopicHandles owned_topics_;
 
