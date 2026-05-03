@@ -45,7 +45,10 @@ find_package(rtc_msgs REQUIRED)
 add_library(rtc_controller_manager_lib STATIC
   src/rt_controller_node.cpp
   src/rt_controller_node_params.cpp
-  src/rt_controller_node_topics.cpp
+  src/rt_controller_node_subscriptions.cpp
+  src/rt_controller_node_publishers.cpp
+  src/rt_controller_node_switch.cpp
+  src/rt_controller_node_services.cpp
   src/rt_controller_node_callbacks.cpp
   src/rt_controller_node_rt_loop.cpp
   src/rt_controller_node_publish.cpp
