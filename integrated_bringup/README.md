@@ -63,9 +63,8 @@ integrated_bringup/
 │           ├── light_contact.yaml      <- rtc_mpc LightContactOCP factory config
 │           └── contact_rich.yaml       <- rtc_mpc ContactRichOCP factory config
 ├── launch/
-│   ├── robot.launch.py                 <- 실제 UR5e 로봇 launch
-│   ├── sim.launch.py                   <- MuJoCo 시뮬레이션 launch
-│   └── hand.launch.py                  <- 핸드 UDP 드라이버 launch
+│   ├── robot.launch.py                 <- 실제 UR5e 로봇 launch (udp_hand_node 포함)
+│   └── sim.launch.py                   <- MuJoCo 시뮬레이션 launch
 └── scripts/
     ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI (tkinter)
     └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
@@ -556,20 +555,6 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 **Lifecycle 순서:** 런치 시 mujoco_simulator → configure → activate 완료 후 integrated_rt_controller → configure → activate 순차 활성화.
 
 `mujoco_simulator.yaml`은 `integrated_bringup/config/`에 위치하며 (UR5e 전용 robot_response 그룹/조인트/토픽), agnostic 기본값은 `rtc_mujoco_sim/config/mujoco_default.yaml`에서 로드된 후 위에 오버레이됩니다.
-
----
-
-### hand.launch.py -- 핸드 드라이버
-
-```bash
-ros2 launch integrated_bringup hand.launch.py target_ip:=192.168.1.2
-```
-
-| 인자 | 기본값 | 설명 |
-|------|--------|------|
-| `target_ip` | `192.168.1.2` | 핸드 컨트롤러 IP |
-| `target_port` | `55151` | UDP 포트 |
-| `publish_rate` | `100.0` | 퍼블리시 주파수 (Hz) |
 
 ---
 
