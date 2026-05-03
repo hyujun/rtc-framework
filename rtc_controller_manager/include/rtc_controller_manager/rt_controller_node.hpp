@@ -115,6 +115,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void DeclareAndLoadParameters();
   void CreateSubscriptions();
   void CreatePublishers();
+  // CreatePublishers helpers — split per role for cognitive complexity.
+  // Each helper assumes ownership has already been filtered to manager-owned
+  // entries by the caller; misconfigured entries (controller-only roles
+  // assigned manager ownership) are rejected by CreatePublishers' switch
+  // default with std::logic_error.
+  void CreateJointCommandPublisher(const rtc::PublishTopicEntry& entry,
+                                   const std::string& group_name, const rclcpp::QoS& cmd_qos);
+  void CreateRos2CommandPublisher(const rtc::PublishTopicEntry& entry,
+                                  const std::string& group_name);
+  void CreateDigitalTwinPublishers();
+  void CreateFixedSafetyPublishers();
   void CreateServices();
   void ExposeTopicParameters();
   void CreateTimers();
