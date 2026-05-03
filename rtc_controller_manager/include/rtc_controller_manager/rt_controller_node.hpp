@@ -447,6 +447,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::map<std::string, rtc::DeviceNameConfig> device_name_configs_;
   std::vector<std::string> slot_to_group_name_;  // reverse: slot index → group name
 
+  // Per-slot sensor packing layout cache (resolved from device_name_configs_
+  // at LoadDeviceNameConfigs time). Indexed by device slot. Empty optional
+  // means the device exposes no packed sensor block.
+  std::vector<std::optional<rtc::DeviceSensorLayout>> slot_to_sensor_layout_;
+
   // Per-device reorder maps (indexed by device slot)
   struct DeviceReorderMap {
     std::vector<int> reorder;

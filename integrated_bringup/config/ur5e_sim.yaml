@@ -108,3 +108,12 @@
           max_velocity:   [6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28]
           position_lower: [-1.57, -1.57, -1.57, -0.15, 0.0, 0.0, -0.15, 0.0, 0.0, 0.0]
           position_upper: [1.57, 1.57, 0.00, 0.15, 1.57, 1.57, 0.15, 1.57, 1.57, 1.57]
+        # Sensor packing layout — CM uses these for stride/offset arithmetic
+        # only; field semantics (barometer/ToF/contact/F/u) live in
+        # udp_hand_driver. assm_v1 hand: 8 baro + 3 ToF per fingertip, ML
+        # inference = contact(1) + F(3) + u(3) = 7.
+        sensor_layout:
+          primary_count_per_group:        8
+          secondary_count_per_group:      3
+          values_per_group:               11
+          inference_values_per_group:     7

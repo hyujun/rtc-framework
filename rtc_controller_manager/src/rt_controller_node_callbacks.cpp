@@ -162,37 +162,59 @@ void RtControllerNode::DeviceTargetCallback(int device_slot,
 void RtControllerNode::HandSensorStateCallback(int device_slot,
                                                rtc_msgs::msg::HandSensorState::SharedPtr msg) {
   const auto uslot = static_cast<std::size_t>(device_slot);
+
+  // Resolve per-device sensor packing layout from YAML-loaded cache. CM
+  // performs no compile-time inference about the sensor schema (no hand
+  // constants); the message's named fields (barometer[N], tof[M], f[3], u[3])
+  // are the boundary contract.
+  if (uslot >= slot_to_sensor_layout_.size() || !slot_to_sensor_layout_[uslot].has_value()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "HandSensorState received on slot %d but no sensor_layout configured "
+                         "(devices.<name>.sensor_layout.* in YAML) — drop msg",
+                         device_slot);
+    return;
+  }
+  const auto& sl = slot_to_sensor_layout_[uslot].value();
+  const int primary = sl.primary_count_per_group;
+  const int secondary = sl.secondary_count_per_group;
+  const int values_per_group = sl.values_per_group;
+  const int infer_values_per_group = sl.inference_values_per_group;
+
   auto ds = device_states_[uslot].Load();
 
   const int n_ft = static_cast<int>(msg->fingertips.size());
   for (int f = 0; f < n_ft && f < urtc::kMaxFingertips; ++f) {
     const auto& fs = msg->fingertips[static_cast<std::size_t>(f)];
-    const int base = f * urtc::kSensorValuesPerFingertip;
+    const int base = f * values_per_group;
 
-    // Filtered sensor data
-    for (int b = 0; b < urtc::kBarometerCount; ++b) {
+    // Primary sensor block (filtered)
+    for (int b = 0; b < primary && b < static_cast<int>(fs.barometer.size()); ++b) {
       ds.sensor_data[static_cast<std::size_t>(base + b)] =
           static_cast<int32_t>(fs.barometer[static_cast<std::size_t>(b)]);
     }
-    for (int t = 0; t < urtc::kTofCount; ++t) {
-      ds.sensor_data[static_cast<std::size_t>(base + urtc::kBarometerCount + t)] =
+    // Secondary sensor block (filtered)
+    for (int t = 0; t < secondary && t < static_cast<int>(fs.tof.size()); ++t) {
+      ds.sensor_data[static_cast<std::size_t>(base + primary + t)] =
           static_cast<int32_t>(fs.tof[static_cast<std::size_t>(t)]);
     }
 
-    // Raw sensor data
-    for (int b = 0; b < urtc::kBarometerCount; ++b) {
+    // Primary sensor block (raw)
+    for (int b = 0; b < primary && b < static_cast<int>(fs.barometer_raw.size()); ++b) {
       ds.sensor_data_raw[static_cast<std::size_t>(base + b)] =
           static_cast<int32_t>(fs.barometer_raw[static_cast<std::size_t>(b)]);
     }
-    for (int t = 0; t < urtc::kTofCount; ++t) {
-      ds.sensor_data_raw[static_cast<std::size_t>(base + urtc::kBarometerCount + t)] =
+    // Secondary sensor block (raw)
+    for (int t = 0; t < secondary && t < static_cast<int>(fs.tof_raw.size()); ++t) {
+      ds.sensor_data_raw[static_cast<std::size_t>(base + primary + t)] =
           static_cast<int32_t>(fs.tof_raw[static_cast<std::size_t>(t)]);
     }
 
-    // Inference data
+    // Inference output block. Layout (per-group): contact(1) + f(3) + u(3) = 7
+    // values; CM is told the size via inference_values_per_group and the
+    // message's f/u/contact_flag fields are copied positionally.
     ds.inference_enable[static_cast<std::size_t>(f)] = fs.inference_enable;
-    if (fs.inference_enable) {
-      const int ft_base = f * urtc::kFTValuesPerFingertip;
+    if (fs.inference_enable && infer_values_per_group >= 7) {
+      const int ft_base = f * infer_values_per_group;
       ds.inference_data[static_cast<std::size_t>(ft_base)] = fs.contact_flag;
       for (int j = 0; j < 3; ++j) {
         const auto ju = static_cast<std::size_t>(j);
@@ -202,7 +224,7 @@ void RtControllerNode::HandSensorStateCallback(int device_slot,
     }
   }
 
-  ds.num_sensor_channels = n_ft * urtc::kSensorValuesPerFingertip;
+  ds.num_sensor_channels = n_ft * values_per_group;
   ds.num_inference_fingertips = n_ft;
   device_states_[uslot].Store(ds);
 }

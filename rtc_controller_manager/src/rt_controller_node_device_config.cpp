@@ -85,6 +85,7 @@ void RtControllerNode::ParseTreeModels(rtc_urdf_bridge::ModelConfig& config) {
 void RtControllerNode::LoadDeviceNameConfigs() {
   // Build reverse lookup: slot index → group name
   slot_to_group_name_.resize(static_cast<std::size_t>(group_slot_map_.size()));
+  slot_to_sensor_layout_.assign(static_cast<std::size_t>(group_slot_map_.size()), std::nullopt);
   for (const auto& [name, slot] : group_slot_map_) {
     slot_to_group_name_[static_cast<std::size_t>(slot)] = name;
   }
@@ -193,6 +194,40 @@ void RtControllerNode::LoadDeviceNameConfigs() {
         if (!cfg.safe_position.empty()) {
           RCLCPP_INFO(get_logger(), "[%s] Safe position loaded from YAML", group_name.c_str());
         }
+      }
+    }
+
+    // sensor_layout (optional — per-group sensor packing for HandSensorState
+    // and analogous packed-sensor topics). CM uses these counts only for
+    // stride/offset arithmetic in its sensor callback; the field semantics
+    // (barometer/ToF/etc.) live in the device-driver package.
+    {
+      const std::string sl_prefix = prefix + ".sensor_layout";
+      const std::string pri_key = sl_prefix + ".primary_count_per_group";
+      const std::string sec_key = sl_prefix + ".secondary_count_per_group";
+      const std::string vpg_key = sl_prefix + ".values_per_group";
+      const std::string ipg_key = sl_prefix + ".inference_values_per_group";
+      const bool any = has_parameter(pri_key) || has_parameter(sec_key) || has_parameter(vpg_key) ||
+                       has_parameter(ipg_key);
+      if (any) {
+        rtc::DeviceSensorLayout sl;
+        if (has_parameter(pri_key))
+          sl.primary_count_per_group = static_cast<int>(get_parameter(pri_key).as_int());
+        if (has_parameter(sec_key))
+          sl.secondary_count_per_group = static_cast<int>(get_parameter(sec_key).as_int());
+        if (has_parameter(vpg_key)) {
+          sl.values_per_group = static_cast<int>(get_parameter(vpg_key).as_int());
+        } else {
+          sl.values_per_group = sl.primary_count_per_group + sl.secondary_count_per_group;
+        }
+        if (has_parameter(ipg_key))
+          sl.inference_values_per_group = static_cast<int>(get_parameter(ipg_key).as_int());
+        cfg.sensor_layout = sl;
+        RCLCPP_INFO(get_logger(),
+                    "[%s] Sensor layout: primary=%d secondary=%d values_per_group=%d "
+                    "inference_values_per_group=%d",
+                    group_name.c_str(), sl.primary_count_per_group, sl.secondary_count_per_group,
+                    sl.values_per_group, sl.inference_values_per_group);
       }
     }
 
@@ -435,6 +470,15 @@ void RtControllerNode::LoadDeviceNameConfigs() {
                   group_name.c_str(), cfg.joint_state_names.size(),
                   join(cfg.joint_state_names).c_str(), cfg.sensor_names.size(),
                   join(cfg.sensor_names).c_str(), cfg.urdf ? " [URDF]" : "");
+    }
+
+    // Populate slot-indexed sensor layout cache (used by hot-path callbacks
+    // to avoid map lookup).
+    if (auto slot_it = group_slot_map_.find(group_name); slot_it != group_slot_map_.end()) {
+      const auto uslot = static_cast<std::size_t>(slot_it->second);
+      if (uslot < slot_to_sensor_layout_.size()) {
+        slot_to_sensor_layout_[uslot] = cfg.sensor_layout;
+      }
     }
 
     device_name_configs_[group_name] = std::move(cfg);

@@ -136,7 +136,8 @@ rtc_base/
 |--------|------|
 | `DeviceUrdfConfig` | URDF 파싱용 -- `package`, `path`, `root_link`, `tip_link` |
 | `DeviceJointLimits` | 관절 한계 -- `max_velocity`, `max_acceleration`, `max_torque`, `position_lower`, `position_upper` |
-| `DeviceNameConfig` | 디바이스 이름, `joint_state_names`, `joint_command_names`, `motor_state_names`, `sensor_names`, URDF 설정(`DeviceUrdfConfig`), 관절 한계(`DeviceJointLimits`), 안전 위치(`safe_position`) |
+| `DeviceSensorLayout` | 센서 패킹 layout -- `primary_count_per_group`, `secondary_count_per_group`, `values_per_group`, `inference_values_per_group`. rtc_* 코드는 stride/offset 계산에만 사용 (의미는 device-driver 책임) |
+| `DeviceNameConfig` | 디바이스 이름, `joint_state_names`, `joint_command_names`, `motor_state_names`, `sensor_names`, URDF 설정(`DeviceUrdfConfig`), 관절 한계(`DeviceJointLimits`), 센서 layout(`DeviceSensorLayout`, optional), 안전 위치(`safe_position`) |
 | `TopicConfig` | 디바이스 그룹별 구독/퍼블리시 토픽 라우팅 (`std::vector<std::pair>` 기반, YAML 삽입 순서 보존) |
 
 **토픽 설정 보조 구조체:**

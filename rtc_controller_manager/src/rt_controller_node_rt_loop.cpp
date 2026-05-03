@@ -147,9 +147,10 @@ void RtControllerNode::ControlLoop() {
       std::copy_n(cache.sensor_data_raw.data(), nsc, dev.sensor_data_raw.data());
     }
     if (urtc::HasCapability(cap, urtc::DeviceCapability::kInference) &&
-        cache.num_inference_fingertips > 0) {
-      const auto nif =
-          static_cast<std::size_t>(cache.num_inference_fingertips * urtc::kFTValuesPerFingertip);
+        cache.num_inference_fingertips > 0 && slot < slot_to_sensor_layout_.size() &&
+        slot_to_sensor_layout_[slot].has_value()) {
+      const int infer_per_group = slot_to_sensor_layout_[slot]->inference_values_per_group;
+      const auto nif = static_cast<std::size_t>(cache.num_inference_fingertips * infer_per_group);
       dev.num_inference_fingertips = cache.num_inference_fingertips;
       std::copy_n(cache.inference_data.data(), nif, dev.inference_data.data());
       std::copy_n(cache.inference_enable.data(),
@@ -232,13 +233,20 @@ void RtControllerNode::ControlLoop() {
         std::copy_n(dstate.sensor_data.data(), nsc, gc.sensor_data.data());
         std::copy_n(dstate.sensor_data_raw.data(), nsc, gc.sensor_data_raw.data());
       }
-      // Inference output for DeviceSensorLog
+      // Inference output for DeviceSensorLog. Layout (values per inference
+      // group) is configured via YAML per device — CM stays sensor-agnostic.
       if (dstate.num_inference_fingertips > 0) {
-        gc.inference_valid = true;
-        gc.num_inference_values = dstate.num_inference_fingertips * urtc::kFTValuesPerFingertip;
-        const auto niv = static_cast<std::size_t>(gc.num_inference_values);
-        for (std::size_t i = 0; i < niv && i < gc.inference_output.size(); ++i) {
-          gc.inference_output[i] = dstate.inference_data[i];
+        const auto group_slot = static_cast<std::size_t>(slot_mapping.slots[gi]);
+        if (group_slot < slot_to_sensor_layout_.size() &&
+            slot_to_sensor_layout_[group_slot].has_value()) {
+          const int infer_per_group =
+              slot_to_sensor_layout_[group_slot]->inference_values_per_group;
+          gc.inference_valid = true;
+          gc.num_inference_values = dstate.num_inference_fingertips * infer_per_group;
+          const auto niv = static_cast<std::size_t>(gc.num_inference_values);
+          for (std::size_t i = 0; i < niv && i < gc.inference_output.size(); ++i) {
+            gc.inference_output[i] = dstate.inference_data[i];
+          }
         }
       }
       // Grasp state from controller output

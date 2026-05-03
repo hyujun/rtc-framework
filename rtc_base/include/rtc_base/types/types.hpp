@@ -291,15 +291,29 @@ struct DeviceJointLimits {
   std::vector<double> position_upper;    // per-joint upper bound (rad)
 };
 
+// Per-device sensor packing layout — describes how `DeviceState::sensor_data`
+// (a flat int32 array) is laid out for one logical "group" (e.g. one
+// fingertip on a tactile hand, one strain-gauge cluster on a force sensor).
+// rtc_* code uses these counts only for stride/offset arithmetic — it does
+// NOT know what the values mean. The semantics (barometer vs ToF, etc.) are
+// the device-driver's private concern and live in the driver package.
+struct DeviceSensorLayout {
+  int primary_count_per_group{0};     // first sensor block per group
+  int secondary_count_per_group{0};   // second sensor block per group
+  int values_per_group{0};            // = primary + secondary (per-group stride)
+  int inference_values_per_group{0};  // ML inference output size per group
+};
+
 struct DeviceNameConfig {
   std::string device_name;
   std::vector<std::string> joint_state_names;
   std::vector<std::string> joint_command_names;  // empty → defaults to joint_state_names
   std::vector<std::string> motor_state_names;    // motor-space names (e.g. motor_1..10)
   std::vector<std::string> sensor_names;
-  std::optional<DeviceUrdfConfig> urdf;           // nullopt if no URDF for this device
-  std::optional<DeviceJointLimits> joint_limits;  // nullopt if no limits configured
-  std::vector<double> safe_position;              // E-STOP target position (per-joint, rad)
+  std::optional<DeviceUrdfConfig> urdf;             // nullopt if no URDF for this device
+  std::optional<DeviceJointLimits> joint_limits;    // nullopt if no limits configured
+  std::optional<DeviceSensorLayout> sensor_layout;  // nullopt if device has no sensor block
+  std::vector<double> safe_position;                // E-STOP target position (per-joint, rad)
 };
 
 // ── Device capability bitmask (selective data copy in RT loop) ───────────────
