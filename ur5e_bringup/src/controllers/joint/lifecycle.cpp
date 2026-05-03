@@ -1,6 +1,6 @@
-#include "ur5e_bringup/controllers/controller_log_registration.hpp"
-#include "ur5e_bringup/controllers/demo_task_controller.hpp"
-#include "ur5e_bringup/controllers/owned_topics.hpp"
+#include "ur5e_bringup/support/controller_log_registration.hpp"
+#include "ur5e_bringup/controllers/demo_joint_controller.hpp"
+#include "ur5e_bringup/support/owned_topics.hpp"
 
 #include <chrono>
 #include <memory>
@@ -11,7 +11,10 @@
 namespace ur5e_bringup {
 
 // ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
-RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
+// Delegates to ur5e_bringup::owned_topics helpers so the 3 demo controllers
+// share a single implementation; only storage lives in the subclass.
+
+RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     const rclcpp_lifecycle::State& prev, rclcpp_lifecycle::LifecycleNode::SharedPtr node,
     const YAML::Node& yaml) noexcept {
   const auto ret = RTControllerInterface::on_configure(prev, node, yaml);
@@ -22,6 +25,9 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     CreateOwnedTopics(*this, owned_topics_);
 
     // ── PR2 (U3) Lift: Phase C controller-owned CSV log registration ──────
+    // Caller maps instance strings → (joint_names, motor_names, sensor_names).
+    // The helper iterates parsed_log_entries_ once, returns instance-keyed
+    // handles, and we plug the ones we own into typed members below.
     LogRegistrationContext ctx{logger_,
                                log_set_,
                                {
@@ -44,6 +50,9 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     if (auto it = reg.handles.sensor.find("hand_sensor"); it != reg.handles.sensor.end()) {
       hand_sensor_log_handle_ = std::move(it->second);
     }
+
+    // Drain timer on a non-RT callback group (10 Hz). Single-threaded —
+    // executor's MutuallyExclusive group is sufficient.
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -51,20 +60,15 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
           std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); }, log_drain_cb_group_);
     }
 
-    // Phase B: declare tunable gains as ROS 2 parameters on the controller's
-    // own LifecycleNode and register the set-parameters callback. LoadConfig
-    // (run from the base class on_configure above) already seeded gains_lock_
-    // from YAML; declare uses those as defaults so YAML-loaded values are the
-    // initial parameter values.
+    // Phase D: declare tunable gains as ROS 2 parameters seeded from
+    // gains_lock_ (populated by LoadConfig from YAML), register the
+    // set-parameters callback, and create the Force-PI grasp_command srv.
     DeclareGainParameters();
     param_callback_handle_ =
         node_->add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& params) {
           return OnGainParametersSet(params);
         });
 
-    // Phase B: Force-PI grasp command channel (one-shot event, NOT a gain).
-    // Resolves to /<config_key>/grasp_command via the LifecycleNode's
-    // namespace.
     grasp_command_srv_ = node_->create_service<rtc_msgs::srv::GraspCommand>(
         "grasp_command", [this](const std::shared_ptr<rtc_msgs::srv::GraspCommand::Request> req,
                                 std::shared_ptr<rtc_msgs::srv::GraspCommand::Response> resp) {
@@ -106,29 +110,31 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
           }
         });
   } catch (const std::exception& e) {
-    RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: %s", e.what());
+    RCLCPP_ERROR(logger_, "DemoJointController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
-    RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: unknown");
+    RCLCPP_ERROR(logger_, "DemoJointController on_configure failed: unknown");
     return CallbackReturn::FAILURE;
   }
   return CallbackReturn::SUCCESS;
 }
 
-RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
+RTControllerInterface::CallbackReturn DemoJointController::on_activate(
     const rclcpp_lifecycle::State& prev, const rtc::ControllerState& device_snapshot) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
   return RTControllerInterface::on_activate(prev, device_snapshot);
 }
 
-RTControllerInterface::CallbackReturn DemoTaskController::on_deactivate(
+RTControllerInterface::CallbackReturn DemoJointController::on_deactivate(
     const rclcpp_lifecycle::State& prev) noexcept {
   DeactivateOwnedTopics(prev, owned_topics_);
-  log_set_.DrainAll();  // flush in-flight log SPSC residue
+  // Flush any in-flight log samples — controller switch leaves SPSC residue
+  // that would otherwise replay on the next on_activate.
+  log_set_.DrainAll();
   return CallbackReturn::SUCCESS;
 }
 
-RTControllerInterface::CallbackReturn DemoTaskController::on_cleanup(
+RTControllerInterface::CallbackReturn DemoJointController::on_cleanup(
     const rclcpp_lifecycle::State& prev) noexcept {
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();

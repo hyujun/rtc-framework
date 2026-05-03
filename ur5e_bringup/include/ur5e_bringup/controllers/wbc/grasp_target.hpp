@@ -1,5 +1,5 @@
-#ifndef UR5E_BRINGUP_PHASE_GRASP_TARGET_HPP_
-#define UR5E_BRINGUP_PHASE_GRASP_TARGET_HPP_
+#ifndef UR5E_BRINGUP_CONTROLLERS_WBC_GRASP_TARGET_HPP_
+#define UR5E_BRINGUP_CONTROLLERS_WBC_GRASP_TARGET_HPP_
 
 /// @file grasp_target.hpp
 /// @brief Passive record of the grasp-scenario goal poses consumed by
@@ -52,4 +52,4 @@ struct GraspTarget {
 
 }  // namespace ur5e_bringup::phase
 
-#endif  // UR5E_BRINGUP_PHASE_GRASP_TARGET_HPP_
+#endif  // UR5E_BRINGUP_CONTROLLERS_WBC_GRASP_TARGET_HPP_

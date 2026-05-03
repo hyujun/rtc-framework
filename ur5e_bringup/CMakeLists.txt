@@ -49,23 +49,23 @@ find_package(ur5e_hand_driver REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
-  src/controllers/demo_joint_controller.cpp
-  src/controllers/demo_joint_controller_compute.cpp
-  src/controllers/demo_joint_controller_lifecycle.cpp
-  src/controllers/demo_joint_controller_parameters.cpp
-  src/controllers/demo_task_controller.cpp
-  src/controllers/demo_task_controller_compute.cpp
-  src/controllers/demo_task_controller_lifecycle.cpp
-  src/controllers/demo_task_controller_parameters.cpp
-  src/controllers/demo_wbc_controller.cpp
-  src/controllers/demo_wbc_controller_compute.cpp
-  src/controllers/demo_wbc_controller_phase.cpp
-  src/controllers/demo_wbc_controller_lifecycle.cpp
-  src/controllers/demo_wbc_controller_parameters.cpp
-  src/controllers/demo_shared_config.cpp
   src/controllers/controller_registration.cpp
-  src/controllers/owned_topics.cpp
-  src/phase/grasp_phase_manager.cpp
+  src/controllers/joint/controller.cpp
+  src/controllers/joint/compute.cpp
+  src/controllers/joint/lifecycle.cpp
+  src/controllers/joint/parameters.cpp
+  src/controllers/task/controller.cpp
+  src/controllers/task/compute.cpp
+  src/controllers/task/lifecycle.cpp
+  src/controllers/task/parameters.cpp
+  src/controllers/wbc/controller.cpp
+  src/controllers/wbc/compute.cpp
+  src/controllers/wbc/lifecycle.cpp
+  src/controllers/wbc/parameters.cpp
+  src/controllers/wbc/phase.cpp
+  src/controllers/wbc/grasp_phase_manager.cpp
+  src/support/demo_shared_config.cpp
+  src/support/owned_topics.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_demo_controllers PUBLIC

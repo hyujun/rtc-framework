@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for ur5e_bringup::ComputeVirtualTcp (virtual_tcp.hpp)
 // ─────────────────────────────────────────────────────────────────────────────
-#include "ur5e_bringup/controllers/virtual_tcp.hpp"
+#include "ur5e_bringup/support/virtual_tcp.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>

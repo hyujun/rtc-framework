@@ -36,7 +36,7 @@
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
-#include "ur5e_bringup/phase/grasp_phase_manager.hpp"
+#include "ur5e_bringup/controllers/wbc/grasp_phase_manager.hpp"
 
 #include <yaml-cpp/yaml.h>
 

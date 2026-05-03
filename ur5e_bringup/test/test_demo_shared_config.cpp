@@ -4,8 +4,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/grasp/grasp_types.hpp"
-#include "ur5e_bringup/controllers/demo_shared_config.hpp"
-#include "ur5e_bringup/controllers/virtual_tcp.hpp"
+#include "ur5e_bringup/support/demo_shared_config.hpp"
+#include "ur5e_bringup/support/virtual_tcp.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>

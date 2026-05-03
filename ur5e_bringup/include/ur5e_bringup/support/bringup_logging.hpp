@@ -1,5 +1,5 @@
-#ifndef UR5E_BRINGUP_BRINGUP_LOGGING_HPP_
-#define UR5E_BRINGUP_BRINGUP_LOGGING_HPP_
+#ifndef UR5E_BRINGUP_SUPPORT_BRINGUP_LOGGING_HPP_
+#define UR5E_BRINGUP_SUPPORT_BRINGUP_LOGGING_HPP_
 
 /// Hierarchical sub-logger factories and standard throttle periods for the
 /// ur5e_bringup package.
@@ -54,4 +54,4 @@ inline rclcpp::Logger SharedConfigLogger() {
 
 }  // namespace ur5e_bringup::logging
 
-#endif  // UR5E_BRINGUP_BRINGUP_LOGGING_HPP_
+#endif  // UR5E_BRINGUP_SUPPORT_BRINGUP_LOGGING_HPP_

@@ -1,4 +1,4 @@
-#include "ur5e_bringup/controllers/owned_topics.hpp"
+#include "ur5e_bringup/support/owned_topics.hpp"
 
 #include <algorithm>
 #include <stdexcept>

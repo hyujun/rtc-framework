@@ -23,8 +23,8 @@
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
-#include "ur5e_bringup/phase/grasp_phase_manager.hpp"
-#include "ur5e_bringup/phase/grasp_target.hpp"
+#include "ur5e_bringup/controllers/wbc/grasp_phase_manager.hpp"
+#include "ur5e_bringup/controllers/wbc/grasp_target.hpp"
 
 #include <yaml-cpp/yaml.h>
 

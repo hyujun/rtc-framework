@@ -1,5 +1,5 @@
-#ifndef UR5E_BRINGUP_PHASE_GRASP_PHASE_MANAGER_HPP_
-#define UR5E_BRINGUP_PHASE_GRASP_PHASE_MANAGER_HPP_
+#ifndef UR5E_BRINGUP_CONTROLLERS_WBC_GRASP_PHASE_MANAGER_HPP_
+#define UR5E_BRINGUP_CONTROLLERS_WBC_GRASP_PHASE_MANAGER_HPP_
 
 /// @file grasp_phase_manager.hpp
 /// @brief Concrete `rtc::mpc::PhaseManagerBase` implementing an 8-state grasp
@@ -47,7 +47,7 @@
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/phase/phase_manager_base.hpp"
 #include "rtc_mpc/types/contact_plan_types.hpp"
-#include "ur5e_bringup/phase/grasp_target.hpp"
+#include "ur5e_bringup/controllers/wbc/grasp_target.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -232,4 +232,4 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
 
 }  // namespace ur5e_bringup::phase
 
-#endif  // UR5E_BRINGUP_PHASE_GRASP_PHASE_MANAGER_HPP_
+#endif  // UR5E_BRINGUP_CONTROLLERS_WBC_GRASP_PHASE_MANAGER_HPP_

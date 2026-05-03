@@ -1,5 +1,5 @@
-#ifndef UR5E_BRINGUP_CONTROLLERS_OWNED_TOPICS_H_
-#define UR5E_BRINGUP_CONTROLLERS_OWNED_TOPICS_H_
+#ifndef UR5E_BRINGUP_SUPPORT_OWNED_TOPICS_HPP_
+#define UR5E_BRINGUP_SUPPORT_OWNED_TOPICS_HPP_
 
 // Shared helper for Phase 4 — creates, activates, and publishes the
 // controller-owned sub/pub set that the three demo controllers
@@ -85,4 +85,4 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
 
 }  // namespace ur5e_bringup
 
-#endif  // UR5E_BRINGUP_CONTROLLERS_OWNED_TOPICS_H_
+#endif  // UR5E_BRINGUP_SUPPORT_OWNED_TOPICS_HPP_

@@ -1,5 +1,5 @@
-#ifndef UR5E_BRINGUP_CONTROLLERS_CONTROLLER_LOG_REGISTRATION_HPP_
-#define UR5E_BRINGUP_CONTROLLERS_CONTROLLER_LOG_REGISTRATION_HPP_
+#ifndef UR5E_BRINGUP_SUPPORT_CONTROLLER_LOG_REGISTRATION_HPP_
+#define UR5E_BRINGUP_SUPPORT_CONTROLLER_LOG_REGISTRATION_HPP_
 
 // Shared helper for the Phase C `logs:` YAML block. The 3 demo controllers
 // (joint, task, wbc) parse the same controller-owned `logs:` schema and
@@ -150,4 +150,4 @@ template <typename ParsedLogEntryT>
 
 }  // namespace ur5e_bringup
 
-#endif  // UR5E_BRINGUP_CONTROLLERS_CONTROLLER_LOG_REGISTRATION_HPP_
+#endif  // UR5E_BRINGUP_SUPPORT_CONTROLLER_LOG_REGISTRATION_HPP_

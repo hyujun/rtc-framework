@@ -43,7 +43,7 @@
 
 **구현 원칙:**
 - ROS 노드 이름 = 실행 파일 이름 (예: `ur5e_rt_controller`). `node_->get_logger()`는 그 이름을 그대로 반환. `rtc_controller_manager`는 library-only (실행 파일 없음) — runtime identity는 robot-specific bringup이 소유. 자세한 원칙: [design-principles.md](design-principles.md)
-- 컨트롤러 내부 로그는 `rclcpp::get_logger("<pkg>.<controller>")` 정적 logger를 멤버 캐시로 보유 (예: [ur5e_bringup/include/ur5e_bringup/bringup_logging.hpp](../ur5e_bringup/include/ur5e_bringup/bringup_logging.hpp))
+- 컨트롤러 내부 로그는 `rclcpp::get_logger("<pkg>.<controller>")` 정적 logger를 멤버 캐시로 보유 (예: [ur5e_bringup/include/ur5e_bringup/support/bringup_logging.hpp](../ur5e_bringup/include/ur5e_bringup/support/bringup_logging.hpp))
 - Base class (`RTControllerInterface`)에서 찍는 공통 로그는 `rclcpp::get_logger("rtc_controller_interface")` + 메시지 본문에 `[<controller_name>]` prefix 로 어느 컨트롤러에서 호출됐는지 표시
 - 점(`.`) 하나만 허용. 패키지 prefix를 축약하지 말 것 (예: `bringup.demo_joint` 사용 금지 → `ur5e_bringup.demo_joint_controller`)
 

@@ -19,11 +19,11 @@
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
-#include "ur5e_bringup/bringup_logging.hpp"
-#include "ur5e_bringup/controllers/owned_topics.hpp"
+#include "ur5e_bringup/support/bringup_logging.hpp"
+#include "ur5e_bringup/support/owned_topics.hpp"
 #include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
 #include "ur5e_bringup/logging/device_state_log_pod.hpp"
-#include "ur5e_bringup/phase/grasp_phase_manager.hpp"
+#include "ur5e_bringup/controllers/wbc/grasp_phase_manager.hpp"
 #include "ur5e_hand_driver/hand_constants.hpp"
 
 // Third-party

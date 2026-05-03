@@ -1,4 +1,4 @@
-#include "ur5e_bringup/phase/grasp_phase_manager.hpp"
+#include "ur5e_bringup/controllers/wbc/grasp_phase_manager.hpp"
 
 #include <array>
 #include <cstdio>

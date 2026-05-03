@@ -1,6 +1,6 @@
-#include "ur5e_bringup/controllers/controller_log_registration.hpp"
+#include "ur5e_bringup/support/controller_log_registration.hpp"
 #include "ur5e_bringup/controllers/demo_wbc_controller.hpp"
-#include "ur5e_bringup/controllers/owned_topics.hpp"
+#include "ur5e_bringup/support/owned_topics.hpp"
 
 #include <chrono>
 #include <memory>

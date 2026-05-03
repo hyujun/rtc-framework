@@ -28,22 +28,28 @@ ur5e_bringup/
 │   ├── controllers/
 │   │   ├── demo_joint_controller.hpp   <- 관절 공간 Quintic 궤적 제어 (로봇+핸드)
 │   │   ├── demo_task_controller.hpp    <- 태스크 공간 CLIK 제어 (로봇+핸드)
-│   │   └── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
-│   ├── logging/
-│   │   ├── device_state_log_pod.hpp    <- DeviceStateLog POD mirror (kMaxJoints=16)
-│   │   └── device_sensor_log_pod.hpp   <- DeviceSensorLog POD mirror (kMaxFingertips=8)
-│   └── phase/
-│       ├── grasp_target.hpp            <- grasp 목표 pose 구조체 + 외부 명령 enum
-│       └── grasp_phase_manager.hpp     <- 8-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
+│   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
+│   │   └── wbc/                        <- WBC 전용 모듈 헤더
+│   │       ├── grasp_target.hpp        <- grasp 목표 pose 구조체 + 외부 명령 enum
+│   │       └── grasp_phase_manager.hpp <- 8-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
+│   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼)
+│   │   ├── bringup_logging.hpp
+│   │   ├── controller_log_registration.hpp
+│   │   ├── demo_shared_config.hpp
+│   │   ├── owned_topics.hpp
+│   │   └── virtual_tcp.hpp
+│   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=16, kMaxFingertips=8)
+│       ├── device_state_log_pod.hpp
+│       ├── device_sensor_log_pod.hpp
+│       └── pod_fill.hpp
 ├── src/
 │   ├── ur5e_rt_controller_main.cpp     <- UR5e용 진입점
 │   ├── controllers/
-│   │   ├── controller_registration.cpp <- 데모 컨트롤러 등록
-│   │   ├── demo_joint_controller.cpp
-│   │   ├── demo_task_controller.cpp
-│   │   └── demo_wbc_controller.cpp
-│   └── phase/
-│       └── grasp_phase_manager.cpp     <- FSM 구현 (YAML 로더 + 전이 로직)
+│   │   ├── controller_registration.cpp <- 데모 컨트롤러 등록 (RTC_REGISTER_CONTROLLER)
+│   │   ├── joint/                      <- DemoJointController (controller/compute/lifecycle/parameters)
+│   │   ├── task/                       <- DemoTaskController (controller/compute/lifecycle/parameters)
+│   │   └── wbc/                        <- DemoWbcController (controller/compute/lifecycle/parameters/phase) + grasp_phase_manager.cpp
+│   └── support/                        <- demo_shared_config / owned_topics 구현
 ├── config/
 │   ├── ur5e_robot.yaml                 <- 실제 로봇 RTC 프레임워크 설정 (URDF + 모델 토폴로지 포함)
 │   ├── ur5e_sim.yaml                   <- 시뮬레이션 전용 설정 (URDF + 모델 토폴로지 포함)
@@ -157,7 +163,7 @@ demo_task_controller:
   ...
 ```
 
-파싱 로직은 `include/ur5e_bringup/controllers/demo_shared_config.hpp` / `src/controllers/demo_shared_config.cpp`의 `ApplyDemoSharedConfig()` / `LoadDemoSharedYamlFile()` / `BuildGraspController()`로 통합되어 있습니다.
+파싱 로직은 `include/ur5e_bringup/support/demo_shared_config.hpp` / `src/support/demo_shared_config.cpp`의 `ApplyDemoSharedConfig()` / `LoadDemoSharedYamlFile()` / `BuildGraspController()`로 통합되어 있습니다.
 
 ---
 

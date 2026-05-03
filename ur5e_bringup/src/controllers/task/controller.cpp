@@ -3,7 +3,7 @@
 #include "ur5e_bringup/controllers/demo_task_controller.hpp"
 
 #include "rtc_base/utils/clamp_commands.hpp"
-#include "ur5e_bringup/controllers/demo_shared_config.hpp"
+#include "ur5e_bringup/support/demo_shared_config.hpp"
 #include "ur5e_bringup/logging/pod_fill.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>

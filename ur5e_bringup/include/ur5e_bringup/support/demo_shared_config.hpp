@@ -1,9 +1,9 @@
-#ifndef UR5E_BRINGUP_CONTROLLERS_DEMO_SHARED_CONFIG_HPP_
-#define UR5E_BRINGUP_CONTROLLERS_DEMO_SHARED_CONFIG_HPP_
+#ifndef UR5E_BRINGUP_SUPPORT_DEMO_SHARED_CONFIG_HPP_
+#define UR5E_BRINGUP_SUPPORT_DEMO_SHARED_CONFIG_HPP_
 
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/grasp/grasp_types.hpp"
-#include "ur5e_bringup/controllers/virtual_tcp.hpp"
+#include "ur5e_bringup/support/virtual_tcp.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -57,4 +57,4 @@ void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
 
 }  // namespace ur5e_bringup
 
-#endif  // UR5E_BRINGUP_CONTROLLERS_DEMO_SHARED_CONFIG_HPP_
+#endif  // UR5E_BRINGUP_SUPPORT_DEMO_SHARED_CONFIG_HPP_

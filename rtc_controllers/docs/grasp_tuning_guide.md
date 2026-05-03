@@ -5,7 +5,7 @@
 - 구현: [grasp_controller.hpp](../include/rtc_controllers/grasp/grasp_controller.hpp), [grasp_controller.cpp](../src/controllers/grasp/grasp_controller.cpp)
 - 타입/파라미터: [grasp_types.hpp](../include/rtc_controllers/grasp/grasp_types.hpp)
 - YAML: [demo_shared.yaml](../../ur5e_bringup/config/controllers/demo_shared.yaml) (`force_pi_grasp:` 블록)
-- 로더: [demo_shared_config.cpp](../../ur5e_bringup/src/controllers/demo_shared_config.cpp)
+- 로더: [demo_shared_config.cpp](../../ur5e_bringup/src/support/demo_shared_config.cpp)
 - 테스트: [test_grasp_controller.cpp](../test/test_grasp_controller.cpp)
 
 ---
@@ -17,7 +17,7 @@
   - `q(s) = (1 − s) · q_open + s · q_close` 선형 보간
   - PI 출력은 관절 토크가 아니라 closing 진행도의 미분 `ds` → 위치 제어 하드웨어에서도 힘 제어 가능
 - **피드백**: fingertip force sensor 의 norm `f_raw[3]` → Bessel 4차 LPF → `f_measured`
-- **호스팅**: 500 Hz RT 루프에서 `Update(f_raw, dt)` 호출 ([demo_joint_controller.cpp:421](../../ur5e_bringup/src/controllers/demo_joint_controller.cpp#L421), [demo_task_controller.cpp:664](../../ur5e_bringup/src/controllers/demo_task_controller.cpp#L664))
+- **호스팅**: 500 Hz RT 루프에서 `Update(f_raw, dt)` 호출 ([demo_joint_controller.cpp:421](../../ur5e_bringup/src/controllers/joint/controller.cpp#L421), [demo_task_controller.cpp:664](../../ur5e_bringup/src/controllers/task/controller.cpp#L664))
 - **활성 범위**: `phase() != kIdle` 일 때만 hand trajectory 출력의 finger 관절을 덮어씀
 - **명령 인터페이스**: `CommandGrasp(target_force)` / `CommandRelease()` (cross-thread atomic flag)
 
