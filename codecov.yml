@@ -57,7 +57,7 @@ flags:
 
 # 커버리지에서 제외할 경로
 ignore:
-  - "ur5e_description/**"            # 데이터/설정 전용
+  - "robot_descriptions/**"          # 데이터/설정 전용
   - "rtc_mujoco_sim/**"              # MuJoCo (옵셔널)
   - "rtc_msgs/**"                    # rosidl 자동 생성
   - "shape_estimation_msgs/**"       # rosidl 자동 생성

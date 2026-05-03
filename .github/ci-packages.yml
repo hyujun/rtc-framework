@@ -14,7 +14,7 @@
 # 누락된 패키지 (의도적):
 #   rtc_mujoco_sim       : MuJoCo 미설치 (D-2)
 #   rtc_mpc              : integrated_bringup transitive 로만 build (직접 test X)
-#   ur5e_description     : URDF/MJCF 데이터만
+#   robot_descriptions   : URDF/MJCF 데이터만
 #   rtc_msgs / shape_estimation_msgs : msg 정의만 (lint_cpp 의 ament_cppcheck 가
 #                                       include/src 부재 시 자동 skip)
 #   repo_scripts / rtc_tools / rtc_digital_twin : C++ 빌드 대상 아님
