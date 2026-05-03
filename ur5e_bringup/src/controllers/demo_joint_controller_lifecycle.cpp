@@ -1,9 +1,11 @@
+#include "ur5e_bringup/controllers/controller_log_registration.hpp"
 #include "ur5e_bringup/controllers/demo_joint_controller.hpp"
 #include "ur5e_bringup/controllers/owned_topics.hpp"
 
 #include <chrono>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ur5e_bringup {
@@ -22,59 +24,31 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
   try {
     CreateOwnedTopics(*this, owned_topics_);
 
-    // ── Phase C: controller-owned CSV log channels ───────────────────────
-    // For each (msg_type, instance) in the parsed `logs:` section, register
-    // a typed channel on log_set_. instance string is *required* and used
-    // as both CSV file stem and the controller-side handle disambiguator.
-    for (const auto& entry : parsed_log_entries_) {
-      if (entry.instance.empty()) {
-        RCLCPP_ERROR(logger_, "logs entry msg_type=%s missing required `instance:` field",
-                     entry.msg_type.c_str());
-        return CallbackReturn::FAILURE;
-      }
-      if (entry.msg_type == "rtc_msgs/DeviceStateLog") {
-        // Q-MSG-3: ur5e_state vs hand_state instance names. The CSV file
-        // paths must not collide so each device gets a distinct instance.
-        const bool is_hand = (entry.instance == "hand_state");
-        const auto& joint_names = is_hand ? hand_joint_names_ : ur5e_joint_names_;
-        const auto& motor_names = is_hand ? hand_motor_names_ : std::vector<std::string>{};
-        // Capture by value into the writers (header runs once at Open).
-        const std::vector<std::string> joint_names_copy = joint_names;
-        const std::vector<std::string> motor_names_copy = motor_names;
-        auto handle = log_set_.RegisterLog<ur5e::DeviceStateLogPod>(
-            entry.instance,
-            [joint_names_copy, motor_names_copy](std::ostream& os) {
-              ur5e::WriteDeviceStateLogHeader(os, joint_names_copy, motor_names_copy);
-            },
-            [](std::ostream& os, const ur5e::DeviceStateLogPod& p) {
-              ur5e::WriteDeviceStateLogRow(os, p);
-            });
-        if (!handle) {
-          RCLCPP_WARN(logger_, "Failed to open device_state CSV for instance=%s",
-                      entry.instance.c_str());
-        } else if (entry.instance == "ur5e_state") {
-          ur5e_state_log_handle_ = handle;
-        } else if (is_hand) {
-          hand_state_log_handle_ = handle;
-        }
-      } else if (entry.msg_type == "rtc_msgs/DeviceSensorLog") {
-        const auto& sensor_names = hand_sensor_names_;
-        const std::vector<std::string> sensor_names_copy = sensor_names;
-        auto handle = log_set_.RegisterLog<ur5e::DeviceSensorLogPod>(
-            entry.instance,
-            [sensor_names_copy](std::ostream& os) {
-              ur5e::WriteDeviceSensorLogHeader(os, sensor_names_copy);
-            },
-            [](std::ostream& os, const ur5e::DeviceSensorLogPod& p) {
-              ur5e::WriteDeviceSensorLogRow(os, p);
-            });
-        if (!handle) {
-          RCLCPP_WARN(logger_, "Failed to open device_sensor CSV for instance=%s",
-                      entry.instance.c_str());
-        } else if (entry.instance == "hand_sensor") {
-          hand_sensor_log_handle_ = handle;
-        }
-      }
+    // ── PR2 (U3) Lift: Phase C controller-owned CSV log registration ──────
+    // Caller maps instance strings → (joint_names, motor_names, sensor_names).
+    // The helper iterates parsed_log_entries_ once, returns instance-keyed
+    // handles, and we plug the ones we own into typed members below.
+    LogRegistrationContext ctx{logger_,
+                               log_set_,
+                               {
+                                   {"ur5e_state", {ur5e_joint_names_, std::vector<std::string>{}}},
+                                   {"hand_state", {hand_joint_names_, hand_motor_names_}},
+                               },
+                               {
+                                   {"hand_sensor", hand_sensor_names_},
+                               }};
+    auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
+    if (reg.status == LogRegistrationStatus::kMissingInstance) {
+      return CallbackReturn::FAILURE;
+    }
+    if (auto it = reg.handles.state.find("ur5e_state"); it != reg.handles.state.end()) {
+      ur5e_state_log_handle_ = std::move(it->second);
+    }
+    if (auto it = reg.handles.state.find("hand_state"); it != reg.handles.state.end()) {
+      hand_state_log_handle_ = std::move(it->second);
+    }
+    if (auto it = reg.handles.sensor.find("hand_sensor"); it != reg.handles.sensor.end()) {
+      hand_sensor_log_handle_ = std::move(it->second);
     }
 
     // Drain timer on a non-RT callback group (10 Hz). Single-threaded —
