@@ -158,7 +158,7 @@ class UdpHandFailureDetector {
     const auto& sens = state.sensor_data;
 
     bool all_zero = true;
-    const int num_sensors = state.num_fingertips * rtc::kSensorValuesPerFingertip;
+    const int num_sensors = state.num_fingertips * udp_hand_driver::kSensorValuesPerFingertip;
     for (int i = 0; i < num_sensors; ++i) {
       if (sens[static_cast<std::size_t>(i)] != 0u) {
         all_zero = false;
@@ -256,7 +256,7 @@ class UdpHandFailureDetector {
   int motor_dup_count_{0};
 
   // Sensor state
-  std::array<int32_t, rtc::kMaxHandSensors> prev_sensor_{};
+  std::array<int32_t, udp_hand_driver::kMaxHandSensors> prev_sensor_{};
   bool prev_sensor_valid_{false};
   int sensor_zero_count_{0};
   int sensor_dup_count_{0};

@@ -139,7 +139,7 @@ TEST_F(FakeHandControllerTest, Callback_Invoked) {
 
   int callback_count = 0;
   UdpHandState last_state{};
-  controller_->SetCallback([&](const UdpHandState& state, const rtc::FingertipFTState& /*ft*/) {
+  controller_->SetCallback([&](const UdpHandState& state, const udp_hand_driver::FingertipFTState& /*ft*/) {
     ++callback_count;
     last_state = state;
   });
@@ -158,7 +158,7 @@ TEST_F(FakeHandControllerTest, Callback_MultipleInvocations) {
 
   int callback_count = 0;
   controller_->SetCallback(
-      [&](const UdpHandState& /*state*/, const rtc::FingertipFTState& /*ft*/) { ++callback_count; });
+      [&](const UdpHandState& /*state*/, const udp_hand_driver::FingertipFTState& /*ft*/) { ++callback_count; });
 
   std::array<float, kNumHandMotors> cmd{};
   for (int i = 0; i < 5; ++i) {

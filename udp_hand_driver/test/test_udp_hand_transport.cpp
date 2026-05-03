@@ -177,9 +177,9 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMismatch_ReturnsFalse) {
 
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
-  std::array<int32_t, rtc::kDefaultNumFingertips * rtc::kSensorValuesPerFingertip> out{};
+  std::array<int32_t, udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip> out{};
   const bool result =
-      transport.RequestAllSensorRead(out.data(), rtc::kDefaultNumFingertips, SensorMode::kRaw);
+      transport.RequestAllSensorRead(out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -200,9 +200,9 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
 
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
-  std::array<int32_t, rtc::kDefaultNumFingertips * rtc::kSensorValuesPerFingertip> out{};
+  std::array<int32_t, udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip> out{};
   const bool result =
-      transport.RequestAllSensorRead(out.data(), rtc::kDefaultNumFingertips, SensorMode::kRaw);
+      transport.RequestAllSensorRead(out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_TRUE(result);

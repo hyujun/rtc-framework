@@ -7,6 +7,7 @@
 // on SCHED_FIFO real-time threads.
 
 #include "rtc_base/types/types.hpp"
+#include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
 
 #include <array>
@@ -110,7 +111,7 @@ inline void EncodeWritePosition(
 // (barometer[8] + tof[3], skipping reserved[5]).
 [[nodiscard]] inline bool DecodeSensorResponse(
     const uint8_t* buf, std::size_t len, uint8_t& cmd_out, uint8_t& mode_out,
-    std::array<float, rtc::kSensorValuesPerFingertip>& data_out) noexcept {
+    std::array<float, udp_hand_driver::kSensorValuesPerFingertip>& data_out) noexcept {
   packets::SensorResponsePacket pkt{};
   if (!packets::DecodeSensorResponse(buf, len, pkt))
     return false;
@@ -124,7 +125,7 @@ inline void EncodeWritePosition(
 // (barometer[8] + tof[3], skipping reserved[5]). No float conversion.
 [[nodiscard]] inline bool DecodeSensorResponseRaw(
     const uint8_t* buf, std::size_t len, uint8_t& cmd_out, uint8_t& mode_out,
-    std::array<int32_t, rtc::kSensorValuesPerFingertip>& data_out) noexcept {
+    std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip>& data_out) noexcept {
   packets::SensorResponsePacket pkt{};
   if (!packets::DecodeSensorResponse(buf, len, pkt))
     return false;

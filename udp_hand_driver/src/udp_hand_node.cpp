@@ -112,7 +112,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
     declare_parameter("ft_inferencer.enabled", false);
     declare_parameter("ft_inferencer.num_fingertips", 4);
-    declare_parameter("ft_inferencer.history_length", rtc::kFTHistoryLength);
+    declare_parameter("ft_inferencer.history_length", udp_hand_driver::kFTHistoryLength);
     declare_parameter("ft_inferencer.model_paths", std::vector<std::string>{});
     declare_parameter("ft_inferencer.calibration_enabled", true);
     declare_parameter("ft_inferencer.calibration_samples", 500);
@@ -161,7 +161,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
           get_parameter("ft_inferencer." +
                         std::string(ft_param_names[static_cast<std::size_t>(f)]) + "_max")
               .as_double_array();
-      for (int b = 0; b < rtc::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
+      for (int b = 0; b < udp_hand_driver::kFTInputSize && b < static_cast<int>(max_vec.size()); ++b) {
         ft_config.input_max[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
             static_cast<float>(max_vec[static_cast<std::size_t>(b)]);
       }
@@ -173,7 +173,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
     // ── UdpHandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
-    num_fingertips_ = rtc::kDefaultNumFingertips;
+    num_fingertips_ = udp_hand_driver::kDefaultNumFingertips;
     use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
     controller_ = std::make_unique<udp_hand_driver::UdpHandController>(
         target_ip, target_port, rtc::kUdpRecvConfig, recv_timeout_ms,
@@ -250,7 +250,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
     // ── EventLoop callback ─────────────────────────────────────────────
     controller_->SetCallback(
-        [this](const udp_hand_driver::UdpHandState& state, const rtc::FingertipFTState& ft_state) {
+        [this](const udp_hand_driver::UdpHandState& state, const udp_hand_driver::FingertipFTState& ft_state) {
           PublishFromEventLoop(state, ft_state);
         });
 
@@ -550,7 +550,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
   // Called directly from EventLoop thread — publishes state at EventLoop rate.
   // Uses pre-allocated messages to avoid dynamic allocation.
-  void PublishFromEventLoop(const udp_hand_driver::UdpHandState& state, const rtc::FingertipFTState& ft_state) {
+  void PublishFromEventLoop(const udp_hand_driver::UdpHandState& state, const udp_hand_driver::FingertipFTState& ft_state) {
     const auto stamp = this->now();
 
     if (state.joint_valid) {
@@ -584,23 +584,23 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
            f < state.num_fingertips && f < static_cast<int>(sensor_msg_.fingertips.size()); ++f) {
         auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
 
-        const int sensor_base = f * rtc::kSensorValuesPerFingertip;
-        for (int b = 0; b < rtc::kBarometerCount; ++b) {
+        const int sensor_base = f * udp_hand_driver::kSensorValuesPerFingertip;
+        for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
           const auto bu = static_cast<std::size_t>(b);
           const auto si = static_cast<std::size_t>(sensor_base + b);
           fs.barometer[bu] = static_cast<float>(state.sensor_data[si]);
           fs.barometer_raw[bu] = static_cast<float>(state.sensor_data_raw[si]);
         }
-        for (int t = 0; t < rtc::kTofCount; ++t) {
+        for (int t = 0; t < udp_hand_driver::kTofCount; ++t) {
           const auto tu = static_cast<std::size_t>(t);
-          const auto si = static_cast<std::size_t>(sensor_base + rtc::kBarometerCount + t);
+          const auto si = static_cast<std::size_t>(sensor_base + udp_hand_driver::kBarometerCount + t);
           fs.tof[tu] = static_cast<float>(state.sensor_data[si]);
           fs.tof_raw[tu] = static_cast<float>(state.sensor_data_raw[si]);
         }
 
         if (ft_valid && f < ft_state.num_fingertips &&
             ft_state.per_fingertip_valid[static_cast<std::size_t>(f)]) {
-          const int ft_base = f * rtc::kFTValuesPerFingertip;
+          const int ft_base = f * udp_hand_driver::kFTValuesPerFingertip;
           fs.inference_enable = true;
           fs.contact_flag = ft_state.ft_data[static_cast<std::size_t>(ft_base)];
           for (int j = 0; j < 3; ++j) {
@@ -801,7 +801,7 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<std::string> joint_names_;
   std::vector<std::string> motor_names_;
   std::vector<std::string> fingertip_names_;
-  int num_fingertips_{rtc::kDefaultNumFingertips};
+  int num_fingertips_{udp_hand_driver::kDefaultNumFingertips};
 
   // Link status — standalone rclcpp::Publisher (NOT LifecyclePublisher).
   // Safety-relevant: must remain publishable in any lifecycle state.

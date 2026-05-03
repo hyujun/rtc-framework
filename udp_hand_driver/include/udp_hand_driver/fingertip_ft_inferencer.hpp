@@ -32,6 +32,7 @@
 #endif
 
 #include "rtc_base/types/types.hpp"
+#include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_logging.hpp"
 
 #include <rclcpp/clock.hpp>
@@ -46,10 +47,10 @@ class FingertipFTInferencer {
  public:
   struct Config {
     bool enabled{false};
-    int num_fingertips{rtc::kDefaultNumFingertips};
-    int history_length{rtc::kFTHistoryLength};
+    int num_fingertips{udp_hand_driver::kDefaultNumFingertips};
+    int history_length{udp_hand_driver::kFTHistoryLength};
     std::vector<std::string> model_paths;
-    std::array<std::array<float, rtc::kFTInputSize>, rtc::kMaxFingertips> input_max{};
+    std::array<std::array<float, udp_hand_driver::kFTInputSize>, rtc::kMaxFingertips> input_max{};
     bool calibration_enabled{true};
     int calibration_samples{500};
   };
@@ -60,15 +61,17 @@ class FingertipFTInferencer {
                  "ONNX Runtime unavailable — FT inference disabled.");
   }
 
-  [[nodiscard]] bool FeedCalibration(const std::array<int32_t, rtc::kMaxHandSensors>& /*sensor_data*/,
-                                     int /*num_fingertips*/) noexcept {
+  [[nodiscard]] bool FeedCalibration(
+      const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& /*sensor_data*/,
+      int /*num_fingertips*/) noexcept {
     return true;
   }
 
   void ResetCalibration(uint16_t /*sample_count*/ = 0) noexcept {}
 
-  [[nodiscard]] rtc::FingertipFTState Infer(const std::array<int32_t, rtc::kMaxHandSensors>& /*sensor_data*/,
-                                       int /*num_fingertips*/) noexcept {
+  [[nodiscard]] udp_hand_driver::FingertipFTState Infer(
+      const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& /*sensor_data*/,
+      int /*num_fingertips*/) noexcept {
     return {};
   }
 
@@ -82,8 +85,8 @@ class FingertipFTInferencer {
 
   [[nodiscard]] int calibration_target() const noexcept { return 0; }
 
-  [[nodiscard]] std::array<std::array<float, rtc::kBarometerCount>, rtc::kMaxFingertips> baseline_offset()
-      const noexcept {
+  [[nodiscard]] std::array<std::array<float, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
+  baseline_offset() const noexcept {
     return {};
   }
 };
@@ -95,8 +98,8 @@ class FingertipFTInferencer {
   // ── Configuration ─────────────────────────────────────────────────────────
   struct Config {
     bool enabled{false};
-    int num_fingertips{rtc::kDefaultNumFingertips};
-    int history_length{rtc::kFTHistoryLength};  // FIFO history rows (default: 12)
+    int num_fingertips{udp_hand_driver::kDefaultNumFingertips};
+    int history_length{udp_hand_driver::kFTHistoryLength};  // FIFO history rows (default: 12)
 
     // Per-fingertip ONNX 모델 경로 (빈 문자열 → 해당 finger 비활성)
     std::vector<std::string> model_paths;
@@ -104,7 +107,7 @@ class FingertipFTInferencer {
     // Per-fingertip 정규화 파라미터: input_max [fingertip][input_channel]
     // input_channel: baro[0..7] + delta[0..7] = 16
     // 정규화 공식: value / input_max → [-1, +1]
-    std::array<std::array<float, rtc::kFTInputSize>, rtc::kMaxFingertips> input_max{};
+    std::array<std::array<float, udp_hand_driver::kFTInputSize>, rtc::kMaxFingertips> input_max{};
 
     // Baseline Offset Calibration
     bool calibration_enabled{true};
@@ -193,14 +196,15 @@ class FingertipFTInferencer {
 
       // 사전 할당된 버퍼 위에 Ort::Value 텐서 생성
       const int64_t H = static_cast<int64_t>(config_.history_length);
-      const int64_t input_shape[] = {1, H, rtc::kFTInputSize};  // [1, 12, 16]
-      constexpr int64_t output0_shape[] = {1, 1};          // [1, 1] contact logit
-      constexpr int64_t output1_shape[] = {1, 3};          // [1, 3] F
-      constexpr int64_t output2_shape[] = {1, 3};          // [1, 3] u
+      const int64_t input_shape[] = {1, H, udp_hand_driver::kFTInputSize};  // [1, 12, 16]
+      constexpr int64_t output0_shape[] = {1, 1};                           // [1, 1] contact logit
+      constexpr int64_t output1_shape[] = {1, 3};                           // [1, 3] F
+      constexpr int64_t output2_shape[] = {1, 3};                           // [1, 3] u
 
       model.input_tensor = Ort::Value::CreateTensor<float>(
           memory_info_, model.input_buffer.data(),
-          static_cast<std::size_t>(config_.history_length) * rtc::kFTInputSize, input_shape, 3);
+          static_cast<std::size_t>(config_.history_length) * udp_hand_driver::kFTInputSize,
+          input_shape, 3);
 
       model.output0_tensor = Ort::Value::CreateTensor<float>(
           memory_info_, model.output0_buffer.data(), 1, output0_shape, 2);
@@ -247,7 +251,7 @@ class FingertipFTInferencer {
     // input_max 역수 사전 계산 (Infer()에서 div → mul 최적화)
     for (int f = 0; f < n; ++f) {
       const auto fi = static_cast<std::size_t>(f);
-      for (int ch = 0; ch < rtc::kFTInputSize; ++ch) {
+      for (int ch = 0; ch < udp_hand_driver::kFTInputSize; ++ch) {
         const auto ci = static_cast<std::size_t>(ch);
         const float m = config_.input_max[fi][ci];
         input_max_reciprocal_[fi][ci] = (m == 0.0f) ? 1.0f : (1.0f / m);
@@ -273,15 +277,16 @@ class FingertipFTInferencer {
 
   /// 캘리브레이션 데이터 축적. sensor cycle마다 호출.
   /// @return true: 캘리브레이션 완료
-  [[nodiscard]] bool FeedCalibration(const std::array<int32_t, rtc::kMaxHandSensors>& sensor_data,
-                                     int num_fingertips) noexcept {
+  [[nodiscard]] bool FeedCalibration(
+      const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data,
+      int num_fingertips) noexcept {
     if (calibrated_)
       return true;
 
     const int n = std::min(num_fingertips, std::min(config_.num_fingertips, rtc::kMaxFingertips));
     for (int f = 0; f < n; ++f) {
-      const int base = f * rtc::kSensorValuesPerFingertip;
-      for (int b = 0; b < rtc::kBarometerCount; ++b) {
+      const int base = f * udp_hand_driver::kSensorValuesPerFingertip;
+      for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
         calibration_sum_[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] +=
             static_cast<double>(sensor_data[static_cast<std::size_t>(base + b)]);
       }
@@ -291,7 +296,7 @@ class FingertipFTInferencer {
     if (calibration_count_ >= config_.calibration_samples) {
       const double inv_count = 1.0 / static_cast<double>(calibration_count_);
       for (int f = 0; f < n; ++f) {
-        for (int b = 0; b < rtc::kBarometerCount; ++b) {
+        for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
           baseline_offset_[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
               static_cast<float>(
                   calibration_sum_[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] *
@@ -330,9 +335,10 @@ class FingertipFTInferencer {
   /// Per-fingertip 순차 추론. sensor_data에서 barometer만 추출 → 정규화 → history FIFO → 추론.
   /// 3-head output: sigmoid(contact_logit) + u 필터링 + 직렬화.
   /// history가 history_length만큼 채워지지 않으면 추론을 수행하지 않고 invalid 반환.
-  [[nodiscard]] rtc::FingertipFTState Infer(const std::array<int32_t, rtc::kMaxHandSensors>& sensor_data,
-                                       int num_fingertips) noexcept {
-    rtc::FingertipFTState result{};
+  [[nodiscard]] udp_hand_driver::FingertipFTState Infer(
+      const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data,
+      int num_fingertips) noexcept {
+    udp_hand_driver::FingertipFTState result{};
     if (!initialized_ || !calibrated_)
       return result;
 
@@ -346,15 +352,15 @@ class FingertipFTInferencer {
         if (!model.valid)
           continue;
 
-        const int sensor_base = f * rtc::kSensorValuesPerFingertip;
+        const int sensor_base = f * udp_hand_driver::kSensorValuesPerFingertip;
         const auto fi = static_cast<std::size_t>(f);
 
         // ── 새 row 계산: baro(8) + delta(8) = 16 float ──────────────────
-        std::array<float, rtc::kFTInputSize> new_row{};
+        std::array<float, udp_hand_driver::kFTInputSize> new_row{};
 
         // barometer[0..7]: baseline-offset → reciprocal 정규화 (mul)
-        std::array<float, rtc::kBarometerCount> cur_baro{};
-        for (int b = 0; b < rtc::kBarometerCount; ++b) {
+        std::array<float, udp_hand_driver::kBarometerCount> cur_baro{};
+        for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
           const auto bi = static_cast<std::size_t>(b);
           const float raw =
               static_cast<float>(sensor_data[static_cast<std::size_t>(sensor_base + b)]);
@@ -363,21 +369,24 @@ class FingertipFTInferencer {
         }
 
         // barometer_delta[8..15]: (current - previous) × reciprocal
-        for (int b = 0; b < rtc::kBarometerCount; ++b) {
+        for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
           const auto bi = static_cast<std::size_t>(b);
-          const auto di = static_cast<std::size_t>(rtc::kBarometerCount + b);
+          const auto di = static_cast<std::size_t>(udp_hand_driver::kBarometerCount + b);
           new_row[di] = (cur_baro[bi] - prev_barometer_[fi][bi]) * input_max_reciprocal_[fi][di];
         }
 
         prev_barometer_[fi] = cur_baro;
 
         // ── FIFO shift ──────────────────────────────────────────────────
-        const auto row_bytes = static_cast<std::size_t>(rtc::kFTInputSize) * sizeof(float);
+        const auto row_bytes =
+            static_cast<std::size_t>(udp_hand_driver::kFTInputSize) * sizeof(float);
         if (H > 1) {
-          std::memmove(model.input_buffer.data(), model.input_buffer.data() + rtc::kFTInputSize,
+          std::memmove(model.input_buffer.data(),
+                       model.input_buffer.data() + udp_hand_driver::kFTInputSize,
                        static_cast<std::size_t>(H - 1) * row_bytes);
         }
-        std::memcpy(model.input_buffer.data() + static_cast<std::size_t>(H - 1) * rtc::kFTInputSize,
+        std::memcpy(model.input_buffer.data() +
+                        static_cast<std::size_t>(H - 1) * udp_hand_driver::kFTInputSize,
                     new_row.data(), row_bytes);
 
         // History count 증가 (최대 H)
@@ -394,7 +403,7 @@ class FingertipFTInferencer {
         model.session->Run(Ort::RunOptions{nullptr}, *model.io_binding);
 
         // ── 후처리: sigmoid + 필터링 + 직렬화 ──────────────────────────
-        const int ft_base = f * rtc::kFTValuesPerFingertip;
+        const int ft_base = f * udp_hand_driver::kFTValuesPerFingertip;
 
         // 1. Sigmoid 적용 (contact logit → 확률)
         const float contact_logit = model.output0_buffer[0];
@@ -461,8 +470,9 @@ class FingertipFTInferencer {
   struct PerFingertipModel {
     std::unique_ptr<Ort::Session> session;
     std::unique_ptr<Ort::IoBinding> io_binding;
-    // History buffer: [history_length × rtc::kFTInputSize] = [12 × 16] = 192 floats
-    std::array<float, rtc::kFTHistoryLength * rtc::kFTInputSize> input_buffer{};
+    // History buffer: [history_length × udp_hand_driver::kFTInputSize] = [12 × 16] = 192 floats
+    std::array<float, udp_hand_driver::kFTHistoryLength * udp_hand_driver::kFTInputSize>
+        input_buffer{};
     std::array<float, 1> output0_buffer{};  // contact logit
     std::array<float, 3> output1_buffer{};  // F: force vector
     std::array<float, 3> output2_buffer{};  // u: direction vector
@@ -491,16 +501,20 @@ class FingertipFTInferencer {
   std::array<PerFingertipModel, rtc::kMaxFingertips> models_;
 
   // Baseline Offset Calibration
-  std::array<std::array<double, rtc::kBarometerCount>, rtc::kMaxFingertips> calibration_sum_{};
-  std::array<std::array<float, rtc::kBarometerCount>, rtc::kMaxFingertips> baseline_offset_{};
+  std::array<std::array<double, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
+      calibration_sum_{};
+  std::array<std::array<float, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
+      baseline_offset_{};
   int calibration_count_{0};
   bool calibrated_{false};
 
   // input_max 역수 (div → mul 최적화, InitFT()에서 사전 계산)
-  std::array<std::array<float, rtc::kFTInputSize>, rtc::kMaxFingertips> input_max_reciprocal_{};
+  std::array<std::array<float, udp_hand_driver::kFTInputSize>, rtc::kMaxFingertips>
+      input_max_reciprocal_{};
 
   // 이전 barometer 값 (delta 계산용)
-  std::array<std::array<float, rtc::kBarometerCount>, rtc::kMaxFingertips> prev_barometer_{};
+  std::array<std::array<float, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
+      prev_barometer_{};
 };
 
 #endif  // HAS_ONNXRUNTIME

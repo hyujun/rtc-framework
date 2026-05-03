@@ -152,16 +152,16 @@ class DecodeSensorResponseTest : public ::testing::Test {
     src.cmd = static_cast<uint8_t>(Command::kReadSensor0);
     src.mode = static_cast<uint8_t>(SensorMode::kRaw);
     // barometer[0..7] = 100..800
-    for (int i = 0; i < rtc::kBarometerCount; ++i) {
+    for (int i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
       src.data[static_cast<std::size_t>(i)] = (i + 1) * 100;
     }
     // reserved[8..12] = 99999
-    for (int i = rtc::kBarometerCount; i < rtc::kBarometerCount + rtc::kReservedCount; ++i) {
+    for (int i = udp_hand_driver::kBarometerCount; i < udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount; ++i) {
       src.data[static_cast<std::size_t>(i)] = 99999;
     }
     // tof[13..15] = 10, 20, 30
-    for (int i = 0; i < rtc::kTofCount; ++i) {
-      src.data[static_cast<std::size_t>(rtc::kBarometerCount + rtc::kReservedCount + i)] = (i + 1) * 10;
+    for (int i = 0; i < udp_hand_driver::kTofCount; ++i) {
+      src.data[static_cast<std::size_t>(udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i)] = (i + 1) * 10;
     }
     std::memcpy(buf_.data(), &src, kSensorResponseSize);
   }
@@ -171,26 +171,26 @@ class DecodeSensorResponseTest : public ::testing::Test {
 
 TEST_F(DecodeSensorResponseTest, ValidDecode_Float) {
   uint8_t cmd_out{}, mode_out{};
-  std::array<float, rtc::kSensorValuesPerFingertip> data_out{};
+  std::array<float, udp_hand_driver::kSensorValuesPerFingertip> data_out{};
 
   ASSERT_TRUE(DecodeSensorResponse(buf_.data(), buf_.size(), cmd_out, mode_out, data_out));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(Command::kReadSensor0));
   EXPECT_EQ(mode_out, static_cast<uint8_t>(SensorMode::kRaw));
 
   // barometer: out[0..7]
-  for (int i = 0; i < rtc::kBarometerCount; ++i) {
+  for (int i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
     EXPECT_FLOAT_EQ(data_out[static_cast<std::size_t>(i)], static_cast<float>((i + 1) * 100));
   }
   // tof: out[8..10]
-  for (int i = 0; i < rtc::kTofCount; ++i) {
-    EXPECT_FLOAT_EQ(data_out[static_cast<std::size_t>(rtc::kBarometerCount + i)],
+  for (int i = 0; i < udp_hand_driver::kTofCount; ++i) {
+    EXPECT_FLOAT_EQ(data_out[static_cast<std::size_t>(udp_hand_driver::kBarometerCount + i)],
                     static_cast<float>((i + 1) * 10));
   }
 }
 
 TEST_F(DecodeSensorResponseTest, ValidDecode_Raw) {
   uint8_t cmd_out{}, mode_out{};
-  std::array<int32_t, rtc::kSensorValuesPerFingertip> data_out{};
+  std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip> data_out{};
 
   ASSERT_TRUE(DecodeSensorResponseRaw(buf_.data(), buf_.size(), cmd_out, mode_out, data_out));
   EXPECT_EQ(data_out[0], 100);
@@ -202,7 +202,7 @@ TEST_F(DecodeSensorResponseTest, ValidDecode_Raw) {
 TEST(HandUdpCodecDecode, DecodeSensorResponse_TooShort) {
   std::array<uint8_t, 66> buf{};
   uint8_t cmd, mode;
-  std::array<float, rtc::kSensorValuesPerFingertip> data{};
+  std::array<float, udp_hand_driver::kSensorValuesPerFingertip> data{};
   EXPECT_FALSE(DecodeSensorResponse(buf.data(), buf.size(), cmd, mode, data));
 }
 
@@ -252,16 +252,16 @@ TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_Valid) {
   src.mode = static_cast<uint8_t>(SensorMode::kRaw);
 
   // Fill: finger f, baro b = f*100+b, reserved=-1, tof t = f*1000+t
-  for (int f = 0; f < rtc::kDefaultNumFingertips; ++f) {
-    const auto base = static_cast<std::size_t>(f) * rtc::kSensorDataPerPacket;
-    for (int b = 0; b < rtc::kBarometerCount; ++b) {
+  for (int f = 0; f < udp_hand_driver::kDefaultNumFingertips; ++f) {
+    const auto base = static_cast<std::size_t>(f) * udp_hand_driver::kSensorDataPerPacket;
+    for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
       src.data[base + static_cast<std::size_t>(b)] = static_cast<int32_t>(f * 100 + b);
     }
-    for (int r = 0; r < rtc::kReservedCount; ++r) {
-      src.data[base + static_cast<std::size_t>(rtc::kBarometerCount + r)] = -1;
+    for (int r = 0; r < udp_hand_driver::kReservedCount; ++r) {
+      src.data[base + static_cast<std::size_t>(udp_hand_driver::kBarometerCount + r)] = -1;
     }
-    for (int t = 0; t < rtc::kTofCount; ++t) {
-      src.data[base + static_cast<std::size_t>(rtc::kBarometerCount + rtc::kReservedCount + t)] =
+    for (int t = 0; t < udp_hand_driver::kTofCount; ++t) {
+      src.data[base + static_cast<std::size_t>(udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + t)] =
           static_cast<int32_t>(f * 1000 + t);
     }
   }
@@ -270,19 +270,19 @@ TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_Valid) {
   std::memcpy(buf.data(), &src, kAllSensorResponseSize);
 
   uint8_t cmd_out{}, mode_out{};
-  std::array<int32_t, rtc::kDefaultNumFingertips * rtc::kSensorValuesPerFingertip> out{};
+  std::array<int32_t, udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip> out{};
 
   ASSERT_TRUE(DecodeAllSensorResponseRaw(buf.data(), buf.size(), cmd_out, mode_out, out.data(),
-                                         rtc::kDefaultNumFingertips));
+                                         udp_hand_driver::kDefaultNumFingertips));
   EXPECT_EQ(cmd_out, static_cast<uint8_t>(Command::kReadAllSensors));
 
-  for (int f = 0; f < rtc::kDefaultNumFingertips; ++f) {
-    const auto out_base = static_cast<std::size_t>(f) * rtc::kSensorValuesPerFingertip;
-    for (int b = 0; b < rtc::kBarometerCount; ++b) {
+  for (int f = 0; f < udp_hand_driver::kDefaultNumFingertips; ++f) {
+    const auto out_base = static_cast<std::size_t>(f) * udp_hand_driver::kSensorValuesPerFingertip;
+    for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
       EXPECT_EQ(out[out_base + static_cast<std::size_t>(b)], f * 100 + b);
     }
-    for (int t = 0; t < rtc::kTofCount; ++t) {
-      EXPECT_EQ(out[out_base + static_cast<std::size_t>(rtc::kBarometerCount + t)], f * 1000 + t);
+    for (int t = 0; t < udp_hand_driver::kTofCount; ++t) {
+      EXPECT_EQ(out[out_base + static_cast<std::size_t>(udp_hand_driver::kBarometerCount + t)], f * 1000 + t);
     }
   }
 }
@@ -335,9 +335,9 @@ TEST(HandUdpCodecRoundtrip, WritePosition_EncodeDecodeRoundtrip) {
 TEST(HandUdpCodecDecode, DecodeAllSensorResponseRaw_TooShort) {
   std::array<uint8_t, 258> buf{};
   uint8_t cmd, mode;
-  std::array<int32_t, rtc::kDefaultNumFingertips * rtc::kSensorValuesPerFingertip> out{};
+  std::array<int32_t, udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip> out{};
   EXPECT_FALSE(DecodeAllSensorResponseRaw(buf.data(), buf.size(), cmd, mode, out.data(),
-                                          rtc::kDefaultNumFingertips));
+                                          udp_hand_driver::kDefaultNumFingertips));
 }
 
 // ── Sensor mode encode-decode roundtrip ─────────────────────────────────────

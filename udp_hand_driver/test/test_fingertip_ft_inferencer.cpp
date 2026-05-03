@@ -64,13 +64,13 @@ TEST_F(FingertipFTInferencerTest, CalibrationTarget_Default) {
 }
 
 TEST_F(FingertipFTInferencerTest, Infer_ReturnsInvalid) {
-  std::array<int32_t, rtc::kMaxHandSensors> sensor_data{};
+  std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data{};
   const auto result = inferencer_.Infer(sensor_data, 4);
   EXPECT_FALSE(result.valid);
 }
 
 TEST_F(FingertipFTInferencerTest, FeedCalibration_ReturnsTrueOrFalse) {
-  std::array<int32_t, rtc::kMaxHandSensors> sensor_data{};
+  std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data{};
   // Stub returns true immediately
   // Real impl depends on calibration state
   // Both should not crash
@@ -106,17 +106,17 @@ TEST_F(FingertipFTInferencerTest, ResetCalibration_NoCrash) {
 TEST(FingertipFTInferencerConfig, Defaults) {
   FingertipFTInferencer::Config cfg{};
   EXPECT_FALSE(cfg.enabled);
-  EXPECT_EQ(cfg.num_fingertips, rtc::kDefaultNumFingertips);
-  EXPECT_EQ(cfg.history_length, rtc::kFTHistoryLength);
+  EXPECT_EQ(cfg.num_fingertips, udp_hand_driver::kDefaultNumFingertips);
+  EXPECT_EQ(cfg.history_length, udp_hand_driver::kFTHistoryLength);
   EXPECT_TRUE(cfg.model_paths.empty());
   EXPECT_TRUE(cfg.calibration_enabled);
   EXPECT_EQ(cfg.calibration_samples, 500);
 }
 
-// ── rtc::FingertipFTState struct ─────────────────────────────────────────────────
+// ── udp_hand_driver::FingertipFTState struct ─────────────────────────────────────────────────
 
 TEST(FingertipFTState, DefaultValues) {
-  rtc::FingertipFTState state{};
+  udp_hand_driver::FingertipFTState state{};
   EXPECT_FALSE(state.valid);
   EXPECT_EQ(state.num_fingertips, 0);
   for (float val : state.ft_data) {
@@ -128,7 +128,7 @@ TEST(FingertipFTState, DefaultValues) {
 }
 
 TEST(FingertipFTState, MaxFTValues) {
-  EXPECT_EQ(rtc::FingertipFTState::kMaxFTValues, rtc::kMaxFingertips * rtc::kFTValuesPerFingertip);
+  EXPECT_EQ(udp_hand_driver::FingertipFTState::kMaxFTValues, rtc::kMaxFingertips * udp_hand_driver::kFTValuesPerFingertip);
 }
 
 // ── InitFT with enabled=true but no model paths ────────────────────────────
@@ -149,7 +149,7 @@ TEST(FingertipFTInferencerInit, EnabledNoModels_InferReturnsInvalid) {
   cfg.num_fingertips = 4;
   inf.InitFT(cfg);
 
-  std::array<int32_t, rtc::kMaxHandSensors> sensor_data{};
+  std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data{};
   const auto result = inf.Infer(sensor_data, 4);
   EXPECT_FALSE(result.valid);
 }
@@ -158,7 +158,7 @@ TEST(FingertipFTInferencerInit, EnabledNoModels_InferReturnsInvalid) {
 
 TEST(FingertipFTInferencerInit, FeedCalibration_Uninitialized) {
   FingertipFTInferencer inf;
-  std::array<int32_t, rtc::kMaxHandSensors> sensor_data{};
+  std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data{};
   // Should not crash on uninitialized inferencer
   [[maybe_unused]] bool result = inf.FeedCalibration(sensor_data, 4);
 }

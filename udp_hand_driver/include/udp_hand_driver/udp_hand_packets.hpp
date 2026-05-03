@@ -40,7 +40,7 @@ inline constexpr std::size_t kMotorPacketSize =
 
 // Sensor packet constants
 inline constexpr std::size_t kSensorRequestSize = kHeaderSize;                 // 3 (no data)
-inline constexpr std::size_t kSensorResponseDataCount = rtc::kSensorDataPerPacket;  // 16
+inline constexpr std::size_t kSensorResponseDataCount = udp_hand_driver::kSensorDataPerPacket;  // 16
 inline constexpr std::size_t kSensorResponseSize =
     kHeaderSize + kSensorResponseDataCount * sizeof(int32_t);  // 67
 
@@ -52,9 +52,9 @@ inline constexpr std::size_t kAllMotorResponseSize =
     kHeaderSize + kAllMotorDataCount * sizeof(uint32_t);  // 123
 
 // Bulk sensor packet constants (cmd=0x19): response = 4 fingers × 16 uint32
-inline constexpr std::size_t kAllSensorFingertipCount = rtc::kDefaultNumFingertips;  // 4
+inline constexpr std::size_t kAllSensorFingertipCount = udp_hand_driver::kDefaultNumFingertips;  // 4
 inline constexpr std::size_t kAllSensorDataCount =
-    kAllSensorFingertipCount * rtc::kSensorDataPerPacket;               // 64
+    kAllSensorFingertipCount * udp_hand_driver::kSensorDataPerPacket;               // 64
 inline constexpr std::size_t kAllSensorRequestSize = kHeaderSize;  // 3 (no data)
 inline constexpr std::size_t kAllSensorResponseSize =
     kHeaderSize + kAllSensorDataCount * sizeof(int32_t);  // 259
@@ -314,27 +314,27 @@ inline void ExtractMotorFloats(const MotorPacket& pkt,
 // Extract sensor values from a sensor response, skipping reserved fields.
 // Output: barometer[8] + tof[3] = 11 useful values (as float).
 inline void ExtractSensorValues(const SensorResponsePacket& pkt,
-                                std::array<float, rtc::kSensorValuesPerFingertip>& out) noexcept {
+                                std::array<float, udp_hand_driver::kSensorValuesPerFingertip>& out) noexcept {
   // barometer: data[0..7] → out[0..7]
-  for (std::size_t i = 0; i < rtc::kBarometerCount; ++i) {
+  for (std::size_t i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
     out[i] = static_cast<float>(pkt.data[i]);
   }
   // skip reserved: data[8..12]
   // tof: data[13..15] → out[8..10]
-  for (std::size_t i = 0; i < rtc::kTofCount; ++i) {
-    out[rtc::kBarometerCount + i] = static_cast<float>(pkt.data[rtc::kBarometerCount + rtc::kReservedCount + i]);
+  for (std::size_t i = 0; i < udp_hand_driver::kTofCount; ++i) {
+    out[udp_hand_driver::kBarometerCount + i] = static_cast<float>(pkt.data[udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i]);
   }
 }
 
 // Extract raw int32 sensor values from a sensor response, skipping reserved fields.
 // Output: barometer[8] + tof[3] = 11 raw int32 values (no float conversion).
 inline void ExtractSensorValuesRaw(const SensorResponsePacket& pkt,
-                                   std::array<int32_t, rtc::kSensorValuesPerFingertip>& out) noexcept {
-  for (std::size_t i = 0; i < rtc::kBarometerCount; ++i) {
+                                   std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip>& out) noexcept {
+  for (std::size_t i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
     out[i] = pkt.data[i];
   }
-  for (std::size_t i = 0; i < rtc::kTofCount; ++i) {
-    out[rtc::kBarometerCount + i] = pkt.data[rtc::kBarometerCount + rtc::kReservedCount + i];
+  for (std::size_t i = 0; i < udp_hand_driver::kTofCount; ++i) {
+    out[udp_hand_driver::kBarometerCount + i] = pkt.data[udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i];
   }
 }
 
@@ -391,20 +391,20 @@ inline void ExtractAllMotorFloats(const AllMotorResponsePacket& pkt,
 
 // Extract all sensor values from bulk response (4 fingers × 16 int32).
 // Output: concatenated barometer[8]+tof[3] per finger, skipping reserved[5].
-// out must have at least num_fingertips * rtc::kSensorValuesPerFingertip elements.
+// out must have at least num_fingertips * udp_hand_driver::kSensorValuesPerFingertip elements.
 inline void ExtractAllSensorValuesRaw(const AllSensorResponsePacket& pkt, int32_t* out,
                                       int num_fingertips) noexcept {
   for (int f = 0; f < num_fingertips; ++f) {
-    const std::size_t pkt_base = static_cast<std::size_t>(f) * rtc::kSensorDataPerPacket;
-    const std::size_t out_base = static_cast<std::size_t>(f) * rtc::kSensorValuesPerFingertip;
+    const std::size_t pkt_base = static_cast<std::size_t>(f) * udp_hand_driver::kSensorDataPerPacket;
+    const std::size_t out_base = static_cast<std::size_t>(f) * udp_hand_driver::kSensorValuesPerFingertip;
     // barometer[8]
-    for (std::size_t i = 0; i < rtc::kBarometerCount; ++i) {
+    for (std::size_t i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
       out[out_base + i] = pkt.data[pkt_base + i];
     }
     // skip reserved[5], tof[3]
-    for (std::size_t i = 0; i < rtc::kTofCount; ++i) {
-      out[out_base + rtc::kBarometerCount + i] =
-          pkt.data[pkt_base + rtc::kBarometerCount + rtc::kReservedCount + i];
+    for (std::size_t i = 0; i < udp_hand_driver::kTofCount; ++i) {
+      out[out_base + udp_hand_driver::kBarometerCount + i] =
+          pkt.data[pkt_base + udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i];
     }
   }
 }

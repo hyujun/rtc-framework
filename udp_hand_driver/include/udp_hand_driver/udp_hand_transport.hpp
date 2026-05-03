@@ -10,9 +10,10 @@
 // Uses ppoll for sub-ms recv timeout (hrtimer on PREEMPT_RT kernels).
 
 #include "rtc_base/types/types.hpp"
+#include "udp_hand_driver/udp_hand_codec.hpp"
+#include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_logging.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
-#include "udp_hand_driver/udp_hand_codec.hpp"
 
 #include <rclcpp/logging.hpp>
 
@@ -130,8 +131,7 @@ class UdpHandTransport {
 
     const ssize_t recvd = RecvWithTimeout(echo_buf.data(), echo_buf.size());
     if (recvd >= static_cast<ssize_t>(packets::kHeaderSize)) {
-      const bool echo_ok =
-          (echo_buf[1] == static_cast<uint8_t>(packets::Command::kWritePosition));
+      const bool echo_ok = (echo_buf[1] == static_cast<uint8_t>(packets::Command::kWritePosition));
       if (!echo_ok) {
         ++comm_stats_.cmd_mismatch;
       }
@@ -160,10 +160,10 @@ class UdpHandTransport {
   }
 
   // Request motor read (individual: 0x11 pos, 0x12 vel). 3B send, 43B recv.
-  [[nodiscard]] bool RequestMotorRead(
-      packets::Command cmd, std::array<float, packets::kMotorDataCount>& out,
-      packets::JointMode joint_mode = packets::JointMode::kMotor,
-      packets::JointMode* received_mode = nullptr) noexcept {
+  [[nodiscard]] bool RequestMotorRead(packets::Command cmd,
+                                      std::array<float, packets::kMotorDataCount>& out,
+                                      packets::JointMode joint_mode = packets::JointMode::kMotor,
+                                      packets::JointMode* received_mode = nullptr) noexcept {
     std::array<uint8_t, packets::kSensorRequestSize> send_buf{};
     std::array<uint8_t, packets::kMotorPacketSize> recv_buf{};
 
@@ -199,8 +199,8 @@ class UdpHandTransport {
         continue;
 
       uint8_t cmd_out, mode_out;
-      if (!codec::DecodeMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
-                                               cmd_out, mode_out, out)) {
+      if (!codec::DecodeMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd), cmd_out,
+                                      mode_out, out)) {
         continue;
       }
       if (cmd_out != static_cast<uint8_t>(cmd)) {
@@ -221,7 +221,7 @@ class UdpHandTransport {
 
   // Request sensor read (individual: 0x14~0x17). 3B send, 67B recv.
   [[nodiscard]] bool RequestSensorRead(
-      packets::Command cmd, std::array<int32_t, rtc::kSensorValuesPerFingertip>& out,
+      packets::Command cmd, std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip>& out,
       packets::SensorMode sensor_mode = packets::SensorMode::kRaw) noexcept {
     std::array<uint8_t, packets::kSensorRequestSize> send_buf{};
     std::array<uint8_t, packets::kSensorResponseSize> recv_buf{};
@@ -277,12 +277,11 @@ class UdpHandTransport {
   }
 
   // Request bulk motor read (cmd=0x10). 3B send, 123B recv.
-  [[nodiscard]] bool RequestAllMotorRead(
-      std::array<float, packets::kMotorDataCount>& positions,
-      std::array<float, packets::kMotorDataCount>& velocities,
-      std::array<float, packets::kMotorDataCount>& currents,
-      packets::JointMode joint_mode = packets::JointMode::kMotor,
-      packets::JointMode* received_mode = nullptr) noexcept {
+  [[nodiscard]] bool RequestAllMotorRead(std::array<float, packets::kMotorDataCount>& positions,
+                                         std::array<float, packets::kMotorDataCount>& velocities,
+                                         std::array<float, packets::kMotorDataCount>& currents,
+                                         packets::JointMode joint_mode = packets::JointMode::kMotor,
+                                         packets::JointMode* received_mode = nullptr) noexcept {
     std::array<uint8_t, packets::kAllMotorRequestSize> send_buf{};
     std::array<uint8_t, packets::kAllMotorResponseSize> recv_buf{};
 
@@ -318,9 +317,8 @@ class UdpHandTransport {
         continue;
 
       uint8_t cmd_out, mode_out;
-      if (!codec::DecodeAllMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
-                                                  cmd_out, mode_out, positions, velocities,
-                                                  currents)) {
+      if (!codec::DecodeAllMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd), cmd_out,
+                                         mode_out, positions, velocities, currents)) {
         continue;
       }
       if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllMotors)) {
@@ -378,9 +376,8 @@ class UdpHandTransport {
         continue;
 
       uint8_t cmd_out, mode_out;
-      if (!codec::DecodeAllSensorResponseRaw(recv_buf.data(),
-                                                      static_cast<std::size_t>(recvd), cmd_out,
-                                                      mode_out, out, num_fingertips)) {
+      if (!codec::DecodeAllSensorResponseRaw(recv_buf.data(), static_cast<std::size_t>(recvd),
+                                             cmd_out, mode_out, out, num_fingertips)) {
         continue;
       }
       if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
