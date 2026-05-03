@@ -11,7 +11,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 -0.032"/>
       <geometry>
-        <mesh filename="meshes/visual/base10.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/base10.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -26,7 +26,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0.01313 0"/>
       <geometry>
-        <mesh filename="meshes/visual/h10_left.glb" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/h10_left.glb" scale="1 1 1"/>
       </geometry>
     </visual>
     <collision>
@@ -53,7 +53,7 @@
     <visual>
       <origin xyz="0.0007 0 -0.01002"/>
       <geometry>
-        <mesh filename="meshes/visual/h11_left.glb" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/h11_left.glb" scale="1 1 1"/>
       </geometry>
     </visual>
     <collision>
@@ -74,7 +74,7 @@
     <visual>
       <origin xyz="0 0 0.02442"/>
       <geometry>
-        <mesh filename="meshes/visual/d10_left.glb" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/d10_left.glb" scale="1 1 1"/>
       </geometry>
     </visual>
     <collision>
@@ -99,24 +99,24 @@
   <link name="left_hand_a">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/d11_left.glb" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/d11_left.glb" scale="1 1 1"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/d11_left.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/d11_left.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
   <link name="left_hand_b">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/d12_left.glb" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/d12_left.glb" scale="1 1 1"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/d12_left.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/d12_left.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -128,12 +128,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/d13_left.glb" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/d13_left.glb" scale="1 1 1"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/d13_left.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/d13_left.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -142,7 +142,7 @@
     <visual>
       <origin xyz="0 0 0.01321"/>
       <geometry>
-        <mesh filename="meshes/visual/f10_f20.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f10_f20.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -155,12 +155,12 @@
   <link name="left_hand_l">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f11.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f11.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f11.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f11.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -172,12 +172,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f12.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f12.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f12.obj"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f12.obj"/>
       </geometry>
     </collision>
   </link>
@@ -189,12 +189,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/finger_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/finger_tip.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/finger_tip.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/finger_tip.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -203,7 +203,7 @@
     <visual>
       <origin xyz="0 0 0.01321"/>
       <geometry>
-        <mesh filename="meshes/visual/f10_f20.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f10_f20.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -216,24 +216,24 @@
   <link name="left_hand_k">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f21.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f21.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f21.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f21.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
   <link name="left_hand_o">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f22_f32.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f22_f32.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f22_f32.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f22_f32.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -245,12 +245,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/finger_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/finger_tip.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/finger_tip.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/finger_tip.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -259,7 +259,7 @@
     <visual>
       <origin xyz="0 0 -0.01321"/>
       <geometry>
-        <mesh filename="meshes/visual/f30_f40.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f30_f40.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -272,24 +272,24 @@
   <link name="left_hand_j">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f31.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f31.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f31.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f31.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
   <link name="left_hand_n">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f22_f32.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f22_f32.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f22_f32.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f22_f32.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -301,12 +301,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/finger_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/finger_tip.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/finger_tip.obj" scale="1 1 1"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/finger_tip.obj" scale="1 1 1"/>
       </geometry>
     </collision>
   </link>
@@ -315,7 +315,7 @@
     <visual>
       <origin xyz="0 0 -0.01321"/>
       <geometry>
-        <mesh filename="meshes/visual/f30_f40.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f30_f40.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -328,12 +328,12 @@
   <link name="left_hand_i">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f41.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f41.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f41.obj"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f41.obj"/>
       </geometry>
     </collision>
   </link>
@@ -345,12 +345,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/f42.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/f42.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/f42.obj"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/f42.obj"/>
       </geometry>
     </collision>
   </link>
@@ -362,12 +362,12 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/finger_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/visual/finger_tip.glb"/>
       </geometry>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="meshes/collision/finger_tip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/schunk_hand/meshes/collision/finger_tip.obj"/>
       </geometry>
     </collision>
   </link>

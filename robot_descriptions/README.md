@@ -42,6 +42,11 @@
 | `robots/ur5e/` | UR5e 6-DoF arm — URDF (xacro 사전 생성), MJCF, full mesh set |
 | `robots/assm_v1/` | 10-DoF custom hand "assm v1" — URDF xacro, MJCF (cylinder geom) |
 | `robots/ur5e_assm_v1/` | UR5e arm + assm_v1 hand 결합 — URDF xacro, MJCF scene (wrist3 말단 부착) |
+| `robots/allegro_hand/` | Allegro Hand 16-DoF — URDF (left/right × obj/glb 4종) + meshes |
+| `robots/allegro_hand_fsr/` | Allegro Hand FSR 부착 변형 4종 (`fsr`/`fsr_glb`/`fsr_simple`/`fsr_cylinder`). 공유 mesh는 `allegro_hand/`를 참조하고, FSR 전용 mesh(`tactile`, `longer_finger_tip`)만 자체 `meshes/` 보유 |
+| `robots/iiwa7/` | KUKA iiwa7 7-DoF arm — URDF (obj/glb 2종) + meshes |
+| `robots/leap_hand/` | LEAP Hand 16-DoF — URDF (left/right × obj/glb 4종) + meshes |
+| `robots/schunk_hand/` | Schunk SVH 5-finger hand — URDF (left/right × obj/glb 4종) + meshes |
 
 향후 robot 추가는 `robots/<new_name>/` 서브디렉토리 추가만으로 끝난다 — 본 패키지의 `CMakeLists.txt` / `package.xml`은 손대지 않는다.
 
@@ -75,13 +80,48 @@ robot_descriptions/
     │   └── urdf/
     │       └── hand.urdf.xacro            # 핸드 xacro 매크로
     │
-    └── ur5e_assm_v1/                      # UR5e + assm_v1 통합
-        ├── mjcf/
-        │   ├── ur5e_with_hand.xml         # 로봇 + 핸드 통합 MJCF
-        │   └── scene_with_hand.xml        # 씬 (지면 + 조명 + 통합 모델)
-        └── urdf/
-            └── ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 결합 xacro
+    ├── ur5e_assm_v1/                      # UR5e + assm_v1 통합
+    │   ├── mjcf/
+    │   │   ├── ur5e_with_hand.xml         # 로봇 + 핸드 통합 MJCF
+    │   │   └── scene_with_hand.xml        # 씬 (지면 + 조명 + 통합 모델)
+    │   └── urdf/
+    │       └── ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 결합 xacro
+    │
+    ├── allegro_hand/                      # Allegro Hand 16-DOF
+    │   ├── urdf/
+    │   │   ├── allegro_hand_{left,right}.urdf       # OBJ mesh 참조
+    │   │   └── allegro_hand_{left,right}_glb.urdf   # GLB mesh 참조
+    │   └── meshes/{visual,collision}/
+    │
+    ├── allegro_hand_fsr/                  # Allegro Hand FSR 부착 변형
+    │   ├── urdf/
+    │   │   ├── allegro_hand_right_fsr.urdf          # OBJ + FSR
+    │   │   ├── allegro_hand_right_fsr_glb.urdf      # GLB + FSR
+    │   │   ├── allegro_hand_right_fsr_simple.urdf   # 베이스 mesh만 (FSR 없음)
+    │   │   └── allegro_hand_right_fsr_cylinder.urdf # 단순 cylinder geom
+    │   └── meshes/{visual,collision}/     # FSR 전용 mesh (tactile, longer_finger_tip)
+    │                                      #   공유 mesh는 allegro_hand/ 참조
+    │
+    ├── iiwa7/                             # KUKA iiwa7 7-DoF arm
+    │   ├── urdf/
+    │   │   ├── iiwa7.urdf                 # OBJ mesh 참조
+    │   │   └── iiwa7_glb.urdf             # GLB mesh 참조
+    │   └── meshes/{visual,collision}/
+    │
+    ├── leap_hand/                         # LEAP Hand 16-DoF
+    │   ├── urdf/
+    │   │   ├── leap_hand_{left,right}.urdf
+    │   │   └── leap_hand_{left,right}_glb.urdf
+    │   └── meshes/{visual,collision}/
+    │
+    └── schunk_hand/                       # Schunk SVH 5-finger hand
+        ├── urdf/
+        │   ├── schunk_svh_hand_{left,right}.urdf
+        │   └── schunk_svh_hand_{left,right}_glb.urdf
+        └── meshes/{visual,collision}/
 ```
+
+**Mesh 참조 규약**: 새로 입주하는 robot의 URDF는 mesh를 `package://robot_descriptions/robots/<name>/meshes/...` 절대 URL로 참조한다 (URDF가 어느 디렉토리로 옮겨져도 깨지지 않음). `ur5e/`는 ROS 표준 dependency 호환을 위해 ament share 경로 기반의 기존 패턴을 유지한다.
 
 ---
 
@@ -282,6 +322,7 @@ robot_descriptions  <-- 독립 (MJCF/URDF/메시 제공)
 | **패키지 rename** | `ur5e_description` → `robot_descriptions`. 더 이상 robot-specific 패키지가 아니라 multi-robot data hub임을 이름이 반영. UR5e는 첫 입주자일 뿐. |
 | **서브디렉토리 rename** | `robots/hand_tmp/` → `robots/assm_v1/`, `robots/ur5e_hand_tmp/` → `robots/ur5e_assm_v1/`. `_tmp` 접미사 제거 — 이제 정식 이름. |
 | **README 톤 변경** | 1절을 robot-agnostic hub 선언으로 다시 작성. 추가 robot/hand 입주 절차(서브디렉토리 추가만으로 충분, 본 패키지 빌드 변경 없음) 명시. |
+| **신규 입주 robots** | `robots/{allegro_hand,allegro_hand_fsr,iiwa7,leap_hand,schunk_hand}/` 추가. 권장 레이아웃(`urdf/` + `meshes/{visual,collision}/`)에 맞춰 정렬, URDF 내부 mesh 참조는 모두 `package://robot_descriptions/robots/<name>/meshes/...` 절대 URL. `allegro_hand_fsr`은 형제 robot으로 분리 — 공유 mesh는 `allegro_hand/`를 cross-reference하고 FSR 전용 mesh(`tactile`, `longer_finger_tip`)만 자체 `meshes/` 보유. |
 
 ### v5.17.0
 

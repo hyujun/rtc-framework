@@ -11,7 +11,7 @@
     <visual>
       <origin xyz="-0.0200 0.02575 -0.0347" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/palm_lower.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/palm_lower.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- palm_lower -->
@@ -84,7 +84,7 @@
     <visual>
       <origin xyz="0.0084 0.0077 0.01465" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/mcp_joint.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/mcp_joint.obj"/>
       </geometry>
     </visual>
     <collision>      <!-- mcp_joint -->
@@ -133,7 +133,7 @@
     <visual>
       <origin xyz="0.0096 0.0002 0.0007" rpy="-1.57079 -1.57079 0"/>
       <geometry>
-        <mesh filename="meshes/visual/pip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/pip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- pip -->
@@ -152,7 +152,7 @@
     <visual>
       <origin xyz="0.0211 -0.0084 0.0097" rpy="-3.1415926 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/dip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/dip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- dip -->
@@ -195,7 +195,7 @@
     <visual>
       <origin xyz="0.0132 -0.0061 0.0144" rpy="3.1415926 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/fingertip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/fingertip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- fingertip -->
@@ -219,7 +219,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/collision/white_tip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/collision/white_tip.obj"/>
       </geometry>
     </collision>
     <inertial>
@@ -265,7 +265,7 @@
     <visual>
       <origin xyz="0.0084 0.0077 0.01465" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/mcp_joint.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/mcp_joint.obj"/>
       </geometry>
     </visual>
     <collision>      <!-- mcp_joint -->
@@ -314,7 +314,7 @@
     <visual>
       <origin xyz="0.0096 0.0003 0.0007" rpy="-1.57079 -1.57079 0"/>
       <geometry>
-        <mesh filename="meshes/visual/pip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/pip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- pip -->
@@ -333,7 +333,7 @@
     <visual>
       <origin xyz="0.0211 -0.0084 0.0097" rpy="-3.14159 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/dip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/dip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- dip -->
@@ -376,7 +376,7 @@
     <visual>
       <origin xyz="0.0132 -0.0061 0.01450" rpy="3.14159 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/fingertip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/fingertip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- fingertip -->
@@ -400,7 +400,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/collision/white_tip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/collision/white_tip.obj"/>
       </geometry>
     </collision>
     <inertial>
@@ -445,7 +445,7 @@
     <visual>
       <origin xyz="0.0084 0.0077 0.01465" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/mcp_joint.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/mcp_joint.obj"/>
       </geometry>
     </visual>
     <collision>      <!-- mcp_joint -->
@@ -494,7 +494,7 @@
     <visual>
       <origin xyz="0.0096 0.0003 0.0007" rpy="-1.57079 -1.57079 0"/>
       <geometry>
-        <mesh filename="meshes/visual/pip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/pip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- pip -->
@@ -513,7 +513,7 @@
     <visual>
       <origin xyz="0.0211 -0.0084 0.0097" rpy="-3.14159 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/dip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/dip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- dip -->
@@ -556,7 +556,7 @@
     <visual>
       <origin xyz="0.0132 -0.0061 0.0145" rpy="3.14159 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/fingertip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/fingertip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- fingertip -->
@@ -580,7 +580,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/collision/white_tip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/collision/white_tip.obj"/>
       </geometry>
     </collision>
     <inertial>
@@ -625,7 +625,7 @@
     <visual>
       <origin xyz="-0.0053 0.0003 0.00078" rpy="-1.57079 -1.57079 0"/>
       <geometry>
-        <mesh filename="meshes/visual/pip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/pip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- pip -->
@@ -644,7 +644,7 @@
     <visual>
       <origin xyz="0.01196 0 -0.0158" rpy="1.57079 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/thumb_pip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/thumb_pip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- thumb_pip -->
@@ -675,7 +675,7 @@
     <visual>
       <origin xyz="0.0439 0.0579 -0.0086" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/thumb_dip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/thumb_dip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- thumb_dip -->
@@ -718,7 +718,7 @@
     <visual>
       <origin xyz="0.0625 0.0784 0.0489" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/thumb_fingertip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/visual/thumb_fingertip.obj"/>
       </geometry>
     </visual>
     <collision>     <!-- thumb_fingertip -->
@@ -742,7 +742,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/collision/white_tip_thumb.obj"/>
+        <mesh filename="package://robot_descriptions/robots/leap_hand/meshes/collision/white_tip_thumb.obj"/>
       </geometry>
     </collision>
     <inertial>

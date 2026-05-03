@@ -8,7 +8,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/base_link.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/base_link.glb"/>
       </geometry>
       <origin rpy="0 0 0" xyz="0 0 0 "/>
     </visual>
@@ -46,7 +46,7 @@
   <link name="link_0.0">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_0.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_0.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -76,7 +76,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_1.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_1.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -93,6 +93,25 @@
     <child link="link_1.0"/>
     <origin xyz="0 0 0.0164"/>
   </joint>
+  <link name="link_1.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_1.0_fsr" type="fixed">
+    <parent link="link_1.0"/>
+    <child link="link_1.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
   <link name="link_2.0">
     <inertial>
       <mass value="0.0355"/>
@@ -101,7 +120,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_2.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_2.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -118,10 +137,29 @@
     <child link="link_2.0"/>
     <origin xyz="0 0 0.054"/>
   </joint>
+  <link name="link_2.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_2.0_fsr" type="fixed">
+    <parent link="link_2.0"/>
+    <child link="link_2.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
   <link name="link_3.0">
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_3.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_3.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -144,28 +182,42 @@
     <origin xyz="0 0 0.0384"/>
   </joint>
   <link name="link_3.0_tip">
-    <inertial>
-      <mass value="0.0168"/>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <inertia ixx="9.68e-07" ixy="0" ixz="0" iyy="9.68e-07" iyz="0" izz="9.68e-07"/>
-    </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
       <geometry>
-        <mesh filename="meshes/visual/link_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/longer_finger_tip.glb" scale="0.001 0.001 0.001"/>
       </geometry>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
       <geometry>
-        <mesh filename="meshes/collision/link_tip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/collision/longer_finger_tip.obj" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
   <joint name="joint_3.0_tip" type="fixed">
     <parent link="link_3.0"/>
     <child link="link_3.0_tip"/>
-    <origin rpy="0 0 0" xyz="0 0 0.0387"/>
+    <origin rpy="0 0 0" xyz="0 0 0.060"/>
+  </joint>
+  <link name="link_3.0_tip_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_3.0_tip_fsr" type="fixed">
+    <parent link="link_3.0_tip"/>
+    <child link="link_3.0_tip_fsr"/>
+    <origin rpy="0 0 0" xyz="-0.005 0 -0.015"/>
   </joint>
   <link name="link_4.0">
     <inertial>
@@ -175,7 +227,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_0.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_0.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -200,7 +252,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_1.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_1.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -217,6 +269,25 @@
     <child link="link_5.0"/>
     <origin xyz="0 0 0.0164"/>
   </joint>
+  <link name="link_5.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_5.0_fsr" type="fixed">
+    <parent link="link_5.0"/>
+    <child link="link_5.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
   <link name="link_6.0">
     <inertial>
       <mass value="0.0355"/>
@@ -225,7 +296,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_2.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_2.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -242,6 +313,25 @@
     <child link="link_6.0"/>
     <origin xyz="0 0 0.054"/>
   </joint>
+  <link name="link_6.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_6.0_fsr" type="fixed">
+    <parent link="link_6.0"/>
+    <child link="link_6.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
   <link name="link_7.0">
     <inertial>
       <mass value="0.0388"/>
@@ -250,7 +340,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_3.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_3.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -268,28 +358,42 @@
     <origin xyz="0 0 0.0384"/>
   </joint>
   <link name="link_7.0_tip">
-    <inertial>
-      <mass value="0.0096"/>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <inertia ixx="4.701248e-06" ixy="1.255968e-06" ixz="1.2936e-06" iyy="3.649312e-06" iyz="1.7622e-06" izz="4.701248e-06"/>
-    </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
       <geometry>
-        <mesh filename="meshes/visual/link_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/longer_finger_tip.glb" scale="0.001 0.001 0.001"/>
       </geometry>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
       <geometry>
-        <mesh filename="meshes/collision/link_tip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/collision/longer_finger_tip.obj" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
   <joint name="joint_7.0_tip" type="fixed">
     <parent link="link_7.0"/>
     <child link="link_7.0_tip"/>
-    <origin rpy="0 0 0" xyz="0 0 0.0387"/>
+    <origin rpy="0 0 0" xyz="0 0 0.060"/>
+  </joint>
+  <link name="link_7.0_tip_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_7.0_tip_fsr" type="fixed">
+    <parent link="link_7.0_tip"/>
+    <child link="link_7.0_tip_fsr"/>
+    <origin rpy="0 0 0" xyz="-0.005 0 -0.015"/>
   </joint>
   <link name="link_8.0">
     <inertial>
@@ -299,7 +403,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_0.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_0.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -324,7 +428,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_1.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_1.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -341,6 +445,25 @@
     <child link="link_9.0"/>
     <origin xyz="0 0 0.0164"/>
   </joint>
+  <link name="link_9.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_9.0_fsr" type="fixed">
+    <parent link="link_9.0"/>
+    <child link="link_9.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
   <link name="link_10.0">
     <inertial>
       <mass value="0.0355"/>
@@ -349,7 +472,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_2.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_2.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -366,6 +489,25 @@
     <child link="link_10.0"/>
     <origin xyz="0 0 0.054"/>
   </joint>
+  <link name="link_10.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_10.0_fsr" type="fixed">
+    <parent link="link_10.0"/>
+    <child link="link_10.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
   <link name="link_11.0">
     <inertial>
       <mass value="0.0096"/>
@@ -374,7 +516,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_3.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_3.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -392,29 +534,44 @@
     <origin xyz="0 0 0.0384"/>
   </joint>
   <link name="link_11.0_tip">
-    <inertial>
-      <mass value="0.0168"/>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <inertia ixx="9.68e-07" ixy="0" ixz="0" iyy="9.68e-07" iyz="0" izz="9.68e-07"/>
-    </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
       <geometry>
-        <mesh filename="meshes/visual/link_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/longer_finger_tip.glb" scale="0.001 0.001 0.001"/>
       </geometry>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
       <geometry>
-        <mesh filename="meshes/collision/link_tip.obj"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/collision/longer_finger_tip.obj" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
   <joint name="joint_11.0_tip" type="fixed">
     <parent link="link_11.0"/>
     <child link="link_11.0_tip"/>
-    <origin rpy="0 0 0" xyz="0 0 0.0387"/>
-  </joint> <!-- THUMB -->
+    <origin rpy="0 0 0" xyz="0 0 0.060"/>
+  </joint>
+  <link name="link_11.0_tip_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_11.0_tip_fsr" type="fixed">
+    <parent link="link_11.0_tip"/>
+    <child link="link_11.0_tip_fsr"/>
+    <origin rpy="0 0 0" xyz="-0.005 0 -0.015"/>
+  </joint>
+  <!-- THUMB -->
   <link name="link_12.0">
     <inertial>
       <mass value="0.0176"/>
@@ -423,7 +580,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_12.0_right.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_12.0_right.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -448,7 +605,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_13.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_13.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -473,7 +630,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_14.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_14.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -490,6 +647,25 @@
     <child link="link_14.0"/>
     <origin xyz="0 0 0.0177"/>
   </joint>
+  <link name="link_14.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_14.0_fsr" type="fixed">
+    <parent link="link_14.0"/>
+    <child link="link_14.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
   <link name="link_15.0">
     <inertial>
       <mass value="0.0388"/>
@@ -498,7 +674,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="meshes/visual/link_15.0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand/meshes/visual/link_15.0.glb"/>
       </geometry>
     </visual>
     <collision>
@@ -515,28 +691,139 @@
     <child link="link_15.0"/>
     <origin xyz="0 0 0.0514"/>
   </joint>
-  <link name="link_15.0_tip">
-    <inertial>
-      <mass value="0.0168"/>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <inertia ixx="9.68e-07" ixy="0" ixz="0" iyy="9.68e-07" iyz="0" izz="9.68e-07"/>
-    </inertial>
+  <link name="link_15.0_fsr">
     <visual>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/link_tip.glb"/>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
       </geometry>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 -0.012"/>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
       <geometry>
-        <mesh filename="meshes/collision/link_tip.obj"/>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_15.0_fsr" type="fixed">
+    <parent link="link_15.0"/>
+    <child link="link_15.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0 0 0.02"/>
+  </joint>
+  <link name="link_15.0_tip">
+    <visual>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/longer_finger_tip.glb" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 1.570795" xyz="0 0 -0.020"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/collision/longer_finger_tip.obj" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
   <joint name="joint_15.0_tip" type="fixed">
     <parent link="link_15.0"/>
     <child link="link_15.0_tip"/>
-    <origin rpy="0 0 0" xyz="0 0 0.0543"/>
+    <origin rpy="0 0 0" xyz="0 0 0.075"/>
+  </joint>
+  <link name="link_15.0_tip_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_15.0_tip_fsr" type="fixed">
+    <parent link="link_15.0_tip"/>
+    <child link="link_15.0_tip_fsr"/>
+    <origin rpy="0 0 0" xyz="-0.005 0 -0.015"/>
+  </joint>
+
+  <!-- Palm fsr sensor -->
+  <link name="link_base_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_0.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_4.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_8.0_fsr">
+    <visual>
+      <origin rpy="1.57079 0 1.57079" xyz="0.0108 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_descriptions/robots/allegro_hand_fsr/meshes/visual/tactile.glb" scale="0.6 0.6 0.6"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0108 0 0"/>
+      <geometry>
+        <box size="0.003 0.0228 0.0168"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint_base_fsr" type="fixed">
+    <parent link="base_link"/>
+    <child link="link_base_fsr"/>
+    <origin rpy="-0.09 0 0" xyz="0.002 -0.035 -0.065"/>
+  </joint>
+  <joint name="joint_0.0_fsr" type="fixed">
+    <parent link="base_link"/>
+    <child link="link_8.0_fsr"/>
+    <origin rpy="-0.09 0 0" xyz="0.001 -0.041 -0.015"/>
+  </joint>
+  <joint name="joint_4.0_fsr" type="fixed">
+    <parent link="base_link"/>
+    <child link="link_4.0_fsr"/>
+    <origin rpy="0 0 0" xyz="0.001 0 -0.013"/>
+  </joint>
+  <joint name="joint_8.0_fsr" type="fixed">
+    <parent link="base_link"/>
+    <child link="link_0.0_fsr"/>
+    <origin rpy="0.09 0 0" xyz="0.001 0.041 -0.015"/>
   </joint>
 </robot>

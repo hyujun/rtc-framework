@@ -9,13 +9,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/visual/link_0.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_0.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/collision/link_0.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_0.obj"/>
       </geometry>
     </collision>
   </link>
@@ -36,13 +36,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0.0 -0.1475"/>
       <geometry>
-        <mesh filename="meshes/visual/link_1.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_1.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0.0 -0.1475"/>
       <geometry>
-        <mesh filename="meshes/collision/link_1.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_1.obj"/>
       </geometry>
     </collision>
   </link>
@@ -63,13 +63,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0.0105 -0.34"/>
       <geometry>
-        <mesh filename="meshes/visual/link_2.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_2.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0.0105 -0.34"/>
       <geometry>
-        <mesh filename="meshes/collision/link_2.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_2.obj"/>
       </geometry>
     </collision>
   </link>
@@ -90,13 +90,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0.0 -0.5475"/>
       <geometry>
-        <mesh filename="meshes/visual/link_3.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_3.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0.0 -0.5475"/>
       <geometry>
-        <mesh filename="meshes/collision/link_3.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_3.obj"/>
       </geometry>
     </collision>
   </link>
@@ -117,13 +117,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 -0.0105 -0.74"/>
       <geometry>
-        <mesh filename="meshes/visual/link_4.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_4.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 -0.0105 -0.74"/>
       <geometry>
-        <mesh filename="meshes/collision/link_4.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_4.obj"/>
       </geometry>
     </collision>
   </link>
@@ -144,13 +144,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0.0 -0.9475"/>
       <geometry>
-        <mesh filename="meshes/visual/link_5.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_5.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0.0 -0.9475"/>
       <geometry>
-        <mesh filename="meshes/collision/link_5.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_5.obj"/>
       </geometry>
     </collision>
   </link>
@@ -171,13 +171,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0.0707 -1.14"/>
       <geometry>
-        <mesh filename="meshes/visual/link_6.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_6.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0.0707 -1.14"/>
       <geometry>
-        <mesh filename="meshes/collision/link_6.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_6.obj"/>
       </geometry>
     </collision>
   </link>
@@ -198,13 +198,13 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0.0 -1.231"/>
       <geometry>
-        <mesh filename="meshes/visual/link_7.glb"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/visual/link_7.obj"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0.0 -1.231"/>
       <geometry>
-        <mesh filename="meshes/collision/link_7.obj"/>
+        <mesh filename="package://robot_descriptions/robots/iiwa7/meshes/collision/link_7.obj"/>
       </geometry>
     </collision>
   </link>
