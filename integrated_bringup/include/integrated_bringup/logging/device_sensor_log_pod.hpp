@@ -6,7 +6,13 @@
 // generic rtc::ThreadCsvLogger<DeviceSensorLogPod>.
 //
 // Robot-specific caps (kMaxFingertips, kSensorValuesPerFingertip,
-// kFTValuesPerFingertip) live HERE in integrated_bringup, not in rtc_base.
+// kFTValuesPerFingertip) are integrated_bringup's own SSoT — they
+// intentionally do NOT include udp_hand_driver and are NOT re-exported
+// from rtc_base. The boundary contract with udp_hand_driver is the
+// rtc_msgs FingertipSensor.msg / HandSensorState.msg named fields; the
+// values below mirror that schema for assm_v1 hand by construction
+// only (numerical equality, not compile-time dependency).
+//
 // SPSC constraint: trivially copyable (std::array, no vector/string).
 //
 // sensor_names captured at on_configure for header expansion only — not
