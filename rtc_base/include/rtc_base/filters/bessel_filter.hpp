@@ -209,19 +209,6 @@ class BesselFilterN {
   double sample_rate_hz_{0.0};
 };
 
-// ── Convenience aliases ────────────────────────────────────────────────────
-using BesselFilter6 = BesselFilterN<6>;    // 6-DOF robot joints
-using BesselFilter11 = BesselFilterN<11>;  // 11 sensor values per fingertip (8 baro + 3 ToF)
-using BesselFilter1 = BesselFilterN<1>;    // single-channel scalar use
-
-// Barometer sensor filtering (kMaxFingertips × kBarometerCount = 8 × 8 = 64 channels)
-inline constexpr std::size_t kMaxBaroChannels = 64;
-using BesselFilterBaro = BesselFilterN<kMaxBaroChannels>;
-
-// TOF sensor filtering (kMaxFingertips × kTofCount = 8 × 3 = 24 channels)
-inline constexpr std::size_t kMaxTofChannels = 24;
-using BesselFilterTof = BesselFilterN<kMaxTofChannels>;
-
 }  // namespace rtc
 
 #endif  // RTC_BASE_FILTERS_BESSEL_FILTER_HPP_

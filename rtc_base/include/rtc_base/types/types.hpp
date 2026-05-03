@@ -70,23 +70,16 @@ inline constexpr double kMinControlRateHz = 100.0;                           // 
 inline constexpr double kMaxControlRateHz = 5000.0;                          // upper design bound
 inline constexpr double kDefaultControlDtSec = 1.0 / kDefaultControlRateHz;  // 2 ms
 
-// Fingertip 수: YAML에서 런타임 설정 가능. 배열 크기는 kMaxFingertips로 고정.
-inline constexpr int kDefaultNumFingertips = 4;  // YAML 미설정 시 기본값
-inline constexpr int kMaxFingertips = 8;         // 배열 상한 (RT 경로 힙 할당 방지)
-
-// Fingertip sensor layout per fingertip (packet contains 16 uint32 values):
-//   barometer[8] + reserved[5] (skipped) + tof[3]
-// Only 11 useful values are stored (reserved is discarded).
-inline constexpr int kBarometerCount = 8;
-inline constexpr int kReservedCount = 5;  // in packet only, not stored
-inline constexpr int kTofCount = 3;
-inline constexpr int kSensorDataPerPacket = kBarometerCount + kReservedCount + kTofCount;  // 16
-inline constexpr int kSensorValuesPerFingertip = kBarometerCount + kTofCount;              // 11
-inline constexpr int kMaxHandSensors = kMaxFingertips * kSensorValuesPerFingertip;         // 88
-
-// 기본값 기반 상수 (하위 호환)
-inline constexpr int kNumFingertips = kDefaultNumFingertips;                        // 4
-inline constexpr int kNumHandSensors = kNumFingertips * kSensorValuesPerFingertip;  // 44
+// Generic per-device array capacity for grouped/inferenced sensor blocks.
+// rtc_* code uses this only as a compile-time upper bound on std::array
+// dimensions (e.g. ToFSnapshotData::tip_poses, DeviceState::inference_enable);
+// the runtime count comes from the device's YAML sensor_layout. Sized
+// generously so future devices with more groups stay within the bound.
+//
+// (Pre-decoupling this was named `kMaxFingertips` — fingertip-as-concept
+// removal is deferred to a follow-up sprint, hence the name is preserved
+// here for now to keep the diff small.)
+inline constexpr int kMaxFingertips = 8;
 
 // ── C++20 Concepts
 // ───────────────────────────────────────────────────────────── Constrains
@@ -101,24 +94,8 @@ concept FloatingPointType = std::floating_point<T>;
 template <typename T>
 concept TriviallyCopyableType = std::is_trivially_copyable_v<T>;
 
-// Fingertip F/T inference 관련 상수
-// Output layout: [contact_prob(1), F(3), u(3)] = 7
-// (3-head model: output0=contact logit→sigmoid, output1=F, output2=u)
-inline constexpr int kFTValuesPerFingertip = 7;
-inline constexpr int kFTInputSize = 2 * kBarometerCount;  // baro(8) + delta(8) = 16
-inline constexpr int kFTHistoryLength = 12;               // FIFO history rows for ONNX input
-
 // ── Data structures (aggregate, zero-initialised by default)
 // ──────────────────
-
-// Fingertip F/T 추론 결과 (SeqLock 호환: trivially_copyable)
-struct FingertipFTState {
-  static constexpr int kMaxFTValues = kMaxFingertips * kFTValuesPerFingertip;  // 56
-  std::array<float, kMaxFTValues> ft_data{};
-  std::array<bool, kMaxFingertips> per_fingertip_valid{};  // per-fingertip inference ready
-  int num_fingertips{0};
-  bool valid{false};
-};
 
 // Unified device state — used for all device groups (robot arm, hand, gripper,
 // …)
@@ -222,7 +199,7 @@ struct WbcStateData {
 // 상한값(kMax*) 기반 고정 배열 + 런타임 num_fingers/sensors_per_finger
 struct ToFSnapshotData {
   static constexpr int kMaxFingers = kMaxFingertips;                           // 8
-  static constexpr int kMaxSensorsPerFinger = kTofCount;                       // 3
+  static constexpr int kMaxSensorsPerFinger = 3;                               // upper bound
   static constexpr int kMaxTotalSensors = kMaxFingers * kMaxSensorsPerFinger;  // 24
 
   // 거리 [m]

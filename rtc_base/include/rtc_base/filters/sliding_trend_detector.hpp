@@ -188,11 +188,6 @@ class SlidingTrendDetector {
   std::size_t count_{0};  // samples ingested so far (capped at n_)
 };
 
-// ── Convenience alias ─────────────────────────────────────────────────────────
-
-// Per-fingertip barometer drift detector (8 baro channels, 5s window at 500Hz)
-using BarometerTrendDetector = SlidingTrendDetector<kBarometerCount, 2500>;
-
 }  // namespace rtc
 
 #endif  // RTC_BASE_FILTERS_SLIDING_TREND_DETECTOR_HPP_

@@ -423,6 +423,7 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 | 영역 | 변경 내용 |
 |------|----------|
 | **Hand 상수 흡수** | `ur5e_description/ur5e_constants.hpp` 폐기에 따라 hand 전용 상수와 타입을 본 패키지로 흡수: `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `include/udp_hand_driver/udp_hand_constants.hpp`, `UdpHandState` → `include/udp_hand_driver/udp_hand_state.hpp`. 이에 따라 `package.xml`/`CMakeLists.txt`에서 `ur5e_description` 의존을 제거 (이 패키지는 더 이상 description 헤더가 필요 없음). 다운스트림(`integrated_bringup`)은 `udp_hand_driver/udp_hand_constants.hpp`를 include. |
+| **Hand layout 상수 SSoT 통합** | `rtc_base/types/types.hpp` 에 있던 hand-specific packet/model layout 상수와 `FingertipFTState` 구조체, 필터 alias 들을 본 패키지의 `udp_hand_constants.hpp` 로 이주. 추가된 식별자: `kBarometerCount`, `kReservedCount`, `kTofCount`, `kSensorDataPerPacket`, `kSensorValuesPerFingertip`, `kMaxHandSensors`, `kFTValuesPerFingertip`, `kFTInputSize`, `kFTHistoryLength`, `kDefaultNumFingertips`, `kNumFingertips`, `kNumHandSensors`, `kMaxBaroChannels`, `kMaxTofChannels`, `FingertipFTState`, `BesselFilterBaro`, `BesselFilterTof`, `BarometerTrendDetector`. `rtc::kMaxFingertips` 는 generic capacity 상한으로 rtc_base 에 잔존 (fingertip-as-concept 제거는 후속 sprint). `integrated_bringup` 와의 boundary 는 이제 `rtc_msgs/HandSensorState.msg` / `FingertipSensor.msg` named field 만 — cross-package include 0건. |
 
 ---
 
