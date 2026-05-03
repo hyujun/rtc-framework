@@ -287,7 +287,7 @@ robot_descriptions  <-- 독립 (MJCF/URDF/메시 제공)
 
 | 영역 | 변경 내용 |
 |------|----------|
-| **순수 데이터화** | `include/ur5e_description/ur5e_constants.hpp` 제거. `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `udp_hand_driver`, `HandState` → `udp_hand_driver/hand_state.hpp`. `RobotState`/`kNumHandJoints`/`kDefaultRobotJointNames`는 사용처가 없어 삭제. `rtc_base` 의존도 제거 — 이 패키지는 URDF/MJCF/mesh만 담는다. |
+| **순수 데이터화** | `include/ur5e_description/ur5e_constants.hpp` 제거. `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `udp_hand_driver`, `UdpHandState` → `udp_hand_driver/udp_hand_state.hpp`. `RobotState`/`kNumHandJoints`/`kDefaultRobotJointNames`는 사용처가 없어 삭제. `rtc_base` 의존도 제거 — 이 패키지는 URDF/MJCF/mesh만 담는다. |
 | **URDF 구조** | `ur5e.urdf` 사전 생성 포함, `hand.urdf.xacro`/`ur5e_with_hand.urdf.xacro` 추가 |
 | **관절 사양** | shoulder_pan/lift 최대 속도 수정: 2.0944 -> 3.1416 rad/s (URDF 실제 값 반영) |
 | **메시 에셋** | assets 디렉토리 파일 수 명확화: 20개 OBJ 파일 |

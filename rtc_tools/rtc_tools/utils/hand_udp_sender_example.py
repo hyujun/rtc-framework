@@ -2,7 +2,7 @@
 """
 핸드 UDP 송신 예제 — udp_hand_driver 패키지 프로토콜 기반
 
-프로토콜 사양 (hand_packets.hpp 참조):
+프로토콜 사양 (udp_hand_packets.hpp 참조):
 
   Request 패킷:
     - 헤더: [ID: 0x01] [CMD: 1B] [MODE: 1B]
@@ -61,7 +61,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ── 프로토콜 상수 (hand_packets.hpp / types.hpp 기반) ────────────────────────
+# ── 프로토콜 상수 (udp_hand_packets.hpp / types.hpp 기반) ────────────────────────
 DEVICE_ID = 0x01
 DEFAULT_MODE = 0x00
 
@@ -102,11 +102,11 @@ MAX_HAND_SENSORS = MAX_FINGERTIPS * SENSOR_VALUES_PER_FINGERTIP  # 88
 STATE_MODE_MOTOR = 0
 STATE_MODE_FINGERTIP_SENSOR = 1
 
-# Sensor sub-mode (SensorMode enum — hand_packets.hpp)
+# Sensor sub-mode (SensorMode enum — udp_hand_packets.hpp)
 SENSOR_MODE_RAW = 0
 SENSOR_MODE_NN = 1
 
-# Joint mode (JointMode enum — hand_packets.hpp)
+# Joint mode (JointMode enum — udp_hand_packets.hpp)
 # MODE 필드 의미: joint commands (0x01, 0x10, 0x11, 0x12) 에서 사용
 #   kMotor = 0x00: raw motor encoder position (기본값, 하위 호환)
 #   kJoint = 0x01: joint-space position (기어비 적용, 펌웨어 변환)
@@ -130,7 +130,7 @@ CMD_READ_SENSORS = [CMD_READ_SENSOR0, CMD_READ_SENSOR1, CMD_READ_SENSOR2, CMD_RE
 
 
 def _is_sensor_command(cmd: int) -> bool:
-    """센서 커맨드인지 확인 (hand_packets.hpp IsSensorCommand 동일)"""
+    """센서 커맨드인지 확인 (udp_hand_packets.hpp IsSensorCommand 동일)"""
     return (
         cmd == CMD_SET_SENSOR_MODE
         or cmd == CMD_READ_ALL_SENSORS
@@ -139,11 +139,11 @@ def _is_sensor_command(cmd: int) -> bool:
 
 
 def _is_joint_command(cmd: int) -> bool:
-    """조인트(모터) 커맨드인지 확인 (hand_packets.hpp IsJointCommand 동일)"""
+    """조인트(모터) 커맨드인지 확인 (udp_hand_packets.hpp IsJointCommand 동일)"""
     return cmd in (CMD_WRITE_POSITION, CMD_READ_ALL_MOTORS, CMD_READ_POSITION, CMD_READ_VELOCITY)
 
 
-# ── 패킷 인코딩/디코딩 (hand_udp_codec.hpp 기반) ────────────────────────────
+# ── 패킷 인코딩/디코딩 (udp_hand_codec.hpp 기반) ────────────────────────────
 
 
 def float_to_uint32(f: float) -> int:

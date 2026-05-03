@@ -164,7 +164,7 @@ class TestFloatUint32Conversion:
 
 
 class TestIsSensorCommand:
-    """C++ hand_packets::IsSensorCommand 동일 로직."""
+    """C++ udp_hand_driver::packets::IsSensorCommand 동일 로직."""
 
     def test_individual_sensor_commands(self):
         for cmd in [CMD_READ_SENSOR0, CMD_READ_SENSOR1, CMD_READ_SENSOR2, CMD_READ_SENSOR3]:
@@ -182,7 +182,7 @@ class TestIsSensorCommand:
 
 
 class TestIsJointCommand:
-    """C++ hand_packets::IsJointCommand 동일 로직."""
+    """C++ udp_hand_driver::packets::IsJointCommand 동일 로직."""
 
     def test_joint_commands(self):
         for cmd in [CMD_WRITE_POSITION, CMD_READ_ALL_MOTORS, CMD_READ_POSITION, CMD_READ_VELOCITY]:

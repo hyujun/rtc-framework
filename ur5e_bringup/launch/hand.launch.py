@@ -1,4 +1,4 @@
-# hand.launch.py — HandUdpNode launch for UR5e bringup
+# hand.launch.py — UdpHandNode launch for UR5e bringup
 # Request-response polling based unified hand UDP node
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument

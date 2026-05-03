@@ -283,8 +283,8 @@ GROUP_SCALARS_PER_ROW = {
 
 # Sensor calibration entries displayed in the Control tab.
 # Add a new dict here to expose a new sensor's calibration to the GUI;
-# it must also be handled by HandController::DispatchCalibrationRequest()
-# and reported by HandController::GetCalibrationStatus() on the driver side.
+# it must also be handled by UdpHandController::DispatchCalibrationRequest()
+# and reported by UdpHandController::GetCalibrationStatus() on the driver side.
 SENSOR_CALIBRATIONS = [
     {
         "label": "Barometer Bias",

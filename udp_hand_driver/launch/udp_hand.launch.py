@@ -1,4 +1,4 @@
-# udp_hand.launch.py -- HandUdpNode 런치
+# udp_hand.launch.py -- UdpHandNode 런치
 # Event-driven request-response polling 기반 통합 핸드 UDP 노드
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
