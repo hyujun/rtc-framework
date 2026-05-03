@@ -12,8 +12,8 @@ namespace udp_hand_driver::test {
 
 // ── Initial state ───────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, InitialState_Empty) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, InitialState_Empty) {
+  UdpHandTimingProfiler profiler;
   const auto stats = profiler.GetStats();
 
   EXPECT_EQ(stats.count, 0u);
@@ -24,8 +24,8 @@ TEST(HandTimingProfiler, InitialState_Empty) {
   EXPECT_FALSE(stats.is_bulk_mode);
 }
 
-TEST(HandTimingProfiler, Summary_Empty) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, Summary_Empty) {
+  UdpHandTimingProfiler profiler;
   const auto summary = profiler.Summary();
   EXPECT_NE(summary.find("no data"), std::string::npos);
 }
@@ -35,7 +35,7 @@ TEST(HandTimingProfiler, Summary_Empty) {
 class IndividualModeTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    HandTimingProfiler::PhaseTiming pt;
+    UdpHandTimingProfiler::PhaseTiming pt;
     pt.write_us = 100.0;
     pt.read_pos_us = 200.0;
     pt.read_joint_pos_us = 150.0;
@@ -49,7 +49,7 @@ class IndividualModeTest : public ::testing::Test {
     profiler_.Update(pt);
   }
 
-  HandTimingProfiler profiler_;
+  UdpHandTimingProfiler profiler_;
 };
 
 TEST_F(IndividualModeTest, SingleUpdate) {
@@ -69,7 +69,7 @@ TEST_F(IndividualModeTest, SingleUpdate) {
 
 TEST_F(IndividualModeTest, MultipleUpdates_MinMax) {
   // Second update with different values
-  HandTimingProfiler::PhaseTiming pt2;
+  UdpHandTimingProfiler::PhaseTiming pt2;
   pt2.write_us = 50.0;
   pt2.read_pos_us = 300.0;
   pt2.read_joint_pos_us = 100.0;
@@ -98,10 +98,10 @@ TEST_F(IndividualModeTest, MultipleUpdates_MinMax) {
   EXPECT_EQ(s.sensor_cycle_count, 1u);
 }
 
-TEST(HandTimingProfiler, NonSensorCycle_SensorStatsUnchanged) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, NonSensorCycle_SensorStatsUnchanged) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt;
+  UdpHandTimingProfiler::PhaseTiming pt;
   pt.write_us = 100.0;
   pt.read_pos_us = 200.0;
   pt.read_joint_pos_us = 150.0;
@@ -121,10 +121,10 @@ TEST(HandTimingProfiler, NonSensorCycle_SensorStatsUnchanged) {
 
 // ── Bulk mode ───────────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, BulkMode_SingleUpdate) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, BulkMode_SingleUpdate) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt;
+  UdpHandTimingProfiler::PhaseTiming pt;
   pt.write_us = 80.0;
   pt.read_all_motor_us = 250.0;
   pt.read_all_joint_motor_us = 240.0;
@@ -148,10 +148,10 @@ TEST(HandTimingProfiler, BulkMode_SingleUpdate) {
   EXPECT_EQ(s.sensor_cycle_count, 1u);
 }
 
-TEST(HandTimingProfiler, BulkMode_NonSensorCycle) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, BulkMode_NonSensorCycle) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt;
+  UdpHandTimingProfiler::PhaseTiming pt;
   pt.write_us = 80.0;
   pt.read_all_motor_us = 250.0;
   pt.read_all_joint_motor_us = 240.0;
@@ -169,10 +169,10 @@ TEST(HandTimingProfiler, BulkMode_NonSensorCycle) {
 
 // ── FT inference tracking ───────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, FTInfer_TrackedWhenPositive) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, FTInfer_TrackedWhenPositive) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt{};
+  UdpHandTimingProfiler::PhaseTiming pt{};
   pt.ft_infer_us = 150.0;
   pt.total_us = 500.0;
   pt.is_sensor_cycle = true;
@@ -183,10 +183,10 @@ TEST(HandTimingProfiler, FTInfer_TrackedWhenPositive) {
   EXPECT_DOUBLE_EQ(s.ft_infer.mean_us, 150.0);
 }
 
-TEST(HandTimingProfiler, FTInfer_IgnoredWhenZero) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, FTInfer_IgnoredWhenZero) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt{};
+  UdpHandTimingProfiler::PhaseTiming pt{};
   pt.ft_infer_us = 0.0;
   pt.total_us = 500.0;
   profiler.Update(pt);
@@ -197,10 +197,10 @@ TEST(HandTimingProfiler, FTInfer_IgnoredWhenZero) {
 
 // ── Sensor processing phase ─────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, SensorProc_TrackedOnSensorCycle) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, SensorProc_TrackedOnSensorCycle) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt{};
+  UdpHandTimingProfiler::PhaseTiming pt{};
   pt.sensor_proc_us = 42.0;
   pt.total_us = 500.0;
   pt.is_sensor_cycle = true;
@@ -210,10 +210,10 @@ TEST(HandTimingProfiler, SensorProc_TrackedOnSensorCycle) {
   EXPECT_DOUBLE_EQ(s.sensor_proc.mean_us, 42.0);
 }
 
-TEST(HandTimingProfiler, SensorProc_NotTrackedOnNonSensorCycle) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, SensorProc_NotTrackedOnNonSensorCycle) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt{};
+  UdpHandTimingProfiler::PhaseTiming pt{};
   pt.sensor_proc_us = 42.0;
   pt.total_us = 500.0;
   pt.is_sensor_cycle = false;
@@ -225,10 +225,10 @@ TEST(HandTimingProfiler, SensorProc_NotTrackedOnNonSensorCycle) {
 
 // ── Reset ───────────────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, Reset_ClearsAll) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, Reset_ClearsAll) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt;
+  UdpHandTimingProfiler::PhaseTiming pt;
   pt.write_us = 100.0;
   pt.read_all_motor_us = 200.0;
   pt.read_all_joint_motor_us = 180.0;
@@ -253,10 +253,10 @@ TEST(HandTimingProfiler, Reset_ClearsAll) {
 
 // ── Summary strings ─────────────────────────────────────────────────────────
 
-TEST(HandTimingProfiler, Summary_IndividualMode) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, Summary_IndividualMode) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt{};
+  UdpHandTimingProfiler::PhaseTiming pt{};
   pt.write_us = 100.0;
   pt.read_pos_us = 200.0;
   pt.read_joint_pos_us = 150.0;
@@ -271,10 +271,10 @@ TEST(HandTimingProfiler, Summary_IndividualMode) {
   EXPECT_EQ(summary.find("[bulk]"), std::string::npos);
 }
 
-TEST(HandTimingProfiler, Summary_BulkMode) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, Summary_BulkMode) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt{};
+  UdpHandTimingProfiler::PhaseTiming pt{};
   pt.write_us = 80.0;
   pt.read_all_motor_us = 250.0;
   pt.read_all_joint_motor_us = 240.0;
@@ -286,10 +286,10 @@ TEST(HandTimingProfiler, Summary_BulkMode) {
   EXPECT_NE(summary.find("[bulk]"), std::string::npos);
 }
 
-TEST(HandTimingProfiler, Summary_WithFTInfer) {
-  HandTimingProfiler profiler;
+TEST(UdpHandTimingProfiler, Summary_WithFTInfer) {
+  UdpHandTimingProfiler profiler;
 
-  HandTimingProfiler::PhaseTiming pt{};
+  UdpHandTimingProfiler::PhaseTiming pt{};
   pt.ft_infer_us = 120.0;
   pt.total_us = 500.0;
   profiler.Update(pt);

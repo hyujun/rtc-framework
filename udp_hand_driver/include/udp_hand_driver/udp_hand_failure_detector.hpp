@@ -3,8 +3,8 @@
 
 // Non-RT failure detector for hand data.
 //
-// Runs its own 50 Hz std::jthread.  Reads the latest HandState from
-// HandController and checks two failure conditions:
+// Runs its own 50 Hz std::jthread.  Reads the latest UdpHandState from
+// UdpHandController and checks two failure conditions:
 //   1. All-zero data for N consecutive checks
 //   2. Duplicate (unchanged) data for N consecutive checks
 //
@@ -27,7 +27,7 @@
 
 namespace udp_hand_driver {
 
-struct HandFailureDetectorConfig {
+struct UdpHandFailureDetectorConfig {
   int failure_threshold{5};     ///< 연속 감지 횟수 임계값
   bool check_motor{true};       ///< 모터 위치 데이터 검사
   bool check_sensor{true};      ///< 센서 데이터 검사
@@ -37,23 +37,23 @@ struct HandFailureDetectorConfig {
   int link_fail_threshold{10};  ///< 연속 N회 recv 전체 실패 시 link_down
 };
 
-class HandFailureDetector {
+class UdpHandFailureDetector {
  public:
-  using Config = HandFailureDetectorConfig;
+  using Config = UdpHandFailureDetectorConfig;
   using FailureCallback = std::function<void(const std::string&)>;
 
-  /// @param controller   Reference to the HandController to monitor.
+  /// @param controller   Reference to the UdpHandController to monitor.
   /// @param cfg          Detection configuration.
   /// @param thread_cfg   Thread scheduling / CPU affinity configuration.
-  explicit HandFailureDetector(HandController& controller, Config cfg = Config{},
+  explicit UdpHandFailureDetector(UdpHandController& controller, Config cfg = Config{},
                                rtc::ThreadConfig thread_cfg = rtc::kLoggingConfig)
       : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
 
-  ~HandFailureDetector() { Stop(); }
+  ~UdpHandFailureDetector() { Stop(); }
 
   // Non-copyable, non-movable
-  HandFailureDetector(const HandFailureDetector&) = delete;
-  HandFailureDetector& operator=(const HandFailureDetector&) = delete;
+  UdpHandFailureDetector(const UdpHandFailureDetector&) = delete;
+  UdpHandFailureDetector& operator=(const UdpHandFailureDetector&) = delete;
 
   /// Register a callback invoked when a failure is detected.
   void SetFailureCallback(FailureCallback cb) { on_failure_ = std::move(cb); }
@@ -93,7 +93,7 @@ class HandFailureDetector {
     prev_cycle_count_ = controller_.cycle_count();
 
     while (!st.stop_requested() && running_.load(std::memory_order_relaxed)) {
-      const HandState state = controller_.GetLatestState();
+      const UdpHandState state = controller_.GetLatestState();
       if (state.valid) {
         Check(state);
       }
@@ -105,7 +105,7 @@ class HandFailureDetector {
     }
   }
 
-  void Check(const HandState& state) {
+  void Check(const UdpHandState& state) {
     if (cfg_.check_motor) {
       CheckMotor(state);
     }
@@ -114,7 +114,7 @@ class HandFailureDetector {
     }
   }
 
-  void CheckMotor(const HandState& state) {
+  void CheckMotor(const UdpHandState& state) {
     const auto& pos = state.motor_positions;
 
     // All-zero check
@@ -154,7 +154,7 @@ class HandFailureDetector {
     }
   }
 
-  void CheckSensor(const HandState& state) {
+  void CheckSensor(const UdpHandState& state) {
     const auto& sens = state.sensor_data;
 
     bool all_zero = true;
@@ -240,7 +240,7 @@ class HandFailureDetector {
     }
   }
 
-  HandController& controller_;
+  UdpHandController& controller_;
   Config cfg_;
   rtc::ThreadConfig thread_cfg_;
   FailureCallback on_failure_;

@@ -1,9 +1,9 @@
 #ifndef UDP_HAND_DRIVER_UDP_HAND_TIMING_PROFILER_HPP_
 #define UDP_HAND_DRIVER_UDP_HAND_TIMING_PROFILER_HPP_
 
-// HandTimingProfiler: EventLoop per-phase timing measurement.
+// UdpHandTimingProfiler: EventLoop per-phase timing measurement.
 //
-// Measures and accumulates per-phase durations for the HandController
+// Measures and accumulates per-phase durations for the UdpHandController
 // EventLoop. Inherits rtc::TimingProfilerBase<250,20,2000> for histogram/percentile
 // logic (covers [0,5000) µs at 20 µs resolution; overflow bucket catches the
 // rest).
@@ -26,7 +26,7 @@
 
 namespace udp_hand_driver {
 
-class HandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
+class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
  public:
   using PhaseStats = typename rtc::TimingProfilerBase<250, 20, 2000>::PhaseStats;
 

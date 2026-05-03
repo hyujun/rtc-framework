@@ -1,6 +1,6 @@
 // Unit tests for hand_failure_detector.hpp — failure detection logic.
 //
-// Tier 2: Uses fake_hand HandController. Requires rclcpp for logging.
+// Tier 2: Uses fake_hand UdpHandController. Requires rclcpp for logging.
 // Tests run the detector's 50Hz thread and verify failure detection.
 
 #include "udp_hand_driver/udp_hand_failure_detector.hpp"
@@ -22,7 +22,7 @@ using namespace std::chrono_literals;
 class HandFailureDetectorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    controller_ = std::make_unique<HandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false,
+    controller_ = std::make_unique<UdpHandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false,
                                                    1, 4, true);  // fake_hand=true
     ASSERT_TRUE(controller_->Start());
   }
@@ -40,20 +40,20 @@ class HandFailureDetectorTest : public ::testing::Test {
     }
   }
 
-  std::unique_ptr<HandController> controller_;
+  std::unique_ptr<UdpHandController> controller_;
 };
 
 // ── Motor all-zero detection ────────────────────────────────────────────────
 
 TEST_F(HandFailureDetectorTest, MotorAllZero_TriggersFailure) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = true;
   cfg.check_sensor = false;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;  // disable rate check
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
   detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
@@ -74,14 +74,14 @@ TEST_F(HandFailureDetectorTest, MotorAllZero_TriggersFailure) {
 }
 
 TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = true;
   cfg.check_sensor = false;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
   detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
@@ -107,14 +107,14 @@ TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure) {
 // ── Motor duplicate detection ───────────────────────────────────────────────
 
 TEST_F(HandFailureDetectorTest, MotorDuplicate_TriggersFailure) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = true;
   cfg.check_sensor = false;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
   detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
@@ -137,14 +137,14 @@ TEST_F(HandFailureDetectorTest, MotorDuplicate_TriggersFailure) {
 // ── Sensor all-zero detection ───────────────────────────────────────────────
 
 TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = false;
   cfg.check_sensor = true;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   std::string failure_reason;
   detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
@@ -165,14 +165,14 @@ TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure) {
 // ── Config: disable checks ──────────────────────────────────────────────────
 
 TEST_F(HandFailureDetectorTest, DisableMotorCheck_NoFailureOnZero) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 3;
   cfg.check_motor = false;
   cfg.check_sensor = false;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   bool callback_called = false;
   detector.SetFailureCallback([&](const std::string& /*reason*/) { callback_called = true; });
@@ -189,14 +189,14 @@ TEST_F(HandFailureDetectorTest, DisableMotorCheck_NoFailureOnZero) {
 }
 
 TEST_F(HandFailureDetectorTest, CustomThreshold_HighThresholdNoFailure) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 1000;  // very high threshold
   cfg.check_motor = true;
   cfg.check_sensor = false;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   bool callback_called = false;
   detector.SetFailureCallback([&](const std::string& /*reason*/) { callback_called = true; });
@@ -216,14 +216,14 @@ TEST_F(HandFailureDetectorTest, CustomThreshold_HighThresholdNoFailure) {
 // ── Idempotent failure callback ─────────────────────────────────────────────
 
 TEST_F(HandFailureDetectorTest, FailureCallbackOnceOnly) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.failure_threshold = 2;
   cfg.check_motor = true;
   cfg.check_sensor = false;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   int callback_count = 0;
   detector.SetFailureCallback([&](const std::string& /*reason*/) { ++callback_count; });
@@ -242,8 +242,8 @@ TEST_F(HandFailureDetectorTest, FailureCallbackOnceOnly) {
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 TEST_F(HandFailureDetectorTest, StartStop_Clean) {
-  HandFailureDetectorConfig cfg{};
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetectorConfig cfg{};
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   detector.Start();
   std::this_thread::sleep_for(50ms);
@@ -252,18 +252,18 @@ TEST_F(HandFailureDetectorTest, StartStop_Clean) {
 }
 
 TEST_F(HandFailureDetectorTest, StopWithoutStart_Safe) {
-  HandFailureDetectorConfig cfg{};
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetectorConfig cfg{};
+  UdpHandFailureDetector detector(*controller_, cfg);
   detector.Stop();  // Should not crash
 }
 
 TEST_F(HandFailureDetectorTest, DoubleStart_Ignored) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.check_motor = false;
   cfg.check_sensor = false;
   cfg.check_link = false;
   cfg.min_rate_hz = 0.0;
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   detector.Start();
   detector.Start();  // Second start should be ignored
@@ -274,14 +274,14 @@ TEST_F(HandFailureDetectorTest, DoubleStart_Ignored) {
 // ── Link health (fake_hand always has 0 failures) ───────────────────────────
 
 TEST_F(HandFailureDetectorTest, LinkCheck_FakeHandNoFailure) {
-  HandFailureDetectorConfig cfg{};
+  UdpHandFailureDetectorConfig cfg{};
   cfg.check_motor = false;
   cfg.check_sensor = false;
   cfg.check_link = true;
   cfg.link_fail_threshold = 5;
   cfg.min_rate_hz = 0.0;
 
-  HandFailureDetector detector(*controller_, cfg);
+  UdpHandFailureDetector detector(*controller_, cfg);
 
   bool callback_called = false;
   detector.SetFailureCallback([&](const std::string& /*reason*/) { callback_called = true; });

@@ -1,4 +1,4 @@
-// Unit tests for hand_udp_transport.hpp — HandCommStats, transport lifecycle,
+// Unit tests for hand_udp_transport.hpp — UdpHandCommStats, transport lifecycle,
 // and mode validation on request-response via loopback UDP.
 
 #include "udp_hand_driver/udp_hand_transport.hpp"
@@ -64,7 +64,7 @@ class LoopbackDevice {
 
 TEST(HandUdpTransportModeValidation, MotorRead_ModeMatch_ReturnsTrue) {
   LoopbackDevice device;
-  HandUdpTransport transport("127.0.0.1", device.port(), 50.0);
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
 
   // Craft a valid motor response with kMotor mode
@@ -90,7 +90,7 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMatch_ReturnsTrue) {
 
 TEST(HandUdpTransportModeValidation, MotorRead_ModeMismatch_ReturnsFalse) {
   LoopbackDevice device;
-  HandUdpTransport transport("127.0.0.1", device.port(), 50.0);
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
 
   // Respond with kJoint mode when kMotor was requested
@@ -115,7 +115,7 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMismatch_ReturnsFalse) {
 
 TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMatch_ReturnsTrue) {
   LoopbackDevice device;
-  HandUdpTransport transport("127.0.0.1", device.port(), 50.0);
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
 
   AllMotorResponsePacket response{};
@@ -140,7 +140,7 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMatch_ReturnsTrue) {
 
 TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMismatch_ReturnsFalse) {
   LoopbackDevice device;
-  HandUdpTransport transport("127.0.0.1", device.port(), 50.0);
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
 
   // Respond with kMotor mode when kJoint was requested
@@ -165,7 +165,7 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMismatch_ReturnsFalse) {
 
 TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMismatch_ReturnsFalse) {
   LoopbackDevice device;
-  HandUdpTransport transport("127.0.0.1", device.port(), 50.0);
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
 
   AllSensorResponsePacket response{};
@@ -188,7 +188,7 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMismatch_ReturnsFalse) {
 
 TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
   LoopbackDevice device;
-  HandUdpTransport transport("127.0.0.1", device.port(), 50.0);
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
 
   AllSensorResponsePacket response{};
@@ -209,10 +209,10 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
 }
 
-// ── HandCommStats defaults ─────────────────────────────────────────────────
+// ── UdpHandCommStats defaults ─────────────────────────────────────────────────
 
-TEST(HandCommStats, DefaultValues) {
-  HandCommStats stats{};
+TEST(UdpHandCommStats, DefaultValues) {
+  UdpHandCommStats stats{};
   EXPECT_EQ(stats.recv_ok, 0u);
   EXPECT_EQ(stats.recv_timeout, 0u);
   EXPECT_EQ(stats.recv_error, 0u);
@@ -224,18 +224,18 @@ TEST(HandCommStats, DefaultValues) {
 
 // ── Construction ───────────────────────────────────────────────────────────
 
-TEST(HandUdpTransport, Construction_NotOpen) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, Construction_NotOpen) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, RecvTimeoutMs_StoredCorrectly) {
-  HandUdpTransport transport("127.0.0.1", 55151, 0.4);
+TEST(UdpHandTransport, RecvTimeoutMs_StoredCorrectly) {
+  UdpHandTransport transport("127.0.0.1", 55151, 0.4);
   EXPECT_DOUBLE_EQ(transport.recv_timeout_ms(), 0.4);
 }
 
-TEST(HandUdpTransport, CommStats_InitiallyZero) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, CommStats_InitiallyZero) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   const auto& stats = transport.comm_stats();
   EXPECT_EQ(stats.recv_ok, 0u);
   EXPECT_EQ(stats.recv_timeout, 0u);
@@ -244,38 +244,38 @@ TEST(HandUdpTransport, CommStats_InitiallyZero) {
   EXPECT_EQ(stats.total_cycles, 0u);
 }
 
-TEST(HandUdpTransport, RecvErrorCount_InitiallyZero) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, RecvErrorCount_InitiallyZero) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   EXPECT_EQ(transport.recv_error_count(), 0u);
 }
 
 // ── Open / Close lifecycle ─────────────────────────────────────────────────
 
-TEST(HandUdpTransport, OpenClose_Loopback) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, OpenClose_Loopback) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
   EXPECT_TRUE(transport.is_open());
   transport.Close();
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, DoubleClose_Safe) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, DoubleClose_Safe) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
   transport.Close();
   transport.Close();  // Should not crash
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, Open_InvalidIP_Fails) {
-  HandUdpTransport transport("999.999.999.999", 55151, 10.0);
+TEST(UdpHandTransport, Open_InvalidIP_Fails) {
+  UdpHandTransport transport("999.999.999.999", 55151, 10.0);
   EXPECT_FALSE(transport.Open());
   EXPECT_FALSE(transport.is_open());
 }
 
-TEST(HandUdpTransport, DestructorClosesSocket) {
+TEST(UdpHandTransport, DestructorClosesSocket) {
   {
-    HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+    UdpHandTransport transport("127.0.0.1", 55151, 10.0);
     ASSERT_TRUE(transport.Open());
     // Destructor should close without crash
   }
@@ -283,8 +283,8 @@ TEST(HandUdpTransport, DestructorClosesSocket) {
 
 // ── DrainStaleResponses on empty socket ────────────────────────────────────
 
-TEST(HandUdpTransport, DrainStaleResponses_EmptySocket) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, DrainStaleResponses_EmptySocket) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
   // Draining an empty socket should not block or crash
   transport.DrainStaleResponses();
@@ -293,16 +293,16 @@ TEST(HandUdpTransport, DrainStaleResponses_EmptySocket) {
 
 // ── CommStats mutable access ───────────────────────────────────────────────
 
-TEST(HandUdpTransport, CommStatsMut_Writable) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, CommStatsMut_Writable) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   transport.comm_stats_mut().total_cycles = 42;
   EXPECT_EQ(transport.comm_stats().total_cycles, 42u);
 }
 
 // ── WritePositionFireAndForget on open socket ──────────────────────────────
 
-TEST(HandUdpTransport, WritePositionFireAndForget_NoRecv) {
-  HandUdpTransport transport("127.0.0.1", 55151, 10.0);
+TEST(UdpHandTransport, WritePositionFireAndForget_NoRecv) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   ASSERT_TRUE(transport.Open());
 
   std::array<float, kNumHandMotors> cmd{};

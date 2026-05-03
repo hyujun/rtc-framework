@@ -4,7 +4,7 @@
 /// Hierarchical sub-logger factories and standard throttle periods for the
 /// udp_hand_driver package.
 ///
-/// The HandController EventLoop runs at ~500 Hz UDP polling rate, so the
+/// The UdpHandController EventLoop runs at ~500 Hz UDP polling rate, so the
 /// transport, codec, sensor processor, and FT inferencer headers are all on
 /// the RT hot path. All hot-path log calls must use the *_THROTTLE variants
 /// together with the constants declared below — never the bare INFO/WARN

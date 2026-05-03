@@ -16,10 +16,10 @@ namespace udp_hand_driver::test {
 
 // ── Construction & Init ─────────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, DefaultConfig_ZeroFingertips) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, DefaultConfig_ZeroFingertips) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 0;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
 
   // Init with zero fingertips should be a no-op (no crash).
   // rtc::SensorRateEstimator defaults to 500Hz nominal before Init().
@@ -27,13 +27,13 @@ TEST(HandSensorProcessor, DefaultConfig_ZeroFingertips) {
   EXPECT_GE(proc.actual_sensor_rate_hz(), 0.0);
 }
 
-TEST(HandSensorProcessor, NegativeDecimation_ClampedToOne) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, NegativeDecimation_ClampedToOne) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = -5;
   cfg.baro_lpf_enabled = true;
   cfg.baro_lpf_cutoff_hz = 30.0;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
 
   // Should not crash; decimation clamped to 1
   proc.Init();
@@ -41,12 +41,12 @@ TEST(HandSensorProcessor, NegativeDecimation_ClampedToOne) {
 
 // ── ApplyFilters: No filters ────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, NoFilters_Passthrough) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, NoFilters_Passthrough) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 2;
   cfg.baro_lpf_enabled = false;
   cfg.tof_lpf_enabled = false;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   std::array<int32_t, rtc::kMaxHandSensors> data{};
@@ -70,17 +70,17 @@ TEST(HandSensorProcessor, NoFilters_Passthrough) {
 class BaroLPFTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    HandSensorProcessorConfig cfg{};
+    UdpHandSensorProcessorConfig cfg{};
     cfg.num_fingertips = 1;
     cfg.sensor_decimation = 1;
     cfg.baro_lpf_enabled = true;
     cfg.baro_lpf_cutoff_hz = 30.0;
     cfg.tof_lpf_enabled = false;
-    proc_ = std::make_unique<HandSensorProcessor>(cfg);
+    proc_ = std::make_unique<UdpHandSensorProcessor>(cfg);
     proc_->Init();
   }
 
-  std::unique_ptr<HandSensorProcessor> proc_;
+  std::unique_ptr<UdpHandSensorProcessor> proc_;
 };
 
 TEST_F(BaroLPFTest, StepInput_Smoothed) {
@@ -125,14 +125,14 @@ TEST_F(BaroLPFTest, TofUnchanged) {
 
 // ── ApplyFilters: ToF LPF ───────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, TofLPF_StepInput_Smoothed) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, TofLPF_StepInput_Smoothed) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = 1;
   cfg.baro_lpf_enabled = false;
   cfg.tof_lpf_enabled = true;
   cfg.tof_lpf_cutoff_hz = 15.0;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   std::array<int32_t, rtc::kMaxHandSensors> data{};
@@ -158,15 +158,15 @@ TEST(HandSensorProcessor, TofLPF_StepInput_Smoothed) {
 
 // ── ApplyFilters: Both filters ──────────────────────────────────────────────
 
-TEST(HandSensorProcessor, BothFilters_Applied) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, BothFilters_Applied) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = 1;
   cfg.baro_lpf_enabled = true;
   cfg.baro_lpf_cutoff_hz = 30.0;
   cfg.tof_lpf_enabled = true;
   cfg.tof_lpf_cutoff_hz = 15.0;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   std::array<int32_t, rtc::kMaxHandSensors> data{};
@@ -197,14 +197,14 @@ TEST(HandSensorProcessor, BothFilters_Applied) {
 
 // ── ApplyFilters: Multi-finger layout ───────────────────────────────────────
 
-TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 4;
   cfg.sensor_decimation = 1;
   cfg.baro_lpf_enabled = true;
   cfg.baro_lpf_cutoff_hz = 30.0;
   cfg.tof_lpf_enabled = false;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   std::array<int32_t, rtc::kMaxHandSensors> data{};
@@ -246,13 +246,13 @@ TEST(HandSensorProcessor, MultiFingerLayout_CorrectIndexing) {
 
 // ── ApplyFilters: Convergence ───────────────────────────────────────────────
 
-TEST(HandSensorProcessor, BaroLPF_ConvergesToSteadyState) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, BaroLPF_ConvergesToSteadyState) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.sensor_decimation = 1;
   cfg.baro_lpf_enabled = true;
   cfg.baro_lpf_cutoff_hz = 50.0;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   std::array<int32_t, rtc::kMaxHandSensors> data{};
@@ -275,11 +275,11 @@ TEST(HandSensorProcessor, BaroLPF_ConvergesToSteadyState) {
 
 // ── DetectDrift ─────────────────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, DetectDrift_Disabled_NoOp) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, DetectDrift_Disabled_NoOp) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.drift_detection_enabled = false;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   std::array<int32_t, rtc::kMaxHandSensors> raw{};
@@ -292,13 +292,13 @@ TEST(HandSensorProcessor, DetectDrift_Disabled_NoOp) {
   }
 }
 
-TEST(HandSensorProcessor, DetectDrift_ConstantData_NoDrift) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, DetectDrift_ConstantData_NoDrift) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
   cfg.drift_detection_enabled = true;
   cfg.drift_threshold = 5.0;
   cfg.drift_window_size = 50;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   std::array<int32_t, rtc::kMaxHandSensors> raw{};
@@ -314,19 +314,19 @@ TEST(HandSensorProcessor, DetectDrift_ConstantData_NoDrift) {
 
 // ── Rate accessor ───────────────────────────────────────────────────────────
 
-TEST(HandSensorProcessor, ActualSensorRateHz_DefaultNominal) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, ActualSensorRateHz_DefaultNominal) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
 
   // Before Init(), rtc::SensorRateEstimator returns its default nominal rate (500Hz)
   EXPECT_DOUBLE_EQ(proc.actual_sensor_rate_hz(), 500.0);
 }
 
-TEST(HandSensorProcessor, PreFilter_TicksRateEstimator) {
-  HandSensorProcessorConfig cfg{};
+TEST(UdpHandSensorProcessor, PreFilter_TicksRateEstimator) {
+  UdpHandSensorProcessorConfig cfg{};
   cfg.num_fingertips = 1;
-  HandSensorProcessor proc(cfg);
+  UdpHandSensorProcessor proc(cfg);
   proc.Init();
 
   // After Init, rate should be near nominal (or at least non-negative)

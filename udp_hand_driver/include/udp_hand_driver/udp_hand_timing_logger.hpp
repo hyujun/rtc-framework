@@ -25,13 +25,13 @@
 
 namespace udp_hand_driver {
 
-class HandUdpTimingLogger {
+class UdpHandTimingLogger {
  public:
-  HandUdpTimingLogger() = default;
-  ~HandUdpTimingLogger() = default;
+  UdpHandTimingLogger() = default;
+  ~UdpHandTimingLogger() = default;
 
-  HandUdpTimingLogger(const HandUdpTimingLogger&) = delete;
-  HandUdpTimingLogger& operator=(const HandUdpTimingLogger&) = delete;
+  UdpHandTimingLogger(const UdpHandTimingLogger&) = delete;
+  UdpHandTimingLogger& operator=(const UdpHandTimingLogger&) = delete;
 
   /// Resolve the CSV path under `<session>/timing/`, create the parent
   /// directory, and open the file. Schema header is written on first

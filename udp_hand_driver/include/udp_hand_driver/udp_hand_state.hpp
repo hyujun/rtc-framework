@@ -9,7 +9,7 @@
 
 namespace udp_hand_driver {
 
-struct HandState {
+struct UdpHandState {
   // Motor-space (from kMotor read)
   std::array<float, kNumHandMotors> motor_positions{};
   std::array<float, kNumHandMotors> motor_velocities{};

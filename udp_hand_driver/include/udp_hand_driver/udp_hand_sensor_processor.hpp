@@ -1,12 +1,12 @@
 #ifndef UDP_HAND_DRIVER_UDP_HAND_SENSOR_PROCESSOR_HPP_
 #define UDP_HAND_DRIVER_UDP_HAND_SENSOR_PROCESSOR_HPP_
 
-// HandSensorProcessor: sensor post-processing pipeline.
+// UdpHandSensorProcessor: sensor post-processing pipeline.
 //
 // Owns BesselFilter (baro/tof LPF), rtc::SensorRateEstimator, and
 // rtc::SlidingTrendDetector (one-shot drift detection).
 //
-// Called from HandController's EventLoop on every sensor cycle.
+// Called from UdpHandController's EventLoop on every sensor cycle.
 // All hot-path methods are noexcept (RT-safe).
 
 #include "rtc_base/filters/bessel_filter.hpp"
@@ -25,7 +25,7 @@
 
 namespace udp_hand_driver {
 
-struct HandSensorProcessorConfig {
+struct UdpHandSensorProcessorConfig {
   int num_fingertips{0};
   int sensor_decimation{1};
   bool tof_lpf_enabled{false};
@@ -37,9 +37,9 @@ struct HandSensorProcessorConfig {
   int drift_window_size{2500};
 };
 
-class HandSensorProcessor {
+class UdpHandSensorProcessor {
  public:
-  explicit HandSensorProcessor(const HandSensorProcessorConfig& cfg) noexcept
+  explicit UdpHandSensorProcessor(const UdpHandSensorProcessorConfig& cfg) noexcept
       : num_fingertips_(cfg.num_fingertips),
         sensor_decimation_(cfg.sensor_decimation < 1 ? 1 : cfg.sensor_decimation),
         tof_lpf_enabled_(cfg.tof_lpf_enabled),

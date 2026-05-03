@@ -38,7 +38,7 @@ using namespace std::chrono_literals;
 
 // Unified hand UDP node using request-response protocol.
 //
-// Owns a HandController that polls the hand device:
+// Owns a UdpHandController that polls the hand device:
 //   write position -> read position -> read velocity -> read sensors x 4
 //
 // Publishes full state directly from EventLoop callback (no timer).
@@ -55,16 +55,16 @@ using namespace std::chrono_literals;
 // Tier 1 (on_configure): parameters, controller, publishers, subscribers,
 //   timers, pre-allocated messages, EventLoop callback.
 // Tier 2 (on_activate): controller Start, fake tick timer, failure detector.
-class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
+class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
  public:
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
-  HandUdpNode() : LifecycleNode("udp_hand_node") {
+  UdpHandNode() : LifecycleNode("udp_hand_node") {
     // Lifecycle design: constructor is intentionally empty.
     // All resource allocation happens in on_configure().
   }
 
-  ~HandUdpNode() override {
+  ~UdpHandNode() override {
     // Safety net — idempotent cleanup in case lifecycle callbacks were not
     // invoked (e.g. SIGTERM without graceful shutdown).
     if (failure_detector_)
@@ -171,11 +171,11 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     const double drift_threshold = get_parameter("drift_threshold").as_double();
     const int drift_window_size = static_cast<int>(get_parameter("drift_window_size").as_int());
 
-    // ── HandController ─────────────────────────────────────────────────
+    // ── UdpHandController ─────────────────────────────────────────────────
     const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
     num_fingertips_ = rtc::kDefaultNumFingertips;
     use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
-    controller_ = std::make_unique<udp_hand_driver::HandController>(
+    controller_ = std::make_unique<udp_hand_driver::UdpHandController>(
         target_ip, target_port, rtc::kUdpRecvConfig, recv_timeout_ms,
         false /* enable_write_ack: deprecated */, 1, num_fingertips_, use_fake_hand_, ft_names,
         comm_mode, tof_lpf_enabled, tof_lpf_cutoff_hz, baro_lpf_enabled, baro_lpf_cutoff_hz,
@@ -250,7 +250,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
     // ── EventLoop callback ─────────────────────────────────────────────
     controller_->SetCallback(
-        [this](const udp_hand_driver::HandState& state, const rtc::FingertipFTState& ft_state) {
+        [this](const udp_hand_driver::UdpHandState& state, const rtc::FingertipFTState& ft_state) {
           PublishFromEventLoop(state, ft_state);
         });
 
@@ -322,7 +322,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     }
 
     RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                "HandUdpNode configured: target %s:%d, direct publish from "
+                "UdpHandNode configured: target %s:%d, direct publish from "
                 "EventLoop, comm=%s",
                 target_ip.c_str(), target_port, comm_mode_str.c_str());
     return CallbackReturn::SUCCESS;
@@ -347,7 +347,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
     if (!controller_->Start()) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                   "Failed to start HandController to %s:%d", target_ip_.c_str(), target_port_);
+                   "Failed to start UdpHandController to %s:%d", target_ip_.c_str(), target_port_);
       return CallbackReturn::FAILURE;
     }
 
@@ -367,10 +367,10 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
           controller_->SendCommandAndRequestStates(cmd);
         });
         RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                    "HandUdpNode: FAKE mode enabled — no UDP, self-tick=%.1f Hz", fake_rate);
+                    "UdpHandNode: FAKE mode enabled — no UDP, self-tick=%.1f Hz", fake_rate);
       } else {
         RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                    "HandUdpNode: FAKE mode enabled — self-tick disabled "
+                    "UdpHandNode: FAKE mode enabled — self-tick disabled "
                     "(fake_tick_rate_hz=%.1f). Drive SendCommandAndRequestStates "
                     "externally (e.g. rtc_controller_manager ControlLoop).",
                     fake_rate);
@@ -380,7 +380,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     // Failure Detector (skipped in fake mode)
     const bool enable_fd = get_parameter("enable_failure_detector").as_bool() && !use_fake_hand_;
     if (enable_fd) {
-      udp_hand_driver::HandFailureDetector::Config fd_cfg;
+      udp_hand_driver::UdpHandFailureDetector::Config fd_cfg;
       fd_cfg.failure_threshold = static_cast<int>(get_parameter("failure_threshold").as_int());
       fd_cfg.check_motor = get_parameter("check_motor").as_bool();
       fd_cfg.check_sensor = get_parameter("check_sensor").as_bool();
@@ -391,21 +391,21 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
       const auto cfgs = rtc::SelectThreadConfigs();
       failure_detector_ =
-          std::make_unique<udp_hand_driver::HandFailureDetector>(*controller_, fd_cfg, cfgs.logging);
+          std::make_unique<udp_hand_driver::UdpHandFailureDetector>(*controller_, fd_cfg, cfgs.logging);
       failure_detector_->SetFailureCallback([this](const std::string& reason) {
         RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Hand failure detected: %s",
                      reason.c_str());
       });
       failure_detector_->Start();
       RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                  "HandFailureDetector started (50 Hz, threshold=%d)", fd_cfg.failure_threshold);
+                  "UdpHandFailureDetector started (50 Hz, threshold=%d)", fd_cfg.failure_threshold);
     }
 
     // ── Per-tick timing CSV: open + start drain timer ──────────────────
     if (!hand_udp_timing_initialized_) {
       if (!hand_udp_timing_logger_.Open()) {
         RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                    "HandUdpTimingLogger::Open() failed — timing CSV disabled");
+                    "UdpHandTimingLogger::Open() failed — timing CSV disabled");
       } else {
         RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand UDP tick-timing CSV: %s",
                     hand_udp_timing_logger_.Path().c_str());
@@ -415,7 +415,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
       hand_udp_timing_initialized_ = true;
     }
 
-    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "HandUdpNode activated");
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode activated");
     return CallbackReturn::SUCCESS;
   }
 
@@ -462,7 +462,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     // Parent call deactivates LifecyclePublishers.
     LifecycleNode::on_deactivate(state);
 
-    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "HandUdpNode deactivated");
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode deactivated");
     return CallbackReturn::SUCCESS;
   }
 
@@ -481,7 +481,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
     calib_status_pub_.reset();
     controller_.reset();
 
-    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "HandUdpNode cleaned up");
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode cleaned up");
     return CallbackReturn::SUCCESS;
   }
 
@@ -496,7 +496,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
   /// Error recovery — clean up and return to Unconfigured.
   CallbackReturn on_error(const rclcpp_lifecycle::State& /*state*/) override {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
-                 "HandUdpNode error — attempting recovery");
+                 "UdpHandNode error — attempting recovery");
     if (failure_detector_) {
       failure_detector_->Stop();
       failure_detector_.reset();
@@ -550,7 +550,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
 
   // Called directly from EventLoop thread — publishes state at EventLoop rate.
   // Uses pre-allocated messages to avoid dynamic allocation.
-  void PublishFromEventLoop(const udp_hand_driver::HandState& state, const rtc::FingertipFTState& ft_state) {
+  void PublishFromEventLoop(const udp_hand_driver::UdpHandState& state, const rtc::FingertipFTState& ft_state) {
     const auto stamp = this->now();
 
     if (state.joint_valid) {
@@ -784,8 +784,8 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
                 avg_rate_hz, ok_pct, timeout_pct, error_pct, fd_failed ? 1 : 0);
   }
 
-  std::unique_ptr<udp_hand_driver::HandController> controller_;
-  std::unique_ptr<udp_hand_driver::HandFailureDetector> failure_detector_;
+  std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
+  std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;
 
   // Data publishers — LifecyclePublisher (gated by lifecycle state).
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
@@ -842,7 +842,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
   // on_activate and is gated by `hand_udp_timing_initialized_` so reactivation
   // does not truncate or re-write the header.
   rtc::HandUdpTimingBuffer hand_udp_timing_producer_;
-  udp_hand_driver::HandUdpTimingLogger hand_udp_timing_logger_;
+  udp_hand_driver::UdpHandTimingLogger hand_udp_timing_logger_;
   rclcpp::TimerBase::SharedPtr hand_udp_timing_timer_;
   bool hand_udp_timing_initialized_{false};
   std::uint64_t hand_udp_timing_drop_baseline_{0};
@@ -868,7 +868,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  auto node = std::make_shared<HandUdpNode>();
+  auto node = std::make_shared<UdpHandNode>();
   // Constructor is empty — launch event handler triggers configure/activate.
   rclcpp::spin(node->get_node_base_interface());
   rclcpp::shutdown();

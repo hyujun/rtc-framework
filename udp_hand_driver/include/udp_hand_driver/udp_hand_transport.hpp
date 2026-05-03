@@ -1,7 +1,7 @@
 #ifndef UDP_HAND_DRIVER_UDP_HAND_TRANSPORT_HPP_
 #define UDP_HAND_DRIVER_UDP_HAND_TRANSPORT_HPP_
 
-// HandUdpTransport: low-level UDP socket management and protocol requests.
+// UdpHandTransport: low-level UDP socket management and protocol requests.
 //
 // Owns the UDP socket and provides typed request-response methods for
 // the hand protocol (motor read/write, sensor read, bulk read).
@@ -36,7 +36,7 @@
 namespace udp_hand_driver {
 
 // Communication statistics (recv success/timeout/error and total cycles)
-struct HandCommStats {
+struct UdpHandCommStats {
   uint64_t recv_ok{0};
   uint64_t recv_timeout{0};
   uint64_t recv_error{0};
@@ -46,19 +46,19 @@ struct HandCommStats {
   uint64_t event_skip_count{0};
 };
 
-class HandUdpTransport {
+class UdpHandTransport {
  public:
-  explicit HandUdpTransport(std::string target_ip, int target_port, double recv_timeout_ms) noexcept
+  explicit UdpHandTransport(std::string target_ip, int target_port, double recv_timeout_ms) noexcept
       : target_ip_(std::move(target_ip)),
         target_port_(target_port),
         recv_timeout_ms_(recv_timeout_ms) {}
 
-  ~HandUdpTransport() { Close(); }
+  ~UdpHandTransport() { Close(); }
 
-  HandUdpTransport(const HandUdpTransport&) = delete;
-  HandUdpTransport& operator=(const HandUdpTransport&) = delete;
-  HandUdpTransport(HandUdpTransport&&) = delete;
-  HandUdpTransport& operator=(HandUdpTransport&&) = delete;
+  UdpHandTransport(const UdpHandTransport&) = delete;
+  UdpHandTransport& operator=(const UdpHandTransport&) = delete;
+  UdpHandTransport(UdpHandTransport&&) = delete;
+  UdpHandTransport& operator=(UdpHandTransport&&) = delete;
 
   // ── Socket lifecycle ──────────────────────────────────────────────────────
 
@@ -437,9 +437,9 @@ class HandUdpTransport {
 
   // ── Statistics accessors ──────────────────────────────────────────────────
 
-  [[nodiscard]] const HandCommStats& comm_stats() const noexcept { return comm_stats_; }
+  [[nodiscard]] const UdpHandCommStats& comm_stats() const noexcept { return comm_stats_; }
 
-  [[nodiscard]] HandCommStats& comm_stats_mut() noexcept { return comm_stats_; }
+  [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return comm_stats_; }
 
   [[nodiscard]] uint64_t recv_error_count() const noexcept {
     return recv_error_count_.load(std::memory_order_relaxed);
@@ -498,7 +498,7 @@ class HandUdpTransport {
   double recv_timeout_ms_;
   sockaddr_in target_addr_{};
 
-  HandCommStats comm_stats_;
+  UdpHandCommStats comm_stats_;
   std::atomic<uint64_t> recv_error_count_{0};
 };
 

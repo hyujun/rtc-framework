@@ -89,11 +89,11 @@ struct CalibrationStatusSnapshot {
   uint16_t target_count{0};
 };
 
-class HandController {
+class UdpHandController {
  public:
-  using StateCallback = std::function<void(const HandState&, const rtc::FingertipFTState&)>;
+  using StateCallback = std::function<void(const UdpHandState&, const rtc::FingertipFTState&)>;
 
-  explicit HandController(
+  explicit UdpHandController(
       std::string target_ip, int target_port, const rtc::ThreadConfig& thread_cfg = rtc::kUdpRecvConfig,
       double recv_timeout_ms = 10.0, bool /*enable_write_ack*/ = false,  // deprecated
       int sensor_decimation = 1, int num_fingertips = rtc::kDefaultNumFingertips,
@@ -113,7 +113,7 @@ class HandController {
         communication_mode_(communication_mode),
         ft_config_(std::move(ft_config)),
         transport_(std::move(target_ip), target_port, recv_timeout_ms),
-        sensor_processor_(HandSensorProcessorConfig{
+        sensor_processor_(UdpHandSensorProcessorConfig{
             num_fingertips_, sensor_decimation_, tof_lpf_enabled, tof_lpf_cutoff_hz,
             baro_lpf_enabled, baro_lpf_cutoff_hz, drift_detection_enabled, drift_threshold,
             drift_window_size}) {
@@ -123,12 +123,12 @@ class HandController {
     }
   }
 
-  ~HandController() { Stop(); }
+  ~UdpHandController() { Stop(); }
 
-  HandController(const HandController&) = delete;
-  HandController& operator=(const HandController&) = delete;
-  HandController(HandController&&) = delete;
-  HandController& operator=(HandController&&) = delete;
+  UdpHandController(const UdpHandController&) = delete;
+  UdpHandController& operator=(const UdpHandController&) = delete;
+  UdpHandController(UdpHandController&&) = delete;
+  UdpHandController& operator=(UdpHandController&&) = delete;
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -176,7 +176,7 @@ class HandController {
       running_.store(true, std::memory_order_release);
       start_time_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
-                  "HandController started in FAKE mode (num_fingertips=%d)", num_fingertips_);
+                  "UdpHandController started in FAKE mode (num_fingertips=%d)", num_fingertips_);
       return true;
     }
 
@@ -224,7 +224,7 @@ class HandController {
     const double avg_rate_hz =
         (elapsed_sec > 0.0) ? static_cast<double>(cycles) / elapsed_sec : 0.0;
     RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
-                "HandController stopped: %zu cycles in %.1fs (avg=%.1f Hz)", cycles, elapsed_sec,
+                "UdpHandController stopped: %zu cycles in %.1fs (avg=%.1f Hz)", cycles, elapsed_sec,
                 avg_rate_hz);
   }
 
@@ -265,7 +265,7 @@ class HandController {
   void SendCommandAndRequestStates(const std::array<float, kNumHandMotors>& cmd) noexcept {
     // Fake mode: echo-back
     if (use_fake_hand_) {
-      HandState fake_state{};
+      UdpHandState fake_state{};
       std::copy(cmd.begin(), cmd.end(), fake_state.motor_positions.begin());
       std::copy(cmd.begin(), cmd.end(), fake_state.joint_positions.begin());
       fake_state.num_fingertips = num_fingertips_;
@@ -357,7 +357,7 @@ class HandController {
 
   // ── State access ───────────────────────────────────────────────────────
 
-  [[nodiscard]] HandState GetLatestState() const noexcept { return state_seqlock_.Load(); }
+  [[nodiscard]] UdpHandState GetLatestState() const noexcept { return state_seqlock_.Load(); }
 
   [[nodiscard]] std::array<float, kNumHandMotors> GetLatestPositions() const noexcept {
     return state_seqlock_.Load().motor_positions;
@@ -387,13 +387,13 @@ class HandController {
     return consecutive_recv_failures_.load(std::memory_order_relaxed);
   }
 
-  [[nodiscard]] HandCommStats comm_stats() const noexcept {
-    HandCommStats stats = transport_.comm_stats();
+  [[nodiscard]] UdpHandCommStats comm_stats() const noexcept {
+    UdpHandCommStats stats = transport_.comm_stats();
     stats.event_skip_count = event_skip_count_.load(std::memory_order_relaxed);
     return stats;
   }
 
-  [[nodiscard]] HandTimingProfiler::Stats timing_stats() const noexcept {
+  [[nodiscard]] UdpHandTimingProfiler::Stats timing_stats() const noexcept {
     return timing_profiler_.GetStats();
   }
 
@@ -471,7 +471,7 @@ class HandController {
         break;
       }
 
-      HandState state{};
+      UdpHandState state{};
       bool any_recv_ok = false;
       double ft_infer_elapsed_us = 0.0;
       std::array<int32_t, rtc::kMaxHandSensors> cached_sensor_data_raw{};
@@ -570,7 +570,7 @@ class HandController {
 
         const auto t5 = std::chrono::steady_clock::now();
 
-        HandTimingProfiler::PhaseTiming pt;
+        UdpHandTimingProfiler::PhaseTiming pt;
         pt.is_bulk_mode = true;
         pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
         pt.read_all_motor_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
@@ -681,7 +681,7 @@ class HandController {
 
         const auto t6 = std::chrono::steady_clock::now();
 
-        HandTimingProfiler::PhaseTiming pt;
+        UdpHandTimingProfiler::PhaseTiming pt;
         pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
         pt.read_pos_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
         pt.read_joint_pos_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
@@ -805,9 +805,9 @@ class HandController {
   FingertipFTInferencer::Config ft_config_;
 
   // Sub-systems
-  HandUdpTransport transport_;
-  HandSensorProcessor sensor_processor_;
-  HandTimingProfiler timing_profiler_;
+  UdpHandTransport transport_;
+  UdpHandSensorProcessor sensor_processor_;
+  UdpHandTimingProfiler timing_profiler_;
   std::unique_ptr<FingertipFTInferencer> ft_inferencer_;
   rtc::SeqLock<rtc::FingertipFTState> ft_seqlock_{};
   bool ft_enabled_{false};
@@ -833,7 +833,7 @@ class HandController {
   double expected_period_us_{0.0};
   std::chrono::steady_clock::time_point prev_tick_t0_{};
   bool prev_tick_valid_{false};
-  rtc::SeqLock<HandState> state_seqlock_{};
+  rtc::SeqLock<UdpHandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
 
   // Non-RT: captured in Start() to report the average cycle rate in Stop().
