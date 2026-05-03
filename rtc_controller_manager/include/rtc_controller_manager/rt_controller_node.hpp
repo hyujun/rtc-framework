@@ -114,6 +114,24 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void CreateCallbackGroups();
   void DeclareAndLoadParameters();
   void CreateSubscriptions();
+  // CreateSubscriptions helpers — split per role for cognitive complexity.
+  // Each helper creates a single subscription and registers it in
+  // topic_subscriptions_; caller filters out controller-owned entries and
+  // duplicate topic names.
+  void CreateStateSubscription(const rtc::SubscribeTopicEntry& entry, const std::string& group_name,
+                               int slot, int dt_idx, const rclcpp::QoS& qos,
+                               const rclcpp::SubscriptionOptions& sub_options);
+  void CreateMotorStateSubscription(const rtc::SubscribeTopicEntry& entry,
+                                    const std::string& group_name, int slot, int dt_idx,
+                                    const rclcpp::QoS& qos,
+                                    const rclcpp::SubscriptionOptions& sub_options);
+  void CreateSensorStateSubscription(const rtc::SubscribeTopicEntry& entry,
+                                     const std::string& group_name, int slot, int dt_idx,
+                                     const rclcpp::QoS& qos,
+                                     const rclcpp::SubscriptionOptions& sub_options);
+  void CreateTargetSubscription(const rtc::SubscribeTopicEntry& entry,
+                                const std::string& group_name, int slot,
+                                const rclcpp::SubscriptionOptions& sub_options);
   void CreatePublishers();
   // CreatePublishers helpers — split per role for cognitive complexity.
   // Each helper assumes ownership has already been filtered to manager-owned
