@@ -105,7 +105,7 @@
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_timing_log.csv` 회귀 |
 | `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch ur5e_bringup sim.launch.py` smoke |
 | `ur5e_bringup/` demo FSM | demo_wbc FSM/integration/output + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
-| `ur5e_hand_driver/` | 단위 gtest + UDP loopback | `ros2 topic hz /hand/joint_states` |
+| `udp_hand_driver/` | 단위 gtest + UDP loopback | `ros2 topic hz /hand/joint_states` |
 | BT 로직 | `ur5e_bt_coordinator` gtest (tree_validation, condition_nodes 등) | 실제 grasp 시나리오 smoke |
 | Launch / YAML | `ros2 launch ... --print` + 짧은 smoke | config 검증 |
 | Threading (`ApplyThreadConfig`) | `rtc_base` gtest + RT perms | `check_rt_setup.sh --summary` |
@@ -241,7 +241,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 | `shape_estimation_msgs` | Shape estimation message/action definitions |
 | `shape_estimation` | ToF-based surface estimation node |
 | `robot_descriptions` | URDF + MJCF + meshes (multi-robot data hub, `robots/<name>/` 단위) |
-| `ur5e_hand_driver` | UDP hand driver, ONNX F/T inference |
+| `udp_hand_driver` | UDP hand driver, ONNX F/T inference |
 | `ur5e_bt_coordinator` | BehaviorTree.CPP v4 coordinator |
 | `ur5e_bringup` | Launch files, demo controllers, config |
 

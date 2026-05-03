@@ -1051,8 +1051,8 @@ verify_installation() {
 
   info "Available executables (rtc_controller_manager):"
   ros2 pkg executables rtc_controller_manager 2>/dev/null || true
-  info "Available executables (ur5e_hand_driver):"
-  ros2 pkg executables ur5e_hand_driver 2>/dev/null || true
+  info "Available executables (udp_hand_driver):"
+  ros2 pkg executables udp_hand_driver 2>/dev/null || true
 
   mkdir -p "${WORKSPACE}/logging_data/stats" "${WORKSPACE}/logging_data/ur_plot"
   success "Log directories ready (${WORKSPACE}/logging_data, ${WORKSPACE}/logging_data/ur_plot)"
@@ -1091,7 +1091,7 @@ print_summary() {
       echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false"
       echo ""
       echo "  # Hand simulation is built-in (fake_response in ur5e_bringup/config/mujoco_simulator.yaml)"
-      echo "  # No need to run ur5e_hand_driver separately"
+      echo "  # No need to run udp_hand_driver separately"
       echo ""
       echo "  # Send test commands"
       echo "  ros2 topic pub /target_joint_positions std_msgs/msg/Float64MultiArray \\"
@@ -1120,7 +1120,7 @@ print_summary() {
       echo "  ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP nodes only"
-      echo "  ros2 launch ur5e_hand_driver hand_udp.launch.py"
+      echo "  ros2 launch udp_hand_driver hand_udp.launch.py"
       echo ""
       echo "  # Monitor control loop rate (should be ~500 Hz)"
       echo "  ros2 topic hz /forward_position_controller/commands"
@@ -1147,7 +1147,7 @@ print_summary() {
       echo "  ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP only"
-      echo "  ros2 launch ur5e_hand_driver hand_udp.launch.py"
+      echo "  ros2 launch udp_hand_driver hand_udp.launch.py"
       echo ""
       echo -e "  ${YELLOW}RT permissions: log out and back in, then verify:${NC}"
       echo "    ulimit -r   # should print 99"

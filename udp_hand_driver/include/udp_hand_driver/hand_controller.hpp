@@ -1,0 +1,862 @@
+#ifndef UDP_HAND_DRIVER_HAND_CONTROLLER_HPP_
+#define UDP_HAND_DRIVER_HAND_CONTROLLER_HPP_
+
+// High-level hand controller: event-driven UDP driver.
+//
+// Uses a single UDP socket for both send and receive.
+// Driven by ControlLoop events (pipeline mode):
+//   Phase 4 of tick N: SendCommandAndRequestStates(cmd)
+//     -> Hand thread wakes and executes (individual mode):
+//       1. Write position  (0x01) + recv echo
+//       2. Read position   (0x11)
+//       3. Read velocity   (0x12)
+//       4. Read sensor 0-3 (0x14..0x17) x 4
+//     -> Hand thread (bulk mode):
+//       1. Write position  (0x01) + recv echo
+//       2. Read all motors (0x10)
+//       3. Read all sensors (0x19)
+//     -> State ready for tick N+1
+//   Phase 1 of tick N+1: GetLatestState() returns pre-fetched state
+//
+// RT safety:
+//   - All hot-path operations are allocation-free.
+//   - No printf/stdout on the EventLoop thread.
+//   - Shared state uses SeqLock (lock-free) instead of mutex.
+
+#include "rtc_base/threading/seqlock.hpp"
+#include "rtc_base/threading/thread_config.hpp"
+#include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_base/timing/rt_tick_timing_sample.hpp"
+#include "rtc_base/types/types.hpp"
+#include "udp_hand_driver/fingertip_ft_inferencer.hpp"
+#include "udp_hand_driver/hand_constants.hpp"
+#include "udp_hand_driver/hand_logging.hpp"
+#include "udp_hand_driver/hand_packets.hpp"
+#include "udp_hand_driver/hand_sensor_processor.hpp"
+#include "udp_hand_driver/hand_state.hpp"
+#include "udp_hand_driver/hand_timing_profiler.hpp"
+#include "udp_hand_driver/hand_udp_transport.hpp"
+
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logging.hpp>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace rtc {
+
+// ── Communication mode
+// ────────────────────────────────────────────────────────
+enum class HandCommunicationMode {
+  kIndividual,  // 0x11 pos + 0x12 vel + 0x14~0x17 sensors
+  kBulk,        // 0x10 all motors + 0x19 all sensors
+};
+
+// ── Sensor calibration (matches rtc_msgs::msg::CalibrationCommand/Status) ─
+// Kept independent of rtc_msgs to avoid adding a message dependency in this
+// header. The ROS node is responsible for translating msg enums to these.
+namespace hand_calibration {
+// Sensor types
+constexpr uint8_t kSensorBarometer = 0;
+constexpr uint8_t kSensorFtZero = 1;   // reserved
+constexpr uint8_t kSensorTofDark = 2;  // reserved
+// Actions
+constexpr uint8_t kActionStart = 0;
+constexpr uint8_t kActionAbort = 1;
+// States
+constexpr uint8_t kStateIdle = 0;
+constexpr uint8_t kStateRunning = 1;
+constexpr uint8_t kStateComplete = 2;
+constexpr uint8_t kStateFailed = 3;
+}  // namespace hand_calibration
+
+struct CalibrationStatusSnapshot {
+  uint8_t sensor_type{0};
+  uint8_t state{hand_calibration::kStateIdle};
+  uint16_t progress_count{0};
+  uint16_t target_count{0};
+};
+
+class HandController {
+ public:
+  using StateCallback = std::function<void(const HandState&, const FingertipFTState&)>;
+
+  explicit HandController(
+      std::string target_ip, int target_port, const ThreadConfig& thread_cfg = kUdpRecvConfig,
+      double recv_timeout_ms = 10.0, bool /*enable_write_ack*/ = false,  // deprecated
+      int sensor_decimation = 1, int num_fingertips = kDefaultNumFingertips,
+      bool use_fake_hand = false, const std::vector<std::string>& fingertip_names = {},
+      HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual,
+      bool tof_lpf_enabled = false, double tof_lpf_cutoff_hz = 15.0, bool baro_lpf_enabled = false,
+      double baro_lpf_cutoff_hz = 30.0, FingertipFTInferencer::Config ft_config = {},
+      bool drift_detection_enabled = false, double drift_threshold = 5.0,
+      int drift_window_size = 2500) noexcept
+      : thread_cfg_(thread_cfg),
+        sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
+        num_fingertips_(num_fingertips > kMaxFingertips
+                            ? kMaxFingertips
+                            : (num_fingertips < 0 ? 0 : num_fingertips)),
+        use_fake_hand_(use_fake_hand),
+        fingertip_names_(fingertip_names.empty() ? kDefaultFingertipNames : fingertip_names),
+        communication_mode_(communication_mode),
+        ft_config_(std::move(ft_config)),
+        transport_(std::move(target_ip), target_port, recv_timeout_ms),
+        sensor_processor_(HandSensorProcessorConfig{
+            num_fingertips_, sensor_decimation_, tof_lpf_enabled, tof_lpf_cutoff_hz,
+            baro_lpf_enabled, baro_lpf_cutoff_hz, drift_detection_enabled, drift_threshold,
+            drift_window_size}) {
+    const int name_count = static_cast<int>(fingertip_names_.size());
+    if (name_count < num_fingertips_) {
+      num_fingertips_ = name_count;
+    }
+  }
+
+  ~HandController() { Stop(); }
+
+  HandController(const HandController&) = delete;
+  HandController& operator=(const HandController&) = delete;
+  HandController(HandController&&) = delete;
+  HandController& operator=(HandController&&) = delete;
+
+  // ── Lifecycle ──────────────────────────────────────────────────────────
+
+  [[nodiscard]] bool Start() {
+    // F/T inferencer initialization. Non-RT init path — verbose diagnostics
+    // here are intentional: when FT inference misbehaves at runtime, this
+    // dump is the first thing the operator inspects.
+    RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
+                "FT config: enabled=%d fingertips=%d paths=%zu cal=%s(%d samples)",
+                ft_config_.enabled ? 1 : 0, num_fingertips_, ft_config_.model_paths.size(),
+                ft_config_.calibration_enabled ? "on" : "off", ft_config_.calibration_samples);
+    if (ft_config_.enabled && num_fingertips_ > 0) {
+      for (std::size_t i = 0; i < ft_config_.model_paths.size(); ++i) {
+        const auto& p = ft_config_.model_paths[i];
+        RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(), "FT model[%zu]=%s", i,
+                    p.empty() ? "<skipped>" : p.c_str());
+      }
+      ft_inferencer_ = std::make_unique<FingertipFTInferencer>();
+      try {
+        ft_inferencer_->InitFT(ft_config_);
+        ft_enabled_ = ft_inferencer_->is_initialized();
+        RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
+                    "FT ready: active=%d/%d initialized=%d calibrated=%d",
+                    ft_inferencer_->num_models(), num_fingertips_,
+                    ft_inferencer_->is_initialized() ? 1 : 0,
+                    ft_inferencer_->is_calibrated() ? 1 : 0);
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(), "FT init FAILED: %s",
+                     e.what());
+        ft_enabled_ = false;
+        ft_inferencer_.reset();
+      } catch (...) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(),
+                     "FT init FAILED: unknown exception");
+        ft_enabled_ = false;
+        ft_inferencer_.reset();
+      }
+    } else {
+      RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                  "FT inference SKIPPED: enabled=%d, num_fingertips=%d", ft_config_.enabled ? 1 : 0,
+                  num_fingertips_);
+    }
+
+    if (use_fake_hand_) {
+      running_.store(true, std::memory_order_release);
+      start_time_ = std::chrono::steady_clock::now();
+      RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
+                  "HandController started in FAKE mode (num_fingertips=%d)", num_fingertips_);
+      return true;
+    }
+
+    if (!transport_.Open()) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(), "UDP socket open failed");
+      return false;
+    }
+
+    // Sensor initialization: NN -> RAW mode
+    if (num_fingertips_ > 0) {
+      sensor_init_ok_ = transport_.InitializeSensors();
+      if (!sensor_init_ok_) {
+        RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                    "Sensor initialization failed (sensor_init_ok=false)");
+      }
+    }
+
+    // Sensor processor initialization (rate estimator, filters, drift detector)
+    if (num_fingertips_ > 0) {
+      sensor_processor_.Init();
+      RCLCPP_DEBUG(::udp_hand_driver::logging::ControllerLogger(), "Sensor processor initialized");
+    }
+
+    running_.store(true, std::memory_order_release);
+    start_time_ = std::chrono::steady_clock::now();
+    event_thread_ = std::jthread([this](std::stop_token st) { EventLoop(std::move(st)); });
+    RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
+                "EventLoop thread started (mode=%s)",
+                communication_mode_ == HandCommunicationMode::kBulk ? "bulk" : "individual");
+
+    return true;
+  }
+
+  void Stop() noexcept {
+    running_.store(false, std::memory_order_release);
+    if (use_fake_hand_) {
+      return;
+    }
+    event_thread_.request_stop();
+    event_cv_.notify_all();
+    transport_.Close();
+    const auto cycles = cycle_count_.load(std::memory_order_relaxed);
+    const double elapsed_sec =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
+    const double avg_rate_hz =
+        (elapsed_sec > 0.0) ? static_cast<double>(cycles) / elapsed_sec : 0.0;
+    RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
+                "HandController stopped: %zu cycles in %.1fs (avg=%.1f Hz)", cycles, elapsed_sec,
+                avg_rate_hz);
+  }
+
+  // ── Callback ───────────────────────────────────────────────────────────
+
+  void SetCallback(StateCallback cb) noexcept { callback_ = std::move(cb); }
+
+  // ── Timing producer (per-tick CSV output, optional) ────────────────────
+
+  /// Inject a producer for the unified per-tick timing CSV (see
+  /// rtc/timing/rt_tick_timing_sample.hpp). Owned by the caller; must
+  /// outlive this controller. Pass nullptr to disable.
+  /// `expected_period_us` is used to compute jitter; pass 0 to leave the
+  /// jitter field at zero (e.g. when the EventLoop is not driven on a
+  /// fixed cadence).
+  void SetTimingProducer(rtc::HandUdpTimingBuffer* producer,
+                         double expected_period_us = 0.0) noexcept {
+    timing_producer_ = producer;
+    expected_period_us_ = expected_period_us;
+  }
+
+  [[nodiscard]] rtc::HandUdpTimingBuffer* TimingProducer() const noexcept {
+    return timing_producer_;
+  }
+
+  // ── E-Stop flag (shared with RtControllerNode) ─────────────────────────
+
+  void SetEstopFlag(std::atomic<bool>* flag) noexcept { estop_flag_ = flag; }
+
+  // ── State readiness ─────────────────────────────────────────────────────
+
+  /// True after at least one successful state read from the hand hardware.
+  /// Write commands are suppressed until this returns true.
+  [[nodiscard]] bool HasStateBeenRead() const noexcept { return state_read_once_; }
+
+  // ── Event-driven API (called from ControlLoop) ─────────────────────────
+
+  void SendCommandAndRequestStates(const std::array<float, kNumHandMotors>& cmd) noexcept {
+    // Fake mode: echo-back
+    if (use_fake_hand_) {
+      HandState fake_state{};
+      std::copy(cmd.begin(), cmd.end(), fake_state.motor_positions.begin());
+      std::copy(cmd.begin(), cmd.end(), fake_state.joint_positions.begin());
+      fake_state.num_fingertips = num_fingertips_;
+      fake_state.valid = true;
+      fake_state.joint_valid = true;
+      fake_state.motor_valid = true;
+
+      if (ft_enabled_ && ft_inferencer_) {
+        if (!ft_inferencer_->is_calibrated()) {
+          static_cast<void>(
+              ft_inferencer_->FeedCalibration(fake_state.sensor_data, num_fingertips_));
+        } else {
+          auto ft_result = ft_inferencer_->Infer(fake_state.sensor_data, num_fingertips_);
+          ft_seqlock_.Store(ft_result);
+        }
+      }
+
+      state_seqlock_.Store(fake_state);
+      if (callback_) {
+        callback_(fake_state, ft_seqlock_.Load());
+      }
+      cycle_count_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+
+    if (busy_.load(std::memory_order_acquire)) {
+      event_skip_count_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    {
+      std::lock_guard lock(event_mutex_);
+      staged_cmd_ = cmd;
+      event_pending_ = true;
+    }
+    event_cv_.notify_one();
+  }
+
+  // ── Legacy API (standalone hand_udp_node) ──────────────────────────────
+
+  void SetTargetPositions(const std::array<float, kNumHandMotors>& positions) noexcept {
+    SendCommandAndRequestStates(positions);
+  }
+
+  // ── Sensor calibration trigger (ROS thread -> EventLoop handoff) ───────
+
+  /// Request a sensor calibration action. Safe to call from ROS subscriber
+  /// threads. The actual reset/state mutation happens on the EventLoop
+  /// thread, so existing sensor data structures stay single-threaded.
+  /// Only one request is in-flight at a time; additional requests before the
+  /// EventLoop consumes the pending one will overwrite it (last-wins).
+  void RequestCalibration(uint8_t sensor_type, uint8_t action, uint16_t sample_count) noexcept {
+    pending_calib_.sensor_type = sensor_type;
+    pending_calib_.action = action;
+    pending_calib_.sample_count = sample_count;
+    calib_request_pending_.store(true, std::memory_order_release);
+  }
+
+  /// Snapshot of the latest calibration progress for a given sensor.
+  /// Safe to call from any thread (reads EventLoop-owned state via snapshot
+  /// accessors that are either atomic or only mutated in known contexts).
+  [[nodiscard]] CalibrationStatusSnapshot GetCalibrationStatus(uint8_t sensor_type) const noexcept {
+    CalibrationStatusSnapshot snap{};
+    snap.sensor_type = sensor_type;
+    switch (sensor_type) {
+      case hand_calibration::kSensorBarometer: {
+        if (!ft_enabled_ || !ft_inferencer_) {
+          snap.state = hand_calibration::kStateFailed;
+          break;
+        }
+        const int cnt = ft_inferencer_->calibration_count();
+        const int target = ft_inferencer_->calibration_target();
+        snap.progress_count = static_cast<uint16_t>(cnt < 0 ? 0 : cnt);
+        snap.target_count = static_cast<uint16_t>(target < 0 ? 0 : target);
+        if (ft_inferencer_->is_calibrated()) {
+          snap.state = hand_calibration::kStateComplete;
+        } else if (cnt > 0) {
+          snap.state = hand_calibration::kStateRunning;
+        } else {
+          snap.state = hand_calibration::kStateIdle;
+        }
+        break;
+      }
+      default:
+        snap.state = hand_calibration::kStateFailed;
+        break;
+    }
+    return snap;
+  }
+
+  // ── State access ───────────────────────────────────────────────────────
+
+  [[nodiscard]] HandState GetLatestState() const noexcept { return state_seqlock_.Load(); }
+
+  [[nodiscard]] std::array<float, kNumHandMotors> GetLatestPositions() const noexcept {
+    return state_seqlock_.Load().motor_positions;
+  }
+
+  [[nodiscard]] bool IsRunning() const noexcept { return running_.load(std::memory_order_acquire); }
+
+  // ── F/T inference accessors ──────────────────────────────────────────────
+
+  [[nodiscard]] FingertipFTState GetLatestFTState() const noexcept { return ft_seqlock_.Load(); }
+
+  [[nodiscard]] bool ft_inference_enabled() const noexcept { return ft_enabled_; }
+
+  [[nodiscard]] bool IsSensorInitialized() const noexcept { return sensor_init_ok_; }
+
+  [[nodiscard]] std::size_t cycle_count() const noexcept {
+    return cycle_count_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] uint64_t recv_error_count() const noexcept { return transport_.recv_error_count(); }
+
+  [[nodiscard]] uint64_t event_skip_count() const noexcept {
+    return event_skip_count_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] uint64_t consecutive_recv_failures() const noexcept {
+    return consecutive_recv_failures_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] HandCommStats comm_stats() const noexcept {
+    HandCommStats stats = transport_.comm_stats();
+    stats.event_skip_count = event_skip_count_.load(std::memory_order_relaxed);
+    return stats;
+  }
+
+  [[nodiscard]] HandTimingProfiler::Stats timing_stats() const noexcept {
+    return timing_profiler_.GetStats();
+  }
+
+  [[nodiscard]] std::string TimingSummary() const noexcept { return timing_profiler_.Summary(); }
+
+  [[nodiscard]] HandCommunicationMode communication_mode() const noexcept {
+    return communication_mode_;
+  }
+
+  [[nodiscard]] double recv_timeout_ms() const noexcept { return transport_.recv_timeout_ms(); }
+
+  [[nodiscard]] double actual_sensor_rate_hz() const noexcept {
+    return sensor_processor_.actual_sensor_rate_hz();
+  }
+
+ private:
+  // Event-driven loop: condvar wait -> write + read -> sensor processing ->
+  // state publish.
+  void EventLoop(std::stop_token stop_token) {
+    if (!ApplyThreadConfig(thread_cfg_)) {
+      RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                  "EventLoop: ApplyThreadConfig failed (running at default priority)");
+    }
+
+    const bool is_bulk = (communication_mode_ == HandCommunicationMode::kBulk);
+
+    std::array<uint8_t, hand_packets::kMotorPacketSize> send_buf{};
+    std::array<uint8_t, hand_packets::kMotorPacketSize> echo_buf{};
+    std::array<float, hand_packets::kMotorDataCount> motor_pos_buf{};
+    std::array<float, hand_packets::kMotorDataCount> motor_vel_buf{};
+    std::array<float, hand_packets::kMotorDataCount> motor_cur_buf{};
+    std::array<int32_t, kSensorValuesPerFingertip> sensor_raw_buf{};
+    std::array<float, kNumHandMotors> pending_cmd{};
+
+    std::array<int32_t, kMaxHandSensors> cached_sensor_data{};
+    int sensor_cycle_counter = 0;
+
+    // First cycle: run immediately (no condvar wait) to read initial state
+    // before any write command is sent. This ensures:
+    //   1. Hand current position is known before any command
+    //   2. /hand/joint_states is published for rtc_controller_manager auto-hold
+    //   3. No zero-command jump on startup
+    bool first_cycle = true;
+
+    while (!stop_token.stop_requested()) {
+      if (first_cycle) {
+        // First cycle: skip condvar wait, run read-only immediately
+        first_cycle = false;
+      } else {
+        std::unique_lock lock(event_mutex_);
+        // Use wait_for instead of wait to prevent deadlock on startup:
+        // rtc_controller_manager needs continuous /hand/joint_states to
+        // initialize auto-hold, but only publishes /hand/joint_command after
+        // init. Timeout ensures read cycles continue even without commands.
+        static constexpr auto kEventTimeout = std::chrono::milliseconds(20);
+        event_cv_.wait_for(lock, kEventTimeout,
+                           [&] { return event_pending_ || stop_token.stop_requested(); });
+        if (stop_token.stop_requested())
+          break;
+        if (event_pending_) {
+          pending_cmd = staged_cmd_;
+          event_pending_ = false;
+        }
+      }
+
+      busy_.store(true, std::memory_order_release);
+
+      // E-Stop check
+      if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
+        RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                    "EventLoop: E-Stop active, sending zero command and exiting");
+        std::array<float, kNumHandMotors> zeros{};
+        transport_.WritePositionFireAndForget(zeros, hand_packets::JointMode::kJoint);
+        busy_.store(false, std::memory_order_release);
+        break;
+      }
+
+      HandState state{};
+      bool any_recv_ok = false;
+      double ft_infer_elapsed_us = 0.0;
+      std::array<int32_t, kMaxHandSensors> cached_sensor_data_raw{};
+
+      const auto t0 = std::chrono::steady_clock::now();
+
+      // 1. Write position + recv echo (always kJoint)
+      // Skip write until first state has been read — prevents sending
+      // uninitialized/zero commands before knowing the hand position.
+      if (state_read_once_) {
+        if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf,
+                                             hand_packets::JointMode::kJoint)) {
+          any_recv_ok = true;
+        }
+      }
+
+      const auto t1 = std::chrono::steady_clock::now();
+
+      // Sensor decimation
+      ++sensor_cycle_counter;
+      const bool is_sensor_cycle = (sensor_cycle_counter >= sensor_decimation_);
+      if (is_sensor_cycle)
+        sensor_cycle_counter = 0;
+
+      if (is_bulk) {
+        // ── Bulk mode ─────────────────────────────────────────────────────
+        // 2. Read all motors (motor-space: kMotor)
+        hand_packets::JointMode received_mode{};
+        if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf, motor_cur_buf,
+                                           hand_packets::JointMode::kMotor, &received_mode)) {
+          std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
+          std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
+          std::copy_n(motor_cur_buf.begin(), kNumHandMotors, state.motor_currents.begin());
+          state.received_joint_mode = static_cast<uint8_t>(received_mode);
+          state.motor_valid = true;
+          any_recv_ok = true;
+        }
+
+        const auto t2 = std::chrono::steady_clock::now();
+
+        // 3. Read all motors (joint-space: kJoint) — pos/vel/cur
+        {
+          std::array<float, hand_packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
+          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf,
+                                             hand_packets::JointMode::kJoint)) {
+            std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
+            std::copy_n(jv_buf.begin(), kNumHandMotors, state.joint_velocities.begin());
+            std::copy_n(jc_buf.begin(), kNumHandMotors, state.joint_currents.begin());
+            state.joint_valid = true;
+            any_recv_ok = true;
+          }
+        }
+
+        const auto t2j = std::chrono::steady_clock::now();
+
+        // 4. Read all sensors
+        if (is_sensor_cycle) {
+          if (transport_.RequestAllSensorRead(cached_sensor_data.data(), num_fingertips_,
+                                              hand_packets::SensorMode::kRaw)) {
+            any_recv_ok = true;
+          }
+        }
+
+        const auto t3 = std::chrono::steady_clock::now();
+
+        // Sensor processing + FT inference
+        if (is_sensor_cycle) {
+          cached_sensor_data_raw = cached_sensor_data;
+          sensor_processor_.PreFilter();
+          sensor_processor_.ApplyFilters(cached_sensor_data);
+          sensor_processor_.DetectDrift(cached_sensor_data_raw);
+          ft_infer_elapsed_us = RunFTInference(cached_sensor_data);
+        }
+
+        const auto t4 = std::chrono::steady_clock::now();
+
+        state.sensor_data_raw = cached_sensor_data_raw;
+        state.sensor_data = cached_sensor_data;
+        state.num_fingertips = num_fingertips_;
+        state.valid = any_recv_ok;
+
+        if (any_recv_ok && !state_read_once_) {
+          state_read_once_ = true;
+          // Throttled as a defensive RT-safety net; the state_read_once_ gate
+          // already guarantees this fires at most once per Start().
+          static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
+          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
+                               ::udp_hand_driver::logging::kThrottleIdleMs,
+                               "First hand state received (write commands now enabled)");
+        }
+
+        state_seqlock_.Store(state);
+        if (callback_) {
+          callback_(state, ft_seqlock_.Load());
+        }
+
+        const auto t5 = std::chrono::steady_clock::now();
+
+        HandTimingProfiler::PhaseTiming pt;
+        pt.is_bulk_mode = true;
+        pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        pt.read_all_motor_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
+        pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
+        pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+        pt.sensor_proc_us =
+            std::chrono::duration<double, std::micro>(t4 - t3).count() - ft_infer_elapsed_us;
+        pt.ft_infer_us = ft_infer_elapsed_us;
+        pt.total_us = std::chrono::duration<double, std::micro>(t5 - t0).count();
+        pt.is_sensor_cycle = is_sensor_cycle;
+        timing_profiler_.Update(pt);
+
+        if (timing_producer_) {
+          rtc::RtTickTimingPayload tp{};
+          tp.t_state_us = std::chrono::duration<double, std::micro>(t3 - t0).count();
+          tp.t_compute_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
+          tp.t_publish_us = std::chrono::duration<double, std::micro>(t5 - t4).count();
+          tp.t_total_us = pt.total_us;
+          if (prev_tick_valid_ && expected_period_us_ > 0.0) {
+            const double period_us =
+                std::chrono::duration<double, std::micro>(t0 - prev_tick_t0_).count();
+            tp.jitter_us = std::abs(period_us - expected_period_us_);
+          }
+          prev_tick_t0_ = t0;
+          prev_tick_valid_ = true;
+          (void)timing_producer_->Push(tp);
+        }
+
+      } else {
+        // ── Individual mode ───────────────────────────────────────────────
+        // 2. Read motor position (kMotor)
+        hand_packets::JointMode received_mode{};
+        if (transport_.RequestMotorRead(hand_packets::Command::kReadPosition, motor_pos_buf,
+                                        hand_packets::JointMode::kMotor, &received_mode)) {
+          std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
+          state.received_joint_mode = static_cast<uint8_t>(received_mode);
+          state.motor_valid = true;
+          any_recv_ok = true;
+        }
+
+        const auto t2 = std::chrono::steady_clock::now();
+
+        // 3. Read joint position (kJoint)
+        {
+          std::array<float, hand_packets::kMotorDataCount> jp_buf{};
+          if (transport_.RequestMotorRead(hand_packets::Command::kReadPosition, jp_buf,
+                                          hand_packets::JointMode::kJoint)) {
+            std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
+            state.joint_valid = true;
+            any_recv_ok = true;
+          }
+        }
+
+        const auto t2j = std::chrono::steady_clock::now();
+
+        // 4. Read motor velocity (kMotor)
+        if (transport_.RequestMotorRead(hand_packets::Command::kReadVelocity, motor_vel_buf,
+                                        hand_packets::JointMode::kMotor)) {
+          std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
+          any_recv_ok = true;
+        }
+
+        const auto t3 = std::chrono::steady_clock::now();
+
+        // 5. Read sensors
+        if (is_sensor_cycle) {
+          for (int i = 0; i < num_fingertips_; ++i) {
+            auto cmd = hand_packets::SensorCommand(i);
+            if (transport_.RequestSensorRead(cmd, sensor_raw_buf, hand_packets::SensorMode::kRaw)) {
+              std::copy_n(sensor_raw_buf.begin(), kSensorValuesPerFingertip,
+                          cached_sensor_data.begin() + i * kSensorValuesPerFingertip);
+              any_recv_ok = true;
+            }
+          }
+        }
+
+        const auto t4 = std::chrono::steady_clock::now();
+
+        if (is_sensor_cycle) {
+          cached_sensor_data_raw = cached_sensor_data;
+          sensor_processor_.PreFilter();
+          sensor_processor_.ApplyFilters(cached_sensor_data);
+          sensor_processor_.DetectDrift(cached_sensor_data_raw);
+          ft_infer_elapsed_us = RunFTInference(cached_sensor_data);
+        }
+
+        const auto t5 = std::chrono::steady_clock::now();
+
+        state.sensor_data_raw = cached_sensor_data_raw;
+        state.sensor_data = cached_sensor_data;
+        state.num_fingertips = num_fingertips_;
+        state.valid = any_recv_ok;
+
+        if (any_recv_ok && !state_read_once_) {
+          state_read_once_ = true;
+          // Throttled as a defensive RT-safety net; the state_read_once_ gate
+          // already guarantees this fires at most once per Start().
+          static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
+          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
+                               ::udp_hand_driver::logging::kThrottleIdleMs,
+                               "First hand state received (write commands now enabled)");
+        }
+
+        state_seqlock_.Store(state);
+        if (callback_) {
+          callback_(state, ft_seqlock_.Load());
+        }
+
+        const auto t6 = std::chrono::steady_clock::now();
+
+        HandTimingProfiler::PhaseTiming pt;
+        pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        pt.read_pos_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
+        pt.read_joint_pos_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
+        pt.read_vel_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+        pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
+        pt.sensor_proc_us =
+            std::chrono::duration<double, std::micro>(t5 - t4).count() - ft_infer_elapsed_us;
+        pt.ft_infer_us = ft_infer_elapsed_us;
+        pt.total_us = std::chrono::duration<double, std::micro>(t6 - t0).count();
+        pt.is_sensor_cycle = is_sensor_cycle;
+        timing_profiler_.Update(pt);
+
+        if (timing_producer_) {
+          rtc::RtTickTimingPayload tp{};
+          tp.t_state_us = std::chrono::duration<double, std::micro>(t4 - t0).count();
+          tp.t_compute_us = std::chrono::duration<double, std::micro>(t5 - t4).count();
+          tp.t_publish_us = std::chrono::duration<double, std::micro>(t6 - t5).count();
+          tp.t_total_us = pt.total_us;
+          if (prev_tick_valid_ && expected_period_us_ > 0.0) {
+            const double period_us =
+                std::chrono::duration<double, std::micro>(t0 - prev_tick_t0_).count();
+            tp.jitter_us = std::abs(period_us - expected_period_us_);
+          }
+          prev_tick_t0_ = t0;
+          prev_tick_valid_ = true;
+          (void)timing_producer_->Push(tp);
+        }
+      }
+
+      transport_.comm_stats_mut().total_cycles++;
+      cycle_count_.fetch_add(1, std::memory_order_relaxed);
+
+      if (any_recv_ok) {
+        consecutive_recv_failures_.store(0, std::memory_order_relaxed);
+      } else {
+        const auto failures =
+            consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (failures >= 5) {
+          static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), steady_clock,
+                               ::udp_hand_driver::logging::kThrottleFastMs,
+                               "EventLoop: consecutive recv failures=%lu",
+                               static_cast<unsigned long>(failures));
+        }
+      }
+
+      busy_.store(false, std::memory_order_release);
+    }
+  }
+
+  // Consume any pending calibration request. Called on EventLoop thread.
+  void DispatchCalibrationRequest() noexcept {
+    if (!calib_request_pending_.load(std::memory_order_acquire))
+      return;
+    const PendingCalibration req = pending_calib_;
+    calib_request_pending_.store(false, std::memory_order_release);
+
+    switch (req.sensor_type) {
+      case hand_calibration::kSensorBarometer: {
+        if (!ft_inferencer_) {
+          RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                      "Calibration: barometer request ignored (no inferencer)");
+          return;
+        }
+        // Calibration START/ABORT are externally triggered, but the dispatch
+        // runs on the EventLoop hot path. Throttle as a defensive RT-safety
+        // net even though duplicate requests are already de-duped upstream.
+        static rclcpp::Clock calib_clock(RCL_STEADY_TIME);
+        if (req.action == hand_calibration::kActionStart) {
+          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+                               ::udp_hand_driver::logging::kThrottleSlowMs,
+                               "Calibration: barometer START (sample_count=%u)",
+                               static_cast<unsigned>(req.sample_count));
+          ft_inferencer_->ResetCalibration(req.sample_count);
+        } else if (req.action == hand_calibration::kActionAbort) {
+          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), calib_clock,
+                               ::udp_hand_driver::logging::kThrottleSlowMs,
+                               "Calibration: barometer ABORT (noop)");
+          // Currently barometer cal has no externally-visible abort state;
+          // leaving the in-progress buffers alone is acceptable.
+        }
+        break;
+      }
+      // Future sensors: add cases here.
+      default:
+        RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                    "Calibration: unknown sensor_type=%u", static_cast<unsigned>(req.sensor_type));
+        break;
+    }
+  }
+
+  // Run FT calibration or inference. Returns inference elapsed time in us.
+  double RunFTInference(const std::array<int32_t, kMaxHandSensors>& sensor_data) noexcept {
+    // Consume any pending calibration request before processing this cycle.
+    DispatchCalibrationRequest();
+
+    if (!ft_enabled_ || !ft_inferencer_)
+      return 0.0;
+
+    if (!ft_inferencer_->is_calibrated()) {
+      static_cast<void>(ft_inferencer_->FeedCalibration(sensor_data, num_fingertips_));
+      return 0.0;
+    }
+
+    const auto ft_t0 = std::chrono::steady_clock::now();
+    auto ft_result = ft_inferencer_->Infer(sensor_data, num_fingertips_);
+    const auto ft_t1 = std::chrono::steady_clock::now();
+    ft_seqlock_.Store(ft_result);
+    return std::chrono::duration<double, std::micro>(ft_t1 - ft_t0).count();
+  }
+
+  ThreadConfig thread_cfg_;
+  int sensor_decimation_;
+  int num_fingertips_;
+  bool use_fake_hand_;
+  std::vector<std::string> fingertip_names_;
+  HandCommunicationMode communication_mode_;
+  bool sensor_init_ok_{false};
+
+  // F/T inferencer config (before transport_ for initializer list order)
+  FingertipFTInferencer::Config ft_config_;
+
+  // Sub-systems
+  HandUdpTransport transport_;
+  HandSensorProcessor sensor_processor_;
+  HandTimingProfiler timing_profiler_;
+  std::unique_ptr<FingertipFTInferencer> ft_inferencer_;
+  SeqLock<FingertipFTState> ft_seqlock_{};
+  bool ft_enabled_{false};
+
+  // E-Stop flag (set by RtControllerNode, null if not used)
+  std::atomic<bool>* estop_flag_{nullptr};
+
+  // Event synchronisation
+  std::mutex event_mutex_;
+  std::condition_variable event_cv_;
+  bool event_pending_{false};
+  std::array<float, kNumHandMotors> staged_cmd_{};
+
+  // EventLoop busy flag
+  std::atomic<bool> busy_{false};
+  std::atomic<uint64_t> event_skip_count_{0};
+
+  // Shared state
+  std::atomic<bool> running_{false};
+  bool state_read_once_{false};  // True after first successful state read
+  StateCallback callback_;
+  rtc::HandUdpTimingBuffer* timing_producer_{nullptr};
+  double expected_period_us_{0.0};
+  std::chrono::steady_clock::time_point prev_tick_t0_{};
+  bool prev_tick_valid_{false};
+  SeqLock<HandState> state_seqlock_{};
+  std::atomic<std::size_t> cycle_count_{0};
+
+  // Non-RT: captured in Start() to report the average cycle rate in Stop().
+  std::chrono::steady_clock::time_point start_time_{};
+
+  // Link health
+  std::atomic<uint64_t> consecutive_recv_failures_{0};
+
+  // Pending calibration request (ROS thread -> EventLoop handoff).
+  // Written by RequestCalibration() (arbitrary thread), consumed by
+  // DispatchCalibrationRequest() (EventLoop thread). Last-wins semantics.
+  struct PendingCalibration {
+    uint8_t sensor_type{0};
+    uint8_t action{0};
+    uint16_t sample_count{0};
+  };
+
+  PendingCalibration pending_calib_{};
+  std::atomic<bool> calib_request_pending_{false};
+
+  std::jthread event_thread_;
+};
+
+}  // namespace rtc
+
+#endif  // UDP_HAND_DRIVER_HAND_CONTROLLER_HPP_

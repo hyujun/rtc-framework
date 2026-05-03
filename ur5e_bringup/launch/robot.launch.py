@@ -226,14 +226,14 @@ def generate_launch_description():
         [FindPackageShare("ur5e_bringup"), "config", "ur5e_robot.yaml"]
     )
 
-    # Hand UDP config (ur5e_hand_driver package)
+    # Hand UDP config (udp_hand_driver package)
     hand_udp_config = PathJoinSubstitution(
-        [FindPackageShare("ur5e_hand_driver"), "config", "hand_udp_node.yaml"]
+        [FindPackageShare("udp_hand_driver"), "config", "hand_udp_node.yaml"]
     )
 
-    # Fingertip F/T inferencer config (ur5e_hand_driver package)
+    # Fingertip F/T inferencer config (udp_hand_driver package)
     ft_inferencer_config = PathJoinSubstitution(
-        [FindPackageShare("ur5e_hand_driver"), "config", "fingertip_ft_inferencer.yaml"]
+        [FindPackageShare("udp_hand_driver"), "config", "fingertip_ft_inferencer.yaml"]
     )
 
     cyclone_dds_xml = PathJoinSubstitution(
@@ -362,7 +362,7 @@ def generate_launch_description():
     # ── Hand UDP driver node (LifecycleNode) ──────────────────────────────────
     # Publishes /hand/joint_states and /hand/sensor_states for ur5e_rt_controller.
     hand_udp_node = LifecycleNode(
-        package="ur5e_hand_driver",
+        package="udp_hand_driver",
         executable="hand_udp_node",
         name="hand_udp_node",
         namespace="",

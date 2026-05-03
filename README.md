@@ -51,7 +51,7 @@
 | 패키지 | 버전 | 설명 | 빌드 |
 |--------|------|------|------|
 | [`robot_descriptions`](robot_descriptions/) | 5.17.0 | Robot-agnostic data hub — robots/&lt;name&gt;/ 당 URDF/MJCF/mesh (현재 ur5e + assm_v1 hand) | ament_cmake |
-| [`ur5e_hand_driver`](ur5e_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
+| [`udp_hand_driver`](udp_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | 0.1.0 | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
 | [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 8-phase WBC + **Phase 5 MPC 통합 경로**, `enable_mpc` launch arg, 9-entry gains) + CPU 격리/DDS 핀닝 | ament_cmake |
 
@@ -78,9 +78,9 @@ shape_estimation_msgs (독립)
 
 robot_descriptions (독립, data-only)
   └── ur5e_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
-                    ur5e_hand_driver, robot_descriptions
+                    udp_hand_driver, robot_descriptions
 
-ur5e_hand_driver ← rtc_communication, rtc_inference, rtc_base
+udp_hand_driver ← rtc_communication, rtc_inference, rtc_base
 ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
 ```
 
@@ -166,7 +166,7 @@ ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
 ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true
 
 # 핸드 드라이버 노드
-ros2 launch ur5e_hand_driver hand_udp.launch.py target_ip:=192.168.1.2
+ros2 launch udp_hand_driver hand_udp.launch.py target_ip:=192.168.1.2
 ```
 
 ### 모니터링
@@ -199,7 +199,7 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
     ├──→ SPSC ──→ [log_thread] ──→ CSV 3-파일 (timing, robot, device)
     └──→ E-STOP ──→ /system/estop_status
 
-[핸드 HW] ←UDP 직접 소유→ [ur5e_hand_driver] ← SeqLock ← [ControlLoop]
+[핸드 HW] ←UDP 직접 소유→ [udp_hand_driver] ← SeqLock ← [ControlLoop]
 
 [rtc_inference]   RT-안전 ONNX 추론 (IoBinding, 사전 할당)
 ```
@@ -214,7 +214,7 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
 | `mpc_main` (Phase 5) | jthread | 4 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (6코어는 logging과 공유; 8+코어는 dedicated) |
 | `publish_thread` | jthread (SPSC drain) | 5 | SCHED_OTHER | nice -3 | ROS2 publish offload (ControlPublishBuffer) |
 | `aux_executor` | ROS2 Executor | 5 | SCHED_OTHER | 0 | E-STOP 상태 퍼블리시 |
-| `udp_recv` | jthread | 5 | SCHED_FIFO | 65 | 핸드 UDP 수신 (ur5e_hand_driver) |
+| `udp_recv` | jthread | 5 | SCHED_FIFO | 65 | 핸드 UDP 수신 (udp_hand_driver) |
 
 > Core 0–1: OS, DDS, NIC IRQ (isolcpus 대신 런타임 `cset shield` 사용). DDS 스레드는 `taskset`으로 Core 0-1에 자동 핀닝.
 > CycloneDDS 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK 지연 최소화.

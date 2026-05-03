@@ -1,10 +1,10 @@
 ---
-globs: ["rtc_controller_manager/**/*.cpp", "rtc_controller_manager/**/*.hpp", "rtc_controllers/**/*.cpp", "rtc_controllers/**/*.hpp", "ur5e_hand_driver/**/*.cpp", "ur5e_hand_driver/**/*.hpp"]
+globs: ["rtc_controller_manager/**/*.cpp", "rtc_controller_manager/**/*.hpp", "rtc_controllers/**/*.cpp", "rtc_controllers/**/*.hpp", "udp_hand_driver/**/*.cpp", "udp_hand_driver/**/*.hpp"]
 ---
 
 # RT Safety Rules (Scoped Stub)
 
-이 파일은 `rtc_controller_manager` / `rtc_controllers` / `ur5e_hand_driver` 경로에서 자동 로드되는 scoped reminder다.
+이 파일은 `rtc_controller_manager` / `rtc_controllers` / `udp_hand_driver` 경로에서 자동 로드되는 scoped reminder다.
 
 **전체 규칙**: [../../agent_docs/invariants.md](../../agent_docs/invariants.md)
 

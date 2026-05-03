@@ -1,6 +1,6 @@
 # 센서 캘리브레이션 진행/완료 상태 (센서 타입당 1개 메시지)
 #
-# Publisher: ur5e_hand_driver가 주기적으로 (또는 상태 변화 시) publish
+# Publisher: udp_hand_driver가 주기적으로 (또는 상태 변화 시) publish
 # Subscriber: demo_controller_gui 등에서 진행률/완료 표시
 #
 # QoS: reliable + transient_local 권장 (late-join GUI가 최신 상태 즉시 수신)

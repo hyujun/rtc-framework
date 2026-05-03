@@ -72,10 +72,10 @@ def launch_setup(context, *args, **kwargs):
     sim_config = PathJoinSubstitution([pkg_bringup, "config", "mujoco_simulator.yaml"])
     ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_sim.yaml"])
 
-    # ur5e_hand_driver is optional — may not be built in sim-only installs
+    # udp_hand_driver is optional — may not be built in sim-only installs
     hand_config = None
     try:
-        hand_share = get_package_share_directory("ur5e_hand_driver")
+        hand_share = get_package_share_directory("udp_hand_driver")
         hand_config = os.path.join(hand_share, "config", "hand_udp_node.yaml")
     except Exception:
         pass

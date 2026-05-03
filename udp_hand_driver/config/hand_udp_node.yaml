@@ -1,0 +1,113 @@
+# hand_udp_node.yaml -- Hand UDP 드라이버 설정
+#
+# 동작 모드:
+#   - rtc_controller_manager 통합 (기본): ControlLoop에서 event-driven으로 구동
+#     Phase 4에서 SendCommandAndRequestStates() -> EventLoop가 write + read 수행
+#   - standalone (hand_udp_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
+#
+# 통신 프로토콜 (1 사이클, Bulk mode):
+#   1. Write position  (cmd=0x01, kJoint) + recv echo
+#   2. Read all motors (cmd=0x10, kMotor) -> request 3B & recv 123B (pos+vel+cur)
+#   3. Read all motors (cmd=0x10, kJoint) -> request 3B & recv 123B (pos+vel+cur)
+#   4. Read all sensors(cmd=0x19)         -> request 3B & recv 259B (4 fingers)
+#
+# Standalone 모드 ROS2 토픽:
+#   pub: /hand/joint_states    JointState (joint-space pos:10 + vel:10 + effort:10)
+#   pub: /hand/motor_states    JointState (motor pos:10 + vel:10 + effort=cur:10)
+#   pub: /hand/sensor_states   HandSensorState (FingertipSensor[] per fingertip)
+#   pub: /hand/sensor_states/monitor  HandSensorState (RELIABLE QoS, 비-RT용)
+#   pub: /hand/link_status     Bool (UDP 링크 상태)
+#   sub: /hand/joint_command   JointCommand (values[10])
+
+/**:
+  ros__parameters:
+    # -- Fake hand 모드 (하드웨어 없이 standalone 테스트용) --
+    # true: UDP 소켓/스레드 없이 command echo, fake_tick_rate_hz 로 상태 publish.
+    # rtc_controller_manager 통합 모드에서는 CM 측에서 자체 호출하므로 타이머
+    # 충돌을 피하려면 fake_tick_rate_hz 를 0 으로 설정해 node-side 타이머를 생략.
+    use_fake_hand: false
+    fake_tick_rate_hz: 500.0          # 0 이하이면 타이머 생략
+
+    # -- UDP 통신 설정 --
+    target_ip: "192.168.1.2"          # 핸드 컨트롤러 IP
+    target_port: 55151                # 핸드 컨트롤러 포트
+    recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 -> 400us
+    # enable_write_ack: deprecated -- write echo는 항상 수신 (RT 안전성)
+
+    # -- 통신 모드 --
+    communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17
+                                      # "bulk":       0x10+0x19
+
+    # -- Publish rate (link_status decimation) --
+    # link_status는 EventLoop rate(~500Hz)로 보낼 필요 없음.
+    # 500Hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).
+    publish_rate: 100.0
+
+    # -- 센서 LPF 설정 (4차 Bessel LPF) --
+    # 유효 센서 샘플링 레이트 = 500Hz (sensor_decimation은 현재 1로 고정)
+    baro_lpf_enabled: true            # Barometer 센서 Low-Pass Filter 활성화
+    baro_lpf_cutoff_hz: 100.0         # Barometer LPF 차단 주파수 (Hz)
+    tof_lpf_enabled: true             # VL53L4CD TOF 센서 Low-Pass Filter 활성화
+    tof_lpf_cutoff_hz: 15.0           # TOF LPF 차단 주파수 (Hz)
+
+    # -- Barometer drift detection (one-shot, OLS) --
+    drift_detection_enabled: false    # Drift detection 활성화
+    drift_threshold: 5.0              # |slope| 임계값 (units/sample-index)
+    drift_window_size: 2500           # OLS 윈도우 크기 (samples, 500Hz 기준 5초)
+
+    # -- 모터/핑거팁 이름 (빈 배열이면 기본 이름 사용) --
+    joint_state_names:
+      - "thumb_cmc_aa"
+      - "thumb_cmc_fe"
+      - "thumb_mcp_fe"
+      - "index_mcp_aa"
+      - "index_mcp_fe"
+      - "index_dip_fe"
+      - "middle_mcp_aa"
+      - "middle_mcp_fe"
+      - "middle_dip_fe"
+      - "ring_mcp_fe"
+
+    motor_state_names:
+      - "motor_1"
+      - "motor_2"
+      - "motor_3"
+      - "motor_4"
+      - "motor_5"
+      - "motor_6"
+      - "motor_7"
+      - "motor_8"
+      - "motor_9"
+      - "motor_10"
+
+    hand_fingertip_names:
+      - "thumb"
+      - "index"
+      - "middle"
+      - "ring"
+
+    # -- ROS2 토픽 설정 --
+    command_topic: "/hand/joint_command"      # JointCommand 구독
+    joint_state_topic: "/hand/joint_states"   # JointState 발행 (joint pos/vel/effort)
+    motor_state_topic: "/hand/motor_states"   # JointState 발행 (motor pos/vel/effort)
+    sensor_topic: "/hand/sensor_states"       # HandSensorState 발행
+    link_status_topic: "/hand/link_status"    # Bool 발행 (UDP 링크 상태)
+
+    # -- Sensor calibration (trigger + status) --
+    # CalibrationCommand 를 publish 하면 udp_hand_driver 가 지정 센서의
+    # baseline 재측정을 수행 (현재 barometer 지원).
+    # Status 토픽은 transient_local 이므로 late-join 구독자(GUI)가 최신 상태
+    # 즉시 수신. 진행률은 progress_count / target_count 로 계산.
+    calibration_command_topic: "/hand/calibration/command"
+    calibration_status_topic:  "/hand/calibration/status"
+    calibration_status_rate_hz: 5.0            # 상태 publish 주기 (Hz)
+
+    # -- Failure Detector 설정 (50Hz non-RT jthread) --
+    enable_failure_detector: true     # Failure detector 활성화
+    failure_threshold: 5              # 연속 감지 횟수 임계값
+    check_motor: true                 # 모터 position 데이터 검사
+    check_sensor: true                # 센서 데이터 검사
+    min_rate_hz: 30.0                 # 최소 허용 polling rate
+    rate_fail_threshold: 5            # 연속 N회 미달 시 failure
+    check_link: true                  # UDP 링크 상태 검사
+    link_fail_threshold: 10           # 연속 N회 recv 전체 실패 시 link_down 판정

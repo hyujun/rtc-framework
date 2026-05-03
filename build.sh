@@ -53,7 +53,7 @@ show_help() {
   echo "                      rtc_urdf_bridge, rtc_tsid, rtc_controllers, rtc_controller_manager,"
   echo "                      rtc_inference, repo_scripts, rtc_tools, robot_descriptions,"
   echo "                      shape_estimation_msgs, shape_estimation,"
-  echo "                      ur5e_hand_driver, ur5e_bringup,"
+  echo "                      udp_hand_driver, ur5e_bringup,"
   echo "                      ur5e_bt_coordinator"
   echo ""
   echo "  sim     Build for simulation (MuJoCo required, hand uses fake response)"

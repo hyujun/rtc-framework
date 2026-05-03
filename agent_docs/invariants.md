@@ -5,7 +5,7 @@
 규칙을 보완하는 문서:
 - [design-principles.md](design-principles.md) — ARCH 섹션의 근거 (robot-agnostic, 5 principles)
 - [anti-patterns.md](anti-patterns.md) — 여기 invariant을 위반했던 실제 실수 사례
-- [.claude/rules/rt-safety.md](../.claude/rules/rt-safety.md) — `rtc_controller_*` / `rtc_controllers` / `ur5e_hand_driver`에 자동 로드되는 스코프 stub (이 파일의 RT 섹션을 가리킴)
+- [.claude/rules/rt-safety.md](../.claude/rules/rt-safety.md) — `rtc_controller_*` / `rtc_controllers` / `udp_hand_driver`에 자동 로드되는 스코프 stub (이 파일의 RT 섹션을 가리킴)
 
 ## RT Path Invariants
 

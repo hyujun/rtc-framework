@@ -28,14 +28,14 @@ def generate_launch_description():
 
     hand_config = PathJoinSubstitution(
         [
-            FindPackageShare("ur5e_hand_driver"),
+            FindPackageShare("udp_hand_driver"),
             "config",
             "hand_udp_node.yaml",
         ]
     )
 
     hand_udp_node = Node(
-        package="ur5e_hand_driver",
+        package="udp_hand_driver",
         executable="hand_udp_node",
         name="hand_udp_node",
         output="screen",

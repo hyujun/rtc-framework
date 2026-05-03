@@ -84,7 +84,7 @@ Channel-specific instantiations:
     +--SPSC--> [log_executor]   --> CSV (timing + per-device state + sensor)
     +--E-STOP--> /system/estop_status
 
-[Hand HW] <--UDP--> [ur5e_hand_driver] <--SeqLock--> [ControlLoop]
+[Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
 [rtc_digital_twin]: merge digital_twin topics --> RViz2
 [ur5e_bt_coordinator]: subscribes grasp_state/gui_position, publishes goals; tunes gains via per-controller ROS 2 parameters
 ```
@@ -147,8 +147,8 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio, fmt ≥ 10
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
-ur5e_hand_driver <-- rtc_communication, rtc_inference, rtc_base
+udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base
 robot_descriptions (data-only, no code deps)
-ur5e_bringup <-- rtc_controller_manager, ur5e_hand_driver, robot_descriptions,
+ur5e_bringup <-- rtc_controller_manager, udp_hand_driver, robot_descriptions,
                  rtc_tsid, rtc_mpc
 ```

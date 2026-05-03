@@ -101,7 +101,7 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 |------|---------------|----------------------|
 | `C++: Launch ur5e_rt_controller (Debug)` | `install/ur5e_bringup/lib/ur5e_bringup/ur5e_rt_controller` | `ur5e_bringup/config/ur5e_sim.yaml` |
 | `C++: Launch mujoco_simulator_node (Debug)` | `install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node` | `ur5e_bringup/config/mujoco_simulator.yaml` |
-| `C++: Launch hand_udp_node (Debug)` | `install/ur5e_hand_driver/lib/ur5e_hand_driver/hand_udp_node` | `ur5e_hand_driver/config/hand_udp_node.yaml` |
+| `C++: Launch hand_udp_node (Debug)` | `install/udp_hand_driver/lib/udp_hand_driver/hand_udp_node` | `udp_hand_driver/config/hand_udp_node.yaml` |
 | `C++: Launch bt_coordinator_node (Debug)` | `install/ur5e_bt_coordinator/lib/ur5e_bt_coordinator/bt_coordinator_node` | — |
 | `C++: Launch shape_estimation_node (Debug)` | `install/shape_estimation/lib/shape_estimation/shape_estimation_node` | — |
 | `C++: Attach to Node (Pick Process)` | (실행 중인 프로세스 선택) | — |

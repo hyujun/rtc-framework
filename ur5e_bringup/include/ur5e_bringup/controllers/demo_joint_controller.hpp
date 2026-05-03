@@ -13,7 +13,7 @@
 #include "ur5e_bringup/support/virtual_tcp.hpp"
 #include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
 #include "ur5e_bringup/logging/device_state_log_pod.hpp"
-#include "ur5e_hand_driver/hand_constants.hpp"
+#include "udp_hand_driver/hand_constants.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
 
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
