@@ -169,86 +169,10 @@ void RtControllerNode::CreatePublishers() {
         break;
     }
 
-    // ── Typed message publishers (GuiPosition, RobotTarget, etc.) ───────────
-    auto cfg_it = device_name_configs_.find(group_name);
-    const auto& joint_names = (cfg_it != device_name_configs_.end())
-                                  ? cfg_it->second.joint_state_names
-                                  : std::vector<std::string>{};
-    const auto& sensor_names = (cfg_it != device_name_configs_.end()) ? cfg_it->second.sensor_names
-                                                                      : std::vector<std::string>{};
-    const auto n = joint_names.size();
-
-    auto log_pub = [&](const char* role_str) {
-      RCLCPP_INFO(get_logger(), "  Publish [%s/%s]: %s", group_name.c_str(), role_str,
-                  entry.topic_name.c_str());
-    };
-
-    switch (entry.role) {
-      case urtc::PublishRole::kGuiPosition: {
-        if (gui_position_publishers_.count(entry.topic_name) > 0) {
-          return;
-        }
-        TypedPublisherEntry<rtc_msgs::msg::GuiPosition> pe;
-        pe.publisher = create_publisher<rtc_msgs::msg::GuiPosition>(entry.topic_name, 10);
-        pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
-        pe.msg.joint_positions.resize(n, 0.0);
-        gui_position_publishers_[entry.topic_name] = std::move(pe);
-        log_pub("gui_position");
-        return;
-      }
-      case urtc::PublishRole::kRobotTarget: {
-        if (robot_target_publishers_.count(entry.topic_name) > 0) {
-          return;
-        }
-        TypedPublisherEntry<rtc_msgs::msg::RobotTarget> pe;
-        pe.publisher = create_publisher<rtc_msgs::msg::RobotTarget>(entry.topic_name, cmd_qos);
-        pe.msg.joint_names.assign(joint_names.begin(), joint_names.end());
-        pe.msg.joint_target.resize(n, 0.0);
-        pe.msg.goal_type = "joint";
-        robot_target_publishers_[entry.topic_name] = std::move(pe);
-        log_pub("robot_target");
-        return;
-      }
-      // (Phase C: kDeviceStateLog / kDeviceSensorLog publisher creation
-      // removed — controller-owned ControllerLogSet writes the same data
-      // directly to <session>/controllers/<key>/*.csv.)
-      case urtc::PublishRole::kGraspState: {
-        if (grasp_state_publishers_.count(entry.topic_name) > 0) {
-          return;
-        }
-        TypedPublisherEntry<rtc_msgs::msg::GraspState> pe;
-        pe.publisher =
-            create_publisher<rtc_msgs::msg::GraspState>(entry.topic_name, rclcpp::QoS{10});
-        pe.msg.fingertip_names.assign(sensor_names.begin(), sensor_names.end());
-        // Pre-allocate to max fingertips to avoid resize() in publish loop
-        const auto max_ft = static_cast<std::size_t>(urtc::kMaxFingertips);
-        pe.msg.force_magnitude.resize(max_ft, 0.0f);
-        pe.msg.contact_flag.resize(max_ft, 0.0f);
-        pe.msg.inference_valid.resize(max_ft, false);
-        pe.msg.finger_s.resize(max_ft, 0.0f);
-        pe.msg.finger_filtered_force.resize(max_ft, 0.0f);
-        pe.msg.finger_force_error.resize(max_ft, 0.0f);
-        grasp_state_publishers_[entry.topic_name] = std::move(pe);
-        log_pub("grasp_state");
-        return;
-      }
-      case urtc::PublishRole::kToFSnapshot: {
-        if (tof_snapshot_publishers_.count(entry.topic_name) > 0) {
-          return;
-        }
-        TypedPublisherEntry<rtc_msgs::msg::ToFSnapshot> pe;
-        rclcpp::QoS qos{5};
-        qos.best_effort();
-        pe.publisher = create_publisher<rtc_msgs::msg::ToFSnapshot>(entry.topic_name, qos);
-        tof_snapshot_publishers_[entry.topic_name] = std::move(pe);
-        log_pub("tof_snapshot");
-        return;
-      }
-      default:
-        break;
-    }
-
-    // Float64MultiArray publishers (kRos2Command)
+    // ── Float64MultiArray publishers (kRos2Command — sim/forward bridge) ────
+    // Controller-output roles (kGuiPosition / kGraspState / kToFSnapshot /
+    // kRobotTarget) are owned by each controller's LifecycleNode; CM only
+    // routes HW/sim ↔ controller boundary traffic.
     if (topic_publishers_.count(entry.topic_name) > 0) {
       return;
     }

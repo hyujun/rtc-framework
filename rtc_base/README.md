@@ -463,7 +463,7 @@ CM, MPC, ur5e_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. 
 | 카테고리 | 필드 |
 |---------|------|
 | 디바이스별 (`GroupCommandSlot[4]`) | `num_channels`, `actual_num_channels`, `commands[]`, `goal_positions[]`, `target_positions[]`, `target_velocities[]`, `trajectory_positions[]`, `trajectory_velocities[]`, `actual_positions[]`, `actual_velocities[]`, `efforts[]`, `motor_positions[]`, `motor_velocities[]`, `motor_efforts[]`, `sensor_data[]`, `sensor_data_raw[]`, `inference_output[]`, `goal_type`, `grasp_state`, `wbc_state`, `tof_snapshot` |
-| 공유 | `command_type`, `actual_task_positions[6]`, `task_goals[4][6]`, `stamp_ns`, `active_controller_idx`, `num_groups` |
+| 공유 | `command_type`, `actual_task_positions[6]`, `stamp_ns`, `active_controller_idx`, `num_groups` |
 
 ---
 

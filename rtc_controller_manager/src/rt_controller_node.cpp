@@ -216,10 +216,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   // 4. publishers (all maps + fixed)
   topic_publishers_.clear();
   joint_command_publishers_.clear();
-  gui_position_publishers_.clear();
-  robot_target_publishers_.clear();
-  grasp_state_publishers_.clear();
-  tof_snapshot_publishers_.clear();
   digital_twin_publishers_.clear();
   slot_to_dt_topic_.clear();
   estop_pub_.reset();
@@ -298,10 +294,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   param_callback_handle_.reset();
   topic_publishers_.clear();
   joint_command_publishers_.clear();
-  gui_position_publishers_.clear();
-  robot_target_publishers_.clear();
-  grasp_state_publishers_.clear();
-  tof_snapshot_publishers_.clear();
   digital_twin_publishers_.clear();
   slot_to_dt_topic_.clear();
   estop_pub_.reset();

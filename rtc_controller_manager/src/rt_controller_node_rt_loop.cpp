@@ -241,8 +241,6 @@ void RtControllerNode::ControlLoop() {
           gc.inference_output[i] = dstate.inference_data[i];
         }
       }
-      // task_goals: copy from controller's task goal target
-      snap.task_goals[gi] = output.task_goal_positions;
       // Grasp state from controller output
       gc.grasp_state = output.grasp_state;
       // WBC state from controller output (TSID-based controllers)

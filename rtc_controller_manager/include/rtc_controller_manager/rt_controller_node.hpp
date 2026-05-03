@@ -11,12 +11,9 @@
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
-#include <rtc_msgs/msg/grasp_state.hpp>
-#include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
 #include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
-#include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
 
@@ -256,23 +253,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   std::unordered_map<std::string, JointCommandPublisherEntry> joint_command_publishers_;
 
-  // Typed publishers for new topic roles
-  template <typename MsgT>
-  struct TypedPublisherEntry {
-    typename rclcpp_lifecycle::LifecyclePublisher<MsgT>::SharedPtr publisher;
-    MsgT msg;  // pre-allocated
-  };
-
-  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::GuiPosition>>
-      gui_position_publishers_;
-  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::RobotTarget>>
-      robot_target_publishers_;
-  // (Phase C: device_state_log_publishers_ / device_sensor_log_publishers_
-  // removed — controller-owned ControllerLogSet replaces them.)
-  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::GraspState>>
-      grasp_state_publishers_;
-  std::unordered_map<std::string, TypedPublisherEntry<rtc_msgs::msg::ToFSnapshot>>
-      tof_snapshot_publishers_;
+  // Controller-output publish roles (kGuiPosition / kGraspState / kToFSnapshot
+  // / kRobotTarget) are owned by each controller's LifecycleNode via
+  // owned_topics.cpp + PublishNonRtSnapshot — CM does not host them.
 
   // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
   // key = "/{group}/digital_twin/joint_states"
