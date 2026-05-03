@@ -181,6 +181,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── Publish offload (SPSC drain → publish) ──────────────────────────────
   void PublishLoopEntry(const rtc::ThreadConfig& cfg);
+  // PublishLoopEntry helpers — split per role + wakeup logic for cognitive
+  // complexity. Run on the publish thread (Core 5/6, SCHED_OTHER) — no RT
+  // constraints. Snapshot reads must use a single buffer pop result.
+  void WaitForPublishWakeup();
+  void PublishJointCommandEntry(const rtc::PublishSnapshot& snap,
+                                const rtc::PublishTopicEntry& entry, std::size_t group_idx,
+                                int32_t sec, uint32_t nsec, const char* cmd_type_str);
+  void PublishRos2CommandEntry(const rtc::PublishSnapshot& snap,
+                               const rtc::PublishTopicEntry& entry, std::size_t group_idx);
   void DrainLog();  // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);

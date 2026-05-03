@@ -26,20 +26,7 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
 
   while (publish_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
     if (!publish_buffer_.Pop(snap)) {
-      // Wait for RT thread signal via eventfd (or 1ms polling fallback)
-      if (publish_eventfd_ >= 0) {
-        struct pollfd pfd {};
-
-        pfd.fd = publish_eventfd_;
-        pfd.events = POLLIN;
-        poll(&pfd, 1, 1);  // 1ms timeout
-        if (pfd.revents & POLLIN) {
-          eventfd_t val{};
-          static_cast<void>(eventfd_read(publish_eventfd_, &val));
-        }
-      } else {
-        sched_yield();
-      }
+      WaitForPublishWakeup();
       continue;
     }
 
@@ -52,86 +39,31 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
     const char* cmd_type_str =
         (snap.command_type == urtc::CommandType::kTorque) ? "torque" : "position";
 
-    // Helper: publish a single topic entry from snapshot data
-    auto publish_entry = [&](const urtc::PublishTopicEntry& pt, std::size_t group_idx) {
-      const auto& gc = snap.group_commands[group_idx];
-      const int nc = gc.num_channels;
-
-      switch (pt.role) {
-        case urtc::PublishRole::kJointCommand: {
-          // Skip publishing when the controller has no output for this
-          // device (nc=0). This prevents sending zero-filled commands
-          // before the device state is known (e.g. hand not yet valid).
-          if (nc <= 0) {
-            return;
-          }
-          auto jc_it = joint_command_publishers_.find(pt.topic_name);
-          if (jc_it == joint_command_publishers_.end()) {
-            return;
-          }
-          auto& jce = jc_it->second;
-          jce.msg.header.stamp.sec = sec;
-          jce.msg.header.stamp.nanosec = nsec;
-          jce.msg.command_type = cmd_type_str;
-          const auto n = std::min(static_cast<std::size_t>(nc), jce.msg.values.size());
-          if (!jce.reorder_map.empty()) {
-            // Reorder from joint_state_names order → joint_command_names order
-            for (std::size_t i = 0; i < n; ++i) {
-              const int src = (i < jce.reorder_map.size()) ? jce.reorder_map[i] : -1;
-              jce.msg.values[i] =
-                  (src >= 0 && src < nc) ? gc.commands[static_cast<std::size_t>(src)] : 0.0;
-            }
-          } else {
-            for (std::size_t i = 0; i < n; ++i) {
-              jce.msg.values[i] = gc.commands[i];
-            }
-          }
-          jce.publisher->publish(jce.msg);
-          return;
-        }
-        case urtc::PublishRole::kRos2Command: {
-          auto it = ros2_command_publishers_.find(pt.topic_name);
-          if (it == ros2_command_publishers_.end()) {
-            return;
-          }
-          auto& pe = it->second;
-          const auto n = std::min(static_cast<std::size_t>(nc), pe.msg.data.size());
-          if (!pe.reorder_map.empty()) {
-            // Reorder from joint_state_names order → joint_command_names order
-            for (std::size_t i = 0; i < n; ++i) {
-              const int src = (i < pe.reorder_map.size()) ? pe.reorder_map[i] : -1;
-              pe.msg.data[i] =
-                  (src >= 0 && src < nc) ? gc.commands[static_cast<std::size_t>(src)] : 0.0;
-            }
-          } else {
-            for (std::size_t i = 0; i < n; ++i) {
-              pe.msg.data[i] = gc.commands[i];
-            }
-          }
-          pe.publisher->publish(pe.msg);
-          return;
-        }
-        default:
-          // Controller-output roles (kGuiPosition / kRobotTarget /
-          // kGraspState / kToFSnapshot / kWbcState) are owned by the
-          // active controller's LifecycleNode and forwarded via
-          // PublishNonRtSnapshot below — CM has no publisher for them.
-          // CreatePublishers() throws on misconfigured manager-owned
-          // controller-output roles, so reaching here means an entry that
-          // CM correctly skipped at publisher creation time.
-          break;
-      }
-    };
-
     // Publish all device groups uniformly (manager-owned entries only —
     // controller-owned entries are skipped; the controller forwards them
     // via PublishNonRtSnapshot below).
     std::size_t group_idx = 0;
     for ([[maybe_unused]] const auto& [group_name, group] : active_tc.groups) {
-      for (const auto& pt : group.publish) {
-        if (pt.ownership == urtc::TopicOwnership::kController)
+      for (const auto& entry : group.publish) {
+        if (entry.ownership == urtc::TopicOwnership::kController)
           continue;
-        publish_entry(pt, group_idx);
+        switch (entry.role) {
+          case urtc::PublishRole::kJointCommand:
+            PublishJointCommandEntry(snap, entry, group_idx, sec, nsec, cmd_type_str);
+            break;
+          case urtc::PublishRole::kRos2Command:
+            PublishRos2CommandEntry(snap, entry, group_idx);
+            break;
+          default:
+            // Controller-output roles (kGuiPosition / kRobotTarget /
+            // kGraspState / kToFSnapshot / kWbcState) are owned by the
+            // active controller's LifecycleNode and forwarded via
+            // PublishNonRtSnapshot below — CM has no publisher for them.
+            // CreatePublishers() throws on misconfigured manager-owned
+            // controller-output roles, so reaching here means an entry that
+            // CM correctly skipped at publisher creation time.
+            break;
+        }
       }
       ++group_idx;
     }
@@ -146,6 +78,83 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
       controllers_[aidx]->PublishNonRtSnapshot(snap);
     }
   }
+}
+
+void RtControllerNode::WaitForPublishWakeup() {
+  // Wait for RT thread signal via eventfd (or 1ms polling fallback)
+  if (publish_eventfd_ >= 0) {
+    struct pollfd pfd {};
+
+    pfd.fd = publish_eventfd_;
+    pfd.events = POLLIN;
+    poll(&pfd, 1, 1);  // 1ms timeout
+    if (pfd.revents & POLLIN) {
+      eventfd_t val{};
+      static_cast<void>(eventfd_read(publish_eventfd_, &val));
+    }
+  } else {
+    sched_yield();
+  }
+}
+
+void RtControllerNode::PublishJointCommandEntry(const urtc::PublishSnapshot& snap,
+                                                const urtc::PublishTopicEntry& entry,
+                                                std::size_t group_idx, int32_t sec, uint32_t nsec,
+                                                const char* cmd_type_str) {
+  const auto& gc = snap.group_commands[group_idx];
+  const int nc = gc.num_channels;
+  // Skip publishing when the controller has no output for this device
+  // (nc=0). This prevents sending zero-filled commands before the device
+  // state is known (e.g. hand not yet valid).
+  if (nc <= 0) {
+    return;
+  }
+  auto jc_it = joint_command_publishers_.find(entry.topic_name);
+  if (jc_it == joint_command_publishers_.end()) {
+    return;
+  }
+  auto& jce = jc_it->second;
+  jce.msg.header.stamp.sec = sec;
+  jce.msg.header.stamp.nanosec = nsec;
+  jce.msg.command_type = cmd_type_str;
+  const auto n = std::min(static_cast<std::size_t>(nc), jce.msg.values.size());
+  if (!jce.reorder_map.empty()) {
+    // Reorder from joint_state_names order → joint_command_names order
+    for (std::size_t i = 0; i < n; ++i) {
+      const int src = (i < jce.reorder_map.size()) ? jce.reorder_map[i] : -1;
+      jce.msg.values[i] = (src >= 0 && src < nc) ? gc.commands[static_cast<std::size_t>(src)] : 0.0;
+    }
+  } else {
+    for (std::size_t i = 0; i < n; ++i) {
+      jce.msg.values[i] = gc.commands[i];
+    }
+  }
+  jce.publisher->publish(jce.msg);
+}
+
+void RtControllerNode::PublishRos2CommandEntry(const urtc::PublishSnapshot& snap,
+                                               const urtc::PublishTopicEntry& entry,
+                                               std::size_t group_idx) {
+  const auto& gc = snap.group_commands[group_idx];
+  const int nc = gc.num_channels;
+  auto it = ros2_command_publishers_.find(entry.topic_name);
+  if (it == ros2_command_publishers_.end()) {
+    return;
+  }
+  auto& pe = it->second;
+  const auto n = std::min(static_cast<std::size_t>(nc), pe.msg.data.size());
+  if (!pe.reorder_map.empty()) {
+    // Reorder from joint_state_names order → joint_command_names order
+    for (std::size_t i = 0; i < n; ++i) {
+      const int src = (i < pe.reorder_map.size()) ? pe.reorder_map[i] : -1;
+      pe.msg.data[i] = (src >= 0 && src < nc) ? gc.commands[static_cast<std::size_t>(src)] : 0.0;
+    }
+  } else {
+    for (std::size_t i = 0; i < n; ++i) {
+      pe.msg.data[i] = gc.commands[i];
+    }
+  }
+  pe.publisher->publish(pe.msg);
 }
 
 void RtControllerNode::StartPublishLoop(const urtc::ThreadConfig& pub_cfg) {
