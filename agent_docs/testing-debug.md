@@ -50,7 +50,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 
 | Package | Tests | Framework |
 |---------|-------|-----------|
-| `udp_hand_driver` | 179 C++ (hand_packets 46, hand_controller 33, hand_udp_codec 24, fingertip_ft 19, hand_udp_transport 18, hand_timing_profiler 15, hand_sensor_processor 13, hand_failure_detector 11) | GTest |
+| `udp_hand_driver` | 179 C++ (udp_hand_packets 46, udp_hand_controller 33, udp_hand_codec 24, fingertip_ft_inferencer 19, udp_hand_transport 18, udp_hand_timing_profiler 15, udp_hand_sensor_processor 13, udp_hand_failure_detector 11) | GTest |
 | `ur5e_bt_coordinator` | 157 C++ (condition_nodes 21, bt_utils 19, bt_types 16, hand_nodes 15, compute_offset_pose 12, shape_nodes 11, tree_validation 10, set_gains 9, set_pose_z 8, switch_controller 7, grasp_control 7, compute_sweep_trajectory 6, move_to_joints 6, wait_duration 5, move_to_pose 5) | GTest |
 | `rtc_mpc` | 136 C++ (types, TripleBuffer, TrajectoryInterpolator, Riccati, SolutionManager, thread skeleton, RobotModelHandler, PhaseCostConfig) | GTest |
 | `integrated_bringup` | 92 C++ (demo_wbc_controller 44, demo_shared_config 16, grasp_phase_manager 13, virtual_tcp 10, demo_wbc_mpc_integration 6, grasp_pipeline 3) | GTest |

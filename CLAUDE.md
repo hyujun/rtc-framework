@@ -5,7 +5,7 @@
 **RTC (Real-Time Control) Framework** — Robot-agnostic real-time control for URDF-based manipulators.
 
 - `rtc_*` packages (13): variable-DOF, configurable RT loop rate (`control_rate` YAML; design range 100 Hz – 5 kHz, default 500 Hz), transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP
-- `ur5e_*` packages (3): UR5e hand driver, demo controllers + BT coordinator (reference integration on top of `rtc_*`)
+- Integration packages (3): `integrated_bringup` (demo controllers + launch + grasp/phase managers, ref integration on top of `rtc_*`), `udp_hand_driver` (UDP hand driver — reusable for any UDP-controlled hand), `ur5e_bt_coordinator` (BehaviorTree.CPP v4 grasp coordinator, UR5e + hand specific)
 - `robot_descriptions` (1): robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (ur5e + assm_v1 hand 입주, 추가 robot/hand는 서브디렉토리 추가만으로)
 - `shape_estimation*` packages (2): ToF-based surface estimation (msgs + node)
 - `repo_scripts` (1): repo-local convenience tooling (PREEMPT_RT, CPU shield, deps build, env activation) — not part of the rtc_* runtime libraries
