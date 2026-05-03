@@ -50,8 +50,18 @@ find_package(ur5e_hand_driver REQUIRED)
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/demo_joint_controller.cpp
+  src/controllers/demo_joint_controller_compute.cpp
+  src/controllers/demo_joint_controller_lifecycle.cpp
+  src/controllers/demo_joint_controller_parameters.cpp
   src/controllers/demo_task_controller.cpp
+  src/controllers/demo_task_controller_compute.cpp
+  src/controllers/demo_task_controller_lifecycle.cpp
+  src/controllers/demo_task_controller_parameters.cpp
   src/controllers/demo_wbc_controller.cpp
+  src/controllers/demo_wbc_controller_compute.cpp
+  src/controllers/demo_wbc_controller_phase.cpp
+  src/controllers/demo_wbc_controller_lifecycle.cpp
+  src/controllers/demo_wbc_controller_parameters.cpp
   src/controllers/demo_shared_config.cpp
   src/controllers/controller_registration.cpp
   src/controllers/owned_topics.cpp
