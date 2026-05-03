@@ -76,7 +76,7 @@ def launch_setup(context, *args, **kwargs):
     hand_config = None
     try:
         hand_share = get_package_share_directory("udp_hand_driver")
-        hand_config = os.path.join(hand_share, "config", "hand_udp_node.yaml")
+        hand_config = os.path.join(hand_share, "config", "udp_hand_node.yaml")
     except Exception:
         pass
 

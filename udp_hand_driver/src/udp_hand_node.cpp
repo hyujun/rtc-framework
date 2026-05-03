@@ -1,7 +1,7 @@
-#include "udp_hand_driver/hand_controller.hpp"
-#include "udp_hand_driver/hand_failure_detector.hpp"
-#include "udp_hand_driver/hand_logging.hpp"
-#include "udp_hand_driver/hand_udp_timing_logger.hpp"
+#include "udp_hand_driver/udp_hand_controller.hpp"
+#include "udp_hand_driver/udp_hand_failure_detector.hpp"
+#include "udp_hand_driver/udp_hand_logging.hpp"
+#include "udp_hand_driver/udp_hand_timing_logger.hpp"
 #include <rtc_base/logging/session_dir.hpp>
 #include <rtc_base/threading/thread_utils.hpp>
 #include <rtc_msgs/msg/calibration_command.hpp>
@@ -59,7 +59,7 @@ class HandUdpNode : public rclcpp_lifecycle::LifecycleNode {
  public:
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
-  HandUdpNode() : LifecycleNode("hand_udp_node") {
+  HandUdpNode() : LifecycleNode("udp_hand_node") {
     // Lifecycle design: constructor is intentionally empty.
     // All resource allocation happens in on_configure().
   }

@@ -2,7 +2,7 @@
 #
 # Launch order (event-driven):
 #   1. Environment vars (RMW, CycloneDDS, session dir)
-#   2. CPU shield, UR driver, hand_udp_node  (parallel)
+#   2. CPU shield, UR driver, udp_hand_node  (parallel)
 #   3. Readiness gate: polls /joint_states and /hand/joint_states publishers
 #   4. ur5e_rt_controller node starts ONLY after gate exits successfully
 #   5. DDS thread pinning runs 5 s after the CM process starts
@@ -156,7 +156,7 @@ def generate_launch_description():
 
     perf_targets_arg = DeclareLaunchArgument(
         "perf_targets",
-        default_value="ur5e_rt_controller|hand_udp_node|ur_ros2_control_node",
+        default_value="ur5e_rt_controller|udp_hand_node|ur_ros2_control_node",
         description=(
             "Regex of process names to attach perf record to. "
             "Matched via `pgrep -f`. Only used when enable_perf:=true."
@@ -228,7 +228,7 @@ def generate_launch_description():
 
     # Hand UDP config (udp_hand_driver package)
     hand_udp_config = PathJoinSubstitution(
-        [FindPackageShare("udp_hand_driver"), "config", "hand_udp_node.yaml"]
+        [FindPackageShare("udp_hand_driver"), "config", "udp_hand_node.yaml"]
     )
 
     # Fingertip F/T inferencer config (udp_hand_driver package)
@@ -361,10 +361,10 @@ def generate_launch_description():
 
     # ── Hand UDP driver node (LifecycleNode) ──────────────────────────────────
     # Publishes /hand/joint_states and /hand/sensor_states for ur5e_rt_controller.
-    hand_udp_node = LifecycleNode(
+    udp_hand_node = LifecycleNode(
         package="udp_hand_driver",
-        executable="hand_udp_node",
-        name="hand_udp_node",
+        executable="udp_hand_node",
+        name="udp_hand_node",
         namespace="",
         output="screen",
         parameters=[
@@ -374,16 +374,16 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    # ── Lifecycle auto-configure/activate for hand_udp_node ───────────────────
+    # ── Lifecycle auto-configure/activate for udp_hand_node ───────────────────
     hand_auto_activate = RegisterEventHandler(
         OnStateTransition(
-            target_lifecycle_node=hand_udp_node,
+            target_lifecycle_node=udp_hand_node,
             start_state="configuring",
             goal_state="inactive",
             entities=[
                 EmitEvent(
                     event=ChangeState(
-                        lifecycle_node_matcher=lambda n: n == hand_udp_node,
+                        lifecycle_node_matcher=lambda n: n == udp_hand_node,
                         transition_id=Transition.TRANSITION_ACTIVATE,
                     )
                 )
@@ -392,7 +392,7 @@ def generate_launch_description():
     )
     hand_trigger_configure = EmitEvent(
         event=ChangeState(
-            lifecycle_node_matcher=lambda n: n == hand_udp_node,
+            lifecycle_node_matcher=lambda n: n == udp_hand_node,
             transition_id=Transition.TRANSITION_CONFIGURE,
         )
     )
@@ -421,7 +421,7 @@ def generate_launch_description():
     )
 
     # ── Readiness gate ────────────────────────────────────────────────────────
-    # Polls until UR driver publishes /joint_states AND hand_udp_node publishes
+    # Polls until UR driver publishes /joint_states AND udp_hand_node publishes
     # /hand/joint_states.  ur5e_rt_controller is chained to start only after
     # this gate process exits successfully (via OnProcessExit event handler).
     comm_readiness_gate = ExecuteProcess(
@@ -435,7 +435,7 @@ def generate_launch_description():
             '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
             '  && echo "[RT]   /joint_states publisher OK" '
             '  || { echo "[RT] FATAL: /joint_states not available after 30 s"; exit 1; }; '
-            # --- Wait for /hand/joint_states publisher (hand_udp_node) ---
+            # --- Wait for /hand/joint_states publisher (udp_hand_node) ---
             "timeout 30 bash -c '"
             "while ! ros2 topic info /hand/joint_states 2>/dev/null "
             '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
@@ -454,15 +454,15 @@ def generate_launch_description():
     )
 
     # ── Event-driven launch chain ─────────────────────────────────────────────
-    # Gate starts only after hand_udp_node process is running (ensures DDS
+    # Gate starts only after udp_hand_node process is running (ensures DDS
     # endpoint is registered before polling).  ur5e_rt_controller starts
     # only after the gate exits with success.  DDS thread pinning fires 5 s
     # after the CM process starts.
     start_gate_after_hand = RegisterEventHandler(
         OnProcessStart(
-            target_action=hand_udp_node,
+            target_action=udp_hand_node,
             on_start=[
-                LogInfo(msg="[RT] hand_udp_node started — launching readiness gate"),
+                LogInfo(msg="[RT] udp_hand_node started — launching readiness gate"),
                 comm_readiness_gate,
             ],
         )
@@ -510,11 +510,11 @@ def generate_launch_description():
             enable_cpu_shield,
             ur_driver_launch_action,
             pin_ur_driver,
-            hand_udp_node,
+            udp_hand_node,
             hand_auto_activate,
             hand_trigger_configure,
             # 4) Event-driven chain:
-            #    hand_udp_node started → comm_readiness_gate
+            #    udp_hand_node started → comm_readiness_gate
             #    → gate exits OK → ur5e_rt_controller
             #    → CM process started → pin_rt_controller_dds
             start_gate_after_hand,

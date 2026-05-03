@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_TIMING_PROFILER_HPP_
-#define UDP_HAND_DRIVER_HAND_TIMING_PROFILER_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_TIMING_PROFILER_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_TIMING_PROFILER_HPP_
 
 // HandTimingProfiler: EventLoop per-phase timing measurement.
 //
@@ -272,4 +272,4 @@ class HandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_TIMING_PROFILER_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_TIMING_PROFILER_HPP_

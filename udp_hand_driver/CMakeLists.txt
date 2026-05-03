@@ -37,11 +37,11 @@ find_package(ament_index_cpp REQUIRED)
 # ── Unified node: HandController (request-response polling) ──────────────────
 # Note: HAS_ONNXRUNTIME, ONNX includes, and link libraries are propagated
 # from rtc_inference via its INTERFACE target.
-add_executable(hand_udp_node
-  src/hand_udp_node.cpp
+add_executable(udp_hand_node
+  src/udp_hand_node.cpp
 )
-target_include_directories(hand_udp_node PRIVATE include)
-ament_target_dependencies(hand_udp_node
+target_include_directories(udp_hand_node PRIVATE include)
+ament_target_dependencies(udp_hand_node
   rclcpp
   rclcpp_lifecycle
   sensor_msgs
@@ -55,7 +55,7 @@ ament_target_dependencies(hand_udp_node
 
 # ── Install ────────────────────────────────────────────────────────────────────
 install(TARGETS
-  hand_udp_node
+  udp_hand_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -85,34 +85,34 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   # ── Tier 1: Pure computation tests (no ROS2 node, no network) ──────────────
-  ament_add_gtest(test_hand_packets test/test_hand_packets.cpp)
-  target_include_directories(test_hand_packets PRIVATE include)
-  ament_target_dependencies(test_hand_packets rtc_base)
+  ament_add_gtest(test_udp_hand_packets test/test_udp_hand_packets.cpp)
+  target_include_directories(test_udp_hand_packets PRIVATE include)
+  ament_target_dependencies(test_udp_hand_packets rtc_base)
 
-  ament_add_gtest(test_hand_udp_codec test/test_hand_udp_codec.cpp)
-  target_include_directories(test_hand_udp_codec PRIVATE include)
-  ament_target_dependencies(test_hand_udp_codec rtc_base)
+  ament_add_gtest(test_udp_hand_codec test/test_udp_hand_codec.cpp)
+  target_include_directories(test_udp_hand_codec PRIVATE include)
+  ament_target_dependencies(test_udp_hand_codec rtc_base)
 
-  ament_add_gtest(test_hand_udp_transport test/test_hand_udp_transport.cpp)
-  target_include_directories(test_hand_udp_transport PRIVATE include)
-  ament_target_dependencies(test_hand_udp_transport rtc_base rclcpp)
+  ament_add_gtest(test_udp_hand_transport test/test_udp_hand_transport.cpp)
+  target_include_directories(test_udp_hand_transport PRIVATE include)
+  ament_target_dependencies(test_udp_hand_transport rtc_base rclcpp)
 
-  ament_add_gtest(test_hand_timing_profiler test/test_hand_timing_profiler.cpp)
-  target_include_directories(test_hand_timing_profiler PRIVATE include)
-  ament_target_dependencies(test_hand_timing_profiler rtc_base)
+  ament_add_gtest(test_udp_hand_timing_profiler test/test_udp_hand_timing_profiler.cpp)
+  target_include_directories(test_udp_hand_timing_profiler PRIVATE include)
+  ament_target_dependencies(test_udp_hand_timing_profiler rtc_base)
 
-  ament_add_gtest(test_hand_sensor_processor test/test_hand_sensor_processor.cpp)
-  target_include_directories(test_hand_sensor_processor PRIVATE include)
-  ament_target_dependencies(test_hand_sensor_processor rtc_base rclcpp)
+  ament_add_gtest(test_udp_hand_sensor_processor test/test_udp_hand_sensor_processor.cpp)
+  target_include_directories(test_udp_hand_sensor_processor PRIVATE include)
+  ament_target_dependencies(test_udp_hand_sensor_processor rtc_base rclcpp)
 
   # ── Tier 2: Component integration tests (fake_hand mode) ──────────────────
-  ament_add_gtest(test_hand_controller test/test_hand_controller.cpp)
-  target_include_directories(test_hand_controller PRIVATE include)
-  ament_target_dependencies(test_hand_controller rtc_base rtc_inference rclcpp)
+  ament_add_gtest(test_udp_hand_controller test/test_udp_hand_controller.cpp)
+  target_include_directories(test_udp_hand_controller PRIVATE include)
+  ament_target_dependencies(test_udp_hand_controller rtc_base rtc_inference rclcpp)
 
-  ament_add_gtest(test_hand_failure_detector test/test_hand_failure_detector.cpp)
-  target_include_directories(test_hand_failure_detector PRIVATE include)
-  ament_target_dependencies(test_hand_failure_detector rtc_base rtc_inference rclcpp)
+  ament_add_gtest(test_udp_hand_failure_detector test/test_udp_hand_failure_detector.cpp)
+  target_include_directories(test_udp_hand_failure_detector PRIVATE include)
+  ament_target_dependencies(test_udp_hand_failure_detector rtc_base rtc_inference rclcpp)
 
   # ── Tier 3: FT inferencer stub tests ──────────────────────────────────────
   ament_add_gtest(test_fingertip_ft_inferencer test/test_fingertip_ft_inferencer.cpp)

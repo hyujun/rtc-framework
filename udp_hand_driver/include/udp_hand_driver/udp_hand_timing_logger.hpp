@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_UDP_TIMING_LOGGER_HPP_
-#define UDP_HAND_DRIVER_HAND_UDP_TIMING_LOGGER_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_TIMING_LOGGER_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_TIMING_LOGGER_HPP_
 
 // Per-EventLoop-tick timing CSV writer for the hand UDP node.
 //
@@ -63,4 +63,4 @@ class HandUdpTimingLogger {
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_UDP_TIMING_LOGGER_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_TIMING_LOGGER_HPP_

@@ -166,7 +166,7 @@ ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
 ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true
 
 # 핸드 드라이버 노드
-ros2 launch udp_hand_driver hand_udp.launch.py target_ip:=192.168.1.2
+ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.1.2
 ```
 
 ### 모니터링

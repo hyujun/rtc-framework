@@ -30,14 +30,14 @@ def generate_launch_description():
         [
             FindPackageShare("udp_hand_driver"),
             "config",
-            "hand_udp_node.yaml",
+            "udp_hand_node.yaml",
         ]
     )
 
-    hand_udp_node = Node(
+    udp_hand_node = Node(
         package="udp_hand_driver",
-        executable="hand_udp_node",
-        name="hand_udp_node",
+        executable="udp_hand_node",
+        name="udp_hand_node",
         output="screen",
         parameters=[
             hand_config,
@@ -55,6 +55,6 @@ def generate_launch_description():
             target_ip_arg,
             target_port_arg,
             publish_rate_arg,
-            hand_udp_node,
+            udp_hand_node,
         ]
     )

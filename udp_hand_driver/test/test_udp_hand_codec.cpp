@@ -2,7 +2,7 @@
 //
 // Tier 1: Pure computation, no ROS2 or network dependencies.
 
-#include "udp_hand_driver/hand_udp_codec.hpp"
+#include "udp_hand_driver/udp_hand_codec.hpp"
 
 #include <gtest/gtest.h>
 

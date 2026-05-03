@@ -3,7 +3,7 @@
 // Tier 2: Uses fake_hand HandController. Requires rclcpp for logging.
 // Tests run the detector's 50Hz thread and verify failure detection.
 
-#include "udp_hand_driver/hand_failure_detector.hpp"
+#include "udp_hand_driver/udp_hand_failure_detector.hpp"
 
 #include <gtest/gtest.h>
 

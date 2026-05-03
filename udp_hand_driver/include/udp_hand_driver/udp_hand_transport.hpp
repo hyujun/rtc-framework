@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_UDP_TRANSPORT_HPP_
-#define UDP_HAND_DRIVER_HAND_UDP_TRANSPORT_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_TRANSPORT_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_TRANSPORT_HPP_
 
 // HandUdpTransport: low-level UDP socket management and protocol requests.
 //
@@ -10,9 +10,9 @@
 // Uses ppoll for sub-ms recv timeout (hrtimer on PREEMPT_RT kernels).
 
 #include "rtc_base/types/types.hpp"
-#include "udp_hand_driver/hand_logging.hpp"
-#include "udp_hand_driver/hand_packets.hpp"
-#include "udp_hand_driver/hand_udp_codec.hpp"
+#include "udp_hand_driver/udp_hand_logging.hpp"
+#include "udp_hand_driver/udp_hand_packets.hpp"
+#include "udp_hand_driver/udp_hand_codec.hpp"
 
 #include <rclcpp/logging.hpp>
 
@@ -504,4 +504,4 @@ class HandUdpTransport {
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_UDP_TRANSPORT_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_TRANSPORT_HPP_

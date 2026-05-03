@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_CONSTANTS_HPP_
-#define UDP_HAND_DRIVER_HAND_CONSTANTS_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_CONSTANTS_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_CONSTANTS_HPP_
 
 #include <string>
 #include <vector>
@@ -16,4 +16,4 @@ inline const std::vector<std::string> kDefaultFingertipNames = {"thumb", "index"
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_CONSTANTS_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_CONSTANTS_HPP_

@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_PACKETS_HPP_
-#define UDP_HAND_DRIVER_HAND_PACKETS_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_PACKETS_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_PACKETS_HPP_
 
 // Wire-format packet definitions for the hand UDP protocol.
 //
@@ -17,7 +17,7 @@
 //     Layout per fingertip: barometer[8] + reserved[5] + tof[3]
 
 #include "rtc_base/types/types.hpp"
-#include "udp_hand_driver/hand_constants.hpp"
+#include "udp_hand_driver/udp_hand_constants.hpp"
 
 #include <array>
 #include <cstddef>
@@ -435,4 +435,4 @@ inline void ExtractFloats(const MotorPacket& pkt,
 
 }  // namespace udp_hand_driver::packets
 
-#endif  // UDP_HAND_DRIVER_HAND_PACKETS_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_PACKETS_HPP_

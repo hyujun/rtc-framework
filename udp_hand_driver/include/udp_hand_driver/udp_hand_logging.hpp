@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_LOGGING_HPP_
-#define UDP_HAND_DRIVER_HAND_LOGGING_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_LOGGING_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_LOGGING_HPP_
 
 /// Hierarchical sub-logger factories and standard throttle periods for the
 /// udp_hand_driver package.
@@ -59,4 +59,4 @@ inline rclcpp::Logger FtLogger() {
 
 }  // namespace udp_hand_driver::logging
 
-#endif  // UDP_HAND_DRIVER_HAND_LOGGING_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_LOGGING_HPP_

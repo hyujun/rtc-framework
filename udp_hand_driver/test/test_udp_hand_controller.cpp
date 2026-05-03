@@ -3,7 +3,7 @@
 // Tier 2: Uses fake_hand=true to bypass UDP. Requires rclcpp for logging.
 // rclcpp::init() is NOT required — rclcpp logging works without node context.
 
-#include "udp_hand_driver/hand_controller.hpp"
+#include "udp_hand_driver/udp_hand_controller.hpp"
 
 #include <gtest/gtest.h>
 

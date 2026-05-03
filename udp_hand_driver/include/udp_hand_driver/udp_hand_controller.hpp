@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_CONTROLLER_HPP_
-#define UDP_HAND_DRIVER_HAND_CONTROLLER_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_CONTROLLER_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_CONTROLLER_HPP_
 
 // High-level hand controller: event-driven UDP driver.
 //
@@ -29,13 +29,13 @@
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
 #include "udp_hand_driver/fingertip_ft_inferencer.hpp"
-#include "udp_hand_driver/hand_constants.hpp"
-#include "udp_hand_driver/hand_logging.hpp"
-#include "udp_hand_driver/hand_packets.hpp"
-#include "udp_hand_driver/hand_sensor_processor.hpp"
-#include "udp_hand_driver/hand_state.hpp"
-#include "udp_hand_driver/hand_timing_profiler.hpp"
-#include "udp_hand_driver/hand_udp_transport.hpp"
+#include "udp_hand_driver/udp_hand_constants.hpp"
+#include "udp_hand_driver/udp_hand_logging.hpp"
+#include "udp_hand_driver/udp_hand_packets.hpp"
+#include "udp_hand_driver/udp_hand_sensor_processor.hpp"
+#include "udp_hand_driver/udp_hand_state.hpp"
+#include "udp_hand_driver/udp_hand_timing_profiler.hpp"
+#include "udp_hand_driver/udp_hand_transport.hpp"
 
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
@@ -303,7 +303,7 @@ class HandController {
     event_cv_.notify_one();
   }
 
-  // ── Legacy API (standalone hand_udp_node) ──────────────────────────────
+  // ── Legacy API (standalone udp_hand_node) ──────────────────────────────
 
   void SetTargetPositions(const std::array<float, kNumHandMotors>& positions) noexcept {
     SendCommandAndRequestStates(positions);
@@ -859,4 +859,4 @@ class HandController {
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_CONTROLLER_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_CONTROLLER_HPP_

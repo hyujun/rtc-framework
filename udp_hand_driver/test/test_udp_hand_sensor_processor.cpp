@@ -4,7 +4,7 @@
 // Note: rclcpp logging is used internally but doesn't require node init for
 // standalone calls (get_logger works without rclcpp::init).
 
-#include "udp_hand_driver/hand_sensor_processor.hpp"
+#include "udp_hand_driver/udp_hand_sensor_processor.hpp"
 
 #include <gtest/gtest.h>
 

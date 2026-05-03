@@ -1,7 +1,7 @@
-#ifndef UDP_HAND_DRIVER_HAND_STATE_HPP_
-#define UDP_HAND_DRIVER_HAND_STATE_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_STATE_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_STATE_HPP_
 
-#include "udp_hand_driver/hand_constants.hpp"
+#include "udp_hand_driver/udp_hand_constants.hpp"
 #include <rtc_base/types/types.hpp>
 
 #include <array>
@@ -30,4 +30,4 @@ struct HandState {
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_STATE_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_STATE_HPP_

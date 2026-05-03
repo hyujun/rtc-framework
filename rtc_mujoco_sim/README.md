@@ -669,7 +669,7 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 | 패키지 | 용도 |
 |--------|------|
 | `robot_descriptions` | MJCF 모델, URDF, 메시 파일 |
-| `udp_hand_driver` | hand_udp_node.yaml 참조 (선택) |
+| `udp_hand_driver` | udp_hand_node.yaml 참조 (선택) |
 | `rtc_controller_manager` | 런치 파일에서 rtc_controller_manager 노드 실행 (실행 파일: `rt_controller`) |
 
 ### 외부 라이브러리 (비ROS2)

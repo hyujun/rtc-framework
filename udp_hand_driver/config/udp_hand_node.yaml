@@ -1,9 +1,9 @@
-# hand_udp_node.yaml -- Hand UDP 드라이버 설정
+# udp_hand_node.yaml -- Hand UDP 드라이버 설정
 #
 # 동작 모드:
 #   - rtc_controller_manager 통합 (기본): ControlLoop에서 event-driven으로 구동
 #     Phase 4에서 SendCommandAndRequestStates() -> EventLoop가 write + read 수행
-#   - standalone (hand_udp_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
+#   - standalone (udp_hand_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
 #
 # 통신 프로토콜 (1 사이클, Bulk mode):
 #   1. Write position  (cmd=0x01, kJoint) + recv echo

@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_UDP_CODEC_HPP_
-#define UDP_HAND_DRIVER_HAND_UDP_CODEC_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_CODEC_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_CODEC_HPP_
 
 // Packet encoding / decoding for the hand UDP request-response protocol.
 //
@@ -7,7 +7,7 @@
 // on SCHED_FIFO real-time threads.
 
 #include "rtc_base/types/types.hpp"
-#include "udp_hand_driver/hand_packets.hpp"
+#include "udp_hand_driver/udp_hand_packets.hpp"
 
 #include <array>
 #include <cstddef>
@@ -174,4 +174,4 @@ inline void EncodeWritePosition(
 
 }  // namespace udp_hand_driver::codec
 
-#endif  // UDP_HAND_DRIVER_HAND_UDP_CODEC_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_CODEC_HPP_

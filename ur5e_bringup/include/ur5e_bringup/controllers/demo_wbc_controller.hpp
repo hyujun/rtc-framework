@@ -24,7 +24,7 @@
 #include "ur5e_bringup/logging/device_sensor_log_pod.hpp"
 #include "ur5e_bringup/logging/device_state_log_pod.hpp"
 #include "ur5e_bringup/controllers/wbc/grasp_phase_manager.hpp"
-#include "udp_hand_driver/hand_constants.hpp"
+#include "udp_hand_driver/udp_hand_constants.hpp"
 
 // Third-party
 #include <rtc_msgs/srv/grasp_command.hpp>

@@ -42,7 +42,7 @@
   2. ReadAllMotors(cmd=0x10)   → send 3B, recv 123B (pos+vel+cur 일괄)
   3. ReadAllSensors(cmd=0x19)  → send 3B, recv 259B (센서 4개 일괄)
 
-ROS2 토픽 (hand_udp_node):
+ROS2 토픽 (udp_hand_node):
   - pub: /hand/joint_states  → positions[10] + velocities[10] + sensors[44] = 64
   - sub: /hand/command       → motor_commands[10]
 """

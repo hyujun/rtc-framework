@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_SENSOR_PROCESSOR_HPP_
-#define UDP_HAND_DRIVER_HAND_SENSOR_PROCESSOR_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_SENSOR_PROCESSOR_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_SENSOR_PROCESSOR_HPP_
 
 // HandSensorProcessor: sensor post-processing pipeline.
 //
@@ -13,7 +13,7 @@
 #include "rtc_base/filters/sensor_rate_estimator.hpp"
 #include "rtc_base/filters/sliding_trend_detector.hpp"
 #include "rtc_base/types/types.hpp"
-#include "udp_hand_driver/hand_logging.hpp"
+#include "udp_hand_driver/udp_hand_logging.hpp"
 
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
@@ -281,4 +281,4 @@ class HandSensorProcessor {
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_SENSOR_PROCESSOR_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_SENSOR_PROCESSOR_HPP_

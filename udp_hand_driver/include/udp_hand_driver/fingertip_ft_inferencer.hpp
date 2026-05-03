@@ -32,7 +32,7 @@
 #endif
 
 #include "rtc_base/types/types.hpp"
-#include "udp_hand_driver/hand_logging.hpp"
+#include "udp_hand_driver/udp_hand_logging.hpp"
 
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>

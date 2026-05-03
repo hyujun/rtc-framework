@@ -1,5 +1,5 @@
-#ifndef UDP_HAND_DRIVER_HAND_FAILURE_DETECTOR_HPP_
-#define UDP_HAND_DRIVER_HAND_FAILURE_DETECTOR_HPP_
+#ifndef UDP_HAND_DRIVER_UDP_HAND_FAILURE_DETECTOR_HPP_
+#define UDP_HAND_DRIVER_UDP_HAND_FAILURE_DETECTOR_HPP_
 
 // Non-RT failure detector for hand data.
 //
@@ -13,7 +13,7 @@
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/types/types.hpp"
-#include "udp_hand_driver/hand_controller.hpp"
+#include "udp_hand_driver/udp_hand_controller.hpp"
 
 #include <rclcpp/logging.hpp>
 
@@ -269,4 +269,4 @@ class HandFailureDetector {
 
 }  // namespace udp_hand_driver
 
-#endif  // UDP_HAND_DRIVER_HAND_FAILURE_DETECTOR_HPP_
+#endif  // UDP_HAND_DRIVER_UDP_HAND_FAILURE_DETECTOR_HPP_

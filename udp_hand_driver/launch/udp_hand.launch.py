@@ -1,4 +1,4 @@
-# hand_udp.launch.py -- HandUdpNode 런치
+# udp_hand.launch.py -- HandUdpNode 런치
 # Event-driven request-response polling 기반 통합 핸드 UDP 노드
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
@@ -63,7 +63,7 @@ def generate_launch_description():
         [
             pkg_share,
             "config",
-            "hand_udp_node.yaml",
+            "udp_hand_node.yaml",
         ]
     )
 
@@ -78,10 +78,10 @@ def generate_launch_description():
     # ── Lifecycle Node ──────────────────────────────────────────────────
     # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
     # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
-    hand_udp_node = LifecycleNode(
+    udp_hand_node = LifecycleNode(
         package="udp_hand_driver",
-        executable="hand_udp_node",
-        name="hand_udp_node",
+        executable="udp_hand_node",
+        name="udp_hand_node",
         namespace="",
         output="screen",
         parameters=[
@@ -103,13 +103,13 @@ def generate_launch_description():
     # ── Auto-configure → auto-activate chain ─────────────────────────
     auto_activate = RegisterEventHandler(
         OnStateTransition(
-            target_lifecycle_node=hand_udp_node,
+            target_lifecycle_node=udp_hand_node,
             start_state="configuring",
             goal_state="inactive",
             entities=[
                 EmitEvent(
                     event=ChangeState(
-                        lifecycle_node_matcher=lambda n: n == hand_udp_node,
+                        lifecycle_node_matcher=lambda n: n == udp_hand_node,
                         transition_id=Transition.TRANSITION_ACTIVATE,
                     )
                 )
@@ -118,7 +118,7 @@ def generate_launch_description():
     )
     trigger_configure = EmitEvent(
         event=ChangeState(
-            lifecycle_node_matcher=lambda n: n == hand_udp_node,
+            lifecycle_node_matcher=lambda n: n == udp_hand_node,
             transition_id=Transition.TRANSITION_CONFIGURE,
         )
     )
@@ -132,7 +132,7 @@ def generate_launch_description():
             recv_timeout_ms_arg,
             use_fake_hand_arg,
             fake_tick_rate_hz_arg,
-            hand_udp_node,
+            udp_hand_node,
             auto_activate,
             trigger_configure,
         ]

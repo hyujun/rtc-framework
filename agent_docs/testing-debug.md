@@ -148,7 +148,7 @@ ros2 launch ur5e_bringup robot.launch.py enable_perf:=true
 선택 인자:
 
 * `perf_targets:='regex|of|process|names'` — 기본은 `ur5e_rt_controller|mujoco_simulator_node`
-  (sim) / `ur5e_rt_controller|hand_udp_node|ur_ros2_control_node` (robot).
+  (sim) / `ur5e_rt_controller|udp_hand_node|ur_ros2_control_node` (robot).
   `pgrep -f` 로 매칭됨. shell wrapper(bash/sh/dash/zsh) 는 자동 제외.
 * `perf_duration:=30` — 초 단위. 빈 값(기본)이면 launch SIGINT 까지 record.
 * `perf_start_delay:=N` — perf 시작까지 대기. **기본 `0` = 시작부터 캡처**
