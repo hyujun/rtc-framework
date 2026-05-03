@@ -9,7 +9,7 @@
 // rtc::RtTickTimingPayload header / row writers (the same schema CM and MPC emit,
 // so analysis scripts can join across threads).
 //
-// Phase mapping for the hand UDP loop (see hand_controller.hpp::EventLoop):
+// Phase mapping for the hand UDP loop (see udp_hand_controller.hpp::EventLoop):
 //   t_state_us    UDP write + read phase (post-condvar to post-sensor-read)
 //   t_compute_us  sensor processing + F/T inference
 //   t_publish_us  state rtc::SeqLock store + EventLoop callback
