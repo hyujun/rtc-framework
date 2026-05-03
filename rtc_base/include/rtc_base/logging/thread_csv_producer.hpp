@@ -16,7 +16,7 @@
 // One template covers state-log POD, sensor-log POD, inference-log POD,
 // and any future per-controller CSV channel. Each Payload defines its
 // own header/row writer — typically free functions next to the POD
-// type (see ur5e_bringup/include/ur5e_bringup/logging/).
+// type (see integrated_bringup/include/integrated_bringup/logging/).
 //
 // Threading contract:
 //   - Push() called from the producer thread only (the controller's RT

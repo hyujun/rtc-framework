@@ -104,7 +104,7 @@ if [[ -z "$INPUT" ]]; then
   INPUT="$(ls -1dt "$WS"/logging_data/[0-9]*/perf/perf.data 2>/dev/null | head -1 || true)"
   if [[ -z "$INPUT" ]]; then
     echo "[timeline] no perf.data found under $WS/logging_data/*/perf/" >&2
-    echo "[timeline] capture first:  ros2 launch ur5e_bringup sim.launch.py enable_perf:=true" >&2
+    echo "[timeline] capture first:  ros2 launch integrated_bringup sim.launch.py enable_perf:=true" >&2
     exit 1
   fi
   echo "[timeline] using latest: $INPUT" >&2

@@ -53,7 +53,7 @@
 | [`robot_descriptions`](robot_descriptions/) | 5.17.0 | Robot-agnostic data hub — robots/&lt;name&gt;/ 당 URDF/MJCF/mesh (현재 ur5e + assm_v1 hand) | ament_cmake |
 | [`udp_hand_driver`](udp_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | 0.1.0 | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
-| [`ur5e_bringup`](ur5e_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 8-phase WBC + **Phase 5 MPC 통합 경로**, `enable_mpc` launch arg, 9-entry gains) + CPU 격리/DDS 핀닝 | ament_cmake |
+| [`integrated_bringup`](integrated_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 8-phase WBC + **Phase 5 MPC 통합 경로**, `enable_mpc` launch arg, 9-entry gains) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
 
@@ -77,7 +77,7 @@ shape_estimation_msgs (독립)
   └── shape_estimation ← shape_estimation_msgs, Eigen3
 
 robot_descriptions (독립, data-only)
-  └── ur5e_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
+  └── integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
                     udp_hand_driver, robot_descriptions
 
 udp_hand_driver ← rtc_communication, rtc_inference, rtc_base
@@ -92,7 +92,7 @@ ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
 - **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 RT 루프 (`control_rate` YAML로 100Hz–5kHz 설정, default 500Hz), CPU 코어 자동 할당 (4/6/8/10/12/16코어)
 - **Lock-Free SPSC 아키텍처**: RT 스레드 → SPSC 버퍼 → 비-RT 퍼블리시/로깅 (wait-free push, cache-line 정렬)
 - **SeqLock 동기화**: 단일 Writer / 다중 Reader lock-free 상태 공유 (trivially copyable 타입 전용)
-- **컨트롤러 계층 분리**: `rtc_controller_interface` (추상) → `rtc_controllers` (범용 4종) → `ur5e_bringup` (데모 2종)
+- **컨트롤러 계층 분리**: `rtc_controller_interface` (추상) → `rtc_controllers` (범용 4종) → `integrated_bringup` (데모 2종)
 - **Lifecycle 관리**: 모든 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝
 
 ### 제어 알고리즘
@@ -160,10 +160,10 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
 
 # 실제 로봇 (CycloneDDS 성능 최적화 설정 자동 로드)
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
+ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10
 
 # 가상 하드웨어 (로봇 불필요)
-ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true
+ros2 launch integrated_bringup robot.launch.py use_fake_hardware:=true
 
 # 핸드 드라이버 노드
 ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.1.2
@@ -175,10 +175,10 @@ ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.1.2
 ros2 topic hz /forward_position_controller/commands   # RT 루프 주기 (= 설정된 control_rate, default ~500Hz)
 ros2 topic echo /system/estop_status                  # E-STOP 상태 (true = 활성)
 ros2 topic echo /sim/status                           # MuJoCo: [step, time, rtf, paused]
-ros2 param list /ur5e_rt_controller | grep controllers  # 토픽 파라미터 확인
+ros2 param list /integrated_rt_controller | grep controllers  # 토픽 파라미터 확인
 
-# RT 스레드 상태 확인 (exec 이름 = 노드 이름 = ur5e_rt_controller)
-PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+# RT 스레드 상태 확인 (exec 이름 = 노드 이름 = integrated_rt_controller)
+PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ```
 
 ---
@@ -191,7 +191,7 @@ PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep
 [로봇 하드웨어 / MuJoCo 시뮬레이터]
     │  /joint_states (sensor_msgs/JointState)
     ▼
-[ur5e_rt_controller]  ←  /target_joint_positions (goal)
+[integrated_rt_controller]  ←  /target_joint_positions (goal)
     │  RT 루프 (clock_nanosleep @ control_rate)
     │  제어기: rtc_controllers (P / JointPD / CLIK / OSC)
     │  전송: rtc_communication (UDP)

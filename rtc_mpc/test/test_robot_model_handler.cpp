@@ -4,7 +4,7 @@
 /// Panda is used as a generic N-DoF fixed-base manipulator fixture (the only
 /// URDF guaranteed to be present alongside Aligator / example-robot-data).
 /// This file must NOT test UR5e or any robot-specific assumption — that
-/// belongs in `ur5e_bringup/test/` (Phase 7).
+/// belongs in `integrated_bringup/test/` (Phase 7).
 
 #include <gtest/gtest.h>
 

@@ -1,11 +1,11 @@
 # Force-PI Grasp Controller — 튜닝 가이드
 
-본 문서는 `rtc::grasp::GraspController` (adaptive PI force controller) 의 내부 구조·FSM·설계 파라미터와 권장 튜닝 절차를 정리한다. `ur5e_bringup` 의 `demo_joint` / `demo_task` 컨트롤러가 `grasp_controller_type: "force_pi"` 로 동작할 때 활성화된다.
+본 문서는 `rtc::grasp::GraspController` (adaptive PI force controller) 의 내부 구조·FSM·설계 파라미터와 권장 튜닝 절차를 정리한다. `integrated_bringup` 의 `demo_joint` / `demo_task` 컨트롤러가 `grasp_controller_type: "force_pi"` 로 동작할 때 활성화된다.
 
 - 구현: [grasp_controller.hpp](../include/rtc_controllers/grasp/grasp_controller.hpp), [grasp_controller.cpp](../src/controllers/grasp/grasp_controller.cpp)
 - 타입/파라미터: [grasp_types.hpp](../include/rtc_controllers/grasp/grasp_types.hpp)
-- YAML: [demo_shared.yaml](../../ur5e_bringup/config/controllers/demo_shared.yaml) (`force_pi_grasp:` 블록)
-- 로더: [demo_shared_config.cpp](../../ur5e_bringup/src/support/demo_shared_config.cpp)
+- YAML: [demo_shared.yaml](../../integrated_bringup/config/controllers/demo_shared.yaml) (`force_pi_grasp:` 블록)
+- 로더: [demo_shared_config.cpp](../../integrated_bringup/src/support/demo_shared_config.cpp)
 - 테스트: [test_grasp_controller.cpp](../test/test_grasp_controller.cpp)
 
 ---
@@ -17,7 +17,7 @@
   - `q(s) = (1 − s) · q_open + s · q_close` 선형 보간
   - PI 출력은 관절 토크가 아니라 closing 진행도의 미분 `ds` → 위치 제어 하드웨어에서도 힘 제어 가능
 - **피드백**: fingertip force sensor 의 norm `f_raw[3]` → Bessel 4차 LPF → `f_measured`
-- **호스팅**: 500 Hz RT 루프에서 `Update(f_raw, dt)` 호출 ([demo_joint_controller.cpp:421](../../ur5e_bringup/src/controllers/joint/controller.cpp#L421), [demo_task_controller.cpp:664](../../ur5e_bringup/src/controllers/task/controller.cpp#L664))
+- **호스팅**: 500 Hz RT 루프에서 `Update(f_raw, dt)` 호출 ([demo_joint_controller.cpp:421](../../integrated_bringup/src/controllers/joint/controller.cpp#L421), [demo_task_controller.cpp:664](../../integrated_bringup/src/controllers/task/controller.cpp#L664))
 - **활성 범위**: `phase() != kIdle` 일 때만 hand trajectory 출력의 finger 관절을 덮어씀
 - **명령 인터페이스**: `CommandGrasp(target_force)` / `CommandRelease()` (cross-thread atomic flag)
 
@@ -130,7 +130,7 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 
 ## 4. 파라미터 레퍼런스
 
-기본값은 [grasp_types.hpp](../include/rtc_controllers/grasp/grasp_types.hpp) 와 [demo_shared.yaml](../../ur5e_bringup/config/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록 기준.
+기본값은 [grasp_types.hpp](../include/rtc_controllers/grasp/grasp_types.hpp) 와 [demo_shared.yaml](../../integrated_bringup/config/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록 기준.
 
 ### 4.1 PI 게인
 
@@ -278,7 +278,7 @@ Contact 전이가 thumb+index 2 손가락에 결정되므로:
 
 ## 7. 파라미터 변경 절차
 
-1. [demo_shared.yaml](../../ur5e_bringup/config/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록을 편집
+1. [demo_shared.yaml](../../integrated_bringup/config/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록을 편집
 2. 재빌드 필요 없음 — YAML 은 컨트롤러 init 시 로드
 3. 런타임 중 변경은 컨트롤러 재로드 (controller switch) 필요
 4. 테스트 실행:

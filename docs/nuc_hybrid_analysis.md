@@ -216,7 +216,7 @@ const CpuTopology& GetCpuTopology() noexcept {
 
 **v4 지시 (§Phase 2 예정 작업 8)**: "mujoco_sim.launch.py의 SIM_CORE 동적 결정"을 Phase 2로 연기.
 
-**분석 (memory project_core_allocation.md + ur5e_bringup/launch/mujoco_sim.launch.py:346)**:
+**분석 (memory project_core_allocation.md + integrated_bringup/launch/mujoco_sim.launch.py:346)**:
 - 현재 SIM_CORE는 14-core tier에서 Core 10을 하드코딩으로 pin.
 - NUC 13 i7-1360P에서는 Core 10 = E-core. MuJoCo sim은 RT 스레드가 아니므로 E-core 배치가 성능에는 문제없음.
 - 그러나 v4 §2.2 4P layout은 `aux=e[1]`로 E-core에 일반 스레드 배치 + `publish=e[0]`. Core 10/11은 아직 비어 있으므로 SIM_CORE=Core 10은 **우연히 충돌하지 않는다**.

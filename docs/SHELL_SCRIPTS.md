@@ -275,7 +275,7 @@ uname -v | grep PREEMPT_RT   # 재부팅 후 RT 커널 확인
 | 16코어 이상 | Core 4-8 | Core 9-11 (legacy layout — RT 2-3 below shield, MPC above) |
 
 **자동 호출 시점**:
-- 로봇 런치: `ur5e_bringup` launch 파일에서 자동 호출
+- 로봇 런치: `integrated_bringup` launch 파일에서 자동 호출
 - 시뮬 런치: `mujoco_sim.launch.py`에서 자동 호출
 - 빌드 전: `build.sh` / `install.sh`에서 자동 해제
 
@@ -550,7 +550,7 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 
 ### verify_rt_runtime.sh --- 제어기 RT 런타임 검증
 
-**목적**: 제어기 (실행 파일 = ROS 노드 이름 = `ur5e_rt_controller`, robot bringup이 소유)가 실행 중일 때, 각 스레드의 RT 설정이 `thread_config.hpp`에 정의된 대로 올바르게 적용되었는지 실시간 확인합니다. `check_rt_setup.sh`가 정적 시스템 설정을 검증하는 반면, 이 스크립트는 실행 중인 프로세스의 런타임 상태를 검증합니다.
+**목적**: 제어기 (실행 파일 = ROS 노드 이름 = `integrated_rt_controller`, robot bringup이 소유)가 실행 중일 때, 각 스레드의 RT 설정이 `thread_config.hpp`에 정의된 대로 올바르게 적용되었는지 실시간 확인합니다. `check_rt_setup.sh`가 정적 시스템 설정을 검증하는 반면, 이 스크립트는 실행 중인 프로세스의 런타임 상태를 검증합니다.
 
 **`check_rt_setup.sh`와의 차이점**:
 
@@ -559,7 +559,7 @@ nvidia-smi -q -d PERFORMANCE         # persistence mode 확인
 | 검증 시점 | 제어기 실행 **전** | 제어기 실행 **중** |
 | 대상 | 시스템 설정 (커널, GRUB, sysctl 등) | 프로세스/스레드 상태 |
 | sudo 필요 | 불필요 (read-only) | 불필요 (read-only) |
-| 제어기 필요 | 불필요 | **필수** (`ur5e_rt_controller` 또는 다른 robot bringup exec 실행 중) |
+| 제어기 필요 | 불필요 | **필수** (`integrated_rt_controller` 또는 다른 robot bringup exec 실행 중) |
 
 **인자**:
 

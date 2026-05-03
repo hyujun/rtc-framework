@@ -149,6 +149,6 @@ rtc_msgs, rtc_base (independent)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base
 robot_descriptions (data-only, no code deps)
-ur5e_bringup <-- rtc_controller_manager, udp_hand_driver, robot_descriptions,
+integrated_bringup <-- rtc_controller_manager, udp_hand_driver, robot_descriptions,
                  rtc_tsid, rtc_mpc
 ```

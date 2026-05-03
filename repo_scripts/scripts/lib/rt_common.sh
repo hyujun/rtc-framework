@@ -533,7 +533,7 @@ get_base_packages() {
 }
 
 get_robot_packages() {
-  echo "udp_hand_driver ur5e_bringup ur5e_bt_coordinator"
+  echo "udp_hand_driver integrated_bringup ur5e_bt_coordinator"
 }
 
 # ── MPC core layout helpers (Phase 5 + unified 10/12/14 rework) ──────────────

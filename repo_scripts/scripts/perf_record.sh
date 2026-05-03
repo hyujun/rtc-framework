@@ -13,7 +13,7 @@
 # Example (called from launch):
 #   perf_record.sh \
 #       /path/to/logging_data/260502_2330/perf/perf.data \
-#       'ur5e_rt_controller|mpc_main|mujoco_simulator_node'
+#       'integrated_rt_controller|mpc_main|mujoco_simulator_node'
 #
 # Permission model (matches cpu_shield.sh / ptrace_scope policy):
 #   * perf_event_paranoid <= 1 → run as user, no sudo

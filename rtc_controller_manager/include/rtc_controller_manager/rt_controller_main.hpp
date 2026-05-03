@@ -10,7 +10,7 @@ namespace rtc {
 //
 // `node_name` is required: rtc_controller_manager is robot-agnostic and does
 // not own a runtime ROS node identity. The robot-specific bringup executable
-// (e.g. ur5e_rt_controller) supplies a name that matches its own executable
+// (e.g. integrated_rt_controller) supplies a name that matches its own executable
 // so that exec / node / pgrep / log identifiers stay aligned.
 int RtControllerMain(int argc, char** argv, const std::string& node_name);
 

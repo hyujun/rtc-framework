@@ -7,7 +7,7 @@
 // *library symbols* only; they are intentionally NOT auto-registered into
 // ControllerRegistry.
 //
-// Downstream <robot>_bringup packages (e.g. ur5e_bringup) register the
+// Downstream <robot>_bringup packages (e.g. integrated_bringup) register the
 // controllers they expose via RTC_REGISTER_CONTROLLER, keeping the set of
 // runtime-selectable controllers minimal and robot-specific.
 //

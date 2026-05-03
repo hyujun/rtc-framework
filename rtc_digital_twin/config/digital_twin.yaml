@@ -7,7 +7,7 @@
 # ARCH-1: rtc_* stays robot-agnostic. This file ships robot-agnostic defaults
 # only — robot identity (URDF package/path, source topics, sensor topics,
 # fingertip names, TCP source) lives in <robot>_bringup yaml, e.g.
-# `ur5e_bringup/config/digital_twin_ur5e.yaml`. Pass it via the launch
+# `integrated_bringup/config/digital_twin_ur5e.yaml`. Pass it via the launch
 # `config_file:=...` argument or layer it on top of this default.
 
 /**:
@@ -38,7 +38,7 @@
     # source_1.topic: "/<hand>/digital_twin/joint_states"
     # source_1.joint_names: [""]
     #
-    # Concrete UR5e + 10-DOF hand example (see ur5e_bringup/config/
+    # Concrete UR5e + 10-DOF hand example (see integrated_bringup/config/
     # digital_twin_ur5e.yaml for the production version):
     # source_0.joint_names:
     #   - "shoulder_pan_joint"

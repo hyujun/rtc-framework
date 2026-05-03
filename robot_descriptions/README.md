@@ -239,7 +239,7 @@ robots/ur5e/meshes/assets/*.obj                 # MJCF 시각화용 (20 files)
 |--------|----------|
 | `rtc_mujoco_sim` | `mjcf/scene.xml` (기본 model_path) |
 | `rtc_controller_manager` + `rtc_controllers` | `urdf/ur5e.urdf` (Pinocchio 모델 빌드, FK/IK/Dynamics) |
-| `ur5e_bringup` | launch 파일에서 URDF 경로 설정 |
+| `integrated_bringup` | launch 파일에서 URDF 경로 설정 |
 
 ---
 
@@ -268,7 +268,7 @@ robot_descriptions  <-- 독립 (MJCF/URDF/메시 제공)
     |-- rtc_mujoco_sim         (MJCF scene.xml 참조, ament_index + package:// URI)
     |-- rtc_controller_manager (URDF ur5e.urdf 참조, Pinocchio 모델 빌드)
     |-- rtc_controllers        (URDF 경유 FK/IK/Dynamics 계산)
-    +-- ur5e_bringup           (launch 파일에서 URDF 경로 설정)
+    +-- integrated_bringup           (launch 파일에서 URDF 경로 설정)
 ```
 
 ---

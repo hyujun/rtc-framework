@@ -103,8 +103,8 @@
 | `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | `cm_timing_log.csv` 회귀 |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_timing_log.csv` 회귀 |
-| `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch ur5e_bringup sim.launch.py` smoke |
-| `ur5e_bringup/` demo FSM | demo_wbc FSM/integration/output + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
+| `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch integrated_bringup sim.launch.py` smoke |
+| `integrated_bringup/` demo FSM | demo_wbc FSM/integration/output + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
 | `udp_hand_driver/` | 단위 gtest + UDP loopback | `ros2 topic hz /hand/joint_states` |
 | BT 로직 | `ur5e_bt_coordinator` gtest (tree_validation, condition_nodes 등) | 실제 grasp 시나리오 smoke |
 | Launch / YAML | `ros2 launch ... --print` + 짧은 smoke | config 검증 |
@@ -243,7 +243,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 | `robot_descriptions` | URDF + MJCF + meshes (multi-robot data hub, `robots/<name>/` 단위) |
 | `udp_hand_driver` | UDP hand driver, ONNX F/T inference |
 | `ur5e_bt_coordinator` | BehaviorTree.CPP v4 coordinator |
-| `ur5e_bringup` | Launch files, demo controllers, config |
+| `integrated_bringup` | Launch files, demo controllers, config |
 
 자세한 모듈 구조 / dependency graph: [agent_docs/architecture.md](agent_docs/architecture.md)
 
@@ -259,8 +259,8 @@ source repo_scripts/scripts/setup_env.sh   # PWD=src/rtc-framework 에서
 ./build.sh full           # all packages
 ./build.sh -p rtc_base    # single package
 
-ros2 launch ur5e_bringup sim.launch.py
-ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10
+ros2 launch integrated_bringup sim.launch.py
+ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10
 
 colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
@@ -279,7 +279,7 @@ colcon test-result --verbose
 - **Variable naming**: paper notation — `J_b` (body Jacobian), `q_d` (desired joint), `K_d` (stiffness)
 - **RAII**, `noexcept` on RT, `[[nodiscard]]` on status returns
 - **Lifecycle**: 5 C++ nodes are `rclcpp_lifecycle::LifecycleNode`, empty constructor, `on_configure` (Tier 1) + `on_activate` (Tier 2)
-- **Logger naming** (3-tier, 상세: [agent_docs/conventions.md](agent_docs/conventions.md#L36)): node-owned = `<exec_name>` (예: `ur5e_rt_controller`) / library-level = `<full_package_name>` / controller-level = `<package>.<controller_key>` (예: `ur5e_bringup.demo_wbc_controller`). 점 `.` 1개만 허용.
+- **Logger naming** (3-tier, 상세: [agent_docs/conventions.md](agent_docs/conventions.md#L36)): node-owned = `<exec_name>` (예: `integrated_rt_controller`) / library-level = `<full_package_name>` / controller-level = `<package>.<controller_key>` (예: `integrated_bringup.demo_wbc_controller`). 점 `.` 1개만 허용.
 - **Commits**: Conventional Commits `type(scope): subject` (상세: [agent_docs/conventions.md](agent_docs/conventions.md#L64))
 
 ## 11. Post-Task Housekeeping

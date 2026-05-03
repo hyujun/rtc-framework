@@ -5,7 +5,7 @@
 /// @brief Generic, robot-agnostic cost container consumed by the OCP layer.
 ///
 /// `PhaseCostConfig` is a passive record; it never contains FSM logic.
-/// Concrete phase managers (e.g. `ur5e_bringup::GraspPhaseManager`) pick a
+/// Concrete phase managers (e.g. `integrated_bringup::GraspPhaseManager`) pick a
 /// pre-loaded config per phase and hand it to the OCP builder via
 /// `PhaseContext`. The container lives on the **OCP build / reconfigure
 /// path**, not the RT loop, so `Eigen::VectorXd` and `std::map` are

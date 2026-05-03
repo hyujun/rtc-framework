@@ -15,7 +15,7 @@
 #
 # Filtering tips:
 #   * Open the SVG in a browser, click "Search" (top right) and type
-#     `^rtc::|^ur5e_bringup::` to highlight workspace functions only.
+#     `^rtc::|^integrated_bringup::` to highlight workspace functions only.
 #   * Click any frame to zoom into its subtree.
 #   * In --by thread / --by cpu mode, click a top-row frame to drill into one
 #     thread or CPU core.
@@ -100,7 +100,7 @@ if [[ -z "$INPUT" ]]; then
   INPUT="$(ls -1dt "$WS"/logging_data/[0-9]*/perf/perf.data 2>/dev/null | head -1 || true)"
   if [[ -z "$INPUT" ]]; then
     echo "[flame] no perf.data found under $WS/logging_data/*/perf/" >&2
-    echo "[flame] capture first:  ros2 launch ur5e_bringup sim.launch.py enable_perf:=true" >&2
+    echo "[flame] capture first:  ros2 launch integrated_bringup sim.launch.py enable_perf:=true" >&2
     exit 1
   fi
   echo "[flame] using latest: $INPUT" >&2
@@ -132,7 +132,7 @@ case "$MODE" in
       echo "[flame] perf script | stackcollapse failed" >&2
       exit 1
     fi
-    SUBTITLE="Search workspace symbols: ^rtc::|^ur5e_bringup::"
+    SUBTITLE="Search workspace symbols: ^rtc::|^integrated_bringup::"
     ;;
   thread)
     # --tid emits "comm-pid/tid" as the bottom frame; this is what we want as

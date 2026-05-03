@@ -554,7 +554,7 @@ auto state = traj.compute(time);
 
 ## 컨트롤러 등록
 
-`rtc_controllers`의 4개 컨트롤러(`PController`, `JointPDController`, `ClikController`, `OperationalSpaceController`)는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry`에 **자동 등록되지 않습니다**. 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (예: `ur5e_bringup`은 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
+`rtc_controllers`의 4개 컨트롤러(`PController`, `JointPDController`, `ClikController`, `OperationalSpaceController`)는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry`에 **자동 등록되지 않습니다**. 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (예: `integrated_bringup`은 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
 
 필요 시 downstream 패키지에서 다음과 같이 직접 등록할 수 있습니다.
 
@@ -658,7 +658,7 @@ rtc_controller_interface  -- 추상 인터페이스 + 레지스트리
 rtc_controllers  -- 4개 내장 컨트롤러 구현
     ^
     |-- rtc_controller_manager  (컨트롤러 인스턴스화 + Compute 호출)
-    |-- ur5e_bringup            (launch에서 컨트롤러 선택)
+    |-- integrated_bringup            (launch에서 컨트롤러 선택)
 ```
 
 ---

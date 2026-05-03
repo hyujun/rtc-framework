@@ -6,7 +6,7 @@
 ///
 /// `PhaseManagerBase` is the boundary between robot-agnostic rtc_mpc and
 /// robot-specific logic. Concrete managers (e.g. `GraspPhaseManager` in
-/// `ur5e_bringup`) implement the FSM; rtc_mpc only knows that *some* phase
+/// `integrated_bringup`) implement the FSM; rtc_mpc only knows that *some* phase
 /// exists and that it produces a @ref PhaseContext per tick.
 ///
 /// Call-site contract (see Phase 6 `mpc_thread.cpp`):

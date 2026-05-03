@@ -4,7 +4,7 @@
 /// @file contact_rich_mpc.hpp
 /// @brief Concrete `MPCHandlerBase` wrapping a `ContactRichOCP`. Exposes
 ///        the same grasp-quality provider seam as the underlying OCP so
-///        `ur5e_bringup` (Phase 7) can inject a concrete provider without
+///        `integrated_bringup` (Phase 7) can inject a concrete provider without
 ///        reaching through to the OCP.
 
 #include "rtc_mpc/handler/mpc_handler_base.hpp"

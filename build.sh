@@ -53,7 +53,7 @@ show_help() {
   echo "                      rtc_urdf_bridge, rtc_tsid, rtc_controllers, rtc_controller_manager,"
   echo "                      rtc_inference, repo_scripts, rtc_tools, robot_descriptions,"
   echo "                      shape_estimation_msgs, shape_estimation,"
-  echo "                      udp_hand_driver, ur5e_bringup,"
+  echo "                      udp_hand_driver, integrated_bringup,"
   echo "                      ur5e_bt_coordinator"
   echo ""
   echo "  sim     Build for simulation (MuJoCo required, hand uses fake response)"
@@ -293,7 +293,7 @@ if [[ -f "$CHECK_SCRIPT" ]]; then
       if [[ "$MEMLOCK" != "unlimited" ]]; then
         echo ""
         warn "Your current memlock limit is $MEMLOCK (not unlimited)."
-        warn "Running ur5e_rt_controller may fail with RMW load errors due to mlockall()."
+        warn "Running integrated_rt_controller may fail with RMW load errors due to mlockall()."
         warn "Run: ./install.sh robot  or  ulimit -l unlimited"
         echo ""
       fi
@@ -305,7 +305,7 @@ else
   if [[ "$MEMLOCK" != "unlimited" ]]; then
     echo ""
     warn "Your current memlock limit is $MEMLOCK (not unlimited)."
-    warn "Running ur5e_rt_controller may fail with RMW load errors due to mlockall()."
+    warn "Running integrated_rt_controller may fail with RMW load errors due to mlockall()."
     warn "  ulimit -l unlimited"
     echo ""
   fi
@@ -317,7 +317,7 @@ if [[ "$BUILD_TYPE" == "Debug" ]]; then
   echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
   echo "  Debug build complete — ready for GDB debugging in VS Code."
   echo ""
-  echo "  Launch debugger : F5 → 'C++: Launch ur5e_rt_controller (Debug)'"
+  echo "  Launch debugger : F5 → 'C++: Launch integrated_rt_controller (Debug)'"
   echo "  Attach debugger : F5 → 'C++: Attach to Node (Pick Process)'"
   echo ""
   echo "  If attach fails with 'Operation not permitted', run:"

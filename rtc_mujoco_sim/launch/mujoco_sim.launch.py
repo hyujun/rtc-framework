@@ -8,8 +8,8 @@ block when a robot bringup package needs the simulator without the rest of
 its stack.
 
 Robot-specific demos (UR5e + RT controller + hand bridge) live in
-`ur5e_bringup/launch/sim.launch.py` and load `mujoco_simulator.yaml` from
-`ur5e_bringup/config/`.
+`integrated_bringup/launch/sim.launch.py` and load `mujoco_simulator.yaml` from
+`integrated_bringup/config/`.
 
 Usage:
   # Smoke test with an external MJCF (no robot params loaded)

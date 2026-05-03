@@ -406,7 +406,7 @@ RT 컨트롤러와 시뮬레이터(또는 실제 로봇)가 먼저 실행되어 
 
 ```bash
 # 사전 실행: MuJoCo 시뮬레이션
-ros2 launch ur5e_bringup sim.launch.py
+ros2 launch integrated_bringup sim.launch.py
 ```
 
 ### Launch 파일 (권장)

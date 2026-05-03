@@ -1,7 +1,7 @@
 #!/bin/bash
 # verify_rt_runtime.sh — 제어기 구동 중 RT 설정 런타임 검증 스크립트
 #
-# Robot bringup exec(예: ur5e_rt_controller)가 실행 중일 때, 각 스레드의 RT 설정이
+# Robot bringup exec(예: integrated_rt_controller)가 실행 중일 때, 각 스레드의 RT 설정이
 # thread_config.hpp에 정의된 대로 올바르게 적용되었는지 실시간 확인한다.
 # check_rt_setup.sh가 정적 시스템 설정을 검증하는 반면,
 # 이 스크립트는 실행 중인 프로세스의 런타임 상태를 검증한다.
@@ -15,7 +15,7 @@
 #   ./verify_rt_runtime.sh --help
 #
 # 검증 카테고리 (7개):
-#   1. Process Discovery    — robot bringup exec(ur5e_rt_controller 등) 감지
+#   1. Process Discovery    — robot bringup exec(integrated_rt_controller 등) 감지
 #   2. Scheduling Policy    — SCHED_FIFO/OTHER 정책 및 우선순위 검증
 #   3. CPU Affinity         — 스레드별 코어 할당 일치 여부
 #   4. Memory Locking       — mlockall 적용 및 page fault 추적
@@ -310,7 +310,7 @@ check_process_discovery() {
   _category_start "process_discovery"
 
   # Robot bringup의 RT controller exec 찾기. 현재 컨벤션: <robot>_rt_controller
-  # (예: ur5e_rt_controller). pgrep -f는 전체 커맨드라인에 매칭.
+  # (예: integrated_rt_controller). pgrep -f는 전체 커맨드라인에 매칭.
   # ROS2 실행 시 --ros-args 등이 붙으므로 공백 또는 문자열 끝( |$)으로
   # 실행파일명의 끝을 매칭.
   CONTROLLER_PID=$(pgrep -f '(^|/)[a-zA-Z0-9_]+_rt_controller( |$)' 2>/dev/null | head -1 || true)

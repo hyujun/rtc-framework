@@ -729,8 +729,8 @@ int RtControllerMain(int argc, char** argv) {
 ### 1. 스레드 설정 확인
 
 ```bash
-# ur5e_rt_controller 프로세스 찾기
-PID=$(pgrep -f ur5e_rt_controller)
+# integrated_rt_controller 프로세스 찾기
+PID=$(pgrep -f integrated_rt_controller)
 
 # 스레드 목록 + 스케줄러 정책 + CPU 코어
 ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
@@ -892,7 +892,7 @@ done
 # CycloneDDS 0.11+ (Jazzy): <Internal><Threads> XML은 더 이상 지원되지 않음.
 # 대신 taskset으로 DDS 스레드를 비-RT 코어에 고정 (robot.launch.py에서 자동 처리).
 # 수동 확인:
-PID=$(pgrep -nf "ur5e_rt_controller")
+PID=$(pgrep -nf "integrated_rt_controller")
 for TID in $(ls /proc/$PID/task/); do
   COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null)
   POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo "OTHER")

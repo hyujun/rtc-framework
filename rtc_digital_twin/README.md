@@ -43,7 +43,7 @@ rtc_digital_twin/
 │   │                                  ※ ARCH-1: robot-specific 값(URDF, source
 │   │                                  topics, fingertip names)은 robot bringup
 │   │                                  yaml에서 layered overlay로 주입 — 예:
-│   │                                  ur5e_bringup/config/digital_twin_ur5e.yaml
+│   │                                  integrated_bringup/config/digital_twin_ur5e.yaml
 │   └── digital_twin.rviz         <- RViz2 디스플레이 설정
 └── test/
     └── test_urdf_parser.py       <- URDF 분류/검증 단위 테스트
@@ -199,11 +199,11 @@ YAML의 `joint_gui.enabled: true` 또는 launch arg `use_joint_gui:=true` 시 �
 
 > **ARCH-1**: 이 패키지의 default yaml 은 robot-agnostic 값만 보유합니다 (display_rate, sensor_viz/tcp_viz scale 등). robot identity 부분(URDF 패키지/경로, 소스 토픽, 센서 토픽, 핑거팁 이름, TCP 소스)은 `<robot>_bringup/config/digital_twin_<robot>.yaml` 에 두고 launch 의 `config_file:=` 인자로 layered overlay 합니다.
 >
-> UR5e+hand 풀 셋업 예시: `ur5e_bringup/config/digital_twin_ur5e.yaml`
+> UR5e+hand 풀 셋업 예시: `integrated_bringup/config/digital_twin_ur5e.yaml`
 >
 > ```bash
 > ros2 launch rtc_digital_twin digital_twin.launch.py \
->     config_file:=$(ros2 pkg prefix --share ur5e_bringup)/config/digital_twin_ur5e.yaml
+>     config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/digital_twin_ur5e.yaml
 > ```
 
 기본 yaml 의 주요 키 (robot bringup yaml 에서 override):

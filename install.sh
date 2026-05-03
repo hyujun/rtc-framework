@@ -449,7 +449,7 @@ See repo_scripts/README.md for the reason robotpkg fallback was removed."
 
 # ── ProxSuite (TSID QP solver) ─────────────────────────────────────────────────
 # ProxSuite: required by rtc_tsid (WQP/HQP formulations used by DemoWbcController).
-# Hard dependency of ur5e_bringup via rtc_tsid — must be installed for all modes.
+# Hard dependency of integrated_bringup via rtc_tsid — must be installed for all modes.
 install_proxsuite() {
   info "Installing ProxSuite (${ROS_PKG_PREFIX})..."
   if sudo apt-get install -y ${ROS_PKG_PREFIX}-proxsuite >/dev/null 2>&1; then
@@ -1090,7 +1090,7 @@ print_summary() {
       echo "  # Headless (no viewer window)"
       echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false"
       echo ""
-      echo "  # Hand simulation is built-in (fake_response in ur5e_bringup/config/mujoco_simulator.yaml)"
+      echo "  # Hand simulation is built-in (fake_response in integrated_bringup/config/mujoco_simulator.yaml)"
       echo "  # No need to run udp_hand_driver separately"
       echo ""
       echo "  # Send test commands"
@@ -1114,10 +1114,10 @@ print_summary() {
       echo ""
       echo "  # Full system launch (replace IP as needed)"
       echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
-      echo "  ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10"
+      echo "  ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10"
       echo ""
       echo "  # Fake hardware (no physical robot — for testing)"
-      echo "  ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true"
+      echo "  ros2 launch integrated_bringup robot.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP nodes only"
       echo "  ros2 launch udp_hand_driver udp_hand.launch.py"
@@ -1138,13 +1138,13 @@ print_summary() {
       echo ""
       echo "  # Real robot"
       echo "  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
-      echo "  ros2 launch ur5e_bringup robot.launch.py robot_ip:=192.168.1.10"
+      echo "  ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10"
       echo ""
       echo "  # MuJoCo simulation"
-      echo "  ros2 launch ur5e_bringup sim.launch.py"
+      echo "  ros2 launch integrated_bringup sim.launch.py"
       echo ""
       echo "  # Fake hardware (no robot, no simulation)"
-      echo "  ros2 launch ur5e_bringup robot.launch.py use_fake_hardware:=true"
+      echo "  ros2 launch integrated_bringup robot.launch.py use_fake_hardware:=true"
       echo ""
       echo "  # Hand UDP only"
       echo "  ros2 launch udp_hand_driver udp_hand.launch.py"
@@ -1166,7 +1166,7 @@ print_summary() {
   echo "  ./build.sh -d                 # or Ctrl+Shift+B in VS Code"
   echo ""
   echo "  # Launch debugger (F5 in VS Code):"
-  echo "  #   C++: Launch ur5e_rt_controller (Debug)"
+  echo "  #   C++: Launch integrated_rt_controller (Debug)"
   echo "  #   C++: Launch mujoco_simulator_node (Debug)"
   echo ""
   echo "  # Attach to running node:"

@@ -209,7 +209,7 @@ ros2 topic pub --once /hand/calibration/command rtc_msgs/msg/CalibrationCommand 
 ros2 topic echo /hand/calibration/status
 ```
 
-또는 `ur5e_bringup/scripts/demo_controller_gui.py` 의 **Control 탭 → Sensor
+또는 `integrated_bringup/scripts/demo_controller_gui.py` 의 **Control 탭 → Sensor
 Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리거할 수 있습니다.
 
 **새 센서 추가 시** (확장성):
@@ -422,7 +422,7 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 
 | 영역 | 변경 내용 |
 |------|----------|
-| **Hand 상수 흡수** | `ur5e_description/ur5e_constants.hpp` 폐기에 따라 hand 전용 상수와 타입을 본 패키지로 흡수: `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `include/udp_hand_driver/udp_hand_constants.hpp`, `UdpHandState` → `include/udp_hand_driver/udp_hand_state.hpp`. 이에 따라 `package.xml`/`CMakeLists.txt`에서 `ur5e_description` 의존을 제거 (이 패키지는 더 이상 description 헤더가 필요 없음). 다운스트림(`ur5e_bringup`)은 `udp_hand_driver/udp_hand_constants.hpp`를 include. |
+| **Hand 상수 흡수** | `ur5e_description/ur5e_constants.hpp` 폐기에 따라 hand 전용 상수와 타입을 본 패키지로 흡수: `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `include/udp_hand_driver/udp_hand_constants.hpp`, `UdpHandState` → `include/udp_hand_driver/udp_hand_state.hpp`. 이에 따라 `package.xml`/`CMakeLists.txt`에서 `ur5e_description` 의존을 제거 (이 패키지는 더 이상 description 헤더가 필요 없음). 다운스트림(`integrated_bringup`)은 `udp_hand_driver/udp_hand_constants.hpp`를 include. |
 
 ---
 

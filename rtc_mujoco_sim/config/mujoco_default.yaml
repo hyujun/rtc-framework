@@ -3,7 +3,7 @@
 # Loaded by rtc_mujoco_sim/launch/mujoco_sim.launch.py for standalone smoke
 # tests. Robot-specific overrides (joint names, command/state topics, model
 # path, servo gains) live in robot bringup packages — see e.g.
-# ur5e_bringup/config/mujoco_simulator.yaml.
+# integrated_bringup/config/mujoco_simulator.yaml.
 #
 # Required externally (no agnostic default):
 #   model_path                       ← path to MJCF scene

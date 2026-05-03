@@ -2,7 +2,7 @@
 // ────────────────────────────────────────────────
 //
 // Library-only API. rtc_controller_manager is robot-agnostic and exports no
-// executable. Robot-specific bringup packages (e.g. ur5e_bringup) supply
+// executable. Robot-specific bringup packages (e.g. integrated_bringup) supply
 // their own main() that calls rtc::RtControllerMain(argc, argv, node_name).
 // See agent_docs/design-principles.md for the agnostic-vs-specific rule.
 //

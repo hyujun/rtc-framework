@@ -12,7 +12,7 @@
 std_msgs/Header header
 
 # WbcPhase enum (8-state FSM, must match WbcPhase in
-# ur5e_bringup/include/ur5e_bringup/controllers/demo_wbc_controller.hpp)
+# integrated_bringup/include/integrated_bringup/controllers/demo_wbc_controller.hpp)
 uint8 PHASE_IDLE      = 0
 uint8 PHASE_APPROACH  = 1
 uint8 PHASE_PRE_GRASP = 2

@@ -102,7 +102,7 @@ Stage B merge 전 다음 벤치마크를 채워 Stage B PR에 첨부한다. 각 
 #### 수집 절차
 
 ```bash
-ros2 launch ur5e_bringup sim.launch.py \
+ros2 launch integrated_bringup sim.launch.py \
     initial_controller:=demo_wbc_controller enable_mpc:=true mpc_engine:=handler
 
 # 워크로드별 5분씩:

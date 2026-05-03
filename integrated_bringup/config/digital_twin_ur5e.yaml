@@ -1,0 +1,34 @@
+# digital_twin_ur5e.yaml — UR5e + 10-DOF hand digital-twin configuration
+#
+# Layered on top of `rtc_digital_twin/config/digital_twin.yaml`. Production
+# bringups should pass this via `config_file:=` to digital_twin.launch.py:
+#
+#   ros2 launch rtc_digital_twin digital_twin.launch.py \
+#       config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/digital_twin_ur5e.yaml
+#
+# Robot identity (URDF, joint topics, sensor topics, fingertip names) lives
+# here per ARCH-1; rtc_digital_twin stays robot-agnostic.
+
+/**:
+  ros__parameters:
+    # ── Robot description ──────────────────────────────────────────────
+    robot_description_package: "robot_descriptions"
+    robot_description_path: "robots/ur5e_assm_v1/urdf/ur5e_with_hand.urdf.xacro"
+
+    # ── Joint state sources (UR5e arm + 10-DOF hand) ──────────────────
+    num_sources: 2
+
+    source_0.topic: "/ur5e/digital_twin/joint_states"
+    source_0.joint_names: [""]        # empty/"" = accept all joints from topic
+
+    source_1.topic: "/hand/digital_twin/joint_states"
+    source_1.joint_names: [""]
+
+    # ── Sensor visualization (10-DOF hand fingertip sensors) ──────────
+    sensor_viz.sensor_topic: "/hand/sensor_states/monitor"
+    sensor_viz.fingertip_names: ["thumb", "index", "middle", "ring"]
+
+    # ── TCP visualization ─────────────────────────────────────────────
+    # Relative source — digital_twin auto-prefixes with /<active_controller_name>/
+    # on every /rtc_cm/active_controller_name change.
+    tcp_viz.source_topic: "ur5e/gui_position"

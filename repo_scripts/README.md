@@ -416,7 +416,7 @@ RT 컨트롤러 실행 중 스레드 상태를 검증합니다.
 
 | # | 카테고리 | 검증 내용 |
 |---|---------|----------|
-| 1 | 프로세스 탐색 | robot bringup exec (예: `ur5e_rt_controller`) PID, 스레드 이름 매칭 |
+| 1 | 프로세스 탐색 | robot bringup exec (예: `integrated_rt_controller`) PID, 스레드 이름 매칭 |
 | 2 | 스케줄링 정책 | SCHED_FIFO/OTHER + 우선순위 (`chrt -p`) |
 | 3 | CPU 어피니티 | 예상 코어에 고정 (`taskset -p`) |
 | 4 | 메모리 잠금 | `mlockall()` 적용 (VmLck > 0) |
@@ -541,12 +541,12 @@ sudo ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/uninstall_system_de
 
 [로봇 실행]
   sudo cpu_shield.sh on --robot           # Tier 1+2 격리
-  ros2 launch ur5e_bringup ur_control.launch.py
+  ros2 launch integrated_bringup ur_control.launch.py
   ./verify_rt_runtime.sh --watch 3        # 런타임 모니터링
 
 [시뮬레이션 실행]
   sudo cpu_shield.sh on --sim             # Tier 1만 격리
-  ros2 launch ur5e_bringup mujoco_sim.launch.py
+  ros2 launch integrated_bringup mujoco_sim.launch.py
 
 [종료]
   sudo cpu_shield.sh off                  # 격리 해제
@@ -586,7 +586,7 @@ source install/setup.bash
 repo_scripts  <- 독립 (ament_cmake만 의존)
     ^
     |-- build.sh / install.sh  (rt_common.sh 공유 함수 사용)
-    |-- ur5e_bringup           (launch 파일에서 cpu_shield.sh 호출)
+    |-- integrated_bringup           (launch 파일에서 cpu_shield.sh 호출)
     '-- 빌드 시스템            (build.sh에서 check_rt_setup.sh 호출)
 ```
 

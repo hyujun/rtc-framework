@@ -56,7 +56,7 @@ class ControllerRegistry {
 //   RTC_REGISTER_CONTROLLER(
 //     demo_joint_controller,          // config_key (unquoted)
 //     "indirect/",                    // config_subdir
-//     "ur5e_bringup",                // ament package name
+//     "integrated_bringup",                // ament package name
 //     std::make_unique<MyCtrl>(urdf)  // factory expression (urdf is in scope)
 //   )
 //

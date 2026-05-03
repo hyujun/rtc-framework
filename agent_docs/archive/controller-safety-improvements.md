@@ -4,7 +4,7 @@
 
 ## Context
 
-Deep analysis of `rtc_controller_interface`, `rtc_controller_manager`, `rtc_controllers`, `ur5e_bringup` identified thread safety, RT safety, and code quality issues across the controller stack. Work is tracked in phases.
+Deep analysis of `rtc_controller_interface`, `rtc_controller_manager`, `rtc_controllers`, `integrated_bringup` identified thread safety, RT safety, and code quality issues across the controller stack. Work is tracked in phases.
 
 ## Completed (commit 3800403)
 
@@ -25,7 +25,7 @@ Prevent mid-tick branch inconsistency when an aux-thread gains writer runs concu
 ### Phase 2 — RT Principle Fixes
 - **R-1:** `InitializeHoldPosition()` changed from `std::lock_guard` to `std::try_to_lock` in JointPD, CLIK, OSC
 - **R-2:** `TriggerGlobalEstop()` — `estop_reason_` changed to `std::array<char, 128>`, logging deferred via `estop_log_pending_` atomic to `DrainLog()`
-- **R-4:** `trajectory_speed` validation — `std::max(1e-6, val)` at 19 sites (rtc_controllers: 6, ur5e_bringup: 13)
+- **R-4:** `trajectory_speed` validation — `std::max(1e-6, val)` at 19 sites (rtc_controllers: 6, integrated_bringup: 13)
 
 ## Remaining Work
 
@@ -49,14 +49,14 @@ Per-controller snapshot site:
 
 | ID | Task | Package | Status |
 |---|---|---|---|
-| Q-1 | `kSafePosition` from YAML | ur5e_bringup ×3 | **Done** — DemoJoint/DemoTask 마이그레이션 완료. WBC 패턴 (`estop.arm_safe_position` 필수 키) 동일 적용. `safe_position_` 멤버 + LoadConfig 검증 |
-| Q-2 | `kFingerJointMap`/`kHandIdx*` from YAML | ur5e_bringup | **Done** — `DemoSharedConfig::hand_finger_joint_map` + `hand_idx_*` 추가. demo_shared.yaml 에 4 키 노출. 29 use sites 마이그레이션 |
+| Q-1 | `kSafePosition` from YAML | integrated_bringup ×3 | **Done** — DemoJoint/DemoTask 마이그레이션 완료. WBC 패턴 (`estop.arm_safe_position` 필수 키) 동일 적용. `safe_position_` 멤버 + LoadConfig 검증 |
+| Q-2 | `kFingerJointMap`/`kHandIdx*` from YAML | integrated_bringup | **Done** — `DemoSharedConfig::hand_finger_joint_map` + `hand_idx_*` 추가. demo_shared.yaml 에 4 키 노출. 29 use sites 마이그레이션 |
 | Q-3 | Velocity clamp utility | rtc_controllers/rtc_base | **Done** — `rtc_base/utils/clamp_commands.hpp::ClampSymmetric/ClampRange` 추출. PController/JointPD/Demo×3 리팩터 |
 | Q-4 | Device passthrough utility | rtc_base | **Done** — `rtc_base/utils/device_passthrough.hpp::PassthroughSecondaryDevices` 추출. 4 controllers (P/JointPD/CLIK/OSC) 리팩터 |
 | ~~Q-5~~ | ~~`GetCurrentGains()` heap removal~~ | (resolved) | **Not applicable** — `GetCurrentGains` 가상 메서드 자체가 2026-04-26 게인 → ROS 2 parameter 마이그레이션에서 제거됨 (rtc_controller_interface). |
 | Q-6 | Registry duplicate check | rtc_controller_interface | **Done** — `ControllerRegistry::Register()` 가 duplicate `config_key` 시 RCLCPP_WARN. `RegisterDuplicateShadowsAndAppends` gtest 추가 |
-| Q-7 | **E-STOP ramp** | ur5e_bringup | **Done (2026-04-26)** — `DemoWbcController::ComputeEstop` now follows the Joint/Task ramp pattern: `out0.commands[i] = dev0.positions[i] + clamp(safe-cur, ±device_max_velocity_[0][i]) * dt`. Eliminates instant-jump hardware risk on real UR5e |
-| Q-8 | **`kContactStopReleaseEps` → YAML** | ur5e_bringup | **Done (2026-04-26)** — Joint mirrors Task: new `Gains::contact_stop_release_eps` (default 0.005), required `fsm.contact_stop_release_eps` key in `demo_joint_controller.yaml` (range-checked [0, 0.1]), use sites read from per-tick gains snapshot. `kContactStopReleaseEps` constexpr removed |
+| Q-7 | **E-STOP ramp** | integrated_bringup | **Done (2026-04-26)** — `DemoWbcController::ComputeEstop` now follows the Joint/Task ramp pattern: `out0.commands[i] = dev0.positions[i] + clamp(safe-cur, ±device_max_velocity_[0][i]) * dt`. Eliminates instant-jump hardware risk on real UR5e |
+| Q-8 | **`kContactStopReleaseEps` → YAML** | integrated_bringup | **Done (2026-04-26)** — Joint mirrors Task: new `Gains::contact_stop_release_eps` (default 0.005), required `fsm.contact_stop_release_eps` key in `demo_joint_controller.yaml` (range-checked [0, 0.1]), use sites read from per-tick gains snapshot. `kContactStopReleaseEps` constexpr removed |
 
 ### Phase 4 — Long-term (재평가 완료 2026-04-26)
 
@@ -81,5 +81,5 @@ These severity assessments were refined during planning:
 | H-1 (InitializeHoldPosition lock) = High | **Medium** | Called once per lifecycle, contention window ~µs |
 | H-2/H-3 (E-STOP/init RCLCPP) = High | **Low** | One-shot paths, system dying/starting anyway |
 | GainsDoubleBuffer template | **Use existing SeqLock** | Avoid new abstraction when codebase already has SeqLock |
-| kSafePosition = "design rule violation" | **Code duplication** | ur5e_bringup is robot-specific package, hardcoding allowed |
+| kSafePosition = "design rule violation" | **Code duplication** | integrated_bringup is robot-specific package, hardcoding allowed |
 | trajectory_speed = 0 "crash" | **Hang** | IEEE 754: 1/0 = INF, not crash. Fixed anyway |

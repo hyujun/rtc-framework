@@ -55,7 +55,7 @@ ignore = [
 known-first-party = [
   "rtc_tools",
   "rtc_digital_twin",
-  "ur5e_bringup",
+  "integrated_bringup",
   "ur5e_description",
   "shape_estimation",
 ]

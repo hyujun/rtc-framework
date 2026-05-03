@@ -72,8 +72,8 @@ if [[ "$fail" -eq 0 ]]; then
 fi
 
 echo ""
-echo "=== 대표 바이너리 — ur5e_rt_controller ==="
-rt_bin="${WS}/install/ur5e_bringup/lib/ur5e_bringup/ur5e_rt_controller"
+echo "=== 대표 바이너리 — integrated_rt_controller ==="
+rt_bin="${WS}/install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller"
 if [[ -f "$rt_bin" ]]; then
   ldd "$rt_bin" 2>/dev/null | grep -E 'aligator|fmt|mimalloc|pinocchio|hpp-fcl|proxsuite|mujoco' | sed 's/^/  /'
 else

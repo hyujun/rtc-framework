@@ -16,7 +16,7 @@ rtc_tools/
 │   │   └── (empty)                       ← controller_gui.py removed in
 │   │                                       Phase F-2 (2026-04-26); the
 │   │                                       supported demo GUI lives under
-│   │                                       ur5e_bringup/scripts/
+│   │                                       integrated_bringup/scripts/
 │   │                                       demo_controller_gui.py
 │   ├── monitoring/
 │   │   └── __init__.py
@@ -61,7 +61,7 @@ rtc_tools/
 > core controllers (P / JointPD / CLIK / OSC) which never exposed a
 > runtime-tunable gain channel. The supported demo GUI for the
 > three demo controllers (DemoJoint / DemoTask / DemoWbc) lives at
-> [ur5e_bringup/scripts/demo_controller_gui.py](../ur5e_bringup/scripts/demo_controller_gui.py).
+> [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
 
 ### `plot_rtc_log.py` — 로그 시각화 (v5, 4-카테고리)
 

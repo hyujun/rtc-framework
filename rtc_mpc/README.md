@@ -44,7 +44,7 @@ rtc_mpc ← rtc_base (SeqLock, threading), Eigen3, yaml-cpp,
 ```
 
 `rtc_mpc` does **not** depend on `rtc_tsid`. Downstream controllers
-(e.g. `ur5e_bringup::DemoWbcController`) inject MPC-generated references
+(e.g. `integrated_bringup::DemoWbcController`) inject MPC-generated references
 into TSID tasks themselves.
 
 ### CMake workarounds (dual-install conflicts on dev machine)
@@ -60,7 +60,7 @@ package linking `rtc_mpc` inherits the workarounds via
 - **Robot-agnostic**: no fixed DoF, no robot names, no hardcoded frame
   strings. All topology flows from `pinocchio::Model` + YAML config.
   Panda is used as a *generic* N-DoF test fixture only; any UR5e-specific
-  integration lives in `ur5e_bringup`.
+  integration lives in `integrated_bringup`.
 - **Trivially copyable RT data**: `MPCSolution` and `MPCStateSnapshot`
   travel through `SeqLock` / `TripleBuffer`, so no dynamic members. OCP
   build-path types (`ContactPlan`, etc.) may use `std::vector`.
@@ -106,7 +106,7 @@ behind.
 | 4 | `ContactRichOCP` (contact-force cost + smooth conic friction cone) + `GraspQualityResidualProvider` seam + `test_utils/SeedGravityCompensation` | ✅ |
 | 5 | `MPCHandlerBase` + `LightContactMPC` + `ContactRichMPC` + `MPCFactory` + horizon-shift warm-start (Aligator `cycleAppend`) | ✅ |
 | 6 | `HandlerMPCThread` + `MockPhaseManager` (test-only) + alloc tracer (Phase 5 Exit #3 closed for LightContact; ContactRich informational) | ✅ |
-| 7 | ur5e_bringup `GraspPhaseManager` + MPC YAML wiring + 16-DoF MuJoCo E2E | ✅ |
+| 7 | integrated_bringup `GraspPhaseManager` + MPC YAML wiring + 16-DoF MuJoCo E2E | ✅ |
 
 Phase 0–7 closed; production default since `5118f67` (`engine: handler` in
 `demo_wbc`). For phase-by-phase rationale, spike notes, and risk closure

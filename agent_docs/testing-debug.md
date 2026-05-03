@@ -14,7 +14,7 @@
 | `rtc_controller_manager/` | RT loop timing (`/system/estop_status`) | (MPC CSV는 `<session>/controllers/<config_key>/...` 경로로 컨트롤러가 자체 기록) |
 | `rtc_tsid/` | QP/task/constraint gtest | TSID performance tests |
 | `rtc_mpc/` | gtest (types, TripleBuffer, Riccati, SolutionManager) | `mpc_timing_log.csv` p50/p99/max 회귀 |
-| `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch ur5e_bringup sim.launch.py` smoke |
+| `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O) | `ros2 launch integrated_bringup sim.launch.py` smoke |
 | `rtc_urdf_bridge/` | gtest (URDF/model parsing, xacro, chain extractor) | 실제 URDF 파싱 smoke |
 | `rtc_inference/` | ONNX engine unit test | 실제 모델 로드 smoke |
 | `rtc_communication/` | UDP loopback + Transceiver lifecycle/decode/callback | 실제 HW UDP 테스트 (선택) |
@@ -22,7 +22,7 @@
 | `rtc_tools/` (pytest) | pytest | GUI/plot 수동 smoke |
 | `repo_scripts/` | `test_rt_common` + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape_estimation/snapshot` topic echo |
-| `ur5e_bringup/` demo FSM | demo_wbc FSM/integration/output + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
+| `integrated_bringup/` demo FSM | demo_wbc FSM/integration/output + grasp_phase_manager + virtual_tcp | BT coordinator 통합 |
 | `udp_hand_driver/` | 단위 gtest (hand_packets, codec, FT, failure detector) + UDP loopback | `ros2 topic hz /hand/joint_states` |
 | `ur5e_bt_coordinator/` | BT gtest (tree_validation, condition_nodes, hand_nodes 등) | 실제 grasp 시나리오 smoke |
 | Launch / YAML | `ros2 launch ... --print` + 짧은 smoke | config 로드 검증 |
@@ -53,7 +53,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `udp_hand_driver` | 179 C++ (hand_packets 46, hand_controller 33, hand_udp_codec 24, fingertip_ft 19, hand_udp_transport 18, hand_timing_profiler 15, hand_sensor_processor 13, hand_failure_detector 11) | GTest |
 | `ur5e_bt_coordinator` | 157 C++ (condition_nodes 21, bt_utils 19, bt_types 16, hand_nodes 15, compute_offset_pose 12, shape_nodes 11, tree_validation 10, set_gains 9, set_pose_z 8, switch_controller 7, grasp_control 7, compute_sweep_trajectory 6, move_to_joints 6, wait_duration 5, move_to_pose 5) | GTest |
 | `rtc_mpc` | 136 C++ (types, TripleBuffer, TrajectoryInterpolator, Riccati, SolutionManager, thread skeleton, RobotModelHandler, PhaseCostConfig) | GTest |
-| `ur5e_bringup` | 92 C++ (demo_wbc_controller 44, demo_shared_config 16, grasp_phase_manager 13, virtual_tcp 10, demo_wbc_mpc_integration 6, grasp_pipeline 3) | GTest |
+| `integrated_bringup` | 92 C++ (demo_wbc_controller 44, demo_shared_config 16, grasp_phase_manager 13, virtual_tcp 10, demo_wbc_mpc_integration 6, grasp_pipeline 3) | GTest |
 | `rtc_tsid` | 90 C++ (wbc_types 11, se3_task 10, qp_solver_wrapper 8, momentum_task 8, tsid_wqp 7, force_task 6, com_task 6, posture_task 5, phase3_integration 5, joint_limit 5, tsid_hqp 4, wqp_hqp_compare 3, performance 3, eom 3, torque_limit 2, friction_cone 2, contact 2) | GTest |
 | `rtc_urdf_bridge` | 89 C++ (urdf_analyzer 25, rt_model_handle 16, model_builder 15, chain_extractor 12, xacro_processor 11, joint_classification 10) | GTest |
 | `rtc_controllers` | 87 C++ (test_core_controllers + grasp related) | GTest |
@@ -97,11 +97,11 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `ament_cmake_test` missing on `colcon test` | `.venv` overlay가 system site-packages를 가림. 재활성화 + ROS 2 환경 재로드 |
 
 ```bash
-# exec name = ROS node name = "ur5e_rt_controller" (only exec from ur5e_bringup;
+# exec name = ROS node name = "integrated_rt_controller" (only exec from integrated_bringup;
 # rtc_controller_manager is library-only). Use the same name for pgrep and
 # lifecycle calls:
-#   ros2 lifecycle list /ur5e_rt_controller
-PID=$(pgrep -f ur5e_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
+#   ros2 lifecycle list /integrated_rt_controller
+PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
 ros2 topic hz /forward_position_controller/commands
 ros2 topic echo /system/estop_status
 ./repo_scripts/scripts/check_rt_setup.sh --summary
@@ -137,9 +137,9 @@ sudo sysctl --system
 ### Capture (sim 또는 robot)
 
 ```bash
-ros2 launch ur5e_bringup sim.launch.py enable_perf:=true
+ros2 launch integrated_bringup sim.launch.py enable_perf:=true
 # 또는
-ros2 launch ur5e_bringup robot.launch.py enable_perf:=true
+ros2 launch integrated_bringup robot.launch.py enable_perf:=true
 
 # 출력: <ws>/logging_data/<YYMMDD_HHMM>/perf/perf.data
 # Ctrl+C 로 launch 종료 시 perf 가 SIGINT 받아 정상 flush.
@@ -147,8 +147,8 @@ ros2 launch ur5e_bringup robot.launch.py enable_perf:=true
 
 선택 인자:
 
-* `perf_targets:='regex|of|process|names'` — 기본은 `ur5e_rt_controller|mujoco_simulator_node`
-  (sim) / `ur5e_rt_controller|udp_hand_node|ur_ros2_control_node` (robot).
+* `perf_targets:='regex|of|process|names'` — 기본은 `integrated_rt_controller|mujoco_simulator_node`
+  (sim) / `integrated_rt_controller|udp_hand_node|ur_ros2_control_node` (robot).
   `pgrep -f` 로 매칭됨. shell wrapper(bash/sh/dash/zsh) 는 자동 제외.
 * `perf_duration:=30` — 초 단위. 빈 값(기본)이면 launch SIGINT 까지 record.
 * `perf_start_delay:=N` — perf 시작까지 대기. **기본 `0` = 시작부터 캡처**
@@ -178,7 +178,7 @@ ros2 launch ur5e_bringup robot.launch.py enable_perf:=true
 
 ```bash
 # RT 주기성 분석 — task-clock 사용
-ros2 launch ur5e_bringup sim.launch.py enable_perf:=true perf_event:=task-clock
+ros2 launch integrated_bringup sim.launch.py enable_perf:=true perf_event:=task-clock
 
 # 결과를 timeline 으로
 ./repo_scripts/scripts/timeline.sh
@@ -188,18 +188,18 @@ ros2 launch ur5e_bringup sim.launch.py enable_perf:=true perf_event:=task-clock
 
 ```bash
 # 기본 (시작부터 캡처, stack 4 KB, 999 Hz)
-ros2 launch ur5e_bringup sim.launch.py enable_perf:=true
+ros2 launch integrated_bringup sim.launch.py enable_perf:=true
 
 # 30 초만 캡처 + steady-state 만 (lifecycle 5 초 후 시작)
-ros2 launch ur5e_bringup sim.launch.py enable_perf:=true \
+ros2 launch integrated_bringup sim.launch.py enable_perf:=true \
     perf_start_delay:=5 perf_duration:=30
 
 # 가벼운 탐색 (낮은 빈도 + 작은 stack)
-ros2 launch ur5e_bringup sim.launch.py enable_perf:=true \
+ros2 launch integrated_bringup sim.launch.py enable_perf:=true \
     perf_frequency:=99
 
 # deep template 스택 보존 (큰 trace)
-ros2 launch ur5e_bringup sim.launch.py enable_perf:=true \
+ros2 launch integrated_bringup sim.launch.py enable_perf:=true \
     perf_stack_size:=16384
 ```
 
@@ -225,7 +225,7 @@ ros2 launch ur5e_bringup sim.launch.py enable_perf:=true \
   - `--by cpu` — "CPU 4 (MPC core) 가 정말 mpc_main 만 쓰나?" / "RT core 2 가
     의도대로 rt_control 전용인가?" — pinning 검증, IRQ leak 확인
 * 기능:
-  - **Search** (우상단) → `^rtc::|^ur5e_bringup::` 입력 시 워크스페이스 함수 highlight
+  - **Search** (우상단) → `^rtc::|^integrated_bringup::` 입력 시 워크스페이스 함수 highlight
   - 프레임 클릭 → 해당 subtree zoom (thread/CPU 모드에서는 top row 클릭으로 한
     스레드/코어 안으로 drill-down)
   - 스택 hover → self / total samples
