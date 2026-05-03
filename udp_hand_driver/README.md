@@ -18,9 +18,12 @@ udp_hand_driver/
 │   ├── udp_hand_failure_detector.hpp -- 손 통신 장애 감지기 (50Hz non-RT jthread)
 │   ├── udp_hand_timing_profiler.hpp  -- EventLoop 단계별 타이밍 프로파일러
 │   ├── udp_hand_timing_logger.hpp -- per-tick CSV writer (mpc_timing_log 패턴)
+│   ├── udp_hand_node.hpp         -- UdpHandNode 클래스 선언 (LifecycleNode)
 │   └── fingertip_ft_inferencer.hpp -- ONNX 기반 핑거팁 F/T 추론
 ├── src/
-│   └── udp_hand_node.cpp         -- ROS2 LifecycleNode (UdpHandController + FailureDetector)
+│   ├── udp_hand_node.cpp           -- main() (mlockall, CPU affinity, spin)
+│   ├── udp_hand_node_lifecycle.cpp -- 6 lifecycle 콜백 + dtor + Drain + SaveCommStats
+│   └── udp_hand_node_publish.cpp   -- Preallocate / PublishFromEventLoop / PublishCalibrationStatus
 ├── config/
 │   ├── udp_hand_node.yaml        -- 노드 파라미터 설정 (ros__parameters)
 │   └── fingertip_ft_inferencer.yaml -- ONNX 모델 경로 + 캘리브레이션 설정

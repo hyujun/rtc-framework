@@ -39,6 +39,8 @@ find_package(ament_index_cpp REQUIRED)
 # from rtc_inference via its INTERFACE target.
 add_executable(udp_hand_node
   src/udp_hand_node.cpp
+  src/udp_hand_node_lifecycle.cpp
+  src/udp_hand_node_publish.cpp
 )
 target_include_directories(udp_hand_node PRIVATE include)
 ament_target_dependencies(udp_hand_node
