@@ -56,6 +56,7 @@
 - `rtc_*` 패키지에 robot name / joint count / HW ID 하드코딩 금지 (ARCH-1)
 - 의존성 그래프 상향 의존 금지 (ARCH-2, [agent_docs/architecture.md](agent_docs/architecture.md#L84))
 - 두 번째 구체 구현은 abstract interface / concept 정의 후에만 추가 (ARCH-3) — `#ifdef` / hardcoded switch 금지. 비슷한 기능(컨트롤러·transport·codec·task 등)이 추가될 때 기존 base를 재사용하거나, 부재 시 base를 먼저 만든다
+- `robot_descriptions`는 data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 사용. `find_package` / `<depend>` / `ament_target_dependencies` 금지 (ARCH-5)
 - 새 utility 작성 전 `rtc_base` / `rtc_communication` / `rtc_inference` / `rtc_tsid` / `rtc_urdf_bridge`에 유사 기능 검색 — 맞지 않으면 fork 대신 일반화 ([agent_docs/design-principles.md](agent_docs/design-principles.md) P5)
 - 코드 변경 → 대응 문서·YAML·CMakeLists·package.xml 동기화 필수 (PROC-1)
 - `rtc_base` / `rtc_msgs` 변경 시 전체 빌드·테스트 (PROC-3)
@@ -143,6 +144,7 @@
 | E-8 | E-STOP 경로 수정 | Critical | 안전 |
 | E-9 | 문서-코드 불일치를 어느 쪽에 맞출지 결정 필요 | Warning | 사용자 의도 확인 |
 | E-10 | [agent_docs/archive/controller-safety-improvements.md](agent_docs/archive/controller-safety-improvements.md) Remaining Phase 진행 | Warning | 계획 순서 |
+| E-11 | `robot_descriptions`를 build-time으로 의존하려는 변경 (`find_package` / `<depend>` / `ament_target_dependencies`) | Warning | ARCH-5 |
 
 ### `[CONCERN]` 포맷
 

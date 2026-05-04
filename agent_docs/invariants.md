@@ -39,6 +39,29 @@
 | ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md#L84) 그래프 기준) | Cyclic dep / abstraction leak | `rtc_base/`가 `rtc_controllers/` include, `rtc_*/`가 `ur5e_*/` include 등 |
 | ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 새 `.cpp`에 대응하는 pure-virtual base 부재 |
 | ARCH-4 | `ur5e_*` 헤더가 `rtc_*` private 헤더 include 금지 | 경계 훼손, robot-specific leak | `grep -rn '#include "rtc_.*/src/' ur5e_*/` |
+| ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | `grep -rn 'find_package(robot_descriptions\|ament_target_dependencies.*robot_descriptions' --include=CMakeLists.txt .` 그리고 `grep -rn '<depend>robot_descriptions</depend>\|<build_depend>robot_descriptions' --include=package.xml .` |
+
+### ARCH-5 세부 스펙
+
+`robot_descriptions`는 C++ target / 헤더 / 라이브러리 export가 0건인 data-only 패키지다 ([robot_descriptions/CMakeLists.txt](../robot_descriptions/CMakeLists.txt)는 `install(DIRECTORY robots/)` 한 줄뿐). 소비 패키지는 다음만 사용한다:
+
+**허용**:
+- `package.xml`: `<exec_depend>robot_descriptions</exec_depend>`
+- C++: `ament_index_cpp::get_package_share_directory("robot_descriptions")`
+- Python: `ament_index_python.packages.get_package_share_directory("robot_descriptions")`
+- URDF/MJCF/launch/YAML: `package://robot_descriptions/robots/<name>/...` URL, 또는 패키지명 문자열 (rtc_controller_manager가 런타임 resolve — [rt_controller_node_params.cpp:218-222](../rtc_controller_manager/src/rt_controller_node_params.cpp#L218))
+
+**금지**:
+- `find_package(robot_descriptions ...)` (CMakeLists.txt)
+- `<depend>` / `<build_depend>` (package.xml)
+- `ament_target_dependencies(... robot_descriptions)`
+- `ament_export_dependencies(... robot_descriptions)`
+
+**근거**: 빌드 시점에 link할 artifact가 0개이므로 build-dep 효과는 0. 그러나 build-dep을 걸면 colcon이 강제 토폴로지 엣지를 만들어 "이 디렉토리를 워크스페이스 어디 두든 — 형제 디렉토리든 별도 overlay든 — `install/robot_descriptions/share/` 만 있으면 동작" 모델이 깨진다 (사용자 정책: 2026-05-04 `88224dc`).
+
+**복구**: build-dep 줄 제거 + `<exec_depend>`로 강등. 일반적으로 코드 수정 0줄. 선례: `integrated_bringup` (2026-05-04 `88224dc`, 3줄 제거).
+
+**예외**: 미래에 `robot_descriptions`가 진짜 C++ 라이브러리를 export하게 되면 별도 패키지 (`robot_descriptions_utils` 등)로 split — 이 invariant는 그대로 유지.
 
 ## Process Invariants
 
