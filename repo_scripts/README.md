@@ -441,14 +441,17 @@ source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
 | 변수 | 값 | 용도 |
 |------|-----|-----|
 | `RTC_DEPS_PREFIX` | `<rtc_ws>/deps/install` | aligator/fmt/mimalloc 격리 prefix |
-| `CMAKE_PREFIX_PATH` | `$RTC_DEPS_PREFIX:...` | CMake 의존성 검색 순서 |
+| `CMAKE_PREFIX_PATH` | `$RTC_DEPS_PREFIX:...:/opt/onnxruntime` | CMake 의존성 검색 순서 (ONNX Runtime 포함) |
 | `LD_LIBRARY_PATH` | `$RTC_DEPS_PREFIX/lib:...` | 런타임 lib resolve |
 | `PKG_CONFIG_PATH` | `$RTC_DEPS_PREFIX/lib/pkgconfig:...` | .pc 기반 설정 |
 | `MUJOCO_DIR` | `/opt/mujoco-3.x.x` (자동 탐색) | `rtc_mujoco_sim` 의 fallback |
+| `mujoco_ROOT` | `$MUJOCO_DIR` | `find_package(mujoco)` cmake hint (build.sh 와 동등) |
 | `COLCON_DEFAULTS_FILE` | `<repo>/.colcon/defaults.yaml` | cwd 와 무관하게 colcon 기본 옵션 적용 |
 | `VIRTUAL_ENV` | `<rtc_ws>/.venv` | Python venv 활성화 |
 
-**Source 순서**: ROS Jazzy → deps/install → .venv → workspace overlay (`install/setup.bash`, 있을 때만).
+**Source 순서**: ROS Jazzy → deps/install (+ ONNX Runtime) → .venv → workspace overlay (`install/setup.bash`, 있을 때만).
+
+**Plain `colcon build` 호환성** (build.sh 우회 워크플로): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 로 단독 빌드가 가능하다. ONNX Runtime · MuJoCo · deps/install prefix 모두 환경변수로 주입되며, `.colcon/defaults.yaml` 이 `--symlink-install` / `Release` / `compile_commands` 를 자동 적용한다. 단 `.venv` 가 활성 상태면 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio configure 가 깨질 수 있으므로, `colcon` 직접 호출 전에는 `deactivate` 하거나 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 를 명시한다 (build.sh 는 이를 자동 처리). build.sh 가 추가로 수행하는 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · `check_rt_setup.sh` 호출은 colcon 단독에서는 빠진다.
 
 ---
 

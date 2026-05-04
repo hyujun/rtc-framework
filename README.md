@@ -148,9 +148,14 @@ chmod +x build.sh
 ./build.sh sim -c -j 4    # 클린 빌드 + 4 워커
 ./build.sh -p rtc_base    # 특정 패키지만 빌드
 
-# 수동 빌드
-cd ~/ros2_ws/rtc_ws && colcon build --symlink-install && source install/setup.bash
+# 수동 빌드 (워크스페이스에 외부 패키지가 섞여 있을 때 권장)
+source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
+deactivate 2>/dev/null   # venv 활성 시 CMake FindPython 충돌 방지
+cd ~/ros2_ws/rtc_ws && colcon build --symlink-install
+source install/setup.bash
 ```
+
+> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 venv 활성 상태면 `deactivate` 또는 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 가 필요합니다 (eigenpy/pinocchio configure 보호). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
 
 ### 실행
 

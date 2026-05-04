@@ -251,7 +251,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 ## 9. Common Commands
 
-**Every new shell** (interactive `colcon test` / `ros2 launch`): `source repo_scripts/scripts/setup_env.sh` — ROS 2 + `deps/install` + `.venv` + workspace overlay 순서대로 로드. `build.sh` / `install.sh` 는 자동 source.
+**Every new shell** (interactive `colcon test` / `ros2 launch`): `source repo_scripts/scripts/setup_env.sh` — ROS 2 + `deps/install` (+ ONNX/`mujoco_ROOT`) + `.venv` + workspace overlay 순서대로 로드. `build.sh` / `install.sh` 는 자동 source.
 
 ```bash
 source repo_scripts/scripts/setup_env.sh   # PWD=src/rtc-framework 에서
@@ -267,6 +267,8 @@ ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10
 colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
 ```
+
+**Plain `colcon build` 호환** (src 에 외부 패키지가 섞인 배포·통합 환경): `setup_env.sh` 만 source 하면 `cd <rtc_ws> && colcon build --symlink-install` 단독 빌드가 동작한다 — deps prefix · ONNX · `mujoco_ROOT` · `.colcon/defaults.yaml` 모두 env 로 주입. venv 활성 시 `deactivate` 또는 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 필요 (eigenpy/pinocchio configure 보호). `build.sh` 와 같은 `build/`·`install/` 트리를 incremental 로 공유하므로 외부 패키지 빌드 후 `./build.sh full` 을 이어 돌려 후처리(compile_commands 머지·RT 점검·MuJoCo path 자동 탐색)를 보충하는 워크플로가 안전하다. **단 `build.sh -c` (`--clean`) 는 트리 전체를 삭제하므로 외부 패키지 공존 시 금지**.
 
 **Isolated deps** (상세: [repo_scripts/README.md](repo_scripts/README.md)): fmt 11.1.4 · mimalloc 2.1.7 · aligator 0.19.0 @ `<rtc_ws>/deps/install/` (`build_deps.sh` from `deps.repos`). Pinocchio · ProxSuite · hpp-fcl · eigenpy은 ROS Jazzy apt. Python은 `requirements.lock`.
 

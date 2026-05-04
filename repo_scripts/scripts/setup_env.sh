@@ -39,12 +39,20 @@ export CMAKE_PREFIX_PATH="${RTC_DEPS_PREFIX}:${CMAKE_PREFIX_PATH:-}"
 export LD_LIBRARY_PATH="${RTC_DEPS_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
 export PKG_CONFIG_PATH="${RTC_DEPS_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
+# ONNX Runtime (rtc_inference) — manual /opt install. Exported here so plain
+# `colcon build` finds it without build.sh's wrapper logic.
+[[ -d /opt/onnxruntime ]] && export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}:/opt/onnxruntime"
+
 # MuJoCo binary tarball (no cmake config — rtc_mujoco_sim falls back to find_library).
 # Pick the latest /opt/mujoco-*/ that exists.
 for _mj in /opt/mujoco-3.*; do
   [[ -d "$_mj" && -f "$_mj/lib/libmujoco.so" ]] && export MUJOCO_DIR="$_mj"
 done
 unset _mj
+
+# rtc_mujoco_sim find_package(mujoco) hint — build.sh injects -Dmujoco_ROOT
+# via cmake-args; mirror it as env var so plain `colcon build` works too.
+[[ -n "${MUJOCO_DIR:-}" ]] && export mujoco_ROOT="${MUJOCO_DIR}"
 
 # Python venv (system-site-packages=true: ROS rclpy/ament_* 상속)
 if [[ -f "${_WS_ROOT}/.venv/bin/activate" ]]; then
