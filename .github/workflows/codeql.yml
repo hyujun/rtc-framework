@@ -48,8 +48,9 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: cpp
-          # default suite (security only). quality 쿼리 제거 → 분석 시간 ~50% 감소.
-          queries: default
+          # queries 미지정 → v4 기본 default suite (security only) 사용.
+          # v3까지는 `queries: default` 약어가 동작했으나 v4에서는 query pack 이름으로
+          # 해석되어 "Query pack default cannot be found" fatal error 발생 (2026-05-03).
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Setup environment
