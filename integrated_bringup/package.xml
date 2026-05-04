@@ -26,7 +26,7 @@
   <exec_depend>python3-pyqt5</exec_depend>
   <exec_depend>repo_scripts</exec_depend>
   <exec_depend>rtc_tools</exec_depend>
-  <depend>robot_descriptions</depend>
+  <exec_depend>robot_descriptions</exec_depend>
   <exec_depend>udp_hand_driver</exec_depend>
   <exec_depend>ur_robot_driver</exec_depend>
   <test_depend>ament_cmake_gtest</test_depend>

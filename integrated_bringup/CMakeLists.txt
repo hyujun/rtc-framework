@@ -44,7 +44,6 @@ find_package(rtc_urdf_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
 find_package(rtc_tsid REQUIRED)
 find_package(rtc_mpc REQUIRED)
-find_package(robot_descriptions REQUIRED)
 
 # ── Static library: demo controllers ──────────────────────────────────────────
 add_library(${PROJECT_NAME}_demo_controllers STATIC
@@ -85,7 +84,6 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_urdf_bridge
   rtc_tsid
   rtc_mpc
-  robot_descriptions
 )
 
 target_link_libraries(${PROJECT_NAME}_demo_controllers
