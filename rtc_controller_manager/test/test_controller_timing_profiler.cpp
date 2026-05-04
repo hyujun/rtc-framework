@@ -237,7 +237,7 @@ TEST(ControllerTimingProfilerTest, ResetHistogramCleared) {
 
 TEST(ControllerTimingProfilerTest, SummaryNoData) {
   rtc::ControllerTimingProfiler profiler;
-  const auto summary = profiler.Summary("TestCtrl");
+  const auto summary = profiler.Summary("TestCtrl", /*elapsed_s=*/2.0);
   EXPECT_EQ(summary, "TestCtrl timing: no data");
 }
 
@@ -248,13 +248,18 @@ TEST(ControllerTimingProfilerTest, SummaryWithData) {
 
   (void)profiler.MeasuredCompute(ctrl, state);
 
-  const auto summary = profiler.Summary("TestCtrl");
+  // Caller decides what `elapsed_s` means (sim: count×dt; robot: wall delta).
+  // The profiler just renders it; verify the value round-trips into the line.
+  const auto summary = profiler.Summary("TestCtrl", /*elapsed_s=*/2.0);
   EXPECT_NE(summary.find("TestCtrl"), std::string::npos);
-  EXPECT_NE(summary.find("count=1"), std::string::npos);
+  EXPECT_NE(summary.find("elapsed=2.0s"), std::string::npos);
   EXPECT_NE(summary.find("mean="), std::string::npos);
-  EXPECT_NE(summary.find("p95="), std::string::npos);
-  EXPECT_NE(summary.find("p99="), std::string::npos);
-  EXPECT_NE(summary.find("over_budget="), std::string::npos);
+  EXPECT_NE(summary.find("max="), std::string::npos);
+  // Detailed percentiles / over_budget are intentionally omitted from the
+  // summary line — they are recoverable from cm_timing_log.csv.
+  EXPECT_EQ(summary.find("p95="), std::string::npos);
+  EXPECT_EQ(summary.find("p99="), std::string::npos);
+  EXPECT_EQ(summary.find("over_budget="), std::string::npos);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -398,7 +398,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── RT loop ────────────────────────────────────────────────────────────
   // The PeriodicRtThread owns the loop thread + clock_nanosleep cadence +
   // overrun bookkeeping; RtControllerNode keeps the CM-specific state below
-  // (loop_count_, init_complete_, compute_overrun_count_, …).
+  // (loop_count_, init_complete_, …).
   ControlLoopThread rt_loop_{this};
 
   // ── Publish offload (SPSC buffer + dedicated thread) ────────────────────
@@ -439,6 +439,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::atomic<bool> print_timing_summary_{false};
   std::atomic<bool> state_received_{false};
   std::atomic<bool> target_received_{false};
+
+  // Wall-clock timestamp of the previous timing-summary print, used by
+  // DrainLog() (log thread, single accessor) to compute the robot-mode
+  // `elapsed=` field as a wall delta. Default-constructed (epoch) marks the
+  // first print since (re)activation; reset in on_deactivate().
+  std::chrono::steady_clock::time_point last_summary_wall_{};
 
   // ── System-level model configuration (top-level "urdf:" YAML section) ────
   rtc_urdf_bridge::ModelConfig system_model_config_;
@@ -507,11 +513,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::atomic<bool> estop_log_pending_{false};  // deferred logging flag
 
   // ── Per-tick timing & overrun ────────────────────────────────────────────
-  // Period budget kept here (us) for the per-tick `compute_overrun_count_`
-  // check (ControlLoop body itself > budget — distinct from the deadline
-  // overrun the base detects across sleep). overrun / skip / consecutive
-  // counters live on the base (rt_loop_.OverrunCount() etc.).
+  // Period budget kept here (us) for the timing summary log line (window
+  // duration = count × period). overrun / skip / consecutive counters live
+  // on the base (rt_loop_.OverrunCount() etc.); per-tick over-budget detail
+  // is recoverable from cm_timing_log.csv.
   double budget_us_{2000.0};
-  std::atomic<uint64_t> compute_overrun_count_{0};
   static constexpr uint64_t kMaxConsecutiveOverruns = 10;
 };

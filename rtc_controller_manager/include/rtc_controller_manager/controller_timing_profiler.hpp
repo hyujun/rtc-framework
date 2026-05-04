@@ -67,23 +67,24 @@ class ControllerTimingProfiler : public TimingProfilerBase<200, 10, 2000> {
 
   void Reset() noexcept { ResetBase(); }
 
-  // Human-readable summary line suitable for RCLCPP_INFO.
-  [[nodiscard]] std::string Summary(const std::string& ctrl_name) const noexcept {
+  // Human-readable summary line suitable for RCLCPP_INFO. `elapsed_s` is the
+  // window duration the *caller* attributes to this batch of samples — sim
+  // mode passes the nominal `count × dt` (controller-perceived time, since
+  // sim is in lock-step with controller dt), robot mode passes the wall-clock
+  // delta between consecutive prints (real measured time on the CM thread).
+  // Detailed percentile / min / p99 / over_budget statistics are intentionally
+  // omitted here — they are recoverable from cm_timing_log.csv via post-
+  // processing.
+  [[nodiscard]] std::string Summary(const std::string& ctrl_name, double elapsed_s) const noexcept {
     const Stats s = GetStats();
     if (s.count == 0) {
       return ctrl_name + " timing: no data";
     }
 
-    const double over_pct =
-        static_cast<double>(s.over_budget) * 100.0 / static_cast<double>(s.count);
-    char buf[512];
+    char buf[256];
     std::snprintf(buf, sizeof(buf),
-                  "%s timing: count=%lu  mean=%.1f\xc2\xb5s  min=%.1f\xc2\xb5s"
-                  "  max=%.1f\xc2\xb5s  p95=%.1f\xc2\xb5s  p99=%.1f\xc2\xb5s"
-                  "  over_budget=%lu (%.1f%%)",
-                  ctrl_name.c_str(), static_cast<unsigned long>(s.count), s.mean_us, s.min_us,
-                  s.max_us, s.p95_us, s.p99_us, static_cast<unsigned long>(s.over_budget),
-                  over_pct);
+                  "%s timing: elapsed=%.1fs  mean=%.1f\xc2\xb5s  max=%.1f\xc2\xb5s",
+                  ctrl_name.c_str(), elapsed_s, s.mean_us, s.max_us);
     return std::string(buf);
   }
 };

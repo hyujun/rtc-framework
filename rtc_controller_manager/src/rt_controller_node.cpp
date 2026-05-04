@@ -184,7 +184,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
   state_received_.store(false, std::memory_order_release);
   target_received_.store(false, std::memory_order_release);
   loop_count_ = 0;
-  compute_overrun_count_.store(0, std::memory_order_relaxed);
+  last_summary_wall_ = {};
   // Base PeriodicRtThread counters (overrun_count / skip_count /
   // consecutive_overruns) reset implicitly when StartRtLoop spawns a fresh
   // loop instance on the next on_activate.

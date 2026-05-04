@@ -265,26 +265,11 @@ void RtControllerNode::ControlLoop() {
     }
   }
 
-  const auto t3 = std::chrono::steady_clock::now();  // end of publish
-
-  // ── Phase 4: compute-overrun counter + log push ────────────────────────
-  // Per-tick timing payload (t_state/t_compute/t_publish/t_total/jitter)
-  // is captured by the base PeriodicRtThread automatically — the t1/t2
-  // breakpoints have already been stamped via rt_loop_.StampStateAcquired/
-  // StampComputeDone earlier in this function, and cm_timing_producer_ is
-  // wired through SetTimingProducer<> in StartRtLoop. We only retain the
-  // *compute-overrun* counter here because it tracks "ControlLoop body >
-  // budget" specifically — distinct from the deadline overrun the base
-  // detects across the sleep step.
-  const double t_total_us = std::chrono::duration<double, std::micro>(t3 - t0).count();
-  if (t_total_us > budget_us_) {
-    compute_overrun_count_.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  // CM no longer fills LogEntry (controller-owned logging path lives on
-  // each controller's ControllerLogSet — Phase C). cm_timing_log.csv is
-  // still produced via cm_timing_producer_ → cm_timing_logger_ in
-  // DrainLog().
+  // Per-tick timing payload (t_state/t_compute/t_publish/t_total/jitter) is
+  // captured by the base PeriodicRtThread automatically via the StampStateAcquired/
+  // StampComputeDone breakpoints earlier in this function and the cm_timing_producer_
+  // wired through SetTimingProducer<> in StartRtLoop. Controller-owned data CSVs
+  // are drained by each controller's own ControllerLogSet timer (Phase C).
 
   ++loop_count_;
   // Signal the log thread to print timing summary every 1 000 iterations.
@@ -316,29 +301,47 @@ void RtControllerNode::DrainLog() {
   }
 
   // Print timing summary when signalled by the RT thread. Each print is
-  // followed by a Reset() so the reported mean/p95/p99 reflect the most
-  // recent kTimingSummaryInterval ticks (≈2 s at the default 500 Hz; scales
-  // inversely with control_rate), not the whole
-  // session — old start-up spikes would otherwise permanently skew p99.
+  // followed by a Reset() so the reported mean/max reflect the most recent
+  // kTimingSummaryInterval ticks (≈2 s at the default 500 Hz; scales
+  // inversely with control_rate), not the whole session — old start-up
+  // spikes would otherwise permanently skew the window stats. Detailed
+  // per-tick percentiles / over-budget counts live in cm_timing_log.csv.
   // The rt_controller_node owns cumulative counters (overruns, skips,
-  // pub_drops, timing_drops) separately, so they are unaffected
-  // by the reset.
+  // pub_drops, timing_drops) separately, so they are unaffected by the
+  // reset.
   if (print_timing_summary_.exchange(false, std::memory_order_relaxed)) {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
     const auto overruns = rt_loop_.OverrunCount();
-    const auto compute_overruns = compute_overrun_count_.load(std::memory_order_relaxed);
     const auto skips = rt_loop_.SkipCount();
     const auto pub_drops = publish_buffer_.drop_count();
     const auto timing_drops = cm_timing_producer_.DropCount();
+
+    // Window elapsed semantics differ by mode:
+    //   sim   — controller is in lock-step with the simulator step, so the
+    //           controller-perceived window length is the nominal
+    //           `samples × dt`, regardless of the wall-clock RTF
+    //   robot — RT loop runs against wall-clock deadlines (clock_nanosleep
+    //           TIMER_ABSTIME), so wall delta between consecutive prints is
+    //           the meaningful "real time" the CM observed
+    // First print since (re)activation falls through to the nominal form so
+    // the very first line still reads as "≈2.0s" instead of the time elapsed
+    // since steady_clock epoch.
+    constexpr double kUsToS = 1e-6;
+    const auto window_count = timing_profiler_.GetStats().count;
+    const auto wall_now = std::chrono::steady_clock::now();
+    double elapsed_s = static_cast<double>(window_count) * budget_us_ * kUsToS;
+    if (!use_sim_time_sync_ && last_summary_wall_.time_since_epoch().count() != 0) {
+      elapsed_s = std::chrono::duration<double>(wall_now - last_summary_wall_).count();
+    }
+    last_summary_wall_ = wall_now;
+
     RCLCPP_INFO(
-        get_logger(),
-        "%s  overruns=%lu  compute_overruns=%lu  skips=%lu  "
-        "pub_drops=%lu  timing_drops=%lu",
-        timing_profiler_.Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()))
+        get_logger(), "%s  overruns=%lu  skips=%lu  pub_drops=%lu  timing_drops=%lu",
+        timing_profiler_
+            .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()), elapsed_s)
             .c_str(),
-        static_cast<unsigned long>(overruns), static_cast<unsigned long>(compute_overruns),
-        static_cast<unsigned long>(skips), static_cast<unsigned long>(pub_drops),
-        static_cast<unsigned long>(timing_drops));
+        static_cast<unsigned long>(overruns), static_cast<unsigned long>(skips),
+        static_cast<unsigned long>(pub_drops), static_cast<unsigned long>(timing_drops));
     timing_profiler_.Reset();
   }
 }
