@@ -200,7 +200,8 @@ void RtControllerNode::ControlLoop() {
 
     // Per-group commands → group_commands slots
     std::size_t gi = 0;
-    for ([[maybe_unused]] const auto& [gname, ggroup] : active_tc.groups) {
+    for (const auto& [gname, ggroup] : active_tc.groups) {
+      static_cast<void>(gname);
       if (gi >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups))
         break;
       auto& gc = snap.group_commands[gi];
@@ -249,12 +250,30 @@ void RtControllerNode::ControlLoop() {
           }
         }
       }
-      // Grasp state from controller output
-      gc.grasp_state = output.grasp_state;
-      // WBC state from controller output (TSID-based controllers)
-      gc.wbc_state = output.wbc_state;
-      // ToF snapshot from controller output
-      gc.tof_snapshot = output.tof_snapshot;
+      // Controller-owned non-RT outputs (grasp / wbc / tof) are single-producer
+      // → single-consumer: only the active controller's own LifecyclePublisher
+      // reads them, and YAML pins each to exactly one device group. Copy into
+      // the slot that the YAML actually publishes from — other group slots
+      // stay zero-initialised so a future reader cannot mistake an unrelated
+      // group's slot for a valid value. (Long-term goal: drop these fields
+      // from PublishSnapshot entirely; see project_controller_owned_topic_isolation.)
+      for (const auto& pub : ggroup.publish) {
+        if (pub.ownership != urtc::TopicOwnership::kController)
+          continue;
+        switch (pub.role) {
+          case urtc::PublishRole::kGraspState:
+            gc.grasp_state = output.grasp_state;
+            break;
+          case urtc::PublishRole::kWbcState:
+            gc.wbc_state = output.wbc_state;
+            break;
+          case urtc::PublishRole::kToFSnapshot:
+            gc.tof_snapshot = output.tof_snapshot;
+            break;
+          default:
+            break;
+        }
+      }
       ++gi;
     }
     snap.num_groups = static_cast<int>(gi);
