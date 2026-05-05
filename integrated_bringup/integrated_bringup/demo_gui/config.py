@@ -43,15 +43,30 @@ TARGET_LABELS = {
         "Pitch (deg) / q5_null",
         "Yaw (deg) / q6_null",
     ],
+    # WBC consumes joint-space goals like the joint controller; the IK /
+    # null-space resolution happens inside TSID on the controller side.
+    "demo_wbc_controller": [
+        "q1 (deg)",
+        "q2 (deg)",
+        "q3 (deg)",
+        "q4 (deg)",
+        "q5 (deg)",
+        "q6 (deg)",
+    ],
 }
 
 ANGLE_INDICES = {
     "demo_joint_controller": [0, 1, 2, 3, 4, 5],
     "demo_task_controller": [3, 4, 5],
+    "demo_wbc_controller": [0, 1, 2, 3, 4, 5],
 }
 
 # True -> joint space, False -> task space
-JOINT_SPACE = {"demo_joint_controller": True, "demo_task_controller": False}
+JOINT_SPACE = {
+    "demo_joint_controller": True,
+    "demo_task_controller": False,
+    "demo_wbc_controller": True,
+}
 
 # Fingertip names matching controller order (4 fingertips)
 FINGERTIP_NAMES = ["Thumb", "Index", "Middle", "Ring"]
@@ -60,6 +75,7 @@ FINGERTIP_NAMES = ["Thumb", "Index", "Middle", "Ring"]
 FORCE_PI_FINGER_NAMES = ["Thumb", "Index", "Middle"]
 
 # GraspPhase enum → (display_text, bg_color, fg_color)
+# Source: GraspState.msg (Force-PI grasp controllers).
 GRASP_PHASE_NAMES = {
     0: ("IDLE", "#585b70", "#cdd6f4"),
     1: ("APPROACHING", "#89b4fa", "#1e1e2e"),
@@ -67,6 +83,21 @@ GRASP_PHASE_NAMES = {
     3: ("FORCE CTRL", "#fab387", "#1e1e2e"),
     4: ("HOLDING", "#a6e3a1", "#1e1e2e"),
     5: ("RELEASING", "#f38ba8", "#1e1e2e"),
+}
+
+# WbcPhase enum → (display_text, bg_color, fg_color).
+# Source: WbcState.msg (TSID-based WBC controllers; 8-state FSM).
+# Indices must match WbcState.PHASE_* constants and the C++
+# integrated_bringup::WbcPhase enum.
+WBC_PHASE_NAMES = {
+    0: ("IDLE", "#585b70", "#cdd6f4"),
+    1: ("APPROACH", "#89b4fa", "#1e1e2e"),
+    2: ("PRE-GRASP", "#cba6f7", "#1e1e2e"),
+    3: ("CLOSURE", "#fab387", "#1e1e2e"),
+    4: ("HOLD", "#a6e3a1", "#1e1e2e"),
+    5: ("RETREAT", "#94e2d5", "#1e1e2e"),
+    6: ("RELEASE", "#f38ba8", "#1e1e2e"),
+    7: ("FALLBACK", "#f9e2af", "#1e1e2e"),
 }
 
 # Default hand presets (positions in degrees for readability, converted to rad at runtime)
@@ -145,6 +176,24 @@ GAIN_DEFS = {
         ("grasp_force_thresh", 1, [1.0], False, "Grasp Detection"),
         ("grasp_min_fingertips", 1, [2], False, "Grasp Detection"),
     ],
+    # DemoWbc wire order: [arm_traj_speed, hand_traj_speed,
+    #     arm_max_traj_vel(RO), hand_max_traj_vel(RO),
+    #     se3_weight, force_weight, posture_weight,
+    #     mpc_enable(0/1), riccati_gain_scale]
+    # Parameters live on /demo_wbc_controller/<name> (LifecycleNode); see
+    # integrated_bringup/src/controllers/wbc/parameters.cpp for the
+    # declare_parameter / OnGainParametersSet wiring.
+    "demo_wbc_controller": [
+        ("arm_traj_speed", 1, [0.5], False, "Arm Trajectory"),
+        ("hand_traj_speed", 1, [1.0], False, "Hand Trajectory"),
+        ("arm_max_traj_vel", 1, [2.0], False, "Arm Trajectory"),
+        ("hand_max_traj_vel", 1, [4.0], False, "Hand Trajectory"),
+        ("se3_weight", 1, [100.0], False, "TSID Weights"),
+        ("force_weight", 1, [10.0], False, "TSID Weights"),
+        ("posture_weight", 1, [1.0], False, "TSID Weights"),
+        ("mpc_enable", 1, [1], True, "MPC"),
+        ("riccati_gain_scale", 1, [1.0], False, "MPC"),
+    ],
 }
 
 GAIN_ROW_NAMES = {
@@ -153,6 +202,7 @@ GAIN_ROW_NAMES = {
         "kp_translation": ["x", "y", "z"],
         "kp_rotation": ["rx", "ry", "rz"],
     },
+    "demo_wbc_controller": {},
 }
 
 
@@ -209,6 +259,17 @@ GAIN_PARAM_DISPATCH: dict[str, dict[str, tuple[str, callable]]] = {
         "grasp_force_thresh": ("grasp_force_threshold", _set_double),
         "grasp_min_fingertips": ("grasp_min_fingertips", _set_int),
     },
+    "demo_wbc_controller": {
+        "arm_traj_speed": ("arm_trajectory_speed", _set_double),
+        "hand_traj_speed": ("hand_trajectory_speed", _set_double),
+        "arm_max_traj_vel": ("arm_max_traj_velocity", _read_only),
+        "hand_max_traj_vel": ("hand_max_traj_velocity", _read_only),
+        "se3_weight": ("se3_weight", _set_double),
+        "force_weight": ("force_weight", _set_double),
+        "posture_weight": ("posture_weight", _set_double),
+        "mpc_enable": ("mpc_enable", _set_bool),
+        "riccati_gain_scale": ("riccati_gain_scale", _set_double),
+    },
 }
 
 # Visual placement of gain groups inside the Control tab "Gains" panel.
@@ -221,6 +282,10 @@ GAIN_GROUP_LAYOUT = {
     "demo_task_controller": [
         ["CLIK Gains"],
         ["Arm Trajectory", "Hand Trajectory"],
+    ],
+    "demo_wbc_controller": [
+        ["Arm Trajectory", "Hand Trajectory"],
+        ["TSID Weights", "MPC"],
     ],
 }
 

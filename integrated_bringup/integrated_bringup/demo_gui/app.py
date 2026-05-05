@@ -37,6 +37,7 @@ from rtc_msgs.msg import (
     GraspState,
     GuiPosition,
     RobotTarget,
+    WbcState,
 )
 from rtc_msgs.srv import GraspCommand, SwitchController
 
@@ -58,6 +59,7 @@ from .config import (
     JOINT_SPACE,
     SENSOR_CALIBRATIONS,
     TARGET_LABELS,  # noqa: F401  (preserved for downstream compat)
+    WBC_PHASE_NAMES,
     _read_only,
     _resolve_preset_path,
     _set_bool,
@@ -82,6 +84,10 @@ class DemoControllerGUI(Node):
         self._arm_gui_sub = None
         self._hand_gui_sub = None
         self._grasp_state_sub = None
+        # Phase 3: WBC controllers publish wbc_state instead of grasp_state.
+        # Subscribed alongside grasp_state — only the controller currently
+        # active publishes anything, so both subs coexisting is harmless.
+        self._wbc_state_sub = None
 
         # /rtc_cm/switch_controller srv client (single-CM scope per D-A2)
         self.switch_controller_client = self.create_client(
@@ -143,6 +149,10 @@ class DemoControllerGUI(Node):
         # Force-PI grasp controller state
         self._grasp_phase = 0
         self._grasp_target_force_val = 0.0
+        # Phase 3: tracks whether the latest phase update came from a WBC
+        # publisher (8-state FSM) versus a Force-PI grasp publisher
+        # (6-state FSM); the phase widget picks the matching label table.
+        self._wbc_active = False
         self._fp_finger_s = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_filtered_force = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_force_error = [0.0] * len(FORCE_PI_FINGER_NAMES)
@@ -203,7 +213,12 @@ class DemoControllerGUI(Node):
         ns = "/" + name
 
         # Reset old sub handles by dropping references; rclpy will unsubscribe.
-        for sub_attr in ("_arm_gui_sub", "_hand_gui_sub", "_grasp_state_sub"):
+        for sub_attr in (
+            "_arm_gui_sub",
+            "_hand_gui_sub",
+            "_grasp_state_sub",
+            "_wbc_state_sub",
+        ):
             sub = getattr(self, sub_attr, None)
             if sub is not None:
                 try:
@@ -230,6 +245,12 @@ class DemoControllerGUI(Node):
         )
         self._grasp_state_sub = self.create_subscription(
             GraspState, ns + "/hand/grasp_state", self._grasp_state_cb, 10
+        )
+        # Phase 3: subscribe to wbc_state regardless of active controller —
+        # only the WBC publisher actually emits, so the joint/task case
+        # silently no-ops. Topic path mirrors demo_wbc_controller.yaml.
+        self._wbc_state_sub = self.create_subscription(
+            WbcState, ns + "/hand/wbc_state", self._wbc_state_cb, 10
         )
         self.get_logger().info(f"rewired controller-owned topics to '{name}'")
 
@@ -292,6 +313,10 @@ class DemoControllerGUI(Node):
         self.estop_active = msg.data
 
     def _grasp_state_cb(self, msg: GraspState):
+        # Receiving grasp_state means a Force-PI grasp controller is the
+        # active publisher; clear the WBC-active flag so the phase widget
+        # re-renders against GRASP_PHASE_NAMES.
+        self._wbc_active = False
         self._grasp_detected = msg.grasp_detected
         self._grasp_num_active = msg.num_active_contacts
         self._grasp_max_force = msg.max_force
@@ -310,6 +335,35 @@ class DemoControllerGUI(Node):
             self._fp_finger_s[i] = msg.finger_s[i]
             self._fp_filtered_force[i] = msg.finger_filtered_force[i]
             self._fp_force_error[i] = msg.finger_force_error[i]
+
+    def _wbc_state_cb(self, msg: WbcState):
+        """WbcState handler — published by demo_wbc_controller at ~50 Hz.
+
+        Reuses the grasp-state display widgets (force_magnitude /
+        contact_flag are per-fingertip, num_active_contacts / max_force /
+        grasp_detected / min_fingertips have identical semantics). The
+        phase widget switches to WBC_PHASE_NAMES via _wbc_active so the
+        labels match the WbcPhase enum (8 states) instead of GraspPhase
+        (6 states). Force-PI per-finger fields stay zeroed because WBC
+        doesn't drive them.
+        """
+        self._wbc_active = True
+        self._grasp_detected = msg.grasp_detected
+        self._grasp_num_active = msg.num_active_contacts
+        self._grasp_max_force = msg.max_force
+        # WbcState carries the same target-force notion as grasp_state but
+        # routes it through grasp_target_force; reuse the same widget.
+        self._grasp_target_force_val = msg.grasp_target_force
+        self._grasp_min_fingertips = msg.min_fingertips
+        # WbcState has no separate force_threshold; reuse what we have.
+        n = min(len(msg.force_magnitude), len(FINGERTIP_NAMES))
+        for i in range(n):
+            self._grasp_force_mag[i] = msg.force_magnitude[i]
+            self._grasp_contact_flag[i] = msg.contact_flag[i]
+            # WBC doesn't ship per-finger inference validity; mark as
+            # valid so the OK/-- indicator stays useful.
+            self._grasp_inference_valid[i] = True
+        self._grasp_phase = msg.phase
 
     def _on_catalog_update(self, _catalog: ControllerCatalog) -> None:
         """ControllerCatalog response handler — runs on the rclpy executor.
@@ -479,13 +533,15 @@ class DemoControllerGUI(Node):
                 self._prev_ft[i][2] = valid_text
                 self._ft_valid_labels[i].config(text=valid_text, fg="#a6e3a1" if iv else "#f38ba8")
 
-        # ── Force-PI state ──
-        phase_key = str(self._grasp_phase)
+        # ── Phase indicator ──
+        # WBC and Force-PI use different FSM enums. Cache key includes the
+        # source flag so a controller switch redraws even if the numeric
+        # phase happens to match across enums.
+        table = WBC_PHASE_NAMES if self._wbc_active else GRASP_PHASE_NAMES
+        phase_key = f"{int(self._wbc_active)}/{self._grasp_phase}"
         if self._prev_fp_phase != phase_key:
             self._prev_fp_phase = phase_key
-            phase_info = GRASP_PHASE_NAMES.get(
-                self._grasp_phase, ("UNKNOWN", "#585b70", "#cdd6f4")
-            )
+            phase_info = table.get(self._grasp_phase, ("UNKNOWN", "#585b70", "#cdd6f4"))
             self._fp_phase_label.config(
                 text=f"  {phase_info[0]}  ", bg=phase_info[1], fg=phase_info[2]
             )
@@ -1887,8 +1943,19 @@ class DemoControllerGUI(Node):
             }
 
     def _show_gains_panel(self, ctrl_idx: str):
-        """Show the pre-built gains panel for the given controller (instant swap)."""
+        """Show the pre-built gains panel for the given controller (instant swap).
+
+        Defensive: returns silently if ``ctrl_idx`` has no pre-built panel
+        (e.g. catalog reports a controller without a GAIN_DEFS schema, or
+        a preset references an unknown controller). The radio-button list
+        already filters to schema-bearing keys, so this is belt-and-braces.
+        """
         if self._active_gains_ctrl == ctrl_idx:
+            return
+        if ctrl_idx not in self._gains_panels:
+            self.get_logger().warn(
+                f"no gain panel for controller '{ctrl_idx}' — skipping panel swap"
+            )
             return
         if self._active_gains_ctrl is not None:
             old = self._gains_panels[self._active_gains_ctrl]
