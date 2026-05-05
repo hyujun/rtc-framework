@@ -41,9 +41,31 @@ static int CamIdx(const ViewerState& vs) noexcept {
 void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp, float cur_rtf) noexcept {
   const double max_rtf_val = vs.sim->GetMaxRtf();
   const bool is_paused = vs.sim->IsPaused();
-  const bool grav_on = vs.sim->IsGravityEnabled();
-  const bool grav_locked = vs.sim->IsGravityLockedByServo();
+  const bool world_grav_on = vs.sim->IsWorldGravityEnabled();
   const bool perturbing = (vs.pert.active != 0);
+
+  // Per-group gravcomp summary: list robot group indices with gravcomp ON.
+  // Empty list = every robot group in torque mode.
+  static constexpr std::size_t kGravcompStrCap = 96;
+  char gravcomp_str[kGravcompStrCap];
+  {
+    std::size_t written = 0;
+    gravcomp_str[0] = '\0';
+    for (std::size_t i = 0; i < vs.sim->NumGroups(); ++i) {
+      if (!vs.sim->IsGroupRobot(i) || !vs.sim->IsGroupGravcompEnabled(i))
+        continue;
+      const int chars = std::snprintf(gravcomp_str + written, sizeof(gravcomp_str) - written,
+                                      "%sg%zu", written != 0U ? "," : "", i);
+      if (chars > 0)
+        written += static_cast<std::size_t>(chars);
+      if (written >= sizeof(gravcomp_str))
+        break;
+    }
+    if (written == 0) {
+      std::strncpy(gravcomp_str, "none", sizeof(gravcomp_str) - 1);
+      gravcomp_str[sizeof(gravcomp_str) - 1] = '\0';
+    }
+  }
 
   char limit_str[32];
   if (max_rtf_val > 0.0) {
@@ -73,19 +95,18 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp, float cur_rtf
 
   char labels[512], values[512];
   std::snprintf(labels, sizeof(labels),
-                "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nGravity\nStatus\n"
-                "Integrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames");
+                "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nWorld G\nRobot Gravcomp\n"
+                "Status\nIntegrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames");
   std::snprintf(values, sizeof(values),
-                "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
+                "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
                 "%d (%.2fms)\n%.1f%%\nLink:%s Joint:%s",
                 "sync", cam_str, static_cast<double>(cur_rtf), limit_str, vs.sim->SimTimeSec(),
                 static_cast<unsigned long>(vs.sim->StepCount()), ss.ncon,
-                vs.sim->IsContactEnabled() ? "on" : "OFF",
-                grav_locked ? "OFF(lock)" : (grav_on ? "ON" : "OFF"),
-                is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"), kIntNames[ii],
-                kSolNames[si], ss.iter, vs.sim->GetSolverIterations(), ss.improvement, n_sub,
-                substep_dt_ms, phys_load_pct, vs.show_link_frames ? "ON" : "OFF",
-                vs.show_joint_frames ? "ON" : "OFF");
+                vs.sim->IsContactEnabled() ? "on" : "OFF", world_grav_on ? "ON" : "OFF",
+                gravcomp_str, is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
+                kIntNames[ii], kSolNames[si], ss.iter, vs.sim->GetSolverIterations(),
+                ss.improvement, n_sub, substep_dt_ms, phys_load_pct,
+                vs.show_link_frames ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF");
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_TOPRIGHT, vp, labels, values, vs.con);
 }
@@ -140,15 +161,13 @@ void RenderHelpOverlay(const ViewerState& vs, const mjrRect& vp, int page) noexc
                   "Zoom\n"
                   "Zoom (drag)\n"
                   "Reset camera\n"
-                  "Gravity [%s]\n"
+                  "World gravity [%s]\n"
                   "Contacts [%s]\n"
                   "Integrator [%s]\n"
                   "Solver [%s]\n"
                   "Solver iter [%d]\n"
                   "Solver stats",
-                  rtf_str, cam_lbl,
-                  vs.sim->IsGravityLockedByServo() ? "OFF(lock)"
-                                                   : (vs.sim->IsGravityEnabled() ? "ON" : "OFF"),
+                  rtf_str, cam_lbl, vs.sim->IsWorldGravityEnabled() ? "ON" : "OFF",
                   vs.sim->IsContactEnabled() ? "ON" : "OFF", kIntNames[ii], kSolNames[si],
                   vs.sim->GetSolverIterations());
     mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, keys, vals, vs.con);

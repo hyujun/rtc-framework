@@ -56,22 +56,35 @@ TEST(CommandStateIO, SetControlModeTorque) {
   EXPECT_TRUE(sim.IsInTorqueMode(0));
 }
 
-TEST(CommandStateIO, SetControlModeServoLocksGravity) {
+TEST(CommandStateIO, PositionServoEnablesGroupGravcomp) {
+  // Position-servo mode (default) tags the group's body chain with gravcomp=1.0
+  // so MuJoCo internally cancels gravity on those bodies. World gravity is left
+  // on so other free bodies (objects to lift) still fall.
   MuJoCoSimulator sim(test::MakeMinimalConfig());
   ASSERT_TRUE(sim.Initialize());
-  // Start in torque mode → servo, expect gravity locked by servo
-  sim.SetControlMode(0, true);
-  sim.SetControlMode(0, false);
-  EXPECT_TRUE(sim.IsGravityLockedByServo());
-  EXPECT_FALSE(sim.IsGravityEnabled());
+  EXPECT_FALSE(sim.IsInTorqueMode(0));
+  EXPECT_TRUE(sim.IsGroupGravcompEnabled(0));
+  EXPECT_TRUE(sim.IsWorldGravityEnabled());
 }
 
-TEST(CommandStateIO, AllTorqueUnlocksGravity) {
+TEST(CommandStateIO, TorqueModeDisablesGroupGravcomp) {
+  // Torque mode mirrors the real robot: the controller is responsible for
+  // gravity comp, so the simulator must not double-cancel.
   MuJoCoSimulator sim(test::MakeMinimalConfig());
   ASSERT_TRUE(sim.Initialize());
   sim.SetControlMode(0, true);
-  EXPECT_FALSE(sim.IsGravityLockedByServo());
-  EXPECT_TRUE(sim.IsGravityEnabled());
+  EXPECT_TRUE(sim.IsInTorqueMode(0));
+  EXPECT_FALSE(sim.IsGroupGravcompEnabled(0));
+  EXPECT_TRUE(sim.IsWorldGravityEnabled());  // world gravity unaffected
+}
+
+TEST(CommandStateIO, GroupGravcompTogglesWithControlMode) {
+  MuJoCoSimulator sim(test::MakeMinimalConfig());
+  ASSERT_TRUE(sim.Initialize());
+  sim.SetControlMode(0, true);
+  EXPECT_FALSE(sim.IsGroupGravcompEnabled(0));
+  sim.SetControlMode(0, false);
+  EXPECT_TRUE(sim.IsGroupGravcompEnabled(0));
 }
 
 TEST(CommandStateIO, FakeGroupTargetLpfRoundtrip) {

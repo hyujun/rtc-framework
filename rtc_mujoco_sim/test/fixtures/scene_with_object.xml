@@ -1,0 +1,32 @@
+<mujoco model="gravcomp_scene_test">
+  <compiler angle="radian"/>
+  <option timestep="0.002" solver="Newton" iterations="20"/>
+
+  <worldbody>
+    <!-- Robot arm: two hinge joints — gravcomp toggles with control mode. -->
+    <body name="link1" pos="0 0 0">
+      <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+      <inertial pos="0 0 0.1" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      <geom type="cylinder" size="0.05 0.1" rgba="0.8 0.2 0.2 1"/>
+      <body name="link2" pos="0 0 0.2">
+        <joint name="j2" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+        <inertial pos="0 0 0.1" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+        <geom type="capsule" size="0.03 0.1" rgba="0.2 0.8 0.2 1"/>
+      </body>
+    </body>
+
+    <!-- Free body: must always fall under world gravity, regardless of robot
+         control mode.  This is the regression target for the lift/manipulation
+         scenario that motivated per-body gravcomp. -->
+    <body name="free_object" pos="1.0 0 1.0">
+      <freejoint name="free_object_root"/>
+      <inertial pos="0 0 0" mass="0.1" diaginertia="0.0001 0.0001 0.0001"/>
+      <geom type="box" size="0.05 0.05 0.05" rgba="0.2 0.2 0.8 1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="m1" joint="j1" ctrlrange="-10 10"/>
+    <position name="m2" joint="j2" kp="100" ctrlrange="-1.57 1.57"/>
+  </actuator>
+</mujoco>

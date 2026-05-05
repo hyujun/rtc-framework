@@ -70,8 +70,8 @@ struct SolverConfig {
 // Per-group configuration loaded from YAML (robot_response / fake_response).
 
 struct JointGroupConfig {
-  std::string name;                              // 임의 이름 (ur5e, hand, kuka, ...)
-  std::vector<std::string> joint_names;          // 하위호환: command/state 미지정 시 사용
+  std::string name;                      // 임의 그룹 식별자 (YAML 에서 자유 지정)
+  std::vector<std::string> joint_names;  // 하위호환: command/state 미지정 시 사용
   std::vector<std::string> command_joint_names;  // command용 joint names (빈 경우 joint_names 사용)
   std::vector<std::string> state_joint_names;  // state용 joint names (빈 경우 XML 전체)
   std::string command_topic;
@@ -107,6 +107,10 @@ struct JointGroup {
   std::vector<int> qpos_indices;
   std::vector<int> qvel_indices;
   std::vector<int> actuator_indices;
+
+  // ── MuJoCo 인덱스: per-group gravity compensation 대상 body
+  // (joint 의 child body, position-servo 모드에서 body_gravcomp=1.0 으로 설정)
+  std::vector<int> body_indices;
 
   // ── MuJoCo 인덱스: state용 ────────────────────────────────────────
   std::vector<int> state_qpos_indices;
@@ -279,11 +283,11 @@ class MuJoCoSimulator {
   void SetControlMode(std::size_t group_idx, bool torque_mode) noexcept;
   [[nodiscard]] bool IsInTorqueMode(std::size_t group_idx) const noexcept;
 
-  // Per-group gravity enforcement for position servo.
-  void EnforcePositionServoGravity() noexcept {
-    gravity_enabled_.store(false, std::memory_order_relaxed);
-    gravity_locked_by_servo_.store(true, std::memory_order_relaxed);
-  }
+  // Per-group gravity-compensation status (set by SetControlMode).
+  // Position servo → per-body gravcomp ON for the group's body chain.
+  // Torque mode    → per-body gravcomp OFF (controller computes its own gravity comp).
+  // World gravity (`opt.gravity`) is unaffected — free objects still fall.
+  [[nodiscard]] bool IsGroupGravcompEnabled(std::size_t group_idx) const noexcept;
 
   // ── Backward-compatible API (delegates to group 0) ────────────────────────
 
@@ -415,19 +419,14 @@ class MuJoCoSimulator {
     sync_cv_.notify_all();
   }
 
-  void EnableGravity(bool enable) noexcept {
-    if (gravity_locked_by_servo_.load(std::memory_order_relaxed)) {
-      return;
-    }
-    gravity_enabled_.store(enable, std::memory_order_relaxed);
+  // World-gravity toggle (debugging only — affects every body in the scene).
+  // Per-robot gravity compensation goes through SetControlMode, not this.
+  void EnableWorldGravity(bool enable) noexcept {
+    world_gravity_enabled_.store(enable, std::memory_order_relaxed);
   }
 
-  [[nodiscard]] bool IsGravityEnabled() const noexcept {
-    return gravity_enabled_.load(std::memory_order_relaxed);
-  }
-
-  [[nodiscard]] bool IsGravityLockedByServo() const noexcept {
-    return gravity_locked_by_servo_.load(std::memory_order_relaxed);
+  [[nodiscard]] bool IsWorldGravityEnabled() const noexcept {
+    return world_gravity_enabled_.load(std::memory_order_relaxed);
   }
 
   // ── External forces / perturbation ────────────────────────────────────────
@@ -477,7 +476,8 @@ class MuJoCoSimulator {
   std::atomic<bool> reset_requested_{false};
   std::atomic<bool> step_once_{false};
   std::atomic<double> current_max_rtf_{0.0};
-  std::atomic<bool> gravity_enabled_{false};
+  // World gravity is on by default — free bodies (objects to lift) always fall.
+  std::atomic<bool> world_gravity_enabled_{true};
   double original_gravity_z_{-9.81};
 
   // ── Physics solver atomics (runtime-changeable via viewer/API) ─────────────
@@ -525,9 +525,6 @@ class MuJoCoSimulator {
   std::chrono::steady_clock::time_point throttle_wall_start_{};
   double throttle_sim_start_{0.0};
   double throttle_rtf_{0.0};
-
-  // ── Gravity lock (position servo 모드에서 gravity 변경 차단) ─────────────
-  std::atomic<bool> gravity_locked_by_servo_{true};
 
   // ── Original actuator params (전체 actuator, Initialize()에서 저장) ──────
   double xml_timestep_{0.002};

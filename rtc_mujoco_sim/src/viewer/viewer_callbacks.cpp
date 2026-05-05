@@ -151,12 +151,11 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
 
     // ── Physics toggles ──────────────────────────────────────────────────────
     case GLFW_KEY_G:
-      if (s->sim->IsGravityLockedByServo()) {
-        fprintf(stdout, "[Viewer] Gravity locked by position servo (OFF)\n");
-      } else {
-        s->sim->EnableGravity(!s->sim->IsGravityEnabled());
-        fprintf(stdout, "[Viewer] Gravity %s\n", s->sim->IsGravityEnabled() ? "ON" : "OFF");
-      }
+      // Toggles world gravity for the whole scene (debugging only). Per-robot
+      // gravity compensation is governed by control mode and not affected.
+      s->sim->EnableWorldGravity(!s->sim->IsWorldGravityEnabled());
+      fprintf(stdout, "[Viewer] World gravity %s\n",
+              s->sim->IsWorldGravityEnabled() ? "ON" : "OFF");
       break;
 
     case GLFW_KEY_N:

@@ -223,12 +223,12 @@ solver:
 
 ### 제어 모드 자동 전환 (robot 그룹)
 
-| command_type | 제어 모드 | Gravity |
-|---|---|---|
-| `"position"` | Position Servo | 자동 OFF + 잠금 |
-| `"torque"` | Direct Torque | 자동 ON (모든 robot 그룹이 torque일 때) |
+| command_type | 제어 모드 | Robot Gravcomp | World Gravity |
+|---|---|---|---|
+| `"position"` | Position Servo | **ON** (해당 그룹 body chain 만 `body_gravcomp=1`) | ON (불변) |
+| `"torque"` | Direct Torque | OFF (실 로봇처럼 controller 가 중력 보상 책임) | ON (불변) |
 
-Position servo 모드에서는 중력이 자동으로 OFF되고 잠금됩니다. 모든 robot 그룹이 torque 모드로 전환되어야 중력이 ON됩니다.
+Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의 link body 들에 대해 1.0 으로 설정되어 중력이 내부적으로 상쇄됩니다. 전역 `opt.gravity` 는 항상 원래 값으로 유지되므로, 같은 씬 안의 free body (들어올릴 객체 등) 는 정상적으로 떨어집니다 — lift / manipulation 시뮬레이션과 양립.
 
 ---
 
@@ -510,7 +510,8 @@ ros2 topic hz /hand/joint_states
 | Sim Time | 시뮬레이션 경과 시간 |
 | Steps | 누적 제어 스텝 수 |
 | Contacts | 활성 접촉 수 / on\|OFF |
-| Gravity | ON / OFF / OFF(lock) |
+| World G | 전역 중력 ON / OFF (디버그용 G 키) |
+| Robot Gravcomp | per-body 중력 보상이 켜진 그룹 인덱스 목록 (예: `g0`) — torque 모드면 `none` |
 | Status | running / PAUSED / perturb |
 | Integrator | Euler / RK4 / Implicit / ImplFast |
 | Solver | PGS / CG / Newton |
@@ -535,7 +536,7 @@ ros2 topic hz /hand/joint_states
 | TAB | 카메라 모드 순환 (Free → Tracking → Fixed[0..N-1] → Free) |
 | Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |
 | Backspace | 시각화 옵션 초기화 |
-| G | 중력 ON/OFF (position servo 중 잠금) |
+| G | 전역 중력 ON/OFF (디버깅용; 로봇 gravcomp 와 무관) |
 | N | 접촉 제약 ON/OFF |
 | I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) |
 | S | solver 순환 (PGS → CG → Newton) |
@@ -611,7 +612,7 @@ sim->SetSolverTolerance(1e-10);
 sim->SetCone(mjCONE_ELLIPTIC);
 sim->SetImpratio(10.0);
 sim->SetNoslipIterations(10);
-sim->EnableGravity(false);
+sim->EnableWorldGravity(false);  // 디버그: 씬 전체 중력 OFF (free body 포함)
 sim->SetContactEnabled(false);
 sim->SetExternalForce(body_id, wrench);
 sim->SetMaxRtf(5.0);
@@ -720,7 +721,8 @@ colcon test-result --verbose
 | `test_solver_config` | 9 | XML `<option>`/`<flag>` 우선순위, YAML fallback, ContactOverride |
 | `test_command_state_io` | 12 | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
 | `test_lifecycle` | 10 | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
-| `test_runtime_controls` | 11 | atomic setter/getter, 클램핑, gravity lock |
+| `test_runtime_controls` | 11 | atomic setter/getter, 클램핑, world gravity 토글 |
+| `test_gravcomp_scene` | 2 | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하 (`scene_with_object.xml`) |
 | `test_data_flow` | 5 | 상태/센서 콜백 firing, StepCount 단조, RTF |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서).

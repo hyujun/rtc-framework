@@ -216,8 +216,9 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
     model_->opt.disableflags |= mjDSBL_CONTACT;
   }
 
-  // 3. Gravity toggle
-  model_->opt.gravity[2] = gravity_enabled_.load(std::memory_order_relaxed)
+  // 3. World gravity toggle (debugging only — robot groups handle their own
+  //    gravity compensation via per-body body_gravcomp set in SetControlMode).
+  model_->opt.gravity[2] = world_gravity_enabled_.load(std::memory_order_relaxed)
                                ? static_cast<mjtNum>(original_gravity_z_)
                                : static_cast<mjtNum>(0.0);
 
@@ -256,9 +257,10 @@ void MuJoCoSimulator::HandleReset() noexcept {
     }
   }
 
-  model_->opt.gravity[2] = gravity_enabled_.load(std::memory_order_relaxed)
+  model_->opt.gravity[2] = world_gravity_enabled_.load(std::memory_order_relaxed)
                                ? static_cast<mjtNum>(original_gravity_z_)
                                : static_cast<mjtNum>(0.0);
+  // body_gravcomp persists across mj_resetData; no need to re-write here.
   mj_forward(model_, data_);
   {
     std::lock_guard lock(pert_mutex_);

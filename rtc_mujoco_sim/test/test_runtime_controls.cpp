@@ -78,11 +78,14 @@ TEST_F(RuntimeControls, MaxRtfGuardsNegative) {
   EXPECT_DOUBLE_EQ(sim_->GetMaxRtf(), 0.0);
 }
 
-TEST_F(RuntimeControls, GravityLockBlocksEnable) {
-  // Default: in servo mode, gravity is locked
-  EXPECT_TRUE(sim_->IsGravityLockedByServo());
-  sim_->EnableGravity(true);
-  EXPECT_FALSE(sim_->IsGravityEnabled());  // lock prevents enable
+TEST_F(RuntimeControls, WorldGravityRoundtrip) {
+  // World gravity is on by default so free objects in the scene fall normally,
+  // even while a robot group is in position-servo (per-body gravcomp) mode.
+  EXPECT_TRUE(sim_->IsWorldGravityEnabled());
+  sim_->EnableWorldGravity(false);
+  EXPECT_FALSE(sim_->IsWorldGravityEnabled());
+  sim_->EnableWorldGravity(true);
+  EXPECT_TRUE(sim_->IsWorldGravityEnabled());
 }
 
 TEST_F(RuntimeControls, ExternalForceOnInvalidBodyIsNoOp) {

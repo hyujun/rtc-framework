@@ -125,6 +125,7 @@ if(mujoco_FOUND)
   if(BUILD_TESTING)
     find_package(ament_cmake_gtest REQUIRED)
     set(MJCF_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/minimal.xml")
+    set(MJCF_SCENE_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/scene_with_object.xml")
 
     # Phase 1: pure helpers (no MJCF fixture needed)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pure_helpers.cpp")
@@ -146,6 +147,15 @@ if(mujoco_FOUND)
           MINIMAL_MJCF_PATH="${MJCF_FIXTURE}")
       endif()
     endforeach()
+
+    # Per-body gravcomp regression: needs a scene with both a robot and a
+    # free body.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_gravcomp_scene.cpp")
+      ament_add_gtest(test_gravcomp_scene test/test_gravcomp_scene.cpp)
+      target_link_libraries(test_gravcomp_scene mujoco_simulator_lib)
+      target_compile_definitions(test_gravcomp_scene PRIVATE
+        SCENE_WITH_OBJECT_MJCF_PATH="${MJCF_SCENE_FIXTURE}")
+    endif()
   endif()
 else()
   message(WARNING

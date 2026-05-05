@@ -496,7 +496,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Group[%zu] → position servo mode",
                       group_idx);
         }
-        sim_->EnforcePositionServoGravity();
+        // SetControlMode(false) already enables per-body gravcomp on the group's
+        // body chain; world gravity stays on so free objects keep falling.
       }
       sim_->SetCommand(group_idx, cmd);
     } else {

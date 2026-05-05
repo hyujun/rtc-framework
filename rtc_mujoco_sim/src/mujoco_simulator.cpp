@@ -147,6 +147,9 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
   group.qpos_indices.clear();
   group.qvel_indices.clear();
   group.actuator_indices.clear();
+  group.body_indices.clear();
+
+  std::set<int> body_set;  // dedupe; 같은 body 에 여러 joint 가 매달릴 수 있음
 
   for (std::size_t i = 0; i < group.command_joint_names.size(); ++i) {
     const auto& jname = group.command_joint_names[i];
@@ -161,6 +164,7 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
 
     group.qpos_indices.push_back(model_->jnt_qposadr[jnt_id]);
     group.qvel_indices.push_back(model_->jnt_dofadr[jnt_id]);
+    body_set.insert(model_->jnt_bodyid[jnt_id]);
 
     bool found_actuator = false;
     for (int a = 0; a < model_->nu; ++a) {
@@ -185,6 +189,10 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
       return false;
     }
   }
+
+  group.body_indices.assign(body_set.begin(), body_set.end());
+  fprintf(stdout, "[MuJoCoSimulator] [%s] gravcomp body chain: %zu body(ies)\n", group.name.c_str(),
+          group.body_indices.size());
   return true;
 }
 
@@ -737,8 +745,19 @@ bool MuJoCoSimulator::Initialize() noexcept {
   }
 
   // ── Initial gravity state ───────────────────────────────────────────────
-  gravity_locked_by_servo_.store(true, std::memory_order_relaxed);
-  gravity_enabled_.store(false, std::memory_order_relaxed);
+  // World gravity stays ON; robot groups default to position-servo, which
+  // enables per-body gravity compensation on their body chain. Free objects
+  // (objects to lift) are unaffected and still fall under -9.81.
+  world_gravity_enabled_.store(true, std::memory_order_relaxed);
+  for (const auto& g : groups_) {
+    if (!g->is_robot)
+      continue;
+    const double gravcomp = g->torque_mode.load(std::memory_order_relaxed) ? 0.0 : 1.0;
+    for (int body_id : g->body_indices) {
+      if (body_id > 0 && body_id < model_->nbody)
+        model_->body_gravcomp[body_id] = gravcomp;
+    }
+  }
 
   // ── Summary ─────────────────────────────────────────────────────────────
   int total_cmd_joints = 0;
@@ -1128,27 +1147,28 @@ void MuJoCoSimulator::SetControlMode(std::size_t group_idx, bool torque_mode) no
   g.torque_mode.store(torque_mode, std::memory_order_relaxed);
   g.control_mode_pending.store(true, std::memory_order_release);
 
-  if (!torque_mode) {
-    gravity_enabled_.store(false, std::memory_order_relaxed);
-    gravity_locked_by_servo_.store(true, std::memory_order_relaxed);
-  } else {
-    // Check if any other robot group is still in position servo
-    bool any_servo = false;
-    for (const auto& og : groups_) {
-      if (!og->is_robot)
-        continue;
-      if (og.get() == &g)
-        continue;
-      if (!og->torque_mode.load(std::memory_order_relaxed)) {
-        any_servo = true;
-        break;
-      }
-    }
-    if (!any_servo) {
-      gravity_locked_by_servo_.store(false, std::memory_order_relaxed);
-      gravity_enabled_.store(true, std::memory_order_relaxed);
+  // Per-body gravity compensation toggle for this group's body chain.
+  // Position servo → 1.0 (MuJoCo internally adds -m·g per body, masking gravity).
+  // Torque mode    → 0.0 (controller is responsible, matching real-robot behavior).
+  // World gravity is untouched, so free objects in the scene still fall.
+  if (model_) {
+    const double gravcomp = torque_mode ? 0.0 : 1.0;
+    for (int body_id : g.body_indices) {
+      if (body_id > 0 && body_id < model_->nbody)
+        model_->body_gravcomp[body_id] = gravcomp;
     }
   }
+}
+
+bool MuJoCoSimulator::IsGroupGravcompEnabled(std::size_t group_idx) const noexcept {
+  if (group_idx >= groups_.size())
+    return false;
+  const auto& group = *groups_[group_idx];
+  if (!group.is_robot || !model_)
+    return false;
+  return std::ranges::any_of(group.body_indices, [this](int body_id) {
+    return body_id > 0 && body_id < model_->nbody && model_->body_gravcomp[body_id] > 0.0;
+  });
 }
 
 bool MuJoCoSimulator::IsInTorqueMode(std::size_t group_idx) const noexcept {
