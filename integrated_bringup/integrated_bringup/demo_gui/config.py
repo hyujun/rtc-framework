@@ -1,14 +1,13 @@
 """Module-level constants, gain schemas, and helper builders for demo_controller_gui.
 
-Split out of scripts/demo_controller_gui.py (Phase 0a). Behavior identical —
-identifier names and values preserved verbatim so importers see the same
-attributes as before.
+Phase 1 step 3: robot-shape constants (NUM_JOINTS, NUM_HAND_MOTORS,
+ROBOT_JOINT_NAMES, HAND_FINGER_GROUPS, HAND_MOTOR_NAMES,
+_ROBOT_NAME_TO_IDX, _HAND_NAME_TO_IDX) moved to ``demo_gui.discovery``
+and threaded through ``RobotShape``. The remaining constants here are
+robot-agnostic — gain schemas, controller registry, GUI styling tables.
 
-Public surface (re-exported by app.py via `from .config import *`):
+Public surface (imported by app.py):
 - CONTROLLER_TYPES, TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
-- NUM_JOINTS, NUM_HAND_MOTORS, ROBOT_JOINT_NAMES,
-  HAND_FINGER_GROUPS, HAND_MOTOR_NAMES,
-  _ROBOT_NAME_TO_IDX, _HAND_NAME_TO_IDX
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
 - _DEFAULT_PRESETS, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
@@ -55,34 +54,6 @@ ANGLE_INDICES = {
 
 # True -> joint space, False -> task space
 JOINT_SPACE = {"demo_joint_controller": True, "demo_task_controller": False}
-
-NUM_JOINTS = 6
-NUM_HAND_MOTORS = 10
-
-ROBOT_JOINT_NAMES = [
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-]
-
-# Hand finger groups
-HAND_FINGER_GROUPS = [
-    ("Thumb", ["thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_fe"]),
-    ("Index", ["index_mcp_aa", "index_mcp_fe", "index_dip_fe"]),
-    ("Middle", ["middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe"]),
-    ("Ring", ["ring_mcp_fe"]),
-]
-
-HAND_MOTOR_NAMES = []
-for _grp_name, _motors in HAND_FINGER_GROUPS:
-    HAND_MOTOR_NAMES.extend(_motors)
-
-# Lookup tables for joint_names → display index mapping
-_ROBOT_NAME_TO_IDX = {n: i for i, n in enumerate(ROBOT_JOINT_NAMES)}
-_HAND_NAME_TO_IDX = {n: i for i, n in enumerate(HAND_MOTOR_NAMES)}
 
 # Fingertip names matching controller order (4 fingertips)
 FINGERTIP_NAMES = ["Thumb", "Index", "Middle", "Ring"]

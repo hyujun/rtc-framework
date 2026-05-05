@@ -111,9 +111,10 @@ class DemoControllerGUI(Node):
 
         # Phase 1: runtime-discovered robot shape. Starts from a sensible
         # default (UR5e + assm_v1 hand) so widgets build immediately at
-        # launch; replaced in-place when /<active>/{ur5e,hand}/gui_position
-        # delivers a different schema (Step 3 wires the rebuild).
+        # launch. ``_shape_mismatch_warned`` keeps gui_position callbacks
+        # from spamming /rosout — one WARN per (side, observed-name-tuple).
         self._shape: RobotShape = RobotShape.default_ur5e_assm()
+        self._shape_mismatch_warned: set[tuple[str, tuple[str, ...]]] = set()
 
         # Subscriptions (Phase 4: GuiPosition subs created by rewire helper)
         self.current_positions = [0.0] * self._shape.arm_dof
@@ -220,13 +221,37 @@ class DemoControllerGUI(Node):
         )
         self.get_logger().info(f"rewired controller-owned topics to '{name}'")
 
+    def _warn_shape_mismatch_once(self, side: str, observed_names: list[str]) -> None:
+        """Emit a one-shot WARN per side when the active controller's
+        joint_names span doesn't match the GUI's RobotShape.
+
+        Phase 1 step 3 keeps Tk widgets fixed at the startup default
+        (``RobotShape.default_ur5e_assm()``), so this is purely advisory:
+        the user should restart the GUI after attaching a different
+        robot/hand. A future phase may convert this into a live widget
+        rebuild — at which point this helper goes away.
+        """
+        key = (side, tuple(observed_names))
+        if key in self._shape_mismatch_warned:
+            return
+        self._shape_mismatch_warned.add(key)
+        expected = self._shape.arm_joint_names if side == "arm" else self._shape.hand_motor_names
+        self.get_logger().warn(
+            f"{side} joint_names mismatch: GUI is wired for {list(expected)} "
+            f"but controller publishes {observed_names}. Restart the GUI to "
+            "pick up the new robot/hand schema."
+        )
+
     def _gui_pos_cb(self, msg: GuiPosition):
         arm_dof = self._shape.arm_dof
         if len(msg.joint_positions) >= arm_dof:
             if msg.joint_names and len(msg.joint_names) >= arm_dof:
+                names = list(msg.joint_names[:arm_dof])
+                if not self._shape.matches_message(names, arm_dof):
+                    self._warn_shape_mismatch_once("arm", names)
                 idx = self._shape.arm_name_to_idx
                 reordered = [0.0] * arm_dof
-                for mi, name in enumerate(msg.joint_names[:arm_dof]):
+                for mi, name in enumerate(names):
                     if name in idx:
                         reordered[idx[name]] = msg.joint_positions[mi]
                 self.current_positions = reordered
@@ -239,9 +264,12 @@ class DemoControllerGUI(Node):
         hand_dof = self._shape.hand_dof
         if len(msg.joint_positions) >= hand_dof:
             if msg.joint_names and len(msg.joint_names) >= hand_dof:
+                names = list(msg.joint_names[:hand_dof])
+                if not self._shape.matches_message(names, hand_dof):
+                    self._warn_shape_mismatch_once("hand", names)
                 idx = self._shape.hand_name_to_idx
                 reordered = [0.0] * hand_dof
-                for mi, name in enumerate(msg.joint_names[:hand_dof]):
+                for mi, name in enumerate(names):
                     if name in idx:
                         reordered[idx[name]] = msg.joint_positions[mi]
                 self.current_hand_positions = reordered
