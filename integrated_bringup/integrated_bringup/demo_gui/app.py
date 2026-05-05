@@ -44,8 +44,6 @@ from .config import (
     _CALIB_STATE_COLORS,
     _CALIB_STATE_NAMES,
     _DEFAULT_PRESETS,
-    _HAND_NAME_TO_IDX,
-    _ROBOT_NAME_TO_IDX,
     ANGLE_INDICES,  # noqa: F401  (preserved for downstream compat)
     CONTROLLER_TYPES,
     FINGERTIP_NAMES,
@@ -57,12 +55,7 @@ from .config import (
     GAIN_ROW_NAMES,
     GRASP_PHASE_NAMES,
     GROUP_SCALARS_PER_ROW,
-    HAND_FINGER_GROUPS,
-    HAND_MOTOR_NAMES,
     JOINT_SPACE,
-    NUM_HAND_MOTORS,
-    NUM_JOINTS,
-    ROBOT_JOINT_NAMES,
     SENSOR_CALIBRATIONS,
     TARGET_LABELS,  # noqa: F401  (preserved for downstream compat)
     _read_only,
@@ -116,8 +109,14 @@ class DemoControllerGUI(Node):
             CalibrationStatus, "/hand/calibration/status", self._calib_status_cb, 10
         )
 
+        # Phase 1: runtime-discovered robot shape. Starts from a sensible
+        # default (UR5e + assm_v1 hand) so widgets build immediately at
+        # launch; replaced in-place when /<active>/{ur5e,hand}/gui_position
+        # delivers a different schema (Step 3 wires the rebuild).
+        self._shape: RobotShape = RobotShape.default_ur5e_assm()
+
         # Subscriptions (Phase 4: GuiPosition subs created by rewire helper)
-        self.current_positions = [0.0] * NUM_JOINTS
+        self.current_positions = [0.0] * self._shape.arm_dof
         self.current_task_positions = [0.0] * 6
 
         self.estop_active = False
@@ -128,7 +127,7 @@ class DemoControllerGUI(Node):
         self._pending_load_gains = False
 
         # Hand state subscription via gui_position topic (created in rewire)
-        self.current_hand_positions = [0.0] * NUM_HAND_MOTORS
+        self.current_hand_positions = [0.0] * self._shape.hand_dof
 
         # Grasp state subscription
         self._grasp_detected = False
@@ -164,7 +163,7 @@ class DemoControllerGUI(Node):
         # Dirty-check caches for GUI refresh (avoid redundant Tk redraws)
         self._prev_status = [""] * 6
         self._prev_task = [""] * 6
-        self._prev_hand = [""] * NUM_HAND_MOTORS
+        self._prev_hand = [""] * self._shape.hand_dof
         self._prev_estop = ""
         self._prev_grasp_detected = ""
         self._prev_grasp_agg = ["", "", "", ""]
@@ -222,28 +221,32 @@ class DemoControllerGUI(Node):
         self.get_logger().info(f"rewired controller-owned topics to '{name}'")
 
     def _gui_pos_cb(self, msg: GuiPosition):
-        if len(msg.joint_positions) >= NUM_JOINTS:
-            if msg.joint_names and len(msg.joint_names) >= NUM_JOINTS:
-                reordered = [0.0] * NUM_JOINTS
-                for mi, name in enumerate(msg.joint_names[:NUM_JOINTS]):
-                    if name in _ROBOT_NAME_TO_IDX:
-                        reordered[_ROBOT_NAME_TO_IDX[name]] = msg.joint_positions[mi]
+        arm_dof = self._shape.arm_dof
+        if len(msg.joint_positions) >= arm_dof:
+            if msg.joint_names and len(msg.joint_names) >= arm_dof:
+                idx = self._shape.arm_name_to_idx
+                reordered = [0.0] * arm_dof
+                for mi, name in enumerate(msg.joint_names[:arm_dof]):
+                    if name in idx:
+                        reordered[idx[name]] = msg.joint_positions[mi]
                 self.current_positions = reordered
             else:
-                self.current_positions = list(msg.joint_positions[:NUM_JOINTS])
+                self.current_positions = list(msg.joint_positions[:arm_dof])
         if len(msg.task_positions) >= 6:
             self.current_task_positions = list(msg.task_positions[:6])
 
     def _hand_gui_pos_cb(self, msg: GuiPosition):
-        if len(msg.joint_positions) >= NUM_HAND_MOTORS:
-            if msg.joint_names and len(msg.joint_names) >= NUM_HAND_MOTORS:
-                reordered = [0.0] * NUM_HAND_MOTORS
-                for mi, name in enumerate(msg.joint_names[:NUM_HAND_MOTORS]):
-                    if name in _HAND_NAME_TO_IDX:
-                        reordered[_HAND_NAME_TO_IDX[name]] = msg.joint_positions[mi]
+        hand_dof = self._shape.hand_dof
+        if len(msg.joint_positions) >= hand_dof:
+            if msg.joint_names and len(msg.joint_names) >= hand_dof:
+                idx = self._shape.hand_name_to_idx
+                reordered = [0.0] * hand_dof
+                for mi, name in enumerate(msg.joint_names[:hand_dof]):
+                    if name in idx:
+                        reordered[idx[name]] = msg.joint_positions[mi]
                 self.current_hand_positions = reordered
             else:
-                self.current_hand_positions = list(msg.joint_positions[:NUM_HAND_MOTORS])
+                self.current_hand_positions = list(msg.joint_positions[:hand_dof])
 
     def _estop_cb(self, msg: Bool):
         self.estop_active = msg.data
@@ -338,8 +341,8 @@ class DemoControllerGUI(Node):
 
     def _refresh_current_display(self):
         """Update display labels with dirty checking. Only redraws changed values."""
-        # ── Arm Joint Positions (always q1..q6) ──
-        for i in range(NUM_JOINTS):
+        # ── Arm Joint Positions ──
+        for i in range(self._shape.arm_dof):
             val_rad = self.current_positions[i]
             text = f"{val_rad:.4f} rad  ({math.degrees(val_rad):.2f}°)"
             if self._prev_status[i] != text:
@@ -355,7 +358,7 @@ class DemoControllerGUI(Node):
                 self._task_state_labels_values[i].config(text=text)
 
         # ── Hand state ──
-        for i in range(NUM_HAND_MOTORS):
+        for i in range(self._shape.hand_dof):
             text = f"{math.degrees(self.current_hand_positions[i]):.2f}°"
             if self._prev_hand[i] != text:
                 self._prev_hand[i] = text
@@ -763,10 +766,11 @@ class DemoControllerGUI(Node):
         self._joint_step_entries: list[ttk.Entry] = []
         self._joint_step_btns: list[list] = []
 
-        for i in range(NUM_JOINTS):
+        for i in range(self._shape.arm_dof):
+            label = _joint_axis_labels[i] if i < len(_joint_axis_labels) else f"q{i + 1} (deg)"
             tk.Label(
                 left_target_frame,
-                text=_joint_axis_labels[i],
+                text=label,
                 bg="#1e1e2e",
                 fg="#cdd6f4",
                 width=10,
@@ -821,7 +825,10 @@ class DemoControllerGUI(Node):
         self._task_step_entries: list[ttk.Entry] = []
         self._task_step_btns: list[list] = []
 
-        for i in range(NUM_JOINTS):
+        # Task target is always 6-D (X, Y, Z, Roll, Pitch, Yaw) regardless
+        # of arm DoF — the controller resolves IK / null-space against the
+        # current arm DoF on its end.
+        for i in range(6):
             tk.Label(
                 right_target_frame,
                 text=_task_axis_labels[i],
@@ -867,7 +874,7 @@ class DemoControllerGUI(Node):
         self._hand_step_entries: list[ttk.Entry] = []
         self._hand_step_btns: list[list] = []
 
-        for col_idx, (finger_name, motors) in enumerate(HAND_FINGER_GROUPS):
+        for col_idx, (finger_name, motors) in enumerate(self._shape.hand_finger_groups):
             col_frame = tk.Frame(hand_target_frame, bg="#1e1e2e")
             col_frame.grid(row=0, column=col_idx, padx=4, sticky="n")
 
@@ -983,7 +990,7 @@ class DemoControllerGUI(Node):
 
         self._hand_state_labels_values: list[tk.Label] = []
 
-        for col_idx, (finger_name, motors) in enumerate(HAND_FINGER_GROUPS):
+        for col_idx, (finger_name, motors) in enumerate(self._shape.hand_finger_groups):
             col_frame = tk.Frame(hand_status_frame, bg="#1e1e2e")
             col_frame.grid(row=0, column=col_idx, padx=2, sticky="n")
 
@@ -1539,7 +1546,7 @@ class DemoControllerGUI(Node):
             ctrl = data.get("controller")
             ctrl_short = ctrl.replace("demo_", "").replace("_controller", "") if ctrl else "—"
             robot_tgt = data.get("robot_target")
-            if robot_tgt and len(robot_tgt) == NUM_JOINTS:
+            if robot_tgt and len(robot_tgt) == self._shape.arm_dof:
                 goal = data.get("robot_goal_type", "joint")
                 robot_str = f"[{goal}] " + ", ".join(f"{v:.2f}" for v in robot_tgt)
             else:
@@ -2168,7 +2175,7 @@ class DemoControllerGUI(Node):
         is_joint = JOINT_SPACE.get(idx, True)
 
         robot_msg = RobotTarget()
-        robot_msg.joint_names = ROBOT_JOINT_NAMES
+        robot_msg.joint_names = list(self._shape.arm_joint_names)
         try:
             if is_joint:
                 robot_msg.goal_type = "joint"
@@ -2204,7 +2211,7 @@ class DemoControllerGUI(Node):
             return
         hand_msg = RobotTarget()
         hand_msg.goal_type = "joint"
-        hand_msg.joint_names = HAND_MOTOR_NAMES
+        hand_msg.joint_names = list(self._shape.hand_motor_names)
         hand_msg.joint_target = hand_values
         if self.hand_cmd_pub is None:
             self.get_logger().warn("hand_cmd_pub not yet bound — waiting for active controller")
@@ -2241,9 +2248,9 @@ class DemoControllerGUI(Node):
             )
             robot_target_vals = data.get("robot_target", [])
 
-            if len(robot_target_vals) == NUM_JOINTS:
+            if len(robot_target_vals) == self._shape.arm_dof:
                 robot_msg = RobotTarget()
-                robot_msg.joint_names = ROBOT_JOINT_NAMES
+                robot_msg.joint_names = list(self._shape.arm_joint_names)
                 if goal_type == "joint":
                     robot_msg.goal_type = "joint"
                     robot_msg.joint_target = [math.radians(v) for v in robot_target_vals]
@@ -2267,7 +2274,7 @@ class DemoControllerGUI(Node):
                     )
 
         # ── Hand target ────────────────────────────────────────────────
-        positions_deg = data.get("positions_deg", [0.0] * NUM_HAND_MOTORS)
+        positions_deg = data.get("positions_deg", [0.0] * self._shape.hand_dof)
         grasp_time = data.get("grasp_time", 1.0)
         positions_rad = [math.radians(d) for d in positions_deg]
 
@@ -2321,7 +2328,7 @@ class DemoControllerGUI(Node):
         # Publish hand target
         hand_msg = RobotTarget()
         hand_msg.goal_type = "joint"
-        hand_msg.joint_names = HAND_MOTOR_NAMES
+        hand_msg.joint_names = list(self._shape.hand_motor_names)
         hand_msg.joint_target = positions_rad
         if self.hand_cmd_pub is None:
             self.get_logger().warn("hand_cmd_pub not yet bound — waiting for active controller")
