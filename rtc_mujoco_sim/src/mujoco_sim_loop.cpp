@@ -170,6 +170,15 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
       continue;
 
     const bool torque = g->torque_mode.load(std::memory_order_relaxed);
+
+    // Per-body gravity compensation toggle (same gate as actuator mode flip,
+    // so all mjModel mutations stay on the SimLoop thread).
+    const mjtNum gravcomp = torque ? static_cast<mjtNum>(0.0) : static_cast<mjtNum>(1.0);
+    for (int body_id : g->body_indices) {
+      if (body_id > 0 && body_id < model_->nbody)
+        model_->body_gravcomp[body_id] = gravcomp;
+    }
+
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       const int act = g->actuator_indices[i];
       if (torque) {

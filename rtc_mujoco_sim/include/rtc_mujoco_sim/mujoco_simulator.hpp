@@ -446,6 +446,13 @@ class MuJoCoSimulator {
 
   [[nodiscard]] int NumJoints() const noexcept { return model_ ? model_->nq : 0; }
 
+  // Read-only handles for tests / viewer. Caller must respect the SimLoop
+  // ownership: do NOT mutate, and only read while the SimLoop is paused or
+  // stopped (no internal locking is provided).
+  [[nodiscard]] const mjModel* GetModel() const noexcept { return model_; }
+
+  [[nodiscard]] const mjData* GetData() const noexcept { return data_; }
+
   [[nodiscard]] double GetRtf() const noexcept { return rtf_.load(std::memory_order_relaxed); }
 
   [[nodiscard]] double GetPhysicsTimestep() const noexcept { return xml_timestep_; }

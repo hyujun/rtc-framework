@@ -1145,30 +1145,23 @@ void MuJoCoSimulator::SetControlMode(std::size_t group_idx, bool torque_mode) no
     return;
 
   g.torque_mode.store(torque_mode, std::memory_order_relaxed);
+  // Both actuator-param and per-body gravcomp updates are picked up by the
+  // SimLoop in PreparePhysicsStep() the next tick — keeps all mjModel mutation
+  // on a single thread.
   g.control_mode_pending.store(true, std::memory_order_release);
-
-  // Per-body gravity compensation toggle for this group's body chain.
-  // Position servo → 1.0 (MuJoCo internally adds -m·g per body, masking gravity).
-  // Torque mode    → 0.0 (controller is responsible, matching real-robot behavior).
-  // World gravity is untouched, so free objects in the scene still fall.
-  if (model_) {
-    const double gravcomp = torque_mode ? 0.0 : 1.0;
-    for (int body_id : g.body_indices) {
-      if (body_id > 0 && body_id < model_->nbody)
-        model_->body_gravcomp[body_id] = gravcomp;
-    }
-  }
 }
 
 bool MuJoCoSimulator::IsGroupGravcompEnabled(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size())
     return false;
   const auto& group = *groups_[group_idx];
-  if (!group.is_robot || !model_)
+  if (!group.is_robot)
     return false;
-  return std::ranges::any_of(group.body_indices, [this](int body_id) {
-    return body_id > 0 && body_id < model_->nbody && model_->body_gravcomp[body_id] > 0.0;
-  });
+  // Reflect the *intended* control mode rather than the live mjModel slot:
+  // SetControlMode() defers the body_gravcomp write to the next SimLoop tick
+  // (single-thread ownership), so a caller that polls right after the setter
+  // would otherwise see stale state.
+  return !group.torque_mode.load(std::memory_order_relaxed);
 }
 
 bool MuJoCoSimulator::IsInTorqueMode(std::size_t group_idx) const noexcept {
