@@ -40,12 +40,12 @@ from rtc_msgs.msg import (
 )
 from rtc_msgs.srv import GraspCommand, SwitchController
 
+from .catalog import ControllerCatalog
 from .config import (
     _CALIB_STATE_COLORS,
     _CALIB_STATE_NAMES,
     _DEFAULT_PRESETS,
     ANGLE_INDICES,  # noqa: F401  (preserved for downstream compat)
-    CONTROLLER_TYPES,
     FINGERTIP_NAMES,
     FORCE_PI_FINGER_NAMES,
     GAIN_DEFS,
@@ -65,6 +65,7 @@ from .config import (
     _set_double_array,
     _set_int,
 )
+from .discovery import RobotShape
 
 
 class DemoControllerGUI(Node):
@@ -172,6 +173,17 @@ class DemoControllerGUI(Node):
         self._prev_fp_phase = ""
         self._prev_fp_target = ""
         self._prev_fp_fingers = [["", "", "", ""] for _ in range(len(FORCE_PI_FINGER_NAMES))]
+
+        # Phase 2: dynamic controller catalog. Built before the Tk thread
+        # starts so the rclpy executor sees the timer/service-client
+        # immediately. ``start()`` is deferred until the radio widgets
+        # exist so the on-update callback never fires against a half-
+        # built UI; see _run_gui where we call self._catalog.start().
+        self._catalog: ControllerCatalog = ControllerCatalog(
+            self,
+            schema_keys=tuple(GAIN_DEFS.keys()),
+            on_update_callback=self._on_catalog_update,
+        )
 
         # GUI in a daemon thread
         self._gui_ready = threading.Event()
@@ -298,6 +310,22 @@ class DemoControllerGUI(Node):
             self._fp_finger_s[i] = msg.finger_s[i]
             self._fp_filtered_force[i] = msg.finger_filtered_force[i]
             self._fp_force_error[i] = msg.finger_force_error[i]
+
+    def _on_catalog_update(self, _catalog: ControllerCatalog) -> None:
+        """ControllerCatalog response handler — runs on the rclpy executor.
+
+        Marshals onto the Tk thread to repopulate radios + preset combo.
+        Only fires after a successful list_controllers response, so the
+        offline-fallback path is the only thing the user sees until the
+        CM is reachable.
+        """
+        # ``root`` may not exist yet on the very first response (the Tk
+        # thread builds it before kicking off the catalog, but we're
+        # defensive against init-order regressions).
+        root = getattr(self, "root", None)
+        if root is None:
+            return
+        root.after(0, self._refresh_controller_widgets)
 
     # ---- Sensor calibration -----------------------------------------------------
 
@@ -686,21 +714,24 @@ class DemoControllerGUI(Node):
         #  CONTROL TAB (existing UI)
         # ══════════════════════════════════════════════════════════════════
 
-        # Controller Selection (only Demo Joint / Demo Task)
+        # Controller Selection — populated dynamically from
+        # /rtc_cm/list_controllers. Until the first successful response
+        # we show the GUI's known schema keys (GAIN_DEFS) so the user
+        # can still operate against a CM that's still coming up; the
+        # ``(controllers offline)`` hint disambiguates the two states.
         ctrl_frame = ttk.LabelFrame(control_tab, text="Controller", padding=4)
         ctrl_frame.pack(fill="x", padx=8, pady=2)
 
-        self.selected_ctrl = tk.StringVar(value="demo_joint_controller")
-        btn_row = tk.Frame(ctrl_frame, bg="#1e1e2e")
-        btn_row.pack(fill="x")
-        for idx, name in CONTROLLER_TYPES.items():
-            ttk.Radiobutton(
-                btn_row,
-                text=name,
-                value=idx,
-                variable=self.selected_ctrl,
-                command=self._on_ctrl_radio_change,
-            ).pack(side="left", padx=2)
+        # Pick a default selection: first GAIN_DEFS key, or empty if none.
+        self._known_schema_keys: tuple[str, ...] = tuple(GAIN_DEFS.keys())
+        default_ctrl = self._known_schema_keys[0] if self._known_schema_keys else ""
+        self.selected_ctrl = tk.StringVar(value=default_ctrl)
+
+        # Row holding the radio buttons; rebuilt by _refresh_controller_widgets.
+        self._ctrl_btn_row = tk.Frame(ctrl_frame, bg="#1e1e2e")
+        self._ctrl_btn_row.pack(fill="x")
+        # No radios placed here yet — _refresh_controller_widgets runs at
+        # the end of _run_gui to seed them from the offline fallback list.
 
         switch_btn = ttk.Button(
             ctrl_frame,
@@ -710,7 +741,11 @@ class DemoControllerGUI(Node):
         )
         switch_btn.pack(pady=(3, 0))
 
-        self._ctrl_status = tk.StringVar(value="Active: Demo Joint Controller")
+        # Initial status reflects the offline fallback. Replaced on first
+        # catalog response.
+        self._ctrl_status = tk.StringVar(
+            value=f"Active: {self._catalog.display_label(default_ctrl)} (controllers offline)"
+        )
         tk.Label(
             ctrl_frame,
             textvariable=self._ctrl_status,
@@ -1072,8 +1107,16 @@ class DemoControllerGUI(Node):
 
         # Pre-build gains panels for all controllers (avoids destroy/recreate on switch)
         self._prebuild_gains_panels()
-        self._show_gains_panel("demo_joint_controller")
-        self._update_target_inputs_state("demo_joint_controller")
+        default_ctrl = self.selected_ctrl.get()
+        if default_ctrl:
+            self._show_gains_panel(default_ctrl)
+            self._update_target_inputs_state(default_ctrl)
+
+        # Seed radios + preset combo from the offline-fallback list, then
+        # arm the catalog so the first list_controllers response can swap
+        # in the live data via _on_catalog_update.
+        self._refresh_controller_widgets()
+        self._catalog.start()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._gui_ready.set()
@@ -1496,11 +1539,15 @@ class DemoControllerGUI(Node):
         tk.Label(
             robot_input_frame, text="Controller:", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)
         ).pack(side="left", padx=(0, 2))
-        self._preset_ctrl_var = tk.StringVar(value="demo_joint_controller")
+        self._preset_ctrl_var = tk.StringVar(
+            value=(self._known_schema_keys[0] if self._known_schema_keys else "")
+        )
+        # ``values=`` is seeded from the GUI's known schema keys; refreshed
+        # to match the live catalog by _refresh_controller_widgets.
         self._preset_ctrl_combo = ttk.Combobox(
             robot_input_frame,
             textvariable=self._preset_ctrl_var,
-            values=list(CONTROLLER_TYPES.keys()),
+            values=list(self._known_schema_keys),
             width=22,
             state="disabled",
         )
@@ -1614,7 +1661,11 @@ class DemoControllerGUI(Node):
         # Default max scalar inputs per row inside a group box.
         DEFAULT_SCALARS_PER_ROW = 2
 
-        for ctrl_idx in CONTROLLER_TYPES:
+        # Pre-build a panel for every controller the GUI knows how to drive
+        # (i.e. every config key with a GAIN_DEFS entry). Controllers that
+        # show up in /rtc_cm/list_controllers without a known schema are
+        # filtered out earlier — no panel needed.
+        for ctrl_idx in GAIN_DEFS:
             panel_frame = tk.Frame(self._gains_inner, bg="#1e1e2e")
             applied_frame = tk.Frame(self._gains_applied_inner, bg="#1e1e2e")
             grasp_frame = tk.Frame(self._gains_grasp_inner, bg="#1e1e2e")
@@ -1890,8 +1941,65 @@ class DemoControllerGUI(Node):
             for btn in btns:
                 btn.configure(state=task_state)
 
+    def _refresh_controller_widgets(self) -> None:
+        """Rebuild the Controller radio buttons + the preset-combo values
+        from the catalog. Runs on the Tk thread.
+
+        Selection rule: if the catalog has any schema-bearing entries we
+        use those (intersected with the GUI's known schema keys);
+        otherwise we fall back to the GUI's full GAIN_DEFS list so the
+        user can still drive a CM that hasn't responded yet.
+        """
+        live = self._catalog.schema_entries()
+        if live:
+            radio_keys: tuple[str, ...] = tuple(
+                e.config_key for e in live if e.config_key in self._known_schema_keys
+            )
+            if not radio_keys:
+                radio_keys = self._known_schema_keys
+            offline = False
+        else:
+            radio_keys = self._known_schema_keys
+            offline = self._catalog.is_offline()
+
+        # Tear down old radios and rebuild from scratch — Tk doesn't have
+        # a clean "update values" path for Radiobutton variant, and the
+        # radio set rarely changes (once per controller hot-swap).
+        for child in self._ctrl_btn_row.winfo_children():
+            child.destroy()
+        for key in radio_keys:
+            ttk.Radiobutton(
+                self._ctrl_btn_row,
+                text=self._catalog.display_label(key),
+                value=key,
+                variable=self.selected_ctrl,
+                command=self._on_ctrl_radio_change,
+            ).pack(side="left", padx=2)
+
+        # Preset combo follows the same set so users can save robot
+        # targets only against controllers we can drive.
+        if hasattr(self, "_preset_ctrl_combo"):
+            self._preset_ctrl_combo.configure(values=list(radio_keys))
+
+        # If the previously-selected controller fell out of the list
+        # (controller hot-swap edge case), pick the first available one.
+        current = self.selected_ctrl.get()
+        if radio_keys and current not in radio_keys:
+            self.selected_ctrl.set(radio_keys[0])
+            self._on_ctrl_radio_change()
+            current = radio_keys[0]
+
+        # Status label reflects offline vs live state.
+        suffix = " (controllers offline)" if offline else ""
+        if current:
+            self._ctrl_status.set(f"Active: {self._catalog.display_label(current)}{suffix}")
+        else:
+            self._ctrl_status.set(f"(no controllers available){suffix}")
+
     def _on_ctrl_radio_change(self):
         idx = self.selected_ctrl.get()
+        if not idx:
+            return
         self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
 
@@ -1904,7 +2012,7 @@ class DemoControllerGUI(Node):
         # done-callback only logs success/failure.
         if not self.switch_controller_client.service_is_ready():
             self.get_logger().warn("/rtc_cm/switch_controller not ready — request dropped")
-            self._ctrl_status.set(f"(srv unavailable) Active: {CONTROLLER_TYPES[idx]}")
+            self._ctrl_status.set(f"(srv unavailable) Active: {self._catalog.display_label(idx)}")
             return
 
         req = SwitchController.Request()
@@ -1921,13 +2029,15 @@ class DemoControllerGUI(Node):
                 self.get_logger().error(f"switch_controller srv exception: {exc}")
                 return
             if resp.ok:
-                self.get_logger().info(f"Switched to {CONTROLLER_TYPES[idx]}: {resp.message}")
+                self.get_logger().info(
+                    f"Switched to {self._catalog.display_label(idx)}: {resp.message}"
+                )
             else:
                 self.get_logger().error(f"switch_controller rejected: {resp.message}")
 
         future.add_done_callback(_on_switch_done)
 
-        self._ctrl_status.set(f"Active: {CONTROLLER_TYPES[idx]}")
+        self._ctrl_status.set(f"Active: {self._catalog.display_label(idx)}")
         self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
 
@@ -2013,7 +2123,7 @@ class DemoControllerGUI(Node):
                 continue
             break
 
-        ctrl_name = CONTROLLER_TYPES[self.selected_ctrl.get()]
+        ctrl_name = self._catalog.display_label(self.selected_ctrl.get())
 
         # Sync grasp target force entry from loaded gains.
         # Layout tail (see CLAUDE.md): [..., grasp_command, grasp_target_force].
@@ -2087,7 +2197,7 @@ class DemoControllerGUI(Node):
             return
 
         future = client.set_parameters_atomically(params)
-        ctrl_label = CONTROLLER_TYPES[ctrl]
+        ctrl_label = self._catalog.display_label(ctrl)
 
         def _on_set_done(fut):
             try:
@@ -2264,8 +2374,12 @@ class DemoControllerGUI(Node):
         name, data = result
 
         # ── Robot target (if present) ──────────────────────────────────
+        # Only act on the preset's controller name if the GUI knows how
+        # to drive it (i.e. has a GAIN_DEFS schema). Unknown names land
+        # us in a state where _on_switch_controller would publish to the
+        # wrong namespace, so silently skip.
         ctrl_name = data.get("controller")
-        if ctrl_name and ctrl_name in CONTROLLER_TYPES:
+        if ctrl_name and ctrl_name in GAIN_DEFS:
             # Switch controller if needed
             if self.selected_ctrl.get() != ctrl_name:
                 self.selected_ctrl.set(ctrl_name)
@@ -2470,6 +2584,7 @@ class DemoControllerGUI(Node):
         self.get_logger().info(f"Deleted preset '{name}'")
 
     def _on_close(self):
+        self._catalog.stop()
         self.root.destroy()
         self.destroy_node()
         rclpy.shutdown()

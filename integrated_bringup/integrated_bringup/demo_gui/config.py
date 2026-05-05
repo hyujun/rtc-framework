@@ -1,13 +1,16 @@
 """Module-level constants, gain schemas, and helper builders for demo_controller_gui.
 
-Phase 1 step 3: robot-shape constants (NUM_JOINTS, NUM_HAND_MOTORS,
+Phase 1 step 3 moved robot-shape constants (NUM_JOINTS, NUM_HAND_MOTORS,
 ROBOT_JOINT_NAMES, HAND_FINGER_GROUPS, HAND_MOTOR_NAMES,
-_ROBOT_NAME_TO_IDX, _HAND_NAME_TO_IDX) moved to ``demo_gui.discovery``
-and threaded through ``RobotShape``. The remaining constants here are
-robot-agnostic — gain schemas, controller registry, GUI styling tables.
+_ROBOT_NAME_TO_IDX, _HAND_NAME_TO_IDX) to ``demo_gui.discovery``.
+Phase 2 then dropped the ``CONTROLLER_TYPES`` display-label dict —
+controller enumeration now flows through ``demo_gui.catalog`` (live
+``/rtc_cm/list_controllers`` query) and labels are produced by
+``ControllerCatalog.display_label`` (override map + ``prettify_config_key``
+fallback). The remaining constants here are GUI-only, robot-agnostic.
 
 Public surface (imported by app.py):
-- CONTROLLER_TYPES, TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
+- TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
 - _DEFAULT_PRESETS, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
@@ -22,11 +25,6 @@ import os
 from rclpy.parameter import Parameter
 
 from rtc_msgs.msg import CalibrationCommand, CalibrationStatus
-
-CONTROLLER_TYPES = {
-    "demo_joint_controller": "Demo Joint Controller",
-    "demo_task_controller": "Demo Task Controller",
-}
 
 TARGET_LABELS = {
     "demo_joint_controller": [
