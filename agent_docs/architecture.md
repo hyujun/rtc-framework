@@ -80,12 +80,12 @@ Channel-specific instantiations:
 ```
 [Robot HW / MuJoCo Sim] --JointState--> [RtControllerNode: RT loop @ control_rate]
     +--SPSC--> [publish_thread] --> /forward_position_controller/commands
-    |                           +-> /{group}/digital_twin/joint_states
+    |                           +-> /rtc_cm/{group}/joint_states
     +--SPSC--> [log_executor]   --> CSV (timing + per-device state + sensor)
     +--E-STOP--> /system/estop_status
 
 [Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
-[rtc_digital_twin]: merge digital_twin topics --> RViz2
+[rtc_digital_twin]: merge /rtc_cm/{group}/joint_states --> RViz2
 [ur5e_bt_coordinator]: subscribes grasp_state/gui_position, publishes goals; tunes gains via per-controller ROS 2 parameters
 ```
 
@@ -101,7 +101,7 @@ ownership: "manager"  ──►   │  │ RT loop (control_rate Hz, SCHED_FIFO)
 (default)                   │  │   sub: state / motor_state / sensor    │    │
                             │  │   pub: ros2_command, joint_command,    │    │
                             │  │        device_state_log, sensor_log,   │    │
-                            │  │        digital_twin/joint_states       │    │
+                            │  │        /rtc_cm/{group}/joint_states    │    │
                             │  │   safety pubs (standalone, non-life-   │    │
                             │  │     cycle): /system/estop_status,      │    │
                             │  │     /rtc_cm/active_controller_name     │    │

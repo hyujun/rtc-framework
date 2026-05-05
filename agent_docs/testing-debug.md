@@ -18,7 +18,7 @@
 | `rtc_urdf_bridge/` | gtest (URDF/model parsing, xacro, chain extractor) | 실제 URDF 파싱 smoke |
 | `rtc_inference/` | ONNX engine unit test | 실제 모델 로드 smoke |
 | `rtc_communication/` | UDP loopback + Transceiver lifecycle/decode/callback | 실제 HW UDP 테스트 (선택) |
-| `rtc_digital_twin/` | pytest + RViz2 smoke | `/{group}/digital_twin/joint_states` hz |
+| `rtc_digital_twin/` | pytest + RViz2 smoke | `/rtc_cm/{group}/joint_states` hz |
 | `rtc_tools/` (pytest) | pytest | GUI/plot 수동 smoke |
 | `repo_scripts/` | `test_rt_common` + shell unit test | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape_estimation/snapshot` topic echo |
@@ -80,7 +80,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `/forward_position_controller/commands` | 동일 | RT loop 건강성 — `ros2 topic hz` 로 설정된 `control_rate` (default ~500 Hz) 매칭 확인 |
 | `<session>/timing/cm_timing_log.csv` | CM RT loop @ `control_rate` (`rtc::ThreadTimingProducer<RtTickTimingPayload>`) drained by `DrainLog()` log thread | RT loop per-tick timing — 7 cols `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`. p50/p99 등은 post-process 계산. **Sim 모드 (`use_sim_time_sync=true`) 에서는 `jitter_us` 컬럼이 항상 0.0** — CV wakeup 이라 `\|actual_period − budget\|`이 sim cadence 잡음일 뿐 RT 지표가 아니기 때문 (`PeriodicRtThread::JitterMeaningful()` override). 다른 6개 컬럼은 robot/sim 동일 의미 |
 | `<session>/timing/mpc_timing_log.csv` | per-controller LifecycleNode 1 Hz aux drains `MPCThread::TimingProducer()` | **Per-MPC-tick raw 샘플** — CM과 동일한 7-col 스키마 (RtTickTimingPayload). 한 row = 한 main-loop iteration. p50/p99/max는 post-process로 계산 (예: `awk` / pandas). aggregate INFO 라인은 controller 로그에 10 s마다 출력 (handler self-report `solve_duration_ns` 256-sample 윈도우). 두 CSV 모두 같은 generic infra + 동일 payload (`rtc_base/timing/rt_tick_timing_sample.hpp`) — 새 thread 추가 시 payload 재사용 |
-| `/{group}/digital_twin/joint_states` | controllers (per-group, RELIABLE) | Device 그룹별 건강성; `rtc_digital_twin`이 merge |
+| `/rtc_cm/{group}/joint_states` | CM (per-group, RELIABLE) | Device 그룹별 건강성; `rtc_digital_twin`이 merge |
 | `/sim/status` | `rtc_mujoco_sim` 1 Hz | Sim 건강성 — 중단 시 sim sync timeout E-STOP |
 | `/hand/joint_states`, `/hand/motor_states`, `/hand/sensor_states` | `udp_hand_driver` | Hand UDP 건강성 |
 | `/shape_estimation/snapshot` (action feedback) | `shape_estimation` | ToF 기반 추정 진행 상황 |

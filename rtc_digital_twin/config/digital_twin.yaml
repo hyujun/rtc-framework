@@ -33,9 +33,9 @@
 
     # Example: two sources (uncomment + customize for arm + hand pair):
     # num_sources: 2
-    # source_0.topic: "/<robot>/digital_twin/joint_states"
+    # source_0.topic: "/rtc_cm/<robot>/joint_states"
     # source_0.joint_names: [""]                # empty = accept all joints
-    # source_1.topic: "/<hand>/digital_twin/joint_states"
+    # source_1.topic: "/rtc_cm/<hand>/joint_states"
     # source_1.joint_names: [""]
     #
     # Concrete UR5e + 10-DOF hand example (see integrated_bringup/config/

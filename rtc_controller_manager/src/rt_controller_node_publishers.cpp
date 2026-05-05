@@ -145,7 +145,7 @@ void RtControllerNode::CreateDigitalTwinPublishers() {
   rclcpp::QoS dt_qos{10};
   dt_qos.reliable();
   for (const auto& [group_name, slot] : group_slot_map_) {
-    std::string dt_topic = "/" + group_name + "/digital_twin/joint_states";
+    std::string dt_topic = "/rtc_cm/" + group_name + "/joint_states";
     DigitalTwinEntry dte;
     dte.publisher = create_publisher<sensor_msgs::msg::JointState>(dt_topic, dt_qos);
     auto cfg_it = device_name_configs_.find(group_name);
@@ -158,7 +158,7 @@ void RtControllerNode::CreateDigitalTwinPublishers() {
     }
     digital_twin_publishers_[dt_topic] = std::move(dte);
     slot_to_dt_topic_[slot] = dt_topic;
-    RCLCPP_INFO(get_logger(), "  Digital Twin publish: %s (RELIABLE/10)", dt_topic.c_str());
+    RCLCPP_INFO(get_logger(), "  CM JointState publish: %s (RELIABLE/10)", dt_topic.c_str());
   }
 }
 
