@@ -2,16 +2,23 @@
 
 The GUI used to hard-code arm DoF (6) and hand motor count (10) plus the
 finger-group breakdown for the assm_v1 hand. Phase 1 replaces those
-constants with a `RobotShape` instance that:
+constants with a ``RobotShape`` instance that:
 
-  1. starts from a sensible default at __init__ time so the Tk widget
+  1. starts from a sensible default at ``__init__`` time so the Tk widget
      tree builds immediately (no "waiting for first message" placeholder),
-  2. is *replaced* the first time a `GuiPosition` message arrives whose
-     `joint_names` describe a different schema, at which point the
-     widgets are torn down and rebuilt against the new shape.
+  2. *advisorily* warns once per unique mismatch when a ``GuiPosition``
+     message arrives whose ``joint_names`` describe a different schema —
+     the user is expected to restart the GUI to pick up the new
+     robot/hand. The Tk widgets stay pinned to the startup default for
+     this sprint (option (a) per the sprint plan); see
+     ``DemoControllerGUI._warn_shape_mismatch_once`` for the wiring.
 
-This file defines the data class only; the rebuild is driven from
-``app.py`` so it can sit on the Tk thread.
+A future sprint may replace the warn-only path with a live Tk widget
+rebuild against the new shape — at which point ``RobotShape.from_joint_names``
+becomes the actual schema source instead of a future-use helper.
+
+This file defines the data class + helpers only; the warn dispatch is
+driven from ``app.py`` so it can sit on the Tk thread.
 """
 
 from __future__ import annotations

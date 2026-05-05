@@ -192,7 +192,15 @@ demo_wbc_controller:
   # a_ff + K·Δx) into the TSID posture/SE3 tasks.
   # Default enabled=false: MPC is inert and TSID self-holds.
   mpc:
-    enabled: true               # runtime-togglable via gains[7]
+    # Structural gate. The runtime ``mpc_enable`` ROS 2 parameter (toggled
+    # from demo_controller_gui or `ros2 param set`) is AND-ed with this
+    # flag — see parameters.cpp `SetEnabled(p && mpc_enabled_)`. So:
+    #   enabled: false   → MPC thread isn't spun up; the GUI toggle is
+    #                      a no-op (controller silently keeps MPC off).
+    #   enabled: true    → MPC thread runs; GUI toggle drives consumption
+    #                      of MPC outputs into TSID tasks at runtime.
+    # Set false here to keep TSID-only behavior even with MPC compiled in.
+    enabled: true
     engine: "handler"               # "mock" | "handler"
     max_stale_solutions: 5       # ticks without a fresh solution before
                                  # falling back to TSID self-hold
@@ -211,6 +219,7 @@ demo_wbc_controller:
 
     riccati:
       enabled: true              # include K·Δx in the reference accel
-      gain_scale: 1.0            # runtime-tunable via gains[8] (0..1)
+      gain_scale: 1.0            # runtime-tunable via ``riccati_gain_scale``
+                                 # ROS 2 parameter (0..1)
       accel_only: true           # write only the first nv entries of u_fb
       max_delta_x_norm: 100.0    # |Δx| cap (rad + rad/s)
