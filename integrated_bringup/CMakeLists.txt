@@ -24,6 +24,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
@@ -140,6 +141,10 @@ install(
   DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
+
+# ── Install Python package (demo_gui modules) ───────────────────────────────
+# scripts/demo_controller_gui.py is a thin shim that imports from this package.
+ament_python_install_package(${PROJECT_NAME})
 
 # ── Install Python scripts ───────────────────────────────────────────────────
 install(
