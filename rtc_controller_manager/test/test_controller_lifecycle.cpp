@@ -82,8 +82,17 @@ class ControllerLifecycleTestAccess {
     node.controller_topic_configs_.assign(node.controllers_.size(), {});
     node.controller_slot_mappings_.assign(node.controllers_.size(), {});
     node.controller_name_to_idx_.clear();
+    // Production keeps controller_types_ (= config_key) parallel to
+    // controllers_ and indexes into it when publishing
+    // /rtc_cm/active_controller_name. Mocks lack a real config_key, so
+    // alias it to Name() — the active_ctrl_name_pub_ payload is not
+    // asserted on here, but the index must be in-bounds.
+    node.controller_types_.clear();
+    node.controller_types_.reserve(node.controllers_.size());
     for (std::size_t i = 0; i < node.controllers_.size(); ++i) {
-      node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] = static_cast<int>(i);
+      const std::string ctrl_name{node.controllers_[i]->Name()};
+      node.controller_name_to_idx_[ctrl_name] = static_cast<int>(i);
+      node.controller_types_.push_back(ctrl_name);
     }
     // Bypass startup auto-hold: set state_received_ true so SwitchActive
     // builds non-empty snapshots, but only when the test explicitly opts in

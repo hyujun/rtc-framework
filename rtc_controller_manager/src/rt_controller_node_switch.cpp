@@ -81,9 +81,12 @@ bool RtControllerNode::SwitchActiveController(const std::string& name, std::stri
     }
   }
 
-  // Step 7: publish latched confirm.
+  // Step 7: publish latched confirm. Payload is config_key (snake_case) —
+  // downstream consumers compose `/<active>/...` namespaces, which must
+  // match each controller's LifecycleNode namespace `/<config_key>`. See
+  // rt_controller_node.cpp on_configure for the same rationale.
   std_msgs::msg::String ctrl_name_msg;
-  ctrl_name_msg.data = std::string(controllers_[target_uidx]->Name());
+  ctrl_name_msg.data = controller_types_[target_uidx];
   active_ctrl_name_pub_->publish(ctrl_name_msg);
 
   RCLCPP_INFO(get_logger(), "Switched controller: %s → %s",

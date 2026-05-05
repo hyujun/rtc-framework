@@ -105,12 +105,17 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // Publish initial active controller name (transient_local so late
   // subscribers receive it). Safety publishers are non-lifecycle, so they
   // can publish regardless of state.
+  // Payload is config_key (not Name()): downstream rewire-on-switch
+  // consumers compose `/<active>/...` namespaces from this string, and the
+  // controller's own LifecycleNode is created under `/<config_key>` (see
+  // controller bring-up in rt_controller_node_params.cpp). Name() returns
+  // the controller class label and would yield a namespace no LifecycleNode
+  // is bound to.
   {
     std_msgs::msg::String ctrl_name_msg;
-    ctrl_name_msg.data =
-        std::string(controllers_[static_cast<std::size_t>(
-                                     active_controller_idx_.load(std::memory_order_acquire))]
-                        ->Name());
+    const auto aidx =
+        static_cast<std::size_t>(active_controller_idx_.load(std::memory_order_acquire));
+    ctrl_name_msg.data = controller_types_[aidx];
     active_ctrl_name_pub_->publish(ctrl_name_msg);
   }
 
