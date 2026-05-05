@@ -574,6 +574,11 @@ class MuJoCoSimulator {
   // XML에 없는 속성에 대해서만 SolverConfig(YAML) 값을 적용하기 위한 헬퍼.
   void ApplySolverConfig() noexcept;
 
+  // body_gravcomp[] 변경 후 호출. mj_passive() 의 ngravcomp==0 early-out 게이트를
+  // 우회하기 위해 nonzero entry 수를 다시 카운트. 단독으로 mjModel 을 mutate 하는
+  // SimLoop / Init 컨텍스트에서만 호출.
+  void RefreshNgravcomp() noexcept;
+
   void ApplyCommand() noexcept;
   void ReadState() noexcept;
   void ReadSensors() noexcept;

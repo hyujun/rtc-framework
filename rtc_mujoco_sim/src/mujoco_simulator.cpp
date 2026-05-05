@@ -758,6 +758,10 @@ bool MuJoCoSimulator::Initialize() noexcept {
         model_->body_gravcomp[body_id] = gravcomp;
     }
   }
+  // mj_passive() early-outs when ngravcomp==0 (MuJoCo engine_passive.c).
+  // The MJCF doesn't declare per-body gravcomp, so the compiled value is 0
+  // — writing body_gravcomp[] alone would silently do nothing. Recount.
+  RefreshNgravcomp();
 
   // ── Summary ─────────────────────────────────────────────────────────────
   int total_cmd_joints = 0;
@@ -1132,6 +1136,23 @@ bool MuJoCoSimulator::IsGroupRobot(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size())
     return false;
   return groups_[group_idx]->is_robot;
+}
+
+// ── Gravcomp counter refresh ──────────────────────────────────────────────────
+//
+// MuJoCo's mj_passive() guards the gravcomp loop with `if (!m->ngravcomp) return`
+// (engine_passive.c). The MJCF doesn't declare per-body gravcomp, so the
+// compiled value is 0 — and a runtime body_gravcomp[] write would otherwise be
+// silently ignored. Recount whenever we mutate body_gravcomp[].
+void MuJoCoSimulator::RefreshNgravcomp() noexcept {
+  if (!model_)
+    return;
+  int count = 0;
+  for (int b = 0; b < model_->nbody; ++b) {
+    if (model_->body_gravcomp[b] != 0.0)
+      ++count;
+  }
+  model_->ngravcomp = count;
 }
 
 // ── Per-group control mode

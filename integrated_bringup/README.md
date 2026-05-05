@@ -65,8 +65,14 @@ integrated_bringup/
 ├── launch/
 │   ├── robot.launch.py                 <- 실제 UR5e 로봇 launch (udp_hand_node 포함)
 │   └── sim.launch.py                   <- MuJoCo 시뮬레이션 launch
+├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈)
+│   └── demo_gui/
+│       ├── app.py                      <- DemoControllerGUI Tk 클래스 + main()
+│       ├── catalog.py                  <- /rtc_cm/list_controllers 동적 enumerator
+│       ├── config.py                   <- gain 스키마, 위젯 레이아웃, 캘리브레이션 표
+│       └── discovery.py                <- RobotShape (런타임 DOF/finger 추론)
 └── scripts/
-    ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI (tkinter)
+    ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI 진입점 (얇은 shim)
     └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
 ```
 
@@ -581,11 +587,60 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 ros2 run integrated_bringup demo_controller_gui
 ```
 
-- 컨트롤러 전환 (DemoJoint / DemoTask)
-- 관절/태스크 공간 타겟 설정
-- 로봇 + 핸드 게인 편집기
-- 핸드 모터 슬라이더 (Thumb, Index, Middle, Ring)
-- 실시간 TCP 위치, 관절 위치, E-STOP 상태 표시
+#### 모듈 구조
+
+원래 단일 파일 (`scripts/demo_controller_gui.py`, ~2.7 kLOC) 이었으나 2026-05 sprint 에서 `integrated_bringup/integrated_bringup/demo_gui/` 패키지로 분할되었습니다 (`scripts/demo_controller_gui.py` 는 8-line shim).
+
+| 모듈 | 역할 |
+|---|---|
+| `demo_gui/app.py` | `DemoControllerGUI` Tk 클래스 + main() — 위젯 빌드 / refresh / ROS callback / 핸들러 |
+| `demo_gui/config.py` | gain 스키마 (`GAIN_DEFS`, `GAIN_PARAM_DISPATCH`), 위젯 레이아웃, FSM phase 라벨 표, 캘리브레이션 항목 — robot-agnostic GUI 표 |
+| `demo_gui/discovery.py` | `RobotShape` (frozen dataclass) — arm/hand DoF 와 finger group 을 런타임 추론 |
+| `demo_gui/catalog.py` | `ControllerCatalog` — `/rtc_cm/list_controllers` 비동기 폴러 (5 s 주기). 라디오 버튼 / preset combo / 라벨이 모두 이 catalog 결과에서 옴. |
+
+#### 동적 controller 발견 (`/rtc_cm/list_controllers`)
+
+GUI 시작 시:
+
+1. `GAIN_DEFS` 의 키 (현재 `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller`) 를 *오프라인 fallback* 으로 라디오에 표시. 상태 라벨에 `(controllers offline)` 접미사.
+2. CM 의 `/rtc_cm/list_controllers` 가 응답하면 catalog 가 수신 → Tk 스레드로 marshalling → 라디오 / preset combo / 상태 라벨이 *live* 데이터로 재구성. 5 s 마다 재조회 (controller hot-swap 자동 감지).
+3. 응답된 controller 중 `GAIN_DEFS` 에 스키마가 있는 것만 라디오에 노출. 스키마 없는 것은 catalog 에는 보존되지만 GUI 에서 운전 불가.
+
+라벨은 controller config_key 를 prettify (`demo_wbc_controller` → `Demo Wbc Controller`) 한 결과를 사용합니다.
+
+#### Variable-DOF 동작 (Phase 1)
+
+`RobotShape` 는 시작 시 UR5e + assm_v1 hand 기본값 (6 arm, 10 hand) 으로 초기화되어 위젯이 즉시 빌드됩니다. 컨트롤러가 발행하는 `/<active>/{ur5e,hand}/gui_position` 의 `joint_names` 가 GUI 의 RobotShape 와 다르면 *1회 WARN 로그* 후 사용자에게 GUI 재시작을 안내합니다 (현재 sprint 에서는 widget 동적 rebuild 미지원 — option (a)). 다른 robot/hand 에서는 startup 시 `default_ur5e_assm()` 대신 적절한 default factory 를 추가하면 동작합니다.
+
+#### 컨트롤러별 패널
+
+| 컨트롤러 | 게인 그룹 | 파라미터 (R/W) | RO 캡 |
+|---|---|---|---|
+| `demo_joint_controller` | Arm/Hand Trajectory | `robot_trajectory_speed`, `hand_trajectory_speed` | `robot_max_traj_velocity`, `hand_max_traj_velocity` |
+| `demo_joint_controller` | Grasp Detection | `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips` | — |
+| `demo_task_controller` | CLIK Gains | `kp_translation` (×3), `kp_rotation` (×3), `damping`, `null_kp`, `enable_null_space`, `control_6dof` | — |
+| `demo_task_controller` | Arm/Hand Trajectory | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed` | `max_traj_velocity`, `max_traj_angular_velocity`, `hand_max_traj_velocity` |
+| `demo_task_controller` | Grasp Detection | (joint 와 동일) | — |
+| `demo_wbc_controller` | Arm/Hand Trajectory | `arm_trajectory_speed`, `hand_trajectory_speed` | `arm_max_traj_velocity`, `hand_max_traj_velocity` |
+| `demo_wbc_controller` | TSID Weights | `se3_weight`, `force_weight`, `posture_weight` | — |
+| `demo_wbc_controller` | MPC | `mpc_enable` (bool), `riccati_gain_scale` | — |
+
+WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
+
+#### Grasp/Release 버튼 동작
+
+- **`demo_joint_controller` / `demo_task_controller`**: `grasp_controller_type: "force_pi"` (`demo_shared.yaml` 기본값) 일 때만 동작. `"contact_stop"` 모드에서는 controller 가 명령을 silent ignore + `/rosout` 에 throttled WARN.
+- **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 8-state FSM 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP / RELEASE 명령은 WBC FSM 의 `kApproach` / `kRelease` 로 전이되고 phase 표시기가 WbcPhase enum 라벨 (8 상태) 로 갱신됩니다.
+
+phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC publisher 인지에 따라 `GRASP_PHASE_NAMES` (6 상태) 또는 `WBC_PHASE_NAMES` (8 상태) 라벨 표를 자동 선택합니다 — 두 publisher 가 GUI 에 동시에 구독되지만 active 한 쪽만 발행하므로 자동 분기.
+
+#### 기타 기능
+
+- 관절/태스크 공간 타겟 설정 (joint controller 는 6 axis, task controller 는 X/Y/Z + Roll/Pitch/Yaw)
+- 핸드 모터 슬라이더 (Thumb / Index / Middle / Ring — finger 그루핑은 motor name prefix 로 자동 추론)
+- E-STOP 상태 (`/system/estop_status`), 실시간 TCP/관절 위치 표시
+- 핸드 자세 프리셋 저장/로드 (JSON)
+- 센서 캘리브레이션 (`/hand/calibration/command`)
 
 ### motion_editor_gui
 

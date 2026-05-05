@@ -163,6 +163,7 @@ void MuJoCoSimulator::ThrottleIfNeeded() noexcept {
 
 void MuJoCoSimulator::PreparePhysicsStep() noexcept {
   // 0. Per-group actuator mode switch (torque ↔ position servo)
+  bool gravcomp_dirty = false;
   for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
@@ -178,6 +179,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
       if (body_id > 0 && body_id < model_->nbody)
         model_->body_gravcomp[body_id] = gravcomp;
     }
+    gravcomp_dirty = true;
 
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       const int act = g->actuator_indices[i];
@@ -200,6 +202,10 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
         model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(p.biasprm2);
       }
     }
+  }
+  if (gravcomp_dirty) {
+    // Re-count nonzero entries so mj_passive() doesn't early-out on ngravcomp==0.
+    RefreshNgravcomp();
   }
 
   // 1. Physics solver parameters
