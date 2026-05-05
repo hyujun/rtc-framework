@@ -2654,7 +2654,9 @@ class DemoControllerGUI(Node):
         self._catalog.stop()
         self.root.destroy()
         self.destroy_node()
-        rclpy.shutdown()
+        # try_shutdown is idempotent; safe even if main()'s finally has
+        # already run (e.g. KeyboardInterrupt → finally → window close).
+        rclpy.try_shutdown()
 
 
 def main(args=None):
@@ -2667,4 +2669,7 @@ def main(args=None):
     finally:
         if rclpy.ok():
             node.destroy_node()
-            rclpy.shutdown()
+        # try_shutdown silently no-ops if the context is already shut
+        # down by _on_close (window-X path); plain shutdown() would
+        # raise rclpy.handle.InvalidHandle in that race.
+        rclpy.try_shutdown()
