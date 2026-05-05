@@ -10,6 +10,7 @@
 #include <mujoco/mujoco.h>
 
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 #ifndef SCENE_WITH_OBJECT_MJCF_PATH
@@ -69,6 +70,50 @@ TEST(GravcompScene, RobotBodiesTaggedFreeObjectUntagged) {
   EXPECT_DOUBLE_EQ(model->body_gravcomp[link1_id], 1.0);
   EXPECT_DOUBLE_EQ(model->body_gravcomp[link2_id], 1.0);
   EXPECT_DOUBLE_EQ(model->body_gravcomp[free_body_id], 0.0);
+
+  // Regression guard: writing body_gravcomp[] alone is not enough — MuJoCo's
+  // mj_passive() early-outs when ngravcomp==0, which is the compiled value
+  // since the MJCF doesn't declare gravcomp. Init must recount.
+  EXPECT_GE(model->ngravcomp, 2) << "ngravcomp must be recounted after Init's "
+                                    "body_gravcomp writes";
+}
+
+TEST(GravcompScene, GravcompForceActuallyAppliedAfterForward) {
+  // The other tests verify *intent* (body_gravcomp tags). This one verifies
+  // *effect*: after mj_forward (which calls mj_passive → mj_gravcomp),
+  // qfrc_gravcomp[] must be nonzero on the tagged DoFs. If RefreshNgravcomp()
+  // is missing, mj_gravcomp() early-outs on ngravcomp==0 and leaves the
+  // freshly-zeroed qfrc_gravcomp at all-zero.
+  //
+  // Using mj_forward directly (instead of SimLoop) sidesteps the test
+  // fixture's sync-barrier timing — SimLoop blocks on cmd_pending and only
+  // advances a handful of steps in 50 ms wall.
+  MuJoCoSimulator sim(MakeSceneConfig());
+  ASSERT_TRUE(sim.Initialize());
+
+  const mjModel* model = sim.GetModel();
+  ASSERT_NE(model, nullptr);
+  // mj_forward needs a writable mjData; reuse the simulator's by const_cast on
+  // its accessor — the simulator is idle (Start() not called) so there is no
+  // concurrent writer.
+  auto* data = const_cast<mjData*>(sim.GetData());
+  ASSERT_NE(data, nullptr);
+
+  // Rotate j2 (the y-axis hinge below the z-axis hinge j1) away from the
+  // gravity-aligned zero pose so link2's inertial offset develops a nonzero
+  // lever arm against world gravity. Without this, the symmetric fixture has
+  // qfrc_gravcomp == 0 at qpos == 0 even when mj_gravcomp() runs correctly.
+  data->qpos[1] = 1.0;  // j2 ≈ 57°
+  mj_forward(model, data);
+
+  double max_abs = 0.0;
+  for (int i = 0; i < model->nv; ++i) {
+    const double v = std::fabs(data->qfrc_gravcomp[i]);
+    if (v > max_abs)
+      max_abs = v;
+  }
+  EXPECT_GT(max_abs, 1e-6) << "qfrc_gravcomp[] is all zero — mj_passive() probably skipped the "
+                              "gravcomp loop because ngravcomp==0";
 }
 
 TEST(GravcompScene, FreeObjectFallsUnderWorldGravity) {

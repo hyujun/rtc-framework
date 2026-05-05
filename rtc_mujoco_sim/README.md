@@ -230,6 +230,8 @@ solver:
 
 Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의 link body 들에 대해 1.0 으로 설정되어 중력이 내부적으로 상쇄됩니다. 전역 `opt.gravity` 는 항상 원래 값으로 유지되므로, 같은 씬 안의 free body (들어올릴 객체 등) 는 정상적으로 떨어집니다 — lift / manipulation 시뮬레이션과 양립.
 
+> **Implementation note**: MuJoCo 의 `mj_passive()` 는 `mjModel.ngravcomp == 0` 이면 gravcomp 루프를 건너뜁니다. MJCF 가 `gravcomp` 속성을 명시하지 않으면 컴파일 시점 카운트가 0 이라, 런타임에 `body_gravcomp[]` 만 1.0 으로 써도 효과가 없습니다. `Init` / `PreparePhysicsStep` 에서 `body_gravcomp[]` 를 mutate 한 직후 `RefreshNgravcomp()` 가 nonzero entry 수를 다시 카운트해 이 게이트를 통과시킵니다. `test_gravcomp_scene::GravcompForceActuallyAppliedAfterForward` 가 `qfrc_gravcomp[]` 가 실제로 채워지는지 검증하는 회귀 가드입니다.
+
 ---
 
 ## 스레딩 모델
@@ -722,7 +724,7 @@ colcon test-result --verbose
 | `test_command_state_io` | 12 | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
 | `test_lifecycle` | 10 | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
 | `test_runtime_controls` | 11 | atomic setter/getter, 클램핑, world gravity 토글 |
-| `test_gravcomp_scene` | 2 | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하 (`scene_with_object.xml`) |
+| `test_gravcomp_scene` | 4 | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증 (`scene_with_object.xml`) |
 | `test_data_flow` | 5 | 상태/센서 콜백 firing, StepCount 단조, RTF |
 
 Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서).
