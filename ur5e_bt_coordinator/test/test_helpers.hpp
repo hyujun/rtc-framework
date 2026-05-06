@@ -13,15 +13,19 @@
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
 #include "ur5e_bt_coordinator/bt_types.hpp"
 #include <rtc_msgs/msg/grasp_state.hpp>
-#include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/srv/grasp_command.hpp>
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
 #include <geometry_msgs/msg/polygon.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
+#include <tf2_ros/static_transform_broadcaster.h>
+#include <tf2_ros/transform_broadcaster.h>
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <gtest/gtest.h>
@@ -85,10 +89,13 @@ class RosTestFixture : public ::testing::Test {
     // State injection publishers — pick demo_task_controller as the default
     // active for state-injection tests; SetActiveAlias() can override later.
     const std::string ctrl_ns = "/demo_task_controller";
-    arm_gui_pub_ = node_->create_publisher<rtc_msgs::msg::GuiPosition>(
-        ctrl_ns + "/ur5e/gui_position", rclcpp::QoS{10});
-    hand_gui_pub_ = node_->create_publisher<rtc_msgs::msg::GuiPosition>(
-        ctrl_ns + "/hand/gui_position", rclcpp::QoS{10});
+    // Phase 4: arm/hand state는 controller-agnostic /rtc_cm/<group>/joint_states
+    // 로 이동. TCP pose는 tf2 broadcaster (`base → tool0_actual`) 로 주입.
+    arm_joint_pub_ = node_->create_publisher<sensor_msgs::msg::JointState>(
+        "/rtc_cm/ur5e/joint_states", rclcpp::QoS{10});
+    hand_joint_pub_ = node_->create_publisher<sensor_msgs::msg::JointState>(
+        "/rtc_cm/hand/joint_states", rclcpp::QoS{10});
+    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
     grasp_state_pub_ = node_->create_publisher<rtc_msgs::msg::GraspState>(
         ctrl_ns + "/hand/grasp_state", rclcpp::QoS{10});
     world_target_pub_ =
@@ -150,16 +157,36 @@ class RosTestFixture : public ::testing::Test {
   // ── State injection helpers ─────────────────────────────────────────────
 
   void PublishArmState(const Pose6D& tcp, const std::vector<double>& joints) {
-    rtc_msgs::msg::GuiPosition msg;
-    msg.task_positions = {tcp.x, tcp.y, tcp.z, tcp.roll, tcp.pitch, tcp.yaw};
-    msg.joint_positions.assign(joints.begin(), joints.end());
-    arm_gui_pub_->publish(msg);
+    // Phase 4: TCP pose via tf2, joint via sensor_msgs/JointState.
+    sensor_msgs::msg::JointState js;
+    js.position.assign(joints.begin(), joints.end());
+    arm_joint_pub_->publish(js);
+
+    geometry_msgs::msg::TransformStamped tfs;
+    tfs.header.stamp = node_->now();
+    tfs.header.frame_id = "base";
+    tfs.child_frame_id = "tool0_actual";
+    tfs.transform.translation.x = tcp.x;
+    tfs.transform.translation.y = tcp.y;
+    tfs.transform.translation.z = tcp.z;
+    // RPY → quaternion (ZYX, matches GetTcpPose's inverse mapping).
+    const double cr = std::cos(tcp.roll * 0.5);
+    const double sr = std::sin(tcp.roll * 0.5);
+    const double cp = std::cos(tcp.pitch * 0.5);
+    const double sp = std::sin(tcp.pitch * 0.5);
+    const double cy = std::cos(tcp.yaw * 0.5);
+    const double sy = std::sin(tcp.yaw * 0.5);
+    tfs.transform.rotation.w = cr * cp * cy + sr * sp * sy;
+    tfs.transform.rotation.x = sr * cp * cy - cr * sp * sy;
+    tfs.transform.rotation.y = cr * sp * cy + sr * cp * sy;
+    tfs.transform.rotation.z = cr * cp * sy - sr * sp * cy;
+    tf_broadcaster_->sendTransform(tfs);
   }
 
   void PublishHandState(const std::vector<double>& joints) {
-    rtc_msgs::msg::GuiPosition msg;
-    msg.joint_positions.assign(joints.begin(), joints.end());
-    hand_gui_pub_->publish(msg);
+    sensor_msgs::msg::JointState js;
+    js.position.assign(joints.begin(), joints.end());
+    hand_joint_pub_->publish(js);
   }
 
   void PublishGraspState(const CachedGraspState& gs) {
@@ -222,8 +249,9 @@ class RosTestFixture : public ::testing::Test {
   MockController mock_task_;
   MockController mock_wbc_;
 
-  rclcpp::Publisher<rtc_msgs::msg::GuiPosition>::SharedPtr arm_gui_pub_;
-  rclcpp::Publisher<rtc_msgs::msg::GuiPosition>::SharedPtr hand_gui_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr arm_joint_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr hand_joint_pub_;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   rclcpp::Publisher<rtc_msgs::msg::GraspState>::SharedPtr grasp_state_pub_;
   rclcpp::Publisher<geometry_msgs::msg::Polygon>::SharedPtr world_target_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_ctrl_pub_;

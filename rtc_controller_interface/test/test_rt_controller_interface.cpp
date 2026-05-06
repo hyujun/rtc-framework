@@ -250,7 +250,6 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
 
   bool has_joint_command = false;
   bool has_ros2_command = false;
-  bool has_gui_position = false;
   bool has_robot_target = false;
 
   for (const auto& [name, group] : cfg.groups) {
@@ -265,9 +264,6 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
         case rtc::PublishRole::kRos2Command:
           has_ros2_command = true;
           break;
-        case rtc::PublishRole::kGuiPosition:
-          has_gui_position = true;
-          break;
         case rtc::PublishRole::kRobotTarget:
           has_robot_target = true;
           break;
@@ -279,7 +275,6 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
 
   EXPECT_TRUE(has_joint_command);
   EXPECT_TRUE(has_ros2_command);
-  EXPECT_TRUE(has_gui_position);
   EXPECT_TRUE(has_robot_target);
 }
 
@@ -296,7 +291,7 @@ ur5e:
     - {topic: /ur5e/target, role: target}
   publish:
     - {topic: /ur5e/joint_command, role: joint_command}
-    - {topic: /ur5e/gui_pos, role: gui_position}
+    - {topic: /ur5e/robot_target, role: robot_target}
 hand:
   subscribe:
     - {topic: /hand/joint_states, role: state}
@@ -518,11 +513,11 @@ robot:
   publish:
     - {topic: /a, role: joint_command}
     - {topic: /b, role: ros2_command}
-    - {topic: /c, role: gui_position}
     - {topic: /d, role: robot_target}
     - {topic: /g, role: grasp_state}
     - {topic: /h, role: tof_snapshot}
     - {topic: /i, role: digital_twin_state}
+    - {topic: /j, role: robot_transforms}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 

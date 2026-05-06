@@ -30,7 +30,22 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
-from rtc_msgs.msg import GuiPosition, RobotTarget
+from rtc_msgs.msg import RobotTarget
+
+
+def _quat_to_rpy(qw, qx, qy, qz):
+    """Hamilton quaternion (w,x,y,z) → ZYX RPY (roll, pitch, yaw)."""
+    import math as _m
+
+    roll = _m.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy))
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1.0:
+        pitch = _m.copysign(_m.pi / 2.0, sinp)
+    else:
+        pitch = _m.asin(sinp)
+    yaw = _m.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    return roll, pitch, yaw
+
 
 # ── 상수 ──────────────────────────────────────────────────────────────────────
 NUM_JOINTS = 6
@@ -1476,13 +1491,27 @@ class ROSNode(Node):
 
         self._qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
-        # Phase 4: controller-owned topics (/<name>/{ur5e,hand}/*) are bound
-        # on every /rtc_cm/active_controller_name transition.
+        # Phase 4: controller-owned target publishers are bound on every
+        # /rtc_cm/active_controller_name transition. arm/hand joint state는
+        # ctrl-agnostic /rtc_cm/<group>/joint_states 로 1회 구독, TCP pose는
+        # tf2 listener (`base → tool0_actual`) 가 모든 controller transforms
+        # 토픽을 자동 수집한다.
         self._active_ctrl: str = ""
-        self.task_pos_sub = None
-        self.hand_gui_pos_sub = None
         self.cmd_pub = None
         self.hand_cmd_pub = None
+
+        # Per-group JointState (ctrl-agnostic).
+        self.create_subscription(
+            JointState, "/rtc_cm/ur5e/joint_states", self.arm_joint_callback, self._qos
+        )
+        self.create_subscription(
+            JointState, "/rtc_cm/hand/joint_states", self.hand_joint_callback, self._qos
+        )
+        # tf2 listener for TCP pose.
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self._tf_parent_frame = "base"
+        self._tf_child_frame = "tool0_actual"
 
         # Manager-owned topics (fixed paths)
         self.estop_sub = self.create_subscription(
@@ -1524,39 +1553,46 @@ class ROSNode(Node):
                     pass
                 setattr(self, attr, None)
 
-        self.task_pos_sub = self.create_subscription(
-            GuiPosition, ns + "/ur5e/gui_position", self.gui_pos_callback, self._qos
-        )
-        self.hand_gui_pos_sub = self.create_subscription(
-            GuiPosition, ns + "/hand/gui_position", self.hand_gui_pos_callback, self._qos
-        )
+        # Phase 4: arm/hand joint state는 init에서 1회 ctrl-agnostic 토픽
+        # 구독; rewire에서는 target publisher만 갱신.
         self.cmd_pub = self.create_publisher(RobotTarget, ns + "/ur5e/joint_goal", self._qos)
         self.hand_cmd_pub = self.create_publisher(RobotTarget, ns + "/hand/joint_goal", self._qos)
-        self.get_logger().info(f"rewired controller-owned topics to '{name}'")
+        self.get_logger().info(f"rewired controller-owned target publishers to '{name}'")
 
-    def gui_pos_callback(self, msg: GuiPosition):
-        if len(msg.joint_positions) >= NUM_JOINTS:
-            if msg.joint_names and len(msg.joint_names) >= NUM_JOINTS:
+    def arm_joint_callback(self, msg: JointState):
+        """Phase 4: /rtc_cm/ur5e/joint_states (replaces gui_pos_callback)."""
+        if len(msg.position) >= NUM_JOINTS:
+            if msg.name and len(msg.name) >= NUM_JOINTS:
                 reordered = [0.0] * NUM_JOINTS
-                for mi, name in enumerate(msg.joint_names[:NUM_JOINTS]):
+                for mi, name in enumerate(msg.name[:NUM_JOINTS]):
                     if name in _ROBOT_NAME_TO_IDX:
-                        reordered[_ROBOT_NAME_TO_IDX[name]] = msg.joint_positions[mi]
+                        reordered[_ROBOT_NAME_TO_IDX[name]] = msg.position[mi]
                 self.gui.update_joints(np.array(reordered))
             else:
-                self.gui.update_joints(np.array(msg.joint_positions[:NUM_JOINTS]))
-        if len(msg.task_positions) >= 6:
-            self.gui.update_task_position(np.array(msg.task_positions[:6]))
+                self.gui.update_joints(np.array(msg.position[:NUM_JOINTS]))
+        # TCP pose via tf2 lookup.
+        try:
+            tfs = self._tf_buffer.lookup_transform(
+                self._tf_parent_frame, self._tf_child_frame, rclpy.time.Time()
+            )
+            t = tfs.transform.translation
+            r = tfs.transform.rotation
+            roll, pitch, yaw = _quat_to_rpy(r.w, r.x, r.y, r.z)
+            self.gui.update_task_position(np.array([t.x, t.y, t.z, roll, pitch, yaw]))
+        except TransformException:
+            pass
 
-    def hand_gui_pos_callback(self, msg: GuiPosition):
-        if len(msg.joint_positions) >= NUM_HAND_MOTORS:
-            if msg.joint_names and len(msg.joint_names) >= NUM_HAND_MOTORS:
+    def hand_joint_callback(self, msg: JointState):
+        """Phase 4: /rtc_cm/hand/joint_states (replaces hand_gui_pos_callback)."""
+        if len(msg.position) >= NUM_HAND_MOTORS:
+            if msg.name and len(msg.name) >= NUM_HAND_MOTORS:
                 reordered = [0.0] * NUM_HAND_MOTORS
-                for mi, name in enumerate(msg.joint_names[:NUM_HAND_MOTORS]):
+                for mi, name in enumerate(msg.name[:NUM_HAND_MOTORS]):
                     if name in _HAND_NAME_TO_IDX:
-                        reordered[_HAND_NAME_TO_IDX[name]] = msg.joint_positions[mi]
+                        reordered[_HAND_NAME_TO_IDX[name]] = msg.position[mi]
                 self.gui.update_hand_state(np.array(reordered))
             else:
-                self.gui.update_hand_state(np.array(msg.joint_positions[:NUM_HAND_MOTORS]))
+                self.gui.update_hand_state(np.array(msg.position[:NUM_HAND_MOTORS]))
 
     def estop_callback(self, msg):
         self.gui.update_estop(msg.data)

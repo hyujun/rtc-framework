@@ -57,15 +57,15 @@ rtc_digital_twin/
 [rtc_controller_manager (C++, RT @ control_rate; default 500Hz)]
   /joint_states (BE/2) -> DeviceJointStateCallback
        ├── device_states_ 업데이트 (기존)
-       └── forward -> /{group}/digital_twin/joint_states (RELIABLE/10)
+       └── forward -> /rtc_cm/{group}/joint_states (RELIABLE/10)
 
 [digital_twin_node (Python)]
-  /{group}/digital_twin/joint_states (RELIABLE/10) ──┐
-                                                      ├-> merge -> /digital_twin/joint_states
-  /{group}/digital_twin/joint_states (RELIABLE/10) ──┘     │
-                                                            ├-> mimic 조인트 자동 계산
-                                                            ├-> URDF 검증 (로그)
-                                                            └-> (선택) sensor_viz -> MarkerArray
+  /rtc_cm/{group}/joint_states (RELIABLE/10) ──┐
+                                                ├-> merge -> /digital_twin/joint_states
+  /rtc_cm/{group}/joint_states (RELIABLE/10) ──┘     │
+                                                      ├-> mimic 조인트 자동 계산
+                                                      ├-> URDF 검증 (로그)
+                                                      └-> (선택) sensor_viz -> MarkerArray
 
 [robot_state_publisher]
   /digital_twin/joint_states -> TF tree -> RViz2
@@ -327,14 +327,14 @@ Launch 파일은 URDF/xacro를 처리하여 `robot_description` 문자열을 `ro
 
 ---
 
-## rtc_controller_manager 연동 (Digital Twin Republish)
+## rtc_controller_manager 연동 (per-group JointState republish)
 
 `rtc_controller_manager` 패키지의 `rtc_controller_manager` 노드는 각 디바이스 그룹의 JointState를 RELIABLE QoS로 자동 republish합니다:
 
 | 원본 토픽 (BEST_EFFORT/2) | Republish 토픽 (RELIABLE/10) |
 |---|---|
-| `/joint_states` | `/{group}/digital_twin/joint_states` |
-| `/hand/joint_states` | `/{group}/digital_twin/joint_states` |
+| `/joint_states` | `/rtc_cm/{group}/joint_states` |
+| `/hand/joint_states` | `/rtc_cm/{group}/joint_states` |
 
 - `DeviceJointStateCallback()`에서 수신 즉시 forward (최소 레이턴시)
 - sensor executor 스레드에서 실행 (RT 루프 영향 없음)

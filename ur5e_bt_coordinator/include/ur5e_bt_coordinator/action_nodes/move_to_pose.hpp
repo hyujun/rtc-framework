@@ -11,8 +11,9 @@ namespace rtc_bt {
 
 /// Move the arm TCP to a target 6D pose via task-space control.
 ///
-/// Publishes target to /ur5e/joint_goal, then monitors /ur5e/gui_position
-/// until the TCP reaches the target within tolerance or timeout.
+/// Publishes target to /ur5e/joint_goal, then monitors the bridge's tf2 lookup
+/// (`base → tool0_actual`, sourced from the active controller's transforms
+/// topic) until the TCP reaches the target within tolerance or timeout.
 ///
 /// Input ports:
 ///   - target (Pose6D): goal pose [x,y,z,roll,pitch,yaw]

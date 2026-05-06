@@ -290,19 +290,23 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   std::unordered_map<std::string, JointCommandPublisherEntry> joint_command_publishers_;
 
-  // Controller-output publish roles (kGuiPosition / kGraspState / kToFSnapshot
-  // / kRobotTarget) are owned by each controller's LifecycleNode via
-  // owned_topics.cpp + PublishNonRtSnapshot — CM does not host them.
+  // Controller-output publish roles (kGraspState / kToFSnapshot / kRobotTarget
+  // / kWbcState / kRobotTransforms) are owned by each controller's
+  // LifecycleNode via owned_topics.cpp + PublishNonRtSnapshot — CM does not
+  // host them.
 
-  // ── Digital Twin JointState republishers (RELIABLE, depth 10) ────────────
-  // key = "/{group}/digital_twin/joint_states"
+  // ── Per-group JointState republishers (RELIABLE, depth 10) ──────────────
+  // key = "/rtc_cm/{group}/joint_states" — single source of truth for the
+  // measured joint state per device group, regardless of which controller is
+  // active. rtc_digital_twin (or any external tool) merges these into a
+  // single /joint_states for robot_state_publisher / RViz.
   struct DigitalTwinEntry {
     rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr publisher;
     sensor_msgs::msg::JointState msg;  // pre-allocated with config joint_state_names
   };
 
   std::unordered_map<std::string, DigitalTwinEntry> digital_twin_publishers_;
-  // group_slot → digital_twin topic name mapping
+  // group_slot → JointState topic name mapping
   std::unordered_map<int, std::string> slot_to_dt_topic_;
 
   // Per-controller topic config cache (index = controller index)

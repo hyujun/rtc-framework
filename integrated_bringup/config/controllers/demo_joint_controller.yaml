@@ -55,8 +55,11 @@ demo_joint_controller:
         - topic: "/forward_position_controller/commands"
           role: "ros2_command"
           data_size: 6
-        - topic: "ur5e/gui_position"
-          role: "gui_position"
+        # Per-controller TF (Phase 2): controller당 1 토픽, tf2_msgs/TFMessage.
+        # frame_id는 system YAML urdf.{sub,tree}_models 기반 자동 결정 +
+        # virtual_tcp. Single publisher → entry는 첫 group(ur5e)에만 둠 (D-10).
+        - topic: "transforms"
+          role: "robot_transforms"
           ownership: "controller"
     hand:
       subscribe:
@@ -72,9 +75,6 @@ demo_joint_controller:
       publish:
         - topic: "/hand/joint_command"
           role: "joint_command"
-        - topic: "hand/gui_position"
-          role: "gui_position"
-          ownership: "controller"
         - topic: "hand/grasp_state"
           role: "grasp_state"
           ownership: "controller"

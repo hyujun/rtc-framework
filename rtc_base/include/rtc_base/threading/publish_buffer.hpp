@@ -65,6 +65,21 @@ struct PublishSnapshot {
     WbcStateData wbc_state{};
     // ToF snapshot (from controller output)
     ToFSnapshotData tof_snapshot{};
+
+    // ── TF source poses for kRobotTransforms publish role ──────────────
+    // RT loop fills these from FK results when the controller is configured
+    // to broadcast a TFMessage. Independent of tof_snapshot (which only
+    // populates when ToF is active and only for ToF fingers). Publish
+    // thread reads them from PublishOwnedTopicsFromSnapshot via the
+    // TfFrameSlot indirection in owned_topics.cpp.
+    Pose arm_tip_pose{};
+    bool arm_tip_pose_valid{false};
+    Pose virtual_tcp_pose{};
+    bool virtual_tcp_pose_valid{false};
+    // Per-fingertip world-frame poses (kMaxFingertips = 8).
+    // Indexed by fingertip index in the controller's hand tree_model.
+    std::array<Pose, kMaxFingertips> fingertip_poses{};
+    std::array<bool, kMaxFingertips> fingertip_pose_valid{};
   };
 
   std::array<GroupCommandSlot, kMaxGroups> group_commands{};

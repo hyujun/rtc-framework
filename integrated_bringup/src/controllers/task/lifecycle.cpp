@@ -1,5 +1,5 @@
-#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <chrono>
@@ -20,6 +20,29 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
+
+    // ── kRobotTransforms: register frame slots (Phase 3) ──────────────────
+    // DemoTask shares the DemoJoint frame layout — arm tip + 4 fingertip +
+    // virtual_tcp = 6 frames. See joint/lifecycle.cpp for rationale.
+    if (owned_topics_.tf_pub) {
+      const auto* sys_cfg = GetSystemModelConfig();
+      if (sys_cfg && !sys_cfg->sub_models.empty()) {
+        const auto& submodel = sys_cfg->sub_models.front();
+        AppendArmTipSlot(owned_topics_, submodel.root_link, submodel.tip_link, /*group_idx=*/0);
+      }
+      if (sys_cfg) {
+        for (const auto& tm : sys_cfg->tree_models) {
+          if (tm.name == "hand") {
+            AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1);
+            break;
+          }
+        }
+      }
+      if (sys_cfg && !sys_cfg->sub_models.empty()) {
+        AppendVirtualTcpSlot(owned_topics_, sys_cfg->sub_models.front().root_link,
+                             /*group_idx=*/0);
+      }
+    }
 
     // ── PR2 (U3) Lift: Phase C controller-owned CSV log registration ──────
     LogRegistrationContext ctx{logger_,

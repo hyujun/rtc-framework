@@ -26,9 +26,9 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
     // Control Command
     {"joint_command", PublishRole::kJointCommand},
     {"ros2_command", PublishRole::kRos2Command},
-    // GUI / Monitoring
-    {"gui_position", PublishRole::kGuiPosition},
     // Topic-based State/Command/Goal
+    // (Phase 4: "gui_position" role removed — consumers use
+    // /rtc_cm/<group>/joint_states + <config_key>/transforms instead.)
     {"robot_target", PublishRole::kRobotTarget},
     // backward compat
     {"joint_goal", PublishRole::kRobotTarget},
@@ -37,6 +37,7 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
     {"grasp_state", PublishRole::kGraspState},
     {"wbc_state", PublishRole::kWbcState},
     {"tof_snapshot", PublishRole::kToFSnapshot},
+    {"robot_transforms", PublishRole::kRobotTransforms},
     // Digital twin
     {"digital_twin_state", PublishRole::kDigitalTwinState},
     // backward compat
@@ -235,10 +236,11 @@ TopicConfig RTControllerInterface::MakeDefaultTopicConfig(const std::string& dev
   cfg[device_name].publish = {
       {ns + "/joint_command", PublishRole::kJointCommand, 0},
       {"/forward_position_controller/commands", PublishRole::kRos2Command, 0},
-      {ns + "/gui_position", PublishRole::kGuiPosition, 0},
       {ns + "/robot_target", PublishRole::kRobotTarget, 0},
       // (Phase C: legacy device_state_log entry removed — controller-owned
       // CSV via ControllerLogSet replaces it.)
+      // (Phase 4: gui_position entry removed — consumers use
+      // /rtc_cm/<group>/joint_states + <config_key>/transforms.)
   };
   cfg[device_name].capability = InferCapability(cfg[device_name]);
 

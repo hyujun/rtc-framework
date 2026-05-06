@@ -11,7 +11,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/JointCommand.msg"
   "msg/FingertipSensor.msg"
   "msg/HandSensorState.msg"
-  "msg/GuiPosition.msg"
   "msg/RobotTarget.msg"
   "msg/DeviceStateLog.msg"
   "msg/DeviceSensorLog.msg"

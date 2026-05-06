@@ -55,8 +55,8 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
             PublishRos2CommandEntry(snap, entry, group_idx);
             break;
           default:
-            // Controller-output roles (kGuiPosition / kRobotTarget /
-            // kGraspState / kToFSnapshot / kWbcState) are owned by the
+            // Controller-output roles (kRobotTarget / kGraspState /
+            // kToFSnapshot / kWbcState / kRobotTransforms) are owned by the
             // active controller's LifecycleNode and forwarded via
             // PublishNonRtSnapshot below — CM has no publisher for them.
             // CreatePublishers() throws on misconfigured manager-owned

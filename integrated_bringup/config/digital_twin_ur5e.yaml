@@ -18,10 +18,10 @@
     # ── Joint state sources (UR5e arm + 10-DOF hand) ──────────────────
     num_sources: 2
 
-    source_0.topic: "/ur5e/digital_twin/joint_states"
+    source_0.topic: "/rtc_cm/ur5e/joint_states"
     source_0.joint_names: [""]        # empty/"" = accept all joints from topic
 
-    source_1.topic: "/hand/digital_twin/joint_states"
+    source_1.topic: "/rtc_cm/hand/joint_states"
     source_1.joint_names: [""]
 
     # ── Sensor visualization (10-DOF hand fingertip sensors) ──────────
@@ -29,6 +29,6 @@
     sensor_viz.fingertip_names: ["thumb", "index", "middle", "ring"]
 
     # ── TCP visualization ─────────────────────────────────────────────
-    # Relative source — digital_twin auto-prefixes with /<active_controller_name>/
-    # on every /rtc_cm/active_controller_name change.
-    tcp_viz.source_topic: "ur5e/gui_position"
+    # Phase 4: tf2 lookup (`base → tool0_actual`); active controller 의
+    # <config_key>/transforms 가 listener buffer 로 자동 수집된다.
+    tcp_viz.source_topic: "tool0_actual"

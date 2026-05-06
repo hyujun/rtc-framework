@@ -1,7 +1,6 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
-
-#include "rtc_base/utils/clamp_commands.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_base/utils/clamp_commands.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -681,6 +680,37 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
+  // ── TF source poses for kRobotTransforms (Phase 3) ─────────────────────
+  // Same layout as DemoJointController. Arm tip = raw FK (not vtcp);
+  // virtual_tcp slot only valid when fingertip-based vtcp computed.
+  {
+    const Eigen::Vector3d& trans = tcp_current.translation();
+    const Eigen::Quaterniond quat(tcp_current.rotation());
+    output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
+    output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+    output.arm_tip_pose_valid = true;
+  }
+  if (vtcp_valid_) {
+    const Eigen::Vector3d& trans = vtcp_pose_.translation();
+    const Eigen::Quaterniond quat(vtcp_pose_.rotation());
+    output.virtual_tcp_pose.position = {trans.x(), trans.y(), trans.z()};
+    output.virtual_tcp_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+    output.virtual_tcp_pose_valid = true;
+  } else {
+    output.virtual_tcp_pose_valid = false;
+  }
+  for (std::size_t f = 0; f < kNumFingertips; ++f) {
+    if (fingertip_frame_ids_[f] != 0) {
+      const Eigen::Vector3d& trans = fingertip_positions_[f];
+      const Eigen::Quaterniond quat(fingertip_rotations_[f]);
+      output.fingertip_poses[f].position = {trans.x(), trans.y(), trans.z()};
+      output.fingertip_poses[f].quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+      output.fingertip_pose_valid[f] = true;
+    } else {
+      output.fingertip_pose_valid[f] = false;
+    }
+  }
+
   // Task goal target from GUI
   output.task_goal_positions[0] = tcp_target_[0];
   output.task_goal_positions[1] = tcp_target_[1];
@@ -784,6 +814,25 @@ ControllerOutput DemoTaskController::ComputeEstop(const ControllerState& state) 
       out1.target_positions[i] = dev1.positions[i];
       out1.trajectory_positions[i] = dev1.positions[i];
     }
+  }
+
+  // ── TF source poses (E-STOP path keeps arm tip tf alive) ───────────────
+  if (arm_handle_) {
+    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
+    arm_handle_->ComputeForwardKinematics(q_span);
+    pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+    if (use_root_frame_) {
+      tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+    }
+    const Eigen::Vector3d& trans = tcp.translation();
+    const Eigen::Quaterniond quat(tcp.rotation());
+    output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
+    output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+    output.arm_tip_pose_valid = true;
+  }
+  output.virtual_tcp_pose_valid = false;
+  for (std::size_t f = 0; f < output.fingertip_pose_valid.size(); ++f) {
+    output.fingertip_pose_valid[f] = false;
   }
 
   return output;

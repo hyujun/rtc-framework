@@ -15,6 +15,9 @@ find_package(rtc_msgs REQUIRED)
 find_package(shape_estimation_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 # ── Library: all BT nodes + ROS bridge ─────────────────────────────────────
 add_library(bt_nodes SHARED
@@ -53,7 +56,7 @@ target_include_directories(bt_nodes PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(bt_nodes
-  rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
+  rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs sensor_msgs rtc_msgs shape_estimation_msgs tf2 tf2_ros
 )
 target_link_libraries(bt_nodes Eigen3::Eigen)
 
@@ -67,7 +70,7 @@ target_include_directories(bt_coordinator_node PRIVATE
 )
 target_link_libraries(bt_coordinator_node bt_nodes)
 ament_target_dependencies(bt_coordinator_node
-  rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
+  rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs sensor_msgs rtc_msgs shape_estimation_msgs tf2 tf2_ros ament_index_cpp
 )
 
 # ── Executable: offline tree validator ─────────────────────────────────────

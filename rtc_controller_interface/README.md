@@ -266,8 +266,8 @@ my_controller:
         - topic: "/ur5e/joint_command"
           role: "joint_command"
           data_size: 6
-        - topic: "ur5e/gui_position"   # relative path (controller namespace)
-          role: "gui_position"
+        - topic: "transforms"          # relative path (controller namespace)
+          role: "robot_transforms"
           ownership: "controller"
     hand:
       subscribe:
@@ -306,13 +306,13 @@ Controller-owned 토픽은 on_configure에서 컨트롤러가 직접 `node_->cre
 |-----------------|---------|------|
 | `joint_command` | `kJointCommand` | 통합 관절 커맨드 (JointCommand) |
 | `ros2_command` | `kRos2Command` | ROS2 표준 커맨드 (Float64MultiArray) |
-| `gui_position` | `kGuiPosition` | GUI 표시용 위치 (GuiPosition) |
 | `robot_target` | `kRobotTarget` | 관절/태스크 목표 (RobotTarget) |
 | `device_state_log` | `kDeviceStateLog` | 통합 상태 로그 (DeviceStateLog) |
 | `device_sensor_log` | `kDeviceSensorLog` | 센서 + 추론 로그 (DeviceSensorLog) |
 | `grasp_state` | `kGraspState` | Force-PI grasp 컨트롤러 상태 (GraspState) — joint/task 데모 |
 | `wbc_state` | `kWbcState` | TSID-based WBC 컨트롤러 상태 (WbcState) — wbc 데모 |
 | `tof_snapshot` | `kToFSnapshot` | ToF 센서 + 핑거팁 포즈 스냅샷 (ToFSnapshot) |
+| `robot_transforms` | `kRobotTransforms` | Per-controller TFMessage — controller당 1 토픽 (`<config_key>/transforms`)에 arm tip / hand fingertips / virtual TCP frame을 묶어 발행 (`tf2_msgs/TFMessage`) |
 | `digital_twin_state` | `kDigitalTwinState` | 디지털 트윈용 관절 상태 (JointState, RELIABLE QoS) |
 | `joint_goal` | `kRobotTarget` | 하위 호환 별칭 |
 | `position_command` | `kRos2Command` | 하위 호환 별칭 |
@@ -333,7 +333,6 @@ ur5e.subscribe:
 ur5e.publish:
   /ur5e/joint_command                    (kJointCommand, data_size=6)
   /forward_position_controller/commands  (kRos2Command,  data_size=6)
-  /ur5e/gui_position                     (kGuiPosition)
   /ur5e/robot_target                     (kRobotTarget)
   /ur5e/state_log                        (kDeviceStateLog)
 ```

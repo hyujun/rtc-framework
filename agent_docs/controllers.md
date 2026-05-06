@@ -54,10 +54,10 @@ Key params in `grasp_types.hpp`: `Kp_base=0.02`, `Ki_base=0.002`, `f_target=2.0N
 
 **Dynamic** (per controller TopicConfig):
 - **CM-owned (HW/sim ↔ controller boundary)** — Subscribe: `kState` / `kMotorState` / `kSensorState` (HW→controller), `kTarget` (외부→controller). Publish: `kJointCommand` (controller→HW/sim), `kRos2Command` (sim forward bridge).
-- **Controller-owned (`<config_key>/` namespace, `PublishNonRtSnapshot`)** — `kGuiPosition`, `kGraspState`, `kWbcState`, `kToFSnapshot`, `kRobotTarget`. CM은 SPSC snapshot 운반만 담당하며 퍼블리셔를 만들지 않는다 (YAML `ownership: manager` 라도 CM은 무시).
+- **Controller-owned (`<config_key>/` namespace, `PublishNonRtSnapshot`)** — `kGraspState`, `kWbcState`, `kToFSnapshot`, `kRobotTarget`, `kRobotTransforms`. CM은 SPSC snapshot 운반만 담당하며 퍼블리셔를 만들지 않는다 (YAML `ownership: manager` 라도 CM은 무시). Phase 4: `kGuiPosition` 폐기 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체.
 - **상호 배타**: `kGraspState` 와 `kWbcState` — Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state. DemoWbcController는 `<config_key>/hand/wbc_state` (RELIABLE/10) 로 발행.
 
-**Digital Twin**: `/{group}/digital_twin/joint_states` (RELIABLE) -> `rtc_digital_twin` merges -> RViz2
+**CM per-group JointState**: `/rtc_cm/{group}/joint_states` (RELIABLE) -> `rtc_digital_twin` merges -> RViz2
 
 **Hand Driver**: `/hand/joint_states`, `/hand/motor_states`, `/hand/sensor_states` (Pub); `/hand/joint_command` (Sub)
 

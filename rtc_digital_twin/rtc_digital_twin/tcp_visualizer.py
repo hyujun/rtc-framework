@@ -1,6 +1,9 @@
 """TCP (Tool Center Point) visualization for RViz.
 
-Subscribes to GuiPosition messages and generates:
+Phase 4: TCP pose는 tf2 (`base → tool0_actual`) 에서 가져온다 (이전에는
+GuiPosition 토픽). 도형/마커 생성 로직은 동일.
+
+Generates:
   - Sphere marker at the current TCP position
   - Axes (3 arrows) showing TCP orientation (RPY)
   - TF broadcast for virtual_tcp frame (optional)
@@ -16,7 +19,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 
 class TcpVisualizer:
-    """Converts GuiPosition task_positions [x,y,z,r,p,y] to RViz markers.
+    """Converts a tf2 TransformStamped (Phase 4) to RViz markers.
 
     Markers:
       - Sphere at TCP position (semi-transparent)
@@ -157,6 +160,47 @@ class TcpVisualizer:
         tf.transform.rotation.w = qw
 
         return tf
+
+    # ── Phase 4: tf2 entry points (TransformStamped → markers / TF) ──────
+
+    def create_markers_from_tf(self, tfs, stamp, goal_positions=None) -> MarkerArray:
+        """Create MarkerArray from a tf2 TransformStamped.
+
+        Args:
+            tfs: geometry_msgs/TransformStamped (translation + quaternion)
+            stamp: ROS2 Time message for marker header
+            goal_positions: optional [x, y, z, ...] for goal display
+        """
+        x = float(tfs.transform.translation.x)
+        y = float(tfs.transform.translation.y)
+        z = float(tfs.transform.translation.z)
+        qw = float(tfs.transform.rotation.w)
+        qx = float(tfs.transform.rotation.x)
+        qy = float(tfs.transform.rotation.y)
+        qz = float(tfs.transform.rotation.z)
+        roll, pitch, yaw = self._quat_to_rpy(qw, qx, qy, qz)
+        return self.create_markers([x, y, z, roll, pitch, yaw], stamp, goal_positions)
+
+    def create_tf_from_tf(self, tfs, stamp, child_frame: str):
+        """Create a virtual-tcp TransformStamped re-using the source pose."""
+        out = TransformStamped()
+        out.header.stamp = stamp
+        out.header.frame_id = self.frame_id
+        out.child_frame_id = child_frame
+        out.transform = tfs.transform  # copy translation + rotation as-is
+        return out
+
+    @staticmethod
+    def _quat_to_rpy(qw, qx, qy, qz):
+        """Hamilton quaternion (w,x,y,z) → ZYX RPY (roll, pitch, yaw)."""
+        roll = math.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy))
+        sinp = 2.0 * (qw * qy - qz * qx)
+        if abs(sinp) >= 1.0:
+            pitch = math.copysign(math.pi / 2.0, sinp)
+        else:
+            pitch = math.asin(sinp)
+        yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        return roll, pitch, yaw
 
     # ── Private helpers ──────────────────────────────────────────────────
 
