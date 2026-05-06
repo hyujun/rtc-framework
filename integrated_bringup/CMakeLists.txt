@@ -30,6 +30,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(tf2_msgs REQUIRED)
 find_package(rtc_controller_interface REQUIRED)
 find_package(rtc_controllers REQUIRED)
 find_package(rtc_base REQUIRED)
@@ -75,8 +76,10 @@ target_include_directories(${PROJECT_NAME}_demo_controllers PUBLIC
 ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   ament_index_cpp
   rclcpp
+  rclcpp_lifecycle
   std_msgs
   sensor_msgs
+  tf2_msgs
   rtc_controller_interface
   rtc_controllers
   rtc_base

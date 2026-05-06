@@ -21,15 +21,44 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <rclcpp_lifecycle/state.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
 
 #include <array>
 #include <cstddef>
+#include <string>
+#include <vector>
 
 namespace integrated_bringup {
 
 // Up to two device groups per demo (ur5e, hand). Expand if/when a demo
 // introduces a third group.
 inline constexpr std::size_t kMaxOwnedGroups = 2;
+
+// Upper bound on TFMessage transforms broadcast by a single controller.
+// Sized for DemoJoint/Task (6: arm tip + 4 fingertip + virtual_tcp) and
+// DemoWbc (4 fingertip + alpha placeholder + headroom for future frames).
+inline constexpr std::size_t kMaxControllerTransforms = 16;
+
+// One transform slot — populated at on_configure from the system YAML
+// urdf.{sub,tree}_models. The publish thread reads from
+// PublishSnapshot::GroupCommandSlot SE3 fields based on `source` + index.
+struct TfFrameSlot {
+  std::string parent_frame_id;  // pre-allocated string (no resize at publish)
+  std::string child_frame_id;
+
+  enum class Source : uint8_t {
+    kArmTip,        // group_commands[group_idx].arm_tip_pose
+    kHandTip,       // group_commands[group_idx].fingertip_poses[source_index]
+    kVirtualTcp,    // group_commands[group_idx].virtual_tcp_pose
+    kWbcTipInBase,  // (Phase 3) WBC tree, tip in base frame — slot reserved
+    kCustom,        // (D-5) future extension hook
+  };
+
+  Source source{Source::kArmTip};
+  int group_idx{0};        // PublishSnapshot::group_commands index
+  int source_index{0};     // for multi-tip sources (fingertip index)
+  bool slot_valid{false};  // controller configured this slot at on_configure
+};
 
 struct ControllerTopicHandles {
   // Target subscriptions — one per device group (ur5e, hand).
@@ -58,6 +87,16 @@ struct ControllerTopicHandles {
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::WbcState>::SharedPtr wbc_pub{};
   rtc_msgs::msg::WbcState wbc_msg{};
   int wbc_group_idx{-1};
+
+  // ── Per-controller TF publisher (kRobotTransforms) ────────────────────
+  // Single publisher per controller — D-2: controller당 1 토픽. The set of
+  // frames is fixed at on_configure (parent/child frame_id + source slot)
+  // so the publish path is allocation-free apart from TFMessage vector
+  // resize; tf_msg.transforms is pre-reserved in CreateOwnedTopics.
+  rclcpp_lifecycle::LifecyclePublisher<tf2_msgs::msg::TFMessage>::SharedPtr tf_pub{};
+  tf2_msgs::msg::TFMessage tf_msg{};
+  std::array<TfFrameSlot, kMaxControllerTransforms> tf_slots{};
+  int num_tf_slots{0};
 };
 
 // Walk ctrl.GetTopicConfig().groups and for every entry with
@@ -82,6 +121,33 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept;
 // thread via RTControllerInterface::PublishNonRtSnapshot. Must be noexcept.
 void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
                                     ControllerTopicHandles& handles) noexcept;
+
+// ── Helpers for controllers to register TF frame slots at on_configure ─────
+// Each helper appends one TfFrameSlot to handles.tf_slots[] (no-op when the
+// slot array is full). frame_id strings are stored by value so the publish
+// thread sees stable memory.
+
+// Append `<root>` → `<tip>_actual` slot reading PublishSnapshot
+// group_commands[group_idx].arm_tip_pose. Returns false if no room.
+bool AppendArmTipSlot(ControllerTopicHandles& handles, const std::string& parent_frame,
+                      const std::string& child_link, int group_idx);
+
+// Append `<hand_root>` → `<tip>_actual` slot per fingertip, reading
+// group_commands[group_idx].fingertip_poses[source_index]. Skips slots when
+// `tip_links` exceeds remaining capacity.
+void AppendHandTipSlots(ControllerTopicHandles& handles, const std::string& parent_frame,
+                        const std::vector<std::string>& tip_links, int group_idx);
+
+// Append `<base>` → `virtual_tcp_actual` slot reading
+// group_commands[group_idx].virtual_tcp_pose. group_idx selects which slot
+// holds the virtual TCP — typically the arm group (0).
+bool AppendVirtualTcpSlot(ControllerTopicHandles& handles, const std::string& parent_frame,
+                          int group_idx);
+
+// Append a placeholder slot (slot_valid = false) for future activation —
+// used by DemoWbcController for the D-5 "alpha" frame.
+bool AppendCustomPlaceholderSlot(ControllerTopicHandles& handles, const std::string& parent_frame,
+                                 const std::string& child_frame);
 
 }  // namespace integrated_bringup
 

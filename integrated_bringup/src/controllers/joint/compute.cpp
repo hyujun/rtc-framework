@@ -1,6 +1,6 @@
-#include "rtc_base/utils/clamp_commands.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_base/utils/clamp_commands.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -42,7 +42,8 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
         ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
       }
       for (std::size_t j = 0; j < 3; ++j) {
-        ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + kHandBaroChannelsCapacity + j];
+        ft.tof[j] =
+            dev1.sensor_data[static_cast<std::size_t>(base) + kHandBaroChannelsCapacity + j];
       }
 
       ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
@@ -435,6 +436,38 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
+  // ── TF source poses for kRobotTransforms publish ───────────────────────
+  // Arm tip (raw FK, not virtual TCP) — frame_id base → tool0_actual
+  {
+    const Eigen::Vector3d& t = tcp.translation();
+    const Eigen::Quaterniond q(tcp.rotation());
+    output.arm_tip_pose.position = {t.x(), t.y(), t.z()};
+    output.arm_tip_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
+    output.arm_tip_pose_valid = true;
+  }
+  // Virtual TCP — only valid when fingertip-based vtcp computed successfully
+  if (vtcp_valid_) {
+    const Eigen::Vector3d& t = vtcp_pose_.translation();
+    const Eigen::Quaterniond q(vtcp_pose_.rotation());
+    output.virtual_tcp_pose.position = {t.x(), t.y(), t.z()};
+    output.virtual_tcp_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
+    output.virtual_tcp_pose_valid = true;
+  } else {
+    output.virtual_tcp_pose_valid = false;
+  }
+  // Fingertip poses (in arm root frame, computed during hand FK loop earlier)
+  for (std::size_t f = 0; f < kNumFingertips; ++f) {
+    if (fingertip_frame_ids_[f] != 0) {
+      const Eigen::Vector3d& t = fingertip_positions_[f];
+      const Eigen::Quaterniond q(fingertip_rotations_[f]);
+      output.fingertip_poses[f].position = {t.x(), t.y(), t.z()};
+      output.fingertip_poses[f].quaternion = {q.w(), q.x(), q.y(), q.z()};
+      output.fingertip_pose_valid[f] = true;
+    } else {
+      output.fingertip_pose_valid[f] = false;
+    }
+  }
+
   // Joint mode: no explicit task goal from GUI, mirror FK result
   output.task_goal_positions = output.actual_task_positions;
 
@@ -527,6 +560,21 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
   output.task_goal_positions = output.actual_task_positions;
+
+  // ── TF source poses (E-STOP path keeps tf alive for RViz) ─────────────
+  // Arm tip raw FK still valid; virtual TCP / fingertip poses are not
+  // updated under E-STOP (hand hold), so keep their valid flags false.
+  {
+    const Eigen::Vector3d& t = tcp.translation();
+    const Eigen::Quaterniond q(tcp.rotation());
+    output.arm_tip_pose.position = {t.x(), t.y(), t.z()};
+    output.arm_tip_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
+    output.arm_tip_pose_valid = true;
+  }
+  output.virtual_tcp_pose_valid = false;
+  for (std::size_t f = 0; f < output.fingertip_pose_valid.size(); ++f) {
+    output.fingertip_pose_valid[f] = false;
+  }
 
   return output;
 }

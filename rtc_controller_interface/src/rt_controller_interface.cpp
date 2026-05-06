@@ -37,6 +37,7 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
     {"grasp_state", PublishRole::kGraspState},
     {"wbc_state", PublishRole::kWbcState},
     {"tof_snapshot", PublishRole::kToFSnapshot},
+    {"robot_transforms", PublishRole::kRobotTransforms},
     // Digital twin
     {"digital_twin_state", PublishRole::kDigitalTwinState},
     // backward compat

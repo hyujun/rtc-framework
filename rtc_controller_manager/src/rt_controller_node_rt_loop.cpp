@@ -274,6 +274,17 @@ void RtControllerNode::ControlLoop() {
             break;
         }
       }
+      // SE3 poses for kRobotTransforms are populated regardless of which
+      // group hosts the TF publisher (D-10): owned_topics walks tf_slots[]
+      // and reads from group_commands[slot.group_idx], so we mirror the
+      // output's pose fields into every group slot. Controllers that don't
+      // broadcast TF leave *_valid = false → publish path is a no-op.
+      gc.arm_tip_pose = output.arm_tip_pose;
+      gc.arm_tip_pose_valid = output.arm_tip_pose_valid;
+      gc.virtual_tcp_pose = output.virtual_tcp_pose;
+      gc.virtual_tcp_pose_valid = output.virtual_tcp_pose_valid;
+      gc.fingertip_poses = output.fingertip_poses;
+      gc.fingertip_pose_valid = output.fingertip_pose_valid;
       ++gi;
     }
     snap.num_groups = static_cast<int>(gi);

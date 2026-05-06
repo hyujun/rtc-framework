@@ -195,6 +195,15 @@ struct WbcStateData {
   int qp_fail_count{0};
 };
 
+// ── SE3 pose (RT-safe, trivially copyable) ─────────────────────────────────
+// Generic free-standing pose carrier used by PublishSnapshot to ferry
+// FK results from the RT loop to the publish thread (e.g. for tf publish).
+// Hamilton quaternion convention (w, x, y, z) — identity = (1, 0, 0, 0).
+struct Pose {
+  std::array<double, 3> position{};
+  std::array<double, 4> quaternion{1.0, 0.0, 0.0, 0.0};  // w, x, y, z
+};
+
 // ToF snapshot data — trivially copyable, RT-safe (SPSC buffer 호환)
 // 상한값(kMax*) 기반 고정 배열 + 런타임 num_fingers/sensors_per_finger
 struct ToFSnapshotData {
@@ -206,12 +215,8 @@ struct ToFSnapshotData {
   std::array<double, kMaxTotalSensors> distances{};
   std::array<bool, kMaxTotalSensors> valid{};
 
-  // Fingertip SE3 poses — world frame
-  struct Pose {
-    std::array<double, 3> position{};
-    std::array<double, 4> quaternion{1.0, 0.0, 0.0, 0.0};  // w, x, y, z
-  };
-
+  // Fingertip SE3 poses — world frame. Re-uses the free-standing rtc::Pose
+  // type so other consumers (e.g. PublishSnapshot tf slots) can share.
   std::array<Pose, kMaxFingers> tip_poses{};
 
   int num_fingers{0};         // 실제 사용 핑거 수
@@ -249,6 +254,18 @@ struct ControllerOutput {
   GraspStateData grasp_state{};
   WbcStateData wbc_state{};
   ToFSnapshotData tof_snapshot{};
+
+  // ── TF source poses for kRobotTransforms publish role ─────────────────
+  // RT compute fills these in addition to actual_task_positions when the
+  // controller broadcasts a TFMessage (independent of tof_snapshot, which
+  // only populates when ToF is active). Mirrors the SE3 slots in
+  // PublishSnapshot::GroupCommandSlot — CM's RT-loop copies output → snap.
+  Pose arm_tip_pose{};
+  bool arm_tip_pose_valid{false};
+  Pose virtual_tcp_pose{};
+  bool virtual_tcp_pose_valid{false};
+  std::array<Pose, kMaxFingertips> fingertip_poses{};
+  std::array<bool, kMaxFingertips> fingertip_pose_valid{};
 };
 
 // ── Per-device name + URDF configuration ─────────────────────────────────────
@@ -344,6 +361,10 @@ enum class PublishRole {
   kWbcState,  // rtc_msgs/WbcState (TSID-based WBC controllers)
   // ToF Snapshot
   kToFSnapshot,  // rtc_msgs/ToFSnapshot (ToF + fingertip SE3)
+  // Per-controller TF array — controller가 사용하는 frame들을 한 토픽에
+  // tf2_msgs/TFMessage 로 묶어 발행. frame_id는 system YAML urdf.{sub,tree}_models
+  // 의 root_link/tip_link 에서 자동 추출, child_frame_id는 "<link>_actual" suffix.
+  kRobotTransforms,  // tf2_msgs/TFMessage (controller-owned)
 };
 
 // ── Topic ownership tier ────────────────────────────────────────────────────
@@ -488,6 +509,8 @@ struct TopicConfig {
       return "wbc_state";
     case PublishRole::kToFSnapshot:
       return "tof_snapshot";
+    case PublishRole::kRobotTransforms:
+      return "robot_transforms";
   }
   return "unknown";
 }

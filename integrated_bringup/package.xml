@@ -22,6 +22,7 @@
   <depend>yaml-cpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>tf2_msgs</depend>
   <depend>rtc_controller_manager</depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-pyqt5</exec_depend>

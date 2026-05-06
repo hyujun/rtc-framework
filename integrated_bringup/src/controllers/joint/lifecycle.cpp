@@ -1,5 +1,5 @@
-#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <chrono>
@@ -23,6 +23,36 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
+
+    // ── kRobotTransforms: register frame slots from system URDF YAML ──────
+    // DemoJoint frame layout (D-3 _actual suffix convention):
+    //   sub_models.ur5e:    base → tool0_actual               (group 0)
+    //   tree_models.hand:   hand_base_link → <tip>_actual ×4  (group 1)
+    //   virtual TCP:        base → virtual_tcp_actual         (group 0)
+    // Slot list is fixed at on_configure; publish thread skips invalid
+    // poses via PublishSnapshot::*_valid flags.
+    if (owned_topics_.tf_pub) {
+      const auto* sys_cfg = GetSystemModelConfig();
+      // Arm tip — sub_models[0] (ur5e)
+      if (sys_cfg && !sys_cfg->sub_models.empty()) {
+        const auto& sm = sys_cfg->sub_models.front();
+        AppendArmTipSlot(owned_topics_, sm.root_link, sm.tip_link, /*group_idx=*/0);
+      }
+      // Hand fingertips — tree_models["hand"]
+      if (sys_cfg) {
+        for (const auto& tm : sys_cfg->tree_models) {
+          if (tm.name == "hand") {
+            AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1);
+            break;
+          }
+        }
+      }
+      // Virtual TCP — broadcast under arm group, parent = arm root_link
+      if (sys_cfg && !sys_cfg->sub_models.empty()) {
+        AppendVirtualTcpSlot(owned_topics_, sys_cfg->sub_models.front().root_link,
+                             /*group_idx=*/0);
+      }
+    }
 
     // ── PR2 (U3) Lift: Phase C controller-owned CSV log registration ──────
     // Caller maps instance strings → (joint_names, motor_names, sensor_names).
