@@ -1,7 +1,6 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
-
-#include "rtc_base/utils/clamp_commands.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_base/utils/clamp_commands.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -28,8 +27,9 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 
   const auto& dev1 = state.devices[1];
   const int num_sensor_ch = dev1.num_sensor_channels;
-  const int num_fingertips =
-      (kHandSensorValuesPerFingertipCapacity > 0) ? (num_sensor_ch / kHandSensorValuesPerFingertipCapacity) : 0;
+  const int num_fingertips = (kHandSensorValuesPerFingertipCapacity > 0)
+                                 ? (num_sensor_ch / kHandSensorValuesPerFingertipCapacity)
+                                 : 0;
   num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
@@ -81,7 +81,6 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 
 // ── Phase 2: Compute control ─────────────────────────────────────────────────
 
-
 // ── Phase 2: Compute control (phase dispatch) ───────────────────────────────
 
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
@@ -123,7 +122,6 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
 
 // ── FSM ──────────────────────────────────────────────────────────────────────
 
-
 // ── Position-mode and TSID solvers ──────────────────────────────────────────
 
 void DemoWbcController::ComputePositionMode(double dt) noexcept {
@@ -145,7 +143,6 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
     hand_computed_.velocities[i] = hstate.velocities[i];
   }
 }
-
 
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
   // 1. Extract full state (sensor values, every tick)
@@ -251,7 +248,6 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
                        static_cast<int>(phase_));
 }
 
-
 void DemoWbcController::ComputeFallback() noexcept {
   // Hold last computed positions (already in robot_computed_/hand_computed_)
   // Set velocities to zero
@@ -264,7 +260,6 @@ void DemoWbcController::ComputeFallback() noexcept {
 }
 
 // ── Phase 3: Write output ────────────────────────────────────────────────────
-
 
 // ── Phase 3: Write output ────────────────────────────────────────────────────
 
@@ -306,6 +301,16 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     output.actual_task_positions[3] = rpy[0];
     output.actual_task_positions[4] = rpy[1];
     output.actual_task_positions[5] = rpy[2];
+
+    // TF source: arm tip (Phase 3). Fingertip / virtual_tcp frames are not
+    // produced by WBC compute — those slots stay invalid.
+    {
+      const Eigen::Vector3d& trans = tcp.translation();
+      const Eigen::Quaterniond quat(tcp.rotation());
+      output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
+      output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+      output.arm_tip_pose_valid = true;
+    }
 
     // Task goal = TCP goal if valid, else mirror actual
     if (tcp_goal_valid_) {
@@ -382,7 +387,6 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
 
 // ── Target management ────────────────────────────────────────────────────────
 
-
 // ── E-STOP compute path ──────────────────────────────────────────────────────
 
 ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) noexcept {
@@ -424,7 +428,6 @@ ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) n
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
-
 // ── Helpers (full state extraction, TCP error, MPC timing log) ──────────────
 
 void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept {
@@ -454,7 +457,6 @@ void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept 
     }
   }
 }
-
 
 double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept {
   if (!arm_handle_) {

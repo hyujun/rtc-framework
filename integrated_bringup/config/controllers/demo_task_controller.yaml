@@ -76,6 +76,10 @@ demo_task_controller:
         - topic: "ur5e/gui_position"
           role: "gui_position"
           ownership: "controller"
+        # Per-controller TF (Phase 3): see demo_joint_controller.yaml.
+        - topic: "transforms"
+          role: "robot_transforms"
+          ownership: "controller"
     hand:
       subscribe:
         - topic: "hand/joint_goal"

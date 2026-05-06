@@ -1,5 +1,5 @@
-#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 
 #include <chrono>
@@ -22,6 +22,23 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     CreateOwnedTopics(*this, owned_topics_);
     mpc_timing_cb_group_ =
         node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    // ── kRobotTransforms: register frame slots (Phase 3) ──────────────────
+    // DemoWbc broadcasts arm tip + alpha placeholder for now. The
+    // integrated `tree_models.wbc` (root=base, tip_links=4 fingertips)
+    // includes the fingertip frames but WBC compute does not yet do
+    // per-fingertip FK on the publish side; adding that is deferred to a
+    // follow-up so this phase lands the cutover plumbing without touching
+    // the TSID/MPC fast path. The placeholder slot reserves a future
+    // alpha frame (D-5) — slot_valid=false, publish path skips it.
+    if (owned_topics_.tf_pub) {
+      const auto* sys_cfg = GetSystemModelConfig();
+      if (sys_cfg && !sys_cfg->sub_models.empty()) {
+        const auto& submodel = sys_cfg->sub_models.front();
+        AppendArmTipSlot(owned_topics_, submodel.root_link, submodel.tip_link, /*group_idx=*/0);
+      }
+      AppendCustomPlaceholderSlot(owned_topics_, "base", "wbc_alpha_actual");
+    }
 
     // ── PR2 (U3) Lift: Phase C controller-owned CSV log registration ──────
     LogRegistrationContext ctx{logger_,
