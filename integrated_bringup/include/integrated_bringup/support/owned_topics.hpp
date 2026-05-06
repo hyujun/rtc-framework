@@ -13,7 +13,6 @@
 #include <rtc_base/threading/publish_buffer.hpp>
 #include <rtc_controller_interface/rt_controller_interface.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
-#include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <rtc_msgs/msg/wbc_state.hpp>
@@ -64,15 +63,6 @@ struct ControllerTopicHandles {
   // Target subscriptions — one per device group (ur5e, hand).
   std::array<rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr, kMaxOwnedGroups>
       target_subs{};
-
-  // Gui-position publishers — one per device group.
-  std::array<rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::GuiPosition>::SharedPtr,
-             kMaxOwnedGroups>
-      gui_pubs{};
-  std::array<rtc_msgs::msg::GuiPosition, kMaxOwnedGroups> gui_msgs;
-  // Group index that owns the gui publisher (so PublishNonRtSnapshot can
-  // pick the correct snapshot slot). -1 when unused.
-  std::array<int, kMaxOwnedGroups> gui_group_idx{{-1, -1}};
 
   // Grasp + ToF publishers — at most one per demo (hand group).
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::GraspState>::SharedPtr grasp_pub{};

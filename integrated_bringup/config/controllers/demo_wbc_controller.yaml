@@ -35,9 +35,6 @@ demo_wbc_controller:
         - topic: "/forward_position_controller/commands"
           role: "ros2_command"
           data_size: 6
-        - topic: "ur5e/gui_position"
-          role: "gui_position"
-          ownership: "controller"
         # Per-controller TF (Phase 3): WBC publishes arm tip + alpha placeholder.
         # Fingertip frames are not yet broadcast — see wbc/lifecycle.cpp note.
         - topic: "transforms"
@@ -57,9 +54,6 @@ demo_wbc_controller:
       publish:
         - topic: "/hand/joint_command"
           role: "joint_command"
-        - topic: "hand/gui_position"
-          role: "gui_position"
-          ownership: "controller"
         - topic: "hand/wbc_state"
           role: "wbc_state"
           ownership: "controller"

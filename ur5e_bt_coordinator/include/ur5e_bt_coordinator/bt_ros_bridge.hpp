@@ -3,7 +3,6 @@
 #include "ur5e_bt_coordinator/bt_types.hpp"
 #include "ur5e_bt_coordinator/hand_pose_config.hpp"
 #include <rtc_msgs/msg/grasp_state.hpp>
-#include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <rtc_msgs/msg/wbc_state.hpp>
@@ -16,8 +15,11 @@
 #include <rclcpp/parameter.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <std_srvs/srv/trigger.hpp>
@@ -53,13 +55,18 @@ class BtRosBridge {
 
   // ── Cached state (thread-safe reads) ──────────────────────────────────────
 
-  /// Current TCP pose from /ur5e/gui_position
+  /// Current TCP pose from tf2 lookup (`base → tool0_actual`).
+  /// Phase 4: replaces GuiPosition.task_positions consumer; the active
+  /// controller broadcasts `<config_key>/transforms` (tf2_msgs/TFMessage)
+  /// and tf2 listener collects the frame.
   Pose6D GetTcpPose() const;
 
-  /// Current arm joint positions from /ur5e/gui_position
+  /// Current arm joint positions from /rtc_cm/ur5e/joint_states.
+  /// Phase 4: CM publishes the per-group JointState regardless of active
+  /// controller, so no rewire needed when controllers switch.
   std::vector<double> GetArmJointPositions() const;
 
-  /// Current hand joint positions from /hand/gui_position
+  /// Current hand joint positions from /rtc_cm/hand/joint_states.
   std::vector<double> GetHandJointPositions() const;
 
   /// Last published hand target (empty if never published)
@@ -189,22 +196,30 @@ class BtRosBridge {
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
 
   // ── Controller-owned topic rewiring (Phase 4) ─────────────────────────────
-  // Rebuild arm_gui/hand_gui/grasp_state/tof/arm_target/hand_target sub/pub
-  // against the /<ctrl_name>/... namespace. No-op when ctrl_name is empty or
-  // unchanged. Protected by controller_topics_mutex_.
+  // Rebuild grasp_state/wbc_state/tof/arm_target/hand_target sub/pub against
+  // the /<ctrl_name>/... namespace. No-op when ctrl_name is empty or
+  // unchanged. Protected by controller_topics_mutex_. (Phase 4: arm/hand
+  // GuiPosition subs are replaced by /rtc_cm/<group>/joint_states which is
+  // controller-agnostic, so no rewire on those.)
   void RewireControllerTopics(const std::string& ctrl_name);
   std::string rewired_controller_;
   mutable std::mutex controller_topics_mutex_;
 
   // ── Subscribers ───────────────────────────────────────────────────────────
-  rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr arm_gui_sub_;
-  rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr hand_gui_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr arm_joint_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr hand_joint_sub_;
   rclcpp::Subscription<rtc_msgs::msg::GraspState>::SharedPtr grasp_state_sub_;
   rclcpp::Subscription<rtc_msgs::msg::WbcState>::SharedPtr wbc_state_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Polygon>::SharedPtr world_target_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr active_ctrl_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Subscription<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr shape_estimate_sub_;
+
+  // ── tf2 listener (TCP pose source, Phase 4) ───────────────────────────
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::string tf_parent_frame_{"base"};
+  std::string tf_child_frame_{"tool0_actual"};
 
   // ── Publishers ────────────────────────────────────────────────────────────
   rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;

@@ -12,13 +12,12 @@ from dataclasses import dataclass, field
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
 from visualization_msgs.msg import MarkerArray
 
 from rtc_digital_twin.urdf_parser import JointClassification, UrdfParser
-from rtc_msgs.msg import GuiPosition, HandSensorState
+from rtc_msgs.msg import HandSensorState
 
 
 @dataclass
@@ -242,31 +241,25 @@ class DigitalTwinNode(Node):
 
                 self._tcp_viz = TcpVisualizer(tcp_viz_config)
 
-                # Phase 4: tcp_viz.source_topic may be a suffix (e.g.
-                # "ur5e/gui_position") that the active controller's
-                # namespace is prefixed onto, or an absolute path that
-                # bypasses rewiring. Detect via the leading slash.
+                # Phase 4: TCP pose comes from tf2 (`base → tool0_actual`).
+                # The active controller broadcasts <config_key>/transforms
+                # (tf2_msgs/TFMessage) and our listener buffer collects every
+                # transform automatically — no per-controller rewire needed.
+                # `tcp_source_topic` is now interpreted as a child frame_id
+                # suffix (e.g. "tool0_actual"); use a leading slash to keep
+                # the legacy "absolute" semantics interpreted as full
+                # frame_id (no parent prefix).
                 self._tcp_source_topic = tcp_source_topic
-                self._tcp_be_qos = QoSProfile(
-                    reliability=ReliabilityPolicy.BEST_EFFORT,
-                    history=HistoryPolicy.KEEP_LAST,
-                    depth=10,
-                )
-                self._tcp_sub = None
-                self._tcp_active_ctrl = ""
-                if tcp_source_topic.startswith("/"):
-                    self._tcp_sub = self.create_subscription(
-                        GuiPosition, tcp_source_topic, self._tcp_cb, self._tcp_be_qos
-                    )
+                self._tcp_tf_buffer = Buffer()
+                self._tcp_tf_listener = TransformListener(self._tcp_tf_buffer, self)
+                self._tcp_parent_frame = self.get_parameter("tcp_viz.frame_id").value
+                # Resolve child frame: explicit override beats source_topic
+                # (when source_topic legacy paths look like "<robot>/gui_position",
+                # default to base→tool0_actual).
+                if tcp_source_topic and "/" not in tcp_source_topic:
+                    self._tcp_child_frame = tcp_source_topic
                 else:
-                    latched = QoSProfile(
-                        depth=1,
-                        durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                        reliability=ReliabilityPolicy.RELIABLE,
-                    )
-                    self.create_subscription(
-                        String, "/rtc_cm/active_controller_name", self._tcp_on_active_ctrl, latched
-                    )
+                    self._tcp_child_frame = "tool0_actual"
                 self._tcp_marker_pub = self.create_publisher(MarkerArray, tcp_marker_topic, 10)
 
                 # TF broadcaster (optional)
@@ -352,27 +345,20 @@ class DigitalTwinNode(Node):
 
         return callback
 
-    def _tcp_cb(self, msg: GuiPosition):
-        """Cache latest TCP task-space data from GuiPosition."""
-        self._tcp_task_positions = list(msg.task_positions)
+    def _lookup_tcp_transform(self):
+        """Phase 4: resolve TCP `TransformStamped` from tf2 buffer.
 
-    def _tcp_on_active_ctrl(self, msg: String):
-        """Rewire tcp gui_position subscription under the active controller
-        namespace (Phase 4)."""
-        name = (msg.data or "").strip()
-        if not name or name == self._tcp_active_ctrl:
-            return
-        self._tcp_active_ctrl = name
-        if self._tcp_sub is not None:
-            try:
-                self.destroy_subscription(self._tcp_sub)
-            except Exception:
-                pass
-        topic = "/" + name + "/" + self._tcp_source_topic.lstrip("/")
-        self._tcp_sub = self.create_subscription(
-            GuiPosition, topic, self._tcp_cb, self._tcp_be_qos
-        )
-        self.get_logger().info(f"TCP visualization rebound to {topic}")
+        Returns the latest TransformStamped or None when the lookup fails
+        (e.g., before the active controller starts publishing).
+        """
+        if not getattr(self, "_tcp_tf_buffer", None):
+            return None
+        try:
+            return self._tcp_tf_buffer.lookup_transform(
+                self._tcp_parent_frame, self._tcp_child_frame, rclpy.time.Time()
+            )
+        except TransformException:
+            return None
 
     def _sensor_cb(self, msg: HandSensorState):
         """Cache latest fingertip sensor data from HandSensorState."""
@@ -435,19 +421,19 @@ class DigitalTwinNode(Node):
             markers = self._sensor_viz.create_markers(self._fingertip_data, now)
             self._sensor_pub.publish(markers)
 
-        # TCP visualization
-        if self._tcp_viz_active and self._tcp_viz and self._tcp_task_positions is not None:
-            tcp_markers = self._tcp_viz.create_markers(
-                self._tcp_task_positions, now, self._tcp_goal_positions
-            )
-            self._tcp_marker_pub.publish(tcp_markers)
-
-            if self._tcp_tf_broadcaster is not None:
-                tf_msg = self._tcp_viz.create_tf(
-                    self._tcp_task_positions, now, self._tcp_tf_child_frame
+        # TCP visualization (Phase 4: tf2 lookup replaces GuiPosition)
+        if self._tcp_viz_active and self._tcp_viz:
+            tfs = self._lookup_tcp_transform()
+            if tfs is not None:
+                tcp_markers = self._tcp_viz.create_markers_from_tf(
+                    tfs, now, self._tcp_goal_positions
                 )
-                if tf_msg is not None:
-                    self._tcp_tf_broadcaster.sendTransform(tf_msg)
+                self._tcp_marker_pub.publish(tcp_markers)
+
+                if self._tcp_tf_broadcaster is not None:
+                    tf_msg = self._tcp_viz.create_tf_from_tf(tfs, now, self._tcp_tf_child_frame)
+                    if tf_msg is not None:
+                        self._tcp_tf_broadcaster.sendTransform(tf_msg)
 
     def _validate_joints(self):
         """Periodic validation: check received joints against URDF."""

@@ -346,9 +346,9 @@ enum class PublishRole {
   // Control Command
   kJointCommand,  // rtc_msgs/JointCommand (통합 명령)
   kRos2Command,   // Float64MultiArray (ros2_control 전용)
-  // GUI / Monitoring
-  kGuiPosition,  // rtc_msgs/GuiPosition (joint_pos + task_pos)
   // Topic-based State/Command/Goal
+  // (Phase 4: kGuiPosition removed — consumers use /rtc_cm/<group>/joint_states
+  // for joint state and <config_key>/transforms (tf2_msgs/TFMessage) for TCP pose.)
   kRobotTarget,  // rtc_msgs/RobotTarget (joint/task 목표)
   // (Phase C: kDeviceStateLog / kDeviceSensorLog removed — controller
   // data CSVs flow through ControllerLogSet, not CM publish.)
@@ -497,8 +497,6 @@ struct TopicConfig {
       return "joint_command";
     case PublishRole::kRos2Command:
       return "ros2_command";
-    case PublishRole::kGuiPosition:
-      return "gui_position";
     case PublishRole::kRobotTarget:
       return "robot_target";
     case PublishRole::kDigitalTwinState:

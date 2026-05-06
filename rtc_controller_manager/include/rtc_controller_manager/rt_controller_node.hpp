@@ -290,9 +290,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   std::unordered_map<std::string, JointCommandPublisherEntry> joint_command_publishers_;
 
-  // Controller-output publish roles (kGuiPosition / kGraspState / kToFSnapshot
-  // / kRobotTarget) are owned by each controller's LifecycleNode via
-  // owned_topics.cpp + PublishNonRtSnapshot — CM does not host them.
+  // Controller-output publish roles (kGraspState / kToFSnapshot / kRobotTarget
+  // / kWbcState / kRobotTransforms) are owned by each controller's
+  // LifecycleNode via owned_topics.cpp + PublishNonRtSnapshot — CM does not
+  // host them.
 
   // ── Per-group JointState republishers (RELIABLE, depth 10) ──────────────
   // key = "/rtc_cm/{group}/joint_states" — single source of truth for the

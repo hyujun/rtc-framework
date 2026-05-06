@@ -13,7 +13,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <rtc_msgs/msg/gui_position.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
@@ -29,6 +28,8 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include <std_srvs/srv/trigger.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -151,7 +152,13 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr pub_robot_target_;
 
   // ── 피드백 수신 ───────────────────────────────────────────────────────────
-  rclcpp::Subscription<rtc_msgs::msg::GuiPosition>::SharedPtr sub_gui_position_;
+  // Phase 4: TCP pose 는 tf2 (`base → tool0_actual`) 에서 lookup. controller가
+  // 발행하는 `<config_key>/transforms` 토픽을 별도 구독하지 않고, 같은 노드의
+  // tf2 listener 가 모든 controller's TFMessage 를 수집한다.
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::string tf_parent_frame_{"base"};
+  std::string tf_child_frame_{"tool0_actual"};
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_estop_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_object_pose_;
 
@@ -177,8 +184,13 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
   std::shared_ptr<GoalHandleExploreShape> active_goal_handle_;
   bool action_active_{false};
   bool estop_active_{false};
-  std::array<double, 6> latest_gui_position_{};
-  bool has_gui_position_{false};
+  // Latest TCP pose looked up from tf2 (Phase 4: replaces GuiPosition.task_positions).
+  std::array<double, 6> latest_tcp_pose_{};
+  bool has_tcp_pose_{false};
+  // Helper: tf2 lookup → [x, y, z, roll, pitch, yaw]; updates latest_tcp_pose_
+  // and has_tcp_pose_ on success. Returns false on lookup failure (timeout /
+  // missing transform).
+  bool TryLookupTcpPose();
   std::array<double, 3> latest_object_position_{};
   bool has_object_position_{false};
 
@@ -189,7 +201,6 @@ class ShapeEstimationNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── 탐색 콜백 ─────────────────────────────────────────────────────────────
   void ExploreLoopCallback();
-  void GuiPositionCallback(rtc_msgs::msg::GuiPosition::SharedPtr msg);
   void EstopCallback(std_msgs::msg::Bool::SharedPtr msg);
   void ObjectPoseCallback(geometry_msgs::msg::PoseStamped::SharedPtr msg);
 

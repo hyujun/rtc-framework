@@ -31,7 +31,6 @@ rtc_msgs/
 │   ├── FingertipSensor.msg    <- 단일 핑거팁 센서 + 추론 결과
 │   ├── HandSensorState.msg    <- 전체 핸드 센서 상태 (핑거팁 집계)
 │   ├── GraspState.msg         <- 파지 상태 판정 (접촉/힘/grasp 감지)
-│   ├── GuiPosition.msg        <- GUI 표시용 관절/태스크 위치
 │   ├── RobotTarget.msg        <- 관절/태스크 공간 목표
 │   ├── DeviceStateLog.msg     <- 디바이스 상태 종합 로그
 │   ├── DeviceSensorLog.msg    <- 디바이스 센서 로그
@@ -139,21 +138,6 @@ rtc_msgs/
 | `finger_filtered_force` | `float32[]` | 핑거별 필터링된 힘 [N] |
 | `finger_force_error` | `float32[]` | 핑거별 힘 오차 [N] |
 | `grasp_target_force` | `float32` | 현재 목표 힘 [N] |
-
----
-
-### `GuiPosition.msg`
-
-GUI 디스플레이를 위한 현재 관절 및 태스크 공간 위치입니다.
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
-| `joint_names` | `string[]` | 관절 이름 배열 |
-| `joint_positions` | `float64[]` | 현재 관절 위치 (rad) |
-| `task_positions` | `float64[6]` | TCP 위치 [x, y, z, roll, pitch, yaw] (FK 결과) |
-
-- `joint_names`와 `joint_positions`는 1:1 대응, `task_positions`는 항상 6개 고정값입니다.
 
 ---
 
@@ -352,11 +336,14 @@ source install/setup.bash
                                             ├── barometer_raw[8] + tof_raw[3] (raw)
                                             └── f[3] + u[3] + contact_flag (추론)
 
-파지 판정 (컨트롤러에서 계산)        목표 & GUI
-└── GraspState                      ├── RobotTarget
-    ├── 핑거팁별: force/contact/valid    │   (관절/태스크 공간 목표)
-    └── 집계: grasp_detected/max_force  └── GuiPosition
-                                            (관절 + TCP 위치)
+파지 판정 (컨트롤러에서 계산)        목표
+└── GraspState                      └── RobotTarget
+    ├── 핑거팁별: force/contact/valid    (관절/태스크 공간 목표)
+    └── 집계: grasp_detected/max_force
+
+(GUI/외부 도구는 sensor_msgs/JointState `/rtc_cm/<group>/joint_states` +
+ tf2_msgs/TFMessage `<config_key>/transforms` 표준 토픽으로 위치 정보를 받음.
+ 이전 GuiPosition 메시지는 Phase 4에서 폐기.)
 
 로깅 (CSV 세션 기록)                ToF 스냅샷 (형상 추정용)
 ├── DeviceStateLog                  └── ToFSnapshot

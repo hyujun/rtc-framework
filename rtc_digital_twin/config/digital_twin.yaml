@@ -82,15 +82,12 @@
     sensor_viz.contact_sphere_radius: 0.005         # sphere radius (m)
 
     # ── TCP visualization ───────────────────────────────────────────────
-    # Subscribes to GuiPosition for task-space TCP data (actual + goal).
-    # Publishes MarkerArray (sphere + axes) and optionally broadcasts TF.
-    # Phase 4: relative suffix → digital_twin auto-prefixes with
-    # /<active_controller_name>/ on every /rtc_cm/active_controller_name.
-    # Use an absolute path (leading "/") to bypass rewiring and subscribe
-    # directly to a fixed topic.
-    # Robot bringup yaml may override; relative path is auto-prefixed with
-    # /<active_controller_name>/ on every /rtc_cm/active_controller_name change.
-    tcp_viz.source_topic: ""                        # e.g. "<robot>/gui_position"
+    # Phase 4: TCP pose는 tf2 (`base → tool0_actual`) 에서 lookup. Active
+    # controller의 <config_key>/transforms 토픽이 listener buffer로 자동 수집
+    # 되므로 active controller 변경 시 별도 rewire가 필요 없다.
+    # tcp_viz.source_topic 은 이제 child frame_id 로 해석된다 (예: "tool0_actual").
+    # 빈 문자열 또는 슬래시("/")가 포함되면 기본값 "tool0_actual" 적용.
+    tcp_viz.source_topic: ""                        # e.g. "tool0_actual"
     tcp_viz.marker_topic: "/digital_twin/tcp_markers"
     tcp_viz.frame_id: "base"                        # parent TF frame
     tcp_viz.broadcast_tf: true                      # broadcast virtual_tcp TF

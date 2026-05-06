@@ -3,8 +3,8 @@
 // CM owns exactly two manager-owned publish roles (kJointCommand and
 // kRos2Command) plus three fixed publishers (digital twin republish per
 // active group, /system/estop_status, /rtc_cm/active_controller_name).
-// Controller-output roles (kGuiPosition / kRobotTarget / kGraspState /
-// kWbcState / kToFSnapshot) are owned by each controller's LifecycleNode.
+// Controller-output roles (kRobotTarget / kGraspState / kWbcState /
+// kToFSnapshot / kRobotTransforms) are owned by each controller's LifecycleNode.
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <stdexcept>
@@ -47,9 +47,10 @@ void RtControllerNode::CreatePublishers() {
   // CM owns exactly two publish roles — kJointCommand (controller→HW/sim) and
   // kRos2Command (sim ros2_control forward bridge). Any other role with
   // ownership: manager means the YAML mistakenly assigned a controller-output
-  // role (kGuiPosition / kGraspState / kWbcState / kToFSnapshot / kRobotTarget)
-  // to CM; the default branch fails fast so the misconfiguration surfaces
-  // immediately instead of dropping the publisher silently.
+  // role (kGraspState / kWbcState / kToFSnapshot / kRobotTarget /
+  // kRobotTransforms) to CM; the default branch fails fast so the
+  // misconfiguration surfaces immediately instead of dropping the publisher
+  // silently.
   for (const auto& tc : controller_topic_configs_) {
     for (const auto& [group_name, group] : tc.groups) {
       if (!active_groups_.contains(group_name))

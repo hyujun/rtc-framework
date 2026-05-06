@@ -181,7 +181,6 @@ demo_task_controller:
 | 토픽 역할 | 소유자 | 경로 (active = demo_wbc_controller 예시) |
 |-----------|--------|------------------------------------------|
 | `target` (ur5e/hand) | 컨트롤러 | `/demo_wbc_controller/ur5e/joint_goal`, `/demo_wbc_controller/hand/joint_goal` |
-| `gui_position` (ur5e/hand) | 컨트롤러 | `/demo_wbc_controller/ur5e/gui_position`, `/demo_wbc_controller/hand/gui_position` |
 | `grasp_state` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/hand/grasp_state` 등 |
 | `wbc_state` (hand; wbc 데모만) | 컨트롤러 | `/demo_wbc_controller/hand/wbc_state` |
 | `tof_snapshot` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/tof/snapshot` 등 |
@@ -611,7 +610,7 @@ GUI 시작 시:
 
 #### Variable-DOF 동작 (Phase 1)
 
-`RobotShape` 는 시작 시 UR5e + assm_v1 hand 기본값 (6 arm, 10 hand) 으로 초기화되어 위젯이 즉시 빌드됩니다. 컨트롤러가 발행하는 `/<active>/{ur5e,hand}/gui_position` 의 `joint_names` 가 GUI 의 RobotShape 와 다르면 *1회 WARN 로그* 후 사용자에게 GUI 재시작을 안내합니다 (현재 sprint 에서는 widget 동적 rebuild 미지원 — option (a)). 다른 robot/hand 에서는 startup 시 `default_ur5e_assm()` 대신 적절한 default factory 를 추가하면 동작합니다.
+`RobotShape` 는 시작 시 UR5e + assm_v1 hand 기본값 (6 arm, 10 hand) 으로 초기화되어 위젯이 즉시 빌드됩니다. CM이 발행하는 `/rtc_cm/{ur5e,hand}/joint_states` (Phase 4 이후 sensor_msgs/JointState) 의 `name` 필드가 GUI 의 RobotShape 와 다르면 *1회 WARN 로그* 후 사용자에게 GUI 재시작을 안내합니다 (현재 sprint 에서는 widget 동적 rebuild 미지원 — option (a)). 다른 robot/hand 에서는 startup 시 `default_ur5e_assm()` 대신 적절한 default factory 를 추가하면 동작합니다.
 
 #### 컨트롤러별 패널
 

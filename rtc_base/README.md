@@ -96,7 +96,7 @@ rtc_base/
 | `CommandType` | `kPosition`, `kTorque` | 커맨드 모드 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
 | `SubscribeRole` | `kState`, `kMotorState`, `kSensorState`, `kTarget` | 구독 역할 |
-| `PublishRole` | `kJointCommand`, `kRos2Command`, `kGuiPosition`, `kRobotTarget`, `kDeviceStateLog`, `kDeviceSensorLog`, `kDigitalTwinState`, `kGraspState`, `kWbcState`, `kToFSnapshot`, `kRobotTransforms` | 퍼블리시 역할 (`kRobotTransforms`: controller 단위 `tf2_msgs/TFMessage`) |
+| `PublishRole` | `kJointCommand`, `kRos2Command`, `kRobotTarget`, `kDeviceStateLog`, `kDeviceSensorLog`, `kDigitalTwinState`, `kGraspState`, `kWbcState`, `kToFSnapshot`, `kRobotTransforms` | 퍼블리시 역할 (`kRobotTransforms`: controller 단위 `tf2_msgs/TFMessage`. Phase 4: `kGuiPosition` 제거 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체) |
 | `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` | 디바이스 기능 비트마스크 (RT 루프 선택적 데이터 복사) |
 
 `GoalTypeToString()`, `SubscribeRoleToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수.

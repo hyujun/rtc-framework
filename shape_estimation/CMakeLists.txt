@@ -31,6 +31,8 @@ find_package(visualization_msgs REQUIRED)
 find_package(shape_estimation_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rtc_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 # ── Core library (ROS 비의존) ─────────────────────────────────────────────────
 add_library(shape_estimation_core STATIC
@@ -62,7 +64,7 @@ target_include_directories(shape_estimation_ros PUBLIC
 target_link_libraries(shape_estimation_ros shape_estimation_core)
 ament_target_dependencies(shape_estimation_ros
   rclcpp rclcpp_lifecycle rclcpp_action std_msgs std_srvs sensor_msgs geometry_msgs
-  visualization_msgs shape_estimation_msgs rtc_msgs
+  visualization_msgs shape_estimation_msgs rtc_msgs tf2 tf2_ros
 )
 set_target_properties(shape_estimation_ros PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -89,7 +91,7 @@ install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rclcpp rclcpp_action Eigen3 std_msgs std_srvs sensor_msgs
-  geometry_msgs visualization_msgs shape_estimation_msgs rtc_msgs
+  geometry_msgs visualization_msgs shape_estimation_msgs rtc_msgs tf2 tf2_ros
 )
 ament_export_include_directories(include)
 

@@ -67,9 +67,15 @@ ShapeEstimationNode::CallbackReturn ShapeEstimationNode::on_configure(
 
   // ── Subscribers ────────────────────────────────────────────────────────────
   //
-  // Phase 4: snapshot_sub_, sub_gui_position_, and pub_robot_target_ are
-  // controller-owned and resolved under /<active_controller_name>/...
-  // RewireControllerTopics() rebinds them when active_ctrl_sub_ fires.
+  // Phase 4: snapshot_sub_ and pub_robot_target_ are controller-owned and
+  // resolved under /<active_controller_name>/...; RewireControllerTopics()
+  // rebinds them when active_ctrl_sub_ fires. TCP pose는 GuiPosition 토픽이
+  // 폐기되어 tf2 lookup (`base → tool0_actual`) 으로 대체됨.
+
+  // tf2 listener: explore loop 가 base→tool0_actual 변환을 읽는다. controller가
+  // 발행한 <config_key>/transforms (tf2_msgs/TFMessage) 를 자동 수집.
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   rclcpp::QoS latched_qos{1};
   latched_qos.transient_local().reliable();
@@ -169,7 +175,6 @@ ShapeEstimationNode::CallbackReturn ShapeEstimationNode::on_cleanup(
   explore_status_pub_.reset();
   sub_object_pose_.reset();
   sub_estop_.reset();
-  sub_gui_position_.reset();
   pub_robot_target_.reset();
   switch_controller_client_.reset();
   action_server_.reset();
@@ -211,7 +216,6 @@ ShapeEstimationNode::CallbackReturn ShapeEstimationNode::on_error(
   explore_status_pub_.reset();
   sub_object_pose_.reset();
   sub_estop_.reset();
-  sub_gui_position_.reset();
   pub_robot_target_.reset();
   switch_controller_client_.reset();
   action_server_.reset();
@@ -501,9 +505,9 @@ void ShapeEstimationNode::InitExploration() {
   switch_controller_client_ =
       create_client<rtc_msgs::srv::SwitchController>("/rtc_cm/switch_controller");
 
-  // pub_robot_target_ and sub_gui_position_ are controller-owned (Phase 4)
-  // and bound in RewireControllerTopics() on /rtc_cm/active_controller_name
-  // arrival.
+  // pub_robot_target_ is controller-owned (Phase 4) and bound in
+  // RewireControllerTopics() on /rtc_cm/active_controller_name arrival.
+  // TCP pose는 tf2 listener로 lookup (configure 시점 생성됨).
 
   sub_estop_ = create_subscription<std_msgs::msg::Bool>(
       "/system/estop_status", rclcpp::QoS(1).reliable().transient_local(),
@@ -615,10 +619,11 @@ void ShapeEstimationNode::StartExploration(const std::array<double, 3>& object_p
   state_ = State::kRunning;  // 형상 추정도 활성화
   action_active_ = true;
 
-  // 현재 EE 위치에서 시작
-  std::array<double, 6> current_pose = latest_gui_position_;
-  if (!has_gui_position_) {
-    RCLCPP_WARN(node_log(), "GuiPosition 미수신. 기본 위치로 시작.");
+  // 현재 EE 위치에서 시작 (Phase 4: tf2 lookup)
+  TryLookupTcpPose();
+  std::array<double, 6> current_pose = latest_tcp_pose_;
+  if (!has_tcp_pose_) {
+    RCLCPP_WARN(node_log(), "TCP pose 미수신 (tf2 lookup 실패). 기본 위치로 시작.");
     current_pose = {0.4, 0.0, 0.3, 3.14, 0.0, 0.0};
   }
 
@@ -655,8 +660,9 @@ void ShapeEstimationNode::ExploreLoopCallback() {
     return;
   }
 
-  // 현재 EE 자세
-  std::array<double, 6> current_pose = latest_gui_position_;
+  // 현재 EE 자세 (Phase 4: tf2 lookup, 최신 변환 사용)
+  TryLookupTcpPose();
+  std::array<double, 6> current_pose = latest_tcp_pose_;
 
   // 탐색 모션 step
   const double dt = 1.0 / get_parameter("exploration.explore_rate_hz").as_double();
@@ -754,11 +760,35 @@ void ShapeEstimationNode::PublishActionFeedback(ExplorePhase phase, const std::s
 
 // ── 피드백 수신 콜백 ────────────────────────────────────────────────────────
 
-void ShapeEstimationNode::GuiPositionCallback(rtc_msgs::msg::GuiPosition::SharedPtr msg) {
-  for (int i = 0; i < 6; ++i) {
-    latest_gui_position_[static_cast<size_t>(i)] = msg->task_positions[static_cast<size_t>(i)];
+bool ShapeEstimationNode::TryLookupTcpPose() {
+  if (!tf_buffer_) {
+    return false;
   }
-  has_gui_position_ = true;
+  try {
+    const auto tfs =
+        tf_buffer_->lookupTransform(tf_parent_frame_, tf_child_frame_, tf2::TimePointZero);
+    const double qw = tfs.transform.rotation.w;
+    const double qx = tfs.transform.rotation.x;
+    const double qy = tfs.transform.rotation.y;
+    const double qz = tfs.transform.rotation.z;
+    // Quaternion → ZYX RPY (matches pinocchio::rpy::matrixToRpy convention used
+    // by demo controllers when they fill GuiPosition.task_positions).
+    const double roll = std::atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy));
+    const double sinp = 2.0 * (qw * qy - qz * qx);
+    const double pitch =
+        (std::abs(sinp) >= 1.0) ? std::copysign(M_PI / 2.0, sinp) : std::asin(sinp);
+    const double yaw = std::atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz));
+    latest_tcp_pose_ = {tfs.transform.translation.x,
+                        tfs.transform.translation.y,
+                        tfs.transform.translation.z,
+                        roll,
+                        pitch,
+                        yaw};
+    has_tcp_pose_ = true;
+    return true;
+  } catch (const tf2::TransformException&) {
+    return false;
+  }
 }
 
 void ShapeEstimationNode::EstopCallback(std_msgs::msg::Bool::SharedPtr msg) {
@@ -821,7 +851,6 @@ void ShapeEstimationNode::RewireControllerTopics(const std::string& ctrl_name) {
 
   // Drop prior handles.
   snapshot_sub_.reset();
-  sub_gui_position_.reset();
   pub_robot_target_.reset();
 
   // Controller-owned ToF snapshot (BEST_EFFORT to match RT publisher QoS).
@@ -832,10 +861,7 @@ void ShapeEstimationNode::RewireControllerTopics(const std::string& ctrl_name) {
       [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) { SnapshotCallback(std::move(msg)); },
       sub_options);
 
-  // Controller-owned gui_position + joint_goal.
-  sub_gui_position_ = create_subscription<rtc_msgs::msg::GuiPosition>(
-      ns + "/" + robot_namespace_ + "/gui_position", rclcpp::SensorDataQoS(),
-      [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) { GuiPositionCallback(std::move(msg)); });
+  // Controller-owned joint_goal publisher (TCP pose는 tf2 listener 가 처리).
   pub_robot_target_ = create_publisher<rtc_msgs::msg::RobotTarget>(
       ns + "/" + robot_namespace_ + "/joint_goal", rclcpp::QoS(1).reliable());
 

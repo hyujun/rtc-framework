@@ -24,6 +24,8 @@
   <depend>shape_estimation_msgs</depend>
   <depend>rclcpp_action</depend>
   <depend>rtc_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
 
   <build_depend>eigen</build_depend>
 

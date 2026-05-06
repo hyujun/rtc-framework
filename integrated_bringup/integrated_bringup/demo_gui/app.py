@@ -14,8 +14,10 @@ their own modules.
 - Force-PI grasp     → /<active>/grasp_command srv (rtc_msgs/GraspCommand)
 - E-STOP status      → /system/estop_status (subscribe)
 - Hand motor target  → /<active>/hand/joint_goal (RobotTarget pub)
-- Live joint state   → /<active>/<arm|hand>/gui_position (rebound on every
-                       /rtc_cm/active_controller_name transition)
+- Live joint state   → /rtc_cm/<group>/joint_states (sensor_msgs/JointState,
+                       controller-agnostic — no rewire needed)
+- Live TCP pose      → tf2 lookup `base → tool0_actual` (active controller's
+                       <config_key>/transforms feeds the listener buffer)
 """
 
 import json
@@ -26,6 +28,24 @@ import tkinter as tk
 from tkinter import font as tkfont, messagebox, ttk
 
 import rclpy
+
+
+def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
+    """Hamilton quaternion (w,x,y,z) → ZYX RPY (roll,pitch,yaw).
+
+    Mirrors `pinocchio::rpy::matrixToRpy` so values match what the demo
+    controllers used to publish in `GuiPosition.task_positions`.
+    """
+    roll = math.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy))
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+    yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    return roll, pitch, yaw
+
+
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
@@ -35,7 +55,6 @@ from rtc_msgs.msg import (
     CalibrationCommand,
     CalibrationStatus,
     GraspState,
-    GuiPosition,
     RobotTarget,
     WbcState,
 )
@@ -74,10 +93,12 @@ class DemoControllerGUI(Node):
     def __init__(self):
         super().__init__("demo_controller_gui")
 
-        # Phase 4: target / gui_position / grasp_state / tof are owned by the
+        # Phase 4: target / grasp_state / wbc_state / tof are owned by the
         # active controller (/<config_key>/...). We defer creating them until
         # /rtc_cm/active_controller_name tells us the namespace, and re-create
-        # them whenever the name changes (controller switch).
+        # them whenever the name changes (controller switch). joint_states는
+        # ctrl-agnostic /rtc_cm/<group>/joint_states 로, TCP pose는 tf2
+        # listener (`base → tool0_actual`) 로 처리되어 rewire 불필요.
         self._active_ctrl: str = ""
         self.robot_cmd_pub = None
         self.hand_cmd_pub = None
@@ -118,24 +139,34 @@ class DemoControllerGUI(Node):
 
         # Phase 1: runtime-discovered robot shape. Starts from a sensible
         # default (UR5e + assm_v1 hand) so widgets build immediately at
-        # launch. ``_shape_mismatch_warned`` keeps gui_position callbacks
+        # launch. ``_shape_mismatch_warned`` keeps joint-state callbacks
         # from spamming /rosout — one WARN per (side, observed-name-tuple).
         self._shape: RobotShape = RobotShape.default_ur5e_assm()
         self._shape_mismatch_warned: set[tuple[str, tuple[str, ...]]] = set()
 
-        # Subscriptions (Phase 4: GuiPosition subs created by rewire helper)
+        # Subscriptions (Phase 4: arm/hand state는 ctrl-agnostic /rtc_cm/<group>/
+        # joint_states; TCP pose는 tf2 listener `base → tool0_actual`).
         self.current_positions = [0.0] * self._shape.arm_dof
         self.current_task_positions = [0.0] * 6
+        self.current_hand_positions = [0.0] * self._shape.hand_dof
 
         self.estop_active = False
         self.create_subscription(Bool, "/system/estop_status", self._estop_cb, 10)
 
+        # Phase 4: per-group JointState (controller-agnostic, no rewire).
+        self.create_subscription(JointState, "/rtc_cm/ur5e/joint_states", self._arm_joint_cb, 10)
+        self.create_subscription(JointState, "/rtc_cm/hand/joint_states", self._hand_joint_cb, 10)
+
+        # Phase 4: tf2 listener for TCP pose (`<config_key>/transforms` 토픽이
+        # listener buffer 로 자동 수집됨).
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self._tf_parent_frame = "base"
+        self._tf_child_frame = "tool0_actual"
+
         # _pending_load_gains carries a tk-thread callback to fire after
         # AsyncParameterClient.get_parameters resolves on the executor.
         self._pending_load_gains = False
-
-        # Hand state subscription via gui_position topic (created in rewire)
-        self.current_hand_positions = [0.0] * self._shape.hand_dof
 
         # Grasp state subscription
         self._grasp_detected = False
@@ -237,12 +268,9 @@ class DemoControllerGUI(Node):
 
         self.robot_cmd_pub = self.create_publisher(RobotTarget, ns + "/ur5e/joint_goal", 10)
         self.hand_cmd_pub = self.create_publisher(RobotTarget, ns + "/hand/joint_goal", 10)
-        self._arm_gui_sub = self.create_subscription(
-            GuiPosition, ns + "/ur5e/gui_position", self._gui_pos_cb, 10
-        )
-        self._hand_gui_sub = self.create_subscription(
-            GuiPosition, ns + "/hand/gui_position", self._hand_gui_pos_cb, 10
-        )
+        # Phase 4: arm/hand joint subs are controller-agnostic
+        # (/rtc_cm/<group>/joint_states), set up once in __init__ and not
+        # rewired here. TCP pose comes from tf2 listener (also __init__).
         self._grasp_state_sub = self.create_subscription(
             GraspState, ns + "/hand/grasp_state", self._grasp_state_cb, 10
         )
@@ -275,36 +303,53 @@ class DemoControllerGUI(Node):
             "pick up the new robot/hand schema."
         )
 
-    def _gui_pos_cb(self, msg: GuiPosition):
+    def _arm_joint_cb(self, msg: JointState):
+        """Phase 4: /rtc_cm/ur5e/joint_states 구독 콜백 (replaces _gui_pos_cb).
+
+        TCP pose는 별도 tf2 lookup 으로 처리 — 여기서는 joint state 만 다룬다.
+        """
         arm_dof = self._shape.arm_dof
-        if len(msg.joint_positions) >= arm_dof:
-            if msg.joint_names and len(msg.joint_names) >= arm_dof:
-                names = list(msg.joint_names[:arm_dof])
+        if len(msg.position) >= arm_dof:
+            if msg.name and len(msg.name) >= arm_dof:
+                names = list(msg.name[:arm_dof])
                 if not self._shape.matches_message(names, arm_dof):
                     self._warn_shape_mismatch_once("arm", names)
                 idx = self._shape.arm_name_to_idx
                 reordered = [0.0] * arm_dof
                 for mi, name in enumerate(names):
                     if name in idx:
-                        reordered[idx[name]] = msg.joint_positions[mi]
+                        reordered[idx[name]] = msg.position[mi]
                 self.current_positions = reordered
             else:
-                self.current_positions = list(msg.joint_positions[:arm_dof])
-        if len(msg.task_positions) >= 6:
-            self.current_task_positions = list(msg.task_positions[:6])
+                self.current_positions = list(msg.position[:arm_dof])
+        # TCP pose: tf2 lookup (failures are silent — RViz 등 다른 표시 도구가
+        # 같은 topic을 보는 경우 동일 listener buffer 가 공유됨).
+        try:
+            tfs = self._tf_buffer.lookup_transform(
+                self._tf_parent_frame,
+                self._tf_child_frame,
+                rclpy.time.Time(),
+            )
+            t = tfs.transform.translation
+            r = tfs.transform.rotation
+            roll, pitch, yaw = _quat_to_rpy(r.w, r.x, r.y, r.z)
+            self.current_task_positions = [t.x, t.y, t.z, roll, pitch, yaw]
+        except TransformException:
+            pass
 
-    def _hand_gui_pos_cb(self, msg: GuiPosition):
+    def _hand_joint_cb(self, msg: JointState):
+        """Phase 4: /rtc_cm/hand/joint_states 구독 콜백 (replaces _hand_gui_pos_cb)."""
         hand_dof = self._shape.hand_dof
-        if len(msg.joint_positions) >= hand_dof:
-            if msg.joint_names and len(msg.joint_names) >= hand_dof:
-                names = list(msg.joint_names[:hand_dof])
+        if len(msg.position) >= hand_dof:
+            if msg.name and len(msg.name) >= hand_dof:
+                names = list(msg.name[:hand_dof])
                 if not self._shape.matches_message(names, hand_dof):
                     self._warn_shape_mismatch_once("hand", names)
                 idx = self._shape.hand_name_to_idx
                 reordered = [0.0] * hand_dof
                 for mi, name in enumerate(names):
                     if name in idx:
-                        reordered[idx[name]] = msg.joint_positions[mi]
+                        reordered[idx[name]] = msg.position[mi]
                 self.current_hand_positions = reordered
             else:
                 self.current_hand_positions = list(msg.joint_positions[:hand_dof])

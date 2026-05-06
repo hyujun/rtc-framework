@@ -86,7 +86,7 @@ Channel-specific instantiations:
 
 [Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
 [rtc_digital_twin]: merge /rtc_cm/{group}/joint_states --> RViz2
-[ur5e_bt_coordinator]: subscribes grasp_state/gui_position, publishes goals; tunes gains via per-controller ROS 2 parameters
+[ur5e_bt_coordinator]: subscribes grasp_state + /rtc_cm/<group>/joint_states + tf2 listener (`<config_key>/transforms`), publishes goals; tunes gains via per-controller ROS 2 parameters
 ```
 
 ## RT vs non-RT Topic Ownership
@@ -112,7 +112,7 @@ ownership: "manager"  ──►   │  │ RT loop (control_rate Hz, SCHED_FIFO)
                             │  ┌────────────────────────────────────────┐    │
 ownership: "controller"     │  │ namespace = /<config_key>/             │    │
                        ──►  │  │   sub: target  (joint_goal, ee_pose)   │    │
-                            │  │   pub: gui_position, grasp_state,      │    │
+                            │  │   pub: transforms, grasp_state,        │    │
                             │  │        wbc_state, tof_snapshot         │    │
                             │  │ RT loop never touches this node — all  │    │
                             │  │ data flows via SPSC PublishSnapshot →  │    │

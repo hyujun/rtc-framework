@@ -23,11 +23,45 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node
 
   // ── Subscribers (all RELIABLE QoS) ──────────────────────────────────────
   //
-  // Phase 4: controller-owned topics (arm_gui / hand_gui / grasp_state /
-  // tof_snapshot / arm_target / hand_target) live under
-  // /<active_controller_name>/... and are rebound on every
-  // /rtc_cm/active_controller_name transition via RewireControllerTopics.
-  // Manager-owned topics stay at their fixed paths below.
+  // Phase 4: controller-owned topics (grasp_state / wbc_state / tof_snapshot /
+  // arm_target / hand_target) live under /<active_controller_name>/... and
+  // are rebound on every /rtc_cm/active_controller_name transition via
+  // RewireControllerTopics. arm/hand joint state는 controller-agnostic
+  // /rtc_cm/<group>/joint_states 로 이동했고 (rewire 불필요), TCP pose는 tf2
+  // listener (`base → tool0_actual`) 가 active controller 의 transforms
+  // 토픽을 자동 수집한다. Manager-owned topics stay at their fixed paths.
+
+  // tf2 listener for TCP pose (Phase 4: replaces GuiPosition.task_positions).
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+  // Per-group joint states (CM publishes always — independent of active ctrl).
+  arm_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
+      "/rtc_cm/ur5e/joint_states", rclcpp::QoS{10},
+      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+        {
+          std::lock_guard lock(state_mutex_);
+          arm_joint_positions_.assign(msg->position.begin(), msg->position.end());
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          arm_gui_last_ = std::chrono::steady_clock::now();
+          arm_gui_received_ = true;
+        }
+      });
+  hand_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
+      "/rtc_cm/hand/joint_states", rclcpp::QoS{10},
+      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+        {
+          std::lock_guard lock(state_mutex_);
+          hand_joint_positions_.assign(msg->position.begin(), msg->position.end());
+        }
+        {
+          std::lock_guard lock(health_mutex_);
+          hand_gui_last_ = std::chrono::steady_clock::now();
+          hand_gui_received_ = true;
+        }
+      });
 
   world_target_sub_ = node_->create_subscription<geometry_msgs::msg::Polygon>(
       "/world_target_info", rclcpp::QoS{10}, [this](geometry_msgs::msg::Polygon::SharedPtr msg) {
@@ -115,6 +149,32 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node
 // ── Cached state accessors ────────────────────────────────────────────────
 
 Pose6D BtRosBridge::GetTcpPose() const {
+  // Phase 4: tf2 lookup `base → tool0_actual`. Returns the cached value when
+  // lookup fails (e.g., no transform yet at startup) so callers see a
+  // last-known pose rather than zeros.
+  if (tf_buffer_) {
+    try {
+      const auto tfs =
+          tf_buffer_->lookupTransform(tf_parent_frame_, tf_child_frame_, tf2::TimePointZero);
+      const double qw = tfs.transform.rotation.w;
+      const double qx = tfs.transform.rotation.x;
+      const double qy = tfs.transform.rotation.y;
+      const double qz = tfs.transform.rotation.z;
+      const double roll = std::atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy));
+      const double sinp = 2.0 * (qw * qy - qz * qx);
+      const double pitch =
+          (std::abs(sinp) >= 1.0) ? std::copysign(M_PI / 2.0, sinp) : std::asin(sinp);
+      const double yaw = std::atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz));
+      return Pose6D{tfs.transform.translation.x,
+                    tfs.transform.translation.y,
+                    tfs.transform.translation.z,
+                    roll,
+                    pitch,
+                    yaw};
+    } catch (const tf2::TransformException&) {
+      // fall through to cached value
+    }
+  }
   std::lock_guard lock(state_mutex_);
   return tcp_pose_;
 }
@@ -385,8 +445,8 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const {
   };
 
   return {
-      make_health("/ur5e/gui_position", arm_gui_received_, arm_gui_last_),
-      make_health("/hand/gui_position", hand_gui_received_, hand_gui_last_),
+      make_health("/rtc_cm/ur5e/joint_states", arm_gui_received_, arm_gui_last_),
+      make_health("/rtc_cm/hand/joint_states", hand_gui_received_, hand_gui_last_),
       make_health("/hand/grasp_state", grasp_state_received_, grasp_state_last_),
       make_health("/hand/wbc_state", wbc_state_received_, wbc_state_last_),
       make_health("/world_target_info", world_target_received_, world_target_last_),
@@ -425,47 +485,15 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
 
   // Drop previous sub/pub handles before recreating to avoid two live
   // subscribers holding references to the same state maps.
-  arm_gui_sub_.reset();
-  hand_gui_sub_.reset();
+  // Phase 4: arm/hand joint state는 controller-agnostic /rtc_cm/<group>/
+  // joint_states 로 이동 — rewire 대상 아님 (constructor에서 1회 설정).
+  // TCP pose는 tf2 listener (constructor에서 1회 설정) 가 모든 controller
+  // transforms 토픽을 자동 수집.
   grasp_state_sub_.reset();
   wbc_state_sub_.reset();
   tof_snapshot_sub_.reset();
   arm_target_pub_.reset();
   hand_target_pub_.reset();
-
-  arm_gui_sub_ = node_->create_subscription<rtc_msgs::msg::GuiPosition>(
-      ns + "/ur5e/gui_position", rclcpp::QoS{10},
-      [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          tcp_pose_.x = msg->task_positions[0];
-          tcp_pose_.y = msg->task_positions[1];
-          tcp_pose_.z = msg->task_positions[2];
-          tcp_pose_.roll = msg->task_positions[3];
-          tcp_pose_.pitch = msg->task_positions[4];
-          tcp_pose_.yaw = msg->task_positions[5];
-          arm_joint_positions_.assign(msg->joint_positions.begin(), msg->joint_positions.end());
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          arm_gui_last_ = std::chrono::steady_clock::now();
-          arm_gui_received_ = true;
-        }
-      });
-
-  hand_gui_sub_ = node_->create_subscription<rtc_msgs::msg::GuiPosition>(
-      ns + "/hand/gui_position", rclcpp::QoS{10},
-      [this](rtc_msgs::msg::GuiPosition::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          hand_joint_positions_.assign(msg->joint_positions.begin(), msg->joint_positions.end());
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          hand_gui_last_ = std::chrono::steady_clock::now();
-          hand_gui_received_ = true;
-        }
-      });
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
       ns + "/hand/grasp_state", rclcpp::QoS{10}, [this](rtc_msgs::msg::GraspState::SharedPtr msg) {

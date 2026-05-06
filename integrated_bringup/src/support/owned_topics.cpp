@@ -19,16 +19,6 @@ namespace {
   return link + "_actual";
 }
 
-// Pre-populate GuiPosition joint_names + joint_positions vectors from the
-// controller's device_name_configs_ so publish() never resizes.
-void PrefillGuiMessage(const rtc::DeviceNameConfig* cfg, rtc_msgs::msg::GuiPosition& msg) {
-  if (cfg == nullptr) {
-    return;
-  }
-  msg.joint_names.assign(cfg->joint_state_names.begin(), cfg->joint_state_names.end());
-  msg.joint_positions.assign(cfg->joint_state_names.size(), 0.0);
-}
-
 // Pre-populate GraspState per-finger arrays to kMaxFingertips so publish()
 // never resizes on the hot path.
 void PrefillGraspMessage(const rtc::DeviceNameConfig* cfg, rtc_msgs::msg::GraspState& msg) {
@@ -89,16 +79,6 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
         continue;
       }
       switch (pub.role) {
-        case rtc::PublishRole::kGuiPosition: {
-          if (gi >= kMaxOwnedGroups) {
-            break;
-          }
-          handles.gui_pubs[gi] =
-              node->create_publisher<rtc_msgs::msg::GuiPosition>(pub.topic_name, 10);
-          PrefillGuiMessage(ctrl.GetDeviceNameConfig(group_name), handles.gui_msgs[gi]);
-          handles.gui_group_idx[gi] = group_idx;
-          break;
-        }
         case rtc::PublishRole::kGraspState: {
           rclcpp::QoS grasp_qos{10};
           handles.grasp_pub =
@@ -217,11 +197,6 @@ bool AppendCustomPlaceholderSlot(ControllerTopicHandles& handles, const std::str
 
 void ActivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
                          ControllerTopicHandles& handles) noexcept {
-  for (auto& pub : handles.gui_pubs) {
-    if (pub) {
-      pub->on_activate();
-    }
-  }
   if (handles.grasp_pub) {
     handles.grasp_pub->on_activate();
   }
@@ -238,11 +213,6 @@ void ActivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
 
 void DeactivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
                            ControllerTopicHandles& handles) noexcept {
-  for (auto& pub : handles.gui_pubs) {
-    if (pub) {
-      pub->on_deactivate();
-    }
-  }
   if (handles.grasp_pub) {
     handles.grasp_pub->on_deactivate();
   }
@@ -261,10 +231,6 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
   for (auto& sub : handles.target_subs) {
     sub.reset();
   }
-  for (auto& pub : handles.gui_pubs) {
-    pub.reset();
-  }
-  handles.gui_group_idx.fill(-1);
   handles.grasp_pub.reset();
   handles.grasp_group_idx = -1;
   handles.tof_pub.reset();
@@ -285,33 +251,6 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
                                     ControllerTopicHandles& handles) noexcept {
   const auto sec = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
   const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
-
-  // ── GUI position (per device group) ───────────────────────────────────
-  for (std::size_t slot = 0; slot < kMaxOwnedGroups; ++slot) {
-    auto& pub = handles.gui_pubs[slot];
-    const int gi_signed = handles.gui_group_idx[slot];
-    if (!pub || gi_signed < 0 || gi_signed >= rtc::PublishSnapshot::kMaxGroups) {
-      continue;
-    }
-    const auto gi = static_cast<std::size_t>(gi_signed);
-    const auto& gc = snap.group_commands[gi];
-    auto& msg = handles.gui_msgs[slot];
-    msg.header.stamp.sec = sec;
-    msg.header.stamp.nanosec = nsec;
-    const auto n_actual =
-        std::min(static_cast<std::size_t>(gc.actual_num_channels), msg.joint_positions.size());
-    for (std::size_t i = 0; i < n_actual; ++i) {
-      msg.joint_positions[i] = gc.actual_positions[i];
-    }
-    // task_positions is SE(3) — populated only for the first (robot) group.
-    if (gi == 0) {
-      std::copy(snap.actual_task_positions.begin(), snap.actual_task_positions.end(),
-                msg.task_positions.begin());
-    } else {
-      msg.task_positions.fill(0.0);
-    }
-    pub->publish(msg);
-  }
 
   // ── Grasp state ─────────────────────────────────────────────────────
   if (handles.grasp_pub && handles.grasp_group_idx >= 0 &&

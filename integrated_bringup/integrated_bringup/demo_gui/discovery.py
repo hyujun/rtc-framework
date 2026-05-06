@@ -6,8 +6,8 @@ constants with a ``RobotShape`` instance that:
 
   1. starts from a sensible default at ``__init__`` time so the Tk widget
      tree builds immediately (no "waiting for first message" placeholder),
-  2. *advisorily* warns once per unique mismatch when a ``GuiPosition``
-     message arrives whose ``joint_names`` describe a different schema —
+  2. *advisorily* warns once per unique mismatch when a ``JointState``
+     message arrives whose ``name`` field describes a different schema —
      the user is expected to restart the GUI to pick up the new
      robot/hand. The Tk widgets stay pinned to the startup default for
      this sprint (option (a) per the sprint plan); see
@@ -81,7 +81,7 @@ class RobotShape:
         return len(self.hand_motor_names)
 
     def matches_message(self, joint_names: list[str], expected_dof: int) -> bool:
-        """Return True iff a ``GuiPosition`` carrying these joint_names is
+        """Return True iff a ``JointState`` carrying these joint_names is
         consistent with this shape — i.e. the GUI does not need to rebuild.
 
         ``expected_dof`` selects which span to compare against (arm_dof or
