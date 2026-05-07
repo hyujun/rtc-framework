@@ -147,6 +147,7 @@ class AllocTracerTest : public ::testing::Test {
     pinocchio::urdf::buildModel(kPandaUrdf, model_);
     auto robot_cfg = YAML::Load(R"(
 end_effector_frame: panda_hand
+base_frame: panda_link0
 contact_frames:
   - name: panda_leftfinger
     dim: 3

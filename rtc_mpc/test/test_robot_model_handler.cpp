@@ -47,6 +47,7 @@ class RobotModelHandlerTest : public ::testing::Test {
 TEST_F(RobotModelHandlerTest, InitSucceedsWithValidYaml) {
   auto cfg = YAML::Load(R"(
 end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
 contact_frames:
   - name: panda_leftfinger
     dim: 3
@@ -71,6 +72,7 @@ contact_frames:
 TEST_F(RobotModelHandlerTest, InitSucceedsWithNoContacts) {
   auto cfg = YAML::Load(R"(
 end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
 )");
 
   rtc::mpc::RobotModelHandler handler;
@@ -91,6 +93,7 @@ end_effector_frame: not_a_real_frame
 TEST_F(RobotModelHandlerTest, MissingContactFrameReturnsError) {
   auto cfg = YAML::Load(R"(
 end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
 contact_frames:
   - name: panda_leftfinger
   - name: ghost_frame
@@ -104,6 +107,7 @@ contact_frames:
 TEST_F(RobotModelHandlerTest, InvalidContactDimReturnsError) {
   auto cfg = YAML::Load(R"(
 end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
 contact_frames:
   - name: panda_leftfinger
     dim: 5
@@ -121,14 +125,20 @@ TEST_F(RobotModelHandlerTest, MissingEndEffectorKeyReturnsSchemaError) {
 }
 
 TEST_F(RobotModelHandlerTest, DoubleInitReturnsError) {
-  auto cfg = YAML::Load("end_effector_frame: panda_hand_tcp\n");
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
+)");
   rtc::mpc::RobotModelHandler handler;
   ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
   EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kModelAlreadyInitialised);
 }
 
 TEST_F(RobotModelHandlerTest, FrameIdLookup) {
-  auto cfg = YAML::Load("end_effector_frame: panda_hand_tcp\n");
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
+)");
   rtc::mpc::RobotModelHandler handler;
   ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
 
@@ -146,8 +156,23 @@ TEST(RobotModelHandlerStandaloneTest, UninitialisedAccessorsSafe) {
   EXPECT_FALSE(handler.FrameId("anything").has_value());
 }
 
-TEST_F(RobotModelHandlerTest, BaseFrameMissingFallsBackToUniverse) {
+TEST_F(RobotModelHandlerTest, BaseFrameMissingReturnsInvalidSchema) {
+  // strict mode (F-4): silent universe fallback 제거됨. base_frame 누락은
+  // kInvalidYamlSchema로 거부된다. 명시적 universe는 별도 케이스에서 검증.
   auto cfg = YAML::Load("end_effector_frame: panda_hand_tcp\n");
+  rtc::mpc::RobotModelHandler handler;
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kInvalidYamlSchema);
+  EXPECT_FALSE(handler.Initialised());
+}
+
+TEST_F(RobotModelHandlerTest, ExplicitUniverseBaseFramePreservesFastPath) {
+  // base_frame: "universe" (frame_id 0) 명시는 허용되며 fast-path를 그대로
+  // 활용한다. F-4 strict mode가 deprecate한 것은 *암묵* fallback이지, base_id 0
+  // 자체가 아니다.
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand_tcp
+base_frame: universe
+)");
   rtc::mpc::RobotModelHandler handler;
   ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
   EXPECT_TRUE(handler.base_frame_is_universe());
@@ -175,7 +200,10 @@ base_frame: not_a_real_frame
 }
 
 TEST_F(RobotModelHandlerTest, BaseOMfIdentityWhenUniverse) {
-  auto cfg = YAML::Load("end_effector_frame: panda_hand_tcp\n");
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand_tcp
+base_frame: universe
+)");
   rtc::mpc::RobotModelHandler handler;
   ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
   // universe fast path: oMb == Identity (no FK done).

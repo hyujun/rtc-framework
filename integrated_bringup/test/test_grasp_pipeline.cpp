@@ -29,6 +29,7 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
@@ -36,7 +37,6 @@
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
-#include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -162,6 +162,7 @@ class GraspPipelineTest : public ::testing::Test {
 
     auto model_cfg = YAML::Load(R"(
 end_effector_frame: panda_hand
+base_frame: panda_link0
 contact_frames:
   - name: panda_leftfinger
     dim: 3

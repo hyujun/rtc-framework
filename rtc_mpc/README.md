@@ -71,17 +71,18 @@ package linking `rtc_mpc` inherits the workarounds via
 - **Fixed-base only**: Cubic Hermite assumes Euclidean `q` (revolute
   joints). Floating-base quaternion interpolation is out of scope.
 - **Explicit SE3 frames**: `RobotModelHandler` requires `end_effector_frame`
-  (controlled tip) and accepts an optional `base_frame` (reference for SE3
-  control; resolved alongside the EE frame). Missing `base_frame` falls back
-  to the Pinocchio universe (frame_id 0) with a one-shot stderr warning;
-  `kMissingBaseFrame` is returned only when the key is set but unresolved.
-  `HandlerMPCThread::Solve` extracts the per-tick TCP pose as
-  `oMb⁻¹·oMf[ee]` (fast path: identity when base is universe) before passing
-  it to the phase manager. `PhaseContext::ee_target` is interpreted in
-  `base_frame`; `cost_factory::AddFramePlacement` lifts it to world via
-  `base_oMf · ee_target` (captured at Init from neutral FK — valid because
-  base must be a fixed frame) before constructing the Aligator residual.
-  Universe base frames take a fast path that skips both transforms.
+  (controlled tip) **and** `base_frame` (reference for SE3 control; F-4
+  strict — silent universe fallback was removed). Missing `base_frame`
+  returns `kInvalidYamlSchema`; an unresolvable name returns
+  `kMissingBaseFrame`. Pass `base_frame: "universe"` (frame_id 0) to opt
+  into the world-frame fast path. `HandlerMPCThread::Solve` extracts the
+  per-tick TCP pose as `oMb⁻¹·oMf[ee]` (identity when base is universe)
+  before passing it to the phase manager. `PhaseContext::ee_target` is
+  interpreted in `base_frame`; `cost_factory::AddFramePlacement` lifts it
+  to world via `base_oMf · ee_target` (captured at Init from neutral FK —
+  valid because base must be a fixed frame) before constructing the
+  Aligator residual. Universe base frames take a fast path that skips both
+  transforms.
 
 ## Observability (HandlerMPCThread)
 

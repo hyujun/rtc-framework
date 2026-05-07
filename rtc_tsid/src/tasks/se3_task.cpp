@@ -1,13 +1,12 @@
 #include "rtc_tsid/tasks/se3_task.hpp"
 
 #include <cmath>
-#include <cstdio>
 
 namespace rtc::tsid {
 
 namespace {
 
-// base_frame YAML 키를 읽어 cache에 등록한다. 미지정/universe(0)일 경우
+// base_frame YAML 키를 읽어 cache에 등록한다. universe(frame_id 0)일 경우
 // fast-path를 위해 base_frame_idx=-1, base_is_universe=true로 표시.
 // 반환값: {base_frame_idx, base_is_universe}.
 struct BaseFrameResolution {
@@ -15,15 +14,13 @@ struct BaseFrameResolution {
   bool is_universe;
 };
 
+// base_frame 키는 strict 필수 — 누락 시 init throws.
+// 명시적 "universe" (frame_id 0) 입력은 허용되며 fast-path로 매핑된다.
 BaseFrameResolution ResolveBaseFrame(const pinocchio::Model& model, PinocchioCache& cache,
                                      const YAML::Node& task_config, const std::string& task_name) {
   if (!task_config || !task_config["base_frame"]) {
-    (void)std::fprintf(stderr,
-                       "[SE3Task] task '%s': 'base_frame' missing — falling back to "
-                       "universe(world). Specify se3 task `base_frame` in YAML to "
-                       "silence this warning.\n",
-                       task_name.c_str());
-    return {-1, true};
+    throw std::runtime_error("SE3Task: task '" + task_name +
+                             "': 'base_frame' is required (no implicit fallback)");
   }
   const auto base_name = task_config["base_frame"].as<std::string>();
   const auto base_id = model.getFrameId(base_name);

@@ -133,9 +133,11 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 ```yaml
 se3_tcp:
   frame: "tool0"              # 제어 대상 tip frame (URDF frame 이름)
-  base_frame: "base"          # reference 좌표계 (선택). 미지정 시 universe(world)로
-                              # fallback + stderr 경고. `set_se3_reference`로 넣는
-                              # placement_des는 이 frame 기준으로 해석된다.
+  base_frame: "base"          # reference 좌표계 — F-4 strict 후 필수.
+                              # 누락 시 init은 std::runtime_error throw.
+                              # `set_se3_reference`로 넣는 placement_des는
+                              # 이 frame 기준으로 해석된다. fast-path를 원하면
+                              # "universe" 명시.
   mask: [1, 1, 1, 1, 1, 1]    # [vx, vy, vz, wx, wy, wz] 축 선택
   kp: [100, 100, 100, 50, 50, 50]  # 축별 position gain
   kd: [20, 20, 20, 10, 10, 10]     # 축별 velocity gain
@@ -143,7 +145,7 @@ se3_tcp:
   priority: 0
 ```
 
-`base_frame`은 universe(`frame_id == 0`)이거나 미지정이면 fast-path(`tip_in_base = oMf`)로 동작하므로 기존 world-기준 설정과 호환된다. base_frame이 다른 frame일 때 매 tick `bMf = oMb⁻¹·oMf` 변환 1회가 추가된다.
+`base_frame`이 명시적 universe(`frame_id == 0`)이면 fast-path(`tip_in_base = oMf`)로 동작한다. base_frame이 다른 frame일 때 매 tick `bMf = oMb⁻¹·oMf` 변환 1회가 추가된다.
 
 #### CoMTask YAML 설정
 

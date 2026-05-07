@@ -70,9 +70,11 @@ TEST(DemoWbcBaseFrameConsistency, MismatchFlagsLifecycleFailure) {
 }
 
 TEST(DemoWbcBaseFrameConsistency, EmptyEntriesSkipsCheck) {
-  // Universe fallback path: no `base_frame` keys captured. Validation
-  // must stay silent so existing YAML without explicit base_frame still
-  // configures (F-4 will tighten this; F-2 only catches divergence).
+  // No base_frame entries captured (e.g. tsid_disabled + mpc_disabled). The
+  // F-2 mismatch gate only fires when entries exist; absent strict-mode
+  // enforcement on the consumer side is the responsibility of TSID/MPC
+  // (F-4: SE3Task throws and RobotModelHandler returns kInvalidYamlSchema
+  // when their YAML lacks `base_frame`).
   DemoWbcController ctrl{""};
   ctrl.SetBaseFrameEntriesForTesting({});
 

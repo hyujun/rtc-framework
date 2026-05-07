@@ -46,6 +46,7 @@ TEST_F(SE3TaskTest, InitAndDimension6D) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{1, 1, 1, 1, 1, 1};
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
@@ -65,6 +66,7 @@ TEST_F(SE3TaskTest, InitAndDimensionPositionOnly) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{1, 1, 1, 0, 0, 0};
 
   task.init(*model_, robot_info_, cache_, cfg);
@@ -76,6 +78,7 @@ TEST_F(SE3TaskTest, InitAndDimensionRotationOnly) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{0, 0, 0, 1, 1, 1};
 
   task.init(*model_, robot_info_, cache_, cfg);
@@ -87,6 +90,7 @@ TEST_F(SE3TaskTest, CustomName) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["name"] = "se3_tcp";
 
   task.init(*model_, robot_info_, cache_, cfg);
@@ -98,6 +102,7 @@ TEST_F(SE3TaskTest, ZeroErrorAtCurrentPose) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
@@ -130,6 +135,7 @@ TEST_F(SE3TaskTest, PositionErrorResponse) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{1, 1, 1, 0, 0, 0};  // position only
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
@@ -164,6 +170,7 @@ TEST_F(SE3TaskTest, OrientationErrorSmallAngle) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{0, 0, 0, 1, 1, 1};  // rotation only
   cfg["kp"] = 50.0;
   cfg["kd"] = 10.0;
@@ -197,6 +204,7 @@ TEST_F(SE3TaskTest, OrientationErrorNearPi) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["kp"] = 50.0;
   cfg["kd"] = 10.0;
 
@@ -230,6 +238,7 @@ TEST_F(SE3TaskTest, GainsUpdate) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
@@ -270,6 +279,7 @@ TEST_F(SE3TaskTest, JBlockDimensionWithMask) {
   SE3Task task;
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{1, 0, 1, 0, 1, 0};  // 3 axes active
 
   task.init(*model_, robot_info_, cache_, cfg);
@@ -295,6 +305,32 @@ TEST_F(SE3TaskTest, JBlockDimensionWithMask) {
   EXPECT_TRUE(J.row(0).isApprox(rf.J.row(0).head(n_vars)));  // vx
   EXPECT_TRUE(J.row(1).isApprox(rf.J.row(2).head(n_vars)));  // vz
   EXPECT_TRUE(J.row(2).isApprox(rf.J.row(4).head(n_vars)));  // wy
+}
+
+TEST_F(SE3TaskTest, MissingBaseFrameThrows) {
+  SE3Task task;
+  YAML::Node cfg;
+  cfg["frame"] = "panda_hand";
+  // base_frame 누락 — strict mode에서 init은 throw 해야 한다.
+  EXPECT_THROW(task.init(*model_, robot_info_, cache_, cfg), std::runtime_error);
+}
+
+TEST_F(SE3TaskTest, ExplicitUniverseBaseFrameAccepted) {
+  SE3Task task;
+  YAML::Node cfg;
+  cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "universe";  // frame_id 0 → fast-path 유지
+
+  EXPECT_NO_THROW(task.init(*model_, robot_info_, cache_, cfg));
+  EXPECT_EQ(task.residual_dim(), 6);
+}
+
+TEST_F(SE3TaskTest, UnknownBaseFrameThrows) {
+  SE3Task task;
+  YAML::Node cfg;
+  cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "not_a_real_frame";
+  EXPECT_THROW(task.init(*model_, robot_info_, cache_, cfg), std::runtime_error);
 }
 
 }  // namespace

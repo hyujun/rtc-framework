@@ -76,6 +76,7 @@ TEST_F(Phase3WQPTest, PostureAndSE3Solve) {
   auto se3 = std::make_unique<SE3Task>();
   YAML::Node se3_cfg;
   se3_cfg["frame"] = "panda_hand";
+  se3_cfg["base_frame"] = "panda_link0";
   se3_cfg["name"] = "se3_tcp";
   se3_cfg["kp"] = 100.0;
   se3_cfg["kd"] = 20.0;
@@ -142,6 +143,7 @@ TEST_F(Phase3WQPTest, SE3WithPositionOffset) {
   auto se3 = std::make_unique<SE3Task>();
   YAML::Node se3_cfg;
   se3_cfg["frame"] = "panda_hand";
+  se3_cfg["base_frame"] = "panda_link0";
   se3_cfg["kp"] = 100.0;
   se3_cfg["kd"] = 20.0;
   se3_cfg["weight"] = 100.0;
@@ -199,6 +201,7 @@ TEST_F(Phase3WQPTest, HQPWithSE3Priority) {
   auto se3 = std::make_unique<SE3Task>();
   YAML::Node se3_cfg;
   se3_cfg["frame"] = "panda_hand";
+  se3_cfg["base_frame"] = "panda_link0";
   se3_cfg["kp"] = 100.0;
   se3_cfg["kd"] = 20.0;
   se3_cfg["weight"] = 100.0;
@@ -245,6 +248,7 @@ TEST_F(Phase3WQPTest, PhasePresetSwitch) {
   auto se3 = std::make_unique<SE3Task>();
   YAML::Node se3_cfg;
   se3_cfg["frame"] = "panda_hand";
+  se3_cfg["base_frame"] = "panda_link0";
   se3_cfg["name"] = "se3_tcp";
   se3_cfg["kp"] = 100.0;
   se3_cfg["kd"] = 20.0;

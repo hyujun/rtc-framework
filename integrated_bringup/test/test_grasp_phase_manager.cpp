@@ -21,10 +21,10 @@
 #include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
-#include "rtc_mpc/model/robot_model_handler.hpp"
-#include "rtc_mpc/phase/phase_context.hpp"
 #include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"
 #include "integrated_bringup/controllers/wbc/grasp_target.hpp"
+#include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/phase/phase_context.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -124,6 +124,7 @@ class GraspPhaseManagerTest : public ::testing::Test {
 
     auto model_cfg = YAML::Load(R"(
 end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
 contact_frames:
   - name: panda_leftfinger
     dim: 3
@@ -194,7 +195,8 @@ TEST_F(GraspPhaseManagerTest, LoadRejectsNonPositiveThreshold) {
 TEST_F(GraspPhaseManagerTest, LoadRejectsOutOfRangeContactIndex) {
   auto cfg = YAML::Load(kPandaPhaseConfig);
   cfg["phases"]["closure"]["active_contact_indices"].push_back(7);
-  EXPECT_EQ(manager_->Load(cfg), integrated_bringup::phase::GraspPhaseInitError::kInvalidContactIndex);
+  EXPECT_EQ(manager_->Load(cfg),
+            integrated_bringup::phase::GraspPhaseInitError::kInvalidContactIndex);
 }
 
 TEST_F(GraspPhaseManagerTest, InitThrowsOnMalformedYaml) {

@@ -23,10 +23,11 @@ namespace rtc::tsid {
 //
 // Frame contract:
 //   - tip_frame   (YAML "frame")        : 제어 대상 frame
-//   - base_frame  (YAML "base_frame")   : reference 좌표계 (선택, 기본 universe)
+//   - base_frame  (YAML "base_frame")   : reference 좌표계 (필수, F-4 strict).
 //   placement_des는 base_frame 기준으로 해석되며, 내부에서
-//   bMf = oMb⁻¹·oMf 로 변환 후 비교한다. base_frame이 universe(frame_id 0)
-//   이거나 미지정 시 기존 world-기준 동작과 동일.
+//   bMf = oMb⁻¹·oMf 로 변환 후 비교한다. base_frame이 universe(frame_id 0)이면
+//   기존 world-기준 동작과 동일 (fast-path). YAML에서 키가 누락되면 init은
+//   std::runtime_error를 throw 한다.
 //
 // 위치 오차: e_pos[0:3] = p_des - p_curr_b
 // 자세 오차: e_pos[3:6] = log3(R_currᵀ · R_des) — base frame에서
@@ -51,7 +52,7 @@ class SE3Task final : public TaskBase {
 
   /// @brief SE3 목표 설정 (RT-safe)
   /// @param placement_des 목표 SE3 pose, **base_frame 기준**.
-  ///        base_frame이 미지정이면 universe(world) 기준.
+  ///        base_frame이 명시적 universe(frame_id 0)이면 world 기준.
   /// @param v_des 목표 spatial velocity [6] (default: zero)
   /// @param a_ff feedforward spatial acceleration [6] (default: zero)
   void set_se3_reference(
@@ -67,10 +68,10 @@ class SE3Task final : public TaskBase {
   std::string name_{"se3"};
   int nv_{0};
   int registered_frame_idx_{-1};  // PinocchioCache registered_frames 인덱스 (tip)
-  // Base frame: reference 좌표계. -1이면 universe(world)와 동일.
-  // 별도 PinocchioCache 슬롯에 등록되어 매 tick oMb가 갱신된다.
+  // Base frame: reference 좌표계. base_is_universe_=true면 -1로 두고 fast-path를
+  // 탄다. 명시적 base_frame이 universe(frame_id 0)일 때도 동일.
   int base_frame_idx_{-1};
-  bool base_is_universe_{true};  // -1 또는 frame_id == 0 → fast path
+  bool base_is_universe_{true};  // base_frame == universe → fast path
 
   // 6D mask: true = 해당 축 제어
   std::array<bool, 6> mask_{};

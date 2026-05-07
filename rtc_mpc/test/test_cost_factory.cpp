@@ -67,6 +67,7 @@ class CostFactoryTest : public ::testing::Test {
 
     auto model_cfg = YAML::Load(R"(
 end_effector_frame: panda_hand
+base_frame: panda_link0
 contact_frames:
   - name: panda_leftfinger
     dim: 3
@@ -282,9 +283,11 @@ TEST(CostFactoryBaseFrameTest, EeTargetUnchangedOnUniverseFastPath) {
   pinocchio::Model model;
   pinocchio::urdf::buildModel(kPandaUrdf, model);
 
-  // No base_frame → universe fallback.
+  // 명시적 universe — fast-path 보존 (F-4 strict mode 후에도 base_id == 0
+  // 입력은 허용되며 기존 fast-path 분기를 그대로 활용한다).
   auto model_cfg = YAML::Load(R"(
 end_effector_frame: panda_hand
+base_frame: universe
 contact_frames:
   - name: panda_leftfinger
     dim: 3
