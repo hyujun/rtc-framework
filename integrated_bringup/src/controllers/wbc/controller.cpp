@@ -1,8 +1,7 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
-
+#include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
-#include "integrated_bringup/logging/pod_fill.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -173,6 +172,15 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       auto task = std::make_unique<rtc::tsid::SE3Task>();
       task->init(model, robot_info_, pinocchio_cache_, task_cfg);
       formulation.add_task(std::move(task));
+      // F-2: capture base_frame for OnDeviceConfigsSet consistency check.
+      // Skip when key absent — universe fallback path stays unchecked here.
+      // (Cache the YAML::Node into a local to avoid yaml-cpp's
+      // unnamed-temporary lifetime trap that GCC flags as dangling.)
+      const YAML::Node base_frame_node = task_cfg["base_frame"];
+      if (base_frame_node) {
+        base_frame_yaml_entries_.emplace_back("tsid.tasks." + key + ".base_frame",
+                                              base_frame_node.as<std::string>());
+      }
     } else if (type == "force") {
       auto task = std::make_unique<rtc::tsid::ForceTask>();
       task->init(model, robot_info_, pinocchio_cache_, task_cfg);
@@ -224,6 +232,12 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   if (!cfg) {
     return;
   }
+
+  // F-2: reset captured base_frame entries; LoadConfig may run twice
+  // (PreConfigure + idempotent on_configure path).
+  base_frame_yaml_entries_.clear();
+  base_frame_mismatch_ = false;
+  base_frame_mismatch_detail_.clear();
 
   // ── 1. Build models from system model config ──────────────────────────
   const auto* sys_cfg = GetSystemModelConfig();
@@ -498,6 +512,20 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
         const auto model_node = mpc_light_cfg_["mpc"] && mpc_light_cfg_["mpc"]["model"]
                                     ? mpc_light_cfg_["mpc"]["model"]
                                     : YAML::Node{};
+        // F-2: capture MPC model.base_frame for OnDeviceConfigsSet
+        // consistency check. Both light_contact and contact_rich share the
+        // same base_frame contract; record each so a divergent edit is
+        // surfaced as a mismatch against the device root_link.
+        if (model_node && model_node["base_frame"]) {
+          base_frame_yaml_entries_.emplace_back("mpc.light.model.base_frame",
+                                                model_node["base_frame"].as<std::string>());
+        }
+        if (mpc_rich_cfg_ && mpc_rich_cfg_["mpc"] && mpc_rich_cfg_["mpc"]["model"] &&
+            mpc_rich_cfg_["mpc"]["model"]["base_frame"]) {
+          base_frame_yaml_entries_.emplace_back(
+              "mpc.rich.model.base_frame",
+              mpc_rich_cfg_["mpc"]["model"]["base_frame"].as<std::string>());
+        }
         mpc_model_handler_ = std::make_unique<rtc::mpc::RobotModelHandler>();
         const auto model_err = mpc_model_handler_->Init(*full_model_ptr_, model_node);
         if (model_err != rtc::mpc::RobotModelInitError::kNoError) {
@@ -514,7 +542,8 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
         // GraspPhaseManager is built eagerly here (non-RT) so any YAML
         // schema errors surface before the RT thread starts. It is handed
         // over to HandlerMPCThread::Configure in InitializeHoldPosition.
-        auto pm = std::make_unique<integrated_bringup::phase::GraspPhaseManager>(*mpc_model_handler_);
+        auto pm =
+            std::make_unique<integrated_bringup::phase::GraspPhaseManager>(*mpc_model_handler_);
         const auto phase_err = pm->Load(
             phase_cfg_["grasp_phase_manager"] ? phase_cfg_["grasp_phase_manager"] : phase_cfg_);
         if (phase_err != integrated_bringup::phase::GraspPhaseInitError::kNoError) {
@@ -559,7 +588,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
 
 void DemoWbcController::OnDeviceConfigsSet() {
   // ── Arm frame IDs ─────────────────────────────────────────────────────
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  // arm_handle_ is null when the model wasn't built (e.g. unit tests that
+  // exercise lifecycle hooks without a URDF). Skip frame resolution in
+  // that case; consistency checks below remain valid.
+  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg && arm_handle_) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {
@@ -571,6 +603,34 @@ void DemoWbcController::OnDeviceConfigsSet() {
       if (fid != 0) {
         root_frame_id_ = fid;
         use_root_frame_ = true;
+      }
+    }
+  }
+
+  // F-2: validate that every captured SE3/MPC `base_frame` YAML value
+  // matches the primary arm device's `urdf.root_link`. A mismatch means
+  // the user edited one knob but not the other — silently lifting the
+  // wrong frame would produce a quietly broken TCP target. We cannot
+  // throw from here (CM calls SetDeviceNameConfigs without a try/catch),
+  // so flag the failure for on_configure to surface as
+  // CallbackReturn::FAILURE.
+  if (!base_frame_yaml_entries_.empty()) {
+    const auto* primary_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+    if (primary_cfg && primary_cfg->urdf && !primary_cfg->urdf->root_link.empty()) {
+      const auto& expected = primary_cfg->urdf->root_link;
+      for (const auto& [label, value] : base_frame_yaml_entries_) {
+        if (value != expected) {
+          if (!base_frame_mismatch_) {
+            base_frame_mismatch_detail_ =
+                label + "='" + value + "' != urdf.root_link='" + expected + "'";
+          }
+          base_frame_mismatch_ = true;
+          RCLCPP_ERROR(logger_,
+                       "[wbc] base_frame mismatch: %s='%s' but '%s' device "
+                       "urdf.root_link='%s'. SE3/MPC reference frame must match.",
+                       label.c_str(), value.c_str(), GetPrimaryDeviceName().c_str(),
+                       expected.c_str());
+        }
       }
     }
   }

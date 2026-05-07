@@ -18,6 +18,15 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
   if (ret != CallbackReturn::SUCCESS) {
     return ret;
   }
+  // F-2: surface base_frame ↔ urdf.root_link mismatch detected in
+  // OnDeviceConfigsSet. RCLCPP_ERROR was already emitted there; this
+  // gate fails the lifecycle transition so the controller never becomes
+  // active with a quietly broken SE3 reference frame.
+  if (base_frame_mismatch_) {
+    RCLCPP_ERROR(logger_, "DemoWbcController on_configure: %s",
+                 base_frame_mismatch_detail_.c_str());
+    return CallbackReturn::FAILURE;
+  }
   try {
     CreateOwnedTopics(*this, owned_topics_);
     mpc_timing_cb_group_ =

@@ -221,6 +221,23 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_wbc_controller base_frame consistency (F-2) ───────────────────────
+  ament_add_gtest(test_demo_wbc_base_frame_consistency
+    test/test_demo_wbc_base_frame_consistency.cpp)
+  target_link_libraries(test_demo_wbc_base_frame_consistency
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_wbc_base_frame_consistency
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    rtc_tsid
+    rtc_mpc
+    Eigen3
+  )
+
   # ── demo_wbc_controller MPC integration tests (Phase 5) ────────────────────
   ament_add_gtest(test_demo_wbc_mpc_integration
     test/test_demo_wbc_mpc_integration.cpp)

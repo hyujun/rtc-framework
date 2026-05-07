@@ -358,6 +358,8 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 - **`estop.arm_safe_position`** (필수, 6개 값): E-STOP 목표 arm pose. 누락 시 `LoadConfig` throw
 - **`mpc`**: `enabled`, `engine` (`mock`/`handler`), `max_stale_solutions`(기본 5), `phase_config_path` + `light_contact_path` + `contact_rich_path` (handler 전용, 기본 `config/controllers/mpc/*.yaml`), `riccati.{enabled, gain_scale, accel_only, max_delta_x_norm}`. `enabled: false`가 기본이라 MPC는 inert이고 TSID가 self-hold한다.
 
+> **base_frame 일관성 게이트 (F-2):** SE3 task의 `base_frame`(예: `tsid.tasks.se3_tcp.base_frame`)과 MPC YAML의 `mpc.model.base_frame`(`light_contact.yaml` / `contact_rich.yaml`)은 모두 1차 디바이스 (`ur5e`)의 `urdf.root_link`와 동일한 frame 이름이어야 한다. `on_configure`가 한쪽만 변경된 mismatch를 감지하면 `RCLCPP_ERROR` 이후 `CallbackReturn::FAILURE`로 lifecycle 전이를 막는다. `base_frame` 키를 모두 비우면 universe(world) fallback으로 동작하며 게이트는 silent (F-4에서 strict 전환 예정).
+
 #### MPC 통합 동작
 
 `mpc.enabled: true`일 때 `InitializeHoldPosition`에서 MPC 스레드가 기동되며, `mpc.engine` 값에 따라 두 경로 중 하나를 선택한다:

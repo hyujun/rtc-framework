@@ -160,6 +160,21 @@ class DemoWbcController final : public RTControllerInterface {
 
   void SetGraspCmdForTesting(int v) noexcept { grasp_cmd_.store(v, std::memory_order_release); }
 
+  // F-2 test access: seed captured base_frame entries directly so
+  // OnDeviceConfigsSet can be exercised without a real Pinocchio model.
+  void SetBaseFrameEntriesForTesting(
+      std::vector<std::pair<std::string, std::string>> entries) noexcept {
+    base_frame_yaml_entries_ = std::move(entries);
+    base_frame_mismatch_ = false;
+    base_frame_mismatch_detail_.clear();
+  }
+
+  [[nodiscard]] bool IsBaseFrameMismatchForTesting() const noexcept { return base_frame_mismatch_; }
+
+  [[nodiscard]] const std::string& GetBaseFrameMismatchDetailForTesting() const noexcept {
+    return base_frame_mismatch_detail_;
+  }
+
   void set_gains(Gains gains) noexcept { gains_lock_.Store(gains); }
 
   [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
@@ -222,6 +237,17 @@ class DemoWbcController final : public RTControllerInterface {
   // Grasp command from ~/grasp_command srv (0=idle/abort, 1=approach,
   // 2=release)
   std::atomic<int> grasp_cmd_{0};
+
+  // F-2: SE3/MPC base_frame YAML values captured during LoadConfig and
+  // validated against the primary device's `urdf.root_link` in
+  // OnDeviceConfigsSet. on_configure consults `base_frame_mismatch_` to
+  // FAIL the lifecycle transition when frame names disagree, since
+  // OnDeviceConfigsSet itself runs from a non-throwing CM call site.
+  // Each entry is (label_for_logs, base_frame_yaml_value); empty labels
+  // skip the comparison (universe fallback policy stays in effect).
+  std::vector<std::pair<std::string, std::string>> base_frame_yaml_entries_;
+  bool base_frame_mismatch_{false};
+  std::string base_frame_mismatch_detail_;
 
   // ── rtc_urdf_bridge ─────────────────────────────────────────────────────
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> builder_;
