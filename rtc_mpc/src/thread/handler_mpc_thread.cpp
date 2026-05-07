@@ -129,10 +129,16 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out,
   v_scratch_.head(nv) = Eigen::Map<const Eigen::VectorXd>(state.v.data(), nv);
 
   // ── FK for TCP pose (per-tick; reuses pdata_) ─────────────────────────
+  // tcp is expressed in base_frame: tcp = oMb⁻¹ · oMf[ee].
+  // base가 universe면 oMb = Identity → tcp = oMf[ee] (fast path).
   pinocchio::forwardKinematics(model_->model(), *pdata_, q_scratch_);
   pinocchio::updateFramePlacements(model_->model(), *pdata_);
-  const pinocchio::SE3& tcp =
+  const pinocchio::SE3& ee_in_world =
       pdata_->oMf[static_cast<std::size_t>(model_->end_effector_frame_id())];
+  const pinocchio::SE3 tcp =
+      model_->base_frame_is_universe()
+          ? ee_in_world
+          : pdata_->oMf[static_cast<std::size_t>(model_->base_frame_id())].actInv(ee_in_world);
 
   // ── Phase manager tick ────────────────────────────────────────────────
   const double t =

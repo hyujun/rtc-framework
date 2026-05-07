@@ -15,7 +15,13 @@ mpc:
 
   # ── RobotModelHandler schema (consumed by RobotModelHandler::Init) ────────
   model:
+    # SE3 control reference is interpreted in `base_frame` (parent),
+    # `end_effector_frame` is the controlled tip. `base_frame` should match
+    # the arm device config `urdf.root_link` so the TCP pose extracted in
+    # handler_mpc_thread.cpp lands in the same frame the GraspPhaseManager
+    # uses for pregrasp/grasp/approach comparisons.
     end_effector_frame: "tool0"
+    base_frame: "base"
     contact_frames:
       - { name: "thumb_tip_link",  dim: 3 }
       - { name: "index_tip_link",  dim: 3 }

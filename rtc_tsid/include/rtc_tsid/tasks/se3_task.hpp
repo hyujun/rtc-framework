@@ -21,9 +21,16 @@ namespace rtc::tsid {
 //
 // r_des = a_ff + Kp·e_pos + Kd·e_vel - dJ·v  (masked)
 //
-// 위치 오차: e_pos[0:3] = p_des - p_curr
-// 자세 오차: e_pos[3:6] = log3(R_currᵀ · R_des)
-// 속도 오차: e_vel = v_des - J_frame · v_curr
+// Frame contract:
+//   - tip_frame   (YAML "frame")        : 제어 대상 frame
+//   - base_frame  (YAML "base_frame")   : reference 좌표계 (선택, 기본 universe)
+//   placement_des는 base_frame 기준으로 해석되며, 내부에서
+//   bMf = oMb⁻¹·oMf 로 변환 후 비교한다. base_frame이 universe(frame_id 0)
+//   이거나 미지정 시 기존 world-기준 동작과 동일.
+//
+// 위치 오차: e_pos[0:3] = p_des - p_curr_b
+// 자세 오차: e_pos[3:6] = log3(R_currᵀ · R_des) — base frame에서
+// 속도 오차: e_vel = v_des - J_frame · v_curr  (base frame이 fixed인 경우만 유효)
 //
 // mask: 6D 중 제어할 축 선택 [vx,vy,vz,wx,wy,wz]
 // residual_dim = mask에서 활성 축 수
@@ -43,7 +50,8 @@ class SE3Task final : public TaskBase {
                         Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
   /// @brief SE3 목표 설정 (RT-safe)
-  /// @param placement_des 목표 SE3 pose (world frame)
+  /// @param placement_des 목표 SE3 pose, **base_frame 기준**.
+  ///        base_frame이 미지정이면 universe(world) 기준.
   /// @param v_des 목표 spatial velocity [6] (default: zero)
   /// @param a_ff feedforward spatial acceleration [6] (default: zero)
   void set_se3_reference(
@@ -58,7 +66,11 @@ class SE3Task final : public TaskBase {
  private:
   std::string name_{"se3"};
   int nv_{0};
-  int registered_frame_idx_{-1};  // PinocchioCache registered_frames 인덱스
+  int registered_frame_idx_{-1};  // PinocchioCache registered_frames 인덱스 (tip)
+  // Base frame: reference 좌표계. -1이면 universe(world)와 동일.
+  // 별도 PinocchioCache 슬롯에 등록되어 매 tick oMb가 갱신된다.
+  int base_frame_idx_{-1};
+  bool base_is_universe_{true};  // -1 또는 frame_id == 0 → fast path
 
   // 6D mask: true = 해당 축 제어
   std::array<bool, 6> mask_{};

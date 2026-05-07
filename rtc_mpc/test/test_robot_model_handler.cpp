@@ -3,8 +3,8 @@
 ///
 /// Panda is used as a generic N-DoF fixed-base manipulator fixture (the only
 /// URDF guaranteed to be present alongside Aligator / example-robot-data).
-/// This file must NOT test UR5e or any robot-specific assumption — that
-/// belongs in `integrated_bringup/test/` (Phase 7).
+/// This file must NOT test any specific deployment robot or robot-specific
+/// assumption — that belongs in `integrated_bringup/test/` (Phase 7).
 
 #include <gtest/gtest.h>
 
@@ -140,6 +140,34 @@ TEST(RobotModelHandlerStandaloneTest, UninitialisedAccessorsSafe) {
   EXPECT_EQ(handler.nu(), 0);
   EXPECT_EQ(handler.n_contacts(), 0);
   EXPECT_FALSE(handler.FrameId("anything").has_value());
+}
+
+TEST_F(RobotModelHandlerTest, BaseFrameMissingFallsBackToUniverse) {
+  auto cfg = YAML::Load("end_effector_frame: panda_hand_tcp\n");
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
+  EXPECT_TRUE(handler.base_frame_is_universe());
+  EXPECT_EQ(handler.base_frame_id(), 0);
+}
+
+TEST_F(RobotModelHandlerTest, BaseFrameExplicitResolvesId) {
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand_tcp
+base_frame: panda_link0
+)");
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kNoError);
+  EXPECT_FALSE(handler.base_frame_is_universe());
+  EXPECT_GT(handler.base_frame_id(), 0);
+}
+
+TEST_F(RobotModelHandlerTest, MissingBaseFrameReturnsError) {
+  auto cfg = YAML::Load(R"(
+end_effector_frame: panda_hand_tcp
+base_frame: not_a_real_frame
+)");
+  rtc::mpc::RobotModelHandler handler;
+  EXPECT_EQ(handler.Init(model_, cfg), rtc::mpc::RobotModelInitError::kMissingBaseFrame);
 }
 
 }  // namespace

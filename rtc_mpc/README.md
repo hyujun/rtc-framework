@@ -70,6 +70,16 @@ package linking `rtc_mpc` inherits the workarounds via
   `RobotModelInitError`; never throws.
 - **Fixed-base only**: Cubic Hermite assumes Euclidean `q` (revolute
   joints). Floating-base quaternion interpolation is out of scope.
+- **Explicit SE3 frames**: `RobotModelHandler` requires `end_effector_frame`
+  (controlled tip) and accepts an optional `base_frame` (reference for SE3
+  control; resolved alongside the EE frame). Missing `base_frame` falls back
+  to the Pinocchio universe (frame_id 0) with a one-shot stderr warning;
+  `kMissingBaseFrame` is returned only when the key is set but unresolved.
+  `HandlerMPCThread::Solve` extracts the per-tick TCP pose as
+  `oMb⁻¹·oMf[ee]` (fast path: identity when base is universe) before passing
+  it to the phase manager. **Note**: Aligator's `FramePlacementResidual`
+  itself still compares against the world frame; aligning the residual with
+  `base_frame` is tracked as a follow-up sprint.
 
 ## Observability (HandlerMPCThread)
 

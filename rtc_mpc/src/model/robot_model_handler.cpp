@@ -1,5 +1,7 @@
 #include "rtc_mpc/model/robot_model_handler.hpp"
 
+#include <cstdio>
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
@@ -51,6 +53,30 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
     return RobotModelInitError::kMissingEndEffectorFrame;
   }
 
+  // Base frame (선택). 미지정 시 universe(world) 기준으로 동작.
+  int base_id = 0;
+  bool base_is_universe = true;
+  const YAML::Node base_node = cfg["base_frame"];
+  if (base_node.IsDefined() && base_node.IsScalar()) {
+    std::string base_name;
+    try {
+      base_name = base_node.as<std::string>();
+    } catch (...) {
+      return RobotModelInitError::kInvalidYamlSchema;
+    }
+    const auto resolved = FindFrameId(model, base_name);
+    if (!resolved.has_value()) {
+      return RobotModelInitError::kMissingBaseFrame;
+    }
+    base_id = *resolved;
+    base_is_universe = (base_id == 0);
+  } else {
+    (void)std::fprintf(stderr,
+                       "[RobotModelHandler] 'base_frame' missing — falling back "
+                       "to universe(world). Specify model.base_frame in YAML to "
+                       "silence this warning.\n");
+  }
+
   std::vector<ContactFrameInfo> contacts;
   const YAML::Node cf_node = cfg["contact_frames"];
   if (cf_node.IsDefined()) {
@@ -86,6 +112,8 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
   // All validation passed — commit.
   model_ = &model;
   ee_frame_id_ = *ee_id;
+  base_frame_id_ = base_id;
+  base_is_universe_ = base_is_universe;
   contact_frames_ = std::move(contacts);
   return RobotModelInitError::kNoError;
 }

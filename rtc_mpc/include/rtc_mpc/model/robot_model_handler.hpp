@@ -45,12 +45,17 @@ enum class RobotModelInitError {
   kMissingContactFrame,      ///< a YAML `contact_frames[i].name` not in model
   kInvalidContactDim,        ///< contact frame dim ∉ {3, 6}
   kInvalidYamlSchema,        ///< structure missing required keys
+  kMissingBaseFrame,         ///< YAML `base_frame` set but not in model
 };
 
 /// YAML schema expected by @ref RobotModelHandler::Init:
 ///
 /// ```yaml
 /// end_effector_frame: "<ee_frame_name>"  # required — URDF frame name
+/// base_frame: "<base_frame_name>"         # optional — reference for SE3
+///                                         # control. Falls back to universe
+///                                         # (frame_id 0) with a stderr warning
+///                                         # if absent.
 /// contact_frames:                         # optional (empty list → no
 /// contacts)
 ///   - name: "<contact_frame_0>"
@@ -98,6 +103,16 @@ class RobotModelHandler {
 
   [[nodiscard]] int end_effector_frame_id() const noexcept { return ee_frame_id_; }
 
+  /// @return Base frame id used as the reference for SE3 control.
+  /// Returns 0 (Pinocchio universe) when YAML `base_frame` was absent — in
+  /// that case @ref base_frame_is_universe returns true and callers can take
+  /// the world-frame fast path.
+  [[nodiscard]] int base_frame_id() const noexcept { return base_frame_id_; }
+
+  /// @return true when no explicit `base_frame` was supplied (fallback to
+  /// universe). Callers may skip the `oMb⁻¹·oMf` transform on the fast path.
+  [[nodiscard]] bool base_frame_is_universe() const noexcept { return base_is_universe_; }
+
   [[nodiscard]] const pinocchio::Model& model() const noexcept { return *model_; }
 
   /// @return Pinocchio frame id for @p name, or `std::nullopt` if absent.
@@ -107,6 +122,10 @@ class RobotModelHandler {
  private:
   const pinocchio::Model* model_{nullptr};
   int ee_frame_id_{-1};
+  // Base frame for SE3 control. -1 사용 안 됨 (always 0..nframes-1).
+  // base_is_universe_=true일 때 base_frame_id_=0 (Pinocchio universe).
+  int base_frame_id_{0};
+  bool base_is_universe_{true};
   std::vector<ContactFrameInfo> contact_frames_{};
 };
 

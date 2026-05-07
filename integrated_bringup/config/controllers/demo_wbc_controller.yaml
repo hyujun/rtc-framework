@@ -90,7 +90,13 @@ demo_wbc_controller:
         kd: 6.0
       se3_tcp:
         type: "se3"
+        # SE3 control reference is interpreted in `base_frame`.
+        # `frame` is the controlled tip; `base_frame` is the parent reference.
+        # Must match the arm device config `urdf.root_link` so tcp_goal_
+        # produced by phase.cpp:196-199 (root-relative when use_root_frame_)
+        # lands in the same frame the SE3Task interprets.
         frame: "tool0"
+        base_frame: "base"
         mask: [1, 1, 1, 1, 1, 1]   # full 6-DoF
         kp: [100, 100, 100, 50, 50, 50]
         kd: [20, 20, 20, 10, 10, 10]

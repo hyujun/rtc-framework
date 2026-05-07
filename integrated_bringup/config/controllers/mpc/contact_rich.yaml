@@ -12,8 +12,11 @@ mpc:
   ocp_type: "contact_rich"
 
   # ── RobotModelHandler schema ──────────────────────────────────────────────
+  # `base_frame` must match light_contact.yaml's value (cross-mode swap shares
+  # the same RobotModelHandler).
   model:
     end_effector_frame: "tool0"
+    base_frame: "base"
     contact_frames:
       - { name: "thumb_tip_link",  dim: 3 }
       - { name: "index_tip_link",  dim: 3 }
