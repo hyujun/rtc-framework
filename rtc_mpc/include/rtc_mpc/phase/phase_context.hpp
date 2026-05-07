@@ -45,8 +45,12 @@ struct PhaseContext {
   /// 4). Unknown strings cause factory rejection — never silently fall back.
   std::string ocp_type{"light_contact"};
 
-  /// End-effector SE3 target in the model's world frame. Identity means
-  /// "no target set" (track current pose); concrete managers overwrite.
+  /// End-effector SE3 target expressed in `RobotModelHandler::base_frame_id()`.
+  /// When `base_frame` is universe (default fallback), this collapses to the
+  /// world frame and matches the legacy semantics. cost_factory lifts it to
+  /// world via `oMb · ee_target` before constructing the Aligator residual.
+  /// Identity means "no target set" (track current pose); concrete managers
+  /// overwrite.
   pinocchio::SE3 ee_target{pinocchio::SE3::Identity()};
 };
 

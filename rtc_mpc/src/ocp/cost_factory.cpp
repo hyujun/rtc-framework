@@ -65,6 +65,13 @@ StageCost MakeEmpty(const RobotModelHandler& model) noexcept {
 // Add frame-placement cost if w_frame_placement > 0. Caller owns `space`
 // and `stack`; `keys` is mutated on success. Aligator ctors may throw →
 // caller must be within a try/catch.
+//
+// Frame contract: `ee_target` is interpreted in `model.base_frame_id()` —
+// see PhaseContext::ee_target. Aligator's FramePlacementResidual compares
+// against `oMf[ee]` (world), so we lift the target to world here once:
+//   ee_target_in_world = oMb · ee_target_in_base.
+// `oMb` is captured at Init for fixed bases (see RobotModelHandler).
+// Identity when base_frame is universe → fast path.
 void AddFramePlacement(CostStack& stack, StageComponentKeys& keys, const PhaseSpace& space,
                        const PhaseCostConfig& cfg, const RobotModelHandler& model,
                        const pinocchio::SE3& ee_target) {
@@ -73,7 +80,9 @@ void AddFramePlacement(CostStack& stack, StageComponentKeys& keys, const PhaseSp
   }
   const int ndx = space.ndx();
   const int nu = model.nu();
-  FrameRes residual(ndx, nu, model.model(), ee_target,
+  const pinocchio::SE3 ee_target_world =
+      model.base_frame_is_universe() ? ee_target : model.base_oMf().act(ee_target);
+  FrameRes residual(ndx, nu, model.model(), ee_target_world,
                     static_cast<pinocchio::FrameIndex>(model.end_effector_frame_id()));
   Eigen::MatrixXd W = cfg.w_frame_placement * cfg.W_placement.asDiagonal().toDenseMatrix();
   QuadCost qcost(space, residual, W);

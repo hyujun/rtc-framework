@@ -221,4 +221,96 @@ TEST_F(CostFactoryTest, NullOutErrorIsSafe) {
   EXPECT_TRUE(sc.keys.has_frame_placement);
 }
 
+// ── base_frame propagation (F-1) ────────────────────────────────────────
+//
+// When the handler reports a non-Identity base_oMf, BuildRunningCost must
+// lift `ee_target` (interpreted in base) to world before constructing the
+// Aligator FramePlacementResidual. This guards against the silent frame-
+// mismatch that motivated F-1.
+TEST(CostFactoryBaseFrameTest, EeTargetLiftedToWorldWhenBaseNonIdentity) {
+  if (!std::filesystem::exists(kPandaUrdf)) {
+    GTEST_SKIP();
+  }
+  pinocchio::Model model;
+  pinocchio::urdf::buildModel(kPandaUrdf, model);
+
+  // Use panda_link4 as base — non-Identity oMb (~0.3 m above world origin).
+  auto model_cfg = YAML::Load(R"(
+end_effector_frame: panda_hand
+base_frame: panda_link4
+contact_frames:
+  - name: panda_leftfinger
+    dim: 3
+  - name: panda_rightfinger
+    dim: 3
+)");
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(model, model_cfg), rtc::mpc::RobotModelInitError::kNoError);
+  ASSERT_FALSE(handler.base_frame_is_universe());
+
+  rtc::mpc::PhaseCostConfig cfg;
+  ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kBaselineYaml), handler, cfg),
+            rtc::mpc::PhaseCostConfigError::kNoError);
+
+  // ee_target expressed in base_frame: arbitrary offset.
+  pinocchio::SE3 ee_in_base = pinocchio::SE3::Identity();
+  ee_in_base.translation() = Eigen::Vector3d(0.1, 0.2, 0.3);
+
+  rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg, handler, ee_in_base, &err);
+  ASSERT_EQ(err, rtc::mpc::CostFactoryError::kNoError);
+  ASSERT_TRUE(sc.keys.has_frame_placement);
+
+  auto* quad_fp = sc.stack.getComponent<aligator::QuadraticResidualCostTpl<double>>(
+      std::string(rtc::mpc::kCostKeyFramePlacement));
+  ASSERT_NE(quad_fp, nullptr);
+  auto* fp_residual = quad_fp->getResidual<aligator::FramePlacementResidualTpl<double>>();
+  ASSERT_NE(fp_residual, nullptr);
+
+  const pinocchio::SE3 expected_world = handler.base_oMf().act(ee_in_base);
+  const auto& stored = fp_residual->getReference();
+  EXPECT_TRUE(stored.translation().isApprox(expected_world.translation()))
+      << "stored=" << stored.translation().transpose()
+      << " expected=" << expected_world.translation().transpose();
+  EXPECT_TRUE(stored.rotation().isApprox(expected_world.rotation()));
+}
+
+TEST(CostFactoryBaseFrameTest, EeTargetUnchangedOnUniverseFastPath) {
+  if (!std::filesystem::exists(kPandaUrdf)) {
+    GTEST_SKIP();
+  }
+  pinocchio::Model model;
+  pinocchio::urdf::buildModel(kPandaUrdf, model);
+
+  // No base_frame → universe fallback.
+  auto model_cfg = YAML::Load(R"(
+end_effector_frame: panda_hand
+contact_frames:
+  - name: panda_leftfinger
+    dim: 3
+  - name: panda_rightfinger
+    dim: 3
+)");
+  rtc::mpc::RobotModelHandler handler;
+  ASSERT_EQ(handler.Init(model, model_cfg), rtc::mpc::RobotModelInitError::kNoError);
+  ASSERT_TRUE(handler.base_frame_is_universe());
+
+  rtc::mpc::PhaseCostConfig cfg;
+  ASSERT_EQ(rtc::mpc::PhaseCostConfig::LoadFromYaml(YAML::Load(kBaselineYaml), handler, cfg),
+            rtc::mpc::PhaseCostConfigError::kNoError);
+
+  pinocchio::SE3 ee = pinocchio::SE3::Identity();
+  ee.translation() = Eigen::Vector3d(0.4, -0.1, 0.5);
+
+  rtc::mpc::CostFactoryError err = rtc::mpc::CostFactoryError::kNoError;
+  auto sc = rtc::mpc::cost_factory::BuildRunningCost(cfg, handler, ee, &err);
+  ASSERT_EQ(err, rtc::mpc::CostFactoryError::kNoError);
+
+  auto* quad_fp = sc.stack.getComponent<aligator::QuadraticResidualCostTpl<double>>(
+      std::string(rtc::mpc::kCostKeyFramePlacement));
+  auto* fp_residual = quad_fp->getResidual<aligator::FramePlacementResidualTpl<double>>();
+  // universe → no transform applied.
+  EXPECT_TRUE(fp_residual->getReference().translation().isApprox(ee.translation()));
+}
+
 }  // namespace

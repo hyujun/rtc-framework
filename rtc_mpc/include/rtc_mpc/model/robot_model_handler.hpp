@@ -113,6 +113,12 @@ class RobotModelHandler {
   /// universe). Callers may skip the `oMb⁻¹·oMf` transform on the fast path.
   [[nodiscard]] bool base_frame_is_universe() const noexcept { return base_is_universe_; }
 
+  /// @return World pose of the base frame, computed at @ref Init with the
+  /// model's neutral configuration. Valid because base_frame must be a
+  /// fixed (q-independent) frame — placement does not change with q.
+  /// Identity when @ref base_frame_is_universe is true.
+  [[nodiscard]] const pinocchio::SE3& base_oMf() const noexcept { return base_oMf_; }
+
   [[nodiscard]] const pinocchio::Model& model() const noexcept { return *model_; }
 
   /// @return Pinocchio frame id for @p name, or `std::nullopt` if absent.
@@ -126,6 +132,9 @@ class RobotModelHandler {
   // base_is_universe_=true일 때 base_frame_id_=0 (Pinocchio universe).
   int base_frame_id_{0};
   bool base_is_universe_{true};
+  // World pose of base frame at neutral q. base가 fixed라는 invariant 하에
+  // q와 무관해 Init 시 1회 계산. universe면 Identity.
+  pinocchio::SE3 base_oMf_{pinocchio::SE3::Identity()};
   std::vector<ContactFrameInfo> contact_frames_{};
 };
 

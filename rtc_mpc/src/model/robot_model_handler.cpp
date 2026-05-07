@@ -7,6 +7,10 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/joint-configuration.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/fwd.hpp>
 #pragma GCC diagnostic pop
 
@@ -109,11 +113,28 @@ RobotModelInitError RobotModelHandler::Init(const pinocchio::Model& model,
     }
   }
 
+  // base_frame placement at neutral configuration. base_frame은 fixed
+  // (q-independent)이라는 invariant 하에 1회 계산해 저장; cost_factory가
+  // ee_target(base 기준) → world 변환에 사용한다.
+  pinocchio::SE3 base_oMf = pinocchio::SE3::Identity();
+  if (!base_is_universe) {
+    try {
+      pinocchio::Data data(model);
+      const Eigen::VectorXd q0 = pinocchio::neutral(model);
+      pinocchio::forwardKinematics(model, data, q0);
+      pinocchio::updateFramePlacement(model, data, static_cast<pinocchio::FrameIndex>(base_id));
+      base_oMf = data.oMf[static_cast<std::size_t>(base_id)];
+    } catch (...) {
+      return RobotModelInitError::kInvalidYamlSchema;
+    }
+  }
+
   // All validation passed — commit.
   model_ = &model;
   ee_frame_id_ = *ee_id;
   base_frame_id_ = base_id;
   base_is_universe_ = base_is_universe;
+  base_oMf_ = base_oMf;
   contact_frames_ = std::move(contacts);
   return RobotModelInitError::kNoError;
 }

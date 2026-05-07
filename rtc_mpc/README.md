@@ -77,9 +77,11 @@ package linking `rtc_mpc` inherits the workarounds via
   `kMissingBaseFrame` is returned only when the key is set but unresolved.
   `HandlerMPCThread::Solve` extracts the per-tick TCP pose as
   `oMb⁻¹·oMf[ee]` (fast path: identity when base is universe) before passing
-  it to the phase manager. **Note**: Aligator's `FramePlacementResidual`
-  itself still compares against the world frame; aligning the residual with
-  `base_frame` is tracked as a follow-up sprint.
+  it to the phase manager. `PhaseContext::ee_target` is interpreted in
+  `base_frame`; `cost_factory::AddFramePlacement` lifts it to world via
+  `base_oMf · ee_target` (captured at Init from neutral FK — valid because
+  base must be a fixed frame) before constructing the Aligator residual.
+  Universe base frames take a fast path that skips both transforms.
 
 ## Observability (HandlerMPCThread)
 
