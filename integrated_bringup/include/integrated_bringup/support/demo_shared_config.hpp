@@ -1,9 +1,9 @@
 #ifndef UR5E_BRINGUP_SUPPORT_DEMO_SHARED_CONFIG_HPP_
 #define UR5E_BRINGUP_SUPPORT_DEMO_SHARED_CONFIG_HPP_
 
+#include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/grasp/grasp_types.hpp"
-#include "integrated_bringup/support/virtual_tcp.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -14,7 +14,7 @@
 namespace integrated_bringup {
 
 // Parameters that DemoJointController and DemoTaskController share.
-// Defaults live in config/controllers/demo_shared.yaml; per-controller YAMLs
+// Defaults live in config/ur5e_hand/controllers/demo_shared.yaml; per-controller YAMLs
 // may override individual keys via a second ApplyDemoSharedConfig() pass.
 struct DemoSharedConfig {
   VirtualTcpConfig vtcp{};
@@ -48,7 +48,13 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg);
 
 // Load demo_shared.yaml from the integrated_bringup package share dir.
 // On error (file missing / parse failure), `cfg` is left unchanged.
-void LoadDemoSharedYamlFile(DemoSharedConfig& cfg);
+//
+// `config_variant` mirrors the rt_controller_node `config_variant` ROS
+// parameter (e.g. "ur5e_hand", "iiwa7_allegro").  Empty → legacy flat layout
+// (config/controllers/demo_shared.yaml); non-empty → variant path
+// (config/<config_variant>/controllers/demo_shared.yaml).  Per-controller call
+// sites forward the value from their LifecycleNode's `config_variant` param.
+void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_variant = "");
 
 // Build (or reset) the GraspController based on `cfg`. Resets to nullptr unless
 // grasp_controller_type == "force_pi" and a force-pi block was provided.

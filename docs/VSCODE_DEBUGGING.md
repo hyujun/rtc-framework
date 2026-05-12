@@ -99,8 +99,8 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 
 | 구성 | 대상 바이너리 | 기본 `--params-file` |
 |------|---------------|----------------------|
-| `C++: Launch integrated_rt_controller (Debug)` | `install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller` | `integrated_bringup/config/ur5e_sim.yaml` |
-| `C++: Launch mujoco_simulator_node (Debug)` | `install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node` | `integrated_bringup/config/mujoco_simulator.yaml` |
+| `C++: Launch integrated_rt_controller (Debug)` | `install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller` | `integrated_bringup/config/ur5e_hand/sim.yaml` |
+| `C++: Launch mujoco_simulator_node (Debug)` | `install/rtc_mujoco_sim/lib/rtc_mujoco_sim/mujoco_simulator_node` | `integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml` |
 | `C++: Launch udp_hand_node (Debug)` | `install/udp_hand_driver/lib/udp_hand_driver/udp_hand_node` | `udp_hand_driver/config/udp_hand_node.yaml` |
 | `C++: Launch bt_coordinator_node (Debug)` | `install/ur5e_bt_coordinator/lib/ur5e_bt_coordinator/bt_coordinator_node` | — |
 | `C++: Launch shape_estimation_node (Debug)` | `install/shape_estimation/lib/shape_estimation/shape_estimation_node` | — |
@@ -125,8 +125,8 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 
 > [!NOTE]
 > 이 설정은 `ros2 launch`를 우회하고 바이너리를 **직접** 실행합니다.
-> 기본값으로 `integrated_bringup/config/ur5e_sim.yaml`이 `--params-file`로 전달됩니다.
-> 실로봇 설정(`ur5e_robot.yaml`)으로 디버깅하려면 `launch.json`의 `args` 항목을 편집하세요.
+> 기본값으로 `integrated_bringup/config/ur5e_hand/sim.yaml`이 `--params-file`로 전달됩니다.
+> 실로봇 설정(`ur5e_hand/robot.yaml`)으로 디버깅하려면 `launch.json`의 `args` 항목을 편집하세요.
 
 ### 3-2. `mujoco_simulator_node` 디버깅
 

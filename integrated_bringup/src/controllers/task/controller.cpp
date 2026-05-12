@@ -1,10 +1,9 @@
 // ── Includes: project header first, then C++ stdlib
 // ────────────────────────────
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
-
-#include "rtc_base/utils/clamp_commands.hpp"
-#include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_base/utils/clamp_commands.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -154,7 +153,6 @@ void DemoTaskController::OnDeviceConfigsSet() {
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
 
-
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexcept {
@@ -184,12 +182,9 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
 
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 
-
 // ── Phase 2: Compute control (IK/CLIK + trajectory + sensor-based logic) ────
 
-
 // ── Phase 3: Write output ────────────────────────────────────────────────────
-
 
 void DemoTaskController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
   if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
@@ -327,7 +322,6 @@ void DemoTaskController::SetHandEstop(bool active) noexcept {
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
-
 // ── Controller registry hooks ────────────────────────────────────────────────
 
 void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
@@ -453,8 +447,13 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──
+  // config_variant is declared on the per-controller LifecycleNode by the CM
+  // (see rt_controller_node_params.cpp).  Empty → legacy flat layout.
   DemoSharedConfig shared;
-  LoadDemoSharedYamlFile(shared);
+  const std::string variant = node_ && node_->has_parameter("config_variant")
+                                  ? node_->get_parameter("config_variant").as_string()
+                                  : std::string{};
+  LoadDemoSharedYamlFile(shared, variant);
   ApplyDemoSharedConfig(cfg, shared);
 
   g.vtcp = shared.vtcp;
@@ -500,9 +499,6 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
 
 // ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
 
-
-
-
 void DemoTaskController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
 }
@@ -518,6 +514,5 @@ void DemoTaskController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) 
 // Read-only fields (D-2): max_traj_velocity, max_traj_angular_velocity,
 // hand_max_traj_velocity. Declared with read_only=true; honour startup
 // overrides but reject runtime `ros2 param set`.
-
 
 }  // namespace integrated_bringup

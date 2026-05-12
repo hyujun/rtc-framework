@@ -69,8 +69,10 @@ def launch_setup(context, *args, **kwargs):
     # MuJoCo sim params: agnostic defaults (rtc_mujoco_sim) + UR5e-specific
     # robot_response groups, joint names, topics, model_path (integrated_bringup).
     sim_default = PathJoinSubstitution([pkg_sim, "config", "mujoco_default.yaml"])
-    sim_config = PathJoinSubstitution([pkg_bringup, "config", "mujoco_simulator.yaml"])
-    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_sim.yaml"])
+    sim_config = PathJoinSubstitution(
+        [pkg_bringup, "config", "ur5e_hand", "mujoco_simulator.yaml"]
+    )
+    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_hand", "sim.yaml"])
 
     # udp_hand_driver is optional — may not be built in sim-only installs
     hand_config = None
@@ -114,7 +116,7 @@ def launch_setup(context, *args, **kwargs):
 
     try:
         ctrl_yaml_path = os.path.join(
-            get_package_share_directory("integrated_bringup"), "config", "ur5e_sim.yaml"
+            get_package_share_directory("integrated_bringup"), "config", "ur5e_hand", "sim.yaml"
         )
         with open(ctrl_yaml_path) as f:
             ctrl_yaml = yaml.safe_load(f)
@@ -459,7 +461,7 @@ def generate_launch_description():
         default_value="",
         description=(
             "Override initial controller name (e.g. demo_wbc_controller). "
-            "Empty = use value from ur5e_sim.yaml."
+            "Empty = use value from config/ur5e_hand/sim.yaml."
         ),
     )
 

@@ -103,10 +103,10 @@ When modifying code in any package, complete ALL of the following steps. Code ch
 
 - Update all relevant YAML files if parameters added/removed/renamed:
   - Controller configs: `rtc_controllers/config/controllers/{direct|indirect}/*.yaml`
-  - Robot/sim configs: `integrated_bringup/config/ur5e_robot.yaml`, `ur5e_sim.yaml`
+  - Robot/sim configs: `integrated_bringup/config/ur5e_hand/robot.yaml`, `ur5e_hand/sim.yaml`
   - MuJoCo configs: `rtc_mujoco_sim/config/*.yaml`
   - Hand driver: `udp_hand_driver/config/udp_hand_node.yaml`
-  - Digital twin: robot-agnostic default in `rtc_digital_twin/config/digital_twin.yaml`; robot-specific overlay (URDF, source topics, sensor topic, fingertip names) in `<robot>_bringup/config/digital_twin_<robot>.yaml` (UR5e: `integrated_bringup/config/digital_twin_ur5e.yaml`)
+  - Digital twin: robot-agnostic default in `rtc_digital_twin/config/digital_twin.yaml`; robot-specific overlay (URDF, source topics, sensor topic, fingertip names) in `<robot>_bringup/config/digital_twin_<robot>.yaml` (UR5e: `integrated_bringup/config/ur5e_hand/digital_twin.yaml`)
 - Update default values and inline YAML comments (valid ranges, units)
 - Update `topics:` section if topic names or device groups changed
 

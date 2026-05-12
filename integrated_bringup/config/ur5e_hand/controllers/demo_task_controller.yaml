@@ -49,7 +49,7 @@ demo_task_controller:
 
   # ── Shared parameters ───────────────────────────────────────────────────────
   # Virtual TCP, grasp detection, and force-PI grasp parameters are loaded from
-  # config/controllers/demo_shared.yaml. To override any shared key locally,
+  # config/ur5e_hand/controllers/demo_shared.yaml. To override any shared key locally,
   # add it under this section — per-controller values take precedence.
 
   # ── Output type ─────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
-
-#include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "integrated_bringup/support/demo_shared_config.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -321,8 +320,13 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──
+  // config_variant is declared on the per-controller LifecycleNode by the CM
+  // (see rt_controller_node_params.cpp).  Empty → legacy flat layout.
   DemoSharedConfig shared;
-  LoadDemoSharedYamlFile(shared);
+  const std::string variant = node_ && node_->has_parameter("config_variant")
+                                  ? node_->get_parameter("config_variant").as_string()
+                                  : std::string{};
+  LoadDemoSharedYamlFile(shared, variant);
   ApplyDemoSharedConfig(cfg, shared);
 
   g.vtcp = shared.vtcp;

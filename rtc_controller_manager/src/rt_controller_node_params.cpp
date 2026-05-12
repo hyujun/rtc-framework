@@ -181,6 +181,14 @@ void RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
   safe_declare("robot_namespace", rclcpp::ParameterValue(std::string("")));
 
+  // Robot config variant directory.  Path is composed as
+  // <pkg_share>/config/<config_variant>/controllers/<config_key>.yaml.
+  // Empty (default) → legacy flat layout (config/controllers/...).  Robot
+  // bringups should set this in their system YAML (e.g. "ur5e_hand" /
+  // "iiwa7_allegro") so all variant-specific configs live under one directory.
+  // No trailing slash.
+  safe_declare("config_variant", rclcpp::ParameterValue(std::string("")));
+
   // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand)
   // ─
   safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
@@ -333,12 +341,27 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // Load YAML for this controller; empty node on failure so PreConfigure /
     // on_configure fall through to built-in defaults (matches previous
     // behavior).
+    //
+    // config_variant gates the whole config tree (system YAML + controllers +
+    // mujoco + shared).  When non-empty, path becomes
+    // <pkg>/config/<variant>/controllers/<subdir><key>.yaml — `subdir` is the
+    // registration-time config_subdir (e.g. "direct/" / "indirect/" for torque
+    // vs. position groups within the same variant).  Empty variant → legacy
+    // flat layout (no per-variant directory).  Hoisted above the try block so
+    // the post-construction LifecycleNode declare_parameter call can re-use it.
+    const std::string variant = get_parameter("config_variant").as_string();
+
     YAML::Node ctrl_node;
     try {
       const std::string pkg_dir =
           ament_index_cpp::get_package_share_directory(entry.config_package);
-      const std::string yaml_path =
-          pkg_dir + "/config/controllers/" + entry.config_subdir + entry.config_key + ".yaml";
+      std::string yaml_path;
+      yaml_path.append(pkg_dir).append("/config/");
+      if (!variant.empty()) {
+        yaml_path.append(variant).append("/");
+      }
+      yaml_path.append("controllers/").append(entry.config_subdir);
+      yaml_path.append(entry.config_key).append(".yaml");
       YAML::Node file_node = YAML::LoadFile(yaml_path);
       ctrl_node = file_node[entry.config_key];
       ApplyControllerParamOverrides(*this, ctrl_node, entry.config_key);
@@ -361,6 +384,11 @@ void RtControllerNode::DeclareAndLoadParameters() {
     const auto ctrl_node_options = rclcpp::NodeOptions().use_global_arguments(false);
     auto ctrl_lc_node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(entry.config_key, ctrl_ns,
                                                                           ctrl_node_options);
+
+    // Propagate config_variant to the per-controller LifecycleNode so
+    // controllers can pass it to LoadDemoSharedYamlFile() without re-declaring
+    // it themselves.  Reads back the CM's current value.
+    ctrl_lc_node->declare_parameter<std::string>("config_variant", variant);
 
     // Inject the target-received notifier so controllers that own their own
     // target subscription flip CM's target_received_ gate in the callback.

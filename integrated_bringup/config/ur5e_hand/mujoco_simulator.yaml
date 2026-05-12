@@ -4,7 +4,7 @@
 # Loaded by integrated_bringup/launch/sim.launch.py.
 #
 # Generic defaults live in rtc_mujoco_sim/config/mujoco_default.yaml.
-# RTC controller param overrides live in integrated_bringup/config/ur5e_sim.yaml.
+# RTC controller param overrides live in integrated_bringup/config/ur5e_hand/sim.yaml.
 
 mujoco_simulator:
   ros__parameters:

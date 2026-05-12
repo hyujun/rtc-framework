@@ -480,15 +480,18 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       }
 
       if (mpc_engine_ == MpcEngine::kHandler) {
-        const auto phase_path = mpc_cfg["phase_config_path"]
-                                    ? mpc_cfg["phase_config_path"].as<std::string>()
-                                    : std::string{"config/controllers/mpc/phase_config.yaml"};
-        const auto light_path = mpc_cfg["light_contact_path"]
-                                    ? mpc_cfg["light_contact_path"].as<std::string>()
-                                    : std::string{"config/controllers/mpc/light_contact.yaml"};
-        const auto rich_path = mpc_cfg["contact_rich_path"]
-                                   ? mpc_cfg["contact_rich_path"].as<std::string>()
-                                   : std::string{"config/controllers/mpc/contact_rich.yaml"};
+        const auto phase_path =
+            mpc_cfg["phase_config_path"]
+                ? mpc_cfg["phase_config_path"].as<std::string>()
+                : std::string{"config/ur5e_hand/controllers/mpc/phase_config.yaml"};
+        const auto light_path =
+            mpc_cfg["light_contact_path"]
+                ? mpc_cfg["light_contact_path"].as<std::string>()
+                : std::string{"config/ur5e_hand/controllers/mpc/light_contact.yaml"};
+        const auto rich_path =
+            mpc_cfg["contact_rich_path"]
+                ? mpc_cfg["contact_rich_path"].as<std::string>()
+                : std::string{"config/ur5e_hand/controllers/mpc/contact_rich.yaml"};
 
         const auto join = [&](const std::string& p) { return share + "/" + p; };
 

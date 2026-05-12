@@ -1,7 +1,10 @@
-# ur5e_robot.yaml — UR5e-specific configuration for RTC framework
+# ur5e_hand/robot.yaml — UR5e + assm_v1 hand real-hardware config
 # ROS2 Humble / Jazzy compatible flat parameter structure
 /**:
   ros__parameters:
+    # ── Config variant directory ─────────────────────────────────────────────
+    config_variant: "ur5e_hand"
+
     # ── Robot namespace (manager-level topic prefix) ──────────────────────────
     # rtc_controller_manager defaults to "" (ARCH-1: rtc_* must be robot-agnostic);
     # the UR5e bringup pins it here so /ur5e/... topics resolve as expected.

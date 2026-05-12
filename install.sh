@@ -1090,7 +1090,7 @@ print_summary() {
       echo "  # Headless (no viewer window)"
       echo "  ros2 launch rtc_mujoco_sim mujoco_sim.launch.py enable_viewer:=false"
       echo ""
-      echo "  # Hand simulation is built-in (fake_response in integrated_bringup/config/mujoco_simulator.yaml)"
+      echo "  # Hand simulation is built-in (fake_response in integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml)"
       echo "  # No need to run udp_hand_driver separately"
       echo ""
       echo "  # Send test commands"

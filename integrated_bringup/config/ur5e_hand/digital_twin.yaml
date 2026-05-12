@@ -1,10 +1,10 @@
-# digital_twin_ur5e.yaml — UR5e + 10-DOF hand digital-twin configuration
+# ur5e_hand/digital_twin.yaml — UR5e + 10-DOF hand digital-twin configuration
 #
 # Layered on top of `rtc_digital_twin/config/digital_twin.yaml`. Production
 # bringups should pass this via `config_file:=` to digital_twin.launch.py:
 #
 #   ros2 launch rtc_digital_twin digital_twin.launch.py \
-#       config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/digital_twin_ur5e.yaml
+#       config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/ur5e_hand/digital_twin.yaml
 #
 # Robot identity (URDF, joint topics, sensor topics, fingertip names) lives
 # here per ARCH-1; rtc_digital_twin stays robot-agnostic.

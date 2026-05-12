@@ -4,7 +4,7 @@
 
 - 구현: [grasp_controller.hpp](../include/rtc_controllers/grasp/grasp_controller.hpp), [grasp_controller.cpp](../src/controllers/grasp/grasp_controller.cpp)
 - 타입/파라미터: [grasp_types.hpp](../include/rtc_controllers/grasp/grasp_types.hpp)
-- YAML: [demo_shared.yaml](../../integrated_bringup/config/controllers/demo_shared.yaml) (`force_pi_grasp:` 블록)
+- YAML: [demo_shared.yaml](../../integrated_bringup/config/ur5e_hand/controllers/demo_shared.yaml) (`force_pi_grasp:` 블록)
 - 로더: [demo_shared_config.cpp](../../integrated_bringup/src/support/demo_shared_config.cpp)
 - 테스트: [test_grasp_controller.cpp](../test/test_grasp_controller.cpp)
 
@@ -130,7 +130,7 @@ ds          = clamp(Kp_eff · e_f + Ki_eff · ∫e, ±ds_max)
 
 ## 4. 파라미터 레퍼런스
 
-기본값은 [grasp_types.hpp](../include/rtc_controllers/grasp/grasp_types.hpp) 와 [demo_shared.yaml](../../integrated_bringup/config/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록 기준.
+기본값은 [grasp_types.hpp](../include/rtc_controllers/grasp/grasp_types.hpp) 와 [demo_shared.yaml](../../integrated_bringup/config/ur5e_hand/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록 기준.
 
 ### 4.1 PI 게인
 
@@ -278,7 +278,7 @@ Contact 전이가 thumb+index 2 손가락에 결정되므로:
 
 ## 7. 파라미터 변경 절차
 
-1. [demo_shared.yaml](../../integrated_bringup/config/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록을 편집
+1. [demo_shared.yaml](../../integrated_bringup/config/ur5e_hand/controllers/demo_shared.yaml) 의 `force_pi_grasp:` 블록을 편집
 2. 재빌드 필요 없음 — YAML 은 컨트롤러 init 시 로드
 3. 런타임 중 변경은 컨트롤러 재로드 (controller switch) 필요
 4. 테스트 실행:

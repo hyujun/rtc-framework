@@ -12,7 +12,7 @@
 # 1 → index_tip_link, 2 → middle_tip_link.
 #
 # Dim contract: `q_posture_ref` must match the WBC control model loaded
-# from urdf.tree_models.wbc (ur5e_sim.yaml / ur5e_robot.yaml). That tree
+# from urdf.tree_models.wbc (ur5e_hand/sim.yaml / ur5e_hand/robot.yaml). That tree
 # locks all URDF <mimic> joints, yielding nq == nv == 16 (6 UR5e arm
 # + 10 actuated hand joints). Joint ordering follows the joint_state_names
 # of devices.ur5e then devices.hand in the runtime YAML.

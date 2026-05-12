@@ -15,7 +15,7 @@ namespace integrated_bringup {
 
 namespace {
 
-constexpr const char* kSharedYamlRelPath = "/config/controllers/demo_shared.yaml";
+constexpr const char* kSharedYamlFile = "/controllers/demo_shared.yaml";
 constexpr const char* kSharedYamlRootKey = "demo_shared";
 
 void ApplyVirtualTcp(const YAML::Node& node, VirtualTcpConfig& vtcp) {
@@ -182,10 +182,16 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
   }
 }
 
-void LoadDemoSharedYamlFile(DemoSharedConfig& cfg) {
+void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_variant) {
   std::string yaml_path;
   try {
-    yaml_path = ament_index_cpp::get_package_share_directory("integrated_bringup") + kSharedYamlRelPath;
+    yaml_path.append(ament_index_cpp::get_package_share_directory("integrated_bringup"));
+    yaml_path.append("/config/");
+    if (!config_variant.empty()) {
+      yaml_path.append(config_variant).append("/");
+    }
+    // Trim the leading slash from kSharedYamlFile since we already appended one.
+    yaml_path.append(kSharedYamlFile + 1);
   } catch (const std::exception& e) {
     RCLCPP_WARN(::integrated_bringup::logging::SharedConfigLogger(),
                 "demo_shared.yaml: package share dir lookup failed (%s); "

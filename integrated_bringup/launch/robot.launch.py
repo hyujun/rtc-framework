@@ -223,7 +223,7 @@ def generate_launch_description():
 
     # ── Paths ──────────────────────────────────────────────────────────────────
     ur_control_config = PathJoinSubstitution(
-        [FindPackageShare("integrated_bringup"), "config", "ur5e_robot.yaml"]
+        [FindPackageShare("integrated_bringup"), "config", "ur5e_hand", "robot.yaml"]
     )
 
     # Hand UDP config (udp_hand_driver package)
