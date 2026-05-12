@@ -87,7 +87,13 @@
           position_upper:   [ 2.9671,  2.0944,  2.9671,  2.0944,  2.9671,  2.0944,  3.0543]
       allegro:
         joint_state_names:
-          # Allegro canonical order: index (0–3), middle (4–7), ring (8–11), thumb (12–15)
+          # Controller-facing order: thumb (12–15), index (0–3), middle (4–7), ring (8–11).
+          # Differs from URDF/MJCF declaration order (which is index → middle → ring → thumb);
+          # BuildJointReorderMap handles the model↔controller index mapping at runtime.
+          - "joint_12.0"
+          - "joint_13.0"
+          - "joint_14.0"
+          - "joint_15.0"
           - "joint_0.0"
           - "joint_1.0"
           - "joint_2.0"
@@ -100,18 +106,15 @@
           - "joint_9.0"
           - "joint_10.0"
           - "joint_11.0"
-          - "joint_12.0"
-          - "joint_13.0"
-          - "joint_14.0"
-          - "joint_15.0"
         # No sensor stack: baro / ToF / contact / F-PI are Allegro-incompatible.
         joint_limits:
+          # Limits follow the joint_state_names order above (thumb first).
           max_velocity:
             [6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28,
              6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28]
           position_lower:
-            [-0.47, -0.196, -0.174, -0.227, -0.47, -0.196, -0.174, -0.227,
-             -0.47, -0.196, -0.174, -0.227,  0.263, -0.105, -0.189, -0.162]
+            [ 0.263, -0.105, -0.189, -0.162, -0.47, -0.196, -0.174, -0.227,
+             -0.47,  -0.196, -0.174, -0.227, -0.47, -0.196, -0.174, -0.227]
           position_upper:
-            [ 0.47,  1.61,   1.709,  1.618,  0.47,  1.61,   1.709,  1.618,
-              0.47,  1.61,   1.709,  1.618,  1.396, 1.163,  1.644,  1.719]
+            [ 1.396, 1.163,  1.644,  1.719,  0.47,  1.61,   1.709,  1.618,
+              0.47,  1.61,   1.709,  1.618,  0.47,  1.61,   1.709,  1.618]
