@@ -176,29 +176,40 @@
       </body>
     </body>
   </worldbody>
+  <default>
+    <default class="iiwa_large">
+      <general gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -200" forcerange="-200 200"/>
+    </default>
+    <default class="iiwa_small">
+      <general gaintype="fixed" biastype="affine" gainprm="800" biasprm="0 -800 -80" forcerange="-200 200"/>
+    </default>
+    <default class="allegro_finger">
+      <general gaintype="fixed" biastype="affine" gainprm="5" biasprm="0 -5 -0.5" forcerange="-10 10"/>
+    </default>
+  </default>
   <actuator>
-    <general name="A1" joint="A1" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A2" joint="A2" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A3" joint="A3" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A4" joint="A4" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A5" joint="A5" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A6" joint="A6" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A7" joint="A7" ctrlrange="-3.0543 3.0543" forcerange="-200 200" />
-    <general name="joint_0.0" joint="joint_0.0" ctrlrange="-0.47 0.47" forcerange="-10 10" />
-    <general name="joint_1.0" joint="joint_1.0" ctrlrange="-0.196 1.61" forcerange="-10 10" />
-    <general name="joint_2.0" joint="joint_2.0" ctrlrange="-0.174 1.709" forcerange="-10 10" />
-    <general name="joint_3.0" joint="joint_3.0" ctrlrange="-0.227 1.618" forcerange="-10 10" />
-    <general name="joint_4.0" joint="joint_4.0" ctrlrange="-0.47 0.47" forcerange="-10 10" />
-    <general name="joint_5.0" joint="joint_5.0" ctrlrange="-0.196 1.61" forcerange="-10 10" />
-    <general name="joint_6.0" joint="joint_6.0" ctrlrange="-0.174 1.709" forcerange="-10 10" />
-    <general name="joint_7.0" joint="joint_7.0" ctrlrange="-0.227 1.618" forcerange="-10 10" />
-    <general name="joint_8.0" joint="joint_8.0" ctrlrange="-0.47 0.47" forcerange="-10 10" />
-    <general name="joint_9.0" joint="joint_9.0" ctrlrange="-0.196 1.61" forcerange="-10 10" />
-    <general name="joint_10.0" joint="joint_10.0" ctrlrange="-0.174 1.709" forcerange="-10 10" />
-    <general name="joint_11.0" joint="joint_11.0" ctrlrange="-0.227 1.618" forcerange="-10 10" />
-    <general name="joint_12.0" joint="joint_12.0" ctrlrange="0.263 1.396" forcerange="-10 10" />
-    <general name="joint_13.0" joint="joint_13.0" ctrlrange="-0.105 1.163" forcerange="-10 10" />
-    <general name="joint_14.0" joint="joint_14.0" ctrlrange="-0.189 1.644" forcerange="-10 10" />
-    <general name="joint_15.0" joint="joint_15.0" ctrlrange="-0.162 1.719" forcerange="-10 10" />
+    <general class="iiwa_large" name="A1" joint="A1" ctrlrange="-2.9671 2.9671"/>
+    <general class="iiwa_large" name="A2" joint="A2" ctrlrange="-2.0944 2.0944"/>
+    <general class="iiwa_large" name="A3" joint="A3" ctrlrange="-2.9671 2.9671"/>
+    <general class="iiwa_large" name="A4" joint="A4" ctrlrange="-2.0944 2.0944"/>
+    <general class="iiwa_small" name="A5" joint="A5" ctrlrange="-2.9671 2.9671"/>
+    <general class="iiwa_small" name="A6" joint="A6" ctrlrange="-2.0944 2.0944"/>
+    <general class="iiwa_small" name="A7" joint="A7" ctrlrange="-3.0543 3.0543"/>
+    <general class="allegro_finger" name="joint_0.0" joint="joint_0.0" ctrlrange="-0.47 0.47"/>
+    <general class="allegro_finger" name="joint_1.0" joint="joint_1.0" ctrlrange="-0.196 1.61"/>
+    <general class="allegro_finger" name="joint_2.0" joint="joint_2.0" ctrlrange="-0.174 1.709"/>
+    <general class="allegro_finger" name="joint_3.0" joint="joint_3.0" ctrlrange="-0.227 1.618"/>
+    <general class="allegro_finger" name="joint_4.0" joint="joint_4.0" ctrlrange="-0.47 0.47"/>
+    <general class="allegro_finger" name="joint_5.0" joint="joint_5.0" ctrlrange="-0.196 1.61"/>
+    <general class="allegro_finger" name="joint_6.0" joint="joint_6.0" ctrlrange="-0.174 1.709"/>
+    <general class="allegro_finger" name="joint_7.0" joint="joint_7.0" ctrlrange="-0.227 1.618"/>
+    <general class="allegro_finger" name="joint_8.0" joint="joint_8.0" ctrlrange="-0.47 0.47"/>
+    <general class="allegro_finger" name="joint_9.0" joint="joint_9.0" ctrlrange="-0.196 1.61"/>
+    <general class="allegro_finger" name="joint_10.0" joint="joint_10.0" ctrlrange="-0.174 1.709"/>
+    <general class="allegro_finger" name="joint_11.0" joint="joint_11.0" ctrlrange="-0.227 1.618"/>
+    <general class="allegro_finger" name="joint_12.0" joint="joint_12.0" ctrlrange="0.263 1.396"/>
+    <general class="allegro_finger" name="joint_13.0" joint="joint_13.0" ctrlrange="-0.105 1.163"/>
+    <general class="allegro_finger" name="joint_14.0" joint="joint_14.0" ctrlrange="-0.189 1.644"/>
+    <general class="allegro_finger" name="joint_15.0" joint="joint_15.0" ctrlrange="-0.162 1.719"/>
   </actuator>
 </mujoco>

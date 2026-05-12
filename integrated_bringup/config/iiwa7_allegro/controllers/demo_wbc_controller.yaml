@@ -1,0 +1,161 @@
+# DemoWbcController — iiwa7 + Allegro variant
+# TSID QP (posture + SE3) → Position integration. No contacts / force task
+# because the Allegro hand has no contact sensing stack on this platform.
+# MPC disabled by default; enable via launch arg `enable_mpc:=true` after
+# verifying TSID self-hold.
+demo_wbc_controller:
+  command_type: "position"
+
+  # ── Trajectory speeds ──────────────────────────────────────────────────────
+  arm_trajectory_speed: 0.5
+  hand_trajectory_speed: 1.0
+  arm_max_traj_velocity: 1.71
+  hand_max_traj_velocity: 4.0
+
+  # ── Topic routing ──────────────────────────────────────────────────────────
+  topics:
+    iiwa7:
+      subscribe:
+        - topic: "iiwa7/joint_goal"
+          role: "target"
+          ownership: "controller"
+        - topic: "/joint_states"
+          role: "state"
+      publish:
+        - topic: "/iiwa7/joint_command"
+          role: "joint_command"
+        - topic: "transforms"
+          role: "robot_transforms"
+          ownership: "controller"
+    allegro:
+      subscribe:
+        - topic: "allegro/joint_goal"
+          role: "target"
+          ownership: "controller"
+        - topic: "/allegro/joint_states"
+          role: "state"
+      publish:
+        - topic: "/allegro/joint_command"
+          role: "joint_command"
+        - topic: "allegro/wbc_state"
+          role: "wbc_state"
+          ownership: "controller"
+
+  # ── Controller-owned CSV logs ──────────────────────────────────────────────
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: iiwa7_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: allegro_state
+
+  # ── TSID QP configuration ─────────────────────────────────────────────────
+  tsid:
+    formulation_type: "wqp"
+
+    wqp:
+      solver:
+        max_iter: 20
+        eps_abs: 1.0e-6
+        eps_rel: 0.0
+        verbose: false
+
+    tasks:
+      posture:
+        type: "posture"
+        weight: 1.0
+        priority: 0
+        kp: 10.0
+        kd: 6.0
+      se3_tcp:
+        type: "se3"
+        # iiwa7 end-effector relative to its base.
+        frame: "ee_link"
+        base_frame: "link_0"
+        mask: [1, 1, 1, 1, 1, 1]
+        kp: [100, 100, 100, 50, 50, 50]
+        kd: [20, 20, 20, 10, 10, 10]
+        weight: 100.0
+        priority: 0
+
+    constraints:
+      eom:
+        type: "eom"
+      joint_limit:
+        type: "joint_limit"
+        dt: 0.002
+        position_margin: 0.05
+        velocity_margin: 0.1
+
+    # No contacts on iiwa7+Allegro sim (no force/tactile sensing).
+    contacts: []
+
+    phase_presets:
+      pre_grasp:
+        tasks:
+          posture:   { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+      # Closure / hold reuse pre_grasp's task set (no force task to engage).
+      closure:
+        tasks:
+          posture:   { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+      hold:
+        tasks:
+          posture:   { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+
+  # ── Integration safety ─────────────────────────────────────────────────────
+  integration:
+    position_margin: 0.02
+    velocity_scale: 0.95
+    force_rate_alpha: 0.1
+
+  # ── FSM thresholds ─────────────────────────────────────────────────────────
+  # Force/contact thresholds retained for schema compliance but unused (no
+  # contact sensing). FSM stays in pre_grasp on iiwa7+Allegro sim.
+  fsm:
+    epsilon_approach: 0.01
+    epsilon_pregrasp: 0.005
+    force_contact_threshold: 0.2
+    force_hold_threshold: 1.0
+    min_contacts_for_hold: 2
+    slip_rate_threshold: 5.0
+    deformation_threshold: 0.015
+    max_qp_fail_before_fallback: 5
+    approach_speed: 0.5
+
+  # ── E-STOP target ──────────────────────────────────────────────────────────
+  estop:
+    arm_safe_position:           # rad, 7 values = iiwa7 DoF (home pose)
+      [0.0, -0.7, 0.0, 1.4, 0.0, -0.7, 0.0]
+
+  # ── MPC integration ────────────────────────────────────────────────────────
+  # Start with MPC disabled; flip via launch arg `enable_mpc:=true` once
+  # TSID-only self-hold is verified. phase_config files reused from UR5e
+  # build — they're robot-agnostic phase definitions; tune weights later if
+  # required.
+  mpc:
+    enabled: false
+    engine: "handler"
+    max_stale_solutions: 5
+    target_frequency_hz: 10.0
+    # MPC phase YAMLs reuse the ur5e_hand variant's set — they are
+    # robot-agnostic phase definitions; tune weights separately if needed.
+    phase_config_path:  "config/ur5e_hand/controllers/mpc/phase_config.yaml"
+    light_contact_path: "config/ur5e_hand/controllers/mpc/light_contact.yaml"
+    contact_rich_path:  "config/ur5e_hand/controllers/mpc/contact_rich.yaml"
+
+    riccati:
+      enabled: true
+      gain_scale: 1.0
+      accel_only: true
+      max_delta_x_norm: 100.0
