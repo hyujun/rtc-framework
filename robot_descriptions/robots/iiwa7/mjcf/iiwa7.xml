@@ -1,0 +1,62 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="iiwa7">
+  <compiler angle="radian" meshdir="../meshes/visual" autolimits="true" />
+  <option integrator="implicitfast" />
+  <asset>
+    <mesh name="link_0" content_type="model/obj" file="link_0.obj" />
+    <mesh name="link_1" content_type="model/obj" file="link_1.obj" />
+    <mesh name="link_2" content_type="model/obj" file="link_2.obj" />
+    <mesh name="link_3" content_type="model/obj" file="link_3.obj" />
+    <mesh name="link_4" content_type="model/obj" file="link_4.obj" />
+    <mesh name="link_5" content_type="model/obj" file="link_5.obj" />
+    <mesh name="link_6" content_type="model/obj" file="link_6.obj" />
+    <mesh name="link_7" content_type="model/obj" file="link_7.obj" />
+  </asset>
+  <worldbody>
+    <geom type="mesh" mesh="link_0" />
+    <body name="link_1" pos="0 0 0.1475">
+      <inertial pos="0 -0.034819 0.123299" quat="0.700813 0.0941355 -0.0941355 0.700813" mass="3.39401" diaginertia="0.0214418 0.021383 0.00652421" />
+      <joint name="A1" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+      <geom pos="0 0 -0.1475" quat="1 0 0 0" type="mesh" mesh="link_1" />
+      <body name="link_2" pos="0 -0.0105 0.1925">
+        <inertial pos="0 0.039793 0.086944" quat="0.991454 0.130453 0 0" mass="4.03199" diaginertia="0.031697 0.031657 0.00808898" />
+        <joint name="A2" pos="0 0 0" axis="0 1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+        <geom pos="0 0.0105 -0.34" quat="1 0 0 0" type="mesh" mesh="link_2" />
+        <body name="link_3" pos="0 0.0105 0.2075">
+          <inertial pos="0 0.034819 0.123299" quat="0.700813 -0.0941355 0.0941355 0.700813" mass="3.39401" diaginertia="0.0214418 0.021383 0.00652421" />
+          <joint name="A3" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+          <geom pos="0 0 -0.5475" quat="1 0 0 0" type="mesh" mesh="link_3" />
+          <body name="link_4" pos="0 0.0105 0.1925">
+            <inertial pos="0 -0.039793 0.086944" quat="0.991454 -0.130453 0 0" mass="4.03199" diaginertia="0.031695 0.031656 0.00808798" />
+            <joint name="A4" pos="0 0 0" axis="0 -1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+            <geom pos="0 -0.0105 -0.74" quat="1 0 0 0" type="mesh" mesh="link_4" />
+            <body name="link_5" pos="0 -0.0105 0.2075">
+              <inertial pos="0 -0.029824 0.076267" quat="0.683304 0.181923 -0.181923 0.683304" mass="1.52924" diaginertia="0.00874413 0.008485 0.00223987" />
+              <joint name="A5" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+              <geom pos="0 0 -0.9475" quat="1 0 0 0" type="mesh" mesh="link_5" />
+              <body name="link_6" pos="0 -0.0707 0.1925">
+                <inertial pos="0 0.07102 0.00495" quat="0.997576 0.0695794 0 0" mass="2.40363" diaginertia="0.007067 0.0068476 0.0045854" />
+                <joint name="A6" pos="0 0 0" axis="0 1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+                <geom pos="0 0.0707 -1.14" type="mesh" mesh="link_6" />
+                <body name="link_7" pos="0 0.0707 0.091">
+                  <inertial pos="3e-06 -2e-06 0.013782" quat="0.5 0.5 -0.5 0.5" mass="0.259474" diaginertia="0.000299 0.000171 0.000171" />
+                  <joint name="A7" pos="0 0 0" axis="0 0 1" range="-3.05433 3.05433" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+                  <geom pos="0 0 -1.231" quat="1 0 0 0" type="mesh" mesh="link_7" />
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general name="A1" joint="A1" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
+    <general name="A2" joint="A2" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
+    <general name="A3" joint="A3" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
+    <general name="A4" joint="A4" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
+    <general name="A5" joint="A5" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
+    <general name="A6" joint="A6" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
+    <general name="A7" joint="A7" ctrlrange="-3.0543 3.0543" forcerange="-200 200" />
+  </actuator>
+</mujoco>
