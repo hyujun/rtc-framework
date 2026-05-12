@@ -358,14 +358,14 @@ class DemoTaskController final : public RTControllerInterface {
   std::vector<ParsedLogEntry> parsed_log_entries_;
 
   rtc::ControllerLogSet log_set_{"demo_task_controller"};
-  rtc::LogHandle<integrated_bringup::DeviceStateLogPod> ur5e_state_log_handle_;
-  rtc::LogHandle<integrated_bringup::DeviceStateLogPod> hand_state_log_handle_;
-  rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> hand_sensor_log_handle_;
+  rtc::LogHandle<integrated_bringup::DeviceStateLogPod> primary_state_log_handle_;
+  rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
+  rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
 
-  std::vector<std::string> ur5e_joint_names_;
-  std::vector<std::string> hand_joint_names_;
-  std::vector<std::string> hand_motor_names_;
-  std::vector<std::string> hand_sensor_names_;
+  std::vector<std::string> primary_joint_names_;
+  std::vector<std::string> secondary_joint_names_;
+  std::vector<std::string> secondary_motor_names_;
+  std::vector<std::string> secondary_sensor_names_;
 
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;

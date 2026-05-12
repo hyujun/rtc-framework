@@ -49,6 +49,10 @@ class StubController : public rtc::RTControllerInterface {
   using RTControllerInterface::ParseArmSafePosition;
   using RTControllerInterface::ParseTopicConfig;
 
+  // Seed topic_config_ directly for tests that exercise Primary/Secondary
+  // device name lookup without going through LoadConfig().
+  void SetTopicConfigForTesting(rtc::TopicConfig cfg) noexcept { topic_config_ = std::move(cfg); }
+
   // Callback counters.
   int device_config_set_count{0};
   int model_config_set_count{0};
@@ -172,6 +176,38 @@ TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromMakeDefaultTopicConfig) 
   const auto cfg = StubController::MakeDefaultTopicConfig("custom_robot");
   ASSERT_FALSE(cfg.groups.empty());
   EXPECT_EQ(cfg.groups.front().first, "custom_robot");
+}
+
+TEST(RTControllerInterfaceTest, GetSecondaryDeviceNameEmptyWhenSingleGroup) {
+  // Single-device controllers have no secondary group; helper returns "" so
+  // callers can null-check GetDeviceNameConfig(...) on the result.
+  StubController ctrl;
+  ctrl.SetTopicConfigForTesting(StubController::MakeDefaultTopicConfig("only_device"));
+  EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "only_device");
+  EXPECT_EQ(ctrl.GetSecondaryDeviceName(), "");
+}
+
+TEST(RTControllerInterfaceTest, GetSecondaryDeviceNameFromMultiGroupConfig) {
+  // Verify the helper picks the second group (preserving YAML insertion
+  // order). Mirrors the demo_*_controller layout: arm primary, hand-like
+  // secondary.
+  const auto node = YAML::Load(
+      R"(
+robot_a:
+  subscribe:
+    - {topic: /a/joint_states, role: state}
+  publish:
+    - {topic: /a/joint_command, role: joint_command}
+robot_b:
+  subscribe:
+    - {topic: /b/joint_states, role: state}
+  publish:
+    - {topic: /b/joint_command, role: joint_command}
+)");
+  StubController ctrl;
+  ctrl.SetTopicConfigForTesting(StubController::ParseTopicConfig(node));
+  EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "robot_a");
+  EXPECT_EQ(ctrl.GetSecondaryDeviceName(), "robot_b");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

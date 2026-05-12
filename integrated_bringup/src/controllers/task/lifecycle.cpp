@@ -31,10 +31,13 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
         AppendArmTipSlot(owned_topics_, submodel.root_link, submodel.tip_link, /*group_idx=*/0);
       }
       if (sys_cfg) {
-        for (const auto& tm : sys_cfg->tree_models) {
-          if (tm.name == "hand") {
-            AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1);
-            break;
+        const auto secondary = GetSecondaryDeviceName();
+        if (!secondary.empty()) {
+          for (const auto& tm : sys_cfg->tree_models) {
+            if (tm.name == secondary) {
+              AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1);
+              break;
+            }
           }
         }
       }
@@ -45,27 +48,40 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     }
 
     // ── PR2 (U3) Lift: Phase C controller-owned CSV log registration ──────
-    LogRegistrationContext ctx{logger_,
-                               log_set_,
-                               {
-                                   {"ur5e_state", {ur5e_joint_names_, std::vector<std::string>{}}},
-                                   {"hand_state", {hand_joint_names_, hand_motor_names_}},
-                               },
-                               {
-                                   {"hand_sensor", hand_sensor_names_},
-                               }};
+    // Log instance keys derived from device names so YAML `instance:` values
+    // track the active config_variant (robot-agnostic, ARCH-1).
+    const auto primary = GetPrimaryDeviceName();
+    const auto secondary = GetSecondaryDeviceName();
+    const auto primary_state_key = primary + "_state";
+    const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
+    const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
+
+    LogRegistrationContext ctx{
+        logger_,
+        log_set_,
+        {
+            {primary_state_key, {primary_joint_names_, std::vector<std::string>{}}},
+            {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
+        },
+        {
+            {secondary_sensor_key, secondary_sensor_names_},
+        }};
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       return CallbackReturn::FAILURE;
     }
-    if (auto it = reg.handles.state.find("ur5e_state"); it != reg.handles.state.end()) {
-      ur5e_state_log_handle_ = std::move(it->second);
+    if (auto it = reg.handles.state.find(primary_state_key); it != reg.handles.state.end()) {
+      primary_state_log_handle_ = std::move(it->second);
     }
-    if (auto it = reg.handles.state.find("hand_state"); it != reg.handles.state.end()) {
-      hand_state_log_handle_ = std::move(it->second);
+    if (!secondary_state_key.empty()) {
+      if (auto it = reg.handles.state.find(secondary_state_key); it != reg.handles.state.end()) {
+        secondary_state_log_handle_ = std::move(it->second);
+      }
     }
-    if (auto it = reg.handles.sensor.find("hand_sensor"); it != reg.handles.sensor.end()) {
-      hand_sensor_log_handle_ = std::move(it->second);
+    if (!secondary_sensor_key.empty()) {
+      if (auto it = reg.handles.sensor.find(secondary_sensor_key); it != reg.handles.sensor.end()) {
+        secondary_sensor_log_handle_ = std::move(it->second);
+      }
     }
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =

@@ -103,6 +103,7 @@ virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 | `GetDeviceNameConfig(name)` | public const | 디바이스 이름으로 설정 조회. 미등록 시 `nullptr` 반환 |
 | `OnDeviceConfigsSet()` | protected virtual | 하위 클래스 오버라이드 포인트 (예: URDF 기구학 해석) |
 | `GetPrimaryDeviceName()` | public const | 토픽 설정의 첫 번째 디바이스 이름 반환 (하드코딩 방지용) |
+| `GetSecondaryDeviceName()` | public const | 토픽 설정의 두 번째 디바이스 이름 반환. 단일-디바이스 컨트롤러에선 빈 문자열 — 호출자는 `GetDeviceNameConfig(...)` 결과를 null-check |
 
 ### 시스템 모델 설정 메서드
 

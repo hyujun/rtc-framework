@@ -10,8 +10,8 @@
 //
 // Runtime stride (values_per_group, inference_values_per_group) is delivered
 // per-device by the YAML sensor_layout block (rtc::DeviceSensorLayout); use
-// `RTControllerInterface::GetDeviceNameConfig("hand")->sensor_layout` at
-// on_configure to pick it up.
+// `RTControllerInterface::GetDeviceNameConfig(GetSecondaryDeviceName())
+// ->sensor_layout` at on_configure to pick it up.
 
 #include <cstddef>
 

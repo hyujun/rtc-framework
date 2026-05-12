@@ -41,7 +41,7 @@ integrated_bringup/
 │   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=16, kMaxFingertips=8)
 │       ├── device_state_log_pod.hpp
 │       ├── device_sensor_log_pod.hpp
-│       └── pod_fill.hpp
+│       └── pod_fill.hpp                <- FillDeviceStateLogPod / FillDeviceSensorLogPod (device_idx 인자, robot-agnostic)
 ├── src/
 │   ├── integrated_rt_controller_main.cpp     <- UR5e용 진입점
 │   ├── controllers/
@@ -186,7 +186,7 @@ demo_task_controller:
 | `tof_snapshot` (hand; joint/task 데모만) | 컨트롤러 | `/demo_joint_controller/tof/snapshot` 등 |
 | `robot_transforms` (Phase 2-3; 모든 데모 컨트롤러) | 컨트롤러 | `<config_key>/transforms` (`tf2_msgs/TFMessage`, RELIABLE/10) — controller가 사용하는 frame을 1개 토픽에 묶어 발행. **DemoJoint / DemoTask**: `base→tool0_actual` (arm tip) + `hand_base_link→{thumb,index,middle,ring}_tip_link_actual` (4 fingertip) + `base→virtual_tcp_actual` = 6 frame. **DemoWbc**: `base→tool0_actual` (arm tip) + `base→wbc_alpha_actual` placeholder (D-5, valid=false) = 1 valid + 1 reserved. 단일 publisher per controller (D-2/D-10) — YAML entry는 첫 group(`ur5e`)의 `publish:` 에 두고, owned_topics가 system YAML `urdf.{sub,tree}_models` 로 frame slot 자동 빌드. Active controller만 LifecyclePublisher 활성 (D-4 cutover) |
 | `state`, `joint_command`, `ros2_command` | CM (매니저) | 기존 경로 유지 (`/joint_states`, `/ur5e/joint_command`, ...) |
-| `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/{ur5e_state,hand_state,hand_sensor}.csv` — Phase C 이후 controller 가 직접 소유 (CM 은 logging authority 아님) |
+| `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/<device>_{state,sensor}.csv` — instance 키는 `GetPrimaryDeviceName()`/`GetSecondaryDeviceName()` 에서 동적 파생 (ur5e_hand → `ur5e_state.csv`/`hand_state.csv`/`hand_sensor.csv`, iiwa7_allegro → `iiwa7_state.csv`/`allegro_state.csv`). Phase C 이후 controller 가 직접 소유 (CM 은 logging authority 아님) |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
 

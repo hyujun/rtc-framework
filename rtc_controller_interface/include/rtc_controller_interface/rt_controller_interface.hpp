@@ -248,6 +248,17 @@ class RTControllerInterface {
     return {};
   }
 
+  // Returns the name of the secondary device (second group in topic config).
+  // Empty when topic_config_ has fewer than two groups — callers must handle
+  // single-device controllers by null-checking GetDeviceNameConfig(...) on
+  // the returned name.
+  [[nodiscard]] std::string GetSecondaryDeviceName() const noexcept {
+    if (topic_config_.groups.size() >= 2) {
+      return topic_config_.groups[1].first;
+    }
+    return {};
+  }
+
   // ── System model configuration ──────────────────────────────────────────
   //   SetSystemModelConfig() is called by RtControllerNode after controllers
   //   are constructed, passing the system-level URDF + model topology

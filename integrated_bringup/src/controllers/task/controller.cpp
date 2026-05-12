@@ -82,21 +82,28 @@ void DemoTaskController::InitArmModel(const rtc_urdf_bridge::ModelConfig& config
 // ── Hand tree-model initialization ──────────────────────────────────────────
 void DemoTaskController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*config*/) {
   namespace rub = rtc_urdf_bridge;
-  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel("hand"));
+  // Secondary device name == tree_model name == device_name_configs key
+  // (robot-agnostic: e.g. "hand" for ur5e_hand, "allegro" for iiwa7_allegro).
+  const auto secondary = GetSecondaryDeviceName();
+  if (secondary.empty()) {
+    return;
+  }
+  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel(secondary));
 
   // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
-  if (auto* hand_cfg = GetDeviceNameConfig("hand"); hand_cfg) {
+  if (auto* hand_cfg = GetDeviceNameConfig(secondary); hand_cfg) {
     if (!hand_handle_->SetJointOrder(hand_cfg->joint_state_names)) {
       RCLCPP_WARN(logger_,
-                  "DemoTaskController: hand SetJointOrder failed — "
-                  "joint_state_names not all in Pinocchio model");
+                  "DemoTaskController: secondary device '%s' SetJointOrder failed — "
+                  "joint_state_names not all in Pinocchio model",
+                  secondary.c_str());
     }
   }
 
   const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg) {
     for (const auto& tm : sys_cfg->tree_models) {
-      if (tm.name == "hand") {
+      if (tm.name == secondary) {
         if (!tm.root_link.empty()) {
           hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
           if (hand_root_frame_id_ != 0) {
@@ -119,7 +126,9 @@ void DemoTaskController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*con
 }
 
 void DemoTaskController::OnDeviceConfigsSet() {
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  const auto primary = GetPrimaryDeviceName();
+  const auto secondary = GetSecondaryDeviceName();
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {  // 0 = universe (not found)
@@ -141,13 +150,15 @@ void DemoTaskController::OnDeviceConfigsSet() {
                              -6.2832, 6.2832, 2.0);
 
   // Phase C: capture joint/sensor names for CSV header expansion.
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
-    ur5e_joint_names_ = cfg->joint_state_names;
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+    primary_joint_names_ = cfg->joint_state_names;
   }
-  if (auto* cfg = GetDeviceNameConfig("hand"); cfg) {
-    hand_joint_names_ = cfg->joint_state_names;
-    hand_motor_names_ = cfg->motor_state_names;
-    hand_sensor_names_ = cfg->sensor_names;
+  if (!secondary.empty()) {
+    if (auto* cfg = GetDeviceNameConfig(secondary); cfg) {
+      secondary_joint_names_ = cfg->joint_state_names;
+      secondary_motor_names_ = cfg->motor_state_names;
+      secondary_sensor_names_ = cfg->sensor_names;
+    }
   }
 }
 
@@ -162,20 +173,20 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   auto output = WriteOutput(state, dt);
 
   // ── Phase C: push log PODs (only from inside Compute()) ──────────────
-  if (ur5e_state_log_handle_) {
+  if (primary_state_log_handle_) {
     integrated_bringup::DeviceStateLogPod pod{};
-    FillUr5eStateLogPod(state, output, pod);
-    ur5e_state_log_handle_.Push(pod);
+    FillDeviceStateLogPod(state, output, /*device_idx=*/0, pod);
+    primary_state_log_handle_.Push(pod);
   }
-  if (hand_state_log_handle_) {
+  if (secondary_state_log_handle_) {
     integrated_bringup::DeviceStateLogPod pod{};
-    FillHandStateLogPod(state, output, pod);
-    hand_state_log_handle_.Push(pod);
+    FillDeviceStateLogPod(state, output, /*device_idx=*/1, pod);
+    secondary_state_log_handle_.Push(pod);
   }
-  if (hand_sensor_log_handle_) {
+  if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
-    FillHandSensorLogPod(state, num_active_fingertips_, pod);
-    hand_sensor_log_handle_.Push(pod);
+    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+    secondary_sensor_log_handle_.Push(pod);
   }
   return output;
 }

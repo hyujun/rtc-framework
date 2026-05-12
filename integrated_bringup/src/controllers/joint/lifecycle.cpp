@@ -25,25 +25,28 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     CreateOwnedTopics(*this, owned_topics_);
 
     // ── kRobotTransforms: register frame slots from system URDF YAML ──────
-    // DemoJoint frame layout (D-3 _actual suffix convention):
-    //   sub_models.ur5e:    base → tool0_actual               (group 0)
-    //   tree_models.hand:   hand_base_link → <tip>_actual ×4  (group 1)
-    //   virtual TCP:        base → virtual_tcp_actual         (group 0)
+    // DemoJoint frame layout (D-3 _actual suffix convention), robot-agnostic:
+    //   sub_models[0] (primary device):     base → <tip>_actual   (group 0)
+    //   tree_models[secondary device name]: root → <tip>_actual ×N (group 1)
+    //   virtual TCP:                        base → virtual_tcp_actual (group 0)
     // Slot list is fixed at on_configure; publish thread skips invalid
     // poses via PublishSnapshot::*_valid flags.
     if (owned_topics_.tf_pub) {
       const auto* sys_cfg = GetSystemModelConfig();
-      // Arm tip — sub_models[0] (ur5e)
+      // Primary arm tip — sub_models[0]
       if (sys_cfg && !sys_cfg->sub_models.empty()) {
         const auto& sm = sys_cfg->sub_models.front();
         AppendArmTipSlot(owned_topics_, sm.root_link, sm.tip_link, /*group_idx=*/0);
       }
-      // Hand fingertips — tree_models["hand"]
+      // Secondary hand fingertips — tree_models[GetSecondaryDeviceName()]
       if (sys_cfg) {
-        for (const auto& tm : sys_cfg->tree_models) {
-          if (tm.name == "hand") {
-            AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1);
-            break;
+        const auto secondary = GetSecondaryDeviceName();
+        if (!secondary.empty()) {
+          for (const auto& tm : sys_cfg->tree_models) {
+            if (tm.name == secondary) {
+              AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1);
+              break;
+            }
           }
         }
       }
@@ -58,27 +61,41 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     // Caller maps instance strings → (joint_names, motor_names, sensor_names).
     // The helper iterates parsed_log_entries_ once, returns instance-keyed
     // handles, and we plug the ones we own into typed members below.
-    LogRegistrationContext ctx{logger_,
-                               log_set_,
-                               {
-                                   {"ur5e_state", {ur5e_joint_names_, std::vector<std::string>{}}},
-                                   {"hand_state", {hand_joint_names_, hand_motor_names_}},
-                               },
-                               {
-                                   {"hand_sensor", hand_sensor_names_},
-                               }};
+    // Log instance keys are derived from device names so YAML `instance:`
+    // values track the active config_variant (e.g. ur5e_state/hand_state
+    // for ur5e_hand vs iiwa7_state/allegro_state for iiwa7_allegro).
+    const auto primary = GetPrimaryDeviceName();
+    const auto secondary = GetSecondaryDeviceName();
+    const auto primary_state_key = primary + "_state";
+    const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
+    const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
+
+    LogRegistrationContext ctx{
+        logger_,
+        log_set_,
+        {
+            {primary_state_key, {primary_joint_names_, std::vector<std::string>{}}},
+            {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
+        },
+        {
+            {secondary_sensor_key, secondary_sensor_names_},
+        }};
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       return CallbackReturn::FAILURE;
     }
-    if (auto it = reg.handles.state.find("ur5e_state"); it != reg.handles.state.end()) {
-      ur5e_state_log_handle_ = std::move(it->second);
+    if (auto it = reg.handles.state.find(primary_state_key); it != reg.handles.state.end()) {
+      primary_state_log_handle_ = std::move(it->second);
     }
-    if (auto it = reg.handles.state.find("hand_state"); it != reg.handles.state.end()) {
-      hand_state_log_handle_ = std::move(it->second);
+    if (!secondary_state_key.empty()) {
+      if (auto it = reg.handles.state.find(secondary_state_key); it != reg.handles.state.end()) {
+        secondary_state_log_handle_ = std::move(it->second);
+      }
     }
-    if (auto it = reg.handles.sensor.find("hand_sensor"); it != reg.handles.sensor.end()) {
-      hand_sensor_log_handle_ = std::move(it->second);
+    if (!secondary_sensor_key.empty()) {
+      if (auto it = reg.handles.sensor.find(secondary_sensor_key); it != reg.handles.sensor.end()) {
+        secondary_sensor_log_handle_ = std::move(it->second);
+      }
     }
 
     // Drain timer on a non-RT callback group (10 Hz). Single-threaded —

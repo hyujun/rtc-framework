@@ -55,15 +55,21 @@ void DemoJointController::InitArmModel(const rtc_urdf_bridge::ModelConfig& confi
 // ── Hand tree-model initialization ──────────────────────────────────────────
 void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*config*/) {
   namespace rub = rtc_urdf_bridge;
-  // "hand" tree_model: name matches device name
-  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel("hand"));
+  // Secondary device name == tree_model name == device_name_configs key
+  // (robot-agnostic: e.g. "hand" for ur5e_hand, "allegro" for iiwa7_allegro).
+  const auto secondary = GetSecondaryDeviceName();
+  if (secondary.empty()) {
+    return;
+  }
+  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel(secondary));
 
   // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
-  if (auto* hand_cfg = GetDeviceNameConfig("hand"); hand_cfg) {
+  if (auto* hand_cfg = GetDeviceNameConfig(secondary); hand_cfg) {
     if (!hand_handle_->SetJointOrder(hand_cfg->joint_state_names)) {
       RCLCPP_WARN(logger_,
-                  "DemoJointController: hand SetJointOrder failed — "
-                  "joint_state_names not all in Pinocchio model");
+                  "DemoJointController: secondary device '%s' SetJointOrder failed — "
+                  "joint_state_names not all in Pinocchio model",
+                  secondary.c_str());
     }
   }
 
@@ -71,7 +77,7 @@ void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*co
   const auto* sys_cfg = GetSystemModelConfig();
   if (sys_cfg) {
     for (const auto& tm : sys_cfg->tree_models) {
-      if (tm.name == "hand") {
+      if (tm.name == secondary) {
         if (!tm.root_link.empty()) {
           hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
           if (hand_root_frame_id_ != 0) {
@@ -97,7 +103,9 @@ void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*co
 }
 
 void DemoJointController::OnDeviceConfigsSet() {
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
+  const auto primary = GetPrimaryDeviceName();
+  const auto secondary = GetSecondaryDeviceName();
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {  // 0 = universe (not found)
@@ -121,13 +129,15 @@ void DemoJointController::OnDeviceConfigsSet() {
   // Capture joint/sensor names for CSV header expansion (Phase C).
   // Header writers run once at file open in on_configure → these vectors
   // are read non-RT only.
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
-    ur5e_joint_names_ = cfg->joint_state_names;
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+    primary_joint_names_ = cfg->joint_state_names;
   }
-  if (auto* cfg = GetDeviceNameConfig("hand"); cfg) {
-    hand_joint_names_ = cfg->joint_state_names;
-    hand_motor_names_ = cfg->motor_state_names;
-    hand_sensor_names_ = cfg->sensor_names;
+  if (!secondary.empty()) {
+    if (auto* cfg = GetDeviceNameConfig(secondary); cfg) {
+      secondary_joint_names_ = cfg->joint_state_names;
+      secondary_motor_names_ = cfg->motor_state_names;
+      secondary_sensor_names_ = cfg->sensor_names;
+    }
   }
 }
 
@@ -139,20 +149,20 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
     // Push minimal logs even in E-STOP so the file shows the gap clearly.
-    if (ur5e_state_log_handle_) {
+    if (primary_state_log_handle_) {
       integrated_bringup::DeviceStateLogPod pod{};
-      FillUr5eStateLogPod(state, out, pod);
-      ur5e_state_log_handle_.Push(pod);
+      FillDeviceStateLogPod(state, out, /*device_idx=*/0, pod);
+      primary_state_log_handle_.Push(pod);
     }
-    if (hand_state_log_handle_) {
+    if (secondary_state_log_handle_) {
       integrated_bringup::DeviceStateLogPod pod{};
-      FillHandStateLogPod(state, out, pod);
-      hand_state_log_handle_.Push(pod);
+      FillDeviceStateLogPod(state, out, /*device_idx=*/1, pod);
+      secondary_state_log_handle_.Push(pod);
     }
-    if (hand_sensor_log_handle_) {
+    if (secondary_sensor_log_handle_) {
       integrated_bringup::DeviceSensorLogPod pod{};
-      FillHandSensorLogPod(state, num_active_fingertips_, pod);
-      hand_sensor_log_handle_.Push(pod);
+      FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+      secondary_sensor_log_handle_.Push(pod);
     }
     return out;
   }
@@ -162,20 +172,20 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   // ── Phase C: push log PODs to controller-owned channels ────────────────
   // Push site is INSIDE Compute() per Q-ACTIVITY-GATING — inactive
   // controllers' Compute() is never called, so their CSVs do not grow.
-  if (ur5e_state_log_handle_) {
+  if (primary_state_log_handle_) {
     integrated_bringup::DeviceStateLogPod pod{};
-    FillUr5eStateLogPod(state, output, pod);
-    ur5e_state_log_handle_.Push(pod);
+    FillDeviceStateLogPod(state, output, /*device_idx=*/0, pod);
+    primary_state_log_handle_.Push(pod);
   }
-  if (hand_state_log_handle_) {
+  if (secondary_state_log_handle_) {
     integrated_bringup::DeviceStateLogPod pod{};
-    FillHandStateLogPod(state, output, pod);
-    hand_state_log_handle_.Push(pod);
+    FillDeviceStateLogPod(state, output, /*device_idx=*/1, pod);
+    secondary_state_log_handle_.Push(pod);
   }
-  if (hand_sensor_log_handle_) {
+  if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
-    FillHandSensorLogPod(state, num_active_fingertips_, pod);
-    hand_sensor_log_handle_.Push(pod);
+    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+    secondary_sensor_log_handle_.Push(pod);
   }
   return output;
 }

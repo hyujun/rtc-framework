@@ -14,7 +14,8 @@
 //       * sensor_logs  : map<instance, sensor_names>
 //     and receives back maps keyed by the same instance strings. Each demo
 //     controller assigns the entries it cares about into its own typed
-//     handle members (e.g. ur5e_state_log_handle_, hand_sensor_log_handle_).
+//     handle members (e.g. primary_state_log_handle_,
+//     secondary_sensor_log_handle_).
 //   - ParsedLogEntry is duck-typed (only `.instance` and `.msg_type` are
 //     read), so each controller can keep its private nested struct unchanged.
 //
@@ -24,9 +25,9 @@
 //   - virtual-TCP setup
 // See agent_docs handoff: `~/.claude/plans/demo-controller-refactor.md`.
 
-#include "rtc_controller_interface/controller_log_set.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "rtc_controller_interface/controller_log_set.hpp"
 
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
@@ -129,7 +130,9 @@ template <typename ParsedLogEntryT>
       const auto sensor_names = it->second;
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::DeviceSensorLogPod>(
           entry.instance,
-          [sensor_names](std::ostream& os) { integrated_bringup::WriteDeviceSensorLogHeader(os, sensor_names); },
+          [sensor_names](std::ostream& os) {
+            integrated_bringup::WriteDeviceSensorLogHeader(os, sensor_names);
+          },
           [](std::ostream& os, const integrated_bringup::DeviceSensorLogPod& pod) {
             integrated_bringup::WriteDeviceSensorLogRow(os, pod);
           });

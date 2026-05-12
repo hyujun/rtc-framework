@@ -100,8 +100,8 @@ void DemoWbcController::BuildJointReorderMap() {
   }
   const auto& model = *full_model_ptr_;
 
-  const auto* arm_cfg = GetDeviceNameConfig("ur5e");
-  const auto* hand_cfg = GetDeviceNameConfig("hand");
+  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+  const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
   if (!arm_cfg || !hand_cfg) {
     RCLCPP_WARN(logger_, "Device configs not available, using identity mapping");
     for (int i = 0; i < kFullDof; ++i) {
@@ -594,7 +594,7 @@ void DemoWbcController::OnDeviceConfigsSet() {
   // arm_handle_ is null when the model wasn't built (e.g. unit tests that
   // exercise lifecycle hooks without a URDF). Skip frame resolution in
   // that case; consistency checks below remain valid.
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg && arm_handle_) {
+  if (auto* cfg = GetDeviceNameConfig(GetPrimaryDeviceName()); cfg && arm_handle_) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {
@@ -648,13 +648,15 @@ void DemoWbcController::OnDeviceConfigsSet() {
   BuildJointReorderMap();
 
   // Phase C: capture joint/sensor names for CSV header expansion.
-  if (auto* cfg = GetDeviceNameConfig("ur5e"); cfg) {
-    ur5e_joint_names_ = cfg->joint_state_names;
+  if (auto* cfg = GetDeviceNameConfig(GetPrimaryDeviceName()); cfg) {
+    primary_joint_names_ = cfg->joint_state_names;
   }
-  if (auto* cfg = GetDeviceNameConfig("hand"); cfg) {
-    hand_joint_names_ = cfg->joint_state_names;
-    hand_motor_names_ = cfg->motor_state_names;
-    hand_sensor_names_ = cfg->sensor_names;
+  if (const auto secondary = GetSecondaryDeviceName(); !secondary.empty()) {
+    if (auto* cfg = GetDeviceNameConfig(secondary); cfg) {
+      secondary_joint_names_ = cfg->joint_state_names;
+      secondary_motor_names_ = cfg->motor_state_names;
+      secondary_sensor_names_ = cfg->sensor_names;
+    }
   }
 }
 
@@ -684,20 +686,20 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
-    if (ur5e_state_log_handle_) {
+    if (primary_state_log_handle_) {
       integrated_bringup::DeviceStateLogPod pod{};
-      FillUr5eStateLogPod(state, out, pod);
-      ur5e_state_log_handle_.Push(pod);
+      FillDeviceStateLogPod(state, out, /*device_idx=*/0, pod);
+      primary_state_log_handle_.Push(pod);
     }
-    if (hand_state_log_handle_) {
+    if (secondary_state_log_handle_) {
       integrated_bringup::DeviceStateLogPod pod{};
-      FillHandStateLogPod(state, out, pod);
-      hand_state_log_handle_.Push(pod);
+      FillDeviceStateLogPod(state, out, /*device_idx=*/1, pod);
+      secondary_state_log_handle_.Push(pod);
     }
-    if (hand_sensor_log_handle_) {
+    if (secondary_sensor_log_handle_) {
       integrated_bringup::DeviceSensorLogPod pod{};
-      FillHandSensorLogPod(state, num_active_fingertips_, pod);
-      hand_sensor_log_handle_.Push(pod);
+      FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+      secondary_sensor_log_handle_.Push(pod);
     }
     return out;
   }
@@ -706,20 +708,20 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   auto output = WriteOutput(state);
 
   // ── Phase C: push log PODs (only from inside Compute()) ──────────────
-  if (ur5e_state_log_handle_) {
+  if (primary_state_log_handle_) {
     integrated_bringup::DeviceStateLogPod pod{};
-    FillUr5eStateLogPod(state, output, pod);
-    ur5e_state_log_handle_.Push(pod);
+    FillDeviceStateLogPod(state, output, /*device_idx=*/0, pod);
+    primary_state_log_handle_.Push(pod);
   }
-  if (hand_state_log_handle_) {
+  if (secondary_state_log_handle_) {
     integrated_bringup::DeviceStateLogPod pod{};
-    FillHandStateLogPod(state, output, pod);
-    hand_state_log_handle_.Push(pod);
+    FillDeviceStateLogPod(state, output, /*device_idx=*/1, pod);
+    secondary_state_log_handle_.Push(pod);
   }
-  if (hand_sensor_log_handle_) {
+  if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};
-    FillHandSensorLogPod(state, num_active_fingertips_, pod);
-    hand_sensor_log_handle_.Push(pod);
+    FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
+    secondary_sensor_log_handle_.Push(pod);
   }
   return output;
 }
