@@ -102,9 +102,9 @@ void DemoWbcController::BuildJointReorderMap() {
 
   const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
   const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
-  if (!arm_cfg || !hand_cfg) {
-    RCLCPP_WARN(logger_, "Device configs not available, using identity mapping");
-    for (int i = 0; i < kFullDof; ++i) {
+  if (!arm_cfg) {
+    RCLCPP_WARN(logger_, "Primary device config not available, using identity mapping");
+    for (int i = 0; i < full_dof_; ++i) {
       ext_to_pin_q_[static_cast<std::size_t>(i)] = i;
       ext_to_pin_v_[static_cast<std::size_t>(i)] = i;
     }
@@ -127,22 +127,24 @@ void DemoWbcController::BuildJointReorderMap() {
     ++ext_idx;
   }
 
-  // Hand joints
-  for (const auto& jname : hand_cfg->joint_state_names) {
-    if (!model.existJointName(jname)) {
-      RCLCPP_ERROR(logger_, "Joint '%s' not found in full model", jname.c_str());
-      continue;
+  // Hand joints (optional — single-device controllers leave hand_dof_ == 0)
+  if (hand_cfg) {
+    for (const auto& jname : hand_cfg->joint_state_names) {
+      if (!model.existJointName(jname)) {
+        RCLCPP_ERROR(logger_, "Joint '%s' not found in full model", jname.c_str());
+        continue;
+      }
+      const auto jid = model.getJointId(jname);
+      const auto eidx = static_cast<std::size_t>(ext_idx);
+      ext_to_pin_q_[eidx] = model.idx_qs[jid];
+      ext_to_pin_v_[eidx] = model.idx_vs[jid];
+      ++ext_idx;
     }
-    const auto jid = model.getJointId(jname);
-    const auto eidx = static_cast<std::size_t>(ext_idx);
-    ext_to_pin_q_[eidx] = model.idx_qs[jid];
-    ext_to_pin_v_[eidx] = model.idx_vs[jid];
-    ++ext_idx;
   }
 
-  joint_reorder_valid_ = (ext_idx == kFullDof);
+  joint_reorder_valid_ = (ext_idx == full_dof_);
   if (!joint_reorder_valid_) {
-    RCLCPP_ERROR(logger_, "Joint reorder incomplete: mapped %d/%d joints", ext_idx, kFullDof);
+    RCLCPP_ERROR(logger_, "Joint reorder incomplete: mapped %d/%d joints", ext_idx, full_dof_);
   }
 }
 
@@ -377,10 +379,27 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── 4b. Lift L2: E-STOP arm safe position (required) ─────────────────
+  //
+  // Runtime arm_dof_ is established from the YAML's `estop.arm_safe_position`
+  // length. This is the authoritative arm DoF at LoadConfig time (device
+  // configs aren't yet available — they arrive in OnDeviceConfigsSet, which
+  // cross-checks joint_state_names size against arm_dof_).
+  if (!cfg["estop"] || !cfg["estop"]["arm_safe_position"] ||
+      !cfg["estop"]["arm_safe_position"].IsSequence()) {
+    throw std::runtime_error(
+        "demo_wbc_controller: required 'estop.arm_safe_position' must be a sequence");
+  }
   {
-    const auto sp =
-        ParseArmSafePosition(cfg, static_cast<std::size_t>(kArmDof), "demo_wbc_controller");
-    for (std::size_t i = 0; i < static_cast<std::size_t>(kArmDof); ++i) {
+    const auto seq_size = cfg["estop"]["arm_safe_position"].size();
+    if (seq_size == 0 || seq_size > static_cast<std::size_t>(kMaxArmDof)) {
+      throw std::runtime_error("demo_wbc_controller: 'estop.arm_safe_position' size " +
+                               std::to_string(seq_size) + " out of range [1, " +
+                               std::to_string(kMaxArmDof) + "]");
+    }
+    arm_dof_ = static_cast<int>(seq_size);
+    const auto sp = ParseArmSafePosition(cfg, seq_size, "demo_wbc_controller");
+    safe_position_.fill(0.0);
+    for (std::size_t i = 0; i < seq_size; ++i) {
       safe_position_[i] = sp[i];
     }
   }
@@ -590,6 +609,33 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
 }
 
 void DemoWbcController::OnDeviceConfigsSet() {
+  // ── Runtime DoF resolution ─────────────────────────────────────────────
+  // arm_dof_ was set from YAML `estop.arm_safe_position` in LoadConfig.
+  // Here we resolve hand_dof_ from the secondary device's joint_state_names
+  // (0 when no secondary device exists), cap-check, and cross-validate the
+  // arm side against the primary device's joint_state_names.
+  if (const auto* primary_cfg = GetDeviceNameConfig(GetPrimaryDeviceName())) {
+    const auto js_size = static_cast<int>(primary_cfg->joint_state_names.size());
+    if (js_size > 0 && js_size != arm_dof_) {
+      RCLCPP_ERROR(logger_,
+                   "[wbc] arm DoF mismatch: estop.arm_safe_position=%d but primary device "
+                   "'%s' joint_state_names size=%d",
+                   arm_dof_, GetPrimaryDeviceName().c_str(), js_size);
+    }
+  }
+  hand_dof_ = 0;
+  if (const auto secondary = GetSecondaryDeviceName(); !secondary.empty()) {
+    if (const auto* cfg = GetDeviceNameConfig(secondary)) {
+      hand_dof_ = static_cast<int>(cfg->joint_state_names.size());
+    }
+  }
+  if (hand_dof_ < 0 || hand_dof_ > kMaxHandDof) {
+    RCLCPP_ERROR(logger_, "[wbc] hand DoF %d exceeds capacity kMaxHandDof=%d — clamping", hand_dof_,
+                 kMaxHandDof);
+    hand_dof_ = std::min(std::max(hand_dof_, 0), kMaxHandDof);
+  }
+  full_dof_ = arm_dof_ + hand_dof_;
+
   // ── Arm frame IDs ─────────────────────────────────────────────────────
   // arm_handle_ is null when the model wasn't built (e.g. unit tests that
   // exercise lifecycle hooks without a URDF). Skip frame resolution in
@@ -748,15 +794,29 @@ void DemoWbcController::SetDeviceTarget(int device_idx, std::span<const double> 
 void DemoWbcController::InitializeHoldPosition(const ControllerState& state) noexcept {
   std::lock_guard lock(target_mutex_);
 
+  // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
+  // dimensions (e.g. unit tests that bypass YAML). Derive from device
+  // num_channels so the hold/E-STOP loops still cover the active channels.
+  if (arm_dof_ == 0 && state.num_devices > 0) {
+    arm_dof_ = std::min(state.devices[0].num_channels, kMaxArmDof);
+  }
+  if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
+    hand_dof_ = std::min(state.devices[1].num_channels, kMaxHandDof);
+  }
+  if (full_dof_ == 0) {
+    full_dof_ = arm_dof_ + hand_dof_;
+  }
+
   // Robot arm: initialize trajectory at current position (zero velocity)
   {
     const auto& dev0 = state.devices[0];
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold{};
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      device_targets_[0][i] = dev0.positions[i];
-      hold.positions[i] = dev0.positions[i];
-      robot_computed_.positions[i] = dev0.positions[i];
-      robot_computed_.velocities[i] = 0.0;
+    trajectory::JointSpaceTrajectory<kMaxArmDof>::State hold{};
+    for (int i = 0; i < arm_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      device_targets_[0][idx] = dev0.positions[idx];
+      hold.positions[idx] = dev0.positions[idx];
+      robot_computed_.positions[idx] = dev0.positions[idx];
+      robot_computed_.velocities[idx] = 0.0;
     }
     robot_trajectory_.initialize(hold, hold, 0.01);
     robot_trajectory_time_ = 0.0;
@@ -773,11 +833,12 @@ void DemoWbcController::InitializeHoldPosition(const ControllerState& state) noe
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
-      trajectory::JointSpaceTrajectory<kHandMotorCount>::State hold{};
-      for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-        hold.positions[i] = dev.positions[i];
-        hand_computed_.positions[i] = dev.positions[i];
-        hand_computed_.velocities[i] = 0.0;
+      trajectory::JointSpaceTrajectory<kMaxHandDof>::State hold{};
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hold.positions[idx] = dev.positions[idx];
+        hand_computed_.positions[idx] = dev.positions[idx];
+        hand_computed_.velocities[idx] = 0.0;
       }
       hand_trajectory_.initialize(hold, hold, 0.01);
       hand_trajectory_time_ = 0.0;

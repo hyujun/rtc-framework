@@ -355,7 +355,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 - `tsid.wqp.solver`: `max_iter` / `eps_abs` / `eps_rel` / `verbose` (ProxSuite 설정, rtc_tsid가 직접 읽음)
 - `integration`: `position_margin` / `velocity_scale` / **`force_rate_alpha`** (필수, [0,1])
 - `fsm`: epsilon_approach/pregrasp, force_contact_threshold, `min_contacts_for_hold`, `slip_rate_threshold`, `deformation_threshold`
-- **`estop.arm_safe_position`** (필수, 6개 값): E-STOP 목표 arm pose. 누락 시 `LoadConfig` throw
+- **`estop.arm_safe_position`** (필수): E-STOP 목표 arm pose. 길이가 곧 런타임 arm DoF (Sprint β, 2026-05-12) — `LoadConfig`가 `arm_dof_`를 이 값으로 결정 (1 ≤ size ≤ `kMaxArmDof=32`). `hand_dof_`는 `OnDeviceConfigsSet`이 secondary device의 `joint_state_names` 크기에서 결정. 누락 시 throw
 - **`mpc`**: `enabled`, `engine` (`mock`/`handler`), `max_stale_solutions`(기본 5), `phase_config_path` + `light_contact_path` + `contact_rich_path` (handler 전용, 기본 `config/ur5e_hand/controllers/mpc/*.yaml`), `riccati.{enabled, gain_scale, accel_only, max_delta_x_norm}`. `enabled: false`가 기본이라 MPC는 inert이고 TSID가 self-hold한다.
 
 > **base_frame 일관성 게이트 (F-2):** SE3 task의 `base_frame`(예: `tsid.tasks.se3_tcp.base_frame`)과 MPC YAML의 `mpc.model.base_frame`(`light_contact.yaml` / `contact_rich.yaml`)은 모두 1차 디바이스 (`ur5e`)의 `urdf.root_link`와 동일한 frame 이름이어야 한다. `on_configure`가 한쪽만 변경된 mismatch를 감지하면 `RCLCPP_ERROR` 이후 `CallbackReturn::FAILURE`로 lifecycle 전이를 막는다. `base_frame` 키를 모두 비우면 universe(world) fallback으로 동작하며 게이트는 silent (F-4에서 strict 전환 예정).

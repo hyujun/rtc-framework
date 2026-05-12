@@ -128,6 +128,32 @@ void DemoTaskController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*con
 void DemoTaskController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
   const auto secondary = GetSecondaryDeviceName();
+
+  // ── Runtime DoF resolution ─────────────────────────────────────────────
+  // arm_dof_ was set from YAML `estop.arm_safe_position` in LoadConfig.
+  // Resolve hand_dof_ from secondary device joint_state_names and
+  // cross-validate arm DoF against primary device joint_state_names.
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+    const auto js_size = static_cast<int>(cfg->joint_state_names.size());
+    if (js_size > 0 && arm_dof_ > 0 && js_size != arm_dof_) {
+      RCLCPP_ERROR(logger_,
+                   "[task] arm DoF mismatch: estop.arm_safe_position=%d but primary device "
+                   "'%s' joint_state_names size=%d",
+                   arm_dof_, primary.c_str(), js_size);
+    }
+  }
+  hand_dof_ = 0;
+  if (!secondary.empty()) {
+    if (auto* cfg = GetDeviceNameConfig(secondary); cfg) {
+      hand_dof_ = static_cast<int>(cfg->joint_state_names.size());
+    }
+  }
+  if (hand_dof_ < 0 || hand_dof_ > kDemoTaskMaxHandDof) {
+    RCLCPP_ERROR(logger_, "[task] hand DoF %d exceeds capacity kDemoTaskMaxHandDof=%d — clamping",
+                 hand_dof_, kDemoTaskMaxHandDof);
+    hand_dof_ = std::min(std::max(hand_dof_, 0), kDemoTaskMaxHandDof);
+  }
+
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
@@ -222,7 +248,13 @@ void DemoTaskController::SetDeviceTarget(int device_idx, std::span<const double>
         tcp_target_pose_.rotation() = q.matrix();
       }
     } else {
-      const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kNumRobotJoints));
+      // Layout: target = [tcp_x, tcp_y, tcp_z, null_q_3, null_q_4, ...].
+      // Cap total elements at runtime arm_dof_ (kDemoTaskMaxArmDof when
+      // arm_dof_ is 0 — pre-LoadConfig path) so null_target_ writes stay
+      // in bounds.
+      const auto cap = (arm_dof_ > 0) ? static_cast<std::size_t>(arm_dof_)
+                                      : static_cast<std::size_t>(kDemoTaskMaxArmDof);
+      const std::size_t n = std::min(target.size(), cap);
       for (std::size_t i = 0; i < std::min(n, std::size_t{3}); ++i) {
         tcp_target_[i] = target[i];
       }
@@ -243,6 +275,16 @@ void DemoTaskController::SetDeviceTarget(int device_idx, std::span<const double>
 }
 
 void DemoTaskController::InitializeHoldPosition(const ControllerState& state) noexcept {
+  // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
+  // dimensions (e.g. unit tests that bypass YAML). Derive from device
+  // num_channels so the hold/null-target loops still cover active channels.
+  if (arm_dof_ == 0 && state.num_devices > 0) {
+    arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
+  }
+  if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
+    hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
+  }
+
   const auto& dev0 = state.devices[0];
   std::span<const double> q_span(dev0.positions.data(),
                                  static_cast<std::size_t>(dev0.num_channels));
@@ -278,8 +320,9 @@ void DemoTaskController::InitializeHoldPosition(const ControllerState& state) no
   tcp_target_pose_ = hold_pose;
   tcp_target_ = {hold_pose.translation()[0], hold_pose.translation()[1],
                  hold_pose.translation()[2]};
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    null_target_[i] = dev0.positions[i];
+  for (int i = 0; i < arm_dof_; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    null_target_[idx] = dev0.positions[idx];
   }
   target_initialized_ = true;
   new_target_.store(false, std::memory_order_relaxed);
@@ -298,11 +341,12 @@ void DemoTaskController::InitializeHoldPosition(const ControllerState& state) no
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
-      trajectory::JointSpaceTrajectory<kHandMotorCount>::State hold_state;
-      for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-        hold_state.positions[i] = dev.positions[i];
-        hold_state.velocities[i] = 0.0;
-        hold_state.accelerations[i] = 0.0;
+      trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State hold_state;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hold_state.positions[idx] = dev.positions[idx];
+        hold_state.velocities[idx] = 0.0;
+        hold_state.accelerations[idx] = 0.0;
       }
       hand_trajectory_.initialize(hold_state, hold_state, 0.01);
       hand_trajectory_time_ = 0.0;
@@ -371,9 +415,26 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
 
   // ── E-STOP arm safe position (required) ─────────────────────────────
   // Lift L2: estop arm safe position parsing.
+  //
+  // Runtime arm_dof_ is established from the YAML's `estop.arm_safe_position`
+  // length (authoritative at LoadConfig time; device configs arrive later in
+  // OnDeviceConfigsSet, which cross-checks joint_state_names size).
+  if (!cfg["estop"] || !cfg["estop"]["arm_safe_position"] ||
+      !cfg["estop"]["arm_safe_position"].IsSequence()) {
+    throw std::runtime_error(
+        "demo_task_controller: required 'estop.arm_safe_position' must be a sequence");
+  }
   {
-    const auto sp = ParseArmSafePosition(cfg, kNumRobotJoints, "demo_task_controller");
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    const auto seq_size = cfg["estop"]["arm_safe_position"].size();
+    if (seq_size == 0 || seq_size > static_cast<std::size_t>(kDemoTaskMaxArmDof)) {
+      throw std::runtime_error("demo_task_controller: 'estop.arm_safe_position' size " +
+                               std::to_string(seq_size) + " out of range [1, " +
+                               std::to_string(kDemoTaskMaxArmDof) + "]");
+    }
+    arm_dof_ = static_cast<int>(seq_size);
+    const auto sp = ParseArmSafePosition(cfg, seq_size, "demo_task_controller");
+    safe_position_.fill(0.0);
+    for (std::size_t i = 0; i < seq_size; ++i) {
       safe_position_[i] = sp[i];
     }
   }

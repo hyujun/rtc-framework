@@ -105,6 +105,32 @@ void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*co
 void DemoJointController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
   const auto secondary = GetSecondaryDeviceName();
+
+  // ── Runtime DoF resolution ─────────────────────────────────────────────
+  // arm_dof_ was set from YAML `estop.arm_safe_position` in LoadConfig.
+  // Resolve hand_dof_ from secondary device joint_state_names size and
+  // cross-validate arm DoF against the primary device's joint_state_names.
+  if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
+    const auto js_size = static_cast<int>(cfg->joint_state_names.size());
+    if (js_size > 0 && arm_dof_ > 0 && js_size != arm_dof_) {
+      RCLCPP_ERROR(logger_,
+                   "[joint] arm DoF mismatch: estop.arm_safe_position=%d but primary device "
+                   "'%s' joint_state_names size=%d",
+                   arm_dof_, primary.c_str(), js_size);
+    }
+  }
+  hand_dof_ = 0;
+  if (!secondary.empty()) {
+    if (auto* cfg = GetDeviceNameConfig(secondary); cfg) {
+      hand_dof_ = static_cast<int>(cfg->joint_state_names.size());
+    }
+  }
+  if (hand_dof_ < 0 || hand_dof_ > kDemoJointMaxHandDof) {
+    RCLCPP_ERROR(logger_, "[joint] hand DoF %d exceeds capacity kDemoJointMaxHandDof=%d — clamping",
+                 hand_dof_, kDemoJointMaxHandDof);
+    hand_dof_ = std::min(std::max(hand_dof_, 0), kDemoJointMaxHandDof);
+  }
+
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = arm_handle_->GetFrameId(cfg->urdf->tip_link);
@@ -213,15 +239,26 @@ void DemoJointController::SetDeviceTarget(int device_idx, std::span<const double
 void DemoJointController::InitializeHoldPosition(const ControllerState& state) noexcept {
   std::lock_guard lock(target_mutex_);
 
+  // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
+  // dimensions (e.g. unit tests that bypass YAML). Derive from device
+  // num_channels so the hold/E-STOP loops still cover the active channels.
+  if (arm_dof_ == 0 && state.num_devices > 0) {
+    arm_dof_ = std::min(state.devices[0].num_channels, kDemoJointMaxArmDof);
+  }
+  if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
+    hand_dof_ = std::min(state.devices[1].num_channels, kDemoJointMaxHandDof);
+  }
+
   // Robot
   {
     const auto& dev0 = state.devices[0];
-    trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold_state;
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-      device_targets_[0][i] = dev0.positions[i];
-      hold_state.positions[i] = dev0.positions[i];
-      hold_state.velocities[i] = 0.0;
-      hold_state.accelerations[i] = 0.0;
+    trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State hold_state;
+    for (int i = 0; i < arm_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      device_targets_[0][idx] = dev0.positions[idx];
+      hold_state.positions[idx] = dev0.positions[idx];
+      hold_state.velocities[idx] = 0.0;
+      hold_state.accelerations[idx] = 0.0;
     }
     robot_trajectory_.initialize(hold_state, hold_state, 0.01);
     robot_trajectory_time_ = 0.0;
@@ -238,11 +275,12 @@ void DemoJointController::InitializeHoldPosition(const ControllerState& state) n
       device_targets_[d][i] = dev.positions[i];
     }
     if (d == 1) {
-      trajectory::JointSpaceTrajectory<kHandMotorCount>::State hold_state;
-      for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-        hold_state.positions[i] = dev.positions[i];
-        hold_state.velocities[i] = 0.0;
-        hold_state.accelerations[i] = 0.0;
+      trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State hold_state;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hold_state.positions[idx] = dev.positions[idx];
+        hold_state.velocities[idx] = 0.0;
+        hold_state.accelerations[idx] = 0.0;
       }
       hand_trajectory_.initialize(hold_state, hold_state, 0.01);
       hand_trajectory_time_ = 0.0;
@@ -288,9 +326,26 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── L2: E-STOP arm safe position (required) ──────────────────────────
+  //
+  // Runtime arm_dof_ is established from the YAML's `estop.arm_safe_position`
+  // length (authoritative source at LoadConfig time; device configs arrive
+  // later in OnDeviceConfigsSet, which cross-checks joint_state_names size).
+  if (!cfg["estop"] || !cfg["estop"]["arm_safe_position"] ||
+      !cfg["estop"]["arm_safe_position"].IsSequence()) {
+    throw std::runtime_error(
+        "demo_joint_controller: required 'estop.arm_safe_position' must be a sequence");
+  }
   {
-    const auto sp = ParseArmSafePosition(cfg, kNumRobotJoints, "demo_joint_controller");
-    for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
+    const auto seq_size = cfg["estop"]["arm_safe_position"].size();
+    if (seq_size == 0 || seq_size > static_cast<std::size_t>(kDemoJointMaxArmDof)) {
+      throw std::runtime_error("demo_joint_controller: 'estop.arm_safe_position' size " +
+                               std::to_string(seq_size) + " out of range [1, " +
+                               std::to_string(kDemoJointMaxArmDof) + "]");
+    }
+    arm_dof_ = static_cast<int>(seq_size);
+    const auto sp = ParseArmSafePosition(cfg, seq_size, "demo_joint_controller");
+    safe_position_.fill(0.0);
+    for (std::size_t i = 0; i < seq_size; ++i) {
       safe_position_[i] = sp[i];
     }
   }

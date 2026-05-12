@@ -417,20 +417,21 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     const auto& dev1 = state.devices[1];
 
     if (hand_new_target_.load(std::memory_order_acquire)) {
-      trajectory::JointSpaceTrajectory<kHandMotorCount>::State start_state;
-      trajectory::JointSpaceTrajectory<kHandMotorCount>::State goal_state;
+      trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State start_state;
+      trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State goal_state;
 
       double max_dist = 0.0;
-      for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-        start_state.positions[i] = dev1.positions[i];
-        start_state.velocities[i] = 0.0;
-        start_state.accelerations[i] = 0.0;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        start_state.positions[idx] = dev1.positions[idx];
+        start_state.velocities[idx] = 0.0;
+        start_state.accelerations[idx] = 0.0;
 
-        goal_state.positions[i] = device_targets_[1][i];
-        goal_state.velocities[i] = 0.0;
-        goal_state.accelerations[i] = 0.0;
+        goal_state.positions[idx] = device_targets_[1][idx];
+        goal_state.velocities[idx] = 0.0;
+        goal_state.accelerations[idx] = 0.0;
 
-        max_dist = std::max(max_dist, std::abs(device_targets_[1][i] - dev1.positions[i]));
+        max_dist = std::max(max_dist, std::abs(device_targets_[1][idx] - dev1.positions[idx]));
       }
 
       const double T_speed = max_dist / gains.hand_trajectory_speed;
@@ -446,9 +447,10 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     const auto hand_traj = hand_trajectory_.compute(hand_trajectory_time_);
     hand_trajectory_time_ += dt;
 
-    for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-      hand_computed_.positions[i] = hand_traj.positions[i];
-      hand_computed_.velocities[i] = hand_traj.velocities[i];
+    for (int i = 0; i < hand_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      hand_computed_.positions[idx] = hand_traj.positions[idx];
+      hand_computed_.velocities[idx] = hand_traj.velocities[idx];
     }
   }
 
@@ -557,9 +559,10 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
                                "dindex_fe=%+.3f dmid_fe=%+.3f",
                                d_thumb, d_index, d_middle);
         } else if (active_count > 0 && max_force > force_thresh) {
-          for (std::size_t i = 0; i < static_cast<std::size_t>(kHandMotorCount); ++i) {
-            hand_computed_.positions[i] = dev1.positions[i];
-            hand_computed_.velocities[i] = 0.0;
+          for (int i = 0; i < hand_dof_; ++i) {
+            const auto idx = static_cast<std::size_t>(i);
+            hand_computed_.positions[idx] = dev1.positions[idx];
+            hand_computed_.velocities[idx] = 0.0;
           }
           // Errors (target - actual) encode both the actual position and the
           // overshoot beyond target in a single number each, so 5 args are

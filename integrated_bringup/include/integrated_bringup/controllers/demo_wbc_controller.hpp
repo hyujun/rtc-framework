@@ -53,7 +53,6 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::GoalType;
 using rtc::kMaxDeviceChannels;
-using rtc::kNumRobotJoints;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
 
@@ -88,9 +87,12 @@ enum class WbcPhase : uint8_t {
 //   gains.grasp_target_force, which the FSM consumes.
 class DemoWbcController final : public RTControllerInterface {
  public:
-  static constexpr int kArmDof = static_cast<int>(kNumRobotJoints);   // 6
-  static constexpr int kHandDof = static_cast<int>(kHandMotorCount);  // 10
-  static constexpr int kFullDof = kArmDof + kHandDof;                 // 16
+  // Fixed-size POD capacity (conservative for humanoid-class robots).
+  // Actual DoF held in arm_dof_ / hand_dof_ / full_dof_ runtime members,
+  // resolved in LoadConfig (arm) and OnDeviceConfigsSet (hand, full).
+  static constexpr int kMaxArmDof = 32;
+  static constexpr int kMaxHandDof = 32;
+  static constexpr int kMaxFullDof = kMaxArmDof + kMaxHandDof;
   static constexpr int kNumPhases = 8;
 
   struct Gains {
@@ -222,10 +224,10 @@ class DemoWbcController final : public RTControllerInterface {
   bool estop_active_{false};
 
   /// Arm joint position the E-STOP path drives to. Authoritative source is
-  /// LoadConfig(cfg["estop"]["arm_safe_position"]); this initializer only
-  /// provides a safe default for unit tests that construct the controller
-  /// without calling LoadConfig.
-  std::array<double, kNumRobotJoints> safe_position_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first
+  /// `arm_dof_` slots are read by ComputeEstop. Zero-initialized by default
+  /// so unit tests that skip LoadConfig still see a deterministic value.
+  std::array<double, kMaxArmDof> safe_position_{};
 
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
@@ -263,10 +265,19 @@ class DemoWbcController final : public RTControllerInterface {
   // isn't declared in urdf.tree_models. TSID + MPC share this model.
   std::shared_ptr<const pinocchio::Model> full_model_ptr_;
 
-  // Joint reorder: external [arm0..5, hand0..9] → Pinocchio q/v index
-  std::array<int, kFullDof> ext_to_pin_q_{};
-  std::array<int, kFullDof> ext_to_pin_v_{};
+  // Joint reorder: external [arm0..arm_dof_-1, hand0..hand_dof_-1] →
+  // Pinocchio q/v index. Only the first `full_dof_` slots are populated.
+  std::array<int, kMaxFullDof> ext_to_pin_q_{};
+  std::array<int, kMaxFullDof> ext_to_pin_v_{};
   bool joint_reorder_valid_{false};
+
+  // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
+  // device configs). arm_dof_ from `estop.arm_safe_position` length;
+  // hand_dof_ from secondary device joint_state_names size (0 when absent).
+  // full_dof_ = arm_dof_ + hand_dof_. All RT-path loops iterate over these.
+  int arm_dof_{0};
+  int hand_dof_{0};
+  int full_dof_{0};
 
   // ── TSID ────────────────────────────────────────────────────────────────
   rtc::tsid::TSIDController tsid_controller_;
@@ -334,8 +345,10 @@ class DemoWbcController final : public RTControllerInterface {
   bool tcp_goal_valid_{false};
 
   // ── Trajectory (position mode phases) ───────────────────────────────────
-  trajectory::JointSpaceTrajectory<kNumRobotJoints> robot_trajectory_;
-  trajectory::JointSpaceTrajectory<kHandMotorCount> hand_trajectory_;
+  // Templates fixed at compile-time capacity; only the first arm_dof_ /
+  // hand_dof_ slots are initialised + read at runtime (caller-trim pattern).
+  trajectory::JointSpaceTrajectory<kMaxArmDof> robot_trajectory_;
+  trajectory::JointSpaceTrajectory<kMaxHandDof> hand_trajectory_;
   double robot_trajectory_time_{0.0};
   double hand_trajectory_time_{0.0};
 
@@ -438,8 +451,9 @@ class DemoWbcController final : public RTControllerInterface {
   double slip_rate_threshold_{5.0};      ///< N/s, |df/dt| slip guard (kHold)
   double deformation_threshold_{0.015};  ///< m, ||disp|| guard (kHold)
 
-  // Approach start pose (saved on kApproach entry, reused on kRetreat)
-  std::array<double, kNumRobotJoints> q_approach_start_{};
+  // Approach start pose (saved on kApproach entry, reused on kRetreat).
+  // Only the first arm_dof_ slots are written/read.
+  std::array<double, kMaxArmDof> q_approach_start_{};
 
   // Integration safety margins
   double position_margin_{0.02};  ///< rad, from joint limits

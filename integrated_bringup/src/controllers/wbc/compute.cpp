@@ -129,18 +129,20 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
   robot_trajectory_time_ += dt;
   const auto rstate =
       robot_trajectory_.compute(std::min(robot_trajectory_time_, robot_trajectory_.duration()));
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    robot_computed_.positions[i] = rstate.positions[i];
-    robot_computed_.velocities[i] = rstate.velocities[i];
+  for (int i = 0; i < arm_dof_; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    robot_computed_.positions[idx] = rstate.positions[idx];
+    robot_computed_.velocities[idx] = rstate.velocities[idx];
   }
 
   // Hand trajectory
   hand_trajectory_time_ += dt;
   const auto hstate =
       hand_trajectory_.compute(std::min(hand_trajectory_time_, hand_trajectory_.duration()));
-  for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-    hand_computed_.positions[i] = hstate.positions[i];
-    hand_computed_.velocities[i] = hstate.velocities[i];
+  for (int i = 0; i < hand_dof_; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    hand_computed_.positions[idx] = hstate.positions[idx];
+    hand_computed_.velocities[idx] = hstate.velocities[idx];
   }
 }
 
@@ -227,15 +229,15 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   q_next_full_ = q_next_full_.cwiseMax(q_min_clamped_).cwiseMin(q_max_clamped_);
 
   // 8. Map Pinocchio order → device order
-  for (int i = 0; i < kArmDof; ++i) {
+  for (int i = 0; i < arm_dof_; ++i) {
     const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[static_cast<std::size_t>(i)]);
     robot_computed_.positions[static_cast<std::size_t>(i)] =
         q_next_full_[static_cast<Eigen::Index>(pin_idx)];
     robot_computed_.velocities[static_cast<std::size_t>(i)] =
         v_next_full_[static_cast<Eigen::Index>(pin_idx)];
   }
-  for (int i = 0; i < kHandDof; ++i) {
-    const auto ext_i = static_cast<std::size_t>(kArmDof + i);
+  for (int i = 0; i < hand_dof_; ++i) {
+    const auto ext_i = static_cast<std::size_t>(arm_dof_ + i);
     const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[ext_i]);
     hand_computed_.positions[static_cast<std::size_t>(i)] =
         q_next_full_[static_cast<Eigen::Index>(pin_idx)];
@@ -251,11 +253,11 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
 void DemoWbcController::ComputeFallback() noexcept {
   // Hold last computed positions (already in robot_computed_/hand_computed_)
   // Set velocities to zero
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    robot_computed_.velocities[i] = 0.0;
+  for (int i = 0; i < arm_dof_; ++i) {
+    robot_computed_.velocities[static_cast<std::size_t>(i)] = 0.0;
   }
-  for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-    hand_computed_.velocities[i] = 0.0;
+  for (int i = 0; i < hand_dof_; ++i) {
+    hand_computed_.velocities[static_cast<std::size_t>(i)] = 0.0;
   }
 }
 
@@ -403,11 +405,12 @@ ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) n
   out0.num_channels = dev0.num_channels;
   out0.goal_type = GoalType::kJoint;
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
-  for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-    const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
-    out0.commands[i] =
-        dev0.positions[i] + std::clamp(safe_position_[i] - dev0.positions[i], -lim, lim) * dt;
-    out0.target_positions[i] = out0.commands[i];
+  for (int i = 0; i < arm_dof_; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    const double lim = (idx < device_max_velocity_[0].size()) ? device_max_velocity_[0][idx] : 2.0;
+    out0.commands[idx] =
+        dev0.positions[idx] + std::clamp(safe_position_[idx] - dev0.positions[idx], -lim, lim) * dt;
+    out0.target_positions[idx] = out0.commands[idx];
   }
 
   // Hold current position (hand)
@@ -436,8 +439,8 @@ void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept 
   }
 
   const auto& dev0 = state.devices[0];
-  // Arm joints: external [0..5] → Pinocchio order
-  for (int i = 0; i < kArmDof; ++i) {
+  // Arm joints: external [0..arm_dof_-1] → Pinocchio order
+  for (int i = 0; i < arm_dof_; ++i) {
     const auto eidx = static_cast<std::size_t>(i);
     const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
     const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
@@ -445,11 +448,11 @@ void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept 
     v_curr_full_[pv] = dev0.velocities[eidx];
   }
 
-  // Hand joints: external [6..15] → Pinocchio order
+  // Hand joints: external [arm_dof_..full_dof_-1] → Pinocchio order
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    for (int i = 0; i < kHandDof; ++i) {
-      const auto eidx = static_cast<std::size_t>(kArmDof + i);
+    for (int i = 0; i < hand_dof_; ++i) {
+      const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
       const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
       q_curr_full_[pq] = dev1.positions[static_cast<std::size_t>(i)];

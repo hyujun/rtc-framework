@@ -41,9 +41,14 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::GoalType;
 using rtc::kMaxDeviceChannels;
-using rtc::kNumRobotJoints;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
+
+// Fixed-size POD capacity (conservative for humanoid-class robots).
+// Actual DoF held in arm_dof_ / hand_dof_ runtime members, resolved in
+// LoadConfig (arm) and OnDeviceConfigsSet (hand).
+inline constexpr int kDemoJointMaxArmDof = 32;
+inline constexpr int kDemoJointMaxHandDof = 32;
 
 // Unified trajectory-based position controller for UR5e arm + hand.
 //
@@ -189,8 +194,10 @@ class DemoJointController final : public RTControllerInterface {
   std::mutex target_mutex_;
   std::atomic<bool> robot_new_target_{false};
   std::atomic<bool> hand_new_target_{false};
-  trajectory::JointSpaceTrajectory<kNumRobotJoints> robot_trajectory_;
-  trajectory::JointSpaceTrajectory<kHandMotorCount> hand_trajectory_;
+  // Templates fixed at compile-time capacity; only the first arm_dof_ /
+  // hand_dof_ slots are initialised + read at runtime (caller-trim pattern).
+  trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof> robot_trajectory_;
+  trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof> hand_trajectory_;
   double robot_trajectory_time_{0.0};
   double hand_trajectory_time_{0.0};
 
@@ -228,10 +235,18 @@ class DemoJointController final : public RTControllerInterface {
   bool estop_active_{false};
 
   /// Arm joint position the E-STOP path drives to. Authoritative source is
-  /// LoadConfig(cfg["estop"]["arm_safe_position"]); this initializer only
-  /// provides a safe default for unit/integration paths that construct the
-  /// controller without LoadConfig.
-  std::array<double, kNumRobotJoints> safe_position_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first
+  /// arm_dof_ slots are read by ComputeEstop. Zero-initialised by default
+  /// so unit/integration paths that skip LoadConfig still see a
+  /// deterministic value.
+  std::array<double, kDemoJointMaxArmDof> safe_position_{};
+
+  // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
+  // device configs). arm_dof_ from `estop.arm_safe_position` length;
+  // hand_dof_ from secondary device joint_state_names size (0 when absent).
+  // RT-path loops iterate over these.
+  int arm_dof_{0};
+  int hand_dof_{0};
 
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 

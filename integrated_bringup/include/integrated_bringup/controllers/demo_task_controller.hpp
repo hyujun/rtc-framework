@@ -44,9 +44,14 @@ using rtc::ControllerOutput;
 using rtc::ControllerState;
 using rtc::GoalType;
 using rtc::kMaxDeviceChannels;
-using rtc::kNumRobotJoints;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
+
+// Fixed-size POD capacity (conservative for humanoid-class robots).
+// Actual DoF held in arm_dof_ / hand_dof_ runtime members, resolved in
+// LoadConfig (arm) and OnDeviceConfigsSet (hand).
+inline constexpr int kDemoTaskMaxArmDof = 32;
+inline constexpr int kDemoTaskMaxHandDof = 32;
 
 /// Demo Task-Space Controller: CLIK (arm) + P control (hand).
 ///
@@ -262,7 +267,10 @@ class DemoTaskController final : public RTControllerInterface {
   // ── Controller state ──────────────────────────────────────────────────────
   pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
   std::array<double, 3> tcp_target_{};
-  std::array<double, kNumRobotJoints> null_target_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  /// Null-space posture target (arm). Only the first arm_dof_ slots are
+  /// read. Zero-initialized by default; LoadConfig overrides from YAML
+  /// when present (legacy default was UR5e home pose; now robot-agnostic).
+  std::array<double, kDemoTaskMaxArmDof> null_target_{};
   std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
       device_targets_{};
   std::array<double, 3> tcp_position_{};
@@ -278,7 +286,9 @@ class DemoTaskController final : public RTControllerInterface {
   pinocchio::SE3 pending_goal_pose_{pinocchio::SE3::Identity()};
   double pending_duration_{0.0};
   bool has_pending_segment_{false};
-  trajectory::JointSpaceTrajectory<kHandMotorCount> hand_trajectory_;
+  // Hand trajectory fixed at compile-time capacity; only the first
+  // hand_dof_ slots are initialised + read at runtime (caller-trim).
+  trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof> hand_trajectory_;
   double hand_trajectory_time_{0.0};
   std::atomic<bool> hand_new_target_{false};
 
@@ -312,10 +322,16 @@ class DemoTaskController final : public RTControllerInterface {
   std::atomic<bool> hand_estopped_{false};
 
   /// Arm joint position the E-STOP path drives to. Authoritative source is
-  /// LoadConfig(cfg["estop"]["arm_safe_position"]); this initializer only
-  /// provides a safe default for unit/integration paths that construct the
-  /// controller without LoadConfig.
-  std::array<double, kNumRobotJoints> safe_position_{0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+  /// LoadConfig(cfg["estop"]["arm_safe_position"]); only the first
+  /// arm_dof_ slots are read by ComputeEstop. Zero-initialized by default.
+  std::array<double, kDemoTaskMaxArmDof> safe_position_{};
+
+  // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
+  // device configs). arm_dof_ from `estop.arm_safe_position` length;
+  // hand_dof_ from secondary device joint_state_names size (0 when absent).
+  int arm_dof_{0};
+  int hand_dof_{0};
+
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_upper_;

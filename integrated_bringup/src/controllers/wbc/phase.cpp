@@ -1,8 +1,8 @@
+#include "integrated_bringup/controllers/demo_wbc_controller.hpp"
+#include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
-#include "integrated_bringup/controllers/demo_wbc_controller.hpp"
-#include "integrated_bringup/logging/pod_fill.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -149,14 +149,16 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   switch (new_phase) {
     case WbcPhase::kIdle: {
       // Hold current position
-      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-        robot_computed_.positions[i] = dev0.positions[i];
-        robot_computed_.velocities[i] = 0.0;
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = dev0.positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
       }
       if (state.num_devices > 1 && dev1.valid) {
-        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-          hand_computed_.positions[i] = dev1.positions[i];
-          hand_computed_.velocities[i] = 0.0;
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hand_computed_.positions[idx] = dev1.positions[idx];
+          hand_computed_.velocities[idx] = 0.0;
         }
       }
       tcp_goal_valid_ = false;
@@ -172,14 +174,15 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     case WbcPhase::kApproach: {
       // Build quintic trajectory: current → target (arm)
       std::lock_guard lock(target_mutex_);
-      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start{};
-      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal{};
+      trajectory::JointSpaceTrajectory<kMaxArmDof>::State start{};
+      trajectory::JointSpaceTrajectory<kMaxArmDof>::State goal{};
       double max_delta = 0.0;
-      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-        start.positions[i] = dev0.positions[i];
-        q_approach_start_[i] = dev0.positions[i];  // save for kRetreat
-        goal.positions[i] = device_targets_[0][i];
-        const double delta = std::abs(goal.positions[i] - start.positions[i]);
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        start.positions[idx] = dev0.positions[idx];
+        q_approach_start_[idx] = dev0.positions[idx];  // save for kRetreat
+        goal.positions[idx] = device_targets_[0][idx];
+        const double delta = std::abs(goal.positions[idx] - start.positions[idx]);
         if (delta > max_delta) {
           max_delta = delta;
         }
@@ -191,7 +194,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
       // Compute FK of arm target for SE3Task reference in kPreGrasp
       if (arm_handle_) {
-        std::span<const double> q_target(device_targets_[0].data(), kNumRobotJoints);
+        std::span<const double> q_target(device_targets_[0].data(),
+                                         static_cast<std::size_t>(arm_dof_));
         arm_handle_->ComputeForwardKinematics(q_target);
         tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
         if (use_root_frame_) {
@@ -202,13 +206,14 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
       // Hand trajectory (pre-shape)
       if (hand_new_target_.load(std::memory_order_acquire) && state.num_devices > 1 && dev1.valid) {
-        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hstart{};
-        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hgoal{};
+        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
+        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
         double hmax = 0.0;
-        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-          hstart.positions[i] = dev1.positions[i];
-          hgoal.positions[i] = device_targets_[1][i];
-          const double hd = std::abs(hgoal.positions[i] - hstart.positions[i]);
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hstart.positions[idx] = dev1.positions[idx];
+          hgoal.positions[idx] = device_targets_[1][idx];
+          const double hd = std::abs(hgoal.positions[idx] - hstart.positions[idx]);
           if (hd > hmax) {
             hmax = hd;
           }
@@ -275,13 +280,14 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
         // Ramp hand joint target toward stored target (user-provided close pose)
         if (state.num_devices > 1 && dev1.valid) {
-          trajectory::JointSpaceTrajectory<kHandMotorCount>::State hstart{};
-          trajectory::JointSpaceTrajectory<kHandMotorCount>::State hgoal{};
+          trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
+          trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
           double hmax = 0.0;
-          for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-            hstart.positions[i] = dev1.positions[i];
-            hgoal.positions[i] = device_targets_[1][i];
-            const double hd = std::abs(hgoal.positions[i] - hstart.positions[i]);
+          for (int i = 0; i < hand_dof_; ++i) {
+            const auto hidx = static_cast<std::size_t>(i);
+            hstart.positions[hidx] = dev1.positions[hidx];
+            hgoal.positions[hidx] = device_targets_[1][hidx];
+            const double hd = std::abs(hgoal.positions[hidx] - hstart.positions[hidx]);
             if (hd > hmax) {
               hmax = hd;
             }
@@ -304,13 +310,14 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       contact_state_.recompute_active(contact_mgr_config_);
 
       // Arm trajectory: current → saved approach-start pose
-      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State start{};
-      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State goal{};
+      trajectory::JointSpaceTrajectory<kMaxArmDof>::State start{};
+      trajectory::JointSpaceTrajectory<kMaxArmDof>::State goal{};
       double max_delta = 0.0;
-      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-        start.positions[i] = dev0.positions[i];
-        goal.positions[i] = q_approach_start_[i];
-        const double delta = std::abs(goal.positions[i] - start.positions[i]);
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        start.positions[idx] = dev0.positions[idx];
+        goal.positions[idx] = q_approach_start_[idx];
+        const double delta = std::abs(goal.positions[idx] - start.positions[idx]);
         if (delta > max_delta) {
           max_delta = delta;
         }
@@ -325,13 +332,14 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     case WbcPhase::kRelease: {
       // Hand open: all motors → 0
       if (state.num_devices > 1 && dev1.valid) {
-        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hstart{};
-        trajectory::JointSpaceTrajectory<kHandMotorCount>::State hgoal{};
+        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
+        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
         double hmax = 0.0;
-        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-          hstart.positions[i] = dev1.positions[i];
-          hgoal.positions[i] = 0.0;
-          const double hd = std::abs(hstart.positions[i]);
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hstart.positions[idx] = dev1.positions[idx];
+          hgoal.positions[idx] = 0.0;
+          const double hd = std::abs(hstart.positions[idx]);
           if (hd > hmax) {
             hmax = hd;
           }
@@ -341,14 +349,16 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         hand_trajectory_time_ = 0.0;
       }
       // Arm holds current pose during release
-      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-        robot_computed_.positions[i] = dev0.positions[i];
-        robot_computed_.velocities[i] = 0.0;
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = dev0.positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
       }
       // Freeze arm trajectory (duration=0 so ComputePositionMode clamps)
-      trajectory::JointSpaceTrajectory<kNumRobotJoints>::State hold{};
-      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-        hold.positions[i] = dev0.positions[i];
+      trajectory::JointSpaceTrajectory<kMaxArmDof>::State hold{};
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hold.positions[idx] = dev0.positions[idx];
       }
       robot_trajectory_.initialize(hold, hold, 0.01);
       robot_trajectory_time_ = 0.0;
@@ -357,14 +367,16 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
     case WbcPhase::kFallback: {
       // Hold current position, deactivate contacts
-      for (std::size_t i = 0; i < kNumRobotJoints; ++i) {
-        robot_computed_.positions[i] = dev0.positions[i];
-        robot_computed_.velocities[i] = 0.0;
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = dev0.positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
       }
       if (state.num_devices > 1 && dev1.valid) {
-        for (std::size_t i = 0; i < kHandMotorCount; ++i) {
-          hand_computed_.positions[i] = dev1.positions[i];
-          hand_computed_.velocities[i] = 0.0;
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hand_computed_.positions[idx] = dev1.positions[idx];
+          hand_computed_.velocities[idx] = 0.0;
         }
       }
       for (auto& c : contact_state_.contacts) {
