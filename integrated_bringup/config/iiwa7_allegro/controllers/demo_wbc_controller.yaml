@@ -148,11 +148,12 @@ demo_wbc_controller:
     engine: "handler"
     max_stale_solutions: 5
     target_frequency_hz: 10.0
-    # MPC phase YAMLs reuse the ur5e_hand variant's set — they are
-    # robot-agnostic phase definitions; tune weights separately if needed.
-    phase_config_path:  "config/ur5e_hand/controllers/mpc/phase_config.yaml"
-    light_contact_path: "config/ur5e_hand/controllers/mpc/light_contact.yaml"
-    contact_rich_path:  "config/ur5e_hand/controllers/mpc/contact_rich.yaml"
+    # iiwa7_allegro-specific MPC phase YAMLs: base_frame=link_0,
+    # end_effector_frame=ee_link, 4 contact frames (thumb/index/middle/ring),
+    # 23-vec q_posture_ref, 12-vec F_target.
+    phase_config_path:  "config/iiwa7_allegro/controllers/mpc/phase_config.yaml"
+    light_contact_path: "config/iiwa7_allegro/controllers/mpc/light_contact.yaml"
+    contact_rich_path:  "config/iiwa7_allegro/controllers/mpc/contact_rich.yaml"
 
     riccati:
       enabled: true
