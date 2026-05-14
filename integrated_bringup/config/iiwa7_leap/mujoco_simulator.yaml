@@ -21,7 +21,7 @@ mujoco_simulator:
 
     # ── Physics Timestep ──────────────────────────────────────────────────────
     physics_timestep: 0.002
-    n_substeps: 3
+    n_substeps: 1
 
     # ── Position Servo Gains ──────────────────────────────────────────────────
     # iiwa7_leap MJCF actuators carry inline gainprm/biasprm (ur5e pattern),
@@ -29,7 +29,7 @@ mujoco_simulator:
     # iiwa7 A1-A4 kp=2000/kd=400, A5-A7 kp=500/kd=100, LEAP kp=100/kd=2.
     # The per-group servo_kp/kd blocks below are kept for documentation /
     # potential opt-in but are inactive while use_yaml_servo_gains=false.
-    use_yaml_servo_gains: true
+    use_yaml_servo_gains: false
 
     # ── Robot Response ────────────────────────────────────────────────────────
     robot_response:

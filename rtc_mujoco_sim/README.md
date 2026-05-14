@@ -232,6 +232,8 @@ Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의
 
 > **Implementation note**: MuJoCo 의 `mj_passive()` 는 `mjModel.ngravcomp == 0` 이면 gravcomp 루프를 건너뜁니다. MJCF 가 `gravcomp` 속성을 명시하지 않으면 컴파일 시점 카운트가 0 이라, 런타임에 `body_gravcomp[]` 만 1.0 으로 써도 효과가 없습니다. `Init` / `PreparePhysicsStep` 에서 `body_gravcomp[]` 를 mutate 한 직후 `RefreshNgravcomp()` 가 nonzero entry 수를 다시 카운트해 이 게이트를 통과시킵니다. `test_gravcomp_scene::GravcompForceActuallyAppliedAfterForward` 가 `qfrc_gravcomp[]` 가 실제로 채워지는지 검증하는 회귀 가드입니다.
 
+> **Body chain 확장 규칙**: `MapGroupIndices()` 는 그룹 command joint 가 매달린 body 를 seed 로 잡은 뒤, child 방향으로 BFS 하면서 `body_jntnum == 0` (= fixed link) 인 descendant 를 모두 그룹에 포함시킵니다. arm-leaf 아래에 mount / wrist adapter / tool / hand 같이 joint-free 체인이 매달려 있을 때, 그 mass 의 중력이 leaf joint 에 외부 토크로 작용해 PD 정상상태 처짐을 만드는 것을 막기 위함입니다. 다른 group 의 joint 를 가진 body 에서는 traversal 이 멈추므로 multi-group 모델에서도 소유권이 깨끗하게 분리됩니다. 초기화 로그의 `gravcomp body chain: N body(ies) (seed S + fixed-link descendants D)` 가 seed / 확장분을 분리해 보여줍니다.
+
 ---
 
 ## 스레딩 모델

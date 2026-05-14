@@ -22,6 +22,11 @@
     <mesh name="thumb_fingertip" content_type="model/obj" file="thumb_fingertip.obj" />
     <mesh name="white_tip_thumb" content_type="model/obj" file="white_tip_thumb.obj" />
   </asset>
+  <!-- MANUAL: iiwa7 7 joint은 urdf_to_mjcf가 damping/frictionloss를 그대로 보존하지만
+       LEAP 16 joint("0".."15")는 URDF에 dynamics 속성이 없어 MJCF에 damping=0/frictionloss=0
+       으로 떨어진다. forcerange=±0.95 N·m + placeholder inertia 조합에서 zero-damping
+       finger가 매 tick 진동하므로 모든 LEAP joint에 damping="0.01" frictionloss="0.0002"을
+       인라인으로 박았다. urdf_to_mjcf 재실행 시 이 속성이 빠지면 재주입할 것 (left 동일). -->
   <worldbody>
     <body name="link_0">
       <inertial pos="-0.012857 0 0.069964" quat="0.444802 0.549682 0.549682 0.444802" mass="4.85566" diaginertia="0.022294 0.0215006 0.0176724" />
@@ -29,37 +34,37 @@
       <geom type="mesh" mesh="link_0" />
       <body name="link_1" pos="0 0 0.1475">
         <inertial pos="0 -0.034819 0.123299" quat="0.700813 0.0941355 -0.0941355 0.700813" mass="3.39401" diaginertia="0.0214418 0.021383 0.00652421" />
-        <joint name="A1" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+        <joint name="A1" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="2" frictionloss="0.02" />
         <geom pos="0 0 -0.1475" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="link_1" />
         <geom pos="0 0 -0.1475" type="mesh" mesh="link_1" />
         <body name="link_2" pos="0 -0.0105 0.1925">
           <inertial pos="0 0.039793 0.086944" quat="0.991454 0.130453 0 0" mass="4.03199" diaginertia="0.031697 0.031657 0.00808898" />
-          <joint name="A2" pos="0 0 0" axis="0 1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+          <joint name="A2" pos="0 0 0" axis="0 1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="2" frictionloss="0.02" />
           <geom pos="0 0.0105 -0.34" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="link_2" />
           <geom pos="0 0.0105 -0.34" type="mesh" mesh="link_2" />
           <body name="link_3" pos="0 0.0105 0.2075">
             <inertial pos="0 0.034819 0.123299" quat="0.700813 -0.0941355 0.0941355 0.700813" mass="3.39401" diaginertia="0.0214418 0.021383 0.00652421" />
-            <joint name="A3" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+            <joint name="A3" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="2" frictionloss="0.02" />
             <geom pos="0 0 -0.5475" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="link_3" />
             <geom pos="0 0 -0.5475" type="mesh" mesh="link_3" />
             <body name="link_4" pos="0 0.0105 0.1925">
               <inertial pos="0 -0.039793 0.086944" quat="0.991454 -0.130453 0 0" mass="4.03199" diaginertia="0.031695 0.031656 0.00808798" />
-              <joint name="A4" pos="0 0 0" axis="0 -1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+              <joint name="A4" pos="0 0 0" axis="0 -1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="2" frictionloss="0.02" />
               <geom pos="0 -0.0105 -0.74" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="link_4" />
               <geom pos="0 -0.0105 -0.74" type="mesh" mesh="link_4" />
               <body name="link_5" pos="0 -0.0105 0.2075">
                 <inertial pos="0 -0.029824 0.076267" quat="0.683304 0.181923 -0.181923 0.683304" mass="1.52924" diaginertia="0.00874413 0.008485 0.00223987" />
-                <joint name="A5" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+                <joint name="A5" pos="0 0 0" axis="0 0 1" range="-2.96706 2.96706" actuatorfrcrange="-200 200" damping="2" frictionloss="0.02" />
                 <geom pos="0 0 -0.9475" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="link_5" />
                 <geom pos="0 0 -0.9475" quat="1 0 0 0" type="mesh" mesh="link_5" />
                 <body name="link_6" pos="0 -0.0707 0.1925">
                   <inertial pos="0 0.07102 0.00495" quat="0.997576 0.0695794 0 0" mass="2.40363" diaginertia="0.007067 0.0068476 0.0045854" />
-                  <joint name="A6" pos="0 0 0" axis="0 1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+                  <joint name="A6" pos="0 0 0" axis="0 1 0" range="-2.0944 2.0944" actuatorfrcrange="-200 200" damping="2" frictionloss="0.02" />
                   <geom pos="0 0.0707 -1.14" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="link_6" />
                   <geom pos="0 0.0707 -1.14" type="mesh" mesh="link_6" />
                   <body name="link_7" pos="0 0.0707 0.091">
                     <inertial pos="3e-06 -2e-06 0.013782" quat="0.5 0.5 -0.5 0.5" mass="0.259474" diaginertia="0.000299 0.000171 0.000171" />
-                    <joint name="A7" pos="0 0 0" axis="0 0 1" range="-3.05433 3.05433" actuatorfrcrange="-200 200" damping="10" frictionloss="0.1" />
+                    <joint name="A7" pos="0 0 0" axis="0 0 1" range="-3.05433 3.05433" actuatorfrcrange="-200 200" damping="2" frictionloss="0.02" />
                     <geom pos="0 0 -1.231" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="link_7" />
                     <geom pos="0 0 -1.231" quat="1 0 0 0" type="mesh" mesh="link_7" />
                     <body name="ee_link" pos="0 0 0.035" quat="0.707109 0 -0.707105 0">
@@ -79,7 +84,7 @@
                           <geom size="0.022 0.028 0.002" pos="-0.078 -0.003 0.01" type="box" />
                           <body name="mcp_joint" pos="-0.007 0.023 -0.0187" quat="0.500003 0.5 0.5 -0.499997">
                             <inertial pos="0 0 0" quat="0.388585 0.626468 -0.324549 0.592628" mass="0.044" diaginertia="1.47756e-05 1.31982e-05 6.0802e-06" />
-                            <joint name="1" pos="0 0 0" axis="0 0 -1" range="-0.314 2.23" actuatorfrcrange="-0.95 0.95" />
+                            <joint name="1" pos="0 0 0" axis="0 0 -1" range="-0.314 2.23" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                             <geom pos="0.0084 0.0077 0.01465" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="mcp_joint" />
                             <geom size="0.01 0.003 0.017" pos="0 0.018 0.0147" type="box" />
                             <geom size="0.014 0.02 0.01" pos="-0.027 0.042 0.015" type="box" />
@@ -89,12 +94,12 @@
                             <geom size="0.007 0.01 0.002" pos="0 0.005 -0.001" type="box" />
                             <body name="pip" pos="-0.0122 0.0381 0.0145" quat="0.500003 -0.5 -0.499997 0.5">
                               <inertial pos="0 0 0" quat="0.709913 0.704273 -0.000363156 0.00475427" mass="0.032" diaginertia="4.7981e-06 4.23406e-06 2.86184e-06" />
-                              <joint name="0" pos="0 0 0" axis="0 0 -1" range="-1.047 1.047" actuatorfrcrange="-0.95 0.95" />
+                              <joint name="0" pos="0 0 0" axis="0 0 -1" range="-1.047 1.047" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                               <geom pos="0.0096 0.0002 0.0007" quat="0.500003 -0.5 -0.5 -0.499997" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="pip" />
                               <geom size="0.017 0.013 0.011" pos="0.0075 -0.0002 -0.011" type="box" />
                               <body name="dip" pos="0.015 0.0143 -0.013" quat="0.500003 0.5 -0.5 0.499997">
                                 <inertial pos="0 0 0" quat="-0.252689 0.659216 0.238844 0.666735" mass="0.037" diaginertia="6.68256e-06 6.24841e-06 5.02002e-06" />
-                                <joint name="2" pos="0 0 0" axis="0 0 -1" range="-0.506 1.885" actuatorfrcrange="-0.95 0.95" />
+                                <joint name="2" pos="0 0 0" axis="0 0 -1" range="-0.506 1.885" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                 <geom pos="0.0211 -0.0084 0.0097" quat="2.67949e-08 -1 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="dip" />
                                 <geom size="0.008 0.003 0.013" pos="0 -0.02 0.015" type="box" />
                                 <geom size="0.01 0.002 0.017" pos="0 -0.016 0.015" type="box" />
@@ -103,7 +108,7 @@
                                 <geom size="0.017 0.011 0.013" pos="0.0075 -0.035 0.015" type="box" />
                                 <body name="fingertip" pos="0 -0.0361 0.0002">
                                   <inertial pos="0 0 0" quat="0.706755 0.706755 0.0223155 0.0223155" mass="0.016" diaginertia="3.37527e-06 2.863e-06 1.54873e-06" />
-                                  <joint name="3" pos="0 0 0" axis="0 0 -1" range="-0.366 2.042" actuatorfrcrange="-0.95 0.95" />
+                                  <joint name="3" pos="0 0 0" axis="0 0 -1" range="-0.366 2.042" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                   <geom pos="0.0132 -0.0061 0.0144" quat="2.67949e-08 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="fingertip" />
                                   <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                                   <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
@@ -116,7 +121,7 @@
                           </body>
                           <body name="mcp_joint_2" pos="-0.0071 -0.0224 -0.0187" quat="0.500003 0.5 0.5 -0.499997">
                             <inertial pos="0 0 0" quat="0.388585 0.626468 -0.324549 0.592628" mass="0.044" diaginertia="1.47756e-05 1.31982e-05 6.0802e-06" />
-                            <joint name="5" pos="0 0 0" axis="0 0 -1" range="-0.314 2.23" actuatorfrcrange="-0.95 0.95" />
+                            <joint name="5" pos="0 0 0" axis="0 0 -1" range="-0.314 2.23" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                             <geom pos="0.0084 0.0077 0.01465" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="mcp_joint" />
                             <geom size="0.01 0.003 0.017" pos="0 0.018 0.0147" type="box" />
                             <geom size="0.014 0.02 0.01" pos="-0.027 0.042 0.015" type="box" />
@@ -126,12 +131,12 @@
                             <geom size="0.007 0.01 0.002" pos="0 0.005 -0.001" type="box" />
                             <body name="pip_2" pos="-0.0122 0.0381 0.0145" quat="0.500003 -0.5 -0.499997 0.5">
                               <inertial pos="0 0 0" quat="0.709913 0.704273 -0.000363156 0.00475427" mass="0.032" diaginertia="4.7981e-06 4.23406e-06 2.86184e-06" />
-                              <joint name="4" pos="0 0 0" axis="0 0 -1" range="-1.047 1.047" actuatorfrcrange="-0.95 0.95" />
+                              <joint name="4" pos="0 0 0" axis="0 0 -1" range="-1.047 1.047" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                               <geom pos="0.0096 0.0003 0.0007" quat="0.500003 -0.5 -0.5 -0.499997" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="pip" />
                               <geom size="0.017 0.013 0.011" pos="0.0075 -0.0002 -0.011" type="box" />
                               <body name="dip_2" pos="0.015 0.0143 -0.013" quat="0.500003 0.5 -0.5 0.499997">
                                 <inertial pos="0 0 0" quat="-0.252689 0.659216 0.238844 0.666735" mass="0.037" diaginertia="6.68256e-06 6.24841e-06 5.02002e-06" />
-                                <joint name="6" pos="0 0 0" axis="0 0 -1" range="-0.506 1.885" actuatorfrcrange="-0.95 0.95" />
+                                <joint name="6" pos="0 0 0" axis="0 0 -1" range="-0.506 1.885" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                 <geom pos="0.0211 -0.0084 0.0097" quat="1.32679e-06 -1 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="dip" />
                                 <geom size="0.008 0.003 0.013" pos="0 -0.02 0.015" type="box" />
                                 <geom size="0.01 0.002 0.017" pos="0 -0.016 0.015" type="box" />
@@ -140,7 +145,7 @@
                                 <geom size="0.017 0.011 0.013" pos="0.0075 -0.035 0.015" type="box" />
                                 <body name="fingertip_2" pos="0 -0.0361 0.0002">
                                   <inertial pos="0 0 0" quat="0.706755 0.706755 0.0223155 0.0223155" mass="0.016" diaginertia="3.37527e-06 2.863e-06 1.54873e-06" />
-                                  <joint name="7" pos="0 0 0" axis="0 0 -1" range="-0.366 2.042" actuatorfrcrange="-0.95 0.95" />
+                                  <joint name="7" pos="0 0 0" axis="0 0 -1" range="-0.366 2.042" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                   <geom pos="0.0132 -0.0061 0.0145" quat="1.32679e-06 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="fingertip" />
                                   <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                                   <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
@@ -153,7 +158,7 @@
                           </body>
                           <body name="mcp_joint_3" pos="-0.00709 -0.0678 -0.0187" quat="0.500003 0.5 0.5 -0.499997">
                             <inertial pos="0 0 0" quat="0.388585 0.626468 -0.324549 0.592628" mass="0.044" diaginertia="1.47756e-05 1.31982e-05 6.0802e-06" />
-                            <joint name="9" pos="0 0 0" axis="0 0 -1" range="-0.314 2.23" actuatorfrcrange="-0.95 0.95" />
+                            <joint name="9" pos="0 0 0" axis="0 0 -1" range="-0.314 2.23" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                             <geom pos="0.0084 0.0077 0.01465" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="mcp_joint" />
                             <geom size="0.01 0.003 0.017" pos="0 0.018 0.0147" type="box" />
                             <geom size="0.014 0.02 0.01" pos="-0.027 0.042 0.015" type="box" />
@@ -163,12 +168,12 @@
                             <geom size="0.007 0.01 0.002" pos="0 0.005 -0.001" type="box" />
                             <body name="pip_3" pos="-0.0122 0.0381 0.0145" quat="0.500003 -0.5 -0.499997 0.5">
                               <inertial pos="0 0 0" quat="0.709913 0.704273 -0.000363156 0.00475427" mass="0.032" diaginertia="4.7981e-06 4.23406e-06 2.86184e-06" />
-                              <joint name="8" pos="0 0 0" axis="0 0 -1" range="-1.047 1.047" actuatorfrcrange="-0.95 0.95" />
+                              <joint name="8" pos="0 0 0" axis="0 0 -1" range="-1.047 1.047" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                               <geom pos="0.0096 0.0003 0.0007" quat="0.500003 -0.5 -0.5 -0.499997" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="pip" />
                               <geom size="0.017 0.013 0.011" pos="0.0075 -0.0002 -0.011" type="box" />
                               <body name="dip_3" pos="0.015 0.0143 -0.013" quat="0.500003 0.5 -0.5 0.499997">
                                 <inertial pos="0 0 0" quat="-0.252689 0.659216 0.238844 0.666735" mass="0.037" diaginertia="6.68256e-06 6.24841e-06 5.02002e-06" />
-                                <joint name="10" pos="0 0 0" axis="0 0 -1" range="-0.506 1.885" actuatorfrcrange="-0.95 0.95" />
+                                <joint name="10" pos="0 0 0" axis="0 0 -1" range="-0.506 1.885" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                 <geom pos="0.0211 -0.0084 0.0097" quat="1.32679e-06 -1 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="dip" />
                                 <geom size="0.008 0.003 0.013" pos="0 -0.02 0.015" type="box" />
                                 <geom size="0.01 0.002 0.017" pos="0 -0.016 0.015" type="box" />
@@ -177,7 +182,7 @@
                                 <geom size="0.017 0.011 0.013" pos="0.0075 -0.035 0.015" type="box" />
                                 <body name="fingertip_3" pos="0 -0.03609 0.0002">
                                   <inertial pos="0 0 0" quat="0.706755 0.706755 0.0223155 0.0223155" mass="0.016" diaginertia="3.37527e-06 2.863e-06 1.54873e-06" />
-                                  <joint name="11" pos="0 0 0" axis="0 0 -1" range="-0.366 2.042" actuatorfrcrange="-0.95 0.95" />
+                                  <joint name="11" pos="0 0 0" axis="0 0 -1" range="-0.366 2.042" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                   <geom pos="0.0132 -0.0061 0.0145" quat="1.32679e-06 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="fingertip" />
                                   <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                                   <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
@@ -190,19 +195,19 @@
                           </body>
                           <body name="thumb_temp_base" pos="-0.0693 -0.0012 -0.0216" quat="0.707109 0 0.707105 0">
                             <inertial pos="0 0 0" quat="0.709913 0.704273 -0.000363156 0.00475427" mass="0.032" diaginertia="4.7981e-06 4.23406e-06 2.86184e-06" />
-                            <joint name="12" pos="0 0 0" axis="0 0 -1" range="-0.349 2.094" actuatorfrcrange="-0.95 0.95" />
+                            <joint name="12" pos="0 0 0" axis="0 0 -1" range="-0.349 2.094" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                             <geom pos="-0.0053 0.0003 0.00078" quat="0.500003 -0.5 -0.5 -0.499997" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="pip" />
                             <geom size="0.017 0.013 0.011" pos="0.0075 -0.0002 -0.011" type="box" />
                             <body name="thumb_pip" pos="0 0.0143 -0.013" quat="0.500003 0.5 -0.5 0.499997">
                               <inertial pos="0 0 0" mass="0.003" diaginertia="5.93e-07 5.49e-07 2.24e-07" />
-                              <joint name="13" pos="0 0 0" axis="0 0 -1" range="-0.47 2.443" actuatorfrcrange="-0.95 0.95" />
+                              <joint name="13" pos="0 0 0" axis="0 0 -1" range="-0.47 2.443" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                               <geom pos="0.01196 0 -0.0158" quat="0.707109 0.707105 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="thumb_pip" />
                               <geom size="0.009 0.0165 0.002" pos="0 0 -0.0015" type="box" />
                               <geom size="0.007 0.002 0.01" pos="0 -0.015 -0.013" type="box" />
                               <geom size="0.007 0.002 0.01" pos="0 0.015 -0.013" type="box" />
                               <body name="thumb_dip" pos="0 0.0145 -0.017" quat="0.707109 -0.707105 0 0">
                                 <inertial pos="0 0 0" quat="0.708624 0.704906 0.00637342 0.0303153" mass="0.038" diaginertia="8.48742e-06 7.67823e-06 3.82835e-06" />
-                                <joint name="14" pos="0 0 0" axis="0 0 -1" range="-1.2 1.9" actuatorfrcrange="-0.95 0.95" />
+                                <joint name="14" pos="0 0 0" axis="0 0 -1" range="-1.2 1.9" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                 <geom pos="0.0439 0.0579 -0.0086" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="thumb_dip" />
                                 <geom size="0.01 0.02 0.012" pos="0 0.0105 -0.014" type="box" />
                                 <geom size="0.01 0.002 0.016" pos="0 0.031 -0.015" type="box" />
@@ -211,7 +216,7 @@
                                 <geom size="0.005 0.012 0.009" pos="-0.0135 0.0175 -0.011656" type="box" />
                                 <body name="thumb_fingertip" pos="0 0.0466 0.0002" quat="1.32679e-06 0 0 1">
                                   <inertial pos="0 0 0" quat="0.704307 0.709299 0.006848 -0.0282727" mass="0.049" diaginertia="2.03882e-05 1.98443e-05 4.32049e-06" />
-                                  <joint name="15" pos="0 0 0" axis="0 0 -1" range="-1.34 1.88" actuatorfrcrange="-0.95 0.95" />
+                                  <joint name="15" pos="0 0 0" axis="0 0 -1" range="-1.34 1.88" actuatorfrcrange="-0.95 0.95" damping="0.01" frictionloss="0.0002" />
                                   <geom pos="0.0625 0.0784 0.0489" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="thumb_fingertip" />
                                   <geom size="0.01 0.018 0.012" pos="0 -0.0085 -0.015" type="box" />
                                   <geom size="0.01 0.002 0.015" pos="0 -0.029 -0.014" type="box" />
@@ -236,9 +241,9 @@
   </worldbody>
   <!-- Inline position-servo PD (ur5e MJCF pattern):
          force = gainprm[0]*ctrl + biasprm[1]*qpos + biasprm[2]*qvel
-       iiwa7 large joints (A1-A4): kp=2000 kd=400
-       iiwa7 wrists       (A5-A7): kp=500  kd=100
-       LEAP fingers       (0-15) : kp=100  kd=2   (forcerange ±0.95 N·m clip)
+       iiwa7 large joints (A1-A4): kp=4000 kd=600
+       iiwa7 wrists       (A5-A7): kp=1000 kd=200
+       LEAP fingers       (0-15) : kp=10   kd=0.5 (forcerange ±0.95 N·m clip)
        NOTE: mujoco_simulator.yaml uses use_yaml_servo_gains: true so the
        YAML servo block overrides these inline values at runtime. The inline
        gainprm/biasprm here remain a safe standalone fallback (e.g. when the
@@ -247,51 +252,51 @@
        되돌아갑니다. 재생성 후 이 블록을 다시 박을 것 (robots/iiwa7_leap/README.md). -->
   <actuator>
     <general name="A1" joint="A1" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
     <general name="A2" joint="A2" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
     <general name="A3" joint="A3" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
     <general name="A4" joint="A4" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
     <general name="A5" joint="A5" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="500"  biasprm="0 -500 -100" />
+             gaintype="fixed" biastype="affine" gainprm="1000" biasprm="0 -1000 -200" />
     <general name="A6" joint="A6" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="500"  biasprm="0 -500 -100" />
+             gaintype="fixed" biastype="affine" gainprm="1000" biasprm="0 -1000 -200" />
     <general name="A7" joint="A7" ctrlrange="-3.0543 3.0543" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="500"  biasprm="0 -500 -100" />
+             gaintype="fixed" biastype="affine" gainprm="1000" biasprm="0 -1000 -200" />
     <general name="0"  joint="0"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="1"  joint="1"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="2"  joint="2"  ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="3"  joint="3"  ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="4"  joint="4"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="5"  joint="5"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="6"  joint="6"  ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="7"  joint="7"  ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="8"  joint="8"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="9"  joint="9"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="10" joint="10" ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="11" joint="11" ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="12" joint="12" ctrlrange="-0.349 2.094" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="13" joint="13" ctrlrange="-0.47 2.443"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="14" joint="14" ctrlrange="-1.2 1.9"     forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
     <general name="15" joint="15" ctrlrange="-1.34 1.88"   forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
   </actuator>
 
   <keyframe>
@@ -306,8 +311,8 @@
          in integrated_bringup/config/iiwa7_leap/controllers/demo_*_controller.yaml,
          so sim spawn and controller bring-up agree on the first valid tick.
          LEAP fingers stay at 0 (fully extended, no hand singularity). -->
-    <key name="home" qpos="0 0.7 0 -1.4 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
-                     ctrl="0 0.7 0 -1.4 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/>
+    <key name="home" qpos="0 0.7 0 -1.0 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+                     ctrl="0 0.7 0 -1.0 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/>
   </keyframe>
 
   <!-- Parent-child contact excludes (merged from standalone iiwa7.xml and

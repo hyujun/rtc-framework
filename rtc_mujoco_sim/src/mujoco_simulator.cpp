@@ -190,9 +190,35 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
     }
   }
 
-  group.body_indices.assign(body_set.begin(), body_set.end());
-  fprintf(stdout, "[MuJoCoSimulator] [%s] gravcomp body chain: %zu body(ies)\n", group.name.c_str(),
-          group.body_indices.size());
+  // Joint-bearing body들만으로는 그 children인 fixed link (joint 없는 강체)가
+  // 누락되어 gravcomp이 일부 mass에만 적용된다. arm-leaf 아래에 joint-free
+  // mount/wrist/tool 체인이 매달려 있으면 그 체인 mass의 중력이 leaf joint에
+  // 외부 토크로 작용해 PD 정상상태 처짐을 만든다. seed body에서 child 방향으로
+  // 탐색해, body_jntnum==0 (= fixed link) 인 descendant를 모두 그룹에 포함.
+  // joint를 가진 body에서 stop — 다른 group joint면 그 group이 소유하고,
+  // 같은 group joint면 이미 seed에 들어있다.
+  std::set<int> extended_set = body_set;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int b = 1; b < model_->nbody; ++b) {
+      if (extended_set.count(b))
+        continue;
+      if (model_->body_jntnum[b] != 0)
+        continue;
+      const int parent = model_->body_parentid[b];
+      if (extended_set.count(parent)) {
+        extended_set.insert(b);
+        changed = true;
+      }
+    }
+  }
+  group.body_indices.assign(extended_set.begin(), extended_set.end());
+  fprintf(stdout,
+          "[MuJoCoSimulator] [%s] gravcomp body chain: %zu body(ies) "
+          "(seed %zu + fixed-link descendants %zu)\n",
+          group.name.c_str(), group.body_indices.size(), body_set.size(),
+          extended_set.size() - body_set.size());
   return true;
 }
 
