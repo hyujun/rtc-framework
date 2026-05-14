@@ -9,8 +9,13 @@
 #
 # Phases :
 #   0. ARCH grep (architecture-fitness sensor)
-#        - ARCH-1 : grep ur5e / hand-coded DOF in rtc_*/include|src
-#        - ARCH-4 : grep ur5e_*/ including rtc_*/src/ private headers
+#        - ARCH-1 : grep robot-name / hand-coded DOF in rtc_*/include|src,
+#                   with negation-aware filter (lines containing "must NOT",
+#                   "forbidden", "robot-agnostic", "no <X>-specific" are
+#                   dropped — they encode the rule, not a violation).
+#        - ARCH-4 : grep rtc_*/src/ private header includes inside the
+#                   integration package set (auto-derived from package.xml
+#                   files that <depend> on any rtc_*).
 #   1. Doc / metadata co-update
 #        - README.md change required when src/ or include/ changed
 #        - new .cpp must appear in CMakeLists.txt
@@ -19,6 +24,10 @@
 #        - rtc_base / rtc_msgs change -> ./build.sh full + colcon test all
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> + colcon test <pkg>
+#   3. Stale install/ detection (rename-aware)
+#        - any deleted launch/*.py or config/**/*.yaml whose basename still
+#          resolves under install/ — warns about stray artefacts that
+#          colcon --symlink-install does not prune.
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
@@ -116,6 +125,10 @@ is_pure_format() {
 PURE_FORMAT=0
 if is_pure_format; then
   PURE_FORMAT=1
+elif ! command -v clang-format >/dev/null 2>&1; then
+  # Diagnostic: formatter absence forces fail-closed; surface once so
+  # debugging stale-cache style fast-path misses isn't blind.
+  echo "verify-changes: clang-format not found; pure-format fast path disabled." >&2
 fi
 
 WARNINGS=""
@@ -134,31 +147,60 @@ done
 # ARCH violation, and the grep would re-flag pre-existing references on
 # any line clang-format happened to reflow.
 RTC_TOUCHED=""
-UR5E_TOUCHED=""
+INTEGRATION_TOUCHED=""
 if [ "$PURE_FORMAT" -eq 0 ]; then
   RTC_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^rtc_[a-z_]+/' || true)
-  UR5E_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^ur5e_[a-z_]+/' || true)
+  # ARCH-4 target set is derived dynamically: any non-rtc_* package whose
+  # package.xml depends on at least one rtc_* package. Previously this was
+  # a hardcoded "^ur5e_*/" prefix which silently lost coverage after the
+  # ur5e_bringup → integrated_bringup / ur5e_hand_driver → udp_hand_driver
+  # renames (memory project_workspace_repackaging, 2026-05-03).
+  INTEGRATION_PKGS=""
+  for px in */package.xml; do
+    [ -f "$px" ] || continue
+    pkg=$(dirname "$px")
+    case "$pkg" in
+      rtc_*) continue ;;
+    esac
+    if grep -qE '<(build_depend|exec_depend|depend|test_depend)>rtc_[a-z_]+<' "$px" 2>/dev/null; then
+      INTEGRATION_PKGS="${INTEGRATION_PKGS} ${pkg}"
+    fi
+  done
+  for pkg in $INTEGRATION_PKGS; do
+    MATCHES=$(echo "$CHANGED_SRC" | grep -E "^${pkg}/" || true)
+    if [ -n "$MATCHES" ]; then
+      INTEGRATION_TOUCHED="${INTEGRATION_TOUCHED}${MATCHES}
+"
+    fi
+  done
 fi
 
 if [ -n "$RTC_TOUCHED" ]; then
-  # ARCH-1: rtc_* must not hardcode robot identifier or fixed DOF
-  # Restrict grep to changed files to keep noise low and surface NEW violations
+  # ARCH-1: rtc_* must not hardcode robot identifier or fixed DOF.
+  # Restrict grep to changed files to keep noise low and surface NEW violations.
+  # Negation filter: lines that *forbid* the term (header comments like
+  # "must NOT test UR5e", "no ur5e-specific code", "robot-agnostic") are
+  # the rule itself, not a violation. Without this filter the hook punished
+  # well-intentioned prohibitive docstrings — see memory
+  # feedback_arch1_grep_false_positive (2026-05-07).
   for f in $RTC_TOUCHED; do
     [ -f "$f" ] || continue
-    HITS=$(grep -niE '\b(ur5e|6.?dof|10.?dof|num_joints[[:space:]]*=[[:space:]]*[0-9])' "$f" 2>/dev/null || true)
+    HITS=$(grep -niE '\b(ur5e|iiwa7|leap|allegro|6.?dof|10.?dof|num_joints[[:space:]]*=[[:space:]]*[0-9])' "$f" 2>/dev/null \
+            | grep -viE '(must[[:space:]]*not|forbidden|robot-agnostic|no[[:space:]]+[a-z0-9_.-]+-specific|NOT[[:space:]]+(test|use|hardcode|include|reference))' \
+            || true)
     if [ -n "$HITS" ]; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-1 (robot-specific in rtc_*): ${f}\n${HITS}\n"
     fi
   done
 fi
 
-if [ -n "$UR5E_TOUCHED" ]; then
-  # ARCH-4: ur5e_* must not include rtc_*/src/ private headers
-  for f in $UR5E_TOUCHED; do
+if [ -n "$INTEGRATION_TOUCHED" ]; then
+  # ARCH-4: integration packages must not include rtc_*/src/ private headers
+  for f in $INTEGRATION_TOUCHED; do
     [ -f "$f" ] || continue
     HITS=$(grep -nE '#include[[:space:]]+"rtc_[a-z_]+/src/' "$f" 2>/dev/null || true)
     if [ -n "$HITS" ]; then
-      ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-4 (ur5e_* includes rtc_*/src/ private header): ${f}\n${HITS}\n"
+      ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-4 (integration pkg includes rtc_*/src/ private header): ${f}\n${HITS}\n"
     fi
   done
 fi
@@ -241,6 +283,37 @@ else
   done
 fi
 
+# --- Phase 3: Stale install/ detection (rename-aware) ---
+# colcon build --symlink-install does NOT prune deleted files from install/,
+# so a rename can leave the old launch/config file resolvable by ros2 launch
+# (memory project_iiwa7_leap_bringup, 2026-05-14). Only warns — full rebuild
+# (./build.sh -c) is too destructive to invoke automatically and is forbidden
+# when external packages share the tree (memory project_local_deps_state).
+# Skipped on pure-format (no deletes possible) and when install/ is absent.
+STALE_INSTALL=""
+INSTALL_ROOTS=""
+if [ "$PURE_FORMAT" -eq 0 ]; then
+  # Probe likely install/ locations: workspace root sibling of repo, plus repo-local
+  for cand in "../../install" "../../../install" "./install"; do
+    [ -d "$cand" ] && INSTALL_ROOTS="${INSTALL_ROOTS} ${cand}"
+  done
+  if [ -n "$INSTALL_ROOTS" ]; then
+    DELETED=$(git diff --diff-filter=D --name-only HEAD 2>/dev/null \
+                | grep -E '(^|/)(launch/[^/]+\.(py|xml|yaml)$|config/.*\.(yaml|yml)$)' \
+                || true)
+    for path in $DELETED; do
+      bname=$(basename "$path")
+      for root in $INSTALL_ROOTS; do
+        FOUND=$(find "$root" -name "$bname" -type f 2>/dev/null | head -3 || true)
+        if [ -n "$FOUND" ]; then
+          STALE_INSTALL="${STALE_INSTALL}  - ${path} deleted from src but still in install/:\n$(echo "$FOUND" | sed 's/^/      /')\n"
+          break
+        fi
+      done
+    done
+  fi
+fi
+
 # --- Report ---
 REPORT=""
 if [ -n "$ARCH_VIOLATIONS" ]; then
@@ -251,6 +324,9 @@ if [ -n "$WARNINGS" ]; then
 fi
 if [ -n "$TEST_FAILURES" ]; then
   REPORT="${REPORT}Test/build failures:\n${TEST_FAILURES}\n"
+fi
+if [ -n "$STALE_INSTALL" ]; then
+  REPORT="${REPORT}Stale install/ artefacts (rename without prune — manual rm required):\n${STALE_INSTALL}\n"
 fi
 
 if [ -n "$REPORT" ]; then
