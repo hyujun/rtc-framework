@@ -60,10 +60,11 @@ IncludeCategories:
     Priority: 4
   - Regex: '^<c[a-z]+>$'
     Priority: 4
-  # Project headers — rtc_*, ur5e_*, shape_estimation*
-  - Regex: '^"(rtc_|ur5e_|shape_estimation)'
+  # Project headers — rtc_*, ur5e_*, shape_estimation*, integrated_bringup,
+  # udp_hand_driver, robot_descriptions
+  - Regex: '^"(rtc_|ur5e_|shape_estimation|integrated_bringup|udp_hand_driver|robot_descriptions)'
     Priority: 1
-  - Regex: '^<(rtc_|ur5e_|shape_estimation)'
+  - Regex: '^<(rtc_|ur5e_|shape_estimation|integrated_bringup|udp_hand_driver|robot_descriptions)'
     Priority: 1
   # ROS 2
   - Regex: '^<(rclcpp|rclcpp_lifecycle|rclcpp_action|lifecycle_msgs|std_msgs|sensor_msgs|geometry_msgs|trajectory_msgs|tf2|tf2_ros|tf2_eigen|tf2_geometry_msgs|ament_|rcl_|rmw_|rosidl_)'
