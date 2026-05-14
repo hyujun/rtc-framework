@@ -1,0 +1,15 @@
+# demo_shared.yaml — iiwa7+LEAP variant
+# Grasp controller is intentionally disabled (no sensor stack on LEAP);
+# demo_joint/task controllers run as pure trajectory tracking + hand joint
+# passthrough. demo_wbc runs TSID posture+SE3 only (no contacts/force).
+demo_shared:
+  # ── Virtual TCP ───────────────────────────────────────────────────────────
+  # WBC SE3 task drives ee_link directly; virtual TCP overlay disabled.
+  virtual_tcp_mode: "disabled"
+  virtual_tcp_offset: [0.0, 0.0, 0.0]
+  virtual_tcp_orientation: [0.0, 0.0, 0.0]
+
+  # ── Grasp controller disabled ─────────────────────────────────────────────
+  # demo_shared_config.cpp:234-239 → grasp_controller_ = nullptr when
+  # type != "force_pi". demo_joint/task hot paths gate on nullptr.
+  grasp_controller_type: "none"

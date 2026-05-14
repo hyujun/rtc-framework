@@ -63,7 +63,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     // handles, and we plug the ones we own into typed members below.
     // Log instance keys are derived from device names so YAML `instance:`
     // values track the active config_variant (e.g. ur5e_state/hand_state
-    // for ur5e_hand vs iiwa7_state/allegro_state for iiwa7_allegro).
+    // for ur5e_hand vs iiwa7_state/leap_state for iiwa7_leap).
     const auto primary = GetPrimaryDeviceName();
     const auto secondary = GetSecondaryDeviceName();
     const auto primary_state_key = primary + "_state";

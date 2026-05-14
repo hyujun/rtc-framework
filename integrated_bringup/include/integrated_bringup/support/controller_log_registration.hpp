@@ -7,7 +7,7 @@
 // demo-controller refactor lifts that ~54-line verbatim block into a single
 // templated entry point.
 //
-// Conservative scope (KUKA + Allegro readiness):
+// Conservative scope (KUKA + LEAP readiness):
 //   - The helper does NOT assume any device name, fingertip count, or
 //     instance string mapping. The caller passes:
 //       * state_logs   : map<instance, (joint_names, motor_names)>
@@ -19,7 +19,7 @@
 //   - ParsedLogEntry is duck-typed (only `.instance` and `.msg_type` are
 //     read), so each controller can keep its private nested struct unchanged.
 //
-// What is NOT lifted (deferred until KUKA + Allegro):
+// What is NOT lifted (deferred until KUKA + LEAP):
 //   - fingertip / sensor-layout parsing
 //   - arm + hand model initialisation
 //   - virtual-TCP setup

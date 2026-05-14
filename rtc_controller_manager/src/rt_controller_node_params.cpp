@@ -185,7 +185,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
   // <pkg_share>/config/<config_variant>/controllers/<config_key>.yaml.
   // Empty (default) → legacy flat layout (config/controllers/...).  Robot
   // bringups should set this in their system YAML (e.g. "ur5e_hand" /
-  // "iiwa7_allegro") so all variant-specific configs live under one directory.
+  // "iiwa7_leap") so all variant-specific configs live under one directory.
   // No trailing slash.
   safe_declare("config_variant", rclcpp::ParameterValue(std::string("")));
 

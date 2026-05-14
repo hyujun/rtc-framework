@@ -45,8 +45,8 @@
 | `robots/allegro_hand/` | Allegro Hand 16-DoF — URDF (left/right × obj/glb 4종) + meshes |
 | `robots/allegro_hand_fsr/` | Allegro Hand FSR 부착 변형 4종 (`fsr`/`fsr_glb`/`fsr_simple`/`fsr_cylinder`). 공유 mesh는 `allegro_hand/`를 참조하고, FSR 전용 mesh(`tactile`, `longer_finger_tip`)만 자체 `meshes/` 보유 |
 | `robots/iiwa7/` | KUKA iiwa7 7-DoF arm — URDF (obj/glb 2종) + meshes |
-| `robots/iiwa7_allegro/` | iiwa7 arm + Allegro Hand 결합 — URDF xacro + MJCF (left/right 각 2종), scene 각 1종. `ee_link` 말단 부착. `meshes/{visual,collision}/`은 iiwa7 + allegro_hand mesh symlink |
 | `robots/leap_hand/` | LEAP Hand 16-DoF — URDF (left/right × obj/glb 4종) + meshes |
+| `robots/iiwa7_leap/` | iiwa7 arm + LEAP Hand 결합 — URDF xacro + MJCF (left/right 각 2종), scene 각 1종. `ee_link` 말단 부착. `meshes/{visual,collision}/`은 iiwa7 + leap_hand mesh hardlink |
 | `robots/schunk_hand/` | Schunk SVH 5-finger hand — URDF (left/right × obj/glb 4종) + meshes |
 
 향후 robot 추가는 `robots/<new_name>/` 서브디렉토리 추가만으로 끝난다 — 본 패키지의 `CMakeLists.txt` / `package.xml`은 손대지 않는다.
@@ -109,20 +109,20 @@ robot_descriptions/
     │   │   └── iiwa7_glb.urdf             # GLB mesh 참조
     │   └── meshes/{visual,collision}/
     │
-    ├── iiwa7_allegro/                     # iiwa7 + Allegro Hand 통합
-    │   ├── urdf/
-    │   │   ├── iiwa7_with_allegro_left.urdf.xacro   # iiwa7 + allegro_hand_left
-    │   │   └── iiwa7_with_allegro_right.urdf.xacro  # iiwa7 + allegro_hand_right
-    │   ├── mjcf/                                    # urdf_to_mjcf 변환 산출
-    │   │   ├── iiwa7_with_allegro_{left,right}.xml  # 로봇 본체 MJCF
-    │   │   └── scene_{left,right}.xml               # 씬 (floor + light + skybox)
-    │   └── meshes/{visual,collision}/               # iiwa7/allegro_hand mesh symlink
-    │
     ├── leap_hand/                         # LEAP Hand 16-DoF
     │   ├── urdf/
     │   │   ├── leap_hand_{left,right}.urdf
     │   │   └── leap_hand_{left,right}_glb.urdf
     │   └── meshes/{visual,collision}/
+    │
+    ├── iiwa7_leap/                        # iiwa7 + LEAP Hand 통합
+    │   ├── urdf/
+    │   │   ├── iiwa7_with_leap_left.urdf.xacro    # iiwa7 + leap_hand_left
+    │   │   └── iiwa7_with_leap_right.urdf.xacro   # iiwa7 + leap_hand_right
+    │   ├── mjcf/                                  # urdf_to_mjcf 변환 산출
+    │   │   ├── iiwa7_with_leap_{left,right}.xml   # 로봇 본체 MJCF
+    │   │   └── scene_{left,right}.xml             # 씬 (floor + light + skybox)
+    │   └── meshes/{visual,collision}/             # iiwa7/leap_hand mesh hardlink
     │
     └── schunk_hand/                       # Schunk SVH 5-finger hand
         ├── urdf/
@@ -333,7 +333,8 @@ robot_descriptions  <-- 독립 (MJCF/URDF/메시 제공)
 | **서브디렉토리 rename** | `robots/hand_tmp/` → `robots/assm_v1/`, `robots/ur5e_hand_tmp/` → `robots/ur5e_assm_v1/`. `_tmp` 접미사 제거 — 이제 정식 이름. |
 | **README 톤 변경** | 1절을 robot-agnostic hub 선언으로 다시 작성. 추가 robot/hand 입주 절차(서브디렉토리 추가만으로 충분, 본 패키지 빌드 변경 없음) 명시. |
 | **신규 입주 robots** | `robots/{allegro_hand,allegro_hand_fsr,iiwa7,leap_hand,schunk_hand}/` 추가. 권장 레이아웃(`urdf/` + `meshes/{visual,collision}/`)에 맞춰 정렬, URDF 내부 mesh 참조는 모두 `package://robot_descriptions/robots/<name>/meshes/...` 절대 URL. `allegro_hand_fsr`은 형제 robot으로 분리 — 공유 mesh는 `allegro_hand/`를 cross-reference하고 FSR 전용 mesh(`tactile`, `longer_finger_tip`)만 자체 `meshes/` 보유. |
-| **신규 assembly** | `robots/iiwa7_allegro/` 추가 — iiwa7 `ee_link`에 Allegro Hand(left/right) `base_link`를 fixed joint로 부착한 URDF xacro 2종 + `rtc_tools/urdf_to_mjcf`로 변환한 MJCF 2종 + scene 2종. URDF에 `<mujoco><compiler balanceinertia="true"/></mujoco>` extension을 두어 MuJoCo가 allegro `link_1.0` 등의 inertia 삼각부등식 위반을 자동 보정. MJCF compiler `meshdir`은 후처리로 `../meshes/visual`로 설정. mesh는 iiwa7 + allegro_hand의 visual/collision OBJ를 `meshes/{visual,collision}/`에 상대 symlink로 모아 두며 (visual 21, collision 9), `install(DIRECTORY)`가 dereference하여 install 트리에는 실파일로 복제됨. |
+| **신규 assembly** | `robots/iiwa7_leap/` 추가 — iiwa7 `ee_link`에 LEAP Hand(left/right) `base` 링크를 fixed joint로 부착한 URDF xacro 2종 + `rtc_tools/urdf_to_mjcf`로 변환한 MJCF 2종 + scene 2종. fixed joint orientation `rpy="0 +π/2 0"`으로 hand fingertip이 ee_link의 +Z 방향을 향하도록 회전. URDF에 `<mujoco><compiler balanceinertia="true" discardvisual="false" fusestatic="false"/></mujoco>` extension. mesh는 iiwa7 + leap_hand의 visual/collision OBJ/MTL을 `meshes/{visual,collision}/`에 hardlink로 모아 두고, MJCF는 `meshdir="../meshes/visual"` 단일 디렉토리만 참조해 mujoco의 mesh-name dedup 충돌(visual vs collision)을 회피 (white_tip / white_tip_thumb은 visual 디렉토리에도 hardlink). |
+| **제거된 assembly** | `robots/iiwa7_allegro/` 삭제. 작업 트리에 `robots/allegro_hand/`가 부재해 xacro include가 dangling 상태였고, 후속 작업은 LEAP Hand로 진행. |
 
 ### v5.17.0
 

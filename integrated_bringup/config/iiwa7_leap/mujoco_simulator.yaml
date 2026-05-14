@@ -1,0 +1,91 @@
+# MuJoCo Simulator — iiwa7 (7-DoF) + LEAP right hand (16-DoF) configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Loaded by integrated_bringup/launch/sim_iiwa7_leap.launch.py.
+# Generic defaults: rtc_mujoco_sim/config/mujoco_default.yaml.
+# RTC controller param overrides: integrated_bringup/config/iiwa7_leap/sim.yaml.
+
+mujoco_simulator:
+  ros__parameters:
+    # ── Model ────────────────────────────────────────────────────────────────
+    model_path: "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
+
+    # ── Sync timeout ─────────────────────────────────────────────────────────
+    sync_timeout_ms: 50.0
+
+    # ── Max Real-Time Factor ──────────────────────────────────────────────────
+    max_rtf: 1.0
+
+    # ── Viewer ───────────────────────────────────────────────────────────────
+    enable_viewer: true
+    viewer_refresh_rate: 60.0
+
+    # ── Physics Timestep ──────────────────────────────────────────────────────
+    physics_timestep: 0.002
+    n_substeps: 3
+
+    # ── Position Servo Gains ──────────────────────────────────────────────────
+    # MJCF authors gainprm/biasprm via default actuator (urdf_to_mjcf); keep
+    # use_yaml_servo_gains=false to honor those values.
+    use_yaml_servo_gains: false
+
+    # ── Robot Response ────────────────────────────────────────────────────────
+    robot_response:
+      groups: ["iiwa7", "leap"]
+      iiwa7:
+        command_joint_names:
+          - A1
+          - A2
+          - A3
+          - A4
+          - A5
+          - A6
+          - A7
+        state_joint_names:
+          - A1
+          - A2
+          - A3
+          - A4
+          - A5
+          - A6
+          - A7
+        command_topic: "/iiwa7/joint_command"
+        state_topic: "/joint_states"
+      leap:
+        # LEAP joint names are bare numbers — quote in YAML to keep them as strings.
+        # URDF/MJCF declaration order (index → middle → ring → thumb).
+        command_joint_names:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+          - "13"
+          - "14"
+          - "15"
+        state_joint_names:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+          - "10"
+          - "11"
+          - "12"
+          - "13"
+          - "14"
+          - "15"
+        command_topic: "/leap/joint_command"
+        state_topic: "/leap/joint_states"

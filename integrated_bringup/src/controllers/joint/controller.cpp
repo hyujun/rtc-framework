@@ -56,7 +56,7 @@ void DemoJointController::InitArmModel(const rtc_urdf_bridge::ModelConfig& confi
 void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*config*/) {
   namespace rub = rtc_urdf_bridge;
   // Secondary device name == tree_model name == device_name_configs key
-  // (robot-agnostic: e.g. "hand" for ur5e_hand, "allegro" for iiwa7_allegro).
+  // (robot-agnostic: e.g. "hand" for ur5e_hand, "leap" for iiwa7_leap).
   const auto secondary = GetSecondaryDeviceName();
   if (secondary.empty()) {
     return;

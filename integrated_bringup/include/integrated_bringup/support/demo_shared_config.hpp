@@ -50,7 +50,7 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg);
 // On error (file missing / parse failure), `cfg` is left unchanged.
 //
 // `config_variant` mirrors the rt_controller_node `config_variant` ROS
-// parameter (e.g. "ur5e_hand", "iiwa7_allegro").  Empty → legacy flat layout
+// parameter (e.g. "ur5e_hand", "iiwa7_leap").  Empty → legacy flat layout
 // (config/controllers/demo_shared.yaml); non-empty → variant path
 // (config/<config_variant>/controllers/demo_shared.yaml).  Per-controller call
 // sites forward the value from their LifecycleNode's `config_variant` param.

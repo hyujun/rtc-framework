@@ -1,0 +1,46 @@
+# rtc_mpc LightContactOCP factory config for iiwa7 + LEAP right hand (23 DoF).
+#
+# Loaded by rtc::mpc::MPCFactory::Create when the active phase's
+# `ocp_type == "light_contact"`.
+#
+# RobotModelHandler schema (end_effector_frame + base_frame + contact_frames)
+# is co-located so a single YAML drives RobotModelHandler::Init + factory
+# create on engine startup.
+#
+# contact_frames ORDER is authoritative — phase_config.yaml's
+# `active_contact_indices` indexes into this list. Matches the
+# controller-facing finger order (thumb → index → middle → ring).
+
+mpc:
+  ocp_type: "light_contact"
+
+  # ── RobotModelHandler schema ─────────────────────────────────────────────
+  # base_frame must match the iiwa7 device urdf.root_link in sim.yaml
+  # (link_0); end_effector_frame must match urdf.sub_models.iiwa7.tip_link
+  # (ee_link). TCP pose extracted in handler_mpc_thread is interpreted in
+  # `base_frame`.
+  model:
+    end_effector_frame: "ee_link"
+    base_frame: "link_0"
+    contact_frames:
+      - { name: "thumb_tip_head", dim: 3 }   # thumb
+      - { name: "index_tip_head",  dim: 3 }   # index
+      - { name: "middle_tip_head",  dim: 3 }   # middle
+      - { name: "ring_tip_head", dim: 3 }   # ring
+
+  # ── Proximal-DDP solver tuning (see MPCSolverConfig) ─────────────────────
+  solver:
+    prim_tol:     1.0e-3
+    dual_tol:     1.0e-2
+    mu_init:      1.0e-2
+    max_iters:    30
+    max_al_iters: 20
+    verbose:      false
+
+  # ── OCP limits (see rtc_mpc::OCPLimits) ──────────────────────────────────
+  # friction_mu is ignored by LightContactOCP (applies only to ContactRichOCP);
+  # retained so the limits block can be shared with contact_rich.yaml.
+  limits:
+    friction_mu:       0.7
+    u_min: []                # empty → use model-default torque lb
+    u_max: []                # empty → use model-default torque ub

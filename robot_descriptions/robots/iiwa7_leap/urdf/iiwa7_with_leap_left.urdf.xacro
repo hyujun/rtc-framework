@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!--
+  Combined URDF: KUKA iiwa7 + LEAP Hand (left).
+  LEAP Hand `base` is attached to iiwa7 `ee_link` via a fixed joint.
+  Process with: xacro iiwa7_with_leap_left.urdf.xacro
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="iiwa7_with_leap_left">
+
+  <!-- MuJoCo-specific compiler hints (ignored by URDF parsers).
+       fusestatic/discardvisual disabled so MuJoCo retains every link and visual
+       mesh (see agent_docs memory feedback_mujoco_urdf_extension).
+       balanceinertia=true is harmless on LEAP (point-mass placeholders) and
+       guards against future inertia tweaks that violate the triangle
+       inequality. -->
+  <mujoco>
+    <compiler balanceinertia="true" discardvisual="false" fusestatic="false"/>
+  </mujoco>
+
+  <!-- iiwa7 base robot (pre-generated URDF, included as-is) -->
+  <xacro:include filename="$(find robot_descriptions)/robots/iiwa7/urdf/iiwa7.urdf"/>
+
+  <!-- LEAP Hand (left) -->
+  <xacro:include filename="$(find robot_descriptions)/robots/leap_hand/urdf/leap_hand_left.urdf"/>
+
+  <!-- Attach LEAP `base` link to iiwa7 `ee_link`.
+       rpy 0 +pi/2 0 rotates the hand so fingertips point along world +Z when the
+       arm is at the zero pose (iiwa7 ee_link itself is rotated -pi/2 about Y
+       relative to link_0/world, so this brings the hand back to world-aligned).
+       xyz offset is expressed in ee_link local frame; ee_link local +X maps to
+       world +Z at the zero pose, so 0.005 along local +X separates the two
+       links by 5 mm along world +Z. -->
+  <joint name="ee_to_leap_base" type="fixed">
+    <parent link="ee_link"/>
+    <child link="base"/>
+    <origin xyz="0.005 0 0" rpy="0 1.5707963267948966 0"/>
+  </joint>
+
+</robot>

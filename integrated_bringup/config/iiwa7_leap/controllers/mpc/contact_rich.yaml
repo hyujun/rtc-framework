@@ -1,0 +1,42 @@
+# rtc_mpc ContactRichOCP factory config for iiwa7 + LEAP right hand (23 DoF).
+#
+# Loaded by rtc::mpc::MPCFactory::Create when the active phase's
+# `ocp_type == "contact_rich"`.
+#
+# The `model` block must stay structurally identical to light_contact.yaml —
+# the same RobotModelHandler is shared across both handlers during
+# cross-mode swaps, and any contact_frames divergence would break
+# index-based activation in phase_config.yaml.
+
+mpc:
+  ocp_type: "contact_rich"
+
+  # ── RobotModelHandler schema ─────────────────────────────────────────────
+  # `base_frame` must match light_contact.yaml's value (cross-mode swap
+  # shares the same RobotModelHandler).
+  model:
+    end_effector_frame: "ee_link"
+    base_frame: "link_0"
+    contact_frames:
+      - { name: "thumb_tip_head", dim: 3 }   # thumb
+      - { name: "index_tip_head",  dim: 3 }   # index
+      - { name: "middle_tip_head",  dim: 3 }   # middle
+      - { name: "ring_tip_head", dim: 3 }   # ring
+
+  # ── Proximal-DDP solver tuning ───────────────────────────────────────────
+  # ContactRichOCP is harder to converge than LightContact; give it a larger
+  # iteration budget to absorb the friction-cone penalty updates.
+  solver:
+    prim_tol:     1.0e-3
+    dual_tol:     1.0e-2
+    mu_init:      1.0e-2
+    max_iters:    50
+    max_al_iters: 30
+    verbose:      false
+
+  # ── OCP limits ───────────────────────────────────────────────────────────
+  # friction_mu drives the smooth conic cone residual (Phase 4 Option C).
+  limits:
+    friction_mu:       0.7
+    u_min: []
+    u_max: []
