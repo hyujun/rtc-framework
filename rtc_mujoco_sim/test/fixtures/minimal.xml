@@ -18,7 +18,7 @@
   </worldbody>
 
   <actuator>
-    <motor name="m1" joint="j1" ctrlrange="-10 10"/>
+    <position name="m1" joint="j1" kp="100" ctrlrange="-3.14 3.14"/>
     <position name="m2" joint="j2" kp="100" ctrlrange="-1.57 1.57"/>
   </actuator>
 

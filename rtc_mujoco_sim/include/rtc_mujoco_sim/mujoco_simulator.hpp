@@ -130,7 +130,11 @@ struct JointGroup {
 
   // ── Per-group control mode ──────────────────────────────────────
   std::atomic<bool> torque_mode{false};
-  std::atomic<bool> control_mode_pending{false};
+  // Initial value true so the first PreparePhysicsStep applies the configured
+  // mode (position-servo by default) to every actuator — necessary on
+  // bare-actuator MJCFs where MuJoCo's parser leaves gainprm/biasprm at the
+  // pass-through default (force = ctrl).
+  std::atomic<bool> control_mode_pending{true};
 
   // ── Per-group servo gains ───────────────────────────────────────
   std::vector<double> gainprm_yaml;

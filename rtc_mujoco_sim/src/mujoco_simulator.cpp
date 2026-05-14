@@ -714,7 +714,7 @@ bool MuJoCoSimulator::Initialize() noexcept {
 
     for (std::size_t i = 0; i < ncj; ++i) {
       if (i < kp.size())
-        g->gainprm_yaml[i] = kp[i] / xml_timestep_;
+        g->gainprm_yaml[i] = kp[i];
       if (i < kd.size())
         g->biasprm2_yaml[i] = -kd[i];
     }
