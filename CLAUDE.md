@@ -68,32 +68,13 @@
 
 ## 4. Workflow Loop
 
-모든 수정 작업은 이 순서. 단계 건너뛰기는 §6 escalation 사유.
+7단계: **Type → Locate → Read → Edit → Build → Test → Verify**. 단계 건너뛰기는 §6 escalation 사유. 실패 시 절대 **"try harder" 금지** — 누락된 capability (test, lint, interface)를 엔지니어링하거나 §6 escalate.
 
-```
-0. Type     → "수정"인가 "추가(새 기능/컨트롤러/메시지/디바이스/스레드)"인가?
-              추가라면 [agent_docs/design-principles.md](agent_docs/design-principles.md) 5원칙 +
-              [agent_docs/modification-guide.md](agent_docs/modification-guide.md) "Adding a New ..." 절을 먼저 읽는다.
-              · rtc_*에 추가 → P1·P2 (zero source edit, robot 상수 금지) +
-                ARCH-3 (interface-first; 같은 종류 두 번째 구현이면 base부터)
-              · ur5e_* / shape_estimation에 추가 → 재사용 가능한 부분이
-                rtc_*에 존재하는지 / 일반화해 끌어올릴 수 있는지 먼저 검토
-1. Locate   → grep / Glob (known symbol) OR Explore agent (broad search)
-              파일의 RT/aux/robot-specific 역할 판단
-2. Read     → package.xml + CMakeLists.txt + target file + 인접 테스트
-              §3 invariants 중 영향받는 것 확인
-3. Edit     → minimal, single-concern. RT path 여부 재확인.
-              auto/lerp/RT-forbidden 자체 grep
-4. Build    → ./build.sh -p <pkg> (단일) 또는 ./build.sh full (rtc_base/rtc_msgs 변경 시)
-5. Test     → §5 Sensor matrix 참조. 버그 수정 시 회귀 테스트 추가
-6. Verify   → agent_docs/modification-guide.md Completion Checklist 8항목 통과
-```
+**Type 분기**: "수정"인가 "추가(새 기능/컨트롤러/메시지/디바이스/스레드)"인가? 추가 task는 단계 1에 들어가기 전에 [agent_docs/design-principles.md](agent_docs/design-principles.md) 5원칙 + [agent_docs/modification-guide.md](agent_docs/modification-guide.md) "Adding a New ..." 절을 먼저 읽는다 (rtc_* 추가는 P1·P2 + ARCH-3 결합; ur5e_* / shape_estimation 추가는 rtc_* 일반화 가능성부터 검토).
 
-실패 시 절대 **"try harder"** 금지. 누락된 capability (test, lint, interface)를 엔지니어링하거나 §6 escalate.
+**4·5·6 자동화**: [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행하고 실패 시 `exit 2`로 다음 turn까지 차단한다. 변경 패키지만 빌드·테스트(60s timeout per pkg) + README/CMake co-update 검사 — `package.xml`/YAML/Doxygen은 에이전트가 직접 검증. Pure-format commit (clang-format / ruff round-trip 동치)은 ARCH grep + README/CMake 단계만 skip, build/test는 그대로.
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행하고, 실패 시 `exit 2`로 다음 turn까지 차단한다. 사전 수동 실행은 빠른 피드백용. Hook은 변경 패키지만 빌드·테스트(60s timeout per pkg) + README/CMake co-update만 검사 — `package.xml`/YAML/Doxygen은 에이전트가 직접 검증. Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format` / `ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
-
-상세: [agent_docs/modification-guide.md](agent_docs/modification-guide.md)
+단계별 액션·grep 패턴·Completion Checklist 8항목: [agent_docs/modification-guide.md](agent_docs/modification-guide.md).
 
 ## 5. Sensors (변경 유형별 검증 매트릭스)
 
@@ -173,6 +154,8 @@ Alternative: <우회 안 1개 이상>
 - 리팩터 (기능 동등성 유지가 곧 success)
 
 면제: 단일 파일 bug fix, 오타·포매팅, 단일 함수 추가, 사용자 의도가 1줄 메시지에서 자명한 경우.
+
+※ **신규 abstract interface · 신규 controller · 신규 메시지·디바이스 추가 시 Sprint Contract = spec.** 구현 전 `~/.claude/plans/<slug>.md`에 *왜 필요한가 · API surface · 검토한 alternatives* 를 1-paragraph spec으로 박는다 (spec-driven development: Specify *before* Implement). 같은 파일이 이후 §6.6 handoff artifact·진행 progress도 누적하므로 `## Spec` / `## Progress` / `## Handoff` 섹션으로 구분.
 
 ### Sprint Contract 포맷
 
