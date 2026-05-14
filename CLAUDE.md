@@ -19,11 +19,13 @@
 | Build | CMake 3.22+, colcon, ament_cmake / ament_python |
 | Deps | Eigen 3.4, Pinocchio, ProxSuite, ONNX Runtime |
 | Optional | MuJoCo 3.x (sim), BehaviorTree.CPP v4 |
-| Test | GTest, pytest — **1377 gtest cases across 13 packages + 281 pytest** (최근 실측: 2026-04-26. 단일 출처: [agent_docs/testing-debug.md](agent_docs/testing-debug.md)) |
+| Test | GTest, pytest — 최신 카운트·실측은 단일 출처 [agent_docs/testing-debug.md](agent_docs/testing-debug.md) 참조 (CLAUDE.md 수치 박제 금지: [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) AP-DOC-1) |
 
 ## 2. Harness Overview
 
-이 저장소의 에이전트 가이드는 harness engineering 5구성요소로 조직되어 있다 (참고: Hashimoto 2026.02 / OpenAI *Harness engineering* 2026.02 / Fowler *Harness engineering for coding agent users* 2026.04).
+이 저장소의 에이전트 가이드는 **agent-driven engineering** (harness engineering + spec-driven development + Anthropic 2026 agentic SDLC patterns) 의 5구성요소로 조직되어 있다. Agent = Model + Harness이며, 모델 바깥의 guides / sensors / orchestration / escalation / enforcement가 본 저장소의 1급 자산이다.
+
+출처: [Fowler — *Harness engineering for coding agent users* 2026.04](https://martinfowler.com/articles/harness-engineering.html) · [Anthropic — *Harness design for long-running application development* 2026.04](https://www.anthropic.com/engineering/harness-design-long-running-apps) · [Osmani — *Agent Harness Engineering* 2026](https://addyosmani.com/blog/agent-harness-engineering/) · [Anthropic — *2026 Agentic Coding Trends Report*](https://resources.anthropic.com/2026-agentic-coding-trends-report).
 
 | 구성요소 | 목적 | 진입점 |
 |---|---|---|
@@ -212,15 +214,9 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 - Sensor-driven debug task (build/test/log 반복) — handoff보다 직접 진행이 빠름
 - 사용자가 명시적으로 "이대로 계속"을 요청한 경우
 
-## 7. Anti-patterns (Top 5)
+## 7. Anti-patterns
 
-전체: [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md).
-
-1. **정기 tick에서 `RCLCPP_*` 직접 호출** — SPSC → aux defer 또는 THROTTLE+RT-safe msg (AP-RT-1)
-2. **`auto` with Eigen expression** — aliasing 버그 (AP-RT-3)
-3. **`rtc_*`에 UR5e 상수 하드코딩** — robot-agnostic 훼손 (AP-ARCH-1)
-4. **"✅ complete" 후 실제 미완료** — grep 기반 전수 검증 누락 (AP-PROC-1)
-5. **기존 test assertion 수정으로 통과시키기** — 회귀 은폐 (AP-PROC-4)
+최근 발현 빈도 Top: **AP-RT-1** (정기 tick `RCLCPP_*`) · **AP-RT-3** (`auto` + Eigen) · **AP-ARCH-1** (`rtc_*`에 robot 상수) · **AP-PROC-1** ("✅ complete" 후 미완료) · **AP-PROC-4** (test assertion 수정). 전체 사례·복구·grep은 [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — §3 invariants와 1:1 대응이므로 §3에서 룰을 보고 anti-patterns에서 *그 룰을 위반한 실제 commit*을 찾는다.
 
 ## 8. Where Things Live
 
