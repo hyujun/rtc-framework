@@ -235,30 +235,56 @@
       </body>
     </body>
   </worldbody>
+  <!-- Inline position-servo PD (ur5e MJCF pattern). See right MJCF for rationale.
+       MANUAL: urdf_to_mjcf 재실행 시 actuator block은 bare <general/>로 되돌아갑니다.
+       재생성 후 이 블록을 다시 박을 것 (robots/iiwa7_leap/README.md). -->
   <actuator>
-    <general name="A1" joint="A1" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A2" joint="A2" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A3" joint="A3" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A4" joint="A4" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A5" joint="A5" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A6" joint="A6" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A7" joint="A7" ctrlrange="-3.0543 3.0543" forcerange="-200 200" />
-    <general name="0" joint="0" ctrlrange="-1.047 1.047" forcerange="-0.95 0.95" />
-    <general name="1" joint="1" ctrlrange="-0.314 2.23" forcerange="-0.95 0.95" />
-    <general name="2" joint="2" ctrlrange="-0.506 1.885" forcerange="-0.95 0.95" />
-    <general name="3" joint="3" ctrlrange="-0.366 2.042" forcerange="-0.95 0.95" />
-    <general name="4" joint="4" ctrlrange="-1.047 1.047" forcerange="-0.95 0.95" />
-    <general name="5" joint="5" ctrlrange="-0.314 2.23" forcerange="-0.95 0.95" />
-    <general name="6" joint="6" ctrlrange="-0.506 1.885" forcerange="-0.95 0.95" />
-    <general name="7" joint="7" ctrlrange="-0.366 2.042" forcerange="-0.95 0.95" />
-    <general name="8" joint="8" ctrlrange="-1.047 1.047" forcerange="-0.95 0.95" />
-    <general name="9" joint="9" ctrlrange="-0.314 2.23" forcerange="-0.95 0.95" />
-    <general name="10" joint="10" ctrlrange="-0.506 1.885" forcerange="-0.95 0.95" />
-    <general name="11" joint="11" ctrlrange="-0.366 2.042" forcerange="-0.95 0.95" />
-    <general name="12" joint="12" ctrlrange="-2.094 0.349" forcerange="-0.95 0.95" />
-    <general name="13" joint="13" ctrlrange="-2.443 0.47" forcerange="-0.95 0.95" />
-    <general name="14" joint="14" ctrlrange="-1.2 1.9" forcerange="-0.95 0.95" />
-    <general name="15" joint="15" ctrlrange="-1.34 1.88" forcerange="-0.95 0.95" />
+    <general name="A1" joint="A1" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
+             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+    <general name="A2" joint="A2" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
+             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+    <general name="A3" joint="A3" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
+             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+    <general name="A4" joint="A4" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
+             gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400" />
+    <general name="A5" joint="A5" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
+             gaintype="fixed" biastype="affine" gainprm="500"  biasprm="0 -500 -100" />
+    <general name="A6" joint="A6" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
+             gaintype="fixed" biastype="affine" gainprm="500"  biasprm="0 -500 -100" />
+    <general name="A7" joint="A7" ctrlrange="-3.0543 3.0543" forcerange="-200 200"
+             gaintype="fixed" biastype="affine" gainprm="500"  biasprm="0 -500 -100" />
+    <general name="0"  joint="0"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="1"  joint="1"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="2"  joint="2"  ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="3"  joint="3"  ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="4"  joint="4"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="5"  joint="5"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="6"  joint="6"  ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="7"  joint="7"  ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="8"  joint="8"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="9"  joint="9"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="10" joint="10" ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="11" joint="11" ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="12" joint="12" ctrlrange="-2.094 0.349" forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="13" joint="13" ctrlrange="-2.443 0.47"  forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="14" joint="14" ctrlrange="-1.2 1.9"     forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
+    <general name="15" joint="15" ctrlrange="-1.34 1.88"   forcerange="-0.95 0.95"
+             gaintype="fixed" biastype="affine" gainprm="100" biasprm="0 -100 -2" />
   </actuator>
 
   <keyframe>

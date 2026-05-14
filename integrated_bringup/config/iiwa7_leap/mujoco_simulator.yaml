@@ -24,13 +24,12 @@ mujoco_simulator:
     n_substeps: 3
 
     # ── Position Servo Gains ──────────────────────────────────────────────────
-    # iiwa7_leap MJCF actuators are bare `<general .../>` (no gainprm/biasprm),
-    # so the default behavior `force = ctrl` gives no position tracking — the
-    # arm collapses under gravity. Inject PD gains here:
-    #   force = kp·(ctrl - qpos) - kd·qvel   (see mujoco_sim_loop.cpp:191).
-    # iiwa7 gains follow ur5e pattern (large joints 500/400, wrist 150/100);
-    # LEAP fingers stay small because their force range is only ±0.95 Nm.
-    use_yaml_servo_gains: true
+    # iiwa7_leap MJCF actuators carry inline gainprm/biasprm (ur5e pattern),
+    # so MuJoCo itself does the PD: force = gainprm·(ctrl - qpos) + biasprm[2]·qvel.
+    # iiwa7 A1-A4 kp=2000/kd=400, A5-A7 kp=500/kd=100, LEAP kp=100/kd=2.
+    # The per-group servo_kp/kd blocks below are kept for documentation /
+    # potential opt-in but are inactive while use_yaml_servo_gains=false.
+    use_yaml_servo_gains: false
 
     # ── Robot Response ────────────────────────────────────────────────────────
     robot_response:
