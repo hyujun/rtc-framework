@@ -1,6 +1,6 @@
 /// @file mpc_handler_core.cpp
 /// @brief Implementation of the shared MPC solve pipeline used by both
-///        `LightContactMPC` and `ContactRichMPC`.
+///        `ContactLightMPC` and `ContactRichMPC`.
 
 #include "handler/internal/mpc_handler_core.hpp"
 
@@ -94,7 +94,7 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   // spacing; UpdateReferences / Build on later ticks may update it.
   dt_ = initial_ctx.cost_config.dt;
 
-  // Only ContactRich needs gravity-comp τ to skirt Risk #14. LightContact's
+  // Only ContactRich needs gravity-comp τ to skirt Risk #14. ContactLight's
   // rigid-contact prox solve doesn't need it and is actually faster to
   // converge from zero controls.
   use_gravity_comp_seed_ = (ocp.ocp_type() == std::string_view{"contact_rich"});
@@ -127,7 +127,7 @@ void MPCHandlerCore::ColdSeedGuess(const Eigen::VectorXd& q_current,
       }
     }
   } else {
-    // LightContact: zero torque is the cheaper seed — no self-gravity
+    // ContactLight: zero torque is the cheaper seed — no self-gravity
     // drift to wrestle the cost landscape against.
     for (auto& u : us_warm_) {
       u.setZero();

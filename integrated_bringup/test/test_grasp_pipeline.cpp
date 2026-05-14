@@ -65,7 +65,7 @@ transition:
   max_failures: 100
 phases:
   idle:
-    ocp_type: "light_contact"
+    ocp_type: "contact_light"
     active_contact_indices: []
     cost: &light
       horizon_length: 15
@@ -78,8 +78,8 @@ phases:
       W_placement: [100.0, 100.0, 100.0, 10.0, 10.0, 10.0]
       q_posture_ref: [0, 0, 0, -1.57, 0, 1.57, 0.785, 0.02, 0.02]
       F_target: [0, 0, 0, 0, 0, 0]
-  approach:    { ocp_type: "light_contact", active_contact_indices: [], cost: *light }
-  pre_grasp:   { ocp_type: "light_contact", active_contact_indices: [], cost: *light }
+  approach:    { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
+  pre_grasp:   { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
   closure:
     ocp_type: "contact_rich"
     active_contact_indices: [0, 1]
@@ -96,16 +96,16 @@ phases:
       F_target: [0, 0, 2, 0, 0, 2]
   hold:        { ocp_type: "contact_rich", active_contact_indices: [0, 1], cost: *rich }
   manipulate:  { ocp_type: "contact_rich", active_contact_indices: [0, 1], cost: *rich }
-  retreat:     { ocp_type: "light_contact", active_contact_indices: [], cost: *light }
-  release:     { ocp_type: "light_contact", active_contact_indices: [], cost: *light }
+  retreat:     { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
+  release:     { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
 )";
 
-// Panda-flavoured analogue of config/ur5e_hand/controllers/mpc/light_contact.yaml.
+// Panda-flavoured analogue of config/ur5e_hand/controllers/mpc/contact_light.yaml.
 // The `mpc.model` block is built by the test fixture before this YAML is
 // consumed — MPCFactory only reads `mpc.ocp_type`, `mpc.solver`, `mpc.limits`.
 constexpr const char* kLightFactoryYaml = R"(
 mpc:
-  ocp_type: "light_contact"
+  ocp_type: "contact_light"
   solver:
     prim_tol: 1.0e-3
     dual_tol: 1.0e-2
@@ -212,9 +212,9 @@ contact_frames:
 
 // ── 1. Factory build path ─────────────────────────────────────────────────
 
-TEST_F(GraspPipelineTest, MPCFactoryBuildsLightContactFromIdleContext) {
+TEST_F(GraspPipelineTest, MPCFactoryBuildsContactLightFromIdleContext) {
   const auto ctx = BuildIdleContext();
-  ASSERT_EQ(ctx.ocp_type, "light_contact");
+  ASSERT_EQ(ctx.ocp_type, "contact_light");
 
   std::unique_ptr<rtc::mpc::MPCHandlerBase> handler;
   const auto status =
@@ -223,11 +223,11 @@ TEST_F(GraspPipelineTest, MPCFactoryBuildsLightContactFromIdleContext) {
       << "MPCFactory rejected the phase_config.yaml-shaped context";
   ASSERT_TRUE(handler);
   EXPECT_TRUE(handler->Initialised());
-  EXPECT_EQ(handler->ocp_type(), "light_contact");
+  EXPECT_EQ(handler->ocp_type(), "contact_light");
   EXPECT_EQ(handler->nq(), model_handler_.nq());
 }
 
-// ── 2. End-to-end 20 Hz loop (LightContact) ───────────────────────────────
+// ── 2. End-to-end 20 Hz loop (ContactLight) ───────────────────────────────
 
 TEST_F(GraspPipelineTest, HandlerThreadLoopSolvesWithGraspPhaseManager) {
   rtc::mpc::MPCSolutionManager mgr;
@@ -264,7 +264,7 @@ TEST_F(GraspPipelineTest, HandlerThreadLoopSolvesWithGraspPhaseManager) {
   EXPECT_GT(thread.TotalSolves(), 3u)
       << "20 Hz thread should have solved several times over 400 ms";
   EXPECT_EQ(thread.FailedSolves(), 0u)
-      << "LightContact steady-state path must not fail on the neutral pose";
+      << "ContactLight steady-state path must not fail on the neutral pose";
   EXPECT_EQ(thread.LastSolveErrorCode(), 0);
   EXPECT_EQ(thread.LastPhaseId(), static_cast<int>(GraspPhaseId::kIdle));
 }
@@ -273,7 +273,7 @@ TEST_F(GraspPipelineTest, HandlerThreadLoopSolvesWithGraspPhaseManager) {
 //
 // `DemoWbcController::OnPhaseEnter` calls `phase_manager_->ForcePhase(...)`
 // when the WBC FSM crosses into `kClosure`. That path flips `ctx.ocp_type`
-// from `light_contact` to `contact_rich`, which `HandlerMPCThread`
+// from `contact_light` to `contact_rich`, which `HandlerMPCThread`
 // translates into a `MPCFactory::Create`-based handler swap. This test
 // reproduces the same sequence to prove the bridge works end-to-end.
 

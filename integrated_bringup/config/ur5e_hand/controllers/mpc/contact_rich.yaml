@@ -4,7 +4,7 @@
 # `ocp_type == "contact_rich"`.
 #
 # The `model` block must stay structurally identical to the one in
-# light_contact.yaml — the same RobotModelHandler is shared across both
+# contact_light.yaml — the same RobotModelHandler is shared across both
 # handlers during cross-mode swaps, and any contact_frames divergence
 # would break index-based activation in phase_config.yaml.
 
@@ -12,7 +12,7 @@ mpc:
   ocp_type: "contact_rich"
 
   # ── RobotModelHandler schema ──────────────────────────────────────────────
-  # `base_frame` must match light_contact.yaml's value (cross-mode swap shares
+  # `base_frame` must match contact_light.yaml's value (cross-mode swap shares
   # the same RobotModelHandler).
   model:
     end_effector_frame: "tool0"
@@ -23,7 +23,7 @@ mpc:
       - { name: "middle_tip_link", dim: 3 }
 
   # ── Proximal-DDP solver tuning ────────────────────────────────────────────
-  # ContactRichOCP is harder to converge than LightContact; give it a slightly
+  # ContactRichOCP is harder to converge than ContactLight; give it a slightly
   # larger iteration budget to absorb the friction-cone penalty updates.
   solver:
     prim_tol:     1.0e-3

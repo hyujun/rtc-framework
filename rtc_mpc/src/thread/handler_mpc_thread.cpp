@@ -78,7 +78,7 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext& ctx) {
   // Pick the matching pre-built YAML node. Baseline Phase 6 passes both as
   // Null, so this method is only reached from the cross-mode stretch test.
   YAML::Node cfg;
-  if (ctx.ocp_type == "light_contact") {
+  if (ctx.ocp_type == "contact_light") {
     cfg = factory_cfg_light_;
   } else if (ctx.ocp_type == "contact_rich") {
     cfg = factory_cfg_rich_;

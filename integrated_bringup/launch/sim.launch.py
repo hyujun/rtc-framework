@@ -484,7 +484,7 @@ def generate_launch_description():
             '"mock" = MockMPCThread placeholder (default); '
             '"handler" = HandlerMPCThread + MPCFactory + GraspPhaseManager '
             "(real Aligator ProxDDP solve, requires mpc/phase_config.yaml + "
-            "mpc/light_contact.yaml + mpc/contact_rich.yaml in the package "
+            "mpc/contact_light.yaml + mpc/contact_rich.yaml in the package "
             "share). Empty = use demo_wbc_controller.yaml default."
         ),
     )

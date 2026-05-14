@@ -152,7 +152,7 @@ demo_wbc_controller:
     # end_effector_frame=ee_link, 4 contact frames (thumb/index/middle/ring),
     # 23-vec q_posture_ref, 12-vec F_target.
     phase_config_path:  "config/iiwa7_leap/controllers/mpc/phase_config.yaml"
-    light_contact_path: "config/iiwa7_leap/controllers/mpc/light_contact.yaml"
+    contact_light_path: "config/iiwa7_leap/controllers/mpc/contact_light.yaml"
     contact_rich_path:  "config/iiwa7_leap/controllers/mpc/contact_rich.yaml"
 
     riccati:

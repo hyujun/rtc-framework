@@ -1,7 +1,7 @@
-# rtc_mpc LightContactOCP factory config for UR5e + 10-DoF hand.
+# rtc_mpc ContactLightOCP factory config for UR5e + 10-DoF hand.
 #
 # Loaded by rtc::mpc::MPCFactory::Create when the active phase's
-# `ocp_type == "light_contact"`.
+# `ocp_type == "contact_light"`.
 #
 # RobotModelHandler side (end_effector_frame + contact_frames) is also
 # declared here so a single YAML drives the full `RobotModelHandler::Init +
@@ -11,7 +11,7 @@
 # `active_contact_indices` indexes into this list.
 
 mpc:
-  ocp_type: "light_contact"
+  ocp_type: "contact_light"
 
   # ── RobotModelHandler schema (consumed by RobotModelHandler::Init) ────────
   model:
@@ -37,7 +37,7 @@ mpc:
     verbose:      false
 
   # ── OCP limits (see rtc_mpc::OCPLimits) ───────────────────────────────────
-  # friction_mu is ignored by LightContactOCP (applies only to ContactRichOCP);
+  # friction_mu is ignored by ContactLightOCP (applies only to ContactRichOCP);
   # retained here so a single limits block can serve both factory YAMLs.
   limits:
     friction_mu:       0.7

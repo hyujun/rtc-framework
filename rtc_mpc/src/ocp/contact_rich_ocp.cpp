@@ -45,8 +45,8 @@ using IntegratorSE = aligator::dynamics::IntegratorSemiImplEulerTpl<double>;
 using StageModel = aligator::StageModelTpl<double>;
 using TrajOptProblem = aligator::TrajOptProblemTpl<double>;
 
-// Mirrors `LightContactOCP::ActiveContactsAtTime` (local to this TU — kept
-// independent so refactors here don't perturb the shipped LightContact path).
+// Mirrors `ContactLightOCP::ActiveContactsAtTime` (local to this TU — kept
+// independent so refactors here don't perturb the shipped ContactLight path).
 std::vector<int> ActiveContactsAtTime(const ContactPlan& plan, double t,
                                       bool* overlap_found) noexcept {
   std::vector<int> active{};

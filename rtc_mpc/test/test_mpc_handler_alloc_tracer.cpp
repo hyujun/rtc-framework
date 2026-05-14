@@ -4,8 +4,8 @@
 ///        delete override backed by @ref rtc::mpc::test_utils::AllocCounter.
 ///
 /// Scope (§Phase 6 Open Decision #4):
-///   - `LightContactSteadyStateZeroAllocs` — MUST-PASS. Closes Phase 5 Exit
-///     #3 on the production light-contact steady-state path.
+///   - `ContactLightSteadyStateZeroAllocs` — MUST-PASS. Closes Phase 5 Exit
+///     #3 on the production contact-light steady-state path.
 ///   - `ContactRichWarmStartZeroAllocs` — INFORMATIONAL. Phase 6 finding:
 ///     cross-mode-seeded ContactRich currently allocates ~15 k temps per
 ///     tick (alloc/free balanced — no leak). The hard gate here is leak-
@@ -41,7 +41,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_mpc/handler/contact_rich_mpc.hpp"
-#include "rtc_mpc/handler/light_contact_mpc.hpp"
+#include "rtc_mpc/handler/contact_light_mpc.hpp"
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
@@ -163,7 +163,7 @@ contact_frames:
               rtc::mpc::PhaseCostConfigError::kNoError);
     rtc::mpc::PhaseContext ctx{};
     ctx.phase_id = 0;
-    ctx.ocp_type = "light_contact";
+    ctx.ocp_type = "contact_light";
     ctx.cost_config = cfg;
     ctx.contact_plan = {};
     pinocchio::Data pdata(model_);
@@ -223,10 +223,10 @@ contact_frames:
   rtc::mpc::RobotModelHandler handler_;
 };
 
-// ── 1. Light-contact steady-state (closes Phase 5 Exit #3) ──────────────
+// ── 1. Contact-light steady-state (closes Phase 5 Exit #3) ──────────────
 
-TEST_F(AllocTracerTest, LightContactSteadyStateZeroAllocs) {
-  auto light = std::make_unique<rtc::mpc::LightContactMPC>();
+TEST_F(AllocTracerTest, ContactLightSteadyStateZeroAllocs) {
+  auto light = std::make_unique<rtc::mpc::ContactLightMPC>();
   rtc::mpc::MPCSolverConfig solver_cfg{};
   solver_cfg.prim_tol = 1e-3;
   solver_cfg.dual_tol = 1e-2;
@@ -260,20 +260,20 @@ TEST_F(AllocTracerTest, LightContactSteadyStateZeroAllocs) {
 
   const auto allocs = rtc::mpc::test_utils::AllocCounter::AllocCount();
   const auto frees = rtc::mpc::test_utils::AllocCounter::FreeCount();
-  std::cout << "[alloc tracer][LightContact] allocs=" << allocs << " frees=" << frees
+  std::cout << "[alloc tracer][ContactLight] allocs=" << allocs << " frees=" << frees
             << " (ticks=" << kTrackedTicks << ")\n";
-  EXPECT_EQ(allocs, 0) << "LightContactMPC::Solve allocated on a steady-"
+  EXPECT_EQ(allocs, 0) << "ContactLightMPC::Solve allocated on a steady-"
                           "state tick (Phase 5 Exit #3 regression).";
-  EXPECT_EQ(frees, 0) << "LightContactMPC::Solve freed on a steady-state "
+  EXPECT_EQ(frees, 0) << "ContactLightMPC::Solve freed on a steady-state "
                          "tick (Phase 5 Exit #3 regression).";
 }
 
-// ── 2. Contact-rich warm-started from LightContact (Risk #14 path) ──────
+// ── 2. Contact-rich warm-started from ContactLight (Risk #14 path) ──────
 
 TEST_F(AllocTracerTest, ContactRichWarmStartZeroAllocs) {
-  // Step 1: build and solve a LightContact cycle to produce a warm-start
+  // Step 1: build and solve a ContactLight cycle to produce a warm-start
   // trajectory. All of this is off-arming.
-  auto light = std::make_unique<rtc::mpc::LightContactMPC>();
+  auto light = std::make_unique<rtc::mpc::ContactLightMPC>();
   rtc::mpc::MPCSolverConfig solver_cfg{};
   solver_cfg.prim_tol = 1e-3;
   solver_cfg.dual_tol = 1e-2;
@@ -345,7 +345,7 @@ mpc:
 
   // ContactRich assertion is **informational** (Phase 6 finding; `git log
   // --grep='rtc_mpc Phase 6'`): the Phase 5
-  // Exit #3 closure invariant applies to the LightContact production
+  // Exit #3 closure invariant applies to the ContactLight production
   // steady-state path only. ContactRich warm-seeded swap is an event-driven
   // transition (seconds between swaps in the real GraspPhaseManager) and
   // Aligator's ContactRich temporary workspace (friction-cone residual,

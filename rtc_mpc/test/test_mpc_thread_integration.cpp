@@ -1,6 +1,6 @@
 /// @file test_mpc_thread_integration.cpp
 /// @brief Phase 6 end-to-end pipeline test — `HandlerMPCThread` +
-///        `MockPhaseManager` + `LightContactMPC` driving the full MPC-RT
+///        `MockPhaseManager` + `ContactLightMPC` driving the full MPC-RT
 ///        loop on the generic Panda fixture.
 ///
 /// Covers Phase 6 Exit Criteria:
@@ -33,7 +33,7 @@
 #pragma GCC diagnostic pop
 
 #include "mock_phase_manager.hpp"
-#include "rtc_mpc/handler/light_contact_mpc.hpp"
+#include "rtc_mpc/handler/contact_light_mpc.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
@@ -135,7 +135,7 @@ contact_frames:
     ctx.phase_id = 0;
     ctx.phase_name = "free_flight";
     ctx.phase_changed = false;
-    ctx.ocp_type = "light_contact";
+    ctx.ocp_type = "contact_light";
     ctx.cost_config = cost_A_;
     ctx.contact_plan = {};
     ctx.ee_target = ee_target_A_;
@@ -159,8 +159,8 @@ contact_frames:
     return p;
   }
 
-  std::unique_ptr<rtc::mpc::LightContactMPC> MakeInitialisedLightHandler() {
-    auto h = std::make_unique<rtc::mpc::LightContactMPC>();
+  std::unique_ptr<rtc::mpc::ContactLightMPC> MakeInitialisedLightHandler() {
+    auto h = std::make_unique<rtc::mpc::ContactLightMPC>();
     rtc::mpc::MPCSolverConfig cfg{};
     cfg.prim_tol = 1e-3;
     cfg.dual_tol = 1e-2;
@@ -243,7 +243,7 @@ TEST_F(MpcThreadIntegrationTest, DefaultPhaseConvergesFreeFlight) {
   // flakiness on loaded CI machines.
   EXPECT_GE(thread.TotalSolves(), 5u);
   EXPECT_EQ(thread.FailedSolves(), 0u)
-      << "Baseline light_contact solve loop must not fail on neutral pose";
+      << "Baseline contact_light solve loop must not fail on neutral pose";
   EXPECT_EQ(thread.LastSolveErrorCode(), 0);
   EXPECT_EQ(thread.LastPhaseId(), 0);
 }
@@ -285,7 +285,7 @@ TEST_F(MpcThreadIntegrationTest, PhaseTransitionPickedUpWithinOneTick) {
                                "the 1-second safety window";
   EXPECT_EQ(thread.LastPhaseId(), 1);
   EXPECT_EQ(thread.FailedSolves(), 0u)
-      << "Light_contact handler should survive a weight/target swap "
+      << "Contact_light handler should survive a weight/target swap "
          "without factory rebuild";
 }
 
@@ -422,7 +422,7 @@ TEST_F(MpcThreadIntegrationTest, SolutionManagerConsumptionE2E) {
 }
 
 // ── 7. Cross-mode swap stretch (Phase 6 Step 6) ─────────────────────────
-// Exercises `HandlerMPCThread::TryCrossModeSwap`: starts in `light_contact`,
+// Exercises `HandlerMPCThread::TryCrossModeSwap`: starts in `contact_light`,
 // MockPhaseManager flips `ocp_type` to `"contact_rich"` at phase B, and the
 // thread swaps its handler via `MPCFactory::Create` +
 // `SeedWarmStart(prev_out_)`.
@@ -450,7 +450,7 @@ TEST_F(MpcThreadIntegrationTest, CrossModeSwapSucceedsOnPhaseTransition) {
   // `ocp_type` against `ctx.ocp_type`, so we need one per dispatch key.
   auto cfg_light = YAML::Load(R"(
 mpc:
-  ocp_type: light_contact
+  ocp_type: contact_light
   solver:
     prim_tol: 1.0e-3
     dual_tol: 1.0e-2

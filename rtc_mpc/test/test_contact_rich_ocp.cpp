@@ -276,7 +276,7 @@ TEST_F(ContactRichOCPTest, ReBuildIdempotent) {
 // ── Error paths ──────────────────────────────────────────────────────────
 
 TEST_F(ContactRichOCPTest, InvalidOcpTypeRejected) {
-  ctx_.ocp_type = "light_contact";
+  ctx_.ocp_type = "contact_light";
   rtc::mpc::ContactRichOCP ocp;
   EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kInvalidPhaseContext);
   EXPECT_FALSE(ocp.Built());

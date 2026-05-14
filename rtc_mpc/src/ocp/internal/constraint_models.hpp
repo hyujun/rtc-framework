@@ -3,7 +3,7 @@
 /// @file constraint_models.hpp
 /// @brief Internal helper: build a `pinocchio::RigidConstraintModelVector`
 ///        from a `RobotModelHandler` and a list of active contact frame
-///        ids. Shared by `LightContactOCP` and `ContactRichOCP`.
+///        ids. Shared by `ContactLightOCP` and `ContactRichOCP`.
 ///
 /// Not installed. Not part of the public `rtc_mpc` API. Lives under
 /// `src/ocp/internal/` so TUs inside the library can `#include` it via

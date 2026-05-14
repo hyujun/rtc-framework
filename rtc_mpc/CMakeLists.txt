@@ -48,10 +48,10 @@ add_library(rtc_mpc STATIC
   src/model/robot_model_handler.cpp
   src/phase/phase_cost_config.cpp
   src/ocp/cost_factory.cpp
-  src/ocp/light_contact_ocp.cpp
+  src/ocp/contact_light_ocp.cpp
   src/ocp/contact_rich_ocp.cpp
   src/handler/internal/mpc_handler_core.cpp
-  src/handler/light_contact_mpc.cpp
+  src/handler/contact_light_mpc.cpp
   src/handler/contact_rich_mpc.cpp
   src/handler/mpc_factory.cpp
 )
@@ -181,9 +181,9 @@ if(BUILD_TESTING)
     target_link_libraries(test_cost_factory rtc_mpc)
   endif()
 
-  ament_add_gtest(test_light_contact_ocp test/test_light_contact_ocp.cpp)
-  if(TARGET test_light_contact_ocp)
-    target_link_libraries(test_light_contact_ocp rtc_mpc)
+  ament_add_gtest(test_contact_light_ocp test/test_contact_light_ocp.cpp)
+  if(TARGET test_contact_light_ocp)
+    target_link_libraries(test_contact_light_ocp rtc_mpc)
   endif()
 
   ament_add_gtest(test_contact_rich_ocp test/test_contact_rich_ocp.cpp)
@@ -193,9 +193,9 @@ if(BUILD_TESTING)
     target_link_libraries(test_contact_rich_ocp rtc_mpc)
   endif()
 
-  ament_add_gtest(test_light_contact_mpc test/test_light_contact_mpc.cpp)
-  if(TARGET test_light_contact_mpc)
-    target_link_libraries(test_light_contact_mpc rtc_mpc)
+  ament_add_gtest(test_contact_light_mpc test/test_contact_light_mpc.cpp)
+  if(TARGET test_contact_light_mpc)
+    target_link_libraries(test_contact_light_mpc rtc_mpc)
   endif()
 
   ament_add_gtest(test_contact_rich_mpc test/test_contact_rich_mpc.cpp)
@@ -227,7 +227,7 @@ if(BUILD_TESTING)
   # Apply PANDA_URDF_PATH macro to every test target that uses it.
   foreach(_t
       test_robot_model_handler test_phase_cost_config test_cost_factory
-      test_light_contact_ocp test_contact_rich_ocp test_light_contact_mpc
+      test_contact_light_ocp test_contact_rich_ocp test_contact_light_mpc
       test_contact_rich_mpc test_mpc_factory test_mpc_thread_integration
       test_mpc_handler_alloc_tracer)
     if(TARGET ${_t})

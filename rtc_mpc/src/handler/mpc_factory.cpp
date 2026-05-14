@@ -4,7 +4,7 @@
 #include "rtc_mpc/handler/mpc_factory.hpp"
 
 #include "rtc_mpc/handler/contact_rich_mpc.hpp"
-#include "rtc_mpc/handler/light_contact_mpc.hpp"
+#include "rtc_mpc/handler/contact_light_mpc.hpp"
 
 #include <string>
 
@@ -123,8 +123,8 @@ MPCFactoryStatus MPCFactory::Create(const YAML::Node& cfg, const RobotModelHandl
   }
 
   std::unique_ptr<MPCHandlerBase> handler;
-  if (yaml_ocp_type == "light_contact") {
-    handler = std::make_unique<LightContactMPC>();
+  if (yaml_ocp_type == "contact_light") {
+    handler = std::make_unique<ContactLightMPC>();
   } else if (yaml_ocp_type == "contact_rich") {
     handler = std::make_unique<ContactRichMPC>();
   } else {

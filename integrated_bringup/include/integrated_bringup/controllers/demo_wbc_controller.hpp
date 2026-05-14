@@ -377,10 +377,10 @@ class DemoWbcController final : public RTControllerInterface {
   //                            path alive without pulling in Aligator.
   //
   //   `mpc.engine: "handler"`  (Phase 7b, opt-in) — HandlerMPCThread drives
-  //                            a real LightContact / ContactRich solve via
+  //                            a real ContactLight / ContactRich solve via
   //                            MPCFactory, with GraspPhaseManager supplying
   //                            phase context. Cross-mode swap between
-  //                            light_contact and contact_rich is handled
+  //                            contact_light and contact_rich is handled
   //                            inside HandlerMPCThread.
   //
   // If `mpc_enabled_` is false, no MPC thread is spawned and the Phase 4

@@ -102,7 +102,7 @@ enum class MPCSolveError {
 };
 
 /// @brief Abstract MPC handler. Concrete implementations pin themselves to
-///        a single OCP dispatch key (`"light_contact"`, `"contact_rich"`)
+///        a single OCP dispatch key (`"contact_light"`, `"contact_rich"`)
 ///        and own exactly one OCP + one solver. Cross-key transitions are
 ///        done at the orchestration layer via `MPCFactory`.
 class MPCHandlerBase {
@@ -147,7 +147,7 @@ class MPCHandlerBase {
   /// @return true once `Init` has succeeded.
   [[nodiscard]] virtual bool Initialised() const noexcept = 0;
 
-  /// @return `"light_contact"` or `"contact_rich"` — matches the underlying
+  /// @return `"contact_light"` or `"contact_rich"` — matches the underlying
   ///         OCP handler. Used by `MPCFactory` for cross-handler dispatch.
   [[nodiscard]] virtual std::string_view ocp_type() const noexcept = 0;
 

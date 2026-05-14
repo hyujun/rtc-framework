@@ -1,5 +1,5 @@
-/// @file test_light_contact_ocp.cpp
-/// @brief End-to-end integration test for `rtc::mpc::LightContactOCP` on the
+/// @file test_contact_light_ocp.cpp
+/// @brief End-to-end integration test for `rtc::mpc::ContactLightOCP` on the
 ///        generic Panda fixture (9-DoF, fixed-base, 2×3D fingertip contacts).
 ///
 /// Covered:
@@ -31,7 +31,7 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
-#include "rtc_mpc/ocp/light_contact_ocp.hpp"
+#include "rtc_mpc/ocp/contact_light_ocp.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -59,7 +59,7 @@ F_target: [0, 0, 0, 0, 0, 0]
 custom_weights: {}
 )";
 
-class LightContactOCPTest : public ::testing::Test {
+class ContactLightOCPTest : public ::testing::Test {
  protected:
   void SetUp() override {
     if (!std::filesystem::exists(kPandaUrdf)) {
@@ -86,7 +86,7 @@ contact_frames:
     ctx_.phase_id = 0;
     ctx_.phase_name = "test";
     ctx_.phase_changed = false;
-    ctx_.ocp_type = "light_contact";
+    ctx_.ocp_type = "contact_light";
     ctx_.cost_config = cfg_;
     ctx_.contact_plan = {};  // no frames, no phases
 
@@ -105,17 +105,17 @@ contact_frames:
 
 // ── Happy path ───────────────────────────────────────────────────────────
 
-TEST_F(LightContactOCPTest, BuildNeutralSucceeds) {
-  rtc::mpc::LightContactOCP ocp;
+TEST_F(ContactLightOCPTest, BuildNeutralSucceeds) {
+  rtc::mpc::ContactLightOCP ocp;
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_TRUE(ocp.Built());
   EXPECT_EQ(ocp.horizon_length(), cfg_.horizon_length);
   EXPECT_EQ(ocp.problem().numSteps(), static_cast<std::size_t>(cfg_.horizon_length));
-  EXPECT_EQ(ocp.ocp_type(), std::string_view("light_contact"));
+  EXPECT_EQ(ocp.ocp_type(), std::string_view("contact_light"));
 }
 
-TEST_F(LightContactOCPTest, SolveReachesEETarget) {
-  rtc::mpc::LightContactOCP ocp;
+TEST_F(ContactLightOCPTest, SolveReachesEETarget) {
+  rtc::mpc::ContactLightOCP ocp;
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   aligator::SolverProxDDPTpl<double> solver(1e-4, 1e-2);
@@ -132,8 +132,8 @@ TEST_F(LightContactOCPTest, SolveReachesEETarget) {
   EXPECT_GT(res.num_iters, 0);
 }
 
-TEST_F(LightContactOCPTest, UpdateReferencesPropagatesTarget) {
-  rtc::mpc::LightContactOCP ocp;
+TEST_F(ContactLightOCPTest, UpdateReferencesPropagatesTarget) {
+  rtc::mpc::ContactLightOCP ocp;
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   // Change ee_target and call UpdateReferences; verify the stored
@@ -158,72 +158,72 @@ TEST_F(LightContactOCPTest, UpdateReferencesPropagatesTarget) {
   EXPECT_TRUE(residual->getReference().translation().isApprox(new_target.translation()));
 }
 
-TEST_F(LightContactOCPTest, ReBuildIdempotent) {
-  rtc::mpc::LightContactOCP ocp;
+TEST_F(ContactLightOCPTest, ReBuildIdempotent) {
+  rtc::mpc::ContactLightOCP ocp;
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_TRUE(ocp.Built());
   EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_TRUE(ocp.Built());
 }
 
-TEST_F(LightContactOCPTest, EmptyContactPlanFreeFlight) {
+TEST_F(ContactLightOCPTest, EmptyContactPlanFreeFlight) {
   // ctx_ default is already free-flight.
-  rtc::mpc::LightContactOCP ocp;
+  rtc::mpc::ContactLightOCP ocp;
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
   EXPECT_TRUE(ocp.Built());
 }
 
-TEST_F(LightContactOCPTest, WithContactPhaseSucceeds) {
+TEST_F(ContactLightOCPTest, WithContactPhaseSucceeds) {
   // One phase over the entire horizon, both fingertips active.
   const int lfinger = handler_.contact_frames()[0].frame_id;
   const int rfinger = handler_.contact_frames()[1].frame_id;
   ctx_.contact_plan.frames = handler_.contact_frames();
   ctx_.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lfinger, rfinger}, 0.0, 100.0});
 
-  rtc::mpc::LightContactOCP ocp;
+  rtc::mpc::ContactLightOCP ocp;
   EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 }
 
 // ── Error paths ──────────────────────────────────────────────────────────
 
-TEST_F(LightContactOCPTest, InvalidOcpTypeRejected) {
+TEST_F(ContactLightOCPTest, InvalidOcpTypeRejected) {
   ctx_.ocp_type = "contact_rich";
-  rtc::mpc::LightContactOCP ocp;
+  rtc::mpc::ContactLightOCP ocp;
   EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kInvalidPhaseContext);
   EXPECT_FALSE(ocp.Built());
 }
 
-TEST_F(LightContactOCPTest, UninitialisedModelRejected) {
+TEST_F(ContactLightOCPTest, UninitialisedModelRejected) {
   rtc::mpc::RobotModelHandler empty;
-  rtc::mpc::LightContactOCP ocp;
+  rtc::mpc::ContactLightOCP ocp;
   EXPECT_EQ(ocp.Build(ctx_, empty, limits_), rtc::mpc::OCPBuildError::kModelNotInitialised);
 }
 
-TEST_F(LightContactOCPTest, ContactPlanMismatchRejected) {
+TEST_F(ContactLightOCPTest, ContactPlanMismatchRejected) {
   ctx_.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{9999}, 0.0, 1.0});  // bogus frame id
-  rtc::mpc::LightContactOCP ocp;
+  rtc::mpc::ContactLightOCP ocp;
   EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kContactPlanModelMismatch);
 }
 
-TEST_F(LightContactOCPTest, OverlappingPhasesRejected) {
+TEST_F(ContactLightOCPTest, OverlappingPhasesRejected) {
   // Horizon = 20 * 0.01 = 0.20 s. Design two phases whose overlap lands
   // inside the horizon so a stage actually falls in both.
   const int lf = handler_.contact_frames()[0].frame_id;
   ctx_.contact_plan.phases.push_back(rtc::mpc::ContactPhase{{lf}, 0.0, 0.15});
   ctx_.contact_plan.phases.push_back(
       rtc::mpc::ContactPhase{{lf}, 0.10, 0.20});  // overlap on [0.10, 0.15)
-  rtc::mpc::LightContactOCP ocp;
+  rtc::mpc::ContactLightOCP ocp;
   EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kOverlappingContactPhases);
 }
 
-TEST_F(LightContactOCPTest, LimitsDimMismatchRejected) {
+TEST_F(ContactLightOCPTest, LimitsDimMismatchRejected) {
   limits_.u_min = Eigen::VectorXd::Zero(handler_.nu() - 1);
-  rtc::mpc::LightContactOCP ocp;
+  rtc::mpc::ContactLightOCP ocp;
   EXPECT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kLimitsDimMismatch);
 }
 
-TEST_F(LightContactOCPTest, UpdateReferencesTopologyChangeRejected) {
-  rtc::mpc::LightContactOCP ocp;
+TEST_F(ContactLightOCPTest, UpdateReferencesTopologyChangeRejected) {
+  rtc::mpc::ContactLightOCP ocp;
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   // Changing horizon_length is a topology change → must reject.
@@ -234,15 +234,15 @@ TEST_F(LightContactOCPTest, UpdateReferencesTopologyChangeRejected) {
   EXPECT_EQ(ocp.horizon_length(), cfg_.horizon_length);
 }
 
-TEST_F(LightContactOCPTest, UpdateReferencesBeforeBuildRejected) {
-  rtc::mpc::LightContactOCP ocp;
+TEST_F(ContactLightOCPTest, UpdateReferencesBeforeBuildRejected) {
+  rtc::mpc::ContactLightOCP ocp;
   EXPECT_EQ(ocp.UpdateReferences(ctx_), rtc::mpc::OCPBuildError::kInvalidPhaseContext);
 }
 
 // ── Performance (log-only) ───────────────────────────────────────────────
 
-TEST_F(LightContactOCPTest, SolvePerfLog) {
-  rtc::mpc::LightContactOCP ocp;
+TEST_F(ContactLightOCPTest, SolvePerfLog) {
+  rtc::mpc::ContactLightOCP ocp;
   ASSERT_EQ(ocp.Build(ctx_, handler_, limits_), rtc::mpc::OCPBuildError::kNoError);
 
   aligator::SolverProxDDPTpl<double> solver(1e-4, 1e-2);
@@ -262,7 +262,7 @@ TEST_F(LightContactOCPTest, SolvePerfLog) {
   std::sort(wall_us.begin(), wall_us.end());
   const long p50 = wall_us[wall_us.size() / 2];
   const long p99 = wall_us.back();
-  std::cout << "[LightContactOCP perf] " << kIters << " solves: p50=" << p50 << "us p99=" << p99
+  std::cout << "[ContactLightOCP perf] " << kIters << " solves: p50=" << p50 << "us p99=" << p99
             << "us\n";
   // No hard assertion — thresholds are informational.
   SUCCEED();

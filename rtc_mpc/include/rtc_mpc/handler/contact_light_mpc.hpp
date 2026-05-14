@@ -1,13 +1,13 @@
 #ifndef RTC_MPC_HANDLER_LIGHT_CONTACT_MPC_HPP_
 #define RTC_MPC_HANDLER_LIGHT_CONTACT_MPC_HPP_
 
-/// @file light_contact_mpc.hpp
-/// @brief Concrete `MPCHandlerBase` wrapping a `LightContactOCP` +
-///        Aligator `SolverProxDDP`. One instance per light-contact phase
+/// @file contact_light_mpc.hpp
+/// @brief Concrete `MPCHandlerBase` wrapping a `ContactLightOCP` +
+///        Aligator `SolverProxDDP`. One instance per contact-light phase
 ///        sequence; cross-mode transitions are the factory's job.
 
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
-#include "rtc_mpc/ocp/light_contact_ocp.hpp"
+#include "rtc_mpc/ocp/contact_light_ocp.hpp"
 
 #include <memory>
 
@@ -17,15 +17,15 @@ namespace internal {
 class MPCHandlerCore;
 }  // namespace internal
 
-class LightContactMPC : public MPCHandlerBase {
+class ContactLightMPC : public MPCHandlerBase {
  public:
-  LightContactMPC();
-  ~LightContactMPC() override;
+  ContactLightMPC();
+  ~ContactLightMPC() override;
 
-  LightContactMPC(const LightContactMPC&) = delete;
-  LightContactMPC& operator=(const LightContactMPC&) = delete;
-  LightContactMPC(LightContactMPC&&) = delete;
-  LightContactMPC& operator=(LightContactMPC&&) = delete;
+  ContactLightMPC(const ContactLightMPC&) = delete;
+  ContactLightMPC& operator=(const ContactLightMPC&) = delete;
+  ContactLightMPC(ContactLightMPC&&) = delete;
+  ContactLightMPC& operator=(ContactLightMPC&&) = delete;
 
   [[nodiscard]] MPCInitError Init(const MPCSolverConfig& solver_cfg, const RobotModelHandler& model,
                                   const OCPLimits& limits,
@@ -47,7 +47,7 @@ class LightContactMPC : public MPCHandlerBase {
   void SeedWarmStart(const MPCSolution& prev_solution) noexcept override;
 
  private:
-  LightContactOCP ocp_;
+  ContactLightOCP ocp_;
   std::unique_ptr<internal::MPCHandlerCore> core_;
 };
 

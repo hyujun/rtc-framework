@@ -41,9 +41,9 @@ struct PhaseContext {
   PhaseCostConfig cost_config{};  ///< per-phase cost weights + references
 
   /// Dispatch key for @ref MPCFactory (Phase 5). Current values:
-  /// `"light_contact"` (Phase 3, renamed in 4.-1), `"contact_rich"` (Phase
+  /// `"contact_light"` (Phase 3, renamed in 4.-1), `"contact_rich"` (Phase
   /// 4). Unknown strings cause factory rejection — never silently fall back.
-  std::string ocp_type{"light_contact"};
+  std::string ocp_type{"contact_light"};
 
   /// End-effector SE3 target expressed in `RobotModelHandler::base_frame_id()`.
   /// When `base_frame` is universe (default fallback), this collapses to the

@@ -1,4 +1,4 @@
-#include "rtc_mpc/ocp/light_contact_ocp.hpp"
+#include "rtc_mpc/ocp/contact_light_ocp.hpp"
 
 #include "ocp/internal/constraint_models.hpp"
 
@@ -112,13 +112,13 @@ void ApplyReferences(const LightStageHandles& h, const PhaseCostConfig& cfg,
 
 }  // namespace
 
-OCPBuildError LightContactOCP::Build(const PhaseContext& ctx, const RobotModelHandler& model,
+OCPBuildError ContactLightOCP::Build(const PhaseContext& ctx, const RobotModelHandler& model,
                                      const OCPLimits& limits) noexcept {
   // ── Input validation ────────────────────────────────────────────────
   if (!model.Initialised()) {
     return OCPBuildError::kModelNotInitialised;
   }
-  if (ctx.ocp_type != "light_contact") {
+  if (ctx.ocp_type != "contact_light") {
     return OCPBuildError::kInvalidPhaseContext;
   }
   const auto& cfg = ctx.cost_config;
@@ -268,11 +268,11 @@ OCPBuildError LightContactOCP::Build(const PhaseContext& ctx, const RobotModelHa
   }
 }
 
-OCPBuildError LightContactOCP::UpdateReferences(const PhaseContext& ctx) noexcept {
+OCPBuildError ContactLightOCP::UpdateReferences(const PhaseContext& ctx) noexcept {
   if (!Built()) {
     return OCPBuildError::kInvalidPhaseContext;
   }
-  if (ctx.ocp_type != "light_contact") {
+  if (ctx.ocp_type != "contact_light") {
     return OCPBuildError::kInvalidPhaseContext;
   }
   const auto& cfg = ctx.cost_config;

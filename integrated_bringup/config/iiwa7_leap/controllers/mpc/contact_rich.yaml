@@ -3,7 +3,7 @@
 # Loaded by rtc::mpc::MPCFactory::Create when the active phase's
 # `ocp_type == "contact_rich"`.
 #
-# The `model` block must stay structurally identical to light_contact.yaml —
+# The `model` block must stay structurally identical to contact_light.yaml —
 # the same RobotModelHandler is shared across both handlers during
 # cross-mode swaps, and any contact_frames divergence would break
 # index-based activation in phase_config.yaml.
@@ -12,7 +12,7 @@ mpc:
   ocp_type: "contact_rich"
 
   # ── RobotModelHandler schema ─────────────────────────────────────────────
-  # `base_frame` must match light_contact.yaml's value (cross-mode swap
+  # `base_frame` must match contact_light.yaml's value (cross-mode swap
   # shares the same RobotModelHandler).
   model:
     end_effector_frame: "ee_link"
@@ -24,7 +24,7 @@ mpc:
       - { name: "ring_tip_head", dim: 3 }   # ring
 
   # ── Proximal-DDP solver tuning ───────────────────────────────────────────
-  # ContactRichOCP is harder to converge than LightContact; give it a larger
+  # ContactRichOCP is harder to converge than ContactLight; give it a larger
   # iteration budget to absorb the friction-cone penalty updates.
   solver:
     prim_tol:     1.0e-3

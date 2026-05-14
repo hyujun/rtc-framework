@@ -40,7 +40,7 @@
 ///   frames come from the `RobotModelHandler` injected at construction, and
 ///   the per-phase `q_posture_ref` / `F_target` sizes are enforced by
 ///   `PhaseCostConfig::LoadFromYaml` against that model.
-/// - `ocp_type` per phase is YAML-driven ("light_contact" / "contact_rich").
+/// - `ocp_type` per phase is YAML-driven ("contact_light" / "contact_rich").
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
@@ -91,7 +91,7 @@ enum class GraspPhaseInitError {
   kMissingPhase,         ///< one of the 8 required phase entries absent
   kInvalidThreshold,     ///< approach_tolerance / pregrasp_tolerance <= 0
                          ///< or force_threshold < 0 or max_failures <= 0
-  kInvalidOcpType,       ///< per-phase ocp_type not in {light_contact,
+  kInvalidOcpType,       ///< per-phase ocp_type not in {contact_light,
                          ///< contact_rich}
   kInvalidContactIndex,  ///< active_contact_indices[i] out of model range
   kInvalidPhaseCost,     ///< PhaseCostConfig::LoadFromYaml rejected
@@ -125,9 +125,9 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
   ///   force_threshold: 0.5
   ///   max_failures: 50
   /// phases:
-  ///   idle:        { ocp_type: "light_contact", active_contact_indices: [],
+  ///   idle:        { ocp_type: "contact_light", active_contact_indices: [],
   ///                  cost: { ... PhaseCostConfig YAML ... } }
-  ///   approach:    { ocp_type: "light_contact", active_contact_indices: [],
+  ///   approach:    { ocp_type: "contact_light", active_contact_indices: [],
   ///                  cost: { ... } }
   ///   pre_grasp:   { ... }
   ///   closure:     { ocp_type: "contact_rich",
@@ -194,7 +194,7 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
 
  private:
   struct PhaseSlot {
-    std::string ocp_type{"light_contact"};
+    std::string ocp_type{"contact_light"};
     rtc::mpc::PhaseCostConfig cost{};
     rtc::mpc::ContactPlan contact_plan{};
   };

@@ -2,7 +2,7 @@
 #define RTC_MPC_SRC_HANDLER_INTERNAL_MPC_HANDLER_CORE_HPP_
 
 /// @file mpc_handler_core.hpp
-/// @brief Shared impl for `LightContactMPC` / `ContactRichMPC`. Internal —
+/// @brief Shared impl for `ContactLightMPC` / `ContactRichMPC`. Internal —
 ///        not installed, not exported, only pulled by files under
 ///        `rtc_mpc/src/handler/`.
 ///

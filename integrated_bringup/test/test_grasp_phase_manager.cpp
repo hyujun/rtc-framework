@@ -53,7 +53,7 @@ transition:
 
 phases:
   idle:
-    ocp_type: "light_contact"
+    ocp_type: "contact_light"
     active_contact_indices: []
     cost: &cost_light
       horizon_length: 20
@@ -68,12 +68,12 @@ phases:
       F_target: [0, 0, 0, 0, 0, 0]
 
   approach:
-    ocp_type: "light_contact"
+    ocp_type: "contact_light"
     active_contact_indices: []
     cost: *cost_light
 
   pre_grasp:
-    ocp_type: "light_contact"
+    ocp_type: "contact_light"
     active_contact_indices: []
     cost: *cost_light
 
@@ -103,12 +103,12 @@ phases:
     cost: *cost_rich
 
   retreat:
-    ocp_type: "light_contact"
+    ocp_type: "contact_light"
     active_contact_indices: []
     cost: *cost_light
 
   release:
-    ocp_type: "light_contact"
+    ocp_type: "contact_light"
     active_contact_indices: []
     cost: *cost_light
 )";
@@ -223,7 +223,7 @@ TEST_F(GraspPhaseManagerTest, FullHappyPathTraversal) {
     auto ctx = Step(PoseAt(start));
     EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kApproach));
     EXPECT_TRUE(ctx.phase_changed);
-    EXPECT_EQ(ctx.ocp_type, "light_contact");
+    EXPECT_EQ(ctx.ocp_type, "contact_light");
   }
 
   // APPROACH → PRE_GRASP when TCP close to pregrasp (< 0.05).
@@ -231,7 +231,7 @@ TEST_F(GraspPhaseManagerTest, FullHappyPathTraversal) {
     auto ctx = Step(PoseAt(Eigen::Vector3d{0.07, 0.0, 0.0}));
     EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kPreGrasp));
     EXPECT_TRUE(ctx.phase_changed);
-    EXPECT_EQ(ctx.ocp_type, "light_contact");
+    EXPECT_EQ(ctx.ocp_type, "contact_light");
   }
 
   // PRE_GRASP → CLOSURE when TCP close to grasp (< 0.01) — cross-mode swap!
@@ -268,7 +268,7 @@ TEST_F(GraspPhaseManagerTest, FullHappyPathTraversal) {
     auto ctx = Step(PoseAt(Eigen::Vector3d{0.15, 0.0, 0.0}));
     EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRetreat));
     EXPECT_TRUE(ctx.phase_changed);
-    EXPECT_EQ(ctx.ocp_type, "light_contact");
+    EXPECT_EQ(ctx.ocp_type, "contact_light");
   }
 
   // RETREAT → RELEASE when back near approach_start.
@@ -389,7 +389,7 @@ TEST_F(GraspPhaseManagerTest, UninitialisedUpdateYieldsSafeIdleContext) {
   auto ctx = Step(PoseAt({0, 0, 0}));
   EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kIdle));
   EXPECT_FALSE(ctx.phase_changed);
-  EXPECT_EQ(ctx.ocp_type, "light_contact");
+  EXPECT_EQ(ctx.ocp_type, "contact_light");
 }
 
 }  // namespace

@@ -93,13 +93,13 @@ class HandlerMPCThread final : public MPCThread {
   ///
   /// @param model_handler       must outlive this thread; provides `nq` /
   ///                            `nv` / `ee_frame_id` for FK scratch sizing.
-  /// @param handler             concrete MPC handler (`LightContactMPC`
+  /// @param handler             concrete MPC handler (`ContactLightMPC`
   ///                            or `ContactRichMPC`). Must be Init()'d
   ///                            already; this class does not re-Init.
   /// @param phase_manager       concrete FSM producing `PhaseContext` per
   ///                            tick. The mock or production FSM.
   /// @param factory_cfg_light   YAML node used if a cross-mode swap TO
-  ///                            `"light_contact"` is requested. Pass
+  ///                            `"contact_light"` is requested. Pass
   ///                            `YAML::Node{}` to disable the swap branch.
   /// @param factory_cfg_rich    Likewise for `"contact_rich"`.
   ///

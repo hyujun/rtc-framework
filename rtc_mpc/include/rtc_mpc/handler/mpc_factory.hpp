@@ -9,7 +9,7 @@
 ///
 /// ```yaml
 /// mpc:
-///   ocp_type: "light_contact"   # or "contact_rich"
+///   ocp_type: "contact_light"   # or "contact_rich"
 ///   solver:
 ///     prim_tol: 1.0e-3
 ///     dual_tol: 1.0e-2

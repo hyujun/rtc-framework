@@ -7,7 +7,7 @@
 # at the field level — anchors + override are the clean alternative).
 #
 # Contact frames referenced by `active_contact_indices:` come from the
-# rtc_mpc factory YAML (`mpc/light_contact.yaml` / `mpc/contact_rich.yaml`).
+# rtc_mpc factory YAML (`mpc/contact_light.yaml` / `mpc/contact_rich.yaml`).
 # The order there is authoritative — index 0 → thumb_tip_link,
 # 1 → index_tip_link, 2 → middle_tip_link.
 #
@@ -57,7 +57,7 @@ grasp_phase_manager:
 
   phases:
     idle:
-      ocp_type: "light_contact"
+      ocp_type: "contact_light"
       active_contact_indices: []
       cost:
         horizon_length: 20
@@ -74,7 +74,7 @@ grasp_phase_manager:
           hand_posture: 1.0
 
     approach:
-      ocp_type: "light_contact"
+      ocp_type: "contact_light"
       active_contact_indices: []
       cost:
         horizon_length: 20
@@ -91,7 +91,7 @@ grasp_phase_manager:
           hand_posture: 1.0
 
     pre_grasp:
-      ocp_type: "light_contact"
+      ocp_type: "contact_light"
       active_contact_indices: []
       cost:
         horizon_length: 20
@@ -159,7 +159,7 @@ grasp_phase_manager:
           hand_posture: 5.0
 
     retreat:
-      ocp_type: "light_contact"
+      ocp_type: "contact_light"
       active_contact_indices: []
       cost:
         horizon_length: 20
@@ -176,7 +176,7 @@ grasp_phase_manager:
           hand_posture: 1.0
 
     release:
-      ocp_type: "light_contact"
+      ocp_type: "contact_light"
       active_contact_indices: []
       cost:
         horizon_length: 20

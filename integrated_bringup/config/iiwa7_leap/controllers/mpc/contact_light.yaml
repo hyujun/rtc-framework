@@ -1,7 +1,7 @@
-# rtc_mpc LightContactOCP factory config for iiwa7 + LEAP right hand (23 DoF).
+# rtc_mpc ContactLightOCP factory config for iiwa7 + LEAP right hand (23 DoF).
 #
 # Loaded by rtc::mpc::MPCFactory::Create when the active phase's
-# `ocp_type == "light_contact"`.
+# `ocp_type == "contact_light"`.
 #
 # RobotModelHandler schema (end_effector_frame + base_frame + contact_frames)
 # is co-located so a single YAML drives RobotModelHandler::Init + factory
@@ -12,7 +12,7 @@
 # controller-facing finger order (thumb → index → middle → ring).
 
 mpc:
-  ocp_type: "light_contact"
+  ocp_type: "contact_light"
 
   # ── RobotModelHandler schema ─────────────────────────────────────────────
   # base_frame must match the iiwa7 device urdf.root_link in sim.yaml
@@ -38,7 +38,7 @@ mpc:
     verbose:      false
 
   # ── OCP limits (see rtc_mpc::OCPLimits) ──────────────────────────────────
-  # friction_mu is ignored by LightContactOCP (applies only to ContactRichOCP);
+  # friction_mu is ignored by ContactLightOCP (applies only to ContactRichOCP);
   # retained so the limits block can be shared with contact_rich.yaml.
   limits:
     friction_mu:       0.7

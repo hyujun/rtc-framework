@@ -27,15 +27,15 @@
 /// in the dispatch key both rely on libstdc++'s 15-char SSO bucket to stay
 /// alloc-free on copy-construction (PhaseContext is value-returned each tick
 /// and must not allocate in steady state). The literals used here
-/// (`"free_flight"`=11, `"near_object"`=11, `"light_contact"`=13,
+/// (`"free_flight"`=11, `"near_object"`=11, `"contact_light"`=13,
 /// `"contact_rich"`=12) are all within the SSO limit. A `static_assert` below
 /// enforces this so future renames cannot silently break the budget. Phase 7
 /// implementers adding longer phase names MUST re-verify this invariant.
 ///
 /// Cross-mode stretch (§Phase 6 Step 6) — when `Params::cross_mode == true`,
 /// Phase B switches `ocp_type` to `"contact_rich"`; otherwise both phases stay
-/// in `"light_contact"`. Baseline integration tests use `cross_mode == false`
-/// so that a single `LightContactMPC` handler can serve both phases without a
+/// in `"contact_light"`. Baseline integration tests use `cross_mode == false`
+/// so that a single `ContactLightMPC` handler can serve both phases without a
 /// factory swap.
 
 #include "rtc_mpc/phase/phase_context.hpp"
@@ -67,7 +67,7 @@ static_assert(sizeof("free_flight") <= 16,
               "phase_name 'free_flight' must fit libstdc++ SSO (<=15 chars)");
 static_assert(sizeof("near_object") <= 16,
               "phase_name 'near_object' must fit libstdc++ SSO (<=15 chars)");
-static_assert(sizeof("light_contact") <= 16, "ocp_type 'light_contact' must fit libstdc++ SSO");
+static_assert(sizeof("contact_light") <= 16, "ocp_type 'contact_light' must fit libstdc++ SSO");
 static_assert(sizeof("contact_rich") <= 16, "ocp_type 'contact_rich' must fit libstdc++ SSO");
 
 /// @brief Two-state deterministic FSM for Phase 6 integration tests.
@@ -99,7 +99,7 @@ class MockPhaseManager final : public PhaseManagerBase {
 
     /// Stretch-test toggle — when true, Phase B switches `ocp_type` to
     /// `"contact_rich"`, forcing a factory handler swap. Baseline integration
-    /// tests set this to false so a single `LightContactMPC` handles both.
+    /// tests set this to false so a single `ContactLightMPC` handles both.
     bool cross_mode{false};
   };
 
@@ -193,12 +193,12 @@ class MockPhaseManager final : public PhaseManagerBase {
       ctx.contact_plan = contact_plan_A_;
       ctx.cost_config = cost_config_A_;
       ctx.ee_target = ee_target_A_;
-      ctx.ocp_type = "light_contact";
+      ctx.ocp_type = "contact_light";
     } else {
       ctx.contact_plan = contact_plan_B_;
       ctx.cost_config = cost_config_B_;
       ctx.ee_target = ee_target_B_;
-      ctx.ocp_type = cross_mode_ ? "contact_rich" : "light_contact";
+      ctx.ocp_type = cross_mode_ ? "contact_rich" : "contact_light";
     }
     return ctx;
   }

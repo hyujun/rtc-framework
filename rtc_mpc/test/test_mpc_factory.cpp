@@ -89,7 +89,7 @@ contact_frames:
 
     rtc::mpc::PhaseContext ctx{};
     ctx.phase_id = 0;
-    ctx.ocp_type = "light_contact";
+    ctx.ocp_type = "contact_light";
     ctx.cost_config = cfg;
     ctx.contact_plan = {};
     pinocchio::Data pdata(model_);
@@ -138,10 +138,10 @@ contact_frames:
   rtc::mpc::RobotModelHandler handler_;
 };
 
-TEST_F(MPCFactoryTest, DispatchesLightContact) {
+TEST_F(MPCFactoryTest, DispatchesContactLight) {
   auto cfg = YAML::Load(R"(
 mpc:
-  ocp_type: light_contact
+  ocp_type: contact_light
   solver:
     prim_tol: 1.0e-3
     dual_tol: 1.0e-2
@@ -152,7 +152,7 @@ mpc:
   const auto status = rtc::mpc::MPCFactory::Create(cfg, handler_, ctx, h);
   ASSERT_EQ(status.error, rtc::mpc::MPCFactoryError::kNoError);
   ASSERT_NE(h, nullptr);
-  EXPECT_EQ(h->ocp_type(), std::string_view("light_contact"));
+  EXPECT_EQ(h->ocp_type(), std::string_view("contact_light"));
   EXPECT_TRUE(h->Initialised());
 }
 
@@ -193,7 +193,7 @@ TEST_F(MPCFactoryTest, RejectsYamlOcpTypeDriftVsContext) {
 mpc:
   ocp_type: contact_rich
 )");
-  auto ctx = MakeLightContext();  // light_contact, mismatches YAML
+  auto ctx = MakeLightContext();  // contact_light, mismatches YAML
   std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
   const auto status = rtc::mpc::MPCFactory::Create(cfg, handler_, ctx, h);
   EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kUnknownOcpType);
@@ -216,7 +216,7 @@ TEST_F(MPCFactoryTest, RejectsULimitsDimMismatch) {
   // u_min with wrong size.
   auto cfg = YAML::Load(R"(
 mpc:
-  ocp_type: light_contact
+  ocp_type: contact_light
   limits:
     u_min: [0, 0, 0]
 )");
@@ -229,10 +229,10 @@ mpc:
 // ── Cross-mode switch ────────────────────────────────────────────────────
 
 TEST_F(MPCFactoryTest, CrossModeSwapPreservesSolveability) {
-  // Build LightContact first, solve, extract warm-start solution.
+  // Build ContactLight first, solve, extract warm-start solution.
   auto cfg_light = YAML::Load(R"(
 mpc:
-  ocp_type: light_contact
+  ocp_type: contact_light
   solver:
     prim_tol: 1.0e-3
     dual_tol: 1.0e-2
@@ -247,7 +247,7 @@ mpc:
   rtc::mpc::MPCSolution prev{};
   ASSERT_EQ(light->Solve(ctx_light, state, prev), rtc::mpc::MPCSolveError::kNoError);
 
-  // Build ContactRich and seed its warm-start with the LightContact
+  // Build ContactRich and seed its warm-start with the ContactLight
   // solution, then verify the first solve converges (or at minimum does
   // not diverge / throw).
   auto cfg_rich = YAML::Load(R"(

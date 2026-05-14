@@ -438,7 +438,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   //
   // `mpc.engine` (default "mock") selects MockMPCThread vs
   // HandlerMPCThread. Handler mode additionally loads mpc/phase_config.yaml
-  // + mpc/light_contact.yaml + mpc/contact_rich.yaml from the package share
+  // + mpc/contact_light.yaml + mpc/contact_rich.yaml from the package share
   // and pre-builds the RobotModelHandler + GraspPhaseManager for startup.
   if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && full_model_ptr_) {
     mpc_enabled_ = mpc_cfg["enabled"] && mpc_cfg["enabled"].as<bool>();
@@ -504,9 +504,9 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
                 ? mpc_cfg["phase_config_path"].as<std::string>()
                 : std::string{"config/ur5e_hand/controllers/mpc/phase_config.yaml"};
         const auto light_path =
-            mpc_cfg["light_contact_path"]
-                ? mpc_cfg["light_contact_path"].as<std::string>()
-                : std::string{"config/ur5e_hand/controllers/mpc/light_contact.yaml"};
+            mpc_cfg["contact_light_path"]
+                ? mpc_cfg["contact_light_path"].as<std::string>()
+                : std::string{"config/ur5e_hand/controllers/mpc/contact_light.yaml"};
         const auto rich_path =
             mpc_cfg["contact_rich_path"]
                 ? mpc_cfg["contact_rich_path"].as<std::string>()
@@ -528,14 +528,14 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       }
 
       if (mpc_engine_ == MpcEngine::kHandler) {
-        // Build RobotModelHandler from light_contact.yaml's `model:` subtree
+        // Build RobotModelHandler from contact_light.yaml's `model:` subtree
         // (identical to contact_rich.yaml by contract — cross-mode swap
         // requires matching contact_frames).
         const auto model_node = mpc_light_cfg_["mpc"] && mpc_light_cfg_["mpc"]["model"]
                                     ? mpc_light_cfg_["mpc"]["model"]
                                     : YAML::Node{};
         // F-2: capture MPC model.base_frame for OnDeviceConfigsSet
-        // consistency check. Both light_contact and contact_rich share the
+        // consistency check. Both contact_light and contact_rich share the
         // same base_frame contract; record each so a divergent edit is
         // surfaced as a mismatch against the device root_link.
         if (model_node && model_node["base_frame"]) {

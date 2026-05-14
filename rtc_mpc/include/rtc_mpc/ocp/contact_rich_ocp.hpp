@@ -5,7 +5,7 @@
 ///        fixed-base manipulator.
 ///
 /// Shares the `MultibodyConstraintFwdDynamicsTpl` backbone with
-/// `LightContactOCP`; the differentiation (Phase 4 scope; `git log
+/// `ContactLightOCP`; the differentiation (Phase 4 scope; `git log
 /// --grep='rtc_mpc Phase 4'`):
 /// - per-active-contact `ContactForceResidualTpl` in the running cost
 ///   when `cfg.w_contact_force > 0`
@@ -15,7 +15,7 @@
 ///   `GraspQualityResidualProvider` (pure-virtual; no concrete
 ///   implementation ships in Phase 4)
 ///
-/// Layout (identical to `LightContactOCP`):
+/// Layout (identical to `ContactLightOCP`):
 /// - state  `x = [q; v]` ∈ R^{nq+nv}
 /// - control `u = τ` ∈ R^{nv} (identity actuation; contact forces emerge
 ///   from the rigid-contact proximal solve as Lagrange multipliers λ, NOT
@@ -90,7 +90,7 @@ struct RichStageHandles {
 };
 
 /// Contact-rich MPC OCP handler. Shares the MultibodyConstraintFwdDynamicsTpl
-/// backbone with LightContactOCP; adds per-active-contact
+/// backbone with ContactLightOCP; adds per-active-contact
 /// ContactForceResidualTpl cost terms (when w_contact_force > 0) and
 /// MultibodyFrictionConeResidualTpl inequality constraints (when
 /// limits.friction_mu > 0). Use for CLOSURE / HOLD / MANIPULATE phases
@@ -156,7 +156,7 @@ class ContactRichOCP : public OCPHandlerBase {
   ///
   /// Default is null, which matches the Phase 4 baseline behaviour: no
   /// grasp-quality residual is added and the OCP behaves as
-  /// "LightContact + contact-force cost + friction cone". The effect of a
+  /// "ContactLight + contact-force cost + friction cone". The effect of a
   /// non-null provider takes hold on the **next** `Build()` call; this
   /// setter does not invalidate an already-built problem or trigger a
   /// rebuild on its own.

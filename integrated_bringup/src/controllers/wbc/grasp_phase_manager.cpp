@@ -31,7 +31,7 @@ static_assert(sizeof("hold") <= 16, "phase name 'hold' exceeds SSO");
 static_assert(sizeof("manipulate") <= 16, "phase name 'manipulate' exceeds SSO");
 static_assert(sizeof("retreat") <= 16, "phase name 'retreat' exceeds SSO");
 static_assert(sizeof("release") <= 16, "phase name 'release' exceeds SSO");
-static_assert(sizeof("light_contact") <= 16, "ocp_type 'light_contact' exceeds SSO");
+static_assert(sizeof("contact_light") <= 16, "ocp_type 'contact_light' exceeds SSO");
 static_assert(sizeof("contact_rich") <= 16, "ocp_type 'contact_rich' exceeds SSO");
 
 constexpr std::array<const char*, kNumGraspPhases> kPhaseNames = {
@@ -43,7 +43,7 @@ double Distance(const pinocchio::SE3& a, const pinocchio::SE3& b) noexcept {
 }
 
 bool IsValidOcpType(const std::string& s) noexcept {
-  return s == "light_contact" || s == "contact_rich";
+  return s == "contact_light" || s == "contact_rich";
 }
 
 template <typename T>
@@ -403,9 +403,9 @@ rtc::mpc::PhaseContext GraspPhaseManager::BuildContext(int id, bool changed) con
   ctx.phase_changed = changed;
 
   if (!initialised_ || id < 0 || id >= kNumGraspPhases) {
-    // Safe default: empty light-contact context. Consumers should not hit
+    // Safe default: empty contact-light context. Consumers should not hit
     // this unless Init failed silently (which we guard against above).
-    ctx.ocp_type = "light_contact";
+    ctx.ocp_type = "contact_light";
     return ctx;
   }
 

@@ -1,15 +1,15 @@
 #ifndef RTC_MPC_OCP_LIGHT_CONTACT_OCP_HPP_
 #define RTC_MPC_OCP_LIGHT_CONTACT_OCP_HPP_
 
-/// @file light_contact_ocp.hpp
-/// @brief Concrete `OCPHandlerBase` for the "LightContact" MPC mode on a
+/// @file contact_light_ocp.hpp
+/// @brief Concrete `OCPHandlerBase` for the "ContactLight" MPC mode on a
 ///        fixed-base manipulator (renamed from `KinoDynamicsOCP` in Phase
 ///        4.-1; commit `c5553a9`).
 ///
 /// The backing Aligator class is `MultibodyConstraintFwdDynamicsTpl` — the
 /// similarly-named `KinodynamicsFwdDynamicsTpl` is a floating-base
 /// centroidal class unsuitable for fixed-base manipulators. The
-/// "LightContact" name reflects the scope axis that distinguishes this OCP
+/// "ContactLight" name reflects the scope axis that distinguishes this OCP
 /// from Phase 4's `ContactRichOCP`: rigid-contact dynamics only, no
 /// contact-force cost and no friction-cone constraints.
 ///
@@ -62,15 +62,15 @@ struct LightStageHandles {
   aligator::ControlErrorResidualTpl<double>* control_reg{nullptr};
 };
 
-class LightContactOCP : public OCPHandlerBase {
+class ContactLightOCP : public OCPHandlerBase {
  public:
-  LightContactOCP() = default;
-  ~LightContactOCP() override = default;
+  ContactLightOCP() = default;
+  ~ContactLightOCP() override = default;
 
-  LightContactOCP(const LightContactOCP&) = delete;
-  LightContactOCP& operator=(const LightContactOCP&) = delete;
-  LightContactOCP(LightContactOCP&&) = delete;
-  LightContactOCP& operator=(LightContactOCP&&) = delete;
+  ContactLightOCP(const ContactLightOCP&) = delete;
+  ContactLightOCP& operator=(const ContactLightOCP&) = delete;
+  ContactLightOCP(ContactLightOCP&&) = delete;
+  ContactLightOCP& operator=(ContactLightOCP&&) = delete;
 
   [[nodiscard]] OCPBuildError Build(const PhaseContext& ctx, const RobotModelHandler& model,
                                     const OCPLimits& limits) noexcept override;
@@ -84,7 +84,7 @@ class LightContactOCP : public OCPHandlerBase {
   [[nodiscard]] int horizon_length() const noexcept override { return horizon_length_; }
 
   [[nodiscard]] std::string_view ocp_type() const noexcept override {
-    return std::string_view{"light_contact"};
+    return std::string_view{"contact_light"};
   }
 
  private:
