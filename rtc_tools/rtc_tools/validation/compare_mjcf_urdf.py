@@ -21,7 +21,7 @@ Usage:
   # Auto-detect via ament package + canonical layout
   # (<robot-pkg>/robots/<robot-name>/{mjcf,urdf}/<robot-name>.{xml,urdf}):
   ros2 run rtc_tools compare_mjcf_urdf \\
-      --robot-pkg robot_descriptions --robot-name ur5e
+      --robot-pkg robot_descriptions --robot-name <robot_name>
 
   # Override the MJCF default class root if it differs from the model name:
   ros2 run rtc_tools compare_mjcf_urdf --mjcf-class my_robot ...
@@ -37,6 +37,10 @@ import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
 
 # ── Data structures ────────────────────────────────────────────────────────────
 
@@ -172,6 +176,29 @@ def parse_mjcf(
             params.origin_rpy = _parse_floats(quat)  # Store raw quat for reporting
         links[name] = params
 
+    # ── Actuator → joint forcerange map ──
+    #
+    # urdf_to_mjcf writes ``<actuator><general joint="J" forcerange="...">``
+    # directly (without relying on default-class inheritance), so the
+    # authoritative effort value lives there rather than in <default>.
+    # Build a lookup once; fall back to the default-class value if a joint
+    # has no actuator entry.
+    actuator_forcerange: dict[str, float] = {}
+    for act_root in root.findall("actuator"):
+        for act in act_root:
+            jname_attr = act.get("joint")
+            if not jname_attr:
+                continue
+            fr_str = act.get("forcerange")
+            if fr_str is None:
+                cls = act.get("class", root_class or "")
+                fr_str = resolve_general_defaults(cls).get("forcerange")
+            if fr_str is None:
+                continue
+            fr = _parse_floats(fr_str)
+            if len(fr) == 2:
+                actuator_forcerange[jname_attr] = fr[1]
+
     # ── Parse joints ──
     joints = {}
     for body in root.iter("body"):
@@ -194,10 +221,16 @@ def parse_mjcf(
             rng = _parse_floats(range_str)
             jp.lower, jp.upper = rng[0], rng[1]
 
-            # Effort (forcerange)
-            fr_str = gdefaults.get("forcerange", "-150 150")
-            fr = _parse_floats(fr_str)
-            jp.effort = fr[1]  # positive limit
+            # Effort (forcerange): prefer actuator-level value, fall back to
+            # default-class.  If neither exists, leave at 0 to flag MJCF has
+            # no force limit declared rather than fabricate a default.
+            if jname in actuator_forcerange:
+                jp.effort = actuator_forcerange[jname]
+            elif "forcerange" in gdefaults:
+                fr = _parse_floats(gdefaults["forcerange"])
+                jp.effort = fr[1] if len(fr) == 2 else 0.0
+            else:
+                jp.effort = 0.0
 
             # Armature
             jp.armature = float(jdefaults.get("armature", "0"))
@@ -300,6 +333,399 @@ def _fmt(val: float) -> str:
     return f"{val:.6g}"
 
 
+def _urdf_principal_moments(params: "InertialParams") -> list[float]:
+    """Return URDF inertia eigenvalues sorted descending.
+
+    Builds the full 3x3 symmetric inertia matrix from URDF ``ixx, iyy, izz,
+    ixy, ixz, iyz`` and returns its eigenvalues.  Principal moments are a
+    rotation-invariant signature, so they compare cleanly against MJCF's
+    ``diaginertia`` regardless of how either side oriented the inertial
+    frame.
+
+    Falls back to ``sorted(diag_inertia)`` when NumPy is not available.
+    """
+    ixx, iyy, izz = params.diag_inertia
+    ixy, ixz, iyz = params.off_diag_inertia
+    try:
+        import numpy as np  # noqa: PLC0415
+
+        I = np.array(
+            [[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]],
+            dtype=float,
+        )
+        eigs = np.linalg.eigvalsh(I)
+        return sorted((float(v) for v in eigs), reverse=True)
+    except ImportError:
+        return sorted((ixx, iyy, izz), reverse=True)
+
+
+# ── Physical plausibility (URDF inertia vs collision-shape mass distribution) ─
+
+
+def _rpy_to_rotmat(rpy: tuple[float, float, float]):
+    import numpy as np  # noqa: PLC0415
+
+    r, p, y = rpy
+    cr, sr = math.cos(r), math.sin(r)
+    cp, sp = math.cos(p), math.sin(p)
+    cy, sy = math.cos(y), math.sin(y)
+    return (
+        np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+        @ np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+        @ np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    )
+
+
+def _shape_volume_and_local_inertia(shape_elem: ET.Element):
+    """Return (volume, I_local_unit_mass) for a URDF collision/visual primitive.
+
+    The returned ``I_local_unit_mass`` is the inertia tensor of the shape with
+    unit mass, expressed in the shape's local frame about its centroid.
+    Returns ``(0.0, None)`` for shapes we can't size (notably ``<mesh>``).
+    """
+    import numpy as np  # noqa: PLC0415
+
+    box = shape_elem.find("box")
+    if box is not None:
+        sx, sy, sz = (float(v) for v in box.get("size", "0 0 0").split())
+        vol = sx * sy * sz
+        I = np.diag(
+            [
+                (sy * sy + sz * sz) / 12.0,
+                (sx * sx + sz * sz) / 12.0,
+                (sx * sx + sy * sy) / 12.0,
+            ]
+        )
+        return vol, I
+
+    cyl = shape_elem.find("cylinder")
+    if cyl is not None:
+        r = float(cyl.get("radius", "0"))
+        h = float(cyl.get("length", "0"))
+        vol = math.pi * r * r * h
+        Ixy = (3.0 * r * r + h * h) / 12.0
+        Iz = r * r / 2.0
+        return vol, np.diag([Ixy, Ixy, Iz])
+
+    sph = shape_elem.find("sphere")
+    if sph is not None:
+        r = float(sph.get("radius", "0"))
+        vol = 4.0 / 3.0 * math.pi * r * r * r
+        Ixyz = 2.0 / 5.0 * r * r
+        return vol, np.diag([Ixyz, Ixyz, Ixyz])
+
+    return 0.0, None
+
+
+def _urdf_link_collision_inertia(
+    urdf_root: ET.Element,
+    link_name: str,
+    total_mass: float,
+) -> tuple[float, int]:
+    """Estimate the inertia trace of a URDF link from its collision geometry.
+
+    The link's declared mass is distributed across collision primitives in
+    proportion to their volume (uniform-density assumption), each primitive's
+    inertia is computed in its local frame, rotated into the link frame, and
+    shifted to the link origin via the parallel-axis theorem.  We return only
+    the trace ``Ixx + Iyy + Izz`` — a rotation-invariant scalar that lets us
+    compare against any URDF inertia frame without worrying about axes.
+
+    Returns:
+        ``(estimated_trace, n_primitives_used)``.  ``estimated_trace`` is 0
+        when no sizable primitives are present (typically mesh-only links).
+    """
+    try:
+        import numpy as np  # noqa: PLC0415
+    except ImportError:
+        return 0.0, 0
+
+    link = next(
+        (l for l in urdf_root.findall("link") if l.get("name") == link_name),
+        None,
+    )
+    if link is None:
+        return 0.0, 0
+
+    primitives = []
+    for col in link.findall("collision"):
+        geom = col.find("geometry")
+        if geom is None:
+            continue
+        vol, I_local = _shape_volume_and_local_inertia(geom)
+        if I_local is None or vol <= 0.0:
+            continue
+        origin = col.find("origin")
+        xyz = (0.0, 0.0, 0.0)
+        rpy = (0.0, 0.0, 0.0)
+        if origin is not None:
+            xyz = tuple(float(v) for v in origin.get("xyz", "0 0 0").split())
+            rpy = tuple(float(v) for v in origin.get("rpy", "0 0 0").split())
+        primitives.append((vol, I_local, xyz, rpy))
+
+    if not primitives:
+        return 0.0, 0
+
+    total_vol = sum(p[0] for p in primitives)
+    if total_vol <= 0.0:
+        return 0.0, 0
+
+    I_total = np.zeros((3, 3))
+    for vol, I_local, xyz, rpy in primitives:
+        m_i = total_mass * vol / total_vol
+        R = _rpy_to_rotmat(rpy)
+        I_at_origin_centroid = R @ (m_i * I_local) @ R.T
+        r = np.asarray(xyz, dtype=float)
+        I_total += I_at_origin_centroid + m_i * (np.dot(r, r) * np.eye(3) - np.outer(r, r))
+
+    return float(np.trace(I_total)), len(primitives)
+
+
+def _check_inertia_plausibility(
+    urdf_root: ET.Element,
+    urdf_link_name: str,
+    urdf_ip: "InertialParams",
+    *,
+    ratio_low: float = 0.5,
+    ratio_high: float = 2.0,
+) -> str:
+    """Return a WARN message string when URDF inertia looks physically off.
+
+    Compares the trace of URDF's declared inertia (about its inertial origin,
+    lifted to the link origin via parallel-axis) to the trace estimated from
+    the link's collision primitives.  If the ratio falls outside
+    ``[ratio_low, ratio_high]`` the URDF inertia is likely a placeholder
+    (point-mass at link origin, copy-paste from another robot, etc.).
+
+    Returns "" when:
+      * no sizable collision primitives exist (mesh-only links),
+      * mass is zero,
+      * the ratio is in the acceptable band.
+
+    The check is informational — it cannot tell whether the declared inertia
+    or the collision geometry is the source of truth.
+    """
+    if urdf_ip.mass <= 0.0:
+        return ""
+
+    try:
+        import numpy as np  # noqa: PLC0415
+    except ImportError:
+        return ""
+
+    geom_trace, n_prim = _urdf_link_collision_inertia(urdf_root, urdf_link_name, urdf_ip.mass)
+    if n_prim == 0 or geom_trace <= 0.0:
+        return ""
+
+    # URDF declared trace, lifted from inertial origin to link origin via Steiner.
+    ixx, iyy, izz = urdf_ip.diag_inertia
+    declared_trace = ixx + iyy + izz
+    r = urdf_ip.origin_xyz
+    declared_trace_at_link = declared_trace + 2.0 * urdf_ip.mass * (
+        r[0] * r[0] + r[1] * r[1] + r[2] * r[2]
+    )
+
+    if declared_trace_at_link <= 0.0:
+        return ""
+
+    ratio = geom_trace / declared_trace_at_link
+    if ratio_low <= ratio <= ratio_high:
+        return ""
+
+    direction = "smaller than" if ratio > 1.0 else "larger than"
+    return (
+        f"    [WARN] URDF inertia looks physically implausible: "
+        f"declared trace={_fmt(declared_trace_at_link)} is "
+        f"{ratio:.2f}x {direction} the collision-geometry estimate "
+        f"({_fmt(geom_trace)}, from {n_prim} primitive(s)).  Likely a "
+        f"placeholder — sim dynamics will not match physical link."
+    )
+
+
+# ── Structural comparison (counts, mass conservation, missing links) ──────────
+
+
+def _urdf_link_mass(urdf_root: ET.Element) -> dict[str, float]:
+    """Return ``{link_name: mass}`` for every URDF link (0.0 when no inertial)."""
+    result: dict[str, float] = {}
+    for link in urdf_root.findall("link"):
+        name = link.get("name")
+        if not name:
+            continue
+        inertial = link.find("inertial")
+        mass = 0.0
+        if inertial is not None:
+            m = inertial.find("mass")
+            if m is not None:
+                mass = float(m.get("value", "0"))
+        result[name] = mass
+    return result
+
+
+def _urdf_active_joints(urdf_root: ET.Element) -> list[str]:
+    """Return URDF joint names that contribute DoF (non-fixed)."""
+    return [
+        j.get("name", "")
+        for j in urdf_root.findall("joint")
+        if j.get("type") in ("revolute", "continuous", "prismatic") and j.get("name")
+    ]
+
+
+def _urdf_geom_counts(urdf_root: ET.Element) -> tuple[int, int]:
+    """Return ``(visual_count, collision_count)`` across the URDF."""
+    return (sum(1 for _ in urdf_root.iter("visual")), sum(1 for _ in urdf_root.iter("collision")))
+
+
+def _compare_structure(
+    mjcf_path: Path,
+    urdf_path: Path,
+    tolerance: float,
+) -> tuple[int, int]:
+    """Compare structural counts and mass conservation between MJCF and URDF.
+
+    Uses ``mujoco.MjModel`` to read the *compiled* MJCF (matching what the
+    simulator actually sees), so fixed-link fusion, missing visual meshes,
+    or broken mesh paths surface as concrete diffs.  Falls back to plain
+    XML counts when ``mujoco`` is not importable.
+
+    Reports:
+      * Body count: URDF link count vs MJCF nbody (minus world).
+      * DoF / actuator count: URDF non-fixed joints vs MJCF nv / nu.
+      * Total mass: sum of URDF link masses vs sum of MJCF body_mass.
+      * Geom count: URDF (visual + collision) vs MJCF ngeom.
+      * Mesh asset count: distinct URDF mesh files vs MJCF nmesh.
+      * Missing links: URDF links absent from MJCF body list — these
+        usually indicate MuJoCo's ``fusestatic`` optimization absorbed
+        the link, taking its mass with it.
+
+    Returns:
+        ``(mismatches, warnings)`` counts contributed by this section.
+    """
+    urdf_root = ET.parse(urdf_path).getroot()
+    urdf_link_mass = _urdf_link_mass(urdf_root)
+    urdf_links = set(urdf_link_mass.keys())
+    urdf_active_joints = _urdf_active_joints(urdf_root)
+    urdf_visual, urdf_collision = _urdf_geom_counts(urdf_root)
+    urdf_total_mass = sum(urdf_link_mass.values())
+    urdf_mesh_files = {
+        m.get("filename", "").rsplit("/", 1)[-1]
+        for m in urdf_root.iter("mesh")
+        if m.get("filename")
+    }
+
+    print("\n--- Structural Comparison (MuJoCo-compiled model vs URDF) ---\n")
+
+    mismatches = 0
+    warnings = 0
+
+    try:
+        import mujoco  # noqa: PLC0415
+    except ImportError:
+        print(
+            "  [WARN] 'mujoco' module not importable — skipping compiled-model "
+            "structural comparison.  Install with `pip install mujoco` for "
+            "full validation."
+        )
+        return 0, 1
+
+    try:
+        model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+    except Exception as e:
+        print(f"  [MISMATCH] MJCF failed to compile under MuJoCo: {e}")
+        return 1, 0
+
+    mjcf_bodies = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(model.nbody)
+    }
+    mjcf_bodies.discard("world")
+    mjcf_total_mass = float(sum(model.body_mass))
+
+    # Body / link count
+    expected_bodies = len(urdf_links)
+    actual_bodies = model.nbody - 1  # exclude world
+    if actual_bodies != expected_bodies:
+        print(
+            f"  [MISMATCH] body count: URDF links={expected_bodies}  "
+            f"MJCF bodies (excl. world)={actual_bodies}"
+        )
+        mismatches += 1
+    else:
+        print(f"  body count: {actual_bodies}  OK")
+
+    # DoF / actuator
+    if model.nv != len(urdf_active_joints):
+        print(
+            f"  [MISMATCH] DoF: URDF non-fixed joints={len(urdf_active_joints)}  "
+            f"MJCF nv={model.nv}"
+        )
+        mismatches += 1
+    else:
+        print(f"  DoF: {model.nv}  OK")
+
+    if model.nu != len(urdf_active_joints):
+        print(
+            f"  [WARN] actuator count: URDF non-fixed joints={len(urdf_active_joints)}  "
+            f"MJCF nu={model.nu} (MJCF may intentionally omit actuators)"
+        )
+        warnings += 1
+    else:
+        print(f"  actuators: {model.nu}  OK")
+
+    # Total mass
+    mass_delta = abs(mjcf_total_mass - urdf_total_mass)
+    if mass_delta > max(tolerance, 1e-4 * max(urdf_total_mass, 1e-9)):
+        print(
+            f"  [MISMATCH] total mass: URDF={_fmt(urdf_total_mass)}  "
+            f"MJCF={_fmt(mjcf_total_mass)}  (delta={_fmt(mass_delta)})"
+        )
+        mismatches += 1
+    else:
+        print(f"  total mass: URDF={_fmt(urdf_total_mass)}  MJCF={_fmt(mjcf_total_mass)}  OK")
+
+    # Geom count
+    urdf_geom_total = urdf_visual + urdf_collision
+    if model.ngeom != urdf_geom_total:
+        print(
+            f"  [WARN] geom count: URDF visual+collision={urdf_geom_total}  "
+            f"MJCF ngeom={model.ngeom}"
+        )
+        warnings += 1
+    else:
+        print(f"  geoms: {model.ngeom}  OK")
+
+    # Mesh asset count
+    if urdf_mesh_files:
+        if model.nmesh != len(urdf_mesh_files):
+            print(
+                f"  [WARN] mesh asset count: URDF distinct files={len(urdf_mesh_files)}  "
+                f"MJCF nmesh={model.nmesh}  "
+                "(missing visuals usually mean MuJoCo's discardvisual was on)"
+            )
+            warnings += 1
+        else:
+            print(f"  meshes: {model.nmesh}  OK")
+
+    # Missing links — the strong signal for fusestatic regression
+    missing = sorted(urdf_links - mjcf_bodies)
+    if missing:
+        print(f"\n  [MISMATCH] URDF links absent from MJCF ({len(missing)}):")
+        for name in missing:
+            m = urdf_link_mass.get(name, 0.0)
+            note = f"  mass={_fmt(m)} kg lost" if m > 0 else "  (massless)"
+            print(f"    - {name}{note}")
+        print(
+            "    Hint: MuJoCo's compiler defaults absorb fixed-joint child "
+            'links into their parent (fusestatic="true") and silently drop '
+            "the root link when it is empty.  Inject "
+            '<mujoco><compiler fusestatic="false"/></mujoco> in the URDF '
+            "to preserve 1:1 link → body mapping."
+        )
+        mismatches += 1
+
+    print()
+    return mismatches, warnings
+
+
 def compare(
     mjcf_path: Path,
     urdf_path: Path,
@@ -340,8 +766,16 @@ def compare(
     print(f"  Tolerance: {tolerance}")
     print("=" * 78)
 
+    # ── Structural comparison (counts, mass, missing links) ──
+    s_mis, s_warn = _compare_structure(mjcf_path, urdf_path, tolerance)
+    mismatches += s_mis
+    warnings += s_warn
+
     # ── Link inertial comparison ──
     print("\n--- Link Inertial Parameters ---\n")
+
+    # Cache parsed URDF root so the plausibility helper doesn't reparse per link.
+    urdf_root_cached = ET.parse(urdf_path).getroot()
 
     for mjcf_name, urdf_name in link_map.items():
         mjcf_ip = mjcf_links.get(mjcf_name)
@@ -372,38 +806,59 @@ def compare(
         else:
             print(f"    mass: {_fmt(mjcf_ip.mass)}  OK")
 
-        # Diagonal inertia
-        inertia_labels = ["Ixx", "Iyy", "Izz"]
-        for i, lbl in enumerate(inertia_labels):
-            m_val = mjcf_ip.diag_inertia[i]
-            u_val = urdf_ip.diag_inertia[i]
-            if not _close(m_val, u_val, tolerance):
-                print(
-                    f"    {lbl} MISMATCH:  MJCF={_fmt(m_val)}  URDF={_fmt(u_val)}"
-                    f"  (delta={_fmt(abs(m_val - u_val))})"
-                )
-                mismatches += 1
+        # Inertia comparison via principal moments
+        #
+        # URDF stores the full inertia tensor in the (possibly rotated)
+        # inertial frame.  MJCF normalises this to the principal-axis frame:
+        # ``diaginertia`` holds the eigenvalues sorted descending, and an
+        # optional ``quat`` encodes the rotation from body frame to that
+        # principal frame.  Comparing raw Ixx/Iyy/Izz fails when either side
+        # is rotated; comparing sorted eigenvalues is rotation-invariant.
+        u_eigs = _urdf_principal_moments(urdf_ip)
+        m_eigs = sorted((float(v) for v in mjcf_ip.diag_inertia), reverse=True)
 
-        # Check if URDF has significant off-diagonal inertia
+        eig_pairs = list(zip(m_eigs, u_eigs))
+        eig_match = all(_close(m, u, tolerance) for m, u in eig_pairs)
+
+        if eig_match:
+            print(
+                f"    principal moments: "
+                f"[{_fmt(m_eigs[0])}, {_fmt(m_eigs[1])}, {_fmt(m_eigs[2])}]  OK"
+            )
+        else:
+            print(
+                f"    INERTIA MISMATCH (principal moments):"
+                f"  MJCF=[{_fmt(m_eigs[0])}, {_fmt(m_eigs[1])}, {_fmt(m_eigs[2])}]"
+                f"  URDF=[{_fmt(u_eigs[0])}, {_fmt(u_eigs[1])}, {_fmt(u_eigs[2])}]"
+            )
+            for i, lbl in enumerate(("λ1", "λ2", "λ3")):
+                d = abs(m_eigs[i] - u_eigs[i])
+                if d > tolerance:
+                    print(f"      {lbl} delta={_fmt(d)}")
+            mismatches += 1
+
+        # Informational notes (non-error): off-diagonal magnitude / frame rotation
         off_diag_mag = math.sqrt(sum(x * x for x in urdf_ip.off_diag_inertia))
         if off_diag_mag > tolerance:
             print(
-                f"    [NOTE] URDF has non-zero off-diagonal inertia: "
-                f"Ixy={_fmt(urdf_ip.off_diag_inertia[0])}, "
-                f"Ixz={_fmt(urdf_ip.off_diag_inertia[1])}, "
-                f"Iyz={_fmt(urdf_ip.off_diag_inertia[2])}"
+                f"    [NOTE] URDF has non-zero off-diagonal inertia "
+                f"(|off-diag|={_fmt(off_diag_mag)}); compared via principal moments."
             )
-            print("           MJCF diaginertia assumes these are zero (principal axes frame).")
-            warnings += 1
-
-        # Check if inertial frames differ
         if urdf_ip.origin_rpy != [0.0, 0.0, 0.0]:
             rpy_str = " ".join(_fmt(v) for v in urdf_ip.origin_rpy)
-            print(f"    [NOTE] URDF inertial frame rotated: rpy=[{rpy_str}]")
             print(
-                "           Diagonal inertia values are NOT directly comparable "
-                "when frames differ."
+                f"    [NOTE] URDF inertial frame rotated rpy=[{rpy_str}]; "
+                "compared via principal moments."
             )
+
+        # Physical plausibility: compare URDF-declared inertia trace to the
+        # estimate from collision-shape mass distribution.  Both quantities
+        # are taken about the link origin and are rotation-invariant, so a
+        # large ratio (declared << geometric) usually means the URDF inertia
+        # was a placeholder, not a proper rigid-body computation.
+        plaus_warn = _check_inertia_plausibility(urdf_root_cached, urdf_name, urdf_ip)
+        if plaus_warn:
+            print(plaus_warn)
             warnings += 1
 
         print()
@@ -491,6 +946,46 @@ def compare(
 
     print("=" * 78)
     return mismatches
+
+
+def compare_mjcf_urdf(
+    mjcf_path: str | Path,
+    urdf_path: str | Path,
+    tolerance: float = 1e-4,
+    robot_label: str = "",
+) -> int:
+    """Convenience wrapper: auto-detect link map + joint list and run compare.
+
+    Intended for callers that have an MJCF/URDF pair and want a single-call
+    validation — e.g. ``urdf_to_mjcf`` invoking validation right after
+    conversion.  Falls back gracefully when no shared links/joints are
+    detected (returns 0 with a printed warning rather than crashing).
+
+    Returns:
+        Number of mismatches reported by :func:`compare`.
+    """
+    mjcf_path = Path(mjcf_path)
+    urdf_path = Path(urdf_path)
+
+    link_map = _detect_link_mapping(mjcf_path, urdf_path)
+    joint_names = _detect_joints(mjcf_path, urdf_path)
+
+    if not link_map and not joint_names:
+        print(
+            "Warning: no shared inertial links or joints found between MJCF "
+            "and URDF — nothing to compare.",
+            file=sys.stderr,
+        )
+        return 0
+
+    return compare(
+        mjcf_path,
+        urdf_path,
+        link_map=link_map,
+        joint_names=joint_names,
+        tolerance=tolerance,
+        robot_label=robot_label,
+    )
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -612,7 +1107,7 @@ def main():
         "--robot-name",
         type=str,
         default=None,
-        help="Robot name used as both directory and file stem under --robot-pkg (e.g. 'ur5e').",
+        help="Robot name used as both directory and file stem under --robot-pkg.",
     )
     parser.add_argument(
         "--mjcf-class",

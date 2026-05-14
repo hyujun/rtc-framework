@@ -9,9 +9,9 @@ Supports:
   - Scene file generation
 
 Usage:
-  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/ur5e
+  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/<robot_name>
   ros2 run rtc_tools urdf_to_mjcf --input /path/to/robot.urdf --output /path/to/output.xml
-  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/ur5e --scene --validate
+  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/<robot_name> --scene --validate
 """
 
 from __future__ import annotations
@@ -231,6 +231,41 @@ def remove_closed_chain_joints(
         if jelem.get("name", "") in to_remove:
             root.remove(jelem)
 
+    return ET.tostring(root, encoding="unicode", xml_declaration=True)
+
+
+def inject_mujoco_compiler_defaults(urdf_xml: str) -> str:
+    """Inject MuJoCo URDF-compiler defaults that preserve URDF structure.
+
+    MuJoCo's URDF compiler applies two optimizations by default that
+    diverge from a 1:1 URDF↔MJCF mapping:
+
+      * ``discardvisual="true"`` silently drops every ``<visual>`` element
+        on import, losing all visual mesh geometry.
+      * ``fusestatic="true"`` merges fixed-joint child links into their
+        parent body, removing them from the MJCF body list entirely.
+        Their inertia is folded into the parent — except when the parent
+        is the world body, in which case the inertia is discarded outright.
+
+    Both behaviours break parity with URDF-based pipelines (e.g.
+    Pinocchio) that expect every URDF link to map to a named body.  We
+    inject the extension element so the converted MJCF contains visual
+    meshes and preserves all link → body relationships.
+
+    Existing ``<mujoco><compiler ...>`` blocks are preserved; only the
+    attributes that are missing are added.
+    """
+    root = ET.fromstring(urdf_xml)
+    mj = root.find("mujoco")
+    if mj is None:
+        mj = ET.SubElement(root, "mujoco")
+    compiler = mj.find("compiler")
+    if compiler is None:
+        compiler = ET.SubElement(mj, "compiler")
+    if compiler.get("discardvisual") is None:
+        compiler.set("discardvisual", "false")
+    if compiler.get("fusestatic") is None:
+        compiler.set("fusestatic", "false")
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
 
@@ -585,12 +620,20 @@ def _add_parent_child_collision_excludes(
             seen.add(pair)
             unique_pairs.append(pair)
 
+    # Drop pairs whose body no longer exists in the MJCF.  Fixed-joint
+    # parents that were merged into worldbody (e.g. an empty root link)
+    # disappear during URDF→MJCF compile and would cause MuJoCo to reject
+    # the exclude with "body 'X' not found in bodypair".
+    mjcf_bodies = {b.get("name") for b in mjcf_root.iter("body")}
+
     contact = mjcf_root.find("contact")
     if contact is None:
         contact = ET.SubElement(mjcf_root, "contact")
 
     count = 0
     for parent_link, child_link in unique_pairs:
+        if parent_link not in mjcf_bodies or child_link not in mjcf_bodies:
+            continue
         attrib = {"body1": parent_link, "body2": child_link}
         contact.append(_make_element("exclude", attrib))
         count += 1
@@ -598,12 +641,37 @@ def _add_parent_child_collision_excludes(
     return count
 
 
-def _clean_mesh_paths(mjcf_root: ET.Element) -> None:
-    """Strip directory prefixes from mesh file attributes (keep filename only)."""
+def _clean_mesh_paths(mjcf_root: ET.Element, meshdir: Path) -> None:
+    """Rewrite mesh file attributes to be relative to ``meshdir``.
+
+    MuJoCo embeds absolute paths after URDF compile.  We want files relative
+    to the ``<compiler meshdir=...>`` so the MJCF stays portable.
+
+    Resolution order:
+      1. Path is already inside ``meshdir`` → use the literal relative path
+         (preserves ``visual/`` / ``collision/`` subdirs).
+      2. Path is absolute but in a different tree (e.g. install/share/) →
+         search by basename under ``meshdir`` and use that relative path.
+      3. Fallback → bare filename only.
+    """
+    meshdir = meshdir.resolve()
     for mesh_elem in mjcf_root.iter("mesh"):
         file_attr = mesh_elem.get("file")
-        if file_attr:
-            mesh_elem.set("file", Path(file_attr).name)
+        if not file_attr:
+            continue
+        fpath = Path(file_attr)
+        if fpath.is_absolute():
+            try:
+                rel = fpath.resolve().relative_to(meshdir)
+                mesh_elem.set("file", str(rel))
+                continue
+            except ValueError:
+                matches = list(meshdir.rglob(fpath.name))
+                if matches:
+                    rel = matches[0].resolve().relative_to(meshdir)
+                    mesh_elem.set("file", str(rel))
+                    continue
+        mesh_elem.set("file", fpath.name)
 
 
 def _make_element(tag: str, attrib: dict[str, str]) -> ET.Element:
@@ -642,7 +710,7 @@ def postprocess_mjcf(
 
     _fix_compiler(root, meshdir_rel)
     _add_option(root)
-    _clean_mesh_paths(root)
+    _clean_mesh_paths(root, meshdir)
     n_eq = _add_equality_constraints(root, classification)
     n_act = _add_actuators(root, classification)
 
@@ -828,6 +896,8 @@ def convert_urdf_to_mjcf(
             classification.passive_closed_chain,
         )
 
+    urdf_xml = inject_mujoco_compiler_defaults(urdf_xml)
+
     # ── Step 4: Write temp URDF & compile with MuJoCo ─────────────────
     #
     # MuJoCo resolves mesh filenames relative to the XML file location.
@@ -913,19 +983,20 @@ def main():
         epilog="""\
 Examples:
   # Directory convention (auto-discover URDF, output to mjcf/, resolve meshes)
-  ros2 run rtc_tools urdf_to_mjcf --robot-dir robot_descriptions/robots/ur5e
+  ros2 run rtc_tools urdf_to_mjcf --robot-dir robot_descriptions/robots/<robot_name>
 
   # Specify URDF within robot directory
-  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/ur5e --urdf-file ur5e_with_hand.urdf.xacro
+  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/<robot_name> \\
+      --urdf-file <robot_name>_with_hand.urdf.xacro
 
   # Explicit input/output (legacy mode)
   ros2 run rtc_tools urdf_to_mjcf --input robot.urdf --output robot.xml
 
   # With scene generation and validation
-  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/ur5e --scene --validate
+  ros2 run rtc_tools urdf_to_mjcf --robot-dir robots/<robot_name> --scene --validate
 
   # Xacro with arguments
-  ros2 run rtc_tools urdf_to_mjcf --input robot.xacro --xacro-args name:=ur5e
+  ros2 run rtc_tools urdf_to_mjcf --input robot.xacro --xacro-args name:=<robot_name>
 """,
     )
 
