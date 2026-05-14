@@ -136,7 +136,7 @@ demo_wbc_controller:
   # ── E-STOP target ──────────────────────────────────────────────────────────
   estop:
     arm_safe_position:           # rad, 7 values = iiwa7 DoF (home pose)
-      [0.0, -0.7, 0.0, 1.4, 0.0, -0.7, 0.0]
+      [0.0, 0.7, 0.0, -1.4, 0.0, 0.7, 0.0]
 
   # ── MPC integration ────────────────────────────────────────────────────────
   # Start with MPC disabled; flip via launch arg `enable_mpc:=true` once

@@ -19,11 +19,11 @@ demo_joint_controller:
   estop:
     arm_safe_position:           # rad, 7 values = iiwa7 DoF (home pose)
       - 0.0
-      - -0.7
+      - 0.7
       - 0.0
-      - 1.4
+      - -1.4
       - 0.0
-      - -0.7
+      - 0.7
       - 0.0
 
   # ── Output type ────────────────────────────────────────────────────────────

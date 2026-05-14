@@ -340,6 +340,11 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter(prefix + "state_topic", std::string(""));
     declare_parameter(prefix + "sensor_topic", std::string(""));
     declare_parameter(prefix + "sensor_names", std::vector<std::string>{});
+    // Per-group PD overrides; empty default = inherit the global servo_kp/kd.
+    // Required when groups have different DoF since a single global
+    // servo_kp/kd array cannot match multiple distinct joint counts.
+    declare_parameter(prefix + "servo_kp", std::vector<double>{});
+    declare_parameter(prefix + "servo_kd", std::vector<double>{});
   }
 
   // ── Simulator creation

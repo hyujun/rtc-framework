@@ -24,9 +24,13 @@ mujoco_simulator:
     n_substeps: 3
 
     # ── Position Servo Gains ──────────────────────────────────────────────────
-    # MJCF authors gainprm/biasprm via default actuator (urdf_to_mjcf); keep
-    # use_yaml_servo_gains=false to honor those values.
-    use_yaml_servo_gains: false
+    # iiwa7_leap MJCF actuators are bare `<general .../>` (no gainprm/biasprm),
+    # so the default behavior `force = ctrl` gives no position tracking — the
+    # arm collapses under gravity. Inject PD gains here:
+    #   force = kp·(ctrl - qpos) - kd·qvel   (see mujoco_sim_loop.cpp:191).
+    # iiwa7 gains follow ur5e pattern (large joints 500/400, wrist 150/100);
+    # LEAP fingers stay small because their force range is only ±0.95 Nm.
+    use_yaml_servo_gains: true
 
     # ── Robot Response ────────────────────────────────────────────────────────
     robot_response:
@@ -50,6 +54,9 @@ mujoco_simulator:
           - A7
         command_topic: "/iiwa7/joint_command"
         state_topic: "/joint_states"
+        # PD gains per joint (A1..A7). Large joints 500/400, wrists 150/100.
+        servo_kp: [500.0, 500.0, 500.0, 500.0, 150.0, 150.0, 150.0]
+        servo_kd: [400.0, 400.0, 400.0, 400.0, 100.0, 100.0, 100.0]
       leap:
         # LEAP joint names are bare numbers — quote in YAML to keep them as strings.
         # URDF/MJCF declaration order (index → middle → ring → thumb).
@@ -89,3 +96,9 @@ mujoco_simulator:
           - "15"
         command_topic: "/leap/joint_command"
         state_topic: "/leap/joint_states"
+        # LEAP servo gains in command_joint_names order ("0".."15").
+        # Force range is only ±0.95 Nm; keep PD small to avoid saturation.
+        servo_kp: [20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0,
+                   20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]
+        servo_kd: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                   1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

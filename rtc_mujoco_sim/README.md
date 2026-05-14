@@ -386,7 +386,7 @@ mujoco_simulator:
 | `sensor_topic` | string | MuJoCo 센서 퍼블리시 토픽 (빈 문자열 = 비활성화) |
 | `sensor_names` | string[] | XML 센서 이름 목록 (빈 배열 = 센서 없음) |
 | `filter_alpha` | double | fake_response 전용 LPF 계수 (기본 0.1) |
-| `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속) |
+| `servo_kp` / `servo_kd` | double[] | 그룹별 servo 게인 (미지정 시 글로벌 값 상속). 그룹마다 DoF 가 다르면 글로벌 fallback 으론 매치 불가하므로 그룹별 지정 필수. |
 
 ### 그룹 구성 예시
 
