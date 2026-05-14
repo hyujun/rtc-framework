@@ -36,7 +36,7 @@ demo_joint_controller:
         - topic: "iiwa7/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/joint_states"
+        - topic: "/iiwa7/joint_states"
           role: "state"
       publish:
         - topic: "/iiwa7/joint_command"

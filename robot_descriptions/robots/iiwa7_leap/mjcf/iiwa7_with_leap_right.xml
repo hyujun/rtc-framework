@@ -239,7 +239,10 @@
        iiwa7 large joints (A1-A4): kp=2000 kd=400
        iiwa7 wrists       (A5-A7): kp=500  kd=100
        LEAP fingers       (0-15) : kp=100  kd=2   (forcerange ±0.95 N·m clip)
-       Paired with mujoco_simulator.yaml use_yaml_servo_gains: false.
+       NOTE: mujoco_simulator.yaml uses use_yaml_servo_gains: true so the
+       YAML servo block overrides these inline values at runtime. The inline
+       gainprm/biasprm here remain a safe standalone fallback (e.g. when the
+       MJCF is loaded directly without the simulator node).
        MANUAL: urdf_to_mjcf 재실행 시 이 actuator 블록은 bare <general/>로
        되돌아갑니다. 재생성 후 이 블록을 다시 박을 것 (robots/iiwa7_leap/README.md). -->
   <actuator>
@@ -306,4 +309,48 @@
     <key name="home" qpos="0 0.7 0 -1.4 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
                      ctrl="0 0.7 0 -1.4 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/>
   </keyframe>
+
+  <!-- Parent-child contact excludes (merged from standalone iiwa7.xml and
+       leap_hand_right.xml, plus the iiwa7-hand junction).
+       Without these, tiny LEAP finger boxes oscillate against their parent
+       links every tick (visible as constant trembling). MANUAL: re-paste this
+       block after any urdf_to_mjcf regeneration (see robots/iiwa7_leap/README.md). -->
+  <contact>
+    <!-- iiwa7 arm chain -->
+    <exclude body1="link_0" body2="link_1" />
+    <exclude body1="link_1" body2="link_2" />
+    <exclude body1="link_2" body2="link_3" />
+    <exclude body1="link_3" body2="link_4" />
+    <exclude body1="link_4" body2="link_5" />
+    <exclude body1="link_5" body2="link_6" />
+    <exclude body1="link_6" body2="link_7" />
+    <exclude body1="link_7" body2="ee_link" />
+    <!-- iiwa7 ↔ LEAP hand junction -->
+    <exclude body1="ee_link" body2="base" />
+    <exclude body1="base" body2="palm_lower" />
+    <!-- LEAP index finger -->
+    <exclude body1="palm_lower" body2="mcp_joint" />
+    <exclude body1="mcp_joint" body2="pip" />
+    <exclude body1="pip" body2="dip" />
+    <exclude body1="dip" body2="fingertip" />
+    <exclude body1="fingertip" body2="index_tip_head" />
+    <!-- LEAP middle finger -->
+    <exclude body1="palm_lower" body2="mcp_joint_2" />
+    <exclude body1="mcp_joint_2" body2="pip_2" />
+    <exclude body1="pip_2" body2="dip_2" />
+    <exclude body1="dip_2" body2="fingertip_2" />
+    <exclude body1="fingertip_2" body2="middle_tip_head" />
+    <!-- LEAP ring finger -->
+    <exclude body1="palm_lower" body2="mcp_joint_3" />
+    <exclude body1="mcp_joint_3" body2="pip_3" />
+    <exclude body1="pip_3" body2="dip_3" />
+    <exclude body1="dip_3" body2="fingertip_3" />
+    <exclude body1="fingertip_3" body2="ring_tip_head" />
+    <!-- LEAP thumb -->
+    <exclude body1="palm_lower" body2="thumb_temp_base" />
+    <exclude body1="thumb_temp_base" body2="thumb_pip" />
+    <exclude body1="thumb_pip" body2="thumb_dip" />
+    <exclude body1="thumb_dip" body2="thumb_fingertip" />
+    <exclude body1="thumb_fingertip" body2="thumb_tip_head" />
+  </contact>
 </mujoco>
