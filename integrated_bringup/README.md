@@ -38,6 +38,10 @@ integrated_bringup/
 │   │   ├── demo_shared_config.hpp
 │   │   ├── owned_topics.hpp
 │   │   └── virtual_tcp.hpp
+│   ├── backends/                       <- DeviceBackend 구현 (sim/robot HW 어댑터, ARCH-3 부합)
+│   │   ├── mujoco_native_backend.hpp     <- sim 공용 (JointState in+out)
+│   │   ├── ur_driver_native_backend.hpp  <- UR5e robot (JointState in, Float64MultiArray out)
+│   │   └── udp_hand_native_backend.hpp   <- assm_v1 hand robot (joint+motor+sensor lane)
 │   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=16, kMaxFingertips=8)
 │       ├── device_state_log_pod.hpp
 │       ├── device_sensor_log_pod.hpp
@@ -49,6 +53,10 @@ integrated_bringup/
 │   │   ├── joint/                      <- DemoJointController (controller/compute/lifecycle/parameters)
 │   │   ├── task/                       <- DemoTaskController (controller/compute/lifecycle/parameters)
 │   │   └── wbc/                        <- DemoWbcController (controller/compute/lifecycle/parameters/phase) + grasp_phase_manager.cpp
+│   ├── backends/                       <- DeviceBackend 구현체 (RTC_REGISTER_DEVICE_BACKEND, --whole-archive 등록)
+│   │   ├── mujoco_native_backend.cpp
+│   │   ├── ur_driver_native_backend.cpp
+│   │   └── udp_hand_native_backend.cpp
 │   └── support/                        <- demo_shared_config / owned_topics 구현
 ├── config/
 │   ├── ur5e_hand/robot.yaml                 <- 실제 로봇 RTC 프레임워크 설정 (URDF + 모델 토폴로지 포함)

@@ -66,6 +66,9 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/grasp_phase_manager.cpp
   src/support/demo_shared_config.cpp
   src/support/owned_topics.cpp
+  src/backends/mujoco_native_backend.cpp
+  src/backends/ur_driver_native_backend.cpp
+  src/backends/udp_hand_native_backend.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_demo_controllers PUBLIC
@@ -82,6 +85,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   tf2_msgs
   rtc_controller_interface
   rtc_controllers
+  rtc_controller_manager
   rtc_base
   rtc_msgs
   pinocchio
@@ -298,6 +302,27 @@ if(BUILD_TESTING)
     rtc_base
     pinocchio
     Eigen3
+  )
+
+  # ── Device backend registration smoke test ─────────────────────────────────
+  # Confirms the 3 backend TUs (mujoco_native / ur_driver_native /
+  # udp_hand_native) static-init through --whole-archive and reach the
+  # DeviceBackendRegistry singleton at startup.
+  ament_add_gtest(test_device_backends_registered
+    test/test_device_backends_registered.cpp)
+  target_link_libraries(test_device_backends_registered
+    -Wl,--whole-archive
+    ${PROJECT_NAME}_demo_controllers
+    -Wl,--no-whole-archive
+  )
+  ament_target_dependencies(test_device_backends_registered
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_manager
+    rtc_base
+    rtc_msgs
+    sensor_msgs
+    std_msgs
   )
 endif()
 
