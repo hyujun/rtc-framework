@@ -12,7 +12,7 @@
 >
 > **관련 문서**:
 > - [`docs/NUC_HYBRID_SUPPORT.md`](NUC_HYBRID_SUPPORT.md) — Stage A 산출물 요약 + Phase 2/3 로드맵 + 벤치마크 템플릿
-> - [`docs/RT_OPTIMIZATION.md`](RT_OPTIMIZATION.md), [`docs/SHELL_SCRIPTS.md`](SHELL_SCRIPTS.md) — 현행 RT/shield/IRQ 설계
+> - [`docs/RT_OPTIMIZATION.md`](RT_OPTIMIZATION.md), [`../repo_scripts/README.md`](../repo_scripts/README.md) — 현행 RT/shield/IRQ 설계 + 셸 스크립트 가이드
 > - [`agent_docs/architecture.md`](../agent_docs/architecture.md) — threading model, E-STOP, SSoT 설명
 > - [`rtc_base/test/test_mpc_thread_config.cpp`](../rtc_base/test/test_mpc_thread_config.cpp) — `TierIsolationMonotonicity`
 > - memory: `project_core_allocation.md` (2026-04-22 unified layout, SSoT 4파일 목록)

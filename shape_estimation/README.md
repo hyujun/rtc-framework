@@ -1,6 +1,6 @@
 # shape_estimation
 
-**Version 5.17.0** | `ament_cmake` | C++20
+`ament_cmake` | C++20
 
 ToF(Time-of-Flight) 센서 기반 물체 형상 추정 패키지. UR5e + 커스텀 핸드 시스템의 핑거팁 ToF 센서(6개)로부터 포인트 클라우드를 누적하고, 최소제곱 프리미티브 피팅(Sphere, Cylinder, Plane, Box)과 돌출 구조 탐지를 수행한다. 자율 탐색 모션 생성기를 내장하여 Action Server를 통한 능동적 물체 탐색도 지원한다.
 

@@ -6,7 +6,7 @@
 - **탐지**: grep/test 명령 (가능한 경우)
 - **복구**: 올바른 방법
 
-근거는 Phase 0 git log 분석 (fix 커밋 312/997 = 31%) + [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md)의 Phase 1~3 작업 중 발견된 케이스.
+근거는 Phase 0 git log 분석 (historical fix-commit 비율, 2026-04 측정) + [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md)의 Phase 1~3 작업 중 발견된 케이스. 절대 카운트는 박제하지 않는다 (AP-DOC-1) — 패턴 자체가 핵심이고 비율은 측정 시점에 의존한다.
 
 ## RT Safety
 
@@ -122,10 +122,6 @@
 
 - **증상**: `Compute()` 중간에 aux thread의 게인 writer (parameter callback `OnGainParametersSet` — 2026-04-26 이전엔 `UpdateGainsFromMsg`) 실행 → bool flag 절반만 업데이트된 상태로 분기
 - **복구**: `Compute()` 진입 시 `const auto gains = gains_lock_.Load();` 단일 snapshot. 이미 7개 컨트롤러 모두 적용됨 (Phase 1b ✅)
-
-### ~~AP-CTRL-2: `GetCurrentGains()` heap allocation~~ (resolved 2026-04-26)
-
-게인 → ROS 2 parameter 마이그레이션에서 `GetCurrentGains` 가상 메서드 자체가 제거되어 더 이상 해당 안티패턴 대상이 없음 ([archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Q-5).
 
 ### AP-CTRL-3: `trajectory_speed = 0` → 1/v = INF ([archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Phase 2 R-4, [invariants.md](invariants.md#L68) NUM-4 근거)
 

@@ -47,16 +47,17 @@ Per-controller snapshot site:
 
 ### Phase 3 — Code Quality (완료 2026-04-26)
 
+Q-1~Q-4 (low-traffic, outbound-link 없음) — 한 줄 요약:
+- **Q-1, Q-2**: integrated_bringup 의 robot-specific 상수 (`kSafePosition`, `kFingerJointMap`, `kHandIdx*`) 를 YAML 로 이관. `safe_position_` 멤버 + `DemoSharedConfig::hand_finger_joint_map` 추가.
+- **Q-3, Q-4**: 공통 유틸 추출 — `rtc_base/utils/clamp_commands.hpp` (ClampSymmetric/Range), `rtc_base/utils/device_passthrough.hpp` (PassthroughSecondaryDevices). 4-7개 컨트롤러 리팩터.
+
 | ID | Task | Package | Status |
 |---|---|---|---|
-| Q-1 | `kSafePosition` from YAML | integrated_bringup ×3 | **Done** — DemoJoint/DemoTask 마이그레이션 완료. WBC 패턴 (`estop.arm_safe_position` 필수 키) 동일 적용. `safe_position_` 멤버 + LoadConfig 검증 |
-| Q-2 | `kFingerJointMap`/`kHandIdx*` from YAML | integrated_bringup | **Done** — `DemoSharedConfig::hand_finger_joint_map` + `hand_idx_*` 추가. demo_shared.yaml 에 4 키 노출. 29 use sites 마이그레이션 |
-| Q-3 | Velocity clamp utility | rtc_controllers/rtc_base | **Done** — `rtc_base/utils/clamp_commands.hpp::ClampSymmetric/ClampRange` 추출. PController/JointPD/Demo×3 리팩터 |
-| Q-4 | Device passthrough utility | rtc_base | **Done** — `rtc_base/utils/device_passthrough.hpp::PassthroughSecondaryDevices` 추출. 4 controllers (P/JointPD/CLIK/OSC) 리팩터 |
-| ~~Q-5~~ | ~~`GetCurrentGains()` heap removal~~ | (resolved) | **Not applicable** — `GetCurrentGains` 가상 메서드 자체가 2026-04-26 게인 → ROS 2 parameter 마이그레이션에서 제거됨 (rtc_controller_interface). |
 | Q-6 | Registry duplicate check | rtc_controller_interface | **Done** — `ControllerRegistry::Register()` 가 duplicate `config_key` 시 RCLCPP_WARN. `RegisterDuplicateShadowsAndAppends` gtest 추가 |
 | Q-7 | **E-STOP ramp** | integrated_bringup | **Done (2026-04-26)** — `DemoWbcController::ComputeEstop` now follows the Joint/Task ramp pattern: `out0.commands[i] = dev0.positions[i] + clamp(safe-cur, ±device_max_velocity_[0][i]) * dt`. Eliminates instant-jump hardware risk on real UR5e |
 | Q-8 | **`kContactStopReleaseEps` → YAML** | integrated_bringup | **Done (2026-04-26)** — Joint mirrors Task: new `Gains::contact_stop_release_eps` (default 0.005), required `fsm.contact_stop_release_eps` key in `demo_joint_controller.yaml` (range-checked [0, 0.1]), use sites read from per-tick gains snapshot. `kContactStopReleaseEps` constexpr removed |
+
+(Q-5 was dropped — `GetCurrentGains()` virtual itself removed by the gain → ROS 2 parameter migration on 2026-04-26.)
 
 ### Phase 4 — Long-term (재평가 완료 2026-04-26)
 
