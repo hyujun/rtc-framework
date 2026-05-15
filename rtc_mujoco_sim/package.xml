@@ -28,8 +28,6 @@
   <!-- MuJoCo (optional C++ library — not a ROS2 package; install separately)
        https://github.com/google-deepmind/mujoco/releases -->
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

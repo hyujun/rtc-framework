@@ -19,7 +19,12 @@
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <!-- ament_lint_common pulls uncrustify (incompatible with .clang-format —
+       see CMakeLists.txt + agent_docs/conventions.md). Depend on the
+       surviving component lints individually instead. -->
+  <test_depend>ament_cmake_cppcheck</test_depend>
+  <test_depend>ament_cmake_lint_cmake</test_depend>
+  <test_depend>ament_cmake_xmllint</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

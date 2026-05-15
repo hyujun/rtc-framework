@@ -78,6 +78,15 @@ ament_export_dependencies(
 ament_export_include_directories(include)
 
 if(BUILD_TESTING)
+  # NOTE: ament_lint_common (test_depend in package.xml) pulls in uncrustify,
+  # which enforces ROS 2 / Eclipse-CDT style (Allman braces, `T *p`, `T &r`,
+  # `template <T>`). That is fundamentally incompatible with our `.clang-format`
+  # (Google base, PointerAlignment Left, Attach braces) — the PostToolUse hook
+  # already enforces clang-format on every Edit, so uncrustify is dead lint.
+  # The `_FOUND TRUE` skip trick only works for lints whose extras hook gates
+  # on that variable; ament_cmake_uncrustify does not, so we depend on the
+  # surviving component lints individually (see package.xml test_depend list)
+  # instead of pulling them in via ament_lint_common.
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

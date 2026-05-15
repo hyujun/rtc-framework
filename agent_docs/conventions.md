@@ -30,6 +30,7 @@
 - **Eigen**: pre-allocated buffers, `noalias()`, zero heap on the RT path (any configured `control_rate`). `auto`로 Eigen expression 받지 말 것 ([invariants.md](invariants.md) RT-5)
 - **Lifecycle**: 5 C++ nodes는 `rclcpp_lifecycle::LifecycleNode`. Empty constructor; `on_configure` (Tier 1) / `on_activate` (Tier 2). Safety publishers은 standalone `rclcpp::create_publisher` 사용
 - **ROS 2 API**: 명시 `rclcpp::QoS`, `MutuallyExclusiveCallbackGroup`, 범위 지정 `ParameterDescriptor`
+- **Formatting SSoT**: C++ 는 [`.clang-format`](../.clang-format) (Google base, ColumnLimit 100, PointerAlignment Left), Python 은 [`pyproject.toml`](../pyproject.toml) (ruff, line 99). PostToolUse hook ([.claude/hooks/format-code.sh](../.claude/hooks/format-code.sh)) 이 모든 Edit 마다 자동 적용. **`ament_uncrustify` enable 금지** — ROS 2 / Eclipse-CDT 표준 스타일 (Allman braces, `T *p`, `T &r`, `template <T>`) 이 Google base 와 호환 불가능하므로 두 lint 가 서로 영원히 충돌한다. 새 패키지 CMakeLists 에서 `ament_lint_auto` 를 사용한다면 `set(ament_cmake_uncrustify_FOUND TRUE)` 로 skip 필수. cppcheck / cpplint / xmllint / lint_cmake 는 가치 있으므로 유지.
 
 ## Logging
 
