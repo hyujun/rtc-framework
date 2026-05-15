@@ -46,17 +46,14 @@ demo_task_controller:
   command_type: "position"
 
   # ── Topic configuration ────────────────────────────────────────────────────
+  # Phase 4: device-wire lanes moved to devices.<group>.backend.
   topics:
     iiwa7:
       subscribe:
         - topic: "iiwa7/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/iiwa7/joint_states"
-          role: "state"
       publish:
-        - topic: "/iiwa7/joint_command"
-          role: "joint_command"
         - topic: "transforms"
           role: "robot_transforms"
           ownership: "controller"
@@ -65,11 +62,6 @@ demo_task_controller:
         - topic: "leap/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/leap/joint_states"
-          role: "state"
-      publish:
-        - topic: "/leap/joint_command"
-          role: "joint_command"
 
   # ── Controller-owned CSV logs ──────────────────────────────────────────────
   logs:

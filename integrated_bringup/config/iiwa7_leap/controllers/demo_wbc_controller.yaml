@@ -13,17 +13,16 @@ demo_wbc_controller:
   hand_max_traj_velocity: 4.0
 
   # ── Topic routing ──────────────────────────────────────────────────────────
+  # Phase 4: device-wire lanes (state / joint_command) moved to
+  # devices.<group>.backend in sim.yaml/robot.yaml. Only controller-owned
+  # lanes (target / robot_transforms / wbc_state) remain here.
   topics:
     iiwa7:
       subscribe:
         - topic: "iiwa7/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/iiwa7/joint_states"
-          role: "state"
       publish:
-        - topic: "/iiwa7/joint_command"
-          role: "joint_command"
         - topic: "transforms"
           role: "robot_transforms"
           ownership: "controller"
@@ -32,11 +31,7 @@ demo_wbc_controller:
         - topic: "leap/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/leap/joint_states"
-          role: "state"
       publish:
-        - topic: "/leap/joint_command"
-          role: "joint_command"
         - topic: "leap/wbc_state"
           role: "wbc_state"
           ownership: "controller"

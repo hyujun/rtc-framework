@@ -72,8 +72,16 @@
       #   - "ring_mcp_fe"
 
     # ── Device configuration (keyed by controller topic group name) ─────────
+    # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +
+    # wire-format topics. CM creates one DeviceBackend per group from this
+    # block; controller YAMLs only own target / robot_transforms / grasp_state
+    # / wbc_state / tof_snapshot.
     devices:
       ur5e:
+        backend:
+          type: "mujoco_native"            # sim mode: MuJoCo bridge
+          state_topic: "/joint_states"     # sim publishes full URDF joints here
+          command_topic: "/ur5e/joint_command"
         joint_state_names:
           - "shoulder_pan_joint"
           - "shoulder_lift_joint"
@@ -88,6 +96,10 @@
           position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
           position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
       hand:
+        backend:
+          type: "mujoco_native"            # sim mode: MuJoCo bridge (no motor / sensor lanes)
+          state_topic: "/hand/joint_states"
+          command_topic: "/hand/joint_command"
         joint_state_names:
           - "thumb_cmc_aa"
           - "thumb_cmc_fe"
@@ -112,6 +124,7 @@
         # only; field semantics (barometer/ToF/contact/F/u) live in
         # udp_hand_driver. assm_v1 hand: 8 baro + 3 ToF per fingertip, ML
         # inference = contact(1) + F(3) + u(3) = 7.
+        # (Not consumed in sim mode because backend.sensor_topic is unset.)
         sensor_layout:
           primary_count_per_group:        8
           secondary_count_per_group:      3

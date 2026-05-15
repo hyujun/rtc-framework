@@ -16,9 +16,10 @@
 namespace urtc = rtc;
 
 void RtControllerNode::CreatePublishers() {
-  // CM no longer owns kJointCommand/kRos2Command — those moved into
-  // DeviceBackend impls. Reject any manager-ownership entry whose role is
-  // outside the controller-output set so YAML mistakes surface early.
+  // Phase 4: device-wire command publication is owned by DeviceBackend impls;
+  // controller-output roles (kRobotTarget/kGraspState/kWbcState/kToFSnapshot/
+  // kRobotTransforms) are controller-owned. Reject any manager-ownership
+  // publish entry so YAML mistakes surface early.
   for (const auto& tc : controller_topic_configs_) {
     for (const auto& [group_name, group] : tc.groups) {
       if (!active_groups_.contains(group_name))
@@ -26,19 +27,11 @@ void RtControllerNode::CreatePublishers() {
       for (const auto& entry : group.publish) {
         if (entry.ownership == urtc::TopicOwnership::kController)
           continue;
-        switch (entry.role) {
-          case urtc::PublishRole::kJointCommand:
-          case urtc::PublishRole::kRos2Command:
-            // Owned by the device backend — no-op here. CreateDeviceBackends
-            // resolves the corresponding command_topic from the YAML entry.
-            break;
-          default:
-            throw std::logic_error(
-                std::string("CreatePublishers: role '") + urtc::PublishRoleToString(entry.role) +
-                "' for topic '" + entry.topic_name + "' (group '" + group_name +
-                "') is controller-owned only; set ownership: controller in the YAML "
-                "or remove the entry.");
-        }
+        throw std::logic_error(std::string("CreatePublishers: role '") +
+                               urtc::PublishRoleToString(entry.role) + "' for topic '" +
+                               entry.topic_name + "' (group '" + group_name +
+                               "') is controller-owned only; set ownership: controller in the YAML "
+                               "or remove the entry.");
       }
     }
   }

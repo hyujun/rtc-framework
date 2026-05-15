@@ -29,18 +29,14 @@ joint_pd_controller:
   command_type: "torque"
 
   # ── 토픽 설정 ─────────────────────────────────────────────────────────────
-  # `<robot>` 는 device-group 키 placeholder — <robot>_bringup 에서 자신의 CM
-  # `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 교체. 토픽 경로의 `<robot>` 도
-  # 동일한 그룹 이름으로 치환.
+  # Phase 4: device-wire lanes (state / joint_command / ros2_command /
+  # motor_state / sensor_state) are owned by DeviceBackend impls — declare
+  # them in `<robot>_bringup` sim.yaml/robot.yaml under
+  # `devices.<robot>.backend: {type, state_topic, command_topic, ...}`.
+  # Controller YAML keeps only target / robot_target / robot_transforms.
+  # `<robot>` is a device-group placeholder; replace with your CM group key.
   topics:
     <robot>:
       subscribe:
         - topic: "/<robot>/joint_goal"
           role: "target"
-        - topic: "/joint_states"
-          role: "state"
-      publish:
-        - topic: "/<robot>/joint_command"
-          role: "joint_command"
-        - topic: "/forward_torque_controller/commands"
-          role: "ros2_command"

@@ -292,54 +292,42 @@ Controller-owned 토픽은 on_configure에서 컨트롤러가 직접 `node_->cre
 
 ### 구독 역할 (SubscribeRole)
 
+Phase 4: 디바이스 와이어 lane (`state` / `motor_state` / `sensor_state`) 은 `devices.<group>.backend:` 로 이관되어 `DeviceBackend` 가 소유합니다. 컨트롤러 YAML 의 `topics:` 섹션에서는 `target` 만 남습니다.
+
 | YAML 역할 문자열 | enum 값 | 설명 |
 |-----------------|---------|------|
-| `state` | `kState` | 디바이스 관절 상태 (JointState) |
-| `motor_state` | `kMotorState` | 모터 공간 상태 (JointState) |
-| `sensor_state` | `kSensorState` | 센서 상태 (Float64MultiArray) |
-| `target` | `kTarget` | 외부 목표 (Float64MultiArray) |
-| `joint_state` | `kState` | 하위 호환 별칭 |
-| `hand_state` | `kState` | 하위 호환 별칭 |
+| `target` | `kTarget` | 외부 목표 (RobotTarget) |
 | `goal` | `kTarget` | 하위 호환 별칭 |
 
 ### 퍼블리시 역할 (PublishRole)
 
+Phase 4: 디바이스 와이어 command lane (`joint_command` / `ros2_command`) 은 `devices.<group>.backend:` 로 이관되어 `DeviceBackend` 가 소유합니다. 컨트롤러 YAML 의 `topics:` 섹션에서는 컨트롤러-owned 역할만 남습니다.
+
 | YAML 역할 문자열 | enum 값 | 설명 |
 |-----------------|---------|------|
-| `joint_command` | `kJointCommand` | 통합 관절 커맨드 (JointCommand) |
-| `ros2_command` | `kRos2Command` | ROS2 표준 커맨드 (Float64MultiArray) |
 | `robot_target` | `kRobotTarget` | 관절/태스크 목표 (RobotTarget) |
-| `device_state_log` | `kDeviceStateLog` | 통합 상태 로그 (DeviceStateLog) |
-| `device_sensor_log` | `kDeviceSensorLog` | 센서 + 추론 로그 (DeviceSensorLog) |
 | `grasp_state` | `kGraspState` | Force-PI grasp 컨트롤러 상태 (GraspState) — joint/task 데모 |
 | `wbc_state` | `kWbcState` | TSID-based WBC 컨트롤러 상태 (WbcState) — wbc 데모 |
 | `tof_snapshot` | `kToFSnapshot` | ToF 센서 + 핑거팁 포즈 스냅샷 (ToFSnapshot) |
 | `robot_transforms` | `kRobotTransforms` | Per-controller TFMessage — controller당 1 토픽 (`<config_key>/transforms`)에 arm tip / hand fingertips / virtual TCP frame을 묶어 발행 (`tf2_msgs/TFMessage`) |
 | `digital_twin_state` | `kDigitalTwinState` | 디지털 트윈용 관절 상태 (JointState, RELIABLE QoS) |
 | `joint_goal` | `kRobotTarget` | 하위 호환 별칭 |
-| `position_command` | `kRos2Command` | 하위 호환 별칭 |
-| `torque_command` | `kRos2Command` | 하위 호환 별칭 |
-| `hand_command` | `kJointCommand` | 하위 호환 별칭 |
 
 > 참고: `kDigitalTwinState` 역할은 `PublishRole` enum에 정의되어 있으며, YAML에서 `"digital_twin_state"` 역할 문자열로 설정할 수 있습니다. 디지털 트윈용 JointState를 RELIABLE QoS로 퍼블리시합니다.
 
 ### 기본 토픽 설정
 
-`MakeDefaultTopicConfig("ur5e")` 호출 시 생성되는 기본 토픽:
+`MakeDefaultTopicConfig("ur5e")` 호출 시 생성되는 기본 토픽 (Phase 4 — 컨트롤러-owned 만):
 
 ```
 ur5e.subscribe:
-  /joint_states                          (kState)
   /ur5e/target_joint_positions           (kTarget)
 
 ur5e.publish:
-  /ur5e/joint_command                    (kJointCommand, data_size=6)
-  /forward_position_controller/commands  (kRos2Command,  data_size=6)
   /ur5e/robot_target                     (kRobotTarget)
-  /ur5e/state_log                        (kDeviceStateLog)
 ```
 
-> YAML에 `topics` 섹션이 없으면 위 기본값이 사용됩니다.
+> YAML에 `topics` 섹션이 없으면 위 기본값이 사용됩니다. 디바이스 와이어 토픽은 `<robot>_bringup/config/<robot>/{sim,robot}.yaml` 의 `devices.<group>.backend:` 블록에서 별도로 선언합니다.
 
 ---
 

@@ -78,8 +78,16 @@
       #   - "ring_mcp_fe"
 
     # ── Device configuration (keyed by controller topic group name) ─────────
+    # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +
+    # wire-format topics. CM creates one DeviceBackend per group from this
+    # block; controller YAMLs only own target / robot_transforms / grasp_state
+    # / wbc_state / tof_snapshot.
     devices:
       ur5e:
+        backend:
+          type: "ur_driver_native"  # real UR5e via ros2_control
+          state_topic: "/joint_states"
+          command_topic: "/forward_position_controller/commands"
         joint_state_names:
           - "shoulder_pan_joint"
           - "shoulder_lift_joint"
@@ -88,7 +96,8 @@
           - "wrist_2_joint"
           - "wrist_3_joint"
         # forward_position_controller receives Float64MultiArray.
-        # Order matches joint_state_names; reorder map handles interface mapping.
+        # Order matches joint_state_names; ur_driver_native uses these to
+        # build a reorder map between controller output and the wire format.
         joint_command_names:
           - "shoulder_pan_joint"
           - "shoulder_lift_joint"
@@ -103,6 +112,12 @@
           position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
           position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
       hand:
+        backend:
+          type: "udp_hand_native"   # UDP hand driver — joint + motor + sensor lanes
+          state_topic:   "/hand/joint_states"
+          command_topic: "/hand/joint_command"
+          motor_topic:   "/hand/motor_states"
+          sensor_topic:  "/hand/sensor_states"
         joint_state_names:
           - "thumb_cmc_aa"
           - "thumb_cmc_fe"

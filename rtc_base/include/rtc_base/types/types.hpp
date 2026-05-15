@@ -298,6 +298,27 @@ struct DeviceSensorLayout {
   int inference_values_per_group{0};  // ML inference output size per group
 };
 
+// Per-device backend binding — parsed from `devices.<group>.backend:` in
+// sim.yaml / robot.yaml. SSoT for HW/sim adapter type + wire-format topics.
+// Phase 4: replaces backend-type inference + topic harvesting from controller
+// YAML lanes (state/joint_command/ros2_command/motor_state/sensor_state).
+//
+// `type` keys are registry tags (see DeviceBackendRegistry) — current values:
+//   "mujoco_native"    — sim mode, JointState ↔ JointCommand
+//   "ur_driver_native" — UR ros2_control driver (JointState ↔ Float64MultiArray)
+//   "udp_hand_native"  — UDP hand driver (joint + motor + sensor lanes)
+//
+// Required: type, state_topic, command_topic.
+// Optional: motor_topic (motor-space lane), sensor_topic (packed sensor lane),
+// joint_command_names (output ordering for ur_driver_native).
+struct DeviceBackendBinding {
+  std::string type;
+  std::string state_topic;
+  std::string command_topic;
+  std::string motor_topic;   // empty → backend has no motor lane
+  std::string sensor_topic;  // empty → backend has no sensor lane
+};
+
 struct DeviceNameConfig {
   std::string device_name;
   std::vector<std::string> joint_state_names;
@@ -307,14 +328,18 @@ struct DeviceNameConfig {
   std::optional<DeviceUrdfConfig> urdf;             // nullopt if no URDF for this device
   std::optional<DeviceJointLimits> joint_limits;    // nullopt if no limits configured
   std::optional<DeviceSensorLayout> sensor_layout;  // nullopt if device has no sensor block
+  std::optional<DeviceBackendBinding> backend;      // nullopt if no `backend:` block in YAML
   std::vector<double> safe_position;                // E-STOP target position (per-joint, rad)
 };
 
 // ── Device capability bitmask (selective data copy in RT loop) ───────────────
-// Auto-inferred from subscribe roles at topic config time.  The RT loop
-// checks capability bits instead of per-field count checks, enabling the
-// compiler to eliminate entire copy blocks for devices that don't provide
-// certain data types (e.g. robot arm has no sensor_data / inference).
+// Phase 4: derived from the DeviceBackend impl (HasMotorState / HasSensorState
+// + presence of an inference layout) by RtControllerNode at backend create
+// time, then propagated into ControllerSlotMapping::capabilities for RT-path
+// gating. The RT loop checks capability bits instead of per-field count
+// checks, enabling the compiler to eliminate entire copy blocks for devices
+// that don't provide certain data types (e.g. robot arm has no sensor_data /
+// inference).
 
 enum class DeviceCapability : uint16_t {
   kNone = 0,
@@ -335,17 +360,16 @@ enum class DeviceCapability : uint16_t {
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────
 
+// Phase 4: state / motor_state / sensor_state roles deleted — device-wire
+// state lanes are now declared in `devices.<group>.backend:` (DeviceBackendBinding)
+// and owned by DeviceBackend impls. Controller YAML retains only target.
 enum class SubscribeRole {
-  kState,        // sensor_msgs/JointState (joint-space state, all device groups)
-  kMotorState,   // sensor_msgs/JointState (motor-space state, optional secondary read)
-  kSensorState,  // Float64MultiArray (센서 전용, e.g. 촉각)
-  kTarget,       // Float64MultiArray (외부 목표)
+  kTarget,  // Float64MultiArray (외부 목표)
 };
 
 enum class PublishRole {
-  // Control Command
-  kJointCommand,  // rtc_msgs/JointCommand (통합 명령)
-  kRos2Command,   // Float64MultiArray (ros2_control 전용)
+  // Phase 4: joint_command / ros2_command roles deleted — device-wire command
+  // publication is owned by DeviceBackend impls via devices.<group>.backend.
   // Topic-based State/Command/Goal
   // (Phase 4: kGuiPosition removed — consumers use /rtc_cm/<group>/joint_states
   // for joint state and <config_key>/transforms (tf2_msgs/TFMessage) for TCP pose.)
@@ -406,10 +430,12 @@ struct PublishTopicEntry {
 
 // ── Device topic grouping ────────────────────────────────────────────────────
 
+// Phase 4: `capability` field removed — DeviceCapability bitmask is now
+// derived per device from DeviceBackendBinding by RtControllerNode and
+// propagated into ControllerSlotMapping at backend create time.
 struct DeviceTopicGroup {
   std::vector<SubscribeTopicEntry> subscribe;
   std::vector<PublishTopicEntry> publish;
-  uint16_t capability{0};  ///< DeviceCapability bitmask, auto-inferred from subscribe roles
 };
 
 // Dynamic topic configuration: groups keyed by device name (arbitrary strings
@@ -479,12 +505,6 @@ struct TopicConfig {
 
 [[nodiscard]] inline constexpr const char* SubscribeRoleToString(SubscribeRole role) noexcept {
   switch (role) {
-    case SubscribeRole::kState:
-      return "state";
-    case SubscribeRole::kMotorState:
-      return "motor_state";
-    case SubscribeRole::kSensorState:
-      return "sensor_state";
     case SubscribeRole::kTarget:
       return "target";
   }
@@ -493,10 +513,6 @@ struct TopicConfig {
 
 [[nodiscard]] inline constexpr const char* PublishRoleToString(PublishRole role) noexcept {
   switch (role) {
-    case PublishRole::kJointCommand:
-      return "joint_command";
-    case PublishRole::kRos2Command:
-      return "ros2_command";
     case PublishRole::kRobotTarget:
       return "robot_target";
     case PublishRole::kDigitalTwinState:

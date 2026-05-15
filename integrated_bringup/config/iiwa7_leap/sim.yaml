@@ -65,8 +65,15 @@
             - "ring_tip_head"
 
     # ── Device configuration ──────────────────────────────────────────────────
+    # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +
+    # wire-format topics. CM creates one DeviceBackend per group from this
+    # block; controller YAMLs only own target / robot_transforms / wbc_state.
     devices:
       iiwa7:
+        backend:
+          type: "mujoco_native"            # sim mode: MuJoCo bridge
+          state_topic:   "/iiwa7/joint_states"
+          command_topic: "/iiwa7/joint_command"
         joint_state_names:
           - "A1"
           - "A2"
@@ -83,6 +90,10 @@
           position_lower:   [-2.9671, -2.0944, -2.9671, -2.0944, -2.9671, -2.0944, -3.0543]
           position_upper:   [ 2.9671,  2.0944,  2.9671,  2.0944,  2.9671,  2.0944,  3.0543]
       leap:
+        backend:
+          type: "mujoco_native"            # sim mode: MuJoCo bridge
+          state_topic:   "/leap/joint_states"
+          command_topic: "/leap/joint_command"
         joint_state_names:
           # Controller-facing order: thumb (12–15), index (0–3), middle (4–7), ring (8–11).
           # Differs from URDF/MJCF declaration order (which is index → middle → ring → thumb);

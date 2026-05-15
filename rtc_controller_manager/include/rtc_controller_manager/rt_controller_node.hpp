@@ -128,17 +128,19 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void CreateTimers();
 
   // ── Device backends (state/command HW/sim adapters per group) ────────────
-  // One backend per active device group. Owns kState/kMotorState/kSensorState
-  // subscriptions, kJointCommand/kRos2Command publishers, and the reorder
+  // One backend per active device group. Owns the state / motor / sensor
+  // subscriptions and the joint / ros2 command publishers, plus the reorder
   // maps that translate between wire formats and device-config order. Built
   // in on_configure after LoadDeviceNameConfigs (sensor_layout forwarding).
+  // Phase 4: backend type + wire-format topics come from
+  // devices.<group>.backend: in sim.yaml / robot.yaml (parsed into
+  // DeviceNameConfig::backend).
   void CreateDeviceBackends();
-  // Infer backend type tag from the active controller's YAML topic config
-  // for `group_name`. Used when YAML omits `devices.<group>.backend.type`.
-  //   subscribe has kSensorState → "udp_hand_native"
-  //   publish has kRos2Command   → "ur_driver_native"
-  //   otherwise                  → "mujoco_native"
-  [[nodiscard]] std::string InferBackendType(const std::string& group_name) const;
+  // Phase 4: capability per slot is unknown until backends are constructed
+  // (HasMotorState / HasSensorState are backend-impl details). After
+  // CreateDeviceBackends, this helper patches `controller_slot_mappings_`
+  // with `slot_to_capability_` so the RT loop has correct gating bits.
+  void PropagateCapabilitiesIntoMappings();
 
   // ── Subscription callbacks (unified per-device) ──────────────────────────
   void DeviceTargetCallback(int device_slot, rtc_msgs::msg::RobotTarget::SharedPtr msg);
@@ -402,6 +404,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // at LoadDeviceNameConfigs time). Indexed by device slot. Empty optional
   // means the device exposes no packed sensor block.
   std::vector<std::optional<rtc::DeviceSensorLayout>> slot_to_sensor_layout_;
+
+  // Per-slot DeviceCapability bitmask derived from the backend impl
+  // (HasMotorState/HasSensorState + sensor_layout.inference_values_per_group)
+  // in CreateDeviceBackends. Propagated into ControllerSlotMapping at the
+  // same time so the RT loop can skip whole copy blocks per slot.
+  std::vector<uint16_t> slot_to_capability_;
 
   // ── Simulation sync (CV-based wakeup) ──────────────────────────────────
   bool use_sim_time_sync_{false};

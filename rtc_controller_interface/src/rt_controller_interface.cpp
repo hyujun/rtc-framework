@@ -11,62 +11,29 @@
 namespace rtc {
 
 namespace {
+// Phase 4: device-wire roles (state / motor_state / sensor_state / joint_command
+// / ros2_command) live in `devices.<group>.backend:` (sim.yaml/robot.yaml) and
+// are owned by DeviceBackend impls. Controller YAML retains only target /
+// robot_target / grasp_state / wbc_state / tof_snapshot / robot_transforms /
+// digital_twin_state.
 const std::unordered_map<std::string, SubscribeRole> kSubscribeRoleMap = {
-    {"state", SubscribeRole::kState},
-    {"motor_state", SubscribeRole::kMotorState},
-    {"sensor_state", SubscribeRole::kSensorState},
     {"target", SubscribeRole::kTarget},
     // backward compat
-    {"joint_state", SubscribeRole::kState},
-    {"hand_state", SubscribeRole::kState},
     {"goal", SubscribeRole::kTarget},
 };
 
 const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
-    // Control Command
-    {"joint_command", PublishRole::kJointCommand},
-    {"ros2_command", PublishRole::kRos2Command},
     // Topic-based State/Command/Goal
-    // (Phase 4: "gui_position" role removed — consumers use
-    // /rtc_cm/<group>/joint_states + <config_key>/transforms instead.)
     {"robot_target", PublishRole::kRobotTarget},
     // backward compat
     {"joint_goal", PublishRole::kRobotTarget},
-    // (Phase C: device_state_log / device_sensor_log roles removed —
-    // controller data CSVs flow through ControllerLogSet now.)
     {"grasp_state", PublishRole::kGraspState},
     {"wbc_state", PublishRole::kWbcState},
     {"tof_snapshot", PublishRole::kToFSnapshot},
     {"robot_transforms", PublishRole::kRobotTransforms},
     // Digital twin
     {"digital_twin_state", PublishRole::kDigitalTwinState},
-    // backward compat
-    {"position_command", PublishRole::kRos2Command},
-    {"torque_command", PublishRole::kRos2Command},
-    {"hand_command", PublishRole::kJointCommand},
 };
-
-// Infer DeviceCapability bitmask from subscribe roles.
-uint16_t InferCapability(const DeviceTopicGroup& group) {
-  uint16_t cap = static_cast<uint16_t>(DeviceCapability::kNone);
-  for (const auto& entry : group.subscribe) {
-    switch (entry.role) {
-      case SubscribeRole::kState:
-        cap |= static_cast<uint16_t>(DeviceCapability::kJointState);
-        break;
-      case SubscribeRole::kMotorState:
-        cap |= static_cast<uint16_t>(DeviceCapability::kMotorState);
-        break;
-      case SubscribeRole::kSensorState:
-        cap |= static_cast<uint16_t>(DeviceCapability::kSensorData) |
-               static_cast<uint16_t>(DeviceCapability::kInference);
-        break;
-      case SubscribeRole::kTarget:
-        break;
-    }
-  }
-  return cap;
-}
 
 // Parse the optional "ownership" field on a subscribe/publish entry.
 // Missing → kManager; unknown string → runtime_error.
@@ -113,9 +80,6 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
       out.publish.push_back({topic, it->second, data_size, ParseOwnership(entry)});
     }
   }
-
-  // Auto-infer capability bitmask from subscribe roles.
-  out.capability = InferCapability(out);
 }
 
 }  // namespace
@@ -226,23 +190,18 @@ RTControllerInterface::GetSharedModelBuilder() const noexcept {
 }
 
 TopicConfig RTControllerInterface::MakeDefaultTopicConfig(const std::string& device_name) {
+  // Phase 4: device-wire lanes moved to devices.<group>.backend: — this helper
+  // now seeds only the controller-owned target lane so bringups that bypass
+  // YAML still get a usable TopicConfig.
   TopicConfig cfg;
   const std::string ns = "/" + device_name;
 
   cfg[device_name].subscribe = {
-      {"/joint_states", SubscribeRole::kState},
       {ns + "/target_joint_positions", SubscribeRole::kTarget},
   };
   cfg[device_name].publish = {
-      {ns + "/joint_command", PublishRole::kJointCommand, 0},
-      {"/forward_position_controller/commands", PublishRole::kRos2Command, 0},
       {ns + "/robot_target", PublishRole::kRobotTarget, 0},
-      // (Phase C: legacy device_state_log entry removed — controller-owned
-      // CSV via ControllerLogSet replaces it.)
-      // (Phase 4: gui_position entry removed — consumers use
-      // /rtc_cm/<group>/joint_states + <config_key>/transforms.)
   };
-  cfg[device_name].capability = InferCapability(cfg[device_name]);
 
   return cfg;
 }

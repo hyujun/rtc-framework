@@ -38,18 +38,11 @@ operational_space_controller:
   command_type: "torque"
 
   # ── 토픽 설정 ─────────────────────────────────────────────────────────────
-  # `<robot>` 는 device-group 키 placeholder — <robot>_bringup 에서 자신의 CM
-  # `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 교체. 토픽 경로의 `<robot>` 도
-  # 동일한 그룹 이름으로 치환.
+  # Phase 4: device-wire lanes owned by DeviceBackend impls (see
+  # `devices.<robot>.backend:` in your `<robot>_bringup` sim.yaml/robot.yaml).
+  # Controller YAML keeps only target / robot_target / robot_transforms.
   topics:
     <robot>:
       subscribe:
         - topic: "/<robot>/joint_goal"
           role: "target"
-        - topic: "/joint_states"
-          role: "state"
-      publish:
-        - topic: "/<robot>/joint_command"
-          role: "joint_command"
-        - topic: "/forward_torque_controller/commands"
-          role: "ros2_command"

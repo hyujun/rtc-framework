@@ -455,6 +455,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
   LoadDeviceNameConfigs();
 
   // ── Build per-controller flat slot mappings (RT-safe, no map lookup) ────
+  // Phase 4: capability per slot is unknown here (depends on backend impl,
+  // built later by CreateDeviceBackends). Slots/num_groups are filled now;
+  // capabilities[] stays zero and is patched after backends create.
   controller_slot_mappings_.resize(controllers_.size());
   for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
     auto& mapping = controller_slot_mappings_[ci];
@@ -463,7 +466,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
       if (gi < ControllerSlotMapping::kMaxSlots) {
         const auto gidx = static_cast<std::size_t>(gi);
         mapping.slots[gidx] = group_slot_map_[gname];
-        mapping.capabilities[gidx] = ggroup.capability;
       }
       ++gi;
     }
@@ -545,15 +547,17 @@ void RtControllerNode::DeclareAndLoadParameters() {
                     name.c_str());
         continue;
       }
+      // Phase 4: state lane is owned by DeviceBackend — resolved from
+      // devices.<group>.backend.state_topic (DeviceNameConfig::backend).
       std::string state_topic;
-      for (const auto& tc : controller_topic_configs_) {
-        state_topic = tc.GetSubscribeTopicName(name, urtc::SubscribeRole::kState);
-        if (!state_topic.empty())
-          break;
+      if (auto it = device_name_configs_.find(name);
+          it != device_name_configs_.end() && it->second.backend.has_value()) {
+        state_topic = it->second.backend->state_topic;
       }
       if (state_topic.empty()) {
-        RCLCPP_WARN(get_logger(), "Device timeout '%s' has no state subscription — ignored",
-                    name.c_str());
+        RCLCPP_WARN(get_logger(),
+                    "Device timeout '%s' has no devices.%s.backend.state_topic — ignored",
+                    name.c_str(), name.c_str());
         continue;
       }
       DeviceTimeoutEntry entry;

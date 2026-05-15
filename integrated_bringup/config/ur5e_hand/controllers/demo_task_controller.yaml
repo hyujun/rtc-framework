@@ -59,20 +59,14 @@ demo_task_controller:
   # ownership: "manager"   → CM owns the sub/pub (RT-adjacent, default)
   # ownership: "controller"→ per-controller LifecycleNode owns it; relative
   #                          paths resolve under namespace /<config_key>/
+  # Phase 4: device-wire lanes moved to devices.<group>.backend.
   topics:
     ur5e:
       subscribe:
         - topic: "ur5e/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/joint_states"
-          role: "state"
       publish:
-        - topic: "/ur5e/joint_command"
-          role: "joint_command"
-        - topic: "/forward_position_controller/commands"
-          role: "ros2_command"
-          data_size: 6
         # Per-controller TF (Phase 3): see demo_joint_controller.yaml.
         - topic: "transforms"
           role: "robot_transforms"
@@ -82,15 +76,7 @@ demo_task_controller:
         - topic: "hand/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/hand/joint_states"
-          role: "state"
-        - topic: "/hand/motor_states"
-          role: "motor_state"
-        - topic: "/hand/sensor_states"
-          role: "sensor_state"
       publish:
-        - topic: "/hand/joint_command"
-          role: "joint_command"
         - topic: "hand/grasp_state"
           role: "grasp_state"
           ownership: "controller"

@@ -198,6 +198,44 @@ void RtControllerNode::LoadDeviceNameConfigs() {
       }
     }
 
+    // backend (Phase 4 SSoT — HW/sim adapter type + wire-format topics).
+    // Required keys: type, state_topic, command_topic.
+    // Optional keys: motor_topic, sensor_topic.
+    // Without this block CreateDeviceBackends() will refuse to create a
+    // backend for the group.
+    {
+      const std::string b_prefix = prefix + ".backend";
+      const std::string type_key = b_prefix + ".type";
+      if (has_parameter(type_key)) {
+        rtc::DeviceBackendBinding b;
+        b.type = get_parameter(type_key).as_string();
+        const std::string st_key = b_prefix + ".state_topic";
+        if (has_parameter(st_key))
+          b.state_topic = get_parameter(st_key).as_string();
+        const std::string ct_key = b_prefix + ".command_topic";
+        if (has_parameter(ct_key))
+          b.command_topic = get_parameter(ct_key).as_string();
+        const std::string mt_key = b_prefix + ".motor_topic";
+        if (has_parameter(mt_key))
+          b.motor_topic = get_parameter(mt_key).as_string();
+        const std::string sn_key2 = b_prefix + ".sensor_topic";
+        if (has_parameter(sn_key2))
+          b.sensor_topic = get_parameter(sn_key2).as_string();
+        if (b.state_topic.empty() || b.command_topic.empty()) {
+          RCLCPP_ERROR(get_logger(),
+                       "[%s] devices.%s.backend missing required state_topic / command_topic — "
+                       "ignoring block",
+                       group_name.c_str(), group_name.c_str());
+        } else {
+          RCLCPP_INFO(get_logger(),
+                      "[%s] Backend binding: type=%s state='%s' cmd='%s' motor='%s' sensor='%s'",
+                      group_name.c_str(), b.type.c_str(), b.state_topic.c_str(),
+                      b.command_topic.c_str(), b.motor_topic.c_str(), b.sensor_topic.c_str());
+          cfg.backend = std::move(b);
+        }
+      }
+    }
+
     // sensor_layout (optional — per-group sensor packing for HandSensorState
     // and analogous packed-sensor topics). CM uses these counts only for
     // stride/offset arithmetic in its sensor callback; the field semantics
@@ -488,98 +526,27 @@ void RtControllerNode::LoadDeviceNameConfigs() {
 
 // ── Device backend wiring ───────────────────────────────────────────────────
 //
-// One DeviceBackend per active device group. CM resolves topics from the
-// active controller's TopicConfig (state/motor/sensor/command), infers the
-// backend type from the same YAML, creates the backend via registry, forwards
-// the sensor layout (when present), wires a callback that refreshes
-// E-STOP/state/digital-twin/sim-sync state, and finally Configures the
-// backend so it can create its own subs/pubs on this LifecycleNode.
+// One DeviceBackend per active device group. Phase 4: backend type +
+// wire-format topics come directly from devices.<group>.backend in
+// sim.yaml/robot.yaml (parsed by LoadDeviceNameConfigs). CM creates the
+// backend via registry, forwards the sensor layout (when present), wires a
+// callback that refreshes E-STOP/state/digital-twin/sim-sync state, and
+// finally Configures the backend so it can create its own subs/pubs on this
+// LifecycleNode.
 //
 // The callback is the single bridge between backend sub callbacks (sensor
 // executor) and CM's accounting state — it consolidates the timestamp
 // refresh, state_received_ flag, digital-twin republish, and sim-sync
 // condvar notify that used to live in three separate sub callbacks.
 
-std::string RtControllerNode::InferBackendType(const std::string& group_name) const {
-  // Inspect the first controller's topic config that has this group. All
-  // active controllers share the same HW/sim adapter (single CM, one device
-  // per group), so the first match is authoritative.
-  for (const auto& tc : controller_topic_configs_) {
-    for (const auto& [name, group] : tc.groups) {
-      if (name != group_name)
-        continue;
-      bool has_sensor = false;
-      bool has_ros2_command = false;
-      for (const auto& sub : group.subscribe) {
-        if (sub.role == urtc::SubscribeRole::kSensorState)
-          has_sensor = true;
-      }
-      for (const auto& pub : group.publish) {
-        if (pub.role == urtc::PublishRole::kRos2Command)
-          has_ros2_command = true;
-      }
-      if (has_sensor)
-        return "udp_hand_native";
-      if (has_ros2_command)
-        return "ur_driver_native";
-      return "mujoco_native";
-    }
-  }
-  return "mujoco_native";
-}
-
-namespace {
-
-struct BackendTopicSelection {
-  std::string state_topic;
-  std::string motor_topic;
-  std::string sensor_topic;
-  std::string command_topic;
-};
-
-BackendTopicSelection SelectBackendTopics(const urtc::TopicConfig& tc,
-                                          const std::string& group_name) {
-  BackendTopicSelection sel;
-  for (const auto& [name, group] : tc.groups) {
-    if (name != group_name)
-      continue;
-    for (const auto& sub : group.subscribe) {
-      if (sub.ownership == urtc::TopicOwnership::kController)
-        continue;
-      switch (sub.role) {
-        case urtc::SubscribeRole::kState:
-          if (sel.state_topic.empty())
-            sel.state_topic = sub.topic_name;
-          break;
-        case urtc::SubscribeRole::kMotorState:
-          if (sel.motor_topic.empty())
-            sel.motor_topic = sub.topic_name;
-          break;
-        case urtc::SubscribeRole::kSensorState:
-          if (sel.sensor_topic.empty())
-            sel.sensor_topic = sub.topic_name;
-          break;
-        default:
-          break;
-      }
-    }
-    for (const auto& pub : group.publish) {
-      if (pub.ownership == urtc::TopicOwnership::kController)
-        continue;
-      if ((pub.role == urtc::PublishRole::kJointCommand ||
-           pub.role == urtc::PublishRole::kRos2Command) &&
-          sel.command_topic.empty()) {
-        sel.command_topic = pub.topic_name;
-      }
-    }
-  }
-  return sel;
-}
-
-}  // namespace
-
 void RtControllerNode::CreateDeviceBackends() {
   auto& registry = urtc::DeviceBackendRegistry::Instance();
+
+  // Per-slot DeviceCapability bitmask, derived from the backend binding +
+  // backend impl (HasMotorState/HasSensorState) and a sensor layout if any.
+  // Propagated into ControllerSlotMapping by RebindControllerCapabilities()
+  // after every backend is created.
+  slot_to_capability_.assign(static_cast<std::size_t>(group_slot_map_.size()), 0);
 
   for (const auto& [group_name, slot] : group_slot_map_) {
     const std::size_t uslot = static_cast<std::size_t>(slot);
@@ -589,33 +556,25 @@ void RtControllerNode::CreateDeviceBackends() {
       continue;
     }
 
-    BackendTopicSelection topics;
-    // Walk every controller's topic config and merge — different controllers
-    // may declare the same group with different command roles (joint vs
-    // ros2). We accept the first non-empty value per lane.
-    for (const auto& tc : controller_topic_configs_) {
-      const auto sel = SelectBackendTopics(tc, group_name);
-      if (topics.state_topic.empty())
-        topics.state_topic = sel.state_topic;
-      if (topics.motor_topic.empty())
-        topics.motor_topic = sel.motor_topic;
-      if (topics.sensor_topic.empty())
-        topics.sensor_topic = sel.sensor_topic;
-      if (topics.command_topic.empty())
-        topics.command_topic = sel.command_topic;
+    auto name_it = device_name_configs_.find(group_name);
+    if (name_it == device_name_configs_.end() || !name_it->second.backend.has_value()) {
+      RCLCPP_ERROR(get_logger(),
+                   "Group '%s' has no devices.%s.backend block in YAML — skip backend. "
+                   "Phase 4 requires devices.<group>.backend: {type, state_topic, command_topic} "
+                   "in sim.yaml/robot.yaml.",
+                   group_name.c_str(), group_name.c_str());
+      continue;
     }
+    const auto& binding = *name_it->second.backend;
 
     urtc::DeviceBackendConfig cfg;
     cfg.group_name = group_name;
-    cfg.type = InferBackendType(group_name);
-    cfg.state_topic = std::move(topics.state_topic);
-    cfg.motor_topic = std::move(topics.motor_topic);
-    cfg.sensor_topic = std::move(topics.sensor_topic);
-    cfg.command_topic = std::move(topics.command_topic);
-    if (auto name_it = device_name_configs_.find(group_name);
-        name_it != device_name_configs_.end()) {
-      cfg.joint_command_names = name_it->second.joint_command_names;
-    }
+    cfg.type = binding.type;
+    cfg.state_topic = binding.state_topic;
+    cfg.motor_topic = binding.motor_topic;
+    cfg.sensor_topic = binding.sensor_topic;
+    cfg.command_topic = binding.command_topic;
+    cfg.joint_command_names = name_it->second.joint_command_names;
 
     auto backend = registry.Create(cfg.type);
     if (!backend) {
@@ -682,11 +641,42 @@ void RtControllerNode::CreateDeviceBackends() {
     });
 
     backend->Configure(this, cfg);
+
+    // Derive DeviceCapability bitmask from backend feature set + sensor layout.
+    // RT loop uses this to skip whole memcpy blocks per slot.
+    uint16_t cap = static_cast<uint16_t>(urtc::DeviceCapability::kJointState);
+    if (backend->HasMotorState())
+      cap |= static_cast<uint16_t>(urtc::DeviceCapability::kMotorState);
+    if (backend->HasSensorState()) {
+      cap |= static_cast<uint16_t>(urtc::DeviceCapability::kSensorData);
+      if (uslot < slot_to_sensor_layout_.size() && slot_to_sensor_layout_[uslot].has_value() &&
+          slot_to_sensor_layout_[uslot]->inference_values_per_group > 0) {
+        cap |= static_cast<uint16_t>(urtc::DeviceCapability::kInference);
+      }
+    }
+    slot_to_capability_[uslot] = cap;
+
     backends_[uslot] = std::move(backend);
 
-    RCLCPP_INFO(get_logger(),
-                "  Backend [%s]: type=%s slot=%d state='%s' motor='%s' sensor='%s' cmd='%s'",
-                group_name.c_str(), cfg.type.c_str(), slot, cfg.state_topic.c_str(),
-                cfg.motor_topic.c_str(), cfg.sensor_topic.c_str(), cfg.command_topic.c_str());
+    RCLCPP_INFO(
+        get_logger(),
+        "  Backend [%s]: type=%s slot=%d state='%s' motor='%s' sensor='%s' cmd='%s' cap=0x%x",
+        group_name.c_str(), cfg.type.c_str(), slot, cfg.state_topic.c_str(),
+        cfg.motor_topic.c_str(), cfg.sensor_topic.c_str(), cfg.command_topic.c_str(),
+        static_cast<unsigned>(cap));
+  }
+}
+
+void RtControllerNode::PropagateCapabilitiesIntoMappings() {
+  // Patch each controller's slot mapping with the capability bitmask freshly
+  // derived from the backend impls. Must run after CreateDeviceBackends.
+  for (auto& mapping : controller_slot_mappings_) {
+    for (int gi = 0; gi < mapping.num_groups && gi < ControllerSlotMapping::kMaxSlots; ++gi) {
+      const auto gidx = static_cast<std::size_t>(gi);
+      const auto slot = static_cast<std::size_t>(mapping.slots[gidx]);
+      if (slot < slot_to_capability_.size()) {
+        mapping.capabilities[gidx] = slot_to_capability_[slot];
+      }
+    }
   }
 }

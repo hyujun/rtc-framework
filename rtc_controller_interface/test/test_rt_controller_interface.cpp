@@ -7,8 +7,11 @@
 //
 // Covers: default construction, control rate, device name configuration,
 // system model configuration, MakeDefaultTopicConfig, ParseTopicConfig
-// (valid / deprecated / unknown role / backward-compat / capability inference),
-// LoadConfig, TopicConfig struct operations, and default virtual methods.
+// (valid / deprecated / unknown role / backward-compat), LoadConfig,
+// TopicConfig struct operations, and default virtual methods.
+// (Phase 4: device-wire roles state/motor_state/sensor_state/joint_command/
+// ros2_command — and the DeviceCapability inference path that read them —
+// were removed; their tests were dropped.)
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_controller_interface/rt_controller_interface.hpp>
 #include <rtc_urdf_bridge/types.hpp>
@@ -190,19 +193,15 @@ TEST(RTControllerInterfaceTest, GetSecondaryDeviceNameEmptyWhenSingleGroup) {
 TEST(RTControllerInterfaceTest, GetSecondaryDeviceNameFromMultiGroupConfig) {
   // Verify the helper picks the second group (preserving YAML insertion
   // order). Mirrors the demo_*_controller layout: arm primary, hand-like
-  // secondary.
+  // secondary. Phase 4: controller YAML only carries controller-owned roles.
   const auto node = YAML::Load(
       R"(
 robot_a:
   subscribe:
-    - {topic: /a/joint_states, role: state}
-  publish:
-    - {topic: /a/joint_command, role: joint_command}
+    - {topic: /a/target, role: target}
 robot_b:
   subscribe:
-    - {topic: /b/joint_states, role: state}
-  publish:
-    - {topic: /b/joint_command, role: joint_command}
+    - {topic: /b/target, role: target}
 )");
   StubController ctrl;
   ctrl.SetTopicConfigForTesting(StubController::ParseTopicConfig(node));
@@ -252,65 +251,35 @@ TEST(RTControllerInterfaceTest, SetSystemModelConfigOverwrites) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigSubscribeRoles) {
+  // Phase 4: MakeDefaultTopicConfig only seeds the controller-owned target
+  // lane; device-wire roles live in devices.<group>.backend (CM YAML).
   const auto cfg = StubController::MakeDefaultTopicConfig("my_robot");
   EXPECT_TRUE(cfg.HasGroup("my_robot"));
-  EXPECT_TRUE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kState));
   EXPECT_TRUE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kTarget));
-  EXPECT_FALSE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kMotorState));
-  EXPECT_FALSE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kSensorState));
 }
 
 TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigTopicNames) {
   const auto cfg = StubController::MakeDefaultTopicConfig("my_robot");
-  EXPECT_EQ(cfg.GetSubscribeTopicName("my_robot", rtc::SubscribeRole::kState), "/joint_states");
   EXPECT_EQ(cfg.GetSubscribeTopicName("my_robot", rtc::SubscribeRole::kTarget),
             "/my_robot/target_joint_positions");
 }
 
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigCapability) {
-  const auto cfg = StubController::MakeDefaultTopicConfig("ur5e");
-
-  for (const auto& [name, group] : cfg.groups) {
-    if (name == "ur5e") {
-      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kJointState));
-      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kMotorState));
-      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kSensorData));
-      return;
-    }
-  }
-  FAIL() << "ur5e group not found in default topic config";
-}
-
 TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
+  // Phase 4: only robot_target (controller-owned) remains in the default
+  // template; command/state lanes were moved to DeviceBackend.
   const auto cfg = StubController::MakeDefaultTopicConfig("ur5e");
 
-  bool has_joint_command = false;
-  bool has_ros2_command = false;
   bool has_robot_target = false;
-
   for (const auto& [name, group] : cfg.groups) {
     if (name != "ur5e") {
       continue;
     }
     for (const auto& pub : group.publish) {
-      switch (pub.role) {
-        case rtc::PublishRole::kJointCommand:
-          has_joint_command = true;
-          break;
-        case rtc::PublishRole::kRos2Command:
-          has_ros2_command = true;
-          break;
-        case rtc::PublishRole::kRobotTarget:
-          has_robot_target = true;
-          break;
-        default:
-          break;
+      if (pub.role == rtc::PublishRole::kRobotTarget) {
+        has_robot_target = true;
       }
     }
   }
-
-  EXPECT_TRUE(has_joint_command);
-  EXPECT_TRUE(has_ros2_command);
   EXPECT_TRUE(has_robot_target);
 }
 
@@ -319,22 +288,22 @@ TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigValidMultiDevice) {
+  // Phase 4: controller YAML carries only controller-owned roles
+  // (target / robot_target / robot_transforms / grasp_state / wbc_state /
+  // tof_snapshot / digital_twin_state). Device-wire roles moved to
+  // devices.<group>.backend in sim.yaml/robot.yaml.
   const auto node = YAML::Load(
       R"(
 ur5e:
   subscribe:
-    - {topic: /joint_states, role: state}
     - {topic: /ur5e/target, role: target}
   publish:
-    - {topic: /ur5e/joint_command, role: joint_command}
     - {topic: /ur5e/robot_target, role: robot_target}
+    - {topic: transforms, role: robot_transforms, ownership: controller}
 hand:
   subscribe:
-    - {topic: /hand/joint_states, role: state}
-    - {topic: /hand/motor_states, role: motor_state}
-    - {topic: /hand/sensor_states, role: sensor_state}
+    - {topic: /hand/target, role: target}
   publish:
-    - {topic: /hand/joint_command, role: joint_command}
     - {topic: /hand/grasp_state, role: grasp_state, data_size: 20}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
@@ -343,119 +312,96 @@ hand:
   EXPECT_TRUE(cfg.HasGroup("hand"));
   EXPECT_FALSE(cfg.HasGroup("missing"));
 
-  EXPECT_TRUE(cfg.HasSubscribeRole("ur5e", rtc::SubscribeRole::kState));
   EXPECT_TRUE(cfg.HasSubscribeRole("ur5e", rtc::SubscribeRole::kTarget));
-  EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kMotorState));
-  EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kSensorState));
+  EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kTarget));
 
-  EXPECT_EQ(cfg.GetSubscribeTopicName("ur5e", rtc::SubscribeRole::kState), "/joint_states");
-  EXPECT_EQ(cfg.GetSubscribeTopicName("hand", rtc::SubscribeRole::kMotorState),
-            "/hand/motor_states");
+  EXPECT_EQ(cfg.GetSubscribeTopicName("hand", rtc::SubscribeRole::kTarget), "/hand/target");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ParseTopicConfig — capability inference
+// ParseTopicConfig — Phase 4 strips device-wire roles from controller YAML
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigCapabilityInference) {
-  const auto node = YAML::Load(
-      R"(
-hand:
-  subscribe:
-    - {topic: /hand/js, role: state}
-    - {topic: /hand/ms, role: motor_state}
-    - {topic: /hand/ss, role: sensor_state}
-)");
-  const auto cfg = StubController::ParseTopicConfig(node);
-
-  for (const auto& [name, group] : cfg.groups) {
-    if (name == "hand") {
-      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kJointState));
-      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kMotorState));
-      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kSensorData));
-      EXPECT_TRUE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kInference));
-      return;
-    }
-  }
-  FAIL() << "hand group not found";
-}
-
-TEST(RTControllerInterfaceTest, ParseTopicConfigTargetOnlyNoCapability) {
-  const auto node = YAML::Load(R"(
+TEST(RTControllerInterfaceTest, ParseTopicConfigStateRoleRejected) {
+  // state / motor_state / sensor_state / joint_command / ros2_command live in
+  // devices.<group>.backend; the controller-YAML parser refuses them.
+  const auto sub_state = YAML::Load(R"(
 robot:
   subscribe:
-    - {topic: /robot/target, role: target}
+    - {topic: /joint_states, role: state}
 )");
-  const auto cfg = StubController::ParseTopicConfig(node);
+  EXPECT_THROW(StubController::ParseTopicConfig(sub_state), std::runtime_error);
 
-  for (const auto& [name, group] : cfg.groups) {
-    if (name == "robot") {
-      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kJointState));
-      EXPECT_FALSE(rtc::HasCapability(group.capability, rtc::DeviceCapability::kMotorState));
-      return;
-    }
-  }
-  FAIL() << "robot group not found";
+  const auto sub_motor = YAML::Load(R"(
+robot:
+  subscribe:
+    - {topic: /hand/motor_states, role: motor_state}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(sub_motor), std::runtime_error);
+
+  const auto sub_sensor = YAML::Load(R"(
+robot:
+  subscribe:
+    - {topic: /hand/sensor_states, role: sensor_state}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(sub_sensor), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, ParseTopicConfigJointCommandRoleRejected) {
+  const auto pub_joint = YAML::Load(R"(
+robot:
+  publish:
+    - {topic: /joint_command, role: joint_command}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(pub_joint), std::runtime_error);
+
+  const auto pub_ros2 = YAML::Load(R"(
+robot:
+  publish:
+    - {topic: /cmds, role: ros2_command, data_size: 6}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(pub_ros2), std::runtime_error);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ParseTopicConfig — backward compatibility
+// ParseTopicConfig — backward compatibility (target only after Phase 4)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatSubscribe) {
+TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatSubscribeTargetGoal) {
+  // `goal` is a backward-compat alias for target. The legacy joint_state /
+  // hand_state aliases were dropped along with kState in Phase 4.
   const auto node = YAML::Load(
       R"(
 robot:
   subscribe:
-    - {topic: /js, role: joint_state}
-    - {topic: /hs, role: hand_state}
     - {topic: /goal, role: goal}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
-
-  // joint_state -> kState, hand_state -> kState, goal -> kTarget
-  EXPECT_TRUE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kState));
   EXPECT_TRUE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kTarget));
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatPublish) {
+TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatPublishJointGoal) {
+  // joint_goal still maps to kRobotTarget; position_command/torque_command/
+  // hand_command aliases were dropped (they mapped to kRos2Command/
+  // kJointCommand, both deleted).
   const auto node = YAML::Load(
       R"(
 robot:
   publish:
-    - {topic: /cmd, role: position_command}
-    - {topic: /tcmd, role: torque_command}
-    - {topic: /hcmd, role: hand_command}
     - {topic: /jgoal, role: joint_goal}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
-
-  bool has_ros2_cmd = false;
-  bool has_joint_cmd = false;
   bool has_robot_target = false;
-
   for (const auto& [name, group] : cfg.groups) {
     if (name != "robot") {
       continue;
     }
     for (const auto& pub : group.publish) {
-      if (pub.role == rtc::PublishRole::kRos2Command) {
-        has_ros2_cmd = true;
-      }
-      if (pub.role == rtc::PublishRole::kJointCommand) {
-        has_joint_cmd = true;
-      }
       if (pub.role == rtc::PublishRole::kRobotTarget) {
         has_robot_target = true;
       }
     }
   }
-
-  // position_command/torque_command -> kRos2Command
-  EXPECT_TRUE(has_ros2_cmd);
-  // hand_command -> kJointCommand
-  EXPECT_TRUE(has_joint_cmd);
-  // joint_goal -> kRobotTarget
   EXPECT_TRUE(has_robot_target);
 }
 
@@ -467,9 +413,9 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigDeprecatedFlatFormatThrows) {
   const auto node = YAML::Load(
       R"(
 subscribe:
-  - {topic: /joint_states, role: state}
+  - {topic: /target, role: target}
 publish:
-  - {topic: /cmd, role: joint_command}
+  - {topic: /robot_target, role: robot_target}
 )");
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
 }
@@ -496,7 +442,7 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigNonMapGroupSkipped) {
   const auto node = YAML::Load(R"(
 ur5e:
   subscribe:
-    - {topic: /joint_states, role: state}
+    - {topic: /ur5e/target, role: target}
 scalar_value: 42
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
@@ -505,10 +451,11 @@ scalar_value: 42
 }
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigDataSizePreserved) {
+  // Phase 4: data_size still flows through for controller-owned roles.
   const auto node = YAML::Load(R"(
 robot:
   publish:
-    - {topic: /cmd, role: ros2_command, data_size: 30}
+    - {topic: /grasp, role: grasp_state, data_size: 30}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
@@ -527,10 +474,10 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigPreservesInsertionOrder) {
       R"(
 beta_device:
   subscribe:
-    - {topic: /b, role: state}
+    - {topic: /b/target, role: target}
 alpha_device:
   subscribe:
-    - {topic: /a, role: state}
+    - {topic: /a/target, role: target}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
@@ -543,12 +490,12 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigAllPublishRoles) {
   // Phase C: device_state_log / device_sensor_log roles removed; controller
   // data CSVs flow through ControllerLogSet under the top-level `logs:`
   // section instead.
+  // Phase 4: joint_command / ros2_command roles are now device-wire and
+  // owned by DeviceBackend; controller YAML keeps only controller-owned pubs.
   const auto node = YAML::Load(
       R"(
 robot:
   publish:
-    - {topic: /a, role: joint_command}
-    - {topic: /b, role: ros2_command}
     - {topic: /d, role: robot_target}
     - {topic: /g, role: grasp_state}
     - {topic: /h, role: tof_snapshot}
@@ -559,7 +506,7 @@ robot:
 
   for (const auto& [name, group] : cfg.groups) {
     if (name == "robot") {
-      EXPECT_EQ(group.publish.size(), std::size_t{7});
+      EXPECT_EQ(group.publish.size(), std::size_t{5});
       return;
     }
   }
@@ -579,15 +526,16 @@ TEST(RTControllerInterfaceTest, LoadConfigNullNode) {
 }
 
 TEST(RTControllerInterfaceTest, LoadConfigWithTopics) {
+  // Phase 4: controller YAML only carries controller-owned lanes.
   StubController ctrl;
   const auto node = YAML::Load(
       R"(
 topics:
   custom_robot:
     subscribe:
-      - {topic: /custom/states, role: state}
+      - {topic: /custom/target, role: target}
     publish:
-      - {topic: /custom/cmd, role: joint_command}
+      - {topic: /custom/robot_target, role: robot_target}
 )");
   ctrl.LoadConfig(node);
 
@@ -623,14 +571,14 @@ enable_hand: false
 
 TEST(TopicConfigTest, OperatorBracketInsertsNew) {
   rtc::TopicConfig cfg;
-  cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kState});
+  cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kTarget});
   EXPECT_TRUE(cfg.HasGroup("robot"));
   EXPECT_EQ(cfg.groups.size(), std::size_t{1});
 }
 
 TEST(TopicConfigTest, OperatorBracketAccessesExisting) {
   rtc::TopicConfig cfg;
-  cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kState});
+  cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kTarget});
   cfg["robot"].subscribe.push_back({"/more", rtc::SubscribeRole::kTarget});
   EXPECT_EQ(cfg.groups.size(), std::size_t{1});
   EXPECT_EQ(cfg.groups[0].second.subscribe.size(), std::size_t{2});
@@ -649,26 +597,26 @@ TEST(TopicConfigTest, HasGroupFalseForEmptyEntries) {
 
 TEST(TopicConfigTest, HasSubscribeRoleNotFound) {
   rtc::TopicConfig cfg;
-  EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kState));
+  EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kTarget));
 }
 
 TEST(TopicConfigTest, HasSubscribeRoleWrongGroup) {
   rtc::TopicConfig cfg;
-  cfg["hand"].subscribe.push_back({"/hand/js", rtc::SubscribeRole::kState});
-  EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kState));
-  EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kState));
+  cfg["hand"].subscribe.push_back({"/hand/js", rtc::SubscribeRole::kTarget});
+  EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kTarget));
+  EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kTarget));
 }
 
 TEST(TopicConfigTest, GetSubscribeTopicNameReturnsEmpty) {
   rtc::TopicConfig cfg;
-  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kState), "");
+  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kTarget), "");
 }
 
 TEST(TopicConfigTest, GetSubscribeTopicNameReturnsFirst) {
   rtc::TopicConfig cfg;
-  cfg["robot"].subscribe.push_back({"/first", rtc::SubscribeRole::kState});
-  cfg["robot"].subscribe.push_back({"/second", rtc::SubscribeRole::kState});
-  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kState), "/first");
+  cfg["robot"].subscribe.push_back({"/first", rtc::SubscribeRole::kTarget});
+  cfg["robot"].subscribe.push_back({"/second", rtc::SubscribeRole::kTarget});
+  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kTarget), "/first");
 }
 
 TEST(TopicConfigTest, InsertionOrderPreserved) {
@@ -818,10 +766,10 @@ TEST(LoadDeviceLimitsFromConfig, RespectsTopicConfigGroupOrder) {
   // independent of std::map<std::string,DeviceNameConfig> alphabetical order.
   StubController ctrl;
   YAML::Node yaml;
-  yaml["topics"]["wrist"]["subscribe"][0]["topic"] = "/wrist/state";
-  yaml["topics"]["wrist"]["subscribe"][0]["role"] = "state";
-  yaml["topics"]["base"]["subscribe"][0]["topic"] = "/base/state";
-  yaml["topics"]["base"]["subscribe"][0]["role"] = "state";
+  yaml["topics"]["wrist"]["subscribe"][0]["topic"] = "/wrist/target";
+  yaml["topics"]["wrist"]["subscribe"][0]["role"] = "target";
+  yaml["topics"]["base"]["subscribe"][0]["topic"] = "/base/target";
+  yaml["topics"]["base"]["subscribe"][0]["role"] = "target";
   ctrl.LoadConfig(yaml);
 
   std::map<std::string, rtc::DeviceNameConfig> configs;
@@ -851,8 +799,8 @@ TEST(LoadDeviceLimitsFromConfig, RespectsTopicConfigGroupOrder) {
 TEST(LoadDeviceLimitsFromConfig, FillsEmptySlotsWithFallbacks) {
   StubController ctrl;
   YAML::Node yaml;
-  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/state";
-  yaml["topics"]["arm"]["subscribe"][0]["role"] = "state";
+  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/target";
+  yaml["topics"]["arm"]["subscribe"][0]["role"] = "target";
   ctrl.LoadConfig(yaml);
 
   std::array<std::vector<double>, rtc::ControllerState::kMaxDevices> lower, upper, vel;
@@ -877,8 +825,8 @@ TEST(LoadDeviceLimitsFromConfig, EmptyJointLimitVectorsTreatedAsMissing) {
   // not per-device.
   StubController ctrl;
   YAML::Node yaml;
-  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/state";
-  yaml["topics"]["arm"]["subscribe"][0]["role"] = "state";
+  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/target";
+  yaml["topics"]["arm"]["subscribe"][0]["role"] = "target";
   ctrl.LoadConfig(yaml);
 
   std::map<std::string, rtc::DeviceNameConfig> configs;

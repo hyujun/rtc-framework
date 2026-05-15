@@ -18,23 +18,19 @@ demo_wbc_controller:
   hand_max_traj_velocity: 4.0     # rad/s
 
   # ── Topic routing ─────────────────────────────────────────────────────
-  # ownership: "manager"   → CM owns the sub/pub (RT-adjacent, default)
-  # ownership: "controller"→ per-controller LifecycleNode owns it; relative
-  #                          paths resolve under namespace /<config_key>/
+  # Phase 4: device-wire lanes (state / motor_state / sensor_state /
+  # joint_command / ros2_command) moved to devices.<group>.backend in
+  # sim.yaml / robot.yaml. Controller YAML keeps only controller-owned
+  # roles (target / robot_transforms / wbc_state).
+  # ownership: "controller" → per-controller LifecycleNode owns it; relative
+  #                           paths resolve under namespace /<config_key>/
   topics:
     ur5e:
       subscribe:
         - topic: "ur5e/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/joint_states"
-          role: "state"
       publish:
-        - topic: "/ur5e/joint_command"
-          role: "joint_command"
-        - topic: "/forward_position_controller/commands"
-          role: "ros2_command"
-          data_size: 6
         # Per-controller TF (Phase 3): WBC publishes arm tip + alpha placeholder.
         # Fingertip frames are not yet broadcast — see wbc/lifecycle.cpp note.
         - topic: "transforms"
@@ -45,15 +41,7 @@ demo_wbc_controller:
         - topic: "hand/joint_goal"
           role: "target"
           ownership: "controller"
-        - topic: "/hand/joint_states"
-          role: "state"
-        - topic: "/hand/motor_states"
-          role: "motor_state"
-        - topic: "/hand/sensor_states"
-          role: "sensor_state"
       publish:
-        - topic: "/hand/joint_command"
-          role: "joint_command"
         - topic: "hand/wbc_state"
           role: "wbc_state"
           ownership: "controller"

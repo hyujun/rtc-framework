@@ -706,8 +706,12 @@ ros2 run integrated_bringup motion_editor_gui
 
     devices:
       ur5e:
+        backend:                                # Phase 4 SSoT
+          type: "ur_driver_native"
+          state_topic:   "/joint_states"
+          command_topic: "/forward_position_controller/commands"
         joint_state_names: [shoulder_pan_joint, ..., wrist_3_joint]  # 6
-        joint_command_names: [shoulder_pan_joint, ..., wrist_3_joint]  # 6 (생략 시 joint_state_names 사용)
+        joint_command_names: [shoulder_pan_joint, ..., wrist_3_joint]  # ur_driver_native packing order
         # root_link/tip_link: urdf.sub_models에서 name="ur5e"로 자동 해석
         joint_limits:
           max_velocity: [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
@@ -716,6 +720,12 @@ ros2 run integrated_bringup motion_editor_gui
           position_lower: [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
           position_upper: [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
       hand:
+        backend:                                # Phase 4 SSoT
+          type: "udp_hand_native"
+          state_topic:   "/hand/joint_states"
+          command_topic: "/hand/joint_command"
+          motor_topic:   "/hand/motor_states"
+          sensor_topic:  "/hand/sensor_states"
         joint_state_names: [thumb_cmc_aa, ..., ring_mcp_fe]  # 10
         motor_state_names: [motor_1, ..., motor_10]          # 10
         sensor_names: [thumb, index, middle, ring]            # 4
@@ -732,6 +742,7 @@ ros2 run integrated_bringup motion_editor_gui
 - `joint_command_names` 생략 (`joint_state_names`과 동일하므로)
 - 핸드에 `motor_state_names` 없음 (MuJoCo가 직접 position 제공)
 - URDF sub_model 조작 프레임: `root_link: "base_link"`, `tip_link: "flange"` (MuJoCo URDF 기준)
+- 양 그룹의 `backend.type: "mujoco_native"`; `state_topic` = `/<group>/joint_states`, `command_topic` = `/<group>/joint_command`; sim 모드에서는 `motor_topic`/`sensor_topic` 미설정 (MuJoCo는 단일 lane만 노출)
 
 ---
 
