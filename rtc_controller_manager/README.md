@@ -29,7 +29,10 @@ rtc_controller_manager/
 ├── include/rtc_controller_manager/
 │   ├── rt_controller_node.hpp             <- 메인 노드 클래스
 │   ├── rt_controller_main.hpp             <- 재사용 가능 진입점 함수
-│   └── controller_timing_profiler.hpp     <- 락-프리 타이밍 프로파일러
+│   ├── controller_timing_profiler.hpp     <- 락-프리 타이밍 프로파일러
+│   ├── device_state_cache.hpp             <- `DeviceStateCache` POD (SeqLock payload, backend-shared)
+│   ├── device_backend.hpp                 <- `DeviceBackend` 추상 인터페이스 + `DeviceBackendConfig`
+│   └── device_backend_registry.hpp        <- 백엔드 type_tag 레지스트리 + `RTC_REGISTER_DEVICE_BACKEND` 매크로
 ├── src/
 │   ├── rt_controller_node.cpp             <- 생성자/소멸자, 콜백 그룹, 타이머, Lifecycle 콜백
 │   ├── rt_controller_node_params.cpp      <- 파라미터 선언/로딩, 디바이스 설정
@@ -39,7 +42,8 @@ rtc_controller_manager/
 │   ├── rt_controller_node_rt_loop.cpp     <- RT 루프 (@ control_rate), 워치독, 로그 드레인
 │   ├── rt_controller_node_publish.cpp     <- SPSC 드레인 → ROS2 publish (eventfd wakeup)
 │   ├── rt_controller_node_estop.cpp       <- E-STOP 트리거/클리어/퍼블리시
-│   └── rt_controller_main_impl.cpp        <- RtControllerMain() 구현 (라이브러리)
+│   ├── rt_controller_main_impl.cpp        <- RtControllerMain() 구현 (라이브러리)
+│   └── device_backend_registry.cpp        <- 레지스트리 싱글톤 + duplicate-tag warn
 └── config/
     ├── rt_controller_manager.yaml         <- 제어 루프 설정
     └── cyclone_dds.xml                    <- CycloneDDS RT 성능 최적화 설정

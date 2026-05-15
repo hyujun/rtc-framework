@@ -9,6 +9,7 @@
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
+#include "rtc_controller_manager/device_state_cache.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rtc_msgs/msg/hand_sensor_state.hpp>
@@ -364,30 +365,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   [[nodiscard]] bool AllTimeoutDevicesReceived() const noexcept;
 
   // ── Per-device state caches (indexed by group_slot_map_) ─────────────────
-  static constexpr int kMaxDevices = rtc::PublishSnapshot::kMaxGroups;
+  // DeviceStateCache + kMaxDevices live in
+  // rtc_controller_manager/device_state_cache.hpp so DeviceBackend
+  // implementations can populate them without re-declaring the layout.
+  using DeviceStateCache = rtc::DeviceStateCache;
+  static constexpr int kMaxDevices = rtc::kMaxDevices;
 
-  struct DeviceStateCache {
-    int num_channels{0};
-    std::array<double, rtc::kMaxDeviceChannels> positions{};
-    std::array<double, rtc::kMaxDeviceChannels> velocities{};
-    std::array<double, rtc::kMaxDeviceChannels> efforts{};
-    // Motor-space data (separate from joint-space)
-    int num_motor_channels{0};
-    std::array<double, rtc::kMaxDeviceChannels> motor_positions{};
-    std::array<double, rtc::kMaxDeviceChannels> motor_velocities{};
-    std::array<double, rtc::kMaxDeviceChannels> motor_efforts{};
-    std::array<int32_t, rtc::kMaxSensorChannels> sensor_data{};
-    std::array<int32_t, rtc::kMaxSensorChannels> sensor_data_raw{};
-    int num_sensor_channels{0};
-    // Inference (force/displacement per fingertip)
-    std::array<float, rtc::kMaxInferenceValues> inference_data{};
-    std::array<bool, rtc::kMaxFingertips> inference_enable{};
-    int num_inference_fingertips{0};
-    bool valid{false};
-  };
-
-  static_assert(std::is_trivially_copyable_v<DeviceStateCache>,
-                "DeviceStateCache must be trivially copyable for SeqLock");
   std::array<rtc::SeqLock<DeviceStateCache>, kMaxDevices> device_states_;
 
   // Per-device targets

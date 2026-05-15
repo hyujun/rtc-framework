@@ -55,6 +55,7 @@ add_library(rtc_controller_manager_lib STATIC
   src/rt_controller_node_estop.cpp
   src/rt_controller_node_device_config.cpp
   src/rt_controller_main_impl.cpp
+  src/device_backend_registry.cpp
 )
 target_include_directories(rtc_controller_manager_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -151,6 +152,16 @@ if(BUILD_TESTING)
       rtc_msgs rtc_urdf_bridge)
     target_link_libraries(test_switch_service
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
+  ament_add_gtest(test_device_backend_registry
+    test/test_device_backend_registry.cpp)
+  if(TARGET test_device_backend_registry)
+    target_include_directories(test_device_backend_registry PRIVATE include)
+    ament_target_dependencies(test_device_backend_registry
+      rclcpp rclcpp_lifecycle rtc_base)
+    target_link_libraries(test_device_backend_registry
+      rtc_controller_manager_lib)
   endif()
 endif()
 
