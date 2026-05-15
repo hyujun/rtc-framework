@@ -6,7 +6,7 @@
 
 - `rtc_*` packages (13): variable-DOF, configurable RT loop rate (`control_rate` YAML; design range 100 Hz – 5 kHz, default 500 Hz), transport abstraction (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP
 - Integration packages (3): `integrated_bringup` (demo controllers + launch + grasp/phase managers, ref integration on top of `rtc_*`), `udp_hand_driver` (UDP hand driver — reusable for any UDP-controlled hand), `ur5e_bt_coordinator` (BehaviorTree.CPP v4 grasp coordinator, UR5e + hand specific)
-- `robot_descriptions` (1): robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (ur5e + assm_v1 hand 입주, 추가 robot/hand는 서브디렉토리 추가만으로)
+- `robot_descriptions` (1): robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (현재 ur5e, ur5e_assm_v1, assm_v1, iiwa7, iiwa7_leap, leap_hand, schunk_hand 입주). 추가 robot/hand는 서브디렉토리 추가만으로 — 본 패키지 CMakeLists/package.xml 미수정
 - `shape_estimation*` packages (2): ToF-based surface estimation (msgs + node)
 - `repo_scripts` (1): repo-local convenience tooling (PREEMPT_RT, CPU shield, deps build, env activation) — not part of the rtc_* runtime libraries
 - **Total: 20 ROS 2 packages**
@@ -126,8 +126,8 @@
 | E-7 | Thread model (core 배치, priority) 변경 | Critical | timing 가정 |
 | E-8 | E-STOP 경로 수정 | Critical | 안전 |
 | E-9 | 문서-코드 불일치를 어느 쪽에 맞출지 결정 필요 | Warning | 사용자 의도 확인 |
-| E-10 | [agent_docs/archive/controller-safety-improvements.md](agent_docs/archive/controller-safety-improvements.md) Remaining Phase 진행 | Warning | 계획 순서 |
-| E-11 | `robot_descriptions`를 build-time으로 의존하려는 변경 (`find_package` / `<depend>` / `ament_target_dependencies`) | Warning | ARCH-5 |
+| E-10 | `robot_descriptions`를 build-time으로 의존하려는 변경 (`find_package` / `<depend>` / `ament_target_dependencies`) | Warning | ARCH-5 |
+| E-11 | `PublishRole` enum에 controller-owned non-RT 토픽을 추가하려는 변경 | Warning | Phase 4 trailing cleanup (`104796f`) — 새 controller-owned 토픽은 `SeqLock<T>` + `Setup*Publisher` helper 패턴을 따른다. PublishRole 은 `kRobotTarget` / `kRobotTransforms` / `kDigitalTwinState` (manager-published) 만 |
 
 ### `[CONCERN]` 포맷
 

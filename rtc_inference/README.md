@@ -129,7 +129,7 @@ colcon build --packages-select rtc_inference
 | `ament_cmake` | 빌드 도구 | ROS 2 빌드 시스템 |
 | `rtc_base` | 런타임 의존 | 공유 데이터 타입 |
 | `libonnxruntime-dev` | 빌드 의존 (선택) | ONNX Runtime 백엔드 |
-| `ament_lint_auto` / `ament_lint_common` | 테스트 의존 | 린트 검사 |
+| (lint depend 없음) | — | 워크스페이스 정책 (`bdedac7`): `ament_lint_common` meta / `ament_uncrustify` 사용 금지 — 필요 시 개별 `ament_cmake_{cppcheck,lint_cmake,xmllint}` 만 추가. 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md) |
 
 C++ 20 표준이 요구됩니다 (`CMAKE_CXX_STANDARD 20`).
 

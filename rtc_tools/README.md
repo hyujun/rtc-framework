@@ -1,6 +1,5 @@
 # rtc_tools
 
-![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
@@ -383,7 +382,7 @@ pip install matplotlib pandas numpy scipy mujoco
 |------|--------|
 | buildtool | `ament_python` |
 | exec | `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `python3-numpy`, `python3-mujoco` |
-| test | `ament_lint_auto`, `ament_lint_common` |
+| test | (개별 lint — `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 `bdedac7` 으로 사용 금지; 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md)) |
 
 **requirements.txt 기준:**
 

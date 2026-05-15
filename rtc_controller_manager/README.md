@@ -1,6 +1,5 @@
 # rtc_controller_manager
 
-![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
@@ -37,16 +36,18 @@ rtc_controller_manager/
 │   ├── rt_controller_node.cpp             <- 생성자/소멸자, 콜백 그룹, 타이머, Lifecycle 콜백
 │   ├── rt_controller_node_params.cpp      <- 파라미터 선언/로딩, 디바이스 설정
 │   ├── rt_controller_node_device_config.cpp <- URDF/모델 파싱, 디바이스 이름 설정
-│   ├── rt_controller_node_topics.cpp      <- 구독/퍼블리셔 생성, 컨트롤러 전환
-│   ├── rt_controller_node_callbacks.cpp   <- 디바이스 센서/타겟 콜백 (SeqLock writer)
-│   ├── rt_controller_node_rt_loop.cpp     <- RT 루프 (@ control_rate), 워치독, 로그 드레인
-│   ├── rt_controller_node_publish.cpp     <- SPSC 드레인 → ROS2 publish (eventfd wakeup)
-│   ├── rt_controller_node_estop.cpp       <- E-STOP 트리거/클리어/퍼블리시
-│   ├── rt_controller_main_impl.cpp        <- RtControllerMain() 구현 (라이브러리)
-│   └── device_backend_registry.cpp        <- 레지스트리 싱글톤 + duplicate-tag warn
+│   ├── rt_controller_node_subscriptions.cpp <- 구독자 생성 (SeqLock writer 콜백 등록)
+│   ├── rt_controller_node_publishers.cpp    <- 퍼블리셔 생성 (per-controller LifecyclePublisher)
+│   ├── rt_controller_node_services.cpp      <- 서비스 (LoadController, SwitchController 등)
+│   ├── rt_controller_node_switch.cpp        <- 컨트롤러 전환 로직 + active_controller_name latched publish
+│   ├── rt_controller_node_callbacks.cpp     <- 디바이스 센서/타겟 콜백 (SeqLock writer)
+│   ├── rt_controller_node_rt_loop.cpp       <- RT 루프 (@ control_rate), 워치독, 로그 드레인
+│   ├── rt_controller_node_publish.cpp       <- SPSC 드레인 → ROS2 publish (eventfd wakeup)
+│   ├── rt_controller_node_estop.cpp         <- E-STOP 트리거/클리어/퍼블리시
+│   ├── rt_controller_main_impl.cpp          <- RtControllerMain() 구현 (라이브러리)
+│   └── device_backend_registry.cpp          <- 레지스트리 싱글톤 + duplicate-tag warn
 └── config/
-    ├── rt_controller_manager.yaml         <- 제어 루프 설정
-    └── cyclone_dds.xml                    <- CycloneDDS RT 성능 최적화 설정
+    └── cyclone_dds.xml                      <- CycloneDDS RT 성능 최적화 설정 (실제 control_rate / devices / urdf 는 `<robot>_bringup/config/<robot>/{sim,robot}.yaml` 의 `devices.<group>.backend:` 등으로 선언)
 ```
 
 ---

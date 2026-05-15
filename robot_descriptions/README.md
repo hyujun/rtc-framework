@@ -1,6 +1,5 @@
 # robot_descriptions
 
-![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
@@ -12,7 +11,6 @@
 | 항목 | 내용 |
 |------|------|
 | **패키지 이름** | `robot_descriptions` |
-| **버전** | 5.17.0 |
 | **빌드 시스템** | ament_cmake |
 | **라이선스** | MIT |
 | **관리자** | Junho Park (jeryblueput@gmail.com) |
@@ -42,10 +40,8 @@
 | `robots/ur5e/` | UR5e 6-DoF arm — URDF (xacro 사전 생성), MJCF, full mesh set |
 | `robots/assm_v1/` | 10-DoF custom hand "assm v1" — URDF xacro, MJCF (cylinder geom) |
 | `robots/ur5e_assm_v1/` | UR5e arm + assm_v1 hand 결합 — URDF xacro, MJCF scene (wrist3 말단 부착) |
-| `robots/allegro_hand/` | Allegro Hand 16-DoF — URDF (left/right × obj/glb 4종) + meshes |
-| `robots/allegro_hand_fsr/` | Allegro Hand FSR 부착 변형 4종 (`fsr`/`fsr_glb`/`fsr_simple`/`fsr_cylinder`). 공유 mesh는 `allegro_hand/`를 참조하고, FSR 전용 mesh(`tactile`, `longer_finger_tip`)만 자체 `meshes/` 보유 |
 | `robots/iiwa7/` | KUKA iiwa7 7-DoF arm — URDF (obj/glb 2종) + meshes |
-| `robots/leap_hand/` | LEAP Hand 16-DoF — URDF (left/right × obj/glb 4종) + meshes |
+| `robots/leap_hand/` | LEAP Hand 16-DoF — URDF (left/right) + meshes (collision-box composite inertia rebake 2026-05-15) |
 | `robots/iiwa7_leap/` | iiwa7 arm + LEAP Hand 결합 — URDF xacro + MJCF (left/right 각 2종), scene 각 1종. `ee_link` 말단 부착. `meshes/{visual,collision}/`은 iiwa7 + leap_hand mesh hardlink |
 | `robots/schunk_hand/` | Schunk SVH 5-finger hand — URDF (left/right × obj/glb 4종) + meshes |
 
@@ -88,31 +84,14 @@ robot_descriptions/
     │   └── urdf/
     │       └── ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 결합 xacro
     │
-    ├── allegro_hand/                      # Allegro Hand 16-DOF
-    │   ├── urdf/
-    │   │   ├── allegro_hand_{left,right}.urdf       # OBJ mesh 참조
-    │   │   └── allegro_hand_{left,right}_glb.urdf   # GLB mesh 참조
-    │   └── meshes/{visual,collision}/
-    │
-    ├── allegro_hand_fsr/                  # Allegro Hand FSR 부착 변형
-    │   ├── urdf/
-    │   │   ├── allegro_hand_right_fsr.urdf          # OBJ + FSR
-    │   │   ├── allegro_hand_right_fsr_glb.urdf      # GLB + FSR
-    │   │   ├── allegro_hand_right_fsr_simple.urdf   # 베이스 mesh만 (FSR 없음)
-    │   │   └── allegro_hand_right_fsr_cylinder.urdf # 단순 cylinder geom
-    │   └── meshes/{visual,collision}/     # FSR 전용 mesh (tactile, longer_finger_tip)
-    │                                      #   공유 mesh는 allegro_hand/ 참조
-    │
     ├── iiwa7/                             # KUKA iiwa7 7-DoF arm
     │   ├── urdf/
-    │   │   ├── iiwa7.urdf                 # OBJ mesh 참조
-    │   │   └── iiwa7_glb.urdf             # GLB mesh 참조
+    │   │   └── iiwa7.urdf                 # OBJ mesh 참조
     │   └── meshes/{visual,collision}/
     │
     ├── leap_hand/                         # LEAP Hand 16-DoF
     │   ├── urdf/
-    │   │   ├── leap_hand_{left,right}.urdf
-    │   │   └── leap_hand_{left,right}_glb.urdf
+    │   │   └── leap_hand_{left,right}.urdf
     │   └── meshes/{visual,collision}/
     │
     ├── iiwa7_leap/                        # iiwa7 + LEAP Hand 통합
@@ -126,8 +105,7 @@ robot_descriptions/
     │
     └── schunk_hand/                       # Schunk SVH 5-finger hand
         ├── urdf/
-        │   ├── schunk_svh_hand_{left,right}.urdf
-        │   └── schunk_svh_hand_{left,right}_glb.urdf
+        │   └── schunk_svh_hand_{left,right}.urdf
         └── meshes/{visual,collision}/
 ```
 

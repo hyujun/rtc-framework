@@ -1,6 +1,5 @@
 # rtc_msgs
 
-![version](https://img.shields.io/badge/version-v5.17.0-blue)
 
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md) | RT 최적화: [RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md)
@@ -54,8 +53,7 @@ rtc_msgs/
 | `builtin_interfaces` | `Time` 타입 (ToFSnapshot 타임스탬프) |
 | `ament_cmake` | 빌드 시스템 |
 | `rosidl_default_generators` | 메시지 C++/Python 코드 생성 |
-| `ament_lint_auto` | 테스트 의존성 (lint 자동화) |
-| `ament_lint_common` | 테스트 의존성 (공통 lint 규칙) |
+| `ament_cmake_cppcheck` / `ament_cmake_lint_cmake` / `ament_cmake_xmllint` | 테스트 의존성 (개별 lint — `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 `bdedac7` 으로 사용 금지, 자세한 사유는 [agent_docs/conventions.md](../agent_docs/conventions.md)) |
 
 ---
 

@@ -13,47 +13,47 @@
 
 ## 패키지 구성
 
-20개 ROS2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 로봇 고유 패키지(`ur5e_*`)로 분리됩니다. 각 패키지는 자체 `README.md`를 포함합니다.
+20개 ROS 2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 멀티-로봇 데이터/통합 패키지로 분리됩니다. 각 패키지는 자체 `README.md`를 포함하며, 패키지 버전 핀은 README 에서 의도적으로 생략합니다 (drift 방지 — 정확한 버전은 각 `package.xml` 참조).
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
-| 패키지 | 버전 | 설명 | 빌드 |
-|--------|------|------|------|
-| [`rtc_msgs`](rtc_msgs/) | 5.17.0 | 커스텀 ROS2 메시지 8종 (JointCommand, FingertipSensor, HandSensorState, GuiPosition, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState) | ament_cmake |
-| [`rtc_base`](rtc_base/) | 5.17.0 | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
-| [`rtc_communication`](rtc_communication/) | 5.17.0 | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
-| [`rtc_controller_interface`](rtc_controller_interface/) | 5.17.0 | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
-| [`rtc_controllers`](rtc_controllers/) | 5.17.0 | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
-| [`rtc_tsid`](rtc_tsid/) | 0.1.0 | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
-| [`rtc_mpc`](rtc_mpc/) | 0.1.0 | MPC↔RT 인터페이스: zero-copy `TripleBuffer<T>` (single-atomic publish/acquire), cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton (solver-agnostic; Aligator는 후속 패키지) | ament_cmake |
-| [`rtc_controller_manager`](rtc_controller_manager/) | 5.17.0 | 설정 가능한 RT 루프 (`control_rate`, default 500Hz, clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP | ament_cmake |
-| [`rtc_inference`](rtc_inference/) | 5.17.0 | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
-| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | 5.18.0 | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
-| [`rtc_digital_twin`](rtc_digital_twin/) | 5.17.0 | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
-| [`rtc_tools`](rtc_tools/) | 5.17.0 | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
-| [`repo_scripts`](repo_scripts/) | 5.17.0 | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화, MPC 코어 헬퍼 `get_mpc_cores`/`get_rt_cores`/`get_os_cores`) | ament_cmake |
+| 패키지 | 설명 | 빌드 |
+|--------|------|------|
+| [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 14종 (JointCommand, FingertipSensor, HandSensorState, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, WbcState, ToFSnapshot, ControllerState, CalibrationCommand, CalibrationStatus, SimSensor, SimSensorState) | ament_cmake |
+| [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
+| [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
+| [`rtc_controller_interface`](rtc_controller_interface/) | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
+| [`rtc_controllers`](rtc_controllers/) | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
+| [`rtc_tsid`](rtc_tsid/) | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
+| [`rtc_mpc`](rtc_mpc/) | MPC↔RT 인터페이스: zero-copy `TripleBuffer<T>` (single-atomic publish/acquire), cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton (solver-agnostic; Aligator는 후속 패키지) | ament_cmake |
+| [`rtc_controller_manager`](rtc_controller_manager/) | 설정 가능한 RT 루프 (`control_rate`, default 500Hz, clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP + `DeviceBackend` 추상 | ament_cmake |
+| [`rtc_inference`](rtc_inference/) | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
+| [`rtc_mujoco_sim`](rtc_mujoco_sim/) | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
+| [`rtc_digital_twin`](rtc_digital_twin/) | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
+| [`rtc_tools`](rtc_tools/) | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
+| [`repo_scripts`](repo_scripts/) | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화, `setup_env.sh`, MPC 코어 헬퍼 `get_mpc_cores`/`get_rt_cores`/`get_os_cores`) — shell-only (CMake 빌드 없음) |
 
 ### 브릿지 패키지
 
-| 패키지 | 버전 | 설명 | 빌드 |
-|--------|------|------|------|
-| [`rtc_urdf_bridge`](rtc_urdf_bridge/) | 5.17.0 | 로봇 비의존적 URDF 파서 + Pinocchio 모델 빌더, YAML 기반 체인 추출 설정 | ament_cmake |
+| 패키지 | 설명 | 빌드 |
+|--------|------|------|
+| [`rtc_urdf_bridge`](rtc_urdf_bridge/) | 로봇 비의존적 URDF 파서 + Pinocchio 모델 빌더, YAML 기반 체인 추출 설정 | ament_cmake |
 
 ### 형상 추정 패키지 (shape_estimation_*)
 
-| 패키지 | 버전 | 설명 | 빌드 |
-|--------|------|------|------|
-| [`shape_estimation_msgs`](shape_estimation_msgs/) | 5.17.0 | ToF 기반 형상 추정용 커스텀 ROS2 메시지 3종 (ToFReadings, TipPoses, ShapeEstimate) + ExploreShape 액션 | ament_cmake |
-| [`shape_estimation`](shape_estimation/) | 5.17.0 | ToF 센서 기반 형상 추정: 복셀 포인트 누적, 최소제곱 프리미티브 피팅 (구/실린더/평면/박스) | ament_cmake |
+| 패키지 | 설명 | 빌드 |
+|--------|------|------|
+| [`shape_estimation_msgs`](shape_estimation_msgs/) | ToF 기반 형상 추정용 커스텀 ROS 2 메시지 3종 (ToFReadings, TipPoses, ShapeEstimate) + ExploreShape 액션 | ament_cmake |
+| [`shape_estimation`](shape_estimation/) | ToF 센서 기반 형상 추정: 복셀 포인트 누적, 최소제곱 프리미티브 피팅 (구/실린더/평면/박스) | ament_cmake |
 
-### 로봇 고유 패키지 (ur5e_*)
+### 멀티-로봇 데이터 + 통합 패키지
 
-| 패키지 | 버전 | 설명 | 빌드 |
-|--------|------|------|------|
-| [`robot_descriptions`](robot_descriptions/) | 5.17.0 | Robot-agnostic data hub — robots/&lt;name&gt;/ 당 URDF/MJCF/mesh (현재 ur5e + assm_v1 hand) | ament_cmake |
-| [`udp_hand_driver`](udp_hand_driver/) | 5.17.0 | 10-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서 44ch, ONNX F/T 추론 | ament_cmake |
-| [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | 0.1.0 | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
-| [`integrated_bringup`](integrated_bringup/) | 5.17.0 | UR5e launch/config + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 8-phase WBC + **Phase 5 MPC 통합 경로**, `enable_mpc` launch arg, 9-entry gains) + CPU 격리/DDS 핀닝 | ament_cmake |
+| 패키지 | 설명 | 빌드 |
+|--------|------|------|
+| [`robot_descriptions`](robot_descriptions/) | Robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (현재: ur5e, ur5e_assm_v1, assm_v1, iiwa7, iiwa7_leap, leap_hand, schunk_hand). data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 사용 (ARCH-5) | ament_cmake |
+| [`udp_hand_driver`](udp_hand_driver/) | 가변-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서, ONNX F/T 추론 | ament_cmake |
+| [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
+| [`integrated_bringup`](integrated_bringup/) | per-robot launch/config (`config/<robot>/`: ur5e_hand, iiwa7_leap, ...) + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 8-phase WBC + MPC 통합 경로, `enable_mpc` launch arg) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
 
@@ -61,27 +61,27 @@
 rtc_msgs, rtc_base (독립)
   ├── rtc_communication ← rtc_base
   ├── rtc_inference ← rtc_base
-  ├── rtc_controller_interface ← rtc_base, rtc_msgs
-  │   └── rtc_controllers ← rtc_controller_interface, rtc_urdf_bridge
-  │       └── rtc_controller_manager ← rtc_controllers, rtc_communication
+  ├── rtc_controller_interface ← rtc_base, rtc_msgs, rtc_urdf_bridge
+  │   ├── rtc_controllers ← rtc_controller_interface
+  │   └── rtc_controller_manager ← rtc_controller_interface, rtc_communication
   ├── rtc_tsid ← Pinocchio, ProxSuite, Eigen3, yaml-cpp
-  ├── rtc_mpc  ← rtc_base, Eigen3, yaml-cpp          # Phase 5
+  ├── rtc_mpc  ← rtc_base, Eigen3, yaml-cpp
   ├── rtc_mujoco_sim ← MuJoCo 3.x (optional)
   ├── rtc_digital_twin (독립, Python)
-  ├── rtc_tools (독립, Python)
-  └── repo_scripts (독립, shell)
+  └── rtc_tools (독립, Python)
 
+repo_scripts (shell-only, no CMake)
 rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 
 shape_estimation_msgs (독립)
   └── shape_estimation ← shape_estimation_msgs, Eigen3
 
-robot_descriptions (독립, data-only)
-  └── integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
-                    udp_hand_driver, robot_descriptions
-
+robot_descriptions (독립, data-only — <exec_depend> only, ARCH-5)
 udp_hand_driver ← rtc_communication, rtc_inference, rtc_base
 ur5e_bt_coordinator ← rtc_msgs, BehaviorTree.CPP v4
+
+integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
+                     udp_hand_driver, robot_descriptions (runtime lookup)
 ```
 
 ---
@@ -209,7 +209,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 [rtc_inference]   RT-안전 ONNX 추론 (IoBinding, 사전 할당)
 ```
 
-### 스레딩 모델 (v5.17.0, 6코어 기준)
+### 스레딩 모델 (6코어 기준)
 
 | 스레드 | 타입 | 코어 | 스케줄러 | 우선순위 | 역할 |
 |--------|------|------|----------|----------|------|
@@ -270,8 +270,9 @@ sudo update-grub && sudo reboot
 |------|------|
 | [docs/RT_OPTIMIZATION.md](docs/RT_OPTIMIZATION.md) | 실시간 최적화 가이드 (CPU 코어 할당, 커널 설정) |
 | [docs/VSCODE_DEBUGGING.md](docs/VSCODE_DEBUGGING.md) | VS Code + GDB 디버깅 가이드 |
-| [docs/CLAUDE.md](docs/CLAUDE.md) | AI 어시스턴트 컨텍스트 문서 |
-| [docs/SHELL_SCRIPTS.md](docs/SHELL_SCRIPTS.md) | RT 설정 쉘 스크립트 가이드 |
+| [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13 Pro hybrid CPU (P/E core) 지원 게이팅 (Stage A done, Stage B pending) |
+| [CLAUDE.md](CLAUDE.md) | AI 에이전트 컨텍스트 (harness, invariants, escalation) |
+| [repo_scripts/README.md](repo_scripts/README.md) | RT 설정 / 빌드 / 환경 셋업 쉘 스크립트 가이드 (PREEMPT_RT, CPU shield, IRQ affinity, `setup_env.sh`) |
 
 각 패키지의 상세 API, 설정, 아키텍처는 해당 패키지의 `README.md`를 참조하세요.
 

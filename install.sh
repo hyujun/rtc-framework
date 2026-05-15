@@ -1178,10 +1178,10 @@ print_summary() {
   echo "  See: docs/VSCODE_DEBUGGING.md"
   echo ""
   echo -e "${CYAN}${BOLD}── Documentation ───────────────────────────────────────${NC}"
-  echo "  docs/CLAUDE.md           — full API and architecture reference"
+  echo "  CLAUDE.md                — agent context (harness, invariants, escalation)"
   echo "  docs/VSCODE_DEBUGGING.md — VS Code GDB debugging guide"
   echo "  docs/RT_OPTIMIZATION.md  — RT tuning guide"
-  echo "  docs/SHELL_SCRIPTS.md    — shell scripts usage guide"
+  echo "  repo_scripts/README.md   — shell scripts usage guide (RT setup, env, build)"
   echo ""
 }
 
