@@ -6,17 +6,23 @@
        자식 모델의 <option>은 어차피 YAML로 덮어씌워짐). -->
   <option integrator="implicitfast" />
 
-  <!-- ─── default classes (joint properties SSoT) ─────────────────────────────
+  <!-- ─── default classes (joint properties + position-servo PD SSoT) ─────────
        Panda 유사 class. proximal(J1-J4)이 큰 link 관성/토크 → 상향.
+       PD gain은 ur5e MJCF 패턴(size3 kp=2000/kd=400, size1 kp=500/kd=100, ζ≈0.2)을
+       따르되 iiwa7 payload에 맞춰 1.5× 스케일:
+         proximal kp=3000 kd=600, distal kp=750 kd=150.
        합체 모델 (iiwa7_leap/mjcf/iiwa7_with_leap_*.xml)과 값 동기화 유지. -->
   <default>
     <default class="iiwa7">
       <joint armature="0.2" damping="2.0" frictionloss="0.3" />
+      <general gaintype="fixed" biastype="affine" forcerange="-200 200" />
       <default class="iiwa7_proximal">
         <joint armature="0.25" damping="3.0" frictionloss="0.5" />
+        <general gainprm="3000" biasprm="0 -3000 -600" />
       </default>
       <default class="iiwa7_distal">
         <joint armature="0.15" damping="1.0" frictionloss="0.2" />
+        <general gainprm="750" biasprm="0 -750 -150" />
       </default>
     </default>
   </default>
@@ -82,22 +88,14 @@
     </body>
   </worldbody>
   <actuator>
-    <general name="A1" joint="A1" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A2" joint="A2" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A3" joint="A3" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A4" joint="A4" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A5" joint="A5" ctrlrange="-2.9671 2.9671" forcerange="-200 200" />
-    <general name="A6" joint="A6" ctrlrange="-2.0944 2.0944" forcerange="-200 200" />
-    <general name="A7" joint="A7" ctrlrange="-3.0543 3.0543" forcerange="-200 200" />
+    <general class="iiwa7_proximal" name="A1" joint="A1" ctrlrange="-2.9671 2.9671" />
+    <general class="iiwa7_proximal" name="A2" joint="A2" ctrlrange="-2.0944 2.0944" />
+    <general class="iiwa7_proximal" name="A3" joint="A3" ctrlrange="-2.9671 2.9671" />
+    <general class="iiwa7_proximal" name="A4" joint="A4" ctrlrange="-2.0944 2.0944" />
+    <general class="iiwa7_distal"   name="A5" joint="A5" ctrlrange="-2.9671 2.9671" />
+    <general class="iiwa7_distal"   name="A6" joint="A6" ctrlrange="-2.0944 2.0944" />
+    <general class="iiwa7_distal"   name="A7" joint="A7" ctrlrange="-3.0543 3.0543" />
   </actuator>
-  <contact>
-    <exclude body1="link_0" body2="link_1" />
-    <exclude body1="link_1" body2="link_2" />
-    <exclude body1="link_2" body2="link_3" />
-    <exclude body1="link_3" body2="link_4" />
-    <exclude body1="link_4" body2="link_5" />
-    <exclude body1="link_5" body2="link_6" />
-    <exclude body1="link_6" body2="link_7" />
-    <exclude body1="link_7" body2="ee_link" />
-  </contact>
+  <!-- Parent-child contact excludes intentionally removed (user request 2026-05-15).
+       Re-enable selectively if tiny boxes show trembling at parent-link joints. -->
 </mujoco>

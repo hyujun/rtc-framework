@@ -6,34 +6,45 @@
        자식 모델의 <option>은 어차피 YAML로 덮어씌워짐). -->
   <option integrator="implicitfast" />
 
-  <!-- ─── default classes (joint properties SSoT) ─────────────────────────────
+  <!-- ─── default classes (joint properties + position-servo PD SSoT) ─────────
        iiwa7: Panda 유사 class. proximal(J1-J4)이 큰 link 관성/토크 → 상향.
+              PD gain은 ur5e MJCF 패턴(size3 kp=2000/kd=400, size1 kp=500/kd=100,
+              ζ≈0.2)을 따르되 iiwa7 payload에 맞춰 1.5× 스케일:
+                proximal kp=3000 kd=600, distal kp=750 kd=150.
        LEAP : XC430 gear 159.5:1, 고감속비 → reflected inertia 큼.
               MCP(flex) / PIP(abduction at base) / DIP(mid+tip) / thumb 4-tier.
-       forcerange는 XC430 stall 안전 한계 ±0.95로 유지 (spec ±1.4/±1.0/±0.8 미적용).
-       MANUAL: urdf_to_mjcf 재실행 시 이 블록은 사라집니다. 재주입할 것
-               (robots/iiwa7_leap/README.md). -->
+              PD gain은 forcerange ±0.95 N·m 한계 하에서 보수적으로 kp=2.5 kd=0.125
+              (이전 값의 1/4). forcerange는 XC430 stall 안전 한계 ±0.95로 유지.
+       MANUAL: urdf_to_mjcf 재실행 시 이 블록 + 각 joint/actuator의 class 속성이
+               사라집니다. 재주입할 것 (robots/iiwa7_leap/README.md). -->
   <default>
     <default class="iiwa7">
       <joint armature="0.2" damping="2.0" frictionloss="0.3" />
+      <general gaintype="fixed" biastype="affine" forcerange="-200 200" />
       <default class="iiwa7_proximal">
         <joint armature="0.25" damping="3.0" frictionloss="0.5" />
+        <general gainprm="3000" biasprm="0 -3000 -600" />
       </default>
       <default class="iiwa7_distal">
         <joint armature="0.15" damping="1.0" frictionloss="0.2" />
+        <general gainprm="750" biasprm="0 -750 -150" />
       </default>
     </default>
-    <default class="leap_mcp">
-      <joint armature="0.006" damping="0.10" frictionloss="0.04" />
-    </default>
-    <default class="leap_pip">
-      <joint armature="0.004" damping="0.06" frictionloss="0.025" />
-    </default>
-    <default class="leap_dip">
-      <joint armature="0.003" damping="0.04" frictionloss="0.015" />
-    </default>
-    <default class="leap_thumb">
-      <joint armature="0.006" damping="0.10" frictionloss="0.04" />
+    <default class="leap">
+      <general gaintype="fixed" biastype="affine" gainprm="2.5"
+               biasprm="0 -2.5 -0.125" forcerange="-0.95 0.95" />
+      <default class="leap_mcp">
+        <joint armature="0.006" damping="0.10" frictionloss="0.04" />
+      </default>
+      <default class="leap_pip">
+        <joint armature="0.004" damping="0.06" frictionloss="0.025" />
+      </default>
+      <default class="leap_dip">
+        <joint armature="0.003" damping="0.04" frictionloss="0.015" />
+      </default>
+      <default class="leap_thumb">
+        <joint armature="0.006" damping="0.10" frictionloss="0.04" />
+      </default>
     </default>
   </default>
 
@@ -273,64 +284,40 @@
       </body>
     </body>
   </worldbody>
-  <!-- Inline position-servo PD (ur5e MJCF pattern):
-         force = gainprm[0]*ctrl + biasprm[1]*qpos + biasprm[2]*qvel
-       iiwa7 large joints (A1-A4): kp=4000 kd=600
-       iiwa7 wrists       (A5-A7): kp=1000 kd=200
-       LEAP fingers       (0-15) : kp=10   kd=0.5 (forcerange ±0.95 N·m clip)
-       NOTE: mujoco_simulator.yaml uses use_yaml_servo_gains: true so the
-       YAML servo block overrides these inline values at runtime. The inline
-       gainprm/biasprm here remain a safe standalone fallback (e.g. when the
-       MJCF is loaded directly without the simulator node).
+  <!-- Position-servo PD via default classes (ur5e MJCF pattern):
+         force = gainprm[0]*(ctrl - qpos) + biasprm[2]*qvel
+       PD values are SSoT'd in the <default> block above:
+         iiwa7_proximal (A1-A4): kp=3000 kd=600
+         iiwa7_distal   (A5-A7): kp=750  kd=150
+         leap           (0-15) : kp=2.5  kd=0.125 (forcerange ±0.95 N·m clip)
+       NOTE: mujoco_simulator.yaml use_yaml_servo_gains 가 true 면 YAML servo
+       블록이 런타임에 이 값을 덮어쓴다. 현재 false → MJCF 값이 활성.
        MANUAL: urdf_to_mjcf 재실행 시 이 actuator 블록은 bare <general/>로
        되돌아갑니다. 재생성 후 이 블록을 다시 박을 것 (robots/iiwa7_leap/README.md). -->
   <actuator>
-    <general name="A1" joint="A1" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
-    <general name="A2" joint="A2" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
-    <general name="A3" joint="A3" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
-    <general name="A4" joint="A4" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="4000" biasprm="0 -4000 -600" />
-    <general name="A5" joint="A5" ctrlrange="-2.9671 2.9671" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="1000" biasprm="0 -1000 -200" />
-    <general name="A6" joint="A6" ctrlrange="-2.0944 2.0944" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="1000" biasprm="0 -1000 -200" />
-    <general name="A7" joint="A7" ctrlrange="-3.0543 3.0543" forcerange="-200 200"
-             gaintype="fixed" biastype="affine" gainprm="1000" biasprm="0 -1000 -200" />
-    <general name="0"  joint="0"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="1"  joint="1"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="2"  joint="2"  ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="3"  joint="3"  ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="4"  joint="4"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="5"  joint="5"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="6"  joint="6"  ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="7"  joint="7"  ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="8"  joint="8"  ctrlrange="-1.047 1.047" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="9"  joint="9"  ctrlrange="-0.314 2.23"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="10" joint="10" ctrlrange="-0.506 1.885" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="11" joint="11" ctrlrange="-0.366 2.042" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="12" joint="12" ctrlrange="-0.349 2.094" forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="13" joint="13" ctrlrange="-0.47 2.443"  forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="14" joint="14" ctrlrange="-1.2 1.9"     forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
-    <general name="15" joint="15" ctrlrange="-1.34 1.88"   forcerange="-0.95 0.95"
-             gaintype="fixed" biastype="affine" gainprm="10" biasprm="0 -10 -0.5" />
+    <general class="iiwa7_proximal" name="A1" joint="A1" ctrlrange="-2.9671 2.9671" />
+    <general class="iiwa7_proximal" name="A2" joint="A2" ctrlrange="-2.0944 2.0944" />
+    <general class="iiwa7_proximal" name="A3" joint="A3" ctrlrange="-2.9671 2.9671" />
+    <general class="iiwa7_proximal" name="A4" joint="A4" ctrlrange="-2.0944 2.0944" />
+    <general class="iiwa7_distal"   name="A5" joint="A5" ctrlrange="-2.9671 2.9671" />
+    <general class="iiwa7_distal"   name="A6" joint="A6" ctrlrange="-2.0944 2.0944" />
+    <general class="iiwa7_distal"   name="A7" joint="A7" ctrlrange="-3.0543 3.0543" />
+    <general class="leap" name="0"  joint="0"  ctrlrange="-1.047 1.047" />
+    <general class="leap" name="1"  joint="1"  ctrlrange="-0.314 2.23" />
+    <general class="leap" name="2"  joint="2"  ctrlrange="-0.506 1.885" />
+    <general class="leap" name="3"  joint="3"  ctrlrange="-0.366 2.042" />
+    <general class="leap" name="4"  joint="4"  ctrlrange="-1.047 1.047" />
+    <general class="leap" name="5"  joint="5"  ctrlrange="-0.314 2.23" />
+    <general class="leap" name="6"  joint="6"  ctrlrange="-0.506 1.885" />
+    <general class="leap" name="7"  joint="7"  ctrlrange="-0.366 2.042" />
+    <general class="leap" name="8"  joint="8"  ctrlrange="-1.047 1.047" />
+    <general class="leap" name="9"  joint="9"  ctrlrange="-0.314 2.23" />
+    <general class="leap" name="10" joint="10" ctrlrange="-0.506 1.885" />
+    <general class="leap" name="11" joint="11" ctrlrange="-0.366 2.042" />
+    <general class="leap" name="12" joint="12" ctrlrange="-0.349 2.094" />
+    <general class="leap" name="13" joint="13" ctrlrange="-0.47 2.443" />
+    <general class="leap" name="14" joint="14" ctrlrange="-1.2 1.9" />
+    <general class="leap" name="15" joint="15" ctrlrange="-1.34 1.88" />
   </actuator>
 
   <keyframe>
@@ -349,47 +336,9 @@
                      ctrl="0 0.7 0 -1.0 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/>
   </keyframe>
 
-  <!-- Parent-child contact excludes (merged from standalone iiwa7.xml and
-       leap_hand_right.xml, plus the iiwa7-hand junction).
-       Without these, tiny LEAP finger boxes oscillate against their parent
-       links every tick (visible as constant trembling). MANUAL: re-paste this
-       block after any urdf_to_mjcf regeneration (see robots/iiwa7_leap/README.md). -->
-  <contact>
-    <!-- iiwa7 arm chain -->
-    <exclude body1="link_0" body2="link_1" />
-    <exclude body1="link_1" body2="link_2" />
-    <exclude body1="link_2" body2="link_3" />
-    <exclude body1="link_3" body2="link_4" />
-    <exclude body1="link_4" body2="link_5" />
-    <exclude body1="link_5" body2="link_6" />
-    <exclude body1="link_6" body2="link_7" />
-    <exclude body1="link_7" body2="ee_link" />
-    <!-- iiwa7 ↔ LEAP hand junction -->
-    <exclude body1="ee_link" body2="base" />
-    <exclude body1="base" body2="palm_lower" />
-    <!-- LEAP index finger -->
-    <exclude body1="palm_lower" body2="mcp_joint" />
-    <exclude body1="mcp_joint" body2="pip" />
-    <exclude body1="pip" body2="dip" />
-    <exclude body1="dip" body2="fingertip" />
-    <exclude body1="fingertip" body2="index_tip_head" />
-    <!-- LEAP middle finger -->
-    <exclude body1="palm_lower" body2="mcp_joint_2" />
-    <exclude body1="mcp_joint_2" body2="pip_2" />
-    <exclude body1="pip_2" body2="dip_2" />
-    <exclude body1="dip_2" body2="fingertip_2" />
-    <exclude body1="fingertip_2" body2="middle_tip_head" />
-    <!-- LEAP ring finger -->
-    <exclude body1="palm_lower" body2="mcp_joint_3" />
-    <exclude body1="mcp_joint_3" body2="pip_3" />
-    <exclude body1="pip_3" body2="dip_3" />
-    <exclude body1="dip_3" body2="fingertip_3" />
-    <exclude body1="fingertip_3" body2="ring_tip_head" />
-    <!-- LEAP thumb -->
-    <exclude body1="palm_lower" body2="thumb_temp_base" />
-    <exclude body1="thumb_temp_base" body2="thumb_pip" />
-    <exclude body1="thumb_pip" body2="thumb_dip" />
-    <exclude body1="thumb_dip" body2="thumb_fingertip" />
-    <exclude body1="thumb_fingertip" body2="thumb_tip_head" />
-  </contact>
+  <!-- Parent-child contact excludes intentionally removed (user request 2026-05-15).
+       Previously this block excluded: iiwa7 arm chain, iiwa7↔LEAP junction,
+       index/middle/ring/thumb finger chains, and *tip_head leaf bodies.
+       Re-enable selectively if LEAP finger boxes show trembling against their
+       parent links every tick. -->
 </mujoco>
