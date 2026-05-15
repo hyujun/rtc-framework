@@ -5,11 +5,6 @@
     # ── Config variant directory ─────────────────────────────────────────────
     config_variant: "ur5e_hand"
 
-    # ── Robot namespace (manager-level topic prefix) ──────────────────────────
-    # rtc_controller_manager defaults to "" (ARCH-1: rtc_* must be robot-agnostic);
-    # the UR5e bringup pins it here so /ur5e/... topics resolve as expected.
-    robot_namespace: "ur5e"
-
     # ── Control rate ──────────────────────────────────────────────────────────
     control_rate: 500.0 # Hz — timer period = 1e6/rate us
 

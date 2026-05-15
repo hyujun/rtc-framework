@@ -106,8 +106,8 @@ class ControllerLifecycleTestAccess {
   static void EnsureActivePublisher(RtControllerNode& node) {
     if (!node.active_ctrl_name_pub_) {
       // Mirror production topic name (rt_controller_node_topics.cpp:430-431):
-      // owned by rtc_controller_manager, robot_namespace prefix intentionally
-      // absent so the topic ownership is obvious from its name.
+      // owned by rtc_controller_manager; topic name is fixed so the ownership
+      // is obvious from its name.
       node.active_ctrl_name_pub_ =
           node.create_publisher<std_msgs::msg::String>("/rtc_cm/active_controller_name", 1);
     }

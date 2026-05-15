@@ -10,14 +10,11 @@
     # <pkg>/config/<config_variant>/controllers/<key>.yaml.
     config_variant: "iiwa7_leap"
 
-    # ── Robot namespace ───────────────────────────────────────────────────────
-    robot_namespace: "iiwa7"
-
     # ── Control rate ──────────────────────────────────────────────────────────
     control_rate: 500.0
 
     # ── Initial controller ────────────────────────────────────────────────────
-    initial_controller: "demo_joint_controller"
+    initial_controller: "demo_wbc_controller"
 
     # ── Initialization timeout ────────────────────────────────────────────────
     init_timeout_sec: 0.0

@@ -173,8 +173,8 @@ void RtControllerNode::CreateFixedSafetyPublishers() {
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();
   // /rtc_cm/active_controller_name — owned by rtc_controller_manager
-  // (single-CM assumption per locked decision D-A2). robot_namespace prefix
-  // is intentionally absent so the topic ownership is obvious from its name.
+  // (single-CM assumption per locked decision D-A2). Topic name is fixed so
+  // the ownership is obvious from its name; no robot-level prefix.
   active_ctrl_name_pub_ = rclcpp::create_publisher<std_msgs::msg::String>(
       this->get_node_topics_interface(), "/rtc_cm/active_controller_name", latch_qos);
 }

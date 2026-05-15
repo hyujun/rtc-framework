@@ -489,7 +489,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   double control_rate_{rtc::kDefaultControlRateHz};
   bool enable_logging_{true};
   bool enable_estop_{true};
-  std::string robot_ns_{};  // robot namespace for manager-level topics
 
   std::size_t loop_count_{0};
 

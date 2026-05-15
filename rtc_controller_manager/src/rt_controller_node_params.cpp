@@ -179,18 +179,15 @@ void RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("initial_controller", rclcpp::ParameterValue(std::string("")));
   safe_declare("use_sim_time_sync", rclcpp::ParameterValue(false));
   safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
-  safe_declare("robot_namespace", rclcpp::ParameterValue(std::string("")));
 
   // Robot config variant directory.  Path is composed as
   // <pkg_share>/config/<config_variant>/controllers/<config_key>.yaml.
   // Empty (default) → legacy flat layout (config/controllers/...).  Robot
-  // bringups should set this in their system YAML (e.g. "ur5e_hand" /
-  // "iiwa7_leap") so all variant-specific configs live under one directory.
-  // No trailing slash.
+  // bringups should set this in their system YAML so all variant-specific
+  // configs live under one directory.  No trailing slash.
   safe_declare("config_variant", rclcpp::ParameterValue(std::string("")));
 
-  // ── Device timeouts (replaces robot_timeout_ms / enable_ur5e / enable_hand)
-  // ─
+  // ── Device timeouts (per-device, indexed by group name) ──────────────────
   safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
   safe_declare("device_timeout_values", rclcpp::ParameterValue(std::vector<double>{}));
 
@@ -213,7 +210,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
   enable_estop_ = get_parameter("enable_estop").as_bool();
   use_sim_time_sync_ = get_parameter("use_sim_time_sync").as_bool();
   sim_sync_timeout_sec_ = get_parameter("sim_sync_timeout_sec").as_double();
-  robot_ns_ = get_parameter("robot_namespace").as_string();
 
   // NOTE: Logging setup and device name configs are deferred until after
   // controller loading, because active_groups_ must be known first.
