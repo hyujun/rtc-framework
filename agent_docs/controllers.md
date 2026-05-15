@@ -68,9 +68,8 @@ Key params in `grasp_types.hpp`: `Kp_base=0.02`, `Ki_base=0.002`, `f_target=2.0N
 | Config | Path | Key Parameters |
 |--------|------|----------------|
 | RT controller manager | `integrated_bringup/config/ur5e_hand/robot.yaml` / `ur5e_hand/sim.yaml` | `control_rate`, `initial_controller`, `devices`, `urdf`, `device_timeout_*` |
-| MuJoCo simulator (agnostic 기본값) | `rtc_mujoco_sim/config/mujoco_default.yaml` | `physics_timestep`, `n_substeps`, `sync_timeout_ms`, viewer 설정 |
+| MuJoCo simulator (agnostic 기본값 + solver SSoT) | `rtc_mujoco_sim/config/solver_param.yaml` | `physics_timestep`, `n_substeps`, `sync_timeout_ms`, viewer 설정, `solver` (Newton/CG/PGS), `cone`, `integrator`, `noslip_iterations`, `contact_override` |
 | MuJoCo simulator (UR5e robot 오버레이) | `integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml` | `model_path`, `robot_response.groups` (`ur5e`, `hand`), joint names, command/state 토픽 |
-| MuJoCo solver | `rtc_mujoco_sim/config/solver_param.yaml` | `solver` (Newton/CG/PGS), `cone`, `integrator`, `noslip_iterations`, `contact_override` |
 | Hand UDP driver | `udp_hand_driver/config/udp_hand_node.yaml` | `target_ip`, `recv_timeout_ms`, `communication_mode` (bulk/individual) |
 | Digital twin (default) | `rtc_digital_twin/config/digital_twin.yaml` | `display_rate`, `auto_compute_mimic`, sensor_viz/tcp_viz scale params (robot-agnostic) |
 | Digital twin (UR5e overlay) | `integrated_bringup/config/ur5e_hand/digital_twin.yaml` | `robot_description_*`, `source_*.topic`, `sensor_viz.sensor_topic`, `sensor_viz.fingertip_names`, `tcp_viz.source_topic` |

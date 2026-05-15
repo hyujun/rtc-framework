@@ -1,14 +1,23 @@
-# MuJoCo Simulator — Robot-agnostic default parameters
-# ──────────────────────────────────────────────────────
-# Loaded by rtc_mujoco_sim/launch/mujoco_sim.launch.py for standalone smoke
-# tests. Robot-specific overrides (joint names, command/state topics, model
-# path, servo gains) live in robot bringup packages — see e.g.
-# integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml.
+# MuJoCo Simulator — TEMPLATE / EXAMPLE ONLY (NOT LOADED BY ANY LAUNCH)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ⚠️  이 파일은 어떤 launch에도 로드되지 않습니다.
+#
+# 용도: 새 robot bringup 패키지를 만들 때 자신의 mujoco_simulator.yaml
+#       (예: integrated_bringup/config/<robot>/mujoco_simulator.yaml) 의
+#       시작점으로 쓰기 위한 robot-agnostic 키 목록 / 기본값 / 주석 reference.
+#
+# 실사용 파일:
+#   - rtc_mujoco_sim/config/solver_param.yaml  ← 모든 sim launch가 항상 로드
+#     (agnostic 기본값 + solver SSoT)
+#   - integrated_bringup/config/<robot>/mujoco_simulator.yaml ← robot-specific
+#     override (model_path, robot_response.*, servo gains 등)
 #
 # Required externally (no agnostic default):
 #   model_path                       ← path to MJCF scene
 #   robot_response.groups            ← list of actuator groups
 #   robot_response.<group>.command_joint_names + topics
+# ─────────────────────────────────────────────────────────────────────────────
 
 mujoco_simulator:
   ros__parameters:

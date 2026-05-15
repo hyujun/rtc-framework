@@ -7,9 +7,9 @@ config. Useful as a smoke test for the simulator itself or as a building
 block when a robot bringup package needs the simulator without the rest of
 its stack.
 
-Robot-specific demos (UR5e + RT controller + hand bridge) live in
-`integrated_bringup/launch/sim.launch.py` and load `mujoco_simulator.yaml` from
-`integrated_bringup/config/`.
+Robot-specific demos (arm + RT controller + hand bridge) live in robot
+bringup packages (예: `integrated_bringup/launch/sim*.launch.py`) and load
+`mujoco_simulator.yaml` from their own `config/<robot>/` directory.
 
 Usage:
   # Smoke test with an external MJCF (no robot params loaded)
@@ -24,9 +24,9 @@ Usage:
   ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \\
       params_file:=/path/to/my_robot_sim.yaml
 
-Defaults loaded: rtc_mujoco_sim/config/mujoco_default.yaml (agnostic only;
-robot-specific groups MUST be supplied via params_file or the node will
-fail to configure).
+Defaults loaded: rtc_mujoco_sim/config/solver_param.yaml (agnostic defaults +
+solver SSoT; robot-specific groups MUST be supplied via params_file or the
+node will fail to configure).
 """
 
 from launch import LaunchDescription
@@ -60,7 +60,7 @@ def launch_setup(context, *args, **kwargs):
 
     # ── Params: default file + optional override + CLI overrides ─────────────
     pkg_sim = FindPackageShare("rtc_mujoco_sim")
-    default_params = PathJoinSubstitution([pkg_sim, "config", "mujoco_default.yaml"])
+    default_params = PathJoinSubstitution([pkg_sim, "config", "solver_param.yaml"])
 
     params_file = LaunchConfiguration("params_file").perform(context)
     sim_params: list = [default_params]
@@ -130,7 +130,7 @@ def generate_launch_description():
                 "params_file",
                 default_value="",
                 description=(
-                    "Optional ROS params YAML overlaid on top of mujoco_default.yaml. "
+                    "Optional ROS params YAML overlaid on top of solver_param.yaml. "
                     "Must supply robot_response.groups + per-group joint/topic config."
                 ),
             ),

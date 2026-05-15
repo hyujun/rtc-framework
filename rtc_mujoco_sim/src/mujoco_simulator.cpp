@@ -1031,6 +1031,13 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
             "[MuJoCoSimulator] XML <option> not found — all solver "
             "params from YAML\n");
   }
+
+  // Shrink contact-point viz disks to 1/10 of MuJoCo defaults
+  // (0.3 / 0.1). Purely visual — does not affect physics.
+  constexpr float kContactVizWidth = 0.03F;
+  constexpr float kContactVizHeight = 0.01F;
+  model_->vis.scale.contactwidth = kContactVizWidth;
+  model_->vis.scale.contactheight = kContactVizHeight;
 }
 
 // ── Thread lifecycle

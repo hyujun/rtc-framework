@@ -1,7 +1,8 @@
 # MuJoCo Simulator — iiwa7 (7-DoF) + LEAP right hand (16-DoF) configuration
 # ─────────────────────────────────────────────────────────────────────────────
 # Loaded by integrated_bringup/launch/sim_iiwa7_leap.launch.py.
-# Generic defaults: rtc_mujoco_sim/config/mujoco_default.yaml.
+# Agnostic defaults + solver SSoT: rtc_mujoco_sim/config/solver_param.yaml
+#   (이 파일이 먼저 로드되고, 본 yaml이 robot-specific 키를 override함).
 # RTC controller param overrides: integrated_bringup/config/iiwa7_leap/sim.yaml.
 
 mujoco_simulator:

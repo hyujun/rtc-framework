@@ -562,7 +562,7 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 
 **Lifecycle 순서:** 런치 시 mujoco_simulator → configure → activate 완료 후 integrated_rt_controller → configure → activate 순차 활성화.
 
-`mujoco_simulator.yaml`은 `integrated_bringup/config/`에 위치하며 (UR5e 전용 robot_response 그룹/조인트/토픽), agnostic 기본값은 `rtc_mujoco_sim/config/mujoco_default.yaml`에서 로드된 후 위에 오버레이됩니다.
+`mujoco_simulator.yaml`은 `integrated_bringup/config/`에 위치하며 (UR5e 전용 robot_response 그룹/조인트/토픽), agnostic 기본값 + solver SSoT는 `rtc_mujoco_sim/config/solver_param.yaml`에서 먼저 로드된 후 본 yaml이 그 위에 오버레이됩니다.
 
 ---
 

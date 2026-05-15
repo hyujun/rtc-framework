@@ -1,20 +1,57 @@
-# MuJoCo Constraint Solver Parameter Configuration
+# MuJoCo Simulator — Robot-Agnostic Defaults + Solver SSoT
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# XML 우선순위 규칙:
-#   MJCF XML의 <option> 요소에 명시적으로 설정된 속성은 이 YAML 값보다 우선합니다.
-#   XML에 해당 속성이 없는 경우에만 이 YAML의 값이 적용됩니다.
+# 모든 sim launch (rtc_mujoco_sim/launch/mujoco_sim.launch.py,
+# integrated_bringup/launch/sim*.launch.py)가 항상 가장 먼저 로드하는 파일.
+# robot-specific bringup yaml (예: integrated_bringup/config/<robot>/
+# mujoco_simulator.yaml) 이 그 위에 오버레이되어 일부 값을 override합니다.
+#
+# 실사용 우선순위 (높음 → 낮음):
+#   1. MJCF XML scene_*.xml의 <option> 속성 — rtc_mujoco_sim ApplySolverConfig가
+#      tinyxml2로 scene_*.xml만 감지 (자식 <include>는 미추적이므로 자식 MJCF의
+#      <option>은 무시됨).
+#   2. robot별 mujoco_simulator.yaml (예:
+#      integrated_bringup/config/<robot>/mujoco_simulator.yaml) — launch가
+#      마지막에 로드하는 robot-specific override.
+#   3. 본 파일 solver_param.yaml — agnostic 기본값 + solver SSoT.
 #
 # 예시:
 #   XML: <option solver="CG" iterations="50"/>
 #   YAML: solver: "Newton", iterations: 100, cone: "elliptic"
 #   결과: solver=CG (XML), iterations=50 (XML), cone=elliptic (YAML fallback)
 #
+# Robot-specific yaml에서 반드시 정의해야 하는 키 (agnostic 기본값 없음):
+#   model_path                       ← path to MJCF scene
+#   robot_response.groups            ← list of actuator groups
+#   robot_response.<group>.command_joint_names + topics
+#
 # 참조: MuJoCo 3.x 공식 문서 — Modeling/Computation 챕터
 # ─────────────────────────────────────────────────────────────────────────────
 
 mujoco_simulator:
   ros__parameters:
+    # ── Sync timeout (controller command wait per step) ──────────────────────
+    sync_timeout_ms: 50.0
+
+    # ── Real-Time Factor (1.0 = real-time, 0.0 = unlimited) ──────────────────
+    max_rtf: 1.0
+
+    # ── Viewer ───────────────────────────────────────────────────────────────
+    enable_viewer: true
+    viewer_refresh_rate: 60.0  # Hz
+
+    # ── Physics timestep ─────────────────────────────────────────────────────
+    physics_timestep: 0.002  # seconds (control period)
+    n_substeps: 3            # physics substeps per control cycle
+
+    # ── Position servo gains (override per robot) ────────────────────────────
+    use_yaml_servo_gains: false
+    # servo_kp: [...]   # set per robot in robot-specific YAML
+    # servo_kd: [...]
+
+    # ── Control rate (used by physics_timestep validator) ────────────────────
+    control_rate: 500.0  # Hz
+
     solver:
       # ════════════════════════════════════════════════════════════════════════
       # Algorithm Selection (알고리즘 선택)

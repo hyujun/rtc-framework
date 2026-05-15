@@ -65,9 +65,11 @@ def launch_setup(context, *args, **kwargs):
     pkg_sim = FindPackageShare("rtc_mujoco_sim")
     pkg_bringup = FindPackageShare("integrated_bringup")
 
-    # MuJoCo sim params: agnostic defaults (rtc_mujoco_sim) + iiwa7+LEAP
-    # robot_response groups, joint names, topics, model_path (integrated_bringup).
-    sim_default = PathJoinSubstitution([pkg_sim, "config", "mujoco_default.yaml"])
+    # MuJoCo sim params: agnostic defaults + solver SSoT (rtc_mujoco_sim/
+    # config/solver_param.yaml) + iiwa7+LEAP robot_response groups, joint
+    # names, topics, model_path (integrated_bringup/config/iiwa7_leap/
+    # mujoco_simulator.yaml — overlaid on top).
+    sim_default = PathJoinSubstitution([pkg_sim, "config", "solver_param.yaml"])
     sim_config = PathJoinSubstitution(
         [pkg_bringup, "config", "iiwa7_leap", "mujoco_simulator.yaml"]
     )
