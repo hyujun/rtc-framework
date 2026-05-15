@@ -98,8 +98,7 @@ repo_scripts/
 | 함수 | 설명 |
 |------|------|
 | `get_physical_cores()` | 물리 코어 수 감지 (SMT/HT 제외). lscpu -> sysfs -> nproc 순 |
-| `compute_cpu_layout()` | 코어 수 기반 RT 레이아웃 계산 (OS/RT 코어 범위, IRQ 마스크) |
-| `compute_irq_affinity_mask()` | SMT-aware IRQ affinity bitmask 계산 (HT 시블링 포함) |
+| `compute_cpu_layout()` | 코어 수 기반 RT 레이아웃 계산 (OS/RT 코어 범위, IRQ 마스크) — 내부에서 IRQ affinity bitmask도 함께 산출 |
 | `compute_expected_isolated()` | `isolcpus` 기대값 계산 (SMT 시블링 포함 범위 표기) |
 | `get_os_logical_cpus()` | OS 물리 코어에 속하는 논리 CPU 번호 목록 |
 
@@ -113,7 +112,7 @@ repo_scripts/
 
 | 함수 | 설명 |
 |------|------|
-| `setup_colors()` | 터미널 색상 변수 초기화 (비-TTY 환경에서는 빈 문자열) |
+| `setup_colors()` | 터미널 색상 변수 초기화 (비-TTY 환경에서는 빈 문자열). source 시 자동 호출되므로 보통 직접 호출 불필요 |
 | `make_logger PREFIX [STYLE]` | 로깅 프리픽스+스타일 설정. `bracket` (기본): `[PREFIX] msg`, `emoji`: 이모지 형식 |
 | `info()` / `warn()` / `error()` / `success()` / `section()` | 색상별 로깅 |
 | `fatal()` | 에러 메시지 출력 후 `exit 1` (error + exit 통합) |
@@ -124,10 +123,9 @@ repo_scripts/
 |------|------|
 | `require_root()` | root 권한 확인 (실패 시 `fatal`) |
 | `write_file_if_changed()` | 멱등 파일 쓰기 (동일 시 skip, 다를 시 백업+덮어쓰기) |
-| `create_oneshot_service()` | systemd oneshot 서비스 생성 헬퍼 |
 | `auto_release_cpu_shield()` | 빌드 전 CPU shield 자동 해제 (cset 감지 시 해제, isolcpus는 경고만) |
 | `check_workspace_structure()` | ROS2 워크스페이스 디렉토리 구조 검증 (`src/` 하위 확인) |
-| `ensure_ros2_sourced()` | ROS2 환경 자동 탐색 및 소싱 (jazzy/humble/iron/rolling 순) |
+| `ensure_ros2_sourced()` | ROS2 환경 자동 탐색 및 소싱 (jazzy 우선, humble fallback — setup_env.sh와 동일 priority) |
 
 ### 패키지 리스트 함수
 
@@ -138,14 +136,14 @@ repo_scripts/
 
 ### MPC 코어 레이아웃 함수 (Phase 5)
 
-쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. `cpu_shield.sh`, `setup_grub_rt.sh`, `setup_irq_affinity.sh`, `check_rt_setup.sh`, `verify_rt_runtime.sh`가 이 함수들을 통해 tier별 코어 배치를 질의합니다.
+쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. 현재 `cpu_shield.sh`, `setup_irq_affinity.sh`, `check_rt_setup.sh`, `verify_rt_runtime.sh`는 각자 tier 분기를 갖고 있으며, 이들을 본 헬퍼로 일원화하는 작업은 Phase 4 (Layout SSoT 단일화)에 예정되어 있습니다.
 
-| 함수 | 설명 | 반환 예시 (6 / 8 / 10 / 12 / 14 / 16 코어) |
-|------|------|--------------------------------------------|
-| `get_mpc_cores()` | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `4` / `4` / `4,5` / `4,5,6` / `4,5,6` / `9,10,11` |
-| `get_mpc_main_core()` | MPC main 코어만 (get_mpc_cores의 첫 항목). | `4` / `4` / `4` / `4` / `4` / `9` |
-| `get_rt_cores()` | RT 스레드 전체 집합 (rt_control + sensor_io + udp_recv + MPC). GRUB `nohz_full`/`rcu_nocbs` 인자에 사용. | `2,3,5,4` / `2,3,5,4` / `2,3,6,4,5` / `2,3,7,4,5,6` / `2,3,7,4,5,6` / `2,3,12,9,10,11` |
-| `get_os_cores()` | OS/DDS/IRQ 코어 (전체 - RT). IRQ affinity 고정 대상. | `0,1` / `0,1` / `0,1` / `0,1` / `0,1` / `0,1` |
+| 함수 | 상태 | 설명 | 반환 예시 (6 / 8 / 10 / 12 / 14 / 16 코어) |
+|------|------|------|--------------------------------------------|
+| `get_mpc_cores()` | active | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `4` / `4` / `4,5` / `4,5,6` / `4,5,6` / `9,10,11` |
+| `get_mpc_main_core()` | dormant | MPC main 코어만 (get_mpc_cores의 첫 항목). Phase 4 에서 활용 예정. | `4` / `4` / `4` / `4` / `4` / `9` |
+| `get_rt_cores()` | dormant | RT 스레드 전체 집합 (rt_control + sensor_io + udp_recv + MPC). GRUB `nohz_full`/`rcu_nocbs` 인자에 사용 예정. | `2,3,5,4` / `2,3,5,4` / `2,3,6,4,5` / `2,3,7,4,5,6` / `2,3,7,4,5,6` / `2,3,12,9,10,11` |
+| `get_os_cores()` | dormant | OS/DDS/IRQ 코어 (전체 - RT). IRQ affinity 고정 대상으로 사용 예정. | `0,1` / `0,1` / `0,1` / `0,1` / `0,1` / `0,1` |
 
 Tier별 매핑 (2026-04 unified layout):
 - **≤4코어**: MPC `SCHED_OTHER nice=-5`, Core 3 공유 (degraded).

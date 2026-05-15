@@ -289,11 +289,12 @@ check_prerequisites() {
   fi
 
   # If ros2 command is not in PATH, try to find and source ROS2 from /opt/ros/
+  # Distro priority matches setup_env.sh / build_deps.sh: jazzy first, humble fallback.
   if ! command -v ros2 &>/dev/null; then
     warn "ros2 command not found in PATH. Searching /opt/ros/ ..."
     local _found_ros2=0
     if [[ -d /opt/ros ]]; then
-      for _distro in jazzy humble iron rolling; do
+      for _distro in jazzy humble; do
         if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
           info "Found ROS2 ${_distro} at /opt/ros/${_distro} — sourcing setup.bash ..."
           # shellcheck disable=SC1090
@@ -317,14 +318,21 @@ check_prerequisites() {
 
   # Detect ROS2 distro via three-tier fallback:
   #   1. $ROS_DISTRO env var  — set automatically when setup.bash is sourced (most reliable)
-  #   2. /opt/ros/ directory  — works even without sourcing
+  #   2. /opt/ros/<distro>    — jazzy preferred, humble fallback (matches setup_env.sh)
   #   3. ros2 --version       — parses "(humble)" from "ros2, version X.Y.Z (humble)"
   if [[ -n "${ROS_DISTRO:-}" ]]; then
     ROS_DISTRO_DETECTED="$ROS_DISTRO"
-  elif ls /opt/ros/ &>/dev/null; then
-    ROS_DISTRO_DETECTED=$(ls /opt/ros/ 2>/dev/null | head -1 || echo "unknown")
   else
-    ROS_DISTRO_DETECTED=$(ros2 --version 2>/dev/null | grep -oP '\(\K[^)]+' || echo "unknown")
+    ROS_DISTRO_DETECTED="unknown"
+    for _distro in jazzy humble; do
+      if [[ -f "/opt/ros/${_distro}/setup.bash" ]]; then
+        ROS_DISTRO_DETECTED="$_distro"
+        break
+      fi
+    done
+    if [[ "$ROS_DISTRO_DETECTED" == "unknown" ]]; then
+      ROS_DISTRO_DETECTED=$(ros2 --version 2>/dev/null | grep -oP '\(\K[^)]+' || echo "unknown")
+    fi
   fi
 
   success "ROS2 detected: ${ROS_DISTRO_DETECTED}"
@@ -332,10 +340,6 @@ check_prerequisites() {
   # ── Distro-aware package prefix ─────────────────────────────────────────────
   # ros-humble-* or ros-jazzy-* selected automatically based on detected distro.
   ROS_PKG_PREFIX="ros-${ROS_DISTRO_DETECTED}"
-  PYTHON_ROBOTPKG_SUFFIX="py310"   # Humble / Python 3.10 default
-  if [[ "$ROS_DISTRO_DETECTED" == "jazzy" ]]; then
-    PYTHON_ROBOTPKG_SUFFIX="py312"  # Jazzy / Python 3.12
-  fi
 
   if [[ "$ROS_DISTRO_DETECTED" != "humble" && "$ROS_DISTRO_DETECTED" != "jazzy" ]]; then
     warn "Unsupported ROS2 distro: ${ROS_DISTRO_DETECTED}. Supported: humble, jazzy. Continuing..."
