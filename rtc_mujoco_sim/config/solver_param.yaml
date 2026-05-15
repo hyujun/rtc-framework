@@ -159,7 +159,7 @@ mujoco_simulator:
       # 부모-자식 body 간 collision 필터링
       #   true  = 기본값, 불필요한 자기충돌 방지
       #   false = 모든 body 쌍에 대해 collision 검사
-      filterparent: true
+      filterparent: false
 
       # ════════════════════════════════════════════════════════════════════════
       # Contact Override (접촉 파라미터 일괄 덮어쓰기)
