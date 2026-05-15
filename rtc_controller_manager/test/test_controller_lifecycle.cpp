@@ -140,7 +140,7 @@ class ControllerLifecycleTestAccess {
     return node.SwitchActiveController(name, message);
   }
 
-  static ControllerState BuildSnapshot(const RtControllerNode& node, std::size_t idx) {
+  static ControllerState BuildSnapshot(RtControllerNode& node, std::size_t idx) {
     return node.BuildDeviceSnapshot(idx);
   }
 

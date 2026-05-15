@@ -135,6 +135,8 @@ void UdpHandNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr 
                            std::chrono::steady_clock::now().time_since_epoch())
                            .count(),
                        std::memory_order_release);
+
+  NotifyStateReady();
 }
 
 void UdpHandNativeBackend::OnMotorState(sensor_msgs::msg::JointState::SharedPtr msg) {

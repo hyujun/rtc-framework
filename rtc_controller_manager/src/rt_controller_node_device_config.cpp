@@ -1,4 +1,5 @@
-// ── Device name configuration, URDF validation, reorder maps ─────────────────
+// ── Device name configuration, URDF validation, backend wiring ──────────────
+#include "rtc_controller_manager/device_backend_registry.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
 
@@ -485,33 +486,207 @@ void RtControllerNode::LoadDeviceNameConfigs() {
   }
 }
 
-void RtControllerNode::BuildDeviceReorderMap(int device_slot,
-                                             const std::vector<std::string>& msg_names) {
-  // Look up reference names from device config via slot → group name
-  const auto slot_idx = static_cast<std::size_t>(device_slot);
-  if (slot_idx >= slot_to_group_name_.size())
-    return;
-  const auto& group_name = slot_to_group_name_[slot_idx];
-  auto it = device_name_configs_.find(group_name);
-  if (it == device_name_configs_.end())
-    return;
-  const auto& ref_names = it->second.joint_state_names;
-  if (ref_names.empty())
-    return;
+// ── Device backend wiring ───────────────────────────────────────────────────
+//
+// One DeviceBackend per active device group. CM resolves topics from the
+// active controller's TopicConfig (state/motor/sensor/command), infers the
+// backend type from the same YAML, creates the backend via registry, forwards
+// the sensor layout (when present), wires a callback that refreshes
+// E-STOP/state/digital-twin/sim-sync state, and finally Configures the
+// backend so it can create its own subs/pubs on this LifecycleNode.
+//
+// The callback is the single bridge between backend sub callbacks (sensor
+// executor) and CM's accounting state — it consolidates the timestamp
+// refresh, state_received_ flag, digital-twin republish, and sim-sync
+// condvar notify that used to live in three separate sub callbacks.
 
-  auto& map = device_reorder_maps_[static_cast<std::size_t>(device_slot)];
-  map.reorder.assign(msg_names.size(),
-                     -1);  // clear + resize (was resize, kept stale data)
+std::string RtControllerNode::InferBackendType(const std::string& group_name) const {
+  // Inspect the first controller's topic config that has this group. All
+  // active controllers share the same HW/sim adapter (single CM, one device
+  // per group), so the first match is authoritative.
+  for (const auto& tc : controller_topic_configs_) {
+    for (const auto& [name, group] : tc.groups) {
+      if (name != group_name)
+        continue;
+      bool has_sensor = false;
+      bool has_ros2_command = false;
+      for (const auto& sub : group.subscribe) {
+        if (sub.role == urtc::SubscribeRole::kSensorState)
+          has_sensor = true;
+      }
+      for (const auto& pub : group.publish) {
+        if (pub.role == urtc::PublishRole::kRos2Command)
+          has_ros2_command = true;
+      }
+      if (has_sensor)
+        return "udp_hand_native";
+      if (has_ros2_command)
+        return "ur_driver_native";
+      return "mujoco_native";
+    }
+  }
+  return "mujoco_native";
+}
 
-  for (std::size_t msg_i = 0; msg_i < msg_names.size(); ++msg_i) {
-    for (std::size_t ref_i = 0; ref_i < ref_names.size(); ++ref_i) {
-      if (msg_names[msg_i] == ref_names[ref_i]) {
-        map.reorder[msg_i] = static_cast<int>(ref_i);
-        break;
+namespace {
+
+struct BackendTopicSelection {
+  std::string state_topic;
+  std::string motor_topic;
+  std::string sensor_topic;
+  std::string command_topic;
+};
+
+BackendTopicSelection SelectBackendTopics(const urtc::TopicConfig& tc,
+                                          const std::string& group_name) {
+  BackendTopicSelection sel;
+  for (const auto& [name, group] : tc.groups) {
+    if (name != group_name)
+      continue;
+    for (const auto& sub : group.subscribe) {
+      if (sub.ownership == urtc::TopicOwnership::kController)
+        continue;
+      switch (sub.role) {
+        case urtc::SubscribeRole::kState:
+          if (sel.state_topic.empty())
+            sel.state_topic = sub.topic_name;
+          break;
+        case urtc::SubscribeRole::kMotorState:
+          if (sel.motor_topic.empty())
+            sel.motor_topic = sub.topic_name;
+          break;
+        case urtc::SubscribeRole::kSensorState:
+          if (sel.sensor_topic.empty())
+            sel.sensor_topic = sub.topic_name;
+          break;
+        default:
+          break;
+      }
+    }
+    for (const auto& pub : group.publish) {
+      if (pub.ownership == urtc::TopicOwnership::kController)
+        continue;
+      if ((pub.role == urtc::PublishRole::kJointCommand ||
+           pub.role == urtc::PublishRole::kRos2Command) &&
+          sel.command_topic.empty()) {
+        sel.command_topic = pub.topic_name;
       }
     }
   }
-  map.built = true;
-  RCLCPP_INFO(get_logger(), "Built device reorder map for slot %d (%zu msg names → %zu ref names)",
-              device_slot, msg_names.size(), ref_names.size());
+  return sel;
+}
+
+}  // namespace
+
+void RtControllerNode::CreateDeviceBackends() {
+  auto& registry = urtc::DeviceBackendRegistry::Instance();
+
+  for (const auto& [group_name, slot] : group_slot_map_) {
+    const std::size_t uslot = static_cast<std::size_t>(slot);
+    if (uslot >= kMaxDevices) {
+      RCLCPP_ERROR(get_logger(), "Group '%s' slot %d exceeds kMaxDevices (%d) — skip backend",
+                   group_name.c_str(), slot, kMaxDevices);
+      continue;
+    }
+
+    BackendTopicSelection topics;
+    // Walk every controller's topic config and merge — different controllers
+    // may declare the same group with different command roles (joint vs
+    // ros2). We accept the first non-empty value per lane.
+    for (const auto& tc : controller_topic_configs_) {
+      const auto sel = SelectBackendTopics(tc, group_name);
+      if (topics.state_topic.empty())
+        topics.state_topic = sel.state_topic;
+      if (topics.motor_topic.empty())
+        topics.motor_topic = sel.motor_topic;
+      if (topics.sensor_topic.empty())
+        topics.sensor_topic = sel.sensor_topic;
+      if (topics.command_topic.empty())
+        topics.command_topic = sel.command_topic;
+    }
+
+    urtc::DeviceBackendConfig cfg;
+    cfg.group_name = group_name;
+    cfg.type = InferBackendType(group_name);
+    cfg.state_topic = std::move(topics.state_topic);
+    cfg.motor_topic = std::move(topics.motor_topic);
+    cfg.sensor_topic = std::move(topics.sensor_topic);
+    cfg.command_topic = std::move(topics.command_topic);
+    if (auto name_it = device_name_configs_.find(group_name);
+        name_it != device_name_configs_.end()) {
+      cfg.joint_command_names = name_it->second.joint_command_names;
+    }
+
+    auto backend = registry.Create(cfg.type);
+    if (!backend) {
+      RCLCPP_ERROR(get_logger(),
+                   "DeviceBackendRegistry: no backend registered for type '%s' (group '%s') — "
+                   "check that integrated_bringup (or your bringup package) is linked with "
+                   "--whole-archive",
+                   cfg.type.c_str(), group_name.c_str());
+      continue;
+    }
+
+    // Forward sensor packing layout before Configure() so udp_hand_native
+    // can accept sensor messages from the first packet. Layout is silently
+    // ignored by other backend types.
+    if (uslot < slot_to_sensor_layout_.size() && slot_to_sensor_layout_[uslot].has_value()) {
+      backend->SetSensorLayout(slot_to_sensor_layout_[uslot].value());
+    }
+
+    // Find DeviceTimeoutEntry for this group (built earlier in
+    // DeclareAndLoadParameters/CreateTimers; index stable for node
+    // lifetime). Used by the state-ready callback below to refresh
+    // last_update for the E-STOP watchdog.
+    int dt_idx = -1;
+    for (std::size_t i = 0; i < device_timeouts_.size(); ++i) {
+      if (device_timeouts_[i].group_name == group_name) {
+        dt_idx = static_cast<int>(i);
+        break;
+      }
+    }
+
+    backend->SetStateReadyCallback([this, slot, dt_idx]() {
+      // Watchdog timestamp refresh (replaces sub-lambda accounting).
+      if (dt_idx >= 0) {
+        const auto dti = static_cast<std::size_t>(dt_idx);
+        device_timeouts_[dti].last_update = std::chrono::steady_clock::now();
+        device_timeouts_[dti].received.store(true, std::memory_order_relaxed);
+      }
+      state_received_.store(true, std::memory_order_release);
+
+      // Digital-twin republish (RELIABLE/10) — single hop into the joint
+      // cache via ReadState; trivially copyable POD.
+      auto dt_it = slot_to_dt_topic_.find(slot);
+      if (dt_it != slot_to_dt_topic_.end()) {
+        auto pub_it = digital_twin_publishers_.find(dt_it->second);
+        if (pub_it != digital_twin_publishers_.end()) {
+          auto& dte = pub_it->second;
+          urtc::DeviceStateCache cache{};
+          (void)backends_[static_cast<std::size_t>(slot)]->ReadState(cache);
+          const auto n = dte.msg.position.size();
+          for (std::size_t i = 0; i < n; ++i) {
+            dte.msg.position[i] = cache.positions[i];
+            dte.msg.velocity[i] = cache.velocities[i];
+            dte.msg.effort[i] = cache.efforts[i];
+          }
+          dte.publisher->publish(dte.msg);
+        }
+      }
+
+      // Sim-sync wake-up
+      if (use_sim_time_sync_) {
+        state_fresh_.store(true, std::memory_order_release);
+        state_cv_.notify_one();
+      }
+    });
+
+    backend->Configure(this, cfg);
+    backends_[uslot] = std::move(backend);
+
+    RCLCPP_INFO(get_logger(),
+                "  Backend [%s]: type=%s slot=%d state='%s' motor='%s' sensor='%s' cmd='%s'",
+                group_name.c_str(), cfg.type.c_str(), slot, cfg.state_topic.c_str(),
+                cfg.motor_topic.c_str(), cfg.sensor_topic.c_str(), cfg.command_topic.c_str());
+  }
 }

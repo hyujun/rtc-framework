@@ -136,6 +136,8 @@ void UrDriverNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr
                            std::chrono::steady_clock::now().time_since_epoch())
                            .count(),
                        std::memory_order_release);
+
+  NotifyStateReady();
 }
 
 bool UrDriverNativeBackend::ReadState(DeviceStateCache& cache) noexcept {

@@ -142,6 +142,8 @@ void MujocoNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr m
                            std::chrono::steady_clock::now().time_since_epoch())
                            .count(),
                        std::memory_order_release);
+
+  NotifyStateReady();
 }
 
 bool MujocoNativeBackend::ReadState(DeviceStateCache& cache) noexcept {

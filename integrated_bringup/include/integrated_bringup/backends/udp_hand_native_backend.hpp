@@ -65,7 +65,9 @@ class UdpHandNativeBackend : public DeviceBackend {
 
   /// Forward the device sensor packing layout. Must be called before
   /// Configure() — without it the sensor lane drops messages.
-  void SetSensorLayout(DeviceSensorLayout layout) { sensor_layout_ = layout; }
+  void SetSensorLayout(const DeviceSensorLayout& layout) noexcept override {
+    sensor_layout_ = layout;
+  }
 
  private:
   void OnJointState(sensor_msgs::msg::JointState::SharedPtr msg);

@@ -66,7 +66,10 @@ void RtControllerNode::ControlLoop() {
         for ([[maybe_unused]] const auto& [gname, ggroup] : active_tc.groups) {
           const auto slot = static_cast<std::size_t>(hold_slots.slots[di]);
           auto& dev = hold_state.devices[di];
-          const auto cache = device_states_[slot].Load();
+          urtc::DeviceStateCache cache{};
+          if (backends_[slot]) {
+            (void)backends_[slot]->ReadState(cache);
+          }
           dev.num_channels = cache.num_channels;
           dev.positions = cache.positions;
           dev.velocities = cache.velocities;
@@ -125,7 +128,14 @@ void RtControllerNode::ControlLoop() {
     const auto slot = static_cast<std::size_t>(slot_mapping.slots[di]);
     const auto cap = slot_mapping.capabilities[di];
     auto& dev = state.devices[di];
-    const auto cache = device_states_[slot].Load();
+    urtc::DeviceStateCache cache{};
+    if (backends_[slot]) {
+      (void)backends_[slot]->ReadState(cache);
+      if (backends_[slot]->HasMotorState())
+        backends_[slot]->ReadMotorState(cache);
+      if (backends_[slot]->HasSensorState())
+        backends_[slot]->ReadSensorState(cache);
+    }
     const auto nc = static_cast<std::size_t>(cache.num_channels);
     dev.num_channels = cache.num_channels;
     std::copy_n(cache.positions.data(), nc, dev.positions.data());

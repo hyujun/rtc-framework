@@ -2,11 +2,13 @@
 #define RTC_CONTROLLER_MANAGER_DEVICE_BACKEND_H_
 
 #include "rtc_base/threading/publish_buffer.hpp"
+#include "rtc_base/types/types.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <chrono>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -119,6 +121,36 @@ class DeviceBackend {
   /// Last time a state message arrived on this backend (steady clock). Used
   /// by CM's E-STOP watchdog. RT-safe.
   [[nodiscard]] virtual std::chrono::steady_clock::time_point LastStateStamp() const noexcept = 0;
+
+  /// Forward the per-group sensor packing layout resolved by CM. Default
+  /// no-op; backends that consume a packed sensor lane (udp_hand_native)
+  /// override to stash the layout before Configure().
+  virtual void SetSensorLayout(const DeviceSensorLayout& /*layout*/) noexcept {}
+
+  /// Callback fired by the backend on every fresh state arrival (joint /
+  /// motor / sensor lanes — all routed through the same hook). CM uses this
+  /// to refresh the E-STOP watchdog timestamp, set `state_received_`,
+  /// republish digital-twin joint states, and notify the sim-sync condvar.
+  /// Slot identity is supplied via lambda capture by the caller.
+  ///
+  /// Must be set before Configure(); default no-op for tests / fixtures that
+  /// don't wire the hook.
+  using StateReadyCallback = std::function<void()>;
+
+  void SetStateReadyCallback(StateReadyCallback callback) noexcept {
+    state_ready_cb_ = std::move(callback);
+  }
+
+ protected:
+  /// Backends call this at the end of each sub callback (joint / motor /
+  /// sensor lane). Safe to call when no callback is registered.
+  void NotifyStateReady() noexcept {
+    if (state_ready_cb_)
+      state_ready_cb_();
+  }
+
+ private:
+  StateReadyCallback state_ready_cb_;
 };
 
 }  // namespace rtc

@@ -4,16 +4,14 @@
 // ───────────────────────────────────────────────────────────
 #include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
-#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controller_manager/controller_timing_profiler.hpp"
+#include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
-#include <rtc_msgs/msg/hand_sensor_state.hpp>
-#include <rtc_msgs/msg/joint_command.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/srv/list_controllers.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
@@ -23,7 +21,6 @@
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 
 // ── C++ stdlib
@@ -51,9 +48,11 @@
 // Threading model:
 //   - rt_loop (jthread):   clock_nanosleep RT loop — ControlLoop() +
 //   CheckTimeouts()
-//   - publish_thread (jthread): SPSC drain → all ROS2 publish() calls
-//   - cb_group_sensor_:    joint_state_sub_, target_sub_, hand_state_sub_
-//   (Sensor core)
+//   - publish_thread (jthread): SPSC drain → controller PublishNonRtSnapshot +
+//                          DeviceBackend WriteCommand (each backend pushes onto
+//                          its own publisher path)
+//   - cb_group_sensor_:    backend state/motor/sensor subs (created by each
+//                          DeviceBackend) + target_sub_ (Sensor core)
 //   - cb_group_log_:       drain_timer_  (non-RT core)
 //   - cb_group_aux_:       estop_pub_  (aux core)
 // Forward declaration for friend access — defined in
@@ -115,44 +114,33 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void CreateCallbackGroups();
   void DeclareAndLoadParameters();
   void CreateSubscriptions();
-  // CreateSubscriptions helpers — split per role for cognitive complexity.
-  // Each helper creates a single subscription and registers it in
-  // topic_subscriptions_; caller filters out controller-owned entries and
-  // duplicate topic names.
-  void CreateStateSubscription(const rtc::SubscribeTopicEntry& entry, const std::string& group_name,
-                               int slot, int dt_idx, const rclcpp::QoS& qos,
-                               const rclcpp::SubscriptionOptions& sub_options);
-  void CreateMotorStateSubscription(const rtc::SubscribeTopicEntry& entry,
-                                    const std::string& group_name, int slot, int dt_idx,
-                                    const rclcpp::QoS& qos,
-                                    const rclcpp::SubscriptionOptions& sub_options);
-  void CreateSensorStateSubscription(const rtc::SubscribeTopicEntry& entry,
-                                     const std::string& group_name, int slot, int dt_idx,
-                                     const rclcpp::QoS& qos,
-                                     const rclcpp::SubscriptionOptions& sub_options);
+  // CreateSubscriptions helper — state/motor/sensor lanes are owned by
+  // DeviceBackend implementations (CreateDeviceBackends); CM only binds
+  // kTarget itself.
   void CreateTargetSubscription(const rtc::SubscribeTopicEntry& entry,
                                 const std::string& group_name, int slot,
                                 const rclcpp::SubscriptionOptions& sub_options);
   void CreatePublishers();
-  // CreatePublishers helpers — split per role for cognitive complexity.
-  // Each helper assumes ownership has already been filtered to manager-owned
-  // entries by the caller; misconfigured entries (controller-only roles
-  // assigned manager ownership) are rejected by CreatePublishers' switch
-  // default with std::logic_error.
-  void CreateJointCommandPublisher(const rtc::PublishTopicEntry& entry,
-                                   const std::string& group_name, const rclcpp::QoS& cmd_qos);
-  void CreateRos2CommandPublisher(const rtc::PublishTopicEntry& entry,
-                                  const std::string& group_name);
   void CreateDigitalTwinPublishers();
   void CreateFixedSafetyPublishers();
   void CreateServices();
   void ExposeTopicParameters();
   void CreateTimers();
 
+  // ── Device backends (state/command HW/sim adapters per group) ────────────
+  // One backend per active device group. Owns kState/kMotorState/kSensorState
+  // subscriptions, kJointCommand/kRos2Command publishers, and the reorder
+  // maps that translate between wire formats and device-config order. Built
+  // in on_configure after LoadDeviceNameConfigs (sensor_layout forwarding).
+  void CreateDeviceBackends();
+  // Infer backend type tag from the active controller's YAML topic config
+  // for `group_name`. Used when YAML omits `devices.<group>.backend.type`.
+  //   subscribe has kSensorState → "udp_hand_native"
+  //   publish has kRos2Command   → "ur_driver_native"
+  //   otherwise                  → "mujoco_native"
+  [[nodiscard]] std::string InferBackendType(const std::string& group_name) const;
+
   // ── Subscription callbacks (unified per-device) ──────────────────────────
-  void DeviceJointStateCallback(int device_slot, sensor_msgs::msg::JointState::SharedPtr msg);
-  void DeviceMotorStateCallback(int device_slot, sensor_msgs::msg::JointState::SharedPtr msg);
-  void HandSensorStateCallback(int device_slot, rtc_msgs::msg::HandSensorState::SharedPtr msg);
   void DeviceTargetCallback(int device_slot, rtc_msgs::msg::RobotTarget::SharedPtr msg);
 
   // ── System model configuration (top-level "urdf:" YAML) ──────────────────
@@ -162,7 +150,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── Device name configuration ────────────────────────────────────────────
   void LoadDeviceNameConfigs();
-  void BuildDeviceReorderMap(int device_slot, const std::vector<std::string>& msg_names);
 
   // ── RT loop (rtc::PeriodicRtThread) ───────────────────────────────────────
   // The RT loop itself is owned by a nested PeriodicRtThread subclass that
@@ -200,15 +187,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── Publish offload (SPSC drain → publish) ──────────────────────────────
   void PublishLoopEntry(const rtc::ThreadConfig& cfg);
-  // PublishLoopEntry helpers — split per role + wakeup logic for cognitive
-  // complexity. Run on the publish thread (Core 5/6, SCHED_OTHER) — no RT
-  // constraints. Snapshot reads must use a single buffer pop result.
   void WaitForPublishWakeup();
-  void PublishJointCommandEntry(const rtc::PublishSnapshot& snap,
-                                const rtc::PublishTopicEntry& entry, std::size_t group_idx,
-                                int32_t sec, uint32_t nsec, const char* cmd_type_str);
-  void PublishRos2CommandEntry(const rtc::PublishSnapshot& snap,
-                               const rtc::PublishTopicEntry& entry, std::size_t group_idx);
   void DrainLog();  // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);
@@ -218,7 +197,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // `ctrl_idx`. Returns empty (num_devices == 0) when sensor data has not
   // been received yet (state_received_ false) — callers pass this to
   // controller->on_activate so the base hold-init logic skips cleanly.
-  [[nodiscard]] rtc::ControllerState BuildDeviceSnapshot(std::size_t ctrl_idx) const noexcept;
+  [[nodiscard]] rtc::ControllerState BuildDeviceSnapshot(std::size_t ctrl_idx) noexcept;
 
   // Activate / deactivate a single controller. Updates controller_states_
   // (release store) and invokes the controller's lifecycle hook. Aux-thread
@@ -253,22 +232,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── Configurable topic subscriptions (created from controller YAML) ──────
   // Key = topic name, value = subscription handle (kept alive for node
-  // lifetime)
+  // lifetime). Only kTarget remains here — kState/kMotorState/kSensorState
+  // moved into DeviceBackend implementations.
   std::vector<rclcpp::SubscriptionBase::SharedPtr> topic_subscriptions_;
-
-  // ── ros2_control forward bridge publishers (kRos2Command role) ───────────
-  // Float64MultiArray to a ros2_control forward command controller (sim).
-  // Key = topic name, value = publisher + pre-allocated message.
-  struct Ros2CommandPublisherEntry {
-    rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr publisher;
-    std_msgs::msg::Float64MultiArray msg;
-    // Reorder map: output index → input (gc.commands) index.
-    // Built from joint_state_names → joint_command_names mapping.
-    // Empty when no reorder is needed (names are identical or absent).
-    std::vector<int> reorder_map;
-  };
-
-  std::unordered_map<std::string, Ros2CommandPublisherEntry> ros2_command_publishers_;
 
   // Fixed publishers (always present)
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
@@ -281,15 +247,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // controller_topic_configs_ + controller_types_.
   rclcpp::Service<rtc_msgs::srv::ListControllers>::SharedPtr list_controllers_srv_;
   rclcpp::Service<rtc_msgs::srv::SwitchController>::SharedPtr switch_controller_srv_;
-
-  // JointCommand publishers (created from controller YAML kJointCommand roles)
-  struct JointCommandPublisherEntry {
-    rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::JointCommand>::SharedPtr publisher;
-    rtc_msgs::msg::JointCommand msg;  // pre-allocated
-    std::vector<int> reorder_map;     // config (joint_state_names) → command order
-  };
-
-  std::unordered_map<std::string, JointCommandPublisherEntry> joint_command_publishers_;
 
   // Controller-output publish roles (kGraspState / kToFSnapshot / kRobotTarget
   // / kWbcState / kRobotTransforms) are owned by each controller's
@@ -364,14 +321,13 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<DeviceTimeoutEntry> device_timeouts_;
   [[nodiscard]] bool AllTimeoutDevicesReceived() const noexcept;
 
-  // ── Per-device state caches (indexed by group_slot_map_) ─────────────────
-  // DeviceStateCache + kMaxDevices live in
-  // rtc_controller_manager/device_state_cache.hpp so DeviceBackend
-  // implementations can populate them without re-declaring the layout.
+  // ── Per-device backends (HW/sim adapters, indexed by group_slot_map_) ────
+  // Each backend owns its own SeqLock<DeviceStateCache>; CM reads via
+  // backend->ReadState/ReadMotorState/ReadSensorState in the RT loop.
   using DeviceStateCache = rtc::DeviceStateCache;
   static constexpr int kMaxDevices = rtc::kMaxDevices;
 
-  std::array<rtc::SeqLock<DeviceStateCache>, kMaxDevices> device_states_;
+  std::array<std::unique_ptr<rtc::DeviceBackend>, kMaxDevices> backends_;
 
   // Per-device targets
   std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> device_targets_{};
@@ -417,9 +373,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rtc::ThreadTimingCsvLogger<rtc::RtTickTimingPayload> cm_timing_logger_{};
 
   // ── Shared state ──────────────────────────────────────────────────────────
-  // Device state: per-device SeqLock (lock-free single-writer/multi-reader).
-  // Writer: sensor callbacks (cb_group_sensor_, MutuallyExclusive).
-  // Readers: RT loop (ControlLoop), controller switch callback.
+  // Device state lives inside each DeviceBackend (per-device SeqLock,
+  // lock-free single-writer/multi-reader). Writer: backend's own sub
+  // callbacks (cb_group_sensor_, MutuallyExclusive). Readers: RT loop
+  // (ControlLoop) and controller switch (BuildDeviceSnapshot) via
+  // backend->ReadState.
 
   mutable std::mutex target_mutex_;
 
@@ -444,15 +402,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // at LoadDeviceNameConfigs time). Indexed by device slot. Empty optional
   // means the device exposes no packed sensor block.
   std::vector<std::optional<rtc::DeviceSensorLayout>> slot_to_sensor_layout_;
-
-  // Per-device reorder maps (indexed by device slot)
-  struct DeviceReorderMap {
-    std::vector<int> reorder;
-    bool built{false};
-    bool built_from_msg{false};  // true only when built from actual device msg
-  };
-
-  std::array<DeviceReorderMap, kMaxDevices> device_reorder_maps_{};
 
   // ── Simulation sync (CV-based wakeup) ──────────────────────────────────
   bool use_sim_time_sync_{false};

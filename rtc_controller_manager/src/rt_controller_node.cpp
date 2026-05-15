@@ -81,8 +81,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
 
   CreateCallbackGroups();
   DeclareAndLoadParameters();
-  CreateSubscriptions();
-  CreatePublishers();
+  CreatePublishers();      // digital twin + fixed safety; HW publishers live in backends.
+  CreateDeviceBackends();  // state/motor/sensor subs + joint/ros2 command publishers.
+  CreateSubscriptions();   // kTarget lanes only (state/motor/sensor moved to backends).
   CreateServices();
   ExposeTopicParameters();
   CreateTimers();
@@ -128,6 +129,15 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
 RtControllerNode::CallbackReturn RtControllerNode::on_activate(
     const rclcpp_lifecycle::State& state) {
   LifecycleNode::on_activate(state);  // activates CM-owned LifecyclePublishers
+
+  // Activate device backends — enables their LifecyclePublishers so any
+  // command published after this point reaches the wire. Backends operate
+  // independently of which controller is active.
+  for (auto& backend : backends_) {
+    if (backend) {
+      backend->Activate();
+    }
+  }
 
   // Activate ONLY the initial controller (single-active invariant, D-A1).
   // Snapshot is empty because the RT loop has not yet received any sensor
@@ -181,6 +191,15 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
     s.store(0, std::memory_order_release);
   }
 
+  // Deactivate backends after the publish thread stops — RT loop is no
+  // longer writing commands; backend LifecyclePublishers can safely
+  // transition to inactive.
+  for (auto& backend : backends_) {
+    if (backend) {
+      backend->Deactivate();
+    }
+  }
+
   ClearGlobalEstop();
 
   // Reset initialization state for clean re-activate
@@ -218,15 +237,17 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   // 5. parameter callback
   param_callback_handle_.reset();
 
-  // 4. publishers (all maps + fixed)
-  ros2_command_publishers_.clear();
-  joint_command_publishers_.clear();
+  // 4. publishers (CM-owned: digital twin + fixed safety) + device backends
+  //    (own their own sub/pub handles)
+  for (auto& backend : backends_) {
+    backend.reset();
+  }
   digital_twin_publishers_.clear();
   slot_to_dt_topic_.clear();
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
 
-  // 3. subscribers
+  // 3. subscribers (kTarget only — state/motor/sensor live in backends)
   topic_subscriptions_.clear();
 
   // 2. parameters / controllers
@@ -297,8 +318,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   }
   drain_timer_.reset();
   param_callback_handle_.reset();
-  ros2_command_publishers_.clear();
-  joint_command_publishers_.clear();
+  for (auto& backend : backends_) {
+    backend.reset();
+  }
   digital_twin_publishers_.clear();
   slot_to_dt_topic_.clear();
   estop_pub_.reset();
@@ -330,7 +352,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
 // (initial-controller-only activation) and shutdown (active-only
 // deactivation) without redundant checks.
 
-rtc::ControllerState RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx) const noexcept {
+rtc::ControllerState RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx) noexcept {
   rtc::ControllerState snapshot{};
   if (ctrl_idx >= controller_topic_configs_.size() ||
       !state_received_.load(std::memory_order_acquire)) {
@@ -341,7 +363,10 @@ rtc::ControllerState RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx)
   for ([[maybe_unused]] const auto& [gname, ggroup] : controller_topic_configs_[ctrl_idx].groups) {
     const auto slot = static_cast<std::size_t>(slots.slots[di]);
     auto& dev = snapshot.devices[di];
-    const auto cache = device_states_[slot].Load();
+    rtc::DeviceStateCache cache{};
+    if (backends_[slot]) {
+      (void)backends_[slot]->ReadState(cache);
+    }
     dev.num_channels = cache.num_channels;
     dev.positions = cache.positions;
     dev.velocities = cache.velocities;
