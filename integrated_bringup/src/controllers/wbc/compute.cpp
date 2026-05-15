@@ -383,6 +383,11 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     // tsid_solve_us: not measured in WBC yet — informational, leave 0.
   }
 
+  // Hand the just-computed WbcStateData to the publish thread without going
+  // through the shared PublishSnapshot slot. SeqLock store = two atomic
+  // stores + memcpy (wait-free, RT-safe). Read by PublishNonRtSnapshot.
+  wbc_state_lock_.Store(output.wbc_state);
+
   output.valid = true;
   return output;
 }

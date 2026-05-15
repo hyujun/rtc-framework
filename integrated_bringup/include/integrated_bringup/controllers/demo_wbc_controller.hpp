@@ -471,6 +471,13 @@ class DemoWbcController final : public RTControllerInterface {
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
   ControllerTopicHandles owned_topics_;
 
+  // RT compute → publish-thread handoff for the controller-owned wbc_state
+  // topic. WriteOutput stores the freshly-computed WbcStateData here; the
+  // publish thread Loads it inside PublishNonRtSnapshot. Replaces the
+  // PublishSnapshot::group_commands[gi].wbc_state slot (the long-term goal
+  // of `project_controller_owned_topic_isolation`).
+  rtc::SeqLock<rtc::WbcStateData> wbc_state_lock_;
+
   // ── Phase D (gain→parameter migration): per-controller ROS 2 parameters ──
   //
   // Tunable: arm_trajectory_speed, hand_trajectory_speed, se3_weight,

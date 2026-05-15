@@ -512,6 +512,11 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
   output.command_type = command_type_;
   output.grasp_state = grasp_state_;
   output.tof_snapshot = tof_snapshot_;
+  // Per-controller SeqLock handoff to the publish thread — replaces the
+  // shared PublishSnapshot::group_commands[gi].{grasp_state,tof_snapshot}
+  // slots so the CM no longer mediates controller-owned non-RT data.
+  grasp_state_lock_.Store(grasp_state_);
+  tof_snapshot_lock_.Store(tof_snapshot_);
   return output;
 }
 

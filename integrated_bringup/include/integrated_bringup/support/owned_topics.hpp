@@ -109,8 +109,18 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept;
 
 // Publish controller-owned topics from a snapshot. Called from CM's publish
 // thread via RTControllerInterface::PublishNonRtSnapshot. Must be noexcept.
+//
+// `grasp` / `wbc` / `tof` carry controller-owned non-RT data that used to ride
+// inside `snap.group_commands[gi].{grasp_state,wbc_state,tof_snapshot}`. Each
+// controller now owns a per-output SeqLock<T> and passes the freshly-loaded
+// snapshot here; pass `nullptr` for any role the controller does not publish.
+// `snap` still carries the stamp + group routing + SE3 fields used by
+// kRobotTransforms.
 void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
-                                    ControllerTopicHandles& handles) noexcept;
+                                    ControllerTopicHandles& handles,
+                                    const rtc::GraspStateData* grasp = nullptr,
+                                    const rtc::WbcStateData* wbc = nullptr,
+                                    const rtc::ToFSnapshotData* tof = nullptr) noexcept;
 
 // ── Helpers for controllers to register TF frame slots at on_configure ─────
 // Each helper appends one TfFrameSlot to handles.tf_slots[] (no-op when the

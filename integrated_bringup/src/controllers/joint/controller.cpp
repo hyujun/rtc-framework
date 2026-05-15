@@ -457,7 +457,10 @@ void DemoJointController::SetHandEstop(bool active) noexcept {
 }
 
 void DemoJointController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
-  PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
+  const auto grasp_loaded = grasp_state_lock_.Load();
+  const auto tof_loaded = tof_snapshot_lock_.Load();
+  PublishOwnedTopicsFromSnapshot(snap, owned_topics_, /*grasp=*/&grasp_loaded, /*wbc=*/nullptr,
+                                 /*tof=*/&tof_loaded);
 }
 
 // on_configure / on_activate / on_deactivate / on_cleanup

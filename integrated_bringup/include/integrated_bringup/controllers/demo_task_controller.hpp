@@ -344,6 +344,13 @@ class DemoTaskController final : public RTControllerInterface {
   // ── Phase 4: controller-owned topic sub/pub handles ───────────────────
   ControllerTopicHandles owned_topics_;
 
+  // RT compute → publish-thread handoff for controller-owned grasp/tof
+  // topics. WriteOutput stores the freshly-computed values here; the publish
+  // thread Loads them inside PublishNonRtSnapshot. Replaces the
+  // PublishSnapshot::group_commands[gi].{grasp_state,tof_snapshot} slots.
+  rtc::SeqLock<rtc::GraspStateData> grasp_state_lock_;
+  rtc::SeqLock<rtc::ToFSnapshotData> tof_snapshot_lock_;
+
   // ── Phase B (gain→parameter migration): per-controller ROS 2 parameters ──
   //
   // Tunable gains (kp_translation, damping, trajectory_speed, ...) are

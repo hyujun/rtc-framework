@@ -250,15 +250,16 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
 }
 
 void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
-                                    ControllerTopicHandles& handles) noexcept {
+                                    ControllerTopicHandles& handles,
+                                    const rtc::GraspStateData* grasp, const rtc::WbcStateData* wbc,
+                                    const rtc::ToFSnapshotData* tof) noexcept {
   const auto sec = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
   const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
 
   // ── Grasp state ─────────────────────────────────────────────────────
-  if (handles.grasp_pub && handles.grasp_group_idx >= 0 &&
+  if (grasp != nullptr && handles.grasp_pub && handles.grasp_group_idx >= 0 &&
       handles.grasp_group_idx < rtc::PublishSnapshot::kMaxGroups) {
-    const auto gi = static_cast<std::size_t>(handles.grasp_group_idx);
-    const auto& gs = snap.group_commands[gi].grasp_state;
+    const auto& gs = *grasp;
     auto& msg = handles.grasp_msg;
     msg.header.stamp.sec = sec;
     msg.header.stamp.nanosec = nsec;
@@ -283,10 +284,9 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
   }
 
   // ── WBC state ───────────────────────────────────────────────────────
-  if (handles.wbc_pub && handles.wbc_group_idx >= 0 &&
+  if (wbc != nullptr && handles.wbc_pub && handles.wbc_group_idx >= 0 &&
       handles.wbc_group_idx < rtc::PublishSnapshot::kMaxGroups) {
-    const auto gi = static_cast<std::size_t>(handles.wbc_group_idx);
-    const auto& ws = snap.group_commands[gi].wbc_state;
+    const auto& ws = *wbc;
     auto& msg = handles.wbc_msg;
     msg.header.stamp.sec = sec;
     msg.header.stamp.nanosec = nsec;
@@ -310,10 +310,9 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
   }
 
   // ── ToF snapshot ────────────────────────────────────────────────────
-  if (handles.tof_pub && handles.tof_group_idx >= 0 &&
+  if (tof != nullptr && handles.tof_pub && handles.tof_group_idx >= 0 &&
       handles.tof_group_idx < rtc::PublishSnapshot::kMaxGroups) {
-    const auto gi = static_cast<std::size_t>(handles.tof_group_idx);
-    const auto& ts = snap.group_commands[gi].tof_snapshot;
+    const auto& ts = *tof;
     if (ts.populated) {
       auto& msg = handles.tof_msg;
       msg.stamp.sec = sec;

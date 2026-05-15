@@ -954,7 +954,9 @@ void DemoWbcController::SetHandEstop(bool active) noexcept {
 }
 
 void DemoWbcController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
-  PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
+  const auto wbc_loaded = wbc_state_lock_.Load();
+  PublishOwnedTopicsFromSnapshot(snap, owned_topics_, /*grasp=*/nullptr, /*wbc=*/&wbc_loaded,
+                                 /*tof=*/nullptr);
 }
 
 }  // namespace integrated_bringup
