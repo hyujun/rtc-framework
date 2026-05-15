@@ -23,10 +23,24 @@ mujoco_simulator:
     physics_timestep: 0.002
     n_substeps: 1
 
+    # ── Solver ────────────────────────────────────────────────────────────────
+    # rtc_mujoco_sim의 ApplySolverConfig는 scene_*.xml의 <option>만 탐지하므로
+    # 자식 MJCF의 <option integrator="implicitfast" />는 YAML로 덮어씌워진다.
+    # implicitfast: joint damping 암묵 적분 → 동일 timestep에서 더 큰 damping 안정 허용.
+    # iterations/ls_iterations: contact-rich fingertip grasp의 solver residual 수렴용.
+    solver:
+      integrator: "implicitfast"
+      iterations: 100
+      ls_iterations: 50
+
     # ── Position Servo Gains ──────────────────────────────────────────────────
     # iiwa7_leap MJCF actuators carry inline gainprm/biasprm (ur5e pattern),
     # so MuJoCo itself does the PD: force = gainprm·(ctrl - qpos) + biasprm[2]·qvel.
-    # iiwa7 A1-A4 kp=2000/kd=400, A5-A7 kp=500/kd=100, LEAP kp=100/kd=2.
+    # 현재 MJCF inline 값: iiwa7 A1-A4 kp=4000/kd=600, A5-A7 kp=1000/kd=200,
+    # LEAP 0-15 kp=10/kd=0.5 (next sprint에서 새 joint properties와 함께 리튠 예정).
+    # Joint properties (armature/damping/frictionloss)는 MJCF의 <default> class 블록
+    # (iiwa7_proximal / iiwa7_distal / leap_mcp / leap_pip / leap_dip / leap_thumb)이
+    # 단일 출처. urdf_to_mjcf 재실행 시 재주입 필요 (robots/iiwa7_leap/README.md).
     # The per-group servo_kp/kd blocks below are kept for documentation /
     # potential opt-in but are inactive while use_yaml_servo_gains=false.
     use_yaml_servo_gains: false
