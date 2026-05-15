@@ -59,19 +59,17 @@ struct PublishSnapshot {
     bool inference_valid{false};
     int num_inference_values{0};
     GoalType goal_type{GoalType::kJoint};
-    // Grasp state (from controller output)
-    GraspStateData grasp_state{};
-    // WBC state (from controller output, TSID-based whole-body controllers)
-    WbcStateData wbc_state{};
-    // ToF snapshot (from controller output)
-    ToFSnapshotData tof_snapshot{};
 
     // ── TF source poses for kRobotTransforms publish role ──────────────
     // RT loop fills these from FK results when the controller is configured
-    // to broadcast a TFMessage. Independent of tof_snapshot (which only
-    // populates when ToF is active and only for ToF fingers). Publish
-    // thread reads them from PublishOwnedTopicsFromSnapshot via the
-    // TfFrameSlot indirection in owned_topics.cpp.
+    // to broadcast a TFMessage. Publish thread reads them from
+    // PublishOwnedTopicsFromSnapshot via the TfFrameSlot indirection in
+    // owned_topics.cpp.
+    //
+    // Note: controller-owned non-RT data (grasp_state / wbc_state /
+    // tof_snapshot) used to live in this slot too. As of the
+    // PublishRole-owned isolation sprint, each controller owns its own
+    // SeqLock<T> for those payloads — CM no longer mediates them.
     Pose arm_tip_pose{};
     bool arm_tip_pose_valid{false};
     Pose virtual_tcp_pose{};

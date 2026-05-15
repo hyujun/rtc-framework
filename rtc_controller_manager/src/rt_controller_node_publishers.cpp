@@ -4,9 +4,10 @@
 // (created in CreateDeviceBackends — see device_config.cpp). CM owns three
 // fixed publishers: per-group digital twin (RELIABLE republish of measured
 // joint state), /system/estop_status, and /rtc_cm/active_controller_name.
-// Controller-output roles (kRobotTarget / kGraspState / kWbcState /
-// kToFSnapshot / kRobotTransforms) are owned by each controller's
-// LifecycleNode.
+// Controller-output roles (kRobotTarget / kRobotTransforms /
+// kDigitalTwinState) are owned by each controller's LifecycleNode.
+// GraspState / WbcState / ToFSnapshot bypass YAML roles and use
+// per-controller SeqLock<T> handoffs.
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <stdexcept>
@@ -17,8 +18,8 @@ namespace urtc = rtc;
 
 void RtControllerNode::CreatePublishers() {
   // Phase 4: device-wire command publication is owned by DeviceBackend impls;
-  // controller-output roles (kRobotTarget/kGraspState/kWbcState/kToFSnapshot/
-  // kRobotTransforms) are controller-owned. Reject any manager-ownership
+  // controller-output roles (kRobotTarget / kRobotTransforms /
+  // kDigitalTwinState) are controller-owned. Reject any manager-ownership
   // publish entry so YAML mistakes surface early.
   for (const auto& tc : controller_topic_configs_) {
     for (const auto& [group_name, group] : tc.groups) {

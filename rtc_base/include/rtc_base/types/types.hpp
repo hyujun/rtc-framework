@@ -370,21 +370,17 @@ enum class DeviceCapability : uint16_t {
 enum class PublishRole {
   // Phase 4: joint_command / ros2_command roles deleted — device-wire command
   // publication is owned by DeviceBackend impls via devices.<group>.backend.
-  // Topic-based State/Command/Goal
   // (Phase 4: kGuiPosition removed — consumers use /rtc_cm/<group>/joint_states
   // for joint state and <config_key>/transforms (tf2_msgs/TFMessage) for TCP pose.)
-  kRobotTarget,  // rtc_msgs/RobotTarget (joint/task 목표)
   // (Phase C: kDeviceStateLog / kDeviceSensorLog removed — controller
   // data CSVs flow through ControllerLogSet, not CM publish.)
+  // (Controller-owned isolation sprint: kGraspState / kWbcState / kToFSnapshot
+  // removed — each controller owns a per-output SeqLock<T> and publishes
+  // directly without going through PublishSnapshot.)
+  kRobotTarget,  // rtc_msgs/RobotTarget (joint/task 목표)
   // Digital Twin
   kDigitalTwinState,  // sensor_msgs/JointState (RELIABLE republish for digital
                       // twin)
-  // Grasp State
-  kGraspState,  // rtc_msgs/GraspState (BT coordinator용 grasp 상태)
-  // WBC State
-  kWbcState,  // rtc_msgs/WbcState (TSID-based WBC controllers)
-  // ToF Snapshot
-  kToFSnapshot,  // rtc_msgs/ToFSnapshot (ToF + fingertip SE3)
   // Per-controller TF array — controller가 사용하는 frame들을 한 토픽에
   // tf2_msgs/TFMessage 로 묶어 발행. frame_id는 system YAML urdf.{sub,tree}_models
   // 의 root_link/tip_link 에서 자동 추출, child_frame_id는 "<link>_actual" suffix.
@@ -500,12 +496,6 @@ struct TopicConfig {
       return "robot_target";
     case PublishRole::kDigitalTwinState:
       return "digital_twin_state";
-    case PublishRole::kGraspState:
-      return "grasp_state";
-    case PublishRole::kWbcState:
-      return "wbc_state";
-    case PublishRole::kToFSnapshot:
-      return "tof_snapshot";
     case PublishRole::kRobotTransforms:
       return "robot_transforms";
   }

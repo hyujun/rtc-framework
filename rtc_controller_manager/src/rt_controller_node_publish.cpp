@@ -32,8 +32,9 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
         controller_topic_configs_[static_cast<std::size_t>(snap.active_controller_idx)];
 
     // Per-group device command publish is delegated to the backend bound to
-    // each group's slot. Controller-output topics (kGraspState / kWbcState /
-    // kToFSnapshot / kRobotTarget / kRobotTransforms) are forwarded via
+    // each group's slot. Controller-output topics (kRobotTarget /
+    // kRobotTransforms / kDigitalTwinState — plus the SeqLock-routed
+    // GraspState / WbcState / ToFSnapshot) are forwarded via
     // PublishNonRtSnapshot below — CM publishes nothing for those roles.
     const auto& slot_mapping =
         controller_slot_mappings_[static_cast<std::size_t>(snap.active_controller_idx)];

@@ -24,6 +24,27 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
   try {
     CreateOwnedTopics(*this, owned_topics_);
 
+    // ── Controller-owned non-RT publishers (no YAML role mapping) ─────────
+    // GraspState rides under the secondary device's namespace, robot-agnostic
+    // (e.g. "hand/grasp_state" for ur5e_hand). The full topic path is
+    // /<config_key>/<secondary>/<topic> because the controller's
+    // LifecycleNode lives under /<config_key>/. Only created when the
+    // secondary device has fingertip sensors (sensor_names non-empty) —
+    // robots without tactile sensing (e.g. iiwa7_leap) skip these.
+    {
+      const auto secondary = GetSecondaryDeviceName();
+      if (!secondary.empty()) {
+        const auto* secondary_cfg = GetDeviceNameConfig(secondary);
+        if (secondary_cfg != nullptr && !secondary_cfg->sensor_names.empty()) {
+          SetupGraspStatePublisher(*this, owned_topics_, secondary + "/grasp_state", secondary);
+          // ToF lives under "tof/snapshot" (legacy from before per-controller
+          // namespacing — BT subscribes to /<ctrl>/tof/snapshot). Independent
+          // of the secondary device name.
+          SetupToFSnapshotPublisher(*this, owned_topics_, "tof/snapshot");
+        }
+      }
+    }
+
     // ── kRobotTransforms: register frame slots from system URDF YAML ──────
     // DemoJoint frame layout (D-3 _actual suffix convention), robot-agnostic:
     //   sub_models[0] (primary device):     base → <tip>_actual   (group 0)

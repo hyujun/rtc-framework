@@ -15,8 +15,9 @@ namespace {
 // Phase 4: device-wire roles (state / motor_state / sensor_state / joint_command
 // / ros2_command) live in `devices.<group>.backend:` (sim.yaml/robot.yaml) and
 // are owned by DeviceBackend impls. Controller YAML retains only target /
-// robot_target / grasp_state / wbc_state / tof_snapshot / robot_transforms /
-// digital_twin_state.
+// robot_target / robot_transforms / digital_twin_state — grasp_state /
+// wbc_state / tof_snapshot are now controller-owned via per-controller
+// SeqLock and are not declared in YAML.
 //
 // Phase 4 trailing cleanup: SubscribeRole enum dropped — the only remaining
 // value (kTarget) carries no discrimination. The parser still validates the
@@ -31,9 +32,6 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
     {"robot_target", PublishRole::kRobotTarget},
     // backward compat
     {"joint_goal", PublishRole::kRobotTarget},
-    {"grasp_state", PublishRole::kGraspState},
-    {"wbc_state", PublishRole::kWbcState},
-    {"tof_snapshot", PublishRole::kToFSnapshot},
     {"robot_transforms", PublishRole::kRobotTransforms},
     // Digital twin
     {"digital_twin_state", PublishRole::kDigitalTwinState},

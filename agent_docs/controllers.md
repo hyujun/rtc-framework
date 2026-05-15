@@ -55,8 +55,9 @@ Key params in `grasp_types.hpp`: `Kp_base=0.02`, `Ki_base=0.002`, `f_target=2.0N
 **Dynamic** (per controller TopicConfig):
 - **DeviceBackend-owned (HW/sim ↔ controller boundary, Phase 4 SSoT)** — `state_topic` / `motor_topic` / `sensor_topic` (HW→controller) and `command_topic` (controller→HW/sim) are declared in `devices.<group>.backend:` (sim.yaml/robot.yaml) and owned by `DeviceBackend` impls (`mujoco_native` / `ur_driver_native` / `udp_hand_native`). CM no longer reads device-wire roles from controller YAML.
 - **CM-owned (controller YAML)** — Subscribe: `kTarget` (외부 RobotTarget→controller).
-- **Controller-owned (`<config_key>/` namespace, `PublishNonRtSnapshot`)** — `kGraspState`, `kWbcState`, `kToFSnapshot`, `kRobotTarget`, `kRobotTransforms`. CM은 SPSC snapshot 운반만 담당하며 퍼블리셔를 만들지 않는다 (YAML `ownership: manager` 라도 CM은 무시). Phase 4: `kGuiPosition` 폐기 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체.
-- **상호 배타**: `kGraspState` 와 `kWbcState` — Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state. DemoWbcController는 `<config_key>/hand/wbc_state` (RELIABLE/10) 로 발행.
+- **Controller-owned (`<config_key>/` namespace, `PublishNonRtSnapshot`)** — YAML role-mapped: `kRobotTarget`, `kRobotTransforms`, `kDigitalTwinState`. CM은 SPSC snapshot 운반만 담당하며 퍼블리셔를 만들지 않는다 (YAML `ownership: manager` 라도 CM은 무시). Phase 4: `kGuiPosition` 폐기 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체.
+- **Controller-owned (no YAML role)** — `GraspState` / `WbcState` / `ToFSnapshot` 은 각 컨트롤러가 `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼로 직접 생성하고 자체 `SeqLock<T>` 로 RT compute → publish thread 전달. `PublishSnapshot` 에서 완전히 분리되어 CM 은 의미를 모름.
+- **상호 배타**: `GraspState` 와 `WbcState` — Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state. DemoWbcController는 `<config_key>/<secondary>/wbc_state` (RELIABLE/10) 로 발행 (secondary = `hand` for ur5e_hand, `leap` for iiwa7_leap).
 
 **CM per-group JointState**: `/rtc_cm/{group}/joint_states` (RELIABLE) -> `rtc_digital_twin` merges -> RViz2
 

@@ -255,9 +255,9 @@ TEST(RTControllerInterfaceTest, SetSystemModelConfigOverwrites) {
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigValidMultiDevice) {
   // Phase 4: controller YAML carries only controller-owned roles
-  // (target / robot_target / robot_transforms / grasp_state / wbc_state /
-  // tof_snapshot / digital_twin_state). Device-wire roles moved to
-  // devices.<group>.backend in sim.yaml/robot.yaml.
+  // (target / robot_target / robot_transforms / digital_twin_state).
+  // Device-wire roles moved to devices.<group>.backend; grasp_state /
+  // wbc_state / tof_snapshot are now controller-created (no YAML role).
   const auto node = YAML::Load(
       R"(
 ur5e:
@@ -269,8 +269,6 @@ ur5e:
 hand:
   subscribe:
     - {topic: /hand/target, role: target}
-  publish:
-    - {topic: /hand/grasp_state, role: grasp_state, data_size: 20}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
@@ -421,7 +419,7 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigDataSizePreserved) {
   const auto node = YAML::Load(R"(
 robot:
   publish:
-    - {topic: /grasp, role: grasp_state, data_size: 30}
+    - {topic: /target, role: robot_target, data_size: 30}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
@@ -458,13 +456,13 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigAllPublishRoles) {
   // section instead.
   // Phase 4: joint_command / ros2_command roles are now device-wire and
   // owned by DeviceBackend; controller YAML keeps only controller-owned pubs.
+  // Controller-owned isolation sprint: grasp_state / wbc_state / tof_snapshot
+  // are now controller-created (no YAML role mapping).
   const auto node = YAML::Load(
       R"(
 robot:
   publish:
     - {topic: /d, role: robot_target}
-    - {topic: /g, role: grasp_state}
-    - {topic: /h, role: tof_snapshot}
     - {topic: /i, role: digital_twin_state}
     - {topic: /j, role: robot_transforms}
 )");
@@ -472,7 +470,7 @@ robot:
 
   for (const auto& [name, group] : cfg.groups) {
     if (name == "robot") {
-      EXPECT_EQ(group.publish.size(), std::size_t{5});
+      EXPECT_EQ(group.publish.size(), std::size_t{3});
       return;
     }
   }

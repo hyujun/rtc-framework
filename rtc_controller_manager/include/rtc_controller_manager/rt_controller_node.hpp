@@ -250,10 +250,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<rtc_msgs::srv::ListControllers>::SharedPtr list_controllers_srv_;
   rclcpp::Service<rtc_msgs::srv::SwitchController>::SharedPtr switch_controller_srv_;
 
-  // Controller-output publish roles (kGraspState / kToFSnapshot / kRobotTarget
-  // / kWbcState / kRobotTransforms) are owned by each controller's
-  // LifecycleNode via owned_topics.cpp + PublishNonRtSnapshot — CM does not
-  // host them.
+  // Controller-output publish roles (kRobotTarget / kRobotTransforms /
+  // kDigitalTwinState) are owned by each controller's LifecycleNode via
+  // owned_topics.cpp + PublishNonRtSnapshot — CM does not host them.
+  // GraspState / WbcState / ToFSnapshot bypass YAML role mapping and ride
+  // per-controller SeqLock<T> handoffs.
 
   // ── Per-group JointState republishers (RELIABLE, depth 10) ──────────────
   // key = "/rtc_cm/{group}/joint_states" — single source of truth for the

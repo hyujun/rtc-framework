@@ -81,30 +81,6 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
         continue;
       }
       switch (pub.role) {
-        case rtc::PublishRole::kGraspState: {
-          rclcpp::QoS grasp_qos{10};
-          handles.grasp_pub =
-              node->create_publisher<rtc_msgs::msg::GraspState>(pub.topic_name, grasp_qos);
-          PrefillGraspMessage(ctrl.GetDeviceNameConfig(group_name), handles.grasp_msg);
-          handles.grasp_group_idx = group_idx;
-          break;
-        }
-        case rtc::PublishRole::kToFSnapshot: {
-          rclcpp::QoS tof_qos{5};
-          tof_qos.best_effort();
-          handles.tof_pub =
-              node->create_publisher<rtc_msgs::msg::ToFSnapshot>(pub.topic_name, tof_qos);
-          handles.tof_group_idx = group_idx;
-          break;
-        }
-        case rtc::PublishRole::kWbcState: {
-          rclcpp::QoS wbc_qos{10};
-          handles.wbc_pub =
-              node->create_publisher<rtc_msgs::msg::WbcState>(pub.topic_name, wbc_qos);
-          PrefillWbcMessage(ctrl.GetDeviceNameConfig(group_name), handles.wbc_msg);
-          handles.wbc_group_idx = group_idx;
-          break;
-        }
         case rtc::PublishRole::kRobotTransforms: {
           // Single TF publisher per controller (D-2). YAML places the entry
           // under the first group (D-10); duplicate entries in other groups
@@ -122,12 +98,65 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
         }
         default:
           // Controller-owned role we don't handle yet — ignore rather than
-          // throw so that future additions are opt-in.
+          // throw so that future additions are opt-in. Grasp / WBC / ToF
+          // publishers are controller-created (SetupGraspStatePublisher /
+          // SetupWbcStatePublisher / SetupToFSnapshotPublisher), no longer
+          // wired through YAML role mappings.
           break;
       }
     }
     ++group_idx;
   }
+}
+
+// ── Controller-owned non-RT publishers ─────────────────────────────────
+
+void SetupGraspStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                              const std::string& topic_name, const std::string& device_group) {
+  if (handles.grasp_pub) {
+    return;
+  }
+  auto node = ctrl.get_lifecycle_node();
+  if (!node) {
+    throw std::runtime_error(
+        "SetupGraspStatePublisher: controller has no LifecycleNode (on_configure "
+        "not yet called?)");
+  }
+  rclcpp::QoS grasp_qos{10};
+  handles.grasp_pub = node->create_publisher<rtc_msgs::msg::GraspState>(topic_name, grasp_qos);
+  PrefillGraspMessage(ctrl.GetDeviceNameConfig(device_group), handles.grasp_msg);
+}
+
+void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                            const std::string& topic_name, const std::string& device_group) {
+  if (handles.wbc_pub) {
+    return;
+  }
+  auto node = ctrl.get_lifecycle_node();
+  if (!node) {
+    throw std::runtime_error(
+        "SetupWbcStatePublisher: controller has no LifecycleNode (on_configure "
+        "not yet called?)");
+  }
+  rclcpp::QoS wbc_qos{10};
+  handles.wbc_pub = node->create_publisher<rtc_msgs::msg::WbcState>(topic_name, wbc_qos);
+  PrefillWbcMessage(ctrl.GetDeviceNameConfig(device_group), handles.wbc_msg);
+}
+
+void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                               const std::string& topic_name) {
+  if (handles.tof_pub) {
+    return;
+  }
+  auto node = ctrl.get_lifecycle_node();
+  if (!node) {
+    throw std::runtime_error(
+        "SetupToFSnapshotPublisher: controller has no LifecycleNode "
+        "(on_configure not yet called?)");
+  }
+  rclcpp::QoS tof_qos{5};
+  tof_qos.best_effort();
+  handles.tof_pub = node->create_publisher<rtc_msgs::msg::ToFSnapshot>(topic_name, tof_qos);
 }
 
 // ── TfFrameSlot append helpers ───────────────────────────────────────────
@@ -234,11 +263,8 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
     sub.reset();
   }
   handles.grasp_pub.reset();
-  handles.grasp_group_idx = -1;
   handles.tof_pub.reset();
-  handles.tof_group_idx = -1;
   handles.wbc_pub.reset();
-  handles.wbc_group_idx = -1;
   handles.tf_pub.reset();
   handles.tf_msg.transforms.clear();
   for (auto& slot : handles.tf_slots) {
@@ -257,8 +283,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
   const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
 
   // ── Grasp state ─────────────────────────────────────────────────────
-  if (grasp != nullptr && handles.grasp_pub && handles.grasp_group_idx >= 0 &&
-      handles.grasp_group_idx < rtc::PublishSnapshot::kMaxGroups) {
+  if (grasp != nullptr && handles.grasp_pub) {
     const auto& gs = *grasp;
     auto& msg = handles.grasp_msg;
     msg.header.stamp.sec = sec;
@@ -284,8 +309,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
   }
 
   // ── WBC state ───────────────────────────────────────────────────────
-  if (wbc != nullptr && handles.wbc_pub && handles.wbc_group_idx >= 0 &&
-      handles.wbc_group_idx < rtc::PublishSnapshot::kMaxGroups) {
+  if (wbc != nullptr && handles.wbc_pub) {
     const auto& ws = *wbc;
     auto& msg = handles.wbc_msg;
     msg.header.stamp.sec = sec;
@@ -310,8 +334,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
   }
 
   // ── ToF snapshot ────────────────────────────────────────────────────
-  if (tof != nullptr && handles.tof_pub && handles.tof_group_idx >= 0 &&
-      handles.tof_group_idx < rtc::PublishSnapshot::kMaxGroups) {
+  if (tof != nullptr && handles.tof_pub) {
     const auto& ts = *tof;
     if (ts.populated) {
       auto& msg = handles.tof_msg;

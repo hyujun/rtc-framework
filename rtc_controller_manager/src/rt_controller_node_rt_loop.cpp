@@ -260,30 +260,11 @@ void RtControllerNode::ControlLoop() {
           }
         }
       }
-      // Controller-owned non-RT outputs (grasp / wbc / tof) are single-producer
-      // → single-consumer: only the active controller's own LifecyclePublisher
-      // reads them, and YAML pins each to exactly one device group. Copy into
-      // the slot that the YAML actually publishes from — other group slots
-      // stay zero-initialised so a future reader cannot mistake an unrelated
-      // group's slot for a valid value. (Long-term goal: drop these fields
-      // from PublishSnapshot entirely; see project_controller_owned_topic_isolation.)
-      for (const auto& pub : ggroup.publish) {
-        if (pub.ownership != urtc::TopicOwnership::kController)
-          continue;
-        switch (pub.role) {
-          case urtc::PublishRole::kGraspState:
-            gc.grasp_state = output.grasp_state;
-            break;
-          case urtc::PublishRole::kWbcState:
-            gc.wbc_state = output.wbc_state;
-            break;
-          case urtc::PublishRole::kToFSnapshot:
-            gc.tof_snapshot = output.tof_snapshot;
-            break;
-          default:
-            break;
-        }
-      }
+      // Controller-owned non-RT outputs (grasp / wbc / tof) are no longer
+      // ferried through PublishSnapshot — each controller owns a per-output
+      // SeqLock<T> and publishes via its own LifecyclePublisher. CM mirrors
+      // only SE3 poses (kRobotTransforms) and per-group device data here.
+      //
       // SE3 poses for kRobotTransforms are populated regardless of which
       // group hosts the TF publisher (D-10): owned_topics walks tf_slots[]
       // and reads from group_commands[slot.group_idx], so we mirror the

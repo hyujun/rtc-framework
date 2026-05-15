@@ -64,19 +64,20 @@ struct ControllerTopicHandles {
   std::array<rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr, kMaxOwnedGroups>
       target_subs{};
 
-  // Grasp + ToF publishers — at most one per demo (hand group).
+  // Grasp + ToF publishers — at most one per demo (hand group). Created by
+  // the controller via SetupGraspStatePublisher / SetupToFSnapshotPublisher
+  // (controller-owned non-RT data is no longer routed through YAML role
+  // mappings; the controller decides the topic name and pre-fills the msg).
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::GraspState>::SharedPtr grasp_pub{};
   rtc_msgs::msg::GraspState grasp_msg{};
-  int grasp_group_idx{-1};
 
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::ToFSnapshot>::SharedPtr tof_pub{};
   rtc_msgs::msg::ToFSnapshot tof_msg{};
-  int tof_group_idx{-1};
 
   // WBC state publisher — at most one per demo (TSID-based controllers).
+  // Created by the controller via SetupWbcStatePublisher.
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::WbcState>::SharedPtr wbc_pub{};
   rtc_msgs::msg::WbcState wbc_msg{};
-  int wbc_group_idx{-1};
 
   // ── Per-controller TF publisher (kRobotTransforms) ────────────────────
   // Single publisher per controller — D-2: controller당 1 토픽. The set of
@@ -148,6 +149,22 @@ bool AppendVirtualTcpSlot(ControllerTopicHandles& handles, const std::string& pa
 // used by DemoWbcController for the D-5 "alpha" frame.
 bool AppendCustomPlaceholderSlot(ControllerTopicHandles& handles, const std::string& parent_frame,
                                  const std::string& child_frame);
+
+// ── Controller-owned non-RT publishers (no YAML role mapping) ────────────
+// Called from controller on_configure to create the GraspState / WbcState /
+// ToFSnapshot LifecyclePublisher with a controller-specified topic name and
+// pre-fill the per-finger arrays with the device's sensor names (so the
+// publish path never resizes). Each helper is idempotent — a second call
+// with a non-empty handle is a no-op.
+
+void SetupGraspStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                              const std::string& topic_name, const std::string& device_group);
+
+void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                            const std::string& topic_name, const std::string& device_group);
+
+void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
+                               const std::string& topic_name);
 
 }  // namespace integrated_bringup
 

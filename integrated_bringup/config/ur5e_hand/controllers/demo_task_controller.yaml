@@ -76,13 +76,9 @@ demo_task_controller:
         - topic: "hand/joint_goal"
           role: "target"
           ownership: "controller"
-      publish:
-        - topic: "hand/grasp_state"
-          role: "grasp_state"
-          ownership: "controller"
-        - topic: "tof/snapshot"
-          role: "tof_snapshot"
-          ownership: "controller"
+      # GraspState / ToFSnapshot publishers are controller-owned and created
+      # in on_configure (SetupGraspStatePublisher / SetupToFSnapshotPublisher);
+      # they no longer have a YAML role mapping.
 
   # ── Controller-owned CSV logs (Phase C) ────────────────────────────────────
   logs:

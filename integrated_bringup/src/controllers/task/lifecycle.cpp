@@ -21,6 +21,25 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
   try {
     CreateOwnedTopics(*this, owned_topics_);
 
+    // ── Controller-owned non-RT publishers (no YAML role mapping) ─────────
+    // GraspState rides under the secondary device's namespace (e.g.
+    // "hand/grasp_state" for ur5e_hand). Only created when the secondary
+    // device has fingertip sensors (sensor_names non-empty) — robots
+    // without tactile sensing skip these.
+    {
+      const auto secondary = GetSecondaryDeviceName();
+      if (!secondary.empty()) {
+        const auto* secondary_cfg = GetDeviceNameConfig(secondary);
+        if (secondary_cfg != nullptr && !secondary_cfg->sensor_names.empty()) {
+          SetupGraspStatePublisher(*this, owned_topics_, secondary + "/grasp_state", secondary);
+          // ToF lives under "tof/snapshot" (legacy from before per-controller
+          // namespacing — BT subscribes to /<ctrl>/tof/snapshot). Independent
+          // of the secondary device name.
+          SetupToFSnapshotPublisher(*this, owned_topics_, "tof/snapshot");
+        }
+      }
+    }
+
     // ── kRobotTransforms: register frame slots (Phase 3) ──────────────────
     // DemoTask shares the DemoJoint frame layout — arm tip + 4 fingertip +
     // virtual_tcp = 6 frames. See joint/lifecycle.cpp for rationale.

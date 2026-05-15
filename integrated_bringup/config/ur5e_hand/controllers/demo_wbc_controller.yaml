@@ -41,10 +41,8 @@ demo_wbc_controller:
         - topic: "hand/joint_goal"
           role: "target"
           ownership: "controller"
-      publish:
-        - topic: "hand/wbc_state"
-          role: "wbc_state"
-          ownership: "controller"
+      # WbcState publisher is controller-owned and created in on_configure
+      # (SetupWbcStatePublisher); it no longer has a YAML role mapping.
 
   # ── Controller-owned CSV logs (Phase C) ────────────────────────────────────
   logs:

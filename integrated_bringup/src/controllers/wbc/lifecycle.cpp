@@ -29,6 +29,18 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
   }
   try {
     CreateOwnedTopics(*this, owned_topics_);
+
+    // ── Controller-owned non-RT publisher (no YAML role mapping) ─────────
+    // WbcState rides under the secondary device's namespace (e.g.
+    // "hand/wbc_state" for ur5e_hand, "leap/wbc_state" for iiwa7_leap).
+    // Robot-agnostic — derives the prefix from GetSecondaryDeviceName().
+    {
+      const auto secondary = GetSecondaryDeviceName();
+      if (!secondary.empty()) {
+        SetupWbcStatePublisher(*this, owned_topics_, secondary + "/wbc_state", secondary);
+      }
+    }
+
     mpc_timing_cb_group_ =
         node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
