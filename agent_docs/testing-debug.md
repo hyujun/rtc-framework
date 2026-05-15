@@ -46,27 +46,29 @@ colcon test --packages-select rtc_controllers --ctest-args -R test_grasp_control
 colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 ```
 
-## Test Table (최근 실측: 2026-04-26, gtest CASES 단위)
+## Test Table (sensor 매트릭스용 가이드)
 
-| Package | Tests | Framework |
-|---------|-------|-----------|
-| `udp_hand_driver` | 179 C++ (udp_hand_packets 46, udp_hand_controller 33, udp_hand_codec 24, fingertip_ft_inferencer 19, udp_hand_transport 18, udp_hand_timing_profiler 15, udp_hand_sensor_processor 13, udp_hand_failure_detector 11) | GTest |
-| `ur5e_bt_coordinator` | 157 C++ (condition_nodes 21, bt_utils 19, bt_types 16, hand_nodes 15, compute_offset_pose 12, shape_nodes 11, tree_validation 10, set_gains 9, set_pose_z 8, switch_controller 7, grasp_control 7, compute_sweep_trajectory 6, move_to_joints 6, wait_duration 5, move_to_pose 5) | GTest |
-| `rtc_mpc` | 136 C++ (types, TripleBuffer, TrajectoryInterpolator, Riccati, SolutionManager, thread skeleton, RobotModelHandler, PhaseCostConfig) | GTest |
-| `integrated_bringup` | 92 C++ (demo_wbc_controller 44, demo_shared_config 16, grasp_phase_manager 13, virtual_tcp 10, demo_wbc_mpc_integration 6, grasp_pipeline 3) | GTest |
-| `rtc_tsid` | 90 C++ (wbc_types 11, se3_task 10, qp_solver_wrapper 8, momentum_task 8, tsid_wqp 7, force_task 6, com_task 6, posture_task 5, phase3_integration 5, joint_limit 5, tsid_hqp 4, wqp_hqp_compare 3, performance 3, eom 3, torque_limit 2, friction_cone 2, contact 2) | GTest |
-| `rtc_urdf_bridge` | 89 C++ (urdf_analyzer 25, rt_model_handle 16, model_builder 15, chain_extractor 12, xacro_processor 11, joint_classification 10) | GTest |
-| `rtc_controllers` | 87 C++ (test_core_controllers + grasp related) | GTest |
-| `shape_estimation` | 82 C++ (exploration_motion 29, tof_shape 27, protuberance_detector 26) | GTest |
-| `rtc_mujoco_sim` | 77 C++ (simulator_init 15, pure_helpers 15, command_state_io 12, runtime_controls 11, lifecycle 10, solver_config 9, data_flow 5) | GTest |
-| `rtc_base` | 54 C++ (SeqLock, SPSC, Bessel/Kalman filters, session dir, thread-config tiers) | GTest |
-| `rtc_controller_interface` | 52 C++ (registry 8 incl. duplicate-shadow + rt_controller_interface) | GTest |
-| `rtc_controller_manager` | 35 C++ (controller_lifecycle 9, switch_service 9, controller_timing_profiler 17) | GTest |
-| `rtc_communication` | 9 C++ (udp_loopback 5, transceiver 4) | GTest |
-| `rtc_tools` | 247 Python (pytest parameterized) | pytest |
-| `rtc_digital_twin` | 34 Python (test_urdf_parser; pytest 자동 discovery 미통과 — `pytest test/` 직접 실행 필요) | pytest |
+테스트 카운트 절대값은 박제하지 않는다 ([anti-patterns.md](anti-patterns.md) AP-DOC-1). 최신 카운트는 `colcon test --packages-select <pkg> --event-handlers console_direct+` 직접 측정 — 아래 표는 *상대적 규모* + *대표 suite* 만 기록한다 (last verified scope: 2026-05-16, post-Phase 4 trailing cleanup).
 
-총 **1377 gtest cases + 281 pytest cases**. 5개 신규 측정 패키지 (`rtc_tsid`/`rtc_mujoco_sim`/`rtc_communication`/`shape_estimation`/`rtc_digital_twin`) 2026-04-26 실측 추가. Q-6 추가 테스트로 `rtc_controller_interface` 51→52. **참고**: 메모리에 기록된 `.venv` overlay → `ament_cmake_test` 이슈는 현재 PC 환경에서 재현되지 않음. `rtc_digital_twin` pytest discovery 실패는 별개 이슈 (pytest config 미존재 추정).
+| Package | 규모 | 대표 suite (Framework) |
+|---------|------|------------------------|
+| `udp_hand_driver` | Large (8 suite) | udp_hand_packets, udp_hand_controller, udp_hand_codec, fingertip_ft_inferencer, udp_hand_transport, udp_hand_timing_profiler, udp_hand_sensor_processor, udp_hand_failure_detector (GTest) |
+| `ur5e_bt_coordinator` | Large (15 suite) | condition_nodes, bt_utils, bt_types, hand_nodes, compute_offset_pose, shape_nodes, tree_validation, set_gains, ... (GTest) |
+| `rtc_mpc` | Large | types, TripleBuffer, TrajectoryInterpolator, Riccati, SolutionManager, thread skeleton, RobotModelHandler, PhaseCostConfig (GTest) |
+| `integrated_bringup` | Medium-Large | demo_wbc_controller, demo_shared_config, grasp_phase_manager, virtual_tcp, demo_wbc_mpc_integration, grasp_pipeline, owned_topics SeqLock wiring (GTest) |
+| `rtc_tsid` | Medium-Large | wbc_types, se3_task, qp_solver_wrapper, momentum_task, tsid_wqp, force_task, com_task, posture_task, phase3_integration, joint_limit, tsid_hqp, ... (GTest) |
+| `rtc_urdf_bridge` | Medium | urdf_analyzer, rt_model_handle, model_builder, chain_extractor, xacro_processor, joint_classification (GTest) |
+| `rtc_controllers` | Medium | test_core_controllers + grasp-related (GTest) |
+| `shape_estimation` | Medium | exploration_motion, tof_shape, protuberance_detector (GTest) |
+| `rtc_mujoco_sim` | Medium | simulator_init, pure_helpers, command_state_io, runtime_controls, lifecycle, solver_config, data_flow (GTest) |
+| `rtc_base` | Medium | SeqLock, SPSC, Bessel/Kalman filters, session dir, thread-config tiers (GTest) |
+| `rtc_controller_interface` | Small-Medium | registry (incl. duplicate-shadow), rt_controller_interface (GTest) |
+| `rtc_controller_manager` | Small-Medium | controller_lifecycle, switch_service, controller_timing_profiler, device_backend_registry (GTest) |
+| `rtc_communication` | Small | udp_loopback, transceiver (GTest) |
+| `rtc_tools` | Large (parameterized) | pytest |
+| `rtc_digital_twin` | Small | test_urdf_parser (pytest 자동 discovery 미통과 — `pytest test/` 직접 실행 필요) |
+
+**참고**: 메모리에 기록된 `.venv` overlay → `ament_cmake_test` 이슈가 일부 환경에서 재발할 수 있음 — 증상은 `Testing/Temporary/LastTest.log` 즉시 종료. 우회: `build/<pkg>/<test_bin>` 직접 실행. `rtc_digital_twin` pytest discovery 실패는 별개 이슈 (pytest config 미존재 추정).
 
 ## Live Debug Topics
 

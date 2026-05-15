@@ -9,7 +9,7 @@ Key types (all trivially copyable, RT-safe):
 - **ControllerState**: devices[4], num_devices, dt, iteration
 - **ControllerOutput**: devices[4], task positions, valid, command_type, grasp_state, wbc_state
 - **GraspStateData**: force_magnitude/contact_flag/inference_valid[8], grasp_phase, finger_s/filtered_force/force_error[8], grasp_target_force (Force-PI 데모 전용 — DemoJoint/DemoTask)
-- **WbcStateData** (2026-04-26, `6c8d70a`): wbc_phase (8-state enum), per-fingertip force/contact/displacement[8], num_active_contacts, max_force, grasp_target_force, grasp_detected, min_fingertips, tsid_solve_us, tsid_solver_ok, qp_fail_count (TSID-기반 데모 전용 — DemoWbc). RT 루프가 `output.wbc_state` → `PublishSnapshot::GroupCommandSlot::wbc_state` 로 단일 struct 복사.
+- **WbcStateData** (2026-04-26, `6c8d70a`): wbc_phase (8-state enum), per-fingertip force/contact/displacement[8], num_active_contacts, max_force, grasp_target_force, grasp_detected, min_fingertips, tsid_solve_us, tsid_solver_ok, qp_fail_count (TSID-기반 데모 전용 — DemoWbc). Owned-topic isolation (`104796f`, 2026-05-16) 이후: RT 루프가 `output.wbc_state` 를 controller 가 소유한 `SeqLock<WbcStateData>` 로 직접 push (`Setup{Wbc,Grasp,ToF}*Publisher` 헬퍼). `PublishSnapshot::GroupCommandSlot` 슬롯에서는 빠짐.
 
 ## Threading Model (6-core example)
 
@@ -112,11 +112,14 @@ ownership: "manager"  ──►   │  │ RT loop (control_rate Hz, SCHED_FIFO)
                             │  ┌────────────────────────────────────────┐    │
 ownership: "controller"     │  │ namespace = /<config_key>/             │    │
                        ──►  │  │   sub: target  (joint_goal, ee_pose)   │    │
-                            │  │   pub: transforms, grasp_state,        │    │
-                            │  │        wbc_state, tof_snapshot         │    │
-                            │  │ RT loop never touches this node — all  │    │
-                            │  │ data flows via SPSC PublishSnapshot →  │    │
-                            │  │ publish_thread → Node->publish()       │    │
+                            │  │   pub: transforms (PublishRole)        │    │
+                            │  │        grasp_state / wbc_state /       │    │
+                            │  │        tof_snapshot (controller-owned  │    │
+                            │  │        SeqLock + Setup*Publisher;      │    │
+                            │  │        no PublishRole, `104796f`)      │    │
+                            │  │ RT loop pushes per-tick into the       │    │
+                            │  │ controller's SeqLock<T> writers; non-RT│    │
+                            │  │ aux thread reads + ROS publish.        │    │
                             │  └────────────────────────────────────────┘    │
                             └────────────────────────────────────────────────┘
 

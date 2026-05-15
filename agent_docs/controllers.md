@@ -69,10 +69,10 @@ Key params in `grasp_types.hpp`: `Kp_base=0.02`, `Ki_base=0.002`, `f_target=2.0N
 
 | Config | Path | Key Parameters |
 |--------|------|----------------|
-| RT controller manager | `integrated_bringup/config/ur5e_hand/robot.yaml` / `ur5e_hand/sim.yaml` | `control_rate`, `initial_controller`, `devices`, `urdf`, `device_timeout_*` |
+| RT controller manager (per-robot) | `integrated_bringup/config/<robot>/{sim,robot}.yaml` (`<robot>` ∈ `ur5e_hand`, `iiwa7_leap`, ...) | `control_rate`, `initial_controller`, `devices.<group>.backend` (Phase 4 SSoT — backend type + device-wire topics), `urdf`, `device_timeout_*` |
 | MuJoCo simulator (agnostic 기본값 + solver SSoT) | `rtc_mujoco_sim/config/solver_param.yaml` | `physics_timestep`, `n_substeps`, `sync_timeout_ms`, viewer 설정, `solver` (Newton/CG/PGS), `cone`, `integrator`, `noslip_iterations`, `contact_override` |
-| MuJoCo simulator (UR5e robot 오버레이) | `integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml` | `model_path`, `robot_response.groups` (`ur5e`, `hand`), joint names, command/state 토픽 |
+| MuJoCo simulator (per-robot overlay) | `integrated_bringup/config/<robot>/mujoco_simulator.yaml` | `model_path`, `robot_response.groups` (e.g. `ur5e`+`hand`, `iiwa7`+`leap`), joint names, command/state 토픽 |
 | Hand UDP driver | `udp_hand_driver/config/udp_hand_node.yaml` | `target_ip`, `recv_timeout_ms`, `communication_mode` (bulk/individual) |
 | Digital twin (default) | `rtc_digital_twin/config/digital_twin.yaml` | `display_rate`, `auto_compute_mimic`, sensor_viz/tcp_viz scale params (robot-agnostic) |
-| Digital twin (UR5e overlay) | `integrated_bringup/config/ur5e_hand/digital_twin.yaml` | `robot_description_*`, `source_*.topic`, `sensor_viz.sensor_topic`, `sensor_viz.fingertip_names`, `tcp_viz.source_topic` |
-| Controller YAML examples | `rtc_controllers/examples/controllers/{direct\|indirect}/*.yaml` | Reference only (`<robot>` placeholder). Production lives in `<robot>_bringup/config/controllers/{direct\|indirect}/*.yaml` |
+| Digital twin (per-robot overlay) | `integrated_bringup/config/<robot>/digital_twin.yaml` | `robot_description_*`, `source_*.topic`, `sensor_viz.sensor_topic`, `sensor_viz.fingertip_names`, `tcp_viz.source_topic` |
+| Controller YAML examples | `rtc_controllers/examples/controllers/{direct\|indirect}/*.yaml` | Reference only (`<robot>` placeholder). Production lives in `<robot>_bringup/config/<robot>/controllers/{direct\|indirect}/*.yaml` |
