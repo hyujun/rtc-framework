@@ -1,12 +1,15 @@
 # ── EXAMPLE — reference config for ClikController ─────────────────────────────
+# Location: rtc_controllers/examples/controllers/indirect/ (installed under
+#           share/rtc_controllers/examples/). NOT a production YAML.
+#
 # rtc_controllers ships this as a *reference example* only. The class is not
 # auto-registered; downstream <robot>_bringup packages opt in by:
 #   1) adding a `RTC_REGISTER_CONTROLLER(clik_controller, "indirect",
 #      "<robot>_bringup", std::make_unique<rtc::ClikController>(...))`
 #      registration in their controller_registration.cpp, and
 #   2) copying this YAML to `<robot>_bringup/config/controllers/indirect/` and
-#      replacing the UR5e-specific topic group ("ur5e" below) with their own
-#      robot identity.
+#      replacing the placeholder topic group ("<robot>" below) with their own
+#      robot identity (matches their CM `devices.<group>` key).
 # Keeping ARCH-1 invariant: rtc_* may not host robot-specific production YAML.
 # ──────────────────────────────────────────────────────────────────────────────
 clik_controller:
@@ -35,15 +38,18 @@ clik_controller:
   command_type: "position"
 
   # ── 토픽 설정 ─────────────────────────────────────────────────────────────
+  # `<robot>` 는 device-group 키 placeholder — <robot>_bringup 에서 자신의 CM
+  # `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 교체. 토픽 경로의 `<robot>` 도
+  # 동일한 그룹 이름으로 치환.
   topics:
-    ur5e:
+    <robot>:
       subscribe:
-        - topic: "/ur5e/joint_goal"
+        - topic: "/<robot>/joint_goal"
           role: "target"
         - topic: "/joint_states"
           role: "state"
       publish:
-        - topic: "/ur5e/joint_command"
+        - topic: "/<robot>/joint_command"
           role: "joint_command"
         - topic: "/forward_position_controller/commands"
           role: "ros2_command"

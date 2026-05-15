@@ -10,7 +10,7 @@
 
 RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 4개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
 
-> **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/config/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며, robot identity (토픽 그룹 이름, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요.
+> **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
 **컨트롤러 분류:**
 
@@ -59,16 +59,16 @@ rtc_controllers/
 │       │   └── operational_space_controller.cpp
 │       └── grasp/
 │           └── grasp_controller.cpp
-└── config/controllers/                       -- ★ 모두 reference example (ARCH-1)
+└── examples/controllers/                     -- ★ 모두 reference example (ARCH-1)
     ├── indirect/
-    │   ├── p_controller.yaml             -- example (UR5e 토픽/게인 기준)
+    │   ├── p_controller.yaml             -- example (placeholder `<robot>` 그룹)
     │   └── clik_controller.yaml          -- example
     └── direct/
         ├── joint_pd_controller.yaml      -- example
         └── operational_space_controller.yaml -- example
 ```
 
-> 위 4개 YAML 은 *복제용 reference* 입니다. 실제 production 설정은 `<robot>_bringup/config/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요. 자세한 사용법은 각 YAML 상단 주석 참고.
+> 위 4개 YAML 은 *복제용 reference* 입니다 (설치 위치: `share/rtc_controllers/examples/`). 실제 production 설정은 `<robot>_bringup/config/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요. `<robot>` placeholder 는 자신의 CM `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 일괄 치환합니다. 자세한 사용법은 각 YAML 상단 주석 참고.
 
 ---
 
@@ -101,7 +101,7 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current[i]) * dt
 - 스레드 동기화 없음 (단일 스레드 전용)
 
 ```yaml
-# config/controllers/indirect/p_controller.yaml
+# examples/controllers/indirect/p_controller.yaml
 p_controller:
   kp: [120.0, 120.0, 100.0, 80.0, 80.0, 80.0]
   command_type: "position"
@@ -147,7 +147,7 @@ command[i] = kp[i] * e[i] + kd[i] * de[i]
 **E-STOP:** `safe_position` (YAML 디바이스 설정에서 로드)으로 PD 제어를 통해 이동
 
 ```yaml
-# config/controllers/direct/joint_pd_controller.yaml
+# examples/controllers/direct/joint_pd_controller.yaml
 joint_pd_controller:
   kp: [200.0, 200.0, 150.0, 120.0, 120.0, 120.0]
   kd: [30.0, 30.0, 25.0, 20.0, 20.0, 20.0]
@@ -219,7 +219,7 @@ q_cmd  = q_des
 **E-STOP:** `safe_position`으로 관절 속도 제한 범위 내에서 위치 명령 이동
 
 ```yaml
-# config/controllers/indirect/clik_controller.yaml
+# examples/controllers/indirect/clik_controller.yaml
 clik_controller:
   kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   damping: 0.01
@@ -286,7 +286,7 @@ duration = max(0.01, max(trans_dist / trajectory_speed, angular_dist / trajector
 **E-STOP:** `safe_position`으로 관절 속도 제한 범위 내에서 위치 명령 이동
 
 ```yaml
-# config/controllers/direct/operational_space_controller.yaml
+# examples/controllers/direct/operational_space_controller.yaml
 operational_space_controller:
   kp_pos: [1.0, 1.0, 1.0]
   kd_pos: [0.1, 0.1, 0.1]
@@ -607,16 +607,16 @@ RTC_REGISTER_CONTROLLER(
 
 ---
 
-## 설정 파일 (`config/`)
+## 예시 설정 파일 (`examples/`)
 
-각 컨트롤러에 대응하는 YAML 설정 파일이 있으며, `LoadConfig()` 메서드에서 파싱합니다. 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다.
+각 컨트롤러에 대응하는 YAML reference example. `LoadConfig()` 메서드에서 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `<robot>_bringup/config/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
 
 | 파일 | 설명 |
 |------|------|
-| `config/controllers/indirect/p_controller.yaml` | P 제어기: kp 게인, command_type, 토픽 매핑 |
-| `config/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, damping, null_kp, 영공간/6DOF 설정, 토픽 매핑 |
-| `config/controllers/direct/joint_pd_controller.yaml` | JointPD 제어기: kp/kd 게인, 중력/코리올리 보상, 궤적 속도, 토픽 매핑 |
-| `config/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, damping, 중력 보상, 궤적 속도, 토픽 매핑 |
+| `examples/controllers/indirect/p_controller.yaml` | P 제어기: kp 게인, command_type, 토픽 매핑 |
+| `examples/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, damping, null_kp, 영공간/6DOF 설정, 토픽 매핑 |
+| `examples/controllers/direct/joint_pd_controller.yaml` | JointPD 제어기: kp/kd 게인, 중력/코리올리 보상, 궤적 속도, 토픽 매핑 |
+| `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, damping, 중력 보상, 궤적 속도, 토픽 매핑 |
 
 각 YAML 파일은 `topics` 섹션에서 디바이스별 ROS2 토픽 구독/발행 매핑도 정의합니다. 이 매핑은 `RTControllerInterface::LoadConfig()`에서 공통 파싱됩니다.
 

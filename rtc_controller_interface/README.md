@@ -229,8 +229,9 @@ namespace {
 
 예: `<robot>_bringup/config/controllers/indirect/p_controller.yaml`
 (production YAML 은 robot-specific bringup 패키지가 소유합니다 — ARCH-1.
-`rtc_controllers/config/controllers/` 의 동일 이름 파일은 reference
-example 이며 직접 로드되지 않습니다)
+`rtc_controllers/examples/controllers/` 의 동일 이름 파일은 reference
+example 이며 직접 로드되지 않습니다 — `<robot>` placeholder 를 자신의
+device-group 키로 치환해 복제하세요)
 
 ### 정적 라이브러리 링커 스트립 방지
 
