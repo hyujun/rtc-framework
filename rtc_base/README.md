@@ -95,11 +95,11 @@ rtc_base/
 |--------|---|------|
 | `CommandType` | `kPosition`, `kTorque` | 커맨드 모드 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
-| `SubscribeRole` | `kState`, `kMotorState`, `kSensorState`, `kTarget` | 구독 역할 |
-| `PublishRole` | `kJointCommand`, `kRos2Command`, `kRobotTarget`, `kDeviceStateLog`, `kDeviceSensorLog`, `kDigitalTwinState`, `kGraspState`, `kWbcState`, `kToFSnapshot`, `kRobotTransforms` | 퍼블리시 역할 (`kRobotTransforms`: controller 단위 `tf2_msgs/TFMessage`. Phase 4: `kGuiPosition` 제거 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체) |
+| `PublishRole` | `kRobotTarget`, `kDigitalTwinState`, `kGraspState`, `kWbcState`, `kToFSnapshot`, `kRobotTransforms` | 퍼블리시 역할 (`kRobotTransforms`: controller 단위 `tf2_msgs/TFMessage`. Phase 4: `kJointCommand`/`kRos2Command`/`kDeviceStateLog`/`kDeviceSensorLog`/`kGuiPosition` 제거 — device-wire 명령은 `devices.<group>.backend`, joint state는 `/rtc_cm/<group>/joint_states`, TCP pose는 `<config_key>/transforms`) |
 | `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` | 디바이스 기능 비트마스크 (RT 루프 선택적 데이터 복사) |
 
-`GoalTypeToString()`, `SubscribeRoleToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수.
+`GoalTypeToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수.
+구독 역할은 Phase 4 trailing cleanup에서 singleton (`target`) 만 남아 enum이 삭제되었고, YAML parser가 `role:` 문자열 (`target` / 호환용 `goal`) 만 validate 한다.
 
 #### 주요 구조체
 
@@ -132,8 +132,8 @@ rtc_base/
 
 | 구조체 | 설명 |
 |--------|------|
-| `SubscribeTopicEntry` | `topic_name` + `SubscribeRole` |
-| `PublishTopicEntry` | `topic_name` + `PublishRole` + `data_size` |
+| `SubscribeTopicEntry` | `topic_name` + `TopicOwnership` (role enum은 Phase 4 trailing cleanup에서 삭제) |
+| `PublishTopicEntry` | `topic_name` + `PublishRole` + `data_size` + `TopicOwnership` |
 | `DeviceTopicGroup` | `subscribe` + `publish` 토픽 엔트리 벡터 |
 
 `TopicConfig` 주요 메서드:
@@ -142,11 +142,11 @@ rtc_base/
 |--------|------|
 | `operator[](name)` | 삽입 순서 보존 접근/생성 |
 | `HasGroup(name)` | 그룹 존재 및 토픽 보유 여부 확인 (`noexcept`) |
-| `HasSubscribeRole(group, role)` | 특정 구독 역할 보유 여부 확인 (`noexcept`) |
-| `GetSubscribeTopicName(group, role)` | 구독 토픽 이름 반환 (RT-unsafe, 초기화 시에만 호출) |
+| `HasSubscribeTopic(group)` | 그룹에 구독 엔트리가 1개 이상 존재하는지 확인 (`noexcept`) |
+| `GetFirstSubscribeTopic(group)` | 그룹의 첫 구독 토픽 이름 반환 (RT-unsafe, 초기화 시에만 호출) |
 
 > **RT 안전 설계:** 모든 구조체는 zero-initialized, trivially copyable로 설계되어 SeqLock/SPSC 버퍼와 호환됩니다.
-> **주의:** `TopicConfig::GetSubscribeTopicName()`은 `std::string`을 반환하므로 RT 경로에서 호출 금지 -- 초기화 시에만 사용.
+> **주의:** `TopicConfig::GetFirstSubscribeTopic()`은 `std::string`을 반환하므로 RT 경로에서 호출 금지 -- 초기화 시에만 사용.
 
 ---
 

@@ -360,12 +360,12 @@ enum class DeviceCapability : uint16_t {
 
 // ── Topic configuration for per-controller subscribe/publish routing ─────────
 
-// Phase 4: state / motor_state / sensor_state roles deleted — device-wire
-// state lanes are now declared in `devices.<group>.backend:` (DeviceBackendBinding)
-// and owned by DeviceBackend impls. Controller YAML retains only target.
-enum class SubscribeRole {
-  kTarget,  // Float64MultiArray (외부 목표)
-};
+// Phase 4 trailing cleanup: SubscribeRole enum dropped — after the device-wire
+// roles (state / motor_state / sensor_state) moved to `devices.<group>.backend`,
+// the only remaining role was `kTarget`. A singleton enum carries no
+// discrimination, so `SubscribeTopicEntry` no longer tags a role. The YAML
+// parser still validates the `role:` string ("target" / "goal") as readable
+// documentation + drift detection.
 
 enum class PublishRole {
   // Phase 4: joint_command / ros2_command roles deleted — device-wire command
@@ -417,7 +417,6 @@ enum class TopicOwnership : uint8_t {
 
 struct SubscribeTopicEntry {
   std::string topic_name;
-  SubscribeRole role;
   TopicOwnership ownership{TopicOwnership::kManager};
 };
 
@@ -466,50 +465,34 @@ struct TopicConfig {
     return false;
   }
 
-  // True if the named group has a subscribe entry with the given role.
-  [[nodiscard]] bool HasSubscribeRole(const std::string& group_name,
-                                      SubscribeRole role) const noexcept {
+  // True if the named group has at least one subscribe entry.
+  [[nodiscard]] bool HasSubscribeTopic(const std::string& group_name) const noexcept {
     for (const auto& [n, g] : groups) {
       if (n != group_name)
         continue;
-      for (const auto& e : g.subscribe) {
-        if (e.role == role)
-          return true;
-      }
-      return false;
+      return !g.subscribe.empty();
     }
     return false;
   }
 
-  // Returns the topic name for the first subscribe entry matching the role,
-  // or an empty string if not found.
+  // Returns the topic name for the first subscribe entry in the named group,
+  // or an empty string if the group is missing or has no subscribe entries.
   //
   // WARNING: NOT RT-safe — returns std::string (potential heap allocation).
   // Call only during initialisation, not from the RT control loop.
-  [[nodiscard]] std::string GetSubscribeTopicName(const std::string& group_name,
-                                                  SubscribeRole role) const {
+  [[nodiscard]] std::string GetFirstSubscribeTopic(const std::string& group_name) const {
     for (const auto& [n, g] : groups) {
       if (n != group_name)
         continue;
-      for (const auto& e : g.subscribe) {
-        if (e.role == role)
-          return e.topic_name;
-      }
-      return {};
+      if (g.subscribe.empty())
+        return {};
+      return g.subscribe.front().topic_name;
     }
     return {};
   }
 };
 
 // ── Role → string conversion (for ROS2 parameter exposure) ──────────────────
-
-[[nodiscard]] inline constexpr const char* SubscribeRoleToString(SubscribeRole role) noexcept {
-  switch (role) {
-    case SubscribeRole::kTarget:
-      return "target";
-  }
-  return "unknown";
-}
 
 [[nodiscard]] inline constexpr const char* PublishRoleToString(PublishRole role) noexcept {
   switch (role) {

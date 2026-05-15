@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace rtc {
 
@@ -16,10 +17,13 @@ namespace {
 // are owned by DeviceBackend impls. Controller YAML retains only target /
 // robot_target / grasp_state / wbc_state / tof_snapshot / robot_transforms /
 // digital_twin_state.
-const std::unordered_map<std::string, SubscribeRole> kSubscribeRoleMap = {
-    {"target", SubscribeRole::kTarget},
-    // backward compat
-    {"goal", SubscribeRole::kTarget},
+//
+// Phase 4 trailing cleanup: SubscribeRole enum dropped — the only remaining
+// value (kTarget) carries no discrimination. The parser still validates the
+// `role:` string as documentation + drift detection.
+const std::unordered_set<std::string> kSubscribeRoleStrings = {
+    "target",
+    "goal",  // backward compat
 };
 
 const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
@@ -57,11 +61,10 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
     for (const auto& entry : group_node["subscribe"]) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
-      auto it = kSubscribeRoleMap.find(role_str);
-      if (it == kSubscribeRoleMap.end()) {
+      if (kSubscribeRoleStrings.find(role_str) == kSubscribeRoleStrings.end()) {
         throw std::runtime_error("Unknown subscribe role: " + role_str);
       }
-      out.subscribe.push_back({topic, it->second, ParseOwnership(entry)});
+      out.subscribe.push_back({topic, ParseOwnership(entry)});
     }
   }
 
@@ -187,23 +190,6 @@ void RTControllerInterface::SetSharedModelBuilder(
 std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder>
 RTControllerInterface::GetSharedModelBuilder() const noexcept {
   return shared_model_builder_;
-}
-
-TopicConfig RTControllerInterface::MakeDefaultTopicConfig(const std::string& device_name) {
-  // Phase 4: device-wire lanes moved to devices.<group>.backend: — this helper
-  // now seeds only the controller-owned target lane so bringups that bypass
-  // YAML still get a usable TopicConfig.
-  TopicConfig cfg;
-  const std::string ns = "/" + device_name;
-
-  cfg[device_name].subscribe = {
-      {ns + "/target_joint_positions", SubscribeRole::kTarget},
-  };
-  cfg[device_name].publish = {
-      {ns + "/robot_target", PublishRole::kRobotTarget, 0},
-  };
-
-  return cfg;
 }
 
 TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_node) {
@@ -360,8 +346,9 @@ void RTControllerInterface::LoadConfig(const YAML::Node& cfg) {
   }
 
   // Parse topics section if present; otherwise leave topic_config_ empty.
-  // Controllers that need a fallback can call MakeDefaultTopicConfig(<device>)
-  // explicitly with a robot-specific device name (rtc_* stays robot-agnostic).
+  // Controllers without YAML topics keep an empty topic_config_; the CM /
+  // owned-topics helpers tolerate that (rtc_* stays robot-agnostic — no
+  // hardcoded fallback device name lives in the framework).
   if (cfg["topics"]) {
     topic_config_ = ParseTopicConfig(cfg["topics"]);
   }

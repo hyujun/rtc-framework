@@ -11,10 +11,9 @@ void RtControllerNode::CreateSubscriptions() {
 
   std::set<std::string> created_topics;
 
-  // kState / kMotorState / kSensorState are owned by DeviceBackend
-  // implementations and bound in CreateDeviceBackends(). CM only binds
-  // kTarget here since it is a controller-target lane (RobotTarget),
-  // not part of the HW/sim adapter.
+  // Device-wire state lanes are owned by DeviceBackend implementations and
+  // bound in CreateDeviceBackends(). The only manager-owned subscribe entry
+  // remaining is the controller target lane (RobotTarget).
   for (const auto& tc : controller_topic_configs_) {
     for (const auto& [group_name, group] : tc.groups) {
       if (!active_groups_.contains(group_name))
@@ -24,8 +23,6 @@ void RtControllerNode::CreateSubscriptions() {
 
       for (const auto& entry : group.subscribe) {
         if (entry.ownership == urtc::TopicOwnership::kController)
-          continue;
-        if (entry.role != urtc::SubscribeRole::kTarget)
           continue;
         if (!created_topics.insert(entry.topic_name).second)
           continue;

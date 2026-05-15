@@ -81,9 +81,20 @@ void RtControllerNode::ExposeTopicParameters() {
     const std::string prefix = "controllers." + std::string(controllers_[i]->Name());
 
     for (const auto& [group_name, group] : tc.groups) {
-      for (const auto& entry : group.subscribe) {
-        const std::string param_name =
-            prefix + "." + group_name + ".subscribe." + urtc::SubscribeRoleToString(entry.role);
+      // Phase 4 trailing cleanup: SubscribeRole enum dropped. Only one
+      // subscribe lane (target) remains per group, so the parameter name is
+      // fixed; the index keeps duplicate target entries (rare but legal)
+      // discoverable.
+      for (std::size_t si = 0; si < group.subscribe.size(); ++si) {
+        const auto& entry = group.subscribe[si];
+        std::string param_name = prefix;
+        param_name += ".";
+        param_name += group_name;
+        param_name += ".subscribe.target";
+        if (si > 0) {
+          param_name += "_";
+          param_name += std::to_string(si);
+        }
         if (!has_parameter(param_name)) {
           declare_parameter(param_name, entry.topic_name);
         }

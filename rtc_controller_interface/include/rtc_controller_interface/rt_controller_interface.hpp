@@ -308,11 +308,6 @@ class RTControllerInterface {
   // should call RTControllerInterface::LoadConfig(cfg) to inherit this.
   static TopicConfig ParseTopicConfig(const YAML::Node& topics_node);
 
-  // Default topic configuration — device_name determines topic namespace.
-  // Caller must supply a non-empty device name (rtc_* stays robot-agnostic;
-  // robot-specific bringups own the device name).
-  static TopicConfig MakeDefaultTopicConfig(const std::string& device_name);
-
   // ── L1: Device limits loader ───────────────────────────────────────────
   //   Populates per-device joint limit vectors from the resolved
   //   device_name_configs_, using `topic_config_.groups` order as the

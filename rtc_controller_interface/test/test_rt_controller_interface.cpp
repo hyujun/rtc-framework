@@ -6,12 +6,14 @@
 // and virtual method behaviour of the abstract interface.
 //
 // Covers: default construction, control rate, device name configuration,
-// system model configuration, MakeDefaultTopicConfig, ParseTopicConfig
-// (valid / deprecated / unknown role / backward-compat), LoadConfig,
-// TopicConfig struct operations, and default virtual methods.
+// system model configuration, ParseTopicConfig (valid / deprecated / unknown
+// role / backward-compat), LoadConfig, TopicConfig struct operations, and
+// default virtual methods.
 // (Phase 4: device-wire roles state/motor_state/sensor_state/joint_command/
 // ros2_command — and the DeviceCapability inference path that read them —
-// were removed; their tests were dropped.)
+// were removed; their tests were dropped. Phase 4 trailing cleanup:
+// SubscribeRole enum + MakeDefaultTopicConfig dropped; tests that depended
+// on them were rewritten to construct TopicConfig directly or removed.)
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_controller_interface/rt_controller_interface.hpp>
 #include <rtc_urdf_bridge/types.hpp>
@@ -48,7 +50,6 @@ class StubController : public rtc::RTControllerInterface {
 
   // Expose protected statics for direct testing.
   using RTControllerInterface::LoadDeviceLimitsFromConfig;
-  using RTControllerInterface::MakeDefaultTopicConfig;
   using RTControllerInterface::ParseArmSafePosition;
   using RTControllerInterface::ParseTopicConfig;
 
@@ -77,9 +78,8 @@ TEST(RTControllerInterfaceTest, DefaultControlRate) {
 
 TEST(RTControllerInterfaceTest, DefaultTopicConfigIsEmpty) {
   // ARCH-1: rtc_* must stay robot-agnostic. The default ctor leaves
-  // topic_config_ empty; LoadConfig() (or an explicit
-  // MakeDefaultTopicConfig(<device>) call from a robot-specific bringup)
-  // populates it.
+  // topic_config_ empty; LoadConfig() populates it from the YAML `topics:`
+  // section when present.
   StubController ctrl;
   EXPECT_TRUE(ctrl.GetTopicConfig().groups.empty());
 }
@@ -173,10 +173,11 @@ TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameEmptyByDefault) {
   EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "");
 }
 
-TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromMakeDefaultTopicConfig) {
-  // Robot-specific bringups can still call MakeDefaultTopicConfig(<device>)
-  // explicitly to seed the topic config — verify primary name flows through.
-  const auto cfg = StubController::MakeDefaultTopicConfig("custom_robot");
+TEST(RTControllerInterfaceTest, GetPrimaryDeviceNameFromExplicitGroup) {
+  // Robot-specific bringups seed a single group; verify primary name flows
+  // through the helper.
+  rtc::TopicConfig cfg;
+  cfg["custom_robot"].subscribe.push_back({"/custom_robot/target"});
   ASSERT_FALSE(cfg.groups.empty());
   EXPECT_EQ(cfg.groups.front().first, "custom_robot");
 }
@@ -185,7 +186,9 @@ TEST(RTControllerInterfaceTest, GetSecondaryDeviceNameEmptyWhenSingleGroup) {
   // Single-device controllers have no secondary group; helper returns "" so
   // callers can null-check GetDeviceNameConfig(...) on the result.
   StubController ctrl;
-  ctrl.SetTopicConfigForTesting(StubController::MakeDefaultTopicConfig("only_device"));
+  rtc::TopicConfig cfg;
+  cfg["only_device"].subscribe.push_back({"/only_device/target"});
+  ctrl.SetTopicConfigForTesting(std::move(cfg));
   EXPECT_EQ(ctrl.GetPrimaryDeviceName(), "only_device");
   EXPECT_EQ(ctrl.GetSecondaryDeviceName(), "");
 }
@@ -247,43 +250,6 @@ TEST(RTControllerInterfaceTest, SetSystemModelConfigOverwrites) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MakeDefaultTopicConfig
-// ═══════════════════════════════════════════════════════════════════════════════
-
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigSubscribeRoles) {
-  // Phase 4: MakeDefaultTopicConfig only seeds the controller-owned target
-  // lane; device-wire roles live in devices.<group>.backend (CM YAML).
-  const auto cfg = StubController::MakeDefaultTopicConfig("my_robot");
-  EXPECT_TRUE(cfg.HasGroup("my_robot"));
-  EXPECT_TRUE(cfg.HasSubscribeRole("my_robot", rtc::SubscribeRole::kTarget));
-}
-
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigTopicNames) {
-  const auto cfg = StubController::MakeDefaultTopicConfig("my_robot");
-  EXPECT_EQ(cfg.GetSubscribeTopicName("my_robot", rtc::SubscribeRole::kTarget),
-            "/my_robot/target_joint_positions");
-}
-
-TEST(RTControllerInterfaceTest, MakeDefaultTopicConfigPublishEntries) {
-  // Phase 4: only robot_target (controller-owned) remains in the default
-  // template; command/state lanes were moved to DeviceBackend.
-  const auto cfg = StubController::MakeDefaultTopicConfig("ur5e");
-
-  bool has_robot_target = false;
-  for (const auto& [name, group] : cfg.groups) {
-    if (name != "ur5e") {
-      continue;
-    }
-    for (const auto& pub : group.publish) {
-      if (pub.role == rtc::PublishRole::kRobotTarget) {
-        has_robot_target = true;
-      }
-    }
-  }
-  EXPECT_TRUE(has_robot_target);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // ParseTopicConfig — valid YAML
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -312,10 +278,10 @@ hand:
   EXPECT_TRUE(cfg.HasGroup("hand"));
   EXPECT_FALSE(cfg.HasGroup("missing"));
 
-  EXPECT_TRUE(cfg.HasSubscribeRole("ur5e", rtc::SubscribeRole::kTarget));
-  EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kTarget));
+  EXPECT_TRUE(cfg.HasSubscribeTopic("ur5e"));
+  EXPECT_TRUE(cfg.HasSubscribeTopic("hand"));
 
-  EXPECT_EQ(cfg.GetSubscribeTopicName("hand", rtc::SubscribeRole::kTarget), "/hand/target");
+  EXPECT_EQ(cfg.GetFirstSubscribeTopic("hand"), "/hand/target");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -377,7 +343,7 @@ robot:
     - {topic: /goal, role: goal}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
-  EXPECT_TRUE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kTarget));
+  EXPECT_TRUE(cfg.HasSubscribeTopic("robot"));
 }
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatPublishJointGoal) {
@@ -545,8 +511,8 @@ topics:
 
 TEST(RTControllerInterfaceTest, LoadConfigWithoutTopicsLeavesEmpty) {
   // ARCH-1: topic_config_ starts empty; YAML without a `topics:` section
-  // leaves it empty (controllers that need a fallback must call
-  // MakeDefaultTopicConfig(<device>) explicitly with a robot-specific name).
+  // leaves it empty (controllers that need a fallback construct their own
+  // TopicConfig in the robot-specific bringup, not in the framework).
   StubController ctrl;
   const auto node = YAML::Load(R"(
 some_gain: 1.5
@@ -571,15 +537,15 @@ enable_hand: false
 
 TEST(TopicConfigTest, OperatorBracketInsertsNew) {
   rtc::TopicConfig cfg;
-  cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kTarget});
+  cfg["robot"].subscribe.push_back({"/data"});
   EXPECT_TRUE(cfg.HasGroup("robot"));
   EXPECT_EQ(cfg.groups.size(), std::size_t{1});
 }
 
 TEST(TopicConfigTest, OperatorBracketAccessesExisting) {
   rtc::TopicConfig cfg;
-  cfg["robot"].subscribe.push_back({"/data", rtc::SubscribeRole::kTarget});
-  cfg["robot"].subscribe.push_back({"/more", rtc::SubscribeRole::kTarget});
+  cfg["robot"].subscribe.push_back({"/data"});
+  cfg["robot"].subscribe.push_back({"/more"});
   EXPECT_EQ(cfg.groups.size(), std::size_t{1});
   EXPECT_EQ(cfg.groups[0].second.subscribe.size(), std::size_t{2});
 }
@@ -595,28 +561,28 @@ TEST(TopicConfigTest, HasGroupFalseForEmptyEntries) {
   EXPECT_FALSE(cfg.HasGroup("empty"));
 }
 
-TEST(TopicConfigTest, HasSubscribeRoleNotFound) {
+TEST(TopicConfigTest, HasSubscribeTopicNotFound) {
   rtc::TopicConfig cfg;
-  EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kTarget));
+  EXPECT_FALSE(cfg.HasSubscribeTopic("robot"));
 }
 
-TEST(TopicConfigTest, HasSubscribeRoleWrongGroup) {
+TEST(TopicConfigTest, HasSubscribeTopicWrongGroup) {
   rtc::TopicConfig cfg;
-  cfg["hand"].subscribe.push_back({"/hand/js", rtc::SubscribeRole::kTarget});
-  EXPECT_FALSE(cfg.HasSubscribeRole("robot", rtc::SubscribeRole::kTarget));
-  EXPECT_TRUE(cfg.HasSubscribeRole("hand", rtc::SubscribeRole::kTarget));
+  cfg["hand"].subscribe.push_back({"/hand/js"});
+  EXPECT_FALSE(cfg.HasSubscribeTopic("robot"));
+  EXPECT_TRUE(cfg.HasSubscribeTopic("hand"));
 }
 
-TEST(TopicConfigTest, GetSubscribeTopicNameReturnsEmpty) {
+TEST(TopicConfigTest, GetFirstSubscribeTopicReturnsEmpty) {
   rtc::TopicConfig cfg;
-  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kTarget), "");
+  EXPECT_EQ(cfg.GetFirstSubscribeTopic("robot"), "");
 }
 
-TEST(TopicConfigTest, GetSubscribeTopicNameReturnsFirst) {
+TEST(TopicConfigTest, GetFirstSubscribeTopicReturnsFirst) {
   rtc::TopicConfig cfg;
-  cfg["robot"].subscribe.push_back({"/first", rtc::SubscribeRole::kTarget});
-  cfg["robot"].subscribe.push_back({"/second", rtc::SubscribeRole::kTarget});
-  EXPECT_EQ(cfg.GetSubscribeTopicName("robot", rtc::SubscribeRole::kTarget), "/first");
+  cfg["robot"].subscribe.push_back({"/first"});
+  cfg["robot"].subscribe.push_back({"/second"});
+  EXPECT_EQ(cfg.GetFirstSubscribeTopic("robot"), "/first");
 }
 
 TEST(TopicConfigTest, InsertionOrderPreserved) {

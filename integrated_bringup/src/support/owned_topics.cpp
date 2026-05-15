@@ -63,7 +63,9 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
       if (sub.ownership != rtc::TopicOwnership::kController) {
         continue;
       }
-      if (sub.role == rtc::SubscribeRole::kTarget && gi < kMaxOwnedGroups) {
+      // Phase 4 trailing cleanup: SubscribeRole enum dropped — the only
+      // remaining subscribe lane is the controller target (RobotTarget).
+      if (gi < kMaxOwnedGroups) {
         const std::string name_capture = group_name;
         const int idx_capture = group_idx;
         handles.target_subs[gi] = node->create_subscription<rtc_msgs::msg::RobotTarget>(
