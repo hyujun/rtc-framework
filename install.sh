@@ -855,8 +855,10 @@ setup_rt_sudoers() {
 
   local SUDOERS_FILE="/etc/sudoers.d/ur5e-rt-controller"
 
-  # 설치된 cpu_shield.sh 경로
-  local INSTALLED_SHIELD="${WORKSPACE}/install/rtc_controller_manager/lib/rtc_controller_manager/cpu_shield.sh"
+  # 설치된 cpu_shield.sh 경로 — repo_scripts/CMakeLists.txt 가 install (PROGRAMS) 로
+  # DESTINATION lib/${PROJECT_NAME} 에 박는다. 2026-04-30 패키지 rename
+  # (rtc_scripts → repo_scripts) 이후 경로는 install/repo_scripts/lib/repo_scripts/.
+  local INSTALLED_SHIELD="${WORKSPACE}/install/repo_scripts/lib/repo_scripts/cpu_shield.sh"
   # 소스 cpu_shield.sh 경로
   local SOURCE_SHIELD="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/cpu_shield.sh"
 
