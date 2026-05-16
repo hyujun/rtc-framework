@@ -27,6 +27,8 @@ INSTALL_SCRIPT_DIR="$_RT_SCRIPT_DIR"
 # ── Modular install steps (functions live in lib/install_*.sh) ─────────────
 # shellcheck source=repo_scripts/scripts/lib/install_ros2.sh
 source "${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/lib/install_ros2.sh"
+# shellcheck source=repo_scripts/scripts/lib/install_uv.sh
+source "${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/lib/install_uv.sh"
 # shellcheck source=repo_scripts/scripts/lib/install_python.sh
 source "${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/lib/install_python.sh"
 # shellcheck source=repo_scripts/scripts/lib/install_deps.sh
