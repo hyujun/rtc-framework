@@ -29,12 +29,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/rt_common.sh
 source "${SCRIPT_DIR}/lib/rt_common.sh"
-
-# build_rt_kernel 전용 로깅 (기존 호출 코드와 호환)
-info()    { echo -e "${BLUE}[RT-KERNEL]${NC} $*"; }
-success() { echo -e "${GREEN}[RT-KERNEL]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[RT-KERNEL]${NC} $*"; }
-error()   { echo -e "${RED}[RT-KERNEL]${NC} $*" >&2; exit 1; }
+make_logger "RT-KERNEL"
 
 # get_physical_cores() — rt_common.sh에서 제공
 
