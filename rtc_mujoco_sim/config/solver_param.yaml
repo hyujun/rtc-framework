@@ -79,7 +79,7 @@ mujoco_simulator:
       #   "RK4"          — 4차 Runge-Kutta (정밀하지만 느림)
       #   "implicit"     — implicit Euler (관절 damping이 큰 모델에 안정적)
       #   "implicitfast" — implicit의 근사 버전 (implicit보다 빠름)
-      integrator: "implicit"
+      integrator: "implicitfast"
 
       # ════════════════════════════════════════════════════════════════════════
       # Iteration Parameters (반복 계산 파라미터)
