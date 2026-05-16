@@ -68,7 +68,7 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 | `rtc_tools` | Large (parameterized) | pytest |
 | `rtc_digital_twin` | Small | test_urdf_parser (pytest 자동 discovery 미통과 — `pytest test/` 직접 실행 필요) |
 
-**참고**: 메모리에 기록된 `.venv` overlay → `ament_cmake_test` 이슈가 일부 환경에서 재발할 수 있음 — 증상은 `Testing/Temporary/LastTest.log` 즉시 종료. 우회: `build/<pkg>/<test_bin>` 직접 실행. `rtc_digital_twin` pytest discovery 실패는 별개 이슈 (pytest config 미존재 추정).
+**`.venv` 격리 원칙 (Hard rule)**: `.venv`는 runtime PC가 본 workspace 외에 다른 control project들과 공존하는 환경에서 workspace dependency를 격리하기 위한 **의도된 설계**다. `colcon test` / `colcon build` / `ros2 run` / `ros2 launch`가 venv 활성 상태에서 실패하면 **반드시 근본 원인을 해결**한다 (sys.path / shebang / wrapper / dep resolution 디버그). gtest 바이너리 직접 실행, venv deactivate 후 colcon 호출, `PYTHONPATH` 강제 우회 등은 **금지** — 격리를 무력화해 runtime PC에서 다른 project의 site-packages가 끼어들면 silent breakage. 과거 (2026-04 ~ 05-초) `.venv` overlay → `ament_cmake_test` ImportError 함정이 있었으나 **현재 stack (ROS 2 Jazzy + Python 3.12.3 + colcon-core 0.20.1)에서는 2026-05-16 재검증 시 재현되지 않음**. 신호 (`Testing/Temporary/LastTest.log` Start/End 동일 초)가 재발하면 `env -i` 깨끗한 셸에서 `setup_env.sh` source 후 `sys.path` 순서 점검부터. `rtc_digital_twin` pytest discovery 실패는 별개 이슈 (pytest config 미존재 추정).
 
 ## Live Debug Topics
 
