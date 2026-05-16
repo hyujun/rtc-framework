@@ -3,6 +3,7 @@
 #pragma once
 
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
+#include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
@@ -178,6 +179,18 @@ class DemoTaskController final : public RTControllerInterface {
     return {pos_error_[0], pos_error_[1], pos_error_[2]};
   }
 
+  // Phase 4c: ControllerOutput::grasp_state / tof_snapshot fields were
+  // removed — tests read the post-Compute() staging buffers directly via
+  // these accessors (RT-7 safe; no behavior change).
+  [[nodiscard]] const ::rtc::grasp::GraspStateData& GetGraspStateForTesting() const noexcept {
+    return grasp_state_;
+  }
+
+  [[nodiscard]] const ::integrated_bringup::ToFSnapshotData& GetToFSnapshotForTesting()
+      const noexcept {
+    return tof_snapshot_;
+  }
+
  private:
   // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
   struct FingertipSensorData {
@@ -189,10 +202,10 @@ class DemoTaskController final : public RTControllerInterface {
     bool valid{false};
   };
 
-  std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
+  std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
   int num_active_fingertips_{0};
-  rtc::GraspStateData grasp_state_{};
-  rtc::ToFSnapshotData tof_snapshot_{};
+  ::rtc::grasp::GraspStateData grasp_state_{};
+  ::integrated_bringup::ToFSnapshotData tof_snapshot_{};
 
   // ── Phase 2→3 intermediate: computed trajectory results ─────────────────
   struct ComputedTrajectory {
@@ -348,8 +361,8 @@ class DemoTaskController final : public RTControllerInterface {
   // topics. WriteOutput stores the freshly-computed values here; the publish
   // thread Loads them inside PublishNonRtSnapshot. Replaces the
   // PublishSnapshot::group_commands[gi].{grasp_state,tof_snapshot} slots.
-  rtc::SeqLock<rtc::GraspStateData> grasp_state_lock_;
-  rtc::SeqLock<rtc::ToFSnapshotData> tof_snapshot_lock_;
+  rtc::SeqLock<::rtc::grasp::GraspStateData> grasp_state_lock_;
+  rtc::SeqLock<::integrated_bringup::ToFSnapshotData> tof_snapshot_lock_;
 
   // ── Phase B (gain→parameter migration): per-controller ROS 2 parameters ──
   //

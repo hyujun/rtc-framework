@@ -32,7 +32,7 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
     const auto& dev1 = state.devices[1];
     const int num_sensor_ch = dev1.num_sensor_channels;
     const int num_fingertips = num_sensor_ch / kHandSensorValuesPerFingertipCapacity;
-    num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
+    num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
 
     for (int f = 0; f < num_active_fingertips_; ++f) {
       auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
@@ -465,11 +465,11 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
     if (fingertip_frame_ids_[f] != 0) {
       const Eigen::Vector3d& t = fingertip_positions_[f];
       const Eigen::Quaterniond q(fingertip_rotations_[f]);
-      output.fingertip_poses[f].position = {t.x(), t.y(), t.z()};
-      output.fingertip_poses[f].quaternion = {q.w(), q.x(), q.y(), q.z()};
-      output.fingertip_pose_valid[f] = true;
+      output.task_link_poses[f].position = {t.x(), t.y(), t.z()};
+      output.task_link_poses[f].quaternion = {q.w(), q.x(), q.y(), q.z()};
+      output.task_link_pose_valid[f] = true;
     } else {
-      output.fingertip_pose_valid[f] = false;
+      output.task_link_pose_valid[f] = false;
     }
   }
 
@@ -510,11 +510,9 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
   }
 
   output.command_type = command_type_;
-  output.grasp_state = grasp_state_;
-  output.tof_snapshot = tof_snapshot_;
-  // Per-controller SeqLock handoff to the publish thread — replaces the
-  // shared PublishSnapshot::group_commands[gi].{grasp_state,tof_snapshot}
-  // slots so the CM no longer mediates controller-owned non-RT data.
+  // Per-controller SeqLock handoff to the publish thread. ControllerOutput
+  // no longer carries grasp_state / tof_snapshot (Phase 4c) — each controller
+  // publishes its own non-RT data via these locks directly.
   grasp_state_lock_.Store(grasp_state_);
   tof_snapshot_lock_.Store(tof_snapshot_);
   return output;
@@ -582,8 +580,8 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
     output.arm_tip_pose_valid = true;
   }
   output.virtual_tcp_pose_valid = false;
-  for (std::size_t f = 0; f < output.fingertip_pose_valid.size(); ++f) {
-    output.fingertip_pose_valid[f] = false;
+  for (std::size_t f = 0; f < output.task_link_pose_valid.size(); ++f) {
+    output.task_link_pose_valid[f] = false;
   }
 
   return output;

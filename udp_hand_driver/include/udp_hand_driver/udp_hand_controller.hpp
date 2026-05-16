@@ -91,11 +91,13 @@ struct CalibrationStatusSnapshot {
 
 class UdpHandController {
  public:
-  using StateCallback = std::function<void(const UdpHandState&, const udp_hand_driver::FingertipFTState&)>;
+  using StateCallback =
+      std::function<void(const UdpHandState&, const udp_hand_driver::FingertipFTState&)>;
 
   explicit UdpHandController(
-      std::string target_ip, int target_port, const rtc::ThreadConfig& thread_cfg = rtc::kUdpRecvConfig,
-      double recv_timeout_ms = 10.0, bool /*enable_write_ack*/ = false,  // deprecated
+      std::string target_ip, int target_port,
+      const rtc::ThreadConfig& thread_cfg = rtc::kUdpRecvConfig, double recv_timeout_ms = 10.0,
+      bool /*enable_write_ack*/ = false,  // deprecated
       int sensor_decimation = 1, int num_fingertips = udp_hand_driver::kDefaultNumFingertips,
       bool use_fake_hand = false, const std::vector<std::string>& fingertip_names = {},
       HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual,
@@ -105,8 +107,8 @@ class UdpHandController {
       int drift_window_size = 2500) noexcept
       : thread_cfg_(thread_cfg),
         sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
-        num_fingertips_(num_fingertips > rtc::kMaxFingertips
-                            ? rtc::kMaxFingertips
+        num_fingertips_(num_fingertips > kMaxFingertips
+                            ? kMaxFingertips
                             : (num_fingertips < 0 ? 0 : num_fingertips)),
         use_fake_hand_(use_fake_hand),
         fingertip_names_(fingertip_names.empty() ? kDefaultFingertipNames : fingertip_names),
@@ -367,7 +369,9 @@ class UdpHandController {
 
   // ── F/T inference accessors ──────────────────────────────────────────────
 
-  [[nodiscard]] udp_hand_driver::FingertipFTState GetLatestFTState() const noexcept { return ft_seqlock_.Load(); }
+  [[nodiscard]] udp_hand_driver::FingertipFTState GetLatestFTState() const noexcept {
+    return ft_seqlock_.Load();
+  }
 
   [[nodiscard]] bool ft_inference_enabled() const noexcept { return ft_enabled_; }
 
@@ -515,8 +519,7 @@ class UdpHandController {
         // 3. Read all motors (joint-space: kJoint) — pos/vel/cur
         {
           std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
-          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf,
-                                             packets::JointMode::kJoint)) {
+          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, packets::JointMode::kJoint)) {
             std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
             std::copy_n(jv_buf.begin(), kNumHandMotors, state.joint_velocities.begin());
             std::copy_n(jc_buf.begin(), kNumHandMotors, state.joint_currents.begin());
@@ -640,8 +643,9 @@ class UdpHandController {
           for (int i = 0; i < num_fingertips_; ++i) {
             auto cmd = packets::SensorCommand(i);
             if (transport_.RequestSensorRead(cmd, sensor_raw_buf, packets::SensorMode::kRaw)) {
-              std::copy_n(sensor_raw_buf.begin(), udp_hand_driver::kSensorValuesPerFingertip,
-                          cached_sensor_data.begin() + i * udp_hand_driver::kSensorValuesPerFingertip);
+              std::copy_n(
+                  sensor_raw_buf.begin(), udp_hand_driver::kSensorValuesPerFingertip,
+                  cached_sensor_data.begin() + i * udp_hand_driver::kSensorValuesPerFingertip);
               any_recv_ok = true;
             }
           }
@@ -774,7 +778,8 @@ class UdpHandController {
   }
 
   // Run FT calibration or inference. Returns inference elapsed time in us.
-  double RunFTInference(const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data) noexcept {
+  double RunFTInference(
+      const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data) noexcept {
     // Consume any pending calibration request before processing this cycle.
     DispatchCalibrationRequest();
 

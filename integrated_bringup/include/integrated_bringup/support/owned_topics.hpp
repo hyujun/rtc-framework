@@ -10,8 +10,11 @@
 // Manager-owned entries (ownership == TopicOwnership::kManager) are left to
 // RtControllerNode.
 
+#include "integrated_bringup/controllers/tof_snapshot.hpp"
+#include "integrated_bringup/controllers/wbc/wbc_state.hpp"
 #include <rtc_base/threading/publish_buffer.hpp>
 #include <rtc_controller_interface/rt_controller_interface.hpp>
+#include <rtc_controllers/grasp/grasp_state.hpp>
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
@@ -47,7 +50,7 @@ struct TfFrameSlot {
 
   enum class Source : uint8_t {
     kArmTip,        // group_commands[group_idx].arm_tip_pose
-    kHandTip,       // group_commands[group_idx].fingertip_poses[source_index]
+    kHandTip,       // group_commands[group_idx].task_link_poses[source_index]
     kVirtualTcp,    // group_commands[group_idx].virtual_tcp_pose
     kWbcTipInBase,  // (Phase 3) WBC tree, tip in base frame — slot reserved
     kCustom,        // (D-5) future extension hook
@@ -119,9 +122,9 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept;
 // kRobotTransforms.
 void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
                                     ControllerTopicHandles& handles,
-                                    const rtc::GraspStateData* grasp = nullptr,
-                                    const rtc::WbcStateData* wbc = nullptr,
-                                    const rtc::ToFSnapshotData* tof = nullptr) noexcept;
+                                    const rtc::grasp::GraspStateData* grasp = nullptr,
+                                    const WbcStateData* wbc = nullptr,
+                                    const ToFSnapshotData* tof = nullptr) noexcept;
 
 // ── Helpers for controllers to register TF frame slots at on_configure ─────
 // Each helper appends one TfFrameSlot to handles.tf_slots[] (no-op when the
@@ -134,7 +137,7 @@ bool AppendArmTipSlot(ControllerTopicHandles& handles, const std::string& parent
                       const std::string& child_link, int group_idx);
 
 // Append `<hand_root>` → `<tip>_actual` slot per fingertip, reading
-// group_commands[group_idx].fingertip_poses[source_index]. Skips slots when
+// group_commands[group_idx].task_link_poses[source_index]. Skips slots when
 // `tip_links` exceeds remaining capacity.
 void AppendHandTipSlots(ControllerTopicHandles& handles, const std::string& parent_frame,
                         const std::vector<std::string>& tip_links, int group_idx);

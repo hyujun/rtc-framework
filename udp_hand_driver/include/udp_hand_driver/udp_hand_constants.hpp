@@ -41,10 +41,16 @@ inline constexpr int kSensorValuesPerFingertip = kBarometerCount + kTofCount;   
 inline constexpr int kDefaultNumFingertips = 4;
 inline constexpr int kNumFingertips = kDefaultNumFingertips;  // 4 (legacy alias)
 
-// Capacity-derived totals. `rtc::kMaxFingertips` is reused (Option C: the
-// fingertip-as-concept removal is deferred to a follow-up sprint).
-inline constexpr int kMaxHandSensors = rtc::kMaxFingertips * kSensorValuesPerFingertip;  // 88
-inline constexpr int kNumHandSensors = kNumFingertips * kSensorValuesPerFingertip;       // 44
+// Compile-time upper bound on fingertips for this hand domain. Sized so the
+// std::array fields on the RT path (FT inference, baro/tof channels, packet
+// scratchpads) stay heap-free; raise the constant — never branch on it — if
+// a future hand exceeds 8 fingertips. Lives in this package because fingertip
+// is hand-domain vocabulary; rtc_base stays robot-agnostic.
+inline constexpr int kMaxFingertips = 8;
+
+// Capacity-derived totals (hand-domain — fingertip is the natural unit here).
+inline constexpr int kMaxHandSensors = kMaxFingertips * kSensorValuesPerFingertip;  // 88
+inline constexpr int kNumHandSensors = kNumFingertips * kSensorValuesPerFingertip;  // 44
 
 // ── Fingertip F/T inference (3-head ONNX model) ──────────────────────────────
 // Output layout: [contact_prob(1), F(3), u(3)] = 7
@@ -54,13 +60,10 @@ inline constexpr int kFTInputSize = 2 * kBarometerCount;  // baro(8) + delta(8) 
 inline constexpr int kFTHistoryLength = 12;               // FIFO history rows for ONNX input
 
 // ── Fingertip F/T inference state (SeqLock-compatible: trivially_copyable) ───
-//
-// Per-fingertip arrays use `rtc::kMaxFingertips` for capacity (Option C: the
-// fingertip-as-concept removal is deferred to a follow-up sprint).
 struct FingertipFTState {
-  static constexpr int kMaxFTValues = rtc::kMaxFingertips * kFTValuesPerFingertip;  // 56
+  static constexpr int kMaxFTValues = kMaxFingertips * kFTValuesPerFingertip;  // 56
   std::array<float, kMaxFTValues> ft_data{};
-  std::array<bool, rtc::kMaxFingertips> per_fingertip_valid{};
+  std::array<bool, kMaxFingertips> per_fingertip_valid{};
   int num_fingertips{0};
   bool valid{false};
 };

@@ -174,14 +174,16 @@ TEST_F(WbcFSMTest, OutputFieldsPopulated) {
 }
 
 TEST_F(WbcFSMTest, WbcStateOutputPopulated) {
-  // Default phase = kIdle. After Compute, output.wbc_state.phase should
-  // match phase_ and aggregates should be sensible defaults (no contacts).
+  // Default phase = kIdle. After Compute, the controller's internal wbc_state
+  // (accessed via GetWbcStateForTesting() since Phase 4c) should match phase_
+  // and aggregates should be sensible defaults (no contacts).
   auto out = ctrl_.Compute(state_);
   EXPECT_TRUE(out.valid);
-  EXPECT_EQ(out.wbc_state.phase, static_cast<uint8_t>(WbcPhase::kIdle));
-  EXPECT_EQ(out.wbc_state.num_active_contacts, 0);
-  EXPECT_FALSE(out.wbc_state.grasp_detected);
-  EXPECT_EQ(out.wbc_state.min_fingertips_for_grasp, 2);
+  const auto& ws = ctrl_.GetWbcStateForTesting();
+  EXPECT_EQ(ws.phase, static_cast<uint8_t>(WbcPhase::kIdle));
+  EXPECT_EQ(ws.num_active_contacts, 0);
+  EXPECT_FALSE(ws.grasp_detected);
+  EXPECT_EQ(ws.min_fingertips_for_grasp, 2);
 }
 
 TEST_F(WbcFSMTest, WbcStateAggregatesContactFromFingertipForce) {
@@ -211,11 +213,12 @@ TEST_F(WbcFSMTest, WbcStateAggregatesContactFromFingertipForce) {
   // Phase reflects whatever phase_ resolved to after UpdatePhase() — the
   // important contract is that wbc_state.phase agrees with the controller's
   // current internal phase, not that we held kHold.
-  EXPECT_EQ(out.wbc_state.phase, static_cast<uint8_t>(ctrl_.GetPhaseForTesting()));
-  EXPECT_GE(out.wbc_state.num_fingertips, 2);
-  EXPECT_GE(out.wbc_state.num_active_contacts, 2);
-  EXPECT_NEAR(out.wbc_state.max_force, 5.0f, 1e-3f);
-  EXPECT_TRUE(out.wbc_state.grasp_detected);
+  const auto& ws = ctrl_.GetWbcStateForTesting();
+  EXPECT_EQ(ws.phase, static_cast<uint8_t>(ctrl_.GetPhaseForTesting()));
+  EXPECT_GE(ws.num_fingertips, 2);
+  EXPECT_GE(ws.num_active_contacts, 2);
+  EXPECT_NEAR(ws.max_force, 5.0f, 1e-3f);
+  EXPECT_TRUE(ws.grasp_detected);
 }
 
 TEST_F(WbcFSMTest, MultipleComputeCyclesStable) {
@@ -498,7 +501,7 @@ TEST_F(WbcFSMTest, ReadStateZeroSensorChannelsReportsZeroFingertips) {
 
 TEST_F(WbcFSMTest, GetFingertipReportOutOfBoundsReturnsDefault) {
   auto r_low = ctrl_.GetFingertipReportForTesting(-1);
-  auto r_high = ctrl_.GetFingertipReportForTesting(static_cast<int>(rtc::kMaxFingertips) + 5);
+  auto r_high = ctrl_.GetFingertipReportForTesting(static_cast<int>(rtc::kMaxSensorGroups) + 5);
   EXPECT_FALSE(r_low.valid);
   EXPECT_FALSE(r_high.valid);
   EXPECT_NEAR(r_low.force_magnitude, 0.0f, 1e-6f);

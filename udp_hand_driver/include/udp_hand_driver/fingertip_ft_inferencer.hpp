@@ -50,7 +50,7 @@ class FingertipFTInferencer {
     int num_fingertips{udp_hand_driver::kDefaultNumFingertips};
     int history_length{udp_hand_driver::kFTHistoryLength};
     std::vector<std::string> model_paths;
-    std::array<std::array<float, udp_hand_driver::kFTInputSize>, rtc::kMaxFingertips> input_max{};
+    std::array<std::array<float, udp_hand_driver::kFTInputSize>, kMaxFingertips> input_max{};
     bool calibration_enabled{true};
     int calibration_samples{500};
   };
@@ -85,7 +85,7 @@ class FingertipFTInferencer {
 
   [[nodiscard]] int calibration_target() const noexcept { return 0; }
 
-  [[nodiscard]] std::array<std::array<float, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
+  [[nodiscard]] std::array<std::array<float, udp_hand_driver::kBarometerCount>, kMaxFingertips>
   baseline_offset() const noexcept {
     return {};
   }
@@ -107,7 +107,7 @@ class FingertipFTInferencer {
     // Per-fingertip 정규화 파라미터: input_max [fingertip][input_channel]
     // input_channel: baro[0..7] + delta[0..7] = 16
     // 정규화 공식: value / input_max → [-1, +1]
-    std::array<std::array<float, udp_hand_driver::kFTInputSize>, rtc::kMaxFingertips> input_max{};
+    std::array<std::array<float, udp_hand_driver::kFTInputSize>, kMaxFingertips> input_max{};
 
     // Baseline Offset Calibration
     bool calibration_enabled{true};
@@ -128,7 +128,7 @@ class FingertipFTInferencer {
   /// non-RT 컨텍스트에서만 호출. 실패 시 예외.
   void InitFT(const Config& config) {
     config_ = config;
-    const int n = std::min(config_.num_fingertips, rtc::kMaxFingertips);
+    const int n = std::min(config_.num_fingertips, kMaxFingertips);
     num_active_ = 0;
 
     RCLCPP_INFO(::udp_hand_driver::logging::FtLogger(),
@@ -283,7 +283,7 @@ class FingertipFTInferencer {
     if (calibrated_)
       return true;
 
-    const int n = std::min(num_fingertips, std::min(config_.num_fingertips, rtc::kMaxFingertips));
+    const int n = std::min(num_fingertips, std::min(config_.num_fingertips, kMaxFingertips));
     for (int f = 0; f < n; ++f) {
       const int base = f * udp_hand_driver::kSensorValuesPerFingertip;
       for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
@@ -343,7 +343,7 @@ class FingertipFTInferencer {
       return result;
 
     try {
-      const int n = std::min(num_fingertips, std::min(config_.num_fingertips, rtc::kMaxFingertips));
+      const int n = std::min(num_fingertips, std::min(config_.num_fingertips, kMaxFingertips));
       const int H = config_.history_length;
       bool all_ready = true;
 
@@ -498,23 +498,22 @@ class FingertipFTInferencer {
   Ort::MemoryInfo memory_info_{nullptr};
 
   // Per-fingertip 모델 배열
-  std::array<PerFingertipModel, rtc::kMaxFingertips> models_;
+  std::array<PerFingertipModel, kMaxFingertips> models_;
 
   // Baseline Offset Calibration
-  std::array<std::array<double, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
+  std::array<std::array<double, udp_hand_driver::kBarometerCount>, kMaxFingertips>
       calibration_sum_{};
-  std::array<std::array<float, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
+  std::array<std::array<float, udp_hand_driver::kBarometerCount>, kMaxFingertips>
       baseline_offset_{};
   int calibration_count_{0};
   bool calibrated_{false};
 
   // input_max 역수 (div → mul 최적화, InitFT()에서 사전 계산)
-  std::array<std::array<float, udp_hand_driver::kFTInputSize>, rtc::kMaxFingertips>
+  std::array<std::array<float, udp_hand_driver::kFTInputSize>, kMaxFingertips>
       input_max_reciprocal_{};
 
   // 이전 barometer 값 (delta 계산용)
-  std::array<std::array<float, udp_hand_driver::kBarometerCount>, rtc::kMaxFingertips>
-      prev_barometer_{};
+  std::array<std::array<float, udp_hand_driver::kBarometerCount>, kMaxFingertips> prev_barometer_{};
 };
 
 #endif  // HAS_ONNXRUNTIME

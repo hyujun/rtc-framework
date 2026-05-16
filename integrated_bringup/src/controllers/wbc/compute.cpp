@@ -30,7 +30,7 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   const int num_fingertips = (kHandSensorValuesPerFingertipCapacity > 0)
                                  ? (num_sensor_ch / kHandSensorValuesPerFingertipCapacity)
                                  : 0;
-  num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxFingertips));
+  num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
 
@@ -348,8 +348,11 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
   }
 
   // ── WBC state (per-fingertip aggregates + FSM phase) ─────────────────
+  // Phase 4c: ControllerOutput no longer carries wbc_state. The internal
+  // wbc_state_ staging buffer feeds both the SeqLock publish path and
+  // GetWbcStateForTesting().
   {
-    auto& ws = output.wbc_state;
+    auto& ws = wbc_state_;
     ws.phase = static_cast<uint8_t>(phase_);
     ws.num_fingertips = num_active_fingertips_;
     int active_count = 0;
@@ -383,10 +386,10 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     // tsid_solve_us: not measured in WBC yet — informational, leave 0.
   }
 
-  // Hand the just-computed WbcStateData to the publish thread without going
-  // through the shared PublishSnapshot slot. SeqLock store = two atomic
-  // stores + memcpy (wait-free, RT-safe). Read by PublishNonRtSnapshot.
-  wbc_state_lock_.Store(output.wbc_state);
+  // Hand the just-computed WbcStateData to the publish thread. SeqLock store
+  // = two atomic stores + memcpy (wait-free, RT-safe). Read by
+  // PublishNonRtSnapshot.
+  wbc_state_lock_.Store(wbc_state_);
 
   output.valid = true;
   return output;

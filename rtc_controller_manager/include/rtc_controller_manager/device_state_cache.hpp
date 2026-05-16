@@ -28,10 +28,10 @@ struct DeviceStateCache {
   std::array<int32_t, kMaxSensorChannels> sensor_data{};
   std::array<int32_t, kMaxSensorChannels> sensor_data_raw{};
   int num_sensor_channels{0};
-  // Inference (force/displacement per fingertip)
+  // Inference output per sensor group (force/displacement)
   std::array<float, kMaxInferenceValues> inference_data{};
-  std::array<bool, kMaxFingertips> inference_enable{};
-  int num_inference_fingertips{0};
+  std::array<bool, kMaxSensorGroups> inference_enable{};
+  int num_inference_groups{0};
   bool valid{false};
 };
 

@@ -174,7 +174,7 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
   auto ds = sensor_cache_.Load();
 
   const int n_ft = static_cast<int>(msg->fingertips.size());
-  for (int f = 0; f < n_ft && f < kMaxFingertips; ++f) {
+  for (int f = 0; f < n_ft && f < kMaxSensorGroups; ++f) {
     const auto& fs = msg->fingertips[static_cast<std::size_t>(f)];
     const int base = f * values_per_group;
 
@@ -209,7 +209,7 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
   }
 
   ds.num_sensor_channels = n_ft * values_per_group;
-  ds.num_inference_fingertips = n_ft;
+  ds.num_inference_groups = n_ft;
   sensor_cache_.Store(ds);
 }
 
@@ -233,7 +233,7 @@ void UdpHandNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
   cache.sensor_data_raw = s.sensor_data_raw;
   cache.inference_data = s.inference_data;
   cache.inference_enable = s.inference_enable;
-  cache.num_inference_fingertips = s.num_inference_fingertips;
+  cache.num_inference_groups = s.num_inference_groups;
 }
 
 void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,

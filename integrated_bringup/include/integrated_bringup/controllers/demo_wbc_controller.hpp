@@ -4,6 +4,7 @@
 // Project headers (order: RTC base → interface → controllers → bridge → tsid)
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"
+#include "integrated_bringup/controllers/wbc/wbc_state.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
@@ -157,6 +158,14 @@ class DemoWbcController final : public RTControllerInterface {
   }
 
   [[nodiscard]] WbcPhase GetPhaseForTesting() const noexcept { return phase_; }
+
+  // Phase 4c: ControllerOutput::wbc_state field was removed — tests now read
+  // the post-Compute() staging buffer directly. The wbc_state_lock_ SeqLock
+  // is what the publish thread sees; this accessor exposes the same data
+  // without going through SeqLock's retry loop.
+  [[nodiscard]] const ::integrated_bringup::WbcStateData& GetWbcStateForTesting() const noexcept {
+    return wbc_state_;
+  }
 
   void ForcePhaseForTesting(WbcPhase p) noexcept { phase_ = p; }
 
@@ -314,7 +323,7 @@ class DemoWbcController final : public RTControllerInterface {
     bool valid{false};
   };
 
-  std::array<FingertipSensorData, rtc::kMaxFingertips> fingertip_data_{};
+  std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
   int num_active_fingertips_{0};
   bool force_rate_initialized_{false};
 
@@ -472,12 +481,10 @@ class DemoWbcController final : public RTControllerInterface {
   ControllerTopicHandles owned_topics_;
 
   // RT compute → publish-thread handoff for the controller-owned wbc_state
-  // topic. WriteOutput stores the freshly-computed WbcStateData here; the
-  // publish thread Loads it inside PublishNonRtSnapshot. Replaces the
-  // PublishSnapshot::group_commands[gi].wbc_state slot (the long-term goal
-  // of `project_controller_owned_topic_isolation`).
-  rtc::SeqLock<rtc::WbcStateData> wbc_state_lock_;
-
+  // topic. Compute() fills `wbc_state_` then stores into `wbc_state_lock_`;
+  // the publish thread Loads it inside PublishNonRtSnapshot.
+  ::integrated_bringup::WbcStateData wbc_state_{};
+  rtc::SeqLock<::integrated_bringup::WbcStateData> wbc_state_lock_;
   // ── Phase D (gain→parameter migration): per-controller ROS 2 parameters ──
   //
   // Tunable: arm_trajectory_speed, hand_trajectory_speed, se3_weight,

@@ -2,14 +2,15 @@
 
 ## Core Data Types (`rtc_base/types/types.hpp`)
 
-Key constants: `kNumRobotJoints=6`, `kMaxDeviceChannels=64`, `kMaxSensorChannels=128`, `kMaxFingertips=8`, `kNumHandMotors=10`.
+Key constants: `kNumRobotJoints=6`, `kMaxDeviceChannels=64`, `kMaxSensorChannels=128`, `kMaxSensorGroups=8`, `kMaxTaskLinks=8`. `kNumHandMotors=10` / `kMaxFingertips=8` 는 hand 도메인이므로 `udp_hand_driver/udp_hand_constants.hpp` 소유 (Phase 4d, 2026-05-16).
 
 Key types (all trivially copyable, RT-safe):
-- **DeviceState**: positions/velocities/efforts[64], motor_*/sensor_data/inference_data arrays
-- **ControllerState**: devices[4], num_devices, dt, iteration
-- **ControllerOutput**: devices[4], task positions, valid, command_type, grasp_state, wbc_state
-- **GraspStateData**: force_magnitude/contact_flag/inference_valid[8], grasp_phase, finger_s/filtered_force/force_error[8], grasp_target_force (Force-PI 데모 전용 — DemoJoint/DemoTask)
-- **WbcStateData** (2026-04-26, `6c8d70a`): wbc_phase (8-state enum), per-fingertip force/contact/displacement[8], num_active_contacts, max_force, grasp_target_force, grasp_detected, min_fingertips, tsid_solve_us, tsid_solver_ok, qp_fail_count (TSID-기반 데모 전용 — DemoWbc). Owned-topic isolation (`104796f`, 2026-05-16) 이후: RT 루프가 `output.wbc_state` 를 controller 가 소유한 `SeqLock<WbcStateData>` 로 직접 push (`Setup{Wbc,Grasp,ToF}*Publisher` 헬퍼). `PublishSnapshot::GroupCommandSlot` 슬롯에서는 빠짐.
+- **DeviceState** (rtc_base): positions/velocities/efforts[64], motor_*/sensor_data/inference_data arrays, `num_inference_groups`
+- **ControllerState** (rtc_base): devices[4], num_devices, dt, iteration, t_relative_s
+- **ControllerOutput** (rtc_base): devices[4], task positions, valid, command_type, **TF poses** (arm_tip/virtual_tcp + `task_link_poses[8]`). Phase 4c 이후 `grasp_state`/`wbc_state`/`tof_snapshot` 필드 제거됨.
+- **rtc::grasp::GraspStateData** (`rtc_controllers/grasp/grasp_state.hpp` — Phase 4d): force_magnitude/contact_flag/inference_valid[8], grasp_phase, finger_s/filtered_force/force_error[8], grasp_target_force (Force-PI 데모 전용 — DemoJoint/DemoTask). 각 controller 가 자체 `SeqLock<GraspStateData>` 소유.
+- **integrated_bringup::WbcStateData** (`integrated_bringup/controllers/wbc/wbc_state.hpp` — Phase 4d): wbc_phase (8-state enum), per-fingertip force/contact/displacement[8], num_active_contacts, max_force, grasp_target_force, grasp_detected, min_fingertips, tsid_solve_us, tsid_solver_ok, qp_fail_count (TSID-기반 데모 전용 — DemoWbc). Controller 가 자체 `SeqLock<WbcStateData>` 로 publish.
+- **integrated_bringup::ToFSnapshotData** (`integrated_bringup/controllers/tof_snapshot.hpp` — Phase 4d): ToF 거리[24], tip_poses[8], num_fingers/sensors_per_finger.
 
 ## Threading Model (6-core example)
 

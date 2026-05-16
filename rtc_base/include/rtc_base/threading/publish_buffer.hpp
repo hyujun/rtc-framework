@@ -74,10 +74,11 @@ struct PublishSnapshot {
     bool arm_tip_pose_valid{false};
     Pose virtual_tcp_pose{};
     bool virtual_tcp_pose_valid{false};
-    // Per-fingertip world-frame poses (kMaxFingertips = 8).
-    // Indexed by fingertip index in the controller's hand tree_model.
-    std::array<Pose, kMaxFingertips> fingertip_poses{};
-    std::array<bool, kMaxFingertips> fingertip_pose_valid{};
+    // Per-task-link world-frame poses (kMaxTaskLinks = 8). Generic — slot
+    // meaning is controller-specific (fingertip, elbow, mounting plate, …).
+    // Mirrors ControllerOutput::task_link_poses; RT loop copies output → snap.
+    std::array<Pose, kMaxTaskLinks> task_link_poses{};
+    std::array<bool, kMaxTaskLinks> task_link_pose_valid{};
   };
 
   std::array<GroupCommandSlot, kMaxGroups> group_commands{};

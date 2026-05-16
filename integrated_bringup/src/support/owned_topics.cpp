@@ -19,13 +19,13 @@ namespace {
   return link + "_actual";
 }
 
-// Pre-populate GraspState per-finger arrays to kMaxFingertips so publish()
+// Pre-populate GraspState per-finger arrays to kMaxSensorGroups so publish()
 // never resizes on the hot path.
 void PrefillGraspMessage(const rtc::DeviceNameConfig* cfg, rtc_msgs::msg::GraspState& msg) {
   if (cfg != nullptr) {
     msg.fingertip_names.assign(cfg->sensor_names.begin(), cfg->sensor_names.end());
   }
-  const auto max_ft = static_cast<std::size_t>(rtc::kMaxFingertips);
+  const auto max_ft = static_cast<std::size_t>(rtc::kMaxSensorGroups);
   msg.force_magnitude.assign(max_ft, 0.0F);
   msg.contact_flag.assign(max_ft, 0.0F);
   msg.inference_valid.assign(max_ft, false);
@@ -39,7 +39,7 @@ void PrefillWbcMessage(const rtc::DeviceNameConfig* cfg, rtc_msgs::msg::WbcState
   if (cfg != nullptr) {
     msg.fingertip_names.assign(cfg->sensor_names.begin(), cfg->sensor_names.end());
   }
-  const auto max_ft = static_cast<std::size_t>(rtc::kMaxFingertips);
+  const auto max_ft = static_cast<std::size_t>(rtc::kMaxSensorGroups);
   msg.force_magnitude.assign(max_ft, 0.0F);
   msg.contact_flag.assign(max_ft, 0.0F);
   msg.displacement.assign(max_ft, 0.0F);
@@ -277,8 +277,8 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
 
 void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
                                     ControllerTopicHandles& handles,
-                                    const rtc::GraspStateData* grasp, const rtc::WbcStateData* wbc,
-                                    const rtc::ToFSnapshotData* tof) noexcept {
+                                    const rtc::grasp::GraspStateData* grasp,
+                                    const WbcStateData* wbc, const ToFSnapshotData* tof) noexcept {
   const auto sec = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
   const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
 
@@ -289,7 +289,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
     msg.header.stamp.sec = sec;
     msg.header.stamp.nanosec = nsec;
     const auto nf = static_cast<std::size_t>(
-        std::min(gs.num_fingertips, static_cast<int>(rtc::kMaxFingertips)));
+        std::min(gs.num_fingertips, static_cast<int>(rtc::kMaxSensorGroups)));
     for (std::size_t i = 0; i < nf; ++i) {
       msg.force_magnitude[i] = gs.force_magnitude[i];
       msg.contact_flag[i] = gs.contact_flag[i];
@@ -315,7 +315,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
     msg.header.stamp.sec = sec;
     msg.header.stamp.nanosec = nsec;
     const auto nf = static_cast<std::size_t>(
-        std::min(ws.num_fingertips, static_cast<int>(rtc::kMaxFingertips)));
+        std::min(ws.num_fingertips, static_cast<int>(rtc::kMaxSensorGroups)));
     for (std::size_t i = 0; i < nf; ++i) {
       msg.force_magnitude[i] = ws.force_magnitude[i];
       msg.contact_flag[i] = ws.contact_flag[i];
@@ -392,8 +392,8 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
           break;
         case TfFrameSlot::Source::kHandTip: {
           const auto si = static_cast<std::size_t>(slot.source_index);
-          if (si < gc.fingertip_poses.size() && gc.fingertip_pose_valid[si]) {
-            src_pose = &gc.fingertip_poses[si];
+          if (si < gc.task_link_poses.size() && gc.task_link_pose_valid[si]) {
+            src_pose = &gc.task_link_poses[si];
           }
           break;
         }

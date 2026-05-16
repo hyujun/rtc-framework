@@ -128,7 +128,8 @@ TEST(FingertipFTState, DefaultValues) {
 }
 
 TEST(FingertipFTState, MaxFTValues) {
-  EXPECT_EQ(udp_hand_driver::FingertipFTState::kMaxFTValues, rtc::kMaxFingertips * udp_hand_driver::kFTValuesPerFingertip);
+  EXPECT_EQ(udp_hand_driver::FingertipFTState::kMaxFTValues,
+            kMaxFingertips * udp_hand_driver::kFTValuesPerFingertip);
 }
 
 // ── InitFT with enabled=true but no model paths ────────────────────────────

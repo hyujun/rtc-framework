@@ -709,7 +709,7 @@ void DemoWbcController::OnDeviceConfigsSet() {
 DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesting(
     int fingertip_idx) const noexcept {
   FingertipReport r{};
-  if (fingertip_idx < 0 || fingertip_idx >= static_cast<int>(rtc::kMaxFingertips)) {
+  if (fingertip_idx < 0 || fingertip_idx >= static_cast<int>(rtc::kMaxSensorGroups)) {
     return r;
   }
   const auto& ft = fingertip_data_[static_cast<std::size_t>(fingertip_idx)];
