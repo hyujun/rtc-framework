@@ -1,0 +1,36 @@
+# iiwa7_leap/digital_twin.yaml — IIWA7 + LEAP hand digital-twin configuration
+#
+# Layered on top of `rtc_digital_twin/config/digital_twin.yaml`. Production
+# bringups should pass this via `config_file:=` to digital_twin.launch.py:
+#
+#   ros2 launch rtc_digital_twin digital_twin.launch.py \
+#       config_file:=$(ros2 pkg prefix --share integrated_bringup)/config/iiwa7_leap/digital_twin.yaml
+#
+# Robot identity (URDF, joint topics, sensor topics) lives here per ARCH-1;
+# rtc_digital_twin stays robot-agnostic.
+
+/**:
+  ros__parameters:
+    # ── Robot description ──────────────────────────────────────────────
+    robot_description_package: "robot_descriptions"
+    robot_description_path: "robots/iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro"
+
+    # ── Joint state sources (IIWA7 arm + LEAP 16-DOF hand) ────────────
+    num_sources: 2
+
+    source_0.topic: "/rtc_cm/iiwa7/joint_states"
+    source_0.joint_names: [""]        # empty/"" = accept all joints from topic
+
+    source_1.topic: "/rtc_cm/leap/joint_states"
+    source_1.joint_names: [""]
+
+    # ── Sensor visualization ──────────────────────────────────────────
+    # LEAP hand has no fingertip sensor stack (baro / ToF / contact / F-PI
+    # are disabled in sim.yaml). sensor_viz intentionally omitted — defaults
+    # in rtc_digital_twin/config/digital_twin.yaml keep it inert.
+
+    # ── TCP visualization ─────────────────────────────────────────────
+    # Phase 4: tf2 lookup (`base → ee_link_actual`); active controller 의
+    # <config_key>/transforms 가 listener buffer 로 자동 수집된다.
+    # (iiwa7 task controller tip_link = "ee_link" → "_actual" suffix per D-3.)
+    tcp_viz.source_topic: "ee_link_actual"
