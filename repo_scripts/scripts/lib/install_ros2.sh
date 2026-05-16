@@ -139,11 +139,10 @@ check_prerequisites() {
   fi
 
   # ── venv compatibility check ─────────────────────────────────────────────────
+  # ensure_venv creates .venv with --system-site-packages, so ROS rclpy/ament_*
+  # and apt numpy/scipy/matplotlib/pandas/PyQt5 are inherited automatically.
   if is_venv_active; then
-    warn "Active virtual environment: ${VIRTUAL_ENV}"
-    warn "System apt packages may not be visible. Recommended:"
-    warn "  python3 -m venv .venv --system-site-packages"
-    warn "Python deps will also be pip-installed into the venv as fallback."
+    info "Active virtual environment: ${VIRTUAL_ENV} (system-site-packages assumed)"
   fi
 }
 
