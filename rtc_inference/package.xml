@@ -8,7 +8,9 @@
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rtc_base</depend>
-  <build_depend>libonnxruntime-dev</build_depend>
+  <!-- ONNX Runtime: not in apt/rosdep on jazzy/noble. Install manually via
+       install.sh (apt fallback to /opt/onnxruntime tarball) or system pkg
+       manager when available. See README "ONNX Runtime" section. -->
   <export>
     <build_type>ament_cmake</build_type>
   </export>

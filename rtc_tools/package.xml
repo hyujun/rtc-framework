@@ -7,8 +7,6 @@
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
-
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
@@ -16,7 +14,9 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-pandas</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
-  <exec_depend>python3-mujoco</exec_depend>
+  <!-- mujoco: pip-only on jazzy/noble (no python3-mujoco apt). Installed via
+       install.sh (venv pip install mujoco>=3.0.0). Only urdf_to_mjcf /
+       compare_mjcf_urdf require it at runtime. -->
   <exec_depend>ament_index_python</exec_depend>
 
 

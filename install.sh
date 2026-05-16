@@ -437,6 +437,9 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
   check_prerequisites
   ensure_venv
   setup_workspace
+  # rosdep으로 풀리는 ROS apt 의존성을 일괄 설치. 기존 install_ur_driver /
+  # install_pinocchio / install_proxsuite / install_behaviortree와 멱등.
+  install_rosdep_deps
 
   install_python_base_deps
 

@@ -163,3 +163,40 @@ setup_workspace() {
       > /dev/null
   success "Build tools installed"
 }
+
+# ── Resolve apt-available package.xml deps via rosdep ─────────────────────────
+# package.xml에 선언된 rosdep keys (pinocchio, proxsuite, ur-robot-driver,
+# behaviortree-cpp, tf2-ros, rclcpp-lifecycle 등)를 한 번에 설치.
+# libonnxruntime-dev / mujoco / fmt+mimalloc+aligator 같은 apt 미존재 deps는
+# install_deps.sh의 install_onnxruntime / install_mujoco / install_mpc_deps가
+# 별도로 처리한다 (manual install path).
+#
+# 기존 install_ur_driver / install_pinocchio / install_proxsuite / install_behaviortree
+# 와 멱등 — rosdep이 동일 apt 패키지를 먼저 설치하면 후속 함수는 이미 설치됨.
+install_rosdep_deps() {
+  info "Resolving package.xml deps via rosdep (${ROS_DISTRO})..."
+
+  if ! command -v rosdep &>/dev/null; then
+    warn "rosdep not found — skipping (install_ros2 should have set it up)"
+    return 0
+  fi
+
+  # Ensure rosdep database is current. Failures are non-fatal (network).
+  sudo rosdep init 2>/dev/null || true
+  rosdep update --rosdistro="${ROS_DISTRO}" 2>/dev/null || true
+
+  # Run from workspace root so --from-paths resolves correctly.
+  local ws_src="${WORKSPACE}/src"
+  if [[ ! -d "$ws_src" ]]; then
+    warn "Workspace src not found at $ws_src — skipping rosdep install"
+    return 0
+  fi
+
+  rosdep install \
+      --from-paths "$ws_src" \
+      --ignore-src \
+      --rosdistro="${ROS_DISTRO}" \
+      -y \
+      || warn "rosdep install reported errors (likely distro-missing keys handled by manual install path — continuing)"
+  success "rosdep deps installed"
+}
