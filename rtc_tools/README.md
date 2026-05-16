@@ -367,33 +367,39 @@ colcon build --packages-select rtc_tools --symlink-install
 source install/setup.bash
 ```
 
-**Python 의존성 설치:**
+**Python 의존성 설치:** `install.sh` 가 `rosdep` + `uv pip sync requirements.lock` 으로 자동 처리. 수동 시:
 ```bash
-pip install matplotlib pandas numpy scipy mujoco
+# apt (rosdep)
+sudo apt-get install -y python3-numpy python3-pandas python3-matplotlib python3-scipy python3-pyqt5
+# venv lock (workspace 루트에서 한 번만)
+cd ~/ros2_ws/rtc_ws && uv pip sync src/rtc-framework/requirements.lock
 ```
 
 ---
 
 ## 의존성
 
-**package.xml 기준:**
+**package.xml 기준 (rosdep 해결):**
 
 | 타입 | 패키지 |
 |------|--------|
-| buildtool | `ament_python` |
-| exec | `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `python3-numpy`, `python3-mujoco` |
+| build_type (export) | `ament_python` |
+| exec | `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `ament_index_python`, `python3-numpy`, `python3-pandas`, `python3-matplotlib` |
 | test | (개별 lint — `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 `bdedac7` 으로 사용 금지; 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md)) |
 
-**requirements.txt 기준:**
+> `scipy` / `mujoco` 는 package.xml 에 두지 않는다 (jazzy rosdep DB 미정의). `python3-scipy` 는 apt 수동 설치, `mujoco` Python binding 은 `requirements.lock` 으로 venv 에서 관리 — 책임 분리 ([agent_docs/architecture.md](../agent_docs/architecture.md) ARCH-5 정책과 동일 패턴).
 
-| 패키지 | 최소 버전 |
-|--------|-----------|
-| matplotlib | >= 3.5.3 |
-| pandas | >= 1.5.3 |
-| numpy | >= 1.24.3 |
-| scipy | >= 1.10.1 |
-| rclpy | >= 0.20.0 |
-| mujoco | >= 3.0.0 |
+**venv lock 기준** ([requirements.in](../requirements.in) → [requirements.lock](../requirements.lock)):
+
+| 패키지 | 버전 | 비고 |
+|--------|------|------|
+| mujoco | 3.7.0 | urdf_to_mjcf / compare_mjcf_urdf 런타임 |
+| Cython | 3.2.4 | mujoco wheel build 등 |
+| ruff | 0.7.4 | formatter / linter (`pyproject.toml` SSoT) |
+| setuptools | <80 | colcon-core 0.20.1 호환 |
+| wheel | latest | sdist build |
+
+`numpy` / `scipy` / `matplotlib` / `pandas` / `PyQt5` 는 venv 의 `--system-site-packages` 로 apt 버전 상속 (lock 에 박지 않음 — `--no-emit-package`). `rclpy` 는 ROS Jazzy 가 책임.
 
 ---
 
