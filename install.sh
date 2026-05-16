@@ -13,7 +13,7 @@
 #   ./install.sh --all --skip-rt  # deps + build, no RT setup
 #   ./install.sh --help       # Show this help
 
-set -e
+set -eo pipefail
 
 # ── Script directory (absolute path, safe across cd) ──────────────────────────
 INSTALL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
