@@ -599,6 +599,81 @@ get_os_cores() {
   fi
 }
 
+# ── Canonical thread layout printout ───────────────────────────────────────
+# Mirrors rtc_base/threading/thread_config.hpp::SelectThreadConfigs().
+# Callers (cpu_shield.sh::do_status, setup_irq_affinity.sh) used to keep
+# their own copies of this table; consolidating it here removes the drift
+# risk between the shell- and C++-side views.
+#
+# Usage:
+#   print_thread_layout                  # auto-detect physical core count
+#   print_thread_layout 12               # explicit core count
+#
+# Each line is indented with two spaces and uses `info`-style coloring so
+# the output blends with the surrounding [PREFIX] log lines.
+print_thread_layout() {
+  local ncpu="${1:-$(get_physical_cores)}"
+  echo -e "  ${BOLD}Thread layout (${ncpu}-core)${NC}"
+  if [[ "$ncpu" -le 4 ]]; then
+    echo "    Core 0:   OS / DDS / NIC IRQ"
+    echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
+    echo "    Core 2:   sensor_io    (SCHED_FIFO 70) + udp_recv (SCHED_FIFO 65)"
+    echo "    Core 3:   MPC (SCHED_OTHER, degraded) + logger + aux + rt_publish"
+  elif [[ "$ncpu" -le 7 ]]; then
+    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
+    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 4:   MPC main     (SCHED_FIFO 60)  + logger (CFS -5)"
+    echo "    Core 5:   udp_recv     (SCHED_FIFO 65)  + aux + rt_publish (CFS)"
+  elif [[ "$ncpu" -le 9 ]]; then
+    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
+    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 4:   MPC main     (SCHED_FIFO 60, dedicated)"
+    echo "    Core 5:   udp_recv     (SCHED_FIFO 65)"
+    echo "    Core 6:   logger       (CFS nice -5)"
+    echo "    Core 7:   aux + rt_publish (CFS)"
+  elif [[ "$ncpu" -le 11 ]]; then
+    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
+    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 4-5: MPC main + worker 0 (SCHED_FIFO 60)"
+    echo "    Core 6:   udp_recv     (SCHED_FIFO 65)"
+    echo "    Core 7:   logger       (CFS nice -5)"
+    echo "    Core 8:   aux + rt_publish (CFS)"
+    echo "    Core 9:   spare"
+  elif [[ "$ncpu" -le 13 ]]; then
+    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
+    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 4-6: MPC main + workers (SCHED_FIFO 60)"
+    echo "    Core 7:   udp_recv     (SCHED_FIFO 65)"
+    echo "    Core 8:   logger       (CFS nice -5)"
+    echo "    Core 9:   aux + rt_publish (CFS)"
+    echo "    Core 10-${ncpu}: spare"
+  elif [[ "$ncpu" -le 15 ]]; then
+    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
+    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 4-6: MPC main + workers (SCHED_FIFO 60)"
+    echo "    Core 7:   udp_recv     (SCHED_FIFO 65)"
+    echo "    Core 8:   logger       (CFS nice -5)"
+    echo "    Core 9:   aux + rt_publish (CFS)"
+    echo "    Core 10:  MuJoCo sim (dedicated)"
+    echo "    Core 11-${ncpu}: spare"
+  else
+    echo "    Core 0-1:   OS / DDS / NIC IRQ"
+    echo "    Core 2:     rt_control   (SCHED_FIFO 90)"
+    echo "    Core 3:     sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 4-8:   user cpuset shield (legacy Option A)"
+    echo "    Core 9-11:  MPC main + workers (SCHED_FIFO 60)"
+    echo "    Core 12:    udp_recv     (SCHED_FIFO 65)"
+    echo "    Core 13:    logger       (CFS nice -5)"
+    echo "    Core 14:    aux + rt_publish (CFS)"
+    echo "    Core 15+:   spare / monitoring"
+  fi
+}
+
 # ── Intel hybrid CPU detection (Stage A) ────────────────────────────────────
 # C++ 측 rtc::DetectCpuTopology() (cpu_topology.hpp)와 동일한 감지 로직을
 # shell에서 재현한다. 두 구현은 같은 입력(sysfs + /proc/cpuinfo)을 소비하므로

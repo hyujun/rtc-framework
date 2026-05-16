@@ -272,31 +272,9 @@ do_status() {
     info "  All ${available_cores} cores available for general use"
   fi
 
-  # Show expected layout for this core count
+  # Show expected layout for this core count (SSoT: rt_common::print_thread_layout)
   echo ""
-  if [[ "$phys_cores" -le 4 ]]; then
-    info "  Expected layout (${phys_cores}-core):"
-    info "    Core 0:   OS / DDS / NIC IRQ"
-    info "    Core 1:   rt_control (SCHED_FIFO 90)"
-    info "    Core 2:   sensor_io + udp_recv"
-    info "    Core 3:   logger + aux + monitors"
-  elif [[ "$phys_cores" -le 7 ]]; then
-    info "  Expected layout (${phys_cores}-core):"
-    info "    Core 0-1: OS / DDS / NIC IRQ"
-    info "    Core 2:   rt_control (SCHED_FIFO 90)"
-    info "    Core 3:   sensor_io (SCHED_FIFO 70)"
-    info "    Core 4:   logger + hand_detect"
-    info "    Core 5:   udp_recv + aux"
-  else
-    info "  Expected layout (${phys_cores}-core):"
-    info "    Core 0-1: OS / DDS / NIC IRQ"
-    info "    Core 2:   rt_control (SCHED_FIFO 90)"
-    info "    Core 3:   sensor_io (SCHED_FIFO 70)"
-    info "    Core 4:   udp_recv (SCHED_FIFO 65)"
-    info "    Core 5:   logger"
-    info "    Core 6:   aux + monitors"
-    info "    Core 7+:  spare / sim / monitoring"
-  fi
+  print_thread_layout "$phys_cores"
   echo ""
 }
 

@@ -155,31 +155,8 @@ info "IRQ affinity configuration complete."
 info "RT cores ${RT_CORES} are now protected from NIC and hardware interrupts."
 info ""
 
-if [[ "$TOTAL_CORES" -le 4 ]]; then
-  info "Thread layout (${TOTAL_CORES}-core):"
-  info "  Core 0:   OS / DDS / NIC IRQ"
-  info "  Core 1:   rt_control   (SCHED_FIFO 90, 500Hz control + 50Hz E-STOP)"
-  info "  Core 2:   sensor_io    (SCHED_FIFO 70) + udp_recv (SCHED_FIFO 65)"
-  info "  Core 3:   logger       (SCHED_OTHER nice -5) + aux + hand_detect"
-elif [[ "$TOTAL_CORES" -le 7 ]]; then
-  info "Thread layout (${TOTAL_CORES}-core):"
-  info "  Core 0-1: OS / DDS / NIC IRQ"
-  info "  Core 2:   rt_control   (SCHED_FIFO 90, 500Hz control + 50Hz E-STOP)"
-  info "  Core 3:   sensor_io    (SCHED_FIFO 70, joint_state/target/hand callbacks)"
-  info "  Core 4:   logger       (SCHED_OTHER nice -5, 100Hz CSV drain)"
-  info "  Core 4:   hand_detect  (SCHED_OTHER nice -2, 50Hz hand failure detector)"
-  info "  Core 5:   udp_recv     (SCHED_FIFO 65, hand UDP polling)"
-  info "  Core 5:   aux          (SCHED_OTHER nice 0, E-STOP publisher)"
-else
-  info "Thread layout (${TOTAL_CORES}-core):"
-  info "  Core 0-1: OS / DDS / NIC IRQ"
-  info "  Core 2:   rt_control   (SCHED_FIFO 90, 500Hz control + 50Hz E-STOP)"
-  info "  Core 3:   sensor_io    (SCHED_FIFO 70, joint_state/target/hand callbacks)"
-  info "  Core 4:   udp_recv     (SCHED_FIFO 65, hand UDP polling)"
-  info "  Core 5:   logger       (SCHED_OTHER nice -5, 100Hz CSV drain)"
-  info "  Core 6:   aux          (SCHED_OTHER nice 0) + hand_detect"
-  info "  Core 7:   spare        (monitoring, cyclictest measurement)"
-fi
+# Show expected thread layout (SSoT: rt_common::print_thread_layout)
+print_thread_layout "$TOTAL_CORES"
 
 info ""
 info "To make persistent across reboots, add to /etc/rc.local or a systemd service:"
