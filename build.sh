@@ -218,7 +218,7 @@ fi
 
 # compile_commands.json — clangd / IDE 통합용. 항상 켠다 (오버헤드 무시 가능).
 # 빌드 후 merge_compile_commands.py 가 패키지별 산출물을 단일 파일로 머지한다
-# (.clangd 의 CompilationDatabase: build/ 와 일치).
+# (.clangd 의 CompilationDatabase: . 와 일치 — repo-root 에 직접 둔다).
 CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
 
 COLCON_ARGS=("--packages-select" "${PACKAGES[@]}")
@@ -252,21 +252,24 @@ colcon build "${COLCON_ARGS[@]}" || error "Build failed!"
 source "${WORKSPACE}/install/setup.bash" || true
 
 # ── compile_commands.json 머지 (clangd / VS Code IntelliSense) ────────────────
-# colcon 은 build/<pkg>/compile_commands.json 을 패키지별로 생성한다. clangd
-# 는 단일 DB 를 기대하므로 merge_compile_commands.py 로 합쳐 build/ 루트에
-# 둔다 (.clangd 의 CompilationDatabase: build/ 와 매칭).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MERGE_SCRIPT="${SCRIPT_DIR}/merge_compile_commands.py"
+# colcon 은 <ws>/build/<pkg>/compile_commands.json 을 패키지별로 생성한다. clangd
+# 는 단일 DB 를 기대하므로 merge_compile_commands.py 로 합쳐 repo-root 에 둔다
+# (.clangd 의 CompilationDatabase: . 와 매칭). repo-root 에 build/ 디렉토리를
+# 만들지 않는 것이 핵심 — colcon build 는 ws-root 에서만 (colcon-cwd.md).
+# Use _SCRIPT_DIR_BUILD (bootstrap-resolved absolute path to this script's dir);
+# `dirname "${BASH_SOURCE[0]}"` here would resolve relative to cwd and silently
+# point at ws-root when build.sh is invoked as `./build.sh` from <ws>.
+MERGE_SCRIPT="${_SCRIPT_DIR_BUILD}/merge_compile_commands.py"
 if [[ -f "$MERGE_SCRIPT" ]]; then
   if python3 "$MERGE_SCRIPT" >/dev/null 2>&1; then
-    success "compile_commands.json merged → $WORKSPACE/build/compile_commands.json"
+    success "compile_commands.json merged → ${_SCRIPT_DIR_BUILD}/compile_commands.json"
   else
     warn "merge_compile_commands.py failed — clangd may use stale per-package DBs"
   fi
 fi
 
 # ── RT Setup Verification ─────────────────────────────────────────────────────
-CHECK_SCRIPT="${SCRIPT_DIR}/repo_scripts/scripts/check_rt_setup.sh"
+CHECK_SCRIPT="${_SCRIPT_DIR_BUILD}/repo_scripts/scripts/check_rt_setup.sh"
 
 if [[ -f "$CHECK_SCRIPT" ]]; then
   case "$MODE" in

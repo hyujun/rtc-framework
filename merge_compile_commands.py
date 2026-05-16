@@ -6,7 +6,10 @@ from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent  # rtc_ws/
 BUILD_DIR = WORKSPACE / "build"
-OUTPUT = Path(__file__).resolve().parent / "build" / "compile_commands.json"
+# Place merged DB at repo-root (next to .clangd) — NOT under a build/ subdir.
+# A repo-root build/ folder would falsely signal "colcon build here is fine",
+# but colcon must always run from ws-root (see .claude/rules/colcon-cwd.md).
+OUTPUT = Path(__file__).resolve().parent / "compile_commands.json"
 
 
 def main():

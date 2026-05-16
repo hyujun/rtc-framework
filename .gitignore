@@ -4,6 +4,10 @@ install/
 log/
 CMakeFiles/
 
+# clangd merged DB — lives at repo-root (next to .clangd) to avoid creating
+# a build/ folder here. See merge_compile_commands.py + .clangd.
+/compile_commands.json
+
 # Python
 __pycache__/
 *.py[cod]
