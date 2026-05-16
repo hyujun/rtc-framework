@@ -2,7 +2,7 @@
 
 `rtc_*` packages are the **robot-agnostic** backbone of this framework. Any modification must preserve this property. Robot-specific logic, hardware assumptions, and fixed-shape constants belong in `ur5e_*` packages. When in doubt: *"Would this code still make sense on a 7-DOF arm with a 2-finger gripper?"*
 
-> **이 파일의 규칙 위반은 [invariants.md](invariants.md) ARCH-1~4의 escalation 대상이다.** 위반이 불가피하다고 판단될 때는 코드를 쓰기 **전에** [CLAUDE.md](../CLAUDE.md#L115) §6 포맷으로 `[CONCERN] Severity: Warning` 이상을 보고한다.
+> **이 파일의 규칙 위반은 [invariants.md](invariants.md) ARCH-1~4의 escalation 대상이다.** 위반이 불가피하다고 판단될 때는 코드를 쓰기 **전에** [CLAUDE.md](../CLAUDE.md) §6 포맷으로 `[CONCERN] Severity: Warning` 이상을 보고한다.
 
 ## Five Principles
 
@@ -42,14 +42,14 @@
 Non-RT ROS I/O is split into two tiers based on RT adjacency and per-controller schema requirements:
 
 - **Manager-owned** (`TopicOwnership::kManager`, default): RT-adjacent traffic — device state, joint/ros2 commands, state/sensor logs, digital-twin republishers. Lives on `RtControllerNode` (CM). Topic paths are stable across controller switches because the hardware protocol does not change.
-- **Controller-owned** (`TopicOwnership::kController`): external GUI / BT / planner traffic whose schema or QoS may differ per controller. Two flavors: (a) PublishRole-mapped (`kRobotTarget`, `kRobotTransforms`, `kDigitalTwinState`) — declared in controller YAML `topics:`; (b) controller-private SeqLock (Grasp/Wbc/ToF since `104796f`) — controller owns `SeqLock<T>` + `Setup*Publisher` helper, no PublishRole/YAML entry. Both flavors are created on a per-controller `rclcpp_lifecycle::LifecycleNode` whose namespace is `/<config_key>`; relative YAML paths auto-resolve to `/<config_key>/<topic>`. Phase 4 dropped `kGuiPosition` — replaced by `/rtc_cm/<group>/joint_states` + `<config_key>/transforms`.
+- **Controller-owned** (`TopicOwnership::kController`): external GUI / BT / planner traffic whose schema or QoS may differ per controller. Two flavors: (a) PublishRole-mapped (`kRobotTarget`, `kRobotTransforms`, `kDigitalTwinState`) — declared in controller YAML `topics:`; (b) controller-private SeqLock (Grasp/Wbc/ToF) — controller owns `SeqLock<T>` + `Setup*Publisher` helper, no PublishRole/YAML entry. Both flavors are created on a per-controller `rclcpp_lifecycle::LifecycleNode` whose namespace is `/<config_key>`; relative YAML paths auto-resolve to `/<config_key>/<topic>`.
 
 CM's publish thread drains the SPSC snapshot for manager-owned roles and then calls `controllers_[active]->PublishNonRtSnapshot(snap)` to delegate controller-owned publishing. External consumers (BT bridge, GUIs, digital_twin, shape_estimation) subscribe to `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL, single-CM scope per locked decision D-A2) and rewire their sub/pubs on each transition. The CM never decides which namespace is authoritative — it exposes the current choice; everything else is pull-based. Logs (`device_state_log`, `device_sensor_log`) remain manager-owned for now; may move later when per-controller schema stabilises.
 
 ## When Generalization Requires a Design Change
 
 If you cannot satisfy all five principles with a local edit, STOP and:
-1. Report a `[CONCERN] Severity: Warning` ([CLAUDE.md](../CLAUDE.md#L115) §6 포맷)
+1. Report a `[CONCERN] Severity: Warning` ([CLAUDE.md](../CLAUDE.md) §6 포맷)
 2. Propose an interface refactor or dependency inversion as a separate task
 3. Do NOT embed robot-specific logic in `rtc_*` "for now"
 
