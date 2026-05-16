@@ -307,8 +307,8 @@ migration, 2026-04-26).
   WBC 8-state FSM이 다음 tick에서 `kApproach` / `kRelease` 진입.
 - E-STOP 활성 시 모든 호출이 `ok=false, message="E-STOP active"`.
 
-Publisher: `ur5e_bt_coordinator` 의 `SetGains` BT node (또는 `ros2 service call`).
-Subscriber: 활성 데모 컨트롤러의 LifecycleNode aux thread.
+Caller: grasp coordinator (예: BehaviorTree action node) 또는 `ros2 service call`.
+Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ---
 
