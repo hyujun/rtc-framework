@@ -17,6 +17,12 @@ source "${_SCRIPT_DIR}/setup_env.sh"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 
+# ROS prefix — setup_env.sh sources /opt/ros/<distro>/setup.bash and exports
+# $ROS_DISTRO. Fall back to the literal /opt/ros/ prefix so the audit still
+# catches ROS-resident libraries when $ROS_DISTRO is unset (verify mode).
+ROS_PREFIX="/opt/ros/${ROS_DISTRO:-}"
+[[ -z "${ROS_DISTRO:-}" ]] && ROS_PREFIX="/opt/ros/"
+
 echo "═══ RPATH + ldd 격리 검증 (${WS}) ═══"
 echo ""
 
@@ -24,7 +30,7 @@ _is_leak_line() {
   # ldd 한 줄이 격리 외부 경로를 가리키면 0, 아니면 1 반환
   local line="$1"
   case "$line" in
-    *" => /opt/ros/jazzy/"*)            return 1 ;;
+    *" => ${ROS_PREFIX}/"*)              return 1 ;;
     *" => ${WS}/deps/install/"*)         return 1 ;;
     *" => ${WS}/install/"*)              return 1 ;;
     *" => /lib/x86_64-linux-gnu/"*)      return 1 ;;
