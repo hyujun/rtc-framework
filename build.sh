@@ -14,7 +14,7 @@
 #   ./build.sh -d --export-compile-commands # debug build with IntelliSense DB
 #   ./build.sh --help                       # show help
 
-set -e
+set -eo pipefail
 
 # ── 공통 유틸리티 라이브러리 ──────────────────────────────────────────────
 _SCRIPT_DIR_BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
