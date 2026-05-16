@@ -230,6 +230,8 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 ## 9. Common Commands
 
+> **⚠ `colcon build` / `colcon test` 는 반드시 colcon workspace root (`<rtc_ws>` = `~/ros2_ws/rtc_ws`)에서 실행한다.** repo (`src/rtc-framework`) 안에서 호출하면 colcon이 그 위치에 `build/`·`install/`·`log/` 트리를 새로 만든다 — `.clangd`의 CompilationDatabase 가 잘못된 트리를 가리키고, ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 생긴다. `build.sh` / `install.sh` 는 내부에서 `cd "$WORKSPACE"` 하므로 안전. 직접 `colcon` 을 칠 때는 **항상 `cd <rtc_ws>` 또는 절대경로 `--build-base`/`--install-base` 지정**. 자세히: [.claude/rules/colcon-cwd.md](.claude/rules/colcon-cwd.md), [feedback_build_workspace_location.md](file:///home/junho/.claude/projects/-home-junho-ros2-ws-rtc-ws-src-rtc-framework/memory/feedback_build_workspace_location.md).
+
 **Every new shell** (interactive `colcon test` / `ros2 launch`): `source repo_scripts/scripts/setup_env.sh` — ROS 2 + `deps/install` (+ ONNX/`mujoco_ROOT`) + `.venv` + workspace overlay 순서대로 로드. `build.sh` / `install.sh` 는 자동 source.
 
 ```bash
@@ -243,6 +245,8 @@ source repo_scripts/scripts/setup_env.sh   # PWD=src/rtc-framework 에서
 ros2 launch integrated_bringup sim.launch.py
 ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10
 
+# 직접 colcon 호출 시 — 반드시 cd <rtc_ws> 먼저
+cd ~/ros2_ws/rtc_ws
 colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
 ```
