@@ -26,12 +26,6 @@ SCRIPT_DIR_NVIDIA="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR_NVIDIA}/lib/rt_common.sh"
 make_logger "NVIDIA-RT"
 
-# NVIDIA 스크립트 전용 로깅 재정의 (기존 호출 코드와 호환)
-success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[WARNING]${NC} $*"; }
-error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
-
 # ── 지연 작업 플래그 (멱등성 최적화) ───────────────────────────────────────
 _NEED_DAEMON_RELOAD=0
 _NEED_INITRAMFS_UPDATE=0
@@ -89,15 +83,13 @@ echo ""
 
 # ── Root check ──────────────────────────────────────────────────────────────
 if [[ "$EUID" -ne 0 ]]; then
-  error "Root 권한이 필요합니다. 실행: sudo $0"
-  exit 1
+  fatal "Root 권한이 필요합니다. 실행: sudo $0"
 fi
 success "Root 권한 확인"
 
 # ── Ubuntu version detection ────────────────────────────────────────────────
 if [[ ! -f /etc/os-release ]]; then
-  error "/etc/os-release 파일을 찾을 수 없습니다"
-  exit 1
+  fatal "/etc/os-release 파일을 찾을 수 없습니다"
 fi
 
 # shellcheck source=/dev/null
@@ -105,9 +97,8 @@ source /etc/os-release
 UBUNTU_VERSION="${VERSION_ID:-unknown}"
 
 if [[ "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_VERSION" != "24.04" ]]; then
-  error "지원하지 않는 Ubuntu 버전: ${UBUNTU_VERSION}"
-  error "이 스크립트는 Ubuntu 22.04 또는 24.04만 지원합니다."
-  exit 1
+  warn "지원하지 않는 Ubuntu 버전: ${UBUNTU_VERSION}"
+  fatal "이 스크립트는 Ubuntu 22.04 또는 24.04만 지원합니다."
 fi
 success "Ubuntu ${UBUNTU_VERSION} 감지"
 
@@ -136,8 +127,7 @@ fi
 
 if [[ "$NVIDIA_GPU_MODEL" == "unknown" ]]; then
   if ! lspci 2>/dev/null | grep -qi nvidia; then
-    error "NVIDIA GPU를 찾을 수 없습니다. 이 스크립트는 NVIDIA GPU가 필요합니다."
-    exit 1
+    fatal "NVIDIA GPU를 찾을 수 없습니다. 이 스크립트는 NVIDIA GPU가 필요합니다."
   fi
 fi
 
@@ -155,9 +145,9 @@ if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
 fi
 
 if [[ "$TOTAL_CORES" -lt 4 ]]; then
-  error "물리 CPU 코어가 ${TOTAL_CORES}개입니다. 최소 4코어가 필요합니다."
-  error "  Core 0-1: OS/NVIDIA IRQ, Core 2+: RT 제어 루프"
-  exit 1
+  warn "물리 CPU 코어가 ${TOTAL_CORES}개입니다. 최소 4코어가 필요합니다."
+  warn "  Core 0-1: OS/NVIDIA IRQ, Core 2+: RT 제어 루프"
+  fatal "CPU 코어 부족 — 빌드를 중단합니다"
 fi
 
 if [[ "$TOTAL_CORES" -le 4 ]]; then
