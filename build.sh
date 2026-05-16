@@ -42,6 +42,11 @@ SHOW_BANNER=1
 MJ_DEFAULT="/opt/mujoco-3.2.4"
 
 show_help() {
+  # Package lists are read from rt_common.sh (SSoT for build.sh/install.sh).
+  local _base _robot
+  _base="$(get_base_packages)"
+  _robot="$(get_robot_packages)"
+
   echo ""
   echo -e "${BOLD}RTC (Real-Time Controller) — build.sh${NC}"
   echo ""
@@ -49,18 +54,13 @@ show_help() {
   echo ""
   echo "Modes:"
   echo "  robot   Build packages for real robot (no MuJoCo)"
-  echo "            Packages: rtc_msgs, rtc_base, rtc_communication, rtc_controller_interface,"
-  echo "                      rtc_urdf_bridge, rtc_tsid, rtc_controllers, rtc_controller_manager,"
-  echo "                      rtc_inference, repo_scripts, rtc_tools, robot_descriptions,"
-  echo "                      shape_estimation_msgs, shape_estimation,"
-  echo "                      udp_hand_driver, integrated_bringup,"
-  echo "                      ur5e_bt_coordinator"
+  echo "            Packages: ${_base} ${_robot}"
   echo ""
   echo "  sim     Build for simulation (MuJoCo required, hand uses fake response)"
-  echo "            Packages: all robot packages + rtc_mujoco_sim"
+  echo "            Packages: <robot list> + rtc_mujoco_sim"
   echo ""
   echo "  full    Build all packages (default)"
-  echo "            Packages: all of the above + rtc_digital_twin"
+  echo "            Packages: <sim list> + rtc_digital_twin"
   echo ""
   echo "Options:"
   echo "  -d, --debug                Build with CMAKE_BUILD_TYPE=Debug"
