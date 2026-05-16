@@ -155,7 +155,7 @@ colcon test
 - **ONNX Runtime** (`rtc_inference` 빌드 요구) — apt에 없을 시 `/opt/onnxruntime` tarball fallback ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_onnxruntime`)
 - **MuJoCo 3.x** (`rtc_mujoco_sim` 빌드 요구) — `/opt/mujoco-3.2.4` tarball ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_mujoco`)
 - **MPC source-build deps** (`fmt` 11.1.4 + `mimalloc` 2.1.7 + `aligator` 0.19.0 — `rtc_mpc` 요구) — `<rtc_ws>/deps/install/`에 소스 빌드 ([repo_scripts/scripts/build_deps.sh](repo_scripts/scripts/build_deps.sh))
-- **mujoco Python bindings** (`rtc_tools` urdf_to_mjcf / compare_mjcf_urdf 런타임) — `pip install mujoco>=3.0.0` (venv 안)
+- **mujoco Python bindings** (`rtc_tools` urdf_to_mjcf / compare_mjcf_urdf 런타임) — `requirements.lock`에 박혀 있고 `install.sh`가 `uv pip sync`로 venv에 설치 (수동: `uv pip sync requirements.lock`)
 
 ### 빌드
 
@@ -175,6 +175,28 @@ source install/setup.bash
 ```
 
 > `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 venv 활성 상태면 `deactivate` 또는 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 가 필요합니다 (eigenpy/pinocchio configure 보호). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
+
+### Python 의존성 sync (dev PC ↔ runtime PC 재현성)
+
+`install.sh` 가 `uv` 를 자동 부트스트랩하여 `.venv` 를 `requirements.lock` 과 비트단위로 일치시킵니다. 정책:
+
+- **apt 책임**: `numpy` / `scipy` / `matplotlib` / `pandas` / `PyQt5` / `rclpy` / `ament_*` — `--system-site-packages` 로 venv 가 상속 (lock 에는 박지 않음)
+- **venv 책임 (lock)**: `mujoco` + transitive + `Cython` + `ruff` + `setuptools` / `wheel` — `requirements.lock` 에 sha256 hash 와 함께 박힘
+
+```bash
+# Lock 재생성 (의존성 추가/버전 변경 시)
+uv pip compile requirements.in --generate-hashes \
+    --no-emit-package numpy --no-emit-package scipy \
+    --no-emit-package matplotlib --no-emit-package pandas \
+    -o requirements.lock
+
+# 새 머신에서 sync (install.sh 가 자동 수행, 수동:)
+uv venv --system-site-packages .venv
+source .venv/bin/activate
+uv pip sync requirements.lock        # lock 과 정확히 일치 (extra 제거)
+```
+
+`uv pip sync` 는 `pip install -r` 과 달리 lock 에 없는 패키지를 venv 에서 제거하므로 dev PC ↔ runtime PC 간 의존성 drift 가 발생하지 않습니다 (system-site-packages 는 건드리지 않음). hash 검증으로 wheel 변조도 차단합니다.
 
 ### 실행
 

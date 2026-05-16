@@ -1,11 +1,21 @@
-# rtc_tools/requirements.txt 의 상위 집합 (Option A)
-# PyTorch 는 현재 워크스페이스 미사용 — 사용 시점에 재추가.
-numpy>=1.24.3
-scipy>=1.10.1
-matplotlib>=3.5.3
-pandas>=1.5.3
-mujoco>=3.0.0
-Cython
-# colcon-core 0.20.1 호환
+# venv-only Python dependencies (top-level)
+#
+# Policy (Option A, settled 2026-05-16):
+#   - numpy / scipy / matplotlib / pandas / PyQt5 — system-site-packages (apt python3-*)
+#   - rclpy / ament_* — system-site-packages (ROS 2)
+#   - venv-only: mujoco + transitive (binary wheels not on apt) + cython + ruff
+#
+# Lock generation:
+#   uv pip compile requirements.in --generate-hashes -o requirements.lock
+#
+# Sync on a new machine:
+#   uv venv --system-site-packages .venv
+#   source .venv/bin/activate
+#   uv pip sync requirements.lock
+
+mujoco==3.7.0
+Cython==3.2.4
+ruff==0.7.4
+# colcon-core 0.20.1 호환 (PEP 660 editable installs)
 setuptools<80
-# PyQt5, rclpy, ament_* 는 system-site-packages 에서 로드
+wheel

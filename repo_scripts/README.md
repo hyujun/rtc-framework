@@ -607,10 +607,11 @@ git clone <repo-url> src/rtc-framework
 # 2. apt 의존성 (install.sh 에 정의됨 — 빌드까지 하려면 그냥 install.sh 실행)
 ./src/rtc-framework/install.sh --skip-build   # deps/install 빌드 + apt 설치만
 
-# 3. Python venv
-python3 -m venv --system-site-packages .venv
+# 3. Python venv (uv 사용 — install.sh 가 자동 부트스트랩하지만 수동 시:)
+#    uv 가 없으면: curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --system-site-packages .venv
 source src/rtc-framework/repo_scripts/scripts/setup_env.sh
-pip install -r src/rtc-framework/requirements.lock
+uv pip sync src/rtc-framework/requirements.lock
 
 # 4. workspace 빌드
 ./src/rtc-framework/build.sh sim        # 또는 robot / full
@@ -626,7 +627,7 @@ pip install -r src/rtc-framework/requirements.lock
 | CPU 격리 | 해제 | `isolcpus=...` + `nohz_full=...` (setup_grub_rt.sh) |
 | IRQ affinity | 기본 | `setup_irq_affinity.sh` 실행 |
 | 지터 기준 | 수~수십 us | 수 us (cyclictest 99.99 %ile) |
-| GPU / Python 패키지 | CUDA+GPU 휠 | `+cpu` 휠로 재컴파일 (`requirements.in` 에 `--extra-index-url https://download.pytorch.org/whl/cpu` 추가 후 `pip compile` 재실행) |
+| GPU / Python 패키지 | CUDA+GPU 휠 | `+cpu` 휠로 재컴파일 (`requirements.in` 에 `--extra-index-url https://download.pytorch.org/whl/cpu` 추가 후 `uv pip compile` 재실행) |
 
 RT PC 에서 위 RT 준비가 끝나면 `cyclictest -p 90 -t 1 -n -i 1000 -D 300s` 로 jitter 기준선을 잡은 뒤 워크스페이스 RT 루프 실행.
 
@@ -644,12 +645,13 @@ jobs:
       - name: Install apt deps
         run: |
           apt-get update
-          apt-get install -y python3-venv python3-pip git \
+          apt-get install -y python3-venv git curl ca-certificates \
             libeigen3-dev libyaml-cpp-dev libtinyxml2-dev \
             ros-jazzy-pinocchio ros-jazzy-proxsuite ros-jazzy-hpp-fcl \
             ros-jazzy-eigenpy ros-jazzy-behaviortree-cpp \
             ros-jazzy-ament-cmake-gtest python3-colcon-common-extensions \
-            python3-vcstool
+            python3-vcstool python3-numpy python3-scipy python3-matplotlib \
+            python3-pandas python3-pyqt5
 
       - name: Import + build isolated deps
         run: |
@@ -658,12 +660,13 @@ jobs:
           (cd deps/src/aligator && git submodule update --init --recursive --depth 1)
           bash src/rtc-framework/repo_scripts/scripts/build_deps.sh
 
-      - name: Python venv + requirements.lock
+      - name: Install uv + Python venv (hash-verified sync)
         run: |
-          python3 -m venv --system-site-packages .venv
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv venv --system-site-packages .venv
           . .venv/bin/activate
-          pip install --upgrade pip
-          pip install -r src/rtc-framework/requirements.lock
+          uv pip sync src/rtc-framework/requirements.lock
 
       - name: colcon build + test
         run: |
