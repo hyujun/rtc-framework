@@ -21,11 +21,9 @@ WS="$(cd "${_SCRIPT_DIR}/../../../.." && pwd)"
 REPO="$(cd "${_SCRIPT_DIR}/../.." && pwd)"
 TS="$(date +%Y%m%d_%H%M%S)"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
-info()    { echo -e "${BLUE}▶ $*${NC}"; }
-warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
-success() { echo -e "${GREEN}✔ $*${NC}"; }
-error()   { echo -e "${RED}✘ $*${NC}" >&2; }
+# shellcheck source=lib/rt_common.sh
+source "${_SCRIPT_DIR}/lib/rt_common.sh"
+make_logger "UNINSTALL" emoji
 
 confirm() {
   local prompt="$1"
@@ -41,12 +39,10 @@ banner() {
 # ── Pre-flight ────────────────────────────────────────────────────────────────
 banner "Pre-flight checks"
 if [[ ! -f "${WS}/deps/install/lib/libaligator.so.0.19.0" ]]; then
-  error "deps/install/ 가 비어있음. Step 6 (scripts/build_deps.sh) 먼저 실행하세요."
-  exit 1
+  fatal "deps/install/ 가 비어있음. Step 6 (scripts/build_deps.sh) 먼저 실행하세요."
 fi
 if [[ ! -d "${WS}/install" ]] || [[ -z "$(ls -A "${WS}/install" 2>/dev/null)" ]]; then
-  error "colcon install/ 가 비어있음. Step 8 (colcon build) 먼저 실행하세요."
-  exit 1
+  fatal "colcon install/ 가 비어있음. Step 8 (colcon build) 먼저 실행하세요."
 fi
 success "격리된 환경 확인: deps/install + install/ 정상"
 
@@ -127,10 +123,10 @@ if confirm "C-1: ros-jazzy-proxsuite 설치 + robotpkg-proxsuite 제거 + rtc_ts
   if (cd "$WS" && bash -c "source \"${_SCRIPT_DIR}/setup_env.sh\" && colcon build --packages-select rtc_tsid --cmake-clean-cache && colcon test --packages-select rtc_tsid --event-handlers console_direct+ && colcon test-result --verbose"); then
     success "C-1: rtc_tsid 테스트 통과 — 다음 단계 진행 가능"
   else
-    error "C-1: rtc_tsid 테스트 실패 — robotpkg-proxsuite 복원"
+    warn "C-1: rtc_tsid 테스트 실패 — robotpkg-proxsuite 복원"
     sudo apt-get install -y robotpkg-proxsuite
     warn "단계 C-2 는 robotpkg-proxsuite / robotpkg-jrl-cmakemodules 보존하도록 수동 조정 필요"
-    exit 1
+    fatal "C-1 실패 — uninstall 절차 중단 (rollback 완료)"
   fi
 else
   warn "C-1 건너뜀 — 후속 단계 불가. 종료."
