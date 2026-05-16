@@ -27,6 +27,7 @@ install(PROGRAMS
 )
 install(PROGRAMS
   scripts/lib/rt_common.sh
+  scripts/lib/rt_report.sh
   DESTINATION lib/${PROJECT_NAME}/lib
 )
 

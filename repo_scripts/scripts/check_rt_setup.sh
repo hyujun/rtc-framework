@@ -38,14 +38,12 @@ OUTPUT_MODE="verbose"   # verbose | summary | json
 SHOW_FIX=0
 BENCHMARK_MODE=0
 
-# ── Counters ─────────────────────────────────────────────────────────────────
-PASS_COUNT=0
-WARN_COUNT=0
-FAIL_COUNT=0
-SKIP_COUNT=0
-
-# ── JSON accumulator ────────────────────────────────────────────────────────
-JSON_CATEGORIES=""
+# ── Shared reporter infrastructure ───────────────────────────────────────────
+# _pass/_warn/_fail/_skip/_section, _category_*, print_category_row,
+# print_result_line, emit_json_*  — see lib/rt_report.sh.
+# shellcheck source=lib/rt_report.sh
+source "${SCRIPT_DIR}/lib/rt_report.sh"
+init_report_state
 
 # SCRIPT_DIR — rt_common.sh 로드 시 이미 설정됨 (for --fix suggestions)
 
@@ -84,71 +82,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Output helpers ───────────────────────────────────────────────────────────
-_pass() {
-  ((PASS_COUNT++)) || true
-  if [[ "$OUTPUT_MODE" == "verbose" ]]; then
-    echo -e "  ${GREEN}[PASS]${NC} $*"
-  fi
-}
-
-_warn() {
-  ((WARN_COUNT++)) || true
-  if [[ "$OUTPUT_MODE" == "verbose" ]]; then
-    echo -e "  ${YELLOW}[WARN]${NC} $*"
-  fi
-}
-
-_fail() {
-  ((FAIL_COUNT++)) || true
-  if [[ "$OUTPUT_MODE" == "verbose" ]]; then
-    echo -e "  ${RED}[FAIL]${NC} $*"
-  fi
-}
-
-_skip() {
-  ((SKIP_COUNT++)) || true
-  if [[ "$OUTPUT_MODE" == "verbose" ]]; then
-    echo -e "  ${DIM}[SKIP]${NC} $*"
-  fi
-}
-
+# ── Local helper: --fix 안내 한 줄 (check_rt_setup 전용) ────────────────────
 _fix() {
   if [[ "$SHOW_FIX" -eq 1 && "$OUTPUT_MODE" == "verbose" ]]; then
     echo -e "         ${CYAN}fix:${NC} $*"
   fi
-}
-
-_section() {
-  if [[ "$OUTPUT_MODE" == "verbose" ]]; then
-    echo ""
-    echo -e "${BOLD}[$1] $2${NC}"
-  fi
-}
-
-# ── Summary helpers (카테고리 결과 추적) ──────────────────────────────────────
-# 각 카테고리의 최악 상태를 저장
-declare -A CATEGORY_STATUS
-declare -A CATEGORY_DETAIL
-
-_category_start() {
-  CATEGORY_STATUS["$1"]="PASS"
-  CATEGORY_DETAIL["$1"]=""
-}
-
-_category_update() {
-  local cat="$1" status="$2"
-  local current="${CATEGORY_STATUS[$cat]}"
-  # FAIL > WARN > PASS
-  if [[ "$status" == "FAIL" ]]; then
-    CATEGORY_STATUS["$cat"]="FAIL"
-  elif [[ "$status" == "WARN" && "$current" != "FAIL" ]]; then
-    CATEGORY_STATUS["$cat"]="WARN"
-  fi
-}
-
-_category_set_detail() {
-  CATEGORY_DETAIL["$1"]="$2"
 }
 
 # get_physical_cores() — rt_common.sh에서 제공
@@ -1123,33 +1061,12 @@ print_summary() {
   if [[ "$OUTPUT_MODE" == "summary" ]]; then
     echo -e "${BOLD}RT Setup Check (${TOTAL_CORES}-core)${NC}"
     for i in "${!categories[@]}"; do
-      local cat="${categories[$i]}"
-      local label="${labels[$i]}"
-      local status="${CATEGORY_STATUS[$cat]:-SKIP}"
-      local detail="${CATEGORY_DETAIL[$cat]:-}"
-
-      local color="$GREEN"
-      local icon="PASS"
-      case "$status" in
-        WARN) color="$YELLOW"; icon="WARN" ;;
-        FAIL) color="$RED"; icon="FAIL" ;;
-        SKIP) color="$DIM"; icon="SKIP" ;;
-      esac
-
-      echo -e "  ${color}[${icon}]${NC} $(printf '%-16s' "$label") ${DIM}${detail}${NC}"
+      print_category_row "${categories[$i]}" "${labels[$i]}" 16
     done
   fi
 
-  # 최종 요약 (verbose & summary 공통)
   if [[ "$OUTPUT_MODE" != "json" ]]; then
-    echo ""
-    local total=$((PASS_COUNT + WARN_COUNT + FAIL_COUNT))
-    echo -ne "  ${BOLD}Result:${NC} "
-    [[ "$PASS_COUNT" -gt 0 ]] && echo -ne "${GREEN}${PASS_COUNT} pass${NC}  "
-    [[ "$WARN_COUNT" -gt 0 ]] && echo -ne "${YELLOW}${WARN_COUNT} warn${NC}  "
-    [[ "$FAIL_COUNT" -gt 0 ]] && echo -ne "${RED}${FAIL_COUNT} fail${NC}  "
-    [[ "$SKIP_COUNT" -gt 0 ]] && echo -ne "${DIM}${SKIP_COUNT} skip${NC}"
-    echo ""
+    print_result_line
   fi
 }
 
@@ -1168,22 +1085,9 @@ print_json() {
   echo "  \"hostname\": \"$(hostname)\","
   echo "  \"cpu_cores\": ${TOTAL_CORES},"
   echo "  \"categories\": {"
-
-  local first=1
-  for cat in "${categories[@]}"; do
-    local status="${CATEGORY_STATUS[$cat]:-SKIP}"
-    local detail="${CATEGORY_DETAIL[$cat]:-}"
-    # JSON 특수문자 이스케이프
-    detail=$(echo "$detail" | sed 's/\\/\\\\/g; s/"/\\"/g')
-
-    [[ "$first" -eq 0 ]] && echo ","
-    printf "    \"%s\": {\"status\": \"%s\", \"detail\": \"%s\"}" "$cat" "$status" "$detail"
-    first=0
-  done
-
-  echo ""
+  emit_json_categories "${categories[@]}"
   echo "  },"
-  echo "  \"summary\": {\"pass\": ${PASS_COUNT}, \"warn\": ${WARN_COUNT}, \"fail\": ${FAIL_COUNT}, \"skip\": ${SKIP_COUNT}}"
+  emit_json_summary
   echo "}"
 }
 
