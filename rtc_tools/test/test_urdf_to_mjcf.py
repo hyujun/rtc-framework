@@ -452,13 +452,15 @@ class TestAddActuators:
 
 
 class TestCleanMeshPaths:
-    def test_strips_directory(self):
+    def test_strips_directory(self, tmp_path):
         root = ET.fromstring(
             '<mujoco><asset><mesh file="/abs/path/to/base.obj"/>'
             '<mesh file="relative/shoulder.obj"/>'
             "</asset></mujoco>"
         )
-        _clean_mesh_paths(root)
+        # meshdir is empty so neither mesh resolves inside it, exercising
+        # the bare-filename fallback path for both absolute and relative inputs.
+        _clean_mesh_paths(root, tmp_path)
         files = [m.get("file") for m in root.iter("mesh")]
         assert files == ["base.obj", "shoulder.obj"]
 
@@ -529,12 +531,17 @@ class TestPostprocessMjcf:
         assert len(actuator.findall("general")) == 2
 
     def test_postprocess_with_collision_excludes(self, tmp_path):
+        # All three URDF_BASIC links must appear as MJCF bodies so the
+        # body-presence filter in _add_parent_child_collision_excludes keeps
+        # both parent-child pairs.
         raw_mjcf = (
             '<mujoco model="test">'
             '<compiler meshdir="/abs/meshes"/>'
             "<worldbody>"
             '<body name="base_link"><joint name="joint1"/>'
-            '<body name="link1"><joint name="joint2"/></body>'
+            '<body name="link1"><joint name="joint2"/>'
+            '<body name="link2"/>'
+            "</body>"
             "</body>"
             "</worldbody>"
             "</mujoco>"
@@ -570,11 +577,16 @@ class TestPostprocessMjcf:
 
 
 class TestAddParentChildCollisionExcludes:
-    def _make_root(self) -> ET.Element:
-        return ET.fromstring('<mujoco model="test"></mujoco>')
+    @staticmethod
+    def _make_root(body_names: tuple[str, ...] = ()) -> ET.Element:
+        # _add_parent_child_collision_excludes filters pairs by bodies that
+        # actually exist in the MJCF (commit 6033081). Tests must seed the
+        # fixture with the link names they expect to survive the filter.
+        bodies = "".join(f'<body name="{name}"/>' for name in body_names)
+        return ET.fromstring(f'<mujoco model="test"><worldbody>{bodies}</worldbody></mujoco>')
 
     def test_basic_excludes(self):
-        root = self._make_root()
+        root = self._make_root(("base_link", "link1", "link2"))
         n = _add_parent_child_collision_excludes(root, URDF_BASIC)
 
         assert n == 2
@@ -588,7 +600,7 @@ class TestAddParentChildCollisionExcludes:
         assert ("link1", "link2") in pairs
 
     def test_no_joints(self):
-        root = self._make_root()
+        root = self._make_root(("base_link",))
         urdf = '<robot name="test"><link name="base_link"/></robot>'
         n = _add_parent_child_collision_excludes(root, urdf)
         assert n == 0
@@ -596,7 +608,7 @@ class TestAddParentChildCollisionExcludes:
 
     def test_deduplicates_pairs(self):
         """동일한 parent→child 쌍이 중복되면 하나만 추가."""
-        root = self._make_root()
+        root = self._make_root(("base_link", "link1"))
         # Two joints with same parent→child
         urdf = """\
 <robot name="test">
@@ -616,9 +628,20 @@ class TestAddParentChildCollisionExcludes:
         assert n == 1
 
     def test_fixed_joints_included(self):
-        root = self._make_root()
+        root = self._make_root(("base_link", "link1", "tool"))
         n = _add_parent_child_collision_excludes(root, URDF_WITH_FIXED)
         assert n == 2  # joint1 + tool_fixed
+
+    def test_filters_missing_bodies(self):
+        # Regression guard for commit 6033081: pairs whose child body was
+        # absorbed into worldbody (fixed-joint root) must be dropped silently.
+        root = self._make_root(("base_link", "link1"))  # link2 missing
+        n = _add_parent_child_collision_excludes(root, URDF_BASIC)
+        assert n == 1
+        contact = root.find("contact")
+        assert contact is not None
+        pairs = {(e.get("body1"), e.get("body2")) for e in contact.findall("exclude")}
+        assert pairs == {("base_link", "link1")}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -628,12 +651,12 @@ class TestAddParentChildCollisionExcludes:
 
 class TestGenerateScene:
     def test_scene_content(self, tmp_path):
-        scene_path = generate_scene(tmp_path, "ur5e.xml", "ur5e")
+        scene_path = generate_scene(tmp_path, "robot.xml", "robot")
         assert scene_path.exists()
 
         content = scene_path.read_text()
-        assert '<include file="ur5e.xml"/>' in content
-        assert 'model="ur5e scene"' in content
+        assert '<include file="robot.xml"/>' in content
+        assert 'model="robot scene"' in content
         assert 'name="floor"' in content
         assert "groundplane" in content
 
