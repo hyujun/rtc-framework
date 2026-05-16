@@ -16,22 +16,10 @@
 
 set -eo pipefail
 
-# ── 공통 유틸리티 라이브러리 ──────────────────────────────────────────────
-_SCRIPT_DIR_BUILD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_RT_COMMON="${_SCRIPT_DIR_BUILD}/repo_scripts/scripts/lib/rt_common.sh"
-if [[ -f "$_RT_COMMON" ]]; then
-  source "$_RT_COMMON"
-fi
-make_logger "BUILD" emoji
-
-# ── 격리 환경 자동 활성화 (repo_scripts/README.md 배포 가이드) ─────────────
-# setup_env.sh 가 아직 source 되지 않았으면 자동 source — RTC_DEPS_PREFIX 가
-# 지정되어 있는지로 판정. (deps/install 의 fmt/mimalloc/aligator 경로 + venv + ROS)
-_SETUP_ENV="${_SCRIPT_DIR_BUILD}/repo_scripts/scripts/setup_env.sh"
-if [[ -z "${RTC_DEPS_PREFIX:-}" && -f "$_SETUP_ENV" ]]; then
-  # shellcheck source=/dev/null
-  source "$_SETUP_ENV"
-fi
+# ── 공통 부트스트랩 (rt_common source + logger + setup_env auto-source) ────
+# shellcheck source=repo_scripts/scripts/lib/bootstrap.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repo_scripts/scripts/lib/bootstrap.sh" "BUILD"
+_SCRIPT_DIR_BUILD="$_RT_SCRIPT_DIR"
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 NO_SYMLINK=0

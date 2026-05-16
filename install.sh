@@ -15,33 +15,10 @@
 
 set -eo pipefail
 
-# ── Script directory (absolute path, safe across cd) ──────────────────────────
-INSTALL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# ── 공통 유틸리티 라이브러리 (get_physical_cores, compute_cpu_layout 등) ──────
-_RT_COMMON="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/lib/rt_common.sh"
-if [[ -f "$_RT_COMMON" ]]; then
-  # shellcheck source=repo_scripts/scripts/lib/rt_common.sh
-  source "$_RT_COMMON"
-  make_logger "INSTALL" emoji
-else
-  # fallback: rt_common.sh 없을 때 최소 색상/로거 정의
-  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-  BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
-  info()    { echo -e "${BLUE}▶ $*${NC}"; }
-  warn()    { echo -e "${YELLOW}⚠ $*${NC}"; }
-  error()   { echo -e "${RED}✘ $*${NC}" >&2; exit 1; }
-  success() { echo -e "${GREEN}✔ $*${NC}"; }
-fi
-
-# ── 격리 환경 자동 활성화 (repo_scripts/README.md 배포 가이드) ─────────────
-# setup_env.sh 가 아직 source 되지 않았으면 자동 source — deps/install 의
-# fmt/mimalloc/aligator 경로를 colcon 빌드 시 먼저 찾도록.
-_SETUP_ENV="${INSTALL_SCRIPT_DIR}/repo_scripts/scripts/setup_env.sh"
-if [[ -z "${RTC_DEPS_PREFIX:-}" && -f "$_SETUP_ENV" ]]; then
-  # shellcheck source=/dev/null
-  source "$_SETUP_ENV"
-fi
+# ── 공통 부트스트랩 (rt_common source + logger + setup_env auto-source) ────
+# shellcheck source=repo_scripts/scripts/lib/bootstrap.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repo_scripts/scripts/lib/bootstrap.sh" "INSTALL"
+INSTALL_SCRIPT_DIR="$_RT_SCRIPT_DIR"
 
 # ── apt-get update 이중 호출 방지 ─────────────────────────────────────────────
 _LAST_APT_UPDATE=0
