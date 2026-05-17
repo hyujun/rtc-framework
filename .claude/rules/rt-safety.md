@@ -1,5 +1,5 @@
 ---
-globs: ["rtc_controller_manager/**/*.cpp", "rtc_controller_manager/**/*.hpp", "rtc_controllers/**/*.cpp", "rtc_controllers/**/*.hpp", "udp_hand_driver/**/*.cpp", "udp_hand_driver/**/*.hpp"]
+globs: ["rtc_controller_manager/**/*.cpp", "rtc_controller_manager/**/*.hpp", "rtc_controllers/**/*.cpp", "rtc_controllers/**/*.hpp", "udp_hand_driver/**/*.cpp", "udp_hand_driver/**/*.hpp", "integrated_bringup/include/integrated_bringup/controllers/**/*.hpp", "integrated_bringup/src/controllers/**/*.cpp"]
 ---
 
 # RT Safety Rules (Scoped Stub)

@@ -76,6 +76,17 @@ repo_scripts/
 | `check_rt_setup.sh` | 정적 환경 검증 -- 커널, CPU, IRQ, 네트워크 등 (9개 카테고리) | 선택 |
 | `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 (7개 카테고리) | 선택 |
 
+#### invariants 연관 매핑
+
+[agent_docs/invariants.md](../agent_docs/invariants.md) §RT Host / Runtime Preconditions RT-HOST-1~3 은 본 패키지 스크립트가 검증한다:
+
+- RT-HOST-1 (`mlockall`) ↔ `verify_rt_runtime.sh` (`VmLck` 검증)
+- RT-HOST-2 (SCHED_FIFO priority) ↔ `verify_rt_runtime.sh` (thread sched policy 검증)
+- RT-HOST-3 (CPU affinity) ↔ `cpu_shield.sh` (런타임 격리) + `setup_irq_affinity.sh` (IRQ 격리)
+- System-level (PREEMPT_RT kernel, `@realtime` group, isolated cores) ↔ `check_rt_setup.sh` (9 카테고리 정적 검증)
+
+세부 invariant 본문 / grep 패턴 / 복구는 [invariants.md](../agent_docs/invariants.md) 가 SSoT.
+
 ### 의존성 격리 스크립트 (Isolation) -- Level 3
 
 | 스크립트 | 용도 | sudo |

@@ -42,6 +42,7 @@
 5. `auto` with Eigen expression — aliasing 버그; 명시 타입
 6. Quaternion `lerp` / `nlerp` — `slerp` only
 7. 기존 test assertion 수정 — 새 코드를 고쳐라
+8. `std::shared_ptr` 복사 — atomic ref-count contention; raw ref 또는 `const std::shared_ptr<T>&`
 
 ### Architecture / Process / Numerical
 

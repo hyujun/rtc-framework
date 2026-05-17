@@ -43,7 +43,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 - **SeqLock<T>**: single-writer/multi-reader, requires `is_trivially_copyable_v<T>`
 - **SpscQueue<T,N> / SpscPublishBuffer<512>**: wait-free push (drops on full), power-of-2 (controller data CSVs use `ThreadCsvProducer<Pod, N>` which wraps `SpscQueue` — Phase C)
-- **try_lock only** on RT path (never block), `lock_guard` on non-RT `SetDeviceTarget()`
+- **try_lock only** on RT path (never block); `lock_guard` 는 lifecycle 콜백 / aux thread / 파라미터 콜백 등 non-RT 경로에서만
 - **jthread + stop_token** for cooperative cancellation
 - **Separate mutexes**: `state_mutex_`, `target_mutex_`, `hand_mutex_` -- never hold more than one
 

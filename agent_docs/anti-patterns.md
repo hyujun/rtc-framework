@@ -51,6 +51,34 @@
 - **원인**: `memcpy(&out, &shared, sizeof)` 도중 writer 개입
 - **복구**: `SeqLock<T>` Load (reader-side retry loop), 또는 `std::atomic<T>` (POD만)
 
+### AP-RTT-1: `realtime_tools::RealtimePublisher` 의 dedicated thread 가 thread_config.hpp layout 을 깨뜨림
+
+- **증상**: RT process 의 thread 수가 `thread_config.hpp` 의 `cpu_affinity` layout 을 초과, RT thread 와 동일 core 공유 시 cache pollution / 선점
+- **원인**: `RealtimePublisher` 는 instance 당 `publishingLoop` 전용 thread 1개 생성. controller 가 N개 토픽 publish 시 thread N개
+- **탐지**: `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 정의보다 큼
+- **복구**: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) `RealtimePublisher` 채택 시 `get_thread()` 로 명시적 priority/affinity 설정 ([CLAUDE.md](../CLAUDE.md) §6 E-7 escalation 대상)
+
+### AP-RTT-2: `realtime_tools::RealtimeBuffer` 를 lifecycle 콜백 외 시점에 ctor / reset 호출
+
+- **증상**: RT path 에서 `RealtimeBuffer` ctor 또는 `reset()` 가 `new T()` 2회 호출 → RT-1 위반 경로
+- **원인**: `RealtimeBuffer` ctor 가 internal double buffer 를 heap allocate. `reset()` 도 동일하게 `delete` + `new`
+- **탐지**: `grep -nE 'RealtimeBuffer<.*>\(' <RT file>` 매칭이 lifecycle 콜백 (`on_configure` / `on_cleanup`) 외에 있는가
+- **복구**: ctor / `reset` 은 lifecycle 콜백에서만. RT path 에서 buffer 재구성이 필요하면 `SeqLock<T>` + writer `Store` 패턴
+
+### AP-RTT-3: `RealtimePublisher::try_publish` 의 drop 을 추적하지 않음
+
+- **증상**: `try_publish` 가 false 반환 (lock 실패) 시 메시지 silent drop, 호출자가 인지 못함
+- **원인**: 본 repo 의 SPSC drain 은 logger 가 drop counter 추적 — `RealtimePublisher` 는 false 반환만 하고 카운트 없음
+- **탐지**: `try_publish` 호출자 코드에서 return 값을 무시하거나 `if(!try_publish) ...;` 가 카운터 없이 빈 블록
+- **복구**: `try_publish` 호출 site 마다 `std::atomic<uint64_t> drop_count_` 증가 + aux thread 가 주기적 publish/log
+
+### AP-RTT-4: 외부 라이브러리 (`realtime_tools` 등) thread 의 priority / affinity 가 thread_config.hpp 와 불일치
+
+- **증상**: 외부 thread 가 default policy (`SCHED_OTHER`) 로 생성되어 RT thread 와 동일 core 에 묶이면 RT thread 가 선점 받음
+- **원인**: `RealtimePublisher` 등 외부 라이브러리는 thread 생성 시 priority/affinity 설정 없음. 호출자 책임
+- **탐지**: `verify_rt_runtime.sh` 의 thread 별 sched policy / affinity 검사에서 `SCHED_OTHER` thread 가 RT core 에 매핑
+- **복구**: 외부 라이브러리 thread 의 native handle (예: `RealtimePublisher::get_thread()`) 로 `pthread_setschedparam` + `pthread_setaffinity_np` 명시 호출. RT-HOST-2/3 정합 보장
+
 ## Design / Architecture
 
 ### AP-ARCH-1: `rtc_*` 패키지에 robot-specific 상수 하드코딩 ([invariants.md](invariants.md) ARCH-1 위반)
