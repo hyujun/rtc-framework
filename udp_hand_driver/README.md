@@ -51,10 +51,11 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 [Core 2] ControlLoop 500Hz
              |
              | Phase 4: SendCommandAndRequestStates(cmd)
-             |           -> busy_ 체크 -> condvar notify (non-blocking)
+             |           -> busy_ 체크 -> SeqLock store + atomic flag
+             |           -> eventfd write (RT-safe, lock-free)
              |           -> busy_ 시 skip + event_skip_count 증가
              v
-[Core 5] EventLoop -- condvar wait -> wake
+[Core 5] EventLoop -- poll(event_fd, 20ms) -> wake
                     -> WritePosition(cmd, kJoint) + recv echo
                     -> ReadAllMotors(kMotor) -- motor pos/vel/cur
                     -> ReadAllMotors(kJoint) -- joint pos/vel/cur

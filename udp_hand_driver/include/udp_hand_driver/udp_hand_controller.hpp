@@ -22,6 +22,8 @@
 //   - All hot-path operations are allocation-free.
 //   - No printf/stdout on the EventLoop thread.
 //   - Shared state uses rtc::SeqLock (lock-free) instead of mutex.
+//   - ControlLoop -> EventLoop wake uses eventfd (Linux) + atomic flag,
+//     no std::mutex / std::condition_variable on the RT producer path.
 
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
@@ -40,18 +42,22 @@
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
+#include <poll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -187,6 +193,14 @@ class UdpHandController {
       return false;
     }
 
+    // EventLoop wake primitive: non-blocking + close-on-exec eventfd.
+    // Producer (RT path) does write(8 bytes); consumer drains in EventLoop.
+    event_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (event_fd_ < 0) {
+      RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                  "eventfd() failed (errno=%d); EventLoop will fall back to timed sleep", errno);
+    }
+
     // Sensor initialization: NN -> RAW mode
     if (num_fingertips_ > 0) {
       sensor_init_ok_ = transport_.InitializeSensors();
@@ -218,7 +232,19 @@ class UdpHandController {
       return;
     }
     event_thread_.request_stop();
-    event_cv_.notify_all();
+    // Wake the EventLoop immediately so it observes request_stop() within
+    // one poll() iteration instead of waiting out the 20ms timeout.
+    if (event_fd_ >= 0) {
+      static_cast<void>(::eventfd_write(event_fd_, 1));
+    }
+    if (event_thread_.joinable()) {
+      event_thread_.join();
+    }
+    // EventLoop has exited; the eventfd is no longer touched by either side.
+    if (event_fd_ >= 0) {
+      ::close(event_fd_);
+      event_fd_ = -1;
+    }
     transport_.Close();
     const auto cycles = cycle_count_.load(std::memory_order_relaxed);
     const double elapsed_sec =
@@ -297,12 +323,13 @@ class UdpHandController {
       event_skip_count_.fetch_add(1, std::memory_order_relaxed);
       return;
     }
-    {
-      std::lock_guard lock(event_mutex_);
-      staged_cmd_ = cmd;
-      event_pending_ = true;
+    // RT-safe handoff: lock-free SeqLock store, release-ordered flag, then
+    // non-blocking eventfd write to wake the EventLoop.
+    staged_cmd_seqlock_.Store(cmd);
+    event_pending_.store(true, std::memory_order_release);
+    if (event_fd_ >= 0) {
+      static_cast<void>(::eventfd_write(event_fd_, 1));
     }
-    event_cv_.notify_one();
   }
 
   // ── Legacy API (standalone udp_hand_node) ──────────────────────────────
@@ -414,7 +441,7 @@ class UdpHandController {
   }
 
  private:
-  // Event-driven loop: condvar wait -> write + read -> sensor processing ->
+  // Event-driven loop: eventfd poll -> write + read -> sensor processing ->
   // state publish.
   void EventLoop(std::stop_token stop_token) {
     if (!rtc::ApplyThreadConfig(thread_cfg_)) {
@@ -435,7 +462,7 @@ class UdpHandController {
     std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data{};
     int sensor_cycle_counter = 0;
 
-    // First cycle: run immediately (no condvar wait) to read initial state
+    // First cycle: run immediately (no eventfd wait) to read initial state
     // before any write command is sent. This ensures:
     //   1. Hand current position is known before any command
     //   2. /hand/joint_states is published for rtc_controller_manager auto-hold
@@ -444,22 +471,34 @@ class UdpHandController {
 
     while (!stop_token.stop_requested()) {
       if (first_cycle) {
-        // First cycle: skip condvar wait, run read-only immediately
+        // First cycle: skip eventfd wait, run read-only immediately
         first_cycle = false;
       } else {
-        std::unique_lock lock(event_mutex_);
-        // Use wait_for instead of wait to prevent deadlock on startup:
+        // poll() instead of unconditional sleep to prevent startup deadlock:
         // rtc_controller_manager needs continuous /hand/joint_states to
         // initialize auto-hold, but only publishes /hand/joint_command after
         // init. Timeout ensures read cycles continue even without commands.
-        static constexpr auto kEventTimeout = std::chrono::milliseconds(20);
-        event_cv_.wait_for(lock, kEventTimeout,
-                           [&] { return event_pending_ || stop_token.stop_requested(); });
+        static constexpr int kEventTimeoutMs = 20;
+        if (event_fd_ >= 0) {
+          struct pollfd pfd {};
+
+          pfd.fd = event_fd_;
+          pfd.events = POLLIN;
+          pfd.revents = 0;
+          const int poll_rc = ::poll(&pfd, 1, kEventTimeoutMs);
+          if (poll_rc > 0 && (pfd.revents & POLLIN) != 0) {
+            std::uint64_t drained{};
+            static_cast<void>(::eventfd_read(event_fd_, &drained));
+          }
+        } else {
+          // No eventfd available (fallback): degrade to a short sleep so the
+          // loop still ticks for the read-only cadence used during startup.
+          std::this_thread::sleep_for(std::chrono::milliseconds(kEventTimeoutMs));
+        }
         if (stop_token.stop_requested())
           break;
-        if (event_pending_) {
-          pending_cmd = staged_cmd_;
-          event_pending_ = false;
+        if (event_pending_.exchange(false, std::memory_order_acquire)) {
+          pending_cmd = staged_cmd_seqlock_.Load();
         }
       }
 
@@ -820,11 +859,15 @@ class UdpHandController {
   // E-Stop flag (set by RtControllerNode, null if not used)
   std::atomic<bool>* estop_flag_{nullptr};
 
-  // Event synchronisation
-  std::mutex event_mutex_;
-  std::condition_variable event_cv_;
-  bool event_pending_{false};
-  std::array<float, kNumHandMotors> staged_cmd_{};
+  // Event synchronisation (RT-safe: SeqLock + atomic flag + eventfd wake).
+  // Producer (ControlLoop, RT path) stores latest cmd into the SeqLock,
+  // sets event_pending_, and writes to event_fd_ to wake the consumer.
+  // Consumer (EventLoop, aux thread) polls event_fd_ then drains the flag.
+  static_assert(std::is_trivially_copyable_v<std::array<float, kNumHandMotors>>,
+                "SeqLock payload must be trivially copyable");
+  rtc::SeqLock<std::array<float, kNumHandMotors>> staged_cmd_seqlock_{};
+  std::atomic<bool> event_pending_{false};
+  int event_fd_{-1};
 
   // EventLoop busy flag
   std::atomic<bool> busy_{false};
