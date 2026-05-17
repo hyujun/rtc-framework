@@ -51,6 +51,17 @@
 - **원인**: `memcpy(&out, &shared, sizeof)` 도중 writer 개입
 - **복구**: `SeqLock<T>` Load (reader-side retry loop), 또는 `std::atomic<T>` (POD만)
 
+### AP-RT-7: RT path 에서 `std::condition_variable` notify/wait ([invariants.md](invariants.md) RT-10 위반)
+
+- **증상**: RT producer 가 `cv.notify_one` 시 내부 mutex 보유 → 우선순위 역전 + 비결정 wake latency. wait side 는 명시 mutex lock 보유 (RT-4 결합)
+- **원인**: producer-consumer 통지를 cv 로 구현. 직관적이나 RT 우선순위 보장 안 됨
+- **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (`6405c76` 이전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
+- **탐지**: `grep -nE '(std::condition_variable|\.notify_(one|all)\(|\.wait(|_for|_until)\()' <RT file>`
+- **복구**:
+  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM publish_thread (`rtc_controller_manager/src/rt_controller_node.cpp:92-95`) + `UdpHandController` (post-`6405c76`) 가 표준 패턴
+  - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
+  - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
+
 ### AP-RTT-1: `realtime_tools::RealtimePublisher` 의 dedicated thread 가 thread_config.hpp layout 을 깨뜨림
 
 - **증상**: RT process 의 thread 수가 `thread_config.hpp` 의 `cpu_affinity` layout 을 초과, RT thread 와 동일 core 공유 시 cache pollution / 선점

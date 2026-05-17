@@ -9,7 +9,7 @@
 
 ## RT Path Invariants
 
-**RT path 정의**: `control_rate` YAML 파라미터로 설정된 정기 tick에서 실행되는 모든 경로. 프레임워크는 rate-agnostic (설계 범위 100 Hz–5 kHz, default 500 Hz; 상수: `rtc::kMin/kMax/kDefaultControlRateHz`)으로, **"500 Hz"는 default 일 뿐 가정으로 박지 말 것** — RT 안전성은 *모든* 지원 rate에서 성립해야 한다. 구체적으로 `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `SetDeviceTarget()` / `InitializeHoldPosition()` / `PublishNonRtSnapshot()` 내부 기본 tick, UDP receive 콜백, sensor/target 구독 콜백, `CheckTimeouts` 50 Hz 분기. **비-RT path**: `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` lifecycle 콜백, `DrainLog()` aux thread, controller LifecycleNode의 1 Hz aux 타이머 (timing CSV drain 등), ROS 파라미터 콜백.
+**RT path 정의**: `control_rate` YAML 파라미터로 설정된 정기 tick **또는 SCHED_FIFO dedicated-core 로 실행되는 모든 thread** 에서 실행되는 모든 경로. 프레임워크는 rate-agnostic (설계 범위 100 Hz–5 kHz, default 500 Hz; 상수: `rtc::kMin/kMax/kDefaultControlRateHz`)으로, **"500 Hz"는 default 일 뿐 가정으로 박지 말 것** — RT 안전성은 *모든* 지원 rate에서 성립해야 한다. 구체적으로 `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `SetDeviceTarget()` / `InitializeHoldPosition()` / `PublishNonRtSnapshot()` 내부 기본 tick, UDP receive 콜백, sensor/target 구독 콜백, `CheckTimeouts` 50 Hz 분기, **MPC thread (`HandlerMPCThread::Tick` 등 — [architecture.md](architecture.md) §Threading Model 의 dedicated SCHED_FIFO core)**, **`UdpHandController::EventLoop`** (UDP send/recv cycle, 별도 SCHED_FIFO thread). **비-RT path**: `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` lifecycle 콜백, `DrainLog()` aux thread, controller LifecycleNode의 1 Hz aux 타이머 (timing CSV drain 등), ROS 파라미터 콜백, ROS subscription / service handler (ROS executor — aux thread).
 
 ### RT callback rule
 
@@ -26,13 +26,14 @@ RT path 에 포함되는 subscription / UDP receive / timer callback 은 **mailb
 - 동적 할당 (`std::string` 변환 포함)
 - `std::function` 재바인딩, `std::bind`
 - `RCLCPP_*` 직접 호출 (RT-3 적용)
+- `std::condition_variable::notify_one/all` / `cv.wait*` — RT producer wake 시 mutex 보유. eventfd + non-blocking write 로 대체 (RT-10)
 - String formatting (`fmt::format`, `std::to_string`, `std::ostringstream`)
 - 컨트롤러 / lifecycle state transition
 - 무거운 수치 연산 — `ControlLoop()` 으로 위임
 
 ### RT pub/sub primitive catalog
 
-RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free + heap-free + single-owner) 를 default 로 하고, 정당한 이유 (신규 단일-토픽 publisher, MPSC 필요 등) 가 있을 때만 2순위로 내려간다. 금지 항목은 RT-1~9 위반.
+RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free + heap-free + single-owner) 를 default 로 하고, 정당한 이유 (신규 단일-토픽 publisher, MPSC 필요 등) 가 있을 때만 2순위로 내려간다. 금지 항목은 RT-1~10 위반.
 
 | 등급 | Primitive | 출처 | 메커니즘 | 사용 가능한 시점 | 비고 |
 |------|-----------|------|---------|----------------|------|
@@ -45,6 +46,7 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 | 금지 | `std::atomic<std::shared_ptr<T>>` | C++20 stdlib | libstdc++/libc++ internal spinlock — wait-free 아님 | (RT 외만) | `SeqLock<std::shared_ptr<T>>` 도 X — RT-8 위반 |
 | 금지 | `std::mutex::lock` / `lock_guard` / `scoped_lock` | C++ stdlib | blocking | (RT 외만) | RT-4 위반. `try_to_lock` 은 best-effort 로 RT-4 와 별개 |
 | 금지 | `std::shared_ptr` 복사 | C++ stdlib | atomic ref-count contention | (RT 외만) | RT-8 위반. `const std::shared_ptr<T>&` 또는 raw ref 사용 |
+| 금지 | `std::condition_variable` / `std::condition_variable_any` | C++ stdlib | mutex + futex wake — `notify_*` path 가 내부 mutex 보유 | (RT 외만) | RT-10 위반. RT producer→consumer wake 는 **eventfd + non-blocking write** (CM `publish_eventfd_` 패턴, `UdpHandController::event_fd_` 패턴) 또는 SPSC + polling |
 
 **결정 가이드**:
 
@@ -65,6 +67,7 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 | RT-7 | 기존 테스트 assertion을 통과시키려 수정 | 회귀 은폐 | `git diff test/` 에서 `EXPECT_*` / `ASSERT_*` 값 변경 | 새 코드를 고쳐라. assertion이 진짜 틀렸다면 별도 commit으로 논증 |
 | RT-8 | `std::shared_ptr` 복사 | Atomic ref-count contention | `grep -nE 'std::shared_ptr<' <RT file>` (값 인자/반환 검사) | Raw ref 또는 `const std::shared_ptr<T>&` |
 | RT-9 | RT tick 또는 RT callback 내부에서 `get_lifecycle_state()` / `get_current_state()` 호출 | 내부 state machine 동기화 (mutex 또는 atomic load + 분기). ros2_control 공식 RT-unsafe 명시 | `grep -nE '(get_lifecycle_state\|get_current_state)\(' <RT file>` | `on_activate` 종료 직전 `std::atomic<uint8_t> lifecycle_id_cache_.store(PRIMARY_STATE_ACTIVE, std::memory_order_release)`, RT loop 는 `lifecycle_id_cache_.load(std::memory_order_acquire)` |
+| RT-10 | `std::condition_variable` / `std::condition_variable_any` 의 `notify_*` / `wait*` (RT path 의 producer 또는 consumer) | `notify_one/all` 자체가 내부 mutex 잡고 thread wake — 우선순위 역전 + 비결정 latency. `wait` 은 명시 mutex lock 보유 (RT-4 결합) | `grep -nE '(std::condition_variable\|\.notify_(one\|all)\(\|\.wait(\|_for\|_until)\()' <RT file>` | (a) **eventfd + non-blocking write/poll** — CM publish_thread ([rt_controller_node.cpp:92-95](../rtc_controller_manager/src/rt_controller_node.cpp#L92-L95)) + `UdpHandController` ([udp_hand_controller.hpp](../udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp) post-`6405c76`); (b) `SpscQueue<T,N>` + consumer polling (wake latency = polling 주기); (c) `std::atomic<bool>` flag + consumer polling (busy-spin, CPU 낭비) |
 
 ros2_control jazzy 공식 wording: "Avoid using the `get_lifecycle_state()` method in the real-time control loop of the controllers and the hardware components as it is not real-time safe." 현 코드 위반 0건 (`rt_controller_main_impl.cpp:91` 와 `udp_hand_node_lifecycle.cpp:439` 모두 비-RT path). 본 invariant 는 선제적 차단 — 향후 위반 발현 시 위 복구 패턴 적용.
 
