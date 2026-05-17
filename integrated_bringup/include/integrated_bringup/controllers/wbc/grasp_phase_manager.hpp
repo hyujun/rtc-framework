@@ -27,10 +27,12 @@
 /// true on the transition tick.
 ///
 /// Thread-safety contract (per `PhaseManagerBase`):
-/// - `Update` runs on the MPC thread.
+/// - `Update` runs on the MPC thread (RT-equivalent SCHED_FIFO).
 /// - `SetTaskTarget` and `SetCommand` may come from any off-MPC thread
-///   (topic callback, BT leaf, test driver); both serialise via
-///   @c target_mutex_ (non-RT).
+///   (topic callback, BT leaf, test driver). `SetTaskTarget` publishes the
+///   target through @c target_seqlock_ (single-writer wait-free `rtc::SeqLock`
+///   over @ref phase::GraspTargetPOD); the MPC reader is wait-free / lock-
+///   free — see invariants.md RT-4.
 /// - `ForcePhase` / `CurrentPhaseId` / `CurrentPhaseName` use atomics.
 /// - Per-phase `PhaseCostConfig` / `ContactPlan` slots are built in `Init`
 ///   and stay `const` thereafter — `Update` reads them without locking.
@@ -42,12 +44,13 @@
 ///   `PhaseCostConfig::LoadFromYaml` against that model.
 /// - `ocp_type` per phase is YAML-driven ("contact_light" / "contact_rich").
 
+#include "integrated_bringup/controllers/wbc/grasp_target.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/phase/phase_manager_base.hpp"
 #include "rtc_mpc/types/contact_plan_types.hpp"
-#include "integrated_bringup/controllers/wbc/grasp_target.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -62,7 +65,6 @@
 
 #include <array>
 #include <atomic>
-#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -224,9 +226,10 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
   std::atomic<int> command_{static_cast<int>(GraspCommand::kNone)};
   int failure_count_{0};  // MPC-thread only; plain int.
 
-  // Grasp target — updated off-MPC-thread.
-  mutable std::mutex target_mutex_{};
-  GraspTarget target_{};
+  // Grasp target — single-writer wait-free publication to the MPC reader.
+  // `has_target_` separately tracks whether `target_seqlock_` carries a
+  // meaningful payload (zero-initialised identity is treated as "no target").
+  rtc::SeqLock<GraspTargetPOD> target_seqlock_{};
   std::atomic<bool> has_target_{false};
 };
 

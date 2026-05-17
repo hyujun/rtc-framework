@@ -385,7 +385,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 ##### GraspPhaseManager 연동
 
-`engine: "handler"`일 때 WBC의 8-state FSM(`WbcPhase`)이 authoritative이며, `OnPhaseEnter` 말미에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다(매핑: `kApproach→kApproach`, `kClosure→kClosure`, `kHold→kHold`, `kFallback→kIdle` 등). `kApproach` 진입 시 `tcp_goal_`이 valid하면 `GraspPhaseManager::SetTaskTarget`으로 grasp/pregrasp/approach_start pose가 푸시된다. `ForcePhase`는 atomic-only여서 RT-safe; `SetTaskTarget`은 non-RT 뮤텍스이지만 phase edge마다 1회만 실행된다.
+`engine: "handler"`일 때 WBC의 8-state FSM(`WbcPhase`)이 authoritative이며, `OnPhaseEnter` 말미에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다(매핑: `kApproach→kApproach`, `kClosure→kClosure`, `kHold→kHold`, `kFallback→kIdle` 등). `kApproach` 진입 시 `tcp_goal_`이 valid하면 `GraspPhaseManager::SetTaskTarget`으로 grasp/pregrasp/approach_start pose가 푸시된다. `ForcePhase`는 atomic-only여서 RT-safe; `SetTaskTarget`은 `SeqLock<GraspTargetPOD>` writer 한 번으로 wait-free 발행되며 MPC thread reader도 wait-free (RT-4).
 
 grasp 측 phase별 OCP 설정(`ocp_type`, `PhaseCostConfig`, `ContactPlan`)은 `config/ur5e_hand/controllers/mpc/phase_config.yaml`에서 로드된다. Factory 설정(`RobotModelHandler.Init` 입력 + solver 튜닝 + friction_mu)은 `config/ur5e_hand/controllers/mpc/contact_light.yaml` / `config/ur5e_hand/controllers/mpc/contact_rich.yaml`에서 로드되며, 두 YAML의 `mpc.model:` 블록은 구조적으로 동일해야 한다(cross-mode swap이 같은 `RobotModelHandler`를 공유하므로 contact_frames 불일치는 index-based 활성화를 깬다).
 

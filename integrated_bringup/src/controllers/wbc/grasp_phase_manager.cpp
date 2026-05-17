@@ -280,8 +280,10 @@ void GraspPhaseManager::SetTaskTarget(const YAML::Node& target) {
 }
 
 void GraspPhaseManager::SetTaskTarget(const GraspTarget& target) noexcept {
-  std::lock_guard<std::mutex> lock(target_mutex_);
-  target_ = target;
+  // SeqLock writer = wait-free single-producer publication. has_target_'s
+  // release-store happens-after the SeqLock Store; the MPC reader pairs that
+  // with an acquire-load (see EvaluateTransition / BuildContext).
+  target_seqlock_.Store(ToPOD(target));
   has_target_.store(true, std::memory_order_release);
 }
 
@@ -314,24 +316,25 @@ int GraspPhaseManager::EvaluateTransition(int current_id, const pinocchio::SE3& 
 
   const auto id = static_cast<GraspPhaseId>(current_id);
 
-  // Snapshot target once per tick (non-RT mutex on the MPC thread — phase
-  // transitions are off the 500 Hz RT path).
-  GraspTarget tgt;
-  bool have_target;
-  {
-    std::lock_guard<std::mutex> lock(target_mutex_);
-    tgt = target_;
-    have_target = has_target_.load(std::memory_order_acquire);
-  }
+  // Snapshot target once per tick via the wait-free SeqLock reader path
+  // (RT-equivalent MPC thread; see invariants.md RT-4).
+  const GraspTarget tgt = FromPOD(target_seqlock_.Load());
+  const bool have_target = has_target_.load(std::memory_order_acquire);
 
   switch (id) {
     case GraspPhaseId::kIdle:
       if (cmd == GraspCommand::kApproach && have_target) {
         // Snapshot TCP as approach_start so RETREAT can come back to it.
-        {
-          std::lock_guard<std::mutex> lock(target_mutex_);
-          target_.approach_start = tcp;
-        }
+        // Read-modify-write on the SeqLock: this transition fires once per
+        // grasp episode (IDLE → APPROACH edge), so a concurrent
+        // `SetTaskTarget` race here is benign — last writer wins and the
+        // worst case (a new target arriving exactly on the APPROACH entry
+        // tick) overwrites approach_start with the new target's identity
+        // default, which RETREAT would not yet need.
+        GraspTargetPOD pod = target_seqlock_.Load();
+        std::memcpy(pod.approach_rot.data(), tcp.rotation().data(), sizeof(pod.approach_rot));
+        std::memcpy(pod.approach_t.data(), tcp.translation().data(), sizeof(pod.approach_t));
+        target_seqlock_.Store(pod);
         failure_count_ = 0;
         return static_cast<int>(GraspPhaseId::kApproach);
       }
@@ -417,28 +420,26 @@ rtc::mpc::PhaseContext GraspPhaseManager::BuildContext(int id, bool changed) con
   // EE target: grasp_pose for CLOSURE/HOLD/MANIPULATE, pregrasp_pose for
   // APPROACH/PRE_GRASP, approach_start for RETREAT/RELEASE, identity for
   // IDLE.
-  {
-    std::lock_guard<std::mutex> lock(target_mutex_);
-    if (has_target_.load(std::memory_order_acquire)) {
-      switch (static_cast<GraspPhaseId>(id)) {
-        case GraspPhaseId::kApproach:
-        case GraspPhaseId::kPreGrasp:
-          ctx.ee_target = target_.pregrasp_pose;
-          break;
-        case GraspPhaseId::kClosure:
-        case GraspPhaseId::kHold:
-        case GraspPhaseId::kManipulate:
-          ctx.ee_target = target_.grasp_pose;
-          break;
-        case GraspPhaseId::kRetreat:
-        case GraspPhaseId::kRelease:
-          ctx.ee_target = target_.approach_start;
-          break;
-        case GraspPhaseId::kIdle:
-        default:
-          ctx.ee_target = pinocchio::SE3::Identity();
-          break;
-      }
+  if (has_target_.load(std::memory_order_acquire)) {
+    const GraspTarget tgt = FromPOD(target_seqlock_.Load());
+    switch (static_cast<GraspPhaseId>(id)) {
+      case GraspPhaseId::kApproach:
+      case GraspPhaseId::kPreGrasp:
+        ctx.ee_target = tgt.pregrasp_pose;
+        break;
+      case GraspPhaseId::kClosure:
+      case GraspPhaseId::kHold:
+      case GraspPhaseId::kManipulate:
+        ctx.ee_target = tgt.grasp_pose;
+        break;
+      case GraspPhaseId::kRetreat:
+      case GraspPhaseId::kRelease:
+        ctx.ee_target = tgt.approach_start;
+        break;
+      case GraspPhaseId::kIdle:
+      default:
+        ctx.ee_target = pinocchio::SE3::Identity();
+        break;
     }
   }
 
