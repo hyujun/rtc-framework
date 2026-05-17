@@ -429,7 +429,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
         goal_state.velocities[idx] = 0.0;
         goal_state.accelerations[idx] = 0.0;
 
-        max_dist = std::max(max_dist, std::abs(current_target_slot_.targets[1][idx] - dev1.positions[idx]));
+        max_dist = std::max(max_dist,
+                            std::abs(current_target_slot_.targets[1][idx] - dev1.positions[idx]));
       }
 
       const double T_speed = max_dist / gains.hand_trajectory_speed;
@@ -539,12 +540,12 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto& dev1 = state.devices[1];
 
-        const double d_thumb =
-            current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
-        const double d_index =
-            current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
-        const double d_middle =
-            current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+        const double d_thumb = current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] -
+                               dev1.positions[hand_idx_thumb_cmc_fe_];
+        const double d_index = current_target_slot_.targets[1][hand_idx_index_mcp_fe_] -
+                               dev1.positions[hand_idx_index_mcp_fe_];
+        const double d_middle = current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] -
+                                dev1.positions[hand_idx_middle_mcp_fe_];
 
         const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
         const bool index_releasing = d_index < -gains.contact_stop_release_eps;
@@ -565,12 +566,12 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
           // Errors (target - actual) encode both the actual position and the
           // overshoot beyond target in a single number each, so 5 args are
           // enough to diagnose contact_stop engagement.
-          const double err_thumb =
-              current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
-          const double err_index =
-              current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
-          const double err_middle =
-              current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+          const double err_thumb = current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] -
+                                   dev1.positions[hand_idx_thumb_cmc_fe_];
+          const double err_index = current_target_slot_.targets[1][hand_idx_index_mcp_fe_] -
+                                   dev1.positions[hand_idx_index_mcp_fe_];
+          const double err_middle = current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] -
+                                    dev1.positions[hand_idx_middle_mcp_fe_];
           RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
                                "err=[%+.3f,%+.3f,%+.3f]",
@@ -617,10 +618,21 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   }
 }
 
-// ── Phase 3: Write output ────────────────────────────────────────────────────
+// ── Phase 3a: Write joint command (wire-bound only) ──────────────────────────
+//
+// Task controller wire pipeline:
+//   1. Clamp dq_ in-place by per-joint velocity limits (dq_ is the canonical
+//      clamped velocity; both log and publish read it back).
+//   2. Integrate desired_q_ ← desired_q_ + dq_ * dt (member, persists across
+//      ticks; the integrator state).
+//   3. commands ← desired_q_.
+// E-STOP early-return preserved here so ComputeEstop's output is the wire
+// command and the caller still gets log/publish fills via FillLogOutput/
+// FillPublishOutput in normal ticks (E-STOP path runs its own log push in the
+// dispatcher above).
 
-ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, double dt) noexcept {
-  // ── E-stop early return ────────────────────────────────────────────────
+ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& state,
+                                                       double dt) noexcept {
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
@@ -629,29 +641,128 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
 
   ControllerOutput output;
   output.num_devices = state.num_devices;
+  output.command_type = command_type_;
+  output.valid = true;
 
-  // ── Robot arm output ───────────────────────────────────────────────────
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
 
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
-  }
-  // Clamp joint velocities by max velocity limits (symmetric ±max_vel)
+  // Clamp dq_ in-place so log + publish read the same canonical clamped value.
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
-    out0.target_velocities[i] = std::clamp(out0.target_velocities[i], -lim, lim);
+    dq_[static_cast<Eigen::Index>(i)] = std::clamp(dq_[static_cast<Eigen::Index>(i)], -lim, lim);
+  }
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    desired_q_[static_cast<Eigen::Index>(i)] += dq_[static_cast<Eigen::Index>(i)] * dt;
+    out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }
 
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto& out1 = output.devices[1];
+    out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      out1.commands[i] = hand_computed_.positions[i];
+    }
+    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+  }
+
+  return output;
+}
+
+// ── Phase 3b: Fill log output ────────────────────────────────────────────────
+
+void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerOutput& output,
+                                       double /*dt*/) noexcept {
+  if (estop_active_) {
+    return;  // ComputeEstop path skipped log-fill in legacy WriteOutput too.
+  }
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    desired_q_[static_cast<Eigen::Index>(i)] += out0.target_velocities[i] * dt;
-    out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
-    // Pure trajectory feedforward velocity (without Kp error / null-space)
-    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
     out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
+    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
+  }
+  for (std::size_t i = 0; i < 3; ++i) {
+    out0.goal_positions[i] = current_target_slot_.tcp_target[i];
+  }
+  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.goal_positions[i] = current_target_slot_.null_target[i];
+  }
+
+  pinocchio::SE3 tcp_current = arm_handle_->GetFramePlacement(tip_frame_id_);
+  if (use_root_frame_) {
+    tcp_current = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_current);
+  }
+  pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
+  output.actual_task_positions[0] = log_pose.translation().x();
+  output.actual_task_positions[1] = log_pose.translation().y();
+  output.actual_task_positions[2] = log_pose.translation().z();
+  output.actual_task_positions[3] = rpy[0];
+  output.actual_task_positions[4] = rpy[1];
+  output.actual_task_positions[5] = rpy[2];
+
+  output.task_goal_positions[0] = current_target_slot_.tcp_target[0];
+  output.task_goal_positions[1] = current_target_slot_.tcp_target[1];
+  output.task_goal_positions[2] = current_target_slot_.tcp_target[2];
+  if (gains_lock_.Load().control_6dof) {
+    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
+    output.task_goal_positions[3] = goal_rpy[0];
+    output.task_goal_positions[4] = goal_rpy[1];
+    output.task_goal_positions[5] = goal_rpy[2];
+  } else {
+    output.task_goal_positions[3] = rpy[0];
+    output.task_goal_positions[4] = rpy[1];
+    output.task_goal_positions[5] = rpy[2];
+  }
+
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto& out1 = output.devices[1];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      out1.trajectory_positions[i] = hand_computed_.positions[i];
+      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
+      out1.goal_positions[i] = current_target_slot_.targets[1][i];
+    }
+  }
+
+  if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+    grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
+    grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
+    const auto& fs = grasp_controller_->finger_states();
+    for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
+      const auto idx = static_cast<std::size_t>(f);
+      grasp_state_.finger_s[idx] = static_cast<float>(fs[idx].s);
+      grasp_state_.finger_filtered_force[idx] = static_cast<float>(fs[idx].f_measured);
+      grasp_state_.finger_force_error[idx] =
+          static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
+    }
+  }
+  grasp_state_lock_.Store(grasp_state_);
+  tof_snapshot_lock_.Store(tof_snapshot_);
+}
+
+// ── Phase 3c: Fill publish output ────────────────────────────────────────────
+
+void DemoTaskController::FillPublishOutput(const ControllerState& state, ControllerOutput& output,
+                                           double /*dt*/) noexcept {
+  if (estop_active_) {
+    return;
+  }
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
+    out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
+    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
@@ -666,12 +777,11 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
     out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
-  // ── Task-space logging ─────────────────────────────────────────────────
+  // FK re-read (O(1), cached in arm_handle_->Data).
   pinocchio::SE3 tcp_current = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
     tcp_current = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_current);
   }
-  // Log virtual TCP pose when active, otherwise raw TCP
   pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
   output.actual_task_positions[0] = log_pose.translation().x();
@@ -681,9 +791,21 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
 
-  // ── TF source poses for kRobotTransforms (Phase 3) ─────────────────────
-  // Same layout as DemoJointController. Arm tip = raw FK (not vtcp);
-  // virtual_tcp slot only valid when fingertip-based vtcp computed.
+  output.task_goal_positions[0] = current_target_slot_.tcp_target[0];
+  output.task_goal_positions[1] = current_target_slot_.tcp_target[1];
+  output.task_goal_positions[2] = current_target_slot_.tcp_target[2];
+  if (gains_lock_.Load().control_6dof) {
+    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
+    output.task_goal_positions[3] = goal_rpy[0];
+    output.task_goal_positions[4] = goal_rpy[1];
+    output.task_goal_positions[5] = goal_rpy[2];
+  } else {
+    output.task_goal_positions[3] = rpy[0];
+    output.task_goal_positions[4] = rpy[1];
+    output.task_goal_positions[5] = rpy[2];
+  }
+
+  // TF source poses.
   {
     const Eigen::Vector3d& trans = tcp_current.translation();
     const Eigen::Quaterniond quat(tcp_current.rotation());
@@ -712,22 +834,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
     }
   }
 
-  // Task goal target from GUI
-  output.task_goal_positions[0] = current_target_slot_.tcp_target[0];
-  output.task_goal_positions[1] = current_target_slot_.tcp_target[1];
-  output.task_goal_positions[2] = current_target_slot_.tcp_target[2];
-  if (gains_lock_.Load().control_6dof) {
-    Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
-    output.task_goal_positions[3] = goal_rpy[0];
-    output.task_goal_positions[4] = goal_rpy[1];
-    output.task_goal_positions[5] = goal_rpy[2];
-  } else {
-    output.task_goal_positions[3] = rpy[0];
-    output.task_goal_positions[4] = rpy[1];
-    output.task_goal_positions[5] = rpy[2];
-  }
-
-  // ── Task-space trajectory reference ─────────────────────────────────
+  // Task-space trajectory reference (publish-only — no log POD reads these).
   {
     const Eigen::Vector3d traj_pos = traj_state_.pose.translation();
     Eigen::Vector3d traj_rpy = pinocchio::rpy::matrixToRpy(traj_state_.pose.rotation());
@@ -746,46 +853,17 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
     output.trajectory_task_velocities[5] = traj_state_.velocity.angular()[2];
   }
 
-  // ── Hand output ────────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
     auto& out1 = output.devices[1];
-    out1.num_channels = nc1;
-    out1.goal_type = GoalType::kJoint;
-
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.commands[i] = hand_computed_.positions[i];
       out1.target_positions[i] = hand_computed_.positions[i];
       out1.target_velocities[i] = hand_computed_.velocities[i];
       out1.trajectory_positions[i] = hand_computed_.positions[i];
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
-    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
   }
-
-  // Populate force-PI grasp state if active
-  if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
-    grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
-    grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
-    const auto& fs = grasp_controller_->finger_states();
-    for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
-      const auto idx = static_cast<std::size_t>(f);
-      grasp_state_.finger_s[idx] = static_cast<float>(fs[idx].s);
-      grasp_state_.finger_filtered_force[idx] = static_cast<float>(fs[idx].f_measured);
-      grasp_state_.finger_force_error[idx] =
-          static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
-    }
-  }
-
-  output.command_type = command_type_;
-  // Per-controller SeqLock handoff to the publish thread. ControllerOutput
-  // no longer carries grasp_state / tof_snapshot (Phase 4c) — each controller
-  // publishes its own non-RT data via these locks directly.
-  grasp_state_lock_.Store(grasp_state_);
-  tof_snapshot_lock_.Store(tof_snapshot_);
-  return output;
 }
 
 // ── E-STOP compute path ──────────────────────────────────────────────────────

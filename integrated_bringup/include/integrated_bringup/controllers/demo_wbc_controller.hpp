@@ -219,7 +219,12 @@ class DemoWbcController final : public RTControllerInterface {
   // ── 3-phase pipeline (RT path) ──────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
   void ComputeControl(const ControllerState& state, double dt) noexcept;
-  [[nodiscard]] ControllerOutput WriteOutput(const ControllerState& state) noexcept;
+  // WriteOutput was split into 3 explicit-intent methods (see
+  // demo_joint_controller.hpp for the bucket contract). Compute() calls
+  // them in order WriteJointCommand → FillLogOutput → FillPublishOutput.
+  [[nodiscard]] ControllerOutput WriteJointCommand(const ControllerState& state) noexcept;
+  void FillLogOutput(const ControllerState& state, ControllerOutput& output) noexcept;
+  void FillPublishOutput(const ControllerState& state, ControllerOutput& output) noexcept;
 
   // ── FSM ─────────────────────────────────────────────────────────────────
   WbcPhase phase_{WbcPhase::kIdle};

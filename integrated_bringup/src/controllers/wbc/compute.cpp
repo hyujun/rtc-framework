@@ -261,34 +261,54 @@ void DemoWbcController::ComputeFallback() noexcept {
   }
 }
 
-// ── Phase 3: Write output ────────────────────────────────────────────────────
+// ── Phase 3a: Write joint command (wire-bound only) ──────────────────────────
 
-// ── Phase 3: Write output ────────────────────────────────────────────────────
-
-ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) noexcept {
+ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& state) noexcept {
   ControllerOutput output;
   output.num_devices = state.num_devices;
   output.command_type = command_type_;
+  output.valid = true;
 
-  // ── Robot arm output ──────────────────────────────────────────────────
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = robot_computed_.positions[i];
-    out0.target_positions[i] = robot_computed_.positions[i];
-    out0.target_velocities[i] = robot_computed_.velocities[i];
-    out0.trajectory_positions[i] = robot_computed_.positions[i];
-    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
   rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
                          std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
 
-  // ── Task-space logging (FK) ───────────────────────────────────────────
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto& out1 = output.devices[1];
+    out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      out1.commands[i] = hand_computed_.positions[i];
+    }
+    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+  }
+
+  return output;
+}
+
+// ── Phase 3b: Fill log output ────────────────────────────────────────────────
+
+void DemoWbcController::FillLogOutput(const ControllerState& state,
+                                      ControllerOutput& output) noexcept {
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.trajectory_positions[i] = robot_computed_.positions[i];
+    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
+  }
+
+  // FK + actual_task_positions + task_goal_positions (log POD reads both).
   if (arm_handle_) {
     std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
@@ -304,17 +324,6 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     output.actual_task_positions[4] = rpy[1];
     output.actual_task_positions[5] = rpy[2];
 
-    // TF source: arm tip (Phase 3). Fingertip / virtual_tcp frames are not
-    // produced by WBC compute — those slots stay invalid.
-    {
-      const Eigen::Vector3d& trans = tcp.translation();
-      const Eigen::Quaterniond quat(tcp.rotation());
-      output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
-      output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
-      output.arm_tip_pose_valid = true;
-    }
-
-    // Task goal = TCP goal if valid, else mirror actual
     if (tcp_goal_valid_) {
       Eigen::Vector3d grpy = pinocchio::rpy::matrixToRpy(tcp_goal_.rotation());
       output.task_goal_positions[0] = tcp_goal_.translation().x();
@@ -328,29 +337,18 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     }
   }
 
-  // ── Hand output ───────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
     auto& out1 = output.devices[1];
-    out1.num_channels = nc1;
-    out1.goal_type = GoalType::kJoint;
-
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.commands[i] = hand_computed_.positions[i];
-      out1.target_positions[i] = hand_computed_.positions[i];
-      out1.target_velocities[i] = hand_computed_.velocities[i];
       out1.trajectory_positions[i] = hand_computed_.positions[i];
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
-    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
   }
 
-  // ── WBC state (per-fingertip aggregates + FSM phase) ─────────────────
-  // Phase 4c: ControllerOutput no longer carries wbc_state. The internal
-  // wbc_state_ staging buffer feeds both the SeqLock publish path and
-  // GetWbcStateForTesting().
+  // WBC state aggregates (per-fingertip + FSM phase). Staging buffer feeds
+  // both the SeqLock publish path and GetWbcStateForTesting().
   {
     auto& ws = wbc_state_;
     ws.phase = static_cast<uint8_t>(phase_);
@@ -363,7 +361,6 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
       const float mag = ft.force_magnitude;
       ws.force_magnitude[idx] = mag;
       ws.contact_flag[idx] = ft.contact_flag;
-      // Use per-axis displacement magnitude (single scalar for the topic).
       const float d0 = ft.displacement[0];
       const float d1 = ft.displacement[1];
       const float d2 = ft.displacement[2];
@@ -383,16 +380,79 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     ws.grasp_detected = (active_count >= ws.min_fingertips_for_grasp);
     ws.tsid_solver_ok = tsid_initialized_ && (qp_fail_count_ == 0);
     ws.qp_fail_count = qp_fail_count_;
-    // tsid_solve_us: not measured in WBC yet — informational, leave 0.
+  }
+  // SeqLock store = two atomic stores + memcpy (wait-free, RT-safe).
+  // Read by PublishNonRtSnapshot.
+  wbc_state_lock_.Store(wbc_state_);
+}
+
+// ── Phase 3c: Fill publish output ────────────────────────────────────────────
+//
+// WBC's publish surface is narrower than joint/task: only arm_tip_pose for
+// kRobotTransforms (no fingertip / virtual_tcp poses — WBC compute doesn't
+// produce them). target_*/trajectory_*/goal_positions are also mirrored
+// here so the publish snapshot reflects the canonical RT-tick values.
+
+void DemoWbcController::FillPublishOutput(const ControllerState& state,
+                                          ControllerOutput& output) noexcept {
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.target_positions[i] = robot_computed_.positions[i];
+    out0.target_velocities[i] = robot_computed_.velocities[i];
+    out0.trajectory_positions[i] = robot_computed_.positions[i];
+    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
 
-  // Hand the just-computed WbcStateData to the publish thread. SeqLock store
-  // = two atomic stores + memcpy (wait-free, RT-safe). Read by
-  // PublishNonRtSnapshot.
-  wbc_state_lock_.Store(wbc_state_);
+  if (arm_handle_) {
+    pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+    if (use_root_frame_) {
+      tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+    }
+    Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+    output.actual_task_positions[0] = tcp.translation().x();
+    output.actual_task_positions[1] = tcp.translation().y();
+    output.actual_task_positions[2] = tcp.translation().z();
+    output.actual_task_positions[3] = rpy[0];
+    output.actual_task_positions[4] = rpy[1];
+    output.actual_task_positions[5] = rpy[2];
 
-  output.valid = true;
-  return output;
+    if (tcp_goal_valid_) {
+      Eigen::Vector3d grpy = pinocchio::rpy::matrixToRpy(tcp_goal_.rotation());
+      output.task_goal_positions[0] = tcp_goal_.translation().x();
+      output.task_goal_positions[1] = tcp_goal_.translation().y();
+      output.task_goal_positions[2] = tcp_goal_.translation().z();
+      output.task_goal_positions[3] = grpy[0];
+      output.task_goal_positions[4] = grpy[1];
+      output.task_goal_positions[5] = grpy[2];
+    } else {
+      output.task_goal_positions = output.actual_task_positions;
+    }
+
+    // TF source: arm tip only. Fingertip / virtual_tcp frames are not
+    // produced by WBC compute — those slots stay invalid.
+    {
+      const Eigen::Vector3d& trans = tcp.translation();
+      const Eigen::Quaterniond quat(tcp.rotation());
+      output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
+      output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+      output.arm_tip_pose_valid = true;
+    }
+  }
+
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto& out1 = output.devices[1];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      out1.target_positions[i] = hand_computed_.positions[i];
+      out1.target_velocities[i] = hand_computed_.velocities[i];
+      out1.trajectory_positions[i] = hand_computed_.positions[i];
+      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
+      out1.goal_positions[i] = current_target_slot_.targets[1][i];
+    }
+  }
 }
 
 // ── Target management ────────────────────────────────────────────────────────

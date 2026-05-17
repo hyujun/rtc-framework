@@ -753,7 +753,11 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   }
 
   ComputeControl(state, dt);
-  auto output = WriteOutput(state);
+  // Output composition split by consumer (wire / log / publish). See
+  // demo_joint_controller.hpp for the bucket assignment rationale.
+  auto output = WriteJointCommand(state);
+  FillLogOutput(state, output);
+  FillPublishOutput(state, output);
 
   // ── Phase C: push log PODs (only from inside Compute()) ──────────────
   if (primary_state_log_handle_) {

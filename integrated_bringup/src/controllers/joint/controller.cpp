@@ -171,7 +171,8 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
-  // After this call ComputeControl / WriteOutput must read from
+  // After this call ComputeControl / WriteJointCommand / FillLogOutput /
+  // FillPublishOutput must read from
   // current_target_slot_, never from any old device_targets_ member.
   DrainTargetSlot(state);
   estop_active_ = estopped_.load(std::memory_order_acquire);
@@ -197,7 +198,12 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
     return out;
   }
   ComputeControl(state, dt);
-  auto output = WriteOutput(state, dt);
+  // Output composition is split by consumer (wire / log / publish) so each
+  // method's body lists exactly the fields the consumer reads. See
+  // demo_joint_controller.hpp for the bucket assignment rationale.
+  auto output = WriteJointCommand(state, dt);
+  FillLogOutput(state, output, dt);
+  FillPublishOutput(state, output, dt);
 
   // ── Phase C: push log PODs to controller-owned channels ────────────────
   // Push site is INSIDE Compute() per Q-ACTIVITY-GATING — inactive
@@ -220,7 +226,8 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   return output;
 }
 
-// ReadState / UpdateVirtualTcp / ComputeControl / WriteOutput / ComputeEstop
+// ReadState / UpdateVirtualTcp / ComputeControl /
+// WriteJointCommand / FillLogOutput / FillPublishOutput / ComputeEstop
 // live in demo_joint_controller_compute.cpp.
 
 void DemoJointController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {

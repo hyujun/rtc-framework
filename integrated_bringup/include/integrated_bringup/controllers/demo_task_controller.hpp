@@ -9,8 +9,8 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
-#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
@@ -218,7 +218,14 @@ class DemoTaskController final : public RTControllerInterface {
   // ── 3-phase pipeline ────────────────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
   void ComputeControl(const ControllerState& state, double dt) noexcept;
-  [[nodiscard]] ControllerOutput WriteOutput(const ControllerState& state, double dt) noexcept;
+  // WriteOutput was split into 3 explicit-intent methods (see
+  // demo_joint_controller.hpp for the bucket contract). Compute() calls
+  // them in order WriteJointCommand → FillLogOutput → FillPublishOutput.
+  [[nodiscard]] ControllerOutput WriteJointCommand(const ControllerState& state,
+                                                   double dt) noexcept;
+  void FillLogOutput(const ControllerState& state, ControllerOutput& output, double dt) noexcept;
+  void FillPublishOutput(const ControllerState& state, ControllerOutput& output,
+                         double dt) noexcept;
 
   // ── Controller state (gains before urdf_path to match constructor init
   // order) ─

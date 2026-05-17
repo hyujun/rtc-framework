@@ -197,7 +197,11 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   ReadState(state);
   DrainTargetSlot(state);
   ComputeControl(state, dt);
-  auto output = WriteOutput(state, dt);
+  // Output composition split by consumer (wire / log / publish). See
+  // demo_joint_controller.hpp for the bucket assignment rationale.
+  auto output = WriteJointCommand(state, dt);
+  FillLogOutput(state, output, dt);
+  FillPublishOutput(state, output, dt);
 
   // ── Phase C: push log PODs (only from inside Compute()) ──────────────
   if (primary_state_log_handle_) {

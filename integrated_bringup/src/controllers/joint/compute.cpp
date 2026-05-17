@@ -318,12 +318,12 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto& dev1 = state.devices[1];
 
-        const double d_thumb =
-            current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
-        const double d_index =
-            current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
-        const double d_middle =
-            current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+        const double d_thumb = current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] -
+                               dev1.positions[hand_idx_thumb_cmc_fe_];
+        const double d_index = current_target_slot_.targets[1][hand_idx_index_mcp_fe_] -
+                               dev1.positions[hand_idx_index_mcp_fe_];
+        const double d_middle = current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] -
+                                dev1.positions[hand_idx_middle_mcp_fe_];
 
         const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
         const bool index_releasing = d_index < -gains.contact_stop_release_eps;
@@ -344,12 +344,12 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           // Errors (target - actual) encode both the actual position and the
           // overshoot beyond target in a single number each, so 5 args are
           // enough to diagnose contact_stop engagement.
-          const double err_thumb =
-              current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
-          const double err_index =
-              current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
-          const double err_middle =
-              current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+          const double err_thumb = current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] -
+                                   dev1.positions[hand_idx_thumb_cmc_fe_];
+          const double err_index = current_target_slot_.targets[1][hand_idx_index_mcp_fe_] -
+                                   dev1.positions[hand_idx_index_mcp_fe_];
+          const double err_middle = current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] -
+                                    dev1.positions[hand_idx_middle_mcp_fe_];
           RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
                                "err=[%+.3f,%+.3f,%+.3f]",
@@ -396,104 +396,95 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   }
 }
 
-// ── Phase 3: Write output ────────────────────────────────────────────────────
+// ── Phase 3a: Write joint command (wire-bound only) ──────────────────────────
+//
+// Populates ONLY fields the DeviceBackend::WriteCommand consumes (verified via
+// audit of MujocoNativeBackend / UrDriverNativeBackend / UdpHandNativeBackend
+// — all three read slot.commands, slot.num_channels, and command_type).
+// ClampRange lives here because the clamp's job is to make `commands` safe
+// just before the wire.
 
-ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
-                                                  double /*dt*/) noexcept {
+ControllerOutput DemoJointController::WriteJointCommand(const ControllerState& state,
+                                                        double /*dt*/) noexcept {
   ControllerOutput output;
   output.num_devices = state.num_devices;
+  output.command_type = command_type_;
+  output.valid = true;
 
-  // ── Robot arm output ────────────────────────────────────────────────────
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kJoint;
-
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.commands[i] = robot_computed_.positions[i];
-    out0.target_positions[i] = robot_computed_.positions[i];
-    out0.target_velocities[i] = robot_computed_.velocities[i];
-    out0.trajectory_positions[i] = robot_computed_.positions[i];
-    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
   rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
                          std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
 
-  // ── Forward kinematics for task-space logging ──────────────────────────
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto& out1 = output.devices[1];
+    out1.num_channels = nc1;
+    out1.goal_type = GoalType::kJoint;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      out1.commands[i] = hand_computed_.positions[i];
+    }
+    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
+                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+  }
+
+  return output;
+}
+
+// ── Phase 3b: Fill log output ────────────────────────────────────────────────
+//
+// Populates fields the DeviceStateLogPod reads (verified via
+// integrated_bringup/logging/pod_fill.hpp: out.commands[i] — already filled by
+// WriteJointCommand — plus out.goal_positions, out.trajectory_positions,
+// out.trajectory_velocities, output.actual_task_positions,
+// output.task_goal_positions). FK happens here because actual_task_positions
+// needs it. SeqLock store of grasp/tof staging buffers also belongs to the
+// log/publish path, not the wire.
+
+void DemoJointController::FillLogOutput(const ControllerState& state, ControllerOutput& output,
+                                        double /*dt*/) noexcept {
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.trajectory_positions[i] = robot_computed_.positions[i];
+    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
+  }
+
   std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
   arm_handle_->ComputeForwardKinematics(q_span);
   pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
     tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
   }
-  // Log virtual TCP pose when active, otherwise raw TCP
   const pinocchio::SE3& log_pose = vtcp_valid_ ? vtcp_pose_ : tcp;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
-
   output.actual_task_positions[0] = log_pose.translation().x();
   output.actual_task_positions[1] = log_pose.translation().y();
   output.actual_task_positions[2] = log_pose.translation().z();
   output.actual_task_positions[3] = rpy[0];
   output.actual_task_positions[4] = rpy[1];
   output.actual_task_positions[5] = rpy[2];
-
-  // ── TF source poses for kRobotTransforms publish ───────────────────────
-  // Arm tip (raw FK, not virtual TCP) — frame_id base → tool0_actual
-  {
-    const Eigen::Vector3d& t = tcp.translation();
-    const Eigen::Quaterniond q(tcp.rotation());
-    output.arm_tip_pose.position = {t.x(), t.y(), t.z()};
-    output.arm_tip_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
-    output.arm_tip_pose_valid = true;
-  }
-  // Virtual TCP — only valid when fingertip-based vtcp computed successfully
-  if (vtcp_valid_) {
-    const Eigen::Vector3d& t = vtcp_pose_.translation();
-    const Eigen::Quaterniond q(vtcp_pose_.rotation());
-    output.virtual_tcp_pose.position = {t.x(), t.y(), t.z()};
-    output.virtual_tcp_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
-    output.virtual_tcp_pose_valid = true;
-  } else {
-    output.virtual_tcp_pose_valid = false;
-  }
-  // Fingertip poses (in arm root frame, computed during hand FK loop earlier)
-  for (std::size_t f = 0; f < kNumFingertips; ++f) {
-    if (fingertip_frame_ids_[f] != 0) {
-      const Eigen::Vector3d& t = fingertip_positions_[f];
-      const Eigen::Quaterniond q(fingertip_rotations_[f]);
-      output.task_link_poses[f].position = {t.x(), t.y(), t.z()};
-      output.task_link_poses[f].quaternion = {q.w(), q.x(), q.y(), q.z()};
-      output.task_link_pose_valid[f] = true;
-    } else {
-      output.task_link_pose_valid[f] = false;
-    }
-  }
-
-  // Joint mode: no explicit task goal from GUI, mirror FK result
+  // Joint mode: no explicit task goal from GUI, mirror FK result.
   output.task_goal_positions = output.actual_task_positions;
 
-  // ── Hand output ────────────────────────────────────────────────────────
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
     auto& out1 = output.devices[1];
-    out1.num_channels = nc1;
-    out1.goal_type = GoalType::kJoint;
-
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.commands[i] = hand_computed_.positions[i];
-      out1.target_positions[i] = hand_computed_.positions[i];
-      out1.target_velocities[i] = hand_computed_.velocities[i];
       out1.trajectory_positions[i] = hand_computed_.positions[i];
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
       out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
-    rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
   }
 
-  // Populate force-PI grasp state if active
   if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
@@ -506,14 +497,91 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
           static_cast<float>(fs[idx].f_desired - fs[idx].f_measured);
     }
   }
-
-  output.command_type = command_type_;
-  // Per-controller SeqLock handoff to the publish thread. ControllerOutput
-  // no longer carries grasp_state / tof_snapshot (Phase 4c) — each controller
-  // publishes its own non-RT data via these locks directly.
+  // Per-controller SeqLock handoff to the publish thread (Phase 4c).
   grasp_state_lock_.Store(grasp_state_);
   tof_snapshot_lock_.Store(tof_snapshot_);
-  return output;
+}
+
+// ── Phase 3c: Fill publish output ────────────────────────────────────────────
+//
+// Populates fields the publish snapshot / owned_topics consume — verified via
+// rtc_controller_manager/src/rt_controller_node_rt_loop.cpp:147-218 (snapshot
+// build) and integrated_bringup/src/support/owned_topics.cpp:384-405 (TF
+// publish). target_positions / target_velocities go to gc.* slots;
+// goal_positions / trajectory_* are also mirrored here so reading this
+// method alone reveals everything the publish path needs (overlap with
+// FillLogOutput is intentional — write twice rather than couple ordering).
+// Pose fields drive the kRobotTransforms TF publisher.
+
+void DemoJointController::FillPublishOutput(const ControllerState& state, ControllerOutput& output,
+                                            double /*dt*/) noexcept {
+  const auto& dev0 = state.devices[0];
+  auto& out0 = output.devices[0];
+  const int nc0 = dev0.num_channels;
+  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.target_positions[i] = robot_computed_.positions[i];
+    out0.target_velocities[i] = robot_computed_.velocities[i];
+    out0.trajectory_positions[i] = robot_computed_.positions[i];
+    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
+  }
+
+  // FK already computed in FillLogOutput; GetFramePlacement is O(1) read of
+  // pinocchio::Data::oMf.
+  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+  if (use_root_frame_) {
+    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+  }
+  const pinocchio::SE3& log_pose = vtcp_valid_ ? vtcp_pose_ : tcp;
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
+  output.actual_task_positions[0] = log_pose.translation().x();
+  output.actual_task_positions[1] = log_pose.translation().y();
+  output.actual_task_positions[2] = log_pose.translation().z();
+  output.actual_task_positions[3] = rpy[0];
+  output.actual_task_positions[4] = rpy[1];
+  output.actual_task_positions[5] = rpy[2];
+  output.task_goal_positions = output.actual_task_positions;
+
+  // TF source poses for kRobotTransforms publish.
+  {
+    const Eigen::Vector3d& t = tcp.translation();
+    const Eigen::Quaterniond q(tcp.rotation());
+    output.arm_tip_pose.position = {t.x(), t.y(), t.z()};
+    output.arm_tip_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
+    output.arm_tip_pose_valid = true;
+  }
+  if (vtcp_valid_) {
+    const Eigen::Vector3d& t = vtcp_pose_.translation();
+    const Eigen::Quaterniond q(vtcp_pose_.rotation());
+    output.virtual_tcp_pose.position = {t.x(), t.y(), t.z()};
+    output.virtual_tcp_pose.quaternion = {q.w(), q.x(), q.y(), q.z()};
+    output.virtual_tcp_pose_valid = true;
+  } else {
+    output.virtual_tcp_pose_valid = false;
+  }
+  for (std::size_t f = 0; f < kNumFingertips; ++f) {
+    if (fingertip_frame_ids_[f] != 0) {
+      const Eigen::Vector3d& t = fingertip_positions_[f];
+      const Eigen::Quaterniond q(fingertip_rotations_[f]);
+      output.task_link_poses[f].position = {t.x(), t.y(), t.z()};
+      output.task_link_poses[f].quaternion = {q.w(), q.x(), q.y(), q.z()};
+      output.task_link_pose_valid[f] = true;
+    } else {
+      output.task_link_pose_valid[f] = false;
+    }
+  }
+
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const int nc1 = state.devices[1].num_channels;
+    auto& out1 = output.devices[1];
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      out1.target_positions[i] = hand_computed_.positions[i];
+      out1.target_velocities[i] = hand_computed_.velocities[i];
+      out1.trajectory_positions[i] = hand_computed_.positions[i];
+      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
+      out1.goal_positions[i] = current_target_slot_.targets[1][i];
+    }
+  }
 }
 
 ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state) noexcept {

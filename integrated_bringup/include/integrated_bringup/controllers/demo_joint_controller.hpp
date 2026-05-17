@@ -8,8 +8,8 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
-#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
@@ -165,7 +165,25 @@ class DemoJointController final : public RTControllerInterface {
   // ── 3-phase pipeline ────────────────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
   void ComputeControl(const ControllerState& state, double dt) noexcept;
-  [[nodiscard]] ControllerOutput WriteOutput(const ControllerState& state, double dt) noexcept;
+  // WriteOutput was split into 3 explicit-intent methods. The Compute()
+  // dispatcher calls them in this order:
+  //   1) WriteJointCommand — wire-bound fields only (devices[i].commands,
+  //      num_channels, goal_type, num_devices, command_type, valid). The
+  //      DeviceBackend reads ONLY these via WriteCommand().
+  //   2) FillLogOutput    — fields the DeviceStateLogPod reads
+  //      (goal_positions, trajectory_positions, trajectory_velocities,
+  //      actual_task_positions, task_goal_positions) + SeqLock store of
+  //      grasp/tof staging buffers.
+  //   3) FillPublishOutput — fields the publish snapshot / owned_topics
+  //      consumes (target_positions, target_velocities, trajectory_task_*,
+  //      arm_tip_pose*, virtual_tcp_pose*, task_link_poses*). Fields shared
+  //      with log are filled here too: each consumer's method is self-
+  //      contained so the intent of each block is obvious.
+  [[nodiscard]] ControllerOutput WriteJointCommand(const ControllerState& state,
+                                                   double dt) noexcept;
+  void FillLogOutput(const ControllerState& state, ControllerOutput& output, double dt) noexcept;
+  void FillPublishOutput(const ControllerState& state, ControllerOutput& output,
+                         double dt) noexcept;
 
   // ── Internal state ──────────────────────────────────────────────────────
   rtc::SeqLock<Gains> gains_lock_;
