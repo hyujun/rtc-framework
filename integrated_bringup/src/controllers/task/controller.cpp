@@ -195,6 +195,7 @@ void DemoTaskController::OnDeviceConfigsSet() {
 ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
+  DrainTargetSlot(state);
   ComputeControl(state, dt);
   auto output = WriteOutput(state, dt);
 
@@ -224,134 +225,170 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
 // ── Phase 3: Write output ────────────────────────────────────────────────────
 
 void DemoTaskController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
-  if (device_idx == 0) {
-    std::lock_guard lock(target_mutex_);
-    if (gains_lock_.Load().control_6dof) {
-      if (target.size() >= 6) {
-        tcp_target_[0] = target[0];
-        tcp_target_[1] = target[1];
-        tcp_target_[2] = target[2];
-
-        double r = target[3];
-        double p = target[4];
-        double y = target[5];
-
-        Eigen::AngleAxisd rollAngle(r, Eigen::Vector3d::UnitX());
-        Eigen::AngleAxisd pitchAngle(p, Eigen::Vector3d::UnitY());
-        Eigen::AngleAxisd yawAngle(y, Eigen::Vector3d::UnitZ());
-
-        Eigen::Quaternion<double> q = yawAngle * pitchAngle * rollAngle;
-
-        tcp_target_pose_.translation() << target[0], target[1], target[2];
-        tcp_target_pose_.rotation() = q.matrix();
-      }
-    } else {
-      // Layout: target = [tcp_x, tcp_y, tcp_z, null_q_3, null_q_4, ...].
-      // Cap total elements at runtime arm_dof_ (kDemoTaskMaxArmDof when
-      // arm_dof_ is 0 — pre-LoadConfig path) so null_target_ writes stay
-      // in bounds.
-      const auto cap = (arm_dof_ > 0) ? static_cast<std::size_t>(arm_dof_)
-                                      : static_cast<std::size_t>(kDemoTaskMaxArmDof);
-      const std::size_t n = std::min(target.size(), cap);
-      for (std::size_t i = 0; i < std::min(n, std::size_t{3}); ++i) {
-        tcp_target_[i] = target[i];
-      }
-      for (std::size_t i = 3; i < n; ++i) {
-        null_target_[i] = target[i];
-      }
-    }
-    new_target_.store(true, std::memory_order_release);
-  } else {
-    const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < n; ++i) {
-      device_targets_[static_cast<std::size_t>(device_idx)][i] = target[i];
-    }
-    if (device_idx == 1) {
-      hand_new_target_.store(true, std::memory_order_release);
-    }
   }
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = target[i];
+  }
+  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
+  // and is the SOLE writer of target_seqlock_.
+  (void)pending_targets_.Push(pending);
 }
 
-void DemoTaskController::InitializeHoldPosition(const ControllerState& state) noexcept {
-  // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
-  // dimensions (e.g. unit tests that bypass YAML). Derive from device
-  // num_channels so the hold/null-target loops still cover active channels.
-  if (arm_dof_ == 0 && state.num_devices > 0) {
-    arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
-  }
-  if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
-    hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
-  }
+// RT-thread-only. Refreshes current_target_slot_, drains off-RT pending
+// entries, and runs first-tick self-init seeded from the current TCP pose.
+void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept {
+  current_target_slot_ = target_seqlock_.Load();
+  bool slot_dirty = false;
 
-  const auto& dev0 = state.devices[0];
-  std::span<const double> q_span(dev0.positions.data(),
-                                 static_cast<std::size_t>(dev0.num_channels));
-  arm_handle_->ComputeForwardKinematics(q_span);
-  pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
-  }
-
-  // Virtual TCP: compute hold_pose from fingertip kinematics if enabled
-  pinocchio::SE3 hold_pose = tcp_pose;
-  if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
-    for (std::size_t i = 0; i < hand_nq; ++i) {
-      hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    if (arm_dof_ == 0 && state.num_devices > 0) {
+      arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
     }
-    hand_handle_->ComputeForwardKinematics(std::span<const double>(hand_q_.data(), hand_nq));
-    UpdateVirtualTcp(tcp_pose, gains_lock_.Load());
-    if (vtcp_valid_) {
-      hold_pose = vtcp_pose_;
+    if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
+      hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
     }
-  }
 
-  // Initialize desired_q_ from current actual joint positions
-  if (arm_handle_) {
-    for (int i = 0; i < arm_handle_->nv(); ++i) {
-      desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+    const auto& dev0 = state.devices[0];
+    std::span<const double> q_span(dev0.positions.data(),
+                                   static_cast<std::size_t>(dev0.num_channels));
+    arm_handle_->ComputeForwardKinematics(q_span);
+    pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
+    if (use_root_frame_) {
+      tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
     }
-  }
 
-  std::lock_guard lock(target_mutex_);
-  tcp_target_pose_ = hold_pose;
-  tcp_target_ = {hold_pose.translation()[0], hold_pose.translation()[1],
-                 hold_pose.translation()[2]};
-  for (int i = 0; i < arm_dof_; ++i) {
-    const auto idx = static_cast<std::size_t>(i);
-    null_target_[idx] = dev0.positions[idx];
-  }
-  target_initialized_ = true;
-  new_target_.store(false, std::memory_order_relaxed);
-
-  trajectory_.initialize(hold_pose, pinocchio::Motion::Zero(), hold_pose, pinocchio::Motion::Zero(),
-                         0.01);
-  trajectory_time_ = 0.0;
-  has_pending_segment_ = false;
-
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto& dev = state.devices[d];
-    if (!dev.valid)
-      continue;
-    for (std::size_t i = 0;
-         i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
-      device_targets_[d][i] = dev.positions[i];
-    }
-    if (d == 1) {
-      trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State hold_state;
-      for (int i = 0; i < hand_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        hold_state.positions[idx] = dev.positions[idx];
-        hold_state.velocities[idx] = 0.0;
-        hold_state.accelerations[idx] = 0.0;
+    pinocchio::SE3 hold_pose = tcp_pose;
+    if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
+      const auto& dev1 = state.devices[1];
+      const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
+      for (std::size_t i = 0; i < hand_nq; ++i) {
+        hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
       }
-      hand_trajectory_.initialize(hold_state, hold_state, 0.01);
-      hand_trajectory_time_ = 0.0;
-      hand_new_target_.store(false, std::memory_order_relaxed);
+      hand_handle_->ComputeForwardKinematics(std::span<const double>(hand_q_.data(), hand_nq));
+      UpdateVirtualTcp(tcp_pose, gains_lock_.Load());
+      if (vtcp_valid_) {
+        hold_pose = vtcp_pose_;
+      }
     }
+
+    if (arm_handle_) {
+      for (int i = 0; i < arm_handle_->nv(); ++i) {
+        desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+      }
+    }
+
+    tcp_target_pose_ = hold_pose;
+    current_target_slot_.tcp_target = {hold_pose.translation()[0], hold_pose.translation()[1],
+                                       hold_pose.translation()[2]};
+    std::memcpy(current_target_slot_.tcp_target_rot.data(), hold_pose.rotation().data(),
+                sizeof(current_target_slot_.tcp_target_rot));
+    std::memcpy(current_target_slot_.tcp_target_t.data(), hold_pose.translation().data(),
+                sizeof(current_target_slot_.tcp_target_t));
+    for (int i = 0; i < arm_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      // Prefer YAML seed (null_target_init_); fall back to current pose.
+      current_target_slot_.null_target[idx] =
+          (null_target_init_[idx] != 0.0) ? null_target_init_[idx] : dev0.positions[idx];
+    }
+
+    trajectory_.initialize(hold_pose, pinocchio::Motion::Zero(), hold_pose,
+                           pinocchio::Motion::Zero(), 0.01);
+    trajectory_time_ = 0.0;
+    has_pending_segment_ = false;
+    new_target_pending_ = false;
+
+    for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      const auto& dev = state.devices[d];
+      if (!dev.valid) {
+        continue;
+      }
+      for (std::size_t i = 0;
+           i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
+        current_target_slot_.targets[d][i] = dev.positions[i];
+      }
+      if (d == 1) {
+        trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State hold_state;
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hold_state.positions[idx] = dev.positions[idx];
+          hold_state.velocities[idx] = 0.0;
+          hold_state.accelerations[idx] = 0.0;
+        }
+        hand_trajectory_.initialize(hold_state, hold_state, 0.01);
+        hand_trajectory_time_ = 0.0;
+        hand_new_target_pending_ = false;
+      }
+    }
+    target_initialized_.store(true, std::memory_order_release);
+    slot_dirty = true;
+  } else {
+    // Restore RT-thread working SE3 from POD storage.
+    std::memcpy(tcp_target_pose_.rotation().data(), current_target_slot_.tcp_target_rot.data(),
+                sizeof(current_target_slot_.tcp_target_rot));
+    std::memcpy(tcp_target_pose_.translation().data(), current_target_slot_.tcp_target_t.data(),
+                sizeof(current_target_slot_.tcp_target_t));
+  }
+
+  PendingTarget pending{};
+  while (pending_targets_.Pop(pending)) {
+    const auto didx = static_cast<std::size_t>(pending.device_idx);
+    if (didx >= ControllerState::kMaxDevices) {
+      continue;
+    }
+    if (didx == 0) {
+      if (gains_lock_.Load().control_6dof) {
+        if (pending.num_values >= 6) {
+          current_target_slot_.tcp_target[0] = pending.values[0];
+          current_target_slot_.tcp_target[1] = pending.values[1];
+          current_target_slot_.tcp_target[2] = pending.values[2];
+          Eigen::AngleAxisd rollAngle(pending.values[3], Eigen::Vector3d::UnitX());
+          Eigen::AngleAxisd pitchAngle(pending.values[4], Eigen::Vector3d::UnitY());
+          Eigen::AngleAxisd yawAngle(pending.values[5], Eigen::Vector3d::UnitZ());
+          const Eigen::Quaternion<double> qrot = yawAngle * pitchAngle * rollAngle;
+          const Eigen::Matrix3d rotation = qrot.matrix();
+          const Eigen::Vector3d translation(pending.values[0], pending.values[1],
+                                            pending.values[2]);
+          std::memcpy(current_target_slot_.tcp_target_rot.data(), rotation.data(),
+                      sizeof(current_target_slot_.tcp_target_rot));
+          std::memcpy(current_target_slot_.tcp_target_t.data(), translation.data(),
+                      sizeof(current_target_slot_.tcp_target_t));
+          tcp_target_pose_.translation() = translation;
+          tcp_target_pose_.rotation() = rotation;
+          new_target_pending_ = true;
+        }
+      } else {
+        const auto cap = (arm_dof_ > 0) ? static_cast<std::size_t>(arm_dof_)
+                                        : static_cast<std::size_t>(kDemoTaskMaxArmDof);
+        const std::size_t pn = std::min(static_cast<std::size_t>(pending.num_values), cap);
+        for (std::size_t i = 0; i < std::min(pn, std::size_t{3}); ++i) {
+          current_target_slot_.tcp_target[i] = pending.values[i];
+        }
+        for (std::size_t i = 3; i < pn; ++i) {
+          current_target_slot_.null_target[i] = pending.values[i];
+        }
+        new_target_pending_ = true;
+      }
+    } else {
+      const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
+                                       static_cast<std::size_t>(kMaxDeviceChannels));
+      for (std::size_t i = 0; i < nch; ++i) {
+        current_target_slot_.targets[didx][i] = pending.values[i];
+      }
+      if (didx == 1) {
+        hand_new_target_pending_ = true;
+      }
+    }
+    slot_dirty = true;
+  }
+
+  if (slot_dirty) {
+    target_seqlock_.Store(current_target_slot_);
   }
 }
 

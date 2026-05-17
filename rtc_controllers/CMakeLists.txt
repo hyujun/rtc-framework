@@ -110,6 +110,12 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
   target_link_libraries(test_core_controllers rtc_controllers)
+
+  # RT-4 single-writer SeqLock race stress: SetDeviceTarget (off-RT) vs
+  # Compute (RT) — verifies the SPSC marshal pattern keeps target_seqlock_
+  # tear-free under concurrent producer/consumer access.
+  ament_add_gtest(test_target_seqlock_race test/test_target_seqlock_race.cpp)
+  target_link_libraries(test_target_seqlock_race rtc_controllers)
 endif()
 
 ament_package()

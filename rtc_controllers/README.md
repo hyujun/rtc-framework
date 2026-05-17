@@ -595,13 +595,12 @@ RTC_REGISTER_CONTROLLER(
 
 ### RT 안전 보장 (전체 공통)
 
-모든 컨트롤러의 RT 경로 메서드 (`Compute`, `SetDeviceTarget`, `InitializeHoldPosition`)는:
+모든 컨트롤러의 RT 경로 메서드 (`Compute`, `SetDeviceTarget`)는:
 - `noexcept` 보장
 - 생성자에서 모든 Pinocchio/Eigen 버퍼 사전 할당 (RT 경로에서 동적 할당 없음)
-- `SetDeviceTarget()`은 `std::lock_guard` 사용, `Compute()`/`InitializeHoldPosition()`은 `std::try_to_lock` (RT 스레드 차단 불가)
-- `new_target_` 플래그는 `memory_order_acquire/release` 원자적 동기화
+- **SeqLock + SPSC marshal (2026-05-17 RT-4 cleanup):** target 슬롯은 `rtc::SeqLock<TargetSlot>`이 publish하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>`에 lock-free push (newest-drop) 만 하고 SeqLock을 직접 만지지 않는다. RT 스레드는 매 tick에서 (1) queue drain → slot 갱신, (2) 첫 tick일 경우 현재 device state로 self-init (controller-internal hold init policy), (3) 단일 `target_seqlock_.Store(slot)` 호출. SE3 타입은 `is_trivially_copyable=false` (Eigen false-negative)이므로 `std::array<double, 9>` (rotation) + `std::array<double, 3>` (translation) POD wrapper로 마샬링한다. 자세한 패턴은 [`feedback_eigen_seqlock_pod_wrapper`](memory).
 - Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
-- **Gains SeqLock 스냅샷:** 모든 컨트롤러의 `gains_` 필드를 `rtc::SeqLock<Gains> gains_lock_`로 교체. RT 경로(`Compute()`)는 진입 시 `const auto gains = gains_lock_.Load()`로 전체 구조체를 단일 스냅샷으로 읽어, parameter callback이 aux 스레드에서 동시 실행되어도 한 틱 내 모든 필드(bool/배열/스칼라) 일관성 보장. Aux 스레드 writer(`LoadConfig`, parameter callback, `set_gains`)는 Load→mutate→Store 패턴으로 torn-write 방지. Phase 1의 bool 플래그 스냅샷은 SeqLock에 흡수됨.
+- **Gains SeqLock 스냅샷:** 모든 컨트롤러의 `gains_` 필드를 `rtc::SeqLock<Gains> gains_lock_`로 교체. RT 경로(`Compute()`)는 진입 시 `const auto gains = gains_lock_.Load()`로 전체 구조체를 단일 스냅샷으로 읽어, parameter callback이 aux 스레드에서 동시 실행되어도 한 틱 내 모든 필드(bool/배열/스칼라) 일관성 보장. Aux 스레드 writer(`LoadConfig`, parameter callback, `set_gains`)는 Load→mutate→Store 패턴으로 torn-write 방지.
 - **trajectory_speed 검증:** `LoadConfig()` 및 데모 컨트롤러의 parameter callback에서 `trajectory_speed`/`trajectory_angular_speed`에 `std::max(1e-6, val)` 적용하여 0 또는 음수 값으로 인한 무한 궤적 duration 방지
 
 ---

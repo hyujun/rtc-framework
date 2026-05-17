@@ -54,15 +54,11 @@ void RtControllerNode::DeviceTargetCallback(int device_slot,
     }
   }
 
-  {
-    std::lock_guard lock(target_mutex_);
-    const int n = std::min(ordered_size, urtc::kMaxDeviceChannels);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-      device_targets_[static_cast<std::size_t>(device_slot)][i] = ordered_ptr[i];
-    }
-  }
-  target_received_.store(true, std::memory_order_release);
+  // Forward to the active controller's SetDeviceTarget, which marshals the
+  // payload onto its own SPSC queue (drained by the RT thread in Compute).
+  // No CM-side mirror — target ownership lives with the controller now.
+  const int clipped_size = std::min(ordered_size, urtc::kMaxDeviceChannels);
   const int idx = active_controller_idx_.load(std::memory_order_acquire);
   controllers_[static_cast<std::size_t>(idx)]->SetDeviceTarget(
-      device_slot, std::span<const double>(ordered_ptr, static_cast<std::size_t>(ordered_size)));
+      device_slot, std::span<const double>(ordered_ptr, static_cast<std::size_t>(clipped_size)));
 }

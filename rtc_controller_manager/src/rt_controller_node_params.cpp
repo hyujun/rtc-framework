@@ -172,7 +172,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("enable_device_log", rclcpp::ParameterValue(true));
   safe_declare("enable_estop", rclcpp::ParameterValue(true));
   safe_declare("init_timeout_sec", rclcpp::ParameterValue(5.0));
-  safe_declare("auto_hold_position", rclcpp::ParameterValue(true));
   // Default empty: robot bringup yaml must specify which controller to start.
   // Code default carries no assumption about which controllers are registered
   // (rtc_* stays robot-agnostic; controllers are registered by robot bringup).
@@ -205,7 +204,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
   // configured loop rate.
   const double init_timeout_sec = get_parameter("init_timeout_sec").as_double();
   init_timeout_ticks_ = static_cast<uint64_t>(init_timeout_sec * control_rate_);
-  auto_hold_position_ = get_parameter("auto_hold_position").as_bool();
   enable_logging_ = get_parameter("enable_logging").as_bool();
   enable_estop_ = get_parameter("enable_estop").as_bool();
   use_sim_time_sync_ = get_parameter("use_sim_time_sync").as_bool();
@@ -385,12 +383,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // controllers can pass it to LoadDemoSharedYamlFile() without re-declaring
     // it themselves.  Reads back the CM's current value.
     ctrl_lc_node->declare_parameter<std::string>("config_variant", variant);
-
-    // Inject the target-received notifier so controllers that own their own
-    // target subscription flip CM's target_received_ gate in the callback.
-    // Matches the prior behavior of CM's DeviceTargetCallback.
-    ctrl->SetTargetReceivedNotifier(
-        [this]() { target_received_.store(true, std::memory_order_release); });
 
     // PreConfigure: stores node_ + parses yaml so GetTopicConfig() is valid
     // before Pass 2 builds active_groups_. No RegisterLog or resource
@@ -573,7 +565,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
   // Skip init wait if no device timeouts configured
   if (device_timeouts_.empty()) {
     state_received_.store(true, std::memory_order_release);
-    target_received_.store(true, std::memory_order_release);
     RCLCPP_INFO(get_logger(), "No device timeouts configured — skipping init wait");
   }
 

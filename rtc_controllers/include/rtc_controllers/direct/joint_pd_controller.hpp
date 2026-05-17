@@ -3,6 +3,7 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include <rtc_base/threading/seqlock.hpp>
+#include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -11,9 +12,9 @@
 #include <array>
 #include <atomic>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace rtc {
@@ -48,8 +49,6 @@ class JointPDController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
-
-  void InitializeHoldPosition(const ControllerState& state) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "JointPDController"; }
 
@@ -91,12 +90,41 @@ class JointPDController final : public RTControllerInterface {
 
   // ── Controller state ───────────────────────────────────────────────────────
   SeqLock<Gains> gains_lock_;
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
-      device_targets_{};
+
+  // TargetSlot holds the per-device joint target arrays. The RT thread is
+  // the SOLE writer of target_seqlock_ (writes happen inside Compute via the
+  // SPSC drain + self-init paths). Off-RT writers (ROS sub callbacks reaching
+  // SetDeviceTarget) push onto pending_targets_, never touching target_seqlock_
+  // directly. This single-writer invariant is what makes the SeqLock safe.
+  struct TargetSlot {
+    std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<TargetSlot>,
+                "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, kMaxDeviceChannels> values{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  SeqLock<TargetSlot> target_seqlock_;
+  SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
+  // Flipping target_initialized_ back to false from off-RT (e.g. ClearEstop)
+  // makes the next Compute() re-run the self-init path, seeding the slot from
+  // the current state and rebuilding the trajectory. RT thread is still the
+  // sole writer of target_seqlock_ itself; this atomic is just the signal.
+  std::atomic<bool> target_initialized_{false};
+  bool new_target_pending_{false};  // RT-thread-only; gates trajectory re-init
+
   std::array<double, kMaxRobotDOF> prev_error_{};
 
-  std::mutex target_mutex_;
-  std::atomic<bool> new_target_{false};
   trajectory::JointSpaceTrajectory<kMaxRobotDOF> trajectory_;
   double trajectory_time_{0.0};
 

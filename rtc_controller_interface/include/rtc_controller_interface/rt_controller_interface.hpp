@@ -13,7 +13,6 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include <functional>
 #include <map>
 #include <memory>
 #include <span>
@@ -71,8 +70,9 @@ class RTControllerInterface {
   //   on_configure:  store node_ (idempotent), LoadConfig (idempotent if
   //                  PreConfigure ran), then subclass work (RegisterLog,
   //                  publishers, parameter declares, …)
-  //   on_activate:   if device_snapshot.num_devices > 0,
-  //                    InitializeHoldPosition(device_snapshot); SUCCESS
+  //   on_activate:   no-op SUCCESS (controller-internal init policy — each
+  //                    derived controller self-initialises its target slot on
+  //                    the first Compute() tick using the current device state)
   //   on_deactivate: no-op SUCCESS
   //   on_cleanup:    release node_
   //   on_shutdown:   delegate to on_cleanup
@@ -81,14 +81,11 @@ class RTControllerInterface {
   // Overrides that add work MUST call the base implementation first (or
   // handle LoadConfig / node_ themselves).
   //
-  // on_activate's `device_snapshot` carries fresh device state at the moment
-  // the controller becomes active. Callers that do not have valid state (e.g.
-  // CM's startup on_activate before the RT loop has received any sensor data)
-  // pass an empty snapshot (`num_devices == 0`); the RT loop's auto-hold path
-  // then handles initialisation later. Callers that DO have valid state (e.g.
-  // the switch_controller helper after a successful state read) populate the
-  // snapshot so the controller's hold target is initialised in lockstep with
-  // the activation, before any Compute() runs.
+  // Hold-target initialisation is owned by the controller (not CM): on the
+  // first Compute() tick after activation each controller seeds its target
+  // slot from the current device state, eliminating the writer-multiplicity
+  // race that auto-hold + on_activate + ROS sub callbacks used to create on
+  // the legacy target_mutex_ path.
   // PreConfigure: lightweight first pass. Stores node_ and calls LoadConfig(yaml)
   // so that GetTopicConfig() returns valid data BEFORE CM resolves
   // device_name_configs_. Must precede on_configure() in the CM bring-up
@@ -107,8 +104,7 @@ class RTControllerInterface {
                                       rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                                       const YAML::Node& yaml_cfg) noexcept;
 
-  virtual CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state,
-                                     const ControllerState& device_snapshot) noexcept;
+  virtual CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) noexcept;
 
   virtual CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) noexcept;
 
@@ -131,13 +127,6 @@ class RTControllerInterface {
   virtual void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept = 0;
 
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
-
-  // Auto-hold: initialise target from current state so the robot holds
-  // its position when no external goal has been received.
-  // Each controller implements this according to its own target format
-  // (joint-space, task-space, etc.).  Called once from ControlLoop Phase 0
-  // when state_received_ is true but target_received_ is false.
-  virtual void InitializeHoldPosition(const ControllerState& state) noexcept = 0;
 
   // E-STOP interface — default no-ops for controllers that do not need it.
   virtual void TriggerEstop() noexcept {}
@@ -197,25 +186,17 @@ class RTControllerInterface {
   //   thread. Must not touch device_target_ or other RT-written state.
   virtual void PublishNonRtSnapshot(const PublishSnapshot& snap) noexcept { (void)snap; }
 
-  // SetTargetReceivedNotifier()
-  //   Injected by CM before on_configure. Controllers that move target
-  //   subscriptions to their own LifecycleNode (ownership == kController)
-  //   must invoke notifier_() in the subscription callback so CM's
-  //   target_received_ gate flips exactly once, matching the legacy behavior
-  //   where CM's own DeviceTargetCallback set the flag. No-op when unset.
-  void SetTargetReceivedNotifier(std::function<void()> notifier) {
-    target_received_notifier_ = std::move(notifier);
-  }
-
   // DeliverTargetMessage()
   //   Relocates CM's legacy DeviceTargetCallback logic into the controller.
   //   Use from controller-owned target-topic subscription callbacks:
   //     - joint_target goal: reorders by msg.joint_names against
   //       device_name_configs_[group_name].joint_state_names;
   //     - task_target goal: forwarded as-is.
-  //   Dispatches via SetDeviceTarget(device_idx, ordered_span) and invokes
-  //   NotifyTargetReceived(). `device_idx` is the controller-local group
-  //   index (position in topic_config_.groups).
+  //   Dispatches via SetDeviceTarget(device_idx, ordered_span). `device_idx`
+  //   is the controller-local group index (position in topic_config_.groups).
+  //   Controller's SetDeviceTarget marshals onto an SPSC queue drained by
+  //   the RT thread in Compute(), so no off-RT writer touches the target
+  //   slot directly.
   void DeliverTargetMessage(const std::string& group_name, int device_idx,
                             const rtc_msgs::msg::RobotTarget& msg) noexcept;
 
@@ -360,18 +341,6 @@ class RTControllerInterface {
   // future migration to "RTControllerInterface : public LifecycleNode" is a
   // mechanical `node_->` → `this->` replacement.
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
-
-  // Invoked by subclasses (from controller-owned target subscription
-  // callbacks) to signal CM that a target has been received. Safe to call
-  // even when the notifier is unset — guarded internally.
-  void NotifyTargetReceived() const {
-    if (target_received_notifier_) {
-      target_received_notifier_();
-    }
-  }
-
- private:
-  std::function<void()> target_received_notifier_;
 };
 
 }  // namespace rtc

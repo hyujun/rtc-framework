@@ -26,7 +26,6 @@ class StubRegistryController : public rtc::RTControllerInterface {
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "stub"; }
 
-  void InitializeHoldPosition(const rtc::ControllerState&) noexcept override {}
 
   [[nodiscard]] const std::string& urdf_path() const { return urdf_path_; }
 

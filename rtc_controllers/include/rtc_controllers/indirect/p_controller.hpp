@@ -3,6 +3,7 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include <rtc_base/threading/seqlock.hpp>
+#include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -14,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace rtc {
@@ -41,8 +43,6 @@ class PController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
-
-  void InitializeHoldPosition(const ControllerState& state) noexcept override;
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "PController"; }
 
@@ -75,8 +75,32 @@ class PController final : public RTControllerInterface {
 
  private:
   SeqLock<Gains> gains_lock_;
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
-      device_targets_{};
+
+  // SeqLock + SPSC marshal for the per-device joint target slots. RT thread
+  // (Compute) is the SOLE writer of target_seqlock_; off-RT callers push
+  // onto pending_targets_ via SetDeviceTarget. See joint_pd_controller.hpp
+  // for the full rationale.
+  struct TargetSlot {
+    std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<TargetSlot>,
+                "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, kMaxDeviceChannels> values{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  SeqLock<TargetSlot> target_seqlock_;
+  SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
+  std::atomic<bool> target_initialized_{false};
 
   // ── Pinocchio via rtc_urdf_bridge ────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;

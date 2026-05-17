@@ -112,10 +112,87 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const pinocchio::SE3& tcp = handle_->GetFramePlacement(tip_frame_id_);
 
+  // ── Target slot maintenance (RT thread is the single SeqLock writer) ──
+  TargetSlot slot = target_seqlock_.Load();
+  bool slot_dirty = false;
+
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    // Seed pose_target / goal_rot / goal_t from current TCP.
+    const Eigen::Vector3d rpy_init = pinocchio::rpy::matrixToRpy(tcp.rotation());
+    slot.pose_target[0] = tcp.translation()[0];
+    slot.pose_target[1] = tcp.translation()[1];
+    slot.pose_target[2] = tcp.translation()[2];
+    slot.pose_target[3] = rpy_init[0];
+    slot.pose_target[4] = rpy_init[1];
+    slot.pose_target[5] = rpy_init[2];
+    std::memcpy(slot.goal_rot.data(), tcp.rotation().data(), sizeof(slot.goal_rot));
+    std::memcpy(slot.goal_t.data(), tcp.translation().data(), sizeof(slot.goal_t));
+    goal_pose_ = tcp;
+    for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      const auto& dev = state.devices[d];
+      if (!dev.valid) {
+        continue;
+      }
+      const std::size_t nch = std::min(static_cast<std::size_t>(dev.num_channels),
+                                       static_cast<std::size_t>(kMaxDeviceChannels));
+      for (std::size_t i = 0; i < nch; ++i) {
+        slot.targets[d][i] = dev.positions[i];
+      }
+    }
+    trajectory_.initialize(tcp, pinocchio::Motion::Zero(), tcp, pinocchio::Motion::Zero(), 0.01);
+    trajectory_time_ = 0.0;
+    has_pending_segment_ = false;
+    new_target_pending_ = false;
+    target_initialized_.store(true, std::memory_order_release);
+    slot_dirty = true;
+  } else {
+    // Reader-side: restore RT working SE3 from the slot's flat doubles so
+    // diagnostic-echo paths (task_goal_positions below) see a consistent
+    // rotation matrix every tick.
+    std::memcpy(goal_pose_.rotation().data(), slot.goal_rot.data(), sizeof(slot.goal_rot));
+    std::memcpy(goal_pose_.translation().data(), slot.goal_t.data(), sizeof(slot.goal_t));
+  }
+
+  // Drain pending targets pushed by off-RT SetDeviceTarget callers.
+  PendingTarget pending{};
+  while (pending_targets_.Pop(pending)) {
+    const auto didx = static_cast<std::size_t>(pending.device_idx);
+    if (didx >= ControllerState::kMaxDevices) {
+      continue;
+    }
+    if (didx == 0) {
+      const std::size_t pose_n =
+          std::min(static_cast<std::size_t>(pending.num_values), std::size_t{6});
+      for (std::size_t i = 0; i < pose_n; ++i) {
+        slot.pose_target[i] = pending.values[i];
+      }
+      if (pose_n >= 6) {
+        const Eigen::Vector3d translation(pending.values[0], pending.values[1], pending.values[2]);
+        const Eigen::Matrix3d rotation =
+            RpyToMatrix(pending.values[3], pending.values[4], pending.values[5]);
+        std::memcpy(slot.goal_rot.data(), rotation.data(), sizeof(slot.goal_rot));
+        std::memcpy(slot.goal_t.data(), translation.data(), sizeof(slot.goal_t));
+        goal_pose_.translation() = translation;
+        goal_pose_.rotation() = rotation;
+        new_target_pending_ = true;
+      }
+    } else {
+      const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
+                                       static_cast<std::size_t>(kMaxDeviceChannels));
+      for (std::size_t i = 0; i < nch; ++i) {
+        slot.targets[didx][i] = pending.values[i];
+      }
+    }
+    slot_dirty = true;
+  }
+
+  if (slot_dirty) {
+    target_seqlock_.Store(slot);
+  }
+
   // ── Step 3.5: initialise trajectory on new target (after FK) ─────────────
-  if (new_target_.load(std::memory_order_acquire)) {
-    std::unique_lock lock(target_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
+  if (new_target_pending_) {
+    {
       const Eigen::Vector3d start_pos = tcp.translation();
       const Eigen::Vector3d goal_pos = goal_pose_.translation();
       const double trans_dist = (goal_pos - start_pos).norm();
@@ -174,7 +251,7 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
       }
 
       trajectory_time_ = 0.0;
-      new_target_.store(false, std::memory_order_relaxed);
+      new_target_pending_ = false;
     }
   }
 
@@ -262,11 +339,11 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
   }
   for (std::size_t i = 0; i < 6; ++i) {
-    out0.target_positions[i] = pose_target_[i];
-    out0.goal_positions[i] = pose_target_[i];
+    out0.target_positions[i] = slot.pose_target[i];
+    out0.goal_positions[i] = slot.pose_target[i];
   }
 
-  rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
+  rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
 
   Eigen::Vector3d rpy_current = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
@@ -279,9 +356,9 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   // Task-space goal target
   {
     Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(goal_pose_.rotation());
-    output.task_goal_positions[0] = pose_target_[0];
-    output.task_goal_positions[1] = pose_target_[1];
-    output.task_goal_positions[2] = pose_target_[2];
+    output.task_goal_positions[0] = slot.pose_target[0];
+    output.task_goal_positions[1] = slot.pose_target[1];
+    output.task_goal_positions[2] = slot.pose_target[2];
     output.task_goal_positions[3] = goal_rpy[0];
     output.task_goal_positions[4] = goal_rpy[1];
     output.task_goal_positions[5] = goal_rpy[2];
@@ -312,70 +389,19 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
 
 void OperationalSpaceController::SetDeviceTarget(int device_idx,
                                                  std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
-  if (device_idx == 0) {
-    std::lock_guard lock(target_mutex_);
-    const std::size_t n = std::min(target.size(), std::size_t{6});
-    for (std::size_t i = 0; i < n; ++i) {
-      pose_target_[i] = target[i];
-    }
-    if (n >= 6) {
-      goal_pose_.translation() = Eigen::Vector3d(target[0], target[1], target[2]);
-      goal_pose_.rotation() = RpyToMatrix(target[3], target[4], target[5]);
-    }
-    new_target_.store(true, std::memory_order_release);
-  } else {
-    const auto ud = static_cast<std::size_t>(device_idx);
-    const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < n; ++i) {
-      device_targets_[ud][i] = target[i];
-    }
   }
-}
-
-void OperationalSpaceController::InitializeHoldPosition(const ControllerState& state) noexcept {
-  const auto& dev0 = state.devices[0];
-  const int nv = handle_->nv();
-
-  std::array<double, kMaxDeviceChannels> q_buf{};
-  for (int i = 0; i < nv; ++i) {
-    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = target[i];
   }
-  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
-  handle_->ComputeJacobians(q_span);
-  const pinocchio::SE3& tcp = handle_->GetFramePlacement(tip_frame_id_);
-
-  // try_lock: called from RT path — never block. Skip on contention (retry next
-  // tick).
-  std::unique_lock lock(target_mutex_, std::try_to_lock);
-  if (!lock.owns_lock())
-    return;
-  goal_pose_ = tcp;
-
-  const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
-  pose_target_[0] = tcp.translation()[0];
-  pose_target_[1] = tcp.translation()[1];
-  pose_target_[2] = tcp.translation()[2];
-  pose_target_[3] = rpy[0];
-  pose_target_[4] = rpy[1];
-  pose_target_[5] = rpy[2];
-  new_target_.store(false, std::memory_order_relaxed);
-
-  trajectory_.initialize(tcp, pinocchio::Motion::Zero(), tcp, pinocchio::Motion::Zero(), 0.01);
-  trajectory_time_ = 0.0;
-  has_pending_segment_ = false;
-
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto& dev = state.devices[d];
-    if (!dev.valid)
-      continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
-                            i < static_cast<std::size_t>(kMaxDeviceChannels);
-         ++i) {
-      device_targets_[d][i] = dev.positions[i];
-    }
-  }
+  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
+  // and is the SOLE writer of target_seqlock_.
+  (void)pending_targets_.Push(pending);
 }
 
 std::string_view OperationalSpaceController::Name() const noexcept {
@@ -388,7 +414,9 @@ void OperationalSpaceController::TriggerEstop() noexcept {
 
 void OperationalSpaceController::ClearEstop() noexcept {
   estopped_.store(false, std::memory_order_release);
-  new_target_.store(true, std::memory_order_relaxed);
+  // Force the next Compute() to re-seed pose target + trajectory from the
+  // current state (single-writer-safe: RT thread itself re-stores the slot).
+  target_initialized_.store(false, std::memory_order_release);
 }
 
 bool OperationalSpaceController::IsEstopped() const noexcept {

@@ -9,6 +9,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
@@ -29,10 +30,10 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace integrated_bringup {
@@ -93,8 +94,6 @@ class DemoJointController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState& state) noexcept override;
-
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoJointController"; }
 
   void TriggerEstop() noexcept override;
@@ -106,8 +105,7 @@ class DemoJointController final : public RTControllerInterface {
   CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                               const YAML::Node& yaml) noexcept override;
-  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev,
-                             const rtc::ControllerState& device_snapshot) noexcept override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
   void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
@@ -171,8 +169,41 @@ class DemoJointController final : public RTControllerInterface {
 
   // ── Internal state ──────────────────────────────────────────────────────
   rtc::SeqLock<Gains> gains_lock_;
-  std::array<std::array<double, rtc::kMaxDeviceChannels>, ControllerState::kMaxDevices>
-      device_targets_{};
+
+  // SeqLock + SPSC marshal for the per-device joint target slots. RT thread
+  // (Compute) is the SOLE writer of target_seqlock_; off-RT writers push
+  // onto pending_targets_ via SetDeviceTarget. See joint_pd_controller.hpp
+  // for the full rationale ([[feedback_eigen_seqlock_pod_wrapper]]).
+  struct TargetSlot {
+    std::array<std::array<double, rtc::kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<TargetSlot>,
+                "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, rtc::kMaxDeviceChannels> values{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  rtc::SeqLock<TargetSlot> target_seqlock_;
+  rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
+  std::atomic<bool> target_initialized_{false};
+
+  // RT-thread-only working copy of the current TargetSlot; ComputeControl /
+  // WriteOutput read from this instead of touching target_seqlock_ multiple
+  // times per tick. Refreshed by DrainTargetSlot() at the top of Compute().
+  TargetSlot current_target_slot_{};
+
+  // RT-thread-only: refresh current_target_slot_ from the SeqLock, drain any
+  // off-RT SetDeviceTarget marshal entries, run first-tick self-init.
+  void DrainTargetSlot(const ControllerState& state) noexcept;
 
   // ── rtc_urdf_bridge ────────────────────────────────────────────
   std::string urdf_path_;  // stored from constructor, used in LoadConfig
@@ -204,9 +235,10 @@ class DemoJointController final : public RTControllerInterface {
   CommandType command_type_{CommandType::kPosition};
 
   // ── Trajectory ───────────────────────────────────────────────────────────
-  std::mutex target_mutex_;
-  std::atomic<bool> robot_new_target_{false};
-  std::atomic<bool> hand_new_target_{false};
+  // RT-thread-only flags; SetDeviceTarget marshals via pending_targets_ and
+  // the RT thread flips these when it drains a device-0 / device-1 entry.
+  bool robot_new_target_pending_{false};
+  bool hand_new_target_pending_{false};
   // Templates fixed at compile-time capacity; only the first arm_dof_ /
   // hand_dof_ slots are initialised + read at runtime (caller-trim pattern).
   trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof> robot_trajectory_;

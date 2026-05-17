@@ -170,6 +170,10 @@ void DemoJointController::OnDeviceConfigsSet() {
 ControllerOutput DemoJointController::Compute(const ControllerState& state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
+  // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
+  // After this call ComputeControl / WriteOutput must read from
+  // current_target_slot_, never from any old device_targets_ member.
+  DrainTargetSlot(state);
   estop_active_ = estopped_.load(std::memory_order_acquire);
   if (estop_active_) {
     auto out = ComputeEstop(state);
@@ -220,72 +224,103 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
 // live in demo_joint_controller_compute.cpp.
 
 void DemoJointController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
-  const int n = std::min(static_cast<int>(target.size()), kMaxDeviceChannels);
-  {
-    std::lock_guard lock(target_mutex_);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-      device_targets_[static_cast<std::size_t>(device_idx)][i] = target[i];
-    }
   }
-  if (device_idx == 0) {
-    robot_new_target_.store(true, std::memory_order_release);
-  } else if (device_idx == 1) {
-    hand_new_target_.store(true, std::memory_order_release);
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = target[i];
   }
+  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
+  // and is the SOLE writer of target_seqlock_.
+  (void)pending_targets_.Push(pending);
 }
 
-void DemoJointController::InitializeHoldPosition(const ControllerState& state) noexcept {
-  std::lock_guard lock(target_mutex_);
+// RT-thread-only. Refreshes current_target_slot_ from the SeqLock, drains any
+// off-RT pending entries, and runs first-tick self-init (seeding the slot
+// from the current device state + trajectories). The RT thread is the sole
+// writer of target_seqlock_; SetDeviceTarget is marshal-only.
+void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept {
+  current_target_slot_ = target_seqlock_.Load();
+  bool slot_dirty = false;
 
-  // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
-  // dimensions (e.g. unit tests that bypass YAML). Derive from device
-  // num_channels so the hold/E-STOP loops still cover the active channels.
-  if (arm_dof_ == 0 && state.num_devices > 0) {
-    arm_dof_ = std::min(state.devices[0].num_channels, kDemoJointMaxArmDof);
-  }
-  if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
-    hand_dof_ = std::min(state.devices[1].num_channels, kDemoJointMaxHandDof);
-  }
-
-  // Robot
-  {
-    const auto& dev0 = state.devices[0];
-    trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State hold_state;
-    for (int i = 0; i < arm_dof_; ++i) {
-      const auto idx = static_cast<std::size_t>(i);
-      device_targets_[0][idx] = dev0.positions[idx];
-      hold_state.positions[idx] = dev0.positions[idx];
-      hold_state.velocities[idx] = 0.0;
-      hold_state.accelerations[idx] = 0.0;
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
+    // dimensions (e.g. unit tests that bypass YAML).
+    if (arm_dof_ == 0 && state.num_devices > 0) {
+      arm_dof_ = std::min(state.devices[0].num_channels, kDemoJointMaxArmDof);
     }
-    robot_trajectory_.initialize(hold_state, hold_state, 0.01);
-    robot_trajectory_time_ = 0.0;
-    robot_new_target_.store(false, std::memory_order_relaxed);
-  }
-
-  // Hand
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto& dev = state.devices[d];
-    if (!dev.valid)
-      continue;
-    for (std::size_t i = 0;
-         i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
-      device_targets_[d][i] = dev.positions[i];
+    if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
+      hand_dof_ = std::min(state.devices[1].num_channels, kDemoJointMaxHandDof);
     }
-    if (d == 1) {
-      trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State hold_state;
-      for (int i = 0; i < hand_dof_; ++i) {
+
+    // Robot self-init
+    {
+      const auto& dev0 = state.devices[0];
+      trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State hold_state;
+      for (int i = 0; i < arm_dof_; ++i) {
         const auto idx = static_cast<std::size_t>(i);
-        hold_state.positions[idx] = dev.positions[idx];
+        current_target_slot_.targets[0][idx] = dev0.positions[idx];
+        hold_state.positions[idx] = dev0.positions[idx];
         hold_state.velocities[idx] = 0.0;
         hold_state.accelerations[idx] = 0.0;
       }
-      hand_trajectory_.initialize(hold_state, hold_state, 0.01);
-      hand_trajectory_time_ = 0.0;
-      hand_new_target_.store(false, std::memory_order_relaxed);
+      robot_trajectory_.initialize(hold_state, hold_state, 0.01);
+      robot_trajectory_time_ = 0.0;
+      robot_new_target_pending_ = false;
     }
+
+    // Hand self-init
+    for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      const auto& dev = state.devices[d];
+      if (!dev.valid) {
+        continue;
+      }
+      for (std::size_t i = 0;
+           i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
+        current_target_slot_.targets[d][i] = dev.positions[i];
+      }
+      if (d == 1) {
+        trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State hold_state;
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hold_state.positions[idx] = dev.positions[idx];
+          hold_state.velocities[idx] = 0.0;
+          hold_state.accelerations[idx] = 0.0;
+        }
+        hand_trajectory_.initialize(hold_state, hold_state, 0.01);
+        hand_trajectory_time_ = 0.0;
+        hand_new_target_pending_ = false;
+      }
+    }
+    target_initialized_.store(true, std::memory_order_release);
+    slot_dirty = true;
+  }
+
+  PendingTarget pending{};
+  while (pending_targets_.Pop(pending)) {
+    const auto didx = static_cast<std::size_t>(pending.device_idx);
+    if (didx >= ControllerState::kMaxDevices) {
+      continue;
+    }
+    const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
+                                     static_cast<std::size_t>(kMaxDeviceChannels));
+    for (std::size_t i = 0; i < nch; ++i) {
+      current_target_slot_.targets[didx][i] = pending.values[i];
+    }
+    if (pending.device_idx == 0) {
+      robot_new_target_pending_ = true;
+    } else if (pending.device_idx == 1) {
+      hand_new_target_pending_ = true;
+    }
+    slot_dirty = true;
+  }
+
+  if (slot_dirty) {
+    target_seqlock_.Store(current_target_slot_);
   }
 }
 

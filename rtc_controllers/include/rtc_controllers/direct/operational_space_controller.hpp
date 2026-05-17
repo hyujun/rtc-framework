@@ -4,6 +4,7 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include <rtc_base/threading/seqlock.hpp>
+#include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -24,11 +25,12 @@
 
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace rtc {
@@ -92,8 +94,6 @@ class OperationalSpaceController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState& state) noexcept override;
-
   [[nodiscard]] std::string_view Name() const noexcept override;
 
   void TriggerEstop() noexcept override;
@@ -147,12 +147,10 @@ class OperationalSpaceController final : public RTControllerInterface {
   // PartialPivLU on a fixed-size 6×6 matrix — zero dynamic allocation.
   Eigen::PartialPivLU<Eigen::Matrix<double, 6, 6>> lu_;
 
-  // Desired SE3 goal pose, updated in SetRobotTarget() and used to initialise
-  // the trajectory.
+  // RT-thread-only working copies materialised from the SeqLock POD at the
+  // start of each Compute(). Not shared across threads.
   pinocchio::SE3 goal_pose_{pinocchio::SE3::Identity()};
 
-  std::atomic<bool> new_target_{false};
-  std::mutex target_mutex_;
   trajectory::TaskSpaceTrajectory trajectory_;
   trajectory::TaskSpaceTrajectory::State traj_state_{};
   double trajectory_time_{0.0};
@@ -164,9 +162,41 @@ class OperationalSpaceController final : public RTControllerInterface {
 
   // ── Controller state ──────────────────────────────────────────────────────
   SeqLock<Gains> gains_lock_;
-  std::array<double, 6> pose_target_{};  ///< [x,y,z,r,p,yaw]
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
-      device_targets_{};
+
+  // TargetSlot — Eigen / pinocchio::SE3 are NOT trivially copyable (false
+  // negative documented in [[feedback_eigen_seqlock_pod_wrapper]]), so the
+  // goal pose is mirrored as a plain double[9] + double[3] flat array. The
+  // RT thread is the sole SeqLock writer; off-RT writers push onto
+  // pending_targets_ instead.
+  static constexpr std::size_t kSE3RotDoubles = 9;
+  static constexpr std::size_t kSE3TransDoubles = 3;
+
+  struct TargetSlot {
+    std::array<double, 6> pose_target{};            // [x,y,z,r,p,yaw]
+    std::array<double, kSE3RotDoubles> goal_rot{};  // 3x3 col-major
+    std::array<double, kSE3TransDoubles> goal_t{};
+    std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<TargetSlot>,
+                "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, kMaxDeviceChannels> values{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  SeqLock<TargetSlot> target_seqlock_;
+  SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
+  std::atomic<bool> target_initialized_{false};
+  bool new_target_pending_{false};  // RT-thread-only; gates trajectory re-init
+
   std::array<double, 3> tcp_position_{};      ///< diagnostic cache
   std::array<double, 6> pose_error_cache_{};  ///< diagnostic cache
 

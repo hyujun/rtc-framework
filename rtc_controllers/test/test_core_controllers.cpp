@@ -53,7 +53,7 @@ TEST(PController, ComputeAtTarget) {
   auto state = MakeState();
 
   // Target == position (both zero) -> command should be near current position
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   EXPECT_TRUE(out.valid);
@@ -70,7 +70,7 @@ TEST(PController, ComputeWithError) {
   rtc::PController ctrl(GetTestUrdfPath());
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
 
   // Set a target offset for joint 0
   std::array<double, 6> target{0.5, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -93,7 +93,7 @@ TEST(PController, SetDeviceTarget) {
   rtc::PController ctrl(GetTestUrdfPath());
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
 
   std::array<double, 6> target{0.1, -0.2, 0.3, -0.1, 0.05, -0.15};
   ctrl.SetDeviceTarget(0, target);
@@ -118,7 +118,7 @@ TEST(PController, InitializeHoldPosition) {
   state.devices[0].positions[0] = 0.3;
   state.devices[0].positions[1] = -0.2;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   // Should hold current position (command ~= position)
@@ -133,7 +133,7 @@ TEST(PController, Estop) {
   auto state = MakeState();
   state.devices[0].positions[0] = 0.5;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   // Set a different target
   std::array<double, 6> target{1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   ctrl.SetDeviceTarget(0, target);
@@ -154,7 +154,7 @@ TEST(PController, EstopClear) {
   rtc::PController ctrl(GetTestUrdfPath());
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   std::array<double, 6> target{0.5, 0.0, 0.0, 0.0, 0.0, 0.0};
   ctrl.SetDeviceTarget(0, target);
 
@@ -194,7 +194,7 @@ TEST(PController, ZeroDt) {
   rtc::PController ctrl(GetTestUrdfPath());
   auto state = MakeState(6, 0.0);  // dt = 0
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   std::array<double, 6> target{0.3, 0.0, 0.0, 0.0, 0.0, 0.0};
   ctrl.SetDeviceTarget(0, target);
 
@@ -215,7 +215,7 @@ TEST(JointPD, ComputeAtTarget) {
   rtc::JointPDController ctrl(GetTestUrdfPath());
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   EXPECT_TRUE(out.valid);
@@ -233,7 +233,7 @@ TEST(JointPD, ComputeWithError) {
   rtc::JointPDController ctrl(GetTestUrdfPath());
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
 
   // Set a target offset from current position
   std::array<double, 6> target{0.3, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -255,7 +255,7 @@ TEST(JointPD, SetDeviceTarget) {
   rtc::JointPDController ctrl(GetTestUrdfPath());
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
 
   std::array<double, 6> target{0.1, 0.0, 0.0, 0.0, 0.0, 0.0};
   ctrl.SetDeviceTarget(0, target);
@@ -282,7 +282,7 @@ TEST(JointPD, InitializeHoldPosition) {
   state.devices[0].positions[0] = 0.5;
   state.devices[0].positions[1] = -0.3;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   // At hold position, PD error ~0, torque ~0
@@ -301,7 +301,7 @@ TEST(JointPD, Estop) {
   auto state = MakeState();
   state.devices[0].positions[0] = 0.5;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
 
   ctrl.TriggerEstop();
   EXPECT_TRUE(ctrl.IsEstopped());
@@ -361,7 +361,7 @@ TEST(Clik, ComputeAtTarget) {
   auto state = MakeState();
 
   // Initialize hold -> target becomes current FK position
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   EXPECT_TRUE(out.valid);
@@ -383,7 +383,7 @@ TEST(Clik, ComputeWithTaskError) {
 
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out0 = ctrl.Compute(state);
 
   // Set target offset from current TCP position (3-DOF mode: x,y,z)
@@ -414,7 +414,7 @@ TEST(Clik, InitializeHoldPosition) {
   state.devices[0].positions[0] = 0.3;
   state.devices[0].positions[1] = -0.2;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   // After InitializeHoldPosition, commands should hold near current joints
@@ -434,7 +434,7 @@ TEST(Clik, Estop) {
   auto state = MakeState();
   state.devices[0].positions[0] = 0.5;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
 
   ctrl.TriggerEstop();
   EXPECT_TRUE(ctrl.IsEstopped());
@@ -497,7 +497,7 @@ TEST(OSC, ComputeAtTarget) {
 
   auto state = MakeState();
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   EXPECT_TRUE(out.valid);
@@ -521,7 +521,7 @@ TEST(OSC, ComputeWithPosError) {
 
   auto state = MakeState();
   // Use non-zero joint config for well-conditioned Jacobian
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out0 = ctrl.Compute(state);
 
   // Set target offset from current TCP pose
@@ -554,7 +554,7 @@ TEST(OSC, InitializeHoldPosition) {
   state.devices[0].positions[0] = 0.3;
   state.devices[0].positions[1] = -0.2;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
   auto out = ctrl.Compute(state);
 
   // After InitializeHoldPosition, commands should stay near current joints
@@ -574,7 +574,7 @@ TEST(OSC, Estop) {
   auto state = MakeState();
   state.devices[0].positions[0] = 0.5;
 
-  ctrl.InitializeHoldPosition(state);
+  (void)ctrl.Compute(state);
 
   ctrl.TriggerEstop();
   EXPECT_TRUE(ctrl.IsEstopped());

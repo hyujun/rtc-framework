@@ -283,7 +283,7 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
     out0.target_velocities[i] = robot_computed_.velocities[i];
     out0.trajectory_positions[i] = robot_computed_.positions[i];
     out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = device_targets_[0][i];
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
   rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
                          std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
@@ -341,7 +341,7 @@ ControllerOutput DemoWbcController::WriteOutput(const ControllerState& state) no
       out1.target_velocities[i] = hand_computed_.velocities[i];
       out1.trajectory_positions[i] = hand_computed_.positions[i];
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
-      out1.goal_positions[i] = device_targets_[1][i];
+      out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
     rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
                            std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);

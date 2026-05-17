@@ -141,18 +141,17 @@ RtControllerNode::CallbackReturn RtControllerNode::on_activate(
   }
 
   // Activate ONLY the initial controller (single-active invariant, D-A1).
-  // Snapshot is empty because the RT loop has not yet received any sensor
-  // data; the loop's auto-hold path (rt_loop.cpp) takes over once state
-  // arrives. Controller-owned LifecyclePublishers are toggled inside the
-  // controller's on_activate (e.g. demo controllers' ActivateOwnedTopics).
+  // The controller seeds its own target slot from the current device state on
+  // its first Compute() tick — CM does not pass a state snapshot here.
+  // Controller-owned LifecyclePublishers are toggled inside the controller's
+  // on_activate (e.g. demo controllers' ActivateOwnedTopics).
   const int initial_idx = active_controller_idx_.load(std::memory_order_acquire);
   if (initial_idx < 0 || initial_idx >= static_cast<int>(controllers_.size())) {
     RCLCPP_ERROR(get_logger(), "on_activate: invalid initial_controller_idx %d (size=%zu)",
                  initial_idx, controllers_.size());
     return CallbackReturn::FAILURE;
   }
-  const rtc::ControllerState empty_snapshot{};
-  const auto rc = ActivateController(static_cast<std::size_t>(initial_idx), state, empty_snapshot);
+  const auto rc = ActivateController(static_cast<std::size_t>(initial_idx), state);
   if (rc != CallbackReturn::SUCCESS) {
     return rc;
   }
@@ -207,7 +206,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
   init_complete_ = false;
   init_wait_ticks_ = 0;
   state_received_.store(false, std::memory_order_release);
-  target_received_.store(false, std::memory_order_release);
   loop_count_ = 0;
   last_summary_wall_ = {};
   // Base PeriodicRtThread counters (overrun_count / skip_count /
@@ -353,42 +351,12 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
 // (initial-controller-only activation) and shutdown (active-only
 // deactivation) without redundant checks.
 
-rtc::ControllerState RtControllerNode::BuildDeviceSnapshot(std::size_t ctrl_idx) noexcept {
-  rtc::ControllerState snapshot{};
-  if (ctrl_idx >= controller_topic_configs_.size() ||
-      !state_received_.load(std::memory_order_acquire)) {
-    return snapshot;  // empty — caller skips hold init
-  }
-  const auto& slots = controller_slot_mappings_[ctrl_idx];
-  std::size_t di = 0;
-  for ([[maybe_unused]] const auto& [gname, ggroup] : controller_topic_configs_[ctrl_idx].groups) {
-    const auto slot = static_cast<std::size_t>(slots.slots[di]);
-    auto& dev = snapshot.devices[di];
-    rtc::DeviceStateCache cache{};
-    if (backends_[slot]) {
-      (void)backends_[slot]->ReadState(cache);
-    }
-    dev.num_channels = cache.num_channels;
-    dev.positions = cache.positions;
-    dev.velocities = cache.velocities;
-    dev.efforts = cache.efforts;
-    dev.valid = cache.valid;
-    ++di;
-  }
-  snapshot.num_devices = static_cast<int>(di);
-  // The fallback only fires if control_rate_ was misconfigured (LoadParameters
-  // guarantees > 0). Real RT ticks always observe 1 / configured rate.
-  snapshot.dt = (control_rate_ > 0.0) ? (1.0 / control_rate_) : rtc::kDefaultControlDtSec;
-  return snapshot;
-}
-
 RtControllerNode::CallbackReturn RtControllerNode::ActivateController(
-    std::size_t ctrl_idx, const rclcpp_lifecycle::State& prev_state,
-    const rtc::ControllerState& snapshot) {
+    std::size_t ctrl_idx, const rclcpp_lifecycle::State& prev_state) {
   if (ctrl_idx >= controllers_.size() || !controllers_[ctrl_idx]) {
     return CallbackReturn::FAILURE;
   }
-  const auto rc = controllers_[ctrl_idx]->on_activate(prev_state, snapshot);
+  const auto rc = controllers_[ctrl_idx]->on_activate(prev_state);
   if (rc == CallbackReturn::SUCCESS) {
     controller_states_[ctrl_idx].store(1, std::memory_order_release);
   }

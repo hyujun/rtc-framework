@@ -83,30 +83,82 @@ ControllerOutput JointPDController::Compute(const ControllerState& state) noexce
 
   const int nc0 = dev0.num_channels;
 
-  if (new_target_.load(std::memory_order_acquire)) {
-    std::unique_lock lock(target_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
-      trajectory::JointSpaceTrajectory<kMaxRobotDOF>::State start_state;
-      trajectory::JointSpaceTrajectory<kMaxRobotDOF>::State goal_state;
+  // ── Target slot maintenance (RT thread is the single SeqLock writer) ──
+  TargetSlot slot = target_seqlock_.Load();
+  bool slot_dirty = false;
 
-      double max_dist = 0.0;
-      for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-        start_state.positions[i] = dev0.positions[i];
-        start_state.velocities[i] = dev0.velocities[i];
-        start_state.accelerations[i] = 0.0;
-
-        goal_state.positions[i] = device_targets_[0][i];
-        goal_state.velocities[i] = 0.0;
-        goal_state.accelerations[i] = 0.0;
-
-        max_dist = std::max(max_dist, std::abs(device_targets_[0][i] - dev0.positions[i]));
+  // First-tick self-init: seed every device's target slot from the current
+  // state so subsequent ticks have a coherent baseline.
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      const auto& dev = state.devices[d];
+      if (!dev.valid) {
+        continue;
       }
-
-      const double duration = std::max(0.01, max_dist / gains.trajectory_speed);
-      trajectory_.initialize(start_state, goal_state, duration);
-      trajectory_time_ = 0.0;
-      new_target_.store(false, std::memory_order_relaxed);
+      const std::size_t nch = std::min(static_cast<std::size_t>(dev.num_channels),
+                                       static_cast<std::size_t>(kMaxDeviceChannels));
+      for (std::size_t i = 0; i < nch; ++i) {
+        slot.targets[d][i] = dev.positions[i];
+      }
     }
+    trajectory::JointSpaceTrajectory<kMaxRobotDOF>::State hold_state;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      hold_state.positions[i] = dev0.positions[i];
+      hold_state.velocities[i] = 0.0;
+      hold_state.accelerations[i] = 0.0;
+    }
+    trajectory_.initialize(hold_state, hold_state, 0.01);
+    trajectory_time_ = 0.0;
+    prev_error_ = {};
+    new_target_pending_ = false;
+    target_initialized_.store(true, std::memory_order_release);
+    slot_dirty = true;
+  }
+
+  // Drain SPSC entries pushed by off-RT SetDeviceTarget callers. Device 0
+  // updates trigger a trajectory re-init; secondary devices passthrough.
+  PendingTarget pending{};
+  while (pending_targets_.Pop(pending)) {
+    const auto didx = static_cast<std::size_t>(pending.device_idx);
+    if (didx >= ControllerState::kMaxDevices) {
+      continue;
+    }
+    const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
+                                     static_cast<std::size_t>(kMaxDeviceChannels));
+    for (std::size_t i = 0; i < nch; ++i) {
+      slot.targets[didx][i] = pending.values[i];
+    }
+    if (didx == 0) {
+      new_target_pending_ = true;
+    }
+    slot_dirty = true;
+  }
+
+  if (new_target_pending_) {
+    trajectory::JointSpaceTrajectory<kMaxRobotDOF>::State start_state;
+    trajectory::JointSpaceTrajectory<kMaxRobotDOF>::State goal_state;
+
+    double max_dist = 0.0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      start_state.positions[i] = dev0.positions[i];
+      start_state.velocities[i] = dev0.velocities[i];
+      start_state.accelerations[i] = 0.0;
+
+      goal_state.positions[i] = slot.targets[0][i];
+      goal_state.velocities[i] = 0.0;
+      goal_state.accelerations[i] = 0.0;
+
+      max_dist = std::max(max_dist, std::abs(slot.targets[0][i] - dev0.positions[i]));
+    }
+
+    const double duration = std::max(0.01, max_dist / gains.trajectory_speed);
+    trajectory_.initialize(start_state, goal_state, duration);
+    trajectory_time_ = 0.0;
+    new_target_pending_ = false;
+  }
+
+  if (slot_dirty) {
+    target_seqlock_.Store(slot);
   }
 
   const auto traj_state = trajectory_.compute(trajectory_time_);
@@ -139,11 +191,11 @@ ControllerOutput JointPDController::Compute(const ControllerState& state) noexce
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = traj_state.positions[i];
-    out0.goal_positions[i] = device_targets_[0][i];
+    out0.goal_positions[i] = slot.targets[0][i];
     out0.target_velocities[i] = traj_state.velocities[i];
   }
 
-  rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
+  rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
 
   ClampCommands(out0.commands, nc0, command_type_);
 
@@ -162,55 +214,20 @@ ControllerOutput JointPDController::Compute(const ControllerState& state) noexce
 }
 
 void JointPDController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
-  const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-  if (device_idx == 0) {
-    std::lock_guard lock(target_mutex_);
-    for (std::size_t i = 0; i < n; ++i) {
-      device_targets_[0][i] = target[i];
-    }
-    new_target_.store(true, std::memory_order_release);
-  } else {
-    const auto ud = static_cast<std::size_t>(device_idx);
-    for (std::size_t i = 0; i < n; ++i) {
-      device_targets_[ud][i] = target[i];
-    }
   }
-}
-
-void JointPDController::InitializeHoldPosition(const ControllerState& state) noexcept {
-  const auto& dev0 = state.devices[0];
-  const int nc0 = dev0.num_channels;
-  // try_lock: called from RT path — never block. Skip on contention (retry next
-  // tick).
-  std::unique_lock lock(target_mutex_, std::try_to_lock);
-  if (!lock.owns_lock())
-    return;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    device_targets_[0][i] = dev0.positions[i];
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = target[i];
   }
-  trajectory::JointSpaceTrajectory<kMaxRobotDOF>::State hold_state;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    hold_state.positions[i] = dev0.positions[i];
-    hold_state.velocities[i] = 0.0;
-    hold_state.accelerations[i] = 0.0;
-  }
-  trajectory_.initialize(hold_state, hold_state, 0.01);
-  trajectory_time_ = 0.0;
-  prev_error_ = {};
-  new_target_.store(false, std::memory_order_relaxed);
-
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto& dev = state.devices[d];
-    if (!dev.valid)
-      continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
-                            i < static_cast<std::size_t>(kMaxDeviceChannels);
-         ++i) {
-      device_targets_[d][i] = dev.positions[i];
-    }
-  }
+  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
+  // and is the SOLE writer of target_seqlock_. SpscQueue::Push is lock-free
+  // and uses newest-drop on overflow, so callbacks never block.
+  (void)pending_targets_.Push(pending);
 }
 
 // ── E-STOP
@@ -223,7 +240,10 @@ void JointPDController::TriggerEstop() noexcept {
 void JointPDController::ClearEstop() noexcept {
   estopped_.store(false, std::memory_order_release);
   prev_error_ = {};
-  new_target_.store(true, std::memory_order_relaxed);
+  // Force the next Compute() to re-seed the target slot + trajectory from the
+  // current device state (single-writer invariant preserved — target_seqlock_
+  // is still only ever stored by the RT thread).
+  target_initialized_.store(false, std::memory_order_release);
 }
 
 bool JointPDController::IsEstopped() const noexcept {
@@ -306,7 +326,10 @@ ControllerOutput JointPDController::ComputeEstop(const ControllerState& state) n
     out0.goal_positions[i] = safe_position_[i];
   }
   ClampCommands(out0.commands, nc0, command_type_);
-  new_target_.store(true, std::memory_order_relaxed);
+  // After E-STOP returns to normal flow we re-trigger self-init so the
+  // trajectory matches whatever state the robot is in (single-writer-safe:
+  // RT thread itself sets this).
+  target_initialized_.store(false, std::memory_order_release);
   return output;
 }
 

@@ -142,11 +142,11 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_activate(
-    const rclcpp_lifecycle::State& /*previous_state*/,
-    const ControllerState& device_snapshot) noexcept {
-  if (device_snapshot.num_devices > 0) {
-    InitializeHoldPosition(device_snapshot);
-  }
+    const rclcpp_lifecycle::State& /*previous_state*/) noexcept {
+  // Controller-internal init policy: each derived controller seeds its
+  // target slot from the current device state on the first Compute() tick
+  // after activation. The base has no hold-init responsibility — see the
+  // header comment for the rationale (single-writer SeqLock invariant).
   return CallbackReturn::SUCCESS;
 }
 
@@ -256,7 +256,6 @@ void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, 
 
   const int n = std::min(ordered_size, kMaxDeviceChannels);
   SetDeviceTarget(device_idx, std::span<const double>(ordered_ptr, static_cast<std::size_t>(n)));
-  NotifyTargetReceived();
 }
 
 void RTControllerInterface::LoadDeviceLimitsFromConfig(

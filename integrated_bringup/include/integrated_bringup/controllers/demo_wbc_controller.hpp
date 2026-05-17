@@ -9,6 +9,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -40,11 +41,12 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace integrated_bringup {
@@ -124,8 +126,6 @@ class DemoWbcController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState& state) noexcept override;
-
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoWbcController"; }
 
   void TriggerEstop() noexcept override;
@@ -137,8 +137,7 @@ class DemoWbcController final : public RTControllerInterface {
   CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                               const YAML::Node& yaml) noexcept override;
-  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev,
-                             const rtc::ControllerState& device_snapshot) noexcept override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
   void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
@@ -167,7 +166,14 @@ class DemoWbcController final : public RTControllerInterface {
     return wbc_state_;
   }
 
-  void ForcePhaseForTesting(WbcPhase p) noexcept { phase_ = p; }
+  void ForcePhaseForTesting(WbcPhase p) noexcept {
+    phase_ = p;
+    // Force-injection tests rely on the first post-ForcePhase tick treating
+    // any change in fingertip force as a fresh measurement (no spurious
+    // df/dt spike). Reset the initialization flag so the next ReadState
+    // tick skips the EMA delta computation.
+    force_rate_initialized_ = false;
+  }
 
   void SetGraspCmdForTesting(int v) noexcept { grasp_cmd_.store(v, std::memory_order_release); }
 
@@ -342,14 +348,50 @@ class DemoWbcController final : public RTControllerInterface {
   rtc::tsid::ControlState ctrl_state_;
 
   // ── Target management ───────────────────────────────────────────────────
-  std::mutex target_mutex_;
-  std::atomic<bool> robot_new_target_{false};
-  std::atomic<bool> hand_new_target_{false};
+  // RT thread is the SOLE writer of target_seqlock_. Off-RT SetDeviceTarget
+  // callers marshal onto pending_targets_; RT thread drains in Compute().
+  static constexpr std::size_t kSE3RotDoubles = 9;
+  static constexpr std::size_t kSE3TransDoubles = 3;
 
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
-      device_targets_{};
+  struct TargetSlot {
+    std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
+    std::array<double, kSE3RotDoubles> tcp_goal_rot{};
+    std::array<double, kSE3TransDoubles> tcp_goal_t{};
+    bool tcp_goal_valid{false};
+  };
 
-  // Task-space goal (computed from FK of arm target in SetDeviceTarget)
+  static_assert(std::is_trivially_copyable_v<TargetSlot>,
+                "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, kMaxDeviceChannels> values{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  rtc::SeqLock<TargetSlot> target_seqlock_;
+  rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
+  std::atomic<bool> target_initialized_{false};
+  TargetSlot current_target_slot_{};
+  bool robot_new_target_pending_{false};  // RT-thread-only
+  bool hand_new_target_pending_{false};   // RT-thread-only
+
+  // RT-thread-only: refresh current_target_slot_ from the SeqLock + drain
+  // pending entries. Also flips robot/hand _pending_ flags for the FSM.
+  void DrainTargetSlot(const ControllerState& state) noexcept;
+
+  // Aux-thread spawn of MPC thread (idempotent). Called from on_activate so
+  // the heap-allocating Factory::Create + thread.Start happen off the RT
+  // path. MPCFactory is given a zero-initialised PhaseContext, matching the
+  // legacy InitializeHoldPosition semantics.
+  void SpawnMpcThreadIfNeeded() noexcept;
+
+  // RT-thread working SE3 (materialised from current_target_slot_.tcp_goal_*).
   pinocchio::SE3 tcp_goal_{pinocchio::SE3::Identity()};
   bool tcp_goal_valid_{false};
 
@@ -377,8 +419,9 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── MPC integration (Phase 5 + 7b) ──────────────────────────────────────
   //
-  // When `mpc_enabled_` is true, `InitializeHoldPosition` spawns one of two
-  // MPC thread implementations:
+  // When `mpc_enabled_` is true, `SpawnMpcThreadIfNeeded()` (called from
+  // on_activate on the aux thread) spawns one of two MPC thread
+  // implementations:
   //
   //   `mpc.engine: "mock"`     (Phase 5, default) — MockMPCThread publishes
   //                            a self-regularising hold target. Keeps the
@@ -399,7 +442,7 @@ class DemoWbcController final : public RTControllerInterface {
   bool mpc_enabled_{false};
   MpcEngine mpc_engine_{MpcEngine::kMock};
   // MPC solve-loop frequency (Hz). Loaded from YAML `mpc.target_frequency_hz`
-  // and forwarded to MpcThreadLaunchConfig in InitializeHoldPosition. Default
+  // and forwarded to MpcThreadLaunchConfig in SpawnMpcThreadIfNeeded. Default
   // 20 Hz preserves prior hardcoded behaviour.
   double mpc_target_frequency_hz_{20.0};
   rtc::mpc::MPCSolutionManager mpc_manager_;
@@ -410,7 +453,7 @@ class DemoWbcController final : public RTControllerInterface {
   // `mpc_model_handler_` stays owned by the controller because HandlerMPCThread
   // only holds a non-owning reference to it; its lifetime must bracket the
   // MPC thread. `phase_manager_owned_` holds the manager between LoadConfig
-  // (build + validate YAML) and InitializeHoldPosition (ownership transferred
+  // (build + validate YAML) and SpawnMpcThreadIfNeeded (ownership transferred
   // into HandlerMPCThread::Configure). `phase_manager_ptr_` is a borrowed
   // raw pointer that stays valid for the thread's lifetime; the controller
   // uses it to bridge WBC FSM edges onto the grasp FSM command bus

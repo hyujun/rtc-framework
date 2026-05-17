@@ -69,9 +69,11 @@ void ClikController::OnDeviceConfigsSet() {
     }
     if (!cfg->safe_position.empty()) {
       safe_position_ = cfg->safe_position;
-      // Also use safe_position as null-space reference if available
-      for (std::size_t i = 0; i < std::min(cfg->safe_position.size(), null_target_.size()); ++i) {
-        null_target_[i] = cfg->safe_position[i];
+      // Seed the off-RT null-space init vector; the RT thread copies it
+      // into the TargetSlot on the first Compute() tick.
+      for (std::size_t i = 0; i < std::min(cfg->safe_position.size(), null_target_init_.size());
+           ++i) {
+        null_target_init_[i] = cfg->safe_position[i];
       }
     }
   }
@@ -118,18 +120,107 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   const pinocchio::SE3& tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
   const Eigen::Vector3d tcp = tcp_pose.translation();
 
-  if (!target_initialized_) {
+  // ── Target slot maintenance (RT thread is the single SeqLock writer) ──
+  TargetSlot slot = target_seqlock_.Load();
+  bool slot_dirty = false;
+
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    slot.tcp_target = {tcp[0], tcp[1], tcp[2]};
+    std::memcpy(slot.tcp_target_rot.data(), tcp_pose.rotation().data(),
+                sizeof(slot.tcp_target_rot));
+    std::memcpy(slot.tcp_target_t.data(), tcp_pose.translation().data(), sizeof(slot.tcp_target_t));
+    for (int i = 0; i < nv; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      // Prefer YAML safe_position via null_target_init_; fall back to the
+      // current joint pose if no safe_position was supplied.
+      slot.null_target[idx] =
+          (null_target_init_[idx] != 0.0) ? null_target_init_[idx] : dev0.positions[idx];
+    }
+    for (std::size_t didx = 1; didx < static_cast<std::size_t>(state.num_devices); ++didx) {
+      const auto& dev = state.devices[didx];
+      if (!dev.valid) {
+        continue;
+      }
+      const std::size_t nch = std::min(static_cast<std::size_t>(dev.num_channels),
+                                       static_cast<std::size_t>(kMaxDeviceChannels));
+      for (std::size_t i = 0; i < nch; ++i) {
+        slot.targets[didx][i] = dev.positions[i];
+      }
+    }
+    // Seed RT-thread working SE3 + integration state.
     tcp_target_pose_ = tcp_pose;
-    // Keep internal target synchronized
-    tcp_target_ = {tcp[0], tcp[1], tcp[2]};
-    target_initialized_ = true;
+    for (int i = 0; i < nv; ++i) {
+      desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+    }
+    trajectory_.initialize(tcp_pose, pinocchio::Motion::Zero(), tcp_pose, pinocchio::Motion::Zero(),
+                           0.01);
+    trajectory_time_ = 0.0;
+    has_pending_segment_ = false;
+    new_target_pending_ = false;
+    target_initialized_.store(true, std::memory_order_release);
+    slot_dirty = true;
+  } else {
+    // Restore RT-thread working SE3 from POD storage so diagnostic echoes
+    // see a consistent rotation matrix every tick.
+    std::memcpy(tcp_target_pose_.rotation().data(), slot.tcp_target_rot.data(),
+                sizeof(slot.tcp_target_rot));
+    std::memcpy(tcp_target_pose_.translation().data(), slot.tcp_target_t.data(),
+                sizeof(slot.tcp_target_t));
   }
 
-  // Protect target read + trajectory init with target_mutex_.
-  // try_lock so RT thread never blocks — skip on contention, handle next tick.
-  if (new_target_.load(std::memory_order_acquire)) {
-    std::unique_lock lock(target_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
+  // Drain SPSC entries from off-RT SetDeviceTarget.
+  PendingTarget pending{};
+  while (pending_targets_.Pop(pending)) {
+    const auto didx = static_cast<std::size_t>(pending.device_idx);
+    if (didx >= ControllerState::kMaxDevices) {
+      continue;
+    }
+    if (didx == 0) {
+      if (gains_lock_.Load().control_6dof) {
+        if (pending.num_values >= 6) {
+          slot.tcp_target[0] = pending.values[0];
+          slot.tcp_target[1] = pending.values[1];
+          slot.tcp_target[2] = pending.values[2];
+          Eigen::AngleAxisd rollAngle(pending.values[3], Eigen::Vector3d::UnitX());
+          Eigen::AngleAxisd pitchAngle(pending.values[4], Eigen::Vector3d::UnitY());
+          Eigen::AngleAxisd yawAngle(pending.values[5], Eigen::Vector3d::UnitZ());
+          const Eigen::Quaternion<double> qrot = yawAngle * pitchAngle * rollAngle;
+          const Eigen::Matrix3d rotation = qrot.matrix();
+          const Eigen::Vector3d translation(pending.values[0], pending.values[1],
+                                            pending.values[2]);
+          std::memcpy(slot.tcp_target_rot.data(), rotation.data(), sizeof(slot.tcp_target_rot));
+          std::memcpy(slot.tcp_target_t.data(), translation.data(), sizeof(slot.tcp_target_t));
+          tcp_target_pose_.translation() = translation;
+          tcp_target_pose_.rotation() = rotation;
+          new_target_pending_ = true;
+        }
+      } else {
+        const auto nv_u = static_cast<std::size_t>(handle_->nv());
+        const std::size_t pn = std::min(static_cast<std::size_t>(pending.num_values), nv_u);
+        for (std::size_t i = 0; i < std::min(pn, std::size_t{3}); ++i) {
+          slot.tcp_target[i] = pending.values[i];
+        }
+        for (std::size_t i = 3; i < pn; ++i) {
+          slot.null_target[i] = pending.values[i];
+        }
+        new_target_pending_ = true;
+      }
+    } else {
+      const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
+                                       static_cast<std::size_t>(kMaxDeviceChannels));
+      for (std::size_t i = 0; i < nch; ++i) {
+        slot.targets[didx][i] = pending.values[i];
+      }
+    }
+    slot_dirty = true;
+  }
+
+  if (slot_dirty) {
+    target_seqlock_.Store(slot);
+  }
+
+  if (new_target_pending_) {
+    {
       pinocchio::SE3 start_pose = tcp_pose;
       pinocchio::SE3 goal_pose;
 
@@ -137,7 +228,8 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
         goal_pose = tcp_target_pose_;
       } else {
         goal_pose = start_pose;  // keep current rotation
-        goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
+        goal_pose.translation() =
+            Eigen::Vector3d(slot.tcp_target[0], slot.tcp_target[1], slot.tcp_target[2]);
       }
 
       const Eigen::Vector3d start_pos = start_pose.translation();
@@ -208,7 +300,7 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
       for (int i = 0; i < nv; ++i) {
         desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
       }
-      new_target_.store(false, std::memory_order_relaxed);
+      new_target_pending_ = false;
     }
   }
 
@@ -297,8 +389,8 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     N_.noalias() -= Jpinv_ * J_pos_;
 
     for (int i = 0; i < nv; ++i) {
-      null_err_[static_cast<Eigen::Index>(i)] =
-          null_target_[static_cast<std::size_t>(i)] - dev0.positions[static_cast<std::size_t>(i)];
+      null_err_[static_cast<Eigen::Index>(i)] = slot.null_target[static_cast<std::size_t>(i)] -
+                                                dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
     null_dq_ *= gains.null_kp;
@@ -329,17 +421,17 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_positions[i] = null_target_[i];
+    out0.target_positions[i] = slot.null_target[i];
   }
   // goal_positions: task-space goal in [0..2], null-space goal in [3..5]
   for (std::size_t i = 0; i < 3; ++i) {
-    out0.goal_positions[i] = tcp_target_[i];
+    out0.goal_positions[i] = slot.tcp_target[i];
   }
   for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.goal_positions[i] = null_target_[i];
+    out0.goal_positions[i] = slot.null_target[i];
   }
 
-  rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
+  rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
 
   const pinocchio::SE3& tcp_current = handle_->GetFramePlacement(tip_frame_id_);
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp_current.rotation());
@@ -351,9 +443,9 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   output.actual_task_positions[5] = rpy[2];
 
   // Task-space goal target
-  output.task_goal_positions[0] = tcp_target_[0];
-  output.task_goal_positions[1] = tcp_target_[1];
-  output.task_goal_positions[2] = tcp_target_[2];
+  output.task_goal_positions[0] = slot.tcp_target[0];
+  output.task_goal_positions[1] = slot.tcp_target[1];
+  output.task_goal_positions[2] = slot.tcp_target[2];
   if (use_6dof) {
     Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
     output.task_goal_positions[3] = goal_rpy[0];
@@ -389,99 +481,19 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
 }
 
 void ClikController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
-  if (device_idx == 0) {
-    std::lock_guard lock(target_mutex_);
-    if (gains_lock_.Load().control_6dof) {
-      // 6-DOF target mode: [x, y, z, roll, pitch, yaw]
-      if (target.size() >= 6) {
-        tcp_target_[0] = target[0];
-        tcp_target_[1] = target[1];
-        tcp_target_[2] = target[2];
-
-        double r = target[3];
-        double p = target[4];
-        double y = target[5];
-
-        Eigen::AngleAxisd rollAngle(r, Eigen::Vector3d::UnitX());
-        Eigen::AngleAxisd pitchAngle(p, Eigen::Vector3d::UnitY());
-        Eigen::AngleAxisd yawAngle(y, Eigen::Vector3d::UnitZ());
-
-        Eigen::Quaternion<double> q = yawAngle * pitchAngle * rollAngle;
-
-        tcp_target_pose_.translation() << target[0], target[1], target[2];
-        tcp_target_pose_.rotation() = q.matrix();
-      }
-    } else {
-      // 3-DOF target mode: [x, y, z, null3, null4, ...]
-      const auto nv = static_cast<std::size_t>(handle_->nv());
-      const std::size_t n = std::min(target.size(), nv);
-      for (std::size_t i = 0; i < std::min(n, std::size_t{3}); ++i) {
-        tcp_target_[i] = target[i];
-      }
-      for (std::size_t i = 3; i < n; ++i) {
-        null_target_[i] = target[i];
-      }
-    }
-    new_target_.store(true, std::memory_order_release);
-  } else {
-    const auto ud = static_cast<std::size_t>(device_idx);
-    const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < n; ++i) {
-      device_targets_[ud][i] = target[i];
-    }
   }
-}
-
-void ClikController::InitializeHoldPosition(const ControllerState& state) noexcept {
-  const auto& dev0 = state.devices[0];
-  const int nv = handle_->nv();
-
-  // Compute current TCP position/pose via FK and set as target
-  std::array<double, kMaxDeviceChannels> q_buf{};
-  for (int i = 0; i < nv; ++i) {
-    q_buf[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = target[i];
   }
-  std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
-  handle_->ComputeForwardKinematics(q_span);
-  const pinocchio::SE3& tcp_pose = handle_->GetFramePlacement(tip_frame_id_);
-
-  // Initialize desired_q_ from current actual joint positions
-  for (int i = 0; i < nv; ++i) {
-    desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
-  }
-
-  // try_lock: called from RT path — never block. Skip on contention (retry next
-  // tick).
-  std::unique_lock lock(target_mutex_, std::try_to_lock);
-  if (!lock.owns_lock())
-    return;
-  tcp_target_pose_ = tcp_pose;
-  tcp_target_ = {tcp_pose.translation()[0], tcp_pose.translation()[1], tcp_pose.translation()[2]};
-  // null-space target: initialize to current joint positions
-  for (int i = 0; i < nv; ++i) {
-    null_target_[static_cast<std::size_t>(i)] = dev0.positions[static_cast<std::size_t>(i)];
-  }
-  target_initialized_ = true;
-  new_target_.store(false, std::memory_order_relaxed);
-
-  // Initialize stationary trajectory (start == goal)
-  trajectory_.initialize(tcp_pose, pinocchio::Motion::Zero(), tcp_pose, pinocchio::Motion::Zero(),
-                         0.01);
-  trajectory_time_ = 0.0;
-  has_pending_segment_ = false;
-
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto& dev = state.devices[d];
-    if (!dev.valid)
-      continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
-                            i < static_cast<std::size_t>(kMaxDeviceChannels);
-         ++i) {
-      device_targets_[d][i] = dev.positions[i];
-    }
-  }
+  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
+  // and is the SOLE writer of target_seqlock_.
+  (void)pending_targets_.Push(pending);
 }
 
 std::string_view ClikController::Name() const noexcept {

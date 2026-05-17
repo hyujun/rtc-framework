@@ -432,8 +432,9 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   //
   // If `mpc.enabled: true`, size the reference buffers and initialise the
   // MPC solution manager. The thread itself is spawned in
-  // InitializeHoldPosition so it starts from the first valid RT tick's
-  // state snapshot. If `mpc:` is missing or disabled, all MPC paths are
+  // SpawnMpcThreadIfNeeded (called from on_activate on the aux thread) so the
+  // heap-allocating MPCFactory::Create stays off the RT path. If `mpc:` is
+  // missing or disabled, all MPC paths are
   // short-circuited and TSID self-hold behaviour is preserved bit-exactly.
   //
   // `mpc.engine` (default "mock") selects MockMPCThread vs
@@ -563,7 +564,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       if (mpc_engine_ == MpcEngine::kHandler) {
         // GraspPhaseManager is built eagerly here (non-RT) so any YAML
         // schema errors surface before the RT thread starts. It is handed
-        // over to HandlerMPCThread::Configure in InitializeHoldPosition.
+        // over to HandlerMPCThread::Configure in SpawnMpcThreadIfNeeded.
         auto pm =
             std::make_unique<integrated_bringup::phase::GraspPhaseManager>(*mpc_model_handler_);
         const auto phase_err = pm->Load(
@@ -726,6 +727,7 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
 
   ReadState(state);
+  DrainTargetSlot(state);
 
   // E-STOP takes priority over FSM
   estop_active_ = estopped_.load(std::memory_order_acquire);
@@ -775,93 +777,129 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
 // ── Phase 1: Read state ──────────────────────────────────────────────────────
 
 void DemoWbcController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  std::lock_guard lock(target_mutex_);
-  const auto didx = static_cast<std::size_t>(device_idx);
-  if (didx >= device_targets_.size()) {
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
   }
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = target[i];
+  }
+  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
+  // and is the SOLE writer of target_seqlock_.
+  (void)pending_targets_.Push(pending);
+}
 
-  const auto n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-  std::copy_n(target.data(), n, device_targets_[didx].data());
+// RT-thread-only. Refreshes current_target_slot_, drains pending entries,
+// runs first-tick self-init (seeded from current device state).
+void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
+  current_target_slot_ = target_seqlock_.Load();
+  bool slot_dirty = false;
 
-  if (device_idx == 0) {
-    robot_new_target_.store(true, std::memory_order_release);
-  } else if (device_idx == 1) {
-    hand_new_target_.store(true, std::memory_order_release);
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
+    // dimensions (e.g. unit tests that bypass YAML).
+    if (arm_dof_ == 0 && state.num_devices > 0) {
+      arm_dof_ = std::min(state.devices[0].num_channels, kMaxArmDof);
+    }
+    if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
+      hand_dof_ = std::min(state.devices[1].num_channels, kMaxHandDof);
+    }
+    if (full_dof_ == 0) {
+      full_dof_ = arm_dof_ + hand_dof_;
+    }
+
+    // Robot arm: initialize trajectory at current position (zero velocity)
+    {
+      const auto& dev0 = state.devices[0];
+      trajectory::JointSpaceTrajectory<kMaxArmDof>::State hold{};
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        current_target_slot_.targets[0][idx] = dev0.positions[idx];
+        hold.positions[idx] = dev0.positions[idx];
+        robot_computed_.positions[idx] = dev0.positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
+      }
+      robot_trajectory_.initialize(hold, hold, 0.01);
+      robot_trajectory_time_ = 0.0;
+      robot_new_target_pending_ = false;
+    }
+
+    // Hand
+    for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      const auto& dev = state.devices[d];
+      if (!dev.valid) {
+        continue;
+      }
+      for (std::size_t i = 0;
+           i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
+        current_target_slot_.targets[d][i] = dev.positions[i];
+      }
+      if (d == 1) {
+        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hold{};
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hold.positions[idx] = dev.positions[idx];
+          hand_computed_.positions[idx] = dev.positions[idx];
+          hand_computed_.velocities[idx] = 0.0;
+        }
+        hand_trajectory_.initialize(hold, hold, 0.01);
+        hand_trajectory_time_ = 0.0;
+        hand_new_target_pending_ = false;
+      }
+    }
+
+    // Reset FSM
+    phase_ = WbcPhase::kIdle;
+    tcp_goal_valid_ = false;
+    current_target_slot_.tcp_goal_valid = false;
+    qp_fail_count_ = 0;
+    grasp_cmd_.store(0, std::memory_order_relaxed);
+
+    target_initialized_.store(true, std::memory_order_release);
+    slot_dirty = true;
+  } else {
+    // Restore RT-thread working SE3 from POD storage so reader sites see a
+    // consistent rotation matrix every tick.
+    tcp_goal_valid_ = current_target_slot_.tcp_goal_valid;
+    if (tcp_goal_valid_) {
+      std::memcpy(tcp_goal_.rotation().data(), current_target_slot_.tcp_goal_rot.data(),
+                  sizeof(current_target_slot_.tcp_goal_rot));
+      std::memcpy(tcp_goal_.translation().data(), current_target_slot_.tcp_goal_t.data(),
+                  sizeof(current_target_slot_.tcp_goal_t));
+    }
+  }
+
+  PendingTarget pending{};
+  while (pending_targets_.Pop(pending)) {
+    const auto didx = static_cast<std::size_t>(pending.device_idx);
+    if (didx >= ControllerState::kMaxDevices) {
+      continue;
+    }
+    const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
+                                     static_cast<std::size_t>(kMaxDeviceChannels));
+    for (std::size_t i = 0; i < nch; ++i) {
+      current_target_slot_.targets[didx][i] = pending.values[i];
+    }
+    if (pending.device_idx == 0) {
+      robot_new_target_pending_ = true;
+    } else if (pending.device_idx == 1) {
+      hand_new_target_pending_ = true;
+    }
+    slot_dirty = true;
+  }
+
+  if (slot_dirty) {
+    target_seqlock_.Store(current_target_slot_);
   }
 }
 
-void DemoWbcController::InitializeHoldPosition(const ControllerState& state) noexcept {
-  std::lock_guard lock(target_mutex_);
-
-  // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
-  // dimensions (e.g. unit tests that bypass YAML). Derive from device
-  // num_channels so the hold/E-STOP loops still cover the active channels.
-  if (arm_dof_ == 0 && state.num_devices > 0) {
-    arm_dof_ = std::min(state.devices[0].num_channels, kMaxArmDof);
-  }
-  if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
-    hand_dof_ = std::min(state.devices[1].num_channels, kMaxHandDof);
-  }
-  if (full_dof_ == 0) {
-    full_dof_ = arm_dof_ + hand_dof_;
-  }
-
-  // Robot arm: initialize trajectory at current position (zero velocity)
-  {
-    const auto& dev0 = state.devices[0];
-    trajectory::JointSpaceTrajectory<kMaxArmDof>::State hold{};
-    for (int i = 0; i < arm_dof_; ++i) {
-      const auto idx = static_cast<std::size_t>(i);
-      device_targets_[0][idx] = dev0.positions[idx];
-      hold.positions[idx] = dev0.positions[idx];
-      robot_computed_.positions[idx] = dev0.positions[idx];
-      robot_computed_.velocities[idx] = 0.0;
-    }
-    robot_trajectory_.initialize(hold, hold, 0.01);
-    robot_trajectory_time_ = 0.0;
-    robot_new_target_.store(false, std::memory_order_relaxed);
-  }
-
-  // Hand
-  for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto& dev = state.devices[d];
-    if (!dev.valid)
-      continue;
-    for (std::size_t i = 0;
-         i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
-      device_targets_[d][i] = dev.positions[i];
-    }
-    if (d == 1) {
-      trajectory::JointSpaceTrajectory<kMaxHandDof>::State hold{};
-      for (int i = 0; i < hand_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        hold.positions[idx] = dev.positions[idx];
-        hand_computed_.positions[idx] = dev.positions[idx];
-        hand_computed_.velocities[idx] = 0.0;
-      }
-      hand_trajectory_.initialize(hold, hold, 0.01);
-      hand_trajectory_time_ = 0.0;
-      hand_new_target_.store(false, std::memory_order_relaxed);
-    }
-  }
-
-  // Reset FSM
-  phase_ = WbcPhase::kIdle;
-  tcp_goal_valid_ = false;
-  qp_fail_count_ = 0;
-  grasp_cmd_.store(0, std::memory_order_relaxed);
-
-  // ── MPC thread lifecycle ────────────────────────────────────────────────
-  //
-  // Spawn the MPC thread lazily on first InitializeHoldPosition call so it
-  // starts from a known-good RT state. Subsequent calls (e.g. controller
-  // re-init after E-STOP clear) leave the existing thread running.
-  //
-  // Handler mode additionally builds the initial PhaseContext from the idle
-  // phase, runs MPCFactory::Create, and hands both the handler and the
-  // pre-loaded GraspPhaseManager to HandlerMPCThread::Configure. On factory
-  // failure we fall back to mock mode so the RT loop can still make progress.
+// Aux-thread spawn of MPC thread. Called from on_activate (heap-allocating;
+// must not run on the RT path). Idempotent — re-activation reuses the
+// existing thread.
+void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
   if (mpc_enabled_ && !mpc_thread_) {
     const auto thread_configs = rtc::SelectThreadConfigs();
     const int nq = static_cast<int>(q_curr_full_.size());
@@ -943,6 +981,11 @@ void DemoWbcController::TriggerEstop() noexcept {
 
 void DemoWbcController::ClearEstop() noexcept {
   estopped_.store(false, std::memory_order_release);
+  // Force the controller back through self-init on the next Compute() tick:
+  // seeds target slot from current state, resets phase_ to kIdle, and rebuilds
+  // trajectory baselines. RT-thread sole-writer invariant preserved (the
+  // SeqLock store happens inside DrainTargetSlot on the next RT tick).
+  target_initialized_.store(false, std::memory_order_release);
 }
 
 bool DemoWbcController::IsEstopped() const noexcept {

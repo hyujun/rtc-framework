@@ -42,10 +42,9 @@ class SrvMockController : public RTControllerInterface {
  public:
   explicit SrvMockController(std::string name) : name_(std::move(name)) {}
 
-  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev,
-                             const ControllerState& snapshot) noexcept override {
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override {
     activate_count_.fetch_add(1, std::memory_order_relaxed);
-    return RTControllerInterface::on_activate(prev, snapshot);
+    return RTControllerInterface::on_activate(prev);
   }
 
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& /*prev*/) noexcept override {
@@ -60,8 +59,6 @@ class SrvMockController : public RTControllerInterface {
   void SetDeviceTarget(int /*device_idx*/, std::span<const double> /*target*/) noexcept override {}
 
   std::string_view Name() const noexcept override { return name_; }
-
-  void InitializeHoldPosition(const ControllerState& /*state*/) noexcept override {}
 
   int ActivateCount() const { return activate_count_.load(std::memory_order_relaxed); }
 

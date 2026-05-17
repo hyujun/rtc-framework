@@ -43,70 +43,13 @@ void RtControllerNode::ControlLoop() {
 
   if (!state_received_.load(std::memory_order_acquire)) {
     if (!init_complete_ && init_timeout_ticks_ > 0 && ++init_wait_ticks_ > init_timeout_ticks_) {
-      RCLCPP_FATAL(get_logger(), "Initialization timeout (%.1f s): robot=%d, target=%d",
+      RCLCPP_FATAL(get_logger(), "Initialization timeout (%.1f s): robot=%d",
                    static_cast<double>(init_timeout_ticks_) / control_rate_,
-                   state_received_.load(std::memory_order_relaxed) ? 1 : 0,
-                   target_received_.load(std::memory_order_relaxed) ? 1 : 0);
+                   state_received_.load(std::memory_order_relaxed) ? 1 : 0);
       TriggerGlobalEstop("init_timeout");
       rclcpp::shutdown();
     }
     return;
-  }
-
-  if (!target_received_.load(std::memory_order_acquire)) {
-    if (auto_hold_position_) {
-      const int idx = active_controller_idx_.load(std::memory_order_acquire);
-      const auto uidx = static_cast<std::size_t>(idx);
-      const auto& active_tc = controller_topic_configs_[uidx];
-
-      const auto& hold_slots = controller_slot_mappings_[uidx];
-      urtc::ControllerState hold_state{};
-      {
-        std::size_t di = 0;
-        for ([[maybe_unused]] const auto& [gname, ggroup] : active_tc.groups) {
-          const auto slot = static_cast<std::size_t>(hold_slots.slots[di]);
-          auto& dev = hold_state.devices[di];
-          urtc::DeviceStateCache cache{};
-          if (backends_[slot]) {
-            (void)backends_[slot]->ReadState(cache);
-          }
-          dev.num_channels = cache.num_channels;
-          dev.positions = cache.positions;
-          dev.velocities = cache.velocities;
-          dev.efforts = cache.efforts;
-          dev.valid = cache.valid;
-          ++di;
-        }
-        hold_state.num_devices = static_cast<int>(di);
-      }
-      hold_state.dt = 1.0 / control_rate_;
-
-      bool all_devices_valid = true;
-      for (std::size_t d = 0; d < static_cast<std::size_t>(hold_state.num_devices); ++d) {
-        if (!hold_state.devices[d].valid) {
-          all_devices_valid = false;
-          break;
-        }
-      }
-      if (!all_devices_valid) {
-        return;
-      }
-
-      controllers_[uidx]->InitializeHoldPosition(hold_state);
-
-      target_received_.store(true, std::memory_order_release);
-      RCLCPP_INFO(get_logger(), "Auto-hold: initialized target from current position (%s)",
-                  controllers_[uidx]->Name().data());
-    } else {
-      if (!init_complete_ && init_timeout_ticks_ > 0 && ++init_wait_ticks_ > init_timeout_ticks_) {
-        RCLCPP_FATAL(get_logger(), "Initialization timeout (%.1f s): robot=%d, target=%d",
-                     static_cast<double>(init_timeout_ticks_) / control_rate_, 1,
-                     target_received_.load(std::memory_order_relaxed) ? 1 : 0);
-        TriggerGlobalEstop("init_timeout");
-        rclcpp::shutdown();
-      }
-      return;
-    }
   }
   init_complete_ = true;
 
@@ -172,12 +115,9 @@ void RtControllerNode::ControlLoop() {
   }
   state.num_devices = static_cast<int>(di);
 
-  {
-    std::unique_lock lock(target_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
-      device_target_snapshots_ = device_targets_;
-    }
-  }
+  // Per-controller targets are owned by the active controller (SeqLock +
+  // SPSC marshal). CM no longer mirrors them — Compute() reads its own
+  // SeqLock snapshot internally.
   state.dt = 1.0 / control_rate_;
   state.iteration = loop_count_;
 

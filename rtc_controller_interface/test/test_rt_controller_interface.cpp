@@ -46,7 +46,6 @@ class StubController : public rtc::RTControllerInterface {
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "StubController"; }
 
-  void InitializeHoldPosition(const rtc::ControllerState&) noexcept override {}
 
   // Expose protected statics for direct testing.
   using RTControllerInterface::LoadDeviceLimitsFromConfig;

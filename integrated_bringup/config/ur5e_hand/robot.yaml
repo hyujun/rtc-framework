@@ -14,9 +14,6 @@
     # ── Initialization timeout ────────────────────────────────────────────────
     init_timeout_sec: 30.0 # E-STOP + shutdown if no robot/target data (sec)
 
-    # ── Auto-hold position ────────────────────────────────────────────────────
-    auto_hold_position: true # Auto-target current position when no external goal
-
     # ── E-STOP configuration ─────────────────────────────────────────────────
     enable_estop: true # E-STOP timeout monitoring
     # device_timeouts: matches topics group names, watches state topic for gaps

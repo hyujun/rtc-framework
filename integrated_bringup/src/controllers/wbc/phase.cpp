@@ -18,7 +18,7 @@ void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
   switch (phase_) {
     case WbcPhase::kIdle:
       // grasp_cmd=1 + valid target → approach
-      if (cmd == 1 && robot_new_target_.load(std::memory_order_acquire)) {
+      if (cmd == 1 && robot_new_target_pending_) {
         next = WbcPhase::kApproach;
       }
       break;
@@ -172,8 +172,9 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     }
 
     case WbcPhase::kApproach: {
-      // Build quintic trajectory: current → target (arm)
-      std::lock_guard lock(target_mutex_);
+      // Build quintic trajectory: current → target (arm). current_target_slot_
+      // was refreshed at the top of Compute() by DrainTargetSlot; the RT
+      // thread is still the sole SeqLock writer.
       trajectory::JointSpaceTrajectory<kMaxArmDof>::State start{};
       trajectory::JointSpaceTrajectory<kMaxArmDof>::State goal{};
       double max_delta = 0.0;
@@ -181,7 +182,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         const auto idx = static_cast<std::size_t>(i);
         start.positions[idx] = dev0.positions[idx];
         q_approach_start_[idx] = dev0.positions[idx];  // save for kRetreat
-        goal.positions[idx] = device_targets_[0][idx];
+        goal.positions[idx] = current_target_slot_.targets[0][idx];
         const double delta = std::abs(goal.positions[idx] - start.positions[idx]);
         if (delta > max_delta) {
           max_delta = delta;
@@ -190,11 +191,11 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       const double duration = std::max(max_delta / gains.arm_trajectory_speed, 0.1);
       robot_trajectory_.initialize(start, goal, duration);
       robot_trajectory_time_ = 0.0;
-      robot_new_target_.store(false, std::memory_order_relaxed);
+      robot_new_target_pending_ = false;
 
       // Compute FK of arm target for SE3Task reference in kPreGrasp
       if (arm_handle_) {
-        std::span<const double> q_target(device_targets_[0].data(),
+        std::span<const double> q_target(current_target_slot_.targets[0].data(),
                                          static_cast<std::size_t>(arm_dof_));
         arm_handle_->ComputeForwardKinematics(q_target);
         tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
@@ -202,17 +203,26 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
           tcp_goal_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_goal_);
         }
         tcp_goal_valid_ = true;
+        // Mirror the freshly-FK'd SE3 into the SeqLock POD so subsequent
+        // ticks can restore tcp_goal_ from current_target_slot_ without
+        // touching another writer. Single-writer (RT) invariant preserved.
+        std::memcpy(current_target_slot_.tcp_goal_rot.data(), tcp_goal_.rotation().data(),
+                    sizeof(current_target_slot_.tcp_goal_rot));
+        std::memcpy(current_target_slot_.tcp_goal_t.data(), tcp_goal_.translation().data(),
+                    sizeof(current_target_slot_.tcp_goal_t));
+        current_target_slot_.tcp_goal_valid = true;
+        target_seqlock_.Store(current_target_slot_);
       }
 
       // Hand trajectory (pre-shape)
-      if (hand_new_target_.load(std::memory_order_acquire) && state.num_devices > 1 && dev1.valid) {
+      if (hand_new_target_pending_ && state.num_devices > 1 && dev1.valid) {
         trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
         trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
         double hmax = 0.0;
         for (int i = 0; i < hand_dof_; ++i) {
           const auto idx = static_cast<std::size_t>(i);
           hstart.positions[idx] = dev1.positions[idx];
-          hgoal.positions[idx] = device_targets_[1][idx];
+          hgoal.positions[idx] = current_target_slot_.targets[1][idx];
           const double hd = std::abs(hgoal.positions[idx] - hstart.positions[idx]);
           if (hd > hmax) {
             hmax = hd;
@@ -221,7 +231,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
         hand_trajectory_.initialize(hstart, hgoal, hdur);
         hand_trajectory_time_ = 0.0;
-        hand_new_target_.store(false, std::memory_order_relaxed);
+        hand_new_target_pending_ = false;
       }
       break;
     }
@@ -286,7 +296,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
           for (int i = 0; i < hand_dof_; ++i) {
             const auto hidx = static_cast<std::size_t>(i);
             hstart.positions[hidx] = dev1.positions[hidx];
-            hgoal.positions[hidx] = device_targets_[1][hidx];
+            hgoal.positions[hidx] = current_target_slot_.targets[1][hidx];
             const double hd = std::abs(hgoal.positions[hidx] - hstart.positions[hidx]);
             if (hd > hmax) {
               hmax = hd;

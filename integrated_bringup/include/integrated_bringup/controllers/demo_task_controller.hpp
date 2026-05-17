@@ -10,6 +10,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/threading/seqlock.hpp"
+#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
@@ -31,11 +32,12 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace integrated_bringup {
@@ -135,8 +137,6 @@ class DemoTaskController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState& state) noexcept override;
-
   [[nodiscard]] std::string_view Name() const noexcept override;
 
   void TriggerEstop() noexcept override;
@@ -148,8 +148,7 @@ class DemoTaskController final : public RTControllerInterface {
   CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
                               rclcpp_lifecycle::LifecycleNode::SharedPtr node,
                               const YAML::Node& yaml) noexcept override;
-  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev,
-                             const rtc::ControllerState& device_snapshot) noexcept override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override;
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& prev) noexcept override;
   void PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept override;
@@ -278,19 +277,53 @@ class DemoTaskController final : public RTControllerInterface {
   Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt_6d_;
 
   // ── Controller state ──────────────────────────────────────────────────────
+  // RT-thread-only working copy of the SE3 target (materialised from the
+  // SeqLock POD each tick).
   pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
-  std::array<double, 3> tcp_target_{};
-  /// Null-space posture target (arm). Only the first arm_dof_ slots are
-  /// read. Zero-initialized by default; LoadConfig overrides from YAML
-  /// when present (legacy default was UR5e home pose; now robot-agnostic).
-  std::array<double, kDemoTaskMaxArmDof> null_target_{};
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
-      device_targets_{};
+
+  /// Null-space posture seed parsed from YAML. RT thread copies it into
+  /// TargetSlot::null_target on first-tick self-init.
+  std::array<double, kDemoTaskMaxArmDof> null_target_init_{};
+
+  // TargetSlot — Eigen SE3 mirrored as flat doubles. RT thread is the SOLE
+  // writer of target_seqlock_; off-RT writers push onto pending_targets_.
+  static constexpr std::size_t kSE3RotDoubles = 9;
+  static constexpr std::size_t kSE3TransDoubles = 3;
+
+  struct TargetSlot {
+    std::array<double, 3> tcp_target{};
+    std::array<double, kSE3RotDoubles> tcp_target_rot{};
+    std::array<double, kSE3TransDoubles> tcp_target_t{};
+    std::array<double, kDemoTaskMaxArmDof> null_target{};
+    std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<TargetSlot>,
+                "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, kMaxDeviceChannels> values{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  rtc::SeqLock<TargetSlot> target_seqlock_;
+  rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
+  std::atomic<bool> target_initialized_{false};
+  TargetSlot current_target_slot_{};
+
+  // RT-thread-only: refresh current_target_slot_ from the SeqLock, drain any
+  // off-RT SetDeviceTarget marshal entries, run first-tick self-init.
+  void DrainTargetSlot(const ControllerState& state) noexcept;
+
   std::array<double, 3> tcp_position_{};
 
-  bool target_initialized_{false};
-  std::atomic<bool> new_target_{false};
-  std::mutex target_mutex_;
+  bool new_target_pending_{false};  // RT-thread-only; gates trajectory re-init
   trajectory::TaskSpaceTrajectory trajectory_;
   trajectory::TaskSpaceTrajectory::State traj_state_{};
   double trajectory_time_{0.0};
@@ -303,7 +336,7 @@ class DemoTaskController final : public RTControllerInterface {
   // hand_dof_ slots are initialised + read at runtime (caller-trim).
   trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof> hand_trajectory_;
   double hand_trajectory_time_{0.0};
-  std::atomic<bool> hand_new_target_{false};
+  bool hand_new_target_pending_{false};  // RT-thread-only
 
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
   std::string grasp_controller_type_{"contact_stop"};

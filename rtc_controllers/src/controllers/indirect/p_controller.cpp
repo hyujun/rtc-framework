@@ -49,18 +49,59 @@ void PController::OnDeviceConfigsSet() {
 }
 
 ControllerOutput PController::Compute(const ControllerState& state) noexcept {
+  // ── Target slot maintenance (RT thread is the single SeqLock writer) ──
+  TargetSlot slot = target_seqlock_.Load();
+  bool slot_dirty = false;
+
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
+      const auto& dev = state.devices[d];
+      if (!dev.valid && d > 0) {
+        continue;
+      }
+      const std::size_t nch = std::min(static_cast<std::size_t>(dev.num_channels),
+                                       static_cast<std::size_t>(kMaxDeviceChannels));
+      for (std::size_t i = 0; i < nch; ++i) {
+        slot.targets[d][i] = dev.positions[i];
+      }
+    }
+    target_initialized_.store(true, std::memory_order_release);
+    slot_dirty = true;
+  }
+
+  PendingTarget pending{};
+  while (pending_targets_.Pop(pending)) {
+    const auto didx = static_cast<std::size_t>(pending.device_idx);
+    if (didx >= ControllerState::kMaxDevices) {
+      continue;
+    }
+    const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
+                                     static_cast<std::size_t>(kMaxDeviceChannels));
+    for (std::size_t i = 0; i < nch; ++i) {
+      slot.targets[didx][i] = pending.values[i];
+    }
+    slot_dirty = true;
+  }
+
   if (estopped_.load(std::memory_order_acquire)) {
-    // E-STOP: hold current position, zero velocity
+    // E-STOP: hold current position, zero velocity. Also seed the target
+    // slot from the current state so a subsequent ClearEstop resumes from
+    // there (single-writer path — RT thread itself updates the slot).
     ControllerOutput output{};
     output.valid = true;
     output.command_type = command_type_;
     for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
       for (std::size_t j = 0; j < static_cast<std::size_t>(state.devices[d].num_channels); ++j) {
         output.devices[d].commands[j] = state.devices[d].positions[j];
-        device_targets_[d][j] = state.devices[d].positions[j];
+        slot.targets[d][j] = state.devices[d].positions[j];
       }
     }
+    target_seqlock_.Store(slot);
     return output;
+  }
+
+  if (slot_dirty) {
+    target_seqlock_.Store(slot);
   }
 
   ControllerOutput output;
@@ -78,7 +119,7 @@ ControllerOutput PController::Compute(const ControllerState& state) noexcept {
   // Build q span for FK
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double error = device_targets_[0][i] - dev0.positions[i];
+    const double error = slot.targets[0][i] - dev0.positions[i];
     out0.commands[i] = dev0.positions[i] + gains.kp[i] * error * state.dt;
     q_buf[i] = dev0.positions[i];
   }
@@ -97,12 +138,12 @@ ControllerOutput PController::Compute(const ControllerState& state) noexcept {
   output.actual_task_positions[5] = rpy[2];
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_positions[i] = device_targets_[0][i];
-    out0.target_velocities[i] = gains.kp[i] * (device_targets_[0][i] - dev0.positions[i]);
-    out0.goal_positions[i] = device_targets_[0][i];
+    out0.target_positions[i] = slot.targets[0][i];
+    out0.target_velocities[i] = gains.kp[i] * (slot.targets[0][i] - dev0.positions[i]);
+    out0.goal_positions[i] = slot.targets[0][i];
   }
 
-  rtc::utils::PassthroughSecondaryDevices(state, output, device_targets_);
+  rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
 
   ClampCommands(out0.commands, nc0);
   output.command_type = command_type_;
@@ -110,26 +151,17 @@ ControllerOutput PController::Compute(const ControllerState& state) noexcept {
 }
 
 void PController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices)
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
     return;
-  const auto ud = static_cast<std::size_t>(device_idx);
-  const std::size_t n = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-  for (std::size_t i = 0; i < n; ++i) {
-    device_targets_[ud][i] = target[i];
   }
-}
-
-void PController::InitializeHoldPosition(const ControllerState& state) noexcept {
-  for (std::size_t d = 0; d < static_cast<std::size_t>(state.num_devices); ++d) {
-    const auto& dev = state.devices[d];
-    if (!dev.valid && d > 0)
-      continue;
-    for (std::size_t i = 0; i < static_cast<std::size_t>(dev.num_channels) &&
-                            i < static_cast<std::size_t>(kMaxDeviceChannels);
-         ++i) {
-      device_targets_[d][i] = dev.positions[i];
-    }
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = target[i];
   }
+  (void)pending_targets_.Push(pending);
 }
 
 void PController::ClampCommands(std::array<double, kMaxDeviceChannels>& commands,

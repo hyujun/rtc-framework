@@ -370,7 +370,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 #### MPC 통합 동작
 
-`mpc.enabled: true`일 때 `InitializeHoldPosition`에서 MPC 스레드가 기동되며, `mpc.engine` 값에 따라 두 경로 중 하나를 선택한다:
+`mpc.enabled: true`일 때 `on_activate`에서 (aux 스레드, heap-alloc 가능 경로) MPC 스레드가 기동되며, `mpc.engine` 값에 따라 두 경로 중 하나를 선택한다. 과거에는 RT 스레드의 첫 `InitializeHoldPosition` 호출에서 lazy spawn했으나, 2026-05-17 RT-4 cleanup에서 thread spawn (MPCFactory::Create + std::make_unique + Pinocchio init)이 RT-safe하지 않다는 점이 명확해져 aux 스레드로 이동했다. trajectory / FSM seed는 여전히 controller가 RT thread의 첫 `Compute()` tick에서 self-init한다 (controller-internal init policy).
 
 - **`engine: "mock"` (기본값)** — `MockMPCThread`가 기동되어 `rtc::SelectThreadConfigs().mpc`이 지정한 코어/우선순위로 20 Hz solve 루프를 돌린다. 현재 state에서 target까지의 선형 trajectory + identity Riccati gain을 공급하는 placeholder. TSID self-hold 동작과 bit-identical.
 - **`engine: "handler"` (옵트인)** — `HandlerMPCThread`가 기동되어 `rtc_mpc::MPCFactory`로 `ContactLightMPC` 또는 `ContactRichMPC`를 생성하고, `GraspPhaseManager`(아래 참조)의 `PhaseContext`에 따라 실제 Aligator ProxDDP solve를 수행한다. 핸들러 factory / 모델 초기화가 실패하면 경고 로그와 함께 자동으로 mock 경로로 폴백해 RT 루프는 계속 진행된다. Cross-mode swap(light↔rich)은 `HandlerMPCThread` 내부에서 처리된다.
@@ -676,7 +676,6 @@ ros2 run integrated_bringup motion_editor_gui
     control_rate: 500.0
     initial_controller: "demo_joint_controller"
     init_timeout_sec: 30.0          # 하드웨어 초기화 타임아웃 (sec)
-    auto_hold_position: true
     enable_estop: true
     device_timeout_names: ["ur5e", "hand"]
     device_timeout_values: [1000.0, 1000.0]  # ms

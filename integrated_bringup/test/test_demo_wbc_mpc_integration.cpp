@@ -50,7 +50,7 @@ class WbcMpcTest : public ::testing::Test {
   DemoWbcController ctrl_{""};
   ControllerState state_ = MakeDefaultState();
 
-  void SetUp() override { ctrl_.InitializeHoldPosition(state_); }
+  void SetUp() override { (void)ctrl_.Compute(state_); }
 };
 
 TEST_F(WbcMpcTest, GainsAccessorRoundTrip) {

@@ -38,11 +38,8 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
     tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
   }
   const Eigen::Vector3d tcp = tcp_pose.translation();
-  if (!target_initialized_) {
-    tcp_target_pose_ = tcp_pose;
-    tcp_target_ = {tcp[0], tcp[1], tcp[2]};
-    target_initialized_ = true;
-  }
+  // Self-init is owned by DrainTargetSlot() (called before ReadState in
+  // Compute); ReadState no longer touches target_seqlock_ / tcp_target_pose_.
 
   tcp_position_ = {tcp[0], tcp[1], tcp[2]};
 
@@ -195,9 +192,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   tcp_position_ = {ctrl_pos[0], ctrl_pos[1], ctrl_pos[2]};
 
   // ── Task-space trajectory ──────────────────────────────────────────────
-  if (new_target_.load(std::memory_order_acquire)) {
-    std::unique_lock lock(target_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
+  if (new_target_pending_) {
+    {
       pinocchio::SE3 start_pose = control_pose;
       pinocchio::SE3 goal_pose;
 
@@ -205,7 +201,9 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
         goal_pose = tcp_target_pose_;
       } else {
         goal_pose = start_pose;
-        goal_pose.translation() = Eigen::Vector3d(tcp_target_[0], tcp_target_[1], tcp_target_[2]);
+        goal_pose.translation() =
+            Eigen::Vector3d(current_target_slot_.tcp_target[0], current_target_slot_.tcp_target[1],
+                            current_target_slot_.tcp_target[2]);
       }
 
       const Eigen::Vector3d start_pos = start_pose.translation();
@@ -278,7 +276,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
       for (int i = 0; i < arm_handle_->nv(); ++i) {
         desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
       }
-      new_target_.store(false, std::memory_order_relaxed);
+      new_target_pending_ = false;
     }
   }
 
@@ -404,8 +402,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     N_.noalias() -= Jpinv_ * J_pos_;
 
     for (Eigen::Index i = 0; i < arm_handle_->nv(); ++i) {
-      null_err_[i] =
-          null_target_[static_cast<std::size_t>(i)] - dev0.positions[static_cast<std::size_t>(i)];
+      null_err_[i] = current_target_slot_.null_target[static_cast<std::size_t>(i)] -
+                     dev0.positions[static_cast<std::size_t>(i)];
     }
     null_dq_.noalias() = N_ * null_err_;
     null_dq_ *= gains.null_kp;
@@ -416,7 +414,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
 
-    if (hand_new_target_.load(std::memory_order_acquire)) {
+    if (hand_new_target_pending_) {
       trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State start_state;
       trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State goal_state;
 
@@ -427,11 +425,11 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
         start_state.velocities[idx] = 0.0;
         start_state.accelerations[idx] = 0.0;
 
-        goal_state.positions[idx] = device_targets_[1][idx];
+        goal_state.positions[idx] = current_target_slot_.targets[1][idx];
         goal_state.velocities[idx] = 0.0;
         goal_state.accelerations[idx] = 0.0;
 
-        max_dist = std::max(max_dist, std::abs(device_targets_[1][idx] - dev1.positions[idx]));
+        max_dist = std::max(max_dist, std::abs(current_target_slot_.targets[1][idx] - dev1.positions[idx]));
       }
 
       const double T_speed = max_dist / gains.hand_trajectory_speed;
@@ -441,7 +439,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
       const double duration = std::max({0.01, T_speed, T_vel});
       hand_trajectory_.initialize(start_state, goal_state, duration);
       hand_trajectory_time_ = 0.0;
-      hand_new_target_.store(false, std::memory_order_relaxed);
+      hand_new_target_pending_ = false;
     }
 
     const auto hand_traj = hand_trajectory_.compute(hand_trajectory_time_);
@@ -542,11 +540,11 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
         const auto& dev1 = state.devices[1];
 
         const double d_thumb =
-            device_targets_[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
+            current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
         const double d_index =
-            device_targets_[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
+            current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
         const double d_middle =
-            device_targets_[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+            current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
 
         const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
         const bool index_releasing = d_index < -gains.contact_stop_release_eps;
@@ -568,11 +566,11 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
           // overshoot beyond target in a single number each, so 5 args are
           // enough to diagnose contact_stop engagement.
           const double err_thumb =
-              device_targets_[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
+              current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
           const double err_index =
-              device_targets_[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
+              current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
           const double err_middle =
-              device_targets_[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+              current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
           RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
                                "err=[%+.3f,%+.3f,%+.3f]",
@@ -659,13 +657,13 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_positions[i] = null_target_[i];
+    out0.target_positions[i] = current_target_slot_.null_target[i];
   }
   for (std::size_t i = 0; i < 3; ++i) {
-    out0.goal_positions[i] = tcp_target_[i];
+    out0.goal_positions[i] = current_target_slot_.tcp_target[i];
   }
   for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.goal_positions[i] = null_target_[i];
+    out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
   // ── Task-space logging ─────────────────────────────────────────────────
@@ -715,9 +713,9 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
   }
 
   // Task goal target from GUI
-  output.task_goal_positions[0] = tcp_target_[0];
-  output.task_goal_positions[1] = tcp_target_[1];
-  output.task_goal_positions[2] = tcp_target_[2];
+  output.task_goal_positions[0] = current_target_slot_.tcp_target[0];
+  output.task_goal_positions[1] = current_target_slot_.tcp_target[1];
+  output.task_goal_positions[2] = current_target_slot_.tcp_target[2];
   if (gains_lock_.Load().control_6dof) {
     Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
     output.task_goal_positions[3] = goal_rpy[0];
@@ -761,7 +759,7 @@ ControllerOutput DemoTaskController::WriteOutput(const ControllerState& state, d
       out1.target_velocities[i] = hand_computed_.velocities[i];
       out1.trajectory_positions[i] = hand_computed_.positions[i];
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
-      out1.goal_positions[i] = device_targets_[1][i];
+      out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
     rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
                            std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);

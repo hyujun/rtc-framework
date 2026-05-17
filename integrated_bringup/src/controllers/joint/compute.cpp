@@ -108,37 +108,37 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   const auto& dev0 = state.devices[0];
 
   // ── Robot arm trajectory ────────────────────────────────────────────────
-  if (robot_new_target_.load(std::memory_order_acquire)) {
-    std::unique_lock lock(target_mutex_, std::try_to_lock);
-    if (lock.owns_lock()) {
-      trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State start_state;
-      trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State goal_state;
+  // current_target_slot_ was refreshed by DrainTargetSlot() at the start of
+  // Compute(); the flags are RT-thread-only.
+  if (robot_new_target_pending_) {
+    trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State start_state;
+    trajectory::JointSpaceTrajectory<kDemoJointMaxArmDof>::State goal_state;
 
-      double max_dist = 0.0;
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        start_state.positions[idx] = dev0.positions[idx];
-        start_state.velocities[idx] = 0.0;
-        start_state.accelerations[idx] = 0.0;
+    double max_dist = 0.0;
+    for (int i = 0; i < arm_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      start_state.positions[idx] = dev0.positions[idx];
+      start_state.velocities[idx] = 0.0;
+      start_state.accelerations[idx] = 0.0;
 
-        goal_state.positions[idx] = device_targets_[0][idx];
-        goal_state.velocities[idx] = 0.0;
-        goal_state.accelerations[idx] = 0.0;
+      goal_state.positions[idx] = current_target_slot_.targets[0][idx];
+      goal_state.velocities[idx] = 0.0;
+      goal_state.accelerations[idx] = 0.0;
 
-        max_dist = std::max(max_dist, std::abs(device_targets_[0][idx] - dev0.positions[idx]));
-      }
-
-      // Duration from trajectory_speed, then enforce max trajectory velocity.
-      // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
-      const double T_speed = max_dist / gains.robot_trajectory_speed;
-      const double T_vel = (gains.robot_max_traj_velocity > 0.0)
-                               ? (1.875 * max_dist / gains.robot_max_traj_velocity)
-                               : 0.0;
-      const double duration = std::max({0.01, T_speed, T_vel});
-      robot_trajectory_.initialize(start_state, goal_state, duration);
-      robot_trajectory_time_ = 0.0;
-      robot_new_target_.store(false, std::memory_order_relaxed);
+      max_dist =
+          std::max(max_dist, std::abs(current_target_slot_.targets[0][idx] - dev0.positions[idx]));
     }
+
+    // Duration from trajectory_speed, then enforce max trajectory velocity.
+    // Quintic rest-to-rest peak velocity = (15/8) * max_dist / T.
+    const double T_speed = max_dist / gains.robot_trajectory_speed;
+    const double T_vel = (gains.robot_max_traj_velocity > 0.0)
+                             ? (1.875 * max_dist / gains.robot_max_traj_velocity)
+                             : 0.0;
+    const double duration = std::max({0.01, T_speed, T_vel});
+    robot_trajectory_.initialize(start_state, goal_state, duration);
+    robot_trajectory_time_ = 0.0;
+    robot_new_target_pending_ = false;
   }
 
   const auto robot_traj = robot_trajectory_.compute(robot_trajectory_time_);
@@ -154,35 +154,33 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
 
-    if (hand_new_target_.load(std::memory_order_acquire)) {
-      std::unique_lock lock(target_mutex_, std::try_to_lock);
-      if (lock.owns_lock()) {
-        trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State start_state;
-        trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State goal_state;
+    if (hand_new_target_pending_) {
+      trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State start_state;
+      trajectory::JointSpaceTrajectory<kDemoJointMaxHandDof>::State goal_state;
 
-        double max_dist = 0.0;
-        for (int i = 0; i < hand_dof_; ++i) {
-          const auto idx = static_cast<std::size_t>(i);
-          start_state.positions[idx] = dev1.positions[idx];
-          start_state.velocities[idx] = 0.0;
-          start_state.accelerations[idx] = 0.0;
+      double max_dist = 0.0;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        start_state.positions[idx] = dev1.positions[idx];
+        start_state.velocities[idx] = 0.0;
+        start_state.accelerations[idx] = 0.0;
 
-          goal_state.positions[idx] = device_targets_[1][idx];
-          goal_state.velocities[idx] = 0.0;
-          goal_state.accelerations[idx] = 0.0;
+        goal_state.positions[idx] = current_target_slot_.targets[1][idx];
+        goal_state.velocities[idx] = 0.0;
+        goal_state.accelerations[idx] = 0.0;
 
-          max_dist = std::max(max_dist, std::abs(device_targets_[1][idx] - dev1.positions[idx]));
-        }
-
-        const double T_speed = max_dist / gains.hand_trajectory_speed;
-        const double T_vel = (gains.hand_max_traj_velocity > 0.0)
-                                 ? (1.875 * max_dist / gains.hand_max_traj_velocity)
-                                 : 0.0;
-        const double duration = std::max({0.01, T_speed, T_vel});
-        hand_trajectory_.initialize(start_state, goal_state, duration);
-        hand_trajectory_time_ = 0.0;
-        hand_new_target_.store(false, std::memory_order_relaxed);
+        max_dist = std::max(max_dist,
+                            std::abs(current_target_slot_.targets[1][idx] - dev1.positions[idx]));
       }
+
+      const double T_speed = max_dist / gains.hand_trajectory_speed;
+      const double T_vel = (gains.hand_max_traj_velocity > 0.0)
+                               ? (1.875 * max_dist / gains.hand_max_traj_velocity)
+                               : 0.0;
+      const double duration = std::max({0.01, T_speed, T_vel});
+      hand_trajectory_.initialize(start_state, goal_state, duration);
+      hand_trajectory_time_ = 0.0;
+      hand_new_target_pending_ = false;
     }
 
     const auto hand_traj = hand_trajectory_.compute(hand_trajectory_time_);
@@ -321,11 +319,11 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
         const auto& dev1 = state.devices[1];
 
         const double d_thumb =
-            device_targets_[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
+            current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
         const double d_index =
-            device_targets_[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
+            current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
         const double d_middle =
-            device_targets_[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+            current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
 
         const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
         const bool index_releasing = d_index < -gains.contact_stop_release_eps;
@@ -347,11 +345,11 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           // overshoot beyond target in a single number each, so 5 args are
           // enough to diagnose contact_stop engagement.
           const double err_thumb =
-              device_targets_[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
+              current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] - dev1.positions[hand_idx_thumb_cmc_fe_];
           const double err_index =
-              device_targets_[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
+              current_target_slot_.targets[1][hand_idx_index_mcp_fe_] - dev1.positions[hand_idx_index_mcp_fe_];
           const double err_middle =
-              device_targets_[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
+              current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] - dev1.positions[hand_idx_middle_mcp_fe_];
           RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
                                "err=[%+.3f,%+.3f,%+.3f]",
@@ -418,7 +416,7 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
     out0.target_velocities[i] = robot_computed_.velocities[i];
     out0.trajectory_positions[i] = robot_computed_.positions[i];
     out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = device_targets_[0][i];
+    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
   rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
                          std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
@@ -489,7 +487,7 @@ ControllerOutput DemoJointController::WriteOutput(const ControllerState& state,
       out1.target_velocities[i] = hand_computed_.velocities[i];
       out1.trajectory_positions[i] = hand_computed_.positions[i];
       out1.trajectory_velocities[i] = hand_computed_.velocities[i];
-      out1.goal_positions[i] = device_targets_[1][i];
+      out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
     rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
                            std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);

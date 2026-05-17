@@ -4,6 +4,7 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include <rtc_base/threading/seqlock.hpp>
+#include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -24,11 +25,12 @@
 
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace rtc {
@@ -92,8 +94,6 @@ class ClikController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
-  void InitializeHoldPosition(const ControllerState& state) noexcept override;
-
   [[nodiscard]] std::string_view Name() const noexcept override;
 
   void TriggerEstop() noexcept override;
@@ -155,20 +155,53 @@ class ClikController final : public RTControllerInterface {
 
   // ── Controller state ──────────────────────────────────────────────────────
   SeqLock<Gains> gains_lock_;
+
+  // RT-thread-only working copy of the SE3 target pose. Materialised from
+  // the SeqLock POD each tick so the existing Eigen-based maths can index
+  // ::translation() / ::rotation() directly.
   pinocchio::SE3 tcp_target_pose_{pinocchio::SE3::Identity()};
-  std::array<double, 3> tcp_target_{};
-  /// Null-space reference configuration. Initialized to zero; set from
-  /// safe_position in OnDeviceConfigsSet(). In 3-DOF mode, joints 3+
-  /// are overwritten by SetDeviceTarget(target[3..]).
-  std::array<double, kMaxRobotDOF> null_target_{};
-  std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices>
-      device_targets_{};
+
+  // TargetSlot — SE3 mirrored as flat doubles (Eigen is_trivially_copyable
+  // false-negative). RT thread is the SOLE writer of target_seqlock_; off-RT
+  // writers push onto pending_targets_.
+  static constexpr std::size_t kSE3RotDoubles = 9;
+  static constexpr std::size_t kSE3TransDoubles = 3;
+
+  struct TargetSlot {
+    std::array<double, 3> tcp_target{};
+    std::array<double, kSE3RotDoubles> tcp_target_rot{};
+    std::array<double, kSE3TransDoubles> tcp_target_t{};
+    std::array<double, kMaxRobotDOF> null_target{};
+    std::array<std::array<double, kMaxDeviceChannels>, ControllerState::kMaxDevices> targets{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<TargetSlot>,
+                "TargetSlot must be trivially copyable for SeqLock<TargetSlot>");
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, kMaxDeviceChannels> values{};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  SeqLock<TargetSlot> target_seqlock_;
+  SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
+
+  // Initial null-space reference seeded from safe_position in
+  // OnDeviceConfigsSet (off-RT, before any Compute()). The RT thread copies
+  // this into TargetSlot::null_target during first-tick self-init.
+  std::array<double, kMaxRobotDOF> null_target_init_{};
+
   std::array<double, 6> pose_error_cache_{};  ///< diagnostic cache
   std::array<double, 3> tcp_position_{};      ///< diagnostic cache
 
-  bool target_initialized_{false};
-  std::atomic<bool> new_target_{false};
-  std::mutex target_mutex_;
+  std::atomic<bool> target_initialized_{false};
+  bool new_target_pending_{false};  // RT-thread-only; gates trajectory re-init
   trajectory::TaskSpaceTrajectory trajectory_;
   trajectory::TaskSpaceTrajectory::State traj_state_{};
   double trajectory_time_{0.0};

@@ -63,8 +63,8 @@ class ControllerLifecycleTestAccess;
 
 class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Test-only access to private lifecycle helpers (controller_states_,
-  // BuildDeviceSnapshot, ActivateController, DeactivateController,
-  // SwitchActiveController) without exposing them as public API.
+  // ActivateController, DeactivateController, SwitchActiveController)
+  // without exposing them as public API.
   friend class rtc::ControllerLifecycleTestAccess;
 
  public:
@@ -195,25 +195,24 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void PublishEstopStatus(bool estopped);
 
   // ── Controller-level lifecycle (aux thread only) ─────────────────────────
-  // Build a snapshot of the latest device state for the controller at
-  // `ctrl_idx`. Returns empty (num_devices == 0) when sensor data has not
-  // been received yet (state_received_ false) — callers pass this to
-  // controller->on_activate so the base hold-init logic skips cleanly.
-  [[nodiscard]] rtc::ControllerState BuildDeviceSnapshot(std::size_t ctrl_idx) noexcept;
-
   // Activate / deactivate a single controller. Updates controller_states_
   // (release store) and invokes the controller's lifecycle hook. Aux-thread
   // only. Caller must hold lifecycle ordering invariants (e.g. don't
   // activate while another controller is active — use SwitchActiveController
   // for transitions).
-  CallbackReturn ActivateController(std::size_t ctrl_idx, const rclcpp_lifecycle::State& prev_state,
-                                    const rtc::ControllerState& snapshot);
+  //
+  // Hold-target initialisation is owned by the controller (not CM): on the
+  // first Compute() tick after activation each controller seeds its target
+  // slot from the current device state. CM therefore does not snapshot
+  // device state at switch time.
+  CallbackReturn ActivateController(std::size_t ctrl_idx,
+                                    const rclcpp_lifecycle::State& prev_state);
   CallbackReturn DeactivateController(std::size_t ctrl_idx,
                                       const rclcpp_lifecycle::State& prev_state);
 
   // Swap the active controller to `name`. Sync sequence: precondition →
-  // build snapshot → target.on_activate → store active idx → wait one RT
-  // tick → previous.on_deactivate → publish active_controller_name.
+  // target.on_activate → store active idx → wait one RT tick →
+  // previous.on_deactivate → publish active_controller_name.
   // Returns true on success; sets `message` on failure. Aux-thread only.
   bool SwitchActiveController(const std::string& name, std::string& message);
 
@@ -332,10 +331,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   std::array<std::unique_ptr<rtc::DeviceBackend>, kMaxDevices> backends_;
 
-  // Per-device targets
-  std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> device_targets_{};
-  std::array<std::array<double, rtc::kMaxDeviceChannels>, kMaxDevices> device_target_snapshots_{};
-
   // Read-only parameter guard handle (topic params immutable after init)
   rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
@@ -379,14 +374,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // Device state lives inside each DeviceBackend (per-device SeqLock,
   // lock-free single-writer/multi-reader). Writer: backend's own sub
   // callbacks (cb_group_sensor_, MutuallyExclusive). Readers: RT loop
-  // (ControlLoop) and controller switch (BuildDeviceSnapshot) via
-  // backend->ReadState.
-
-  mutable std::mutex target_mutex_;
+  // (ControlLoop) via backend->ReadState.
+  //
+  // Per-controller target slots live on each controller (SeqLock<TargetSlot>
+  // + SpscQueue marshal). CM forwards DeviceTargetCallback into the active
+  // controller's SetDeviceTarget — there is no CM-side target mirror.
 
   std::atomic<bool> print_timing_summary_{false};
   std::atomic<bool> state_received_{false};
-  std::atomic<bool> target_received_{false};
 
   // Wall-clock timestamp of the previous timing-summary print, used by
   // DrainLog() (log thread, single accessor) to compute the robot-mode
@@ -441,9 +436,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // `init_timeout_sec * control_rate_` once the runtime rate is known.
   // (5 s × kDefaultControlRateHz at the default rate.)
   uint64_t init_timeout_ticks_{static_cast<uint64_t>(5.0 * rtc::kDefaultControlRateHz)};
-
-  // ── Auto-hold position ─────────────────────────────────────────────────────
-  bool auto_hold_position_{true};
 
   // Session-wide t=0 origin for ControllerState::t_relative_s (and the
   // legacy log timestamp). Captured on the very first ControlLoop()
