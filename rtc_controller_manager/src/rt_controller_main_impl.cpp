@@ -17,11 +17,24 @@
 //
 // Threading model:
 //   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
-//   E-STOP publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish()
-//   calls sensor_executor  Core 3  SCHED_FIFO 70   /joint_states, /target,
-//   /hand subs log_executor     Core 4  SCHED_OTHER -5   cm_timing_log.csv
-//   drain + deferred E-STOP log aux_executor     Core 5  SCHED_OTHER  0 E-STOP
-//   status + lifecycle services
+//   E-STOP publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish() calls
+//   sensor_executor  Core 3  SCHED_FIFO 70   cb_group_sensor_ only — CM-owned
+//                                            RobotTarget sub. DeviceBackend
+//                                            state subs (/joint_states, hand
+//                                            state/motor/sensor) are currently
+//                                            on aux_executor via the default
+//                                            callback group (Phase 4 backend
+//                                            abstraction dropped the sensor-
+//                                            group injection path; cleanup
+//                                            tracked in
+//                                            ~/.claude/plans/callback_group_audit.md)
+//   log_executor     Core 4  SCHED_OTHER -5   cm_timing_log.csv drain + deferred E-STOP log
+//   aux_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle services
+//                                            + CM default group + controller
+//                                            LifecycleNode default groups
+//                                            (DeviceBackend subs, owned
+//                                            RobotTarget subs, grasp_command
+//                                            services)
 
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"

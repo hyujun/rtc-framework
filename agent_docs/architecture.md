@@ -63,6 +63,8 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 **RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to sensor/log/aux dedicated executors.
 
+**callback_group → executor binding** (Phase 3 in [rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp)): `sensor_executor` 는 `cb_group_sensor_` 만, `log_executor` 는 `cb_group_log_` 만, `aux_executor` 는 `cb_group_aux_` + CM node default group + 모든 controller LifecycleNode default group 을 spin 한다. **현재 drift**: DeviceBackend state sub (`/joint_states`, hand state/motor/sensor) 와 controller-owned RobotTarget sub 는 default group 으로 생성되어 aux_executor 에서 직렬화됨 — Phase 4 backend abstraction 도입 시 sensor group injection path 가 끊긴 상태. RT path 안전성은 SeqLock mailbox 로 보장되어 jitter 영향은 없으나 sensor freshness latency 가 aux_executor 부하에 의존. 후속 정리 후보는 [~/.claude/plans/callback_group_audit.md](file:///home/junho/.claude/plans/callback_group_audit.md) 참조.
+
 - **ControlLoop** (configurable rate, default 500 Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> SPSC publish + log
 - **CheckTimeouts** (50Hz): per-group device timeout -> `TriggerGlobalEstop("{group}_timeout")`
 - **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout
