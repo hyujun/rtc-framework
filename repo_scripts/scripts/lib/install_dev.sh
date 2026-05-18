@@ -99,6 +99,8 @@ install_perf_tools() {
   else
     info "Cloning brendangregg/FlameGraph → $FG_DIR..."
     mkdir -p "${WORKSPACE}/deps"
+    # Hide deps/ from colcon (see install_deps.sh:install_mpc_deps comment).
+    touch "${WORKSPACE}/deps/COLCON_IGNORE"
     if git clone --depth=1 --quiet \
         https://github.com/brendangregg/FlameGraph "$FG_DIR" 2>&1 | tail -5; then
       success "FlameGraph cloned (run: ./repo_scripts/scripts/flame.sh)"

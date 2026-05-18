@@ -45,7 +45,11 @@ PARALLEL_JOBS="${PARALLEL_JOBS:-$(nproc)}"
 
 log() { printf '\n\033[1;34m▶ %s\033[0m\n' "$*"; }
 
-# deps/src 가 비어있으면 deps.repos 로 자동 import (fresh checkout 재현)
+# deps/src 가 비어있으면 deps.repos 로 자동 import (fresh checkout 재현).
+# COLCON_IGNORE 는 deps/ 가 ws-root 의 src/ 처럼 colcon 에 picked up 되는 것을
+# 차단 (aligator/package.xml 가 ROS 패키지로 보이면 duplicate package name error).
+mkdir -p "${WS}/deps"
+touch "${WS}/deps/COLCON_IGNORE"
 if [[ ! -d "${WS}/deps/src/aligator/.git" ]]; then
   log "Importing deps sources (${REPO}/deps.repos → ${WS}/deps/src)"
   mkdir -p "${WS}/deps/src"
