@@ -663,16 +663,6 @@ inline const MpcThreadConfig kMpcConfig16Core{
         },
 };
 
-// ── Simulation core layout (backward-compat thin wrapper) ───────────────────
-// Pre-v3 callers consumed SimCoreLayout from GetSimCoreLayout(int); Phase 5
-// makes SystemThreadConfigs.sim_thread / .viewer the SSoT. This wrapper is
-// preserved for callers that still expect the older API surface — it derives
-// the layout from SelectThreadConfigs() so a single edit changes both paths.
-struct SimCoreLayout {
-  int sim_thread_core;  // MuJoCo physics thread (-1 = no pinning)
-  int viewer_core;      // GLFW viewer thread (-1 = OS cores, no pinning)
-};
-
 }  // namespace rtc
 
 #endif  // RTC_BASE_THREAD_CONFIG_HPP_

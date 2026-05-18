@@ -337,17 +337,17 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 
 **MuJoCo 시뮬레이션 코어 레이아웃:**
 
-`GetSimCoreLayout(physical_cores)` -- `constexpr` 함수로 시뮬레이션/뷰어 스레드 코어를 할당합니다.
-2026-04 unified layout부터 10/12-core tier도 RT 범위 상단에 여유 코어를 확보했고, 14-core tier는 sim thread 전용 코어를 제공합니다.
+Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (`SelectThreadConfigs()` 가 반환). `rtc_mujoco_sim` 의 `SimLoop` 가 `ApplyThreadConfig(SelectThreadConfigs().sim_thread)` 를 호출하여 taskset 핀을 박고, 같은 값이 `rtc_tools.launch.thread_layout.get_sim_core()` 로도 미러링되어 launch 의 process-level taskset 에 사용됩니다.
 
-| 물리 코어 수 | sim_thread_core | viewer_core | 비고 |
+| 물리 코어 수 | sim_thread.cpu_core | viewer.cpu_core | 비고 |
 |-------------|----------------|-------------|------|
-| 16+ | 15 | -1 (OS) | legacy 배치: MPC(9–11) + IO(12–14) 회피 |
-| 14-15 | 10 | -1 | RT/MPC/IO가 Core 2-9 → Core 10 dedicated |
-| 12-13 | 10 | -1 | RT/MPC/IO가 Core 2-9 → Core 10-11 spare |
-| 10-11 | 9 | -1 | RT/MPC/IO가 Core 2-8 → Core 9 spare |
-| 8-9 | -1 (없음) | -1 | sim 모드는 cset shield를 Core 2-3으로 축소, MuJoCo는 해제된 shield 범위에서 CFS 실행 |
-| <8 | -1 (없음) | -1 | dedicated sim core 없음 |
+| 16+ | 15 | -1 (OS) | legacy 배치: MPC(9–11) + driver(12–13) 회피 |
+| 14-15 | 10 | -1 | RT/MPC가 Core 2-6 → Core 10 dedicated |
+| 12-13 | 10 | -1 | RT/MPC가 Core 2-6 → Core 10-11 spare |
+| 10-11 | 9 | -1 | RT/MPC가 Core 2-5 → Core 9 spare |
+| 8-9 | 7 | -1 | RT/MPC가 Core 2-4, hand_driver 5, arm_driver 6 → Core 7 dedicated |
+| 6-7 | -1 (없음) | -1 | sim 모드는 cset shield 가 Core 2-4 만 보호, MuJoCo 는 해제된 코어에서 CFS 실행 |
+| <6 | -1 (없음) | -1 | dedicated sim core 없음 |
 
 #### 스레드 유틸리티 (`thread_utils.hpp`)
 

@@ -9,14 +9,19 @@
 #   sudo cpu_shield.sh off                 # 격리 해제
 #   cpu_shield.sh status                   # 상태 확인 (sudo 불필요)
 #
-# Tier 모델:
-#   Tier 1 (RT-critical): rt_control + rt_inbound  — 항상 격리
-#   Tier 2 (RT-support):  udp_recv + nrt_logging + nrt_callback — 로봇 모드에서만 격리
-#   Tier 3 (Flexible):    sim/monitoring/build     — 격리하지 않음
+# Shield model (layout v3, Phase 6):
+#   shielded = RT controller cores + MPC cores (rt_control, rt_inbound,
+#              rt_outbound, mpc_main + workers)
+#   released = OS/DDS (Core 0-1), nrt_*, arm_driver, hand_driver,
+#              sim_thread/viewer, spare
 #
 # Modes:
-#   --robot (기본): Tier 1 + Tier 2 격리
-#   --sim:          Tier 1만 격리 (Tier 2는 해제, MuJoCo 성능 확보)
+#   --robot (default): same shield range as --sim. driver processes pin via
+#                      taskset (rtc_tools.launch.thread_layout) and run on
+#                      SCHED_OTHER — they do not need cset protection.
+#   --sim:             identical shield. MuJoCo physics + viewer run on
+#                      whichever core SystemThreadConfigs.sim_thread points
+#                      to (taskset pin; outside the shield range).
 #
 # 실행 시점:
 #   - 로봇 런치: ur_control.launch.py에서 자동 호출
@@ -33,45 +38,43 @@ make_logger "SHIELD"
 
 # ── Compute shield cores based on mode and core count ─────────────────────
 #
-# Unified layout (10-/12-/14-core): RT + MPC + I/O live on low-numbered
-# cores (2-9) in every tier, so the shield range grows monotonically with
-# the machine size. 16-core retains the legacy Option A layout (shield
-# 4-8 between RT 2-3 and MPC 9-11).
+# Phase 6 layout v3: the "user" cpuset shields RT controller threads
+# (rt_control, rt_inbound, rt_outbound — all on the cores rt_control and
+# rt_inbound claim, layout v3 puts rt_outbound on the same core as rt_inbound)
+# plus MPC main + workers. Process-level driver cores (arm_driver,
+# hand_driver) are *not* shielded — the driver processes themselves run there
+# under SCHED_OTHER, so isolating them from "user" tasks gains nothing and
+# wastes a core. sim_thread / viewer cores are also released (sim mode lets
+# MuJoCo roam under CFS, robot mode does not run sim).
 #
-# Shield range semantics (robot mode): the "user" cpuset protects RT/MPC
-# cores from ambient user tasks; everything else lands in "system" (OS 0-1
-# plus spare cores above the RT range). The sim mode only protects Tier 1
-# (rt_control + rt_inbound) so MuJoCo can use the freed cores.
+# Both modes shield the same range now (RT + MPC only). The legacy "Tier 1
+# vs Tier 1+2" distinction is gone — driver/IO cores are SCHED_OTHER and do
+# not need cset protection. The function signature keeps the mode argument
+# for forward compatibility and so callers (`on --sim`, `on --robot`) need
+# no further changes.
+#
+# Tier table (matches rtc::SystemThreadConfigs layout v3):
+#   4-core   : RT 1, MPC 3                   → "1,3"
+#   6-7-core : RT 2-3, MPC 4                 → "2-4"
+#   8-9-core : RT 2-3, MPC 4                 → "2-4"
+#   10-11-core: RT 2-3, MPC 4-5              → "2-5"
+#   12-13-core: RT 2-3, MPC 4-6              → "2-6"
+#   14-15-core: RT 2-3, MPC 4-6              → "2-6"
+#   16+-core : RT 2-3, MPC 9-11              → "2-3,9-11"
 compute_shield_cores() {
-  local mode="$1"
+  local mode="$1"  # kept for forward compat; both modes use the same shield
   local phys_cores="$2"
 
-  if [[ "$mode" == "sim" ]]; then
-    # Tier 1 only: rt_control + rt_inbound
-    if [[ "$phys_cores" -le 4 ]]; then
-      echo "1-2"
-    elif [[ "$phys_cores" -ge 16 ]]; then
-      echo "4-5"
-    else
-      echo "2-3"
-    fi
+  if [[ "$phys_cores" -le 4 ]]; then
+    echo "1,3"
+  elif [[ "$phys_cores" -le 9 ]]; then
+    echo "2-4"
+  elif [[ "$phys_cores" -le 11 ]]; then
+    echo "2-5"
+  elif [[ "$phys_cores" -le 15 ]]; then
+    echo "2-6"
   else
-    # robot: Tier 1 + Tier 2 (RT + MPC + I/O)
-    if [[ "$phys_cores" -le 4 ]]; then
-      echo "1-3"
-    elif [[ "$phys_cores" -le 7 ]]; then
-      echo "2-5"
-    elif [[ "$phys_cores" -le 9 ]]; then
-      echo "2-6"   # 8-9: RT 2-3, MPC 4, UDP 5, nrt_logging 6, nrt_callback/rt_outbound 7 (boundary)
-    elif [[ "$phys_cores" -le 11 ]]; then
-      echo "2-8"   # 10-11: RT 2-3, MPC 4-5, UDP 6, nrt_log 7, nrt_cb/rt_out 8; Core 9 spare/sim
-    elif [[ "$phys_cores" -le 13 ]]; then
-      echo "2-9"   # 12-13: RT 2-3, MPC 4-6, UDP 7, nrt_log 8, nrt_cb/rt_out 9; Cores 10-11 spare
-    elif [[ "$phys_cores" -le 15 ]]; then
-      echo "2-10"  # 14-15: same RT/MPC/IO + sim_thread on Core 10; Cores 11-13 spare
-    else
-      echo "4-8"   # 16+: legacy — RT 2-3 below shield, MPC 9-11 above, user=4-8
-    fi
+    echo "2-3,9-11"
   fi
 }
 
@@ -285,8 +288,8 @@ usage() {
   echo ""
   echo "Commands:"
   echo "  on [--robot|--sim]  Activate CPU isolation (default: --robot)"
-  echo "    --robot           Tier 1 + Tier 2 isolation (full RT protection)"
-  echo "    --sim             Tier 1 only (lightweight, MuJoCo-friendly)"
+  echo "    --robot           Shield RT + MPC cores (driver cores released)"
+  echo "    --sim             Same shield as --robot; sim_thread runs outside"
   echo "  off                 Deactivate CPU isolation"
   echo "  status              Show current isolation status"
   echo ""

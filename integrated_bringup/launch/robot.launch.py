@@ -8,7 +8,9 @@
 #   5. DDS thread pinning runs 5 s after the CM process starts
 #
 # Core allocation optimizations applied:
-#   C) UR driver process pinned to Core 0-1 via delayed taskset (use_cpu_affinity:=true)
+#   C) UR driver + udp_hand_node processes pinned via tier-aware taskset
+#      (rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core; SSoT in
+#      rtc::SystemThreadConfigs.{arm,hand}_driver) when use_cpu_affinity:=true
 #   D) integrated_rt_controller DDS threads pinned to Core 0-1 (prevents 100-350us jitter on Jazzy)
 #   E) CycloneDDS threads restricted to Core 0-1 via CYCLONEDDS_URI env var
 
@@ -37,11 +39,43 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch.thread_layout import get_arm_driver_core, get_hand_driver_core
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
     create_session_dir,
     resolve_logging_root,
 )
+
+
+def _pin_external_driver(label: str, process_grep: str, core: int) -> ExecuteProcess:
+    """Build a taskset ExecuteProcess that pins ``process_grep`` to ``core``.
+
+    ``core < 0`` is the "no pinning" sentinel from ``select_thread_layout`` —
+    in that case the resulting action logs the skip and returns immediately,
+    so launch files do not need their own guard.
+    """
+    if core < 0:
+        return ExecuteProcess(
+            cmd=[
+                "bash",
+                "-c",
+                f'echo "[RT] {label}: cpu_core=-1, no taskset pinning"',
+            ],
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
+        )
+    return ExecuteProcess(
+        cmd=[
+            "bash",
+            "-c",
+            f'PID=$(pgrep -nf "{process_grep}") && [ -n "$PID" ] && '
+            f'taskset -cp {core} "$PID" && '
+            f'echo "[RT] {label} (PID=$PID) pinned to Core {core}" || '
+            f'echo "[RT] WARNING: {label} not found — CPU pinning skipped"',
+        ],
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
+    )
 
 
 def _launch_setup(context):
@@ -284,23 +318,18 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
     )
 
-    # ── UR driver CPU pinning ─────────────────────────────────────────────────
+    # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
+    # Pins via tier-aware core resolution. SystemThreadConfigs.{arm,hand}_driver
+    # is the C++ SSoT; rtc_tools.launch.thread_layout mirrors it for launch.
+    arm_driver_core = get_arm_driver_core()
+    hand_driver_core = get_hand_driver_core()
     pin_ur_driver = TimerAction(
         period=3.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    "bash",
-                    "-c",
-                    'PID=$(pgrep -nf ur_ros2_driver) && [ -n "$PID" ] && '
-                    'taskset -cp 0-1 "$PID" && '
-                    'echo "[RT] ur_ros2_driver (PID=$PID) pinned to Core 0-1" || '
-                    'echo "[RT] WARNING: ur_ros2_driver not found — CPU pinning skipped"',
-                ],
-                output="screen",
-                condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
-            )
-        ],
+        actions=[_pin_external_driver("ur_ros2_driver", "ur_ros2_driver", arm_driver_core)],
+    )
+    pin_hand_driver = TimerAction(
+        period=3.0,
+        actions=[_pin_external_driver("udp_hand_node", "udp_hand_node", hand_driver_core)],
     )
 
     # ── integrated_rt_controller DDS thread pinning ─────────────────────────────────
@@ -511,6 +540,7 @@ def generate_launch_description():
             ur_driver_launch_action,
             pin_ur_driver,
             udp_hand_node,
+            pin_hand_driver,
             hand_auto_activate,
             hand_trigger_configure,
             # 4) Event-driven chain:

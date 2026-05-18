@@ -854,27 +854,6 @@ inline SystemThreadConfigs SelectThreadConfigs() noexcept {
           kMpcConfig4Core};
 }
 
-// Backward-compat thin wrapper for legacy callers that expected
-// GetSimCoreLayout(int). The Phase 5 SSoT is SystemThreadConfigs.sim_thread
-// / .viewer, but pre-v3 code may still call this. The wrapper derives the
-// layout from SelectThreadConfigs() so there is exactly one definition.
-inline SimCoreLayout GetSimCoreLayout(int physical_cores) noexcept {
-  // Match SelectThreadConfigs() tier breakpoints to surface the same values.
-  if (physical_cores >= 16)
-    return {kSimThreadConfig16Core.cpu_core, kViewerConfig16Core.cpu_core};
-  if (physical_cores >= 14)
-    return {kSimThreadConfig14Core.cpu_core, kViewerConfig14Core.cpu_core};
-  if (physical_cores >= 12)
-    return {kSimThreadConfig12Core.cpu_core, kViewerConfig12Core.cpu_core};
-  if (physical_cores >= 10)
-    return {kSimThreadConfig10Core.cpu_core, kViewerConfig10Core.cpu_core};
-  if (physical_cores >= 8)
-    return {kSimThreadConfig8Core.cpu_core, kViewerConfig8Core.cpu_core};
-  if (physical_cores >= 6)
-    return {kSimThreadConfig.cpu_core, kViewerConfig.cpu_core};
-  return {kSimThreadConfig4Core.cpu_core, kViewerConfig4Core.cpu_core};
-}
-
 }  // namespace rtc
 
 #endif  // RTC_BASE_THREAD_UTILS_HPP_
