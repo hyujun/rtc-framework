@@ -130,7 +130,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   num_fingertips_ = udp_hand_driver::kDefaultNumFingertips;
   use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
   controller_ = std::make_unique<udp_hand_driver::UdpHandController>(
-      target_ip, target_port, rtc::kUdpRecvConfig, recv_timeout_ms,
+      target_ip, target_port, udp_hand_driver::kHandUdpRecvConfig, recv_timeout_ms,
       false /* enable_write_ack: deprecated */, 1, num_fingertips_, use_fake_hand_, ft_names,
       comm_mode, tof_lpf_enabled, tof_lpf_cutoff_hz, baro_lpf_enabled, baro_lpf_cutoff_hz,
       ft_config, drift_enabled, drift_threshold, drift_window_size);

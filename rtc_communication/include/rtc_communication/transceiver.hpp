@@ -29,6 +29,16 @@
 
 namespace rtc {
 
+// Generic default for RT UDP receive loops (Phase 5 — replaces the deleted
+// kUdpRecvConfig*). cpu_core = -1 signals "no pinning here; the launch-level
+// taskset on the driver process determines affinity". SCHED_FIFO 65 keeps
+// parity with the priority hierarchy documented in thread_config.hpp.
+inline const ThreadConfig kRtUdpRecvConfig{.cpu_core = -1,
+                                           .sched_policy = SCHED_FIFO,
+                                           .sched_priority = 65,
+                                           .nice_value = 0,
+                                           .name = "rt_udp_recv"};
+
 template <typename Codec>
   requires PacketCodec<Codec>
 class Transceiver {
@@ -41,7 +51,7 @@ class Transceiver {
   // transport: the transport layer to use for send/recv.
   // thread_cfg: RT thread config for the receive loop.
   explicit Transceiver(std::unique_ptr<TransportInterface> transport,
-                       const ThreadConfig& thread_cfg = kUdpRecvConfig) noexcept
+                       const ThreadConfig& thread_cfg = kRtUdpRecvConfig) noexcept
       : transport_(std::move(transport)), thread_cfg_(thread_cfg) {}
 
   ~Transceiver() { Stop(); }

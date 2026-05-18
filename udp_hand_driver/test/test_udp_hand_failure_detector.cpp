@@ -22,7 +22,7 @@ using namespace std::chrono_literals;
 class HandFailureDetectorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    controller_ = std::make_unique<UdpHandController>("127.0.0.1", 55151, rtc::kUdpRecvConfig, 10.0, false,
+    controller_ = std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false,
                                                    1, 4, true);  // fake_hand=true
     ASSERT_TRUE(controller_->Start());
   }
