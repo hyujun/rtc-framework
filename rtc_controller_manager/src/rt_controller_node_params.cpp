@@ -367,7 +367,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // Create a dedicated LifecycleNode per controller.  Namespace is
     // "/<config_key>" so controller-owned topics declared with relative
     // paths in YAML resolve to /<config_key>/<topic> automatically.
-    // main() attaches these to aux_executor.
+    // main() attaches these to nrt_callback_executor.
     // Per-controller LifecycleNodes must NOT inherit the parent's CLI
     // remappings (e.g. `--ros-args -r __node:=robot_rt_controller`).  Without
     // use_global_arguments(false), the global remap rules rename every child

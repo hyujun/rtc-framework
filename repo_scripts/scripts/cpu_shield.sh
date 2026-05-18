@@ -10,8 +10,8 @@
 #   cpu_shield.sh status                   # 상태 확인 (sudo 불필요)
 #
 # Tier 모델:
-#   Tier 1 (RT-critical): rt_control + sensor_io  — 항상 격리
-#   Tier 2 (RT-support):  udp_recv + logging + aux — 로봇 모드에서만 격리
+#   Tier 1 (RT-critical): rt_control + rt_inbound  — 항상 격리
+#   Tier 2 (RT-support):  udp_recv + nrt_logging + nrt_callback — 로봇 모드에서만 격리
 #   Tier 3 (Flexible):    sim/monitoring/build     — 격리하지 않음
 #
 # Modes:
@@ -41,13 +41,13 @@ make_logger "SHIELD"
 # Shield range semantics (robot mode): the "user" cpuset protects RT/MPC
 # cores from ambient user tasks; everything else lands in "system" (OS 0-1
 # plus spare cores above the RT range). The sim mode only protects Tier 1
-# (rt_control + sensor_io) so MuJoCo can use the freed cores.
+# (rt_control + rt_inbound) so MuJoCo can use the freed cores.
 compute_shield_cores() {
   local mode="$1"
   local phys_cores="$2"
 
   if [[ "$mode" == "sim" ]]; then
-    # Tier 1 only: rt_control + sensor_io
+    # Tier 1 only: rt_control + rt_inbound
     if [[ "$phys_cores" -le 4 ]]; then
       echo "1-2"
     elif [[ "$phys_cores" -ge 16 ]]; then
@@ -62,11 +62,11 @@ compute_shield_cores() {
     elif [[ "$phys_cores" -le 7 ]]; then
       echo "2-5"
     elif [[ "$phys_cores" -le 9 ]]; then
-      echo "2-6"   # 8-9: RT 2-3, MPC 4, UDP 5, logging 6, aux/publish 7 (boundary)
+      echo "2-6"   # 8-9: RT 2-3, MPC 4, UDP 5, nrt_logging 6, nrt_callback/rt_outbound 7 (boundary)
     elif [[ "$phys_cores" -le 11 ]]; then
-      echo "2-8"   # 10-11: RT 2-3, MPC 4-5, UDP 6, log 7, aux/pub 8; Core 9 spare/sim
+      echo "2-8"   # 10-11: RT 2-3, MPC 4-5, UDP 6, nrt_log 7, nrt_cb/rt_out 8; Core 9 spare/sim
     elif [[ "$phys_cores" -le 13 ]]; then
-      echo "2-9"   # 12-13: RT 2-3, MPC 4-6, UDP 7, log 8, aux/pub 9; Cores 10-11 spare
+      echo "2-9"   # 12-13: RT 2-3, MPC 4-6, UDP 7, nrt_log 8, nrt_cb/rt_out 9; Cores 10-11 spare
     elif [[ "$phys_cores" -le 15 ]]; then
       echo "2-10"  # 14-15: same RT/MPC/IO + sim_thread on Core 10; Cores 11-13 spare
     else

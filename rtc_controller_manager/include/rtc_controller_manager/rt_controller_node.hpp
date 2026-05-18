@@ -92,8 +92,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::CallbackGroup::SharedPtr GetNrtCallbackGroup() const { return cb_group_nrt_callback_; }
 
   // Per-controller LifecycleNodes created in on_configure.  main() attaches
-  // these to aux_executor so controller-owned subscriptions/publishers are
-  // processed off the RT path.  Valid after CM's on_configure has succeeded.
+  // these to nrt_callback_executor so controller-owned subscriptions/publishers
+  // are processed off the RT path.  Valid after CM's on_configure has
+  // succeeded.
   [[nodiscard]] const std::vector<rclcpp_lifecycle::LifecycleNode::SharedPtr>& GetControllerNodes()
       const {
     return controller_nodes_;

@@ -116,7 +116,7 @@ class RTControllerInterface {
 
   // Controller-owned LifecycleNode accessor.  Non-null after on_configure
   // succeeds; null after on_cleanup.  Intended for CM to add the node to an
-  // executor (aux_executor) for non-RT callback processing.
+  // executor (nrt_callback_executor) for non-RT callback processing.
   [[nodiscard]] rclcpp_lifecycle::LifecycleNode::SharedPtr get_lifecycle_node() const noexcept {
     return node_;
   }
