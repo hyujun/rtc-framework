@@ -53,9 +53,14 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   std::string errors;
   const int max_cores = GetOnlineCpuCount();
 
-  // Validate CPU core
-  if (cfg.cpu_core < 0 || cfg.cpu_core >= max_cores) {
-    errors += "Invalid CPU core " + std::to_string(cfg.cpu_core) + " (valid range: 0-" +
+  // Validate CPU core. cpu_core == -1 is a Phase 5 sentinel meaning
+  // "skip affinity, inherit the calling process's taskset" — used by
+  // process-level pins (sim_thread / viewer) and by RT receive threads
+  // that piggy-back on a launch-level driver process taskset (Transceiver
+  // default kRtUdpRecvConfig, udp_hand_driver kHandUdpRecvConfig). Apply
+  // the upper-bound check only when cpu_core is non-sentinel.
+  if (cfg.cpu_core < -1 || cfg.cpu_core >= max_cores) {
+    errors += "Invalid CPU core " + std::to_string(cfg.cpu_core) + " (valid range: -1, 0-" +
               std::to_string(max_cores - 1) + "); ";
   }
 
@@ -98,13 +103,17 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
     return false;
   }
 
-  // 1. Set CPU affinity
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
+  // 1. Set CPU affinity (skip when cpu_core == -1: the calling process's
+  //    taskset already constrains this thread's affinity — typical for RT
+  //    receive threads that piggy-back on a launch-level driver taskset).
+  if (cfg.cpu_core >= 0) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
 
-  if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-    return false;
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+      return false;
+    }
   }
 
   // 2. Set scheduler policy and priority
@@ -155,14 +164,18 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   bool full_success = true;
   std::string warnings;
 
-  // 1. Always try CPU affinity first (critical for isolation)
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
+  // 1. Try CPU affinity (skip when cpu_core == -1: launch-level taskset is
+  //    the source of truth for this thread's affinity, see Phase 5 sentinel
+  //    in kRtUdpRecvConfig / kHandUdpRecvConfig).
+  if (cfg.cpu_core >= 0) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
 
-  if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-    full_success = false;
-    warnings += "CPU affinity failed: " + SafeStrerror(errno) + "; ";
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+      full_success = false;
+      warnings += "CPU affinity failed: " + SafeStrerror(errno) + "; ";
+    }
   }
 
   // 2. Try RT scheduling, fallback to SCHED_OTHER if it fails

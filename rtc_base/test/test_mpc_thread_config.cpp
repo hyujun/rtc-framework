@@ -296,5 +296,47 @@ TEST(MpcThreadConfig, NoRtPriorityConflicts) {
   EXPECT_TRUE(err.empty()) << "Host tier validation should succeed, got: " << err;
 }
 
+// Negative case: ValidateSystemThreadConfigs must actually catch arm/hand
+// driver pins that collide with an RT controller thread. The
+// LayoutV3ArmHandDriverDisjoint test above only proves "current canonical
+// configs are clean"; this test proves "the validator catches violations."
+TEST(MpcThreadConfig, LayoutV3ValidatorCatchesArmHandCollision) {
+  const int ncpu = GetPhysicalCpuCount();
+  if (ncpu < 4) {
+    GTEST_SKIP() << "Host has only " << ncpu << " cores; minimum 4-core tier requires >= 4";
+  }
+
+  SystemThreadConfigs bad = SelectThreadConfigs();
+  // Force arm_driver onto rt_inbound's core — a clear violation of the
+  // Phase 5 disjointness rule.
+  bad.arm_driver.cpu_core = bad.rt_inbound.cpu_core;
+  const std::string err = ValidateSystemThreadConfigs(bad);
+  EXPECT_FALSE(err.empty()) << "Validator missed arm_driver/rt_inbound core collision";
+  EXPECT_NE(err.find("arm_driver"), std::string::npos)
+      << "Error string should name arm_driver, got: " << err;
+}
+
+// cpu_core == -1 sentinel must pass ValidateThreadConfig (Phase 5 follow-up).
+// kRtUdpRecvConfig (transceiver default) and kHandUdpRecvConfig (udp_hand
+// private) both ship with cpu_core = -1; ApplyThreadConfig must accept them
+// so the FIFO 65 priority actually lands on the receive thread instead of
+// being silently dropped by an early-return validation failure.
+TEST(MpcThreadConfig, CpuCoreSentinelValidatesAsRtConfig) {
+  const ThreadConfig sentinel{.cpu_core = -1,
+                              .sched_policy = SCHED_FIFO,
+                              .sched_priority = 65,
+                              .nice_value = 0,
+                              .name = "rt_udp_recv"};
+  EXPECT_TRUE(ValidateThreadConfig(sentinel).empty())
+      << "cpu_core = -1 must validate (no-pinning sentinel)";
+
+  const ThreadConfig invalid{.cpu_core = -2,
+                             .sched_policy = SCHED_FIFO,
+                             .sched_priority = 65,
+                             .nice_value = 0,
+                             .name = "bad_core"};
+  EXPECT_FALSE(ValidateThreadConfig(invalid).empty()) << "cpu_core < -1 must still fail validation";
+}
+
 }  // namespace
 }  // namespace rtc
