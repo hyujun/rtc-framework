@@ -99,10 +99,13 @@ fatal() {
 # 예: i7-8700 (6C/12T) → nproc=12 이지만 이 함수는 6을 반환.
 # thread_config.hpp의 코어 레이아웃은 물리 코어 기준이므로 반드시 물리 코어를 사용해야 한다.
 get_physical_cores() {
-  # 방법 1: lscpu (가장 빠름)
+  # 방법 1: lscpu (가장 빠름).
+  # `-p=Core,Socket` 는 헤더(`#` 시작) 외에 일반적으로 빈 줄을 emit 하지 않지만,
+  # rtc_tools/launch/thread_layout.py 의 Python mirror 와 정확히 동일한 행 필터를
+  # 보장하기 위해 빈 줄도 명시적으로 제외한다 (drift 방지).
   if command -v lscpu &>/dev/null; then
     local count
-    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | sort -u | wc -l)
+    count=$(lscpu -p=Core,Socket 2>/dev/null | grep -v '^#' | grep -v '^$' | sort -u | wc -l)
     if [[ "$count" -gt 0 ]]; then
       echo "$count"
       return

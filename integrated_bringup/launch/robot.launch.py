@@ -54,6 +54,15 @@ def _pin_external_driver(label: str, process_grep: str, core: int) -> ExecutePro
     in that case the resulting action logs the skip and returns immediately,
     so launch files do not need their own guard.
     """
+    # Defense in depth: the f-string below interpolates ``label`` and
+    # ``process_grep`` into a ``bash -c`` command. Current callers pass
+    # hardcoded literals, but reject any embedded double quote outright so a
+    # future caller cannot accidentally inject shell syntax.
+    if '"' in label or '"' in process_grep:
+        raise ValueError(
+            f"_pin_external_driver: embedded double quote disallowed in "
+            f"label={label!r} or process_grep={process_grep!r}"
+        )
     if core < 0:
         return ExecuteProcess(
             cmd=[

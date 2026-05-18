@@ -25,6 +25,7 @@ treats it as a no-op (skip taskset call entirely).
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 
@@ -57,9 +58,11 @@ def get_physical_cpu_count() -> int:
     """Return the physical (non-SMT) CPU count.
 
     Mirrors ``rtc::GetPhysicalCpuCount`` and ``rt_common.sh::get_physical_cores``.
-    Prefers ``lscpu -p=Core,Socket`` (matches the shell helper); falls back to
-    ``os.cpu_count()`` only if lscpu is unavailable. The shell and Python paths
-    must agree because both feed the same tier selection.
+    Prefers ``lscpu -p=Core,Socket`` and applies the same row filter as the
+    shell helper: drop ``#``-prefixed headers and blank lines, then count
+    unique ``(Core,Socket)`` tuples. Falls back to ``os.cpu_count()`` only if
+    lscpu is unavailable. The shell and Python paths must agree because both
+    feed the same tier selection.
     """
     try:
         result = subprocess.run(
@@ -79,8 +82,6 @@ def get_physical_cpu_count() -> int:
                 return len(unique_cores)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-
-    import os
 
     return os.cpu_count() or 1
 
