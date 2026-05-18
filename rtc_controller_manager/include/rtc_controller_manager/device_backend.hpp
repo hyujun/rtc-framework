@@ -90,6 +90,12 @@ class DeviceBackend {
   /// `~/.claude/plans/arm-hand-core-allocation.md`. May be null in test
   /// fixtures that don't wire an executor — backends must tolerate this and
   /// fall back to the default callback group.
+  ///
+  /// The supplied group MUST be `MutuallyExclusive` (CM creates it as such).
+  /// Each backend writes into its own `SeqLock<DeviceStateCache>` from the
+  /// state callback — the single-writer invariant relies on the callback
+  /// group serializing concurrent callbacks. A `Reentrant` group would break
+  /// it; do not substitute one.
   virtual void Configure(rclcpp_lifecycle::LifecycleNode* node, const DeviceBackendConfig& config,
                          rclcpp::CallbackGroup::SharedPtr state_cb_group) = 0;
 
