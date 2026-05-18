@@ -34,7 +34,8 @@ std::vector<int> BuildReorderMap(const std::vector<std::string>& state_names,
 }  // namespace
 
 void UrDriverNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
-                                      const DeviceBackendConfig& config) {
+                                      const DeviceBackendConfig& config,
+                                      rclcpp::CallbackGroup::SharedPtr state_cb_group) {
   config_ = config;
 
   // Command-side: ros2_control forward_position_controller expects a fixed-
@@ -50,10 +51,16 @@ void UrDriverNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   rclcpp::QoS cmd_qos{1};
   cmd_qos.reliable();
 
+  // Route /joint_states onto the rt_inbound callback group (FIFO 70) so the
+  // RT loop reads see fresh data on the controller↔hardware boundary.
+  rclcpp::SubscriptionOptions sub_opts;
+  sub_opts.callback_group = state_cb_group;
+
   if (!config_.state_topic.empty()) {
     state_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.state_topic, state_qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); });
+        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); },
+        sub_opts);
   }
   if (!config_.command_topic.empty()) {
     cmd_pub_ =

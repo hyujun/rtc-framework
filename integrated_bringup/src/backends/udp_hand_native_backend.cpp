@@ -34,7 +34,8 @@ std::vector<int> BuildReorderMap(const std::vector<std::string>& state_names,
 }  // namespace
 
 void UdpHandNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
-                                     const DeviceBackendConfig& config) {
+                                     const DeviceBackendConfig& config,
+                                     rclcpp::CallbackGroup::SharedPtr state_cb_group) {
   config_ = config;
 
   if (!config_.joint_command_names.empty()) {
@@ -46,20 +47,29 @@ void UdpHandNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   rclcpp::QoS qos{1};
   qos.best_effort();
 
+  // All three state lanes (joint / motor / sensor) ride the rt_inbound
+  // callback group (FIFO 70) so the RT loop reads see fresh data on the
+  // controller↔hardware boundary.
+  rclcpp::SubscriptionOptions sub_opts;
+  sub_opts.callback_group = state_cb_group;
+
   if (!config_.state_topic.empty()) {
     state_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.state_topic, qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); });
+        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); },
+        sub_opts);
   }
   if (!config_.motor_topic.empty()) {
     motor_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.motor_topic, qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnMotorState(std::move(msg)); });
+        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnMotorState(std::move(msg)); },
+        sub_opts);
   }
   if (!config_.sensor_topic.empty()) {
     sensor_sub_ = node->create_subscription<rtc_msgs::msg::HandSensorState>(
         config_.sensor_topic, qos,
-        [this](rtc_msgs::msg::HandSensorState::SharedPtr msg) { OnSensorState(std::move(msg)); });
+        [this](rtc_msgs::msg::HandSensorState::SharedPtr msg) { OnSensorState(std::move(msg)); },
+        sub_opts);
   }
   if (!config_.command_topic.empty()) {
     cmd_pub_ = node->create_publisher<rtc_msgs::msg::JointCommand>(config_.command_topic, qos);

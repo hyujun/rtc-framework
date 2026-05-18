@@ -33,7 +33,8 @@ class UrDriverNativeBackend : public DeviceBackend {
   UrDriverNativeBackend(const UrDriverNativeBackend&) = delete;
   UrDriverNativeBackend& operator=(const UrDriverNativeBackend&) = delete;
 
-  void Configure(rclcpp_lifecycle::LifecycleNode* node, const DeviceBackendConfig& config) override;
+  void Configure(rclcpp_lifecycle::LifecycleNode* node, const DeviceBackendConfig& config,
+                 rclcpp::CallbackGroup::SharedPtr state_cb_group) override;
   void Activate() override;
   void Deactivate() override;
 

@@ -28,22 +28,24 @@
 //                                            (controller-owned non-RT topics:
 //                                            RobotTarget/Transforms/
 //                                            DigitalTwin). Capacity 16.
-//   rt_inbound_executor  Core 3  SCHED_FIFO 70   cb_group_rt_inbound_ only — CM-owned
-//                                            RobotTarget sub. DeviceBackend
-//                                            state subs (/joint_states, hand
-//                                            state/motor/sensor) are currently
-//                                            on nrt_callback_executor via the default
-//                                            callback group (Phase 3 backend
-//                                            abstraction will route them onto
-//                                            cb_group_rt_inbound_; tracked in
-//                                            ~/.claude/plans/arm-hand-core-allocation.md)
+//   rt_inbound_executor  Core 3  SCHED_FIFO 70   cb_group_rt_inbound_ —
+//                                            DeviceBackend state subs
+//                                            (/joint_states, hand
+//                                            state/motor/sensor) routed here
+//                                            via Configure(..., cb_group)
+//                                            injection (Phase 3 of
+//                                            thread-layout-v3 sprint). The
+//                                            CM-owned RobotTarget sub stays
+//                                            on the default group
+//                                            (nrt_callback) per RT-boundary
+//                                            decision.
 //   nrt_logging_executor     Core 4  SCHED_OTHER -5   cm_timing_log.csv drain + deferred E-STOP log
 //   nrt_callback_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle services
-//                                            + CM default group + controller
+//                                            + CM default group (CM-owned
+//                                            RobotTarget sub) + controller
 //                                            LifecycleNode default groups
-//                                            (DeviceBackend subs, owned
-//                                            RobotTarget subs, grasp_command
-//                                            services)
+//                                            (owned RobotTarget subs,
+//                                            grasp_command services).
 
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
