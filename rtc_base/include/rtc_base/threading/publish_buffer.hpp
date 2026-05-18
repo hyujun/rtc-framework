@@ -165,6 +165,13 @@ using ControlPublishBuffer = SpscPublishBuffer<kPublishBufferCapacity>;
 // burst margin only (16 slots ≈ 32 ms at 500 Hz, 3 ms at 5 kHz); the consumer
 // drains every tick so deep queueing is wasted memory and adds publish
 // latency.
+//
+// Producer-side fan-out invariant (RtControllerNode ControlLoop): the same
+// PublishSnapshot is pushed by value into ControlPublishBuffer and
+// NrtPublishBuffer in the same tick. Pop() then writes a fresh copy into each
+// consumer's `out` parameter, so the two drain threads observe independent
+// by-value copies — no aliasing or shared mutation between the actuator and
+// non-RT publish lanes. Drop counters are tracked per-buffer.
 inline constexpr std::size_t kNrtPublishBufferCapacity = 16;
 using NrtPublishBuffer = SpscPublishBuffer<kNrtPublishBufferCapacity>;
 
