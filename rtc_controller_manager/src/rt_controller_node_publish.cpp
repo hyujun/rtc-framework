@@ -1,4 +1,4 @@
-// ── Publish offload thread (SPSC drain + ROS2 publish) ───────────────────────
+// ── Publish offload threads (SPSC drains + ROS2 publish) ─────────────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/threading/thread_utils.hpp>
 
@@ -8,13 +8,14 @@
 
 namespace urtc = rtc;
 
-// ── Publish offload thread
-// ────────────────────────────────────────────────────
+// ── rt_outbound thread (actuator command lane) ──────────────────────────────
 //
-// Drains the SPSC publish buffer and performs all ROS2 publish() calls.
-// Runs on a non-RT core (Core 5/6, SCHED_OTHER nice -3).
-// All DDS serialization, string allocation, and sendto() syscalls happen here,
-// keeping the RT path free of unbounded-latency operations.
+// Drains publish_buffer_ and forwards DeviceBackend.WriteCommand calls only
+// (controller↔hardware boundary, RT). After Phase 4 this thread is promoted
+// to SCHED_FIFO 65 and shares its core with rt_inbound (FIFO 70 has priority).
+// Controller-owned non-RT publishes (RobotTarget / Transforms / DigitalTwin)
+// were peeled off into the nrt_callback thread below — see Phase 2 of the
+// thread-layout-v3 sprint.
 
 void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
   static_cast<void>(urtc::ApplyThreadConfig(cfg));
@@ -32,10 +33,8 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
         controller_topic_configs_[static_cast<std::size_t>(snap.active_controller_idx)];
 
     // Per-group device command publish is delegated to the backend bound to
-    // each group's slot. Controller-output topics (kRobotTarget /
-    // kRobotTransforms / kDigitalTwinState — plus the SeqLock-routed
-    // GraspState / WbcState / ToFSnapshot) are forwarded via
-    // PublishNonRtSnapshot below — CM publishes nothing for those roles.
+    // each group's slot. Controller-owned non-RT topics ride a separate lane
+    // drained by NrtPublishLoopEntry below.
     const auto& slot_mapping =
         controller_slot_mappings_[static_cast<std::size_t>(snap.active_controller_idx)];
     std::size_t group_idx = 0;
@@ -48,16 +47,6 @@ void RtControllerNode::PublishLoopEntry(const urtc::ThreadConfig& cfg) {
                                                                 snap.command_type);
       }
       ++group_idx;
-    }
-
-    // Forward the snapshot to the active controller so it can publish its
-    // own (controller-owned) topics via LifecyclePublishers it created in
-    // on_configure / activated in on_activate.  Index is read from the
-    // snapshot (fixed by the RT loop this tick) to stay consistent with
-    // active_tc above.
-    const auto aidx = static_cast<std::size_t>(snap.active_controller_idx);
-    if (aidx < controllers_.size() && controllers_[aidx]) {
-      controllers_[aidx]->PublishNonRtSnapshot(snap);
     }
   }
 }
@@ -87,6 +76,64 @@ void RtControllerNode::StopPublishLoop() {
   publish_running_.store(false, std::memory_order_release);
   if (publish_thread_.joinable()) {
     publish_thread_.join();
+  }
+}
+
+// ── nrt_callback thread (controller-owned non-RT publish lane) ──────────────
+//
+// Drains nrt_publish_buffer_ and forwards controller.PublishNonRtSnapshot —
+// the controller owns LifecyclePublishers for kRobotTarget / kRobotTransforms
+// / kDigitalTwinState (plus any owned topics behind owned_topics.cpp). These
+// publishes are outside the controller↔hardware RT boundary, so they ride a
+// non-RT consumer on the nrt_callback core (SCHED_OTHER nice 0).
+
+void RtControllerNode::NrtPublishLoopEntry(const urtc::ThreadConfig& cfg) {
+  static_cast<void>(urtc::ApplyThreadConfig(cfg));
+  nrt_publish_running_.store(true, std::memory_order_release);
+
+  urtc::PublishSnapshot snap{};
+
+  while (nrt_publish_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
+    if (!nrt_publish_buffer_.Pop(snap)) {
+      WaitForNrtPublishWakeup();
+      continue;
+    }
+
+    // Forward the snapshot to the active controller so it can publish its
+    // own (controller-owned) topics. Index is captured by the RT loop this
+    // tick so the controller pulled out of controllers_ matches the topic
+    // config that produced the snapshot.
+    const auto aidx = static_cast<std::size_t>(snap.active_controller_idx);
+    if (aidx < controllers_.size() && controllers_[aidx]) {
+      controllers_[aidx]->PublishNonRtSnapshot(snap);
+    }
+  }
+}
+
+void RtControllerNode::WaitForNrtPublishWakeup() {
+  if (nrt_publish_eventfd_ >= 0) {
+    struct pollfd pfd {};
+
+    pfd.fd = nrt_publish_eventfd_;
+    pfd.events = POLLIN;
+    poll(&pfd, 1, 1);  // 1ms timeout
+    if (pfd.revents & POLLIN) {
+      eventfd_t val{};
+      static_cast<void>(eventfd_read(nrt_publish_eventfd_, &val));
+    }
+  } else {
+    sched_yield();
+  }
+}
+
+void RtControllerNode::StartNrtPublishLoop(const urtc::ThreadConfig& nrt_pub_cfg) {
+  nrt_publish_thread_ = std::jthread([this, nrt_pub_cfg]() { NrtPublishLoopEntry(nrt_pub_cfg); });
+}
+
+void RtControllerNode::StopNrtPublishLoop() {
+  nrt_publish_running_.store(false, std::memory_order_release);
+  if (nrt_publish_thread_.joinable()) {
+    nrt_publish_thread_.join();
   }
 }
 

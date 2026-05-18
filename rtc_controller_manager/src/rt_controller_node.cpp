@@ -40,10 +40,15 @@ RtControllerNode::~RtControllerNode() {
   // invoked (e.g. SIGTERM without graceful shutdown).
   StopRtLoop();
   StopPublishLoop();
+  StopNrtPublishLoop();
 
   if (publish_eventfd_ >= 0) {
     close(publish_eventfd_);
     publish_eventfd_ = -1;
+  }
+  if (nrt_publish_eventfd_ >= 0) {
+    close(nrt_publish_eventfd_);
+    nrt_publish_eventfd_ = -1;
   }
 }
 
@@ -94,6 +99,13 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
   if (publish_eventfd_ < 0) {
     RCLCPP_WARN(get_logger(), "eventfd() failed: publish thread will use polling fallback");
+  }
+  // Separate eventfd for the controller-owned non-RT publish lane (Phase 2
+  // of thread-layout-v3 sprint). Independent wake so the rt_outbound thread
+  // and the nrt_callback thread can drain their lanes without coupling.
+  nrt_publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
+  if (nrt_publish_eventfd_ < 0) {
+    RCLCPP_WARN(get_logger(), "eventfd() failed: nrt publish thread will use polling fallback");
   }
 
   // Per-controller lifecycle state, parallel to controllers_. All start
@@ -160,6 +172,10 @@ RtControllerNode::CallbackReturn RtControllerNode::on_activate(
   const auto cfgs = urtc::SelectThreadConfigs();
   StartRtLoop(cfgs.rt_control);
   StartPublishLoop(cfgs.rt_outbound);
+  // Controller-owned non-RT publish lane (Phase 2 of thread-layout-v3
+  // sprint): drains nrt_publish_buffer_ on the nrt_callback core
+  // (SCHED_OTHER nice 0) and forwards controller.PublishNonRtSnapshot.
+  StartNrtPublishLoop(cfgs.nrt_callback);
 
   RCLCPP_INFO(get_logger(),
               "RtControllerNode active — initial controller '%s', RT loop + "
@@ -175,10 +191,11 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
 
   StopRtLoop();
   StopPublishLoop();
+  StopNrtPublishLoop();
 
-  // Deactivate the active controller after the publish thread has stopped so
-  // no one tries to publish via a newly-Inactive LifecyclePublisher. Other
-  // controllers were already Inactive (single-active invariant).
+  // Deactivate the active controller after the publish threads have stopped
+  // so no one tries to publish via a newly-Inactive LifecyclePublisher.
+  // Other controllers were already Inactive (single-active invariant).
   const int active_idx = active_controller_idx_.load(std::memory_order_acquire);
   if (active_idx >= 0 && active_idx < static_cast<int>(controllers_.size()) &&
       controller_states_[static_cast<std::size_t>(active_idx)].load(std::memory_order_acquire) ==
@@ -225,10 +242,14 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
 
   // Reverse order of on_configure:
 
-  // 7. eventfd
+  // 7. eventfds
   if (publish_eventfd_ >= 0) {
     close(publish_eventfd_);
     publish_eventfd_ = -1;
+  }
+  if (nrt_publish_eventfd_ >= 0) {
+    close(nrt_publish_eventfd_);
+    nrt_publish_eventfd_ = -1;
   }
 
   // 6. timers
@@ -310,11 +331,16 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   TriggerGlobalEstop("lifecycle_error");
   StopRtLoop();
   StopPublishLoop();
+  StopNrtPublishLoop();
 
   // Full cleanup for recovery to Unconfigured state
   if (publish_eventfd_ >= 0) {
     close(publish_eventfd_);
     publish_eventfd_ = -1;
+  }
+  if (nrt_publish_eventfd_ >= 0) {
+    close(nrt_publish_eventfd_);
+    nrt_publish_eventfd_ = -1;
   }
   drain_timer_.reset();
   param_callback_handle_.reset();

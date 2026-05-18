@@ -159,6 +159,15 @@ class SpscPublishBuffer {
 inline constexpr std::size_t kPublishBufferCapacity = 512;
 using ControlPublishBuffer = SpscPublishBuffer<kPublishBufferCapacity>;
 
+// Snapshot lane consumed by the nrt_callback core
+// (controller.PublishNonRtSnapshot — controller-owned non-RT topics:
+// kRobotTarget / kRobotTransforms / kDigitalTwinState).  Sized for a small
+// burst margin only (16 slots ≈ 32 ms at 500 Hz, 3 ms at 5 kHz); the consumer
+// drains every tick so deep queueing is wasted memory and adds publish
+// latency.
+inline constexpr std::size_t kNrtPublishBufferCapacity = 16;
+using NrtPublishBuffer = SpscPublishBuffer<kNrtPublishBufferCapacity>;
+
 }  // namespace rtc
 
 #endif  // RTC_BASE_PUBLISH_BUFFER_HPP_

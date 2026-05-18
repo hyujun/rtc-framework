@@ -220,9 +220,19 @@ void RtControllerNode::ControlLoop() {
     }
     snap.num_groups = static_cast<int>(gi);
 
+    // Producer-side fan-out into two SPSC lanes (Phase 2 of thread-layout-v3
+    // sprint).  publish_buffer_ → rt_outbound (actuator command, RT bound);
+    // nrt_publish_buffer_ → nrt_callback (controller-owned non-RT publishes).
+    // Both push the same snap by value — duplication cost is small (≈12 KB
+    // total at capacity 16) and avoids splitting the struct.  Drops are
+    // accounted per-buffer; the nrt lane is the tighter (cap=16) one.
     static_cast<void>(publish_buffer_.Push(snap));
     if (publish_eventfd_ >= 0) {
       static_cast<void>(eventfd_write(publish_eventfd_, 1));
+    }
+    static_cast<void>(nrt_publish_buffer_.Push(snap));
+    if (nrt_publish_eventfd_ >= 0) {
+      static_cast<void>(eventfd_write(nrt_publish_eventfd_, 1));
     }
   }
 
@@ -275,6 +285,7 @@ void RtControllerNode::DrainLog() {
     const auto overruns = rt_loop_.OverrunCount();
     const auto skips = rt_loop_.SkipCount();
     const auto pub_drops = publish_buffer_.drop_count();
+    const auto nrt_pub_drops = nrt_publish_buffer_.drop_count();
     const auto timing_drops = cm_timing_producer_.DropCount();
 
     // Window elapsed semantics differ by mode:
@@ -297,12 +308,14 @@ void RtControllerNode::DrainLog() {
     last_summary_wall_ = wall_now;
 
     RCLCPP_INFO(
-        get_logger(), "%s  overruns=%lu  skips=%lu  pub_drops=%lu  timing_drops=%lu",
+        get_logger(),
+        "%s  overruns=%lu  skips=%lu  pub_drops=%lu  nrt_pub_drops=%lu  timing_drops=%lu",
         timing_profiler_
             .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()), elapsed_s)
             .c_str(),
         static_cast<unsigned long>(overruns), static_cast<unsigned long>(skips),
-        static_cast<unsigned long>(pub_drops), static_cast<unsigned long>(timing_drops));
+        static_cast<unsigned long>(pub_drops), static_cast<unsigned long>(nrt_pub_drops),
+        static_cast<unsigned long>(timing_drops));
     timing_profiler_.Reset();
   }
 }

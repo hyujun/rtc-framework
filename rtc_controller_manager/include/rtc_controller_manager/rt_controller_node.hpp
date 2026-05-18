@@ -48,9 +48,15 @@
 // Threading model:
 //   - rt_loop (jthread):   clock_nanosleep RT loop — ControlLoop() +
 //   CheckTimeouts()
-//   - publish_thread (jthread): SPSC drain → controller PublishNonRtSnapshot +
-//                          DeviceBackend WriteCommand (each backend pushes onto
-//                          its own publisher path)
+//   - publish_thread (jthread, rt_outbound): SPSC drain →
+//                          DeviceBackend.WriteCommand only (actuator command,
+//                          RT controller↔hardware boundary, SCHED_FIFO 65).
+//   - nrt_publish_thread (jthread, nrt_callback): SPSC drain →
+//                          controller.PublishNonRtSnapshot (controller-owned
+//                          non-RT topics: RobotTarget/Transforms/DigitalTwin,
+//                          SCHED_OTHER nice 0). Separate lane because these
+//                          publishes are outside the controller↔hardware RT
+//                          boundary.
 //   - cb_group_rt_inbound_:    backend state/motor/sensor subs (created by each
 //                          DeviceBackend) + target_sub_ (Sensor core)
 //   - cb_group_nrt_logging_:       drain_timer_  (non-RT core)
@@ -103,8 +109,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // RT loop lifecycle — public until Step 8 (RtControllerMain redesign)
   void StartRtLoop(const rtc::ThreadConfig& rt_cfg);
   void StartPublishLoop(const rtc::ThreadConfig& pub_cfg);
+  void StartNrtPublishLoop(const rtc::ThreadConfig& nrt_pub_cfg);
   void StopRtLoop();
   void StopPublishLoop();
+  void StopNrtPublishLoop();
 
  private:
   // ── Session directory helpers ─────────────────────────────────────────────
@@ -191,6 +199,8 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Publish offload (SPSC drain → publish) ──────────────────────────────
   void PublishLoopEntry(const rtc::ThreadConfig& cfg);
   void WaitForPublishWakeup();
+  void NrtPublishLoopEntry(const rtc::ThreadConfig& cfg);
+  void WaitForNrtPublishWakeup();
   void DrainLog();  // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);
@@ -344,10 +354,23 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   ControlLoopThread rt_loop_{this};
 
   // ── Publish offload (SPSC buffer + dedicated thread) ────────────────────
+  // Actuator command lane (rt_outbound, SCHED_FIFO 65 after Phase 4):
+  //   producer = RT loop, consumer = publish_thread_ → backend.WriteCommand.
   rtc::ControlPublishBuffer publish_buffer_{};
   std::jthread publish_thread_;
   std::atomic<bool> publish_running_{false};
   int publish_eventfd_{-1};  // eventfd for RT→publish wakeup (replaces sched_yield)
+
+  // Controller-owned non-RT topic lane (nrt_callback, SCHED_OTHER nice 0):
+  //   producer = RT loop, consumer = nrt_publish_thread_ →
+  //   controller.PublishNonRtSnapshot. Separate from publish_buffer_ so the
+  //   rt_outbound thread carries only actuator commands (controller↔hardware
+  //   boundary); controller-owned publishes (RobotTarget/Transforms/
+  //   DigitalTwin) ride a non-RT consumer.
+  rtc::NrtPublishBuffer nrt_publish_buffer_{};
+  std::jthread nrt_publish_thread_;
+  std::atomic<bool> nrt_publish_running_{false};
+  int nrt_publish_eventfd_{-1};
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<rtc::RTControllerInterface>> controllers_;

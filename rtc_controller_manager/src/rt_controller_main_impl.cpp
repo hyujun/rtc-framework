@@ -18,17 +18,25 @@
 //
 // Threading model:
 //   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
-//   E-STOP publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish() calls
+//   E-STOP publish_thread   Core 5  SCHED_OTHER -3   publish_buffer_ drain → backend.WriteCommand
+//                                            only (Phase 4 will promote to
+//                                            SCHED_FIFO 65; Phase 2 removed
+//                                            PublishNonRtSnapshot from this
+//                                            lane).
+//   nrt_publish_thread (Phase 2)        SCHED_OTHER  0   nrt_publish_buffer_ drain →
+//                                            controller.PublishNonRtSnapshot
+//                                            (controller-owned non-RT topics:
+//                                            RobotTarget/Transforms/
+//                                            DigitalTwin). Capacity 16.
 //   rt_inbound_executor  Core 3  SCHED_FIFO 70   cb_group_rt_inbound_ only — CM-owned
 //                                            RobotTarget sub. DeviceBackend
 //                                            state subs (/joint_states, hand
 //                                            state/motor/sensor) are currently
 //                                            on nrt_callback_executor via the default
-//                                            callback group (Phase 4 backend
-//                                            abstraction dropped the sensor-
-//                                            group injection path; cleanup
-//                                            tracked in
-//                                            ~/.claude/plans/callback_group_audit.md)
+//                                            callback group (Phase 3 backend
+//                                            abstraction will route them onto
+//                                            cb_group_rt_inbound_; tracked in
+//                                            ~/.claude/plans/arm-hand-core-allocation.md)
 //   nrt_logging_executor     Core 4  SCHED_OTHER -5   cm_timing_log.csv drain + deferred E-STOP log
 //   nrt_callback_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle services
 //                                            + CM default group + controller
