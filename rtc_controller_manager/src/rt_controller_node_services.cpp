@@ -40,7 +40,7 @@ void RtControllerNode::CreateServices() {
           resp->controllers.push_back(std::move(cs));
         }
       },
-      srv_qos, cb_group_aux_);
+      srv_qos, cb_group_nrt_callback_);
 
   switch_controller_srv_ = create_service<rtc_msgs::srv::SwitchController>(
       "/rtc_cm/switch_controller",
@@ -104,7 +104,7 @@ void RtControllerNode::CreateServices() {
           resp->message = sub_msg;
         }
       },
-      srv_qos, cb_group_aux_);
+      srv_qos, cb_group_nrt_callback_);
 
   RCLCPP_INFO(get_logger(),
               "Services ready: /rtc_cm/list_controllers, "

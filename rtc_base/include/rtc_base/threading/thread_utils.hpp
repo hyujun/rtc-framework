@@ -580,14 +580,23 @@ inline int GetPhysicalCpuCount() noexcept {
 }
 
 // Aggregated thread configs selected at runtime for all threads.
+//
+// Field naming (Phase 1 of thread-layout-v3 rename):
+//   * rt_inbound   = RT priority inbound callback dispatcher (was: sensor)
+//   * rt_outbound  = RT loop output forwarding — SPSC drain → DDS publish
+//                    (was: publish; SCHED_OTHER nice -3 in Phase 1, promoted to
+//                    SCHED_FIFO 65 in a later phase)
+//   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
+//                    non-RT-boundary subs (was: aux)
+//   * nrt_logging  = non-RT CSV drain (was: logging)
 struct SystemThreadConfigs {
   ThreadConfig rt_control;
-  ThreadConfig sensor;
-  ThreadConfig udp_recv;  // Hand UDP receiver (separate from sensor_io)
-  ThreadConfig logging;
-  ThreadConfig aux;
-  ThreadConfig publish;  // Non-RT publish offload thread
-  MpcThreadConfig mpc;   // Phase 5: MPC main + optional workers
+  ThreadConfig rt_inbound;
+  ThreadConfig udp_recv;  // Hand UDP receiver (separate from rt_inbound)
+  ThreadConfig nrt_logging;
+  ThreadConfig nrt_callback;
+  ThreadConfig rt_outbound;  // RT output forwarding thread (Phase 1: still CFS)
+  MpcThreadConfig mpc;       // Phase 5: MPC main + optional workers
 };
 
 // Validate SystemThreadConfigs for conflicts and invalid configurations.
@@ -606,11 +615,11 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
 
   // Validate each individual config
   errors += ValidateThreadConfig(configs.rt_control);
-  errors += ValidateThreadConfig(configs.sensor);
+  errors += ValidateThreadConfig(configs.rt_inbound);
   errors += ValidateThreadConfig(configs.udp_recv);
-  errors += ValidateThreadConfig(configs.logging);
-  errors += ValidateThreadConfig(configs.aux);
-  errors += ValidateThreadConfig(configs.publish);
+  errors += ValidateThreadConfig(configs.nrt_logging);
+  errors += ValidateThreadConfig(configs.nrt_callback);
+  errors += ValidateThreadConfig(configs.rt_outbound);
   // MPC: validate main + active workers. workers beyond num_workers are
   // zero-initialised and ignored.
   errors += ValidateThreadConfig(configs.mpc.main);
@@ -629,14 +638,15 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
       errors += "mpc.worker[" + std::to_string(i) + "] priority exceeds mpc.main; ";
     }
   }
-  // MPC main must not exceed sensor priority — sensor callbacks are hard
+  // MPC main must not exceed rt_inbound priority — rt_inbound callbacks are hard
   // real-time and must always preempt long MPC solves.
   if ((configs.mpc.main.sched_policy == SCHED_FIFO || configs.mpc.main.sched_policy == SCHED_RR) &&
-      (configs.sensor.sched_policy == SCHED_FIFO || configs.sensor.sched_policy == SCHED_RR) &&
-      configs.mpc.main.sched_priority >= configs.sensor.sched_priority) {
+      (configs.rt_inbound.sched_policy == SCHED_FIFO ||
+       configs.rt_inbound.sched_policy == SCHED_RR) &&
+      configs.mpc.main.sched_priority >= configs.rt_inbound.sched_priority) {
     errors += "mpc.main priority (" + std::to_string(configs.mpc.main.sched_priority) +
-              ") must be below sensor priority (" + std::to_string(configs.sensor.sched_priority) +
-              "); ";
+              ") must be below rt_inbound priority (" +
+              std::to_string(configs.rt_inbound.sched_priority) + "); ";
   }
 
   // Collect all configs with names for conflict analysis. MPC main + up
@@ -650,11 +660,11 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
 
   const std::array<NamedConfig, 6 + 1 + kMpcMaxWorkers> all_configs = {{
       {"rt_control", &configs.rt_control},
-      {"sensor", &configs.sensor},
+      {"rt_inbound", &configs.rt_inbound},
       {"udp_recv", &configs.udp_recv},
-      {"logging", &configs.logging},
-      {"aux", &configs.aux},
-      {"publish", &configs.publish},
+      {"nrt_logging", &configs.nrt_logging},
+      {"nrt_callback", &configs.nrt_callback},
+      {"rt_outbound", &configs.rt_outbound},
       {"mpc_main", &configs.mpc.main},
       {"mpc_worker_0", &configs.mpc.workers[0]},
       {"mpc_worker_1", &configs.mpc.workers[1]},
@@ -702,7 +712,8 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
 // cores.
 // >=10 cores: 10-core layout — threads on 0-1,7-9 (shield 2-6), shared Core 9.
 // >=8 cores:  8-core layout — threads on 2-6 (no shield-aware mapping).
-// >=6 cores:  6-core layout — threads on 2-5, udp_recv shares Core 5 with aux.
+// >=6 cores:  6-core layout — threads on 2-5, udp_recv shares Core 5 with
+// nrt_callback.
 // < 6 cores:  4-core fallback — threads on 1-3, udp_recv shares Core 2.
 //
 // Note: 8-9 core layout still uses cores 2-6 which overlap with shield 2-6.
@@ -710,35 +721,37 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
 inline SystemThreadConfigs SelectThreadConfigs() noexcept {
   const int ncpu = GetPhysicalCpuCount();
   if (ncpu >= 16) {
-    return {kRtControlConfig16Core, kSensorConfig16Core, kUdpRecvConfig16Core,
-            kLoggingConfig16Core,   kAuxConfig16Core,    kPublishConfig16Core,
+    return {kRtControlConfig16Core,  kRtInboundConfig16Core,   kUdpRecvConfig16Core,
+            kNrtLoggingConfig16Core, kNrtCallbackConfig16Core, kRtOutboundConfig16Core,
             kMpcConfig16Core};
   }
   if (ncpu >= 14) {
-    return {kRtControlConfig14Core, kSensorConfig14Core, kUdpRecvConfig14Core,
-            kLoggingConfig14Core,   kAuxConfig14Core,    kPublishConfig14Core,
+    return {kRtControlConfig14Core,  kRtInboundConfig14Core,   kUdpRecvConfig14Core,
+            kNrtLoggingConfig14Core, kNrtCallbackConfig14Core, kRtOutboundConfig14Core,
             kMpcConfig14Core};
   }
   if (ncpu >= 12) {
-    return {kRtControlConfig12Core, kSensorConfig12Core, kUdpRecvConfig12Core,
-            kLoggingConfig12Core,   kAuxConfig12Core,    kPublishConfig12Core,
+    return {kRtControlConfig12Core,  kRtInboundConfig12Core,   kUdpRecvConfig12Core,
+            kNrtLoggingConfig12Core, kNrtCallbackConfig12Core, kRtOutboundConfig12Core,
             kMpcConfig12Core};
   }
   if (ncpu >= 10) {
-    return {kRtControlConfig10Core, kSensorConfig10Core, kUdpRecvConfig10Core,
-            kLoggingConfig10Core,   kAuxConfig10Core,    kPublishConfig10Core,
+    return {kRtControlConfig10Core,  kRtInboundConfig10Core,   kUdpRecvConfig10Core,
+            kNrtLoggingConfig10Core, kNrtCallbackConfig10Core, kRtOutboundConfig10Core,
             kMpcConfig10Core};
   }
   if (ncpu >= 8) {
-    return {kRtControlConfig8Core, kSensorConfig8Core,  kUdpRecvConfig8Core, kLoggingConfig8Core,
-            kAuxConfig8Core,       kPublishConfig8Core, kMpcConfig8Core};
+    return {kRtControlConfig8Core,  kRtInboundConfig8Core,   kUdpRecvConfig8Core,
+            kNrtLoggingConfig8Core, kNrtCallbackConfig8Core, kRtOutboundConfig8Core,
+            kMpcConfig8Core};
   }
   if (ncpu >= 6) {
-    return {kRtControlConfig, kSensorConfig,  kUdpRecvConfig, kLoggingConfig,
-            kAuxConfig,       kPublishConfig, kMpcConfig6Core};
+    return {kRtControlConfig,   kRtInboundConfig,  kUdpRecvConfig, kNrtLoggingConfig,
+            kNrtCallbackConfig, kRtOutboundConfig, kMpcConfig6Core};
   }
-  return {kRtControlConfig4Core, kSensorConfig4Core,  kUdpRecvConfig4Core, kLoggingConfig4Core,
-          kAuxConfig4Core,       kPublishConfig4Core, kMpcConfig4Core};
+  return {kRtControlConfig4Core,  kRtInboundConfig4Core,   kUdpRecvConfig4Core,
+          kNrtLoggingConfig4Core, kNrtCallbackConfig4Core, kRtOutboundConfig4Core,
+          kMpcConfig4Core};
 }
 
 }  // namespace rtc

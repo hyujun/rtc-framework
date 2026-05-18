@@ -23,7 +23,7 @@ Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_config.hpp
 - **Core 0-1 reserved** for OS/DDS/IRQ across all tiers
 - **RT loop**: SCHED_FIFO, 최고 priority, dedicated core
 - **Sensor executor**: SCHED_FIFO, RT loop 보다 낮음, 항상 MPC 보다 높음 (sensor callback 이 long MPC solve 를 선점할 수 있어야 함)
-- **MPC main**: 8+ core tier 에서 dedicated core, priority < sensor_io
+- **MPC main**: 8+ core tier 에서 dedicated core, priority < rt_inbound
 - **Log / publish thread**: SCHED_OTHER, nice 음수
 
 세부 thread 종류·core 번호·priority 값은 위 header + `cpu_topology.hpp` 참조. Hybrid-CPU detection 은 `docs/NUC_HYBRID_SUPPORT.md`.
@@ -43,7 +43,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 - **SeqLock<T>**: single-writer/multi-reader, requires `is_trivially_copyable_v<T>`
 - **SpscQueue<T,N> / SpscPublishBuffer<512>**: wait-free push (drops on full), power-of-2 (controller data CSVs use `ThreadCsvProducer<Pod, N>` which wraps `SpscQueue` — Phase C)
-- **try_lock only** on RT path (never block); `lock_guard` 는 lifecycle 콜백 / aux thread / 파라미터 콜백 등 non-RT 경로에서만
+- **try_lock only** on RT path (never block); `lock_guard` 는 lifecycle 콜백 / nrt_callback thread / 파라미터 콜백 등 non-RT 경로에서만
 - **jthread + stop_token** for cooperative cancellation
 - **Separate mutexes**: `state_mutex_`, `target_mutex_`, `hand_mutex_` -- never hold more than one
 
@@ -63,7 +63,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 **RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to sensor/log/aux dedicated executors.
 
-**callback_group → executor binding** (Phase 3 in [rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp)): `sensor_executor` 는 `cb_group_sensor_` 만, `log_executor` 는 `cb_group_log_` 만, `aux_executor` 는 `cb_group_aux_` + CM node default group + 모든 controller LifecycleNode default group 을 spin 한다. **현재 drift**: DeviceBackend state sub (`/joint_states`, hand state/motor/sensor) 와 controller-owned RobotTarget sub 는 default group 으로 생성되어 aux_executor 에서 직렬화됨 — Phase 4 backend abstraction 도입 시 sensor group injection path 가 끊긴 상태. RT path 안전성은 SeqLock mailbox 로 보장되어 jitter 영향은 없으나 sensor freshness latency 가 aux_executor 부하에 의존. 후속 정리 후보는 [~/.claude/plans/callback_group_audit.md](file:///home/junho/.claude/plans/callback_group_audit.md) 참조.
+**callback_group → executor binding** (Phase 3 in [rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp)): `rt_inbound_executor` 는 `cb_group_rt_inbound_` 만, `nrt_logging_executor` 는 `cb_group_nrt_logging_` 만, `nrt_callback_executor` 는 `cb_group_nrt_callback_` + CM node default group + 모든 controller LifecycleNode default group 을 spin 한다. **현재 drift**: DeviceBackend state sub (`/joint_states`, hand state/motor/sensor) 와 controller-owned RobotTarget sub 는 default group 으로 생성되어 nrt_callback_executor 에서 직렬화됨 — Phase 4 backend abstraction 도입 시 sensor group injection path 가 끊긴 상태. RT path 안전성은 SeqLock mailbox 로 보장되어 jitter 영향은 없으나 sensor freshness latency 가 nrt_callback_executor 부하에 의존. 후속 정리 후보는 [~/.claude/plans/callback_group_audit.md](file:///home/junho/.claude/plans/callback_group_audit.md) 참조.
 
 - **ControlLoop** (configurable rate, default 500 Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> SPSC publish + log
 - **CheckTimeouts** (50Hz): per-group device timeout -> `TriggerGlobalEstop("{group}_timeout")`
@@ -76,7 +76,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 [Robot HW / MuJoCo Sim] --JointState--> [RtControllerNode: RT loop @ control_rate]
     +--SPSC--> [publish_thread] --> /forward_position_controller/commands
     |                           +-> /rtc_cm/{group}/joint_states
-    +--SPSC--> [log_executor]   --> CSV (timing + per-device state + sensor)
+    +--SPSC--> [nrt_logging_executor]   --> CSV (timing + per-device state + sensor)
     +--E-STOP--> /system/estop_status
 
 [Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
@@ -91,7 +91,7 @@ YAML `ownership:` field (per `<topic>` entry in controller config) drives 2-tier
 - **Manager-owned** (default, `ownership: manager`) — RT-adjacent traffic 가 `RtControllerNode` (CM, exec process) 에서. RT loop sub (state/motor/sensor), RT loop pub (commands / per-group joint_states / device logs), safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name` latched rewire trigger) 모두 lifecycle 무관 standalone publisher 로 active
 - **Controller-owned** (`ownership: controller`) — Per-controller `LifecycleNode` (namespace `/<config_key>/`, aux executor) 가 외부 facing snapshot 소유. Subscribe (target/joint_goal/ee_pose), publish (transforms via PublishRole; grasp_state/wbc_state/tof_snapshot 는 controller-owned SeqLock + Setup*Publisher 헬퍼 — PublishRole 없음)
 
-RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT aux thread 가 read + ROS publish.
+RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nrt_callback thread 가 read + ROS publish.
 
 외부 도구 (BT, GUIs, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 구독 → switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire.
 

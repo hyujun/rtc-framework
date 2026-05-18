@@ -255,16 +255,16 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 | 스레드 | 타입 | 코어 | 스케줄러 | 우선순위 | 역할 |
 |--------|------|------|----------|----------|------|
 | `rt_loop` | jthread (clock_nanosleep) | 2 | SCHED_FIFO | 90 | ControlLoop @ `control_rate` (default 500Hz, design 100Hz–5kHz) + CheckTimeouts 50Hz |
-| `sensor_executor` | ROS2 Executor | 3 | SCHED_FIFO | 70 | /joint_states, /target_joint_positions 구독 |
-| `log_executor` | ROS2 Executor | 4 | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 (Phase C 이후 controller-owned CSV 는 각 controller LifecycleNode 소유) |
+| `rt_inbound_executor` | ROS2 Executor | 3 | SCHED_FIFO | 70 | /joint_states, /target_joint_positions 구독 |
+| `nrt_logging_executor` | ROS2 Executor | 4 | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 (Phase C 이후 controller-owned CSV 는 각 controller LifecycleNode 소유) |
 | `mpc_main` (Phase 5) | jthread | 4 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (6코어는 logging과 공유; 8+코어는 dedicated) |
 | `publish_thread` | jthread (SPSC drain) | 5 | SCHED_OTHER | nice -3 | ROS2 publish offload (ControlPublishBuffer) |
-| `aux_executor` | ROS2 Executor | 5 | SCHED_OTHER | 0 | E-STOP 상태 퍼블리시 |
+| `nrt_callback_executor` | ROS2 Executor | 5 | SCHED_OTHER | 0 | E-STOP 상태 퍼블리시 |
 | `udp_recv` | jthread | 5 | SCHED_FIFO | 65 | 핸드 UDP 수신 (udp_hand_driver) |
 
 > Core 0–1: OS, DDS, NIC IRQ (isolcpus 대신 런타임 `cset shield` 사용). DDS 스레드는 `taskset`으로 Core 0-1에 자동 핀닝.
 > CycloneDDS 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK 지연 최소화.
-> **MPC 스레드는 sensor_io보다 낮은 우선순위(60 < 70)를 가지므로 sensor callback이 항상 preempt — 긴 solve가 RT 루프에 영향을 주지 않음.** 12/16코어 tier는 MPC main + 1–2 worker(SCHED_FIFO 55)로 병렬 solve 지원. 8/10/12/16코어 레이아웃 및 `kMpcConfig{4,6,8,10,12,16}Core`는 `rtc_base` README 참조.
+> **MPC 스레드는 rt_inbound보다 낮은 우선순위(60 < 70)를 가지므로 sensor callback이 항상 preempt — 긴 solve가 RT 루프에 영향을 주지 않음.** 12/16코어 tier는 MPC main + 1–2 worker(SCHED_FIFO 55)로 병렬 solve 지원. 8/10/12/16코어 레이아웃 및 `kMpcConfig{4,6,8,10,12,16}Core`는 `rtc_base` README 참조.
 
 ---
 

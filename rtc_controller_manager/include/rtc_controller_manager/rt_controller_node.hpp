@@ -51,10 +51,10 @@
 //   - publish_thread (jthread): SPSC drain → controller PublishNonRtSnapshot +
 //                          DeviceBackend WriteCommand (each backend pushes onto
 //                          its own publisher path)
-//   - cb_group_sensor_:    backend state/motor/sensor subs (created by each
+//   - cb_group_rt_inbound_:    backend state/motor/sensor subs (created by each
 //                          DeviceBackend) + target_sub_ (Sensor core)
-//   - cb_group_log_:       drain_timer_  (non-RT core)
-//   - cb_group_aux_:       estop_pub_  (aux core)
+//   - cb_group_nrt_logging_:       drain_timer_  (non-RT core)
+//   - cb_group_nrt_callback_:       estop_pub_  (aux core)
 // Forward declaration for friend access — defined in
 // test/test_controller_lifecycle.cpp.
 namespace rtc {
@@ -85,11 +85,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
   // Public accessors for main() to retrieve callback groups
-  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const { return cb_group_sensor_; }
+  rclcpp::CallbackGroup::SharedPtr GetRtInboundGroup() const { return cb_group_rt_inbound_; }
 
-  rclcpp::CallbackGroup::SharedPtr GetLogGroup() const { return cb_group_log_; }
+  rclcpp::CallbackGroup::SharedPtr GetNrtLoggingGroup() const { return cb_group_nrt_logging_; }
 
-  rclcpp::CallbackGroup::SharedPtr GetAuxGroup() const { return cb_group_aux_; }
+  rclcpp::CallbackGroup::SharedPtr GetNrtCallbackGroup() const { return cb_group_nrt_callback_; }
 
   // Per-controller LifecycleNodes created in on_configure.  main() attaches
   // these to aux_executor so controller-owned subscriptions/publishers are
@@ -227,9 +227,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   }
 
   // ── ROS2 handles ──────────────────────────────────────────────────────────
-  rclcpp::CallbackGroup::SharedPtr cb_group_sensor_;
-  rclcpp::CallbackGroup::SharedPtr cb_group_log_;
-  rclcpp::CallbackGroup::SharedPtr cb_group_aux_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_rt_inbound_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_nrt_logging_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_nrt_callback_;
 
   // ── Configurable topic subscriptions (created from controller YAML) ──────
   // Key = topic name, value = subscription handle (kept alive for node
@@ -242,7 +242,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_ctrl_name_pub_;
 
   // ── /rtc_cm/* services (Phase 3) ─────────────────────────────────────────
-  // Both callbacks run on cb_group_aux_ — never on the RT path. The switch
+  // Both callbacks run on cb_group_nrt_callback_ — never on the RT path. The switch
   // service is a thin wrapper around SwitchActiveController(name, message);
   // list_controllers builds its response from controller_states_ +
   // controller_topic_configs_ + controller_types_.
@@ -373,7 +373,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Shared state ──────────────────────────────────────────────────────────
   // Device state lives inside each DeviceBackend (per-device SeqLock,
   // lock-free single-writer/multi-reader). Writer: backend's own sub
-  // callbacks (cb_group_sensor_, MutuallyExclusive). Readers: RT loop
+  // callbacks (cb_group_rt_inbound_, MutuallyExclusive). Readers: RT loop
   // (ControlLoop) via backend->ReadState.
   //
   // Per-controller target slots live on each controller (SeqLock<TargetSlot>

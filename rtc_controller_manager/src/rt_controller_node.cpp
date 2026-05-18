@@ -56,9 +56,9 @@ std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir() {
 // ── CallbackGroup creation
 // ────────────────────────────────────────────────────
 void RtControllerNode::CreateCallbackGroups() {
-  cb_group_sensor_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_log_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_aux_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_rt_inbound_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_nrt_logging_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_nrt_callback_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 }
 
 void RtControllerNode::CreateTimers() {
@@ -66,7 +66,8 @@ void RtControllerNode::CreateTimers() {
   // deferred E-STOP RCLCPP messages. Controller data CSVs are owned by
   // each controller's own ControllerLogSet (Phase C), not by CM.
   static constexpr auto kLogDrainPeriod = 10ms;
-  drain_timer_ = create_wall_timer(kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_log_);
+  drain_timer_ =
+      create_wall_timer(kLogDrainPeriod, [this]() { DrainLog(); }, cb_group_nrt_logging_);
 }
 
 // ── Lifecycle callbacks ──────────────────────────────────────────────────────
@@ -158,7 +159,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_activate(
 
   const auto cfgs = urtc::SelectThreadConfigs();
   StartRtLoop(cfgs.rt_control);
-  StartPublishLoop(cfgs.publish);
+  StartPublishLoop(cfgs.rt_outbound);
 
   RCLCPP_INFO(get_logger(),
               "RtControllerNode active — initial controller '%s', RT loop + "

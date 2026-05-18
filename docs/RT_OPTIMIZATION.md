@@ -49,15 +49,15 @@ rt_loop (Core 2, SCHED_FIFO prio 90) <- std::jthread, clock_nanosleep
 publish_thread (Core 5, SCHED_OTHER nice -3) <- std::jthread, SPSC drain
   +- ControlPublishBuffer -> 모든 publish() 호출
 
-sensor_executor (Core 3, SCHED_FIFO prio 70) <- ROS2 Executor
+rt_inbound_executor (Core 3, SCHED_FIFO prio 70) <- ROS2 Executor
   |- joint_state_sub_
   |- target_sub_
   +- hand_state_sub_
 
-log_executor (Core 4, SCHED_OTHER nice -5) <- ROS2 Executor
+nrt_logging_executor (Core 4, SCHED_OTHER nice -5) <- ROS2 Executor
   +- drain_timer_ (SpscLogBuffer -> CSV)
 
-aux_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
+nrt_callback_executor (Core 5, SCHED_OTHER) <- ROS2 Executor
   +- estop_pub_
 
 mpc_main (Phase 5, Core 4, SCHED_FIFO prio 60) <- std::jthread, 20Hz
@@ -81,7 +81,7 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 
 ### 6-Core 시스템 (기본)
 
-> `udp_recv`가 Core 5에 배치되어 `sensor_io`(Core 3)가 전용 코어를 확보합니다.
+> `udp_recv`가 Core 5에 배치되어 `rt_inbound`(Core 3)가 전용 코어를 확보합니다.
 > UDP 버스트 시에도 `JointStateCallback` 지연이 발생하지 않습니다.
 > Phase 5: `mpc_main`이 `logger`와 Core 4를 공유하지만 `SCHED_FIFO 60`이므로 `logger`(SCHED_OTHER)는 자동으로 양보됩니다.
 
@@ -89,10 +89,10 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 |------|------|-----------|---------------|------------|------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - | cset shield로 동적 격리 |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` | 500Hz + 50Hz E-STOP |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` | joint_state, target, hand 콜백 |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `rt_inbound` | joint_state, target, hand 콜백 |
 | 4 | Logging | SCHED_OTHER | nice -5 | `logger` | 100Hz CSV drain |
 | 4 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` | **20Hz solve, logger 코어 공유** |
-| 5 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` | SPSC drain -> publish |
+| 5 | Publish offload | SCHED_OTHER | nice -3 | `rt_outbound` | SPSC drain -> publish |
 | 5 | UDP recv | SCHED_FIFO | 65 | `udp_recv` | Hand UDP 수신 |
 | 5 | Aux | SCHED_OTHER | nice 0 | `aux` | E-STOP publisher |
 
@@ -106,10 +106,10 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 |------|------|-----------|---------------|------------|
 | 0 | OS / DDS / IRQ | SCHED_OTHER | - | - |
 | 1 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 2 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 2 | Sensor I/O | SCHED_FIFO | 70 | `rt_inbound` |
 | 2 | UDP recv | SCHED_FIFO | 65 | `udp_recv` |
 | 3 | Logging | SCHED_OTHER | nice -5 | `logger` |
-| 3 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 3 | Publish offload | SCHED_OTHER | nice -3 | `rt_outbound` |
 | 3 | Aux | SCHED_OTHER | nice 0 | `aux` |
 | 3 | **MPC main** (Phase 5) | **SCHED_OTHER** | **nice -5** | `mpc_main` (degraded mode) |
 
@@ -123,12 +123,12 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `rt_inbound` |
 | 4 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
 | 5 | UDP recv (shifted from 4) | SCHED_FIFO | 65 | `udp_recv` |
 | 6 | Logging (shifted from 5) | SCHED_OTHER | nice -5 | `logger` |
 | 7 | Aux (shifted from 6) | SCHED_OTHER | nice 0 | `aux` |
-| 7 | Publish offload (shifted from 6) | SCHED_OTHER | nice -3 | `rt_publish` |
+| 7 | Publish offload (shifted from 6) | SCHED_OTHER | nice -3 | `rt_outbound` |
 
 **GRUB 설정**: `nohz_full=2-7 rcu_nocbs=2-7`
 
@@ -140,13 +140,13 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `rt_inbound` |
 | 4 | **MPC main** | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
 | 5 | **MPC worker 0** | **SCHED_FIFO** | **55** | `mpc_worker_0` |
 | 6 | UDP recv | SCHED_FIFO | 65 | `udp_recv` (dedicated) |
 | 7 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 8 | Aux | SCHED_OTHER | nice 0 | `aux` |
-| 8 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 8 | Publish offload | SCHED_OTHER | nice -3 | `rt_outbound` |
 | 9 | MuJoCo sim / spare | SCHED_OTHER | - | `sim_thread` (Tier 3) |
 
 ### 12-Core 시스템 (unified layout, MPC + 2 workers)
@@ -157,14 +157,14 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `rt_inbound` |
 | 4 | **MPC main** | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
 | 5 | **MPC worker 0** | **SCHED_FIFO** | **55** | `mpc_worker_0` |
 | 6 | **MPC worker 1** | **SCHED_FIFO** | **55** | `mpc_worker_1` |
 | 7 | UDP recv | SCHED_FIFO | 65 | `udp_recv` (dedicated) |
 | 8 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 9 | Aux | SCHED_OTHER | nice 0 | `aux` |
-| 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_outbound` |
 | 10 | MuJoCo sim | SCHED_OTHER | - | `sim_thread` (Tier 3) |
 | 11 | Spare | - | - | user shield / viewer |
 
@@ -176,14 +176,14 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `rt_inbound` |
 | 4 | **MPC main** | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
 | 5 | **MPC worker 0** | **SCHED_FIFO** | **55** | `mpc_worker_0` |
 | 6 | **MPC worker 1** | **SCHED_FIFO** | **55** | `mpc_worker_1` |
 | 7 | UDP recv | SCHED_FIFO | 65 | `udp_recv` (dedicated) |
 | 8 | Logging | SCHED_OTHER | nice -5 | `logger` |
 | 9 | Aux | SCHED_OTHER | nice 0 | `aux` |
-| 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_publish` |
+| 9 | Publish offload | SCHED_OTHER | nice -3 | `rt_outbound` |
 | 10 | MuJoCo sim | SCHED_OTHER | - | `sim_thread` (Tier 3) |
 | 11-13 | Spare | - | - | user shield / viewer / monitoring |
 
@@ -196,7 +196,7 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 |------|------|-----------|---------------|------------|
 | 0-1 | OS / DDS / NIC IRQ | SCHED_OTHER | - | - |
 | 2 | RT Control | SCHED_FIFO | 90 | `rt_control` |
-| 3 | Sensor I/O | SCHED_FIFO | 70 | `sensor_io` |
+| 3 | Sensor I/O | SCHED_FIFO | 70 | `rt_inbound` |
 | 4-8 | cset shield "user" | - | - | 예약 |
 | 9 | **MPC main** (Phase 5) | **SCHED_FIFO** | **60** | `mpc_main` (dedicated) |
 | 10 | **MPC worker 0** (Phase 5) | **SCHED_FIFO** | **55** | `mpc_worker_0` |
@@ -204,7 +204,7 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 | 12 | UDP recv (shifted from 9) | SCHED_FIFO | 65 | `udp_recv` |
 | 13 | Logging (shifted from 10) | SCHED_OTHER | nice -5 | `logger` |
 | 14 | Aux (shifted from 11) | SCHED_OTHER | nice 0 | `aux` |
-| 14 | Publish offload (shifted from 11) | SCHED_OTHER | nice -3 | `rt_publish` |
+| 14 | Publish offload (shifted from 11) | SCHED_OTHER | nice -3 | `rt_outbound` |
 | 15 | MuJoCo sim (shifted from 12) | SCHED_OTHER | - | sim_thread (Tier 3) |
 
 > **단조성 불변식 (Monotonicity Invariant)**: 물리 코어 수가 증가하면 per-thread 격리 품질은 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp::TierIsolationMonotonicity`가 모든 tier 쌍에 대해 (1) MPC worker 수 단조 비감소, (2) 전용 코어 개수 단조 비감소, (3) 10-core 이상에서 `mpc_main` / `udp_recv` / `logger`가 서로 다른 코어에 위치한다는 것을 강제합니다. 새 레이아웃 추가 시 이 테스트를 반드시 업데이트하세요.
@@ -214,7 +214,7 @@ mpc_worker_0..1 (Phase 5, 12/16-core only, SCHED_FIFO prio 55)
 ```
 SCHED_FIFO prio 90 (rt_control)            <- 최고 우선순위
            |
-SCHED_FIFO prio 70 (sensor_io)             <- 센서 데이터 수신
+SCHED_FIFO prio 70 (rt_inbound)             <- 센서 데이터 수신
            |
 SCHED_FIFO prio 65 (udp_recv)              <- Hand UDP 수신
            |
@@ -224,7 +224,7 @@ SCHED_FIFO prio 55 (mpc_worker_0..1)       <- Phase 5: MPC parallel solve
            |
 SCHED_OTHER nice -5 (logger)               <- I/O bound
            |
-SCHED_OTHER nice -3 (rt_publish)           <- publish 오프로드
+SCHED_OTHER nice -3 (rt_outbound)           <- publish 오프로드
            |
 SCHED_OTHER nice 0  (aux)                  <- 보조 작업
 ```
@@ -233,7 +233,7 @@ SCHED_OTHER nice 0  (aux)                  <- 보조 작업
 - **RT 작업**: SCHED_FIFO (선점형, 우선순위 고정)
 - **I/O 작업**: SCHED_OTHER (CFS, nice value로 조정)
 - **우선순위 간격**: 20 (prio 90 vs 70)으로 충분한 여유 확보
-- **Phase 5 MPC 우선순위 규칙**: `mpc_main < sensor_io` 가 강제됨 (`ValidateSystemThreadConfigs`에서 검증). 긴 MPC solve가 sensor callback latency를 늘리지 않도록 보장.
+- **Phase 5 MPC 우선순위 규칙**: `mpc_main < rt_inbound` 가 강제됨 (`ValidateSystemThreadConfigs`에서 검증). 긴 MPC solve가 sensor callback latency를 늘리지 않도록 보장.
 - **Phase 5 worker 규칙**: `mpc_worker_*.priority ≤ mpc_main.priority` 강제. parallel solver가 main loop를 역preempt하는 것을 방지.
 
 ---
@@ -476,11 +476,11 @@ cat /proc/interrupts | grep -E "(CPU0|CPU1)"  # 대부분의 IRQ가 Core 0-1에 
 void RtControllerNode::CreateCallbackGroups() {
   // cb_group_rt_ 제거 (v5.17.0) -- ControlLoop() + CheckTimeouts()는
   // RtLoopEntry() jthread에서 clock_nanosleep으로 직접 실행
-  cb_group_sensor_ = create_callback_group(
+  cb_group_rt_inbound_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_log_ = create_callback_group(
+  cb_group_nrt_logging_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
-  cb_group_aux_ = create_callback_group(
+  cb_group_nrt_callback_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
 }
 ```
@@ -576,23 +576,23 @@ inline const ThreadConfig kRtControlConfig{
     .name           = "rt_control"
 };
 
-inline const ThreadConfig kSensorConfig{
+inline const ThreadConfig kRtInboundConfig{
     .cpu_core       = 3,
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 70,
     .nice_value     = 0,
-    .name           = "sensor_io"
+    .name           = "rt_inbound"
 };
 
 inline const ThreadConfig kUdpRecvConfig{
-    .cpu_core       = 5,       // Core 3 -> Core 5 (sensor_io와 분리)
+    .cpu_core       = 5,       // Core 3 -> Core 5 (rt_inbound와 분리)
     .sched_policy   = SCHED_FIFO,
     .sched_priority = 65,
     .nice_value     = 0,
     .name           = "udp_recv"
 };
 
-inline const ThreadConfig kLoggingConfig{
+inline const ThreadConfig kNrtLoggingConfig{
     .cpu_core       = 4,
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
@@ -600,7 +600,7 @@ inline const ThreadConfig kLoggingConfig{
     .name           = "logger"
 };
 
-inline const ThreadConfig kAuxConfig{
+inline const ThreadConfig kNrtCallbackConfig{
     .cpu_core       = 5,       // udp_recv와 Core 5 공유 (aux는 이벤트 기반, 경량)
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
@@ -608,12 +608,12 @@ inline const ThreadConfig kAuxConfig{
     .name           = "aux"
 };
 
-inline const ThreadConfig kPublishConfig{
+inline const ThreadConfig kRtOutboundConfig{
     .cpu_core       = 5,
     .sched_policy   = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value     = -3,
-    .name           = "rt_publish"
+    .name           = "rt_outbound"
 };
 
 // ... kRtControlConfig4Core, kRtControlConfig8Core, kRtControlConfig10Core,
@@ -699,18 +699,18 @@ int RtControllerMain(int argc, char** argv) {
   node->StartPublishLoop(cfgs.publish);      // SPSC drain -> publish
 
   // 6. ROS2 Executor 생성 (3개)
-  rclcpp::executors::SingleThreadedExecutor sensor_executor;
-  rclcpp::executors::SingleThreadedExecutor log_executor;
-  rclcpp::executors::SingleThreadedExecutor aux_executor;
+  rclcpp::executors::SingleThreadedExecutor rt_inbound_executor;
+  rclcpp::executors::SingleThreadedExecutor nrt_logging_executor;
+  rclcpp::executors::SingleThreadedExecutor nrt_callback_executor;
 
-  sensor_executor.add_callback_group(node->GetSensorGroup(), ...);
-  log_executor.add_callback_group(node->GetLogGroup(), ...);
-  aux_executor.add_callback_group(node->GetAuxGroup(), ...);
+  rt_inbound_executor.add_callback_group(node->GetSensorGroup(), ...);
+  nrt_logging_executor.add_callback_group(node->GetLogGroup(), ...);
+  nrt_callback_executor.add_callback_group(node->GetAuxGroup(), ...);
 
   // 7. Executor 스레드 생성 + RT 설정 (ApplyThreadConfig 호출)
-  auto t_sensor = make_thread(sensor_executor, cfgs.sensor);
-  auto t_log    = make_thread(log_executor,    cfgs.logging);
-  auto t_aux    = make_thread(aux_executor,    cfgs.aux);
+  auto t_sensor = make_thread(rt_inbound_executor, cfgs.sensor);
+  auto t_log    = make_thread(nrt_logging_executor,    cfgs.logging);
+  auto t_aux    = make_thread(nrt_callback_executor,    cfgs.aux);
 
   // 8. Join + 종료
   t_sensor.join(); t_log.join(); t_aux.join();
@@ -741,8 +741,8 @@ ps -eLo pid,tid,cls,rtprio,psr,comm | grep $PID
   PID   TID CLS RTPRIO PSR COMMAND
  1234  1234  TS      -   0 ur5e_rt_contro (메인 스레드, comm 컬럼은 15자)
  1234  1235  FF     90   2 rt_control         <- Core 2, FIFO 90 (clock_nanosleep jthread)
- 1234  1236  TS      -   5 rt_publish         <- Core 5, OTHER   (SPSC publish jthread)
- 1234  1237  FF     70   3 sensor_io          <- Core 3, FIFO 70 (ROS2 Executor)
+ 1234  1236  TS      -   5 rt_outbound         <- Core 5, OTHER   (SPSC publish jthread)
+ 1234  1237  FF     70   3 rt_inbound          <- Core 3, FIFO 70 (ROS2 Executor)
  1234  1238  TS      -   4 logger             <- Core 4, OTHER   (ROS2 Executor)
  1234  1239  TS      -   5 aux                <- Core 5, OTHER   (ROS2 Executor)
 ```

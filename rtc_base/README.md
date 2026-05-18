@@ -319,19 +319,19 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 | 스레드 | 4코어 | 6코어 | 8코어 | 10코어 | 12코어 | 14코어 | 16코어 |
 |--------|-------|-------|-------|--------|--------|--------|--------|
 | **rt_control** (FIFO 90) | Core 1 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **sensor_io** (FIFO 70) | Core 2 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
+| **rt_inbound** (FIFO 70) | Core 2 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
 | **mpc_main** (FIFO 60) | Core 3¹ | Core 4² | **Core 4** | **Core 4** | **Core 4** | **Core 4** | **Core 9**³ |
 | **mpc_worker_0** (FIFO 55) | — | — | — | **Core 5** | **Core 5** | **Core 5** | **Core 10** |
 | **mpc_worker_1** (FIFO 55) | — | — | — | — | **Core 6** | **Core 6** | **Core 11** |
 | **udp_recv** (FIFO 65) | Core 2 | Core 5 | Core 5 | Core 6 | Core 7 | Core 7 | Core 12 |
 | **logger** (OTHER -5) | Core 3 | Core 4 | Core 6 | Core 7 | Core 8 | Core 8 | Core 13 |
-| **rt_publish** (OTHER -3) | Core 3 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 14 |
+| **rt_outbound** (OTHER -3) | Core 3 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 14 |
 | **aux** (OTHER 0) | Core 3 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 14 |
 
 > ¹ 4코어는 MPC를 `SCHED_OTHER nice=-5`로 강등 (RT로 돌릴 여유 없음 — 소프트 RT degraded 모드, 10 Hz 권장).
 > ² 6코어는 MPC가 logger와 Core 4를 공유하되 FIFO 60으로 logger(OTHER)보다 우선.
 > ³ 16코어는 legacy Option A 유지 — RT가 Core 2-3(shield 아래), MPC가 Core 9-11(shield 위), 중간 Core 4-8이 user shield. 10/12/14-core는 unified low-core 배치(RT+MPC 모두 Core 2-9)로 모든 RT thread가 전용 코어 확보.
-> **8코어 이상 모든 tier에서 MPC 전용 main 코어 확보**. MPC main 우선순위는 항상 sensor_io(70)보다 낮아 sensor callback이 긴 solve를 preempt.
+> **8코어 이상 모든 tier에서 MPC 전용 main 코어 확보**. MPC main 우선순위는 항상 rt_inbound(70)보다 낮아 sensor callback이 긴 solve를 preempt.
 > 10코어 이상은 worker 1–2개를 추가로 제공하여 Aligator 등 parallel rollout 솔버를 지원.
 > **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `test/test_mpc_thread_config.cpp::TierIsolationMonotonicity`가 tier 쌍 전체에 대해 worker 수 / 전용 코어 수 단조 비감소 + 10-core↑에서 `mpc_main`/`udp_recv`/`logger` 코어 분리를 강제.
 

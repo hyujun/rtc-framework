@@ -2,11 +2,11 @@
 //
 // For every supported core count we check:
 //   * The tier's kMpcConfig*Core selects the documented MPC main core.
-//   * MPC main priority is strictly below sensor priority (sensor preempts
+//   * MPC main priority is strictly below rt_inbound priority (rt_inbound preempts
 //     MPC).
 //   * Worker priorities (if any) are ≤ main priority.
 //   * On tiers that dedicate cores, MPC main does not overlap with
-//     rt_control, sensor, or udp_recv.
+//     rt_control, rt_inbound, or udp_recv.
 //   * ValidateSystemThreadConfigs returns empty string for the canonical
 //     configs (no conflicts).
 
@@ -61,21 +61,21 @@ TEST(MpcThreadConfig, WorkerPriorityNotAboveMain) {
 }
 
 TEST(MpcThreadConfig, PriorityBelowSensor) {
-  // Pair every tier's MPC with the corresponding sensor config.
+  // Pair every tier's MPC with the corresponding rt_inbound config.
   struct Pair {
     const MpcThreadConfig* mpc;
-    const ThreadConfig* sensor;
+    const ThreadConfig* rt_inbound;
     const char* label;
   };
 
   const std::array<Pair, 7> pairs = {{
-      {&kMpcConfig4Core, &kSensorConfig4Core, "4-core"},
-      {&kMpcConfig6Core, &kSensorConfig, "6-core"},
-      {&kMpcConfig8Core, &kSensorConfig8Core, "8-core"},
-      {&kMpcConfig10Core, &kSensorConfig10Core, "10-core"},
-      {&kMpcConfig12Core, &kSensorConfig12Core, "12-core"},
-      {&kMpcConfig14Core, &kSensorConfig14Core, "14-core"},
-      {&kMpcConfig16Core, &kSensorConfig16Core, "16-core"},
+      {&kMpcConfig4Core, &kRtInboundConfig4Core, "4-core"},
+      {&kMpcConfig6Core, &kRtInboundConfig, "6-core"},
+      {&kMpcConfig8Core, &kRtInboundConfig8Core, "8-core"},
+      {&kMpcConfig10Core, &kRtInboundConfig10Core, "10-core"},
+      {&kMpcConfig12Core, &kRtInboundConfig12Core, "12-core"},
+      {&kMpcConfig14Core, &kRtInboundConfig14Core, "14-core"},
+      {&kMpcConfig16Core, &kRtInboundConfig16Core, "16-core"},
   }};
   for (const auto& pair : pairs) {
     const bool mpc_is_rt =
@@ -83,8 +83,8 @@ TEST(MpcThreadConfig, PriorityBelowSensor) {
     if (!mpc_is_rt) {
       continue;  // SCHED_OTHER MPC never preempts anything RT.
     }
-    EXPECT_LT(pair.mpc->main.sched_priority, pair.sensor->sched_priority)
-        << pair.label << ": MPC priority must be below sensor";
+    EXPECT_LT(pair.mpc->main.sched_priority, pair.rt_inbound->sched_priority)
+        << pair.label << ": MPC priority must be below rt_inbound";
   }
 }
 
@@ -93,64 +93,64 @@ TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithSensorOrRt) {
   struct DedicatedPair {
     const MpcThreadConfig* mpc;
     const ThreadConfig* rt_control;
-    const ThreadConfig* sensor;
+    const ThreadConfig* rt_inbound;
     const char* label;
   };
 
   const std::array<DedicatedPair, 5> dedicated = {{
-      {&kMpcConfig8Core, &kRtControlConfig8Core, &kSensorConfig8Core, "8"},
-      {&kMpcConfig10Core, &kRtControlConfig10Core, &kSensorConfig10Core, "10"},
-      {&kMpcConfig12Core, &kRtControlConfig12Core, &kSensorConfig12Core, "12"},
-      {&kMpcConfig14Core, &kRtControlConfig14Core, &kSensorConfig14Core, "14"},
-      {&kMpcConfig16Core, &kRtControlConfig16Core, &kSensorConfig16Core, "16"},
+      {&kMpcConfig8Core, &kRtControlConfig8Core, &kRtInboundConfig8Core, "8"},
+      {&kMpcConfig10Core, &kRtControlConfig10Core, &kRtInboundConfig10Core, "10"},
+      {&kMpcConfig12Core, &kRtControlConfig12Core, &kRtInboundConfig12Core, "12"},
+      {&kMpcConfig14Core, &kRtControlConfig14Core, &kRtInboundConfig14Core, "14"},
+      {&kMpcConfig16Core, &kRtControlConfig16Core, &kRtInboundConfig16Core, "16"},
   }};
   for (const auto& d : dedicated) {
     EXPECT_NE(d.mpc->main.cpu_core, d.rt_control->cpu_core)
         << d.label << "-core: MPC must not share rt_control's core";
-    EXPECT_NE(d.mpc->main.cpu_core, d.sensor->cpu_core)
-        << d.label << "-core: MPC must not share sensor's core";
+    EXPECT_NE(d.mpc->main.cpu_core, d.rt_inbound->cpu_core)
+        << d.label << "-core: MPC must not share rt_inbound's core";
   }
 }
 
 // Monotonicity invariant: as physical core count grows, RT/MPC isolation
 // quality must never regress. Specifically, once MPC gets a dedicated main
 // core and N worker threads, a larger tier must have at least as many
-// workers and must keep MPC main, UDP recv, logging, and aux all on
+// workers and must keep MPC main, UDP recv, logging, and nrt_callback all on
 // distinct cores. This is the test that would have caught the pre-unified
-// 10-core regression (where Core 9 hosted udp_recv + logger + aux +
+// 10-core regression (where Core 9 hosted udp_recv + nrt_logging + nrt_callback +
 // publish + mpc_main together).
 TEST(MpcThreadConfig, TierIsolationMonotonicity) {
   struct TierSnapshot {
     int ncpu;
     const MpcThreadConfig* mpc;
     const ThreadConfig* rt_control;
-    const ThreadConfig* sensor;
+    const ThreadConfig* rt_inbound;
     const ThreadConfig* udp_recv;
-    const ThreadConfig* logger;
-    const ThreadConfig* aux;
+    const ThreadConfig* nrt_logging;
+    const ThreadConfig* nrt_callback;
   };
 
   const std::array<TierSnapshot, 5> tiers = {{
-      {8, &kMpcConfig8Core, &kRtControlConfig8Core, &kSensorConfig8Core, &kUdpRecvConfig8Core,
-       &kLoggingConfig8Core, &kAuxConfig8Core},
-      {10, &kMpcConfig10Core, &kRtControlConfig10Core, &kSensorConfig10Core, &kUdpRecvConfig10Core,
-       &kLoggingConfig10Core, &kAuxConfig10Core},
-      {12, &kMpcConfig12Core, &kRtControlConfig12Core, &kSensorConfig12Core, &kUdpRecvConfig12Core,
-       &kLoggingConfig12Core, &kAuxConfig12Core},
-      {14, &kMpcConfig14Core, &kRtControlConfig14Core, &kSensorConfig14Core, &kUdpRecvConfig14Core,
-       &kLoggingConfig14Core, &kAuxConfig14Core},
-      {16, &kMpcConfig16Core, &kRtControlConfig16Core, &kSensorConfig16Core, &kUdpRecvConfig16Core,
-       &kLoggingConfig16Core, &kAuxConfig16Core},
+      {8, &kMpcConfig8Core, &kRtControlConfig8Core, &kRtInboundConfig8Core, &kUdpRecvConfig8Core,
+       &kNrtLoggingConfig8Core, &kNrtCallbackConfig8Core},
+      {10, &kMpcConfig10Core, &kRtControlConfig10Core, &kRtInboundConfig10Core, &kUdpRecvConfig10Core,
+       &kNrtLoggingConfig10Core, &kNrtCallbackConfig10Core},
+      {12, &kMpcConfig12Core, &kRtControlConfig12Core, &kRtInboundConfig12Core, &kUdpRecvConfig12Core,
+       &kNrtLoggingConfig12Core, &kNrtCallbackConfig12Core},
+      {14, &kMpcConfig14Core, &kRtControlConfig14Core, &kRtInboundConfig14Core, &kUdpRecvConfig14Core,
+       &kNrtLoggingConfig14Core, &kNrtCallbackConfig14Core},
+      {16, &kMpcConfig16Core, &kRtControlConfig16Core, &kRtInboundConfig16Core, &kUdpRecvConfig16Core,
+       &kNrtLoggingConfig16Core, &kNrtCallbackConfig16Core},
   }};
 
   auto distinct_rt_core_count = [](const TierSnapshot& t) {
     // Count distinct cores across the RT-critical thread set.
     std::array<int, 8> cores{t.rt_control->cpu_core,
-                             t.sensor->cpu_core,
+                             t.rt_inbound->cpu_core,
                              t.mpc->main.cpu_core,
                              t.udp_recv->cpu_core,
-                             t.logger->cpu_core,
-                             t.aux->cpu_core,
+                             t.nrt_logging->cpu_core,
+                             t.nrt_callback->cpu_core,
                              -1,
                              -1};
     if (t.mpc->num_workers >= 1)
@@ -185,16 +185,16 @@ TEST(MpcThreadConfig, TierIsolationMonotonicity) {
         << hi.ncpu << "-core regresses RT isolation (distinct-core count) vs " << lo.ncpu
         << "-core";
 
-    // Every tier from 10 onwards must keep MPC main, UDP, logger on
+    // Every tier from 10 onwards must keep MPC main, UDP, nrt_logging on
     // distinct cores (the 10-core regression crammed all three onto
     // Core 9).
     if (hi.ncpu >= 10) {
       EXPECT_NE(hi.mpc->main.cpu_core, hi.udp_recv->cpu_core)
           << hi.ncpu << "-core: MPC main shares UDP core";
-      EXPECT_NE(hi.mpc->main.cpu_core, hi.logger->cpu_core)
-          << hi.ncpu << "-core: MPC main shares logger core";
-      EXPECT_NE(hi.udp_recv->cpu_core, hi.logger->cpu_core)
-          << hi.ncpu << "-core: UDP recv shares logger core";
+      EXPECT_NE(hi.mpc->main.cpu_core, hi.nrt_logging->cpu_core)
+          << hi.ncpu << "-core: MPC main shares nrt_logging core";
+      EXPECT_NE(hi.udp_recv->cpu_core, hi.nrt_logging->cpu_core)
+          << hi.ncpu << "-core: UDP recv shares nrt_logging core";
     }
   }
 }

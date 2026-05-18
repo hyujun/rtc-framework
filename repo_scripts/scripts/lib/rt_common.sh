@@ -569,14 +569,14 @@ get_mpc_main_core() {
   get_mpc_cores | cut -d',' -f1
 }
 
-# Print the list of RT cores (rt_control + sensor_io + udp_recv + MPC).
+# Print the list of RT cores (rt_control + rt_inbound + udp_recv + MPC).
 # Used by IRQ affinity and GRUB nohz_full/rcu_nocbs. Order is not guaranteed.
 get_rt_cores() {
   local ncpu
   ncpu=$(get_physical_cores)
   local mpc
   mpc=$(get_mpc_cores)
-  # rt_control + sensor_io + udp_recv cores — match thread_config.hpp.
+  # rt_control + rt_inbound + udp_recv cores — match thread_config.hpp.
   case "$ncpu" in
     1|2|3|4)      echo "1,2,${mpc}" ;;
     5|6|7)        echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5
@@ -617,59 +617,59 @@ print_thread_layout() {
   if [[ "$ncpu" -le 4 ]]; then
     echo "    Core 0:   OS / DDS / NIC IRQ"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   sensor_io    (SCHED_FIFO 70) + udp_recv (SCHED_FIFO 65)"
-    echo "    Core 3:   MPC (SCHED_OTHER, degraded) + logger + aux + rt_publish"
+    echo "    Core 2:   rt_inbound   (SCHED_FIFO 70) + udp_recv (SCHED_FIFO 65)"
+    echo "    Core 3:   MPC (SCHED_OTHER, degraded) + nrt_logging + nrt_callback + rt_outbound"
   elif [[ "$ncpu" -le 7 ]]; then
     echo "    Core 0-1: OS / DDS / NIC IRQ"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
-    echo "    Core 4:   MPC main     (SCHED_FIFO 60)  + logger (CFS -5)"
-    echo "    Core 5:   udp_recv     (SCHED_FIFO 65)  + aux + rt_publish (CFS)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
+    echo "    Core 4:   MPC main     (SCHED_FIFO 60) + nrt_logging (CFS -5)"
+    echo "    Core 5:   udp_recv     (SCHED_FIFO 65)  + nrt_callback + rt_outbound (CFS)"
   elif [[ "$ncpu" -le 9 ]]; then
     echo "    Core 0-1: OS / DDS / NIC IRQ"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
     echo "    Core 4:   MPC main     (SCHED_FIFO 60, dedicated)"
     echo "    Core 5:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 6:   logger       (CFS nice -5)"
-    echo "    Core 7:   aux + rt_publish (CFS)"
+    echo "    Core 6:   nrt_logging       (CFS nice -5)"
+    echo "    Core 7:   nrt_callback + rt_outbound (CFS)"
   elif [[ "$ncpu" -le 11 ]]; then
     echo "    Core 0-1: OS / DDS / NIC IRQ"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
     echo "    Core 4-5: MPC main + worker 0 (SCHED_FIFO 60)"
     echo "    Core 6:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 7:   logger       (CFS nice -5)"
-    echo "    Core 8:   aux + rt_publish (CFS)"
+    echo "    Core 7:   nrt_logging       (CFS nice -5)"
+    echo "    Core 8:   nrt_callback + rt_outbound (CFS)"
     echo "    Core 9:   spare"
   elif [[ "$ncpu" -le 13 ]]; then
     echo "    Core 0-1: OS / DDS / NIC IRQ"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
     echo "    Core 4-6: MPC main + workers (SCHED_FIFO 60)"
     echo "    Core 7:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 8:   logger       (CFS nice -5)"
-    echo "    Core 9:   aux + rt_publish (CFS)"
+    echo "    Core 8:   nrt_logging       (CFS nice -5)"
+    echo "    Core 9:   nrt_callback + rt_outbound (CFS)"
     echo "    Core 10-${ncpu}: spare"
   elif [[ "$ncpu" -le 15 ]]; then
     echo "    Core 0-1: OS / DDS / NIC IRQ"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
     echo "    Core 4-6: MPC main + workers (SCHED_FIFO 60)"
     echo "    Core 7:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 8:   logger       (CFS nice -5)"
-    echo "    Core 9:   aux + rt_publish (CFS)"
+    echo "    Core 8:   nrt_logging       (CFS nice -5)"
+    echo "    Core 9:   nrt_callback + rt_outbound (CFS)"
     echo "    Core 10:  MuJoCo sim (dedicated)"
     echo "    Core 11-${ncpu}: spare"
   else
     echo "    Core 0-1:   OS / DDS / NIC IRQ"
     echo "    Core 2:     rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:     sensor_io    (SCHED_FIFO 70)"
+    echo "    Core 3:     rt_inbound   (SCHED_FIFO 70)"
     echo "    Core 4-8:   user cpuset shield (legacy Option A)"
     echo "    Core 9-11:  MPC main + workers (SCHED_FIFO 60)"
     echo "    Core 12:    udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 13:    logger       (CFS nice -5)"
-    echo "    Core 14:    aux + rt_publish (CFS)"
+    echo "    Core 13:    nrt_logging       (CFS nice -5)"
+    echo "    Core 14:    nrt_callback + rt_outbound (CFS)"
     echo "    Core 15+:   spare / monitoring"
   fi
 }

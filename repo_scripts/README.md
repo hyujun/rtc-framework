@@ -153,7 +153,7 @@ repo_scripts/
 |------|------|------|--------------------------------------------|
 | `get_mpc_cores()` | active | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `4` / `4` / `4,5` / `4,5,6` / `4,5,6` / `9,10,11` |
 | `get_mpc_main_core()` | dormant | MPC main 코어만 (get_mpc_cores의 첫 항목). Phase 4 에서 활용 예정. | `4` / `4` / `4` / `4` / `4` / `9` |
-| `get_rt_cores()` | dormant | RT 스레드 전체 집합 (rt_control + sensor_io + udp_recv + MPC). GRUB `nohz_full`/`rcu_nocbs` 인자에 사용 예정. | `2,3,5,4` / `2,3,5,4` / `2,3,6,4,5` / `2,3,7,4,5,6` / `2,3,7,4,5,6` / `2,3,12,9,10,11` |
+| `get_rt_cores()` | dormant | RT 스레드 전체 집합 (rt_control + rt_inbound + udp_recv + MPC). GRUB `nohz_full`/`rcu_nocbs` 인자에 사용 예정. | `2,3,5,4` / `2,3,5,4` / `2,3,6,4,5` / `2,3,7,4,5,6` / `2,3,7,4,5,6` / `2,3,12,9,10,11` |
 | `get_os_cores()` | dormant | OS/DDS/IRQ 코어 (전체 - RT). IRQ affinity 고정 대상으로 사용 예정. | `0,1` / `0,1` / `0,1` / `0,1` / `0,1` / `0,1` |
 
 Tier별 매핑 (2026-04 unified layout):
@@ -358,7 +358,7 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 
 | Tier | 스레드 | 격리 |
 |------|--------|------|
-| Tier 1 (RT-critical) | rt_control + sensor_io | 항상 |
+| Tier 1 (RT-critical) | rt_control + rt_inbound | 항상 |
 | Tier 2 (RT-support) | udp_recv + logging + aux | `--robot` 모드만 |
 | Tier 3 (Flexible) | sim, monitoring, build | 격리 안 함 |
 

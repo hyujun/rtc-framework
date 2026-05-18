@@ -345,7 +345,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
 
     const auto cfgs = rtc::SelectThreadConfigs();
     failure_detector_ = std::make_unique<udp_hand_driver::UdpHandFailureDetector>(
-        *controller_, fd_cfg, cfgs.logging);
+        *controller_, fd_cfg, cfgs.nrt_logging);
     failure_detector_->SetFailureCallback([this](const std::string& reason) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Hand failure detected: %s",
                    reason.c_str());

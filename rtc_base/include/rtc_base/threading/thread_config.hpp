@@ -22,7 +22,7 @@ struct ThreadConfig {
 // `num_workers` entries of `workers` are valid.
 //
 // Invariants (checked by ValidateSystemThreadConfigs):
-//   * `main.sched_priority` < sensor thread priority (sensor preempts MPC).
+//   * `main.sched_priority` < rt_inbound thread priority (rt_inbound preempts MPC).
 //   * Each worker `sched_priority` ≤ `main.sched_priority` (workers never
 //     preempt the main solve).
 //   * `0 ≤ num_workers ≤ 2` (matches 12-/16-core capacity).
@@ -38,11 +38,11 @@ struct MpcThreadConfig {
 // ── 6-core configuration ────────────────────────────────────────────────────
 // Core 0-1: OS / DDS / NIC IRQ  (isolated by isolcpus=2-5)
 // Core 2:   RT Control           (ControlLoop @ control_rate + 50 Hz E-STOP watchdog)
-// Core 3:   Sensor I/O           (joint_state, target, hand callbacks —
+// Core 3:   RT Inbound           (joint_state, target, hand callbacks —
 // dedicated) Core 4:   Logging              (100 Hz CSV drain) Core 5:   UDP
-// recv + Aux       (udp_recv FIFO 65, aux SCHED_OTHER 0)
+// recv + Aux       (udp_recv FIFO 65, nrt_callback SCHED_OTHER 0)
 //
-// Note: udp_recv is on Core 5 (not Core 3) to avoid contention with sensor_io.
+// Note: udp_recv is on Core 5 (not Core 3) to avoid contention with rt_inbound.
 //       Even under UDP burst, JointStateCallback latency is unaffected.
 
 inline const ThreadConfig kRtControlConfig{.cpu_core = 2,
@@ -51,42 +51,42 @@ inline const ThreadConfig kRtControlConfig{.cpu_core = 2,
                                            .nice_value = 0,
                                            .name = "rt_control"};
 
-inline const ThreadConfig kSensorConfig{.cpu_core = 3,
+inline const ThreadConfig kRtInboundConfig{.cpu_core = 3,
                                         .sched_policy = SCHED_FIFO,
                                         .sched_priority = 70,
                                         .nice_value = 0,
-                                        .name = "sensor_io"};
+                                        .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig{
-    .cpu_core = 5,  // Moved from Core 3 → Core 5 (dedicated, no sensor_io contention)
+    .cpu_core = 5,  // Moved from Core 3 → Core 5 (dedicated, no rt_inbound contention)
     .sched_policy = SCHED_FIFO,
     .sched_priority = 65,
     .nice_value = 0,
     .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig{.cpu_core = 4,
+inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 4,
                                          .sched_policy = SCHED_OTHER,
                                          .sched_priority = 0,
                                          .nice_value = -5,
-                                         .name = "logger"};
+                                         .name = "nrt_logging"};
 
-inline const ThreadConfig kAuxConfig{
-    .cpu_core = 5,  // Shares Core 5 with udp_recv (aux is event-driven, very light)
+inline const ThreadConfig kNrtCallbackConfig{
+    .cpu_core = 5,  // Shares Core 5 with udp_recv (nrt_callback is event-driven, very light)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
-    .name = "aux"};
+    .name = "nrt_callback"};
 
 // ── Publish offload thread (6-core) ──────────────────────────────────────────
 // Drains SPSC publish buffer and calls all ROS2 publish() on a non-RT core.
-// Shares Core 5 with aux and udp_recv — publish is SCHED_OTHER, preempted
+// Shares Core 5 with nrt_callback and udp_recv — rt_outbound is SCHED_OTHER (Phase 1 unchanged), preempted
 // by udp_recv (SCHED_FIFO 65).
 
-inline const ThreadConfig kPublishConfig{.cpu_core = 5,
+inline const ThreadConfig kRtOutboundConfig{.cpu_core = 5,
                                          .sched_policy = SCHED_OTHER,
                                          .sched_priority = 0,
                                          .nice_value = -3,
-                                         .name = "rt_publish"};
+                                         .name = "rt_outbound"};
 
 // MPC on 6-core: piggybacks on Core 4 with SCHED_FIFO 60. Logging also
 // lives on Core 4 (SCHED_OTHER); MPC FIFO preempts logging whenever a
@@ -107,15 +107,15 @@ inline const MpcThreadConfig kMpcConfig6Core{
 // ── 8-core configuration (Phase 5: MPC dedicated core) ─────────────────────
 // Core 0-1: OS / DDS / NIC IRQ  (isolated by cset shield)
 // Core 2:   RT Control           (ControlLoop @ control_rate + 50 Hz E-STOP watchdog)
-// Core 3:   Sensor I/O           (joint_state, target, hand callbacks)
-// Core 4:   MPC main             (Phase 5, FIFO 60 — below sensor's 70)
+// Core 3:   RT Inbound           (joint_state, target, hand callbacks)
+// Core 4:   MPC main             (Phase 5, FIFO 60 — below rt_inbound (70))
 // Core 5:   UDP recv             (dedicated — previously Core 4)
 // Core 6:   Logging              (100 Hz CSV drain — previously Core 5)
-// Core 7:   Aux + Publish        (E-STOP publisher — previously Core 6)
+// Core 7:   Nrt CB + Rt Outbound (E-STOP publisher — previously Core 6)
 //
 // Rationale: MPC is a first-class RT citizen (soft-RT 20 Hz solve with
 // 10-30 ms compute bursts). A shared core would cause unpredictable
-// latency for udp_recv and sensor callbacks. The 4→5→6→7 shift preserves
+// latency for udp_recv and rt_inbound callbacks. The 4→5→6→7 shift preserves
 // every other thread's role; only core numbers change.
 
 inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 2,
@@ -124,11 +124,11 @@ inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 2,
                                                 .nice_value = 0,
                                                 .name = "rt_control"};
 
-inline const ThreadConfig kSensorConfig8Core{.cpu_core = 3,
+inline const ThreadConfig kRtInboundConfig8Core{.cpu_core = 3,
                                              .sched_policy = SCHED_FIFO,
                                              .sched_priority = 70,
                                              .nice_value = 0,
-                                             .name = "sensor_io"};
+                                             .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig8Core{.cpu_core = 5,  // Shifted from Core 4 (now MPC main).
                                               .sched_policy = SCHED_FIFO,
@@ -136,27 +136,27 @@ inline const ThreadConfig kUdpRecvConfig8Core{.cpu_core = 5,  // Shifted from Co
                                               .nice_value = 0,
                                               .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig8Core{.cpu_core = 6,  // Shifted from Core 5.
+inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 6,  // Shifted from Core 5.
                                               .sched_policy = SCHED_OTHER,
                                               .sched_priority = 0,
                                               .nice_value = -5,
-                                              .name = "logger"};
+                                              .name = "nrt_logging"};
 
-inline const ThreadConfig kAuxConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
+inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
                                           .sched_policy = SCHED_OTHER,
                                           .sched_priority = 0,
                                           .nice_value = 0,
-                                          .name = "aux"};
+                                          .name = "nrt_callback"};
 
-inline const ThreadConfig kPublishConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
+inline const ThreadConfig kRtOutboundConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
                                               .sched_policy = SCHED_OTHER,
                                               .sched_priority = 0,
                                               .nice_value = -3,
-                                              .name = "rt_publish"};
+                                              .name = "rt_outbound"};
 
 // MPC main on Core 4 (dedicated). No workers on 8-core — too few spare
-// cores to host them without contention. Priority 60 < sensor(70) so a
-// long solve can be preempted by sensor callbacks.
+// cores to host them without contention. Priority 60 < rt_inbound(70) so a
+// long solve can be preempted by rt_inbound callbacks.
 inline const MpcThreadConfig kMpcConfig8Core{
     .main =
         ThreadConfig{
@@ -173,8 +173,8 @@ inline const MpcThreadConfig kMpcConfig8Core{
 // ── 4-core fallback ─────────────────────────────────────────────────────────
 // Core 0:   OS / DDS / IRQ
 // Core 1:   RT Control
-// Core 2:   Sensor I/O + UDP recv (shared — best effort)
-// Core 3:   Logging + Aux
+// Core 2:   RT Inbound + UDP recv (shared — best effort)
+// Core 3:   Nrt Logging + Nrt CB
 
 inline const ThreadConfig kRtControlConfig4Core{.cpu_core = 1,
                                                 .sched_policy = SCHED_FIFO,
@@ -182,40 +182,40 @@ inline const ThreadConfig kRtControlConfig4Core{.cpu_core = 1,
                                                 .nice_value = 0,
                                                 .name = "rt_control"};
 
-inline const ThreadConfig kSensorConfig4Core{.cpu_core = 2,
+inline const ThreadConfig kRtInboundConfig4Core{.cpu_core = 2,
                                              .sched_policy = SCHED_FIFO,
                                              .sched_priority = 70,
                                              .nice_value = 0,
-                                             .name = "sensor_io"};
+                                             .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig4Core{
-    .cpu_core = 2,  // Shares Core 2 with sensor_io (4-core: unavoidable)
+    .cpu_core = 2,  // Shares Core 2 with rt_inbound (4-core: unavoidable)
     .sched_policy = SCHED_FIFO,
     .sched_priority = 65,
     .nice_value = 0,
     .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig4Core{.cpu_core = 3,
+inline const ThreadConfig kNrtLoggingConfig4Core{.cpu_core = 3,
                                               .sched_policy = SCHED_OTHER,
                                               .sched_priority = 0,
                                               .nice_value = -5,
-                                              .name = "logger"};
+                                              .name = "nrt_logging"};
 
-inline const ThreadConfig kAuxConfig4Core{
+inline const ThreadConfig kNrtCallbackConfig4Core{
     .cpu_core = 3,  // Shares Core 3 with logging (4-core: unavoidable)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
-    .name = "aux"};
+    .name = "nrt_callback"};
 
-inline const ThreadConfig kPublishConfig4Core{.cpu_core = 3,
+inline const ThreadConfig kRtOutboundConfig4Core{.cpu_core = 3,
                                               .sched_policy = SCHED_OTHER,
                                               .sched_priority = 0,
                                               .nice_value = -3,
-                                              .name = "rt_publish"};
+                                              .name = "rt_outbound"};
 
 // MPC on 4-core: piggybacks on Core 3 with SCHED_OTHER (degraded mode).
-// With only 3 non-OS cores a FIFO MPC would starve logging/aux; CFS is
+// With only 3 non-OS cores a FIFO MPC would starve nrt_logging/nrt_callback; CFS is
 // the safer choice. Consumers are expected to reduce MPC frequency to
 // 10 Hz on this tier.
 inline const MpcThreadConfig kMpcConfig4Core{
@@ -237,12 +237,12 @@ inline const MpcThreadConfig kMpcConfig4Core{
 //
 // Core 0-1:  OS / DDS / NIC IRQ
 // Core 2:    RT Control           (SCHED_FIFO 90)
-// Core 3:    Sensor I/O           (SCHED_FIFO 70)
+// Core 3:    RT Inbound           (SCHED_FIFO 70)
 // Core 4:    MPC main             (SCHED_FIFO 60)
 // Core 5:    MPC worker 0         (SCHED_FIFO 55) — new vs 8-core
 // Core 6:    UDP recv             (SCHED_FIFO 65)
 // Core 7:    Logging              (100 Hz CSV drain)
-// Core 8:    Aux + Publish        (E-STOP service + DDS drain)
+// Core 8:    Nrt CB + Rt Outbound (E-STOP service + DDS drain)
 // Core 9:    MuJoCo sim / spare   (GetSimCoreLayout(10) = {9,-1})
 //
 // Monotonicity vs 8-core: +1 MPC worker, +1 spare core. No RT thread loses
@@ -255,11 +255,11 @@ inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kSensorConfig10Core{.cpu_core = 3,
+inline const ThreadConfig kRtInboundConfig10Core{.cpu_core = 3,
                                               .sched_policy = SCHED_FIFO,
                                               .sched_priority = 70,
                                               .nice_value = 0,
-                                              .name = "sensor_io"};
+                                              .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig10Core{
     .cpu_core = 6,  // Dedicated (was Core 9 shared prior to unified layout)
@@ -268,25 +268,25 @@ inline const ThreadConfig kUdpRecvConfig10Core{
     .nice_value = 0,
     .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig10Core{.cpu_core = 7,  // Dedicated
+inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 7,  // Dedicated
                                                .sched_policy = SCHED_OTHER,
                                                .sched_priority = 0,
                                                .nice_value = -5,
-                                               .name = "logger"};
+                                               .name = "nrt_logging"};
 
-inline const ThreadConfig kAuxConfig10Core{
-    .cpu_core = 8,  // Dedicated (shared only with rt_publish, both CFS)
+inline const ThreadConfig kNrtCallbackConfig10Core{
+    .cpu_core = 8,  // Dedicated (shared only with rt_outbound, both CFS)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
-    .name = "aux"};
+    .name = "nrt_callback"};
 
-inline const ThreadConfig kPublishConfig10Core{
-    .cpu_core = 8,  // Shares Core 8 with aux (both SCHED_OTHER)
+inline const ThreadConfig kRtOutboundConfig10Core{
+    .cpu_core = 8,  // Shares Core 8 with nrt_callback (both SCHED_OTHER)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = -3,
-    .name = "rt_publish"};
+    .name = "rt_outbound"};
 
 // MPC on 10-core: dedicated Core 4 main + Core 5 worker. Priority
 // 60/55 keeps sensor (70) preemptive and UDP (65) ahead of MPC, matching
@@ -321,13 +321,13 @@ inline const MpcThreadConfig kMpcConfig10Core{
 //
 // Core 0-1:  OS / DDS / NIC IRQ
 // Core 2:    RT Control           (SCHED_FIFO 90)
-// Core 3:    Sensor I/O           (SCHED_FIFO 70)
+// Core 3:    RT Inbound           (SCHED_FIFO 70)
 // Core 4:    MPC main             (SCHED_FIFO 60)
 // Core 5:    MPC worker 0         (SCHED_FIFO 55)
 // Core 6:    MPC worker 1         (SCHED_FIFO 55) — new vs 10-core
 // Core 7:    UDP recv             (SCHED_FIFO 65)
 // Core 8:    Logging              (100 Hz CSV drain)
-// Core 9:    Aux + Publish        (E-STOP service + DDS drain)
+// Core 9:    Nrt CB + Rt Outbound (E-STOP service + DDS drain)
 // Core 10:   MuJoCo sim / spare   (GetSimCoreLayout(12) = {10,-1})
 // Core 11:   Spare (user shield / monitoring)
 //
@@ -340,11 +340,11 @@ inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kSensorConfig12Core{.cpu_core = 3,
+inline const ThreadConfig kRtInboundConfig12Core{.cpu_core = 3,
                                               .sched_policy = SCHED_FIFO,
                                               .sched_priority = 70,
                                               .nice_value = 0,
-                                              .name = "sensor_io"};
+                                              .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig12Core{.cpu_core = 7,  // Dedicated
                                                .sched_policy = SCHED_FIFO,
@@ -352,24 +352,24 @@ inline const ThreadConfig kUdpRecvConfig12Core{.cpu_core = 7,  // Dedicated
                                                .nice_value = 0,
                                                .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig12Core{.cpu_core = 8,  // Dedicated
+inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 8,  // Dedicated
                                                .sched_policy = SCHED_OTHER,
                                                .sched_priority = 0,
                                                .nice_value = -5,
-                                               .name = "logger"};
+                                               .name = "nrt_logging"};
 
-inline const ThreadConfig kAuxConfig12Core{
-    .cpu_core = 9,  // Dedicated (shared with rt_publish, both CFS)
+inline const ThreadConfig kNrtCallbackConfig12Core{
+    .cpu_core = 9,  // Dedicated (shared with rt_outbound, both CFS)
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
-    .name = "aux"};
+    .name = "nrt_callback"};
 
-inline const ThreadConfig kPublishConfig12Core{.cpu_core = 9,
+inline const ThreadConfig kRtOutboundConfig12Core{.cpu_core = 9,
                                                .sched_policy = SCHED_OTHER,
                                                .sched_priority = 0,
                                                .nice_value = -3,
-                                               .name = "rt_publish"};
+                                               .name = "rt_outbound"};
 
 // MPC on 12-core: main + 2 workers enable full Aligator parallel-rollout
 // capacity. Both workers at FIFO 55 — identical priority is safe because
@@ -410,13 +410,13 @@ inline const MpcThreadConfig kMpcConfig12Core{
 //
 // Core 0-1:  OS / DDS / NIC IRQ
 // Core 2:    RT Control           (SCHED_FIFO 90)
-// Core 3:    Sensor I/O           (SCHED_FIFO 70)
+// Core 3:    RT Inbound           (SCHED_FIFO 70)
 // Core 4:    MPC main             (SCHED_FIFO 60)
 // Core 5:    MPC worker 0         (SCHED_FIFO 55)
 // Core 6:    MPC worker 1         (SCHED_FIFO 55)
 // Core 7:    UDP recv             (SCHED_FIFO 65)
 // Core 8:    Logging              (100 Hz CSV drain)
-// Core 9:    Aux + Publish        (E-STOP service + DDS drain)
+// Core 9:    Nrt CB + Rt Outbound (E-STOP service + DDS drain)
 // Core 10:   MuJoCo sim_thread    (GetSimCoreLayout(14) = {10,-1})
 // Core 11-13: Spare (user shield / MuJoCo viewer / monitoring)
 //
@@ -430,11 +430,11 @@ inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kSensorConfig14Core{.cpu_core = 3,
+inline const ThreadConfig kRtInboundConfig14Core{.cpu_core = 3,
                                               .sched_policy = SCHED_FIFO,
                                               .sched_priority = 70,
                                               .nice_value = 0,
-                                              .name = "sensor_io"};
+                                              .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig14Core{.cpu_core = 7,
                                                .sched_policy = SCHED_FIFO,
@@ -442,23 +442,23 @@ inline const ThreadConfig kUdpRecvConfig14Core{.cpu_core = 7,
                                                .nice_value = 0,
                                                .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig14Core{.cpu_core = 8,
+inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 8,
                                                .sched_policy = SCHED_OTHER,
                                                .sched_priority = 0,
                                                .nice_value = -5,
-                                               .name = "logger"};
+                                               .name = "nrt_logging"};
 
-inline const ThreadConfig kAuxConfig14Core{.cpu_core = 9,
+inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 9,
                                            .sched_policy = SCHED_OTHER,
                                            .sched_priority = 0,
                                            .nice_value = 0,
-                                           .name = "aux"};
+                                           .name = "nrt_callback"};
 
-inline const ThreadConfig kPublishConfig14Core{.cpu_core = 9,
+inline const ThreadConfig kRtOutboundConfig14Core{.cpu_core = 9,
                                                .sched_policy = SCHED_OTHER,
                                                .sched_priority = 0,
                                                .nice_value = -3,
-                                               .name = "rt_publish"};
+                                               .name = "rt_outbound"};
 
 inline const MpcThreadConfig kMpcConfig14Core{
     .main =
@@ -497,14 +497,14 @@ inline const MpcThreadConfig kMpcConfig14Core{
 //
 // Core 0-1:  OS / DDS / NIC IRQ
 // Core 2:    RT Control           (SCHED_FIFO 90)
-// Core 3:    Sensor I/O           (SCHED_FIFO 70)
+// Core 3:    RT Inbound           (SCHED_FIFO 70)
 // Core 4-8:  cset shield "user"   (reserved — reduces OS noise system-wide)
 // Core 9:    MPC main             (Phase 5, SCHED_FIFO 60)
 // Core 10:   MPC worker 0         (Phase 5, SCHED_FIFO 55)
 // Core 11:   MPC worker 1         (Phase 5, SCHED_FIFO 55)
 // Core 12:   UDP recv             (shifted from Core 9, SCHED_FIFO 65)
 // Core 13:   Logging              (shifted from Core 10, 100 Hz CSV drain)
-// Core 14:   Aux + Publish        (shifted from Core 11, E-STOP publisher)
+// Core 14:   Nrt CB + Rt Outbound (shifted from Core 11, E-STOP publisher)
 // Core 15:   Spare / MuJoCo sim   (shifted from Core 12-13 pair)
 
 inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 2,
@@ -513,11 +513,11 @@ inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kSensorConfig16Core{.cpu_core = 3,
+inline const ThreadConfig kRtInboundConfig16Core{.cpu_core = 3,
                                               .sched_policy = SCHED_FIFO,
                                               .sched_priority = 70,
                                               .nice_value = 0,
-                                              .name = "sensor_io"};
+                                              .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig16Core{
     .cpu_core = 12,  // Shifted from Core 9 (now MPC main).
@@ -526,26 +526,26 @@ inline const ThreadConfig kUdpRecvConfig16Core{
     .nice_value = 0,
     .name = "udp_recv"};
 
-inline const ThreadConfig kLoggingConfig16Core{
+inline const ThreadConfig kNrtLoggingConfig16Core{
     .cpu_core = 13,  // Shifted from Core 10 (now MPC worker 0).
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = -5,
-    .name = "logger"};
+    .name = "nrt_logging"};
 
-inline const ThreadConfig kAuxConfig16Core{
+inline const ThreadConfig kNrtCallbackConfig16Core{
     .cpu_core = 14,  // Shifted from Core 11 (now MPC worker 1).
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = 0,
-    .name = "aux"};
+    .name = "nrt_callback"};
 
-inline const ThreadConfig kPublishConfig16Core{
-    .cpu_core = 14,  // Shares Core 14 with aux (both CFS).
+inline const ThreadConfig kRtOutboundConfig16Core{
+    .cpu_core = 14,  // Shares Core 14 with nrt_callback (both CFS).
     .sched_policy = SCHED_OTHER,
     .sched_priority = 0,
     .nice_value = -3,
-    .name = "rt_publish"};
+    .name = "rt_outbound"};
 
 // MPC on 16-core: full parallel solve capacity — main + 2 workers on three
 // dedicated cores. Workers run FIFO 55 (< main's 60) so a long Aligator

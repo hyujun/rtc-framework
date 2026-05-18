@@ -7,7 +7,7 @@ namespace urtc = rtc;
 
 void RtControllerNode::CreateSubscriptions() {
   auto sub_options = rclcpp::SubscriptionOptions();
-  sub_options.callback_group = cb_group_sensor_;
+  sub_options.callback_group = cb_group_rt_inbound_;
 
   std::set<std::string> created_topics;
 
