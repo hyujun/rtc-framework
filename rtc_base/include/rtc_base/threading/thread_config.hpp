@@ -35,15 +35,18 @@ struct MpcThreadConfig {
   std::array<ThreadConfig, kMpcMaxWorkers> workers{};
 };
 
-// ── 6-core configuration ────────────────────────────────────────────────────
+// ── 6-core configuration (degraded mode — no deterministic RT guarantee) ────
 // Core 0-1: OS / DDS / NIC IRQ  (isolated by isolcpus=2-5)
 // Core 2:   RT Control           (ControlLoop @ control_rate + 50 Hz E-STOP watchdog)
-// Core 3:   RT Inbound           (joint_state, target, hand callbacks —
-// dedicated) Core 4:   Logging              (100 Hz CSV drain) Core 5:   UDP
-// recv + Aux       (udp_recv FIFO 65, nrt_callback SCHED_OTHER 0)
+// Core 3:   RT Inbound + RT Outbound  (FIFO 70 / 65 priority queue — Phase 4)
+// Core 4:   Logging              (100 Hz CSV drain)
+// Core 5:   UDP recv + Aux       (udp_recv FIFO 65, nrt_callback SCHED_OTHER 0)
 //
 // Note: udp_recv is on Core 5 (not Core 3) to avoid contention with rt_inbound.
 //       Even under UDP burst, JointStateCallback latency is unaffected.
+//       rt_outbound shares Core 3 with rt_inbound on 6-core only — the other
+//       tiers keep rt_outbound on its existing core in Phase 4 (layout v3
+//       same-core consolidation lands in Phase 5).
 
 inline const ThreadConfig kRtControlConfig{.cpu_core = 2,
                                            .sched_policy = SCHED_FIFO,
@@ -52,10 +55,10 @@ inline const ThreadConfig kRtControlConfig{.cpu_core = 2,
                                            .name = "rt_control"};
 
 inline const ThreadConfig kRtInboundConfig{.cpu_core = 3,
-                                        .sched_policy = SCHED_FIFO,
-                                        .sched_priority = 70,
-                                        .nice_value = 0,
-                                        .name = "rt_inbound"};
+                                           .sched_policy = SCHED_FIFO,
+                                           .sched_priority = 70,
+                                           .nice_value = 0,
+                                           .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig{
     .cpu_core = 5,  // Moved from Core 3 → Core 5 (dedicated, no rt_inbound contention)
@@ -65,10 +68,10 @@ inline const ThreadConfig kUdpRecvConfig{
     .name = "udp_recv"};
 
 inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 4,
-                                         .sched_policy = SCHED_OTHER,
-                                         .sched_priority = 0,
-                                         .nice_value = -5,
-                                         .name = "nrt_logging"};
+                                            .sched_policy = SCHED_OTHER,
+                                            .sched_priority = 0,
+                                            .nice_value = -5,
+                                            .name = "nrt_logging"};
 
 inline const ThreadConfig kNrtCallbackConfig{
     .cpu_core = 5,  // Shares Core 5 with udp_recv (nrt_callback is event-driven, very light)
@@ -78,15 +81,20 @@ inline const ThreadConfig kNrtCallbackConfig{
     .name = "nrt_callback"};
 
 // ── Publish offload thread (6-core) ──────────────────────────────────────────
-// Drains SPSC publish buffer and calls all ROS2 publish() on a non-RT core.
-// Shares Core 5 with nrt_callback and udp_recv — rt_outbound is SCHED_OTHER (Phase 1 unchanged), preempted
-// by udp_recv (SCHED_FIFO 65).
+// Drains SPSC publish buffer (actuator-only after Phase 2) and calls
+// backend.WriteCommand on the RT outbound boundary. Phase 4 promoted to
+// SCHED_FIFO 65 (one below rt_inbound's 70 to keep input-priority ordering).
+//
+// 6-core only: rt_outbound is placed on Core 3 (rt_inbound's core) — not
+// Core 5 — to avoid the FIFO 65 ↔ udp_recv (also Core 5 FIFO 65) collision
+// that the rest of the tiers don't have. rt_inbound (FIFO 70) preempts
+// rt_outbound (FIFO 65) on the shared core; no starvation.
 
-inline const ThreadConfig kRtOutboundConfig{.cpu_core = 5,
-                                         .sched_policy = SCHED_OTHER,
-                                         .sched_priority = 0,
-                                         .nice_value = -3,
-                                         .name = "rt_outbound"};
+inline const ThreadConfig kRtOutboundConfig{.cpu_core = 3,
+                                            .sched_policy = SCHED_FIFO,
+                                            .sched_priority = 65,
+                                            .nice_value = 0,
+                                            .name = "rt_outbound"};
 
 // MPC on 6-core: piggybacks on Core 4 with SCHED_FIFO 60. Logging also
 // lives on Core 4 (SCHED_OTHER); MPC FIFO preempts logging whenever a
@@ -125,10 +133,10 @@ inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 2,
                                                 .name = "rt_control"};
 
 inline const ThreadConfig kRtInboundConfig8Core{.cpu_core = 3,
-                                             .sched_policy = SCHED_FIFO,
-                                             .sched_priority = 70,
-                                             .nice_value = 0,
-                                             .name = "rt_inbound"};
+                                                .sched_policy = SCHED_FIFO,
+                                                .sched_priority = 70,
+                                                .nice_value = 0,
+                                                .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig8Core{.cpu_core = 5,  // Shifted from Core 4 (now MPC main).
                                               .sched_policy = SCHED_FIFO,
@@ -137,22 +145,24 @@ inline const ThreadConfig kUdpRecvConfig8Core{.cpu_core = 5,  // Shifted from Co
                                               .name = "udp_recv"};
 
 inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 6,  // Shifted from Core 5.
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = -5,
-                                              .name = "nrt_logging"};
+                                                 .sched_policy = SCHED_OTHER,
+                                                 .sched_priority = 0,
+                                                 .nice_value = -5,
+                                                 .name = "nrt_logging"};
 
 inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
-                                          .sched_policy = SCHED_OTHER,
-                                          .sched_priority = 0,
-                                          .nice_value = 0,
-                                          .name = "nrt_callback"};
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = 0,
+                                                  .name = "nrt_callback"};
 
+// Phase 4: SCHED_FIFO 65 (was SCHED_OTHER nice -3). Co-located with
+// nrt_callback (CFS) on Core 7 — FIFO preempts CFS unconditionally.
 inline const ThreadConfig kRtOutboundConfig8Core{.cpu_core = 7,  // Shifted from Core 6.
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = -3,
-                                              .name = "rt_outbound"};
+                                                 .sched_policy = SCHED_FIFO,
+                                                 .sched_priority = 65,
+                                                 .nice_value = 0,
+                                                 .name = "rt_outbound"};
 
 // MPC main on Core 4 (dedicated). No workers on 8-core — too few spare
 // cores to host them without contention. Priority 60 < rt_inbound(70) so a
@@ -183,10 +193,10 @@ inline const ThreadConfig kRtControlConfig4Core{.cpu_core = 1,
                                                 .name = "rt_control"};
 
 inline const ThreadConfig kRtInboundConfig4Core{.cpu_core = 2,
-                                             .sched_policy = SCHED_FIFO,
-                                             .sched_priority = 70,
-                                             .nice_value = 0,
-                                             .name = "rt_inbound"};
+                                                .sched_policy = SCHED_FIFO,
+                                                .sched_priority = 70,
+                                                .nice_value = 0,
+                                                .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig4Core{
     .cpu_core = 2,  // Shares Core 2 with rt_inbound (4-core: unavoidable)
@@ -196,10 +206,10 @@ inline const ThreadConfig kUdpRecvConfig4Core{
     .name = "udp_recv"};
 
 inline const ThreadConfig kNrtLoggingConfig4Core{.cpu_core = 3,
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = -5,
-                                              .name = "nrt_logging"};
+                                                 .sched_policy = SCHED_OTHER,
+                                                 .sched_priority = 0,
+                                                 .nice_value = -5,
+                                                 .name = "nrt_logging"};
 
 inline const ThreadConfig kNrtCallbackConfig4Core{
     .cpu_core = 3,  // Shares Core 3 with logging (4-core: unavoidable)
@@ -208,11 +218,14 @@ inline const ThreadConfig kNrtCallbackConfig4Core{
     .nice_value = 0,
     .name = "nrt_callback"};
 
+// Phase 4: SCHED_FIFO 65 (was SCHED_OTHER nice -3). 4-core is already a
+// degraded-mode fallback (no deterministic RT guarantee). Co-located with
+// nrt_logging/nrt_callback (both CFS) on Core 3; FIFO preempts CFS.
 inline const ThreadConfig kRtOutboundConfig4Core{.cpu_core = 3,
-                                              .sched_policy = SCHED_OTHER,
-                                              .sched_priority = 0,
-                                              .nice_value = -3,
-                                              .name = "rt_outbound"};
+                                                 .sched_policy = SCHED_FIFO,
+                                                 .sched_priority = 65,
+                                                 .nice_value = 0,
+                                                 .name = "rt_outbound"};
 
 // MPC on 4-core: piggybacks on Core 3 with SCHED_OTHER (degraded mode).
 // With only 3 non-OS cores a FIFO MPC would starve nrt_logging/nrt_callback; CFS is
@@ -256,10 +269,10 @@ inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 2,
                                                  .name = "rt_control"};
 
 inline const ThreadConfig kRtInboundConfig10Core{.cpu_core = 3,
-                                              .sched_policy = SCHED_FIFO,
-                                              .sched_priority = 70,
-                                              .nice_value = 0,
-                                              .name = "rt_inbound"};
+                                                 .sched_policy = SCHED_FIFO,
+                                                 .sched_priority = 70,
+                                                 .nice_value = 0,
+                                                 .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig10Core{
     .cpu_core = 6,  // Dedicated (was Core 9 shared prior to unified layout)
@@ -269,10 +282,10 @@ inline const ThreadConfig kUdpRecvConfig10Core{
     .name = "udp_recv"};
 
 inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 7,  // Dedicated
-                                               .sched_policy = SCHED_OTHER,
-                                               .sched_priority = 0,
-                                               .nice_value = -5,
-                                               .name = "nrt_logging"};
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = -5,
+                                                  .name = "nrt_logging"};
 
 inline const ThreadConfig kNrtCallbackConfig10Core{
     .cpu_core = 8,  // Dedicated (shared only with rt_outbound, both CFS)
@@ -281,11 +294,13 @@ inline const ThreadConfig kNrtCallbackConfig10Core{
     .nice_value = 0,
     .name = "nrt_callback"};
 
+// Phase 4: SCHED_FIFO 65 (was SCHED_OTHER nice -3). Co-located with
+// nrt_callback (CFS) on Core 8; FIFO preempts CFS unconditionally.
 inline const ThreadConfig kRtOutboundConfig10Core{
-    .cpu_core = 8,  // Shares Core 8 with nrt_callback (both SCHED_OTHER)
-    .sched_policy = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value = -3,
+    .cpu_core = 8,  // Shares Core 8 with nrt_callback (CFS preempted by FIFO 65)
+    .sched_policy = SCHED_FIFO,
+    .sched_priority = 65,
+    .nice_value = 0,
     .name = "rt_outbound"};
 
 // MPC on 10-core: dedicated Core 4 main + Core 5 worker. Priority
@@ -341,10 +356,10 @@ inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 2,
                                                  .name = "rt_control"};
 
 inline const ThreadConfig kRtInboundConfig12Core{.cpu_core = 3,
-                                              .sched_policy = SCHED_FIFO,
-                                              .sched_priority = 70,
-                                              .nice_value = 0,
-                                              .name = "rt_inbound"};
+                                                 .sched_policy = SCHED_FIFO,
+                                                 .sched_priority = 70,
+                                                 .nice_value = 0,
+                                                 .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig12Core{.cpu_core = 7,  // Dedicated
                                                .sched_policy = SCHED_FIFO,
@@ -353,10 +368,10 @@ inline const ThreadConfig kUdpRecvConfig12Core{.cpu_core = 7,  // Dedicated
                                                .name = "udp_recv"};
 
 inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 8,  // Dedicated
-                                               .sched_policy = SCHED_OTHER,
-                                               .sched_priority = 0,
-                                               .nice_value = -5,
-                                               .name = "nrt_logging"};
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = -5,
+                                                  .name = "nrt_logging"};
 
 inline const ThreadConfig kNrtCallbackConfig12Core{
     .cpu_core = 9,  // Dedicated (shared with rt_outbound, both CFS)
@@ -365,11 +380,13 @@ inline const ThreadConfig kNrtCallbackConfig12Core{
     .nice_value = 0,
     .name = "nrt_callback"};
 
+// Phase 4: SCHED_FIFO 65 (was SCHED_OTHER nice -3). Co-located with
+// nrt_callback (CFS) on Core 9; FIFO preempts CFS unconditionally.
 inline const ThreadConfig kRtOutboundConfig12Core{.cpu_core = 9,
-                                               .sched_policy = SCHED_OTHER,
-                                               .sched_priority = 0,
-                                               .nice_value = -3,
-                                               .name = "rt_outbound"};
+                                                  .sched_policy = SCHED_FIFO,
+                                                  .sched_priority = 65,
+                                                  .nice_value = 0,
+                                                  .name = "rt_outbound"};
 
 // MPC on 12-core: main + 2 workers enable full Aligator parallel-rollout
 // capacity. Both workers at FIFO 55 — identical priority is safe because
@@ -431,10 +448,10 @@ inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 2,
                                                  .name = "rt_control"};
 
 inline const ThreadConfig kRtInboundConfig14Core{.cpu_core = 3,
-                                              .sched_policy = SCHED_FIFO,
-                                              .sched_priority = 70,
-                                              .nice_value = 0,
-                                              .name = "rt_inbound"};
+                                                 .sched_policy = SCHED_FIFO,
+                                                 .sched_priority = 70,
+                                                 .nice_value = 0,
+                                                 .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig14Core{.cpu_core = 7,
                                                .sched_policy = SCHED_FIFO,
@@ -443,22 +460,24 @@ inline const ThreadConfig kUdpRecvConfig14Core{.cpu_core = 7,
                                                .name = "udp_recv"};
 
 inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 8,
-                                               .sched_policy = SCHED_OTHER,
-                                               .sched_priority = 0,
-                                               .nice_value = -5,
-                                               .name = "nrt_logging"};
+                                                  .sched_policy = SCHED_OTHER,
+                                                  .sched_priority = 0,
+                                                  .nice_value = -5,
+                                                  .name = "nrt_logging"};
 
 inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 9,
-                                           .sched_policy = SCHED_OTHER,
-                                           .sched_priority = 0,
-                                           .nice_value = 0,
-                                           .name = "nrt_callback"};
+                                                   .sched_policy = SCHED_OTHER,
+                                                   .sched_priority = 0,
+                                                   .nice_value = 0,
+                                                   .name = "nrt_callback"};
 
+// Phase 4: SCHED_FIFO 65 (was SCHED_OTHER nice -3). Co-located with
+// nrt_callback (CFS) on Core 9; FIFO preempts CFS unconditionally.
 inline const ThreadConfig kRtOutboundConfig14Core{.cpu_core = 9,
-                                               .sched_policy = SCHED_OTHER,
-                                               .sched_priority = 0,
-                                               .nice_value = -3,
-                                               .name = "rt_outbound"};
+                                                  .sched_policy = SCHED_FIFO,
+                                                  .sched_priority = 65,
+                                                  .nice_value = 0,
+                                                  .name = "rt_outbound"};
 
 inline const MpcThreadConfig kMpcConfig14Core{
     .main =
@@ -514,10 +533,10 @@ inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 2,
                                                  .name = "rt_control"};
 
 inline const ThreadConfig kRtInboundConfig16Core{.cpu_core = 3,
-                                              .sched_policy = SCHED_FIFO,
-                                              .sched_priority = 70,
-                                              .nice_value = 0,
-                                              .name = "rt_inbound"};
+                                                 .sched_policy = SCHED_FIFO,
+                                                 .sched_priority = 70,
+                                                 .nice_value = 0,
+                                                 .name = "rt_inbound"};
 
 inline const ThreadConfig kUdpRecvConfig16Core{
     .cpu_core = 12,  // Shifted from Core 9 (now MPC main).
@@ -540,11 +559,13 @@ inline const ThreadConfig kNrtCallbackConfig16Core{
     .nice_value = 0,
     .name = "nrt_callback"};
 
+// Phase 4: SCHED_FIFO 65 (was SCHED_OTHER nice -3). Co-located with
+// nrt_callback (CFS) on Core 14; FIFO preempts CFS unconditionally.
 inline const ThreadConfig kRtOutboundConfig16Core{
-    .cpu_core = 14,  // Shares Core 14 with nrt_callback (both CFS).
-    .sched_policy = SCHED_OTHER,
-    .sched_priority = 0,
-    .nice_value = -3,
+    .cpu_core = 14,  // Shares Core 14 with nrt_callback (CFS preempted by FIFO 65)
+    .sched_policy = SCHED_FIFO,
+    .sched_priority = 65,
+    .nice_value = 0,
     .name = "rt_outbound"};
 
 // MPC on 16-core: full parallel solve capacity — main + 2 workers on three

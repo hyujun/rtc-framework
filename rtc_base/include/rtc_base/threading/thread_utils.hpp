@@ -583,9 +583,10 @@ inline int GetPhysicalCpuCount() noexcept {
 //
 // Field naming (Phase 1 of thread-layout-v3 rename):
 //   * rt_inbound   = RT priority inbound callback dispatcher (was: sensor)
-//   * rt_outbound  = RT loop output forwarding — SPSC drain → DDS publish
-//                    (was: publish; SCHED_OTHER nice -3 in Phase 1, promoted to
-//                    SCHED_FIFO 65 in a later phase)
+//   * rt_outbound  = RT loop output forwarding — SPSC drain →
+//                    backend.WriteCommand on the controller↔hardware boundary
+//                    (was: publish; SCHED_FIFO 65 since Phase 4, one below
+//                    rt_inbound's 70 to maintain input-priority ordering)
 //   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
 //                    non-RT-boundary subs (was: aux)
 //   * nrt_logging  = non-RT CSV drain (was: logging)
@@ -595,7 +596,7 @@ struct SystemThreadConfigs {
   ThreadConfig udp_recv;  // Hand UDP receiver (separate from rt_inbound)
   ThreadConfig nrt_logging;
   ThreadConfig nrt_callback;
-  ThreadConfig rt_outbound;  // RT output forwarding thread (Phase 1: still CFS)
+  ThreadConfig rt_outbound;  // RT output forwarding thread (Phase 4: SCHED_FIFO 65)
   MpcThreadConfig mpc;       // Phase 5: MPC main + optional workers
 };
 
@@ -645,6 +646,23 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
        configs.rt_inbound.sched_policy == SCHED_RR) &&
       configs.mpc.main.sched_priority >= configs.rt_inbound.sched_priority) {
     errors += "mpc.main priority (" + std::to_string(configs.mpc.main.sched_priority) +
+              ") must be below rt_inbound priority (" +
+              std::to_string(configs.rt_inbound.sched_priority) + "); ";
+  }
+
+  // Phase 4 invariant: rt_outbound priority must be strictly below rt_inbound
+  // priority. Inbound DDS callbacks (joint_state / target / hand sensor) drive
+  // the RT control loop; the outbound SPSC drain must never preempt them.
+  // Layout v3 places both threads on the same core (priority queue 70 > 65),
+  // and this gate prevents accidental priority inversion when the layout
+  // expands further. Only meaningful when both threads are RT — degraded
+  // tiers (e.g. 4-core fallback) where one is CFS are not checked here.
+  if ((configs.rt_outbound.sched_policy == SCHED_FIFO ||
+       configs.rt_outbound.sched_policy == SCHED_RR) &&
+      (configs.rt_inbound.sched_policy == SCHED_FIFO ||
+       configs.rt_inbound.sched_policy == SCHED_RR) &&
+      configs.rt_outbound.sched_priority >= configs.rt_inbound.sched_priority) {
+    errors += "rt_outbound priority (" + std::to_string(configs.rt_outbound.sched_priority) +
               ") must be below rt_inbound priority (" +
               std::to_string(configs.rt_inbound.sched_priority) + "); ";
   }
