@@ -77,7 +77,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 |---|---|---|
 | `rt_inbound_executor` | `cfgs.rt_inbound` (SCHED_FIFO 70, Core 3) | `cb_group_rt_inbound_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호) |
 | `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, Core 0) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log |
-| `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, Core 1 on ≥ 8-core / Core 0 on 6-core) | `cb_group_nrt_callback_` + CM node default group (CM-owned RobotTarget sub) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services) + the `nrt_publish_thread` snapshot drain |
+| `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, Core 1 on ≥ 8-core / Core 0 on 6-core) | `cb_group_nrt_callback_` (lifecycle services) + CM node default group (CM-owned `target_sub_` — RobotTarget 은 외부 의도 입력, RT 경계 밖) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
 
 **DeviceBackend cb_group injection 의무 (Phase 3)**: 모든 backend 구현은 `Configure(node, cfg, state_cb_group)` 가 받은 `state_cb_group` 을 자신이 만드는 모든 state/motor/sensor subscription 의 `SubscriptionOptions.callback_group` 에 적용해야 한다. ARCH-3 두 번째 구현 이후 silent default-group fallback 회귀를 막기 위해 backend integration test 가 `get_actual_callback_group() != nullptr` 을 assert 한다 (Phase 8 SubscriptionOptions invariant test). Reentrant cb_group 금지 — SeqLock writer 가 단일 thread 임을 보장해야 함.
 
