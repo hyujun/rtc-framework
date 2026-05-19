@@ -525,7 +525,7 @@ ros2 launch integrated_bringup robot.launch.py use_mock_hardware:=true  # 모의
 6. Hand UDP 노드 launch (`udp_hand_driver/udp_hand_node`)
 7. RT 컨트롤러 노드 launch (실행 파일 = ROS 노드 이름 = `integrated_rt_controller` — 정렬됨)
 8. UR 드라이버 CPU 핀닝 -> Core 0-1 (3초 지연)
-9. RT 컨트롤러 DDS 스레드 핀닝 -> Core 0-1 (5초 지연, 비-SCHED_FIFO 스레드만)
+9. RT 컨트롤러 DDS 스레드 핀닝 -> Core 3 (5초 지연, 비-SCHED_FIFO 스레드만). Layout v4 에서 DDS receive thread 가 `rt_callback` (Core 3 FIFO 70) 와 같은 코어에 co-pin 되어 cache locality 공유 (CFS 유지, SCHED_FIFO 가 무조건 선점하므로 RT 결정성 영향 없음)
 
 **Lifecycle:** udp_hand_node, integrated_rt_controller 모두 LifecycleNode 기반. 런치 시 자동 configure → activate.
 

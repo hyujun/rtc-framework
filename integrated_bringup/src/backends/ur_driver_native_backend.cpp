@@ -51,7 +51,7 @@ void UrDriverNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   rclcpp::QoS cmd_qos{1};
   cmd_qos.reliable();
 
-  // Route /joint_states onto the rt_inbound callback group (FIFO 70) so the
+  // Route /joint_states onto the rt_callback callback group (FIFO 70) so the
   // RT loop reads see fresh data on the controller↔hardware boundary.
   rclcpp::SubscriptionOptions sub_opts;
   sub_opts.callback_group = state_cb_group;

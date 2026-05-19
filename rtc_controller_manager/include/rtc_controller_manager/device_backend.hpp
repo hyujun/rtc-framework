@@ -22,21 +22,22 @@ namespace rtc {
 // Configure(). All keys are staging strings — backend implementations interpret
 // only the keys they need; unknown keys are ignored (forward-compatible).
 //
-// Examples:
+// Examples (topic strings are robot-specific YAML values; the rtc_* packages
+// stay robot-agnostic by treating these as opaque):
 //   type = "mujoco_native"
-//     state_topic   = "/ur5e/joint_states"
-//     command_topic = "/ur5e/joint_command"
+//     state_topic   = "/<arm>/joint_states"
+//     command_topic = "/<arm>/joint_command"
 //
 //   type = "ur_driver_native"
 //     state_topic         = "/joint_states"
 //     command_topic       = "/forward_position_controller/commands"
-//     joint_command_names = ["shoulder_pan_joint", ...]   // packing order
+//     joint_command_names = ["<joint_0>", ...]            // packing order
 //
 //   type = "udp_hand_native"
-//     state_topic   = "/hand/joint_states"
-//     command_topic = "/hand/joint_command"
-//     motor_topic   = "/hand/motor_states"
-//     sensor_topic  = "/hand/sensor_states"
+//     state_topic   = "/<hand>/joint_states"
+//     command_topic = "/<hand>/joint_command"
+//     motor_topic   = "/<hand>/motor_states"
+//     sensor_topic  = "/<hand>/sensor_states"
 //     sensor_layout = { ... }  // resolved separately via DeviceSensorLayout
 struct DeviceBackendConfig {
   std::string group_name;                        ///< owning device-group key
@@ -84,12 +85,11 @@ class DeviceBackend {
   /// `state_cb_group` is the callback group that ALL state-lane subscriptions
   /// (joint / motor / sensor) created by the backend must be attached to via
   /// `rclcpp::SubscriptionOptions::callback_group`. CM passes its
-  /// `cb_group_rt_inbound_` (RT path, FIFO 70 executor) so the
-  /// controller↔hardware/sim boundary subs are dispatched on the rt_inbound
-  /// thread, matching the RT definition in
-  /// `~/.claude/plans/arm-hand-core-allocation.md`. May be null in test
-  /// fixtures that don't wire an executor — backends must tolerate this and
-  /// fall back to the default callback group.
+  /// `cb_group_rt_callback_` (RT path, FIFO 70 executor on Core 3 — layout
+  /// v4) so the controller↔hardware/sim boundary subs are dispatched on the
+  /// rt_callback thread. May be null in test fixtures that don't wire an
+  /// executor — backends must tolerate this and fall back to the default
+  /// callback group.
   ///
   /// The supplied group MUST be `MutuallyExclusive` (CM creates it as such).
   /// Each backend writes into its own `SeqLock<DeviceStateCache>` from the

@@ -61,7 +61,7 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   rclcpp::QoS qos{1};
   qos.best_effort();
 
-  // RT inbound boundary: route the state-lane sub onto the rt_inbound
+  // RT inbound boundary: route the state-lane sub onto the rt_callback
   // callback group (FIFO 70) so RT loop reads see fresh data without
   // bouncing through the non-RT default executor.
   rclcpp::SubscriptionOptions sub_opts;

@@ -339,7 +339,7 @@ source install/setup.bash
 |------|-----|
 | CPU 코어 | hand_driver core (tier-aware, `SelectThreadConfigs().hand_driver.cpu_core`); 내부 receive thread 는 process taskset 으로 affinity 상속 (`kHandUdpRecvConfig`, cpu_core=-1 sentinel) |
 | 스케줄러 | `SCHED_FIFO` |
-| 우선순위 | **65** (rt_outbound 와 동순위지만 다른 core/프로세스라 충돌 없음) |
+| 우선순위 | **65** (rt_callback 의 70 보다 한 단계 낮게 두어 hand 수신이 controller state 수신을 절대 선점하지 않도록 설계) |
 | 메모리 잠금 | `mlockall(MCL_CURRENT \| MCL_FUTURE)` |
 
 - 모든 코덱 함수: `noexcept`, 힙 할당 없음

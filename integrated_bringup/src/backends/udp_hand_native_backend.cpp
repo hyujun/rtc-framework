@@ -47,7 +47,7 @@ void UdpHandNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   rclcpp::QoS qos{1};
   qos.best_effort();
 
-  // All three state lanes (joint / motor / sensor) ride the rt_inbound
+  // All three state lanes (joint / motor / sensor) ride the rt_callback
   // callback group (FIFO 70) so the RT loop reads see fresh data on the
   // controller↔hardware boundary.
   rclcpp::SubscriptionOptions sub_opts;

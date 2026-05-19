@@ -220,15 +220,28 @@ void RtControllerNode::ControlLoop() {
     }
     snap.num_groups = static_cast<int>(gi);
 
-    // Producer-side fan-out into two SPSC lanes (Phase 2 of thread-layout-v3
-    // sprint).  publish_buffer_ → rt_outbound (actuator command, RT bound);
-    // nrt_publish_buffer_ → nrt_callback (controller-owned non-RT publishes).
-    // Both push the same snap by value — duplication cost is small (≈12 KB
-    // total at capacity 16) and avoids splitting the struct.  Drops are
-    // accounted per-buffer; the nrt lane is the tighter (cap=16) one.
-    static_cast<void>(publish_buffer_.Push(snap));
-    if (publish_eventfd_ >= 0) {
-      static_cast<void>(eventfd_write(publish_eventfd_, 1));
+    // Layout v4: actuator command publish is performed inline on the
+    // rt_control thread (Core 2 FIFO 90) — DeviceBackend.WriteCommand is
+    // RT-safe by contract (see device_backend.hpp). Removing the SPSC
+    // hand-off to rt_outbound eliminates one Core 3 thread + eventfd and
+    // closes the cross-core path between RT loop and actuator publish.
+    //
+    // Per-group device command publish is delegated to the backend bound to
+    // each group's slot. Controller-owned non-RT topics still ride the SPSC
+    // lane drained by NrtPublishLoopEntry on the nrt_callback core.
+    // Reuses active_tc / slot_mapping resolved at the top of ControlLoop().
+    {
+      std::size_t out_idx = 0;
+      for ([[maybe_unused]] const auto& [group_name, group] : active_tc.groups) {
+        if (out_idx >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups))
+          break;
+        const int slot = slot_mapping.slots[out_idx];
+        if (slot >= 0 && slot < kMaxDevices && backends_[static_cast<std::size_t>(slot)]) {
+          backends_[static_cast<std::size_t>(slot)]->WriteCommand(snap.group_commands[out_idx],
+                                                                  snap.command_type);
+        }
+        ++out_idx;
+      }
     }
     static_cast<void>(nrt_publish_buffer_.Push(snap));
     if (nrt_publish_eventfd_ >= 0) {
@@ -284,7 +297,6 @@ void RtControllerNode::DrainLog() {
     int idx = active_controller_idx_.load(std::memory_order_acquire);
     const auto overruns = rt_loop_.OverrunCount();
     const auto skips = rt_loop_.SkipCount();
-    const auto pub_drops = publish_buffer_.drop_count();
     const auto nrt_pub_drops = nrt_publish_buffer_.drop_count();
     const auto timing_drops = cm_timing_producer_.DropCount();
 
@@ -308,14 +320,12 @@ void RtControllerNode::DrainLog() {
     last_summary_wall_ = wall_now;
 
     RCLCPP_INFO(
-        get_logger(),
-        "%s  overruns=%lu  skips=%lu  pub_drops=%lu  nrt_pub_drops=%lu  timing_drops=%lu",
+        get_logger(), "%s  overruns=%lu  skips=%lu  nrt_pub_drops=%lu  timing_drops=%lu",
         timing_profiler_
             .Summary(std::string(controllers_[static_cast<std::size_t>(idx)]->Name()), elapsed_s)
             .c_str(),
         static_cast<unsigned long>(overruns), static_cast<unsigned long>(skips),
-        static_cast<unsigned long>(pub_drops), static_cast<unsigned long>(nrt_pub_drops),
-        static_cast<unsigned long>(timing_drops));
+        static_cast<unsigned long>(nrt_pub_drops), static_cast<unsigned long>(timing_drops));
     timing_profiler_.Reset();
   }
 }

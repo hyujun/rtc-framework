@@ -314,15 +314,14 @@ O(1) 슬라이딩 윈도우 OLS(최소자승법) 기반 실시간 드리프트 �
 
 CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4, 6, 8, 10, 12, 14, 16코어).
 
-> **헤더 내 선언 순서**: tier 블록은 코어 수 오름차순 (4 → 6 → 8 → 10 → 12 → 14 → 16), 각 tier 내부는 `sched_priority` 내림차순 (rt_control 90 → rt_inbound 70 → rt_outbound 65 → mpc 60/55 → SCHED_OTHER 0 그룹), priority 동률 시 심볼명 알파벳 순 (Arm → Hand → NrtCallback → NrtLogging → SimThread → Viewer).
+> **헤더 내 선언 순서**: tier 블록은 코어 수 오름차순 (4 → 6 → 8 → 10 → 12 → 14 → 16), 각 tier 내부는 `sched_priority` 내림차순 (rt_control 90 → rt_callback 70 → mpc 60/55 → SCHED_OTHER 0 그룹), priority 동률 시 심볼명 알파벳 순 (Arm → Hand → NrtCallback → NrtLogging → SimThread → Viewer).
 
-**코어 수별 스레드 레이아웃 (layout v3, 2026-05):**
+**코어 수별 스레드 레이아웃 (layout v4):**
 
 | 스레드 | 4코어¹ | 6코어² | 8코어 | 10코어 | 12코어 | 14코어 | 16코어³ |
 |--------|-------|-------|-------|--------|--------|--------|--------|
 | **rt_control** (FIFO 90) | Core 1 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **rt_inbound** (FIFO 70) | Core 2 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
-| **rt_outbound** (FIFO 65) | Core 2 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
+| **rt_callback** (FIFO 70) | Core 2 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
 | **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 4 | Core 4 | Core 4 | Core 4 | Core 4 | Core 9 |
 | **mpc_worker_0** (FIFO 55) | — | — | — | Core 5 | Core 5 | Core 5 | Core 10 |
 | **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 6 | Core 6 | Core 11 |
@@ -333,14 +332,14 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 | **sim_thread** (CFS 0) | -1⁴ | -1⁴ | Core 7 | Core 9 | Core 10 | Core 10 | Core 15 |
 | **viewer** (CFS 0) | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ |
 
-> ¹ 4코어는 degraded mode — rt_outbound 와 mpc 가 CFS 로 강등 (RT 자원 부족). RT 결정성 보장 X.
+> ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). RT 결정성 보장 X.
 > ² 6코어는 degraded mode — arm/hand_driver 가 Core 1 공유, mpc_workers 없음, sim_thread cpu_core=-1 (격리 해제된 코어에서 roam).
 > ³ 16코어는 legacy Option A 유지 — Core 4-8 이 user cset shield, MPC + driver 가 Core 9-13.
 > ⁴ `cpu_core = -1` sentinel: pin 없음. sim_thread 는 cpu_shield `--sim` 모드에서 격리 해제된 코어 사용, viewer 는 모든 tier 에서 OS 공유.
 >
-> **v3 의 핵심 변화**: rt_inbound + rt_outbound 가 모든 ≥ 6-core tier 에서 Core 3 same-core, priority diff (70 > 65) 가 starvation 방지. rt_outbound (이전 publish/aux, OTHER -3) 가 RT 승격 — backend.WriteCommand actuator-only lane (PublishNonRtSnapshot 는 nrt_publish_thread 로 분리). hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, cpu_core=-1) — `SystemThreadConfigs` 에 필드 없음.
+> **v4 의 핵심 변화**: v3 의 `rt_outbound` (FIFO 65) jthread + `publish_buffer_` SPSC + eventfd 제거 — actuator publish 는 `rt_control` (Core 2 FIFO 90) 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 (RT-safe contract). DDS receive thread 는 launch-time taskset 으로 `rt_callback` 와 같은 Core 3 으로 co-pin (CFS 유지) 되어 cache locality 공유. hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, cpu_core=-1) — `SystemThreadConfigs` 에 필드 없음.
 >
-> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `test/test_mpc_thread_config.cpp::TierIsolationMonotonicity` + `LayoutV3SameCoreRtInboundOutbound` + `LayoutV3ArmHandDriverDisjoint` + `LayoutV3ValidatorCatchesArmHandCollision` + `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + same-core 결합 + cpu_core=-1 sentinel 처리를 강제.
+> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `test/test_mpc_thread_config.cpp::TierIsolationMonotonicity` + `LayoutV4RtCallbackPinning` + `LayoutV4ArmHandDriverDisjoint` + `LayoutV3ValidatorCatchesArmHandCollision` + `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + cpu_core=-1 sentinel 처리를 강제.
 
 **MuJoCo 시뮬레이션 코어 레이아웃:**
 
@@ -376,14 +375,14 @@ Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (
 
 `ThreadHealthFlag` 비트 플래그: `kOk`, `kWrongCore`, `kPolicyChanged`, `kPriorityChanged`, `kNiceChanged`.
 
-`SystemThreadConfigs` 구조체 (layout v3): `rt_control`, `rt_inbound`, `rt_outbound`, `nrt_logging`, `nrt_callback`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`). `udp_recv` 필드는 Phase 5 에서 삭제 — hand UDP receive thread 는 hand_driver 프로세스 내부 (`udp_hand_driver/udp_hand_constants.hpp::kHandUdpRecvConfig`) 로 이주, 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1 sentinel) 을 caller 가 명시 사용.
+`SystemThreadConfigs` 구조체 (layout v4): `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`). v3 의 `rt_outbound` 필드는 v4 에서 제거 — actuator publish 는 `rt_control` 이 inline 으로 수행. `udp_recv` 필드도 없음 — hand UDP receive thread 는 hand_driver 프로세스 내부 (`udp_hand_driver/udp_hand_constants.hpp::kHandUdpRecvConfig`) 로 이주, 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1 sentinel) 을 caller 가 명시 사용.
 
 `MpcThreadConfig` 구조체:
 - `main`: MPC solve 스레드의 `ThreadConfig`.
 - `num_workers`: 활성 worker 수 (`0 ≤ n ≤ kMpcMaxWorkers == 2`).
 - `workers`: `std::array<ThreadConfig, 2>` — 앞쪽 `num_workers`개만 유효.
 - `SelectThreadConfigs()`가 물리 코어 수에 맞는 `kMpcConfig{4,6,8,10,12,14,16}Core` 프리셋을 채워 반환 (tier dispatch는 `>=` 계단식이므로 `ncpu >= 14` 분기 유지 필수).
-- `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_inbound priority, (2) worker priority ≤ main priority, (3) `num_workers ∈ [0, kMpcMaxWorkers]`, (4) rt_outbound priority < rt_inbound priority (둘 다 RT 일 때만), (5) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_inbound/rt_outbound/mpc_*) 와 disjoint, (6) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
+- `ValidateSystemThreadConfigs()`는 (1) MPC main priority < rt_callback priority, (2) worker priority ≤ main priority, (3) `num_workers ∈ [0, kMpcMaxWorkers]`, (4) `arm_driver` / `hand_driver` cpu_core 가 모든 RT controller thread (rt_control/rt_callback/mpc_*) 와 disjoint, (5) cpu_core=-1 sentinel 은 disjointness sweep 에서 skip 등의 불변식을 검증.
 
 `ThreadMetrics` 구조체: `min_latency_us`, `max_latency_us`, `avg_latency_us`, `jitter_us`, `percentile_95_us`, `percentile_99_us`.
 

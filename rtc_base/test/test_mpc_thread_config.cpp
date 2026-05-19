@@ -1,14 +1,12 @@
-// Tier-by-tier validation of the MpcThreadConfig + layout v3 invariants.
+// Tier-by-tier validation of the MpcThreadConfig + layout v4 invariants.
 //
 // For every supported core count we check:
 //   * The tier's kMpcConfig*Core selects the documented MPC main core.
-//   * MPC main priority is strictly below rt_inbound priority (rt_inbound preempts
+//   * MPC main priority is strictly below rt_callback priority (rt_callback preempts
 //     MPC).
 //   * Worker priorities (if any) are ≤ main priority.
 //   * On tiers that dedicate cores, MPC main does not overlap with
-//     rt_control or rt_inbound.
-//   * Layout v3 same-core invariant: rt_inbound.cpu_core == rt_outbound.cpu_core
-//     AND rt_inbound.priority > rt_outbound.priority on tiers where both are RT.
+//     rt_control or rt_callback.
 //   * Process-level pins (arm_driver / hand_driver) live on dedicated cores
 //     once the tier is ≥ 8-core, and never collide with any RT controller thread.
 //   * ValidateSystemThreadConfigs returns empty string for the canonical
@@ -65,21 +63,21 @@ TEST(MpcThreadConfig, WorkerPriorityNotAboveMain) {
 }
 
 TEST(MpcThreadConfig, PriorityBelowSensor) {
-  // Pair every tier's MPC with the corresponding rt_inbound config.
+  // Pair every tier's MPC with the corresponding rt_callback config.
   struct Pair {
     const MpcThreadConfig* mpc;
-    const ThreadConfig* rt_inbound;
+    const ThreadConfig* rt_callback;
     const char* label;
   };
 
   const std::array<Pair, 7> pairs = {{
-      {&kMpcConfig4Core, &kRtInboundConfig4Core, "4-core"},
-      {&kMpcConfig6Core, &kRtInboundConfig, "6-core"},
-      {&kMpcConfig8Core, &kRtInboundConfig8Core, "8-core"},
-      {&kMpcConfig10Core, &kRtInboundConfig10Core, "10-core"},
-      {&kMpcConfig12Core, &kRtInboundConfig12Core, "12-core"},
-      {&kMpcConfig14Core, &kRtInboundConfig14Core, "14-core"},
-      {&kMpcConfig16Core, &kRtInboundConfig16Core, "16-core"},
+      {&kMpcConfig4Core, &kRtCallbackConfig4Core, "4-core"},
+      {&kMpcConfig6Core, &kRtCallbackConfig, "6-core"},
+      {&kMpcConfig8Core, &kRtCallbackConfig8Core, "8-core"},
+      {&kMpcConfig10Core, &kRtCallbackConfig10Core, "10-core"},
+      {&kMpcConfig12Core, &kRtCallbackConfig12Core, "12-core"},
+      {&kMpcConfig14Core, &kRtCallbackConfig14Core, "14-core"},
+      {&kMpcConfig16Core, &kRtCallbackConfig16Core, "16-core"},
   }};
   for (const auto& pair : pairs) {
     const bool mpc_is_rt =
@@ -87,8 +85,8 @@ TEST(MpcThreadConfig, PriorityBelowSensor) {
     if (!mpc_is_rt) {
       continue;  // SCHED_OTHER MPC never preempts anything RT.
     }
-    EXPECT_LT(pair.mpc->main.sched_priority, pair.rt_inbound->sched_priority)
-        << pair.label << ": MPC priority must be below rt_inbound";
+    EXPECT_LT(pair.mpc->main.sched_priority, pair.rt_callback->sched_priority)
+        << pair.label << ": MPC priority must be below rt_callback";
   }
 }
 
@@ -97,49 +95,49 @@ TEST(MpcThreadConfig, DedicatedTiersDoNotShareWithSensorOrRt) {
   struct DedicatedPair {
     const MpcThreadConfig* mpc;
     const ThreadConfig* rt_control;
-    const ThreadConfig* rt_inbound;
+    const ThreadConfig* rt_callback;
     const char* label;
   };
 
   const std::array<DedicatedPair, 5> dedicated = {{
-      {&kMpcConfig8Core, &kRtControlConfig8Core, &kRtInboundConfig8Core, "8"},
-      {&kMpcConfig10Core, &kRtControlConfig10Core, &kRtInboundConfig10Core, "10"},
-      {&kMpcConfig12Core, &kRtControlConfig12Core, &kRtInboundConfig12Core, "12"},
-      {&kMpcConfig14Core, &kRtControlConfig14Core, &kRtInboundConfig14Core, "14"},
-      {&kMpcConfig16Core, &kRtControlConfig16Core, &kRtInboundConfig16Core, "16"},
+      {&kMpcConfig8Core, &kRtControlConfig8Core, &kRtCallbackConfig8Core, "8"},
+      {&kMpcConfig10Core, &kRtControlConfig10Core, &kRtCallbackConfig10Core, "10"},
+      {&kMpcConfig12Core, &kRtControlConfig12Core, &kRtCallbackConfig12Core, "12"},
+      {&kMpcConfig14Core, &kRtControlConfig14Core, &kRtCallbackConfig14Core, "14"},
+      {&kMpcConfig16Core, &kRtControlConfig16Core, &kRtCallbackConfig16Core, "16"},
   }};
   for (const auto& d : dedicated) {
     EXPECT_NE(d.mpc->main.cpu_core, d.rt_control->cpu_core)
         << d.label << "-core: MPC must not share rt_control's core";
-    EXPECT_NE(d.mpc->main.cpu_core, d.rt_inbound->cpu_core)
-        << d.label << "-core: MPC must not share rt_inbound's core";
+    EXPECT_NE(d.mpc->main.cpu_core, d.rt_callback->cpu_core)
+        << d.label << "-core: MPC must not share rt_callback's core";
   }
 }
 
 // Monotonicity invariant: as physical core count grows, RT/MPC isolation
 // quality must never regress. Each tier ≥ 8-core must keep MPC main on a
-// dedicated core (distinct from rt_control / rt_inbound / nrt_logging /
+// dedicated core (distinct from rt_control / rt_callback / nrt_logging /
 // nrt_callback), and worker count must be monotonic.
 TEST(MpcThreadConfig, TierIsolationMonotonicity) {
   struct TierSnapshot {
     int ncpu;
     const MpcThreadConfig* mpc;
     const ThreadConfig* rt_control;
-    const ThreadConfig* rt_inbound;
+    const ThreadConfig* rt_callback;
     const ThreadConfig* nrt_logging;
     const ThreadConfig* nrt_callback;
   };
 
   const std::array<TierSnapshot, 5> tiers = {{
-      {8, &kMpcConfig8Core, &kRtControlConfig8Core, &kRtInboundConfig8Core, &kNrtLoggingConfig8Core,
-       &kNrtCallbackConfig8Core},
-      {10, &kMpcConfig10Core, &kRtControlConfig10Core, &kRtInboundConfig10Core,
+      {8, &kMpcConfig8Core, &kRtControlConfig8Core, &kRtCallbackConfig8Core,
+       &kNrtLoggingConfig8Core, &kNrtCallbackConfig8Core},
+      {10, &kMpcConfig10Core, &kRtControlConfig10Core, &kRtCallbackConfig10Core,
        &kNrtLoggingConfig10Core, &kNrtCallbackConfig10Core},
-      {12, &kMpcConfig12Core, &kRtControlConfig12Core, &kRtInboundConfig12Core,
+      {12, &kMpcConfig12Core, &kRtControlConfig12Core, &kRtCallbackConfig12Core,
        &kNrtLoggingConfig12Core, &kNrtCallbackConfig12Core},
-      {14, &kMpcConfig14Core, &kRtControlConfig14Core, &kRtInboundConfig14Core,
+      {14, &kMpcConfig14Core, &kRtControlConfig14Core, &kRtCallbackConfig14Core,
        &kNrtLoggingConfig14Core, &kNrtCallbackConfig14Core},
-      {16, &kMpcConfig16Core, &kRtControlConfig16Core, &kRtInboundConfig16Core,
+      {16, &kMpcConfig16Core, &kRtControlConfig16Core, &kRtCallbackConfig16Core,
        &kNrtLoggingConfig16Core, &kNrtCallbackConfig16Core},
   }};
 
@@ -162,80 +160,77 @@ TEST(MpcThreadConfig, TierIsolationMonotonicity) {
   }
 }
 
-// Layout v3: rt_inbound and rt_outbound must share a single core on every
-// non-degraded tier (≥ 6) AND keep priority diff (inbound > outbound) so the
-// shared-core schedule cannot starve. 4-core is degraded — rt_outbound there
-// is CFS by design, so we skip it.
-TEST(MpcThreadConfig, LayoutV3SameCoreRtInboundOutbound) {
-  struct Pair {
-    const ThreadConfig* rt_inbound;
-    const ThreadConfig* rt_outbound;
+// Layout v4: rt_callback is the only RT inbound/outbound thread. Pin it to
+// Core 3 on every tier ≥ 6 (4-core fallback uses Core 2 — see thread_config.hpp).
+TEST(MpcThreadConfig, LayoutV4RtCallbackPinning) {
+  struct TierPin {
+    const ThreadConfig* rt_callback;
+    int expected_core;
     const char* label;
   };
 
-  const std::array<Pair, 6> pairs = {{
-      {&kRtInboundConfig, &kRtOutboundConfig, "6-core"},
-      {&kRtInboundConfig8Core, &kRtOutboundConfig8Core, "8-core"},
-      {&kRtInboundConfig10Core, &kRtOutboundConfig10Core, "10-core"},
-      {&kRtInboundConfig12Core, &kRtOutboundConfig12Core, "12-core"},
-      {&kRtInboundConfig14Core, &kRtOutboundConfig14Core, "14-core"},
-      {&kRtInboundConfig16Core, &kRtOutboundConfig16Core, "16-core"},
+  const std::array<TierPin, 7> tiers = {{
+      {&kRtCallbackConfig4Core, 2, "4-core"},
+      {&kRtCallbackConfig, 3, "6-core"},
+      {&kRtCallbackConfig8Core, 3, "8-core"},
+      {&kRtCallbackConfig10Core, 3, "10-core"},
+      {&kRtCallbackConfig12Core, 3, "12-core"},
+      {&kRtCallbackConfig14Core, 3, "14-core"},
+      {&kRtCallbackConfig16Core, 3, "16-core"},
   }};
-  for (const auto& p : pairs) {
-    EXPECT_EQ(p.rt_inbound->cpu_core, p.rt_outbound->cpu_core)
-        << p.label << ": rt_inbound and rt_outbound must share a core (layout v3)";
-    EXPECT_GT(p.rt_inbound->sched_priority, p.rt_outbound->sched_priority)
-        << p.label << ": rt_inbound must outrank rt_outbound on the shared core";
+  for (const auto& t : tiers) {
+    EXPECT_EQ(t.rt_callback->cpu_core, t.expected_core)
+        << t.label << ": rt_callback must pin to Core " << t.expected_core;
+    EXPECT_EQ(t.rt_callback->sched_policy, SCHED_FIFO)
+        << t.label << ": rt_callback must be SCHED_FIFO (layout v4)";
+    EXPECT_EQ(t.rt_callback->sched_priority, 70)
+        << t.label << ": rt_callback must be FIFO 70 (layout v4)";
   }
 }
 
-// Layout v3: arm_driver and hand_driver must not collide with any RT
-// controller thread (rt_control / rt_inbound / rt_outbound / mpc_*). Tiers
-// ≥ 8 give each its own dedicated core; tiers below are degraded (4/6-core)
-// and may share with OS cores.
-TEST(MpcThreadConfig, LayoutV3ArmHandDriverDisjoint) {
+// Layout v4: arm_driver and hand_driver must not collide with any RT
+// controller thread (rt_control / rt_callback / mpc_*). Tiers ≥ 8 give each
+// its own dedicated core; tiers below are degraded (4/6-core) and may share
+// with OS cores.
+TEST(MpcThreadConfig, LayoutV4ArmHandDriverDisjoint) {
   struct TierDrivers {
     const char* label;
     const ThreadConfig* arm;
     const ThreadConfig* hand;
     const ThreadConfig* rt_control;
-    const ThreadConfig* rt_inbound;
-    const ThreadConfig* rt_outbound;
+    const ThreadConfig* rt_callback;
     const MpcThreadConfig* mpc;
     bool dedicated;  // tiers ≥ 8 expect arm/hand on dedicated cores
   };
 
   const std::array<TierDrivers, 7> tiers = {{
       {"4-core", &kArmDriverConfig4Core, &kHandDriverConfig4Core, &kRtControlConfig4Core,
-       &kRtInboundConfig4Core, &kRtOutboundConfig4Core, &kMpcConfig4Core, false},
-      {"6-core", &kArmDriverConfig, &kHandDriverConfig, &kRtControlConfig, &kRtInboundConfig,
-       &kRtOutboundConfig, &kMpcConfig6Core, false},
+       &kRtCallbackConfig4Core, &kMpcConfig4Core, false},
+      {"6-core", &kArmDriverConfig, &kHandDriverConfig, &kRtControlConfig, &kRtCallbackConfig,
+       &kMpcConfig6Core, false},
       {"8-core", &kArmDriverConfig8Core, &kHandDriverConfig8Core, &kRtControlConfig8Core,
-       &kRtInboundConfig8Core, &kRtOutboundConfig8Core, &kMpcConfig8Core, true},
+       &kRtCallbackConfig8Core, &kMpcConfig8Core, true},
       {"10-core", &kArmDriverConfig10Core, &kHandDriverConfig10Core, &kRtControlConfig10Core,
-       &kRtInboundConfig10Core, &kRtOutboundConfig10Core, &kMpcConfig10Core, true},
+       &kRtCallbackConfig10Core, &kMpcConfig10Core, true},
       {"12-core", &kArmDriverConfig12Core, &kHandDriverConfig12Core, &kRtControlConfig12Core,
-       &kRtInboundConfig12Core, &kRtOutboundConfig12Core, &kMpcConfig12Core, true},
+       &kRtCallbackConfig12Core, &kMpcConfig12Core, true},
       {"14-core", &kArmDriverConfig14Core, &kHandDriverConfig14Core, &kRtControlConfig14Core,
-       &kRtInboundConfig14Core, &kRtOutboundConfig14Core, &kMpcConfig14Core, true},
+       &kRtCallbackConfig14Core, &kMpcConfig14Core, true},
       {"16-core", &kArmDriverConfig16Core, &kHandDriverConfig16Core, &kRtControlConfig16Core,
-       &kRtInboundConfig16Core, &kRtOutboundConfig16Core, &kMpcConfig16Core, true},
+       &kRtCallbackConfig16Core, &kMpcConfig16Core, true},
   }};
   for (const auto& t : tiers) {
     if (!t.dedicated) {
       continue;  // 4/6-core: degraded, arm/hand may share with OS cores
     }
     EXPECT_NE(t.arm->cpu_core, t.rt_control->cpu_core) << t.label << ": arm shares rt_control core";
-    EXPECT_NE(t.arm->cpu_core, t.rt_inbound->cpu_core) << t.label << ": arm shares rt_inbound core";
-    EXPECT_NE(t.arm->cpu_core, t.rt_outbound->cpu_core)
-        << t.label << ": arm shares rt_outbound core";
+    EXPECT_NE(t.arm->cpu_core, t.rt_callback->cpu_core)
+        << t.label << ": arm shares rt_callback core";
     EXPECT_NE(t.arm->cpu_core, t.mpc->main.cpu_core) << t.label << ": arm shares mpc_main core";
     EXPECT_NE(t.hand->cpu_core, t.rt_control->cpu_core)
         << t.label << ": hand shares rt_control core";
-    EXPECT_NE(t.hand->cpu_core, t.rt_inbound->cpu_core)
-        << t.label << ": hand shares rt_inbound core";
-    EXPECT_NE(t.hand->cpu_core, t.rt_outbound->cpu_core)
-        << t.label << ": hand shares rt_outbound core";
+    EXPECT_NE(t.hand->cpu_core, t.rt_callback->cpu_core)
+        << t.label << ": hand shares rt_callback core";
     EXPECT_NE(t.hand->cpu_core, t.mpc->main.cpu_core) << t.label << ": hand shares mpc_main core";
     for (int i = 0; i < t.mpc->num_workers; ++i) {
       const int worker_core = t.mpc->workers[static_cast<std::size_t>(i)].cpu_core;
@@ -307,11 +302,11 @@ TEST(MpcThreadConfig, LayoutV3ValidatorCatchesArmHandCollision) {
   }
 
   SystemThreadConfigs bad = SelectThreadConfigs();
-  // Force arm_driver onto rt_inbound's core — a clear violation of the
+  // Force arm_driver onto rt_callback's core — a clear violation of the
   // Phase 5 disjointness rule.
-  bad.arm_driver.cpu_core = bad.rt_inbound.cpu_core;
+  bad.arm_driver.cpu_core = bad.rt_callback.cpu_core;
   const std::string err = ValidateSystemThreadConfigs(bad);
-  EXPECT_FALSE(err.empty()) << "Validator missed arm_driver/rt_inbound core collision";
+  EXPECT_FALSE(err.empty()) << "Validator missed arm_driver/rt_callback core collision";
   EXPECT_NE(err.find("arm_driver"), std::string::npos)
       << "Error string should name arm_driver, got: " << err;
 }

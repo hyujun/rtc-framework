@@ -640,11 +640,10 @@ void RtControllerNode::CreateDeviceBackends() {
       }
     });
 
-    // Inject cb_group_rt_inbound_ so backend state-lane subs (joint /
-    // motor / sensor) are dispatched on the rt_inbound executor (FIFO 70),
-    // matching the controller↔hardware RT boundary defined in
-    // `~/.claude/plans/arm-hand-core-allocation.md` (Phase 3).
-    backend->Configure(this, cfg, cb_group_rt_inbound_);
+    // Inject cb_group_rt_callback_ so backend state-lane subs (joint /
+    // motor / sensor) are dispatched on the rt_callback executor (FIFO 70,
+    // Core 3), matching the controller↔hardware RT boundary (layout v4).
+    backend->Configure(this, cfg, cb_group_rt_callback_);
 
     // Derive DeviceCapability bitmask from backend feature set + sensor layout.
     // RT loop uses this to skip whole memcpy blocks per slot.

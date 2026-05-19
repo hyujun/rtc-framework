@@ -99,7 +99,7 @@ struct CalibrationStatusSnapshot {
 // in SystemThreadConfigs prior to the SSoT cleanup). cpu_core = -1 means the
 // receive thread inherits whatever affinity the launch script's process-level
 // `taskset` set on the hand_driver process; SCHED_FIFO 65 preserves the prior
-// priority hierarchy (rt_inbound 70 > hand UDP 65 > mpc_main 60).
+// priority hierarchy (rt_callback 70 > hand UDP 65 > mpc_main 60).
 inline const rtc::ThreadConfig kHandUdpRecvConfig{.cpu_core = -1,
                                                   .sched_policy = SCHED_FIFO,
                                                   .sched_priority = 65,

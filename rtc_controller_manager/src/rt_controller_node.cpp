@@ -39,13 +39,8 @@ RtControllerNode::~RtControllerNode() {
   // Safety net — idempotent cleanup in case lifecycle callbacks were not
   // invoked (e.g. SIGTERM without graceful shutdown).
   StopRtLoop();
-  StopPublishLoop();
   StopNrtPublishLoop();
 
-  if (publish_eventfd_ >= 0) {
-    close(publish_eventfd_);
-    publish_eventfd_ = -1;
-  }
   if (nrt_publish_eventfd_ >= 0) {
     close(nrt_publish_eventfd_);
     nrt_publish_eventfd_ = -1;
@@ -61,7 +56,7 @@ std::filesystem::path RtControllerNode::ResolveAndSetupSessionDir() {
 // ── CallbackGroup creation
 // ────────────────────────────────────────────────────
 void RtControllerNode::CreateCallbackGroups() {
-  cb_group_rt_inbound_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  cb_group_rt_callback_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cb_group_nrt_logging_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   cb_group_nrt_callback_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 }
@@ -95,14 +90,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   ExposeTopicParameters();
   CreateTimers();
 
-  // eventfd for RT→publish thread wakeup (non-blocking to avoid RT stalls)
-  publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
-  if (publish_eventfd_ < 0) {
-    RCLCPP_WARN(get_logger(), "eventfd() failed: publish thread will use polling fallback");
-  }
-  // Separate eventfd for the controller-owned non-RT publish lane (Phase 2
-  // of thread-layout-v3 sprint). Independent wake so the rt_outbound thread
-  // and the nrt_callback thread can drain their lanes without coupling.
+  // eventfd for RT→nrt-publish thread wakeup (non-blocking to avoid RT
+  // stalls). Layout v4: actuator command lane is inline in the rt_loop, so
+  // only the controller-owned non-RT publish lane needs an SPSC + eventfd.
   nrt_publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
   if (nrt_publish_eventfd_ < 0) {
     RCLCPP_WARN(get_logger(), "eventfd() failed: nrt publish thread will use polling fallback");
@@ -171,15 +161,15 @@ RtControllerNode::CallbackReturn RtControllerNode::on_activate(
 
   const auto cfgs = urtc::SelectThreadConfigs();
   StartRtLoop(cfgs.rt_control);
-  StartPublishLoop(cfgs.rt_outbound);
-  // Controller-owned non-RT publish lane (Phase 2 of thread-layout-v3
-  // sprint): drains nrt_publish_buffer_ on the nrt_callback core
-  // (SCHED_OTHER nice 0) and forwards controller.PublishNonRtSnapshot.
+  // Controller-owned non-RT publish lane: drains nrt_publish_buffer_ on the
+  // nrt_callback core (SCHED_OTHER nice 0) and forwards
+  // controller.PublishNonRtSnapshot. The actuator command lane is inline in
+  // ControlLoop() since layout v4 — no separate publish thread.
   StartNrtPublishLoop(cfgs.nrt_callback);
 
   RCLCPP_INFO(get_logger(),
               "RtControllerNode active — initial controller '%s', RT loop + "
-              "publish offload started",
+              "nrt publish offload started",
               controllers_[static_cast<std::size_t>(initial_idx)]->Name().data());
 
   return CallbackReturn::SUCCESS;
@@ -190,7 +180,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
   RCLCPP_INFO(get_logger(), "Deactivating RtControllerNode...");
 
   StopRtLoop();
-  StopPublishLoop();
   StopNrtPublishLoop();
 
   // Deactivate the active controller after the publish threads have stopped
@@ -242,11 +231,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
 
   // Reverse order of on_configure:
 
-  // 7. eventfds
-  if (publish_eventfd_ >= 0) {
-    close(publish_eventfd_);
-    publish_eventfd_ = -1;
-  }
+  // 7. eventfd (nrt publish lane only — actuator lane is inline)
   if (nrt_publish_eventfd_ >= 0) {
     close(nrt_publish_eventfd_);
     nrt_publish_eventfd_ = -1;
@@ -330,14 +315,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
 
   TriggerGlobalEstop("lifecycle_error");
   StopRtLoop();
-  StopPublishLoop();
   StopNrtPublishLoop();
 
   // Full cleanup for recovery to Unconfigured state
-  if (publish_eventfd_ >= 0) {
-    close(publish_eventfd_);
-    publish_eventfd_ = -1;
-  }
   if (nrt_publish_eventfd_ >= 0) {
     close(nrt_publish_eventfd_);
     nrt_publish_eventfd_ = -1;

@@ -20,17 +20,18 @@
 
 Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_config.hpp` (`SystemThreadConfigs` 정의 + `SelectThreadConfigs()` core-tier 분기). 4/6/8/10/12/14/16-core 레이아웃을 자동 선택. 문서엔 *불변 원칙*만 박는다.
 
-**RT thread 정의 (layout v3)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 즉 `rt_control` (정기 tick), `rt_inbound` (backend state sub 처리), `rt_outbound` (backend.WriteCommand 송출) — 셋이 SCHED_FIFO 로 묶이는 그룹이다. 다른 thread (`nrt_callback`, `nrt_logging`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`) 는 RT 가 아니다 (mpc_main/workers 는 별도 RT 그룹 — controller 가 producer/consumer 양쪽).
+**RT thread 정의 (layout v4)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 즉 `rt_control` (정기 tick + inline actuator WriteCommand) 과 `rt_callback` (backend state sub 처리) — 둘이 SCHED_FIFO 로 묶이는 그룹이다. 다른 thread (`nrt_callback`, `nrt_logging`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`) 는 RT 가 아니다 (mpc_main/workers 는 별도 RT 그룹 — controller 가 producer/consumer 양쪽).
 
 **RT priority hierarchy**:
 
 ```
-90 rt_control  >  70 rt_inbound  >  65 rt_outbound  >  60 mpc_main  >  55 mpc_workers
+90 rt_control  >  70 rt_callback  >  60 mpc_main  >  55 mpc_workers
 ```
 
-- **Core 0-1 reserved** for OS / DDS / IRQ + nrt_logging (Core 0) + nrt_callback (Core 1, ≥ 8-core tier; 6-core 는 Core 0 공유)
-- **rt_inbound + rt_outbound same-core**: v3 의 핵심 — Core 3 에 같이 핀, priority diff 70 vs 65 가 rt_inbound 의 rt_outbound 선점을 보장 (starvation 없음). 4-core fallback 만 rt_outbound 를 CFS 로 떨어뜨려 starvation 회피
-- **MPC main < rt_inbound**: sensor callback (rt_inbound) 이 long MPC solve 를 항상 preempt
+- **Core 0 reserved** for OS / nrt_logging; **Core 1** for nrt_callback (≥ 8-core tier; 6-core 는 Core 0 공유)
+- **rt_callback + DDS co-pin on Core 3**: v4 의 핵심 — `rt_callback` thread (FIFO 70) 이 DDS receive thread (CFS) 와 같은 코어를 공유. launch-time taskset 이 controller process 의 비-RT thread (DDS / aux) 만 Core 3 으로 다시 핀해서 cache locality 확보. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음
+- **Actuator command publish inline**: `rt_control` thread (Core 2 FIFO 90) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). v3 의 별도 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거
+- **MPC main < rt_callback**: sensor callback (rt_callback) 이 long MPC solve 를 항상 preempt
 - **hand-private UDP receive thread** (FIFO 65, hand_driver 프로세스 내부) 는 launch-level taskset 으로 affinity 상속 — `SystemThreadConfigs` 에 필드 없음. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1) 기본값으로 caller 가 명시 핀
 - **arm_driver / hand_driver / sim_thread / viewer** 는 process-level taskset pin (SCHED_OTHER, priority 0) — launch script 가 적용. sim_thread/viewer 의 cpu_core=-1 sentinel 은 "no pin" (cpu_shield --sim 모드에서 격리 해제된 코어 사용)
 
@@ -62,26 +63,26 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 | Callback | Tier | Resources |
 |----------|------|-----------|
 | `on_configure` | 1 | Callback groups, parameters, controllers, publishers/subscribers, timers, eventfd |
-| `on_activate` | 2 | `SelectThreadConfigs()` -> `StartRtLoop()` + `StartPublishLoop()` |
-| `on_deactivate` | -- | Stop RT / rt_outbound / nrt_publish threads, clear E-STOP, reset init state |
+| `on_activate` | 2 | `SelectThreadConfigs()` -> `StartRtLoop()` + `StartNrtPublishLoop()` |
+| `on_deactivate` | -- | Stop RT / nrt_publish threads, clear E-STOP, reset init state |
 | `on_cleanup` | -- | Reverse of `on_configure` (all `.reset()` / `.clear()`) |
 | `on_error` | -- | `TriggerGlobalEstop("lifecycle_error")`, stop threads, full cleanup -> SUCCESS |
 
 **Safety publishers** (`estop_pub_`, `active_ctrl_name_pub_`) use standalone `rclcpp::create_publisher` -- active regardless of lifecycle state.
 
-**RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to dedicated rt_inbound / nrt_logging / nrt_callback executors per the matrix below.
+**RtControllerMain** uses a 3-phase executor: (1) lifecycle_executor spins for configure/activate, (2) polls until Active, (3) switches to dedicated rt_callback / nrt_logging / nrt_callback executors per the matrix below.
 
 **callback_group → executor binding** (see [rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp)):
 
 | Executor | Thread config | Callback groups |
 |---|---|---|
-| `rt_inbound_executor` | `cfgs.rt_inbound` (SCHED_FIFO 70, Core 3) | `cb_group_rt_inbound_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호) |
+| `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 3) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to Core 3 via launch taskset |
 | `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, Core 0) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log |
 | `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, Core 1 on ≥ 8-core / Core 0 on 6-core) | `cb_group_nrt_callback_` (lifecycle services + CM-owned `target_sub_` — RobotTarget 은 외부 의도 입력, spec §0d 에 따라 RT 경계 밖) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
 
-**DeviceBackend cb_group injection 의무 (Phase 3)**: 모든 backend 구현은 `Configure(node, cfg, state_cb_group)` 가 받은 `state_cb_group` 을 자신이 만드는 모든 state/motor/sensor subscription 의 `SubscriptionOptions.callback_group` 에 적용해야 한다. ARCH-3 두 번째 구현 이후 silent default-group fallback 회귀를 막기 위해 backend integration test 가 `get_actual_callback_group() != nullptr` 을 assert 한다 (Phase 8 SubscriptionOptions invariant test). Reentrant cb_group 금지 — SeqLock writer 가 단일 thread 임을 보장해야 함.
+**DeviceBackend cb_group injection 의무**: 모든 backend 구현은 `Configure(node, cfg, state_cb_group)` 가 받은 `state_cb_group` 을 자신이 만드는 모든 state/motor/sensor subscription 의 `SubscriptionOptions.callback_group` 에 적용해야 한다. ARCH-3 두 번째 구현 이후 silent default-group fallback 회귀를 막기 위해 backend integration test 가 `get_actual_callback_group() != nullptr` 을 assert 한다. Reentrant cb_group 금지 — SeqLock writer 가 단일 thread 임을 보장해야 함.
 
-- **ControlLoop** (configurable rate, default 500 Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> SPSC publish + log
+- **ControlLoop** (configurable rate, default 500 Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> inline `DeviceBackend.WriteCommand` (actuator publish) + SPSC push (nrt-publish lane) + log
 - **CheckTimeouts** (50Hz): per-group device timeout -> `TriggerGlobalEstop("{group}_timeout")`
 - **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout
 - **TriggerGlobalEstop**: idempotent (`compare_exchange_strong`), propagates to all controllers
@@ -89,9 +90,9 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 ## Data Flow
 
 ```
-[Robot HW / MuJoCo Sim] --JointState--> [rt_inbound (FIFO 70)] --SeqLock--> [rt_control: RT loop @ control_rate]
-    +--SPSC (cap 512)--> [rt_outbound (FIFO 65)] --> backend.WriteCommand
-    |                                            +-> /rtc_cm/{group}/joint_states
+[Robot HW / MuJoCo Sim] --JointState--> [rt_callback (FIFO 70)] --SeqLock--> [rt_control: RT loop @ control_rate]
+    +--inline--> backend.WriteCommand (actuator command, RT-safe)
+    |        +-> /rtc_cm/{group}/joint_states
     +--SPSC (cap 16)--> [nrt_publish_thread (CFS)] --> controller.PublishNonRtSnapshot
     |                                                  (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot)
     +--SPSC--> [nrt_logging_executor (CFS -5)] --> CSV (timing + per-device state + sensor)
@@ -113,7 +114,7 @@ RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nr
 
 외부 도구 (BT, GUIs, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 구독 → switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire.
 
-구현: `rtc::TopicOwnership` enum (`rtc_controllers/topic_config.hpp`). CM 은 controller-owned sub/pub 을 configure 시 skip; `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임. RT path 의 actuator 송출 (`rt_outbound`, cap 512) 과 별도 lane — Phase 2 split 으로 long-publish 가 actuator latency 를 막지 못함.
+구현: `rtc::TopicOwnership` enum (`rtc_controllers/topic_config.hpp`). CM 은 controller-owned sub/pub 을 configure 시 skip; `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
 
 Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,device,sim,plots,motions}/`. Per-controller logs 는 `controllers/<config_key>/` (plural), CM RT loop logs 는 `controller/` (singular). See `feedback_session_log_dir_convention` memory. Session root resolution (4-tier chain) 는 `rtc_base/logging/session_dir.hpp` + `rtc_tools.utils.session_dir` 가 SSoT.
 

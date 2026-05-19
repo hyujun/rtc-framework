@@ -22,7 +22,7 @@ struct ThreadConfig {
 // `num_workers` entries of `workers` are valid.
 //
 // Invariants (checked by ValidateSystemThreadConfigs):
-//   * `main.sched_priority` < rt_inbound thread priority (rt_inbound preempts MPC).
+//   * `main.sched_priority` < rt_callback thread priority (rt_callback preempts MPC).
 //   * Each worker `sched_priority` ≤ `main.sched_priority` (workers never
 //     preempt the main solve).
 //   * `0 ≤ num_workers ≤ 2` (matches 12-/16-core capacity).
@@ -35,15 +35,18 @@ struct MpcThreadConfig {
   std::array<ThreadConfig, kMpcMaxWorkers> workers{};
 };
 
-// ── RT priority hierarchy (layout v3) ───────────────────────────────────────
-//   90 (rt_control)  > 70 (rt_inbound) > 65 (rt_outbound) >
-//   60 (mpc_main)    > 55 (mpc_workers)
+// ── RT priority hierarchy (layout v4) ───────────────────────────────────────
+//   90 (rt_control)  > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers)
 //
-// rt_inbound and rt_outbound share a single core (Core 3 on every tier
-// except 4-core fallback). Priority diff (70 vs 65) guarantees rt_inbound
-// preempts rt_outbound — no starvation. Hand-private UDP receive thread
-// (priority 65) lives inside the hand_driver process and inherits affinity
-// from the launch-level taskset, so it is NOT represented in SystemThreadConfigs.
+// Layout v4 unifies former rt_inbound (FIFO 70) + rt_outbound (FIFO 65) into
+// a single rt_callback thread (Core 3 on every tier except 4-core fallback,
+// FIFO 70). The rt_outbound jthread + publish_buffer_ SPSC + eventfd wakeup
+// are removed; rt_control performs DeviceBackend.WriteCommand inline in the
+// rt_loop tick (RT-safe contract on backends). DDS receive thread is
+// co-pinned to the same core (Core 3) via launch-time taskset for cache
+// locality. Hand-private UDP receive thread (priority 65) lives inside the
+// hand_driver process and inherits affinity from the launch-level taskset,
+// so it is NOT represented in SystemThreadConfigs.
 //
 // process-level threads (arm_driver, hand_driver, sim_thread, viewer) are
 // SCHED_OTHER prio 0; only their cpu_core is consumed (taskset pin), all
@@ -59,7 +62,7 @@ struct MpcThreadConfig {
 // ── 4-core fallback (degraded — no deterministic RT guarantee) ──────────────
 // Core 0:   OS / DDS / IRQ + nrt_logging + nrt_callback + arm/hand_driver
 // Core 1:   rt_control                     FIFO 90
-// Core 2:   rt_inbound + rt_outbound       FIFO 70 / 65
+// Core 2:   rt_callback                    FIFO 70
 // Core 3:   mpc_main (SCHED_OTHER nice -5 — degraded)
 
 inline const ThreadConfig kRtControlConfig4Core{.cpu_core = 1,
@@ -68,21 +71,11 @@ inline const ThreadConfig kRtControlConfig4Core{.cpu_core = 1,
                                                 .nice_value = 0,
                                                 .name = "rt_control"};
 
-inline const ThreadConfig kRtInboundConfig4Core{.cpu_core = 2,
-                                                .sched_policy = SCHED_FIFO,
-                                                .sched_priority = 70,
-                                                .nice_value = 0,
-                                                .name = "rt_inbound"};
-
-// Phase 5 4-core: keep rt_outbound on SCHED_OTHER. The "rt_outbound.priority
-// < rt_inbound.priority" invariant in ValidateSystemThreadConfigs is gated on
-// both being RT, so CFS rt_outbound here is intentional and skipped by the
-// gate. mpc_main is also CFS for the same reason.
-inline const ThreadConfig kRtOutboundConfig4Core{.cpu_core = 2,
-                                                 .sched_policy = SCHED_OTHER,
-                                                 .sched_priority = 0,
+inline const ThreadConfig kRtCallbackConfig4Core{.cpu_core = 2,
+                                                 .sched_policy = SCHED_FIFO,
+                                                 .sched_priority = 70,
                                                  .nice_value = 0,
-                                                 .name = "rt_outbound"};
+                                                 .name = "rt_callback"};
 
 inline const MpcThreadConfig kMpcConfig4Core{
     .main =
@@ -137,7 +130,7 @@ inline const ThreadConfig kViewerConfig4Core{.cpu_core = -1,
 // Core 0:  OS / DDS / IRQ + nrt_logging + nrt_callback
 // Core 1:  arm_driver + hand_driver (shared, degraded)
 // Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_inbound + rt_outbound         FIFO 70 / 65   ← v3 same-core
+// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
 // Core 4:  mpc_main                         FIFO 60
 // Core 5:  spare
 //
@@ -150,17 +143,11 @@ inline const ThreadConfig kRtControlConfig{.cpu_core = 2,
                                            .nice_value = 0,
                                            .name = "rt_control"};
 
-inline const ThreadConfig kRtInboundConfig{.cpu_core = 3,
-                                           .sched_policy = SCHED_FIFO,
-                                           .sched_priority = 70,
-                                           .nice_value = 0,
-                                           .name = "rt_inbound"};
-
-inline const ThreadConfig kRtOutboundConfig{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig{.cpu_core = 3,
                                             .sched_policy = SCHED_FIFO,
-                                            .sched_priority = 65,
+                                            .sched_priority = 70,
                                             .nice_value = 0,
-                                            .name = "rt_outbound"};
+                                            .name = "rt_callback"};
 
 inline const MpcThreadConfig kMpcConfig6Core{
     .main =
@@ -213,11 +200,11 @@ inline const ThreadConfig kViewerConfig{.cpu_core = -1,
                                         .nice_value = 0,
                                         .name = "viewer"};
 
-// ── 8-core configuration (layout v3) ────────────────────────────────────────
-// Core 0:  OS / DDS / IRQ + nrt_logging
+// ── 8-core configuration (layout v4) ────────────────────────────────────────
+// Core 0:  OS / nrt_logging
 // Core 1:  nrt_callback
 // Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_inbound + rt_outbound         FIFO 70 / 65   ← v3 same-core
+// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
 // Core 4:  mpc_main                         FIFO 60
 // Core 5:  hand_driver (dedicated)
 // Core 6:  arm_driver  (dedicated)
@@ -229,17 +216,11 @@ inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 2,
                                                 .nice_value = 0,
                                                 .name = "rt_control"};
 
-inline const ThreadConfig kRtInboundConfig8Core{.cpu_core = 3,
-                                                .sched_policy = SCHED_FIFO,
-                                                .sched_priority = 70,
-                                                .nice_value = 0,
-                                                .name = "rt_inbound"};
-
-inline const ThreadConfig kRtOutboundConfig8Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig8Core{.cpu_core = 3,
                                                  .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 65,
+                                                 .sched_priority = 70,
                                                  .nice_value = 0,
-                                                 .name = "rt_outbound"};
+                                                 .name = "rt_callback"};
 
 inline const MpcThreadConfig kMpcConfig8Core{
     .main =
@@ -290,11 +271,11 @@ inline const ThreadConfig kViewerConfig8Core{.cpu_core = -1,
                                              .nice_value = 0,
                                              .name = "viewer"};
 
-// ── 10-core configuration (layout v3) ───────────────────────────────────────
-// Core 0:  OS / DDS / IRQ + nrt_logging
+// ── 10-core configuration (layout v4) ───────────────────────────────────────
+// Core 0:  OS / nrt_logging
 // Core 1:  nrt_callback
 // Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_inbound + rt_outbound         FIFO 70 / 65   ← v3 same-core
+// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
 // Core 4:  mpc_main                         FIFO 60
 // Core 5:  mpc_worker_0                     FIFO 55
 // Core 6:  hand_driver
@@ -308,17 +289,11 @@ inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtInboundConfig10Core{.cpu_core = 3,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 70,
-                                                 .nice_value = 0,
-                                                 .name = "rt_inbound"};
-
-inline const ThreadConfig kRtOutboundConfig10Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig10Core{.cpu_core = 3,
                                                   .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 65,
+                                                  .sched_priority = 70,
                                                   .nice_value = 0,
-                                                  .name = "rt_outbound"};
+                                                  .name = "rt_callback"};
 
 inline const MpcThreadConfig kMpcConfig10Core{
     .main =
@@ -379,11 +354,11 @@ inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 12-core configuration (primary target, layout v3) ───────────────────────
-// Core 0:  OS / DDS / IRQ + nrt_logging
+// ── 12-core configuration (primary target, layout v4) ───────────────────────
+// Core 0:  OS / nrt_logging
 // Core 1:  nrt_callback
 // Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_inbound + rt_outbound         FIFO 70 / 65   ← v3 same-core
+// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
 // Core 4:  mpc_main                         FIFO 60
 // Core 5:  mpc_worker_0                     FIFO 55
 // Core 6:  mpc_worker_1                     FIFO 55
@@ -399,17 +374,11 @@ inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtInboundConfig12Core{.cpu_core = 3,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 70,
-                                                 .nice_value = 0,
-                                                 .name = "rt_inbound"};
-
-inline const ThreadConfig kRtOutboundConfig12Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig12Core{.cpu_core = 3,
                                                   .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 65,
+                                                  .sched_priority = 70,
                                                   .nice_value = 0,
-                                                  .name = "rt_outbound"};
+                                                  .name = "rt_callback"};
 
 inline const MpcThreadConfig kMpcConfig12Core{
     .main =
@@ -476,11 +445,11 @@ inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 14-core configuration (layout v3) ───────────────────────────────────────
-// Core 0:  OS / DDS / IRQ + nrt_logging
+// ── 14-core configuration (layout v4) ───────────────────────────────────────
+// Core 0:  OS / nrt_logging
 // Core 1:  nrt_callback
 // Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_inbound + rt_outbound         FIFO 70 / 65   ← v3 same-core
+// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
 // Core 4:  mpc_main                         FIFO 60
 // Core 5:  mpc_worker_0                     FIFO 55
 // Core 6:  mpc_worker_1                     FIFO 55
@@ -496,17 +465,11 @@ inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtInboundConfig14Core{.cpu_core = 3,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 70,
-                                                 .nice_value = 0,
-                                                 .name = "rt_inbound"};
-
-inline const ThreadConfig kRtOutboundConfig14Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig14Core{.cpu_core = 3,
                                                   .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 65,
+                                                  .sched_priority = 70,
                                                   .nice_value = 0,
-                                                  .name = "rt_outbound"};
+                                                  .name = "rt_callback"};
 
 inline const MpcThreadConfig kMpcConfig14Core{
     .main =
@@ -573,11 +536,11 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 16-core configuration (cset shield 4-8 retained, layout v3) ─────────────
-// Core 0:   OS / DDS / IRQ + nrt_logging
+// ── 16-core configuration (cset shield 4-8 retained, layout v4) ─────────────
+// Core 0:   OS / nrt_logging
 // Core 1:   nrt_callback
 // Core 2:   rt_control                      FIFO 90
-// Core 3:   rt_inbound + rt_outbound        FIFO 70 / 65   ← v3 same-core
+// Core 3:   rt_callback + DDS recv          FIFO 70 (RT) / CFS (DDS)
 // Core 4-8: cset shield "user" (retained from prior layout)
 // Core 9:   mpc_main                        FIFO 60
 // Core 10:  mpc_worker_0                    FIFO 55
@@ -593,17 +556,11 @@ inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 2,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtInboundConfig16Core{.cpu_core = 3,
-                                                 .sched_policy = SCHED_FIFO,
-                                                 .sched_priority = 70,
-                                                 .nice_value = 0,
-                                                 .name = "rt_inbound"};
-
-inline const ThreadConfig kRtOutboundConfig16Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig16Core{.cpu_core = 3,
                                                   .sched_policy = SCHED_FIFO,
-                                                  .sched_priority = 65,
+                                                  .sched_priority = 70,
                                                   .nice_value = 0,
-                                                  .name = "rt_outbound"};
+                                                  .name = "rt_callback"};
 
 inline const MpcThreadConfig kMpcConfig16Core{
     .main =

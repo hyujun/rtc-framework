@@ -5,7 +5,7 @@
 // Contract under test: every state-lane subscription a backend creates (joint
 // / motor / sensor) MUST attach itself to the supplied `state_cb_group` via
 // `rclcpp::SubscriptionOptions::callback_group`. In production this routes
-// hardware/sim state callbacks onto the rt_inbound thread (FIFO 70). If a
+// hardware/sim state callbacks onto the rt_callback thread (FIFO 70). If a
 // future fourth backend forgets the SubscriptionOptions plumbing, RCL silently
 // falls the subscription back onto the node's default callback group — a
 // regression invisible to build/test, only detectable via `ps -T` or runtime

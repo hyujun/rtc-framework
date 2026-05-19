@@ -594,39 +594,43 @@ inline int GetPhysicalCpuCount() noexcept {
 
 // Aggregated thread configs selected at runtime for all threads.
 //
-// Field naming (Phase 1 of thread-layout-v3 rename):
-//   * rt_inbound   = RT priority inbound callback dispatcher (was: sensor)
-//   * rt_outbound  = RT loop output forwarding — SPSC drain →
-//                    backend.WriteCommand on the controller↔hardware boundary
-//                    (was: publish; SCHED_FIFO 65 since Phase 4, one below
-//                    rt_inbound's 70 to maintain input-priority ordering)
+// Field naming (layout v4):
+//   * rt_callback  = single RT callback dispatcher thread (Core 3 FIFO 70).
+//                    Hosts the executor that dispatches state subscriptions
+//                    bound to the rt_callback callback group. Replaces the
+//                    former rt_inbound (FIFO 70) + rt_outbound (FIFO 65)
+//                    pair: actuator command publish is performed inline in
+//                    the rt_loop tick on rt_control (Core 2 FIFO 90), so
+//                    no separate output thread is required.
 //   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
-//                    non-RT-boundary subs (was: aux)
-//   * nrt_logging  = non-RT CSV drain (was: logging)
+//                    non-RT-boundary subs
+//   * nrt_logging  = non-RT CSV drain
 //
-// Phase 5 additions:
-//   * arm_driver / hand_driver = process-level affinity for external driver
-//                                processes (taskset pin at launch time, no
-//                                ApplyThreadConfig call). SCHED_OTHER prio 0.
-//   * sim_thread / viewer       = MuJoCo physics + GLFW rendering threads in
-//                                 sim mode. cpu_core may be -1 (no pinning;
-//                                 launch script releases the cpu_shield for
-//                                 MuJoCo). SCHED_OTHER prio 0.
-//   * Phase 5 also drops the `udp_recv` field. The hand UDP receive thread
-//     (RT priority 65) now lives privately inside udp_hand_controller and
-//     inherits affinity from the launch-level taskset on the hand_driver
-//     core. Generic UDP receivers using rtc_communication::Transceiver pick
-//     up the kRtUdpRecvConfig default (cpu_core = -1, caller pins explicitly).
+// Process-level pins (taskset at launch time, no ApplyThreadConfig call;
+// SCHED_OTHER prio 0):
+//   * arm_driver / hand_driver = external driver processes.
+//   * sim_thread / viewer      = MuJoCo physics + GLFW rendering threads in
+//                                sim mode. cpu_core may be -1 (no pinning;
+//                                launch script releases the cpu_shield for
+//                                MuJoCo).
+//
+// DDS receive thread (CycloneDDS / Fast-RTPS) is co-pinned to the rt_callback
+// core (Core 3) via launch-time taskset for cache locality. Its CFS policy is
+// preserved; the launch script pins only non-RT threads of the controller
+// process. The hand UDP receive thread (RT priority 65) lives privately
+// inside udp_hand_controller and inherits affinity from the launch-level
+// taskset on the hand_driver core. Generic UDP receivers using
+// rtc_communication::Transceiver pick up the kRtUdpRecvConfig default
+// (cpu_core = -1, caller pins explicitly).
 struct SystemThreadConfigs {
   ThreadConfig rt_control;
-  ThreadConfig rt_inbound;
-  ThreadConfig rt_outbound;  // RT output forwarding thread (Phase 4: SCHED_FIFO 65)
+  ThreadConfig rt_callback;
   ThreadConfig nrt_logging;
   ThreadConfig nrt_callback;
-  ThreadConfig arm_driver;   // Phase 5: external arm driver process pin (SCHED_OTHER)
-  ThreadConfig hand_driver;  // Phase 5: external hand driver process pin (SCHED_OTHER)
-  ThreadConfig sim_thread;   // Phase 5: MuJoCo physics thread (SCHED_OTHER, cpu_core may be -1)
-  ThreadConfig viewer;       // Phase 5: GLFW viewer thread     (SCHED_OTHER, cpu_core may be -1)
+  ThreadConfig arm_driver;   // external arm driver process pin (SCHED_OTHER)
+  ThreadConfig hand_driver;  // external hand driver process pin (SCHED_OTHER)
+  ThreadConfig sim_thread;   // MuJoCo physics thread (SCHED_OTHER, cpu_core may be -1)
+  ThreadConfig viewer;       // GLFW viewer thread     (SCHED_OTHER, cpu_core may be -1)
   MpcThreadConfig mpc;       // MPC main + optional workers
 };
 
@@ -646,8 +650,7 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
 
   // Validate each individual config
   errors += ValidateThreadConfig(configs.rt_control);
-  errors += ValidateThreadConfig(configs.rt_inbound);
-  errors += ValidateThreadConfig(configs.rt_outbound);
+  errors += ValidateThreadConfig(configs.rt_callback);
   errors += ValidateThreadConfig(configs.nrt_logging);
   errors += ValidateThreadConfig(configs.nrt_callback);
   // Process-level configs (arm_driver / hand_driver / sim_thread / viewer)
@@ -674,32 +677,15 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
       errors += "mpc.worker[" + std::to_string(i) + "] priority exceeds mpc.main; ";
     }
   }
-  // MPC main must not exceed rt_inbound priority — rt_inbound callbacks are hard
+  // MPC main must not exceed rt_callback priority — rt_callback callbacks are hard
   // real-time and must always preempt long MPC solves.
   if ((configs.mpc.main.sched_policy == SCHED_FIFO || configs.mpc.main.sched_policy == SCHED_RR) &&
-      (configs.rt_inbound.sched_policy == SCHED_FIFO ||
-       configs.rt_inbound.sched_policy == SCHED_RR) &&
-      configs.mpc.main.sched_priority >= configs.rt_inbound.sched_priority) {
+      (configs.rt_callback.sched_policy == SCHED_FIFO ||
+       configs.rt_callback.sched_policy == SCHED_RR) &&
+      configs.mpc.main.sched_priority >= configs.rt_callback.sched_priority) {
     errors += "mpc.main priority (" + std::to_string(configs.mpc.main.sched_priority) +
-              ") must be below rt_inbound priority (" +
-              std::to_string(configs.rt_inbound.sched_priority) + "); ";
-  }
-
-  // Phase 4 invariant: rt_outbound priority must be strictly below rt_inbound
-  // priority. Inbound DDS callbacks (joint_state / target / hand sensor) drive
-  // the RT control loop; the outbound SPSC drain must never preempt them.
-  // Layout v3 places both threads on the same core (priority queue 70 > 65),
-  // and this gate prevents accidental priority inversion when the layout
-  // expands further. Only meaningful when both threads are RT — degraded
-  // tiers (e.g. 4-core fallback) where one is CFS are not checked here.
-  if ((configs.rt_outbound.sched_policy == SCHED_FIFO ||
-       configs.rt_outbound.sched_policy == SCHED_RR) &&
-      (configs.rt_inbound.sched_policy == SCHED_FIFO ||
-       configs.rt_inbound.sched_policy == SCHED_RR) &&
-      configs.rt_outbound.sched_priority >= configs.rt_inbound.sched_priority) {
-    errors += "rt_outbound priority (" + std::to_string(configs.rt_outbound.sched_priority) +
-              ") must be below rt_inbound priority (" +
-              std::to_string(configs.rt_inbound.sched_priority) + "); ";
+              ") must be below rt_callback priority (" +
+              std::to_string(configs.rt_callback.sched_priority) + "); ";
   }
 
   // Collect all configs with names for conflict analysis. MPC main + up
@@ -711,15 +697,14 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
     const ThreadConfig* config;
   };
 
-  // Phase 5 layout: 5 fixed thread roles + 4 process-level pins (arm/hand,
+  // Layout v4: 4 fixed thread roles + 4 process-level pins (arm/hand,
   // sim/viewer) + mpc main + up to kMpcMaxWorkers. Process-level configs are
   // included so their cpu_core participates in the disjointness sweep below,
   // but their SCHED_OTHER policy means they cannot trigger an RT/RT
   // same-priority conflict (the only error condition).
-  const std::array<NamedConfig, 9 + 1 + kMpcMaxWorkers> all_configs = {{
+  const std::array<NamedConfig, 8 + 1 + kMpcMaxWorkers> all_configs = {{
       {"rt_control", &configs.rt_control},
-      {"rt_inbound", &configs.rt_inbound},
-      {"rt_outbound", &configs.rt_outbound},
+      {"rt_callback", &configs.rt_callback},
       {"nrt_logging", &configs.nrt_logging},
       {"nrt_callback", &configs.nrt_callback},
       {"arm_driver", &configs.arm_driver},
@@ -760,17 +745,17 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
     }
   }
 
-  // Phase 5 disjointness: arm_driver / hand_driver must not collide with any
-  // RT controller thread (rt_control / rt_inbound / rt_outbound / mpc_*).
+  // Disjointness: arm_driver / hand_driver must not collide with any RT
+  // controller thread (rt_control / rt_callback / mpc_*).
   // Same-core sharing between arm and hand is tolerated (6-core degraded mode
   // intentionally puts both on Core 1). sim_thread / viewer are excluded
   // because in sim mode the launch script releases the cpu_shield and lets
   // MuJoCo roam freely over the freed cores.
   auto is_rt_controller = [](const char* name) noexcept {
     // Lightweight: RT controller roles share the same compile-time names.
-    return std::string(name) == "rt_control" || std::string(name) == "rt_inbound" ||
-           std::string(name) == "rt_outbound" || std::string(name) == "mpc_main" ||
-           std::string(name) == "mpc_worker_0" || std::string(name) == "mpc_worker_1";
+    return std::string(name) == "rt_control" || std::string(name) == "rt_callback" ||
+           std::string(name) == "mpc_main" || std::string(name) == "mpc_worker_0" ||
+           std::string(name) == "mpc_worker_1";
   };
   for (const auto& driver_name : {std::string("arm_driver"), std::string("hand_driver")}) {
     const ThreadConfig* driver = nullptr;
@@ -805,53 +790,47 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
 // over-counting. Example: i7-8700 (6C/12T) correctly selects 6-core layout,
 // not 12-core.
 //
-// Layout v3 (Phase 5): rt_inbound and rt_outbound share a single core on
-// every tier above the 4-core fallback. process-level arm_driver/hand_driver
-// pins are claimed for tiers ≥ 8; smaller tiers fall back to shared cores.
-// MuJoCo sim_thread is pinned on tiers ≥ 10; smaller tiers leave it
-// unpinned (cpu_core = -1) and rely on cpu_shield --sim releasing the
-// shield so MuJoCo can roam under CFS.
+// Layout v4: rt_callback (Core 3 FIFO 70) unifies former rt_inbound +
+// rt_outbound on every tier above the 4-core fallback. Process-level
+// arm_driver/hand_driver pins are claimed for tiers ≥ 8; smaller tiers fall
+// back to shared cores. MuJoCo sim_thread is pinned on tiers ≥ 10; smaller
+// tiers leave it unpinned (cpu_core = -1) and rely on cpu_shield --sim
+// releasing the shield so MuJoCo can roam under CFS.
 inline SystemThreadConfigs SelectThreadConfigs() noexcept {
   const int ncpu = GetPhysicalCpuCount();
   if (ncpu >= 16) {
-    return {kRtControlConfig16Core,  kRtInboundConfig16Core,   kRtOutboundConfig16Core,
-            kNrtLoggingConfig16Core, kNrtCallbackConfig16Core, kArmDriverConfig16Core,
-            kHandDriverConfig16Core, kSimThreadConfig16Core,   kViewerConfig16Core,
-            kMpcConfig16Core};
+    return {kRtControlConfig16Core,   kRtCallbackConfig16Core, kNrtLoggingConfig16Core,
+            kNrtCallbackConfig16Core, kArmDriverConfig16Core,  kHandDriverConfig16Core,
+            kSimThreadConfig16Core,   kViewerConfig16Core,     kMpcConfig16Core};
   }
   if (ncpu >= 14) {
-    return {kRtControlConfig14Core,  kRtInboundConfig14Core,   kRtOutboundConfig14Core,
-            kNrtLoggingConfig14Core, kNrtCallbackConfig14Core, kArmDriverConfig14Core,
-            kHandDriverConfig14Core, kSimThreadConfig14Core,   kViewerConfig14Core,
-            kMpcConfig14Core};
+    return {kRtControlConfig14Core,   kRtCallbackConfig14Core, kNrtLoggingConfig14Core,
+            kNrtCallbackConfig14Core, kArmDriverConfig14Core,  kHandDriverConfig14Core,
+            kSimThreadConfig14Core,   kViewerConfig14Core,     kMpcConfig14Core};
   }
   if (ncpu >= 12) {
-    return {kRtControlConfig12Core,  kRtInboundConfig12Core,   kRtOutboundConfig12Core,
-            kNrtLoggingConfig12Core, kNrtCallbackConfig12Core, kArmDriverConfig12Core,
-            kHandDriverConfig12Core, kSimThreadConfig12Core,   kViewerConfig12Core,
-            kMpcConfig12Core};
+    return {kRtControlConfig12Core,   kRtCallbackConfig12Core, kNrtLoggingConfig12Core,
+            kNrtCallbackConfig12Core, kArmDriverConfig12Core,  kHandDriverConfig12Core,
+            kSimThreadConfig12Core,   kViewerConfig12Core,     kMpcConfig12Core};
   }
   if (ncpu >= 10) {
-    return {kRtControlConfig10Core,  kRtInboundConfig10Core,   kRtOutboundConfig10Core,
-            kNrtLoggingConfig10Core, kNrtCallbackConfig10Core, kArmDriverConfig10Core,
-            kHandDriverConfig10Core, kSimThreadConfig10Core,   kViewerConfig10Core,
-            kMpcConfig10Core};
+    return {kRtControlConfig10Core,   kRtCallbackConfig10Core, kNrtLoggingConfig10Core,
+            kNrtCallbackConfig10Core, kArmDriverConfig10Core,  kHandDriverConfig10Core,
+            kSimThreadConfig10Core,   kViewerConfig10Core,     kMpcConfig10Core};
   }
   if (ncpu >= 8) {
-    return {kRtControlConfig8Core,  kRtInboundConfig8Core,   kRtOutboundConfig8Core,
-            kNrtLoggingConfig8Core, kNrtCallbackConfig8Core, kArmDriverConfig8Core,
-            kHandDriverConfig8Core, kSimThreadConfig8Core,   kViewerConfig8Core,
-            kMpcConfig8Core};
+    return {kRtControlConfig8Core,   kRtCallbackConfig8Core, kNrtLoggingConfig8Core,
+            kNrtCallbackConfig8Core, kArmDriverConfig8Core,  kHandDriverConfig8Core,
+            kSimThreadConfig8Core,   kViewerConfig8Core,     kMpcConfig8Core};
   }
   if (ncpu >= 6) {
-    return {kRtControlConfig,   kRtInboundConfig, kRtOutboundConfig, kNrtLoggingConfig,
-            kNrtCallbackConfig, kArmDriverConfig, kHandDriverConfig, kSimThreadConfig,
-            kViewerConfig,      kMpcConfig6Core};
+    return {kRtControlConfig,   kRtCallbackConfig, kNrtLoggingConfig,
+            kNrtCallbackConfig, kArmDriverConfig,  kHandDriverConfig,
+            kSimThreadConfig,   kViewerConfig,     kMpcConfig6Core};
   }
-  return {kRtControlConfig4Core,  kRtInboundConfig4Core,   kRtOutboundConfig4Core,
-          kNrtLoggingConfig4Core, kNrtCallbackConfig4Core, kArmDriverConfig4Core,
-          kHandDriverConfig4Core, kSimThreadConfig4Core,   kViewerConfig4Core,
-          kMpcConfig4Core};
+  return {kRtControlConfig4Core,   kRtCallbackConfig4Core, kNrtLoggingConfig4Core,
+          kNrtCallbackConfig4Core, kArmDriverConfig4Core,  kHandDriverConfig4Core,
+          kSimThreadConfig4Core,   kViewerConfig4Core,     kMpcConfig4Core};
 }
 
 }  // namespace rtc

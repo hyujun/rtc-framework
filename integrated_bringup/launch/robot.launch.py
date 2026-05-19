@@ -355,15 +355,21 @@ def generate_launch_description():
                     '  echo "[RT] WARNING: integrated_rt_controller not found — DDS thread pinning skipped"; '
                     "  exit 0; "
                     "fi; "
-                    'taskset -cp 0-1 "$PID" 2>/dev/null; '
+                    # Layout v4: DDS receive thread is co-pinned to the
+                    # rt_callback core (Core 3) so DDS message dispatch and
+                    # state callback execution share L1/L2 cache. SCHED_OTHER
+                    # is preserved — only affinity changes. SCHED_FIFO
+                    # threads (rt_control / rt_callback / mpc_*) are skipped
+                    # so this loop only touches non-RT (DDS / aux) threads.
+                    'taskset -cp 3 "$PID" 2>/dev/null; '
                     "PINNED=0; "
                     "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
                     '  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null || echo ""); '
                     '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
                     '  if [ -n "$POLICY" ]; then continue; fi; '
-                    '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
+                    '  taskset -cp 3 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
                     "done; "
-                    'echo "[RT] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"',
+                    'echo "[RT] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 3"',
                 ],
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),

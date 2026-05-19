@@ -9,7 +9,7 @@ void RtControllerNode::CreateSubscriptions() {
   // RobotTarget is an external-intent input (target generator / BT / teleop),
   // not a hardware/sim boundary, so per spec §0d it stays on the non-RT
   // callback group. Device-wire state subs (joint/motor/sensor) are owned by
-  // DeviceBackend implementations and get cb_group_rt_inbound_ injected in
+  // DeviceBackend implementations and get cb_group_rt_callback_ injected in
   // CreateDeviceBackends().
   auto sub_options = rclcpp::SubscriptionOptions();
   sub_options.callback_group = cb_group_nrt_callback_;

@@ -52,17 +52,19 @@ rtc_controller_manager/
 
 ---
 
-## 스레딩 아키텍처
+## 스레딩 아키텍처 (layout v4)
 
-5개의 스레드가 CPU 코어에 분리 배치됩니다. `SelectThreadConfigs()`가 물리 코어 수에 따라 설정을 자동 선택합니다.
+`SelectThreadConfigs()`가 물리 코어 수에 따라 스레드 레이아웃을 자동 선택합니다 (SSoT: `rtc_base/threading/thread_config.hpp`).
 
 | 스레드 | 코어 | 스케줄러 | 주파수 | 역할 |
 |--------|------|----------|--------|------|
-| **rt_loop** | 2 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독 |
-| **rt_inbound_executor** | 3 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState, Target 구독 |
-| **nrt_logging_executor** | 4 | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 (Phase C 이후 controller 데이터 CSV 는 각 controller LifecycleNode 가 자체 드레인) |
-| **publish_thread** | 5 | SCHED_OTHER -3 | 이벤트 | SPSC 드레인 → ROS2 `publish()` (eventfd wakeup, 모든 DDS 직렬화/시스콜 처리) |
-| **nrt_callback_executor** | 5 | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, 컨트롤러 LifecycleNode parameter 콜백 (게인 채널) |
+| **rt_loop** (rt_control) | 2 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push |
+| **rt_callback_executor** | 3 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch-time taskset 으로 같은 Core 3 에 co-pin (CFS 유지) |
+| **nrt_logging_executor** | 0 | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
+| **nrt_publish_thread** | 1 (8+ tier) / 0 (6-core) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup |
+| **nrt_callback_executor** | 1 (8+ tier) / 0 (6-core) | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
+
+> **v4 변경**: v3 의 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거. actuator publish 는 `rt_control` 이 inline 으로 수행 (RT-safe contract). cross-core hand-off 가 사라져 latency / 자원 동시 감소. DDS receive thread Core 0-1 → Core 3 으로 이동하여 `rt_callback` 와 cache locality 공유.
 
 > `mlockall(MCL_CURRENT | MCL_FUTURE)`를 `rclcpp::init()` 전에 호출하여 페이지 폴트를 방지합니다.
 
@@ -91,9 +93,9 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 1. `mlockall()` → `rclcpp::init()` → 노드 생성 (Unconfigured 상태)
 2. **Phase 1:** `lifecycle_executor` spin → Launch event handler가 configure/activate 트리거
    - `on_configure`: 콜백 그룹, 파라미터, 구독/퍼블리셔, 타이머, eventfd 생성
-   - `on_activate`: `SelectThreadConfigs()` → `StartRtLoop()` + `StartPublishLoop()` 시작
+   - `on_activate`: `SelectThreadConfigs()` → `StartRtLoop()` + `StartNrtPublishLoop()` 시작
 3. **Phase 2:** Active 상태 대기 (polling)
-4. **Phase 3:** sensor/log/aux 전용 executor 전환 (lifecycle services는 nrt_callback_executor에서 처리)
+4. **Phase 3:** rt_callback / nrt_logging / nrt_callback 전용 executor 전환 (lifecycle services는 nrt_callback_executor에서 처리)
 
 ---
 
@@ -114,10 +116,11 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 - 활성 컨트롤러의 `Compute()` 호출 -> `ControllerOutput` 반환
 - 벽시계 시간 히스토그램 자동 수집 (20 버킷, 100us 간격)
 
-### Phase 3: 퍼블리시 오프로드 (락-프리)
-- `PublishSnapshot` 생성 -> `publish_buffer_.Push()` (SPSC O(1))
+### Phase 3: 퍼블리시 (inline actuator + non-RT 오프로드)
+- `PublishSnapshot` 생성
+- **Actuator publish (inline, RT-safe)**: rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 그룹별로 직접 호출 (RT-safe contract)
+- **Controller-owned non-RT publish (오프로드)**: `nrt_publish_buffer_.Push()` (SPSC cap 16) → `nrt_publish_thread` 가 드레인하여 `controller.PublishNonRtSnapshot` 호출 (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot)
 - 그룹별 commands, actual, motor, sensor, inference 데이터 포함
-- `publish_thread`가 드레인하여 모든 ROS2 publish() 처리
 
 ### Phase 4: 타이밍 & 로깅
 - 위상별 소요 시간 계산 (state_acquire, compute, publish) + 지터 측정
@@ -239,7 +242,7 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 디바이스 상태는 `DeviceBackend` 구현체가 자체 보유한 `SeqLock<DeviceStateCache>`로 sensor callback (writer) ↔ RT loop (reader) 락-프리 공유:
 
 ```cpp
-// Backend 내부 — sensor callback (cb_group_rt_inbound_ MutuallyExclusive — 단일 writer)
+// Backend 내부 — sensor callback (cb_group_rt_callback_ MutuallyExclusive — 단일 writer)
 auto ds = state_cache_.Load();
 ds.positions = ...;            // 필드 수정 (wire-format → device-config 순서로 reorder 포함)
 state_cache_.Store(ds);
@@ -256,19 +259,19 @@ if (backends_[slot]) {
 
 > `DeviceStateCache`는 trivially copyable (~4.3 KB). SeqLock writer는 wait-free (2회 atomic store + memcpy), reader는 writer 완료 시까지 spin-retry (writer ~1-2 µs). CM은 SeqLock을 직접 보유하지 않고 backend의 ReadState API를 통해 접근.
 
-### eventfd 기반 Publish Thread Wakeup
+### eventfd 기반 Non-RT Publish Thread Wakeup
 
-RT thread가 `publish_buffer_.Push()` 후 `eventfd_write()`로 publish thread를 즉시 깨움:
+Layout v4: actuator publish 는 RT loop 안에서 inline 호출되므로 별도 wakeup 메커니즘이 없다. controller-owned non-RT publish 만 SPSC + eventfd 를 통해 비동기 drain:
 
 ```cpp
-// RT thread (after Push)
-eventfd_write(publish_eventfd_, 1);
+// RT loop (after nrt_publish_buffer_.Push)
+eventfd_write(nrt_publish_eventfd_, 1);
 
-// Publish thread (대기)
+// nrt_publish_thread (대기)
 poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 ```
 
-> `sched_yield()` 대비 CPU 사용량 감소 + 즉시 wakeup으로 publish 지연 최소화.
+> `sched_yield()` 대비 CPU 사용량 감소 + 즉시 wakeup으로 non-RT publish 지연 최소화.
 
 ---
 
@@ -283,9 +286,9 @@ poll(&pfd, 1, 1);  // 1ms timeout, eventfd readable → 즉시 wakeup
 | 예산 | `1e6 / control_rate` µs (예: 500 Hz → 2000 µs) — sim 모드 `elapsed` 계산에 사용 |
 | `elapsed` 의미 | **robot**: 직전 print와의 wall-clock delta (CM 측정 실제 시간). **sim** (`use_sim_time_sync=true`): `count × period` (컨트롤러가 sim step과 lock-step이라 dt 기준 가상 시간이 컨트롤러 관점의 진실). 첫 print는 fallback으로 sim과 동일 식 |
 | 리셋 주기 | RT 루프가 1 000 tick(≈ 2 s @ 500 Hz)마다 로그 스레드에 Summary 출력 요청 → 로그 스레드는 `RCLCPP_INFO` 직후 `timing_profiler_.Reset()`을 호출. 따라서 각 출력은 **직전 윈도우**(elapsed로 표시)의 mean/max이며, 세션 시작 시점의 스파이크가 영구 반영되지 않음 |
-| Console summary 형식 | `<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  pub_drops=N  timing_drops=N` — 의도적으로 슬림. 상세 percentile / over_budget / per-tick 값은 `cm_timing_log.csv`에서 사후 분석 |
+| Console summary 형식 | `<ctrl> timing: elapsed=Xs  mean=Yµs  max=Zµs  overruns=N  skips=N  nrt_pub_drops=N  timing_drops=N` — 의도적으로 슬림. 상세 percentile / over_budget / per-tick 값은 `cm_timing_log.csv`에서 사후 분석 |
 
-누적 over-run 카운터(`overruns`, `skips`, `pub_drops`, `timing_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음.
+누적 over-run 카운터(`overruns`, `skips`, `nrt_pub_drops`, `timing_drops`)는 `rt_controller_node`가 별도 원자 변수로 관리 — Summary 리셋에 영향 없음.
 
 ### Per-thread Timing CSV (generic infra)
 

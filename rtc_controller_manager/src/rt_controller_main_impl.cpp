@@ -10,30 +10,28 @@
 //   Phase 1: lifecycle_executor spins to process configure/activate service
 //            calls from launch event handlers.
 //   Phase 2: Poll until the node reaches Active state (on_activate starts
-//            RT loop + publish offload thread).
-//   Phase 3: Add rt_inbound/nrt_logging/nrt_callback callback groups to
+//            RT loop + nrt publish offload thread).
+//   Phase 3: Add rt_callback/nrt_logging/nrt_callback callback groups to
 //            dedicated executors with RT thread configs. The default callback
 //            group stays on nrt_callback_executor to continue processing
 //            lifecycle services.
 //
-// Threading model (layout v3, SSoT: rtc_base/threading/thread_config.hpp):
+// Threading model (layout v4, SSoT: rtc_base/threading/thread_config.hpp):
 //   rt_control       Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
-//                                            timeout checker. Drives publish_buffer_ +
-//                                            nrt_publish_buffer_.
-//   rt_inbound       Core 3  SCHED_FIFO 70   rt_inbound_executor pinned here.
-//                                            cb_group_rt_inbound_ — DeviceBackend
+//                                            timeout checker. Performs DeviceBackend.WriteCommand
+//                                            inline (actuator command publish, RT-safe) and pushes
+//                                            controller-owned snapshots into nrt_publish_buffer_.
+//   rt_callback      Core 3  SCHED_FIFO 70   rt_callback_executor pinned here.
+//                                            cb_group_rt_callback_ — DeviceBackend
 //                                            state subs only (/joint_states,
 //                                            hand state/motor/sensor) via
 //                                            DeviceBackend::Configure(node, cfg,
 //                                            state_cb_group) injection. RobotTarget
 //                                            subs (CM-owned and controller-owned)
 //                                            stay on default group (nrt_callback)
-//                                            per RT-boundary decision.
-//   rt_outbound      Core 3  SCHED_FIFO 65   publish_buffer_ drain → backend.WriteCommand
-//                                            only (actuator + per-group joint_states +
-//                                            device logs). Same core as rt_inbound;
-//                                            priority diff (70 > 65) lets rt_inbound
-//                                            preempt — no starvation.
+//                                            per RT-boundary decision. DDS recv
+//                                            thread co-pinned to this core via
+//                                            launch-time taskset for cache locality.
 //   nrt_publish      nrt_callback core, CFS  nrt_publish_buffer_ drain (cap 16) →
 //                                            controller.PublishNonRtSnapshot
 //                                            (controller-owned non-RT topics:
@@ -147,12 +145,12 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
 
   const auto cfgs = SelectThreadConfigs();
 
-  rclcpp::executors::SingleThreadedExecutor rt_inbound_executor;
+  rclcpp::executors::SingleThreadedExecutor rt_callback_executor;
   rclcpp::executors::SingleThreadedExecutor nrt_logging_executor;
   rclcpp::executors::SingleThreadedExecutor nrt_callback_executor;
 
-  rt_inbound_executor.add_callback_group(node->GetRtInboundGroup(),
-                                         node->get_node_base_interface());
+  rt_callback_executor.add_callback_group(node->GetRtCallbackGroup(),
+                                          node->get_node_base_interface());
   nrt_logging_executor.add_callback_group(node->GetNrtLoggingGroup(),
                                           node->get_node_base_interface());
   nrt_callback_executor.add_callback_group(node->GetNrtCallbackGroup(),
@@ -187,7 +185,7 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
     });
   };
 
-  auto t_rt_inbound = make_thread(rt_inbound_executor, cfgs.rt_inbound);
+  auto t_rt_callback = make_thread(rt_callback_executor, cfgs.rt_callback);
   auto t_nrt_logging = make_thread(nrt_logging_executor, cfgs.nrt_logging);
   auto t_nrt_callback = make_thread(nrt_callback_executor, cfgs.nrt_callback);
 
@@ -200,11 +198,11 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
   while (rclcpp::ok()) {
     std::this_thread::sleep_for(50ms);
   }
-  rt_inbound_executor.cancel();
+  rt_callback_executor.cancel();
   nrt_logging_executor.cancel();
   nrt_callback_executor.cancel();
 
-  t_rt_inbound.join();
+  t_rt_callback.join();
   t_nrt_logging.join();
   t_nrt_callback.join();
 

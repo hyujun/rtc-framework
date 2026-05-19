@@ -340,11 +340,12 @@ def launch_setup(context, *args, **kwargs):
             )
             actions.append(pin_mujoco_sim)
 
-        # integrated_rt_controller DDS/aux threads → Core 0-1 (mirror of robot.launch.py).
-        # ApplyThreadConfig() already pins SCHED_FIFO executors (rt_loop, sensor,
-        # udp_recv); this timer only catches DDS-internal reader/writer threads
-        # that are spawned outside our control.
-        # exec name = ROS node name = "integrated_rt_controller" (Phase 3 정렬).
+        # Layout v4: integrated_rt_controller DDS/aux threads → Core 3
+        # (co-pinned with rt_callback) for cache locality. ApplyThreadConfig()
+        # already pins SCHED_FIFO executors (rt_control, rt_callback, mpc_*);
+        # this timer only catches DDS-internal reader/writer threads that are
+        # spawned outside our control.
+        # exec name = ROS node name = "integrated_rt_controller".
         pin_rt_controller_dds = TimerAction(
             period=5.0,
             actions=[
@@ -357,14 +358,14 @@ def launch_setup(context, *args, **kwargs):
                         '  echo "[SIM] WARNING: integrated_rt_controller not found — DDS thread pinning skipped"; '
                         "  exit 0; "
                         "fi; "
-                        'taskset -cp 0-1 "$PID" 2>/dev/null; '
+                        'taskset -cp 3 "$PID" 2>/dev/null; '
                         "PINNED=0; "
                         "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
                         '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
                         '  if [ -n "$POLICY" ]; then continue; fi; '
-                        '  taskset -cp 0-1 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
+                        '  taskset -cp 3 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
                         "done; "
-                        'echo "[SIM] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 0-1"',
+                        'echo "[SIM] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 3"',
                     ],
                     output="screen",
                 )

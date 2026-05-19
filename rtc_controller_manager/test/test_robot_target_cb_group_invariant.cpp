@@ -10,7 +10,7 @@
 // is an external intent input (target generator / BT / teleop) and must not
 // run at FIFO 70.
 //
-// History: PR #97 Phase 3 (`f6a78b6`) introduced cb_group_rt_inbound_
+// History: PR #97 Phase 3 (`f6a78b6`) introduced cb_group_rt_callback_
 // injection for DeviceBackend state lanes but reused the same SubscriptionOptions
 // for the manager-owned RobotTarget sub, accidentally promoting it to RT.
 // This test locks the invariant against future regressions.
@@ -50,8 +50,8 @@ class ControllerLifecycleTestAccess {
   }
 
   static void EnsureCallbackGroups(RtControllerNode& node) {
-    if (!node.cb_group_rt_inbound_) {
-      node.cb_group_rt_inbound_ =
+    if (!node.cb_group_rt_callback_) {
+      node.cb_group_rt_callback_ =
           node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     }
     if (!node.cb_group_nrt_callback_) {
@@ -62,8 +62,8 @@ class ControllerLifecycleTestAccess {
 
   static void RunCreateSubscriptions(RtControllerNode& node) { node.CreateSubscriptions(); }
 
-  static rclcpp::CallbackGroup::SharedPtr RtInboundGroup(const RtControllerNode& node) {
-    return node.cb_group_rt_inbound_;
+  static rclcpp::CallbackGroup::SharedPtr RtCallbackGroup(const RtControllerNode& node) {
+    return node.cb_group_rt_callback_;
   }
 
   static rclcpp::CallbackGroup::SharedPtr NrtCallbackGroup(const RtControllerNode& node) {
@@ -136,15 +136,15 @@ TEST_F(RobotTargetCbGroupInvariantTest, ManagerTargetSubAttachesToNrtCallbackGro
 // callback group. This is the exact regression introduced by PR #97 Phase 3
 // (sub_options reused across state lanes and the target lane) and reported as
 // Issue #100.
-TEST_F(RobotTargetCbGroupInvariantTest, ManagerTargetSubDoesNotAttachToRtInboundGroup) {
+TEST_F(RobotTargetCbGroupInvariantTest, ManagerTargetSubDoesNotAttachToRtCallbackGroup) {
   const auto& subs = rtc::ControllerLifecycleTestAccess::TopicSubscriptions(*node_);
   ASSERT_EQ(subs.size(), 1u);
   const auto sub = subs.front();
   ASSERT_NE(sub, nullptr);
 
   EXPECT_FALSE(
-      GroupContainsSubscription(rtc::ControllerLifecycleTestAccess::RtInboundGroup(*node_), sub))
-      << "RobotTarget sub leaked into cb_group_rt_inbound_ — external-intent traffic "
+      GroupContainsSubscription(rtc::ControllerLifecycleTestAccess::RtCallbackGroup(*node_), sub))
+      << "RobotTarget sub leaked into cb_group_rt_callback_ — external-intent traffic "
          "would execute at FIFO 70 alongside hardware state callbacks";
 }
 
