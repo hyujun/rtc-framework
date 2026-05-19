@@ -58,9 +58,13 @@
 //                          publishes are outside the controller↔hardware RT
 //                          boundary.
 //   - cb_group_rt_inbound_:    backend state/motor/sensor subs (created by each
-//                          DeviceBackend) + target_sub_ (Sensor core)
+//                          DeviceBackend, FIFO 70 — controller↔hardware RT
+//                          boundary only)
 //   - cb_group_nrt_logging_:       drain_timer_  (non-RT core)
-//   - cb_group_nrt_callback_:       estop_pub_  (aux core)
+//   - cb_group_nrt_callback_:       estop_pub_ + CM-owned target_sub_
+//                          (RobotTarget — external intent input, spec §0d
+//                          keeps it off the RT path) + lifecycle services
+//                          (aux core)
 // Forward declaration for friend access — defined in
 // test/test_controller_lifecycle.cpp.
 namespace rtc {

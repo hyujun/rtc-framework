@@ -78,11 +78,13 @@ class ControllerLifecycleTestAccess {
 
 }  // namespace rtc
 
+namespace {
+
 // True iff `sub` is registered in `group`. Reverse-lookup via
 // CallbackGroup::find_subscription_ptrs_if — see
 // test_device_backend_cb_group_injection.cpp for the same pattern.
-static bool GroupContainsSubscription(const rclcpp::CallbackGroup::SharedPtr& group,
-                                      const rclcpp::SubscriptionBase::SharedPtr& sub) {
+bool GroupContainsSubscription(const rclcpp::CallbackGroup::SharedPtr& group,
+                               const rclcpp::SubscriptionBase::SharedPtr& sub) {
   if (!group || !sub)
     return false;
   auto match =
@@ -145,3 +147,5 @@ TEST_F(RobotTargetCbGroupInvariantTest, ManagerTargetSubDoesNotAttachToRtInbound
       << "RobotTarget sub leaked into cb_group_rt_inbound_ — external-intent traffic "
          "would execute at FIFO 70 alongside hardware state callbacks";
 }
+
+}  // namespace
