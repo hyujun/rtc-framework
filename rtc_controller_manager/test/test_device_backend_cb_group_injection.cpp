@@ -16,8 +16,9 @@
 // enough that the cb_group plumbing is exercised end-to-end:
 //   - create_subscription with SubscriptionOptions{ .callback_group = arg }
 //   - one joint-state lane plus two optional motor/sensor lanes
-// We then verify get_actual_callback_group() on each subscription matches the
-// injected group exactly (non-null, same shared_ptr identity).
+// We then verify (via CallbackGroup::find_subscription_ptrs_if reverse-lookup
+// — jazzy rclcpp does not expose the group from SubscriptionBase directly)
+// that each backend-created subscription is registered in the injected group.
 //
 // Adding a fourth real backend? Add it (or a faithful stub mirroring its sub
 // creation) to this file's parametrised cases.
