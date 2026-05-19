@@ -314,6 +314,8 @@ O(1) 슬라이딩 윈도우 OLS(최소자승법) 기반 실시간 드리프트 �
 
 CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4, 6, 8, 10, 12, 14, 16코어).
 
+> **헤더 내 선언 순서**: tier 블록은 코어 수 오름차순 (4 → 6 → 8 → 10 → 12 → 14 → 16), 각 tier 내부는 `sched_priority` 내림차순 (rt_control 90 → rt_inbound 70 → rt_outbound 65 → mpc 60/55 → SCHED_OTHER 0 그룹), priority 동률 시 심볼명 알파벳 순 (Arm → Hand → NrtCallback → NrtLogging → SimThread → Viewer).
+
 **코어 수별 스레드 레이아웃 (layout v3, 2026-05):**
 
 | 스레드 | 4코어¹ | 6코어² | 8코어 | 10코어 | 12코어 | 14코어 | 16코어³ |
