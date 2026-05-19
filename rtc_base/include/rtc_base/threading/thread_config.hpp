@@ -71,6 +71,12 @@ inline const ThreadConfig kRtControlConfig4Core{.cpu_core = 1,
                                                 .nice_value = 0,
                                                 .name = "rt_control"};
 
+// Layout v4 promotes rt_callback to SCHED_FIFO 70 on the 4-core fallback
+// (v3 kept rt_outbound on CFS). On a 4-core box DDS receive co-pins to
+// Core 2 (no spare core), so DDS dispatch shares the same FIFO 70 queue
+// as the rt_callback executor. Because both serve the controller↔hardware
+// state-input boundary, this co-residency is acceptable; the 4-core tier
+// is explicitly "degraded — no deterministic RT guarantee" (header above).
 inline const ThreadConfig kRtCallbackConfig4Core{.cpu_core = 2,
                                                  .sched_policy = SCHED_FIFO,
                                                  .sched_priority = 70,
