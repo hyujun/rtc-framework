@@ -99,80 +99,76 @@ PHYSICAL_CORES="$TOTAL_CORES"
 declare -a EXPECTED_THREADS
 
 build_expected_threads() {
-  # thread_config.hpp / SelectThreadConfigs() 기반 기대값
+  # thread_config.hpp / SelectThreadConfigs() 기반 기대값 (layout v3, 2026-05).
   # 형식: "thread_name:expected_cpu:expected_policy:expected_priority[:optional]"
+  # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
   # optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리.
-  #   - udp_recv:   Transceiver 사용 시에만 생성 (현재 미사용)
+  #   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
+  #                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
+  #                    별도 cpu pin 검증 skip (priority 65 만 확인).
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 16 ]]; then
-    # 16+: RT 2-3, shield 4-8 (user), MPC 9-11, UDP 12, nrt_logging 13, nrt_callback/rt_outbound 14.
+    # 16+: RT 2-3, shield 4-8 (user), MPC 9-11, hand_driver 12, arm_driver 13, sim 15.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "rt_inbound:3:1:70"
-      "udp_recv:12:1:65:optional"
-      "nrt_logging:13:0:0"
-      "nrt_callback:14:0:0"
-      "rt_outbound:14:0:0"
+      "rt_outbound:3:1:65"
+      "nrt_logging:0:0:0"
+      "nrt_callback:1:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 14 ]]; then
-    # 14-15: unified — RT 2-3, MPC 4-6, UDP 7, nrt_logging 8, nrt_callback/rt_outbound 9, sim 10.
+    # 14-15: RT 2-3 (same-core), MPC 4-6, hand_driver 7, arm_driver 8, sim 10.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "rt_inbound:3:1:70"
-      "udp_recv:7:1:65:optional"
-      "nrt_logging:8:0:0"
-      "nrt_callback:9:0:0"
-      "rt_outbound:9:0:0"
+      "rt_outbound:3:1:65"
+      "nrt_logging:0:0:0"
+      "nrt_callback:1:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    # 12-13: unified — RT 2-3, MPC 4-6, UDP 7, nrt_logging 8, nrt_callback/rt_outbound 9.
+    # 12-13: RT 2-3 (same-core), MPC 4-6, hand_driver 7, arm_driver 8, sim 10.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "rt_inbound:3:1:70"
-      "udp_recv:7:1:65:optional"
-      "nrt_logging:8:0:0"
-      "nrt_callback:9:0:0"
-      "rt_outbound:9:0:0"
+      "rt_outbound:3:1:65"
+      "nrt_logging:0:0:0"
+      "nrt_callback:1:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    # 10-11: unified — RT 2-3, MPC 4-5, UDP 6, nrt_logging 7, nrt_callback/rt_outbound 8; spare 9.
+    # 10-11: RT 2-3 (same-core), MPC 4-5, hand_driver 6, arm_driver 7, sim 9.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "rt_inbound:3:1:70"
-      "udp_recv:6:1:65:optional"
-      "nrt_logging:7:0:0"
-      "nrt_callback:8:0:0"
-      "rt_outbound:8:0:0"
+      "rt_outbound:3:1:65"
+      "nrt_logging:0:0:0"
+      "nrt_callback:1:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    # 8-9: RT 2-3, MPC 4, UDP 5, nrt_logging 6, nrt_callback/rt_outbound 7.
+    # 8-9: RT 2-3 (same-core), MPC 4, hand_driver 5, arm_driver 6, sim 7.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "rt_inbound:3:1:70"
-      "udp_recv:5:1:65:optional"
-      "nrt_logging:6:0:0"
-      "nrt_callback:7:0:0"
-      "rt_outbound:7:0:0"
+      "rt_outbound:3:1:65"
+      "nrt_logging:0:0:0"
+      "nrt_callback:1:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
-    # Core 0-1: OS, Core 2-5: RT threads, udp_recv shares Core 5 with nrt_callback
+    # 6-7 (degraded): RT 2-3 (same-core), MPC 4, arm/hand_driver share Core 1, nrt_* on Core 0.
     EXPECTED_THREADS=(
       "rt_control:2:1:90"
       "rt_inbound:3:1:70"
-      "udp_recv:5:1:65:optional"
-      "nrt_logging:4:0:0"
-      "nrt_callback:5:0:0"
-      "rt_outbound:5:0:0"
+      "rt_outbound:3:1:65"
+      "nrt_logging:0:0:0"
+      "nrt_callback:0:0:0"
     )
   else
-    # 4-core fallback: Core 0: OS, Core 1-3: RT, udp_recv shares Core 2
+    # 4-core fallback (degraded): RT 1-2, rt_outbound CFS, MPC CFS — no RT determinism.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_inbound:2:1:70"
-      "udp_recv:2:1:65:optional"
-      "nrt_logging:3:0:0"
-      "nrt_callback:3:0:0"
-      "rt_outbound:3:0:0"
+      "rt_outbound:2:0:0"
+      "nrt_logging:0:0:0"
+      "nrt_callback:0:0:0"
     )
   fi
 }

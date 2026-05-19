@@ -153,19 +153,19 @@ repo_scripts/
 |------|------|------|--------------------------------------------|
 | `get_mpc_cores()` | active | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `4` / `4` / `4,5` / `4,5,6` / `4,5,6` / `9,10,11` |
 | `get_mpc_main_core()` | dormant | MPC main 코어만 (get_mpc_cores의 첫 항목). Phase 4 에서 활용 예정. | `4` / `4` / `4` / `4` / `4` / `9` |
-| `get_rt_cores()` | dormant | RT 스레드 전체 집합 (rt_control + rt_inbound + udp_recv + MPC). GRUB `nohz_full`/`rcu_nocbs` 인자에 사용 예정. | `2,3,5,4` / `2,3,5,4` / `2,3,6,4,5` / `2,3,7,4,5,6` / `2,3,7,4,5,6` / `2,3,12,9,10,11` |
+| `get_rt_cores()` | dormant | RT 그룹 전체 집합 (rt_control + rt_inbound + rt_outbound + MPC). rt_outbound 는 rt_inbound 와 same-core (Core 3) 라 set 으로 dedup. GRUB `nohz_full`/`rcu_nocbs` 인자에 사용 예정. | `2,3,4` / `2,3,4` / `2,3,4,5` / `2,3,4,5,6` / `2,3,4,5,6` / `2,3,9,10,11` |
 | `get_os_cores()` | dormant | OS/DDS/IRQ 코어 (전체 - RT). IRQ affinity 고정 대상으로 사용 예정. | `0,1` / `0,1` / `0,1` / `0,1` / `0,1` / `0,1` |
 
-Tier별 매핑 (2026-04 unified layout):
-- **≤4코어**: MPC `SCHED_OTHER nice=-5`, Core 3 공유 (degraded).
-- **5–7코어**: Core 4 공유 (MPC FIFO 60 > logger OTHER).
-- **8–9코어**: **Core 4 dedicated** (udp_recv 5, logger 6, aux+publish 7).
-- **10–11코어**: **Core 4 main + Core 5 worker 0** (dedicated UDP 6 / logger 7 / aux+pub 8, Core 9 spare).
-- **12–13코어**: **Core 4 main + Core 5-6 workers** (dedicated UDP 7 / logger 8 / aux+pub 9, Cores 10-11 spare).
-- **14–15코어**: 12-core와 동일한 RT 배치 + **Core 10 MuJoCo sim dedicated**, Cores 11-13 spare.
-- **16+코어**: **Core 9 main + Core 10-11 workers** (legacy Option A: udp→12, logger→13, aux/publish→14, sim→15).
+Tier별 매핑 (layout v3, 2026-05 — SSoT: `rtc_base/threading/thread_config.hpp::SelectThreadConfigs()`):
+- **≤4코어 (degraded)**: rt_control Core 1, rt_inbound Core 2, rt_outbound Core 2 (CFS), mpc Core 3 (CFS). RT 결정성 보장 X.
+- **6코어 (degraded)**: rt_control Core 2, rt_inbound + rt_outbound **Core 3 same-core** (FIFO 70/65, v3), mpc Core 4. arm/hand_driver Core 1 공유.
+- **8–9코어**: 위 layout + arm_driver **Core 6 dedicated**, hand_driver **Core 5 dedicated**, sim_thread **Core 7 dedicated**.
+- **10–11코어**: + mpc_worker_0 Core 5, arm Core 7, hand Core 6, sim Core 9.
+- **12–13코어**: + mpc_worker_1 Core 6, arm Core 8, hand Core 7, sim Core 10.
+- **14–15코어**: 12-core 와 동일 RT 배치 + sim Core 10, spare Core 11-13.
+- **16+코어 (legacy Option A)**: cset shield "user" Core 4-8 유지, mpc Core 9-11, hand Core 12, arm Core 13, sim Core 15.
 
-이전 10/12-core 구성은 cset shield "user"를 Core 2-6에 고정하고 rtc_controller_manager를 system cpuset(Core 7-9)로 몰아넣어 **8-core보다 적은 3코어만** RT에 쓰는 구조였습니다. 14-core는 12-core 분기에 흡수되어 Cores 12-13을 완전히 미사용. 새 레이아웃은 단조성 불변식 — "물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다" — 을 `rtc_base/test/test_mpc_thread_config.cpp::TierIsolationMonotonicity`로 회귀 방지합니다.
+**v3 의 핵심 변화 (모든 tier 공통)**: rt_outbound 가 RT 승격 (FIFO 65, ≥ 6-core 에서 rt_inbound 와 same-core Core 3), `udp_recv` 필드 삭제 (hand UDP receive thread 는 hand_driver 프로세스 내부 `kHandUdpRecvConfig` cpu_core=-1 sentinel 로 이주, 일반 Transceiver 는 caller 가 명시 핀). 단조성 불변식은 `rtc_base/test/test_mpc_thread_config.cpp` 의 `TierIsolationMonotonicity` + `LayoutV3SameCoreRtInboundOutbound` + `LayoutV3ArmHandDriverDisjoint` 가 회귀 방지.
 
 ---
 
@@ -358,18 +358,21 @@ cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 
 | Tier | 스레드 | 격리 |
 |------|--------|------|
-| Tier 1 (RT-critical) | rt_control + rt_inbound | 항상 |
-| Tier 2 (RT-support) | udp_recv + logging + aux | `--robot` 모드만 |
-| Tier 3 (Flexible) | sim, monitoring, build | 격리 안 함 |
+| Tier 1 (RT-critical) | rt_control + rt_inbound + rt_outbound (same-core) + mpc | 항상 |
+| Tier 2 (driver / IO) | arm_driver, hand_driver, nrt_logging, nrt_callback | SCHED_OTHER — shield 밖 dedicated core 로 taskset pin |
+| Tier 3 (Flexible) | sim_thread, viewer, monitoring, build | 격리 안 함 |
 
-**코어 수별 격리 범위:**
+> Phase 6 layout v3 에서 `--robot` / `--sim` 두 모드의 shield 범위가 동일해짐 (RT + MPC only). driver / IO 코어는 shield 밖에서 SCHED_OTHER 로 직접 핀 — 별도 tier 격리 불필요. 두 옵션은 forward-compat 용으로 유지.
 
-| 코어 수 | `--robot` | `--sim` |
-|---------|-----------|---------|
-| 4코어 이하 | 1-3 | 1-2 |
-| 5-7코어 | 2-5 | 2-3 |
-| 8-15코어 | 2-6 | 2-3 |
-| 16코어+ | 4-8 | 4-5 |
+**코어 수별 격리 범위 (`--robot` / `--sim` 동일):**
+
+| 코어 수 | shield cores |
+|---------|--------------|
+| 4코어 이하 | 1,3 |
+| 6-9코어 | 2-4 |
+| 10-11코어 | 2-5 |
+| 12-15코어 | 2-6 |
+| 16코어+ | 2-3,9-11 |
 
 > Launch 파일 (`ur_control.launch.py`, `mujoco_sim.launch.py`)에서 자동 호출됩니다.
 > `build.sh` / `install.sh`에서 빌드 전 자동 해제됩니다.

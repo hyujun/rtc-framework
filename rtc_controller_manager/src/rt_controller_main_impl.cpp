@@ -16,36 +16,40 @@
 //            group stays on nrt_callback_executor to continue processing
 //            lifecycle services.
 //
-// Threading model:
-//   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
-//   E-STOP publish_thread   Core 5  SCHED_OTHER -3   publish_buffer_ drain → backend.WriteCommand
-//                                            only (Phase 4 will promote to
-//                                            SCHED_FIFO 65; Phase 2 removed
-//                                            PublishNonRtSnapshot from this
-//                                            lane).
-//   nrt_publish_thread (Phase 2)        SCHED_OTHER  0   nrt_publish_buffer_ drain →
+// Threading model (layout v3, SSoT: rtc_base/threading/thread_config.hpp):
+//   rt_control       Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
+//                                            timeout checker. Drives publish_buffer_ +
+//                                            nrt_publish_buffer_.
+//   rt_inbound       Core 3  SCHED_FIFO 70   rt_inbound_executor pinned here.
+//                                            cb_group_rt_inbound_ — DeviceBackend
+//                                            state subs only (/joint_states,
+//                                            hand state/motor/sensor) via
+//                                            DeviceBackend::Configure(node, cfg,
+//                                            state_cb_group) injection. RobotTarget
+//                                            subs (CM-owned and controller-owned)
+//                                            stay on default group (nrt_callback)
+//                                            per RT-boundary decision.
+//   rt_outbound      Core 3  SCHED_FIFO 65   publish_buffer_ drain → backend.WriteCommand
+//                                            only (actuator + per-group joint_states +
+//                                            device logs). Same core as rt_inbound;
+//                                            priority diff (70 > 65) lets rt_inbound
+//                                            preempt — no starvation.
+//   nrt_publish      nrt_callback core, CFS  nrt_publish_buffer_ drain (cap 16) →
 //                                            controller.PublishNonRtSnapshot
 //                                            (controller-owned non-RT topics:
-//                                            RobotTarget/Transforms/
-//                                            DigitalTwin). Capacity 16.
-//   rt_inbound_executor  Core 3  SCHED_FIFO 70   cb_group_rt_inbound_ —
-//                                            DeviceBackend state subs
-//                                            (/joint_states, hand
-//                                            state/motor/sensor) routed here
-//                                            via Configure(..., cb_group)
-//                                            injection (Phase 3 of
-//                                            thread-layout-v3 sprint). The
-//                                            CM-owned RobotTarget sub stays
-//                                            on the default group
-//                                            (nrt_callback) per RT-boundary
-//                                            decision.
-//   nrt_logging_executor     Core 4  SCHED_OTHER -5   cm_timing_log.csv drain + deferred E-STOP log
-//   nrt_callback_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle services
-//                                            + CM default group (CM-owned
-//                                            RobotTarget sub) + controller
-//                                            LifecycleNode default groups
-//                                            (owned RobotTarget subs,
-//                                            grasp_command services).
+//                                            RobotTarget / Transforms / DigitalTwin /
+//                                            grasp_state / wbc_state / tof_snapshot).
+//   nrt_logging      Core 0  SCHED_OTHER -5   nrt_logging_executor — cm_timing_log.csv
+//                                            drain + deferred E-STOP log.
+//   nrt_callback     Core 1 (≥ 8-core tier;  nrt_callback_executor —
+//                    Core 0 on 6-core)        cb_group_nrt_callback_ + CM node default
+//                                            SCHED_OTHER 0                group
+//                                            (CM-owned RobotTarget sub) + every
+//                                            controller LifecycleNode default group
+//                                            (owned RobotTarget subs, grasp_command
+//                                            services). E-STOP status + lifecycle
+//                                            services + nrt_publish_thread snapshot
+//                                            drain co-located here.
 
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"

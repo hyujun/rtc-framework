@@ -572,22 +572,25 @@ get_mpc_main_core() {
   get_mpc_cores | cut -d',' -f1
 }
 
-# Print the list of RT cores (rt_control + rt_inbound + udp_recv + MPC).
+# Print the list of RT cores (rt_control + rt_inbound/rt_outbound same-core + MPC).
 # Used by IRQ affinity and GRUB nohz_full/rcu_nocbs. Order is not guaranteed.
+# Layout v3: rt_inbound + rt_outbound share Core 3 on every ≥ 6-core tier,
+# priority diff (70 vs 65) guarantees no starvation. hand UDP receive thread
+# lives inside the hand_driver process (cpu_core=-1 sentinel) and is not
+# represented here. SSoT: rtc_base/threading/thread_config.hpp.
 get_rt_cores() {
   local ncpu
   ncpu=$(get_physical_cores)
   local mpc
   mpc=$(get_mpc_cores)
-  # rt_control + rt_inbound + udp_recv cores — match thread_config.hpp.
   case "$ncpu" in
-    1|2|3|4)      echo "1,2,${mpc}" ;;
-    5|6|7)        echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5
-    8|9)          echo "2,3,5,${mpc}" ;;     # RT=2, sensor=3, udp=5
-    10|11)        echo "2,3,6,${mpc}" ;;     # RT=2, sensor=3, udp=6, MPC=4,5
-    12|13)        echo "2,3,7,${mpc}" ;;     # RT=2, sensor=3, udp=7, MPC=4,5,6
-    14|15)        echo "2,3,7,${mpc}" ;;     # RT=2, sensor=3, udp=7, MPC=4,5,6
-    *)            echo "2,3,12,${mpc}" ;;    # 16+: RT=2, sensor=3, udp=12, MPC=9-11
+    1|2|3|4)      echo "1,2,${mpc}" ;;       # 4-core degraded: rt_control=1, rt_inbound/rt_outbound=2
+    5|6|7)        echo "2,3,${mpc}" ;;       # rt_control=2, rt_inbound+rt_outbound=3, MPC=4
+    8|9)          echo "2,3,${mpc}" ;;       # rt_control=2, rt_inbound+rt_outbound=3, MPC=4
+    10|11)        echo "2,3,${mpc}" ;;       # rt_control=2, rt_inbound+rt_outbound=3, MPC=4,5
+    12|13)        echo "2,3,${mpc}" ;;       # rt_control=2, rt_inbound+rt_outbound=3, MPC=4,5,6
+    14|15)        echo "2,3,${mpc}" ;;       # rt_control=2, rt_inbound+rt_outbound=3, MPC=4,5,6
+    *)            echo "2,3,${mpc}" ;;       # 16+: rt_control=2, rt_inbound+rt_outbound=3, MPC=9-11
   esac
 }
 
@@ -616,64 +619,72 @@ get_os_cores() {
 # the output blends with the surrounding [PREFIX] log lines.
 print_thread_layout() {
   local ncpu="${1:-$(get_physical_cores)}"
-  echo -e "  ${BOLD}Thread layout (${ncpu}-core)${NC}"
+  echo -e "  ${BOLD}Thread layout (${ncpu}-core, layout v3)${NC}"
   if [[ "$ncpu" -le 4 ]]; then
-    echo "    Core 0:   OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (degraded)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 2:   rt_inbound   (SCHED_FIFO 70) + udp_recv (SCHED_FIFO 65)"
-    echo "    Core 3:   MPC (SCHED_OTHER, degraded) + nrt_logging + nrt_callback + rt_outbound"
+    echo "    Core 2:   rt_inbound   (SCHED_FIFO 70) + rt_outbound (CFS, degraded)"
+    echo "    Core 3:   mpc_main     (CFS, degraded)"
   elif [[ "$ncpu" -le 7 ]]; then
-    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging (CFS -5) + nrt_callback (CFS 0)"
+    echo "    Core 1:   arm_driver + hand_driver (shared, degraded)"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
-    echo "    Core 4:   MPC main     (SCHED_FIFO 60) + nrt_logging (CFS -5)"
-    echo "    Core 5:   udp_recv     (SCHED_FIFO 65)  + nrt_callback + rt_outbound (CFS)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70) + rt_outbound (SCHED_FIFO 65)   ← v3 same-core"
+    echo "    Core 4:   mpc_main     (SCHED_FIFO 60)"
+    echo "    Core 5:   spare        (sim_thread roams if cpu_shield --sim releases)"
   elif [[ "$ncpu" -le 9 ]]; then
-    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging (CFS -5)"
+    echo "    Core 1:   nrt_callback (CFS 0)"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
-    echo "    Core 4:   MPC main     (SCHED_FIFO 60, dedicated)"
-    echo "    Core 5:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 6:   nrt_logging       (CFS nice -5)"
-    echo "    Core 7:   nrt_callback + rt_outbound (CFS)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70) + rt_outbound (SCHED_FIFO 65)   ← v3 same-core"
+    echo "    Core 4:   mpc_main     (SCHED_FIFO 60)"
+    echo "    Core 5:   hand_driver  (CFS, taskset pin; internal recv thread FIFO 65)"
+    echo "    Core 6:   arm_driver   (CFS, taskset pin)"
+    echo "    Core 7:   sim_thread   (CFS, taskset pin)"
   elif [[ "$ncpu" -le 11 ]]; then
-    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging (CFS -5)"
+    echo "    Core 1:   nrt_callback (CFS 0)"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
-    echo "    Core 4-5: MPC main + worker 0 (SCHED_FIFO 60)"
-    echo "    Core 6:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 7:   nrt_logging       (CFS nice -5)"
-    echo "    Core 8:   nrt_callback + rt_outbound (CFS)"
-    echo "    Core 9:   spare"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70) + rt_outbound (SCHED_FIFO 65)   ← v3 same-core"
+    echo "    Core 4-5: mpc_main + worker_0 (SCHED_FIFO 60 / 55)"
+    echo "    Core 6:   hand_driver  (CFS, taskset pin)"
+    echo "    Core 7:   arm_driver   (CFS, taskset pin)"
+    echo "    Core 8:   spare"
+    echo "    Core 9:   sim_thread   (CFS, taskset pin)"
   elif [[ "$ncpu" -le 13 ]]; then
-    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging (CFS -5)"
+    echo "    Core 1:   nrt_callback (CFS 0)"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
-    echo "    Core 4-6: MPC main + workers (SCHED_FIFO 60)"
-    echo "    Core 7:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 8:   nrt_logging       (CFS nice -5)"
-    echo "    Core 9:   nrt_callback + rt_outbound (CFS)"
-    echo "    Core 10-${ncpu}: spare"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70) + rt_outbound (SCHED_FIFO 65)   ← v3 same-core"
+    echo "    Core 4-6: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
+    echo "    Core 7:   hand_driver  (CFS, taskset pin)"
+    echo "    Core 8:   arm_driver   (CFS, taskset pin)"
+    echo "    Core 9:   spare"
+    echo "    Core 10:  sim_thread   (CFS, taskset pin)"
+    echo "    Core 11-${ncpu}: spare"
   elif [[ "$ncpu" -le 15 ]]; then
-    echo "    Core 0-1: OS / DDS / NIC IRQ"
+    echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging (CFS -5)"
+    echo "    Core 1:   nrt_callback (CFS 0)"
     echo "    Core 2:   rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70)"
-    echo "    Core 4-6: MPC main + workers (SCHED_FIFO 60)"
-    echo "    Core 7:   udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 8:   nrt_logging       (CFS nice -5)"
-    echo "    Core 9:   nrt_callback + rt_outbound (CFS)"
-    echo "    Core 10:  MuJoCo sim (dedicated)"
+    echo "    Core 3:   rt_inbound   (SCHED_FIFO 70) + rt_outbound (SCHED_FIFO 65)   ← v3 same-core"
+    echo "    Core 4-6: mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
+    echo "    Core 7:   hand_driver  (CFS, taskset pin)"
+    echo "    Core 8:   arm_driver   (CFS, taskset pin)"
+    echo "    Core 9:   spare"
+    echo "    Core 10:  sim_thread   (CFS, taskset pin)"
     echo "    Core 11-${ncpu}: spare"
   else
-    echo "    Core 0-1:   OS / DDS / NIC IRQ"
+    echo "    Core 0:     OS / DDS / NIC IRQ + nrt_logging (CFS -5)"
+    echo "    Core 1:     nrt_callback (CFS 0)"
     echo "    Core 2:     rt_control   (SCHED_FIFO 90)"
-    echo "    Core 3:     rt_inbound   (SCHED_FIFO 70)"
+    echo "    Core 3:     rt_inbound   (SCHED_FIFO 70) + rt_outbound (SCHED_FIFO 65)   ← v3 same-core"
     echo "    Core 4-8:   user cpuset shield (legacy Option A)"
-    echo "    Core 9-11:  MPC main + workers (SCHED_FIFO 60)"
-    echo "    Core 12:    udp_recv     (SCHED_FIFO 65)"
-    echo "    Core 13:    nrt_logging       (CFS nice -5)"
-    echo "    Core 14:    nrt_callback + rt_outbound (CFS)"
-    echo "    Core 15+:   spare / monitoring"
+    echo "    Core 9-11:  mpc_main + workers (SCHED_FIFO 60 / 55 / 55)"
+    echo "    Core 12:    hand_driver  (CFS, taskset pin)"
+    echo "    Core 13:    arm_driver   (CFS, taskset pin)"
+    echo "    Core 14:    spare"
+    echo "    Core 15:    sim_thread   (CFS, taskset pin)"
+    echo "    Core 16+:   spare / monitoring"
   fi
 }
 
