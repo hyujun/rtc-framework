@@ -191,7 +191,7 @@ uv pip compile requirements.in --generate-hashes \
     -o requirements.lock
 
 # 새 머신에서 sync (install.sh 가 자동 수행, 수동:)
-uv venv --system-site-packages .venv
+uv venv --python 3.12 --system-site-packages .venv   # 3.12 명시 — runtime PC 의 system python3.9/3.10 fallback 방지
 source .venv/bin/activate
 uv pip sync requirements.lock        # lock 과 정확히 일치 (extra 제거)
 ```

@@ -29,6 +29,9 @@ _INSTALL_PYTHON_LOADED=1
 # system Python 에 대한 `pip install` 을 차단한다 (PEP 668).
 # 대응: workspace 루트에 .venv 를 uv로 생성하여 후속 install이 venv 안에서 동작.
 #   --system-site-packages: ROS rclpy / ament_* / apt numpy/scipy/matplotlib/pandas/PyQt5 상속
+#   --python 3.12: ROS 2 Jazzy / Ubuntu 24.04 SSoT 와 정합. runtime PC 에 다른 control
+#     project 용 python3.9/3.10 이 PATH 앞에 있어도 uv 가 그걸 잡지 않도록 명시 고정.
+#     pyproject.toml ruff target-version = "py312" 와 일치.
 #   기존 .venv 가 있으면 재사용 (멱등)
 #   이미 다른 venv 가 활성이면 그것을 그대로 사용
 ensure_venv() {
@@ -40,16 +43,31 @@ ensure_venv() {
   ensure_uv
 
   local venv_dir="${WORKSPACE}/.venv"
+
+  # 기존 venv 가 3.12 가 아닐 경우 재생성 (runtime PC 에 3.9 가 PATH 앞에 있던 시절에
+  # 만들어진 stale venv 복구). 활성 venv 가 아니므로 안전하게 삭제 가능.
+  if [[ -f "${venv_dir}/bin/activate" ]]; then
+    local existing_ver
+    existing_ver="$("${venv_dir}/bin/python" -c \
+      'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "")"
+    if [[ "${existing_ver}" != "3.12" ]]; then
+      warn "Existing venv at ${venv_dir} uses Python '${existing_ver:-unknown}' (expected 3.12) — recreating"
+      rm -rf "${venv_dir}"
+    fi
+  fi
+
   if [[ ! -f "${venv_dir}/bin/activate" ]]; then
-    info "Creating Python venv at ${venv_dir} (uv, --system-site-packages)..."
-    # python3-venv는 uv venv가 stdlib venv module을 호출하므로 필요
+    info "Creating Python venv at ${venv_dir} (uv, Python 3.12, --system-site-packages)..."
+    # python3.12-venv는 uv venv가 stdlib venv module을 호출하므로 필요.
+    # 메타패키지 python3-venv 는 시스템 default python3 (runtime PC 에선 3.9 가능)
+    # 를 따라가므로 명시적으로 3.12 변종을 깐다.
     apt_update_if_stale
-    sudo apt-get install -y python3-venv > /dev/null
-    uv venv --system-site-packages "${venv_dir}" \
-      || error "uv venv failed at ${venv_dir}"
+    sudo apt-get install -y python3.12 python3.12-venv > /dev/null
+    uv venv --python 3.12 --system-site-packages "${venv_dir}" \
+      || error "uv venv failed at ${venv_dir} (Python 3.12 not found?)"
     success "venv created: ${venv_dir}"
   else
-    info "venv already exists at ${venv_dir} — activating"
+    info "venv already exists at ${venv_dir} (Python 3.12) — activating"
   fi
 
   # shellcheck disable=SC1091
