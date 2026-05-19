@@ -173,6 +173,16 @@ if(BUILD_TESTING)
     target_link_libraries(test_device_backend_cb_group_injection
       rtc_controller_manager_lib)
   endif()
+
+  ament_add_gtest(test_robot_target_cb_group_invariant
+    test/test_robot_target_cb_group_invariant.cpp)
+  if(TARGET test_robot_target_cb_group_invariant)
+    target_include_directories(test_robot_target_cb_group_invariant PRIVATE include)
+    ament_target_dependencies(test_robot_target_cb_group_invariant
+      rclcpp rclcpp_lifecycle rtc_base)
+    target_link_libraries(test_robot_target_cb_group_invariant
+      rtc_controller_manager_lib)
+  endif()
 endif()
 
 ament_package()

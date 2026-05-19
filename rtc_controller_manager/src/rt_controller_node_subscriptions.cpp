@@ -6,14 +6,18 @@
 namespace urtc = rtc;
 
 void RtControllerNode::CreateSubscriptions() {
+  // RobotTarget is an external-intent input (target generator / BT / teleop),
+  // not a hardware/sim boundary, so per spec §0d it stays on the non-RT
+  // callback group. Device-wire state subs (joint/motor/sensor) are owned by
+  // DeviceBackend implementations and get cb_group_rt_inbound_ injected in
+  // CreateDeviceBackends().
   auto sub_options = rclcpp::SubscriptionOptions();
-  sub_options.callback_group = cb_group_rt_inbound_;
+  sub_options.callback_group = cb_group_nrt_callback_;
 
   std::set<std::string> created_topics;
 
-  // Device-wire state lanes are owned by DeviceBackend implementations and
-  // bound in CreateDeviceBackends(). The only manager-owned subscribe entry
-  // remaining is the controller target lane (RobotTarget).
+  // The only manager-owned subscribe entry is the controller target lane
+  // (RobotTarget). Controller-owned target subs live in owned_topics.cpp.
   for (const auto& tc : controller_topic_configs_) {
     for (const auto& [group_name, group] : tc.groups) {
       if (!active_groups_.contains(group_name))
