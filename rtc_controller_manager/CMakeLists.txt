@@ -163,6 +163,16 @@ if(BUILD_TESTING)
     target_link_libraries(test_device_backend_registry
       rtc_controller_manager_lib)
   endif()
+
+  ament_add_gtest(test_device_backend_cb_group_injection
+    test/test_device_backend_cb_group_injection.cpp)
+  if(TARGET test_device_backend_cb_group_injection)
+    target_include_directories(test_device_backend_cb_group_injection PRIVATE include)
+    ament_target_dependencies(test_device_backend_cb_group_injection
+      rclcpp rclcpp_lifecycle sensor_msgs std_msgs rtc_base)
+    target_link_libraries(test_device_backend_cb_group_injection
+      rtc_controller_manager_lib)
+  endif()
 endif()
 
 ament_package()
