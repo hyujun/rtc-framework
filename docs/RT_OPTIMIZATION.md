@@ -2,7 +2,7 @@
 
 **RTC (Real-Time Controller) 병렬 컴퓨팅 아키텍처 상세 문서**
 
-> **Currency (2026-04-26)**: RT layout (thread tier 4/8/10/12/14/16-core) 은 commit `5f0680c` (2026-04-22, unified rework + `TierIsolationMonotonicity`) 이후 변경되지 않음. controller / MPC / WbcState 변경은 RT subsystem 외부이므로 본 문서는 trunk 와 일치한다. 정확한 최신 버전은 각 패키지 `package.xml` 참조.
+> **⚠ Currency (2026-05-19, branch `feat/thread-layout-v3`)**: 본 문서는 thread-layout-v3 sprint **이전** 상태를 기준으로 작성됐다. v3 (commit `86b9479..132c90d`) 가 `SystemThreadConfigs` 의 `sensor`/`aux`/`publish`/`udp_recv` 필드를 `rt_inbound`/`nrt_callback`/`rt_outbound`/`nrt_publish_thread` + hand-private `kHandUdpRecvConfig` 로 재구성했고, `rt_outbound` 가 SCHED_FIFO 65 로 승격되어 rt_inbound 와 same-core (Core 3) 에 배치됐다. 따라서 본 문서의 thread 다이어그램 (§아키텍처 개요), 6/8/10/12/14/16-core tier 표, `kUdpRecvConfig` 코드 인용, perf flame trace 의 thread 이름은 **모두 stale 이다**. 최신 layout 은 [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model + [rtc_base/README.md](../rtc_base/README.md) + SSoT [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) 참조. 본 문서의 RT 최적화 *원칙* (mlockall, SeqLock, SPSC, SCHED_FIFO priority 계층) 은 그대로 유효하다 — 변경된 것은 thread roster 와 core/priority 매핑뿐. 본 문서의 layout 절 전체 v3 재작성은 별도 docs sprint 로 계획되어 있다.
 
 ---
 
