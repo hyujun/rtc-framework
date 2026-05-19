@@ -106,11 +106,18 @@ class MockSysfs {
   }
 
   // /proc/cpuinfo stub. Controls the `hybrid` fallback flag path.
-  fs::path WriteCpuinfo(bool has_hybrid_flag) {
+  // Optional family / model emit a CPUID identity block; pass -1 to skip
+  // either field (legacy mocks rely on the absence path for default 0).
+  fs::path WriteCpuinfo(bool has_hybrid_flag, int family = -1, int model = -1,
+                        const std::string& vendor = "GenuineIntel") {
     const fs::path p = root_.parent_path() / (root_.filename().string() + "_cpuinfo");
     std::ofstream f(p);
     f << "processor\t: 0\n";
-    f << "vendor_id\t: GenuineIntel\n";
+    f << "vendor_id\t: " << vendor << "\n";
+    if (family >= 0)
+      f << "cpu family\t: " << family << "\n";
+    if (model >= 0)
+      f << "model\t\t: " << model << "\n";
     f << "flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr";
     if (has_hybrid_flag)
       f << " hybrid";
@@ -443,6 +450,156 @@ TEST(CpuTopologyClassifier, HybridDetectSourceToString) {
   EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::SYSFS_TYPES), "sysfs_types");
   EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::CPUFREQ_CLUSTER),
             "cpufreq_cluster");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. PlatformLabel_RaptorLake_S_Desktop — i9-13900K shares the (P-HT, no LP-E)
+//     fingerprint with NUC13 Pro's Raptor Lake-P mobile. CPUID model 0xBF
+//     must distinguish them in platform_label even though `generation` stays
+//     RAPTOR_LAKE_P. This is the user-reported desktop case.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_RaptorLake_S_Desktop) {
+  MockSysfs m(tmp_root_);
+  // 8 P-cores with SMT siblings — i9-13900K layout.
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5800000);
+  // 16 E-cores, no SMT, uniform freq (no LP-E on desktop).
+  for (int i = 0; i < 16; ++i)
+    m.AddECore(8 + i, 16 + i, /*freq*/ 4300000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true, /*family=*/6, /*model=*/0xBF);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::RAPTOR_LAKE_P);
+  EXPECT_EQ(t.cpu_vendor, "GenuineIntel");
+  EXPECT_EQ(t.cpu_family, 6);
+  EXPECT_EQ(t.cpu_model, 0xBF);
+  EXPECT_EQ(t.platform_label, "Raptor Lake-S desktop");
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+  EXPECT_EQ(t.num_p_physical, 8);
+  EXPECT_EQ(t.num_e_cores, 16);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. PlatformLabel_ArrowLake_S_Desktop — Core Ultra 9 285K: no HT (Lion
+//     Cove), no LP-E. Fingerprint (0,0) collides with RAPTOR_LAKE_P_HT_OFF
+//     but CPUID model 0xC6 must set platform_no_ht_by_design=true so the
+//     verifier PASSes instead of suggesting an impossible BIOS toggle.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_ArrowLake_S_Desktop) {
+  MockSysfs m(tmp_root_);
+  // 8 P-cores, no SMT (Lion Cove has no HT).
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 5700000);
+  // 16 E-cores, no SMT, uniform freq (no LP-E on desktop).
+  for (int i = 0; i < 16; ++i)
+    m.AddECore(8 + i, 8 + i, /*freq*/ 4600000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true, /*family=*/6, /*model=*/0xC6);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_FALSE(t.p_core_has_smt);
+  EXPECT_FALSE(t.has_lp_e_cores);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::RAPTOR_LAKE_P_HT_OFF);
+  EXPECT_EQ(t.cpu_model, 0xC6);
+  EXPECT_EQ(t.platform_label, "Arrow Lake-S desktop");
+  EXPECT_TRUE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. PlatformLabel_UnknownModel — future / unmapped silicon stays in the
+//     existing classifier flow with platform_label empty + no_ht=false.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_UnknownModel) {
+  MockSysfs m(tmp_root_);
+  for (int core = 0; core < 4; ++core)
+    m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 3000000);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, /*family=*/6, /*model=*/0xFF);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.cpu_family, 6);
+  EXPECT_EQ(t.cpu_model, 0xFF);
+  EXPECT_TRUE(t.platform_label.empty());
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. PlatformLabel_AmdVendor — AMD reports a non-Intel family (e.g. 25);
+//     lookup must return empty platform_label even though family/model
+//     fields are populated.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_AmdVendor) {
+  MockSysfs m(tmp_root_);
+  for (int core = 0; core < 4; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 4800000);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, /*family=*/25, /*model=*/33,
+                                      /*vendor=*/"AuthenticAMD");
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.cpu_vendor, "AuthenticAMD");
+  EXPECT_EQ(t.cpu_family, 25);
+  EXPECT_EQ(t.cpu_model, 33);
+  EXPECT_TRUE(t.platform_label.empty());
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14. PlatformLabel_MissingFields — legacy mock (no family/model lines).
+//     Defaults must be safe zeros / empty so existing tests round-trip.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_MissingFields) {
+  MockSysfs m(tmp_root_);
+  for (int core = 0; core < 4; ++core)
+    m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 3000000);
+  // family=-1, model=-1 → no CPUID lines emitted.
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.cpu_vendor, "GenuineIntel");
+  EXPECT_EQ(t.cpu_family, 0);
+  EXPECT_EQ(t.cpu_model, 0);
+  EXPECT_TRUE(t.platform_label.empty());
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. LookupPlatformLabel — direct unit coverage of the mapping table.
+//     Keeps the (intel-family.h SSOT, code) bridge honest as new chips land.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(CpuTopologyClassifier, LookupPlatformLabel) {
+  using rtc::internal::topology::LookupPlatformLabel;
+  // family != 6 → empty
+  EXPECT_TRUE(LookupPlatformLabel(25, 33).first.empty());
+  EXPECT_FALSE(LookupPlatformLabel(25, 33).second);
+  // Raptor Lake family
+  EXPECT_EQ(LookupPlatformLabel(6, 0xBF).first, "Raptor Lake-S desktop");
+  EXPECT_FALSE(LookupPlatformLabel(6, 0xBF).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xBA).first, "Raptor Lake-P mobile");
+  // Meteor Lake
+  EXPECT_EQ(LookupPlatformLabel(6, 0xAA).first, "Meteor Lake-L mobile");
+  // Lion Cove silicon — no_ht_by_design must be true
+  EXPECT_EQ(LookupPlatformLabel(6, 0xC6).first, "Arrow Lake-S desktop");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xC6).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xC5).first, "Arrow Lake-H mobile");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xC5).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xB5).first, "Arrow Lake-U mobile");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xB5).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xBD).first, "Lunar Lake mobile");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xBD).second);
+  // Unmapped Intel model → empty
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xFF).first.empty());
 }
 
 // Fallback primitive — direct ClusterByMaxFreq coverage. Guards the

@@ -238,6 +238,14 @@ check_hybrid_cpu() {
 
   detect_hybrid_capability
 
+  # Platform identifier — prefer the human-readable label looked up from
+  # CPUID family.model (intel-family.h) over the topology-shape-only
+  # NUC_GENERATION enum. Falls back to the enum text on unknown silicon.
+  local platform_id="${PLATFORM_LABEL:-}"
+  if [[ -z "$platform_id" ]]; then
+    platform_id="$NUC_GENERATION"
+  fi
+
   case "$NUC_GENERATION" in
     none)
       if [[ "$IS_HYBRID" -eq 1 ]]; then
@@ -252,30 +260,42 @@ check_hybrid_cpu() {
       fi
       ;;
     raptor_lake_p)
-      _pass "NUC 13 Pro class: Raptor Lake-P (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E)"
+      _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E, P-HT)"
       if [[ "$NUM_LPE_CORES" -gt 0 ]]; then
-        _warn "LP E-core ${NUM_LPE_CORES}개 감지 — Raptor Lake-P에는 없어야 함"
+        _warn "LP E-core ${NUM_LPE_CORES}개 감지 — Raptor Lake-class 토폴로지에는 없어야 함"
       fi
-      _category_set_detail "hybrid_cpu" "raptor_lake_p ${NUM_P_PHYSICAL}P+${NUM_E_CORES}E"
+      _category_set_detail "hybrid_cpu" "${platform_id} ${NUM_P_PHYSICAL}P+${NUM_E_CORES}E"
       ;;
     meteor_lake)
-      _pass "NUC 14 Pro class: Meteor Lake (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E + ${NUM_LPE_CORES}LP-E)"
+      _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E + ${NUM_LPE_CORES}LP-E)"
       _warn "Phase 2 지원 예정 — 현재 Stage A는 감지만 수행 (레이아웃은 tier dispatch 사용)"
       _category_update "hybrid_cpu" "WARN"
-      _category_set_detail "hybrid_cpu" "meteor_lake ${NUM_P_PHYSICAL}P+${NUM_E_CORES}E+${NUM_LPE_CORES}LP-E (Phase 2 pending)"
+      _category_set_detail "hybrid_cpu" "${platform_id} ${NUM_P_PHYSICAL}P+${NUM_E_CORES}E+${NUM_LPE_CORES}LP-E (Phase 2 pending)"
       ;;
     arrow_lake_h)
-      _pass "NUC 15 Pro class: Arrow Lake-H (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E + ${NUM_LPE_CORES}LP-E, SMT off)"
+      _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E + ${NUM_LPE_CORES}LP-E, no P-HT)"
       _warn "Phase 3 지원 예정 — 현재 Stage A는 감지만 수행"
       _category_update "hybrid_cpu" "WARN"
-      _category_set_detail "hybrid_cpu" "arrow_lake_h (Phase 3 pending)"
+      _category_set_detail "hybrid_cpu" "${platform_id} (Phase 3 pending)"
       ;;
     raptor_lake_p_ht_off)
-      _fail "Intel hybrid 감지되었으나 Hyper-Threading이 비활성 상태입니다"
-      _fail "MPC worker의 SMT sibling 배치가 불가능 — BIOS에서 HT를 활성화해야 합니다"
-      _fix "Reboot → BIOS/UEFI 설정 → Advanced → CPU Configuration → Hyper-Threading = Enabled"
-      _category_update "hybrid_cpu" "FAIL"
-      _category_set_detail "hybrid_cpu" "raptor_lake_p_ht_off (BIOS HT disabled)"
+      # Two distinct cases share the (no P-HT, no LP-E) fingerprint:
+      #   (a) Raptor/Alder-class chip with BIOS Hyper-Threading disabled →
+      #       fixable in BIOS. FAIL with the existing actionable message.
+      #   (b) Lion Cove silicon (Arrow Lake-S/H/U, Lunar Lake) where HT is
+      #       absent by design. PASS — there is no BIOS toggle to enable.
+      if [[ "${PLATFORM_NO_HT_BY_DESIGN:-0}" -eq 1 ]]; then
+        _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E, HT not applicable — Lion Cove silicon)"
+        _warn "Phase 3 지원 예정 — 현재 Stage A는 감지만 수행"
+        _category_update "hybrid_cpu" "WARN"
+        _category_set_detail "hybrid_cpu" "${platform_id} (silicon has no HT, Phase 3 pending)"
+      else
+        _fail "Intel hybrid 감지되었으나 Hyper-Threading이 비활성 상태입니다 (${platform_id})"
+        _fail "MPC worker의 SMT sibling 배치가 불가능 — BIOS에서 HT를 활성화해야 합니다"
+        _fix "Reboot → BIOS/UEFI 설정 → Advanced → CPU Configuration → Hyper-Threading = Enabled"
+        _category_update "hybrid_cpu" "FAIL"
+        _category_set_detail "hybrid_cpu" "${platform_id} (BIOS HT disabled)"
+      fi
       ;;
     *)
       _warn "알 수 없는 NUC_GENERATION 값: ${NUC_GENERATION}"

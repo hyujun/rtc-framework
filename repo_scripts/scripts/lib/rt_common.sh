@@ -733,6 +733,83 @@ _rt_cpuinfo_has_hybrid() {
   }' "$p"
 }
 
+# Read vendor_id / cpu family / model from /proc/cpuinfo. Only the first
+# processor block is parsed — all logical CPUs share family/model. Sets:
+#   _RT_CPU_VENDOR  — "GenuineIntel" / "AuthenticAMD" / "" (unknown)
+#   _RT_CPU_FAMILY  — integer (0 if unknown or non-numeric)
+#   _RT_CPU_MODEL   — integer (0 if unknown or non-numeric)
+# Tolerant: missing fields stay at defaults so existing mocks (which omit
+# family/model lines) continue to round-trip.
+_rt_read_cpu_vendor_family_model() {
+  _RT_CPU_VENDOR=""
+  _RT_CPU_FAMILY=0
+  _RT_CPU_MODEL=0
+  local p="${RTC_PROC_CPUINFO:-/proc/cpuinfo}"
+  [[ -r "$p" ]] || return 0
+  local vendor family model
+  vendor=$(awk -F':' '/^vendor_id[ \t]*:/ {
+    gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit
+  }' "$p")
+  family=$(awk -F':' '/^cpu family[ \t]*:/ {
+    gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit
+  }' "$p")
+  # "model" line — distinguish from "model name" by requiring optional
+  # whitespace then ":" immediately after "model".
+  model=$(awk -F':' '/^model[ \t]*:/ {
+    gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit
+  }' "$p")
+  _RT_CPU_VENDOR="${vendor:-}"
+  # Use `if` blocks (not `[[ ]] && cmd`) so a missing field doesn't make the
+  # function return non-zero under `set -e` in callers.
+  if [[ "$family" =~ ^[0-9]+$ ]]; then _RT_CPU_FAMILY="$family"; fi
+  if [[ "$model"  =~ ^[0-9]+$ ]]; then _RT_CPU_MODEL="$model"; fi
+  return 0
+}
+
+# Lookup human-friendly platform label and "no-HT-by-design" flag from
+# Intel CPUID family.model. Maps modern Intel hybrid silicon to its
+# silicon family + form factor, so callers can distinguish e.g.
+# Raptor Lake-S desktop (i9-13900K, model 0xBF) from Raptor Lake-P mobile
+# (NUC 13 Pro, model 0xBA) — they share the (P-HT, no LP-E) topology
+# fingerprint and would otherwise be indistinguishable.
+#
+# SSOT: Linux kernel arch/x86/include/asm/intel-family.h
+#   https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/intel-family.h
+#
+# Inputs:  $1 = cpu family (int), $2 = cpu model (int)
+# Outputs (globals):
+#   _RT_PLATFORM_LABEL           — human-friendly string, "" if unknown
+#   _RT_PLATFORM_NO_HT_BY_DESIGN — 1 if silicon design lacks Hyper-Threading
+#                                  (Lion Cove cores: Arrow/Lunar Lake);
+#                                  0 otherwise. Used by check_rt_setup.sh to
+#                                  distinguish "BIOS disabled HT" (FAIL) from
+#                                  "silicon has no HT to begin with" (PASS).
+_rt_lookup_platform_label() {
+  _RT_PLATFORM_LABEL=""
+  _RT_PLATFORM_NO_HT_BY_DESIGN=0
+  local family="$1" model="$2"
+  [[ "$family" == "6" ]] || return 0
+  case "$model" in
+    151) _RT_PLATFORM_LABEL="Alder Lake-S desktop" ;;        # 0x97
+    154) _RT_PLATFORM_LABEL="Alder Lake-P mobile" ;;         # 0x9A
+    190) _RT_PLATFORM_LABEL="Alder Lake-N (Atom-only)" ;;    # 0xBE
+    183) _RT_PLATFORM_LABEL="Raptor Lake" ;;                 # 0xB7 (base alias)
+    186) _RT_PLATFORM_LABEL="Raptor Lake-P mobile" ;;        # 0xBA (NUC 13 Pro)
+    191) _RT_PLATFORM_LABEL="Raptor Lake-S desktop" ;;       # 0xBF (i9-13900K)
+    170) _RT_PLATFORM_LABEL="Meteor Lake-L mobile" ;;        # 0xAA (NUC 14 Pro)
+    172) _RT_PLATFORM_LABEL="Meteor Lake-M mobile" ;;        # 0xAC
+    189) _RT_PLATFORM_LABEL="Lunar Lake mobile"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xBD
+    198) _RT_PLATFORM_LABEL="Arrow Lake-S desktop"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xC6
+    197) _RT_PLATFORM_LABEL="Arrow Lake-H mobile"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xC5
+    181) _RT_PLATFORM_LABEL="Arrow Lake-U mobile"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xB5
+    *)   _RT_PLATFORM_LABEL="" ;;
+  esac
+}
+
 # Enumerate online logical CPU ids by scanning cpuN directories under sysfs.
 # Output: space-separated ids in numeric order. Empty on failure.
 _rt_enumerate_online_cpus() {
@@ -1013,6 +1090,18 @@ detect_hybrid_capability() {
   NUC_GENERATION="none"
   HYBRID_DETECT_SOURCE="none"
 
+  # ── CPU identity (vendor / family / model + platform label) ──────────────
+  # Populated independently of hybrid detection: even non-hybrid Intel and
+  # AMD chips get vendor + family + model exposed so callers can render a
+  # meaningful identifier. PLATFORM_LABEL stays "" on unknown silicon.
+  _rt_read_cpu_vendor_family_model
+  CPU_VENDOR="$_RT_CPU_VENDOR"
+  CPU_FAMILY="$_RT_CPU_FAMILY"
+  CPU_MODEL="$_RT_CPU_MODEL"
+  _rt_lookup_platform_label "$CPU_FAMILY" "$CPU_MODEL"
+  PLATFORM_LABEL="$_RT_PLATFORM_LABEL"
+  PLATFORM_NO_HT_BY_DESIGN="$_RT_PLATFORM_NO_HT_BY_DESIGN"
+
   local p_cpus="" e_cpus=""
 
   # ── Primary: sysfs types + cpuinfo hybrid flag ───────────────────────────
@@ -1093,3 +1182,8 @@ get_p_core_sibling_ids()  { echo "${P_CORE_SIBLING_IDS:-}"; }
 get_e_core_ids()          { echo "${E_CORE_IDS:-}"; }
 get_lpe_core_ids()        { echo "${LPE_CORE_IDS:-}"; }
 get_hybrid_detect_source() { echo "${HYBRID_DETECT_SOURCE:-none}"; }
+get_cpu_vendor()          { echo "${CPU_VENDOR:-}"; }
+get_cpu_family()          { echo "${CPU_FAMILY:-0}"; }
+get_cpu_model()           { echo "${CPU_MODEL:-0}"; }
+get_platform_label()      { echo "${PLATFORM_LABEL:-}"; }
+get_platform_no_ht_by_design() { echo "${PLATFORM_NO_HT_BY_DESIGN:-0}"; }

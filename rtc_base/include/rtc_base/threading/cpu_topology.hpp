@@ -13,6 +13,8 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // CPU topology detection for hybrid-aware thread placement.
@@ -100,6 +102,27 @@ struct CpuTopology {
   // Used by callers to warn when the primary sysfs path was unavailable and
   // a fallback had to classify the CPU.
   HybridDetectSource detect_source{HybridDetectSource::NONE};
+
+  // CPU identity from /proc/cpuinfo (independent of hybrid topology).
+  // cpu_family / cpu_model are the CPUID family / model integers — equal
+  // shape as the kernel's INTEL_FAM6_* macros. Used to distinguish chips
+  // that share the topology fingerprint (e.g. Raptor Lake-S desktop 0xBF
+  // vs Raptor Lake-P mobile 0xBA — both (P-HT, no LP-E)).
+  std::string cpu_vendor;  // "GenuineIntel" / "AuthenticAMD" / ""
+  int cpu_family{0};       // 0 if unknown
+  int cpu_model{0};        // 0 if unknown
+
+  // Human-friendly platform identifier looked up from (cpu_family, cpu_model).
+  // Empty when the silicon is not in the mapping table. Decoupled from
+  // `generation` so the enum continues to encode topology shape while this
+  // field encodes silicon identity.
+  std::string platform_label;
+
+  // True when the silicon design lacks Hyper-Threading (Lion Cove cores:
+  // Arrow Lake-S/H/U, Lunar Lake). When `generation == RAPTOR_LAKE_P_HT_OFF`
+  // the verifier distinguishes "BIOS disabled HT" (FAIL — fixable) from
+  // "silicon has no HT to begin with" (PASS — by design).
+  bool platform_no_ht_by_design{false};
 
   // Tier-selection metric for future hybrid dispatch. Returns the count of
   // "high-performance" physical cores — P-core count on hybrid, plain
@@ -306,6 +329,114 @@ inline void PopulateHybridFromCpus(CpuTopology& t, const std::filesystem::path& 
   }
 }
 
+// Parse vendor_id / cpu family / model from /proc/cpuinfo. Only the first
+// processor block is consulted — all logical CPUs share family/model.
+// Returns (vendor, family, model); vendor is "" / family or model is 0 when
+// the field is missing or non-numeric. Tolerant: existing mocks (which omit
+// family/model lines) get safe defaults rather than erroring out.
+inline std::tuple<std::string, int, int> ReadCpuVendorFamilyModel(
+    const std::filesystem::path& cpuinfo) noexcept {
+  std::ifstream f(cpuinfo);
+  if (!f)
+    return {std::string{}, 0, 0};
+
+  std::string vendor;
+  int family = 0;
+  int model = 0;
+  bool got_vendor = false;
+  bool got_family = false;
+  bool got_model = false;
+
+  auto trim = [](std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+      s.erase(s.begin());
+    while (!s.empty() &&
+           (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
+      s.pop_back();
+    return s;
+  };
+
+  std::string line;
+  while (std::getline(f, line)) {
+    const auto colon = line.find(':');
+    if (colon == std::string::npos)
+      continue;
+    std::string key = line.substr(0, colon);
+    std::string val = line.substr(colon + 1);
+    // Trim trailing whitespace/tab from key.
+    while (!key.empty() && (key.back() == ' ' || key.back() == '\t'))
+      key.pop_back();
+    val = trim(std::move(val));
+
+    if (!got_vendor && key == "vendor_id") {
+      vendor = val;
+      got_vendor = true;
+    } else if (!got_family && key == "cpu family") {
+      try {
+        family = std::stoi(val);
+        got_family = true;
+      } catch (...) {
+      }
+    } else if (!got_model && key == "model") {
+      try {
+        model = std::stoi(val);
+        got_model = true;
+      } catch (...) {
+      }
+    }
+    if (got_vendor && got_family && got_model)
+      break;
+  }
+  return {vendor, family, model};
+}
+
+// Lookup human-friendly platform label + "no-HT-by-design" flag from CPUID
+// family.model. Maps modern Intel hybrid silicon to silicon family +
+// form factor so callers can distinguish e.g. Raptor Lake-S desktop
+// (i9-13900K, model 0xBF) from Raptor Lake-P mobile (NUC 13 Pro, model
+// 0xBA) — both share the (P-HT, no LP-E) topology fingerprint.
+//
+// SSOT: Linux kernel arch/x86/include/asm/intel-family.h
+//   https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/intel-family.h
+//
+// Returns (label, no_ht_by_design). label is empty when the silicon is not
+// in the mapping table. no_ht_by_design is true for Lion Cove silicon
+// (Arrow Lake-S/H/U, Lunar Lake) where HT removal is the silicon spec, not
+// a BIOS toggle — used by check_rt_setup.sh to avoid suggesting an
+// impossible fix ("enable HT in BIOS") on those chips.
+inline std::pair<std::string, bool> LookupPlatformLabel(int family, int model) noexcept {
+  if (family != 6)
+    return {std::string{}, false};
+  switch (model) {
+    case 0x97:
+      return {"Alder Lake-S desktop", false};
+    case 0x9A:
+      return {"Alder Lake-P mobile", false};
+    case 0xBE:
+      return {"Alder Lake-N (Atom-only)", false};
+    case 0xB7:
+      return {"Raptor Lake", false};
+    case 0xBA:
+      return {"Raptor Lake-P mobile", false};
+    case 0xBF:
+      return {"Raptor Lake-S desktop", false};
+    case 0xAA:
+      return {"Meteor Lake-L mobile", false};
+    case 0xAC:
+      return {"Meteor Lake-M mobile", false};
+    case 0xBD:
+      return {"Lunar Lake mobile", true};
+    case 0xC6:
+      return {"Arrow Lake-S desktop", true};
+    case 0xC5:
+      return {"Arrow Lake-H mobile", true};
+    case 0xB5:
+      return {"Arrow Lake-U mobile", true};
+    default:
+      return {std::string{}, false};
+  }
+}
+
 inline NucGeneration ClassifyGeneration(bool is_hybrid, bool p_core_has_smt,
                                         bool has_lp_e_cores) noexcept {
   if (!is_hybrid)
@@ -359,6 +490,21 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
   const fs::path root{std::string(sysfs_root)};
   const fs::path cpu_root = root / "devices/system/cpu";
   const fs::path cpuinfo{std::string(proc_cpuinfo_path)};
+
+  // Step 0: CPU identity (independent of hybrid detection).
+  //         Populates t.cpu_vendor / cpu_family / cpu_model and the
+  //         platform label looked up from intel-family.h. Empty / zero
+  //         defaults when /proc/cpuinfo is unavailable or the field is
+  //         missing (preserves existing-mock compatibility).
+  {
+    auto [vendor, family, model] = ReadCpuVendorFamilyModel(cpuinfo);
+    t.cpu_vendor = std::move(vendor);
+    t.cpu_family = family;
+    t.cpu_model = model;
+    auto [label, no_ht] = LookupPlatformLabel(family, model);
+    t.platform_label = std::move(label);
+    t.platform_no_ht_by_design = no_ht;
+  }
 
   // Step 1: enumerate logical CPUs + group by (pkg, core_id).
   std::map<long, std::vector<int>> core_id_to_logicals;
