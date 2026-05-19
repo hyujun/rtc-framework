@@ -324,6 +324,24 @@ if(BUILD_TESTING)
     sensor_msgs
     std_msgs
   )
+
+  # ── Controller-owned RobotTarget cb_group invariant test ───────────────────
+  # Spec §0d follow-up to Issue #100: locks that CreateOwnedTopics() routes
+  # the controller-owned RobotTarget sub onto the LifecycleNode default
+  # callback group (no SubscriptionOptions argument), so CM attaches it to
+  # nrt_callback_executor instead of any RT-priority lane.
+  ament_add_gtest(test_controller_target_cb_group_invariant
+    test/test_controller_target_cb_group_invariant.cpp)
+  target_link_libraries(test_controller_target_cb_group_invariant
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_controller_target_cb_group_invariant
+    rclcpp
+    rclcpp_lifecycle
+    rtc_base
+    rtc_controller_interface
+    rtc_msgs
+  )
 endif()
 
 ament_package()
