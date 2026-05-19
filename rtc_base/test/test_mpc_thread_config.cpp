@@ -188,6 +188,38 @@ TEST(MpcThreadConfig, LayoutV4RtCallbackPinning) {
   }
 }
 
+// Layout v4.1 invariant: Core 0 is reserved for OS / DDS / IRQ on every tier
+// ≥ 6-core. nrt_logging / nrt_callback must NOT pin to Core 0 on those tiers.
+// 4-core fallback (degraded) is exempt — it intentionally collapses everything
+// onto Core 0 due to capacity limits.
+TEST(MpcThreadConfig, LayoutV41NrtNotOnCoreZero) {
+  struct TierNrt {
+    const char* label;
+    const ThreadConfig* nrt_logging;
+    const ThreadConfig* nrt_callback;
+    bool enforce;  // false for 4-core fallback (degraded)
+  };
+
+  const std::array<TierNrt, 7> tiers = {{
+      {"4-core", &kNrtLoggingConfig4Core, &kNrtCallbackConfig4Core, false},
+      {"6-core", &kNrtLoggingConfig, &kNrtCallbackConfig, true},
+      {"8-core", &kNrtLoggingConfig8Core, &kNrtCallbackConfig8Core, true},
+      {"10-core", &kNrtLoggingConfig10Core, &kNrtCallbackConfig10Core, true},
+      {"12-core", &kNrtLoggingConfig12Core, &kNrtCallbackConfig12Core, true},
+      {"14-core", &kNrtLoggingConfig14Core, &kNrtCallbackConfig14Core, true},
+      {"16-core", &kNrtLoggingConfig16Core, &kNrtCallbackConfig16Core, true},
+  }};
+  for (const auto& t : tiers) {
+    if (!t.enforce) {
+      continue;  // 4-core fallback: degraded, nrt may collapse onto Core 0
+    }
+    EXPECT_NE(t.nrt_logging->cpu_core, 0)
+        << t.label << ": nrt_logging must not pin to Core 0 (OS/DDS/IRQ only, v4.1)";
+    EXPECT_NE(t.nrt_callback->cpu_core, 0)
+        << t.label << ": nrt_callback must not pin to Core 0 (OS/DDS/IRQ only, v4.1)";
+  }
+}
+
 // Layout v4: arm_driver and hand_driver must not collide with any RT
 // controller thread (rt_control / rt_callback / mpc_*). Tiers ≥ 8 give each
 // its own dedicated core; tiers below are degraded (4/6-core) and may share

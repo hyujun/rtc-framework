@@ -474,42 +474,43 @@ void UrDriverNativeBackend::Configure(LifecycleNode* node, const DeviceBackendCo
 
 ```cpp
 void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
-  ApplyThreadConfig(cfg);  // Core 2, SCHED_FIFO 90
+  ApplyThreadConfig(cfg);  // Core 1, SCHED_FIFO 90 (layout v4.1)
   // ... (clock_nanosleep TIMER_ABSTIME 절대시간 루프, sim CV wakeup branch, overrun recovery)
 
-  // 매 tick 끝에 producer-side 2-lane fan-out
-  static_cast<void>(publish_buffer_.Push(snap));           // → rt_outbound
-  if (publish_eventfd_ >= 0) static_cast<void>(eventfd_write(publish_eventfd_, 1));
+  // 매 tick 끝: actuator 는 inline (v4 RT-safe contract), non-RT 토픽만 SPSC fan-out
+  // v4 에서 v3 의 publish_buffer_ SPSC + eventfd + rt_outbound jthread 는 제거됨.
+  for (auto& slot : active_slots) {
+    slot.backend->WriteCommand(slot.cmd);                 // inline actuator publish (RT-safe by contract)
+  }
   static_cast<void>(nrt_publish_buffer_.Push(snap));       // → nrt_publish_thread
   if (nrt_publish_eventfd_ >= 0) static_cast<void>(eventfd_write(nrt_publish_eventfd_, 1));
 }
 ```
 
-- **by-value fan-out**: `snap` (≈6 KB) 을 두 SPSC 큐에 그대로 push. cap 16 의 nrt_publish_buffer 가 saturate 되어도 RT lane (cap 512) 은 별개 — drop 은 `nrt_pub_drops` counter 로 관측.
+- **Inline actuator publish (v4)**: `rt_control` thread (Core 1 FIFO 90) 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 직접 호출 — backend 가 RT-safe contract 를 따른다. cross-core hand-off / eventfd wake 제거.
+- **Non-RT lane only**: `snap` (≈6 KB) 을 cap 16 의 `nrt_publish_buffer_` 에만 push. saturate 시 drop 은 `nrt_pub_drops` counter 로 관측.
 - **RT-safe push**: `Push` 와 `eventfd_write` 둘 다 nothrow + 결과 `static_cast<void>` 무시. push 실패 (full) = silent drop.
-- **2 drain thread**:
-  - `rt_outbound` (FIFO 65) → `DeviceBackend.WriteCommand` (actuator)
+- **1 drain thread (nrt only)**:
   - `nrt_publish_thread` (nrt_callback core, CFS) → `controller.PublishNonRtSnapshot` (controller-owned non-RT topic)
 - Drain 측 by-value invariant 는 [publish_buffer.hpp](../rtc_base/include/rtc_base/threading/publish_buffer.hpp) header doc 참조.
-- Sim CV wakeup · overrun recovery · 연속 10회 → E-STOP 메커니즘은 v3 와 독립 (별도 메커니즘).
+- Sim CV wakeup · overrun recovery · 연속 10회 → E-STOP 메커니즘은 별도.
 
 ### 스레드 설정 ([thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp))
 
-`SystemThreadConfigs` 의 1급 필드 (v3):
+`SystemThreadConfigs` 의 1급 필드 (v4):
 
 ```cpp
 namespace rtc {
 
 struct SystemThreadConfigs {
-  ThreadConfig rt_control;     // FIFO 90
-  ThreadConfig rt_callback;     // FIFO 70
-  ThreadConfig rt_outbound;    // FIFO 65 (4-core 만 CFS 강등)
+  ThreadConfig rt_control;     // FIFO 90 (Core 1 in v4.1)
+  ThreadConfig rt_callback;    // FIFO 70 (Core 2 in v4.1; DDS recv co-pin)
   ThreadConfig nrt_logging;    // CFS nice -5
   ThreadConfig nrt_callback;   // CFS nice  0
   ThreadConfig arm_driver;     // CFS, process-level taskset (launch script 가 박음)
   ThreadConfig hand_driver;    // CFS, 동일
-  ThreadConfig sim_thread;     // CFS, cpu_core=-1 sentinel 가능
-  ThreadConfig viewer;         // CFS, cpu_core=-1 sentinel 가능
+  ThreadConfig sim_thread;     // CFS, cpu_core=-1 sentinel (모든 tier)
+  ThreadConfig viewer;         // CFS, cpu_core=-1 sentinel (모든 tier)
   MpcThreadConfig mpc;         // mpc_main + workers[0..2]
 };
 
@@ -517,7 +518,7 @@ inline SystemThreadConfigs SelectThreadConfigs() noexcept {
   const int ncpu = GetPhysicalCpuCount();
   // 7-tier dispatch: >= 16 / 14 / 12 / 10 / 8 / 6 / else 4-core fallback.
   // 각 tier 의 ThreadConfig 상수는 헤더에 inline const 로 정의 (kRtControlConfig*,
-  // kRtInboundConfig*, kRtOutboundConfig*, kNrtCallbackConfig*, kNrtLoggingConfig*,
+  // kRtCallbackConfig*, kNrtCallbackConfig*, kNrtLoggingConfig*,
   // kArmDriverConfig*, kHandDriverConfig*, kSimThreadConfig*, kViewerConfig*).
   ...
 }
@@ -525,7 +526,8 @@ inline SystemThreadConfigs SelectThreadConfigs() noexcept {
 }  // namespace rtc
 ```
 
-- **`udp_recv` 필드 / `kUdpRecvConfig*` 상수 완전 삭제** (v3). 대체:
+- **v4 단일화**: v3 의 `rt_inbound` + `rt_outbound` 필드는 `rt_callback` (FIFO 70) 으로 통합. actuator publish 는 `rt_control` 이 inline 으로 수행하므로 별도 출력 thread 불요.
+- **`udp_recv` 필드 / `kUdpRecvConfig*` 상수 완전 삭제** (v3 부터). 대체:
   - `udp_hand_driver` 내부 private 상수 [`kHandUdpRecvConfig`](../udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp) (FIFO 65, `cpu_core=-1` sentinel — `hand_driver` 프로세스의 taskset affinity 상속).
   - 일반 `rtc_communication::Transceiver` default 는 [`kRtUdpRecvConfig`](../rtc_communication/include/rtc_communication/transceiver.hpp) (FIFO 65, `cpu_core=-1`) — caller 가 명시 핀 필요시 override.
   - `SystemThreadConfigs` 에는 UDP receive 가 보이지 않는다 — hand UDP receive 는 별도 프로세스 (`udp_hand_node`) 의 *내부* thread 이므로 single-process 의 SSoT 표현 대상이 아님.
@@ -573,9 +575,10 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
 
   const auto cfgs = rtc::SelectThreadConfigs();
 
-  // 2. RT loop + rt_outbound + nrt_publish_thread (jthread, executor 미사용)
-  // on_activate 가 StartRtLoop(cfgs.rt_control) / StartPublishLoop(cfgs.rt_outbound)
-  // / StartNrtPublishLoop(cfgs.nrt_callback) 를 호출.
+  // 2. RT loop + nrt_publish_thread (jthread, executor 미사용)
+  // on_activate 가 StartRtLoop(cfgs.rt_control) / StartNrtPublishLoop(cfgs.nrt_callback)
+  // 를 호출. v3 의 StartPublishLoop / rt_outbound jthread 는 v4 에서 제거됨 —
+  // actuator publish 는 rt_control 의 rt_loop tick 안에서 inline 으로 수행.
 
   // 3. 3 executor 생성 + cb_group binding
   rclcpp::executors::SingleThreadedExecutor rt_callback_executor;
@@ -693,10 +696,10 @@ sudo cyclictest --mlockall --smp --priority=90 --policy=fifo \
 ### 4. ROS 2 제어 주파수
 
 ```bash
-# UR 의 forward_position_controller 명령 (rt_outbound → DDS)
+# UR 의 forward_position_controller 명령 (rt_control inline → DDS, v4)
 ros2 topic hz /forward_position_controller/commands
 
-# Hand UDP joint_command (rt_outbound → UDP via udp_hand_node)
+# Hand UDP joint_command (rt_control inline → UDP via udp_hand_node, v4)
 ros2 topic hz /hand/joint_command
 
 # 출력:
