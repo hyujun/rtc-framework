@@ -95,6 +95,17 @@ struct CalibrationStatusSnapshot {
   uint16_t target_count{0};
 };
 
+// Hand-private UDP receive thread config (Phase 5 — was rtc::kUdpRecvConfig
+// in SystemThreadConfigs prior to the SSoT cleanup). cpu_core = -1 means the
+// receive thread inherits whatever affinity the launch script's process-level
+// `taskset` set on the hand_driver process; SCHED_FIFO 65 preserves the prior
+// priority hierarchy (rt_inbound 70 > hand UDP 65 > mpc_main 60).
+inline const rtc::ThreadConfig kHandUdpRecvConfig{.cpu_core = -1,
+                                                  .sched_policy = SCHED_FIFO,
+                                                  .sched_priority = 65,
+                                                  .nice_value = 0,
+                                                  .name = "hand_udp_recv"};
+
 class UdpHandController {
  public:
   using StateCallback =
@@ -102,7 +113,7 @@ class UdpHandController {
 
   explicit UdpHandController(
       std::string target_ip, int target_port,
-      const rtc::ThreadConfig& thread_cfg = rtc::kUdpRecvConfig, double recv_timeout_ms = 10.0,
+      const rtc::ThreadConfig& thread_cfg = kHandUdpRecvConfig, double recv_timeout_ms = 10.0,
       bool /*enable_write_ack*/ = false,  // deprecated
       int sensor_decimation = 1, int num_fingertips = udp_hand_driver::kDefaultNumFingertips,
       bool use_fake_hand = false, const std::vector<std::string>& fingertip_names = {},

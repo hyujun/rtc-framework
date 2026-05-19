@@ -241,8 +241,9 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
     │  RT 루프 (clock_nanosleep @ control_rate)
     │  제어기: rtc_controllers (P / JointPD / CLIK / OSC)
     │  전송: rtc_communication (UDP)
-    ├──→ SPSC ──→ [publish_thread] ──→ /forward_position_controller/commands
-    ├──→ SPSC ──→ [log_thread] ──→ CSV 3-파일 (timing, robot, device)
+    ├──→ SPSC (cap 512) ──→ [rt_outbound (FIFO 65)] ──→ /forward_position_controller/commands
+    ├──→ SPSC (cap 16)  ──→ [nrt_publish_thread (CFS)] ──→ controller.PublishNonRtSnapshot
+    ├──→ SPSC ──→ [nrt_logging_executor] ──→ CSV 3-파일 (timing, robot, device)
     └──→ E-STOP ──→ /system/estop_status
 
 [핸드 HW] ←UDP 직접 소유→ [udp_hand_driver] ← SeqLock ← [ControlLoop]
@@ -250,21 +251,22 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 [rtc_inference]   RT-안전 ONNX 추론 (IoBinding, 사전 할당)
 ```
 
-### 스레딩 모델 (6코어 기준)
+### 스레딩 모델 (6코어 기준, layout v3)
 
 | 스레드 | 타입 | 코어 | 스케줄러 | 우선순위 | 역할 |
 |--------|------|------|----------|----------|------|
-| `rt_loop` | jthread (clock_nanosleep) | 2 | SCHED_FIFO | 90 | ControlLoop @ `control_rate` (default 500Hz, design 100Hz–5kHz) + CheckTimeouts 50Hz |
-| `sensor_executor` | ROS2 Executor | 3 | SCHED_FIFO | 70 | /joint_states, /target_joint_positions 구독 |
-| `log_executor` | ROS2 Executor | 4 | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 (Phase C 이후 controller-owned CSV 는 각 controller LifecycleNode 소유) |
-| `mpc_main` (Phase 5) | jthread | 4 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (6코어는 logging과 공유; 8+코어는 dedicated) |
-| `publish_thread` | jthread (SPSC drain) | 5 | SCHED_OTHER | nice -3 | ROS2 publish offload (ControlPublishBuffer) |
-| `aux_executor` | ROS2 Executor | 5 | SCHED_OTHER | 0 | E-STOP 상태 퍼블리시 |
-| `udp_recv` | jthread | 5 | SCHED_FIFO | 65 | 핸드 UDP 수신 (udp_hand_driver) |
+| `rt_control` | jthread (clock_nanosleep) | 2 | SCHED_FIFO | 90 | ControlLoop @ `control_rate` (default 500Hz, design 100Hz–5kHz) + CheckTimeouts 50Hz |
+| `rt_inbound` | ROS2 Executor | 3 | SCHED_FIFO | 70 | DeviceBackend state subs (/joint_states, hand state/motor/sensor) via Configure(node, cfg, state_cb_group) 주입 |
+| `rt_outbound` | jthread (SPSC drain, cap 512) | 3 | SCHED_FIFO | 65 | RT actuator publish — `publish_buffer_` → `backend.WriteCommand`. rt_inbound 와 same-core, priority diff (70 > 65) 가 starvation 방지 |
+| `nrt_publish_thread` | jthread (SPSC drain, cap 16) | nrt_callback core | SCHED_OTHER | 0 | controller-owned non-RT 토픽 (`RobotTarget` / `Transforms` / `DigitalTwin` / `grasp_state` / `wbc_state` / `tof_snapshot`) — `controller.PublishNonRtSnapshot` 호출 |
+| `nrt_logging_executor` | ROS2 Executor | 0 | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 (Phase C 이후 controller-owned CSV 는 각 controller LifecycleNode 소유) |
+| `nrt_callback_executor` | ROS2 Executor | 0 (6-core) / 1 (≥ 8-core) | SCHED_OTHER | 0 | E-STOP 상태 + lifecycle services + CM/controller default group (RobotTarget subs, grasp_command services) |
+| `mpc_main` | jthread | 4 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (≥ 8코어 dedicated; 6코어는 spare core 와 공유) |
+| `hand_driver` (process) | external process | 1 (6-core) / dedicated (≥ 8-core) | SCHED_OTHER | 0 (process pin); internal recv FIFO 65 | hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, cpu_core=-1 sentinel → process taskset 상속) |
 
 > Core 0–1: OS, DDS, NIC IRQ (isolcpus 대신 런타임 `cset shield` 사용). DDS 스레드는 `taskset`으로 Core 0-1에 자동 핀닝.
 > CycloneDDS 성능 최적화: 멀티캐스트 비활성화, 소켓 버퍼 확대, write batching, NACK 지연 최소화.
-> **MPC 스레드는 sensor_io보다 낮은 우선순위(60 < 70)를 가지므로 sensor callback이 항상 preempt — 긴 solve가 RT 루프에 영향을 주지 않음.** 12/16코어 tier는 MPC main + 1–2 worker(SCHED_FIFO 55)로 병렬 solve 지원. 8/10/12/16코어 레이아웃 및 `kMpcConfig{4,6,8,10,12,16}Core`는 `rtc_base` README 참조.
+> **RT priority hierarchy**: 90 (rt_control) > 70 (rt_inbound) > 65 (rt_outbound) > 60 (mpc_main) > 55 (mpc_workers). MPC 가 rt_inbound 보다 낮으므로 sensor callback 이 항상 preempt — 긴 solve 가 RT 루프에 영향을 주지 않음. 10+코어 tier 는 MPC main + 1–2 worker (SCHED_FIFO 55) 로 병렬 solve 지원. 전체 tier (4/6/8/10/12/14/16) 레이아웃 + `kMpcConfig{4,6,8,10,12,14,16}Core` 는 `rtc_base` README 참조.
 
 ---
 

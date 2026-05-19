@@ -48,13 +48,19 @@
 // Threading model:
 //   - rt_loop (jthread):   clock_nanosleep RT loop — ControlLoop() +
 //   CheckTimeouts()
-//   - publish_thread (jthread): SPSC drain → controller PublishNonRtSnapshot +
-//                          DeviceBackend WriteCommand (each backend pushes onto
-//                          its own publisher path)
-//   - cb_group_sensor_:    backend state/motor/sensor subs (created by each
+//   - publish_thread (jthread, rt_outbound): SPSC drain →
+//                          DeviceBackend.WriteCommand only (actuator command,
+//                          RT controller↔hardware boundary, SCHED_FIFO 65).
+//   - nrt_publish_thread (jthread, nrt_callback): SPSC drain →
+//                          controller.PublishNonRtSnapshot (controller-owned
+//                          non-RT topics: RobotTarget/Transforms/DigitalTwin,
+//                          SCHED_OTHER nice 0). Separate lane because these
+//                          publishes are outside the controller↔hardware RT
+//                          boundary.
+//   - cb_group_rt_inbound_:    backend state/motor/sensor subs (created by each
 //                          DeviceBackend) + target_sub_ (Sensor core)
-//   - cb_group_log_:       drain_timer_  (non-RT core)
-//   - cb_group_aux_:       estop_pub_  (aux core)
+//   - cb_group_nrt_logging_:       drain_timer_  (non-RT core)
+//   - cb_group_nrt_callback_:       estop_pub_  (aux core)
 // Forward declaration for friend access — defined in
 // test/test_controller_lifecycle.cpp.
 namespace rtc {
@@ -85,15 +91,16 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
   // Public accessors for main() to retrieve callback groups
-  rclcpp::CallbackGroup::SharedPtr GetSensorGroup() const { return cb_group_sensor_; }
+  rclcpp::CallbackGroup::SharedPtr GetRtInboundGroup() const { return cb_group_rt_inbound_; }
 
-  rclcpp::CallbackGroup::SharedPtr GetLogGroup() const { return cb_group_log_; }
+  rclcpp::CallbackGroup::SharedPtr GetNrtLoggingGroup() const { return cb_group_nrt_logging_; }
 
-  rclcpp::CallbackGroup::SharedPtr GetAuxGroup() const { return cb_group_aux_; }
+  rclcpp::CallbackGroup::SharedPtr GetNrtCallbackGroup() const { return cb_group_nrt_callback_; }
 
   // Per-controller LifecycleNodes created in on_configure.  main() attaches
-  // these to aux_executor so controller-owned subscriptions/publishers are
-  // processed off the RT path.  Valid after CM's on_configure has succeeded.
+  // these to nrt_callback_executor so controller-owned subscriptions/publishers
+  // are processed off the RT path.  Valid after CM's on_configure has
+  // succeeded.
   [[nodiscard]] const std::vector<rclcpp_lifecycle::LifecycleNode::SharedPtr>& GetControllerNodes()
       const {
     return controller_nodes_;
@@ -102,8 +109,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // RT loop lifecycle — public until Step 8 (RtControllerMain redesign)
   void StartRtLoop(const rtc::ThreadConfig& rt_cfg);
   void StartPublishLoop(const rtc::ThreadConfig& pub_cfg);
+  void StartNrtPublishLoop(const rtc::ThreadConfig& nrt_pub_cfg);
   void StopRtLoop();
   void StopPublishLoop();
+  void StopNrtPublishLoop();
 
  private:
   // ── Session directory helpers ─────────────────────────────────────────────
@@ -190,6 +199,8 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Publish offload (SPSC drain → publish) ──────────────────────────────
   void PublishLoopEntry(const rtc::ThreadConfig& cfg);
   void WaitForPublishWakeup();
+  void NrtPublishLoopEntry(const rtc::ThreadConfig& cfg);
+  void WaitForNrtPublishWakeup();
   void DrainLog();  // Log drain (non-RT core)
 
   void PublishEstopStatus(bool estopped);
@@ -227,9 +238,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   }
 
   // ── ROS2 handles ──────────────────────────────────────────────────────────
-  rclcpp::CallbackGroup::SharedPtr cb_group_sensor_;
-  rclcpp::CallbackGroup::SharedPtr cb_group_log_;
-  rclcpp::CallbackGroup::SharedPtr cb_group_aux_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_rt_inbound_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_nrt_logging_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_nrt_callback_;
 
   // ── Configurable topic subscriptions (created from controller YAML) ──────
   // Key = topic name, value = subscription handle (kept alive for node
@@ -242,7 +253,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_ctrl_name_pub_;
 
   // ── /rtc_cm/* services (Phase 3) ─────────────────────────────────────────
-  // Both callbacks run on cb_group_aux_ — never on the RT path. The switch
+  // Both callbacks run on cb_group_nrt_callback_ — never on the RT path. The switch
   // service is a thin wrapper around SwitchActiveController(name, message);
   // list_controllers builds its response from controller_states_ +
   // controller_topic_configs_ + controller_types_.
@@ -343,10 +354,23 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   ControlLoopThread rt_loop_{this};
 
   // ── Publish offload (SPSC buffer + dedicated thread) ────────────────────
+  // Actuator command lane (rt_outbound, SCHED_FIFO 65 after Phase 4):
+  //   producer = RT loop, consumer = publish_thread_ → backend.WriteCommand.
   rtc::ControlPublishBuffer publish_buffer_{};
   std::jthread publish_thread_;
   std::atomic<bool> publish_running_{false};
   int publish_eventfd_{-1};  // eventfd for RT→publish wakeup (replaces sched_yield)
+
+  // Controller-owned non-RT topic lane (nrt_callback, SCHED_OTHER nice 0):
+  //   producer = RT loop, consumer = nrt_publish_thread_ →
+  //   controller.PublishNonRtSnapshot. Separate from publish_buffer_ so the
+  //   rt_outbound thread carries only actuator commands (controller↔hardware
+  //   boundary); controller-owned publishes (RobotTarget/Transforms/
+  //   DigitalTwin) ride a non-RT consumer.
+  rtc::NrtPublishBuffer nrt_publish_buffer_{};
+  std::jthread nrt_publish_thread_;
+  std::atomic<bool> nrt_publish_running_{false};
+  int nrt_publish_eventfd_{-1};
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<rtc::RTControllerInterface>> controllers_;
@@ -373,7 +397,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Shared state ──────────────────────────────────────────────────────────
   // Device state lives inside each DeviceBackend (per-device SeqLock,
   // lock-free single-writer/multi-reader). Writer: backend's own sub
-  // callbacks (cb_group_sensor_, MutuallyExclusive). Readers: RT loop
+  // callbacks (cb_group_rt_inbound_, MutuallyExclusive). Readers: RT loop
   // (ControlLoop) via backend->ReadState.
   //
   // Per-controller target slots live on each controller (SeqLock<TargetSlot>

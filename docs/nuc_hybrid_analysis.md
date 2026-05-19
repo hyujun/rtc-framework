@@ -25,7 +25,7 @@
 2. 단, **새로 도입된 설계 결정** 3건은 실측·벤치마크로만 검증 가능하므로 코드 merge 전에 결론을 낼 수 없다:
    - i7-1360P(4P)의 `mpc_main+mpc_worker_0` SMT sibling 결합이 Aligator parallel backward pass에 실제로 유리한가
    - i7-1370P(6P) Variant A vs B 선택
-   - `sensor_io+udp_recv` SMT sibling 결합이 I/O burst 시 경쟁을 유발하는가
+   - `rt_inbound+udp_recv` SMT sibling 결합이 I/O burst 시 경쟁을 유발하는가
 3. **즉시 merge 가능한 부분은 Stage A(Topology 감지)뿐**이다. Stage B 이후는 NUC 13 Pro i7-1360P 실기 벤치마크가 선행 조건이다.
 4. 잔존 우려 3건은 plan 수립 시점에 결정해야 한다:
    - `DegradationMode::SERIAL_MPC` 경로를 Phase 1에서 **구현**하는지 **명세만** 확정하는지
@@ -41,7 +41,7 @@
 |---|---|---|
 | Tier dispatch 기준 | `GetPhysicalCpuCount()` 물리 코어 수 | [`thread_utils.hpp:506,723`](../rtc_base/include/rtc_base/threading/thread_utils.hpp) |
 | 지원 tier | 4/6/8/10/12/14/16 (모두 `inline const ThreadConfig` 정적 상수) | [`thread_config.hpp:48,123,184,257,342,432,515`](../rtc_base/include/rtc_base/threading/thread_config.hpp) |
-| 대표 FIFO 우선순위 | rt_control 90, sensor_io 70, udp_recv 65, mpc_main 60, mpc_worker_* 55 | [`architecture.md`](../agent_docs/architecture.md), [`thread_config.hpp`](../rtc_base/include/rtc_base/threading/thread_config.hpp) |
+| 대표 FIFO 우선순위 | rt_control 90, rt_inbound 70, udp_recv 65, mpc_main 60, mpc_worker_* 55 | [`architecture.md`](../agent_docs/architecture.md), [`thread_config.hpp`](../rtc_base/include/rtc_base/threading/thread_config.hpp) |
 | Worker 개수 | 8코어 0 · 10코어 1 · 12/14/16코어 2 | [`thread_config.hpp:105,235,308,392,477,568`](../rtc_base/include/rtc_base/threading/thread_config.hpp) |
 | SSoT 4파일 | `thread_config.hpp`, `thread_utils.hpp::SelectThreadConfigs`, `rt_common.sh`, `cpu_shield.sh`, `verify_rt_runtime.sh` | memory `project_core_allocation.md` |
 | Invariant 테스트 | `TierIsolationMonotonicity` — 인접 tier 간 num_workers 단조 증가, distinct-core 단조 비감소, ≥10코어에서 mpc_main/udp_recv/logger 분리 | [`test_mpc_thread_config.cpp`](../rtc_base/test/test_mpc_thread_config.cpp) |
@@ -97,7 +97,7 @@ P-core 2: mpc_main    (p[2], FIFO 60)
 
 **분석**:
 - Variant A는 Aligator worker 수를 4개로 늘려 horizon 병렬도를 높이지만, 4개 중 2개는 SMT sibling 공유(`s[2], s[3]`)이므로 3.1과 동일한 ALU 경쟁 우려.
-- Variant B는 worker 2개이므로 현재 12/14/16-core tier의 `num_workers=2`와 동일 — Aligator 병렬도는 동일하나 `sensor_io`와 `udp_recv`가 독립 P-core에 dedicated되어 I/O jitter가 낮다.
+- Variant B는 worker 2개이므로 현재 12/14/16-core tier의 `num_workers=2`와 동일 — Aligator 병렬도는 동일하나 `rt_inbound`와 `udp_recv`가 독립 P-core에 dedicated되어 I/O jitter가 낮다.
 - **`TierIsolationMonotonicity` 관점**: 현재 테스트는 "num_workers가 tier 증가에 따라 단조 증가"를 강제한다. i7-1360P(4P, worker 2) → i7-1370P(6P, Variant B, worker 2)는 **증가가 아니라 동일**이므로 테스트는 통과하나, Variant A(worker 4)는 증가를 보장한다.
 - 만약 사용자가 Variant B를 기본으로 채택하면 "6P가 4P보다 worker를 늘리지 않는다"는 의사결정을 문서화해야 함 (이유: I/O 격리가 worker 추가보다 가치 있음).
 
@@ -107,18 +107,18 @@ P-core 2: mpc_main    (p[2], FIFO 60)
 
 **분석 결론**: i7-1370P 실기 확보 전까지는 Variant B만 빌드/테스트 대상으로 두고, Variant A는 코드로만 존재(deadcode 경고 suppress) — CMake 옵션은 실기 확보 후에 활성화.
 
-### 3.3 `sensor_io + udp_recv` SMT sibling 결합 (4P, 6P Variant A 공통)
+### 3.3 `rt_inbound + udp_recv` SMT sibling 결합 (4P, 6P Variant A 공통)
 
 **v4 지시 (§2.2, §2.3 Variant A)**:
 ```
-P-core 1: sensor_io (p[1], FIFO 70)
+P-core 1: rt_inbound (p[1], FIFO 70)
          udp_recv  (s[1], FIFO 65)
 ```
 
 **분석**:
-- 둘 다 **I/O 콜백**이다. `sensor_io`는 ROS2 subscription executor, `udp_recv`는 UDP 소켓 recv 루프.
+- 둘 다 **I/O 콜백**이다. `rt_inbound`는 ROS2 subscription executor, `udp_recv`는 UDP 소켓 recv 루프.
 - SMT sibling 공유는 I/O interrupt 처리 중 L1d cache hit rate 향상에는 긍정적이지만, UDP burst(10kHz 이상) 시 두 스레드가 context switch 경쟁을 일으키면 **sensor callback p99가 현재(12-core tier, Core 3 dedicated)보다 나빠질 수 있다**.
-- v4 §2.3 Variant B는 이 문제를 예방하기 위해 `sensor_io=p[1]` sibling 비움, `udp_recv=p[2]` dedicated로 설계.
+- v4 §2.3 Variant B는 이 문제를 예방하기 위해 `rt_inbound=p[1]` sibling 비움, `udp_recv=p[2]` dedicated로 설계.
 - v4 §2.2 4P는 P-core 4개밖에 없어 dedicated 할 수 없음 — **구조적 제약이지 선택이 아니다**.
 
 **실측 필요 항목**:
@@ -279,7 +279,7 @@ const CpuTopology& GetCpuTopology() noexcept {
 
 1. **i7-1370P 실기 확보 여부 확인** — 없으면 Variant B 기본값만 구현(Variant A 코드는 제외), 있으면 벤치마크 일정 잡기
 2. **§3.1 SMT pair 기본값 결정**: `mpc_main+mpc_worker_0` SMT 결합을 기본으로 할지, cross-core를 기본으로 할지 — i7-1360P 벤치마크 후
-3. **§3.3 4P에서 `sensor_io+udp_recv` SMT 결합** 실측 UDP burst 조건 하에서 sensor p99 regression 여부 확인
+3. **§3.3 4P에서 `rt_inbound+udp_recv` SMT 결합** 실측 UDP burst 조건 하에서 sensor p99 regression 여부 확인
 4. **§4.1 `RTC_FORCE_HYBRID_GENERATION`** 의미 확정 (감지 힌트인가, 전체 override인가)
 5. **§4.2 `GetCpuTopology()` prewarm** 지점 명시 (`on_configure` 권장)
 6. **§4.3 `TierIsolationMonotonicity` 리팩토링 방식** — Option 2 + Option 3 조합 권장

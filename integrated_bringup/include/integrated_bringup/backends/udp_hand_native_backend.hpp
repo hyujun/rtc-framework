@@ -43,7 +43,8 @@ class UdpHandNativeBackend : public DeviceBackend {
   UdpHandNativeBackend(const UdpHandNativeBackend&) = delete;
   UdpHandNativeBackend& operator=(const UdpHandNativeBackend&) = delete;
 
-  void Configure(rclcpp_lifecycle::LifecycleNode* node, const DeviceBackendConfig& config) override;
+  void Configure(rclcpp_lifecycle::LifecycleNode* node, const DeviceBackendConfig& config,
+                 rclcpp::CallbackGroup::SharedPtr state_cb_group) override;
   void Activate() override;
   void Deactivate() override;
 

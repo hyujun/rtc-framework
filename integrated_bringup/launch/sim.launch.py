@@ -45,6 +45,7 @@ from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
 from rtc_tools.launch.perf_action import make_perf_action
+from rtc_tools.launch.thread_layout import get_sim_core
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
     create_session_dir,
@@ -311,30 +312,33 @@ def launch_setup(context, *args, **kwargs):
         ]
     )
 
-    # ── MuJoCo sim_thread CPU pinning ─────────────────────────────────────────
+    # ── MuJoCo sim_thread CPU pinning (Phase 6) ───────────────────────────────
+    # SystemThreadConfigs.sim_thread is the C++ SSoT; the same tier dispatch
+    # lives in rtc_tools.launch.thread_layout. The MuJoCo node also calls
+    # ApplyThreadConfig(...sim_thread) from inside the SimLoop thread — this
+    # taskset is a redundant safety net for any auxiliary process-level work
+    # that runs before SimLoop starts. cpu_core == -1 → skip (no pinning).
     if use_affinity.lower() in ("true", "1", "yes"):
-        pin_mujoco_sim = TimerAction(
-            period=2.0,
-            actions=[
-                ExecuteProcess(
-                    cmd=[
-                        "bash",
-                        "-c",
-                        'PHYS=$(lscpu -p=Core,Socket 2>/dev/null | grep -v "^#" | sort -u | wc -l); '
-                        'if [ "$PHYS" -ge 8 ]; then '
-                        "  PID=$(pgrep -nf mujoco_simulator_node); "
-                        '  if [ -n "$PID" ]; then '
-                        "    SIM_CORE=$((PHYS >= 10 ? 7 : 6)); "
-                        '    taskset -cp $SIM_CORE "$PID" && '
-                        '    echo "[SIM] mujoco_simulator (PID=$PID) pinned to Core $SIM_CORE"; '
-                        "  fi; "
-                        "fi",
-                    ],
-                    output="screen",
-                )
-            ],
-        )
-        actions.append(pin_mujoco_sim)
+        sim_core = get_sim_core()
+        if sim_core >= 0:
+            pin_mujoco_sim = TimerAction(
+                period=2.0,
+                actions=[
+                    ExecuteProcess(
+                        cmd=[
+                            "bash",
+                            "-c",
+                            "PID=$(pgrep -nf mujoco_simulator_node); "
+                            'if [ -n "$PID" ]; then '
+                            f'  taskset -cp {sim_core} "$PID" && '
+                            f'  echo "[SIM] mujoco_simulator (PID=$PID) pinned to Core {sim_core}"; '
+                            "fi",
+                        ],
+                        output="screen",
+                    )
+                ],
+            )
+            actions.append(pin_mujoco_sim)
 
         # integrated_rt_controller DDS/aux threads → Core 0-1 (mirror of robot.launch.py).
         # ApplyThreadConfig() already pins SCHED_FIFO executors (rt_loop, sensor,

@@ -121,11 +121,11 @@ class ControllerLifecycleTestAccess {
     node.global_estop_.store(v, std::memory_order_release);
   }
 
-  // Bind cb_group_aux_ + bring the services online without driving the full
-  // lifecycle. CM's CreateServices() requires cb_group_aux_ already set.
+  // Bind cb_group_nrt_callback_ + bring the services online without driving the full
+  // lifecycle. CM's CreateServices() requires cb_group_nrt_callback_ already set.
   static void BringServicesOnline(RtControllerNode& node) {
-    if (!node.cb_group_aux_) {
-      node.cb_group_aux_ = node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    if (!node.cb_group_nrt_callback_) {
+      node.cb_group_nrt_callback_ = node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     }
     node.CreateServices();
   }

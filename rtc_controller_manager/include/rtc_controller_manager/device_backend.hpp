@@ -5,6 +5,7 @@
 #include "rtc_base/types/types.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 
+#include <rclcpp/callback_group.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <chrono>
@@ -79,8 +80,24 @@ class DeviceBackend {
   /// One-shot configure. Backend creates its subscriptions/publishers on
   /// `node` and stashes the config for later use. Must be safe to call on the
   /// main thread; not RT.
-  virtual void Configure(rclcpp_lifecycle::LifecycleNode* node,
-                         const DeviceBackendConfig& config) = 0;
+  ///
+  /// `state_cb_group` is the callback group that ALL state-lane subscriptions
+  /// (joint / motor / sensor) created by the backend must be attached to via
+  /// `rclcpp::SubscriptionOptions::callback_group`. CM passes its
+  /// `cb_group_rt_inbound_` (RT path, FIFO 70 executor) so the
+  /// controller↔hardware/sim boundary subs are dispatched on the rt_inbound
+  /// thread, matching the RT definition in
+  /// `~/.claude/plans/arm-hand-core-allocation.md`. May be null in test
+  /// fixtures that don't wire an executor — backends must tolerate this and
+  /// fall back to the default callback group.
+  ///
+  /// The supplied group MUST be `MutuallyExclusive` (CM creates it as such).
+  /// Each backend writes into its own `SeqLock<DeviceStateCache>` from the
+  /// state callback — the single-writer invariant relies on the callback
+  /// group serializing concurrent callbacks. A `Reentrant` group would break
+  /// it; do not substitute one.
+  virtual void Configure(rclcpp_lifecycle::LifecycleNode* node, const DeviceBackendConfig& config,
+                         rclcpp::CallbackGroup::SharedPtr state_cb_group) = 0;
 
   /// Enable lifecycle publishers. Not RT.
   virtual void Activate() = 0;

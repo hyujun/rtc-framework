@@ -80,10 +80,15 @@ install_mpc_deps() {
 
   # Ensure sources are present (vcs import if missing).
   # deps.repos 는 repo 내부 (src/rtc-framework/), deps/src|install 은 workspace 루트 (../../).
-  if [[ ! -d "${INSTALL_SCRIPT_DIR}/../../deps/src/aligator/.git" ]]; then
+  # COLCON_IGNORE 는 deps/ 가 ws-root 의 src/ 처럼 colcon 에 picked up 되는 것을
+  # 차단 (aligator/package.xml 가 ROS 패키지로 보이면 duplicate package name error).
+  local deps_root="${INSTALL_SCRIPT_DIR}/../../deps"
+  mkdir -p "${deps_root}"
+  touch "${deps_root}/COLCON_IGNORE"
+  if [[ ! -d "${deps_root}/src/aligator/.git" ]]; then
     info "  Importing deps sources (deps.repos)..."
-    mkdir -p "${INSTALL_SCRIPT_DIR}/../../deps/src"
-    (cd "${INSTALL_SCRIPT_DIR}/../../deps/src" \
+    mkdir -p "${deps_root}/src"
+    (cd "${deps_root}/src" \
         && vcs import . < "${INSTALL_SCRIPT_DIR}/deps.repos" > /dev/null 2>&1 \
         && (cd aligator && git submodule update --init --recursive --depth 1 >/dev/null 2>&1)) \
       || { warn "vcs import failed — check deps.repos"; return; }

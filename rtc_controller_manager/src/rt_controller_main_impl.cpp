@@ -11,30 +11,45 @@
 //            calls from launch event handlers.
 //   Phase 2: Poll until the node reaches Active state (on_activate starts
 //            RT loop + publish offload thread).
-//   Phase 3: Add sensor/log/aux callback groups to dedicated executors
-//            with RT thread configs. The default callback group stays on
-//            aux_executor to continue processing lifecycle services.
+//   Phase 3: Add rt_inbound/nrt_logging/nrt_callback callback groups to
+//            dedicated executors with RT thread configs. The default callback
+//            group stays on nrt_callback_executor to continue processing
+//            lifecycle services.
 //
-// Threading model:
-//   rt_loop          Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
-//   E-STOP publish_thread   Core 5  SCHED_OTHER -3   SPSC drain → all publish() calls
-//   sensor_executor  Core 3  SCHED_FIFO 70   cb_group_sensor_ only — CM-owned
-//                                            RobotTarget sub. DeviceBackend
-//                                            state subs (/joint_states, hand
-//                                            state/motor/sensor) are currently
-//                                            on aux_executor via the default
-//                                            callback group (Phase 4 backend
-//                                            abstraction dropped the sensor-
-//                                            group injection path; cleanup
-//                                            tracked in
-//                                            ~/.claude/plans/callback_group_audit.md)
-//   log_executor     Core 4  SCHED_OTHER -5   cm_timing_log.csv drain + deferred E-STOP log
-//   aux_executor     Core 5  SCHED_OTHER  0   E-STOP status + lifecycle services
-//                                            + CM default group + controller
-//                                            LifecycleNode default groups
-//                                            (DeviceBackend subs, owned
-//                                            RobotTarget subs, grasp_command
-//                                            services)
+// Threading model (layout v3, SSoT: rtc_base/threading/thread_config.hpp):
+//   rt_control       Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
+//                                            timeout checker. Drives publish_buffer_ +
+//                                            nrt_publish_buffer_.
+//   rt_inbound       Core 3  SCHED_FIFO 70   rt_inbound_executor pinned here.
+//                                            cb_group_rt_inbound_ — DeviceBackend
+//                                            state subs only (/joint_states,
+//                                            hand state/motor/sensor) via
+//                                            DeviceBackend::Configure(node, cfg,
+//                                            state_cb_group) injection. RobotTarget
+//                                            subs (CM-owned and controller-owned)
+//                                            stay on default group (nrt_callback)
+//                                            per RT-boundary decision.
+//   rt_outbound      Core 3  SCHED_FIFO 65   publish_buffer_ drain → backend.WriteCommand
+//                                            only (actuator + per-group joint_states +
+//                                            device logs). Same core as rt_inbound;
+//                                            priority diff (70 > 65) lets rt_inbound
+//                                            preempt — no starvation.
+//   nrt_publish      nrt_callback core, CFS  nrt_publish_buffer_ drain (cap 16) →
+//                                            controller.PublishNonRtSnapshot
+//                                            (controller-owned non-RT topics:
+//                                            RobotTarget / Transforms / DigitalTwin /
+//                                            grasp_state / wbc_state / tof_snapshot).
+//   nrt_logging      Core 0  SCHED_OTHER -5   nrt_logging_executor — cm_timing_log.csv
+//                                            drain + deferred E-STOP log.
+//   nrt_callback     Core 1 (≥ 8-core tier;  nrt_callback_executor —
+//                    Core 0 on 6-core)        cb_group_nrt_callback_ + CM node default
+//                                            SCHED_OTHER 0                group
+//                                            (CM-owned RobotTarget sub) + every
+//                                            controller LifecycleNode default group
+//                                            (owned RobotTarget subs, grasp_command
+//                                            services). E-STOP status + lifecycle
+//                                            services + nrt_publish_thread snapshot
+//                                            drain co-located here.
 
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -132,24 +147,27 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
 
   const auto cfgs = SelectThreadConfigs();
 
-  rclcpp::executors::SingleThreadedExecutor sensor_executor;
-  rclcpp::executors::SingleThreadedExecutor log_executor;
-  rclcpp::executors::SingleThreadedExecutor aux_executor;
+  rclcpp::executors::SingleThreadedExecutor rt_inbound_executor;
+  rclcpp::executors::SingleThreadedExecutor nrt_logging_executor;
+  rclcpp::executors::SingleThreadedExecutor nrt_callback_executor;
 
-  sensor_executor.add_callback_group(node->GetSensorGroup(), node->get_node_base_interface());
-  log_executor.add_callback_group(node->GetLogGroup(), node->get_node_base_interface());
-  aux_executor.add_callback_group(node->GetAuxGroup(), node->get_node_base_interface());
+  rt_inbound_executor.add_callback_group(node->GetRtInboundGroup(),
+                                         node->get_node_base_interface());
+  nrt_logging_executor.add_callback_group(node->GetNrtLoggingGroup(),
+                                          node->get_node_base_interface());
+  nrt_callback_executor.add_callback_group(node->GetNrtCallbackGroup(),
+                                           node->get_node_base_interface());
 
-  // Keep default callback group on aux_executor so lifecycle services
+  // Keep default callback group on nrt_callback_executor so lifecycle services
   // (deactivate, cleanup, shutdown) continue to be processed at runtime.
-  aux_executor.add_node(node->get_node_base_interface());
+  nrt_callback_executor.add_node(node->get_node_base_interface());
 
-  // Attach each controller's LifecycleNode to aux_executor so controller-
+  // Attach each controller's LifecycleNode to nrt_callback_executor so controller-
   // owned subscriptions/publishers are processed off the RT path.  Created
   // during CM on_configure; stable for the lifetime of the CM node.
   for (const auto& ctrl_node : node->GetControllerNodes()) {
     if (ctrl_node) {
-      aux_executor.add_node(ctrl_node->get_node_base_interface());
+      nrt_callback_executor.add_node(ctrl_node->get_node_base_interface());
     }
   }
 
@@ -169,26 +187,26 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
     });
   };
 
-  auto t_sensor = make_thread(sensor_executor, cfgs.sensor);
-  auto t_log = make_thread(log_executor, cfgs.logging);
-  auto t_aux = make_thread(aux_executor, cfgs.aux);
+  auto t_rt_inbound = make_thread(rt_inbound_executor, cfgs.rt_inbound);
+  auto t_nrt_logging = make_thread(nrt_logging_executor, cfgs.nrt_logging);
+  auto t_nrt_callback = make_thread(nrt_callback_executor, cfgs.nrt_callback);
 
   // Block here until rclcpp signals shutdown (SIGINT / SIGTERM via
   // rclcpp's installed signal handler, or explicit `rclcpp::shutdown()`).
   // We cannot rely on the rmw guard condition alone to wake every
-  // executor — cores collected during sim shutdown showed t_aux still in
+  // executor — cores collected during sim shutdown showed t_nrt_callback still in
   // rmw_fastrtps_shared_cpp::__rmw_wait after rclcpp::ok() flipped false,
   // so cancel each executor explicitly here before joining.
   while (rclcpp::ok()) {
     std::this_thread::sleep_for(50ms);
   }
-  sensor_executor.cancel();
-  log_executor.cancel();
-  aux_executor.cancel();
+  rt_inbound_executor.cancel();
+  nrt_logging_executor.cancel();
+  nrt_callback_executor.cancel();
 
-  t_sensor.join();
-  t_log.join();
-  t_aux.join();
+  t_rt_inbound.join();
+  t_nrt_logging.join();
+  t_nrt_callback.join();
 
   // Drop executor↔node references explicitly so the executors' internal
   // weak_ptr bookkeeping releases its node refs before local destruction
@@ -197,10 +215,10 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
   // their expected scope during local-variable teardown.
   for (const auto& ctrl_node : node->GetControllerNodes()) {
     if (ctrl_node) {
-      aux_executor.remove_node(ctrl_node->get_node_base_interface());
+      nrt_callback_executor.remove_node(ctrl_node->get_node_base_interface());
     }
   }
-  aux_executor.remove_node(node->get_node_base_interface());
+  nrt_callback_executor.remove_node(node->get_node_base_interface());
 
   rclcpp::shutdown();
   return 0;

@@ -20,8 +20,8 @@ namespace {
 // the registry can produce a non-null unique_ptr for a registered tag.
 class StubBackend : public rtc::DeviceBackend {
  public:
-  void Configure(rclcpp_lifecycle::LifecycleNode* /*node*/,
-                 const rtc::DeviceBackendConfig& config) override {
+  void Configure(rclcpp_lifecycle::LifecycleNode* /*node*/, const rtc::DeviceBackendConfig& config,
+                 rclcpp::CallbackGroup::SharedPtr /*state_cb_group*/) override {
     last_group_ = config.group_name;
   }
 
@@ -71,7 +71,10 @@ TEST(DeviceBackendRegistryTest, CreateProducesInstance) {
   rtc::DeviceBackendConfig cfg;
   cfg.group_name = "iiwa7";
   cfg.type = "test_stub_native";
-  backend->Configure(nullptr, cfg);
+  // Test fixture has no executor — pass a null callback group; backends must
+  // tolerate this and fall back to the node's default group (StubBackend
+  // ignores the arg entirely).
+  backend->Configure(nullptr, cfg, nullptr);
 
   auto* stub = dynamic_cast<StubBackend*>(backend.get());
   ASSERT_NE(stub, nullptr);

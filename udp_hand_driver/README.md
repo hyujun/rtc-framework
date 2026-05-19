@@ -48,14 +48,14 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 `UdpHandController`는 `rtc_controller_manager`의 `ControlLoop`가 호출하는 `SendCommandAndRequestStates()`에 의해 event-driven으로 구동됩니다. 단독 실행(standalone) 시에는 `/hand/joint_command` 구독으로 명령을 수신합니다.
 
 ```
-[Core 2] ControlLoop 500Hz
+[rt_control core] ControlLoop 500Hz
              |
              | Phase 4: SendCommandAndRequestStates(cmd)
              |           -> busy_ 체크 -> SeqLock store + atomic flag
              |           -> eventfd write (RT-safe, lock-free)
              |           -> busy_ 시 skip + event_skip_count 증가
              v
-[Core 5] EventLoop -- poll(event_fd, 20ms) -> wake
+[hand_driver core] EventLoop -- poll(event_fd, 20ms) -> wake
                     -> WritePosition(cmd, kJoint) + recv echo
                     -> ReadAllMotors(kMotor) -- motor pos/vel/cur
                     -> ReadAllMotors(kJoint) -- joint pos/vel/cur
@@ -115,7 +115,7 @@ Write 명령은 항상 `kJoint` 모드로 전송됩니다.
 
 ### UdpHandController (`udp_hand_controller.hpp`)
 
-핵심 드라이버 클래스. Event-driven jthread(Core 5, SCHED_FIFO/65)로 동작합니다.
+핵심 드라이버 클래스. Event-driven jthread (hand_driver core, SCHED_FIFO/65) 로 동작합니다. 코어 번호는 tier-aware (`rtc_base/threading/thread_config.hpp::SelectThreadConfigs().hand_driver.cpu_core` — 6-core 에서 Core 1, ≥ 8-core 에서 dedicated; SSoT 참조). 프로세스가 launch-level taskset 으로 pin 되고 내부 receive thread (priority 65) 가 affinity 상속.
 
 - **SeqLock** 기반 lock-free 상태 공유 (priority inversion 방지)
 - **busy_ flag**: EventLoop 실행 중 이벤트 skip 보호
@@ -337,9 +337,9 @@ source install/setup.bash
 
 | 항목 | 값 |
 |------|-----|
-| CPU 코어 | **Core 5** (`kUdpRecvConfig`) |
+| CPU 코어 | hand_driver core (tier-aware, `SelectThreadConfigs().hand_driver.cpu_core`); 내부 receive thread 는 process taskset 으로 affinity 상속 (`kHandUdpRecvConfig`, cpu_core=-1 sentinel) |
 | 스케줄러 | `SCHED_FIFO` |
-| 우선순위 | **65** |
+| 우선순위 | **65** (rt_outbound 와 동순위지만 다른 core/프로세스라 충돌 없음) |
 | 메모리 잠금 | `mlockall(MCL_CURRENT \| MCL_FUTURE)` |
 
 - 모든 코덱 함수: `noexcept`, 힙 할당 없음

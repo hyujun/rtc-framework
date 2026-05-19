@@ -91,7 +91,7 @@ virtual void SetDeviceTarget(int device_idx, std::span<const double> target) noe
 
 | 메서드 | 접근 | 설명 |
 |--------|------|------|
-| `get_lifecycle_node()` | public const noexcept | `on_configure` 성공 후 non-null. `RtControllerNode`가 `aux_executor`에 attach하기 위해 사용. `on_cleanup` 후 null |
+| `get_lifecycle_node()` | public const noexcept | `on_configure` 성공 후 non-null. `RtControllerNode`가 `nrt_callback_executor`에 attach하기 위해 사용. `on_cleanup` 후 null |
 
 멤버 `node_`는 `protected`로 노출되어 서브클래스가 `node_->create_subscription(...)` 형태로 직접 ROS I/O를 소유합니다. 이 네이밍 규약(`node_->`)은 향후 상속 전환 시 `this->`로 기계적 치환이 가능하도록 의도된 것입니다.
 

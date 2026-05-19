@@ -43,7 +43,8 @@ void MujocoNativeBackend::SetNameConfig(std::vector<std::string> joint_state_nam
 }
 
 void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
-                                    const DeviceBackendConfig& config) {
+                                    const DeviceBackendConfig& config,
+                                    rclcpp::CallbackGroup::SharedPtr state_cb_group) {
   config_ = config;
 
   if (config_.command_topic.empty() && config_.state_topic.empty()) {
@@ -60,10 +61,17 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   rclcpp::QoS qos{1};
   qos.best_effort();
 
+  // RT inbound boundary: route the state-lane sub onto the rt_inbound
+  // callback group (FIFO 70) so RT loop reads see fresh data without
+  // bouncing through the non-RT default executor.
+  rclcpp::SubscriptionOptions sub_opts;
+  sub_opts.callback_group = state_cb_group;
+
   if (!config_.state_topic.empty()) {
     state_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
         config_.state_topic, qos,
-        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); });
+        [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnJointState(std::move(msg)); },
+        sub_opts);
   }
   if (!config_.command_topic.empty()) {
     cmd_pub_ = node->create_publisher<rtc_msgs::msg::JointCommand>(config_.command_topic, qos);

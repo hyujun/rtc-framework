@@ -46,7 +46,7 @@ class UdpHandFailureDetector {
   /// @param cfg          Detection configuration.
   /// @param thread_cfg   Thread scheduling / CPU affinity configuration.
   explicit UdpHandFailureDetector(UdpHandController& controller, Config cfg = Config{},
-                               rtc::ThreadConfig thread_cfg = rtc::kLoggingConfig)
+                               rtc::ThreadConfig thread_cfg = rtc::kNrtLoggingConfig)
       : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
 
   ~UdpHandFailureDetector() { Stop(); }
