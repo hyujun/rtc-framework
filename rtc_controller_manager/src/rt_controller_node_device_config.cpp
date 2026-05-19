@@ -642,7 +642,7 @@ void RtControllerNode::CreateDeviceBackends() {
 
     // Inject cb_group_rt_callback_ so backend state-lane subs (joint /
     // motor / sensor) are dispatched on the rt_callback executor (FIFO 70,
-    // Core 3), matching the controller↔hardware RT boundary (layout v4).
+    // Core 2), matching the controller↔hardware RT boundary (layout v4.1).
     backend->Configure(this, cfg, cb_group_rt_callback_);
 
     // Derive DeviceCapability bitmask from backend feature set + sensor layout.

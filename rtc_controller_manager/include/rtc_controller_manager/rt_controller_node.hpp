@@ -57,10 +57,10 @@
 //                          publishes are outside the controller↔hardware RT
 //                          boundary.
 //   - cb_group_rt_callback_:   backend state/motor/sensor subs (created by each
-//                          DeviceBackend, MutuallyExclusive, FIFO 70 on Core 3
-//                          — controller↔hardware RT boundary only). DDS recv
-//                          thread co-pinned to the same core via launch
-//                          taskset for cache locality.
+//                          DeviceBackend, MutuallyExclusive, FIFO 70 on Core 2
+//                          — controller↔hardware RT boundary only, layout
+//                          v4.1). DDS recv thread co-pinned to the same core
+//                          via launch taskset for cache locality.
 //   - cb_group_nrt_logging_:   drain_timer_  (non-RT core)
 //   - cb_group_nrt_callback_:  estop_pub_ + CM-owned target_sub_ (RobotTarget
 //                          — external intent input, spec §0d keeps it off the

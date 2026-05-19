@@ -594,14 +594,15 @@ inline int GetPhysicalCpuCount() noexcept {
 
 // Aggregated thread configs selected at runtime for all threads.
 //
-// Field naming (layout v4):
-//   * rt_callback  = single RT callback dispatcher thread (Core 3 FIFO 70).
-//                    Hosts the executor that dispatches state subscriptions
-//                    bound to the rt_callback callback group. Replaces the
-//                    former rt_inbound (FIFO 70) + rt_outbound (FIFO 65)
-//                    pair: actuator command publish is performed inline in
-//                    the rt_loop tick on rt_control (Core 2 FIFO 90), so
-//                    no separate output thread is required.
+// Field naming (layout v4.1):
+//   * rt_callback  = single RT callback dispatcher thread (Core 2 FIFO 70 on
+//                    every tier; Core 0 = OS/DDS/IRQ only, RT cluster starts
+//                    at Core 1). Hosts the executor that dispatches state
+//                    subscriptions bound to the rt_callback callback group.
+//                    Replaces the former rt_inbound (FIFO 70) + rt_outbound
+//                    (FIFO 65) pair: actuator command publish is performed
+//                    inline in the rt_loop tick on rt_control (Core 1 FIFO
+//                    90), so no separate output thread is required.
 //   * nrt_callback = non-RT callback dispatcher for services / lifecycle /
 //                    non-RT-boundary subs
 //   * nrt_logging  = non-RT CSV drain
@@ -615,7 +616,7 @@ inline int GetPhysicalCpuCount() noexcept {
 //                                MuJoCo).
 //
 // DDS receive thread (CycloneDDS / Fast-RTPS) is co-pinned to the rt_callback
-// core (Core 3) via launch-time taskset for cache locality. Its CFS policy is
+// core (Core 2 in v4.1) via launch-time taskset for cache locality. Its CFS policy is
 // preserved; the launch script pins only non-RT threads of the controller
 // process. The hand UDP receive thread (RT priority 65) lives privately
 // inside udp_hand_controller and inherits affinity from the launch-level
@@ -790,11 +791,12 @@ inline std::string ValidateSystemThreadConfigs(const SystemThreadConfigs& config
 // over-counting. Example: i7-8700 (6C/12T) correctly selects 6-core layout,
 // not 12-core.
 //
-// Layout v4: rt_callback (Core 3 FIFO 70) unifies former rt_inbound +
-// rt_outbound on every tier above the 4-core fallback. Process-level
-// arm_driver/hand_driver pins are claimed for tiers ≥ 8; smaller tiers fall
-// back to shared cores. MuJoCo sim_thread is pinned on tiers ≥ 10; smaller
-// tiers leave it unpinned (cpu_core = -1) and rely on cpu_shield --sim
+// Layout v4.1: rt_callback (Core 2 FIFO 70) unifies former rt_inbound +
+// rt_outbound on every tier above the 4-core fallback; RT cluster starts at
+// Core 1 (Core 0 reserved for OS/DDS/IRQ only). Process-level
+// arm_driver/hand_driver pins are claimed for tiers ≥ 8 (alphabetical: arm <
+// hand); smaller tiers fall back to shared cores. MuJoCo sim_thread / viewer
+// always use cpu_core = -1 (no pin, all tiers) and rely on cpu_shield --sim
 // releasing the shield so MuJoCo can roam under CFS.
 inline SystemThreadConfigs SelectThreadConfigs() noexcept {
   const int ncpu = GetPhysicalCpuCount();

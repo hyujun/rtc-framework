@@ -25,15 +25,15 @@ Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_config.hpp
 **RT priority hierarchy**:
 
 ```
-90 rt_control  >  70 rt_callback  >  60 mpc_main  >  55 mpc_workers
+90 rt_control (Core 1)  >  70 rt_callback (Core 2 + DDS recv co-pin)  >  60 mpc_main (Core 3)  >  55 mpc_workers (Core 4-5 on ≥ 10c)
 ```
 
-- **Core 0 reserved** for OS / nrt_logging; **Core 1** for nrt_callback (≥ 8-core tier; 6-core 는 Core 0 공유)
-- **rt_callback + DDS co-pin on Core 3**: v4 의 핵심 — `rt_callback` thread (FIFO 70) 이 DDS receive thread (CFS) 와 같은 코어를 공유. launch-time taskset 이 controller process 의 비-RT thread (DDS / aux) 만 Core 3 으로 다시 핀해서 cache locality 확보. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음
-- **Actuator command publish inline**: `rt_control` thread (Core 2 FIFO 90) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). v3 의 별도 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거
+- **Core 0 reserved** for OS / DDS / IRQ only — ≥ 6-core 모든 tier 에서 nrt_logging / nrt_callback 이 Core 0 와 분리 (v4.1)
+- **rt_callback + DDS co-pin on Core 2 (v4.1)**: v4 의 핵심 — `rt_callback` thread (FIFO 70) 이 DDS receive thread (CFS) 와 같은 코어를 공유. launch-time taskset 이 controller process 의 비-RT thread (DDS / aux) 만 `rt_callback` core 로 다시 핀해서 cache locality 확보. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음. core 번호는 tier-aware (`rtc_tools.launch.thread_layout.get_rt_callback_core()`; 현재 모든 tier 에서 Core 2)
+- **Actuator command publish inline**: `rt_control` thread (Core 1 FIFO 90, v4.1) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). v3 의 별도 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거
 - **MPC main < rt_callback**: sensor callback (rt_callback) 이 long MPC solve 를 항상 preempt
 - **hand-private UDP receive thread** (FIFO 65, hand_driver 프로세스 내부) 는 launch-level taskset 으로 affinity 상속 — `SystemThreadConfigs` 에 필드 없음. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1) 기본값으로 caller 가 명시 핀
-- **arm_driver / hand_driver / sim_thread / viewer** 는 process-level taskset pin (SCHED_OTHER, priority 0) — launch script 가 적용. sim_thread/viewer 의 cpu_core=-1 sentinel 은 "no pin" (cpu_shield --sim 모드에서 격리 해제된 코어 사용)
+- **arm_driver / hand_driver / sim_thread / viewer** 는 process-level taskset pin (SCHED_OTHER, priority 0) — launch script 가 적용. sim_thread/viewer 의 cpu_core=-1 sentinel 은 모든 tier 에서 "no pin" (v4.1, cpu_shield --sim 모드에서 격리 해제된 코어 사용)
 
 세부 thread 종류·core 번호·priority 값은 위 header + `cpu_topology.hpp` 참조. Hybrid-CPU detection 은 `docs/NUC_HYBRID_SUPPORT.md`.
 
@@ -76,9 +76,9 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 | Executor | Thread config | Callback groups |
 |---|---|---|
-| `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 3) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to Core 3 via launch taskset |
-| `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, Core 0) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log |
-| `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, Core 1 on ≥ 8-core / Core 0 on 6-core) | `cb_group_nrt_callback_` (lifecycle services + CM-owned `target_sub_` — RobotTarget 은 외부 의도 입력, spec §0d 에 따라 RT 경계 밖) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
+| `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 2 in v4.1) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to the same core via launch taskset |
+| `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, tier-aware core) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log |
+| `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, tier-aware core — Core 0 만 4-core fallback, 그 외 tier 는 dedicated core) | `cb_group_nrt_callback_` (lifecycle services + CM-owned `target_sub_` — RobotTarget 은 외부 의도 입력, spec §0d 에 따라 RT 경계 밖) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
 
 **DeviceBackend cb_group injection 의무**: 모든 backend 구현은 `Configure(node, cfg, state_cb_group)` 가 받은 `state_cb_group` 을 자신이 만드는 모든 state/motor/sensor subscription 의 `SubscriptionOptions.callback_group` 에 적용해야 한다. ARCH-3 두 번째 구현 이후 silent default-group fallback 회귀를 막기 위해 backend integration test 가 `get_actual_callback_group() != nullptr` 을 assert 한다. Reentrant cb_group 금지 — SeqLock writer 가 단일 thread 임을 보장해야 함.
 

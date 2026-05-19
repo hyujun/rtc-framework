@@ -10,17 +10,19 @@ Drift between this module and the C++ SSoT is caught by
 ``test/test_thread_layout.py`` — the test fixture pins the expected mapping
 per tier; any divergence (here or in ``thread_config.hpp``) breaks the test.
 
-Tier source (Phase 5 layout v3):
-  - 4-core fallback  : arm=0, hand=0, sim=-1, viewer=-1
-  - 6-core (degraded): arm=1, hand=1, sim=-1, viewer=-1
-  - 8-core           : arm=6, hand=5, sim=7,  viewer=-1
-  - 10-core          : arm=7, hand=6, sim=9,  viewer=-1
-  - 12-core          : arm=8, hand=7, sim=10, viewer=-1
-  - 14-core          : arm=8, hand=7, sim=10, viewer=-1
-  - 16-core+         : arm=13, hand=12, sim=15, viewer=-1
+Tier source (layout v4.1):
+  - 4-core fallback  : arm=0,  hand=0,  sim=-1, viewer=-1, rt_callback=2
+  - 6-core (degraded): arm=4,  hand=4,  sim=-1, viewer=-1, rt_callback=2
+  - 8-core           : arm=4,  hand=5,  sim=-1, viewer=-1, rt_callback=2
+  - 10-core          : arm=5,  hand=6,  sim=-1, viewer=-1, rt_callback=2
+  - 12-core          : arm=6,  hand=7,  sim=-1, viewer=-1, rt_callback=2
+  - 14-core          : arm=6,  hand=7,  sim=-1, viewer=-1, rt_callback=2
+  - 16-core+         : arm=6,  hand=7,  sim=-1, viewer=-1, rt_callback=2
 
 ``cpu_core == -1`` is a sentinel meaning "do not pin" — the launch script
-treats it as a no-op (skip taskset call entirely).
+treats it as a no-op (skip taskset call entirely). ``rt_callback_core`` is
+exposed so launch files can co-pin the DDS receive thread to the same core
+as the ``rt_callback`` RT thread for cache locality (layout v4 invariant).
 """
 
 from __future__ import annotations
@@ -36,21 +38,77 @@ class ThreadLayout:
     hand_driver_core: int
     sim_thread_core: int
     viewer_core: int
+    rt_callback_core: int
 
 
 _TIERS: tuple[tuple[int, ThreadLayout], ...] = (
     (
         16,
-        ThreadLayout(arm_driver_core=13, hand_driver_core=12, sim_thread_core=15, viewer_core=-1),
+        ThreadLayout(
+            arm_driver_core=6,
+            hand_driver_core=7,
+            sim_thread_core=-1,
+            viewer_core=-1,
+            rt_callback_core=2,
+        ),
     ),
-    (14, ThreadLayout(arm_driver_core=8, hand_driver_core=7, sim_thread_core=10, viewer_core=-1)),
-    (12, ThreadLayout(arm_driver_core=8, hand_driver_core=7, sim_thread_core=10, viewer_core=-1)),
-    (10, ThreadLayout(arm_driver_core=7, hand_driver_core=6, sim_thread_core=9, viewer_core=-1)),
-    (8, ThreadLayout(arm_driver_core=6, hand_driver_core=5, sim_thread_core=7, viewer_core=-1)),
-    (6, ThreadLayout(arm_driver_core=1, hand_driver_core=1, sim_thread_core=-1, viewer_core=-1)),
+    (
+        14,
+        ThreadLayout(
+            arm_driver_core=6,
+            hand_driver_core=7,
+            sim_thread_core=-1,
+            viewer_core=-1,
+            rt_callback_core=2,
+        ),
+    ),
+    (
+        12,
+        ThreadLayout(
+            arm_driver_core=6,
+            hand_driver_core=7,
+            sim_thread_core=-1,
+            viewer_core=-1,
+            rt_callback_core=2,
+        ),
+    ),
+    (
+        10,
+        ThreadLayout(
+            arm_driver_core=5,
+            hand_driver_core=6,
+            sim_thread_core=-1,
+            viewer_core=-1,
+            rt_callback_core=2,
+        ),
+    ),
+    (
+        8,
+        ThreadLayout(
+            arm_driver_core=4,
+            hand_driver_core=5,
+            sim_thread_core=-1,
+            viewer_core=-1,
+            rt_callback_core=2,
+        ),
+    ),
+    (
+        6,
+        ThreadLayout(
+            arm_driver_core=4,
+            hand_driver_core=4,
+            sim_thread_core=-1,
+            viewer_core=-1,
+            rt_callback_core=2,
+        ),
+    ),
 )
 _FALLBACK_4CORE = ThreadLayout(
-    arm_driver_core=0, hand_driver_core=0, sim_thread_core=-1, viewer_core=-1
+    arm_driver_core=0,
+    hand_driver_core=0,
+    sim_thread_core=-1,
+    viewer_core=-1,
+    rt_callback_core=2,
 )
 
 
@@ -119,3 +177,8 @@ def get_sim_core(physical_cores: int | None = None) -> int:
 def get_viewer_core(physical_cores: int | None = None) -> int:
     """Core index for the GLFW viewer thread; ``-1`` means no pinning."""
     return select_thread_layout(physical_cores).viewer_core
+
+
+def get_rt_callback_core(physical_cores: int | None = None) -> int:
+    """Core index for the ``rt_callback`` RT thread; DDS recv co-pins here."""
+    return select_thread_layout(physical_cores).rt_callback_core

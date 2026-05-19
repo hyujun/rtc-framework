@@ -35,18 +35,21 @@ struct MpcThreadConfig {
   std::array<ThreadConfig, kMpcMaxWorkers> workers{};
 };
 
-// ── RT priority hierarchy (layout v4) ───────────────────────────────────────
+// ── RT priority hierarchy (layout v4.1) ─────────────────────────────────────
 //   90 (rt_control)  > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers)
 //
-// Layout v4 unifies former rt_inbound (FIFO 70) + rt_outbound (FIFO 65) into
-// a single rt_callback thread (Core 3 on every tier except 4-core fallback,
-// FIFO 70). The rt_outbound jthread + publish_buffer_ SPSC + eventfd wakeup
-// are removed; rt_control performs DeviceBackend.WriteCommand inline in the
-// rt_loop tick (RT-safe contract on backends). DDS receive thread is
-// co-pinned to the same core (Core 3) via launch-time taskset for cache
-// locality. Hand-private UDP receive thread (priority 65) lives inside the
-// hand_driver process and inherits affinity from the launch-level taskset,
-// so it is NOT represented in SystemThreadConfigs.
+// Layout v4 unified former rt_inbound (FIFO 70) + rt_outbound (FIFO 65) into
+// a single rt_callback thread. v4.1 shifts the RT cluster down to start at
+// Core 1 (Core 0 is reserved for OS / DDS / IRQ only) — rt_control = Core 1,
+// rt_callback + DDS recv co-pin = Core 2, mpc_main = Core 3, workers follow.
+// The rt_outbound jthread + publish_buffer_ SPSC + eventfd wakeup are removed;
+// rt_control performs DeviceBackend.WriteCommand inline in the rt_loop tick
+// (RT-safe contract on backends). DDS receive thread is co-pinned to the same
+// core as rt_callback (Core 2 on every tier except 4-core fallback) via
+// launch-time taskset for cache locality. Hand-private UDP receive thread
+// (priority 65) lives inside the hand_driver process and inherits affinity
+// from the launch-level taskset, so it is NOT represented in
+// SystemThreadConfigs.
 //
 // process-level threads (arm_driver, hand_driver, sim_thread, viewer) are
 // SCHED_OTHER prio 0; only their cpu_core is consumed (taskset pin), all
@@ -133,23 +136,24 @@ inline const ThreadConfig kViewerConfig4Core{.cpu_core = -1,
                                              .name = "viewer"};
 
 // ── 6-core configuration (degraded mode — no deterministic RT guarantee) ────
-// Core 0:  OS / DDS / IRQ + nrt_logging + nrt_callback
-// Core 1:  arm_driver + hand_driver (shared, degraded)
-// Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 4:  mpc_main                         FIFO 60
-// Core 5:  spare
+// Core 0:  OS / DDS / IRQ
+// Core 1:  rt_control                       FIFO 90
+// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
+// Core 3:  mpc_main                         FIFO 60
+// Core 4:  arm_driver + hand_driver (shared, degraded)
+// Core 5:  nrt_logging + nrt_callback (shared, degraded)
 //
-// Trade-off: mpc_worker absent, arm/hand share Core 1. "degraded mode" label
-// required — no deterministic RT guarantee.
+// Trade-off: mpc_worker absent, arm/hand share Core 4, nrt_* share Core 5.
+// "degraded mode" label required — no deterministic RT guarantee. Core 0 is
+// reserved for OS / DDS / IRQ; user-space threads start at Core 1.
 
-inline const ThreadConfig kRtControlConfig{.cpu_core = 2,
+inline const ThreadConfig kRtControlConfig{.cpu_core = 1,
                                            .sched_policy = SCHED_FIFO,
                                            .sched_priority = 90,
                                            .nice_value = 0,
                                            .name = "rt_control"};
 
-inline const ThreadConfig kRtCallbackConfig{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig{.cpu_core = 2,
                                             .sched_policy = SCHED_FIFO,
                                             .sched_priority = 70,
                                             .nice_value = 0,
@@ -158,7 +162,7 @@ inline const ThreadConfig kRtCallbackConfig{.cpu_core = 3,
 inline const MpcThreadConfig kMpcConfig6Core{
     .main =
         ThreadConfig{
-            .cpu_core = 4,
+            .cpu_core = 3,
             .sched_policy = SCHED_FIFO,
             .sched_priority = 60,
             .nice_value = 0,
@@ -168,32 +172,33 @@ inline const MpcThreadConfig kMpcConfig6Core{
     .workers = {},
 };
 
-inline const ThreadConfig kArmDriverConfig{.cpu_core = 1,
+inline const ThreadConfig kArmDriverConfig{.cpu_core = 4,
                                            .sched_policy = SCHED_OTHER,
                                            .sched_priority = 0,
                                            .nice_value = 0,
                                            .name = "arm_driver"};
 
-inline const ThreadConfig kHandDriverConfig{.cpu_core = 1,
+inline const ThreadConfig kHandDriverConfig{.cpu_core = 4,
                                             .sched_policy = SCHED_OTHER,
                                             .sched_priority = 0,
                                             .nice_value = 0,
                                             .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig{.cpu_core = 0,
+inline const ThreadConfig kNrtCallbackConfig{.cpu_core = 5,
                                              .sched_policy = SCHED_OTHER,
                                              .sched_priority = 0,
                                              .nice_value = 0,
                                              .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 0,
+inline const ThreadConfig kNrtLoggingConfig{.cpu_core = 5,
                                             .sched_policy = SCHED_OTHER,
                                             .sched_priority = 0,
                                             .nice_value = -5,
                                             .name = "nrt_logging"};
 
-// sim_thread.cpu_core = -1 means caller-controlled (cpu_shield --sim releases
-// the shield, MuJoCo physics may roam over freed cores under CFS).
+// sim_thread / viewer cpu_core = -1: caller-controlled, no pinning on any
+// tier. cpu_shield --sim releases the shield so MuJoCo physics + GLFW viewer
+// may roam over freed cores under CFS.
 inline const ThreadConfig kSimThreadConfig{.cpu_core = -1,
                                            .sched_policy = SCHED_OTHER,
                                            .sched_priority = 0,
@@ -206,23 +211,23 @@ inline const ThreadConfig kViewerConfig{.cpu_core = -1,
                                         .nice_value = 0,
                                         .name = "viewer"};
 
-// ── 8-core configuration (layout v4) ────────────────────────────────────────
-// Core 0:  OS / nrt_logging
-// Core 1:  nrt_callback
-// Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 4:  mpc_main                         FIFO 60
+// ── 8-core configuration (layout v4.1) ──────────────────────────────────────
+// Core 0:  OS / DDS / IRQ
+// Core 1:  rt_control                       FIFO 90
+// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
+// Core 3:  mpc_main                         FIFO 60
+// Core 4:  arm_driver (dedicated)
 // Core 5:  hand_driver (dedicated)
-// Core 6:  arm_driver  (dedicated)
-// Core 7:  spare / sim_thread
+// Core 6:  nrt_logging
+// Core 7:  nrt_callback
 
-inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 2,
+inline const ThreadConfig kRtControlConfig8Core{.cpu_core = 1,
                                                 .sched_policy = SCHED_FIFO,
                                                 .sched_priority = 90,
                                                 .nice_value = 0,
                                                 .name = "rt_control"};
 
-inline const ThreadConfig kRtCallbackConfig8Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig8Core{.cpu_core = 2,
                                                  .sched_policy = SCHED_FIFO,
                                                  .sched_priority = 70,
                                                  .nice_value = 0,
@@ -231,7 +236,7 @@ inline const ThreadConfig kRtCallbackConfig8Core{.cpu_core = 3,
 inline const MpcThreadConfig kMpcConfig8Core{
     .main =
         ThreadConfig{
-            .cpu_core = 4,
+            .cpu_core = 3,
             .sched_policy = SCHED_FIFO,
             .sched_priority = 60,
             .nice_value = 0,
@@ -241,7 +246,7 @@ inline const MpcThreadConfig kMpcConfig8Core{
     .workers = {},
 };
 
-inline const ThreadConfig kArmDriverConfig8Core{.cpu_core = 6,
+inline const ThreadConfig kArmDriverConfig8Core{.cpu_core = 4,
                                                 .sched_policy = SCHED_OTHER,
                                                 .sched_priority = 0,
                                                 .nice_value = 0,
@@ -253,19 +258,19 @@ inline const ThreadConfig kHandDriverConfig8Core{.cpu_core = 5,
                                                  .nice_value = 0,
                                                  .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 1,
+inline const ThreadConfig kNrtCallbackConfig8Core{.cpu_core = 7,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
                                                   .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 0,
+inline const ThreadConfig kNrtLoggingConfig8Core{.cpu_core = 6,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = -5,
                                                  .name = "nrt_logging"};
 
-inline const ThreadConfig kSimThreadConfig8Core{.cpu_core = 7,
+inline const ThreadConfig kSimThreadConfig8Core{.cpu_core = -1,
                                                 .sched_policy = SCHED_OTHER,
                                                 .sched_priority = 0,
                                                 .nice_value = 0,
@@ -277,25 +282,25 @@ inline const ThreadConfig kViewerConfig8Core{.cpu_core = -1,
                                              .nice_value = 0,
                                              .name = "viewer"};
 
-// ── 10-core configuration (layout v4) ───────────────────────────────────────
-// Core 0:  OS / nrt_logging
-// Core 1:  nrt_callback
-// Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 4:  mpc_main                         FIFO 60
-// Core 5:  mpc_worker_0                     FIFO 55
+// ── 10-core configuration (layout v4.1) ─────────────────────────────────────
+// Core 0:  OS / DDS / IRQ
+// Core 1:  rt_control                       FIFO 90
+// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
+// Core 3:  mpc_main                         FIFO 60
+// Core 4:  mpc_worker_0                     FIFO 55
+// Core 5:  arm_driver
 // Core 6:  hand_driver
-// Core 7:  arm_driver
-// Core 8:  spare
-// Core 9:  spare / sim_thread
+// Core 7:  nrt_logging
+// Core 8:  nrt_callback
+// Core 9:  spare
 
-inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 2,
+inline const ThreadConfig kRtControlConfig10Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
                                                  .sched_priority = 90,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtCallbackConfig10Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig10Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_FIFO,
                                                   .sched_priority = 70,
                                                   .nice_value = 0,
@@ -304,7 +309,7 @@ inline const ThreadConfig kRtCallbackConfig10Core{.cpu_core = 3,
 inline const MpcThreadConfig kMpcConfig10Core{
     .main =
         ThreadConfig{
-            .cpu_core = 4,
+            .cpu_core = 3,
             .sched_policy = SCHED_FIFO,
             .sched_priority = 60,
             .nice_value = 0,
@@ -314,7 +319,7 @@ inline const MpcThreadConfig kMpcConfig10Core{
     .workers =
         {
             ThreadConfig{
-                .cpu_core = 5,
+                .cpu_core = 4,
                 .sched_policy = SCHED_FIFO,
                 .sched_priority = 55,
                 .nice_value = 0,
@@ -324,7 +329,7 @@ inline const MpcThreadConfig kMpcConfig10Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig10Core{.cpu_core = 7,
+inline const ThreadConfig kArmDriverConfig10Core{.cpu_core = 5,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
@@ -336,19 +341,19 @@ inline const ThreadConfig kHandDriverConfig10Core{.cpu_core = 6,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig10Core{.cpu_core = 1,
+inline const ThreadConfig kNrtCallbackConfig10Core{.cpu_core = 8,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 0,
+inline const ThreadConfig kNrtLoggingConfig10Core{.cpu_core = 7,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,
                                                   .name = "nrt_logging"};
 
-inline const ThreadConfig kSimThreadConfig10Core{.cpu_core = 9,
+inline const ThreadConfig kSimThreadConfig10Core{.cpu_core = -1,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
@@ -360,27 +365,27 @@ inline const ThreadConfig kViewerConfig10Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 12-core configuration (primary target, layout v4) ───────────────────────
-// Core 0:  OS / nrt_logging
-// Core 1:  nrt_callback
-// Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 4:  mpc_main                         FIFO 60
-// Core 5:  mpc_worker_0                     FIFO 55
-// Core 6:  mpc_worker_1                     FIFO 55
+// ── 12-core configuration (primary target, layout v4.1) ─────────────────────
+// Core 0:  OS / DDS / IRQ
+// Core 1:  rt_control                       FIFO 90
+// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
+// Core 3:  mpc_main                         FIFO 60
+// Core 4:  mpc_worker_0                     FIFO 55
+// Core 5:  mpc_worker_1                     FIFO 55
+// Core 6:  arm_driver
 // Core 7:  hand_driver
-// Core 8:  arm_driver
-// Core 9:  spare
-// Core 10: spare / sim_thread (sim mode)
+// Core 8:  nrt_logging
+// Core 9:  nrt_callback
+// Core 10: spare
 // Core 11: spare / user shield
 
-inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 2,
+inline const ThreadConfig kRtControlConfig12Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
                                                  .sched_priority = 90,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtCallbackConfig12Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig12Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_FIFO,
                                                   .sched_priority = 70,
                                                   .nice_value = 0,
@@ -389,7 +394,7 @@ inline const ThreadConfig kRtCallbackConfig12Core{.cpu_core = 3,
 inline const MpcThreadConfig kMpcConfig12Core{
     .main =
         ThreadConfig{
-            .cpu_core = 4,
+            .cpu_core = 3,
             .sched_policy = SCHED_FIFO,
             .sched_priority = 60,
             .nice_value = 0,
@@ -399,14 +404,14 @@ inline const MpcThreadConfig kMpcConfig12Core{
     .workers =
         {
             ThreadConfig{
-                .cpu_core = 5,
+                .cpu_core = 4,
                 .sched_policy = SCHED_FIFO,
                 .sched_priority = 55,
                 .nice_value = 0,
                 .name = "mpc_worker_0",
             },
             ThreadConfig{
-                .cpu_core = 6,
+                .cpu_core = 5,
                 .sched_policy = SCHED_FIFO,
                 .sched_priority = 55,
                 .nice_value = 0,
@@ -415,7 +420,7 @@ inline const MpcThreadConfig kMpcConfig12Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig12Core{.cpu_core = 8,
+inline const ThreadConfig kArmDriverConfig12Core{.cpu_core = 6,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
@@ -427,19 +432,19 @@ inline const ThreadConfig kHandDriverConfig12Core{.cpu_core = 7,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig12Core{.cpu_core = 1,
+inline const ThreadConfig kNrtCallbackConfig12Core{.cpu_core = 9,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 0,
+inline const ThreadConfig kNrtLoggingConfig12Core{.cpu_core = 8,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,
                                                   .name = "nrt_logging"};
 
-inline const ThreadConfig kSimThreadConfig12Core{.cpu_core = 10,
+inline const ThreadConfig kSimThreadConfig12Core{.cpu_core = -1,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
@@ -451,27 +456,26 @@ inline const ThreadConfig kViewerConfig12Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 14-core configuration (layout v4) ───────────────────────────────────────
-// Core 0:  OS / nrt_logging
-// Core 1:  nrt_callback
-// Core 2:  rt_control                       FIFO 90
-// Core 3:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
-// Core 4:  mpc_main                         FIFO 60
-// Core 5:  mpc_worker_0                     FIFO 55
-// Core 6:  mpc_worker_1                     FIFO 55
+// ── 14-core configuration (layout v4.1) ─────────────────────────────────────
+// Core 0:  OS / DDS / IRQ
+// Core 1:  rt_control                       FIFO 90
+// Core 2:  rt_callback + DDS recv           FIFO 70 (RT) / CFS (DDS)
+// Core 3:  mpc_main                         FIFO 60
+// Core 4:  mpc_worker_0                     FIFO 55
+// Core 5:  mpc_worker_1                     FIFO 55
+// Core 6:  arm_driver
 // Core 7:  hand_driver
-// Core 8:  arm_driver
-// Core 9:  spare
-// Core 10: sim_thread (sim mode)
-// Core 11-13: spare / user shield / viewer
+// Core 8:  nrt_logging
+// Core 9:  nrt_callback
+// Core 10-13: spare / user shield
 
-inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 2,
+inline const ThreadConfig kRtControlConfig14Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
                                                  .sched_priority = 90,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtCallbackConfig14Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig14Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_FIFO,
                                                   .sched_priority = 70,
                                                   .nice_value = 0,
@@ -480,7 +484,7 @@ inline const ThreadConfig kRtCallbackConfig14Core{.cpu_core = 3,
 inline const MpcThreadConfig kMpcConfig14Core{
     .main =
         ThreadConfig{
-            .cpu_core = 4,
+            .cpu_core = 3,
             .sched_policy = SCHED_FIFO,
             .sched_priority = 60,
             .nice_value = 0,
@@ -490,14 +494,14 @@ inline const MpcThreadConfig kMpcConfig14Core{
     .workers =
         {
             ThreadConfig{
-                .cpu_core = 5,
+                .cpu_core = 4,
                 .sched_policy = SCHED_FIFO,
                 .sched_priority = 55,
                 .nice_value = 0,
                 .name = "mpc_worker_0",
             },
             ThreadConfig{
-                .cpu_core = 6,
+                .cpu_core = 5,
                 .sched_policy = SCHED_FIFO,
                 .sched_priority = 55,
                 .nice_value = 0,
@@ -506,7 +510,7 @@ inline const MpcThreadConfig kMpcConfig14Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig14Core{.cpu_core = 8,
+inline const ThreadConfig kArmDriverConfig14Core{.cpu_core = 6,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
@@ -518,19 +522,19 @@ inline const ThreadConfig kHandDriverConfig14Core{.cpu_core = 7,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 1,
+inline const ThreadConfig kNrtCallbackConfig14Core{.cpu_core = 9,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 0,
+inline const ThreadConfig kNrtLoggingConfig14Core{.cpu_core = 8,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,
                                                   .name = "nrt_logging"};
 
-inline const ThreadConfig kSimThreadConfig14Core{.cpu_core = 10,
+inline const ThreadConfig kSimThreadConfig14Core{.cpu_core = -1,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
@@ -542,27 +546,29 @@ inline const ThreadConfig kViewerConfig14Core{.cpu_core = -1,
                                               .nice_value = 0,
                                               .name = "viewer"};
 
-// ── 16-core configuration (cset shield 4-8 retained, layout v4) ─────────────
-// Core 0:   OS / nrt_logging
-// Core 1:   nrt_callback
-// Core 2:   rt_control                      FIFO 90
-// Core 3:   rt_callback + DDS recv          FIFO 70 (RT) / CFS (DDS)
-// Core 4-8: cset shield "user" (retained from prior layout)
-// Core 9:   mpc_main                        FIFO 60
-// Core 10:  mpc_worker_0                    FIFO 55
-// Core 11:  mpc_worker_1                    FIFO 55
-// Core 12:  hand_driver
-// Core 13:  arm_driver
-// Core 14:  spare
-// Core 15:  spare / sim_thread
+// ── 16-core configuration (layout v4.1) ─────────────────────────────────────
+// Core 0:   OS / DDS / IRQ
+// Core 1:   rt_control                      FIFO 90
+// Core 2:   rt_callback + DDS recv          FIFO 70 (RT) / CFS (DDS)
+// Core 3:   mpc_main                        FIFO 60
+// Core 4:   mpc_worker_0                    FIFO 55
+// Core 5:   mpc_worker_1                    FIFO 55
+// Core 6:   arm_driver
+// Core 7:   hand_driver
+// Core 8:   nrt_logging
+// Core 9:   nrt_callback
+// Core 10-15: spare / user shield
+//
+// v4.1: prior cset shield "user" on Core 4-8 removed for RT cluster cache
+// locality. Cores 10-15 remain free for user-level workloads.
 
-inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 2,
+inline const ThreadConfig kRtControlConfig16Core{.cpu_core = 1,
                                                  .sched_policy = SCHED_FIFO,
                                                  .sched_priority = 90,
                                                  .nice_value = 0,
                                                  .name = "rt_control"};
 
-inline const ThreadConfig kRtCallbackConfig16Core{.cpu_core = 3,
+inline const ThreadConfig kRtCallbackConfig16Core{.cpu_core = 2,
                                                   .sched_policy = SCHED_FIFO,
                                                   .sched_priority = 70,
                                                   .nice_value = 0,
@@ -571,7 +577,7 @@ inline const ThreadConfig kRtCallbackConfig16Core{.cpu_core = 3,
 inline const MpcThreadConfig kMpcConfig16Core{
     .main =
         ThreadConfig{
-            .cpu_core = 9,
+            .cpu_core = 3,
             .sched_policy = SCHED_FIFO,
             .sched_priority = 60,
             .nice_value = 0,
@@ -581,14 +587,14 @@ inline const MpcThreadConfig kMpcConfig16Core{
     .workers =
         {
             ThreadConfig{
-                .cpu_core = 10,
+                .cpu_core = 4,
                 .sched_policy = SCHED_FIFO,
                 .sched_priority = 55,
                 .nice_value = 0,
                 .name = "mpc_worker_0",
             },
             ThreadConfig{
-                .cpu_core = 11,
+                .cpu_core = 5,
                 .sched_policy = SCHED_FIFO,
                 .sched_priority = 55,
                 .nice_value = 0,
@@ -597,31 +603,31 @@ inline const MpcThreadConfig kMpcConfig16Core{
         },
 };
 
-inline const ThreadConfig kArmDriverConfig16Core{.cpu_core = 13,
+inline const ThreadConfig kArmDriverConfig16Core{.cpu_core = 6,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,
                                                  .name = "arm_driver"};
 
-inline const ThreadConfig kHandDriverConfig16Core{.cpu_core = 12,
+inline const ThreadConfig kHandDriverConfig16Core{.cpu_core = 7,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = 0,
                                                   .name = "hand_driver"};
 
-inline const ThreadConfig kNrtCallbackConfig16Core{.cpu_core = 1,
+inline const ThreadConfig kNrtCallbackConfig16Core{.cpu_core = 9,
                                                    .sched_policy = SCHED_OTHER,
                                                    .sched_priority = 0,
                                                    .nice_value = 0,
                                                    .name = "nrt_callback"};
 
-inline const ThreadConfig kNrtLoggingConfig16Core{.cpu_core = 0,
+inline const ThreadConfig kNrtLoggingConfig16Core{.cpu_core = 8,
                                                   .sched_policy = SCHED_OTHER,
                                                   .sched_priority = 0,
                                                   .nice_value = -5,
                                                   .name = "nrt_logging"};
 
-inline const ThreadConfig kSimThreadConfig16Core{.cpu_core = 15,
+inline const ThreadConfig kSimThreadConfig16Core{.cpu_core = -1,
                                                  .sched_policy = SCHED_OTHER,
                                                  .sched_priority = 0,
                                                  .nice_value = 0,

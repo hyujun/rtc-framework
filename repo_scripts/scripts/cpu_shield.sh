@@ -9,19 +9,18 @@
 #   sudo cpu_shield.sh off                 # 격리 해제
 #   cpu_shield.sh status                   # 상태 확인 (sudo 불필요)
 #
-# Shield model (layout v3, Phase 6):
-#   shielded = RT controller cores + MPC cores (rt_control, rt_inbound,
-#              rt_outbound, mpc_main + workers)
-#   released = OS/DDS (Core 0-1), nrt_*, arm_driver, hand_driver,
-#              sim_thread/viewer, spare
+# Shield model (layout v4.1):
+#   shielded = RT controller cores + MPC cores (rt_control Core 1,
+#              rt_callback Core 2, mpc_main + workers from Core 3)
+#   released = OS/DDS (Core 0), nrt_*, arm_driver, hand_driver,
+#              sim_thread/viewer (cpu_core=-1, no pin), spare
 #
 # Modes:
 #   --robot (default): same shield range as --sim. driver processes pin via
 #                      taskset (rtc_tools.launch.thread_layout) and run on
 #                      SCHED_OTHER — they do not need cset protection.
-#   --sim:             identical shield. MuJoCo physics + viewer run on
-#                      whichever core SystemThreadConfigs.sim_thread points
-#                      to (taskset pin; outside the shield range).
+#   --sim:             identical shield. MuJoCo physics + viewer roam over the
+#                      released cores under CFS (cpu_core=-1 on every tier).
 #
 # 실행 시점:
 #   - 로봇 런치: ur_control.launch.py에서 자동 호출
@@ -38,14 +37,13 @@ make_logger "SHIELD"
 
 # ── Compute shield cores based on mode and core count ─────────────────────
 #
-# Phase 6 layout v3: the "user" cpuset shields RT controller threads
-# (rt_control, rt_inbound, rt_outbound — all on the cores rt_control and
-# rt_inbound claim, layout v3 puts rt_outbound on the same core as rt_inbound)
-# plus MPC main + workers. Process-level driver cores (arm_driver,
-# hand_driver) are *not* shielded — the driver processes themselves run there
-# under SCHED_OTHER, so isolating them from "user" tasks gains nothing and
-# wastes a core. sim_thread / viewer cores are also released (sim mode lets
-# MuJoCo roam under CFS, robot mode does not run sim).
+# Layout v4.1: the "user" cpuset shields RT controller threads (rt_control
+# Core 1, rt_callback Core 2) plus MPC main + workers (Core 3 + 4 + 5).
+# Process-level driver cores (arm_driver, hand_driver) are *not* shielded —
+# the driver processes themselves run there under SCHED_OTHER, so isolating
+# them from "user" tasks gains nothing and wastes a core. sim_thread /
+# viewer cores are -1 (no pin) on every tier; MuJoCo roams over the released
+# cores under CFS.
 #
 # Both modes shield the same range now (RT + MPC only). The legacy "Tier 1
 # vs Tier 1+2" distinction is gone — driver/IO cores are SCHED_OTHER and do
@@ -53,14 +51,13 @@ make_logger "SHIELD"
 # for forward compatibility and so callers (`on --sim`, `on --robot`) need
 # no further changes.
 #
-# Tier table (matches rtc::SystemThreadConfigs layout v3):
-#   4-core   : RT 1, MPC 3                   → "1,3"
-#   6-7-core : RT 2-3, MPC 4                 → "2-4"
-#   8-9-core : RT 2-3, MPC 4                 → "2-4"
-#   10-11-core: RT 2-3, MPC 4-5              → "2-5"
-#   12-13-core: RT 2-3, MPC 4-6              → "2-6"
-#   14-15-core: RT 2-3, MPC 4-6              → "2-6"
-#   16+-core : RT 2-3, MPC 9-11              → "2-3,9-11"
+# Tier table (matches rtc::SystemThreadConfigs layout v4.1):
+#   4-core    : RT 1, MPC 3 (CFS)             → "1,3"
+#   6-9-core  : rt_control 1, rt_callback 2, MPC 3 → "1-3"
+#   10-11-core: RT 1-2, MPC 3-4               → "1-4"
+#   12-13-core: RT 1-2, MPC 3-5               → "1-5"
+#   14-15-core: RT 1-2, MPC 3-5               → "1-5"
+#   16+-core  : RT 1-2, MPC 3-5               → "1-5"
 compute_shield_cores() {
   local mode="$1"  # kept for forward compat; both modes use the same shield
   local phys_cores="$2"
@@ -68,13 +65,11 @@ compute_shield_cores() {
   if [[ "$phys_cores" -le 4 ]]; then
     echo "1,3"
   elif [[ "$phys_cores" -le 9 ]]; then
-    echo "2-4"
+    echo "1-3"
   elif [[ "$phys_cores" -le 11 ]]; then
-    echo "2-5"
-  elif [[ "$phys_cores" -le 15 ]]; then
-    echo "2-6"
+    echo "1-4"
   else
-    echo "2-3,9-11"
+    echo "1-5"
   fi
 }
 

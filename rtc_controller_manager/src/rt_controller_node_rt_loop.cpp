@@ -220,11 +220,12 @@ void RtControllerNode::ControlLoop() {
     }
     snap.num_groups = static_cast<int>(gi);
 
-    // Layout v4: actuator command publish is performed inline on the
-    // rt_control thread (Core 2 FIFO 90) — DeviceBackend.WriteCommand is
+    // Layout v4.1: actuator command publish is performed inline on the
+    // rt_control thread (Core 1 FIFO 90) — DeviceBackend.WriteCommand is
     // RT-safe by contract (see device_backend.hpp). Removing the SPSC
-    // hand-off to rt_outbound eliminates one Core 3 thread + eventfd and
-    // closes the cross-core path between RT loop and actuator publish.
+    // hand-off to rt_outbound eliminates one rt_callback-core thread +
+    // eventfd and closes the cross-core path between RT loop and actuator
+    // publish.
     //
     // Per-group device command publish is delegated to the backend bound to
     // each group's slot. Controller-owned non-RT topics still ride the SPSC

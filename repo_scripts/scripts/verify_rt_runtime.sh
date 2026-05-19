@@ -99,74 +99,55 @@ PHYSICAL_CORES="$TOTAL_CORES"
 declare -a EXPECTED_THREADS
 
 build_expected_threads() {
-  # thread_config.hpp / SelectThreadConfigs() 기반 기대값 (layout v3, 2026-05).
+  # thread_config.hpp / SelectThreadConfigs() 기반 기대값 (layout v4.1).
   # 형식: "thread_name:expected_cpu:expected_policy:expected_priority[:optional]"
   # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
   # optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리.
   #   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
   #                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
   #                    별도 cpu pin 검증 skip (priority 65 만 확인).
+  #
+  # Layout v4.1: rt_control=1, rt_callback=2, mpc_main=3, workers=4-5.
+  # nrt_logging / nrt_callback: 4c=0, 6c=5 (shared), 8c=6/7, 10c=7/8,
+  #   12c+=8/9. arm < hand alphabetical.
   EXPECTED_THREADS=()
-  if [[ "$PHYSICAL_CORES" -ge 16 ]]; then
-    # 16+: RT 2-3, shield 4-8 (user), MPC 9-11, hand_driver 12, arm_driver 13, sim 15.
-    EXPECTED_THREADS=(
-      "rt_control:2:1:90"
-      "rt_inbound:3:1:70"
-      "rt_outbound:3:1:65"
-      "nrt_logging:0:0:0"
-      "nrt_callback:1:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 14 ]]; then
-    # 14-15: RT 2-3 (same-core), MPC 4-6, hand_driver 7, arm_driver 8, sim 10.
-    EXPECTED_THREADS=(
-      "rt_control:2:1:90"
-      "rt_inbound:3:1:70"
-      "rt_outbound:3:1:65"
-      "nrt_logging:0:0:0"
-      "nrt_callback:1:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    # 12-13: RT 2-3 (same-core), MPC 4-6, hand_driver 7, arm_driver 8, sim 10.
-    EXPECTED_THREADS=(
-      "rt_control:2:1:90"
-      "rt_inbound:3:1:70"
-      "rt_outbound:3:1:65"
-      "nrt_logging:0:0:0"
-      "nrt_callback:1:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    # 10-11: RT 2-3 (same-core), MPC 4-5, hand_driver 6, arm_driver 7, sim 9.
-    EXPECTED_THREADS=(
-      "rt_control:2:1:90"
-      "rt_inbound:3:1:70"
-      "rt_outbound:3:1:65"
-      "nrt_logging:0:0:0"
-      "nrt_callback:1:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    # 8-9: RT 2-3 (same-core), MPC 4, hand_driver 5, arm_driver 6, sim 7.
-    EXPECTED_THREADS=(
-      "rt_control:2:1:90"
-      "rt_inbound:3:1:70"
-      "rt_outbound:3:1:65"
-      "nrt_logging:0:0:0"
-      "nrt_callback:1:0:0"
-    )
-  elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
-    # 6-7 (degraded): RT 2-3 (same-core), MPC 4, arm/hand_driver share Core 1, nrt_* on Core 0.
-    EXPECTED_THREADS=(
-      "rt_control:2:1:90"
-      "rt_inbound:3:1:70"
-      "rt_outbound:3:1:65"
-      "nrt_logging:0:0:0"
-      "nrt_callback:0:0:0"
-    )
-  else
-    # 4-core fallback (degraded): RT 1-2, rt_outbound CFS, MPC CFS — no RT determinism.
+  if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
+    # 12-16+: RT 1-2, MPC 3-5, arm 6, hand 7, nrt_logging 8, nrt_callback 9.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
-      "rt_inbound:2:1:70"
-      "rt_outbound:2:0:0"
+      "rt_callback:2:1:70"
+      "nrt_logging:8:0:0"
+      "nrt_callback:9:0:0"
+    )
+  elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
+    # 10-11: RT 1-2, MPC 3-4, arm 5, hand 6, nrt_logging 7, nrt_callback 8.
+    EXPECTED_THREADS=(
+      "rt_control:1:1:90"
+      "rt_callback:2:1:70"
+      "nrt_logging:7:0:0"
+      "nrt_callback:8:0:0"
+    )
+  elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
+    # 8-9: RT 1-2, MPC 3, arm 4, hand 5, nrt_logging 6, nrt_callback 7.
+    EXPECTED_THREADS=(
+      "rt_control:1:1:90"
+      "rt_callback:2:1:70"
+      "nrt_logging:6:0:0"
+      "nrt_callback:7:0:0"
+    )
+  elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
+    # 6-7 (degraded): RT 1-2, MPC 3, arm+hand share Core 4, nrt_logging+nrt_callback share Core 5.
+    EXPECTED_THREADS=(
+      "rt_control:1:1:90"
+      "rt_callback:2:1:70"
+      "nrt_logging:5:0:0"
+      "nrt_callback:5:0:0"
+    )
+  else
+    # 4-core fallback (degraded): RT 1-2, MPC CFS Core 3 — no RT determinism.
+    EXPECTED_THREADS=(
+      "rt_control:1:1:90"
+      "rt_callback:2:1:70"
       "nrt_logging:0:0:0"
       "nrt_callback:0:0:0"
     )

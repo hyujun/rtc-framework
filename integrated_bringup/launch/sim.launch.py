@@ -45,7 +45,7 @@ from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
 from rtc_tools.launch.perf_action import make_perf_action
-from rtc_tools.launch.thread_layout import get_sim_core
+from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
     create_session_dir,
@@ -340,12 +340,13 @@ def launch_setup(context, *args, **kwargs):
             )
             actions.append(pin_mujoco_sim)
 
-        # Layout v4: integrated_rt_controller DDS/aux threads → Core 3
-        # (co-pinned with rt_callback) for cache locality. ApplyThreadConfig()
-        # already pins SCHED_FIFO executors (rt_control, rt_callback, mpc_*);
-        # this timer only catches DDS-internal reader/writer threads that are
-        # spawned outside our control.
-        # exec name = ROS node name = "integrated_rt_controller".
+        # Layout v4.1: integrated_rt_controller DDS/aux threads co-pinned to
+        # the rt_callback core (tier-aware via get_rt_callback_core) for cache
+        # locality. ApplyThreadConfig() already pins SCHED_FIFO executors
+        # (rt_control, rt_callback, mpc_*); this timer only catches
+        # DDS-internal reader/writer threads that are spawned outside our
+        # control. exec name = ROS node name = "integrated_rt_controller".
+        rt_callback_core = get_rt_callback_core()
         pin_rt_controller_dds = TimerAction(
             period=5.0,
             actions=[
@@ -358,14 +359,14 @@ def launch_setup(context, *args, **kwargs):
                         '  echo "[SIM] WARNING: integrated_rt_controller not found — DDS thread pinning skipped"; '
                         "  exit 0; "
                         "fi; "
-                        'taskset -cp 3 "$PID" 2>/dev/null; '
+                        f'taskset -cp {rt_callback_core} "$PID" 2>/dev/null; '
                         "PINNED=0; "
                         "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
                         '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
                         '  if [ -n "$POLICY" ]; then continue; fi; '
-                        '  taskset -cp 3 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
+                        f'  taskset -cp {rt_callback_core} "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
                         "done; "
-                        'echo "[SIM] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 3"',
+                        f'echo "[SIM] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core {rt_callback_core}"',
                     ],
                     output="screen",
                 )

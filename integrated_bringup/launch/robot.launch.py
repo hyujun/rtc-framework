@@ -11,8 +11,11 @@
 #   C) UR driver + udp_hand_node processes pinned via tier-aware taskset
 #      (rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core; SSoT in
 #      rtc::SystemThreadConfigs.{arm,hand}_driver) when use_cpu_affinity:=true
-#   D) integrated_rt_controller DDS threads pinned to Core 0-1 (prevents 100-350us jitter on Jazzy)
-#   E) CycloneDDS threads restricted to Core 0-1 via CYCLONEDDS_URI env var
+#   D) integrated_rt_controller DDS threads co-pinned to the rt_callback core
+#      (tier-aware via rtc_tools.launch.thread_layout.get_rt_callback_core)
+#      so DDS dispatch and the FIFO 70 rt_callback executor share L1/L2 cache.
+#   E) CycloneDDS threads also fall under the launch taskset above (no
+#      separate CYCLONEDDS_URI thread affinity since CycloneDDS 0.11+)
 
 import os
 
@@ -39,7 +42,11 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
-from rtc_tools.launch.thread_layout import get_arm_driver_core, get_hand_driver_core
+from rtc_tools.launch.thread_layout import (
+    get_arm_driver_core,
+    get_hand_driver_core,
+    get_rt_callback_core,
+)
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
     create_session_dir,
@@ -343,6 +350,8 @@ def generate_launch_description():
 
     # ── integrated_rt_controller DDS thread pinning ─────────────────────────────────
     # exec name = ROS node name = "integrated_rt_controller" (Phase 3 정렬).
+    # Layout v4.1: rt_callback core is tier-aware (Core 2 on every tier).
+    rt_callback_core = get_rt_callback_core()
     pin_rt_controller_dds = TimerAction(
         period=5.0,
         actions=[
@@ -355,21 +364,21 @@ def generate_launch_description():
                     '  echo "[RT] WARNING: integrated_rt_controller not found — DDS thread pinning skipped"; '
                     "  exit 0; "
                     "fi; "
-                    # Layout v4: DDS receive thread is co-pinned to the
-                    # rt_callback core (Core 3) so DDS message dispatch and
-                    # state callback execution share L1/L2 cache. SCHED_OTHER
-                    # is preserved — only affinity changes. SCHED_FIFO
-                    # threads (rt_control / rt_callback / mpc_*) are skipped
-                    # so this loop only touches non-RT (DDS / aux) threads.
-                    'taskset -cp 3 "$PID" 2>/dev/null; '
+                    # Layout v4.1: DDS receive thread is co-pinned to the
+                    # rt_callback core so DDS message dispatch and state
+                    # callback execution share L1/L2 cache. SCHED_OTHER is
+                    # preserved — only affinity changes. SCHED_FIFO threads
+                    # (rt_control / rt_callback / mpc_*) are skipped so this
+                    # loop only touches non-RT (DDS / aux) threads.
+                    f'taskset -cp {rt_callback_core} "$PID" 2>/dev/null; '
                     "PINNED=0; "
                     "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
                     '  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null || echo ""); '
                     '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
                     '  if [ -n "$POLICY" ]; then continue; fi; '
-                    '  taskset -cp 3 "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
+                    f'  taskset -cp {rt_callback_core} "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
                     "done; "
-                    'echo "[RT] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core 3"',
+                    f'echo "[RT] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core {rt_callback_core}"',
                 ],
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),

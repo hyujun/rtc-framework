@@ -34,11 +34,11 @@
 ### 핵심 설계 원칙
 
 1. **clock_nanosleep RT 루프**: `create_wall_timer()` 대신 `clock_nanosleep(TIMER_ABSTIME)` 절대시간 루프 — executor dispatch 지터 제거
-2. **Inline actuator publish + 1 non-RT lane**: `rt_control` thread (Core 2 FIFO 90) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). controller-owned non-RT 토픽 (RobotTarget · Transforms · DigitalTwin · grasp_state · wbc_state · tof_snapshot) 만 `nrt_publish_buffer_` (cap 16) → `nrt_publish_thread` (CFS) → `controller.PublishNonRtSnapshot` 로 비동기 송출. v3 의 actuator SPSC lane (`publish_buffer_`) 은 v4 에서 제거 — cross-core hand-off / eventfd wake / jthread 한 세트가 사라져 latency / 자원 동시 감소
+2. **Inline actuator publish + 1 non-RT lane**: `rt_control` thread (Core 1 FIFO 90) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). controller-owned non-RT 토픽 (RobotTarget · Transforms · DigitalTwin · grasp_state · wbc_state · tof_snapshot) 만 `nrt_publish_buffer_` (cap 16) → `nrt_publish_thread` (CFS) → `controller.PublishNonRtSnapshot` 로 비동기 송출. v3 의 actuator SPSC lane (`publish_buffer_`) 은 v4 에서 제거 — cross-core hand-off / eventfd wake / jthread 한 세트가 사라져 latency / 자원 동시 감소
 3. **DeviceBackend cb_group injection**: 모든 backend (UR / udp_hand / mujoco) 의 state/motor/sensor subscription 이 `Configure(node, cfg, state_cb_group)` 로 받은 `cb_group_rt_callback_` 에 attach — `SubscriptionOptions.callback_group` 으로 RT 경계 subs 가 `rt_callback_executor` (FIFO 70) 에서 dispatch. MutuallyExclusive 그룹 강제 (SeqLock single-writer 보호)
 4. **3 executor 모델**: `rt_callback_executor` (RT 경계 subs) · `nrt_callback_executor` (controller-owned subs · services · nrt_publish drain) · `nrt_logging_executor` (CSV drain · 지연 E-STOP log). RT loop · nrt_publish 는 `std::jthread` + eventfd
 5. **Overrun recovery**: 놓친 tick skip + 다음 경계 재정렬, 연속 10회 시 E-STOP
-6. **CPU Affinity**: 각 스레드를 전용 CPU 코어에 고정. `rt_callback` (Core 3 FIFO 70) 는 DDS receive thread (CFS) 와 **같은 Core 3 공유** — launch-time taskset 으로 controller process 의 비-RT thread 를 Core 3 으로 다시 핀해 cache locality 확보. `arm_driver` / `hand_driver` 는 process-level taskset 으로 분리 코어
+6. **CPU Affinity**: 각 스레드를 전용 CPU 코어에 고정. `rt_callback` (Core 2 FIFO 70) 는 DDS receive thread (CFS) 와 **같은 Core 2 공유** — launch-time taskset 으로 controller process 의 비-RT thread 를 Core 2 로 다시 핀해 cache locality 확보. `arm_driver` / `hand_driver` 는 process-level taskset 으로 분리 코어. Core 0 은 OS / DDS / IRQ 전용 (user-space thread 금지, v4.1)
 7. **RT 스케줄링**: SCHED_FIFO (RT thread), SCHED_OTHER (non-RT) 명시 설정. priority hierarchy `90 > 70 > 60 > 55` 강제 (`ValidateSystemThreadConfigs` invariant)
 8. **메모리 잠금**: `mlockall(MCL_CURRENT | MCL_FUTURE)` 로 페이지 폴트 방지 (rclcpp::init 이전)
 9. **시뮬레이션 동기 모드**: CV 기반 wakeup 으로 시뮬레이터 step 과 1:1 동기화 (sim_thread → ControlLoop)
@@ -47,31 +47,28 @@
 
 ## 아키텍처
 
-### 스레드 모델 (layout v3, 6-core 기준)
+### 스레드 모델 (layout v4.1, 6-core 기준)
 
 아래는 **6-core dev box** 기준 thread roster. 4/8/10/12/14/16-core tier 는 §CPU 코어 할당 참조. `SelectThreadConfigs()` 가 `GetPhysicalCpuCount()` 로 물리 코어 수를 감지해 적절한 `SystemThreadConfigs` 를 반환한다.
 
 ```
 ── RT 경계 (controller ↔ hardware/sim) ───────────────────────────────
-rt_control (Core 2, SCHED_FIFO prio 90) ← std::jthread, clock_nanosleep
+rt_control (Core 1, SCHED_FIFO prio 90) ← std::jthread, clock_nanosleep
   ├─ ControlLoop() (500Hz default, TIMER_ABSTIME 절대시간)
   ├─ CheckTimeouts() (매 10 tick = 50Hz, inline)
-  ├─ producer → publish_buffer_ (cap 512, SPSC)
   ├─ producer → nrt_publish_buffer_ (cap 16, SPSC)
+  ├─ inline actuator publish: DeviceBackend.WriteCommand (v4)
   └─ overrun recovery (skip + 재정렬, 연속 10회 → E-STOP)
 
-rt_callback_executor (Core 3, SCHED_FIFO prio 70) ← rclcpp::Executor + jthread
+rt_callback_executor (Core 2, SCHED_FIFO prio 70) ← rclcpp::Executor + jthread
   └─ cb_group_rt_callback_ (MutuallyExclusive)
       ├─ DeviceBackend state subs: /joint_states · hand/{joint,motor,sensor}_states
       └─ ※ 모든 backend (UR/udp_hand/mujoco) 가 Configure(node, cfg, state_cb_group)
          로 cb_group_rt_callback_ 를 받아 SubscriptionOptions 에 박는다 (v3 invariant)
-
-rt_outbound (Core 3, SCHED_FIFO prio 65) ← std::jthread, eventfd wakeup
-  └─ drain publish_buffer_ → DeviceBackend.WriteCommand (actuator only)
-     ※ rt_callback 와 same-core, priority diff 70 > 65 가 starvation 방지
+  ※ DDS receive thread (CFS) 가 launch-time taskset 으로 같은 Core 2 에 co-pin
 
 ── MPC 그룹 (controller producer / consumer) ────────────────────────
-mpc_main (Core 4, SCHED_FIFO prio 60) ← std::jthread, 20-100Hz
+mpc_main (Core 3, SCHED_FIFO prio 60) ← std::jthread, 20-100Hz
   ├─ ReadState() ← rtc::SeqLock<MPCStateSnapshot>::Load()
   ├─ Solve() ← Aligator-based handler
   └─ PublishSolution() → rtc::mpc::TripleBuffer (zero-copy publish)
@@ -80,7 +77,8 @@ mpc_worker_0..1 (10+/12+ core only, SCHED_FIFO prio 55)
   └─ 솔버가 spawn 한 parallel rollout / linear solve
 
 ── Non-RT executor 그룹 ──────────────────────────────────────────────
-nrt_callback_executor (Core 0, SCHED_OTHER nice 0) ← rclcpp::Executor + jthread
+nrt_callback_executor (Core 5 on 6c shared / Core 7+ dedicated on ≥ 8c,
+                       SCHED_OTHER nice 0) ← rclcpp::Executor + jthread
   ├─ cb_group_nrt_callback_ (CM-owned: lifecycle services 등)
   ├─ CM 노드 default group (CM-owned target_sub_ — RobotTarget 은 외부 의도
   │     입력이므로 RT 경계 밖)
@@ -91,22 +89,24 @@ nrt_publish_thread (std::jthread, eventfd wakeup, nrt_callback core 공유 — �
   └─ drain nrt_publish_buffer_ → controller.PublishNonRtSnapshot
        — RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot
 
-nrt_logging_executor (Core 0, SCHED_OTHER nice -5) ← rclcpp::Executor + jthread
+nrt_logging_executor (Core 5 on 6c shared / Core 6+ dedicated on ≥ 8c,
+                      SCHED_OTHER nice -5) ← rclcpp::Executor + jthread
   ├─ cm_timing_log.csv drain (ThreadCsvProducer<RtTickTimingPayload, 4096>)
   └─ deferred E-STOP log
 
 ── Hardware/sim driver (process-level pin) ──────────────────────────
-arm_driver (Core 1, SCHED_OTHER) — UR ros2_control driver, taskset 으로 process-level pin
-hand_driver (Core 1, SCHED_OTHER) — udp_hand_node 프로세스, 같은 Core 1 공유 (6-core degraded)
+arm_driver (Core 4 on 6c shared / dedicated on ≥ 8c, SCHED_OTHER) — UR ros2_control driver
+hand_driver (Core 4 on 6c shared / dedicated on ≥ 8c, SCHED_OTHER) — udp_hand_node 프로세스
   └─ 내부 kHandUdpRecvConfig (FIFO 65, cpu_core=-1 sentinel — 프로세스 affinity 상속)
 
-sim_thread (cpu_core=-1, SCHED_OTHER) — MuJoCo physics, 6-core 는 cset shield 해제된 코어 roam
+sim_thread (cpu_core=-1, SCHED_OTHER) — MuJoCo physics, 모든 tier 에서 cpu_shield 해제된 코어 roam
 viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공유
 ```
 
 > - **RT priority hierarchy (v4)**: `90 (rt_control) > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers)`. `ValidateSystemThreadConfigs()` invariant 가 강제. v3 의 `rt_outbound` (FIFO 65) 는 v4 에서 제거 — actuator publish 는 `rt_control` 이 inline 으로 수행.
-> - **rt_callback + DDS co-pin on Core 3**: launch-time taskset 이 controller process 의 비-RT thread (DDS receive 등) 를 Core 3 으로 다시 핀해 `rt_callback` (FIFO 70) 와 cache locality 공유. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음.
-> - **6-core 는 degraded mode**: arm/hand_driver 가 Core 1 공유, mpc_workers 없음, sim_thread cpu_core=-1. 결정적 RT 보장은 ≥ 8-core tier 부터.
+> - **rt_callback + DDS co-pin on Core 2 (v4.1)**: launch-time taskset 이 controller process 의 비-RT thread (DDS receive 등) 를 Core 2 로 다시 핀해 `rt_callback` (FIFO 70) 와 cache locality 공유. SCHED_FIFO 가 CFS 를 무조건 선점하므로 RT 결정성은 영향 없음. v4 의 Core 3 → v4.1 의 Core 2 로 이동 (RT cluster 가 Core 1 부터 시작).
+> - **Core 0 은 OS / DDS / IRQ 전용 (v4.1)**: ≥ 6-core 모든 tier 에서 nrt_logging / nrt_callback 은 Core 0 와 분리. user-space thread 가 Core 0 에 들어가지 않음.
+> - **6-core 는 degraded mode**: arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유, mpc_workers 없음, sim_thread cpu_core=-1. 결정적 RT 보장은 ≥ 8-core tier 부터.
 
 ---
 
@@ -114,29 +114,35 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 
 `SelectThreadConfigs()` 가 `GetPhysicalCpuCount()` 로 물리 코어 수를 감지해 7-tier (`4 / 6 / 8 / 10 / 12 / 14 / 16+`) 중 적합한 `SystemThreadConfigs` 를 반환한다. 값의 SSoT 는 [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) — 본 표는 그 미러.
 
-| 스레드 | 4-core¹ | 6-core² | 8-core | 10-core | 12-core | 14-core | 16-core³ |
+| 스레드 | 4-core¹ | 6-core² | 8-core | 10-core | 12-core | 14-core | 16-core |
 |---|---|---|---|---|---|---|---|
-| **rt_control** (FIFO 90) | Core 1 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **rt_callback** (FIFO 70) | Core 2 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
-| **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 4 | Core 4 | Core 4 | Core 4 | Core 4 | Core 9 |
-| **mpc_worker_0** (FIFO 55) | — | — | — | Core 5 | Core 5 | Core 5 | Core 10 |
-| **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 6 | Core 6 | Core 11 |
-| **nrt_logging** (CFS -5) | Core 0 | Core 0 | Core 0 | Core 0 | Core 0 | Core 0 | Core 0 |
-| **nrt_callback** (CFS 0) | Core 0 | Core 0 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
-| **arm_driver** (CFS 0) | Core 0 | Core 1 | Core 6 | Core 7 | Core 8 | Core 8 | Core 13 |
-| **hand_driver** (CFS 0) | Core 0 | Core 1 | Core 5 | Core 6 | Core 7 | Core 7 | Core 12 |
-| **sim_thread** (CFS 0) | -1⁴ | -1⁴ | Core 7 | Core 9 | Core 10 | Core 10 | Core 15 |
-| **viewer** (CFS 0) | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ |
+| **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
+| **rt_callback** (FIFO 70) | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
+| **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
+| **mpc_worker_0** (FIFO 55) | — | — | — | Core 4 | Core 4 | Core 4 | Core 4 |
+| **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 5 | Core 5 | Core 5 |
+| **arm_driver** (CFS 0) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
+| **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
+| **nrt_logging** (CFS -5) | Core 0 | Core 5 | Core 6 | Core 7 | Core 8 | Core 8 | Core 8 |
+| **nrt_callback** (CFS 0) | Core 0 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 9 |
+| **sim_thread** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
+| **viewer** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
 
-> ¹ **4-core 는 degraded mode** — `mpc_main` 이 CFS 로 강등 (RT 자원 부족). 결정적 RT 보장 X, demo / smoke 용도만 권장.
-> ² **6-core 는 degraded mode** — `arm_driver` / `hand_driver` 가 Core 1 공유, mpc_workers 없음, `sim_thread` `cpu_core=-1` (cset shield 해제된 코어에서 roam).
-> ³ **16-core 는 legacy Option A** — Core 4-8 이 user cset shield, MPC + driver 가 Core 9-13. NUC hybrid CPU 분석은 [docs/nuc_hybrid_analysis.md](nuc_hybrid_analysis.md) 별도 추적.
-> ⁴ **`cpu_core = -1` sentinel** — pthread affinity 호출 skip, scheduler/priority/nice/name 만 적용. process-level taskset (launch script) 가 박은 affinity 를 상속.
+> ¹ **4-core 는 degraded mode** — `mpc_main` 이 CFS 로 강등 (RT 자원 부족). 결정적 RT 보장 X, demo / smoke 용도만 권장. Core 0 에 nrt + driver 가 모두 합쳐짐 (capacity 한계).
+> ² **6-core 는 degraded mode** — `arm_driver` / `hand_driver` 가 Core 4 공유, `nrt_logging` / `nrt_callback` 이 Core 5 공유, mpc_workers 없음, `sim_thread` `cpu_core=-1` (cpu_shield 해제된 코어에서 roam).
+> ³ **`cpu_core = -1` sentinel** — pthread affinity 호출 skip, scheduler/priority/nice/name 만 적용. process-level taskset (launch script) 가 박은 affinity 를 상속. v4.1 부터 모든 tier 에서 `sim_thread` / `viewer` 가 -1.
 >
-> **v4 의 핵심 변화**:
-> - v3 의 `rt_outbound` (FIFO 65) jthread + `publish_buffer_` SPSC + eventfd 제거. actuator publish 는 `rt_control` (Core 2 FIFO 90) 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 (RT-safe contract). 결과적으로 한 코어 (Core 3) 의 RT thread 수 2 → 1, cross-core hand-off / eventfd wake 제거.
-> - DDS receive thread 가 Core 0-1 → **Core 3** 으로 이동 (launch-time taskset). `rt_callback` 와 cache locality 공유. CFS 유지, SCHED_FIFO 가 무조건 선점하므로 RT 결정성 영향 없음.
-> - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 가 `SystemThreadConfigs` 의 1급 필드 (v3 유지). Python helper (`rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core() / get_sim_core() / get_viewer_core()`) 가 동일 tier dispatch 미러링 — launch script 가 process-level taskset 으로 사용.
+> **v4.1 의 핵심 변화**:
+> - **RT cluster 가 Core 1 부터 시작** (Core 0 은 OS / DDS / IRQ 전용). 모든 tier 에서 `rt_control = Core 1`, `rt_callback = Core 2`, `mpc_main = Core 3` 으로 통일.
+> - **nrt_logging / nrt_callback 이 OS 코어와 분리** (≥ 6-core). Core 0 에 user-space thread 가 들어가지 않음.
+> - **arm_driver / hand_driver 알파벳 순** — 8-core 이상에서 `arm` 이 항상 더 낮은 코어 번호.
+> - **sim_thread / viewer 항상 cpu_core = -1** — tier 마다 다르게 해석되는 모호성 제거. cpu_shield --sim 이 모든 tier 에서 동일한 의미.
+> - **16-core 의 cset shield "user" (Core 4-8) 제거** — RT cluster 가 10-14c 와 동일 패턴으로 응집되어 cache locality 회복.
+>
+> **v4 의 핵심 변화 (참고)**:
+> - v3 의 `rt_outbound` (FIFO 65) jthread + `publish_buffer_` SPSC + eventfd 제거. actuator publish 는 `rt_control` 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 (RT-safe contract).
+> - DDS receive thread 가 `rt_callback` 와 same-core co-pin (v4.1 에서 Core 2). CFS 유지, SCHED_FIFO 가 무조건 선점하므로 RT 결정성 영향 없음.
+> - `arm_driver` / `hand_driver` / `sim_thread` / `viewer` 가 `SystemThreadConfigs` 의 1급 필드. Python helper (`rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core() / get_sim_core() / get_viewer_core() / get_rt_callback_core()`) 가 동일 tier dispatch 미러링 — launch script 가 process-level taskset 으로 사용.
 >
 > **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `TierIsolationMonotonicity` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + sentinel 처리를 강제한다. drift gate: Python helper 결과 ≡ C++ `SelectThreadConfigs()` 결과는 `rtc_tools/test/test_thread_layout.py` 가 보장.
 
@@ -147,10 +153,10 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 | 물리 코어 | shield cpuset (RT + MPC 영역) | 격리 해제 영역 |
 |---|---|---|
 | 4 | `1,3` (rt_control + mpc) | Core 0, 2 — OS · driver · nrt |
-| 5–9 | `2-4` (rt + mpc_main) | Core 0-1, 5+ — OS · arm/hand_driver · sim |
-| 10–11 | `2-5` (+ mpc_worker_0) | Core 0-1, 6-9 |
-| 12–15 | `2-6` (+ mpc_worker_1) | Core 0-1, 7+ |
-| 16+ | `2-3,9-11` (16-core Option A 의 RT + MPC) | Core 4-8 (user shield), 12+ |
+| 5–9 | `1-3` (rt_control + rt_callback + mpc_main) | Core 0, 4+ — OS · arm/hand_driver · nrt · sim |
+| 10–11 | `1-4` (+ mpc_worker_0) | Core 0, 5+ |
+| 12–15 | `1-5` (+ mpc_worker_1) | Core 0, 6+ |
+| 16+ | `1-5` (RT cluster 응집) | Core 0, 6+ (driver · nrt · spare / user shield) |
 
 driver core (`arm_driver` / `hand_driver`) 는 SCHED_OTHER 이므로 cset 보호 불요 — process-level taskset 만으로 충분.
 
@@ -160,8 +166,6 @@ driver core (`arm_driver` / `hand_driver`) 는 SCHED_OTHER 이므로 cset 보호
 SCHED_FIFO prio 90  rt_control          ← controller tick (정기)
                      ↓ preempt
 SCHED_FIFO prio 70  rt_callback          ← backend state subs (joint/motor/sensor)
-                     ↓ preempt (same-core)
-SCHED_FIFO prio 65  rt_outbound         ← backend.WriteCommand drain
                      ↓ preempt
 SCHED_FIFO prio 60  mpc_main            ← MPC solve (rt_callback 미만)
                      ↓ preempt
@@ -176,11 +180,10 @@ SCHED_OTHER nice  0 sim_thread · viewer ← MuJoCo physics · GLFW
 
 **설계 원칙**:
 
-- **RT thread = controller↔hardware/sim 경계만**: rt_control · rt_callback · rt_outbound · mpc_*. 다른 thread 는 NRT.
-- **priority 간격 5**: `90/70/65/60/55` — `cgroup.cpu.rt_runtime_us` 가 압박해도 hierarchy 유지. 우선순위 inflation 금지 (CLAUDE.md §3 E-1 escalation).
+- **RT thread = controller↔hardware/sim 경계만**: rt_control · rt_callback · mpc_*. 다른 thread 는 NRT.
+- **priority 간격 5–10**: `90/70/60/55` — `cgroup.cpu.rt_runtime_us` 가 압박해도 hierarchy 유지. 우선순위 inflation 금지 (CLAUDE.md §3 E-1 escalation). v3 의 priority 65 슬롯 (rt_outbound) 은 v4 에서 빈 채로 두어 hand_driver 내부 UDP recv (FIFO 65) 가 유일.
 - **`mpc_main < rt_callback` 강제** (`ValidateSystemThreadConfigs`): 긴 MPC solve 가 sensor callback latency 를 늘리지 않도록 보장.
 - **`mpc_worker_*.priority ≤ mpc_main.priority` 강제**: parallel solver 가 main loop 를 역 preempt 하지 않도록.
-- **`rt_outbound.priority < rt_callback.priority` 강제** (v3 신규): same-core 일 때 starvation 방지. 두 thread 가 다른 core 면 자동 만족 — `ValidateSystemThreadConfigs` 가 `cpu_core` 동일성과 무관히 한쪽이라도 RT 면 check.
 - **`arm_driver` / `hand_driver` vs RT controller core disjoint** 강제 (v3 신규): 같은 코어에 배치 시 ValidateSystemThreadConfigs 가 reject. driver 프로세스가 RT thread 코어를 침범하지 못하도록.
 
 ---
@@ -586,9 +589,9 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
   // matrix 는 architecture.md §RtControllerNode 표 참조.
 
   // 4. Executor 스레드 spawn + ApplyThreadConfig
-  std::jthread t_rt_callback  = make_thread(rt_callback_executor,  cfgs.rt_callback);   // FIFO 70 Core 3
-  std::jthread t_nrt_logging = make_thread(nrt_logging_executor, cfgs.nrt_logging);  // CFS -5 Core 0
-  std::jthread t_nrt_callback= make_thread(nrt_callback_executor,cfgs.nrt_callback); // CFS  0 Core 1
+  std::jthread t_rt_callback  = make_thread(rt_callback_executor,  cfgs.rt_callback);   // FIFO 70 Core 2
+  std::jthread t_nrt_logging = make_thread(nrt_logging_executor, cfgs.nrt_logging);   // CFS -5 (tier-aware)
+  std::jthread t_nrt_callback= make_thread(nrt_callback_executor,cfgs.nrt_callback);  // CFS  0 (tier-aware)
 
   // 5. Join + lifecycle shutdown (on_deactivate / on_cleanup 가 jthread 들 join + reset)
   rclcpp::shutdown();
@@ -597,7 +600,7 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
 ```
 
 - 본 함수 자체는 `cm_executable` 별 wrapper 가 `RtControllerMain(argc, argv, "integrated_rt_controller")` 처럼 호출. 실제 시그니처와 lifecycle wiring 은 [rt_controller_main_impl.cpp](../rtc_controller_manager/src/rt_controller_main_impl.cpp) 참조.
-- **rt_outbound 의 시작/종료** 는 RtControllerNode 의 lifecycle 콜백 (`on_activate` / `on_deactivate`) 에서 — main 이 직접 spawn 하지 않는다.
+- **rt_control jthread 의 시작/종료** 는 RtControllerNode 의 lifecycle 콜백 (`on_activate` / `on_deactivate`) 에서 — main 이 직접 spawn 하지 않는다. v3 의 rt_outbound jthread 는 v4 에서 제거됐다.
 
 ---
 
@@ -610,29 +613,28 @@ PID=$(pgrep -f integrated_rt_controller)
 ps -T -p $PID -o tid,comm,rtprio,psr,cls,pri
 ```
 
-**v3 layout 6-core 정상 출력**:
+**v4.1 layout 6-core 정상 출력**:
 
 ```
     TID COMMAND         RTPRIO PSR CLS PRI
-   ... rt_control          90   2  FF 130   ← Core 2, FIFO 90 (clock_nanosleep jthread)
-   ... rt_callback          70   3  FF 110   ← Core 3, FIFO 70 (rt_callback_executor)
-   ... rt_outbound         65   3  FF 105   ← Core 3, FIFO 65 — rt_callback 와 same-core ✓
-   ... mpc_main            60   4  FF 100   ← Core 4, FIFO 60
-   ... nrt_callback         -   0  TS   0   ← Core 0, CFS
-   ... nrt_callback         -   0  TS   0   ← executor worker (2개일 수 있음)
-   ... nrt_logging          -   0  TS   0   ← Core 0, CFS nice -5
-   ... dds.shm.*            -   - …          ← FastDDS 내부 (CFS, 코어 임의)
+   ... rt_control          90   1  FF 130   ← Core 1, FIFO 90 (clock_nanosleep jthread)
+   ... rt_callback          70   2  FF 110   ← Core 2, FIFO 70 (rt_callback_executor)
+   ... mpc_main            60   3  FF 100   ← Core 3, FIFO 60
+   ... nrt_callback         -   5  TS   0   ← Core 5 (degraded 6c: shared with nrt_logging), CFS
+   ... nrt_logging          -   5  TS   0   ← Core 5, CFS nice -5
+   ... dds.shm.*            -   2  TS   0   ← DDS recv (co-pinned to rt_callback Core 2)
    ... integrated-ust       -   - …          ← LTTng UST (있을 때만)
    ... integrated_rt_c      -   -  TS   0   ← 메인 thread (rclcpp main, idle)
 ```
 
 **CLS**: `FF`=SCHED_FIFO, `RR`=SCHED_RR, `TS`=SCHED_OTHER (CFS). **RTPRIO**: RT priority (`-` = non-RT). **PSR**: 현재 실행 코어.
 
-**v3 invariant 체크**:
-- `rt_control` priority 90 > `rt_callback` 70 > `rt_outbound` 65 > `mpc_main` 60
-- `rt_callback.PSR == rt_outbound.PSR` (same-core, ≥ 6-core tier)
-- `nrt_callback` / `nrt_logging` 은 CLS=TS (RTPRIO=-)
-- 어느 thread 도 pre-v3 명칭 (`sensor_io` / `publish_thread` / `aux` / `logger` / `udp_recv`) 이면 안 됨 — drift 회귀 grep sentinel
+**v4.1 invariant 체크**:
+- `rt_control` priority 90 > `rt_callback` 70 > `mpc_main` 60
+- `rt_control.PSR == 1`, `rt_callback.PSR == 2`, `mpc_main.PSR == 3` (모든 tier 공통)
+- DDS recv thread (CLS=TS) 의 PSR 이 `rt_callback.PSR` 과 같아야 함 (Core 2 co-pin)
+- `nrt_callback` / `nrt_logging` 은 CLS=TS (RTPRIO=-), Core 0 가 아니어야 함 (≥ 6c)
+- 어느 thread 도 pre-v4 명칭 (`rt_inbound` / `rt_outbound` / `sensor_io` / `publish_thread` / `aux` / `logger` / `udp_recv`) 이면 안 됨 — drift 회귀 grep sentinel
 
 `udp_hand_node` 는 별도 프로세스이므로 그 PID 로 별도 `ps -T`:
 ```bash
@@ -646,7 +648,7 @@ ps -T -p $(pgrep -f udp_hand_node) -o tid,comm,rtprio,psr,cls
 ```bash
 # 특정 thread 의 affinity (TID 는 위 ps -T 출력)
 taskset -cp <TID>
-# 예: rt_outbound TID → "current affinity list: 3"
+# 예: rt_callback TID → "current affinity list: 2"
 
 # 프로세스 전체 (arm/hand_driver process-level pin 검증)
 taskset -cp $(pgrep -f udp_hand_node)

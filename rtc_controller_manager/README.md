@@ -52,19 +52,21 @@ rtc_controller_manager/
 
 ---
 
-## 스레딩 아키텍처 (layout v4)
+## 스레딩 아키텍처 (layout v4.1)
 
 `SelectThreadConfigs()`가 물리 코어 수에 따라 스레드 레이아웃을 자동 선택합니다 (SSoT: `rtc_base/threading/thread_config.hpp`).
 
 | 스레드 | 코어 | 스케줄러 | 주파수 | 역할 |
 |--------|------|----------|--------|------|
-| **rt_loop** (rt_control) | 2 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push |
-| **rt_callback_executor** | 3 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch-time taskset 으로 같은 Core 3 에 co-pin (CFS 유지) |
-| **nrt_logging_executor** | 0 | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
-| **nrt_publish_thread** | 1 (8+ tier) / 0 (6-core) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup |
-| **nrt_callback_executor** | 1 (8+ tier) / 0 (6-core) | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
+| **rt_loop** (rt_control) | 1 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push |
+| **rt_callback_executor** | 2 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch-time taskset 으로 같은 Core 2 에 co-pin (CFS 유지) |
+| **nrt_logging_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
+| **nrt_publish_thread** | tier-aware (4c: 0 / ≥6c: dedicated, nrt_callback core 공유) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup |
+| **nrt_callback_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
 
-> **v4 변경**: v3 의 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거. actuator publish 는 `rt_control` 이 inline 으로 수행 (RT-safe contract). cross-core hand-off 가 사라져 latency / 자원 동시 감소. DDS receive thread Core 0-1 → Core 3 으로 이동하여 `rt_callback` 와 cache locality 공유.
+> **v4.1 변경**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS / DDS / IRQ 전용). DDS receive thread 는 새 rt_callback core (Core 2) 에 co-pin. nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리. 정확한 tier 별 cpu_core 는 [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) 또는 [docs/RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md) 표 참조.
+>
+> **v4 변경 (참고)**: v3 의 `rt_outbound` jthread + `publish_buffer_` SPSC + eventfd 는 제거. actuator publish 는 `rt_control` 이 inline 으로 수행 (RT-safe contract). cross-core hand-off 가 사라져 latency / 자원 동시 감소.
 
 > `mlockall(MCL_CURRENT | MCL_FUTURE)`를 `rclcpp::init()` 전에 호출하여 페이지 폴트를 방지합니다.
 

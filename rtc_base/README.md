@@ -316,44 +316,37 @@ CPU 코어 수에 따른 스레드 레이아웃 프리셋을 제공합니다 (4,
 
 > **헤더 내 선언 순서**: tier 블록은 코어 수 오름차순 (4 → 6 → 8 → 10 → 12 → 14 → 16), 각 tier 내부는 `sched_priority` 내림차순 (rt_control 90 → rt_callback 70 → mpc 60/55 → SCHED_OTHER 0 그룹), priority 동률 시 심볼명 알파벳 순 (Arm → Hand → NrtCallback → NrtLogging → SimThread → Viewer).
 
-**코어 수별 스레드 레이아웃 (layout v4):**
+**코어 수별 스레드 레이아웃 (layout v4.1):**
 
-| 스레드 | 4코어¹ | 6코어² | 8코어 | 10코어 | 12코어 | 14코어 | 16코어³ |
+| 스레드 | 4코어¹ | 6코어² | 8코어 | 10코어 | 12코어 | 14코어 | 16코어 |
 |--------|-------|-------|-------|--------|--------|--------|--------|
-| **rt_control** (FIFO 90) | Core 1 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
-| **rt_callback** (FIFO 70) | Core 2 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
-| **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 4 | Core 4 | Core 4 | Core 4 | Core 4 | Core 9 |
-| **mpc_worker_0** (FIFO 55) | — | — | — | Core 5 | Core 5 | Core 5 | Core 10 |
-| **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 6 | Core 6 | Core 11 |
-| **nrt_logging** (CFS -5) | Core 0 | Core 0 | Core 0 | Core 0 | Core 0 | Core 0 | Core 0 |
-| **nrt_callback** (CFS 0) | Core 0 | Core 0 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
-| **arm_driver** (CFS 0) | Core 0 | Core 1 | Core 6 | Core 7 | Core 8 | Core 8 | Core 13 |
-| **hand_driver** (CFS 0) | Core 0 | Core 1 | Core 5 | Core 6 | Core 7 | Core 7 | Core 12 |
-| **sim_thread** (CFS 0) | -1⁴ | -1⁴ | Core 7 | Core 9 | Core 10 | Core 10 | Core 15 |
-| **viewer** (CFS 0) | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ | -1⁴ |
+| **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |
+| **rt_callback** (FIFO 70) | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 | Core 2 |
+| **mpc_main** (FIFO 60) | Core 3 (CFS¹) | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 | Core 3 |
+| **mpc_worker_0** (FIFO 55) | — | — | — | Core 4 | Core 4 | Core 4 | Core 4 |
+| **mpc_worker_1** (FIFO 55) | — | — | — | — | Core 5 | Core 5 | Core 5 |
+| **arm_driver** (CFS 0) | Core 0 | Core 4 | Core 4 | Core 5 | Core 6 | Core 6 | Core 6 |
+| **hand_driver** (CFS 0) | Core 0 | Core 4 | Core 5 | Core 6 | Core 7 | Core 7 | Core 7 |
+| **nrt_logging** (CFS -5) | Core 0 | Core 5 | Core 6 | Core 7 | Core 8 | Core 8 | Core 8 |
+| **nrt_callback** (CFS 0) | Core 0 | Core 5 | Core 7 | Core 8 | Core 9 | Core 9 | Core 9 |
+| **sim_thread** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
+| **viewer** (CFS 0) | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ | -1³ |
 
-> ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). RT 결정성 보장 X.
-> ² 6코어는 degraded mode — arm/hand_driver 가 Core 1 공유, mpc_workers 없음, sim_thread cpu_core=-1 (격리 해제된 코어에서 roam).
-> ³ 16코어는 legacy Option A 유지 — Core 4-8 이 user cset shield, MPC + driver 가 Core 9-13.
-> ⁴ `cpu_core = -1` sentinel: pin 없음. sim_thread 는 cpu_shield `--sim` 모드에서 격리 해제된 코어 사용, viewer 는 모든 tier 에서 OS 공유.
+> ¹ 4코어는 degraded mode — mpc 가 CFS 로 강등 (RT 자원 부족). Core 0 에 nrt + driver 모두 합쳐짐.
+> ² 6코어는 degraded mode — arm/hand_driver 가 Core 4 공유, nrt_logging+nrt_callback 이 Core 5 공유, mpc_workers 없음.
+> ³ `cpu_core = -1` sentinel: pin 없음. sim_thread / viewer 는 모든 tier 에서 cpu_shield 가 해제한 코어에서 CFS 로 roam (v4.1 통일).
 >
-> **v4 의 핵심 변화**: v3 의 `rt_outbound` (FIFO 65) jthread + `publish_buffer_` SPSC + eventfd 제거 — actuator publish 는 `rt_control` (Core 2 FIFO 90) 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 (RT-safe contract). DDS receive thread 는 launch-time taskset 으로 `rt_callback` 와 같은 Core 3 으로 co-pin (CFS 유지) 되어 cache locality 공유. hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, cpu_core=-1) — `SystemThreadConfigs` 에 필드 없음.
+> **v4.1 의 핵심 변화**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS / DDS / IRQ 전용); nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리; arm/hand 알파벳 순; sim/viewer 모든 tier 에서 cpu_core=-1; 16c 의 cset shield "user" (Core 4-8) 제거.
 >
-> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `test/test_mpc_thread_config.cpp::TierIsolationMonotonicity` + `LayoutV4RtCallbackPinning` + `LayoutV4ArmHandDriverDisjoint` + `LayoutV3ValidatorCatchesArmHandCollision` + `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + cpu_core=-1 sentinel 처리를 강제.
+> **v4 의 핵심 변화 (참고)**: v3 의 `rt_outbound` (FIFO 65) jthread + `publish_buffer_` SPSC + eventfd 제거 — actuator publish 는 `rt_control` 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 (RT-safe contract). DDS receive thread 는 launch-time taskset 으로 `rt_callback` 와 같은 코어 (v4.1: Core 2) 로 co-pin. hand UDP receive thread 는 hand_driver 프로세스 내부 (`kHandUdpRecvConfig`, cpu_core=-1).
+>
+> **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `test/test_mpc_thread_config.cpp` 의 tier 쌍 + cpu_core=-1 sentinel 강제 테스트가 보장.
 
-**MuJoCo 시뮬레이션 코어 레이아웃:**
+**MuJoCo 시뮬레이션 코어 레이아웃 (v4.1):**
 
-Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (`SelectThreadConfigs()` 가 반환). `rtc_mujoco_sim` 의 `SimLoop` 가 `ApplyThreadConfig(SelectThreadConfigs().sim_thread)` 를 호출하여 taskset 핀을 박고, 같은 값이 `rtc_tools.launch.thread_layout.get_sim_core()` 로도 미러링되어 launch 의 process-level taskset 에 사용됩니다.
+Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (`SelectThreadConfigs()` 가 반환). v4.1 부터 모든 tier 에서 `sim_thread.cpu_core = -1` / `viewer.cpu_core = -1` — MuJoCo physics 와 GLFW viewer 는 모두 caller-controlled (no pin). 같은 값이 `rtc_tools.launch.thread_layout.get_sim_core() / get_viewer_core()` 로도 미러링됩니다.
 
-| 물리 코어 수 | sim_thread.cpu_core | viewer.cpu_core | 비고 |
-|-------------|----------------|-------------|------|
-| 16+ | 15 | -1 (OS) | legacy 배치: MPC(9–11) + driver(12–13) 회피 |
-| 14-15 | 10 | -1 | RT/MPC가 Core 2-6 → Core 10 dedicated |
-| 12-13 | 10 | -1 | RT/MPC가 Core 2-6 → Core 10-11 spare |
-| 10-11 | 9 | -1 | RT/MPC가 Core 2-5 → Core 9 spare |
-| 8-9 | 7 | -1 | RT/MPC가 Core 2-4, hand_driver 5, arm_driver 6 → Core 7 dedicated |
-| 6-7 | -1 (없음) | -1 | sim 모드는 cset shield 가 Core 2-4 만 보호, MuJoCo 는 해제된 코어에서 CFS 실행 |
-| <6 | -1 (없음) | -1 | dedicated sim core 없음 |
+`cpu_shield.sh --sim` 모드는 RT cluster 코어 (Core 1-5) 만 격리하고 나머지 코어를 해제하므로, MuJoCo physics + GLFW viewer 는 해제된 코어에서 CFS 로 자유롭게 roam 합니다.
 
 #### 스레드 유틸리티 (`thread_utils.hpp`)
 

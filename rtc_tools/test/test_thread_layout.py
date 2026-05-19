@@ -17,6 +17,7 @@ from rtc_tools.launch.thread_layout import (
     get_arm_driver_core,
     get_hand_driver_core,
     get_physical_cpu_count,
+    get_rt_callback_core,
     get_sim_core,
     get_viewer_core,
     select_thread_layout,
@@ -25,13 +26,55 @@ from rtc_tools.launch.thread_layout import (
 # Per-tier expected mapping. Mirrors the table at the top of
 # rtc_tools/launch/thread_layout.py and the C++ kXxxConfigNCore constants.
 _EXPECTED: dict[int, ThreadLayout] = {
-    4: ThreadLayout(arm_driver_core=0, hand_driver_core=0, sim_thread_core=-1, viewer_core=-1),
-    6: ThreadLayout(arm_driver_core=1, hand_driver_core=1, sim_thread_core=-1, viewer_core=-1),
-    8: ThreadLayout(arm_driver_core=6, hand_driver_core=5, sim_thread_core=7, viewer_core=-1),
-    10: ThreadLayout(arm_driver_core=7, hand_driver_core=6, sim_thread_core=9, viewer_core=-1),
-    12: ThreadLayout(arm_driver_core=8, hand_driver_core=7, sim_thread_core=10, viewer_core=-1),
-    14: ThreadLayout(arm_driver_core=8, hand_driver_core=7, sim_thread_core=10, viewer_core=-1),
-    16: ThreadLayout(arm_driver_core=13, hand_driver_core=12, sim_thread_core=15, viewer_core=-1),
+    4: ThreadLayout(
+        arm_driver_core=0,
+        hand_driver_core=0,
+        sim_thread_core=-1,
+        viewer_core=-1,
+        rt_callback_core=2,
+    ),
+    6: ThreadLayout(
+        arm_driver_core=4,
+        hand_driver_core=4,
+        sim_thread_core=-1,
+        viewer_core=-1,
+        rt_callback_core=2,
+    ),
+    8: ThreadLayout(
+        arm_driver_core=4,
+        hand_driver_core=5,
+        sim_thread_core=-1,
+        viewer_core=-1,
+        rt_callback_core=2,
+    ),
+    10: ThreadLayout(
+        arm_driver_core=5,
+        hand_driver_core=6,
+        sim_thread_core=-1,
+        viewer_core=-1,
+        rt_callback_core=2,
+    ),
+    12: ThreadLayout(
+        arm_driver_core=6,
+        hand_driver_core=7,
+        sim_thread_core=-1,
+        viewer_core=-1,
+        rt_callback_core=2,
+    ),
+    14: ThreadLayout(
+        arm_driver_core=6,
+        hand_driver_core=7,
+        sim_thread_core=-1,
+        viewer_core=-1,
+        rt_callback_core=2,
+    ),
+    16: ThreadLayout(
+        arm_driver_core=6,
+        hand_driver_core=7,
+        sim_thread_core=-1,
+        viewer_core=-1,
+        rt_callback_core=2,
+    ),
 }
 
 
@@ -69,6 +112,7 @@ def test_helper_accessors_agree_with_layout() -> None:
         assert get_hand_driver_core(ncpu) == expected.hand_driver_core
         assert get_sim_core(ncpu) == expected.sim_thread_core
         assert get_viewer_core(ncpu) == expected.viewer_core
+        assert get_rt_callback_core(ncpu) == expected.rt_callback_core
 
 
 def test_physical_cpu_count_is_positive() -> None:

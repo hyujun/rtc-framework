@@ -31,12 +31,12 @@ struct TierExpectation {
 
 const std::array<TierExpectation, 7> kTiers = {{
     {"4-core", &kMpcConfig4Core, 3, 0},
-    {"6-core", &kMpcConfig6Core, 4, 0},
-    {"8-core", &kMpcConfig8Core, 4, 0},
-    {"10-core", &kMpcConfig10Core, 4, 1},
-    {"12-core", &kMpcConfig12Core, 4, 2},
-    {"14-core", &kMpcConfig14Core, 4, 2},
-    {"16-core", &kMpcConfig16Core, 9, 2},
+    {"6-core", &kMpcConfig6Core, 3, 0},
+    {"8-core", &kMpcConfig8Core, 3, 0},
+    {"10-core", &kMpcConfig10Core, 3, 1},
+    {"12-core", &kMpcConfig12Core, 3, 2},
+    {"14-core", &kMpcConfig14Core, 3, 2},
+    {"16-core", &kMpcConfig16Core, 3, 2},
 }};
 
 TEST(MpcThreadConfig, MainCoreMatchesSpec) {
@@ -160,8 +160,8 @@ TEST(MpcThreadConfig, TierIsolationMonotonicity) {
   }
 }
 
-// Layout v4: rt_callback is the only RT inbound/outbound thread. Pin it to
-// Core 3 on every tier ≥ 6 (4-core fallback uses Core 2 — see thread_config.hpp).
+// Layout v4.1: rt_callback is the only RT inbound/outbound thread. Pin it to
+// Core 2 on every tier (RT cluster starts at Core 1; Core 0 = OS only).
 TEST(MpcThreadConfig, LayoutV4RtCallbackPinning) {
   struct TierPin {
     const ThreadConfig* rt_callback;
@@ -171,12 +171,12 @@ TEST(MpcThreadConfig, LayoutV4RtCallbackPinning) {
 
   const std::array<TierPin, 7> tiers = {{
       {&kRtCallbackConfig4Core, 2, "4-core"},
-      {&kRtCallbackConfig, 3, "6-core"},
-      {&kRtCallbackConfig8Core, 3, "8-core"},
-      {&kRtCallbackConfig10Core, 3, "10-core"},
-      {&kRtCallbackConfig12Core, 3, "12-core"},
-      {&kRtCallbackConfig14Core, 3, "14-core"},
-      {&kRtCallbackConfig16Core, 3, "16-core"},
+      {&kRtCallbackConfig, 2, "6-core"},
+      {&kRtCallbackConfig8Core, 2, "8-core"},
+      {&kRtCallbackConfig10Core, 2, "10-core"},
+      {&kRtCallbackConfig12Core, 2, "12-core"},
+      {&kRtCallbackConfig14Core, 2, "14-core"},
+      {&kRtCallbackConfig16Core, 2, "16-core"},
   }};
   for (const auto& t : tiers) {
     EXPECT_EQ(t.rt_callback->cpu_core, t.expected_core)

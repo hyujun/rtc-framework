@@ -85,8 +85,8 @@ class DeviceBackend {
   /// `state_cb_group` is the callback group that ALL state-lane subscriptions
   /// (joint / motor / sensor) created by the backend must be attached to via
   /// `rclcpp::SubscriptionOptions::callback_group`. CM passes its
-  /// `cb_group_rt_callback_` (RT path, FIFO 70 executor on Core 3 — layout
-  /// v4) so the controller↔hardware/sim boundary subs are dispatched on the
+  /// `cb_group_rt_callback_` (RT path, FIFO 70 executor on Core 2 — layout
+  /// v4.1) so the controller↔hardware/sim boundary subs are dispatched on the
   /// rt_callback thread. May be null in test fixtures that don't wire an
   /// executor — backends must tolerate this and fall back to the default
   /// callback group.

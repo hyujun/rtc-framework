@@ -16,12 +16,12 @@
 //            group stays on nrt_callback_executor to continue processing
 //            lifecycle services.
 //
-// Threading model (layout v4, SSoT: rtc_base/threading/thread_config.hpp):
-//   rt_control       Core 2  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
+// Threading model (layout v4.1, SSoT: rtc_base/threading/thread_config.hpp):
+//   rt_control       Core 1  SCHED_FIFO 90   clock_nanosleep @ control_rate (default 500Hz) + 50Hz
 //                                            timeout checker. Performs DeviceBackend.WriteCommand
 //                                            inline (actuator command publish, RT-safe) and pushes
 //                                            controller-owned snapshots into nrt_publish_buffer_.
-//   rt_callback      Core 3  SCHED_FIFO 70   rt_callback_executor pinned here.
+//   rt_callback      Core 2  SCHED_FIFO 70   rt_callback_executor pinned here.
 //                                            cb_group_rt_callback_ — DeviceBackend
 //                                            state subs only (/joint_states,
 //                                            hand state/motor/sensor) via
@@ -37,10 +37,11 @@
 //                                            (controller-owned non-RT topics:
 //                                            RobotTarget / Transforms / DigitalTwin /
 //                                            grasp_state / wbc_state / tof_snapshot).
-//   nrt_logging      Core 0  SCHED_OTHER -5   nrt_logging_executor — cm_timing_log.csv
-//                                            drain + deferred E-STOP log.
-//   nrt_callback     Core 1 (≥ 8-core tier;  nrt_callback_executor —
-//                    Core 0 on 6-core)        cb_group_nrt_callback_ + CM node default
+//   nrt_logging      tier-aware (4c: Core 0; nrt_logging_executor — cm_timing_log.csv
+//                    ≥ 6c: dedicated core)   drain + deferred E-STOP log.
+//                                            SCHED_OTHER -5.
+//   nrt_callback     tier-aware (4c: Core 0; nrt_callback_executor —
+//                    ≥ 6c: dedicated core)   cb_group_nrt_callback_ + CM node default
 //                                            SCHED_OTHER 0                group
 //                                            (CM-owned RobotTarget sub) + every
 //                                            controller LifecycleNode default group
