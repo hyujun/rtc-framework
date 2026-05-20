@@ -145,44 +145,71 @@ build_expected_threads() {
   # Layout v4.1: rt_control=1, rt_callback=2, mpc_main=3, workers=4-5.
   # nrt_logging / nrt_callback: 4c=0, 6c=5 (shared), 8c=6/7, 10c=7/8,
   #   12c+=8/9. arm < hand alphabetical.
+  # Mirrors thread_config.hpp::kMpcConfig*Core + per-tier driver/nrt configs.
+  # Every RT thread (rt_control, rt_callback, mpc_main, mpc_worker_*) AND
+  # process-level pins (arm_driver, hand_driver, nrt_logging, nrt_callback)
+  # are enumerated so check_process_discovery / check_cpu_affinity /
+  # check_cpu_migration cover the full system layout — previously mpc_main,
+  # mpc_worker_*, arm_driver, hand_driver were missing and verify silently
+  # skipped them.
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    # 12-16+: RT 1-2, MPC 3-5, arm 6, hand 7, nrt_logging 8, nrt_callback 9.
+    # 12-16+: rt_control/callback 1-2, mpc_main 3, workers 4-5, arm 6, hand 7,
+    # nrt_logging 8, nrt_callback 9.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "mpc_worker_0:4:1:55"
+      "mpc_worker_1:5:1:55"
+      "arm_driver:6:0:0"
+      "hand_driver:7:0:0"
       "nrt_logging:8:0:0"
       "nrt_callback:9:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    # 10-11: RT 1-2, MPC 3-4, arm 5, hand 6, nrt_logging 7, nrt_callback 8.
+    # 10-11: rt 1-2, mpc_main 3, single worker 4, arm 5, hand 6, nrt_log 7, nrt_cb 8.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "mpc_worker_0:4:1:55"
+      "arm_driver:5:0:0"
+      "hand_driver:6:0:0"
       "nrt_logging:7:0:0"
       "nrt_callback:8:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    # 8-9: RT 1-2, MPC 3, arm 4, hand 5, nrt_logging 6, nrt_callback 7.
+    # 8-9: rt 1-2, mpc_main 3, arm 4, hand 5, nrt_log 6, nrt_cb 7. No workers.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "arm_driver:4:0:0"
+      "hand_driver:5:0:0"
       "nrt_logging:6:0:0"
       "nrt_callback:7:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
-    # 6-7 (degraded): RT 1-2, MPC 3, arm+hand share Core 4, nrt_logging+nrt_callback share Core 5.
+    # 6-7 (degraded): rt 1-2, mpc_main 3, arm+hand share 4, nrt_log+nrt_cb share 5.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "arm_driver:4:0:0"
+      "hand_driver:4:0:0"
       "nrt_logging:5:0:0"
       "nrt_callback:5:0:0"
     )
   else
-    # 4-core fallback (degraded): RT 1-2, MPC CFS Core 3 — no RT determinism.
+    # 4-core fallback (degraded): rt 1-2, mpc_main CFS slot 3, arm/hand/nrt
+    # all share OS Core 0 — no RT determinism.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:0:0"
+      "arm_driver:0:0:0"
+      "hand_driver:0:0:0"
       "nrt_logging:0:0:0"
       "nrt_callback:0:0:0"
     )
@@ -319,6 +346,16 @@ check_process_discovery() {
   done
 
   _pass "총 스레드: ${thread_count}개"
+
+  # PHYSICAL_CORE_SLOTS 진단: slot index → logical CPU id 룩업 테이블이 어떻게
+  # 채워졌는지 한 줄 표시. 사용자가 affinity / migration 결과를 보고 "왜 slot 2
+  # 가 cpu 4 로 변환되는가" 같은 의문을 가질 때 즉시 답이 됨. 비어 있으면
+  # identity fallback (SMT-off CI / container) 이라는 점 surface.
+  if [[ -n "${PHYSICAL_CORE_SLOTS:-}" ]]; then
+    _pass "Slot→logical 매핑: [${PHYSICAL_CORE_SLOTS}] (slot index 순서대로 logical CPU id)"
+  else
+    _warn "PHYSICAL_CORE_SLOTS 미감지 — slot→logical 변환이 identity fallback (sysfs topology 미가용 / 비-Intel 비-hybrid 시스템)"
+  fi
 
   # 알려진 스레드 매칭 결과 — optional 스레드 미발견은 SKIP 처리
   local required_count=0
@@ -688,9 +725,9 @@ check_cpu_migration() {
   local ok=0 total=0
 
   for entry in "${EXPECTED_THREADS[@]}"; do
-    local ename ecpu epolicy
+    local ename eslot epolicy
     ename=$(echo "$entry" | cut -d: -f1)
-    ecpu=$(echo "$entry" | cut -d: -f2)
+    eslot=$(echo "$entry" | cut -d: -f2)
     epolicy=$(echo "$entry" | cut -d: -f3)
 
     # RT 스레드만 검사 (SCHED_FIFO)
@@ -723,11 +760,25 @@ check_cpu_migration() {
       continue
     fi
 
-    if [[ "$current_cpu" -eq "$ecpu" ]]; then
-      _pass "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: Core ${ecpu})"
+    # Translate slot → logical CPU id via PHYSICAL_CORE_SLOTS so comparison is
+    # against the actual logical CPU that ApplyThreadConfig pinned. Without
+    # this, SMT-on hybrid hosts report false "core migration" because slot 2
+    # is mistaken for logical cpu 2 instead of the P-physical it maps to.
+    local elogical
+    elogical=$(slot_to_logical_cpu "$eslot")
+
+    local pin_label
+    if [[ "$eslot" == "$elogical" ]]; then
+      pin_label="Core ${elogical}"
+    else
+      pin_label="slot ${eslot} → logical cpu ${elogical}"
+    fi
+
+    if [[ "$current_cpu" -eq "$elogical" ]]; then
+      _pass "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: ${pin_label})"
       ((ok++)) || true
     else
-      _fail "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: Core ${ecpu}) — 코어 이동 발생!"
+      _fail "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: ${pin_label}) — 코어 이동 발생!"
       _category_update "cpu_migration" "FAIL"
     fi
   done
