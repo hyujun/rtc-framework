@@ -29,9 +29,9 @@
     device_timeout_values: [10000.0, 10000.0]
 
     # ── Logging configuration ─────────────────────────────────────────────────
-    enable_logging: false
-    enable_timing_log: false
-    enable_device_log: false
+    enable_logging: true
+    enable_timing_log: true
+    enable_device_log: true
     log_dir: ""
     max_log_sessions: 10
 

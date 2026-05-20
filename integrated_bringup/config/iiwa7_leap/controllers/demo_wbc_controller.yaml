@@ -137,7 +137,7 @@ demo_wbc_controller:
   # build — they're robot-agnostic phase definitions; tune weights later if
   # required.
   mpc:
-    enabled: false
+    enabled: true
     engine: "handler"
     max_stale_solutions: 5
     target_frequency_hz: 10.0
