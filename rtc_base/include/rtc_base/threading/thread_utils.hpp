@@ -151,11 +151,15 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
     CPU_ZERO(&cpuset);
     CPU_SET(static_cast<std::size_t>(logical_cpu), &cpuset);
 
-    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+    // pthread_setaffinity_np returns the error code directly and does NOT
+    // set errno (POSIX pthread API contract). Capture rc explicitly — reading
+    // errno here yields stale state from earlier libc calls and routinely
+    // prints "(success)" while the call actually failed.
+    if (const int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset); rc != 0) {
       std::fprintf(
           stderr,
-          "[ApplyThreadConfig] '%s' setaffinity failed: slot=%d -> logical_cpu=%d errno=%d (%s)\n",
-          cfg.name, cfg.cpu_core, logical_cpu, errno, std::strerror(errno));
+          "[ApplyThreadConfig] '%s' setaffinity failed: slot=%d -> logical_cpu=%d rc=%d (%s)\n",
+          cfg.name, cfg.cpu_core, logical_cpu, rc, SafeStrerror(rc).c_str());
       return false;
     }
   }
@@ -166,11 +170,12 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   if (cfg.sched_policy == SCHED_FIFO || cfg.sched_policy == SCHED_RR) {
     param.sched_priority = cfg.sched_priority;
 
-    if (pthread_setschedparam(pthread_self(), cfg.sched_policy, &param) != 0) {
+    // pthread_setschedparam also returns rc directly without touching errno.
+    if (const int rc = pthread_setschedparam(pthread_self(), cfg.sched_policy, &param); rc != 0) {
       std::fprintf(stderr,
-                   "[ApplyThreadConfig] '%s' setschedparam failed: policy=%d prio=%d errno=%d "
+                   "[ApplyThreadConfig] '%s' setschedparam failed: policy=%d prio=%d rc=%d "
                    "(%s) — check ulimit -r and CAP_SYS_NICE\n",
-                   cfg.name, cfg.sched_policy, cfg.sched_priority, errno, std::strerror(errno));
+                   cfg.name, cfg.sched_policy, cfg.sched_priority, rc, SafeStrerror(rc).c_str());
       return false;
     }
   } else if (cfg.sched_policy == SCHED_OTHER) {
