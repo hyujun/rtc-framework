@@ -8,8 +8,11 @@
 # 백업: /etc/default/grub 수정 전 자동 백업 생성.
 #
 # 관리 파라미터:
-#   nohz_full=<RT_CORES>       — RT 코어에서 타이머 틱 비활성화
-#   rcu_nocbs=<RT_CORES>       — RT 코어에서 RCU 콜백 오프로드
+#   nohz_full=<RT_CORES>       — RT 스레드 (SCHED_FIFO) 가 실행되는 코어에서
+#                                타이머 틱 비활성화. SMT 시 HT 시블링 포함
+#                                (sibling tick 이 RT 코어 캐시 invalidate 방지).
+#                                값은 get_rt_cores_with_siblings() SSoT.
+#   rcu_nocbs=<RT_CORES>       — RT 코어에서 RCU 콜백 오프로드 (동일 범위).
 #   processor.max_cstate=1     — 깊은 C-state 진입 방지 (wake-up latency 제거)
 #   clocksource=tsc            — TSC 클럭소스 명시 (HPET 대비 50-100x 빠름)
 #   tsc=reliable               — TSC 안정성 마킹 (fallback 방지)
@@ -44,7 +47,8 @@ if [[ "${1:-}" == "--help" ]]; then
   echo ""
   echo "GRUB parameters added to GRUB_CMDLINE_LINUX_DEFAULT:"
   echo "  nohz_full=<RT_CORES>       Disable timer ticks on RT cores"
-  echo "  rcu_nocbs=<RT_CORES>       Offload RCU callbacks from RT cores"
+  echo "                             (rt_control + rt_callback + MPC, HT siblings included)"
+  echo "  rcu_nocbs=<RT_CORES>       Offload RCU callbacks from RT cores (same range)"
   echo "  processor.max_cstate=1     Prevent deep C-state entry"
   echo "  clocksource=tsc            Use TSC clock source (fastest)"
   echo "  tsc=reliable               Mark TSC as reliable"
@@ -68,8 +72,13 @@ require_root "${1:-}"
 # RT_CORES_START, RT_CORES_END 등을 설정한다.
 compute_cpu_layout
 
-# compute_expected_isolated()로 SMT 시블링을 포함한 정확한 RT 코어 범위를 얻는다.
-RT_CORES=$(compute_expected_isolated)
+# nohz_full / rcu_nocbs 값은 SCHED_FIFO 스레드가 실제로 실행되는 코어 (rt_control,
+# rt_callback, mpc_main + workers) 로 한정한다 — compute_expected_isolated() 는
+# nrt / arm_driver / hand_driver (CFS) 까지 포함하므로 RT-only kernel feature
+# 인 nohz_full / rcu_nocbs 의 의도와 불일치 (layout v4.1 SSoT).
+# SMT 시 RT 물리 코어의 HT 시블링은 helper 가 자동 포함 — sibling 이 tick 을
+# 계속 발생시키면 RT 코어 L1/L2 캐시가 무효화된다.
+RT_CORES=$(get_rt_cores_with_siblings)
 
 if [[ "$LOGICAL_CORES" -ne "$TOTAL_CORES" ]]; then
   info "SMT/HT detected: ${LOGICAL_CORES} logical, ${TOTAL_CORES} physical cores"
@@ -98,10 +107,9 @@ fi
 # 빌드 시 전체 코어를 사용할 수 있다. (cpu_shield.sh 참조)
 # nohz_full과 rcu_nocbs는 isolcpus와 독립적으로 유효하므로 유지.
 #
-# Phase 5 note: RT_CORES comes from compute_expected_isolated which returns
-# every non-OS core. MPC cores (get_mpc_cores in rt_common.sh) are a strict
-# subset of non-OS cores, so they are automatically covered without needing
-# a separate merge step.
+# v4.1 note: RT_CORES = get_rt_cores_with_siblings() — RT cluster (rt_control,
+# rt_callback, mpc_main + workers) 와 그 HT 시블링만 포함. nrt / driver (CFS)
+# 는 제외 — RT-only feature 인 nohz_full / rcu_nocbs 의 의도와 일치.
 declare -A GRUB_PARAMS_WITH_VALUE=(
   ["nohz_full"]="${RT_CORES}"
   ["rcu_nocbs"]="${RT_CORES}"

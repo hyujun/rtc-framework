@@ -51,26 +51,21 @@ make_logger "SHIELD"
 # for forward compatibility and so callers (`on --sim`, `on --robot`) need
 # no further changes.
 #
-# Tier table (matches rtc::SystemThreadConfigs layout v4.1):
-#   4-core    : RT 1-2, MPC 3 (CFS)           → "1-3"
-#   6-9-core  : rt_control 1, rt_callback 2, MPC 3 → "1-3"
-#   10-11-core: RT 1-2, MPC 3-4               → "1-4"
-#   12-13-core: RT 1-2, MPC 3-5               → "1-5"
-#   14-15-core: RT 1-2, MPC 3-5               → "1-5"
-#   16+-core  : RT 1-2, MPC 3-5               → "1-5"
+# SSoT: get_rt_cores() in rt_common.sh — the same CSV is consumed by
+# setup_grub_rt.sh (via get_rt_cores_with_siblings) for nohz_full / rcu_nocbs
+# and by setup_irq_affinity.sh for IRQ affinity. Range expansion comes from
+# _format_cpu_range so cset gets compact notation (e.g. "1-5") regardless of
+# tier.
 compute_shield_cores() {
-  local mode="$1"  # kept for forward compat; both modes use the same shield
-  local phys_cores="$2"
-
-  if [[ "$phys_cores" -le 4 ]]; then
-    echo "1-3"
-  elif [[ "$phys_cores" -le 9 ]]; then
-    echo "1-3"
-  elif [[ "$phys_cores" -le 11 ]]; then
-    echo "1-4"
-  else
-    echo "1-5"
-  fi
+  # Args $1 (mode) and $2 (phys_cores) are accepted for forward compat with
+  # legacy callers; both modes share the same shield range, and get_rt_cores
+  # auto-detects the physical core count via rt_common.sh.
+  local rt_csv
+  rt_csv=$(get_rt_cores)
+  local rt_ids
+  rt_ids=$(_rt_parse_cpulist "$rt_csv")
+  # shellcheck disable=SC2086  # word splitting intended
+  _format_cpu_range $rt_ids
 }
 
 # ── Status mode marker file ──────────────────────────────────────────────────

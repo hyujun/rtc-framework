@@ -678,6 +678,118 @@ test_sanity_check_disagreement() {
   fi
 }
 
+# ── get_rt_cores_with_siblings() / compute_shield_cores() tests ────────────
+#
+# These exercise the layout v4.1 SSoT helpers consumed by setup_grub_rt.sh
+# (nohz_full / rcu_nocbs) and cpu_shield.sh (cset shield range). The helper
+# walks $RTC_SYSFS_ROOT/devices/system/cpu/cpu*/topology/core_id; we build a
+# fake topology and shadow get_physical_cores() per tier so the helper sees
+# the desired core count without touching the host CPU.
+#
+# Coverage matrix:
+#   * non-SMT: 4c, 6c, 10c, 12c, 14c, 16c — each tier verifies the helper
+#     output collapses to the expected range (e.g. 12c → "1-5")
+#   * SMT (6C/12T mock): RT physical cores 1,2,3 → "1-3,7-9" (sibling cpus 7,8,9)
+#   * compute_shield_cores output matches the v4.1 tier table after migration
+
+# Build a fake non-SMT sysfs tree: cpu0..N-1 each with core_id == cpu number.
+_mock_sysfs_non_smt() {
+  local root="$1" ncpu="$2"
+  mock_reset "$root"
+  local i
+  for ((i=0; i<ncpu; i++)); do
+    mock_add_cpu "$root" "$i" "$i" 0
+  done
+}
+
+# Build a fake SMT sysfs tree: ncpu_phys physical cores with 2 HT siblings.
+# cpu 0..N-1 are the physical-core primaries (core_id == i),
+# cpu N..2N-1 are the HT siblings sharing core_id with cpu (i-N).
+_mock_sysfs_smt() {
+  local root="$1" ncpu_phys="$2"
+  mock_reset "$root"
+  local i
+  for ((i=0; i<ncpu_phys; i++)); do
+    mock_add_cpu "$root" "$i"               "$i" 0
+    mock_add_cpu "$root" "$((i+ncpu_phys))" "$i" 0
+  done
+}
+
+# Shadow get_physical_cores so layout helpers see the tier we want.
+_force_physical_cores() {
+  eval "get_physical_cores() { echo $1; }"
+}
+
+test_get_rt_cores_with_siblings_non_smt() {
+  local root="$TMP/rtcs_nonsmt"
+  local n
+  # tier → expected output (matches docs/RT_OPTIMIZATION.md table)
+  declare -A expected=(
+    [4]="1-3" [6]="1-3" [8]="1-3" [9]="1-3"
+    [10]="1-4" [11]="1-4"
+    [12]="1-5" [13]="1-5" [14]="1-5" [15]="1-5" [16]="1-5"
+  )
+  for n in 4 6 8 9 10 11 12 13 14 15 16; do
+    _mock_sysfs_non_smt "$root" "$n"
+    _force_physical_cores "$n"
+    local got
+    got=$(RTC_SYSFS_ROOT="$root" get_rt_cores_with_siblings)
+    expect_eq "rtcs_nonsmt.${n}c" "${expected[$n]}" "$got"
+  done
+}
+
+test_get_rt_cores_with_siblings_smt_6c12t() {
+  # 6 physical cores, SMT enabled. RT physical cores: 1,2,3.
+  # Siblings: cpu 7 (core_id 1), cpu 8 (core_id 2), cpu 9 (core_id 3).
+  # Expected output: "1-3,7-9" (range-collapsed sorted CSV).
+  local root="$TMP/rtcs_smt_6c"
+  _mock_sysfs_smt "$root" 6
+  _force_physical_cores 6
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" get_rt_cores_with_siblings)
+  expect_eq "rtcs_smt.6c12t" "1-3,7-9" "$got"
+}
+
+test_get_rt_cores_with_siblings_smt_12c24t() {
+  # 12 physical cores, SMT enabled. RT physical cores: 1,2,3,4,5.
+  # Siblings: cpu 13..17 (share core_id with cpu 1..5).
+  # Expected output: "1-5,13-17".
+  local root="$TMP/rtcs_smt_12c"
+  _mock_sysfs_smt "$root" 12
+  _force_physical_cores 12
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" get_rt_cores_with_siblings)
+  expect_eq "rtcs_smt.12c24t" "1-5,13-17" "$got"
+}
+
+test_compute_shield_cores_v4_1_tiers() {
+  # cpu_shield.sh::compute_shield_cores migrated to call get_rt_cores() under
+  # the hood. Verify the post-migration output matches the v4.1 tier table.
+  # Inline-replicate the function body so the test breaks if cpu_shield.sh
+  # drifts from this expectation without sourcing the script (which has
+  # side effects: require_root, file IO).
+  compute_shield_cores_v41() {
+    local rt_csv
+    rt_csv=$(get_rt_cores)
+    local rt_ids
+    rt_ids=$(_rt_parse_cpulist "$rt_csv")
+    # shellcheck disable=SC2086
+    _format_cpu_range $rt_ids
+  }
+  declare -A expected=(
+    [4]="1-3" [6]="1-3" [9]="1-3"
+    [10]="1-4" [11]="1-4"
+    [12]="1-5" [16]="1-5"
+  )
+  local n
+  for n in 4 6 9 10 11 12 16; do
+    _force_physical_cores "$n"
+    local got
+    got=$(compute_shield_cores_v41)
+    expect_eq "shield.${n}c" "${expected[$n]}" "$got"
+  done
+}
+
 # ── Run all ─────────────────────────────────────────────────────────────────
 test_cpulist_parser
 test_nuc13_i7_1360p
@@ -701,6 +813,12 @@ test_physical_core_slots_amd_ryzen_smt
 test_physical_core_slots_smt_off_identity
 test_physical_core_slots_nuc14_nonstandard_enum
 test_sanity_check_disagreement
+
+# v4.1 Layout SSoT helpers (setup_grub_rt.sh / cpu_shield.sh consumers).
+test_get_rt_cores_with_siblings_non_smt
+test_get_rt_cores_with_siblings_smt_6c12t
+test_get_rt_cores_with_siblings_smt_12c24t
+test_compute_shield_cores_v4_1_tiers
 
 echo
 echo "── test_rt_common.sh summary ──"

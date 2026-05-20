@@ -214,47 +214,55 @@ ulimit -r  # 출력: 99 (RT priority limit)
 ulimit -l  # 출력: unlimited (memlock)
 ```
 
-### 2. CPU Isolation (권장)
+### 2. CPU Isolation (권장 — cpu_shield + setup_grub_rt 자동화)
 
-> **주의: SMT/Hyper-Threading 환경**
->
-> `isolcpus`는 **물리 코어** 기준으로 설정해야 합니다. `nproc`은 논리 코어(SMT 포함)를
-> 반환하므로, HT가 켜진 시스템에서 `nproc` 값을 그대로 사용하면 과도한 격리가 발생합니다.
->
-> | CPU | 물리 코어 | `nproc` | 올바른 `isolcpus` | 잘못된 `isolcpus` |
-> |-----|-----------|---------|-------------------|-------------------|
-> | i7-8700 (6C/12T) | 6 | 12 | `2-5` | `2-11` (OS에 2코어만 남김) |
-> | i5-8250U (4C/8T) | 4 | 8 | `1-3` | `1-7` (OS에 1코어만 남김) |
->
-> 물리 코어 수 확인: `lscpu -p=Core,Socket | grep -v '^#' | sort -u | wc -l`
->
-> `setup_nvidia_rt.sh`, `setup_irq_affinity.sh`는 자동으로 물리 코어를 감지합니다.
+v4.1 기준 권장 흐름은 **`isolcpus` 직접 편집 없이** 두 도구로 분리되어 있습니다:
+
+- **`sudo ./repo_scripts/scripts/setup_grub_rt.sh`** — `nohz_full` / `rcu_nocbs` 자동 산출
+  (`get_rt_cores_with_siblings()` SSoT). RT thread 가 실행되는 코어 (rt_control,
+  rt_callback, mpc_main + workers) 만 tickless 로 만들고, SMT 시 HT 시블링은 자동 포함하여
+  cache invalidation 을 방지합니다. nrt / arm_driver / hand_driver (CFS) 는 RT 코어가
+  아니므로 nohz_full 에서 제외 — 정기 tick 이 정상 작동.
+- **`sudo ./repo_scripts/scripts/cpu_shield.sh on --robot`** — 런타임에 cset shield 로
+  RT + MPC 코어를 격리 (`compute_shield_cores()` → `get_rt_cores()` SSoT). 기존
+  `isolcpus` GRUB 파라미터를 대체하므로 빌드 시 `cpu_shield.sh off` 로 전체 코어를
+  되돌려 사용할 수 있습니다.
+
+| 코어 수 | `nohz_full` / `rcu_nocbs` (non-SMT) | cset shield |
+|---------|--------------------------------------|-------------|
+| 4–9c    | `1-3`                                | `1-3`       |
+| 10–11c  | `1-4`                                | `1-4`       |
+| 12c+    | `1-5`                                | `1-5`       |
+
+SMT 가 켜져 있으면 `setup_grub_rt.sh` 가 시블링 logical CPU 까지 자동으로 합집합에
+포함합니다. 예: 6C/12T 시스템에서 RT 물리 코어 1-3 → `nohz_full=1-3,7-9`.
+
+> **레거시 (v3) 흐름**: 과거에는 `/etc/default/grub` 에 직접 `isolcpus=2-5
+> nohz_full=2-5 rcu_nocbs=2-5` 를 박았으나, 이 방식은 (a) 빌드 시에도 코어가 격리되어
+> 빌드 속도 저하, (b) 재부팅 없이 해제 불가, (c) nrt / driver 까지 tickless 로 만들어
+> `nohz_full` 의 RT-only 의도와 불일치 — v4.1 에서 폐기되었습니다.
 
 ```bash
-# /etc/default/grub 편집
+# /etc/default/grub 직접 수정이 필요한 경우 (수동 fallback):
 sudo nano /etc/default/grub
 
-# 다음 줄 추가 또는 수정 (6-core 기준, 물리 코어 기준)
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5"
+# 6-core 시스템 예시 (cpu_shield 로 격리하지 않고 부팅 시 고정 격리하려면)
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nohz_full=1-3 rcu_nocbs=1-3"
+# 12-core 시스템: nohz_full=1-5 rcu_nocbs=1-5
+# (isolcpus 는 cpu_shield 로 대체되어 비권장)
 
-# GRUB 업데이트
 sudo update-grub
-
-# 재부팅
 sudo reboot
 
 # 확인
-cat /sys/devices/system/cpu/isolated
-# 출력: 2-5
-
-cat /proc/cmdline | grep isolcpus
-# 출력: ... isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5 ...
+cat /proc/cmdline | grep -E "nohz_full|rcu_nocbs"
+# 출력: ... nohz_full=1-3 rcu_nocbs=1-3 ...
 ```
 
-**isolcpus 옵션 설명**:
-- `isolcpus=2-5`: Core 2-5를 일반 스케줄러에서 제외
-- `nohz_full=2-5`: Core 2-5에서 타이머 인터럽트 최소화 (tickless)
-- `rcu_nocbs=2-5`: RCU 콜백을 다른 코어에서 처리
+**파라미터 의미**:
+- `nohz_full=<RT_CORES>`: SCHED_FIFO 스레드가 실행되는 코어에서 정기 타이머 틱 제거 (tickless)
+- `rcu_nocbs=<RT_CORES>`: RCU 콜백을 다른 코어에서 처리하여 RT 코어 지터 제거
+- `isolcpus`: **v4.1 비권장** — `cpu_shield.sh` (cset) 로 런타임 동적 격리 사용
 
 ### 3. CPU 성능 모드
 
@@ -775,20 +783,26 @@ ulimit -r  # 99 출력되어야 함
 
 ### CPU Isolation 미적용
 
-**증상**: PSR 값이 0-1로 계속 변경됨
+**증상**: PSR 값이 RT 코어 밖 (0 또는 nrt/driver 코어) 으로 계속 변경됨
 
 **확인**:
 ```bash
-cat /proc/cmdline | grep isolcpus
-# 출력 없음 -> 설정 안 됨
+# nohz_full / rcu_nocbs 가 RT 코어로 설정됐는지
+cat /proc/cmdline | grep -E "nohz_full|rcu_nocbs"
+# 출력 없음 -> setup_grub_rt.sh 미실행
+
+# cset shield 가 활성 상태인지 (런타임 격리)
+cpu_shield.sh status
 ```
 
-**해결**:
+**해결** (v4.1 권장 흐름):
 ```bash
-sudo nano /etc/default/grub
-# GRUB_CMDLINE_LINUX_DEFAULT에 isolcpus=2-5 추가
-sudo update-grub
+# 1. GRUB nohz_full / rcu_nocbs 자동 설정 (한 번만, 재부팅 필요)
+sudo ./repo_scripts/scripts/setup_grub_rt.sh
 sudo reboot
+
+# 2. 매 부팅 후 또는 launch 시 자동으로 호출되는 런타임 격리
+sudo ./repo_scripts/scripts/cpu_shield.sh on --robot
 ```
 
 ### 여전히 높은 지터

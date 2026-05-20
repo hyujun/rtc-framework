@@ -110,7 +110,7 @@ repo_scripts/
 |------|------|
 | `get_physical_cores()` | 물리 코어 수 감지 (SMT/HT 제외). lscpu -> sysfs -> nproc 순 |
 | `compute_cpu_layout()` | 코어 수 기반 RT 레이아웃 계산 (OS/RT 코어 범위, IRQ 마스크) — 내부에서 IRQ affinity bitmask도 함께 산출 |
-| `compute_expected_isolated()` | `isolcpus` 기대값 계산 (SMT 시블링 포함 범위 표기) |
+| `compute_expected_isolated()` | 비-OS 코어 전체 범위 (RT + nrt + driver, SMT 시블링 포함). cset shield 검증 (`check_rt_setup.sh`) 에 사용 — nohz_full / rcu_nocbs 는 `get_rt_cores_with_siblings()` 를 사용 (좁은 범위) |
 | `get_os_logical_cpus()` | OS 물리 코어에 속하는 논리 CPU 번호 목록 |
 
 ### NIC/네트워크 함수
@@ -145,16 +145,21 @@ repo_scripts/
 | `get_base_packages()` | 기본 RTC 패키지 리스트 (build.sh/install.sh 공유). Phase 5에서 `rtc_mpc`가 `rtc_urdf_bridge`와 `rtc_tsid` 사이에 추가됨. |
 | `get_robot_packages()` | 로봇 전용 패키지 리스트 |
 
-### MPC 코어 레이아웃 함수 (Phase 5)
+### RT/MPC 코어 레이아웃 함수 (Layout SSoT)
 
-쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. 현재 `cpu_shield.sh`, `setup_irq_affinity.sh`, `check_rt_setup.sh`, `verify_rt_runtime.sh`는 각자 tier 분기를 갖고 있으며, 이들을 본 헬퍼로 일원화하는 작업은 Phase 4 (Layout SSoT 단일화)에 예정되어 있습니다.
+쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. v4.1 Layout SSoT 통합 후:
+
+- `cpu_shield.sh::compute_shield_cores()` 는 `get_rt_cores()` 를 호출하며 자체 tier 분기를 제거 (RT+MPC 만 shield).
+- `setup_grub_rt.sh` 는 `get_rt_cores_with_siblings()` 를 호출하여 `nohz_full` / `rcu_nocbs` 값으로 RT thread 가 실행되는 코어만 (SMT 시 sibling 포함) 한정.
+- `setup_irq_affinity.sh` / `check_rt_setup.sh` / `verify_rt_runtime.sh` 는 `compute_cpu_layout()` 기반으로 동작하여 tier 분기가 없습니다 (OS/RT 코어 범위가 layout v4.1 에서 모든 tier 공통: OS=0, RT=1..N-1).
 
 | 함수 | 상태 | 설명 | 반환 예시 (6 / 8 / 10 / 12 / 14 / 16 코어) |
 |------|------|------|--------------------------------------------|
 | `get_mpc_cores()` | active | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `3` / `3` / `3,4` / `3,4,5` / `3,4,5` / `3,4,5` |
 | `get_mpc_main_core()` | dormant | MPC main 코어만 (get_mpc_cores의 첫 항목). | `3` / `3` / `3` / `3` / `3` / `3` |
-| `get_rt_cores()` | dormant | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). v4 에서 rt_outbound 가 단일화되어 rt_callback 단일 entry. | `1,2,3` / `1,2,3` / `1,2,3,4` / `1,2,3,4,5` / `1,2,3,4,5` / `1,2,3,4,5` |
-| `get_os_cores()` | dormant | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). | `0` / `0` / `0` / `0` / `0` / `0` |
+| `get_rt_cores()` | active | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `cpu_shield.sh` 와 `get_rt_cores_with_siblings()` 의 base. | `1,2,3` / `1,2,3` / `1,2,3,4` / `1,2,3,4,5` / `1,2,3,4,5` / `1,2,3,4,5` |
+| `get_rt_cores_with_siblings()` | active | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기). | non-SMT: `1-3` / `1-3` / `1-4` / `1-5` / `1-5` / `1-5` |
+| `get_os_cores()` | active (informational) | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). 현재 직접 consumer 없음 — 보고/검증용. | `0` / `0` / `0` / `0` / `0` / `0` |
 
 Tier별 매핑 (layout v4.1 — SSoT: `rtc_base/threading/thread_config.hpp::SelectThreadConfigs()`):
 - **≤4코어 (degraded)**: rt_control Core 1, rt_callback Core 2 (FIFO 70 + DDS recv co-pin, degraded), mpc Core 3 (CFS). RT 결정성 보장 X.
@@ -220,8 +225,8 @@ sudo ./setup_grub_rt.sh --help
 
 | 파라미터 | 값 | 효과 |
 |---------|-----|------|
-| `nohz_full` | RT 코어 범위 | RT 코어에서 타이머 틱 제거 |
-| `rcu_nocbs` | RT 코어 범위 | RT 코어에서 RCU 콜백 제거 |
+| `nohz_full` | RT thread core (SMT sibling 포함) | SCHED_FIFO 가 실제로 실행되는 코어에서 타이머 틱 제거. 값은 `get_rt_cores_with_siblings()` SSoT — 예: 6c "1-3", 12c "1-5", SMT 6C/12T 시 "1-3,7-9". nrt / driver (CFS) 는 제외. |
+| `rcu_nocbs` | RT thread core (SMT sibling 포함) | RCU 콜백을 RT 코어 밖으로 오프로드 (동일 범위). |
 | `processor.max_cstate` | 1 | 깊은 C-state 진입 방지 |
 | `clocksource` | tsc | HPET 대비 50-100x 빠른 타이머 |
 | `tsc` | reliable | TSC 불안정 감지 비활성화 |
@@ -231,7 +236,7 @@ sudo ./setup_grub_rt.sh --help
 
 **sysctl 설정:** `kernel.sched_rt_runtime_us=-1` 즉시 + `/etc/sysctl.d/99-rt-sched.conf`로 영구 적용
 
-참고: `isolcpus`는 포함하지 않습니다. 런타임 동적 격리를 위해 `cpu_shield.sh`(cset shield)로 대체되었습니다.
+참고: `isolcpus`는 포함하지 않습니다. 런타임 동적 격리를 위해 `cpu_shield.sh`(cset shield)로 대체되었습니다. SMT 시 RT 물리 코어의 HT 시블링은 `nohz_full` / `rcu_nocbs` 에 자동 포함되어 (sibling tick → RT 코어 L1/L2 invalidation 방지) cache 일관성을 유지합니다.
 
 ---
 

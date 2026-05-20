@@ -584,6 +584,86 @@ get_os_cores() {
   echo "0"
 }
 
+# Expand a CSV / range list of physical core ids into a CSV of logical CPU ids
+# that includes each core's HT sibling (when SMT is enabled).
+#
+# Inputs:
+#   $1 — physical core id list, accepts CSV ("1,2,3"), range ("1-3"), or mix
+#        ("1-3,5"). Whitespace is tolerated.
+# Outputs (stdout):
+#   - non-SMT: same logical id set as input, normalized to range notation
+#     (e.g. "1,2,3" → "1-3").
+#   - SMT:     input physical ids resolved to their cpuN entries plus the
+#     matching HT sibling cpus, sorted and range-collapsed
+#     (e.g. on 6C/12T with input "1-2" → "1-2,7-8").
+#
+# Test hook: honors $RTC_SYSFS_ROOT (default: /sys) when walking the topology
+# tree, mirroring detect_hybrid_capability so unit tests can construct fake
+# sysfs trees without root.
+#
+# Used by setup_grub_rt.sh for nohz_full / rcu_nocbs values — RT-only kernel
+# features must include every logical cpu that a SCHED_FIFO thread can land
+# on, otherwise the HT sibling keeps ticking and invalidates the RT core's
+# cache. Distinct from compute_expected_isolated() which returns *all* non-OS
+# cores (RT + nrt + driver), suitable for cset shield / isolcpus but too
+# broad for nohz_full semantics.
+_rt_expand_smt_siblings() {
+  local raw="$1"
+  local cpu_root="${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu"
+
+  # Parse input → space-separated physical core id list.
+  local phys_ids
+  phys_ids=$(_rt_parse_cpulist "$raw")
+  [[ -z "$phys_ids" ]] && { echo ""; return 0; }
+
+  # Build core_id → "cpu0 cpu1 ..." map from sysfs topology.
+  local -A core_to_cpus=()
+  local cpu_dir cpu cid
+  for cpu_dir in "$cpu_root"/cpu[0-9]*; do
+    [[ -d "$cpu_dir" ]] || continue
+    cpu="${cpu_dir##*/cpu}"
+    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
+    cid=$(_rt_read_trim "$cpu_dir/topology/core_id")
+    [[ -z "$cid" ]] && continue
+    if [[ -z "${core_to_cpus[$cid]+x}" ]]; then
+      core_to_cpus[$cid]="$cpu"
+    else
+      core_to_cpus[$cid]="${core_to_cpus[$cid]} $cpu"
+    fi
+  done
+
+  # Resolve each requested physical core to its full sibling set.
+  local result_cpus=()
+  local pid sib
+  for pid in $phys_ids; do
+    if [[ -n "${core_to_cpus[$pid]+x}" ]]; then
+      for sib in ${core_to_cpus[$pid]}; do
+        result_cpus+=("$sib")
+      done
+    else
+      # Fallback: sysfs missing or core_id mismatch — pass through input id.
+      result_cpus+=("$pid")
+    fi
+  done
+
+  # Deduplicate + sort ascending, then collapse to range notation.
+  local sorted
+  sorted=$(printf '%s\n' "${result_cpus[@]}" | sort -nu | tr '\n' ' ')
+  # shellcheck disable=SC2086  # word splitting intended
+  _format_cpu_range $sorted
+}
+
+# Print the RT-thread cpuset for GRUB nohz_full / rcu_nocbs.
+# Layout v4.1: base = get_rt_cores() (rt_control 1, rt_callback 2, MPC 3+).
+# On SMT systems, each RT physical core's HT sibling is included so that the
+# sibling does not keep ticking and invalidate the RT core's L1/L2 cache.
+# Output is range-collapsed CSV (e.g. "1-3" or "1-3,7-9").
+get_rt_cores_with_siblings() {
+  local rt_csv
+  rt_csv=$(get_rt_cores)
+  _rt_expand_smt_siblings "$rt_csv"
+}
+
 # ── Canonical thread layout printout ───────────────────────────────────────
 # Mirrors rtc_base/threading/thread_config.hpp::SelectThreadConfigs().
 # Callers (cpu_shield.sh::do_status, setup_irq_affinity.sh) used to keep
