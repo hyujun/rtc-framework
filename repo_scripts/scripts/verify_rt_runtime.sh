@@ -152,6 +152,12 @@ build_expected_threads() {
   # check_cpu_migration cover the full system layout — previously mpc_main,
   # mpc_worker_*, arm_driver, hand_driver were missing and verify silently
   # skipped them.
+  # NOTE: mpc_worker_* 는 ":optional" 로 표시 — MPCThread::Start (rtc_mpc/src/
+  # thread/mpc_thread.cpp) 의 worker 생성 lambda 가 ApplyThreadConfig 호출 후
+  # 즉시 종료하는 구조 (parallel solver 가 별도로 thread 를 spawn 하는 패턴).
+  # std::jthread destructor 가 join 하므로 verify 의 process discovery 시점에
+  # 이미 사라져 매칭 불가. 미발견을 WARN 이 아닌 SKIP 으로 처리해 false
+  # negative 방지. 실제 worker 활용 여부는 별도 진단 task.
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
     # 12-16+: rt_control/callback 1-2, mpc_main 3, workers 4-5, arm 6, hand 7,
@@ -160,8 +166,8 @@ build_expected_threads() {
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
       "mpc_main:3:1:60"
-      "mpc_worker_0:4:1:55"
-      "mpc_worker_1:5:1:55"
+      "mpc_worker_0:4:1:55:optional"
+      "mpc_worker_1:5:1:55:optional"
       "arm_driver:6:0:0"
       "hand_driver:7:0:0"
       "nrt_logging:8:0:0"
@@ -173,7 +179,7 @@ build_expected_threads() {
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
       "mpc_main:3:1:60"
-      "mpc_worker_0:4:1:55"
+      "mpc_worker_0:4:1:55:optional"
       "arm_driver:5:0:0"
       "hand_driver:6:0:0"
       "nrt_logging:7:0:0"

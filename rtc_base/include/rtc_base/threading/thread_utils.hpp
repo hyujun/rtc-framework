@@ -135,7 +135,8 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   // Validate configuration first
   std::string validation_errors = ValidateThreadConfig(cfg);
   if (!validation_errors.empty()) {
-    // In a real system, you'd log these errors
+    std::fprintf(stderr, "[ApplyThreadConfig] '%s' validation failed: %s\n",
+                 cfg.name ? cfg.name : "<null>", validation_errors.c_str());
     return false;
   }
 
@@ -151,6 +152,10 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
     CPU_SET(static_cast<std::size_t>(logical_cpu), &cpuset);
 
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+      std::fprintf(
+          stderr,
+          "[ApplyThreadConfig] '%s' setaffinity failed: slot=%d -> logical_cpu=%d errno=%d (%s)\n",
+          cfg.name, cfg.cpu_core, logical_cpu, errno, std::strerror(errno));
       return false;
     }
   }
@@ -162,7 +167,10 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
     param.sched_priority = cfg.sched_priority;
 
     if (pthread_setschedparam(pthread_self(), cfg.sched_policy, &param) != 0) {
-      // Failed to set RT scheduling - likely permission issue
+      std::fprintf(stderr,
+                   "[ApplyThreadConfig] '%s' setschedparam failed: policy=%d prio=%d errno=%d "
+                   "(%s) — check ulimit -r and CAP_SYS_NICE\n",
+                   cfg.name, cfg.sched_policy, cfg.sched_priority, errno, std::strerror(errno));
       return false;
     }
   } else if (cfg.sched_policy == SCHED_OTHER) {
