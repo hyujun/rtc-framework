@@ -92,6 +92,34 @@ done
 compute_cpu_layout
 PHYSICAL_CORES="$TOTAL_CORES"
 
+# Populate PHYSICAL_CORE_SLOTS (rt_common.sh::detect_hybrid_capability) so the
+# slot→logical-id translator below can map ThreadConfig::cpu_core (a *slot
+# index*, not a kernel logical CPU id) into the actual logical CPU that
+# ApplyThreadConfig pinned. Without this, SMT-on hybrid (NUC13/14, i9-13900K)
+# and AMD SMT systems would erroneously report PASS/FAIL against the wrong cpu
+# because slot 1 maps to logical cpu 2 (P-core 1 primary), not cpu 1 (sibling).
+detect_hybrid_capability
+
+# Translate a thread_config slot index into the kernel logical CPU id that
+# ApplyThreadConfig actually pinned. Mirrors C++ rtc::SlotToLogicalCpu()
+# (thread_utils.hpp). Empty PHYSICAL_CORE_SLOTS (container without sysfs) or
+# out-of-range slot → identity fallback (preserves legacy behaviour).
+slot_to_logical_cpu() {
+  local slot="$1"
+  if [[ "$slot" -lt 0 ]]; then
+    echo "$slot"
+    return 0
+  fi
+  local -a slots=()
+  read -ra slots <<<"${PHYSICAL_CORE_SLOTS:-}"
+  local count=${#slots[@]}
+  if (( count == 0 || slot >= count )); then
+    echo "$slot"
+    return 0
+  fi
+  echo "${slots[$slot]}"
+}
+
 # ── thread_config.hpp 기반 기대값 테이블 ──────────────────────────────────────
 # 코어 수에 따라 기대값이 달라진다.
 # 형식: "thread_name:expected_cpu:expected_policy:expected_priority"
@@ -100,12 +128,19 @@ declare -a EXPECTED_THREADS
 
 build_expected_threads() {
   # thread_config.hpp / SelectThreadConfigs() 기반 기대값 (layout v4.1).
-  # 형식: "thread_name:expected_cpu:expected_policy:expected_priority[:optional]"
+  # 형식: "thread_name:expected_slot:expected_policy:expected_priority[:optional]"
   # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
   # optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리.
   #   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
   #                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
   #                    별도 cpu pin 검증 skip (priority 65 만 확인).
+  #
+  # IMPORTANT: expected_slot 은 ThreadConfig::cpu_core 와 동일한 *slot index*
+  # (physical core 번호) 이며, kernel logical CPU id 가 아니다. check_cpu_affinity
+  # 가 slot_to_logical_cpu() 로 변환해 실제 affinity mask 와 비교한다. SMT-on
+  # hybrid (NUC13/14, i9-13900K) 에서 slot 1 → logical cpu 2 (P-core 1 primary),
+  # SMT-off / 4-core CI 에서 slot 1 → logical cpu 1 (identity). 같은 표가 양쪽
+  # 환경 모두에서 올바르게 동작.
   #
   # Layout v4.1: rt_control=1, rt_callback=2, mpc_main=3, workers=4-5.
   # nrt_logging / nrt_callback: 4c=0, 6c=5 (shared), 8c=6/7, 10c=7/8,
@@ -440,9 +475,9 @@ check_cpu_affinity() {
   local ok=0 total=0
 
   for entry in "${EXPECTED_THREADS[@]}"; do
-    local ename ecpu
+    local ename eslot
     ename=$(echo "$entry" | cut -d: -f1)
-    ecpu=$(echo "$entry" | cut -d: -f2)
+    eslot=$(echo "$entry" | cut -d: -f2)
 
     local tid="${THREAD_TIDS[$ename]:-}"
     if [[ -z "$tid" ]]; then
@@ -459,21 +494,34 @@ check_cpu_affinity() {
       continue
     fi
 
-    # 기대 mask 계산 (단일 코어 pin)
-    local expected_mask_dec=$((1 << ecpu))
+    # Translate slot → logical CPU id via PHYSICAL_CORE_SLOTS, then compute
+    # the single-core pin mask. On SMT-on hybrid (NUC13/14, i9-13900K) slot 1
+    # maps to logical cpu 2 (P-core 1 primary); on SMT-off CI it stays at 1.
+    local elogical
+    elogical=$(slot_to_logical_cpu "$eslot")
+    local expected_mask_dec=$((1 << elogical))
     local actual_mask_dec=$((16#${mask_hex}))
     local actual_cpus
     actual_cpus=$(mask_to_cpus "$mask_hex")
 
+    # When slot ≠ logical (hybrid SMT-on), surface both numbers so misalignment
+    # is easy to diagnose. Otherwise drop the slot annotation to keep output
+    # readable on the common SMT-off case.
+    local pin_label
+    if [[ "$eslot" == "$elogical" ]]; then
+      pin_label="Core ${elogical}"
+    else
+      pin_label="slot ${eslot} → logical cpu ${elogical}"
+    fi
+
     if [[ "$actual_mask_dec" -eq "$expected_mask_dec" ]]; then
-      _pass "${ename} (TID ${tid}): Core ${ecpu} (mask 0x${mask_hex})"
+      _pass "${ename} (TID ${tid}): ${pin_label} (mask 0x${mask_hex})"
       ((ok++)) || true
     elif (( actual_mask_dec & expected_mask_dec )); then
-      # 기대 코어 포함하지만 다른 코어도 포함
-      _warn "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: Core ${ecpu} only)"
+      _warn "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: ${pin_label} only)"
       _category_update "cpu_affinity" "WARN"
     else
-      _fail "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: Core ${ecpu})"
+      _fail "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: ${pin_label})"
       _category_update "cpu_affinity" "FAIL"
     fi
   done
