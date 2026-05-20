@@ -2,7 +2,7 @@
 
 namespace rtc::tsid {
 
-void ForceTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void ForceTask::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                      PinocchioCache& /*cache*/, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
 
@@ -22,11 +22,11 @@ void ForceTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& ro
   has_local_ref_ = false;
 }
 
-void ForceTask::update_residual_dim(const ContactState& contacts) noexcept {
+void ForceTask::UpdateResidualDim(const ContactState& contacts) noexcept {
   current_residual_dim_ = contacts.active_contact_vars;
 }
 
-void ForceTask::compute_residual(const PinocchioCache& /*cache*/, const ControlReference& ref,
+void ForceTask::ComputeResidual(const PinocchioCache& /*cache*/, const ControlReference& ref,
                                  const ContactState& contacts, int /*n_vars*/,
                                  Eigen::Ref<Eigen::MatrixXd> J_block,
                                  Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
@@ -71,7 +71,7 @@ void ForceTask::compute_residual(const PinocchioCache& /*cache*/, const ControlR
   }
 }
 
-void ForceTask::set_force_reference(int contact_index, const Eigen::VectorXd& lambda_des) noexcept {
+void ForceTask::SetForceReference(int contact_index, const Eigen::VectorXd& lambda_des) noexcept {
   if (!manager_)
     return;
 
@@ -92,7 +92,7 @@ void ForceTask::set_force_reference(int contact_index, const Eigen::VectorXd& la
   }
 }
 
-void ForceTask::set_force_references(const Eigen::VectorXd& lambda_des_all) noexcept {
+void ForceTask::SetForceReferences(const Eigen::VectorXd& lambda_des_all) noexcept {
   if (lambda_des_.size() < lambda_des_all.size()) {
     return;  // 크기 불일치 → 무시 (RT-safe: 할당 금지)
   }
@@ -100,7 +100,7 @@ void ForceTask::set_force_references(const Eigen::VectorXd& lambda_des_all) noex
   has_local_ref_ = true;
 }
 
-void ForceTask::set_contact_manager(const ContactManagerConfig* manager) noexcept {
+void ForceTask::SetContactManager(const ContactManagerConfig* manager) noexcept {
   manager_ = manager;
   if (manager_) {
     max_contact_vars_ = manager_->max_contact_vars;

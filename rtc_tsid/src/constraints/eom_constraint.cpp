@@ -2,7 +2,7 @@
 
 namespace rtc::tsid {
 
-void EomConstraint::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void EomConstraint::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                          PinocchioCache& /*cache*/, const YAML::Node& /*constraint_config*/) {
   nv_ = robot_info.nv;
   floating_base_ = robot_info.floating_base;
@@ -20,15 +20,15 @@ void EomConstraint::init(const pinocchio::Model& /*model*/, const RobotModelInfo
   }
 }
 
-int EomConstraint::eq_dim(const ContactState& /*contacts*/) const noexcept {
+int EomConstraint::EqDim(const ContactState& /*contacts*/) const noexcept {
   return n_unactuated_;
 }
 
-int EomConstraint::ineq_dim(const ContactState& /*contacts*/) const noexcept {
+int EomConstraint::IneqDim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
-void EomConstraint::compute_equality(const PinocchioCache& cache, const ContactState& contacts,
+void EomConstraint::ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
                                      const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                      Eigen::Ref<Eigen::MatrixXd> A_block,
                                      Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
@@ -71,7 +71,7 @@ void EomConstraint::compute_equality(const PinocchioCache& cache, const ContactS
   b_block.head(n_unactuated_) = -cache.h.head(n_unactuated_);
 }
 
-void EomConstraint::compute_inequality(const PinocchioCache& /*cache*/,
+void EomConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
                                        const ContactState& /*contacts*/,
                                        const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                        Eigen::Ref<Eigen::MatrixXd> /*C_block*/,

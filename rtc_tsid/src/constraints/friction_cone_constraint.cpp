@@ -4,17 +4,17 @@
 
 namespace rtc::tsid {
 
-void FrictionConeConstraint::init(const pinocchio::Model& /*model*/,
+void FrictionConeConstraint::Init(const pinocchio::Model& /*model*/,
                                   const RobotModelInfo& robot_info, PinocchioCache& /*cache*/,
                                   const YAML::Node& /*constraint_config*/) {
   nv_ = robot_info.nv;
 }
 
-int FrictionConeConstraint::eq_dim(const ContactState& /*contacts*/) const noexcept {
+int FrictionConeConstraint::EqDim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
-int FrictionConeConstraint::ineq_dim(const ContactState& contacts) const noexcept {
+int FrictionConeConstraint::IneqDim(const ContactState& contacts) const noexcept {
   if (!manager_)
     return 0;
 
@@ -35,13 +35,13 @@ int FrictionConeConstraint::ineq_dim(const ContactState& contacts) const noexcep
   return total;
 }
 
-void FrictionConeConstraint::compute_equality(const PinocchioCache& /*cache*/,
+void FrictionConeConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
                                               const ContactState& /*contacts*/,
                                               const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                               Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
                                               Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {}
 
-void FrictionConeConstraint::compute_inequality(const PinocchioCache& /*cache*/,
+void FrictionConeConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
                                                 const ContactState& contacts,
                                                 const RobotModelInfo& /*robot_info*/,
                                                 int /*n_vars*/, Eigen::Ref<Eigen::MatrixXd> C_block,

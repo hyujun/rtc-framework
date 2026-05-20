@@ -23,13 +23,13 @@ class EomConstraintTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.init(model_, contact_cfg);
+    cache_.Init(model_, contact_cfg);
 
-    contacts_.init(0);
+    contacts_.Init(0);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -41,12 +41,12 @@ class EomConstraintTest : public ::testing::Test {
 TEST_F(EomConstraintTest, FixedBaseNoDimension) {
   EomConstraint eom;
   YAML::Node cfg;
-  eom.init(*model_, robot_info_, cache_, cfg);
+  eom.Init(*model_, robot_info_, cache_, cfg);
 
   // Fixed-base → eq_dim = 0
-  EXPECT_EQ(eom.eq_dim(contacts_), 0);
-  EXPECT_EQ(eom.ineq_dim(contacts_), 0);
-  EXPECT_EQ(eom.name(), "eom");
+  EXPECT_EQ(eom.EqDim(contacts_), 0);
+  EXPECT_EQ(eom.IneqDim(contacts_), 0);
+  EXPECT_EQ(eom.Name(), "eom");
 }
 
 TEST_F(EomConstraintTest, FloatingBaseHasDimension) {
@@ -56,15 +56,15 @@ TEST_F(EomConstraintTest, FloatingBaseHasDimension) {
   config["n_actuated"] = robot_info_.nv - 6;
 
   RobotModelInfo fb_info;
-  fb_info.build(*model_, config);
+  fb_info.Build(*model_, config);
 
   EomConstraint eom;
   YAML::Node cfg;
-  eom.init(*model_, fb_info, cache_, cfg);
+  eom.Init(*model_, fb_info, cache_, cfg);
 
   // Floating-base → eq_dim = 6
-  EXPECT_EQ(eom.eq_dim(contacts_), 6);
-  EXPECT_EQ(eom.ineq_dim(contacts_), 0);
+  EXPECT_EQ(eom.EqDim(contacts_), 6);
+  EXPECT_EQ(eom.IneqDim(contacts_), 0);
 }
 
 // A-2: surface(cdim=6) contact 가 활성일 때 λ block column offset 이 정확한지.
@@ -78,7 +78,7 @@ TEST_F(EomConstraintTest, MixedPointSurfaceContactOffsets) {
   config["n_actuated"] = robot_info_.nv - 6;
 
   RobotModelInfo fb_info;
-  fb_info.build(*model_, config);
+  fb_info.Build(*model_, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(2);
@@ -94,31 +94,31 @@ TEST_F(EomConstraintTest, MixedPointSurfaceContactOffsets) {
   mgr.max_contact_vars = 9;
 
   PinocchioCache cache;
-  cache.init(model_, mgr);
+  cache.Init(model_, mgr);
 
   ContactState cs;
-  cs.init(2);
+  cs.Init(2);
   cs.contacts[0].active = true;
   cs.contacts[1].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   EomConstraint eom;
   YAML::Node cfg;
-  eom.init(*model_, fb_info, cache, cfg);
-  eom.set_contact_manager(&mgr);
+  eom.Init(*model_, fb_info, cache, cfg);
+  eom.SetContactManager(&mgr);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(fb_info.nv);
-  cache.update(q, v, cs);
+  cache.Update(q, v, cs);
 
-  const int n_eq = eom.eq_dim(cs);    // 6
+  const int n_eq = eom.EqDim(cs);    // 6
   const int n_vars = fb_info.nv + 9;  // 6 + n_actuated + 3 + 6
   Eigen::MatrixXd A(n_eq, n_vars);
   Eigen::VectorXd b(n_eq);
   A.setZero();
   b.setZero();
 
-  eom.compute_equality(cache, cs, fb_info, n_vars, A, b);
+  eom.ComputeEquality(cache, cs, fb_info, n_vars, A, b);
 
   // Hand-computed reference — A.block(0, nv+offset_i, n_unactuated, cdim_i)
   //   = -Jc_i.topRows(cdim_i).leftCols(n_unactuated).transpose()
@@ -149,7 +149,7 @@ TEST_F(EomConstraintTest, ManagerNullGuardPointFallback) {
   config["n_actuated"] = robot_info_.nv - 6;
 
   RobotModelInfo fb_info;
-  fb_info.build(*model_, config);
+  fb_info.Build(*model_, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -161,22 +161,22 @@ TEST_F(EomConstraintTest, ManagerNullGuardPointFallback) {
   mgr.max_contact_vars = 3;
 
   PinocchioCache cache;
-  cache.init(model_, mgr);
+  cache.Init(model_, mgr);
   ContactState cs;
-  cs.init(1);
+  cs.Init(1);
   cs.contacts[0].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   EomConstraint eom;
   YAML::Node cfg;
-  eom.init(*model_, fb_info, cache, cfg);
+  eom.Init(*model_, fb_info, cache, cfg);
   // set_contact_manager 호출 의도적 생략 — legacy 회로 시뮬레이션.
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(fb_info.nv);
-  cache.update(q, v, cs);
+  cache.Update(q, v, cs);
 
-  const int n_eq = eom.eq_dim(cs);
+  const int n_eq = eom.EqDim(cs);
   const int n_vars = fb_info.nv + 3;
   Eigen::MatrixXd A(n_eq, n_vars);
   Eigen::VectorXd b(n_eq);
@@ -184,7 +184,7 @@ TEST_F(EomConstraintTest, ManagerNullGuardPointFallback) {
   b.setZero();
 
   // Crash 없이 동작 + point block 채워짐.
-  eom.compute_equality(cache, cs, fb_info, n_vars, A, b);
+  eom.ComputeEquality(cache, cs, fb_info, n_vars, A, b);
   EXPECT_GT(A.block(0, fb_info.nv, n_eq, 3).norm(), 0.0);
 }
 
@@ -194,17 +194,17 @@ TEST_F(EomConstraintTest, FloatingBaseMatrixDimensions) {
   config["n_actuated"] = robot_info_.nv - 6;
 
   RobotModelInfo fb_info;
-  fb_info.build(*model_, config);
+  fb_info.Build(*model_, config);
 
   EomConstraint eom;
   YAML::Node cfg;
-  eom.init(*model_, fb_info, cache_, cfg);
+  eom.Init(*model_, fb_info, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
-  const int n_eq = eom.eq_dim(contacts_);
+  const int n_eq = eom.EqDim(contacts_);
   const int n_vars = robot_info_.nv;  // no contacts
 
   Eigen::MatrixXd A(n_eq, n_vars);
@@ -212,7 +212,7 @@ TEST_F(EomConstraintTest, FloatingBaseMatrixDimensions) {
   A.setZero();
   b.setZero();
 
-  eom.compute_equality(cache_, contacts_, fb_info, n_vars, A, b);
+  eom.ComputeEquality(cache_, contacts_, fb_info, n_vars, A, b);
 
   // A should be non-zero (P*M)
   EXPECT_GT(A.norm(), 0.0);

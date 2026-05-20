@@ -2,7 +2,7 @@
 
 namespace rtc::tsid {
 
-void WQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void WQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                           const ContactManagerConfig& contact_cfg, const YAML::Node& config) {
   nv_ = robot_info.nv;
   max_n_vars_ = nv_ + contact_cfg.max_contact_vars;
@@ -26,7 +26,7 @@ void WQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInf
   max_n_ineq_ = robot_info.n_actuated + max_friction + 16;
 
   // QP data pre-allocate
-  qp_data_.init(max_n_vars_, max_n_eq_, max_n_ineq_);
+  qp_data_.Init(max_n_vars_, max_n_eq_, max_n_ineq_);
 
   // Solver init
   QPSolverConfig solver_cfg;
@@ -37,10 +37,10 @@ void WQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInf
     solver_cfg.eps_rel = sc["eps_rel"].as<double>(0.0);
     solver_cfg.verbose = sc["verbose"].as<bool>(false);
   }
-  qp_solver_.init(max_n_vars_, max_n_eq_, max_n_ineq_, solver_cfg);
+  qp_solver_.Init(max_n_vars_, max_n_eq_, max_n_ineq_, solver_cfg);
 
   // Result buffer
-  result_.init(max_n_vars_);
+  result_.Init(max_n_vars_);
 
   // Workspace — will be sized on first add_task, or use max_n_vars as default
   max_residual_dim_ = max_n_vars_;
@@ -48,8 +48,8 @@ void WQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInf
   r_workspace_.setZero(max_residual_dim_);
 }
 
-void WQPFormulation::add_task(std::unique_ptr<TaskBase> task) {
-  const int rdim = task->residual_dim();
+void WQPFormulation::AddTask(std::unique_ptr<TaskBase> task) {
+  const int rdim = task->ResidualDim();
   if (rdim > max_residual_dim_) {
     max_residual_dim_ = rdim;
     J_workspace_.setZero(max_residual_dim_, max_n_vars_);
@@ -58,42 +58,42 @@ void WQPFormulation::add_task(std::unique_ptr<TaskBase> task) {
   tasks_.push_back(std::move(task));
 }
 
-void WQPFormulation::add_constraint(std::unique_ptr<ConstraintBase> constraint) {
+void WQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
   constraints_.push_back(std::move(constraint));
 }
 
-TaskBase* WQPFormulation::get_task(std::string_view name) {
+TaskBase* WQPFormulation::GetTask(std::string_view name) {
   for (auto& t : tasks_) {
-    if (t->name() == name)
+    if (t->Name() == name)
       return t.get();
   }
   return nullptr;
 }
 
-ConstraintBase* WQPFormulation::get_constraint(std::string_view name) {
+ConstraintBase* WQPFormulation::GetConstraint(std::string_view name) {
   for (auto& c : constraints_) {
-    if (c->name() == name)
+    if (c->Name() == name)
       return c.get();
   }
   return nullptr;
 }
 
-void WQPFormulation::apply_preset(const PhasePreset& preset) noexcept {
+void WQPFormulation::ApplyPreset(const PhasePreset& preset) noexcept {
   for (const auto& tp : preset.task_presets) {
-    if (auto* t = get_task(tp.task_name)) {
-      t->set_active(tp.active);
-      t->set_weight(tp.weight);
-      t->set_priority(tp.priority);
+    if (auto* t = GetTask(tp.task_name)) {
+      t->SetActive(tp.active);
+      t->SetWeight(tp.weight);
+      t->SetPriority(tp.priority);
     }
   }
   for (const auto& cp : preset.constraint_presets) {
-    if (auto* c = get_constraint(cp.constraint_name)) {
-      c->set_active(cp.active);
+    if (auto* c = GetConstraint(cp.constraint_name)) {
+      c->SetActive(cp.active);
     }
   }
 }
 
-const SolveResult& WQPFormulation::solve(const PinocchioCache& cache, const ControlReference& ref,
+const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const ControlReference& ref,
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept {
   const int n_vars = nv_ + contacts.active_contact_vars;
@@ -105,18 +105,18 @@ const SolveResult& WQPFormulation::solve(const PinocchioCache& cache, const Cont
   g_vec.setZero();
 
   for (const auto& task : tasks_) {
-    if (!task->is_active())
+    if (!task->IsActive())
       continue;
 
-    const int rdim = task->residual_dim();
+    const int rdim = task->ResidualDim();
     auto J_view = J_workspace_.topLeftCorner(rdim, n_vars);
     auto r_view = r_workspace_.head(rdim);
     J_view.setZero();
     r_view.setZero();
 
-    task->compute_residual(cache, ref, contacts, n_vars, J_view, r_view);
+    task->ComputeResidual(cache, ref, contacts, n_vars, J_view, r_view);
 
-    const double w = task->weight();
+    const double w = task->Weight();
     // H += w * Jᵀ·J
     H.noalias() += w * J_view.transpose() * J_view;
     // g += -w * Jᵀ·r
@@ -131,9 +131,9 @@ const SolveResult& WQPFormulation::solve(const PinocchioCache& cache, const Cont
   // ── Equality constraints: A, b ──
   int n_eq = 0;
   for (const auto& con : constraints_) {
-    if (!con->is_active())
+    if (!con->IsActive())
       continue;
-    const int ed = con->eq_dim(contacts);
+    const int ed = con->EqDim(contacts);
     if (ed <= 0)
       continue;
 
@@ -142,16 +142,16 @@ const SolveResult& WQPFormulation::solve(const PinocchioCache& cache, const Cont
     A_view.setZero();
     b_view.setZero();
 
-    con->compute_equality(cache, contacts, robot_info, n_vars, A_view, b_view);
+    con->ComputeEquality(cache, contacts, robot_info, n_vars, A_view, b_view);
     n_eq += ed;
   }
 
   // ── Inequality constraints: C, l, u ──
   int n_ineq = 0;
   for (const auto& con : constraints_) {
-    if (!con->is_active())
+    if (!con->IsActive())
       continue;
-    const int id = con->ineq_dim(contacts);
+    const int id = con->IneqDim(contacts);
     if (id <= 0)
       continue;
 
@@ -162,7 +162,7 @@ const SolveResult& WQPFormulation::solve(const PinocchioCache& cache, const Cont
     l_view.setZero();
     u_view.setZero();
 
-    con->compute_inequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
+    con->ComputeInequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
     n_ineq += id;
   }
 
@@ -171,7 +171,7 @@ const SolveResult& WQPFormulation::solve(const PinocchioCache& cache, const Cont
   qp_data_.n_ineq = n_ineq;
 
   // ── Solve ──
-  const auto& solver_result = qp_solver_.solve(qp_data_);
+  const auto& solver_result = qp_solver_.Solve(qp_data_);
 
   result_.x_opt.head(n_vars) = solver_result.x_opt.head(n_vars);
   result_.converged = solver_result.converged;

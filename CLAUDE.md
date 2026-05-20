@@ -204,7 +204,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 상세: [agent_docs/conventions.md](agent_docs/conventions.md). 본 헌법은 변경 빈도가 낮은 절대 규칙만:
 
 - **Namespace**: `rtc`
-- **Naming**: Google C++ — `snake_case_` members, `PascalCase` types, `kConstant`
+- **Naming**: Google C++ — `PascalCase` methods/types/free functions, `snake_case_` private members, `kConstant` constants. 상세 [agent_docs/conventions.md](agent_docs/conventions.md#code-conventions)
 - **Units**: SI (m, rad, s, kg, N) — degree 는 API 경계에서만
 - **Rotation**: quaternion (`Eigen::Quaterniond`, Hamilton) internal, ZYX Euler at boundaries
 - **Variable naming**: paper notation — `J_b` (body Jacobian), `q_d` (desired joint), `K_d` (stiffness)

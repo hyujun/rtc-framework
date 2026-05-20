@@ -21,7 +21,7 @@
 ## Code Conventions
 
 - **Namespace**: `rtc` (all packages)
-- **Naming**: Google C++ — `snake_case_` members, `PascalCase` types, `kConstant`
+- **Naming**: Google C++ — `PascalCase` methods/types/free functions, `snake_case_` private members, `snake_case` local variables/parameters, `kConstant` for constants. `.clang-tidy` 의 `readability-identifier-naming.MethodCase: CamelCase` 가 기계 SSoT.
 - **C++20**: `jthread` / `stop_token`, `std::span`, `string_view`, concepts, `[[likely]]/[[unlikely]]`, `constexpr`, structured bindings, `optional` / `expected`
 - **RAII**: 모든 리소스 획득은 RAII. Raw `new` / `delete` 금지
 - **`noexcept`** on all RT paths

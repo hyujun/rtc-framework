@@ -25,14 +25,14 @@ class WQPvsHQPTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.init(model_, contact_cfg_);
-    contacts_.init(0);
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
+    cache_.Init(model_, contact_cfg_);
+    contacts_.Init(0);
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
 
     q_ = pinocchio::neutral(*model_);
     v_ = Eigen::VectorXd::Zero(robot_info_.nv);
@@ -42,15 +42,15 @@ class WQPvsHQPTest : public ::testing::Test {
     YAML::Node config;
     config["formulation_type"] = type;
 
-    auto f = create_formulation(*model_, robot_info_, contact_cfg_, config);
+    auto f = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
 
     auto posture = std::make_unique<PostureTask>();
     YAML::Node task_cfg;
     task_cfg["kp"] = 100.0;
     task_cfg["kd"] = 20.0;
     task_cfg["priority"] = 0;
-    posture->init(*model_, robot_info_, cache_, task_cfg);
-    f->add_task(std::move(posture));
+    posture->Init(*model_, robot_info_, cache_, task_cfg);
+    f->AddTask(std::move(posture));
 
     return f;
   }
@@ -69,13 +69,13 @@ TEST_F(WQPvsHQPTest, SingleLevelEquivalence) {
   auto wqp = make_formulation("wqp");
   auto hqp = make_formulation("hqp");
 
-  cache_.update(q_, v_, contacts_);
+  cache_.Update(q_, v_, contacts_);
   ref_.q_des = q_;
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
 
-  const auto& r_wqp = wqp->solve(cache_, ref_, contacts_, robot_info_);
-  const auto& r_hqp = hqp->solve(cache_, ref_, contacts_, robot_info_);
+  const auto& r_wqp = wqp->Solve(cache_, ref_, contacts_, robot_info_);
+  const auto& r_hqp = hqp->Solve(cache_, ref_, contacts_, robot_info_);
 
   ASSERT_TRUE(r_wqp.converged);
   ASSERT_TRUE(r_hqp.converged);
@@ -92,15 +92,15 @@ TEST_F(WQPvsHQPTest, SingleLevelWithError) {
   auto wqp = make_formulation("wqp");
   auto hqp = make_formulation("hqp");
 
-  cache_.update(q_, v_, contacts_);
+  cache_.Update(q_, v_, contacts_);
 
   ref_.q_des = q_;
   ref_.q_des.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.1);
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
 
-  const auto& r_wqp = wqp->solve(cache_, ref_, contacts_, robot_info_);
-  const auto& r_hqp = hqp->solve(cache_, ref_, contacts_, robot_info_);
+  const auto& r_wqp = wqp->Solve(cache_, ref_, contacts_, robot_info_);
+  const auto& r_hqp = hqp->Solve(cache_, ref_, contacts_, robot_info_);
 
   ASSERT_TRUE(r_wqp.converged);
   ASSERT_TRUE(r_hqp.converged);
@@ -117,17 +117,17 @@ TEST_F(WQPvsHQPTest, TSIDControllerGravityComp) {
   YAML::Node config;
   config["formulation_type"] = "wqp";
 
-  ctrl.init(*model_, robot_info_, config);
+  ctrl.Init(*model_, robot_info_, config);
 
   // Register posture task
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  ctrl.formulation().add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  ctrl.Formulation().AddTask(std::move(posture));
 
-  cache_.update(q_, v_, contacts_);
+  cache_.Update(q_, v_, contacts_);
 
   ref_.q_des = q_;
   ref_.v_des = v_;
@@ -137,7 +137,7 @@ TEST_F(WQPvsHQPTest, TSIDControllerGravityComp) {
   state.q = q_;
   state.v = v_;
 
-  auto output = ctrl.compute(state, ref_, cache_, contacts_);
+  auto output = ctrl.Compute(state, ref_, cache_, contacts_);
 
   ASSERT_TRUE(output.qp_converged);
   EXPECT_EQ(output.solve_levels, 1);

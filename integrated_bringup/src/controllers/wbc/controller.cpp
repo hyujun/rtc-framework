@@ -153,14 +153,14 @@ void DemoWbcController::BuildJointReorderMap() {
 //
 // Dispatch by YAML `type` string. Tasks/constraints are created with
 // unique_ptr and transferred to formulation via add_task/add_constraint.
-// After construction each is init()'d with its own sub-node.
+// After construction each is Init()'d with its own sub-node.
 
 void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
   if (!full_model_ptr_ || !tsid_node || !tsid_node["tasks"]) {
     return;
   }
   const auto& model = *full_model_ptr_;
-  auto& formulation = tsid_controller_.formulation();
+  auto& formulation = tsid_controller_.Formulation();
 
   for (auto it = tsid_node["tasks"].begin(); it != tsid_node["tasks"].end(); ++it) {
     const auto key = it->first.as<std::string>();
@@ -169,12 +169,12 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
 
     if (type == "posture") {
       auto task = std::make_unique<rtc::tsid::PostureTask>();
-      task->init(model, robot_info_, pinocchio_cache_, task_cfg);
-      formulation.add_task(std::move(task));
+      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      formulation.AddTask(std::move(task));
     } else if (type == "se3") {
       auto task = std::make_unique<rtc::tsid::SE3Task>();
-      task->init(model, robot_info_, pinocchio_cache_, task_cfg);
-      formulation.add_task(std::move(task));
+      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      formulation.AddTask(std::move(task));
       // F-2: capture base_frame for OnDeviceConfigsSet consistency check.
       // Skip when key absent — universe fallback path stays unchecked here.
       // (Cache the YAML::Node into a local to avoid yaml-cpp's
@@ -186,9 +186,9 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       }
     } else if (type == "force") {
       auto task = std::make_unique<rtc::tsid::ForceTask>();
-      task->init(model, robot_info_, pinocchio_cache_, task_cfg);
-      task->set_contact_manager(&contact_mgr_config_);
-      formulation.add_task(std::move(task));
+      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->SetContactManager(&contact_mgr_config_);
+      formulation.AddTask(std::move(task));
     } else {
       RCLCPP_ERROR(logger_, "[wbc] unknown task type '%s' for entry '%s' — skipping", type.c_str(),
                    key.c_str());
@@ -201,7 +201,7 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
     return;
   }
   const auto& model = *full_model_ptr_;
-  auto& formulation = tsid_controller_.formulation();
+  auto& formulation = tsid_controller_.Formulation();
 
   for (auto it = tsid_node["constraints"].begin(); it != tsid_node["constraints"].end(); ++it) {
     const auto key = it->first.as<std::string>();
@@ -210,27 +210,27 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
 
     if (type == "eom") {
       auto c = std::make_unique<rtc::tsid::EomConstraint>();
-      c->init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
       // Floating-base + surface contact 시 cdim != 3 인 column offset 을 정확히
       // 잡기 위해 필수. point-only 회로에서는 fallback(cdim=3) 으로도 동작하지만,
       // mixed point/surface 가 들어오면 무성 alignment 깨짐.
-      c->set_contact_manager(&contact_mgr_config_);
-      formulation.add_constraint(std::move(c));
+      c->SetContactManager(&contact_mgr_config_);
+      formulation.AddConstraint(std::move(c));
     } else if (type == "joint_limit") {
       auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
-      c->init(model, robot_info_, pinocchio_cache_, c_cfg);
-      formulation.add_constraint(std::move(c));
+      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
+      formulation.AddConstraint(std::move(c));
     } else if (type == "friction_cone") {
       auto c = std::make_unique<rtc::tsid::FrictionConeConstraint>();
-      c->init(model, robot_info_, pinocchio_cache_, c_cfg);
-      c->set_contact_manager(&contact_mgr_config_);
-      formulation.add_constraint(std::move(c));
+      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->SetContactManager(&contact_mgr_config_);
+      formulation.AddConstraint(std::move(c));
     } else if (type == "torque_limit") {
       auto c = std::make_unique<rtc::tsid::TorqueLimitConstraint>();
-      c->init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
       // τ = S·(M·a + h − Jcᵀ·λ) 역산 시 surface(cdim=6) λ 의 column offset 정확.
-      c->set_contact_manager(&contact_mgr_config_);
-      formulation.add_constraint(std::move(c));
+      c->SetContactManager(&contact_mgr_config_);
+      formulation.AddConstraint(std::move(c));
     } else {
       RCLCPP_ERROR(logger_, "[wbc] unknown constraint type '%s' for entry '%s' — skipping",
                    type.c_str(), key.c_str());
@@ -276,7 +276,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     const auto& model = *full_model_ptr_;
 
     // RobotModelInfo
-    robot_info_.build(model, tsid_node);
+    robot_info_.Build(model, tsid_node);
 
     // ContactManagerConfig — pass the whole tsid subtree; load() looks up
     // "contacts" itself (same pattern as rtc_tsid/test_force_task.cpp).
@@ -284,26 +284,26 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // max_contacts = 0 (bug observed as "TSID initialized: contacts=0"
     // in the sim launch prior to this fix).
     if (tsid_node["contacts"]) {
-      contact_mgr_config_.load(tsid_node, model);
+      contact_mgr_config_.Load(tsid_node, model);
     }
 
     // PinocchioCache
-    pinocchio_cache_.init(full_model_ptr_, contact_mgr_config_);
+    pinocchio_cache_.Init(full_model_ptr_, contact_mgr_config_);
 
     // ContactState
-    contact_state_.init(contact_mgr_config_.max_contacts);
+    contact_state_.Init(contact_mgr_config_.max_contacts);
 
     // ControlReference & CommandOutput pre-allocate
-    control_ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated,
+    control_ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated,
                       contact_mgr_config_.max_contact_vars);
-    tsid_output_.init(robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contact_vars);
+    tsid_output_.Init(robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contact_vars);
 
     // ControlState pre-allocate
     ctrl_state_.q = Eigen::VectorXd::Zero(robot_info_.nq);
     ctrl_state_.v = Eigen::VectorXd::Zero(robot_info_.nv);
 
     // TSIDController init (creates formulation; tasks/constraints added below)
-    tsid_controller_.init(model, robot_info_, tsid_node);
+    tsid_controller_.Init(model, robot_info_, tsid_node);
 
     // Build tasks + constraints from YAML (auto-dispatch by `type` field)
     BuildTsidTasks(tsid_node);
@@ -320,7 +320,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // Pre-resolve phase presets
     phase_preset_valid_.fill(false);
     if (tsid_node["phase_presets"]) {
-      auto presets = rtc::tsid::load_phase_presets(tsid_node);
+      auto presets = rtc::tsid::LoadPhasePresets(tsid_node);
       auto map_preset = [&](WbcPhase phase, const std::string& name) {
         auto it = presets.find(name);
         if (it != presets.end()) {

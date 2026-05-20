@@ -19,29 +19,29 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class TSIDController final : public ControllerBase {
  public:
-  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
+  void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
             const YAML::Node& config) override;
 
-  [[nodiscard]] CommandOutput compute(const ControlState& state, const ControlReference& ref,
+  [[nodiscard]] CommandOutput Compute(const ControlState& state, const ControlReference& ref,
                                       const PinocchioCache& cache,
                                       const ContactState& contacts) noexcept override;
 
-  void reset() noexcept override;
+  void Reset() noexcept override;
 
-  [[nodiscard]] std::string_view name() const noexcept override { return "tsid"; }
+  [[nodiscard]] std::string_view Name() const noexcept override { return "tsid"; }
 
   // Phase preset 적용
-  void apply_phase_preset(const std::string& preset_name) noexcept;
-  void apply_phase_preset(const PhasePreset& preset) noexcept;
+  void ApplyPhasePreset(const std::string& preset_name) noexcept;
+  void ApplyPhasePreset(const PhasePreset& preset) noexcept;
 
   // Contact 활성/비활성 (ContactState 외부에서 직접 제어 시)
-  void activate_contact(int idx) noexcept;
-  void deactivate_contact(int idx) noexcept;
+  void ActivateContact(int idx) noexcept;
+  void DeactivateContact(int idx) noexcept;
 
   // 연구용: formulation 직접 접근
-  [[nodiscard]] FormulationBase& formulation() { return *formulation_; }
+  [[nodiscard]] FormulationBase& Formulation() { return *formulation_; }
 
-  [[nodiscard]] const FormulationBase& formulation() const { return *formulation_; }
+  [[nodiscard]] const FormulationBase& Formulation() const { return *formulation_; }
 
  private:
   RobotModelInfo robot_info_;

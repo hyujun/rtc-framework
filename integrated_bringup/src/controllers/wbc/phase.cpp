@@ -167,7 +167,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       for (auto& c : contact_state_.contacts) {
         c.active = false;
       }
-      contact_state_.recompute_active(contact_mgr_config_);
+      contact_state_.RecomputeActive(contact_mgr_config_);
       break;
     }
 
@@ -242,7 +242,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // Apply TSID phase preset (RT-safe: uses pre-resolved PhasePreset)
       const auto idx = static_cast<std::size_t>(new_phase);
       if (phase_preset_valid_[idx]) {
-        tsid_controller_.apply_phase_preset(phase_presets_[idx]);
+        tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
 
       // Set TSID integration initial conditions from current state
@@ -252,9 +252,9 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
       // Set SE3Task reference (TCP goal)
       if (tcp_goal_valid_) {
-        auto* se3_task = tsid_controller_.formulation().get_task("se3_tcp");
+        auto* se3_task = tsid_controller_.Formulation().GetTask("se3_tcp");
         if (se3_task) {
-          static_cast<rtc::tsid::SE3Task*>(se3_task)->set_se3_reference(tcp_goal_);
+          static_cast<rtc::tsid::SE3Task*>(se3_task)->SetSe3Reference(tcp_goal_);
         }
       }
 
@@ -263,11 +263,11 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         for (auto& c : contact_state_.contacts) {
           c.active = true;
         }
-        contact_state_.recompute_active(contact_mgr_config_);
+        contact_state_.RecomputeActive(contact_mgr_config_);
 
         // Set per-contact force reference: +Z normal = gains.grasp_target_force
         auto* force_task =
-            tsid_initialized_ ? tsid_controller_.formulation().get_task("force") : nullptr;
+            tsid_initialized_ ? tsid_controller_.Formulation().GetTask("force") : nullptr;
         if (force_task) {
           const int n = contact_mgr_config_.max_contact_vars;
           if (n > 0) {
@@ -284,7 +284,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
               }
               offset += cdim;
             }
-            static_cast<rtc::tsid::ForceTask*>(force_task)->set_force_references(lambda_des);
+            static_cast<rtc::tsid::ForceTask*>(force_task)->SetForceReferences(lambda_des);
           }
         }
 
@@ -317,7 +317,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       for (auto& c : contact_state_.contacts) {
         c.active = false;
       }
-      contact_state_.recompute_active(contact_mgr_config_);
+      contact_state_.RecomputeActive(contact_mgr_config_);
 
       // Arm trajectory: current → saved approach-start pose
       trajectory::JointSpaceTrajectory<kMaxArmDof>::State start{};
@@ -392,7 +392,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       for (auto& c : contact_state_.contacts) {
         c.active = false;
       }
-      contact_state_.recompute_active(contact_mgr_config_);
+      contact_state_.RecomputeActive(contact_mgr_config_);
       qp_fail_count_ = 0;
       break;
     }

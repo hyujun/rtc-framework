@@ -151,7 +151,7 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   ExtractFullState(state);
 
   // 2. Update Pinocchio cache (M, h, g, Jacobians)
-  pinocchio_cache_.update(q_curr_full_, v_curr_full_, contact_state_);
+  pinocchio_cache_.Update(q_curr_full_, v_curr_full_, contact_state_);
 
   // 2b. MPC reference injection.
   //
@@ -194,7 +194,7 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
 
   // 5. TSID solve
   tsid_output_ =
-      tsid_controller_.compute(ctrl_state_, control_ref_, pinocchio_cache_, contact_state_);
+      tsid_controller_.Compute(ctrl_state_, control_ref_, pinocchio_cache_, contact_state_);
 
   // 6. QP failure handling
   if (!tsid_output_.qp_converged) {

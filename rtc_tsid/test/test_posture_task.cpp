@@ -23,15 +23,15 @@ class PostureTaskTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.init(model_, contact_cfg);
+    cache_.Init(model_, contact_cfg);
 
-    contacts_.init(0);
+    contacts_.Init(0);
 
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -44,13 +44,13 @@ class PostureTaskTest : public ::testing::Test {
 TEST_F(PostureTaskTest, InitAndDimension) {
   PostureTask task;
   YAML::Node cfg;
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
-  EXPECT_EQ(task.residual_dim(), robot_info_.nv);
-  EXPECT_EQ(task.name(), "posture");
-  EXPECT_TRUE(task.is_active());
-  EXPECT_DOUBLE_EQ(task.weight(), 1.0);
-  EXPECT_EQ(task.priority(), 0);
+  EXPECT_EQ(task.ResidualDim(), robot_info_.nv);
+  EXPECT_EQ(task.Name(), "posture");
+  EXPECT_TRUE(task.IsActive());
+  EXPECT_DOUBLE_EQ(task.Weight(), 1.0);
+  EXPECT_EQ(task.Priority(), 0);
 }
 
 TEST_F(PostureTaskTest, ComputeResidualAtRest) {
@@ -58,11 +58,11 @@ TEST_F(PostureTaskTest, ComputeResidualAtRest) {
   YAML::Node cfg;
   cfg["kp"] = 10.0;
   cfg["kd"] = 1.0;
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   ref_.q_des = q;  // same as current → error = 0
   ref_.v_des = v;
@@ -74,7 +74,7 @@ TEST_F(PostureTaskTest, ComputeResidualAtRest) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // J should be identity in the a columns
   EXPECT_TRUE(J.isApprox(Eigen::MatrixXd::Identity(n_vars, n_vars)));
@@ -88,11 +88,11 @@ TEST_F(PostureTaskTest, ComputeResidualWithError) {
   YAML::Node cfg;
   cfg["kp"] = 10.0;
   cfg["kd"] = 2.0;
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // Set desired = current + offset
   ref_.q_des = q;
@@ -106,7 +106,7 @@ TEST_F(PostureTaskTest, ComputeResidualWithError) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // r = Kp * (q_des - q) + Kd * (0 - 0) + 0 = 10 * 0.1 = 1.0
   for (int i = 0; i < robot_info_.nv; ++i) {
@@ -119,16 +119,16 @@ TEST_F(PostureTaskTest, LocalReference) {
   YAML::Node cfg;
   cfg["kp"] = 5.0;
   cfg["kd"] = 1.0;
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // Set local reference (overrides ControlReference)
   Eigen::VectorXd q_des = q;
   q_des.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.2);
-  task.set_reference(q_des, v, Eigen::VectorXd::Zero(robot_info_.nv));
+  task.SetReference(q_des, v, Eigen::VectorXd::Zero(robot_info_.nv));
 
   // ControlReference with different values (should be ignored)
   ref_.q_des = q;
@@ -141,7 +141,7 @@ TEST_F(PostureTaskTest, LocalReference) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // r = 5.0 * 0.2 = 1.0 (using local ref, not ControlReference)
   for (int i = 0; i < robot_info_.nv; ++i) {
@@ -154,15 +154,15 @@ TEST_F(PostureTaskTest, WeightAndPriority) {
   YAML::Node cfg;
   cfg["weight"] = 2.5;
   cfg["priority"] = 3;
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
-  EXPECT_DOUBLE_EQ(task.weight(), 2.5);
-  EXPECT_EQ(task.priority(), 3);
+  EXPECT_DOUBLE_EQ(task.Weight(), 2.5);
+  EXPECT_EQ(task.Priority(), 3);
 
-  task.set_weight(0.5);
-  task.set_priority(1);
-  EXPECT_DOUBLE_EQ(task.weight(), 0.5);
-  EXPECT_EQ(task.priority(), 1);
+  task.SetWeight(0.5);
+  task.SetPriority(1);
+  EXPECT_DOUBLE_EQ(task.Weight(), 0.5);
+  EXPECT_EQ(task.Priority(), 1);
 }
 
 }  // namespace

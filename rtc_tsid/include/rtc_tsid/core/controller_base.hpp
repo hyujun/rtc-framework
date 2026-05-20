@@ -15,18 +15,18 @@ class ControllerBase {
   virtual ~ControllerBase() = default;
 
   // 초기화 (동적 할당 허용)
-  virtual void init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
+  virtual void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                     const YAML::Node& config) = 0;
 
   // 매 tick 호출 (RT-safe)
-  [[nodiscard]] virtual CommandOutput compute(const ControlState& state,
+  [[nodiscard]] virtual CommandOutput Compute(const ControlState& state,
                                               const ControlReference& ref,
                                               const PinocchioCache& cache,
                                               const ContactState& contacts) noexcept = 0;
 
-  virtual void reset() noexcept = 0;
+  virtual void Reset() noexcept = 0;
 
-  [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+  [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 };
 
 }  // namespace rtc::tsid

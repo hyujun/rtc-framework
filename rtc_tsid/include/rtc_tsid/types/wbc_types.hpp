@@ -42,7 +42,7 @@ struct RobotModelInfo {
   Eigen::VectorXd v_max;    // [nv]
 
   // Pinocchio model + YAML config로부터 구성
-  void build(const pinocchio::Model& model, const YAML::Node& config);
+  void Build(const pinocchio::Model& model, const YAML::Node& config);
 };
 
 // ────────────────────────────────────────────────
@@ -75,7 +75,7 @@ struct ContactManagerConfig {
   int max_contact_vars{0};  // Σ contact_dim_i
 
   // YAML로부터 로드 + frame name → frame ID resolve
-  void load(const YAML::Node& config, const pinocchio::Model& model);
+  void Load(const YAML::Node& config, const pinocchio::Model& model);
 };
 
 // ────────────────────────────────────────────────
@@ -93,14 +93,14 @@ struct ContactState {
   int active_contact_vars{0};  // Σ active contact_dim
 
   // max_contacts 크기로 pre-allocate
-  void init(int max_contacts);
+  void Init(int max_contacts);
 
   // active contact 개수 및 active_contact_vars 재계산
-  void recompute_active(const ContactManagerConfig& manager);
+  void RecomputeActive(const ContactManagerConfig& manager);
 
   // RT-safe active contact 순회 (no alloc)
   template <typename Func>
-  void for_each_active(const ContactManagerConfig& manager, Func&& fn) const {
+  void ForEachActive(const ContactManagerConfig& manager, Func&& fn) const {
     for (int i = 0; i < static_cast<int>(contacts.size()); ++i) {
       if (contacts[static_cast<size_t>(i)].active) {
         fn(i, manager.contacts[static_cast<size_t>(i)]);
@@ -146,7 +146,7 @@ struct PinocchioCache {
   };
 
   std::vector<RegisteredFrame> registered_frames;
-  bool registration_locked{false};  // update() 호출 후 true → 추가 등록 금지
+  bool registration_locked{false};  // Update() 호출 후 true → 추가 등록 금지
 
   // CoM (optional — CoMTask 등록 시 활성화)
   bool compute_com{false};
@@ -161,14 +161,14 @@ struct PinocchioCache {
   Eigen::Matrix<double, 6, 1> hg_drift;  // dAg·v (centroidal momentum rate drift) [6]
 
   // 초기화: buffer pre-allocate (init 시 1회)
-  void init(std::shared_ptr<const pinocchio::Model> model, const ContactManagerConfig& contact_cfg);
+  void Init(std::shared_ptr<const pinocchio::Model> model, const ContactManagerConfig& contact_cfg);
 
-  // Task가 init 시 필요한 frame 등록 → update()에서 자동 계산
+  // Task가 init 시 필요한 frame 등록 → Update()에서 자동 계산
   // 반환: registered_frames 내 인덱스
-  int register_frame(const std::string& name, pinocchio::FrameIndex frame_id);
+  int RegisterFrame(const std::string& name, pinocchio::FrameIndex frame_id);
 
   // 매 tick 갱신 (RT-safe: 사전 할당된 버퍼만 사용)
-  void update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& v_in,
+  void Update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& v_in,
               const ContactState& contacts) noexcept;
 };
 
@@ -188,7 +188,7 @@ struct ControlReference {
   Eigen::VectorXd tau_ff;      // [n_actuated] feedforward torque
   Eigen::VectorXd lambda_des;  // [max_contact_vars] desired contact forces
 
-  void init(int nq, int nv, int n_actuated, int max_contact_vars);
+  void Init(int nq, int nv, int n_actuated, int max_contact_vars);
 };
 
 struct CommandOutput {
@@ -199,7 +199,7 @@ struct CommandOutput {
   double solve_time_us{0.0};
   int solve_levels{0};  // WQP: 1, HQP: 실제 level 수
 
-  void init(int nv, int n_actuated, int max_contact_vars);
+  void Init(int nv, int n_actuated, int max_contact_vars);
 };
 
 }  // namespace rtc::tsid

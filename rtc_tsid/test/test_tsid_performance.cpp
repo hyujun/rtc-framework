@@ -48,14 +48,14 @@ class TSIDPerformanceTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.init(model_, contact_cfg_);
-    contacts_.init(0);
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
+    cache_.Init(model_, contact_cfg_);
+    contacts_.Init(0);
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
 
     q_ = pinocchio::neutral(*model_);
     v_ = Eigen::VectorXd::Zero(robot_info_.nv);
@@ -74,16 +74,16 @@ TEST_F(TSIDPerformanceTest, PandaWQPSolveTime) {
   YAML::Node config;
   config["formulation_type"] = "wqp";
 
-  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto formulation = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
-  cache_.update(q_, v_, contacts_);
+  cache_.Update(q_, v_, contacts_);
   ref_.q_des = q_;
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
@@ -93,16 +93,16 @@ TEST_F(TSIDPerformanceTest, PandaWQPSolveTime) {
 
   // Warm-up
   for (int i = 0; i < 5; ++i) {
-    formulation->solve(cache_, ref_, contacts_, robot_info_);
+    formulation->Solve(cache_, ref_, contacts_, robot_info_);
   }
 
   for (int i = 0; i < n_iters; ++i) {
     // Slightly vary q to prevent caching artifacts
     q_(0) += 1e-6;
-    cache_.update(q_, v_, contacts_);
+    cache_.Update(q_, v_, contacts_);
 
     const auto t0 = std::chrono::steady_clock::now();
-    const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+    const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
     const auto t1 = std::chrono::steady_clock::now();
 
     ASSERT_TRUE(result.converged) << "Iteration " << i;
@@ -124,7 +124,7 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto formulation = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
 
   // Level 0
   auto posture0 = std::make_unique<PostureTask>();
@@ -132,8 +132,8 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
   cfg0["kp"] = 100.0;
   cfg0["kd"] = 20.0;
   cfg0["priority"] = 0;
-  posture0->init(*model_, robot_info_, cache_, cfg0);
-  formulation->add_task(std::move(posture0));
+  posture0->Init(*model_, robot_info_, cache_, cfg0);
+  formulation->AddTask(std::move(posture0));
 
   // Level 1
   auto posture1 = std::make_unique<PostureTask>();
@@ -141,10 +141,10 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
   cfg1["kp"] = 50.0;
   cfg1["kd"] = 10.0;
   cfg1["priority"] = 1;
-  posture1->init(*model_, robot_info_, cache_, cfg1);
-  formulation->add_task(std::move(posture1));
+  posture1->Init(*model_, robot_info_, cache_, cfg1);
+  formulation->AddTask(std::move(posture1));
 
-  cache_.update(q_, v_, contacts_);
+  cache_.Update(q_, v_, contacts_);
   ref_.q_des = q_;
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
@@ -154,15 +154,15 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
 
   // Warm-up
   for (int i = 0; i < 5; ++i) {
-    formulation->solve(cache_, ref_, contacts_, robot_info_);
+    formulation->Solve(cache_, ref_, contacts_, robot_info_);
   }
 
   for (int i = 0; i < n_iters; ++i) {
     q_(0) += 1e-6;
-    cache_.update(q_, v_, contacts_);
+    cache_.Update(q_, v_, contacts_);
 
     const auto t0 = std::chrono::steady_clock::now();
-    const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+    const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
     const auto t1 = std::chrono::steady_clock::now();
 
     ASSERT_TRUE(result.converged) << "Iteration " << i;
@@ -181,18 +181,18 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
 }
 
 TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
-  // Measure full pipeline: PinocchioCache::update() + WQP solve + τ recovery
+  // Measure full pipeline: PinocchioCache::Update() + WQP solve + τ recovery
   TSIDController ctrl;
   YAML::Node config;
   config["formulation_type"] = "wqp";
-  ctrl.init(*model_, robot_info_, config);
+  ctrl.Init(*model_, robot_info_, config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  ctrl.formulation().add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  ctrl.Formulation().AddTask(std::move(posture));
 
   ref_.q_des = q_;
   ref_.v_des = v_;
@@ -207,8 +207,8 @@ TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
 
   // Warm-up
   for (int i = 0; i < 5; ++i) {
-    cache_.update(q_, v_, contacts_);
-    (void)ctrl.compute(state, ref_, cache_, contacts_);
+    cache_.Update(q_, v_, contacts_);
+    (void)ctrl.Compute(state, ref_, cache_, contacts_);
   }
 
   for (int i = 0; i < n_iters; ++i) {
@@ -216,8 +216,8 @@ TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
     state.q = q_;
 
     const auto t0 = std::chrono::steady_clock::now();
-    cache_.update(q_, v_, contacts_);
-    auto output = ctrl.compute(state, ref_, cache_, contacts_);
+    cache_.Update(q_, v_, contacts_);
+    auto output = ctrl.Compute(state, ref_, cache_, contacts_);
     const auto t1 = std::chrono::steady_clock::now();
 
     ASSERT_TRUE(output.qp_converged) << "Iteration " << i;

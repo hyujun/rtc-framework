@@ -16,24 +16,24 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class PostureTask final : public TaskBase {
  public:
-  [[nodiscard]] std::string_view name() const noexcept override { return "posture"; }
+  [[nodiscard]] std::string_view Name() const noexcept override { return "posture"; }
 
-  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
+  void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& task_config) override;
 
-  [[nodiscard]] int residual_dim() const noexcept override { return nv_; }
+  [[nodiscard]] int ResidualDim() const noexcept override { return nv_; }
 
-  void compute_residual(const PinocchioCache& cache, const ControlReference& ref,
-                        const ContactState& contacts, int n_vars,
-                        Eigen::Ref<Eigen::MatrixXd> J_block,
-                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
+  void ComputeResidual(const PinocchioCache& cache, const ControlReference& ref,
+                       const ContactState& contacts, int n_vars,
+                       Eigen::Ref<Eigen::MatrixXd> J_block,
+                       Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
   // Per-task reference 설정 (external에서 호출)
-  void set_reference(const Eigen::VectorXd& q_des, const Eigen::VectorXd& v_des,
-                     const Eigen::VectorXd& a_ff) noexcept;
+  void SetReference(const Eigen::VectorXd& q_des, const Eigen::VectorXd& v_des,
+                    const Eigen::VectorXd& a_ff) noexcept;
 
   // PD gains 설정
-  void set_gains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept;
+  void SetGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept;
 
  private:
   int nv_{0};
@@ -43,7 +43,7 @@ class PostureTask final : public TaskBase {
   Eigen::VectorXd kd_;  // [nv]
 
   // Per-task reference (ControlReference의 q_des/v_des/a_des를 사용하거나
-  // set_reference()로 별도 주입 가능)
+  // SetReference()로 별도 주입 가능)
   bool has_local_ref_{false};
   Eigen::VectorXd local_q_des_;
   Eigen::VectorXd local_v_des_;

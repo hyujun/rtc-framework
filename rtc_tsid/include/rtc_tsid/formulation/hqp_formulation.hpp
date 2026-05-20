@@ -21,26 +21,26 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class HQPFormulation final : public FormulationBase {
  public:
-  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
+  void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
             const ContactManagerConfig& contact_cfg, const YAML::Node& config) override;
 
-  void add_task(std::unique_ptr<TaskBase> task) override;
-  void add_constraint(std::unique_ptr<ConstraintBase> constraint) override;
+  void AddTask(std::unique_ptr<TaskBase> task) override;
+  void AddConstraint(std::unique_ptr<ConstraintBase> constraint) override;
 
-  [[nodiscard]] TaskBase* get_task(std::string_view name) override;
-  [[nodiscard]] ConstraintBase* get_constraint(std::string_view name) override;
+  [[nodiscard]] TaskBase* GetTask(std::string_view name) override;
+  [[nodiscard]] ConstraintBase* GetConstraint(std::string_view name) override;
 
-  void apply_preset(const PhasePreset& preset) noexcept override;
+  void ApplyPreset(const PhasePreset& preset) noexcept override;
 
-  [[nodiscard]] const SolveResult& solve(const PinocchioCache& cache, const ControlReference& ref,
+  [[nodiscard]] const SolveResult& Solve(const PinocchioCache& cache, const ControlReference& ref,
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept override;
 
-  [[nodiscard]] std::string_view type() const noexcept override { return "hqp"; }
+  [[nodiscard]] std::string_view Type() const noexcept override { return "hqp"; }
 
  private:
   // Level별 task 인덱스 재구성 (active task만)
-  void rebuild_level_indices() noexcept;
+  void RebuildLevelIndices() noexcept;
 
   int nv_{0};
   int max_n_vars_{0};
@@ -49,7 +49,7 @@ class HQPFormulation final : public FormulationBase {
   std::vector<std::unique_ptr<TaskBase>> tasks_;
   std::vector<std::unique_ptr<ConstraintBase>> constraints_;
 
-  // Level별 task 인덱스 (rebuild_level_indices()로 갱신)
+  // Level별 task 인덱스 (RebuildLevelIndices()로 갱신)
   // level_task_indices_[k] = {task index들}
   std::vector<std::vector<int>> level_task_indices_;
   int active_max_level_{0};

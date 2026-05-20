@@ -29,7 +29,7 @@ class RobotModelInfoTest : public ::testing::Test {
 TEST_F(RobotModelInfoTest, PandaFixedBase) {
   RobotModelInfo info;
   YAML::Node config;
-  info.build(model_, config);
+  info.Build(model_, config);
 
   EXPECT_EQ(info.nq, model_.nq);
   EXPECT_EQ(info.nv, model_.nv);
@@ -53,7 +53,7 @@ TEST_F(RobotModelInfoTest, FloatingBaseOverride) {
   YAML::Node config;
   config["floating_base"] = true;
   config["n_actuated"] = 7;
-  info.build(model_, config);
+  info.Build(model_, config);
 
   EXPECT_TRUE(info.floating_base);
   EXPECT_EQ(info.n_actuated, 7);
@@ -69,7 +69,7 @@ TEST_F(RobotModelInfoTest, FloatingBaseOverride) {
 TEST_F(RobotModelInfoTest, ContactManagerEmpty) {
   ContactManagerConfig mgr;
   YAML::Node config;
-  mgr.load(config, model_);
+  mgr.Load(config, model_);
 
   EXPECT_EQ(mgr.max_contacts, 0);
   EXPECT_EQ(mgr.max_contact_vars, 0);
@@ -95,7 +95,7 @@ TEST_F(RobotModelInfoTest, ContactManagerWithContacts) {
   config["contacts"].push_back(contact);
 
   ContactManagerConfig mgr;
-  mgr.load(config, model_);
+  mgr.Load(config, model_);
 
   EXPECT_EQ(mgr.max_contacts, 1);
   EXPECT_EQ(mgr.max_contact_vars, 3);
@@ -116,13 +116,13 @@ TEST(ContactStateTest, InitAndRecompute) {
   mgr.contacts[2].contact_dim = 3;
 
   ContactState cs;
-  cs.init(3);
+  cs.Init(3);
   EXPECT_EQ(cs.active_count, 0);
   EXPECT_EQ(cs.active_contact_vars, 0);
 
   cs.contacts[0].active = true;
   cs.contacts[2].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
   EXPECT_EQ(cs.active_count, 2);
   EXPECT_EQ(cs.active_contact_vars, 6);
 }
@@ -139,7 +139,7 @@ class PinocchioCacheTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.init(model_, contact_cfg);
+    cache_.Init(model_, contact_cfg);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -159,7 +159,7 @@ TEST_F(PinocchioCacheTest, UpdateAtNeutralConfig) {
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v_vec = Eigen::VectorXd::Zero(model_->nv);
   ContactState cs;
-  cache_.update(q, v_vec, cs);
+  cache_.Update(q, v_vec, cs);
 
   // M 대칭
   EXPECT_TRUE(cache_.M.isApprox(cache_.M.transpose(), 1e-10));
@@ -179,25 +179,25 @@ TEST_F(PinocchioCacheTest, RegisterFrame) {
     }
   }
 
-  int idx = cache_.register_frame("test_frame", fid);
+  int idx = cache_.RegisterFrame("test_frame", fid);
   EXPECT_GE(idx, 0);
   EXPECT_EQ(static_cast<int>(cache_.registered_frames.size()), 1);
 
   // 중복 등록 → 같은 인덱스
-  int idx2 = cache_.register_frame("dup", fid);
+  int idx2 = cache_.RegisterFrame("dup", fid);
   EXPECT_EQ(idx, idx2);
 
   // Update 후 Jacobian 계산됨
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v_vec = Eigen::VectorXd::Zero(model_->nv);
   ContactState cs;
-  cache_.update(q, v_vec, cs);
+  cache_.Update(q, v_vec, cs);
 
   EXPECT_EQ(cache_.registered_frames[0].J.rows(), 6);
   EXPECT_EQ(cache_.registered_frames[0].J.cols(), model_->nv);
 
   // update 이후 등록 시도 실패
-  int idx3 = cache_.register_frame("late", fid);
+  int idx3 = cache_.RegisterFrame("late", fid);
   EXPECT_EQ(idx3, -1);
 }
 
@@ -205,7 +205,7 @@ TEST_F(PinocchioCacheTest, MassMatrixSymmetryRandom) {
   Eigen::VectorXd q = pinocchio::randomConfiguration(*model_);
   Eigen::VectorXd v_vec = Eigen::VectorXd::Random(model_->nv) * 0.1;
   ContactState cs;
-  cache_.update(q, v_vec, cs);
+  cache_.Update(q, v_vec, cs);
 
   Eigen::MatrixXd diff = cache_.M - cache_.M.transpose();
   EXPECT_LT(diff.norm(), 1e-10);
@@ -216,7 +216,7 @@ TEST_F(PinocchioCacheTest, MassMatrixSymmetryRandom) {
 // ──────────────────────────────────────────────
 TEST(IOTest, ControlReferenceInit) {
   ControlReference ref;
-  ref.init(9, 9, 9, 6);
+  ref.Init(9, 9, 9, 6);
   EXPECT_EQ(ref.q_des.size(), 9);
   EXPECT_EQ(ref.a_des.size(), 9);
   EXPECT_EQ(ref.lambda_des.size(), 6);
@@ -224,7 +224,7 @@ TEST(IOTest, ControlReferenceInit) {
 
 TEST(IOTest, CommandOutputInit) {
   CommandOutput out;
-  out.init(9, 7, 6);
+  out.Init(9, 7, 6);
   EXPECT_EQ(out.tau.size(), 7);
   EXPECT_EQ(out.a_opt.size(), 9);
   EXPECT_EQ(out.lambda_opt.size(), 6);

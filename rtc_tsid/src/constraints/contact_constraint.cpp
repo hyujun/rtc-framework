@@ -2,20 +2,20 @@
 
 namespace rtc::tsid {
 
-void ContactConstraint::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void ContactConstraint::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                              PinocchioCache& /*cache*/, const YAML::Node& /*constraint_config*/) {
   nv_ = robot_info.nv;
 }
 
-int ContactConstraint::eq_dim(const ContactState& contacts) const noexcept {
+int ContactConstraint::EqDim(const ContactState& contacts) const noexcept {
   return contacts.active_contact_vars;
 }
 
-int ContactConstraint::ineq_dim(const ContactState& /*contacts*/) const noexcept {
+int ContactConstraint::IneqDim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
-void ContactConstraint::compute_equality(const PinocchioCache& cache, const ContactState& contacts,
+void ContactConstraint::ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
                                          const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                          Eigen::Ref<Eigen::MatrixXd> A_block,
                                          Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
@@ -42,7 +42,7 @@ void ContactConstraint::compute_equality(const PinocchioCache& cache, const Cont
   }
 }
 
-void ContactConstraint::compute_inequality(const PinocchioCache& /*cache*/,
+void ContactConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
                                            const ContactState& /*contacts*/,
                                            const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                            Eigen::Ref<Eigen::MatrixXd> /*C_block*/,

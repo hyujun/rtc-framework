@@ -26,7 +26,7 @@ struct QPData {
   int n_ineq{0};
 
   // Pre-allocate buffers to maximum size (init 시 1회 호출)
-  void init(int max_n_vars, int max_n_eq, int max_n_ineq) {
+  void Init(int max_n_vars, int max_n_eq, int max_n_ineq) {
     H.setZero(max_n_vars, max_n_vars);
     g.setZero(max_n_vars);
     A.setZero(max_n_eq, max_n_vars);
@@ -47,7 +47,7 @@ struct SolveResult {
   int iterations{0};
   int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수
 
-  void init(int max_n_vars) { x_opt.setZero(max_n_vars); }
+  void Init(int max_n_vars) { x_opt.setZero(max_n_vars); }
 };
 
 // ────────────────────────────────────────────────
@@ -72,6 +72,6 @@ struct PhasePreset {
 };
 
 // YAML로부터 phase preset 로드 (init 시 1회)
-std::unordered_map<std::string, PhasePreset> load_phase_presets(const YAML::Node& config);
+std::unordered_map<std::string, PhasePreset> LoadPhasePresets(const YAML::Node& config);
 
 }  // namespace rtc::tsid

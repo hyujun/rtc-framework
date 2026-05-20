@@ -2,7 +2,7 @@
 
 namespace rtc::tsid {
 
-void PostureTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void PostureTask::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                        PinocchioCache& /*cache*/, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
 
@@ -46,7 +46,7 @@ void PostureTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& 
   has_local_ref_ = false;
 }
 
-void PostureTask::compute_residual(const PinocchioCache& cache, const ControlReference& ref,
+void PostureTask::ComputeResidual(const PinocchioCache& cache, const ControlReference& ref,
                                    const ContactState& /*contacts*/, int /*n_vars*/,
                                    Eigen::Ref<Eigen::MatrixXd> J_block,
                                    Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
@@ -80,7 +80,7 @@ void PostureTask::compute_residual(const PinocchioCache& cache, const ControlRef
   }
 }
 
-void PostureTask::set_reference(const Eigen::VectorXd& q_des, const Eigen::VectorXd& v_des,
+void PostureTask::SetReference(const Eigen::VectorXd& q_des, const Eigen::VectorXd& v_des,
                                 const Eigen::VectorXd& a_ff) noexcept {
   local_q_des_ = q_des;
   local_v_des_ = v_des;
@@ -88,7 +88,7 @@ void PostureTask::set_reference(const Eigen::VectorXd& q_des, const Eigen::Vecto
   has_local_ref_ = true;
 }
 
-void PostureTask::set_gains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept {
+void PostureTask::SetGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept {
   kp_ = kp;
   kd_ = kd;
 }

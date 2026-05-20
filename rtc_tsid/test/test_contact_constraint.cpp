@@ -23,7 +23,7 @@ class ContactConstraintTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     // Find a valid frame for contact
     for (size_t i = 0; i < model_->frames.size(); ++i) {
@@ -45,11 +45,11 @@ class ContactConstraintTest : public ::testing::Test {
     contact_cfg_.max_contacts = 1;
     contact_cfg_.max_contact_vars = 3;
 
-    cache_.init(model_, contact_cfg_);
+    cache_.Init(model_, contact_cfg_);
 
-    contacts_.init(1);
+    contacts_.Init(1);
     contacts_.contacts[0].active = true;
-    contacts_.recompute_active(contact_cfg_);
+    contacts_.RecomputeActive(contact_cfg_);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -63,37 +63,37 @@ class ContactConstraintTest : public ::testing::Test {
 TEST_F(ContactConstraintTest, Dimensions) {
   ContactConstraint cc;
   YAML::Node cfg;
-  cc.init(*model_, robot_info_, cache_, cfg);
-  cc.set_contact_manager(&contact_cfg_);
+  cc.Init(*model_, robot_info_, cache_, cfg);
+  cc.SetContactManager(&contact_cfg_);
 
-  EXPECT_EQ(cc.eq_dim(contacts_), 3);  // 1 point contact = 3
-  EXPECT_EQ(cc.ineq_dim(contacts_), 0);
+  EXPECT_EQ(cc.EqDim(contacts_), 3);  // 1 point contact = 3
+  EXPECT_EQ(cc.IneqDim(contacts_), 0);
 
   // Deactivate → eq_dim = 0
   contacts_.contacts[0].active = false;
-  contacts_.recompute_active(contact_cfg_);
-  EXPECT_EQ(cc.eq_dim(contacts_), 0);
+  contacts_.RecomputeActive(contact_cfg_);
+  EXPECT_EQ(cc.EqDim(contacts_), 0);
 }
 
 TEST_F(ContactConstraintTest, MatrixShape) {
   ContactConstraint cc;
   YAML::Node cfg;
-  cc.init(*model_, robot_info_, cache_, cfg);
-  cc.set_contact_manager(&contact_cfg_);
+  cc.Init(*model_, robot_info_, cache_, cfg);
+  cc.SetContactManager(&contact_cfg_);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   const int n_vars = robot_info_.nv + contacts_.active_contact_vars;
-  const int n_eq = cc.eq_dim(contacts_);
+  const int n_eq = cc.EqDim(contacts_);
 
   Eigen::MatrixXd A(n_eq, n_vars);
   Eigen::VectorXd b(n_eq);
   A.setZero();
   b.setZero();
 
-  cc.compute_equality(cache_, contacts_, robot_info_, n_vars, A, b);
+  cc.ComputeEquality(cache_, contacts_, robot_info_, n_vars, A, b);
 
   // A[:, 0:nv] = Jc[:3, :] (should be non-zero)
   EXPECT_GT(A.leftCols(robot_info_.nv).norm(), 0.0);

@@ -23,7 +23,7 @@ class ForceTaskTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     // 1개 point contact 설정
     YAML::Node contact_yaml;
@@ -34,12 +34,12 @@ class ForceTaskTest : public ::testing::Test {
     c1["friction_coeff"] = 0.5;
     contact_yaml["contacts"].push_back(c1);
 
-    contact_cfg_.load(contact_yaml, *model_);
-    cache_.init(model_, contact_cfg_);
+    contact_cfg_.Load(contact_yaml, *model_);
+    cache_.Init(model_, contact_cfg_);
 
-    contacts_.init(contact_cfg_.max_contacts);
+    contacts_.Init(contact_cfg_.max_contacts);
 
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated,
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated,
               contact_cfg_.max_contact_vars);
   }
 
@@ -57,55 +57,55 @@ TEST_F(ForceTaskTest, InitAndNameWeight) {
   cfg["weight"] = 10.0;
   cfg["priority"] = 1;
 
-  task.init(*model_, robot_info_, cache_, cfg);
-  task.set_contact_manager(&contact_cfg_);
+  task.Init(*model_, robot_info_, cache_, cfg);
+  task.SetContactManager(&contact_cfg_);
 
-  EXPECT_EQ(task.name(), "force");
-  EXPECT_DOUBLE_EQ(task.weight(), 10.0);
-  EXPECT_EQ(task.priority(), 1);
-  EXPECT_TRUE(task.is_active());
+  EXPECT_EQ(task.Name(), "force");
+  EXPECT_DOUBLE_EQ(task.Weight(), 10.0);
+  EXPECT_EQ(task.Priority(), 1);
+  EXPECT_TRUE(task.IsActive());
 }
 
 TEST_F(ForceTaskTest, ResidualDimWithNoActiveContact) {
   ForceTask task;
   YAML::Node cfg;
-  task.init(*model_, robot_info_, cache_, cfg);
-  task.set_contact_manager(&contact_cfg_);
+  task.Init(*model_, robot_info_, cache_, cfg);
+  task.SetContactManager(&contact_cfg_);
 
   // 모든 contact 비활성
-  contacts_.recompute_active(contact_cfg_);
-  task.update_residual_dim(contacts_);
+  contacts_.RecomputeActive(contact_cfg_);
+  task.UpdateResidualDim(contacts_);
 
-  EXPECT_EQ(task.residual_dim(), 0);
+  EXPECT_EQ(task.ResidualDim(), 0);
 }
 
 TEST_F(ForceTaskTest, ResidualDimWithActiveContact) {
   ForceTask task;
   YAML::Node cfg;
-  task.init(*model_, robot_info_, cache_, cfg);
-  task.set_contact_manager(&contact_cfg_);
+  task.Init(*model_, robot_info_, cache_, cfg);
+  task.SetContactManager(&contact_cfg_);
 
   // contact 0 활성화 (point contact, dim=3)
   contacts_.contacts[0].active = true;
-  contacts_.recompute_active(contact_cfg_);
-  task.update_residual_dim(contacts_);
+  contacts_.RecomputeActive(contact_cfg_);
+  task.UpdateResidualDim(contacts_);
 
-  EXPECT_EQ(task.residual_dim(), 3);
+  EXPECT_EQ(task.ResidualDim(), 3);
 }
 
 TEST_F(ForceTaskTest, ComputeResidualIdentityOnLambda) {
   ForceTask task;
   YAML::Node cfg;
-  task.init(*model_, robot_info_, cache_, cfg);
-  task.set_contact_manager(&contact_cfg_);
+  task.Init(*model_, robot_info_, cache_, cfg);
+  task.SetContactManager(&contact_cfg_);
 
   // contact 활성화
   contacts_.contacts[0].active = true;
-  contacts_.recompute_active(contact_cfg_);
+  contacts_.RecomputeActive(contact_cfg_);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // reference: [10, 0, 5]
   ref_.lambda_des.head(3) << 10.0, 0.0, 5.0;
@@ -117,7 +117,7 @@ TEST_F(ForceTaskTest, ComputeResidualIdentityOnLambda) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // J: 처음 nv 열은 0, 마지막 3열은 Identity
   for (int i = 0; i < rdim; ++i) {
@@ -140,15 +140,15 @@ TEST_F(ForceTaskTest, ComputeResidualIdentityOnLambda) {
 TEST_F(ForceTaskTest, LocalForceReference) {
   ForceTask task;
   YAML::Node cfg;
-  task.init(*model_, robot_info_, cache_, cfg);
-  task.set_contact_manager(&contact_cfg_);
+  task.Init(*model_, robot_info_, cache_, cfg);
+  task.SetContactManager(&contact_cfg_);
 
   contacts_.contacts[0].active = true;
-  contacts_.recompute_active(contact_cfg_);
+  contacts_.RecomputeActive(contact_cfg_);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // global reference (should be ignored)
   ref_.lambda_des.head(3) << 1.0, 2.0, 3.0;
@@ -156,7 +156,7 @@ TEST_F(ForceTaskTest, LocalForceReference) {
   // local reference
   Eigen::VectorXd local_ref(3);
   local_ref << 100.0, 200.0, 300.0;
-  task.set_force_reference(0, local_ref);
+  task.SetForceReference(0, local_ref);
 
   const int n_vars = robot_info_.nv + contacts_.active_contact_vars;
   const int rdim = contacts_.active_contact_vars;
@@ -165,7 +165,7 @@ TEST_F(ForceTaskTest, LocalForceReference) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // local ref가 우선
   EXPECT_NEAR(r(0), 100.0, 1e-10);
@@ -176,15 +176,15 @@ TEST_F(ForceTaskTest, LocalForceReference) {
 TEST_F(ForceTaskTest, InactiveContactSkipped) {
   ForceTask task;
   YAML::Node cfg;
-  task.init(*model_, robot_info_, cache_, cfg);
-  task.set_contact_manager(&contact_cfg_);
+  task.Init(*model_, robot_info_, cache_, cfg);
+  task.SetContactManager(&contact_cfg_);
 
   // 모든 contact 비활성
-  contacts_.recompute_active(contact_cfg_);
+  contacts_.RecomputeActive(contact_cfg_);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   const int n_vars = robot_info_.nv;  // no active contacts → n_vars = nv
   // residual dim = 0 → J/r 크기도 0이므로 compute 호출만 확인
@@ -192,7 +192,7 @@ TEST_F(ForceTaskTest, InactiveContactSkipped) {
   Eigen::VectorXd r(0);
 
   // crash 없이 반환해야 함
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
   EXPECT_EQ(contacts_.active_contact_vars, 0);
 }
 

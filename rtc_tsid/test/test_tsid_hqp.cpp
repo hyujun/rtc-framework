@@ -25,14 +25,14 @@ class HQPFormulationTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.init(model_, contact_cfg_);
-    contacts_.init(0);
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
+    cache_.Init(model_, contact_cfg_);
+    contacts_.Init(0);
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -47,34 +47,34 @@ TEST_F(HQPFormulationTest, FactoryCreatesHQP) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto f = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto f = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
   ASSERT_NE(f, nullptr);
-  EXPECT_EQ(f->type(), "hqp");
+  EXPECT_EQ(f->Type(), "hqp");
 }
 
 TEST_F(HQPFormulationTest, SingleLevelConverges) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto formulation = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
   task_cfg["priority"] = 0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   ref_.q_des = q;
   ref_.v_des = v;
   ref_.a_des.setZero(robot_info_.nv);
 
-  const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+  const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
 
   ASSERT_TRUE(result.converged);
   EXPECT_EQ(result.levels_solved, 1);
@@ -92,7 +92,7 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto formulation = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture_high = std::make_unique<PostureTask>();
   YAML::Node cfg_high;
@@ -100,8 +100,8 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
   cfg_high["kd"] = 20.0;
   cfg_high["weight"] = 1.0;
   cfg_high["priority"] = 0;
-  posture_high->init(*model_, robot_info_, cache_, cfg_high);
-  formulation->add_task(std::move(posture_high));
+  posture_high->Init(*model_, robot_info_, cache_, cfg_high);
+  formulation->AddTask(std::move(posture_high));
 
   auto posture_low = std::make_unique<PostureTask>();
   YAML::Node cfg_low;
@@ -109,24 +109,24 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
   cfg_low["kd"] = 20.0;
   cfg_low["weight"] = 1.0;
   cfg_low["priority"] = 1;
-  posture_low->init(*model_, robot_info_, cache_, cfg_low);
+  posture_low->Init(*model_, robot_info_, cache_, cfg_low);
 
   Eigen::VectorXd q_neutral = pinocchio::neutral(*model_);
   Eigen::VectorXd q_offset = q_neutral;
   q_offset.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.5);
-  posture_low->set_reference(q_offset, Eigen::VectorXd::Zero(robot_info_.nv),
+  posture_low->SetReference(q_offset, Eigen::VectorXd::Zero(robot_info_.nv),
                              Eigen::VectorXd::Zero(robot_info_.nv));
-  formulation->add_task(std::move(posture_low));
+  formulation->AddTask(std::move(posture_low));
 
   Eigen::VectorXd q = q_neutral;
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   ref_.q_des = q;
   ref_.v_des = v;
   ref_.a_des.setZero(robot_info_.nv);
 
-  const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+  const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
 
   ASSERT_TRUE(result.converged);
   EXPECT_EQ(result.levels_solved, 2);
@@ -140,12 +140,12 @@ TEST_F(HQPFormulationTest, PresetSetsCorrectPriority) {
   YAML::Node config;
   config["formulation_type"] = "hqp";
 
-  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto formulation = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
   PhasePreset preset;
   preset.phase_name = "test";
@@ -156,12 +156,12 @@ TEST_F(HQPFormulationTest, PresetSetsCorrectPriority) {
   tp.priority = 3;
   preset.task_presets.push_back(tp);
 
-  formulation->apply_preset(preset);
+  formulation->ApplyPreset(preset);
 
-  auto* task = formulation->get_task("posture");
+  auto* task = formulation->GetTask("posture");
   ASSERT_NE(task, nullptr);
-  EXPECT_DOUBLE_EQ(task->weight(), 2.0);
-  EXPECT_EQ(task->priority(), 3);
+  EXPECT_DOUBLE_EQ(task->Weight(), 2.0);
+  EXPECT_EQ(task->Priority(), 3);
 }
 
 }  // namespace

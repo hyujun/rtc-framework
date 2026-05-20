@@ -4,22 +4,22 @@
 
 namespace rtc::tsid {
 
-void TSIDController::init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
+void TSIDController::Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                           const YAML::Node& config) {
   robot_info_ = robot_info;
 
   // ContactManagerConfig 보관 — τ 역산에서 active contact 의 contact_dim 조회.
   contact_cfg_ = ContactManagerConfig{};
   if (config) {
-    contact_cfg_.load(config, model);
+    contact_cfg_.Load(config, model);
   }
 
   // Formulation 생성 (WQP or HQP)
-  formulation_ = create_formulation(model, robot_info, contact_cfg_, config);
+  formulation_ = CreateFormulation(model, robot_info, contact_cfg_, config);
 
   // Phase presets 로드
   if (config) {
-    presets_ = load_phase_presets(config);
+    presets_ = LoadPhasePresets(config);
   }
 
   // τ 역산 버퍼
@@ -27,14 +27,14 @@ void TSIDController::init(const pinocchio::Model& model, const RobotModelInfo& r
   tau_actuated_.setZero(robot_info.n_actuated);
   JcT_lambda_.setZero(robot_info.nv);
 
-  output_.init(robot_info.nv, robot_info.n_actuated, contact_cfg_.max_contact_vars);
+  output_.Init(robot_info.nv, robot_info.n_actuated, contact_cfg_.max_contact_vars);
 }
 
-CommandOutput TSIDController::compute(const ControlState& /*state*/, const ControlReference& ref,
+CommandOutput TSIDController::Compute(const ControlState& /*state*/, const ControlReference& ref,
                                       const PinocchioCache& cache,
                                       const ContactState& contacts) noexcept {
   // 1. Formulation solve (WQP 또는 HQP)
-  const auto& result = formulation_->solve(cache, ref, contacts, robot_info_);
+  const auto& result = formulation_->Solve(cache, ref, contacts, robot_info_);
 
   output_.qp_converged = result.converged;
   output_.solve_time_us = result.solve_time_us;
@@ -96,7 +96,7 @@ CommandOutput TSIDController::compute(const ControlState& /*state*/, const Contr
   return output_;
 }
 
-void TSIDController::reset() noexcept {
+void TSIDController::Reset() noexcept {
   output_.qp_converged = false;
   output_.solve_time_us = 0.0;
   output_.solve_levels = 0;
@@ -105,22 +105,22 @@ void TSIDController::reset() noexcept {
   output_.lambda_opt.setZero();
 }
 
-void TSIDController::apply_phase_preset(const std::string& preset_name) noexcept {
+void TSIDController::ApplyPhasePreset(const std::string& preset_name) noexcept {
   auto it = presets_.find(preset_name);
   if (it != presets_.end()) {
-    formulation_->apply_preset(it->second);
+    formulation_->ApplyPreset(it->second);
   }
 }
 
-void TSIDController::apply_phase_preset(const PhasePreset& preset) noexcept {
-  formulation_->apply_preset(preset);
+void TSIDController::ApplyPhasePreset(const PhasePreset& preset) noexcept {
+  formulation_->ApplyPreset(preset);
 }
 
-void TSIDController::activate_contact(int /*idx*/) noexcept {
+void TSIDController::ActivateContact(int /*idx*/) noexcept {
   // ContactState는 외부에서 관리 — 여기서는 no-op
   // 필요 시 내부 ContactState를 갖고 관리 가능
 }
 
-void TSIDController::deactivate_contact(int /*idx*/) noexcept {}
+void TSIDController::DeactivateContact(int /*idx*/) noexcept {}
 
 }  // namespace rtc::tsid

@@ -38,14 +38,14 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class SE3Task final : public TaskBase {
  public:
-  [[nodiscard]] std::string_view name() const noexcept override { return name_; }
+  [[nodiscard]] std::string_view Name() const noexcept override { return name_; }
 
-  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
+  void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& task_config) override;
 
-  [[nodiscard]] int residual_dim() const noexcept override { return active_dim_; }
+  [[nodiscard]] int ResidualDim() const noexcept override { return active_dim_; }
 
-  void compute_residual(const PinocchioCache& cache, const ControlReference& ref,
+  void ComputeResidual(const PinocchioCache& cache, const ControlReference& ref,
                         const ContactState& contacts, int n_vars,
                         Eigen::Ref<Eigen::MatrixXd> J_block,
                         Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
@@ -55,13 +55,13 @@ class SE3Task final : public TaskBase {
   ///        base_frame이 명시적 universe(frame_id 0)이면 world 기준.
   /// @param v_des 목표 spatial velocity [6] (default: zero)
   /// @param a_ff feedforward spatial acceleration [6] (default: zero)
-  void set_se3_reference(
+  void SetSe3Reference(
       const pinocchio::SE3& placement_des,
       const Eigen::Matrix<double, 6, 1>& v_des = Eigen::Matrix<double, 6, 1>::Zero(),
       const Eigen::Matrix<double, 6, 1>& a_ff = Eigen::Matrix<double, 6, 1>::Zero()) noexcept;
 
   /// @brief PD gains 설정 (RT-safe)
-  void set_gains(const Eigen::Matrix<double, 6, 1>& kp,
+  void SetGains(const Eigen::Matrix<double, 6, 1>& kp,
                  const Eigen::Matrix<double, 6, 1>& kd) noexcept;
 
  private:

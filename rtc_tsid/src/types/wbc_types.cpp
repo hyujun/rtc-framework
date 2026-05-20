@@ -23,7 +23,7 @@ namespace rtc::tsid {
 // ════════════════════════════════════════════════
 // RobotModelInfo
 // ════════════════════════════════════════════════
-void RobotModelInfo::build(const pinocchio::Model& model, const YAML::Node& config) {
+void RobotModelInfo::Build(const pinocchio::Model& model, const YAML::Node& config) {
   nq = model.nq;
   nv = model.nv;
 
@@ -86,7 +86,7 @@ void RobotModelInfo::build(const pinocchio::Model& model, const YAML::Node& conf
 // ════════════════════════════════════════════════
 // ContactManagerConfig
 // ════════════════════════════════════════════════
-void ContactManagerConfig::load(const YAML::Node& config, const pinocchio::Model& model) {
+void ContactManagerConfig::Load(const YAML::Node& config, const pinocchio::Model& model) {
   contacts.clear();
   max_contact_vars = 0;
 
@@ -127,7 +127,7 @@ void ContactManagerConfig::load(const YAML::Node& config, const pinocchio::Model
 // ════════════════════════════════════════════════
 // ContactState
 // ════════════════════════════════════════════════
-void ContactState::init(int max_contacts) {
+void ContactState::Init(int max_contacts) {
   contacts.resize(static_cast<size_t>(max_contacts));
   for (int i = 0; i < max_contacts; ++i) {
     auto& e = contacts[static_cast<size_t>(i)];
@@ -139,7 +139,7 @@ void ContactState::init(int max_contacts) {
   active_contact_vars = 0;
 }
 
-void ContactState::recompute_active(const ContactManagerConfig& manager) {
+void ContactState::RecomputeActive(const ContactManagerConfig& manager) {
   active_count = 0;
   active_contact_vars = 0;
   for (size_t i = 0; i < contacts.size(); ++i) {
@@ -153,7 +153,7 @@ void ContactState::recompute_active(const ContactManagerConfig& manager) {
 // ════════════════════════════════════════════════
 // PinocchioCache
 // ════════════════════════════════════════════════
-void PinocchioCache::init(std::shared_ptr<const pinocchio::Model> model,
+void PinocchioCache::Init(std::shared_ptr<const pinocchio::Model> model,
                           const ContactManagerConfig& contact_cfg) {
   model_ptr = std::move(model);
   const auto& mdl = *model_ptr;
@@ -187,7 +187,7 @@ void PinocchioCache::init(std::shared_ptr<const pinocchio::Model> model,
   registration_locked = false;
 }
 
-int PinocchioCache::register_frame(const std::string& name, pinocchio::FrameIndex frame_id) {
+int PinocchioCache::RegisterFrame(const std::string& name, pinocchio::FrameIndex frame_id) {
   if (registration_locked) {
     return -1;
   }
@@ -210,7 +210,7 @@ int PinocchioCache::register_frame(const std::string& name, pinocchio::FrameInde
   return static_cast<int>(registered_frames.size()) - 1;
 }
 
-void PinocchioCache::update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& v_in,
+void PinocchioCache::Update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& v_in,
                             const ContactState& contacts_state) noexcept {
   registration_locked = true;
 
@@ -291,7 +291,7 @@ void PinocchioCache::update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& 
 // ════════════════════════════════════════════════
 // ControlReference
 // ════════════════════════════════════════════════
-void ControlReference::init(int nq, int nv, int n_actuated, int max_contact_vars) {
+void ControlReference::Init(int nq, int nv, int n_actuated, int max_contact_vars) {
   q_des.setZero(nq);
   v_des.setZero(nv);
   a_des.setZero(nv);
@@ -302,7 +302,7 @@ void ControlReference::init(int nq, int nv, int n_actuated, int max_contact_vars
 // ════════════════════════════════════════════════
 // CommandOutput
 // ════════════════════════════════════════════════
-void CommandOutput::init(int nv, int n_actuated, int max_contact_vars) {
+void CommandOutput::Init(int nv, int n_actuated, int max_contact_vars) {
   tau.setZero(n_actuated);
   a_opt.setZero(nv);
   lambda_opt.setZero(max_contact_vars);
@@ -311,7 +311,7 @@ void CommandOutput::init(int nv, int n_actuated, int max_contact_vars) {
 // ════════════════════════════════════════════════
 // PhasePreset loader
 // ════════════════════════════════════════════════
-std::unordered_map<std::string, PhasePreset> load_phase_presets(const YAML::Node& config) {
+std::unordered_map<std::string, PhasePreset> LoadPhasePresets(const YAML::Node& config) {
   std::unordered_map<std::string, PhasePreset> presets;
 
   if (!config || !config["phase_presets"])

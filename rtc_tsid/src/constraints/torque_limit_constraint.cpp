@@ -5,7 +5,7 @@
 
 namespace rtc::tsid {
 
-void TorqueLimitConstraint::init(const pinocchio::Model& /*model*/,
+void TorqueLimitConstraint::Init(const pinocchio::Model& /*model*/,
                                  const RobotModelInfo& robot_info, PinocchioCache& /*cache*/,
                                  const YAML::Node& constraint_config) {
   nv_ = robot_info.nv;
@@ -26,21 +26,21 @@ void TorqueLimitConstraint::init(const pinocchio::Model& /*model*/,
   Sh_.setZero(na_);
 }
 
-int TorqueLimitConstraint::eq_dim(const ContactState& /*contacts*/) const noexcept {
+int TorqueLimitConstraint::EqDim(const ContactState& /*contacts*/) const noexcept {
   return 0;
 }
 
-int TorqueLimitConstraint::ineq_dim(const ContactState& /*contacts*/) const noexcept {
+int TorqueLimitConstraint::IneqDim(const ContactState& /*contacts*/) const noexcept {
   return na_;
 }
 
-void TorqueLimitConstraint::compute_equality(const PinocchioCache& /*cache*/,
+void TorqueLimitConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
                                              const ContactState& /*contacts*/,
                                              const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
                                              Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
                                              Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {}
 
-void TorqueLimitConstraint::compute_inequality(const PinocchioCache& cache,
+void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
                                                const ContactState& contacts,
                                                const RobotModelInfo& robot_info, int /*n_vars*/,
                                                Eigen::Ref<Eigen::MatrixXd> C_block,

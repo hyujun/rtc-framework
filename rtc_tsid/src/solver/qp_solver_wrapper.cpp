@@ -4,7 +4,7 @@
 
 namespace rtc::tsid {
 
-void QPSolverWrapper::init(int max_n_vars, int max_n_eq, int max_n_ineq,
+void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
                            const QPSolverConfig& config) {
   config_ = config;
 
@@ -23,7 +23,7 @@ void QPSolverWrapper::init(int max_n_vars, int max_n_eq, int max_n_ineq,
       proxsuite::proxqp::InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT;
 
   // 결과 버퍼 pre-allocate
-  result_.init(max_n_vars);
+  result_.Init(max_n_vars);
 
   initialized_ = true;
   first_solve_ = true;
@@ -32,7 +32,7 @@ void QPSolverWrapper::init(int max_n_vars, int max_n_eq, int max_n_ineq,
   prev_n_ineq_ = 0;
 }
 
-const SolveResult& QPSolverWrapper::solve(const QPData& qp) noexcept {
+const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   if (!initialized_) {
     result_.converged = false;
     return result_;
@@ -126,14 +126,14 @@ const SolveResult& QPSolverWrapper::solve(const QPData& qp) noexcept {
   return result_;
 }
 
-void QPSolverWrapper::set_max_iter(int iter) noexcept {
+void QPSolverWrapper::SetMaxIter(int iter) noexcept {
   config_.max_iter = iter;
   if (qp_) {
     qp_->settings.max_iter = iter;
   }
 }
 
-void QPSolverWrapper::set_eps_abs(double eps) noexcept {
+void QPSolverWrapper::SetEpsAbs(double eps) noexcept {
   config_.eps_abs = eps;
   if (qp_) {
     qp_->settings.eps_abs = eps;

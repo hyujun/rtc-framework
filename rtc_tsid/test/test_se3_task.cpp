@@ -25,14 +25,14 @@ class SE3TaskTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.init(model_, contact_cfg);
+    cache_.Init(model_, contact_cfg);
 
-    contacts_.init(0);
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
+    contacts_.Init(0);
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -53,13 +53,13 @@ TEST_F(SE3TaskTest, InitAndDimension6D) {
   cfg["weight"] = 50.0;
   cfg["priority"] = 1;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
-  EXPECT_EQ(task.residual_dim(), 6);
-  EXPECT_EQ(task.name(), "se3");
-  EXPECT_TRUE(task.is_active());
-  EXPECT_DOUBLE_EQ(task.weight(), 50.0);
-  EXPECT_EQ(task.priority(), 1);
+  EXPECT_EQ(task.ResidualDim(), 6);
+  EXPECT_EQ(task.Name(), "se3");
+  EXPECT_TRUE(task.IsActive());
+  EXPECT_DOUBLE_EQ(task.Weight(), 50.0);
+  EXPECT_EQ(task.Priority(), 1);
 }
 
 TEST_F(SE3TaskTest, InitAndDimensionPositionOnly) {
@@ -69,9 +69,9 @@ TEST_F(SE3TaskTest, InitAndDimensionPositionOnly) {
   cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{1, 1, 1, 0, 0, 0};
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
-  EXPECT_EQ(task.residual_dim(), 3);
+  EXPECT_EQ(task.ResidualDim(), 3);
 }
 
 TEST_F(SE3TaskTest, InitAndDimensionRotationOnly) {
@@ -81,9 +81,9 @@ TEST_F(SE3TaskTest, InitAndDimensionRotationOnly) {
   cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{0, 0, 0, 1, 1, 1};
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
-  EXPECT_EQ(task.residual_dim(), 3);
+  EXPECT_EQ(task.ResidualDim(), 3);
 }
 
 TEST_F(SE3TaskTest, CustomName) {
@@ -93,9 +93,9 @@ TEST_F(SE3TaskTest, CustomName) {
   cfg["base_frame"] = "panda_link0";
   cfg["name"] = "se3_tcp";
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
-  EXPECT_EQ(task.name(), "se3_tcp");
+  EXPECT_EQ(task.Name(), "se3_tcp");
 }
 
 TEST_F(SE3TaskTest, ZeroErrorAtCurrentPose) {
@@ -106,15 +106,15 @@ TEST_F(SE3TaskTest, ZeroErrorAtCurrentPose) {
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // 현재 pose를 목표로 설정 → error = 0
   const auto& rf = cache_.registered_frames[0];
-  task.set_se3_reference(rf.oMf);
+  task.SetSe3Reference(rf.oMf);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(6, n_vars);
@@ -122,7 +122,7 @@ TEST_F(SE3TaskTest, ZeroErrorAtCurrentPose) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // r ≈ -dJv (q=neutral, v=0이므로 dJv=0 → r ≈ 0)
   EXPECT_LT(r.norm(), 1e-10);
@@ -140,16 +140,16 @@ TEST_F(SE3TaskTest, PositionErrorResponse) {
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // 현재 pose에서 z축으로 0.1m offset 추가
   auto des = cache_.registered_frames[0].oMf;
   des.translation()(2) += 0.1;
-  task.set_se3_reference(des);
+  task.SetSe3Reference(des);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -157,7 +157,7 @@ TEST_F(SE3TaskTest, PositionErrorResponse) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // r = Kp * e_pos - dJv = 100 * [0, 0, 0.1] - 0
   // v=0 → velocity error=0 → r_z = 100*0.1 = 10
@@ -175,17 +175,17 @@ TEST_F(SE3TaskTest, OrientationErrorSmallAngle) {
   cfg["kp"] = 50.0;
   cfg["kd"] = 10.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // 현재 pose에서 z축 0.1rad 회전 추가
   auto des = cache_.registered_frames[0].oMf;
   Eigen::AngleAxisd rot(0.1, Eigen::Vector3d::UnitZ());
   des.rotation() = des.rotation() * rot.toRotationMatrix();
-  task.set_se3_reference(des);
+  task.SetSe3Reference(des);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -193,7 +193,7 @@ TEST_F(SE3TaskTest, OrientationErrorSmallAngle) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // orientation error의 크기 = 0.1rad → r ≈ Kp * 0.1 = 5.0 (z축)
   EXPECT_GT(r.norm(), 1.0);  // 유의미한 response
@@ -208,17 +208,17 @@ TEST_F(SE3TaskTest, OrientationErrorNearPi) {
   cfg["kp"] = 50.0;
   cfg["kd"] = 10.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // 현재 pose에서 x축 π-0.001 rad 회전 (거의 π)
   auto des = cache_.registered_frames[0].oMf;
   Eigen::AngleAxisd rot(M_PI - 0.001, Eigen::Vector3d::UnitX());
   des.rotation() = des.rotation() * rot.toRotationMatrix();
-  task.set_se3_reference(des);
+  task.SetSe3Reference(des);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(6, n_vars);
@@ -227,7 +227,7 @@ TEST_F(SE3TaskTest, OrientationErrorNearPi) {
   r.setZero();
 
   // crash/NaN 없이 compute 가능해야 함
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   EXPECT_FALSE(std::isnan(r.norm()));
   EXPECT_FALSE(std::isinf(r.norm()));
@@ -242,15 +242,15 @@ TEST_F(SE3TaskTest, GainsUpdate) {
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   auto des = cache_.registered_frames[0].oMf;
   des.translation()(0) += 0.1;
-  task.set_se3_reference(des);
+  task.SetSe3Reference(des);
 
   // 첫 번째 계산 (kp=100)
   const int n_vars = robot_info_.nv;
@@ -258,17 +258,17 @@ TEST_F(SE3TaskTest, GainsUpdate) {
   Eigen::VectorXd r1(6);
   J.setZero();
   r1.setZero();
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r1);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r1);
 
   // gains 변경 (kp=200)
   Eigen::Matrix<double, 6, 1> new_kp = Eigen::Matrix<double, 6, 1>::Constant(200.0);
   Eigen::Matrix<double, 6, 1> new_kd = Eigen::Matrix<double, 6, 1>::Constant(20.0);
-  task.set_gains(new_kp, new_kd);
+  task.SetGains(new_kp, new_kd);
 
   Eigen::VectorXd r2(6);
   J.setZero();
   r2.setZero();
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r2);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r2);
 
   // kp 2배 → position 관련 residual도 2배
   // r = kp * e_pos + kd * e_vel - dJv, v=0이므로 e_vel=0, dJv=0
@@ -282,15 +282,15 @@ TEST_F(SE3TaskTest, JBlockDimensionWithMask) {
   cfg["base_frame"] = "panda_link0";
   cfg["mask"] = std::vector<int>{1, 0, 1, 0, 1, 0};  // 3 axes active
 
-  task.init(*model_, robot_info_, cache_, cfg);
-  EXPECT_EQ(task.residual_dim(), 3);
+  task.Init(*model_, robot_info_, cache_, cfg);
+  EXPECT_EQ(task.ResidualDim(), 3);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   auto des = cache_.registered_frames[0].oMf;
-  task.set_se3_reference(des);
+  task.SetSe3Reference(des);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -298,7 +298,7 @@ TEST_F(SE3TaskTest, JBlockDimensionWithMask) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // J는 masked Jacobian → rows = {0, 2, 4} of full J
   const auto& rf = cache_.registered_frames[0];
@@ -312,7 +312,7 @@ TEST_F(SE3TaskTest, MissingBaseFrameThrows) {
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
   // base_frame 누락 — strict mode에서 init은 throw 해야 한다.
-  EXPECT_THROW(task.init(*model_, robot_info_, cache_, cfg), std::runtime_error);
+  EXPECT_THROW(task.Init(*model_, robot_info_, cache_, cfg), std::runtime_error);
 }
 
 TEST_F(SE3TaskTest, ExplicitUniverseBaseFrameAccepted) {
@@ -321,8 +321,8 @@ TEST_F(SE3TaskTest, ExplicitUniverseBaseFrameAccepted) {
   cfg["frame"] = "panda_hand";
   cfg["base_frame"] = "universe";  // frame_id 0 → fast-path 유지
 
-  EXPECT_NO_THROW(task.init(*model_, robot_info_, cache_, cfg));
-  EXPECT_EQ(task.residual_dim(), 6);
+  EXPECT_NO_THROW(task.Init(*model_, robot_info_, cache_, cfg));
+  EXPECT_EQ(task.ResidualDim(), 6);
 }
 
 TEST_F(SE3TaskTest, UnknownBaseFrameThrows) {
@@ -330,7 +330,7 @@ TEST_F(SE3TaskTest, UnknownBaseFrameThrows) {
   YAML::Node cfg;
   cfg["frame"] = "panda_hand";
   cfg["base_frame"] = "not_a_real_frame";
-  EXPECT_THROW(task.init(*model_, robot_info_, cache_, cfg), std::runtime_error);
+  EXPECT_THROW(task.Init(*model_, robot_info_, cache_, cfg), std::runtime_error);
 }
 
 }  // namespace

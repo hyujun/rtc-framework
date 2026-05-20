@@ -7,7 +7,7 @@
 
 namespace rtc::tsid {
 
-std::unique_ptr<FormulationBase> create_formulation(const pinocchio::Model& model,
+std::unique_ptr<FormulationBase> CreateFormulation(const pinocchio::Model& model,
                                                     const RobotModelInfo& robot_info,
                                                     const ContactManagerConfig& contact_cfg,
                                                     const YAML::Node& config) {
@@ -20,11 +20,11 @@ std::unique_ptr<FormulationBase> create_formulation(const pinocchio::Model& mode
 
   if (type == "wqp") {
     auto wqp = std::make_unique<WQPFormulation>();
-    wqp->init(model, robot_info, contact_cfg, config);
+    wqp->Init(model, robot_info, contact_cfg, config);
     formulation = std::move(wqp);
   } else if (type == "hqp") {
     auto hqp = std::make_unique<HQPFormulation>();
-    hqp->init(model, robot_info, contact_cfg, config);
+    hqp->Init(model, robot_info, contact_cfg, config);
     formulation = std::move(hqp);
   } else {
     throw std::runtime_error("Unknown formulation_type: '" + type + "'. Use 'wqp' or 'hqp'.");

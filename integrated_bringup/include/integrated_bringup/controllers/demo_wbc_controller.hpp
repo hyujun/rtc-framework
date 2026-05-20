@@ -212,7 +212,7 @@ class DemoWbcController final : public RTControllerInterface {
   // Dispatches on the `type:` field of each entry under `tsid.tasks` /
   // `tsid.constraints`. Supported tasks: posture, se3, force. Supported
   // constraints: eom, joint_limit, friction_cone. Unknown types log ERROR
-  // and skip. Called once in LoadConfig after TSIDController::init().
+  // and skip. Called once in LoadConfig after TSIDController::Init().
   void BuildTsidTasks(const YAML::Node& tsid_node);
   void BuildTsidConstraints(const YAML::Node& tsid_node);
 

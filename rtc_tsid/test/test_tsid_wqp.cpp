@@ -29,15 +29,15 @@ class WQPFormulationTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.init(model_, contact_cfg_);
-    contacts_.init(0);
+    cache_.Init(model_, contact_cfg_);
+    contacts_.Init(0);
 
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -55,9 +55,9 @@ TEST_F(WQPFormulationTest, PostureOnlyConverges) {
   YAML::Node formulation_config;
   formulation_config["formulation_type"] = "wqp";
 
-  auto formulation = create_formulation(*model_, robot_info_, contact_cfg_, formulation_config);
+  auto formulation = CreateFormulation(*model_, robot_info_, contact_cfg_, formulation_config);
   ASSERT_NE(formulation, nullptr);
-  EXPECT_EQ(formulation->type(), "wqp");
+  EXPECT_EQ(formulation->Type(), "wqp");
 
   // PostureTask 등록
   auto posture = std::make_unique<PostureTask>();
@@ -65,19 +65,19 @@ TEST_F(WQPFormulationTest, PostureOnlyConverges) {
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
   task_cfg["weight"] = 1.0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
   // q_des = q_current, v_des = 0 → 가속도 ≈ 0
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   ref_.q_des = q;
   ref_.v_des = v;
   ref_.a_des.setZero(robot_info_.nv);
 
-  const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+  const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
 
   ASSERT_TRUE(result.converged);
   EXPECT_EQ(result.levels_solved, 1);
@@ -92,18 +92,18 @@ TEST_F(WQPFormulationTest, PostureTrackingNonZeroAccel) {
   YAML::Node formulation_config;
 
   auto formulation = std::make_unique<WQPFormulation>();
-  formulation->init(*model_, robot_info_, contact_cfg_, formulation_config);
+  formulation->Init(*model_, robot_info_, contact_cfg_, formulation_config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // q_des != q → non-zero acceleration
   ref_.q_des = q;
@@ -111,7 +111,7 @@ TEST_F(WQPFormulationTest, PostureTrackingNonZeroAccel) {
   ref_.v_des = v;
   ref_.a_des.setZero(robot_info_.nv);
 
-  const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+  const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
 
   ASSERT_TRUE(result.converged);
   Eigen::VectorXd a_opt = result.x_opt.head(robot_info_.nv);
@@ -127,24 +127,24 @@ TEST_F(WQPFormulationTest, GravityCompensationTorque) {
   YAML::Node formulation_config;
 
   auto formulation = std::make_unique<WQPFormulation>();
-  formulation->init(*model_, robot_info_, contact_cfg_, formulation_config);
+  formulation->Init(*model_, robot_info_, contact_cfg_, formulation_config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   ref_.q_des = q;
   ref_.v_des = v;
   ref_.a_des.setZero(robot_info_.nv);
 
-  const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+  const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
   ASSERT_TRUE(result.converged);
 
   // τ = S * (M * a_opt + h)  (no contacts → Jcᵀλ = 0)
@@ -162,28 +162,28 @@ TEST_F(WQPFormulationTest, FactoryCreatesWQP) {
   YAML::Node config;
   config["formulation_type"] = "wqp";
 
-  auto f = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto f = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
   ASSERT_NE(f, nullptr);
-  EXPECT_EQ(f->type(), "wqp");
+  EXPECT_EQ(f->Type(), "wqp");
 }
 
 TEST_F(WQPFormulationTest, FactoryDefaultIsWQP) {
   YAML::Node config;  // no formulation_type
 
-  auto f = create_formulation(*model_, robot_info_, contact_cfg_, config);
+  auto f = CreateFormulation(*model_, robot_info_, contact_cfg_, config);
   ASSERT_NE(f, nullptr);
-  EXPECT_EQ(f->type(), "wqp");
+  EXPECT_EQ(f->Type(), "wqp");
 }
 
 TEST_F(WQPFormulationTest, PresetApplication) {
   YAML::Node formulation_config;
   auto formulation = std::make_unique<WQPFormulation>();
-  formulation->init(*model_, robot_info_, contact_cfg_, formulation_config);
+  formulation->Init(*model_, robot_info_, contact_cfg_, formulation_config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
   // Apply preset that deactivates posture
   PhasePreset preset;
@@ -195,30 +195,30 @@ TEST_F(WQPFormulationTest, PresetApplication) {
   tp.priority = 2;
   preset.task_presets.push_back(tp);
 
-  formulation->apply_preset(preset);
+  formulation->ApplyPreset(preset);
 
-  auto* task = formulation->get_task("posture");
+  auto* task = formulation->GetTask("posture");
   ASSERT_NE(task, nullptr);
-  EXPECT_FALSE(task->is_active());
-  EXPECT_DOUBLE_EQ(task->weight(), 0.5);
-  EXPECT_EQ(task->priority(), 2);
+  EXPECT_FALSE(task->IsActive());
+  EXPECT_DOUBLE_EQ(task->Weight(), 0.5);
+  EXPECT_EQ(task->Priority(), 2);
 }
 
 TEST_F(WQPFormulationTest, ConsecutiveSolvesWarmStart) {
   YAML::Node formulation_config;
   auto formulation = std::make_unique<WQPFormulation>();
-  formulation->init(*model_, robot_info_, contact_cfg_, formulation_config);
+  formulation->Init(*model_, robot_info_, contact_cfg_, formulation_config);
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node task_cfg;
   task_cfg["kp"] = 100.0;
   task_cfg["kd"] = 20.0;
-  posture->init(*model_, robot_info_, cache_, task_cfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   ref_.q_des = q;
   ref_.v_des = v;
@@ -226,7 +226,7 @@ TEST_F(WQPFormulationTest, ConsecutiveSolvesWarmStart) {
 
   // Multiple solves should all converge
   for (int i = 0; i < 10; ++i) {
-    const auto& result = formulation->solve(cache_, ref_, contacts_, robot_info_);
+    const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
     ASSERT_TRUE(result.converged) << "Solve " << i << " failed";
   }
 }
@@ -255,16 +255,16 @@ TEST_F(WQPFormulationTest, WQPSolveWithSurfaceContact) {
   mgr.max_contact_vars = 6;
 
   PinocchioCache cache;
-  cache.init(model_, mgr);
+  cache.Init(model_, mgr);
 
   ContactState cs;
-  cs.init(1);
+  cs.Init(1);
   cs.contacts[0].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   YAML::Node fcfg;
   fcfg["formulation_type"] = "wqp";
-  auto formulation = create_formulation(*model_, robot_info_, mgr, fcfg);
+  auto formulation = CreateFormulation(*model_, robot_info_, mgr, fcfg);
   ASSERT_NE(formulation, nullptr);
 
   // PostureTask only — minimal task set, drives a* ≈ Kp(q_des-q) + Kd(v_des-v).
@@ -273,28 +273,28 @@ TEST_F(WQPFormulationTest, WQPSolveWithSurfaceContact) {
   tcfg["kp"] = 100.0;
   tcfg["kd"] = 20.0;
   tcfg["weight"] = 1.0;
-  posture->init(*model_, robot_info_, cache, tcfg);
-  formulation->add_task(std::move(posture));
+  posture->Init(*model_, robot_info_, cache, tcfg);
+  formulation->AddTask(std::move(posture));
 
   // FrictionConeConstraint with surface CoP/yaw rows.
   auto fc = std::make_unique<FrictionConeConstraint>();
   YAML::Node ccfg;
-  fc->init(*model_, robot_info_, cache, ccfg);
-  fc->set_contact_manager(&mgr);
-  formulation->add_constraint(std::move(fc));
+  fc->Init(*model_, robot_info_, cache, ccfg);
+  fc->SetContactManager(&mgr);
+  formulation->AddConstraint(std::move(fc));
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache.update(q, v, cs);
+  cache.Update(q, v, cs);
 
   ControlReference ref;
-  ref.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, mgr.max_contact_vars);
+  ref.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, mgr.max_contact_vars);
   ref.q_des = q;
   ref.v_des = v;
   ref.a_des.setZero(robot_info_.nv);
 
   // Solve must succeed without buffer assertion / overflow.
-  const auto& result = formulation->solve(cache, ref, cs, robot_info_);
+  const auto& result = formulation->Solve(cache, ref, cs, robot_info_);
   ASSERT_TRUE(result.converged) << "WQP solve with surface contact failed";
 
   // Extract λ = [fx, fy, fz, mx, my, mz] from x_opt segment after a.
@@ -342,10 +342,10 @@ TEST_F(WQPFormulationTest, TSIDComputeSurfaceContactTauResidual) {
   config["contacts"] = contacts_yaml;
 
   TSIDController tsid;
-  tsid.init(*model_, robot_info_, config);
+  tsid.Init(*model_, robot_info_, config);
 
   // Add minimal task + constraints to formulation post-init.
-  auto& f = tsid.formulation();
+  auto& f = tsid.Formulation();
 
   auto posture = std::make_unique<PostureTask>();
   YAML::Node tcfg;
@@ -359,32 +359,32 @@ TEST_F(WQPFormulationTest, TSIDComputeSurfaceContactTauResidual) {
   local_mgr.contacts[0].frame_id = static_cast<int>(model_->getFrameId("panda_link8"));
   local_mgr.max_contacts = 1;
   local_mgr.max_contact_vars = 6;
-  local_cache.init(model_, local_mgr);
-  posture->init(*model_, robot_info_, local_cache, tcfg);
-  f.add_task(std::move(posture));
+  local_cache.Init(model_, local_mgr);
+  posture->Init(*model_, robot_info_, local_cache, tcfg);
+  f.AddTask(std::move(posture));
 
   auto eom = std::make_unique<EomConstraint>();
   YAML::Node ecfg;
-  eom->init(*model_, robot_info_, local_cache, ecfg);
-  eom->set_contact_manager(&local_mgr);
-  f.add_constraint(std::move(eom));
+  eom->Init(*model_, robot_info_, local_cache, ecfg);
+  eom->SetContactManager(&local_mgr);
+  f.AddConstraint(std::move(eom));
 
   auto fc = std::make_unique<FrictionConeConstraint>();
   YAML::Node fccfg;
-  fc->init(*model_, robot_info_, local_cache, fccfg);
-  fc->set_contact_manager(&local_mgr);
-  f.add_constraint(std::move(fc));
+  fc->Init(*model_, robot_info_, local_cache, fccfg);
+  fc->SetContactManager(&local_mgr);
+  f.AddConstraint(std::move(fc));
 
   // State setup.
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
 
   ContactState cs;
-  cs.init(1);
+  cs.Init(1);
   cs.contacts[0].active = true;
-  cs.recompute_active(local_mgr);
+  cs.RecomputeActive(local_mgr);
 
-  local_cache.update(q, v, cs);
+  local_cache.Update(q, v, cs);
 
   ControlState state;
   state.q = q;
@@ -392,13 +392,13 @@ TEST_F(WQPFormulationTest, TSIDComputeSurfaceContactTauResidual) {
   state.timestamp_ns = 0;
 
   ControlReference ref;
-  ref.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, local_mgr.max_contact_vars);
+  ref.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, local_mgr.max_contact_vars);
   ref.q_des = q;
   ref.v_des = v;
   ref.a_des.setZero(robot_info_.nv);
 
   // Compute through full TSIDController path (exercises τ recovery cdim fix).
-  const auto& out = tsid.compute(state, ref, local_cache, cs);
+  const auto& out = tsid.Compute(state, ref, local_cache, cs);
   ASSERT_TRUE(out.qp_converged) << "TSID solve with surface contact failed";
 
   // τ residual check: M·a + h − Jcᵀ·λ should equal Sᵀ·τ (within tolerance).

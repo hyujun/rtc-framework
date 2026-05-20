@@ -2,7 +2,7 @@
 
 namespace rtc::tsid {
 
-void MomentumTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void MomentumTask::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                         PinocchioCache& cache, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
 
@@ -29,7 +29,7 @@ void MomentumTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo&
   hg_dot_des_.setZero();
 }
 
-void MomentumTask::compute_residual(const PinocchioCache& cache, const ControlReference& /*ref*/,
+void MomentumTask::ComputeResidual(const PinocchioCache& cache, const ControlReference& /*ref*/,
                                     const ContactState& /*contacts*/, int /*n_vars*/,
                                     Eigen::Ref<Eigen::MatrixXd> J_block,
                                     Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
@@ -46,7 +46,7 @@ void MomentumTask::compute_residual(const PinocchioCache& cache, const ControlRe
   }
 }
 
-void MomentumTask::set_momentum_reference(const Eigen::Matrix<double, 6, 1>& hg_dot_des) noexcept {
+void MomentumTask::SetMomentumReference(const Eigen::Matrix<double, 6, 1>& hg_dot_des) noexcept {
   hg_dot_des_ = hg_dot_des;
 }
 

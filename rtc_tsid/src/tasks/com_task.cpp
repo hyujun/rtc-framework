@@ -2,7 +2,7 @@
 
 namespace rtc::tsid {
 
-void CoMTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void CoMTask::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                    PinocchioCache& cache, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
 
@@ -51,7 +51,7 @@ void CoMTask::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robo
   a_des_.setZero();
 }
 
-void CoMTask::compute_residual(const PinocchioCache& cache, const ControlReference& /*ref*/,
+void CoMTask::ComputeResidual(const PinocchioCache& cache, const ControlReference& /*ref*/,
                                const ContactState& /*contacts*/, int /*n_vars*/,
                                Eigen::Ref<Eigen::MatrixXd> J_block,
                                Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
@@ -71,7 +71,7 @@ void CoMTask::compute_residual(const PinocchioCache& cache, const ControlReferen
   r_block.head(3) = a_des_ - cache.com_drift;
 }
 
-void CoMTask::set_com_reference(const Eigen::Vector3d& com_des, const Eigen::Vector3d& v_des,
+void CoMTask::SetComReference(const Eigen::Vector3d& com_des, const Eigen::Vector3d& v_des,
                                 const Eigen::Vector3d& a_ff) noexcept {
   com_des_ = com_des;
   v_des_ = v_des;
@@ -79,7 +79,7 @@ void CoMTask::set_com_reference(const Eigen::Vector3d& com_des, const Eigen::Vec
   has_local_ref_ = true;
 }
 
-void CoMTask::set_gains(const Eigen::Vector3d& kp, const Eigen::Vector3d& kd) noexcept {
+void CoMTask::SetGains(const Eigen::Vector3d& kp, const Eigen::Vector3d& kd) noexcept {
   kp_ = kp;
   kd_ = kd;
 }

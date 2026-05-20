@@ -18,7 +18,7 @@ TEST(FrictionConeTest, Dimensions) {
 
   RobotModelInfo info;
   YAML::Node config;
-  info.build(*model, config);
+  info.Build(*model, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(2);
@@ -30,26 +30,26 @@ TEST(FrictionConeTest, Dimensions) {
   mgr.max_contact_vars = 6;
 
   ContactState cs;
-  cs.init(2);
+  cs.Init(2);
   cs.contacts[0].active = true;
   cs.contacts[1].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.init(model, mgr);
+  cache.Init(model, mgr);
   YAML::Node cfg;
-  fc.init(*model, info, cache, cfg);
-  fc.set_contact_manager(&mgr);
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
 
-  EXPECT_EQ(fc.eq_dim(cs), 0);
+  EXPECT_EQ(fc.EqDim(cs), 0);
   // Contact 0: 4+1=5, Contact 1: 8+1=9 → total = 14
-  EXPECT_EQ(fc.ineq_dim(cs), 14);
+  EXPECT_EQ(fc.IneqDim(cs), 14);
 
   // Deactivate contact 1 → 5
   cs.contacts[1].active = false;
-  cs.recompute_active(mgr);
-  EXPECT_EQ(fc.ineq_dim(cs), 5);
+  cs.RecomputeActive(mgr);
+  EXPECT_EQ(fc.IneqDim(cs), 5);
 }
 
 TEST(FrictionConeTest, ConeMatrixStructure) {
@@ -58,7 +58,7 @@ TEST(FrictionConeTest, ConeMatrixStructure) {
 
   RobotModelInfo info;
   YAML::Node config;
-  info.build(*model, config);
+  info.Build(*model, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -69,20 +69,20 @@ TEST(FrictionConeTest, ConeMatrixStructure) {
   mgr.max_contact_vars = 3;
 
   ContactState cs;
-  cs.init(1);
+  cs.Init(1);
   cs.contacts[0].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.init(model, mgr);
+  cache.Init(model, mgr);
   YAML::Node cfg;
-  fc.init(*model, info, cache, cfg);
-  fc.set_contact_manager(&mgr);
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
 
   const int nv = info.nv;
   const int n_vars = nv + 3;
-  const int n_ineq = fc.ineq_dim(cs);  // 5
+  const int n_ineq = fc.IneqDim(cs);  // 5
   ASSERT_EQ(n_ineq, 5);
 
   Eigen::MatrixXd C(n_ineq, n_vars);
@@ -91,7 +91,7 @@ TEST(FrictionConeTest, ConeMatrixStructure) {
   l.setZero();
   u.setZero();
 
-  fc.compute_inequality(cache, cs, info, n_vars, C, l, u);
+  fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
 
   // a 열 (0:nv)은 모두 0
   EXPECT_NEAR(C.leftCols(nv).norm(), 0.0, 1e-15);
@@ -120,7 +120,7 @@ TEST(FrictionConeTest, SurfaceContactDimensions) {
 
   RobotModelInfo info;
   YAML::Node config;
-  info.build(*model, config);
+  info.Build(*model, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(2);
@@ -135,24 +135,24 @@ TEST(FrictionConeTest, SurfaceContactDimensions) {
   mgr.max_contact_vars = 9;
 
   ContactState cs;
-  cs.init(2);
+  cs.Init(2);
   cs.contacts[0].active = true;
   cs.contacts[1].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.init(model, mgr);
+  cache.Init(model, mgr);
   YAML::Node cfg;
-  fc.init(*model, info, cache, cfg);
-  fc.set_contact_manager(&mgr);
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
 
   // Point: 4 + 1 = 5; Surface: 4 + 1 + 6 = 11 → total 16
-  EXPECT_EQ(fc.ineq_dim(cs), 16);
+  EXPECT_EQ(fc.IneqDim(cs), 16);
 
   cs.contacts[0].active = false;
-  cs.recompute_active(mgr);
-  EXPECT_EQ(fc.ineq_dim(cs), 11);  // surface only
+  cs.RecomputeActive(mgr);
+  EXPECT_EQ(fc.IneqDim(cs), 11);  // surface only
 }
 
 // A-3: CoP rectangle row 수치 검증 — m_x bound: ±m_x - l_y·f_z ≤ 0.
@@ -162,7 +162,7 @@ TEST(FrictionConeTest, SurfaceCopRectangleMatrix) {
 
   RobotModelInfo info;
   YAML::Node config;
-  info.build(*model, config);
+  info.Build(*model, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -176,20 +176,20 @@ TEST(FrictionConeTest, SurfaceCopRectangleMatrix) {
   mgr.max_contact_vars = 6;
 
   ContactState cs;
-  cs.init(1);
+  cs.Init(1);
   cs.contacts[0].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.init(model, mgr);
+  cache.Init(model, mgr);
   YAML::Node cfg;
-  fc.init(*model, info, cache, cfg);
-  fc.set_contact_manager(&mgr);
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
 
   const int nv = info.nv;
   const int n_vars = nv + 6;
-  const int n_ineq = fc.ineq_dim(cs);
+  const int n_ineq = fc.IneqDim(cs);
   ASSERT_EQ(n_ineq, 11);  // 4 cone + 1 unilateral + 4 CoP + 2 yaw
 
   Eigen::MatrixXd C(n_ineq, n_vars);
@@ -197,7 +197,7 @@ TEST(FrictionConeTest, SurfaceCopRectangleMatrix) {
   C.setZero();
   l.setZero();
   u.setZero();
-  fc.compute_inequality(cache, cs, info, n_vars, C, l, u);
+  fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
 
   // Row layout: [0..3] cone, [4] unilateral, [5..6] CoP_x (±m_y - l_x·fz),
   // [7..8] CoP_y (±m_x - l_y·fz), [9..10] yaw (±m_z - μ_τ·fz).
@@ -241,7 +241,7 @@ TEST(FrictionConeTest, SurfaceYawMoment) {
 
   RobotModelInfo info;
   YAML::Node config;
-  info.build(*model, config);
+  info.Build(*model, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -252,26 +252,26 @@ TEST(FrictionConeTest, SurfaceYawMoment) {
   mgr.max_contact_vars = 6;
 
   ContactState cs;
-  cs.init(1);
+  cs.Init(1);
   cs.contacts[0].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.init(model, mgr);
+  cache.Init(model, mgr);
   YAML::Node cfg;
-  fc.init(*model, info, cache, cfg);
-  fc.set_contact_manager(&mgr);
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
 
   const int nv = info.nv;
   const int n_vars = nv + 6;
-  const int n_ineq = fc.ineq_dim(cs);
+  const int n_ineq = fc.IneqDim(cs);
   Eigen::MatrixXd C(n_ineq, n_vars);
   Eigen::VectorXd l(n_ineq), u(n_ineq);
   C.setZero();
   l.setZero();
   u.setZero();
-  fc.compute_inequality(cache, cs, info, n_vars, C, l, u);
+  fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
 
   // Yaw rows 9, 10 — fz column = -μ_τ
   EXPECT_DOUBLE_EQ(C(9, nv + 2), -0.05);
@@ -295,7 +295,7 @@ TEST(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
 
   RobotModelInfo info;
   YAML::Node config;
-  info.build(*model, config);
+  info.Build(*model, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -306,20 +306,20 @@ TEST(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
   mgr.max_contact_vars = 6;
 
   ContactState cs;
-  cs.init(1);
+  cs.Init(1);
   cs.contacts[0].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.init(model, mgr);
+  cache.Init(model, mgr);
   YAML::Node cfg;
-  fc.init(*model, info, cache, cfg);
-  fc.set_contact_manager(&mgr);
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
 
   const int nv = info.nv;
   const int n_vars = nv + 6;
-  const int n_ineq = fc.ineq_dim(cs);
+  const int n_ineq = fc.IneqDim(cs);
   EXPECT_EQ(n_ineq, 11);  // surface 행 자체는 유지
 
   Eigen::MatrixXd C(n_ineq, n_vars);
@@ -327,7 +327,7 @@ TEST(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
   C.setZero();
   l.setZero();
   u.setZero();
-  fc.compute_inequality(cache, cs, info, n_vars, C, l, u);
+  fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
 
   // Rows 5..10 의 fz column 은 모두 0 (l_x=l_y=μ_τ=0)
   for (int r = 5; r <= 10; ++r) {
@@ -355,7 +355,7 @@ TEST(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
 
   RobotModelInfo info;
   YAML::Node config;
-  info.build(*model, config);
+  info.Build(*model, config);
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(2);
@@ -372,21 +372,21 @@ TEST(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
   mgr.max_contact_vars = 9;
 
   ContactState cs;
-  cs.init(2);
+  cs.Init(2);
   cs.contacts[0].active = true;
   cs.contacts[1].active = true;
-  cs.recompute_active(mgr);
+  cs.RecomputeActive(mgr);
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.init(model, mgr);
+  cache.Init(model, mgr);
   YAML::Node cfg;
-  fc.init(*model, info, cache, cfg);
-  fc.set_contact_manager(&mgr);
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
 
   const int nv = info.nv;
   const int n_vars = nv + 9;
-  const int n_ineq = fc.ineq_dim(cs);
+  const int n_ineq = fc.IneqDim(cs);
   ASSERT_EQ(n_ineq, 5 + 11);  // 16
 
   Eigen::MatrixXd C(n_ineq, n_vars);
@@ -394,7 +394,7 @@ TEST(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
   C.setZero();
   l.setZero();
   u.setZero();
-  fc.compute_inequality(cache, cs, info, n_vars, C, l, u);
+  fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
 
   // Rows 0..4: point contact — λ columns [nv .. nv+3).
   // Row 4 (point unilateral): C(4, nv+2) = -1.

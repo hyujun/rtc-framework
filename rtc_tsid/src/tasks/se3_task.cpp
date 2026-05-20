@@ -30,12 +30,12 @@ BaseFrameResolution ResolveBaseFrame(const pinocchio::Model& model, PinocchioCac
   if (base_id == 0) {
     return {-1, true};
   }
-  return {cache.register_frame(base_name, base_id), false};
+  return {cache.RegisterFrame(base_name, base_id), false};
 }
 
 }  // namespace
 
-void SE3Task::init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
+void SE3Task::Init(const pinocchio::Model& model, const RobotModelInfo& robot_info,
                    PinocchioCache& cache, const YAML::Node& task_config) {
   nv_ = robot_info.nv;
 
@@ -51,7 +51,7 @@ void SE3Task::init(const pinocchio::Model& model, const RobotModelInfo& robot_in
     // init 단계에서만 호출되므로 exception 허용
     throw std::runtime_error("SE3Task: frame '" + frame_name + "' not found in model");
   }
-  registered_frame_idx_ = cache.register_frame(frame_name, frame_id);
+  registered_frame_idx_ = cache.RegisterFrame(frame_name, frame_id);
 
   // Base frame 등록 (선택). 미지정 시 universe(world) 기준으로 동작.
   const auto base_res = ResolveBaseFrame(model, cache, task_config, name_);
@@ -114,7 +114,7 @@ void SE3Task::init(const pinocchio::Model& model, const RobotModelInfo& robot_in
   a_des_full_.setZero();
 }
 
-void SE3Task::compute_residual(const PinocchioCache& cache, const ControlReference& /*ref*/,
+void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReference& /*ref*/,
                                const ContactState& /*contacts*/, int /*n_vars*/,
                                Eigen::Ref<Eigen::MatrixXd> J_block,
                                Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
@@ -162,7 +162,7 @@ void SE3Task::compute_residual(const PinocchioCache& cache, const ControlReferen
   }
 }
 
-void SE3Task::set_se3_reference(const pinocchio::SE3& placement_des,
+void SE3Task::SetSe3Reference(const pinocchio::SE3& placement_des,
                                 const Eigen::Matrix<double, 6, 1>& v_des,
                                 const Eigen::Matrix<double, 6, 1>& a_ff) noexcept {
   placement_des_ = placement_des;
@@ -170,7 +170,7 @@ void SE3Task::set_se3_reference(const pinocchio::SE3& placement_des,
   a_ff_ = a_ff;
 }
 
-void SE3Task::set_gains(const Eigen::Matrix<double, 6, 1>& kp,
+void SE3Task::SetGains(const Eigen::Matrix<double, 6, 1>& kp,
                         const Eigen::Matrix<double, 6, 1>& kd) noexcept {
   kp_ = kp;
   kd_ = kd;

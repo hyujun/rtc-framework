@@ -2,7 +2,7 @@
 
 namespace rtc::tsid {
 
-void HQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
+void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
                           const ContactManagerConfig& contact_cfg, const YAML::Node& config) {
   nv_ = robot_info.nv;
   max_n_vars_ = nv_ + contact_cfg.max_contact_vars;
@@ -46,8 +46,8 @@ void HQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInf
   qp_data_per_level_.resize(static_cast<size_t>(max_levels_));
   qp_solvers_.resize(static_cast<size_t>(max_levels_));
   for (int k = 0; k < max_levels_; ++k) {
-    qp_data_per_level_[static_cast<size_t>(k)].init(max_n_vars_, max_n_eq_per_level, max_n_ineq_);
-    qp_solvers_[static_cast<size_t>(k)].init(max_n_vars_, max_n_eq_per_level, max_n_ineq_,
+    qp_data_per_level_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level, max_n_ineq_);
+    qp_solvers_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level, max_n_ineq_,
                                              solver_cfg);
   }
 
@@ -63,11 +63,11 @@ void HQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInf
   J_workspace_.setZero(max_residual_dim_, max_n_vars_);
   r_workspace_.setZero(max_residual_dim_);
 
-  result_.init(max_n_vars_);
+  result_.Init(max_n_vars_);
 }
 
-void HQPFormulation::add_task(std::unique_ptr<TaskBase> task) {
-  const int rdim = task->residual_dim();
+void HQPFormulation::AddTask(std::unique_ptr<TaskBase> task) {
+  const int rdim = task->ResidualDim();
   if (rdim > max_residual_dim_) {
     max_residual_dim_ = rdim;
     J_workspace_.setZero(max_residual_dim_, max_n_vars_);
@@ -76,51 +76,51 @@ void HQPFormulation::add_task(std::unique_ptr<TaskBase> task) {
   tasks_.push_back(std::move(task));
 }
 
-void HQPFormulation::add_constraint(std::unique_ptr<ConstraintBase> constraint) {
+void HQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
   constraints_.push_back(std::move(constraint));
 }
 
-TaskBase* HQPFormulation::get_task(std::string_view name) {
+TaskBase* HQPFormulation::GetTask(std::string_view name) {
   for (auto& t : tasks_) {
-    if (t->name() == name)
+    if (t->Name() == name)
       return t.get();
   }
   return nullptr;
 }
 
-ConstraintBase* HQPFormulation::get_constraint(std::string_view name) {
+ConstraintBase* HQPFormulation::GetConstraint(std::string_view name) {
   for (auto& c : constraints_) {
-    if (c->name() == name)
+    if (c->Name() == name)
       return c.get();
   }
   return nullptr;
 }
 
-void HQPFormulation::apply_preset(const PhasePreset& preset) noexcept {
+void HQPFormulation::ApplyPreset(const PhasePreset& preset) noexcept {
   for (const auto& tp : preset.task_presets) {
-    if (auto* t = get_task(tp.task_name)) {
-      t->set_active(tp.active);
-      t->set_weight(tp.weight);
-      t->set_priority(tp.priority);
+    if (auto* t = GetTask(tp.task_name)) {
+      t->SetActive(tp.active);
+      t->SetWeight(tp.weight);
+      t->SetPriority(tp.priority);
     }
   }
   for (const auto& cp : preset.constraint_presets) {
-    if (auto* c = get_constraint(cp.constraint_name)) {
-      c->set_active(cp.active);
+    if (auto* c = GetConstraint(cp.constraint_name)) {
+      c->SetActive(cp.active);
     }
   }
 }
 
-void HQPFormulation::rebuild_level_indices() noexcept {
+void HQPFormulation::RebuildLevelIndices() noexcept {
   for (auto& v : level_task_indices_) {
     v.clear();
   }
   active_max_level_ = -1;
 
   for (int i = 0; i < static_cast<int>(tasks_.size()); ++i) {
-    if (!tasks_[static_cast<size_t>(i)]->is_active())
+    if (!tasks_[static_cast<size_t>(i)]->IsActive())
       continue;
-    const int prio = tasks_[static_cast<size_t>(i)]->priority();
+    const int prio = tasks_[static_cast<size_t>(i)]->Priority();
     if (prio >= 0 && prio < max_levels_) {
       level_task_indices_[static_cast<size_t>(prio)].push_back(i);
       if (prio > active_max_level_) {
@@ -130,13 +130,13 @@ void HQPFormulation::rebuild_level_indices() noexcept {
   }
 }
 
-const SolveResult& HQPFormulation::solve(const PinocchioCache& cache, const ControlReference& ref,
+const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const ControlReference& ref,
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept {
   const int n_vars = nv_ + contacts.active_contact_vars;
 
   // Rebuild level indices from current task active/priority state
-  rebuild_level_indices();
+  RebuildLevelIndices();
 
   if (active_max_level_ < 0) {
     // No active tasks
@@ -151,9 +151,9 @@ const SolveResult& HQPFormulation::solve(const PinocchioCache& cache, const Cont
   auto& base_qp = qp_data_per_level_[0];
 
   for (const auto& con : constraints_) {
-    if (!con->is_active())
+    if (!con->IsActive())
       continue;
-    const int ed = con->eq_dim(contacts);
+    const int ed = con->EqDim(contacts);
     if (ed <= 0)
       continue;
 
@@ -161,15 +161,15 @@ const SolveResult& HQPFormulation::solve(const PinocchioCache& cache, const Cont
     auto b_view = base_qp.b.segment(base_n_eq, ed);
     A_view.setZero();
     b_view.setZero();
-    con->compute_equality(cache, contacts, robot_info, n_vars, A_view, b_view);
+    con->ComputeEquality(cache, contacts, robot_info, n_vars, A_view, b_view);
     base_n_eq += ed;
   }
 
   int base_n_ineq = 0;
   for (const auto& con : constraints_) {
-    if (!con->is_active())
+    if (!con->IsActive())
       continue;
-    const int id = con->ineq_dim(contacts);
+    const int id = con->IneqDim(contacts);
     if (id <= 0)
       continue;
 
@@ -179,7 +179,7 @@ const SolveResult& HQPFormulation::solve(const PinocchioCache& cache, const Cont
     C_view.setZero();
     l_view.setZero();
     u_view.setZero();
-    con->compute_inequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
+    con->ComputeInequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
     base_n_ineq += id;
   }
 
@@ -206,16 +206,16 @@ const SolveResult& HQPFormulation::solve(const PinocchioCache& cache, const Cont
 
     for (const int ti : task_indices) {
       const auto& task = tasks_[static_cast<size_t>(ti)];
-      const int rdim = task->residual_dim();
+      const int rdim = task->ResidualDim();
 
       auto J_view = J_workspace_.topLeftCorner(rdim, n_vars);
       auto r_view = r_workspace_.head(rdim);
       J_view.setZero();
       r_view.setZero();
 
-      task->compute_residual(cache, ref, contacts, n_vars, J_view, r_view);
+      task->ComputeResidual(cache, ref, contacts, n_vars, J_view, r_view);
 
-      const double w = task->weight();
+      const double w = task->Weight();
       H.noalias() += w * J_view.transpose() * J_view;
       g_vec.noalias() -= w * J_view.transpose() * r_view;
 
@@ -259,7 +259,7 @@ const SolveResult& HQPFormulation::solve(const PinocchioCache& cache, const Cont
     qp.n_ineq = base_n_ineq;
 
     // ── Solve level k ──
-    const auto& solver_result = qp_solvers_[static_cast<size_t>(k)].solve(qp);
+    const auto& solver_result = qp_solvers_[static_cast<size_t>(k)].Solve(qp);
 
     if (!solver_result.converged) {
       // Infeasible → 직전 level z* 사용

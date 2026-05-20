@@ -21,32 +21,32 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class ForceTask final : public TaskBase {
  public:
-  [[nodiscard]] std::string_view name() const noexcept override { return "force"; }
+  [[nodiscard]] std::string_view Name() const noexcept override { return "force"; }
 
-  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
+  void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& task_config) override;
 
-  [[nodiscard]] int residual_dim() const noexcept override { return current_residual_dim_; }
+  [[nodiscard]] int ResidualDim() const noexcept override { return current_residual_dim_; }
 
-  void compute_residual(const PinocchioCache& cache, const ControlReference& ref,
+  void ComputeResidual(const PinocchioCache& cache, const ControlReference& ref,
                         const ContactState& contacts, int n_vars,
                         Eigen::Ref<Eigen::MatrixXd> J_block,
                         Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
   /// @brief ContactManagerConfig 포인터 설정 (init 후 외부에서 호출)
-  void set_contact_manager(const ContactManagerConfig* manager) noexcept;
+  void SetContactManager(const ContactManagerConfig* manager) noexcept;
 
   /// @brief 개별 contact의 force reference 설정 (RT-safe)
   /// @param contact_index ContactManagerConfig 내 인덱스
   /// @param lambda_des 해당 contact의 desired force [contact_dim]
-  void set_force_reference(int contact_index, const Eigen::VectorXd& lambda_des) noexcept;
+  void SetForceReference(int contact_index, const Eigen::VectorXd& lambda_des) noexcept;
 
   /// @brief 전체 contact force reference 일괄 설정 (RT-safe)
   /// @param lambda_des_all 전체 contact force [max_contact_vars]
-  void set_force_references(const Eigen::VectorXd& lambda_des_all) noexcept;
+  void SetForceReferences(const Eigen::VectorXd& lambda_des_all) noexcept;
 
   /// @brief 현재 active contact 기준 residual_dim 갱신 (solve 전 호출)
-  void update_residual_dim(const ContactState& contacts) noexcept;
+  void UpdateResidualDim(const ContactState& contacts) noexcept;
 
  private:
   int nv_{0};

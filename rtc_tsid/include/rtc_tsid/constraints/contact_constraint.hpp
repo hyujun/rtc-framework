@@ -16,26 +16,26 @@ namespace rtc::tsid {
 // ────────────────────────────────────────────────
 class ContactConstraint final : public ConstraintBase {
  public:
-  [[nodiscard]] std::string_view name() const noexcept override { return "contact_accel"; }
+  [[nodiscard]] std::string_view Name() const noexcept override { return "contact_accel"; }
 
-  void init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
+  void Init(const pinocchio::Model& model, const RobotModelInfo& robot_info, PinocchioCache& cache,
             const YAML::Node& constraint_config) override;
 
-  [[nodiscard]] int eq_dim(const ContactState& contacts) const noexcept override;
-  [[nodiscard]] int ineq_dim(const ContactState& contacts) const noexcept override;
+  [[nodiscard]] int EqDim(const ContactState& contacts) const noexcept override;
+  [[nodiscard]] int IneqDim(const ContactState& contacts) const noexcept override;
 
-  void compute_equality(const PinocchioCache& cache, const ContactState& contacts,
+  void ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
                         const RobotModelInfo& robot_info, int n_vars,
                         Eigen::Ref<Eigen::MatrixXd> A_block,
                         Eigen::Ref<Eigen::VectorXd> b_block) noexcept override;
 
-  void compute_inequality(const PinocchioCache& cache, const ContactState& contacts,
+  void ComputeInequality(const PinocchioCache& cache, const ContactState& contacts,
                           const RobotModelInfo& robot_info, int n_vars,
                           Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
                           Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
 
   // ContactManagerConfig 참조 설정 (init 후 호출)
-  void set_contact_manager(const ContactManagerConfig* manager) noexcept { manager_ = manager; }
+  void SetContactManager(const ContactManagerConfig* manager) noexcept { manager_ = manager; }
 
  private:
   int nv_{0};

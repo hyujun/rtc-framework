@@ -23,14 +23,14 @@ class CoMTaskTest : public ::testing::Test {
     model_ = model;
 
     YAML::Node config;
-    robot_info_.build(*model_, config);
+    robot_info_.Build(*model_, config);
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.init(model_, contact_cfg);
+    cache_.Init(model_, contact_cfg);
 
-    contacts_.init(0);
-    ref_.init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
+    contacts_.Init(0);
+    ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -48,13 +48,13 @@ TEST_F(CoMTaskTest, InitAndDimension) {
   cfg["weight"] = 50.0;
   cfg["priority"] = 0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
-  EXPECT_EQ(task.residual_dim(), 3);
-  EXPECT_EQ(task.name(), "com");
-  EXPECT_TRUE(task.is_active());
-  EXPECT_DOUBLE_EQ(task.weight(), 50.0);
-  EXPECT_EQ(task.priority(), 0);
+  EXPECT_EQ(task.ResidualDim(), 3);
+  EXPECT_EQ(task.Name(), "com");
+  EXPECT_TRUE(task.IsActive());
+  EXPECT_DOUBLE_EQ(task.Weight(), 50.0);
+  EXPECT_EQ(task.Priority(), 0);
 
   // compute_com 플래그가 활성화되어야 함
   EXPECT_TRUE(cache_.compute_com);
@@ -66,14 +66,14 @@ TEST_F(CoMTaskTest, ZeroErrorAtCurrentCoM) {
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // 현재 CoM을 목표로 설정
-  task.set_com_reference(cache_.com_position);
+  task.SetComReference(cache_.com_position);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -81,7 +81,7 @@ TEST_F(CoMTaskTest, ZeroErrorAtCurrentCoM) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // J = Jcom (non-zero)
   EXPECT_GT(J.norm(), 0.0);
@@ -98,16 +98,16 @@ TEST_F(CoMTaskTest, PositionErrorResponse) {
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   // CoM에서 z축으로 0.1m offset 추가
   Eigen::Vector3d target = cache_.com_position;
   target(2) += 0.1;
-  task.set_com_reference(target);
+  task.SetComReference(target);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -115,7 +115,7 @@ TEST_F(CoMTaskTest, PositionErrorResponse) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // r_z = kp * 0.1 - com_drift_z = 10.0 - 0 = 10.0 (v=0)
   EXPECT_NEAR(r(0), 0.0, 1e-8);   // x: no error
@@ -126,13 +126,13 @@ TEST_F(CoMTaskTest, PositionErrorResponse) {
 TEST_F(CoMTaskTest, JcomStructure) {
   CoMTask task;
   YAML::Node cfg;
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
-  task.set_com_reference(cache_.com_position);
+  task.SetComReference(cache_.com_position);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -140,7 +140,7 @@ TEST_F(CoMTaskTest, JcomStructure) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // J_block[:, :nv] = Jcom
   EXPECT_TRUE(J.isApprox(cache_.Jcom));
@@ -152,30 +152,30 @@ TEST_F(CoMTaskTest, GainsUpdate) {
   cfg["kp"] = 100.0;
   cfg["kd"] = 20.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
   Eigen::Vector3d target = cache_.com_position;
   target(0) += 0.1;
-  task.set_com_reference(target);
+  task.SetComReference(target);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
   Eigen::VectorXd r1(3);
   J.setZero();
   r1.setZero();
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r1);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r1);
 
   // gains 2배
-  task.set_gains(Eigen::Vector3d::Constant(200.0), Eigen::Vector3d::Constant(20.0));
+  task.SetGains(Eigen::Vector3d::Constant(200.0), Eigen::Vector3d::Constant(20.0));
 
   Eigen::VectorXd r2(3);
   J.setZero();
   r2.setZero();
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r2);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r2);
 
   // kp 2배 → r_x도 2배
   EXPECT_NEAR(r2(0), 2.0 * r1(0), 1e-10);
@@ -187,14 +187,14 @@ TEST_F(CoMTaskTest, ComDriftWithVelocity) {
   cfg["kp"] = 0.0;
   cfg["kd"] = 0.0;
 
-  task.init(*model_, robot_info_, cache_, cfg);
+  task.Init(*model_, robot_info_, cache_, cfg);
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
   v(0) = 1.0;  // joint 0에 속도 부여
-  cache_.update(q, v, contacts_);
+  cache_.Update(q, v, contacts_);
 
-  task.set_com_reference(cache_.com_position);
+  task.SetComReference(cache_.com_position);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -202,7 +202,7 @@ TEST_F(CoMTaskTest, ComDriftWithVelocity) {
   J.setZero();
   r.setZero();
 
-  task.compute_residual(cache_, ref_, contacts_, n_vars, J, r);
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
 
   // r = -com_drift (kp=kd=0, e_pos=0이므로 a_des=0)
   // v≠0이면 com_drift≠0
