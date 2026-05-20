@@ -630,18 +630,27 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
     for (const int cpu : t.lpe_core_ids)
       t.physical_core_slots.push_back(cpu);
   } else {
-    // core_id_to_logicals iterates in (pkg, core_id) ascending order (std::map
-    // ordering). Each inner vector is push_back'd in cpu = 0,1,... order,
-    // so the lowest logical id of every physical core (the "primary", not
-    // the SMT sibling) is logicals.front() after a deterministic sort.
-    t.physical_core_slots.reserve(core_id_to_logicals.size());
+    // Collect first-logical-id of every physical core, then sort the result
+    // by logical id ascending. The outer sort is required because std::map
+    // iterates in (pkg, core_id) order, which is NOT the same as logical-id
+    // order on BIOSes that emit non-monotonic core_id (e.g. some Meteor /
+    // Raptor Lake firmware: cpu0.core_id=16 places cpu0's group at the end
+    // of the iteration even though slot 0 must map to logical 0). Without
+    // this sort, RT thread pinning by slot lands on an unrelated logical
+    // CPU and pthread_setaffinity_np returns EINVAL. The hybrid branch
+    // above already sorts pairs by physical id; this keeps both paths
+    // consistent.
+    std::vector<int> primaries;
+    primaries.reserve(core_id_to_logicals.size());
     for (const auto& [key, logicals] : core_id_to_logicals) {
       if (logicals.empty())
         continue;
       auto sorted = logicals;
       std::sort(sorted.begin(), sorted.end());
-      t.physical_core_slots.push_back(sorted.front());
+      primaries.push_back(sorted.front());
     }
+    std::sort(primaries.begin(), primaries.end());
+    t.physical_core_slots = std::move(primaries);
   }
 
   return t;

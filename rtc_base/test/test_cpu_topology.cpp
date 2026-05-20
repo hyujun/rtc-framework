@@ -694,6 +694,38 @@ TEST_F(CpuTopologyTest, PhysicalCoreSlots_SmtOff_Identity) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 19a-bis. PhysicalCoreSlots_NonHybrid_NonMonotonicCoreId — field-observed
+//          BIOS variant where cpu 0 has a high topology/core_id (16) while
+//          later cpus carry lower core_ids. Hits the non-hybrid path
+//          (no intel_core / intel_atom sysfs, no hybrid flag, no freq
+//          heterogeneity). Without an outer sort, std::map's (pkg, core_id)
+//          iteration produces physical_core_slots = [cpu_at_lowest_core_id,
+//          ..., cpu0, ...] — slot 1 lands on an unrelated logical CPU and
+//          pthread_setaffinity_np returns EINVAL when the launch script
+//          pinned the expected logical CPU. The sort must run regardless of
+//          detection path.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_NonHybrid_NonMonotonicCoreId) {
+  MockSysfs m(tmp_root_);
+  m.AddPCore(16, 0, /*sibling=*/-1, /*freq=*/3000000);  // cpu0 → core_id 16
+  m.AddPCore(17, 1, /*sibling=*/-1, /*freq=*/3000000);
+  m.AddPCore(0, 2, /*sibling=*/-1, /*freq=*/3000000);  // cpu2 → core_id 0
+  m.AddPCore(1, 3, /*sibling=*/-1, /*freq=*/3000000);
+  // NOTE: no WriteTypes() — exercise the non-hybrid sysfs primary path.
+  //       Uniform freq disables the cpufreq-cluster fallback too.
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  // Slots must be sorted by logical CPU id ascending, not by core_id. Without
+  // the fix this would be {2, 3, 0, 1} (std::map iteration order by core_id).
+  const std::vector<int> expected{0, 1, 2, 3};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 19b. PhysicalCoreSlots_NonStandardCoreIdEnum — NUC 14 Pro Meteor Lake
 //      비표준 BIOS enumeration. cpu 0 의 SMT sibling 이 cpu 5 (core_id 100..105
 //      을 1/2, 3/4, 0/5, 6/7, 8/9, 10/11 페어로 분배). core_id 정렬 그대로
