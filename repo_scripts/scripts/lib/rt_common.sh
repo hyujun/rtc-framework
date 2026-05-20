@@ -867,7 +867,11 @@ _rt_detect_hybrid_via_cpuid() {
   for cpu in $cpus; do
     # Extract leaf 0x1A subleaf 0x00 for this specific CPU. The raw line
     # format is e.g. "   0x0000001a 0x00: eax=0x40000002 ebx=0x00000000 ...".
-    line=$(taskset -c "$cpu" cpuid -r -1 -l 0x1a 2>/dev/null \
+    # `timeout 1` caps per-CPU wait — observed in field that `cpuid` can block
+    # reading `/dev/cpu/N/cpuid` on certain kernel+CPU combinations, freezing
+    # the entire fallback. On timeout, $line is empty and we fall through to
+    # the freq-clustering path below.
+    line=$(timeout 1 taskset -c "$cpu" cpuid -r -1 -l 0x1a 2>/dev/null \
            | awk '/0x0000001a 0x00:/ {print; exit}')
     [[ -z "$line" ]] && return 1
     hex=$(echo "$line" | grep -oE 'eax=0x[0-9a-fA-F]+' | head -1 | cut -d= -f2)
