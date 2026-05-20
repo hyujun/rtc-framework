@@ -980,10 +980,24 @@ check_tracing_setup() {
     _category_update "tracing_setup" "WARN"
   fi
 
-  # lttng-modules-dkms: kernel tracing의 핵심. DKMS가 빌드 후 modinfo로 노출.
-  if modinfo lttng-tracer >/dev/null 2>&1; then
+  # lttng-modules-dkms: kernel tracing의 핵심. DKMS 빌드만 보면 부족 — Secure Boot
+  # 호스트에선 .ko 가 디스크에 있어도 MOK 미서명 시 load 거부 (modinfo PASS / modprobe FAIL).
+  # 우선순위: lsmod (이미 load) → modprobe --dry-run (서명 검증 포함) → modinfo (file 존재만).
+  if lsmod 2>/dev/null | grep -q '^lttng_tracer '; then
     kmod_ok=1
-    _pass "lttng-tracer kernel module: $(modinfo -F version lttng-tracer 2>/dev/null || echo '?')"
+    _pass "lttng-tracer kernel module: loaded ($(modinfo -F version lttng-tracer 2>/dev/null | head -1 || echo '?'))"
+  elif modprobe --dry-run lttng-tracer >/dev/null 2>&1; then
+    kmod_ok=1
+    _pass "lttng-tracer kernel module: loadable ($(modinfo -F version lttng-tracer 2>/dev/null | head -1 || echo '?'))"
+  elif modinfo lttng-tracer >/dev/null 2>&1; then
+    # file 은 있는데 load 불가 — Secure Boot MOK 미서명 가능성 가장 큼.
+    _warn "lttng-tracer kernel module: .ko 존재하나 load 불가 (Secure Boot MOK 미서명 의심)"
+    if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi enabled; then
+      _fix "./repo_scripts/scripts/enroll_lttng_mok.sh  # Secure Boot 서명 enrollment"
+    else
+      _fix "sudo modprobe lttng-tracer  # 실패 메시지 확인 후 ./install.sh --tracing 재실행"
+    fi
+    _category_update "tracing_setup" "WARN"
   else
     _warn "lttng-tracer kernel module 미빌드 (kernel tracing 불가)"
     _fix "./install.sh --tracing  # 또는 sudo dkms status lttng-modules 로 빌드 상태 확인"
