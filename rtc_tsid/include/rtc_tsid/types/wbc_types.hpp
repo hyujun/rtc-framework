@@ -55,6 +55,18 @@ struct ContactConfig {
   int contact_dim{3};  // 3 (point) or 6 (surface)
   double friction_coeff{0.7};
   int friction_faces{4};  // linearized cone 면 수
+
+  // Surface contact (contact_dim == 6) 전용 — CoP rectangle 반치수 & yaw moment 한계.
+  // Point contact 에서는 무시.
+  // 좌표: contact frame +z = normal, patch 는 xy 평면. CoP_x ∈ [-l_x, l_x],
+  // CoP_y ∈ [-l_y, l_y], |m_z| ≤ μ_τ · f_z.
+  //
+  // patch=0 / μ_τ=0 default 의 *결과*: f_z 열은 0 이 되지만 moment 열 ±1 은 살아
+  // `m_x = m_y = m_z = 0` 의 stiff equality 가 됨 — 즉 "moment 강제 0 인 point-like
+  // restraint". ineq_dim 일관성을 위해 고의로 도입 (vacuous 행 아님).
+  double patch_half_length_x{0.0};
+  double patch_half_length_y{0.0};
+  double torsional_friction_coeff{0.0};
 };
 
 struct ContactManagerConfig {

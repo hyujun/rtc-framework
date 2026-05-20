@@ -39,6 +39,9 @@ class TorqueLimitConstraint final : public ConstraintBase {
  private:
   int nv_{0};
   int na_{0};
+  // URDF effort_limit 에 곱하는 margin (0 < tau_scale ≤ 1). YAML 키 누락 시 1.0
+  // (raw URDF 사용). init 에서 (0, 1] 범위 위반 시 throw — silent margin 변경 방지.
+  double tau_scale_{1.0};
   const ContactManagerConfig* manager_{nullptr};
 
   // Pre-allocated workspace

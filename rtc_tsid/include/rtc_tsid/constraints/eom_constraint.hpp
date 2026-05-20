@@ -32,10 +32,17 @@ class EomConstraint final : public ConstraintBase {
                           Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
                           Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
 
+  // λ block column offset = Σ_{active j<i} manager_->contacts[j].contact_dim.
+  // Must be wired by formulation before first compute_equality when any
+  // contact has cdim != 3 (surface). When null, falls back to cdim=3 per
+  // active contact — preserves pre-A-2 behaviour for point-only setups.
+  void set_contact_manager(const ContactManagerConfig* manager) noexcept { manager_ = manager; }
+
  private:
   int nv_{0};
   int n_unactuated_{0};  // nv - n_actuated (0 for fixed-base)
   bool floating_base_{false};
+  const ContactManagerConfig* manager_{nullptr};
 
   // Pre-allocated workspace
   Eigen::MatrixXd P_;   // [nv × nv] projection matrix I - SᵀS

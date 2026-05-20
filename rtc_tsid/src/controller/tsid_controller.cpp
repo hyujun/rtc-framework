@@ -8,14 +8,14 @@ void TSIDController::init(const pinocchio::Model& model, const RobotModelInfo& r
                           const YAML::Node& config) {
   robot_info_ = robot_info;
 
-  // ContactManagerConfig (TSID controller가 자체 관리하지 않음 — 외부 주입)
-  ContactManagerConfig contact_cfg;
+  // ContactManagerConfig 보관 — τ 역산에서 active contact 의 contact_dim 조회.
+  contact_cfg_ = ContactManagerConfig{};
   if (config) {
-    contact_cfg.load(config, model);
+    contact_cfg_.load(config, model);
   }
 
   // Formulation 생성 (WQP or HQP)
-  formulation_ = create_formulation(model, robot_info, contact_cfg, config);
+  formulation_ = create_formulation(model, robot_info, contact_cfg_, config);
 
   // Phase presets 로드
   if (config) {
@@ -27,7 +27,7 @@ void TSIDController::init(const pinocchio::Model& model, const RobotModelInfo& r
   tau_actuated_.setZero(robot_info.n_actuated);
   JcT_lambda_.setZero(robot_info.nv);
 
-  output_.init(robot_info.nv, robot_info.n_actuated, contact_cfg.max_contact_vars);
+  output_.init(robot_info.nv, robot_info.n_actuated, contact_cfg_.max_contact_vars);
 }
 
 CommandOutput TSIDController::compute(const ControlState& /*state*/, const ControlReference& ref,
@@ -70,9 +70,11 @@ CommandOutput TSIDController::compute(const ControlState& /*state*/, const Contr
       if (i >= cache.contact_frames.size())
         continue;
 
-      // Contact dim 추론: lambda 남은 크기에서 판단
-      // 보수적으로 3 사용 (point contact)
-      const int cdim = 3;  // TODO: ContactManagerConfig 참조
+      // Contact dim 은 ContactManagerConfig 에서 조회 (point=3, surface=6).
+      // 보관본이 비어 있으면 (legacy / 외부 init) point 로 fallback — 기존
+      // point-only 회로 회귀 방지.
+      const int cdim =
+          (i < contact_cfg_.contacts.size()) ? contact_cfg_.contacts[i].contact_dim : 3;
 
       if (lambda_offset + cdim > n_lambda)
         break;

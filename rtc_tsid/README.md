@@ -172,10 +172,10 @@ momentum:
 
 | 제약조건 | 타입 | 설명 |
 |---------|------|------|
-| `EOMConstraint` | 등식 | 운동 방정식: @f$ M \ddot{q} + h = S^T \tau + J_c^T \lambda @f$ |
+| `EOMConstraint` | 등식 | 운동 방정식: @f$ M \ddot{q} + h = S^T \tau + J_c^T \lambda @f$. Mixed point/surface contact 시 λ block column offset 을 위해 `set_contact_manager(&cfg)` 필수 (미주입 시 point cdim=3 fallback). |
 | `ContactConstraint` | 등식 | 접촉점 가속도 = 0: @f$ J_c \ddot{q} + \dot{J}_c \dot{q} = 0 @f$ |
-| `FrictionConeConstraint` | 부등식 | 쿨롱 마찰 원뿔 선형 근사 |
-| `TorqueLimitConstraint` | 부등식 | 액추에이터 토크 상/하한 |
+| `FrictionConeConstraint` | 부등식 | 쿨롱 마찰 원뿔 선형 근사. Point(cdim=3): `friction_faces + 1` 행 (cone + unilateral). Surface(cdim=6): `+ 6` 행 (CoP rectangle 4 + yaw moment 2). `ContactConfig` 의 `patch_half_length_x/y`, `torsional_friction_coeff` (default 0) 사용. |
+| `TorqueLimitConstraint` | 부등식 | 액추에이터 토크 상/하한. URDF effort_limit 에 YAML `tau_scale` ∈ (0, 1] (default 1.0) margin 곱. 범위 위반 시 init throw. |
 | `JointLimitConstraint` | 부등식 | 가속도-레벨 관절 한계 viability (Del Prete 2018) |
 
 #### JointLimitConstraint YAML 설정

@@ -23,6 +23,7 @@
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
+#include "rtc_tsid/constraints/torque_limit_constraint.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
@@ -210,6 +211,10 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
     if (type == "eom") {
       auto c = std::make_unique<rtc::tsid::EomConstraint>();
       c->init(model, robot_info_, pinocchio_cache_, c_cfg);
+      // Floating-base + surface contact 시 cdim != 3 인 column offset 을 정확히
+      // 잡기 위해 필수. point-only 회로에서는 fallback(cdim=3) 으로도 동작하지만,
+      // mixed point/surface 가 들어오면 무성 alignment 깨짐.
+      c->set_contact_manager(&contact_mgr_config_);
       formulation.add_constraint(std::move(c));
     } else if (type == "joint_limit") {
       auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
@@ -218,6 +223,12 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
     } else if (type == "friction_cone") {
       auto c = std::make_unique<rtc::tsid::FrictionConeConstraint>();
       c->init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->set_contact_manager(&contact_mgr_config_);
+      formulation.add_constraint(std::move(c));
+    } else if (type == "torque_limit") {
+      auto c = std::make_unique<rtc::tsid::TorqueLimitConstraint>();
+      c->init(model, robot_info_, pinocchio_cache_, c_cfg);
+      // τ = S·(M·a + h − Jcᵀ·λ) 역산 시 surface(cdim=6) λ 의 column offset 정확.
       c->set_contact_manager(&contact_mgr_config_);
       formulation.add_constraint(std::move(c));
     } else {

@@ -45,6 +45,10 @@ class TSIDController final : public ControllerBase {
 
  private:
   RobotModelInfo robot_info_;
+  // τ 역산 시 active contact 의 contact_dim 을 정확히 조회하기 위해 보관.
+  // (formulation 내부 ContactManagerConfig 와 동일 내용이지만, controller 가
+  //  formulation 의존성 없이 직접 접근.)
+  ContactManagerConfig contact_cfg_;
   std::unique_ptr<FormulationBase> formulation_;
 
   // Phase presets (YAML에서 로드)

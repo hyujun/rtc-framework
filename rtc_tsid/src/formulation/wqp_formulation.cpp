@@ -12,11 +12,16 @@ void WQPFormulation::init(const pinocchio::Model& /*model*/, const RobotModelInf
   const int eom_eq = robot_info.floating_base ? (robot_info.nv - robot_info.n_actuated) : 0;
   max_n_eq_ = eom_eq + contact_cfg.max_contact_vars + 16;
 
-  // Max inequality: torque limits (n_actuated) + friction cones
-  // (rough upper bound: max_contacts * (friction_faces + 1) + n_actuated)
+  // Max inequality: torque limits (n_actuated) + friction cones.
+  // Point contact (cdim=3): friction_faces + 1 (cone faces + unilateral).
+  // Surface contact (cdim=6): + 6 (CoP rectangle 4 + yaw moment 2).
   int max_friction = 0;
   for (const auto& c : contact_cfg.contacts) {
-    max_friction += c.friction_faces + 1;
+    int per_contact = c.friction_faces + 1;
+    if (c.contact_dim == 6) {
+      per_contact += 6;
+    }
+    max_friction += per_contact;
   }
   max_n_ineq_ = robot_info.n_actuated + max_friction + 16;
 

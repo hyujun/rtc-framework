@@ -358,7 +358,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 #### YAML 구조 (`config/ur5e_hand/controllers/demo_wbc_controller.yaml`)
 
 - `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking)
-- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8)
+- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
 - `tsid.phase_presets`: pre_grasp / closure / hold 별 task weight + active 토글
 - `tsid.wqp.solver`: `max_iter` / `eps_abs` / `eps_rel` / `verbose` (ProxSuite 설정, rtc_tsid가 직접 읽음)
 - `integration`: `position_margin` / `velocity_scale` / **`force_rate_alpha`** (필수, [0,1])

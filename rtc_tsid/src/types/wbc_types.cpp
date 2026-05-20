@@ -106,6 +106,12 @@ void ContactManagerConfig::load(const YAML::Node& config, const pinocchio::Model
     cc.friction_coeff = c["friction_coeff"].as<double>(0.7);
     cc.friction_faces = c["friction_faces"].as<int>(4);
 
+    // Surface contact 전용 필드 (point 에서는 무시). Default 0 으로 두면
+    // surface 라도 CoP/yaw 부등식이 trivial 행으로 남아 ineq_dim 일정.
+    cc.patch_half_length_x = c["patch_half_length_x"].as<double>(0.0);
+    cc.patch_half_length_y = c["patch_half_length_y"].as<double>(0.0);
+    cc.torsional_friction_coeff = c["torsional_friction_coeff"].as<double>(0.0);
+
     if (!model.existFrame(cc.frame_name)) {
       throw std::runtime_error("Contact frame '" + cc.frame_name + "' not found in URDF model");
     }

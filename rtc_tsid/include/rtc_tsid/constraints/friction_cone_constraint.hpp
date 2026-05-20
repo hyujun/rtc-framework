@@ -12,7 +12,16 @@ namespace rtc::tsid {
 //   unilateral:         -fz ≤ 0
 //   → (n_faces + 1) ineq rows per contact
 //
-// Surface contact (6D wrench): point cone + moment limits (TODO Phase 3)
+// Surface contact (6D wrench):
+//   force cone + unilateral (위와 동일)
+//   CoP rectangle: |m_x| ≤ l_y·f_z, |m_y| ≤ l_x·f_z  (4 rows)
+//   yaw moment:   |m_z| ≤ μ_τ·f_z                    (2 rows)
+//   → 총 (n_faces + 7) rows.
+//
+// patch=0 / μ_τ=0 (default) 일 때: f_z 열은 0 이지만 moment 열은 ±1 이 유지되어
+// `+m ≤ 0 ∧ -m ≤ 0` → `m = 0` 의 stiff equality 로 작동 — 즉 patch=0 surface 는
+// "moment 가 강제로 0 인 point-like restraint". 'trivial 행' 아님, 의도된 동작.
+// (surface API 로 hemispherical fingertip 같은 effectively-point contact 를 표현.)
 //
 // C_block: a열 = 0, λ_i열에 cone matrix
 // ────────────────────────────────────────────────
