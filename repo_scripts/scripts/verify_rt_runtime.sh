@@ -394,6 +394,7 @@ check_process_discovery() {
   elif [[ "$known_count" -gt 0 ]]; then
     _warn "thread_config.hpp 스레드 일부 감지: ${known_count}/${expected_count}"
     # 누락된 필수 스레드 표시
+    local _missing_required=0
     for entry in "${EXPECTED_THREADS[@]}"; do
       local ename eopt
       ename=$(echo "$entry" | cut -d: -f1)
@@ -403,10 +404,51 @@ check_process_discovery() {
           _skip "  선택적 스레드 미활성: ${ename}"
         else
           _warn "  미발견: ${ename}"
+          ((_missing_required++)) || true
         fi
       fi
     done
     _category_update "process_discovery" "WARN"
+
+    # 진단 보조: 필수 스레드가 미발견이면 controller process 의 모든 RT-like
+    # thread comm 을 dump. 이름이 박힌 thread 가 어떤 게 있고, EXPECTED 와
+    # 어떻게 다른지 즉시 확인 가능 — pthread_setname_np 실패(silent),
+    # ApplyThreadConfig early-return (FIFO priority permission 부족, affinity
+    # 실패), thread 미생성, race condition 등 가설을 좁힘.
+    if (( _missing_required > 0 )); then
+      local rt_like_threads="" other_threads=""
+      local seen_comms=""
+      for tid in "${!THREAD_NAMES[@]}"; do
+        local cname="${THREAD_NAMES[$tid]:-}"
+        [[ -z "$cname" ]] && continue
+        # Dedupe — N threads with the same comm only printed once.
+        case " $seen_comms " in
+          *" $cname "*) continue ;;
+        esac
+        seen_comms="${seen_comms} ${cname}"
+        # RT-like keyword filter to keep the dump readable.
+        if [[ "$cname" =~ (rt_|mpc|callback|control|worker|driver|nrt|spin|exec) ]]; then
+          rt_like_threads="${rt_like_threads}    ${cname}"$'\n'
+        else
+          other_threads="${other_threads}${cname} "
+        fi
+      done
+      if [[ -n "$rt_like_threads" ]]; then
+        echo "    [diag] controller process 의 RT-like thread comm (unique):"
+        printf '%s' "$rt_like_threads"
+      fi
+      if [[ -n "$other_threads" ]]; then
+        # Other threads — single line, no per-thread output (just so user knows
+        # they exist). Truncate to ~120 chars to avoid wrapping noise.
+        local other_short="${other_threads:0:120}"
+        echo "    [diag] 기타 thread comm: ${other_short}..."
+      fi
+      echo "    [hint] 실패 가능성:"
+      echo "    [hint]   1. realtime 권한 부족 (SCHED_FIFO 90/70 한도 초과) — ulimit -r 확인, @realtime 그룹 멤버십"
+      echo "    [hint]   2. controller 가 setname 전에 thread 종료 (sim 모드의 짧은 lifecycle)"
+      echo "    [hint]   3. pthread_setname_np truncate (15 chars 초과) — thread_config.hpp 의 .name 길이 확인"
+      echo "    [hint]   4. ApplyThreadConfig early-return (affinity / sched 실패) — controller stderr 의 [WARN] 메시지 확인"
+    fi
   else
     _fail "thread_config.hpp 스레드 감지 실패 (${known_count}/${expected_count})"
     _category_update "process_discovery" "FAIL"
