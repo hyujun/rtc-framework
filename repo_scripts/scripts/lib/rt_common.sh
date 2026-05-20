@@ -976,20 +976,32 @@ _rt_populate_hybrid_from_cpus() {
     fi
   done
 
-  local sorted_cids
-  sorted_cids=$(printf '%s\n' "${!core_to_cpus[@]}" | sort -n)
-  local cpus sorted_cpus first second
-  while IFS= read -r cid; do
-    [[ -z "$cid" ]] && continue
+  # Build (physical, sibling) pairs from each core_id group, then emit the list
+  # sorted by *physical logical id ascending*. Without this outer sort, BIOSes
+  # that assign a non-monotonic core_id to cpu 0 (e.g. some NUC 14 Pro Meteor
+  # Lake firmware: cpu 0 shares core_id with cpu 5, so its group lands in the
+  # middle of the iteration) produce a P-physical list like [1, 3, 0, 6, 8, 10]
+  # — and the v4.1 layout assumption "slot 0 == lowest logical cpu == OS"
+  # breaks. Sorting by physical restores the invariant on every enumeration
+  # order, while keeping each (physical, sibling) pair contiguous.
+  local pairs="" cid cpus sorted_cpus first second
+  for cid in "${!core_to_cpus[@]}"; do
     cpus="${core_to_cpus[$cid]}"
     sorted_cpus=$(printf '%s\n' $cpus | sort -n | tr '\n' ' ')
     read -r first second _ <<<"$sorted_cpus"
+    pairs+="${first} ${second:--1}"$'\n'
+    NUM_P_PHYSICAL=$((NUM_P_PHYSICAL + 1))
+  done
+  local sorted_pairs
+  sorted_pairs=$(printf '%s' "$pairs" | sort -n -k1,1)
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    read -r first second _ <<<"$line"
     P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS} ${first}"
-    if [[ -n "$second" ]]; then
+    if [[ -n "$second" && "$second" != "-1" ]]; then
       P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS} ${second}"
     fi
-    NUM_P_PHYSICAL=$((NUM_P_PHYSICAL + 1))
-  done <<<"$sorted_cids"
+  done <<<"$sorted_pairs"
   P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS# }"
   P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS# }"
 
@@ -1023,8 +1035,13 @@ _rt_populate_hybrid_from_cpus() {
         E_CORE_IDS="${E_CORE_IDS} ${cpu}"
       fi
     done
-    E_CORE_IDS="${E_CORE_IDS# }"
-    LPE_CORE_IDS="${LPE_CORE_IDS# }"
+    # Sort ascending — non-standard BIOS enumerations may emit e_cpus in
+    # non-monotonic order. Logical-id ascending gives a stable mapping
+    # consumers (PHYSICAL_CORE_SLOTS, check_rt_setup display) can rely on.
+    E_CORE_IDS=$(printf '%s\n' $E_CORE_IDS | sort -n | tr '\n' ' ')
+    LPE_CORE_IDS=$(printf '%s\n' $LPE_CORE_IDS | sort -n | tr '\n' ' ')
+    E_CORE_IDS="${E_CORE_IDS% }"
+    LPE_CORE_IDS="${LPE_CORE_IDS% }"
     NUM_E_CORES=$(echo "$E_CORE_IDS" | wc -w)
     NUM_LPE_CORES=$(echo "$LPE_CORE_IDS" | wc -w)
     if (( NUM_LPE_CORES > 0 )); then HAS_LP_E_CORES=1; fi

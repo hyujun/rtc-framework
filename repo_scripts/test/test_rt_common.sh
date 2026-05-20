@@ -575,7 +575,70 @@ test_physical_core_slots_smt_off_identity() {
   expect_eq "PCS.SmtOff.slots" "0 1 2 3" "$PHYSICAL_CORE_SLOTS"
 }
 
-# ── Test 21: sanity-check hook fires a warning on disagreement ─────────────
+# ── Test 21: PHYSICAL_CORE_SLOTS — NUC14 Pro 비표준 enumeration ────────────
+# NUC14 Pro Meteor Lake (Core Ultra 7 155H) 일부 BIOS 펌웨어는 cpu 0 의 core_id
+# 를 다른 P-core 들의 중간에 배치한다. sysfs 출력:
+#   core_id A → cpus {1, 2}   (logical pair)
+#   core_id B → cpus {3, 4}
+#   core_id C → cpus {0, 5}   ← cpu 0 의 sibling 이 cpu 5
+#   core_id D → cpus {6, 7}
+#   core_id E → cpus {8, 9}
+#   core_id F → cpus {10, 11}
+# core_id 정렬 순서로 그대로 iteration 하면 P_CORE_PHYSICAL_IDS = [1, 3, 0, 6, 8, 10]
+# 으로 비단조 — slot 0 이 cpu 1 이 되고 slot 2 가 cpu 0 이 되어 layout v4.1 의
+# "slot 0 = OS 영역" 가정이 깨진다. (physical, sibling) pair 를 physical
+# ascending 으로 sort 해 [0, 1, 3, 6, 8, 10] 으로 normalize 해야 한다.
+test_physical_core_slots_nuc14_nonstandard_enum() {
+  local root="$TMP/pcs_nuc14_nonstd"
+  mock_reset "$root"
+  # mock_add_cpu: $1=root $2=cpu $3=core_id $4=max_freq_khz
+  # core_id ordering is intentionally non-monotonic across cpu number.
+  mock_add_cpu "$root" 1  100 5000000  # core_id 100, cpus {1, 2}
+  mock_add_cpu "$root" 2  100 5000000
+  mock_add_cpu "$root" 3  101 5000000  # core_id 101, cpus {3, 4}
+  mock_add_cpu "$root" 4  101 5000000
+  mock_add_cpu "$root" 0  102 5000000  # core_id 102, cpus {0, 5} — cpu 0 in middle
+  mock_add_cpu "$root" 5  102 5000000
+  mock_add_cpu "$root" 6  103 5000000  # core_id 103, cpus {6, 7}
+  mock_add_cpu "$root" 7  103 5000000
+  mock_add_cpu "$root" 8  104 5000000  # core_id 104, cpus {8, 9}
+  mock_add_cpu "$root" 9  104 5000000
+  mock_add_cpu "$root" 10 105 5000000  # core_id 105, cpus {10, 11}
+  mock_add_cpu "$root" 11 105 5000000
+  # 8 E-cores 12..19
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((12+i)) $((200+i)) 3800000
+  done
+  # 2 LP-E cores 20..21, freq < 70% of E-max
+  mock_add_cpu "$root" 20 208 2500000
+  mock_add_cpu "$root" 21 209 2500000
+
+  mock_set_types "$root" "0,1,2,3,4,5,6,7,8,9,10,11" "12,13,14,15,16,17,18,19,20,21"
+  mock_write_cpuinfo "$TMP/pcs_nuc14_nonstd_cpuinfo" "true" "6" "170"  # 0xAA
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_nuc14_nonstd_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  # P-physical sorted ascending despite non-monotonic core_id grouping.
+  expect_eq "NUC14NS.p_physical"    "0 1 3 6 8 10"                 "$P_CORE_PHYSICAL_IDS"
+  expect_eq "NUC14NS.p_sibling"     "5 2 4 7 9 11"                 "$P_CORE_SIBLING_IDS"
+  expect_eq "NUC14NS.e_cores"       "12 13 14 15 16 17 18 19"      "$E_CORE_IDS"
+  expect_eq "NUC14NS.lpe_cores"     "20 21"                        "$LPE_CORE_IDS"
+  # physical_core_slots: P → E → LP-E, all logical-id ascending.
+  expect_eq "NUC14NS.slots" \
+    "0 1 3 6 8 10 12 13 14 15 16 17 18 19 20 21" \
+    "$PHYSICAL_CORE_SLOTS"
+  # slot 0 maps to cpu 0 (OS-eligible primary), NOT cpu 1 like the unsorted
+  # core_id-iteration order would yield.
+  expect_eq "NUC14NS.is_hybrid"     "1"                            "$IS_HYBRID"
+  expect_eq "NUC14NS.p_core_has_smt" "1"                           "$P_CORE_HAS_SMT"
+  expect_eq "NUC14NS.has_lp_e_cores" "1"                           "$HAS_LP_E_CORES"
+  expect_eq "NUC14NS.generation"    "meteor_lake"                  "$NUC_GENERATION"
+}
+
+# ── Test 22: sanity-check hook fires a warning on disagreement ─────────────
 # Primary sysfs path classifies cpus 0-7 as P (all at a flat 5.0 GHz), but
 # freq-clustering sees uniform freq → can't form an opinion → no warning.
 # To force a disagreement we give sysfs an "intel_core" override that doesn't
@@ -636,6 +699,7 @@ test_physical_core_slots_nuc13_hybrid
 test_physical_core_slots_13900k_hybrid
 test_physical_core_slots_amd_ryzen_smt
 test_physical_core_slots_smt_off_identity
+test_physical_core_slots_nuc14_nonstandard_enum
 test_sanity_check_disagreement
 
 echo

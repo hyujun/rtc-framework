@@ -306,11 +306,27 @@ inline void PopulateHybridFromCpus(CpuTopology& t, const std::filesystem::path& 
       if (cid >= 0)
         p_core_id_to_cpus[cid].push_back(cpu);
     }
+    // Build (physical, sibling) pairs from each core_id group, then sort the
+    // *list of pairs by physical logical id ascending*. Without this outer
+    // sort, BIOSes that assign a non-monotonic core_id to cpu 0 (e.g. some
+    // NUC 14 Pro Meteor Lake firmware: cpu 0 shares core_id with cpu 5, so
+    // its group lands in the middle of the iteration) produce a P-physical
+    // list like [1, 3, 0, 6, 8, 10] — and the v4.1 layout assumption
+    // "slot 0 == lowest logical cpu == OS" breaks. Sorting by physical
+    // restores the invariant on every enumeration order.
+    std::vector<std::pair<int, int>> pairs;
+    pairs.reserve(p_core_id_to_cpus.size());
     for (auto& [cid, cpus] : p_core_id_to_cpus) {
       std::sort(cpus.begin(), cpus.end());
-      t.p_core_physical_ids.push_back(cpus.front());
-      if (cpus.size() >= 2)
-        t.p_core_sibling_ids.push_back(cpus[1]);
+      const int phys = cpus.front();
+      const int sib = (cpus.size() >= 2) ? cpus[1] : -1;
+      pairs.emplace_back(phys, sib);
+    }
+    std::sort(pairs.begin(), pairs.end());
+    for (const auto& [phys, sib] : pairs) {
+      t.p_core_physical_ids.push_back(phys);
+      if (sib >= 0)
+        t.p_core_sibling_ids.push_back(sib);
     }
     t.num_p_physical = static_cast<int>(p_core_id_to_cpus.size());
     t.num_p_logical = static_cast<int>(p_cpus.size());
@@ -335,6 +351,11 @@ inline void PopulateHybridFromCpus(CpuTopology& t, const std::filesystem::path& 
       else
         t.e_core_ids.push_back(cpu);
     }
+    // Sort ascending — non-standard BIOS enumerations (NUC 14 Pro Meteor
+    // Lake) may emit e_cpus in non-monotonic order. Logical-id ascending
+    // gives a stable mapping consumers can rely on.
+    std::sort(t.e_core_ids.begin(), t.e_core_ids.end());
+    std::sort(t.lpe_core_ids.begin(), t.lpe_core_ids.end());
     t.num_e_cores = static_cast<int>(t.e_core_ids.size());
     t.num_lpe_cores = static_cast<int>(t.lpe_core_ids.size());
     t.has_lp_e_cores = (t.num_lpe_cores > 0);

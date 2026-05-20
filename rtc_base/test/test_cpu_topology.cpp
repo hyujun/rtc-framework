@@ -694,6 +694,63 @@ TEST_F(CpuTopologyTest, PhysicalCoreSlots_SmtOff_Identity) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 19b. PhysicalCoreSlots_NonStandardCoreIdEnum — NUC 14 Pro Meteor Lake
+//      비표준 BIOS enumeration. cpu 0 의 SMT sibling 이 cpu 5 (core_id 100..105
+//      을 1/2, 3/4, 0/5, 6/7, 8/9, 10/11 페어로 분배). core_id 정렬 그대로
+//      iteration 하면 P-physical = [1, 3, 0, 6, 8, 10] 으로 비단조 → slot 2
+//      가 cpu 0 으로 매핑되어 layout v4.1 의 "slot 0 = OS" 가정이 깨짐.
+//      (physical, sibling) pair 를 physical ascending 으로 sort 해야 한다.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_NonStandardCoreIdEnum) {
+  MockSysfs m(tmp_root_);
+  // P-core pairs with non-monotonic core_id grouping. cpu 0 lands in the
+  // middle (core_id 102) rather than the first group.
+  m.AddPCore(100, 1, 2, /*freq*/ 5000000);    // core_id 100 → cpus {1, 2}
+  m.AddPCore(101, 3, 4, /*freq*/ 5000000);    // core_id 101 → cpus {3, 4}
+  m.AddPCore(102, 0, 5, /*freq*/ 5000000);    // core_id 102 → cpus {0, 5}
+  m.AddPCore(103, 6, 7, /*freq*/ 5000000);    // core_id 103 → cpus {6, 7}
+  m.AddPCore(104, 8, 9, /*freq*/ 5000000);    // core_id 104 → cpus {8, 9}
+  m.AddPCore(105, 10, 11, /*freq*/ 5000000);  // core_id 105 → cpus {10, 11}
+  // 8 E-cores, no SMT
+  for (int i = 0; i < 8; ++i)
+    m.AddECore(200 + i, 12 + i, /*freq*/ 3800000);
+  // 2 LP-E cores
+  m.AddECore(208, 20, /*freq*/ 2500000);
+  m.AddECore(209, 21, /*freq*/ 2500000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true, /*family=*/6, /*model=*/0xAA);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::METEOR_LAKE);
+
+  // P-physical sorted ascending despite non-monotonic core_id ordering.
+  const std::vector<int> expected_phys{0, 1, 3, 6, 8, 10};
+  EXPECT_EQ(t.p_core_physical_ids, expected_phys);
+
+  // Sibling list preserves pairing — cpu 0 (physical) ↔ cpu 5 (sibling) at
+  // index 0, cpu 1 ↔ cpu 2 at index 1, etc.
+  const std::vector<int> expected_sib{5, 2, 4, 7, 9, 11};
+  EXPECT_EQ(t.p_core_sibling_ids, expected_sib);
+
+  // physical_core_slots: P (sorted) → E (sorted) → LP-E (sorted).
+  std::vector<int> expected_slots{0, 1, 3, 6, 8, 10};
+  for (int cpu = 12; cpu <= 19; ++cpu)
+    expected_slots.push_back(cpu);
+  expected_slots.push_back(20);
+  expected_slots.push_back(21);
+  EXPECT_EQ(t.physical_core_slots, expected_slots);
+
+  // Slot 0 lands on cpu 0 (OS-eligible primary), not cpu 1.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(0, t), 0);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(1, t), 1);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(2, t), 3);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(3, t), 6);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 20. SlotToLogicalCpu — direct unit coverage of the slot→logical translator.
 //     Mocks a CpuTopology with a known slot list and exercises all branches
 //     (sentinel, in-range, out-of-range, empty).
