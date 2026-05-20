@@ -1031,6 +1031,51 @@ _rt_populate_hybrid_from_cpus() {
   fi
 }
 
+# Populate PHYSICAL_CORE_SLOTS — ordered first-logical-id of every unique
+# physical core. Mirrors CpuTopology::physical_core_slots (cpu_topology.hpp).
+# Sequence:
+#   hybrid     → P-physical → E-core → LP-E (already split by sysfs/freq path)
+#   non-hybrid → first logical of each (pkg, core_id) group, cpu ascending
+# Consumed by RT thread-affinity translation (ApplyThreadConfig in C++).
+# Excludes SMT siblings so RT thread pinning by slot index never lands on a
+# P-core's hyperthread.
+_rt_populate_physical_core_slots() {
+  PHYSICAL_CORE_SLOTS=""
+  local cpu_root="$1"
+
+  if (( IS_HYBRID == 1 )); then
+    local slots=""
+    [[ -n "$P_CORE_PHYSICAL_IDS" ]] && slots="${P_CORE_PHYSICAL_IDS}"
+    [[ -n "$E_CORE_IDS" ]]         && slots="${slots:+$slots }${E_CORE_IDS}"
+    [[ -n "$LPE_CORE_IDS" ]]       && slots="${slots:+$slots }${LPE_CORE_IDS}"
+    PHYSICAL_CORE_SLOTS="$slots"
+    return 0
+  fi
+
+  # Non-hybrid (AMD SMT, SMT-off Intel, container). Walk cpus ascending and
+  # record the first cpu that introduces each unique (pkg, core_id) pair —
+  # that cpu is the "primary" of its physical core (sibling, if any, has
+  # a higher logical id and is skipped).
+  local cpu_dir cpu pkg core key
+  declare -A _seen_keys=()
+  local sorted_cpu_dirs
+  sorted_cpu_dirs=$(ls -d "$cpu_root"/cpu[0-9]* 2>/dev/null | sort -V)
+  while IFS= read -r cpu_dir; do
+    [[ -d "$cpu_dir" ]] || continue
+    cpu="${cpu_dir##*/cpu}"
+    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
+    pkg=$(_rt_read_trim "$cpu_dir/topology/physical_package_id")
+    core=$(_rt_read_trim "$cpu_dir/topology/core_id")
+    [[ -z "$pkg" || -z "$core" ]] && continue
+    key="${pkg}_${core}"
+    if [[ -z "${_seen_keys[$key]+x}" ]]; then
+      _seen_keys[$key]=1
+      PHYSICAL_CORE_SLOTS="${PHYSICAL_CORE_SLOTS:+$PHYSICAL_CORE_SLOTS }${cpu}"
+    fi
+  done <<<"$sorted_cpu_dirs"
+  return 0
+}
+
 # Sanity hook: when enabled (RTC_HYBRID_SANITY=1), cross-check the primary
 # detection result against the freq-clustering fallback. Emits a single
 # stderr warning if they disagree on the P/E split. Does not alter globals
@@ -1087,6 +1132,7 @@ detect_hybrid_capability() {
   P_CORE_SIBLING_IDS=""
   E_CORE_IDS=""
   LPE_CORE_IDS=""
+  PHYSICAL_CORE_SLOTS=""
   NUC_GENERATION="none"
   HYBRID_DETECT_SOURCE="none"
 
@@ -1172,6 +1218,9 @@ detect_hybrid_capability() {
       NUC_GENERATION="$RTC_FORCE_HYBRID_GENERATION"
       ;;
   esac
+
+  # Populate slot-index→logical-id mapping for RT thread placement.
+  _rt_populate_physical_core_slots "$cpu_root"
 }
 
 # Thin accessors — call detect_hybrid_capability once first, or rely on
@@ -1187,3 +1236,4 @@ get_cpu_family()          { echo "${CPU_FAMILY:-0}"; }
 get_cpu_model()           { echo "${CPU_MODEL:-0}"; }
 get_platform_label()      { echo "${PLATFORM_LABEL:-}"; }
 get_platform_no_ht_by_design() { echo "${PLATFORM_NO_HT_BY_DESIGN:-0}"; }
+get_physical_core_slots() { echo "${PHYSICAL_CORE_SLOTS:-}"; }

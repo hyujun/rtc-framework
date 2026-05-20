@@ -6,6 +6,7 @@
 // SMT-sibling invariant holds on whatever hardware runs the test.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_base/threading/cpu_topology.hpp>
+#include <rtc_base/threading/thread_utils.hpp>
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -600,6 +601,127 @@ TEST(CpuTopologyClassifier, LookupPlatformLabel) {
   EXPECT_TRUE(LookupPlatformLabel(6, 0xBD).second);
   // Unmapped Intel model → empty
   EXPECT_TRUE(LookupPlatformLabel(6, 0xFF).first.empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. PhysicalCoreSlots_Hybrid_4P8E_HtOn — NUC13 layout: P-physical first,
+//     then E-cores, sibling excluded so RT threads never pin to a P-core's
+//     SMT sibling.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_Hybrid_4P8E_HtOn) {
+  MockSysfs m(tmp_root_);
+  // 4 P-cores with SMT siblings: cpu 0..7 — P-physical = 0,2,4,6; sib = 1,3,5,7
+  m.AddPCore(0, 0, 1);
+  m.AddPCore(1, 2, 3);
+  m.AddPCore(2, 4, 5);
+  m.AddPCore(3, 6, 7);
+  // 8 E-cores, no SMT: cpu 8..15
+  for (int i = 0; i < 8; ++i)
+    m.AddECore(4 + i, 8 + i, /*freq*/ 3800000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  // Expected slot ordering: 4 P-physical (0,2,4,6) → 8 E-cores (8..15).
+  // P-siblings (1,3,5,7) are NOT in the slot list — the central guarantee.
+  const std::vector<int> expected{0, 2, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 17. PhysicalCoreSlots_DesktopHybrid_8P16E — i9-13900K layout: 8 P-physical,
+//     16 E-cores, no LP-E. Tests slot ordering when num_p_physical is large.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_DesktopHybrid_8P16E) {
+  MockSysfs m(tmp_root_);
+  // 8 P-cores with SMT siblings: cpu 0..15 — P-physical = 0,2,4,...,14
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5800000);
+  // 16 E-cores, no SMT: cpu 16..31
+  for (int i = 0; i < 16; ++i)
+    m.AddECore(8 + i, 16 + i, /*freq*/ 4300000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  std::vector<int> expected{0, 2, 4, 6, 8, 10, 12, 14};  // 8 P-physical
+  for (int i = 0; i < 16; ++i)
+    expected.push_back(16 + i);  // 16 E-cores
+  EXPECT_EQ(t.physical_core_slots, expected);
+  EXPECT_EQ(t.physical_core_slots.size(), 24u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 18. PhysicalCoreSlots_AmdSmt — non-hybrid SMT (AMD Ryzen 8C/16T). Sibling
+//     must still be excluded — slot list collapses to even logicals only.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_AmdSmt) {
+  MockSysfs m(tmp_root_);
+  // 8 physical cores with SMT siblings — cpu 0,1 share core_id 0, etc.
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5400000);
+  // No WriteTypes / hybrid flag — non-hybrid path.
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  const std::vector<int> expected{0, 2, 4, 6, 8, 10, 12, 14};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 19. PhysicalCoreSlots_SmtOff_Identity — 4 physical cores, no SMT. Slot
+//     mapping must be identity (slot N → cpu N), preserving legacy 4-core
+//     fallback behaviour.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_SmtOff_Identity) {
+  MockSysfs m(tmp_root_);
+  for (int cpu = 0; cpu < 4; ++cpu)
+    m.AddPCore(cpu, cpu, /*sibling=*/-1, /*freq*/ 3000000);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  const std::vector<int> expected{0, 1, 2, 3};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 20. SlotToLogicalCpu — direct unit coverage of the slot→logical translator.
+//     Mocks a CpuTopology with a known slot list and exercises all branches
+//     (sentinel, in-range, out-of-range, empty).
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(SlotToLogicalCpu, AllBranches) {
+  rtc::CpuTopology topo;
+  topo.physical_core_slots = {0, 2, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+
+  // In-range slot — P-physical sequence.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(0, topo), 0);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(1, topo), 2);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(3, topo), 6);
+  // In-range slot — E-core spillover.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(4, topo), 8);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(11, topo), 15);
+
+  // Sentinel passthrough.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(-1, topo), -1);
+
+  // Out-of-range fallback to identity (legacy behaviour).
+  EXPECT_EQ(rtc::SlotToLogicalCpu(12, topo), 12);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(99, topo), 99);
+
+  // Empty topology (container without sysfs) — identity for every slot.
+  rtc::CpuTopology empty;
+  EXPECT_EQ(rtc::SlotToLogicalCpu(0, empty), 0);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(5, empty), 5);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(-1, empty), -1);
 }
 
 // Fallback primitive — direct ClusterByMaxFreq coverage. Guards the

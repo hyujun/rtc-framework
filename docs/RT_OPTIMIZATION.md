@@ -114,6 +114,8 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 
 `SelectThreadConfigs()` 가 `GetPhysicalCpuCount()` 로 물리 코어 수를 감지해 7-tier (`4 / 6 / 8 / 10 / 12 / 14 / 16+`) 중 적합한 `SystemThreadConfigs` 를 반환한다. 값의 SSoT 는 [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) — 본 표는 그 미러.
 
+> **"Core N" 은 *slot index* — kernel logical CPU id 가 아님**. `ApplyThreadConfig` 가 `CpuTopology::physical_core_slots` 룩업으로 slot → 실제 logical id 를 변환한다. slot 은 항상 physical core 의 *primary* logical 만 가리켜 SMT sibling 회피를 보장한다. Slot ordering: **hybrid** → P-physical (asc) → E-core (asc) → LP-E (asc); **non-hybrid** → physical core first-logicals (asc); **SMT off** → identity. 예: NUC13 Pro (4P+8E, HT on) 의 Core 1 = logical cpu 2 (P-core 1 의 primary), 사이블링 cpu 3 회피. i9-13900K (8P+16E) 의 Core 3 = logical cpu 6. 자세한 정의: [rtc_base/include/rtc_base/threading/thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp) `SlotToLogicalCpu()`.
+
 | 스레드 | 4-core¹ | 6-core² | 8-core | 10-core | 12-core | 14-core | 16-core |
 |---|---|---|---|---|---|---|---|
 | **rt_control** (FIFO 90) | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 | Core 1 |

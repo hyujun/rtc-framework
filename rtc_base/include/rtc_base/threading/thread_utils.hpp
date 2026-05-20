@@ -1,6 +1,7 @@
 #ifndef RTC_BASE_THREAD_UTILS_HPP_
 #define RTC_BASE_THREAD_UTILS_HPP_
 
+#include "rtc_base/threading/cpu_topology.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 
 #include <pthread.h>
@@ -51,17 +52,22 @@ inline std::string SafeStrerror(int errnum) noexcept {
 // Returns empty string if valid, error message if invalid
 inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   std::string errors;
-  const int max_cores = GetOnlineCpuCount();
 
-  // Validate CPU core. cpu_core == -1 is a Phase 5 sentinel meaning
-  // "skip affinity, inherit the calling process's taskset" — used by
-  // process-level pins (sim_thread / viewer) and by RT receive threads
-  // that piggy-back on a launch-level driver process taskset (Transceiver
-  // default kRtUdpRecvConfig, udp_hand_driver kHandUdpRecvConfig). Apply
-  // the upper-bound check only when cpu_core is non-sentinel.
-  if (cfg.cpu_core < -1 || cfg.cpu_core >= max_cores) {
-    errors += "Invalid CPU core " + std::to_string(cfg.cpu_core) + " (valid range: -1, 0-" +
-              std::to_string(max_cores - 1) + "); ";
+  // Validate CPU core. cpu_core is a *slot index*, not a logical CPU id, so
+  // the upper bound is the number of unique physical cores (physical_core_slots
+  // size) — falling back to logical count when topology detection is
+  // unavailable (container without sysfs, where SlotToLogicalCpu degrades to
+  // identity). cpu_core == -1 is a Phase 5 sentinel meaning "skip affinity,
+  // inherit the calling process's taskset" — used by process-level pins
+  // (sim_thread / viewer) and by RT receive threads that piggy-back on a
+  // launch-level driver process taskset (Transceiver default kRtUdpRecvConfig,
+  // udp_hand_driver kHandUdpRecvConfig). Apply the upper-bound check only
+  // when cpu_core is non-sentinel.
+  const auto& slots = GetCpuTopology().physical_core_slots;
+  const int max_slots = slots.empty() ? GetOnlineCpuCount() : static_cast<int>(slots.size());
+  if (cfg.cpu_core < -1 || cfg.cpu_core >= max_slots) {
+    errors += "Invalid CPU core slot " + std::to_string(cfg.cpu_core) + " (valid range: -1, 0-" +
+              std::to_string(max_slots - 1) + "); ";
   }
 
   // Validate scheduler policy
@@ -89,6 +95,36 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   return errors;
 }
 
+// Translate a ThreadConfig::cpu_core *slot index* into the kernel logical CPU
+// id passed to CPU_SET. Slot semantics:
+//   slot == -1            → -1 (sentinel: caller-controlled pin, no CPU_SET)
+//   slot in [0, slots-1)  → physical_core_slots[slot] (P-physical → E → LP-E
+//                           on hybrid; identity / "even logicals" elsewhere)
+//   slot >= slots OR
+//   physical_core_slots empty (container without sysfs) → fall back to
+//                           identity (slot == logical), preserving legacy
+//                           behaviour for environments where topology
+//                           detection cannot run.
+//
+// This is the only place ThreadConfig::cpu_core is interpreted as logical
+// id, so RT threads never accidentally land on a P-core's SMT sibling.
+//
+// Two overloads: the no-arg form reads the process-wide cached topology
+// (production hot path). The CpuTopology& form lets unit tests inject a
+// mocked topology without touching the cached singleton.
+[[nodiscard]] inline int SlotToLogicalCpu(int slot, const CpuTopology& topology) noexcept {
+  if (slot < 0)
+    return slot;
+  if (topology.physical_core_slots.empty() ||
+      slot >= static_cast<int>(topology.physical_core_slots.size()))
+    return slot;
+  return topology.physical_core_slots[slot];
+}
+
+[[nodiscard]] inline int SlotToLogicalCpu(int slot) noexcept {
+  return SlotToLogicalCpu(slot, GetCpuTopology());
+}
+
 // Apply thread configuration (CPU affinity, scheduler policy, priority)
 // Returns true on success, false on failure (e.g., insufficient permissions)
 //
@@ -106,10 +142,13 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   // 1. Set CPU affinity (skip when cpu_core == -1: the calling process's
   //    taskset already constrains this thread's affinity — typical for RT
   //    receive threads that piggy-back on a launch-level driver taskset).
+  //    cpu_core is a *slot index*; SlotToLogicalCpu translates to the
+  //    actual logical CPU id (P-core physical, not SMT sibling, on hybrid).
   if (cfg.cpu_core >= 0) {
+    const int logical_cpu = SlotToLogicalCpu(cfg.cpu_core);
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
+    CPU_SET(static_cast<std::size_t>(logical_cpu), &cpuset);
 
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
       return false;
@@ -166,11 +205,14 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
 
   // 1. Try CPU affinity (skip when cpu_core == -1: launch-level taskset is
   //    the source of truth for this thread's affinity, see Phase 5 sentinel
-  //    in kRtUdpRecvConfig / kHandUdpRecvConfig).
+  //    in kRtUdpRecvConfig / kHandUdpRecvConfig). cpu_core is a *slot index*;
+  //    SlotToLogicalCpu translates to the actual logical CPU id (P-core
+  //    physical, not SMT sibling, on hybrid).
   if (cfg.cpu_core >= 0) {
+    const int logical_cpu = SlotToLogicalCpu(cfg.cpu_core);
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(static_cast<std::size_t>(cfg.cpu_core), &cpuset);
+    CPU_SET(static_cast<std::size_t>(logical_cpu), &cpuset);
 
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
       full_success = false;
@@ -385,11 +427,13 @@ inline ThreadHealthFlag& operator|=(ThreadHealthFlag& a, ThreadHealthFlag b) noe
 inline ThreadHealthFlag CheckThreadHealthFast(const ThreadConfig& expected) noexcept {
   ThreadHealthFlag flags = ThreadHealthFlag::kOk;
 
-  // Check CPU affinity
+  // Check CPU affinity — translate slot index through SlotToLogicalCpu so
+  // we compare against the actual logical CPU that ApplyThreadConfig pinned.
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   if (pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0) {
-    if (!CPU_ISSET(static_cast<std::size_t>(expected.cpu_core), &cpuset)) {
+    const int expected_logical = SlotToLogicalCpu(expected.cpu_core);
+    if (expected_logical >= 0 && !CPU_ISSET(static_cast<std::size_t>(expected_logical), &cpuset)) {
       flags |= ThreadHealthFlag::kWrongCore;
     }
   }
@@ -427,21 +471,25 @@ inline ThreadHealthFlag CheckThreadHealthFast(const ThreadConfig& expected) noex
 inline std::string CheckThreadHealth(const ThreadConfig* expected_config = nullptr) noexcept {
   std::string issues;
 
-  // Check if still on expected CPU core
+  // Check if still on expected CPU core — compare against the slot-translated
+  // logical CPU id, not the raw cpu_core (which is a slot index, not a
+  // kernel logical id).
   if (expected_config) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     if (pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0) {
+      const int expected_logical = SlotToLogicalCpu(expected_config->cpu_core);
       bool on_expected_core = false;
       for (std::size_t i = 0; i < static_cast<std::size_t>(CPU_SETSIZE); ++i) {
-        if (CPU_ISSET(i, &cpuset) && static_cast<int>(i) == expected_config->cpu_core) {
+        if (CPU_ISSET(i, &cpuset) && static_cast<int>(i) == expected_logical) {
           on_expected_core = true;
           break;
         }
       }
       if (!on_expected_core) {
-        issues +=
-            "Thread not on expected CPU core " + std::to_string(expected_config->cpu_core) + "; ";
+        issues += "Thread not on expected CPU core slot " +
+                  std::to_string(expected_config->cpu_core) + " (logical " +
+                  std::to_string(expected_logical) + "); ";
       }
     }
   }

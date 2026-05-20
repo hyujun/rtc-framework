@@ -124,6 +124,18 @@ struct CpuTopology {
   // "silicon has no HT to begin with" (PASS — by design).
   bool platform_no_ht_by_design{false};
 
+  // Ordered first-logical-id of every unique physical core. The sequence is
+  //   hybrid    → P-physical (asc) → E-core (asc) → LP-E (asc)
+  //   non-hybrid (AMD SMT / older Intel) → physical core first-logicals (asc)
+  //   SMT off   → identity 0..N-1
+  // ApplyThreadConfig consumes this to translate ThreadConfig::cpu_core
+  // (interpreted as a *slot index*) into the kernel logical CPU id passed to
+  // CPU_SET. The sibling of each P-core is intentionally excluded so RT
+  // threads cannot leak onto an SMT hyperthread of an already-RT physical
+  // core. When the topology is unknown (container without sysfs), the list
+  // is empty and ApplyThreadConfig falls back to identity (slot == logical).
+  std::vector<int> physical_core_slots;
+
   // Tier-selection metric for future hybrid dispatch. Returns the count of
   // "high-performance" physical cores — P-core count on hybrid, plain
   // physical count otherwise.
@@ -579,6 +591,38 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
   // Step 4: classify generation + apply env hint override.
   t.generation = ClassifyGeneration(t.is_hybrid, t.p_core_has_smt, t.has_lp_e_cores);
   t.generation = ApplyEnvHint(t.generation, env_gen_hint);
+
+  // Step 5: populate physical_core_slots — ordered first-logical-id of every
+  //         unique physical core. Hybrid uses P → E → LP-E sequence so RT
+  //         layouts that index by slot land on P-physical first and spill
+  //         over to E-cores only when slot index exceeds the P-physical
+  //         count. Non-hybrid and SMT-off systems collapse to the
+  //         "first logical of each (pkg, core_id) group" rule, which is
+  //         identity on SMT-off and "even logicals only" on AMD SMT.
+  if (t.is_hybrid) {
+    t.physical_core_slots.reserve(t.p_core_physical_ids.size() + t.e_core_ids.size() +
+                                  t.lpe_core_ids.size());
+    for (const int cpu : t.p_core_physical_ids)
+      t.physical_core_slots.push_back(cpu);
+    for (const int cpu : t.e_core_ids)
+      t.physical_core_slots.push_back(cpu);
+    for (const int cpu : t.lpe_core_ids)
+      t.physical_core_slots.push_back(cpu);
+  } else {
+    // core_id_to_logicals iterates in (pkg, core_id) ascending order (std::map
+    // ordering). Each inner vector is push_back'd in cpu = 0,1,... order,
+    // so the lowest logical id of every physical core (the "primary", not
+    // the SMT sibling) is logicals.front() after a deterministic sort.
+    t.physical_core_slots.reserve(core_id_to_logicals.size());
+    for (const auto& [key, logicals] : core_id_to_logicals) {
+      if (logicals.empty())
+        continue;
+      auto sorted = logicals;
+      std::sort(sorted.begin(), sorted.end());
+      t.physical_core_slots.push_back(sorted.front());
+    }
+  }
+
   return t;
 }
 

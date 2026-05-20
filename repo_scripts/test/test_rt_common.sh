@@ -492,7 +492,90 @@ test_platform_label_missing_fields() {
   expect_eq "NoFM.platform_label"     ""                           "$PLATFORM_LABEL"
 }
 
-# ── Test 17: sanity-check hook fires a warning on disagreement ─────────────
+# ── Test 17: PHYSICAL_CORE_SLOTS — NUC13 (4P+8E HT on) ─────────────────────
+# P-physical (0,2,4,6) followed by E-cores (8..15). SMT siblings excluded.
+test_physical_core_slots_nuc13_hybrid() {
+  local root="$TMP/pcs_nuc13"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5000000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5000000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((8+i)) $((4+i)) 3800000
+  done
+  mock_set_types "$root" "0,1,2,3,4,5,6,7" "8,9,10,11,12,13,14,15"
+  mock_write_cpuinfo "$TMP/pcs_nuc13_cpuinfo" "true" "6" "186"  # 0xBA
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_nuc13_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PCS.NUC13.slots" "0 2 4 6 8 9 10 11 12 13 14 15" "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 18: PHYSICAL_CORE_SLOTS — i9-13900K (8P+16E HT on) ────────────────
+test_physical_core_slots_13900k_hybrid() {
+  local root="$TMP/pcs_13900k"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5800000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5800000
+  done
+  for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    mock_add_cpu "$root" $((16+i)) $((8+i)) 4300000
+  done
+  mock_set_types "$root" "0-15" "16-31"
+  mock_write_cpuinfo "$TMP/pcs_13900k_cpuinfo" "true" "6" "191"  # 0xBF
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_13900k_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  local expected="0 2 4 6 8 10 12 14 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31"
+  expect_eq "PCS.13900K.slots" "$expected" "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 19: PHYSICAL_CORE_SLOTS — AMD Ryzen 8C/16T (non-hybrid SMT) ───────
+# Non-hybrid SMT must collapse to even logicals (sibling excluded).
+test_physical_core_slots_amd_ryzen_smt() {
+  local root="$TMP/pcs_amd"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5400000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5400000
+  done
+  mock_write_cpuinfo "$TMP/pcs_amd_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_amd_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PCS.AMD.is_hybrid" "0"                          "$IS_HYBRID"
+  expect_eq "PCS.AMD.slots"     "0 2 4 6 8 10 12 14"         "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 20: PHYSICAL_CORE_SLOTS — SMT-off 4-core (identity) ──────────────
+test_physical_core_slots_smt_off_identity() {
+  local root="$TMP/pcs_smtoff"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 3000000
+  done
+  mock_write_cpuinfo "$TMP/pcs_smtoff_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_smtoff_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PCS.SmtOff.slots" "0 1 2 3" "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 21: sanity-check hook fires a warning on disagreement ─────────────
 # Primary sysfs path classifies cpus 0-7 as P (all at a flat 5.0 GHz), but
 # freq-clustering sees uniform freq → can't form an opinion → no warning.
 # To force a disagreement we give sysfs an "intel_core" override that doesn't
@@ -549,6 +632,10 @@ test_platform_label_arrow_lake_s_desktop
 test_platform_label_unknown_model
 test_platform_label_amd_vendor
 test_platform_label_missing_fields
+test_physical_core_slots_nuc13_hybrid
+test_physical_core_slots_13900k_hybrid
+test_physical_core_slots_amd_ryzen_smt
+test_physical_core_slots_smt_off_identity
 test_sanity_check_disagreement
 
 echo
