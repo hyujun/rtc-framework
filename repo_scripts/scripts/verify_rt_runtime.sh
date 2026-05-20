@@ -448,6 +448,39 @@ check_process_discovery() {
       echo "    [hint]   2. controller 가 setname 전에 thread 종료 (sim 모드의 짧은 lifecycle)"
       echo "    [hint]   3. pthread_setname_np truncate (15 chars 초과) — thread_config.hpp 의 .name 길이 확인"
       echo "    [hint]   4. ApplyThreadConfig early-return (affinity / sched 실패) — controller stderr 의 [WARN] 메시지 확인"
+
+      # Auto-diagnose rtprio limit — single most common cause. If the limit is
+      # between two SCHED_FIFO priorities used by EXPECTED_THREADS (e.g. 60 ≤
+      # limit < 70), only the lower-priority threads succeed and the higher
+      # ones silent-fail. Read the controller process's actual limits.
+      local controller_rtprio=""
+      if [[ -r "/proc/${CONTROLLER_PID}/limits" ]]; then
+        controller_rtprio=$(awk '/Max realtime priority/ { print $4 " (soft) / " $5 " (hard)"; exit }' \
+                            "/proc/${CONTROLLER_PID}/limits" 2>/dev/null || echo "")
+      fi
+      if [[ -n "$controller_rtprio" ]]; then
+        echo "    [diag] controller PID ${CONTROLLER_PID} 의 Max realtime priority: ${controller_rtprio}"
+        # Pull soft limit only for the range check.
+        local rtprio_soft
+        rtprio_soft=$(echo "$controller_rtprio" | awk '{print $1}')
+        if [[ "$rtprio_soft" =~ ^[0-9]+$ ]]; then
+          # Highest required FIFO priority across EXPECTED_THREADS (typically 90).
+          local max_required_prio=0
+          for entry in "${EXPECTED_THREADS[@]}"; do
+            local epolicy eprio
+            epolicy=$(echo "$entry" | cut -d: -f3)
+            eprio=$(echo "$entry" | cut -d: -f4)
+            if [[ "$epolicy" -eq 1 && "$eprio" -gt "$max_required_prio" ]]; then
+              max_required_prio="$eprio"
+            fi
+          done
+          if (( rtprio_soft < max_required_prio )); then
+            echo "    [hint] ↑ rtprio soft limit (${rtprio_soft}) < required (${max_required_prio}). FIFO ${rtprio_soft} 초과 priority 모두 silent-fail."
+            echo "    [fix]  sudo bash -c 'echo \"@realtime - rtprio 99\" >> /etc/security/limits.d/99-realtime.conf' (그 후 재로그인)"
+            echo "    [fix]  또는 controller 실행 시 'sudo -E' 사용 (개발 환경)"
+          fi
+        fi
+      fi
     fi
   else
     _fail "thread_config.hpp 스레드 감지 실패 (${known_count}/${expected_count})"
