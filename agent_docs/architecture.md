@@ -35,7 +35,7 @@ Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_config.hpp
 - **hand-private UDP receive thread** (FIFO 65, hand_driver 프로세스 내부) 는 launch-level taskset 으로 affinity 상속 — `SystemThreadConfigs` 에 필드 없음. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1) 기본값으로 caller 가 명시 핀
 - **arm_driver / hand_driver / sim_thread / viewer** 는 process-level taskset pin (SCHED_OTHER, priority 0) — launch script 가 적용. sim_thread/viewer 의 cpu_core=-1 sentinel 은 모든 tier 에서 "no pin" (v4.1, cpu_shield --sim 모드에서 격리 해제된 코어 사용)
 
-세부 thread 종류·core 번호·priority 값은 위 header + `cpu_topology.hpp` 참조. Hybrid-CPU detection 은 `docs/NUC_HYBRID_SUPPORT.md`.
+세부 thread 종류·core 번호·priority 값은 위 header + `cpu_topology.hpp` 참조. Hybrid-CPU 감지 + BIOS 체크리스트는 [`docs/NUC_HYBRID_SUPPORT.md`](../docs/NUC_HYBRID_SUPPORT.md) (layout 분기는 v4.1 `physical_core_slots` 추상화가 처리 — 별도 hybrid config 없음).
 
 ### Per-thread timing CSV infrastructure
 

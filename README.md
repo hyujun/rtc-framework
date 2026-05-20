@@ -317,7 +317,7 @@ sudo update-grub && sudo reboot
 |------|------|
 | [docs/RT_OPTIMIZATION.md](docs/RT_OPTIMIZATION.md) | 실시간 최적화 가이드 (CPU 코어 할당, 커널 설정) |
 | [docs/VSCODE_DEBUGGING.md](docs/VSCODE_DEBUGGING.md) | VS Code + GDB 디버깅 가이드 |
-| [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13 Pro hybrid CPU (P/E core) 지원 게이팅 (Stage A done, Stage B pending) |
+| [docs/NUC_HYBRID_SUPPORT.md](docs/NUC_HYBRID_SUPPORT.md) | NUC 13/14/15 Pro hybrid CPU (P/E core) 감지 + BIOS 체크리스트. Layout 분기는 v4.1 slot 매핑이 처리 |
 | [CLAUDE.md](CLAUDE.md) | AI 에이전트 컨텍스트 (harness, invariants, escalation) |
 | [repo_scripts/README.md](repo_scripts/README.md) | RT 설정 / 빌드 / 환경 셋업 쉘 스크립트 가이드 (PREEMPT_RT, CPU shield, IRQ affinity, `setup_env.sh`) |
 
