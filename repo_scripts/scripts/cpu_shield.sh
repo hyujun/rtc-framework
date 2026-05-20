@@ -52,7 +52,7 @@ make_logger "SHIELD"
 # no further changes.
 #
 # Tier table (matches rtc::SystemThreadConfigs layout v4.1):
-#   4-core    : RT 1, MPC 3 (CFS)             → "1,3"
+#   4-core    : RT 1-2, MPC 3 (CFS)           → "1-3"
 #   6-9-core  : rt_control 1, rt_callback 2, MPC 3 → "1-3"
 #   10-11-core: RT 1-2, MPC 3-4               → "1-4"
 #   12-13-core: RT 1-2, MPC 3-5               → "1-5"
@@ -63,7 +63,7 @@ compute_shield_cores() {
   local phys_cores="$2"
 
   if [[ "$phys_cores" -le 4 ]]; then
-    echo "1,3"
+    echo "1-3"
   elif [[ "$phys_cores" -le 9 ]]; then
     echo "1-3"
   elif [[ "$phys_cores" -le 11 ]]; then

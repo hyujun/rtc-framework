@@ -229,7 +229,8 @@ compute_irq_affinity_mask() {
   fi
 
   # SMT: Core 0 의 HT 시블링까지 포함한 bitmask (layout v4.1)
-  local os_end=0
+  # OS_PHYS_END 는 compute_cpu_layout 이 설정. 단독 호출 시 0 fallback.
+  local os_end="${OS_PHYS_END:-0}"
 
   local mask=0
   for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*/; do
