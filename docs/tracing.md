@@ -118,7 +118,7 @@ ros2 launch integrated_bringup sim.launch.py enable_tracing:=true \
 * https://ui.perfetto.dev 에 JSON drag-drop. 설치 0, 브라우저만.
 * 세 가지 swimlane 그룹:
   - **Threads (by TID)** — `mpc_main-NNNN`, `rt_control-NNNN`, `mujoco_simulato-NNNN`
-    등 각 thread 의 callback B/E + 기타 instant event. WBC tick 의 주기성, MPC 8 ms
+    등 각 thread 의 callback B/E 슬라이스. WBC tick 의 주기성, MPC 8 ms
     주기를 시간축에서 직접 확인.
   - **Cpus** — `Cpu 000` ~ `Cpu 011` 코어별 sched_switch 기반 timeline.
     ApplyThreadConfig pinning 의 의도대로 rt_control 이 Core 2 에 고정됐는지,
@@ -127,6 +127,31 @@ ros2 launch integrated_bringup sim.launch.py enable_tracing:=true \
     한눈에.
 * Perfetto UI tip: 좌측 swimlane 헤더 클릭 → 그 lane 만 펼침. 마우스 휠로 zoom,
   shift+드래그로 범위 측정. Ctrl+F 으로 callback symbol 검색.
+
+### Event drop policy (JSON size)
+
+기본 변환은 **구조화 이벤트 (callback B/E + sched_switch + irq_handler_*)** 만
+slice 로 emit 한다. `sched_wakeup` / `ros2:rclcpp_publish` / `ros2:rcl_init`
+등 나머지 tracepoint 는 silently drop — instant marker 로 박으면 Perfetto 에서
+aggregate 안 되는 vertical line 만 늘고 JSON 이 2 배 가까이 부푼다. 변환 종료 시
+stderr 에 `dropped N non-structured events (M distinct names). Top: <name>=<count> ...`
+요약이 찍히므로 어떤 이벤트가 잘렸는지는 항상 가시화된다.
+
+특정 이벤트를 다시 보고 싶을 때:
+
+```bash
+# 한두 종류만 살리기 (확장성용)
+python3 -m rtc_tools.conversion.ctf_to_chrome_trace \
+    --input <trace_dir> --output out.json \
+    --keep-events ros2:rclcpp_publish,sched_wakeup
+
+# legacy: 모든 unknown event 를 instant marker 로 emit (debugging 용, 큰 JSON)
+python3 -m rtc_tools.conversion.ctf_to_chrome_trace \
+    --input <trace_dir> --output out.json --keep-all
+```
+
+`timeline.sh` 는 default drop 모드만 노출한다 — 화이트리스트 / keep-all 은
+위 처럼 직접 호출.
 
 ## babeltrace2 직접 사용 (raw inspection)
 

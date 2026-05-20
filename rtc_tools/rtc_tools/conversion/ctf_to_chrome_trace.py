@@ -31,8 +31,13 @@ events handled today:
   a special ``Cpu/IRQ`` lane (CPU_PID + 1) so IRQ time is visually
   separable from user threads.
 
-Other event types pass through as instant markers (``ph: i``) so they
-appear as vertical lines on the lane that owns them (default: tid lane).
+Every other event type is **dropped by default** to keep the JSON small —
+the prior behaviour of emitting every unknown tracepoint as an instant
+marker (``ph: i``) doubled trace size with content that Perfetto could
+not aggregate. Pass ``--keep-events name[,name...]`` to opt specific
+event names back in (they re-appear as instant markers on the owning
+thread lane). ``--keep-all`` restores the legacy "emit everything"
+behaviour for one-off debugging.
 
 Parser: prefers ``python3-bt2`` (the LTTng Python binding) when
 importable, falls back to parsing the text output of ``babeltrace2 <dir>``
@@ -64,6 +69,18 @@ THREAD_PID = 1
 CPU_PID = 2
 IRQ_PID = 3
 
+# Events that always produce structured slices (B/E pairs) and are never
+# subject to the drop policy — dropping them would empty the timeline.
+STRUCTURED_EVENTS = frozenset(
+    {
+        "ros2:callback_start",
+        "ros2:callback_end",
+        "sched_switch",
+        "irq_handler_entry",
+        "irq_handler_exit",
+    }
+)
+
 
 def _truncate(label: str, limit: int = 80) -> str:
     return label if len(label) <= limit else label[: limit - 3] + "..."
@@ -85,24 +102,40 @@ def _try_parse_bt2(trace_dir: Path):
     except ImportError:
         return None
 
+    # Recognise bt2 integer field types by class name so we can coerce
+    # them to int even on jazzy/8.x where the .value attribute is absent
+    # (hasattr returns False for _SignedIntegerFieldConst and friends).
+    _INT_FIELD_TYPENAMES = (
+        "_SignedIntegerFieldConst",
+        "_UnsignedIntegerFieldConst",
+        "_SignedEnumerationFieldConst",
+        "_UnsignedEnumerationFieldConst",
+    )
+
     def _to_py(field):
         """Convert a bt2 field object to a JSON-friendly Python primitive.
 
         bt2 field objects (_SignedIntegerFieldConst, _StringFieldConst, ...)
         are not directly JSON-serializable; trying to dump them blows up
-        inside json.encoder. We coerce by their reported value attribute,
-        falling back to str() so an unknown field type at least round-trips
-        as a label instead of crashing the whole conversion.
+        inside json.encoder. We try the documented ``.value`` attribute
+        first, then sniff the class name for known integer types (jazzy
+        8.x drops ``.value`` on integer field consts and only str() works
+        — but str() returns the numeric *string*, which silently corrupts
+        downstream dict-keying-by-tid). Final fallback is str().
         """
         if field is None:
             return None
-        # Integers / enums expose .value as Python int.
         if hasattr(field, "value"):
             try:
                 return field.value
             except Exception:  # noqa: BLE001
                 pass
-        # Strings respond to str() cleanly.
+        # bt2 8.x integer fields lack .value but coerce cleanly via int(str(field)).
+        if type(field).__name__ in _INT_FIELD_TYPENAMES:
+            try:
+                return int(str(field))
+            except (TypeError, ValueError):
+                pass
         try:
             return str(field)
         except Exception:  # noqa: BLE001
@@ -221,19 +254,42 @@ def iter_events(trace_dir: Path | None, stdin: bool):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def build_trace(events_iter) -> dict:
+def build_trace(
+    events_iter,
+    *,
+    keep_events: frozenset[str] | None = None,
+    keep_all: bool = False,
+) -> dict:
     """Walk the event stream once, emit Chrome Trace events.
 
     Maintains per-CPU "currently-running" tid so sched_switch produces a
     closed B/E pair on the Cpu lane every time a thread is scheduled.
     Callback B/E and IRQ B/E are 1:1 with their tracepoints, no state
     needed.
+
+    Args:
+        events_iter: yields ``(ts_ns, name, payload, cpu_id)``.
+        keep_events: extra event names (beyond :data:`STRUCTURED_EVENTS`)
+            to emit as instant markers on the owning thread lane. Names
+            not in ``STRUCTURED_EVENTS | keep_events`` are silently
+            dropped and counted in the returned summary.
+        keep_all: if True, emit every non-structured event as an instant
+            marker (legacy behaviour, useful for debugging which
+            tracepoints fired). Overrides ``keep_events``.
+
+    Returns:
+        ``{"traceEvents": [...], "displayTimeUnit": "ms",
+           "_dropped_event_counts": {name: count, ...}}``. The
+        ``_dropped_event_counts`` key is consumed by ``main()`` for the
+        stderr summary and is stripped before JSON serialization.
     """
+    keep_extra = keep_events or frozenset()
     thread_names: dict[int, str] = {}
     cpus_seen: set[int] = set()
     irqs_seen: set[int] = set()
     out: list[dict] = []
     base_ns: int | None = None
+    dropped_counts: dict[str, int] = defaultdict(int)
 
     # Per-CPU current tid (for sched_switch B/E emission).
     current_tid_on_cpu: dict[int, int] = {}
@@ -246,8 +302,21 @@ def build_trace(events_iter) -> dict:
             base_ns = ts_ns
         ts_us = (ts_ns - base_ns) // 1_000
 
-        vtid = payload.get("vtid") or payload.get("tid") or 0
+        # Belt-and-suspenders int coercion: even with the _to_py int-field
+        # path, the CLI fallback parser returns strings, so harmonise here
+        # — Perfetto and our metadata loop both key by numeric tid.
+        try:
+            vtid = int(payload.get("vtid") or payload.get("tid") or 0)
+        except (TypeError, ValueError):
+            vtid = 0
         procname = payload.get("procname") or payload.get("comm")
+        # UST-derived procname can be stale: a thread that calls
+        # pthread_setname_np("rt_callback", ...) *after* its first UST
+        # event still gets logged with the parent main-thread comm
+        # ("integrated_rt_c"). We register it provisionally here, but the
+        # sched_switch branch below overrides with the kernel's view of
+        # prev_comm/next_comm — the OS reads /proc/<tid>/comm fresh on
+        # every switch, so it reflects the latest pthread_setname_np.
         if vtid and procname and vtid not in thread_names:
             thread_names[vtid] = f"{procname}-{vtid}"
 
@@ -291,9 +360,14 @@ def build_trace(events_iter) -> dict:
             next_tid = int(payload.get("next_tid", 0))
             prev_comm = payload.get("prev_comm") or ""
             next_comm = payload.get("next_comm") or ""
-            if prev_tid and prev_comm and prev_tid not in thread_names:
+            # The kernel's prev_comm/next_comm is the freshest signal we
+            # get for a thread's name: /proc/<tid>/comm is re-read on
+            # every sched_switch, so any pthread_setname_np that has run
+            # by this point is reflected. UST registrations above may
+            # have used a stale parent-thread comm; overwrite them.
+            if prev_tid and prev_comm:
                 thread_names[prev_tid] = f"{prev_comm}-{prev_tid}"
-            if next_tid and next_comm and next_tid not in thread_names:
+            if next_tid and next_comm:
                 thread_names[next_tid] = f"{next_comm}-{next_tid}"
             if cpu_id is None:
                 continue
@@ -354,20 +428,25 @@ def build_trace(events_iter) -> dict:
             )
 
         else:
-            # Everything else (rclcpp_*, sched_wakeup, ...) becomes an instant marker
-            # on the thread lane so it stays visible without blowing up the JSON.
-            out.append(
-                {
-                    "name": _truncate(name),
-                    "cat": name.split(":")[0] if ":" in name else "event",
-                    "ph": "i",
-                    "ts": ts_us,
-                    "pid": THREAD_PID,
-                    "tid": vtid,
-                    "s": "t",
-                    "args": payload,
-                }
-            )
+            # Drop policy: by default everything not in STRUCTURED_EVENTS
+            # is silently dropped — emitting them as instant markers
+            # bloated the JSON without adding aggregatable signal in
+            # Perfetto. Opt-in via --keep-events <name> or --keep-all.
+            if keep_all or name in keep_extra:
+                out.append(
+                    {
+                        "name": _truncate(name),
+                        "cat": name.split(":")[0] if ":" in name else "event",
+                        "ph": "i",
+                        "ts": ts_us,
+                        "pid": THREAD_PID,
+                        "tid": vtid,
+                        "s": "t",
+                        "args": payload,
+                    }
+                )
+            else:
+                dropped_counts[name] += 1
 
     # Metadata records so Perfetto labels the swimlanes.
     metadata: list[dict] = [
@@ -427,7 +506,11 @@ def build_trace(events_iter) -> dict:
                 }
             )
 
-    return {"traceEvents": metadata + out, "displayTimeUnit": "ms"}
+    return {
+        "traceEvents": metadata + out,
+        "displayTimeUnit": "ms",
+        "_dropped_event_counts": dict(dropped_counts),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -451,14 +534,38 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Output Chrome Trace JSON path.",
     )
+    p.add_argument(
+        "--keep-events",
+        default="",
+        help=(
+            "Comma-separated event names (e.g. 'ros2:rclcpp_publish,"
+            "sched_wakeup') to retain as instant markers in addition to "
+            "the structured B/E set. Default: drop everything else."
+        ),
+    )
+    p.add_argument(
+        "--keep-all",
+        action="store_true",
+        help=(
+            "Legacy behaviour: emit every non-structured event as an "
+            "instant marker. Useful when investigating which tracepoints "
+            "fired, but produces large JSON."
+        ),
+    )
     args = p.parse_args(argv)
+    keep_events = frozenset(item.strip() for item in args.keep_events.split(",") if item.strip())
 
     if args.input is not None and not args.input.is_dir():
         print(f"[ctf_to_chrome] input not a directory: {args.input}", file=sys.stderr)
         return 1
 
     events_iter = iter_events(args.input, args.stdin)
-    trace = build_trace(events_iter)
+    trace = build_trace(events_iter, keep_events=keep_events, keep_all=args.keep_all)
+
+    # Strip the in-process sentinel before JSON dump (Chrome Trace
+    # spec rejects unknown top-level keys with leading underscore on
+    # some viewers; safer to drop).
+    dropped_counts = trace.pop("_dropped_event_counts", {})
 
     if len(trace["traceEvents"]) <= 2:  # only the 2 metadata 'M' records
         print(
@@ -482,6 +589,22 @@ def main(argv: list[str] | None = None) -> int:
         f"{by_phase['B']}B/{by_phase['E']}E/{by_phase['i']}I/{by_phase['M']}M)",
         file=sys.stderr,
     )
+    if dropped_counts:
+        total_dropped = sum(dropped_counts.values())
+        # Show the top contributors so the user can decide what to add
+        # back via --keep-events. Cap at 5 entries to keep stderr tidy.
+        top = sorted(dropped_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        top_str = ", ".join(f"{n}={c}" for n, c in top)
+        print(
+            f"[ctf_to_chrome] dropped {total_dropped} non-structured events "
+            f"({len(dropped_counts)} distinct names). Top: {top_str}.",
+            file=sys.stderr,
+        )
+        print(
+            "[ctf_to_chrome]   add specific names back with "
+            "--keep-events <comma-list>, or --keep-all for everything.",
+            file=sys.stderr,
+        )
     print(
         "[ctf_to_chrome] open https://ui.perfetto.dev and drag-drop the JSON",
         file=sys.stderr,
