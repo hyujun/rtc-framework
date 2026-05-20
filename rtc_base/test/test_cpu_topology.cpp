@@ -6,6 +6,7 @@
 // SMT-sibling invariant holds on whatever hardware runs the test.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <rtc_base/threading/cpu_topology.hpp>
+#include <rtc_base/threading/thread_utils.hpp>
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -106,11 +107,18 @@ class MockSysfs {
   }
 
   // /proc/cpuinfo stub. Controls the `hybrid` fallback flag path.
-  fs::path WriteCpuinfo(bool has_hybrid_flag) {
+  // Optional family / model emit a CPUID identity block; pass -1 to skip
+  // either field (legacy mocks rely on the absence path for default 0).
+  fs::path WriteCpuinfo(bool has_hybrid_flag, int family = -1, int model = -1,
+                        const std::string& vendor = "GenuineIntel") {
     const fs::path p = root_.parent_path() / (root_.filename().string() + "_cpuinfo");
     std::ofstream f(p);
     f << "processor\t: 0\n";
-    f << "vendor_id\t: GenuineIntel\n";
+    f << "vendor_id\t: " << vendor << "\n";
+    if (family >= 0)
+      f << "cpu family\t: " << family << "\n";
+    if (model >= 0)
+      f << "model\t\t: " << model << "\n";
     f << "flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr";
     if (has_hybrid_flag)
       f << " hybrid";
@@ -443,6 +451,334 @@ TEST(CpuTopologyClassifier, HybridDetectSourceToString) {
   EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::SYSFS_TYPES), "sysfs_types");
   EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::CPUFREQ_CLUSTER),
             "cpufreq_cluster");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. PlatformLabel_RaptorLake_S_Desktop — i9-13900K shares the (P-HT, no LP-E)
+//     fingerprint with NUC13 Pro's Raptor Lake-P mobile. CPUID model 0xBF
+//     must distinguish them in platform_label even though `generation` stays
+//     RAPTOR_LAKE_P. This is the user-reported desktop case.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_RaptorLake_S_Desktop) {
+  MockSysfs m(tmp_root_);
+  // 8 P-cores with SMT siblings — i9-13900K layout.
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5800000);
+  // 16 E-cores, no SMT, uniform freq (no LP-E on desktop).
+  for (int i = 0; i < 16; ++i)
+    m.AddECore(8 + i, 16 + i, /*freq*/ 4300000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true, /*family=*/6, /*model=*/0xBF);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::RAPTOR_LAKE_P);
+  EXPECT_EQ(t.cpu_vendor, "GenuineIntel");
+  EXPECT_EQ(t.cpu_family, 6);
+  EXPECT_EQ(t.cpu_model, 0xBF);
+  EXPECT_EQ(t.platform_label, "Raptor Lake-S desktop");
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+  EXPECT_EQ(t.num_p_physical, 8);
+  EXPECT_EQ(t.num_e_cores, 16);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. PlatformLabel_ArrowLake_S_Desktop — Core Ultra 9 285K: no HT (Lion
+//     Cove), no LP-E. Fingerprint (0,0) collides with RAPTOR_LAKE_P_HT_OFF
+//     but CPUID model 0xC6 must set platform_no_ht_by_design=true so the
+//     verifier PASSes instead of suggesting an impossible BIOS toggle.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_ArrowLake_S_Desktop) {
+  MockSysfs m(tmp_root_);
+  // 8 P-cores, no SMT (Lion Cove has no HT).
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 5700000);
+  // 16 E-cores, no SMT, uniform freq (no LP-E on desktop).
+  for (int i = 0; i < 16; ++i)
+    m.AddECore(8 + i, 8 + i, /*freq*/ 4600000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true, /*family=*/6, /*model=*/0xC6);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_FALSE(t.p_core_has_smt);
+  EXPECT_FALSE(t.has_lp_e_cores);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::RAPTOR_LAKE_P_HT_OFF);
+  EXPECT_EQ(t.cpu_model, 0xC6);
+  EXPECT_EQ(t.platform_label, "Arrow Lake-S desktop");
+  EXPECT_TRUE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. PlatformLabel_UnknownModel — future / unmapped silicon stays in the
+//     existing classifier flow with platform_label empty + no_ht=false.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_UnknownModel) {
+  MockSysfs m(tmp_root_);
+  for (int core = 0; core < 4; ++core)
+    m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 3000000);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, /*family=*/6, /*model=*/0xFF);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.cpu_family, 6);
+  EXPECT_EQ(t.cpu_model, 0xFF);
+  EXPECT_TRUE(t.platform_label.empty());
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. PlatformLabel_AmdVendor — AMD reports a non-Intel family (e.g. 25);
+//     lookup must return empty platform_label even though family/model
+//     fields are populated.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_AmdVendor) {
+  MockSysfs m(tmp_root_);
+  for (int core = 0; core < 4; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 4800000);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, /*family=*/25, /*model=*/33,
+                                      /*vendor=*/"AuthenticAMD");
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.cpu_vendor, "AuthenticAMD");
+  EXPECT_EQ(t.cpu_family, 25);
+  EXPECT_EQ(t.cpu_model, 33);
+  EXPECT_TRUE(t.platform_label.empty());
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14. PlatformLabel_MissingFields — legacy mock (no family/model lines).
+//     Defaults must be safe zeros / empty so existing tests round-trip.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PlatformLabel_MissingFields) {
+  MockSysfs m(tmp_root_);
+  for (int core = 0; core < 4; ++core)
+    m.AddPCore(core, core, /*sibling=*/-1, /*freq*/ 3000000);
+  // family=-1, model=-1 → no CPUID lines emitted.
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.cpu_vendor, "GenuineIntel");
+  EXPECT_EQ(t.cpu_family, 0);
+  EXPECT_EQ(t.cpu_model, 0);
+  EXPECT_TRUE(t.platform_label.empty());
+  EXPECT_FALSE(t.platform_no_ht_by_design);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. LookupPlatformLabel — direct unit coverage of the mapping table.
+//     Keeps the (intel-family.h SSOT, code) bridge honest as new chips land.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(CpuTopologyClassifier, LookupPlatformLabel) {
+  using rtc::internal::topology::LookupPlatformLabel;
+  // family != 6 → empty
+  EXPECT_TRUE(LookupPlatformLabel(25, 33).first.empty());
+  EXPECT_FALSE(LookupPlatformLabel(25, 33).second);
+  // Raptor Lake family
+  EXPECT_EQ(LookupPlatformLabel(6, 0xBF).first, "Raptor Lake-S desktop");
+  EXPECT_FALSE(LookupPlatformLabel(6, 0xBF).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xBA).first, "Raptor Lake-P mobile");
+  // Meteor Lake
+  EXPECT_EQ(LookupPlatformLabel(6, 0xAA).first, "Meteor Lake-L mobile");
+  // Lion Cove silicon — no_ht_by_design must be true
+  EXPECT_EQ(LookupPlatformLabel(6, 0xC6).first, "Arrow Lake-S desktop");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xC6).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xC5).first, "Arrow Lake-H mobile");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xC5).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xB5).first, "Arrow Lake-U mobile");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xB5).second);
+  EXPECT_EQ(LookupPlatformLabel(6, 0xBD).first, "Lunar Lake mobile");
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xBD).second);
+  // Unmapped Intel model → empty
+  EXPECT_TRUE(LookupPlatformLabel(6, 0xFF).first.empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. PhysicalCoreSlots_Hybrid_4P8E_HtOn — NUC13 layout: P-physical first,
+//     then E-cores, sibling excluded so RT threads never pin to a P-core's
+//     SMT sibling.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_Hybrid_4P8E_HtOn) {
+  MockSysfs m(tmp_root_);
+  // 4 P-cores with SMT siblings: cpu 0..7 — P-physical = 0,2,4,6; sib = 1,3,5,7
+  m.AddPCore(0, 0, 1);
+  m.AddPCore(1, 2, 3);
+  m.AddPCore(2, 4, 5);
+  m.AddPCore(3, 6, 7);
+  // 8 E-cores, no SMT: cpu 8..15
+  for (int i = 0; i < 8; ++i)
+    m.AddECore(4 + i, 8 + i, /*freq*/ 3800000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  // Expected slot ordering: 4 P-physical (0,2,4,6) → 8 E-cores (8..15).
+  // P-siblings (1,3,5,7) are NOT in the slot list — the central guarantee.
+  const std::vector<int> expected{0, 2, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 17. PhysicalCoreSlots_DesktopHybrid_8P16E — i9-13900K layout: 8 P-physical,
+//     16 E-cores, no LP-E. Tests slot ordering when num_p_physical is large.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_DesktopHybrid_8P16E) {
+  MockSysfs m(tmp_root_);
+  // 8 P-cores with SMT siblings: cpu 0..15 — P-physical = 0,2,4,...,14
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5800000);
+  // 16 E-cores, no SMT: cpu 16..31
+  for (int i = 0; i < 16; ++i)
+    m.AddECore(8 + i, 16 + i, /*freq*/ 4300000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  std::vector<int> expected{0, 2, 4, 6, 8, 10, 12, 14};  // 8 P-physical
+  for (int i = 0; i < 16; ++i)
+    expected.push_back(16 + i);  // 16 E-cores
+  EXPECT_EQ(t.physical_core_slots, expected);
+  EXPECT_EQ(t.physical_core_slots.size(), 24u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 18. PhysicalCoreSlots_AmdSmt — non-hybrid SMT (AMD Ryzen 8C/16T). Sibling
+//     must still be excluded — slot list collapses to even logicals only.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_AmdSmt) {
+  MockSysfs m(tmp_root_);
+  // 8 physical cores with SMT siblings — cpu 0,1 share core_id 0, etc.
+  for (int core = 0; core < 8; ++core)
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ 5400000);
+  // No WriteTypes / hybrid flag — non-hybrid path.
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  const std::vector<int> expected{0, 2, 4, 6, 8, 10, 12, 14};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 19. PhysicalCoreSlots_SmtOff_Identity — 4 physical cores, no SMT. Slot
+//     mapping must be identity (slot N → cpu N), preserving legacy 4-core
+//     fallback behaviour.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_SmtOff_Identity) {
+  MockSysfs m(tmp_root_);
+  for (int cpu = 0; cpu < 4; ++cpu)
+    m.AddPCore(cpu, cpu, /*sibling=*/-1, /*freq*/ 3000000);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  const std::vector<int> expected{0, 1, 2, 3};
+  EXPECT_EQ(t.physical_core_slots, expected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 19b. PhysicalCoreSlots_NonStandardCoreIdEnum — NUC 14 Pro Meteor Lake
+//      비표준 BIOS enumeration. cpu 0 의 SMT sibling 이 cpu 5 (core_id 100..105
+//      을 1/2, 3/4, 0/5, 6/7, 8/9, 10/11 페어로 분배). core_id 정렬 그대로
+//      iteration 하면 P-physical = [1, 3, 0, 6, 8, 10] 으로 비단조 → slot 2
+//      가 cpu 0 으로 매핑되어 layout v4.1 의 "slot 0 = OS" 가정이 깨짐.
+//      (physical, sibling) pair 를 physical ascending 으로 sort 해야 한다.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(CpuTopologyTest, PhysicalCoreSlots_NonStandardCoreIdEnum) {
+  MockSysfs m(tmp_root_);
+  // P-core pairs with non-monotonic core_id grouping. cpu 0 lands in the
+  // middle (core_id 102) rather than the first group.
+  m.AddPCore(100, 1, 2, /*freq*/ 5000000);    // core_id 100 → cpus {1, 2}
+  m.AddPCore(101, 3, 4, /*freq*/ 5000000);    // core_id 101 → cpus {3, 4}
+  m.AddPCore(102, 0, 5, /*freq*/ 5000000);    // core_id 102 → cpus {0, 5}
+  m.AddPCore(103, 6, 7, /*freq*/ 5000000);    // core_id 103 → cpus {6, 7}
+  m.AddPCore(104, 8, 9, /*freq*/ 5000000);    // core_id 104 → cpus {8, 9}
+  m.AddPCore(105, 10, 11, /*freq*/ 5000000);  // core_id 105 → cpus {10, 11}
+  // 8 E-cores, no SMT
+  for (int i = 0; i < 8; ++i)
+    m.AddECore(200 + i, 12 + i, /*freq*/ 3800000);
+  // 2 LP-E cores
+  m.AddECore(208, 20, /*freq*/ 2500000);
+  m.AddECore(209, 21, /*freq*/ 2500000);
+  m.WriteTypes();
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/true, /*family=*/6, /*model=*/0xAA);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::METEOR_LAKE);
+
+  // P-physical sorted ascending despite non-monotonic core_id ordering.
+  const std::vector<int> expected_phys{0, 1, 3, 6, 8, 10};
+  EXPECT_EQ(t.p_core_physical_ids, expected_phys);
+
+  // Sibling list preserves pairing — cpu 0 (physical) ↔ cpu 5 (sibling) at
+  // index 0, cpu 1 ↔ cpu 2 at index 1, etc.
+  const std::vector<int> expected_sib{5, 2, 4, 7, 9, 11};
+  EXPECT_EQ(t.p_core_sibling_ids, expected_sib);
+
+  // physical_core_slots: P (sorted) → E (sorted) → LP-E (sorted).
+  std::vector<int> expected_slots{0, 1, 3, 6, 8, 10};
+  for (int cpu = 12; cpu <= 19; ++cpu)
+    expected_slots.push_back(cpu);
+  expected_slots.push_back(20);
+  expected_slots.push_back(21);
+  EXPECT_EQ(t.physical_core_slots, expected_slots);
+
+  // Slot 0 lands on cpu 0 (OS-eligible primary), not cpu 1.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(0, t), 0);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(1, t), 1);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(2, t), 3);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(3, t), 6);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 20. SlotToLogicalCpu — direct unit coverage of the slot→logical translator.
+//     Mocks a CpuTopology with a known slot list and exercises all branches
+//     (sentinel, in-range, out-of-range, empty).
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(SlotToLogicalCpu, AllBranches) {
+  rtc::CpuTopology topo;
+  topo.physical_core_slots = {0, 2, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+
+  // In-range slot — P-physical sequence.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(0, topo), 0);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(1, topo), 2);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(3, topo), 6);
+  // In-range slot — E-core spillover.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(4, topo), 8);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(11, topo), 15);
+
+  // Sentinel passthrough.
+  EXPECT_EQ(rtc::SlotToLogicalCpu(-1, topo), -1);
+
+  // Out-of-range fallback to identity (legacy behaviour).
+  EXPECT_EQ(rtc::SlotToLogicalCpu(12, topo), 12);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(99, topo), 99);
+
+  // Empty topology (container without sysfs) — identity for every slot.
+  rtc::CpuTopology empty;
+  EXPECT_EQ(rtc::SlotToLogicalCpu(0, empty), 0);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(5, empty), 5);
+  EXPECT_EQ(rtc::SlotToLogicalCpu(-1, empty), -1);
 }
 
 // Fallback primitive — direct ClusterByMaxFreq coverage. Guards the

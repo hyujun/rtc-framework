@@ -733,6 +733,83 @@ _rt_cpuinfo_has_hybrid() {
   }' "$p"
 }
 
+# Read vendor_id / cpu family / model from /proc/cpuinfo. Only the first
+# processor block is parsed — all logical CPUs share family/model. Sets:
+#   _RT_CPU_VENDOR  — "GenuineIntel" / "AuthenticAMD" / "" (unknown)
+#   _RT_CPU_FAMILY  — integer (0 if unknown or non-numeric)
+#   _RT_CPU_MODEL   — integer (0 if unknown or non-numeric)
+# Tolerant: missing fields stay at defaults so existing mocks (which omit
+# family/model lines) continue to round-trip.
+_rt_read_cpu_vendor_family_model() {
+  _RT_CPU_VENDOR=""
+  _RT_CPU_FAMILY=0
+  _RT_CPU_MODEL=0
+  local p="${RTC_PROC_CPUINFO:-/proc/cpuinfo}"
+  [[ -r "$p" ]] || return 0
+  local vendor family model
+  vendor=$(awk -F':' '/^vendor_id[ \t]*:/ {
+    gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit
+  }' "$p")
+  family=$(awk -F':' '/^cpu family[ \t]*:/ {
+    gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit
+  }' "$p")
+  # "model" line — distinguish from "model name" by requiring optional
+  # whitespace then ":" immediately after "model".
+  model=$(awk -F':' '/^model[ \t]*:/ {
+    gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit
+  }' "$p")
+  _RT_CPU_VENDOR="${vendor:-}"
+  # Use `if` blocks (not `[[ ]] && cmd`) so a missing field doesn't make the
+  # function return non-zero under `set -e` in callers.
+  if [[ "$family" =~ ^[0-9]+$ ]]; then _RT_CPU_FAMILY="$family"; fi
+  if [[ "$model"  =~ ^[0-9]+$ ]]; then _RT_CPU_MODEL="$model"; fi
+  return 0
+}
+
+# Lookup human-friendly platform label and "no-HT-by-design" flag from
+# Intel CPUID family.model. Maps modern Intel hybrid silicon to its
+# silicon family + form factor, so callers can distinguish e.g.
+# Raptor Lake-S desktop (i9-13900K, model 0xBF) from Raptor Lake-P mobile
+# (NUC 13 Pro, model 0xBA) — they share the (P-HT, no LP-E) topology
+# fingerprint and would otherwise be indistinguishable.
+#
+# SSOT: Linux kernel arch/x86/include/asm/intel-family.h
+#   https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/intel-family.h
+#
+# Inputs:  $1 = cpu family (int), $2 = cpu model (int)
+# Outputs (globals):
+#   _RT_PLATFORM_LABEL           — human-friendly string, "" if unknown
+#   _RT_PLATFORM_NO_HT_BY_DESIGN — 1 if silicon design lacks Hyper-Threading
+#                                  (Lion Cove cores: Arrow/Lunar Lake);
+#                                  0 otherwise. Used by check_rt_setup.sh to
+#                                  distinguish "BIOS disabled HT" (FAIL) from
+#                                  "silicon has no HT to begin with" (PASS).
+_rt_lookup_platform_label() {
+  _RT_PLATFORM_LABEL=""
+  _RT_PLATFORM_NO_HT_BY_DESIGN=0
+  local family="$1" model="$2"
+  [[ "$family" == "6" ]] || return 0
+  case "$model" in
+    151) _RT_PLATFORM_LABEL="Alder Lake-S desktop" ;;        # 0x97
+    154) _RT_PLATFORM_LABEL="Alder Lake-P mobile" ;;         # 0x9A
+    190) _RT_PLATFORM_LABEL="Alder Lake-N (Atom-only)" ;;    # 0xBE
+    183) _RT_PLATFORM_LABEL="Raptor Lake" ;;                 # 0xB7 (base alias)
+    186) _RT_PLATFORM_LABEL="Raptor Lake-P mobile" ;;        # 0xBA (NUC 13 Pro)
+    191) _RT_PLATFORM_LABEL="Raptor Lake-S desktop" ;;       # 0xBF (i9-13900K)
+    170) _RT_PLATFORM_LABEL="Meteor Lake-L mobile" ;;        # 0xAA (NUC 14 Pro)
+    172) _RT_PLATFORM_LABEL="Meteor Lake-M mobile" ;;        # 0xAC
+    189) _RT_PLATFORM_LABEL="Lunar Lake mobile"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xBD
+    198) _RT_PLATFORM_LABEL="Arrow Lake-S desktop"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xC6
+    197) _RT_PLATFORM_LABEL="Arrow Lake-H mobile"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xC5
+    181) _RT_PLATFORM_LABEL="Arrow Lake-U mobile"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xB5
+    *)   _RT_PLATFORM_LABEL="" ;;
+  esac
+}
+
 # Enumerate online logical CPU ids by scanning cpuN directories under sysfs.
 # Output: space-separated ids in numeric order. Empty on failure.
 _rt_enumerate_online_cpus() {
@@ -899,20 +976,32 @@ _rt_populate_hybrid_from_cpus() {
     fi
   done
 
-  local sorted_cids
-  sorted_cids=$(printf '%s\n' "${!core_to_cpus[@]}" | sort -n)
-  local cpus sorted_cpus first second
-  while IFS= read -r cid; do
-    [[ -z "$cid" ]] && continue
+  # Build (physical, sibling) pairs from each core_id group, then emit the list
+  # sorted by *physical logical id ascending*. Without this outer sort, BIOSes
+  # that assign a non-monotonic core_id to cpu 0 (e.g. some NUC 14 Pro Meteor
+  # Lake firmware: cpu 0 shares core_id with cpu 5, so its group lands in the
+  # middle of the iteration) produce a P-physical list like [1, 3, 0, 6, 8, 10]
+  # — and the v4.1 layout assumption "slot 0 == lowest logical cpu == OS"
+  # breaks. Sorting by physical restores the invariant on every enumeration
+  # order, while keeping each (physical, sibling) pair contiguous.
+  local pairs="" cid cpus sorted_cpus first second
+  for cid in "${!core_to_cpus[@]}"; do
     cpus="${core_to_cpus[$cid]}"
     sorted_cpus=$(printf '%s\n' $cpus | sort -n | tr '\n' ' ')
     read -r first second _ <<<"$sorted_cpus"
+    pairs+="${first} ${second:--1}"$'\n'
+    NUM_P_PHYSICAL=$((NUM_P_PHYSICAL + 1))
+  done
+  local sorted_pairs
+  sorted_pairs=$(printf '%s' "$pairs" | sort -n -k1,1)
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    read -r first second _ <<<"$line"
     P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS} ${first}"
-    if [[ -n "$second" ]]; then
+    if [[ -n "$second" && "$second" != "-1" ]]; then
       P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS} ${second}"
     fi
-    NUM_P_PHYSICAL=$((NUM_P_PHYSICAL + 1))
-  done <<<"$sorted_cids"
+  done <<<"$sorted_pairs"
   P_CORE_PHYSICAL_IDS="${P_CORE_PHYSICAL_IDS# }"
   P_CORE_SIBLING_IDS="${P_CORE_SIBLING_IDS# }"
 
@@ -946,12 +1035,62 @@ _rt_populate_hybrid_from_cpus() {
         E_CORE_IDS="${E_CORE_IDS} ${cpu}"
       fi
     done
-    E_CORE_IDS="${E_CORE_IDS# }"
-    LPE_CORE_IDS="${LPE_CORE_IDS# }"
+    # Sort ascending — non-standard BIOS enumerations may emit e_cpus in
+    # non-monotonic order. Logical-id ascending gives a stable mapping
+    # consumers (PHYSICAL_CORE_SLOTS, check_rt_setup display) can rely on.
+    E_CORE_IDS=$(printf '%s\n' $E_CORE_IDS | sort -n | tr '\n' ' ')
+    LPE_CORE_IDS=$(printf '%s\n' $LPE_CORE_IDS | sort -n | tr '\n' ' ')
+    E_CORE_IDS="${E_CORE_IDS% }"
+    LPE_CORE_IDS="${LPE_CORE_IDS% }"
     NUM_E_CORES=$(echo "$E_CORE_IDS" | wc -w)
     NUM_LPE_CORES=$(echo "$LPE_CORE_IDS" | wc -w)
     if (( NUM_LPE_CORES > 0 )); then HAS_LP_E_CORES=1; fi
   fi
+}
+
+# Populate PHYSICAL_CORE_SLOTS — ordered first-logical-id of every unique
+# physical core. Mirrors CpuTopology::physical_core_slots (cpu_topology.hpp).
+# Sequence:
+#   hybrid     → P-physical → E-core → LP-E (already split by sysfs/freq path)
+#   non-hybrid → first logical of each (pkg, core_id) group, cpu ascending
+# Consumed by RT thread-affinity translation (ApplyThreadConfig in C++).
+# Excludes SMT siblings so RT thread pinning by slot index never lands on a
+# P-core's hyperthread.
+_rt_populate_physical_core_slots() {
+  PHYSICAL_CORE_SLOTS=""
+  local cpu_root="$1"
+
+  if (( IS_HYBRID == 1 )); then
+    local slots=""
+    [[ -n "$P_CORE_PHYSICAL_IDS" ]] && slots="${P_CORE_PHYSICAL_IDS}"
+    [[ -n "$E_CORE_IDS" ]]         && slots="${slots:+$slots }${E_CORE_IDS}"
+    [[ -n "$LPE_CORE_IDS" ]]       && slots="${slots:+$slots }${LPE_CORE_IDS}"
+    PHYSICAL_CORE_SLOTS="$slots"
+    return 0
+  fi
+
+  # Non-hybrid (AMD SMT, SMT-off Intel, container). Walk cpus ascending and
+  # record the first cpu that introduces each unique (pkg, core_id) pair —
+  # that cpu is the "primary" of its physical core (sibling, if any, has
+  # a higher logical id and is skipped).
+  local cpu_dir cpu pkg core key
+  declare -A _seen_keys=()
+  local sorted_cpu_dirs
+  sorted_cpu_dirs=$(ls -d "$cpu_root"/cpu[0-9]* 2>/dev/null | sort -V)
+  while IFS= read -r cpu_dir; do
+    [[ -d "$cpu_dir" ]] || continue
+    cpu="${cpu_dir##*/cpu}"
+    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
+    pkg=$(_rt_read_trim "$cpu_dir/topology/physical_package_id")
+    core=$(_rt_read_trim "$cpu_dir/topology/core_id")
+    [[ -z "$pkg" || -z "$core" ]] && continue
+    key="${pkg}_${core}"
+    if [[ -z "${_seen_keys[$key]+x}" ]]; then
+      _seen_keys[$key]=1
+      PHYSICAL_CORE_SLOTS="${PHYSICAL_CORE_SLOTS:+$PHYSICAL_CORE_SLOTS }${cpu}"
+    fi
+  done <<<"$sorted_cpu_dirs"
+  return 0
 }
 
 # Sanity hook: when enabled (RTC_HYBRID_SANITY=1), cross-check the primary
@@ -1010,8 +1149,21 @@ detect_hybrid_capability() {
   P_CORE_SIBLING_IDS=""
   E_CORE_IDS=""
   LPE_CORE_IDS=""
+  PHYSICAL_CORE_SLOTS=""
   NUC_GENERATION="none"
   HYBRID_DETECT_SOURCE="none"
+
+  # ── CPU identity (vendor / family / model + platform label) ──────────────
+  # Populated independently of hybrid detection: even non-hybrid Intel and
+  # AMD chips get vendor + family + model exposed so callers can render a
+  # meaningful identifier. PLATFORM_LABEL stays "" on unknown silicon.
+  _rt_read_cpu_vendor_family_model
+  CPU_VENDOR="$_RT_CPU_VENDOR"
+  CPU_FAMILY="$_RT_CPU_FAMILY"
+  CPU_MODEL="$_RT_CPU_MODEL"
+  _rt_lookup_platform_label "$CPU_FAMILY" "$CPU_MODEL"
+  PLATFORM_LABEL="$_RT_PLATFORM_LABEL"
+  PLATFORM_NO_HT_BY_DESIGN="$_RT_PLATFORM_NO_HT_BY_DESIGN"
 
   local p_cpus="" e_cpus=""
 
@@ -1083,6 +1235,9 @@ detect_hybrid_capability() {
       NUC_GENERATION="$RTC_FORCE_HYBRID_GENERATION"
       ;;
   esac
+
+  # Populate slot-index→logical-id mapping for RT thread placement.
+  _rt_populate_physical_core_slots "$cpu_root"
 }
 
 # Thin accessors — call detect_hybrid_capability once first, or rely on
@@ -1093,3 +1248,9 @@ get_p_core_sibling_ids()  { echo "${P_CORE_SIBLING_IDS:-}"; }
 get_e_core_ids()          { echo "${E_CORE_IDS:-}"; }
 get_lpe_core_ids()        { echo "${LPE_CORE_IDS:-}"; }
 get_hybrid_detect_source() { echo "${HYBRID_DETECT_SOURCE:-none}"; }
+get_cpu_vendor()          { echo "${CPU_VENDOR:-}"; }
+get_cpu_family()          { echo "${CPU_FAMILY:-0}"; }
+get_cpu_model()           { echo "${CPU_MODEL:-0}"; }
+get_platform_label()      { echo "${PLATFORM_LABEL:-}"; }
+get_platform_no_ht_by_design() { echo "${PLATFORM_NO_HT_BY_DESIGN:-0}"; }
+get_physical_core_slots() { echo "${PHYSICAL_CORE_SLOTS:-}"; }

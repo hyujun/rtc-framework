@@ -9,7 +9,17 @@ namespace rtc {
 
 // Thread configuration for RT control and scheduling
 struct ThreadConfig {
-  int cpu_core;        // CPU affinity (0-based core index, -1 = no pinning)
+  // CPU affinity *slot index* (0-based; -1 = no pinning).
+  // A slot identifies one unique physical core, not a kernel logical CPU id:
+  // ApplyThreadConfig translates the slot through CpuTopology::physical_core_slots
+  // so RT threads always land on a P-core's *primary* logical (never the SMT
+  // sibling) on hybrid Intel and AMD SMT alike. Slot ordering:
+  //   hybrid     → P-physical → E-core → LP-E (P-core first, spill to E only
+  //                  when slot index exceeds num_p_physical)
+  //   non-hybrid → physical core first-logicals, ascending
+  //   SMT off    → identity (slot N → logical N), unchanged behaviour
+  // See SlotToLogicalCpu() in thread_utils.hpp.
+  int cpu_core;
   int sched_policy;    // SCHED_FIFO, SCHED_RR, or SCHED_OTHER
   int sched_priority;  // 1-99 for SCHED_FIFO/RR, ignored for OTHER
   int nice_value;      // -20 to 19 for SCHED_OTHER, ignored for FIFO/RR
@@ -37,6 +47,14 @@ struct MpcThreadConfig {
 
 // ── RT priority hierarchy (layout v4.1) ─────────────────────────────────────
 //   90 (rt_control)  > 70 (rt_callback) > 60 (mpc_main) > 55 (mpc_workers)
+//
+// IMPORTANT — "Core N" below is a *slot index*, not a kernel logical CPU id.
+// ApplyThreadConfig translates the slot through CpuTopology::physical_core_slots
+// so RT threads land on a physical P-core's *primary* logical (never the SMT
+// sibling) on hybrid Intel (Raptor Lake-S i9-13900K, NUC13 Pro, Meteor Lake)
+// and AMD SMT alike. The "Core 1" slot maps to logical cpu 2 on a SMT-on
+// 4P+8E hybrid, to logical cpu 1 on a SMT-off 4-core, to logical cpu 2 on
+// AMD Ryzen 8C/16T — a single uniform meaning across topologies.
 //
 // Layout v4 unified former rt_inbound (FIFO 70) + rt_outbound (FIFO 65) into
 // a single rt_callback thread. v4.1 shifts the RT cluster down to start at

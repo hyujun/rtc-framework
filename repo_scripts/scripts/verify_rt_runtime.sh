@@ -92,6 +92,34 @@ done
 compute_cpu_layout
 PHYSICAL_CORES="$TOTAL_CORES"
 
+# Populate PHYSICAL_CORE_SLOTS (rt_common.sh::detect_hybrid_capability) so the
+# slot→logical-id translator below can map ThreadConfig::cpu_core (a *slot
+# index*, not a kernel logical CPU id) into the actual logical CPU that
+# ApplyThreadConfig pinned. Without this, SMT-on hybrid (NUC13/14, i9-13900K)
+# and AMD SMT systems would erroneously report PASS/FAIL against the wrong cpu
+# because slot 1 maps to logical cpu 2 (P-core 1 primary), not cpu 1 (sibling).
+detect_hybrid_capability
+
+# Translate a thread_config slot index into the kernel logical CPU id that
+# ApplyThreadConfig actually pinned. Mirrors C++ rtc::SlotToLogicalCpu()
+# (thread_utils.hpp). Empty PHYSICAL_CORE_SLOTS (container without sysfs) or
+# out-of-range slot → identity fallback (preserves legacy behaviour).
+slot_to_logical_cpu() {
+  local slot="$1"
+  if [[ "$slot" -lt 0 ]]; then
+    echo "$slot"
+    return 0
+  fi
+  local -a slots=()
+  read -ra slots <<<"${PHYSICAL_CORE_SLOTS:-}"
+  local count=${#slots[@]}
+  if (( count == 0 || slot >= count )); then
+    echo "$slot"
+    return 0
+  fi
+  echo "${slots[$slot]}"
+}
+
 # ── thread_config.hpp 기반 기대값 테이블 ──────────────────────────────────────
 # 코어 수에 따라 기대값이 달라진다.
 # 형식: "thread_name:expected_cpu:expected_policy:expected_priority"
@@ -100,54 +128,94 @@ declare -a EXPECTED_THREADS
 
 build_expected_threads() {
   # thread_config.hpp / SelectThreadConfigs() 기반 기대값 (layout v4.1).
-  # 형식: "thread_name:expected_cpu:expected_policy:expected_priority[:optional]"
+  # 형식: "thread_name:expected_slot:expected_policy:expected_priority[:optional]"
   # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
   # optional 필드가 있으면 해당 스레드 미발견 시 WARN 대신 SKIP 처리.
   #   - hand_udp_recv: hand_driver 프로세스 내부의 receive thread.
   #                    cpu_core=-1 sentinel — process taskset 으로 affinity 상속,
   #                    별도 cpu pin 검증 skip (priority 65 만 확인).
   #
+  # IMPORTANT: expected_slot 은 ThreadConfig::cpu_core 와 동일한 *slot index*
+  # (physical core 번호) 이며, kernel logical CPU id 가 아니다. check_cpu_affinity
+  # 가 slot_to_logical_cpu() 로 변환해 실제 affinity mask 와 비교한다. SMT-on
+  # hybrid (NUC13/14, i9-13900K) 에서 slot 1 → logical cpu 2 (P-core 1 primary),
+  # SMT-off / 4-core CI 에서 slot 1 → logical cpu 1 (identity). 같은 표가 양쪽
+  # 환경 모두에서 올바르게 동작.
+  #
   # Layout v4.1: rt_control=1, rt_callback=2, mpc_main=3, workers=4-5.
   # nrt_logging / nrt_callback: 4c=0, 6c=5 (shared), 8c=6/7, 10c=7/8,
   #   12c+=8/9. arm < hand alphabetical.
+  # Mirrors thread_config.hpp::kMpcConfig*Core + per-tier driver/nrt configs.
+  # Every RT thread (rt_control, rt_callback, mpc_main, mpc_worker_*) AND
+  # process-level pins (arm_driver, hand_driver, nrt_logging, nrt_callback)
+  # are enumerated so check_process_discovery / check_cpu_affinity /
+  # check_cpu_migration cover the full system layout — previously mpc_main,
+  # mpc_worker_*, arm_driver, hand_driver were missing and verify silently
+  # skipped them.
+  # NOTE: mpc_worker_* 는 ":optional" 로 표시 — MPCThread::Start (rtc_mpc/src/
+  # thread/mpc_thread.cpp) 의 worker 생성 lambda 가 ApplyThreadConfig 호출 후
+  # 즉시 종료하는 구조 (parallel solver 가 별도로 thread 를 spawn 하는 패턴).
+  # std::jthread destructor 가 join 하므로 verify 의 process discovery 시점에
+  # 이미 사라져 매칭 불가. 미발견을 WARN 이 아닌 SKIP 으로 처리해 false
+  # negative 방지. 실제 worker 활용 여부는 별도 진단 task.
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    # 12-16+: RT 1-2, MPC 3-5, arm 6, hand 7, nrt_logging 8, nrt_callback 9.
+    # 12-16+: rt_control/callback 1-2, mpc_main 3, workers 4-5, arm 6, hand 7,
+    # nrt_logging 8, nrt_callback 9.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "mpc_worker_0:4:1:55:optional"
+      "mpc_worker_1:5:1:55:optional"
+      "arm_driver:6:0:0"
+      "hand_driver:7:0:0"
       "nrt_logging:8:0:0"
       "nrt_callback:9:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    # 10-11: RT 1-2, MPC 3-4, arm 5, hand 6, nrt_logging 7, nrt_callback 8.
+    # 10-11: rt 1-2, mpc_main 3, single worker 4, arm 5, hand 6, nrt_log 7, nrt_cb 8.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "mpc_worker_0:4:1:55:optional"
+      "arm_driver:5:0:0"
+      "hand_driver:6:0:0"
       "nrt_logging:7:0:0"
       "nrt_callback:8:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    # 8-9: RT 1-2, MPC 3, arm 4, hand 5, nrt_logging 6, nrt_callback 7.
+    # 8-9: rt 1-2, mpc_main 3, arm 4, hand 5, nrt_log 6, nrt_cb 7. No workers.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "arm_driver:4:0:0"
+      "hand_driver:5:0:0"
       "nrt_logging:6:0:0"
       "nrt_callback:7:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
-    # 6-7 (degraded): RT 1-2, MPC 3, arm+hand share Core 4, nrt_logging+nrt_callback share Core 5.
+    # 6-7 (degraded): rt 1-2, mpc_main 3, arm+hand share 4, nrt_log+nrt_cb share 5.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:1:60"
+      "arm_driver:4:0:0"
+      "hand_driver:4:0:0"
       "nrt_logging:5:0:0"
       "nrt_callback:5:0:0"
     )
   else
-    # 4-core fallback (degraded): RT 1-2, MPC CFS Core 3 — no RT determinism.
+    # 4-core fallback (degraded): rt 1-2, mpc_main CFS slot 3, arm/hand/nrt
+    # all share OS Core 0 — no RT determinism.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
+      "mpc_main:3:0:0"
+      "arm_driver:0:0:0"
+      "hand_driver:0:0:0"
       "nrt_logging:0:0:0"
       "nrt_callback:0:0:0"
     )
@@ -285,6 +353,16 @@ check_process_discovery() {
 
   _pass "총 스레드: ${thread_count}개"
 
+  # PHYSICAL_CORE_SLOTS 진단: slot index → logical CPU id 룩업 테이블이 어떻게
+  # 채워졌는지 한 줄 표시. 사용자가 affinity / migration 결과를 보고 "왜 slot 2
+  # 가 cpu 4 로 변환되는가" 같은 의문을 가질 때 즉시 답이 됨. 비어 있으면
+  # identity fallback (SMT-off CI / container) 이라는 점 surface.
+  if [[ -n "${PHYSICAL_CORE_SLOTS:-}" ]]; then
+    _pass "Slot→logical 매핑: [${PHYSICAL_CORE_SLOTS}] (slot index 순서대로 logical CPU id)"
+  else
+    _warn "PHYSICAL_CORE_SLOTS 미감지 — slot→logical 변환이 identity fallback (sysfs topology 미가용 / 비-Intel 비-hybrid 시스템)"
+  fi
+
   # 알려진 스레드 매칭 결과 — optional 스레드 미발견은 SKIP 처리
   local required_count=0
   local required_found=0
@@ -322,6 +400,7 @@ check_process_discovery() {
   elif [[ "$known_count" -gt 0 ]]; then
     _warn "thread_config.hpp 스레드 일부 감지: ${known_count}/${expected_count}"
     # 누락된 필수 스레드 표시
+    local _missing_required=0
     for entry in "${EXPECTED_THREADS[@]}"; do
       local ename eopt
       ename=$(echo "$entry" | cut -d: -f1)
@@ -331,10 +410,84 @@ check_process_discovery() {
           _skip "  선택적 스레드 미활성: ${ename}"
         else
           _warn "  미발견: ${ename}"
+          ((_missing_required++)) || true
         fi
       fi
     done
     _category_update "process_discovery" "WARN"
+
+    # 진단 보조: 필수 스레드가 미발견이면 controller process 의 모든 RT-like
+    # thread comm 을 dump. 이름이 박힌 thread 가 어떤 게 있고, EXPECTED 와
+    # 어떻게 다른지 즉시 확인 가능 — pthread_setname_np 실패(silent),
+    # ApplyThreadConfig early-return (FIFO priority permission 부족, affinity
+    # 실패), thread 미생성, race condition 등 가설을 좁힘.
+    if (( _missing_required > 0 )); then
+      local rt_like_threads="" other_threads=""
+      local seen_comms=""
+      for tid in "${!THREAD_NAMES[@]}"; do
+        local cname="${THREAD_NAMES[$tid]:-}"
+        [[ -z "$cname" ]] && continue
+        # Dedupe — N threads with the same comm only printed once.
+        case " $seen_comms " in
+          *" $cname "*) continue ;;
+        esac
+        seen_comms="${seen_comms} ${cname}"
+        # RT-like keyword filter to keep the dump readable.
+        if [[ "$cname" =~ (rt_|mpc|callback|control|worker|driver|nrt|spin|exec) ]]; then
+          rt_like_threads="${rt_like_threads}    ${cname}"$'\n'
+        else
+          other_threads="${other_threads}${cname} "
+        fi
+      done
+      if [[ -n "$rt_like_threads" ]]; then
+        echo "    [diag] controller process 의 RT-like thread comm (unique):"
+        printf '%s' "$rt_like_threads"
+      fi
+      if [[ -n "$other_threads" ]]; then
+        # Other threads — single line, no per-thread output (just so user knows
+        # they exist). Truncate to ~120 chars to avoid wrapping noise.
+        local other_short="${other_threads:0:120}"
+        echo "    [diag] 기타 thread comm: ${other_short}..."
+      fi
+      echo "    [hint] 실패 가능성:"
+      echo "    [hint]   1. realtime 권한 부족 (SCHED_FIFO 90/70 한도 초과) — ulimit -r 확인, @realtime 그룹 멤버십"
+      echo "    [hint]   2. controller 가 setname 전에 thread 종료 (sim 모드의 짧은 lifecycle)"
+      echo "    [hint]   3. pthread_setname_np truncate (15 chars 초과) — thread_config.hpp 의 .name 길이 확인"
+      echo "    [hint]   4. ApplyThreadConfig early-return (affinity / sched 실패) — controller stderr 의 [WARN] 메시지 확인"
+
+      # Auto-diagnose rtprio limit — single most common cause. If the limit is
+      # between two SCHED_FIFO priorities used by EXPECTED_THREADS (e.g. 60 ≤
+      # limit < 70), only the lower-priority threads succeed and the higher
+      # ones silent-fail. Read the controller process's actual limits.
+      local controller_rtprio=""
+      if [[ -r "/proc/${CONTROLLER_PID}/limits" ]]; then
+        controller_rtprio=$(awk '/Max realtime priority/ { print $4 " (soft) / " $5 " (hard)"; exit }' \
+                            "/proc/${CONTROLLER_PID}/limits" 2>/dev/null || echo "")
+      fi
+      if [[ -n "$controller_rtprio" ]]; then
+        echo "    [diag] controller PID ${CONTROLLER_PID} 의 Max realtime priority: ${controller_rtprio}"
+        # Pull soft limit only for the range check.
+        local rtprio_soft
+        rtprio_soft=$(echo "$controller_rtprio" | awk '{print $1}')
+        if [[ "$rtprio_soft" =~ ^[0-9]+$ ]]; then
+          # Highest required FIFO priority across EXPECTED_THREADS (typically 90).
+          local max_required_prio=0
+          for entry in "${EXPECTED_THREADS[@]}"; do
+            local epolicy eprio
+            epolicy=$(echo "$entry" | cut -d: -f3)
+            eprio=$(echo "$entry" | cut -d: -f4)
+            if [[ "$epolicy" -eq 1 && "$eprio" -gt "$max_required_prio" ]]; then
+              max_required_prio="$eprio"
+            fi
+          done
+          if (( rtprio_soft < max_required_prio )); then
+            echo "    [hint] ↑ rtprio soft limit (${rtprio_soft}) < required (${max_required_prio}). FIFO ${rtprio_soft} 초과 priority 모두 silent-fail."
+            echo "    [fix]  sudo bash -c 'echo \"@realtime - rtprio 99\" >> /etc/security/limits.d/99-realtime.conf' (그 후 재로그인)"
+            echo "    [fix]  또는 controller 실행 시 'sudo -E' 사용 (개발 환경)"
+          fi
+        fi
+      fi
+    fi
   else
     _fail "thread_config.hpp 스레드 감지 실패 (${known_count}/${expected_count})"
     _category_update "process_discovery" "FAIL"
@@ -440,9 +593,9 @@ check_cpu_affinity() {
   local ok=0 total=0
 
   for entry in "${EXPECTED_THREADS[@]}"; do
-    local ename ecpu
+    local ename eslot
     ename=$(echo "$entry" | cut -d: -f1)
-    ecpu=$(echo "$entry" | cut -d: -f2)
+    eslot=$(echo "$entry" | cut -d: -f2)
 
     local tid="${THREAD_TIDS[$ename]:-}"
     if [[ -z "$tid" ]]; then
@@ -459,21 +612,34 @@ check_cpu_affinity() {
       continue
     fi
 
-    # 기대 mask 계산 (단일 코어 pin)
-    local expected_mask_dec=$((1 << ecpu))
+    # Translate slot → logical CPU id via PHYSICAL_CORE_SLOTS, then compute
+    # the single-core pin mask. On SMT-on hybrid (NUC13/14, i9-13900K) slot 1
+    # maps to logical cpu 2 (P-core 1 primary); on SMT-off CI it stays at 1.
+    local elogical
+    elogical=$(slot_to_logical_cpu "$eslot")
+    local expected_mask_dec=$((1 << elogical))
     local actual_mask_dec=$((16#${mask_hex}))
     local actual_cpus
     actual_cpus=$(mask_to_cpus "$mask_hex")
 
+    # When slot ≠ logical (hybrid SMT-on), surface both numbers so misalignment
+    # is easy to diagnose. Otherwise drop the slot annotation to keep output
+    # readable on the common SMT-off case.
+    local pin_label
+    if [[ "$eslot" == "$elogical" ]]; then
+      pin_label="Core ${elogical}"
+    else
+      pin_label="slot ${eslot} → logical cpu ${elogical}"
+    fi
+
     if [[ "$actual_mask_dec" -eq "$expected_mask_dec" ]]; then
-      _pass "${ename} (TID ${tid}): Core ${ecpu} (mask 0x${mask_hex})"
+      _pass "${ename} (TID ${tid}): ${pin_label} (mask 0x${mask_hex})"
       ((ok++)) || true
     elif (( actual_mask_dec & expected_mask_dec )); then
-      # 기대 코어 포함하지만 다른 코어도 포함
-      _warn "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: Core ${ecpu} only)"
+      _warn "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: ${pin_label} only)"
       _category_update "cpu_affinity" "WARN"
     else
-      _fail "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: Core ${ecpu})"
+      _fail "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: ${pin_label})"
       _category_update "cpu_affinity" "FAIL"
     fi
   done
@@ -640,9 +806,9 @@ check_cpu_migration() {
   local ok=0 total=0
 
   for entry in "${EXPECTED_THREADS[@]}"; do
-    local ename ecpu epolicy
+    local ename eslot epolicy
     ename=$(echo "$entry" | cut -d: -f1)
-    ecpu=$(echo "$entry" | cut -d: -f2)
+    eslot=$(echo "$entry" | cut -d: -f2)
     epolicy=$(echo "$entry" | cut -d: -f3)
 
     # RT 스레드만 검사 (SCHED_FIFO)
@@ -675,11 +841,25 @@ check_cpu_migration() {
       continue
     fi
 
-    if [[ "$current_cpu" -eq "$ecpu" ]]; then
-      _pass "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: Core ${ecpu})"
+    # Translate slot → logical CPU id via PHYSICAL_CORE_SLOTS so comparison is
+    # against the actual logical CPU that ApplyThreadConfig pinned. Without
+    # this, SMT-on hybrid hosts report false "core migration" because slot 2
+    # is mistaken for logical cpu 2 instead of the P-physical it maps to.
+    local elogical
+    elogical=$(slot_to_logical_cpu "$eslot")
+
+    local pin_label
+    if [[ "$eslot" == "$elogical" ]]; then
+      pin_label="Core ${elogical}"
+    else
+      pin_label="slot ${eslot} → logical cpu ${elogical}"
+    fi
+
+    if [[ "$current_cpu" -eq "$elogical" ]]; then
+      _pass "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: ${pin_label})"
       ((ok++)) || true
     else
-      _fail "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: Core ${ecpu}) — 코어 이동 발생!"
+      _fail "${ename} (TID ${tid}): 현재 CPU ${current_cpu} (기대값: ${pin_label}) — 코어 이동 발생!"
       _category_update "cpu_migration" "FAIL"
     fi
   done

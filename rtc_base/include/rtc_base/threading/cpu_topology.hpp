@@ -13,6 +13,8 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // CPU topology detection for hybrid-aware thread placement.
@@ -100,6 +102,39 @@ struct CpuTopology {
   // Used by callers to warn when the primary sysfs path was unavailable and
   // a fallback had to classify the CPU.
   HybridDetectSource detect_source{HybridDetectSource::NONE};
+
+  // CPU identity from /proc/cpuinfo (independent of hybrid topology).
+  // cpu_family / cpu_model are the CPUID family / model integers — equal
+  // shape as the kernel's INTEL_FAM6_* macros. Used to distinguish chips
+  // that share the topology fingerprint (e.g. Raptor Lake-S desktop 0xBF
+  // vs Raptor Lake-P mobile 0xBA — both (P-HT, no LP-E)).
+  std::string cpu_vendor;  // "GenuineIntel" / "AuthenticAMD" / ""
+  int cpu_family{0};       // 0 if unknown
+  int cpu_model{0};        // 0 if unknown
+
+  // Human-friendly platform identifier looked up from (cpu_family, cpu_model).
+  // Empty when the silicon is not in the mapping table. Decoupled from
+  // `generation` so the enum continues to encode topology shape while this
+  // field encodes silicon identity.
+  std::string platform_label;
+
+  // True when the silicon design lacks Hyper-Threading (Lion Cove cores:
+  // Arrow Lake-S/H/U, Lunar Lake). When `generation == RAPTOR_LAKE_P_HT_OFF`
+  // the verifier distinguishes "BIOS disabled HT" (FAIL — fixable) from
+  // "silicon has no HT to begin with" (PASS — by design).
+  bool platform_no_ht_by_design{false};
+
+  // Ordered first-logical-id of every unique physical core. The sequence is
+  //   hybrid    → P-physical (asc) → E-core (asc) → LP-E (asc)
+  //   non-hybrid (AMD SMT / older Intel) → physical core first-logicals (asc)
+  //   SMT off   → identity 0..N-1
+  // ApplyThreadConfig consumes this to translate ThreadConfig::cpu_core
+  // (interpreted as a *slot index*) into the kernel logical CPU id passed to
+  // CPU_SET. The sibling of each P-core is intentionally excluded so RT
+  // threads cannot leak onto an SMT hyperthread of an already-RT physical
+  // core. When the topology is unknown (container without sysfs), the list
+  // is empty and ApplyThreadConfig falls back to identity (slot == logical).
+  std::vector<int> physical_core_slots;
 
   // Tier-selection metric for future hybrid dispatch. Returns the count of
   // "high-performance" physical cores — P-core count on hybrid, plain
@@ -271,11 +306,27 @@ inline void PopulateHybridFromCpus(CpuTopology& t, const std::filesystem::path& 
       if (cid >= 0)
         p_core_id_to_cpus[cid].push_back(cpu);
     }
+    // Build (physical, sibling) pairs from each core_id group, then sort the
+    // *list of pairs by physical logical id ascending*. Without this outer
+    // sort, BIOSes that assign a non-monotonic core_id to cpu 0 (e.g. some
+    // NUC 14 Pro Meteor Lake firmware: cpu 0 shares core_id with cpu 5, so
+    // its group lands in the middle of the iteration) produce a P-physical
+    // list like [1, 3, 0, 6, 8, 10] — and the v4.1 layout assumption
+    // "slot 0 == lowest logical cpu == OS" breaks. Sorting by physical
+    // restores the invariant on every enumeration order.
+    std::vector<std::pair<int, int>> pairs;
+    pairs.reserve(p_core_id_to_cpus.size());
     for (auto& [cid, cpus] : p_core_id_to_cpus) {
       std::sort(cpus.begin(), cpus.end());
-      t.p_core_physical_ids.push_back(cpus.front());
-      if (cpus.size() >= 2)
-        t.p_core_sibling_ids.push_back(cpus[1]);
+      const int phys = cpus.front();
+      const int sib = (cpus.size() >= 2) ? cpus[1] : -1;
+      pairs.emplace_back(phys, sib);
+    }
+    std::sort(pairs.begin(), pairs.end());
+    for (const auto& [phys, sib] : pairs) {
+      t.p_core_physical_ids.push_back(phys);
+      if (sib >= 0)
+        t.p_core_sibling_ids.push_back(sib);
     }
     t.num_p_physical = static_cast<int>(p_core_id_to_cpus.size());
     t.num_p_logical = static_cast<int>(p_cpus.size());
@@ -300,9 +351,122 @@ inline void PopulateHybridFromCpus(CpuTopology& t, const std::filesystem::path& 
       else
         t.e_core_ids.push_back(cpu);
     }
+    // Sort ascending — non-standard BIOS enumerations (NUC 14 Pro Meteor
+    // Lake) may emit e_cpus in non-monotonic order. Logical-id ascending
+    // gives a stable mapping consumers can rely on.
+    std::sort(t.e_core_ids.begin(), t.e_core_ids.end());
+    std::sort(t.lpe_core_ids.begin(), t.lpe_core_ids.end());
     t.num_e_cores = static_cast<int>(t.e_core_ids.size());
     t.num_lpe_cores = static_cast<int>(t.lpe_core_ids.size());
     t.has_lp_e_cores = (t.num_lpe_cores > 0);
+  }
+}
+
+// Parse vendor_id / cpu family / model from /proc/cpuinfo. Only the first
+// processor block is consulted — all logical CPUs share family/model.
+// Returns (vendor, family, model); vendor is "" / family or model is 0 when
+// the field is missing or non-numeric. Tolerant: existing mocks (which omit
+// family/model lines) get safe defaults rather than erroring out.
+inline std::tuple<std::string, int, int> ReadCpuVendorFamilyModel(
+    const std::filesystem::path& cpuinfo) noexcept {
+  std::ifstream f(cpuinfo);
+  if (!f)
+    return {std::string{}, 0, 0};
+
+  std::string vendor;
+  int family = 0;
+  int model = 0;
+  bool got_vendor = false;
+  bool got_family = false;
+  bool got_model = false;
+
+  auto trim = [](std::string s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+      s.erase(s.begin());
+    while (!s.empty() &&
+           (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
+      s.pop_back();
+    return s;
+  };
+
+  std::string line;
+  while (std::getline(f, line)) {
+    const auto colon = line.find(':');
+    if (colon == std::string::npos)
+      continue;
+    std::string key = line.substr(0, colon);
+    std::string val = line.substr(colon + 1);
+    // Trim trailing whitespace/tab from key.
+    while (!key.empty() && (key.back() == ' ' || key.back() == '\t'))
+      key.pop_back();
+    val = trim(std::move(val));
+
+    if (!got_vendor && key == "vendor_id") {
+      vendor = val;
+      got_vendor = true;
+    } else if (!got_family && key == "cpu family") {
+      try {
+        family = std::stoi(val);
+        got_family = true;
+      } catch (...) {
+      }
+    } else if (!got_model && key == "model") {
+      try {
+        model = std::stoi(val);
+        got_model = true;
+      } catch (...) {
+      }
+    }
+    if (got_vendor && got_family && got_model)
+      break;
+  }
+  return {vendor, family, model};
+}
+
+// Lookup human-friendly platform label + "no-HT-by-design" flag from CPUID
+// family.model. Maps modern Intel hybrid silicon to silicon family +
+// form factor so callers can distinguish e.g. Raptor Lake-S desktop
+// (i9-13900K, model 0xBF) from Raptor Lake-P mobile (NUC 13 Pro, model
+// 0xBA) — both share the (P-HT, no LP-E) topology fingerprint.
+//
+// SSOT: Linux kernel arch/x86/include/asm/intel-family.h
+//   https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/intel-family.h
+//
+// Returns (label, no_ht_by_design). label is empty when the silicon is not
+// in the mapping table. no_ht_by_design is true for Lion Cove silicon
+// (Arrow Lake-S/H/U, Lunar Lake) where HT removal is the silicon spec, not
+// a BIOS toggle — used by check_rt_setup.sh to avoid suggesting an
+// impossible fix ("enable HT in BIOS") on those chips.
+inline std::pair<std::string, bool> LookupPlatformLabel(int family, int model) noexcept {
+  if (family != 6)
+    return {std::string{}, false};
+  switch (model) {
+    case 0x97:
+      return {"Alder Lake-S desktop", false};
+    case 0x9A:
+      return {"Alder Lake-P mobile", false};
+    case 0xBE:
+      return {"Alder Lake-N (Atom-only)", false};
+    case 0xB7:
+      return {"Raptor Lake", false};
+    case 0xBA:
+      return {"Raptor Lake-P mobile", false};
+    case 0xBF:
+      return {"Raptor Lake-S desktop", false};
+    case 0xAA:
+      return {"Meteor Lake-L mobile", false};
+    case 0xAC:
+      return {"Meteor Lake-M mobile", false};
+    case 0xBD:
+      return {"Lunar Lake mobile", true};
+    case 0xC6:
+      return {"Arrow Lake-S desktop", true};
+    case 0xC5:
+      return {"Arrow Lake-H mobile", true};
+    case 0xB5:
+      return {"Arrow Lake-U mobile", true};
+    default:
+      return {std::string{}, false};
   }
 }
 
@@ -359,6 +523,21 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
   const fs::path root{std::string(sysfs_root)};
   const fs::path cpu_root = root / "devices/system/cpu";
   const fs::path cpuinfo{std::string(proc_cpuinfo_path)};
+
+  // Step 0: CPU identity (independent of hybrid detection).
+  //         Populates t.cpu_vendor / cpu_family / cpu_model and the
+  //         platform label looked up from intel-family.h. Empty / zero
+  //         defaults when /proc/cpuinfo is unavailable or the field is
+  //         missing (preserves existing-mock compatibility).
+  {
+    auto [vendor, family, model] = ReadCpuVendorFamilyModel(cpuinfo);
+    t.cpu_vendor = std::move(vendor);
+    t.cpu_family = family;
+    t.cpu_model = model;
+    auto [label, no_ht] = LookupPlatformLabel(family, model);
+    t.platform_label = std::move(label);
+    t.platform_no_ht_by_design = no_ht;
+  }
 
   // Step 1: enumerate logical CPUs + group by (pkg, core_id).
   std::map<long, std::vector<int>> core_id_to_logicals;
@@ -433,6 +612,38 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
   // Step 4: classify generation + apply env hint override.
   t.generation = ClassifyGeneration(t.is_hybrid, t.p_core_has_smt, t.has_lp_e_cores);
   t.generation = ApplyEnvHint(t.generation, env_gen_hint);
+
+  // Step 5: populate physical_core_slots — ordered first-logical-id of every
+  //         unique physical core. Hybrid uses P → E → LP-E sequence so RT
+  //         layouts that index by slot land on P-physical first and spill
+  //         over to E-cores only when slot index exceeds the P-physical
+  //         count. Non-hybrid and SMT-off systems collapse to the
+  //         "first logical of each (pkg, core_id) group" rule, which is
+  //         identity on SMT-off and "even logicals only" on AMD SMT.
+  if (t.is_hybrid) {
+    t.physical_core_slots.reserve(t.p_core_physical_ids.size() + t.e_core_ids.size() +
+                                  t.lpe_core_ids.size());
+    for (const int cpu : t.p_core_physical_ids)
+      t.physical_core_slots.push_back(cpu);
+    for (const int cpu : t.e_core_ids)
+      t.physical_core_slots.push_back(cpu);
+    for (const int cpu : t.lpe_core_ids)
+      t.physical_core_slots.push_back(cpu);
+  } else {
+    // core_id_to_logicals iterates in (pkg, core_id) ascending order (std::map
+    // ordering). Each inner vector is push_back'd in cpu = 0,1,... order,
+    // so the lowest logical id of every physical core (the "primary", not
+    // the SMT sibling) is logicals.front() after a deterministic sort.
+    t.physical_core_slots.reserve(core_id_to_logicals.size());
+    for (const auto& [key, logicals] : core_id_to_logicals) {
+      if (logicals.empty())
+        continue;
+      auto sorted = logicals;
+      std::sort(sorted.begin(), sorted.end());
+      t.physical_core_slots.push_back(sorted.front());
+    }
+  }
+
   return t;
 }
 

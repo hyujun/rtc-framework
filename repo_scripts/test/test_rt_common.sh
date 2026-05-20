@@ -71,12 +71,18 @@ mock_set_types() {
 
 mock_write_cpuinfo() {
   # $1=path $2="true"|"false" for hybrid flag
-  local p="$1" has_hybrid="$2"
+  # Optional: $3=cpu_family (int), $4=cpu_model (int)
+  # When family/model are omitted, the corresponding lines are skipped —
+  # tests that exercise the "unknown silicon" path (e.g. AMD, container,
+  # legacy mocks) rely on this absence.
+  local p="$1" has_hybrid="$2" family="${3:-}" model="${4:-}"
   local flag=""
   if [[ "$has_hybrid" == "true" ]]; then flag=" hybrid"; fi
   {
     echo "processor	: 0"
     echo "vendor_id	: GenuineIntel"
+    if [[ -n "$family" ]]; then echo "cpu family	: ${family}"; fi
+    if [[ -n "$model"  ]]; then echo "model		: ${model}"; fi
     echo "flags		: fpu vme de pse tsc msr${flag} pae"
   } >"$p"
 }
@@ -320,7 +326,319 @@ test_container_no_freq_files() {
   expect_eq "NoFreq.detect_source"   "none"  "$HYBRID_DETECT_SOURCE"
 }
 
-# ── Test 11: sanity-check hook fires a warning on disagreement ─────────────
+# ── Test 11: CPUID-based platform label — i9-13900K (Raptor Lake-S) ────────
+# Raptor Lake-S desktop shares the (P-HT, no LP-E) fingerprint with NUC13
+# Pro's Raptor Lake-P mobile. CPUID model 0xBF (191) must distinguish them
+# in PLATFORM_LABEL even though NUC_GENERATION stays raptor_lake_p.
+test_platform_label_raptor_lake_s_desktop() {
+  local root="$TMP/rls_desktop"
+  mock_reset "$root"
+  local i
+  # 8 P-cores with SMT siblings, 16 E-cores — i9-13900K layout.
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5800000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5800000
+  done
+  for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    mock_add_cpu "$root" $((16+i)) $((8+i)) 4300000
+  done
+  mock_set_types "$root" "0-15" "16-31"
+  mock_write_cpuinfo "$TMP/rls_desktop_cpuinfo" "true" "6" "191"  # 0xBF
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/rls_desktop_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "RLS.is_hybrid"           "1"                          "$IS_HYBRID"
+  expect_eq "RLS.generation"          "raptor_lake_p"              "$NUC_GENERATION"
+  expect_eq "RLS.cpu_vendor"          "GenuineIntel"               "$CPU_VENDOR"
+  expect_eq "RLS.cpu_family"          "6"                          "$CPU_FAMILY"
+  expect_eq "RLS.cpu_model"           "191"                        "$CPU_MODEL"
+  expect_eq "RLS.platform_label"      "Raptor Lake-S desktop"      "$PLATFORM_LABEL"
+  expect_eq "RLS.no_ht_by_design"     "0"                          "$PLATFORM_NO_HT_BY_DESIGN"
+  expect_eq "RLS.num_p_physical"      "8"                          "$NUM_P_PHYSICAL"
+  expect_eq "RLS.num_e_cores"         "16"                         "$NUM_E_CORES"
+}
+
+# ── Test 12: CPUID-based platform label — NUC 13 Pro (Raptor Lake-P) ───────
+# Same topology fingerprint as Test 11 but CPUID model 0xBA (186) distinguishes.
+test_platform_label_raptor_lake_p_mobile() {
+  local root="$TMP/rlp_mobile"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5000000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5000000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((8+i)) $((4+i)) 3800000
+  done
+  mock_set_types "$root" "0,1,2,3,4,5,6,7" "8,9,10,11,12,13,14,15"
+  mock_write_cpuinfo "$TMP/rlp_mobile_cpuinfo" "true" "6" "186"  # 0xBA
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/rlp_mobile_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "RLP.generation"          "raptor_lake_p"              "$NUC_GENERATION"
+  expect_eq "RLP.cpu_model"           "186"                        "$CPU_MODEL"
+  expect_eq "RLP.platform_label"      "Raptor Lake-P mobile"       "$PLATFORM_LABEL"
+  expect_eq "RLP.no_ht_by_design"     "0"                          "$PLATFORM_NO_HT_BY_DESIGN"
+}
+
+# ── Test 13: Arrow Lake-S desktop (no HT by silicon design) ────────────────
+# Core Ultra 9 285K: 8 P-cores (Lion Cove, no HT) + 16 E-cores (Skymont),
+# no LP-E. Fingerprint (no P-HT, no LP-E) collides with raptor_lake_p_ht_off
+# but CPUID model 0xC6 (198) must flag platform_no_ht_by_design=1 so the
+# verifier PASSes instead of suggesting an impossible BIOS toggle.
+test_platform_label_arrow_lake_s_desktop() {
+  local root="$TMP/als_desktop"
+  mock_reset "$root"
+  local i
+  # 8 P-cores, no SMT siblings (Lion Cove has no HT).
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" "$i" "$i" 5700000
+  done
+  # 16 E-cores, no SMT, uniform freq (no LP-E on desktop).
+  for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    mock_add_cpu "$root" $((8+i)) $((8+i)) 4600000
+  done
+  mock_set_types "$root" "0-7" "8-23"
+  mock_write_cpuinfo "$TMP/als_desktop_cpuinfo" "true" "6" "198"  # 0xC6
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/als_desktop_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "ALS.is_hybrid"           "1"                          "$IS_HYBRID"
+  expect_eq "ALS.p_core_has_smt"      "0"                          "$P_CORE_HAS_SMT"
+  expect_eq "ALS.has_lp_e_cores"      "0"                          "$HAS_LP_E_CORES"
+  expect_eq "ALS.generation"          "raptor_lake_p_ht_off"       "$NUC_GENERATION"
+  expect_eq "ALS.cpu_model"           "198"                        "$CPU_MODEL"
+  expect_eq "ALS.platform_label"      "Arrow Lake-S desktop"       "$PLATFORM_LABEL"
+  expect_eq "ALS.no_ht_by_design"     "1"                          "$PLATFORM_NO_HT_BY_DESIGN"
+  expect_eq "ALS.num_p_physical"      "8"                          "$NUM_P_PHYSICAL"
+  expect_eq "ALS.num_e_cores"         "16"                         "$NUM_E_CORES"
+}
+
+# ── Test 14: unknown silicon (e.g. future CPU) — empty label, no crash ─────
+test_platform_label_unknown_model() {
+  local root="$TMP/unknown"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 3000000
+  done
+  mock_write_cpuinfo "$TMP/unknown_cpuinfo" "false" "6" "255"  # not in table
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/unknown_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "Unknown.cpu_family"      "6"                          "$CPU_FAMILY"
+  expect_eq "Unknown.cpu_model"       "255"                        "$CPU_MODEL"
+  expect_eq "Unknown.platform_label"  ""                           "$PLATFORM_LABEL"
+  expect_eq "Unknown.no_ht_by_design" "0"                          "$PLATFORM_NO_HT_BY_DESIGN"
+}
+
+# ── Test 15: AMD vendor — no platform label, family/model still surfaced ───
+test_platform_label_amd_vendor() {
+  local root="$TMP/amd_id"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 4800000
+  done
+  # AMD reports family 25 (Zen 3/4) — non-Intel, so lookup returns empty.
+  {
+    echo "processor	: 0"
+    echo "vendor_id	: AuthenticAMD"
+    echo "cpu family	: 25"
+    echo "model		: 33"
+    echo "flags		: fpu vme de pse tsc msr pae"
+  } >"$TMP/amd_id_cpuinfo"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/amd_id_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "AMD.cpu_vendor"          "AuthenticAMD"               "$CPU_VENDOR"
+  expect_eq "AMD.cpu_family"          "25"                         "$CPU_FAMILY"
+  expect_eq "AMD.cpu_model"           "33"                         "$CPU_MODEL"
+  expect_eq "AMD.platform_label"      ""                           "$PLATFORM_LABEL"
+  expect_eq "AMD.no_ht_by_design"     "0"                          "$PLATFORM_NO_HT_BY_DESIGN"
+}
+
+# ── Test 16: missing /proc/cpuinfo fields — graceful defaults ──────────────
+# Legacy mocks omit cpu family / model entirely; existing tests rely on this.
+# Verify we get safe zero/empty defaults rather than crashing.
+test_platform_label_missing_fields() {
+  local root="$TMP/no_fm"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 3000000
+  done
+  # No family / model arguments — mock_write_cpuinfo skips both lines.
+  mock_write_cpuinfo "$TMP/no_fm_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/no_fm_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "NoFM.cpu_vendor"         "GenuineIntel"               "$CPU_VENDOR"
+  expect_eq "NoFM.cpu_family"         "0"                          "$CPU_FAMILY"
+  expect_eq "NoFM.cpu_model"          "0"                          "$CPU_MODEL"
+  expect_eq "NoFM.platform_label"     ""                           "$PLATFORM_LABEL"
+}
+
+# ── Test 17: PHYSICAL_CORE_SLOTS — NUC13 (4P+8E HT on) ─────────────────────
+# P-physical (0,2,4,6) followed by E-cores (8..15). SMT siblings excluded.
+test_physical_core_slots_nuc13_hybrid() {
+  local root="$TMP/pcs_nuc13"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5000000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5000000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((8+i)) $((4+i)) 3800000
+  done
+  mock_set_types "$root" "0,1,2,3,4,5,6,7" "8,9,10,11,12,13,14,15"
+  mock_write_cpuinfo "$TMP/pcs_nuc13_cpuinfo" "true" "6" "186"  # 0xBA
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_nuc13_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PCS.NUC13.slots" "0 2 4 6 8 9 10 11 12 13 14 15" "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 18: PHYSICAL_CORE_SLOTS — i9-13900K (8P+16E HT on) ────────────────
+test_physical_core_slots_13900k_hybrid() {
+  local root="$TMP/pcs_13900k"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5800000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5800000
+  done
+  for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    mock_add_cpu "$root" $((16+i)) $((8+i)) 4300000
+  done
+  mock_set_types "$root" "0-15" "16-31"
+  mock_write_cpuinfo "$TMP/pcs_13900k_cpuinfo" "true" "6" "191"  # 0xBF
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_13900k_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  local expected="0 2 4 6 8 10 12 14 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31"
+  expect_eq "PCS.13900K.slots" "$expected" "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 19: PHYSICAL_CORE_SLOTS — AMD Ryzen 8C/16T (non-hybrid SMT) ───────
+# Non-hybrid SMT must collapse to even logicals (sibling excluded).
+test_physical_core_slots_amd_ryzen_smt() {
+  local root="$TMP/pcs_amd"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5400000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5400000
+  done
+  mock_write_cpuinfo "$TMP/pcs_amd_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_amd_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PCS.AMD.is_hybrid" "0"                          "$IS_HYBRID"
+  expect_eq "PCS.AMD.slots"     "0 2 4 6 8 10 12 14"         "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 20: PHYSICAL_CORE_SLOTS — SMT-off 4-core (identity) ──────────────
+test_physical_core_slots_smt_off_identity() {
+  local root="$TMP/pcs_smtoff"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 3000000
+  done
+  mock_write_cpuinfo "$TMP/pcs_smtoff_cpuinfo" "false"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_smtoff_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PCS.SmtOff.slots" "0 1 2 3" "$PHYSICAL_CORE_SLOTS"
+}
+
+# ── Test 21: PHYSICAL_CORE_SLOTS — NUC14 Pro 비표준 enumeration ────────────
+# NUC14 Pro Meteor Lake (Core Ultra 7 155H) 일부 BIOS 펌웨어는 cpu 0 의 core_id
+# 를 다른 P-core 들의 중간에 배치한다. sysfs 출력:
+#   core_id A → cpus {1, 2}   (logical pair)
+#   core_id B → cpus {3, 4}
+#   core_id C → cpus {0, 5}   ← cpu 0 의 sibling 이 cpu 5
+#   core_id D → cpus {6, 7}
+#   core_id E → cpus {8, 9}
+#   core_id F → cpus {10, 11}
+# core_id 정렬 순서로 그대로 iteration 하면 P_CORE_PHYSICAL_IDS = [1, 3, 0, 6, 8, 10]
+# 으로 비단조 — slot 0 이 cpu 1 이 되고 slot 2 가 cpu 0 이 되어 layout v4.1 의
+# "slot 0 = OS 영역" 가정이 깨진다. (physical, sibling) pair 를 physical
+# ascending 으로 sort 해 [0, 1, 3, 6, 8, 10] 으로 normalize 해야 한다.
+test_physical_core_slots_nuc14_nonstandard_enum() {
+  local root="$TMP/pcs_nuc14_nonstd"
+  mock_reset "$root"
+  # mock_add_cpu: $1=root $2=cpu $3=core_id $4=max_freq_khz
+  # core_id ordering is intentionally non-monotonic across cpu number.
+  mock_add_cpu "$root" 1  100 5000000  # core_id 100, cpus {1, 2}
+  mock_add_cpu "$root" 2  100 5000000
+  mock_add_cpu "$root" 3  101 5000000  # core_id 101, cpus {3, 4}
+  mock_add_cpu "$root" 4  101 5000000
+  mock_add_cpu "$root" 0  102 5000000  # core_id 102, cpus {0, 5} — cpu 0 in middle
+  mock_add_cpu "$root" 5  102 5000000
+  mock_add_cpu "$root" 6  103 5000000  # core_id 103, cpus {6, 7}
+  mock_add_cpu "$root" 7  103 5000000
+  mock_add_cpu "$root" 8  104 5000000  # core_id 104, cpus {8, 9}
+  mock_add_cpu "$root" 9  104 5000000
+  mock_add_cpu "$root" 10 105 5000000  # core_id 105, cpus {10, 11}
+  mock_add_cpu "$root" 11 105 5000000
+  # 8 E-cores 12..19
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((12+i)) $((200+i)) 3800000
+  done
+  # 2 LP-E cores 20..21, freq < 70% of E-max
+  mock_add_cpu "$root" 20 208 2500000
+  mock_add_cpu "$root" 21 209 2500000
+
+  mock_set_types "$root" "0,1,2,3,4,5,6,7,8,9,10,11" "12,13,14,15,16,17,18,19,20,21"
+  mock_write_cpuinfo "$TMP/pcs_nuc14_nonstd_cpuinfo" "true" "6" "170"  # 0xAA
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/pcs_nuc14_nonstd_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  # P-physical sorted ascending despite non-monotonic core_id grouping.
+  expect_eq "NUC14NS.p_physical"    "0 1 3 6 8 10"                 "$P_CORE_PHYSICAL_IDS"
+  expect_eq "NUC14NS.p_sibling"     "5 2 4 7 9 11"                 "$P_CORE_SIBLING_IDS"
+  expect_eq "NUC14NS.e_cores"       "12 13 14 15 16 17 18 19"      "$E_CORE_IDS"
+  expect_eq "NUC14NS.lpe_cores"     "20 21"                        "$LPE_CORE_IDS"
+  # physical_core_slots: P → E → LP-E, all logical-id ascending.
+  expect_eq "NUC14NS.slots" \
+    "0 1 3 6 8 10 12 13 14 15 16 17 18 19 20 21" \
+    "$PHYSICAL_CORE_SLOTS"
+  # slot 0 maps to cpu 0 (OS-eligible primary), NOT cpu 1 like the unsorted
+  # core_id-iteration order would yield.
+  expect_eq "NUC14NS.is_hybrid"     "1"                            "$IS_HYBRID"
+  expect_eq "NUC14NS.p_core_has_smt" "1"                           "$P_CORE_HAS_SMT"
+  expect_eq "NUC14NS.has_lp_e_cores" "1"                           "$HAS_LP_E_CORES"
+  expect_eq "NUC14NS.generation"    "meteor_lake"                  "$NUC_GENERATION"
+}
+
+# ── Test 22: sanity-check hook fires a warning on disagreement ─────────────
 # Primary sysfs path classifies cpus 0-7 as P (all at a flat 5.0 GHz), but
 # freq-clustering sees uniform freq → can't form an opinion → no warning.
 # To force a disagreement we give sysfs an "intel_core" override that doesn't
@@ -371,6 +689,17 @@ test_freq_fallback_meteor_lake
 test_freq_fallback_amd_negative
 test_detect_source_primary
 test_container_no_freq_files
+test_platform_label_raptor_lake_s_desktop
+test_platform_label_raptor_lake_p_mobile
+test_platform_label_arrow_lake_s_desktop
+test_platform_label_unknown_model
+test_platform_label_amd_vendor
+test_platform_label_missing_fields
+test_physical_core_slots_nuc13_hybrid
+test_physical_core_slots_13900k_hybrid
+test_physical_core_slots_amd_ryzen_smt
+test_physical_core_slots_smt_off_identity
+test_physical_core_slots_nuc14_nonstandard_enum
 test_sanity_check_disagreement
 
 echo
