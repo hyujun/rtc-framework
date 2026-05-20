@@ -18,19 +18,20 @@ import importlib
 import pytest
 
 
-def test_perf_action_helper_importable() -> None:
-    """``make_perf_action`` is used by sim*.launch.py for opt-in perf record.
+def test_trace_action_helper_importable() -> None:
+    """``make_trace_action`` is used by sim*.launch.py / robot.launch.py for
+    opt-in ros2_tracing capture.
 
-    ``perf_action`` depends on the ROS 2 ``launch`` package, which is unavailable
+    ``trace_action`` depends on the ROS 2 ``launch`` package, which is unavailable
     outside the colcon environment — skip when that is the case so the test
     suite still passes for plain ``pytest`` runs while validating packaging
     under ``colcon test``.
     """
     if importlib.util.find_spec("launch") is None:
         pytest.skip("ROS 2 'launch' package unavailable (not in colcon env)")
-    from rtc_tools.launch.perf_action import make_perf_action
+    from rtc_tools.launch.trace_action import make_trace_action
 
-    assert callable(make_perf_action)
+    assert callable(make_trace_action)
 
 
 def test_thread_layout_helpers_importable() -> None:

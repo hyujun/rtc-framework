@@ -30,7 +30,7 @@ _SESSION_SUBDIRS = (
     "sim",
     "plots",
     "motions",
-    "perf",
+    "tracing",
 )
 _SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}$")
 

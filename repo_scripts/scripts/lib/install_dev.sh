@@ -3,11 +3,12 @@
 #
 # 제공 함수:
 #   install_vscode_debug_tools  — gdb + ptrace_scope policy (VS Code Attach)
-#   install_perf_tools          — linux-tools-* + hotspot + FlameGraph clone
-#                                 + perf_event_paranoid sysctl
+#   install_tracing_tools       — lttng-modules-dkms + lttng-tools + ros-jazzy-ros2trace
+#                                 + tracetools-launch/read + python3-bt2
+#                                 + tracing group membership
 #
 # Caller scope 의존:
-#   WORKSPACE, SET_PTRACE_SCOPE, SET_PERF_TOOLS, apt_update_if_stale, 로거
+#   WORKSPACE, SET_PTRACE_SCOPE, SET_TRACING_TOOLS, apt_update_if_stale, 로거
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "ERROR: This file should be sourced, not executed." >&2
@@ -57,78 +58,96 @@ install_vscode_debug_tools() {
   fi
 }
 
-# ── Linux perf + Hotspot (profiling) ──────────────────────────────────────────
-# Mirrors install_vscode_debug_tools(): apt binaries (L1) + sysctl policy (L2).
-# Idempotent: second run skips when binaries are present and paranoid is set.
-install_perf_tools() {
-  info "Installing Linux perf + Hotspot for profiling..."
+# ── ros2_tracing stack (LTTng + tracetools + bt2) ─────────────────────────────
+# Installs the apt packages required by `ros2 launch ... enable_tracing:=true`,
+# adds the user to the 'tracing' group (mirrors the ptrace_scope policy pattern
+# in install_vscode_debug_tools — group membership replaces sysctl tuning).
+#
+# Idempotent: apt-get install is no-op when packages are present; usermod
+# only fires when the user is not already in the group.
+install_tracing_tools() {
+  info "Installing ros2_tracing stack (LTTng + tracetools + bt2)..."
   apt_update_if_stale
 
-  # ── L1: apt binaries ────────────────────────────────────────────────────
-  # linux-tools-$(uname -r) carries the version-matched perf binary; the
-  # generic metapackage tracks the running kernel on Ubuntu but can lag.
+  # ── L1: kernel headers + dkms toolchain (lttng-modules-dkms builds against
+  #        the running kernel; build-essential is *not* pulled in by the dkms
+  #        package itself but is required for the out-of-tree build) ─────────
   local KERNEL_RELEASE
   KERNEL_RELEASE="$(uname -r)"
 
   sudo apt-get install -y \
-      linux-tools-generic \
-      linux-tools-"${KERNEL_RELEASE}" \
-      hotspot \
+      build-essential \
+      dkms \
+      linux-headers-"${KERNEL_RELEASE}" \
       > /dev/null 2>&1 \
-    || warn "linux-tools-${KERNEL_RELEASE} not available — generic only (perf may print kernel mismatch)"
+    || warn "linux-headers-${KERNEL_RELEASE} unavailable — lttng-modules build may fail"
 
-  if command -v perf >/dev/null 2>&1; then
-    success "perf: $(perf --version 2>&1 | head -1)"
+  # ── L2: LTTng userspace + kernel module (DKMS rebuilds on each kernel) ───
+  sudo apt-get install -y \
+      lttng-tools \
+      lttng-modules-dkms \
+      liblttng-ust-dev \
+      babeltrace2 \
+      python3-bt2 \
+      > /dev/null 2>&1 \
+    || warn "LTTng stack install reported an error — re-run with verbose apt to inspect"
+
+  if command -v lttng >/dev/null 2>&1; then
+    success "lttng-tools: $(lttng --version 2>&1 | head -1)"
   else
-    warn "perf binary not on PATH. Try: sudo apt install linux-tools-${KERNEL_RELEASE}"
+    warn "lttng binary not on PATH after apt install"
   fi
 
-  if command -v hotspot >/dev/null 2>&1; then
-    success "hotspot installed (run: hotspot <session>/perf/perf.data)"
+  if command -v babeltrace2 >/dev/null 2>&1; then
+    success "babeltrace2: $(babeltrace2 --version 2>&1 | head -1)"
   else
-    warn "hotspot binary not on PATH after apt install"
+    warn "babeltrace2 binary not on PATH after apt install"
   fi
 
-  # ── FlameGraph (browser-based viewer; faster than Hotspot for large traces) ──
-  # Clone into <ws>/deps/FlameGraph/ — same isolation tier as fmt/mimalloc/aligator.
-  # Idempotent: skip clone if already present, otherwise `git pull` to refresh.
-  local FG_DIR="${WORKSPACE}/deps/FlameGraph"
-  if [[ -d "$FG_DIR/.git" ]]; then
-    info "FlameGraph already cloned at $FG_DIR — pulling latest..."
-    (cd "$FG_DIR" && git pull --quiet 2>/dev/null) || warn "git pull failed in $FG_DIR (continuing)"
+  # python3-bt2 is the binding ctf_to_chrome_trace.py uses for structured
+  # CTF parsing. Falls back to babeltrace2 CLI text parsing if missing.
+  if python3 -c "import bt2" 2>/dev/null; then
+    success "python3-bt2 binding importable"
   else
-    info "Cloning brendangregg/FlameGraph → $FG_DIR..."
-    mkdir -p "${WORKSPACE}/deps"
-    # Hide deps/ from colcon (see install_deps.sh:install_mpc_deps comment).
-    touch "${WORKSPACE}/deps/COLCON_IGNORE"
-    if git clone --depth=1 --quiet \
-        https://github.com/brendangregg/FlameGraph "$FG_DIR" 2>&1 | tail -5; then
-      success "FlameGraph cloned (run: ./repo_scripts/scripts/flame.sh)"
-    else
-      warn "FlameGraph clone failed — flame.sh will be unavailable"
-    fi
+    warn "python3 -c 'import bt2' failed — converter will fall back to CLI parser"
   fi
 
-  # ── L2: sysctl perf_event_paranoid (mirrors ptrace_scope policy) ────────
-  local PARANOID_CURRENT
-  PARANOID_CURRENT="$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo unknown)"
+  # ── L3: ros2_tracing apt packages (ros-jazzy-tracetools is pulled in
+  #        transitively by rclcpp; the extras below add the launch action,
+  #        CLI verb, and post-processing utilities) ───────────────────────────
+  sudo apt-get install -y \
+      ros-jazzy-ros2trace \
+      ros-jazzy-tracetools-launch \
+      ros-jazzy-tracetools-read \
+      ros-jazzy-tracetools-trace \
+      > /dev/null 2>&1 \
+    || warn "ros-jazzy tracing packages install reported an error"
 
-  if [[ "$SET_PERF_TOOLS" -eq 1 ]]; then
-    info "Setting perf_event_paranoid=1 (non-root perf record enabled)..."
-    echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid > /dev/null
-    if ! grep -q 'kernel.perf_event_paranoid' /etc/sysctl.d/99-perf.conf 2>/dev/null; then
-      echo 'kernel.perf_event_paranoid = 1' | sudo tee /etc/sysctl.d/99-perf.conf > /dev/null
-      sudo sysctl -p /etc/sysctl.d/99-perf.conf > /dev/null 2>&1 || true
-    fi
-    success "perf_event_paranoid=1 (persists across reboots)"
-    warn "Security note: lowers kernel sampling restriction. Dev machine only."
+  if dpkg -s ros-jazzy-tracetools-launch >/dev/null 2>&1; then
+    success "tracetools-launch installed (enables tracetools_launch.action.Trace)"
+  fi
+
+  # ── L4: tracing group membership (lttng-sessiond accepts non-root clients
+  #        whose effective gid is 'tracing'; without this, kernel tracing
+  #        always requires sudo). Mirrors the ptrace_scope policy pattern. ──
+  if ! getent group tracing >/dev/null 2>&1; then
+    warn "'tracing' group not found — lttng-tools install should have created it. Skipping group add."
+  elif id -nG "$(id -un)" | tr ' ' '\n' | grep -qx tracing; then
+    success "user '$(id -un)' already in 'tracing' group"
   else
-    if [[ "$PARANOID_CURRENT" -gt 1 ]] 2>/dev/null; then
-      warn "perf_event_paranoid=${PARANOID_CURRENT} — non-root perf record disabled."
-      warn "  ros2 launch ... enable_perf:=true will require sudo at launch time."
-      warn "  Fix permanently: re-run install.sh --perf"
-    else
-      success "perf_event_paranoid=${PARANOID_CURRENT} (non-root perf record OK)"
-    fi
+    info "Adding user '$(id -un)' to 'tracing' group..."
+    sudo usermod -a -G tracing "$(id -un)"
+    success "user '$(id -un)' added to 'tracing' group"
+    warn "Group membership requires re-login (or 'newgrp tracing' in the current shell)"
+    warn "  Without it, 'enable_tracing:=true' with kernel events will fail with EPERM."
+  fi
+
+  # ── L5: kernel module load check (DKMS builds on install but does not
+  #        autoload; lttng-sessiond loads on first kernel session) ─────────
+  if modinfo lttng-tracer >/dev/null 2>&1; then
+    success "lttng-tracer kernel module available (version $(modinfo -F version lttng-tracer 2>/dev/null || echo '?'))"
+  else
+    warn "lttng-tracer kernel module not yet built — DKMS may still be compiling"
+    warn "  Check: sudo dkms status lttng-modules"
   fi
 }

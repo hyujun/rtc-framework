@@ -963,41 +963,59 @@ check_cpu_frequency() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [10/N] Perf profiling — perf binary + paranoid level + hotspot
+# [10/N] ros2_tracing — lttng-tools + DKMS kernel module + tracing group
+#                       + tracetools-launch (launch action provider)
 # ══════════════════════════════════════════════════════════════════════════════
-check_perf_setup() {
-  _section "10" "Perf Profiling"
-  _category_start "perf_setup"
+check_tracing_setup() {
+  _section "10" "Tracing"
+  _category_start "tracing_setup"
 
-  local perf_ok=0 hotspot_ok=0
-  if command -v perf >/dev/null 2>&1; then
-    perf_ok=1
-    _pass "perf: $(perf --version 2>&1 | head -1)"
+  local lttng_ok=0 kmod_ok=0 group_ok=0 launch_ok=0
+  if command -v lttng >/dev/null 2>&1; then
+    lttng_ok=1
+    _pass "lttng-tools: $(lttng --version 2>&1 | head -1)"
   else
-    _warn "perf 미설치"
-    _fix "./install.sh --perf  # 또는 sudo apt install linux-tools-\$(uname -r)"
-    _category_update "perf_setup" "WARN"
+    _warn "lttng-tools 미설치"
+    _fix "./install.sh --tracing  # apt: lttng-tools + lttng-modules-dkms + ros-jazzy-ros2trace"
+    _category_update "tracing_setup" "WARN"
   fi
 
-  local paranoid
-  paranoid="$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo unknown)"
-  if [[ "$paranoid" =~ ^-?[0-9]+$ ]] && [[ "$paranoid" -le 1 ]]; then
-    _pass "perf_event_paranoid=${paranoid} (non-root profiling OK)"
+  # lttng-modules-dkms: kernel tracing의 핵심. DKMS가 빌드 후 modinfo로 노출.
+  if modinfo lttng-tracer >/dev/null 2>&1; then
+    kmod_ok=1
+    _pass "lttng-tracer kernel module: $(modinfo -F version lttng-tracer 2>/dev/null || echo '?')"
   else
-    _warn "perf_event_paranoid=${paranoid} (>1 → enable_perf:=true requires sudo)"
-    _fix "./install.sh --perf  # sets paranoid=1 via /etc/sysctl.d/99-perf.conf"
-    _category_update "perf_setup" "WARN"
+    _warn "lttng-tracer kernel module 미빌드 (kernel tracing 불가)"
+    _fix "./install.sh --tracing  # 또는 sudo dkms status lttng-modules 로 빌드 상태 확인"
+    _category_update "tracing_setup" "WARN"
   fi
 
-  if command -v hotspot >/dev/null 2>&1; then
-    hotspot_ok=1
-    _pass "hotspot installed"
+  # tracing group 멤버십: kernel session을 non-root 로 띄울 수 있는 조건.
+  if id -nG "$(id -un)" | tr ' ' '\n' | grep -qx tracing; then
+    group_ok=1
+    _pass "user '$(id -un)' in 'tracing' group (non-root kernel tracing OK)"
+  elif getent group tracing >/dev/null 2>&1; then
+    _warn "user '$(id -un)' not in 'tracing' group (kernel tracing requires sudo)"
+    _fix "./install.sh --tracing  # 또는 sudo usermod -a -G tracing \$USER && relogin"
+    _category_update "tracing_setup" "WARN"
   else
-    _skip "hotspot 미설치 (viewer만 — 캡처에는 영향 없음). sudo apt install hotspot"
+    _warn "'tracing' group not found — lttng-tools install incomplete?"
+    _fix "sudo apt install lttng-tools"
+    _category_update "tracing_setup" "WARN"
   fi
 
-  _category_set_detail "perf_setup" \
-    "perf=${perf_ok} paranoid=${paranoid} hotspot=${hotspot_ok}"
+  # tracetools_launch: tracetools_launch.action.Trace 제공. enable_tracing:=true 의 전제.
+  if dpkg -s ros-jazzy-tracetools-launch >/dev/null 2>&1; then
+    launch_ok=1
+    _pass "ros-jazzy-tracetools-launch installed (enable_tracing:=true OK)"
+  else
+    _warn "ros-jazzy-tracetools-launch 미설치 — enable_tracing:=true 동작 불가"
+    _fix "./install.sh --tracing"
+    _category_update "tracing_setup" "WARN"
+  fi
+
+  _category_set_detail "tracing_setup" \
+    "lttng=${lttng_ok} kmod=${kmod_ok} group=${group_ok} launch=${launch_ok}"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1068,10 +1086,10 @@ check_benchmark() {
 print_summary() {
   local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
                     "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency"
-                    "perf_setup")
+                    "tracing_setup")
   local labels=("RT Kernel" "CPU Isolation" "Sched/Memory" "GRUB Params"
                 "RT Permissions" "IRQ Affinity" "Network/UDP" "NVIDIA" "CPU Frequency"
-                "Perf Profiling")
+                "Tracing")
 
   if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
     categories+=("benchmark")
@@ -1135,7 +1153,7 @@ main() {
   check_network_udp
   check_nvidia
   check_cpu_frequency
-  check_perf_setup
+  check_tracing_setup
 
   if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
     check_benchmark

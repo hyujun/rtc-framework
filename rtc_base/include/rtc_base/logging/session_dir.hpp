@@ -58,7 +58,7 @@ inline std::string GenerateSessionTimestamp() {
 /// 세션 디렉토리 내 표준 서브디렉토리 생성
 inline void EnsureSessionSubdirs(const std::filesystem::path& session_dir) {
   static constexpr const char* kSubdirs[] = {"controller", "timing", "monitor", "device",
-                                             "sim",        "plots",  "motions", "perf"};
+                                             "sim",        "plots",  "motions", "tracing"};
   for (const auto* sub : kSubdirs) {
     std::filesystem::create_directories(session_dir / sub);
   }

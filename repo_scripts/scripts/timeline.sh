@@ -1,32 +1,26 @@
 #!/usr/bin/env bash
-# timeline.sh — convert a perf.data into a Perfetto/Chrome trace JSON.
+# timeline.sh — convert an LTTng CTF trace into a Chrome Trace JSON.
 #
-# x-axis: wall-clock time. y-axis: per-thread swimlane (and per-CPU swimlane
-# in a sibling group). Each sample is a vertical instant marker; hover to see
-# the captured callstack (leaf-first, top-N frames).
+# x-axis: wall-clock time. Two swimlane groups:
+#   * Threads (by TID) — each ros2:callback_start/end pair becomes a
+#                       horizontal bar labelled with the callback symbol.
+#   * Cpus             — per-CPU lane showing which thread ran when (from
+#                       sched_switch). Use this to verify ApplyThreadConfig
+#                       pinning and spot migrations / IRQ leaks.
 #
 # Usage:
-#   timeline.sh                              # default: --mode flamechart, max-depth=5
-#   timeline.sh --mode instant               # vertical markers per sample (no bars)
-#   timeline.sh --mode flamechart            # horizontal bars labelled by function name
-#   timeline.sh --max-depth 5                # shallower stacks → smaller JSON
-#   timeline.sh <perf.data>                  # explicit input
-#   timeline.sh --mode flamechart <perf.data> [output.json]
-#
-# Modes:
-#   flamechart (default)  — adjacent-sample stitching: each function becomes
-#                           a horizontal bar with a label, width = wall time
-#                           the function was on stack. This answers "what ran
-#                           when" with function names baked into the picture.
-#   instant               — each sample is a vertical marker; hover shows the
-#                           callstack. Use when exact sample timestamps matter.
+#   timeline.sh                                # default: latest ~/.ros/tracing/* trace
+#   timeline.sh <trace_dir>                    # explicit CTF trace directory
+#   timeline.sh <trace_dir> [output.json]
 #
 # After conversion, drag-drop the JSON onto https://ui.perfetto.dev.
 #
 # Requires:
-#   * perf — captures the trace
-#   * Python 3 with `rtc_tools.conversion.perf_to_chrome_trace` on PYTHONPATH
+#   * babeltrace2 — CTF reader (apt: babeltrace2)
+#   * Python 3 with `rtc_tools.conversion.ctf_to_chrome_trace` on PYTHONPATH
 #     (provided by `source repo_scripts/scripts/setup_env.sh`).
+#   * Optional: `python3-bt2` for the faster, structured parser. The script
+#     transparently falls back to babeltrace2 CLI text parsing if absent.
 
 set -uo pipefail
 
@@ -51,30 +45,12 @@ if [[ -z "${WS:-}" ]]; then
 fi
 
 # ── Args ──────────────────────────────────────────────────────────────────────
-MAX_DEPTH=5
-MODE="flamechart"
 INPUT=""
 OUTPUT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --max-depth)
-      MAX_DEPTH="$2"
-      shift 2
-      ;;
-    --max-depth=*)
-      MAX_DEPTH="${1#--max-depth=}"
-      shift
-      ;;
-    --mode)
-      MODE="$2"
-      shift 2
-      ;;
-    --mode=*)
-      MODE="${1#--mode=}"
-      shift
-      ;;
     -h|--help)
-      sed -n '2,16p' "$0"
+      sed -n '2,20p' "$0"
       exit 0
       ;;
     *)
@@ -91,53 +67,46 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$MODE" in
-  flamechart|instant) ;;
-  *)
-    echo "[timeline] --mode must be one of: flamechart | instant (got: $MODE)" >&2
-    exit 2
-    ;;
-esac
-
 # ── Resolve input ────────────────────────────────────────────────────────────
+# Trace lives at <ws>/logging_data/<YYMMDD_HHMM>/tracing/<lttng_session>/.
+# Pick the most recent session folder that actually has a tracing/ subdir.
 if [[ -z "$INPUT" ]]; then
-  INPUT="$(ls -1dt "$WS"/logging_data/[0-9]*/perf/perf.data 2>/dev/null | head -1 || true)"
+  INPUT="$(ls -1dt "$WS"/logging_data/[0-9]*/tracing/*/ 2>/dev/null | head -1 || true)"
   if [[ -z "$INPUT" ]]; then
-    echo "[timeline] no perf.data found under $WS/logging_data/*/perf/" >&2
-    echo "[timeline] capture first:  ros2 launch integrated_bringup sim.launch.py enable_perf:=true" >&2
+    echo "[timeline] no CTF trace found under $WS/logging_data/*/tracing/" >&2
+    echo "[timeline] capture first:  ros2 launch integrated_bringup sim.launch.py enable_tracing:=true" >&2
     exit 1
   fi
+  INPUT="${INPUT%/}"
   echo "[timeline] using latest: $INPUT" >&2
 fi
 
-if [[ ! -f "$INPUT" ]]; then
-  echo "[timeline] input not found: $INPUT" >&2
+if [[ ! -d "$INPUT" ]]; then
+  echo "[timeline] input not a directory: $INPUT" >&2
   exit 1
 fi
 
-# ── Resolve output (default: trace.json next to perf.data) ───────────────────
+# ── Resolve output (default: trace.json next to the trace directory) ─────────
 if [[ -z "$OUTPUT" ]]; then
-  OUTPUT="$(dirname "$INPUT")/trace.json"
+  OUTPUT="${INPUT}/trace.json"
 fi
 
 # ── Sanity: PYTHONPATH must include rtc_tools ────────────────────────────────
-if ! python3 -c "import rtc_tools.conversion.perf_to_chrome_trace" 2>/dev/null; then
-  echo "[timeline] rtc_tools.conversion.perf_to_chrome_trace not importable." >&2
+if ! python3 -c "import rtc_tools.conversion.ctf_to_chrome_trace" 2>/dev/null; then
+  echo "[timeline] rtc_tools.conversion.ctf_to_chrome_trace not importable." >&2
   echo "[timeline] source the workspace env first:" >&2
   echo "[timeline]   source $WS/src/rtc-framework/repo_scripts/scripts/setup_env.sh" >&2
   exit 1
 fi
 
-if ! command -v perf >/dev/null 2>&1; then
-  echo "[timeline] perf not on PATH — install: sudo apt install linux-tools-\$(uname -r)" >&2
+if ! command -v babeltrace2 >/dev/null 2>&1; then
+  echo "[timeline] babeltrace2 not on PATH — install: ./install.sh --tracing" >&2
   exit 1
 fi
 
 # ── Convert ──────────────────────────────────────────────────────────────────
-echo "[timeline] perf script | python perf_to_chrome_trace → $OUTPUT (mode=$MODE max-depth=$MAX_DEPTH)" >&2
-perf script -i "$INPUT" 2>/dev/null \
-  | python3 -m rtc_tools.conversion.perf_to_chrome_trace \
-      --output "$OUTPUT" --max-depth "$MAX_DEPTH" --mode "$MODE"
+echo "[timeline] ctf_to_chrome_trace $INPUT → $OUTPUT" >&2
+python3 -m rtc_tools.conversion.ctf_to_chrome_trace --input "$INPUT" --output "$OUTPUT"
 RC=$?
 
 if [[ $RC -ne 0 ]]; then

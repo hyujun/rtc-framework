@@ -27,7 +27,7 @@
 | `ur5e_bt_coordinator/` | BT gtest (tree_validation, condition_nodes, hand_nodes 등) | 실제 grasp 시나리오 smoke |
 | Launch / YAML | `ros2 launch ... --print` + 짧은 smoke | config 로드 검증 |
 | Threading (`ApplyThreadConfig`) | `rtc_base` thread-config gtest + RT perms | `check_rt_setup.sh --summary` |
-| RT 회귀 의심 / RT path 미상 | `mpc_timing_log.csv`·`cm_timing_log.csv` p99 검사 | `enable_perf:=true` + Hotspot 분석 (§Profiling) |
+| RT 회귀 의심 / RT path 미상 | `mpc_timing_log.csv`·`cm_timing_log.csv` p99 검사 | `enable_tracing:=true` + Perfetto 분석 (§Tracing) |
 | RT host 환경 검증 | `check_rt_setup.sh --summary` + `verify_rt_runtime.sh` | `cyclictest --mlockall --smp -p 80 -i 200` / `rtla osnoise top` — [invariants.md](invariants.md) §RT Host / Runtime Preconditions RT-HOST-1~3 |
 
 ## Test Commands
@@ -108,16 +108,16 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 # Re-login required. Optional: isolcpus, nohz_full, or cpu_shield.sh
 ```
 
-## Profiling
+## Tracing
 
-CSV timing logs (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv`) 은 **per-tick 총 시간** 만 기록한다. 어떤 함수가 시간을 쓰는지 알아내려면 sampling profile 을 캡처해 분석한다.
+CSV timing logs (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv`) 은 **per-tick 총 시간** 만 기록한다. 어느 thread 가 어느 core 에서 언제 run 했는지 / 어떤 callback 이 시간을 쓰는지 알아내려면 LTTng 트레이스를 캡처해 분석한다.
 
-세부 명령·뷰어 사용법·sampling event 선택·permission 분기는 [../docs/profiling.md](../docs/profiling.md) 참조 (perf / Hotspot / Perfetto operational guide).
+세부 명령·event 선택·permission 분기·뷰어 사용법은 [../docs/tracing.md](../docs/tracing.md) 참조 (ros2_tracing / babeltrace2 / Perfetto operational guide).
 
 핵심 진입점만:
 
 ```bash
-ros2 launch integrated_bringup sim.launch.py enable_perf:=true   # 캡처
-./repo_scripts/scripts/flame.sh                                  # flame graph (권장, 1-2초)
-./repo_scripts/scripts/timeline.sh                               # Perfetto timeline (thread/CPU swimlane)
+./install.sh --tracing                                              # 1회 setup
+ros2 launch integrated_bringup sim.launch.py enable_tracing:=true   # 캡처
+./repo_scripts/scripts/timeline.sh                                  # Perfetto JSON 변환
 ```

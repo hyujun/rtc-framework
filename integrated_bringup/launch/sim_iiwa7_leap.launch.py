@@ -43,8 +43,8 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
-from rtc_tools.launch.perf_action import make_perf_action
 from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
+from rtc_tools.launch.trace_action import make_trace_action
 from rtc_tools.utils.session_dir import (
     cleanup_old_sessions,
     create_session_dir,
@@ -371,8 +371,8 @@ def launch_setup(context, *args, **kwargs):
         )
         actions.append(pin_rt_controller_dds)
 
-    # ── perf record (Hotspot-friendly profiling, opt-in) ─────────────────────
-    actions.extend(make_perf_action(context, session_dir=session_dir))
+    # ── ros2_tracing capture (LTTng UST + kernel, opt-in) ────────────────────
+    actions.extend(make_trace_action(context, session_dir=session_dir))
 
     return actions
 
@@ -494,74 +494,44 @@ def generate_launch_description():
         ),
     )
 
-    enable_perf_arg = DeclareLaunchArgument(
-        "enable_perf",
+    enable_tracing_arg = DeclareLaunchArgument(
+        "enable_tracing",
         default_value="false",
         description=(
-            "Capture Linux perf data for the rt-controller and MuJoCo simulator. "
-            "Output: <session>/perf/perf.data (open with `hotspot <path>`). "
-            "Requires perf_event_paranoid<=1 OR passwordless sudo — "
-            "run ./install.sh --perf for one-time setup."
+            "Capture an LTTng trace via ros2_tracing for the active launch. "
+            "Output: <session_dir>/tracing/<trace_session_name>/ (open with "
+            "babeltrace2 or convert via repo_scripts/scripts/timeline.sh). "
+            "Run ./install.sh --tracing for one-time setup."
         ),
     )
 
-    perf_targets_arg = DeclareLaunchArgument(
-        "perf_targets",
-        default_value="integrated_rt_controller|mujoco_simulator_node",
-        description=(
-            "Regex of process names to attach perf record to. "
-            "Matched via `pgrep -f`. Only used when enable_perf:=true."
-        ),
-    )
-
-    perf_duration_arg = DeclareLaunchArgument(
-        "perf_duration",
+    trace_session_name_arg = DeclareLaunchArgument(
+        "trace_session_name",
         default_value="",
         description=(
-            "Capture duration in seconds. Empty = run until launch SIGINT "
-            "(perf flushes on Ctrl+C)."
+            "LTTng session name. Becomes the leaf directory under "
+            '<session_dir>/tracing/. Empty (default) = "trace".'
         ),
     )
 
-    perf_start_delay_arg = DeclareLaunchArgument(
-        "perf_start_delay",
-        default_value="0",
+    trace_events_ust_arg = DeclareLaunchArgument(
+        "trace_events_ust",
+        default_value="",
         description=(
-            "Seconds to wait after launch before invoking perf. Default 0 = "
-            "start immediately (captures lifecycle bring-up). Set 5+ to skip "
-            "configure/activate noise and only profile steady-state."
+            "Comma-separated UST events to enable. Empty (default) = "
+            "ros2_tracing's DEFAULT_EVENTS_ROS (broad ros2:* coverage). "
+            "Example narrow set: 'ros2:callback_start,ros2:callback_end'."
         ),
     )
 
-    perf_stack_size_arg = DeclareLaunchArgument(
-        "perf_stack_size",
-        default_value="4096",
+    trace_events_kernel_arg = DeclareLaunchArgument(
+        "trace_events_kernel",
+        default_value="sched_switch,sched_waking,sched_wakeup,irq_handler_entry,irq_handler_exit",
         description=(
-            "DWARF unwind stack size (bytes) per sample. Default 4096 keeps "
-            "Hotspot loading fast; raise to 8192/16384 if deep template stacks "
-            "appear truncated in flame graphs. Trace size scales linearly."
-        ),
-    )
-
-    perf_frequency_arg = DeclareLaunchArgument(
-        "perf_frequency",
-        default_value="999",
-        description=(
-            "perf sampling frequency in Hz. Default 999 gives sub-millisecond "
-            "resolution suitable for RT tick analysis. Lower to 99 for lighter "
-            "exploratory captures (~10× smaller trace)."
-        ),
-    )
-
-    perf_event_arg = DeclareLaunchArgument(
-        "perf_event",
-        default_value="cycles:P",
-        description=(
-            "perf event to sample on. Default 'cycles:P' weights samples by CPU "
-            "cycles consumed — accurate for hot CPU users (mpc_main, mujoco) but "
-            "under-samples burst-then-sleep RT loops (rt_control 30 µs / 2 ms). "
-            "Use 'task-clock' for periodic RT loops to get more uniform sampling "
-            "across active intervals regardless of CPU intensity."
+            "Comma-separated kernel events. Default = sched_switch + IRQ "
+            "entry/exit, enough to see which thread ran on which core when. "
+            "Empty disables kernel tracing (UST only). Requires "
+            "lttng-modules-dkms and 'tracing' group membership."
         ),
     )
 
@@ -580,13 +550,10 @@ def generate_launch_description():
             initial_controller_arg,
             enable_mpc_arg,
             mpc_engine_arg,
-            enable_perf_arg,
-            perf_targets_arg,
-            perf_duration_arg,
-            perf_start_delay_arg,
-            perf_stack_size_arg,
-            perf_frequency_arg,
-            perf_event_arg,
+            enable_tracing_arg,
+            trace_session_name_arg,
+            trace_events_ust_arg,
+            trace_events_kernel_arg,
             # Nodes (via OpaqueFunction for conditional parameter loading)
             OpaqueFunction(function=launch_setup),
         ]

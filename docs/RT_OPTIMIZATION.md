@@ -728,17 +728,17 @@ sudo perf stat -e context-switches,cpu-migrations -p $PID sleep 10
 #   cpu-migrations:   = 0          (affinity 고정 ⇒ 마이그레이션 0)
 ```
 
-### 6. perf flame graph (hotpath 프로파일링)
+### 6. ros2_tracing (thread × core × callback timeline)
 
-`repo_scripts/scripts/flame.sh` 가 RT loop hotpath 의 flame graph 생성:
+본 저장소의 RT loop 가 30-90 µs 로 매우 짧아 perf sampling 으로는 hotpath 를 못 잡는다. 대신 LTTng event-driven tracing 으로 callback B/E + sched_switch 정확한 타이밍을 본다:
 
 ```bash
-./repo_scripts/scripts/flame.sh                    # 기본: cycles 이벤트
-./repo_scripts/scripts/flame.sh --event task-clock # 30 µs tick 짧으면 task-clock 권장
-                                                    # (cycles:P 로는 RT tick 이 안 잡힘)
+./install.sh --tracing                                              # 1회 setup
+ros2 launch integrated_bringup sim.launch.py enable_tracing:=true   # 캡처
+./repo_scripts/scripts/timeline.sh                                  # Perfetto JSON 변환
 ```
 
-본 저장소의 RT loop 가 30-90 µs 로 매우 짧으므로 cycles:P 샘플링은 sub-sampling 으로 hotspot 을 놓친다 — `task-clock` 이벤트 권장 (memory `reference_perf_tooling` 참조).
+세부 사용은 [tracing.md](tracing.md) 참조 (event 선택, permission, viewer 가이드).
 
 ---
 

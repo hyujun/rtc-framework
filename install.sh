@@ -64,7 +64,7 @@ MODE_VERIFY=0
 DO_RT=0
 SKIP_DEBUG_SETUP=0
 SET_PTRACE_SCOPE=0
-SET_PERF_TOOLS=0
+SET_TRACING_TOOLS=0
 
 show_help() {
   echo ""
@@ -106,9 +106,10 @@ show_help() {
   echo "  --skip-debug      Skip GDB/debugger tools installation"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
-  echo "  --perf            Install Linux perf + Hotspot for profiling, set"
-  echo "                    perf_event_paranoid=1 (enables non-root perf record)."
-  echo "                    Required for 'ros2 launch ... enable_perf:=true'."
+  echo "  --tracing         Install ros2_tracing stack (lttng-modules-dkms + lttng-tools"
+  echo "                    + ros-jazzy-ros2trace + tracetools-launch/read + python3-bt2)"
+  echo "                    and add the current user to the 'tracing' group."
+  echo "                    Required for 'ros2 launch ... enable_tracing:=true'."
   echo "  --mujoco <path>   Use specific MuJoCo path"
   echo "  --help            Show this help"
   echo ""
@@ -176,8 +177,8 @@ while [[ $# -gt 0 ]]; do
       SET_PTRACE_SCOPE=1
       shift
       ;;
-    --perf)
-      SET_PERF_TOOLS=1
+    --tracing)
+      SET_TRACING_TOOLS=1
       shift
       ;;
     -h|--help|help)
@@ -479,8 +480,8 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
     info "Skipping GDB/debugger tools installation (--skip-debug)"
   fi
 
-  if [[ "$SET_PERF_TOOLS" -eq 1 ]]; then
-    install_perf_tools
+  if [[ "$SET_TRACING_TOOLS" -eq 1 ]]; then
+    install_tracing_tools
   fi
 else
   info "Skipping system dependencies installation (--skip-deps)"
