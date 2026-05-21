@@ -265,27 +265,12 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         }
         contact_state_.RecomputeActive(contact_mgr_config_);
 
-        // Set per-contact force reference: +Z normal = gains.grasp_target_force
-        auto* force_task =
-            tsid_initialized_ ? tsid_controller_.Formulation().GetTask("force") : nullptr;
-        if (force_task) {
-          const int n = contact_mgr_config_.max_contact_vars;
-          if (n > 0) {
-            Eigen::VectorXd lambda_des = Eigen::VectorXd::Zero(n);
-            int offset = 0;
-            for (const auto& c : contact_mgr_config_.contacts) {
-              const int cdim = c.contact_dim;
-              if (offset + cdim > n) {
-                break;
-              }
-              // Point contact: lambda = [fx, fy, fz]; push +Z target force
-              if (cdim >= 3) {
-                lambda_des[offset + 2] = gains.grasp_target_force;
-              }
-              offset += cdim;
-            }
-            static_cast<rtc::tsid::ForceTask*>(force_task)->SetForceReferences(lambda_des);
-          }
+        // Stage A-3: reset the per-contact PI integrator on the closure
+        // edge so a fresh grasp starts from a known state. Hold reuses the
+        // same updater state — the kClosure→kHold transition is a smooth
+        // continuation of the same closed loop, not a new control episode.
+        if (new_phase == WbcPhase::kClosure) {
+          force_ref_updater_.Reset();
         }
 
         // Ramp hand joint target toward stored target (user-provided close pose)

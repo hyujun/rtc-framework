@@ -29,8 +29,9 @@ integrated_bringup/
 │   │   ├── demo_task_controller.hpp    <- 태스크 공간 CLIK 제어 (로봇+핸드)
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
-│   │       ├── grasp_target.hpp        <- grasp 목표 pose 구조체 + 외부 명령 enum
-│   │       └── grasp_phase_manager.hpp <- 8-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
+│   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
+│   │       ├── grasp_phase_manager.hpp    <- 8-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
+│   │       └── force_reference_updater.hpp <- Stage A-3 per-contact normal-force PI helper
 │   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼)
 │   │   ├── bringup_logging.hpp
 │   │   ├── controller_log_registration.hpp
@@ -51,7 +52,7 @@ integrated_bringup/
 │   │   ├── controller_registration.cpp <- 데모 컨트롤러 등록 (RTC_REGISTER_CONTROLLER)
 │   │   ├── joint/                      <- DemoJointController (controller/compute/lifecycle/parameters)
 │   │   ├── task/                       <- DemoTaskController (controller/compute/lifecycle/parameters)
-│   │   └── wbc/                        <- DemoWbcController (controller/compute/lifecycle/parameters/phase) + grasp_phase_manager.cpp
+│   │   └── wbc/                        <- DemoWbcController (controller/compute/lifecycle/parameters/phase) + grasp_phase_manager.cpp + force_reference_updater.cpp
 │   ├── backends/                       <- DeviceBackend 구현체 (RTC_REGISTER_DEVICE_BACKEND, --whole-archive 등록)
 │   │   ├── mujoco_native_backend.cpp
 │   │   ├── ur_driver_native_backend.cpp
@@ -357,8 +358,9 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 #### YAML 구조 (`config/ur5e_hand/controllers/demo_wbc_controller.yaml`)
 
-- `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking)
-- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
+- `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking) / `contact_consistency` (Stage A-2 soft no-slip)
+- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8) / `torque_limit` (Stage A-1, `tau_scale`). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
+- `tsid.force_pi` (Stage A-3, optional): per-contact normal-force PI updater. Keys: `kp` / `ki` / `i_max` / `lambda_min` / `lambda_max` / `f_des_default`. Reset on `kClosure` entry edge, updated every RT tick in `kClosure`/`kHold` via `ForceReferenceUpdater`. Missing block → defaults.
 - `tsid.phase_presets`: pre_grasp / closure / hold 별 task weight + active 토글
 - `tsid.wqp.solver`: `max_iter` / `eps_abs` / `eps_rel` / `verbose` (ProxSuite 설정, rtc_tsid가 직접 읽음)
 - `integration`: `position_margin` / `velocity_scale` / **`force_rate_alpha`** (필수, [0,1])

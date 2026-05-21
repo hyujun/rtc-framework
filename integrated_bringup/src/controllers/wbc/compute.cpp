@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_tsid/tasks/force_task.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -185,6 +186,43 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
     control_ref_.q_des = q_curr_full_;
     control_ref_.v_des.setZero();
     control_ref_.a_des.setZero();
+  }
+
+  // 3b. Stage A-3 — per-tick ForceReferenceUpdater (kClosure/kHold only).
+  // Closes the loop on per-fingertip normal force: λ_des_i_n = PI(f_des - |f_meas_i|).
+  // Open-loop on phase entry (legacy behaviour) is replaced by this per-tick path.
+  if (phase_ == WbcPhase::kClosure || phase_ == WbcPhase::kHold) {
+    auto* force_task =
+        tsid_initialized_ ? tsid_controller_.Formulation().GetTask("force") : nullptr;
+    const int n_lambda = contact_mgr_config_.max_contact_vars;
+    if (force_task && n_lambda > 0 && force_lambda_des_.size() == n_lambda) {
+      const auto gains_now = gains_lock_.Load();
+      const double f_des = gains_now.grasp_target_force;
+      force_lambda_des_.setZero();
+      int offset = 0;
+      int contact_idx = 0;
+      for (const auto& c : contact_mgr_config_.contacts) {
+        const int cdim = c.contact_dim;
+        if (offset + cdim > n_lambda) {
+          break;
+        }
+        // Map contact_idx → fingertip sensor slot 1:1 (configured ordering).
+        const bool valid = (contact_idx < num_active_fingertips_) &&
+                           fingertip_data_[static_cast<std::size_t>(contact_idx)].valid;
+        const double f_meas =
+            valid ? static_cast<double>(
+                        fingertip_data_[static_cast<std::size_t>(contact_idx)].force_magnitude)
+                  : 0.0;
+        const double lambda_n = force_ref_updater_.Update(contact_idx, valid, f_des, f_meas, dt);
+        // Point/surface contact: λ = [fx, fy, fz, (mx, my, mz)]; push +Z.
+        if (cdim >= 3) {
+          force_lambda_des_[offset + 2] = lambda_n;
+        }
+        offset += cdim;
+        ++contact_idx;
+      }
+      static_cast<rtc::tsid::ForceTask*>(force_task)->SetForceReferences(force_lambda_des_);
+    }
   }
 
   // 4. Build ControlState

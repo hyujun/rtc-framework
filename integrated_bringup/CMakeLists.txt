@@ -64,6 +64,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/parameters.cpp
   src/controllers/wbc/phase.cpp
   src/controllers/wbc/grasp_phase_manager.cpp
+  src/controllers/wbc/force_reference_updater.cpp
   src/support/demo_shared_config.cpp
   src/support/owned_topics.cpp
   src/backends/mujoco_native_backend.cpp
@@ -287,6 +288,15 @@ if(BUILD_TESTING)
     rtc_base
     pinocchio
     rtc_mpc
+    Eigen3
+  )
+
+  # ── Stage A-3: ForceReferenceUpdater unit tests (pure helper, no model) ───
+  ament_add_gtest(test_force_reference_updater test/test_force_reference_updater.cpp)
+  target_link_libraries(test_force_reference_updater
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_force_reference_updater
     Eigen3
   )
 

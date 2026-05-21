@@ -3,6 +3,7 @@
 
 // Project headers (order: RTC base → interface → controllers → bridge → tsid)
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
+#include "integrated_bringup/controllers/wbc/force_reference_updater.hpp"
 #include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"
 #include "integrated_bringup/controllers/wbc/wbc_state.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
@@ -311,6 +312,15 @@ class DemoWbcController final : public RTControllerInterface {
   bool tsid_initialized_{false};
   int qp_fail_count_{0};
   int max_qp_fail_before_fallback_{5};
+
+  // Stage A-3: per-tick force-reference closed-loop helper. Replaces the
+  // open-loop λ_des push that used to fire on phase entry only. Updated
+  // every RT tick inside ComputeTSIDPosition while phase ∈ {kClosure,
+  // kHold}; reset on the kClosure entry edge so integrators start clean.
+  ::integrated_bringup::wbc::ForceReferenceUpdater force_ref_updater_;
+  // Pre-allocated λ_des vector (size = contact_mgr_config_.max_contact_vars),
+  // sized once in LoadConfig so RT path never resizes.
+  Eigen::VectorXd force_lambda_des_;
 
   // Phase presets — pre-resolved from YAML at init for RT-safe access.
   // Indexed by static_cast<int>(WbcPhase).

@@ -121,6 +121,22 @@ demo_wbc_controller:
         type: "torque_limit"
         tau_scale: 1.0
 
+    # Stage A-3: per-contact PI on normal-force error (controller-side helper,
+    # closes the loop on tactile inference). Active in closure/hold phases via
+    # ComputeTSIDPosition (compute.cpp); integrator resets on the kClosure
+    # entry edge. Missing block → ForceReferenceUpdater defaults.
+    #   kp/ki:        per-contact PI gains on (f_des - |f_meas|).
+    #   i_max:        integrator clamp [N] — anti-windup safety net.
+    #   lambda_min/max: per-contact +Z λ saturation [N].
+    #   f_des_default: fallback target when gains.grasp_target_force ≤ 0.
+    force_pi:
+      kp: 0.5
+      ki: 2.0
+      i_max: 2.0
+      lambda_min: 0.0
+      lambda_max: 20.0
+      f_des_default: 2.0
+
     contacts:
       - name: "thumb_tip"
         frame: "thumb_tip_link"

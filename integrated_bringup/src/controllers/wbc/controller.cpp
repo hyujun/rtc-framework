@@ -306,6 +306,38 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
                       contact_mgr_config_.max_contact_vars);
     tsid_output_.Init(robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contact_vars);
 
+    // Stage A-3: pre-allocate λ_des buffer for ForceReferenceUpdater output.
+    // Sized once here so the RT-tick SetForceReferences() path never resizes.
+    force_lambda_des_ = Eigen::VectorXd::Zero(contact_mgr_config_.max_contact_vars);
+
+    // Parse optional `tsid.force_pi` block into the updater config. Missing
+    // block → defaults from ForceReferenceUpdaterConfig (kp=0.5, ki=2.0,
+    // i_max=2, lambda∈[0,20], f_des_default=2 N).
+    if (tsid_node["force_pi"]) {
+      const auto& fp = tsid_node["force_pi"];
+      ::integrated_bringup::wbc::ForceReferenceUpdaterConfig fp_cfg =
+          force_ref_updater_.GetConfig();
+      if (fp["kp"]) {
+        fp_cfg.kp = fp["kp"].as<double>();
+      }
+      if (fp["ki"]) {
+        fp_cfg.ki = fp["ki"].as<double>();
+      }
+      if (fp["i_max"]) {
+        fp_cfg.i_max = fp["i_max"].as<double>();
+      }
+      if (fp["lambda_min"]) {
+        fp_cfg.lambda_min = fp["lambda_min"].as<double>();
+      }
+      if (fp["lambda_max"]) {
+        fp_cfg.lambda_max = fp["lambda_max"].as<double>();
+      }
+      if (fp["f_des_default"]) {
+        fp_cfg.f_des_default = fp["f_des_default"].as<double>();
+      }
+      force_ref_updater_.SetConfig(fp_cfg);
+    }
+
     // ControlState pre-allocate
     ctrl_state_.q = Eigen::VectorXd::Zero(robot_info_.nq);
     ctrl_state_.v = Eigen::VectorXd::Zero(robot_info_.nv);
