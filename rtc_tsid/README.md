@@ -49,7 +49,8 @@ rtc_tsid/
 │   │   ├── force_task.hpp              -- 접촉력 reference 추종 태스크
 │   │   ├── momentum_task.hpp           -- Centroidal momentum regularization 태스크
 │   │   ├── object_wrench_task.hpp      -- (Stage B-2) Object 결합 wrench 추종 (J = [0, G], r = w_obj_des)
-│   │   └── internal_force_task.hpp     -- (Stage B-3) Squeeze force 추종 (rank-based nullity + r = P_N · λ_des)
+│   │   ├── internal_force_task.hpp     -- (Stage B-3) Squeeze force 추종 (rank-based nullity + r = P_N · λ_des)
+│   │   └── object_se3_task.hpp         -- (Stage B-4) Object SE(3) pose 추종 ((Gᵀ)⁺·J_c kinematic)
 │   ├── constraints/
 │   │   ├── eom_constraint.hpp          -- 운동 방정식 등식 제약
 │   │   ├── contact_constraint.hpp      -- 접촉 제약
@@ -61,8 +62,9 @@ rtc_tsid/
 │   │   ├── qp_types.hpp                -- QP 문제 구조체
 │   │   └── object_frame.hpp            -- (Stage B-1) ObjectFrame POD + Ad*/grasp-block helpers
 │   ├── contact/
-│   │   ├── contact_manager.hpp         -- (Stage B-1) Grasp matrix G + J_c stacking + active_lambda_dim
-│   │   └── grasp_cache.hpp             -- (Stage B-2) LDLT-based G_pinv + GT_pinv + P_N + rank_G
+│   │   ├── contact_manager.hpp         -- (Stage B-1/B-4) Grasp matrix G + J_c / J̇_c·v stacking + active_lambda_dim
+│   │   ├── grasp_cache.hpp             -- (Stage B-2) LDLT-based G_pinv + GT_pinv + P_N + rank_G
+│   │   └── object_state_provider.hpp   -- (Stage B-4) ObjectStateProvider interface + IdentityObjectStateProvider stub
 │   └── solver/
 │       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼
 ├── src/                                -- 구현 파일
@@ -133,6 +135,7 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 | `MomentumTask` | Centroidal | Angular momentum → 0 regularization 또는 full momentum tracking | 3 (angular) / 6 (full) |
 | `ObjectWrenchTask` | Object | (Stage B-2) Contact-resultant wrench 가 desired w_obj 와 일치하도록: J=[0, G], r=w_obj_des | 6 (active≥1) / 0 (active=0) |
 | `InternalForceTask` | Object | (Stage B-3) Squeeze force 가 Null(G) 안에서만 desired 와 일치: J=[0, I_{n_λ}], r=P_N·λ_squeeze_des. rank-based nullity skip (nullity=n_λ-rank_G≤0 → skip) | n_λ (nullity>0) / 0 |
+| `ObjectSE3Task` | Object | (Stage B-4) Object SE(3) pose 추종 (kinematic): J=[(Gᵀ)⁺·J_c, 0], r=a_obj_des-(Gᵀ)⁺·dotJ_c·v. 활성화: active contact≥1 AND ObjectStateProvider valid. 6D mask 지원. | mask 활성 축 수 (1~6) / 0 |
 
 태스크는 `TaskBase`를 상속하며, `compute_residual()` 메서드로 잔차 벡터와 자코비안을 반환합니다. 각 태스크는 `weight`와 `priority` 속성을 가집니다.
 
@@ -141,6 +144,8 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 **Stage B-1 — ObjectFrame + Grasp matrix G.** `types/object_frame.hpp` 에 `ObjectFrame` POD (world-frame object origin `p_w` + orientation `R_w`) + `AdjointDualWorldAligned(p_ci, p_o)` (6×6 surface-wrench transport) / `PointGraspBlock(p_ci, p_o)` (6×3 point-force transport) helper 추가. `contact/contact_manager.hpp` 의 `ContactManager` 가 `ActiveLambdaDim(state) → int` / `ComputeGraspMatrix(cache, state, object, G_out) → G[6×n_λ_active]` / `StackContactJacobians(cache, state, J_out) → J_c[n_λ_active × nv]` 세 가지 object-level operation 제공. Inactive contact 는 column/row 모두 skip 되며, G 는 LOCAL_WORLD_ALIGNED basis 의 world-aligned wrench convention (rtc_tsid 의 기존 contact Jacobian 과 일치). Stage B-2 (`GraspCache` + `ObjectWrenchTask`) 의 base building block.
 
 **Stage B-3 — InternalForceTask (rank-based nullity + P_N projection).** `tasks/internal_force_task.hpp` 의 `InternalForceTask` 가 squeeze/internal force 를 desired 와 일치시키되 *오직 Null(G) 안에서만* — Range(Gᵀ) component 는 P_N 으로 사전 제거하여 ObjectWrenchTask 와의 직교성 보장. `J = [0_{n_λ×nv} | I_{n_λ}]` (active slot 에 1, inactive 슬롯 0), `r = P_N · λ_squeeze_des` (active-packed). 활성화 조건 = rank-based nullity test: `nullity = n_λ_active - rank_G`, `nullity ≤ 0 → ResidualDim=0 (skip)`. 단순 `n_λ ≤ 6` 단독 early-exit 은 collinear/degenerate grasp (rank<6 인데 n_λ>6) 를 놓치므로 v2 가이드에서 명시적으로 금지. GraspCache 의 `P_N` / `Rank()` / `CurrentLambdaDim()` 을 공유 인스턴스로 읽으며, controller-side 가 한 tick 당 1회 `GraspCache::Compute(G, n_active)` 책임. RT alloc 0 (workspace `lambda_squeeze_des_` / `lambda_des_active_` / `r_projected_` 모두 SetContactManager 시점에 max_contact_vars 로 pre-alloc).
+
+**Stage B-4 — ObjectSE3Task ((Gᵀ)⁺·J_c kinematic) + ObjectStateProvider.** `tasks/object_se3_task.hpp` 의 `ObjectSE3Task` 가 object SE(3) pose 를 contact 가 매개하는 kinematic chain 으로 추종한다. `J = [(Gᵀ)⁺ · J_c_stack | 0_{6 × n_λ}]` (좌측 nv 컬럼만 a 에 의존, 우측 λ block 은 0 — *kinematic* task), `r = a_obj_des - (Gᵀ)⁺ · (J̇_c · v)_stack` 이며 `a_obj_des = a_ff + Kp·e_pos + Kd·e_vel` 의 SE(3) PD reference (SE3Task 와 동일한 log3 singularity guard). ⚠ **v2 차원 수정**: kinematic Jacobian 은 `(Gᵀ)⁺ · J_c` 이지 `G⁺ · J_c` 가 아니다 — 후자는 6-row residual 과 차원 불일치. GraspCache 가 이미 `GTPinv()` 를 캐시하므로 ObjectSE3Task / ObjectWrenchTask / InternalForceTask 세 task 가 동일 GraspCache 인스턴스를 공유한다. 활성화 게이트: (1) `ContactManager::ActiveLambdaDim > 0`, AND (2) `ObjectStateProvider::IsValid()` — 두 조건 모두 만족시 `ResidualDim() = active_mask_count` (default 6), 아니면 0. ObjectStateProvider 는 abstract interface (Stage B-4 에서 신설 — ARCH-3 의 "두 번째 구현 전 abstract" 룰을 *선제적으로* 만족) + `IdentityObjectStateProvider` stub (pose ≡ given ObjectFrame, twist=0, valid=true). 실제 vision / external pose topic 소비 provider 는 Stage B-5+ 에서 watchdog (pose_timeout_sec) 과 함께 추가 예정. `ContactManager` 는 본 stage 에서 `StackContactJDotV(cache, state, v_out)` API 도 신설 (StackContactJacobians 와 대칭, dotJ·v bias 의 active-packed stack). RT alloc 0 (workspace `jc_stack_` / `djv_stack_` / `j_obj_full_` 모두 SetContactManager 에서 (max_contact_vars × nv) / max_contact_vars / (6 × nv) 로 pre-alloc; ComputeResidual 내부는 `noalias()` block product 만 사용).
 
 **Stage B-2 — GraspCache + ObjectWrenchTask.** `contact/grasp_cache.hpp` 의 `GraspCache::Compute(G, n_λ_active)` 가 매 tick `G_pinv ∈ R^{n_λ × 6}` / `GT_pinv ∈ R^{6 × n_λ}` / `P_N = I - G_pinv·G ∈ R^{n_λ × n_λ}` / `rank_G ∈ [0,6]` 을 LDLT-기반 damped Moore–Penrose 로 계산 — SVD 미사용, 6×6 또는 n_λ×n_λ 의 작은 normal-equation (`G·Gᵀ` 또는 `Gᵀ·G`) 위에서 in-place `solveInPlace` 만 사용. RT-safe: 모든 workspace (`m6_`, `minv6_`, `nlam_`, `ninv_`, `minv_g_`, `ldlt_*`) Init() 에서 사전 할당. Damping ε = max(tol_damp, eps_machine · trace(M)) 으로 wholly singular contact configuration 에도 stable. `tasks/object_wrench_task.hpp` 의 `ObjectWrenchTask` 는 `J = [0_{6×nv} | G]`, `r = w_obj_des` 의 6-residual task — active contact slot 에 G column 을 unpack 하고 inactive slot 은 0 (ForceTask convention). `ResidualDim()` 은 active count > 0 이면 6, else 0 (한-tick lag). Stage B-3 (InternalForceTask, `r = P_N · λ_squeeze_des`) / Stage B-4 (ObjectSE3Task, `(Gᵀ)⁺·J_c`) 에서 GraspCache 의 동일 인스턴스 공유.
 

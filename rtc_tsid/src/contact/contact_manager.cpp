@@ -71,4 +71,22 @@ void ContactManager::StackContactJacobians(const PinocchioCache& cache,
   }
 }
 
+void ContactManager::StackContactJDotV(const PinocchioCache& cache, const ContactState& contacts,
+                                       Eigen::Ref<Eigen::VectorXd> v_out) const noexcept {
+  if (!manager_cfg_)
+    return;
+
+  int row = 0;
+  for (size_t i = 0; i < contacts.contacts.size() && i < manager_cfg_->contacts.size() &&
+                     i < cache.contact_frames.size();
+       ++i) {
+    if (!contacts.contacts[i].active)
+      continue;
+
+    const int cdim = manager_cfg_->contacts[i].contact_dim;
+    v_out.segment(row, cdim) = cache.contact_frames[i].dJv.head(cdim);
+    row += cdim;
+  }
+}
+
 }  // namespace rtc::tsid

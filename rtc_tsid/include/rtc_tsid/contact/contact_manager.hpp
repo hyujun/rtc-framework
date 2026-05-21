@@ -87,6 +87,19 @@ class ContactManager {
   void StackContactJacobians(const PinocchioCache& cache, const ContactState& contacts,
                              Eigen::Ref<Eigen::MatrixXd> J_out) const noexcept;
 
+  // Write the stacked (J̇_c · v) bias for active contacts into v_out.
+  // Caller must size v_out to (ActiveLambdaDim(contacts)) before calling.
+  // Inactive contacts skip cdim entries; active contacts contribute the
+  // top-cdim rows of cache.contact_frames[i].dJv (the classical-acceleration
+  // bias of the contact frame, LOCAL_WORLD_ALIGNED).
+  //
+  // Used by Stage B-4 ObjectSE3Task to assemble the reference
+  //   r = a_obj_des - (Gᵀ)⁺ · (J̇_c·v)_stack.
+  //
+  // RT-safe: segment copy from cache.contact_frames[i].dJv.
+  void StackContactJDotV(const PinocchioCache& cache, const ContactState& contacts,
+                         Eigen::Ref<Eigen::VectorXd> v_out) const noexcept;
+
   [[nodiscard]] const ContactManagerConfig* config() const noexcept { return manager_cfg_; }
 
  private:
