@@ -24,6 +24,7 @@ find_package(proxsuite REQUIRED)
 add_library(rtc_tsid STATIC
   src/solver/qp_solver_wrapper.cpp
   src/types/wbc_types.cpp
+  src/contact/contact_manager.cpp
   src/tasks/posture_task.cpp
   src/tasks/se3_task.cpp
   src/tasks/force_task.cpp
@@ -147,6 +148,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_weight_scaling test/test_weight_scaling.cpp)
   target_link_libraries(test_weight_scaling rtc_tsid)
 
+  # Stage B-1: ObjectFrame + Grasp matrix G + ContactManager.
+  ament_add_gtest(test_grasp_matrix test/test_grasp_matrix.cpp)
+  target_link_libraries(test_grasp_matrix rtc_tsid)
+
   # Apply PANDA_URDF_PATH macro to every test target above.
   foreach(_t
       test_qp_solver_wrapper test_wbc_types test_posture_task test_se3_task
@@ -155,7 +160,8 @@ if(BUILD_TESTING)
       test_eom_constraint test_contact_constraint test_friction_cone_constraint
       test_torque_limit_constraint test_joint_limit_constraint test_tsid_wqp
       test_tsid_hqp test_tsid_wqp_hqp_compare test_tsid_performance
-      test_fixed_dim_qp test_activation_ramp test_weight_scaling)
+      test_fixed_dim_qp test_activation_ramp test_weight_scaling
+      test_grasp_matrix)
     target_compile_definitions(${_t} PRIVATE
         RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
   endforeach()

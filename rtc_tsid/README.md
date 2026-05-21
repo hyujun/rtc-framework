@@ -56,12 +56,15 @@ rtc_tsid/
 │   │   └── joint_limit_constraint.hpp  -- 관절 한계 가속도 부등식 제약
 │   ├── types/
 │   │   ├── wbc_types.hpp               -- 핵심 데이터 구조체
-│   │   └── qp_types.hpp                -- QP 문제 구조체
+│   │   ├── qp_types.hpp                -- QP 문제 구조체
+│   │   └── object_frame.hpp            -- (Stage B-1) ObjectFrame POD + Ad*/grasp-block helpers
+│   ├── contact/
+│   │   └── contact_manager.hpp         -- (Stage B-1) Grasp matrix G + J_c stacking + active_lambda_dim
 │   └── solver/
 │       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼
 ├── src/                                -- 구현 파일
 ├── config/                             -- YAML 설정 파일
-├── test/                               -- 17개 GTest 파일
+├── test/                               -- GTest 파일 (ament_add_gtest 등록 — CMakeLists.txt 참조)
 ├── CMakeLists.txt
 └── package.xml
 ```
@@ -129,6 +132,8 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 태스크는 `TaskBase`를 상속하며, `compute_residual()` 메서드로 잔차 벡터와 자코비안을 반환합니다. 각 태스크는 `weight`와 `priority` 속성을 가집니다.
 
 **Stage A-5b — Contact activation ramp & √s cost scaling.** `ContactState::Entry` 에 `activation ∈ [0,1]`, `activation_target`, `t_ramp_sec` 필드. Phase FSM 이 `SetActivationTarget(idx, target, t_ramp_sec)` 로 목표 설정, RT-tick 마다 `UpdateActivation(dt)` 가 linear ramp 진행. `ForceTask` / `ContactConsistencyTask` 의 i-th contact row 영역이 `√s_i` 로 곱해져 cost = `w · s_i · ‖J_i z - r_i‖²`. `activation` 이 `kActivationDeadband(=1e-3)` 미만이면 `active : bool` 가 자동 `false` 로 flip 되고, FrictionCone/EoM/ContactConstraint 의 `if (!active) skip` 경로가 그대로 inequality/equality row 를 0 으로 만든다 (loose bound 효과). YAML key `tsid.contacts_default_ramp_sec` (default 0.1).
+
+**Stage B-1 — ObjectFrame + Grasp matrix G.** `types/object_frame.hpp` 에 `ObjectFrame` POD (world-frame object origin `p_w` + orientation `R_w`) + `AdjointDualWorldAligned(p_ci, p_o)` (6×6 surface-wrench transport) / `PointGraspBlock(p_ci, p_o)` (6×3 point-force transport) helper 추가. `contact/contact_manager.hpp` 의 `ContactManager` 가 `ActiveLambdaDim(state) → int` / `ComputeGraspMatrix(cache, state, object, G_out) → G[6×n_λ_active]` / `StackContactJacobians(cache, state, J_out) → J_c[n_λ_active × nv]` 세 가지 object-level operation 제공. Inactive contact 는 column/row 모두 skip 되며, G 는 LOCAL_WORLD_ALIGNED basis 의 world-aligned wrench convention (rtc_tsid 의 기존 contact Jacobian 과 일치). Stage B-2 (`GraspCache` + `ObjectWrenchTask`) 의 base building block.
 
 #### SE3Task YAML 설정
 
