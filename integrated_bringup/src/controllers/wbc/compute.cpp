@@ -161,6 +161,23 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   // 2. Update Pinocchio cache (M, h, g, Jacobians)
   pinocchio_cache_.Update(q_curr_full_, v_curr_full_, contact_state_);
 
+  // 2a. Stage B-5: populate the once-per-tick grasp cache shared across the
+  // three object-level tasks (ObjectWrenchTask / InternalForceTask /
+  // ObjectSE3Task). Order is invariant per the plan handoff:
+  //   cache.Update → UpdateActivation → RecomputeActive →
+  //   ActiveLambdaDim → ComputeGraspMatrix(G_workspace_) → grasp_cache_.Compute
+  // Tasks must never re-Compute on their own — they only read GPinv/GTPinv/
+  // ProjN/Rank from grasp_cache_. n_active=0 (idle/pre_grasp) leaves the
+  // cache empty (Rank()=0); object-level tasks then report ResidualDim=0.
+  const int n_lambda_active = contact_mgr_.ActiveLambdaDim(contact_state_);
+  if (n_lambda_active > 0) {
+    auto G_view = grasp_G_workspace_.leftCols(n_lambda_active);
+    contact_mgr_.ComputeGraspMatrix(pinocchio_cache_, contact_state_, object_frame_, G_view);
+    grasp_cache_.Compute(G_view, n_lambda_active);
+  } else {
+    grasp_cache_.Compute(grasp_G_workspace_.leftCols(0), 0);
+  }
+
   // 2b. MPC reference injection.
   //
   // Publish the current RT state to the MPC thread, then try to consume
@@ -297,9 +314,14 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
         v_next_full_[static_cast<Eigen::Index>(pin_idx)];
   }
 
+  // Stage B-5: WBC diagnostic (RT-safe throttled INFO). WBCDiagnostic struct
+  // (separate SeqLock publisher) is deferred to a future stage — this single
+  // throttled line is the interim observability surface. Format uses only
+  // %d / %.2f / %.0f (no fmt::format / to_string / string concat — RT-3
+  // throttle exception applies).
   RCLCPP_INFO_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
-                       "[wbc] TSID solve=%.0fus qp_ok phase=%d", tsid_output_.solve_time_us,
-                       static_cast<int>(phase_));
+                       "[wbc] solve=%.0fus phase=%d n_act=%d rank_G=%d", tsid_output_.solve_time_us,
+                       static_cast<int>(phase_), n_lambda_active, grasp_cache_.Rank());
 }
 
 void DemoWbcController::ComputeFallback() noexcept {

@@ -101,6 +101,35 @@ demo_wbc_controller:
         type: "contact_consistency"
         weight: 100.0
         priority: 1
+      # Stage B-5: object-level tasks. All three share the controller-owned
+      # ContactManager / GraspCache / ObjectFrame instances; the per-tick
+      # grasp cache is populated once inside ComputeTSIDPosition (call-order
+      # invariant in compute.cpp). Activated in closure/hold only (no
+      # contacts in pre_grasp → ResidualDim()=0 anyway).
+      #
+      # object_wrench: r = w_obj_des, J = [0_{6×nv} | G]. Drives Σ G·λ →
+      # mass·gravity·ẑ (object support).
+      object_wrench:
+        type: "object_wrench"
+        weight: 100.0
+        priority: 1
+      # internal_force: r = P_N · λ_squeeze_des (rank-based nullity gate).
+      # Stage B-5 keeps λ_squeeze_des ≡ 0; a future planner writes here.
+      internal_force:
+        type: "internal_force"
+        weight: 50.0
+        priority: 1
+      # object_se3: r = a_obj_des - (Gᵀ)⁺·dJv_stack, J = [(Gᵀ)⁺·J_c | 0].
+      # Drives the object SE(3) pose via the kinematic chain implied by
+      # active contacts. Identity provider keeps the reference static for
+      # Stage B-5 (concrete vision/topic provider arrives in B-5+).
+      object_se3:
+        type: "object_se3"
+        mask: [1, 1, 1, 1, 1, 1]
+        kp: [100, 100, 100, 50, 50, 50]
+        kd: [20, 20, 20, 10, 10, 10]
+        weight: 50.0
+        priority: 0
 
     constraints:
       eom:
@@ -137,6 +166,13 @@ demo_wbc_controller:
       lambda_max: 20.0
       f_des_default: 2.0
 
+    # Stage B-5: object frame seed. R_w stays identity (reserved per
+    # object_frame.hpp Stage B-2 note). mass × 9.81 m/s² is pushed into
+    # w_obj_des on closure/hold entry — 0 leaves ObjectWrenchTask a no-op.
+    object_frame:
+      p_w: [0.0, 0.0, 0.0]
+      mass: 0.0
+
     contacts:
       - name: "thumb_tip"
         frame: "thumb_tip_link"
@@ -167,6 +203,9 @@ demo_wbc_controller:
           se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
           force:               { active: true,  weight: 10.0,  priority: 1 }
           contact_consistency: { active: true,  weight: 100.0, priority: 1 }
+          object_wrench:       { active: true,  weight: 100.0, priority: 1 }
+          internal_force:      { active: true,  weight: 50.0,  priority: 1 }
+          object_se3:          { active: true,  weight: 50.0,  priority: 0 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
@@ -179,6 +218,9 @@ demo_wbc_controller:
           se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
           force:               { active: true,  weight: 20.0,  priority: 1 }
           contact_consistency: { active: true,  weight: 100.0, priority: 1 }
+          object_wrench:       { active: true,  weight: 100.0, priority: 1 }
+          internal_force:      { active: true,  weight: 50.0,  priority: 1 }
+          object_se3:          { active: true,  weight: 50.0,  priority: 0 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }

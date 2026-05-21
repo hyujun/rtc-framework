@@ -1,6 +1,9 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
+#include "rtc_tsid/tasks/internal_force_task.hpp"
+#include "rtc_tsid/tasks/object_se3_task.hpp"
+#include "rtc_tsid/tasks/object_wrench_task.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
 
@@ -274,6 +277,34 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         // continuation of the same closed loop, not a new control episode.
         if (new_phase == WbcPhase::kClosure) {
           force_ref_updater_.Reset();
+        }
+
+        // Stage B-5: seed the three object-level task references on
+        // closure/hold entry. tsid_initialized_ gate avoids a null
+        // formulation_ deref when LoadConfig was skipped (unit tests).
+        //   ObjectWrenchTask:   w_obj_des = [0, 0, m·g, 0, 0, 0]  (gravity
+        //                       support; m=0 leaves it a no-op residual).
+        //   InternalForceTask:  λ_squeeze_des ≡ 0 (placeholder; future
+        //                       dynamic squeeze planner writes here).
+        //   ObjectSE3Task:      placement_des = object_frame_ (identity-only
+        //                       provider; pose is static for Stage B-5).
+        // Tasks lookup by Name(); silent skip when YAML didn't register them.
+        if (tsid_initialized_) {
+          if (auto* ow = tsid_controller_.Formulation().GetTask("object_wrench"); ow) {
+            constexpr double kGravity = 9.81;
+            Eigen::Matrix<double, 6, 1> w_obj_des = Eigen::Matrix<double, 6, 1>::Zero();
+            w_obj_des(2) = object_mass_kg_ * kGravity;
+            static_cast<rtc::tsid::ObjectWrenchTask*>(ow)->SetDesiredWrench(w_obj_des);
+          }
+          if (auto* in = tsid_controller_.Formulation().GetTask("internal_force"); in) {
+            squeeze_lambda_des_.setZero();
+            static_cast<rtc::tsid::InternalForceTask*>(in)->SetSqueezeReference(
+                squeeze_lambda_des_);
+          }
+          if (auto* os = tsid_controller_.Formulation().GetTask("object_se3"); os) {
+            pinocchio::SE3 placement_des(object_frame_.R_w, object_frame_.p_w);
+            static_cast<rtc::tsid::ObjectSE3Task*>(os)->SetSe3Reference(placement_des);
+          }
         }
 
         // Ramp hand joint target toward stored target (user-provided close pose)

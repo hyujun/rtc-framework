@@ -358,11 +358,12 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 #### YAML 구조 (`config/ur5e_hand/controllers/demo_wbc_controller.yaml`)
 
-- `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking) / `contact_consistency` (Stage A-2 soft no-slip)
+- `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking) / `contact_consistency` (Stage A-2 soft no-slip) / `object_wrench` / `internal_force` / `object_se3` (Stage B-5 object-level trio — closure/hold 에서만 활성, controller-owned `ContactManager` / `GraspCache` / `ObjectFrame` / `IdentityObjectStateProvider` 공유. RT-tick 마다 `ComputeGraspMatrix → grasp_cache_.Compute` 1회 호출 후 세 task 가 `GPinv()` / `GTPinv()` / `ProjN()` / `Rank()` 를 *읽기만* 함)
 - `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8, Stage A-4 normal-aware) / `torque_limit` (Stage A-1, `tau_scale`). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
 - `tsid.contacts.*` (Stage A-4 옵션): 각 contact 에 `normal: [x, y, z]` 키 추가하면 world-frame seed normal 로 사용 (기본 `(0,0,1)`). `tsid.contacts_normal_filter_alpha`: runtime `ContactState::UpdateNormal` LPF gain (default 0.1, 1.0 = no filter).
 - `tsid.contacts_default_ramp_sec` (Stage A-5b, optional): contact activation linear-ramp 시간 (초). Phase FSM 이 kClosure / kHold 진입 시 `SetActivationTarget(i, 1.0, this)`, kRetreat / kIdle 시 0.0 으로 ramp 호출. ForceTask / ContactConsistencyTask 의 행이 √s_i 로 scaling 되어 contact on/off 시 cost surface 가 부드럽게 변함. Default 0.1 (100 ms).
 - `tsid.force_pi` (Stage A-3, optional): per-contact normal-force PI updater. Keys: `kp` / `ki` / `i_max` / `lambda_min` / `lambda_max` / `f_des_default`. Stage A-4 부터 출력은 contact normal 방향으로 푸시되어 FrictionCone 과 일관성을 유지 (default +Z 면 byte-identical).
+- `tsid.object_frame` (Stage B-5, optional): object 의 world-frame placement + mass. Keys: `p_w: [x,y,z]` (default `[0,0,0]`) / `mass` (default `0.0`). R_w 는 reserved (identity 고정). closure/hold entry 마다 `mass × 9.81` 이 `ObjectWrenchTask` 의 ẑ 성분으로 push 되고, `IdentityObjectStateProvider` 가 동일한 `p_w` 를 `ObjectSE3Task` placement reference 로 사용. mass=0 은 ObjectWrenchTask 를 no-op residual 로 만듦. Stage B-5+ 에서 vision/pose-topic provider 가 watchdog (`pose_timeout_sec`) 와 함께 plug-in 예정.
 - `tsid.phase_presets`: pre_grasp / closure / hold 별 task weight + active 토글
 - `tsid.wqp.solver`: `max_iter` / `eps_abs` / `eps_rel` / `verbose` (ProxSuite 설정, rtc_tsid가 직접 읽음)
 - `integration`: `position_margin` / `velocity_scale` / **`force_rate_alpha`** (필수, [0,1])

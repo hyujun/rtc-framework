@@ -26,6 +26,9 @@
 #include "rtc_tsid/constraints/torque_limit_constraint.hpp"
 #include "rtc_tsid/tasks/contact_consistency_task.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
+#include "rtc_tsid/tasks/internal_force_task.hpp"
+#include "rtc_tsid/tasks/object_se3_task.hpp"
+#include "rtc_tsid/tasks/object_wrench_task.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
 
@@ -197,6 +200,43 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
       task->SetContactManager(&contact_mgr_config_);
       formulation.AddTask(std::move(task));
+    } else if (type == "object_wrench") {
+      // Stage B-5: drives Σ G·λ → w_obj_des (object-origin wrench). Shares
+      // the controller-owned ContactManager / GraspCache / ObjectFrame
+      // instances so the per-tick cache populated in ComputeTSIDPosition
+      // is reused across all three object-level tasks.
+      auto task = std::make_unique<rtc::tsid::ObjectWrenchTask>();
+      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->SetContactManager(&contact_mgr_config_);
+      task->SetContactManagerRuntime(&contact_mgr_);
+      task->SetGraspCache(&grasp_cache_);
+      task->SetObjectFrame(&object_frame_);
+      formulation.AddTask(std::move(task));
+    } else if (type == "internal_force") {
+      // Stage B-5: drives the squeeze λ component inside Null(G) toward a
+      // projected reference (P_N · λ_squeeze_des). Stage B-5 keeps the
+      // reference at zero — a future dynamic squeeze planner will write
+      // into squeeze_lambda_des_ on phase entry.
+      auto task = std::make_unique<rtc::tsid::InternalForceTask>();
+      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->SetContactManager(&contact_mgr_config_);
+      task->SetContactManagerRuntime(&contact_mgr_);
+      task->SetGraspCache(&grasp_cache_);
+      formulation.AddTask(std::move(task));
+    } else if (type == "object_se3") {
+      // Stage B-5: drives the object SE(3) pose toward
+      // object_state_provider_'s placement via the kinematic chain implied
+      // by the active contacts. IdentityObjectStateProvider keeps the pose
+      // at object_frame_ (set in LoadConfig) until a concrete provider is
+      // plumbed in — IsValid() stays true so ResidualDim() = 6 whenever
+      // ≥ 1 contact is active.
+      auto task = std::make_unique<rtc::tsid::ObjectSE3Task>();
+      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->SetContactManager(&contact_mgr_config_);
+      task->SetContactManagerRuntime(&contact_mgr_);
+      task->SetGraspCache(&grasp_cache_);
+      task->SetObjectStateProvider(&object_state_provider_);
+      formulation.AddTask(std::move(task));
     } else {
       RCLCPP_ERROR(logger_, "[wbc] unknown task type '%s' for entry '%s' — skipping", type.c_str(),
                    key.c_str());
@@ -312,6 +352,40 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // Stage A-3: pre-allocate λ_des buffer for ForceReferenceUpdater output.
     // Sized once here so the RT-tick SetForceReferences() path never resizes.
     force_lambda_des_ = Eigen::VectorXd::Zero(contact_mgr_config_.max_contact_vars);
+
+    // Stage B-5: object-level WBC infrastructure. The controller owns the
+    // ContactManager / GraspCache / ObjectFrame / IdentityObjectStateProvider
+    // so the three object-level tasks share one populated-per-tick cache.
+    // YAML schema (out-of-scope expansion: R_w / center_of_mass / vision
+    // provider — Stage B-5+):
+    //   tsid.object_frame:
+    //     p_w: [x, y, z]   # object origin in world frame (default [0,0,0])
+    //     mass: <scalar>   # used to seed w_obj_des = [0,0,m·g,0,0,0]
+    if (tsid_node["object_frame"]) {
+      const auto& of = tsid_node["object_frame"];
+      if (of["p_w"] && of["p_w"].IsSequence() && of["p_w"].size() == 3) {
+        object_frame_.p_w = Eigen::Vector3d(of["p_w"][0].as<double>(), of["p_w"][1].as<double>(),
+                                            of["p_w"][2].as<double>());
+      }
+      // R_w stays identity (reserved per object_frame.hpp Stage B-2 note).
+      if (of["mass"]) {
+        const double m = of["mass"].as<double>();
+        if (m >= 0.0) {
+          object_mass_kg_ = m;
+        }
+      }
+    }
+    object_state_provider_.SetPose(object_frame_);
+    object_state_provider_.SetTwist(Eigen::Matrix<double, 6, 1>::Zero());
+    object_state_provider_.SetValid(true);
+
+    // ContactManager + GraspCache + workspace allocation. All sized to
+    // (max_contact_vars, nv) once here; RT path only writes top-left
+    // active blocks via Eigen::Ref into these buffers.
+    contact_mgr_.Init(contact_mgr_config_, robot_info_.nv);
+    grasp_cache_.Init(contact_mgr_config_.max_contact_vars);
+    grasp_G_workspace_ = Eigen::MatrixXd::Zero(6, contact_mgr_config_.max_contact_vars);
+    squeeze_lambda_des_ = Eigen::VectorXd::Zero(contact_mgr_config_.max_contact_vars);
 
     // Parse optional `tsid.force_pi` block into the updater config. Missing
     // block → defaults from ForceReferenceUpdaterConfig (kp=0.5, ki=2.0,

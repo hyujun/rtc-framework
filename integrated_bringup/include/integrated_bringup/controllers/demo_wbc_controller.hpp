@@ -23,7 +23,11 @@
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/thread/mock_mpc_thread.hpp"
 #include "rtc_mpc/thread/mpc_thread.hpp"
+#include "rtc_tsid/contact/contact_manager.hpp"
+#include "rtc_tsid/contact/grasp_cache.hpp"
+#include "rtc_tsid/contact/object_state_provider.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
+#include "rtc_tsid/types/object_frame.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -321,6 +325,31 @@ class DemoWbcController final : public RTControllerInterface {
   // Pre-allocated λ_des vector (size = contact_mgr_config_.max_contact_vars),
   // sized once in LoadConfig so RT path never resizes.
   Eigen::VectorXd force_lambda_des_;
+
+  // Stage B-5: object-level WBC components shared across the three
+  // object-level tasks (object_wrench / internal_force / object_se3). The
+  // controller owns these instances so the tasks can hold non-owning
+  // references and the cache is populated *exactly once per RT tick* in
+  // ComputeTSIDPosition. Call-order invariant (plan handoff): cache.Update
+  // → contact_state_.UpdateActivation → RecomputeActive →
+  // contact_mgr_.ActiveLambdaDim → contact_mgr_.ComputeGraspMatrix(G_workspace_)
+  // → grasp_cache_.Compute(G_workspace_, n_active). After that, the three
+  // tasks only read GPinv/GTPinv/ProjN/Rank — never re-Compute.
+  rtc::tsid::ContactManager contact_mgr_;
+  rtc::tsid::GraspCache grasp_cache_;
+  rtc::tsid::ObjectFrame object_frame_;
+  rtc::tsid::IdentityObjectStateProvider object_state_provider_;
+  // Pre-allocated 6 × max_contact_vars buffer for ComputeGraspMatrix.
+  // Resized once in LoadConfig; RT path only writes top-left active block.
+  Eigen::MatrixXd grasp_G_workspace_;
+  // Pre-allocated max_contact_vars buffer for SetSqueezeReference (Stage
+  // B-5 keeps the squeeze reference at zero — placeholder for a future
+  // dynamic squeeze planner).
+  Eigen::VectorXd squeeze_lambda_des_;
+  // Object mass [kg] from `tsid.object_frame.mass`. Used to seed
+  // w_obj_des = [0, 0, m·g, 0, 0, 0] on kClosure/kHold entry. 0.0 keeps
+  // ObjectWrenchTask a no-op (residual on zero wrench).
+  double object_mass_kg_{0.0};
 
   // Phase presets — pre-resolved from YAML at init for RT-safe access.
   // Indexed by static_cast<int>(WbcPhase).
