@@ -24,6 +24,7 @@
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
 #include "rtc_tsid/constraints/torque_limit_constraint.hpp"
+#include "rtc_tsid/tasks/contact_consistency_task.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
@@ -186,6 +187,13 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       }
     } else if (type == "force") {
       auto task = std::make_unique<rtc::tsid::ForceTask>();
+      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->SetContactManager(&contact_mgr_config_);
+      formulation.AddTask(std::move(task));
+    } else if (type == "contact_consistency") {
+      // Stage A-2: soft task — residual J_c·a + dotJ_c·v. Activated in
+      // closure/hold per phase preset; deactivated in pre_grasp.
+      auto task = std::make_unique<rtc::tsid::ContactConsistencyTask>();
       task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
       task->SetContactManager(&contact_mgr_config_);
       formulation.AddTask(std::move(task));

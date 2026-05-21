@@ -93,6 +93,14 @@ demo_wbc_controller:
         type: "force"
         weight: 10.0
         priority: 1
+      # Stage A-2: soft contact acceleration consistency — penalises
+      # ‖J_c·a + dotJ_c·v‖². Activated in closure/hold; off during pre_grasp
+      # (no contacts → residual_dim=0 anyway, but explicit deactivation
+      # keeps the cost matrix lean).
+      contact_consistency:
+        type: "contact_consistency"
+        weight: 100.0
+        priority: 1
 
     constraints:
       eom:
@@ -139,9 +147,10 @@ demo_wbc_controller:
 
       closure:
         tasks:
-          posture:   { active: true,  weight: 0.1,  priority: 0 }
-          se3_tcp:   { active: true,  weight: 50.0, priority: 0 }
-          force:     { active: true,  weight: 10.0, priority: 1 }
+          posture:             { active: true,  weight: 0.1,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          force:               { active: true,  weight: 10.0,  priority: 1 }
+          contact_consistency: { active: true,  weight: 100.0, priority: 1 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
@@ -150,9 +159,10 @@ demo_wbc_controller:
 
       hold:
         tasks:
-          posture:   { active: true,  weight: 0.1,   priority: 0 }
-          se3_tcp:   { active: true,  weight: 50.0,  priority: 0 }
-          force:     { active: true,  weight: 20.0,  priority: 1 }
+          posture:             { active: true,  weight: 0.1,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          force:               { active: true,  weight: 20.0,  priority: 1 }
+          contact_consistency: { active: true,  weight: 100.0, priority: 1 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }

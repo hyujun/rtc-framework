@@ -29,6 +29,7 @@ add_library(rtc_tsid STATIC
   src/tasks/force_task.cpp
   src/tasks/com_task.cpp
   src/tasks/momentum_task.cpp
+  src/tasks/contact_consistency_task.cpp
   src/constraints/eom_constraint.cpp
   src/constraints/contact_constraint.cpp
   src/constraints/friction_cone_constraint.cpp
@@ -103,6 +104,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_momentum_task test/test_momentum_task.cpp)
   target_link_libraries(test_momentum_task rtc_tsid)
 
+  ament_add_gtest(test_contact_consistency_task test/test_contact_consistency_task.cpp)
+  target_link_libraries(test_contact_consistency_task rtc_tsid)
+
   ament_add_gtest(test_phase3_integration test/test_phase3_integration.cpp)
   target_link_libraries(test_phase3_integration rtc_tsid)
 
@@ -136,7 +140,8 @@ if(BUILD_TESTING)
   # Apply PANDA_URDF_PATH macro to every test target above.
   foreach(_t
       test_qp_solver_wrapper test_wbc_types test_posture_task test_se3_task
-      test_force_task test_com_task test_momentum_task test_phase3_integration
+      test_force_task test_com_task test_momentum_task test_contact_consistency_task
+      test_phase3_integration
       test_eom_constraint test_contact_constraint test_friction_cone_constraint
       test_torque_limit_constraint test_joint_limit_constraint test_tsid_wqp
       test_tsid_hqp test_tsid_wqp_hqp_compare test_tsid_performance)
