@@ -106,6 +106,12 @@ demo_wbc_controller:
       friction_cone:
         type: "friction_cone"
         n_faces: 8
+      # Stage A-1: actuator torque envelope τ = S(M·a + h - Jcᵀ·λ) bounded by
+      # URDF effort_limit. tau_scale=1.0 → raw URDF bound (no margin); reduce
+      # toward (0, 1) for safety margin once integrated tests are in.
+      torque_limit:
+        type: "torque_limit"
+        tau_scale: 1.0
 
     contacts:
       - name: "thumb_tip"
@@ -129,6 +135,7 @@ demo_wbc_controller:
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          torque_limit:  { active: true }
 
       closure:
         tasks:
@@ -139,6 +146,7 @@ demo_wbc_controller:
           eom:           { active: true }
           joint_limit:   { active: true }
           friction_cone: { active: true }
+          torque_limit:  { active: true }
 
       hold:
         tasks:
@@ -149,6 +157,7 @@ demo_wbc_controller:
           eom:           { active: true }
           joint_limit:   { active: true }
           friction_cone: { active: true }
+          torque_limit:  { active: true }
 
   # ── Integration safety ───────────────────────────────────────────────
   integration:

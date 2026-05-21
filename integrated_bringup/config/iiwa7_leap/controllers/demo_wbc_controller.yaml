@@ -78,6 +78,13 @@ demo_wbc_controller:
         dt: 0.002
         position_margin: 0.05
         velocity_margin: 0.1
+      # Stage A-1: actuator torque envelope τ = S(M·a + h) bounded by URDF
+      # effort_limit. tau_scale=1.0 → raw URDF bound. iiwa7+LEAP has no contact
+      # sensing (contacts=[]) so the λ term in τ vanishes — torque_limit still
+      # gates ‖S·M·a + S·h‖ against tau_max.
+      torque_limit:
+        type: "torque_limit"
+        tau_scale: 1.0
 
     # No contacts on iiwa7+LEAP sim (no force/tactile sensing).
     contacts: []
@@ -90,6 +97,7 @@ demo_wbc_controller:
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          torque_limit:  { active: true }
       # Closure / hold reuse pre_grasp's task set (no force task to engage).
       closure:
         tasks:
@@ -98,6 +106,7 @@ demo_wbc_controller:
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          torque_limit:  { active: true }
       hold:
         tasks:
           posture:   { active: true,  weight: 1.0,   priority: 0 }
@@ -105,6 +114,7 @@ demo_wbc_controller:
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          torque_limit:  { active: true }
 
   # ── Integration safety ─────────────────────────────────────────────────────
   integration:
