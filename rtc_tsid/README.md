@@ -48,7 +48,8 @@ rtc_tsid/
 │   │   ├── com_task.hpp                -- CoM 위치 추종 태스크
 │   │   ├── force_task.hpp              -- 접촉력 reference 추종 태스크
 │   │   ├── momentum_task.hpp           -- Centroidal momentum regularization 태스크
-│   │   └── object_wrench_task.hpp      -- (Stage B-2) Object 결합 wrench 추종 (J = [0, G], r = w_obj_des)
+│   │   ├── object_wrench_task.hpp      -- (Stage B-2) Object 결합 wrench 추종 (J = [0, G], r = w_obj_des)
+│   │   └── internal_force_task.hpp     -- (Stage B-3) Squeeze force 추종 (rank-based nullity + r = P_N · λ_des)
 │   ├── constraints/
 │   │   ├── eom_constraint.hpp          -- 운동 방정식 등식 제약
 │   │   ├── contact_constraint.hpp      -- 접촉 제약
@@ -131,12 +132,15 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 | `ForceTask` | Force | 접촉력 reference 추종, active contact 만 행 기여 (Stage A-5b: √s_i row scaling) | Σ(active contact_dim) |
 | `MomentumTask` | Centroidal | Angular momentum → 0 regularization 또는 full momentum tracking | 3 (angular) / 6 (full) |
 | `ObjectWrenchTask` | Object | (Stage B-2) Contact-resultant wrench 가 desired w_obj 와 일치하도록: J=[0, G], r=w_obj_des | 6 (active≥1) / 0 (active=0) |
+| `InternalForceTask` | Object | (Stage B-3) Squeeze force 가 Null(G) 안에서만 desired 와 일치: J=[0, I_{n_λ}], r=P_N·λ_squeeze_des. rank-based nullity skip (nullity=n_λ-rank_G≤0 → skip) | n_λ (nullity>0) / 0 |
 
 태스크는 `TaskBase`를 상속하며, `compute_residual()` 메서드로 잔차 벡터와 자코비안을 반환합니다. 각 태스크는 `weight`와 `priority` 속성을 가집니다.
 
 **Stage A-5b — Contact activation ramp & √s cost scaling.** `ContactState::Entry` 에 `activation ∈ [0,1]`, `activation_target`, `t_ramp_sec` 필드. Phase FSM 이 `SetActivationTarget(idx, target, t_ramp_sec)` 로 목표 설정, RT-tick 마다 `UpdateActivation(dt)` 가 linear ramp 진행. `ForceTask` / `ContactConsistencyTask` 의 i-th contact row 영역이 `√s_i` 로 곱해져 cost = `w · s_i · ‖J_i z - r_i‖²`. `activation` 이 `kActivationDeadband(=1e-3)` 미만이면 `active : bool` 가 자동 `false` 로 flip 되고, FrictionCone/EoM/ContactConstraint 의 `if (!active) skip` 경로가 그대로 inequality/equality row 를 0 으로 만든다 (loose bound 효과). YAML key `tsid.contacts_default_ramp_sec` (default 0.1).
 
 **Stage B-1 — ObjectFrame + Grasp matrix G.** `types/object_frame.hpp` 에 `ObjectFrame` POD (world-frame object origin `p_w` + orientation `R_w`) + `AdjointDualWorldAligned(p_ci, p_o)` (6×6 surface-wrench transport) / `PointGraspBlock(p_ci, p_o)` (6×3 point-force transport) helper 추가. `contact/contact_manager.hpp` 의 `ContactManager` 가 `ActiveLambdaDim(state) → int` / `ComputeGraspMatrix(cache, state, object, G_out) → G[6×n_λ_active]` / `StackContactJacobians(cache, state, J_out) → J_c[n_λ_active × nv]` 세 가지 object-level operation 제공. Inactive contact 는 column/row 모두 skip 되며, G 는 LOCAL_WORLD_ALIGNED basis 의 world-aligned wrench convention (rtc_tsid 의 기존 contact Jacobian 과 일치). Stage B-2 (`GraspCache` + `ObjectWrenchTask`) 의 base building block.
+
+**Stage B-3 — InternalForceTask (rank-based nullity + P_N projection).** `tasks/internal_force_task.hpp` 의 `InternalForceTask` 가 squeeze/internal force 를 desired 와 일치시키되 *오직 Null(G) 안에서만* — Range(Gᵀ) component 는 P_N 으로 사전 제거하여 ObjectWrenchTask 와의 직교성 보장. `J = [0_{n_λ×nv} | I_{n_λ}]` (active slot 에 1, inactive 슬롯 0), `r = P_N · λ_squeeze_des` (active-packed). 활성화 조건 = rank-based nullity test: `nullity = n_λ_active - rank_G`, `nullity ≤ 0 → ResidualDim=0 (skip)`. 단순 `n_λ ≤ 6` 단독 early-exit 은 collinear/degenerate grasp (rank<6 인데 n_λ>6) 를 놓치므로 v2 가이드에서 명시적으로 금지. GraspCache 의 `P_N` / `Rank()` / `CurrentLambdaDim()` 을 공유 인스턴스로 읽으며, controller-side 가 한 tick 당 1회 `GraspCache::Compute(G, n_active)` 책임. RT alloc 0 (workspace `lambda_squeeze_des_` / `lambda_des_active_` / `r_projected_` 모두 SetContactManager 시점에 max_contact_vars 로 pre-alloc).
 
 **Stage B-2 — GraspCache + ObjectWrenchTask.** `contact/grasp_cache.hpp` 의 `GraspCache::Compute(G, n_λ_active)` 가 매 tick `G_pinv ∈ R^{n_λ × 6}` / `GT_pinv ∈ R^{6 × n_λ}` / `P_N = I - G_pinv·G ∈ R^{n_λ × n_λ}` / `rank_G ∈ [0,6]` 을 LDLT-기반 damped Moore–Penrose 로 계산 — SVD 미사용, 6×6 또는 n_λ×n_λ 의 작은 normal-equation (`G·Gᵀ` 또는 `Gᵀ·G`) 위에서 in-place `solveInPlace` 만 사용. RT-safe: 모든 workspace (`m6_`, `minv6_`, `nlam_`, `ninv_`, `minv_g_`, `ldlt_*`) Init() 에서 사전 할당. Damping ε = max(tol_damp, eps_machine · trace(M)) 으로 wholly singular contact configuration 에도 stable. `tasks/object_wrench_task.hpp` 의 `ObjectWrenchTask` 는 `J = [0_{6×nv} | G]`, `r = w_obj_des` 의 6-residual task — active contact slot 에 G column 을 unpack 하고 inactive slot 은 0 (ForceTask convention). `ResidualDim()` 은 active count > 0 이면 6, else 0 (한-tick lag). Stage B-3 (InternalForceTask, `r = P_N · λ_squeeze_des`) / Stage B-4 (ObjectSE3Task, `(Gᵀ)⁺·J_c`) 에서 GraspCache 의 동일 인스턴스 공유.
 

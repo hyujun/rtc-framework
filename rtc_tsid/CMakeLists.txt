@@ -28,6 +28,7 @@ add_library(rtc_tsid STATIC
   src/contact/grasp_cache.cpp
   src/tasks/posture_task.cpp
   src/tasks/object_wrench_task.cpp
+  src/tasks/internal_force_task.cpp
   src/tasks/se3_task.cpp
   src/tasks/force_task.cpp
   src/tasks/com_task.cpp
@@ -160,6 +161,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_object_wrench_task test/test_object_wrench_task.cpp)
   target_link_libraries(test_object_wrench_task rtc_tsid)
 
+  # Stage B-3: InternalForceTask (rank-based nullity + P_N reference projection).
+  ament_add_gtest(test_internal_force_task test/test_internal_force_task.cpp)
+  target_link_libraries(test_internal_force_task rtc_tsid)
+
   # Apply PANDA_URDF_PATH macro to every test target above.
   foreach(_t
       test_qp_solver_wrapper test_wbc_types test_posture_task test_se3_task
@@ -169,7 +174,8 @@ if(BUILD_TESTING)
       test_torque_limit_constraint test_joint_limit_constraint test_tsid_wqp
       test_tsid_hqp test_tsid_wqp_hqp_compare test_tsid_performance
       test_fixed_dim_qp test_activation_ramp test_weight_scaling
-      test_grasp_matrix test_grasp_cache test_object_wrench_task)
+      test_grasp_matrix test_grasp_cache test_object_wrench_task
+      test_internal_force_task)
     target_compile_definitions(${_t} PRIVATE
         RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
   endforeach()
