@@ -1,6 +1,9 @@
 # DemoWbcController — iiwa7 + LEAP variant
-# TSID QP (posture + SE3) → Position integration. No contacts / force task
-# because the LEAP hand has no contact sensing stack on this platform.
+# TSID QP (posture + SE3) → Position integration. Four point-contact
+# fingertips (thumb / index / middle / ring) declared to align with the MPC
+# contact_frames schema; force/tactile sensing is still absent on this
+# platform so ForceReferenceUpdater / fingertip parsing stay inert, but the
+# kinematic contact Jacobian + friction cone are exercised end-to-end.
 # MPC disabled by default; enable via launch arg `enable_mpc:=true` after
 # verifying TSID self-hold.
 demo_wbc_controller:
@@ -86,8 +89,28 @@ demo_wbc_controller:
         type: "torque_limit"
         tau_scale: 1.0
 
-    # No contacts on iiwa7+LEAP sim (no force/tactile sensing).
-    contacts: []
+    # Four LEAP fingertip point contacts (cdim=3 each). Order + frame names
+    # match the MPC contact_frames schema (mpc/contact_light.yaml). LEAP
+    # has no tactile inference yet, so the ForceReferenceUpdater output stays
+    # at f_des_default (open-loop) until a sensing stack is added — the
+    # contact Jacobian / friction cone still constrain QP feasibility.
+    contacts:
+      - name: "thumb_tip"
+        frame: "thumb_tip_head"
+        type: "point"
+        mu: 0.5
+      - name: "index_tip"
+        frame: "index_tip_head"
+        type: "point"
+        mu: 0.5
+      - name: "middle_tip"
+        frame: "middle_tip_head"
+        type: "point"
+        mu: 0.5
+      - name: "ring_tip"
+        frame: "ring_tip_head"
+        type: "point"
+        mu: 0.5
 
     phase_presets:
       pre_grasp:
