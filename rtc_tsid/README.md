@@ -47,7 +47,8 @@ rtc_tsid/
 │   │   ├── se3_task.hpp                -- SE3 pose tracking 태스크 (6D, mask 지원)
 │   │   ├── com_task.hpp                -- CoM 위치 추종 태스크
 │   │   ├── force_task.hpp              -- 접촉력 reference 추종 태스크
-│   │   └── momentum_task.hpp           -- Centroidal momentum regularization 태스크
+│   │   ├── momentum_task.hpp           -- Centroidal momentum regularization 태스크
+│   │   └── object_wrench_task.hpp      -- (Stage B-2) Object 결합 wrench 추종 (J = [0, G], r = w_obj_des)
 │   ├── constraints/
 │   │   ├── eom_constraint.hpp          -- 운동 방정식 등식 제약
 │   │   ├── contact_constraint.hpp      -- 접촉 제약
@@ -59,7 +60,8 @@ rtc_tsid/
 │   │   ├── qp_types.hpp                -- QP 문제 구조체
 │   │   └── object_frame.hpp            -- (Stage B-1) ObjectFrame POD + Ad*/grasp-block helpers
 │   ├── contact/
-│   │   └── contact_manager.hpp         -- (Stage B-1) Grasp matrix G + J_c stacking + active_lambda_dim
+│   │   ├── contact_manager.hpp         -- (Stage B-1) Grasp matrix G + J_c stacking + active_lambda_dim
+│   │   └── grasp_cache.hpp             -- (Stage B-2) LDLT-based G_pinv + GT_pinv + P_N + rank_G
 │   └── solver/
 │       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼
 ├── src/                                -- 구현 파일
@@ -128,12 +130,15 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 | `CoMTask` | Cartesian | CoM 위치 추종, `com_drift` 보상 | 3 |
 | `ForceTask` | Force | 접촉력 reference 추종, active contact 만 행 기여 (Stage A-5b: √s_i row scaling) | Σ(active contact_dim) |
 | `MomentumTask` | Centroidal | Angular momentum → 0 regularization 또는 full momentum tracking | 3 (angular) / 6 (full) |
+| `ObjectWrenchTask` | Object | (Stage B-2) Contact-resultant wrench 가 desired w_obj 와 일치하도록: J=[0, G], r=w_obj_des | 6 (active≥1) / 0 (active=0) |
 
 태스크는 `TaskBase`를 상속하며, `compute_residual()` 메서드로 잔차 벡터와 자코비안을 반환합니다. 각 태스크는 `weight`와 `priority` 속성을 가집니다.
 
 **Stage A-5b — Contact activation ramp & √s cost scaling.** `ContactState::Entry` 에 `activation ∈ [0,1]`, `activation_target`, `t_ramp_sec` 필드. Phase FSM 이 `SetActivationTarget(idx, target, t_ramp_sec)` 로 목표 설정, RT-tick 마다 `UpdateActivation(dt)` 가 linear ramp 진행. `ForceTask` / `ContactConsistencyTask` 의 i-th contact row 영역이 `√s_i` 로 곱해져 cost = `w · s_i · ‖J_i z - r_i‖²`. `activation` 이 `kActivationDeadband(=1e-3)` 미만이면 `active : bool` 가 자동 `false` 로 flip 되고, FrictionCone/EoM/ContactConstraint 의 `if (!active) skip` 경로가 그대로 inequality/equality row 를 0 으로 만든다 (loose bound 효과). YAML key `tsid.contacts_default_ramp_sec` (default 0.1).
 
 **Stage B-1 — ObjectFrame + Grasp matrix G.** `types/object_frame.hpp` 에 `ObjectFrame` POD (world-frame object origin `p_w` + orientation `R_w`) + `AdjointDualWorldAligned(p_ci, p_o)` (6×6 surface-wrench transport) / `PointGraspBlock(p_ci, p_o)` (6×3 point-force transport) helper 추가. `contact/contact_manager.hpp` 의 `ContactManager` 가 `ActiveLambdaDim(state) → int` / `ComputeGraspMatrix(cache, state, object, G_out) → G[6×n_λ_active]` / `StackContactJacobians(cache, state, J_out) → J_c[n_λ_active × nv]` 세 가지 object-level operation 제공. Inactive contact 는 column/row 모두 skip 되며, G 는 LOCAL_WORLD_ALIGNED basis 의 world-aligned wrench convention (rtc_tsid 의 기존 contact Jacobian 과 일치). Stage B-2 (`GraspCache` + `ObjectWrenchTask`) 의 base building block.
+
+**Stage B-2 — GraspCache + ObjectWrenchTask.** `contact/grasp_cache.hpp` 의 `GraspCache::Compute(G, n_λ_active)` 가 매 tick `G_pinv ∈ R^{n_λ × 6}` / `GT_pinv ∈ R^{6 × n_λ}` / `P_N = I - G_pinv·G ∈ R^{n_λ × n_λ}` / `rank_G ∈ [0,6]` 을 LDLT-기반 damped Moore–Penrose 로 계산 — SVD 미사용, 6×6 또는 n_λ×n_λ 의 작은 normal-equation (`G·Gᵀ` 또는 `Gᵀ·G`) 위에서 in-place `solveInPlace` 만 사용. RT-safe: 모든 workspace (`m6_`, `minv6_`, `nlam_`, `ninv_`, `minv_g_`, `ldlt_*`) Init() 에서 사전 할당. Damping ε = max(tol_damp, eps_machine · trace(M)) 으로 wholly singular contact configuration 에도 stable. `tasks/object_wrench_task.hpp` 의 `ObjectWrenchTask` 는 `J = [0_{6×nv} | G]`, `r = w_obj_des` 의 6-residual task — active contact slot 에 G column 을 unpack 하고 inactive slot 은 0 (ForceTask convention). `ResidualDim()` 은 active count > 0 이면 6, else 0 (한-tick lag). Stage B-3 (InternalForceTask, `r = P_N · λ_squeeze_des`) / Stage B-4 (ObjectSE3Task, `(Gᵀ)⁺·J_c`) 에서 GraspCache 의 동일 인스턴스 공유.
 
 #### SE3Task YAML 설정
 
