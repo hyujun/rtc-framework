@@ -300,6 +300,9 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
 
     // ContactState
     contact_state_.Init(contact_mgr_config_.max_contacts);
+    // Stage A-4: seed per-entry normals from YAML defaults (manager.contacts[*].
+    // default_normal). Existing YAMLs without `normal:` keep world +Z.
+    contact_state_.SeedNormals(contact_mgr_config_);
 
     // ControlReference & CommandOutput pre-allocate
     control_ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated,

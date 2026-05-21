@@ -190,7 +190,9 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
 
   // 3b. Stage A-3 — per-tick ForceReferenceUpdater (kClosure/kHold only).
   // Closes the loop on per-fingertip normal force: λ_des_i_n = PI(f_des - |f_meas_i|).
-  // Open-loop on phase entry (legacy behaviour) is replaced by this per-tick path.
+  // Stage A-4: push along the contact normal (world frame) so the reference
+  // and FrictionConeConstraint share the same R_c basis. Default normal=+Z
+  // is byte-identical to the original Stage A-3 +Z push.
   if (phase_ == WbcPhase::kClosure || phase_ == WbcPhase::kHold) {
     auto* force_task =
         tsid_initialized_ ? tsid_controller_.Formulation().GetTask("force") : nullptr;
@@ -214,9 +216,14 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
                         fingertip_data_[static_cast<std::size_t>(contact_idx)].force_magnitude)
                   : 0.0;
         const double lambda_n = force_ref_updater_.Update(contact_idx, valid, f_des, f_meas, dt);
-        // Point/surface contact: λ = [fx, fy, fz, (mx, my, mz)]; push +Z.
-        if (cdim >= 3) {
-          force_lambda_des_[offset + 2] = lambda_n;
+        // Stage A-4: 3D push along world-frame contact normal n.
+        // λ_world_force = lambda_n · n. Moment block (surface) stays zero.
+        if (cdim >= 3 && contact_idx < static_cast<int>(contact_state_.contacts.size())) {
+          const Eigen::Vector3d& n =
+              contact_state_.contacts[static_cast<std::size_t>(contact_idx)].normal;
+          force_lambda_des_[offset + 0] = lambda_n * n.x();
+          force_lambda_des_[offset + 1] = lambda_n * n.y();
+          force_lambda_des_[offset + 2] = lambda_n * n.z();
         }
         offset += cdim;
         ++contact_idx;

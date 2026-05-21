@@ -359,8 +359,9 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 #### YAML 구조 (`config/ur5e_hand/controllers/demo_wbc_controller.yaml`)
 
 - `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking) / `contact_consistency` (Stage A-2 soft no-slip)
-- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8) / `torque_limit` (Stage A-1, `tau_scale`). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
-- `tsid.force_pi` (Stage A-3, optional): per-contact normal-force PI updater. Keys: `kp` / `ki` / `i_max` / `lambda_min` / `lambda_max` / `f_des_default`. Reset on `kClosure` entry edge, updated every RT tick in `kClosure`/`kHold` via `ForceReferenceUpdater`. Missing block → defaults.
+- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8, Stage A-4 normal-aware) / `torque_limit` (Stage A-1, `tau_scale`). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
+- `tsid.contacts.*` (Stage A-4 옵션): 각 contact 에 `normal: [x, y, z]` 키 추가하면 world-frame seed normal 로 사용 (기본 `(0,0,1)`). `tsid.contacts_normal_filter_alpha`: runtime `ContactState::UpdateNormal` LPF gain (default 0.1, 1.0 = no filter).
+- `tsid.force_pi` (Stage A-3, optional): per-contact normal-force PI updater. Keys: `kp` / `ki` / `i_max` / `lambda_min` / `lambda_max` / `f_des_default`. Stage A-4 부터 출력은 contact normal 방향으로 푸시되어 FrictionCone 과 일관성을 유지 (default +Z 면 byte-identical).
 - `tsid.phase_presets`: pre_grasp / closure / hold 별 task weight + active 토글
 - `tsid.wqp.solver`: `max_iter` / `eps_abs` / `eps_rel` / `verbose` (ProxSuite 설정, rtc_tsid가 직접 읽음)
 - `integration`: `position_margin` / `velocity_scale` / **`force_rate_alpha`** (필수, [0,1])

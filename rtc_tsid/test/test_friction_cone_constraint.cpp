@@ -409,5 +409,194 @@ TEST(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
   EXPECT_DOUBLE_EQ(C.block(5, nv, 11, 3).norm(), 0.0);
 }
 
+// ════════════════════════════════════════════════
+// Stage A-4: normal-aware cone rotation
+// ════════════════════════════════════════════════
+
+// A-4: normal = (0,0,1) explicit → cone matrix byte-identical to default-init.
+// Validates the +Z short-circuit path stays regression-safe.
+TEST(FrictionConeTest, NormalDefaultsToWorldZ) {
+  auto model = std::make_shared<pinocchio::Model>();
+  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
+
+  RobotModelInfo info;
+  YAML::Node config;
+  info.Build(*model, config);
+
+  ContactManagerConfig mgr;
+  mgr.contacts.resize(1);
+  mgr.contacts[0].contact_dim = 3;
+  mgr.contacts[0].friction_coeff = 0.5;
+  mgr.contacts[0].friction_faces = 4;
+  mgr.max_contacts = 1;
+  mgr.max_contact_vars = 3;
+
+  ContactState cs_default;
+  cs_default.Init(1);
+  cs_default.contacts[0].active = true;
+  // Normal stays at default (0,0,1).
+  cs_default.RecomputeActive(mgr);
+
+  ContactState cs_explicit;
+  cs_explicit.Init(1);
+  cs_explicit.contacts[0].active = true;
+  cs_explicit.contacts[0].normal = Eigen::Vector3d(0.0, 0.0, 1.0);
+  cs_explicit.RecomputeActive(mgr);
+
+  FrictionConeConstraint fc;
+  PinocchioCache cache;
+  cache.Init(model, mgr);
+  YAML::Node cfg;
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
+
+  const int nv = info.nv;
+  const int n_vars = nv + 3;
+  const int n_ineq = fc.IneqDim(cs_default);
+
+  Eigen::MatrixXd C1(n_ineq, n_vars);
+  Eigen::MatrixXd C2(n_ineq, n_vars);
+  Eigen::VectorXd l(n_ineq);
+  Eigen::VectorXd u(n_ineq);
+  C1.setZero();
+  C2.setZero();
+  fc.ComputeInequality(cache, cs_default, info, n_vars, C1, l, u);
+  fc.ComputeInequality(cache, cs_explicit, info, n_vars, C2, l, u);
+
+  // Byte-equal: short-circuit must produce identical matrices.
+  EXPECT_LT((C1 - C2).norm(), 1e-15);
+}
+
+// A-4: normal tilted around X axis by θ=30° → rotated cone columns match
+// the analytical R_c · row_local prediction.
+TEST(FrictionConeTest, NormalAwareTiltedZ) {
+  auto model = std::make_shared<pinocchio::Model>();
+  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
+
+  RobotModelInfo info;
+  YAML::Node config;
+  info.Build(*model, config);
+
+  ContactManagerConfig mgr;
+  mgr.contacts.resize(1);
+  mgr.contacts[0].contact_dim = 3;
+  mgr.contacts[0].friction_coeff = 0.5;
+  mgr.contacts[0].friction_faces = 4;
+  mgr.max_contacts = 1;
+  mgr.max_contact_vars = 3;
+
+  // Normal tilted 30° from +Z around X axis: n = (0, sin θ, cos θ).
+  constexpr double kTheta = M_PI / 6.0;  // 30°
+  const Eigen::Vector3d n_world(0.0, std::sin(kTheta), std::cos(kTheta));
+
+  ContactState cs;
+  cs.Init(1);
+  cs.contacts[0].active = true;
+  cs.contacts[0].normal = n_world;
+  cs.RecomputeActive(mgr);
+
+  FrictionConeConstraint fc;
+  PinocchioCache cache;
+  cache.Init(model, mgr);
+  YAML::Node cfg;
+  fc.Init(*model, info, cache, cfg);
+  fc.SetContactManager(&mgr);
+
+  const int nv = info.nv;
+  const int n_vars = nv + 3;
+  const int n_ineq = fc.IneqDim(cs);
+  ASSERT_EQ(n_ineq, 5);  // 4 cone faces + 1 unilateral
+
+  Eigen::MatrixXd C(n_ineq, n_vars);
+  Eigen::VectorXd l(n_ineq);
+  Eigen::VectorXd u(n_ineq);
+  C.setZero();
+  fc.ComputeInequality(cache, cs, info, n_vars, C, l, u);
+
+  // Independent R_c computation: same Gram-Schmidt the constraint uses.
+  // Seed = +X since |n.x|=0 < 0.9.
+  Eigen::Vector3d t1 = Eigen::Vector3d::UnitX();
+  t1 = t1 - n_world * t1.dot(n_world);
+  t1.normalize();
+  const Eigen::Vector3d t2 = n_world.cross(t1);
+  Eigen::Matrix3d R_c;
+  R_c.col(0) = t1;
+  R_c.col(1) = t2;
+  R_c.col(2) = n_world;
+
+  // Each cone row: world coeffs = R_c · [cos θk, sin θk, -μ]ᵀ.
+  for (int k = 0; k < 4; ++k) {
+    const double phi = 2.0 * M_PI * static_cast<double>(k) / 4.0;
+    const Eigen::Vector3d row_local(std::cos(phi), std::sin(phi), -0.5);
+    const Eigen::Vector3d row_world = R_c * row_local;
+    EXPECT_NEAR(C(k, nv + 0), row_world.x(), 1e-12) << "cone row " << k << " fx";
+    EXPECT_NEAR(C(k, nv + 1), row_world.y(), 1e-12) << "cone row " << k << " fy";
+    EXPECT_NEAR(C(k, nv + 2), row_world.z(), 1e-12) << "cone row " << k << " fz";
+  }
+  // Unilateral row: world coeffs = -n.
+  EXPECT_NEAR(C(4, nv + 0), -n_world.x(), 1e-12);
+  EXPECT_NEAR(C(4, nv + 1), -n_world.y(), 1e-12);
+  EXPECT_NEAR(C(4, nv + 2), -n_world.z(), 1e-12);
+
+  // Feasibility check: a force purely along +n_world with magnitude 10
+  // should satisfy all rows (cone interior since μ > 0).
+  Eigen::VectorXd z = Eigen::VectorXd::Zero(n_vars);
+  z(nv + 0) = 10.0 * n_world.x();
+  z(nv + 1) = 10.0 * n_world.y();
+  z(nv + 2) = 10.0 * n_world.z();
+  const Eigen::VectorXd Cz = C * z;
+  for (int k = 0; k < 4; ++k) {
+    EXPECT_LE(Cz(k), 1e-9) << "tilted-normal cone row " << k << " rejects pure normal force";
+  }
+  EXPECT_LE(Cz(4), 1e-9) << "unilateral rejects pure normal force";
+
+  // Infeasibility: force *opposite* to n_world must violate unilateral.
+  z(nv + 0) = -10.0 * n_world.x();
+  z(nv + 1) = -10.0 * n_world.y();
+  z(nv + 2) = -10.0 * n_world.z();
+  EXPECT_GT((C * z)(4), 0.0) << "anti-normal force must violate unilateral";
+}
+
+// A-4: ContactState::UpdateNormal LPF — pushing a step normal converges
+// monotonically toward target and stays unit-norm.
+TEST(FrictionConeTest, NormalLowPassConvergence) {
+  ContactManagerConfig mgr;
+  mgr.contacts.resize(1);
+  mgr.contacts[0].contact_dim = 3;
+  mgr.max_contacts = 1;
+  mgr.max_contact_vars = 3;
+
+  ContactState cs;
+  cs.Init(1);
+  cs.SeedNormals(mgr);
+  ASSERT_NEAR(cs.contacts[0].normal.z(), 1.0, 1e-15) << "seed must be +Z";
+
+  // Target normal tilted 45° around Y axis.
+  const Eigen::Vector3d n_target = Eigen::Vector3d(std::sin(M_PI / 4.0), 0.0, std::cos(M_PI / 4.0));
+
+  double prev_err = (cs.contacts[0].normal - n_target).norm();
+  for (int k = 0; k < 200; ++k) {
+    cs.UpdateNormal(0, n_target, /*alpha=*/0.1);
+    // Unit norm preserved.
+    EXPECT_NEAR(cs.contacts[0].normal.norm(), 1.0, 1e-9);
+    // Monotonic convergence on a constant-target LPF: each step reduces error.
+    const double err = (cs.contacts[0].normal - n_target).norm();
+    EXPECT_LE(err, prev_err + 1e-12) << "LPF must not diverge at step " << k;
+    prev_err = err;
+  }
+  // After 200 steps at α=0.1 the error should be well under 1e-3.
+  EXPECT_LT((cs.contacts[0].normal - n_target).norm(), 1e-3);
+
+  // Degenerate input is a no-op.
+  const Eigen::Vector3d n_before = cs.contacts[0].normal;
+  cs.UpdateNormal(0, Eigen::Vector3d::Zero(), 0.1);
+  EXPECT_LT((cs.contacts[0].normal - n_before).norm(), 1e-15);
+
+  // Out-of-range idx is a no-op.
+  cs.UpdateNormal(-1, n_target, 0.1);
+  cs.UpdateNormal(99, n_target, 0.1);
+  EXPECT_LT((cs.contacts[0].normal - n_before).norm(), 1e-15);
+}
+
 }  // namespace
 }  // namespace rtc::tsid

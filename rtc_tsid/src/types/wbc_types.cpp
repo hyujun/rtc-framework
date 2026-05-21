@@ -2,6 +2,8 @@
 
 #include "rtc_tsid/types/qp_types.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 #pragma GCC diagnostic push
@@ -112,6 +114,17 @@ void ContactManagerConfig::Load(const YAML::Node& config, const pinocchio::Model
     cc.patch_half_length_y = c["patch_half_length_y"].as<double>(0.0);
     cc.torsional_friction_coeff = c["torsional_friction_coeff"].as<double>(0.0);
 
+    // Stage A-4: optional `normal: [x, y, z]` world-frame seed. Default
+    // (0, 0, 1) preserves pre-A-4 fixed-normal cone behaviour.
+    if (c["normal"] && c["normal"].IsSequence() && c["normal"].size() == 3) {
+      Eigen::Vector3d n(c["normal"][0].as<double>(), c["normal"][1].as<double>(),
+                        c["normal"][2].as<double>());
+      const double n_norm = n.norm();
+      if (n_norm > 1e-9) {
+        cc.default_normal = n / n_norm;
+      }
+    }
+
     if (!model.existFrame(cc.frame_name)) {
       throw std::runtime_error("Contact frame '" + cc.frame_name + "' not found in URDF model");
     }
@@ -119,6 +132,14 @@ void ContactManagerConfig::Load(const YAML::Node& config, const pinocchio::Model
 
     max_contact_vars += cc.contact_dim;
     contacts.push_back(std::move(cc));
+  }
+
+  // Stage A-4: optional sibling key for the runtime normal LPF gain.
+  if (config["contacts_normal_filter_alpha"]) {
+    const double a = config["contacts_normal_filter_alpha"].as<double>();
+    if (a > 0.0 && a <= 1.0) {
+      normal_filter_alpha = a;
+    }
   }
 
   max_contacts = static_cast<int>(contacts.size());
@@ -147,6 +168,32 @@ void ContactState::RecomputeActive(const ContactManagerConfig& manager) {
       ++active_count;
       active_contact_vars += manager.contacts[i].contact_dim;
     }
+  }
+}
+
+void ContactState::SeedNormals(const ContactManagerConfig& manager) noexcept {
+  const size_t n = std::min(contacts.size(), manager.contacts.size());
+  for (size_t i = 0; i < n; ++i) {
+    const auto& dn = manager.contacts[i].default_normal;
+    const double dn_norm = dn.norm();
+    contacts[i].normal = (dn_norm > 1e-9) ? (dn / dn_norm) : Eigen::Vector3d(0.0, 0.0, 1.0);
+  }
+}
+
+void ContactState::UpdateNormal(int idx, const Eigen::Vector3d& n_raw, double alpha) noexcept {
+  if (idx < 0 || static_cast<size_t>(idx) >= contacts.size()) {
+    return;
+  }
+  const double raw_norm = n_raw.norm();
+  if (!(raw_norm > 1e-9) || !std::isfinite(raw_norm)) {
+    return;  // ignore degenerate input; keep prior normal
+  }
+  const double a = std::clamp(alpha, 0.0, 1.0);
+  auto& n_prev = contacts[static_cast<size_t>(idx)].normal;
+  Eigen::Vector3d blended = a * (n_raw / raw_norm) + (1.0 - a) * n_prev;
+  const double bn = blended.norm();
+  if (bn > 1e-9) {
+    n_prev = blended / bn;
   }
 }
 

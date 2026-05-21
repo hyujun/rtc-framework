@@ -67,12 +67,23 @@ struct ContactConfig {
   double patch_half_length_x{0.0};
   double patch_half_length_y{0.0};
   double torsional_friction_coeff{0.0};
+
+  // Stage A-4: world-frame contact normal seed. Default world +Z preserves
+  // pre-A-4 fixed-normal behaviour. Runtime override via
+  // `ContactState::UpdateNormal(idx, n_raw, alpha)`; YAML override via
+  // optional `normal: [x, y, z]` per-contact key.
+  Eigen::Vector3d default_normal{0.0, 0.0, 1.0};
 };
 
 struct ContactManagerConfig {
   std::vector<ContactConfig> contacts;
   int max_contacts{0};
   int max_contact_vars{0};  // Σ contact_dim_i
+
+  // Stage A-4: global low-pass filter coefficient for runtime normal updates
+  // via ContactState::UpdateNormal. Default 0.1 (~10-tick rise at 500 Hz).
+  // YAML: `tsid.contacts_normal_filter_alpha: <α>` (sibling of `contacts:`).
+  double normal_filter_alpha{0.1};
 
   // YAML로부터 로드 + frame name → frame ID resolve
   void Load(const YAML::Node& config, const pinocchio::Model& model);
@@ -94,6 +105,16 @@ struct ContactState {
 
   // max_contacts 크기로 pre-allocate
   void Init(int max_contacts);
+
+  // Stage A-4: seed per-entry normals from manager.contacts[i].default_normal.
+  // Safe to call after Init(). RT-safe (no alloc).
+  void SeedNormals(const ContactManagerConfig& manager) noexcept;
+
+  // Stage A-4: RT-safe low-pass update of a single contact normal.
+  //   n_filtered = normalize(α·n_raw + (1−α)·n_prev).
+  // Out-of-range idx → no-op. Zero/NaN n_raw → no-op (keeps prior normal).
+  // Caller threads typically a tactile-inferred or geometric estimate per tick.
+  void UpdateNormal(int idx, const Eigen::Vector3d& n_raw, double alpha) noexcept;
 
   // active contact 개수 및 active_contact_vars 재계산
   void RecomputeActive(const ContactManagerConfig& manager);
