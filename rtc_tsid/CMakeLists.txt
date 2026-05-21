@@ -141,6 +141,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_fixed_dim_qp test/test_fixed_dim_qp.cpp)
   target_link_libraries(test_fixed_dim_qp rtc_tsid)
 
+  # Stage A-5b: activation ramp + √s weight scaling.
+  ament_add_gtest(test_activation_ramp test/test_activation_ramp.cpp)
+  target_link_libraries(test_activation_ramp rtc_tsid)
+  ament_add_gtest(test_weight_scaling test/test_weight_scaling.cpp)
+  target_link_libraries(test_weight_scaling rtc_tsid)
+
   # Apply PANDA_URDF_PATH macro to every test target above.
   foreach(_t
       test_qp_solver_wrapper test_wbc_types test_posture_task test_se3_task
@@ -149,7 +155,7 @@ if(BUILD_TESTING)
       test_eom_constraint test_contact_constraint test_friction_cone_constraint
       test_torque_limit_constraint test_joint_limit_constraint test_tsid_wqp
       test_tsid_hqp test_tsid_wqp_hqp_compare test_tsid_performance
-      test_fixed_dim_qp)
+      test_fixed_dim_qp test_activation_ramp test_weight_scaling)
     target_compile_definitions(${_t} PRIVATE
         RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
   endforeach()

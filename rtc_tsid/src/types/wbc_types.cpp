@@ -197,6 +197,34 @@ void ContactState::UpdateNormal(int idx, const Eigen::Vector3d& n_raw, double al
   }
 }
 
+void ContactState::SetActivationTarget(int idx, double target, double t_ramp_sec) noexcept {
+  if (idx < 0 || static_cast<size_t>(idx) >= contacts.size()) {
+    return;
+  }
+  auto& e = contacts[static_cast<size_t>(idx)];
+  e.activation_target = std::clamp(target, 0.0, 1.0);
+  // t_ramp_sec=0 is allowed and means "instant" — UpdateActivation snaps
+  // to target in a single tick when 1/t_ramp_sec exceeds dt's reciprocal.
+  e.t_ramp_sec = (t_ramp_sec > 0.0) ? t_ramp_sec : 0.0;
+}
+
+void ContactState::UpdateActivation(double dt) noexcept {
+  if (!(dt > 0.0)) {
+    return;
+  }
+  for (auto& e : contacts) {
+    const double err = e.activation_target - e.activation;
+    // Linear ramp with rate 1/t_ramp_sec. Instant (t_ramp_sec=0) snaps.
+    const double step =
+        (e.t_ramp_sec > 0.0) ? std::clamp(err, -dt / e.t_ramp_sec, dt / e.t_ramp_sec) : err;
+    e.activation = std::clamp(e.activation + step, 0.0, 1.0);
+    // Keep legacy `active : bool` aligned with the deadband. Downstream
+    // skip paths (active_contact_vars, task `if (!active) continue` early
+    // outs) follow this flip.
+    e.active = (e.activation >= kActivationDeadband);
+  }
+}
+
 // ════════════════════════════════════════════════
 // PinocchioCache
 // ════════════════════════════════════════════════

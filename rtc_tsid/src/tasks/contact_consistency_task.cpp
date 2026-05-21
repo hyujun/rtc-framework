@@ -1,5 +1,7 @@
 #include "rtc_tsid/tasks/contact_consistency_task.hpp"
 
+#include <cmath>
+
 namespace rtc::tsid {
 
 void ContactConsistencyTask::Init(const pinocchio::Model& /*model*/,
@@ -49,11 +51,16 @@ void ContactConsistencyTask::ComputeResidual(const PinocchioCache& cache,
     const auto& Jc = cache.contact_frames[i].J;     // [6 × nv] LOCAL_WORLD_ALIGNED
     const auto& dJv = cache.contact_frames[i].dJv;  // [6]
 
-    // J_block[row:row+cdim, 0:nv] = J_c[:cdim, :]
-    J_block.block(row, 0, cdim, nv_) = Jc.topRows(cdim);
+    // Stage A-5b: sqrt(s_i) cost scaling. Cost = w·‖J_c·a + dotJ_c·v‖²
+    // becomes w·s_i·‖...‖² by multiplying both J and r blocks by √s_i.
+    // s_i=1 (default) is byte-identical to pre-A-5b behaviour.
+    const double sqrt_s = std::sqrt(contacts.contacts[i].activation);
+
+    // J_block[row:row+cdim, 0:nv] = √s · J_c[:cdim, :]
+    J_block.block(row, 0, cdim, nv_) = sqrt_s * Jc.topRows(cdim);
     // J_block λ-columns 는 zero (no coupling).
-    // r_block[row:row+cdim] = -dotJ_c · v
-    r_block.segment(row, cdim) = -dJv.head(cdim);
+    // r_block[row:row+cdim] = √s · (-dotJ_c · v)
+    r_block.segment(row, cdim) = -sqrt_s * dJv.head(cdim);
 
     row += cdim;
   }

@@ -92,11 +92,25 @@ struct ContactManagerConfig {
 // ────────────────────────────────────────────────
 // 런타임 Contact 상태 (매 tick 또는 phase 전환 시 갱신)
 // ────────────────────────────────────────────────
+// Stage A-5b: activation deadband — below this magnitude the contact is
+// treated as inactive (zero-row in constraints, active flag flipped to
+// false). Above it the contact contributes via sqrt(s) cost scaling.
+inline constexpr double kActivationDeadband = 1e-3;
+
 struct ContactState {
   struct Entry {
     int config_index{0};
     bool active{false};
     Eigen::Vector3d normal{0.0, 0.0, 1.0};  // world-frame 접촉 법선
+
+    // Stage A-5b: continuous activation ∈ [0, 1]. 1 = fully active (cost +
+    // constraints fully on), 0 = fully inactive (zero-row in everything,
+    // λ_i drifts to 0 via Hessian regularization). Ramp progresses each
+    // tick via UpdateActivation(dt) toward activation_target with rate
+    // 1/t_ramp_sec.
+    double activation{1.0};
+    double activation_target{1.0};
+    double t_ramp_sec{0.1};
   };
 
   std::vector<Entry> contacts;  // init 시 resize(max_contacts), 이후 크기 불변
@@ -115,6 +129,18 @@ struct ContactState {
   // Out-of-range idx → no-op. Zero/NaN n_raw → no-op (keeps prior normal).
   // Caller threads typically a tactile-inferred or geometric estimate per tick.
   void UpdateNormal(int idx, const Eigen::Vector3d& n_raw, double alpha) noexcept;
+
+  // Stage A-5b: phase-FSM-facing API to set the linear-ramp target.
+  // RT-safe: clamps target to [0,1] and t_ramp to (0, ∞). Out-of-range idx
+  // → no-op. Backward-compat: passing target=1.0 with active==true keeps
+  // the legacy "instant on" via t_ramp=0+.
+  void SetActivationTarget(int idx, double target, double t_ramp_sec) noexcept;
+
+  // Stage A-5b: per-tick ramp progression. Linear toward activation_target
+  // with rate 1/t_ramp_sec. dt non-positive → no-op. Also flips the legacy
+  // `active : bool` field based on the kActivationDeadband threshold so
+  // existing consumers (active_contact_vars, fast skip paths) stay in sync.
+  void UpdateActivation(double dt) noexcept;
 
   // active contact 개수 및 active_contact_vars 재계산
   void RecomputeActive(const ContactManagerConfig& manager);

@@ -341,6 +341,14 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       force_ref_updater_.SetConfig(fp_cfg);
     }
 
+    // Stage A-5b: contact activation ramp time (default 0.1 s ≈ 100 ms).
+    if (tsid_node["contacts_default_ramp_sec"]) {
+      const double rs = tsid_node["contacts_default_ramp_sec"].as<double>();
+      if (rs >= 0.0) {
+        contact_ramp_sec_ = rs;
+      }
+    }
+
     // ControlState pre-allocate
     ctrl_state_.q = Eigen::VectorXd::Zero(robot_info_.nq);
     ctrl_state_.v = Eigen::VectorXd::Zero(robot_info_.nv);

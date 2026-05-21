@@ -163,9 +163,9 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       }
       tcp_goal_valid_ = false;
       qp_fail_count_ = 0;
-      // Deactivate all contacts
-      for (auto& c : contact_state_.contacts) {
-        c.active = false;
+      // Stage A-5b: kIdle ramps activation down to 0 (gentle release).
+      for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
+        contact_state_.SetActivationTarget(i, 0.0, contact_ramp_sec_);
       }
       contact_state_.RecomputeActive(contact_mgr_config_);
       break;
@@ -258,10 +258,13 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         }
       }
 
-      // Contact activation for closure/hold phases
+      // Contact activation for closure/hold phases. Stage A-5b: drive the
+      // continuous activation ramp toward 1.0 over `contact_ramp_sec_`; the
+      // legacy `active : bool` flips automatically once s_i crosses the
+      // deadband inside ContactState::UpdateActivation.
       if (new_phase == WbcPhase::kClosure || new_phase == WbcPhase::kHold) {
-        for (auto& c : contact_state_.contacts) {
-          c.active = true;
+        for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
+          contact_state_.SetActivationTarget(i, 1.0, contact_ramp_sec_);
         }
         contact_state_.RecomputeActive(contact_mgr_config_);
 
@@ -298,9 +301,9 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     }
 
     case WbcPhase::kRetreat: {
-      // Deactivate contacts
-      for (auto& c : contact_state_.contacts) {
-        c.active = false;
+      // Stage A-5b: ramp contact activation down to 0 over contact_ramp_sec_.
+      for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
+        contact_state_.SetActivationTarget(i, 0.0, contact_ramp_sec_);
       }
       contact_state_.RecomputeActive(contact_mgr_config_);
 
@@ -374,8 +377,10 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
           hand_computed_.velocities[idx] = 0.0;
         }
       }
-      for (auto& c : contact_state_.contacts) {
-        c.active = false;
+      // Stage A-5b: fallback rapidly ramps activation down (10 ms) so QP
+      // cost / constraints release contact within a few ticks.
+      for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
+        contact_state_.SetActivationTarget(i, 0.0, 0.01);
       }
       contact_state_.RecomputeActive(contact_mgr_config_);
       qp_fail_count_ = 0;

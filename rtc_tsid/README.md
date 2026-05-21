@@ -123,10 +123,12 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 | `PostureTask` | Joint | 관절 자세 추종: `a_des = Kp·(q_des-q) + Kd·(v_des-v)`, `J = I` | nv |
 | `SE3Task` | Cartesian | TCP/EE pose tracking (6D), 6D mask 지원, `log3` singularity 보호 | mask 활성 축 수 (1~6) |
 | `CoMTask` | Cartesian | CoM 위치 추종, `com_drift` 보상 | 3 |
-| `ForceTask` | Force | 접촉력 reference 추종, active contact에 따라 가변 dim | Σ(active contact_dim) |
+| `ForceTask` | Force | 접촉력 reference 추종, active contact 만 행 기여 (Stage A-5b: √s_i row scaling) | Σ(active contact_dim) |
 | `MomentumTask` | Centroidal | Angular momentum → 0 regularization 또는 full momentum tracking | 3 (angular) / 6 (full) |
 
 태스크는 `TaskBase`를 상속하며, `compute_residual()` 메서드로 잔차 벡터와 자코비안을 반환합니다. 각 태스크는 `weight`와 `priority` 속성을 가집니다.
+
+**Stage A-5b — Contact activation ramp & √s cost scaling.** `ContactState::Entry` 에 `activation ∈ [0,1]`, `activation_target`, `t_ramp_sec` 필드. Phase FSM 이 `SetActivationTarget(idx, target, t_ramp_sec)` 로 목표 설정, RT-tick 마다 `UpdateActivation(dt)` 가 linear ramp 진행. `ForceTask` / `ContactConsistencyTask` 의 i-th contact row 영역이 `√s_i` 로 곱해져 cost = `w · s_i · ‖J_i z - r_i‖²`. `activation` 이 `kActivationDeadband(=1e-3)` 미만이면 `active : bool` 가 자동 `false` 로 flip 되고, FrictionCone/EoM/ContactConstraint 의 `if (!active) skip` 경로가 그대로 inequality/equality row 를 0 으로 만든다 (loose bound 효과). YAML key `tsid.contacts_default_ramp_sec` (default 0.1).
 
 #### SE3Task YAML 설정
 

@@ -1,5 +1,7 @@
 #include "rtc_tsid/tasks/force_task.hpp"
 
+#include <cmath>
+
 namespace rtc::tsid {
 
 void ForceTask::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
@@ -58,14 +60,19 @@ void ForceTask::ComputeResidual(const PinocchioCache& /*cache*/, const ControlRe
       continue;
     }
 
-    // J_block: λ_i 열에 Identity
+    // Stage A-5b: sqrt(s_i) cost scaling. Cost = w·‖J_i·z - r_i‖² becomes
+    // w·s_i·‖J_i·z - r_i‖² by multiplying both J and r blocks by √s_i.
+    // s_i=1 (default) is byte-identical to pre-A-5b behaviour.
+    const double sqrt_s = std::sqrt(contacts.contacts[i].activation);
+
+    // J_block: λ_i 열에 Identity (×√s)
     for (int d = 0; d < cdim; ++d) {
-      J_block(row + d, lambda_offset_in_z + d) = 1.0;
+      J_block(row + d, lambda_offset_in_z + d) = sqrt_s;
     }
 
-    // r_block: λ_des_i
+    // r_block: λ_des_i (×√s)
     if (lambda_offset_in_ref + cdim <= lambda_ref.size()) {
-      r_block.segment(row, cdim) = lambda_ref.segment(lambda_offset_in_ref, cdim);
+      r_block.segment(row, cdim) = sqrt_s * lambda_ref.segment(lambda_offset_in_ref, cdim);
     }
 
     row += cdim;

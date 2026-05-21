@@ -151,6 +151,13 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
 
+  // Stage A-5b: progress per-contact activation ramp by dt. ContactState
+  // auto-flips the legacy `active : bool` once s_i crosses kActivationDeadband
+  // so downstream skip paths (active_contact_vars, task/constraint early
+  // outs) stay coherent.
+  contact_state_.UpdateActivation(dt);
+  contact_state_.RecomputeActive(contact_mgr_config_);
+
   // 2. Update Pinocchio cache (M, h, g, Jacobians)
   pinocchio_cache_.Update(q_curr_full_, v_curr_full_, contact_state_);
 

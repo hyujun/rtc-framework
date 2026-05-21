@@ -527,6 +527,12 @@ class DemoWbcController final : public RTControllerInterface {
   double velocity_scale_{0.95};   ///< fraction of max velocity
   float force_rate_alpha_{0.1f};  ///< EMA smoothing for df/dt (500Hz→~20Hz BW)
 
+  // Stage A-5b: contact activation ramp time (seconds). Phase transitions
+  // call SetActivationTarget(i, 1.0|0.0, contact_ramp_sec_); per-tick
+  // ContactState::UpdateActivation(dt) linearly progresses s_i toward the
+  // target. YAML: `tsid.contacts_default_ramp_sec` (default 0.1 = 100 ms).
+  double contact_ramp_sec_{0.1};
+
   // ── Utility ─────────────────────────────────────────────────────────────
   void ExtractFullState(const ControllerState& state) noexcept;
   [[nodiscard]] double ComputeTcpError(const pinocchio::SE3& target) noexcept;
