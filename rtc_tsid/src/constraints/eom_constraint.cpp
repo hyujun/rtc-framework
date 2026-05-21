@@ -29,9 +29,9 @@ int EomConstraint::IneqDim(const ContactState& /*contacts*/) const noexcept {
 }
 
 void EomConstraint::ComputeEquality(const PinocchioCache& cache, const ContactState& contacts,
-                                     const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                     Eigen::Ref<Eigen::MatrixXd> A_block,
-                                     Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
+                                    const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                    Eigen::Ref<Eigen::MatrixXd> A_block,
+                                    Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
   if (!floating_base_ || n_unactuated_ == 0)
     return;
 
@@ -45,20 +45,20 @@ void EomConstraint::ComputeEquality(const PinocchioCache& cache, const ContactSt
   // P = [I_{nu} 0; 0 0] → P·M = M.topRows(nu)
   A_block.leftCols(nv_) = cache.M.topRows(n_unactuated_);
 
-  // -P·Jcᵀ·λ: active contact 순회.
-  // P = diag(I_{nu}, 0) 이므로 P·Jcᵀ = Jcᵀ.topRows(nu) = Jc[:cdim, :].T.topRows(nu)
-  // = Jc.topRows(cdim).leftCols(nu).transpose().
-  // contact_dim 은 manager 에서 조회; manager 미주입(legacy) 시 point(cdim=3) 가정.
+  // Stage A-5a: fixed-dim QP — λ column slot is fixed per contact index in
+  // the manager. Inactive contacts leave their column block as zero (A_block
+  // was zero-init by caller) so the QP sees them as having zero contribution
+  // to EoM; the solver picks λ_i = 0 via Hessian regularization.
   int lambda_offset = 0;
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
-    if (!contacts.contacts[i].active)
-      continue;
-    if (i >= cache.contact_frames.size())
-      continue;
-
     const int cdim = (manager_ != nullptr && i < manager_->contacts.size())
                          ? manager_->contacts[i].contact_dim
                          : 3;
+
+    if (!contacts.contacts[i].active || i >= cache.contact_frames.size()) {
+      lambda_offset += cdim;
+      continue;
+    }
 
     const auto& Jc = cache.contact_frames[i].J;
     A_block.block(0, nv_ + lambda_offset, n_unactuated_, cdim) =
@@ -72,11 +72,11 @@ void EomConstraint::ComputeEquality(const PinocchioCache& cache, const ContactSt
 }
 
 void EomConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
-                                       const ContactState& /*contacts*/,
-                                       const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                       Eigen::Ref<Eigen::MatrixXd> /*C_block*/,
-                                       Eigen::Ref<Eigen::VectorXd> /*l_block*/,
-                                       Eigen::Ref<Eigen::VectorXd> /*u_block*/) noexcept {
+                                      const ContactState& /*contacts*/,
+                                      const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                      Eigen::Ref<Eigen::MatrixXd> /*C_block*/,
+                                      Eigen::Ref<Eigen::VectorXd> /*l_block*/,
+                                      Eigen::Ref<Eigen::VectorXd> /*u_block*/) noexcept {
   // No inequality constraints from EoM
 }
 

@@ -35,17 +35,17 @@ int TorqueLimitConstraint::IneqDim(const ContactState& /*contacts*/) const noexc
 }
 
 void TorqueLimitConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
-                                             const ContactState& /*contacts*/,
-                                             const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                             Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
-                                             Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {}
+                                            const ContactState& /*contacts*/,
+                                            const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
+                                            Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
+                                            Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {}
 
 void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
-                                               const ContactState& contacts,
-                                               const RobotModelInfo& robot_info, int /*n_vars*/,
-                                               Eigen::Ref<Eigen::MatrixXd> C_block,
-                                               Eigen::Ref<Eigen::VectorXd> l_block,
-                                               Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
+                                              const ContactState& contacts,
+                                              const RobotModelInfo& robot_info, int /*n_vars*/,
+                                              Eigen::Ref<Eigen::MatrixXd> C_block,
+                                              Eigen::Ref<Eigen::VectorXd> l_block,
+                                              Eigen::Ref<Eigen::VectorXd> u_block) noexcept {
   // τ = S·(M·a + h - Jcᵀ·λ)
   // τ_min ≤ S·(M·a + h - Jcᵀ·λ) ≤ τ_max
   //
@@ -57,20 +57,21 @@ void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
   SM_.noalias() = robot_info.S * cache.M;
   C_block.leftCols(nv_) = SM_;
 
-  // C[:, nv+offset : nv+offset+cdim] = -S·Jc_iᵀ  for each active contact
+  // Stage A-5a: fixed-dim QP — every contact slot's λ columns are written
+  // (active: -S·Jc_iᵀ, inactive: zero left from caller's zero-init). Offset
+  // always advances so active contacts land on stable column indices.
   if (manager_) {
     int lambda_offset = 0;
     for (size_t i = 0; i < contacts.contacts.size(); ++i) {
-      if (!contacts.contacts[i].active)
-        continue;
-      if (i >= cache.contact_frames.size())
-        continue;
-
       const int cdim = manager_->contacts[i].contact_dim;
+
+      if (!contacts.contacts[i].active || i >= cache.contact_frames.size()) {
+        lambda_offset += cdim;
+        continue;
+      }
+
       const auto& Jc = cache.contact_frames[i].J;
 
-      // -S · Jc[:cdim, :]ᵀ = -(S · Jc.topRows(cdim).transpose())
-      // Result: [na × cdim]
       C_block.block(0, nv_ + lambda_offset, na_, cdim).noalias() =
           -(robot_info.S * Jc.topRows(cdim).transpose());
 

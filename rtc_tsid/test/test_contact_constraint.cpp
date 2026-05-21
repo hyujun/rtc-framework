@@ -60,19 +60,35 @@ class ContactConstraintTest : public ::testing::Test {
   std::string frame_name_;
 };
 
+// Stage A-5a: ContactConstraint::EqDim returns max_contact_vars (fixed)
+// regardless of activation. Inactive contacts contribute zero rows so the
+// QP sees a stable equality block size across contact on/off transitions.
 TEST_F(ContactConstraintTest, Dimensions) {
   ContactConstraint cc;
   YAML::Node cfg;
   cc.Init(*model_, robot_info_, cache_, cfg);
   cc.SetContactManager(&contact_cfg_);
 
-  EXPECT_EQ(cc.EqDim(contacts_), 3);  // 1 point contact = 3
+  EXPECT_EQ(cc.EqDim(contacts_), 3);  // max_contact_vars = 3 (1 point contact)
   EXPECT_EQ(cc.IneqDim(contacts_), 0);
 
-  // Deactivate → eq_dim = 0
+  // Deactivate → eq_dim stays at max_contact_vars; inactive rows must be
+  // zero so the equality is trivially satisfied (0·a = 0).
   contacts_.contacts[0].active = false;
   contacts_.RecomputeActive(contact_cfg_);
-  EXPECT_EQ(cc.EqDim(contacts_), 0);
+  EXPECT_EQ(cc.EqDim(contacts_), 3);
+
+  Eigen::VectorXd q = pinocchio::neutral(*model_);
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
+  cache_.Update(q, v, contacts_);
+  const int n_vars = robot_info_.nv + contact_cfg_.max_contact_vars;
+  Eigen::MatrixXd A(3, n_vars);
+  Eigen::VectorXd b(3);
+  A.setZero();
+  b.setZero();
+  cc.ComputeEquality(cache_, contacts_, robot_info_, n_vars, A, b);
+  EXPECT_LT(A.norm(), 1e-15);
+  EXPECT_LT(b.norm(), 1e-15);
 }
 
 TEST_F(ContactConstraintTest, MatrixShape) {
@@ -85,7 +101,9 @@ TEST_F(ContactConstraintTest, MatrixShape) {
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
   cache_.Update(q, v, contacts_);
 
-  const int n_vars = robot_info_.nv + contacts_.active_contact_vars;
+  // Stage A-5a: n_vars uses max_contact_vars (fixed) rather than
+  // active_contact_vars — the QP variable dimension is constant.
+  const int n_vars = robot_info_.nv + contact_cfg_.max_contact_vars;
   const int n_eq = cc.EqDim(contacts_);
 
   Eigen::MatrixXd A(n_eq, n_vars);
@@ -95,10 +113,10 @@ TEST_F(ContactConstraintTest, MatrixShape) {
 
   cc.ComputeEquality(cache_, contacts_, robot_info_, n_vars, A, b);
 
-  // A[:, 0:nv] = Jc[:3, :] (should be non-zero)
+  // A[:, 0:nv] = Jc[:3, :] (should be non-zero on the active contact's row block)
   EXPECT_GT(A.leftCols(robot_info_.nv).norm(), 0.0);
   // A[:, nv:] = 0 (no coupling with λ in contact constraint)
-  EXPECT_NEAR(A.rightCols(contacts_.active_contact_vars).norm(), 0.0, 1e-15);
+  EXPECT_NEAR(A.rightCols(contact_cfg_.max_contact_vars).norm(), 0.0, 1e-15);
 }
 
 }  // namespace

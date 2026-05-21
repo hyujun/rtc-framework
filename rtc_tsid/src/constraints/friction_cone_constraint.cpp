@@ -107,14 +107,18 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& /*cache*/,
   Eigen::Matrix3d R_c;
 
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
-    if (!contacts.contacts[i].active) {
-      continue;
-    }
-
     const auto& cfg = manager_->contacts[i];
     const int cdim = cfg.contact_dim;
     const int n_faces = cfg.friction_faces;
     const double mu = cfg.friction_coeff;
+
+    // Stage A-5a: fixed-dim QP — advance the contact's λ column slot even
+    // when inactive, so active contacts land on stable QP indices. Inactive
+    // contacts contribute zero rows (skipped below).
+    if (!contacts.contacts[i].active) {
+      lambda_offset += cdim;
+      continue;
+    }
 
     const int lambda_col = nv_ + lambda_offset;
 

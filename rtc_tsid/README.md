@@ -229,7 +229,7 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 |------|------|------|
 | `tau` | `VectorXd` | 구동 토크 [n_actuated] |
 | `a_opt` | `VectorXd` | 최적 가속도 [nv] |
-| `lambda_opt` | `VectorXd` | 접촉력 [active_contact_vars] |
+| `lambda_opt` | `VectorXd` | 접촉력 [max_contact_vars] (Stage A-5a fixed-dim QP; 비활성 contact 슬롯은 ≈ 0) |
 | `qp_converged` | `bool` | QP 솔버 수렴 여부 |
 | `solve_time_us` | `double` | 풀이 시간 [μs] |
 | `solve_levels` | `int` | WQP: 1, HQP: N |

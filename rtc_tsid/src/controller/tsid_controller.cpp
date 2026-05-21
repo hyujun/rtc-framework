@@ -50,33 +50,35 @@ CommandOutput TSIDController::Compute(const ControlState& /*state*/, const Contr
   // 2. Extract a_opt, lambda_opt
   output_.a_opt.head(nv) = result.x_opt.head(nv);
 
-  const int n_lambda = contacts.active_contact_vars;
-  if (n_lambda > 0) {
-    output_.lambda_opt.head(n_lambda) = result.x_opt.segment(nv, n_lambda);
+  // Stage A-5a: fixed-dim QP — extract the full λ block (size =
+  // max_contact_vars). Inactive contacts' λ slots are ≈ 0 by Hessian
+  // regularization (no task/constraint references them).
+  const int n_lambda_full = contact_cfg_.max_contact_vars;
+  if (n_lambda_full > 0) {
+    output_.lambda_opt.head(n_lambda_full) = result.x_opt.segment(nv, n_lambda_full);
   }
 
   // 3. τ 역산: tau = S · (M·a + h - Jcᵀ·λ)
   tau_full_.noalias() = cache.M * output_.a_opt.head(nv);
   tau_full_ += cache.h;
 
-  // Jcᵀ·λ 조립
-  if (n_lambda > 0) {
+  // Jcᵀ·λ 조립 — fixed-dim λ index per contact slot. Skip inactive contacts
+  // (their λ ≈ 0 contributes nothing) but advance offset so active contacts
+  // pick up the right segment.
+  if (n_lambda_full > 0) {
     JcT_lambda_.setZero();
     int lambda_offset = 0;
 
     for (size_t i = 0; i < contacts.contacts.size(); ++i) {
-      if (!contacts.contacts[i].active)
-        continue;
-      if (i >= cache.contact_frames.size())
-        continue;
-
-      // Contact dim 은 ContactManagerConfig 에서 조회 (point=3, surface=6).
-      // 보관본이 비어 있으면 (legacy / 외부 init) point 로 fallback — 기존
-      // point-only 회로 회귀 방지.
       const int cdim =
           (i < contact_cfg_.contacts.size()) ? contact_cfg_.contacts[i].contact_dim : 3;
 
-      if (lambda_offset + cdim > n_lambda)
+      if (!contacts.contacts[i].active || i >= cache.contact_frames.size()) {
+        lambda_offset += cdim;
+        continue;
+      }
+
+      if (lambda_offset + cdim > n_lambda_full)
         break;
 
       const auto& Jc = cache.contact_frames[i].J;

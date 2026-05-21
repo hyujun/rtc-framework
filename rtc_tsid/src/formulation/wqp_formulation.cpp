@@ -96,7 +96,12 @@ void WQPFormulation::ApplyPreset(const PhasePreset& preset) noexcept {
 const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const ControlReference& ref,
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept {
-  const int n_vars = nv_ + contacts.active_contact_vars;
+  // Stage A-5a: fixed-dim QP. n_vars = nv + max_contact_vars (constant across
+  // contact on/off transitions). Inactive contacts contribute zero rows to
+  // tasks/equality constraints; ContactConstraint's IneqDim/EqDim use the
+  // full block size; the QP solver picks λ_i = 0 for inactive contacts via
+  // the small Hessian regularization (no task or constraint references them).
+  const int n_vars = max_n_vars_;
 
   // ── Cost: H, g ──
   auto H = qp_data_.H.topLeftCorner(n_vars, n_vars);

@@ -133,7 +133,8 @@ void HQPFormulation::RebuildLevelIndices() noexcept {
 const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const ControlReference& ref,
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept {
-  const int n_vars = nv_ + contacts.active_contact_vars;
+  // Stage A-5a: fixed-dim QP (see WQPFormulation::Solve for rationale).
+  const int n_vars = max_n_vars_;
 
   // Rebuild level indices from current task active/priority state
   RebuildLevelIndices();

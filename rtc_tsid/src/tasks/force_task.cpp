@@ -27,9 +27,9 @@ void ForceTask::UpdateResidualDim(const ContactState& contacts) noexcept {
 }
 
 void ForceTask::ComputeResidual(const PinocchioCache& /*cache*/, const ControlReference& ref,
-                                 const ContactState& contacts, int /*n_vars*/,
-                                 Eigen::Ref<Eigen::MatrixXd> J_block,
-                                 Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
+                                const ContactState& contacts, int /*n_vars*/,
+                                Eigen::Ref<Eigen::MatrixXd> J_block,
+                                Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
   if (!manager_)
     return;
 
@@ -41,16 +41,19 @@ void ForceTask::ComputeResidual(const PinocchioCache& /*cache*/, const ControlRe
   // reference 선택: local이 설정됐으면 local, 아니면 ControlReference
   const auto& lambda_ref = has_local_ref_ ? lambda_des_ : ref.lambda_des;
 
+  // Stage A-5a: fixed-dim QP — λ column position is the contact's index slot
+  // (offset_in_z), not the i-th active contact. Inactive contacts are
+  // skipped over (no row contribution) but the column offset still advances
+  // so active contacts land on stable QP variable indices.
   int row = 0;
-  int lambda_offset_in_z = nv_;  // QP 변수에서 λ 시작 위치
-  int lambda_offset_in_ref = 0;  // reference 벡터에서의 offset
+  int lambda_offset_in_z = nv_;
+  int lambda_offset_in_ref = 0;
 
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
     const int cdim = manager_->contacts[i].contact_dim;
 
     if (!contacts.contacts[i].active) {
-      // 비활성 contact: QP 변수 offset은 진행하지 않음
-      // (WQP/HQP에서 active contact만 λ에 포함)
+      lambda_offset_in_z += cdim;
       lambda_offset_in_ref += cdim;
       continue;
     }
