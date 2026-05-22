@@ -43,8 +43,7 @@ repo_scripts/
     │   # ── 의존성 격리 (배포 가이드 참조) ────────────────────────
     ├── setup_env.sh                      <- 개발 쉘 env 활성화 (ROS + deps/install + venv + overlay)
     ├── build_deps.sh                     <- fmt/mimalloc/aligator 소스 빌드 -> deps/install/
-    ├── verify_isolation.sh               <- ELF RPATH/ldd 격리 검증
-    └── uninstall_system_deps.sh          <- robotpkg/stale /usr/local 대화형 제거 (§8 A-D)
+    └── verify_isolation.sh               <- ELF RPATH/ldd 격리 검증
 ```
 
 ---
@@ -94,7 +93,6 @@ repo_scripts/
 | `setup_env.sh` | 매 쉘 활성화 -- ROS Jazzy + `deps/install` (fmt/mimalloc/aligator) + `.venv` + `install/` overlay. `COLCON_DEFAULTS_FILE` 도 주입 | 불필요 |
 | `build_deps.sh` | `../deps.repos` 기반으로 fmt 11.1.4 / mimalloc 2.1.7 / aligator 0.19.0 을 `<rtc_ws>/deps/install/` 로 소스 빌드. deps/src 가 비어있으면 `vcs import` 자동 실행 | 불필요 |
 | `verify_isolation.sh` | `install/` 의 모든 ELF 를 훑어 `/usr/local` · `/opt/openrobots` 등 격리 외부 경로 누수 검사 | 불필요 |
-| `uninstall_system_deps.sh` | robotpkg 15개 · `/opt/openrobots` · `/opt/rti.com` · stale `/usr/local` 잔재 제거 (§8 A-D 대화형) | 필수 |
 
 `build.sh` / `install.sh` 는 `RTC_DEPS_PREFIX` 미설정 시 `setup_env.sh` 를 자동으로 source 하므로, 수동 실행 없이 바로 동작합니다. 그러나 `ros2 launch` · `colcon test` 등 대화형 커맨드에서는 각자 `source setup_env.sh` 필요.
 
@@ -508,27 +506,6 @@ source setup_env.sh
 - `/opt/onnxruntime*`, `/opt/mujoco-*` (승인된 바이너리 drop)
 
 **종료 코드:** 0=모든 ELF 격리 통과, 1=하나 이상 누수 (상세 출력)
-
----
-
-### uninstall_system_deps.sh
-
-대화형 시스템 정리. 기존 dual-install 상태 (robotpkg + /usr/local 소스 빌드) 에서 Level 3 격리로 전환할 때 **1회** 실행. 각 단계마다 `[y/N]` 확인. 이 저장소가 이미 격리 상태로 구성돼 있다면 실행 불필요.
-
-```bash
-sudo ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/uninstall_system_deps.sh
-```
-
-| 단계 | 내용 |
-|------|------|
-| A | `/usr/local/` stale 잔재 제거 (구 hpp-fcl/pinocchio 3.0.x, gtsam, teaser, example-robot-data, libmujoco 등) |
-| B | `/usr/local/` 의 fmt/mimalloc/aligator (install_manifest 기반 uninstall) + `~/libs/` 소스 트리 삭제 |
-| C-1 | `ros-jazzy-proxsuite` 설치 + `robotpkg-proxsuite` 제거 + `rtc_tsid` 재빌드 테스트 |
-| C-2 | 나머지 robotpkg 14개 purge |
-| C-3 | robotpkg apt source + `/opt/openrobots` 제거 |
-| D | `/opt/rti.com` 제거 |
-
-**Pre-flight**: `deps/install` + `install/` (colcon build 완료) 가 존재해야만 진행. 실패 시 자동 롤백.
 
 ---
 

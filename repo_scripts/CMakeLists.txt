@@ -21,7 +21,6 @@ install(PROGRAMS
   scripts/setup_env.sh
   scripts/build_deps.sh
   scripts/verify_isolation.sh
-  scripts/uninstall_system_deps.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 install(PROGRAMS
