@@ -115,9 +115,9 @@ void SE3Task::Init(const pinocchio::Model& model, const RobotModelInfo& robot_in
 }
 
 void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReference& /*ref*/,
-                               const ContactState& /*contacts*/, int /*n_vars*/,
-                               Eigen::Ref<Eigen::MatrixXd> J_block,
-                               Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
+                              const ContactState& /*contacts*/, int /*n_vars*/,
+                              Eigen::Ref<Eigen::MatrixXd> J_block,
+                              Eigen::Ref<Eigen::VectorXd> r_block) noexcept {
   const auto& rf = cache.registered_frames[static_cast<size_t>(registered_frame_idx_)];
 
   // 현재 tip pose를 base_frame 기준으로 변환: tip_in_base = oMb⁻¹ · oMf.
@@ -156,22 +156,22 @@ void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReferenc
   for (int i = 0; i < 6; ++i) {
     if (!mask_[static_cast<size_t>(i)])
       continue;
-    J_block.row(row) = rf.J.row(i).head(nv_);
+    J_block.row(row).head(nv_) = rf.J.row(i).head(nv_);
     r_block(row) = a_des_full_(i) - rf.dJv(i);
     ++row;
   }
 }
 
 void SE3Task::SetSe3Reference(const pinocchio::SE3& placement_des,
-                                const Eigen::Matrix<double, 6, 1>& v_des,
-                                const Eigen::Matrix<double, 6, 1>& a_ff) noexcept {
+                              const Eigen::Matrix<double, 6, 1>& v_des,
+                              const Eigen::Matrix<double, 6, 1>& a_ff) noexcept {
   placement_des_ = placement_des;
   v_des_ = v_des;
   a_ff_ = a_ff;
 }
 
 void SE3Task::SetGains(const Eigen::Matrix<double, 6, 1>& kp,
-                        const Eigen::Matrix<double, 6, 1>& kd) noexcept {
+                       const Eigen::Matrix<double, 6, 1>& kd) noexcept {
   kp_ = kp;
   kd_ = kd;
 }
