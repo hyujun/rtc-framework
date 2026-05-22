@@ -795,8 +795,8 @@ else
 
   # Post-verify: hybrid-관련 필수 옵션이 실제로 = y 인지 점검 (olddefconfig
   # 가 의존성 불만족으로 드롭시킬 수 있음 — 그 경우 사용자에게 알림).
-  local _missing_hybrid=""
-  local _k
+  _missing_hybrid=""
+  _k=""
   for _k in CONFIG_SCHED_MC_PRIO CONFIG_SCHED_CLUSTER CONFIG_INTEL_HFI_THERMAL \
             CONFIG_IKCONFIG_PROC; do
     if ! grep -q "^${_k}=y$" .config 2>/dev/null; then
@@ -877,26 +877,17 @@ else
   # NVIDIA DKMS는 커스텀 RT 커널 헤더 이름을 인식하지 못해 빌드 실패할 수 있음.
   # dpkg post-install 트리거에서 DKMS autoinstall이 실패하면 dpkg 전체가 실패하므로,
   # 커널 설치 중 DKMS autoinstall 훅을 일시 비활성화한 뒤 복원한다.
+  # with_temporary_disable 가 trap EXIT 으로 dpkg 실패 시에도 hook 복원을 보장한다.
   DKMS_POSTINST="/etc/kernel/postinst.d/dkms"
-  DKMS_DISABLED=0
-  if [[ -f "$DKMS_POSTINST" ]]; then
-    info "DKMS autoinstall 훅 일시 비활성화..."
-    chmod -x "$DKMS_POSTINST"
-    DKMS_DISABLED=1
-  fi
+  [[ -f "$DKMS_POSTINST" ]] && info "DKMS autoinstall 훅 일시 비활성화 (자동 복원)..."
 
   # headers를 먼저 설치하여 이후 DKMS 빌드 시 헤더가 존재하도록 함
   DEBS_TO_INSTALL=()
   [[ -n "$DEB_HEADERS" ]] && DEBS_TO_INSTALL+=("${DEB_HEADERS}")
   DEBS_TO_INSTALL+=("${DEB_IMAGE}")
 
-  dpkg -i "${DEBS_TO_INSTALL[@]}"
-
-  # DKMS 훅 복원
-  if [[ "$DKMS_DISABLED" -eq 1 ]] && [[ -f "$DKMS_POSTINST" ]]; then
-    chmod +x "$DKMS_POSTINST"
-    info "DKMS autoinstall 훅 복원 완료"
-  fi
+  with_temporary_disable "$DKMS_POSTINST" -- dpkg -i "${DEBS_TO_INSTALL[@]}"
+  [[ -f "$DKMS_POSTINST" ]] && info "DKMS autoinstall 훅 복원 완료"
 
   # NVIDIA GPU가 있으면 DKMS 수동 빌드 시도 (실패해도 무시)
   # 주의: `dkms autoinstall`은 커스텀 RT 커널에서 apport 검증 실패.

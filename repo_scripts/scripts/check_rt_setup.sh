@@ -579,9 +579,9 @@ check_irq_affinity() {
 
     ((total_irqs++)) || true
 
-    local mask
-    mask=$(cat "$smp_file" 2>/dev/null)
-    if [[ $? -ne 0 || -z "$mask" ]]; then
+    local mask="" mask_rc=0
+    mask=$(cat "$smp_file" 2>/dev/null) || mask_rc=$?
+    if [[ "$mask_rc" -ne 0 || -z "$mask" ]]; then
       ((unreadable++)) || true
       continue
     fi
@@ -700,9 +700,11 @@ check_network_udp() {
 
     if [[ -n "$nic" ]]; then
       # Coalescing 확인
-      local coal_out
-      coal_out=$(ethtool -c "$nic" 2>&1)
-      if [[ $? -eq 0 ]]; then
+      # 주의: `var=$(cmd); if [[ $? -eq 0 ]]` 패턴은 항상 $?=0 (assignment 종료코드).
+      # if 안에서 직접 명령을 실행하거나, 별도 변수에 exit code 를 캡쳐해야 한다.
+      local coal_out="" coal_rc=0
+      coal_out=$(ethtool -c "$nic" 2>&1) || coal_rc=$?
+      if [[ "$coal_rc" -eq 0 ]]; then
         local rx_usecs
         rx_usecs=$(echo "$coal_out" | grep "rx-usecs:" | awk '{print $2}')
         if [[ "$rx_usecs" == "0" ]]; then
@@ -712,12 +714,14 @@ check_network_udp() {
           _category_update "network_udp" "WARN"
         fi
       else
-        _skip "NIC ${nic}: ethtool -c 권한 부족"
+        _skip "NIC ${nic}: ethtool -c 권한 부족 또는 미지원"
       fi
 
-      # Adaptive interrupt moderation 확인
-      local adaptive_rx
-      adaptive_rx=$(echo "$coal_out" | awk '/^Adaptive RX:/ {print $3}')
+      # Adaptive interrupt moderation 확인 (coal_out 이 유효할 때만)
+      local adaptive_rx=""
+      if [[ "$coal_rc" -eq 0 ]]; then
+        adaptive_rx=$(echo "$coal_out" | awk '/^Adaptive RX:/ {print $3}')
+      fi
       if [[ "${adaptive_rx:-}" == "on" ]]; then
         _warn "NIC ${nic}: Adaptive RX coalescing ON (jitter 유발)"
         _fix "sudo ethtool -C ${nic} adaptive-rx off"
@@ -726,10 +730,10 @@ check_network_udp() {
         _pass "NIC ${nic}: Adaptive RX coalescing off"
       fi
 
-      # Offload 확인
-      local offload_out
-      offload_out=$(ethtool -k "$nic" 2>&1)
-      if [[ $? -eq 0 ]]; then
+      # Offload 확인 — $? 마스킹 버그 회피 (coalescing 와 동일)
+      local offload_out="" offload_rc=0
+      offload_out=$(ethtool -k "$nic" 2>&1) || offload_rc=$?
+      if [[ "$offload_rc" -eq 0 ]]; then
         local gro_status
         gro_status=$(echo "$offload_out" | grep "generic-receive-offload:" | awk '{print $2}')
         if [[ "$gro_status" == "off" ]]; then
@@ -739,7 +743,7 @@ check_network_udp() {
           _category_update "network_udp" "WARN"
         fi
       else
-        _skip "NIC ${nic}: ethtool -k 권한 부족"
+        _skip "NIC ${nic}: ethtool -k 권한 부족 또는 미지원"
       fi
     fi
   else

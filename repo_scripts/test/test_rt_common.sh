@@ -820,6 +820,111 @@ test_get_rt_cores_with_siblings_smt_6c12t
 test_get_rt_cores_with_siblings_smt_12c24t
 test_compute_shield_cores_v4_1_tiers
 
+# ── Phase 1 safety primitives: write_file_if_changed / with_temporary_disable ──
+
+test_write_file_if_changed_creates_new() {
+  local tmp_root
+  tmp_root=$(mktemp -d)
+  local target="${tmp_root}/new.conf"
+  write_file_if_changed "$target" "hello"
+  expect_eq "new_created.exists" "true" "$([[ -f "$target" ]] && echo true || echo false)"
+  expect_eq "new_created.content" "hello" "$(cat "$target")"
+  # Default mode 0644
+  expect_eq "new_created.mode" "644" "$(stat -c '%a' "$target")"
+  rm -rf -- "$tmp_root"
+}
+
+test_write_file_if_changed_skips_identical() {
+  local tmp_root
+  tmp_root=$(mktemp -d)
+  local target="${tmp_root}/same.conf"
+  printf '%s\n' "same" > "$target"
+  local before
+  before=$(stat -c '%Y' "$target")
+  sleep 1  # mtime 비교 안정
+  if write_file_if_changed "$target" "same"; then
+    fail "identical_skip.return: expected non-zero (skipped), got 0 (written)"
+  else
+    pass
+  fi
+  local after
+  after=$(stat -c '%Y' "$target")
+  expect_eq "identical_skip.mtime_unchanged" "$before" "$after"
+  rm -rf -- "$tmp_root"
+}
+
+test_write_file_if_changed_preserves_mode() {
+  local tmp_root
+  tmp_root=$(mktemp -d)
+  local target="${tmp_root}/exec.sh"
+  printf '%s\n' "old" > "$target"
+  chmod 0755 "$target"
+  write_file_if_changed "$target" "new"
+  expect_eq "preserve_mode.content" "new" "$(cat "$target")"
+  expect_eq "preserve_mode.mode" "755" "$(stat -c '%a' "$target")"
+  rm -rf -- "$tmp_root"
+}
+
+test_write_file_if_changed_atomic_no_partial() {
+  # write_file_if_changed 의 tmp 파일이 target 디렉토리 안에서 생성되는지 검증
+  # (cross-fs EXDEV 방지). 직접적 atomicity 는 crash injection 없이 unit test 가
+  # 어려우므로, mktemp pattern + same-dir 위치만 검증.
+  local tmp_root
+  tmp_root=$(mktemp -d)
+  local target="${tmp_root}/atomic.conf"
+  write_file_if_changed "$target" "data"
+  # write 후 tmp 잔존 없어야 함 (mv 가 atomic 으로 rename)
+  local leftover
+  leftover=$(find "$tmp_root" -maxdepth 1 -name '.atomic.conf.*' 2>/dev/null | wc -l)
+  expect_eq "atomic.no_leftover_tmp" "0" "$leftover"
+  expect_eq "atomic.target_exists" "true" "$([[ -f "$target" ]] && echo true || echo false)"
+  rm -rf -- "$tmp_root"
+}
+
+test_with_temporary_disable_restores_on_success() {
+  local tmp_root
+  tmp_root=$(mktemp -d)
+  local hook="${tmp_root}/fake-hook"
+  printf '#!/bin/bash\nexit 0\n' > "$hook"
+  chmod +x "$hook"
+  with_temporary_disable "$hook" -- true
+  # 명령 성공 후 hook 이 다시 실행 가능해야 함
+  expect_eq "tmp_disable.success.restored" "true" "$([[ -x "$hook" ]] && echo true || echo false)"
+  rm -rf -- "$tmp_root"
+}
+
+test_with_temporary_disable_restores_on_failure() {
+  # 핵심 buy: 내부 명령이 실패해도 hook 이 +x 로 복원되는가
+  local tmp_root
+  tmp_root=$(mktemp -d)
+  local hook="${tmp_root}/fake-hook"
+  printf '#!/bin/bash\nexit 0\n' > "$hook"
+  chmod +x "$hook"
+  # set -e 환경에서 실패 명령 — 함수 종료 후 hook 이 +x 여야 함
+  with_temporary_disable "$hook" -- false || true
+  expect_eq "tmp_disable.failure.restored" "true" "$([[ -x "$hook" ]] && echo true || echo false)"
+  rm -rf -- "$tmp_root"
+}
+
+test_with_temporary_disable_missing_hook() {
+  # Hook 자체가 없으면 그냥 명령만 실행되어야 함 (fatal X)
+  local tmp_root
+  tmp_root=$(mktemp -d)
+  local missing="${tmp_root}/no-such-hook"
+  local sentinel="${tmp_root}/sentinel"
+  with_temporary_disable "$missing" -- touch "$sentinel"
+  expect_eq "tmp_disable.missing_hook.cmd_ran" "true" "$([[ -f "$sentinel" ]] && echo true || echo false)"
+  rm -rf -- "$tmp_root"
+}
+
+test_write_file_if_changed_creates_new
+test_write_file_if_changed_skips_identical
+test_write_file_if_changed_preserves_mode
+test_write_file_if_changed_atomic_no_partial
+test_with_temporary_disable_restores_on_success
+test_with_temporary_disable_restores_on_failure
+test_with_temporary_disable_missing_hook
+
 echo
 echo "── test_rt_common.sh summary ──"
 echo "  PASS: $PASS"

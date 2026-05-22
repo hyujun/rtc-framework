@@ -131,7 +131,8 @@ repo_scripts/
 | 함수 | 설명 |
 |------|------|
 | `require_root()` | root 권한 확인 (실패 시 `fatal`) |
-| `write_file_if_changed()` | 멱등 파일 쓰기 (동일 시 skip, 다를 시 백업+덮어쓰기) |
+| `write_file_if_changed()` | 멱등 atomic 파일 쓰기 (same-dir `mktemp` + `mv`, 기존 mode 보존, 다를 시 백업) |
+| `with_temporary_disable()` | postinst hook 일시 비활성화 후 명령 실행, `trap EXIT` 으로 실패해도 hook 복원 (e.g. DKMS hook + `dpkg -i`) |
 | `auto_release_cpu_shield()` | 빌드 전 CPU shield 자동 해제 (cset 감지 시 해제, isolcpus는 경고만) |
 | `check_workspace_structure()` | ROS2 워크스페이스 디렉토리 구조 검증 (`src/` 하위 확인) |
 | `ensure_ros2_sourced()` | ROS2 환경 자동 탐색 및 소싱 (jazzy 우선, humble fallback — setup_env.sh와 동일 priority) |

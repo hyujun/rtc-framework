@@ -13,7 +13,8 @@
 #   compute_irq_affinity_mask — SMT-aware IRQ affinity bitmask 계산
 #   compute_expected_isolated — isolcpus 기대값 계산
 #   require_root              — root 권한 확인
-#   write_file_if_changed     — 멱등 파일 쓰기
+#   write_file_if_changed     — 멱등 atomic 파일 쓰기 (mktemp + mv, mode 보존)
+#   with_temporary_disable    — postinst hook 일시 비활성화 (trap EXIT 복원)
 #   auto_release_cpu_shield   — 빌드 전 CPU shield 자동 해제
 #   check_workspace_structure — ROS2 워크스페이스 구조 검증
 #   ensure_ros2_sourced       — ROS2 환경 자동 탐색 및 소싱
@@ -168,8 +169,17 @@ require_root() {
   fi
 }
 
-# ── Idempotent file write ───────────────────────────────────────────────────
-# 파일 내용이 동일하면 skip, 다르면 백업 후 덮어쓴다.
+# ── Idempotent atomic file write ────────────────────────────────────────────
+# 파일 내용이 동일하면 skip, 다르면 백업 후 atomic 으로 덮어쓴다.
+#
+# Atomicity: same-directory mktemp + mv (rename(2)) — mid-write crash 시
+# target 파일은 이전 상태 그대로 유지. systemd/sysctl/grub 등 시스템 설정에 필수.
+# 같은 디렉토리에 tmp 를 두는 이유는 rename(2) 가 동일 filesystem 내에서만
+# atomic 이기 때문 (cross-fs 는 EXDEV).
+#
+# Mode preservation: 기존 file 의 mode 를 stat 으로 읽어 보존. 없으면 0644 default.
+# 호출처가 write 후 chmod 로 mode 를 조정하는 패턴 (executable script 등) 은 그대로 호환.
+#
 # Usage: write_file_if_changed "/path/to/file" "$CONTENT" [backup=true]
 # Returns: 0 if written, 1 if skipped (already identical)
 write_file_if_changed() {
@@ -177,16 +187,78 @@ write_file_if_changed() {
   local content="$2"
   local do_backup="${3:-true}"
 
-  if [[ -f "$file" ]] && diff -q <(echo "$content") "$file" &>/dev/null; then
+  if [[ -f "$file" ]] && diff -q <(printf '%s\n' "$content") "$file" &>/dev/null; then
     return 1  # 동일 — skip
   fi
 
-  if [[ "$do_backup" == "true" && -f "$file" ]]; then
-    cp "$file" "${file}.bak.$(date +%Y%m%d_%H%M%S)"
+  # 기존 file 의 mode 보존 (없으면 0644)
+  local mode="0644"
+  if [[ -f "$file" ]]; then
+    mode=$(stat -c '%a' "$file" 2>/dev/null || echo "0644")
   fi
 
-  echo "$content" > "$file"
+  if [[ "$do_backup" == "true" && -f "$file" ]]; then
+    cp -p "$file" "${file}.bak.$(date +%Y%m%d_%H%M%S)"
+  fi
+
+  # Same-directory tmp 로 atomic 보장. parent 디렉토리는 시스템 경로라 항상 존재.
+  local dir tmp
+  dir=$(dirname "$file")
+  tmp=$(mktemp "${dir}/.$(basename "$file").XXXXXX") || fatal "mktemp failed in ${dir}"
+
+  # printf 로 trailing newline 1개 보장 (systemd/sysctl 관례).
+  # tmp 쓰기 실패 시 cleanup.
+  if ! printf '%s\n' "$content" > "$tmp"; then
+    rm -f "$tmp"
+    fatal "Failed to write tmp file ${tmp}"
+  fi
+
+  chmod "$mode" "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$file"
   return 0  # 기록됨
+}
+
+# ── Temporarily disable executable hook, restore on EXIT ────────────────────
+# chmod -x <hook> 후 <command> 를 실행하고, set -e / signal / 정상 종료 어느
+# 경로로 빠져나가든 trap EXIT 으로 chmod +x 복원한다.
+#
+# 배경: dpkg -i 가 /etc/kernel/postinst.d/dkms 를 호출하는데 NVIDIA DKMS 가 RT
+# 커널에서 실패하면 dpkg 전체가 실패한다. 이를 우회하려고 hook 을 일시 비활성화
+# 해야 하나, dpkg 실패 시 hook 이 영구 비활성화되는 위험이 있다 (set -e + 미복원).
+# trap EXIT 으로 무조건 복원 보장.
+#
+# Usage:
+#   with_temporary_disable /etc/kernel/postinst.d/dkms -- dpkg -i pkg1.deb pkg2.deb
+#
+# Returns: 내부 명령의 exit code (성공/실패 모두 caller 로 propagate)
+with_temporary_disable() {
+  local hook="$1"; shift
+  [[ "$1" == "--" ]] || fatal "with_temporary_disable: '--' separator missing"
+  shift
+
+  if [[ ! -f "$hook" ]]; then
+    # Hook 자체가 없으면 그냥 명령만 실행
+    "$@"
+    return $?
+  fi
+
+  # 원래 실행 가능 여부 기록 (이미 -x 가 없으면 복원도 -x 추가하지 않음)
+  local was_executable=0
+  [[ -x "$hook" ]] && was_executable=1
+
+  if [[ "$was_executable" -eq 1 ]]; then
+    # trap 은 함수 scope 가 아닌 shell scope 라서 RETURN 으로는 깔끔히 못 잡는다.
+    # subshell 로 격리하여 EXIT trap 이 해당 subshell 만 cleanup 하도록 한다.
+    (
+      trap 'rc=$?; set +e; chmod +x "'"$hook"'" 2>/dev/null; exit $rc' EXIT
+      chmod -x "$hook" || exit 1
+      "$@"
+    )
+    return $?
+  fi
+
+  # 이미 비활성화 상태였으면 그냥 명령 실행
+  "$@"
 }
 
 # ── CPU layout helpers ──────────────────────────────────────────────────────
