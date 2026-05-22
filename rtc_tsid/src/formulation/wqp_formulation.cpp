@@ -1,5 +1,7 @@
 #include "rtc_tsid/formulation/wqp_formulation.hpp"
 
+#include <limits>
+
 namespace rtc::tsid {
 
 void WQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
@@ -96,11 +98,11 @@ void WQPFormulation::ApplyPreset(const PhasePreset& preset) noexcept {
 const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const ControlReference& ref,
                                          const ContactState& contacts,
                                          const RobotModelInfo& robot_info) noexcept {
-  // Stage A-5a: fixed-dim QP. n_vars = nv + max_contact_vars (constant across
-  // contact on/off transitions). Inactive contacts contribute zero rows to
-  // tasks/equality constraints; ContactConstraint's IneqDim/EqDim use the
-  // full block size; the QP solver picks λ_i = 0 for inactive contacts via
-  // the small Hessian regularization (no task or constraint references them).
+  // Stage A-5a + RT-safety: fully fixed-dim QP. n_vars = max_n_vars_,
+  // n_eq = max_n_eq_, n_ineq = max_n_ineq_ — solver dim 은 변하지 않는다.
+  // Inactive task/constraint 는 zero row + (-inf, +inf) bound 로 패딩되어
+  // trivially feasible 하게 처리된다. 이로써 QPSolverWrapper 는 매 tick
+  // update() 만 호출하면 되고 RT path 에서 heap (re)alloc 이 발생하지 않는다.
   const int n_vars = max_n_vars_;
 
   // ── Cost: H, g ──
@@ -122,9 +124,7 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
     task->ComputeResidual(cache, ref, contacts, n_vars, J_view, r_view);
 
     const double w = task->Weight();
-    // H += w * Jᵀ·J
     H.noalias() += w * J_view.transpose() * J_view;
-    // g += -w * Jᵀ·r
     g_vec.noalias() -= w * J_view.transpose() * r_view;
   }
 
@@ -133,47 +133,56 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
     H(i, i) += 1e-8;
   }
 
-  // ── Equality constraints: A, b ──
-  int n_eq = 0;
+  // ── Equality constraints: A, b (zero-padded to max_n_eq_) ──
+  // Inactive 또는 active 영역 밖은 0 = 0 자명식.
+  qp_data_.A.topLeftCorner(max_n_eq_, n_vars).setZero();
+  qp_data_.b.head(max_n_eq_).setZero();
+
+  int n_eq_used = 0;
   for (const auto& con : constraints_) {
     if (!con->IsActive())
       continue;
     const int ed = con->EqDim(contacts);
     if (ed <= 0)
       continue;
+    if (n_eq_used + ed > max_n_eq_)
+      break;  // overflow guard — Init 시 충분히 잡았으므로 정상 경로에서는 발생하지 않음
 
-    auto A_view = qp_data_.A.block(n_eq, 0, ed, n_vars);
-    auto b_view = qp_data_.b.segment(n_eq, ed);
-    A_view.setZero();
-    b_view.setZero();
-
+    auto A_view = qp_data_.A.block(n_eq_used, 0, ed, n_vars);
+    auto b_view = qp_data_.b.segment(n_eq_used, ed);
     con->ComputeEquality(cache, contacts, robot_info, n_vars, A_view, b_view);
-    n_eq += ed;
+    n_eq_used += ed;
   }
 
-  // ── Inequality constraints: C, l, u ──
-  int n_ineq = 0;
+  // ── Inequality constraints: C, l, u (padded to max_n_ineq_) ──
+  // Active 영역 밖은 C=0, l=-inf, u=+inf (trivially feasible).
+  qp_data_.C.topLeftCorner(max_n_ineq_, n_vars).setZero();
+  qp_data_.l.head(max_n_ineq_).setConstant(-std::numeric_limits<double>::infinity());
+  qp_data_.u.head(max_n_ineq_).setConstant(std::numeric_limits<double>::infinity());
+
+  int n_ineq_used = 0;
   for (const auto& con : constraints_) {
     if (!con->IsActive())
       continue;
     const int id = con->IneqDim(contacts);
     if (id <= 0)
       continue;
+    if (n_ineq_used + id > max_n_ineq_)
+      break;
 
-    auto C_view = qp_data_.C.block(n_ineq, 0, id, n_vars);
-    auto l_view = qp_data_.l.segment(n_ineq, id);
-    auto u_view = qp_data_.u.segment(n_ineq, id);
-    C_view.setZero();
-    l_view.setZero();
-    u_view.setZero();
-
+    auto C_view = qp_data_.C.block(n_ineq_used, 0, id, n_vars);
+    auto l_view = qp_data_.l.segment(n_ineq_used, id);
+    auto u_view = qp_data_.u.segment(n_ineq_used, id);
+    // ComputeInequality 가 l/u 를 덮어쓰므로 padding 의미는 active 영역 밖에서만 유효.
     con->ComputeInequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
-    n_ineq += id;
+    n_ineq_used += id;
   }
 
+  // n_vars / n_eq / n_ineq 는 caller (테스트·로깅) 가 active dim 을 알 수 있도록 기록만.
+  // QPSolverWrapper 는 max_n_* 로 고정해 호출한다.
   qp_data_.n_vars = n_vars;
-  qp_data_.n_eq = n_eq;
-  qp_data_.n_ineq = n_ineq;
+  qp_data_.n_eq = n_eq_used;
+  qp_data_.n_ineq = n_ineq_used;
 
   // ── Solve ──
   const auto& solver_result = qp_solver_.Solve(qp_data_);

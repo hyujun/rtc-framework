@@ -1,5 +1,7 @@
 #include "rtc_tsid/formulation/hqp_formulation.hpp"
 
+#include <limits>
+
 namespace rtc::tsid {
 
 void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInfo& robot_info,
@@ -30,7 +32,7 @@ void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
   // Conservative: max_n_vars * max_levels
   max_prev_rows_ = max_n_vars_ * max_levels_;
   // Total max equality per level = base + prev stack
-  const int max_n_eq_per_level = max_n_eq_base_ + max_prev_rows_;
+  max_n_eq_per_level_ = max_n_eq_base_ + max_prev_rows_;
 
   // Solver config
   QPSolverConfig solver_cfg;
@@ -46,8 +48,8 @@ void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
   qp_data_per_level_.resize(static_cast<size_t>(max_levels_));
   qp_solvers_.resize(static_cast<size_t>(max_levels_));
   for (int k = 0; k < max_levels_; ++k) {
-    qp_data_per_level_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level, max_n_ineq_);
-    qp_solvers_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level, max_n_ineq_,
+    qp_data_per_level_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level_, max_n_ineq_);
+    qp_solvers_[static_cast<size_t>(k)].Init(max_n_vars_, max_n_eq_per_level_, max_n_ineq_,
                                              solver_cfg);
   }
 
@@ -147,21 +149,29 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   }
 
   // ── Compute base constraints (shared across all levels) ──
-  int base_n_eq = 0;
-  // Use level 0's QPData as scratch for base constraints
+  // Use level 0's QPData as scratch for base constraints.
+  // Fixed-dim padding: A/b zero, C=0/l=-inf/u=+inf 로 max 영역 전체 초기화.
+  // QPSolverWrapper 가 항상 max-dim 으로 update() 하므로 active 영역 밖도 trivially feasible 해야
+  // 함.
   auto& base_qp = qp_data_per_level_[0];
+  base_qp.A.topLeftCorner(max_n_eq_per_level_, n_vars).setZero();
+  base_qp.b.head(max_n_eq_per_level_).setZero();
+  base_qp.C.topLeftCorner(max_n_ineq_, n_vars).setZero();
+  base_qp.l.head(max_n_ineq_).setConstant(-std::numeric_limits<double>::infinity());
+  base_qp.u.head(max_n_ineq_).setConstant(std::numeric_limits<double>::infinity());
 
+  int base_n_eq = 0;
   for (const auto& con : constraints_) {
     if (!con->IsActive())
       continue;
     const int ed = con->EqDim(contacts);
     if (ed <= 0)
       continue;
+    if (base_n_eq + ed > max_n_eq_per_level_)
+      break;
 
     auto A_view = base_qp.A.block(base_n_eq, 0, ed, n_vars);
     auto b_view = base_qp.b.segment(base_n_eq, ed);
-    A_view.setZero();
-    b_view.setZero();
     con->ComputeEquality(cache, contacts, robot_info, n_vars, A_view, b_view);
     base_n_eq += ed;
   }
@@ -173,13 +183,12 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     const int id = con->IneqDim(contacts);
     if (id <= 0)
       continue;
+    if (base_n_ineq + id > max_n_ineq_)
+      break;
 
     auto C_view = base_qp.C.block(base_n_ineq, 0, id, n_vars);
     auto l_view = base_qp.l.segment(base_n_ineq, id);
     auto u_view = base_qp.u.segment(base_n_ineq, id);
-    C_view.setZero();
-    l_view.setZero();
-    u_view.setZero();
     con->ComputeInequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
     base_n_ineq += id;
   }
@@ -195,6 +204,20 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
       continue;
 
     auto& qp = qp_data_per_level_[static_cast<size_t>(k)];
+
+    // Fixed-dim padding (QPSolverWrapper 는 항상 max-dim 으로 update 함):
+    // 매 level QP buffer 의 max 영역 전체를 trivial 값으로 초기화.
+    // Active region (base + cascaded) 은 아래에서 덮어쓴다.
+    if (k > 0) {
+      qp.A.topLeftCorner(max_n_eq_per_level_, n_vars).setZero();
+      qp.b.head(max_n_eq_per_level_).setZero();
+      qp.C.topLeftCorner(max_n_ineq_, n_vars).setZero();
+      qp.l.head(max_n_ineq_).setConstant(-std::numeric_limits<double>::infinity());
+      qp.u.head(max_n_ineq_).setConstant(std::numeric_limits<double>::infinity());
+    } else {
+      // Level 0: base_qp 가 이미 padding 됐지만, prev_stack_rows 가 0 인 region 위쪽 (cascaded)
+      // 은 base_qp 자체 padding 으로 covered. 추가 작업 불필요.
+    }
 
     // ── Cost: H_k, g_k from level k tasks ──
     auto H = qp.H.topLeftCorner(n_vars, n_vars);

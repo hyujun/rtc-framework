@@ -56,10 +56,9 @@ class QPSolverWrapper {
   SolveResult result_;
   QPSolverConfig config_;
   bool initialized_{false};
-  bool first_solve_{true};
-  int prev_n_vars_{0};
-  int prev_n_eq_{0};
-  int prev_n_ineq_{0};
+  int max_n_vars_{0};
+  int max_n_eq_{0};
+  int max_n_ineq_{0};
 };
 
 }  // namespace rtc::tsid

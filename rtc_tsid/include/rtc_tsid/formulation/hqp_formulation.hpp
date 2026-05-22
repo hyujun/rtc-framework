@@ -70,6 +70,7 @@ class HQPFormulation final : public FormulationBase {
 
   // Max constraint dimensions
   int max_n_eq_base_{0};
+  int max_n_eq_per_level_{0};  // base + max_prev_rows_ (solver init dim)
   int max_n_ineq_{0};
 
   SolveResult result_;

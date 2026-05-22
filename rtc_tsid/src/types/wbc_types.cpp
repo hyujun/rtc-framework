@@ -392,16 +392,21 @@ std::unordered_map<std::string, PhasePreset> LoadPhasePresets(const YAML::Node& 
   if (!config || !config["phase_presets"])
     return presets;
 
+  // yaml-cpp iterator::operator->() returns a proxy holding a prvalue
+  // value_type, so binding the result by reference (`const auto& node =
+  // it->second`) leaves a dangling handle once the proxy temporary dies at the
+  // end of the statement. Always copy yaml-cpp Nodes by value — they are
+  // lightweight handles sharing the underlying Memory.
   for (auto it = config["phase_presets"].begin(); it != config["phase_presets"].end(); ++it) {
     PhasePreset preset;
     preset.phase_name = it->first.as<std::string>();
-    const auto& node = it->second;
+    YAML::Node node = it->second;
 
     if (node["tasks"]) {
       for (auto t = node["tasks"].begin(); t != node["tasks"].end(); ++t) {
         TaskPreset tp;
         tp.task_name = t->first.as<std::string>();
-        const auto& tn = t->second;
+        YAML::Node tn = t->second;
         tp.active = tn["active"].as<bool>(true);
         tp.weight = tn["weight"].as<double>(1.0);
         tp.priority = tn["priority"].as<int>(0);
@@ -413,7 +418,8 @@ std::unordered_map<std::string, PhasePreset> LoadPhasePresets(const YAML::Node& 
       for (auto c = node["constraints"].begin(); c != node["constraints"].end(); ++c) {
         ConstraintPreset cp;
         cp.constraint_name = c->first.as<std::string>();
-        cp.active = c->second["active"].as<bool>(true);
+        YAML::Node cn = c->second;
+        cp.active = cn["active"].as<bool>(true);
         preset.constraint_presets.push_back(std::move(cp));
       }
     }

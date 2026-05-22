@@ -168,7 +168,10 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
 
   for (auto it = tsid_node["tasks"].begin(); it != tsid_node["tasks"].end(); ++it) {
     const auto key = it->first.as<std::string>();
-    const auto& task_cfg = it->second;
+    // yaml-cpp iterator::operator->() returns a proxy holding a prvalue Node;
+    // binding `it->second` by reference leaves a dangling handle once the
+    // proxy temporary dies. Copy by value — Node is a lightweight handle.
+    const YAML::Node task_cfg = it->second;
     const auto type = task_cfg["type"].as<std::string>("");
 
     if (type == "posture") {
@@ -253,7 +256,9 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
 
   for (auto it = tsid_node["constraints"].begin(); it != tsid_node["constraints"].end(); ++it) {
     const auto key = it->first.as<std::string>();
-    const auto& c_cfg = it->second;
+    // yaml-cpp iterator::operator->() returns a proxy holding a prvalue Node;
+    // see BuildTsidTasks comment above for the lifetime trap.
+    const YAML::Node c_cfg = it->second;
     const auto type = c_cfg["type"].as<std::string>("");
 
     if (type == "eom") {

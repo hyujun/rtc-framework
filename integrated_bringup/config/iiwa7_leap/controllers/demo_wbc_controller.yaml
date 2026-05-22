@@ -237,7 +237,7 @@ demo_wbc_controller:
   # base_frame=link_0, end_effector_frame=ee_link, 4 contact frames
   # (thumb/index/middle/ring), 23-vec q_posture_ref, 12-vec F_target.
   mpc:
-    enabled: true
+    enabled: false
     engine: "handler"
     max_stale_solutions: 5
     target_frequency_hz: 10.0

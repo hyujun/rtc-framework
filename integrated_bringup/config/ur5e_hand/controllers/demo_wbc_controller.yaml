@@ -268,7 +268,7 @@ demo_wbc_controller:
     #   enabled: true    → MPC thread runs; GUI toggle drives consumption
     #                      of MPC outputs into TSID tasks at runtime.
     # Set false here to keep TSID-only behavior even with MPC compiled in.
-    enabled: true
+    enabled: false
     engine: "handler"               # "mock" | "handler"
     max_stale_solutions: 5       # ticks without a fresh solution before
                                  # falling back to TSID self-hold

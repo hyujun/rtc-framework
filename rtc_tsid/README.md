@@ -264,7 +264,7 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 | `pinocchio` | 강체 동역학 (질량 행렬, 자코비안, RNEA 등) |
 | `Eigen3` | 선형 대수 (행렬/벡터 연산) |
 | `proxsuite` | Dense QP 솔버 (사전 할당 워크스페이스) |
-| `yaml-cpp` | YAML 설정 파싱 |
+| `yaml-cpp` | YAML 설정 파싱 (iterator 함정: `it->first/second` 는 prvalue Node — `const auto& x = it->second` 는 dangling. `YAML::Node x = it->second` 로 복사할 것. `LoadPhasePresets` 참고) |
 | `ament_cmake` | 빌드 시스템 |
 | `ament_cmake_gtest` | 테스트 (test_depend) |
 
