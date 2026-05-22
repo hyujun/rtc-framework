@@ -1,9 +1,10 @@
 # DemoWbcController — iiwa7 + LEAP variant
-# TSID QP (posture + SE3) → Position integration. Four point-contact
-# fingertips (thumb / index / middle / ring) declared to align with the MPC
+# TSID QP → Position integration with FSM. Four point-contact fingertips
+# (thumb / index / middle / ring) declared to align with the MPC
 # contact_frames schema; force/tactile sensing is still absent on this
-# platform so ForceReferenceUpdater / fingertip parsing stay inert, but the
-# kinematic contact Jacobian + friction cone are exercised end-to-end.
+# platform so ForceReferenceUpdater runs open-loop on f_des_default and
+# object_frame.mass=0 keeps ObjectWrenchTask inert — the kinematic contact
+# Jacobian + friction cone + object_se3 chain are exercised end-to-end.
 # MPC disabled by default; enable via launch arg `enable_mpc:=true` after
 # verifying TSID self-hold.
 demo_wbc_controller:
@@ -72,6 +73,39 @@ demo_wbc_controller:
         kd: [20, 20, 20, 10, 10, 10]
         weight: 100.0
         priority: 0
+      # Contact force tracking: active in closure/hold phases. LEAP has no
+      # tactile sensing → ForceReferenceUpdater output stays at f_des_default
+      # (open-loop), but the task still couples QP λ to the desired normal.
+      force:
+        type: "force"
+        weight: 10.0
+        priority: 1
+      # Stage A-2: soft contact acceleration consistency — penalises
+      # ‖J_c·a + dotJ_c·v‖². Activated in closure/hold; off during pre_grasp.
+      contact_consistency:
+        type: "contact_consistency"
+        weight: 100.0
+        priority: 1
+      # Stage B-5: object-level tasks. With object_frame.mass=0 the
+      # ObjectWrenchTask residual is zero (no-op); InternalForceTask uses
+      # λ_squeeze_des ≡ 0 (rank-based nullity gate). ObjectSE3Task drives
+      # the object pose through the kinematic chain of active contacts —
+      # identity provider keeps the reference static for Stage B-5.
+      object_wrench:
+        type: "object_wrench"
+        weight: 100.0
+        priority: 1
+      internal_force:
+        type: "internal_force"
+        weight: 50.0
+        priority: 1
+      object_se3:
+        type: "object_se3"
+        mask: [1, 1, 1, 1, 1, 1]
+        kp: [100, 100, 100, 50, 50, 50]
+        kd: [20, 20, 20, 10, 10, 10]
+        weight: 50.0
+        priority: 0
 
     constraints:
       eom:
@@ -81,19 +115,37 @@ demo_wbc_controller:
         dt: 0.002
         position_margin: 0.05
         velocity_margin: 0.1
-      # Stage A-1: actuator torque envelope τ = S(M·a + h) bounded by URDF
-      # effort_limit. tau_scale=1.0 → raw URDF bound. iiwa7+LEAP has no contact
-      # sensing (contacts=[]) so the λ term in τ vanishes — torque_limit still
-      # gates ‖S·M·a + S·h‖ against tau_max.
+      # Friction cone: linearised n-face pyramid per contact.
+      friction_cone:
+        type: "friction_cone"
+        n_faces: 8
+      # Stage A-1: actuator torque envelope τ = S(M·a + h - Jcᵀ·λ) bounded by
+      # URDF effort_limit. tau_scale=1.0 → raw URDF bound (no margin).
       torque_limit:
         type: "torque_limit"
         tau_scale: 1.0
 
+    # Stage A-3: per-contact PI on normal-force error. LEAP has no tactile
+    # measurement so |f_meas|=0 and the integrator winds against f_des_default
+    # until clamped at i_max — that's the intended open-loop fallback until a
+    # sensing stack is added (see ForceReferenceUpdater defaults).
+    force_pi:
+      kp: 0.5
+      ki: 2.0
+      i_max: 2.0
+      lambda_min: 0.0
+      lambda_max: 20.0
+      f_des_default: 2.0
+
+    # Stage B-5: object frame seed. mass=0 keeps w_obj_des=0 → ObjectWrenchTask
+    # is a no-op. Tune mass once a concrete grasp target / vision provider
+    # arrives.
+    object_frame:
+      p_w: [0.0, 0.0, 0.0]
+      mass: 0.0
+
     # Four LEAP fingertip point contacts (cdim=3 each). Order + frame names
-    # match the MPC contact_frames schema (mpc/contact_light.yaml). LEAP
-    # has no tactile inference yet, so the ForceReferenceUpdater output stays
-    # at f_des_default (open-loop) until a sensing stack is added — the
-    # contact Jacobian / friction cone still constrain QP feasibility.
+    # match the MPC contact_frames schema (mpc/contact_light.yaml).
     contacts:
       - name: "thumb_tip"
         frame: "thumb_tip_head"
@@ -121,22 +173,35 @@ demo_wbc_controller:
           eom:           { active: true }
           joint_limit:   { active: true }
           torque_limit:  { active: true }
-      # Closure / hold reuse pre_grasp's task set (no force task to engage).
+
       closure:
         tasks:
-          posture:   { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
+          posture:             { active: true,  weight: 0.1,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          force:               { active: true,  weight: 10.0,  priority: 1 }
+          contact_consistency: { active: true,  weight: 100.0, priority: 1 }
+          object_wrench:       { active: true,  weight: 100.0, priority: 1 }
+          internal_force:      { active: true,  weight: 50.0,  priority: 1 }
+          object_se3:          { active: true,  weight: 50.0,  priority: 0 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          friction_cone: { active: true }
           torque_limit:  { active: true }
+
       hold:
         tasks:
-          posture:   { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
+          posture:             { active: true,  weight: 0.1,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          force:               { active: true,  weight: 20.0,  priority: 1 }
+          contact_consistency: { active: true,  weight: 100.0, priority: 1 }
+          object_wrench:       { active: true,  weight: 100.0, priority: 1 }
+          internal_force:      { active: true,  weight: 50.0,  priority: 1 }
+          object_se3:          { active: true,  weight: 50.0,  priority: 0 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          friction_cone: { active: true }
           torque_limit:  { active: true }
 
   # ── Integration safety ─────────────────────────────────────────────────────
@@ -146,8 +211,10 @@ demo_wbc_controller:
     force_rate_alpha: 0.1
 
   # ── FSM thresholds ─────────────────────────────────────────────────────────
-  # Force/contact thresholds retained for schema compliance but unused (no
-  # contact sensing). FSM stays in pre_grasp on iiwa7+LEAP sim.
+  # Force/contact thresholds retained for schema compliance but the contact
+  # detection edge will rarely fire without tactile sensing — FSM tends to
+  # stay in pre_grasp on iiwa7+LEAP sim unless |λ| from QP solution crosses
+  # force_contact_threshold via the friction cone bound.
   fsm:
     epsilon_approach: 0.01
     epsilon_pregrasp: 0.005
@@ -166,17 +233,14 @@ demo_wbc_controller:
 
   # ── MPC integration ────────────────────────────────────────────────────────
   # Start with MPC disabled; flip via launch arg `enable_mpc:=true` once
-  # TSID-only self-hold is verified. phase_config files reused from UR5e
-  # build — they're robot-agnostic phase definitions; tune weights later if
-  # required.
+  # TSID-only self-hold is verified. iiwa7_leap-specific MPC phase YAMLs:
+  # base_frame=link_0, end_effector_frame=ee_link, 4 contact frames
+  # (thumb/index/middle/ring), 23-vec q_posture_ref, 12-vec F_target.
   mpc:
     enabled: true
     engine: "handler"
     max_stale_solutions: 5
     target_frequency_hz: 10.0
-    # iiwa7_leap-specific MPC phase YAMLs: base_frame=link_0,
-    # end_effector_frame=ee_link, 4 contact frames (thumb/index/middle/ring),
-    # 23-vec q_posture_ref, 12-vec F_target.
     phase_config_path:  "config/iiwa7_leap/controllers/mpc/phase_config.yaml"
     contact_light_path: "config/iiwa7_leap/controllers/mpc/contact_light.yaml"
     contact_rich_path:  "config/iiwa7_leap/controllers/mpc/contact_rich.yaml"
