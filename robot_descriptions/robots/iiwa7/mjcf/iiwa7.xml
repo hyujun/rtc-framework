@@ -109,6 +109,22 @@
     <general class="iiwa7_distal"   name="A6" joint="A6" ctrlrange="-2.0944 2.0944" />
     <general class="iiwa7_distal"   name="A7" joint="A7" ctrlrange="-3.0543 3.0543" />
   </actuator>
-  <!-- Parent-child contact excludes intentionally removed (user request 2026-05-15).
-       Re-enable selectively if tiny boxes show trembling at parent-link joints. -->
+  <!-- Parent-child contact excludes for iiwa7 arm chain (re-enabled 2026-05-24).
+       collision/*.obj convex hulls overlap by 10~52 mm at every joint axis
+       (geometric query at qpos=0; same overlap existed with visual mesh too).
+       filterparent only filters weld-attached pairs — revolute joints make
+       link_N ↔ link_N+1 NOT weld-attached, so explicit exclude is required.
+       Without these excludes, mj_step generates steady-state contacts at the
+       deepest pair (link_5↔link_6 −52 mm) and causes shoulder trembling.
+       Originally removed 2026-05-15; re-enabled after the visual/collision
+       mesh split surfaced the long-standing overlap as a reliable contact. -->
+  <contact>
+    <exclude body1="link_0" body2="link_1" />
+    <exclude body1="link_1" body2="link_2" />
+    <exclude body1="link_2" body2="link_3" />
+    <exclude body1="link_3" body2="link_4" />
+    <exclude body1="link_4" body2="link_5" />
+    <exclude body1="link_5" body2="link_6" />
+    <exclude body1="link_6" body2="link_7" />
+  </contact>
 </mujoco>

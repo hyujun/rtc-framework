@@ -357,11 +357,24 @@
                      ctrl="0 0.7 0 -1.0 0 0.7 0   0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/>
   </keyframe>
 
-  <!-- Parent-child contact excludes intentionally removed (user request 2026-05-15).
-       Previously this block excluded: iiwa7 arm chain, iiwa7↔LEAP junction,
-       index/middle/ring/thumb finger chains, and *tip_head leaf bodies.
-       Re-enable selectively if LEAP finger boxes show trembling against their
-       parent links every tick. -->
+  <!-- Parent-child contact excludes: iiwa7 arm chain only (re-enabled 2026-05-24).
+       collision/*.obj convex hulls overlap by 10~52 mm at every iiwa7 joint
+       axis (geometric query at qpos=0); without these excludes mj_step generates
+       steady-state contacts and shoulder trembling. filterparent doesn't help
+       because revolute joints make link_N ↔ link_N+1 NOT weld-attached.
+       LEAP hand chain is NOT excluded here — finger collision is given by
+       <geom type="box"> primitives sized to actual link bounds, not bloated
+       convex hulls, so finger trembling has not been observed. Re-enable
+       finger-chain excludes selectively if symptoms appear. -->
+  <contact>
+    <exclude body1="link_0" body2="link_1" />
+    <exclude body1="link_1" body2="link_2" />
+    <exclude body1="link_2" body2="link_3" />
+    <exclude body1="link_3" body2="link_4" />
+    <exclude body1="link_4" body2="link_5" />
+    <exclude body1="link_5" body2="link_6" />
+    <exclude body1="link_6" body2="link_7" />
+  </contact>
   <!-- Fingertip contact wrench sensors (MuJoCo >= 3.3.5, mjSENS_CONTACT).
        body2 omitted = any contacting body. reduce="netforce" reduces all
        contacts on geom1 to a single synthetic wrench in world frame.
