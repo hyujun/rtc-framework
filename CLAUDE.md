@@ -148,32 +148,11 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 기준은 **객관 검증 가능** 해야 한다 (예: "test_X 통과", "rtc_* 에 ur5e grep 0건", "rtc_cm 빌드 0 warning"). "코드가 깔끔하다", "잘 작동한다" 같은 주관 기준은 금지. 이 컨트랙트는 task 종료 시 §11 보고에서 항목별 충족 여부를 체크한다.
 
-## 6.6 Long-running task — Context reset > Compaction
+## 6.6 Long-running task — Context handoff
 
-근거: Anthropic 2026.04 *Harness design* — long-running task 에서 context compaction 은 "context anxiety" (조기 마무리 / 디테일 손실) 를 유발. **clean-slate reset + structured handoff artifact** 가 더 안정적.
+Long-running task handoff 절차·능동 제안 트리거 (도메인 전환 / 실패 trace 누적 / 대용량 호출 / 세션 누적 신호 / 사용자 모니터링)·메커니즘 선택 (`/clear` / `/compact` / subagent / `/fork`)·면제 조항은 user-level CLAUDE.md `# Context handoff policy` 가 SSoT.
 
-다음 신호가 보이면 사용자에게 reset 을 제안한다:
-
-- 동일 task 안에서 turn 50 이상, 또는 자동 compaction 이 1회 이상 발생
-- 에이전트가 직전 결정·근거를 다시 묻거나, "방금 한 작업이…" 로 시작하는 hallucinated recall 발견
-- §6.5 Sprint Contract 기준 중 일부가 "이미 했다" 라고 잘못 보고됨
-
-### Reset 절차
-
-1. **Handoff artifact 작성**: `~/.claude/plans/<task-slug>.md` 에 다음 박아 두기
-   - Sprint Contract (§6.5 그대로 — Done when / Out of scope)
-   - 지금까지 commit 된 SHA + 한 줄 요약
-   - 미완료 항목 (체크박스)
-   - 다음 fresh session 이 첫 turn 에 읽어야 할 파일 경로 5~10개
-   - 알려진 함정 / `[CONCERN]` 미해결 사항
-2. **사용자에게 통지**: "context reset 권장. handoff 는 `<path>` 에 저장. 새 세션에서 `Read <path>` 로 시작" 한 줄
-3. **현 세션 종료**: 사용자 컨펌 후 `/clear` 또는 새 세션 시작은 사용자 결정
-
-### 면제
-
-- 단일 commit 으로 끝나는 task — compaction 도달 전에 종료
-- Sensor-driven debug task (build/test/log 반복) — handoff 보다 직접 진행이 빠름
-- 사용자가 명시적으로 "이대로 계속" 을 요청한 경우
+**RTC override** — handoff 파일 경로는 user-level default (`.claude/handoff/YYYY-MM-DD-<topic>.md`) 대신 `~/.claude/plans/<task-slug>.md` 를 사용한다. §6.5 Sprint Contract spec 과 같은 파일에 누적되며 `## Spec` / `## Progress` / `## Handoff` 섹션으로 구분 — handoff 본문 필드 (State / Decisions / Open / Constraints / Pointers) 는 `## Handoff` 아래에 그대로.
 
 ## 7. Anti-patterns
 
@@ -217,11 +196,9 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 Commit 완료 또는 사용자가 task 종료를 알린 후:
 
-1. **Memory save** — *surprising / non-obvious* 학습만 auto-memory 타입 규칙 (user / feedback / project / reference) 에 따라 저장. 코드 패턴, git 추출 가능한 사실, ephemeral state 는 스킵
+1. **Memory save / Memory prune / Harness pruning 신호 보고** — user-level CLAUDE.md `# Post-task housekeeping` 가 SSoT. *Harness pruning 신호* 의 RTC 발현 카테고리는 invariant·anti-pattern grep false-positive, [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) 오차단, agent_docs 간 규칙 중복 drift
 2. **Stale artifact 정리** — `~/.claude/plans/*.md` 완료 task 용, repo-root / `/tmp` scratch files. 내용이 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`) 에 보존됨을 확인 후 삭제
-3. **Memory prune** — 이제 틀리거나 outdated 된 항목 정리
-4. **Harness pruning 신호 보고** (Anthropic 2026.04: 모델 capability 향상 시 harness 일부는 stripping 대상) — 이번 task 에서 (a) invariant·anti-pattern grep 이 false-positive 로 발현 (정당한 사용을 막음), (b) hook 이 정당한 변경을 잘못 차단, (c) 문서 규칙이 두 곳 이상에서 동일 내용 반복으로 drift 유발 — 중 하나라도 관찰됐다면 한 줄로 보고. 사용자가 향후 정리 task 로 분리 결정
-5. **보고** — 실제 수행한 항목만 한 줄씩
+3. **보고** — 실제 수행한 항목만 한 줄씩
 
 ## 12. Reference Docs (read when relevant)
 
