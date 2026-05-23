@@ -2,10 +2,14 @@
 # install_dev.sh — Developer / debug tooling for install.sh
 #
 # 제공 함수:
-#   install_vscode_debug_tools  — gdb + ptrace_scope policy (VS Code Attach)
-#   install_tracing_tools       — lttng-modules-dkms + lttng-tools + ros-jazzy-ros2trace
-#                                 + tracetools-launch/read + python3-bt2
-#                                 + tracing group membership
+#   install_vscode_debug_tools         — gdb + ptrace_scope policy (VS Code Attach)
+#   install_tracing_tools              — lttng-tools + lttng-modules-dkms (DKMS
+#                                         build w/ timeout + dpkg retry) +
+#                                         ros-jazzy-ros2trace +
+#                                         tracetools-launch/read + python3-bt2
+#                                         + tracing group + modprobe verify
+#                                         (Secure Boot MOK mismatch diagnosis)
+#   verify_lttng_tracer_loadable       — install_tracing_tools L5 helper
 #
 # Caller scope 의존:
 #   WORKSPACE, SET_PTRACE_SCOPE, SET_TRACING_TOOLS, apt_update_if_stale, 로거
@@ -82,15 +86,34 @@ install_tracing_tools() {
       > /dev/null 2>&1 \
     || warn "linux-headers-${KERNEL_RELEASE} unavailable — lttng-modules build may fail"
 
-  # ── L2: LTTng userspace + kernel module (DKMS rebuilds on each kernel) ───
+  # ── L2a: LTTng userspace (silent — fast, deterministic apt path) ────────
   sudo apt-get install -y \
       lttng-tools \
-      lttng-modules-dkms \
       liblttng-ust-dev \
       babeltrace2 \
       python3-bt2 \
       > /dev/null 2>&1 \
-    || warn "LTTng stack install reported an error — re-run with verbose apt to inspect"
+    || warn "LTTng userspace install reported an error — re-run with verbose apt to inspect"
+
+  # ── L2b: LTTng kernel module (DKMS build — verbose + timeout + retry) ───
+  # dkms postinst has been observed to stall silently on fresh Ubuntu 24.04
+  # (lttng-modules-dkms 2.14.0 + kernel 6.17 HWE) — `dkms status` shows
+  # "added" without kernel/arch row, build/ directory empty, dkms-build
+  # process idle with zero syscalls. The cause is in dpkg/debconf chain, not
+  # kernel compatibility: `sudo dpkg --configure -a` consistently retries
+  # and the DKMS build completes. The timeout below bounds the stall so
+  # non-interactive runs do not hang forever.
+  local DKMS_TIMEOUT=600
+  info "Installing lttng-modules-dkms (DKMS build, up to ${DKMS_TIMEOUT}s; output kept for progress)..."
+  if ! sudo timeout --kill-after=30 "$DKMS_TIMEOUT" apt-get install -y lttng-modules-dkms; then
+    warn "lttng-modules-dkms install timed out or was killed — retrying via 'sudo dpkg --configure -a'"
+    if sudo dpkg --configure -a; then
+      success "dpkg --configure -a recovered the lttng-modules postinst (DKMS build completed on retry)"
+    else
+      warn "dpkg --configure -a also failed — lttng-tracer kernel module unavailable"
+      warn "  Manual recovery: sudo apt-get remove --purge lttng-modules-dkms && sudo reboot && re-run --tracing"
+    fi
+  fi
 
   if command -v lttng >/dev/null 2>&1; then
     success "lttng-tools: $(lttng --version 2>&1 | head -1)"
@@ -142,12 +165,56 @@ install_tracing_tools() {
     warn "  Without it, 'enable_tracing:=true' with kernel events will fail with EPERM."
   fi
 
-  # ── L5: kernel module load check (DKMS builds on install but does not
-  #        autoload; lttng-sessiond loads on first kernel session) ─────────
-  if modinfo lttng-tracer >/dev/null 2>&1; then
-    success "lttng-tracer kernel module available (version $(modinfo -F version lttng-tracer 2>/dev/null || echo '?'))"
-  else
-    warn "lttng-tracer kernel module not yet built — DKMS may still be compiling"
+  # ── L5: kernel module load verification (modprobe --dry-run) ────────────
+  # modinfo only checks file existence on disk. modprobe is the real gate:
+  # on Secure Boot systems a DKMS-built module signed by a MOK that is NOT
+  # enrolled in the kernel keyring (e.g. CN derived from a hostname that
+  # changed since the previous MOK enrollment) loads with "Key was rejected
+  # by service" even though `modinfo` and `dkms status` both report success.
+  verify_lttng_tracer_loadable
+}
+
+# Helper for install_tracing_tools L5.
+# Runs `modprobe --dry-run` and, on failure under Secure Boot, compares the
+# module's signer CN against the enrolled MOK CNs and prints the exact
+# `mokutil --import` + reboot recovery path.
+verify_lttng_tracer_loadable() {
+  if ! modinfo lttng-tracer >/dev/null 2>&1; then
+    warn "lttng-tracer kernel module not found — DKMS may have failed silently"
     warn "  Check: sudo dkms status lttng-modules"
+    return
+  fi
+
+  local DRY_OUT DRY_RC
+  DRY_OUT=$(sudo modprobe --dry-run -v lttng-tracer 2>&1) || true
+  DRY_RC=$?
+  if [[ $DRY_RC -eq 0 ]]; then
+    success "lttng-tracer loadable (modprobe dry-run OK, version $(modinfo -F version lttng-tracer 2>/dev/null || echo '?'))"
+    return
+  fi
+
+  warn "lttng-tracer built but modprobe rejects load:"
+  echo "$DRY_OUT" | sed 's/^/    /' >&2
+
+  # Secure Boot MOK signer/enrolled-CN mismatch diagnosis
+  if command -v mokutil >/dev/null 2>&1 \
+     && mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled"; then
+    local SIGNER ENROLLED_CNS
+    SIGNER=$(modinfo -F signer lttng-tracer 2>/dev/null | head -1)
+    ENROLLED_CNS=$(sudo mokutil --list-enrolled 2>/dev/null \
+                   | awk -F'CN=' '/Subject:/ && NF>1 {print $NF}' \
+                   | sort -u)
+    if [[ -n "$SIGNER" ]] && ! echo "$ENROLLED_CNS" | grep -qxF "$SIGNER"; then
+      warn "Cause: Secure Boot MOK signer is not enrolled."
+      warn "  Module signed by: ${SIGNER}"
+      warn "  Enrolled MOKs:"
+      echo "$ENROLLED_CNS" | sed 's/^/      /' >&2
+      warn "  Recovery:"
+      warn "    sudo mokutil --import /var/lib/shim-signed/mok/MOK.der"
+      warn "    sudo reboot   # On boot: MOK Manager → Enroll MOK → Continue → password"
+      warn "    sudo modprobe lttng-tracer && lsmod | grep lttng   # verify after reboot"
+    else
+      warn "  Signer is enrolled but modprobe still fails — inspect 'sudo dmesg | tail' for the reject reason."
+    fi
   fi
 }
