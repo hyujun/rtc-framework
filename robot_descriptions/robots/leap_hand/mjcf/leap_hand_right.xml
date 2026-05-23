@@ -13,6 +13,16 @@
        forcerange는 XC430 stall 안전 한계 ±0.95 (joint actuatorfrcrange와 일관).
        합체 모델 (iiwa7_leap/mjcf/iiwa7_with_leap_*.xml)과 값 동기화 유지. -->
   <default>
+    <!-- Geom-group baseline: any <geom> without explicit `group` lands in
+         group=3 ("collision" bucket, matches ur5e MJCF convention).
+         Visual meshes below explicitly set `group="1"` so they override.
+         white_tip{,_thumb} contact_geoms are dual-purpose (visual silicone
+         pad + force contact) so they explicitly set `group="0"` to stay
+         visible when the user toggles collision off (press '3' in viewer).
+         Site-group baseline: any <site> without `group` lands in group=4
+         (matches ur5e convention; existing FT sites also use group=4). -->
+    <geom group="3" />
+    <site group="4" />
     <default class="leap">
       <general gaintype="fixed" biastype="affine" gainprm="2.5"
                biasprm="0 -2.5 -0.125" forcerange="-0.95 0.95" />
@@ -89,9 +99,9 @@
                 <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 -0.001" type="box" />
-                <geom name="index_tip_contact_geom" type="mesh" mesh="white_tip" />
+                <geom name="index_tip_contact_geom" type="mesh" mesh="white_tip" group="0" />
                 <body name="index_tip_head" pos="0 -0.048 0.015">
-                  <site name="index_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                  <site name="index_tip_ft_site" pos="0 0 0" size="0.003" group="4" />
                 </body>
               </body>
             </body>
@@ -128,9 +138,9 @@
                 <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 -0.001" type="box" />
-                <geom name="middle_tip_contact_geom" type="mesh" mesh="white_tip" />
+                <geom name="middle_tip_contact_geom" type="mesh" mesh="white_tip" group="0" />
                 <body name="middle_tip_head" pos="0 -0.048 0.015">
-                  <site name="middle_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                  <site name="middle_tip_ft_site" pos="0 0 0" size="0.003" group="4" />
                 </body>
               </body>
             </body>
@@ -167,9 +177,9 @@
                 <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 -0.001" type="box" />
-                <geom name="ring_tip_contact_geom" type="mesh" mesh="white_tip" />
+                <geom name="ring_tip_contact_geom" type="mesh" mesh="white_tip" group="0" />
                 <body name="ring_tip_head" pos="0 -0.048 0.015">
-                  <site name="ring_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                  <site name="ring_tip_ft_site" pos="0 0 0" size="0.003" group="4" />
                 </body>
               </body>
             </body>
@@ -203,9 +213,9 @@
                 <geom size="0.01 0.018 0.012" pos="0 -0.0085 -0.015" type="box" />
                 <geom size="0.01 0.002 0.015" pos="0 -0.029 -0.014" type="box" />
                 <geom size="0.004 0.012 0.009" pos="0.015 -0.0175 -0.0115" type="box" />
-                <geom name="thumb_tip_contact_geom" type="mesh" mesh="white_tip_thumb" />
+                <geom name="thumb_tip_contact_geom" type="mesh" mesh="white_tip_thumb" group="0" />
                 <body name="thumb_tip_head" pos="0 -0.06 -0.015">
-                  <site name="thumb_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                  <site name="thumb_tip_ft_site" pos="0 0 0" size="0.003" group="4" />
                 </body>
               </body>
             </body>
