@@ -58,6 +58,12 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
   mjv_defaultCamera(&cam);
   mjvOption opt;
   mjv_defaultOption(&opt);
+  // Show perturbation force arrow (off by default in MuJoCo).  Arrow is drawn
+  // from xipos along xfrc_applied — we populate vis_data->xfrc_applied below
+  // when pert is active.
+  opt.flags[mjVIS_PERTFORCE] = 1;
+  // Slim the force-arrow shaft to 2/3 of MuJoCo default for readability.
+  model_->vis.scale.forcewidth *= 2.0f / 3.0f;
   mjvScene scn;
   mjv_defaultScene(&scn);
   mjrContext con;
@@ -157,6 +163,16 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       }
     }
     mj_forward(model_, vis_data);  // update kinematics + sensor data
+
+    // Populate vis_data->xfrc_applied so PERTFORCE arrow renders and the
+    // overlay can read |F| / |τ|.  Replicates the physics-side call but on
+    // the viewer's local mjData (refpos/refselpos came from vs.pert which
+    // OnCursorPos already updated against vis_data's kinematics).
+    if (vs.pert.active != 0 && vs.pert.select > 0) {
+      mjv_applyPerturbForce(model_, vis_data, &vs.pert);
+    } else {
+      mju_zero(vis_data->xfrc_applied, static_cast<int>(model_->nbody) * 6);
+    }
 
     // Sample RTF into rolling buffer
     const float cur_rtf = static_cast<float>(rtf_.load(std::memory_order_relaxed));

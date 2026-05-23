@@ -551,6 +551,10 @@ ros2 topic hz /hand/joint_states
 | Residual | solver 잔차 |
 | Substeps | `n_substeps (substep_dt ms)` — 예: `4 (0.50ms)` |
 | Physics Load | substep 루프 wall time / 제어 주기 (%) — 100% 초과 시 실시간 유지 불가 |
+| Frames | Link / Joint frame overlay ON/OFF |
+| Perturb (\<body\>) | Ctrl+drag 으로 인가 중인 외력의 크기 — `|F|=X.XX N  |t|=X.XXX Nm`. 비활성 시 `-` |
+
+또한 perturb active 시 선택된 body 위에 빨간 force arrow (MuJoCo `mjVIS_PERTFORCE`) 와 body→drag-anchor 까지의 흰 capsule (`mjVIS_PERTOBJ`) 이 동시에 그려진다. Arrow 길이는 `m->vis.map.force / m->stat.meanmass` 로 스케일된 표시용이며, 정확한 수치는 위 status 의 `|F|` / `|t|` 를 참조.
 
 ---
 
@@ -596,9 +600,9 @@ ros2 topic hz /hand/joint_states
 | Shift + Right drag | 수평 평면 패닝 |
 | Scroll / Middle drag | 줌 인/아웃 |
 | Dbl-click | 물체 선택 |
-| Ctrl + Left drag | 퍼튜베이션 (토크) |
-| Ctrl + Right drag | 퍼튜베이션 (힘 XZ) |
-| Ctrl + Shift + Right drag | 퍼튜베이션 (힘 XY) |
+| Ctrl + Left drag | 퍼튜베이션 (토크) — 마우스 방향이 곧 회전 축, status 패널의 `|t|` 가 실제 인가 토크 (N·m) |
+| Ctrl + Right drag | 퍼튜베이션 (힘, 카메라 수직 평면 = MOVE_V) — 드래그 방향과 인가 force 방향이 일치, status 의 `|F|` (N) |
+| Ctrl + Shift + Right drag | 퍼튜베이션 (힘, 월드 수평 평면 = MOVE_H) |
 
 ---
 

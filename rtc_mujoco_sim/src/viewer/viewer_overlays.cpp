@@ -14,6 +14,7 @@
 #ifdef MUJOCO_HAVE_GLFW
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -93,20 +94,39 @@ void RenderStatusOverlay(const ViewerState& vs, const mjrRect& vp, float cur_rtf
     cam_str[sizeof(cam_str) - 1] = '\0';
   }
 
-  char labels[512], values[512];
+  // Perturbation force/torque magnitudes (read from vis_data->xfrc_applied
+  // which viewer_loop populates via mjv_applyPerturbForce when pert active).
+  char pert_label[96] = "Perturb";
+  char pert_value[96] = "-";
+  if (perturbing && vs.pert.select > 0 && vs.model && vs.vis_data) {
+    const int sel = vs.pert.select;
+    const double* w = vs.vis_data->xfrc_applied + 6 * sel;
+    const double f_mag = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+    const double t_mag = std::sqrt(w[3] * w[3] + w[4] * w[4] + w[5] * w[5]);
+    const char* bname = mj_id2name(vs.model, mjOBJ_BODY, sel);
+    std::snprintf(pert_label, sizeof(pert_label), "Perturb (%s)",
+                  bname ? bname : "?");
+    std::snprintf(pert_value, sizeof(pert_value),
+                  "|F|=%.2f N  |t|=%.3f Nm", f_mag, t_mag);
+  }
+
+  char labels[640], values[640];
   std::snprintf(labels, sizeof(labels),
                 "Mode\nCamera\nRTF\nLimit\nSim Time\nSteps\nContacts\nWorld G\nRobot Gravcomp\n"
-                "Status\nIntegrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames");
+                "Status\nIntegrator\nSolver\nIterations\nResidual\nSubsteps\nPhysics Load\nFrames\n"
+                "%s",
+                pert_label);
   std::snprintf(values, sizeof(values),
                 "%s\n%s\n%.1fx\n%s\n%.2f s\n%lu\n%d/%s\n%s\n%s\n%s\n%s\n%s\n%d/%d\n%.2e\n"
-                "%d (%.2fms)\n%.1f%%\nLink:%s Joint:%s",
+                "%d (%.2fms)\n%.1f%%\nLink:%s Joint:%s\n%s",
                 "sync", cam_str, static_cast<double>(cur_rtf), limit_str, vs.sim->SimTimeSec(),
                 static_cast<unsigned long>(vs.sim->StepCount()), ss.ncon,
                 vs.sim->IsContactEnabled() ? "on" : "OFF", world_grav_on ? "ON" : "OFF",
                 gravcomp_str, is_paused ? "PAUSED" : (perturbing ? "perturb" : "running"),
                 kIntNames[ii], kSolNames[si], ss.iter, vs.sim->GetSolverIterations(),
                 ss.improvement, n_sub, substep_dt_ms, phys_load_pct,
-                vs.show_link_frames ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF");
+                vs.show_link_frames ? "ON" : "OFF", vs.show_joint_frames ? "ON" : "OFF",
+                pert_value);
 
   mjr_overlay(mjFONT_NORMAL, mjGRID_TOPRIGHT, vp, labels, values, vs.con);
 }

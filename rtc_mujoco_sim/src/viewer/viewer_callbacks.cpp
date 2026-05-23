@@ -412,7 +412,11 @@ void OnCursorPos(GLFWwindow* w, double xpos, double ypos) noexcept {
         (s->pert.active == mjPERT_ROTATE)
             ? mjMOUSE_ROTATE_V                                    // Ctrl+Left: torque
             : (s->shift_held ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V);  // Ctrl+Right: force
-    mjv_movePerturb(s->model, s->vis_data, perturb_action, nx, -ny, s->scn, &s->pert);
+    // mjv_movePerturb expects reldy>0 when cursor moves DOWN (OpenGL screen-y
+    // convention after MuJoCo's internal y-inversion); GLFW raw cursor-y is
+    // already positive-down, so pass +ny directly.  Camera ops above use -ny
+    // intentionally for inverted-Y orbit feel — perturb must follow the cursor.
+    mjv_movePerturb(s->model, s->vis_data, perturb_action, nx, ny, s->scn, &s->pert);
     s->sim->UpdatePerturb(s->pert);
 
   } else if (s->btn_left && !s->ctrl_held) {
