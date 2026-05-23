@@ -189,7 +189,7 @@ mujoco_simulator:
       #   true  = convex pair 당 여러 contact point 생성 (object grasp / pinch /
       #           평면 접촉에 매우 권장 — 단일 point 는 finger pad-box 안정성 ↓)
       #   주의: nativeccd=true 와 함께일 때 가장 효과적
-      multiccd: false
+      multiccd: true
 
       # 수치 발산 시 자동 reset (disableflags: mjDSBL_AUTORESET, polarity 반전)
       #   true  = MuJoCo 기본값 — NaN/blow-up 시 silently mj_resetData
