@@ -53,6 +53,14 @@ struct SolverConfig {
   bool island{false};
   bool eulerdamp{true};
   bool filterparent{true};
+  // Defaults below mirror MuJoCo's own defaults so behavior is unchanged
+  // unless the user opts in:
+  //   multiccd  — OFF (single contact point per convex pair)
+  //   autoreset — ON  (silently mj_resetData on NaN; turn OFF to debug blow-up)
+  //   nativeccd — ON  (3.3+ native CCD; OFF reverts to legacy MPR fallback)
+  bool multiccd{false};
+  bool autoreset{true};
+  bool nativeccd{true};
 
   // Contact override
   struct ContactOverride {

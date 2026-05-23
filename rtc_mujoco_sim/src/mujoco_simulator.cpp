@@ -1142,6 +1142,39 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
         model_->opt.enableflags &= ~mjENBL_OVERRIDE;
       }
     }
+    // multiccd: enableflags bit. Multi-point convex collision — gives several
+    // contact points per convex pair, which materially improves grasp/pinch
+    // stability over MuJoCo's default single-point contact.
+    if (!flag_attrs.count("multiccd")) {
+      if (sc.multiccd) {
+        model_->opt.enableflags |= mjENBL_MULTICCD;
+      } else {
+        model_->opt.enableflags &= ~mjENBL_MULTICCD;
+      }
+    }
+    // autoreset: disableflags bit (set = disabled). When disabled, NaN/blow-up
+    // surfaces as a hard simulator error instead of silent mj_resetData — useful
+    // during grasp-controller development.
+    if (!flag_attrs.count("autoreset")) {
+      if (sc.autoreset) {
+        model_->opt.disableflags &= ~mjDSBL_AUTORESET;
+      } else {
+        model_->opt.disableflags |= mjDSBL_AUTORESET;
+      }
+    }
+    // nativeccd: disableflags bit (set = disabled). Available in MuJoCo 3.3+;
+    // earlier versions ignore the YAML key silently. Same version-scale handling
+    // as RTC_MUJOCO_HAS_CCD above.
+#if defined(mjVERSION_HEADER) && \
+    ((mjVERSION_HEADER >= 330 && mjVERSION_HEADER < 1000) || mjVERSION_HEADER >= 3003000)
+    if (!flag_attrs.count("nativeccd")) {
+      if (sc.nativeccd) {
+        model_->opt.disableflags &= ~mjDSBL_NATIVECCD;
+      } else {
+        model_->opt.disableflags |= mjDSBL_NATIVECCD;
+      }
+    }
+#endif
   }
 
   // ── Contact override parameters ───────────────────────────────────────────

@@ -26,6 +26,29 @@
 #   robot_response.<group>.command_joint_names + topics
 #
 # 참조: MuJoCo 3.x 공식 문서 — Modeling/Computation 챕터
+#
+# ── Object-grasp 권장 튜닝 (robot-specific yaml 에서 override) ───────────────
+# 본 파일은 agnostic default 라 grasp 특화 값을 박지 않습니다. Pinch / lift /
+# in-hand manipulation 시나리오에서는 robot-specific yaml 에 다음 override 권장:
+#   solver:
+#     cone: "elliptic"         # slip 억제, 곡면 접촉에 물리적으로 정확
+#     impratio: 5.0            # friction-to-normal 강성 비 (5~10 권장)
+#     noslip_iterations: 15    # 마찰 방향 drift 후처리 (10~20)
+#     integrator: "implicitfast"
+#     solver: "Newton"
+#     iterations: 30           # multiccd 추가 contact 분만큼 여유
+#     multiccd: true           # finger-pad ↔ object 다점 접촉 — 핵심
+#     nativeccd: true          # 3.3+ 기본값 유지
+#     autoreset: false         # 개발 단계에서 numerical issue 가시화
+#     # contact_override 는 scene-wide 강제이므로 per-geom 튜닝이 가능하면 그쪽이
+#     # 우선. 일괄 튜닝이 필요할 때만:
+#     contact_override:
+#       enable: true
+#       o_solref: [0.005, 1.0] # timeconst 작게 → stiffer contact (>= 2*dt)
+#       o_solimp: [0.95, 0.99, 0.001, 0.5, 2.0]
+#       o_friction: [1.2, 1.2, 0.01, 0.001, 0.001]  # rubber-like pad
+# 추가로 MJCF 측에서: finger pad / object 의 <geom> 에 condim=4 또는 6
+# (torsional / rolling friction 활성) + 적절한 solref/solimp 설정 권장.
 # ─────────────────────────────────────────────────────────────────────────────
 
 mujoco_simulator:
@@ -160,6 +183,24 @@ mujoco_simulator:
       #   true  = 기본값, 불필요한 자기충돌 방지
       #   false = 모든 body 쌍에 대해 collision 검사
       filterparent: true
+
+      # Multi-point convex collision detection (enableflags: mjENBL_MULTICCD)
+      #   false = MuJoCo 기본값 — convex pair 당 contact point 1개
+      #   true  = convex pair 당 여러 contact point 생성 (object grasp / pinch /
+      #           평면 접촉에 매우 권장 — 단일 point 는 finger pad-box 안정성 ↓)
+      #   주의: nativeccd=true 와 함께일 때 가장 효과적
+      multiccd: false
+
+      # 수치 발산 시 자동 reset (disableflags: mjDSBL_AUTORESET, polarity 반전)
+      #   true  = MuJoCo 기본값 — NaN/blow-up 시 silently mj_resetData
+      #   false = hard error 로 노출 (controller 개발/디버그 중 권장)
+      autoreset: true
+
+      # Native convex collision detection (disableflags: mjDSBL_NATIVECCD, 반전)
+      #   true  = MuJoCo 3.3+ 기본값 — 신규 native CCD 사용
+      #   false = legacy MPR/SAP fallback (구버전 동작 재현 필요 시에만)
+      #   주의: MuJoCo <3.3 에서는 본 키가 silently 무시됨
+      nativeccd: true
 
       # ════════════════════════════════════════════════════════════════════════
       # Contact Override (접촉 파라미터 일괄 덮어쓰기)

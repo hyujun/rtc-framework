@@ -219,6 +219,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("solver.island", false);
     declare_parameter("solver.eulerdamp", true);
     declare_parameter("solver.filterparent", true);
+    declare_parameter("solver.multiccd", false);
+    declare_parameter("solver.autoreset", true);
+    declare_parameter("solver.nativeccd", true);
     declare_parameter("solver.contact_override.enable", false);
     declare_parameter("solver.contact_override.o_margin", 0.0);
     declare_parameter("solver.contact_override.o_solref", std::vector<double>{0.02, 1.0});
@@ -266,6 +269,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     solver_config_.island = get_parameter("solver.island").as_bool();
     solver_config_.eulerdamp = get_parameter("solver.eulerdamp").as_bool();
     solver_config_.filterparent = get_parameter("solver.filterparent").as_bool();
+    solver_config_.multiccd = get_parameter("solver.multiccd").as_bool();
+    solver_config_.autoreset = get_parameter("solver.autoreset").as_bool();
+    solver_config_.nativeccd = get_parameter("solver.nativeccd").as_bool();
     solver_config_.contact_override.enable =
         get_parameter("solver.contact_override.enable").as_bool();
     solver_config_.contact_override.o_margin =

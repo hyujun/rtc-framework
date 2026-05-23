@@ -153,6 +153,9 @@ YAML: solver: "Newton", iterations: 100, cone: "elliptic"
 | | `island` | `false` | constraint island discovery (CG 병렬화) |
 | | `eulerdamp` | `true` | Euler에서 joint damping implicit 처리 |
 | | `filterparent` | `true` | 부모-자식 body collision 필터링 |
+| | `multiccd` | `false` | convex pair 당 다점 contact (object grasp / pinch 권장) |
+| | `autoreset` | `true` | NaN/blow-up 시 silently `mj_resetData` (개발 중 `false` 권장) |
+| | `nativeccd` | `true` | MuJoCo 3.3+ native CCD (legacy MPR fallback 필요 시 `false`) |
 | **Contact Override** | `contact_override.enable` | `false` | 전체 contact 파라미터 일괄 덮어쓰기 |
 | | `contact_override.o_solref` | `[0.02, 1.0]` | override solref [timeconst, dampratio] |
 | | `contact_override.o_solimp` | `[0.9, 0.95, 0.001, 0.5, 2.0]` | override solimp [d0, dwidth, width, midpoint, power] |
@@ -174,6 +177,17 @@ solver:
   impratio: 10.0
   tolerance: 1.0e-10
   noslip_iterations: 10
+
+# Object grasp / pinch / in-hand manipulation
+solver:
+  solver: "Newton"
+  cone: "elliptic"
+  impratio: 5.0
+  noslip_iterations: 15
+  iterations: 30
+  multiccd: true        # finger-pad ↔ object 다점 접촉 — 핵심
+  nativeccd: true       # 3.3+ 기본값 유지
+  autoreset: false      # 개발 단계 numerical issue 가시화
 
 # 안정적 보행 시뮬레이션
 solver:
