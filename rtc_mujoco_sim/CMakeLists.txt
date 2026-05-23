@@ -126,6 +126,7 @@ if(mujoco_FOUND)
     find_package(ament_cmake_gtest REQUIRED)
     set(MJCF_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/minimal.xml")
     set(MJCF_SCENE_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/scene_with_object.xml")
+    set(MJCF_CONTACT_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/contact_minimal.xml")
 
     # Phase 1: pure helpers (no MJCF fixture needed)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pure_helpers.cpp")
@@ -155,6 +156,14 @@ if(mujoco_FOUND)
       target_link_libraries(test_gravcomp_scene mujoco_simulator_lib)
       target_compile_definitions(test_gravcomp_scene PRIVATE
         SCENE_WITH_OBJECT_MJCF_PATH="${MJCF_SCENE_FIXTURE}")
+    endif()
+
+    # Contact wrench pipeline: requires a fixture with mjSENS_CONTACT sensor.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_contact_wrench.cpp")
+      ament_add_gtest(test_contact_wrench test/test_contact_wrench.cpp)
+      target_link_libraries(test_contact_wrench mujoco_simulator_lib)
+      target_compile_definitions(test_contact_wrench PRIVATE
+        CONTACT_MJCF_PATH="${MJCF_CONTACT_FIXTURE}")
     endif()
   endif()
 else()

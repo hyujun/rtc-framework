@@ -84,6 +84,24 @@ struct JointGroupConfig {
   // ── Sensor publishing (optional) ──────────────────────────────
   std::string sensor_topic;               // 빈 문자열이면 센서 publish 안 함
   std::vector<std::string> sensor_names;  // XML sensor names (빈 경우 = 그룹에 센서 없음)
+
+  // ── Contact wrench publishing (optional, mjSENS_CONTACT auto-discovery) ──
+  // Scans this group's sensor_infos for mjSENS_CONTACT entries (dim==17,
+  // data="found force torque dist pos normal tangent" reduce="netforce"), then
+  // resolves each to a (target, ft_site, body, frame_id) tuple. World-frame
+  // wrench is transformed into the ft_site's body frame at every sim tick.
+  // Per-target topics: <topic_prefix>/<target>/contact_wrench (WrenchStamped).
+  struct ContactWrenchConfig {
+    bool enabled{false};
+    std::string topic_prefix;  // 빈 문자열 = 비활성 (enabled=false 와 동등)
+    // Suffix list ordered longest-first so "_tip_contact" matches before "_contact".
+    std::vector<std::string> sensor_name_suffixes{"_tip_contact", "_contact"};
+    std::vector<std::string> reference_site_suffixes{"_tip_ft_site", "_ft_site"};
+    bool publish_state{false};  // <target>/contact_state (std_msgs/Bool)
+    bool publish_debug{false};  // <target>/contact_point + contact_depth
+    bool allow_partial_discovery{false};  // false=fail if any sensor unresolved
+  };
+  ContactWrenchConfig contact_wrench;
 };
 
 // ── JointGroup ───────────────────────────────────────────────────────────────
@@ -166,6 +184,36 @@ struct JointGroup {
   using SensorCallback =
       std::function<void(const std::vector<SensorInfo>& infos, const std::vector<double>& values)>;
   SensorCallback sensor_cb{nullptr};
+
+  // ── Contact wrench info (populated by DiscoverContactWrenches) ──────────
+  // Each entry pairs a mjSENS_CONTACT sensor (dim==17, reduce=netforce) with a
+  // reference site and body. The body frame is used as ROS frame_id and as the
+  // target of the world→link wrench transform.
+  struct ContactWrenchInfo {
+    std::string target_name;       // e.g. "index_tip" (sensor name minus suffix)
+    std::string frame_id;          // body name owning ft_site (e.g. "index_tip_head")
+    int sensor_id{-1};             // mjModel sensor id
+    int sensor_adr{0};             // mjModel.sensor_adr[sensor_id]
+    int ft_site_id{-1};            // mjModel site id (torque reference origin)
+    int body_id{-1};               // mjModel.site_bodyid[ft_site_id]
+  };
+
+  // Transformed wrench sample (link frame). Heap-free POD.
+  struct ContactWrenchSample {
+    bool found{false};
+    std::array<double, 3> force{0.0, 0.0, 0.0};   // object-on-fingertip, in link frame
+    std::array<double, 3> torque{0.0, 0.0, 0.0};  // about ft_site origin, in link frame
+    std::array<double, 3> point_world{0.0, 0.0, 0.0};  // contact point in world (debug)
+    double dist{0.0};
+  };
+
+  std::vector<ContactWrenchInfo> contact_wrench_infos;
+  std::vector<ContactWrenchSample> contact_wrench_buffer;  // size == infos.size()
+
+  using ContactWrenchCallback = std::function<void(
+      const std::vector<ContactWrenchInfo>& infos,
+      const std::vector<ContactWrenchSample>& samples)>;
+  ContactWrenchCallback contact_wrench_cb{nullptr};
 
   // ── ROS2 토픽 ──────────────────────────────────────────────────
   std::string command_topic;
@@ -269,6 +317,15 @@ class MuJoCoSimulator {
   [[nodiscard]] const std::vector<JointGroup::SensorInfo>& GetSensorInfos(
       std::size_t group_idx) const noexcept;
   [[nodiscard]] bool HasSensors(std::size_t group_idx) const noexcept;
+
+  // Register the contact wrench callback for a specific group.
+  void SetContactWrenchCallback(std::size_t group_idx,
+                                JointGroup::ContactWrenchCallback callback) noexcept;
+
+  // Contact wrench accessors (populated only when ContactWrenchConfig.enabled).
+  [[nodiscard]] const std::vector<JointGroup::ContactWrenchInfo>& GetContactWrenchInfos(
+      std::size_t group_idx) const noexcept;
+  [[nodiscard]] bool HasContactWrenches(std::size_t group_idx) const noexcept;
 
   [[nodiscard]] std::vector<double> GetPositions(std::size_t group_idx) const noexcept;
   [[nodiscard]] std::vector<double> GetVelocities(std::size_t group_idx) const noexcept;
@@ -576,6 +633,10 @@ class MuJoCoSimulator {
   std::vector<std::string> CollectAllXmlSensorNames() const noexcept;
   // 그룹의 sensor_names를 XML 센서와 매핑
   void MapSensorInfos(JointGroup& group, const std::vector<std::string>& sensor_names) noexcept;
+  // 그룹의 sensor_infos 에서 mjSENS_CONTACT 만 추려 contact_wrench_infos 생성.
+  // sensor name suffix 와 site name suffix 로 target/site/body 를 자동 resolve.
+  // allow_partial_discovery=false 면 unresolved 1건이라도 있으면 false 반환.
+  [[nodiscard]] bool DiscoverContactWrenches(JointGroup& group) noexcept;
 
   // MJCF XML의 <option> 요소를 파싱하여 명시적으로 설정된 속성 이름 집합을 반환.
   // XML에 없는 속성에 대해서만 SolverConfig(YAML) 값을 적용하기 위한 헬퍼.
@@ -589,9 +650,11 @@ class MuJoCoSimulator {
   void ApplyCommand() noexcept;
   void ReadState() noexcept;
   void ReadSensors() noexcept;
+  void ReadContactWrenches() noexcept;
   void ReadSolverStats() noexcept;
   void InvokeStateCallback() noexcept;
   void InvokeSensorCallback() noexcept;
+  void InvokeContactWrenchCallback() noexcept;
   void UpdateVizBuffer() noexcept;
   void UpdateRtf(uint64_t step) noexcept;
   void ThrottleIfNeeded() noexcept;

@@ -80,6 +80,121 @@ void MuJoCoSimulator::InvokeSensorCallback() noexcept {
   }
 }
 
+namespace {
+
+// MJCF <contact> sensor data layout (data="found force torque dist pos normal
+// tangent", num=1, reduce="netforce" → mjModel.sensor_dim==17). Offsets index
+// into mjData.sensordata starting at mjModel.sensor_adr[sensor_id].
+constexpr int kContactSensorFoundOffset = 0;
+constexpr int kContactSensorForceOffset = 1;   // force[3]
+constexpr int kContactSensorTorqueOffset = 4;  // torque[3] (about contact point)
+constexpr int kContactSensorDistOffset = 7;
+constexpr int kContactSensorPosOffset = 8;     // pos[3] (contact point in world)
+constexpr int kRotationMatrixStride = 9;       // mjData.xmat per body (row-major 3x3)
+constexpr int kSitePosStride = 3;              // mjData.site_xpos per site
+
+// Apply transpose of body rotation matrix R_WB (row-major 9 elements) to a
+// world vector — produces the vector expressed in the body frame.
+// v_B = R_WB^T * v_W. noexcept, heap-free.
+inline void WorldVecToBody(const mjtNum* rwb_rowmajor,
+                           const std::array<double, 3>& v_world,
+                           std::array<double, 3>& v_body) noexcept {
+  v_body[0] = rwb_rowmajor[0] * v_world[0]
+            + rwb_rowmajor[3] * v_world[1]
+            + rwb_rowmajor[6] * v_world[2];
+  v_body[1] = rwb_rowmajor[1] * v_world[0]
+            + rwb_rowmajor[4] * v_world[1]
+            + rwb_rowmajor[7] * v_world[2];
+  v_body[2] = rwb_rowmajor[2] * v_world[0]
+            + rwb_rowmajor[5] * v_world[1]
+            + rwb_rowmajor[8] * v_world[2];
+}
+
+inline std::array<double, 3> Cross3(const std::array<double, 3>& lhs,
+                                    const std::array<double, 3>& rhs) noexcept {
+  return {lhs[1] * rhs[2] - lhs[2] * rhs[1],
+          lhs[2] * rhs[0] - lhs[0] * rhs[2],
+          lhs[0] * rhs[1] - lhs[1] * rhs[0]};
+}
+
+}  // namespace
+
+// Read mjData.sensordata for each registered contact sensor, shift the torque
+// from the reported contact point to the ft_site origin, then express both
+// vectors in the ft_site's body frame. Heap-free, noexcept.
+void MuJoCoSimulator::ReadContactWrenches() noexcept {
+  if (!model_ || !data_)
+    return;
+  for (auto& g : groups_) {
+    if (!g->is_robot)
+      continue;
+    if (g->contact_wrench_infos.empty())
+      continue;
+    for (std::size_t i = 0; i < g->contact_wrench_infos.size(); ++i) {
+      const auto& info = g->contact_wrench_infos[i];
+      auto& sample = g->contact_wrench_buffer[i];
+
+      const mjtNum* sensor_data = data_->sensordata + info.sensor_adr;
+      const bool found = sensor_data[kContactSensorFoundOffset] > 0.0;
+      sample.found = found;
+      if (!found) {
+        sample.force.fill(0.0);
+        sample.torque.fill(0.0);
+        sample.point_world.fill(0.0);
+        sample.dist = 0.0;
+        continue;
+      }
+
+      // MuJoCo's netforce contact sensor reports the world-frame wrench in
+      // the "geom1-on-environment" convention (force/torque that geom1 applies
+      // to whatever it contacts). ROS WrenchStamped convention used here is
+      // "environment-on-link" (so the published force is the load felt by the
+      // fingertip body). We therefore negate at read time.
+      const std::array<double, 3> f_w = {
+          -static_cast<double>(sensor_data[kContactSensorForceOffset + 0]),
+          -static_cast<double>(sensor_data[kContactSensorForceOffset + 1]),
+          -static_cast<double>(sensor_data[kContactSensorForceOffset + 2])};
+      const std::array<double, 3> tau_pc_w = {
+          -static_cast<double>(sensor_data[kContactSensorTorqueOffset + 0]),
+          -static_cast<double>(sensor_data[kContactSensorTorqueOffset + 1]),
+          -static_cast<double>(sensor_data[kContactSensorTorqueOffset + 2])};
+      sample.dist = static_cast<double>(sensor_data[kContactSensorDistOffset]);
+      sample.point_world[0] = static_cast<double>(sensor_data[kContactSensorPosOffset + 0]);
+      sample.point_world[1] = static_cast<double>(sensor_data[kContactSensorPosOffset + 1]);
+      sample.point_world[2] = static_cast<double>(sensor_data[kContactSensorPosOffset + 2]);
+
+      // Torque shift to ft_site origin: τ_link_world = τ_pc + (p_c − p_L) × f_W.
+      const mjtNum* p_link_w =
+          data_->site_xpos +
+          (static_cast<std::ptrdiff_t>(kSitePosStride) * info.ft_site_id);
+      const std::array<double, 3> r_w = {
+          sample.point_world[0] - static_cast<double>(p_link_w[0]),
+          sample.point_world[1] - static_cast<double>(p_link_w[1]),
+          sample.point_world[2] - static_cast<double>(p_link_w[2])};
+      const auto r_cross_f = Cross3(r_w, f_w);
+      const std::array<double, 3> tau_link_w = {tau_pc_w[0] + r_cross_f[0],
+                                                tau_pc_w[1] + r_cross_f[1],
+                                                tau_pc_w[2] + r_cross_f[2]};
+
+      // Transform world-frame vectors into the ft_site's body frame.
+      const mjtNum* rwb = data_->xmat + (static_cast<std::ptrdiff_t>(kRotationMatrixStride) *
+                                         info.body_id);
+      WorldVecToBody(rwb, f_w, sample.force);
+      WorldVecToBody(rwb, tau_link_w, sample.torque);
+    }
+  }
+}
+
+void MuJoCoSimulator::InvokeContactWrenchCallback() noexcept {
+  for (auto& g : groups_) {
+    if (!g->is_robot)
+      continue;
+    if (g->contact_wrench_infos.empty() || !g->contact_wrench_cb)
+      continue;
+    g->contact_wrench_cb(g->contact_wrench_infos, g->contact_wrench_buffer);
+  }
+}
+
 void MuJoCoSimulator::ReadSolverStats() noexcept {
   if (!data_) {
     return;
@@ -357,8 +472,10 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     // 1. Publish current state (and sensors) for ALL robot groups
     ReadState();
     ReadSensors();
+    ReadContactWrenches();
     InvokeStateCallback();
     InvokeSensorCallback();
+    InvokeContactWrenchCallback();
 
     // 2. Wait for command from PRIMARY group
     {

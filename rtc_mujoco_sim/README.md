@@ -208,7 +208,19 @@ solver:
 | `<group.state_topic>` (예: `/joint_states`) | `sensor_msgs/JointState` | 매 물리 스텝 | robot 그룹: 위치/속도/토크 |
 | `<group.state_topic>` (예: `/hand/joint_states`) | `sensor_msgs/JointState` | 100Hz | fake 그룹: LPF 필터링된 상태 |
 | `<group.sensor_topic>` (예: `/hand/sim_sensors`) | `rtc_msgs/SimSensorState` | 매 물리 스텝 | robot 그룹: MuJoCo XML 센서 (선택, YAML에 `sensor_topic` + `sensor_names` 설정 시) |
+| `<contact_wrench.topic_prefix>/<target>/contact_wrench` | `geometry_msgs/WrenchStamped` | 매 물리 스텝 | robot 그룹: MJCF `<sensor><contact>` (`reduce="netforce"`, dim==17) 자동 발견. world→`<target>_tip_head` frame transform + torque shift. 비접촉 시 0 발행 (stale 방지). |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
+
+#### Contact wrench auto-discovery (MJCF `<sensor><contact>` → ROS WrenchStamped)
+
+MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact_wrench.enabled: true` 면, `rtc_mujoco_sim` 이 매 물리 스텝마다 world-frame netforce 를 link frame 으로 변환해 표준 `geometry_msgs/WrenchStamped` 로 발행한다. Custom 메시지 정의 없음.
+
+요구사항:
+- `<contact>` 의 `data="found force torque dist pos normal tangent"` + `num="1"` + `reduce="netforce"` (sensor_dim == 17 필수)
+- sensor 이름 suffix (default `_tip_contact` / `_contact`) 와 site 이름 suffix (default `_tip_ft_site` / `_ft_site`) 가 같은 target 토큰을 가리킬 것 (예: `index_tip_contact` ↔ `index_tip_ft_site`)
+- ROS frame_id 는 ft_site 의 owning body name (예: `index_tip_head`)
+
+토픽 이름은 `<contact_wrench.topic_prefix>/<contact_sensor_name>/contact_wrench` — **MJCF `<contact name="...">` 값이 ROS topic segment 로 verbatim 전달** 되어 XML 과 1:1 round-trip 한다. Suffix 리스트는 ft_site 를 찾기 위한 *내부 site_stem* 도출에만 쓰임 (예: sensor `index_tip_contact` → site_stem `index_tip` → site `index_tip_ft_site`). LEAP profile 예시 (`topic_prefix: "/leap_hand"`): `/leap_hand/{index_tip_contact, middle_tip_contact, ring_tip_contact, thumb_tip_contact}/contact_wrench`. 비-LEAP MJCF 도 sensor↔site suffix 규약만 맞으면 wrapper 코드 변경 없이 자동 토픽 생성.
 
 ### 구독 토픽 (그룹별)
 

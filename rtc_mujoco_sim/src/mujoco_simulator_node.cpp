@@ -22,7 +22,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
+#include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include <algorithm>
@@ -40,6 +42,15 @@ namespace urtc = rtc;
 struct GroupRosHandles {
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr state_pub;
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::SimSensorState>::SharedPtr sensor_pub;
+  // Contact wrench publishers (one per discovered target). Size matches
+  // sim_->GetContactWrenchInfos(group_idx). Empty when ContactWrenchConfig
+  // is disabled or no mjSENS_CONTACT sensors exist in the model.
+  std::vector<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::WrenchStamped>::SharedPtr>
+      contact_wrench_pubs;
+  std::vector<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Bool>::SharedPtr>
+      contact_state_pubs;
+  // Last published contact_state per target — Bool topic transitions only.
+  std::vector<bool> contact_state_last;
   rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr cmd_sub;
   rclcpp::TimerBase::SharedPtr fake_timer;  // fake groups only
   std::size_t group_idx{0};
@@ -119,6 +130,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       h.fake_timer.reset();
       h.cmd_sub.reset();
       h.sensor_pub.reset();
+      h.contact_wrench_pubs.clear();
+      h.contact_state_pubs.clear();
+      h.contact_state_last.clear();
       h.state_pub.reset();
     }
     group_handles_.clear();
@@ -154,6 +168,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       h.fake_timer.reset();
       h.cmd_sub.reset();
       h.sensor_pub.reset();
+      h.contact_wrench_pubs.clear();
+      h.contact_state_pubs.clear();
+      h.contact_state_last.clear();
       h.state_pub.reset();
     }
     group_handles_.clear();
@@ -292,6 +309,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       } catch (...) {
       }
 
+      LoadContactWrenchConfig("robot_response", gname, gc.contact_wrench);
+
       group_configs_.push_back(std::move(gc));
     }
 
@@ -345,6 +364,34 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // servo_kp/kd array cannot match multiple distinct joint counts.
     declare_parameter(prefix + "servo_kp", std::vector<double>{});
     declare_parameter(prefix + "servo_kd", std::vector<double>{});
+    // Contact wrench publishing (opt-in). enabled+topic_prefix are required
+    // to activate; suffix lists default to the "_tip_contact"/"_tip_ft_site"
+    // convention but are fully YAML-overridable for any MJCF naming scheme.
+    declare_parameter(prefix + "contact_wrench.enabled", false);
+    declare_parameter(prefix + "contact_wrench.topic_prefix", std::string(""));
+    declare_parameter(prefix + "contact_wrench.sensor_name_suffixes",
+                      std::vector<std::string>{"_tip_contact", "_contact"});
+    declare_parameter(prefix + "contact_wrench.reference_site_suffixes",
+                      std::vector<std::string>{"_tip_ft_site", "_ft_site"});
+    declare_parameter(prefix + "contact_wrench.publish_state", false);
+    declare_parameter(prefix + "contact_wrench.publish_debug", false);
+    declare_parameter(prefix + "contact_wrench.allow_partial_discovery", false);
+  }
+
+  void LoadContactWrenchConfig(
+      const std::string& section, const std::string& gname,
+      urtc::JointGroupConfig::ContactWrenchConfig& cwc) {
+    const auto prefix = section + "." + gname + ".contact_wrench.";
+    cwc.enabled = get_parameter(prefix + "enabled").as_bool();
+    cwc.topic_prefix = get_parameter(prefix + "topic_prefix").as_string();
+    cwc.sensor_name_suffixes =
+        get_parameter(prefix + "sensor_name_suffixes").as_string_array();
+    cwc.reference_site_suffixes =
+        get_parameter(prefix + "reference_site_suffixes").as_string_array();
+    cwc.publish_state = get_parameter(prefix + "publish_state").as_bool();
+    cwc.publish_debug = get_parameter(prefix + "publish_debug").as_bool();
+    cwc.allow_partial_discovery =
+        get_parameter(prefix + "allow_partial_discovery").as_bool();
   }
 
   // ── Simulator creation
@@ -438,6 +485,45 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                                             const std::vector<double>& values) {
                                   PublishGroupSensors(idx, infos, values);
                                 });
+      }
+
+      // ── Contact wrench publishers (one per auto-discovered target) ──
+      const auto& cw_cfg = group_configs_[idx].contact_wrench;
+      if (is_robot && cw_cfg.enabled && !cw_cfg.topic_prefix.empty() &&
+          sim_->HasContactWrenches(idx)) {
+        const auto& cw_infos = sim_->GetContactWrenchInfos(idx);
+        rclcpp::QoS cw_qos = rclcpp::SensorDataQoS().keep_last(1);
+
+        h.contact_wrench_pubs.reserve(cw_infos.size());
+        if (cw_cfg.publish_state) {
+          h.contact_state_pubs.reserve(cw_infos.size());
+          h.contact_state_last.assign(cw_infos.size(), false);
+        }
+
+        for (const auto& cw_info : cw_infos) {
+          const std::string wrench_topic =
+              cw_cfg.topic_prefix + "/" + cw_info.target_name + "/contact_wrench";
+          h.contact_wrench_pubs.push_back(
+              create_publisher<geometry_msgs::msg::WrenchStamped>(wrench_topic, cw_qos));
+          if (cw_cfg.publish_state) {
+            const std::string contact_state_topic =
+                cw_cfg.topic_prefix + "/" + cw_info.target_name + "/contact_state";
+            h.contact_state_pubs.push_back(
+                create_publisher<std_msgs::msg::Bool>(contact_state_topic, cw_qos));
+          }
+          RCLCPP_INFO(get_logger(),
+                      "[MuJoCoSimulatorNode] Group[%zu] contact_wrench target='%s' "
+                      "frame=%s topic=%s",
+                      idx, cw_info.target_name.c_str(), cw_info.frame_id.c_str(),
+                      wrench_topic.c_str());
+        }
+
+        sim_->SetContactWrenchCallback(
+            idx, [this, idx](
+                     const std::vector<urtc::JointGroup::ContactWrenchInfo>& infos,
+                     const std::vector<urtc::JointGroup::ContactWrenchSample>& samples) {
+              PublishGroupContactWrenches(idx, infos, samples);
+            });
       }
 
       RCLCPP_INFO(get_logger(),
@@ -545,6 +631,49 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       msg.sensors.push_back(std::move(s));
     }
     group_handles_[group_idx].sensor_pub->publish(msg);
+  }
+
+  // Publishes one WrenchStamped per discovered contact target (link frame).
+  // found=false → wrench=0 still published every tick (SensorDataQoS stale guard).
+  // If publish_state is enabled, a Bool is also emitted on transitions only.
+  void PublishGroupContactWrenches(
+      std::size_t group_idx,
+      const std::vector<urtc::JointGroup::ContactWrenchInfo>& infos,
+      const std::vector<urtc::JointGroup::ContactWrenchSample>& samples) {
+    if (group_idx >= group_handles_.size())
+      return;
+    auto& handle = group_handles_[group_idx];
+    if (handle.contact_wrench_pubs.size() != infos.size())
+      return;
+    const auto stamp = now();
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+      const auto& cw_info = infos[i];
+      const auto& sample = samples[i];
+      geometry_msgs::msg::WrenchStamped wmsg;
+      wmsg.header.stamp = stamp;
+      wmsg.header.frame_id = cw_info.frame_id;
+      wmsg.wrench.force.x = sample.force[0];
+      wmsg.wrench.force.y = sample.force[1];
+      wmsg.wrench.force.z = sample.force[2];
+      wmsg.wrench.torque.x = sample.torque[0];
+      wmsg.wrench.torque.y = sample.torque[1];
+      wmsg.wrench.torque.z = sample.torque[2];
+      handle.contact_wrench_pubs[i]->publish(wmsg);
+
+      if (i < handle.contact_state_pubs.size() && handle.contact_state_pubs[i]) {
+        const bool last = (i < handle.contact_state_last.size())
+                              ? handle.contact_state_last[i]
+                              : false;
+        if (sample.found != last) {
+          std_msgs::msg::Bool bmsg;
+          bmsg.data = sample.found;
+          handle.contact_state_pubs[i]->publish(bmsg);
+          if (i < handle.contact_state_last.size()) {
+            handle.contact_state_last[i] = sample.found;
+          }
+        }
+      }
+    }
   }
 
   void PublishFakeState(std::size_t group_idx) {

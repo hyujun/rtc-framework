@@ -120,3 +120,35 @@ mujoco_simulator:
                    2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5]
         servo_kd: [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125,
                    0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125]
+        # ── Fingertip contact wrench (mjSENS_CONTACT auto-discovery) ──────────
+        # The MJCF (robots/iiwa7_leap/mjcf/iiwa7_with_leap_right.xml) defines
+        # four <sensor><contact ... reduce="netforce"/> blocks named
+        # {index,middle,ring,thumb}_tip_contact and matching {*}_tip_ft_site
+        # sites under each fingertip's *_tip_head body. rtc_mujoco_sim reads
+        # the 17-tuple sensordata (found/force/torque/dist/pos/normal/tangent),
+        # shifts the torque to the ft_site origin, transforms world→link via
+        # the *_tip_head body's xmat, and negates to the env-on-link sign
+        # convention before publishing geometry_msgs/WrenchStamped.
+        #
+        # sensor_names="auto" is REQUIRED for contact wrench discovery — the
+        # wrapper maps a contact sensor only if it lives in this group's
+        # sensor_infos. sensor_topic stays empty so the raw SimSensorState
+        # publish path is suppressed; only the per-target WrenchStamped (and
+        # optional Bool transition) topics are emitted.
+        sensor_names: ["auto"]
+        contact_wrench:
+          enabled: true
+          topic_prefix: "/leap_hand"
+          # target_name = MJCF <contact name=...> verbatim, so topics mirror
+          # the XML 1:1. The suffix lists are only used internally to derive
+          # the site_stem (e.g. "index_tip_contact" → site_stem "index_tip" →
+          # site "index_tip_ft_site"). Resulting topics:
+          #   /leap_hand/index_tip_contact/contact_wrench   (WrenchStamped, link frame = index_tip_head)
+          #   /leap_hand/middle_tip_contact/contact_wrench  (WrenchStamped, link frame = middle_tip_head)
+          #   /leap_hand/ring_tip_contact/contact_wrench    (WrenchStamped, link frame = ring_tip_head)
+          #   /leap_hand/thumb_tip_contact/contact_wrench   (WrenchStamped, link frame = thumb_tip_head)
+          # Override sensor_name_suffixes/reference_site_suffixes only when
+          # the MJCF uses a different sensor↔site suffix convention.
+          publish_state: true   # adds /leap_hand/<target>/contact_state (Bool, edge-triggered)
+          publish_debug: false  # set true to also emit contact_point + contact_depth (debug)
+          # allow_partial_discovery: false  # fail-fast if any sensor unresolved

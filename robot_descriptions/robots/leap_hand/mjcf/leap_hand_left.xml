@@ -90,8 +90,10 @@
                 <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 -0.001" type="box" />
-                <geom type="mesh" mesh="white_tip" />
-                <body name="index_tip_head" pos="0 -0.048 0.015" />
+                <geom name="index_tip_contact_geom" type="mesh" mesh="white_tip" />
+                <body name="index_tip_head" pos="0 -0.048 0.015">
+                  <site name="index_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                </body>
               </body>
             </body>
           </body>
@@ -127,8 +129,10 @@
                 <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 -0.001" type="box" />
-                <geom type="mesh" mesh="white_tip" />
-                <body name="middle_tip_head" pos="0 -0.048 0.015" />
+                <geom name="middle_tip_contact_geom" type="mesh" mesh="white_tip" />
+                <body name="middle_tip_head" pos="0 -0.048 0.015">
+                  <site name="middle_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                </body>
               </body>
             </body>
           </body>
@@ -164,8 +168,10 @@
                 <geom size="0.01 0.003 0.015" pos="0 -0.017 0.015" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 0.03" type="box" />
                 <geom size="0.007 0.011 0.002" pos="0 -0.006 -0.001" type="box" />
-                <geom type="mesh" mesh="white_tip" />
-                <body name="ring_tip_head" pos="0 -0.048 0.015" />
+                <geom name="ring_tip_contact_geom" type="mesh" mesh="white_tip" />
+                <body name="ring_tip_head" pos="0 -0.048 0.015">
+                  <site name="ring_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                </body>
               </body>
             </body>
           </body>
@@ -198,8 +204,10 @@
                 <geom size="0.01 0.018 0.012" pos="0 -0.0085 -0.015" type="box" />
                 <geom size="0.01 0.002 0.015" pos="0 -0.029 -0.014" type="box" />
                 <geom size="0.004 0.012 0.009" pos="0.015 -0.0175 -0.0115" type="box" />
-                <geom type="mesh" mesh="white_tip_thumb" />
-                <body name="thumb_tip_head" pos="0 -0.06 -0.015" />
+                <geom name="thumb_tip_contact_geom" type="mesh" mesh="white_tip_thumb" />
+                <body name="thumb_tip_head" pos="0 -0.06 -0.015">
+                  <site name="thumb_tip_ft_site" pos="0 0 0" size="0.003" group="3" />
+                </body>
               </body>
             </body>
           </body>
@@ -228,4 +236,15 @@
   <!-- Parent-child contact excludes intentionally removed (user request 2026-05-15).
        Previously excluded all LEAP finger-chain parent/child pairs + *tip_head leaves.
        Re-enable selectively if finger boxes show trembling against their parent links. -->
+  <!-- Fingertip contact wrench sensors (MuJoCo >= 3.3.5, mjSENS_CONTACT).
+       body2 omitted = any contacting body. reduce="netforce" reduces all
+       contacts on geom1 to a single synthetic wrench in world frame.
+       data layout (17 scalars): found(1) force(3) torque(3) dist(1) pos(3)
+       normal(3) tangent(3). rtc_mujoco_sim transforms to <target>_tip_head frame. -->
+  <sensor>
+    <contact name="index_tip_contact"  geom1="index_tip_contact_geom"  num="1" data="found force torque dist pos normal tangent" reduce="netforce" />
+    <contact name="middle_tip_contact" geom1="middle_tip_contact_geom" num="1" data="found force torque dist pos normal tangent" reduce="netforce" />
+    <contact name="ring_tip_contact"   geom1="ring_tip_contact_geom"   num="1" data="found force torque dist pos normal tangent" reduce="netforce" />
+    <contact name="thumb_tip_contact"  geom1="thumb_tip_contact_geom"  num="1" data="found force torque dist pos normal tangent" reduce="netforce" />
+  </sensor>
 </mujoco>

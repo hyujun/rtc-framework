@@ -451,6 +451,139 @@ void MuJoCoSimulator::MapSensorInfos(JointGroup& group,
   group.sensor_buffer.resize(static_cast<std::size_t>(total_dim), 0.0);
 }
 
+// ── Contact wrench auto-discovery ────────────────────────────────────────
+// Scans group.sensor_infos for mjSENS_CONTACT entries (dim==17 expected for
+// data="found force torque dist pos normal tangent" with num=1). For each
+// match, strips the configured sensor-name suffix to derive a target token,
+// concatenates each configured site-name suffix to find the FT reference site,
+// and resolves the site's owning body as the frame_id.
+//
+// allow_partial_discovery=false (default): if any contact sensor in the group
+// fails to resolve, the function returns false (caller decides whether to
+// abort initialization).
+//
+// Suffix lists are tried in declaration order — keep longest-first.
+namespace {
+
+[[nodiscard]] std::optional<std::string> StripFirstMatchingSuffix(
+    std::string_view name, const std::vector<std::string>& suffixes) noexcept {
+  for (const auto& suf : suffixes) {
+    if (name.size() > suf.size() &&
+        name.compare(name.size() - suf.size(), suf.size(), suf) == 0) {
+      return std::string(name.substr(0, name.size() - suf.size()));
+    }
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] int ResolveSiteByTarget(const mjModel* model, const std::string& target,
+                                      const std::vector<std::string>& suffixes,
+                                      std::string& matched_name) noexcept {
+  for (const auto& suf : suffixes) {
+    matched_name = target + suf;
+    const int sid = mj_name2id(model, mjOBJ_SITE, matched_name.c_str());
+    if (sid >= 0)
+      return sid;
+  }
+  matched_name.clear();
+  return -1;
+}
+
+}  // namespace
+
+bool MuJoCoSimulator::DiscoverContactWrenches(JointGroup& group) noexcept {
+  group.contact_wrench_infos.clear();
+  group.contact_wrench_buffer.clear();
+
+  if (!model_)
+    return false;
+
+  const JointGroupConfig::ContactWrenchConfig* gcfg = nullptr;
+  for (const auto& group_cfg : cfg_.groups) {
+    if (group_cfg.name == group.name) {
+      gcfg = &group_cfg.contact_wrench;
+      break;
+    }
+  }
+  if (!gcfg || !gcfg->enabled)
+    return true;  // disabled = success (nothing to discover)
+
+  constexpr int kExpectedDim = 17;
+  bool any_unresolved = false;
+
+  for (const auto& sinfo : group.sensor_infos) {
+    if (sinfo.type != mjSENS_CONTACT)
+      continue;
+    if (sinfo.dim != kExpectedDim) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] [%s] contact sensor '%s' has dim=%d "
+              "(expected %d) — skipped\n",
+              group.name.c_str(), sinfo.name.c_str(), sinfo.dim, kExpectedDim);
+      any_unresolved = true;
+      continue;
+    }
+
+    // Two-stage naming:
+    //   target_name (= ROS topic segment) is the sensor name verbatim, so the
+    //   topic path mirrors the MJCF declaration and round-trips losslessly.
+    //   site_stem (internal) strips the configured sensor-name suffix and is
+    //   only used to locate the matching reference site by concatenating each
+    //   reference_site_suffixes entry. Empty suffix list = site lookup uses
+    //   the sensor name verbatim (rare; useful when the MJCF re-uses the same
+    //   token for both objects).
+    const auto site_stem = StripFirstMatchingSuffix(sinfo.name, gcfg->sensor_name_suffixes);
+    if (!site_stem) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] [%s] contact sensor '%s' did not match any "
+              "configured sensor_name_suffixes — skipped\n",
+              group.name.c_str(), sinfo.name.c_str());
+      any_unresolved = true;
+      continue;
+    }
+
+    std::string site_name;
+    const int site_id =
+        ResolveSiteByTarget(model_, *site_stem, gcfg->reference_site_suffixes, site_name);
+    if (site_id < 0) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] [%s] contact sensor '%s' → site_stem '%s' but no "
+              "matching reference site found — skipped\n",
+              group.name.c_str(), sinfo.name.c_str(), site_stem->c_str());
+      any_unresolved = true;
+      continue;
+    }
+
+    const int body_id = model_->site_bodyid[site_id];
+    const char* body_name = mj_id2name(model_, mjOBJ_BODY, body_id);
+
+    JointGroup::ContactWrenchInfo info;
+    info.target_name = sinfo.name;  // ROS topic segment = MJCF sensor name verbatim.
+    info.frame_id = body_name ? body_name : ("body_" + std::to_string(body_id));
+    info.sensor_id = mj_name2id(model_, mjOBJ_SENSOR, sinfo.name.c_str());
+    info.sensor_adr = sinfo.adr;
+    info.ft_site_id = site_id;
+    info.body_id = body_id;
+
+    fprintf(stdout,
+            "[MuJoCoSimulator] [%s] contact_wrench target='%s' site=%s frame=%s\n",
+            group.name.c_str(), info.target_name.c_str(), site_name.c_str(),
+            info.frame_id.c_str());
+
+    group.contact_wrench_infos.push_back(std::move(info));
+  }
+
+  group.contact_wrench_buffer.resize(group.contact_wrench_infos.size());
+
+  if (any_unresolved && !gcfg->allow_partial_discovery) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] [%s] contact wrench discovery failed "
+            "(allow_partial_discovery=false)\n",
+            group.name.c_str());
+    return false;
+  }
+  return true;
+}
+
 // ── Initialization
 // ─────────────────────────────────────────────────────────────
 
@@ -640,6 +773,17 @@ bool MuJoCoSimulator::Initialize() noexcept {
       }
     } else {
       MapSensorInfos(*groups_[gi], gc.sensor_names);
+    }
+  }
+
+  // ── Contact wrench discovery (mjSENS_CONTACT auto-mapping) ─────────────
+  for (const auto& grp : groups_) {
+    if (!DiscoverContactWrenches(*grp)) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] Initialize aborted: contact wrench discovery "
+              "failed for group '%s'\n",
+              grp->name.c_str());
+      return false;
     }
   }
 
@@ -1124,6 +1268,27 @@ bool MuJoCoSimulator::HasSensors(std::size_t group_idx) const noexcept {
   if (group_idx >= groups_.size())
     return false;
   return !groups_[group_idx]->sensor_infos.empty();
+}
+
+void MuJoCoSimulator::SetContactWrenchCallback(
+    std::size_t group_idx, JointGroup::ContactWrenchCallback callback) noexcept {
+  if (group_idx >= groups_.size())
+    return;
+  groups_[group_idx]->contact_wrench_cb = std::move(callback);
+}
+
+const std::vector<JointGroup::ContactWrenchInfo>& MuJoCoSimulator::GetContactWrenchInfos(
+    std::size_t group_idx) const noexcept {
+  static const std::vector<JointGroup::ContactWrenchInfo> empty;
+  if (group_idx >= groups_.size())
+    return empty;
+  return groups_[group_idx]->contact_wrench_infos;
+}
+
+bool MuJoCoSimulator::HasContactWrenches(std::size_t group_idx) const noexcept {
+  if (group_idx >= groups_.size())
+    return false;
+  return !groups_[group_idx]->contact_wrench_infos.empty();
 }
 
 std::vector<double> MuJoCoSimulator::GetPositions(std::size_t group_idx) const noexcept {
