@@ -116,7 +116,7 @@ void OnKey(GLFWwindow* w, int key, int /*scan*/, int action, int /*mods*/) noexc
 
     // ── Camera mode (TAB cycles: Free → Tracking → Fixed[0..N-1] → Free) ────
     case GLFW_KEY_TAB: {
-      const int ncam = s->model->ncam;
+      const int ncam = static_cast<int>(s->model->ncam);
       const int total = 2 + ncam;  // Free + Tracking + ncam Fixed cameras
       int cur = 0;
       if (s->cam_mode == CameraMode::kFree) {

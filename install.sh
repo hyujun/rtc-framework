@@ -54,7 +54,7 @@ MIMALLOC_VERSION="2.1.7"
 ALIGATOR_VERSION="0.19.0"
 
 # ── MuJoCo version + default path (install_mujoco 에서 소비) ────────────────
-MJ_VERSION="3.2.4"
+MJ_VERSION="3.7.0"
 
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0

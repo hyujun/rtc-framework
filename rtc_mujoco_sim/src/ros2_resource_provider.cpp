@@ -108,27 +108,6 @@ void Ros2CloseResource(mjResource* resource) {
   resource->data = nullptr;
 }
 
-void Ros2GetResourceDir(mjResource* resource, const char** dir, int* ndir) {
-  if (!resource || !resource->name || !dir || !ndir) {
-    return;
-  }
-
-  // Use a thread-local static string to hold the directory path
-  // so the pointer returned remains valid for the caller.
-  static thread_local std::string dir_str;
-
-  std::string name(resource->name);
-  std::size_t last_slash = name.find_last_of('/');
-  if (last_slash != std::string::npos) {
-    dir_str = name.substr(0, last_slash + 1);  // Keep the trailing slash
-  } else {
-    dir_str = "";
-  }
-
-  *dir = dir_str.c_str();
-  *ndir = static_cast<int>(dir_str.length());
-}
-
 }  // namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -141,7 +120,9 @@ void RegisterRos2ResourceProvider() {
   provider.open = Ros2OpenResource;
   provider.read = Ros2ReadResource;
   provider.close = Ros2CloseResource;
-  provider.getdir = Ros2GetResourceDir;
+  // getdir 콜백은 3.5.0 에서 제거됨 — MuJoCo 가 resource->name 의 마지막 '/' 를
+  // 자체 파싱 (mju_getResourceDir) 하여 디렉토리를 유도하므로 별도 구현 불필요.
+  // mount/unmount/modified 는 optional — nullptr 유지 시 호출되지 않음.
 
   mjp_registerResourceProvider(&provider);
 }

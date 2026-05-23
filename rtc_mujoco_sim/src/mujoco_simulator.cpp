@@ -382,7 +382,8 @@ void MuJoCoSimulator::LogAllXmlSensors() const noexcept {
     return;
   }
 
-  fprintf(stdout, "[MuJoCoSimulator] XML sensors found (%d):\n", model_->nsensor);
+  fprintf(stdout, "[MuJoCoSimulator] XML sensors found (%d):\n",
+          static_cast<int>(model_->nsensor));
   for (int i = 0; i < model_->nsensor; ++i) {
     const char* name = mj_id2name(model_, mjOBJ_SENSOR, i);
     const int type = model_->sensor_type[i];
@@ -806,8 +807,8 @@ bool MuJoCoSimulator::Initialize() noexcept {
   fprintf(stdout,
           "[MuJoCoSimulator] Loaded '%s'  nq=%d nv=%d nu=%d  groups=%zu"
           "  command_joints=%d  dt=%.4f s\n",
-          cfg_.model_path.c_str(), model_->nq, model_->nv, model_->nu, groups_.size(),
-          total_cmd_joints, xml_timestep_);
+          cfg_.model_path.c_str(), static_cast<int>(model_->nq), static_cast<int>(model_->nv),
+          static_cast<int>(model_->nu), groups_.size(), total_cmd_joints, xml_timestep_);
 
   return true;
 }
@@ -894,9 +895,18 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
     model_->opt.noslip_tolerance = static_cast<mjtNum>(sc.noslip_tolerance);
     solver_noslip_tolerance_.store(sc.noslip_tolerance, std::memory_order_relaxed);
   }
-  // MuJoCo version compatibility: ccd_iterations/ccd_tolerance (>=3.2.0,
-  // version 320+) vs mpr_iterations/mpr_tolerance (older, <3.2.0)
-#if defined(mjVERSION_HEADER) && mjVERSION_HEADER >= 320
+  // MuJoCo 3.2 부터 ccd_* (convex collision) 가 mpr_* 를 대체.
+  // mjVERSION_HEADER 자릿수 체계가 3.5+ 부터 변경됨:
+  //   3.1.x = 31x, 3.2.4 = 324, 3.5+ = MAJOR*1000000 + MINOR*1000 + PATCH (예: 3.7.0 = 3007000)
+  // 두 자릿수 스케일 모두 cover 하도록 helper macro 로 추출.
+#if defined(mjVERSION_HEADER) && \
+    ((mjVERSION_HEADER >= 320 && mjVERSION_HEADER < 1000) || mjVERSION_HEADER >= 3002000)
+  #define RTC_MUJOCO_HAS_CCD 1
+#else
+  #define RTC_MUJOCO_HAS_CCD 0
+#endif
+
+#if RTC_MUJOCO_HAS_CCD
   if (!xml_attrs.count("ccd_iterations")) {
     model_->opt.ccd_iterations = sc.ccd_iterations;
   }
@@ -958,10 +968,13 @@ void MuJoCoSimulator::ApplySolverConfig() noexcept {
       }
     }
     if (!flag_attrs.count("island")) {
+      // MuJoCo 3.3.6 부터 island discovery 가 default-on 으로 승격되면서
+      // mjENBL_ISLAND 가 제거되고 mjDSBL_ISLAND disable flag 로 의미가 반전됨.
+      // YAML 의 island=true 는 "활성화" 의미를 유지 — polarity 만 반전 처리.
       if (sc.island) {
-        model_->opt.enableflags |= mjENBL_ISLAND;
+        model_->opt.disableflags &= ~mjDSBL_ISLAND;
       } else {
-        model_->opt.enableflags &= ~mjENBL_ISLAND;
+        model_->opt.disableflags |= mjDSBL_ISLAND;
       }
     }
     if (!flag_attrs.count("eulerdamp")) {

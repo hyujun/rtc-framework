@@ -153,7 +153,7 @@ colcon test
 다만 아래 의존성은 apt/rosdep에 없어 manual install path가 필요합니다 (`install.sh`가 자동 처리):
 
 - **ONNX Runtime** (`rtc_inference` 빌드 요구) — apt에 없을 시 `/opt/onnxruntime` tarball fallback ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_onnxruntime`)
-- **MuJoCo 3.x** (`rtc_mujoco_sim` 빌드 요구) — `/opt/mujoco-3.2.4` tarball ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_mujoco`)
+- **MuJoCo 3.x** (`rtc_mujoco_sim` 빌드 요구) — `/opt/mujoco-3.7.0` tarball ([repo_scripts/scripts/lib/install_deps.sh](repo_scripts/scripts/lib/install_deps.sh) `install_mujoco`)
 - **MPC source-build deps** (`fmt` 11.1.4 + `mimalloc` 2.1.7 + `aligator` 0.19.0 — `rtc_mpc` 요구) — `<rtc_ws>/deps/install/`에 소스 빌드 ([repo_scripts/scripts/build_deps.sh](repo_scripts/scripts/build_deps.sh))
 - **mujoco Python bindings** (`rtc_tools` urdf_to_mjcf / compare_mjcf_urdf 런타임) — `requirements.lock`에 박혀 있고 `install.sh`가 `uv pip sync`로 venv에 설치 (수동: `uv pip sync requirements.lock`)
 

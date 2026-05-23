@@ -244,7 +244,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
       const std::size_t n = static_cast<std::size_t>(model_->nbody) * 6;
       std::memcpy(data_->xfrc_applied, ext_xfrc_.data(), n * sizeof(double));
     } else {
-      mju_zero(data_->xfrc_applied, model_->nbody * 6);
+      mju_zero(data_->xfrc_applied, static_cast<int>(model_->nbody) * 6);
     }
     if (pert_active_ && shared_pert_.select > 0) {
       mjv_applyPerturbForce(model_, data_, &shared_pert_);
@@ -255,7 +255,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
 
 void MuJoCoSimulator::ClearContactForces() noexcept {
   if (!pert_active_ && !ext_xfrc_dirty_) {
-    mju_zero(data_->xfrc_applied, model_->nbody * 6);
+    mju_zero(data_->xfrc_applied, static_cast<int>(model_->nbody) * 6);
   }
 }
 

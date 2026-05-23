@@ -219,7 +219,9 @@ install_mujoco() {
   local ARCH
   ARCH=$(uname -m)
   local TMP_TAR="/tmp/mujoco-${MJ_VERSION}-linux-${ARCH}.tar.gz"
+  local TMP_SHA="${TMP_TAR}.sha256"
   local DL_URL="https://github.com/google-deepmind/mujoco/releases/download/${MJ_VERSION}/mujoco-${MJ_VERSION}-linux-${ARCH}.tar.gz"
+  local SHA_URL="${DL_URL}.sha256"
 
   info "Downloading MuJoCo ${MJ_VERSION}..."
   if ! wget -q --show-progress -O "$TMP_TAR" "$DL_URL"; then
@@ -230,8 +232,19 @@ install_mujoco() {
     return
   fi
 
+  if wget -q -O "$TMP_SHA" "$SHA_URL"; then
+    if ! (cd /tmp && sha256sum -c "$(basename "$TMP_SHA")" > /dev/null 2>&1); then
+      warn "MuJoCo tarball SHA256 mismatch — refusing to install"
+      rm -f "$TMP_TAR" "$TMP_SHA"
+      MJ_DIR=""
+      return
+    fi
+  else
+    warn "SHA256 file not available — proceeding without checksum verification"
+  fi
+
   sudo tar -xzf "$TMP_TAR" -C /opt/
-  rm -f "$TMP_TAR"
+  rm -f "$TMP_TAR" "$TMP_SHA"
 
   # Add library path for runtime
   local MJ_LIB_CONF="/etc/ld.so.conf.d/mujoco.conf"

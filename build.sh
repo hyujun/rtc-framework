@@ -10,7 +10,7 @@
 #   ./build.sh sim                          # simulation only (MuJoCo required)
 #   ./build.sh robot                        # real robot only (no MuJoCo)
 #   ./build.sh full                         # explicit full build
-#   ./build.sh sim --mujoco /opt/mujoco-3.2.4  # sim with custom MuJoCo path
+#   ./build.sh sim --mujoco /opt/mujoco-3.7.0  # sim with custom MuJoCo path
 #   ./build.sh -d --export-compile-commands # debug build with IntelliSense DB
 #   ./build.sh --help                       # show help
 
@@ -26,8 +26,8 @@ NO_SYMLINK=0
 EXPORT_COMPILE_COMMANDS=0
 SHOW_BANNER=1
 
-# Default MuJoCo search path
-MJ_DEFAULT="/opt/mujoco-3.2.4"
+# Default MuJoCo search path (matches install.sh MJ_VERSION)
+MJ_DEFAULT="/opt/mujoco-3.7.0"
 
 show_help() {
   # Package lists are read from rt_common.sh (SSoT for build.sh/install.sh).
@@ -61,14 +61,14 @@ show_help() {
   echo "                             is now always exported and merged for clangd / VS Code)"
   echo "  --no-symlink               Do not use --symlink-install"
   echo "  --no-banner                Suppress the build banner (used by install.sh)"
-  echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.2.4)"
+  echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.7.0)"
   echo "                             Auto-detected from $MJ_DEFAULT if not specified"
   echo "  --help                     Show this help"
   echo ""
   echo "Examples:"
   echo "  ./build.sh robot"
   echo "  ./build.sh sim"
-  echo "  ./build.sh sim --mujoco /opt/mujoco-3.2.4"
+  echo "  ./build.sh sim --mujoco /opt/mujoco-3.7.0"
   echo "  ./build.sh full"
   echo ""
 }

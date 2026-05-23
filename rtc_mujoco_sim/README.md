@@ -740,6 +740,7 @@ GLFW 뷰어 통합 테스트는 헤드리스 CI 제약으로 제외.
 
 | 버전 | 변경 내용 |
 |------|----------|
+| **v5.21.0** | MuJoCo 3.2.4 → 3.7.0 호환 업데이트. `mjpResourceProvider.getdir` 콜백 제거 (3.5.0 에서 shared impl 로 대체), `mjENBL_ISLAND` → `mjDSBL_ISLAND` polarity 반전 (3.3.6 에서 islanding default-on 승격), `mjVERSION_HEADER` 자릿수 변경에 대응한 `RTC_MUJOCO_HAS_CCD` helper macro 도입. YAML `solver.island` 의미 (`true=enable`) 그대로 유지 — 내부에서만 polarity 처리. |
 | **v5.20.0** | 단위 테스트 스위트 추가 (77 GTest 케이스, 7 파일). `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep`를 public static helper로 추출. 소스를 `mujoco_simulator_lib` 정적 라이브러리로 분리. |
 | **v5.19.0** | MuJoCo 센서 publish 지원 추가. 그룹별 `sensor_topic` + `sensor_names` YAML 설정으로 XML 센서 데이터를 `rtc_msgs/SimSensorState`로 매 physics step 퍼블리시. 로봇 독립적(robot-agnostic) 구현. |
 | **v5.18.0** | `n_substeps` 파라미터 추가 — 제어 주기당 `mj_step` 호출 횟수 제어. Physics Load 측정 및 뷰어 상태 오버레이에 Substeps/Physics Load 표시 추가. |

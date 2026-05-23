@@ -268,7 +268,7 @@ void RenderSensorOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
   if (!vs.model || !vs.vis_data) {
     return;
   }
-  const int nsensor = vs.model->nsensor;
+  const int nsensor = static_cast<int>(vs.model->nsensor);
   if (nsensor <= 0) {
     mjr_overlay(mjFONT_NORMAL, mjGRID_TOPLEFT, vp, "Sensors", "none in model", vs.con);
     return;
@@ -321,9 +321,12 @@ void RenderModelInfoOverlay(const ViewerState& vs, const mjrRect& vp) noexcept {
   std::snprintf(
       labels, sizeof(labels),
       "── Model Info ──\nnBody\nnGeom\nnJoint\nnActuator\nnSensor\nnSite\nnCamera\nnTimestep");
-  std::snprintf(values, sizeof(values), "\n%d\n%d\n%d\n%d\n%d\n%d\n%d\n%.4f ms", vs.model->nbody,
-                vs.model->ngeom, vs.model->njnt, vs.model->nu, vs.model->nsensor, vs.model->nsite,
-                vs.model->ncam, static_cast<double>(vs.model->opt.timestep) * 1e3);
+  std::snprintf(values, sizeof(values), "\n%d\n%d\n%d\n%d\n%d\n%d\n%d\n%.4f ms",
+                static_cast<int>(vs.model->nbody), static_cast<int>(vs.model->ngeom),
+                static_cast<int>(vs.model->njnt), static_cast<int>(vs.model->nu),
+                static_cast<int>(vs.model->nsensor), static_cast<int>(vs.model->nsite),
+                static_cast<int>(vs.model->ncam),
+                static_cast<double>(vs.model->opt.timestep) * 1e3);
   mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMRIGHT, vp, labels, values, vs.con);
 }
 
@@ -357,7 +360,7 @@ void AddJointFrameGeoms(ViewerState& vs) noexcept {
       {0.2f, 0.2f, 1.0f, kAlpha},
   };
 
-  const int njnt = vs.model->njnt;
+  const int njnt = static_cast<int>(vs.model->njnt);
   for (int j = 0; j < njnt; ++j) {
     const int body_id = vs.model->jnt_bodyid[j];
     const double* anchor = vs.vis_data->xanchor + 3 * j;
@@ -381,8 +384,8 @@ void AddJointFrameGeoms(ViewerState& vs) noexcept {
 
       mjvGeom* g = vs.scn->geoms + vs.scn->ngeom;
       mjv_initGeom(g, mjGEOM_NONE, nullptr, nullptr, nullptr, nullptr);
-      mjv_makeConnector(g, mjGEOM_CAPSULE, kAxisWidth, anchor[0], anchor[1], anchor[2], end[0],
-                        end[1], end[2]);
+      // mjv_makeConnector (9-scalar) removed in 3.7 — use mjv_connector with from[3]/to[3].
+      mjv_connector(g, mjGEOM_CAPSULE, kAxisWidth, anchor, end);
 
       g->rgba[0] = kColors[axis][0];
       g->rgba[1] = kColors[axis][1];

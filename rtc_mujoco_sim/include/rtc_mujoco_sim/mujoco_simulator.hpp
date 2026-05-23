@@ -448,7 +448,10 @@ class MuJoCoSimulator {
 
   [[nodiscard]] double SimTimeSec() const noexcept { return sim_time_sec_.load(); }
 
-  [[nodiscard]] int NumJoints() const noexcept { return model_ ? model_->nq : 0; }
+  // model_->nq became mjtSize (int64_t) in MuJoCo 3.7 — explicit narrowing.
+  [[nodiscard]] int NumJoints() const noexcept {
+    return model_ ? static_cast<int>(model_->nq) : 0;
+  }
 
   // Read-only handles for tests / viewer. Caller must respect the SimLoop
   // ownership: do NOT mutate, and only read while the SimLoop is paused or
