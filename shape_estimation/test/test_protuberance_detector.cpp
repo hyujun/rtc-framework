@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace shape_estimation {
@@ -22,7 +23,7 @@ std::vector<PointWithNormal> MakeCylinderSurfacePoints(double radius, int count,
     PointWithNormal p;
     p.position = Eigen::Vector3d(radius * std::cos(angle), radius * std::sin(angle), z);
     p.normal = Eigen::Vector3d(std::cos(angle), std::sin(angle), 0.0);
-    p.timestamp_ns = static_cast<uint64_t>(i) * 10'000'000ULL;
+    p.timestamp_ns = static_cast<uint64_t>(i) * uint64_t{10'000'000};
     points.push_back(p);
   }
   return points;
@@ -42,7 +43,7 @@ std::vector<PointWithNormal> MakeSphereSurfacePoints(const Eigen::Vector3d& cent
     PointWithNormal p;
     p.position = center + radius * dir;
     p.normal = dir;
-    p.timestamp_ns = static_cast<uint64_t>(i) * 10'000'000ULL;
+    p.timestamp_ns = static_cast<uint64_t>(i) * uint64_t{10'000'000};
     points.push_back(p);
   }
   return points;
@@ -59,7 +60,7 @@ std::vector<PointWithNormal> MakePlaneSurfacePoints(int count) {
     PointWithNormal p;
     p.position = Eigen::Vector3d(x, y, 0.0);
     p.normal = Eigen::Vector3d(0, 0, 1);
-    p.timestamp_ns = static_cast<uint64_t>(i) * 10'000'000ULL;
+    p.timestamp_ns = static_cast<uint64_t>(i) * uint64_t{10'000'000};
     points.push_back(p);
   }
   return points;
@@ -560,7 +561,7 @@ TEST(ProtuberanceDetector, BoxResidualCorrectSign) {
     const double y = -0.03 + 0.06 * static_cast<double>((i * 3) % 20) / 20.0;
     p.position = Eigen::Vector3d(x, y, 0.0);
     p.normal = Eigen::Vector3d(0, 0, 1);
-    p.timestamp_ns = static_cast<uint64_t>(i) * 10'000'000ULL;
+    p.timestamp_ns = static_cast<uint64_t>(i) * uint64_t{10'000'000};
     points.push_back(p);
   }
 
@@ -652,7 +653,7 @@ TEST(SnapshotHistory, PushAndRetrieve) {
 
   for (int i = 0; i < 10; ++i) {
     ToFSnapshot snap;
-    snap.timestamp_ns = static_cast<uint64_t>(i + 1) * 100'000'000ULL;
+    snap.timestamp_ns = static_cast<uint64_t>(i + 1) * uint64_t{100'000'000};
     history.Push(snap);
   }
 
@@ -670,7 +671,7 @@ TEST(SnapshotHistory, PrunesByTime) {
   // 2초치 데이터 (10ms 간격 = 200개)
   for (int i = 0; i < 200; ++i) {
     ToFSnapshot snap;
-    snap.timestamp_ns = static_cast<uint64_t>(i) * 10'000'000ULL;  // 10ms
+    snap.timestamp_ns = static_cast<uint64_t>(i) * uint64_t{10'000'000};  // 10ms
     history.Push(snap);
   }
 
@@ -684,7 +685,7 @@ TEST(SnapshotHistory, PrunesByCount) {
 
   for (int i = 0; i < 10; ++i) {
     ToFSnapshot snap;
-    snap.timestamp_ns = static_cast<uint64_t>(i + 1) * 100'000'000ULL;
+    snap.timestamp_ns = static_cast<uint64_t>(i + 1) * uint64_t{100'000'000};
     history.Push(snap);
   }
 
@@ -699,7 +700,7 @@ TEST(SnapshotHistory, ClearResetsAll) {
 
   for (int i = 0; i < 5; ++i) {
     ToFSnapshot snap;
-    snap.timestamp_ns = static_cast<uint64_t>(i + 1) * 100'000'000ULL;
+    snap.timestamp_ns = static_cast<uint64_t>(i + 1) * uint64_t{100'000'000};
     history.Push(snap);
   }
 

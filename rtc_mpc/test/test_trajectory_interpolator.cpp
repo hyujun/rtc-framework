@@ -228,7 +228,7 @@ TEST_F(TrajectoryInterpolatorTest, HermiteC1ContinuityAtNodeBoundary) {
 
   const uint64_t dt_ns = static_cast<uint64_t>(kDtNode * 1e9);
   for (int k = 1; k < kHorizon; ++k) {
-    const uint64_t node_ns = kReceiveNs + k * dt_ns;
+    const uint64_t node_ns = kReceiveNs + static_cast<uint64_t>(k) * dt_ns;
 
     Eigen::VectorXd q_left = q_ref_;
     Eigen::VectorXd v_left = v_ref_;

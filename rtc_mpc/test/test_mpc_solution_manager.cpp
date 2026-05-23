@@ -200,7 +200,7 @@ TEST_F(MpcSolutionManagerTest, SolveStatsAggregatesPercentiles) {
   // (1 ms, 2 ms, …, 100 ms). p50 should land near 50 ms, p99 near 99 ms.
   for (int i = 0; i < 100; ++i) {
     MPCSolution sol = MakeSolution(static_cast<uint64_t>(i + 1));
-    sol.solve_duration_ns = static_cast<uint64_t>(i + 1) * 1'000'000ULL;
+    sol.solve_duration_ns = static_cast<uint64_t>(i + 1) * uint64_t{1'000'000};
     mgr_.PublishSolution(sol);
   }
 

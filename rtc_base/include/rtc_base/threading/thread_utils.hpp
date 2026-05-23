@@ -118,7 +118,7 @@ inline std::string ValidateThreadConfig(const ThreadConfig& cfg) noexcept {
   if (topology.physical_core_slots.empty() ||
       slot >= static_cast<int>(topology.physical_core_slots.size()))
     return slot;
-  return topology.physical_core_slots[slot];
+  return topology.physical_core_slots[static_cast<size_t>(slot)];
 }
 
 [[nodiscard]] inline int SlotToLogicalCpu(int slot) noexcept {

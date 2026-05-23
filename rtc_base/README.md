@@ -567,7 +567,7 @@ source install/setup.bash
 
 **컴파일러 경고 플래그:** `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`
 
-> Build hygiene: `thread_utils.hpp`의 `fscanf` 호출은 반환값을 검사하여 `-Wunused-result`를 제거했습니다. 실패 시 sentinel value (`quota=-1`, `period=0`)가 그대로 남아 다음 fallback stage로 진행 — behavior 동일.
+> Build hygiene: `thread_utils.hpp`의 `fscanf` 호출은 반환값을 검사하여 `-Wunused-result`를 제거했습니다. 실패 시 sentinel value (`quota=-1`, `period=0`)가 그대로 남아 다음 fallback stage로 진행 — behavior 동일. `SlotToLogicalCpu(slot, topology)` 의 벡터 인덱스도 `static_cast<size_t>(slot)` 으로 `-Wsign-conversion` 제거 — 범위 가드는 상위 라인에 이미 존재.
 
 ---
 
