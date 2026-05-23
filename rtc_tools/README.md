@@ -367,11 +367,9 @@ colcon build --packages-select rtc_tools --symlink-install
 source install/setup.bash
 ```
 
-**Python 의존성 설치:** `install.sh` 가 `rosdep` + `uv pip sync requirements.lock` 으로 자동 처리. 수동 시:
+**Python 의존성 설치:** `install.sh` 가 `uv pip sync requirements.lock` 으로 자동 처리. 수동 시:
 ```bash
-# apt (rosdep)
-sudo apt-get install -y python3-numpy python3-pandas python3-matplotlib python3-scipy python3-pyqt5
-# venv lock (workspace 루트에서 한 번만)
+# venv lock — numpy / scipy / matplotlib / pandas / PyQt5 + mujoco + cython + ruff
 cd ~/ros2_ws/rtc_ws && uv pip sync src/rtc-framework/requirements.lock
 ```
 
@@ -384,22 +382,24 @@ cd ~/ros2_ws/rtc_ws && uv pip sync src/rtc-framework/requirements.lock
 | 타입 | 패키지 |
 |------|--------|
 | build_type (export) | `ament_python` |
-| exec | `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `ament_index_python`, `python3-numpy`, `python3-pandas`, `python3-matplotlib` |
+| exec | `rclpy`, `std_msgs`, `sensor_msgs`, `rtc_msgs`, `ament_index_python` |
 | test | (개별 lint — `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 `bdedac7` 으로 사용 금지; 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md)) |
 
-> `scipy` / `mujoco` 는 package.xml 에 두지 않는다 (jazzy rosdep DB 미정의). `python3-scipy` 는 apt 수동 설치, `mujoco` Python binding 은 `requirements.lock` 으로 venv 에서 관리 — 책임 분리 ([agent_docs/architecture.md](../agent_docs/architecture.md) ARCH-5 정책과 동일 패턴).
+> Python scientific stack (`numpy` / `scipy` / `matplotlib` / `pandas` / `PyQt5`) 과 `mujoco` 는 package.xml 에 두지 않는다 — cross-workspace isolation 정책 (2026-05-23) 으로 모두 venv `requirements.lock` 책임. `rclpy` 만 ROS Jazzy 가 책임.
 
 **venv lock 기준** ([requirements.in](../requirements.in) → [requirements.lock](../requirements.lock)):
 
 | 패키지 | 버전 | 비고 |
 |--------|------|------|
+| numpy | <2 (1.26.4) | ros-jazzy-rclpy ABI 호환 핀 |
+| scipy / matplotlib / pandas / PyQt5 | latest | scientific stack + GUI |
 | mujoco | 3.7.0 | urdf_to_mjcf / compare_mjcf_urdf 런타임 |
 | Cython | 3.2.4 | mujoco wheel build 등 |
 | ruff | 0.7.4 | formatter / linter (`pyproject.toml` SSoT) |
 | setuptools | <80 | colcon-core 0.20.1 호환 |
 | wheel | latest | sdist build |
 
-`numpy` / `scipy` / `matplotlib` / `pandas` / `PyQt5` 는 venv 의 `--system-site-packages` 로 apt 버전 상속 (lock 에 박지 않음 — `--no-emit-package`). `rclpy` 는 ROS Jazzy 가 책임.
+venv 는 `--system-site-packages` 로 만들어져 ROS `rclpy` / `ament_*` / `python3-bt2` 등 시스템 책임 모듈을 상속하지만, scientific stack 5종은 venv 안 pinned 버전이 sys.path 에서 우선.
 
 ---
 

@@ -178,17 +178,14 @@ source install/setup.bash
 
 ### Python 의존성 sync (dev PC ↔ runtime PC 재현성)
 
-`install.sh` 가 `uv` 를 자동 부트스트랩하여 `.venv` 를 `requirements.lock` 과 비트단위로 일치시킵니다. 정책:
+`install.sh` 가 `uv` 를 자동 부트스트랩하여 `.venv` 를 `requirements.lock` 과 비트단위로 일치시킵니다. 정책 (2026-05-23, cross-workspace isolation):
 
-- **apt 책임**: `numpy` / `scipy` / `matplotlib` / `pandas` / `PyQt5` / `rclpy` / `ament_*` — `--system-site-packages` 로 venv 가 상속 (lock 에는 박지 않음)
-- **venv 책임 (lock)**: `mujoco` + transitive + `Cython` + `ruff` + `setuptools` / `wheel` — `requirements.lock` 에 sha256 hash 와 함께 박힘
+- **venv 책임 (lock)**: `numpy` (`<2`, ros-jazzy-rclpy ABI 핀) / `scipy` / `matplotlib` / `pandas` / `PyQt5` / `mujoco` + transitive / `Cython` / `ruff` / `setuptools` / `wheel` — `requirements.lock` 에 sha256 hash 와 함께 박힘. 같은 host 의 다른 workspace 가 시스템 numpy 를 바꿔도 이 venv 는 영향 없음 (sys.path 우선)
+- **시스템 상속 (`--system-site-packages`)**: `rclpy` / `ament_*` (ROS 2 Jazzy) / `python3-bt2` (kernel-bound) / `python3-colcon-*` · `python3-vcstool` · `python3-rosdep` (부트스트랩 도구)
 
 ```bash
 # Lock 재생성 (의존성 추가/버전 변경 시)
-uv pip compile requirements.in --generate-hashes \
-    --no-emit-package numpy --no-emit-package scipy \
-    --no-emit-package matplotlib --no-emit-package pandas \
-    -o requirements.lock
+uv pip compile requirements.in --generate-hashes -o requirements.lock
 
 # 새 머신에서 sync (install.sh 가 자동 수행, 수동:)
 uv venv --python 3.12 --system-site-packages .venv   # 3.12 명시 — runtime PC 의 system python3.9/3.10 fallback 방지

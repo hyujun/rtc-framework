@@ -26,7 +26,7 @@
   <depend>rtc_controller_manager</depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>python3-pyqt5</exec_depend>
+  <!-- PyQt5: venv 책임 (requirements.lock, cross-workspace isolation 정책 2026-05-23) -->
   <exec_depend>repo_scripts</exec_depend>
   <exec_depend>rtc_tools</exec_depend>
   <exec_depend>robot_descriptions</exec_depend>

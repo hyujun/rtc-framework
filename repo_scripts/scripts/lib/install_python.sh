@@ -3,18 +3,20 @@
 #
 # 제공 함수:
 #   ensure_venv               — .venv 자동 생성 (uv venv, 24.04 PEP 668 우회)
-#   install_python_base_deps  — python3-dev, python3-numpy (eigenpy cmake 의존)
+#   install_python_base_deps  — python3-dev (eigenpy Python.h 빌드 헤더)
 #   install_python_deps       — requirements.lock으로 venv 일괄 동기화 (uv pip sync)
 #
 # Caller scope 의존:
 #   WORKSPACE, INSTALL_SCRIPT_DIR, apt_update_if_stale, 로거,
 #   is_venv_active, ensure_uv (install_uv.sh)
 #
-# 정책 (2026-05-16, uv 도입):
+# 정책 (2026-05-23, scientific stack venv 이전):
 #   - venv 생성·sync 모두 uv (pip 미사용)
 #   - lock은 requirements.lock (uv pip compile --generate-hashes 산출)
-#   - apt-provided 패키지 (numpy/scipy/matplotlib/pandas/PyQt5)는 lock에서 제외 →
-#     system-site-packages로 상속. requirements.in 정책 주석 참조.
+#   - numpy/scipy/matplotlib/pandas/PyQt5는 venv 안에 핀-버전으로 설치 →
+#     다른 workspace 의 시스템 패키지 변경에 영향 안 받음 (cross-workspace 격리).
+#     numpy<2 핀은 ros-jazzy-rclpy ABI 호환용 (requirements.in 주석 참조).
+#   - rclpy / ament_* / python3-bt2 등은 --system-site-packages 로 상속 유지.
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "ERROR: This file should be sourced, not executed." >&2
@@ -75,37 +77,24 @@ ensure_venv() {
   success "venv activated: ${VIRTUAL_ENV}"
 }
 
-# ── Python dev headers + NumPy (required by eigenpy cmake detection) ───────────
-# eigenpy's python.cmake calls FIND_NUMPY at cmake configure time.
-# python3-dev provides Python.h; python3-numpy provides numpy headers.
-# Must be installed before colcon build (and ideally before pinocchio apt install).
-#
-# uv 도입 후 venv 내부 numpy는 system-site-packages로 상속받는다 (requirements.in
-# 정책상 lock에서 제외). 따라서 별도 venv-pip 호출 불필요.
+# ── Python dev headers (required by eigenpy cmake detection) ──────────────────
+# eigenpy's python.cmake calls FIND_NUMPY at cmake configure time, and needs
+# Python.h to compile its C extension. python3-dev provides Python.h.
+# NumPy headers come from the venv (requirements.lock pins numpy 1.x); eigenpy
+# discovers them via Python3_EXECUTABLE → venv's numpy.get_include().
 install_python_base_deps() {
-  info "Installing Python dev headers and NumPy (required by eigenpy cmake)..."
+  info "Installing Python dev headers (Python.h for eigenpy cmake)..."
   sudo apt-get install -y \
       python3-dev \
-      python3-numpy \
       > /dev/null
-  success "python3-dev and python3-numpy installed"
+  success "python3-dev installed"
 }
 
-# ── Python dependencies (apt + venv lock sync) ──────────────────────────────────
-# apt:  numpy/scipy/matplotlib/pandas/PyQt5 — venv가 system-site-packages로 상속
-# venv: mujoco + transitive + Cython + ruff + setuptools/wheel — requirements.lock
+# ── Python dependencies (venv lock sync only) ──────────────────────────────────
+# Full scientific stack + mujoco + Cython + ruff + setuptools/wheel ships via
+# requirements.lock. Cross-workspace isolation: another control project on the
+# same host can pin a different numpy without affecting this venv.
 install_python_deps() {
-  info "Installing apt Python packages (inherited by venv via system-site-packages)..."
-  apt_update_if_stale
-  sudo apt-get install -y \
-      python3-matplotlib \
-      python3-pandas \
-      python3-numpy \
-      python3-scipy \
-      python3-pyqt5 \
-      > /dev/null
-  success "apt Python packages installed"
-
   if ! is_venv_active; then
     warn "No active venv — skipping uv pip sync (requirements.lock not applied)"
     return 0

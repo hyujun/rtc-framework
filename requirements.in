@@ -1,18 +1,34 @@
-# venv-only Python dependencies (top-level)
+# venv Python dependencies (top-level)
 #
-# Policy (Option A, settled 2026-05-16):
-#   - numpy / scipy / matplotlib / pandas / PyQt5 — system-site-packages (apt python3-*)
-#   - rclpy / ament_* — system-site-packages (ROS 2)
-#   - venv-only: mujoco + transitive (binary wheels not on apt) + cython + ruff
+# Policy (Option A, settled 2026-05-23):
+#   - venv-managed: scientific stack (numpy/scipy/matplotlib/pandas/PyQt5) +
+#     mujoco + transitive + cython + ruff + colcon build tooling
+#   - Inherited via --system-site-packages: rclpy / ament_* (ROS 2 Jazzy),
+#     python3-bt2 (kernel-bound), python3-colcon-* / python3-vcstool /
+#     python3-rosdep (system bootstrap tools)
+#
+# Why scientific stack moved venv-side: avoid cross-workspace collisions when
+# another control project on the same host pins a different numpy/scipy
+# version. venv pin wins sys.path priority. Trade-off: ros-jazzy-rclpy is
+# built against numpy 1.x ABI, so numpy<2 must remain pinned until ROS 2
+# Kilted (numpy 2.x baseline). Bump only with rclpy import smoke test.
 #
 # Lock generation:
 #   uv pip compile requirements.in --generate-hashes -o requirements.lock
 #
 # Sync on a new machine:
-#   uv venv --system-site-packages .venv
+#   uv venv --python 3.12 --system-site-packages .venv
 #   source .venv/bin/activate
 #   uv pip sync requirements.lock
 
+# Scientific stack — pinned to apt-jazzy baseline for rclpy ABI compatibility
+numpy<2
+scipy
+matplotlib
+pandas
+PyQt5
+
+# Simulation + build tooling
 mujoco==3.7.0
 Cython==3.2.4
 ruff==0.7.4

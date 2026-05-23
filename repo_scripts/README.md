@@ -643,13 +643,14 @@ jobs:
       - name: Install apt deps
         run: |
           apt-get update
-          apt-get install -y python3.12 python3.12-venv git curl ca-certificates \
+          apt-get install -y python3.12 python3.12-venv python3-dev \
+            git curl ca-certificates \
             libeigen3-dev libyaml-cpp-dev libtinyxml2-dev \
             ros-jazzy-pinocchio ros-jazzy-proxsuite ros-jazzy-hpp-fcl \
             ros-jazzy-eigenpy ros-jazzy-behaviortree-cpp \
             ros-jazzy-ament-cmake-gtest python3-colcon-common-extensions \
-            python3-vcstool python3-numpy python3-scipy python3-matplotlib \
-            python3-pandas python3-pyqt5
+            python3-vcstool
+          # numpy/scipy/matplotlib/pandas/PyQt5 는 requirements.lock 에서 venv 안으로 설치
 
       - name: Import + build isolated deps
         run: |
