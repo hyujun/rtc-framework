@@ -46,6 +46,22 @@ Non-RT ROS I/O is split into two tiers based on RT adjacency and per-controller 
 
 CM's publish thread drains the SPSC snapshot for manager-owned roles and then calls `controllers_[active]->PublishNonRtSnapshot(snap)` to delegate controller-owned publishing. External consumers (BT bridge, GUIs, digital_twin, shape_estimation) subscribe to `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL, single-CM scope per locked decision D-A2) and rewire their sub/pubs on each transition. The CM never decides which namespace is authoritative — it exposes the current choice; everything else is pull-based. Logs (`device_state_log`, `device_sensor_log`) remain manager-owned for now; may move later when per-controller schema stabilises.
 
+## Backend / Controller Layering
+
+Within a robot bringup package and its `DeviceBackend` implementations (`mujoco_native`, `udp_hand_native`, `ur_driver_native`, future drivers), the backend ↔ controller boundary is governed by **responsibility**, not by data shape. The Two-Tier Topic Ownership rule above governs *who owns a ROS topic*; this rule governs *who computes a value*.
+
+- **Backend = hardware-facing.** Every backend packs the raw values its hardware publishes into `DeviceStateCache` (`state_data` / `motor_data` / `sensor_data` / `inference_data`), filling **all stride slots the layout reserves** regardless of whether the currently-active controller reads them. Unused slots are zero-filled (not skipped) so logging / digital_twin / replay tools see a single SSoT for HW state and a backend swap does not silently change consumer semantics.
+- **Controller = behavior-facing.** Controllers read only the slots they consume (e.g. WBC reads `inference_data[ft_base+1..3]` for fx/fy/fz + `inference_enable[f]`). Derived quantities (`force_magnitude`, `in_contact`, `force_rate`, `slip_rate`) are computed inside the controller from raw inputs — they do **not** appear in `DeviceStateCache`.
+- **Controller-owned publish = controller's derived view.** Topics owned by a controller (`WbcState`, `GraspState`, ToF snapshot) carry the controller's behavior view, not a mirror of backend raw. A field that started as a raw mirror but became unconsumed should be derived by the controller as a transitional step; mark with `TODO(layer-d)` (or analogous) and remove in a follow-up ABI revision.
+
+Concrete consequences:
+
+- A new behavior signal (e.g. slip detection) is added in the controller, not the backend. Backend keeps publishing raw force; controller derives `slip_rate`.
+- Removing a sensor channel from a backend does not require touching controllers that don't read it; conversely, dropping a derived field from a controller publish ABI does not require touching backends.
+- Adding a backend that exposes a subset of the layout (e.g. mujoco fills only fx/fy/fz, leaves contact_flag/displacement zero) is a legitimate sparse backend — controllers that need only the filled slots work unchanged.
+
+This layering pairs with the runtime contract in [architecture.md](architecture.md) §Threading: the same boundary that separates raw vs derived also separates the non-RT writer (backend `OnX` callback, MutuallyExclusive cb_group, SeqLock single-writer) from the RT reader (controller `ReadState` via `ControllerState`). Crossing the layering boundary in code (e.g. controller reaching into `dev1.sensor_data[]` to compute a value that the backend should have packed, or backend computing a derived value the controller should own) is an `[CONCERN] Severity: Warning` per §6.
+
 ## When Generalization Requires a Design Change
 
 If you cannot satisfy all five principles with a local edit, STOP and:
