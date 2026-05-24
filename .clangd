@@ -8,6 +8,11 @@ CompileFlags:
     - "-Wshadow"
     - "-Wconversion"
     - "-Wsign-conversion"
+    # clangd-18 resource-dir does not ship omp.h; without it the preamble
+    # fails (pinocchio/proxsuite include <omp.h>) and Eigen typedefs
+    # cascade to 'aka int'. Use GCC 13's bundled omp.h to match the actual
+    # g++ build. Build-time -fopenmp adds this automatically; clangd does not.
+    - "-I/usr/lib/gcc/x86_64-linux-gnu/13/include"
 
 Index:
   Background: Build
