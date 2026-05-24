@@ -2,6 +2,8 @@
 
 #include "rtc_controller_manager/device_backend_registry.hpp"
 
+#include <rclcpp/callback_group.hpp>
+#include <rclcpp/logging.hpp>
 #include <rclcpp/qos.hpp>
 
 #include <algorithm>
@@ -103,11 +105,29 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   }
   max_missed_ticks_ = std::max(1, max_miss);
 
-  if (!wrench_topics.empty()) {
+  if (wrench_topics.empty()) {
+    // Documented fallback: HasSensorState() still reports true, but
+    // ReadSensorState publishes num_inference_groups=0. Surface once so
+    // mis-configuration is visible in launch logs.
+    RCLCPP_INFO(logger_,
+                "[mujoco_native:%s] fingertip wrench lane disabled — no topics configured",
+                config_.group_name.c_str());
+  } else {
     rclcpp::SubscriptionOptions wrench_opts;
     // Reuse the RT callback group: callbacks run alongside JointState on the
     // same FIFO 70 thread the executor wires up. Mismatched-QoS warnings are
     // logged by rclcpp; we keep BEST_EFFORT to mirror the simulator publisher.
+    // SPSC guard: OnWrench's load-modify-store on sensor_mirror_ is safe only
+    // when this cb_group is MutuallyExclusive. WARN (do not abort) so dev
+    // builds can opt into Reentrant for diagnosis with the trade-off visible.
+    if (state_cb_group &&
+        state_cb_group->type() != rclcpp::CallbackGroupType::MutuallyExclusive) {
+      RCLCPP_WARN(logger_,
+                  "[mujoco_native:%s] wrench cb_group is not MutuallyExclusive — "
+                  "OnWrench SPSC guarantee is broken; concurrent callbacks may "
+                  "lose updates via SeqLock load-modify-store race",
+                  config_.group_name.c_str());
+    }
     wrench_opts.callback_group = state_cb_group;
     const std::size_t n_topics =
         std::min(wrench_topics.size(), static_cast<std::size_t>(kMaxSensorGroups));
@@ -133,7 +153,13 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   const double fy_d = msg.wrench.force.y;
   const double fz_d = msg.wrench.force.z;
   if (!std::isfinite(fx_d) || !std::isfinite(fy_d) || !std::isfinite(fz_d)) {
-    return;  // Drop NaN/Inf — RT reader keeps last valid value.
+    // Drop NaN/Inf — RT reader keeps last valid value. Throttled WARN so a
+    // flooding bad publisher does not spam logs but the failure mode stays
+    // visible (silent drop made debug "why did force freeze" too hard).
+    RCLCPP_WARN_THROTTLE(logger_, clock_, 1000,
+                         "[mujoco_native:%s] non-finite wrench on fingertip %d, dropping",
+                         config_.group_name.c_str(), finger_idx);
+    return;
   }
 
   auto mirror = sensor_mirror_.Load();

@@ -7,6 +7,8 @@
 #include <rtc_msgs/msg/joint_command.hpp>
 
 #include <geometry_msgs/msg/wrench_stamped.hpp>
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logger.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
@@ -117,8 +119,11 @@ class MujocoNativeBackend : public DeviceBackend {
   rtc_msgs::msg::JointCommand cmd_msg_{};
 
   // Fingertip wrench SeqLock — non-RT executor writes (OnWrench), RT reads
-  // (ReadSensorState). Per-tip seq counters give RT-side miss accounting
-  // without touching the mirror.
+  // (ReadSensorState). SPSC contract: every wrench callback MUST run on a
+  // single-threaded callback group (MutuallyExclusive) so the load-modify-
+  // store sequence in OnWrench is serialized across all fingertip indices.
+  // Configure() WARN-logs if the cb_group is Reentrant. Per-tip seq counters
+  // give RT-side miss accounting without touching the mirror.
   SeqLock<SensorMirror> sensor_mirror_{};
   std::array<std::atomic<uint64_t>, kMaxSensorGroups> wrench_seq_{};
 
@@ -128,6 +133,11 @@ class MujocoNativeBackend : public DeviceBackend {
   int max_missed_ticks_{5};
 
   std::vector<rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr> wrench_subs_;
+
+  // Diagnostics for the wrench lane (NaN/Inf drop throttle, empty-topics
+  // INFO). Steady clock so RCLCPP_*_THROTTLE works without a node clock.
+  rclcpp::Logger logger_{rclcpp::get_logger("mujoco_native_backend")};
+  rclcpp::Clock clock_{RCL_STEADY_TIME};
 };
 
 }  // namespace rtc
