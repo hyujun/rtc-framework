@@ -409,16 +409,21 @@ static void InjectFingertipDisplacement(ControllerState& s, int f, float dx, flo
 
 // ── Phase 4 Comprehensive: Deformation / Abort / Fallback Recovery ──────────
 
-TEST_F(WbcFSMTest, HoldTransitionsToFallbackOnDeformation) {
+TEST_F(WbcFSMTest, HoldIgnoresDeformationWhenDisplacementUnavailable) {
+  // TODO(layer-d): deformation guard is stubbed because current fingertip
+  // sensors do not publish per-tip displacement. ReadState drops slots 4..6
+  // from inference_data and phase.cpp no longer runs the dmag > threshold
+  // check. This test pins the new behavior so a future restoration is
+  // intentional, not silent.
   ctrl_.ForcePhaseForTesting(WbcPhase::kHold);
   ctrl_.SetGraspCmdForTesting(1);
-  // Steady force (no slip) but excessive displacement (> 0.015 m default)
+  // Steady force, no slip. Displacement injection writes inference_data
+  // slots 4..6 which the controller ignores — kHold must be maintained.
   InjectFingertipForce(state_, 0, 0.0f, 0.0f, 1.0f);
   InjectFingertipDisplacement(state_, 0, 0.0f, 0.0f, 0.05f);
-  // Two ticks to get past force_rate init
   (void)ctrl_.Compute(state_);
   (void)ctrl_.Compute(state_);
-  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kFallback);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kHold);
 }
 
 TEST_F(WbcFSMTest, HoldStaysHoldUnderNormalContact) {
@@ -523,11 +528,23 @@ TEST_F(WbcFSMTest, NumActiveFingertipsScalesWithSensorChannels) {
 }
 
 TEST_F(WbcFSMTest, ContactFlagPropagatesToReport) {
-  InjectFingertipForce(state_, 2, 0.0f, 0.0f, 0.5f, /*contact=*/0.85f);
+  // Backend = hardware raw / controller = behavior: controller no longer
+  // forwards the raw inference slot 0 probability; FingertipReport.contact_flag
+  // is now derived from |force| > force_contact_threshold_ (default 0.2 N).
+  // Inject force above threshold → in_contact=true → contact_flag=1.0F. The
+  // `contact` arg below is ignored by the new ReadState.
+  InjectFingertipForce(state_, 2, 0.0f, 0.0f, 0.5f, /*contact (ignored)=*/0.85f);
   (void)ctrl_.Compute(state_);
   auto r = ctrl_.GetFingertipReportForTesting(2);
   EXPECT_TRUE(r.valid);
-  EXPECT_NEAR(r.contact_flag, 0.85f, 1e-5f);
+  EXPECT_NEAR(r.contact_flag, 1.0F, 1e-5F);
+
+  // Same fingertip but force below threshold → derived contact_flag=0.
+  InjectFingertipForce(state_, 2, 0.0f, 0.0f, 0.05f, /*contact (ignored)=*/0.85f);
+  (void)ctrl_.Compute(state_);
+  r = ctrl_.GetFingertipReportForTesting(2);
+  EXPECT_TRUE(r.valid);
+  EXPECT_NEAR(r.contact_flag, 0.0F, 1e-5F);
 }
 
 TEST_F(WbcFSMTest, ForceRateEMASmoothsImpulse) {

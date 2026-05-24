@@ -358,19 +358,19 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── Fingertip sensor data (parsed in ReadState) ─────────────────────────
   //
-  // Populated each tick from state.devices[1].sensor_data / inference_data.
-  // Consumed by contact detection (kClosure -> kHold) and anomaly monitoring
-  // (kHold slip/deformation -> kFallback).
+  // Populated each tick from state.devices[1].inference_data slots 1..3
+  // (fx, fy, fz). Backend (hardware-facing) packs only force; controller
+  // (behavior-facing) derives in_contact / force_rate. Consumed by contact
+  // detection (kClosure -> kHold) and slip monitoring (kHold |df/dt| ->
+  // kFallback). Deformation guard is TODO(layer-d) — current fingertip
+  // sensors do not publish displacement.
   struct FingertipSensorData {
-    std::array<int32_t, kHandBaroChannelsCapacity> baro{};
-    std::array<int32_t, 3> tof{};
-    std::array<float, 3> force{};
-    std::array<float, 3> displacement{};
+    std::array<float, 3> force{};      ///< fx, fy, fz (link frame, N)
     float force_magnitude{0.0f};       ///< ||force||  (cached, N)
     float prev_force_magnitude{0.0f};  ///< previous tick, for df/dt
-    float force_rate{0.0f};            ///< df/dt [N/s] (smoothed)
-    float contact_flag{0.0f};
-    bool valid{false};
+    float force_rate{0.0f};            ///< df/dt [N/s] (smoothed, derived)
+    bool valid{false};                 ///< inference_enable[f] (backend fresh)
+    bool in_contact{false};            ///< |force| > force_contact_threshold_
   };
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};

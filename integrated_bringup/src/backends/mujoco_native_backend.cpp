@@ -6,9 +6,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace rtc {
 
@@ -75,6 +78,109 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   }
   if (!config_.command_topic.empty()) {
     cmd_pub_ = node->create_publisher<rtc_msgs::msg::JointCommand>(config_.command_topic, qos);
+  }
+
+  // Fingertip wrench lane (Y2c: read via ros 2 param nested key so we avoid
+  // touching rtc_base/DeviceBackendBinding). sim.yaml lists topics at
+  // `devices.<group>.backend.fingertip_wrench_topics`; absent → no subs.
+  const std::string param_prefix = "devices." + config_.group_name + ".backend";
+  const std::string topics_key = param_prefix + ".fingertip_wrench_topics";
+  const std::string miss_key = param_prefix + ".max_consecutive_missed_ticks";
+
+  std::vector<std::string> wrench_topics;
+  if (node->has_parameter(topics_key)) {
+    wrench_topics = node->get_parameter(topics_key).as_string_array();
+  } else {
+    wrench_topics =
+        node->declare_parameter<std::vector<std::string>>(topics_key, std::vector<std::string>{});
+  }
+
+  int max_miss = 5;
+  if (node->has_parameter(miss_key)) {
+    max_miss = static_cast<int>(node->get_parameter(miss_key).as_int());
+  } else {
+    max_miss = static_cast<int>(node->declare_parameter<int>(miss_key, max_miss));
+  }
+  max_missed_ticks_ = std::max(1, max_miss);
+
+  if (!wrench_topics.empty()) {
+    rclcpp::SubscriptionOptions wrench_opts;
+    // Reuse the RT callback group: callbacks run alongside JointState on the
+    // same FIFO 70 thread the executor wires up. Mismatched-QoS warnings are
+    // logged by rclcpp; we keep BEST_EFFORT to mirror the simulator publisher.
+    wrench_opts.callback_group = state_cb_group;
+    const std::size_t n_topics =
+        std::min(wrench_topics.size(), static_cast<std::size_t>(kMaxSensorGroups));
+    wrench_subs_.reserve(n_topics);
+    for (std::size_t i = 0; i < n_topics; ++i) {
+      const int idx = static_cast<int>(i);
+      wrench_subs_.push_back(node->create_subscription<geometry_msgs::msg::WrenchStamped>(
+          wrench_topics[i], rclcpp::SensorDataQoS(),
+          [this, idx](const geometry_msgs::msg::WrenchStamped::ConstSharedPtr msg) {
+            OnWrench(idx, *msg);
+          },
+          wrench_opts));
+    }
+  }
+}
+
+void MujocoNativeBackend::OnWrench(int finger_idx,
+                                   const geometry_msgs::msg::WrenchStamped& msg) noexcept {
+  if (finger_idx < 0 || finger_idx >= static_cast<int>(kMaxSensorGroups)) {
+    return;
+  }
+  const double fx_d = msg.wrench.force.x;
+  const double fy_d = msg.wrench.force.y;
+  const double fz_d = msg.wrench.force.z;
+  if (!std::isfinite(fx_d) || !std::isfinite(fy_d) || !std::isfinite(fz_d)) {
+    return;  // Drop NaN/Inf — RT reader keeps last valid value.
+  }
+
+  auto mirror = sensor_mirror_.Load();
+  const auto fidx = static_cast<std::size_t>(finger_idx);
+  auto& tip = mirror.tips[fidx];
+  tip.fx = static_cast<float>(fx_d);
+  tip.fy = static_cast<float>(fy_d);
+  tip.fz = static_cast<float>(fz_d);
+  tip.received_at_least_once = true;
+  if (finger_idx + 1 > mirror.num_tips) {
+    mirror.num_tips = finger_idx + 1;
+  }
+  sensor_mirror_.Store(mirror);
+  wrench_seq_[fidx].fetch_add(1, std::memory_order_release);
+}
+
+void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
+  const auto mirror = sensor_mirror_.Load();
+  cache.num_inference_groups = mirror.num_tips;
+
+  for (int f = 0; f < mirror.num_tips; ++f) {
+    const auto fu = static_cast<std::size_t>(f);
+    const uint64_t cur_seq = wrench_seq_[fu].load(std::memory_order_acquire);
+
+    if (cur_seq != rt_last_seen_seq_[fu]) {
+      rt_last_seen_seq_[fu] = cur_seq;
+      rt_miss_count_[fu] = 0;
+    } else if (rt_miss_count_[fu] < max_missed_ticks_) {
+      ++rt_miss_count_[fu];  // saturates at max_missed_ticks_ so no overflow.
+    }
+
+    const auto& tip = mirror.tips[fu];
+    const bool fresh = tip.received_at_least_once && (rt_miss_count_[fu] < max_missed_ticks_);
+    cache.inference_enable[fu] = fresh;
+
+    // Stride 7 mirror — slot 0 contact_flag / 4..6 displacement intentionally
+    // 0-filled (controller does not consume them; udp_hand backend remains
+    // the source for those lanes). Force values are preserved across stale
+    // ticks so the controller can keep using the last known fx/fy/fz.
+    const std::size_t base = static_cast<std::size_t>(f) * static_cast<std::size_t>(kInferenceStride);
+    cache.inference_data[base + 0] = 0.0F;
+    cache.inference_data[base + 1] = tip.fx;
+    cache.inference_data[base + 2] = tip.fy;
+    cache.inference_data[base + 3] = tip.fz;
+    cache.inference_data[base + 4] = 0.0F;
+    cache.inference_data[base + 5] = 0.0F;
+    cache.inference_data[base + 6] = 0.0F;
   }
 }
 

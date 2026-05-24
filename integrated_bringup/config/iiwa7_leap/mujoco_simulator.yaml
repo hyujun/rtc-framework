@@ -138,17 +138,17 @@ mujoco_simulator:
         sensor_names: ["auto"]
         contact_wrench:
           enabled: true
-          topic_prefix: "/leap_hand"
+          topic_prefix: "/leap"
           # target_name = MJCF <contact name=...> verbatim, so topics mirror
           # the XML 1:1. The suffix lists are only used internally to derive
           # the site_stem (e.g. "index_tip_contact" → site_stem "index_tip" →
           # site "index_tip_ft_site"). Resulting topics:
-          #   /leap_hand/index_tip_contact/contact_wrench   (WrenchStamped, link frame = index_tip_head)
-          #   /leap_hand/middle_tip_contact/contact_wrench  (WrenchStamped, link frame = middle_tip_head)
-          #   /leap_hand/ring_tip_contact/contact_wrench    (WrenchStamped, link frame = ring_tip_head)
-          #   /leap_hand/thumb_tip_contact/contact_wrench   (WrenchStamped, link frame = thumb_tip_head)
+          #   /leap/index_tip_contact/contact_wrench   (WrenchStamped, link frame = index_tip_head)
+          #   /leap/middle_tip_contact/contact_wrench  (WrenchStamped, link frame = middle_tip_head)
+          #   /leap/ring_tip_contact/contact_wrench    (WrenchStamped, link frame = ring_tip_head)
+          #   /leap/thumb_tip_contact/contact_wrench   (WrenchStamped, link frame = thumb_tip_head)
           # Override sensor_name_suffixes/reference_site_suffixes only when
           # the MJCF uses a different sensor↔site suffix convention.
-          publish_state: true   # adds /leap_hand/<target>/contact_state (Bool, edge-triggered)
+          publish_state: true   # adds /leap/<target>/contact_state (Bool, edge-triggered)
           publish_debug: false  # set true to also emit contact_point + contact_depth (debug)
           # allow_partial_discovery: false  # fail-fast if any sensor unresolved

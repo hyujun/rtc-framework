@@ -18,53 +18,51 @@ namespace integrated_bringup {
 
 // ── Phase 1: Read state ─────────────────────────────────────────────────────
 void DemoWbcController::ReadState(const ControllerState& state) noexcept {
-  // Parse fingertip F/T inference data + raw sensor channels for
-  // contact detection (kClosure -> kHold) and anomaly monitoring (kHold).
-  // Layout mirrors DemoJointController::ReadState for consistency.
+  // Read fingertip force from inference_data slots 1..3 (fx, fy, fz).
+  // Backend = hardware raw, controller = behavior: in_contact is derived
+  // here from force_contact_threshold_ (same threshold the kClosure->kHold
+  // FSM consumes, so the two stay consistent by construction). Slots 0/4..6
+  // are dead in this controller (contact_flag / displacement) and ignored.
   num_active_fingertips_ = 0;
   if (state.num_devices <= 1 || !state.devices[1].valid) {
     return;
   }
 
   const auto& dev1 = state.devices[1];
-  const int num_sensor_ch = dev1.num_sensor_channels;
-  const int num_fingertips = (kHandSensorValuesPerFingertipCapacity > 0)
-                                 ? (num_sensor_ch / kHandSensorValuesPerFingertipCapacity)
-                                 : 0;
-  num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
+  // Prefer num_inference_groups (set by mujoco_native via ReadSensorState +
+  // udp_hand via ReadSensorState). Fall back to deriving from sensor channel
+  // stride for the older udp_hand-style mocks that only fill the sensor lane.
+  const int num_groups =
+      (dev1.num_inference_groups > 0)
+          ? dev1.num_inference_groups
+          : (kHandSensorValuesPerFingertipCapacity > 0
+                 ? static_cast<int>(dev1.num_sensor_channels /
+                                    static_cast<int>(kHandSensorValuesPerFingertipCapacity))
+                 : 0);
+  num_active_fingertips_ = std::min(num_groups, static_cast<int>(rtc::kMaxSensorGroups));
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
+  const float threshold = static_cast<float>(force_contact_threshold_);
 
   for (int f = 0; f < num_active_fingertips_; ++f) {
     auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
-    const int base = f * kHandSensorValuesPerFingertipCapacity;
-
-    for (std::size_t j = 0; j < kHandBaroChannelsCapacity; ++j) {
-      ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
-    }
-    for (std::size_t j = 0; j < 3; ++j) {
-      ft.tof[j] = dev1.sensor_data[static_cast<std::size_t>(base) + kHandBaroChannelsCapacity + j];
-    }
 
     ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
     if (ft.valid) {
       const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
-      ft.contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
       for (int j = 0; j < 3; ++j) {
         ft.force[static_cast<std::size_t>(j)] =
             dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
-        ft.displacement[static_cast<std::size_t>(j)] =
-            dev1.inference_data[static_cast<std::size_t>(ft_base + 4 + j)];
       }
       const float fx = ft.force[0];
       const float fy = ft.force[1];
       const float fz = ft.force[2];
       ft.force_magnitude = std::sqrt(fx * fx + fy * fy + fz * fz);
+      ft.in_contact = (ft.force_magnitude > threshold);
     } else {
-      ft.contact_flag = 0.0f;
       ft.force = {};
-      ft.displacement = {};
       ft.force_magnitude = 0.0f;
+      ft.in_contact = false;
     }
 
     // df/dt with EMA smoothing; skip on first tick to avoid startup spike
@@ -434,12 +432,14 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
       const auto& ft = fingertip_data_[idx];
       const float mag = ft.force_magnitude;
       ws.force_magnitude[idx] = mag;
-      ws.contact_flag[idx] = ft.contact_flag;
-      const float d0 = ft.displacement[0];
-      const float d1 = ft.displacement[1];
-      const float d2 = ft.displacement[2];
-      ws.displacement[idx] = std::sqrt(d0 * d0 + d1 * d1 + d2 * d2);
-      if (ft.contact_flag > 0.5F) {
+      // TODO(layer-d): WbcState ABI carries contact_flag/displacement for
+      // historic compatibility. Backend = hardware raw / controller =
+      // behavior — controller derives in_contact from force_magnitude, and
+      // current fingertip sensors do not publish displacement (set to 0).
+      // Drop these fields when WbcState.msg is revised.
+      ws.contact_flag[idx] = ft.in_contact ? 1.0F : 0.0F;
+      ws.displacement[idx] = 0.0F;
+      if (ft.in_contact) {
         ++active_count;
       }
       if (mag > max_force) {

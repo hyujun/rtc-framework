@@ -30,6 +30,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(rtc_controller_interface REQUIRED)
 find_package(rtc_controllers REQUIRED)
@@ -83,6 +84,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rclcpp_lifecycle
   std_msgs
   sensor_msgs
+  geometry_msgs
   tf2_msgs
   rtc_controller_interface
   rtc_controllers
@@ -333,6 +335,22 @@ if(BUILD_TESTING)
     rtc_msgs
     sensor_msgs
     std_msgs
+  )
+
+  # ── MujocoNativeBackend fingertip wrench lane test ─────────────────────────
+  # Layer C: verifies HasSensorState / ReadSensorState / OnWrench contract —
+  # stride-7 inference_data packing, stale detection, NaN guard, per-tip
+  # miss counter independence, recovery, and dead-slot zero-fill.
+  ament_add_gtest(test_mujoco_native_backend test/test_mujoco_native_backend.cpp)
+  target_link_libraries(test_mujoco_native_backend
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_mujoco_native_backend
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_manager
+    rtc_base
+    geometry_msgs
   )
 
   # ── Controller-owned RobotTarget cb_group invariant test ───────────────────

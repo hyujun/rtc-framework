@@ -6,11 +6,14 @@
 #include "rtc_controller_manager/device_state_cache.hpp"
 #include <rtc_msgs/msg/joint_command.hpp>
 
+#include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <vector>
 
 namespace rtc {
@@ -47,6 +50,14 @@ class MujocoNativeBackend : public DeviceBackend {
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                     CommandType command_type) noexcept override;
 
+  // Fingertip wrench lane (mujoco-only extension — fills inference_data slots
+  // 1..3 with fx/fy/fz per fingertip, slots 0 / 4..6 zeroed). When the YAML
+  // `devices.<group>.backend.fingertip_wrench_topics` list is empty
+  // HasSensorState() stays true but ReadSensorState reports
+  // num_inference_groups=0 and inference_enable all false.
+  [[nodiscard]] bool HasSensorState() const noexcept override { return true; }
+  void ReadSensorState(DeviceStateCache& cache) noexcept override;
+
   [[nodiscard]] std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
     const auto ns = last_state_ns_.load(std::memory_order_acquire);
     return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(ns));
@@ -60,6 +71,27 @@ class MujocoNativeBackend : public DeviceBackend {
 
  private:
   void OnJointState(sensor_msgs::msg::JointState::SharedPtr msg);
+  void OnWrench(int finger_idx, const geometry_msgs::msg::WrenchStamped& msg) noexcept;
+
+  // Fingertip wrench mirror — sized to rtc::kMaxSensorGroups so a SensorMirror
+  // fits the same per-group capacity as DeviceStateCache::inference_enable.
+  // Stride 7 mirrors the legacy udp_hand layout (slot 0 contact_flag, 1..3
+  // fx/fy/fz, 4..6 displacement); mujoco only publishes fx/fy/fz so dead
+  // slots are zero-filled by ReadSensorState.
+  static constexpr int kInferenceStride = 7;
+
+  struct FingertipForceMirror {
+    float fx{0.0F};
+    float fy{0.0F};
+    float fz{0.0F};
+    bool received_at_least_once{false};
+  };
+  struct SensorMirror {
+    std::array<FingertipForceMirror, kMaxSensorGroups> tips{};
+    int num_tips{0};
+  };
+  static_assert(std::is_trivially_copyable_v<SensorMirror>,
+                "SensorMirror must be trivially copyable for SeqLock");
 
   DeviceBackendConfig config_{};
 
@@ -83,6 +115,19 @@ class MujocoNativeBackend : public DeviceBackend {
 
   // Pre-allocated JointCommand message (no per-tick allocation).
   rtc_msgs::msg::JointCommand cmd_msg_{};
+
+  // Fingertip wrench SeqLock — non-RT executor writes (OnWrench), RT reads
+  // (ReadSensorState). Per-tip seq counters give RT-side miss accounting
+  // without touching the mirror.
+  SeqLock<SensorMirror> sensor_mirror_{};
+  std::array<std::atomic<uint64_t>, kMaxSensorGroups> wrench_seq_{};
+
+  // RT-thread local state — only ReadSensorState touches these so no race.
+  std::array<uint64_t, kMaxSensorGroups> rt_last_seen_seq_{};
+  std::array<int, kMaxSensorGroups> rt_miss_count_{};
+  int max_missed_ticks_{5};
+
+  std::vector<rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr> wrench_subs_;
 };
 
 }  // namespace rtc

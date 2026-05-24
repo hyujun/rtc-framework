@@ -34,7 +34,9 @@ TEST(DeviceBackendsRegisteredTest, AllReportCorrectCapabilities) {
   auto mujoco = rtc::DeviceBackendRegistry::Instance().Create("mujoco_native");
   ASSERT_NE(mujoco, nullptr);
   EXPECT_FALSE(mujoco->HasMotorState());
-  EXPECT_FALSE(mujoco->HasSensorState());
+  // Fingertip wrench lane added — sensor lane is now populated from
+  // geometry_msgs/WrenchStamped subscriptions (see MujocoNativeBackend).
+  EXPECT_TRUE(mujoco->HasSensorState());
 
   auto ur = rtc::DeviceBackendRegistry::Instance().Create("ur_driver_native");
   ASSERT_NE(ur, nullptr);

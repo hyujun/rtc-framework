@@ -76,7 +76,11 @@ void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
     }
 
     case WbcPhase::kHold: {
-      // Anomaly detection: slip (|df/dt|) or excessive deformation
+      // Anomaly detection: slip (|df/dt|) only. Deformation guard is
+      // TODO(layer-d) — current fingertip sensors do not publish per-tip
+      // displacement, so the kFallback ramp on |d| > deformation_threshold_
+      // is suppressed. `deformation_threshold_` member + YAML key kept for
+      // backward compatibility and Layer D restoration.
       for (int f = 0; f < num_active_fingertips_; ++f) {
         const auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
         if (!ft.valid) {
@@ -86,16 +90,6 @@ void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
           RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
                                "[wbc] slip detected f=%d df/dt=%.2f N/s > %.2f", f,
                                static_cast<double>(ft.force_rate), slip_rate_threshold_);
-          next = WbcPhase::kFallback;
-          break;
-        }
-        const float dmag = std::sqrt(ft.displacement[0] * ft.displacement[0] +
-                                     ft.displacement[1] * ft.displacement[1] +
-                                     ft.displacement[2] * ft.displacement[2]);
-        if (dmag > deformation_threshold_) {
-          RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
-                               "[wbc] deformation detected f=%d |d|=%.3f > %.3f", f,
-                               static_cast<double>(dmag), deformation_threshold_);
           next = WbcPhase::kFallback;
           break;
         }

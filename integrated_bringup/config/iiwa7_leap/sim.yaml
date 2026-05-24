@@ -91,6 +91,19 @@
           type: "mujoco_native"            # sim mode: MuJoCo bridge
           state_topic:   "/leap/joint_states"
           command_topic: "/leap/joint_command"
+          # Fingertip wrench lane — list order = inference_enable[f] index.
+          # Mujoco backend subscribes to each WrenchStamped topic and packs
+          # fx/fy/fz into inference_data slots 1..3 (stride 7, dead slots 0
+          # + 4..6 zero-filled). Empty list disables the lane.
+          fingertip_wrench_topics:
+            - "/leap/index_tip_contact/contact_wrench"
+            - "/leap/middle_tip_contact/contact_wrench"
+            - "/leap/ring_tip_contact/contact_wrench"
+            - "/leap/thumb_tip_contact/contact_wrench"
+          # Consecutive missed RT ticks before inference_enable[f] flips to
+          # false. 500 Hz × 5 = 10 ms freshness budget; force values are
+          # preserved across stale ticks (controller gates on the bool).
+          max_consecutive_missed_ticks: 5
         joint_state_names:
           # Controller-facing order: thumb (12–15), index (0–3), middle (4–7), ring (8–11).
           # Differs from URDF/MJCF declaration order (which is index → middle → ring → thumb);

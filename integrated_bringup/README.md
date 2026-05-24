@@ -39,7 +39,7 @@ integrated_bringup/
 │   │   ├── owned_topics.hpp
 │   │   └── virtual_tcp.hpp
 │   ├── backends/                       <- DeviceBackend 구현 (sim/robot HW 어댑터, ARCH-3 부합)
-│   │   ├── mujoco_native_backend.hpp     <- sim 공용 (JointState in+out)
+│   │   ├── mujoco_native_backend.hpp     <- sim 공용 (JointState in+out, fingertip WrenchStamped in via devices.<group>.backend.fingertip_wrench_topics — list order = inference_enable[f] index, stride 7 inference_data, slot 0/4..6 zero-filled)
 │   │   ├── ur_driver_native_backend.hpp  <- UR5e robot (JointState in, Float64MultiArray out)
 │   │   └── udp_hand_native_backend.hpp   <- assm_v1 hand robot (joint+motor+sensor lane)
 │   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=16, kMaxFingertips=8)

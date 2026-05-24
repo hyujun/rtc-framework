@@ -26,7 +26,12 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // motor_efforts[] available via state.devices[1].motor_* (populated from
   // /hand/motor_states)
 
-  // Hand sensor data (per-fingertip)
+  // Hand sensor data (per-fingertip).
+  // ToF (raw distances) is still read from sensor_data for the publish-only
+  // tof_snapshot path; baro is no longer consumed. From inference_data we
+  // only take fx/fy/fz — slot 0 (contact_flag) and slots 4..6 (displacement)
+  // are derived (in_contact) or unused on current sensors. Same backend
+  // raw / controller behavior split as DemoWbcController.
   num_active_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
@@ -34,13 +39,13 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
     const int num_fingertips = num_sensor_ch / kHandSensorValuesPerFingertipCapacity;
     num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
 
+    const auto gains_now = gains_lock_.Load();
+    const float force_threshold = gains_now.grasp_force_threshold;
+
     for (int f = 0; f < num_active_fingertips_; ++f) {
       auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
       const int base = f * kHandSensorValuesPerFingertipCapacity;
 
-      for (std::size_t j = 0; j < kHandBaroChannelsCapacity; ++j) {
-        ft.baro[j] = dev1.sensor_data[static_cast<std::size_t>(base) + j];
-      }
       for (std::size_t j = 0; j < 3; ++j) {
         ft.tof[j] =
             dev1.sensor_data[static_cast<std::size_t>(base) + kHandBaroChannelsCapacity + j];
@@ -49,17 +54,18 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
       ft.valid = dev1.inference_enable[static_cast<std::size_t>(f)];
       if (ft.valid) {
         const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
-        ft.contact_flag = dev1.inference_data[static_cast<std::size_t>(ft_base)];
         for (int j = 0; j < 3; ++j) {
           ft.force[static_cast<std::size_t>(j)] =
               dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
-          ft.displacement[static_cast<std::size_t>(j)] =
-              dev1.inference_data[static_cast<std::size_t>(ft_base + 4 + j)];
         }
+        const float fx = ft.force[0];
+        const float fy = ft.force[1];
+        const float fz = ft.force[2];
+        const float mag = std::sqrt(fx * fx + fy * fy + fz * fz);
+        ft.in_contact = (mag > force_threshold);
       } else {
-        ft.contact_flag = 0.0f;
         ft.force = {};
-        ft.displacement = {};
+        ft.in_contact = false;
       }
     }
   }
@@ -230,7 +236,11 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
-    const float contact_thresh = gains.grasp_contact_threshold;
+    // gains.grasp_contact_threshold is no longer consulted: contact
+    // probability slot is not published by current fingertip sensors, and
+    // in_contact is derived from |force| > grasp_force_threshold in
+    // ReadState. TODO(layer-d): drop grasp_contact_threshold from Gains
+    // once the WbcState/GraspState ABI is settled.
     const float force_thresh = gains.grasp_force_threshold;
     const int min_fingers = gains.grasp_min_fingertips;
 
@@ -244,12 +254,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
                                   ft.force[2] * ft.force[2]);
 
       grasp_state_.force_magnitude[idx] = mag;
-      grasp_state_.contact_flag[idx] = ft.contact_flag;
+      // TODO(layer-d): GraspState ABI carries contact_flag for historic
+      // compatibility; controller now derives it from in_contact.
+      grasp_state_.contact_flag[idx] = ft.in_contact ? 1.0F : 0.0F;
       grasp_state_.inference_valid[idx] = ft.valid;
 
       if (mag > max_force)
         max_force = mag;
-      if (ft.valid && ft.contact_flag > contact_thresh && mag > force_thresh) {
+      if (ft.in_contact) {
         ++active_count;
       }
     }

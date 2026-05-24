@@ -139,13 +139,15 @@ class DemoJointController final : public RTControllerInterface {
 
  private:
   // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
+  // Backend = hardware raw, controller = behavior: force/in_contact for
+  // grasp detection; tof retained for the ToF publish snapshot. Slot 0
+  // (contact_flag) and slots 4..6 (displacement) are no longer consumed
+  // by this controller — see Layer D for full backend/controller split.
   struct FingertipSensorData {
-    std::array<int32_t, kHandBaroChannelsCapacity> baro{};
-    std::array<int32_t, 3> tof{};
-    std::array<float, 3> force{};
-    std::array<float, 3> displacement{};
-    float contact_flag{0.0f};
-    bool valid{false};
+    std::array<int32_t, 3> tof{};   ///< ToF distances (publish-only)
+    std::array<float, 3> force{};   ///< fx, fy, fz (link frame, N)
+    bool valid{false};              ///< inference_enable[f] (backend fresh)
+    bool in_contact{false};         ///< |force| > gains.grasp_force_threshold
   };
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};

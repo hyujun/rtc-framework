@@ -857,7 +857,9 @@ DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesti
   const auto& ft = fingertip_data_[static_cast<std::size_t>(fingertip_idx)];
   r.force_magnitude = ft.force_magnitude;
   r.force_rate = ft.force_rate;
-  r.contact_flag = ft.contact_flag;
+  // FingertipReport.contact_flag is the public test API; controller now
+  // derives in_contact (bool) instead of carrying a raw float flag.
+  r.contact_flag = ft.in_contact ? 1.0F : 0.0F;
   r.valid = ft.valid;
   return r;
 }
