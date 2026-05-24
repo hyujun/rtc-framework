@@ -24,7 +24,7 @@
 | **Sensors** (feedback, inferential) | 의미 검증 (LLM-as-judge, on-demand) | §5.5 |
 | **Orchestration** | Workflow | §4, [agent_docs/modification-guide.md](agent_docs/modification-guide.md) |
 | **Escalation** | Human gate | §6, §6.5 Sprint Contract |
-| **Enforcement** (자동) | 무인 실행/차단 | [.claude/hooks/format-code.sh](.claude/hooks/format-code.sh) (PostToolUse: clang-format / ruff), [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) (Stop: doc·CMake·build·test gate, exit 2 차단), [.claude/rules/rt-safety.md](.claude/rules/rt-safety.md) (RT path scoped inject), [.claude/rules/colcon-cwd.md](.claude/rules/colcon-cwd.md) (colcon/CMake/package.xml scoped inject) |
+| **Enforcement** (자동) | 무인 실행/차단 | [.claude/hooks/format-code.sh](.claude/hooks/format-code.sh) (PostToolUse: clang-format / ruff), [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) (Stop: doc·CMake·build·test gate, exit 2 차단), [.claude/hooks/guard-colcon-cwd.sh](.claude/hooks/guard-colcon-cwd.sh) (PreToolUse Bash: direct `colcon` 호출이 ws-root cwd 또는 `--build-base`/`--install-base` 절대경로를 갖지 않으면 exit 2 차단 + recovery 패턴을 stderr inline) |
 
 **첫 방문 에이전트**: §3 → §4 → §6 순으로 읽고 작업 시작.
 **수정 작업 중**: §5 검증 + §6 escalation 확인. Invariant 위반 의심 시 즉시 §6.
@@ -170,7 +170,7 @@ Long-running task handoff 절차·능동 제안 트리거 (도메인 전환 / �
 
 > **`colcon build` / `colcon test` 는 반드시 colcon workspace root (`<rtc_ws>` = `~/ros2_ws/rtc_ws`) 에서 실행한다.** repo (`src/rtc-framework`) 안에서 호출하면 `build/` · `install/` · `log/` 트리가 그 위치에 생기고 — `.clangd` 의 CompilationDatabase 가 잘못된 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다. `build.sh` / `install.sh` 는 내부에서 `cd "$WORKSPACE"` 하므로 안전. 직접 `colcon` 을 칠 때는 **항상 `cd <rtc_ws>` 또는 절대경로 `--build-base` / `--install-base` 지정**.
 
-세부 검출·복구: [.claude/rules/colcon-cwd.md](.claude/rules/colcon-cwd.md).
+자동 차단: [.claude/hooks/guard-colcon-cwd.sh](.claude/hooks/guard-colcon-cwd.sh) (PreToolUse Bash) — 직접 `colcon (build|test|test-result)` 호출이 ws-root cwd / 절대 `--build-base`+`--install-base` 중 어느 것도 갖지 않으면 `exit 2` 로 차단하고 recovery 패턴 (wrapper / cd / `--build-base` / `setup_env.sh` source / post-incident `ls build install log` 검증) 을 stderr 로 inline.
 
 ### 9.2 `.venv` 격리 (Hard rule)
 
