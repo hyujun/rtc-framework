@@ -1,0 +1,3 @@
+[submodule "robot_descriptions/object_sim"]
+	path = robot_descriptions/object_sim
+	url = https://github.com/vikashplus/object_sim.git

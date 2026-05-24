@@ -53,4 +53,9 @@ install(
   DESTINATION share/${PROJECT_NAME}/robots
 )
 
+install(
+  DIRECTORY object_sim/
+  DESTINATION share/${PROJECT_NAME}/object_sim
+)
+
 ament_package()
