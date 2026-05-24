@@ -18,7 +18,14 @@ namespace integrated_bringup {
 // may override individual keys via a second ApplyDemoSharedConfig() pass.
 struct DemoSharedConfig {
   VirtualTcpConfig vtcp{};
+  // grasp_contact_threshold gates native contact_flag probability (sensor A
+  // path only — udp_hand_native + ft_inferencer.enabled). On sensor B (force-
+  // only backends like mujoco wrench), controllers skip this check and rely
+  // on grasp_force_threshold alone.
   float grasp_contact_threshold{0.5f};
+  // grasp_force_threshold and grasp_min_fingertips are common across sensor
+  // types. force_threshold gates |F| > N; min_fingertips_for_grasp = N
+  // decides grasp_detected.
   float grasp_force_threshold{1.0f};
   int grasp_min_fingertips{2};
 

@@ -15,6 +15,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -214,6 +215,22 @@ class RTControllerInterface {
       const std::string& device_name) const noexcept {
     auto it = device_name_configs_.find(device_name);
     return (it != device_name_configs_.end()) ? &it->second : nullptr;
+  }
+
+  // Convenience accessor — returns the sensor packing layout for `device_name`
+  // (incl. capability flags `has_native_contact` / `has_native_displacement`).
+  // Empty optional when the device is unknown OR when its YAML did not declare
+  // a `sensor_layout` block (i.e. the device has no packed sensor lane).
+  // Callers (controllers) typically read this once in OnConfigure/
+  // OnDeviceConfigsSet and cache capability bools into members; the RT loop
+  // must not depend on the optional object itself.
+  [[nodiscard]] std::optional<DeviceSensorLayout> GetSensorLayout(
+      const std::string& device_name) const noexcept {
+    const auto* cfg = GetDeviceNameConfig(device_name);
+    if (cfg == nullptr) {
+      return std::nullopt;
+    }
+    return cfg->sensor_layout;
   }
 
   // Returns the name of the primary device (first group in topic config).

@@ -6,7 +6,12 @@ std_msgs/Header header
 # Per-fingertip (배열 크기 = num_fingertips, 보통 4)
 string[]  fingertip_names       # ["thumb", "index", "middle", "ring"]
 float32[] force_magnitude       # |F| per fingertip [N]
-float32[] contact_flag          # 접촉 확률 (0.0~1.0)
+# contact_flag — backend capability 분기:
+#   sensor A (udp_hand_native + ft_inferencer.enabled) → native sigmoid prob [0..1]
+#   sensor B (force-only, e.g. mujoco wrench) → controller-derived binary
+#     1.0F / 0.0F from |F| > gains.grasp_force_threshold
+# BT/GUI 는 두 경우 모두 `> 0.5f` in-contact 판정.
+float32[] contact_flag
 bool[]    inference_valid       # per-fingertip inference enable
 
 # Aggregate (컨트롤러에서 계산)

@@ -24,8 +24,12 @@ inline constexpr int kMaxWbcFingertips = 8;
 struct WbcStateData {
   uint8_t phase{0};                                        // WbcPhase enum
   std::array<float, kMaxWbcFingertips> force_magnitude{};  // |F| per fingertip [N]
-  std::array<float, kMaxWbcFingertips> contact_flag{};     // contact probability [0,1]
-  std::array<float, kMaxWbcFingertips> displacement{};     // raw displacement [m]
+  // contact_flag: sensor A → native sigmoid prob [0,1]; sensor B → derived
+  // binary 1.0F/0.0F. See WbcState.msg for capability-flag semantics.
+  std::array<float, kMaxWbcFingertips> contact_flag{};
+  // displacement: native (sensor A inference slots 4..6) if backend provides
+  // it; 0 otherwise — deformation guard is stubbed pending HW upgrade.
+  std::array<float, kMaxWbcFingertips> displacement{};     // [m]
   int num_fingertips{0};
   int num_active_contacts{0};
   float max_force{0.0f};           // max across fingertips [N]

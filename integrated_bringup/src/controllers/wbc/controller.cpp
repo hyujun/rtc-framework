@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "integrated_bringup/support/demo_shared_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 
@@ -519,6 +520,24 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     gains_lock_.Store(g);
   }
 
+  // ── 4c. Shared grasp thresholds (mirrors joint/task) ──────────────────
+  // Defaults from demo_shared.yaml, overridden by per-controller cfg keys.
+  // grasp_contact_threshold is sensor-A-only (consulted when
+  // has_native_contact_=true); the other two are common across sensor types.
+  {
+    DemoSharedConfig shared;
+    const std::string variant = node_ && node_->has_parameter("config_variant")
+                                    ? node_->get_parameter("config_variant").as_string()
+                                    : std::string{};
+    LoadDemoSharedYamlFile(shared, variant);
+    ApplyDemoSharedConfig(cfg, shared);
+    auto g = gains_lock_.Load();
+    g.grasp_contact_threshold = shared.grasp_contact_threshold;
+    g.grasp_force_threshold = shared.grasp_force_threshold;
+    g.grasp_min_fingertips = shared.grasp_min_fingertips;
+    gains_lock_.Store(g);
+  }
+
   // ── 4b. Lift L2: E-STOP arm safe position (required) ─────────────────
   //
   // Runtime arm_dof_ is established from the YAML's `estop.arm_safe_position`
@@ -846,6 +865,21 @@ void DemoWbcController::OnDeviceConfigsSet() {
       secondary_sensor_names_ = cfg->sensor_names;
     }
   }
+
+  // Cache fingertip sensor capability flags from the secondary (hand) device.
+  // See demo_joint_controller.hpp for rationale.
+  const auto secondary_name = GetSecondaryDeviceName();
+  if (!secondary_name.empty()) {
+    if (const auto layout = GetSensorLayout(secondary_name); layout.has_value()) {
+      has_native_contact_ = layout->has_native_contact;
+      has_native_displacement_ = layout->has_native_displacement;
+    }
+  }
+  RCLCPP_INFO(logger_,
+              "[wbc] fingertip sensor capability: has_native_contact=%d "
+              "has_native_displacement=%d (secondary='%s')",
+              static_cast<int>(has_native_contact_),
+              static_cast<int>(has_native_displacement_), secondary_name.c_str());
 }
 
 DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesting(

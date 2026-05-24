@@ -421,10 +421,12 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 | `sensor_layout.secondary_count_per_group` | int | 선택 | 센서 그룹당 secondary block 채널 수 (예: ToF 3) |
 | `sensor_layout.values_per_group` | int | 선택 | 그룹당 총 채널 수 (= primary + secondary 가 디폴트). 명시 시 stride 로 사용. |
 | `sensor_layout.inference_values_per_group` | int | 선택 | ML 추론 출력 그룹당 값 수 (예: contact(1)+F(3)+u(3) = 7) |
+| `sensor_layout.has_native_contact` | bool | 선택 (default false) | Backend 가 inference slot 0 에 native contact 신호 (e.g. ONNX sigmoid prob) 를 채우는지 advertise. 컨트롤러가 native vs derived contact decision 분기에 사용 (예: udp_hand+inferencer.enabled=true → true, mujoco wrench → false). CM 은 의미를 모르고 전달만. |
+| `sensor_layout.has_native_displacement` | bool | 선택 (default false) | Backend 가 inference slots 4..6 에 native displacement 를 채우는지 advertise. 위와 동일 패턴. |
 
 > URDF가 설정된 디바이스의 경우, YAML joint_limits와 URDF limits를 병합하여 더 보수적인 값을 적용합니다. YAML에 joint_limits가 없으면 URDF 값만 사용합니다.
 
-> `sensor_layout` 은 packed-sensor 토픽 (`HandSensorState` 등) 을 받는 디바이스 한정. CM 은 layout 의 의미를 모르고 stride/offset 계산만 수행 — robot/sensor-agnostic 원칙 유지. 미설정 디바이스의 packed-sensor 콜백은 throttled WARN 후 메시지 drop.
+> `sensor_layout` 은 packed-sensor 토픽 (`HandSensorState` 등) 을 받는 디바이스 한정. CM 은 layout 의 의미를 모르고 stride/offset 계산만 수행 — robot/sensor-agnostic 원칙 유지. 미설정 디바이스의 packed-sensor 콜백은 throttled WARN 후 메시지 drop. capability bool (`has_native_*`) 은 stride 계산에는 무관하고 컨트롤러 행동 분기에만 영향.
 
 ---
 

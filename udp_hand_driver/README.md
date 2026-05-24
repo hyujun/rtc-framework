@@ -109,6 +109,12 @@ Write 명령은 항상 `kJoint` 모드로 전송됩니다.
 3. **추론**: per-fingertip ONNX 모델 (IoBinding, zero-alloc)
 4. **출력**: contact probability (sigmoid), force vector (3), direction vector (3)
 
+> ⚠️ **컨트롤러 capability 일치 의무** — 컨슈머 (integrated_bringup) 의 device YAML
+> `devices.<hand_group>.sensor_layout.has_native_contact` / `has_native_displacement`
+> 두 bool 은 본 inferencer 의 `ft_inferencer.enabled` 와 lockstep 유지해야 한다.
+> Inferencer 가 꺼진 채 capability=true 로 두면 컨트롤러가 항상 0 인 contact
+> probability 를 native signal 로 오인하여 grasp detection 이 silently 무력화된다.
+
 ---
 
 ## 주요 컴포넌트

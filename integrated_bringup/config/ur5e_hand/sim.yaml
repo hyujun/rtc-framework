@@ -122,8 +122,14 @@
         # udp_hand_driver. assm_v1 hand: 8 baro + 3 ToF per fingertip, ML
         # inference = contact(1) + F(3) + u(3) = 7.
         # (Not consumed in sim mode because backend.sensor_topic is unset.)
+        #
+        # has_native_* both false: mujoco backend does not synthesize contact
+        # probability or displacement vectors. Controllers fall back to
+        # |force| > grasp_force_threshold derive.
         sensor_layout:
           primary_count_per_group:        8
           secondary_count_per_group:      3
           values_per_group:               11
           inference_values_per_group:     7
+          has_native_contact:             false
+          has_native_displacement:        false

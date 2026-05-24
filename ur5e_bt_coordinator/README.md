@@ -495,7 +495,7 @@ ur5e_bt_coordinator/
 │   ├── shape_inspect_simple.xml    # Vision + linear ToF search 간소화 inspection
 │   └── search_motion.xml            # 팔 sweep + tilt scan 탐색
 ├── include/ur5e_bt_coordinator/
-│   ├── bt_types.hpp                 # Pose6D, CachedGraspState, BT 타입 변환
+│   ├── bt_types.hpp                 # Pose6D, CachedGraspState/CachedWbcState (contact_flag 은 sensor-A native prob 또는 sensor-B derived binary — BT 노드는 `> 0.5f` 로 양쪽 모두 일관 판정), BT 타입 변환
 │   ├── bt_utils.hpp                 # 유틸리티 함수 (시간, map lookup, CSV 파싱, partial hand update)
 │   ├── bt_ros_bridge.hpp            # ROS topic ↔ BT bridge 헤더
 │   ├── bt_coordinator_node.hpp      # 메인 노드 헤더

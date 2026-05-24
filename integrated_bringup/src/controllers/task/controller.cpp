@@ -186,6 +186,20 @@ void DemoTaskController::OnDeviceConfigsSet() {
       secondary_sensor_names_ = cfg->sensor_names;
     }
   }
+
+  // Cache fingertip sensor capability flags from the secondary (hand) device.
+  // See DemoJointController::OnDeviceConfigsSet for the rationale.
+  if (!secondary.empty()) {
+    if (const auto layout = GetSensorLayout(secondary); layout.has_value()) {
+      has_native_contact_ = layout->has_native_contact;
+      has_native_displacement_ = layout->has_native_displacement;
+    }
+  }
+  RCLCPP_INFO(logger_,
+              "[task] fingertip sensor capability: has_native_contact=%d "
+              "has_native_displacement=%d (secondary='%s')",
+              static_cast<int>(has_native_contact_),
+              static_cast<int>(has_native_displacement_), secondary.c_str());
 }
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────

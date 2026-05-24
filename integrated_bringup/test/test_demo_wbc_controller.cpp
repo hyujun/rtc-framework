@@ -393,7 +393,11 @@ TEST_F(WbcFSMTest, ReadStateHandlesDisabledFingertip) {
   EXPECT_NEAR(r.force_magnitude, 0.0f, 1e-6f);
 }
 
-// Inject displacement (deformation magnitude vector) on fingertip f.
+// Inject native displacement (sensor A path: udp_hand inference output) into
+// fingertip f's inference_data slots 4..6. WBC controller currently never
+// consumes these slots — the deformation guard in phase.cpp is stubbed
+// pending an upgrade — so this helper exercises that the controller's HOLD
+// behavior stays unchanged even when sensor A is providing real values.
 static void InjectFingertipDisplacement(ControllerState& s, int f, float dx, float dy, float dz) {
   auto& dev1 = s.devices[1];
   dev1.valid = true;
@@ -409,12 +413,14 @@ static void InjectFingertipDisplacement(ControllerState& s, int f, float dx, flo
 
 // ── Phase 4 Comprehensive: Deformation / Abort / Fallback Recovery ──────────
 
-TEST_F(WbcFSMTest, HoldIgnoresDeformationWhenDisplacementUnavailable) {
-  // TODO(layer-d): deformation guard is stubbed because current fingertip
-  // sensors do not publish per-tip displacement. ReadState drops slots 4..6
-  // from inference_data and phase.cpp no longer runs the dmag > threshold
-  // check. This test pins the new behavior so a future restoration is
-  // intentional, not silent.
+TEST_F(WbcFSMTest, HoldIgnoresDeformationWhenGuardStubbed) {
+  // Deformation guard is stubbed: even when a sensor A backend (udp_hand)
+  // publishes native displacement into inference_data slots 4..6, phase.cpp
+  // does not run the dmag > threshold check. This test pins that the kHold
+  // phase stays stable so a future restoration of the guard is intentional,
+  // not a silent regression. has_native_displacement_ in controllers is
+  // wired but unconsumed today; this test will need updating when the guard
+  // is restored.
   ctrl_.ForcePhaseForTesting(WbcPhase::kHold);
   ctrl_.SetGraspCmdForTesting(1);
   // Steady force, no slip. Displacement injection writes inference_data
@@ -529,11 +535,13 @@ TEST_F(WbcFSMTest, NumActiveFingertipsScalesWithSensorChannels) {
 
 TEST_F(WbcFSMTest, ContactFlagPropagatesToReport) {
   // Backend = hardware raw / controller = behavior: controller no longer
-  // forwards the raw inference slot 0 probability; FingertipReport.contact_flag
-  // is now derived from |force| > force_contact_threshold_ (default 0.2 N).
-  // Inject force above threshold → in_contact=true → contact_flag=1.0F. The
-  // `contact` arg below is ignored by the new ReadState.
-  InjectFingertipForce(state_, 2, 0.0f, 0.0f, 0.5f, /*contact (ignored)=*/0.85f);
+  // forwards the raw inference slot 0 probability when sensor A capability
+  // is absent (test fixture has has_native_contact_=false). Report.contact_flag
+  // is derived from ft.in_contact, which is gated by |force| >
+  // gains.grasp_force_threshold (default 1.0 N — capability-aware AND
+  // collapses to the force-only branch on sensor B paths). The injected
+  // `contact` arg below is ignored on this path.
+  InjectFingertipForce(state_, 2, 0.0f, 0.0f, 1.5f, /*contact (ignored)=*/0.85f);
   (void)ctrl_.Compute(state_);
   auto r = ctrl_.GetFingertipReportForTesting(2);
   EXPECT_TRUE(r.valid);

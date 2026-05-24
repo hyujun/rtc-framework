@@ -46,7 +46,8 @@ rtc_controllers/
 │   │   └── task_space_spline_trajectory.hpp  -- SE(3) C4 글로벌 스플라인
 │   └── grasp/
 │       ├── grasp_types.hpp                   -- 그래스프 상태 머신 타입/파라미터
-│       └── grasp_controller.hpp              -- 적응형 PI 힘 제어 그래스프 컨트롤러
+│       ├── grasp_controller.hpp              -- 적응형 PI 힘 제어 그래스프 컨트롤러
+│       └── grasp_state.hpp                   -- GraspStateData POD (SeqLock-호환). contact_flag 는 capability-aware: sensor A → native sigmoid prob, sensor B → derived binary (rtc_msgs/GraspState.msg 참조)
 ├── src/
 │   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
 │   └── controllers/

@@ -40,7 +40,9 @@ BT::NodeStatus IsForceAbove::tick() {
     // Controller defaults match — use pre-computed aggregate
     count = gs.num_active_contacts;
   } else {
-    // Custom threshold — recount from per-fingertip data
+    // Custom threshold — recount from per-fingertip data.
+    // contact_flag is producer-capability dependent (sensor A native prob
+    // vs sensor B derived binary); `> 0.5f` works for both encodings.
     count = 0;
     for (const auto& ft : gs.fingertips) {
       if (ft.inference_valid && ft.contact_flag > 0.5f &&

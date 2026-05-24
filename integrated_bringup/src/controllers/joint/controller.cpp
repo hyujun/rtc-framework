@@ -165,6 +165,21 @@ void DemoJointController::OnDeviceConfigsSet() {
       secondary_sensor_names_ = cfg->sensor_names;
     }
   }
+
+  // Cache fingertip sensor capability flags from the secondary (hand) device.
+  // Both default false — primary-only configs or hand devices without a
+  // sensor_layout block stay on the force-only derive path.
+  if (!secondary.empty()) {
+    if (const auto layout = GetSensorLayout(secondary); layout.has_value()) {
+      has_native_contact_ = layout->has_native_contact;
+      has_native_displacement_ = layout->has_native_displacement;
+    }
+  }
+  RCLCPP_INFO(logger_,
+              "[joint] fingertip sensor capability: has_native_contact=%d "
+              "has_native_displacement=%d (secondary='%s')",
+              static_cast<int>(has_native_contact_),
+              static_cast<int>(has_native_displacement_), secondary.c_str());
 }
 
 ControllerOutput DemoJointController::Compute(const ControllerState& state) noexcept {

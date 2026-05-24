@@ -51,7 +51,10 @@ BT::NodeStatus IsGrasped::tick() {
     return BT::NodeStatus::FAILURE;
   }
 
-  // Custom threshold: recount from per-fingertip data
+  // Custom threshold: recount from per-fingertip data.
+  // contact_flag semantic depends on producer capability (see GraspState.msg):
+  // sensor A backends emit native sigmoid prob, sensor B backends emit
+  // derived binary 1.0/0.0 — both work with the `> 0.5f` predicate.
   int count = 0;
   float max_force = 0.0f;
   for (const auto& ft : gs.fingertips) {

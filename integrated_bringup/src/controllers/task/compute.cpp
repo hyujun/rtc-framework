@@ -455,6 +455,9 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
+    // Capability-aware: sensor A path → native_prob AND force; sensor B → force
+    // only. ft.valid (inference_enable) guards both — stale ticks contribute 0
+    // to active_count.
     const float contact_thresh = gains.grasp_contact_threshold;
     const float force_thresh = gains.grasp_force_threshold;
     const int min_fingers = gains.grasp_min_fingertips;
@@ -469,12 +472,21 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
                                   ft.force[2] * ft.force[2]);
 
       grasp_state_.force_magnitude[idx] = mag;
-      grasp_state_.contact_flag[idx] = ft.contact_flag;
+      // contact_flag publish policy mirrors joint/wbc: sensor A → native
+      // probability (smooth sigmoid), sensor B → derived binary so BT
+      // consumers see consistent >0.5 semantics across robots.
+      grasp_state_.contact_flag[idx] =
+          has_native_contact_ ? ft.contact_flag : ((ft.valid && mag > force_thresh) ? 1.0F : 0.0F);
       grasp_state_.inference_valid[idx] = ft.valid;
 
       if (mag > max_force)
         max_force = mag;
-      if (ft.valid && ft.contact_flag > contact_thresh && mag > force_thresh) {
+      const bool native_path = has_native_contact_ && ft.valid;
+      const bool force_active = ft.valid && (mag > force_thresh);
+      const bool active = native_path
+                              ? (ft.contact_flag > contact_thresh && force_active)
+                              : force_active;
+      if (active) {
         ++active_count;
       }
     }

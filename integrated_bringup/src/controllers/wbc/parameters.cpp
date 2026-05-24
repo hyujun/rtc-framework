@@ -25,6 +25,15 @@ void DemoWbcController::DeclareGainParameters() noexcept {
     }
     return node_->get_parameter(name).as_double();
   };
+  auto declare_int = [&](const std::string& name, int64_t default_val,
+                         const std::string& description) {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.description = description;
+    if (!node_->has_parameter(name)) {
+      return node_->declare_parameter<int64_t>(name, default_val, d);
+    }
+    return node_->get_parameter(name).as_int();
+  };
   auto declare_bool = [&](const std::string& name, bool default_val,
                           const std::string& description) {
     rcl_interfaces::msg::ParameterDescriptor d;
@@ -53,6 +62,18 @@ void DemoWbcController::DeclareGainParameters() noexcept {
   g.se3_weight = declare_double("se3_weight", g.se3_weight, "TSID SE3Task weight (runtime tuning)");
   g.force_weight = declare_double("force_weight", g.force_weight, "TSID ForceTask weight");
   g.posture_weight = declare_double("posture_weight", g.posture_weight, "TSID PostureTask weight");
+
+  // Grasp detection thresholds (mirror joint/task controllers). The contact
+  // threshold is consulted only on sensor-A paths (has_native_contact_=true);
+  // the force threshold + min_fingertips are common across sensor types.
+  g.grasp_contact_threshold = static_cast<float>(declare_double(
+      "grasp_contact_threshold", g.grasp_contact_threshold,
+      "Native contact probability threshold [0,1] — sensor A path only"));
+  g.grasp_force_threshold = static_cast<float>(declare_double(
+      "grasp_force_threshold", g.grasp_force_threshold, "Force magnitude threshold [N]"));
+  g.grasp_min_fingertips = static_cast<int>(
+      declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
+                  "Min fingertips with contact for grasp detection"));
 
   gains_lock_.Store(g);
 
@@ -96,6 +117,15 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
         gains_dirty = true;
       } else if (name == "posture_weight") {
         g.posture_weight = p.as_double();
+        gains_dirty = true;
+      } else if (name == "grasp_contact_threshold") {
+        g.grasp_contact_threshold = static_cast<float>(p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_force_threshold") {
+        g.grasp_force_threshold = static_cast<float>(p.as_double());
+        gains_dirty = true;
+      } else if (name == "grasp_min_fingertips") {
+        g.grasp_min_fingertips = static_cast<int>(p.as_int());
         gains_dirty = true;
       } else if (name == "mpc_enable") {
         mpc_manager_.SetEnabled(p.as_bool() && mpc_enabled_);

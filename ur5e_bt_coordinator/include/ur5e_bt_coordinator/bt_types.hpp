@@ -36,7 +36,9 @@ struct CachedGraspState {
   struct Fingertip {
     std::string name;
     float force_magnitude{0.0f};  // |F| [N]
-    float contact_flag{0.0f};     // contact probability (0.0~1.0)
+    // contact_flag: producer-capability dependent — sensor A native sigmoid
+    // prob [0,1] or sensor B derived binary 1.0/0.0. BT nodes test `> 0.5f`.
+    float contact_flag{0.0f};
     bool inference_valid{false};
   };
 
@@ -68,8 +70,11 @@ struct CachedWbcState {
   struct Fingertip {
     std::string name;
     float force_magnitude{0.0f};  // |F| [N]
-    float contact_flag{0.0f};     // contact probability (0.0~1.0)
-    float displacement{0.0f};     // raw displacement magnitude [m]
+    // contact_flag: same sensor-A/B semantics as CachedGraspState.
+    float contact_flag{0.0f};
+    // displacement: native (sensor A slots 4..6) when backend exposes it,
+    // 0 otherwise. WBC controller-side deformation guard is stubbed.
+    float displacement{0.0f};     // [m]
   };
 
   std::vector<Fingertip> fingertips;

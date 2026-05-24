@@ -267,6 +267,13 @@ GAIN_PARAM_DISPATCH: dict[str, dict[str, tuple[str, callable]]] = {
         "se3_weight": ("se3_weight", _set_double),
         "force_weight": ("force_weight", _set_double),
         "posture_weight": ("posture_weight", _set_double),
+        # Grasp detection thresholds (layer-d): capability-aware. contact_thresh
+        # is consulted only on sensor A paths (udp_hand_native +
+        # ft_inferencer.enabled); force_thresh + min_fingertips are common
+        # across sensor types. UI tooltip noting this is future work.
+        "grasp_contact_thresh": ("grasp_contact_threshold", _set_double),
+        "grasp_force_thresh": ("grasp_force_threshold", _set_double),
+        "grasp_min_fingertips": ("grasp_min_fingertips", _set_int),
         "mpc_enable": ("mpc_enable", _set_bool),
         "riccati_gain_scale": ("riccati_gain_scale", _set_double),
     },

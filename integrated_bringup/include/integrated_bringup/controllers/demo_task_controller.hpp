@@ -118,9 +118,12 @@ class DemoTaskController final : public RTControllerInterface {
     VirtualTcpConfig vtcp;
 
     // Grasp detection parameters
-    float grasp_contact_threshold{0.5f};  ///< Contact probability threshold (0.0~1.0)
-    float grasp_force_threshold{1.0f};    ///< Force magnitude threshold [N]
-    int grasp_min_fingertips{2};          ///< Min fingertips for grasp detection
+    // Grasp detection parameters. Capability-aware (see demo_shared.yaml /
+    // sensor_layout.has_native_contact): sensor A requires both contact_thresh
+    // AND force_thresh; sensor B requires force_thresh only.
+    float grasp_contact_threshold{0.5f};  ///< Native prob threshold [0,1] — sensor A only
+    float grasp_force_threshold{1.0f};    ///< |F| threshold [N] — common
+    int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
 
     // Trajectory / grasp FSM tuning
     double pi_rotation_margin{0.15};  ///< Split quintic trajectory when |angle|>π-margin [rad]
@@ -384,6 +387,11 @@ class DemoTaskController final : public RTControllerInterface {
   // hand_dof_ from secondary device joint_state_names size (0 when absent).
   int arm_dof_{0};
   int hand_dof_{0};
+
+  // Sensor capability cache — populated in OnDeviceConfigsSet from
+  // GetSensorLayout(secondary). See demo_joint_controller.hpp for rationale.
+  bool has_native_contact_{false};
+  bool has_native_displacement_{false};
 
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;

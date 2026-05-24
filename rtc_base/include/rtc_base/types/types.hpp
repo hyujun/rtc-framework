@@ -248,11 +248,20 @@ struct DeviceJointLimits {
 // rtc_* code uses these counts only for stride/offset arithmetic — it does
 // NOT know what the values mean. The semantics (barometer vs ToF, etc.) are
 // the device-driver's private concern and live in the driver package.
+//
+// `has_native_*` flags advertise *backend-provided* (vs controller-derived)
+// signal availability. They are opaque bools to rtc_* code — only consumers
+// (controllers) interpret them. Operator sets per device-group in yaml to
+// match the active backend's runtime capability (e.g. udp_hand_native with
+// `ft_inferencer.enabled=true` → has_native_contact=true, mujoco backend
+// without contact emulation → false). Default false (assume derived path).
 struct DeviceSensorLayout {
   int primary_count_per_group{0};     // first sensor block per group
   int secondary_count_per_group{0};   // second sensor block per group
   int values_per_group{0};            // = primary + secondary (per-group stride)
   int inference_values_per_group{0};  // ML inference output size per group
+  bool has_native_contact{false};       // backend emits per-group contact signal
+  bool has_native_displacement{false};  // backend emits per-group displacement signal
 };
 
 // Per-device backend binding — parsed from `devices.<group>.backend:` in

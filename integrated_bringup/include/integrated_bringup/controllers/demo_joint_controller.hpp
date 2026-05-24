@@ -78,10 +78,13 @@ class DemoJointController final : public RTControllerInterface {
     // Virtual TCP (fingertip-based control point)
     VirtualTcpConfig vtcp;
 
-    // Grasp detection parameters
-    float grasp_contact_threshold{0.5f};  ///< Contact probability threshold (0.0~1.0)
-    float grasp_force_threshold{1.0f};    ///< Force magnitude threshold [N]
-    int grasp_min_fingertips{2};          ///< Min fingertips for grasp detection
+    // Grasp detection parameters. Capability-aware (see
+    // demo_shared.yaml / sensor_layout.has_native_contact):
+    //   sensor A: contact_thresh AND force_thresh (both required)
+    //   sensor B: force_thresh only (contact_thresh unconsumed)
+    float grasp_contact_threshold{0.5f};  ///< Native prob threshold [0,1] — sensor A only
+    float grasp_force_threshold{1.0f};    ///< |F| threshold [N] — common
+    int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
 
     // Trajectory / grasp FSM tuning
     double contact_stop_release_eps{0.005};  ///< Hand contact-stop release hysteresis [rad]
@@ -146,8 +149,11 @@ class DemoJointController final : public RTControllerInterface {
   struct FingertipSensorData {
     std::array<int32_t, 3> tof{};   ///< ToF distances (publish-only)
     std::array<float, 3> force{};   ///< fx, fy, fz (link frame, N)
+    float contact_flag{0.0f};       ///< native sigmoid prob (sensor A only)
     bool valid{false};              ///< inference_enable[f] (backend fresh)
-    bool in_contact{false};         ///< |force| > gains.grasp_force_threshold
+    bool in_contact{false};         ///< capability-aware: |F|>force_thresh AND
+                                    ///< (sensor A path also requires native
+                                    ///< prob > contact_thresh)
   };
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
@@ -312,6 +318,14 @@ class DemoJointController final : public RTControllerInterface {
   // RT-path loops iterate over these.
   int arm_dof_{0};
   int hand_dof_{0};
+
+  // Sensor capability cache — populated in OnDeviceConfigsSet from
+  // GetSensorLayout(secondary). RT path (ReadState) reads only these bools,
+  // not the optional layout object. Default false ⇒ controllers fall back to
+  // |F| > grasp_force_threshold derive when secondary device omits
+  // sensor_layout or declares both capabilities false.
+  bool has_native_contact_{false};
+  bool has_native_displacement_{false};
 
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 

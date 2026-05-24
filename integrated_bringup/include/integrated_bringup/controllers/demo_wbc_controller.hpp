@@ -112,6 +112,13 @@ class DemoWbcController final : public RTControllerInterface {
     double se3_weight{100.0};            ///< SE3Task weight (runtime tuning)
     double force_weight{10.0};           ///< ForceTask weight
     double posture_weight{1.0};          ///< PostureTask weight
+    /// Grasp detection thresholds (mirror joint/task controllers).
+    /// grasp_contact_threshold gates the native contact_flag probability and
+    /// is consulted only when has_native_contact_=true (sensor A path); on
+    /// sensor B paths the |F| threshold alone decides in_contact.
+    float grasp_contact_threshold{0.5f};  ///< Native contact prob threshold (0..1)
+    float grasp_force_threshold{1.0f};    ///< |F| threshold [N]
+    int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
   };
 
   explicit DemoWbcController(std::string_view urdf_path);
@@ -304,6 +311,11 @@ class DemoWbcController final : public RTControllerInterface {
   int hand_dof_{0};
   int full_dof_{0};
 
+  // Sensor capability cache — populated in OnDeviceConfigsSet from
+  // GetSensorLayout(secondary). See demo_joint_controller.hpp for rationale.
+  bool has_native_contact_{false};
+  bool has_native_displacement_{false};
+
   // ── TSID ────────────────────────────────────────────────────────────────
   rtc::tsid::TSIDController tsid_controller_;
   rtc::tsid::PinocchioCache pinocchio_cache_;
@@ -369,8 +381,13 @@ class DemoWbcController final : public RTControllerInterface {
     float force_magnitude{0.0f};       ///< ||force||  (cached, N)
     float prev_force_magnitude{0.0f};  ///< previous tick, for df/dt
     float force_rate{0.0f};            ///< df/dt [N/s] (smoothed, derived)
+    float contact_flag{0.0f};          ///< native sigmoid prob (sensor A only)
     bool valid{false};                 ///< inference_enable[f] (backend fresh)
-    bool in_contact{false};            ///< |force| > force_contact_threshold_
+    bool in_contact{false};            ///< capability-aware: |F|>grasp_force_threshold
+                                       ///< AND (sensor A also requires native
+                                       ///< prob > grasp_contact_threshold).
+                                       ///< Separate from FSM force_contact_threshold_
+                                       ///< (phase.cpp gates on force_magnitude).
   };
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};

@@ -18,11 +18,14 @@ namespace integrated_bringup {
 
 // ── Phase 1: Read state ─────────────────────────────────────────────────────
 void DemoWbcController::ReadState(const ControllerState& state) noexcept {
-  // Read fingertip force from inference_data slots 1..3 (fx, fy, fz).
-  // Backend = hardware raw, controller = behavior: in_contact is derived
-  // here from force_contact_threshold_ (same threshold the kClosure->kHold
-  // FSM consumes, so the two stay consistent by construction). Slots 0/4..6
-  // are dead in this controller (contact_flag / displacement) and ignored.
+  // Read fingertip data from inference_data: slots 1..3 (fx/fy/fz) always,
+  // slot 0 (native contact probability) only when has_native_contact_=true
+  // (sensor A path; otherwise backend zero-fills the slot). Slots 4..6
+  // (displacement) remain unconsumed — deformation guard is stubbed pending
+  // sensor HW upgrade. ft.in_contact here decides *grasp* detection (uses
+  // gains.grasp_force_threshold + grasp_contact_threshold via capability-
+  // aware AND) — separate from phase.cpp's FSM threshold force_contact_threshold_
+  // which gates the kClosure→kHold transition on raw force_magnitude directly.
   num_active_fingertips_ = 0;
   if (state.num_devices <= 1 || !state.devices[1].valid) {
     return;
@@ -42,7 +45,9 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   num_active_fingertips_ = std::min(num_groups, static_cast<int>(rtc::kMaxSensorGroups));
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
-  const float threshold = static_cast<float>(force_contact_threshold_);
+  const auto gains_now = gains_lock_.Load();
+  const float force_threshold = gains_now.grasp_force_threshold;
+  const float contact_threshold = gains_now.grasp_contact_threshold;
 
   for (int f = 0; f < num_active_fingertips_; ++f) {
     auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
@@ -54,13 +59,20 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
         ft.force[static_cast<std::size_t>(j)] =
             dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
       }
+      const bool native_path =
+          has_native_contact_ && dev1.inference_enable[static_cast<std::size_t>(f)];
+      ft.contact_flag =
+          native_path ? dev1.inference_data[static_cast<std::size_t>(ft_base)] : 0.0F;
       const float fx = ft.force[0];
       const float fy = ft.force[1];
       const float fz = ft.force[2];
       ft.force_magnitude = std::sqrt(fx * fx + fy * fy + fz * fz);
-      ft.in_contact = (ft.force_magnitude > threshold);
+      const bool force_active = (ft.force_magnitude > force_threshold);
+      ft.in_contact =
+          native_path ? (ft.contact_flag > contact_threshold && force_active) : force_active;
     } else {
       ft.force = {};
+      ft.contact_flag = 0.0F;
       ft.force_magnitude = 0.0f;
       ft.in_contact = false;
     }
@@ -427,17 +439,18 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     ws.num_fingertips = num_active_fingertips_;
     int active_count = 0;
     float max_force = 0.0F;
+    const auto g = gains_lock_.Load();
     for (int f = 0; f < num_active_fingertips_; ++f) {
       const auto idx = static_cast<std::size_t>(f);
       const auto& ft = fingertip_data_[idx];
       const float mag = ft.force_magnitude;
       ws.force_magnitude[idx] = mag;
-      // TODO(layer-d): WbcState ABI carries contact_flag/displacement for
-      // historic compatibility. Backend = hardware raw / controller =
-      // behavior — controller derives in_contact from force_magnitude, and
-      // current fingertip sensors do not publish displacement (set to 0).
-      // Drop these fields when WbcState.msg is revised.
-      ws.contact_flag[idx] = ft.in_contact ? 1.0F : 0.0F;
+      // contact_flag: native sigmoid probability if backend provides it
+      // (sensor A path), else derived binary 1/0 from ft.in_contact.
+      // displacement: native (slots 4..6) if backend provides it (sensor A);
+      // else 0 — controller-side deformation derive is stubbed.
+      ws.contact_flag[idx] =
+          has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
       ws.displacement[idx] = 0.0F;
       if (ft.in_contact) {
         ++active_count;
@@ -448,9 +461,8 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     }
     ws.num_active_contacts = active_count;
     ws.max_force = max_force;
-    const auto g = gains_lock_.Load();
     ws.grasp_target_force = static_cast<float>(g.grasp_target_force);
-    ws.min_fingertips_for_grasp = 2;  // WBC default; no YAML override yet
+    ws.min_fingertips_for_grasp = g.grasp_min_fingertips;
     ws.grasp_detected = (active_count >= ws.min_fingertips_for_grasp);
     ws.tsid_solver_ok = tsid_initialized_ && (qp_fail_count_ == 0);
     ws.qp_fail_count = qp_fail_count_;

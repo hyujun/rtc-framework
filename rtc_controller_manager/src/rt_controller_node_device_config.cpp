@@ -246,8 +246,10 @@ void RtControllerNode::LoadDeviceNameConfigs() {
       const std::string sec_key = sl_prefix + ".secondary_count_per_group";
       const std::string vpg_key = sl_prefix + ".values_per_group";
       const std::string ipg_key = sl_prefix + ".inference_values_per_group";
+      const std::string hnc_key = sl_prefix + ".has_native_contact";
+      const std::string hnd_key = sl_prefix + ".has_native_displacement";
       const bool any = has_parameter(pri_key) || has_parameter(sec_key) || has_parameter(vpg_key) ||
-                       has_parameter(ipg_key);
+                       has_parameter(ipg_key) || has_parameter(hnc_key) || has_parameter(hnd_key);
       if (any) {
         rtc::DeviceSensorLayout sl;
         if (has_parameter(pri_key))
@@ -261,12 +263,19 @@ void RtControllerNode::LoadDeviceNameConfigs() {
         }
         if (has_parameter(ipg_key))
           sl.inference_values_per_group = static_cast<int>(get_parameter(ipg_key).as_int());
+        if (has_parameter(hnc_key))
+          sl.has_native_contact = get_parameter(hnc_key).as_bool();
+        if (has_parameter(hnd_key))
+          sl.has_native_displacement = get_parameter(hnd_key).as_bool();
         cfg.sensor_layout = sl;
         RCLCPP_INFO(get_logger(),
                     "[%s] Sensor layout: primary=%d secondary=%d values_per_group=%d "
-                    "inference_values_per_group=%d",
+                    "inference_values_per_group=%d has_native_contact=%d "
+                    "has_native_displacement=%d",
                     group_name.c_str(), sl.primary_count_per_group, sl.secondary_count_per_group,
-                    sl.values_per_group, sl.inference_values_per_group);
+                    sl.values_per_group, sl.inference_values_per_group,
+                    static_cast<int>(sl.has_native_contact),
+                    static_cast<int>(sl.has_native_displacement));
       }
     }
 

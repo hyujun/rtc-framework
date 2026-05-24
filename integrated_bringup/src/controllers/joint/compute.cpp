@@ -29,9 +29,10 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // Hand sensor data (per-fingertip).
   // ToF (raw distances) is still read from sensor_data for the publish-only
   // tof_snapshot path; baro is no longer consumed. From inference_data we
-  // only take fx/fy/fz — slot 0 (contact_flag) and slots 4..6 (displacement)
-  // are derived (in_contact) or unused on current sensors. Same backend
-  // raw / controller behavior split as DemoWbcController.
+  // take fx/fy/fz (sensor union slots 1..3 — populated by both sensor A and
+  // B backends) plus slot 0 contact_flag *only when has_native_contact_*
+  // (sensor A path; backends without native contact zero-fill the slot).
+  // Slots 4..6 (displacement) remain unconsumed in joint controller.
   num_active_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
@@ -41,6 +42,7 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
 
     const auto gains_now = gains_lock_.Load();
     const float force_threshold = gains_now.grasp_force_threshold;
+    const float contact_threshold = gains_now.grasp_contact_threshold;
 
     for (int f = 0; f < num_active_fingertips_; ++f) {
       auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
@@ -58,13 +60,25 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
           ft.force[static_cast<std::size_t>(j)] =
               dev1.inference_data[static_cast<std::size_t>(ft_base + 1 + j)];
         }
+        // Capability + runtime gate: native_path requires both yaml-declared
+        // capability AND per-fingertip inferencer freshness.
+        const bool native_path =
+            has_native_contact_ && dev1.inference_enable[static_cast<std::size_t>(f)];
+        ft.contact_flag = native_path
+                              ? dev1.inference_data[static_cast<std::size_t>(ft_base)]
+                              : 0.0F;
         const float fx = ft.force[0];
         const float fy = ft.force[1];
         const float fz = ft.force[2];
         const float mag = std::sqrt(fx * fx + fy * fy + fz * fz);
-        ft.in_contact = (mag > force_threshold);
+        const bool force_active = (mag > force_threshold);
+        // Sensor A (native): require both native prob AND force threshold.
+        // Sensor B (force-only): force threshold alone.
+        ft.in_contact =
+            native_path ? (ft.contact_flag > contact_threshold && force_active) : force_active;
       } else {
         ft.force = {};
+        ft.contact_flag = 0.0F;
         ft.in_contact = false;
       }
     }
@@ -236,11 +250,9 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
-    // gains.grasp_contact_threshold is no longer consulted: contact
-    // probability slot is not published by current fingertip sensors, and
-    // in_contact is derived from |force| > grasp_force_threshold in
-    // ReadState. TODO(layer-d): drop grasp_contact_threshold from Gains
-    // once the WbcState/GraspState ABI is settled.
+    // Capability-aware: ReadState has already encoded the sensor path in
+    // ft.in_contact (sensor A → native_prob+force AND, sensor B → force only).
+    // grasp_contact_threshold is consulted only on sensor A paths there.
     const float force_thresh = gains.grasp_force_threshold;
     const int min_fingers = gains.grasp_min_fingertips;
 
@@ -254,9 +266,12 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
                                   ft.force[2] * ft.force[2]);
 
       grasp_state_.force_magnitude[idx] = mag;
-      // TODO(layer-d): GraspState ABI carries contact_flag for historic
-      // compatibility; controller now derives it from in_contact.
-      grasp_state_.contact_flag[idx] = ft.in_contact ? 1.0F : 0.0F;
+      // contact_flag publish policy: sensor A path → native probability so
+      // downstream consumers see the smooth sigmoid value; sensor B path →
+      // derived binary (1/0 from in_contact). Both work with the BT
+      // convention `contact_flag > 0.5f`.
+      grasp_state_.contact_flag[idx] =
+          has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
       grasp_state_.inference_valid[idx] = ft.valid;
 
       if (mag > max_force)

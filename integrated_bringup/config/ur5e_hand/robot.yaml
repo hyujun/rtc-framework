@@ -151,8 +151,19 @@
         # device-driver package (udp_hand_driver). assm_v1 hand: per
         # fingertip, primary=8 barometers + secondary=3 ToFs (= 11 sensor
         # values); ML inference output = contact(1) + F(3) + u(3) = 7.
+        #
+        # has_native_contact / has_native_displacement advertise that the
+        # configured backend populates the corresponding inference_data slots
+        # with real signal (not zero-fill). Controllers consult these to
+        # branch between native + derived contact decision paths. udp_hand
+        # exposes both only when fingertip_ft_inferencer is actually enabled
+        # — keep these in lockstep with the driver's ft_inferencer.enabled
+        # YAML; setting true here while the driver runs without inference
+        # silently degrades grasp detection to "always false probability".
         sensor_layout:
           primary_count_per_group:        8
           secondary_count_per_group:      3
           values_per_group:               11
           inference_values_per_group:     7
+          has_native_contact:             true
+          has_native_displacement:        true

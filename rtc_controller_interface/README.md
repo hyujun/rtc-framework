@@ -101,6 +101,7 @@ virtual void SetDeviceTarget(int device_idx, std::span<const double> target) noe
 |--------|------|------|
 | `SetDeviceNameConfigs(map)` | public | 디바이스 이름/설정 맵 저장 후 `OnDeviceConfigsSet()` 호출 |
 | `GetDeviceNameConfig(name)` | public const | 디바이스 이름으로 설정 조회. 미등록 시 `nullptr` 반환 |
+| `GetSensorLayout(name)` | public const | `GetDeviceNameConfig(name)->sensor_layout` 의 편의 wrapper. 디바이스 미등록 또는 `sensor_layout` 블록 부재 시 `std::nullopt`. 컨트롤러가 `OnDeviceConfigsSet` 에서 1회 호출 후 capability bool 등 멤버에 cache 하는 패턴 권장 |
 | `OnDeviceConfigsSet()` | protected virtual | 하위 클래스 오버라이드 포인트 (예: URDF 기구학 해석) |
 | `GetPrimaryDeviceName()` | public const | 토픽 설정의 첫 번째 디바이스 이름 반환 (하드코딩 방지용) |
 | `GetSecondaryDeviceName()` | public const | 토픽 설정의 두 번째 디바이스 이름 반환. 단일-디바이스 컨트롤러에선 빈 문자열 — 호출자는 `GetDeviceNameConfig(...)` 결과를 null-check |

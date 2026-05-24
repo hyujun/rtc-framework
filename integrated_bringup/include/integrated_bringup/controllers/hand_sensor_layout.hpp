@@ -24,6 +24,19 @@ inline constexpr std::size_t kHandSensorValuesPerFingertipCapacity =
     kHandBaroChannelsCapacity + kHandTofChannelsCapacity;  // 11
 
 // Per-fingertip ML inference output capacity: contact(1) + F(3) + u(3) = 7.
+// Stride 7 is a *sensor union* — different backends populate different subsets:
+//   slot 0   = native contact probability (sigmoid output)
+//                — populated by udp_hand_native when ft_inferencer.enabled,
+//                  zero from force-only backends (e.g. mujoco fingertip wrench).
+//   slot 1..3 = force vector fx/fy/fz [N]
+//                — populated by all fingertip-bearing backends.
+//   slot 4..6 = native displacement vector ux/uy/uz
+//                — populated by udp_hand_native only (capacitive direction),
+//                  zero from force-only backends.
+// Controllers honor per-slot availability via DeviceSensorLayout
+// `has_native_contact` / `has_native_displacement` (yaml-declared per device
+// group); reading raw slots without consulting the capability flags risks
+// treating zero-fill as a real signal.
 inline constexpr std::size_t kHandInferenceValuesPerFingertipCapacity = 7;
 
 // Hand actuator count (assm_v1 hand: 10-DoF). integrated_bringup's own SSoT

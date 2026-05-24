@@ -15,6 +15,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include "integrated_bringup/backends/mujoco_native_backend.hpp"
+#include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
 
@@ -28,6 +29,11 @@
 namespace {
 
 using namespace std::chrono_literals;
+
+// Per-fingertip inference stride (sensor union: contact + F + u = 7).
+// Sourced from integrated_bringup's own SSoT so tests stay in lockstep when
+// the layout evolves (e.g. capacitive emulation extending sensor B path).
+constexpr std::size_t kInferStride = integrated_bringup::kHandInferenceValuesPerFingertipCapacity;
 
 constexpr const char* kGroupName = "test_leap";
 constexpr int kMaxMissedTicks = 5;
@@ -157,12 +163,12 @@ TEST_F(MujocoNativeBackendTest, AllFingertips_IndependentSubscriptions) {
   for (int f = 0; f < 4; ++f) {
     EXPECT_TRUE(cache.inference_enable[static_cast<std::size_t>(f)]) << "f=" << f;
   }
-  EXPECT_FLOAT_EQ(cache.inference_data[0 * 7 + 1], 1.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[1 * 7 + 2], 2.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[2 * 7 + 3], 3.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[3 * 7 + 1], 4.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[3 * 7 + 2], 5.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[3 * 7 + 3], 6.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[0 * kInferStride + 1], 1.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 2], 2.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[2 * kInferStride + 3], 3.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[3 * kInferStride + 1], 4.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[3 * kInferStride + 2], 5.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[3 * kInferStride + 3], 6.0F);
 }
 
 // 5. NaN/Inf force is rejected — mirror keeps last valid value.
@@ -262,10 +268,10 @@ TEST_F(MujocoNativeBackendTest, Stride7_DeadSlotsAreZero) {
   rtc::DeviceStateCache cache{};
   backend_->ReadSensorState(cache);
   ASSERT_GE(cache.num_inference_groups, 2);
-  EXPECT_FLOAT_EQ(cache.inference_data[1 * 7 + 0], 0.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[1 * 7 + 4], 0.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[1 * 7 + 5], 0.0F);
-  EXPECT_FLOAT_EQ(cache.inference_data[1 * 7 + 6], 0.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 0], 0.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 4], 0.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 5], 0.0F);
+  EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 6], 0.0F);
 }
 
 }  // namespace

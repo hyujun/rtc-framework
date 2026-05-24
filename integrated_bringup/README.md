@@ -39,7 +39,7 @@ integrated_bringup/
 │   │   ├── owned_topics.hpp
 │   │   └── virtual_tcp.hpp
 │   ├── backends/                       <- DeviceBackend 구현 (sim/robot HW 어댑터, ARCH-3 부합)
-│   │   ├── mujoco_native_backend.hpp     <- sim 공용 (JointState in+out, fingertip WrenchStamped in via devices.<group>.backend.fingertip_wrench_topics — list order = inference_enable[f] index, stride 7 inference_data, slot 0/4..6 zero-filled)
+│   │   ├── mujoco_native_backend.hpp     <- sim 공용 (JointState in+out, fingertip WrenchStamped in) ◇
 │   │   ├── ur_driver_native_backend.hpp  <- UR5e robot (JointState in, Float64MultiArray out)
 │   │   └── udp_hand_native_backend.hpp   <- assm_v1 hand robot (joint+motor+sensor lane)
 │   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=16, kMaxFingertips=8)
@@ -83,6 +83,11 @@ integrated_bringup/
     ├── demo_controller_gui.py          <- 컨트롤러 튜닝 GUI 진입점 (얇은 shim)
     └── motion_editor_gui.py            <- 모션 에디터 GUI (PyQt5)
 ```
+
+> ◇ `mujoco_native_backend.hpp` 의 fingertip wrench lane 동작 (sim sensor B path):
+> - 구독 입력: `devices.<group>.backend.fingertip_wrench_topics` (list 순서 = `inference_enable[f]` 인덱스)
+> - 패킹: stride 7 `inference_data` 의 slot 1..3 (fx/fy/fz). slot 0 (contact_flag) 과 slot 4..6 (displacement) 은 zero-fill
+> - 컨트롤러는 `devices.<group>.sensor_layout.has_native_contact=false` (sim 의 default) 로 인식하여 force-only grasp 분기 선택 (D-2 capability-aware)
 
 ---
 
@@ -158,14 +163,22 @@ urdf:
 
 ## 공통 파라미터 (`demo_shared.yaml`)
 
-`DemoJointController`와 `DemoTaskController`는 다음 파라미터를 공유합니다. 기본값은 `config/ur5e_hand/controllers/demo_shared.yaml`에 단일 소스로 정의되며, 두 컨트롤러가 `LoadConfig()` 시점에 동일하게 로드합니다.
+`DemoJointController` · `DemoTaskController` · `DemoWbcController` 가 다음 파라미터를 공유합니다. 기본값은 `config/ur5e_hand/controllers/demo_shared.yaml` 에 단일 소스로 정의되며, 세 컨트롤러가 `LoadConfig()` 시점에 동일하게 로드합니다 (WBC 는 layer-d 에서 추가됨).
 
 | 파라미터 | 설명 |
 |---------|------|
 | `virtual_tcp_mode` / `virtual_tcp_offset` / `virtual_tcp_orientation` | Virtual TCP 설정 (아래 DemoTask 섹션 참조) |
-| `grasp_contact_threshold` / `grasp_force_threshold` / `grasp_min_fingertips` | Grasp 감지 임계값 |
+| `grasp_contact_threshold` / `grasp_force_threshold` / `grasp_min_fingertips` | Grasp 감지 임계값 (capability-aware — 아래 표 참조) |
 | `grasp_controller_type` | `"contact_stop"` 또는 `"force_pi"` |
 | `force_pi_grasp.*` | Force-PI grasp 파라미터 + 핑거별 q_open/q_close |
+
+**Grasp threshold capability matrix.** 컨트롤러는 `devices.<hand>.sensor_layout.has_native_contact` (robot/sim yaml) 를 보고 두 경로로 분기합니다.
+
+| 키 | 활성 sensor type | 의미 |
+|---|---|---|
+| `grasp_contact_threshold` | sensor A only (udp_hand + ft_inferencer.enabled) | native sigmoid contact probability threshold (0..1). sensor B 에선 미사용 |
+| `grasp_force_threshold` | sensor A + B 공통 | `\|F\| > threshold` [N]. sensor A 에선 contact_threshold 와 AND 결합 |
+| `grasp_min_fingertips` | sensor A + B 공통 | `grasp_detected = active_count ≥ N` |
 
 **Override 우선순위:** `demo_shared.yaml` (defaults) → `demo_*_controller.yaml` (per-controller overrides). 컨트롤러별 YAML에 동일 키를 추가하면 해당 컨트롤러에서만 덮어씁니다. 예:
 
@@ -640,6 +653,7 @@ GUI 시작 시:
 | `demo_task_controller` | Grasp Detection | (joint 와 동일) | — |
 | `demo_wbc_controller` | Arm/Hand Trajectory | `arm_trajectory_speed`, `hand_trajectory_speed` | `arm_max_traj_velocity`, `hand_max_traj_velocity` |
 | `demo_wbc_controller` | TSID Weights | `se3_weight`, `force_weight`, `posture_weight` | — |
+| `demo_wbc_controller` | Grasp Detection | (joint 와 동일 — layer-d 에서 추가, capability-aware) | — |
 | `demo_wbc_controller` | MPC | `mpc_enable` (bool), `riccati_gain_scale` | — |
 
 WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_hand/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.

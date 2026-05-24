@@ -26,8 +26,18 @@ uint8 phase
 # Per-fingertip raw sensor data (size = num_fingertips, typically 4)
 string[]  fingertip_names    # e.g. ["thumb", "index", "middle", "ring"]
 float32[] force_magnitude    # |F| per fingertip [N]
-float32[] contact_flag       # contact probability (0.0–1.0)
-float32[] displacement       # raw fingertip displacement [m]
+# contact_flag semantics depend on the active backend's capability flag
+# devices.<group>.sensor_layout.has_native_contact:
+#   sensor A (e.g. udp_hand_native + ft_inferencer.enabled=true) → native
+#     sigmoid contact probability in [0.0, 1.0].
+#   sensor B (force-only backends, e.g. mujoco fingertip wrench) → controller-
+#     derived binary 1.0F / 0.0F from |F| > gains.grasp_force_threshold.
+# Downstream consumers (BT, GUI) use `contact_flag > 0.5f` as the in-contact
+# predicate in both cases — sigmoid threshold and binary derive agree there.
+float32[] contact_flag
+# displacement: native (sensor A inference slots 4..6) if backend provides it;
+# 0 otherwise — controller-side deformation derive is stubbed pending HW upgrade.
+float32[] displacement       # fingertip displacement [m]
 
 # Aggregate
 int32   num_active_contacts

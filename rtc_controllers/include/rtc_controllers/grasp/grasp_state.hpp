@@ -26,6 +26,9 @@ inline constexpr int kMaxGraspFingertips = 8;
 // Grasp detection state — trivially copyable, SeqLock-compatible.
 struct GraspStateData {
   std::array<float, kMaxGraspFingertips> force_magnitude{};
+  // contact_flag: backend capability 분기 — sensor A (udp_hand_native +
+  // ft_inferencer) → native sigmoid prob [0,1]; sensor B (force-only) →
+  // controller-derived binary 1.0F/0.0F. See rtc_msgs/GraspState.msg.
   std::array<float, kMaxGraspFingertips> contact_flag{};
   std::array<bool, kMaxGraspFingertips> inference_valid{};
   int num_fingertips{0};

@@ -505,6 +505,9 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
             auto& ft = grasp_state_.fingertips[i];
             ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
             ft.force_magnitude = msg->force_magnitude[i];
+            // contact_flag passthrough — sensor A producers send native
+            // sigmoid prob [0..1], sensor B producers send derived binary
+            // 1.0/0.0. Downstream BT nodes test with `> 0.5f` either way.
             ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
             ft.inference_valid =
                 (i < msg->inference_valid.size()) ? msg->inference_valid[i] : false;
@@ -554,6 +557,8 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
             auto& ft = wbc_state_.fingertips[i];
             ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
             ft.force_magnitude = msg->force_magnitude[i];
+            // contact_flag passthrough — same sensor-A/B capability semantics
+            // as GraspState branch above (see WbcState.msg).
             ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
             ft.displacement = (i < msg->displacement.size()) ? msg->displacement[i] : 0.0f;
           }

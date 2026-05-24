@@ -6,9 +6,15 @@ demo_shared:
   virtual_tcp_orientation: [1.5708, 0.0, -1.5708]  # RPY [rad] orientation of vtcp in TCP frame
 
   # ── Grasp detection ─────────────────────────────────────────────────────────
-  grasp_contact_threshold: 0.5   # Contact probability threshold (0.0~1.0)
-  grasp_force_threshold: 1.0     # Force magnitude threshold [N]
-  grasp_min_fingertips: 2        # Min fingertips for grasp detection
+  # Capability-aware: controllers branch on
+  # devices.<hand>.sensor_layout.has_native_contact (set in robot/sim yaml):
+  #   key                      | sensor A (native contact) | sensor B (force-only)
+  #   grasp_contact_threshold  | required (AND with force) | unconsumed
+  #   grasp_force_threshold    | required (AND with prob)  | required (only check)
+  #   grasp_min_fingertips     | active_count ≥ N (common across types)
+  grasp_contact_threshold: 0.5   # [sensor A only] native sigmoid prob threshold (0..1)
+  grasp_force_threshold: 1.0     # [common]  |F| threshold [N]
+  grasp_min_fingertips: 2        # [common]  grasp_detected = active_count ≥ N
 
   # ── Grasp controller selection ─────────────────────────────────────────────
   # "contact_stop" (default): force 감지 시 hand position freeze
