@@ -9,6 +9,17 @@ demo_shared:
   virtual_tcp_offset: [0.0, 0.0, 0.0]
   virtual_tcp_orientation: [0.0, 0.0, 0.0]
 
+  # ── Grasp detection ─────────────────────────────────────────────────────────
+  # Capability-aware: controllers branch on
+  # devices.<hand>.sensor_layout.has_native_contact (set in robot/sim yaml):
+  #   key                      | sensor A (native contact) | sensor B (force-only)
+  #   grasp_contact_threshold  | required (AND with force) | unconsumed
+  #   grasp_force_threshold    | required (AND with prob)  | required (only check)
+  #   grasp_min_fingertips     | active_count ≥ N (common across types)
+  grasp_contact_threshold: 0.5   # [sensor A only] native sigmoid prob threshold (0..1)
+  grasp_force_threshold: 1.0     # [common]  |F| threshold [N]
+  grasp_min_fingertips: 2        # [common]  grasp_detected = active_count ≥ N
+
   # ── Grasp controller disabled ─────────────────────────────────────────────
   # demo_shared_config.cpp:234-239 → grasp_controller_ = nullptr when
   # type != "force_pi". demo_joint/task hot paths gate on nullptr.
