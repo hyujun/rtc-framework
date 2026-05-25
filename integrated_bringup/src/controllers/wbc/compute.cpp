@@ -2,6 +2,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
+#include "rtc_tsid/tasks/se3_task.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -263,6 +264,34 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
         ++contact_idx;
       }
       static_cast<rtc::tsid::ForceTask*>(force_task)->SetForceReferences(force_lambda_des_);
+    }
+  }
+
+  // 3c. TCP SE3 trajectory tick (MPC-disabled mode only). Gated by both
+  // tcp_trajectory_active_ (init flag from OnPhaseEnter) AND the per-phase
+  // SE3-task-active cache so we don't push references in phases where
+  // se3_tcp is YAML-deactivated. Per-tick push of (pose, v, a) replaces the
+  // single step-on-entry SetSe3Reference path so the SE3Task sees a smooth
+  // ramp instead of a large initial error → aggressive PD acceleration.
+  if (tcp_trajectory_active_ &&
+      se3_task_active_in_phase_[static_cast<std::size_t>(phase_)]) {
+    tcp_trajectory_time_ += dt;
+    if (has_pending_tcp_segment_ &&
+        tcp_trajectory_time_ >= tcp_trajectory_.duration()) {
+      const pinocchio::SE3 mid =
+          tcp_trajectory_.compute(tcp_trajectory_.duration()).pose;
+      tcp_trajectory_.initialize(mid, pinocchio::Motion::Zero(), pending_tcp_goal_,
+                                 pinocchio::Motion::Zero(), pending_tcp_duration_);
+      tcp_trajectory_time_ = 0.0;
+      has_pending_tcp_segment_ = false;
+    }
+    tcp_traj_state_ = tcp_trajectory_.compute(
+        std::min(tcp_trajectory_time_, tcp_trajectory_.duration()), dt);
+    if (auto* se3 = tsid_controller_.Formulation().GetTask("se3_tcp"); se3) {
+      static_cast<rtc::tsid::SE3Task*>(se3)->SetSe3Reference(
+          tcp_traj_state_.pose,
+          tcp_traj_state_.velocity.toVector(),
+          tcp_traj_state_.acceleration.toVector());
     }
   }
 

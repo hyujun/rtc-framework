@@ -16,6 +16,16 @@ demo_wbc_controller:
   arm_max_traj_velocity: 1.71
   hand_max_traj_velocity: 4.0
 
+  # ── TCP SE3 trajectory (MPC-disabled SE3 ramp on phase entry) ────────────
+  # Quintic rest-to-rest from current FK pose to tcp_goal_; mid-pose split
+  # when ang_dist > π - pi_rotation_margin. Active only when MPC is disabled
+  # and the new phase has se3_tcp.active=true in phase_presets.
+  tcp_trajectory_speed: 0.1            # m/s, TCP translational
+  tcp_trajectory_angular_speed: 0.5    # rad/s, TCP angular
+  tcp_max_traj_velocity: 0.5           # m/s, quintic peak = 1.875·d/T
+  tcp_max_traj_angular_velocity: 1.0   # rad/s, quintic peak
+  pi_rotation_margin: 0.15             # rad, split threshold (π - margin)
+
   # ── Topic routing ──────────────────────────────────────────────────────────
   # Phase 4: device-wire lanes (state / joint_command) moved to
   # devices.<group>.backend in sim.yaml/robot.yaml. Only controller-owned

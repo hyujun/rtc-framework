@@ -361,6 +361,11 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 | `hand_trajectory_speed` | double | `[1e-6, ∞)` (clamp). `kRelease` hand quintic duration 산출 |
 | `arm_max_traj_velocity` | double (read-only) | trajectory 진행 중 arm 관절 최대 속도 [rad/s] |
 | `hand_max_traj_velocity` | double (read-only) | trajectory 진행 중 hand 모터 최대 속도 [rad/s] |
+| `tcp_trajectory_speed` | double | `[1e-6, ∞)` (clamp). MPC-disabled SE3 ramp 의 TCP 병진 속도 [m/s]. SE3-task active 한 phase 진입 edge 에서 `InitTcpTrajectory` 가 quintic rest-to-rest segment 를 구성 |
+| `tcp_trajectory_angular_speed` | double | `[1e-6, ∞)` (clamp). MPC-disabled SE3 ramp 의 TCP 각속도 [rad/s] |
+| `tcp_max_traj_velocity` | double | TCP 병진 속도 cap [m/s] (quintic peak = `1.875·d/T`) |
+| `tcp_max_traj_angular_velocity` | double | TCP 각속도 cap [rad/s] (quintic peak = `1.875·d/T`) |
+| `pi_rotation_margin` | double | π-rotation defense 임계 [rad]. `ang_dist > π - margin` 이면 mid-pose split 으로 2-segment trajectory |
 | `se3_weight` | double | TSID `SE3Task` 가중치 (런타임 튜닝) |
 | `force_weight` | double | TSID `ForceTask` 가중치 |
 | `posture_weight` | double | TSID `PostureTask` 가중치 |

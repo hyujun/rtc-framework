@@ -4,6 +4,8 @@
 #
 # Runtime tunable parameters are exposed on /demo_wbc_controller/<name> via
 # the LifecycleNode parameter API: arm_trajectory_speed, hand_trajectory_speed,
+# tcp_trajectory_speed, tcp_trajectory_angular_speed, tcp_max_traj_velocity,
+# tcp_max_traj_angular_velocity, pi_rotation_margin,
 # se3_weight, force_weight, posture_weight, mpc_enable, riccati_gain_scale.
 # Read-only (YAML-only) caps: arm_max_traj_velocity, hand_max_traj_velocity.
 # Force-PI grasp transitions: ~/grasp_command srv (rtc_msgs/GraspCommand).
@@ -16,6 +18,16 @@ demo_wbc_controller:
   hand_trajectory_speed: 1.0      # rad/s
   arm_max_traj_velocity: 2.0      # rad/s, max velocity during trajectory
   hand_max_traj_velocity: 4.0     # rad/s
+
+  # ── TCP SE3 trajectory (MPC-disabled SE3 ramp on phase entry) ─────────
+  # Quintic rest-to-rest from current FK pose to tcp_goal_; mid-pose split
+  # when ang_dist > π - pi_rotation_margin. Active only when MPC is
+  # disabled and the new phase has se3_tcp.active=true in phase_presets.
+  tcp_trajectory_speed: 0.1             # m/s, TCP translational
+  tcp_trajectory_angular_speed: 0.5     # rad/s, TCP angular
+  tcp_max_traj_velocity: 0.5            # m/s, quintic peak = 1.875·d/T
+  tcp_max_traj_angular_velocity: 1.0    # rad/s, quintic peak
+  pi_rotation_margin: 0.15              # rad, split threshold (π - margin)
 
   # ── Topic routing ─────────────────────────────────────────────────────
   # Phase 4: device-wire lanes (state / motor_state / sensor_state /

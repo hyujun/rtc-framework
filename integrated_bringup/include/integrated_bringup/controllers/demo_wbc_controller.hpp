@@ -15,6 +15,7 @@
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
+#include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/logging/mpc_timing_logger.hpp"
@@ -109,6 +110,13 @@ class DemoWbcController final : public RTControllerInterface {
     double arm_max_traj_velocity{2.0};   ///< Max arm joint velocity [rad/s]
     double hand_max_traj_velocity{4.0};  ///< Max hand motor velocity [rad/s]
     double grasp_target_force{2.0};      ///< Target grasp force [N]
+    // TCP task-space trajectory speeds (MPC-disabled SE3 ramp). Quintic
+    // rest-to-rest; duration = max(d/speed, 1.875·d/max_vel, ...).
+    double tcp_trajectory_speed{0.1};          ///< TCP translational speed [m/s]
+    double tcp_trajectory_angular_speed{0.5};  ///< TCP angular speed [rad/s]
+    double tcp_max_traj_velocity{0.5};         ///< TCP translational vel cap [m/s]
+    double tcp_max_traj_angular_velocity{1.0}; ///< TCP angular vel cap [rad/s]
+    double pi_rotation_margin{0.15};           ///< split when ang_dist > π - margin
     double se3_weight{100.0};            ///< SE3Task weight (runtime tuning)
     double force_weight{10.0};           ///< ForceTask weight
     double posture_weight{1.0};          ///< PostureTask weight
@@ -463,6 +471,28 @@ class DemoWbcController final : public RTControllerInterface {
   trajectory::JointSpaceTrajectory<kMaxHandDof> hand_trajectory_;
   double robot_trajectory_time_{0.0};
   double hand_trajectory_time_{0.0};
+
+  // TCP SE3 trajectory — used in MPC-disabled mode only, gated by
+  // se3_task_active_in_phase_[phase_]. On phase entry (SE3-inactive →
+  // SE3-active) InitTcpTrajectory builds a quintic rest-to-rest segment
+  // from current FK pose to tcp_goal_ (with π-rotation split when needed).
+  // MPC-enabled mode keeps the legacy OnPhaseEnter SE3 step path.
+  trajectory::TaskSpaceTrajectory tcp_trajectory_;
+  trajectory::TaskSpaceTrajectory::State tcp_traj_state_{};
+  double tcp_trajectory_time_{0.0};
+  bool tcp_trajectory_active_{false};
+  pinocchio::SE3 pending_tcp_goal_{pinocchio::SE3::Identity()};
+  double pending_tcp_duration_{0.0};
+  bool has_pending_tcp_segment_{false};
+  // True iff phase_presets_[p].task_presets contains active se3_tcp entry.
+  // Filled once in LoadConfig — phase ID hardcoding 0 (YAML is SSoT).
+  std::array<bool, kNumPhases> se3_task_active_in_phase_{};
+
+  void InitTcpTrajectory(const ControllerState& state) noexcept;
+  [[nodiscard]] bool Se3TaskActiveInPhase(WbcPhase p) const noexcept {
+    const auto idx = static_cast<std::size_t>(p);
+    return idx < kNumPhases && se3_task_active_in_phase_[idx];
+  }
 
   // ── Device limits ───────────────────────────────────────────────────────
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;

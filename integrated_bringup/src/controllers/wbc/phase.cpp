@@ -143,6 +143,22 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   const auto& dev0 = state.devices[0];
   const auto& dev1 = state.devices[1];
 
+  // ── TCP SE3 trajectory edge handling (MPC-disabled mode only) ──────────
+  // SE3 task activity is the gate (YAML phase_presets[<phase>].tasks.se3_tcp.
+  // active). MPC-enabled mode keeps the legacy step-on-entry path (`tcp_goal_`
+  // assigned once below); MPC-disabled mode drives a quintic ramp every tick.
+  {
+    const bool se3_now = Se3TaskActiveInPhase(new_phase);
+    const bool se3_prev = Se3TaskActiveInPhase(prev_phase_);
+    const bool mpc_on = mpc_enabled_ && mpc_manager_.Enabled();
+    if (se3_now && !se3_prev && tcp_goal_valid_ && !mpc_on) {
+      InitTcpTrajectory(state);
+    } else if (!se3_now && se3_prev) {
+      tcp_trajectory_active_ = false;
+      has_pending_tcp_segment_ = false;
+    }
+  }
+
   switch (new_phase) {
     case WbcPhase::kIdle: {
       // Hold current position
@@ -247,8 +263,12 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       q_next_full_ = q_curr_full_;
       v_next_full_ = v_curr_full_;
 
-      // Set SE3Task reference (TCP goal)
-      if (tcp_goal_valid_) {
+      // Set SE3Task reference (TCP goal). MPC-enabled mode pushes the step
+      // here once on entry — MPC drives PostureTask smoothly so the SE3 step
+      // is acceptable. MPC-disabled mode lets ComputeTSIDPosition push a
+      // quintic-shaped (pose, v, a) every tick via tcp_trajectory_ instead;
+      // a step push here would defeat the trajectory's smoothing on entry.
+      if (tcp_goal_valid_ && mpc_enabled_ && mpc_manager_.Enabled()) {
         auto* se3_task = tsid_controller_.Formulation().GetTask("se3_tcp");
         if (se3_task) {
           static_cast<rtc::tsid::SE3Task*>(se3_task)->SetSe3Reference(tcp_goal_);
@@ -461,6 +481,89 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     }
     phase_manager_ptr_->ForcePhase(grasp_id);
   }
+}
+
+// ── TCP SE3 trajectory init (MPC-disabled SE3 ramp) ─────────────────────────
+//
+// Mirrors the demo_task_controller TaskSpaceTrajectory pattern: quintic
+// rest-to-rest interpolation in SE3 with a π-rotation defense (mid-pose
+// split). Called from OnPhaseEnter on SE3-inactive → SE3-active edges
+// when MPC is disabled. tcp_goal_valid_ is the caller's precondition.
+void DemoWbcController::InitTcpTrajectory(const ControllerState& /*state*/) noexcept {
+  if (!arm_handle_) {
+    tcp_trajectory_active_ = false;
+    has_pending_tcp_segment_ = false;
+    return;
+  }
+
+  // Current TCP via FK (already populated by ReadState / FillLogOutput path
+  // earlier this tick — but be defensive: arm_handle_ keeps last computed
+  // FK so GetFramePlacement is RT-safe even if no FK was issued this tick).
+  pinocchio::SE3 start_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
+  if (use_root_frame_) {
+    start_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(start_pose);
+  }
+  const pinocchio::SE3 goal_pose = tcp_goal_;
+
+  const auto gains = gains_lock_.Load();
+
+  const Eigen::Vector3d start_pos = start_pose.translation();
+  const Eigen::Vector3d goal_pos = goal_pose.translation();
+  const double trans_dist = (goal_pos - start_pos).norm();
+
+  // Quintic rest-to-rest peak velocity = 1.875 · d / T.
+  const double T_speed_trans = trans_dist / gains.tcp_trajectory_speed;
+  const double T_vel_trans = (gains.tcp_max_traj_velocity > 0.0)
+                                 ? (1.875 * trans_dist / gains.tcp_max_traj_velocity)
+                                 : 0.0;
+
+  // Angular distance via AngleAxisd (stable at θ → π, unlike log3).
+  const Eigen::AngleAxisd aa(start_pose.rotation().transpose() * goal_pose.rotation());
+  const double angular_dist = aa.angle();  // [0, π]
+  const Eigen::Vector3d rot_axis = aa.axis();
+
+  const double T_speed_rot = angular_dist / gains.tcp_trajectory_angular_speed;
+  const double T_vel_rot = (gains.tcp_max_traj_angular_velocity > 0.0)
+                               ? (1.875 * angular_dist / gains.tcp_max_traj_angular_velocity)
+                               : 0.0;
+  const double duration = std::max({0.01, T_speed_trans, T_vel_trans, T_speed_rot, T_vel_rot});
+
+  const bool split_trajectory = (angular_dist > M_PI - gains.pi_rotation_margin);
+
+  if (split_trajectory) {
+    // ── π-rotation defense: split into 2 rest-to-rest segments ──────────
+    const double half_angle = angular_dist * 0.5;
+    const Eigen::Matrix3d R_mid =
+        start_pose.rotation() * Eigen::AngleAxisd(half_angle, rot_axis).toRotationMatrix();
+
+    pinocchio::SE3 mid_pose;
+    mid_pose.translation() = 0.5 * (start_pos + goal_pos);
+    mid_pose.rotation() = R_mid;
+
+    const double half_trans = trans_dist * 0.5;
+    const double T1_speed_t = half_trans / gains.tcp_trajectory_speed;
+    const double T1_vel_t = (gains.tcp_max_traj_velocity > 0.0)
+                                ? (1.875 * half_trans / gains.tcp_max_traj_velocity)
+                                : 0.0;
+    const double T1_speed_r = half_angle / gains.tcp_trajectory_angular_speed;
+    const double T1_vel_r = (gains.tcp_max_traj_angular_velocity > 0.0)
+                                ? (1.875 * half_angle / gains.tcp_max_traj_angular_velocity)
+                                : 0.0;
+    const double dur1 = std::max({0.01, T1_speed_t, T1_vel_t, T1_speed_r, T1_vel_r});
+
+    tcp_trajectory_.initialize(start_pose, pinocchio::Motion::Zero(), mid_pose,
+                               pinocchio::Motion::Zero(), dur1);
+    pending_tcp_goal_ = goal_pose;
+    pending_tcp_duration_ = dur1;  // symmetric split
+    has_pending_tcp_segment_ = true;
+  } else {
+    tcp_trajectory_.initialize(start_pose, pinocchio::Motion::Zero(), goal_pose,
+                               pinocchio::Motion::Zero(), duration);
+    has_pending_tcp_segment_ = false;
+  }
+
+  tcp_trajectory_time_ = 0.0;
+  tcp_trajectory_active_ = true;
 }
 
 // ── Control modes ────────────────────────────────────────────────────────────

@@ -465,6 +465,24 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       map_preset(WbcPhase::kHold, "hold");
     }
 
+    // Cache per-phase SE3-task activity (YAML is SSoT — phase ID hardcoding
+    // would drift the moment se3_tcp is toggled off in a phase preset).
+    // Consumed by OnPhaseEnter (edge detection) + ComputeTSIDPosition
+    // (per-tick trajectory gate).
+    se3_task_active_in_phase_.fill(false);
+    for (int p = 0; p < kNumPhases; ++p) {
+      const auto idx = static_cast<std::size_t>(p);
+      if (!phase_preset_valid_[idx]) {
+        continue;
+      }
+      for (const auto& tp : phase_presets_[idx].task_presets) {
+        if (tp.task_name == "se3_tcp" && tp.active) {
+          se3_task_active_in_phase_[idx] = true;
+          break;
+        }
+      }
+    }
+
     tsid_initialized_ = true;
     RCLCPP_INFO(logger_, "TSID initialized: nq=%d nv=%d n_act=%d contacts=%d", robot_info_.nq,
                 robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contacts);
@@ -578,6 +596,22 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     }
     if (cfg["hand_max_traj_velocity"]) {
       g.hand_max_traj_velocity = cfg["hand_max_traj_velocity"].as<double>();
+    }
+    if (cfg["tcp_trajectory_speed"]) {
+      g.tcp_trajectory_speed = std::max(1e-6, cfg["tcp_trajectory_speed"].as<double>());
+    }
+    if (cfg["tcp_trajectory_angular_speed"]) {
+      g.tcp_trajectory_angular_speed =
+          std::max(1e-6, cfg["tcp_trajectory_angular_speed"].as<double>());
+    }
+    if (cfg["tcp_max_traj_velocity"]) {
+      g.tcp_max_traj_velocity = cfg["tcp_max_traj_velocity"].as<double>();
+    }
+    if (cfg["tcp_max_traj_angular_velocity"]) {
+      g.tcp_max_traj_angular_velocity = cfg["tcp_max_traj_angular_velocity"].as<double>();
+    }
+    if (cfg["pi_rotation_margin"]) {
+      g.pi_rotation_margin = cfg["pi_rotation_margin"].as<double>();
     }
     gains_lock_.Store(g);
   }

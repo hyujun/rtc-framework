@@ -59,6 +59,23 @@ void DemoWbcController::DeclareGainParameters() noexcept {
                      "Max hand motor velocity during trajectory [rad/s] (read-only)",
                      /*read_only=*/true);
 
+  // TCP task-space trajectory (MPC-disabled SE3 ramp).
+  g.tcp_trajectory_speed = std::max(
+      1e-6, declare_double("tcp_trajectory_speed", g.tcp_trajectory_speed,
+                           "TCP translational trajectory speed [m/s] (MPC-disabled SE3 ramp)"));
+  g.tcp_trajectory_angular_speed =
+      std::max(1e-6, declare_double("tcp_trajectory_angular_speed", g.tcp_trajectory_angular_speed,
+                                    "TCP angular trajectory speed [rad/s] (MPC-disabled SE3 ramp)"));
+  g.tcp_max_traj_velocity =
+      declare_double("tcp_max_traj_velocity", g.tcp_max_traj_velocity,
+                     "TCP translational velocity cap [m/s] (quintic peak = 1.875·d/T)");
+  g.tcp_max_traj_angular_velocity =
+      declare_double("tcp_max_traj_angular_velocity", g.tcp_max_traj_angular_velocity,
+                     "TCP angular velocity cap [rad/s] (quintic peak = 1.875·d/T)");
+  g.pi_rotation_margin = declare_double(
+      "pi_rotation_margin", g.pi_rotation_margin,
+      "π-rotation split margin [rad] — split into 2 segments when ang_dist > π - margin");
+
   g.se3_weight = declare_double("se3_weight", g.se3_weight, "TSID SE3Task weight (runtime tuning)");
   g.force_weight = declare_double("force_weight", g.force_weight, "TSID ForceTask weight");
   g.posture_weight = declare_double("posture_weight", g.posture_weight, "TSID PostureTask weight");
@@ -108,6 +125,21 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
         gains_dirty = true;
       } else if (name == "hand_trajectory_speed") {
         g.hand_trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "tcp_trajectory_speed") {
+        g.tcp_trajectory_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "tcp_trajectory_angular_speed") {
+        g.tcp_trajectory_angular_speed = std::max(1e-6, p.as_double());
+        gains_dirty = true;
+      } else if (name == "tcp_max_traj_velocity") {
+        g.tcp_max_traj_velocity = p.as_double();
+        gains_dirty = true;
+      } else if (name == "tcp_max_traj_angular_velocity") {
+        g.tcp_max_traj_angular_velocity = p.as_double();
+        gains_dirty = true;
+      } else if (name == "pi_rotation_margin") {
+        g.pi_rotation_margin = p.as_double();
         gains_dirty = true;
       } else if (name == "se3_weight") {
         g.se3_weight = p.as_double();
