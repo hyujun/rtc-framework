@@ -338,18 +338,19 @@ J_vtcp_angular = J_tcp_angular
 
 UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 8-단계 FSM이 phase별 task 가중치/contact 활성화를 자동 전환한다.
 
-#### 8-Phase FSM
+#### 7-Phase FSM (slot 5 reserved)
+
+모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 어떤 비-terminal phase 에서도 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kRelease` / `kFallback` 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).
 
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
-| `kIdle` | Position hold | 초기 / `grasp_cmd=0` | `grasp_cmd=1` + `robot_new_target` |
-| `kApproach` | Quintic trajectory (joint) | kIdle 종료 | `trajectory_time >= duration` |
-| `kPreGrasp` | TSID QP (no contact) | kApproach 종료 | `||tcp_err|| < epsilon_pregrasp` |
-| `kClosure` | TSID QP + contact + ForceTask | kPreGrasp 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
-| `kHold` | TSID QP + contact + ForceTask | kClosure 종료 | `grasp_cmd=2`, slip 또는 deformation 감지 시 `kFallback` |
-| `kRetreat` | Quintic trajectory (joint) | `grasp_cmd=2` | `trajectory_time >= duration` (q_approach_start로 복귀) |
-| `kRelease` | Hand open trajectory | kRetreat 종료 | `hand_trajectory_time >= duration` |
-| `kFallback` | Position hold | QP 연속 실패 N회, slip/deformation | `grasp_cmd=0` (수동 복구) |
+| `kIdle` (0) | TSID QP (SE3 hold @ current TCP + posture) | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |
+| `kApproach` (1) | TSID QP (SE3 quintic ramp → pregrasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_approach` |
+| `kPreGrasp` (2) | TSID QP (no contact, fine SE3 tracking) | kApproach 종료 | `||tcp_err|| < epsilon_pregrasp` |
+| `kClosure` (3) | TSID QP + contact + ForceTask | kPreGrasp 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
+| `kHold` (4) | TSID QP + contact + ForceTask | kClosure 종료 | slip 감지 시 `kFallback` (RELEASE preempt 는 top-level guard) |
+| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from any non-terminal phase | `release_done_` (stage 1 hand trajectory 완료) |
+| `kFallback` (7) | Position hold | QP 연속 실패 N회, slip/deformation | `grasp_cmd=0` (수동 복구; top-level abort guard 면제) |
 
 #### Runtime Gains (per-controller ROS 2 parameters)
 
@@ -357,8 +358,8 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 | Parameter | 타입 | 범위 / 비고 |
 |-----------|------|-------------|
-| `arm_trajectory_speed` | double | `[1e-6, ∞)` (clamp). `kApproach`/`kRetreat` quintic duration 산출 |
-| `hand_trajectory_speed` | double | `[1e-6, ∞)` (clamp). `kRelease` hand quintic duration 산출 |
+| `arm_trajectory_speed` | double | `[1e-6, ∞)` (clamp). 현재는 hand quintic 외 미사용 (TSID-everywhere) — 향후 fallback path 가 부활하면 활성. |
+| `hand_trajectory_speed` | double | `[1e-6, ∞)` (clamp). `kRelease` stage 1 finger-open quintic duration 산출 |
 | `arm_max_traj_velocity` | double (read-only) | trajectory 진행 중 arm 관절 최대 속도 [rad/s] |
 | `hand_max_traj_velocity` | double (read-only) | trajectory 진행 중 hand 모터 최대 속도 [rad/s] |
 | `tcp_trajectory_speed` | double | `[1e-6, ∞)` (clamp). MPC-disabled SE3 ramp 의 TCP 병진 속도 [m/s]. SE3-task active 한 phase 진입 edge 에서 `InitTcpTrajectory` 가 quintic rest-to-rest segment 를 구성 |
@@ -379,7 +380,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 - `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking) / `contact_consistency` (Stage A-2 soft no-slip) / `object_wrench` / `internal_force` / `object_se3` (Stage B-5 object-level trio — closure/hold 에서만 활성, controller-owned `ContactManager` / `GraspCache` / `ObjectFrame` / `IdentityObjectStateProvider` 공유. RT-tick 마다 `ComputeGraspMatrix → grasp_cache_.Compute` 1회 호출 후 세 task 가 `GPinv()` / `GTPinv()` / `ProjN()` / `Rank()` 를 *읽기만* 함)
 - `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8, Stage A-4 normal-aware) / `torque_limit` (Stage A-1, `tau_scale`). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
 - `tsid.contacts.*` (Stage A-4 옵션): 각 contact 에 `normal: [x, y, z]` 키 추가하면 world-frame seed normal 로 사용 (기본 `(0,0,1)`). `tsid.contacts_normal_filter_alpha`: runtime `ContactState::UpdateNormal` LPF gain (default 0.1, 1.0 = no filter).
-- `tsid.contacts_default_ramp_sec` (Stage A-5b, optional): contact activation linear-ramp 시간 (초). Phase FSM 이 kClosure / kHold 진입 시 `SetActivationTarget(i, 1.0, this)`, kRetreat / kIdle 시 0.0 으로 ramp 호출. ForceTask / ContactConsistencyTask 의 행이 √s_i 로 scaling 되어 contact on/off 시 cost surface 가 부드럽게 변함. Default 0.1 (100 ms).
+- `tsid.contacts_default_ramp_sec` (Stage A-5b, optional): contact activation linear-ramp 시간 (초). Phase FSM 이 kClosure / kHold 진입 시 `SetActivationTarget(i, 1.0, this)`, kIdle 진입 시 0.0 으로 ramp 호출. ForceTask / ContactConsistencyTask 의 행이 √s_i 로 scaling 되어 contact on/off 시 cost surface 가 부드럽게 변함. Default 0.1 (100 ms). `kRelease` 는 별도 `fsm.release_ramp_sec` (default 30 ms) 으로 더 빠른 deactivation ramp 사용 — finger-open 시작 전 contact 를 안전히 떼기 위함.
 - `tsid.force_pi` (Stage A-3, optional): per-contact normal-force PI updater. Keys: `kp` / `ki` / `i_max` / `lambda_min` / `lambda_max` / `f_des_default`. Stage A-4 부터 출력은 contact normal 방향으로 푸시되어 FrictionCone 과 일관성을 유지 (default +Z 면 byte-identical).
 - `tsid.object_frame` (Stage B-5, optional): object 의 world-frame placement + mass. Keys: `p_w: [x,y,z]` (default `[0,0,0]`) / `mass` (default `0.0`). R_w 는 reserved (identity 고정). closure/hold entry 마다 `mass × 9.81` 이 `ObjectWrenchTask` 의 ẑ 성분으로 push 되고, `IdentityObjectStateProvider` 가 동일한 `p_w` 를 `ObjectSE3Task` placement reference 로 사용. mass=0 은 ObjectWrenchTask 를 no-op residual 로 만듦. Stage B-5+ 에서 vision/pose-topic provider 가 watchdog (`pose_timeout_sec`) 와 함께 plug-in 예정.
 - `tsid.phase_presets`: pre_grasp / closure / hold 별 task weight + active 토글
@@ -404,13 +405,13 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 **Shutdown 순서.** `~DemoWbcController()`는 멤버 자동 파괴 *전에* `mpc_thread_->StopAndJoin()`을 호출해 MPC solve thread를 먼저 join한다. 멤버 선언 순서상 `mpc_model_handler_` / `phase_manager_owned_` / `mpc_manager_`가 `mpc_thread_`보다 *나중에* 선언되어 reverse-order 자동 파괴에서는 *먼저* 사라지는데, 이 시점에 `mpc_main` thread가 `Solve()` 안에서 Pinocchio 모델/data를 사용 중이면 use-after-free가 일어나기 때문(과거 sim Ctrl+C SEGV의 직접 원인 — `pinocchio::CATForwardStep` visitor 안에서 fault). SIGINT 경로에서는 `on_deactivate`/`on_cleanup`이 호출되지 않을 수 있으므로 destructor join이 유일한 안전 보장이다.
 
-매 RT tick에서 `ComputeControl`이 `UpdatePhase` 직후 phase-independent하게 `ExtractFullState` + `mpc_manager_.WriteState(q, v, now_ns)`를 실행해 MPC 스레드가 항상 최신 `(q, v)`를 보도록 한다 — `HandlerMPCThread::Solve`의 dim-mismatch gate(`state.nq != model_->nq()`)를 통과시키기 위함이며, 그렇지 않으면 TSID를 돌지 않는 `kIdle/kApproach/kRetreat/kRelease` 구간에서 solver가 계속 false를 반환해 `mpc_timing_log.csv`의 `t_publish_us` 가 0인 row만 쌓이게 된다. TSID 활성 phase(`kPreGrasp/kClosure/kHold`)에서는 `ComputeTSIDPosition`이 최신 solution을 cubic-Hermite 보간한 `q_ref, v_ref, a_ff`를 TSID task reference로 주입하고, Riccati 피드백(`K·Δx`)은 `control_ref_.a_des`의 상위 `nv`개 원소에 가산된다. MPC가 solution을 공급하지 못하거나 `stale_count >= max_stale_solutions`면 자동으로 TSID self-hold reference로 fallback한다.
+매 RT tick에서 `ComputeControl`이 `UpdatePhase` 직후 phase-independent하게 `ExtractFullState` + `mpc_manager_.WriteState(q, v, now_ns)`를 실행해 MPC 스레드가 항상 최신 `(q, v)`를 보도록 한다 — `HandlerMPCThread::Solve`의 dim-mismatch gate(`state.nq != model_->nq()`)를 통과시키기 위함. TSID-everywhere refactor 이후 5 phase (`kIdle/kApproach/kPreGrasp/kClosure/kHold`) 와 `kRelease` 모두 `ComputeTSIDPosition` 을 통해 동일한 reference 주입 경로를 사용하므로 dim-mismatch gate 는 정상 phase 에서는 거의 트립하지 않는다 (kFallback 만 self-hold). `ComputeTSIDPosition`이 최신 solution을 cubic-Hermite 보간한 `q_ref, v_ref, a_ff`를 TSID task reference로 주입하고, Riccati 피드백(`K·Δx`)은 `control_ref_.a_des`의 상위 `nv`개 원소에 가산된다. MPC가 solution을 공급하지 못하거나 `stale_count >= max_stale_solutions`면 자동으로 TSID self-hold reference로 fallback한다. `ComputeControl` dispatch 의 phase-independent `ExtractFullState` + `WriteState` 는 `ComputeTSIDPosition` 내부 동일 호출과 중복 — perf cleanup task (`wbc-tsid-uniform-release-preempt` plan finding #15) 로 분리 예정.
 
 `DemoWbcController` 자체 LifecycleNode의 aux 1 Hz 타이머(`on_activate` 시 `mpc_enabled_`인 경우만 spawn)는 `MPCThread::TimingProducer()` SPSC ring을 drain하여 `<session>/timing/mpc_timing_log.csv`에 per-MPC-tick raw 샘플을 한 row씩 append한다 (CM과 동일한 7-col 스키마 `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`, MPC 주파수로 행이 쌓임 — generic 인프라 `rtc_base/timing/thread_timing_*` + 공용 `RtTickTimingPayload`). 위 phase-independent state write 덕분에 grasp 명령이 오지 않은 kIdle 상태에서도 row가 쌓이며, solver가 publish 못한 구간(dim-mismatch / solver error / 워밍업)은 `t_publish_us == 0` 으로 식별 가능. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (handler self-report `solve_duration_ns`의 256-sample 슬라이딩 윈도우)로 10초마다 aggregate `RCLCPP_INFO` 라인을 출력 — 디스크엔 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산. Stage B 레이아웃 변경 전후 분포 비교의 baseline.
 
 ##### GraspPhaseManager 연동
 
-`engine: "handler"`일 때 WBC의 8-state FSM(`WbcPhase`)이 authoritative이며, `OnPhaseEnter` 말미에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다(매핑: `kApproach→kApproach`, `kClosure→kClosure`, `kHold→kHold`, `kFallback→kIdle` 등). `kApproach` 진입 시 `tcp_goal_`이 valid하면 `GraspPhaseManager::SetTaskTarget`으로 grasp/pregrasp/approach_start pose가 푸시된다. `ForcePhase`는 atomic-only여서 RT-safe; `SetTaskTarget`은 `SeqLock<GraspTargetPOD>` writer 한 번으로 wait-free 발행되며 MPC thread reader도 wait-free (RT-4).
+`engine: "handler"`일 때 WBC의 7-state FSM(`WbcPhase`, slot 5 reserved)이 authoritative이며, `OnPhaseEnter` 말미에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다(매핑: `kApproach→kApproach`, `kClosure→kClosure`, `kHold→kHold`, `kRelease→kRelease`, `kFallback→kIdle`). WBC 는 더 이상 kRetreat 로 가지 않으므로 grasp 측 `GraspPhaseId::kRetreat` 슬롯은 MPC-only 잔재 (carry-then-release 시나리오를 별도 PR 로 도입 시 재활용 가능). `kApproach` 진입 시 `tcp_goal_`이 valid하면 `GraspPhaseManager::SetTaskTarget`으로 grasp/pregrasp/approach_start pose가 푸시된다. `ForcePhase`는 atomic-only여서 RT-safe; `SetTaskTarget`은 `SeqLock<GraspTargetPOD>` writer 한 번으로 wait-free 발행되며 MPC thread reader도 wait-free (RT-4).
 
 grasp 측 phase별 OCP 설정(`ocp_type`, `PhaseCostConfig`, `ContactPlan`)은 `config/ur5e_hand/controllers/mpc/phase_config.yaml`에서 로드된다. Factory 설정(`RobotModelHandler.Init` 입력 + solver 튜닝 + friction_mu)은 `config/ur5e_hand/controllers/mpc/contact_light.yaml` / `config/ur5e_hand/controllers/mpc/contact_rich.yaml`에서 로드되며, 두 YAML의 `mpc.model:` 블록은 구조적으로 동일해야 한다(cross-mode swap이 같은 `RobotModelHandler`를 공유하므로 contact_frames 불일치는 index-based 활성화를 깬다).
 
@@ -666,9 +667,9 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 #### Grasp/Release 버튼 동작
 
 - **`demo_joint_controller` / `demo_task_controller`**: `grasp_controller_type: "force_pi"` (`demo_shared.yaml` 기본값) 일 때만 동작. `"contact_stop"` 모드에서는 controller 가 명령을 silent ignore + `/rosout` 에 throttled WARN.
-- **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 8-state FSM 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP / RELEASE 명령은 WBC FSM 의 `kApproach` / `kRelease` 로 전이되고 phase 표시기가 WbcPhase enum 라벨 (8 상태) 로 갱신됩니다.
+- **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 7-state FSM (slot 5 reserved) 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP 명령은 `kApproach` 진입, RELEASE 는 어떤 비-terminal phase 에서도 `kRelease` 로 즉시 preempt (PreGrasp/Closure/Hold 중 GUI 로 RELEASE 누르면 즉시 반응). phase 표시기가 WbcPhase enum 라벨로 갱신됩니다.
 
-phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC publisher 인지에 따라 `GRASP_PHASE_NAMES` (6 상태) 또는 `WBC_PHASE_NAMES` (8 상태) 라벨 표를 자동 선택합니다 — 두 publisher 가 GUI 에 동시에 구독되지만 active 한 쪽만 발행하므로 자동 분기.
+phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC publisher 인지에 따라 `GRASP_PHASE_NAMES` (6 상태) 또는 `WBC_PHASE_NAMES` (8 슬롯, 7 reachable — slot 5 RETREAT 는 deprecated reserved) 라벨 표를 자동 선택합니다 — 두 publisher 가 GUI 에 동시에 구독되지만 active 한 쪽만 발행하므로 자동 분기.
 
 #### 기타 기능
 
