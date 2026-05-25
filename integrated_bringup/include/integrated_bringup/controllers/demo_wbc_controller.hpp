@@ -256,6 +256,7 @@ class DemoWbcController final : public RTControllerInterface {
   // ── Control modes ───────────────────────────────────────────────────────
   void ComputePositionMode(double dt) noexcept;
   void ComputeTSIDPosition(const ControllerState& state, double dt) noexcept;
+  void ComputeReleaseMode(const ControllerState& state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
   // ── E-STOP ──────────────────────────────────────────────────────────────
@@ -608,6 +609,15 @@ class DemoWbcController final : public RTControllerInterface {
   // ContactState::UpdateActivation(dt) linearly progresses s_i toward the
   // target. YAML: `tsid.contacts_default_ramp_sec` (default 0.1 = 100 ms).
   double contact_ramp_sec_{0.1};
+
+  // kRelease 2-stage state. Stage 0: contact activation_target ramps to 0
+  // over release_ramp_sec_; stage 1: hand finger-open trajectory plays.
+  // release_done_ flips on stage-1 completion → UpdatePhase routes back to
+  // kIdle. YAML: `fsm.release_ramp_sec` (default 0.03 = 30 ms).
+  int release_stage_{0};
+  double release_elapsed_s_{0.0};
+  double release_ramp_sec_{0.03};
+  bool release_done_{false};
 
   // ── Utility ─────────────────────────────────────────────────────────────
   void ExtractFullState(const ControllerState& state) noexcept;
