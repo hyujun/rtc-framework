@@ -400,9 +400,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   // WBC FSM is authoritative for the demo; the grasp phase manager mirrors
   // it via ForcePhase so rtc_mpc picks up the matching OCP type
   // (contact_light vs contact_rich) on every WBC edge. `ForcePhase` is
-  // atomic and RT-safe (see grasp_phase_manager.hpp thread-safety notes);
-  // `SetTaskTarget` uses a non-RT mutex but fires at most once per WBC edge
-  // (not per 500 Hz tick), which is acceptable off the TSID hot path.
+  // atomic and RT-safe; `SetTaskTarget` uses SeqLock::Store (wait-free,
+  // RT-4 safe). See grasp_phase_manager.hpp thread-safety notes.
   // WBC has no direct MANIPULATE analogue — kClosure maps to CLOSURE and
   // kHold to HOLD; MANIPULATE is reserved for a future WBC extension.
   if (phase_manager_ptr_) {

@@ -372,6 +372,12 @@ void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double 
   // contact ramp window has elapsed, then overlay it onto hand_computed_
   // after TSID's tick mapping. The arm continues on TSID SE3 hold.
   release_elapsed_s_ += dt;
+  // Guard against unbounded accumulation if release_done_ never trips
+  // (e.g., hand device drops mid-stage-1 → time advance loop is skipped).
+  constexpr double kReleaseElapsedCapSec = 60.0;
+  if (release_elapsed_s_ > kReleaseElapsedCapSec) {
+    release_elapsed_s_ = kReleaseElapsedCapSec;
+  }
 
   if (tsid_initialized_) {
     ComputeTSIDPosition(state, dt);

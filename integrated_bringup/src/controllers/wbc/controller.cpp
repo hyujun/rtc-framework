@@ -535,7 +535,11 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     slip_rate_threshold_ = fsm["slip_rate_threshold"].as<double>(slip_rate_threshold_);
     deformation_threshold_ = fsm["deformation_threshold"].as<double>(deformation_threshold_);
     max_qp_fail_before_fallback_ = fsm["max_qp_fail_before_fallback"].as<int>(5);
-    release_ramp_sec_ = std::max(0.0, fsm["release_ramp_sec"].as<double>(release_ramp_sec_));
+    // Clamp at >= 1 tick of the slowest supported control rate (100 Hz → 10 ms).
+    // release_ramp_sec=0 would snap all contact activations to 0 in a single
+    // tick, deactivating friction_cone rows simultaneously with active EOM
+    // constraints → one-tick ill-conditioned QP.
+    release_ramp_sec_ = std::max(0.01, fsm["release_ramp_sec"].as<double>(release_ramp_sec_));
     auto g = gains_lock_.Load();
     g.arm_trajectory_speed =
         std::max(1e-6, fsm["approach_speed"].as<double>(g.arm_trajectory_speed));
