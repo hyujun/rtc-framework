@@ -58,6 +58,18 @@ fi
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR" 2>/dev/null || exit 0
 
+# Resolve colcon workspace root (sibling-of-src) and source setup_env.sh so
+# bare `colcon test` / `colcon test-result` calls below find ROS, deps, venv,
+# and COLCON_DEFAULTS_FILE — without depending on the parent shell having
+# pre-sourced setup_env.sh. RTC_DEPS_PREFIX guard mirrors bootstrap.sh so a
+# re-source is a no-op when env is already set.
+WORKSPACE="$(cd "$PROJECT_DIR/../.." 2>/dev/null && pwd)"
+SETUP_ENV="$PROJECT_DIR/repo_scripts/scripts/setup_env.sh"
+if [ -z "${RTC_DEPS_PREFIX:-}" ] && [ -f "$SETUP_ENV" ]; then
+  # shellcheck source=/dev/null
+  source "$SETUP_ENV"
+fi
+
 # Get changed files (staged + unstaged vs HEAD)
 CHANGED=$(git diff --name-only HEAD 2>/dev/null || true)
 [ -z "$CHANGED" ] && exit 0
@@ -256,11 +268,13 @@ PROC3=$(echo "$CHANGED_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || 
 if [ -n "$PROC3" ]; then
   # PROC-3: broad rebuild + full test (60s * count would still time out, so use
   # a generous bound on the build and a per-package test timeout).
+  # All colcon invocations run from $WORKSPACE so build/install/log land in the
+  # colcon ws root (CLAUDE.md §9.1), not in this repo's cwd.
   if ! timeout 300 ./build.sh full >/dev/null 2>&1; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (./build.sh full) failed (rtc_base / rtc_msgs touched)\n"
   else
-    TEST_OUTPUT=$(timeout 180 bash -c "colcon test --event-handlers console_direct+ 2>&1" || true)
-    RESULT=$(colcon test-result 2>&1 || true)
+    TEST_OUTPUT=$(timeout 180 bash -c "cd '$WORKSPACE' && colcon test --event-handlers console_direct+ 2>&1" || true)
+    RESULT=$(cd "$WORKSPACE" && colcon test-result 2>&1 || true)
     if echo "$RESULT" | grep -qE "[1-9][0-9]* failures"; then
       FAILED_TESTS=$(echo "$RESULT" | grep -E "FAILED|failures" | head -20 || true)
       TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test failed:\n${FAILED_TESTS}\n"
@@ -273,8 +287,8 @@ else
       continue
     fi
 
-    TEST_OUTPUT=$(timeout 60 bash -c "colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" || true)
-    RESULT=$(colcon test-result --packages-select "$pkg" 2>&1 || true)
+    TEST_OUTPUT=$(timeout 60 bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" || true)
+    RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
 
     if echo "$RESULT" | grep -qE "[1-9][0-9]* failures"; then
       FAILED_TESTS=$(echo "$RESULT" | grep -E "FAILED|failures" || true)
