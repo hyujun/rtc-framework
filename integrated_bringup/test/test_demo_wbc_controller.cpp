@@ -308,7 +308,7 @@ TEST_F(WbcFSMTest, ReadStateComputesForceRate) {
   EXPECT_LT(r.force_rate, 100.0f);  // bounded by EMA
 }
 
-// ── Phase Transition Tests (kClosure / kHold / kRetreat / kRelease) ─────────
+// ── Phase Transition Tests (kClosure / kHold / kRelease preempt) ───────────
 
 TEST_F(WbcFSMTest, ClosureToHoldOnSufficientContacts) {
   // Force phase = kClosure directly
@@ -337,11 +337,52 @@ TEST_F(WbcFSMTest, ClosureAbortsOnGraspCmdZero) {
   EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kIdle);
 }
 
-TEST_F(WbcFSMTest, HoldTransitionsToRetreatOnCmd2) {
+TEST_F(WbcFSMTest, HoldTransitionsToReleaseOnCmd2) {
+  // RELEASE=2 is now an unconditional preempt to kRelease from any non-terminal
+  // phase. Old behaviour routed Hold→Retreat first; kRetreat was removed.
   ctrl_.ForcePhaseForTesting(WbcPhase::kHold);
   ctrl_.SetGraspCmdForTesting(2);
   (void)ctrl_.Compute(state_);
-  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRetreat);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+}
+
+// New: RELEASE=2 preempts from every non-terminal phase, not just kHold.
+TEST_F(WbcFSMTest, ApproachPreemptedToReleaseOnCmd2) {
+  ctrl_.ForcePhaseForTesting(WbcPhase::kApproach);
+  ctrl_.SetGraspCmdForTesting(2);
+  (void)ctrl_.Compute(state_);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+}
+
+TEST_F(WbcFSMTest, PreGraspPreemptedToReleaseOnCmd2) {
+  ctrl_.ForcePhaseForTesting(WbcPhase::kPreGrasp);
+  ctrl_.SetGraspCmdForTesting(2);
+  (void)ctrl_.Compute(state_);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+}
+
+TEST_F(WbcFSMTest, ClosurePreemptedToReleaseOnCmd2) {
+  ctrl_.ForcePhaseForTesting(WbcPhase::kClosure);
+  ctrl_.SetGraspCmdForTesting(2);
+  (void)ctrl_.Compute(state_);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+}
+
+TEST_F(WbcFSMTest, IdlePreemptedToReleaseOnCmd2) {
+  // Even kIdle accepts the preempt (cmd=2 in kIdle is a no-op semantically,
+  // but the guard treats it uniformly — kIdle is not in the exempt set).
+  ctrl_.ForcePhaseForTesting(WbcPhase::kIdle);
+  ctrl_.SetGraspCmdForTesting(2);
+  (void)ctrl_.Compute(state_);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+}
+
+// kRelease and kFallback are exempt — preempt guard does not re-enter.
+TEST_F(WbcFSMTest, FallbackIsExemptFromReleasePreempt) {
+  ctrl_.ForcePhaseForTesting(WbcPhase::kFallback);
+  ctrl_.SetGraspCmdForTesting(2);
+  (void)ctrl_.Compute(state_);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kFallback);
 }
 
 TEST_F(WbcFSMTest, HoldTransitionsToFallbackOnSlip) {
@@ -356,17 +397,6 @@ TEST_F(WbcFSMTest, HoldTransitionsToFallbackOnSlip) {
   InjectFingertipForce(state_, 0, 0.0f, 0.0f, 10.0f);
   (void)ctrl_.Compute(state_);
   EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kFallback);
-}
-
-TEST_F(WbcFSMTest, RetreatProducesValidOutput) {
-  // Set approach target then force straight to kRetreat
-  std::array<double, 6> target = {0.1, -1.0, 1.0, -1.0, -1.0, 0.1};
-  ctrl_.SetDeviceTarget(0, target);
-  ctrl_.ForcePhaseForTesting(WbcPhase::kRetreat);
-  ctrl_.SetGraspCmdForTesting(2);
-  auto out = ctrl_.Compute(state_);
-  EXPECT_TRUE(out.valid);
-  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRetreat);
 }
 
 TEST_F(WbcFSMTest, ReleaseReturnsToIdleOnTrajectoryComplete) {
@@ -450,29 +480,18 @@ TEST_F(WbcFSMTest, HoldAbortsOnGraspCmdZero) {
   EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kIdle);
 }
 
-TEST_F(WbcFSMTest, RetreatAbortsOnGraspCmdZero) {
-  ctrl_.ForcePhaseForTesting(WbcPhase::kRetreat);
-  ctrl_.SetGraspCmdForTesting(0);
-  (void)ctrl_.Compute(state_);
-  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kIdle);
-}
-
-TEST_F(WbcFSMTest, RetreatTransitionsToReleaseOnTrajectoryComplete) {
-  std::array<double, 6> target = {0.05, -1.5, 1.5, -1.5, -1.5, 0.05};
-  ctrl_.SetDeviceTarget(0, target);
-  ctrl_.ForcePhaseForTesting(WbcPhase::kRetreat);
-  ctrl_.SetGraspCmdForTesting(2);
-  // Run enough ticks for trajectory to complete (default arm_traj_speed=0.5,
-  // small delta → ~few seconds at dt=0.002 = ~2000 ticks)
-  bool reached_release = false;
-  for (int i = 0; i < 5000; ++i) {
+// New: kRelease 2-stage timing. Stage 0 (contact ramp) is release_ramp_sec_
+// wide; Stage 1 (finger open) starts after the ramp window. release_done_
+// only flips after Stage 1 completes.
+TEST_F(WbcFSMTest, ReleaseStaysUntilHandTrajectoryCompletes) {
+  ctrl_.ForcePhaseForTesting(WbcPhase::kRelease);
+  // Default release_ramp_sec_=0.03 + hand_trajectory min duration 0.1 →
+  // expect kRelease for at least 30 ticks (60ms) at dt=0.002.
+  for (int i = 0; i < 30; ++i) {
+    state_.iteration = static_cast<uint64_t>(i);
     (void)ctrl_.Compute(state_);
-    if (ctrl_.GetPhaseForTesting() == WbcPhase::kRelease) {
-      reached_release = true;
-      break;
-    }
   }
-  EXPECT_TRUE(reached_release);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
 }
 
 TEST_F(WbcFSMTest, FallbackExitsOnlyOnGraspCmdZero) {
@@ -600,7 +619,7 @@ TEST_F(WbcFSMTest, EstopDuringHoldProducesSafeAndCanResume) {
 
 TEST_F(WbcFSMTest, CommandTypeStableAcrossPhases) {
   const auto baseline = ctrl_.GetCommandType();
-  for (auto p : {WbcPhase::kIdle, WbcPhase::kApproach, WbcPhase::kRetreat, WbcPhase::kRelease,
+  for (auto p : {WbcPhase::kIdle, WbcPhase::kApproach, WbcPhase::kRelease,
                  WbcPhase::kFallback}) {
     ctrl_.ForcePhaseForTesting(p);
     auto out = ctrl_.Compute(state_);
@@ -611,24 +630,6 @@ TEST_F(WbcFSMTest, CommandTypeStableAcrossPhases) {
 // SetGraspCmdForTesting is the test-only access path for grasp_cmd_;
 // post-Phase-E, runtime grasp commands flow through the
 // /<active>/grasp_command srv (see SetGains BT node tests).
-
-TEST_F(WbcFSMTest, ApproachSavesQApproachStartForRetreat) {
-  // Set an approach target, transition idle -> approach (UpdatePhase path)
-  std::array<double, 6> target = {0.5, -1.0, 1.0, -1.0, -1.0, 0.5};
-  ctrl_.SetDeviceTarget(0, target);
-  ctrl_.SetGraspCmdForTesting(1);
-  // First Compute should trigger UpdatePhase: kIdle -> kApproach,
-  // OnPhaseEnter saves q_approach_start_ from current state positions.
-  (void)ctrl_.Compute(state_);
-  // State positions are the home pose [-1.57, ...] — verify by forcing
-  // kRetreat which builds trajectory from current → q_approach_start_.
-  // We can't read q_approach_start_ directly, but we can verify Retreat
-  // produces valid output (regression: would crash if unsaved).
-  ctrl_.ForcePhaseForTesting(WbcPhase::kRetreat);
-  ctrl_.SetGraspCmdForTesting(2);
-  auto out = ctrl_.Compute(state_);
-  EXPECT_TRUE(out.valid);
-}
 
 TEST_F(WbcFSMTest, MultipleComputeInClosureRemainsStable) {
   ctrl_.ForcePhaseForTesting(WbcPhase::kClosure);

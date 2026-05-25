@@ -65,19 +65,21 @@ using rtc::kMaxDeviceChannels;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
 
-// ── WBC Phase (8-state FSM) ─────────────────────────────────────────────────
+// ── WBC Phase (7-state reachable FSM, slot 5 reserved) ─────────────────────
 //
-// Phase 4 MVP implements: kIdle, kApproach, kPreGrasp, kFallback.
-// Contact phases (kClosure, kHold, kRetreat, kRelease) are skeleton-only.
+// All non-fallback phases run TSID QP → position. Value 5 was kRetreat in
+// older WBC builds and is reserved here to keep WbcState.msg PHASE_RETREAT=5
+// stable for downstream consumers (demo_gui, BT, rosbag). Reintroducing a
+// carry-then-release semantic should reuse the slot rather than shift values.
 enum class WbcPhase : uint8_t {
-  kIdle,      ///< Home pose hold (position hold)
-  kApproach,  ///< Joint-space quintic trajectory to pre-grasp
-  kPreGrasp,  ///< TSID QP → position (no contact, fine positioning)
-  kClosure,   ///< TSID QP → position (contact forming, Phase 4B)
-  kHold,      ///< TSID QP → position (grasp holding, Phase 4B)
-  kRetreat,   ///< Quintic trajectory retreat (Phase 4B)
-  kRelease,   ///< Finger open ramp (Phase 4B)
-  kFallback   ///< Safety: position hold at last valid q
+  kIdle = 0,      ///< SE3 hold at current TCP via TSID
+  kApproach = 1,  ///< TSID drives TCP toward pre-grasp pose (quintic SE3 ramp)
+  kPreGrasp = 2,  ///< TSID fine positioning at pre-grasp pose
+  kClosure = 3,   ///< TSID with contact-forming tasks
+  kHold = 4,      ///< TSID grasp holding
+  // 5 reserved (was kRetreat — removed; WbcState.msg PHASE_RETREAT=5 deprecated)
+  kRelease = 6,   ///< Contact ramp-down → finger-open trajectory
+  kFallback = 7   ///< Safety: position hold at last valid q
 };
 
 // ── DemoWbcController ────────────────────────────────────────────────────────
@@ -590,14 +592,10 @@ class DemoWbcController final : public RTControllerInterface {
   double epsilon_approach_{0.01};        ///< m, approach → pre-grasp
   double epsilon_pregrasp_{0.005};       ///< m, pre-grasp → closure
   double force_contact_threshold_{0.2};  ///< N, contact detection
-  double force_hold_threshold_{1.0};     ///< N, hold → retreat
+  double force_hold_threshold_{1.0};     ///< N, hold force threshold (unused — see TODO)
   int min_contacts_for_hold_{2};         ///< # fingertips required -> kHold
   double slip_rate_threshold_{5.0};      ///< N/s, |df/dt| slip guard (kHold)
   double deformation_threshold_{0.015};  ///< m, ||disp|| guard (kHold)
-
-  // Approach start pose (saved on kApproach entry, reused on kRetreat).
-  // Only the first arm_dof_ slots are written/read.
-  std::array<double, kMaxArmDof> q_approach_start_{};
 
   // Integration safety margins
   double position_margin_{0.02};  ///< rad, from joint limits

@@ -99,9 +99,11 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
   UpdatePhase(state);
 
   // Keep MPC state fresh across all phases: HandlerMPCThread::Solve rejects
-  // dim-mismatched snapshots, so non-TSID phases (kIdle/kApproach/kRetreat/
-  // kRelease) would otherwise starve the solver and leave mpc_timing_log.csv
-  // with only the header.
+  // dim-mismatched snapshots, so a starved solver would leave
+  // mpc_timing_log.csv with only the header. Now redundant with the per-tick
+  // WriteState inside ComputeTSIDPosition for the 5 TSID phases; kept for
+  // kRelease (which routes through ComputeReleaseMode) and kFallback. See
+  // wbc-tsid-uniform-release-preempt plan finding #15 — perf cleanup task.
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
     ExtractFullState(state);
     const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
@@ -111,11 +113,6 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
   switch (phase_) {
     case WbcPhase::kIdle:
     case WbcPhase::kApproach:
-    case WbcPhase::kRetreat:
-    case WbcPhase::kRelease:
-      // ComputePositionMode(dt);
-      // break;
-
     case WbcPhase::kPreGrasp:
     case WbcPhase::kClosure:
     case WbcPhase::kHold:
@@ -124,6 +121,10 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
       } else {
         ComputePositionMode(dt);  // Fallback if TSID not available
       }
+      break;
+
+    case WbcPhase::kRelease:
+      ComputeReleaseMode(state, dt);
       break;
 
     case WbcPhase::kFallback:
@@ -361,6 +362,61 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   RCLCPP_INFO_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
                        "[wbc] solve=%.0fus phase=%d n_act=%d rank_G=%d", tsid_output_.solve_time_us,
                        static_cast<int>(phase_), n_lambda_active, grasp_cache_.Rank());
+}
+
+void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double dt) noexcept {
+  // Stage 0: TSID holds the arm SE3 at current TCP while ContactState ramps
+  // activation toward 0 (set in OnPhaseEnter(kRelease)). Posture preset
+  // damps hand at its current pose during this brief window.
+  // Stage 1: lazily initialise the finger-open joint trajectory once the
+  // contact ramp window has elapsed, then overlay it onto hand_computed_
+  // after TSID's tick mapping. The arm continues on TSID SE3 hold.
+  release_elapsed_s_ += dt;
+
+  if (tsid_initialized_) {
+    ComputeTSIDPosition(state, dt);
+  } else {
+    ComputePositionMode(dt);
+  }
+
+  if (release_stage_ == 0 && release_elapsed_s_ >= release_ramp_sec_) {
+    if (state.num_devices > 1 && state.devices[1].valid) {
+      const auto gains = gains_lock_.Load();
+      trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
+      trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
+      double hmax = 0.0;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hstart.positions[idx] = hand_computed_.positions[idx];
+        hgoal.positions[idx] = 0.0;
+        const double hd = std::abs(hstart.positions[idx]);
+        if (hd > hmax) {
+          hmax = hd;
+        }
+      }
+      const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
+      hand_trajectory_.initialize(hstart, hgoal, hdur);
+      hand_trajectory_time_ = 0.0;
+    } else {
+      // No hand device → ramp window is the entire release sequence.
+      release_done_ = true;
+    }
+    release_stage_ = 1;
+  }
+
+  if (release_stage_ == 1 && state.num_devices > 1 && state.devices[1].valid) {
+    hand_trajectory_time_ += dt;
+    const auto hstate = hand_trajectory_.compute(
+        std::min(hand_trajectory_time_, hand_trajectory_.duration()));
+    for (int i = 0; i < hand_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      hand_computed_.positions[idx] = hstate.positions[idx];
+      hand_computed_.velocities[idx] = hstate.velocities[idx];
+    }
+    if (hand_trajectory_time_ >= hand_trajectory_.duration()) {
+      release_done_ = true;
+    }
+  }
 }
 
 void DemoWbcController::ComputeFallback() noexcept {
