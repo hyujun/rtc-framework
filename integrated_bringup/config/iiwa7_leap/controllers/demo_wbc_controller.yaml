@@ -174,14 +174,54 @@ demo_wbc_controller:
         type: "point"
         mu: 0.5
 
+    # ApplyPreset is reset-style (touches only tasks/constraints named in the
+    # preset). Every phase preset must therefore list the full task and
+    # constraint set so that transitions reliably deactivate prior tasks —
+    # active=false toggles, not omission.
     phase_presets:
-      pre_grasp:
+      idle:
         tasks:
-          posture:   { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:   { active: true,  weight: 200.0, priority: 0 }
+          posture:             { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          force:               { active: false, weight: 0.0,   priority: 1 }
+          contact_consistency: { active: false, weight: 0.0,   priority: 1 }
+          object_wrench:       { active: false, weight: 0.0,   priority: 1 }
+          internal_force:      { active: false, weight: 0.0,   priority: 1 }
+          object_se3:          { active: false, weight: 0.0,   priority: 0 }
         constraints:
           eom:           { active: true }
           joint_limit:   { active: true }
+          friction_cone: { active: false }
+          torque_limit:  { active: true }
+
+      approach:
+        tasks:
+          posture:             { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 200.0, priority: 0 }
+          force:               { active: false, weight: 0.0,   priority: 1 }
+          contact_consistency: { active: false, weight: 0.0,   priority: 1 }
+          object_wrench:       { active: false, weight: 0.0,   priority: 1 }
+          internal_force:      { active: false, weight: 0.0,   priority: 1 }
+          object_se3:          { active: false, weight: 0.0,   priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+          friction_cone: { active: false }
+          torque_limit:  { active: true }
+
+      pre_grasp:
+        tasks:
+          posture:             { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 200.0, priority: 0 }
+          force:               { active: false, weight: 0.0,   priority: 1 }
+          contact_consistency: { active: false, weight: 0.0,   priority: 1 }
+          object_wrench:       { active: false, weight: 0.0,   priority: 1 }
+          internal_force:      { active: false, weight: 0.0,   priority: 1 }
+          object_se3:          { active: false, weight: 0.0,   priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+          friction_cone: { active: false }
           torque_limit:  { active: true }
 
       closure:
@@ -214,6 +254,25 @@ demo_wbc_controller:
           friction_cone: { active: true }
           torque_limit:  { active: true }
 
+      # Release: SE3 hold at current TCP, posture damping, contact-related
+      # tasks deactivated. Contact activation_target ramps to 0 via
+      # ContactState; friction_cone stays active during the brief ramp to
+      # keep the in-progress contacts feasible.
+      release:
+        tasks:
+          posture:             { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          force:               { active: false, weight: 0.0,   priority: 1 }
+          contact_consistency: { active: false, weight: 0.0,   priority: 1 }
+          object_wrench:       { active: false, weight: 0.0,   priority: 1 }
+          internal_force:      { active: false, weight: 0.0,   priority: 1 }
+          object_se3:          { active: false, weight: 0.0,   priority: 0 }
+        constraints:
+          eom:           { active: true }
+          joint_limit:   { active: true }
+          friction_cone: { active: true }
+          torque_limit:  { active: true }
+
   # ── Integration safety ─────────────────────────────────────────────────────
   integration:
     position_margin: 0.02
@@ -235,6 +294,10 @@ demo_wbc_controller:
     deformation_threshold: 0.015
     max_qp_fail_before_fallback: 5
     approach_speed: 0.5
+    # kRelease stage 0: contact activation_target → 0 ramp duration before
+    # finger-open trajectory starts (stage 1). Tune to balance object-drop
+    # latency vs. contact-deactivation jerk.
+    release_ramp_sec: 0.03
 
   # ── E-STOP target ──────────────────────────────────────────────────────────
   estop:
