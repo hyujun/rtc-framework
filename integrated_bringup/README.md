@@ -336,7 +336,7 @@ J_vtcp_angular = J_tcp_angular
 
 ### DemoWbcController (Index 6)
 
-UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 8-단계 FSM이 phase별 task 가중치/contact 활성화를 자동 전환한다.
+UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 7-단계 FSM (slot 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다.
 
 #### 7-Phase FSM (slot 5 reserved)
 
