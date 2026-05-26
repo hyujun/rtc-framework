@@ -340,7 +340,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 #### 7-Phase FSM (slot 5 reserved)
 
-모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 어떤 비-terminal phase 에서도 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kRelease` / `kFallback` 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).
+모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kIdle` (접촉 없음·hand 이미 open 인 no-op flash 방지) / `kRelease` (이미 release 중) / `kFallback` (수동 복구 필요) 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).
 
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
@@ -349,7 +349,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 | `kPreGrasp` (2) | TSID QP (no contact, fine SE3 tracking) | kApproach 종료 | `||tcp_err|| < epsilon_pregrasp` |
 | `kClosure` (3) | TSID QP + contact + ForceTask | kPreGrasp 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
 | `kHold` (4) | TSID QP + contact + ForceTask | kClosure 종료 | slip 감지 시 `kFallback` (RELEASE preempt 는 top-level guard) |
-| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from any non-terminal phase | `release_done_` (stage 1 hand trajectory 완료) |
+| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) | `release_done_` (stage 1 hand trajectory 완료) |
 | `kFallback` (7) | Position hold | QP 연속 실패 N회, slip/deformation | `grasp_cmd=0` (수동 복구; top-level abort guard 면제) |
 
 #### Runtime Gains (per-controller ROS 2 parameters)
@@ -405,7 +405,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 **Shutdown 순서.** `~DemoWbcController()`는 멤버 자동 파괴 *전에* `mpc_thread_->StopAndJoin()`을 호출해 MPC solve thread를 먼저 join한다. 멤버 선언 순서상 `mpc_model_handler_` / `phase_manager_owned_` / `mpc_manager_`가 `mpc_thread_`보다 *나중에* 선언되어 reverse-order 자동 파괴에서는 *먼저* 사라지는데, 이 시점에 `mpc_main` thread가 `Solve()` 안에서 Pinocchio 모델/data를 사용 중이면 use-after-free가 일어나기 때문(과거 sim Ctrl+C SEGV의 직접 원인 — `pinocchio::CATForwardStep` visitor 안에서 fault). SIGINT 경로에서는 `on_deactivate`/`on_cleanup`이 호출되지 않을 수 있으므로 destructor join이 유일한 안전 보장이다.
 
-매 RT tick에서 `ComputeControl`이 `UpdatePhase` 직후 phase-independent하게 `ExtractFullState` + `mpc_manager_.WriteState(q, v, now_ns)`를 실행해 MPC 스레드가 항상 최신 `(q, v)`를 보도록 한다 — `HandlerMPCThread::Solve`의 dim-mismatch gate(`state.nq != model_->nq()`)를 통과시키기 위함. TSID-everywhere refactor 이후 5 phase (`kIdle/kApproach/kPreGrasp/kClosure/kHold`) 와 `kRelease` 모두 `ComputeTSIDPosition` 을 통해 동일한 reference 주입 경로를 사용하므로 dim-mismatch gate 는 정상 phase 에서는 거의 트립하지 않는다 (kFallback 만 self-hold). `ComputeTSIDPosition`이 최신 solution을 cubic-Hermite 보간한 `q_ref, v_ref, a_ff`를 TSID task reference로 주입하고, Riccati 피드백(`K·Δx`)은 `control_ref_.a_des`의 상위 `nv`개 원소에 가산된다. MPC가 solution을 공급하지 못하거나 `stale_count >= max_stale_solutions`면 자동으로 TSID self-hold reference로 fallback한다. `ComputeControl` dispatch 의 phase-independent `ExtractFullState` + `WriteState` 는 `ComputeTSIDPosition` 내부 동일 호출과 중복 — perf cleanup task (`wbc-tsid-uniform-release-preempt` plan finding #15) 로 분리 예정.
+매 RT tick에서 `ComputeTSIDPosition`이 `ExtractFullState` 직후 `mpc_manager_.WriteState(q, v, now_ns)`를 실행해 MPC 스레드가 항상 최신 `(q, v)`를 보도록 한다 — `HandlerMPCThread::Solve`의 dim-mismatch gate(`state.nq != model_->nq()`)를 통과시키기 위함. TSID-everywhere refactor 이후 5 phase (`kIdle/kApproach/kPreGrasp/kClosure/kHold`) 와 `kRelease` 모두 `ComputeTSIDPosition` 을 통해 동일한 reference 주입 경로를 사용하므로 dim-mismatch gate 는 정상 phase 에서는 거의 트립하지 않는다 (kFallback 만 self-hold). `ComputeTSIDPosition`이 최신 solution을 cubic-Hermite 보간한 `q_ref, v_ref, a_ff`를 TSID task reference로 주입하고, Riccati 피드백(`K·Δx`)은 `control_ref_.a_des`의 상위 `nv`개 원소에 가산된다. MPC가 solution을 공급하지 못하거나 `stale_count >= max_stale_solutions`면 자동으로 TSID self-hold reference로 fallback한다. `kFallback` 은 WriteState 를 호출하지 않으므로 MPC 가 마지막 snapshot 을 유지하지만, fallback 자체가 self-hold 이고 복귀 (cmd=0 → kIdle) 즉시 per-tick WriteState 가 재개되므로 안전하다.
 
 `DemoWbcController` 자체 LifecycleNode의 aux 1 Hz 타이머(`on_activate` 시 `mpc_enabled_`인 경우만 spawn)는 `MPCThread::TimingProducer()` SPSC ring을 drain하여 `<session>/timing/mpc_timing_log.csv`에 per-MPC-tick raw 샘플을 한 row씩 append한다 (CM과 동일한 7-col 스키마 `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`, MPC 주파수로 행이 쌓임 — generic 인프라 `rtc_base/timing/thread_timing_*` + 공용 `RtTickTimingPayload`). 위 phase-independent state write 덕분에 grasp 명령이 오지 않은 kIdle 상태에서도 row가 쌓이며, solver가 publish 못한 구간(dim-mismatch / solver error / 워밍업)은 `t_publish_us == 0` 으로 식별 가능. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (handler self-report `solve_duration_ns`의 256-sample 슬라이딩 윈도우)로 10초마다 aggregate `RCLCPP_INFO` 라인을 출력 — 디스크엔 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산. Stage B 레이아웃 변경 전후 분포 비교의 baseline.
 

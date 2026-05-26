@@ -199,6 +199,20 @@ class DemoWbcController final : public RTControllerInterface {
 
   void SetGraspCmdForTesting(int v) noexcept { grasp_cmd_.store(v, std::memory_order_release); }
 
+  [[nodiscard]] int GetReleaseStageForTesting() const noexcept { return release_stage_; }
+
+  [[nodiscard]] double GetReleaseElapsedSecForTesting() const noexcept {
+    return release_elapsed_s_;
+  }
+
+  // Pollute the release sub-FSM state so a subsequent kRelease entry can
+  // verify OnPhaseEnter's reset overrode the dirty value.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+  void ForceReleaseStateForTesting(int stage, double elapsed) noexcept {
+    release_stage_ = stage;
+    release_elapsed_s_ = elapsed;
+  }
+
   // F-2 test access: seed captured base_frame entries directly so
   // OnDeviceConfigsSet can be exercised without a real Pinocchio model.
   void SetBaseFrameEntriesForTesting(
@@ -592,7 +606,6 @@ class DemoWbcController final : public RTControllerInterface {
   double epsilon_approach_{0.01};        ///< m, approach → pre-grasp
   double epsilon_pregrasp_{0.005};       ///< m, pre-grasp → closure
   double force_contact_threshold_{0.2};  ///< N, contact detection
-  double force_hold_threshold_{1.0};     ///< N, hold force threshold (unused — see TODO)
   int min_contacts_for_hold_{2};         ///< # fingertips required -> kHold
   double slip_rate_threshold_{5.0};      ///< N/s, |df/dt| slip guard (kHold)
   double deformation_threshold_{0.015};  ///< m, ||disp|| guard (kHold)

@@ -98,18 +98,15 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   UpdatePhase(state);
 
-  // Keep MPC state fresh across all phases: HandlerMPCThread::Solve rejects
-  // dim-mismatched snapshots, so a starved solver would leave
-  // mpc_timing_log.csv with only the header. Now redundant with the per-tick
-  // WriteState inside ComputeTSIDPosition for the 5 TSID phases; kept for
-  // kRelease (which routes through ComputeReleaseMode) and kFallback. See
-  // wbc-tsid-uniform-release-preempt plan finding #15 — perf cleanup task.
-  if (mpc_enabled_ && mpc_manager_.Enabled()) {
-    ExtractFullState(state);
-    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
-    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
-  }
-
+  // MPC WriteState moved into ComputeTSIDPosition (next to its
+  // ExtractFullState), which is reached every tick by all TSID-routing
+  // phases (kIdle/kApproach/kPreGrasp/kClosure/kHold and kRelease via
+  // ComputeReleaseMode → ComputeTSIDPosition). kFallback no longer pushes
+  // state; the MPC retains its last snapshot until recovery to kIdle, which
+  // is safe because MPC output is not driving control during fallback and
+  // the dim-mismatch gate (state.nq == model_->nq()) keys on nq, not
+  // staleness. Eliminates the per-tick ExtractFullState double-call (this
+  // top-level + ComputeTSIDPosition's own call).
   switch (phase_) {
     case WbcPhase::kIdle:
     case WbcPhase::kApproach:
@@ -162,6 +159,16 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
+
+  // 1a. Push fresh (q, v) to the MPC thread so HandlerMPCThread::Solve does
+  // not reject the snapshot via its dim-mismatch / staleness gates.
+  // Lives here (not at ComputeControl's top) because ExtractFullState +
+  // pinocchio_cache_.Update already need fresh state at this exact point;
+  // co-locating the WriteState avoids a per-tick double extraction.
+  if (mpc_enabled_ && mpc_manager_.Enabled()) {
+    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
+    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
+  }
 
   // Stage A-5b: progress per-contact activation ramp by dt. ContactState
   // auto-flips the legacy `active : bool` once s_i crosses kActivationDeadband
@@ -382,7 +389,28 @@ void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double 
   if (tsid_initialized_) {
     ComputeTSIDPosition(state, dt);
   } else {
-    ComputePositionMode(dt);
+    // !tsid_initialized_ implies LoadConfig was skipped (unit tests, init
+    // failure). Hold the current sensed pose with zero velocity instead of
+    // calling ComputePositionMode — that path reads robot_trajectory_,
+    // which is only seeded by the Position-controller-style preset path
+    // and never initialised on a kRelease entry, so it would feed stale
+    // joint targets into the wire output. Production reaches this branch
+    // only after init failure, but the unit-test path exercises it on
+    // every preempt-into-kRelease, so the fresh-hold guard is mandatory.
+    if (state.num_devices > 0 && state.devices[0].valid) {
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = state.devices[0].positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
+      }
+    }
+    if (state.num_devices > 1 && state.devices[1].valid) {
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hand_computed_.positions[idx] = state.devices[1].positions[idx];
+        hand_computed_.velocities[idx] = 0.0;
+      }
+    }
   }
 
   if (release_stage_ == 0 && release_elapsed_s_ >= release_ramp_sec_) {

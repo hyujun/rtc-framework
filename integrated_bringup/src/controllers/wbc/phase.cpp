@@ -15,15 +15,19 @@ namespace integrated_bringup {
 // ── 7-state grasp FSM (Idle → Approach → PreGrasp → Closure → Hold →
 //                       Release → Fallback; slot 5 reserved) ───────────────
 //
-// RELEASE preempt: grasp_cmd=2 unconditionally jumps to kRelease from any
-// non-terminal phase (kRelease and kFallback are guards). Abort (cmd=0)
-// returns to kIdle similarly. Both preempt the per-case transitions below.
+// RELEASE preempt: grasp_cmd=2 jumps to kRelease from any active grasp phase
+// (kApproach/kPreGrasp/kClosure/kHold). Terminal/safe phases — kIdle (no
+// contacts, hand already open), kRelease (already releasing), kFallback
+// (latched safe state) — are exempt to keep the guard a no-op there.
+// Abort (cmd=0) returns to kIdle from the same active set. Both preempt the
+// per-case transitions below.
 void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
   const int cmd = grasp_cmd_.load(std::memory_order_acquire);
   WbcPhase next = phase_;
 
   // Top-level preempt guards: RELEASE > abort > case-internal transitions.
-  if (cmd == 2 && phase_ != WbcPhase::kRelease && phase_ != WbcPhase::kFallback) {
+  if (cmd == 2 && phase_ != WbcPhase::kIdle && phase_ != WbcPhase::kRelease &&
+      phase_ != WbcPhase::kFallback) {
     next = WbcPhase::kRelease;
   } else if (cmd == 0 && phase_ != WbcPhase::kIdle && phase_ != WbcPhase::kRelease &&
              phase_ != WbcPhase::kFallback) {
@@ -183,13 +187,15 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     }
 
     case WbcPhase::kApproach: {
-      // TSID drives the arm via SE3 quintic ramp (current FK → pregrasp pose)
-      // and posture toward q_target. No joint-space trajectory; the hand
-      // pre-shape is handled by the TSID posture task tracking the hand
-      // portion of current_target_slot_.targets[1] (see ControlReference
-      // q_des population in ComputeTSIDPosition's MPC-disabled branch —
-      // posture target = q_curr_full_ each tick, so target prep is implicit
-      // via the joint-target SeqLock fed from the goal subscription).
+      // TSID drives the arm via an SE3 quintic ramp (current FK → pregrasp
+      // pose). The hand stays at its current pose throughout Approach: the
+      // TSID posture task is rewritten to q_curr_full_ each tick inside
+      // ComputeTSIDPosition's MPC-disabled branch (q_des = q_curr_full_),
+      // so the user-provided hand close pose in current_target_slot_.
+      // targets[1] is NOT applied here. That target is consumed by the
+      // hand_trajectory_ ramp initialised on kClosure/kHold entry below,
+      // which interpolates from the current hand pose toward the user
+      // target over `hand_trajectory_speed`-shaped duration.
       const auto idx = static_cast<std::size_t>(WbcPhase::kApproach);
       if (phase_preset_valid_[idx]) {
         tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);

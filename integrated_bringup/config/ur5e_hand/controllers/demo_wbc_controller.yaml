@@ -310,7 +310,6 @@ demo_wbc_controller:
     epsilon_approach: 0.01       # m, approach → pre-grasp threshold
     epsilon_pregrasp: 0.005      # m, pre-grasp → closure threshold
     force_contact_threshold: 0.2 # N, per-fingertip contact detection
-    force_hold_threshold: 1.0    # N, hold threshold
     min_contacts_for_hold: 2     # # of fingertips required for kClosure→kHold
     slip_rate_threshold: 5.0     # N/s, |df/dt| anomaly guard in kHold
     deformation_threshold: 0.015 # m, ||displacement|| anomaly guard in kHold
