@@ -382,7 +382,28 @@ void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double 
   if (tsid_initialized_) {
     ComputeTSIDPosition(state, dt);
   } else {
-    ComputePositionMode(dt);
+    // !tsid_initialized_ implies LoadConfig was skipped (unit tests, init
+    // failure). Hold the current sensed pose with zero velocity instead of
+    // calling ComputePositionMode — that path reads robot_trajectory_,
+    // which is only seeded by the Position-controller-style preset path
+    // and never initialised on a kRelease entry, so it would feed stale
+    // joint targets into the wire output. Production reaches this branch
+    // only after init failure, but the unit-test path exercises it on
+    // every preempt-into-kRelease, so the fresh-hold guard is mandatory.
+    if (state.num_devices > 0 && state.devices[0].valid) {
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = state.devices[0].positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
+      }
+    }
+    if (state.num_devices > 1 && state.devices[1].valid) {
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hand_computed_.positions[idx] = state.devices[1].positions[idx];
+        hand_computed_.velocities[idx] = 0.0;
+      }
+    }
   }
 
   if (release_stage_ == 0 && release_elapsed_s_ >= release_ramp_sec_) {
