@@ -530,7 +530,6 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     epsilon_approach_ = fsm["epsilon_approach"].as<double>(0.01);
     epsilon_pregrasp_ = fsm["epsilon_pregrasp"].as<double>(0.005);
     force_contact_threshold_ = fsm["force_contact_threshold"].as<double>(0.2);
-    force_hold_threshold_ = fsm["force_hold_threshold"].as<double>(1.0);
     min_contacts_for_hold_ = fsm["min_contacts_for_hold"].as<int>(min_contacts_for_hold_);
     slip_rate_threshold_ = fsm["slip_rate_threshold"].as<double>(slip_rate_threshold_);
     deformation_threshold_ = fsm["deformation_threshold"].as<double>(deformation_threshold_);

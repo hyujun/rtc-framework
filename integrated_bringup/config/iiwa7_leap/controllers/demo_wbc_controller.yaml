@@ -288,7 +288,6 @@ demo_wbc_controller:
     epsilon_approach: 0.01
     epsilon_pregrasp: 0.005
     force_contact_threshold: 0.2
-    force_hold_threshold: 1.0
     min_contacts_for_hold: 2
     slip_rate_threshold: 5.0
     deformation_threshold: 0.015

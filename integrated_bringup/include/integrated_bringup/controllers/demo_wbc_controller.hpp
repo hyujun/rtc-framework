@@ -606,7 +606,6 @@ class DemoWbcController final : public RTControllerInterface {
   double epsilon_approach_{0.01};        ///< m, approach → pre-grasp
   double epsilon_pregrasp_{0.005};       ///< m, pre-grasp → closure
   double force_contact_threshold_{0.2};  ///< N, contact detection
-  double force_hold_threshold_{1.0};     ///< N, hold force threshold (unused — see TODO)
   int min_contacts_for_hold_{2};         ///< # fingertips required -> kHold
   double slip_rate_threshold_{5.0};      ///< N/s, |df/dt| slip guard (kHold)
   double deformation_threshold_{0.015};  ///< m, ||disp|| guard (kHold)
