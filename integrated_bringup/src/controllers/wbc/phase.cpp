@@ -187,13 +187,15 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     }
 
     case WbcPhase::kApproach: {
-      // TSID drives the arm via SE3 quintic ramp (current FK → pregrasp pose)
-      // and posture toward q_target. No joint-space trajectory; the hand
-      // pre-shape is handled by the TSID posture task tracking the hand
-      // portion of current_target_slot_.targets[1] (see ControlReference
-      // q_des population in ComputeTSIDPosition's MPC-disabled branch —
-      // posture target = q_curr_full_ each tick, so target prep is implicit
-      // via the joint-target SeqLock fed from the goal subscription).
+      // TSID drives the arm via an SE3 quintic ramp (current FK → pregrasp
+      // pose). The hand stays at its current pose throughout Approach: the
+      // TSID posture task is rewritten to q_curr_full_ each tick inside
+      // ComputeTSIDPosition's MPC-disabled branch (q_des = q_curr_full_),
+      // so the user-provided hand close pose in current_target_slot_.
+      // targets[1] is NOT applied here. That target is consumed by the
+      // hand_trajectory_ ramp initialised on kClosure/kHold entry below,
+      // which interpolates from the current hand pose toward the user
+      // target over `hand_trajectory_speed`-shaped duration.
       const auto idx = static_cast<std::size_t>(WbcPhase::kApproach);
       if (phase_preset_valid_[idx]) {
         tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
