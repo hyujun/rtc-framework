@@ -460,9 +460,12 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
           phase_preset_valid_[idx] = true;
         }
       };
+      map_preset(WbcPhase::kIdle, "idle");
+      map_preset(WbcPhase::kApproach, "approach");
       map_preset(WbcPhase::kPreGrasp, "pre_grasp");
       map_preset(WbcPhase::kClosure, "closure");
       map_preset(WbcPhase::kHold, "hold");
+      map_preset(WbcPhase::kRelease, "release");
     }
 
     // Cache per-phase SE3-task activity (YAML is SSoT — phase ID hardcoding
@@ -527,11 +530,15 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     epsilon_approach_ = fsm["epsilon_approach"].as<double>(0.01);
     epsilon_pregrasp_ = fsm["epsilon_pregrasp"].as<double>(0.005);
     force_contact_threshold_ = fsm["force_contact_threshold"].as<double>(0.2);
-    force_hold_threshold_ = fsm["force_hold_threshold"].as<double>(1.0);
     min_contacts_for_hold_ = fsm["min_contacts_for_hold"].as<int>(min_contacts_for_hold_);
     slip_rate_threshold_ = fsm["slip_rate_threshold"].as<double>(slip_rate_threshold_);
     deformation_threshold_ = fsm["deformation_threshold"].as<double>(deformation_threshold_);
     max_qp_fail_before_fallback_ = fsm["max_qp_fail_before_fallback"].as<int>(5);
+    // Clamp at >= 1 tick of the slowest supported control rate (100 Hz → 10 ms).
+    // release_ramp_sec=0 would snap all contact activations to 0 in a single
+    // tick, deactivating friction_cone rows simultaneously with active EOM
+    // constraints → one-tick ill-conditioned QP.
+    release_ramp_sec_ = std::max(0.01, fsm["release_ramp_sec"].as<double>(release_ramp_sec_));
     auto g = gains_lock_.Load();
     g.arm_trajectory_speed =
         std::max(1e-6, fsm["approach_speed"].as<double>(g.arm_trajectory_speed));

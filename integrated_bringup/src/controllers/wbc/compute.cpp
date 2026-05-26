@@ -98,24 +98,18 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   UpdatePhase(state);
 
-  // Keep MPC state fresh across all phases: HandlerMPCThread::Solve rejects
-  // dim-mismatched snapshots, so non-TSID phases (kIdle/kApproach/kRetreat/
-  // kRelease) would otherwise starve the solver and leave mpc_timing_log.csv
-  // with only the header.
-  if (mpc_enabled_ && mpc_manager_.Enabled()) {
-    ExtractFullState(state);
-    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
-    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
-  }
-
+  // MPC WriteState moved into ComputeTSIDPosition (next to its
+  // ExtractFullState), which is reached every tick by all TSID-routing
+  // phases (kIdle/kApproach/kPreGrasp/kClosure/kHold and kRelease via
+  // ComputeReleaseMode → ComputeTSIDPosition). kFallback no longer pushes
+  // state; the MPC retains its last snapshot until recovery to kIdle, which
+  // is safe because MPC output is not driving control during fallback and
+  // the dim-mismatch gate (state.nq == model_->nq()) keys on nq, not
+  // staleness. Eliminates the per-tick ExtractFullState double-call (this
+  // top-level + ComputeTSIDPosition's own call).
   switch (phase_) {
     case WbcPhase::kIdle:
     case WbcPhase::kApproach:
-    case WbcPhase::kRetreat:
-    case WbcPhase::kRelease:
-      // ComputePositionMode(dt);
-      // break;
-
     case WbcPhase::kPreGrasp:
     case WbcPhase::kClosure:
     case WbcPhase::kHold:
@@ -124,6 +118,10 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
       } else {
         ComputePositionMode(dt);  // Fallback if TSID not available
       }
+      break;
+
+    case WbcPhase::kRelease:
+      ComputeReleaseMode(state, dt);
       break;
 
     case WbcPhase::kFallback:
@@ -161,6 +159,16 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
+
+  // 1a. Push fresh (q, v) to the MPC thread so HandlerMPCThread::Solve does
+  // not reject the snapshot via its dim-mismatch / staleness gates.
+  // Lives here (not at ComputeControl's top) because ExtractFullState +
+  // pinocchio_cache_.Update already need fresh state at this exact point;
+  // co-locating the WriteState avoids a per-tick double extraction.
+  if (mpc_enabled_ && mpc_manager_.Enabled()) {
+    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
+    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
+  }
 
   // Stage A-5b: progress per-contact activation ramp by dt. ContactState
   // auto-flips the legacy `active : bool` once s_i crosses kActivationDeadband
@@ -361,6 +369,88 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   RCLCPP_INFO_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
                        "[wbc] solve=%.0fus phase=%d n_act=%d rank_G=%d", tsid_output_.solve_time_us,
                        static_cast<int>(phase_), n_lambda_active, grasp_cache_.Rank());
+}
+
+void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double dt) noexcept {
+  // Stage 0: TSID holds the arm SE3 at current TCP while ContactState ramps
+  // activation toward 0 (set in OnPhaseEnter(kRelease)). Posture preset
+  // damps hand at its current pose during this brief window.
+  // Stage 1: lazily initialise the finger-open joint trajectory once the
+  // contact ramp window has elapsed, then overlay it onto hand_computed_
+  // after TSID's tick mapping. The arm continues on TSID SE3 hold.
+  release_elapsed_s_ += dt;
+  // Guard against unbounded accumulation if release_done_ never trips
+  // (e.g., hand device drops mid-stage-1 → time advance loop is skipped).
+  constexpr double kReleaseElapsedCapSec = 60.0;
+  if (release_elapsed_s_ > kReleaseElapsedCapSec) {
+    release_elapsed_s_ = kReleaseElapsedCapSec;
+  }
+
+  if (tsid_initialized_) {
+    ComputeTSIDPosition(state, dt);
+  } else {
+    // !tsid_initialized_ implies LoadConfig was skipped (unit tests, init
+    // failure). Hold the current sensed pose with zero velocity instead of
+    // calling ComputePositionMode — that path reads robot_trajectory_,
+    // which is only seeded by the Position-controller-style preset path
+    // and never initialised on a kRelease entry, so it would feed stale
+    // joint targets into the wire output. Production reaches this branch
+    // only after init failure, but the unit-test path exercises it on
+    // every preempt-into-kRelease, so the fresh-hold guard is mandatory.
+    if (state.num_devices > 0 && state.devices[0].valid) {
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = state.devices[0].positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
+      }
+    }
+    if (state.num_devices > 1 && state.devices[1].valid) {
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hand_computed_.positions[idx] = state.devices[1].positions[idx];
+        hand_computed_.velocities[idx] = 0.0;
+      }
+    }
+  }
+
+  if (release_stage_ == 0 && release_elapsed_s_ >= release_ramp_sec_) {
+    if (state.num_devices > 1 && state.devices[1].valid) {
+      const auto gains = gains_lock_.Load();
+      trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
+      trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
+      double hmax = 0.0;
+      for (int i = 0; i < hand_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        hstart.positions[idx] = hand_computed_.positions[idx];
+        hgoal.positions[idx] = 0.0;
+        const double hd = std::abs(hstart.positions[idx]);
+        if (hd > hmax) {
+          hmax = hd;
+        }
+      }
+      const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
+      hand_trajectory_.initialize(hstart, hgoal, hdur);
+      hand_trajectory_time_ = 0.0;
+    } else {
+      // No hand device → ramp window is the entire release sequence.
+      release_done_ = true;
+    }
+    release_stage_ = 1;
+  }
+
+  if (release_stage_ == 1 && state.num_devices > 1 && state.devices[1].valid) {
+    hand_trajectory_time_ += dt;
+    const auto hstate = hand_trajectory_.compute(
+        std::min(hand_trajectory_time_, hand_trajectory_.duration()));
+    for (int i = 0; i < hand_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      hand_computed_.positions[idx] = hstate.positions[idx];
+      hand_computed_.velocities[idx] = hstate.velocities[idx];
+    }
+    if (hand_trajectory_time_ >= hand_trajectory_.duration()) {
+      release_done_ = true;
+    }
+  }
 }
 
 void DemoWbcController::ComputeFallback() noexcept {

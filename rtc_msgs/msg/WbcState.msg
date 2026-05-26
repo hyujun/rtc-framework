@@ -11,14 +11,19 @@
 
 std_msgs/Header header
 
-# WbcPhase enum (8-state FSM, must match WbcPhase in
-# integrated_bringup/include/integrated_bringup/controllers/demo_wbc_controller.hpp)
+# WbcPhase enum (7 reachable states + slot 5 reserved, must match WbcPhase
+# in integrated_bringup/include/integrated_bringup/controllers/
+# demo_wbc_controller.hpp). PHASE_RETREAT=5 is DEPRECATED — the C++ enum
+# entry was removed when the WBC FSM became TSID-everywhere and RELEASE
+# became an unconditional preempt to PHASE_RELEASE. The constant value
+# stays for rosbag/BT/GUI ABI compatibility and is reserved for a future
+# carry-then-release reintroduction; no controller produces it today.
 uint8 PHASE_IDLE      = 0
 uint8 PHASE_APPROACH  = 1
 uint8 PHASE_PRE_GRASP = 2
 uint8 PHASE_CLOSURE   = 3
 uint8 PHASE_HOLD      = 4
-uint8 PHASE_RETREAT   = 5
+uint8 PHASE_RETREAT   = 5  # DEPRECATED, reserved (no longer published)
 uint8 PHASE_RELEASE   = 6
 uint8 PHASE_FALLBACK  = 7
 uint8 phase

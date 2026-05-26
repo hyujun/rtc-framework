@@ -65,19 +65,21 @@ using rtc::kMaxDeviceChannels;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
 
-// ── WBC Phase (8-state FSM) ─────────────────────────────────────────────────
+// ── WBC Phase (7-state reachable FSM, slot 5 reserved) ─────────────────────
 //
-// Phase 4 MVP implements: kIdle, kApproach, kPreGrasp, kFallback.
-// Contact phases (kClosure, kHold, kRetreat, kRelease) are skeleton-only.
+// All non-fallback phases run TSID QP → position. Value 5 was kRetreat in
+// older WBC builds and is reserved here to keep WbcState.msg PHASE_RETREAT=5
+// stable for downstream consumers (demo_gui, BT, rosbag). Reintroducing a
+// carry-then-release semantic should reuse the slot rather than shift values.
 enum class WbcPhase : uint8_t {
-  kIdle,      ///< Home pose hold (position hold)
-  kApproach,  ///< Joint-space quintic trajectory to pre-grasp
-  kPreGrasp,  ///< TSID QP → position (no contact, fine positioning)
-  kClosure,   ///< TSID QP → position (contact forming, Phase 4B)
-  kHold,      ///< TSID QP → position (grasp holding, Phase 4B)
-  kRetreat,   ///< Quintic trajectory retreat (Phase 4B)
-  kRelease,   ///< Finger open ramp (Phase 4B)
-  kFallback   ///< Safety: position hold at last valid q
+  kIdle = 0,      ///< SE3 hold at current TCP via TSID
+  kApproach = 1,  ///< TSID drives TCP toward pre-grasp pose (quintic SE3 ramp)
+  kPreGrasp = 2,  ///< TSID fine positioning at pre-grasp pose
+  kClosure = 3,   ///< TSID with contact-forming tasks
+  kHold = 4,      ///< TSID grasp holding
+  // 5 reserved (was kRetreat — removed; WbcState.msg PHASE_RETREAT=5 deprecated)
+  kRelease = 6,   ///< Contact ramp-down → finger-open trajectory
+  kFallback = 7   ///< Safety: position hold at last valid q
 };
 
 // ── DemoWbcController ────────────────────────────────────────────────────────
@@ -197,6 +199,20 @@ class DemoWbcController final : public RTControllerInterface {
 
   void SetGraspCmdForTesting(int v) noexcept { grasp_cmd_.store(v, std::memory_order_release); }
 
+  [[nodiscard]] int GetReleaseStageForTesting() const noexcept { return release_stage_; }
+
+  [[nodiscard]] double GetReleaseElapsedSecForTesting() const noexcept {
+    return release_elapsed_s_;
+  }
+
+  // Pollute the release sub-FSM state so a subsequent kRelease entry can
+  // verify OnPhaseEnter's reset overrode the dirty value.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+  void ForceReleaseStateForTesting(int stage, double elapsed) noexcept {
+    release_stage_ = stage;
+    release_elapsed_s_ = elapsed;
+  }
+
   // F-2 test access: seed captured base_frame entries directly so
   // OnDeviceConfigsSet can be exercised without a real Pinocchio model.
   void SetBaseFrameEntriesForTesting(
@@ -256,6 +272,7 @@ class DemoWbcController final : public RTControllerInterface {
   // ── Control modes ───────────────────────────────────────────────────────
   void ComputePositionMode(double dt) noexcept;
   void ComputeTSIDPosition(const ControllerState& state, double dt) noexcept;
+  void ComputeReleaseMode(const ControllerState& state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
   // ── E-STOP ──────────────────────────────────────────────────────────────
@@ -589,14 +606,9 @@ class DemoWbcController final : public RTControllerInterface {
   double epsilon_approach_{0.01};        ///< m, approach → pre-grasp
   double epsilon_pregrasp_{0.005};       ///< m, pre-grasp → closure
   double force_contact_threshold_{0.2};  ///< N, contact detection
-  double force_hold_threshold_{1.0};     ///< N, hold → retreat
   int min_contacts_for_hold_{2};         ///< # fingertips required -> kHold
   double slip_rate_threshold_{5.0};      ///< N/s, |df/dt| slip guard (kHold)
   double deformation_threshold_{0.015};  ///< m, ||disp|| guard (kHold)
-
-  // Approach start pose (saved on kApproach entry, reused on kRetreat).
-  // Only the first arm_dof_ slots are written/read.
-  std::array<double, kMaxArmDof> q_approach_start_{};
 
   // Integration safety margins
   double position_margin_{0.02};  ///< rad, from joint limits
@@ -608,6 +620,15 @@ class DemoWbcController final : public RTControllerInterface {
   // ContactState::UpdateActivation(dt) linearly progresses s_i toward the
   // target. YAML: `tsid.contacts_default_ramp_sec` (default 0.1 = 100 ms).
   double contact_ramp_sec_{0.1};
+
+  // kRelease 2-stage state. Stage 0: contact activation_target ramps to 0
+  // over release_ramp_sec_; stage 1: hand finger-open trajectory plays.
+  // release_done_ flips on stage-1 completion → UpdatePhase routes back to
+  // kIdle. YAML: `fsm.release_ramp_sec` (default 0.03 = 30 ms).
+  int release_stage_{0};
+  double release_elapsed_s_{0.0};
+  double release_ramp_sec_{0.03};
+  bool release_done_{false};
 
   // ── Utility ─────────────────────────────────────────────────────────────
   void ExtractFullState(const ControllerState& state) noexcept;

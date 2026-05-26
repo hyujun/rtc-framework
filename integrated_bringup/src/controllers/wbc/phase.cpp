@@ -12,120 +12,109 @@
 
 namespace integrated_bringup {
 
-// ── 8-state grasp FSM (Idle → Approach → PreGrasp → Closure → Hold →
-//                       Retreat → Release → Fallback) ───────────────────────
+// ── 7-state grasp FSM (Idle → Approach → PreGrasp → Closure → Hold →
+//                       Release → Fallback; slot 5 reserved) ───────────────
+//
+// RELEASE preempt: grasp_cmd=2 jumps to kRelease from any active grasp phase
+// (kApproach/kPreGrasp/kClosure/kHold). Terminal/safe phases — kIdle (no
+// contacts, hand already open), kRelease (already releasing), kFallback
+// (latched safe state) — are exempt to keep the guard a no-op there.
+// Abort (cmd=0) returns to kIdle from the same active set. Both preempt the
+// per-case transitions below.
 void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
   const int cmd = grasp_cmd_.load(std::memory_order_acquire);
   WbcPhase next = phase_;
 
-  switch (phase_) {
-    case WbcPhase::kIdle:
-      // grasp_cmd=1 + valid target → approach
-      if (cmd == 1 && robot_new_target_pending_) {
-        next = WbcPhase::kApproach;
-      }
-      break;
-
-    case WbcPhase::kApproach: {
-      // Trajectory complete → pre-grasp (TSID)
-      if (robot_trajectory_time_ >= robot_trajectory_.duration()) {
-        if (tsid_initialized_) {
-          next = WbcPhase::kPreGrasp;
-        } else {
-          next = WbcPhase::kIdle;  // No TSID, stay in position mode
+  // Top-level preempt guards: RELEASE > abort > case-internal transitions.
+  if (cmd == 2 && phase_ != WbcPhase::kIdle && phase_ != WbcPhase::kRelease &&
+      phase_ != WbcPhase::kFallback) {
+    next = WbcPhase::kRelease;
+  } else if (cmd == 0 && phase_ != WbcPhase::kIdle && phase_ != WbcPhase::kRelease &&
+             phase_ != WbcPhase::kFallback) {
+    next = WbcPhase::kIdle;
+  } else {
+    switch (phase_) {
+      case WbcPhase::kIdle:
+        // grasp_cmd=1 + valid target → approach
+        if (cmd == 1 && robot_new_target_pending_) {
+          next = WbcPhase::kApproach;
         }
-      }
-      // Abort
-      if (cmd == 0) {
-        next = WbcPhase::kIdle;
-      }
-      break;
-    }
+        break;
 
-    case WbcPhase::kPreGrasp: {
-      // TCP close enough to goal → closure
-      if (tcp_goal_valid_) {
-        const double err = ComputeTcpError(tcp_goal_);
-        if (err < epsilon_pregrasp_) {
+      case WbcPhase::kApproach: {
+        // TCP close enough to approach goal → fine positioning. epsilon_approach_
+        // (formerly unused) is the loose threshold; pre_grasp tightens to
+        // epsilon_pregrasp_ for closure entry.
+        if (tcp_goal_valid_ && ComputeTcpError(tcp_goal_) < epsilon_approach_) {
+          if (tsid_initialized_) {
+            next = WbcPhase::kPreGrasp;
+          } else {
+            next = WbcPhase::kIdle;
+          }
+        }
+        break;
+      }
+
+      case WbcPhase::kPreGrasp: {
+        // TCP close enough to goal → closure
+        if (tcp_goal_valid_ && ComputeTcpError(tcp_goal_) < epsilon_pregrasp_) {
           next = WbcPhase::kClosure;
         }
+        break;
       }
-      // Abort
-      if (cmd == 0) {
-        next = WbcPhase::kIdle;
-      }
-      break;
-    }
 
-    case WbcPhase::kClosure: {
-      // Count active contacts from parsed fingertip forces
-      int active_contacts = 0;
-      for (int f = 0; f < num_active_fingertips_; ++f) {
-        const auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
-        if (ft.valid && ft.force_magnitude > force_contact_threshold_) {
-          ++active_contacts;
+      case WbcPhase::kClosure: {
+        // Count active contacts from parsed fingertip forces
+        int active_contacts = 0;
+        for (int f = 0; f < num_active_fingertips_; ++f) {
+          const auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
+          if (ft.valid && ft.force_magnitude > force_contact_threshold_) {
+            ++active_contacts;
+          }
         }
-      }
-      if (active_contacts >= min_contacts_for_hold_) {
-        next = WbcPhase::kHold;
-      }
-      if (cmd == 0) {
-        next = WbcPhase::kIdle;
-      }
-      break;
-    }
-
-    case WbcPhase::kHold: {
-      // Anomaly detection: slip (|df/dt|) only. Deformation guard is
-      // TODO(layer-d) — current fingertip sensors do not publish per-tip
-      // displacement, so the kFallback ramp on |d| > deformation_threshold_
-      // is suppressed. `deformation_threshold_` member + YAML key kept for
-      // backward compatibility and Layer D restoration.
-      for (int f = 0; f < num_active_fingertips_; ++f) {
-        const auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
-        if (!ft.valid) {
-          continue;
+        if (active_contacts >= min_contacts_for_hold_) {
+          next = WbcPhase::kHold;
         }
-        if (std::abs(ft.force_rate) > slip_rate_threshold_) {
-          RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
-                               "[wbc] slip detected f=%d df/dt=%.2f N/s > %.2f", f,
-                               static_cast<double>(ft.force_rate), slip_rate_threshold_);
-          next = WbcPhase::kFallback;
-          break;
+        break;
+      }
+
+      case WbcPhase::kHold: {
+        // Anomaly detection: slip (|df/dt|) only. Deformation guard is
+        // TODO(layer-d) — current fingertip sensors do not publish per-tip
+        // displacement, so the kFallback ramp on |d| > deformation_threshold_
+        // is suppressed. `deformation_threshold_` member + YAML key kept for
+        // backward compatibility and Layer D restoration.
+        for (int f = 0; f < num_active_fingertips_; ++f) {
+          const auto& ft = fingertip_data_[static_cast<std::size_t>(f)];
+          if (!ft.valid) {
+            continue;
+          }
+          if (std::abs(ft.force_rate) > slip_rate_threshold_) {
+            RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
+                                 "[wbc] slip detected f=%d df/dt=%.2f N/s > %.2f", f,
+                                 static_cast<double>(ft.force_rate), slip_rate_threshold_);
+            next = WbcPhase::kFallback;
+            break;
+          }
         }
+        break;
       }
-      if (cmd == 2) {
-        next = WbcPhase::kRetreat;
-      }
-      if (cmd == 0) {
-        next = WbcPhase::kIdle;
-      }
-      break;
+
+      case WbcPhase::kRelease:
+        // Stage 1 finger-open completed → idle. release_done_ is set by
+        // ComputeReleaseMode when hand_trajectory_ runs out.
+        if (release_done_) {
+          next = WbcPhase::kIdle;
+        }
+        break;
+
+      case WbcPhase::kFallback:
+        // Manual recovery only: grasp_cmd=0 → idle (exempt from top-level guard)
+        if (cmd == 0) {
+          next = WbcPhase::kIdle;
+        }
+        break;
     }
-
-    case WbcPhase::kRetreat:
-      // Trajectory complete → release
-      if (robot_trajectory_time_ >= robot_trajectory_.duration()) {
-        next = WbcPhase::kRelease;
-      }
-      if (cmd == 0) {
-        next = WbcPhase::kIdle;
-      }
-      break;
-
-    case WbcPhase::kRelease:
-      // Hand open complete → idle
-      if (hand_trajectory_time_ >= hand_trajectory_.duration()) {
-        next = WbcPhase::kIdle;
-      }
-      break;
-
-    case WbcPhase::kFallback:
-      // Manual recovery only: grasp_cmd=0 → idle
-      if (cmd == 0) {
-        next = WbcPhase::kIdle;
-      }
-      break;
   }
 
   if (next != phase_) {
@@ -161,20 +150,33 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
   switch (new_phase) {
     case WbcPhase::kIdle: {
-      // Hold current position
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        robot_computed_.positions[idx] = dev0.positions[idx];
-        robot_computed_.velocities[idx] = 0.0;
+      // TSID drives SE3 hold at current TCP + posture hold at current q.
+      // Seed integration buffers and the SE3 reference from current state;
+      // ComputeTSIDPosition fills robot_computed_/hand_computed_ from
+      // q_next_full_ per tick. No direct command-buffer writes here — they
+      // would be overwritten by the TSID mapping the same tick.
+      ExtractFullState(state);
+      q_next_full_ = q_curr_full_;
+      v_next_full_.setZero();
+
+      const auto idx = static_cast<std::size_t>(WbcPhase::kIdle);
+      if (phase_preset_valid_[idx]) {
+        tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
-      if (state.num_devices > 1 && dev1.valid) {
-        for (int i = 0; i < hand_dof_; ++i) {
-          const auto idx = static_cast<std::size_t>(i);
-          hand_computed_.positions[idx] = dev1.positions[idx];
-          hand_computed_.velocities[idx] = 0.0;
+
+      // SE3 hold at current TCP (zero-displacement quintic).
+      if (arm_handle_) {
+        std::span<const double> q_arm(dev0.positions.data(),
+                                      static_cast<std::size_t>(arm_dof_));
+        arm_handle_->ComputeForwardKinematics(q_arm);
+        tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
+        if (use_root_frame_) {
+          tcp_goal_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_goal_);
         }
+        tcp_goal_valid_ = true;
+        InitTcpTrajectory(state);
       }
-      tcp_goal_valid_ = false;
+
       qp_fail_count_ = 0;
       // Stage A-5b: kIdle ramps activation down to 0 (gentle release).
       for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
@@ -185,28 +187,28 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
     }
 
     case WbcPhase::kApproach: {
-      // Build quintic trajectory: current → target (arm). current_target_slot_
-      // was refreshed at the top of Compute() by DrainTargetSlot; the RT
-      // thread is still the sole SeqLock writer.
-      trajectory::JointSpaceTrajectory<kMaxArmDof>::State start{};
-      trajectory::JointSpaceTrajectory<kMaxArmDof>::State goal{};
-      double max_delta = 0.0;
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        start.positions[idx] = dev0.positions[idx];
-        q_approach_start_[idx] = dev0.positions[idx];  // save for kRetreat
-        goal.positions[idx] = current_target_slot_.targets[0][idx];
-        const double delta = std::abs(goal.positions[idx] - start.positions[idx]);
-        if (delta > max_delta) {
-          max_delta = delta;
-        }
+      // TSID drives the arm via an SE3 quintic ramp (current FK → pregrasp
+      // pose). The hand stays at its current pose throughout Approach: the
+      // TSID posture task is rewritten to q_curr_full_ each tick inside
+      // ComputeTSIDPosition's MPC-disabled branch (q_des = q_curr_full_),
+      // so the user-provided hand close pose in current_target_slot_.
+      // targets[1] is NOT applied here. That target is consumed by the
+      // hand_trajectory_ ramp initialised on kClosure/kHold entry below,
+      // which interpolates from the current hand pose toward the user
+      // target over `hand_trajectory_speed`-shaped duration.
+      const auto idx = static_cast<std::size_t>(WbcPhase::kApproach);
+      if (phase_preset_valid_[idx]) {
+        tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
-      const double duration = std::max(max_delta / gains.arm_trajectory_speed, 0.1);
-      robot_trajectory_.initialize(start, goal, duration);
-      robot_trajectory_time_ = 0.0;
-      robot_new_target_pending_ = false;
 
-      // Compute FK of arm target for SE3Task reference in kPreGrasp
+      ExtractFullState(state);
+      q_next_full_ = q_curr_full_;
+      v_next_full_.setZero();
+      robot_new_target_pending_ = false;
+      hand_new_target_pending_ = false;
+
+      // Compute FK of arm target for SE3 goal, then re-FK current pose so
+      // InitTcpTrajectory's start = current FK, goal = tcp_goal_.
       if (arm_handle_) {
         std::span<const double> q_target(current_target_slot_.targets[0].data(),
                                          static_cast<std::size_t>(arm_dof_));
@@ -225,27 +227,15 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
                     sizeof(current_target_slot_.tcp_goal_t));
         current_target_slot_.tcp_goal_valid = true;
         target_seqlock_.Store(current_target_slot_);
+
+        // Reset FK to current pose so InitTcpTrajectory's start = current.
+        std::span<const double> q_arm(dev0.positions.data(),
+                                      static_cast<std::size_t>(arm_dof_));
+        arm_handle_->ComputeForwardKinematics(q_arm);
+        InitTcpTrajectory(state);
       }
 
-      // Hand trajectory (pre-shape)
-      if (hand_new_target_pending_ && state.num_devices > 1 && dev1.valid) {
-        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
-        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
-        double hmax = 0.0;
-        for (int i = 0; i < hand_dof_; ++i) {
-          const auto idx = static_cast<std::size_t>(i);
-          hstart.positions[idx] = dev1.positions[idx];
-          hgoal.positions[idx] = current_target_slot_.targets[1][idx];
-          const double hd = std::abs(hgoal.positions[idx] - hstart.positions[idx]);
-          if (hd > hmax) {
-            hmax = hd;
-          }
-        }
-        const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
-        hand_trajectory_.initialize(hstart, hgoal, hdur);
-        hand_trajectory_time_ = 0.0;
-        hand_new_target_pending_ = false;
-      }
+      qp_fail_count_ = 0;
       break;
     }
 
@@ -345,66 +335,44 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       break;
     }
 
-    case WbcPhase::kRetreat: {
-      // Stage A-5b: ramp contact activation down to 0 over contact_ramp_sec_.
+    case WbcPhase::kRelease: {
+      // 2-stage release. Stage 0: contact activation_target → 0 over
+      // release_ramp_sec_ while TSID holds the arm SE3 at current TCP and
+      // posture damps the hand at its current pose. Stage 1: finger-open
+      // trajectory plays after the ramp window (initialised lazily in
+      // ComputeReleaseMode so hstart reflects the post-ramp pose).
+      release_stage_ = 0;
+      release_elapsed_s_ = 0.0;
+      release_done_ = false;
+
       for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
-        contact_state_.SetActivationTarget(i, 0.0, contact_ramp_sec_);
+        contact_state_.SetActivationTarget(i, 0.0, release_ramp_sec_);
       }
       contact_state_.RecomputeActive(contact_mgr_config_);
 
-      // Arm trajectory: current → saved approach-start pose
-      trajectory::JointSpaceTrajectory<kMaxArmDof>::State start{};
-      trajectory::JointSpaceTrajectory<kMaxArmDof>::State goal{};
-      double max_delta = 0.0;
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        start.positions[idx] = dev0.positions[idx];
-        goal.positions[idx] = q_approach_start_[idx];
-        const double delta = std::abs(goal.positions[idx] - start.positions[idx]);
-        if (delta > max_delta) {
-          max_delta = delta;
-        }
+      const auto idx = static_cast<std::size_t>(WbcPhase::kRelease);
+      if (phase_preset_valid_[idx]) {
+        tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
-      const double duration = std::max(max_delta / gains.arm_trajectory_speed, 0.1);
-      robot_trajectory_.initialize(start, goal, duration);
-      robot_trajectory_time_ = 0.0;
-      tcp_goal_valid_ = false;
-      break;
-    }
 
-    case WbcPhase::kRelease: {
-      // Hand open: all motors → 0
-      if (state.num_devices > 1 && dev1.valid) {
-        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
-        trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};
-        double hmax = 0.0;
-        for (int i = 0; i < hand_dof_; ++i) {
-          const auto idx = static_cast<std::size_t>(i);
-          hstart.positions[idx] = dev1.positions[idx];
-          hgoal.positions[idx] = 0.0;
-          const double hd = std::abs(hstart.positions[idx]);
-          if (hd > hmax) {
-            hmax = hd;
-          }
+      ExtractFullState(state);
+      q_next_full_ = q_curr_full_;
+      v_next_full_.setZero();
+
+      // SE3 hold at current TCP (zero-displacement quintic).
+      if (arm_handle_) {
+        std::span<const double> q_arm(dev0.positions.data(),
+                                      static_cast<std::size_t>(arm_dof_));
+        arm_handle_->ComputeForwardKinematics(q_arm);
+        tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
+        if (use_root_frame_) {
+          tcp_goal_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_goal_);
         }
-        const double hdur = std::max(hmax / gains.hand_trajectory_speed, 0.1);
-        hand_trajectory_.initialize(hstart, hgoal, hdur);
-        hand_trajectory_time_ = 0.0;
+        tcp_goal_valid_ = true;
+        InitTcpTrajectory(state);
       }
-      // Arm holds current pose during release
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        robot_computed_.positions[idx] = dev0.positions[idx];
-        robot_computed_.velocities[idx] = 0.0;
-      }
-      // Freeze arm trajectory (duration=0 so ComputePositionMode clamps)
-      trajectory::JointSpaceTrajectory<kMaxArmDof>::State hold{};
-      for (int i = 0; i < arm_dof_; ++i) {
-        const auto idx = static_cast<std::size_t>(i);
-        hold.positions[idx] = dev0.positions[idx];
-      }
-      robot_trajectory_.initialize(hold, hold, 0.01);
-      robot_trajectory_time_ = 0.0;
+
+      qp_fail_count_ = 0;
       break;
     }
 
@@ -438,9 +406,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   // WBC FSM is authoritative for the demo; the grasp phase manager mirrors
   // it via ForcePhase so rtc_mpc picks up the matching OCP type
   // (contact_light vs contact_rich) on every WBC edge. `ForcePhase` is
-  // atomic and RT-safe (see grasp_phase_manager.hpp thread-safety notes);
-  // `SetTaskTarget` uses a non-RT mutex but fires at most once per WBC edge
-  // (not per 500 Hz tick), which is acceptable off the TSID hot path.
+  // atomic and RT-safe; `SetTaskTarget` uses SeqLock::Store (wait-free,
+  // RT-4 safe). See grasp_phase_manager.hpp thread-safety notes.
   // WBC has no direct MANIPULATE analogue — kClosure maps to CLOSURE and
   // kHold to HOLD; MANIPULATE is reserved for a future WBC extension.
   if (phase_manager_ptr_) {
@@ -468,9 +435,6 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         break;
       case WbcPhase::kHold:
         grasp_id = static_cast<int>(phase::GraspPhaseId::kHold);
-        break;
-      case WbcPhase::kRetreat:
-        grasp_id = static_cast<int>(phase::GraspPhaseId::kRetreat);
         break;
       case WbcPhase::kRelease:
         grasp_id = static_cast<int>(phase::GraspPhaseId::kRelease);

@@ -304,7 +304,10 @@ migration, 2026-04-26).
 - `demo_joint_controller` / `demo_task_controller`: `grasp_controller_` (Force-PI
   FSM) 가 있을 때만 적용. 없으면 `ok=false, message="grasp_controller unavailable"`.
 - `demo_wbc_controller`: `grasp_cmd_` atomic + `grasp_target_force` gain 갱신 →
-  WBC 8-state FSM이 다음 tick에서 `kApproach` / `kRelease` 진입.
+  WBC 7-state FSM (slot 5 reserved) 이 다음 tick 의 최상단 preempt guard 에서
+  `kApproach` (GRASP) / `kRelease` (RELEASE) 로 전이. RELEASE 는 active grasp
+  phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 어디서든 즉시 preempt;
+  `kIdle` (no-op) / `kRelease` (이미 release 중) / `kFallback` (수동 복구 필요) 면제.
 - E-STOP 활성 시 모든 호출이 `ok=false, message="E-STOP active"`.
 
 Caller: grasp coordinator (예: BehaviorTree action node) 또는 `ros2 service call`.
