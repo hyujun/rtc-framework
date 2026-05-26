@@ -15,15 +15,19 @@ namespace integrated_bringup {
 // ── 7-state grasp FSM (Idle → Approach → PreGrasp → Closure → Hold →
 //                       Release → Fallback; slot 5 reserved) ───────────────
 //
-// RELEASE preempt: grasp_cmd=2 unconditionally jumps to kRelease from any
-// non-terminal phase (kRelease and kFallback are guards). Abort (cmd=0)
-// returns to kIdle similarly. Both preempt the per-case transitions below.
+// RELEASE preempt: grasp_cmd=2 jumps to kRelease from any active grasp phase
+// (kApproach/kPreGrasp/kClosure/kHold). Terminal/safe phases — kIdle (no
+// contacts, hand already open), kRelease (already releasing), kFallback
+// (latched safe state) — are exempt to keep the guard a no-op there.
+// Abort (cmd=0) returns to kIdle from the same active set. Both preempt the
+// per-case transitions below.
 void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
   const int cmd = grasp_cmd_.load(std::memory_order_acquire);
   WbcPhase next = phase_;
 
   // Top-level preempt guards: RELEASE > abort > case-internal transitions.
-  if (cmd == 2 && phase_ != WbcPhase::kRelease && phase_ != WbcPhase::kFallback) {
+  if (cmd == 2 && phase_ != WbcPhase::kIdle && phase_ != WbcPhase::kRelease &&
+      phase_ != WbcPhase::kFallback) {
     next = WbcPhase::kRelease;
   } else if (cmd == 0 && phase_ != WbcPhase::kIdle && phase_ != WbcPhase::kRelease &&
              phase_ != WbcPhase::kFallback) {

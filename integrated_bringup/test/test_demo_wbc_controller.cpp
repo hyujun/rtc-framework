@@ -338,46 +338,65 @@ TEST_F(WbcFSMTest, ClosureAbortsOnGraspCmdZero) {
 }
 
 TEST_F(WbcFSMTest, HoldTransitionsToReleaseOnCmd2) {
-  // RELEASE=2 is now an unconditional preempt to kRelease from any non-terminal
-  // phase. Old behaviour routed Hold→Retreat first; kRetreat was removed.
+  // RELEASE=2 preempts to kRelease from kHold (and every other active grasp
+  // phase). Old behaviour routed Hold→Retreat first; kRetreat was removed.
+  // The pre-pollution + reset check matches the other preempt tests.
   ctrl_.ForcePhaseForTesting(WbcPhase::kHold);
+  ctrl_.ForceReleaseStateForTesting(1, 5.0);
   ctrl_.SetGraspCmdForTesting(2);
   (void)ctrl_.Compute(state_);
   EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+  EXPECT_EQ(ctrl_.GetReleaseStageForTesting(), 0);
+  EXPECT_LT(ctrl_.GetReleaseElapsedSecForTesting(), 1.0);
 }
 
-// New: RELEASE=2 preempts from every non-terminal phase, not just kHold.
+// New: RELEASE=2 preempts from every active grasp phase.
+// Each test pre-pollutes the release sub-FSM state (stage=1, elapsed=5.0)
+// and asserts OnPhaseEnter reset it: stage back to 0, elapsed below the
+// dirty value (only the single in-tick dt increment from ComputeReleaseMode
+// remains, proving the reset overrode the dirty 5.0 s).
 TEST_F(WbcFSMTest, ApproachPreemptedToReleaseOnCmd2) {
   ctrl_.ForcePhaseForTesting(WbcPhase::kApproach);
+  ctrl_.ForceReleaseStateForTesting(1, 5.0);
   ctrl_.SetGraspCmdForTesting(2);
   (void)ctrl_.Compute(state_);
   EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+  EXPECT_EQ(ctrl_.GetReleaseStageForTesting(), 0);
+  EXPECT_LT(ctrl_.GetReleaseElapsedSecForTesting(), 1.0);
 }
 
 TEST_F(WbcFSMTest, PreGraspPreemptedToReleaseOnCmd2) {
   ctrl_.ForcePhaseForTesting(WbcPhase::kPreGrasp);
+  ctrl_.ForceReleaseStateForTesting(1, 5.0);
   ctrl_.SetGraspCmdForTesting(2);
   (void)ctrl_.Compute(state_);
   EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+  EXPECT_EQ(ctrl_.GetReleaseStageForTesting(), 0);
+  EXPECT_LT(ctrl_.GetReleaseElapsedSecForTesting(), 1.0);
 }
 
 TEST_F(WbcFSMTest, ClosurePreemptedToReleaseOnCmd2) {
   ctrl_.ForcePhaseForTesting(WbcPhase::kClosure);
+  ctrl_.ForceReleaseStateForTesting(1, 5.0);
   ctrl_.SetGraspCmdForTesting(2);
   (void)ctrl_.Compute(state_);
   EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+  EXPECT_EQ(ctrl_.GetReleaseStageForTesting(), 0);
+  EXPECT_LT(ctrl_.GetReleaseElapsedSecForTesting(), 1.0);
 }
 
-TEST_F(WbcFSMTest, IdlePreemptedToReleaseOnCmd2) {
-  // Even kIdle accepts the preempt (cmd=2 in kIdle is a no-op semantically,
-  // but the guard treats it uniformly — kIdle is not in the exempt set).
+// kIdle, kRelease, kFallback are exempt from the cmd=2 preempt:
+// - kIdle: no contacts, hand already open — releasing is a no-op flash that
+//   would just spam wbc_state.phase transitions.
+// - kRelease: already releasing.
+// - kFallback: latched safe state, must be cleared explicitly.
+TEST_F(WbcFSMTest, IdleReleaseCmdIsNoOp) {
   ctrl_.ForcePhaseForTesting(WbcPhase::kIdle);
   ctrl_.SetGraspCmdForTesting(2);
   (void)ctrl_.Compute(state_);
-  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
+  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kIdle);
 }
 
-// kRelease and kFallback are exempt — preempt guard does not re-enter.
 TEST_F(WbcFSMTest, FallbackIsExemptFromReleasePreempt) {
   ctrl_.ForcePhaseForTesting(WbcPhase::kFallback);
   ctrl_.SetGraspCmdForTesting(2);

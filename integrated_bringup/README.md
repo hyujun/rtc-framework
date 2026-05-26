@@ -340,7 +340,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 #### 7-Phase FSM (slot 5 reserved)
 
-모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 어떤 비-terminal phase 에서도 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kRelease` / `kFallback` 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).
+모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kIdle` (접촉 없음·hand 이미 open 인 no-op flash 방지) / `kRelease` (이미 release 중) / `kFallback` (수동 복구 필요) 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).
 
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
@@ -349,7 +349,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 | `kPreGrasp` (2) | TSID QP (no contact, fine SE3 tracking) | kApproach 종료 | `||tcp_err|| < epsilon_pregrasp` |
 | `kClosure` (3) | TSID QP + contact + ForceTask | kPreGrasp 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
 | `kHold` (4) | TSID QP + contact + ForceTask | kClosure 종료 | slip 감지 시 `kFallback` (RELEASE preempt 는 top-level guard) |
-| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from any non-terminal phase | `release_done_` (stage 1 hand trajectory 완료) |
+| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) | `release_done_` (stage 1 hand trajectory 완료) |
 | `kFallback` (7) | Position hold | QP 연속 실패 N회, slip/deformation | `grasp_cmd=0` (수동 복구; top-level abort guard 면제) |
 
 #### Runtime Gains (per-controller ROS 2 parameters)
