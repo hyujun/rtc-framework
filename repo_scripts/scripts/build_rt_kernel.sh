@@ -1,20 +1,31 @@
 #!/bin/bash
 # build_rt_kernel.sh — PREEMPT_RT 커널 빌드 및 설치
 #
-# Ubuntu 22.04 / 24.04 에서 PREEMPT_RT 패치된 커널을 빌드한다.
+# Ubuntu 22.04 / 24.04 에서 mainline PREEMPT_RT 커널 (6.12+) 을 소스 빌드한다.
 # Option B (최대 성능) — docs/RT_OPTIMIZATION.md 참조.
 #
+# PREEMPT_RT 는 Linux 6.12 에서 mainline 병합 (x86_64/arm64/riscv) — 6.12+ 는 외부
+# RT 패치 없이 CONFIG_PREEMPT_RT=y 만으로 RT 활성. 본 스크립트는 vanilla 커널을
+# 받아 (GPG 서명 검증 후) CPU profile 별 config 를 적용해 빌드한다.
+#
+# Profile: --profile auto (기본) 가 CPU 를 감지해 분기 —
+#   desktop-amd   : AMD Ryzen (amd_pstate)
+#   desktop-intel : 일반 Intel (intel_pstate, non-hybrid)
+#   nuc           : Intel hybrid NUC 13/14/15 (SCHED_MC_PRIO / HFI / cluster)
+#
 # 이전 실행에서 완료된 단계는 자동으로 감지하여 건너뛴다.
-# 예: 빌드가 완료된 상태라면 설치 단계부터 재개한다.
 #
 # Usage:
-#   sudo ./build_rt_kernel.sh                # 대화형 (완료 단계 자동 스킵)
-#   sudo ./build_rt_kernel.sh --batch        # 비대화형 (menuconfig 건너뜀)
-#   sudo ./build_rt_kernel.sh --dry-run      # 다운로드 및 패치까지만 실행
-#   sudo ./build_rt_kernel.sh --status       # 진행 상태만 확인 (실행 안 함)
-#   sudo ./build_rt_kernel.sh --force-step 5 # 5단계부터 강제 재실행
-#   sudo ./build_rt_kernel.sh --force-step 7 # GRUB 등록만 재실행
-#   sudo ./build_rt_kernel.sh --clean        # 빌드 소스 정리 후 처음부터
+#   sudo ./build_rt_kernel.sh                  # 대화형 (완료 단계 자동 스킵)
+#   sudo ./build_rt_kernel.sh --batch          # 비대화형 (menuconfig 건너뜀)
+#   sudo ./build_rt_kernel.sh --batch --with-nvidia   # 데스크탑 (NVIDIA DKMS 포함)
+#   sudo ./build_rt_kernel.sh --profile nuc --batch   # Intel NUC hybrid config 강제
+#   sudo ./build_rt_kernel.sh --kernel-version 6.12.91  # 커널 버전 지정 (6.12+)
+#   sudo ./build_rt_kernel.sh --dry-run        # 다운로드·검증·압축해제·설정까지만
+#   sudo ./build_rt_kernel.sh --status         # 진행 상태만 확인 (실행 안 함)
+#   sudo ./build_rt_kernel.sh --force-step 5   # 5단계부터 강제 재실행
+#   sudo ./build_rt_kernel.sh --force-step 7   # GRUB 등록만 재실행
+#   sudo ./build_rt_kernel.sh --clean          # 빌드 소스 정리 후 처음부터
 #   sudo ./build_rt_kernel.sh --help
 #
 # 실행 시점: 최초 1회 (커널 빌드 → 설치 → 재부팅)
@@ -41,6 +52,14 @@ VERIFY_ONLY=0
 FORCE_STEP=0
 CLEAN_BUILD=0
 BUILD_DIR="${HOME}/rt_kernel_build"
+# PREEMPT_RT 는 Linux 6.12 에서 mainline 병합 (x86_64/arm64/riscv) — 6.12+ 는 외부 패치
+# 없이 CONFIG_PREEMPT_RT=y 만으로 RT 활성. 두 머신(데스크탑/NUC) 재현성을 위해 pin 한다.
+# Bump 시 kernel.org v6.x 에서 최신 6.12.x longterm 을 확인해 갱신.
+KERNEL_VERSION_DEFAULT="6.12.91"
+KERNEL_VERSION_OVERRIDE=""
+PROFILE="auto"          # auto | desktop | nuc
+WITH_NVIDIA=0           # NVIDIA DKMS 처리는 기본 분리 (setup_nvidia_rt.sh) — opt-in
+SKIP_VERIFY=0           # GPG .sign 검증 강제 skip
 
 show_help() {
   echo ""
@@ -49,32 +68,39 @@ show_help() {
   echo "Usage: sudo $0 [OPTIONS]"
   echo ""
   echo "Options:"
-  echo "  --batch          비대화형 모드 (menuconfig 건너뜀)"
-  echo "  --dry-run        다운로드 및 패치까지만 실행 (빌드 안 함)"
-  echo "  --status         진행 상태 요약 확인 (실행하지 않음)"
-  echo "  --verify         각 단계별 세부 적용 상태 진단 (실행하지 않음)"
-  echo "  --force-step N   N단계부터 강제 재실행 (1-7)"
-  echo "  --clean          빌드 소스 정리 후 처음부터 (다운로드 파일은 보존)"
-  echo "  --build-dir DIR  빌드 디렉토리 지정 (기본: ~/rt_kernel_build)"
-  echo "  --help           이 도움말 표시"
+  echo "  --batch              비대화형 모드 (menuconfig 건너뜀)"
+  echo "  --dry-run            다운로드·검증·압축 해제·설정까지만 실행 (빌드 안 함)"
+  echo "  --status             진행 상태 요약 확인 (실행하지 않음)"
+  echo "  --verify             각 단계별 세부 적용 상태 진단 (실행하지 않음)"
+  echo "  --force-step N       N단계부터 강제 재실행 (1-7)"
+  echo "  --clean              빌드 소스 정리 후 처음부터 (다운로드 파일은 보존)"
+  echo "  --build-dir DIR      빌드 디렉토리 지정 (기본: ~/rt_kernel_build)"
+  echo "  --kernel-version V   빌드할 커널 버전 (기본: ${KERNEL_VERSION_DEFAULT}, 6.12+ 필수)"
+  echo "  --profile P          auto|desktop|nuc — config 분기 (기본: auto, CPU 자동 감지)"
+  echo "  --with-nvidia        NVIDIA DKMS 모듈을 RT 커널에 직접 빌드 (기본: 분리, off)"
+  echo "  --skip-verify        커널 tarball GPG 서명 검증 건너뜀"
+  echo "  --help               이 도움말 표시"
   echo ""
   echo "단계 구성:"
   echo "  [1/7] 필수 빌드 패키지 설치"
-  echo "  [2/7] 커널 소스 + RT 패치 다운로드"
-  echo "  [3/7] 압축 해제 및 패치 적용"
-  echo "  [4/7] 커널 설정 (PREEMPT_RT 활성화)"
+  echo "  [2/7] 커널 소스 다운로드 + GPG 서명 검증"
+  echo "  [3/7] 압축 해제"
+  echo "  [4/7] 커널 설정 (PREEMPT_RT + profile별 config)"
   echo "  [5/7] 커널 빌드 (make bindeb-pkg)"
   echo "  [6/7] .deb 패키지 설치"
   echo "  [7/7] GRUB 등록 확인 및 기본 부팅 설정"
   echo ""
+  echo "PREEMPT_RT 는 Linux 6.12 에서 mainline 병합 — 6.12+ 는 외부 패치 불요."
   echo "이전 실행에서 완료된 단계는 자동으로 건너뜁니다."
   echo ""
   echo "Examples:"
-  echo "  sudo ./build_rt_kernel.sh --batch          # 전체 자동 (완료 단계 스킵)"
-  echo "  sudo ./build_rt_kernel.sh --status         # 상태 요약 확인"
-  echo "  sudo ./build_rt_kernel.sh --verify         # 세부 적용 상태 진단"
-  echo "  sudo ./build_rt_kernel.sh --force-step 5   # 빌드부터 강제 재실행"
-  echo "  sudo ./build_rt_kernel.sh --clean --batch  # 정리 후 처음부터"
+  echo "  sudo ./build_rt_kernel.sh --batch                  # 전체 자동 (완료 단계 스킵)"
+  echo "  sudo ./build_rt_kernel.sh --batch --with-nvidia    # 데스크탑 (NVIDIA DKMS 포함)"
+  echo "  sudo ./build_rt_kernel.sh --profile nuc --batch    # Intel NUC hybrid config 강제"
+  echo "  sudo ./build_rt_kernel.sh --status                 # 상태 요약 확인"
+  echo "  sudo ./build_rt_kernel.sh --verify                 # 세부 적용 상태 진단"
+  echo "  sudo ./build_rt_kernel.sh --force-step 5           # 빌드부터 강제 재실행"
+  echo "  sudo ./build_rt_kernel.sh --clean --batch          # 정리 후 처음부터"
   echo ""
   exit 0
 }
@@ -96,6 +122,19 @@ while [[ $# -gt 0 ]]; do
     --build-dir)
       [[ $# -ge 2 ]] || error "--build-dir requires a value"
       BUILD_DIR="$2"; shift 2 ;;
+    --kernel-version)
+      [[ $# -ge 2 ]] || error "--kernel-version requires a value (e.g. 6.12.91)"
+      KERNEL_VERSION_OVERRIDE="$2"; shift 2 ;;
+    --profile)
+      [[ $# -ge 2 ]] || error "--profile requires a value (auto|desktop|nuc)"
+      PROFILE="$2"
+      case "$PROFILE" in
+        auto|desktop|nuc) ;;
+        *) error "--profile must be auto|desktop|nuc (given: ${PROFILE})" ;;
+      esac
+      shift 2 ;;
+    --with-nvidia)  WITH_NVIDIA=1; shift ;;
+    --skip-verify)  SKIP_VERIFY=1; shift ;;
     -h|--help)   show_help ;;
     *)           error "Unknown option: '$1'  (run $0 --help)" ;;
   esac
@@ -113,32 +152,68 @@ echo -e "${BOLD}${BLUE}║     PREEMPT_RT Kernel Build Script                   
 echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# ── OS 버전 감지 및 커널/패치 버전 설정 ────────────────────────────────────────
+# ── OS 버전 확인 + 커널 버전 결정 ──────────────────────────────────────────────
+# PREEMPT_RT 가 6.12 에서 mainline 병합되어 외부 패치가 불요하므로, 커널 버전을
+# Ubuntu 버전으로 분기하지 않는다 (6.12 는 OS-독립; 22.04/24.04 모두 동일 커널).
 if ! command -v lsb_release &>/dev/null; then
   error "lsb_release not found. Install with: sudo apt-get install -y lsb-release"
 fi
 UBUNTU_VER=$(lsb_release -rs 2>/dev/null)
-
-if [[ "$UBUNTU_VER" == "24.04" ]]; then
-  KERNEL_MAJOR=6
-  KERNEL_VERSION="6.8.2"
-  PATCH_VERSION="6.8.2-rt11"
-  RT_PATCH_DIR="6.8"
-elif [[ "$UBUNTU_VER" == "22.04" ]]; then
-  KERNEL_MAJOR=6
-  KERNEL_VERSION="6.6.127"
-  PATCH_VERSION="6.6.127-rt69"
-  RT_PATCH_DIR="6.6"
-else
+if [[ "$UBUNTU_VER" != "24.04" && "$UBUNTU_VER" != "22.04" ]]; then
   error "지원하지 않는 Ubuntu 버전입니다: ${UBUNTU_VER} (22.04 또는 24.04 필요)"
 fi
 
-KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
-PATCH_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/projects/rt/${RT_PATCH_DIR}/patch-${PATCH_VERSION}.patch.xz"
+KERNEL_MAJOR=6
+KERNEL_VERSION="${KERNEL_VERSION_OVERRIDE:-$KERNEL_VERSION_DEFAULT}"
 
-# RT 커널 버전 문자열 (설치 확인용)
-RT_TAG=$(echo "$PATCH_VERSION" | grep -oP 'rt\d+')
-RT_KERNEL_FULL="${KERNEL_VERSION}-${RT_TAG}-rt-custom"
+# 형식 검증 (X.Y 또는 X.Y.Z) + 6.12+ 강제 (no-patch 모드 전제: RT mainline since 6.12)
+if [[ ! "$KERNEL_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+  error "잘못된 커널 버전 형식: '${KERNEL_VERSION}' (예: 6.12.91)"
+fi
+_kv_major="${KERNEL_VERSION%%.*}"
+_kv_minor="${KERNEL_VERSION#*.}"; _kv_minor="${_kv_minor%%.*}"
+if [[ "$_kv_major" -lt 6 || ( "$_kv_major" -eq 6 && "$_kv_minor" -lt 12 ) ]]; then
+  error "no-patch 모드는 커널 6.12+ 가 필요합니다 (PREEMPT_RT mainline 병합: 6.12). \
+구버전 RT 는 외부 패치가 필요 — docs/RT_OPTIMIZATION.md §5 참조 (given: ${KERNEL_VERSION})"
+fi
+
+KERNEL_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
+SIGN_URL="https://mirrors.edge.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.sign"
+
+# RT 커널 버전 문자열 (설치 확인용) — LOCALVERSION "-rt-custom" 와 일치.
+# mainline RT 는 별도 rtNN 태그가 없으므로 make kernelrelease == "${KERNEL_VERSION}-rt-custom".
+RT_KERNEL_FULL="${KERNEL_VERSION}-rt-custom"
+
+# ── CPU 벤더 / hybrid 감지 → effective profile 결정 ────────────────────────────
+# rt_common.sh 의 기존 감지 로직을 재사용 (재구현 금지). detect_hybrid_capability 가
+# CPU_VENDOR / NUC_GENERATION / PLATFORM_LABEL 전역을 채운다.
+detect_hybrid_capability >/dev/null 2>&1 || true
+CPU_VENDOR=$(get_cpu_vendor)              # GenuineIntel | AuthenticAMD | ""
+NUC_GEN=$(get_nuc_generation)             # raptor_lake_p | meteor_lake | ... | none
+PLATFORM_LABEL=$(get_platform_label)
+# rt_common 은 알려진 Intel 플랫폼만 라벨링 — AMD/일반 Intel 은 lscpu 모델명으로 fallback.
+[[ -z "$PLATFORM_LABEL" ]] && PLATFORM_LABEL=$(lscpu 2>/dev/null \
+  | awk -F: '/^Model name/{gsub(/^[ \t]+/,"",$2); print $2; exit}')
+[[ -z "$PLATFORM_LABEL" ]] && PLATFORM_LABEL="(unknown CPU)"
+
+# --profile auto: hybrid Intel → nuc, AMD → desktop-amd, 그 외 Intel → desktop-intel
+case "$PROFILE" in
+  auto)
+    if [[ "$NUC_GEN" != "none" && "$NUC_GEN" != "" ]]; then
+      EFFECTIVE_PROFILE="nuc"
+    elif [[ "$CPU_VENDOR" == "AuthenticAMD" ]]; then
+      EFFECTIVE_PROFILE="desktop-amd"
+    else
+      EFFECTIVE_PROFILE="desktop-intel"
+    fi ;;
+  nuc)       EFFECTIVE_PROFILE="nuc" ;;
+  desktop)
+    if [[ "$CPU_VENDOR" == "AuthenticAMD" ]]; then
+      EFFECTIVE_PROFILE="desktop-amd"
+    else
+      EFFECTIVE_PROFILE="desktop-intel"
+    fi ;;
+esac
 
 # NVIDIA GPU 감지
 HAS_NVIDIA="no"
@@ -158,9 +233,13 @@ KERNEL_SRC_DIR="${BUILD_DIR}/linux-${KERNEL_VERSION}"
 # Step completion detection functions
 # ══════════════════════════════════════════════════════════════════════════════
 
-# [1/6] 패키지 설치 완료 여부
+# [1/7] 패키지 설치 완료 여부
+# 실제 설치 목록과 일치시켜 (Step1 install 블록) 일부만 깔린 상태를 done 으로 오판하지 않는다.
+# dkms 는 --with-nvidia 일 때만 필수.
 is_step1_done() {
-  local required_pkgs=("build-essential" "libncurses-dev" "libssl-dev" "libelf-dev" "flex" "bison")
+  local required_pkgs=("build-essential" "bc" "curl" "wget" "libncurses-dev" "libssl-dev" \
+                       "libelf-dev" "flex" "bison" "debhelper" "cpio" "python3")
+  [[ "$WITH_NVIDIA" -eq 1 ]] && required_pkgs+=("dkms")
   for pkg in "${required_pkgs[@]}"; do
     if ! dpkg -s "$pkg" &>/dev/null; then
       return 1
@@ -169,24 +248,23 @@ is_step1_done() {
   return 0
 }
 
-# [2/6] 다운로드 완료 여부
+# [2/7] 다운로드 완료 여부 (커널 tarball — mainline RT 는 별도 패치 불요)
 is_step2_done() {
-  [[ -f "${BUILD_DIR}/linux-${KERNEL_VERSION}.tar.xz" ]] && \
-  [[ -f "${BUILD_DIR}/patch-${PATCH_VERSION}.patch.xz" ]]
+  [[ -f "${BUILD_DIR}/linux-${KERNEL_VERSION}.tar.xz" ]]
 }
 
-# [3/6] 압축 해제 + 패치 완료 여부
+# [3/7] 압축 해제 완료 여부
 is_step3_done() {
-  [[ -f "${KERNEL_SRC_DIR}/.rt_patched" ]]
+  [[ -f "${KERNEL_SRC_DIR}/.rt_extracted" ]]
 }
 
-# [4/6] 커널 설정 완료 여부
+# [4/7] 커널 설정 완료 여부
 is_step4_done() {
   [[ -f "${KERNEL_SRC_DIR}/.config" ]] && \
   grep -q "CONFIG_PREEMPT_RT=y" "${KERNEL_SRC_DIR}/.config" 2>/dev/null
 }
 
-# [5/6] 빌드 완료 여부
+# [5/7] 빌드 완료 여부
 is_step5_done() {
   # linux-image .deb 존재 (dbg 제외)
   local found
@@ -232,9 +310,9 @@ is_step7_done() {
 show_status() {
   local labels=(
     "[1/7] 필수 빌드 패키지 설치"
-    "[2/7] 커널 소스 + RT 패치 다운로드"
-    "[3/7] 압축 해제 및 패치 적용"
-    "[4/7] 커널 설정 (PREEMPT_RT)"
+    "[2/7] 커널 소스 다운로드 + GPG 서명 검증"
+    "[3/7] 압축 해제"
+    "[4/7] 커널 설정 (PREEMPT_RT + profile별 config)"
     "[5/7] 커널 빌드 (make bindeb-pkg)"
     "[6/7] .deb 패키지 설치"
     "[7/7] GRUB 등록 및 기본 부팅 설정"
@@ -246,9 +324,10 @@ show_status() {
 
   echo -e "${BOLD}━━━ 진행 상태 ━━━${NC}"
   echo ""
-  info "Ubuntu: ${UBUNTU_VER}  |  커널: ${KERNEL_VERSION}  |  RT: ${PATCH_VERSION}"
+  info "Ubuntu: ${UBUNTU_VER}  |  커널: ${KERNEL_VERSION}  |  RT: mainline (6.12+ no patch)"
   info "빌드 디렉토리: ${BUILD_DIR}"
-  info "CPU: 물리 ${PHYSICAL_CORES}코어 / 논리 ${LOGICAL_CORES}코어  |  NVIDIA: ${HAS_NVIDIA}"
+  info "CPU: ${PLATFORM_LABEL} (${CPU_VENDOR:-unknown})  |  profile: ${EFFECTIVE_PROFILE}"
+  info "코어: 물리 ${PHYSICAL_CORES} / 논리 ${LOGICAL_CORES}  |  NVIDIA: ${HAS_NVIDIA} (--with-nvidia: $([[ "$WITH_NVIDIA" -eq 1 ]] && echo on || echo off))"
   echo ""
 
   for i in "${!labels[@]}"; do
@@ -305,15 +384,20 @@ show_verify() {
 
   echo -e "${BOLD}━━━ RT 커널 빌드 상태 진단 ━━━${NC}"
   echo ""
-  info "Ubuntu: ${UBUNTU_VER}  |  대상 커널: ${KERNEL_VERSION}  |  RT: ${PATCH_VERSION}"
+  info "Ubuntu: ${UBUNTU_VER}  |  대상 커널: ${KERNEL_VERSION}  |  RT: mainline (6.12+ no patch)"
   info "빌드 디렉토리: ${BUILD_DIR}"
-  info "CPU: 물리 ${PHYSICAL_CORES}코어 / 논리 ${LOGICAL_CORES}코어  |  NVIDIA: ${HAS_NVIDIA}"
+  info "CPU: ${PLATFORM_LABEL} (${CPU_VENDOR:-unknown})  |  profile: ${EFFECTIVE_PROFILE}"
+  info "코어: 물리 ${PHYSICAL_CORES} / 논리 ${LOGICAL_CORES}  |  NVIDIA: ${HAS_NVIDIA} (--with-nvidia: $([[ "$WITH_NVIDIA" -eq 1 ]] && echo on || echo off))"
+  if command -v mokutil &>/dev/null; then
+    info "Secure Boot: $(mokutil --sb-state 2>/dev/null | head -1 || echo unknown)"
+  fi
   echo ""
 
   # ── [1/7] 필수 패키지 ────────────────────────────────────────────────────
   echo -e "${BOLD}[1/7] 필수 빌드 패키지${NC}"
-  local required_pkgs=("build-essential" "libncurses-dev" "libssl-dev" "libelf-dev"
-                       "flex" "bison" "debhelper" "bc" "dkms" "cpio")
+  local required_pkgs=("build-essential" "bc" "curl" "wget" "libncurses-dev" "libssl-dev"
+                       "libelf-dev" "flex" "bison" "debhelper" "cpio" "python3")
+  [[ "$WITH_NVIDIA" -eq 1 ]] && required_pkgs+=("dkms")
   for pkg in "${required_pkgs[@]}"; do
     if dpkg -s "$pkg" &>/dev/null; then
       local ver
@@ -325,7 +409,7 @@ show_verify() {
       ((total_fail++))
     fi
   done
-  if [[ "$HAS_NVIDIA" == "yes" ]]; then
+  if [[ "$WITH_NVIDIA" -eq 1 && "$HAS_NVIDIA" == "yes" ]]; then
     local nvidia_dkms
     nvidia_dkms=$(dpkg -l 'nvidia-dkms-*' 2>/dev/null | grep '^ii' | awk '{print $2, $3}' | head -1)
     if [[ -n "$nvidia_dkms" ]]; then
@@ -339,9 +423,8 @@ show_verify() {
   echo ""
 
   # ── [2/7] 다운로드 ──────────────────────────────────────────────────────
-  echo -e "${BOLD}[2/7] 커널 소스 + RT 패치 다운로드${NC}"
+  echo -e "${BOLD}[2/7] 커널 소스 다운로드${NC}"
   local kernel_tar="${BUILD_DIR}/linux-${KERNEL_VERSION}.tar.xz"
-  local patch_file="${BUILD_DIR}/patch-${PATCH_VERSION}.patch.xz"
   if [[ -f "$kernel_tar" ]]; then
     local sz
     sz=$(du -h "$kernel_tar" 2>/dev/null | awk '{print $1}')
@@ -351,19 +434,15 @@ show_verify() {
     echo -e "  ${fail_icon} linux-${KERNEL_VERSION}.tar.xz  ${DIM}— 파일 없음${NC}"
     ((total_fail++))
   fi
-  if [[ -f "$patch_file" ]]; then
-    local sz
-    sz=$(du -h "$patch_file" 2>/dev/null | awk '{print $1}')
-    echo -e "  ${pass_icon} patch-${PATCH_VERSION}.patch.xz  ${DIM}(${sz})${NC}"
-    ((total_pass++))
+  if [[ -f "${BUILD_DIR}/linux-${KERNEL_VERSION}.tar.sign" ]]; then
+    echo -e "  ${pass_icon} GPG 서명 파일 존재 (linux-${KERNEL_VERSION}.tar.sign)"
   else
-    echo -e "  ${fail_icon} patch-${PATCH_VERSION}.patch.xz  ${DIM}— 파일 없음${NC}"
-    ((total_fail++))
+    echo -e "  ${DIM}· GPG 서명 파일 없음 (검증 생략됐거나 --skip-verify)${NC}"
   fi
   echo ""
 
-  # ── [3/7] 압축 해제 + 패치 ─────────────────────────────────────────────
-  echo -e "${BOLD}[3/7] 압축 해제 및 패치 적용${NC}"
+  # ── [3/7] 압축 해제 ────────────────────────────────────────────────────
+  echo -e "${BOLD}[3/7] 압축 해제${NC}"
   if [[ -d "${KERNEL_SRC_DIR}" ]]; then
     echo -e "  ${pass_icon} 소스 디렉토리 존재: ${KERNEL_SRC_DIR}"
     ((total_pass++))
@@ -371,32 +450,45 @@ show_verify() {
     echo -e "  ${fail_icon} 소스 디렉토리 없음: ${KERNEL_SRC_DIR}"
     ((total_fail++))
   fi
-  if [[ -f "${KERNEL_SRC_DIR}/.rt_patched" ]]; then
-    echo -e "  ${pass_icon} RT 패치 적용됨 (.rt_patched 마커 존재)"
+  if [[ -f "${KERNEL_SRC_DIR}/.rt_extracted" ]]; then
+    echo -e "  ${pass_icon} 압축 해제됨 (.rt_extracted 마커 존재)"
     ((total_pass++))
   else
-    echo -e "  ${fail_icon} RT 패치 미적용 (.rt_patched 마커 없음)"
+    echo -e "  ${fail_icon} 압축 미해제 (.rt_extracted 마커 없음)"
     ((total_fail++))
   fi
   echo ""
 
   # ── [4/7] 커널 설정 ────────────────────────────────────────────────────
-  echo -e "${BOLD}[4/7] 커널 설정 (PREEMPT_RT)${NC}"
+  echo -e "${BOLD}[4/7] 커널 설정 (PREEMPT_RT, profile: ${EFFECTIVE_PROFILE})${NC}"
   local kconfig="${KERNEL_SRC_DIR}/.config"
   if [[ -f "$kconfig" ]]; then
     echo -e "  ${pass_icon} .config 파일 존재"
     ((total_pass++))
 
-    # 주요 설정값 확인
+    # 주요 설정값 확인 — 공통 + profile별 (profile 무관 옵션을 FAIL 로 오인하지 않도록 분기)
     local config_checks=(
       "CONFIG_PREEMPT_RT=y:PREEMPT_RT 활성화"
       "CONFIG_PREEMPT_NONE=:PREEMPT_NONE 비활성화"
       "CONFIG_PREEMPT_VOLUNTARY=:PREEMPT_VOLUNTARY 비활성화"
       "CONFIG_IKCONFIG_PROC=y:/proc/config.gz 노출 (진단용)"
-      "CONFIG_SCHED_MC_PRIO=y:ITMT (P-core 우선 스케줄링)"
-      "CONFIG_SCHED_CLUSTER=y:LP E-core cluster 인식"
-      "CONFIG_INTEL_HFI_THERMAL=y:Intel HFI / Thread Director"
     )
+    case "$EFFECTIVE_PROFILE" in
+      nuc)
+        config_checks+=(
+          "CONFIG_SCHED_MC_PRIO=y:ITMT (P-core 우선 스케줄링)"
+          "CONFIG_SCHED_CLUSTER=y:LP E-core cluster 인식"
+          "CONFIG_INTEL_HFI_THERMAL=y:Intel HFI / Thread Director"
+          "CONFIG_X86_INTEL_PSTATE=y:Intel pstate"
+        ) ;;
+      desktop-intel)
+        config_checks+=("CONFIG_X86_INTEL_PSTATE=y:Intel pstate") ;;
+      desktop-amd)
+        config_checks+=(
+          "CONFIG_X86_AMD_PSTATE=y:AMD pstate (Zen)"
+          "CONFIG_SCHED_CLUSTER=y:Zen CCX/L3 cluster 인식"
+        ) ;;
+    esac
     for check in "${config_checks[@]}"; do
       local key="${check%%:*}"
       local desc="${check#*:}"
@@ -643,7 +735,7 @@ should_skip() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [1/6] 필수 빌드 패키지 설치
+# [1/7] 필수 빌드 패키지 설치
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
 info "━━━ [1/7] 필수 빌드 패키지 설치 ━━━"
@@ -658,34 +750,41 @@ else
     apt-get install -f -y > /dev/null 2>&1 || true
   fi
 
+  # GPG 서명 검증용 gpg 도 포함 (--skip-verify 가 아니면 Step2 에서 사용)
   apt-get update -qq
   apt-get install -y \
       build-essential bc curl wget \
       libncurses-dev libssl-dev libelf-dev \
       flex bison debhelper \
-      python3 dkms cpio \
+      python3 cpio gpg \
       > /dev/null
 
-  if [[ "$HAS_NVIDIA" == "yes" ]]; then
-    info "NVIDIA DKMS 드라이버 설치 중..."
-    if ! apt-get install -y nvidia-dkms-550 > /dev/null 2>&1; then
-      warn "nvidia-dkms-550 실패, nvidia-dkms-535 시도..."
-      if ! apt-get install -y nvidia-dkms-535 > /dev/null 2>&1; then
-        warn "NVIDIA DKMS 자동 설치 실패 — 수동 설치가 필요할 수 있습니다"
+  # NVIDIA DKMS 드라이버 설치는 --with-nvidia 일 때만 (기본 분리 — setup_nvidia_rt.sh).
+  if [[ "$WITH_NVIDIA" -eq 1 ]]; then
+    apt-get install -y dkms > /dev/null
+    if [[ "$HAS_NVIDIA" == "yes" ]]; then
+      info "NVIDIA DKMS 드라이버 설치 중 (--with-nvidia)..."
+      if ! apt-get install -y nvidia-dkms-550 > /dev/null 2>&1; then
+        warn "nvidia-dkms-550 실패, nvidia-dkms-535 시도..."
+        if ! apt-get install -y nvidia-dkms-535 > /dev/null 2>&1; then
+          warn "NVIDIA DKMS 자동 설치 실패 — 수동 설치가 필요할 수 있습니다"
+        fi
       fi
+    else
+      warn "--with-nvidia 지정됐으나 NVIDIA GPU 가 감지되지 않았습니다"
     fi
   fi
   success "필수 패키지 설치 완료"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [2/6] 커널 소스 + RT 패치 다운로드
+# [2/7] 커널 소스 다운로드 + GPG 서명 검증
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [2/7] 커널 소스 다운로드 ━━━"
+info "━━━ [2/7] 커널 소스 다운로드 + GPG 서명 검증 ━━━"
 
 if should_skip 2 is_step2_done; then
-  success "커널 소스 + RT 패치가 이미 다운로드되어 있습니다 — 건너뜀"
+  success "커널 소스가 이미 다운로드되어 있습니다 — 건너뜀"
 else
   mkdir -p "${BUILD_DIR}"
   cd "${BUILD_DIR}"
@@ -693,31 +792,49 @@ else
   if [[ ! -f "linux-${KERNEL_VERSION}.tar.xz" ]]; then
     info "커널 소스 다운로드: ${KERNEL_URL}"
     if ! curl -fLO "${KERNEL_URL}"; then
-      error "커널 소스 다운로드 실패: ${KERNEL_URL}"
+      error "커널 소스 다운로드 실패: ${KERNEL_URL} (버전 확인: --kernel-version)"
     fi
   else
     info "커널 소스 이미 존재: linux-${KERNEL_VERSION}.tar.xz"
   fi
 
-  if [[ ! -f "patch-${PATCH_VERSION}.patch.xz" ]]; then
-    info "RT 패치 다운로드: ${PATCH_URL}"
-    if ! curl -fLO "${PATCH_URL}"; then
-      error "RT 패치 다운로드 실패: ${PATCH_URL}"
-    fi
+  # ── GPG 서명 검증 (kernel.org 공식 방식) ─────────────────────────────────────
+  # .sign 은 *압축 해제된* tar 에 대한 서명 → `xz -cd | gpg --verify <sign> -`.
+  # 키 fetch 실패 / gpg 부재 / offline 은 warn 후 진행, 명백한 위변조(BADSIG)는 차단.
+  if [[ "$SKIP_VERIFY" -eq 1 ]]; then
+    warn "GPG 서명 검증 건너뜀 (--skip-verify)"
+  elif ! command -v gpg &>/dev/null; then
+    warn "gpg 미설치 — 서명 검증 생략 (apt-get install -y gpg 권장)"
   else
-    info "RT 패치 이미 존재: patch-${PATCH_VERSION}.patch.xz"
+    info "서명 파일 다운로드: ${SIGN_URL}"
+    if ! curl -fLO "${SIGN_URL}"; then
+      warn "서명 파일 다운로드 실패 — 검증 생략하고 진행"
+    else
+      # kernel.org 릴리스 서명 키 (Linus Torvalds / Greg KH) best-effort import
+      gpg --quiet --locate-keys torvalds@kernel.org gregkh@kernel.org >/dev/null 2>&1 || \
+        warn "kernel.org 서명 키 수신 실패 (offline/proxy?) — 검증이 UNKNOWN 일 수 있음"
+      _gpg_out=$(xz -cd "linux-${KERNEL_VERSION}.tar.xz" 2>/dev/null \
+        | gpg --status-fd 1 --verify "linux-${KERNEL_VERSION}.tar.sign" - 2>/dev/null) || true
+      if echo "$_gpg_out" | grep -q "GOODSIG"; then
+        success "GPG 서명 검증 성공 (GOODSIG)"
+      elif echo "$_gpg_out" | grep -qE "BADSIG|ERRSIG"; then
+        error "GPG 서명 검증 실패 (위변조 의심): linux-${KERNEL_VERSION}.tar.xz — 재다운로드 또는 --skip-verify"
+      else
+        warn "GPG 서명을 신뢰 경로로 확인 불가 (키 미수신 등) — 진행 (--skip-verify 로 무시 가능)"
+      fi
+    fi
   fi
   success "다운로드 완료"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [3/6] 압축 해제 및 패치 적용
+# [3/7] 압축 해제
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [3/7] 압축 해제 및 패치 적용 ━━━"
+info "━━━ [3/7] 압축 해제 ━━━"
 
 if should_skip 3 is_step3_done; then
-  success "RT 패치가 이미 적용되어 있습니다 — 건너뜀"
+  success "커널 소스가 이미 압축 해제되어 있습니다 — 건너뜀"
 else
   cd "${BUILD_DIR}"
 
@@ -729,20 +846,16 @@ else
   info "커널 소스 압축 해제 중..."
   tar -xf "linux-${KERNEL_VERSION}.tar.xz"
 
-  cd "${KERNEL_SRC_DIR}"
-  info "RT 패치 적용 중..."
-  xzcat "../patch-${PATCH_VERSION}.patch.xz" | patch -p1 --quiet
-
   # 마커 파일 생성 (재실행 시 스킵하기 위함)
-  touch ".rt_patched"
-  success "패치 적용 완료"
+  touch "${KERNEL_SRC_DIR}/.rt_extracted"
+  success "압축 해제 완료"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [4/6] 커널 설정 (PREEMPT_RT 활성화)
+# [4/7] 커널 설정 (PREEMPT_RT + profile별 config)
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
-info "━━━ [4/7] 커널 설정 (PREEMPT_RT 활성화) ━━━"
+info "━━━ [4/7] 커널 설정 (PREEMPT_RT + profile: ${EFFECTIVE_PROFILE}) ━━━"
 
 if should_skip 4 is_step4_done; then
   success "커널 설정이 이미 완료되어 있습니다 (CONFIG_PREEMPT_RT=y) — 건너뜀"
@@ -759,11 +872,12 @@ else
     make defconfig
   fi
 
+  # ── 공통 (모든 profile) ─────────────────────────────────────────────────────
   # 서명 키 비활성화 (빌드 오류 방지)
   scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
   scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
 
-  # PREEMPT_RT 활성화
+  # PREEMPT_RT 활성화 (6.12+ mainline — 외부 패치 불요)
   scripts/config --disable CONFIG_PREEMPT_NONE
   scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
   scripts/config --enable CONFIG_PREEMPT_RT
@@ -776,16 +890,33 @@ else
   scripts/config --enable CONFIG_IKCONFIG
   scripts/config --enable CONFIG_IKCONFIG_PROC
 
-  # Intel hybrid CPU topology 노출 (NUC 13/14/15 Pro class).
-  # 아래가 모두 켜져 있어야 /sys/devices/system/cpu/types/intel_{core,atom}
-  # 디렉토리와 /proc/cpuinfo 의 "hybrid" flag 가 올라옴. rt_common.sh /
-  # cpu_topology.hpp 의 primary 감지 경로가 이 노출에 의존한다.
+  # multi-core scheduler (모든 x86 SMP 에 유효)
   scripts/config --enable CONFIG_SCHED_MC
-  scripts/config --enable CONFIG_SCHED_MC_PRIO        # ITMT (P-core preference)
-  scripts/config --enable CONFIG_SCHED_CLUSTER        # LP E-core cluster 인식
-  scripts/config --enable CONFIG_INTEL_HFI_THERMAL    # HFI / Thread Director
-  scripts/config --enable CONFIG_INTEL_IDLE
-  scripts/config --enable CONFIG_X86_INTEL_PSTATE
+
+  # ── Profile별 CPU 토폴로지 / pstate ─────────────────────────────────────────
+  case "$EFFECTIVE_PROFILE" in
+    nuc|desktop-intel)
+      # Intel pstate / idle 드라이버
+      scripts/config --enable CONFIG_INTEL_IDLE
+      scripts/config --enable CONFIG_X86_INTEL_PSTATE
+      if [[ "$EFFECTIVE_PROFILE" == "nuc" ]]; then
+        # Intel hybrid CPU topology 노출 (NUC 13/14/15 Pro class).
+        # 아래가 모두 켜져 있어야 /sys/devices/system/cpu/types/intel_{core,atom}
+        # 와 /proc/cpuinfo "hybrid" flag 가 올라옴 — rt_common.sh / cpu_topology.hpp
+        # 의 P-core primary 감지 경로가 이에 의존한다.
+        scripts/config --enable CONFIG_SCHED_MC_PRIO     # ITMT (P-core preference)
+        scripts/config --enable CONFIG_SCHED_CLUSTER     # LP E-core cluster 인식
+        scripts/config --enable CONFIG_INTEL_HFI_THERMAL # HFI / Thread Director
+      fi
+      ;;
+    desktop-amd)
+      # AMD pstate (Zen) — EPP active 모드. amd_pstate 가 acpi-cpufreq 보다 정밀.
+      scripts/config --enable CONFIG_X86_AMD_PSTATE
+      scripts/config --disable CONFIG_X86_AMD_PSTATE_UT  # in-kernel unit test 불요
+      # Zen 은 CCX/L3 단위 cluster — SCHED_CLUSTER 가 cache-aware 배치에 도움.
+      scripts/config --enable CONFIG_SCHED_CLUSTER
+      ;;
+  esac
 
   # RT 커널 식별을 위한 LOCALVERSION 설정
   scripts/config --set-str LOCALVERSION "-rt-custom"
@@ -793,20 +924,25 @@ else
   # 새 옵션에 대한 기본값 적용
   make olddefconfig
 
-  # Post-verify: hybrid-관련 필수 옵션이 실제로 = y 인지 점검 (olddefconfig
-  # 가 의존성 불만족으로 드롭시킬 수 있음 — 그 경우 사용자에게 알림).
-  _missing_hybrid=""
+  # Post-verify: profile별 필수 옵션이 실제로 = y 인지 점검 (olddefconfig 가
+  # 의존성 불만족으로 드롭시킬 수 있음 — 그 경우 사용자에게 알림, fail-soft).
+  _required_keys=("CONFIG_PREEMPT_RT" "CONFIG_IKCONFIG_PROC")
+  case "$EFFECTIVE_PROFILE" in
+    nuc)           _required_keys+=("CONFIG_SCHED_MC_PRIO" "CONFIG_SCHED_CLUSTER" "CONFIG_INTEL_HFI_THERMAL" "CONFIG_X86_INTEL_PSTATE") ;;
+    desktop-intel) _required_keys+=("CONFIG_X86_INTEL_PSTATE") ;;
+    desktop-amd)   _required_keys+=("CONFIG_X86_AMD_PSTATE" "CONFIG_SCHED_CLUSTER") ;;
+  esac
+  _missing_cfg=""
   _k=""
-  for _k in CONFIG_SCHED_MC_PRIO CONFIG_SCHED_CLUSTER CONFIG_INTEL_HFI_THERMAL \
-            CONFIG_IKCONFIG_PROC; do
+  for _k in "${_required_keys[@]}"; do
     if ! grep -q "^${_k}=y$" .config 2>/dev/null; then
-      _missing_hybrid="${_missing_hybrid} ${_k}"
+      _missing_cfg="${_missing_cfg} ${_k}"
     fi
   done
-  if [[ -n "$_missing_hybrid" ]]; then
-    warn "다음 옵션이 .config 에 =y 로 반영되지 않았습니다:${_missing_hybrid}"
-    warn "Meteor/Arrow Lake NUC 에서 hybrid topology 감지가 fallback 경로를 사용할 수 있습니다."
-    warn "menuconfig 에서 수동으로 활성화하거나 defconfig 의존성을 확인하세요."
+  if [[ -n "$_missing_cfg" ]]; then
+    warn "다음 옵션이 .config 에 =y 로 반영되지 않았습니다 (profile ${EFFECTIVE_PROFILE}):${_missing_cfg}"
+    warn "해당 HW/커널에서 미지원이거나 의존성 불만족일 수 있습니다 (감지/성능 fallback)."
+    warn "menuconfig 에서 수동 활성화하거나 다른 --profile 을 검토하세요."
   fi
 
   if [[ "$BATCH_MODE" -eq 0 ]]; then
@@ -825,13 +961,13 @@ fi
 # ── Dry-run 종료점 ───────────────────────────────────────────────────────────
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo ""
-  success "Dry-run 완료. 소스 및 패치가 준비되었습니다: ${KERNEL_SRC_DIR}"
+  success "Dry-run 완료. 소스 + .config (profile: ${EFFECTIVE_PROFILE}) 준비됨: ${KERNEL_SRC_DIR}"
   info "빌드하려면: cd ${KERNEL_SRC_DIR} && make -j${BUILD_THREADS} bindeb-pkg"
   exit 0
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [5/6] 커널 빌드
+# [5/7] 커널 빌드
 # ══════════════════════════════════════════════════════════════════════════════
 echo ""
 info "━━━ [5/7] 커널 빌드 ━━━"
@@ -889,10 +1025,16 @@ else
   with_temporary_disable "$DKMS_POSTINST" -- dpkg -i "${DEBS_TO_INSTALL[@]}"
   [[ -f "$DKMS_POSTINST" ]] && info "DKMS autoinstall 훅 복원 완료"
 
-  # NVIDIA GPU가 있으면 DKMS 수동 빌드 시도 (실패해도 무시)
+  # NVIDIA DKMS 처리는 기본 분리 (커널 빌드와 드라이버 대응 분리 — 데스크탑 패키지
+  # 소유 파일 변경/버전 충돌 위험 회피). --with-nvidia 일 때만 여기서 직접 빌드한다.
   # 주의: `dkms autoinstall`은 커스텀 RT 커널에서 apport 검증 실패.
   # `dkms build -m nvidia -v VERSION -k KERNEL`으로 직접 빌드한다.
-  if [[ "$HAS_NVIDIA" == "yes" ]]; then
+  if [[ "$WITH_NVIDIA" -ne 1 ]]; then
+    if [[ "$HAS_NVIDIA" == "yes" ]]; then
+      info "NVIDIA 처리는 분리됨 (기본) — 재부팅 후 setup_nvidia_rt.sh 실행"
+      info "  (이 스크립트에서 바로 빌드하려면 --with-nvidia)"
+    fi
+  elif [[ "$HAS_NVIDIA" == "yes" ]]; then
     NVIDIA_DKMS_VER=""
     if [[ -d /var/lib/dkms/nvidia ]]; then
       NVIDIA_DKMS_VER=$(ls -1 /var/lib/dkms/nvidia/ 2>/dev/null \
@@ -934,6 +1076,8 @@ else
     else
       info "NVIDIA DKMS 소스 없음 — 건너뜀 (재부팅 후 setup_nvidia_rt.sh로 설정)"
     fi
+  else
+    warn "--with-nvidia 지정됐으나 NVIDIA GPU 미감지 — NVIDIA 단계 건너뜀"
   fi
 
   success "커널 패키지 설치 완료"
@@ -973,10 +1117,19 @@ else
 
   info "RT 커널 버전: ${RT_KERNEL_VER}"
 
+  # ── Secure Boot 감지 ──────────────────────────────────────────────────────
+  # 미서명 custom 커널 / DKMS 모듈은 Secure Boot 활성 시 부팅·로드가 차단된다.
+  if command -v mokutil &>/dev/null && mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
+    warn "Secure Boot 가 활성 상태입니다 — 미서명 custom RT 커널은 부팅이 차단될 수 있습니다."
+    warn "  대응: BIOS 에서 Secure Boot 비활성화, 또는 MOK 서명 후 enroll (enroll_lttng_mok.sh 참고)."
+  fi
+
   # ── GRUB 메뉴 항목 검색 ──────────────────────────────────────────────────
   # grub.cfg를 갱신하여 새로 설치된 커널이 반영되도록 함
   info "GRUB 설정 갱신 중..."
-  update-grub 2>/dev/null || true
+  if ! update-grub >/dev/null 2>&1; then
+    warn "update-grub 실패 — GRUB 설정 갱신이 적용되지 않았을 수 있습니다 (수동: sudo update-grub)"
+  fi
 
   # /boot/grub/grub.cfg에서 RT 커널 존재 여부 확인
   if [[ ! -f /boot/grub/grub.cfg ]]; then
@@ -1015,8 +1168,11 @@ else
         echo "GRUB_DEFAULT=\"${GRUB_ENTRY}\"" >> "$GRUB_FILE"
       fi
 
-      update-grub 2>/dev/null || true
-      success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
+      if update-grub >/dev/null 2>&1; then
+        success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
+      else
+        warn "update-grub 실패 — GRUB_DEFAULT 는 기록됐으나 grub.cfg 재생성 실패. 수동: sudo update-grub"
+      fi
 
       info "검증 — /etc/default/grub 의 GRUB_DEFAULT:"
       grep '^GRUB_DEFAULT=' "$GRUB_FILE" | sed 's/^/  /'
@@ -1029,8 +1185,8 @@ else
     fi
   fi
 
-  # ── NVIDIA GRUB 최적화 ──────────────────────────────────────────────────────
-  if [[ "$HAS_NVIDIA" == "yes" ]]; then
+  # ── NVIDIA GRUB 최적화 (--with-nvidia 일 때만 — 그 외 setup_nvidia_rt.sh 소관) ──
+  if [[ "$WITH_NVIDIA" -eq 1 && "$HAS_NVIDIA" == "yes" ]]; then
     echo ""
     info "NVIDIA MSI 최적화 적용 중..."
     GRUB_FILE="/etc/default/grub"
@@ -1045,8 +1201,11 @@ else
         warn "GRUB_CMDLINE_LINUX_DEFAULT not found in ${GRUB_FILE} — adding new entry"
         echo 'GRUB_CMDLINE_LINUX_DEFAULT="nvidia.NVreg_EnableMSI=1"' >> "$GRUB_FILE"
       fi
-      update-grub 2>/dev/null || true
-      success "NVIDIA MSI 설정 추가 완료"
+      if update-grub >/dev/null 2>&1; then
+        success "NVIDIA MSI 설정 추가 완료"
+      else
+        warn "update-grub 실패 — NVIDIA MSI 파라미터가 grub.cfg 에 반영되지 않았을 수 있습니다"
+      fi
     fi
   fi
 fi

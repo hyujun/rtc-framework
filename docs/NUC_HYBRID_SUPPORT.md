@@ -4,7 +4,8 @@
 >
 > **Entry points**:
 > - C++: [`rtc_base/include/rtc_base/threading/cpu_topology.hpp`](../rtc_base/include/rtc_base/threading/cpu_topology.hpp) (`SlotToLogicalCpu`, CPUID family.model fallback)
-> - Shell: [`repo_scripts/scripts/lib/rt_common.sh`](../repo_scripts/scripts/lib/rt_common.sh) (`detect_hybrid_capability`, `get_nuc_generation`)
+> - Shell: [`repo_scripts/scripts/lib/rt_common.sh`](../repo_scripts/scripts/lib/rt_common.sh) (`detect_hybrid_capability`, `get_nuc_generation`, `get_cpu_vendor`)
+> - Kernel build: [`repo_scripts/scripts/build_rt_kernel.sh`](../repo_scripts/scripts/build_rt_kernel.sh) 가 `detect_hybrid_capability` 로 profile (`nuc` / `desktop-amd` / `desktop-intel`) 을 분기 — `nuc` 만 SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL 를 enable ([RT_OPTIMIZATION.md §5](RT_OPTIMIZATION.md)).
 
 ## 지원 현황
 

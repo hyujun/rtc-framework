@@ -383,28 +383,45 @@ uname -v
 
 #### Option B: PREEMPT_RT 커널 (최대 성능, 빌드 필요)
 
+PREEMPT_RT 는 **Linux 6.12 에서 mainline 병합** (x86_64/arm64/riscv) — 6.12+ 는 외부 RT
+패치 없이 `CONFIG_PREEMPT_RT=y` 만으로 RT 활성. `build_rt_kernel.sh` 는 vanilla 6.12.x
+LTS 커널을 받아 (GPG 서명 검증 후) CPU profile 별 config 를 적용해 빌드한다.
+
 자동화 스크립트 제공:
 ```bash
-# 대화형 (menuconfig 포함)
+# 대화형 (menuconfig 포함, CPU profile 자동 감지)
 sudo ./repo_scripts/scripts/build_rt_kernel.sh
 
 # 비대화형 (CI/자동화용)
 sudo ./repo_scripts/scripts/build_rt_kernel.sh --batch
 
-# 다운로드 및 패치만 (빌드 전 확인용)
+# 데스크탑 (NVIDIA DKMS 모듈까지 RT 커널에 빌드)
+sudo ./repo_scripts/scripts/build_rt_kernel.sh --batch --with-nvidia
+
+# 다운로드·검증·압축해제·설정까지만 (빌드 전 확인용)
 sudo ./repo_scripts/scripts/build_rt_kernel.sh --dry-run
 ```
 
-지원 버전:
-- Ubuntu 24.04: 커널 6.8.2 + RT patch 6.8.2-rt11
-- Ubuntu 22.04: 커널 6.6.127 + RT patch 6.6.127-rt69
+지원 버전 / profile:
+- **커널**: 6.12.x LTS (mainline PREEMPT_RT, **외부 패치 불요**) — Ubuntu 22.04 / 24.04 공통,
+  OS 독립. 기본 `6.12.91`, `--kernel-version V` 로 override (6.12+ 강제, 미만은 error).
+  두 머신(데스크탑/NUC) 재현성을 위해 pin — bump 시 kernel.org `v6.x` 최신 6.12.x 확인.
+- **profile** (`--profile auto` 가 rt_common `detect_hybrid_capability` 로 분기):
+  - `desktop-amd` — AMD Ryzen (`amd_pstate`, SCHED_CLUSTER)
+  - `desktop-intel` — 일반 Intel (`intel_pstate`, non-hybrid)
+  - `nuc` — Intel hybrid NUC 13/14/15 (SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL)
+- **검증**: 다운로드 후 kernel.org GPG `.sign` 서명 검증 (warn-and-proceed; `--skip-verify` 로 생략).
+- **NVIDIA**: 기본 분리 — `setup_nvidia_rt.sh` 가 담당. `--with-nvidia` 일 때만 빌드 단계에서 DKMS 직접 빌드.
+- **Secure Boot**: 활성 시 미서명 custom 커널 부팅 차단 경고 (`mokutil --sb-state` 감지만).
 
 ```bash
 # 재부팅 후 확인
 uname -v | grep PREEMPT_RT
 ```
 
-참고: https://wiki.linuxfoundation.org/realtime/documentation/howto/applications/start
+참고: PREEMPT_RT 는 Linux 6.12 부터 mainline (별도 패치 불요).
+https://wiki.linuxfoundation.org/realtime/documentation/howto/applications/start ·
+https://www.kernel.org/doc/html/latest/core-api/real-time/index.html
 
 ### 6. IRQ Affinity (고급)
 
@@ -850,7 +867,7 @@ export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc
 
 **증상**:
 ```
-ERROR (dkms apport): kernel package linux-headers-6.8.2-rt11-rt-custom is not supported
+ERROR (dkms apport): kernel package linux-headers-6.12.91-rt-custom is not supported
 ```
 또는 `nvidia-smi` 실행 불가 (NVIDIA 모듈 미로드)
 

@@ -54,7 +54,7 @@ repo_scripts/
 
 | 스크립트 | 용도 | sudo |
 |---------|------|------|
-| `build_rt_kernel.sh` | PREEMPT_RT 커널 다운로드/패치/빌드/설치 (7단계) | 필수 |
+| `build_rt_kernel.sh` | mainline PREEMPT_RT 커널(6.12+) 다운로드/검증/빌드/설치 (7단계, profile 분기) | 필수 |
 | `setup_grub_rt.sh` | GRUB RT 커널 파라미터 관리 + sched_rt_runtime_us 설정 | 필수 |
 | `setup_irq_affinity.sh` | 하드웨어 IRQ를 OS 코어에 고정 (SMT-aware) | 필수 |
 | `setup_udp_optimization.sh` | NIC 코얼레싱, 오프로드 비활성화, sysctl 최적화 + systemd 서비스 | 필수 |
@@ -177,16 +177,20 @@ Tier별 매핑 (layout v4.1 — SSoT: `rtc_base/threading/thread_config.hpp::Sel
 
 ### build_rt_kernel.sh
 
-PREEMPT_RT 커널을 소스에서 빌드하고 설치합니다. 7단계 파이프라인으로 체크포인트 기반 재개를 지원합니다.
+mainline PREEMPT_RT 커널(6.12+)을 소스에서 빌드/검증/설치합니다. 7단계 파이프라인으로 체크포인트 기반 재개를 지원합니다. PREEMPT_RT 는 Linux 6.12 에서 mainline 병합되어 외부 RT 패치 없이 `CONFIG_PREEMPT_RT=y` 만으로 RT 활성화됩니다.
 
 ```bash
-sudo ./build_rt_kernel.sh                # 대화형 빌드 (완료 단계 자동 스킵)
-sudo ./build_rt_kernel.sh --batch        # 비대화형 (menuconfig 건너뜀)
-sudo ./build_rt_kernel.sh --dry-run      # 다운로드 및 패치까지만 실행
-sudo ./build_rt_kernel.sh --status       # 진행 상태만 확인
-sudo ./build_rt_kernel.sh --verify       # 각 단계별 세부 적용 상태 진단
-sudo ./build_rt_kernel.sh --force-step 5 # 5단계부터 강제 재시작
-sudo ./build_rt_kernel.sh --clean        # 빌드 소스 정리 후 처음부터
+sudo ./build_rt_kernel.sh                  # 대화형 빌드 (완료 단계 자동 스킵)
+sudo ./build_rt_kernel.sh --batch          # 비대화형 (menuconfig 건너뜀)
+sudo ./build_rt_kernel.sh --batch --with-nvidia   # 데스크탑 (NVIDIA DKMS 포함)
+sudo ./build_rt_kernel.sh --profile nuc --batch   # Intel NUC hybrid config 강제
+sudo ./build_rt_kernel.sh --kernel-version 6.12.91  # 커널 버전 지정 (6.12+)
+sudo ./build_rt_kernel.sh --dry-run        # 다운로드·검증·압축해제·설정까지만
+sudo ./build_rt_kernel.sh --status         # 진행 상태만 확인
+sudo ./build_rt_kernel.sh --verify         # 각 단계별 세부 적용 상태 진단
+sudo ./build_rt_kernel.sh --skip-verify    # GPG 서명 검증 건너뜀
+sudo ./build_rt_kernel.sh --force-step 5   # 5단계부터 강제 재시작
+sudo ./build_rt_kernel.sh --clean          # 빌드 소스 정리 후 처음부터
 sudo ./build_rt_kernel.sh --build-dir /path  # 빌드 디렉토리 지정
 ```
 
@@ -195,19 +199,22 @@ sudo ./build_rt_kernel.sh --build-dir /path  # 빌드 디렉토리 지정
 | 단계 | 내용 |
 |------|------|
 | 1/7 | 필수 빌드 패키지 설치 |
-| 2/7 | 커널 소스 + RT 패치 다운로드 |
-| 3/7 | 압축 해제 및 패치 적용 |
-| 4/7 | 커널 설정 (PREEMPT_RT 활성화) |
+| 2/7 | 커널 소스 다운로드 + GPG 서명 검증 |
+| 3/7 | 압축 해제 |
+| 4/7 | 커널 설정 (PREEMPT_RT + profile별 config) |
 | 5/7 | 커널 빌드 (`make bindeb-pkg`) |
 | 6/7 | .deb 패키지 설치 |
 | 7/7 | GRUB 등록 확인 및 기본 부팅 설정 |
 
-**지원 커널:**
+**커널 / profile:**
 
-| Ubuntu | 커널 | RT 패치 |
-|--------|------|---------|
-| 24.04 | 6.8.2 | 6.8.2-rt11 |
-| 22.04 | 6.6.127 | 6.6.127-rt69 |
+- **커널**: 6.12.x LTS (mainline PREEMPT_RT, 외부 패치 불요) — Ubuntu 22.04 / 24.04 공통, OS 독립. 기본 `6.12.91`, `--kernel-version` 으로 override (6.12+). 두 머신 재현성을 위해 pin.
+- **profile** (`--profile auto`, CPU 자동 감지 — rt_common `detect_hybrid_capability`):
+  - `desktop-amd` — AMD Ryzen (`amd_pstate`, SCHED_CLUSTER)
+  - `desktop-intel` — 일반 Intel (`intel_pstate`, non-hybrid)
+  - `nuc` — Intel hybrid NUC 13/14/15 (SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL)
+- **NVIDIA**: 기본 분리 — `setup_nvidia_rt.sh` 가 담당. `--with-nvidia` 일 때만 커널 빌드 단계에서 DKMS 직접 빌드.
+- **Secure Boot**: 활성 시 미서명 custom 커널 부팅 차단 경고 (감지만).
 
 ---
 
