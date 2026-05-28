@@ -151,13 +151,16 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   switch (new_phase) {
     case WbcPhase::kIdle: {
       // TSID drives SE3 hold at current TCP + posture hold at current q.
-      // Seed integration buffers and the SE3 reference from current state;
+      // No phase-entry integrator seed (carry-forward is event-driven only).
       // ComputeTSIDPosition fills robot_computed_/hand_computed_ from
       // q_next_full_ per tick. No direct command-buffer writes here — they
       // would be overwritten by the TSID mapping the same tick.
       ExtractFullState(state);
-      q_next_full_ = q_curr_full_;
-      v_next_full_.setZero();
+      // kFallback→kIdle recovery: ComputeFallback bypasses the integrator, so
+      // its state is cold. Hard re-seed from measured on the recovery edge.
+      if (prev_phase_ == WbcPhase::kFallback) {
+        reseed_on_fallback_exit_ = true;
+      }
 
       const auto idx = static_cast<std::size_t>(WbcPhase::kIdle);
       if (phase_preset_valid_[idx]) {
@@ -202,8 +205,6 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       }
 
       ExtractFullState(state);
-      q_next_full_ = q_curr_full_;
-      v_next_full_.setZero();
       robot_new_target_pending_ = false;
       hand_new_target_pending_ = false;
 
@@ -235,6 +236,10 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         InitTcpTrajectory(state);
       }
 
+      // Posture reference tracks the same targets[] snapshot the SE3 goal was
+      // built from above (single consistent target per phase entry).
+      BuildTargetPosture(state);
+
       qp_fail_count_ = 0;
       break;
     }
@@ -248,10 +253,11 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
 
-      // Set TSID integration initial conditions from current state
+      // No phase-entry integrator seed (carry-forward is event-driven). Refresh
+      // the posture target snapshot for this phase (idempotent if targets[]
+      // unchanged since approach).
       ExtractFullState(state);
-      q_next_full_ = q_curr_full_;
-      v_next_full_ = v_curr_full_;
+      BuildTargetPosture(state);
 
       // Set SE3Task reference (TCP goal). MPC-enabled mode pushes the step
       // here once on entry — MPC drives PostureTask smoothly so the SE3 step
@@ -355,9 +361,13 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
 
+      // Release uses self-hold posture (q_des = measured) — see
+      // ComputeTSIDPosition; the finger-open is driven by hand_trajectory_ in
+      // ComputeReleaseMode, so posture must not pull the hand toward targets[1].
+      // Re-anchor the integrator on entry: release is a fresh safe-hold episode
+      // (like fallback recovery), so it should not carry a drifted q_next.
       ExtractFullState(state);
-      q_next_full_ = q_curr_full_;
-      v_next_full_.setZero();
+      reseed_integration_pending_ = true;
 
       // SE3 hold at current TCP (zero-displacement quintic).
       if (arm_handle_) {

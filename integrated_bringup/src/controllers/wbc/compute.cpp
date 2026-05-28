@@ -154,6 +154,10 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
     hand_computed_.positions[idx] = hstate.positions[idx];
     hand_computed_.velocities[idx] = hstate.velocities[idx];
   }
+
+  // This path bypasses the TSID integrator; drop any pending re-seed so it
+  // cannot fire stale once TSID becomes available.
+  reseed_integration_pending_ = false;
 }
 
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
@@ -226,7 +230,16 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
         std::min(static_cast<int>(mpc_u_fb_.size()), static_cast<int>(control_ref_.a_des.size()));
     control_ref_.a_des.head(n_fb) += mpc_u_fb_.head(n_fb);
   } else {
-    control_ref_.q_des = q_curr_full_;
+    // Phase-scoped posture reference. idle/release self-hold at the measured
+    // configuration (SE3 holds the *current* TCP there, and targets[] is stale
+    // after a grasp cycle). Active driving phases track the external joint
+    // target snapshot (q_des_target_full_, built at phase entry alongside the
+    // SE3 goal so posture + SE3 reference the same targets[]).
+    if (phase_ == WbcPhase::kIdle || phase_ == WbcPhase::kRelease) {
+      control_ref_.q_des = q_curr_full_;
+    } else {
+      control_ref_.q_des = q_des_target_full_;
+    }
     control_ref_.v_des.setZero();
     control_ref_.a_des.setZero();
   }
@@ -320,29 +333,73 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
                          max_qp_fail_before_fallback_, tsid_output_.solve_time_us);
 
     if (qp_fail_count_ >= max_qp_fail_before_fallback_) {
+      // kFallback bypasses the integrator; recovery re-seeds via
+      // reseed_on_fallback_exit_. Drop any pending target re-seed so it cannot
+      // fire from a stale target on the recovery tick.
+      reseed_integration_pending_ = false;
       phase_ = WbcPhase::kFallback;
       ComputeFallback();
       return;
     }
-    // This tick: hold last valid output
+    // Hold last valid command this tick. Re-seed on the next successful tick so
+    // the integrator resumes from fresh measured state (no stale-gap jump).
+    reseed_integration_pending_ = true;
     return;
   }
   qp_fail_count_ = 0;
 
-  // 7. Semi-implicit Euler integration: a → v → q
+  // 7. Carry-forward semi-implicit Euler integration: a → v → q.
+  //
+  // The integral accumulates from the PREVIOUS integrated (q_next, v_next).
+  // It re-seeds from the measured state only on discrete events:
+  //   - hard re-seed (= measured exactly): fallback recovery / first tick /
+  //     non-finite guard — no command continuity to preserve.
+  //   - target re-seed (jerk-bounded): a new target arrived mid-motion; seed
+  //     from measured q̇ but bound the one-tick step against the previous
+  //     command velocity to avoid a discontinuity.
   const auto& a = tsid_output_.a_opt;
 
-  // v_next = v_curr + a · dt
-  v_next_full_.noalias() = v_curr_full_ + a * dt;
+  const bool hard_reseed = reseed_on_fallback_exit_ || !q_next_full_.allFinite() ||
+                           !v_next_full_.allFinite();
+  if (hard_reseed) {
+    q_next_full_ = q_curr_full_;
+    v_next_full_ = v_curr_full_;
+  } else if (reseed_integration_pending_) {
+    const double dv = v_jerk_limit_ * dt;
+    v_seed_ = v_next_full_;  // previous command velocity (distinct buffer → no aliasing)
+    q_next_full_ = q_curr_full_;
+    v_next_full_ =
+        v_curr_full_.array().max(v_seed_.array() - dv).min(v_seed_.array() + dv).matrix();
+  }
+  reseed_integration_pending_ = false;
+  reseed_on_fallback_exit_ = false;
+
+  // v_next = v_prev + a · dt
+  v_next_full_.noalias() = v_next_full_ + a * dt;
 
   // Velocity clamp
   v_next_full_ = v_next_full_.cwiseMax(-v_limit_).cwiseMin(v_limit_);
 
-  // q_next = q_curr + v_next · dt
-  q_next_full_.noalias() = q_curr_full_ + v_next_full_ * dt;
+  // q_next = q_prev + v_next · dt
+  q_next_full_.noalias() = q_next_full_ + v_next_full_ * dt;
 
-  // Position clamp (safety net, should not trigger under normal TSID)
-  q_next_full_ = q_next_full_.cwiseMax(q_min_clamped_).cwiseMin(q_max_clamped_);
+  // Position clamp (safety net). Where it saturates, zero the velocity if it is
+  // still driving further into the violated limit — open-loop carry-forward
+  // would otherwise keep pushing. Sign-gated so a TSID-commanded retraction is
+  // not suppressed.
+  for (Eigen::Index i = 0; i < q_next_full_.size(); ++i) {
+    if (q_next_full_[i] < q_min_clamped_[i]) {
+      q_next_full_[i] = q_min_clamped_[i];
+      if (v_next_full_[i] < 0.0) {
+        v_next_full_[i] = 0.0;
+      }
+    } else if (q_next_full_[i] > q_max_clamped_[i]) {
+      q_next_full_[i] = q_max_clamped_[i];
+      if (v_next_full_[i] > 0.0) {
+        v_next_full_[i] = 0.0;
+      }
+    }
+  }
 
   // 8. Map Pinocchio order → device order
   for (int i = 0; i < arm_dof_; ++i) {
@@ -730,6 +787,26 @@ void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept 
       const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
       q_curr_full_[pq] = dev1.positions[static_cast<std::size_t>(i)];
       v_curr_full_[pv] = dev1.velocities[static_cast<std::size_t>(i)];
+    }
+  }
+}
+
+void DemoWbcController::BuildTargetPosture(const ControllerState& state) noexcept {
+  if (!joint_reorder_valid_) {
+    return;
+  }
+  // Arm target: external [0..arm_dof_-1] → Pinocchio order (mirrors ExtractFullState).
+  for (int i = 0; i < arm_dof_; ++i) {
+    const auto eidx = static_cast<std::size_t>(i);
+    const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
+    q_des_target_full_[pq] = current_target_slot_.targets[0][eidx];
+  }
+  // Hand target: external [arm_dof_..full_dof_-1] → Pinocchio order.
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    for (int i = 0; i < hand_dof_; ++i) {
+      const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
+      const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
+      q_des_target_full_[pq] = current_target_slot_.targets[1][static_cast<std::size_t>(i)];
     }
   }
 }

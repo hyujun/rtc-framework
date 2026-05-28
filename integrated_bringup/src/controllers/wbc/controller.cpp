@@ -497,6 +497,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   v_curr_full_ = Eigen::VectorXd::Zero(nv);
   q_next_full_ = Eigen::VectorXd::Zero(nv);
   v_next_full_ = Eigen::VectorXd::Zero(nv);
+  // Same layout as q_curr_full_ so it is a drop-in replacement for the
+  // posture reference (control_ref_.q_des = q_curr_full_) on the RT path.
+  q_des_target_full_ = Eigen::VectorXd::Zero(nv);
+  v_seed_ = Eigen::VectorXd::Zero(nv);
 
   // Joint limits with safety margins + force-rate filter (required)
   if (!cfg["integration"] || !cfg["integration"].IsMap()) {
@@ -506,6 +510,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     const auto int_node = cfg["integration"];
     position_margin_ = int_node["position_margin"].as<double>(0.02);
     velocity_scale_ = int_node["velocity_scale"].as<double>(0.95);
+    // Optional: bound (rad/s²) on the one-tick command-velocity step when the
+    // integrator re-seeds from measured q̇ on a target update. Default rarely
+    // engages when the low-level tracker keeps v_curr ≈ previous command.
+    v_jerk_limit_ = int_node["reseed_velocity_jerk"].as<double>(v_jerk_limit_);
 
     if (!int_node["force_rate_alpha"]) {
       throw std::runtime_error(
@@ -1082,6 +1090,8 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
 
     target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
+    // Seed the carry-forward integrator from the (measured) first-tick state.
+    reseed_integration_pending_ = true;
   } else {
     // Restore RT-thread working SE3 from POD storage so reader sites see a
     // consistent rotation matrix every tick.
@@ -1110,6 +1120,11 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     } else if (pending.device_idx == 1) {
       hand_new_target_pending_ = true;
     }
+    // Phase-independent: any target arrival re-seeds the integrator from the
+    // current measured state (the integral's initial condition), regardless of
+    // FSM phase. q_des_target_full_ itself is rebuilt at phase entry so the
+    // posture + SE3 references stay a consistent snapshot.
+    reseed_integration_pending_ = true;
     slot_dirty = true;
   }
 

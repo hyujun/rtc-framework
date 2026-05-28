@@ -422,13 +422,27 @@ class DemoWbcController final : public RTControllerInterface {
   // ── TSID → Position integration ─────────────────────────────────────────
   //
   // All vectors are in Pinocchio joint order (full model, 16-DoF).
-  Eigen::VectorXd q_curr_full_;    ///< [nv] current q (sensor, per tick)
-  Eigen::VectorXd v_curr_full_;    ///< [nv] current v (sensor, per tick)
-  Eigen::VectorXd q_next_full_;    ///< [nv] integrated position (output)
-  Eigen::VectorXd v_next_full_;    ///< [nv] integrated velocity
-  Eigen::VectorXd q_min_clamped_;  ///< [nv] q_lower + margin
-  Eigen::VectorXd q_max_clamped_;  ///< [nv] q_upper - margin
-  Eigen::VectorXd v_limit_;        ///< [nv] velocity limit
+  Eigen::VectorXd q_curr_full_;       ///< [nv] current q (sensor, per tick)
+  Eigen::VectorXd v_curr_full_;       ///< [nv] current v (sensor, per tick)
+  Eigen::VectorXd q_next_full_;       ///< [nv] integrated position (output)
+  Eigen::VectorXd v_next_full_;       ///< [nv] integrated velocity
+  Eigen::VectorXd q_des_target_full_; ///< [nv] posture reference = external joint target
+                                      ///< (active driving phases). Same layout as q_curr_full_.
+  Eigen::VectorXd v_seed_;            ///< [nv] scratch for the jerk-bounded re-seed velocity
+  Eigen::VectorXd q_min_clamped_;     ///< [nv] q_lower + margin
+  Eigen::VectorXd q_max_clamped_;     ///< [nv] q_upper - margin
+  Eigen::VectorXd v_limit_;           ///< [nv] velocity limit
+
+  // Carry-forward integrator re-seed control (RT-thread-only flags).
+  //   reseed_integration_pending_ — set on a new device target arrival / first
+  //     tick / QP-fail (recover from fresh measured state). Jerk-bounded seed.
+  //   reseed_on_fallback_exit_    — set on kFallback→kIdle recovery (hard seed;
+  //     kept separate so a stale pending target re-seed cannot fire post-fallback).
+  bool reseed_integration_pending_{false};
+  bool reseed_on_fallback_exit_{false};
+  // Bound (rad/s²) on the one-tick velocity step when re-seeding the integrator
+  // from measured q̇ on a target update — prevents a command-velocity jump.
+  double v_jerk_limit_{100.0};
 
   // ControlState for TSID compute (pre-allocated)
   rtc::tsid::ControlState ctrl_state_;
@@ -470,6 +484,12 @@ class DemoWbcController final : public RTControllerInterface {
   // RT-thread-only: refresh current_target_slot_ from the SeqLock + drain
   // pending entries. Also flips robot/hand _pending_ flags for the FSM.
   void DrainTargetSlot(const ControllerState& state) noexcept;
+
+  // RT-thread-only: rebuild q_des_target_full_ from current_target_slot_.targets
+  // (external order → Pinocchio order via ext_to_pin_q_, mirroring ExtractFullState).
+  // Called at phase entry alongside the SE3 goal so posture + SE3 reference share
+  // one consistent target snapshot. No-op until joint_reorder_valid_.
+  void BuildTargetPosture(const ControllerState& state) noexcept;
 
   // Aux-thread spawn of MPC thread (idempotent). Called from on_activate so
   // the heap-allocating Factory::Create + thread.Start happen off the RT

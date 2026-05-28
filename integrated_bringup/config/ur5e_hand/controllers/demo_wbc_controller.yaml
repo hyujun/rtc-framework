@@ -304,6 +304,9 @@ demo_wbc_controller:
     velocity_scale: 0.95       # fraction of max velocity
     force_rate_alpha: 0.1      # EMA alpha for df/dt smoothing at 500Hz
                                # (~20 Hz bandwidth). Range: [0, 1]
+    reseed_velocity_jerk: 100.0  # rad/s²; one-tick command-velocity step bound
+                                 # when the carry-forward integrator re-seeds
+                                 # from measured q̇ on a target update. Optional.
 
   # ── FSM thresholds ───────────────────────────────────────────────────
   fsm:
