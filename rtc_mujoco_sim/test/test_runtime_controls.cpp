@@ -103,5 +103,61 @@ TEST_F(RuntimeControls, CommandModeFlagRoundtrip) {
   EXPECT_FALSE(sim_->IsInTorqueMode(0));
 }
 
+TEST_F(RuntimeControls, ControlModeEnumRoundtrip) {
+  sim_->SetControlMode(0, JointControlMode::kTorque);
+  EXPECT_EQ(sim_->GetControlMode(0), JointControlMode::kTorque);
+  sim_->SetControlMode(0, JointControlMode::kPdFeedforward);
+  EXPECT_EQ(sim_->GetControlMode(0), JointControlMode::kPdFeedforward);
+  sim_->SetControlMode(0, JointControlMode::kPosition);
+  EXPECT_EQ(sim_->GetControlMode(0), JointControlMode::kPosition);
+}
+
+TEST_F(RuntimeControls, PdFeedforwardDisablesGravcomp) {
+  // Only kPosition keeps MuJoCo gravity comp; pd_feedforward leaves it to the
+  // controller's feedforward torque (which must include gravity).
+  sim_->StageCommand(0, JointControlMode::kPdFeedforward, {0.0, 0.0}, {0.0, 0.0}, {}, {});
+  EXPECT_EQ(sim_->GetControlMode(0), JointControlMode::kPdFeedforward);
+  EXPECT_FALSE(sim_->IsGroupGravcompEnabled(0));
+}
+
+TEST_F(RuntimeControls, PdFeedforwardInjectsAppliedTorque) {
+  sim_->StageCommand(0, JointControlMode::kPdFeedforward, {0.0, 0.0}, {1.5, -2.5}, {}, {});
+  sim_->StepForTest();
+  EXPECT_DOUBLE_EQ(sim_->GetAppliedForceForTest(0, 0), 1.5);
+  EXPECT_DOUBLE_EQ(sim_->GetAppliedForceForTest(0, 1), -2.5);
+}
+
+TEST_F(RuntimeControls, ExitingPdFeedforwardClearsAppliedTorque) {
+  sim_->StageCommand(0, JointControlMode::kPdFeedforward, {0.0, 0.0}, {3.0, 4.0}, {}, {});
+  sim_->StepForTest();
+  ASSERT_DOUBLE_EQ(sim_->GetAppliedForceForTest(0, 0), 3.0);
+  // Switch back to position servo — feedforward must be zeroed, not stale.
+  sim_->StageCommand(0, JointControlMode::kPosition, {0.0, 0.0}, {}, {}, {});
+  sim_->StepForTest();
+  EXPECT_DOUBLE_EQ(sim_->GetAppliedForceForTest(0, 0), 0.0);
+  EXPECT_DOUBLE_EQ(sim_->GetAppliedForceForTest(0, 1), 0.0);
+}
+
+TEST_F(RuntimeControls, RuntimeGainUpdateAppliesToActuator) {
+  sim_->StageCommand(0, JointControlMode::kPdFeedforward, {0.0, 0.0}, {0.0, 0.0}, {123.0, 456.0},
+                     {5.0, 6.0});
+  sim_->StepForTest();
+  EXPECT_DOUBLE_EQ(sim_->GetActuatorGainForTest(0, 0), 123.0);
+  EXPECT_DOUBLE_EQ(sim_->GetActuatorGainForTest(0, 1), 456.0);
+}
+
+TEST_F(RuntimeControls, StageCommandIgnoresMismatchedGainArrays) {
+  // Apply a known gain first, then a malformed (wrong-size) gain update: the
+  // StageCommand guard requires kp.size()==kd.size()==num_command_joints, so the
+  // bad update must be a no-op and the prior gain must persist.
+  sim_->StageCommand(0, JointControlMode::kPdFeedforward, {0.0, 0.0}, {0.0, 0.0}, {200.0, 200.0},
+                     {5.0, 5.0});
+  sim_->StepForTest();
+  ASSERT_DOUBLE_EQ(sim_->GetActuatorGainForTest(0, 0), 200.0);
+  sim_->StageCommand(0, JointControlMode::kPdFeedforward, {0.0, 0.0}, {0.0, 0.0}, {999.0}, {});
+  sim_->StepForTest();
+  EXPECT_DOUBLE_EQ(sim_->GetActuatorGainForTest(0, 0), 200.0);
+}
+
 }  // namespace
 }  // namespace rtc

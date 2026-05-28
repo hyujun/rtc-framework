@@ -27,11 +27,42 @@ void MuJoCoSimulator::ApplyCommand() noexcept {
       continue;
 
     std::lock_guard lock(g->cmd_mutex);
-    for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
+    const JointControlMode mode = g->control_mode.load(std::memory_order_relaxed);
+    const auto ncj = static_cast<std::size_t>(g->num_command_joints);
+
+    for (std::size_t i = 0; i < ncj; ++i) {
       if (i < g->pending_cmd.size() && i < g->actuator_indices.size()) {
         data_->ctrl[g->actuator_indices[i]] = g->pending_cmd[i];
       }
     }
+
+    // Feedforward torque: inject in kPdFeedforward, otherwise zero the group's
+    // dofs every tick. mj_step never auto-clears qfrc_applied, so a stale tau_ff
+    // would keep being integrated after a mode switch (impulse with n_substeps>1).
+    for (std::size_t i = 0; i < ncj; ++i) {
+      if (i >= g->qvel_indices.size())
+        break;
+      const int dof = g->qvel_indices[i];
+      data_->qfrc_applied[dof] = (mode == JointControlMode::kPdFeedforward &&
+                                  i < g->pending_feedforward.size())
+                                     ? g->pending_feedforward[i]
+                                     : 0.0;
+    }
+
+    // Runtime PD gains: stage→gainprm_yaml here (SimLoop-only) and flag a
+    // re-apply so this same tick's PreparePhysicsStep pushes them into mjModel.
+    if (g->staged_has_gains) {
+      for (std::size_t i = 0; i < ncj; ++i) {
+        if (i < g->staged_kp.size() && i < g->gainprm_yaml.size())
+          g->gainprm_yaml[i] = g->staged_kp[i];
+        if (i < g->staged_kd.size() && i < g->biasprm2_yaml.size())
+          g->biasprm2_yaml[i] = -g->staged_kd[i];
+      }
+      g->gains_overridden = true;
+      g->staged_has_gains = false;
+      g->control_mode_pending.store(true, std::memory_order_release);
+    }
+
     g->cmd_pending.store(false, std::memory_order_release);
   }
 }
@@ -47,7 +78,11 @@ void MuJoCoSimulator::ReadState() noexcept {
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_state_joints); ++i) {
       g->positions[i] = data_->qpos[g->state_qpos_indices[i]];
       g->velocities[i] = data_->qvel[g->state_qvel_indices[i]];
-      g->efforts[i] = data_->qfrc_actuator[g->state_qvel_indices[i]];
+      // Total joint generalized force = actuator (PD) + applied (feedforward).
+      // qfrc_applied is solely our pd_feedforward injection (external Cartesian
+      // perturbation uses xfrc_applied), so this is 0 in position/torque modes.
+      g->efforts[i] = data_->qfrc_actuator[g->state_qvel_indices[i]] +
+                      data_->qfrc_applied[g->state_qvel_indices[i]];
     }
   }
 }
@@ -278,7 +313,7 @@ void MuJoCoSimulator::ThrottleIfNeeded() noexcept {
 // ── PreparePhysicsStep ─────────────────────────────────────────────────────────
 
 void MuJoCoSimulator::PreparePhysicsStep() noexcept {
-  // 0. Per-group actuator mode switch (torque ↔ position servo)
+  // 0. Per-group actuator mode switch (torque / position-servo / pd_feedforward)
   bool gravcomp_dirty = false;
   for (auto& g : groups_) {
     if (!g->is_robot)
@@ -286,17 +321,23 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
     if (!g->control_mode_pending.exchange(false, std::memory_order_acq_rel))
       continue;
 
-    const bool torque = g->torque_mode.load(std::memory_order_relaxed);
+    const JointControlMode mode = g->control_mode.load(std::memory_order_relaxed);
+    const bool torque = (mode == JointControlMode::kTorque);
 
     // Per-body gravity compensation toggle (same gate as actuator mode flip,
-    // so all mjModel mutations stay on the SimLoop thread).
-    const mjtNum gravcomp = torque ? static_cast<mjtNum>(0.0) : static_cast<mjtNum>(1.0);
+    // so all mjModel mutations stay on the SimLoop thread). Only kPosition lets
+    // MuJoCo cancel gravity; kTorque and kPdFeedforward leave it to the
+    // controller's torque (feedforward must include gravity).
+    const mjtNum gravcomp = (mode == JointControlMode::kPosition) ? static_cast<mjtNum>(1.0)
+                                                                  : static_cast<mjtNum>(0.0);
     for (int body_id : g->body_indices) {
       if (body_id > 0 && body_id < model_->nbody)
         model_->body_gravcomp[body_id] = gravcomp;
     }
     gravcomp_dirty = true;
 
+    // kPosition and kPdFeedforward share the same affine PD actuator params;
+    // kPdFeedforward only differs by gravcomp (above) + qfrc_applied (ApplyCommand).
     for (std::size_t i = 0; i < static_cast<std::size_t>(g->num_command_joints); ++i) {
       const int act = g->actuator_indices[i];
       if (torque) {
@@ -304,7 +345,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
         model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(0.0);
         model_->actuator_biasprm[act * mjNBIAS + 1] = static_cast<mjtNum>(0.0);
         model_->actuator_biasprm[act * mjNBIAS + 2] = static_cast<mjtNum>(0.0);
-      } else if (cfg_.use_yaml_servo_gains) {
+      } else if (g->gains_overridden || cfg_.use_yaml_servo_gains) {
         const double kp = g->gainprm_yaml[i];
         model_->actuator_gainprm[act * mjNGAIN + 0] = static_cast<mjtNum>(kp);
         model_->actuator_biasprm[act * mjNBIAS + 0] = static_cast<mjtNum>(0.0);

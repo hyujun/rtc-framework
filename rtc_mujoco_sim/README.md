@@ -211,7 +211,7 @@ solver:
 ## ROS2 인터페이스
 
 모든 그룹은 동일한 메시지 타입을 사용합니다:
-- **커맨드**: `rtc_msgs/JointCommand` (joint_names + values + command_type)
+- **커맨드**: `rtc_msgs/JointCommand` (joint_names + values + command_type + feedforward/kp/kd)
 - **상태**: `sensor_msgs/JointState` (position, velocity, effort)
 - **센서** (선택): `rtc_msgs/SimSensorState` (MuJoCo XML 센서 데이터)
 
@@ -240,7 +240,7 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 
 | 토픽 | 타입 | 설명 |
 |------|------|------|
-| `<group.command_topic>` (예: `/ur5e/joint_command`) | `rtc_msgs/JointCommand` | robot 그룹: position/torque 명령 (command_type으로 자동 전환) |
+| `<group.command_topic>` (예: `/ur5e/joint_command`) | `rtc_msgs/JointCommand` | robot 그룹: position/torque/pd_feedforward 명령 (command_type으로 자동 전환) |
 | `<group.command_topic>` (예: `/hand/joint_command`) | `rtc_msgs/JointCommand` | fake 그룹: LPF 타겟 업데이트 |
 
 > **QoS**: command subscriber와 state publisher 모두 `BEST_EFFORT` + depth 1을 사용합니다.
@@ -251,8 +251,20 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 |---|---|---|---|
 | `"position"` | Position Servo | **ON** (해당 그룹 body chain 만 `body_gravcomp=1`) | ON (불변) |
 | `"torque"` | Direct Torque | OFF (실 로봇처럼 controller 가 중력 보상 책임) | ON (불변) |
+| `"pd_feedforward"` | PD servo + feedforward torque | OFF (feedforward 가 중력 포함) | ON (불변) |
 
 Position servo 모드에서는 MuJoCo 의 per-body `body_gravcomp` 가 그룹의 link body 들에 대해 1.0 으로 설정되어 중력이 내부적으로 상쇄됩니다. 전역 `opt.gravity` 는 항상 원래 값으로 유지되므로, 같은 씬 안의 free body (들어올릴 객체 등) 는 정상적으로 떨어집니다 — lift / manipulation 시뮬레이션과 양립.
+
+#### `pd_feedforward` 모드 (sim 전용)
+
+`command_type == "pd_feedforward"` 는 `position` 모드와 동일한 affine PD actuator (`kp·(q_d−q) − kd·qvel`, `values` = 위치 타겟 `q_d`) 에 per-joint feedforward torque 를 더합니다 (조인트당 총 일반화 힘 = `kp·(q_d−q) − kd·qvel + tau_ff`). 구현은 `tau_ff` 를 `data_->qfrc_applied[dofadr]` 에 주입하고 (MuJoCo 가 `qfrc_actuator + qfrc_applied` 합산), `body_gravcomp` 를 0 으로 둡니다 — **컨트롤러의 `feedforward` 가 중력 보상까지 전부 포함**해야 하며, 누락 시 팔이 무음으로 처집니다. 메시지 필드:
+
+- `feedforward[]` — `tau_ff` (Nm), gravity 포함. 비면 0. command joint 는 hinge/slide (1-dof) 만 지원.
+- `kp[]` / `kd[]` — 런타임 PD gain (둘 다 `>= 0`), **sticky** (비면 현재 게인 유지, 채우면 갱신 후 지속). **all-or-nothing**: kp/kd 중 하나만 채우거나 그룹 조인트 전체를 덮지 못하면 (또는 음수면) 무시 + throttled warning. `JointState.effort` 는 `qfrc_actuator + qfrc_applied` 합산이라 `tau_ff` 가 반영됩니다.
+
+> **도달성 (Path A)**: `pd_feedforward` 는 현재 sim 수신측에서만 해석됩니다. 프레임워크 전역 `rtc::CommandType` enum 이 2-값 (`position`/`torque`) 이라 rtc 컨트롤러→백엔드 스택은 이 값을 발행하지 못하며, sim 테스트 / 직접 publish 로만 도달합니다. end-to-end 컨트롤 경로는 별도 작업 (rtc_base enum + ControllerOutput 확장).
+
+> **per-consumer dispatch**: `command_type` 은 *수신자별로* 해석됩니다. 예컨대 `udp_hand_driver` 는 `command_type` 을 무시하고 `values` 를 항상 position 으로 읽으므로, 공유 토픽에 `pd_feedforward` 를 발행해도 hand 는 이를 position 명령으로 취급합니다 (의도된 계약).
 
 > **Implementation note**: MuJoCo 의 `mj_passive()` 는 `mjModel.ngravcomp == 0` 이면 gravcomp 루프를 건너뜁니다. MJCF 가 `gravcomp` 속성을 명시하지 않으면 컴파일 시점 카운트가 0 이라, 런타임에 `body_gravcomp[]` 만 1.0 으로 써도 효과가 없습니다. `Init` / `PreparePhysicsStep` 에서 `body_gravcomp[]` 를 mutate 한 직후 `RefreshNgravcomp()` 가 nonzero entry 수를 다시 카운트해 이 게이트를 통과시킵니다. `test_gravcomp_scene::GravcompForceActuallyAppliedAfterForward` 가 `qfrc_gravcomp[]` 가 실제로 채워지는지 검증하는 회귀 가드입니다.
 

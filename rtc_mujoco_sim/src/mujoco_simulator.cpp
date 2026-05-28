@@ -162,6 +162,18 @@ bool MuJoCoSimulator::MapGroupIndices(JointGroup& group) noexcept {
       return false;
     }
 
+    // Command/feedforward path assumes 1-dof joints: a single scalar value and
+    // a single qfrc_applied[dofadr] slot per joint. Ball(3)/free(6) joints span
+    // multiple dofs and would be silently under-driven — reject at mapping.
+    const int jtype = model_->jnt_type[jnt_id];
+    if (jtype != mjJNT_HINGE && jtype != mjJNT_SLIDE) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] ERROR: group '%s' — command joint '%s' must be "
+              "hinge or slide (1-dof); ball/free joints are unsupported\n",
+              group.name.c_str(), jname.c_str());
+      return false;
+    }
+
     group.qpos_indices.push_back(model_->jnt_qposadr[jnt_id]);
     group.qvel_indices.push_back(model_->jnt_dofadr[jnt_id]);
     body_set.insert(model_->jnt_bodyid[jnt_id]);
@@ -923,7 +935,8 @@ bool MuJoCoSimulator::Initialize() noexcept {
   for (const auto& g : groups_) {
     if (!g->is_robot)
       continue;
-    const double gravcomp = g->torque_mode.load(std::memory_order_relaxed) ? 0.0 : 1.0;
+    const double gravcomp =
+        (g->control_mode.load(std::memory_order_relaxed) == JointControlMode::kPosition) ? 1.0 : 0.0;
     for (int body_id : g->body_indices) {
       if (body_id > 0 && body_id < model_->nbody)
         model_->body_gravcomp[body_id] = gravcomp;
@@ -1276,6 +1289,52 @@ void MuJoCoSimulator::SetCommand(std::size_t group_idx, const std::vector<double
   }
 }
 
+void MuJoCoSimulator::StageCommand(std::size_t group_idx, JointControlMode mode,
+                                   const std::vector<double>& cmd,
+                                   const std::vector<double>& feedforward,
+                                   const std::vector<double>& kp,
+                                   const std::vector<double>& kd) noexcept {
+  if (group_idx >= groups_.size())
+    return;
+  auto& g = *groups_[group_idx];
+  if (!g.is_robot)
+    return;
+
+  const auto ncj = static_cast<std::size_t>(g.num_command_joints);
+  const bool has_gains = (kp.size() == ncj && kd.size() == ncj);
+  const bool mode_changed = (g.control_mode.load(std::memory_order_relaxed) != mode);
+
+  {
+    std::lock_guard lock(g.cmd_mutex);
+    g.pending_cmd = cmd;
+    // Feedforward is consumed only in kPdFeedforward; size to ncj (zero-fill) so
+    // ApplyCommand can index without bounds surprises even on an empty/short msg.
+    g.pending_feedforward.assign(ncj, 0.0);
+    if (mode == JointControlMode::kPdFeedforward) {
+      const auto n = std::min(feedforward.size(), ncj);
+      std::copy_n(feedforward.begin(), n, g.pending_feedforward.begin());
+    }
+    if (has_gains) {
+      g.staged_kp = kp;
+      g.staged_kd = kd;
+      g.staged_has_gains = true;
+    }
+    g.staged_mode = mode;
+  }
+
+  g.control_mode.store(mode, std::memory_order_relaxed);
+  // Re-apply actuator params (mode flip or gain change) on the next SimLoop tick.
+  if (mode_changed || has_gains) {
+    g.control_mode_pending.store(true, std::memory_order_release);
+  }
+  // cmd_pending is the publish gate — release-store LAST so the SimLoop's
+  // acquire-load sees the mode store and the cmd_mutex-protected staging above.
+  g.cmd_pending.store(true, std::memory_order_release);
+  if (g.is_primary) {
+    sync_cv_.notify_one();
+  }
+}
+
 void MuJoCoSimulator::SetStateCallback(std::size_t group_idx, StateCallback cb) noexcept {
   if (group_idx >= groups_.size())
     return;
@@ -1402,18 +1461,24 @@ void MuJoCoSimulator::RefreshNgravcomp() noexcept {
 // ── Per-group control mode
 // ──────────────────────────────────────────────────────
 
-void MuJoCoSimulator::SetControlMode(std::size_t group_idx, bool torque_mode) noexcept {
+void MuJoCoSimulator::SetControlMode(std::size_t group_idx, JointControlMode mode) noexcept {
   if (group_idx >= groups_.size())
     return;
   auto& g = *groups_[group_idx];
   if (!g.is_robot)
     return;
 
-  g.torque_mode.store(torque_mode, std::memory_order_relaxed);
+  g.control_mode.store(mode, std::memory_order_relaxed);
   // Both actuator-param and per-body gravcomp updates are picked up by the
   // SimLoop in PreparePhysicsStep() the next tick — keeps all mjModel mutation
   // on a single thread.
   g.control_mode_pending.store(true, std::memory_order_release);
+}
+
+JointControlMode MuJoCoSimulator::GetControlMode(std::size_t group_idx) const noexcept {
+  if (group_idx >= groups_.size())
+    return JointControlMode::kPosition;
+  return groups_[group_idx]->control_mode.load(std::memory_order_relaxed);
 }
 
 bool MuJoCoSimulator::IsGroupGravcompEnabled(std::size_t group_idx) const noexcept {
@@ -1425,14 +1490,50 @@ bool MuJoCoSimulator::IsGroupGravcompEnabled(std::size_t group_idx) const noexce
   // Reflect the *intended* control mode rather than the live mjModel slot:
   // SetControlMode() defers the body_gravcomp write to the next SimLoop tick
   // (single-thread ownership), so a caller that polls right after the setter
-  // would otherwise see stale state.
-  return !group.torque_mode.load(std::memory_order_relaxed);
+  // would otherwise see stale state. Only kPosition enables gravcomp; kTorque
+  // and kPdFeedforward both leave it to the controller.
+  return group.control_mode.load(std::memory_order_relaxed) == JointControlMode::kPosition;
 }
 
-bool MuJoCoSimulator::IsInTorqueMode(std::size_t group_idx) const noexcept {
-  if (group_idx >= groups_.size())
-    return false;
-  return groups_[group_idx]->torque_mode.load(std::memory_order_relaxed);
+// ── Test-only synchronous step + observers ──────────────────────────────────
+
+void MuJoCoSimulator::StepForTest() noexcept {
+  if (!model_ || !data_)
+    return;
+  ApplyCommand();
+  PreparePhysicsStep();
+  mj_step(model_, data_);
+  ReadState();
+}
+
+double MuJoCoSimulator::GetActuatorForceForTest(std::size_t group_idx,
+                                                std::size_t joint_idx) const noexcept {
+  if (!data_ || group_idx >= groups_.size())
+    return 0.0;
+  const auto& g = *groups_[group_idx];
+  if (joint_idx >= g.qvel_indices.size())
+    return 0.0;
+  return data_->qfrc_actuator[g.qvel_indices[joint_idx]];
+}
+
+double MuJoCoSimulator::GetAppliedForceForTest(std::size_t group_idx,
+                                               std::size_t joint_idx) const noexcept {
+  if (!data_ || group_idx >= groups_.size())
+    return 0.0;
+  const auto& g = *groups_[group_idx];
+  if (joint_idx >= g.qvel_indices.size())
+    return 0.0;
+  return data_->qfrc_applied[g.qvel_indices[joint_idx]];
+}
+
+double MuJoCoSimulator::GetActuatorGainForTest(std::size_t group_idx,
+                                               std::size_t joint_idx) const noexcept {
+  if (!model_ || group_idx >= groups_.size())
+    return 0.0;
+  const auto& g = *groups_[group_idx];
+  if (joint_idx >= g.actuator_indices.size())
+    return 0.0;
+  return model_->actuator_gainprm[g.actuator_indices[joint_idx] * mjNGAIN + 0];
 }
 
 // ── Fake response API

@@ -21,6 +21,15 @@
 
 namespace rtc {
 
+// ── JointControlMode ─────────────────────────────────────────────────────────
+// Per-group actuator dispatch mode (robot groups only).
+//   kPosition       — affine PD servo, body_gravcomp ON  (MuJoCo cancels gravity).
+//   kTorque         — force pass-through, body_gravcomp OFF (controller does gravity).
+//   kPdFeedforward  — PD servo (same actuator params as kPosition) + per-dof
+//                     feedforward torque via qfrc_applied; body_gravcomp OFF
+//                     (feedforward must include gravity). See README.
+enum class JointControlMode { kPosition, kTorque, kPdFeedforward };
+
 // ── SolverConfig ─────────────────────────────────────────────────────────────
 // MuJoCo constraint solver parameters loaded from YAML (solver_param.yaml).
 // XML <option> 속성이 명시적으로 설정된 경우 XML 값이 우선됩니다.
@@ -142,9 +151,16 @@ struct JointGroup {
   std::vector<int> state_qpos_indices;
   std::vector<int> state_qvel_indices;
 
-  // ── Command 버퍼 ──────────────────────────────────────────────────
+  // ── Command 버퍼 (모두 cmd_mutex 보호) ───────────────────────────
   std::vector<double> pending_cmd;
   std::vector<double> initial_qpos;
+  // pd_feedforward staging — single cmd_mutex region so the SimLoop sees a
+  // consistent (mode, cmd, feedforward, gains) tuple per cmd_pending publish.
+  std::vector<double> pending_feedforward;  // tau_ff (Nm), sized num_command_joints
+  std::vector<double> staged_kp;            // runtime PD gain, empty = keep current
+  std::vector<double> staged_kd;
+  bool staged_has_gains{false};
+  JointControlMode staged_mode{JointControlMode::kPosition};
 
   // ── State 버퍼 (state_joint_names 기준) ───────────────────────────
   std::vector<double> positions;
@@ -155,16 +171,22 @@ struct JointGroup {
   mutable std::mutex state_mutex;
 
   // ── Per-group control mode ──────────────────────────────────────
-  std::atomic<bool> torque_mode{false};
+  std::atomic<JointControlMode> control_mode{JointControlMode::kPosition};
   // Initial value true so the first PreparePhysicsStep applies the configured
   // mode (position-servo by default) to every actuator — necessary on
   // bare-actuator MJCFs where MuJoCo's parser leaves gainprm/biasprm at the
   // pass-through default (force = ctrl).
   std::atomic<bool> control_mode_pending{true};
 
-  // ── Per-group servo gains ───────────────────────────────────────
+  // ── Per-group servo gains (SimLoop-only after Initialize) ───────
+  // gainprm_yaml[i]=kp, biasprm2_yaml[i]=-kd. Written at Initialize and by the
+  // SimLoop thread (ApplyCommand) on runtime gain updates — never by the ROS
+  // callback thread (avoids a data race with PreparePhysicsStep reads).
   std::vector<double> gainprm_yaml;
   std::vector<double> biasprm2_yaml;
+  // Once a runtime SetGains/StageCommand override lands, the PD dispatch uses
+  // gainprm_yaml regardless of cfg_.use_yaml_servo_gains. SimLoop-only.
+  bool gains_overridden{false};
 
   // ── State callback ──────────────────────────────────────────────
   using StateCallback = std::function<void(const std::vector<double>& positions,
@@ -349,8 +371,39 @@ class MuJoCoSimulator {
   [[nodiscard]] std::size_t NumGroups() const noexcept { return groups_.size(); }
 
   // Per-group control mode (robot groups only).
-  void SetControlMode(std::size_t group_idx, bool torque_mode) noexcept;
-  [[nodiscard]] bool IsInTorqueMode(std::size_t group_idx) const noexcept;
+  void SetControlMode(std::size_t group_idx, JointControlMode mode) noexcept;
+  [[nodiscard]] JointControlMode GetControlMode(std::size_t group_idx) const noexcept;
+
+  // Bool compat shims (true=torque, false=position) — used by existing tests.
+  void SetControlMode(std::size_t group_idx, bool torque_mode) noexcept {
+    SetControlMode(group_idx,
+                   torque_mode ? JointControlMode::kTorque : JointControlMode::kPosition);
+  }
+  [[nodiscard]] bool IsInTorqueMode(std::size_t group_idx) const noexcept {
+    return GetControlMode(group_idx) == JointControlMode::kTorque;
+  }
+
+  // Single-shot staging for the ROS callback thread: bundles mode + command +
+  // feedforward + (optional) PD gains into one cmd_mutex region so the SimLoop
+  // never observes a half-updated tuple. feedforward/kp/kd may be empty.
+  //   - feedforward: per-command-joint tau_ff (Nm); empty → all zeros.
+  //   - kp/kd: runtime PD gains (>=0), sticky; both empty → keep current gains.
+  void StageCommand(std::size_t group_idx, JointControlMode mode,
+                    const std::vector<double>& cmd, const std::vector<double>& feedforward,
+                    const std::vector<double>& kp, const std::vector<double>& kd) noexcept;
+
+  // ── Test-only synchronous step + observers ────────────────────────────────
+  // The SimLoop thread normally owns all mjData mutation; these run one full
+  // tick (ApplyCommand → PreparePhysicsStep → mj_step → ReadState) inline so a
+  // test can stage a command and observe the resulting joint forces. Do NOT
+  // call while SimLoop is running.
+  void StepForTest() noexcept;
+  [[nodiscard]] double GetActuatorForceForTest(std::size_t group_idx,
+                                               std::size_t joint_idx) const noexcept;
+  [[nodiscard]] double GetAppliedForceForTest(std::size_t group_idx,
+                                              std::size_t joint_idx) const noexcept;
+  [[nodiscard]] double GetActuatorGainForTest(std::size_t group_idx,
+                                              std::size_t joint_idx) const noexcept;
 
   // Per-group gravity-compensation status (set by SetControlMode).
   // Position servo → per-body gravcomp ON for the group's body chain.

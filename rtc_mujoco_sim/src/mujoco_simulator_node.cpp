@@ -567,39 +567,96 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     const bool is_robot = sim_->IsGroupRobot(group_idx);
     auto& h = group_handles_[group_idx];
 
-    std::vector<double> cmd(static_cast<std::size_t>(nj), 0.0);
-    if (msg->joint_names.empty()) {
-      const auto n = std::min(msg->values.size(), static_cast<std::size_t>(nj));
-      std::copy_n(msg->values.begin(), n, cmd.begin());
-    } else {
-      for (std::size_t i = 0; i < msg->joint_names.size() && i < msg->values.size(); ++i) {
-        auto it = h.name_index_map.find(msg->joint_names[i]);
-        if (it != h.name_index_map.end()) {
-          cmd[it->second] = msg->values[i];
+    // Remap a per-joint array into group index order. joint_names empty → use
+    // the message order directly (truncated to nj); otherwise map by name.
+    // Unlisted joints stay 0 — fine for command/feedforward, NOT for gains
+    // (validated for full coverage separately below).
+    auto remap = [&](const std::vector<double>& src) {
+      std::vector<double> out(static_cast<std::size_t>(nj), 0.0);
+      if (msg->joint_names.empty()) {
+        std::copy_n(src.begin(), std::min(src.size(), static_cast<std::size_t>(nj)), out.begin());
+      } else {
+        for (std::size_t i = 0; i < msg->joint_names.size() && i < src.size(); ++i) {
+          auto it = h.name_index_map.find(msg->joint_names[i]);
+          if (it != h.name_index_map.end())
+            out[it->second] = src[i];
         }
+      }
+      return out;
+    };
+
+    const std::vector<double> cmd = remap(msg->values);
+
+    if (!is_robot) {
+      sim_->SetFakeTarget(group_idx, cmd);
+      return;
+    }
+
+    urtc::JointControlMode mode = urtc::JointControlMode::kPosition;
+    if (msg->command_type == "torque")
+      mode = urtc::JointControlMode::kTorque;
+    else if (msg->command_type == "pd_feedforward")
+      mode = urtc::JointControlMode::kPdFeedforward;
+
+    if (sim_->GetControlMode(group_idx) != mode) {
+      RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Group[%zu] → %s mode", group_idx,
+                  mode == urtc::JointControlMode::kTorque          ? "torque"
+                  : mode == urtc::JointControlMode::kPdFeedforward ? "pd_feedforward"
+                                                             : "position servo");
+    }
+
+    std::vector<double> feedforward;
+    if (mode == urtc::JointControlMode::kPdFeedforward)
+      feedforward = remap(msg->feedforward);
+
+    // Runtime PD gains — all-or-nothing: kp/kd must both be present, cover every
+    // group joint, and be non-negative. Partial/short/negative → ignore (keep
+    // current gains) with a throttled warning. Empty kp & kd → keep current.
+    std::vector<double> kp;
+    std::vector<double> kd;
+    if (!msg->kp.empty() || !msg->kd.empty()) {
+      bool ok = (msg->kp.size() == msg->kd.size());
+      if (ok) {
+        ok = msg->joint_names.empty() ? (static_cast<int>(msg->kp.size()) == nj)
+                                      : (msg->kp.size() == msg->joint_names.size() &&
+                                         GainsCoverAllJoints(h, msg, nj));
+      }
+      if (ok) {
+        for (double v : msg->kp)
+          ok = ok && (v >= 0.0);
+        for (double v : msg->kd)
+          ok = ok && (v >= 0.0);
+      }
+      if (ok) {
+        kp = remap(msg->kp);
+        kd = remap(msg->kd);
+      } else {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "[MuJoCoSimulatorNode] Group[%zu] gain update ignored: kp/kd must "
+                             "both be non-negative and cover all %d joints",
+                             group_idx, nj);
       }
     }
 
-    if (is_robot) {
-      const bool is_torque = (msg->command_type == "torque");
-      if (is_torque) {
-        if (!sim_->IsInTorqueMode(group_idx)) {
-          sim_->SetControlMode(group_idx, true);
-          RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Group[%zu] → torque mode", group_idx);
-        }
-      } else {
-        if (sim_->IsInTorqueMode(group_idx)) {
-          sim_->SetControlMode(group_idx, false);
-          RCLCPP_INFO(get_logger(), "[MuJoCoSimulatorNode] Group[%zu] → position servo mode",
-                      group_idx);
-        }
-        // SetControlMode(false) already enables per-body gravcomp on the group's
-        // body chain; world gravity stays on so free objects keep falling.
+    sim_->StageCommand(group_idx, mode, cmd, feedforward, kp, kd);
+  }
+
+  // True iff every group joint index is named exactly once in msg->joint_names.
+  static bool GainsCoverAllJoints(const GroupRosHandles& handle,
+                                  const rtc_msgs::msg::JointCommand::SharedPtr& msg, int nj) {
+    if (static_cast<int>(msg->joint_names.size()) < nj)
+      return false;
+    std::vector<bool> seen(static_cast<std::size_t>(nj), false);
+    int covered = 0;
+    for (const auto& name : msg->joint_names) {
+      auto it = handle.name_index_map.find(name);
+      if (it != handle.name_index_map.end() && it->second < static_cast<std::size_t>(nj) &&
+          !seen[it->second]) {
+        seen[it->second] = true;
+        ++covered;
       }
-      sim_->SetCommand(group_idx, cmd);
-    } else {
-      sim_->SetFakeTarget(group_idx, cmd);
     }
+    return covered == nj;
   }
 
   // ── State publishing
