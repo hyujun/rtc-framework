@@ -716,9 +716,9 @@ class TestTimingOutlierFilter:
         # Sloppy parsing: just ensure "340" doesn't appear in the Total Loop
         # block's numeric stats (it's only in the outlier list above).
         total_block = out.split("Total Loop:")[1].split("\n\n")[0]
-        assert "340" not in total_block, (
-            f"steady-state stats appear contaminated by outlier:\n{total_block}"
-        )
+        assert (
+            "340" not in total_block
+        ), f"steady-state stats appear contaminated by outlier:\n{total_block}"
 
     def test_empty_df_returns_no_outliers(self):
         from rtc_tools.plotting.plotters.timing import detect_outlier_indices
@@ -765,3 +765,165 @@ class TestInferBudget:
         # All-equal timestamps → no positive diffs → fallback.
         df = pd.DataFrame({"timestamp": [1.0, 1.0, 1.0]})
         assert infer_budget_us(df, fallback_us=1234.0) == 1234.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Writer-schema round-trip — build the exact CSV header the C++ POD writers
+# emit (DeviceStateLog / DeviceSensorLog), load it through load_log_csv, then
+# drive the plotters. This is the coverage gap that let the column-mapping
+# bugs (command_type as a joint, task_pos_{i} KeyError, baro_/tof_ vs
+# <name>_raw_/_filt_) ship undetected: the prior fixtures used synthetic
+# column names matching neither writer.
+# ═══════════════════════════════════════════════════════════════════════════
+
+import matplotlib  # noqa: E402
+
+matplotlib.use("Agg")  # headless: must precede the pyplot import in the plotters
+
+from rtc_tools.plotting.columns.detect import (  # noqa: E402
+    baro_col as _baro_col,
+    tof_col as _tof_col,
+)
+from rtc_tools.plotting.plotters.robot import (  # noqa: E402
+    command_type_label as _command_type_label,
+    plot_robot_commands as _plot_robot_commands,
+    plot_robot_task_position as _plot_robot_task_position,
+    plot_robot_task_tracking_error as _plot_robot_task_tracking_error,
+)
+from rtc_tools.plotting.plotters.sensors import (  # noqa: E402
+    plot_device_ft_output_auto as _plot_device_ft_output_auto,
+    plot_device_sensor_comparison_auto as _plot_device_sensor_comparison_auto,
+    plot_sensor_barometer_combined as _plot_sensor_barometer_combined,
+    plot_sensor_tof_combined as _plot_sensor_tof_combined,
+)
+
+_TASK_AXES = ("x", "y", "z", "roll", "pitch", "yaw")
+
+
+def _state_log_header(joints, motors):
+    """Column order emitted by WriteDeviceStateLogHeader (device_state_log_pod.hpp)."""
+    cols = ["t_relative_s"]
+    for field in (
+        "actual_pos",
+        "actual_vel",
+        "effort",
+        "command",
+        "joint_goal",
+        "traj_pos",
+        "traj_vel",
+    ):
+        cols += [f"{field}_{j}" for j in joints]
+    cols += [f"task_goal_{a}" for a in _TASK_AXES]
+    cols += [f"task_pos_{a}" for a in _TASK_AXES]
+    for field in ("motor_pos", "motor_vel", "motor_eff"):
+        cols += [f"{field}_{m}" for m in motors]
+    cols += ["command_type", "goal_type"]
+    return cols
+
+
+def _sensor_log_header(fingertips, n_vals=11):
+    """Column order emitted by WriteDeviceSensorLogHeader (device_sensor_log_pod.hpp).
+
+    n_vals == kSensorValuesPerFingertip (11 = 8 baro + 3 ToF).
+    """
+    cols = ["t_relative_s"]
+    for kind in ("raw", "filt"):
+        for name in fingertips:
+            cols += [f"{name}_{kind}_{v}" for v in range(n_vals)]
+    cols += ["inference_valid"]
+    for name in fingertips:
+        cols += [f"ft_{name}_{c}" for c in ("contact", "fx", "fy", "fz", "ux", "uy", "uz")]
+    return cols
+
+
+def _build_log(tmp_path, name, header, str_vals, n=3):
+    """Write `n` numeric rows (string columns from `str_vals`) and load via the loader."""
+    rows = []
+    for i in range(n):
+        row = [str_vals.get(c, float(i)) for c in header]
+        row[0] = i * 0.002  # t_relative_s
+        rows.append(row)
+    path = tmp_path / name
+    _write_csv(str(path), header, rows)
+    log_type = "sensor_log" if "sensor" in name else "state_log"
+    return load_log_csv(str(path), log_type)
+
+
+class TestStateLogRoundTrip:
+    JOINTS = ["a1", "a2"]
+    MOTORS = ["m1"]
+
+    def _df(self, tmp_path, command_type="position", goal_type="task"):
+        header = _state_log_header(self.JOINTS, self.MOTORS)
+        return _build_log(
+            tmp_path,
+            "arm_state_log.csv",
+            header,
+            {"command_type": command_type, "goal_type": goal_type},
+        )
+
+    def test_command_type_not_detected_as_joint(self, tmp_path):
+        """Bug #1: command_type must not be counted as a per-joint channel."""
+        df = self._df(tmp_path)
+        cols, _ = _detect_joint_columns(df, "command_")
+        assert cols == ["command_a1", "command_a2"]  # NOT a 3rd 'command_type'
+
+    def test_command_type_label_string_and_legacy(self, tmp_path):
+        """Bug #2: command_type is a string; legacy int 0/1 still accepted."""
+        assert _command_type_label(self._df(tmp_path, command_type="position")) == (
+            "Position",
+            "rad",
+        )
+        assert _command_type_label(self._df(tmp_path, command_type="torque")) == ("Torque", "Nm")
+        df_int = self._df(tmp_path)
+        df_int["command_type"] = 0
+        assert _command_type_label(df_int) == ("Position", "rad")
+
+    def test_command_plot_renders(self, tmp_path):
+        _plot_robot_commands(self._df(tmp_path), save_dir=str(tmp_path))
+        assert (tmp_path / "robot_commands.png").exists()
+
+    def test_task_plots_render_named_axes(self, tmp_path):
+        """Bug #3/#4: named task_pos_x.. axes, no traj_task_pos_* KeyError."""
+        df = self._df(tmp_path)
+        _plot_robot_task_position(df, save_dir=str(tmp_path))
+        _plot_robot_task_tracking_error(df, save_dir=str(tmp_path))
+        assert (tmp_path / "robot_task_position.png").exists()
+        assert (tmp_path / "robot_task_tracking_error.png").exists()
+
+
+class TestSensorLogRoundTrip:
+    FINGERTIPS = ["thumb", "index"]
+
+    def _df(self, tmp_path):
+        header = _sensor_log_header(self.FINGERTIPS)
+        return _build_log(tmp_path, "hand_sensor_log.csv", header, {})
+
+    def test_fingertip_detection(self, tmp_path):
+        df = self._df(tmp_path)
+        assert _detect_fingertip_labels(df) == self.FINGERTIPS
+        assert _detect_fingertip_labels_raw(df) == self.FINGERTIPS
+        assert _detect_ft_labels(df) == self.FINGERTIPS
+
+    def test_baro_tof_resolver_split(self, tmp_path):
+        """Bug #5: <name>_raw_/_filt_ block, values 0..7 baro / 8..10 ToF."""
+        df = self._df(tmp_path)
+        assert _baro_col(df, "thumb", 0) == "thumb_filt_0"
+        assert _baro_col(df, "thumb", 7) == "thumb_filt_7"
+        assert _baro_col(df, "thumb", 8) is None  # 8..10 are ToF, not baro
+        assert _tof_col(df, "thumb", 0) == "thumb_filt_8"
+        assert _tof_col(df, "thumb", 2) == "thumb_filt_10"
+        assert _tof_col(df, "thumb", 3) is None
+        assert _baro_col(df, "index", 0, raw=True) == "index_raw_0"
+        assert _tof_col(df, "index", 2, raw=True) == "index_raw_10"
+
+    def test_sensor_plots_render(self, tmp_path):
+        df = self._df(tmp_path)
+        _plot_sensor_barometer_combined(df, save_dir=str(tmp_path))
+        _plot_sensor_tof_combined(df, save_dir=str(tmp_path))
+        _plot_device_sensor_comparison_auto(df, save_dir=str(tmp_path))
+        _plot_device_ft_output_auto(df, save_dir=str(tmp_path))
+        assert (tmp_path / "sensor_barometer.png").exists()
+        assert (tmp_path / "sensor_tof.png").exists()
+        assert (tmp_path / "device_sensor_comparison.png").exists()
+        assert (tmp_path / "device_ft_output.png").exists()

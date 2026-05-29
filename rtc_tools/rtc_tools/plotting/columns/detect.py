@@ -138,6 +138,8 @@ def baro_col(df, label, b, raw=False):
 
     Phase C `<label>_raw_/_filt_<b>` 우선, 없으면 legacy `baro[_raw]_<label>_<b>`.
     """
+    if not 0 <= b < BARO_VALUE_COUNT:  # guard: block values 8..10 are ToF, not baro
+        return None
     phase_c = f"{label}_{'raw' if raw else 'filt'}_{b}"
     if phase_c in df.columns:
         return phase_c
@@ -151,6 +153,8 @@ def tof_col(df, label, t, raw=False):
     Phase C ToF occupies block values 8..10, so `<label>_*_<8+t>`; legacy
     `tof[_raw]_<label>_<t>`.
     """
+    if not 0 <= t < TOF_VALUE_COUNT:
+        return None
     phase_c = f"{label}_{'raw' if raw else 'filt'}_{BARO_VALUE_COUNT + t}"
     if phase_c in df.columns:
         return phase_c

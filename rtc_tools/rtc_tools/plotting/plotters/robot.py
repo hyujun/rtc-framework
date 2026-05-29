@@ -160,6 +160,19 @@ def plot_robot_velocities(df, save_dir=None):
     plt.close()
 
 
+def command_type_label(df):
+    """Return (type_label, unit) for the command plot.
+
+    The writer emits `command_type` as a string ("position"/"torque"); legacy
+    logs may use the int code 0/1. Both are accepted. Absent column → generic.
+    """
+    if "command_type" not in df.columns or len(df) == 0:
+        return ("Command", "")
+    cmd_type = df["command_type"].mode().iloc[0]
+    is_position = cmd_type in ("position", 0, "0")
+    return ("Position", "rad") if is_position else ("Torque", "Nm")
+
+
 def plot_robot_commands(df, save_dir=None):
     """Figure 3: Robot control commands — command output per joint."""
     cmd_cols, display_names = _detect_joint_columns(df, "command_")
@@ -171,17 +184,7 @@ def plot_robot_commands(df, save_dir=None):
     nrows, ncols_grid = _auto_subplot_grid(n_joints)
     fig, axes = plt.subplots(nrows, ncols_grid, figsize=(5 * ncols_grid, 4 * nrows))
 
-    # command_type: writer emits a string ("position"/"torque"); legacy logs
-    # may use the int code 0/1. Accept both.
-    has_type = "command_type" in df.columns
-    if has_type:
-        cmd_type = df["command_type"].mode().iloc[0] if len(df) > 0 else "position"
-        is_position = cmd_type in ("position", 0, "0")
-        type_label = "Position" if is_position else "Torque"
-        unit = "rad" if is_position else "Nm"
-    else:
-        type_label = "Command"
-        unit = ""
+    type_label, unit = command_type_label(df)
 
     fig.suptitle(f"Robot Control Commands ({type_label})", fontsize=16, fontweight="bold")
     axes = np.atleast_1d(axes).flatten()
