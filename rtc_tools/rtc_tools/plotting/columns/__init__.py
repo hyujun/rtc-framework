@@ -20,7 +20,6 @@ from .views import (
     has_motor,
     has_raw_sensors,
     has_task_goal,
-    has_traj_task,
 )
 
 __all__ = [
@@ -45,5 +44,4 @@ __all__ = [
     "has_motor",
     "has_raw_sensors",
     "has_task_goal",
-    "has_traj_task",
 ]

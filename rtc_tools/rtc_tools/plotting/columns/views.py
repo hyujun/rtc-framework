@@ -9,7 +9,12 @@ Predicates take `df` and return `bool`. Cheap to call repeatedly
 (no DataFrame copies).
 """
 
-from .detect import has_columns, has_motor_columns
+from .detect import (
+    detect_fingertip_labels,
+    detect_fingertip_labels_raw,
+    has_columns,
+    has_motor_columns,
+)
 
 
 def has_task_goal(df):
@@ -21,13 +26,6 @@ def has_task_goal(df):
     if not has_columns(df, "task_pos_", 3):
         return False
     return (df["goal_type"] == "task").any()
-
-
-def has_traj_task(df):
-    """`traj_task_pos_*` columns exist (task-space trajectory reference).
-    Required for task tracking-error plot.
-    """
-    return has_columns(df, "traj_task_pos_", 3)
 
 
 def has_command_type(df):
@@ -49,11 +47,12 @@ def has_motor(df):
 
 
 def has_fingertip_sensors(df):
-    """sensor_log/device has at least one fingertip's barometer or ToF columns."""
-    for c in df.columns:
-        if c.startswith(("baro_", "tof_")):
-            return True
-    return False
+    """sensor_log/device has at least one fingertip's sensor columns.
+
+    Schema-agnostic: matches the Phase C `<name>_filt_*` block and the legacy
+    `baro_*`/`tof_*` columns (both handled by `detect_fingertip_labels`).
+    """
+    return bool(detect_fingertip_labels(df))
 
 
 def has_ft_inference(df):
@@ -65,8 +64,10 @@ def has_ft_inference(df):
 
 
 def has_raw_sensors(df):
-    """sensor_log has raw (pre-LPF) `baro_raw_*` or `tof_raw_*` columns."""
-    for c in df.columns:
-        if c.startswith(("baro_raw_", "tof_raw_")):
-            return True
-    return False
+    """sensor_log has raw (pre-LPF) sensor columns.
+
+    Schema-agnostic: matches the Phase C `<name>_raw_*` block and the legacy
+    `baro_raw_*`/`tof_raw_*` columns (both handled by
+    `detect_fingertip_labels_raw`).
+    """
+    return bool(detect_fingertip_labels_raw(df))

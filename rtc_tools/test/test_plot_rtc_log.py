@@ -784,6 +784,10 @@ from rtc_tools.plotting.columns.detect import (  # noqa: E402
     baro_col as _baro_col,
     tof_col as _tof_col,
 )
+from rtc_tools.plotting.columns.views import (  # noqa: E402
+    has_fingertip_sensors as _has_fingertip_sensors,
+    has_raw_sensors as _has_raw_sensors,
+)
 from rtc_tools.plotting.plotters.robot import (  # noqa: E402
     command_type_label as _command_type_label,
     plot_robot_commands as _plot_robot_commands,
@@ -927,3 +931,24 @@ class TestSensorLogRoundTrip:
         assert (tmp_path / "sensor_tof.png").exists()
         assert (tmp_path / "device_sensor_comparison.png").exists()
         assert (tmp_path / "device_ft_output.png").exists()
+
+    def test_view_predicates_schema_aware(self, tmp_path):
+        """has_fingertip_sensors / has_raw_sensors must fire on the Phase C
+        `<name>_raw_/_filt_` schema (not just the legacy baro_/tof_ columns)."""
+        df = self._df(tmp_path)
+        assert _has_fingertip_sensors(df) is True
+        assert _has_raw_sensors(df) is True
+        # legacy schema still recognised
+        legacy = pd.DataFrame(
+            {
+                "baro_thumb_0": [1],
+                "baro_thumb_1": [2],
+                "baro_raw_thumb_0": [1],
+                "baro_raw_thumb_1": [2],
+            }
+        )
+        assert _has_fingertip_sensors(legacy) is True
+        assert _has_raw_sensors(legacy) is True
+        # state-log columns must not look like fingertip sensors
+        assert _has_fingertip_sensors(pd.DataFrame({"actual_pos_a1": [0.0]})) is False
+        assert _has_raw_sensors(pd.DataFrame({"actual_pos_a1": [0.0]})) is False
