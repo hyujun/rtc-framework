@@ -462,6 +462,7 @@ def print_robot_statistics(df):
             rms = np.sqrt(np.nanmean(err**2))
             print(f"  Joint {i} ({traj_names[i]}): {rms:.6f} rad/s")
 
-    if "command_type" in df.columns:
-        cmd_type = df["command_type"].mode().iloc[0] if len(df) > 0 else 0
-        print(f"\nCommand type: {'position' if cmd_type == 0 else 'torque'}")
+    if "command_type" in df.columns and len(df) > 0:
+        cmd_type = df["command_type"].mode().iloc[0]
+        is_position = cmd_type in ("position", 0, "0")
+        print(f"\nCommand type: {'position' if is_position else 'torque'}")

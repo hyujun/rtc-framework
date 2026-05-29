@@ -793,6 +793,7 @@ from rtc_tools.plotting.plotters.robot import (  # noqa: E402
     plot_robot_commands as _plot_robot_commands,
     plot_robot_task_position as _plot_robot_task_position,
     plot_robot_task_tracking_error as _plot_robot_task_tracking_error,
+    print_robot_statistics as _print_robot_statistics,
 )
 from rtc_tools.plotting.plotters.sensors import (  # noqa: E402
     plot_device_ft_output_auto as _plot_device_ft_output_auto,
@@ -886,6 +887,17 @@ class TestStateLogRoundTrip:
     def test_command_plot_renders(self, tmp_path):
         _plot_robot_commands(self._df(tmp_path), save_dir=str(tmp_path))
         assert (tmp_path / "robot_commands.png").exists()
+
+    def test_statistics_command_type_summary(self, tmp_path, capsys):
+        """Console summary must read the string command_type (not legacy ==0)."""
+        _print_robot_statistics(self._df(tmp_path, command_type="position"))
+        assert "Command type: position" in capsys.readouterr().out
+        _print_robot_statistics(self._df(tmp_path, command_type="torque"))
+        assert "Command type: torque" in capsys.readouterr().out
+        df_int = self._df(tmp_path)
+        df_int["command_type"] = 0
+        _print_robot_statistics(df_int)
+        assert "Command type: position" in capsys.readouterr().out
 
     def test_task_plots_render_named_axes(self, tmp_path):
         """Bug #3/#4: named task_pos_x.. axes, no traj_task_pos_* KeyError."""
