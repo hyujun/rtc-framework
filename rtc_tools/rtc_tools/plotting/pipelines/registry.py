@@ -22,6 +22,9 @@ from rtc_tools.plotting import plotters
 from rtc_tools.plotting.columns import (
     has_motor,
     has_task_goal,
+    has_wbc_accel,
+    has_wbc_fingertip_force,
+    has_wbc_task_traj,
 )
 
 
@@ -65,6 +68,14 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "sensor_log": [
         PlotEntry("print_device_stats", plotters.print_device_statistics),
     ],
+    # DeviceWbcLog is a state_log superset → reuse robot/motor stats.
+    "wbc_log": [
+        PlotEntry("print_robot_stats", plotters.print_robot_statistics),
+        PlotEntry("print_motor_stats", plotters.print_motor_statistics, has_motor),
+    ],
+    "wbc_diag": [
+        PlotEntry("print_wbc_diag_stats", plotters.print_wbc_diag_statistics),
+    ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
 }
@@ -106,6 +117,47 @@ PIPELINES: dict[str, list[PlotEntry]] = {
             plotters.plot_device_sensor_comparison_auto,
             flag="sensor_compare",
         ),
+    ],
+    # DeviceWbcLog (state_log superset): reuse the robot/motor plots, then add
+    # the WBC-only acceleration / SE3-trajectory / fingertip-force figures.
+    # Role-gated columns mean the arm CSV fires task_trajectory and the hand
+    # CSV fires fingertip_force; available() skips the irrelevant ones.
+    "wbc_log": [
+        PlotEntry("robot_positions", plotters.plot_robot_positions),
+        PlotEntry("robot_velocities", plotters.plot_robot_velocities),
+        PlotEntry("robot_torques", plotters.plot_robot_torques),
+        PlotEntry("wbc_accelerations", plotters.plot_wbc_accelerations, available=has_wbc_accel),
+        PlotEntry(
+            "wbc_task_trajectory",
+            plotters.plot_wbc_task_trajectory,
+            available=has_wbc_task_traj,
+        ),
+        PlotEntry(
+            "robot_task_position",
+            plotters.plot_robot_task_position,
+            available=has_task_goal,
+            flag="task_pos",
+        ),
+        PlotEntry(
+            "robot_task_tracking_error",
+            plotters.plot_robot_task_tracking_error,
+            available=has_task_goal,
+            flag="task_pos",
+        ),
+        PlotEntry("robot_tracking_error", plotters.plot_robot_tracking_error, flag="error"),
+        PlotEntry("robot_commands", plotters.plot_robot_commands, flag="command"),
+        PlotEntry("motor_positions", plotters.plot_motor_positions, available=has_motor),
+        PlotEntry("motor_velocities", plotters.plot_motor_velocities, available=has_motor),
+        PlotEntry("motor_efforts", plotters.plot_motor_efforts, available=has_motor),
+        PlotEntry(
+            "wbc_fingertip_force",
+            plotters.plot_wbc_fingertip_force,
+            available=has_wbc_fingertip_force,
+        ),
+    ],
+    "wbc_diag": [
+        PlotEntry("wbc_diag_solver", plotters.plot_wbc_diag_solver),
+        PlotEntry("wbc_diag_contacts", plotters.plot_wbc_diag_contacts),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

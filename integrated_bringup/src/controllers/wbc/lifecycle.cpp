@@ -2,7 +2,9 @@
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <utility>
@@ -69,33 +71,47 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     const auto primary_state_key = primary + "_state";
     const auto secondary_state_key = secondary.empty() ? std::string{} : secondary + "_state";
     const auto secondary_sensor_key = secondary.empty() ? std::string{} : secondary + "_sensor";
+    const std::string wbc_diag_key = "wbc_diag";
 
-    LogRegistrationContext ctx{
-        logger_,
-        log_set_,
-        {
-            {primary_state_key, {primary_joint_names_, std::vector<std::string>{}}},
-            {secondary_state_key, {secondary_joint_names_, secondary_motor_names_}},
-        },
-        {
-            {secondary_sensor_key, secondary_sensor_names_},
-        }};
+    // WBC arm/hand state channels use DeviceWbcLog (superset POD) — role 0 =
+    // arm (SE3 task block), role 1 = hand (motor + fingertip-force block).
+    // wbc_diag carries the per-tick TSID/QP solution; λ column count = the
+    // fixed QP contact dim (clamped to the POD capacity).
+    const auto num_contact_vars =
+        std::min(static_cast<std::size_t>(std::max(contact_mgr_config_.max_contact_vars, 0)),
+                 integrated_bringup::WbcDiagLogPod::kMaxContactVars);
+
+    LogRegistrationContext ctx{logger_, log_set_, {}, {}, {}, {}};
+    ctx.sensor_logs = {{secondary_sensor_key, secondary_sensor_names_}};
+    ctx.wbc_state_logs = {
+        {primary_state_key, {/*role=*/0, primary_joint_names_, {}, {}}},
+        {secondary_state_key,
+         {/*role=*/1, secondary_joint_names_, secondary_motor_names_, secondary_sensor_names_}},
+    };
+    ctx.wbc_diag_logs = {{wbc_diag_key, num_contact_vars}};
+
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       return CallbackReturn::FAILURE;
     }
-    if (auto it = reg.handles.state.find(primary_state_key); it != reg.handles.state.end()) {
-      primary_state_log_handle_ = std::move(it->second);
+    // LogHandle is a trivially-copyable pointer wrapper — plain assignment.
+    if (auto it = reg.handles.wbc_state.find(primary_state_key);
+        it != reg.handles.wbc_state.end()) {
+      primary_wbc_log_handle_ = it->second;
     }
     if (!secondary_state_key.empty()) {
-      if (auto it = reg.handles.state.find(secondary_state_key); it != reg.handles.state.end()) {
-        secondary_state_log_handle_ = std::move(it->second);
+      if (auto it = reg.handles.wbc_state.find(secondary_state_key);
+          it != reg.handles.wbc_state.end()) {
+        secondary_wbc_log_handle_ = it->second;
       }
     }
     if (!secondary_sensor_key.empty()) {
       if (auto it = reg.handles.sensor.find(secondary_sensor_key); it != reg.handles.sensor.end()) {
-        secondary_sensor_log_handle_ = std::move(it->second);
+        secondary_sensor_log_handle_ = it->second;
       }
+    }
+    if (auto it = reg.handles.wbc_diag.find(wbc_diag_key); it != reg.handles.wbc_diag.end()) {
+      wbc_diag_log_handle_ = it->second;
     }
     if (!log_set_.empty() && node) {
       log_drain_cb_group_ =

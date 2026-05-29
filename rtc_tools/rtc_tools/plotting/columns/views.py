@@ -71,3 +71,28 @@ def has_raw_sensors(df):
     `detect_fingertip_labels_raw`).
     """
     return bool(detect_fingertip_labels_raw(df))
+
+
+# ── WBC-specific (DeviceWbcLog / WbcDiagLog) predicates ────────────────────
+
+
+def has_wbc_accel(df):
+    """DeviceWbcLog has per-joint TSID acceleration columns (`accel_*`)."""
+    return any(c.startswith("accel_") for c in df.columns)
+
+
+def has_wbc_task_traj(df):
+    """DeviceWbcLog arm role has the SE3 trajectory setpoint block
+    (`traj_task_pos_*`) alongside the actual task columns."""
+    return has_columns(df, "traj_task_pos_", 3) and has_columns(df, "task_pos_", 3)
+
+
+def has_wbc_fingertip_force(df):
+    """DeviceWbcLog hand role has per-fingertip |F| columns
+    (`fingertip_force_*`)."""
+    return any(c.startswith("fingertip_force_") for c in df.columns)
+
+
+def has_wbc_lambda(df):
+    """WbcDiagLog has QP contact-wrench solution columns (`lambda_*`)."""
+    return any(c.startswith("lambda_") for c in df.columns)

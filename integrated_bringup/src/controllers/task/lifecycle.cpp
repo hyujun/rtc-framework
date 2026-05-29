@@ -84,7 +84,10 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
         },
         {
             {secondary_sensor_key, secondary_sensor_names_},
-        }};
+        },
+        {},  // wbc_state_logs — WBC controller only
+        {},  // wbc_diag_logs  — WBC controller only
+    };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       return CallbackReturn::FAILURE;

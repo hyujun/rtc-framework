@@ -8,6 +8,8 @@
 #include "integrated_bringup/controllers/wbc/wbc_state.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
@@ -261,6 +263,15 @@ class DemoWbcController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput WriteJointCommand(const ControllerState& state) noexcept;
   void FillLogOutput(const ControllerState& state, ControllerOutput& output) noexcept;
   void FillPublishOutput(const ControllerState& state, ControllerOutput& output) noexcept;
+
+  // ── WBC CSV fill (controller-private data: a_opt / SE3 ramp / fingertip
+  //    force / TSID-QP diagnostics — see ~/.claude/plans/wbc-csv-logging.md) ─
+  // role 0 = arm (SE3 task block), role 1 = hand (motor + fingertip force).
+  void FillDeviceWbcLogPod(const ControllerState& state, const ControllerOutput& output,
+                           std::size_t device_idx, std::uint8_t role,
+                           ::integrated_bringup::DeviceWbcLogPod& pod) const noexcept;
+  void FillWbcDiagLogPod(const ControllerState& state,
+                         ::integrated_bringup::WbcDiagLogPod& pod) const noexcept;
 
   // ── FSM ─────────────────────────────────────────────────────────────────
   WbcPhase phase_{WbcPhase::kIdle};
@@ -703,9 +714,15 @@ class DemoWbcController final : public RTControllerInterface {
   std::vector<ParsedLogEntry> parsed_log_entries_;
 
   rtc::ControllerLogSet log_set_{"demo_wbc_controller"};
-  rtc::LogHandle<integrated_bringup::DeviceStateLogPod> primary_state_log_handle_;
-  rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
+  // WBC arm/hand state channels use the WBC-specific superset POD
+  // (DeviceWbcLog) instead of the generic DeviceStateLog — adds a_opt
+  // acceleration, SE3 trajectory (arm), and fingertip force (hand). The hand
+  // sensor channel stays generic (DeviceSensorLog). wbc_diag is a single
+  // per-tick TSID/QP diagnostics channel. See ~/.claude/plans/wbc-csv-logging.md.
+  rtc::LogHandle<integrated_bringup::DeviceWbcLogPod> primary_wbc_log_handle_;
+  rtc::LogHandle<integrated_bringup::DeviceWbcLogPod> secondary_wbc_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
+  rtc::LogHandle<integrated_bringup::WbcDiagLogPod> wbc_diag_log_handle_;
 
   std::vector<std::string> primary_joint_names_;
   std::vector<std::string> secondary_joint_names_;

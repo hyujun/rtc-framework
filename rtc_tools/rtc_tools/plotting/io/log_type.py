@@ -26,7 +26,13 @@ def detect_log_type(filepath):
     """
     p = Path(filepath)
     stem = p.stem
-    if stem.endswith("state_log"):
+    # WBC controller-owned channels (Path A POD-only). The per-tick TSID/QP
+    # diagnostics file has a fixed `wbc_diag` stem; the WBC arm/hand state
+    # files reuse the generic `<dev>_state` stem, so they fall through to the
+    # column fallback (which keys on the WBC-only `accel_*` columns).
+    if stem == "wbc_diag" or stem.endswith("wbc_diag"):
+        return "wbc_diag"
+    elif stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
         return "sensor_log"
@@ -51,6 +57,17 @@ def detect_log_type_by_columns(columns):
     on the filename to pick the cm/mpc pipeline if needed.
     """
     cols = set(columns)
+    # WBC diagnostics: per-tick TSID/QP solver telemetry (single wbc_diag.csv).
+    # Distinct from timing CSVs (`solve_time_us`, not `t_*_us`).
+    if "solve_time_us" in cols and (
+        "qp_converged" in cols or any(c.startswith("lambda_") for c in cols)
+    ):
+        return "wbc_diag"
+    # WBC device state: superset of state_log with TSID a_opt acceleration.
+    # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
+    # WBC arm/hand state CSVs from the generic state_log before that branch.
+    if any(c.startswith("accel_") for c in cols):
+        return "wbc_log"
     if any(
         c in cols
         for c in (

@@ -45,6 +45,14 @@ from .timing import (
     plot_timing_total_and_jitter,
     print_timing_statistics,
 )
+from .wbc import (
+    plot_wbc_accelerations,
+    plot_wbc_diag_contacts,
+    plot_wbc_diag_solver,
+    plot_wbc_fingertip_force,
+    plot_wbc_task_trajectory,
+    print_wbc_diag_statistics,
+)
 
 __all__ = [
     # robot
@@ -79,4 +87,11 @@ __all__ = [
     "plot_timing_histograms",
     "plot_timing_total_and_jitter",
     "print_timing_statistics",
+    # wbc
+    "plot_wbc_accelerations",
+    "plot_wbc_diag_contacts",
+    "plot_wbc_diag_solver",
+    "plot_wbc_fingertip_force",
+    "plot_wbc_task_trajectory",
+    "print_wbc_diag_statistics",
 ]

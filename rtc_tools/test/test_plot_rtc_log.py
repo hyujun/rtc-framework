@@ -964,3 +964,207 @@ class TestSensorLogRoundTrip:
         # state-log columns must not look like fingertip sensors
         assert _has_fingertip_sensors(pd.DataFrame({"actual_pos_a1": [0.0]})) is False
         assert _has_raw_sensors(pd.DataFrame({"actual_pos_a1": [0.0]})) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WBC writer-schema round-trip — DeviceWbcLog (arm/hand) + WbcDiagLog. Build
+# the exact CSV headers the C++ POD writers emit (device_wbc_log_pod.hpp /
+# wbc_diag_log_pod.hpp), load through load_log_csv, then detect + plot.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from rtc_tools.plotting.columns.views import (  # noqa: E402
+    has_wbc_accel as _has_wbc_accel,
+    has_wbc_fingertip_force as _has_wbc_fingertip_force,
+    has_wbc_lambda as _has_wbc_lambda,
+    has_wbc_task_traj as _has_wbc_task_traj,
+)
+from rtc_tools.plotting.plotters.wbc import (  # noqa: E402
+    plot_wbc_accelerations as _plot_wbc_accelerations,
+    plot_wbc_diag_contacts as _plot_wbc_diag_contacts,
+    plot_wbc_diag_solver as _plot_wbc_diag_solver,
+    plot_wbc_fingertip_force as _plot_wbc_fingertip_force,
+    plot_wbc_task_trajectory as _plot_wbc_task_trajectory,
+    print_wbc_diag_statistics as _print_wbc_diag_statistics,
+)
+
+_WBC_JOINT_FIELDS = (
+    "actual_pos",
+    "actual_vel",
+    "effort",
+    "accel",
+    "command",
+    "joint_goal",
+    "traj_pos",
+    "traj_vel",
+)
+
+
+def _wbc_arm_header(joints):
+    """Column order of WriteDeviceWbcLogHeader(role=0) (device_wbc_log_pod.hpp)."""
+    cols = ["t_relative_s"]
+    for field in _WBC_JOINT_FIELDS:
+        cols += [f"{field}_{j}" for j in joints]
+    for block in ("task_goal", "task_pos", "traj_task_pos", "traj_task_vel"):
+        cols += [f"{block}_{a}" for a in _TASK_AXES]
+    cols += ["command_type", "goal_type"]
+    return cols
+
+
+def _wbc_hand_header(joints, motors, fingertips, max_fingertips=8):
+    """Column order of WriteDeviceWbcLogHeader(role=1).
+
+    The fingertip-force block is FIXED-WIDTH (kMaxFingertips=8): labelled by
+    `fingertips` where provided, numeric index otherwise. This mirrors the C++
+    writer, which can't size the block from the runtime fingertip count.
+    """
+    cols = ["t_relative_s"]
+    for field in _WBC_JOINT_FIELDS:
+        cols += [f"{field}_{j}" for j in joints]
+    for field in ("motor_pos", "motor_vel", "motor_eff"):
+        cols += [f"{field}_{m}" for m in motors]
+    for i in range(max_fingertips):
+        label = fingertips[i] if i < len(fingertips) else str(i)
+        cols.append(f"fingertip_force_{label}")
+    cols += ["command_type", "goal_type"]
+    return cols
+
+
+def _wbc_diag_header(n_lambda):
+    """Column order of WriteWbcDiagLogHeader (wbc_diag_log_pod.hpp)."""
+    cols = [
+        "t_relative_s",
+        "phase",
+        "solve_time_us",
+        "qp_converged",
+        "solve_levels",
+        "qp_fail_count",
+        "num_active_contacts",
+        "grasp_detected",
+        "max_force",
+    ]
+    cols += [f"lambda_{i}" for i in range(n_lambda)]
+    return cols
+
+
+def _build_wbc_log(tmp_path, name, header, str_vals, log_type, n=3):
+    rows = []
+    for i in range(n):
+        row = [str_vals.get(c, float(i)) for c in header]
+        row[0] = i * 0.002  # t_relative_s
+        rows.append(row)
+    path = tmp_path / name
+    _write_csv(str(path), header, rows)
+    return load_log_csv(str(path), log_type)
+
+
+class TestWbcLogRoundTrip:
+    JOINTS = ["a1", "a2"]
+    MOTORS = ["m1", "m2"]
+    FINGERTIPS = ["thumb", "index"]
+
+    def _arm_df(self, tmp_path):
+        header = _wbc_arm_header(self.JOINTS)
+        return _build_wbc_log(
+            tmp_path,
+            "iiwa7_state.csv",
+            header,
+            {"command_type": "position", "goal_type": "task"},
+            "wbc_log",
+        )
+
+    def _hand_df(self, tmp_path):
+        header = _wbc_hand_header(self.JOINTS, self.MOTORS, self.FINGERTIPS)
+        return _build_wbc_log(
+            tmp_path,
+            "leap_state.csv",
+            header,
+            {"command_type": "position", "goal_type": "joint"},
+            "wbc_log",
+        )
+
+    def test_arm_columns_detect_as_wbc_log(self, tmp_path):
+        header = _wbc_arm_header(self.JOINTS)
+        assert detect_log_type_by_columns(header) == "wbc_log"
+
+    def test_hand_columns_detect_as_wbc_log(self, tmp_path):
+        header = _wbc_hand_header(self.JOINTS, self.MOTORS, self.FINGERTIPS)
+        assert detect_log_type_by_columns(header) == "wbc_log"
+
+    def test_accel_not_detected_as_joint_artifact(self, tmp_path):
+        df = self._arm_df(tmp_path)
+        cols, _ = _detect_joint_columns(df, "accel_")
+        assert cols == ["accel_a1", "accel_a2"]
+
+    def test_arm_predicates(self, tmp_path):
+        df = self._arm_df(tmp_path)
+        assert _has_wbc_accel(df) is True
+        assert _has_wbc_task_traj(df) is True
+        assert _has_wbc_fingertip_force(df) is False
+
+    def test_hand_predicates(self, tmp_path):
+        df = self._hand_df(tmp_path)
+        assert _has_wbc_accel(df) is True
+        assert _has_wbc_fingertip_force(df) is True
+        assert _has_wbc_task_traj(df) is False
+
+    def test_arm_plots_render(self, tmp_path):
+        df = self._arm_df(tmp_path)
+        _plot_wbc_accelerations(df, save_dir=str(tmp_path))
+        _plot_wbc_task_trajectory(df, save_dir=str(tmp_path))
+        assert (tmp_path / "wbc_accelerations.png").exists()
+        assert (tmp_path / "wbc_task_trajectory.png").exists()
+
+    def test_hand_plots_render(self, tmp_path):
+        df = self._hand_df(tmp_path)
+        _plot_wbc_fingertip_force(df, save_dir=str(tmp_path))
+        assert (tmp_path / "wbc_fingertip_force.png").exists()
+
+    def test_reused_robot_plotters_render(self, tmp_path):
+        """DeviceWbcLog is a state_log superset → robot plotters still work."""
+        from rtc_tools.plotting.plotters.robot import (
+            plot_robot_positions as _plot_robot_positions,
+        )
+
+        _plot_robot_positions(self._arm_df(tmp_path), save_dir=str(tmp_path))
+        assert (tmp_path / "robot_positions.png").exists()
+
+
+class TestWbcDiagRoundTrip:
+    N_LAMBDA = 6
+
+    def _df(self, tmp_path):
+        header = _wbc_diag_header(self.N_LAMBDA)
+        return _build_wbc_log(
+            tmp_path,
+            "wbc_diag.csv",
+            header,
+            {"phase": "closure", "qp_converged": 1, "grasp_detected": 1},
+            "wbc_diag",
+        )
+
+    def test_filename_detection(self):
+        assert detect_log_type("/s/controllers/demo_wbc/wbc_diag.csv") == "wbc_diag"
+
+    def test_column_detection(self):
+        assert detect_log_type_by_columns(_wbc_diag_header(self.N_LAMBDA)) == "wbc_diag"
+
+    def test_lambda_predicate(self, tmp_path):
+        assert _has_wbc_lambda(self._df(tmp_path)) is True
+
+    def test_phase_stays_string(self, tmp_path):
+        """phase is categorical — loader must not coerce it to NaN."""
+        df = self._df(tmp_path)
+        assert df["phase"].iloc[0] == "closure"
+
+    def test_diag_plots_render(self, tmp_path):
+        df = self._df(tmp_path)
+        _plot_wbc_diag_solver(df, save_dir=str(tmp_path))
+        _plot_wbc_diag_contacts(df, save_dir=str(tmp_path))
+        assert (tmp_path / "wbc_diag_solver.png").exists()
+        assert (tmp_path / "wbc_diag_contacts.png").exists()
+
+    def test_diag_statistics(self, tmp_path, capsys):
+        _print_wbc_diag_statistics(self._df(tmp_path))
+        out = capsys.readouterr().out
+        assert "WBC TSID/QP Diagnostics" in out
+        assert "closure" in out
