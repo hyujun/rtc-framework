@@ -14,9 +14,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from rtc_tools.plotting.columns import (
+    BARO_VALUE_COUNT as _BARO_N,
+    TOF_VALUE_COUNT as _TOF_N,
+    baro_col as _baro_col,
     detect_fingertip_labels as _detect_fingertip_labels,
     detect_fingertip_labels_raw as _detect_fingertip_labels_raw,
     detect_ft_labels as _detect_ft_labels,
+    tof_col as _tof_col,
 )
 from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
 
@@ -41,9 +45,9 @@ def plot_device_sensors(df, save_dir=None):
     # Row 1: Barometer (8ch per fingertip)
     for f_idx, label in enumerate(labels):
         ax = axes[0, f_idx]
-        for b in range(16):  # auto-stopped by column check
-            col = f"baro_{label}_{b}"
-            if col in df.columns:
+        for b in range(_BARO_N):
+            col = _baro_col(df, label, b)
+            if col is not None:
                 ax.plot(t, df[col], label=f"B{b}", alpha=0.7, linewidth=0.8)
         ax.set_title(f"{label} — Barometer")
         ax.set_xlabel("Time (s)")
@@ -54,9 +58,9 @@ def plot_device_sensors(df, save_dir=None):
     # Row 2: ToF (3ch per fingertip)
     for f_idx, label in enumerate(labels):
         ax = axes[1, f_idx]
-        for t_idx in range(8):  # auto-stopped by column check
-            col = f"tof_{label}_{t_idx}"
-            if col in df.columns:
+        for t_idx in range(_TOF_N):
+            col = _tof_col(df, label, t_idx)
+            if col is not None:
                 ax.plot(
                     t,
                     df[col],
@@ -100,9 +104,9 @@ def plot_device_sensors_raw(df, fingertip_labels, save_dir=None):
     # Row 1: Raw Barometer (8ch per fingertip)
     for f_idx, label in enumerate(labels):
         ax = axes[0, f_idx]
-        for b in range(16):  # auto-stopped by column check
-            col = f"baro_raw_{label}_{b}"
-            if col in df.columns:
+        for b in range(_BARO_N):
+            col = _baro_col(df, label, b, raw=True)
+            if col is not None:
                 ax.plot(t, df[col], label=f"B{b}", alpha=0.7, linewidth=0.8)
         ax.set_title(f"{label} — Barometer (Raw)")
         ax.set_xlabel("Time (s)")
@@ -113,9 +117,9 @@ def plot_device_sensors_raw(df, fingertip_labels, save_dir=None):
     # Row 2: Raw ToF (3ch per fingertip)
     for f_idx, label in enumerate(labels):
         ax = axes[1, f_idx]
-        for t_idx in range(8):  # auto-stopped by column check
-            col = f"tof_raw_{label}_{t_idx}"
-            if col in df.columns:
+        for t_idx in range(_TOF_N):
+            col = _tof_col(df, label, t_idx, raw=True)
+            if col is not None:
                 ax.plot(
                     t,
                     df[col],
@@ -224,9 +228,9 @@ def plot_device_ft_output(df, fingertip_labels, save_dir=None):
         # ── Row 0: Barometer (8ch) ──
         ax = axes[0, f_idx]
         if label in sensor_labels:
-            for b in range(16):  # auto-stopped by column check
-                col = f"baro_{label}_{b}"
-                if col in df.columns:
+            for b in range(_BARO_N):
+                col = _baro_col(df, label, b)
+                if col is not None:
                     ax.plot(t, df[col], label=f"B{b}", alpha=0.7, linewidth=0.8)
             ax.legend(fontsize=6, ncol=4)
         ax.set_title(f"{label}", fontweight="bold")
@@ -312,13 +316,13 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
     # Row 1: Barometer comparison
     for f_idx, label in enumerate(common_labels):
         ax = axes[0, f_idx]
-        for b in range(16):  # auto-stopped by column check
+        for b in range(_BARO_N):
             color = colors[b % len(colors)]
-            raw_col = f"baro_raw_{label}_{b}"
-            filt_col = f"baro_{label}_{b}"
-            if raw_col in df.columns:
+            raw_col = _baro_col(df, label, b, raw=True)
+            filt_col = _baro_col(df, label, b)
+            if raw_col is not None:
                 ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.6, color=color)
-            if filt_col in df.columns:
+            if filt_col is not None:
                 ax.plot(
                     t,
                     df[filt_col],
@@ -336,13 +340,13 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
     # Row 2: ToF comparison
     for f_idx, label in enumerate(common_labels):
         ax = axes[1, f_idx]
-        for t_idx in range(8):  # auto-stopped by column check
+        for t_idx in range(_TOF_N):
             color = colors[t_idx % len(colors)]
-            raw_col = f"tof_raw_{label}_{t_idx}"
-            filt_col = f"tof_{label}_{t_idx}"
-            if raw_col in df.columns:
+            raw_col = _tof_col(df, label, t_idx, raw=True)
+            filt_col = _tof_col(df, label, t_idx)
+            if raw_col is not None:
                 ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.8, color=color)
-            if filt_col in df.columns:
+            if filt_col is not None:
                 ax.plot(
                     t,
                     df[filt_col],
@@ -391,13 +395,13 @@ def plot_sensor_barometer_combined(df, save_dir=None):
 
     for f_idx, label in enumerate(all_labels):
         ax = axes[f_idx]
-        for b in range(16):
+        for b in range(_BARO_N):
             color = colors[b % len(colors)]
-            raw_col = f"baro_raw_{label}_{b}"
-            filt_col = f"baro_{label}_{b}"
-            if raw_col in df.columns:
+            raw_col = _baro_col(df, label, b, raw=True)
+            filt_col = _baro_col(df, label, b)
+            if raw_col is not None:
                 ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.6, color=color)
-            if filt_col in df.columns:
+            if filt_col is not None:
                 ax.plot(
                     t,
                     df[filt_col],
@@ -447,13 +451,13 @@ def plot_sensor_tof_combined(df, save_dir=None):
 
     for f_idx, label in enumerate(all_labels):
         ax = axes[f_idx]
-        for t_idx in range(8):
+        for t_idx in range(_TOF_N):
             color = colors[t_idx % len(colors)]
-            raw_col = f"tof_raw_{label}_{t_idx}"
-            filt_col = f"tof_{label}_{t_idx}"
-            if raw_col in df.columns:
+            raw_col = _tof_col(df, label, t_idx, raw=True)
+            filt_col = _tof_col(df, label, t_idx)
+            if raw_col is not None:
                 ax.plot(t, df[raw_col], alpha=0.3, linewidth=0.8, color=color)
-            if filt_col in df.columns:
+            if filt_col is not None:
                 ax.plot(
                     t,
                     df[filt_col],

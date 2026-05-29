@@ -17,6 +17,19 @@ from rtc_tools.plotting.columns import (
 )
 from rtc_tools.plotting.layout import auto_subplot_grid as _auto_subplot_grid
 
+# Task-space axis order emitted by the state_log writer: named columns
+# `task_pos_x/y/z/roll/pitch/yaw` (and `task_goal_*`). Index i maps to this
+# suffix; legacy logs using numeric `task_pos_0` fall back automatically.
+_TASK_AXES = ("x", "y", "z", "roll", "pitch", "yaw")
+
+
+def _task_col(df, prefix, i):
+    """Resolve i-th task-space axis column: named (`task_pos_x`) or numeric."""
+    named = f"{prefix}{_TASK_AXES[i]}"
+    if named in df.columns:
+        return named
+    return f"{prefix}{i}"  # legacy numeric fallback
+
 
 def plot_robot_positions(df, save_dir=None):
     """Figure 1: Robot joint positions — goal vs trajectory vs actual."""
@@ -158,12 +171,14 @@ def plot_robot_commands(df, save_dir=None):
     nrows, ncols_grid = _auto_subplot_grid(n_joints)
     fig, axes = plt.subplots(nrows, ncols_grid, figsize=(5 * ncols_grid, 4 * nrows))
 
-    # command_type: 0=position, 1=torque
+    # command_type: writer emits a string ("position"/"torque"); legacy logs
+    # may use the int code 0/1. Accept both.
     has_type = "command_type" in df.columns
     if has_type:
-        cmd_type = df["command_type"].mode().iloc[0] if len(df) > 0 else 0
-        type_label = "Position" if cmd_type == 0 else "Torque"
-        unit = "rad" if cmd_type == 0 else "Nm"
+        cmd_type = df["command_type"].mode().iloc[0] if len(df) > 0 else "position"
+        is_position = cmd_type in ("position", 0, "0")
+        type_label = "Position" if is_position else "Torque"
+        unit = "rad" if is_position else "Nm"
     else:
         type_label = "Command"
         unit = ""
@@ -256,28 +271,14 @@ def plot_robot_task_position(df, save_dir=None):
     if has_task_goal and has_goal_type:
         task_goal_mask = df["goal_type"] == "task"
 
-    has_traj_task = _has_columns(df, "traj_task_pos_", 3)
-
     t = df["timestamp"]
     for i in range(3):
         ax = axes[i]
-        ax.plot(t, df[f"task_pos_{i}"], label=f"Actual {labels[i]}", linewidth=1.5)
-
-        # Task-space trajectory reference
-        if has_traj_task:
-            ax.plot(
-                t,
-                df[f"traj_task_pos_{i}"],
-                label="Trajectory Ref",
-                linestyle="--",
-                linewidth=1.5,
-                alpha=0.8,
-                color="C1",
-            )
+        ax.plot(t, df[_task_col(df, "task_pos_", i)], label=f"Actual {labels[i]}", linewidth=1.5)
 
         # Task goal from GUI (goal_type=="task" 구간만)
         if task_goal_mask is not None:
-            tg = df[f"task_goal_{i}"].copy()
+            tg = df[_task_col(df, "task_goal_", i)].copy()
             tg[~task_goal_mask] = np.nan
             ax.plot(
                 t,
@@ -355,18 +356,23 @@ def plot_robot_tracking_error(df, save_dir=None):
 
 
 def plot_robot_task_tracking_error(df, save_dir=None):
-    """Task-space tracking error (trajectory reference - actual TCP)."""
-    if not _has_columns(df, "traj_task_pos_", 3) or not _has_columns(df, "task_pos_", 3):
-        print("  Skipping task tracking error plot (traj_task_pos_* columns not found)")
+    """Task-space tracking error (task goal - actual TCP).
+
+    The state_log has no task-space *trajectory* reference, but it does emit the
+    commanded task goal (`task_goal_*`); the meaningful task-space error is
+    therefore goal - actual over the goal_type=="task" segments.
+    """
+    if not _has_columns(df, "task_goal_", 3) or not _has_columns(df, "task_pos_", 3):
+        print("  Skipping task tracking error plot (task_goal_*/task_pos_* columns not found)")
         return
 
     pos_labels = ["X", "Y", "Z"]
     rot_labels = ["Roll", "Pitch", "Yaw"]
-    has_rot = _has_columns(df, "traj_task_pos_", 6) and _has_columns(df, "task_pos_", 6)
+    has_rot = _has_columns(df, "task_goal_", 6) and _has_columns(df, "task_pos_", 6)
     nrows = 2 if has_rot else 1
     fig, axes = plt.subplots(nrows, 1, figsize=(14, 5 * nrows))
     fig.suptitle(
-        "Task-Space Tracking Error (Trajectory Ref - Actual)",
+        "Task-Space Tracking Error (Task Goal - Actual)",
         fontsize=16,
         fontweight="bold",
     )
@@ -375,11 +381,19 @@ def plot_robot_task_tracking_error(df, save_dir=None):
 
     t = df["timestamp"]
 
+    # Only score error where the GUI goal is a task-space goal.
+    task_mask = df["goal_type"] == "task" if "goal_type" in df.columns else None
+
+    def _err(i):
+        e = df[_task_col(df, "task_goal_", i)] - df[_task_col(df, "task_pos_", i)]
+        if task_mask is not None:
+            e = e.where(task_mask, np.nan)
+        return e
+
     # Position error (m)
     ax = axes[0]
     for i in range(3):
-        err = df[f"traj_task_pos_{i}"] - df[f"task_pos_{i}"]
-        ax.plot(t, err, label=pos_labels[i], alpha=0.8, linewidth=1.2)
+        ax.plot(t, _err(i), label=pos_labels[i], alpha=0.8, linewidth=1.2)
     ax.set_ylabel("Position Error (m)")
     ax.set_title("Translation Tracking Error")
     ax.legend(fontsize=8)
@@ -390,8 +404,7 @@ def plot_robot_task_tracking_error(df, save_dir=None):
     if has_rot:
         ax = axes[1]
         for i in range(3):
-            err = df[f"traj_task_pos_{i + 3}"] - df[f"task_pos_{i + 3}"]
-            ax.plot(t, err, label=rot_labels[i], alpha=0.8, linewidth=1.2)
+            ax.plot(t, _err(i + 3), label=rot_labels[i], alpha=0.8, linewidth=1.2)
         ax.set_ylabel("Orientation Error (rad)")
         ax.set_title("Rotation Tracking Error")
         ax.legend(fontsize=8)
