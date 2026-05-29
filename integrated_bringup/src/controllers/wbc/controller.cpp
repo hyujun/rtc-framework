@@ -1088,6 +1088,12 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     qp_fail_count_ = 0;
     grasp_cmd_.store(0, std::memory_order_relaxed);
 
+    // Idle hold snapshot from the measured first-tick configuration. kIdle's
+    // OnPhaseEnter does not fire on enable (phase_ is already kIdle, so there is
+    // no transition edge), so the posture reference (q_des_target_full_) and the
+    // SE3 hold pose must be seeded here or idle would command the zero vector.
+    SeedHoldFromMeasured(state);
+
     target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
     // Seed the carry-forward integrator from the (measured) first-tick state.

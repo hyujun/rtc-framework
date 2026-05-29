@@ -491,6 +491,15 @@ class DemoWbcController final : public RTControllerInterface {
   // one consistent target snapshot. No-op until joint_reorder_valid_.
   void BuildTargetPosture(const ControllerState& state) noexcept;
 
+  // RT-thread-only: snapshot the current measured configuration as the idle
+  // hold target. Sets current_target_slot_.targets[] (joint_goal mirror) =
+  // measured, rebuilds q_des_target_full_ (posture reference), and seeds
+  // tcp_goal_ from the current FK (base_frame → tip) with its SeqLock-POD
+  // mirror. Called on first-tick self-init and on every kIdle entry so idle
+  // regulates toward a fixed init snapshot, re-seeded to where the robot is
+  // *now* on each entry. Caller persists current_target_slot_ to the SeqLock.
+  void SeedHoldFromMeasured(const ControllerState& state) noexcept;
+
   // Aux-thread spawn of MPC thread (idempotent). Called from on_activate so
   // the heap-allocating Factory::Create + thread.Start happen off the RT
   // path. MPCFactory is given a zero-initialised PhaseContext, matching the

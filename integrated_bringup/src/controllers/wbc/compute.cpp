@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <span>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -230,13 +232,19 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
         std::min(static_cast<int>(mpc_u_fb_.size()), static_cast<int>(control_ref_.a_des.size()));
     control_ref_.a_des.head(n_fb) += mpc_u_fb_.head(n_fb);
   } else {
-    // Phase-scoped posture reference. idle/release self-hold at the measured
-    // configuration (SE3 holds the *current* TCP there, and targets[] is stale
-    // after a grasp cycle). Active driving phases track the external joint
-    // target snapshot (q_des_target_full_, built at phase entry alongside the
-    // SE3 goal so posture + SE3 reference the same targets[]).
-    if (phase_ == WbcPhase::kIdle || phase_ == WbcPhase::kRelease) {
+    // Phase-scoped posture reference. kIdle regulates toward a fixed init
+    // snapshot (q_des_target_full_, re-seeded from measured on each idle entry
+    // by SeedHoldFromMeasured) so a disturbed joint returns to the held pose
+    // instead of drifting — the InitPositionHold semantics. kRelease keeps
+    // measured self-hold so the finger-open ramp is not fought by a stiff arm
+    // target. Active driving phases track the external joint target snapshot
+    // (q_des_target_full_, built at phase entry alongside the SE3 goal).
+    // Falls back to measured self-hold when the reorder map is unavailable
+    // (unit-test bypass) so q_des is never the zero vector.
+    if (phase_ == WbcPhase::kRelease) {
       control_ref_.q_des = q_curr_full_;
+    } else if (phase_ == WbcPhase::kIdle) {
+      control_ref_.q_des = joint_reorder_valid_ ? q_des_target_full_ : q_curr_full_;
     } else {
       control_ref_.q_des = q_des_target_full_;
     }
@@ -808,6 +816,42 @@ void DemoWbcController::BuildTargetPosture(const ControllerState& state) noexcep
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
       q_des_target_full_[pq] = current_target_slot_.targets[1][static_cast<std::size_t>(i)];
     }
+  }
+}
+
+void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexcept {
+  // joint_goal mirror = current measured config (arm + hand). This makes the
+  // logged joint_goal match the posture reference idle actually regulates to.
+  const auto& dev0 = state.devices[0];
+  for (int i = 0; i < arm_dof_; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    current_target_slot_.targets[0][idx] = dev0.positions[idx];
+  }
+  if (state.num_devices > 1 && state.devices[1].valid) {
+    const auto& dev1 = state.devices[1];
+    for (int i = 0; i < hand_dof_; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      current_target_slot_.targets[1][idx] = dev1.positions[idx];
+    }
+  }
+  // Posture reference snapshot (external order → Pinocchio order). No-op until
+  // joint_reorder_valid_; the kIdle posture-ref fallback covers that window.
+  BuildTargetPosture(state);
+  // SE3 hold pose at the current measured FK (base_frame → tip), persisted to
+  // the SeqLock POD so the next-tick DrainTargetSlot restore keeps it valid.
+  if (arm_handle_) {
+    std::span<const double> q_arm(dev0.positions.data(), static_cast<std::size_t>(arm_dof_));
+    arm_handle_->ComputeForwardKinematics(q_arm);
+    tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
+    if (use_root_frame_) {
+      tcp_goal_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_goal_);
+    }
+    tcp_goal_valid_ = true;
+    current_target_slot_.tcp_goal_valid = true;
+    std::memcpy(current_target_slot_.tcp_goal_rot.data(), tcp_goal_.rotation().data(),
+                sizeof(current_target_slot_.tcp_goal_rot));
+    std::memcpy(current_target_slot_.tcp_goal_t.data(), tcp_goal_.translation().data(),
+                sizeof(current_target_slot_.tcp_goal_t));
   }
 }
 

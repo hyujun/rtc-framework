@@ -344,7 +344,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
-| `kIdle` (0) | TSID QP (SE3 hold @ current TCP + posture) | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |
+| `kIdle` (0) | TSID QP (SE3 hold @ current TCP + posture regulate @ init snapshot). 진입 시 `SeedHoldFromMeasured` 가 측정 config 를 `q_des_target_full_`(posture ref) + joint_goal mirror + `tcp_goal_` 로 스냅샷 → 외란 시 init 으로 복원하는 stiff hold (InitPositionHold). 진입 edge 없는 첫 enable 은 first-tick self-init 에서 동일 시드. | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |
 | `kApproach` (1) | TSID QP (SE3 quintic ramp → pregrasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_approach` |
 | `kPreGrasp` (2) | TSID QP (no contact, fine SE3 tracking) | kApproach 종료 | `||tcp_err|| < epsilon_pregrasp` |
 | `kClosure` (3) | TSID QP + contact + ForceTask | kPreGrasp 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |

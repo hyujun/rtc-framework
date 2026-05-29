@@ -71,16 +71,16 @@ demo_wbc_controller:
         type: "posture"
         weight: 1.0
         priority: 0
-        kp: 10.0
-        kd: 6.0
+        kp: 1.0
+        kd: 0.10
       se3_tcp:
         type: "se3"
         # iiwa7 end-effector relative to its base.
         frame: "ee_link"
         base_frame: "link_0"
         mask: [1, 1, 1, 1, 1, 1]
-        kp: [100, 100, 100, 50, 50, 50]
-        kd: [20, 20, 20, 10, 10, 10]
+        kp: [5, 5, 5, 2, 2, 2]
+        kd: [0.5, 0.5, 0.5, 0.2, 0.2, 0.2]
         weight: 100.0
         priority: 0
       # Contact force tracking: active in closure/hold phases. LEAP has no
@@ -112,8 +112,8 @@ demo_wbc_controller:
       object_se3:
         type: "object_se3"
         mask: [1, 1, 1, 1, 1, 1]
-        kp: [100, 100, 100, 50, 50, 50]
-        kd: [20, 20, 20, 10, 10, 10]
+        kp: [5, 5, 5, 2, 2, 2]
+        kd: [0.5, 0.5, 0.5, 0.2, 0.2, 0.2]
         weight: 50.0
         priority: 0
 
@@ -182,7 +182,7 @@ demo_wbc_controller:
       idle:
         tasks:
           posture:             { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          se3_tcp:             { active: false,  weight: 50.0,  priority: 0 }
           force:               { active: false, weight: 0.0,   priority: 1 }
           contact_consistency: { active: false, weight: 0.0,   priority: 1 }
           object_wrench:       { active: false, weight: 0.0,   priority: 1 }

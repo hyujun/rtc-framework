@@ -167,16 +167,16 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
 
+      // Re-snapshot the idle hold target from the current measured config:
+      // posture reference (q_des_target_full_), joint_goal mirror, and the SE3
+      // hold pose at current TCP. Re-seeding on each idle entry (e.g. a
+      // release→idle return) holds where the robot is *now* rather than the
+      // stale grasp target. The SeqLock store persists the refreshed targets[]
+      // + SE3 POD so the next-tick DrainTargetSlot restore keeps them.
+      SeedHoldFromMeasured(state);
+      target_seqlock_.Store(current_target_slot_);
       // SE3 hold at current TCP (zero-displacement quintic).
       if (arm_handle_) {
-        std::span<const double> q_arm(dev0.positions.data(),
-                                      static_cast<std::size_t>(arm_dof_));
-        arm_handle_->ComputeForwardKinematics(q_arm);
-        tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
-        if (use_root_frame_) {
-          tcp_goal_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_goal_);
-        }
-        tcp_goal_valid_ = true;
         InitTcpTrajectory(state);
       }
 
