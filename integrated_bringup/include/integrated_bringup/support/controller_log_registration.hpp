@@ -27,11 +27,15 @@
 
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <ostream>
 #include <string>
@@ -52,12 +56,29 @@ struct LogRegistrationContext {
 
   // Map: DeviceSensorLog instance string → sensor_names.
   std::map<std::string, std::vector<std::string>> sensor_logs;
+
+  // ── WBC-specific channels (Path A: POD-only, integrated_bringup-private) ──
+  // DeviceWbcLog header context per instance. role drives the arm/hand column
+  // blocks; fingertip_names expands the hand-only force columns (empty for arm).
+  struct WbcStateLogInfo {
+    std::uint8_t role{0};  // 0=arm (SE3 task block), 1=hand (motor+fingertip block)
+    std::vector<std::string> joint_names;
+    std::vector<std::string> motor_names;
+    std::vector<std::string> fingertip_names;
+  };
+  std::map<std::string, WbcStateLogInfo> wbc_state_logs;
+
+  // Map: WbcDiagLog instance string → num_contact_vars (λ column count =
+  // fixed QP contact dim, contact_mgr_config_.max_contact_vars).
+  std::map<std::string, std::size_t> wbc_diag_logs;
 };
 
 // ── Returned handles (caller assigns to its own typed members) ─────────────
 struct RegisteredLogHandles {
   std::map<std::string, rtc::LogHandle<integrated_bringup::DeviceStateLogPod>> state;
   std::map<std::string, rtc::LogHandle<integrated_bringup::DeviceSensorLogPod>> sensor;
+  std::map<std::string, rtc::LogHandle<integrated_bringup::DeviceWbcLogPod>> wbc_state;
+  std::map<std::string, rtc::LogHandle<integrated_bringup::WbcDiagLogPod>> wbc_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -142,10 +163,54 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.sensor[entry.instance] = std::move(handle);
+    } else if (entry.msg_type == "integrated_bringup/DeviceWbcLog") {
+      auto it = ctx.wbc_state_logs.find(entry.instance);
+      if (it == ctx.wbc_state_logs.end()) {
+        continue;
+      }
+      const std::uint8_t role = it->second.role;
+      const auto joint_names = it->second.joint_names;
+      const auto motor_names = it->second.motor_names;
+      const auto fingertip_names = it->second.fingertip_names;
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::DeviceWbcLogPod>(
+          entry.instance,
+          [role, joint_names, motor_names, fingertip_names](std::ostream& os) {
+            integrated_bringup::WriteDeviceWbcLogHeader(os, role, joint_names, motor_names,
+                                                        fingertip_names);
+          },
+          [](std::ostream& os, const integrated_bringup::DeviceWbcLogPod& pod) {
+            integrated_bringup::WriteDeviceWbcLogRow(os, pod);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open device_wbc CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.wbc_state[entry.instance] = std::move(handle);
+    } else if (entry.msg_type == "integrated_bringup/WbcDiagLog") {
+      auto it = ctx.wbc_diag_logs.find(entry.instance);
+      if (it == ctx.wbc_diag_logs.end()) {
+        continue;
+      }
+      const std::size_t num_contact_vars = it->second;
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::WbcDiagLogPod>(
+          entry.instance,
+          [num_contact_vars](std::ostream& os) {
+            integrated_bringup::WriteWbcDiagLogHeader(os, num_contact_vars);
+          },
+          [](std::ostream& os, const integrated_bringup::WbcDiagLogPod& pod) {
+            integrated_bringup::WriteWbcDiagLogRow(os, pod);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open wbc_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.wbc_diag[entry.instance] = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
-    // closed set {DeviceStateLog, DeviceSensorLog}; reaching here is a
-    // YAML parser bug. Silently ignore — out of scope for this helper.
+    // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog};
+    // reaching here is a YAML parser bug. Silently ignore.
   }
 
   return result;

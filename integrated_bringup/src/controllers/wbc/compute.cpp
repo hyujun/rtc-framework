@@ -895,4 +895,118 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
   }
 }
 
+// ── WBC CSV fill (controller-private) ──────────────────────────────────────
+// Mirrors FillDeviceStateLogPod for the shared joint-space block, then adds
+// the WBC-specific fields that ControllerOutput does not carry: TSID a_opt
+// acceleration (device slice), SE3 quintic-ramp setpoint (arm role), and
+// per-fingertip |F| (hand role). RT-safe: bounded loops, no alloc, no throw.
+void DemoWbcController::FillDeviceWbcLogPod(const ControllerState& state,
+                                           const ControllerOutput& output, std::size_t device_idx,
+                                           std::uint8_t role,
+                                           ::integrated_bringup::DeviceWbcLogPod& pod)
+    const noexcept {
+  pod.role = role;
+  pod.t_relative_s = state.t_relative_s;
+  if (static_cast<std::size_t>(state.num_devices) <= device_idx) {
+    return;
+  }
+  const auto& dev = state.devices[device_idx];
+  const auto& out = output.devices[device_idx];
+  const auto n = std::min(static_cast<std::size_t>(dev.num_channels),
+                          ::integrated_bringup::DeviceWbcLogPod::kMaxJoints);
+  pod.num_joints = static_cast<std::uint8_t>(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    pod.actual_positions[i] = dev.positions[i];
+    pod.actual_velocities[i] = dev.velocities[i];
+    pod.efforts[i] = dev.efforts[i];
+    pod.commands[i] = out.commands[i];
+    pod.joint_goal[i] = out.goal_positions[i];
+    pod.trajectory_positions[i] = out.trajectory_positions[i];
+    pod.trajectory_velocities[i] = out.trajectory_velocities[i];
+  }
+
+  // accelerations: TSID solution a_opt sliced to this device. External order
+  // [arm0.., hand0..] → Pinocchio index via ext_to_pin_q_, reusing the exact
+  // mapping the integrator applies to v_next_full_ (compute.cpp:413-427). For
+  // these fixed-base demos q-index == v-index per joint, so the q-order map
+  // indexes the nv-sized a_opt correctly.
+  const int dof = (role == 0) ? arm_dof_ : hand_dof_;
+  const int ext_base = (role == 0) ? 0 : arm_dof_;
+  const auto& a = tsid_output_.a_opt;
+  if (a.size() > 0) {
+    const auto count = std::min(static_cast<std::size_t>(std::max(dof, 0)), n);
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto ext_i = static_cast<std::size_t>(ext_base + static_cast<int>(i));
+      const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[ext_i]);
+      if (static_cast<Eigen::Index>(pin_idx) < a.size()) {
+        pod.accelerations[i] = a[static_cast<Eigen::Index>(pin_idx)];
+      }
+    }
+  }
+
+  if (role == 0) {
+    // arm: SE3 task block (goal + actual from output, ramp setpoint from
+    // tcp_traj_state_). Order [x,y,z,roll,pitch,yaw] matches Motion toVector
+    // [linear; angular].
+    for (std::size_t i = 0; i < ::integrated_bringup::DeviceWbcLogPod::kTaskDim; ++i) {
+      pod.task_goal[i] = output.task_goal_positions[i];
+      pod.actual_task_positions[i] = output.actual_task_positions[i];
+    }
+    const auto& tpose = tcp_traj_state_.pose;
+    const Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tpose.rotation());
+    pod.trajectory_task_positions[0] = tpose.translation().x();
+    pod.trajectory_task_positions[1] = tpose.translation().y();
+    pod.trajectory_task_positions[2] = tpose.translation().z();
+    pod.trajectory_task_positions[3] = rpy[0];
+    pod.trajectory_task_positions[4] = rpy[1];
+    pod.trajectory_task_positions[5] = rpy[2];
+    const auto tvel = tcp_traj_state_.velocity.toVector();
+    for (std::size_t i = 0; i < ::integrated_bringup::DeviceWbcLogPod::kTaskDim; ++i) {
+      pod.trajectory_task_velocities[i] = tvel[static_cast<Eigen::Index>(i)];
+    }
+  } else {
+    // hand: motor state + per-fingertip |F| from the wbc_state_ staging buffer
+    // (filled earlier this tick in ComputeControl).
+    const auto nm = std::min(static_cast<std::size_t>(dev.num_motor_channels),
+                             ::integrated_bringup::DeviceWbcLogPod::kMaxMotors);
+    pod.num_motors = static_cast<std::uint8_t>(nm);
+    for (std::size_t i = 0; i < nm; ++i) {
+      pod.motor_positions[i] = dev.motor_positions[i];
+      pod.motor_velocities[i] = dev.motor_velocities[i];
+      pod.motor_efforts[i] = dev.motor_efforts[i];
+    }
+    const auto nf = std::min(static_cast<std::size_t>(std::max(num_active_fingertips_, 0)),
+                             ::integrated_bringup::DeviceWbcLogPod::kMaxFingertips);
+    pod.num_fingertips = static_cast<std::uint8_t>(nf);
+    for (std::size_t i = 0; i < nf; ++i) {
+      pod.fingertip_force[i] = static_cast<double>(wbc_state_.force_magnitude[i]);
+    }
+  }
+
+  pod.command_type = (output.command_type == rtc::CommandType::kTorque) ? 1 : 0;
+  pod.goal_type = (out.goal_type == rtc::GoalType::kTask) ? 1 : 0;
+}
+
+void DemoWbcController::FillWbcDiagLogPod(const ControllerState& state,
+                                         ::integrated_bringup::WbcDiagLogPod& pod) const noexcept {
+  pod.t_relative_s = state.t_relative_s;
+  pod.phase = static_cast<std::uint8_t>(phase_);
+  pod.solve_time_us = tsid_output_.solve_time_us;
+  pod.solve_levels = tsid_output_.solve_levels;
+  pod.qp_fail_count = qp_fail_count_;
+  pod.qp_converged = tsid_output_.qp_converged;
+  pod.num_active_contacts = wbc_state_.num_active_contacts;
+  pod.grasp_detected = wbc_state_.grasp_detected;
+  pod.max_force = wbc_state_.max_force;
+  // lambda_opt is the fixed-dim QP contact solution (size == max_contact_vars,
+  // matching the header's λ column count registered in on_configure).
+  const auto& lam = tsid_output_.lambda_opt;
+  const auto nlam = std::min(static_cast<std::size_t>(lam.size()),
+                             ::integrated_bringup::WbcDiagLogPod::kMaxContactVars);
+  pod.num_contact_vars = static_cast<std::uint8_t>(nlam);
+  for (std::size_t i = 0; i < nlam; ++i) {
+    pod.lambda_opt[i] = lam[static_cast<Eigen::Index>(i)];
+  }
+}
+
 }  // namespace integrated_bringup

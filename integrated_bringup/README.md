@@ -45,7 +45,9 @@ integrated_bringup/
 │   └── logging/                        <- DeviceStateLog/DeviceSensorLog POD mirror (kMaxJoints=16, kMaxFingertips=8)
 │       ├── device_state_log_pod.hpp
 │       ├── device_sensor_log_pod.hpp
-│       └── pod_fill.hpp                <- FillDeviceStateLogPod / FillDeviceSensorLogPod (device_idx 인자, robot-agnostic)
+│       ├── device_wbc_log_pod.hpp      <- WBC state superset: a_opt 가속도 + SE3 traj(arm)/fingertip force(hand), role-aware writer
+│       ├── wbc_diag_log_pod.hpp        <- per-tick TSID/QP 진단 (solve time / λ / 수렴 / grasp), 단일 wbc_diag.csv
+│       └── pod_fill.hpp                <- FillDeviceStateLogPod / FillDeviceSensorLogPod (device_idx 인자, robot-agnostic). WBC POD fill 은 controller-private (compute.cpp)
 ├── src/
 │   ├── integrated_rt_controller_main.cpp     <- UR5e용 진입점
 │   ├── controllers/
@@ -209,6 +211,7 @@ demo_task_controller:
 | `state` (per-group `joint_states`) | CM | `/rtc_cm/<group>/joint_states` (`JointState`) |
 | device-wire command lane (`joint_command`, `ros2_command`) | **DeviceBackend** (`b9a2587`) | `devices.<group>.backend:` SSoT — backend 구현체가 직접 publish/serialize. CM/controller YAML 에서 device-wire role 라인 사라짐 |
 | `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/<device>_{state,sensor}.csv` — instance 키는 `GetPrimaryDeviceName()`/`GetSecondaryDeviceName()` 에서 동적 파생 (ur5e_hand → `ur5e_state.csv`/`hand_state.csv`/`hand_sensor.csv`, iiwa7_leap → `iiwa7_state.csv`/`leap_state.csv`) |
+| `device_wbc_log` / `wbc_diag_log` (CSV, WBC 전용) | `DemoWbcController` (`ControllerLogSet`) | WBC 는 arm/hand `<device>_state.csv` 를 generic DeviceStateLog 대신 superset `DeviceWbcLog` (`msg_type: integrated_bringup/DeviceWbcLog`) 로 쓴다 — TSID `a_opt` 가속도 + SE3 trajectory(arm role)/fingertip force(hand role). 추가로 per-tick `wbc_diag.csv` (`msg_type: integrated_bringup/WbcDiagLog`) 에 solve time / λ / 수렴 / grasp 진단을 1행씩. Path A — POD-only, rtc_msgs `.msg` 무변경. fill 은 controller-private (`compute.cpp`); E-STOP 경로는 push 안 함 |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
 

@@ -810,7 +810,9 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       if (entry["instance"]) {
         e.instance = entry["instance"].as<std::string>();
       }
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog") {
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
+          e.msg_type != "integrated_bringup/DeviceWbcLog" &&
+          e.msg_type != "integrated_bringup/WbcDiagLog") {
         throw std::runtime_error("DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));
@@ -960,16 +962,9 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
-    if (primary_state_log_handle_) {
-      integrated_bringup::DeviceStateLogPod pod{};
-      FillDeviceStateLogPod(state, out, /*device_idx=*/0, pod);
-      primary_state_log_handle_.Push(pod);
-    }
-    if (secondary_state_log_handle_) {
-      integrated_bringup::DeviceStateLogPod pod{};
-      FillDeviceStateLogPod(state, out, /*device_idx=*/1, pod);
-      secondary_state_log_handle_.Push(pod);
-    }
+    // E-8 (resolved): do NOT push the WBC state / diag channels on the E-STOP
+    // path — tsid_output_ is stale there. Sensor logging continues (raw HW
+    // telemetry is meaningful during E-STOP).
     if (secondary_sensor_log_handle_) {
       integrated_bringup::DeviceSensorLogPod pod{};
       FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
@@ -985,16 +980,23 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   FillLogOutput(state, output);
   FillPublishOutput(state, output);
 
-  // ── Phase C: push log PODs (only from inside Compute()) ──────────────
-  if (primary_state_log_handle_) {
-    integrated_bringup::DeviceStateLogPod pod{};
-    FillDeviceStateLogPod(state, output, /*device_idx=*/0, pod);
-    primary_state_log_handle_.Push(pod);
+  // ── Phase C: push log PODs (only from inside the normal Compute() path) ──
+  // WBC arm/hand state use the superset DeviceWbcLog (a_opt / SE3 ramp /
+  // fingertip force); wbc_diag is the per-tick TSID/QP solution.
+  if (primary_wbc_log_handle_) {
+    integrated_bringup::DeviceWbcLogPod pod{};
+    FillDeviceWbcLogPod(state, output, /*device_idx=*/0, /*role=*/0, pod);
+    primary_wbc_log_handle_.Push(pod);
   }
-  if (secondary_state_log_handle_) {
-    integrated_bringup::DeviceStateLogPod pod{};
-    FillDeviceStateLogPod(state, output, /*device_idx=*/1, pod);
-    secondary_state_log_handle_.Push(pod);
+  if (secondary_wbc_log_handle_) {
+    integrated_bringup::DeviceWbcLogPod pod{};
+    FillDeviceWbcLogPod(state, output, /*device_idx=*/1, /*role=*/1, pod);
+    secondary_wbc_log_handle_.Push(pod);
+  }
+  if (wbc_diag_log_handle_) {
+    integrated_bringup::WbcDiagLogPod pod{};
+    FillWbcDiagLogPod(state, pod);
+    wbc_diag_log_handle_.Push(pod);
   }
   if (secondary_sensor_log_handle_) {
     integrated_bringup::DeviceSensorLogPod pod{};

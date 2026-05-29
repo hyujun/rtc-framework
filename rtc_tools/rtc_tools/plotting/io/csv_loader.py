@@ -37,7 +37,8 @@ def _check_header_matches_data(filepath: str) -> None:
 
 
 # Columns whose values are intentionally string/categorical — never coerce.
-_STR_COLS = {"goal_type", "command_type", "timestamp"}
+# `phase` is the WbcDiagLog FSM-phase name (idle/approach/.../fallback).
+_STR_COLS = {"goal_type", "command_type", "phase", "timestamp"}
 
 
 def _coerce_numeric_columns(df):

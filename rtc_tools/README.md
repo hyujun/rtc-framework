@@ -99,6 +99,12 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 | `*_sensor_log.csv` | sensor_log (DeviceSensorLog 필드, 컬럼 수 불일치 자동 복구) |
 | `cm_timing_log*.csv` | cm_timing (CM RT loop) |
 | `mpc_timing_log*.csv` | mpc_timing (MPC main loop) |
+| `<dev>_state.csv` (WBC, `accel_*` 컬럼) | wbc_log (DeviceWbcLog — state_log superset: TSID a_opt 가속도 + SE3 trajectory(arm) / fingertip force(hand)) |
+| `wbc_diag.csv` | wbc_diag (WbcDiagLog — per-tick TSID/QP 진단: solve time / λ / 수렴 / grasp) |
+
+> WBC `<dev>_state.csv` 는 파일명만으로 generic state_log 와 구분 불가 (둘 다 `_state`)
+> → `accel_*` 컬럼 fingerprint 로 컬럼 fallback 단계에서 wbc_log 로 분류된다. wbc_log
+> 는 robot/motor 플롯을 그대로 재사용하고 가속도·SE3·fingertip force 플롯을 추가한다.
 
 **Robot 모드 플롯:**
 

@@ -57,11 +57,17 @@ demo_wbc_controller:
       # (SetupWbcStatePublisher); it no longer has a YAML role mapping.
 
   # ── Controller-owned CSV logs (Phase C) ────────────────────────────────────
+  # WBC arm/hand state use the WBC-specific superset channel (DeviceWbcLog):
+  # adds TSID a_opt acceleration, SE3 trajectory (arm), fingertip force (hand).
+  # wbc_diag is the per-tick TSID/QP solution; hand_sensor stays the generic
+  # DeviceSensorLog. Path A — integrated_bringup-private PODs, no rtc_msgs ABI.
   logs:
-    - msg_type: rtc_msgs/DeviceStateLog
+    - msg_type: integrated_bringup/DeviceWbcLog
       instance: ur5e_state
-    - msg_type: rtc_msgs/DeviceStateLog
+    - msg_type: integrated_bringup/DeviceWbcLog
       instance: hand_state
+    - msg_type: integrated_bringup/WbcDiagLog
+      instance: wbc_diag
     - msg_type: rtc_msgs/DeviceSensorLog
       instance: hand_sensor
 

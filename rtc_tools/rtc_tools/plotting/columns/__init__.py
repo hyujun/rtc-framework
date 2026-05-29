@@ -20,6 +20,10 @@ from .views import (
     has_motor,
     has_raw_sensors,
     has_task_goal,
+    has_wbc_accel,
+    has_wbc_fingertip_force,
+    has_wbc_lambda,
+    has_wbc_task_traj,
 )
 
 __all__ = [
@@ -44,4 +48,8 @@ __all__ = [
     "has_motor",
     "has_raw_sensors",
     "has_task_goal",
+    "has_wbc_accel",
+    "has_wbc_fingertip_force",
+    "has_wbc_lambda",
+    "has_wbc_task_traj",
 ]

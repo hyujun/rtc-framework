@@ -49,11 +49,17 @@ demo_wbc_controller:
       # (SetupWbcStatePublisher); it no longer has a YAML role mapping.
 
   # ── Controller-owned CSV logs ──────────────────────────────────────────────
+  # WBC arm/hand state use the WBC-specific superset channel (DeviceWbcLog):
+  # adds TSID a_opt acceleration, SE3 trajectory (arm), fingertip force (hand).
+  # wbc_diag is the per-tick TSID/QP solution (solve time, λ, convergence).
+  # Path A — integrated_bringup-private POD channels, no rtc_msgs ABI change.
   logs:
-    - msg_type: rtc_msgs/DeviceStateLog
+    - msg_type: integrated_bringup/DeviceWbcLog
       instance: iiwa7_state
-    - msg_type: rtc_msgs/DeviceStateLog
+    - msg_type: integrated_bringup/DeviceWbcLog
       instance: leap_state
+    - msg_type: integrated_bringup/WbcDiagLog
+      instance: wbc_diag
 
   # ── TSID QP configuration ─────────────────────────────────────────────────
   tsid:
@@ -112,8 +118,8 @@ demo_wbc_controller:
       object_se3:
         type: "object_se3"
         mask: [1, 1, 1, 1, 1, 1]
-        kp: [5, 5, 5, 2, 2, 2]
-        kd: [0.5, 0.5, 0.5, 0.2, 0.2, 0.2]
+        kp: [50, 50, 50, 20, 20, 20]
+        kd: [2.5, 2.5, 2.5, 1, 1, 1]
         weight: 50.0
         priority: 0
 
@@ -181,15 +187,15 @@ demo_wbc_controller:
     phase_presets:
       idle:
         tasks:
-          posture:             { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:             { active: false,  weight: 50.0,  priority: 0 }
+          posture:             { active: false,  weight: 1.0,   priority: 0 }
+          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
           force:               { active: false, weight: 0.0,   priority: 1 }
           contact_consistency: { active: false, weight: 0.0,   priority: 1 }
           object_wrench:       { active: false, weight: 0.0,   priority: 1 }
           internal_force:      { active: false, weight: 0.0,   priority: 1 }
           object_se3:          { active: false, weight: 0.0,   priority: 0 }
         constraints:
-          eom:           { active: true }
+          eom:           { active: false }
           joint_limit:   { active: true }
           friction_cone: { active: false }
           torque_limit:  { active: true }
