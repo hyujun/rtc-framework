@@ -1134,6 +1134,20 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     // SE3 hold pose must be seeded here or idle would command the zero vector.
     SeedHoldFromMeasured(state);
 
+    // For the same reason (no kIdle transition edge on enable), the idle phase
+    // preset is never applied via OnPhaseEnter at startup. Apply it here, or the
+    // TSID tasks keep their base `tasks:` config — se3_tcp / contact_consistency
+    // / object_* all active at full weight — and idle runs as a multi-task fight
+    // that drives large spurious accelerations into the integrator (QP failure →
+    // fallback cycling). With the preset applied, idle is the configured
+    // joint-space hold (posture-only by default).
+    {
+      const auto idle_idx = static_cast<std::size_t>(WbcPhase::kIdle);
+      if (tsid_initialized_ && phase_preset_valid_[idle_idx]) {
+        tsid_controller_.ApplyPhasePreset(phase_presets_[idle_idx]);
+      }
+    }
+
     target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
     // Seed the carry-forward integrator from the (measured) first-tick state.

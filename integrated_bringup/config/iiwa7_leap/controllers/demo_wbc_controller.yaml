@@ -85,6 +85,14 @@ demo_wbc_controller:
         kd: 0.10
       se3_tcp:
         type: "se3"
+        # SE3Task reads its identity from this `name` field (default "se3").
+        # It MUST equal the YAML key — phase_presets, the per-tick SE3 reference
+        # push (GetTask("se3_tcp")), and the se3_task_active_in_phase cache all
+        # look the task up by "se3_tcp". Without it the task is named "se3",
+        # GetTask("se3_tcp") returns null, so the task is never deactivated by a
+        # preset and never receives a reference — it tracks identity and fights
+        # every phase.
+        name: "se3_tcp"
         # iiwa7 end-effector relative to its base.
         frame: "ee_link"
         base_frame: "link_0"
@@ -189,17 +197,11 @@ demo_wbc_controller:
     # constraint set so that transitions reliably deactivate prior tasks —
     # active=false toggles, not omission.
     phase_presets:
-      # idle = pure joint-space hold. se3_tcp OFF + eom ON here is a PARTIAL
-      # mitigation (headless: converged ticks 535→971, fallback 324→48) but does
-      # NOT fully fix the idle drift: even at a perfect hold equilibrium
-      # (tracking error≈0, v≈0, correct seed, hold torque ~1% of the 200 N·m
-      # limit) the WQP still emits a spurious a_opt ≈ -74 rad/s² (gravity-scale)
-      # that the carry-forward integrator accumulates into a free-falling command
-      # while MuJoCo's stiff servo (kp 3000) holds the real arm — they diverge
-      # until a joint nears its limit and the QP goes infeasible. That residual
-      # is a TSID-core issue (spurious equilibrium a_opt), tracked separately;
-      # it is not explained by the preset, gains, or torque limits.
-      # SE3 hold resumes on the idle→approach edge (Se3TaskActiveInPhase).
+      # idle = pure joint-space hold (posture only; se3_tcp off, eom on). This
+      # now takes effect: the se3_tcp `name` fix (above) lets the preset actually
+      # deactivate the SE3 task, and DrainTargetSlot applies this preset on the
+      # initial enable (kIdle's OnPhaseEnter does not fire without a transition
+      # edge). SE3 hold resumes on the idle→approach edge (Se3TaskActiveInPhase).
       idle:
         tasks:
           posture:             { active: true,  weight: 1.0,   priority: 0 }
