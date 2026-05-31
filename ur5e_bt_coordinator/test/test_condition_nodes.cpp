@@ -227,8 +227,11 @@ TEST_F(ConditionNodeTest, IsGraspPhase_InvalidPhase) {
 // ══════════════════════════════════════════════════════════════════════════
 
 TEST_F(ConditionNodeTest, IsObjectDetected_WithObject) {
-  // Set TCP orientation so it can be merged
-  Pose6D tcp{0.5, 0.5, 0.5, 1.0, 2.0, 3.0};
+  // Set TCP orientation so it can be merged. Keep pitch within the principal
+  // ZYX extraction range [-pi/2, pi/2]: the merge round-trips through a
+  // quaternion, so a pitch outside that range comes back as the equivalent
+  // (roll+-pi, pi-pitch, yaw+-pi) branch and roll would no longer read 1.0.
+  Pose6D tcp{0.5, 0.5, 0.5, 1.0, 0.5, 0.5};
   PublishArmState(tcp, {0, 0, 0, 0, 0, 0});
   PublishWorldTarget(0.3, -0.2, 0.1);
   Spin();
