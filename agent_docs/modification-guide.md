@@ -23,7 +23,7 @@
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드, 60s timeout per package, README/CMake만 검사 (package.xml/YAML은 미검). Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format`/`ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
+**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드, 60s timeout per package, README/CMake만 검사 (package.xml/YAML은 미검). 또한 **무한 차단이 아니다** — 8회 연속 `exit 2` 후 Claude Code 가 hook 을 override 하고 turn 을 종료하므로 (code.claude.com/docs best-practices), 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다. Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format`/`ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
 
 ### Workflow Fail-Safe
 
@@ -37,6 +37,25 @@
 | 4. Build | 빌드 실패 | 에러 메시지를 **먼저** 기록. 원인 파악 전 재시도 금지 |
 | 5. Test | 테스트 실패 | assertion 수정 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-4). 새 코드를 고칠 것 |
 | 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-1) |
+
+## Sprint Contract & Spec (착수 전 성공 기준)
+
+언제 Sprint Contract 를 협상하고 무엇이 면제인지는 [CLAUDE.md](../CLAUDE.md) §6.5 (always-loaded 헌법) 가 trigger 목록의 SSoT. 여기엔 *포맷과 절차* 만 둔다 (가끔만 필요하므로 on-demand).
+
+코드 수정 시작 *전* 1~3줄로 성공 기준을 사용자에게 제시하고 컨펌받는다:
+
+```
+[SPRINT] <task 한 줄 요약>
+Done when:
+  - <검증 가능 기준 1>
+  - <검증 가능 기준 2>
+  - <...>
+Out of scope: <명시적으로 하지 않을 것 — drift 방지>
+```
+
+기준은 **객관 검증 가능** 해야 한다 (예: "test_X 통과", "rtc_* 에 ur5e grep 0건", "rtc_cm 빌드 0 warning"). "코드가 깔끔하다", "잘 작동한다" 같은 주관 기준은 금지. 이 컨트랙트는 task 종료 시 [CLAUDE.md](../CLAUDE.md) §11 보고에서 항목별 충족 여부를 체크한다.
+
+**Spec-driven (신규 abstract interface · controller · 메시지 · 디바이스 추가 시):** Sprint Contract = spec. 구현 전 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 1-paragraph spec 으로 박는다 (Specify *before* Implement). 같은 파일이 이후 handoff artifact · 진행 progress 도 누적하므로 `## Spec` / `## Progress` / `## Handoff` 섹션으로 구분 ([CLAUDE.md](../CLAUDE.md) §6.6 handoff 경로와 동일 파일).
 
 ## Adding a New Controller
 

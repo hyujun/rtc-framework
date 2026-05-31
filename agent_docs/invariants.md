@@ -60,7 +60,7 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 | RT-1 | `new` / `malloc` / `push_back` / `emplace_back` / `resize` | Heap alloc은 100 µs+ jitter + priority inversion | `grep -nE '(\\bnew [A-Za-z_]\|malloc\\(\|\\.push_back\\(\|\\.emplace_back\\(\|\\.resize\\()' <RT file>` | `std::array`, 사전 할당된 fixed-size `Eigen::Matrix<fixed>` |
 | RT-2 | `throw` / `catch` | `noexcept` 위반 = unwinding latency 비결정, process kill 리스크 | `grep -nE '(\\bthrow \|\\bcatch ?\\()' <RT file>` | Error code, `std::optional`, `std::expected` |
 | RT-3 | 정기 tick에서 `RCLCPP_INFO/WARN/ERROR/DEBUG/FATAL` 직접 호출 | Blocking I/O (rosout queue / network) | `grep -nE 'RCLCPP_(INFO\|WARN\|ERROR\|DEBUG\|FATAL)\\(' <RT file>` | SPSC log buffer → `DrainLog()` aux thread ([rt_controller_node_estop.cpp](../rtc_controller_manager/src/rt_controller_node_estop.cpp) 참조) |
-| RT-4 | `std::mutex::lock()` / `std::lock_guard` / `std::scoped_lock` | 우선순위 역전, blocking | `grep -nE '(lock_guard\|scoped_lock\|::lock\\(\\))' <RT file>` | ① `std::atomic<T>` (POD) ② `SeqLock<T>` (default) ③ `SpscQueue<T,N>` / `SpscPublishBuffer<512>` ④ `std::try_to_lock` (last resort) ⑤ `realtime_tools::LockFreeQueue<T, spsc_queue>` ⑥ `RealtimePublisher::try_publish` ⑦ `RealtimeBuffer<T>` / `RealtimeThreadSafeBox<T>`. 전체 분류·결정 가이드는 §RT pub/sub primitive catalog |
+| RT-4 | `std::mutex::lock()` / `std::lock_guard` / `std::scoped_lock` | 우선순위 역전, blocking | `grep -nE '(lock_guard\|scoped_lock\|::lock\\(\\))' <RT file>` | 1순위: `SeqLock<T>` (latest-only state, default) / `SpscQueue<T,N>` (producer→consumer) / `std::atomic<T>` (POD); last resort `std::try_to_lock`. **전체 7-등급 분류·결정 가이드는 위 §RT pub/sub primitive catalog** (중복 박제 회피) |
 | RT-5 | `auto` with Eigen expression | Expression template lazy-eval → aliasing 버그 (같은 메모리 r/w) | `grep -nE 'auto [^=]*=.*\\.(matrix\|transpose\|inverse\|adjoint\|block)\\(' <file>` | 명시 타입: `Eigen::MatrixXd M = ...` |
 | RT-6 | Quaternion `lerp` / `nlerp` | Non-unit 결과 → 회전축 변형, drift | `grep -nE '(nlerp\|\\.lerp\\()' <file>` | `Eigen::Quaterniond::slerp(t, q_b)` only |
 | RT-7 | 기존 테스트 assertion을 통과시키려 수정 | 회귀 은폐 | `git diff test/` 에서 `EXPECT_*` / `ASSERT_*` 값 변경 | 새 코드를 고쳐라. assertion이 진짜 틀렸다면 별도 commit으로 논증 |
@@ -188,13 +188,7 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 
-1. 수정 **전** `[CONCERN]` 보고:
-   ```
-   [CONCERN] <한 줄 요약>
-   Severity: Critical
-   Detail: <어떤 invariant에 저촉되는가, 영향 범위, 대안 검토 결과>
-   Alternative: <우회 안 1개 이상 — interface 추가, SPSC defer, aux thread 이동 등>
-   ```
+1. 수정 **전** `[CONCERN] Severity: Critical` 보고 — 포맷 SSoT 는 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN] 포맷`. `Detail` 에 어떤 invariant 에 저촉되는지·영향 범위, `Alternative` 에 우회 안 1개 이상 (interface 추가 / SPSC defer / aux thread 이동 등).
 2. 사용자 컨펌 후 진행
 3. "임시로 위반 → 나중에 정리"는 허용되지 않음. Warning 이상은 별도 리팩터 task로 분리
 

@@ -41,6 +41,11 @@
 # Exit   : 0 on pass (silent). 2 on any failure -> Claude is blocked, stderr
 #          message is auto-injected next turn. Pointer to modification-guide.md
 #          is appended so the agent has a recovery entry point.
+#          NOTE: this gate is not infinitely blocking — Claude Code overrides a
+#          Stop hook after 8 consecutive exit-2 blocks and ends the turn anyway
+#          (code.claude.com/docs/en/best-practices). So a persistently-failing
+#          build/test will eventually let the turn end; the agent must still act
+#          on the injected report rather than relying on the hook to hard-stop.
 # Limits : 60s timeout per package (silent on overrun -- large packages may
 #          partial-pass). YAML config / Doxygen / cross-package docs NOT
 #          checked (modification-guide.md "Updating an Existing Package" 6

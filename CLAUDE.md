@@ -122,31 +122,14 @@ Alternative: <우회 안 1개 이상>
 
 ## 6.5 Sprint Contract (착수 전 성공 기준 협상)
 
-근거: Anthropic 2026.04 *Harness design* — "에이전트 자기 평가는 신뢰 불가, 평가 기준은 generation 시작 *전* 명시화하라."
-
-다음 task 에서는 코드 수정 시작 *전* 1~3줄로 성공 기준을 사용자에게 제시하고 컨펌 받는다:
+다음 task 에서는 코드 수정 시작 *전* 1~3줄로 **객관 검증 가능한** 성공 기준 (`[SPRINT]` 포맷) 을 제시하고 컨펌받는다 — 에이전트 자기 평가는 신뢰 불가하므로 평가 기준을 generation *전* 명시한다. 포맷·spec 절차·예시는 [agent_docs/modification-guide.md](agent_docs/modification-guide.md) §Sprint Contract & Spec.
 
 - 다단계 task (PR 단위 / 다파일 / 다패키지 / 신규 디렉토리 / phase 로 쪼개진 작업)
-- 신규 abstract interface · 새 controller / device group / thread / message 추가
+- 신규 abstract interface · 새 controller / device group / thread / message 추가 (이 경우 **Sprint Contract = spec**, `~/.claude/plans/<slug>.md` 에 박음)
 - `rtc_base` / `rtc_msgs` 변경 (downstream broad impact)
 - 리팩터 (기능 동등성 유지가 곧 success)
 
 면제: 단일 파일 bug fix, 오타·포매팅, 단일 함수 추가, 사용자 의도가 1줄 메시지에서 자명한 경우.
-
-※ **신규 abstract interface · 신규 controller · 신규 메시지·디바이스 추가 시 Sprint Contract = spec.** 구현 전 `~/.claude/plans/<slug>.md` 에 *왜 필요한가 · API surface · 검토한 alternatives* 를 1-paragraph spec 으로 박는다 (spec-driven development: Specify *before* Implement). 같은 파일이 이후 §6.6 handoff artifact·진행 progress 도 누적하므로 `## Spec` / `## Progress` / `## Handoff` 섹션으로 구분.
-
-### Sprint Contract 포맷
-
-```
-[SPRINT] <task 한 줄 요약>
-Done when:
-  - <검증 가능 기준 1>
-  - <검증 가능 기준 2>
-  - <...>
-Out of scope: <명시적으로 하지 않을 것 — drift 방지>
-```
-
-기준은 **객관 검증 가능** 해야 한다 (예: "test_X 통과", "rtc_* 에 ur5e grep 0건", "rtc_cm 빌드 0 warning"). "코드가 깔끔하다", "잘 작동한다" 같은 주관 기준은 금지. 이 컨트랙트는 task 종료 시 §11 보고에서 항목별 충족 여부를 체크한다.
 
 ## 6.6 Long-running task — Context handoff
 
