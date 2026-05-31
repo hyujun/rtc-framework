@@ -81,8 +81,25 @@ demo_wbc_controller:
         type: "posture"
         weight: 1.0
         priority: 0
-        kp: 1.0
-        kd: 0.10
+        # PD gains split by body group, assembled per-DoF in
+        # DemoWbcController::ApplyPostureGains via the joint reorder map (the
+        # generic PostureTask stores gains in Pinocchio order, where arm/hand
+        # are not contiguous — so the grouping is mapped controller-side,
+        # keeping rtc_tsid robot-agnostic). Both groups critically damped
+        # (ζ=1, Kd=2√Kp). ωn is set below each group's joint-position-controller
+        # inner-loop dominant pole (servo kp/kd, see mujoco_simulator.yaml
+        # robot_response.{iiwa7,leap}):
+        #   arm  servo 3000/600 = 750/150 = 5 rad/s  → posture ωn=6 (matches se3_tcp)
+        #   hand servo 2.5/0.125          = 20 rad/s → posture ωn=7
+        # The old single kp=1.0/kd=0.10 was ζ=0.05 (effectively undamped), which
+        # made idle posture oscillate/diverge under external force. Falls back
+        # to a scalar/vector `kp`/`kd` here if `arm`/`hand` are omitted.
+        arm:
+          kp: 36.0    # ωn=6 rad/s, ζ=1
+          kd: 12.0
+        hand:
+          kp: 49.0    # ωn=7 rad/s, ζ=1
+          kd: 14.0
       se3_tcp:
         type: "se3"
         # SE3Task reads its identity from this `name` field (default "se3").

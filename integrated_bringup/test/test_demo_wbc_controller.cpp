@@ -721,4 +721,66 @@ TEST_F(WbcFSMTest, ObjectWrenchAndSe3PhasePresetsActiveInClosure) {
   EXPECT_EQ(ws.phase, static_cast<uint8_t>(ctrl_.GetPhaseForTesting()));
 }
 
+// ── Posture split-gain assembly ──────────────────────────────────────────────
+
+// AssemblePostureGains must place arm gains on the first arm_dof external
+// joints and hand gains on the rest, written at each joint's *permuted*
+// Pinocchio velocity index — not its external index. A naive YAML vector
+// would land in the wrong order; this is the logic that prevents that.
+TEST(WbcPostureGains, AssembleMapsArmHandThroughPermutation) {
+  // arm_dof=2, hand_dof=3, full_dof=5, nv=5. ext→pin v is a permutation that
+  // interleaves arm and hand so contiguity cannot be assumed:
+  //   ext [a0, a1, h0, h1, h2] → pin v [4, 0, 3, 1, 2]
+  constexpr int kArmDof = 2;
+  constexpr int kFullDof = 5;
+  constexpr int kNv = 5;
+  std::array<int, integrated_bringup::DemoWbcController::kMaxFullDof> ext_to_pin_v{};
+  ext_to_pin_v[0] = 4;  // arm0
+  ext_to_pin_v[1] = 0;  // arm1
+  ext_to_pin_v[2] = 3;  // hand0
+  ext_to_pin_v[3] = 1;  // hand1
+  ext_to_pin_v[4] = 2;  // hand2
+
+  Eigen::VectorXd kp = Eigen::VectorXd::Constant(kNv, -1.0);
+  Eigen::VectorXd kd = Eigen::VectorXd::Constant(kNv, -1.0);
+  DemoWbcController::AssemblePostureGains(kArmDof, kFullDof, kNv, ext_to_pin_v,
+                                          /*kp_arm=*/36.0, /*kd_arm=*/12.0,
+                                          /*kp_hand=*/49.0, /*kd_hand=*/14.0, kp, kd);
+
+  // Arm joints (ext 0,1) → pin v {4, 0}.
+  EXPECT_DOUBLE_EQ(kp[4], 36.0);
+  EXPECT_DOUBLE_EQ(kp[0], 36.0);
+  EXPECT_DOUBLE_EQ(kd[4], 12.0);
+  EXPECT_DOUBLE_EQ(kd[0], 12.0);
+  // Hand joints (ext 2,3,4) → pin v {3, 1, 2}.
+  EXPECT_DOUBLE_EQ(kp[3], 49.0);
+  EXPECT_DOUBLE_EQ(kp[1], 49.0);
+  EXPECT_DOUBLE_EQ(kp[2], 49.0);
+  EXPECT_DOUBLE_EQ(kd[3], 14.0);
+  EXPECT_DOUBLE_EQ(kd[1], 14.0);
+  EXPECT_DOUBLE_EQ(kd[2], 14.0);
+}
+
+// full_dof < nv (e.g. a floating-base/extra-DoF model): slots not covered by
+// any external joint keep the caller's pre-filled default, never garbage.
+TEST(WbcPostureGains, AssembleLeavesUncoveredSlotsUntouched) {
+  constexpr int kArmDof = 1;
+  constexpr int kFullDof = 2;
+  constexpr int kNv = 4;
+  std::array<int, integrated_bringup::DemoWbcController::kMaxFullDof> ext_to_pin_v{};
+  ext_to_pin_v[0] = 0;  // arm0
+  ext_to_pin_v[1] = 1;  // hand0
+
+  Eigen::VectorXd kp = Eigen::VectorXd::Constant(kNv, 7.0);
+  Eigen::VectorXd kd = Eigen::VectorXd::Constant(kNv, 8.0);
+  DemoWbcController::AssemblePostureGains(kArmDof, kFullDof, kNv, ext_to_pin_v, 36.0, 12.0, 49.0,
+                                          14.0, kp, kd);
+  EXPECT_DOUBLE_EQ(kp[0], 36.0);  // arm
+  EXPECT_DOUBLE_EQ(kp[1], 49.0);  // hand
+  EXPECT_DOUBLE_EQ(kp[2], 7.0);   // untouched default
+  EXPECT_DOUBLE_EQ(kp[3], 7.0);   // untouched default
+  EXPECT_DOUBLE_EQ(kd[2], 8.0);
+  EXPECT_DOUBLE_EQ(kd[3], 8.0);
+}
+
 }  // namespace

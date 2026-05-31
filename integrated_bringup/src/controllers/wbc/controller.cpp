@@ -179,6 +179,10 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       auto task = std::make_unique<rtc::tsid::PostureTask>();
       task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
       formulation.AddTask(std::move(task));
+      // Optional arm/hand gain split. The scalar/vector kp/kd in task_cfg are
+      // consumed by PostureTask::Init above; when `arm`/`hand` sub-maps are
+      // present they override per-DoF in ApplyPostureGains (post-reorder).
+      ParsePostureSplitGains(task_cfg);
     } else if (type == "se3") {
       auto task = std::make_unique<rtc::tsid::SE3Task>();
       task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
@@ -290,6 +294,73 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
                    type.c_str(), key.c_str());
     }
   }
+}
+
+// ── Posture task split gains (arm vs hand) ───────────────────────────────────
+
+void DemoWbcController::ParsePostureSplitGains(const YAML::Node& posture_cfg) {
+  // Both sub-maps required: a partial split (only `arm` or only `hand`) is
+  // ambiguous, so fall back to the scalar/vector kp/kd PostureTask::Init read.
+  posture_split_gains_ = false;
+  if (!posture_cfg || !posture_cfg["arm"] || !posture_cfg["hand"]) {
+    return;
+  }
+  const YAML::Node arm = posture_cfg["arm"];
+  const YAML::Node hand = posture_cfg["hand"];
+  if (arm["kp"]) {
+    posture_kp_arm_ = arm["kp"].as<double>();
+  }
+  if (arm["kd"]) {
+    posture_kd_arm_ = arm["kd"].as<double>();
+  }
+  if (hand["kp"]) {
+    posture_kp_hand_ = hand["kp"].as<double>();
+  }
+  if (hand["kd"]) {
+    posture_kd_hand_ = hand["kd"].as<double>();
+  }
+  posture_split_gains_ = true;
+}
+
+void DemoWbcController::AssemblePostureGains(int arm_dof, int full_dof, int nv,
+                                             const std::array<int, kMaxFullDof>& ext_to_pin_v,
+                                             double kp_arm, double kd_arm, double kp_hand,
+                                             double kd_hand, Eigen::VectorXd& kp_out,
+                                             Eigen::VectorXd& kd_out) noexcept {
+  const int n = std::min(full_dof, static_cast<int>(kMaxFullDof));
+  for (int i = 0; i < n; ++i) {
+    const bool is_hand = (i >= arm_dof);
+    const int pv = ext_to_pin_v[static_cast<std::size_t>(i)];
+    if (pv < 0 || pv >= nv) {
+      continue;
+    }
+    kp_out[pv] = is_hand ? kp_hand : kp_arm;
+    kd_out[pv] = is_hand ? kd_hand : kd_arm;
+  }
+}
+
+void DemoWbcController::ApplyPostureGains() noexcept {
+  if (!posture_split_gains_ || !tsid_initialized_ || !joint_reorder_valid_) {
+    return;
+  }
+  auto* task = tsid_controller_.Formulation().GetTask("posture");
+  if (task == nullptr) {
+    return;
+  }
+  const int nv = robot_info_.nv;
+  if (nv <= 0) {
+    return;
+  }
+  // Pre-fill with arm gains; AssemblePostureGains overwrites the hand slots
+  // (and re-affirms arm slots) at their permuted Pinocchio velocity indices.
+  Eigen::VectorXd kp = Eigen::VectorXd::Constant(nv, posture_kp_arm_);
+  Eigen::VectorXd kd = Eigen::VectorXd::Constant(nv, posture_kd_arm_);
+  AssemblePostureGains(arm_dof_, full_dof_, nv, ext_to_pin_v_, posture_kp_arm_, posture_kd_arm_,
+                       posture_kp_hand_, posture_kd_hand_, kp, kd);
+  static_cast<rtc::tsid::PostureTask*>(task)->SetGains(kp, kd);
+  RCLCPP_INFO(logger_,
+              "[wbc] posture split gains applied: arm kp=%.1f kd=%.1f, hand kp=%.1f kd=%.1f",
+              posture_kp_arm_, posture_kd_arm_, posture_kp_hand_, posture_kd_hand_);
 }
 
 // ── Controller registry hooks ────────────────────────────────────────────────
