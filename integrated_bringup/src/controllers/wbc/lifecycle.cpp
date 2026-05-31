@@ -165,6 +165,11 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
             resp->message = "command must be GRASP or RELEASE";
           }
         });
+
+    // Apply the posture arm/hand gain split now that LoadConfig built the
+    // PostureTask and OnDeviceConfigsSet built the joint reorder map. No-op
+    // when the YAML omits the split (PostureTask::Init's kp/kd then stands).
+    ApplyPostureGains();
   } catch (const std::exception& e) {
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;

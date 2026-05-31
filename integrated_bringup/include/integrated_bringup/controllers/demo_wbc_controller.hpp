@@ -240,6 +240,20 @@ class DemoWbcController final : public RTControllerInterface {
 
   [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
 
+  // Pure assembly of per-DoF posture gains from an arm/hand split. External
+  // joint i (< arm_dof → arm gains, else hand gains) is written into
+  // kp_out/kd_out at its Pinocchio velocity index ext_to_pin_v[i]. The
+  // generic PostureTask stores gains in Pinocchio order, where arm/hand are
+  // not contiguous (ext_to_pin_v is a permutation) — so this mapping lives in
+  // the controller, keeping rtc_tsid robot-agnostic (ARCH-1). Static + no
+  // member access so the permutation mapping is unit-testable without a URDF.
+  // kp_out/kd_out must be pre-sized to nv and pre-filled with a default; slots
+  // outside [0, full_dof) are left untouched.
+  static void AssemblePostureGains(int arm_dof, int full_dof, int nv,
+                                   const std::array<int, kMaxFullDof>& ext_to_pin_v, double kp_arm,
+                                   double kd_arm, double kp_hand, double kd_hand,
+                                   Eigen::VectorXd& kp_out, Eigen::VectorXd& kd_out) noexcept;
+
  private:
   // ── Model initialization ────────────────────────────────────────────────
   void InitModels(const rtc_urdf_bridge::ModelConfig& config);
@@ -253,6 +267,18 @@ class DemoWbcController final : public RTControllerInterface {
   // and skip. Called once in LoadConfig after TSIDController::Init().
   void BuildTsidTasks(const YAML::Node& tsid_node);
   void BuildTsidConstraints(const YAML::Node& tsid_node);
+
+  // Parse the optional arm/hand posture-gain split from the posture task
+  // config (`tsid.tasks.posture.{arm,hand}.{kp,kd}`). Sets posture_split_gains_
+  // only when both `arm` and `hand` sub-maps are present; otherwise leaves it
+  // false so PostureTask::Init's scalar/vector `kp`/`kd` path stands.
+  void ParsePostureSplitGains(const YAML::Node& posture_cfg);
+  // Assemble per-DoF posture kp/kd from the arm/hand split and push to the
+  // PostureTask via SetGains. No-op unless posture_split_gains_ &&
+  // tsid_initialized_ && joint_reorder_valid_. Called at the end of
+  // on_configure, after the reorder map (OnDeviceConfigsSet) and the final
+  // task build (LoadConfig) are both in place.
+  void ApplyPostureGains() noexcept;
 
   // ── 3-phase pipeline (RT path) ──────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
@@ -346,6 +372,19 @@ class DemoWbcController final : public RTControllerInterface {
   int arm_dof_{0};
   int hand_dof_{0};
   int full_dof_{0};
+
+  // ── Posture task split gains (arm vs hand) ──────────────────────────────
+  // Parsed from `tsid.tasks.posture.{arm,hand}.{kp,kd}` (ParsePostureSplitGains)
+  // and applied per-DoF via the reorder map in ApplyPostureGains. Defaults are
+  // critically damped (ζ=1, Kd=2√Kp); ωn is set below each group's joint-
+  // position-controller inner-loop dominant pole (servo kp/kd): arm ≈5 rad/s
+  // (servo 3000/600=750/150), hand ≈20 rad/s (servo 2.5/0.125). When the split
+  // keys are absent (posture_split_gains_=false) these are unused.
+  bool posture_split_gains_{false};
+  double posture_kp_arm_{36.0};   ///< ωn=6 rad/s, ζ=1
+  double posture_kd_arm_{12.0};
+  double posture_kp_hand_{49.0};  ///< ωn=7 rad/s, ζ=1
+  double posture_kd_hand_{14.0};
 
   // Sensor capability cache — populated in OnDeviceConfigsSet from
   // GetSensorLayout(secondary). See demo_joint_controller.hpp for rationale.
