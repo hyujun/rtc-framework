@@ -1148,6 +1148,17 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
       }
     }
 
+    // Idle starts in free space — there are no contacts to support. The Entry
+    // default is activation=1.0, and OnPhaseEnter(kIdle) (which ramps it to 0)
+    // does not fire on enable, so seed the contacts inactive here. Instant
+    // (t_ramp=0) — unlike a post-grasp idle entry there is nothing to gently
+    // release. The first ComputeTSIDPosition UpdateActivation snaps activation
+    // to 0 so the very first solve already reports n_active=0.
+    for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
+      contact_state_.SetActivationTarget(i, 0.0, 0.0);
+    }
+    contact_state_.RecomputeActive(contact_mgr_config_);
+
     target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
     // Seed the carry-forward integrator from the (measured) first-tick state.
