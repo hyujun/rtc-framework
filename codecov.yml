@@ -5,20 +5,11 @@
 #   - 빌드/테스트 패키지 목록: .github/ci-packages.yml
 #   - lcov 추출 경로: ci-packages.yml 의 coverage_paths field
 #
-# ⚠ 2026-04-28 상태: ros2-advanced-ci.yml 에서 C++ coverage upload 일시 중단됨
-#   (ament_cmake_test 가 ctest child 환경에서 ModuleNotFoundError —
-#   agent_docs/ci-rewrite-plan.md §8 참조). Build (C++) 는 성공하지만
-#   colcon test / lcov / Codecov upload step 모두 제거된 상태.
-#
-#   현 시점 활성 업로드: python flag (rtc_tools, rtc_digital_twin) 만.
-#
-#   C++ upload 복원 시 추가/복원할 항목 (git history 에서 부활 가능):
-#     - flags.cpp (paths + carryforward)
-#     - coverage.status.project.rt_core (RT-critical 패키지 회귀 감시)
-#     - component_management (12 components — base, communication, controllers,
-#       controller_manager, inference, tsid, urdf_bridge, shape_estimation,
-#       hand_driver, bt_coordinator, bringup, controller_interface)
-#   참조 commit: 158b490 이전 codecov.yml
+# 2026-05-31: C++ coverage upload 복원 (coverage-cpp job, cpp flag).
+#   colcon test 의 ModuleNotFoundError root cause 는 colcon-test-report action 의
+#   PYTHONPATH 보강으로 해결됨. 활성 flag: python (rtc_tools, rtc_digital_twin)
+#   + cpp (test_cpp 패키지, ci-packages.yml SSoT).
+#   flag paths / component paths 는 ci-packages.yml 의 coverage_paths 와 정합 유지.
 
 codecov:
   require_ci_to_pass: false   # coverage 업로드는 CI 실패와 독립적으로 처리
@@ -40,13 +31,25 @@ coverage:
         threshold: 0.5%
         if_ci_failed: success
         informational: false
+      # RT-critical 패키지 회귀 감시 — RT path 코드의 커버리지 하락을 별도 추적
+      rt_core:
+        target: auto
+        threshold: 1%
+        if_ci_failed: success
+        flags:
+          - cpp
+        paths:
+          - "rtc_base/"
+          - "rtc_controllers/"
+          - "rtc_tsid/"
+          - "rtc_controller_manager/"
     patch:
       default:
         target: 60%
         threshold: 5%
         if_ci_failed: success
 
-# 활성 flag 만 유지 (cpp flag 는 CI 복원 시 git 에서 부활).
+# 활성 flag (ci-packages.yml 의 test_cpp / test_python 과 정합).
 flags:
   python:
     paths:
@@ -54,6 +57,62 @@ flags:
       - rtc_digital_twin/
     carryforward: true
     carryforward_mode: "labels"
+  cpp:
+    paths:
+      - rtc_base/
+      - rtc_communication/
+      - rtc_controller_interface/
+      - rtc_controller_manager/
+      - rtc_controllers/
+      - rtc_inference/
+      - rtc_tsid/
+      - rtc_urdf_bridge/
+      - integrated_bringup/
+      - ur5e_bt_coordinator/
+      - udp_hand_driver/
+      - shape_estimation/
+    carryforward: true
+    carryforward_mode: "labels"
+
+# Per-package 커버리지 가시성 (PR 코멘트 components 섹션).
+component_management:
+  individual_components:
+    - component_id: base
+      name: rtc_base
+      paths: ["rtc_base/"]
+    - component_id: communication
+      name: rtc_communication
+      paths: ["rtc_communication/"]
+    - component_id: controller_interface
+      name: rtc_controller_interface
+      paths: ["rtc_controller_interface/"]
+    - component_id: controller_manager
+      name: rtc_controller_manager
+      paths: ["rtc_controller_manager/"]
+    - component_id: controllers
+      name: rtc_controllers
+      paths: ["rtc_controllers/"]
+    - component_id: inference
+      name: rtc_inference
+      paths: ["rtc_inference/"]
+    - component_id: tsid
+      name: rtc_tsid
+      paths: ["rtc_tsid/"]
+    - component_id: urdf_bridge
+      name: rtc_urdf_bridge
+      paths: ["rtc_urdf_bridge/"]
+    - component_id: shape_estimation
+      name: shape_estimation
+      paths: ["shape_estimation/"]
+    - component_id: hand_driver
+      name: udp_hand_driver
+      paths: ["udp_hand_driver/"]
+    - component_id: bt_coordinator
+      name: ur5e_bt_coordinator
+      paths: ["ur5e_bt_coordinator/"]
+    - component_id: bringup
+      name: integrated_bringup
+      paths: ["integrated_bringup/"]
 
 # 커버리지에서 제외할 경로
 ignore:

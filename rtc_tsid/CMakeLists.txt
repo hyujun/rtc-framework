@@ -11,6 +11,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   )
 endif()
 
+# ── Coverage (gcov/lcov) ─────────────────────────────────────────────────────
+option(ENABLE_COVERAGE "Enable gcov code coverage" OFF)
+if(ENABLE_COVERAGE)
+  add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+  add_link_options(--coverage)
+endif()
+
 # ── Dependencies ──
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
