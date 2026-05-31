@@ -68,6 +68,10 @@ demo_wbc_controller:
     wqp:
       solver:
         max_iter: 20
+        # Inner Newton iterations per outer step. ProxQP default (1500) lets an
+        # infeasible QP grind ~0.5–1.4 s (fatal at 500 Hz); bound it so a bad
+        # solve fails fast and qp_fail fallback engages instead of overrunning.
+        max_iter_in: 100
         eps_abs: 1.0e-6
         eps_rel: 0.0
         verbose: false
@@ -81,12 +85,20 @@ demo_wbc_controller:
         kd: 0.10
       se3_tcp:
         type: "se3"
+        # SE3Task reads its identity from this `name` field (default "se3").
+        # It MUST equal the YAML key — phase_presets, the per-tick SE3 reference
+        # push (GetTask("se3_tcp")), and the se3_task_active_in_phase cache all
+        # look the task up by "se3_tcp". Without it the task is named "se3",
+        # GetTask("se3_tcp") returns null, so the task is never deactivated by a
+        # preset and never receives a reference — it tracks identity and fights
+        # every phase.
+        name: "se3_tcp"
         # iiwa7 end-effector relative to its base.
         frame: "ee_link"
         base_frame: "link_0"
         mask: [1, 1, 1, 1, 1, 1]
-        kp: [5, 5, 5, 2, 2, 2]
-        kd: [0.5, 0.5, 0.5, 0.2, 0.2, 0.2]
+        kp: [36, 36, 36, 16, 16, 16]
+        kd: [12.5, 12.5, 12.5, 8.2, 8.2, 8.2]
         weight: 100.0
         priority: 0
       # Contact force tracking: active in closure/hold phases. LEAP has no
@@ -185,17 +197,22 @@ demo_wbc_controller:
     # constraint set so that transitions reliably deactivate prior tasks —
     # active=false toggles, not omission.
     phase_presets:
+      # idle = pure joint-space hold (posture only; se3_tcp off, eom on). This
+      # now takes effect: the se3_tcp `name` fix (above) lets the preset actually
+      # deactivate the SE3 task, and DrainTargetSlot applies this preset on the
+      # initial enable (kIdle's OnPhaseEnter does not fire without a transition
+      # edge). SE3 hold resumes on the idle→approach edge (Se3TaskActiveInPhase).
       idle:
         tasks:
-          posture:             { active: false,  weight: 1.0,   priority: 0 }
-          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          posture:             { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:             { active: false, weight: 0.0,   priority: 0 }
           force:               { active: false, weight: 0.0,   priority: 1 }
           contact_consistency: { active: false, weight: 0.0,   priority: 1 }
           object_wrench:       { active: false, weight: 0.0,   priority: 1 }
           internal_force:      { active: false, weight: 0.0,   priority: 1 }
           object_se3:          { active: false, weight: 0.0,   priority: 0 }
         constraints:
-          eom:           { active: false }
+          eom:           { active: true }
           joint_limit:   { active: true }
           friction_cone: { active: false }
           torque_limit:  { active: true }

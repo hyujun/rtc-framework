@@ -39,6 +39,7 @@ void HQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
   if (config && config["hqp"] && config["hqp"]["solver_per_level"]) {
     const auto& sc = config["hqp"]["solver_per_level"];
     solver_cfg.max_iter = sc["max_iter"].as<int>(10);
+    solver_cfg.max_iter_in = sc["max_iter_in"].as<int>(100);
     solver_cfg.eps_abs = sc["eps_abs"].as<double>(1e-6);
     solver_cfg.eps_rel = sc["eps_rel"].as<double>(0.0);
     solver_cfg.verbose = sc["verbose"].as<bool>(false);

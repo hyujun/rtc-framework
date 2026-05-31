@@ -22,6 +22,14 @@ struct QPSolverConfig {
   double eps_abs{1e-6};
   double eps_rel{0.0};
   int max_iter{20};
+  // Inner (Newton) iteration cap per outer proximal step. ProxQP's default
+  // (1500) lets a degenerate / infeasible QP grind for 0.5–1.4 s (max_iter ×
+  // max_iter_in inner iters) — catastrophic at a 500 Hz RT tick. Bound it so an
+  // infeasible solve fails FAST and the caller's qp_fail fallback engages
+  // instead of overrunning the loop. Feasible, well-conditioned TSID QPs
+  // converge in well under this many inner iters, so it does not regress the
+  // happy path.
+  int max_iter_in{100};
   bool verbose{false};
 };
 

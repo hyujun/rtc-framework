@@ -973,6 +973,16 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     return out;
   }
 
+  // Seed deferred this tick (device 0 not valid yet — see DrainTargetSlot).
+  // Command the passthrough hold set there and skip TSID until the idle hold
+  // target is seeded from a real measured configuration; otherwise
+  // ComputeControl would run TSID against the un-seeded (zero) references.
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    auto out = WriteJointCommand(state);
+    out.command_type = command_type_;
+    return out;
+  }
+
   ComputeControl(state, dt);
   // Output composition split by consumer (wire / log / publish). See
   // demo_joint_controller.hpp for the bucket assignment rationale.
@@ -1043,6 +1053,34 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
       full_dof_ = arm_dof_ + hand_dof_;
     }
 
+    // First-tick self-init must capture a VALID measured arm configuration.
+    // If device 0 (arm) has not published a real state yet (the simulator is
+    // not yet streaming on the first control tick), seeding now would lock the
+    // idle hold target (posture ref + SE3 hold pose) to q=0; idle then
+    // regulates toward the zero config and drives the arm hard toward it,
+    // saturating the joint/torque-limit constraints into an infeasible QP
+    // (ProxQP grind 0.5–1.4 s → fallback cycling). Defer: leave
+    // target_initialized_ false and command a passthrough hold so the next
+    // tick re-attempts the seed from a real measured configuration. The hand
+    // path below already guards on dev.valid; device 0 is the missing guard.
+    if (state.num_devices == 0 || !state.devices[0].valid) {
+      const auto& dev0 = state.devices[0];
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = dev0.positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
+      }
+      if (state.num_devices > 1 && state.devices[1].valid) {
+        const auto& dev1 = state.devices[1];
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hand_computed_.positions[idx] = dev1.positions[idx];
+          hand_computed_.velocities[idx] = 0.0;
+        }
+      }
+      return;
+    }
+
     // Robot arm: initialize trajectory at current position (zero velocity)
     {
       const auto& dev0 = state.devices[0];
@@ -1095,6 +1133,31 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     // no transition edge), so the posture reference (q_des_target_full_) and the
     // SE3 hold pose must be seeded here or idle would command the zero vector.
     SeedHoldFromMeasured(state);
+
+    // For the same reason (no kIdle transition edge on enable), the idle phase
+    // preset is never applied via OnPhaseEnter at startup. Apply it here, or the
+    // TSID tasks keep their base `tasks:` config — se3_tcp / contact_consistency
+    // / object_* all active at full weight — and idle runs as a multi-task fight
+    // that drives large spurious accelerations into the integrator (QP failure →
+    // fallback cycling). With the preset applied, idle is the configured
+    // joint-space hold (posture-only by default).
+    {
+      const auto idle_idx = static_cast<std::size_t>(WbcPhase::kIdle);
+      if (tsid_initialized_ && phase_preset_valid_[idle_idx]) {
+        tsid_controller_.ApplyPhasePreset(phase_presets_[idle_idx]);
+      }
+    }
+
+    // Idle starts in free space — there are no contacts to support. The Entry
+    // default is activation=1.0, and OnPhaseEnter(kIdle) (which ramps it to 0)
+    // does not fire on enable, so seed the contacts inactive here. Instant
+    // (t_ramp=0) — unlike a post-grasp idle entry there is nothing to gently
+    // release. The first ComputeTSIDPosition UpdateActivation snaps activation
+    // to 0 so the very first solve already reports n_active=0.
+    for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
+      contact_state_.SetActivationTarget(i, 0.0, 0.0);
+    }
+    contact_state_.RecomputeActive(contact_mgr_config_);
 
     target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
