@@ -973,6 +973,16 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     return out;
   }
 
+  // Seed deferred this tick (device 0 not valid yet — see DrainTargetSlot).
+  // Command the passthrough hold set there and skip TSID until the idle hold
+  // target is seeded from a real measured configuration; otherwise
+  // ComputeControl would run TSID against the un-seeded (zero) references.
+  if (!target_initialized_.load(std::memory_order_acquire)) {
+    auto out = WriteJointCommand(state);
+    out.command_type = command_type_;
+    return out;
+  }
+
   ComputeControl(state, dt);
   // Output composition split by consumer (wire / log / publish). See
   // demo_joint_controller.hpp for the bucket assignment rationale.
@@ -1041,6 +1051,34 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     }
     if (full_dof_ == 0) {
       full_dof_ = arm_dof_ + hand_dof_;
+    }
+
+    // First-tick self-init must capture a VALID measured arm configuration.
+    // If device 0 (arm) has not published a real state yet (the simulator is
+    // not yet streaming on the first control tick), seeding now would lock the
+    // idle hold target (posture ref + SE3 hold pose) to q=0; idle then
+    // regulates toward the zero config and drives the arm hard toward it,
+    // saturating the joint/torque-limit constraints into an infeasible QP
+    // (ProxQP grind 0.5–1.4 s → fallback cycling). Defer: leave
+    // target_initialized_ false and command a passthrough hold so the next
+    // tick re-attempts the seed from a real measured configuration. The hand
+    // path below already guards on dev.valid; device 0 is the missing guard.
+    if (state.num_devices == 0 || !state.devices[0].valid) {
+      const auto& dev0 = state.devices[0];
+      for (int i = 0; i < arm_dof_; ++i) {
+        const auto idx = static_cast<std::size_t>(i);
+        robot_computed_.positions[idx] = dev0.positions[idx];
+        robot_computed_.velocities[idx] = 0.0;
+      }
+      if (state.num_devices > 1 && state.devices[1].valid) {
+        const auto& dev1 = state.devices[1];
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hand_computed_.positions[idx] = dev1.positions[idx];
+          hand_computed_.velocities[idx] = 0.0;
+        }
+      }
+      return;
     }
 
     // Robot arm: initialize trajectory at current position (zero velocity)

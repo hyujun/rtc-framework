@@ -35,6 +35,7 @@ void WQPFormulation::Init(const pinocchio::Model& /*model*/, const RobotModelInf
   if (config && config["wqp"] && config["wqp"]["solver"]) {
     const auto& sc = config["wqp"]["solver"];
     solver_cfg.max_iter = sc["max_iter"].as<int>(20);
+    solver_cfg.max_iter_in = sc["max_iter_in"].as<int>(100);
     solver_cfg.eps_abs = sc["eps_abs"].as<double>(1e-6);
     solver_cfg.eps_rel = sc["eps_rel"].as<double>(0.0);
     solver_cfg.verbose = sc["verbose"].as<bool>(false);

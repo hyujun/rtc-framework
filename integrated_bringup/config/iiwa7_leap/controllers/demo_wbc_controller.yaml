@@ -68,6 +68,10 @@ demo_wbc_controller:
     wqp:
       solver:
         max_iter: 20
+        # Inner Newton iterations per outer step. ProxQP default (1500) lets an
+        # infeasible QP grind ~0.5–1.4 s (fatal at 500 Hz); bound it so a bad
+        # solve fails fast and qp_fail fallback engages instead of overrunning.
+        max_iter_in: 100
         eps_abs: 1.0e-6
         eps_rel: 0.0
         verbose: false
@@ -85,8 +89,8 @@ demo_wbc_controller:
         frame: "ee_link"
         base_frame: "link_0"
         mask: [1, 1, 1, 1, 1, 1]
-        kp: [5, 5, 5, 2, 2, 2]
-        kd: [0.5, 0.5, 0.5, 0.2, 0.2, 0.2]
+        kp: [36, 36, 36, 16, 16, 16]
+        kd: [12.5, 12.5, 12.5, 8.2, 8.2, 8.2]
         weight: 100.0
         priority: 0
       # Contact force tracking: active in closure/hold phases. LEAP has no
@@ -185,17 +189,28 @@ demo_wbc_controller:
     # constraint set so that transitions reliably deactivate prior tasks —
     # active=false toggles, not omission.
     phase_presets:
+      # idle = pure joint-space hold. se3_tcp OFF + eom ON here is a PARTIAL
+      # mitigation (headless: converged ticks 535→971, fallback 324→48) but does
+      # NOT fully fix the idle drift: even at a perfect hold equilibrium
+      # (tracking error≈0, v≈0, correct seed, hold torque ~1% of the 200 N·m
+      # limit) the WQP still emits a spurious a_opt ≈ -74 rad/s² (gravity-scale)
+      # that the carry-forward integrator accumulates into a free-falling command
+      # while MuJoCo's stiff servo (kp 3000) holds the real arm — they diverge
+      # until a joint nears its limit and the QP goes infeasible. That residual
+      # is a TSID-core issue (spurious equilibrium a_opt), tracked separately;
+      # it is not explained by the preset, gains, or torque limits.
+      # SE3 hold resumes on the idle→approach edge (Se3TaskActiveInPhase).
       idle:
         tasks:
-          posture:             { active: false,  weight: 1.0,   priority: 0 }
-          se3_tcp:             { active: true,  weight: 50.0,  priority: 0 }
+          posture:             { active: true,  weight: 1.0,   priority: 0 }
+          se3_tcp:             { active: false, weight: 0.0,   priority: 0 }
           force:               { active: false, weight: 0.0,   priority: 1 }
           contact_consistency: { active: false, weight: 0.0,   priority: 1 }
           object_wrench:       { active: false, weight: 0.0,   priority: 1 }
           internal_force:      { active: false, weight: 0.0,   priority: 1 }
           object_se3:          { active: false, weight: 0.0,   priority: 0 }
         constraints:
-          eom:           { active: false }
+          eom:           { active: true }
           joint_limit:   { active: true }
           friction_cone: { active: false }
           torque_limit:  { active: true }
