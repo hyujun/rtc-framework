@@ -78,10 +78,18 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   # Path to the example-robot-data Panda URDF used by tests as a generic
-  # fixed-base 7-DOF fixture. Cache var + override-able from -D or env so
-  # other PCs without the /usr/local symlink can still build the test suite.
-  set(RTC_PANDA_URDF_PATH
-      "/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf"
+  # fixed-base 7-DOF fixture. Default resolves to the vcs-imported source under
+  # <rtc_ws>/deps/src (always present after deps setup); pinocchio::buildModel
+  # parses kinematics/dynamics only, so the package:// meshes are not needed.
+  # Falls back to the legacy /usr/local path, and is override-able via -D or env.
+  get_filename_component(_rtc_panda_default
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../../deps/src/example-robot-data/robots/panda_description/urdf/panda.urdf"
+      ABSOLUTE)
+  if(NOT EXISTS "${_rtc_panda_default}")
+    set(_rtc_panda_default
+        "/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf")
+  endif()
+  set(RTC_PANDA_URDF_PATH "${_rtc_panda_default}"
       CACHE FILEPATH "Path to panda.urdf used by rtc_tsid tests")
   if(DEFINED ENV{RTC_PANDA_URDF_PATH})
     set(RTC_PANDA_URDF_PATH "$ENV{RTC_PANDA_URDF_PATH}" CACHE FILEPATH
