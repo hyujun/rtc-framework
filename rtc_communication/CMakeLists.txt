@@ -10,6 +10,13 @@ add_compile_options(
   -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
 )
 
+# ── Coverage (gcov/lcov) ─────────────────────────────────────────────────────
+option(ENABLE_COVERAGE "Enable gcov code coverage" OFF)
+if(ENABLE_COVERAGE)
+  add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+  add_link_options(--coverage)
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rtc_base REQUIRED)
 

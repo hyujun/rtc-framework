@@ -31,6 +31,9 @@ build:
 
 test_cpp:
   - rtc_base
+  - rtc_communication
+  - rtc_controller_interface
+  - rtc_controller_manager
   - rtc_controllers
   - rtc_tsid
   - rtc_urdf_bridge

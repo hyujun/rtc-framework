@@ -323,5 +323,130 @@ jobs:
           enable-testing: "false"
           artifact-suffix: cpp-build
 
+  # ============================================================
+  #  C++ Coverage — gcov/lcov instrumented build + colcon test → Codecov
+  #
+  #  복원 (2026-05-31): build-test 단순화 (2026-04-28) 로 제거됐던 C++ coverage
+  #  upload 를 별도 job 으로 분리 복원. colcon test 의 ModuleNotFoundError root
+  #  cause 는 colcon-test-report action 의 PYTHONPATH 보강으로 해결됨 (python-test
+  #  job 에서 검증됨). build-test 는 RelWithDebInfo 빌드 신호로 그대로 유지하고,
+  #  여기서는 ENABLE_COVERAGE=ON (Debug 계측) 으로 분리 — 빌드 신호와 커버리지
+  #  신호를 섞지 않는다. test 실행은 continue-on-error (아래 step 주석 참조) 로
+  #  coverage 수집과 분리 — job 의 deliverable 은 커버리지이지 test 게이트가 아니다.
+  # ============================================================
+  coverage-cpp:
+    name: C++ Coverage
+    needs: [changes, packages, build-deps]
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: coverage-v1
+          apt-packages: >-
+            lcov
+            ros-jazzy-pinocchio
+            ros-jazzy-proxsuite
+            ros-jazzy-behaviortree-cpp
+            ros-jazzy-xacro
+            ros-jazzy-tinyxml2-vendor
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            libyaml-cpp-dev
+            libtinyxml2-dev
+            libeigen3-dev
+
+      - name: Download deps artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rtc-deps-${{ env.ROS_DISTRO }}
+          path: _rtc_ws/deps/install
+
+      - name: Build packages (coverage-instrumented)
+        uses: ./.github/actions/colcon-build
+        with:
+          packages: ${{ needs.packages.outputs.test_cpp }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          build-type: Debug
+          enable-coverage: "true"
+          artifact-suffix: cpp-coverage-build
+
+      - name: Capture baseline (zero-coverage) lcov
+        shell: bash
+        run: |
+          set -eo pipefail
+          # 테스트가 한 번도 실행하지 않은 instrumented 라인을 0% 로 포함시켜
+          # 미실행 코드가 커버리지 분모에 반영되도록 한다 (untested 파일 0% 노출).
+          lcov --capture --initial \
+            --directory build \
+            --output-file coverage.base.info \
+            --rc geninfo_unexecuted_blocks=1 \
+            --ignore-errors mismatch,source,gcov,negative,unused,empty 2>&1 | tail -20 || true
+
+      # 이 job 의 deliverable 은 coverage 수집이지 test pass/fail 게이트가 아니다.
+      # C++ 테스트는 2026-04-28~05-31 동안 CI 에서 실행되지 않았고, 재개 시 일부
+      # 패키지(런타임 robot description / ROS lifecycle 의존)의 CI-환경 실패가
+      # 드러난다. 그 실패가 coverage 업로드를 막지 않도록 continue-on-error 로
+      # 분리한다 — 실패는 step 의 red + GITHUB_STEP_SUMMARY annotation 으로 계속
+      # 노출되며(가시성 유지), 실제 test-환경 수정은 별도 PR 로 다룬다.
+      - name: Run C++ tests with coverage
+        continue-on-error: true
+        uses: ./.github/actions/colcon-test-report
+        with:
+          packages: ${{ needs.packages.outputs.test_cpp }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          summary-title: C++ Coverage Test Results
+          artifact-suffix: cpp-coverage-test
+
+      - name: Capture & filter lcov coverage
+        if: always()
+        shell: bash
+        env:
+          COVERAGE_PATHS: ${{ needs.packages.outputs.coverage_paths }}
+        run: |
+          set -eo pipefail
+          # 테스트 실행 후 .gcda → tracefile
+          lcov --capture \
+            --directory build \
+            --output-file coverage.test.info \
+            --rc geninfo_unexecuted_blocks=1 \
+            --ignore-errors mismatch,source,gcov,negative,unused,empty 2>&1 | tail -20
+
+          # baseline(0%) + test 합산 → 미실행 파일도 분모 포함
+          COMBINE_ARGS="--add-tracefile coverage.test.info"
+          if [ -s coverage.base.info ]; then
+            COMBINE_ARGS="--add-tracefile coverage.base.info ${COMBINE_ARGS}"
+          fi
+          # shellcheck disable=SC2086
+          lcov ${COMBINE_ARGS} \
+            --output-file coverage.combined.info \
+            --ignore-errors empty,unused 2>&1 | tail -10
+
+          # ci-packages.yml 의 coverage_paths 글로브만 추출 (test/ 등은 codecov.yml ignore)
+          # shellcheck disable=SC2086
+          lcov --extract coverage.combined.info ${COVERAGE_PATHS} \
+            --output-file coverage.info \
+            --ignore-errors unused,empty 2>&1 | tail -20
+
+          echo "=== Coverage summary ==="
+          lcov --summary coverage.info --ignore-errors empty || true
+
+      - name: Upload C++ coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.info
+          flags: cpp
+          name: rtc-framework-cpp
+          fail_ci_if_error: false
+
   # CodeQL: 별도 워크플로우 (.github/workflows/codeql.yml) 로 분리 — weekly + manual.
   # PR/푸시마다 30-60분 빌드 instrumentation 을 돌릴 가치가 낮아 떼어냈다 (2026-04-28).
