@@ -47,9 +47,9 @@
 
 namespace {
 
-constexpr const char* kPandaUrdf =
-    "/usr/local/share/example-robot-data/robots/panda_description/urdf/"
-    "panda.urdf";
+// Generic 7-DOF fixture; path injected at build time from robot_descriptions
+// (see RTC_PANDA_URDF_PATH in CMakeLists.txt). Override via -D or env.
+constexpr const char* kPandaUrdf = RTC_PANDA_URDF_PATH;
 
 using integrated_bringup::phase::GraspCommand;
 using integrated_bringup::phase::GraspPhaseId;

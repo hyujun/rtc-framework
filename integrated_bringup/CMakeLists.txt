@@ -195,6 +195,21 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(Eigen3 REQUIRED)
 
+  # Path to the Panda URDF used by the grasp-pipeline tests as a generic 7-DOF
+  # fixture (pinocchio::buildModel, kinematics only). Default resolves to the
+  # repo-vendored copy under robot_descriptions (checked in, so present at build
+  # time both locally and in CI — unlike the old /usr/local path that the deps
+  # artifact does not ship). Override-able via -D or env.
+  get_filename_component(_rtc_panda_default
+      "${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots/panda/urdf/panda.urdf"
+      ABSOLUTE)
+  set(RTC_PANDA_URDF_PATH "${_rtc_panda_default}"
+      CACHE FILEPATH "Path to panda.urdf used by integrated_bringup tests")
+  if(DEFINED ENV{RTC_PANDA_URDF_PATH})
+    set(RTC_PANDA_URDF_PATH "$ENV{RTC_PANDA_URDF_PATH}" CACHE FILEPATH
+        "Path to panda.urdf used by integrated_bringup tests" FORCE)
+  endif()
+
   # ── DeviceStateLog / DeviceSensorLog POD mirrors (header-only) ────────────
   ament_add_gtest(test_device_log_pods test/test_device_log_pods.cpp)
   target_include_directories(test_device_log_pods PRIVATE
@@ -275,6 +290,8 @@ if(BUILD_TESTING)
     rtc_mpc
     Eigen3
   )
+  target_compile_definitions(test_grasp_phase_manager PRIVATE
+    RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
 
   # ── Grasp handler pipeline integration (Phase 7c) ──────────────────────────
   # Wires GraspPhaseManager + MPCFactory + HandlerMPCThread end-to-end on the
@@ -292,6 +309,8 @@ if(BUILD_TESTING)
     rtc_mpc
     Eigen3
   )
+  target_compile_definitions(test_grasp_pipeline PRIVATE
+    RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
 
   # ── Stage A-3: ForceReferenceUpdater unit tests (pure helper, no model) ───
   ament_add_gtest(test_force_reference_updater test/test_force_reference_updater.cpp)

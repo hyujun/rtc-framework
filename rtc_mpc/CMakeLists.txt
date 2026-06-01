@@ -105,18 +105,15 @@ ament_export_dependencies(rtc_base Eigen3 yaml-cpp pinocchio fmt aligator)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
-  # Path to the example-robot-data Panda URDF used by integration / OCP tests
-  # as a generic 7-DOF fixture. Default resolves to the vcs-imported source under
-  # <rtc_ws>/deps/src (always present after deps setup); pinocchio::buildModel
-  # parses kinematics/dynamics only, so the package:// meshes are not needed.
-  # Falls back to the legacy /usr/local path, and is override-able via -D or env.
+  # Path to the Panda URDF used by integration / OCP tests as a generic 7-DOF
+  # fixture. Default resolves to the repo-vendored copy under robot_descriptions
+  # (checked in, so present at build time both locally and in CI — unlike the old
+  # deps/src or /usr/local paths that the deps artifact does not ship).
+  # pinocchio::buildModel parses kinematics/dynamics only, so the package://
+  # meshes are not needed. Override-able via -D or env.
   get_filename_component(_rtc_panda_default
-      "${CMAKE_CURRENT_SOURCE_DIR}/../../../deps/src/example-robot-data/robots/panda_description/urdf/panda.urdf"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../robot_descriptions/robots/panda/urdf/panda.urdf"
       ABSOLUTE)
-  if(NOT EXISTS "${_rtc_panda_default}")
-    set(_rtc_panda_default
-        "/usr/local/share/example-robot-data/robots/panda_description/urdf/panda.urdf")
-  endif()
   set(RTC_PANDA_URDF_PATH "${_rtc_panda_default}"
       CACHE FILEPATH "Path to panda.urdf used by rtc_mpc tests")
   if(DEFINED ENV{RTC_PANDA_URDF_PATH})
