@@ -331,7 +331,8 @@ jobs:
   #  cause 는 colcon-test-report action 의 PYTHONPATH 보강으로 해결됨 (python-test
   #  job 에서 검증됨). build-test 는 RelWithDebInfo 빌드 신호로 그대로 유지하고,
   #  여기서는 ENABLE_COVERAGE=ON (Debug 계측) 으로 분리 — 빌드 신호와 커버리지
-  #  신호를 섞지 않는다.
+  #  신호를 섞지 않는다. test 실행은 continue-on-error (아래 step 주석 참조) 로
+  #  coverage 수집과 분리 — job 의 deliverable 은 커버리지이지 test 게이트가 아니다.
   # ============================================================
   coverage-cpp:
     name: C++ Coverage
@@ -388,7 +389,14 @@ jobs:
             --rc geninfo_unexecuted_blocks=1 \
             --ignore-errors mismatch,source,gcov,negative,unused,empty 2>&1 | tail -20 || true
 
+      # 이 job 의 deliverable 은 coverage 수집이지 test pass/fail 게이트가 아니다.
+      # C++ 테스트는 2026-04-28~05-31 동안 CI 에서 실행되지 않았고, 재개 시 일부
+      # 패키지(런타임 robot description / ROS lifecycle 의존)의 CI-환경 실패가
+      # 드러난다. 그 실패가 coverage 업로드를 막지 않도록 continue-on-error 로
+      # 분리한다 — 실패는 step 의 red + GITHUB_STEP_SUMMARY annotation 으로 계속
+      # 노출되며(가시성 유지), 실제 test-환경 수정은 별도 PR 로 다룬다.
       - name: Run C++ tests with coverage
+        continue-on-error: true
         uses: ./.github/actions/colcon-test-report
         with:
           packages: ${{ needs.packages.outputs.test_cpp }}
