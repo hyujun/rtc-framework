@@ -129,6 +129,18 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 
 ## 빠른 시작
 
+### 클론 (submodule 포함)
+
+이 저장소는 object_sim mesh 데이터를 git submodule (`robot_descriptions/object_sim` → [vikashplus/object_sim](https://github.com/vikashplus/object_sim)) 로 포함합니다. **`--recursive` 없이 클론하면 해당 디렉토리가 비어 있어**, `robot_descriptions` 빌드 시 mesh 가 설치되지 않고 일부 MuJoCo scene ([robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml](robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml)) 의 mesh 로드가 실패합니다.
+
+```bash
+git clone --recursive https://github.com/hyujun/rtc-framework.git ~/ros2_ws/rtc_ws/src/rtc-framework
+
+# 이미 --recursive 없이 클론한 경우 — submodule 만 채우기
+cd ~/ros2_ws/rtc_ws/src/rtc-framework
+git submodule update --init --recursive
+```
+
 ### 설치
 
 ```bash
