@@ -33,24 +33,35 @@ void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
   // 결과 버퍼 pre-allocate
   result_.Init(max_n_vars);
 
-  // Max-dim 자명 QP 로 초기화: H=I·1e-8 (PD), g=0, A=0, b=0, C=0, l=-inf, u=+inf.
+  // Persistent inactive inequality placeholder. ProxSuite's Debug-only
+  // assert(model.is_valid(...)) rejects an all-zero C when n_in > 0 (helpers.hpp →
+  // model.hpp "C is zero, while n_in != 0"), at BOTH init and update. Seed each
+  // placeholder row with one entry so c_seed_ is non-zero, while l_inf_/u_inf_ keep
+  // every row inactive (±inf) — so the constraints never bind. Reused by Solve()
+  // for any tick with zero active inequality rows. Inert under NDEBUG/production,
+  // where is_valid is never called; the first real Solve() supplies the actual C.
+  c_seed_ = Eigen::MatrixXd::Zero(max_n_ineq, max_n_vars);
+  if (max_n_vars > 0) {
+    for (int i = 0; i < max_n_ineq; ++i) {
+      c_seed_(i, i % max_n_vars) = 1.0;
+    }
+  }
+  l_inf_ = Eigen::VectorXd::Constant(max_n_ineq, -std::numeric_limits<double>::infinity());
+  u_inf_ = Eigen::VectorXd::Constant(max_n_ineq, std::numeric_limits<double>::infinity());
+
+  // Max-dim 자명 QP 로 초기화: H=I·1e-8 (PD), g=0, A=0, b=0, C=c_seed_ (inactive).
   // 이후 Solve() 는 같은 dim 으로 update() 만 호출.
   Eigen::MatrixXd H0 = Eigen::MatrixXd::Identity(max_n_vars, max_n_vars) * 1e-8;
   Eigen::VectorXd g0 = Eigen::VectorXd::Zero(max_n_vars);
   Eigen::MatrixXd A0 = Eigen::MatrixXd::Zero(max_n_eq, max_n_vars);
   Eigen::VectorXd b0 = Eigen::VectorXd::Zero(max_n_eq);
-  Eigen::MatrixXd C0 = Eigen::MatrixXd::Zero(max_n_ineq, max_n_vars);
-  Eigen::VectorXd l0 =
-      Eigen::VectorXd::Constant(max_n_ineq, -std::numeric_limits<double>::infinity());
-  Eigen::VectorXd u0 =
-      Eigen::VectorXd::Constant(max_n_ineq, std::numeric_limits<double>::infinity());
 
   if (max_n_eq > 0 && max_n_ineq > 0) {
-    qp_->init(H0, g0, A0, b0, C0, l0, u0);
+    qp_->init(H0, g0, A0, b0, c_seed_, l_inf_, u_inf_);
   } else if (max_n_eq > 0) {
     qp_->init(H0, g0, A0, b0, std::nullopt, std::nullopt, std::nullopt);
   } else if (max_n_ineq > 0) {
-    qp_->init(H0, g0, std::nullopt, std::nullopt, C0, l0, u0);
+    qp_->init(H0, g0, std::nullopt, std::nullopt, c_seed_, l_inf_, u_inf_);
   } else {
     qp_->init(H0, g0, std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
   }
@@ -81,15 +92,26 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   auto H_view = qp.H.topLeftCorner(n, n);
   auto g_view = qp.g.head(n);
 
+  // When the caller has no active inequality rows (qp.n_ineq == 0) the padded C
+  // block is all-zero, which ProxSuite's Debug-only assert(model.is_valid) rejects
+  // ("C is zero, while n_in != 0"). Substitute the persistent inactive placeholder
+  // (c_seed_ non-zero, l_inf_/u_inf_ = ±inf) so the constraint stays inactive and
+  // the assert is satisfied. Real ticks (qp.n_ineq > 0) keep the caller's C/l/u
+  // unchanged; NDEBUG/production never trips the assert. Refs only — no allocation.
+  const bool ineq_degenerate = (n_ineq > 0) && (qp.n_ineq <= 0);
+  const Eigen::MatrixXd& C_src = ineq_degenerate ? c_seed_ : qp.C;
+  const Eigen::VectorXd& l_src = ineq_degenerate ? l_inf_ : qp.l;
+  const Eigen::VectorXd& u_src = ineq_degenerate ? u_inf_ : qp.u;
+
   if (n_eq > 0 && n_ineq > 0) {
     qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq),
-                qp.C.topLeftCorner(n_ineq, n), qp.l.head(n_ineq), qp.u.head(n_ineq));
+                C_src.topLeftCorner(n_ineq, n), l_src.head(n_ineq), u_src.head(n_ineq));
   } else if (n_eq > 0) {
     qp_->update(H_view, g_view, qp.A.topLeftCorner(n_eq, n), qp.b.head(n_eq), std::nullopt,
                 std::nullopt, std::nullopt);
   } else if (n_ineq > 0) {
-    qp_->update(H_view, g_view, std::nullopt, std::nullopt, qp.C.topLeftCorner(n_ineq, n),
-                qp.l.head(n_ineq), qp.u.head(n_ineq));
+    qp_->update(H_view, g_view, std::nullopt, std::nullopt, C_src.topLeftCorner(n_ineq, n),
+                l_src.head(n_ineq), u_src.head(n_ineq));
   } else {
     qp_->update(H_view, g_view, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
                 std::nullopt);

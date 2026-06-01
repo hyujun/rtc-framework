@@ -67,6 +67,15 @@ class QPSolverWrapper {
   int max_n_vars_{0};
   int max_n_eq_{0};
   int max_n_ineq_{0};
+
+  // Persistent inequality placeholder, allocated once in Init() and reused for
+  // (a) the init model and (b) any Solve() tick with zero active inequality rows.
+  // c_seed_ is non-zero but inactive (l_inf_ = -inf, u_inf_ = +inf), so
+  // ProxSuite's Debug-only assert(model.is_valid) never sees an all-zero C with
+  // n_in > 0 at either init or update. Inert in NDEBUG/production builds.
+  Eigen::MatrixXd c_seed_;
+  Eigen::VectorXd l_inf_;
+  Eigen::VectorXd u_inf_;
 };
 
 }  // namespace rtc::tsid
