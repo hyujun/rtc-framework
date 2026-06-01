@@ -162,6 +162,43 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
   reseed_integration_pending_ = false;
 }
 
+// Static, pure semi-implicit Euler step shared by both integration modes (see
+// ComputeTSIDPosition step 7). Operates in place on the seed (q, v); the seed
+// is the previous command (carry-forward) or the measured state (measured-
+// feedback) — chosen by the caller. RT-safe: fixed-size Eigen ops, no alloc /
+// throw. The .noalias() self-assignments are coefficient-wise (element i reads
+// only element i), so aliasing q/v with themselves is well-defined.
+void DemoWbcController::IntegrateAccelStep(Eigen::VectorXd& q, Eigen::VectorXd& v,
+                                           const Eigen::VectorXd& a, double dt,
+                                           const Eigen::VectorXd& v_limit,
+                                           const Eigen::VectorXd& q_min,
+                                           const Eigen::VectorXd& q_max) noexcept {
+  // v ← v + a · dt, then velocity clamp.
+  v.noalias() = v + a * dt;
+  v = v.cwiseMax(-v_limit).cwiseMin(v_limit);
+
+  // q ← q + v · dt.
+  q.noalias() = q + v * dt;
+
+  // Position clamp (safety net). Where it saturates, zero the velocity if it is
+  // still driving further into the violated limit — open-loop carry-forward
+  // would otherwise keep pushing. Sign-gated so a TSID-commanded retraction is
+  // not suppressed.
+  for (Eigen::Index i = 0; i < q.size(); ++i) {
+    if (q[i] < q_min[i]) {
+      q[i] = q_min[i];
+      if (v[i] < 0.0) {
+        v[i] = 0.0;
+      }
+    } else if (q[i] > q_max[i]) {
+      q[i] = q_max[i];
+      if (v[i] > 0.0) {
+        v[i] = 0.0;
+      }
+    }
+  }
+}
+
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
@@ -356,20 +393,26 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   }
   qp_fail_count_ = 0;
 
-  // 7. Carry-forward semi-implicit Euler integration: a → v → q.
+  // 7. Semi-implicit Euler integration: a → v → q.
   //
-  // The integral accumulates from the PREVIOUS integrated (q_next, v_next).
-  // It re-seeds from the measured state only on discrete events:
-  //   - hard re-seed (= measured exactly): fallback recovery / first tick /
-  //     non-finite guard — no command continuity to preserve.
-  //   - target re-seed (jerk-bounded): a new target arrived mid-motion; seed
-  //     from measured q̇ but bound the one-tick step against the previous
-  //     command velocity to avoid a discontinuity.
+  // Seed selection decides where the integral accumulates from this tick:
+  //   - measured-feedback mode (integrate_from_measured_): re-seed from the
+  //     freshly measured (q_curr, v_curr) every tick → v_next = v_curr + a·dt,
+  //     q_next = q_curr + v_next·dt. The carry-forward continuity machinery
+  //     below is bypassed because there is no prior command state to preserve.
+  //   - carry-forward mode (default): the integral accumulates from the
+  //     PREVIOUS integrated (q_next, v_next); it re-seeds from the measured
+  //     state only on discrete events:
+  //       · hard re-seed (= measured exactly): fallback recovery / first tick /
+  //         non-finite guard — no command continuity to preserve.
+  //       · target re-seed (jerk-bounded): a new target arrived mid-motion;
+  //         seed from measured q̇ but bound the one-tick step against the
+  //         previous command velocity to avoid a discontinuity.
   const auto& a = tsid_output_.a_opt;
 
   const bool hard_reseed = reseed_on_fallback_exit_ || !q_next_full_.allFinite() ||
                            !v_next_full_.allFinite();
-  if (hard_reseed) {
+  if (integrate_from_measured_ || hard_reseed) {
     q_next_full_ = q_curr_full_;
     v_next_full_ = v_curr_full_;
   } else if (reseed_integration_pending_) {
@@ -382,32 +425,9 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   reseed_integration_pending_ = false;
   reseed_on_fallback_exit_ = false;
 
-  // v_next = v_prev + a · dt
-  v_next_full_.noalias() = v_next_full_ + a * dt;
-
-  // Velocity clamp
-  v_next_full_ = v_next_full_.cwiseMax(-v_limit_).cwiseMin(v_limit_);
-
-  // q_next = q_prev + v_next · dt
-  q_next_full_.noalias() = q_next_full_ + v_next_full_ * dt;
-
-  // Position clamp (safety net). Where it saturates, zero the velocity if it is
-  // still driving further into the violated limit — open-loop carry-forward
-  // would otherwise keep pushing. Sign-gated so a TSID-commanded retraction is
-  // not suppressed.
-  for (Eigen::Index i = 0; i < q_next_full_.size(); ++i) {
-    if (q_next_full_[i] < q_min_clamped_[i]) {
-      q_next_full_[i] = q_min_clamped_[i];
-      if (v_next_full_[i] < 0.0) {
-        v_next_full_[i] = 0.0;
-      }
-    } else if (q_next_full_[i] > q_max_clamped_[i]) {
-      q_next_full_[i] = q_max_clamped_[i];
-      if (v_next_full_[i] > 0.0) {
-        v_next_full_[i] = 0.0;
-      }
-    }
-  }
+  // Semi-implicit Euler step + velocity/position clamps (mode-agnostic given
+  // the seed already in q_next_full_/v_next_full_).
+  IntegrateAccelStep(q_next_full_, v_next_full_, a, dt, v_limit_, q_min_clamped_, q_max_clamped_);
 
   // 8. Map Pinocchio order → device order
   for (int i = 0; i < arm_dof_; ++i) {
