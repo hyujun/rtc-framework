@@ -44,6 +44,7 @@
 | `robots/leap_hand/` | LEAP Hand 16-DoF — URDF (left/right) + meshes (collision-box composite inertia rebake 2026-05-15) |
 | `robots/iiwa7_leap/` | iiwa7 arm + LEAP Hand 결합 — URDF xacro + MJCF (left/right 각 2종), scene 각 1종. `ee_link` 말단 부착. `meshes/{visual,collision}/`은 iiwa7 + leap_hand mesh hardlink |
 | `robots/schunk_hand/` | Schunk SVH 5-finger hand — URDF (left/right × obj/glb 4종) + meshes |
+| `robots/panda/` | Franka Emika Panda 7-DoF — **kinematics-only 테스트 fixture** (`urdf/panda.urdf`만, meshes 없음). rtc_tsid / rtc_mpc / integrated_bringup gtest 가 generic 7-DoF 모델로 `pinocchio::buildModel` 에 사용. 상세·출처: `robots/panda/README.md` |
 
 향후 robot 추가는 `robots/<new_name>/` 서브디렉토리 추가만으로 끝난다 — 본 패키지의 `CMakeLists.txt` / `package.xml`은 손대지 않는다.
 
