@@ -32,6 +32,9 @@
   <depend>rtc_urdf_bridge</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <!-- Vendored panda URDF for on_configure integration test (runtime ament
+       lookup only — data-only package, ARCH-5 / not a build dependency). -->
+  <test_depend>robot_descriptions</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
