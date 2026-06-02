@@ -311,6 +311,19 @@ if(BUILD_TESTING)
   )
   target_compile_definitions(test_grasp_pipeline PRIVATE
     RTC_PANDA_URDF_PATH="${RTC_PANDA_URDF_PATH}")
+  # Aligator's contact_rich solver (gar StageFactor / ArenaMatrix) requires
+  # mimalloc as the process allocator: it performs aligned/interior frees that
+  # glibc free() rejects ("free(): invalid pointer"), but mimalloc tolerates.
+  # libmimalloc is only *partially* adopted by default (pulled in transitively,
+  # overriding C++ new/delete but not C malloc/free + Eigen) — a split that
+  # corrupts the heap on the cross-mode swap. Preload it so the allocator is
+  # uniform. Production launches preload it too (launch/*.launch.py: CM process
+  # additional_env LD_PRELOAD=libmimalloc.so.2).
+  find_package(mimalloc QUIET)
+  if(TARGET mimalloc)
+    set_property(TEST test_grasp_pipeline APPEND PROPERTY
+      ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:mimalloc>")
+  endif()
 
   # ── Stage A-3: ForceReferenceUpdater unit tests (pure helper, no model) ───
   ament_add_gtest(test_force_reference_updater test/test_force_reference_updater.cpp)
