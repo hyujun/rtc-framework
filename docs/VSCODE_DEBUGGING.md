@@ -2,6 +2,9 @@
 
 이 문서는 `rtc-framework` 프로젝트에서 VS Code + GDB를 사용하여 C++ 노드를 디버깅하는 방법을 설명합니다.
 
+> [!IMPORTANT]
+> **`.vscode/` 는 리포에 체크인되지 않습니다.** `.gitignore` 에 `.vscode/` 가 등록되어 있어 (에디터 설정은 개발자 로컬 영역), 이 디렉토리는 **각자 생성**해야 합니다. 본 문서의 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조) 가 네 파일(`settings.json` / `tasks.json` / `launch.json` / `extensions.json`)의 복붙용 템플릿을 제공합니다 — VS Code 워크스페이스로 **repo 루트(`src/rtc-framework`)** 를 연다는 전제이며, colcon `build/` · `install/` 은 `${workspaceFolder}/../../` (ws 루트 `~/ros2_ws/rtc_ws`) 에 있습니다 (CLAUDE.md §9.1). `.clangd` 와 `merge_compile_commands.py` 는 repo 에 체크인되어 있습니다.
+
 ---
 
 ## 목차
@@ -28,7 +31,7 @@ sudo apt install gdb
 
 ### VS Code 확장 설치
 
-`.vscode/extensions.json`에 권장 목록이 포함되어 있습니다. VS Code에서 `Ctrl+Shift+P` → `Show Recommended Extensions` → 일괄 설치.
+아래 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조)의 `extensions.json` 템플릿을 만들면 VS Code에서 `Ctrl+Shift+P` → `Show Recommended Extensions` → 일괄 설치할 수 있습니다.
 
 | 확장 | 역할 |
 |------|------|
@@ -95,7 +98,7 @@ python3 src/rtc-framework/merge_compile_commands.py
 
 ## 3. Launch 디버거 — 노드 직접 실행
 
-VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. `.vscode/launch.json`에 다음 구성이 정의되어 있습니다:
+VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 아래 구성을 [§VS Code 설정 파일 구조](#vs-code-설정-파일-구조)의 `launch.json` 템플릿에 정의합니다:
 
 | 구성 | 대상 바이너리 | 기본 `--params-file` |
 |------|---------------|----------------------|
@@ -420,7 +423,10 @@ ros2 node list
 
 ## VS Code 설정 파일 구조
 
-이 프로젝트는 `.vscode/` 아래에 **즉시 사용 가능한** 설정 파일을 포함합니다. 내용은 리포에 체크인되어 있으므로 별도 생성이 불필요합니다.
+`.vscode/` 는 `.gitignore` 로 추적되지 않는 **개발자 로컬 디렉토리**입니다 (에디터 설정을 팀에 강제하지 않기 위함). 아래 네 파일을 **직접 생성**하세요 — 각 subsection 에 복붙용 템플릿이 있습니다.
+
+> [!NOTE]
+> 템플릿의 전제: VS Code 워크스페이스로 **repo 루트** (`src/rtc-framework`) 를 엽니다. 따라서 `${workspaceFolder}` = repo 루트이고, colcon `build/` · `install/` 은 `${workspaceFolder}/../../` (ws 루트 `~/ros2_ws/rtc_ws`) 에 위치합니다.
 
 ```
 .vscode/
@@ -435,15 +441,28 @@ ros2 node list
 | 키 | 값 | 의도 |
 |----|-----|------|
 | `C_Cpp.intelliSenseEngine` | `"disabled"` | cpptools IntelliSense 비활성 (clangd와 충돌 방지) |
-| `clangd.arguments[--compile-commands-dir]` | `${workspaceFolder}/build` | `merge_compile_commands.py` 출력 위치 |
+| `clangd.arguments[--compile-commands-dir]` | `${workspaceFolder}` | `merge_compile_commands.py` 는 merged `compile_commands.json` 을 **repo 루트** (`.clangd` 옆) 에 출력 — `build/` 아님 |
 | `editor.defaultFormatter` (C++) | `llvm-vs-code-extensions.vscode-clangd` | 저장 시 clang-format 적용 |
 | `python.analysis.extraPaths` | `/opt/ros/jazzy/lib/python3.12/dist-packages` 외 | Pylance에서 `rclpy`/`rtc_tools` 인식 |
 | `ros.distro` | `"jazzy"` | ROS 확장 기본 디스트로 |
 | `files.exclude` / `files.watcherExclude` | `build`, `install`, `log`, `logging_data`, `.cache` | 탐색·워처 성능 |
 
+```jsonc
+// .vscode/settings.json
+{
+  "C_Cpp.intelliSenseEngine": "disabled",            // clangd 가 IntelliSense, cpptools 는 디버거 전용
+  "clangd.arguments": ["--compile-commands-dir=${workspaceFolder}"],
+  "[cpp]": { "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd" },
+  "python.analysis.extraPaths": ["/opt/ros/jazzy/lib/python3.12/dist-packages"],
+  "ros.distro": "jazzy",
+  "files.exclude":        { "**/build": true, "**/install": true, "**/log": true, "**/logging_data": true, "**/.cache": true },
+  "files.watcherExclude": { "**/build/**": true, "**/install/**": true, "**/log/**": true, "**/logging_data/**": true, "**/.cache/**": true }
+}
+```
+
 > [!NOTE]
 > `c_cpp_properties.json`은 **의도적으로 생성하지 않습니다**.
-> clangd가 `.clangd` + `build/compile_commands.json`을 직접 사용하므로 cpptools IntelliSense 설정은 불필요합니다.
+> clangd가 `.clangd` (`CompilationDatabase: .`) + repo 루트 `compile_commands.json`을 직접 사용하므로 cpptools IntelliSense 설정은 불필요합니다.
 
 ### `tasks.json` 태스크 목록
 
@@ -459,23 +478,87 @@ ros2 node list
 | `rtc: Check RT Setup` | `repo_scripts/scripts/check_rt_setup.sh --summary` |
 | `ros2 launch: sim` / `robot` | MuJoCo 시뮬 / 실로봇 런치 (`robot_ip` 프롬프트) |
 
+```jsonc
+// .vscode/tasks.json (대표 태스크 — 위 표의 나머지는 동일 패턴으로 추가)
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "colcon: Build All (Debug)", "type": "shell",
+      "command": "./build.sh -d",                  // full debug build; merge_compile_commands.py 자동 실행
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true }, "problemMatcher": ["$gcc"] },
+    { "label": "colcon: Build All (Release)", "type": "shell", "command": "./build.sh -r",
+      "options": { "cwd": "${workspaceFolder}" }, "problemMatcher": ["$gcc"] },
+    { "label": "colcon: Build Selected Package", "type": "shell", "command": "./build.sh -d -p ${input:pkg}",
+      "options": { "cwd": "${workspaceFolder}" }, "problemMatcher": ["$gcc"] },
+    { "label": "rtc: Merge compile_commands.json", "type": "shell", "command": "python3 merge_compile_commands.py",
+      "options": { "cwd": "${workspaceFolder}" } },
+    { "label": "rtc: Check RT Setup", "type": "shell",
+      "command": "./repo_scripts/scripts/check_rt_setup.sh --summary",
+      "options": { "cwd": "${workspaceFolder}" } },
+    { "label": "colcon: Test Selected Package", "type": "shell",
+      "command": "colcon test --packages-select ${input:pkg} --event-handlers console_direct+",
+      "options": { "cwd": "${workspaceFolder}/../.." } }   // colcon 은 반드시 ws 루트에서 (CLAUDE.md §9.1)
+  ],
+  "inputs": [ { "id": "pkg", "type": "promptString", "description": "Package name (e.g. rtc_base)" } ]
+}
+```
+
 ### `launch.json` 디버그 구성
 
 [3. Launch 디버거](#3-launch-디버거--노드-직접-실행) 표 참고. 모든 C++ 구성은 `preLaunchTask: "colcon: Build All (Debug)"`로 빌드 후 실행되며, `setupCommands`에 `-enable-pretty-printing` / `set print pretty on` / `set print object on`이 포함되어 STL 및 Eigen 타입이 가독성 있게 표시됩니다.
 
+```jsonc
+// .vscode/launch.json (main 노드 + attach — 나머지 노드는 §3 표의 program/params 값을 같은 패턴에 대입)
+{
+  "version": "0.2.0",
+  "configurations": [
+    { "name": "C++: Launch integrated_rt_controller (Debug)", "type": "cppdbg", "request": "launch",
+      "program": "${workspaceFolder}/../../install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller",
+      "args": ["--ros-args", "--params-file", "${workspaceFolder}/integrated_bringup/config/ur5e_hand/sim.yaml"],
+      "cwd": "${workspaceFolder}/../..", "MIMode": "gdb", "preLaunchTask": "colcon: Build All (Debug)",
+      "setupCommands": [
+        { "text": "-enable-pretty-printing", "ignoreFailures": true },
+        { "text": "set print pretty on" },
+        { "text": "set print object on" } ] },
+    { "name": "C++: Attach to Node (Pick Process)", "type": "cppdbg", "request": "attach",
+      "program": "${workspaceFolder}/../../install/integrated_bringup/lib/integrated_bringup/integrated_rt_controller",
+      "processId": "${command:pickProcess}", "MIMode": "gdb",
+      "setupCommands": [ { "text": "-enable-pretty-printing", "ignoreFailures": true } ] }
+  ]
+}
+```
+
+> [!IMPORTANT]
+> GDB 가 RT 노드의 공유 라이브러리를 찾으려면 **`source install/setup.bash` 된 터미널에서 VS Code 를 실행**하거나, launch 구성에 `environment` 로 `LD_LIBRARY_PATH` 를 주입해야 합니다 (ROS 환경 미설정 시 `error while loading shared libraries`).
+
 ### `extensions.json`
 
-권장 확장: clangd, cpptools(디버거용), Python+debugpy+Pylance, CMake, YAML/XML/URDF, ROS. `Ctrl+Shift+P` → `Show Recommended Extensions`에서 일괄 설치 가능.
+권장 확장: clangd, cpptools(디버거용), Python+debugpy+Pylance, CMake, YAML/XML/URDF, ROS. 아래 템플릿을 만들면 `Ctrl+Shift+P` → `Show Recommended Extensions`에서 일괄 설치 가능.
+
+```jsonc
+// .vscode/extensions.json
+{
+  "recommendations": [
+    "llvm-vs-code-extensions.vscode-clangd",
+    "ms-vscode.cpptools",
+    "ms-python.python", "ms-python.debugpy",
+    "ms-vscode.cmake-tools", "twxs.cmake",
+    "redhat.vscode-yaml", "redhat.vscode-xml",
+    "ms-iot.vscode-ros", "smilerobotics.urdf"
+  ]
+}
+```
 
 ---
 
 ## 관련 파일
 
-| 파일 | 역할 | 체크인됨 |
+| 파일 | 역할 | 추적 |
 |------|------|:--:|
-| [.vscode/settings.json](../.vscode/settings.json) | clangd, 에디터, Python, exclusion 설정 | ✅ |
-| [.vscode/tasks.json](../.vscode/tasks.json) | 빌드/테스트/런치 태스크 | ✅ |
-| [.vscode/launch.json](../.vscode/launch.json) | GDB launch/attach 구성 | ✅ |
-| [.vscode/extensions.json](../.vscode/extensions.json) | 권장 확장 목록 | ✅ |
-| [.clangd](../.clangd) | clangd 컴파일 플래그 + `build/` 지정 | ✅ |
-| [merge_compile_commands.py](../merge_compile_commands.py) | 패키지별 `compile_commands.json`을 `build/`로 병합 | ✅ |
+| `.vscode/settings.json` | clangd, 에디터, Python, exclusion 설정 | 로컬 (gitignored) |
+| `.vscode/tasks.json` | 빌드/테스트/런치 태스크 | 로컬 (gitignored) |
+| `.vscode/launch.json` | GDB launch/attach 구성 | 로컬 (gitignored) |
+| `.vscode/extensions.json` | 권장 확장 목록 | 로컬 (gitignored) |
+| [.clangd](../.clangd) | clangd 컴파일 플래그 + `CompilationDatabase: .` (repo 루트 DB) | ✅ |
+| [merge_compile_commands.py](../merge_compile_commands.py) | 패키지별 `compile_commands.json`을 repo 루트로 병합 | ✅ |

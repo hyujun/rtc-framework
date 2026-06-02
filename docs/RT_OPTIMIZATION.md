@@ -2,7 +2,7 @@
 
 **RTC (Real-Time Controller) 병렬 컴퓨팅 아키텍처 상세 문서**
 
-> **Layout 기준**: thread-layout-v3. 본 문서의 thread roster · core/priority 표 · 코드 인용은 모두 v3 기준이다.
+> **Layout 기준**: thread-layout-v4.1. 본 문서의 thread roster · core/priority 표 · 코드 인용은 모두 v4.1 기준이다.
 >
 > **Thread layout SSoT**:
 > - [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model — RT 정의·priority hierarchy·callback_group↔executor binding 매트릭스
@@ -696,17 +696,16 @@ taskset -cp $(pgrep -f ur_ros2_control_node)   # UR driver
 ros2 launch integrated_bringup sim.launch.py  # 또는 robot.launch.py
 # 충분한 샘플 (≥ 30s @ 500 Hz = 15k tick) 후 종료
 # 결과는 logging_data/<session_id>/timing/cm_timing_log.csv
-python3 -m rtc_tools.utils.cm_timing_analysis <csv_path>
+ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --stats   # 통계만 (plot 생략)
+ros2 run rtc_tools plot_rtc_log cm_timing_log.csv           # plot + 통계
 ```
 
-분석 스크립트 (`rtc_tools/utils/cm_timing_analysis.py`) 가 median-of-diff budget inference + first-tick init spike filter (mlockall page touch + 첫 RCLCPP_INFO) 를 적용. `--filter-outliers` 옵션이 첫 tick spike 를 stat 에서 제외.
+`plot_rtc_log` 의 cm_timing 파이프라인 (`rtc_tools/plotting/plotters/timing.py`) 이 first-tick init spike (mlockall page touch + 첫 RCLCPP_INFO) 와 outlier 를 `detect_outlier_indices()` (median 기반) 로 **자동 제외**해 p99 / max 가 한 tick 스파이크에 왜곡되지 않는다. `--stats` 는 plot 없이 mean / p50 / p95 / p99 / max + counter 만 출력. (구 `rtc_tools.utils.cm_timing_analysis` 모듈은 plotting 파이프라인으로 통합되어 폐기됨.)
 
 **목표** (500 Hz @ 2 ms budget):
 - `t_total_us` p99 ≪ 2000 µs (헤드룸 50% 이상)
 - `overruns` / `skips` / `pub_drops` / `nrt_pub_drops` 모두 0
 - post-warm `max` 가 p99 의 10× 이내 (튀는 spike 없음)
-
-실제 baseline 측정 결과는 `docs/analysis/cm_timing_baseline_v3.md` 참조 — 머신 / 커널 / sim 모드별로 archived.
 
 #### 3b. cyclictest (OS jitter 독립 측정 — 보조)
 
@@ -1020,4 +1019,3 @@ grep -E "[0-9]{3,}\.[0-9]{3} us" trace.txt
 **SSoT** (drift 방지 — 본 문서가 박제하지 않는 사실의 단일 출처):
 - Thread roster · core/priority 매트릭스: [rtc_base/README.md](../rtc_base/README.md) §스레드 구성 + [thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp)
 - callback_group → executor binding · RT 정의: [agent_docs/architecture.md](../agent_docs/architecture.md) §Threading Model
-- 실측 baseline (머신/커널별): [docs/analysis/cm_timing_baseline_v3.md](analysis/cm_timing_baseline_v3.md)
