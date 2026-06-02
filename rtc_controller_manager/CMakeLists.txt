@@ -183,6 +183,51 @@ if(BUILD_TESTING)
     target_link_libraries(test_robot_target_cb_group_invariant
       rtc_controller_manager_lib)
   endif()
+
+  ament_add_gtest(test_estop
+    test/test_estop.cpp)
+  if(TARGET test_estop)
+    target_include_directories(test_estop PRIVATE include test)
+    ament_target_dependencies(test_estop
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_estop
+      rtc_controller_manager_lib)
+  endif()
+
+  ament_add_gtest(test_device_target_callback
+    test/test_device_target_callback.cpp)
+  if(TARGET test_device_target_callback)
+    target_include_directories(test_device_target_callback PRIVATE include test)
+    ament_target_dependencies(test_device_target_callback
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_device_target_callback
+      rtc_controller_manager_lib)
+  endif()
+
+  ament_add_gtest(test_on_configure
+    test/test_on_configure.cpp)
+  if(TARGET test_on_configure)
+    target_include_directories(test_on_configure PRIVATE include)
+    ament_target_dependencies(test_on_configure
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_on_configure
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
+  ament_add_gtest(test_create_device_backends
+    test/test_create_device_backends.cpp)
+  if(TARGET test_create_device_backends)
+    target_include_directories(test_create_device_backends PRIVATE include test)
+    ament_target_dependencies(test_create_device_backends
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_create_device_backends
+      rtc_controller_manager_lib)
+  endif()
 endif()
 
 ament_package()
