@@ -107,6 +107,13 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_protuberance_detector test/test_protuberance_detector.cpp)
   target_link_libraries(test_protuberance_detector shape_estimation_core)
+
+  # ROS-wrapping helpers (msg ↔ struct, marker builders) — pure, no spin.
+  ament_add_gtest(test_msg_conversions test/test_msg_conversions.cpp)
+  target_link_libraries(test_msg_conversions shape_estimation_ros)
+
+  ament_add_gtest(test_rviz_markers test/test_rviz_markers.cpp)
+  target_link_libraries(test_rviz_markers shape_estimation_ros)
 endif()
 
 ament_package()
