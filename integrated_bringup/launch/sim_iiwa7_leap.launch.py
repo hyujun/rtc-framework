@@ -243,6 +243,17 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
         emulate_tty=True,
         parameters=ctrl_params,
+        # Aligator's contact_rich MPC (gar StageFactor / ArenaMatrix) requires
+        # mimalloc as the process allocator: it performs aligned/interior frees
+        # that glibc free() aborts on ("free(): invalid pointer"), crashing the
+        # WBC handler-MPC on grasp closure (contact_light → contact_rich swap).
+        # libmimalloc is otherwise only *partially* adopted (transitive link
+        # overrides C++ new/delete but not C malloc/free + Eigen) → cross-
+        # allocator free. Preload it so the allocator is uniform. Bare soname
+        # resolves via LD_LIBRARY_PATH (deps/install/lib).
+        # TODO(rt-validate): confirm no RT-loop jitter regression on real
+        # hardware before relying on this in production.
+        additional_env={"LD_PRELOAD": "libmimalloc.so.2"},
     )
 
     # ── Lifecycle chain: mujoco configure→activate → integrated_rt_controller configure→activate

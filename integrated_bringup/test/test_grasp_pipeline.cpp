@@ -41,6 +41,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <thread>
@@ -147,6 +148,9 @@ rtc::mpc::MpcThreadLaunchConfig MakeLaunchCfg(double hz) {
   rtc::mpc::MpcThreadLaunchConfig launch{};
   launch.main.cpu_core = -1;  // no pinning in unit tests
   launch.main.sched_priority = 0;
+  launch.main.name = "mpc_main";  // non-null, <=15 chars: ApplyThreadConfig rejects
+                                  // a null name (default-init MpcThreadLaunchConfig
+                                  // leaves main.name == nullptr otherwise).
   launch.num_workers = 0;
   launch.target_frequency_hz = hz;
   return launch;
@@ -205,6 +209,26 @@ contact_frames:
     mgr.WriteState(q, v, /*timestamp_ns=*/1);
   }
 
+  // Poll until `thread.TotalSolves()` reaches `target`, feeding fresh neutral
+  // state each iteration so ComputeReference stays within the staleness window.
+  // Decouples the solve-throughput assertions from per-solve latency: a cold
+  // 15-knot contact OCP solve runs ~hundreds of ms on CI-class hardware, so a
+  // fixed wall-clock window flakily under-counts. Returns true once the target
+  // is reached, false on timeout.
+  [[nodiscard]] bool WaitForSolves(rtc::mpc::HandlerMPCThread& thread,
+                                   rtc::mpc::MPCSolutionManager& mgr, std::uint64_t target,
+                                   std::chrono::milliseconds timeout) {
+    const auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < timeout) {
+      WriteNeutralState(mgr);
+      if (thread.TotalSolves() >= target) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return thread.TotalSolves() >= target;
+  }
+
   pinocchio::Model model_{};
   rtc::mpc::RobotModelHandler model_handler_{};
   std::unique_ptr<GraspPhaseManager> phase_manager_{};
@@ -248,21 +272,19 @@ TEST_F(GraspPipelineTest, HandlerThreadLoopSolvesWithGraspPhaseManager) {
   thread.Init(mgr, MakeLaunchCfg(20.0));
   thread.Start();
 
-  // Keep feeding neutral state so ComputeReference stays within the
-  // MaxStaleSolutions window for the duration of the test.
-  const auto start = std::chrono::steady_clock::now();
-  while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                                               start)
-             .count() < 400) {
-    WriteNeutralState(mgr);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  // Wait until the 20 Hz thread has solved at least 4 times. Was: assert >3
+  // after a fixed 400 ms window — flaky because a cold contact OCP solve runs
+  // hundreds of ms. The >= 4 threshold is preserved; only the implicit
+  // per-solve latency assumption is dropped. Neutral state is fed each poll to
+  // stay within the MaxStaleSolutions window.
+  const bool reached_target = WaitForSolves(thread, mgr, /*target=*/4u, std::chrono::seconds(10));
 
   thread.RequestStop();
   thread.Join();
 
-  EXPECT_GT(thread.TotalSolves(), 3u)
-      << "20 Hz thread should have solved several times over 400 ms";
+  EXPECT_TRUE(reached_target)
+      << "20 Hz thread did not reach 4 solves within 10 s — loop or solve is stuck";
+  EXPECT_GE(thread.TotalSolves(), 4u);
   EXPECT_EQ(thread.FailedSolves(), 0u)
       << "ContactLight steady-state path must not fail on the neutral pose";
   EXPECT_EQ(thread.LastSolveErrorCode(), 0);
@@ -300,37 +322,44 @@ TEST_F(GraspPipelineTest, ForcePhaseClosureTriggersCrossModeSwap) {
   thread.Init(mgr, MakeLaunchCfg(20.0));
   thread.Start();
 
-  // A few IDLE ticks first so the initial solve lands.
-  for (int i = 0; i < 5; ++i) {
-    WriteNeutralState(mgr);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
+  // Ensure at least one IDLE solve lands before forcing the phase, so the swap
+  // happens from a live handler. Was: 5 fixed 50 ms ticks — too short for a
+  // slow cold solve.
+  ASSERT_TRUE(WaitForSolves(thread, mgr, /*target=*/1u, std::chrono::seconds(10)))
+      << "no IDLE solve landed before ForcePhase — loop or solve is stuck";
 
   // WBC bridge analogue: force the grasp FSM into CLOSURE.
   pm_raw->ForcePhase(static_cast<int>(GraspPhaseId::kClosure));
 
+  // Wait until the handler thread observes the closure phase (cross-mode swap
+  // executed). Feed neutral state each poll to keep ComputeReference fresh.
   bool saw_closure = false;
-  for (int i = 0; i < 40; ++i) {
-    WriteNeutralState(mgr);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    if (thread.LastPhaseId() == static_cast<int>(GraspPhaseId::kClosure)) {
-      saw_closure = true;
-      break;
+  {
+    const auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+      WriteNeutralState(mgr);
+      if (thread.LastPhaseId() == static_cast<int>(GraspPhaseId::kClosure)) {
+        saw_closure = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
   }
-  // A small extra window for the swapped contact_rich handler to run at
-  // least one warm solve (mirrors the rtc_mpc integration test pattern).
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  // Give the swapped contact_rich handler room for >= 5 total solves (threshold
+  // preserved; only the fixed window is replaced by a bounded wait).
+  const bool reached_target = WaitForSolves(thread, mgr, /*target=*/5u, std::chrono::seconds(10));
 
   thread.RequestStop();
   thread.Join();
 
   ASSERT_TRUE(saw_closure) << "ForcePhase(kClosure) did not reach the HandlerMPCThread within "
-                              "2 seconds — bridge or swap is broken";
+                              "10 seconds — bridge or swap is broken";
   EXPECT_NE(thread.LastSolveErrorCode(),
             static_cast<int>(rtc::mpc::MPCSolveError::kRebuildRequired))
       << "Cross-mode swap returned kRebuildRequired — factory rejected the "
          "contact_rich config or handler_ failed to take ownership";
+  EXPECT_TRUE(reached_target);
   EXPECT_GE(thread.TotalSolves(), 5u);
 }
 
