@@ -585,6 +585,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // integrator re-seeds from measured q̇ on a target update. Default rarely
     // engages when the low-level tracker keeps v_curr ≈ previous command.
     v_jerk_limit_ = int_node["reseed_velocity_jerk"].as<double>(v_jerk_limit_);
+    // Optional experimental toggle: integrate from the freshly measured (q, v)
+    // each tick (closed-loop) instead of the carry-forward command buffers
+    // (open-loop). Default false preserves the carry-forward behaviour.
+    integrate_from_measured_ = int_node["integrate_from_measured"].as<bool>(false);
 
     if (!int_node["force_rate_alpha"]) {
       throw std::runtime_error(

@@ -783,4 +783,108 @@ TEST(WbcPostureGains, AssembleLeavesUncoveredSlotsUntouched) {
   EXPECT_DOUBLE_EQ(kd[3], 8.0);
 }
 
+// ── IntegrateAccelStep (a → v → q semi-implicit Euler) ───────────────────────
+//
+// The static step is mode-agnostic: the caller passes the seed (q, v), which is
+// the previous command (carry-forward) or the measured state (measured-
+// feedback). These tests pin the formula v_next = v_seed + a·dt,
+// q_next = q_seed + v_next·dt and the velocity / sign-gated position clamps for
+// both seeds, with no URDF / TSID dependency.
+
+namespace {
+constexpr double kTol = 1e-12;
+// Generous limits so the clamp branches stay inactive unless a test sets them.
+Eigen::VectorXd kBig(int n, double val) { return Eigen::VectorXd::Constant(n, val); }
+}  // namespace
+
+// Carry-forward seed: integrate from the previous command (q_prev, v_prev).
+TEST(WbcIntegrator, CarryForwardSeedAccumulatesFromPrevCommand) {
+  Eigen::VectorXd q(2), v(2), a(2);
+  q << 0.5, 0.5;   // previous commanded position
+  v << 0.0, 0.0;   // previous commanded velocity
+  a << 1.0, -2.0;  // TSID a_opt
+  const double dt = 0.1;
+  DemoWbcController::IntegrateAccelStep(q, v, a, dt, kBig(2, 1e6), kBig(2, -1e6), kBig(2, 1e6));
+  // v_next = v_prev + a·dt
+  EXPECT_NEAR(v[0], 0.1, kTol);
+  EXPECT_NEAR(v[1], -0.2, kTol);
+  // q_next = q_prev + v_next·dt
+  EXPECT_NEAR(q[0], 0.51, kTol);
+  EXPECT_NEAR(q[1], 0.48, kTol);
+}
+
+// Measured-feedback seed: same a, but integrate from the measured (q_curr,
+// v_curr). The result differs from carry-forward exactly by the seed — this is
+// the whole point of the experimental mode.
+TEST(WbcIntegrator, MeasuredFeedbackSeedAccumulatesFromMeasured) {
+  Eigen::VectorXd q(2), v(2), a(2);
+  q << 1.0, 1.0;   // measured position
+  v << 0.3, 0.3;   // measured velocity
+  a << 1.0, -2.0;  // same a_opt as the carry-forward case above
+  const double dt = 0.1;
+  DemoWbcController::IntegrateAccelStep(q, v, a, dt, kBig(2, 1e6), kBig(2, -1e6), kBig(2, 1e6));
+  EXPECT_NEAR(v[0], 0.4, kTol);
+  EXPECT_NEAR(v[1], 0.1, kTol);
+  EXPECT_NEAR(q[0], 1.04, kTol);
+  EXPECT_NEAR(q[1], 1.01, kTol);
+}
+
+// Velocity clamp saturates v_next at ±v_limit before it propagates into q.
+TEST(WbcIntegrator, VelocityClampSaturatesBothSigns) {
+  Eigen::VectorXd q(2), v(2), a(2), vlim(2);
+  q << 0.0, 0.0;
+  v << 0.0, 0.0;
+  a << 100.0, -100.0;  // raw v_next = ±10 over the ±5 limit
+  vlim << 5.0, 5.0;
+  const double dt = 0.1;
+  DemoWbcController::IntegrateAccelStep(q, v, a, dt, vlim, kBig(2, -1e6), kBig(2, 1e6));
+  EXPECT_NEAR(v[0], 5.0, kTol);
+  EXPECT_NEAR(v[1], -5.0, kTol);
+  // q uses the clamped velocity: q_next = 0 ± 5·dt.
+  EXPECT_NEAR(q[0], 0.5, kTol);
+  EXPECT_NEAR(q[1], -0.5, kTol);
+}
+
+// Position clamp zeroes velocity only when it still drives further into the
+// violated limit (sign-gated). A commanded retraction is left intact.
+TEST(WbcIntegrator, PositionClampSignGatesVelocity) {
+  const double dt = 0.1;
+  // Upper limit, driving in (v>0): q saturates and v is zeroed.
+  {
+    Eigen::VectorXd q(1), v(1), a(1), qmax(1), qmin(1);
+    q << 0.99;
+    v << 0.0;
+    a << 100.0;  // v_next = 10, q_raw = 1.99 > 1.0
+    qmax << 1.0;
+    qmin << -1.0;
+    DemoWbcController::IntegrateAccelStep(q, v, a, dt, kBig(1, 1e6), qmin, qmax);
+    EXPECT_NEAR(q[0], 1.0, kTol);
+    EXPECT_NEAR(v[0], 0.0, kTol);  // zeroed: still pushing past the limit
+  }
+  // Upper limit, retracting (v<0) but q still above max: q saturates, v kept.
+  {
+    Eigen::VectorXd q(1), v(1), a(1), qmax(1), qmin(1);
+    q << 1.05;
+    v << 0.0;
+    a << -0.1;  // v_next = -0.01, q_raw = 1.049 > 1.0
+    qmax << 1.0;
+    qmin << -1.0;
+    DemoWbcController::IntegrateAccelStep(q, v, a, dt, kBig(1, 1e6), qmin, qmax);
+    EXPECT_NEAR(q[0], 1.0, kTol);
+    EXPECT_NEAR(v[0], -0.01, kTol);  // preserved: retraction is not suppressed
+  }
+  // Lower limit, driving in (v<0): q saturates and v is zeroed.
+  {
+    Eigen::VectorXd q(1), v(1), a(1), qmax(1), qmin(1);
+    q << -0.99;
+    v << 0.0;
+    a << -100.0;  // v_next = -10, q_raw = -1.99 < -1.0
+    qmax << 1.0;
+    qmin << -1.0;
+    DemoWbcController::IntegrateAccelStep(q, v, a, dt, kBig(1, 1e6), qmin, qmax);
+    EXPECT_NEAR(q[0], -1.0, kTol);
+    EXPECT_NEAR(v[0], 0.0, kTol);
+  }
+}
+
 }  // namespace

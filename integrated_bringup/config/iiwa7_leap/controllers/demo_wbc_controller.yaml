@@ -321,6 +321,11 @@ demo_wbc_controller:
     reseed_velocity_jerk: 100.0  # rad/s²; one-tick command-velocity step bound
                                  # when the carry-forward integrator re-seeds
                                  # from measured q̇ on a target update. Optional.
+    integrate_from_measured: false  # false = open-loop carry-forward (integral
+                                 # accumulates from the previous commanded q/q̇).
+                                 # true  = closed-loop: re-seed from the measured
+                                 # q/q̇ every tick (v_next=v_curr+a·dt,
+                                 # q_next=q_curr+v_next·dt). Experimental.
 
   # ── FSM thresholds ─────────────────────────────────────────────────────────
   # Force/contact thresholds retained for schema compliance but the contact

@@ -87,8 +87,13 @@ enum class WbcPhase : uint8_t {
 // ── DemoWbcController ────────────────────────────────────────────────────────
 //
 // Whole-body controller demo for UR5e + 10-DoF hand using TSID QP.
-// TSID produces optimal acceleration a; position is obtained by integration:
-//   v_next = v_curr + a · dt,  q_next = q_curr + v_next · dt
+// TSID produces optimal acceleration a; position is obtained by semi-implicit
+// Euler integration a → v → q. Two integration modes (YAML
+// `integration.integrate_from_measured`, default false):
+//   carry-forward (false): integral accumulates from the previous *commanded*
+//     (q_next, v_next); measured state folds in only on re-seed events.
+//   measured-feedback (true): re-seed from the freshly *measured* (q_curr,
+//     v_curr) every tick, so v_next = v_curr + a·dt, q_next = q_curr + v_next·dt.
 //
 // Runtime tunable parameters (per-controller LifecycleNode):
 //   ROS 2 parameters declared on /demo_wbc_controller/<name>: see
@@ -253,6 +258,21 @@ class DemoWbcController final : public RTControllerInterface {
                                    const std::array<int, kMaxFullDof>& ext_to_pin_v, double kp_arm,
                                    double kd_arm, double kp_hand, double kd_hand,
                                    Eigen::VectorXd& kp_out, Eigen::VectorXd& kd_out) noexcept;
+
+  // Semi-implicit Euler step with velocity + sign-gated position clamps,
+  // operating in place on the seed state (q, v):
+  //   v ← clamp(v + a·dt, ±v_limit)
+  //   q ← clamp(q + v·dt, [q_min, q_max])  — where q saturates, zero v only if
+  //       it still drives further into the violated limit (open-loop carry-
+  //       forward would otherwise keep pushing).
+  // The seed (q, v) is the previous command (carry-forward) or the measured
+  // state (measured-feedback) — the caller decides; this step is mode-agnostic.
+  // Static + no member access so both modes are unit-testable without a URDF.
+  // All vectors must be pre-sized to nv; RT-safe (no alloc / throw).
+  static void IntegrateAccelStep(Eigen::VectorXd& q, Eigen::VectorXd& v, const Eigen::VectorXd& a,
+                                 double dt, const Eigen::VectorXd& v_limit,
+                                 const Eigen::VectorXd& q_min,
+                                 const Eigen::VectorXd& q_max) noexcept;
 
  private:
   // ── Model initialization ────────────────────────────────────────────────
@@ -493,6 +513,13 @@ class DemoWbcController final : public RTControllerInterface {
   // Bound (rad/s²) on the one-tick velocity step when re-seeding the integrator
   // from measured q̇ on a target update — prevents a command-velocity jump.
   double v_jerk_limit_{100.0};
+  // Integration mode (YAML `integration.integrate_from_measured`). false =
+  // open-loop carry-forward (integral accumulates from the previous commanded
+  // q_next/v_next). true = closed-loop measured-feedback: re-seed from the
+  // freshly measured q_curr/v_curr every tick, so the carry-forward re-seed
+  // machinery (jerk bound, target re-seed) is bypassed — there is no prior
+  // command state to preserve. Experimental; see ComputeTSIDPosition step 7.
+  bool integrate_from_measured_{false};
 
   // ControlState for TSID compute (pre-allocated)
   rtc::tsid::ControlState ctrl_state_;
