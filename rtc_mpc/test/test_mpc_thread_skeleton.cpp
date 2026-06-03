@@ -9,6 +9,8 @@
 
 #include "rtc_mpc/thread/mpc_thread.hpp"
 
+#include "wait_until.hpp"
+
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -59,7 +61,8 @@ TEST(MpcThreadLifecycle, StartAndStopCleanly) {
   thread.Start();
   EXPECT_TRUE(thread.Running());
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() >= 5; }))
+      << "fewer than 5 solves within timeout";
 
   thread.RequestStop();
   thread.Join();
@@ -83,7 +86,8 @@ TEST(MpcThreadLifecycle, DoubleJoinIsSafe) {
   NopMPCThread thread;
   thread.Init(mgr, launch);
   thread.Start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() >= 1; }))
+      << "thread never solved before Join";
   thread.Join();
   thread.Join();  // idempotent
   SUCCEED();
@@ -112,7 +116,8 @@ TEST(MpcThreadLifecycle, PauseFreezesSolveLoop) {
   EXPECT_FALSE(thread.Paused());
 
   // Let the loop spin up.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() > 0; }))
+      << "loop never solved before Pause";
   const int before_pause = thread.solve_count.load();
   EXPECT_GT(before_pause, 0);
 
@@ -130,7 +135,8 @@ TEST(MpcThreadLifecycle, PauseFreezesSolveLoop) {
   // Resume and verify the loop wakes up.
   thread.Resume();
   EXPECT_FALSE(thread.Paused());
-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() > while_paused; }))
+      << "solve_count did not advance after Resume within timeout";
   const int after_resume = thread.solve_count.load();
   EXPECT_GT(after_resume, while_paused) << "solve_count did not advance after Resume";
 
@@ -151,7 +157,8 @@ TEST(MpcThreadLifecycle, PauseResumeIdempotent) {
   NopMPCThread thread;
   thread.Init(mgr, launch);
   thread.Start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() >= 1; }))
+      << "thread never solved before Pause";
 
   thread.Pause();
   thread.Pause();  // idempotent
@@ -162,7 +169,8 @@ TEST(MpcThreadLifecycle, PauseResumeIdempotent) {
 
   thread.Resume();
   thread.Resume();  // idempotent
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.solve_count.load() > frozen; }))
+      << "solve_count did not advance after Resume within timeout";
   EXPECT_GT(thread.solve_count.load(), frozen);
 
   thread.RequestStop();
