@@ -111,6 +111,16 @@ if(BUILD_TESTING)
   ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
   target_link_libraries(test_core_controllers rtc_controllers)
 
+  # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
+  # (tip_link / joint_limits / safe_position), bounds guards, multi-device
+  # passthrough, 6-DOF + gravity/Coriolis compensation branches.
+  ament_add_gtest(test_controller_config test/test_controller_config.cpp)
+  target_link_libraries(test_controller_config rtc_controllers)
+
+  # QuinticPolynomial boundary math + T<=0 short-circuit (trajectory_utils.hpp).
+  ament_add_gtest(test_trajectory_utils test/test_trajectory_utils.cpp)
+  target_link_libraries(test_trajectory_utils rtc_controllers)
+
   # RT-4 single-writer SeqLock race stress: SetDeviceTarget (off-RT) vs
   # Compute (RT) — verifies the SPSC marshal pattern keeps target_seqlock_
   # tear-free under concurrent producer/consumer access.
