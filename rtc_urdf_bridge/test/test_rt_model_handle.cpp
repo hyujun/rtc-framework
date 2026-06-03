@@ -142,6 +142,62 @@ TEST_F(RtModelHandleSerialTest, MassMatrix) {
   }
 }
 
+TEST_F(RtModelHandleSerialTest, GeneralizedGravityEqualsNleAtZeroVelocity) {
+  // v=0 → nonLinearEffects(q,0) == generalizedGravity(q) (Coriolis term vanishes).
+  std::vector<double> q = {0.0, 0.5, -0.3, 0.2, -0.1, 0.4};
+  std::vector<double> v(6, 0.0);
+
+  handle_->ComputeGeneralizedGravity(q);
+  Eigen::VectorXd g = handle_->GetGeneralizedGravity();
+  handle_->ComputeNonLinearEffects(q, v);
+  Eigen::VectorXd nle = handle_->GetNonLinearEffects();
+
+  ASSERT_EQ(g.size(), 6);
+  EXPECT_FALSE(HasNanOrInf(g));
+  for (Eigen::Index i = 0; i < g.size(); ++i) {
+    EXPECT_NEAR(g[i], nle[i], 1e-9) << "component " << i;
+  }
+}
+
+// Validates ComputeCoriolisMatrix via the rigid-body identity
+//   nle(q,v) == C(q,v) v + g(q)
+// against independently-computed nle/g. No joint reorder on this handle, so q/v
+// are already in Pinocchio order and C/g/nle line up directly. NOTE: the repo's
+// test URDFs place each link COM on its own joint axis → M(q) is constant →
+// C(q,v) ≈ 0; the identity (not a magnitude floor) is the invariant here.
+TEST(RtModelHandleCoriolisTest, CoriolisMatrixReconstructsNle) {
+  rub::ModelConfig cfg;
+  cfg.urdf_path = TestUrdfPath("tree_hand.urdf");
+  cfg.root_joint_type = "fixed";
+  rub::PinocchioModelBuilder builder(cfg);
+  rub::RtModelHandle handle(builder.GetFullModel());
+  ASSERT_EQ(handle.nq(), 10);
+
+  std::vector<double> q = {0.1, 0.5, -0.3, 0.2, -0.1, 0.4, 0.2, -0.2, 0.3, -0.15};
+  std::vector<double> v = {0.2, -0.1, 0.3, 0.1, -0.2, 0.15, 0.25, -0.05, 0.2, -0.1};
+
+  handle.ComputeCoriolisMatrix(q, v);
+  Eigen::MatrixXd C = handle.GetCoriolisMatrix();
+  handle.ComputeGeneralizedGravity(q);
+  Eigen::VectorXd g = handle.GetGeneralizedGravity();
+  handle.ComputeNonLinearEffects(q, v);
+  Eigen::VectorXd nle = handle.GetNonLinearEffects();
+
+  ASSERT_EQ(C.rows(), 10);
+  ASSERT_EQ(C.cols(), 10);
+  EXPECT_FALSE(MatrixHasNanOrInf(C));
+
+  // Rigid-body identity: nle(q,v) == C(q,v) v + g(q).
+  Eigen::VectorXd v_eig(10);
+  for (int i = 0; i < 10; ++i) {
+    v_eig[i] = v[i];
+  }
+  Eigen::VectorXd reconstructed = C * v_eig + g;
+  for (Eigen::Index i = 0; i < nle.size(); ++i) {
+    EXPECT_NEAR(reconstructed[i], nle[i], 1e-8) << "component " << i;
+  }
+}
+
 TEST_F(RtModelHandleSerialTest, MoveConstruct) {
   auto handle2 = std::move(*handle_);
   EXPECT_EQ(handle2.nq(), 6);

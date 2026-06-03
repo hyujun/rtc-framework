@@ -59,6 +59,7 @@ rtc_urdf_bridge/
     ├── test_urdf_analyzer.cpp
     ├── test_chain_extractor.cpp
     ├── test_model_builder.cpp
+    ├── test_load_model_config.cpp      # YAML 로드 + 폐쇄체인/lock 빌드
     ├── test_rt_model_handle.cpp
     └── urdf/                           # 테스트용 URDF 파일
 ```

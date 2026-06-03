@@ -114,6 +114,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_model_builder test/test_model_builder.cpp)
   target_link_libraries(test_model_builder ${PROJECT_NAME})
 
+  ament_add_gtest(test_load_model_config test/test_load_model_config.cpp)
+  target_link_libraries(test_load_model_config ${PROJECT_NAME})
+
   ament_add_gtest(test_rt_model_handle test/test_rt_model_handle.cpp)
   target_link_libraries(test_rt_model_handle ${PROJECT_NAME})
 
