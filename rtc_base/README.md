@@ -506,7 +506,6 @@ producer.Drain([&](const StateLogPod &p) { logger.Log(p); });
 세션 디렉토리 구조:
 ```
 logging_data/YYMMDD_HHMM/
-  controller/                -- rtc_controller_manager 의 RT 루프 CSV (state_log, sensor_log; Phase C에서 정리됨)
   controllers/<config_key>/  -- 개별 controller LifecycleNode 가 자체 기록하는 데이터 CSV
   timing/                    -- per-tick 스레드 타이밍 CSV (cm_timing_log,
                                 mpc_timing_log, hand_udp_timing_log)
