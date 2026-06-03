@@ -1,19 +1,14 @@
 // ── UrdfAnalyzer 테스트 ──────────────────────────────────────────────────────
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
+#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
 
-#include <filesystem>
 #include <string>
 
 namespace rub = rtc_urdf_bridge;
 
-// 테스트 URDF 경로 헬퍼
-static std::string TestUrdfPath(const std::string& filename) {
-  // 빌드 디렉토리에서 소스 위치 추정
-  std::filesystem::path p(__FILE__);
-  return (p.parent_path() / "urdf" / filename).string();
-}
+using rtc::test::TestUrdfPath;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Serial 6-DoF arm 테스트

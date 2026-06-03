@@ -3,6 +3,7 @@
 // constructor that drives it, and RegisterClosedChainConstraints /
 // MakeReferenceConfig build paths that no other test exercises.
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
 
@@ -12,10 +13,7 @@
 
 namespace rub = rtc_urdf_bridge;
 
-static std::string TestUrdfPath(const std::string& filename) {
-  std::filesystem::path p(__FILE__);
-  return (p.parent_path() / "urdf" / filename).string();
-}
+using rtc::test::TestUrdfPath;
 
 static std::string WriteTempYaml(const std::string& name, const std::string& content) {
   std::filesystem::path p = std::filesystem::path(::testing::TempDir()) / name;

@@ -90,6 +90,14 @@ ament_export_include_directories(include)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
+  # rtc_controllers tests reuse the shared URDF-fixture path resolver from
+  # rtc_urdf_bridge/test (test_urdf_path.hpp) — a test-only, never-installed
+  # header pulled in by source-tree path. This is the same sibling-package
+  # layout assumption these tests already rely on to locate the URDF fixtures
+  # under rtc_urdf_bridge/test/urdf/.
+  set(rtc_urdf_bridge_test_include
+      "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+
   ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
   target_link_libraries(test_quintic_blend_trajectory rtc_controllers)
 
@@ -110,12 +118,14 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
   target_link_libraries(test_core_controllers rtc_controllers)
+  target_include_directories(test_core_controllers PRIVATE ${rtc_urdf_bridge_test_include})
 
   # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
   # (tip_link / joint_limits / safe_position), bounds guards, multi-device
   # passthrough, 6-DOF + gravity/Coriolis compensation branches.
   ament_add_gtest(test_controller_config test/test_controller_config.cpp)
   target_link_libraries(test_controller_config rtc_controllers)
+  target_include_directories(test_controller_config PRIVATE ${rtc_urdf_bridge_test_include})
 
   # QuinticPolynomial boundary math + T<=0 short-circuit (trajectory_utils.hpp).
   ament_add_gtest(test_trajectory_utils test/test_trajectory_utils.cpp)
@@ -126,6 +136,7 @@ if(BUILD_TESTING)
   # tear-free under concurrent producer/consumer access.
   ament_add_gtest(test_target_seqlock_race test/test_target_seqlock_race.cpp)
   target_link_libraries(test_target_seqlock_race rtc_controllers)
+  target_include_directories(test_target_seqlock_race PRIVATE ${rtc_urdf_bridge_test_include})
 endif()
 
 ament_package()

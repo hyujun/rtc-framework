@@ -2,18 +2,15 @@
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
+#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
 
-#include <filesystem>
 #include <string>
 
 namespace rub = rtc_urdf_bridge;
 
-static std::string TestUrdfPath(const std::string& filename) {
-  std::filesystem::path p(__FILE__);
-  return (p.parent_path() / "urdf" / filename).string();
-}
+using rtc::test::TestUrdfPath;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // IsXacroFile 단위 테스트

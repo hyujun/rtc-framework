@@ -1,16 +1,12 @@
 // ── PinocchioModelBuilder 테스트 ─────────────────────────────────────────────
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
+#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
 
-#include <filesystem>
-
 namespace rub = rtc_urdf_bridge;
 
-static std::string TestUrdfPath(const std::string& filename) {
-  std::filesystem::path p(__FILE__);
-  return (p.parent_path() / "urdf" / filename).string();
-}
+using rtc::test::TestUrdfPath;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Serial arm — ModelConfig 직접 전달

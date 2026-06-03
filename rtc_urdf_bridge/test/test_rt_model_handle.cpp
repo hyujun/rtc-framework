@@ -1,21 +1,18 @@
 // ── RtModelHandle 테스트 ────────────────────────────────────────────────────
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
+#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
 
 #include <cmath>
-#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace rub = rtc_urdf_bridge;
 
-static std::string TestUrdfPath(const std::string& filename) {
-  std::filesystem::path p(__FILE__);
-  return (p.parent_path() / "urdf" / filename).string();
-}
+using rtc::test::TestUrdfPath;
 
 // NaN/Inf 검사 헬퍼
 static bool HasNanOrInf(const Eigen::Ref<const Eigen::VectorXd>& v) {
