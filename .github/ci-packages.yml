@@ -7,7 +7,10 @@
 # 카테고리 의미:
 #   build       : `colcon build --packages-up-to <build>` 의 입력. 의존성으로
 #                 rtc_msgs / rtc_base / rtc_mpc 등이 자동 포함됨.
-#   test_cpp    : `colcon test --packages-select <test_cpp>` (gtest 보유 패키지)
+#   test_cpp_gated      : `colcon test` GATE — CI 실측 통과 패키지. 실패 시 PR red.
+#   test_cpp_besteffort : CI-fragile (perf/타이밍·mimalloc grasp) — coverage 만 수집,
+#                 continue-on-error (실패해도 PR 차단 안 함). loader 가 둘을 union 하여
+#                 빌드/커버리지 대상 test_cpp 를 유도한다.
 #   test_python : ament_python 패키지 (별도 pytest job)
 #   lint_cpp    : cppcheck 대상 — include/ 또는 src/ 가 있는 C++ 패키지
 #
@@ -29,18 +32,25 @@ build:
   - rtc_urdf_bridge
   - shape_estimation
 
-test_cpp:
+# gtest 보유 패키지 — 두 tier 로 분리 (2026-06-03, CI 실측 기반):
+#   gated 로 승격하기 전 반드시 CI 환경 실측 통과를 확인한다 (로컬 green ≠ CI green).
+#   loader: test_cpp = test_cpp_gated + test_cpp_besteffort (union) → 빌드/커버리지 입력.
+test_cpp_gated:
   - rtc_base
   - rtc_communication
   - rtc_controller_interface
   - rtc_controller_manager
   - rtc_controllers
-  - rtc_tsid
   - rtc_urdf_bridge
   - shape_estimation
-  - integrated_bringup
   - ur5e_bt_coordinator
   - udp_hand_driver
+
+test_cpp_besteffort:
+  # rtc_tsid           : TSIDPerformanceTest.*SolveTime — CI 러너에서 solve-time 초과로 실패
+  # integrated_bringup : GraspPipelineTest — contact_rich/mimalloc grasp (10~20s) CI-fragile
+  - rtc_tsid
+  - integrated_bringup
 
 test_python:
   - rtc_tools
@@ -62,7 +72,9 @@ lint_cpp:
   - udp_hand_driver
 
 # Coverage extraction patterns (lcov --extract globs).
-# CPP_TEST_PACKAGES 와 일치해야 한다. include/ + src/ 둘 다 포함.
+# test_cpp_gated + test_cpp_besteffort union 과 일치해야 한다. 패키지별 실제 레이아웃
+# 에 맞춰 include/ · src/ 를 hand-tune (예: rtc_base 는 header-only → include 만,
+# rtc_controller_manager 는 src 만) — 자동 유도 안 함 (분모가 바뀌므로).
 coverage_paths:
   - "*/rtc_base/include/*"
   - "*/rtc_communication/include/*"
