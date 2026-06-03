@@ -33,6 +33,7 @@
 #pragma GCC diagnostic pop
 
 #include "mock_phase_manager.hpp"
+#include "wait_until.hpp"
 #include "rtc_mpc/handler/contact_light_mpc.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
@@ -209,7 +210,8 @@ TEST_F(MpcThreadIntegrationTest, NullHandlerLogsOnceAndSkips) {
   thread.Configure(model_handler_, nullptr, nullptr);
   thread.Init(mgr, MakeLaunchCfg(100.0));
   thread.Start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.FailedSolves() > 0u; }))
+      << "null-handler path never logged a failed solve within timeout";
   thread.RequestStop();
   thread.Join();
 
@@ -235,12 +237,13 @@ TEST_F(MpcThreadIntegrationTest, DefaultPhaseConvergesFreeFlight) {
   thread.Configure(model_handler_, std::move(handler), std::move(mock));
   thread.Init(mgr, MakeLaunchCfg(20.0));
   thread.Start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.TotalSolves() >= 5u; }))
+      << "fewer than 5 solves within timeout";
   thread.RequestStop();
   thread.Join();
 
-  // 500 ms at 20 Hz → ~10 solves; be generous on the lower bound to avoid
-  // flakiness on loaded CI machines.
+  // At 20 Hz a handful of solves land quickly; the lower bound stays generous
+  // to avoid flakiness on loaded CI machines.
   EXPECT_GE(thread.TotalSolves(), 5u);
   EXPECT_EQ(thread.FailedSolves(), 0u)
       << "Baseline contact_light solve loop must not fail on neutral pose";
@@ -264,16 +267,10 @@ TEST_F(MpcThreadIntegrationTest, PhaseTransitionPickedUpWithinOneTick) {
   thread.Init(mgr, MakeLaunchCfg(20.0));  // 50 ms period
   thread.Start();
 
-  // 20 Hz × 5 ticks = ~250 ms for auto-transition; poll in 50 ms chunks until
-  // phase id flips to 1 or we exceed a safety bound.
-  bool transitioned = false;
-  for (int i = 0; i < 20; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    if (thread.LastPhaseId() == 1) {
-      transitioned = true;
-      break;
-    }
-  }
+  // 20 Hz × 5 ticks = ~250 ms for auto-transition; poll until the phase id
+  // flips to 1 or we exceed the 1-second safety bound.
+  const bool transitioned =
+      rtc::test::WaitUntil([&] { return thread.LastPhaseId() == 1; }, std::chrono::seconds(1));
 
   // After the FSM flipped, give the thread one more 50 ms window so the
   // next solve with phase B has time to land, then stop.
@@ -312,14 +309,8 @@ TEST_F(MpcThreadIntegrationTest, ForcePhaseOverridesGuards) {
 
   mock_raw->ForcePhase(1);
 
-  bool saw_phase_b = false;
-  for (int i = 0; i < 10; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    if (thread.LastPhaseId() == 1) {
-      saw_phase_b = true;
-      break;
-    }
-  }
+  const bool saw_phase_b = rtc::test::WaitUntil([&] { return thread.LastPhaseId() == 1; },
+                                                std::chrono::milliseconds(500));
   thread.RequestStop();
   thread.Join();
 
@@ -348,7 +339,8 @@ TEST_F(MpcThreadIntegrationTest, HandlerSurvivesStateDimMismatch) {
   thread.Configure(model_handler_, std::move(handler), std::move(mock));
   thread.Init(mgr, MakeLaunchCfg(50.0));
   thread.Start();
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  EXPECT_TRUE(rtc::test::WaitUntil([&] { return thread.FailedSolves() > 0u; }))
+      << "state-dim mismatch never produced a failed solve within timeout";
   thread.RequestStop();
   thread.Join();
 
@@ -474,14 +466,8 @@ mpc:
 
   // Wait for the auto-transition (tick=5 at 20 Hz ≈ 250 ms) + a few more
   // ticks for the swap + first `contact_rich` solve to land.
-  bool saw_phase_b = false;
-  for (int i = 0; i < 40; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    if (thread.LastPhaseId() == 1) {
-      saw_phase_b = true;
-      break;
-    }
-  }
+  const bool saw_phase_b =
+      rtc::test::WaitUntil([&] { return thread.LastPhaseId() == 1; }, std::chrono::seconds(2));
   // One extra window so the swapped `contact_rich` handler can run at least
   // one warm solve after `SeedWarmStart`.
   std::this_thread::sleep_for(std::chrono::milliseconds(200));

@@ -15,13 +15,25 @@ namespace {
 
 const std::string kPandaUrdf = RTC_PANDA_URDF_PATH;
 
-TEST(TorqueLimitTest, Dimensions) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
+// Fixture: build the Panda model once per test in SetUp(), shared via model_ /
+// info_. Each TEST_F gets a fresh fixture instance, so behaviour is identical
+// to the previous per-TEST inline build — only the boilerplate is removed.
+class TorqueLimitTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    model_ = std::make_shared<pinocchio::Model>();
+    pinocchio::urdf::buildModel(kPandaUrdf, *model_);
+    YAML::Node config;
+    info_.Build(*model_, config);
+  }
 
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+  std::shared_ptr<pinocchio::Model> model_;
+  RobotModelInfo info_;
+};
+
+TEST_F(TorqueLimitTest, Dimensions) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
@@ -40,13 +52,9 @@ TEST(TorqueLimitTest, Dimensions) {
   EXPECT_EQ(tl.IneqDim(cs), info.n_actuated);
 }
 
-TEST(TorqueLimitTest, BoundsConsistency) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(TorqueLimitTest, BoundsConsistency) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
@@ -83,13 +91,9 @@ TEST(TorqueLimitTest, BoundsConsistency) {
 }
 
 // A-1: YAML tau_scale 적용 — bound 가 정확히 tau_scale 배가 되는지.
-TEST(TorqueLimitTest, TauScaleAppliesMargin) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(TorqueLimitTest, TauScaleAppliesMargin) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
@@ -143,13 +147,9 @@ TEST(TorqueLimitTest, TauScaleAppliesMargin) {
 // A-1 (guide §2): No-contact 시 inequality matrix·boundary 가 직접 계산식과 정확히
 // 일치하는지 — random a 100 개에 대해 (C·z)_τ + S·h = S·M·a, l + S·h = τ_min,
 // u + S·h = τ_max.
-TEST(TorqueLimitTest, NoContact_MatchesDirectComputation) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(TorqueLimitTest, NoContact_MatchesDirectComputation) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
@@ -195,13 +195,9 @@ TEST(TorqueLimitTest, NoContact_MatchesDirectComputation) {
 
 // A-1 (guide §2): Contact active 시 -S·Jcᵀ block 이 직접 계산과 일치 — random
 // (a, λ) 100 개에 대해 C·z + S·h ≈ S·(M·a + h - Jcᵀ·λ).
-TEST(TorqueLimitTest, WithContact_MatchesDirectComputation) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(TorqueLimitTest, WithContact_MatchesDirectComputation) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   // Find link7 frame for point contact.
   std::string frame_name;
@@ -278,13 +274,9 @@ TEST(TorqueLimitTest, WithContact_MatchesDirectComputation) {
 // A-1 (guide §2): tau_scale 을 매우 작게 잡으면 feasible (a, λ) 영역이 좁아진다
 // — bound width (u - l) 가 tau_scale 에 비례해서 작아지는지 직접 확인. matrix-level
 // 검증 (QP solver 미사용).
-TEST(TorqueLimitTest, TightBoundsReduceFeasibleRegion) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(TorqueLimitTest, TightBoundsReduceFeasibleRegion) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
@@ -336,13 +328,9 @@ TEST(TorqueLimitTest, TightBoundsReduceFeasibleRegion) {
 // A-1 (guide §2): tau_scale=1.0 (default) 면 bound 가 raw URDF effort_limit 그대로 —
 // "unconstrained baseline" 과 등가. baseline 보다 더 큰 magnitude 의 a 가 통과할 여지
 // 가 있는지 확인.
-TEST(TorqueLimitTest, LooseBoundsMatchRawEffortLimits) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(TorqueLimitTest, LooseBoundsMatchRawEffortLimits) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
@@ -394,13 +382,9 @@ TEST(TorqueLimitTest, LooseBoundsMatchRawEffortLimits) {
 }
 
 // A-1: tau_scale 범위 위반 시 init throw.
-TEST(TorqueLimitTest, TauScaleOutOfRangeThrows) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(kPandaUrdf, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(TorqueLimitTest, TauScaleOutOfRangeThrows) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
   ContactManagerConfig mgr;
   PinocchioCache cache;
   cache.Init(model, mgr);

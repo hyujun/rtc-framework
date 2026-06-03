@@ -8,6 +8,7 @@
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 #include "rtc_controllers/indirect/clik_controller.hpp"
 #include "rtc_controllers/indirect/p_controller.hpp"
+#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
 
@@ -22,16 +23,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 static std::string GetTestUrdfPath() {
-  const char* env = std::getenv("RTC_TEST_URDF_PATH");
-  if (env)
+  if (const char* env = std::getenv("RTC_TEST_URDF_PATH")) {
     return env;
-  // Resolve relative to this source file
-  std::string path = __FILE__;
-  auto pos = path.rfind("/rtc_controllers/");
-  if (pos != std::string::npos) {
-    return path.substr(0, pos) + "/rtc_urdf_bridge/test/urdf/serial_6dof.urdf";
   }
-  return "serial_6dof.urdf";  // last resort
+  return rtc::test::TestUrdfPath("serial_6dof.urdf");
 }
 
 static rtc::ControllerState MakeState(int nj = 6, double dt = 0.002) {

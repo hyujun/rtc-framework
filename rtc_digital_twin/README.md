@@ -45,7 +45,10 @@ rtc_digital_twin/
 │   │                                  integrated_bringup/config/ur5e_hand/digital_twin.yaml
 │   └── digital_twin.rviz         <- RViz2 디스플레이 설정
 └── test/
-    └── test_urdf_parser.py       <- URDF 분류/검증 단위 테스트
+    ├── test_urdf_parser.py         <- URDF 분류/검증 단위 테스트
+    ├── test_sensor_visualizer.py   <- FingertipSensor → MarkerArray 변환
+    ├── test_tcp_visualizer.py      <- TCP pose ↔ marker/TF, 회전 변환 수학
+    └── test_joint_state_cache.py   <- JointStateCache static/dynamic 모드
 ```
 
 ---

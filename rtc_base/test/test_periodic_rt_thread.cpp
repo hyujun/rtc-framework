@@ -28,6 +28,23 @@ namespace {
 
 using namespace std::chrono_literals;
 
+// Polls `pred` every millisecond until it holds or `timeout` elapses, returning
+// the final predicate value. Replaces blind sleep-as-sync: the suite reacts to
+// observable progress (tick / overrun counters) instead of a fixed wall-clock
+// guess, which removes timing flakiness on a busy CI host. The generous 2 s
+// ceiling only bounds a genuine hang — the happy path returns in a few ms.
+template <typename Pred>
+[[nodiscard]] bool WaitUntil(Pred pred, std::chrono::milliseconds timeout = 2s) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!pred()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return true;
+}
+
 rtc::ThreadConfig MakeNonRtConfig(const char* name) {
   // SCHED_OTHER + nice 0 keeps the test runnable without RT permissions.
   rtc::ThreadConfig cfg{};
@@ -67,7 +84,8 @@ TEST(PeriodicRtThread, StartStopRunsTicks) {
   CountingThread t;
   t.Start(MakeCfg("rtc_test_a", 100.0));
   EXPECT_TRUE(t.Running());
-  std::this_thread::sleep_for(120ms);
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 5; }))
+      << "thread did not reach 5 ticks within timeout";
   t.RequestStop();
   t.Join();
   EXPECT_FALSE(t.Running());
@@ -87,7 +105,8 @@ TEST(PeriodicRtThread, StartIsNoopOnNonPositiveFrequency) {
 TEST(PeriodicRtThread, JoinIsIdempotent) {
   CountingThread t;
   t.Start(MakeCfg("rtc_test_c", 100.0));
-  std::this_thread::sleep_for(40ms);
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 1; }))
+      << "thread never ticked before Join";
   t.Join();
   // Second join must not block, throw, or restart anything.
   t.Join();
@@ -97,7 +116,8 @@ TEST(PeriodicRtThread, JoinIsIdempotent) {
 TEST(PeriodicRtThread, PauseHaltsTicksAndResumeRestarts) {
   CountingThread t;
   t.Start(MakeCfg("rtc_test_d", 100.0));
-  std::this_thread::sleep_for(60ms);
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 1; }))
+      << "thread never ticked before Pause";
 
   t.Pause();
   EXPECT_TRUE(t.Paused());
@@ -107,7 +127,8 @@ TEST(PeriodicRtThread, PauseHaltsTicksAndResumeRestarts) {
   EXPECT_EQ(t.ticks.load(), frozen) << "Paused loop must not advance ticks";
 
   t.Resume();
-  std::this_thread::sleep_for(120ms);
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() > frozen; }))
+      << "Resume did not restart ticking within timeout";
   EXPECT_GT(t.ticks.load(), frozen) << "Resume must restart ticking";
 
   t.RequestStop();
@@ -152,7 +173,8 @@ class TimingThread : public rtc::PeriodicRtThread {
 TEST(PeriodicRtThread, TimingProducerReceivesPerTickSamples) {
   TimingThread t;
   t.Start(MakeCfg("rtc_test_f", 100.0));
-  std::this_thread::sleep_for(150ms);
+  EXPECT_TRUE(WaitUntil([&] { return t.TickCount() >= 6; }))
+      << "fewer than 6 ticks produced within timeout";
   t.RequestStop();
   t.Join();
 
@@ -203,10 +225,8 @@ TEST(PeriodicRtThread, WaitForNextTickAbortStopsLoop) {
   t.Start(MakeCfg("rtc_test_g", 200.0));
   // The override returns kAbort on the 3rd call; the loop should exit on
   // its own without RequestStop(), and OnLoopAborted must fire once.
-  // Wait long enough for the 3 wait calls (each sleeps 5 ms) to complete.
-  for (int i = 0; i < 50 && !t.aborted.load(); ++i) {
-    std::this_thread::sleep_for(5ms);
-  }
+  EXPECT_TRUE(WaitUntil([&] { return t.aborted.load(); }))
+      << "loop did not self-abort within timeout";
   t.Join();
   EXPECT_TRUE(t.aborted.load());
   EXPECT_GE(t.wait_calls.load(), 3);
@@ -261,7 +281,8 @@ class NoJitterTimingThread : public rtc::PeriodicRtThread {
 TEST(PeriodicRtThread, JitterZeroWhenSubclassDisablesIt) {
   NoJitterTimingThread thr;
   thr.Start(MakeCfg("rtc_test_nj", 100.0));
-  std::this_thread::sleep_for(150ms);
+  EXPECT_TRUE(WaitUntil([&] { return thr.TickCount() >= 6; }))
+      << "fewer than 6 ticks produced within timeout";
   thr.RequestStop();
   thr.Join();
 
@@ -282,7 +303,8 @@ TEST(PeriodicRtThread, OverrunHookFiresOnDeadlineMiss) {
   OverrunThread t;
   // 200 Hz → 5 ms period; OnTick sleeps 15 ms so every tick overruns.
   t.Start(MakeCfg("rtc_test_h", 200.0));
-  std::this_thread::sleep_for(120ms);
+  EXPECT_TRUE(WaitUntil([&] { return t.overruns.load() >= 3; }))
+      << "fewer than 3 overruns observed within timeout";
   t.RequestStop();
   t.Join();
   EXPECT_GE(t.overruns.load(), 3);

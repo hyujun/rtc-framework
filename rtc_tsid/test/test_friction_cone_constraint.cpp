@@ -12,13 +12,25 @@
 namespace rtc::tsid {
 namespace {
 
-TEST(FrictionConeTest, Dimensions) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
+// Fixture: build the Panda model once per test in SetUp(), shared via model_ /
+// info_. Each TEST_F gets a fresh fixture instance, so behaviour is identical
+// to the previous per-TEST inline build — only the boilerplate is removed.
+class FrictionConeTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    model_ = std::make_shared<pinocchio::Model>();
+    pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model_);
+    YAML::Node config;
+    info_.Build(*model_, config);
+  }
 
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+  std::shared_ptr<pinocchio::Model> model_;
+  RobotModelInfo info_;
+};
+
+TEST_F(FrictionConeTest, Dimensions) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(2);
@@ -52,13 +64,9 @@ TEST(FrictionConeTest, Dimensions) {
   EXPECT_EQ(fc.IneqDim(cs), 5);
 }
 
-TEST(FrictionConeTest, ConeMatrixStructure) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, ConeMatrixStructure) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -114,13 +122,9 @@ TEST(FrictionConeTest, ConeMatrixStructure) {
 }
 
 // A-3: surface contact (cdim=6) → ineq_dim = friction_faces + 1 + 6 (CoP rect + yaw).
-TEST(FrictionConeTest, SurfaceContactDimensions) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, SurfaceContactDimensions) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(2);
@@ -156,13 +160,9 @@ TEST(FrictionConeTest, SurfaceContactDimensions) {
 }
 
 // A-3: CoP rectangle row 수치 검증 — m_x bound: ±m_x - l_y·f_z ≤ 0.
-TEST(FrictionConeTest, SurfaceCopRectangleMatrix) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, SurfaceCopRectangleMatrix) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -235,13 +235,9 @@ TEST(FrictionConeTest, SurfaceCopRectangleMatrix) {
 }
 
 // A-3: μ_τ > 0 → yaw rows have non-zero fz column.
-TEST(FrictionConeTest, SurfaceYawMoment) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, SurfaceYawMoment) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -289,13 +285,9 @@ TEST(FrictionConeTest, SurfaceYawMoment) {
 
 // A-3: patch=0, μ_τ=0 surface → fz 열은 0 이 되고 moment 열 ±1 이 살아 m=0 강제.
 // "trivial 행" 아니라 *point-like restraint* (moment 0 equality). docs 의 의도된 동작.
-TEST(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -349,13 +341,9 @@ TEST(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
 }
 
 // A-3: mixed point + surface — λ block offset 이 정확히 진행하는지.
-TEST(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(2);
@@ -415,13 +403,9 @@ TEST(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
 
 // A-4: normal = (0,0,1) explicit → cone matrix byte-identical to default-init.
 // Validates the +Z short-circuit path stays regression-safe.
-TEST(FrictionConeTest, NormalDefaultsToWorldZ) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, NormalDefaultsToWorldZ) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -469,13 +453,9 @@ TEST(FrictionConeTest, NormalDefaultsToWorldZ) {
 
 // A-4: normal tilted around X axis by θ=30° → rotated cone columns match
 // the analytical R_c · row_local prediction.
-TEST(FrictionConeTest, NormalAwareTiltedZ) {
-  auto model = std::make_shared<pinocchio::Model>();
-  pinocchio::urdf::buildModel(RTC_PANDA_URDF_PATH, *model);
-
-  RobotModelInfo info;
-  YAML::Node config;
-  info.Build(*model, config);
+TEST_F(FrictionConeTest, NormalAwareTiltedZ) {
+  auto& model = model_;
+  RobotModelInfo& info = info_;
 
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
@@ -559,7 +539,7 @@ TEST(FrictionConeTest, NormalAwareTiltedZ) {
 
 // A-4: ContactState::UpdateNormal LPF — pushing a step normal converges
 // monotonically toward target and stays unit-norm.
-TEST(FrictionConeTest, NormalLowPassConvergence) {
+TEST_F(FrictionConeTest, NormalLowPassConvergence) {
   ContactManagerConfig mgr;
   mgr.contacts.resize(1);
   mgr.contacts[0].contact_dim = 3;

@@ -6,6 +6,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ── Coverage (gcov/lcov) ─────────────────────────────────────────────────────
+# Directory-scoped: header-only INTERFACE lib has no object of its own, so this
+# instruments the test binaries that include the headers.
+option(ENABLE_COVERAGE "Enable gcov code coverage" OFF)
+if(ENABLE_COVERAGE)
+  add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+  add_link_options(--coverage)
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rtc_base REQUIRED)
 
@@ -53,6 +62,18 @@ if(HAS_ONNXRUNTIME)
   endif()
 else()
   message(STATUS "ONNX Runtime not found — building stub inference engine")
+endif()
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  # Linking the INTERFACE target propagates the include dir, the HAS_ONNXRUNTIME
+  # definition, and the ONNX Runtime link (when present) into the test binary.
+  ament_add_gtest(test_inference_engine test/test_inference_engine.cpp)
+  if(TARGET test_inference_engine)
+    target_link_libraries(test_inference_engine rtc_inference)
+  endif()
 endif()
 
 # ── Install & Export ──────────────────────────────────────────────────────────

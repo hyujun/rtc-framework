@@ -1,10 +1,10 @@
 // ── Joint classification 테스트 (JointRole / PassiveSubtype) ─────────────────
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
+#include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -12,10 +12,7 @@ namespace rub = rtc_urdf_bridge;
 
 namespace {
 
-std::string TestUrdfPath(const std::string& filename) {
-  std::filesystem::path p(__FILE__);
-  return (p.parent_path() / "urdf" / filename).string();
-}
+using rtc::test::TestUrdfPath;
 
 bool Contains(const std::vector<std::string>& vec, const std::string& name) {
   return std::find(vec.begin(), vec.end(), name) != vec.end();

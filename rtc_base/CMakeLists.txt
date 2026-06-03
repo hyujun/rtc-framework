@@ -74,6 +74,28 @@ if(BUILD_TESTING)
     target_include_directories(test_periodic_rt_thread PRIVATE include)
     target_link_libraries(test_periodic_rt_thread pthread)
   endif()
+
+  ament_add_gtest(test_rt_utils test/test_rt_utils.cpp)
+  if(TARGET test_rt_utils)
+    target_include_directories(test_rt_utils PRIVATE include)
+  endif()
+
+  ament_add_gtest(test_drift_filters test/test_drift_filters.cpp)
+  if(TARGET test_drift_filters)
+    target_include_directories(test_drift_filters PRIVATE include)
+    target_link_libraries(test_drift_filters pthread)
+  endif()
+
+  ament_add_gtest(test_timing_profiler_base test/test_timing_profiler_base.cpp)
+  if(TARGET test_timing_profiler_base)
+    target_include_directories(test_timing_profiler_base PRIVATE include)
+  endif()
+
+  ament_add_gtest(test_spsc_queue test/test_spsc_queue.cpp)
+  if(TARGET test_spsc_queue)
+    target_include_directories(test_spsc_queue PRIVATE include)
+    target_link_libraries(test_spsc_queue pthread)
+  endif()
 endif()
 
 ament_package()

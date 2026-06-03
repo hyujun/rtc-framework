@@ -16,6 +16,14 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   )
 endif()
 
+# ── Coverage (gcov/lcov) ─────────────────────────────────────────────────────
+# Directory-scoped: instruments mujoco_simulator_lib + all tests when ON.
+option(ENABLE_COVERAGE "Enable gcov code coverage" OFF)
+if(ENABLE_COVERAGE)
+  add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+  add_link_options(--coverage)
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
@@ -134,13 +142,20 @@ if(mujoco_FOUND)
       target_link_libraries(test_pure_helpers mujoco_simulator_lib)
     endif()
 
+    # ResolveModelPath: pure string + ament, no MJCF fixture needed.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_resource_provider.cpp")
+      ament_add_gtest(test_resource_provider test/test_resource_provider.cpp)
+      target_link_libraries(test_resource_provider mujoco_simulator_lib)
+    endif()
+
     # Phase 2 + 3: MJCF-fixture-based tests
     foreach(t test_simulator_init
               test_solver_config
               test_command_state_io
               test_lifecycle
               test_runtime_controls
-              test_data_flow)
+              test_data_flow
+              test_sim_effort_force)
       if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/${t}.cpp")
         ament_add_gtest(${t} test/${t}.cpp)
         target_link_libraries(${t} mujoco_simulator_lib)

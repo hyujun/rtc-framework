@@ -14,6 +14,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   )
 endif()
 
+# ── Coverage (gcov/lcov) ─────────────────────────────────────────────────────
+# Directory-scoped: instruments the STATIC lib + all tests when ON.
+option(ENABLE_COVERAGE "Enable gcov code coverage" OFF)
+if(ENABLE_COVERAGE)
+  add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+  add_link_options(--coverage)
+endif()
+
 # ── Dependencies ─────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
 find_package(rtc_base REQUIRED)

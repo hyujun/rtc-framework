@@ -93,6 +93,8 @@ jobs:
     outputs:
       build: ${{ steps.load.outputs.build }}
       test_cpp: ${{ steps.load.outputs.test_cpp }}
+      test_cpp_gated: ${{ steps.load.outputs.test_cpp_gated }}
+      test_cpp_besteffort: ${{ steps.load.outputs.test_cpp_besteffort }}
       test_python: ${{ steps.load.outputs.test_python }}
       lint_cpp: ${{ steps.load.outputs.lint_cpp }}
       coverage_paths: ${{ steps.load.outputs.coverage_paths }}
@@ -104,7 +106,10 @@ jobs:
           set -eo pipefail
           # ubuntu-24.04 image 는 yq 4.x preinstalled
           BUILD=$(yq -r '.build | join(" ")' .github/ci-packages.yml)
-          TEST_CPP=$(yq -r '.test_cpp | join(" ")' .github/ci-packages.yml)
+          TEST_CPP_GATED=$(yq -r '.test_cpp_gated | join(" ")' .github/ci-packages.yml)
+          TEST_CPP_BESTEFFORT=$(yq -r '.test_cpp_besteffort | join(" ")' .github/ci-packages.yml)
+          # test_cpp = gated + besteffort union — 빌드/커버리지 입력의 단일 유도
+          TEST_CPP=$(yq -r '(.test_cpp_gated + .test_cpp_besteffort) | join(" ")' .github/ci-packages.yml)
           TEST_PY=$(yq -r '.test_python | join(" ")' .github/ci-packages.yml)
           LINT=$(yq -r '.lint_cpp | join(" ")' .github/ci-packages.yml)
           # coverage_paths: lcov --extract 의 다중 인자 — 한 줄에 공백 분리
@@ -112,12 +117,16 @@ jobs:
           {
             echo "build=${BUILD}"
             echo "test_cpp=${TEST_CPP}"
+            echo "test_cpp_gated=${TEST_CPP_GATED}"
+            echo "test_cpp_besteffort=${TEST_CPP_BESTEFFORT}"
             echo "test_python=${TEST_PY}"
             echo "lint_cpp=${LINT}"
             echo "coverage_paths=${COV}"
           } >> "$GITHUB_OUTPUT"
           echo "build=${BUILD}"
           echo "test_cpp=${TEST_CPP}"
+          echo "test_cpp_gated=${TEST_CPP_GATED}"
+          echo "test_cpp_besteffort=${TEST_CPP_BESTEFFORT}"
           echo "test_python=${TEST_PY}"
           echo "lint_cpp=${LINT}"
 
@@ -330,9 +339,15 @@ jobs:
   #  upload 를 별도 job 으로 분리 복원. colcon test 의 ModuleNotFoundError root
   #  cause 는 colcon-test-report action 의 PYTHONPATH 보강으로 해결됨 (python-test
   #  job 에서 검증됨). build-test 는 RelWithDebInfo 빌드 신호로 그대로 유지하고,
-  #  여기서는 ENABLE_COVERAGE=ON (Debug 계측) 으로 분리 — 빌드 신호와 커버리지
-  #  신호를 섞지 않는다. test 실행은 continue-on-error (아래 step 주석 참조) 로
-  #  coverage 수집과 분리 — job 의 deliverable 은 커버리지이지 test 게이트가 아니다.
+  #  여기서는 ENABLE_COVERAGE=ON (Debug 계측) 으로 분리한다.
+  #
+  #  Test 게이트 복원 (2026-06-03): test 를 2 tier 로 나눈다 (CI 실측 기반, ci-packages.yml).
+  #    - test_cpp_gated      : CI 통과 패키지 → --return-code-on-test-failure 가 job 을
+  #                            그대로 실패시킨다 (merge GATE). continue-on-error 없음.
+  #    - test_cpp_besteffort : CI-fragile (rtc_tsid perf / integrated_bringup grasp) →
+  #                            continue-on-error 로 coverage 만 수집, PR 차단 안 함.
+  #  빌드 캐시: build-test 와 분리된 키(coverage-v1, Debug+gcov), restore-keys 로 증분.
+  #  캐시 복원분의 stale .gcda 는 test 직전 정리 (커버리지 카운트 오염 방지).
   # ============================================================
   coverage-cpp:
     name: C++ Coverage
@@ -367,6 +382,18 @@ jobs:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
 
+      # build-test 와 분리된 키 (Debug + gcov 계측이라 산출물이 다름). restore-keys
+      # prefix 매치로 colcon 증분 빌드 → 변경 패키지만 재컴파일 (cold 33min 단축).
+      - name: Cache colcon workspace (coverage)
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/
+            install/
+          key: colcon-${{ env.ROS_DISTRO }}-coverage-v1-${{ hashFiles('**/CMakeLists.txt', '**/package.xml', '**/*.hpp', '**/*.cpp') }}
+          restore-keys: |
+            colcon-${{ env.ROS_DISTRO }}-coverage-v1-
+
       - name: Build packages (coverage-instrumented)
         uses: ./.github/actions/colcon-build
         with:
@@ -389,21 +416,38 @@ jobs:
             --rc geninfo_unexecuted_blocks=1 \
             --ignore-errors mismatch,source,gcov,negative,unused,empty 2>&1 | tail -20 || true
 
-      # 이 job 의 deliverable 은 coverage 수집이지 test pass/fail 게이트가 아니다.
-      # C++ 테스트는 2026-04-28~05-31 동안 CI 에서 실행되지 않았고, 재개 시 일부
-      # 패키지(런타임 robot description / ROS lifecycle 의존)의 CI-환경 실패가
-      # 드러난다. 그 실패가 coverage 업로드를 막지 않도록 continue-on-error 로
-      # 분리한다 — 실패는 step 의 red + GITHUB_STEP_SUMMARY annotation 으로 계속
-      # 노출되며(가시성 유지), 실제 test-환경 수정은 별도 PR 로 다룬다.
-      - name: Run C++ tests with coverage
+      # 캐시 복원 시 이전 run 의 .gcda 가 남아 gcov 카운트를 오염시킬 수 있으므로
+      # 테스트 직전 모두 제거 → coverage 는 이번 run 의 실행만 반영. .gcno(빌드 산출)
+      # 는 보존하므로 instrumentation 은 유지된다.
+      - name: Reset stale coverage counters (.gcda)
+        shell: bash
+        run: find build -name '*.gcda' -delete 2>/dev/null || true
+
+      # GATE: CI 실측 통과 패키지. colcon-test-report 의 --return-code-on-test-failure
+      # 가 job 을 그대로 실패시킨다 (continue-on-error 없음) → 여기 red 면 PR merge 차단.
+      - name: Run gated C++ tests (merge gate)
+        uses: ./.github/actions/colcon-test-report
+        with:
+          packages: ${{ needs.packages.outputs.test_cpp_gated }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          summary-title: C++ Gated Test Results
+          artifact-suffix: cpp-coverage-test-gated
+
+      # BEST-EFFORT: CI-fragile (rtc_tsid perf / integrated_bringup grasp). coverage 만
+      # 수집하고 실패해도 PR 을 차단하지 않는다 (continue-on-error). 실패는 step red +
+      # GITHUB_STEP_SUMMARY annotation 으로 계속 노출(가시성 유지). always() 로 gated
+      # 실패 여부와 무관하게 실행해 coverage 를 최대한 수집한다.
+      - name: Run best-effort C++ tests (coverage only)
+        if: always()
         continue-on-error: true
         uses: ./.github/actions/colcon-test-report
         with:
-          packages: ${{ needs.packages.outputs.test_cpp }}
+          packages: ${{ needs.packages.outputs.test_cpp_besteffort }}
           ros-distro: ${{ env.ROS_DISTRO }}
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
-          summary-title: C++ Coverage Test Results
-          artifact-suffix: cpp-coverage-test
+          summary-title: C++ Best-Effort Test Results
+          artifact-suffix: cpp-coverage-test-besteffort
 
       - name: Capture & filter lcov coverage
         if: always()
