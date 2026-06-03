@@ -24,7 +24,7 @@ import shutil
 from datetime import datetime
 
 _SESSION_SUBDIRS = (
-    "controller",
+    "timing",
     "monitor",
     "device",
     "sim",
@@ -124,7 +124,7 @@ def get_session_subdir(subdir: str) -> str | None:
     """현재 세션 디렉토리 내 특정 서브디렉토리 경로를 반환합니다.
 
     Args:
-        subdir: 서브디렉토리 이름 (e.g. ``'plots'``, ``'device'``, ``'controller'``).
+        subdir: 서브디렉토리 이름 (e.g. ``'plots'``, ``'device'``, ``'timing'``).
 
     Returns:
         서브디렉토리 절대 경로. 세션 미설정 시 ``None``.

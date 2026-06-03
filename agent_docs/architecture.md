@@ -116,7 +116,7 @@ RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nr
 
 구현: `rtc::TopicOwnership` enum (`rtc_controllers/topic_config.hpp`). CM 은 controller-owned sub/pub 을 configure 시 skip; `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
 
-Session logs: `logging_data/YYMMDD_HHMM/{controller,monitor,device,sim,plots,motions}/`. Per-controller logs 는 `controllers/<config_key>/` (plural — controller LifecycleNode 가 owner, 예: `demo_wbc_controller/mpc_solve_timing.csv`), CM RT loop logs 는 `controller/` (singular — `rtc_controller_manager` 가 owner, `{group}_state_log.csv` / `{group}_sensor_log.csv` / `timing_log.csv`). 단/복수 차이가 미세하므로 새 logger 추가 시 producer thread 의 소유자 기준으로 위치 선택. Session root resolution (4-tier chain) 는 `rtc_base/logging/session_dir.hpp` + `rtc_tools.utils.session_dir` 가 SSoT.
+Session logs: `logging_data/YYMMDD_HHMM/{timing,monitor,device,sim,plots,motions,tracing}/`. Per-controller logs 는 `controllers/<config_key>/` (controller LifecycleNode 가 owner, 예: `demo_wbc_controller/mpc_solve_timing.csv`), per-tick 스레드 타이밍 CSV 는 `timing/` (`cm_timing_log` / `mpc_timing_log` / `hand_udp_timing_log`). 레거시 singular `controller/` (CM RT-loop DataLogger) 는 Phase C 에서 제거됨 — 더 이상 생성하지 않는다. 새 logger 추가 시 producer thread 의 소유자 기준으로 위치 선택. Session subdir 목록은 `rtc_base/logging/session_dir.hpp` (`kSubdirs`) + `rtc_tools.utils.session_dir` (`_SESSION_SUBDIRS`) 가 mirror SSoT — 한쪽 변경 시 반드시 동기화.
 
 ## Dependency Graph
 

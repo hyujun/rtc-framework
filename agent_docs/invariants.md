@@ -176,6 +176,7 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 | PROC-2 | 공개 API 변경 시 downstream 패키지 재빌드·재테스트 | ABI 호환성 |
 | PROC-3 | `rtc_base` / `rtc_msgs` 변경 시 전체 빌드·전체 테스트 | 광범위 영향 — 대부분 패키지가 의존 |
 | PROC-4 | E-STOP trigger는 idempotent (`compare_exchange_strong`) | 중복 트리거 안전성 |
+| PROC-5 | C++ ↔ Python 미러 쌍은 한쪽만 고치지 말 것 — session subdir 목록 (`rtc_base/logging/session_dir.hpp` `kSubdirs` ↔ `rtc_tools.utils.session_dir` `_SESSION_SUBDIRS`) 등 "동일 로직" 표방 미러는 동시 수정 + 동등성 테스트 통과 | 부분 수정 drift — launch (Python) 가 노드 (C++) 보다 먼저 세션 디렉토리를 만들어 한쪽 누락이 런타임에 표면화 (`test_session_dir.py::test_subdir_list_matches_cpp_mirror`) |
 
 ## Numerical Invariants
 
