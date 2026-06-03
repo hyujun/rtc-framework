@@ -21,7 +21,6 @@ namespace rtc {
 // 모든 패키지에서 공유하는 세션 기반 로깅 디렉토리 관리.
 // 세션 디렉토리 구조:
 //   logging_data/YYMMDD_HHMM/
-//     controller/   — CM RT 루프 CSV (state/sensor 로그; Phase C에서 정리됨)
 //     controllers/  — per-controller 데이터 CSV (예:
 //                     demo_wbc_controller/<log_name>.csv); on-demand 생성
 //     timing/       — per-tick 스레드 타이밍 CSV (cm_timing_log,
@@ -57,8 +56,8 @@ inline std::string GenerateSessionTimestamp() {
 
 /// 세션 디렉토리 내 표준 서브디렉토리 생성
 inline void EnsureSessionSubdirs(const std::filesystem::path& session_dir) {
-  static constexpr const char* kSubdirs[] = {"controller", "timing", "monitor", "device",
-                                             "sim",        "plots",  "motions", "tracing"};
+  static constexpr const char* kSubdirs[] = {"timing", "monitor", "device",
+                                             "sim",    "plots",   "motions", "tracing"};
   for (const auto* sub : kSubdirs) {
     std::filesystem::create_directories(session_dir / sub);
   }

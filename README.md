@@ -289,8 +289,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 
 | 서브디렉토리 | 내용 |
 |---|---|
-| `controller/` | `<device>_log.csv` (디바이스별: 관절/센서/추론; Phase C에서 controller-owned 경로로 이전 예정) |
-| `controllers/<config_key>/` | per-controller 데이터 CSV |
+| `controllers/<config_key>/` | per-controller 데이터 CSV (`<instance>.csv`; Phase C에서 controller-owned 경로로 일원화) |
 | `timing/` | per-tick 스레드 타이밍 CSV (cm_timing_log, mpc_timing_log, hand_udp_timing_log — 동일 7열 RtTickTimingPayload 스키마) |
 | `monitor/` | ur5e_failure_*.log, controller_stats.json |
 | `hand/` | hand_udp_stats.json |

@@ -187,9 +187,11 @@ TEST_F(SessionDirTest, SessionDir_UsesRtcSessionDirEnv) {
   const fs::path got = rtc::ResolveSessionDir();
   EXPECT_EQ(got, explicit_session);
   // 표준 서브디렉토리가 모두 만들어져 있어야 함.
-  for (const char* sub : {"controller", "timing", "monitor", "device", "sim", "plots", "motions"}) {
+  for (const char* sub : {"timing", "monitor", "device", "sim", "plots", "motions"}) {
     EXPECT_TRUE(fs::is_directory(explicit_session / sub)) << sub;
   }
+  // 단수 controller/ 는 더 이상 생성하지 않음 (per-controller CSV 는 controllers/).
+  EXPECT_FALSE(fs::is_directory(explicit_session / "controller"));
   // TimingDir() helper는 동일한 timing/ 경로를 반환해야 함.
   EXPECT_EQ(rtc::TimingDir(explicit_session), explicit_session / "timing");
 }
@@ -206,7 +208,7 @@ TEST_F(SessionDirTest, SessionDir_NoEnv_CreatesUnderResolvedRoot) {
 
   const fs::path session = rtc::ResolveSessionDir();
   EXPECT_EQ(session.parent_path(), ws / "logging_data");
-  EXPECT_TRUE(fs::is_directory(session / "controller"));
+  EXPECT_TRUE(fs::is_directory(session / "timing"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
