@@ -119,6 +119,7 @@ if(BUILD_TESTING)
     test_compute_offset_pose
     test_set_pose_z
     test_compute_sweep_trajectory
+    test_compute_tilt_sequence
     test_wait_duration
   )
   foreach(test_name ${TIER1_TESTS})
@@ -142,6 +143,7 @@ if(BUILD_TESTING)
     test_condition_nodes
     test_hand_nodes
     test_shape_nodes
+    test_data_nodes
   )
   foreach(test_name ${TIER2_TESTS})
     ament_add_gtest(${test_name} test/${test_name}.cpp)
