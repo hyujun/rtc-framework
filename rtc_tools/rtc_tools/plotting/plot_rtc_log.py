@@ -63,10 +63,11 @@ def main():
     )
     parser.add_argument(
         "--show",
-        action="store_true",
-        help="Display plots in GUI in addition to saving. "
-        "Without this flag, --save-dir (auto-resolved by default) forces the "
-        "Agg backend and only PNGs are written.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Display plots in GUI in addition to saving (default: on). "
+        "Pass --no-show to skip the GUI; --save-dir (auto-resolved by default) "
+        "then forces the Agg backend and only PNGs are written.",
     )
     parser.add_argument("--stats", action="store_true", help="Print statistics only (no plots)")
     parser.add_argument(
