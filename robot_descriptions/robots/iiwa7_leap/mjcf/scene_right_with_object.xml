@@ -20,13 +20,18 @@
     <global azimuth="120" elevation="-20"/>
   </visual>
 
+  <!-- Group convention (mirrors the robot MJCF iiwa7_with_leap_right.xml):
+       the included robot file's main default is <geom group="3"/> (collision
+       bucket), and MuJoCo's mjv_defaultOption hides groups 3/4/5 by default
+       (only 0/1/2 shown). So every *visible* scene geom must set an explicit
+       group in 0..2; collision-only geoms stay in group 3 (toggle with '3'). -->
   <default>
     <default class="table">
-      <geom type="box" contype="1" conaffinity="1" friction="1 0.5 0.01" condim="4"/>
+      <geom type="box" contype="1" conaffinity="1" friction="1 0.5 0.01" condim="4" group="2"/>
     </default>
     <default class="object_free">
       <joint limited="false" margin="0.01" armature="0.001" damping="0" frictionloss="0.001"/>
-      <geom type="mesh" rgba=".93 .99 .97 1"/>
+      <geom type="mesh" rgba=".93 .99 .97 1" group="1"/>
       <default class="object_col">
         <geom type="mesh" density="1250" contype="1" conaffinity="1" friction="1 0.5 0.01"
               margin="0.0005" condim="4" rgba=".3 .4 .5 1" group="3"/>
@@ -76,7 +81,7 @@
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
-    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" group="2"/>
 
     <body name="object_table" pos="0.70 0 0">
       <geom name="object_table_top" class="table" size="0.25 0.25 0.005" pos="0 0 0.045" material="wood_table"/>

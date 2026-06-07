@@ -18,6 +18,9 @@
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
-    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+    <!-- group="2": the robot MJCF's main default is group="3" (collision bucket),
+         which MuJoCo's mjv_defaultOption hides by default (only groups 0/1/2 are
+         shown). Scene/world geoms must opt into a visible group explicitly. -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" group="2"/>
   </worldbody>
 </mujoco>
