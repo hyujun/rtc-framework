@@ -186,6 +186,19 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
     } else if (type == "se3") {
       auto task = std::make_unique<rtc::tsid::SE3Task>();
       task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      // SE3Task's identity comes from its inner `name:` field (default "se3"),
+      // NOT the YAML map key. The phase presets, the per-tick reference push
+      // (GetTask(key)), and se3_task_active_in_phase all look the task up by
+      // the map key — if it diverges from the resolved name the task is
+      // unreachable: never deactivated by a preset, never given a reference, so
+      // it tracks identity and fights every phase. Surface the mismatch loudly.
+      const std::string resolved_name{task->Name()};
+      if (resolved_name != key) {
+        RCLCPP_WARN(logger_,
+                    "[wbc] se3 task '%s' resolves to name '%s' — they must match; add "
+                    "`name: \"%s\"` to the task block or GetTask(\"%s\") returns null",
+                    key.c_str(), resolved_name.c_str(), key.c_str(), key.c_str());
+      }
       formulation.AddTask(std::move(task));
       // F-2: capture base_frame for OnDeviceConfigsSet consistency check.
       // Skip when key absent — universe fallback path stays unchecked here.

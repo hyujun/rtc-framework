@@ -260,6 +260,14 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_wbc_controller shipped-config lint (C-0.2) ────────────────────────
+  # Parses the shipped YAML directly (no model / lifecycle); RTC_WBC_CONFIG_DIR
+  # points at integrated_bringup/config.
+  ament_add_gtest(test_demo_wbc_config_lint test/test_demo_wbc_config_lint.cpp)
+  target_link_libraries(test_demo_wbc_config_lint yaml-cpp)
+  target_compile_definitions(test_demo_wbc_config_lint PRIVATE
+    RTC_WBC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+
   # ── demo_wbc_controller MPC integration tests (Phase 5) ────────────────────
   ament_add_gtest(test_demo_wbc_mpc_integration
     test/test_demo_wbc_mpc_integration.cpp)

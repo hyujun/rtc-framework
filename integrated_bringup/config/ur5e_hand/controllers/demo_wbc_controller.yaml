@@ -94,6 +94,14 @@ demo_wbc_controller:
         kd: 6.0
       se3_tcp:
         type: "se3"
+        # SE3Task reads its identity from this `name` field (default "se3").
+        # It MUST equal the YAML key — phase_presets, the per-tick SE3 reference
+        # push (GetTask("se3_tcp")), and the se3_task_active_in_phase cache all
+        # look the task up by "se3_tcp". Without it the task is named "se3",
+        # GetTask("se3_tcp") returns null, so the task is never deactivated by a
+        # preset and never receives a reference — it tracks identity and fights
+        # every phase.
+        name: "se3_tcp"
         # SE3 control reference is interpreted in `base_frame`.
         # `frame` is the controlled tip; `base_frame` is the parent reference.
         # Must match the arm device config `urdf.root_link` so tcp_goal_
