@@ -151,7 +151,7 @@ Long-running task handoff 절차·능동 제안 트리거 (도메인 전환 / �
 
 ### 9.1 colcon CWD (Hard rule)
 
-> **`colcon build` / `colcon test` 는 반드시 colcon workspace root (`<rtc_ws>` = `~/ros2_ws/rtc_ws`) 에서 실행한다.** repo (`src/rtc-framework`) 안에서 호출하면 `build/` · `install/` · `log/` 트리가 그 위치에 생기고 — `.clangd` 의 CompilationDatabase 가 잘못된 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다. `build.sh` / `install.sh` 는 내부에서 `cd "$WORKSPACE"` 하므로 안전. 직접 `colcon` 을 칠 때는 **항상 `cd <rtc_ws>` 또는 절대경로 `--build-base` / `--install-base` 지정**, 그리고 `source repo_scripts/scripts/setup_env.sh` (없으면 ROS·deps·venv env 누락으로 `colcon test` 가 silent fail).
+> **`colcon build` / `colcon test` 는 반드시 colcon workspace root (`<rtc_ws>` = `~/ros2_ws/rtc_ws`) 에서 실행한다.** repo (`src/rtc-framework`) 안에서 호출하면 `build/` · `install/` · `log/` 트리가 그 위치에 생기고 — `.clangd` 의 CompilationDatabase 가 잘못된 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다. `build.sh` / `install.sh` 는 내부에서 `cd "$WORKSPACE"` 하므로 안전. 직접 `colcon` 을 칠 때는 **항상 `cd <rtc_ws>` 또는 절대경로 `--build-base` / `--install-base` 지정**, 그리고 `source ${repo_ws}/repo_scripts/scripts/setup_env.sh` (`${repo_ws}` = `<rtc_ws>/src/rtc-framework` = `~/ros2_ws/rtc_ws/src/rtc-framework`; `repo_scripts` 는 repo 안에 있으므로 ws-root cwd 기준 상대경로 `repo_scripts/...` 는 안 풀린다 — 절대경로 또는 이 prefix 필수). env 미source 상태로 `colcon`/`cmake` 호출 시 컴파일러·ROS·deps·venv PATH 누락으로 `colcon test` 가 silent fail 하거나 build 가 즉시 비정상 종료한다.
 
 post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하면 잘못된 cwd 에서 실행된 것이므로 삭제.
 
