@@ -65,6 +65,9 @@ rtc_tsid/
 │   │   ├── contact_manager.hpp         -- (Stage B-1/B-4) Grasp matrix G + J_c / J̇_c·v stacking + active_lambda_dim
 │   │   ├── grasp_cache.hpp             -- (Stage B-2) LDLT-based G_pinv + GT_pinv + P_N + rank_G
 │   │   └── object_state_provider.hpp   -- (Stage B-4) ObjectStateProvider interface + IdentityObjectStateProvider stub
+│   ├── kinematics/
+│   │   ├── se3_error.hpp               -- (Stage C-1) 공용 SE(3) 오차 규약 (base-frame 위치차 + log3 θ→π clamp)
+│   │   └── clik_reference.hpp          -- (Stage C-1) ClikReferenceGenerator — velocity-level CLIK low-level reference
 │   └── solver/
 │       └── qp_solver_wrapper.hpp       -- ProxSuite QP 솔버 래퍼
 ├── src/                                -- 구현 파일
@@ -148,6 +151,8 @@ wqp:                       # 또는 hqp.solver_per_level (HQP)
 **Stage B-4 — ObjectSE3Task ((Gᵀ)⁺·J_c kinematic) + ObjectStateProvider.** `tasks/object_se3_task.hpp` 의 `ObjectSE3Task` 가 object SE(3) pose 를 contact 가 매개하는 kinematic chain 으로 추종한다. `J = [(Gᵀ)⁺ · J_c_stack | 0_{6 × n_λ}]` (좌측 nv 컬럼만 a 에 의존, 우측 λ block 은 0 — *kinematic* task), `r = a_obj_des - (Gᵀ)⁺ · (J̇_c · v)_stack` 이며 `a_obj_des = a_ff + Kp·e_pos + Kd·e_vel` 의 SE(3) PD reference (SE3Task 와 동일한 log3 singularity guard). ⚠ **v2 차원 수정**: kinematic Jacobian 은 `(Gᵀ)⁺ · J_c` 이지 `G⁺ · J_c` 가 아니다 — 후자는 6-row residual 과 차원 불일치. GraspCache 가 이미 `GTPinv()` 를 캐시하므로 ObjectSE3Task / ObjectWrenchTask / InternalForceTask 세 task 가 동일 GraspCache 인스턴스를 공유한다. 활성화 게이트: (1) `ContactManager::ActiveLambdaDim > 0`, AND (2) `ObjectStateProvider::IsValid()` — 두 조건 모두 만족시 `ResidualDim() = active_mask_count` (default 6), 아니면 0. ObjectStateProvider 는 abstract interface (Stage B-4 에서 신설 — ARCH-3 의 "두 번째 구현 전 abstract" 룰을 *선제적으로* 만족) + `IdentityObjectStateProvider` stub (pose ≡ given ObjectFrame, twist=0, valid=true). 실제 vision / external pose topic 소비 provider 는 Stage B-5+ 에서 watchdog (pose_timeout_sec) 과 함께 추가 예정. `ContactManager` 는 본 stage 에서 `StackContactJDotV(cache, state, v_out)` API 도 신설 (StackContactJacobians 와 대칭, dotJ·v bias 의 active-packed stack). RT alloc 0 (workspace `jc_stack_` / `djv_stack_` / `j_obj_full_` 모두 SetContactManager 에서 (max_contact_vars × nv) / max_contact_vars / (6 × nv) 로 pre-alloc; ComputeResidual 내부는 `noalias()` block product 만 사용).
 
 **Stage B-2 — GraspCache + ObjectWrenchTask.** `contact/grasp_cache.hpp` 의 `GraspCache::Compute(G, n_λ_active)` 가 매 tick `G_pinv ∈ R^{n_λ × 6}` / `GT_pinv ∈ R^{6 × n_λ}` / `P_N = I - G_pinv·G ∈ R^{n_λ × n_λ}` / `rank_G ∈ [0,6]` 을 LDLT-기반 damped Moore–Penrose 로 계산 — SVD 미사용, 6×6 또는 n_λ×n_λ 의 작은 normal-equation (`G·Gᵀ` 또는 `Gᵀ·G`) 위에서 in-place `solveInPlace` 만 사용. RT-safe: 모든 workspace (`m6_`, `minv6_`, `nlam_`, `ninv_`, `minv_g_`, `ldlt_*`) Init() 에서 사전 할당. Damping ε = max(tol_damp, eps_machine · trace(M)) 으로 wholly singular contact configuration 에도 stable. `tasks/object_wrench_task.hpp` 의 `ObjectWrenchTask` 는 `J = [0_{6×nv} | G]`, `r = w_obj_des` 의 6-residual task — active contact slot 에 G column 을 unpack 하고 inactive slot 은 0 (ForceTask convention). `ResidualDim()` 은 active count > 0 이면 6, else 0 (한-tick lag). Stage B-3 (InternalForceTask, `r = P_N · λ_squeeze_des`) / Stage B-4 (ObjectSE3Task, `(Gᵀ)⁺·J_c`) 에서 GraspCache 의 동일 인스턴스 공유.
+
+**Stage C-1 — ClikReferenceGenerator + 공용 SE(3) 오차 유틸.** `kinematics/se3_error.hpp` 에 SE3Task 의 오차 규약 (base-frame 위치차 + 분리된 `log3` 회전오차, θ→π clamp) 을 `Log3Clamped` / `ComputeSe3Error` free function 으로 추출 — SE3Task 와 `ClikReferenceGenerator` 가 동일 척도를 공유한다 (A/B command-source 비교 전제). `kinematics/clik_reference.hpp` 의 `ClikReferenceGenerator` 는 TSID 가속도 적분의 대안인 velocity-level CLIK one-step reference `(q_ref, v_ref)` 를 생성한다: L1 TCP (arm-only, 댐핑 우역행렬 `J_a♯ = J_aᵀ(J_aJ_aᵀ+μ²I)⁻¹` — GraspCache 패턴의 6×6 LDLT, SVD 미사용), L2 arm nullspace posture (projector 비형성 동치식 `v_p + J_a♯(Kx⊙e − J_a·v_p)`), L3 hand posture (projection 없음). 회전 오차는 LWA Jacobian 의 world-aligned 각속도 행과 정합하도록 base 좌표로 회전 (`log3(R_d·R_cᵀ)`, norm 불변 — body 좌표 그대로 쓰면 tip 이 base 대비 90°+ 회전한 자세에서 발산). Robot-agnostic: arm/hand velocity index set 은 controller 가 주입 (ARCH-1), `PinocchioCache` 의 registered-frame J/oMf 재사용 (별도 FK 없음), measured anchoring `q_ref = q_meas + v_ref·dt` (nq==nv reduced tree 전제), per-joint `v_limit` clamp, `Manipulability()` (LDLT pivot √det) / `TcpErrorNorm()` 진단. RT alloc 0 (모든 workspace Init() pre-alloc, `Compute()` noexcept — `test_clik_reference` 의 TU-local alloc counter 로 검증).
 
 #### SE3Task YAML 설정
 
@@ -301,7 +306,7 @@ colcon test --packages-select rtc_tsid --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-17개 테스트 (107 test cases):
+대표 테스트 (전체 목록은 `CMakeLists.txt` `ament_add_gtest` 등록, 실측 카운트는 [agent_docs/testing-debug.md](../agent_docs/testing-debug.md) 참조):
 
 | 테스트 | 설명 |
 |--------|------|
@@ -322,6 +327,7 @@ colcon test-result --verbose
 | `test_tsid_wqp_hqp_compare` | WQP vs HQP 비교 검증 |
 | `test_tsid_performance` | 성능 벤치마크 |
 | `test_phase3_integration` | Phase 3 모듈 통합 (WQP/HQP + SE3 + CoM + preset 전환) |
+| `test_clik_reference` | (Stage C-1) CLIK reference: TCP 수렴, nullspace 무간섭, hand decoupling, singularity bound, RT alloc 0 |
 
 > Build hygiene: `EomConstraint::compute_equality`의 미사용 인자 `n_vars`를 `/*n_vars*/`로 표시 (`-Wunused-parameter` 제거), `PostureTask`의 `cache.q.size()` (Eigen `Index` = `long`) → `int` 변환에 `static_cast<int>` 명시 (`-Wconversion` 제거), `test_tsid_performance` warm-up 호출에 `(void)` 캐스트 추가 (nodiscard `-Wunused-result` 제거). Behavior 동일.
 

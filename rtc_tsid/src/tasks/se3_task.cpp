@@ -1,5 +1,7 @@
 #include "rtc_tsid/tasks/se3_task.hpp"
 
+#include "rtc_tsid/kinematics/se3_error.hpp"
+
 #include <cmath>
 
 namespace rtc::tsid {
@@ -128,21 +130,9 @@ void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReferenc
           ? rf.oMf
           : cache.registered_frames[static_cast<size_t>(base_frame_idx_)].oMf.actInv(rf.oMf);
 
-  // ── 위치 오차 (base 좌표계) ──
-  error_full_.head<3>() = placement_des_.translation() - tip_in_base.translation();
-
-  // ── 자세 오차: log3(R_currᵀ · R_des) — base frame에서 ──
-  // θ → π singularity 보호
-  const Eigen::Matrix3d R_err = tip_in_base.rotation().transpose() * placement_des_.rotation();
-  const Eigen::AngleAxisd aa(R_err);
-  const double angle = aa.angle();
-
-  if (angle < M_PI - 1e-4) {
-    error_full_.tail<3>() = pinocchio::log3(R_err);
-  } else {
-    // π 근처: 방향 유지, 크기 clamp
-    error_full_.tail<3>() = aa.axis() * (M_PI - 1e-4);
-  }
+  // ── 위치 + 자세 오차 (base 좌표계): 공용 SE(3) 오차 규약 ──
+  // kinematics/se3_error.hpp — ClikReferenceGenerator (Stage C-1) 와 동일 척도.
+  error_full_ = ComputeSe3Error(tip_in_base, placement_des_);
 
   // ── 속도 오차: v_des - J · v ──
   v_error_full_.noalias() = v_des_ - rf.J * cache.v;
