@@ -373,6 +373,98 @@ void DemoWbcController::AssemblePostureGains(int arm_dof, int full_dof, int nv,
   }
 }
 
+void DemoWbcController::BuildClikJointIndexSets(int arm_dof, int full_dof, int nv,
+                                                const std::array<int, kMaxFullDof>& ext_to_pin_v,
+                                                std::vector<int>& arm_v_idx,
+                                                std::vector<int>& hand_v_idx) noexcept {
+  arm_v_idx.clear();
+  hand_v_idx.clear();
+  const int n = std::min(full_dof, static_cast<int>(kMaxFullDof));
+  for (int i = 0; i < n; ++i) {
+    const int pv = ext_to_pin_v[static_cast<std::size_t>(i)];
+    if (pv < 0 || pv >= nv) {
+      continue;
+    }
+    if (i < arm_dof) {
+      arm_v_idx.push_back(pv);
+    } else {
+      hand_v_idx.push_back(pv);
+    }
+  }
+}
+
+void DemoWbcController::InitClik() noexcept {
+  clik_enabled_ = false;
+  clik_tcp_frame_idx_ = -1;
+  clik_base_frame_idx_ = -1;
+  if (!tsid_initialized_ || !joint_reorder_valid_ || !full_model_ptr_ || arm_dof_ <= 0) {
+    return;
+  }
+  const int nq = full_model_ptr_->nq;
+  const int nv = full_model_ptr_->nv;
+  // CLIK contract: nq == nv (reduced revolute/prismatic tree) so velocity
+  // indices address q directly and q_ref = q + v·dt is valid. The full URDF
+  // fallback (nq=26, nv=21 with first-class mimic) violates this — CLIK stays
+  // disabled and the clik command source degrades to the integrator.
+  if (nq != nv) {
+    RCLCPP_WARN(logger_,
+                "[wbc] CLIK disabled: control model nq=%d != nv=%d (needs reduced nq==nv tree). "
+                "command_source=clik will fall back to the integrator.",
+                nq, nv);
+    return;
+  }
+
+  // Register the se3_tcp tip/base frames on the shared cache. RegisterFrame
+  // dedups by frame_id, so this reuses the SE3Task's existing registration
+  // (returning the same index). Must run before the first RT cache.Update()
+  // locks registration — InitClik is called from on_configure.
+  if (tip_frame_id_ == 0) {
+    RCLCPP_WARN(logger_, "[wbc] CLIK disabled: tip frame unresolved (OnDeviceConfigsSet).");
+    return;
+  }
+  clik_tcp_frame_idx_ = pinocchio_cache_.RegisterFrame("clik_tcp", tip_frame_id_);
+  if (clik_tcp_frame_idx_ < 0) {
+    RCLCPP_WARN(logger_, "[wbc] CLIK disabled: tip frame registration failed (cache locked).");
+    return;
+  }
+  // Base frame: mirror SE3Task's universe fast-path (base_frame_idx < 0) when
+  // the controller uses the world frame; otherwise register the root link.
+  if (use_root_frame_ && root_frame_id_ != 0) {
+    clik_base_frame_idx_ = pinocchio_cache_.RegisterFrame("clik_base", root_frame_id_);
+    if (clik_base_frame_idx_ < 0) {
+      RCLCPP_WARN(logger_, "[wbc] CLIK disabled: base frame registration failed (cache locked).");
+      clik_tcp_frame_idx_ = -1;
+      return;
+    }
+  } else {
+    clik_base_frame_idx_ = -1;  // universe
+  }
+
+  std::vector<int> arm_v_idx;
+  std::vector<int> hand_v_idx;
+  BuildClikJointIndexSets(arm_dof_, full_dof_, nv, ext_to_pin_v_, arm_v_idx, hand_v_idx);
+
+  rtc::tsid::ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = std::move(arm_v_idx);
+  cfg.hand_v_idx = std::move(hand_v_idx);
+  cfg.damping_sq = clik_damping_sq_;
+  cfg.v_limit = clik_v_limit_;
+  try {
+    clik_.Init(nv, cfg);
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(logger_, "[wbc] CLIK disabled: Init failed: %s", e.what());
+    clik_tcp_frame_idx_ = -1;
+    clik_base_frame_idx_ = -1;
+    return;
+  }
+  clik_enabled_ = true;
+  RCLCPP_INFO(logger_,
+              "[wbc] CLIK reference enabled: arm_v=%d hand_v=%d damping_sq=%.1e v_limit=%.2f "
+              "(tip_frame_idx=%d base_frame_idx=%d)",
+              static_cast<int>(cfg.arm_v_idx.size()), static_cast<int>(cfg.hand_v_idx.size()),
+              clik_damping_sq_, clik_v_limit_, clik_tcp_frame_idx_, clik_base_frame_idx_);
+}
+
 void DemoWbcController::ApplyPostureGains() noexcept {
   if (!posture_split_gains_ || !tsid_initialized_ || !joint_reorder_valid_) {
     return;
@@ -659,6 +751,31 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   q_min_clamped_ = full_model_ptr_->lowerPositionLimit.array() + position_margin_;
   q_max_clamped_ = full_model_ptr_->upperPositionLimit.array() - position_margin_;
   v_limit_ = full_model_ptr_->velocityLimit * velocity_scale_;
+
+  // ── 3b. Stage C-2: low-level command source (integrator | clik) ───────
+  // command_source selects the driving path; clik.{damping_sq,v_limit} are
+  // structural (consumed by ClikReferenceGenerator::Init in on_configure);
+  // clik.{kx_pos,kx_rot,ka,kh} are runtime gains (SeqLock + ROS params). The
+  // CLIK generator is Init'd regardless of command_source so it is always
+  // available as the A/B shadow path. Defaults preserve integrator behaviour.
+  {
+    auto g = gains_lock_.Load();
+    const auto src = cfg["command_source"].as<std::string>("integrator");
+    g.command_source = (src == "clik") ? CommandSource::kClik : CommandSource::kIntegrator;
+    if (src != "integrator" && src != "clik") {
+      RCLCPP_WARN(logger_, "[wbc] unknown command_source '%s' — using 'integrator'", src.c_str());
+    }
+    if (cfg["clik"] && cfg["clik"].IsMap()) {
+      const auto clik = cfg["clik"];
+      clik_damping_sq_ = clik["damping_sq"].as<double>(clik_damping_sq_);
+      clik_v_limit_ = clik["v_limit"].as<double>(clik_v_limit_);
+      g.clik_kx_pos = clik["kx_pos"].as<double>(g.clik_kx_pos);
+      g.clik_kx_rot = clik["kx_rot"].as<double>(g.clik_kx_rot);
+      g.clik_ka = clik["ka"].as<double>(g.clik_ka);
+      g.clik_kh = clik["kh"].as<double>(g.clik_kh);
+    }
+    gains_lock_.Store(g);
+  }
 
   // ── 4. FSM thresholds ─────────────────────────────────────────────────
   if (cfg["fsm"]) {

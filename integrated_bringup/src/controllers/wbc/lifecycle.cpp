@@ -170,6 +170,15 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     // PostureTask and OnDeviceConfigsSet built the joint reorder map. No-op
     // when the YAML omits the split (PostureTask::Init's kp/kd then stands).
     ApplyPostureGains();
+
+    // Stage C-2: initialise the CLIK reference generator (registers the
+    // se3_tcp tip/base frames on the shared cache + Init's clik_ with the
+    // arm/hand v-index sets). Must run here — after LoadConfig (TSID built,
+    // frames registered by SE3Task) and OnDeviceConfigsSet (reorder map +
+    // frame ids) — and before on_activate spins up the RT loop whose first
+    // cache.Update() locks frame registration. No-op (integrator-only) when
+    // the model is nq != nv or frames are unresolved.
+    InitClik();
   } catch (const std::exception& e) {
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;

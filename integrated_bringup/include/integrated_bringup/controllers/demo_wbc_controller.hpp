@@ -30,6 +30,7 @@
 #include "rtc_tsid/contact/grasp_cache.hpp"
 #include "rtc_tsid/contact/object_state_provider.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
+#include "rtc_tsid/kinematics/clik_reference.hpp"
 #include "rtc_tsid/types/object_frame.hpp"
 #include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
@@ -84,6 +85,20 @@ enum class WbcPhase : uint8_t {
   kFallback = 7   ///< Safety: position hold at last valid q
 };
 
+// ── Stage C-2: low-level command source (integrator vs CLIK A/B) ───────────
+//
+// Selects how the per-tick (q, v) low-level command is synthesised from the
+// TSID solve + measured state. Runtime-switchable (lives in the SeqLock'd
+// Gains + a `command_source` ROS parameter) so the two paths can be A/B'd
+// live; the non-driving path is computed every tick as a shadow and its Δ
+// against the driving path is logged (WbcDiagLog).
+//   kIntegrator — semi-implicit Euler on TSID a_opt (carry-forward / measured).
+//   kClik       — velocity-level CLIK reference (rtc_tsid ClikReferenceGenerator).
+enum class CommandSource : uint8_t {
+  kIntegrator = 0,
+  kClik = 1,
+};
+
 // ── DemoWbcController ────────────────────────────────────────────────────────
 //
 // Whole-body controller demo for UR5e + 10-DoF hand using TSID QP.
@@ -136,6 +151,15 @@ class DemoWbcController final : public RTControllerInterface {
     float grasp_contact_threshold{0.5f};  ///< Native contact prob threshold (0..1)
     float grasp_force_threshold{1.0f};    ///< |F| threshold [N]
     int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
+    // ── Stage C-2: low-level command source + CLIK runtime gains ──────────
+    // command_source selects the driving path (runtime-switchable). The CLIK
+    // gains are forwarded to clik_ each tick (kx broadcast as [pos×3, rot×3]).
+    // CLIK structural config (damping_sq / v_limit) is Init-time, not here.
+    CommandSource command_source{CommandSource::kIntegrator};
+    double clik_kx_pos{5.0};  ///< CLIK TCP position task gain
+    double clik_kx_rot{5.0};  ///< CLIK TCP rotation task gain
+    double clik_ka{1.0};      ///< CLIK arm nullspace posture gain
+    double clik_kh{1.0};      ///< CLIK hand posture gain
   };
 
   explicit DemoWbcController(std::string_view urdf_path);
@@ -259,6 +283,17 @@ class DemoWbcController final : public RTControllerInterface {
                                    double kd_arm, double kp_hand, double kd_hand,
                                    Eigen::VectorXd& kp_out, Eigen::VectorXd& kd_out) noexcept;
 
+  // Stage C-2: build the CLIK arm/hand velocity-index sets (Pinocchio order)
+  // from the external→Pinocchio reorder map. External joint i maps to
+  // ext_to_pin_v[i]; arm = external [0, arm_dof), hand = [arm_dof, full_dof).
+  // The result feeds ClikReferenceGenerator::Config (robot-agnostic injection
+  // point, ARCH-1). Indices ≥ nv (or < 0) are skipped. Static + no member
+  // access so the permutation slice is unit-testable without a URDF.
+  static void BuildClikJointIndexSets(int arm_dof, int full_dof, int nv,
+                                      const std::array<int, kMaxFullDof>& ext_to_pin_v,
+                                      std::vector<int>& arm_v_idx,
+                                      std::vector<int>& hand_v_idx) noexcept;
+
   // Semi-implicit Euler step with velocity + sign-gated position clamps,
   // operating in place on the seed state (q, v):
   //   v ← clamp(v + a·dt, ±v_limit)
@@ -278,6 +313,16 @@ class DemoWbcController final : public RTControllerInterface {
   // ── Model initialization ────────────────────────────────────────────────
   void InitModels(const rtc_urdf_bridge::ModelConfig& config);
   void BuildJointReorderMap();
+
+  // Stage C-2: initialise the CLIK reference generator (registers the
+  // se3_tcp tip/base frames on pinocchio_cache_ — by frame_id, so it reuses
+  // the SE3Task registration — and Init's clik_ with the arm/hand v-index
+  // sets). No-op (clik_enabled_ stays false) unless TSID is built, the
+  // reorder map is valid, and the control model is nq == nv (CLIK contract).
+  // Called from on_configure after LoadConfig + OnDeviceConfigsSet, before
+  // the first RT cache.Update() locks frame registration. RT-disabled CLIK
+  // falls back to the integrator path with a one-shot WARN.
+  void InitClik() noexcept;
 
   // ── TSID task/constraint YAML factory ───────────────────────────────────
   //
@@ -520,6 +565,33 @@ class DemoWbcController final : public RTControllerInterface {
   // machinery (jerk bound, target re-seed) is bypassed — there is no prior
   // command state to preserve. Experimental; see ComputeTSIDPosition step 7.
   bool integrate_from_measured_{false};
+
+  // ── Stage C-2: CLIK reference path (A/B with the integrator) ────────────
+  // clik_ is Init'd in on_configure (InitClik). command_source (in the
+  // SeqLock'd Gains) selects the driving path each tick; the non-driving
+  // path is computed every tick as a shadow and its Δ vs the driver is
+  // logged. clik_enabled_ gates the whole thing — false when the model is
+  // nq != nv, the reorder map is invalid, or frame registration failed; the
+  // clik mode then degrades to the integrator with a throttled WARN.
+  rtc::tsid::ClikReferenceGenerator clik_;
+  bool clik_enabled_{false};
+  double clik_damping_sq_{1e-4};  ///< μ² damped right-inverse (YAML clik.damping_sq)
+  double clik_v_limit_{1.5};      ///< per-joint |v_ref| clamp [rad/s] (YAML clik.v_limit)
+  int clik_tcp_frame_idx_{-1};    ///< pinocchio_cache_.registered_frames index (tip)
+  int clik_base_frame_idx_{-1};   ///< registered_frames index (base; < 0 = universe)
+
+  // Per-tick A/B diagnostics (RT-thread-only; copied into WbcDiagLogPod by
+  // FillWbcDiagLogPod). active_command_source_ is what actually drove the
+  // tick (clik may fall back to integrator on Compute() failure).
+  CommandSource active_command_source_{CommandSource::kIntegrator};
+  bool clik_compute_ok_{false};   ///< clik_.Compute() succeeded this tick
+  bool shadow_valid_{false};      ///< both paths computed → Δ meaningful
+  double clik_tcp_err_{0.0};      ///< ‖e_x‖ [m+rad] (CLIK diagnostic)
+  double clik_manip_{0.0};        ///< √det(JJᵀ+μ²I) (CLIK diagnostic)
+  double shadow_pos_delta_{0.0};  ///< ‖q_clik − q_integrator‖
+  double shadow_vel_delta_{0.0};  ///< ‖v_clik − v_integrator‖
+  // Runtime gain vector forwarded to clik_.SetTaskGain each tick (pre-sized).
+  Eigen::Matrix<double, 6, 1> clik_kx_{Eigen::Matrix<double, 6, 1>::Zero()};
 
   // ControlState for TSID compute (pre-allocated)
   rtc::tsid::ControlState ctrl_state_;

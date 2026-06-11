@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <vector>
 #include <cmath>
 
 namespace {
@@ -781,6 +782,77 @@ TEST(WbcPostureGains, AssembleLeavesUncoveredSlotsUntouched) {
   EXPECT_DOUBLE_EQ(kp[3], 7.0);   // untouched default
   EXPECT_DOUBLE_EQ(kd[2], 8.0);
   EXPECT_DOUBLE_EQ(kd[3], 8.0);
+}
+
+// ── BuildClikJointIndexSets (Stage C-2 CLIK arm/hand v-index injection) ──────
+//
+// CLIK is robot-agnostic: the controller injects the arm/hand velocity-index
+// sets (Pinocchio order) sliced from the external→Pinocchio reorder map. arm =
+// external [0, arm_dof), hand = [arm_dof, full_dof), each mapped through the
+// permutation. This is the ARCH-1 boundary that keeps rtc_tsid free of joint
+// counts — pinned here without a URDF.
+TEST(WbcClikIndexSets, SlicesArmHandThroughPermutation) {
+  // ext [a0, a1, h0, h1, h2] → pin v [4, 0, 3, 1, 2] (interleaved permutation).
+  constexpr int kArmDof = 2;
+  constexpr int kFullDof = 5;
+  constexpr int kNv = 5;
+  std::array<int, integrated_bringup::DemoWbcController::kMaxFullDof> ext_to_pin_v{};
+  ext_to_pin_v[0] = 4;  // arm0
+  ext_to_pin_v[1] = 0;  // arm1
+  ext_to_pin_v[2] = 3;  // hand0
+  ext_to_pin_v[3] = 1;  // hand1
+  ext_to_pin_v[4] = 2;  // hand2
+
+  std::vector<int> arm_v_idx;
+  std::vector<int> hand_v_idx;
+  DemoWbcController::BuildClikJointIndexSets(kArmDof, kFullDof, kNv, ext_to_pin_v, arm_v_idx,
+                                             hand_v_idx);
+
+  EXPECT_EQ(arm_v_idx, (std::vector<int>{4, 0}));
+  EXPECT_EQ(hand_v_idx, (std::vector<int>{3, 1, 2}));
+  // The two sets are disjoint and together cover [0, nv) — exactly the
+  // ClikReferenceGenerator::Init validity contract (no overlap, in range).
+}
+
+// hand_dof == 0 (arm-only robot): hand_v_idx is empty, arm fills its slice.
+// ClikReferenceGenerator accepts an empty hand set (L3 is a no-op then).
+TEST(WbcClikIndexSets, ArmOnlyLeavesHandEmpty) {
+  constexpr int kArmDof = 3;
+  constexpr int kFullDof = 3;
+  constexpr int kNv = 6;  // full_dof < nv: extra DoFs simply unaddressed
+  std::array<int, integrated_bringup::DemoWbcController::kMaxFullDof> ext_to_pin_v{};
+  ext_to_pin_v[0] = 5;
+  ext_to_pin_v[1] = 2;
+  ext_to_pin_v[2] = 0;
+
+  std::vector<int> arm_v_idx;
+  std::vector<int> hand_v_idx;
+  DemoWbcController::BuildClikJointIndexSets(kArmDof, kFullDof, kNv, ext_to_pin_v, arm_v_idx,
+                                             hand_v_idx);
+
+  EXPECT_EQ(arm_v_idx, (std::vector<int>{5, 2, 0}));
+  EXPECT_TRUE(hand_v_idx.empty());
+}
+
+// Out-of-range / unmapped slots (pv < 0 or pv >= nv) are skipped, never
+// emitted as invalid indices that would trip Init's range check.
+TEST(WbcClikIndexSets, SkipsOutOfRangeIndices) {
+  constexpr int kArmDof = 2;
+  constexpr int kFullDof = 4;
+  constexpr int kNv = 3;
+  std::array<int, integrated_bringup::DemoWbcController::kMaxFullDof> ext_to_pin_v{};
+  ext_to_pin_v[0] = 0;
+  ext_to_pin_v[1] = -1;  // unmapped arm joint → skipped
+  ext_to_pin_v[2] = 2;
+  ext_to_pin_v[3] = 9;  // out of range → skipped
+
+  std::vector<int> arm_v_idx;
+  std::vector<int> hand_v_idx;
+  DemoWbcController::BuildClikJointIndexSets(kArmDof, kFullDof, kNv, ext_to_pin_v, arm_v_idx,
+                                             hand_v_idx);
+
+  EXPECT_EQ(arm_v_idx, (std::vector<int>{0}));
+  EXPECT_EQ(hand_v_idx, (std::vector<int>{2}));
 }
 
 // ── IntegrateAccelStep (a → v → q semi-implicit Euler) ───────────────────────

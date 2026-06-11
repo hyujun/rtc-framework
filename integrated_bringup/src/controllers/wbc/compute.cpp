@@ -429,6 +429,63 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   // the seed already in q_next_full_/v_next_full_).
   IntegrateAccelStep(q_next_full_, v_next_full_, a, dt, v_limit_, q_min_clamped_, q_max_clamped_);
 
+  // ── 7b. Stage C-2: CLIK reference path + A/B shadow ─────────────────────
+  // The integrator candidate is now in q_next_full_/v_next_full_. Compute the
+  // CLIK candidate (measured-anchored on the cache updated at step 2 — no
+  // extra FK) every tick. command_source selects which drives; the other is
+  // logged as a Δ shadow. When CLIK drives we overwrite q_next_full_/
+  // v_next_full_ — they double as the carry-forward seed, and CLIK output is
+  // measured-anchored, so a later switch back to the integrator resumes
+  // without a jump. On CLIK failure in clik mode the integrator candidate
+  // stands (throttled WARN). When command_source=integrator (default) the
+  // command buffers are never overwritten → integrator output is unchanged;
+  // only the shadow diagnostics are computed.
+  const auto gains_now = gains_lock_.Load();
+  const CommandSource src = clik_enabled_ ? gains_now.command_source : CommandSource::kIntegrator;
+  active_command_source_ = CommandSource::kIntegrator;
+  clik_compute_ok_ = false;
+  shadow_valid_ = false;
+  clik_tcp_err_ = 0.0;
+  clik_manip_ = 0.0;
+  shadow_pos_delta_ = 0.0;
+  shadow_vel_delta_ = 0.0;
+
+  if (clik_enabled_ && tcp_goal_valid_) {
+    // Track the same SE3 reference the SE3Task sees this tick: the quintic
+    // ramp setpoint while se3_tcp is active in this phase, else the held goal.
+    const auto phase_idx = static_cast<std::size_t>(phase_);
+    const bool se3_active =
+        tcp_trajectory_active_ && phase_idx < kNumPhases && se3_task_active_in_phase_[phase_idx];
+    const pinocchio::SE3& clik_target = se3_active ? tcp_traj_state_.pose : tcp_goal_;
+
+    // Forward the live CLIK gains (kx broadcast as [pos×3, rot×3]).
+    clik_kx_ << gains_now.clik_kx_pos, gains_now.clik_kx_pos, gains_now.clik_kx_pos,
+        gains_now.clik_kx_rot, gains_now.clik_kx_rot, gains_now.clik_kx_rot;
+    clik_.SetTaskGain(clik_kx_);
+    clik_.SetPostureGains(gains_now.clik_ka, gains_now.clik_kh);
+
+    clik_compute_ok_ = clik_.Compute(pinocchio_cache_, clik_tcp_frame_idx_, clik_base_frame_idx_,
+                                     clik_target, control_ref_.q_des, dt);
+    clik_tcp_err_ = clik_.TcpErrorNorm();
+    clik_manip_ = clik_.Manipulability();
+
+    if (clik_compute_ok_) {
+      // Δ between the two command candidates (integrator output is still in
+      // q_next_full_/v_next_full_ at this point — capture before any overwrite).
+      shadow_pos_delta_ = (clik_.QRef() - q_next_full_).norm();
+      shadow_vel_delta_ = (clik_.VRef() - v_next_full_).norm();
+      shadow_valid_ = true;
+      if (src == CommandSource::kClik) {
+        q_next_full_ = clik_.QRef();
+        v_next_full_ = clik_.VRef();
+        active_command_source_ = CommandSource::kClik;
+      }
+    } else if (src == CommandSource::kClik) {
+      RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
+                           "[wbc] CLIK Compute failed — integrator fallback this tick");
+    }
+  }
+
   // 8. Map Pinocchio order → device order
   for (int i = 0; i < arm_dof_; ++i) {
     const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[static_cast<std::size_t>(i)]);
@@ -1018,6 +1075,16 @@ void DemoWbcController::FillWbcDiagLogPod(const ControllerState& state,
   pod.num_active_contacts = wbc_state_.num_active_contacts;
   pod.grasp_detected = wbc_state_.grasp_detected;
   pod.max_force = wbc_state_.max_force;
+  // Stage C-2: command source + CLIK A/B shadow (set in ComputeTSIDPosition
+  // step 7b this tick; zero/false on non-TSID phases — kFallback never reaches
+  // FillWbcDiagLogPod via a fresh solve).
+  pod.command_source = static_cast<std::uint8_t>(active_command_source_);
+  pod.clik_valid = clik_compute_ok_;
+  pod.shadow_valid = shadow_valid_;
+  pod.clik_tcp_err = clik_tcp_err_;
+  pod.clik_manipulability = clik_manip_;
+  pod.shadow_pos_delta = shadow_pos_delta_;
+  pod.shadow_vel_delta = shadow_vel_delta_;
   // lambda_opt is the fixed-dim QP contact solution (size == max_contact_vars,
   // matching the header's λ column count registered in on_configure).
   const auto& lam = tsid_output_.lambda_opt;
