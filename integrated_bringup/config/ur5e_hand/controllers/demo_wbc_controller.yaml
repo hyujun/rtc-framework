@@ -165,10 +165,12 @@ demo_wbc_controller:
         dt: 0.002               # must match control_rate
         position_margin: 0.05   # rad
         velocity_margin: 0.1    # rad/s
-      # Friction cone: linearised n-face pyramid per contact
+      # Friction cone: linearised n-face pyramid per contact. Face count
+      # (n_faces) and μ (mu) live per-contact under `contacts:` — this block
+      # only toggles the constraint per phase preset (FrictionConeConstraint
+      # reads no params; a stray `n_faces` here is ignored and WARN-flagged).
       friction_cone:
         type: "friction_cone"
-        n_faces: 8
       # Stage A-1: actuator torque envelope τ = S(M·a + h - Jcᵀ·λ) bounded by
       # URDF effort_limit. tau_scale=1.0 → raw URDF bound (no margin); reduce
       # toward (0, 1) for safety margin once integrated tests are in.
@@ -204,14 +206,17 @@ demo_wbc_controller:
         frame: "thumb_tip_link"
         type: "point"
         mu: 0.5
+        n_faces: 8
       - name: "index_tip"
         frame: "index_tip_link"
         type: "point"
         mu: 0.5
+        n_faces: 8
       - name: "middle_tip"
         frame: "middle_tip_link"
         type: "point"
         mu: 0.5
+        n_faces: 8
 
     # ApplyPreset is reset-style (touches only tasks/constraints named in the
     # preset). Every phase preset must therefore list the full task and

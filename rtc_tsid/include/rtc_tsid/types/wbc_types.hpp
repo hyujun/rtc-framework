@@ -85,6 +85,12 @@ struct ContactManagerConfig {
   // YAML: `tsid.contacts_normal_filter_alpha: <α>` (sibling of `contacts:`).
   double normal_filter_alpha{0.1};
 
+  // Stage C-0.1: set by Load() when any contact specifies both the canonical
+  // key (friction_coeff / friction_faces) and its alias (mu / n_faces) with
+  // disagreeing values. The loader has no logger; the consumer (controller)
+  // reads this to WARN. The explicit canonical key always wins.
+  bool friction_key_conflict{false};
+
   // YAML로부터 로드 + frame name → frame ID resolve
   void Load(const YAML::Node& config, const pinocchio::Model& model);
 };

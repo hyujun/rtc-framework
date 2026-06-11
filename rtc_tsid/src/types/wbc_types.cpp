@@ -91,6 +91,7 @@ void RobotModelInfo::Build(const pinocchio::Model& model, const YAML::Node& conf
 void ContactManagerConfig::Load(const YAML::Node& config, const pinocchio::Model& model) {
   contacts.clear();
   max_contact_vars = 0;
+  friction_key_conflict = false;
 
   if (!config || !config["contacts"]) {
     max_contacts = 0;
@@ -105,8 +106,35 @@ void ContactManagerConfig::Load(const YAML::Node& config, const pinocchio::Model
     const auto type_str = c["type"].as<std::string>("point");
     cc.contact_dim = (type_str == "surface") ? 6 : 3;
 
-    cc.friction_coeff = c["friction_coeff"].as<double>(0.7);
-    cc.friction_faces = c["friction_faces"].as<int>(4);
+    // Stage C-0.1: accept `mu` / `n_faces` as aliases for `friction_coeff` /
+    // `friction_faces`. The shipped YAMLs use the `mu` / `n_faces` spelling;
+    // before this aliasing they silently fell back to the defaults (0.7 / 4)
+    // instead of the intended values. The canonical key wins; a disagreeing
+    // alias sets friction_key_conflict so the controller can WARN.
+    {
+      const bool has_fc = static_cast<bool>(c["friction_coeff"]);
+      const bool has_mu = static_cast<bool>(c["mu"]);
+      if (has_fc) {
+        cc.friction_coeff = c["friction_coeff"].as<double>();
+        if (has_mu && std::fabs(c["mu"].as<double>() - cc.friction_coeff) > 1e-12) {
+          friction_key_conflict = true;
+        }
+      } else {
+        cc.friction_coeff = has_mu ? c["mu"].as<double>() : 0.7;
+      }
+    }
+    {
+      const bool has_ff = static_cast<bool>(c["friction_faces"]);
+      const bool has_nf = static_cast<bool>(c["n_faces"]);
+      if (has_ff) {
+        cc.friction_faces = c["friction_faces"].as<int>();
+        if (has_nf && c["n_faces"].as<int>() != cc.friction_faces) {
+          friction_key_conflict = true;
+        }
+      } else {
+        cc.friction_faces = has_nf ? c["n_faces"].as<int>() : 4;
+      }
+    }
 
     // Surface contact 전용 필드 (point 에서는 무시). Default 0 으로 두면
     // surface 라도 CoP/yaw 부등식이 trivial 행으로 남아 ineq_dim 일정.

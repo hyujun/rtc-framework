@@ -102,6 +102,92 @@ TEST_F(RobotModelInfoTest, ContactManagerWithContacts) {
   EXPECT_EQ(mgr.contacts[0].contact_dim, 3);
   EXPECT_DOUBLE_EQ(mgr.contacts[0].friction_coeff, 0.5);
   EXPECT_EQ(mgr.contacts[0].friction_faces, 8);
+  EXPECT_FALSE(mgr.friction_key_conflict);
+}
+
+// Stage C-0.1: `mu` / `n_faces` are accepted as aliases for friction_coeff /
+// friction_faces (the spelling the shipped YAMLs use).
+TEST_F(RobotModelInfoTest, ContactManagerMuNFacesAliases) {
+  std::string frame_name;
+  for (size_t i = 0; i < model_.frames.size(); ++i) {
+    if (model_.frames[i].name.find("link") != std::string::npos) {
+      frame_name = model_.frames[i].name;
+      break;
+    }
+  }
+  ASSERT_FALSE(frame_name.empty());
+
+  YAML::Node config;
+  YAML::Node contact;
+  contact["name"] = "test_contact";
+  contact["frame"] = frame_name;
+  contact["type"] = "point";
+  contact["mu"] = 0.5;       // alias for friction_coeff
+  contact["n_faces"] = 8;    // alias for friction_faces
+  config["contacts"].push_back(contact);
+
+  ContactManagerConfig mgr;
+  mgr.Load(config, model_);
+
+  EXPECT_DOUBLE_EQ(mgr.contacts[0].friction_coeff, 0.5);
+  EXPECT_EQ(mgr.contacts[0].friction_faces, 8);
+  EXPECT_FALSE(mgr.friction_key_conflict);
+}
+
+// Stage C-0.1: no friction keys at all → documented defaults (0.7 / 4), no
+// conflict. Locks the silent-fallback values so a future default change is
+// a deliberate, test-visible decision.
+TEST_F(RobotModelInfoTest, ContactManagerFrictionDefaults) {
+  std::string frame_name;
+  for (size_t i = 0; i < model_.frames.size(); ++i) {
+    if (model_.frames[i].name.find("link") != std::string::npos) {
+      frame_name = model_.frames[i].name;
+      break;
+    }
+  }
+  ASSERT_FALSE(frame_name.empty());
+
+  YAML::Node config;
+  YAML::Node contact;
+  contact["name"] = "test_contact";
+  contact["frame"] = frame_name;
+  contact["type"] = "point";
+  config["contacts"].push_back(contact);
+
+  ContactManagerConfig mgr;
+  mgr.Load(config, model_);
+
+  EXPECT_DOUBLE_EQ(mgr.contacts[0].friction_coeff, 0.7);
+  EXPECT_EQ(mgr.contacts[0].friction_faces, 4);
+  EXPECT_FALSE(mgr.friction_key_conflict);
+}
+
+// Stage C-0.1: canonical key wins over a disagreeing alias, and the conflict
+// is flagged for the controller to WARN.
+TEST_F(RobotModelInfoTest, ContactManagerFrictionKeyConflict) {
+  std::string frame_name;
+  for (size_t i = 0; i < model_.frames.size(); ++i) {
+    if (model_.frames[i].name.find("link") != std::string::npos) {
+      frame_name = model_.frames[i].name;
+      break;
+    }
+  }
+  ASSERT_FALSE(frame_name.empty());
+
+  YAML::Node config;
+  YAML::Node contact;
+  contact["name"] = "test_contact";
+  contact["frame"] = frame_name;
+  contact["type"] = "point";
+  contact["friction_coeff"] = 0.7;  // canonical wins
+  contact["mu"] = 0.5;              // disagrees → conflict
+  config["contacts"].push_back(contact);
+
+  ContactManagerConfig mgr;
+  mgr.Load(config, model_);
+
+  EXPECT_DOUBLE_EQ(mgr.contacts[0].friction_coeff, 0.7);
+  EXPECT_TRUE(mgr.friction_key_conflict);
 }
 
 // ──────────────────────────────────────────────

@@ -304,6 +304,15 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
       c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
       formulation.AddConstraint(std::move(c));
     } else if (type == "friction_cone") {
+      // Stage C-0.1: FrictionConeConstraint takes its face count from each
+      // contact (contacts[*].n_faces / friction_faces), not from this block.
+      // A `n_faces` here is a dead key — WARN so the misconception that caused
+      // the silent friction_faces=4 fallback does not recur.
+      if (c_cfg["n_faces"]) {
+        RCLCPP_WARN(logger_,
+                    "[wbc] friction_cone.n_faces is ignored — set the face count per "
+                    "contact via contacts[*].n_faces (or friction_faces)");
+      }
       auto c = std::make_unique<rtc::tsid::FrictionConeConstraint>();
       c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
       c->SetContactManager(&contact_mgr_config_);
@@ -435,6 +444,25 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // in the sim launch prior to this fix).
     if (tsid_node["contacts"]) {
       contact_mgr_config_.Load(tsid_node, model);
+      // Stage C-0.1: the loader has no logger, so surface the resolved friction
+      // params here (one-shot init — RT-3 logging exception). Guards the
+      // friction_coeff/mu + friction_faces/n_faces silent-fallback bug.
+      if (contact_mgr_config_.friction_key_conflict) {
+        RCLCPP_WARN(logger_,
+                    "[wbc] friction key conflict: a contact sets both friction_coeff/mu "
+                    "(or friction_faces/n_faces) with different values — the explicit "
+                    "friction_coeff/friction_faces wins");
+      }
+      int max_cone_rows = 0;
+      for (const auto& cc : contact_mgr_config_.contacts) {
+        // Per FrictionConeConstraint: point = n_faces+1, surface = n_faces+7.
+        max_cone_rows += cc.friction_faces + (cc.contact_dim == 6 ? 7 : 1);
+        RCLCPP_INFO(logger_, "[wbc] contact '%s': mu=%.3f n_faces=%d (%s)", cc.name.c_str(),
+                    cc.friction_coeff, cc.friction_faces,
+                    cc.contact_dim == 6 ? "surface" : "point");
+      }
+      RCLCPP_INFO(logger_, "[wbc] friction cone: %d contacts, max %d inequality rows",
+                  contact_mgr_config_.max_contacts, max_cone_rows);
     }
 
     // PinocchioCache
