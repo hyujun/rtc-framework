@@ -21,6 +21,7 @@
 #include <pinocchio/math/rpy.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_tsid/constraints/contact_constraint.hpp"
 #include "rtc_tsid/constraints/eom_constraint.hpp"
 #include "rtc_tsid/constraints/friction_cone_constraint.hpp"
 #include "rtc_tsid/constraints/joint_limit_constraint.hpp"
@@ -285,6 +286,17 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
       // Floating-base + surface contact 시 cdim != 3 인 column offset 을 정확히
       // 잡기 위해 필수. point-only 회로에서는 fallback(cdim=3) 으로도 동작하지만,
       // mixed point/surface 가 들어오면 무성 alignment 깨짐.
+      c->SetContactManager(&contact_mgr_config_);
+      formulation.AddConstraint(std::move(c));
+    } else if (type == "contact_constraint") {
+      // Stage C-0.3: hard acceleration-level no-slip equality
+      // (Jc_i·a + dJc_i·v = 0) per active contact. Off by default in the
+      // shipped configs — the soft contact_consistency task carries the
+      // no-slip objective there. Opt-in by adding a `contact_constraint`
+      // entry under tsid.constraints. SetContactManager mirrors the eom
+      // branch so the active-contact column offsets (cdim 3/6) align.
+      auto c = std::make_unique<rtc::tsid::ContactConstraint>();
+      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
     } else if (type == "joint_limit") {
