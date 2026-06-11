@@ -42,6 +42,14 @@ struct PublishSnapshot {
     std::array<double, kMaxDeviceChannels> target_velocities{};
     std::array<double, kMaxDeviceChannels> trajectory_positions{};
     std::array<double, kMaxDeviceChannels> trajectory_velocities{};
+    // Per-joint feedforward torque (Nm) — mirrors DeviceOutput::feedforward.
+    // Consumed by the backend only when command_type == kPdFeedforward.
+    std::array<double, kMaxDeviceChannels> feedforward{};
+    // Resolved per-group command type (DeviceOutput::command_type override
+    // collapsed against the global default by the RT loop). The backend reads
+    // this — NOT the snapshot-global command_type — so mixed-command output
+    // (arm=kPosition, hand=kPdFeedforward) dispatches correctly per group.
+    CommandType command_type{CommandType::kPosition};
     std::array<double, kMaxDeviceChannels> actual_positions{};
     std::array<double, kMaxDeviceChannels> actual_velocities{};
     std::array<double, kMaxDeviceChannels> efforts{};

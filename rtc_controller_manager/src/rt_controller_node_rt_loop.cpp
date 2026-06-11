@@ -167,6 +167,11 @@ void RtControllerNode::ControlLoop() {
       std::copy_n(dout.target_velocities.data(), onc, gc.target_velocities.data());
       std::copy_n(dout.trajectory_positions.data(), onc, gc.trajectory_positions.data());
       std::copy_n(dout.trajectory_velocities.data(), onc, gc.trajectory_velocities.data());
+      std::copy_n(dout.feedforward.data(), onc, gc.feedforward.data());
+      // Resolve per-device command type: nullopt inherits the global default,
+      // so single-mode controllers keep their existing behaviour while mixed
+      // controllers (WBC arm=kPosition, hand=kPdFeedforward) override per group.
+      gc.command_type = dout.command_type.value_or(output.command_type);
       gc.goal_type = dout.goal_type;
       std::copy_n(dstate.positions.data(), snc, gc.actual_positions.data());
       std::copy_n(dstate.velocities.data(), snc, gc.actual_velocities.data());
@@ -238,8 +243,8 @@ void RtControllerNode::ControlLoop() {
           break;
         const int slot = slot_mapping.slots[out_idx];
         if (slot >= 0 && slot < kMaxDevices && backends_[static_cast<std::size_t>(slot)]) {
-          backends_[static_cast<std::size_t>(slot)]->WriteCommand(snap.group_commands[out_idx],
-                                                                  snap.command_type);
+          backends_[static_cast<std::size_t>(slot)]->WriteCommand(
+              snap.group_commands[out_idx], snap.group_commands[out_idx].command_type);
         }
         ++out_idx;
       }

@@ -143,7 +143,13 @@ struct ControllerState {
   double t_relative_s{0.0};
 };
 
-enum class CommandType { kPosition, kTorque };
+// kPdFeedforward: PD position-servo backbone (values = position target) PLUS a
+// per-joint feedforward torque overlay (DeviceOutput::feedforward). Used for the
+// mixed-command case (e.g. WBC arm = kPosition, hand = kPdFeedforward). The wire
+// format (rtc_msgs/JointCommand) carries the matching "pd_feedforward" string;
+// mujoco_sim injects feedforward into qfrc_applied. Real position-only backends
+// fall back to position tracking (they ignore the feedforward channel).
+enum class CommandType { kPosition, kTorque, kPdFeedforward };
 enum class GoalType : uint8_t { kJoint, kTask };
 
 [[nodiscard]] inline constexpr const char* GoalTypeToString(GoalType g) noexcept {
@@ -183,7 +189,15 @@ struct DeviceOutput {
       trajectory_positions{};  // pure trajectory reference position
   std::array<double, kMaxDeviceChannels>
       trajectory_velocities{};  // pure trajectory reference velocity
+  // Per-joint feedforward torque (Nm), consumed only when the resolved command
+  // type is kPdFeedforward. Zero-initialised; ignored by kPosition/kTorque.
+  std::array<double, kMaxDeviceChannels> feedforward{};
   GoalType goal_type{GoalType::kJoint};
+  // Per-device command type override. nullopt → inherit ControllerOutput::
+  // command_type (the global default), so single-mode controllers need not set
+  // it. Set explicitly for mixed-command output (e.g. WBC arm=kPosition,
+  // hand=kPdFeedforward). std::optional<CommandType> stays trivially copyable.
+  std::optional<CommandType> command_type{};
 };
 
 struct ControllerOutput {
@@ -256,10 +270,10 @@ struct DeviceJointLimits {
 // `ft_inferencer.enabled=true` → has_native_contact=true, mujoco backend
 // without contact emulation → false). Default false (assume derived path).
 struct DeviceSensorLayout {
-  int primary_count_per_group{0};     // first sensor block per group
-  int secondary_count_per_group{0};   // second sensor block per group
-  int values_per_group{0};            // = primary + secondary (per-group stride)
-  int inference_values_per_group{0};  // ML inference output size per group
+  int primary_count_per_group{0};       // first sensor block per group
+  int secondary_count_per_group{0};     // second sensor block per group
+  int values_per_group{0};              // = primary + secondary (per-group stride)
+  int inference_values_per_group{0};    // ML inference output size per group
   bool has_native_contact{false};       // backend emits per-group contact signal
   bool has_native_displacement{false};  // backend emits per-group displacement signal
 };
