@@ -63,9 +63,9 @@ void DemoWbcController::DeclareGainParameters() noexcept {
   g.tcp_trajectory_speed = std::max(
       1e-6, declare_double("tcp_trajectory_speed", g.tcp_trajectory_speed,
                            "TCP translational trajectory speed [m/s] (MPC-disabled SE3 ramp)"));
-  g.tcp_trajectory_angular_speed =
-      std::max(1e-6, declare_double("tcp_trajectory_angular_speed", g.tcp_trajectory_angular_speed,
-                                    "TCP angular trajectory speed [rad/s] (MPC-disabled SE3 ramp)"));
+  g.tcp_trajectory_angular_speed = std::max(
+      1e-6, declare_double("tcp_trajectory_angular_speed", g.tcp_trajectory_angular_speed,
+                           "TCP angular trajectory speed [rad/s] (MPC-disabled SE3 ramp)"));
   g.tcp_max_traj_velocity =
       declare_double("tcp_max_traj_velocity", g.tcp_max_traj_velocity,
                      "TCP translational velocity cap [m/s] (quintic peak = 1.875·d/T)");
@@ -83,14 +83,14 @@ void DemoWbcController::DeclareGainParameters() noexcept {
   // Grasp detection thresholds (mirror joint/task controllers). The contact
   // threshold is consulted only on sensor-A paths (has_native_contact_=true);
   // the force threshold + min_fingertips are common across sensor types.
-  g.grasp_contact_threshold = static_cast<float>(declare_double(
-      "grasp_contact_threshold", g.grasp_contact_threshold,
-      "Native contact probability threshold [0,1] — sensor A path only"));
+  g.grasp_contact_threshold = static_cast<float>(
+      declare_double("grasp_contact_threshold", g.grasp_contact_threshold,
+                     "Native contact probability threshold [0,1] — sensor A path only"));
   g.grasp_force_threshold = static_cast<float>(declare_double(
       "grasp_force_threshold", g.grasp_force_threshold, "Force magnitude threshold [N]"));
-  g.grasp_min_fingertips = static_cast<int>(
-      declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
-                  "Min fingertips with contact for grasp detection"));
+  g.grasp_min_fingertips =
+      static_cast<int>(declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
+                                   "Min fingertips with contact for grasp detection"));
 
   // Stage C-2: low-level command source + CLIK runtime gains. command_source
   // is a string enum ('integrator' | 'clik') flippable live for A/B; the
@@ -116,6 +116,19 @@ void DemoWbcController::DeclareGainParameters() noexcept {
   g.clik_ka = declare_double("clik_ka", g.clik_ka, "CLIK arm nullspace posture gain");
   g.clik_kh = declare_double("clik_kh", g.clik_kh, "CLIK hand posture gain");
 
+  // Stage C-3: hand feedforward torque (kPdFeedforward). Opt-in; gains take
+  // effect next RT tick (compute reads gains_lock_). τ_ff = gravity_gain·g[hand]
+  // + closure_bias, active only in closure/hold, clamped to ±hand_tauff_max.
+  g.hand_tauff_enable =
+      declare_bool("hand_tauff_enable", g.hand_tauff_enable,
+                   "Drive hand via pd_feedforward (model τ_ff overlay on the PD position hold)");
+  g.hand_tauff_gravity_gain = declare_double("hand_tauff_gravity_gain", g.hand_tauff_gravity_gain,
+                                             "Scale on hand gravity-comp τ_ff");
+  g.hand_tauff_closure_bias = declare_double("hand_tauff_closure_bias", g.hand_tauff_closure_bias,
+                                             "Uniform additive hand τ_ff bias [Nm]");
+  g.hand_tauff_max =
+      declare_double("hand_tauff_max", g.hand_tauff_max, "Per-joint |τ_ff| clamp [Nm]");
+
   gains_lock_.Store(g);
 
   // MPC runtime gates: handed straight to mpc_manager_. mpc_enable is gated
@@ -131,7 +144,6 @@ void DemoWbcController::DeclareGainParameters() noexcept {
                                     "Riccati feedback gain scale [0,1]");
   mpc_manager_.SetRiccatiGainScale(rgs);
 }
-
 
 rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
     const std::vector<rclcpp::Parameter>& params) noexcept {
@@ -204,6 +216,18 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
       } else if (name == "clik_kh") {
         g.clik_kh = p.as_double();
         gains_dirty = true;
+      } else if (name == "hand_tauff_enable") {
+        g.hand_tauff_enable = p.as_bool();
+        gains_dirty = true;
+      } else if (name == "hand_tauff_gravity_gain") {
+        g.hand_tauff_gravity_gain = p.as_double();
+        gains_dirty = true;
+      } else if (name == "hand_tauff_closure_bias") {
+        g.hand_tauff_closure_bias = p.as_double();
+        gains_dirty = true;
+      } else if (name == "hand_tauff_max") {
+        g.hand_tauff_max = std::max(0.0, p.as_double());
+        gains_dirty = true;
       } else if (name == "mpc_enable") {
         mpc_manager_.SetEnabled(p.as_bool() && mpc_enabled_);
       } else if (name == "riccati_gain_scale") {
@@ -222,6 +246,5 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
   }
   return result;
 }
-
 
 }  // namespace integrated_bringup

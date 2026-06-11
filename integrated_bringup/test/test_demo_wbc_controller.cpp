@@ -10,8 +10,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <vector>
 #include <cmath>
+#include <vector>
 
 namespace {
 
@@ -134,6 +134,40 @@ TEST_F(WbcFSMTest, HandEstopIndependent) {
 
   auto out = ctrl_.Compute(state_);
   EXPECT_TRUE(out.valid);
+}
+
+// ── C-3 hand τ_ff command-shape tests ────────────────────────────────────────
+// The positive τ_ff value path needs a built TSID model (gravity vector), so it
+// is verified in sim. These two assert the command SHAPE that does not need a
+// model: (1) E-STOP always zeroes the hand feedforward regardless of enable
+// (E-8 safety contract), and (2) when disabled, the hand stays a plain position
+// command (no kPdFeedforward, zero feedforward) — the no-regression default.
+TEST_F(WbcFSMTest, EstopZeroesHandFeedforward) {
+  DemoWbcController::Gains g = ctrl_.get_gains();
+  g.hand_tauff_enable = true;  // even with τ_ff enabled…
+  ctrl_.set_gains(g);
+
+  ctrl_.TriggerEstop();
+  auto out = ctrl_.Compute(state_);
+  ASSERT_TRUE(out.valid);
+  ASSERT_GE(out.num_devices, 2);
+  // …E-STOP must never engage pd_feedforward and must zero every hand torque.
+  EXPECT_NE(out.devices[1].command_type, rtc::CommandType::kPdFeedforward);
+  for (int i = 0; i < out.devices[1].num_channels; ++i) {
+    EXPECT_EQ(out.devices[1].feedforward[static_cast<std::size_t>(i)], 0.0);
+  }
+}
+
+TEST_F(WbcFSMTest, HandTauffDisabledKeepsPlainPositionCommand) {
+  // Default gains: hand_tauff_enable == false → hand device is a position
+  // command with no feedforward, identical to pre-C-3 behaviour.
+  auto out = ctrl_.Compute(state_);
+  ASSERT_TRUE(out.valid);
+  ASSERT_GE(out.num_devices, 2);
+  EXPECT_NE(out.devices[1].command_type, rtc::CommandType::kPdFeedforward);
+  for (int i = 0; i < out.devices[1].num_channels; ++i) {
+    EXPECT_EQ(out.devices[1].feedforward[static_cast<std::size_t>(i)], 0.0);
+  }
 }
 
 // ── Gains Tests ──────────────────────────────────────────────────────────────
@@ -639,8 +673,7 @@ TEST_F(WbcFSMTest, EstopDuringHoldProducesSafeAndCanResume) {
 
 TEST_F(WbcFSMTest, CommandTypeStableAcrossPhases) {
   const auto baseline = ctrl_.GetCommandType();
-  for (auto p : {WbcPhase::kIdle, WbcPhase::kApproach, WbcPhase::kRelease,
-                 WbcPhase::kFallback}) {
+  for (auto p : {WbcPhase::kIdle, WbcPhase::kApproach, WbcPhase::kRelease, WbcPhase::kFallback}) {
     ctrl_.ForcePhaseForTesting(p);
     auto out = ctrl_.Compute(state_);
     EXPECT_EQ(out.command_type, baseline) << "phase=" << static_cast<int>(p);
@@ -865,8 +898,11 @@ TEST(WbcClikIndexSets, SkipsOutOfRangeIndices) {
 
 namespace {
 constexpr double kTol = 1e-12;
+
 // Generous limits so the clamp branches stay inactive unless a test sets them.
-Eigen::VectorXd kBig(int n, double val) { return Eigen::VectorXd::Constant(n, val); }
+Eigen::VectorXd kBig(int n, double val) {
+  return Eigen::VectorXd::Constant(n, val);
+}
 }  // namespace
 
 // Carry-forward seed: integrate from the previous command (q_prev, v_prev).

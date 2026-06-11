@@ -81,8 +81,8 @@ enum class WbcPhase : uint8_t {
   kClosure = 3,   ///< TSID with contact-forming tasks
   kHold = 4,      ///< TSID grasp holding
   // 5 reserved (was kRetreat — removed; WbcState.msg PHASE_RETREAT=5 deprecated)
-  kRelease = 6,   ///< Contact ramp-down → finger-open trajectory
-  kFallback = 7   ///< Safety: position hold at last valid q
+  kRelease = 6,  ///< Contact ramp-down → finger-open trajectory
+  kFallback = 7  ///< Safety: position hold at last valid q
 };
 
 // ── Stage C-2: low-level command source (integrator vs CLIK A/B) ───────────
@@ -136,14 +136,14 @@ class DemoWbcController final : public RTControllerInterface {
     double grasp_target_force{2.0};      ///< Target grasp force [N]
     // TCP task-space trajectory speeds (MPC-disabled SE3 ramp). Quintic
     // rest-to-rest; duration = max(d/speed, 1.875·d/max_vel, ...).
-    double tcp_trajectory_speed{0.1};          ///< TCP translational speed [m/s]
-    double tcp_trajectory_angular_speed{0.5};  ///< TCP angular speed [rad/s]
-    double tcp_max_traj_velocity{0.5};         ///< TCP translational vel cap [m/s]
-    double tcp_max_traj_angular_velocity{1.0}; ///< TCP angular vel cap [rad/s]
-    double pi_rotation_margin{0.15};           ///< split when ang_dist > π - margin
-    double se3_weight{100.0};            ///< SE3Task weight (runtime tuning)
-    double force_weight{10.0};           ///< ForceTask weight
-    double posture_weight{1.0};          ///< PostureTask weight
+    double tcp_trajectory_speed{0.1};           ///< TCP translational speed [m/s]
+    double tcp_trajectory_angular_speed{0.5};   ///< TCP angular speed [rad/s]
+    double tcp_max_traj_velocity{0.5};          ///< TCP translational vel cap [m/s]
+    double tcp_max_traj_angular_velocity{1.0};  ///< TCP angular vel cap [rad/s]
+    double pi_rotation_margin{0.15};            ///< split when ang_dist > π - margin
+    double se3_weight{100.0};                   ///< SE3Task weight (runtime tuning)
+    double force_weight{10.0};                  ///< ForceTask weight
+    double posture_weight{1.0};                 ///< PostureTask weight
     /// Grasp detection thresholds (mirror joint/task controllers).
     /// grasp_contact_threshold gates the native contact_flag probability and
     /// is consulted only when has_native_contact_=true (sensor A path); on
@@ -160,6 +160,18 @@ class DemoWbcController final : public RTControllerInterface {
     double clik_kx_rot{5.0};  ///< CLIK TCP rotation task gain
     double clik_ka{1.0};      ///< CLIK arm nullspace posture gain
     double clik_kh{1.0};      ///< CLIK hand posture gain
+    // ── Stage C-3: hand feedforward torque (pd_feedforward command) ───────
+    // Opt-in. When enabled, the hand device is driven with command_type
+    // kPdFeedforward: values = hold/closure pose (PD backbone), feedforward =
+    // τ_ff. τ_ff = gravity_gain · g[hand] + closure_bias (uniform Nm), active
+    // only in kClosure/kHold, clamped to ±tauff_max, zeroed on non-finite /
+    // limit / E-STOP. Default (gain 1, bias 0) = pure hand gravity comp.
+    // NOTE (follow-up, see plan): wiring full TSID tau as τ_ff (computed-torque
+    // FF + PD) is the eventual intent — kept separate pending gain-overlap study.
+    bool hand_tauff_enable{false};        ///< Drive hand via pd_feedforward
+    double hand_tauff_gravity_gain{1.0};  ///< Scale on g[hand] gravity comp
+    double hand_tauff_closure_bias{0.0};  ///< Uniform additive τ bias [Nm]
+    double hand_tauff_max{5.0};           ///< Per-joint |τ_ff| clamp [Nm]
   };
 
   explicit DemoWbcController(std::string_view urdf_path);
@@ -446,7 +458,7 @@ class DemoWbcController final : public RTControllerInterface {
   // (servo 3000/600=750/150), hand ≈20 rad/s (servo 2.5/0.125). When the split
   // keys are absent (posture_split_gains_=false) these are unused.
   bool posture_split_gains_{false};
-  double posture_kp_arm_{36.0};   ///< ωn=6 rad/s, ζ=1
+  double posture_kp_arm_{36.0};  ///< ωn=6 rad/s, ζ=1
   double posture_kd_arm_{12.0};
   double posture_kp_hand_{49.0};  ///< ωn=7 rad/s, ζ=1
   double posture_kd_hand_{14.0};
@@ -537,16 +549,16 @@ class DemoWbcController final : public RTControllerInterface {
   // ── TSID → Position integration ─────────────────────────────────────────
   //
   // All vectors are in Pinocchio joint order (full model, 16-DoF).
-  Eigen::VectorXd q_curr_full_;       ///< [nv] current q (sensor, per tick)
-  Eigen::VectorXd v_curr_full_;       ///< [nv] current v (sensor, per tick)
-  Eigen::VectorXd q_next_full_;       ///< [nv] integrated position (output)
-  Eigen::VectorXd v_next_full_;       ///< [nv] integrated velocity
-  Eigen::VectorXd q_des_target_full_; ///< [nv] posture reference = external joint target
-                                      ///< (active driving phases). Same layout as q_curr_full_.
-  Eigen::VectorXd v_seed_;            ///< [nv] scratch for the jerk-bounded re-seed velocity
-  Eigen::VectorXd q_min_clamped_;     ///< [nv] q_lower + margin
-  Eigen::VectorXd q_max_clamped_;     ///< [nv] q_upper - margin
-  Eigen::VectorXd v_limit_;           ///< [nv] velocity limit
+  Eigen::VectorXd q_curr_full_;        ///< [nv] current q (sensor, per tick)
+  Eigen::VectorXd v_curr_full_;        ///< [nv] current v (sensor, per tick)
+  Eigen::VectorXd q_next_full_;        ///< [nv] integrated position (output)
+  Eigen::VectorXd v_next_full_;        ///< [nv] integrated velocity
+  Eigen::VectorXd q_des_target_full_;  ///< [nv] posture reference = external joint target
+                                       ///< (active driving phases). Same layout as q_curr_full_.
+  Eigen::VectorXd v_seed_;             ///< [nv] scratch for the jerk-bounded re-seed velocity
+  Eigen::VectorXd q_min_clamped_;      ///< [nv] q_lower + margin
+  Eigen::VectorXd q_max_clamped_;      ///< [nv] q_upper - margin
+  Eigen::VectorXd v_limit_;            ///< [nv] velocity limit
 
   // Carry-forward integrator re-seed control (RT-thread-only flags).
   //   reseed_integration_pending_ — set on a new device target arrival / first
@@ -684,6 +696,7 @@ class DemoWbcController final : public RTControllerInterface {
   std::array<bool, kNumPhases> se3_task_active_in_phase_{};
 
   void InitTcpTrajectory(const ControllerState& state) noexcept;
+
   [[nodiscard]] bool Se3TaskActiveInPhase(WbcPhase p) const noexcept {
     const auto idx = static_cast<std::size_t>(p);
     return idx < kNumPhases && se3_task_active_in_phase_[idx];
@@ -698,10 +711,19 @@ class DemoWbcController final : public RTControllerInterface {
   struct ComputedTrajectory {
     std::array<double, kMaxDeviceChannels> positions{};
     std::array<double, kMaxDeviceChannels> velocities{};
+    // Per-joint feedforward torque [Nm], populated only for the hand device
+    // when hand_tauff_enable (kPdFeedforward). Arm leaves it zero.
+    std::array<double, kMaxDeviceChannels> feedforward{};
   };
 
   ComputedTrajectory robot_computed_{};
   ComputedTrajectory hand_computed_{};
+
+  // Stage C-3: true for the ticks where the hand is driven via kPdFeedforward
+  // (hand_tauff_enable + closure/hold + all-finite τ_ff). WriteJointCommand
+  // reads this to set the hand device command_type + feedforward; ComputeEstop
+  // never sets it, so E-STOP always falls back to a plain position hold (E-8).
+  bool hand_tauff_active_{false};
 
   // ── MPC integration (Phase 5 + 7b) ──────────────────────────────────────
   //

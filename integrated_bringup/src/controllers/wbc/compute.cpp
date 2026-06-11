@@ -64,8 +64,7 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
       }
       const bool native_path =
           has_native_contact_ && dev1.inference_enable[static_cast<std::size_t>(f)];
-      ft.contact_flag =
-          native_path ? dev1.inference_data[static_cast<std::size_t>(ft_base)] : 0.0F;
+      ft.contact_flag = native_path ? dev1.inference_data[static_cast<std::size_t>(ft_base)] : 0.0F;
       const float fx = ft.force[0];
       const float fy = ft.force[1];
       const float fz = ft.force[2];
@@ -339,24 +338,20 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   // se3_tcp is YAML-deactivated. Per-tick push of (pose, v, a) replaces the
   // single step-on-entry SetSe3Reference path so the SE3Task sees a smooth
   // ramp instead of a large initial error → aggressive PD acceleration.
-  if (tcp_trajectory_active_ &&
-      se3_task_active_in_phase_[static_cast<std::size_t>(phase_)]) {
+  if (tcp_trajectory_active_ && se3_task_active_in_phase_[static_cast<std::size_t>(phase_)]) {
     tcp_trajectory_time_ += dt;
-    if (has_pending_tcp_segment_ &&
-        tcp_trajectory_time_ >= tcp_trajectory_.duration()) {
-      const pinocchio::SE3 mid =
-          tcp_trajectory_.compute(tcp_trajectory_.duration()).pose;
+    if (has_pending_tcp_segment_ && tcp_trajectory_time_ >= tcp_trajectory_.duration()) {
+      const pinocchio::SE3 mid = tcp_trajectory_.compute(tcp_trajectory_.duration()).pose;
       tcp_trajectory_.initialize(mid, pinocchio::Motion::Zero(), pending_tcp_goal_,
                                  pinocchio::Motion::Zero(), pending_tcp_duration_);
       tcp_trajectory_time_ = 0.0;
       has_pending_tcp_segment_ = false;
     }
-    tcp_traj_state_ = tcp_trajectory_.compute(
-        std::min(tcp_trajectory_time_, tcp_trajectory_.duration()), dt);
+    tcp_traj_state_ =
+        tcp_trajectory_.compute(std::min(tcp_trajectory_time_, tcp_trajectory_.duration()), dt);
     if (auto* se3 = tsid_controller_.Formulation().GetTask("se3_tcp"); se3) {
       static_cast<rtc::tsid::SE3Task*>(se3)->SetSe3Reference(
-          tcp_traj_state_.pose,
-          tcp_traj_state_.velocity.toVector(),
+          tcp_traj_state_.pose, tcp_traj_state_.velocity.toVector(),
           tcp_traj_state_.acceleration.toVector());
     }
   }
@@ -410,8 +405,8 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   //         previous command velocity to avoid a discontinuity.
   const auto& a = tsid_output_.a_opt;
 
-  const bool hard_reseed = reseed_on_fallback_exit_ || !q_next_full_.allFinite() ||
-                           !v_next_full_.allFinite();
+  const bool hard_reseed =
+      reseed_on_fallback_exit_ || !q_next_full_.allFinite() || !v_next_full_.allFinite();
   if (integrate_from_measured_ || hard_reseed) {
     q_next_full_ = q_curr_full_;
     v_next_full_ = v_curr_full_;
@@ -503,6 +498,44 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
         v_next_full_[static_cast<Eigen::Index>(pin_idx)];
   }
 
+  // Stage C-3: hand feedforward torque (kPdFeedforward). Model-based τ_ff that
+  // the PD position backbone (hand_computed_.positions = hold/closure pose)
+  // rides on. τ_ff = gravity_gain · g[hand] + closure_bias, active only in
+  // closure/hold, clamped to ±tauff_max. Any non-finite → zero the whole hand
+  // and fall back to a plain position hold this tick (conservative, throttled
+  // WARN). Opt-in: hand_tauff_enable. The gravity vector g[nv] was filled by
+  // pinocchio_cache_.Update() earlier this tick.
+  hand_tauff_active_ = false;
+  for (int i = 0; i < hand_dof_; ++i)
+    hand_computed_.feedforward[static_cast<std::size_t>(i)] = 0.0;
+  if (gains_now.hand_tauff_enable && (phase_ == WbcPhase::kClosure || phase_ == WbcPhase::kHold)) {
+    const Eigen::VectorXd& g_vec = pinocchio_cache_.g;
+    const double gain = gains_now.hand_tauff_gravity_gain;
+    const double bias = gains_now.hand_tauff_closure_bias;
+    const double tmax = gains_now.hand_tauff_max;
+    bool finite_ok = true;
+    for (int i = 0; i < hand_dof_ && finite_ok; ++i) {
+      const auto ext_i = static_cast<std::size_t>(arm_dof_ + i);
+      const auto vidx = static_cast<Eigen::Index>(ext_to_pin_v_[ext_i]);
+      double tau = 0.0;
+      if (vidx >= 0 && vidx < g_vec.size())
+        tau = gain * g_vec[vidx] + bias;
+      if (!std::isfinite(tau)) {
+        finite_ok = false;
+        break;
+      }
+      hand_computed_.feedforward[static_cast<std::size_t>(i)] = std::clamp(tau, -tmax, tmax);
+    }
+    if (finite_ok) {
+      hand_tauff_active_ = true;
+    } else {
+      for (int i = 0; i < hand_dof_; ++i)
+        hand_computed_.feedforward[static_cast<std::size_t>(i)] = 0.0;
+      RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
+                           "[wbc] hand τ_ff non-finite — position-hold fallback this tick");
+    }
+  }
+
   // Stage B-5: WBC diagnostic (RT-safe throttled INFO). WBCDiagnostic struct
   // (separate SeqLock publisher) is deferred to a future stage — this single
   // throttled line is the interim observability surface. Format uses only
@@ -582,8 +615,8 @@ void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double 
 
   if (release_stage_ == 1 && state.num_devices > 1 && state.devices[1].valid) {
     hand_trajectory_time_ += dt;
-    const auto hstate = hand_trajectory_.compute(
-        std::min(hand_trajectory_time_, hand_trajectory_.duration()));
+    const auto hstate =
+        hand_trajectory_.compute(std::min(hand_trajectory_time_, hand_trajectory_.duration()));
     for (int i = 0; i < hand_dof_; ++i) {
       const auto idx = static_cast<std::size_t>(i);
       hand_computed_.positions[idx] = hstate.positions[idx];
@@ -635,6 +668,16 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
     }
     rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
                            std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+    // Stage C-3: when hand τ_ff is active this tick, drive the hand device via
+    // kPdFeedforward — the position commands above are the PD target (hold pose)
+    // and feedforward carries the model torque. The arm device leaves its
+    // per-device command_type unset (inherits the global kPosition default).
+    if (hand_tauff_active_) {
+      out1.command_type = CommandType::kPdFeedforward;
+      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+        out1.feedforward[i] = hand_computed_.feedforward[i];
+      }
+    }
   }
 
   return output;
@@ -710,8 +753,7 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
       // (sensor A path), else derived binary 1/0 from ft.in_contact.
       // displacement: native (slots 4..6) if backend provides it (sensor A);
       // else 0 — controller-side deformation derive is stubbed.
-      ws.contact_flag[idx] =
-          has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
+      ws.contact_flag[idx] = has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
       ws.displacement[idx] = 0.0F;
       if (ft.in_contact) {
         ++active_count;
@@ -828,7 +870,11 @@ ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) n
     out0.target_positions[idx] = out0.commands[idx];
   }
 
-  // Hold current position (hand)
+  // Hold current position (hand). E-8: this is a fresh ControllerOutput, so the
+  // hand device's per-device command_type stays unset (→ plain position hold)
+  // and feedforward stays zero — the hand τ_ff path is never engaged under
+  // E-STOP regardless of phase/enable. Do NOT set kPdFeedforward or copy
+  // feedforward here; zeroed torque on E-STOP is the safety contract.
   if (state.num_devices > 1 && state.devices[1].valid) {
     auto& out1 = output.devices[1];
     out1.num_channels = state.devices[1].num_channels;
@@ -977,11 +1023,9 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
 // the WBC-specific fields that ControllerOutput does not carry: TSID a_opt
 // acceleration (device slice), SE3 quintic-ramp setpoint (arm role), and
 // per-fingertip |F| (hand role). RT-safe: bounded loops, no alloc, no throw.
-void DemoWbcController::FillDeviceWbcLogPod(const ControllerState& state,
-                                           const ControllerOutput& output, std::size_t device_idx,
-                                           std::uint8_t role,
-                                           ::integrated_bringup::DeviceWbcLogPod& pod)
-    const noexcept {
+void DemoWbcController::FillDeviceWbcLogPod(
+    const ControllerState& state, const ControllerOutput& output, std::size_t device_idx,
+    std::uint8_t role, ::integrated_bringup::DeviceWbcLogPod& pod) const noexcept {
   pod.role = role;
   pod.t_relative_s = state.t_relative_s;
   if (static_cast<std::size_t>(state.num_devices) <= device_idx) {
@@ -1065,7 +1109,7 @@ void DemoWbcController::FillDeviceWbcLogPod(const ControllerState& state,
 }
 
 void DemoWbcController::FillWbcDiagLogPod(const ControllerState& state,
-                                         ::integrated_bringup::WbcDiagLogPod& pod) const noexcept {
+                                          ::integrated_bringup::WbcDiagLogPod& pod) const noexcept {
   pod.t_relative_s = state.t_relative_s;
   pod.phase = static_cast<std::uint8_t>(phase_);
   pod.solve_time_us = tsid_output_.solve_time_us;
