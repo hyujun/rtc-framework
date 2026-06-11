@@ -122,8 +122,14 @@ void DemoWbcController::DeclareGainParameters() noexcept {
   g.hand_tauff_enable =
       declare_bool("hand_tauff_enable", g.hand_tauff_enable,
                    "Drive hand via pd_feedforward (model τ_ff overlay on the PD position hold)");
+  const std::string tauff_src_default =
+      (g.hand_tauff_source == HandTauffSource::kTsidTau) ? "tsid_tau" : "gravity_comp";
+  const std::string tauff_src = declare_string("hand_tauff_source", tauff_src_default,
+                                               "Hand τ_ff source: 'gravity_comp' | 'tsid_tau'");
+  g.hand_tauff_source =
+      (tauff_src == "tsid_tau") ? HandTauffSource::kTsidTau : HandTauffSource::kGravityComp;
   g.hand_tauff_gravity_gain = declare_double("hand_tauff_gravity_gain", g.hand_tauff_gravity_gain,
-                                             "Scale on hand gravity-comp τ_ff");
+                                             "Scale on the hand τ_ff source");
   g.hand_tauff_closure_bias = declare_double("hand_tauff_closure_bias", g.hand_tauff_closure_bias,
                                              "Uniform additive hand τ_ff bias [Nm]");
   g.hand_tauff_max =
@@ -218,6 +224,16 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
         gains_dirty = true;
       } else if (name == "hand_tauff_enable") {
         g.hand_tauff_enable = p.as_bool();
+        gains_dirty = true;
+      } else if (name == "hand_tauff_source") {
+        const auto& src = p.as_string();
+        if (src != "gravity_comp" && src != "tsid_tau") {
+          result.successful = false;
+          result.reason = "hand_tauff_source must be 'gravity_comp' or 'tsid_tau'";
+          return result;
+        }
+        g.hand_tauff_source =
+            (src == "tsid_tau") ? HandTauffSource::kTsidTau : HandTauffSource::kGravityComp;
         gains_dirty = true;
       } else if (name == "hand_tauff_gravity_gain") {
         g.hand_tauff_gravity_gain = p.as_double();

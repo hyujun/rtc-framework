@@ -500,26 +500,36 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
 
   // Stage C-3: hand feedforward torque (kPdFeedforward). Model-based τ_ff that
   // the PD position backbone (hand_computed_.positions = hold/closure pose)
-  // rides on. τ_ff = gravity_gain · g[hand] + closure_bias, active only in
-  // closure/hold, clamped to ±tauff_max. Any non-finite → zero the whole hand
-  // and fall back to a plain position hold this tick (conservative, throttled
-  // WARN). Opt-in: hand_tauff_enable. The gravity vector g[nv] was filled by
-  // pinocchio_cache_.Update() earlier this tick.
+  // rides on. τ_ff = gravity_gain · src[hand] + closure_bias, where src is the
+  // hand gravity vector g[nv] (kGravityComp, default) or the TSID-solved
+  // actuated torque (kTsidTau, computed-torque FF) per hand_tauff_source. Active
+  // only in closure/hold, clamped to ±tauff_max. Any non-finite → zero the whole
+  // hand and fall back to a plain position hold this tick (conservative,
+  // throttled WARN). Opt-in: hand_tauff_enable. The gravity vector g[nv] was
+  // filled by pinocchio_cache_.Update() and tsid_output_.tau by the solve above,
+  // both earlier this tick.
   hand_tauff_active_ = false;
   for (int i = 0; i < hand_dof_; ++i)
     hand_computed_.feedforward[static_cast<std::size_t>(i)] = 0.0;
   if (gains_now.hand_tauff_enable && (phase_ == WbcPhase::kClosure || phase_ == WbcPhase::kHold)) {
-    const Eigen::VectorXd& g_vec = pinocchio_cache_.g;
     const double gain = gains_now.hand_tauff_gravity_gain;
     const double bias = gains_now.hand_tauff_closure_bias;
     const double tmax = gains_now.hand_tauff_max;
+    // τ_ff source, both indexed by the pinocchio v-index. kGravityComp = g[nv]
+    // (pure gravity comp); kTsidTau = the TSID-solved actuated torque (already
+    // QP-converged this tick, computed-torque FF). For the fixed-base control
+    // model na==nv so tsid_output_.tau aligns with g[nv] on the same vidx; the
+    // bounds guard below keeps either source safe if that assumption breaks.
+    const Eigen::VectorXd& src_vec = (gains_now.hand_tauff_source == HandTauffSource::kTsidTau)
+                                         ? tsid_output_.tau
+                                         : pinocchio_cache_.g;
     bool finite_ok = true;
     for (int i = 0; i < hand_dof_ && finite_ok; ++i) {
       const auto ext_i = static_cast<std::size_t>(arm_dof_ + i);
       const auto vidx = static_cast<Eigen::Index>(ext_to_pin_v_[ext_i]);
       double tau = 0.0;
-      if (vidx >= 0 && vidx < g_vec.size())
-        tau = gain * g_vec[vidx] + bias;
+      if (vidx >= 0 && vidx < src_vec.size())
+        tau = gain * src_vec[vidx] + bias;
       if (!std::isfinite(tau)) {
         finite_ok = false;
         break;

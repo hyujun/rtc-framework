@@ -16,6 +16,7 @@
 namespace {
 
 using integrated_bringup::DemoWbcController;
+using integrated_bringup::HandTauffSource;
 using integrated_bringup::kHandInferenceValuesPerFingertipCapacity;
 using integrated_bringup::kHandSensorValuesPerFingertipCapacity;
 using integrated_bringup::WbcPhase;
@@ -168,6 +169,18 @@ TEST_F(WbcFSMTest, HandTauffDisabledKeepsPlainPositionCommand) {
   for (int i = 0; i < out.devices[1].num_channels; ++i) {
     EXPECT_EQ(out.devices[1].feedforward[static_cast<std::size_t>(i)], 0.0);
   }
+}
+
+// hand_tauff_source selects the τ_ff source (gravity_comp default | tsid_tau
+// follow-up). Default is kGravityComp; the field must survive a gains round-trip
+// so the live ROS param can flip it. The positive kTsidTau torque path needs a
+// real TSID model (the fixture URDF is empty) and is covered by sim verify.
+TEST_F(WbcFSMTest, HandTauffSourceGainsRoundTrip) {
+  EXPECT_EQ(ctrl_.get_gains().hand_tauff_source, HandTauffSource::kGravityComp);
+  DemoWbcController::Gains g = ctrl_.get_gains();
+  g.hand_tauff_source = HandTauffSource::kTsidTau;
+  ctrl_.set_gains(g);
+  EXPECT_EQ(ctrl_.get_gains().hand_tauff_source, HandTauffSource::kTsidTau);
 }
 
 // ── Gains Tests ──────────────────────────────────────────────────────────────

@@ -94,6 +94,18 @@ enum class WbcPhase : uint8_t {
 // against the driving path is logged (WbcDiagLog).
 //   kIntegrator — semi-implicit Euler on TSID a_opt (carry-forward / measured).
 //   kClik       — velocity-level CLIK reference (rtc_tsid ClikReferenceGenerator).
+// Stage C-3 follow-up: source of the hand feedforward torque (τ_ff) overlaid on
+// the pd_feedforward position backbone.
+//   kGravityComp — pure hand gravity comp (g[hand]); conservative default.
+//   kTsidTau     — the TSID-solved actuated torque for the hand joints
+//                  (computed-torque FF: τ = τ_TSID + PD on the position hold).
+// Either source is scaled by hand_tauff_gravity_gain and offset by
+// hand_tauff_closure_bias, so the gain/bias/clamp/finite pipeline is identical.
+enum class HandTauffSource : uint8_t {
+  kGravityComp = 0,
+  kTsidTau = 1,
+};
+
 enum class CommandSource : uint8_t {
   kIntegrator = 0,
   kClik = 1,
@@ -165,11 +177,14 @@ class DemoWbcController final : public RTControllerInterface {
     // kPdFeedforward: values = hold/closure pose (PD backbone), feedforward =
     // τ_ff. τ_ff = gravity_gain · g[hand] + closure_bias (uniform Nm), active
     // only in kClosure/kHold, clamped to ±tauff_max, zeroed on non-finite /
-    // limit / E-STOP. Default (gain 1, bias 0) = pure hand gravity comp.
-    // NOTE (follow-up, see plan): wiring full TSID tau as τ_ff (computed-torque
-    // FF + PD) is the eventual intent — kept separate pending gain-overlap study.
-    bool hand_tauff_enable{false};        ///< Drive hand via pd_feedforward
-    double hand_tauff_gravity_gain{1.0};  ///< Scale on g[hand] gravity comp
+    // limit / E-STOP. Default (gravity_comp, gain 1, bias 0) = pure hand
+    // gravity comp. hand_tauff_source selects gravity_comp vs the full TSID
+    // actuated torque (computed-torque FF + PD); the latter is the eventual
+    // intent, left opt-in pending a gain-overlap (TSID task gain vs hand PD)
+    // study — flip live via the hand_tauff_source ROS param.
+    bool hand_tauff_enable{false};  ///< Drive hand via pd_feedforward
+    HandTauffSource hand_tauff_source{HandTauffSource::kGravityComp};  ///< τ_ff source
+    double hand_tauff_gravity_gain{1.0};  ///< Scale on the τ_ff source [-]
     double hand_tauff_closure_bias{0.0};  ///< Uniform additive τ bias [Nm]
     double hand_tauff_max{5.0};           ///< Per-joint |τ_ff| clamp [Nm]
   };
