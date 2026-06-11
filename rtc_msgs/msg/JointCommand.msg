@@ -3,9 +3,10 @@
 # joint_names와 values는 1:1 대응.
 # joint_names가 비어있으면 기본 조인트 순서로 fallback.
 #
-# command_type == "pd_feedforward" 은 현재 rtc_mujoco_sim 수신측에서만 해석된다.
-# 프레임워크 전역 rtc::CommandType enum 은 2-값(position/torque)이라 rtc 컨트롤러
-# 스택은 이 값을 발행하지 못한다 — sim 테스트/직접 publish 전용.
+# command_type == "pd_feedforward": PD position-servo backbone(values) + per-joint
+# feedforward torque(feedforward[]) 오버레이. rtc::CommandType::kPdFeedforward 로
+# 컨트롤러 스택이 발행 가능(C-3) — 단 mujoco_sim 만 feedforward 를 qfrc_applied 로
+# 주입하고, 실 하드웨어(udp_hand_driver 등 position-only)는 feedforward 를 무시한다.
 
 std_msgs/Header header
 

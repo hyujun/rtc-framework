@@ -254,7 +254,14 @@ void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot&
   if (nc <= 0)
     return;
 
-  cmd_msg_.command_type = (command_type == CommandType::kTorque) ? "torque" : "position";
+  // The real LEAP hand firmware is position-only: udp_hand_driver ignores
+  // command_type / feedforward / kp / kd and servos toward values[] as a joint
+  // position target. We still label the mode honestly on the wire, but the
+  // feedforward torque channel is intentionally NOT transmitted here — real
+  // torque/current drive is a separate backend/firmware track (τ→I, mode bits).
+  cmd_msg_.command_type = (command_type == CommandType::kPdFeedforward) ? "pd_feedforward"
+                          : (command_type == CommandType::kTorque)      ? "torque"
+                                                                        : "position";
 
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
   if (!cmd_reorder_.empty()) {

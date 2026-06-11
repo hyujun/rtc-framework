@@ -44,6 +44,9 @@ void MujocoNativeBackend::SetNameConfig(std::vector<std::string> joint_state_nam
                                         std::vector<std::string> joint_command_names) {
   cmd_msg_.joint_names = joint_command_names;
   cmd_msg_.values.assign(joint_command_names.size(), 0.0);
+  // Pre-size the feedforward channel once here so WriteCommand (RT thread) only
+  // fills it in place — no allocation on the actuator-publish path.
+  cmd_msg_.feedforward.assign(joint_command_names.size(), 0.0);
   cmd_reorder_ = BuildReorderMap(joint_state_names, joint_command_names);
 }
 
@@ -60,6 +63,7 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   if (cmd_msg_.joint_names.empty() && !config_.joint_command_names.empty()) {
     cmd_msg_.joint_names = config_.joint_command_names;
     cmd_msg_.values.assign(config_.joint_command_names.size(), 0.0);
+    cmd_msg_.feedforward.assign(config_.joint_command_names.size(), 0.0);
   }
   cmd_msg_.command_type = "position";
 
@@ -109,8 +113,7 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
     // Documented fallback: HasSensorState() still reports true, but
     // ReadSensorState publishes num_inference_groups=0. Surface once so
     // mis-configuration is visible in launch logs.
-    RCLCPP_INFO(logger_,
-                "[mujoco_native:%s] fingertip wrench lane disabled — no topics configured",
+    RCLCPP_INFO(logger_, "[mujoco_native:%s] fingertip wrench lane disabled — no topics configured",
                 config_.group_name.c_str());
   } else {
     rclcpp::SubscriptionOptions wrench_opts;
@@ -120,8 +123,7 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
     // SPSC guard: OnWrench's load-modify-store on sensor_mirror_ is safe only
     // when this cb_group is MutuallyExclusive. WARN (do not abort) so dev
     // builds can opt into Reentrant for diagnosis with the trade-off visible.
-    if (state_cb_group &&
-        state_cb_group->type() != rclcpp::CallbackGroupType::MutuallyExclusive) {
+    if (state_cb_group && state_cb_group->type() != rclcpp::CallbackGroupType::MutuallyExclusive) {
       RCLCPP_WARN(logger_,
                   "[mujoco_native:%s] wrench cb_group is not MutuallyExclusive — "
                   "OnWrench SPSC guarantee is broken; concurrent callbacks may "
@@ -199,7 +201,8 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
     // 0-filled (controller does not consume them; udp_hand backend remains
     // the source for those lanes). Force values are preserved across stale
     // ticks so the controller can keep using the last known fx/fy/fz.
-    const std::size_t base = static_cast<std::size_t>(f) * static_cast<std::size_t>(kInferenceStride);
+    const std::size_t base =
+        static_cast<std::size_t>(f) * static_cast<std::size_t>(kInferenceStride);
     cache.inference_data[base + 0] = 0.0F;
     cache.inference_data[base + 1] = tip.fx;
     cache.inference_data[base + 2] = tip.fy;
@@ -299,18 +302,28 @@ void MujocoNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& 
   if (nc <= 0)
     return;  // Skip until the controller has output.
 
-  cmd_msg_.command_type = (command_type == CommandType::kTorque) ? "torque" : "position";
+  const bool pd_ff = (command_type == CommandType::kPdFeedforward);
+  cmd_msg_.command_type = pd_ff                                    ? "pd_feedforward"
+                          : (command_type == CommandType::kTorque) ? "torque"
+                                                                   : "position";
 
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
+  const std::size_t nff = std::min(n, cmd_msg_.feedforward.size());
   if (!cmd_reorder_.empty()) {
     for (std::size_t i = 0; i < n; ++i) {
       const int src = (i < cmd_reorder_.size()) ? cmd_reorder_[i] : -1;
-      cmd_msg_.values[i] =
-          (src >= 0 && src < nc) ? slot.commands[static_cast<std::size_t>(src)] : 0.0;
+      const bool src_ok = (src >= 0 && src < nc);
+      cmd_msg_.values[i] = src_ok ? slot.commands[static_cast<std::size_t>(src)] : 0.0;
+      if (i < nff)
+        cmd_msg_.feedforward[i] =
+            (pd_ff && src_ok) ? slot.feedforward[static_cast<std::size_t>(src)] : 0.0;
     }
   } else {
-    for (std::size_t i = 0; i < n; ++i)
+    for (std::size_t i = 0; i < n; ++i) {
       cmd_msg_.values[i] = slot.commands[i];
+      if (i < nff)
+        cmd_msg_.feedforward[i] = pd_ff ? slot.feedforward[i] : 0.0;
+    }
   }
   cmd_pub_->publish(cmd_msg_);
 }
