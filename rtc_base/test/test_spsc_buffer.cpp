@@ -35,7 +35,7 @@ TEST(SpscPublishBufferTest, PushAndPopPreservesData) {
   rtc::PublishSnapshot input{};
   input.stamp_ns = 123456789;
   input.num_groups = 2;
-  input.command_type = rtc::CommandType::kPosition;
+  input.active_controller_idx = 3;
 
   EXPECT_TRUE(buf.Push(input));
 
@@ -44,7 +44,7 @@ TEST(SpscPublishBufferTest, PushAndPopPreservesData) {
 
   EXPECT_EQ(output.stamp_ns, 123456789);
   EXPECT_EQ(output.num_groups, 2);
-  EXPECT_EQ(output.command_type, rtc::CommandType::kPosition);
+  EXPECT_EQ(output.active_controller_idx, 3);
 }
 
 TEST(SpscPublishBufferTest, BufferFull_DropsAndCounts) {

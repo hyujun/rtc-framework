@@ -162,6 +162,21 @@ enum class GoalType : uint8_t { kJoint, kTask };
   return "unknown";
 }
 
+// Wire string for the JointCommand.command_type field. Single source for the
+// CommandType→string mapping shared by every backend that encodes the mode on
+// the wire (mujoco_native, udp_hand_native, …) — keeps the spelling identical.
+[[nodiscard]] inline constexpr const char* CommandTypeToString(CommandType c) noexcept {
+  switch (c) {
+    case CommandType::kPosition:
+      return "position";
+    case CommandType::kTorque:
+      return "torque";
+    case CommandType::kPdFeedforward:
+      return "pd_feedforward";
+  }
+  return "unknown";
+}
+
 // ── SE3 pose (RT-safe, trivially copyable) ─────────────────────────────────
 // Generic free-standing pose carrier used by PublishSnapshot to ferry
 // FK results from the RT loop to the publish thread (e.g. for tf publish).

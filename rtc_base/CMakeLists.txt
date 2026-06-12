@@ -44,6 +44,11 @@ if(BUILD_TESTING)
     target_link_libraries(test_spsc_buffer pthread)
   endif()
 
+  ament_add_gtest(test_types test/test_types.cpp)
+  if(TARGET test_types)
+    target_include_directories(test_types PRIVATE include)
+  endif()
+
   ament_add_gtest(test_filters test/test_filters.cpp)
   if(TARGET test_filters)
     target_include_directories(test_filters PRIVATE include)

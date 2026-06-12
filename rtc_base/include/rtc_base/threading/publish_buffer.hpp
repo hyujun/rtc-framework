@@ -93,7 +93,9 @@ struct PublishSnapshot {
   int num_groups{0};
 
   // ── Shared data (group-independent) ────────────────────────────────────
-  CommandType command_type{CommandType::kPosition};
+  // Per-group command type now lives in GroupCommandSlot::command_type (mixed
+  // commands need per-device modes); the dispatch reads that, not a top-level
+  // field. No group-independent command_type is kept here.
   std::array<double, kTaskSpaceDim> actual_task_positions{};
 
   // JointCommand header stamp (monotonic nanoseconds)

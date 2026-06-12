@@ -111,9 +111,10 @@ class DeviceBackend {
 
   /// RT-safe command write. Backend encodes the controller's per-group output
   /// slot and hands the encoded message to its publisher path. `command_type`
-  /// comes from PublishSnapshot::command_type (kPosition / kTorque) and lets
-  /// backends emit JointCommand.command_type or pick a different ros2_control
-  /// chain if needed. Never blocks; never allocates.
+  /// comes from the per-group GroupCommandSlot::command_type (kPosition /
+  /// kTorque / kPdFeedforward) and lets backends emit JointCommand.command_type
+  /// or pick a different ros2_control chain if needed. Never blocks; never
+  /// allocates.
   virtual void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                             CommandType command_type) noexcept = 0;
 

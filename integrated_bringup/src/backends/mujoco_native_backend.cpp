@@ -303,9 +303,7 @@ void MujocoNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& 
     return;  // Skip until the controller has output.
 
   const bool pd_ff = (command_type == CommandType::kPdFeedforward);
-  cmd_msg_.command_type = pd_ff                                    ? "pd_feedforward"
-                          : (command_type == CommandType::kTorque) ? "torque"
-                                                                   : "position";
+  cmd_msg_.command_type = CommandTypeToString(command_type);
 
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
   const std::size_t nff = std::min(n, cmd_msg_.feedforward.size());

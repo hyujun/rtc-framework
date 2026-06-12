@@ -259,9 +259,7 @@ void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot&
   // position target. We still label the mode honestly on the wire, but the
   // feedforward torque channel is intentionally NOT transmitted here — real
   // torque/current drive is a separate backend/firmware track (τ→I, mode bits).
-  cmd_msg_.command_type = (command_type == CommandType::kPdFeedforward) ? "pd_feedforward"
-                          : (command_type == CommandType::kTorque)      ? "torque"
-                                                                        : "position";
+  cmd_msg_.command_type = CommandTypeToString(command_type);
 
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
   if (!cmd_reorder_.empty()) {

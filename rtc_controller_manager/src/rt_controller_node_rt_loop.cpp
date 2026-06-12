@@ -143,7 +143,6 @@ void RtControllerNode::ControlLoop() {
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
   {
     urtc::PublishSnapshot snap{};
-    snap.command_type = output.command_type;
     snap.actual_task_positions = output.actual_task_positions;
     snap.stamp_ns = std::chrono::steady_clock::now().time_since_epoch().count();
     snap.active_controller_idx = active_idx;
