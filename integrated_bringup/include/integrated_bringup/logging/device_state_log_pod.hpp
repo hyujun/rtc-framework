@@ -60,7 +60,7 @@ struct DeviceStateLogPod {
   std::array<double, kMaxMotors> motor_efforts{};
 
   // ── Categorical (mirrored as ints; CSV writer translates) ─────────────────
-  // command_type: 0=position, 1=torque
+  // command_type: 0=position, 1=torque, 2=pd_feedforward
   std::uint8_t command_type{0};
   // goal_type:    0=joint, 1=task
   std::uint8_t goal_type{0};
@@ -110,7 +110,7 @@ inline void WriteDeviceStateLogHeader(std::ostream& os, std::span<const std::str
 
 /// Translate enum-as-int back to string for the CSV row.
 inline std::string_view DeviceStateLogCommandTypeStr(std::uint8_t v) noexcept {
-  return v == 0 ? "position" : (v == 1 ? "torque" : "unknown");
+  return v == 0 ? "position" : (v == 1 ? "torque" : (v == 2 ? "pd_feedforward" : "unknown"));
 }
 
 inline std::string_view DeviceStateLogGoalTypeStr(std::uint8_t v) noexcept {

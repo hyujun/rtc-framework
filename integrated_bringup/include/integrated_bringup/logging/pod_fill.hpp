@@ -61,7 +61,13 @@ inline void FillDeviceStateLogPod(const rtc::ControllerState& state,
     pod.motor_efforts[i] = dev.motor_efforts[i];
   }
 
-  pod.command_type = (output.command_type == rtc::CommandType::kTorque) ? 1 : 0;
+  // #4: per-device command type (out.command_type), falling back to the global
+  // default — mirrors the per-device out.goal_type below so a hand's
+  // kPdFeedforward is visible in the state log, not masked by the global default.
+  const auto dev_ct = out.command_type.value_or(output.command_type);
+  pod.command_type = (dev_ct == rtc::CommandType::kPdFeedforward) ? 2
+                     : (dev_ct == rtc::CommandType::kTorque)      ? 1
+                                                                  : 0;
   pod.goal_type = (out.goal_type == rtc::GoalType::kTask) ? 1 : 0;
 }
 

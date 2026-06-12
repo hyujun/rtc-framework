@@ -183,6 +183,67 @@ TEST_F(WbcFSMTest, HandTauffSourceGainsRoundTrip) {
   EXPECT_EQ(ctrl_.get_gains().hand_tauff_source, HandTauffSource::kTsidTau);
 }
 
+// #1 (safety): a stale hand_tauff_active_ from a prior TSID tick must NOT survive
+// into a later non-TSID tick. Compute() resets the flag at entry (single owner),
+// so a forced kFallback tick with the flag pre-injected true must produce a plain
+// position hand command — no kPdFeedforward, zero feedforward — not a replay of
+// last tick's torque. This is the conservative-hold contract on QP divergence.
+TEST_F(WbcFSMTest, HandTauffActiveClearedEachTick) {
+  ctrl_.ForcePhaseForTesting(WbcPhase::kFallback);
+  ctrl_.SetHandTauffActiveForTesting(true);  // pollute as if a prior TSID tick left it set
+
+  auto out = ctrl_.Compute(state_);
+
+  // The flag is owned by Compute(): cleared at entry, only ComputeTSIDPosition
+  // sets it true. kFallback never reaches that path → must be false again.
+  EXPECT_FALSE(ctrl_.GetHandTauffActiveForTesting());
+  ASSERT_TRUE(out.valid);
+  ASSERT_GE(out.num_devices, 2);
+  EXPECT_NE(out.devices[1].command_type, rtc::CommandType::kPdFeedforward);
+  for (int i = 0; i < out.devices[1].num_channels; ++i) {
+    EXPECT_EQ(out.devices[1].feedforward[static_cast<std::size_t>(i)], 0.0);
+  }
+}
+
+// #9: when the hand device reports more channels than hand_dof_, the feedforward
+// copy must stop at hand_dof_ — the tail of out.devices[1].feedforward stays
+// fresh-zero (no read past the hand_dof_ model torques). With the empty fixture
+// model hand_dof_ == 0, so every channel must remain zero even if τ_ff is forced
+// active and the device advertises 32 channels.
+TEST_F(WbcFSMTest, HandFeedforwardCopyBoundedByHandDof) {
+  state_.devices[1].num_channels = 32;  // nc1 > hand_dof_
+  ctrl_.ForcePhaseForTesting(WbcPhase::kHold);
+  ctrl_.SetHandTauffActiveForTesting(true);
+
+  auto out = ctrl_.Compute(state_);
+  ASSERT_TRUE(out.valid);
+  ASSERT_GE(out.num_devices, 2);
+  for (int i = 0; i < out.devices[1].num_channels; ++i) {
+    EXPECT_EQ(out.devices[1].feedforward[static_cast<std::size_t>(i)], 0.0)
+        << "feedforward[" << i << "] should be fresh-zero past hand_dof_";
+  }
+}
+
+// #4: the WBC diag log must record the PER-DEVICE command type, not the global
+// ControllerOutput default. A hand device tagged kPdFeedforward → 2; an arm
+// device that leaves command_type unset falls back to the global default.
+TEST_F(WbcFSMTest, HandTauffReflectedInWbcLog) {
+  ControllerOutput output{};
+  output.num_devices = 2;
+  output.command_type = rtc::CommandType::kTorque;                    // global default (=1)
+  output.devices[1].command_type = rtc::CommandType::kPdFeedforward;  // hand per-device override
+
+  // hand (device 1): per-device kPdFeedforward must win over the global default.
+  const auto hand_pod = ctrl_.FillDeviceWbcLogPodForTesting(state_, output, /*device_idx=*/1,
+                                                            /*role=*/1);
+  EXPECT_EQ(hand_pod.command_type, 2);
+
+  // arm (device 0): command_type unset → falls back to the global default (kTorque=1).
+  const auto arm_pod = ctrl_.FillDeviceWbcLogPodForTesting(state_, output, /*device_idx=*/0,
+                                                           /*role=*/0);
+  EXPECT_EQ(arm_pod.command_type, 1);
+}
+
 // ── Gains Tests ──────────────────────────────────────────────────────────────
 
 TEST_F(WbcFSMTest, SetGetGainsRoundTrip) {

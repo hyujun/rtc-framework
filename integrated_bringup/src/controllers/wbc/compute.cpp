@@ -508,13 +508,19 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   // throttled WARN). Opt-in: hand_tauff_enable. The gravity vector g[nv] was
   // filled by pinocchio_cache_.Update() and tsid_output_.tau by the solve above,
   // both earlier this tick.
-  hand_tauff_active_ = false;
+  // hand_tauff_active_ is reset to false once per tick at Compute() entry (#1,
+  // single owner) — not here. This loop only clears stale feedforward indices
+  // before the (possible) re-fill below; the flag is set true at :539 only when
+  // every clamped torque is finite.
   for (int i = 0; i < hand_dof_; ++i)
     hand_computed_.feedforward[static_cast<std::size_t>(i)] = 0.0;
   if (gains_now.hand_tauff_enable && (phase_ == WbcPhase::kClosure || phase_ == WbcPhase::kHold)) {
     const double gain = gains_now.hand_tauff_gravity_gain;
     const double bias = gains_now.hand_tauff_closure_bias;
-    const double tmax = gains_now.hand_tauff_max;
+    // #3: clamp at point-of-use so a negative hand_tauff_max (e.g. a hand-edited
+    // YAML reaching the declare path, which OnSet's std::max does not cover) can
+    // never make std::clamp(tau, -tmax, tmax) have lo > hi (UB). 0 disables τ_ff.
+    const double tmax = std::max(0.0, gains_now.hand_tauff_max);
     // τ_ff source, both indexed by the pinocchio v-index. kGravityComp = g[nv]
     // (pure gravity comp); kTsidTau = the TSID-solved actuated torque (already
     // QP-converged this tick, computed-torque FF). For the fixed-base control
@@ -684,7 +690,12 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
     // per-device command_type unset (inherits the global kPosition default).
     if (hand_tauff_active_) {
       out1.command_type = CommandType::kPdFeedforward;
-      for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
+      // #9: hand_computed_.feedforward holds hand_dof_ model torques; copy only
+      // that many. If the hand device reports nc1 > hand_dof_ channels, the tail
+      // of out1.feedforward stays fresh-zero (no stale read past hand_dof_).
+      const auto nff =
+          std::min(static_cast<std::size_t>(nc1), static_cast<std::size_t>(std::max(hand_dof_, 0)));
+      for (std::size_t i = 0; i < nff; ++i) {
         out1.feedforward[i] = hand_computed_.feedforward[i];
       }
     }
@@ -1114,7 +1125,14 @@ void DemoWbcController::FillDeviceWbcLogPod(
     }
   }
 
-  pod.command_type = (output.command_type == rtc::CommandType::kTorque) ? 1 : 0;
+  // #4: log the PER-DEVICE command type (out.command_type), not the global
+  // ControllerOutput default — otherwise the hand's kPdFeedforward never shows
+  // up in the diag (goal_type already uses the per-device out.goal_type). Falls
+  // back to the global default when the device leaves command_type unset.
+  const auto dev_ct = out.command_type.value_or(output.command_type);
+  pod.command_type = (dev_ct == rtc::CommandType::kPdFeedforward) ? 2
+                     : (dev_ct == rtc::CommandType::kTorque)      ? 1
+                                                                  : 0;
   pod.goal_type = (out.goal_type == rtc::GoalType::kTask) ? 1 : 0;
 }
 

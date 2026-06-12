@@ -78,7 +78,7 @@ struct DeviceWbcLogPod {
   std::array<double, kMaxFingertips> fingertip_force{};
 
   // ── Categorical (mirrored as ints; writer translates) ────────────────────
-  std::uint8_t command_type{0};  // 0=position, 1=torque
+  std::uint8_t command_type{0};  // 0=position, 1=torque, 2=pd_feedforward
   std::uint8_t goal_type{0};     // 0=joint, 1=task
 };
 
@@ -86,7 +86,7 @@ static_assert(std::is_trivially_copyable_v<DeviceWbcLogPod>,
               "DeviceWbcLogPod must be trivially copyable for SPSC ring");
 
 inline std::string_view DeviceWbcLogCommandTypeStr(std::uint8_t v) noexcept {
-  return v == 0 ? "position" : (v == 1 ? "torque" : "unknown");
+  return v == 0 ? "position" : (v == 1 ? "torque" : (v == 2 ? "pd_feedforward" : "unknown"));
 }
 
 inline std::string_view DeviceWbcLogGoalTypeStr(std::uint8_t v) noexcept {

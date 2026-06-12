@@ -132,8 +132,10 @@ void DemoWbcController::DeclareGainParameters() noexcept {
                                              "Scale on the hand τ_ff source");
   g.hand_tauff_closure_bias = declare_double("hand_tauff_closure_bias", g.hand_tauff_closure_bias,
                                              "Uniform additive hand τ_ff bias [Nm]");
-  g.hand_tauff_max =
-      declare_double("hand_tauff_max", g.hand_tauff_max, "Per-joint |τ_ff| clamp [Nm]");
+  // #3: clamp declare symmetric with OnSet (parameters.cpp ~245) — a negative
+  // |τ_ff| clamp is meaningless; floor at 0 (disables τ_ff) on both ingress paths.
+  g.hand_tauff_max = std::max(
+      0.0, declare_double("hand_tauff_max", g.hand_tauff_max, "Per-joint |τ_ff| clamp [Nm]"));
 
   gains_lock_.Store(g);
 

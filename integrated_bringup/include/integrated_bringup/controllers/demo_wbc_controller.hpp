@@ -257,6 +257,23 @@ class DemoWbcController final : public RTControllerInterface {
 
   void SetGraspCmdForTesting(int v) noexcept { grasp_cmd_.store(v, std::memory_order_release); }
 
+  // #1: inject a stale hand τ_ff active flag so a test can assert Compute()
+  // clears it before WriteJointCommand on a non-TSID (e.g. forced kFallback) tick.
+  void SetHandTauffActiveForTesting(bool v) noexcept { hand_tauff_active_ = v; }
+
+  [[nodiscard]] bool GetHandTauffActiveForTesting() const noexcept { return hand_tauff_active_; }
+
+  // #4: expose the WBC diag pod fill so a test can assert the logged command_type
+  // reflects the PER-DEVICE DeviceOutput::command_type (e.g. hand kPdFeedforward
+  // → 2), not the global ControllerOutput default.
+  [[nodiscard]] ::integrated_bringup::DeviceWbcLogPod FillDeviceWbcLogPodForTesting(
+      const ControllerState& state, const ControllerOutput& output, std::size_t device_idx,
+      std::uint8_t role) const noexcept {
+    ::integrated_bringup::DeviceWbcLogPod pod{};
+    FillDeviceWbcLogPod(state, output, device_idx, role, pod);
+    return pod;
+  }
+
   [[nodiscard]] int GetReleaseStageForTesting() const noexcept { return release_stage_; }
 
   [[nodiscard]] double GetReleaseElapsedSecForTesting() const noexcept {

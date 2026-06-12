@@ -1174,8 +1174,8 @@ void DemoWbcController::OnDeviceConfigsSet() {
   RCLCPP_INFO(logger_,
               "[wbc] fingertip sensor capability: has_native_contact=%d "
               "has_native_displacement=%d (secondary='%s')",
-              static_cast<int>(has_native_contact_),
-              static_cast<int>(has_native_displacement_), secondary_name.c_str());
+              static_cast<int>(has_native_contact_), static_cast<int>(has_native_displacement_),
+              secondary_name.c_str());
 }
 
 DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesting(
@@ -1198,6 +1198,15 @@ DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesti
 
 ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexcept {
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
+
+  // #1 (safety): single per-tick owner of the hand τ_ff active flag. Reset here
+  // — before any early-return (E-STOP / !target_initialized) and before the FSM
+  // dispatch — so every non-TSID path (fallback / position / release hold) sees
+  // false. ComputeTSIDPosition is the only writer that sets it true (this tick's
+  // QP converged). Without this, a stale true from a prior TSID tick would make
+  // WriteJointCommand replay last tick's feedforward on a kFallback (QP-divergence)
+  // tick — the exact path that must be a conservative position hold.
+  hand_tauff_active_ = false;
 
   ReadState(state);
   DrainTargetSlot(state);
