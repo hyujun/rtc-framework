@@ -13,9 +13,11 @@ their own modules.
                        (*_max_traj_velocity) are skipped on Apply.
 - Force-PI grasp     → /<active>/grasp_command srv (rtc_msgs/GraspCommand)
 - E-STOP status      → /system/estop_status (subscribe)
-- Hand motor target  → /<active>/hand/joint_goal (RobotTarget pub)
-- Live joint state   → /rtc_cm/<group>/joint_states (sensor_msgs/JointState,
-                       controller-agnostic — no rewire needed)
+- Robot/hand target  → /<active>/<group>/joint_goal (RobotTarget pub); the arm
+                       and hand group names come from the active controller's
+                       claimed_groups (_active_groups), not hard-coded
+- Live joint state   → /rtc_cm/<group>/joint_states (sensor_msgs/JointState),
+                       rewired per active controller's claimed_groups
 - Live TCP pose      → tf2 lookup `base → tool0_actual` (active controller's
                        <config_key>/transforms feeds the listener buffer)
 """
@@ -102,6 +104,11 @@ class DemoControllerGUI(Node):
         # ctrl-agnostic /rtc_cm/<group>/joint_states 로, TCP pose는 tf2
         # listener (`base → tool0_actual`) 로 처리되어 rewire 불필요.
         self._active_ctrl: str = ""
+        # (arm_group, hand_group) the controller-owned topics are currently
+        # wired to. Resolved from the active controller's claimed_groups
+        # (see _active_groups); ("", "") means "not yet wired". Tracked so a
+        # later catalog response carrying the real groups re-wires once.
+        self._wired_groups: tuple[str, str] = ("", "")
         self.robot_cmd_pub = None
         self.hand_cmd_pub = None
         self._arm_gui_sub = None
@@ -155,9 +162,10 @@ class DemoControllerGUI(Node):
         self.estop_active = False
         self.create_subscription(Bool, "/system/estop_status", self._estop_cb, 10)
 
-        # Phase 4: per-group JointState (controller-agnostic, no rewire).
-        self.create_subscription(JointState, "/rtc_cm/ur5e/joint_states", self._arm_joint_cb, 10)
-        self.create_subscription(JointState, "/rtc_cm/hand/joint_states", self._hand_joint_cb, 10)
+        # Per-group JointState lives on /rtc_cm/<group>/joint_states. The group
+        # names are robot-specific (iiwa7/leap vs ur5e/hand), so these subs are
+        # created in the rewire (_rewire_owned_topics) against the active
+        # controller's claimed_groups — not hard-wired here.
 
         # Phase 4: tf2 listener for TCP pose (`<config_key>/transforms` 토픽이
         # listener buffer 로 자동 수집됨).
@@ -243,8 +251,43 @@ class DemoControllerGUI(Node):
         if not name or name == self._active_ctrl:
             return
         self._active_ctrl = name
-        ns = "/" + name
+        # Force a rewire for the new controller even when its groups happen to
+        # match the previous ones. _active_groups may still return the fallback
+        # until the catalog learns this controller's claimed_groups, at which
+        # point _on_catalog_update re-wires to the real group names.
+        self._wired_groups = ("", "")
+        self._rewire_if_groups_changed()
 
+    def _active_groups(self) -> tuple[str, str]:
+        """(arm_group, hand_group) for the active controller, taken from the
+        CM's per-controller ``claimed_groups`` (ordered [arm, hand] by device /
+        YAML order — ``TopicConfig::groups`` is an ordered vector). Falls back
+        to the ur5e_hand group names until the catalog carries the entry, so an
+        old CM that does not populate ``claimed_groups`` still drives the
+        legacy robot."""
+        for e in self._catalog.latest():
+            if e.config_key == self._active_ctrl:
+                arm = e.claimed_groups[0] if len(e.claimed_groups) >= 1 else "ur5e"
+                hand = e.claimed_groups[1] if len(e.claimed_groups) >= 2 else "hand"
+                return arm, hand
+        return "ur5e", "hand"
+
+    def _rewire_if_groups_changed(self) -> None:
+        """Re-wire controller-owned topics when the active controller's resolved
+        (arm, hand) group names change. Idempotent — a no-op when the groups
+        already match what is wired. Called from both the active-controller and
+        catalog-update callbacks (both on the rclpy executor thread)."""
+        if not self._active_ctrl:
+            return
+        groups = self._active_groups()
+        if groups == self._wired_groups:
+            return
+        self._wired_groups = groups
+        self._rewire_owned_topics("/" + self._active_ctrl, groups[0], groups[1])
+
+    def _rewire_owned_topics(self, ns: str, arm_group: str, hand_group: str) -> None:
+        """(Re)create the controller-owned + per-group pubs/subs against ``ns``
+        and the given group names, destroying any prior handles first."""
         # Reset old sub handles by dropping references; rclpy will unsubscribe.
         for sub_attr in (
             "_arm_gui_sub",
@@ -268,21 +311,30 @@ class DemoControllerGUI(Node):
                     pass
                 setattr(self, pub_attr, None)
 
-        self.robot_cmd_pub = self.create_publisher(RobotTarget, ns + "/ur5e/joint_goal", 10)
-        self.hand_cmd_pub = self.create_publisher(RobotTarget, ns + "/hand/joint_goal", 10)
-        # Phase 4: arm/hand joint subs are controller-agnostic
-        # (/rtc_cm/<group>/joint_states), set up once in __init__ and not
-        # rewired here. TCP pose comes from tf2 listener (also __init__).
+        self.robot_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{arm_group}/joint_goal", 10)
+        self.hand_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{hand_group}/joint_goal", 10)
+        # Per-group JointState: the topic ROLE is controller-agnostic but the
+        # group segment is robot-specific, so (re)bind against the discovered
+        # group names here. TCP pose comes from the tf2 listener (__init__).
+        self._arm_gui_sub = self.create_subscription(
+            JointState, f"/rtc_cm/{arm_group}/joint_states", self._arm_joint_cb, 10
+        )
+        self._hand_gui_sub = self.create_subscription(
+            JointState, f"/rtc_cm/{hand_group}/joint_states", self._hand_joint_cb, 10
+        )
         self._grasp_state_sub = self.create_subscription(
-            GraspState, ns + "/hand/grasp_state", self._grasp_state_cb, 10
+            GraspState, f"{ns}/{hand_group}/grasp_state", self._grasp_state_cb, 10
         )
         # Phase 3: subscribe to wbc_state regardless of active controller —
         # only the WBC publisher actually emits, so the joint/task case
         # silently no-ops. Topic path mirrors demo_wbc_controller.yaml.
         self._wbc_state_sub = self.create_subscription(
-            WbcState, ns + "/hand/wbc_state", self._wbc_state_cb, 10
+            WbcState, f"{ns}/{hand_group}/wbc_state", self._wbc_state_cb, 10
         )
-        self.get_logger().info(f"rewired controller-owned topics to '{name}'")
+        self.get_logger().info(
+            f"rewired controller-owned topics to '{self._active_ctrl}' "
+            f"(arm='{arm_group}', hand='{hand_group}')"
+        )
 
     def _warn_shape_mismatch_once(self, side: str, observed_names: list[str]) -> None:
         """Emit a one-shot WARN per side when the active controller's
@@ -306,7 +358,7 @@ class DemoControllerGUI(Node):
         )
 
     def _arm_joint_cb(self, msg: JointState):
-        """Phase 4: /rtc_cm/ur5e/joint_states 구독 콜백 (replaces _gui_pos_cb).
+        """Phase 4: /rtc_cm/<arm_group>/joint_states 구독 콜백 (replaces _gui_pos_cb).
 
         TCP pose는 별도 tf2 lookup 으로 처리 — 여기서는 joint state 만 다룬다.
         """
@@ -340,7 +392,7 @@ class DemoControllerGUI(Node):
             pass
 
     def _hand_joint_cb(self, msg: JointState):
-        """Phase 4: /rtc_cm/hand/joint_states 구독 콜백 (replaces _hand_gui_pos_cb)."""
+        """Phase 4: /rtc_cm/<hand_group>/joint_states 구독 콜백 (replaces _hand_gui_pos_cb)."""
         hand_dof = self._shape.hand_dof
         if len(msg.position) >= hand_dof:
             if msg.name and len(msg.name) >= hand_dof:
@@ -420,6 +472,13 @@ class DemoControllerGUI(Node):
         offline-fallback path is the only thing the user sees until the
         CM is reachable.
         """
+        # The catalog now carries claimed_groups for every controller. If the
+        # active controller's group names just became known (or changed), this
+        # re-wires its owned topics to the correct per-robot group segments —
+        # the active_controller_name message may arrive before the first
+        # list_controllers response, so the initial wiring can be the fallback.
+        self._rewire_if_groups_changed()
+
         # ``root`` may not exist yet on the very first response (the Tk
         # thread builds it before kicking off the catalog, but we're
         # defensive against init-order regressions).
