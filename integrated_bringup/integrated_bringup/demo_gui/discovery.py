@@ -1,23 +1,24 @@
-"""Runtime robot-shape discovery for demo_controller_gui (Phase 1).
+"""Robot-shape + profile definitions for demo_controller_gui.
 
 The GUI used to hard-code arm DoF (6) and hand motor count (10) plus the
-finger-group breakdown for the assm_v1 hand. Phase 1 replaces those
-constants with a ``RobotShape`` instance that:
+finger-group breakdown for the assm_v1 hand. Those constants now live in a
+``RobotShape`` instance, and the GUI picks one at launch via ``--robot``:
 
-  1. starts from a sensible default at ``__init__`` time so the Tk widget
-     tree builds immediately (no "waiting for first message" placeholder),
-  2. *advisorily* warns once per unique mismatch when a ``JointState``
-     message arrives whose ``name`` field describes a different schema —
-     the user is expected to restart the GUI to pick up the new
-     robot/hand. The Tk widgets stay pinned to the startup default for
-     this sprint (option (a) per the sprint plan); see
-     ``DemoControllerGUI._warn_shape_mismatch_once`` for the wiring.
+  1. ``RobotProfile.for_robot(key)`` (``ROBOT_PROFILES`` registry) returns
+     the static ``RobotShape`` + TCP tf frames for the selected robot
+     (``ur5e_hand`` 6+10, ``iiwa7_leap`` 7+16). Widgets size to that shape
+     immediately at ``__init__`` — no "waiting for first message".
+  2. ``DemoControllerGUI._warn_shape_mismatch_once`` *advisorily* warns once
+     per unique mismatch when a ``JointState`` arrives whose ``name`` span
+     disagrees with the chosen profile (wrong ``--robot``, or a motor order
+     differing from the wire order). The fix is to relaunch with the right
+     ``--robot`` value — widgets are sized once, not rebuilt live.
 
-A future sprint may replace the warn-only path with a live Tk widget
-rebuild against the new shape — at which point ``RobotShape.from_joint_names``
+A future sprint may replace the warn-only path with a live Tk widget rebuild
+against the observed shape — at which point ``RobotShape.from_joint_names``
 becomes the actual schema source instead of a future-use helper.
 
-This file defines the data class + helpers only; the warn dispatch is
+This file defines the data classes + helpers only; the warn dispatch is
 driven from ``app.py`` so it can sit on the Tk thread.
 """
 
@@ -118,6 +119,38 @@ class RobotShape:
         )
 
     @classmethod
+    def default_iiwa7_leap(cls) -> RobotShape:
+        """KUKA iiwa7 (7-DoF) + LEAP Hand (16 motors) schema.
+
+        Joint names mirror what the controller publishes on
+        ``/rtc_cm/<group>/joint_states``: arm ``A1..A7`` and the bare-number
+        LEAP motor ids. The motor *order* here matches the live wire order
+        (thumb 12-15 first, then index/middle/ring 0-11) — not the ascending
+        ``"0".."15"`` of ``config/iiwa7_leap/mujoco_simulator.yaml``, which is
+        the backend's state order, not the controller's republished order — so
+        ``matches_message`` passes without a spurious mismatch warning.
+
+        The bare-number motor ids match no finger prefix, so the finger
+        grouping is given explicitly here (4 motors per finger) instead of
+        being inferred by ``group_hand_motors``. Position correctness does
+        not depend on this order (the joint-state callback reorders by name);
+        the order only sets the hand-tab layout.
+        """
+        arm = ("A1", "A2", "A3", "A4", "A5", "A6", "A7")
+        hand_groups = (
+            ("Thumb", ("12", "13", "14", "15")),
+            ("Index", ("0", "1", "2", "3")),
+            ("Middle", ("4", "5", "6", "7")),
+            ("Ring", ("8", "9", "10", "11")),
+        )
+        hand_flat = tuple(m for _, motors in hand_groups for m in motors)
+        return cls(
+            arm_joint_names=arm,
+            hand_motor_names=hand_flat,
+            hand_finger_groups=hand_groups,
+        )
+
+    @classmethod
     def from_joint_names(
         cls,
         arm_joint_names: list[str] | tuple[str, ...] | None,
@@ -140,6 +173,50 @@ class RobotShape:
             hand_motor_names=hand,
             hand_finger_groups=group_hand_motors(hand),
         )
+
+
+@dataclass(frozen=True)
+class RobotProfile:
+    """Static per-robot bundle the GUI selects via ``--robot``.
+
+    Carries the joint-name :class:`RobotShape` plus the tf frame pair the
+    TCP-pose lookup uses (``<tcp_parent> → <tcp_child>``). Both frames are
+    robot-specific: ur5e publishes ``base → tool0_actual``; iiwa7 drives
+    ``link_0 → ee_link``.
+    """
+
+    shape: RobotShape
+    tcp_parent: str
+    tcp_child: str
+
+    @classmethod
+    def for_robot(cls, key: str) -> RobotProfile:
+        """Look up a profile by ``--robot`` key.
+
+        Raises :class:`ValueError` on an unknown key — the caller must not
+        silently fall back to a default robot, otherwise the GUI would size
+        widgets for the wrong arm/hand without telling the user.
+        """
+        try:
+            return ROBOT_PROFILES[key]
+        except KeyError:
+            valid = ", ".join(sorted(ROBOT_PROFILES))
+            raise ValueError(f"unknown robot '{key}'; expected one of: {valid}") from None
+
+
+# key matches the config/<key>/ directory name so --robot mirrors the bringup config.
+ROBOT_PROFILES: dict[str, RobotProfile] = {
+    "ur5e_hand": RobotProfile(
+        shape=RobotShape.default_ur5e_assm(),
+        tcp_parent="base",
+        tcp_child="tool0_actual",
+    ),
+    "iiwa7_leap": RobotProfile(
+        shape=RobotShape.default_iiwa7_leap(),
+        tcp_parent="link_0",
+        tcp_child="ee_link",
+    ),
+}
 
 
 def group_hand_motors(

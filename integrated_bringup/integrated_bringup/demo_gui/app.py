@@ -22,9 +22,11 @@ their own modules.
                        <config_key>/transforms feeds the listener buffer)
 """
 
+import argparse
 import json
 import math
 import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import font as tkfont, messagebox, ttk
@@ -51,6 +53,7 @@ def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, flo
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
+from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -90,12 +93,17 @@ from .config import (
     _set_double_array,
     _set_int,
 )
-from .discovery import RobotShape
+from .discovery import RobotProfile, RobotShape
 
 
 class DemoControllerGUI(Node):
-    def __init__(self):
+    def __init__(self, robot: str = "ur5e_hand"):
         super().__init__("demo_controller_gui")
+
+        # --robot selects the static joint/frame profile (see discovery.py).
+        # Raises ValueError on an unknown key — main() reports + exits rather
+        # than sizing widgets for the wrong arm/hand.
+        self._profile: RobotProfile = RobotProfile.for_robot(robot)
 
         # Phase 4: target / grasp_state / wbc_state / tof are owned by the
         # active controller (/<config_key>/...). We defer creating them until
@@ -146,11 +154,12 @@ class DemoControllerGUI(Node):
             CalibrationStatus, "/hand/calibration/status", self._calib_status_cb, 10
         )
 
-        # Phase 1: runtime-discovered robot shape. Starts from a sensible
-        # default (UR5e + assm_v1 hand) so widgets build immediately at
-        # launch. ``_shape_mismatch_warned`` keeps joint-state callbacks
-        # from spamming /rosout — one WARN per (side, observed-name-tuple).
-        self._shape: RobotShape = RobotShape.default_ur5e_assm()
+        # Robot shape comes from the --robot profile so widgets size to the
+        # right arm/hand at launch (ur5e_hand 6+10, iiwa7_leap 7+16).
+        # ``_shape_mismatch_warned`` keeps joint-state callbacks from spamming
+        # /rosout — one WARN per (side, observed-name-tuple) if the live
+        # controller's joint span still disagrees with the chosen profile.
+        self._shape: RobotShape = self._profile.shape
         self._shape_mismatch_warned: set[tuple[str, tuple[str, ...]]] = set()
 
         # Subscriptions (Phase 4: arm/hand state는 ctrl-agnostic /rtc_cm/<group>/
@@ -171,8 +180,8 @@ class DemoControllerGUI(Node):
         # listener buffer 로 자동 수집됨).
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
-        self._tf_parent_frame = "base"
-        self._tf_child_frame = "tool0_actual"
+        self._tf_parent_frame = self._profile.tcp_parent
+        self._tf_child_frame = self._profile.tcp_child
 
         # _pending_load_gains carries a tk-thread callback to fire after
         # AsyncParameterClient.get_parameters resolves on the executor.
@@ -214,8 +223,8 @@ class DemoControllerGUI(Node):
         self._presets = self._load_presets()
 
         # Dirty-check caches for GUI refresh (avoid redundant Tk redraws)
-        self._prev_status = [""] * 6
-        self._prev_task = [""] * 6
+        self._prev_status = [""] * self._shape.arm_dof
+        self._prev_task = [""] * 6  # task-space is always 6-D (X,Y,Z,R,P,Y)
         self._prev_hand = [""] * self._shape.hand_dof
         self._prev_estop = ""
         self._prev_grasp_detected = ""
@@ -264,10 +273,19 @@ class DemoControllerGUI(Node):
         YAML order — ``TopicConfig::groups`` is an ordered vector). Falls back
         to the ur5e_hand group names until the catalog carries the entry, so an
         old CM that does not populate ``claimed_groups`` still drives the
-        legacy robot."""
+        legacy robot.
+
+        Selection is by the CM's ``is_active`` flag, NOT a name match: the
+        active controller is published as its config_key (snake_case, e.g.
+        ``demo_wbc_controller``) on ``active_controller_name``, whereas
+        ``ControllerState.name`` carries the controller's ``Name()`` (e.g.
+        ``DemoWbcController``). Those never compare equal, so matching
+        ``config_key == self._active_ctrl`` would stay on the fallback forever.
+        ``is_active`` is set by controller index in the CM, independent of the
+        name spelling."""
         for e in self._catalog.latest():
-            if e.config_key == self._active_ctrl:
-                arm = e.claimed_groups[0] if len(e.claimed_groups) >= 1 else "ur5e"
+            if e.is_active and e.claimed_groups:
+                arm = e.claimed_groups[0]
                 hand = e.claimed_groups[1] if len(e.claimed_groups) >= 2 else "hand"
                 return arm, hand
         return "ur5e", "hand"
@@ -340,11 +358,11 @@ class DemoControllerGUI(Node):
         """Emit a one-shot WARN per side when the active controller's
         joint_names span doesn't match the GUI's RobotShape.
 
-        Phase 1 step 3 keeps Tk widgets fixed at the startup default
-        (``RobotShape.default_ur5e_assm()``), so this is purely advisory:
-        the user should restart the GUI after attaching a different
-        robot/hand. A future phase may convert this into a live widget
-        rebuild — at which point this helper goes away.
+        Tk widgets are sized once from the ``--robot`` profile, so this is a
+        cross-check: it fires when the live controller's joint span disagrees
+        with the chosen profile (e.g. ``--robot iiwa7_leap`` against a ur5e
+        bringup, or a profile whose motor order differs from the wire order).
+        Relaunch the GUI with the matching ``--robot`` value to clear it.
         """
         key = (side, tuple(observed_names))
         if key in self._shape_mismatch_warned:
@@ -353,8 +371,8 @@ class DemoControllerGUI(Node):
         expected = self._shape.arm_joint_names if side == "arm" else self._shape.hand_motor_names
         self.get_logger().warn(
             f"{side} joint_names mismatch: GUI is wired for {list(expected)} "
-            f"but controller publishes {observed_names}. Restart the GUI to "
-            "pick up the new robot/hand schema."
+            f"but controller publishes {observed_names}. Relaunch the GUI with "
+            "the matching --robot value to pick up the right robot/hand schema."
         )
 
     def _arm_joint_cb(self, msg: JointState):
@@ -1154,7 +1172,7 @@ class DemoControllerGUI(Node):
         self._status_labels_names: list[tk.Label] = []
         self._status_labels_values: list[tk.Label] = []
 
-        for i in range(6):
+        for i in range(self._shape.arm_dof):
             name_lbl = tk.Label(
                 joint_frame,
                 text=f"J{i + 1}:",
@@ -2765,9 +2783,50 @@ class DemoControllerGUI(Node):
         rclpy.try_shutdown()
 
 
+def _parse_robot_arg(argv):
+    """Extract the ``--robot`` value from ``argv`` (ROS args already removed).
+
+    Accepts ``--robot <key>`` plus convenience aliases ``--ur5e`` / ``--iiwa``
+    that map onto the canonical ``config/<key>/`` names. Unknown keys are not
+    rejected here — ``RobotProfile.for_robot`` validates and raises so the
+    error surfaces in one place.
+    """
+    parser = argparse.ArgumentParser(prog="demo_controller_gui")
+    parser.add_argument(
+        "--robot",
+        default="ur5e_hand",
+        help="robot profile selecting arm/hand joint schema + TCP frames "
+        "(ur5e_hand | iiwa7_leap)",
+    )
+    parser.add_argument(
+        "--ur5e",
+        dest="robot",
+        action="store_const",
+        const="ur5e_hand",
+        help="alias for --robot ur5e_hand",
+    )
+    parser.add_argument(
+        "--iiwa",
+        dest="robot",
+        action="store_const",
+        const="iiwa7_leap",
+        help="alias for --robot iiwa7_leap",
+    )
+    return parser.parse_args(argv).robot
+
+
 def main(args=None):
     rclpy.init(args=args)
-    node = DemoControllerGUI()
+    # ROS strips its own args inside rclpy.init; remove_ros_args drops them
+    # (and argv[0]) so argparse sees only the GUI's own flags.
+    raw = sys.argv if args is None else args
+    robot = _parse_robot_arg(remove_ros_args(raw)[1:])
+    try:
+        node = DemoControllerGUI(robot=robot)
+    except ValueError as exc:
+        print(f"demo_controller_gui: {exc}", file=sys.stderr)
+        rclpy.try_shutdown()
+        return
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

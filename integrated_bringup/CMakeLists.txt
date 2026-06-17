@@ -410,6 +410,10 @@ if(BUILD_TESTING)
     rtc_controller_interface
     rtc_msgs
   )
+
+  # ── demo_controller_gui static robot profiles (pure-Python) ────────────────
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_robot_profiles test/test_robot_profiles.py)
 endif()
 
 ament_package()

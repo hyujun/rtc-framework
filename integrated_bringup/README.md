@@ -624,8 +624,18 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 실시간 컨트롤러 선택, 게인 튜닝, 상태 모니터링 GUI입니다 (tkinter).
 
 ```bash
-ros2 run integrated_bringup demo_controller_gui
+ros2 run integrated_bringup demo_controller_gui                      # 기본 ur5e_hand
+ros2 run integrated_bringup demo_controller_gui --robot iiwa7_leap   # iiwa7 + LEAP
+ros2 run integrated_bringup demo_controller_gui --iiwa               # 별칭 (= --robot iiwa7_leap)
 ```
+
+`--robot <key>` 는 arm/hand joint 스키마(이름·DoF·finger group)와 TCP tf frame 을
+선택합니다. `key` 는 `config/<key>/` bringup 디렉토리명과 동일 (`ur5e_hand` |
+`iiwa7_leap`); `--ur5e` / `--iiwa` 별칭도 동일 dest 로 매핑됩니다. 잘못된 key 는
+즉시 에러 후 종료합니다. 프로파일 정의는 `demo_gui/discovery.py` 의
+`ROBOT_PROFILES` 레지스트리 — 새 로봇은 여기에 한 항목 추가. 실행 후 컨트롤러가
+publish 하는 joint span 과 프로파일이 어긋나면 `/rosout` 에 one-shot WARN 이
+나오며, 맞는 `--robot` 값으로 재실행하면 사라집니다.
 
 #### 모듈 구조
 
@@ -635,7 +645,7 @@ ros2 run integrated_bringup demo_controller_gui
 |---|---|
 | `demo_gui/app.py` | `DemoControllerGUI` Tk 클래스 + main() — 위젯 빌드 / refresh / ROS callback / 핸들러 |
 | `demo_gui/config.py` | gain 스키마 (`GAIN_DEFS`, `GAIN_PARAM_DISPATCH`), 위젯 레이아웃, FSM phase 라벨 표, 캘리브레이션 항목 — robot-agnostic GUI 표 |
-| `demo_gui/discovery.py` | `RobotShape` (frozen dataclass) — arm/hand DoF 와 finger group 을 런타임 추론 |
+| `demo_gui/discovery.py` | `RobotShape` (arm/hand DoF·finger group) + `RobotProfile` / `ROBOT_PROFILES` — `--robot` 가 선택하는 정적 로봇 프로파일 (joint 스키마 + TCP frame) |
 | `demo_gui/catalog.py` | `ControllerCatalog` — `/rtc_cm/list_controllers` 비동기 폴러 (5 s 주기). 라디오 버튼 / preset combo / 라벨이 모두 이 catalog 결과에서 옴. |
 
 #### 동적 controller 발견 (`/rtc_cm/list_controllers`)
