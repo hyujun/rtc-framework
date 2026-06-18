@@ -255,7 +255,15 @@ void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, 
   }
 
   const int n = std::min(ordered_size, kMaxDeviceChannels);
-  SetDeviceTarget(device_idx, std::span<const double>(ordered_ptr, static_cast<std::size_t>(n)));
+  const std::span<const double> ordered_span(ordered_ptr, static_cast<std::size_t>(n));
+  // A task goal routes to the SE3 slot (SetDeviceTaskTarget); the default
+  // override forwards to SetDeviceTarget, so task controllers are unchanged.
+  // Joint goals keep the legacy SetDeviceTarget path verbatim.
+  if (msg.goal_type == "task") {
+    SetDeviceTaskTarget(device_idx, ordered_span);
+  } else {
+    SetDeviceTarget(device_idx, ordered_span);
+  }
 }
 
 void RTControllerInterface::LoadDeviceLimitsFromConfig(

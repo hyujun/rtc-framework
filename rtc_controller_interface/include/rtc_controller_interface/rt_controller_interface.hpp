@@ -127,6 +127,19 @@ class RTControllerInterface {
 
   virtual void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept = 0;
 
+  // SetDeviceTaskTarget()
+  //   Deliver a 6-DoF task-space (SE3) target for `device_idx` — used when the
+  //   inbound RobotTarget has goal_type=="task". `task6` is (x,y,z,r,p,y).
+  //   Default forwards to SetDeviceTarget, preserving the behaviour of existing
+  //   task controllers (DemoTask already interprets its device-0 buffer as an
+  //   SE3 pose). Controllers that keep joint and task targets in separate slots
+  //   (e.g. DemoWbc: arm joint posture vs. commanded SE3) override this so a
+  //   task target lands in the SE3 slot without clobbering the joint slot.
+  //   Must be noexcept / RT-marshal-safe like SetDeviceTarget.
+  virtual void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) noexcept {
+    SetDeviceTarget(device_idx, task6);
+  }
+
   [[nodiscard]] virtual std::string_view Name() const noexcept = 0;
 
   // E-STOP interface — default no-ops for controllers that do not need it.
