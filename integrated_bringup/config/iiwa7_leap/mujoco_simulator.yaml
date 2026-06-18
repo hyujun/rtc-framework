@@ -8,7 +8,7 @@
 mujoco_simulator:
   ros__parameters:
     # ── Model ────────────────────────────────────────────────────────────────
-    model_path: "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right.xml"
+    model_path: "package://robot_descriptions/robots/iiwa7_leap/mjcf/scene_right_with_object.xml"
 
     # ── Sync timeout ─────────────────────────────────────────────────────────
     sync_timeout_ms: 50.0
@@ -22,7 +22,7 @@ mujoco_simulator:
 
     # ── Physics Timestep ──────────────────────────────────────────────────────
     physics_timestep: 0.002
-    n_substeps: 5
+    n_substeps: 3
 
     # ── Solver ────────────────────────────────────────────────────────────────
     # rtc_mujoco_sim의 ApplySolverConfig는 scene_*.xml의 <option>만 탐지하므로

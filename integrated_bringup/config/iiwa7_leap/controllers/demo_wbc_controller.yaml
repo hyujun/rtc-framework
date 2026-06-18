@@ -90,7 +90,12 @@ demo_wbc_controller:
         # inner-loop dominant pole (servo kp/kd, see mujoco_simulator.yaml
         # robot_response.{iiwa7,leap}):
         #   arm  servo 3000/600 = 750/150 = 5 rad/s  → posture ωn=6 (matches se3_tcp)
-        #   hand servo 2.5/0.125          = 20 rad/s → posture ωn=7
+        #   hand servo 2.5/0.125 → posture ωn=4. NOTE: the binding limit is not
+        #   the kp/kd pole but the inner-servo damping kd_s, which is the s³
+        #   coefficient of the carry-forward loop char. eq.
+        #   (I·s⁴ + kd_s·s³ + kp_s·s² + kp_s·kd_p·s + kp_s·kp_p). The hand's tiny
+        #   kd_s=0.125 barely damps the double-integrator phase lag, so ωn=7 self-
+        #   excited a ~9 rad/s limit cycle under disturbance; ωn=4 restores margin.
         # The old single kp=1.0/kd=0.10 was ζ=0.05 (effectively undamped), which
         # made idle posture oscillate/diverge under external force. Falls back
         # to a scalar/vector `kp`/`kd` here if `arm`/`hand` are omitted.
@@ -98,8 +103,9 @@ demo_wbc_controller:
           kp: 36.0    # ωn=6 rad/s, ζ=1
           kd: 12.0
         hand:
-          kp: 49.0    # ωn=7 rad/s, ζ=1
-          kd: 14.0
+          kp: 16.0    # ωn=4 rad/s, ζ=1 (lowered from ωn=7: weak hand servo
+          kd: 8.0     # kd_s=0.125 can't damp the carry-forward double-integrator
+                      # phase lag at ωn=7 → self-sustained ~9 rad/s limit cycle)
       se3_tcp:
         type: "se3"
         # SE3Task reads its identity from this `name` field (default "se3").
@@ -228,7 +234,7 @@ demo_wbc_controller:
       idle:
         tasks:
           posture:             { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:             { active: false, weight: 0.0,   priority: 0 }
+          se3_tcp:             { active: false, weight: 50.0,   priority: 0 }
           force:               { active: false, weight: 0.0,   priority: 1 }
           contact_consistency: { active: false, weight: 0.0,   priority: 1 }
           object_wrench:       { active: false, weight: 0.0,   priority: 1 }
@@ -338,12 +344,12 @@ demo_wbc_controller:
   # clik       = velocity-level CLIK reference (rtc_tsid ClikReferenceGenerator).
   # Runtime-switchable via the `command_source` ROS parameter; the non-driving
   # path is computed every tick as a shadow and its Δ logged to wbc_diag.csv.
-  command_source: integrator
+  command_source: clik
   clik:
     damping_sq: 1.0e-4   # μ² of the damped right-inverse J♯ (structural, > 0)
     v_limit: 1.5         # per-joint |v_ref| clamp [rad/s] (≤ 0 → off)
     kx_pos: 5.0          # TCP position task gain (runtime; ROS param clik_kx_pos)
-    kx_rot: 5.0          # TCP rotation task gain (runtime; ROS param clik_kx_rot)
+    kx_rot: 2.0          # TCP rotation task gain (runtime; ROS param clik_kx_rot)
     ka: 1.0              # arm nullspace posture gain (runtime; clik_ka)
     kh: 1.0              # hand posture gain (runtime; clik_kh)
 
