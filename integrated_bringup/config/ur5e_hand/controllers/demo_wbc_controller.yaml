@@ -332,12 +332,13 @@ demo_wbc_controller:
                                  # q/q̇ every tick (v_next=v_curr+a·dt,
                                  # q_next=q_curr+v_next·dt). Experimental.
 
-  # ── Low-level command source (Stage C-2: integrator vs CLIK A/B) ─────
-  # integrator = semi-implicit Euler on TSID a_opt (default, unchanged path).
-  # clik       = velocity-level CLIK reference (rtc_tsid ClikReferenceGenerator).
+  # ── Low-level command source (Kinematic WBC / integrator A/B) ────────
+  # clik       = Kinematic WBC: velocity-level CLIK reference (rtc_tsid
+  #              ClikReferenceGenerator) — primary command path (D1).
+  # integrator = semi-implicit Euler on TSID a_opt — CLIK-failure fallback.
   # Runtime-switchable via the `command_source` ROS parameter; the non-driving
   # path is computed every tick as a shadow and its Δ logged to wbc_diag.csv.
-  command_source: integrator
+  command_source: clik
   clik:
     damping_sq: 1.0e-4   # μ² of the damped right-inverse J♯ (structural, > 0)
     v_limit: 1.5         # per-joint |v_ref| clamp [rad/s] (≤ 0 → off)

@@ -132,6 +132,27 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   const auto& dev0 = state.devices[0];
   const auto& dev1 = state.devices[1];
 
+  // Grasp / release / fallback own their SE3 goal (grasp target, current-TCP
+  // hold). Drop any stale commanded SE3 on entry so it does not resurface when
+  // control later returns to idle (which would jog the arm to a pre-grasp
+  // command instead of self-holding). Persisted to the SeqLock since the next
+  // tick reloads current_target_slot_ from it.
+  switch (new_phase) {
+    case WbcPhase::kPreGrasp:
+    case WbcPhase::kClosure:
+    case WbcPhase::kHold:
+    case WbcPhase::kRelease:
+    case WbcPhase::kFallback:
+      if (current_target_slot_.tcp_cmd_valid) {
+        current_target_slot_.tcp_cmd_valid = false;
+        target_seqlock_.Store(current_target_slot_);
+      }
+      arm_task_new_target_pending_ = false;
+      break;
+    default:
+      break;
+  }
+
   // ── TCP SE3 trajectory edge handling (MPC-disabled mode only) ──────────
   // SE3 task activity is the gate (YAML phase_presets[<phase>].tasks.se3_tcp.
   // active). MPC-enabled mode keeps the legacy step-on-entry path (`tcp_goal_`
@@ -174,8 +195,13 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // stale grasp target. The SeqLock store persists the refreshed targets[]
       // + SE3 POD so the next-tick DrainTargetSlot restore keeps them.
       SeedHoldFromMeasured(state);
+      // Commanded SE3 (if any) overrides the measured self-hold pose so idle
+      // actively tracks the commanded target instead of holding the current TCP.
+      // InitTcpTrajectory below then ramps current FK → commanded.
+      ApplyCommandedSe3IfPresent();
+      arm_task_new_target_pending_ = false;
       target_seqlock_.Store(current_target_slot_);
-      // SE3 hold at current TCP (zero-displacement quintic).
+      // SE3 ramp toward tcp_goal_ (zero-displacement self-hold, or current→commanded).
       if (arm_handle_) {
         InitTcpTrajectory(state);
       }
@@ -227,11 +253,14 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         std::memcpy(current_target_slot_.tcp_goal_t.data(), tcp_goal_.translation().data(),
                     sizeof(current_target_slot_.tcp_goal_t));
         current_target_slot_.tcp_goal_valid = true;
+        // A commanded SE3 (GUI/operator) overrides the joint-target FK goal so
+        // Approach ramps toward the commanded pose instead of the posture FK.
+        ApplyCommandedSe3IfPresent();
+        arm_task_new_target_pending_ = false;
         target_seqlock_.Store(current_target_slot_);
 
         // Reset FK to current pose so InitTcpTrajectory's start = current.
-        std::span<const double> q_arm(dev0.positions.data(),
-                                      static_cast<std::size_t>(arm_dof_));
+        std::span<const double> q_arm(dev0.positions.data(), static_cast<std::size_t>(arm_dof_));
         arm_handle_->ComputeForwardKinematics(q_arm);
         InitTcpTrajectory(state);
       }
@@ -371,8 +400,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
       // SE3 hold at current TCP (zero-displacement quintic).
       if (arm_handle_) {
-        std::span<const double> q_arm(dev0.positions.data(),
-                                      static_cast<std::size_t>(arm_dof_));
+        std::span<const double> q_arm(dev0.positions.data(), static_cast<std::size_t>(arm_dof_));
         arm_handle_->ComputeForwardKinematics(q_arm);
         tcp_goal_ = arm_handle_->GetFramePlacement(tip_frame_id_);
         if (use_root_frame_) {

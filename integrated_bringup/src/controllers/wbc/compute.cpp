@@ -498,9 +498,12 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
         v_next_full_[static_cast<Eigen::Index>(pin_idx)];
   }
 
-  // Stage C-3: hand feedforward torque (kPdFeedforward). Model-based τ_ff that
-  // the PD position backbone (hand_computed_.positions = hold/closure pose)
-  // rides on. τ_ff = gravity_gain · src[hand] + closure_bias, where src is the
+  // ── Dynamic WBC (hand) — feedforward torque overlay ───────────────────────
+  // Stage C-3: hand feedforward torque (kPdFeedforward). The "Dynamic WBC" path
+  // (hand-only): a model-based τ_ff overlaid on the kinematic/PD position
+  // backbone (hand_computed_.positions = hold/closure pose), distinct from the
+  // Kinematic WBC (CLIK) arm path above.
+  // τ_ff = gravity_gain · src[hand] + closure_bias, where src is the
   // hand gravity vector g[nv] (kGravityComp, default) or the TSID-solved
   // actuated torque (kTsidTau, computed-torque FF) per hand_tauff_source. Active
   // only in closure/hold, clamped to ±tauff_max. Any non-finite → zero the whole

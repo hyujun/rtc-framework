@@ -167,7 +167,9 @@ class DemoWbcController final : public RTControllerInterface {
     // command_source selects the driving path (runtime-switchable). The CLIK
     // gains are forwarded to clik_ each tick (kx broadcast as [pos×3, rot×3]).
     // CLIK structural config (damping_sq / v_limit) is Init-time, not here.
-    CommandSource command_source{CommandSource::kIntegrator};
+    // Default = kClik: the kinematic-WBC (CLIK) reference is the primary command
+    // path (D1); the integrator survives as a CLIK-failure fallback.
+    CommandSource command_source{CommandSource::kClik};
     double clik_kx_pos{5.0};  ///< CLIK TCP position task gain
     double clik_kx_rot{5.0};  ///< CLIK TCP rotation task gain
     double clik_ka{1.0};      ///< CLIK arm nullspace posture gain
@@ -206,6 +208,11 @@ class DemoWbcController final : public RTControllerInterface {
 
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
 
+  // Commanded SE3 (arm task goal). Marshals a task-tagged PendingTarget onto the
+  // SPSC queue; the RT thread converts (x,y,z,r,p,y)→SE3 into the TargetSlot's
+  // commanded slot in DrainTargetSlot. Joint targets keep using SetDeviceTarget.
+  void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) noexcept override;
+
   [[nodiscard]] std::string_view Name() const noexcept override { return "DemoWbcController"; }
 
   void TriggerEstop() noexcept override;
@@ -237,6 +244,23 @@ class DemoWbcController final : public RTControllerInterface {
   }
 
   [[nodiscard]] WbcPhase GetPhaseForTesting() const noexcept { return phase_; }
+
+  // Commanded-SE3 path inspection (wbc-kinematic-dynamic-split). The RT working
+  // SE3 goal, its validity, the commanded-slot validity, and a joint-slot value
+  // (current_target_slot_), so tests can assert task→SE3 routing and joint/task
+  // slot independence without a real URDF/TSID stack.
+  [[nodiscard]] const pinocchio::SE3& GetTcpGoalForTesting() const noexcept { return tcp_goal_; }
+
+  [[nodiscard]] bool IsTcpGoalValidForTesting() const noexcept { return tcp_goal_valid_; }
+
+  [[nodiscard]] bool IsTcpCmdValidForTesting() const noexcept {
+    return current_target_slot_.tcp_cmd_valid;
+  }
+
+  [[nodiscard]] double GetJointTargetForTesting(int device_idx, int channel) const noexcept {
+    return current_target_slot_
+        .targets[static_cast<std::size_t>(device_idx)][static_cast<std::size_t>(channel)];
+  }
 
   // Phase 4c: ControllerOutput::wbc_state field was removed — tests now read
   // the post-Compute() staging buffer directly. The wbc_state_lock_ SeqLock
@@ -651,6 +675,14 @@ class DemoWbcController final : public RTControllerInterface {
     std::array<double, kSE3RotDoubles> tcp_goal_rot{};
     std::array<double, kSE3TransDoubles> tcp_goal_t{};
     bool tcp_goal_valid{false};
+    // Commanded SE3 target (off-RT SetDeviceTaskTarget → RT). Kept separate from
+    // the tcp_goal_* FK-seed mirror above (which kIdle/kApproach overwrite from
+    // the current FK pose): this holds the externally commanded pose so the seed
+    // logic can prefer it over measured self-hold. Materialised from (x,y,z,r,p,y)
+    // to a rotation matrix at drain time, mirroring DemoTask's 6→SE3 convention.
+    std::array<double, kSE3RotDoubles> tcp_cmd_rot{};
+    std::array<double, kSE3TransDoubles> tcp_cmd_t{};
+    bool tcp_cmd_valid{false};
   };
 
   static_assert(std::is_trivially_copyable_v<TargetSlot>,
@@ -660,6 +692,7 @@ class DemoWbcController final : public RTControllerInterface {
     int device_idx{0};
     int num_values{0};
     std::array<double, kMaxDeviceChannels> values{};
+    bool is_task{false};  // true = task-space (SE3) goal via SetDeviceTaskTarget
   };
 
   static_assert(std::is_trivially_copyable_v<PendingTarget>,
@@ -671,8 +704,9 @@ class DemoWbcController final : public RTControllerInterface {
   rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
   std::atomic<bool> target_initialized_{false};
   TargetSlot current_target_slot_{};
-  bool robot_new_target_pending_{false};  // RT-thread-only
-  bool hand_new_target_pending_{false};   // RT-thread-only
+  bool robot_new_target_pending_{false};     // RT-thread-only
+  bool hand_new_target_pending_{false};      // RT-thread-only
+  bool arm_task_new_target_pending_{false};  // RT-thread-only: new commanded SE3 arrived
 
   // RT-thread-only: refresh current_target_slot_ from the SeqLock + drain
   // pending entries. Also flips robot/hand _pending_ flags for the FSM.
@@ -692,6 +726,15 @@ class DemoWbcController final : public RTControllerInterface {
   // regulates toward a fixed init snapshot, re-seeded to where the robot is
   // *now* on each entry. Caller persists current_target_slot_ to the SeqLock.
   void SeedHoldFromMeasured(const ControllerState& state) noexcept;
+
+  // RT-thread-only. If current_target_slot_.tcp_cmd_valid, overrides tcp_goal_
+  // (and its SeqLock-POD mirror tcp_goal_*) with the commanded SE3 so the
+  // commanded pose takes priority over the measured/joint-target FK seed.
+  // Returns true if a commanded pose was applied. Does NOT clear tcp_cmd_valid
+  // — it persists across ticks until a grasp/release/fallback entry clears it.
+  // Caller is responsible for persisting current_target_slot_ to the SeqLock and
+  // for (re)initialising the TCP trajectory when an SE3 ramp is needed.
+  bool ApplyCommandedSe3IfPresent() noexcept;
 
   // Aux-thread spawn of MPC thread (idempotent). Called from on_activate so
   // the heap-allocating Factory::Create + thread.Start happen off the RT

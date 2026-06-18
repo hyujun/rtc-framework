@@ -7,6 +7,7 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -100,6 +101,53 @@ TEST_F(WbcFSMTest, InitializeHoldPositionResetsState) {
   auto out = ctrl_.Compute(state_);
   EXPECT_TRUE(out.valid);
   EXPECT_NEAR(out.devices[0].commands[1], -1.57, 0.01);
+}
+
+// ── Commanded SE3 (Kinematic WBC arm task target) ────────────────────────────
+
+// Success criterion 1: a task goal delivered via SetDeviceTaskTarget routes to
+// the commanded SE3 slot and, in the free-jog phase (kIdle), drives tcp_goal_ to
+// that exact pose (translation + ZYX rotation) with tcp_goal_valid_.
+TEST_F(WbcFSMTest, SetDeviceTaskTargetSetsCommandedSe3Goal) {
+  // (x, y, z, roll, pitch, yaw)
+  const std::array<double, 6> se3 = {0.3, -0.1, 0.5, 0.1, -0.2, 0.4};
+  ctrl_.SetDeviceTaskTarget(0, se3);
+  (void)ctrl_.Compute(state_);  // drain → commanded slot, then mid-phase apply (kIdle)
+
+  EXPECT_TRUE(ctrl_.IsTcpCmdValidForTesting());
+  EXPECT_TRUE(ctrl_.IsTcpGoalValidForTesting());
+
+  const pinocchio::SE3& goal = ctrl_.GetTcpGoalForTesting();
+  EXPECT_NEAR(goal.translation().x(), se3[0], 1e-9);
+  EXPECT_NEAR(goal.translation().y(), se3[1], 1e-9);
+  EXPECT_NEAR(goal.translation().z(), se3[2], 1e-9);
+
+  // ZYX convention: R = Rz(yaw)·Ry(pitch)·Rx(roll), matching DrainTargetSlot.
+  const Eigen::Matrix3d expected = (Eigen::AngleAxisd(se3[5], Eigen::Vector3d::UnitZ()) *
+                                    Eigen::AngleAxisd(se3[4], Eigen::Vector3d::UnitY()) *
+                                    Eigen::AngleAxisd(se3[3], Eigen::Vector3d::UnitX()))
+                                       .toRotationMatrix();
+  EXPECT_TRUE(goal.rotation().isApprox(expected, 1e-9));
+}
+
+// Success criterion 2: joint (SetDeviceTarget) and task (SetDeviceTaskTarget)
+// goals occupy independent slots — neither clobbers the other.
+TEST_F(WbcFSMTest, JointAndTaskTargetSlotsIndependent) {
+  const std::array<double, 6> joint = {0.11, -0.22, 0.33, -0.44, 0.55, -0.66};
+  const std::array<double, 6> se3 = {0.3, -0.1, 0.5, 0.0, 0.0, 0.0};
+  ctrl_.SetDeviceTarget(0, joint);    // joint slot (targets[0])
+  ctrl_.SetDeviceTaskTarget(0, se3);  // task slot (commanded SE3)
+  (void)ctrl_.Compute(state_);
+
+  // Joint target preserved in the joint slot, untouched by the task target.
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_NEAR(ctrl_.GetJointTargetForTesting(0, i), joint[i], 1e-9);
+  }
+  // Task target landed in the commanded SE3 slot (tcp_goal_), not the joint slot.
+  EXPECT_TRUE(ctrl_.IsTcpCmdValidForTesting());
+  const pinocchio::SE3& goal = ctrl_.GetTcpGoalForTesting();
+  EXPECT_NEAR(goal.translation().x(), se3[0], 1e-9);
+  EXPECT_NEAR(goal.translation().z(), se3[2], 1e-9);
 }
 
 // ── E-STOP Tests ─────────────────────────────────────────────────────────────

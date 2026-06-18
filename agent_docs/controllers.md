@@ -46,6 +46,25 @@ ros2 service call /demo_task_controller/grasp_command \
     rtc_msgs/srv/GraspCommand "{command: 1, target_force: 2.0}"
 ```
 
+## DemoWbcController — Kinematic WBC / Dynamic WBC
+
+DemoWbcController는 두 보완 경로로 구성된다.
+
+- **Kinematic WBC** = CLIK 경로 (`rtc::tsid::ClikReferenceGenerator`). arm SE3 추종(L1) + arm
+  redundancy/nullspace posture(L2) + hand posture(L3)를 velocity-level CLIK으로 풀어
+  desired joint position을 낸다. **기본 command_source** (`command_source: clik`, 양 robot YAML).
+  CLIK 실패 / `clik_enabled_==false` 시 semi-implicit-Euler **integrator**가 fallback으로
+  per-tick shadow 계산되며, Δ는 `wbc_diag.csv`로 로깅된다 (runtime A/B는 `command_source` param).
+- **Dynamic WBC** = hand 전용 τ_ff 경로 (`hand_tauff_*` → `kPdFeedforward`). PD position
+  backbone 위에 model-based feedforward torque(gravity_comp | tsid_tau)를 overlay. closure/hold
+  에서만, `±hand_tauff_max` clamp, opt-in `hand_tauff_enable`.
+
+**Commanded SE3 target** — `RobotTarget{goal_type:"task"}`(arm, device 0)은 base interface의
+`SetDeviceTaskTarget`을 거쳐 commanded SE3 slot으로 들어가고, kIdle/kApproach 자유 phase에서
+`tcp_goal_`을 그 pose로 override한다 (joint posture slot과 독립). grasp/release/fallback phase는
+자신의 SE3 goal을 소유하므로 진입 시 commanded SE3를 clear한다. `goal_type:"joint"`(arm)은 기존대로
+arm posture로만 들어간다. (x,y,z,r,p,y)→SE3 변환은 ZYX(yaw·pitch·roll) 규약.
+
 ## GraspController (Force-PI, internal only)
 
 Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`).

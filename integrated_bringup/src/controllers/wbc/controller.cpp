@@ -1237,6 +1237,29 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     return out;
   }
 
+  // Mid-phase commanded SE3 jog: a new SE3 target arrived while idling/approaching
+  // (no phase-entry edge, so OnPhaseEnter's seed did not run this tick). Re-point
+  // tcp_goal_ at the commanded pose; when the SE3 task is active in this phase
+  // (MPC-disabled), rebuild the TCP ramp from the current FK so the move is
+  // smoothed. Grasp/release/fallback own their goal and cleared the flag on entry.
+  if (arm_task_new_target_pending_) {
+    const bool free_jog_phase = (phase_ == WbcPhase::kIdle || phase_ == WbcPhase::kApproach);
+    // Apply the commanded SE3 to tcp_goal_ unconditionally (URDF-independent
+    // copy) so CLIK/SE3Task readers see the new goal. Only the trajectory ramp
+    // re-init needs arm_handle_ FK; skip it when there is no model (unit tests).
+    if (free_jog_phase && ApplyCommandedSe3IfPresent()) {
+      target_seqlock_.Store(current_target_slot_);
+      const bool mpc_on = mpc_enabled_ && mpc_manager_.Enabled();
+      if (arm_handle_ && !mpc_on && Se3TaskActiveInPhase(phase_)) {
+        std::span<const double> q_arm(state.devices[0].positions.data(),
+                                      static_cast<std::size_t>(arm_dof_));
+        arm_handle_->ComputeForwardKinematics(q_arm);  // start = current FK
+        InitTcpTrajectory(state);
+      }
+    }
+    arm_task_new_target_pending_ = false;
+  }
+
   ComputeControl(state, dt);
   // Output composition split by consumer (wire / log / publish). See
   // demo_joint_controller.hpp for the bucket assignment rationale.
@@ -1285,6 +1308,24 @@ void DemoWbcController::SetDeviceTarget(int device_idx, std::span<const double> 
   }
   // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
   // and is the SOLE writer of target_seqlock_.
+  (void)pending_targets_.Push(pending);
+}
+
+void DemoWbcController::SetDeviceTaskTarget(int device_idx,
+                                            std::span<const double> task6) noexcept {
+  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
+    return;
+  }
+  PendingTarget pending{};
+  pending.device_idx = device_idx;
+  pending.is_task = true;
+  const std::size_t nch = std::min(task6.size(), static_cast<std::size_t>(kMaxDeviceChannels));
+  pending.num_values = static_cast<int>(nch);
+  for (std::size_t i = 0; i < nch; ++i) {
+    pending.values[i] = task6[i];
+  }
+  // Off-RT marshal — same SPSC queue as joint targets; the RT thread converts
+  // the task-tagged entry to a commanded SE3 in DrainTargetSlot.
   (void)pending_targets_.Push(pending);
 }
 
@@ -1379,6 +1420,10 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     phase_ = WbcPhase::kIdle;
     tcp_goal_valid_ = false;
     current_target_slot_.tcp_goal_valid = false;
+    // Drop any stale commanded SE3 on (re)enable / E-STOP-clear self-init so the
+    // first idle hold regulates to the measured pose, not a pre-estop command.
+    current_target_slot_.tcp_cmd_valid = false;
+    arm_task_new_target_pending_ = false;
     qp_fail_count_ = 0;
     grasp_cmd_.store(0, std::memory_order_relaxed);
 
@@ -1435,6 +1480,28 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     if (didx >= ControllerState::kMaxDevices) {
       continue;
     }
+    if (pending.is_task) {
+      // Commanded SE3 — arm (device 0) only; the hand has no SE3 task slot, so a
+      // task goal on device 1+ is ignored. Convert (x,y,z,r,p,y)→SE3 with the
+      // ZYX (yaw·pitch·roll) convention, matching DemoTask. trig only, no alloc
+      // (RT-1/RT-4); the joint slot (targets[0]) is left untouched so arm joint
+      // posture and the commanded SE3 stay independent.
+      if (pending.device_idx == 0 && pending.num_values >= 6) {
+        const Eigen::AngleAxisd roll(pending.values[3], Eigen::Vector3d::UnitX());
+        const Eigen::AngleAxisd pitch(pending.values[4], Eigen::Vector3d::UnitY());
+        const Eigen::AngleAxisd yaw(pending.values[5], Eigen::Vector3d::UnitZ());
+        const Eigen::Matrix3d rotation = (yaw * pitch * roll).matrix();
+        const Eigen::Vector3d translation(pending.values[0], pending.values[1], pending.values[2]);
+        std::memcpy(current_target_slot_.tcp_cmd_rot.data(), rotation.data(),
+                    sizeof(current_target_slot_.tcp_cmd_rot));
+        std::memcpy(current_target_slot_.tcp_cmd_t.data(), translation.data(),
+                    sizeof(current_target_slot_.tcp_cmd_t));
+        current_target_slot_.tcp_cmd_valid = true;
+        arm_task_new_target_pending_ = true;
+        slot_dirty = true;
+      }
+      continue;
+    }
     const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
                                      static_cast<std::size_t>(kMaxDeviceChannels));
     for (std::size_t i = 0; i < nch; ++i) {
@@ -1456,6 +1523,26 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
   if (slot_dirty) {
     target_seqlock_.Store(current_target_slot_);
   }
+}
+
+bool DemoWbcController::ApplyCommandedSe3IfPresent() noexcept {
+  if (!current_target_slot_.tcp_cmd_valid) {
+    return false;
+  }
+  // Commanded SE3 takes priority over the measured/joint-target FK seed.
+  std::memcpy(tcp_goal_.rotation().data(), current_target_slot_.tcp_cmd_rot.data(),
+              sizeof(current_target_slot_.tcp_cmd_rot));
+  std::memcpy(tcp_goal_.translation().data(), current_target_slot_.tcp_cmd_t.data(),
+              sizeof(current_target_slot_.tcp_cmd_t));
+  tcp_goal_valid_ = true;
+  // Mirror into the FK-seed POD so the per-tick DrainTargetSlot restore keeps
+  // tcp_goal_ at the commanded pose on subsequent ticks (single-writer: RT).
+  std::memcpy(current_target_slot_.tcp_goal_rot.data(), tcp_goal_.rotation().data(),
+              sizeof(current_target_slot_.tcp_goal_rot));
+  std::memcpy(current_target_slot_.tcp_goal_t.data(), tcp_goal_.translation().data(),
+              sizeof(current_target_slot_.tcp_goal_t));
+  current_target_slot_.tcp_goal_valid = true;
+  return true;
 }
 
 // Aux-thread spawn of MPC thread. Called from on_activate (heap-allocating;
