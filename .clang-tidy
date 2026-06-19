@@ -30,6 +30,13 @@
 #                  braces-around-statements, redundant-smartptr-get,
 #                  simplify-boolean-expr, convert-member-functions-to-static}
 #                               : ROS 2 코드 노이즈
+#   - readability-function-cognitive-complexity : RT compute 커널(ComputeTSIDPosition /
+#       SolveWbcQp / ComputeKinematicWbc / ComputeDynamicWbc 등)은 본질적으로 크다 —
+#       임계 25 가 거의 모든 substantial 함수에 발현(관측 96~166). 빌드 차단력 없는 IDE
+#       squiggle 노이즈이고, 추가 분할은 RT iteration 우선 정책상 보류 → 비활성.
+#   - readability-identifier-length : paper-notation 단문자/2문자 이름(dt, q, v, a,
+#       J_b, K_d 등)은 CLAUDE.md §10 Style 이 명시적으로 endorse 한다 — 규약과 직접
+#       충돌하는 false-positive 이므로 비활성.
 #   - google-{build-using-namespace, explicit-constructor, readability-braces-around-statements,
 #             readability-casting, readability-todo, runtime-int, runtime-references}
 #                               : Google style 의 일부 — RTC convention 우선
@@ -59,6 +66,8 @@ Checks: "-*,
   -performance-unnecessary-value-param,
   -readability-braces-around-statements,
   -readability-convert-member-functions-to-static,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
   -readability-implicit-bool-conversion,
   -readability-magic-numbers,
   -readability-named-parameter,
