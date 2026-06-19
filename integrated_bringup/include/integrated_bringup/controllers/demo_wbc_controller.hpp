@@ -657,6 +657,9 @@ class DemoWbcController final : public RTControllerInterface {
   bool clik_enabled_{false};
   double clik_damping_sq_{1e-4};  ///< μ² damped right-inverse (YAML clik.damping_sq)
   double clik_v_limit_{1.5};      ///< per-joint |v_ref| clamp [rad/s] (YAML clik.v_limit)
+  double clik_w_task_{1.0};       ///< L1 TCP tracking weight (YAML clik.w_task)
+  double clik_w_arm_{1e-2};       ///< L2 arm posture weight (YAML clik.w_arm)
+  double clik_w_hand_{1e-2};      ///< L3 hand posture weight (YAML clik.w_hand)
   int clik_tcp_frame_idx_{-1};    ///< pinocchio_cache_.registered_frames index (tip)
   int clik_base_frame_idx_{-1};   ///< registered_frames index (base; < 0 = universe)
 

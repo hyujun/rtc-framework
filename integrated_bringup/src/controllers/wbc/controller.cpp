@@ -449,6 +449,17 @@ void DemoWbcController::InitClik() noexcept {
   cfg.hand_v_idx = std::move(hand_v_idx);
   cfg.damping_sq = clik_damping_sq_;
   cfg.v_limit = clik_v_limit_;
+  cfg.w_task = clik_w_task_;
+  cfg.w_arm = clik_w_arm_;
+  cfg.w_hand = clik_w_hand_;
+  // Position-aware velocity box. Reuse the margin-clamped limits the integrator
+  // already applies (LoadConfig step 3, computed before InitClik) so both
+  // Kinematic-WBC paths respect the identical joint envelope. Sized [nv]; the
+  // nq==nv guard above guarantees a match with the CLIK box.
+  if (q_min_clamped_.size() == nv && q_max_clamped_.size() == nv) {
+    cfg.q_min = q_min_clamped_;
+    cfg.q_max = q_max_clamped_;
+  }
   try {
     clik_.Init(nv, cfg);
   } catch (const std::exception& e) {
@@ -769,6 +780,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       const auto clik = cfg["clik"];
       clik_damping_sq_ = clik["damping_sq"].as<double>(clik_damping_sq_);
       clik_v_limit_ = clik["v_limit"].as<double>(clik_v_limit_);
+      // Kinematic CLIK-QP soft-priority weights (w_task ≫ w_arm,w_hand ≫ μ²).
+      clik_w_task_ = clik["w_task"].as<double>(clik_w_task_);
+      clik_w_arm_ = clik["w_arm"].as<double>(clik_w_arm_);
+      clik_w_hand_ = clik["w_hand"].as<double>(clik_w_hand_);
       g.clik_kx_pos = clik["kx_pos"].as<double>(g.clik_kx_pos);
       g.clik_kx_rot = clik["kx_rot"].as<double>(g.clik_kx_rot);
       g.clik_ka = clik["ka"].as<double>(g.clik_ka);
