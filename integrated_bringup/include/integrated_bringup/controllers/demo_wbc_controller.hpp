@@ -544,27 +544,29 @@ class DemoWbcController final : public RTControllerInterface {
   bool has_native_contact_{false};
   bool has_native_displacement_{false};
 
-  // ── TSID ────────────────────────────────────────────────────────────────
-  rtc::tsid::TSIDController tsid_controller_;
+  // ══════════════════════════════════════════════════════════════════════════
+  // Common WBC stage (ComputeWbcCommon) — shared per-tick state extraction,
+  // pinocchio + contact/grasp cache, and the joint/SE3 references BOTH QPs
+  // consume. Produces no command and runs no solve; its outputs (cache,
+  // control_ref_, ctrl_state_, n_lambda_active_, tcp_traj_state_) feed both
+  // ComputeDynamicWbc and ComputeKinematicWbc. (SE3-trajectory members live in
+  // the Trajectory section below, next to their init helpers.)
+  // ══════════════════════════════════════════════════════════════════════════
   rtc::tsid::PinocchioCache pinocchio_cache_;
   rtc::tsid::ContactState contact_state_;
   rtc::tsid::ControlReference control_ref_;
   rtc::tsid::RobotModelInfo robot_info_;
   rtc::tsid::ContactManagerConfig contact_mgr_config_;
-  rtc::tsid::CommandOutput tsid_output_;
+  // ControlState built at the end of ComputeWbcCommon; consumed by the Dynamic
+  // solve. Declared in Common (it is a Common-stage output, not a Dynamic member).
+  rtc::tsid::ControlState ctrl_state_;
 
-  bool tsid_initialized_{false};
-  // Fallback split (decision 6): the two WBC QPs fail with different severity.
-  //   dyn_qp_fail_count_ — Dynamic WBC (TSID-ID) QP. NON-critical: a failure
-  //     drops the hand τ_ff this tick only; the Kinematic CLIK-QP still owns
-  //     position. Mirrors the rtc_msgs/WbcState `qp_fail_count` + `tsid_solver_ok`
-  //     fields (both always referred to the TSID solve).
-  //   kin_qp_fail_count_ — Kinematic WBC (CLIK) QP. CRITICAL: CLIK is the
-  //     position backbone, so a failure (while CLIK drives) holds last this tick
-  //     and trips kFallback after max_qp_fail_before_fallback_ consecutive fails.
-  int dyn_qp_fail_count_{0};
-  int kin_qp_fail_count_{0};
-  int max_qp_fail_before_fallback_{5};
+  // Measured state + posture reference (Pinocchio joint order, full model).
+  Eigen::VectorXd q_curr_full_;        ///< [nv] current q (sensor, per tick)
+  Eigen::VectorXd v_curr_full_;        ///< [nv] current v (sensor, per tick)
+  Eigen::VectorXd q_des_target_full_;  ///< [nv] posture reference = external joint target
+                                       ///< (active driving phases). Same layout as q_curr_full_.
+
   // Active contact-force dimension of this tick, computed once in
   // ComputeWbcCommon (grasp cache) and reused by ComputeDynamicWbc's
   // throttled solve-summary log so the value is not recomputed.
@@ -588,6 +590,9 @@ class DemoWbcController final : public RTControllerInterface {
   // contact_mgr_.ActiveLambdaDim → contact_mgr_.ComputeGraspMatrix(G_workspace_)
   // → grasp_cache_.Compute(G_workspace_, n_active). After that, the three
   // tasks only read GPinv/GTPinv/ProjN/Rank — never re-Compute.
+  // NOTE (declaration order): these are declared before tsid_controller_ (Dynamic
+  // section) so they out-live the TSID tasks that hold non-owning references to
+  // them — on teardown the tasks (in tsid_controller_) destruct first.
   rtc::tsid::ContactManager contact_mgr_;
   rtc::tsid::GraspCache grasp_cache_;
   rtc::tsid::ObjectFrame object_frame_;
@@ -635,20 +640,100 @@ class DemoWbcController final : public RTControllerInterface {
   int num_active_fingertips_{0};
   bool force_rate_initialized_{false};
 
-  // ── TSID → Position integration ─────────────────────────────────────────
-  //
-  // All vectors are in Pinocchio joint order (full model, 16-DoF).
-  Eigen::VectorXd q_curr_full_;        ///< [nv] current q (sensor, per tick)
-  Eigen::VectorXd v_curr_full_;        ///< [nv] current v (sensor, per tick)
-  Eigen::VectorXd q_next_full_;        ///< [nv] integrated position (output)
-  Eigen::VectorXd v_next_full_;        ///< [nv] integrated velocity
-  Eigen::VectorXd q_des_target_full_;  ///< [nv] posture reference = external joint target
-                                       ///< (active driving phases). Same layout as q_curr_full_.
-  Eigen::VectorXd v_seed_;             ///< [nv] scratch for the jerk-bounded re-seed velocity
-  Eigen::VectorXd q_min_clamped_;      ///< [nv] q_lower + margin
-  Eigen::VectorXd q_max_clamped_;      ///< [nv] q_upper - margin
-  Eigen::VectorXd v_limit_;            ///< [nv] velocity limit
+  // ══════════════════════════════════════════════════════════════════════════
+  // Dynamic WBC (ComputeDynamicWbc) — TSID inverse-dynamics QP: solves the
+  // whole-body acceleration/torque (tsid_output_.a_opt / .tau), then overlays
+  // the hand feedforward torque (kPdFeedforward). PRODUCES tsid_output_.a_opt,
+  // which the Kinematic integrator A/B shadow CONSUMES (decision 7 ordering:
+  // Common → Dynamic → Kinematic). A QP failure is NON-critical (decision 6):
+  // it drops the hand τ_ff this tick only; the Kinematic CLIK-QP still owns
+  // position. (tsid_* keep their library-type names — TSID = Task-Space Inverse
+  // *Dynamics* — rather than a dyn_qp_ rename; see plan Phase 5 Part B.)
+  // ══════════════════════════════════════════════════════════════════════════
+  rtc::tsid::TSIDController tsid_controller_;
+  rtc::tsid::CommandOutput tsid_output_;
+  bool tsid_initialized_{false};
+  // dyn_qp_fail_count_ — Dynamic WBC (TSID-ID) QP. NON-critical: a failure drops
+  //   the hand τ_ff this tick only; the Kinematic CLIK-QP still owns position.
+  //   Mirrors the rtc_msgs/WbcState `qp_fail_count` + `tsid_solver_ok` fields
+  //   (both always referred to the TSID solve). [counterpart: kin_qp_fail_count_]
+  int dyn_qp_fail_count_{0};
+  // Stage C-3: true for the ticks where the hand is driven via kPdFeedforward
+  // (hand_tauff_enable + closure/hold + all-finite τ_ff). WriteJointCommand
+  // reads this to set the hand device command_type + feedforward; ComputeEstop
+  // never sets it, so E-STOP always falls back to a plain position hold (E-8).
+  // Owns only hand_computed_.feedforward (the τ_ff overlay); positions/velocities
+  // are Kinematic-owned (see ComputedTrajectory below).
+  bool hand_tauff_active_{false};
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // Kinematic WBC (ComputeKinematicWbc) — CLIK-QP position backbone. CONSUMES
+  // tsid_output_.a_opt (Dynamic, above) for the integrator A/B shadow. CLIK is
+  // the position backbone, so a CLIK failure here is CRITICAL (kin_qp_fail_count_
+  // → hold-last → kFallback). (clik_* keep their CLIK names — the public
+  // ClikReferenceGenerator API and the ROS-param/YAML/CSV keys depend on them;
+  // a kin_qp_ rename would break external interfaces — see plan Phase 5 Part B.)
+  // ══════════════════════════════════════════════════════════════════════════
+  // CLIK reference path (Stage C-2). clik_ is Init'd in on_configure (InitClik).
+  // command_source (in the SeqLock'd Gains) selects the driving path each tick;
+  // the non-driving path is computed every tick as a shadow. clik_enabled_ gates
+  // the whole thing — false when the model is nq != nv, the reorder map is
+  // invalid, or frame registration failed; clik mode then degrades to the
+  // integrator with a throttled WARN.
+  rtc::tsid::ClikReferenceGenerator clik_;
+  bool clik_enabled_{false};
+  double clik_damping_sq_{1e-4};  ///< μ² damped right-inverse (YAML clik.damping_sq)
+  double clik_v_limit_{1.5};      ///< per-joint |v_ref| clamp [rad/s] (YAML clik.v_limit)
+  double clik_w_task_{1.0};       ///< L1 TCP tracking weight (YAML clik.w_task)
+  double clik_w_arm_{1e-2};       ///< L2 arm posture weight (YAML clik.w_arm)
+  double clik_w_hand_{1e-2};      ///< L3 hand posture weight (YAML clik.w_hand)
+  int clik_tcp_frame_idx_{-1};    ///< pinocchio_cache_.registered_frames index (tip)
+  int clik_base_frame_idx_{-1};   ///< registered_frames index (base; < 0 = universe)
+  bool clik_compute_ok_{false};   ///< clik_.Compute() succeeded this tick
+  double clik_tcp_err_{0.0};      ///< ‖e_x‖ [m+rad] (CLIK diagnostic)
+  double clik_manip_{0.0};        ///< √det(JJᵀ+μ²I) (CLIK diagnostic)
+  // Runtime gain vector forwarded to clik_.SetTaskGain each tick (pre-sized).
+  Eigen::Matrix<double, 6, 1> clik_kx_{Eigen::Matrix<double, 6, 1>::Zero()};
+
+  // kin_qp_fail_count_ — Kinematic WBC (CLIK) QP. CRITICAL: CLIK is the position
+  //   backbone, so a failure (while CLIK drives) holds last this tick and trips
+  //   kFallback after max_qp_fail_before_fallback_ consecutive fails.
+  int kin_qp_fail_count_{0};
+  int max_qp_fail_before_fallback_{5};
+
+  // Command limits (Pinocchio joint order). Consumed by the integrator clamp
+  // (IntegrateAccelStep) and the CLIK-QP position/velocity box constraints.
+  Eigen::VectorXd q_min_clamped_;  ///< [nv] q_lower + margin
+  Eigen::VectorXd q_max_clamped_;  ///< [nv] q_upper - margin
+  Eigen::VectorXd v_limit_;        ///< [nv] velocity limit
+
+  // Per-tick command output (intermediate, device order). robot_computed_ and
+  // hand_computed_.positions/.velocities are Kinematic-owned; hand_computed_.
+  // feedforward is Dynamic-owned (filled by ComputeDynamicWbc's τ_ff overlay).
+  struct ComputedTrajectory {
+    std::array<double, kMaxDeviceChannels> positions{};
+    std::array<double, kMaxDeviceChannels> velocities{};
+    // Per-joint feedforward torque [Nm], populated only for the hand device
+    // when hand_tauff_enable (kPdFeedforward). Arm leaves it zero. [Dynamic-owned]
+    std::array<double, kMaxDeviceChannels> feedforward{};
+  };
+
+  ComputedTrajectory robot_computed_{};
+  ComputedTrajectory hand_computed_{};
+
+  // ┌─ Phase 4 삭제 예정: integrator A/B shadow ──────────────────────────────┐
+  // │ Semi-implicit Euler integrator + carry-forward seed machinery. CLIK is   │
+  // │ now the primary position backbone (command_source default kClik); the    │
+  // │ integrator survives only as a CLIK-failure fallback + A/B shadow until    │
+  // │ its numerical equivalence is verified (sim A/B), after which Phase 4      │
+  // │ deletes this whole block (integrator path, command_source enum, carry-    │
+  // │ forward seed, shadow diagnostics). Keep grouped so Phase 4 cuts one block.│
+  // └───────────────────────────────────────────────────────────────────────┘
+  //
+  // All vectors are in Pinocchio joint order (full model).
+  Eigen::VectorXd q_next_full_;  ///< [nv] integrated position (output / carry-forward seed)
+  Eigen::VectorXd v_next_full_;  ///< [nv] integrated velocity
+  Eigen::VectorXd v_seed_;       ///< [nv] scratch for the jerk-bounded re-seed velocity
   // Carry-forward integrator re-seed control (RT-thread-only flags).
   //   reseed_integration_pending_ — set on a new device target arrival / first
   //     tick / QP-fail (recover from fresh measured state). Jerk-bounded seed.
@@ -666,39 +751,13 @@ class DemoWbcController final : public RTControllerInterface {
   // machinery (jerk bound, target re-seed) is bypassed — there is no prior
   // command state to preserve. Experimental; see ComputeTSIDPosition step 7.
   bool integrate_from_measured_{false};
-
-  // ── Stage C-2: CLIK reference path (A/B with the integrator) ────────────
-  // clik_ is Init'd in on_configure (InitClik). command_source (in the
-  // SeqLock'd Gains) selects the driving path each tick; the non-driving
-  // path is computed every tick as a shadow and its Δ vs the driver is
-  // logged. clik_enabled_ gates the whole thing — false when the model is
-  // nq != nv, the reorder map is invalid, or frame registration failed; the
-  // clik mode then degrades to the integrator with a throttled WARN.
-  rtc::tsid::ClikReferenceGenerator clik_;
-  bool clik_enabled_{false};
-  double clik_damping_sq_{1e-4};  ///< μ² damped right-inverse (YAML clik.damping_sq)
-  double clik_v_limit_{1.5};      ///< per-joint |v_ref| clamp [rad/s] (YAML clik.v_limit)
-  double clik_w_task_{1.0};       ///< L1 TCP tracking weight (YAML clik.w_task)
-  double clik_w_arm_{1e-2};       ///< L2 arm posture weight (YAML clik.w_arm)
-  double clik_w_hand_{1e-2};      ///< L3 hand posture weight (YAML clik.w_hand)
-  int clik_tcp_frame_idx_{-1};    ///< pinocchio_cache_.registered_frames index (tip)
-  int clik_base_frame_idx_{-1};   ///< registered_frames index (base; < 0 = universe)
-
   // Per-tick A/B diagnostics (RT-thread-only; copied into WbcDiagLogPod by
-  // FillWbcDiagLogPod). active_command_source_ is what actually drove the
-  // tick (clik may fall back to integrator on Compute() failure).
+  // FillWbcDiagLogPod). active_command_source_ is what actually drove the tick
+  // (clik may fall back to integrator on Compute() failure).
   CommandSource active_command_source_{CommandSource::kIntegrator};
-  bool clik_compute_ok_{false};   ///< clik_.Compute() succeeded this tick
   bool shadow_valid_{false};      ///< both paths computed → Δ meaningful
-  double clik_tcp_err_{0.0};      ///< ‖e_x‖ [m+rad] (CLIK diagnostic)
-  double clik_manip_{0.0};        ///< √det(JJᵀ+μ²I) (CLIK diagnostic)
   double shadow_pos_delta_{0.0};  ///< ‖q_clik − q_integrator‖
   double shadow_vel_delta_{0.0};  ///< ‖v_clik − v_integrator‖
-  // Runtime gain vector forwarded to clik_.SetTaskGain each tick (pre-sized).
-  Eigen::Matrix<double, 6, 1> clik_kx_{Eigen::Matrix<double, 6, 1>::Zero()};
-
-  // ControlState for TSID compute (pre-allocated)
-  rtc::tsid::ControlState ctrl_state_;
 
   // ── Target management ───────────────────────────────────────────────────
   // RT thread is the SOLE writer of target_seqlock_. Off-RT SetDeviceTarget
@@ -817,24 +876,6 @@ class DemoWbcController final : public RTControllerInterface {
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_max_velocity_;
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_lower_;
   std::array<std::vector<double>, ControllerState::kMaxDevices> device_position_upper_;
-
-  // ── Computed output (intermediate) ──────────────────────────────────────
-  struct ComputedTrajectory {
-    std::array<double, kMaxDeviceChannels> positions{};
-    std::array<double, kMaxDeviceChannels> velocities{};
-    // Per-joint feedforward torque [Nm], populated only for the hand device
-    // when hand_tauff_enable (kPdFeedforward). Arm leaves it zero.
-    std::array<double, kMaxDeviceChannels> feedforward{};
-  };
-
-  ComputedTrajectory robot_computed_{};
-  ComputedTrajectory hand_computed_{};
-
-  // Stage C-3: true for the ticks where the hand is driven via kPdFeedforward
-  // (hand_tauff_enable + closure/hold + all-finite τ_ff). WriteJointCommand
-  // reads this to set the hand device command_type + feedforward; ComputeEstop
-  // never sets it, so E-STOP always falls back to a plain position hold (E-8).
-  bool hand_tauff_active_{false};
 
   // ── MPC integration (Phase 5 + 7b) ──────────────────────────────────────
   //
