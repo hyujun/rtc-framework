@@ -199,6 +199,23 @@ void DemoWbcController::IntegrateAccelStep(Eigen::VectorXd& q, Eigen::VectorXd& 
 }
 
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
+  // Orchestrator: shared WBC QP → Kinematic WBC (arm CLIK/integrator command) →
+  // Dynamic WBC (hand τ_ff overlay). One gains snapshot is shared by all three
+  // so the whole tick sees a consistent set of runtime gains.
+  const Gains gains_now = gains_lock_.Load();
+  if (!SolveWbcQp(state, dt, gains_now)) {
+    return;  // QP failed — held last command this tick or fell back (handled inside).
+  }
+  ComputeKinematicWbc(dt, gains_now);
+  ComputeDynamicWbc(gains_now);
+}
+
+// SolveWbcQp — shared whole-body TSID QP stage. Fills tsid_output_ (a_opt / tau)
+// consumed by both Kinematic and Dynamic WBC. Returns false when the QP fails
+// (hold-this-tick or kFallback already applied) so the orchestrator skips the
+// command layers.
+bool DemoWbcController::SolveWbcQp(const ControllerState& state, double dt,
+                                   const Gains& gains_now) noexcept {
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
 
@@ -298,7 +315,6 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
         tsid_initialized_ ? tsid_controller_.Formulation().GetTask("force") : nullptr;
     const int n_lambda = contact_mgr_config_.max_contact_vars;
     if (force_task && n_lambda > 0 && force_lambda_des_.size() == n_lambda) {
-      const auto gains_now = gains_lock_.Load();
       const double f_des = gains_now.grasp_target_force;
       force_lambda_des_.setZero();
       int offset = 0;
@@ -379,15 +395,28 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
       reseed_integration_pending_ = false;
       phase_ = WbcPhase::kFallback;
       ComputeFallback();
-      return;
+      return false;
     }
     // Hold last valid command this tick. Re-seed on the next successful tick so
     // the integrator resumes from fresh measured state (no stale-gap jump).
     reseed_integration_pending_ = true;
-    return;
+    return false;
   }
   qp_fail_count_ = 0;
 
+  // Stage B-5: WBC diagnostic (RT-safe throttled INFO) — QP solve summary.
+  // Format uses only %d / %.0f (no fmt::format / to_string / string concat —
+  // RT-3 throttle exception applies).
+  RCLCPP_INFO_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
+                       "[wbc] solve=%.0fus phase=%d n_act=%d rank_G=%d", tsid_output_.solve_time_us,
+                       static_cast<int>(phase_), n_lambda_active, grasp_cache_.Rank());
+  return true;
+}
+
+// ComputeKinematicWbc — Kinematic WBC: arm command via semi-implicit-Euler
+// integrator + CLIK reference (command_source selects which drives; the other
+// is logged as an A/B shadow), then Pinocchio→device order mapping.
+void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) noexcept {
   // 7. Semi-implicit Euler integration: a → v → q.
   //
   // Seed selection decides where the integral accumulates from this tick:
@@ -435,7 +464,6 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   // stands (throttled WARN). When command_source=integrator (default) the
   // command buffers are never overwritten → integrator output is unchanged;
   // only the shadow diagnostics are computed.
-  const auto gains_now = gains_lock_.Load();
   const CommandSource src = clik_enabled_ ? gains_now.command_source : CommandSource::kIntegrator;
   active_command_source_ = CommandSource::kIntegrator;
   clik_compute_ok_ = false;
@@ -497,7 +525,11 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
     hand_computed_.velocities[static_cast<std::size_t>(i)] =
         v_next_full_[static_cast<Eigen::Index>(pin_idx)];
   }
+}
 
+// ComputeDynamicWbc — Dynamic WBC: hand feedforward torque (kPdFeedforward)
+// overlaid on the Kinematic-WBC position backbone. Hand-only, closure/hold only.
+void DemoWbcController::ComputeDynamicWbc(const Gains& gains_now) noexcept {
   // ── Dynamic WBC (hand) — feedforward torque overlay ───────────────────────
   // Stage C-3: hand feedforward torque (kPdFeedforward). The "Dynamic WBC" path
   // (hand-only): a model-based τ_ff overlaid on the kinematic/PD position
@@ -554,15 +586,6 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
                            "[wbc] hand τ_ff non-finite — position-hold fallback this tick");
     }
   }
-
-  // Stage B-5: WBC diagnostic (RT-safe throttled INFO). WBCDiagnostic struct
-  // (separate SeqLock publisher) is deferred to a future stage — this single
-  // throttled line is the interim observability surface. Format uses only
-  // %d / %.2f / %.0f (no fmt::format / to_string / string concat — RT-3
-  // throttle exception applies).
-  RCLCPP_INFO_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
-                       "[wbc] solve=%.0fus phase=%d n_act=%d rank_G=%d", tsid_output_.solve_time_us,
-                       static_cast<int>(phase_), n_lambda_active, grasp_cache_.Rank());
 }
 
 void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double dt) noexcept {

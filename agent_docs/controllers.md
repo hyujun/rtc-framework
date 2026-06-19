@@ -48,7 +48,10 @@ ros2 service call /demo_task_controller/grasp_command \
 
 ## DemoWbcController — Kinematic WBC / Dynamic WBC
 
-DemoWbcController는 두 보완 경로로 구성된다.
+DemoWbcController의 position-mode tick은 `ComputeTSIDPosition()`이 한 gains 스냅샷으로
+**`SolveWbcQp`**(공유 whole-body TSID QP) → **`ComputeKinematicWbc`**(arm 명령) →
+**`ComputeDynamicWbc`**(hand τ_ff)를 순차 orchestrate한다 (`src/controllers/wbc/compute.cpp`).
+두 보완 경로는 다음과 같다.
 
 - **Kinematic WBC** = CLIK 경로 (`rtc::tsid::ClikReferenceGenerator`). arm SE3 추종(L1) + arm
   redundancy/nullspace posture(L2) + hand posture(L3)를 velocity-level CLIK으로 풀어

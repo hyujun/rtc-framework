@@ -325,7 +325,13 @@ demo_wbc_controller:
           friction_cone: { active: true }
           torque_limit:  { active: true }
 
-  # ── Integration safety ─────────────────────────────────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Kinematic WBC — arm command path (CLIK primary + integrator fallback).
+  # Implemented by ComputeKinematicWbc() in src/controllers/wbc/compute.cpp.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Integrator seed/safety — active when command_source=integrator, or when CLIK
+  # falls back. The integrator is the Kinematic-WBC fallback path.
   integration:
     position_margin: 0.02
     velocity_scale: 0.95
@@ -339,9 +345,9 @@ demo_wbc_controller:
                                  # q/q̇ every tick (v_next=v_curr+a·dt,
                                  # q_next=q_curr+v_next·dt). Experimental.
 
-  # ── Low-level command source (Stage C-2: integrator vs CLIK A/B) ─────────────
-  # integrator = semi-implicit Euler on TSID a_opt (default, unchanged path).
-  # clik       = velocity-level CLIK reference (rtc_tsid ClikReferenceGenerator).
+  # Low-level command source (Kinematic WBC primary select):
+  #   clik       = velocity-level CLIK reference (rtc_tsid ClikReferenceGenerator) — primary (D1).
+  #   integrator = semi-implicit Euler on TSID a_opt — CLIK-failure fallback.
   # Runtime-switchable via the `command_source` ROS parameter; the non-driving
   # path is computed every tick as a shadow and its Δ logged to wbc_diag.csv.
   command_source: clik
@@ -352,6 +358,18 @@ demo_wbc_controller:
     kx_rot: 2.0          # TCP rotation task gain (runtime; ROS param clik_kx_rot)
     ka: 1.0              # arm nullspace posture gain (runtime; clik_ka)
     kh: 1.0              # hand posture gain (runtime; clik_kh)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Dynamic WBC — hand feedforward-torque overlay (kPdFeedforward).
+  # Model-based hand τ_ff on top of the Kinematic-WBC position backbone, active
+  # only in closure/hold. Flat ROS params (live-tunable via ros2 param / GUI).
+  # Implemented by ComputeDynamicWbc() in src/controllers/wbc/compute.cpp.
+  # ═══════════════════════════════════════════════════════════════════════════
+  hand_tauff_enable: false           # opt-in: drive hand via pd_feedforward
+  hand_tauff_source: "gravity_comp"  # "gravity_comp" (g[nv]) | "tsid_tau" (QP τ)
+  hand_tauff_gravity_gain: 1.0       # scale on the τ_ff source [-]
+  hand_tauff_closure_bias: 0.0       # uniform additive τ bias [Nm]
+  hand_tauff_max: 5.0                # per-joint |τ_ff| clamp [Nm]
 
   # ── FSM thresholds ─────────────────────────────────────────────────────────
   # Force/contact thresholds retained for schema compliance but the contact

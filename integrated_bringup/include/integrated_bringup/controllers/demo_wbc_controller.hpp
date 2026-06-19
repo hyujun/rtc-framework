@@ -441,7 +441,19 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── Control modes ───────────────────────────────────────────────────────
   void ComputePositionMode(double dt) noexcept;
+  // ComputeTSIDPosition orchestrates the position-mode tick across the two WBC
+  // layers, sharing one gains snapshot:
+  //   SolveWbcQp          — shared whole-body TSID QP (fills tsid_output_.a_opt/
+  //                         tau; returns false on QP failure → caller holds /
+  //                         falls back this tick).
+  //   ComputeKinematicWbc — Kinematic WBC: arm command via semi-implicit-Euler
+  //                         integrator + CLIK reference (command_source select).
+  //   ComputeDynamicWbc   — Dynamic WBC: hand τ_ff overlay (kPdFeedforward).
   void ComputeTSIDPosition(const ControllerState& state, double dt) noexcept;
+  [[nodiscard]] bool SolveWbcQp(const ControllerState& state, double dt,
+                                const Gains& gains_now) noexcept;
+  void ComputeKinematicWbc(double dt, const Gains& gains_now) noexcept;
+  void ComputeDynamicWbc(const Gains& gains_now) noexcept;
   void ComputeReleaseMode(const ControllerState& state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
