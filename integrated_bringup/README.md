@@ -458,7 +458,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
 
 - **Slip**: EMA-smoothed `|df/dt|` > `slip_rate_threshold` (기본 5.0 N/s)
 - **Deformation**: `||displacement||` > `deformation_threshold` (기본 0.015 m)
-- **QP 실패**: 연속 `max_qp_fail_before_fallback`회 (기본 5) → `kFallback` 진입
+- **QP 실패** (fallback 분리): position 백본인 **Kinematic (CLIK) QP** 실패만 critical — 연속 `max_qp_fail_before_fallback`회 (기본 5) → `kFallback` 진입. **Dynamic (TSID) QP** 실패는 non-critical — 해당 tick hand τ_ff 만 drop (position 은 CLIK 가 계속 소유), `kFallback` 미진입. 두 카운터는 `dyn_qp_fail_count_` / `kin_qp_fail_count_` 로 분리되며 `wbc_diag.csv` 에 `qp_fail_count`(dynamic) + `kin_qp_fail_count` 컬럼으로 기록
 
 **E-STOP:** `estop.arm_safe_position` (YAML 필수 키, 기본 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad)로 이동, 핸드는 현재 위치 유지, contact 비활성화
 

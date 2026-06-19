@@ -34,13 +34,15 @@ struct WbcDiagLogPod {
   double t_relative_s{0.0};
 
   // ── Sizes ─────────────────────────────────────────────────────────────────
-  std::uint8_t phase{0};            // WbcPhase enum (see DemoWbcController)
-  std::uint8_t num_contact_vars{0}; // active λ dim (≤ kMaxContactVars)
+  std::uint8_t phase{0};             // WbcPhase enum (see DemoWbcController)
+  std::uint8_t num_contact_vars{0};  // active λ dim (≤ kMaxContactVars)
 
   // ── Solver diagnostics ────────────────────────────────────────────────────
   double solve_time_us{0.0};
   std::int32_t solve_levels{0};
-  std::int32_t qp_fail_count{0};
+  std::int32_t qp_fail_count{0};  // Dynamic (TSID) QP consecutive fails (τ_ff-drop)
+  std::int32_t kin_qp_fail_count{
+      0};  // Kinematic (CLIK) QP consecutive fails (critical → kFallback)
   std::int32_t num_active_contacts{0};
   bool qp_converged{false};
   bool grasp_detected{false};
@@ -71,14 +73,22 @@ static_assert(std::is_trivially_copyable_v<WbcDiagLogPod>,
 /// controller dependency; slot 5 is reserved/deprecated).
 inline std::string_view WbcDiagLogPhaseStr(std::uint8_t v) noexcept {
   switch (v) {
-    case 0: return "idle";
-    case 1: return "approach";
-    case 2: return "pre_grasp";
-    case 3: return "closure";
-    case 4: return "hold";
-    case 6: return "release";
-    case 7: return "fallback";
-    default: return "unknown";
+    case 0:
+      return "idle";
+    case 1:
+      return "approach";
+    case 2:
+      return "pre_grasp";
+    case 3:
+      return "closure";
+    case 4:
+      return "hold";
+    case 6:
+      return "release";
+    case 7:
+      return "fallback";
+    default:
+      return "unknown";
   }
 }
 
@@ -87,9 +97,12 @@ inline std::string_view WbcDiagLogPhaseStr(std::uint8_t v) noexcept {
 /// header has no controller dependency).
 inline std::string_view WbcDiagLogCommandSourceStr(std::uint8_t v) noexcept {
   switch (v) {
-    case 0: return "integrator";
-    case 1: return "clik";
-    default: return "unknown";
+    case 0:
+      return "integrator";
+    case 1:
+      return "clik";
+    default:
+      return "unknown";
   }
 }
 
@@ -98,7 +111,7 @@ inline std::string_view WbcDiagLogCommandSourceStr(std::uint8_t v) noexcept {
 /// the fixed QP dim). The logger appends '\n'.
 inline void WriteWbcDiagLogHeader(std::ostream& os, std::size_t num_contact_vars) {
   os << "t_relative_s,phase";
-  os << ",solve_time_us,qp_converged,solve_levels,qp_fail_count";
+  os << ",solve_time_us,qp_converged,solve_levels,qp_fail_count,kin_qp_fail_count";
   os << ",num_active_contacts,grasp_detected,max_force";
   // Stage C-2: command source + CLIK A/B shadow columns.
   os << ",command_source,clik_valid,clik_tcp_err,clik_manipulability";
@@ -117,6 +130,7 @@ inline void WriteWbcDiagLogRow(std::ostream& os, const WbcDiagLogPod& p) {
   os << ',' << (p.qp_converged ? 1 : 0);
   os << ',' << p.solve_levels;
   os << ',' << p.qp_fail_count;
+  os << ',' << p.kin_qp_fail_count;
   os << ',' << p.num_active_contacts;
   os << ',' << (p.grasp_detected ? 1 : 0);
   os << ',' << p.max_force;

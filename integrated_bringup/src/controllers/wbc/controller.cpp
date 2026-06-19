@@ -1439,7 +1439,8 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     // first idle hold regulates to the measured pose, not a pre-estop command.
     current_target_slot_.tcp_cmd_valid = false;
     arm_task_new_target_pending_ = false;
-    qp_fail_count_ = 0;
+    dyn_qp_fail_count_ = 0;
+    kin_qp_fail_count_ = 0;
     grasp_cmd_.store(0, std::memory_order_relaxed);
 
     // Idle hold snapshot from the measured first-tick configuration. kIdle's

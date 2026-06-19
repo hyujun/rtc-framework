@@ -203,12 +203,12 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   // τ_ff) → Kinematic WBC (CLIK-QP position backbone). One gains snapshot is
   // shared by all three so the whole tick sees a consistent set of runtime
   // gains. Dynamic runs before Kinematic (decision 7) so the integrator A/B
-  // shadow consumes this-tick a_opt and a QP failure skips the position layer.
+  // shadow consumes this-tick a_opt. A Dynamic QP failure is non-critical
+  // (decision 6: τ_ff drop only) so the Kinematic position layer always runs;
+  // criticality lives in ComputeKinematicWbc (CLIK is the position backbone).
   const Gains gains_now = gains_lock_.Load();
   ComputeWbcCommon(state, dt, gains_now);
-  if (!ComputeDynamicWbc(state, dt, gains_now)) {
-    return;  // QP failed — held last command this tick or fell back (handled inside).
-  }
+  ComputeDynamicWbc(state, dt, gains_now);
   ComputeKinematicWbc(dt, gains_now);
 }
 
@@ -470,10 +470,26 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
         q_next_full_ = clik_.QRef();
         v_next_full_ = clik_.VRef();
         active_command_source_ = CommandSource::kClik;
+        kin_qp_fail_count_ = 0;
       }
     } else if (src == CommandSource::kClik) {
+      // CLIK is the position backbone (decision 6): a failure while it drives is
+      // CRITICAL. robot_computed_/hand_computed_ still hold the previous tick's
+      // command (the Pinocchio→device mapping below has not run yet), so an
+      // early return holds last this tick. After max_qp_fail_before_fallback_
+      // consecutive fails, trip kFallback (ComputeFallback zeroes velocity on
+      // the held pose; recovery re-seeds the integrator on the kFallback→kIdle
+      // edge via reseed_on_fallback_exit_).
+      ++kin_qp_fail_count_;
       RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
-                           "[wbc] CLIK Compute failed — integrator fallback this tick");
+                           "[wbc] CLIK QP failed (%d/%d) — holding last command this tick",
+                           kin_qp_fail_count_, max_qp_fail_before_fallback_);
+      if (kin_qp_fail_count_ >= max_qp_fail_before_fallback_) {
+        reseed_integration_pending_ = false;
+        phase_ = WbcPhase::kFallback;
+        ComputeFallback();
+      }
+      return;  // skip the device mapping → robot_computed_/hand_computed_ hold last.
     }
   }
 
@@ -497,39 +513,34 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
 
 // ComputeDynamicWbc — Dynamic WBC (TSID-ID QP): solves the whole-body
 // acceleration/torque QP (fills tsid_output_.a_opt / tau), then overlays the
-// hand feedforward torque (kPdFeedforward). Returns false on QP failure
-// (hold-this-tick or kFallback already applied) so the orchestrator skips the
-// Kinematic position layer. Runs before ComputeKinematicWbc (decision 7) so the
-// integrator A/B shadow consumes this-tick a_opt.
-bool DemoWbcController::ComputeDynamicWbc(const ControllerState& /*state*/, double /*dt*/,
+// hand feedforward torque (kPdFeedforward). A QP failure is NON-critical
+// (decision 6): position is owned by the Kinematic CLIK-QP, so a failure only
+// drops the hand τ_ff this tick (throttled WARN) and returns — it never trips
+// kFallback nor skips the Kinematic layer. Runs before ComputeKinematicWbc
+// (decision 7) so the integrator A/B shadow consumes this-tick a_opt; on a
+// failed solve that a_opt is garbage, but the shadow is non-driving (CLIK is
+// primary) so only the diagnostic Δ spikes.
+void DemoWbcController::ComputeDynamicWbc(const ControllerState& /*state*/, double /*dt*/,
                                           const Gains& gains_now) noexcept {
   // ── Dynamic WBC QP solve (was the SolveWbcQp tail) ────────────────────────
   // 5. TSID solve — consumes the common-stage ctrl_state_/control_ref_/cache.
   tsid_output_ =
       tsid_controller_.Compute(ctrl_state_, control_ref_, pinocchio_cache_, contact_state_);
 
-  // 6. QP failure handling.
+  // 6. Dynamic QP failure handling — non-critical (τ_ff drop only).
   if (!tsid_output_.qp_converged) {
-    ++qp_fail_count_;
+    ++dyn_qp_fail_count_;
     RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
-                         "[wbc] QP failed (%d/%d), solve=%.0fus", qp_fail_count_,
-                         max_qp_fail_before_fallback_, tsid_output_.solve_time_us);
-
-    if (qp_fail_count_ >= max_qp_fail_before_fallback_) {
-      // kFallback bypasses the integrator; recovery re-seeds via
-      // reseed_on_fallback_exit_. Drop any pending target re-seed so it cannot
-      // fire from a stale target on the recovery tick.
-      reseed_integration_pending_ = false;
-      phase_ = WbcPhase::kFallback;
-      ComputeFallback();
-      return false;
-    }
-    // Hold last valid command this tick. Re-seed on the next successful tick so
-    // the integrator resumes from fresh measured state (no stale-gap jump).
-    reseed_integration_pending_ = true;
-    return false;
+                         "[wbc] Dynamic QP failed (%d), τ_ff dropped this tick, solve=%.0fus",
+                         dyn_qp_fail_count_, tsid_output_.solve_time_us);
+    // Drop the hand feedforward this tick; the Kinematic CLIK-QP still produces
+    // the position command (hand falls back to its plain PD position hold).
+    for (int i = 0; i < hand_dof_; ++i)
+      hand_computed_.feedforward[static_cast<std::size_t>(i)] = 0.0;
+    hand_tauff_active_ = false;
+    return;
   }
-  qp_fail_count_ = 0;
+  dyn_qp_fail_count_ = 0;
 
   // Stage B-5: WBC diagnostic (RT-safe throttled INFO) — QP solve summary.
   // Format uses only %d / %.0f (no fmt::format / to_string / string concat —
@@ -594,7 +605,6 @@ bool DemoWbcController::ComputeDynamicWbc(const ControllerState& /*state*/, doub
                            "[wbc] hand τ_ff non-finite — position-hold fallback this tick");
     }
   }
-  return true;
 }
 
 void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double dt) noexcept {
@@ -823,8 +833,10 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     ws.grasp_target_force = static_cast<float>(g.grasp_target_force);
     ws.min_fingertips_for_grasp = g.grasp_min_fingertips;
     ws.grasp_detected = (active_count >= ws.min_fingertips_for_grasp);
-    ws.tsid_solver_ok = tsid_initialized_ && (qp_fail_count_ == 0);
-    ws.qp_fail_count = qp_fail_count_;
+    // tsid_solver_ok / qp_fail_count are the Dynamic (TSID) QP health — the
+    // rtc_msgs/WbcState fields always referred to the TSID solve.
+    ws.tsid_solver_ok = tsid_initialized_ && (dyn_qp_fail_count_ == 0);
+    ws.qp_fail_count = dyn_qp_fail_count_;
   }
   // SeqLock store = two atomic stores + memcpy (wait-free, RT-safe).
   // Read by PublishNonRtSnapshot.
@@ -1177,7 +1189,8 @@ void DemoWbcController::FillWbcDiagLogPod(const ControllerState& state,
   pod.phase = static_cast<std::uint8_t>(phase_);
   pod.solve_time_us = tsid_output_.solve_time_us;
   pod.solve_levels = tsid_output_.solve_levels;
-  pod.qp_fail_count = qp_fail_count_;
+  pod.qp_fail_count = dyn_qp_fail_count_;
+  pod.kin_qp_fail_count = kin_qp_fail_count_;
   pod.qp_converged = tsid_output_.qp_converged;
   pod.num_active_contacts = wbc_state_.num_active_contacts;
   pod.grasp_detected = wbc_state_.grasp_detected;

@@ -206,7 +206,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         InitTcpTrajectory(state);
       }
 
-      qp_fail_count_ = 0;
+      dyn_qp_fail_count_ = 0;
+      kin_qp_fail_count_ = 0;
       // Stage A-5b: kIdle ramps activation down to 0 (gentle release).
       for (int i = 0; i < static_cast<int>(contact_state_.contacts.size()); ++i) {
         contact_state_.SetActivationTarget(i, 0.0, contact_ramp_sec_);
@@ -269,7 +270,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // built from above (single consistent target per phase entry).
       BuildTargetPosture(state);
 
-      qp_fail_count_ = 0;
+      dyn_qp_fail_count_ = 0;
+      kin_qp_fail_count_ = 0;
       break;
     }
 
@@ -366,7 +368,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         }
       }
 
-      qp_fail_count_ = 0;
+      dyn_qp_fail_count_ = 0;
+      kin_qp_fail_count_ = 0;
       break;
     }
 
@@ -410,7 +413,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         InitTcpTrajectory(state);
       }
 
-      qp_fail_count_ = 0;
+      dyn_qp_fail_count_ = 0;
+      kin_qp_fail_count_ = 0;
       break;
     }
 
@@ -434,7 +438,8 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         contact_state_.SetActivationTarget(i, 0.0, 0.01);
       }
       contact_state_.RecomputeActive(contact_mgr_config_);
-      qp_fail_count_ = 0;
+      dyn_qp_fail_count_ = 0;
+      kin_qp_fail_count_ = 0;
       break;
     }
   }

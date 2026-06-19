@@ -447,19 +447,21 @@ class DemoWbcController final : public RTControllerInterface {
   //                         + contact/grasp cache, MPC ref, and the per-tick
   //                         joint/SE3 references both QPs consume. No solve.
   //   ComputeDynamicWbc   — Dynamic WBC (TSID-ID QP): solves tsid_output_.a_opt/
-  //                         tau, then overlays hand τ_ff (kPdFeedforward).
-  //                         Returns false on QP failure → caller holds / falls
-  //                         back this tick (skips Kinematic).
+  //                         tau, then overlays hand τ_ff (kPdFeedforward). A QP
+  //                         failure is NON-critical (decision 6): it drops the
+  //                         hand τ_ff this tick (dyn_qp_fail_count_) and the
+  //                         Kinematic position layer still runs.
   //   ComputeKinematicWbc — Kinematic WBC: arm/hand position via CLIK-QP
-  //                         backbone (integrator A/B shadow until Phase 4).
+  //                         backbone (integrator A/B shadow until Phase 4). CLIK
+  //                         is the position backbone, so a CLIK failure here is
+  //                         CRITICAL (kin_qp_fail_count_ → hold-last → kFallback).
   // Order is Common → Dynamic → Kinematic so the integrator shadow consumes
-  // this-tick a_opt and a QP failure skips the position layer (decision 7;
-  // the plan's Common→Kinematic→Dynamic is the post-integrator end state).
+  // this-tick a_opt (decision 7; the plan's Common→Kinematic→Dynamic is the
+  // post-integrator end state).
   void ComputeTSIDPosition(const ControllerState& state, double dt) noexcept;
   void ComputeWbcCommon(const ControllerState& state, double dt, const Gains& gains_now) noexcept;
   void ComputeKinematicWbc(double dt, const Gains& gains_now) noexcept;
-  [[nodiscard]] bool ComputeDynamicWbc(const ControllerState& state, double dt,
-                                       const Gains& gains_now) noexcept;
+  void ComputeDynamicWbc(const ControllerState& state, double dt, const Gains& gains_now) noexcept;
   void ComputeReleaseMode(const ControllerState& state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
@@ -552,7 +554,16 @@ class DemoWbcController final : public RTControllerInterface {
   rtc::tsid::CommandOutput tsid_output_;
 
   bool tsid_initialized_{false};
-  int qp_fail_count_{0};
+  // Fallback split (decision 6): the two WBC QPs fail with different severity.
+  //   dyn_qp_fail_count_ — Dynamic WBC (TSID-ID) QP. NON-critical: a failure
+  //     drops the hand τ_ff this tick only; the Kinematic CLIK-QP still owns
+  //     position. Mirrors the rtc_msgs/WbcState `qp_fail_count` + `tsid_solver_ok`
+  //     fields (both always referred to the TSID solve).
+  //   kin_qp_fail_count_ — Kinematic WBC (CLIK) QP. CRITICAL: CLIK is the
+  //     position backbone, so a failure (while CLIK drives) holds last this tick
+  //     and trips kFallback after max_qp_fail_before_fallback_ consecutive fails.
+  int dyn_qp_fail_count_{0};
+  int kin_qp_fail_count_{0};
   int max_qp_fail_before_fallback_{5};
   // Active contact-force dimension of this tick, computed once in
   // ComputeWbcCommon (grasp cache) and reused by ComputeDynamicWbc's

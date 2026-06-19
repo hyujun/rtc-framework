@@ -373,6 +373,8 @@ demo_wbc_controller:
     min_contacts_for_hold: 2     # # of fingertips required for kClosure→kHold
     slip_rate_threshold: 5.0     # N/s, |df/dt| anomaly guard in kHold
     deformation_threshold: 0.015 # m, ||displacement|| anomaly guard in kHold
+    # Consecutive Kinematic (CLIK) QP failures before kFallback (critical:
+    # CLIK owns position). Dynamic (TSID) QP fail is non-critical (τ_ff drop).
     max_qp_fail_before_fallback: 5
     approach_speed: 0.5          # rad/s (overrides arm_trajectory_speed)
     # kRelease stage 0: contact activation_target → 0 ramp duration before

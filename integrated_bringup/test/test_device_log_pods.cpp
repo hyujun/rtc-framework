@@ -260,6 +260,10 @@ TEST(WbcDiagLogPod, HeaderColumnsMatchRow) {
 
   EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
   EXPECT_NE(hdr.find("lambda_11"), std::string::npos);
+  // Fallback split (decision 6): Dynamic (qp_fail_count) and Kinematic
+  // (kin_qp_fail_count) QP failure counters are distinct CSV columns.
+  EXPECT_NE(hdr.find("qp_fail_count"), std::string::npos);
+  EXPECT_NE(hdr.find("kin_qp_fail_count"), std::string::npos);
 }
 
 TEST(WbcDiagLogPod, PhaseStringTranslation) {

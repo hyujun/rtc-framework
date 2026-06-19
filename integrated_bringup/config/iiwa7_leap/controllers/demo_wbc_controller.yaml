@@ -70,7 +70,8 @@ demo_wbc_controller:
         max_iter: 20
         # Inner Newton iterations per outer step. ProxQP default (1500) lets an
         # infeasible QP grind ~0.5–1.4 s (fatal at 500 Hz); bound it so a bad
-        # solve fails fast and qp_fail fallback engages instead of overrunning.
+        # solve fails fast. This is the Dynamic (TSID) QP — a failure is
+        # non-critical (hand τ_ff dropped that tick), not a kFallback.
         max_iter_in: 100
         eps_abs: 1.0e-6
         eps_rel: 0.0
@@ -383,6 +384,9 @@ demo_wbc_controller:
     min_contacts_for_hold: 2
     slip_rate_threshold: 5.0
     deformation_threshold: 0.015
+    # Consecutive Kinematic (CLIK) QP failures before kFallback. CLIK is the
+    # position backbone, so its failure is critical; the Dynamic (TSID) QP fail
+    # is non-critical (τ_ff drop only) and does not use this threshold.
     max_qp_fail_before_fallback: 5
     approach_speed: 0.5
     # kRelease stage 0: contact activation_target → 0 ramp duration before
