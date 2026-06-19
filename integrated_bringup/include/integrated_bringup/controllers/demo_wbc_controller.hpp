@@ -441,19 +441,25 @@ class DemoWbcController final : public RTControllerInterface {
 
   // ── Control modes ───────────────────────────────────────────────────────
   void ComputePositionMode(double dt) noexcept;
-  // ComputeTSIDPosition orchestrates the position-mode tick across the two WBC
-  // layers, sharing one gains snapshot:
-  //   SolveWbcQp          — shared whole-body TSID QP (fills tsid_output_.a_opt/
-  //                         tau; returns false on QP failure → caller holds /
-  //                         falls back this tick).
-  //   ComputeKinematicWbc — Kinematic WBC: arm command via semi-implicit-Euler
-  //                         integrator + CLIK reference (command_source select).
-  //   ComputeDynamicWbc   — Dynamic WBC: hand τ_ff overlay (kPdFeedforward).
+  // ComputeTSIDPosition orchestrates the position-mode tick across the common
+  // stage and the two WBC QPs, sharing one gains snapshot:
+  //   ComputeWbcCommon    — shared stage (decision 5): state extract, pinocchio
+  //                         + contact/grasp cache, MPC ref, and the per-tick
+  //                         joint/SE3 references both QPs consume. No solve.
+  //   ComputeDynamicWbc   — Dynamic WBC (TSID-ID QP): solves tsid_output_.a_opt/
+  //                         tau, then overlays hand τ_ff (kPdFeedforward).
+  //                         Returns false on QP failure → caller holds / falls
+  //                         back this tick (skips Kinematic).
+  //   ComputeKinematicWbc — Kinematic WBC: arm/hand position via CLIK-QP
+  //                         backbone (integrator A/B shadow until Phase 4).
+  // Order is Common → Dynamic → Kinematic so the integrator shadow consumes
+  // this-tick a_opt and a QP failure skips the position layer (decision 7;
+  // the plan's Common→Kinematic→Dynamic is the post-integrator end state).
   void ComputeTSIDPosition(const ControllerState& state, double dt) noexcept;
-  [[nodiscard]] bool SolveWbcQp(const ControllerState& state, double dt,
-                                const Gains& gains_now) noexcept;
+  void ComputeWbcCommon(const ControllerState& state, double dt, const Gains& gains_now) noexcept;
   void ComputeKinematicWbc(double dt, const Gains& gains_now) noexcept;
-  void ComputeDynamicWbc(const Gains& gains_now) noexcept;
+  [[nodiscard]] bool ComputeDynamicWbc(const ControllerState& state, double dt,
+                                       const Gains& gains_now) noexcept;
   void ComputeReleaseMode(const ControllerState& state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
@@ -548,6 +554,10 @@ class DemoWbcController final : public RTControllerInterface {
   bool tsid_initialized_{false};
   int qp_fail_count_{0};
   int max_qp_fail_before_fallback_{5};
+  // Active contact-force dimension of this tick, computed once in
+  // ComputeWbcCommon (grasp cache) and reused by ComputeDynamicWbc's
+  // throttled solve-summary log so the value is not recomputed.
+  int n_lambda_active_{0};
 
   // Stage A-3: per-tick force-reference closed-loop helper. Replaces the
   // open-loop λ_des push that used to fire on phase entry only. Updated
