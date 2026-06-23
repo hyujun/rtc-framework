@@ -11,10 +11,12 @@ fallback). The remaining constants here are GUI-only, robot-agnostic.
 
 Public surface (imported by app.py):
 - TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
+- DUAL_TARGET_SPACE, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
 - _DEFAULT_PRESETS, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
   GAIN_GROUP_LAYOUT, GAIN_GROUP_PARENT_GRASP, GROUP_SCALARS_PER_ROW
+- HAND_TAUFF_GROUP, HAND_TAUFF_SOURCE_PARAM, HAND_TAUFF_SOURCES
 - SENSOR_CALIBRATIONS, _CALIB_STATE_NAMES, _CALIB_STATE_COLORS
 - value-builders: _set_double, _set_double_array, _set_bool, _set_int,
   _read_only
@@ -67,6 +69,27 @@ JOINT_SPACE = {
     "demo_task_controller": False,
     "demo_wbc_controller": True,
 }
+
+# Controllers that accept a joint posture goal AND a task-space SE3 goal at
+# once. WBC regulates the arm posture (nullspace reference) and a commanded
+# EE SE3 jog independently (demo_wbc_controller DrainTargetSlot — "posture and
+# the commanded SE3 stay independent"), so its GUI enables both target panels
+# and Send Command publishes both RobotTarget messages. Others stay
+# single-space per JOINT_SPACE.
+DUAL_TARGET_SPACE = {"demo_wbc_controller"}
+
+
+def target_panel_states(ctrl_idx: str) -> tuple[bool, bool]:
+    """Return ``(joint_panel_on, task_panel_on)`` for a controller.
+
+    Dual-space controllers (``DUAL_TARGET_SPACE``) enable both panels; the
+    rest follow the binary ``JOINT_SPACE`` flag (joint XOR task).
+    """
+    if ctrl_idx in DUAL_TARGET_SPACE:
+        return True, True
+    is_joint = JOINT_SPACE.get(ctrl_idx, True)
+    return is_joint, not is_joint
+
 
 # Fingertip names matching controller order (4 fingertips)
 FINGERTIP_NAMES = ["Thumb", "Index", "Middle", "Ring"]
@@ -135,6 +158,16 @@ def _resolve_preset_path() -> str:
     return os.path.join(logging_root, "hand_presets.json")
 
 
+# Hand τ_ff (kPdFeedforward) widgets. Four numeric/bool params ride the
+# float gain pipeline (GAIN_DEFS / GAIN_PARAM_DISPATCH below); the fifth,
+# `hand_tauff_source`, is a string enum the controller validates and so
+# cannot be a float widget — app.py renders it as a standalone combobox in
+# the HAND_TAUFF_GROUP box. SSoT for names/types: wbc/parameters.cpp
+# OnGainParametersSet.
+HAND_TAUFF_GROUP = "Hand τ_ff"
+HAND_TAUFF_SOURCE_PARAM = "hand_tauff_source"
+HAND_TAUFF_SOURCES = ["gravity_comp", "tsid_tau"]
+
 # Gain definitions per controller
 # Each entry: (label, size, defaults, is_bool, group)
 # The flat tuple ORDER is the on-the-wire layout sent to the controller;
@@ -190,6 +223,14 @@ GAIN_DEFS = {
         ("hand_traj_speed", 1, [1.0], False, "Hand Trajectory"),
         ("arm_max_traj_vel", 1, [2.0], False, "Arm Trajectory"),
         ("hand_max_traj_vel", 1, [4.0], False, "Hand Trajectory"),
+        # Stage C-3 hand τ_ff overlay (kPdFeedforward). Defaults mirror the
+        # controller's Gains struct (demo_wbc_controller.hpp). The string-enum
+        # companion `hand_tauff_source` cannot ride this float pipeline — app.py
+        # renders it as a standalone combobox in the HAND_TAUFF_GROUP box.
+        ("hand_tauff_enable", 1, [0], True, HAND_TAUFF_GROUP),
+        ("hand_tauff_gravity_gain", 1, [1.0], False, HAND_TAUFF_GROUP),
+        ("hand_tauff_closure_bias", 1, [0.0], False, HAND_TAUFF_GROUP),
+        ("hand_tauff_max", 1, [5.0], False, HAND_TAUFF_GROUP),
     ],
 }
 
@@ -261,6 +302,10 @@ GAIN_PARAM_DISPATCH: dict[str, dict[str, tuple[str, callable]]] = {
         "hand_traj_speed": ("hand_trajectory_speed", _set_double),
         "arm_max_traj_vel": ("arm_max_traj_velocity", _read_only),
         "hand_max_traj_vel": ("hand_max_traj_velocity", _read_only),
+        "hand_tauff_enable": ("hand_tauff_enable", _set_bool),
+        "hand_tauff_gravity_gain": ("hand_tauff_gravity_gain", _set_double),
+        "hand_tauff_closure_bias": ("hand_tauff_closure_bias", _set_double),
+        "hand_tauff_max": ("hand_tauff_max", _set_double),
         # Grasp detection thresholds (layer-d): capability-aware. contact_thresh
         # is consulted only on sensor A paths (udp_hand_native +
         # ft_inferencer.enabled); force_thresh + min_fingertips are common
@@ -284,6 +329,7 @@ GAIN_GROUP_LAYOUT = {
     ],
     "demo_wbc_controller": [
         ["Arm Trajectory", "Hand Trajectory"],
+        [HAND_TAUFF_GROUP],
     ],
 }
 

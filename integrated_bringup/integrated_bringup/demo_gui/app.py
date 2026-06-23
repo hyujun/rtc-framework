@@ -82,6 +82,9 @@ from .config import (
     GAIN_ROW_NAMES,
     GRASP_PHASE_NAMES,
     GROUP_SCALARS_PER_ROW,
+    HAND_TAUFF_GROUP,
+    HAND_TAUFF_SOURCE_PARAM,
+    HAND_TAUFF_SOURCES,
     JOINT_SPACE,
     SENSOR_CALIBRATIONS,
     TARGET_LABELS,  # noqa: F401  (preserved for downstream compat)
@@ -92,6 +95,7 @@ from .config import (
     _set_double,
     _set_double_array,
     _set_int,
+    target_panel_states,
 )
 from .discovery import RobotProfile, RobotShape
 
@@ -1837,6 +1841,9 @@ class DemoControllerGUI(Node):
         """
         self._gains_panels = {}
         self._active_gains_ctrl = None
+        # Standalone string-enum combobox per controller (hand_tauff_source),
+        # rendered outside the float gain pipeline. Keyed by config_key.
+        self._tauff_source_combos: dict[str, ttk.Combobox] = {}
 
         # Default max scalar inputs per row inside a group box.
         DEFAULT_SCALARS_PER_ROW = 2
@@ -2057,6 +2064,20 @@ class DemoControllerGUI(Node):
                 lbl.pack(anchor="w")
                 applied_labels.append([lbl])
 
+            # Standalone combobox for the one string-enum param that cannot
+            # ride the float gain pipeline (hand_tauff_source). Placed in the
+            # Hand τ_ff group box; set/loaded by _publish_gains /
+            # _request_load_gains, no applied mirror.
+            if HAND_TAUFF_GROUP in group_boxes:
+                frm = _next_scalar_slot(group_boxes[HAND_TAUFF_GROUP])
+                tk.Label(
+                    frm, text="source", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8)
+                ).pack(anchor="w")
+                combo = ttk.Combobox(frm, values=HAND_TAUFF_SOURCES, width=12, state="readonly")
+                combo.set(HAND_TAUFF_SOURCES[0])
+                combo.pack()
+                self._tauff_source_combos[ctrl_idx] = combo
+
             self._gains_panels[ctrl_idx] = {
                 "frame": panel_frame,
                 "applied_frame": applied_frame,
@@ -2113,9 +2134,9 @@ class DemoControllerGUI(Node):
     # ---- Button handlers -----------------------------------------------------
 
     def _update_target_inputs_state(self, ctrl_idx: int):
-        is_joint = JOINT_SPACE.get(ctrl_idx, True)
-        joint_state = "normal" if is_joint else "disabled"
-        task_state = "disabled" if is_joint else "normal"
+        joint_on, task_on = target_panel_states(ctrl_idx)
+        joint_state = "normal" if joint_on else "disabled"
+        task_state = "normal" if task_on else "disabled"
 
         for ent in self._joint_target_entries:
             ent.configure(state=joint_state)
@@ -2232,13 +2253,20 @@ class DemoControllerGUI(Node):
         self._show_gains_panel(idx)
         self._update_target_inputs_state(idx)
 
+        # Seed every enabled target panel from current state so neither holds
+        # stale values (dual-space WBC seeds both).
+        joint_on, task_on = target_panel_states(idx)
+        if joint_on:
+            self._set_joint_target_entries(self.current_positions)
+        if task_on:
+            self._set_task_target_entries(self.current_task_positions)
+
+        # Status readout naming follows the primary space (joint for dual/WBC).
         _task_status_names = ["X (m)", "Y (m)", "Z (m)", "Roll", "Pitch", "Yaw"]
         if JOINT_SPACE.get(idx, True):
-            self._set_joint_target_entries(self.current_positions)
             for i, name_lbl in enumerate(self._status_labels_names):
                 name_lbl.config(text=f"J{i + 1}:")
         else:
-            self._set_task_target_entries(self.current_task_positions)
             for i, name_lbl in enumerate(self._status_labels_names):
                 name_lbl.config(text=f"{_task_status_names[i]}:")
 
@@ -2256,6 +2284,13 @@ class DemoControllerGUI(Node):
         # the YAML-set values; the result fills widgets but they remain
         # disabled at apply time).
         param_names = [p[0] for p in dispatch.values()]
+        # The string-enum source param has no dispatch entry; append it last
+        # so the flat builder (zip over dispatch.items) ignores it, and read
+        # it back into the combobox by its fixed index.
+        combo = self._tauff_source_combos.get(ctrl)
+        src_idx = len(param_names) if combo is not None else None
+        if combo is not None:
+            param_names.append(HAND_TAUFF_SOURCE_PARAM)
         client = self._get_param_client(ctrl)
         if not client.wait_for_services(timeout_sec=1.0):
             self.get_logger().error(f"parameter services for /{ctrl} unavailable")
@@ -2293,6 +2328,10 @@ class DemoControllerGUI(Node):
                 else:
                     flat.append(0.0)
             self.root.after(0, self._fill_gains_from_data, flat)
+            if src_idx is not None and src_idx < len(resp.values):
+                src_val = resp.values[src_idx].string_value
+                if src_val in HAND_TAUFF_SOURCES:
+                    self.root.after(0, combo.set, src_val)
             self.get_logger().info(f"Loaded {len(param_names)} parameters from /{ctrl}")
 
         future.add_done_callback(_on_get_done)
@@ -2378,6 +2417,19 @@ class DemoControllerGUI(Node):
             ptype, pvalue = built
             params.append(Parameter(name=param_name, type_=ptype, value=pvalue))
 
+        # String-enum param rides its own combobox, not the float pipeline.
+        combo = self._tauff_source_combos.get(ctrl)
+        if combo is not None:
+            src = combo.get()
+            if src in HAND_TAUFF_SOURCES:
+                params.append(
+                    Parameter(
+                        name=HAND_TAUFF_SOURCE_PARAM,
+                        type_=Parameter.Type.STRING,
+                        value=src,
+                    )
+                )
+
         if not params:
             self.get_logger().warn("Nothing to apply (all entries read-only?)")
             return
@@ -2447,9 +2499,10 @@ class DemoControllerGUI(Node):
 
     def _copy_current_to_target(self):
         idx = self.selected_ctrl.get()
-        if JOINT_SPACE.get(idx, True):
+        joint_on, task_on = target_panel_states(idx)
+        if joint_on:
             self._set_joint_target_entries(self.current_positions)
-        else:
+        if task_on:
             self._set_task_target_entries(self.current_task_positions)
         self._set_hand_target_entries(self.current_hand_positions)
 
@@ -2501,37 +2554,45 @@ class DemoControllerGUI(Node):
 
     def _publish_target(self):
         idx = self.selected_ctrl.get()
-        is_joint = JOINT_SPACE.get(idx, True)
+        joint_on, task_on = target_panel_states(idx)
 
-        robot_msg = RobotTarget()
-        robot_msg.joint_names = list(self._shape.arm_joint_names)
+        if self.robot_cmd_pub is None:
+            self.get_logger().warn("robot_cmd_pub not yet bound — waiting for active controller")
+            return
+
+        # Dual-space controllers (WBC) publish both a joint posture goal and a
+        # task SE3 goal; the controller routes each by goal_type and treats
+        # them independently. Single-space controllers publish only their one.
         try:
-            if is_joint:
-                robot_msg.goal_type = "joint"
-                robot_msg.joint_target = [
+            if joint_on:
+                joint_msg = RobotTarget()
+                joint_msg.goal_type = "joint"
+                joint_msg.joint_names = list(self._shape.arm_joint_names)
+                joint_msg.joint_target = [
                     math.radians(float(e.get())) for e in self._joint_target_entries
                 ]
-            else:
-                robot_msg.goal_type = "task"
+                self.robot_cmd_pub.publish(joint_msg)
+                self.get_logger().info(
+                    f"Sent robot cmd (joint): {[f'{v:.4f}' for v in joint_msg.joint_target]}"
+                )
+            if task_on:
+                task_msg = RobotTarget()
+                task_msg.goal_type = "task"
+                task_msg.joint_names = list(self._shape.arm_joint_names)
                 task_values = []
                 for i, e in enumerate(self._task_target_entries):
                     v = float(e.get())
                     if i >= 3:
                         v = math.radians(v)
                     task_values.append(v)
-                robot_msg.task_target = task_values
+                task_msg.task_target = task_values
+                self.robot_cmd_pub.publish(task_msg)
+                self.get_logger().info(
+                    f"Sent robot cmd (task): {[f'{v:.4f}' for v in task_values]}"
+                )
         except ValueError:
             self.get_logger().error("Invalid numerical input for target.")
             return
-
-        if self.robot_cmd_pub is None:
-            self.get_logger().warn("robot_cmd_pub not yet bound — waiting for active controller")
-            return
-        self.robot_cmd_pub.publish(robot_msg)
-        data = robot_msg.joint_target if is_joint else list(robot_msg.task_target)
-        self.get_logger().info(
-            f"Sent robot cmd ({robot_msg.goal_type}): {[f'{v:.4f}' for v in data]}"
-        )
 
         try:
             hand_values = [math.radians(float(e.get())) for e in self._hand_target_entries]

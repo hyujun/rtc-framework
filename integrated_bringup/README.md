@@ -672,11 +672,14 @@ GUI 시작 시:
 | `demo_task_controller` | Arm/Hand Trajectory | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed` | `max_traj_velocity`, `max_traj_angular_velocity`, `hand_max_traj_velocity` |
 | `demo_task_controller` | Grasp Detection | (joint 와 동일) | — |
 | `demo_wbc_controller` | Arm/Hand Trajectory | `arm_trajectory_speed`, `hand_trajectory_speed` | `arm_max_traj_velocity`, `hand_max_traj_velocity` |
+| `demo_wbc_controller` | Hand τ_ff | `hand_tauff_enable` (bool), `hand_tauff_gravity_gain`, `hand_tauff_closure_bias`, `hand_tauff_max`, `hand_tauff_source` (combobox: `gravity_comp` \| `tsid_tau`) | — |
 | `demo_wbc_controller` | TSID Weights | `se3_weight`, `force_weight`, `posture_weight` | — |
 | `demo_wbc_controller` | Grasp Detection | (joint 와 동일 — layer-d 에서 추가, capability-aware) | — |
 | `demo_wbc_controller` | MPC | `mpc_enable` (bool), `riccati_gain_scale` | — |
 
 WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_hand/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
+
+**Target 패널 (관절 vs task):** `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
 
 #### Grasp/Release 버튼 동작
 
