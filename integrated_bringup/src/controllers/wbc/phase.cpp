@@ -172,12 +172,13 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   switch (new_phase) {
     case WbcPhase::kIdle: {
       // TSID drives SE3 hold at current TCP + posture hold at current q.
-      // ComputeTSIDPosition fills robot_computed_/hand_computed_ from the
-      // measured-anchored CLIK reference per tick. No direct command-buffer
-      // writes here — they would be overwritten by the CLIK mapping the same
-      // tick. CLIK needs no recovery seed on the kFallback→kIdle edge (it
-      // re-anchors to the measured state every tick).
+      // ComputeTSIDPosition fills robot_computed_/hand_computed_ from the CLIK
+      // reference per tick. No direct command-buffer writes here — they would be
+      // overwritten by the CLIK mapping the same tick. kIdle entry (incl. the
+      // kFallback→kIdle recovery edge) is a goal edge: re-anchor the CLIK desired
+      // to the measured state so it does not carry forward a stale pose.
       ExtractFullState(state);
+      clik_reseed_pending_ = true;
 
       const auto idx = static_cast<std::size_t>(WbcPhase::kIdle);
       if (phase_preset_valid_[idx]) {
@@ -392,7 +393,10 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // Release uses self-hold posture (q_des = measured) — see
       // ComputeTSIDPosition; the finger-open is driven by hand_trajectory_ in
       // ComputeReleaseMode, so posture must not pull the hand toward targets[1].
+      // kRelease is a fresh safe-hold episode: re-anchor the CLIK desired to
+      // measured so it does not carry forward a drifted pose.
       ExtractFullState(state);
+      clik_reseed_pending_ = true;
 
       // SE3 hold at current TCP (zero-displacement quintic).
       if (arm_handle_) {

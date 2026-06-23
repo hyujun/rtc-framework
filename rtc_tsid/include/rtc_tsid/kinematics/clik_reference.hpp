@@ -58,11 +58,25 @@ namespace rtc::tsid {
 // the caller registers tip/base frames on the shared PinocchioCache and
 // calls cache.Update() once per tick.
 //
-// One-step target with measured anchoring: q_ref = q_meas + v_ref·dt.
+// One-step target with selectable anchoring: q_ref = q_anchor + v_ref·dt.
+//   reseed_anchor = true  → q_anchor = q_meas (measured anchoring; the velocity
+//     correction rides on the freshly measured state — the classic closed-loop
+//     CLIK form). This is the default and the post-failure / first-call value.
+//   reseed_anchor = false → q_anchor = q_ref_prev (carry-forward: the desired
+//     position integrates from the PREVIOUS desired, decoupled from per-tick
+//     measured noise — mirrors DemoTaskController's desired_q_ integrator).
+// The caller drives reseed_anchor from "a new goal arrived / phase re-entry"
+// events so the command re-anchors to measured only at those edges. Only the
+// integration anchor switches; the velocity solve (J_task, e_x, posture, box)
+// stays measured-based, so v_ref remains a closed-loop correction. To bound the
+// open-loop drift that carry-forward can accumulate when low-level tracking
+// lags, anchor_drift_max clamps |q_ref_i − q_meas_i| per joint (≤ 0 → off).
+//
 // Requires nq == nv (reduced revolute/prismatic tree). Compute() returns
 // false on precondition violation, QP non-convergence, or non-finite result;
-// the caller falls back (integrator path / hold) for that tick and must not
-// consume the outputs (the failure branch leaves q_ref = q_meas, v_ref = 0).
+// the caller holds last for that tick and must not consume the outputs (the
+// failure branch leaves q_ref = q_meas, v_ref = 0, and forces the next call to
+// re-anchor to measured).
 //
 // All allocations happen in Init(); Compute() is RT-safe and noexcept.
 // ────────────────────────────────────────────────
@@ -83,6 +97,11 @@ class ClikReferenceGenerator {
     // (lᵢ/uᵢ above). Empty → position bound disabled (velocity box only).
     Eigen::VectorXd q_min;
     Eigen::VectorXd q_max;
+    // Anti-windup clamp on the carry-forward anchor: max |q_ref_i − q_meas_i|
+    // [rad] the integrated desired may lead/lag the measured state. ≤ 0 → off.
+    // Only bites in carry-forward mode (reseed_anchor=false) under tracking lag;
+    // on a reseed tick the gap is just v_ref·dt.
+    double anchor_drift_max{0.0};
   };
 
   // Pre-allocates all workspaces and validates the config (indices in
@@ -109,9 +128,14 @@ class ClikReferenceGenerator {
   // non-finite result — outputs must not be consumed in that case (the
   // finite-guard branch leaves q_ref = q_meas, v_ref = 0 as a safe value;
   // precondition branches leave stale values).
+  // reseed_anchor: true = anchor q_ref at the measured state this tick (default,
+  // closed-loop); false = carry forward from the previous q_ref. The first call
+  // after Init (and the call after any failure) always re-anchors to measured
+  // regardless, so the integrator never starts from an undefined anchor.
   [[nodiscard]] bool Compute(const PinocchioCache& cache, int tcp_frame_idx, int base_frame_idx,
                              const pinocchio::SE3& placement_des,
-                             const Eigen::VectorXd& q_posture_des, double dt) noexcept;
+                             const Eigen::VectorXd& q_posture_des, double dt,
+                             bool reseed_anchor = true) noexcept;
 
   [[nodiscard]] const Eigen::VectorXd& QRef() const noexcept { return q_ref_; }
 
@@ -136,8 +160,13 @@ class ClikReferenceGenerator {
   double w_task_{1.0};
   double w_arm_{1e-2};
   double w_hand_{1e-2};
-  Eigen::VectorXd q_min_;  // [nv] or empty (position box disabled)
-  Eigen::VectorXd q_max_;  // [nv] or empty
+  Eigen::VectorXd q_min_;         // [nv] or empty (position box disabled)
+  Eigen::VectorXd q_max_;         // [nv] or empty
+  double anchor_drift_max_{0.0};  // carry-forward anti-windup clamp [rad], ≤0 → off
+  // False until the first successful Compute(); forces a measured re-anchor on
+  // the first call (and after any failure) so q_ref never integrates from a
+  // stale/zero anchor.
+  bool anchor_initialized_{false};
 
   // Gains (L1 task / L2 arm posture / L3 hand posture)
   Eigen::Matrix<double, 6, 1> kx_{Eigen::Matrix<double, 6, 1>::Zero()};

@@ -347,6 +347,11 @@ demo_wbc_controller:
     kx_rot: 2.0          # TCP rotation task gain (runtime; ROS param clik_kx_rot)
     ka: 1.0              # arm nullspace posture gain (runtime; clik_ka)
     kh: 1.0              # hand posture gain (runtime; clik_kh)
+    anchor_drift_max: 0.5  # rad; carry-forward anti-windup clamp on |q_ref−q_meas|
+                           # per joint. q_ref integrates from the previous desired
+                           # (re-anchored to measured on a new target / kIdle·kRelease
+                           # entry); this bounds how far it may lead/lag the robot
+                           # under tracking lag. ≤ 0 → disabled (pure carry-forward).
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Dynamic WBC — hand feedforward-torque overlay (kPdFeedforward).

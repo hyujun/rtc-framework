@@ -454,6 +454,7 @@ void DemoWbcController::InitClik() noexcept {
   cfg.w_task = clik_w_task_;
   cfg.w_arm = clik_w_arm_;
   cfg.w_hand = clik_w_hand_;
+  cfg.anchor_drift_max = clik_anchor_drift_max_;
   // Position-aware velocity box. Reuse the margin-clamped limits the integrator
   // already applies (LoadConfig step 3, computed before InitClik) so both
   // Kinematic-WBC paths respect the identical joint envelope. Sized [nv]; the
@@ -768,6 +769,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       clik_w_task_ = clik["w_task"].as<double>(clik_w_task_);
       clik_w_arm_ = clik["w_arm"].as<double>(clik_w_arm_);
       clik_w_hand_ = clik["w_hand"].as<double>(clik_w_hand_);
+      clik_anchor_drift_max_ = clik["anchor_drift_max"].as<double>(clik_anchor_drift_max_);
       g.clik_kx_pos = clik["kx_pos"].as<double>(g.clik_kx_pos);
       g.clik_kx_rot = clik["kx_rot"].as<double>(g.clik_kx_rot);
       g.clik_ka = clik["ka"].as<double>(g.clik_ka);
@@ -1460,6 +1462,8 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
 
     target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
+    // First-tick init: re-anchor the CLIK desired to the measured state.
+    clik_reseed_pending_ = true;
   } else {
     // Restore RT-thread working SE3 from POD storage so reader sites see a
     // consistent rotation matrix every tick.
@@ -1511,8 +1515,9 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
       hand_new_target_pending_ = true;
     }
     // q_des_target_full_ is rebuilt at phase entry so the posture + SE3
-    // references stay a consistent snapshot. CLIK is measured-anchored, so a
-    // target arrival needs no integrator re-seed.
+    // references stay a consistent snapshot. A new target is a goal edge: re-anchor
+    // the CLIK desired to the measured state (otherwise it carries forward).
+    clik_reseed_pending_ = true;
     slot_dirty = true;
   }
 

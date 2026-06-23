@@ -369,8 +369,13 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
     clik_.SetTaskGain(clik_kx_);
     clik_.SetPostureGains(gains_now.clik_ka, gains_now.clik_kh);
 
+    // Re-anchor q_ref to measured on a goal/phase edge (clik_reseed_pending_);
+    // otherwise CLIK carries forward from the previous desired. Consume the flag
+    // only when CLIK actually solves so a skipped tick keeps the pending reseed.
+    const bool reseed_anchor = clik_reseed_pending_;
+    clik_reseed_pending_ = false;
     clik_compute_ok_ = clik_.Compute(pinocchio_cache_, clik_tcp_frame_idx_, clik_base_frame_idx_,
-                                     clik_target, control_ref_.q_des, dt);
+                                     clik_target, control_ref_.q_des, dt, reseed_anchor);
     clik_tcp_err_ = clik_.TcpErrorNorm();
     clik_manip_ = clik_.Manipulability();
 

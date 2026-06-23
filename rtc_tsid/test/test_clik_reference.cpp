@@ -399,5 +399,80 @@ TEST_F(ClikReferenceTest, ComputeIsAllocationFree) {
   EXPECT_EQ(AllocCounter::alloc_count.load(), 0);
 }
 
+// ── carry-forward anchor (reseed_anchor=false) ─────────────────────────────
+// With the measured state HELD FIXED (a robot that does not move, e.g. lagging
+// or in pure self-hold), measured anchoring (reseed=true) re-derives the same
+// one-step q_ref every tick → ‖q_ref − q_meas‖ stays at the single-step v·dt.
+// Carry-forward (reseed=false) instead integrates from the previous desired, so
+// q_ref accumulates away from the held measured state tick over tick.
+TEST_F(ClikReferenceTest, CarryForwardAnchorAccumulatesFromPreviousDesired) {
+  auto gen = MakeGenerator(1e-6, 0.0);  // anchor_drift_max defaults to 0 → clamp off
+  gen.SetTaskGain(Vec6::Constant(1.0));
+  gen.SetPostureGains(0.0, 0.0);
+
+  cache_.Update(q_home_, v_zero_, contacts_);  // measured held fixed throughout
+  pinocchio::SE3 des = TipInBase();
+  des.translation()(2) += 0.05;
+
+  const double dt = 0.01;
+  constexpr int kTicks = 50;
+
+  // Measured anchoring: q_ref re-derived from the fixed measured state each tick.
+  double reseed_drift = 0.0;
+  for (int k = 0; k < kTicks; ++k) {
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt, /*reseed_anchor=*/true));
+    reseed_drift = (gen.QRef() - q_home_).norm();
+  }
+
+  // Carry-forward: integrates from the previous desired (fresh generator so the
+  // first call re-anchors to measured, then accumulates).
+  auto gen_cf = MakeGenerator(1e-6, 0.0);
+  gen_cf.SetTaskGain(Vec6::Constant(1.0));
+  gen_cf.SetPostureGains(0.0, 0.0);
+  double first_cf_drift = 0.0;
+  double cf_drift = 0.0;
+  for (int k = 0; k < kTicks; ++k) {
+    ASSERT_TRUE(gen_cf.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt, /*reseed_anchor=*/false));
+    if (k == 0) {
+      first_cf_drift = (gen_cf.QRef() - q_home_).norm();
+    }
+    cf_drift = (gen_cf.QRef() - q_home_).norm();
+  }
+
+  // First carry-forward call still re-anchors to measured (anchor_initialized_
+  // guard), so it matches the single-step measured drift.
+  EXPECT_NEAR(first_cf_drift, reseed_drift, 1e-9);
+  // After many ticks the carry-forward desired has accumulated far past the
+  // fixed single-step measured re-anchor.
+  EXPECT_GT(cf_drift, 5.0 * reseed_drift);
+}
+
+// anchor_drift_max bounds the carry-forward excursion from the measured state.
+TEST_F(ClikReferenceTest, AnchorDriftClampBoundsCarryForward) {
+  ClikReferenceGenerator gen;
+  ClikReferenceGenerator::Config cfg;
+  cfg.arm_v_idx = {0, 1, 2, 3, 4, 5, 6};
+  cfg.hand_v_idx = {7, 8};
+  cfg.damping_sq = 1e-6;
+  cfg.v_limit = 0.0;
+  constexpr double kDriftMax = 0.05;
+  cfg.anchor_drift_max = kDriftMax;
+  gen.Init(robot_info_.nv, cfg);
+  gen.SetTaskGain(Vec6::Constant(1.0));
+  gen.SetPostureGains(0.0, 0.0);
+
+  cache_.Update(q_home_, v_zero_, contacts_);  // measured held fixed
+  pinocchio::SE3 des = TipInBase();
+  des.translation()(2) += 0.2;  // large target → would drift far without the clamp
+
+  const double dt = 0.01;
+  for (int k = 0; k < 200; ++k) {
+    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt, /*reseed_anchor=*/false));
+    // Every per-joint |q_ref − q_meas| stays within the clamp (+ FP slack).
+    const double max_excursion = (gen.QRef() - q_home_).cwiseAbs().maxCoeff();
+    EXPECT_LE(max_excursion, kDriftMax + 1e-9);
+  }
+}
+
 }  // namespace
 }  // namespace rtc::tsid

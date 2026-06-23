@@ -74,6 +74,8 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
   w_hand_ = config.w_hand;
   q_min_ = config.q_min;
   q_max_ = config.q_max;
+  anchor_drift_max_ = config.anchor_drift_max;
+  anchor_initialized_ = false;  // first Compute() re-anchors to measured
 
   manipulability_ = 0.0;
   tcp_error_norm_ = 0.0;
@@ -104,7 +106,8 @@ void ClikReferenceGenerator::Init(int nv, const Config& config) {
 
 bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_idx,
                                      int base_frame_idx, const pinocchio::SE3& placement_des,
-                                     const Eigen::VectorXd& q_posture_des, double dt) noexcept {
+                                     const Eigen::VectorXd& q_posture_des, double dt,
+                                     bool reseed_anchor) noexcept {
   // Preconditions. nq == nv (reduced revolute/prismatic tree) is required so
   // velocity indices address q directly and q_ref = q + v·dt is valid.
   const int n_registered = static_cast<int>(cache.registered_frames.size());
@@ -209,6 +212,7 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   if (!res.converged) {
     q_ref_ = cache.q;
     v_ref_.setZero();
+    anchor_initialized_ = false;  // force a measured re-anchor on recovery
     return false;
   }
   v_ref_ = res.x_opt.head(N);
@@ -221,16 +225,33 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
   const double det = ldlt6_.vectorD().prod();
   manipulability_ = (det > 0.0) ? std::sqrt(det) : 0.0;
 
-  // ── One-step target, measured anchoring: q_ref = q_meas + v_ref·dt ──
-  q_ref_ = cache.q;
+  // ── One-step target: q_ref = q_anchor + v_ref·dt ──
+  // Anchor at measured on a reseed (or the first / post-failure call); else
+  // carry forward from the previous q_ref so the desired integrates open-loop
+  // between goal/phase edges (DemoTaskController's desired_q_ pattern). Only the
+  // anchor switches — v_ref above is a measured-based closed-loop correction
+  // either way.
+  if (reseed_anchor || !anchor_initialized_) {
+    q_ref_ = cache.q;  // re-anchor to measured
+  }  // else q_ref_ holds the previous desired — carry forward in place.
   q_ref_.noalias() += v_ref_ * dt;
+
+  // Anti-windup: bound how far the carry-forward desired may lead/lag measured.
+  if (anchor_drift_max_ > 0.0) {
+    q_ref_ = q_ref_.array()
+                 .max(cache.q.array() - anchor_drift_max_)
+                 .min(cache.q.array() + anchor_drift_max_)
+                 .matrix();
+  }
 
   if (!q_ref_.allFinite() || !v_ref_.allFinite()) {
     // Safe outputs even if the caller ignores the return value.
     q_ref_ = cache.q;
     v_ref_.setZero();
+    anchor_initialized_ = false;  // force a measured re-anchor on recovery
     return false;
   }
+  anchor_initialized_ = true;
   return true;
 }
 

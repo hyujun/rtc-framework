@@ -647,16 +647,24 @@ class DemoWbcController final : public RTControllerInterface {
   // true (there is no longer an integrator fallback to degrade to).
   rtc::tsid::ClikReferenceGenerator clik_;
   bool clik_enabled_{false};
-  double clik_damping_sq_{1e-4};  ///< μ² damped right-inverse (YAML clik.damping_sq)
-  double clik_v_limit_{1.5};      ///< per-joint |v_ref| clamp [rad/s] (YAML clik.v_limit)
-  double clik_w_task_{1.0};       ///< L1 TCP tracking weight (YAML clik.w_task)
-  double clik_w_arm_{1e-2};       ///< L2 arm posture weight (YAML clik.w_arm)
-  double clik_w_hand_{1e-2};      ///< L3 hand posture weight (YAML clik.w_hand)
-  int clik_tcp_frame_idx_{-1};    ///< pinocchio_cache_.registered_frames index (tip)
-  int clik_base_frame_idx_{-1};   ///< registered_frames index (base; < 0 = universe)
-  bool clik_compute_ok_{false};   ///< clik_.Compute() succeeded this tick
-  double clik_tcp_err_{0.0};      ///< ‖e_x‖ [m+rad] (CLIK diagnostic)
-  double clik_manip_{0.0};        ///< √det(JJᵀ+μ²I) (CLIK diagnostic)
+  double clik_damping_sq_{1e-4};       ///< μ² damped right-inverse (YAML clik.damping_sq)
+  double clik_v_limit_{1.5};           ///< per-joint |v_ref| clamp [rad/s] (YAML clik.v_limit)
+  double clik_w_task_{1.0};            ///< L1 TCP tracking weight (YAML clik.w_task)
+  double clik_w_arm_{1e-2};            ///< L2 arm posture weight (YAML clik.w_arm)
+  double clik_w_hand_{1e-2};           ///< L3 hand posture weight (YAML clik.w_hand)
+  double clik_anchor_drift_max_{0.0};  ///< carry-forward anti-windup clamp [rad] (YAML
+                                       ///< clik.anchor_drift_max; ≤0 → off)
+  int clik_tcp_frame_idx_{-1};         ///< pinocchio_cache_.registered_frames index (tip)
+  int clik_base_frame_idx_{-1};        ///< registered_frames index (base; < 0 = universe)
+  bool clik_compute_ok_{false};        ///< clik_.Compute() succeeded this tick
+  double clik_tcp_err_{0.0};           ///< ‖e_x‖ [m+rad] (CLIK diagnostic)
+  double clik_manip_{0.0};             ///< √det(JJᵀ+μ²I) (CLIK diagnostic)
+  // RT-thread-only. Set on a new joint/SE3 target arrival, first tick, and
+  // kIdle/kRelease phase entry; consumed (and cleared) by ComputeKinematicWbc,
+  // which passes it as clik_.Compute(reseed_anchor=...). When set, CLIK re-anchors
+  // q_ref to the measured state; otherwise q_ref carries forward from the previous
+  // desired (DemoTaskController's desired_q_ pattern).
+  bool clik_reseed_pending_{false};
   // Runtime gain vector forwarded to clik_.SetTaskGain each tick (pre-sized).
   Eigen::Matrix<double, 6, 1> clik_kx_{Eigen::Matrix<double, 6, 1>::Zero()};
 
