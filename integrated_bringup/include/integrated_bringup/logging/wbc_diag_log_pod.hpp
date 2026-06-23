@@ -48,18 +48,10 @@ struct WbcDiagLogPod {
   bool grasp_detected{false};
   float max_force{0.0f};  // max fingertip |F| [N]
 
-  // ── Stage C-2: low-level command source + CLIK A/B shadow ────────────────
-  // command_source = the path that actually drove this tick (clik falls back
-  // to integrator on CLIK Compute() failure). clik_* are the driving/shadow
-  // CLIK diagnostics; shadow_* are the per-tick Δ between the two command
-  // candidates (q_clik − q_integrator), valid only when shadow_valid.
-  std::uint8_t command_source{0};   // 0=integrator, 1=clik (active this tick)
+  // ── Stage C-2: CLIK-QP (Kinematic WBC) diagnostics ───────────────────────
   bool clik_valid{false};           // clik_.Compute() succeeded this tick
-  bool shadow_valid{false};         // both paths computed → Δ meaningful
   double clik_tcp_err{0.0};         // ‖e_x‖ [m+rad]
   double clik_manipulability{0.0};  // √det(JJᵀ+μ²I)
-  double shadow_pos_delta{0.0};     // ‖q_clik − q_integrator‖
-  double shadow_vel_delta{0.0};     // ‖v_clik − v_integrator‖
 
   // ── QP contact solution (wrench / λ per contact var) ─────────────────────
   std::array<double, kMaxContactVars> lambda_opt{};
@@ -92,20 +84,6 @@ inline std::string_view WbcDiagLogPhaseStr(std::uint8_t v) noexcept {
   }
 }
 
-/// Stage C-2: translate the CommandSource enum value to its name for the CSV
-/// (values mirror integrated_bringup::CommandSource; kept standalone so this
-/// header has no controller dependency).
-inline std::string_view WbcDiagLogCommandSourceStr(std::uint8_t v) noexcept {
-  switch (v) {
-    case 0:
-      return "integrator";
-    case 1:
-      return "clik";
-    default:
-      return "unknown";
-  }
-}
-
 /// Emit the CSV header. `num_contact_vars` sets the λ column expansion
 /// (captured once at registration = contact_mgr_config_.max_contact_vars,
 /// the fixed QP dim). The logger appends '\n'.
@@ -113,9 +91,8 @@ inline void WriteWbcDiagLogHeader(std::ostream& os, std::size_t num_contact_vars
   os << "t_relative_s,phase";
   os << ",solve_time_us,qp_converged,solve_levels,qp_fail_count,kin_qp_fail_count";
   os << ",num_active_contacts,grasp_detected,max_force";
-  // Stage C-2: command source + CLIK A/B shadow columns.
-  os << ",command_source,clik_valid,clik_tcp_err,clik_manipulability";
-  os << ",shadow_valid,shadow_pos_delta,shadow_vel_delta";
+  // Stage C-2: CLIK-QP (Kinematic WBC) diagnostic columns.
+  os << ",clik_valid,clik_tcp_err,clik_manipulability";
   for (std::size_t i = 0; i < num_contact_vars; ++i) {
     os << ",lambda_" << i;
   }
@@ -134,14 +111,10 @@ inline void WriteWbcDiagLogRow(std::ostream& os, const WbcDiagLogPod& p) {
   os << ',' << p.num_active_contacts;
   os << ',' << (p.grasp_detected ? 1 : 0);
   os << ',' << p.max_force;
-  // Stage C-2: command source + CLIK A/B shadow.
-  os << ',' << WbcDiagLogCommandSourceStr(p.command_source);
+  // Stage C-2: CLIK-QP (Kinematic WBC) diagnostics.
   os << ',' << (p.clik_valid ? 1 : 0);
   os << ',' << p.clik_tcp_err;
   os << ',' << p.clik_manipulability;
-  os << ',' << (p.shadow_valid ? 1 : 0);
-  os << ',' << p.shadow_pos_delta;
-  os << ',' << p.shadow_vel_delta;
   for (std::size_t i = 0; i < p.num_contact_vars; ++i) {
     os << ',' << p.lambda_opt[i];
   }

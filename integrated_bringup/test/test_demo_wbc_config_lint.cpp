@@ -99,20 +99,14 @@ TEST(DemoWbcConfigLint, PhasePresetTaskKeysExist) {
   }
 }
 
-// Stage C-2: command_source must be a known enum, and when a `clik` block is
-// present its structural keys must be well-formed (damping_sq > 0). A typo
-// here would silently fall back to defaults / integrator at runtime.
-TEST(DemoWbcConfigLint, CommandSourceAndClikBlockWellFormed) {
+// Stage C-2: when a `clik` block is present (CLIK-QP is the position backbone)
+// its structural keys must be well-formed (damping_sq > 0). A typo here would
+// silently fall back to defaults at runtime.
+TEST(DemoWbcConfigLint, ClikBlockWellFormed) {
   for (const auto& cfg : ShippedConfigs()) {
     YAML::Node root = YAML::LoadFile(cfg.path);
     const YAML::Node wbc = root["demo_wbc_controller"];
     ASSERT_TRUE(wbc) << cfg.robot << ": missing top-level key";
-
-    if (wbc["command_source"]) {
-      const auto src = wbc["command_source"].as<std::string>();
-      EXPECT_TRUE(src == "integrator" || src == "clik")
-          << cfg.robot << ": command_source must be 'integrator' or 'clik', got '" << src << "'";
-    }
 
     const YAML::Node clik = wbc["clik"];
     if (clik && clik.IsMap()) {

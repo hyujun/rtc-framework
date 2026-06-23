@@ -322,29 +322,17 @@ demo_wbc_controller:
   # Implemented by ComputeKinematicWbc() in src/controllers/wbc/compute.cpp.
   # ═══════════════════════════════════════════════════════════════════════════
 
-  # Integrator seed/safety — active when command_source=integrator, or when CLIK
-  # falls back. The integrator is the Kinematic-WBC fallback path.
+  # Command-limit margins + force-rate filter. position_margin/velocity_scale
+  # set the CLIK-QP position/velocity box; force_rate_alpha is the df/dt EMA.
   integration:
     position_margin: 0.02      # rad, from joint limits
     velocity_scale: 0.95       # fraction of max velocity
     force_rate_alpha: 0.1      # EMA alpha for df/dt smoothing at 500Hz
                                # (~20 Hz bandwidth). Range: [0, 1]
-    reseed_velocity_jerk: 100.0  # rad/s²; one-tick command-velocity step bound
-                                 # when the carry-forward integrator re-seeds
-                                 # from measured q̇ on a target update. Optional.
-    integrate_from_measured: true  # false = open-loop carry-forward (integral
-                                 # accumulates from the previous commanded q/q̇).
-                                 # true  = closed-loop: re-seed from the measured
-                                 # q/q̇ every tick (v_next=v_curr+a·dt,
-                                 # q_next=q_curr+v_next·dt). Experimental.
 
-  # ── Low-level command source (Kinematic WBC / integrator A/B) ────────
-  # clik       = Kinematic WBC: velocity-level CLIK reference (rtc_tsid
-  #              ClikReferenceGenerator) — primary command path (D1).
-  # integrator = semi-implicit Euler on TSID a_opt — CLIK-failure fallback.
-  # Runtime-switchable via the `command_source` ROS parameter; the non-driving
-  # path is computed every tick as a shadow and its Δ logged to wbc_diag.csv.
-  command_source: clik
+  # ── Kinematic WBC (CLIK-QP) — the sole position backbone ─────────────
+  # damping_sq/v_limit/w_* are structural (fixed at clik_.Init()); kx_*/ka/kh
+  # are runtime ROS params (clik_kx_pos, …).
   clik:
     damping_sq: 1.0e-4   # μ² of the damped right-inverse J♯ (structural, > 0)
     v_limit: 1.5         # per-joint |v_ref| clamp [rad/s] (≤ 0 → off)

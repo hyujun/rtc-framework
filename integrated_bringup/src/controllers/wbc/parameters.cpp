@@ -92,11 +92,9 @@ void DemoWbcController::DeclareGainParameters() noexcept {
       static_cast<int>(declare_int("grasp_min_fingertips", g.grasp_min_fingertips,
                                    "Min fingertips with contact for grasp detection"));
 
-  // Stage C-2: low-level command source + CLIK runtime gains. command_source
-  // is a string enum ('integrator' | 'clik') flippable live for A/B; the
-  // structural CLIK config (damping_sq / v_limit) is YAML-only since it is
-  // fixed at clik_.Init() time. CLIK gains take effect next RT tick (compute
-  // forwards them to clik_).
+  // Stage C-2: CLIK (Kinematic WBC) runtime gains. The structural CLIK config
+  // (damping_sq / v_limit / w_*) is YAML-only since it is fixed at clik_.Init()
+  // time; these gains take effect next RT tick (compute forwards them to clik_).
   auto declare_string = [&](const std::string& name, const std::string& default_val,
                             const std::string& description) {
     rcl_interfaces::msg::ParameterDescriptor d;
@@ -106,11 +104,6 @@ void DemoWbcController::DeclareGainParameters() noexcept {
     }
     return node_->get_parameter(name).as_string();
   };
-  const std::string src_default =
-      (g.command_source == CommandSource::kClik) ? "clik" : "integrator";
-  const std::string src = declare_string("command_source", src_default,
-                                         "Low-level command source: 'integrator' | 'clik'");
-  g.command_source = (src == "clik") ? CommandSource::kClik : CommandSource::kIntegrator;
   g.clik_kx_pos = declare_double("clik_kx_pos", g.clik_kx_pos, "CLIK TCP position task gain");
   g.clik_kx_rot = declare_double("clik_kx_rot", g.clik_kx_rot, "CLIK TCP rotation task gain");
   g.clik_ka = declare_double("clik_ka", g.clik_ka, "CLIK arm nullspace posture gain");
@@ -202,15 +195,6 @@ rcl_interfaces::msg::SetParametersResult DemoWbcController::OnGainParametersSet(
         gains_dirty = true;
       } else if (name == "grasp_min_fingertips") {
         g.grasp_min_fingertips = static_cast<int>(p.as_int());
-        gains_dirty = true;
-      } else if (name == "command_source") {
-        const auto& src = p.as_string();
-        if (src != "integrator" && src != "clik") {
-          result.successful = false;
-          result.reason = "command_source must be 'integrator' or 'clik'";
-          return result;
-        }
-        g.command_source = (src == "clik") ? CommandSource::kClik : CommandSource::kIntegrator;
         gains_dirty = true;
       } else if (name == "clik_kx_pos") {
         g.clik_kx_pos = p.as_double();

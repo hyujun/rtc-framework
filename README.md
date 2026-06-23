@@ -100,7 +100,7 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 - **JointPDController**: PD + Pinocchio RNEA 중력/코리올리 보상, JointSpaceTrajectory 퀸틱 보간
 - **ClikController**: Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
 - **OperationalSpaceController**: 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
-- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 7-phase FSM (Idle→Approach→PreGrasp→Closure→Hold→Release→Fallback; slot 5 reserved — 과거 kRetreat), ProxSuite Dense QP, semi-implicit Euler 적분, RELEASE/abort 가 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제), **Phase 5에서 MPC reference 주입 경로 지원 — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, MPC 비활성 시 Phase 4 고정-reference 동작 bit-identical 유지**
+- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 7-phase FSM (Idle→Approach→PreGrasp→Closure→Hold→Release→Fallback; slot 5 reserved — 과거 kRetreat), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제), **Phase 5에서 MPC reference 주입 경로 지원 — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, MPC 비활성 시 Phase 4 고정-reference 동작 bit-identical 유지**
 
 ### 안전 시스템
 - **글로벌 E-STOP**: `atomic<bool>` + `compare_exchange_strong` 기반 통합 비상 정지 — 동적 디바이스 그룹 기반 트리거:

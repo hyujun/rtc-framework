@@ -155,61 +155,21 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
     hand_computed_.positions[idx] = hstate.positions[idx];
     hand_computed_.velocities[idx] = hstate.velocities[idx];
   }
-
-  // This path bypasses the TSID integrator; drop any pending re-seed so it
-  // cannot fire stale once TSID becomes available.
-  reseed_integration_pending_ = false;
-}
-
-// Static, pure semi-implicit Euler step shared by both integration modes (see
-// ComputeTSIDPosition step 7). Operates in place on the seed (q, v); the seed
-// is the previous command (carry-forward) or the measured state (measured-
-// feedback) — chosen by the caller. RT-safe: fixed-size Eigen ops, no alloc /
-// throw. The .noalias() self-assignments are coefficient-wise (element i reads
-// only element i), so aliasing q/v with themselves is well-defined.
-void DemoWbcController::IntegrateAccelStep(Eigen::VectorXd& q, Eigen::VectorXd& v,
-                                           const Eigen::VectorXd& a, double dt,
-                                           const Eigen::VectorXd& v_limit,
-                                           const Eigen::VectorXd& q_min,
-                                           const Eigen::VectorXd& q_max) noexcept {
-  // v ← v + a · dt, then velocity clamp.
-  v.noalias() = v + a * dt;
-  v = v.cwiseMax(-v_limit).cwiseMin(v_limit);
-
-  // q ← q + v · dt.
-  q.noalias() = q + v * dt;
-
-  // Position clamp (safety net). Where it saturates, zero the velocity if it is
-  // still driving further into the violated limit — open-loop carry-forward
-  // would otherwise keep pushing. Sign-gated so a TSID-commanded retraction is
-  // not suppressed.
-  for (Eigen::Index i = 0; i < q.size(); ++i) {
-    if (q[i] < q_min[i]) {
-      q[i] = q_min[i];
-      if (v[i] < 0.0) {
-        v[i] = 0.0;
-      }
-    } else if (q[i] > q_max[i]) {
-      q[i] = q_max[i];
-      if (v[i] > 0.0) {
-        v[i] = 0.0;
-      }
-    }
-  }
 }
 
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
-  // Orchestrator: common stage (references) → Dynamic WBC (TSID solve + hand
-  // τ_ff) → Kinematic WBC (CLIK-QP position backbone). One gains snapshot is
+  // Orchestrator: common stage (references) → Kinematic WBC (CLIK-QP position
+  // backbone) → Dynamic WBC (TSID solve + hand τ_ff). One gains snapshot is
   // shared by all three so the whole tick sees a consistent set of runtime
-  // gains. Dynamic runs before Kinematic (decision 7) so the integrator A/B
-  // shadow consumes this-tick a_opt. A Dynamic QP failure is non-critical
-  // (decision 6: τ_ff drop only) so the Kinematic position layer always runs;
-  // criticality lives in ComputeKinematicWbc (CLIK is the position backbone).
+  // gains. The two QPs consume the same Common-stage references independently
+  // (decision 5): Kinematic owns position, Dynamic owns the hand τ_ff overlay,
+  // so neither depends on the other's output. A Dynamic QP failure is
+  // non-critical (decision 6: τ_ff drop only); position criticality lives in
+  // ComputeKinematicWbc (CLIK is the sole position backbone).
   const Gains gains_now = gains_lock_.Load();
   ComputeWbcCommon(state, dt, gains_now);
-  ComputeDynamicWbc(state, dt, gains_now);
   ComputeKinematicWbc(dt, gains_now);
+  ComputeDynamicWbc(state, dt, gains_now);
 }
 
 // ComputeWbcCommon — shared per-tick stage (decision 5): state extraction,
@@ -381,66 +341,20 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   ctrl_state_.timestamp_ns = state.iteration;
 }
 
-// ComputeKinematicWbc — Kinematic WBC: arm command via semi-implicit-Euler
-// integrator + CLIK reference (command_source selects which drives; the other
-// is logged as an A/B shadow), then Pinocchio→device order mapping.
+// ComputeKinematicWbc — Kinematic WBC: arm/hand position via the CLIK-QP
+// reference (q_ref = q + v_ref·dt, measured-anchored on the cache updated in
+// ComputeWbcCommon), then Pinocchio→device order mapping. CLIK is the SOLE
+// position backbone (the integrator A/B shadow was removed once its numerical
+// equivalence was verified): a CLIK failure is therefore CRITICAL.
 void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) noexcept {
-  // 7. Semi-implicit Euler integration: a → v → q.
-  //
-  // Seed selection decides where the integral accumulates from this tick:
-  //   - measured-feedback mode (integrate_from_measured_): re-seed from the
-  //     freshly measured (q_curr, v_curr) every tick → v_next = v_curr + a·dt,
-  //     q_next = q_curr + v_next·dt. The carry-forward continuity machinery
-  //     below is bypassed because there is no prior command state to preserve.
-  //   - carry-forward mode (default): the integral accumulates from the
-  //     PREVIOUS integrated (q_next, v_next); it re-seeds from the measured
-  //     state only on discrete events:
-  //       · hard re-seed (= measured exactly): fallback recovery / first tick /
-  //         non-finite guard — no command continuity to preserve.
-  //       · target re-seed (jerk-bounded): a new target arrived mid-motion;
-  //         seed from measured q̇ but bound the one-tick step against the
-  //         previous command velocity to avoid a discontinuity.
-  const auto& a = tsid_output_.a_opt;
-
-  const bool hard_reseed =
-      reseed_on_fallback_exit_ || !q_next_full_.allFinite() || !v_next_full_.allFinite();
-  if (integrate_from_measured_ || hard_reseed) {
-    q_next_full_ = q_curr_full_;
-    v_next_full_ = v_curr_full_;
-  } else if (reseed_integration_pending_) {
-    const double dv = v_jerk_limit_ * dt;
-    v_seed_ = v_next_full_;  // previous command velocity (distinct buffer → no aliasing)
-    q_next_full_ = q_curr_full_;
-    v_next_full_ =
-        v_curr_full_.array().max(v_seed_.array() - dv).min(v_seed_.array() + dv).matrix();
-  }
-  reseed_integration_pending_ = false;
-  reseed_on_fallback_exit_ = false;
-
-  // Semi-implicit Euler step + velocity/position clamps (mode-agnostic given
-  // the seed already in q_next_full_/v_next_full_).
-  IntegrateAccelStep(q_next_full_, v_next_full_, a, dt, v_limit_, q_min_clamped_, q_max_clamped_);
-
-  // ── 7b. Stage C-2: CLIK reference path + A/B shadow ─────────────────────
-  // The integrator candidate is now in q_next_full_/v_next_full_. Compute the
-  // CLIK candidate (measured-anchored on the cache updated at step 2 — no
-  // extra FK) every tick. command_source selects which drives; the other is
-  // logged as a Δ shadow. When CLIK drives we overwrite q_next_full_/
-  // v_next_full_ — they double as the carry-forward seed, and CLIK output is
-  // measured-anchored, so a later switch back to the integrator resumes
-  // without a jump. On CLIK failure in clik mode the integrator candidate
-  // stands (throttled WARN). When command_source=integrator (default) the
-  // command buffers are never overwritten → integrator output is unchanged;
-  // only the shadow diagnostics are computed.
-  const CommandSource src = clik_enabled_ ? gains_now.command_source : CommandSource::kIntegrator;
-  active_command_source_ = CommandSource::kIntegrator;
   clik_compute_ok_ = false;
-  shadow_valid_ = false;
   clik_tcp_err_ = 0.0;
   clik_manip_ = 0.0;
-  shadow_pos_delta_ = 0.0;
-  shadow_vel_delta_ = 0.0;
 
+  // clik_enabled_ is guaranteed true on the accepted config path: InitClik
+  // enforces the nq==nv CLIK contract and on_configure FAILS the lifecycle
+  // transition otherwise (DEC-1 ⓐ — no integrator fallback remains). The guard
+  // is kept defensive; if it ever does not hold, hold last (early return below).
   if (clik_enabled_ && tcp_goal_valid_) {
     // Track the same SE3 reference the SE3Task sees this tick: the quintic
     // ramp setpoint while se3_tcp is active in this phase, else the held goal.
@@ -460,54 +374,45 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
     clik_tcp_err_ = clik_.TcpErrorNorm();
     clik_manip_ = clik_.Manipulability();
 
-    if (clik_compute_ok_) {
-      // Δ between the two command candidates (integrator output is still in
-      // q_next_full_/v_next_full_ at this point — capture before any overwrite).
-      shadow_pos_delta_ = (clik_.QRef() - q_next_full_).norm();
-      shadow_vel_delta_ = (clik_.VRef() - v_next_full_).norm();
-      shadow_valid_ = true;
-      if (src == CommandSource::kClik) {
-        q_next_full_ = clik_.QRef();
-        v_next_full_ = clik_.VRef();
-        active_command_source_ = CommandSource::kClik;
-        kin_qp_fail_count_ = 0;
-      }
-    } else if (src == CommandSource::kClik) {
-      // CLIK is the position backbone (decision 6): a failure while it drives is
-      // CRITICAL. robot_computed_/hand_computed_ still hold the previous tick's
-      // command (the Pinocchio→device mapping below has not run yet), so an
-      // early return holds last this tick. After max_qp_fail_before_fallback_
-      // consecutive fails, trip kFallback (ComputeFallback zeroes velocity on
-      // the held pose; recovery re-seeds the integrator on the kFallback→kIdle
-      // edge via reseed_on_fallback_exit_).
+    if (!clik_compute_ok_) {
+      // CLIK is the position backbone (decision 6): a failure is CRITICAL.
+      // robot_computed_/hand_computed_ still hold the previous tick's command
+      // (the Pinocchio→device mapping below has not run yet), so an early return
+      // holds last this tick. After max_qp_fail_before_fallback_ consecutive
+      // fails, trip kFallback (ComputeFallback zeroes velocity on the held pose).
       ++kin_qp_fail_count_;
       RCLCPP_WARN_THROTTLE(logger_, log_clock_, integrated_bringup::logging::kThrottleSlowMs,
                            "[wbc] CLIK QP failed (%d/%d) — holding last command this tick",
                            kin_qp_fail_count_, max_qp_fail_before_fallback_);
       if (kin_qp_fail_count_ >= max_qp_fail_before_fallback_) {
-        reseed_integration_pending_ = false;
         phase_ = WbcPhase::kFallback;
         ComputeFallback();
       }
       return;  // skip the device mapping → robot_computed_/hand_computed_ hold last.
     }
+    kin_qp_fail_count_ = 0;
+  } else {
+    // No CLIK / no valid goal: nothing to drive position → hold last command.
+    return;
   }
 
-  // 8. Map Pinocchio order → device order
+  // 8. Map Pinocchio order → device order (CLIK reference is the position).
+  const auto& q_ref = clik_.QRef();
+  const auto& v_ref = clik_.VRef();
   for (int i = 0; i < arm_dof_; ++i) {
     const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[static_cast<std::size_t>(i)]);
     robot_computed_.positions[static_cast<std::size_t>(i)] =
-        q_next_full_[static_cast<Eigen::Index>(pin_idx)];
+        q_ref[static_cast<Eigen::Index>(pin_idx)];
     robot_computed_.velocities[static_cast<std::size_t>(i)] =
-        v_next_full_[static_cast<Eigen::Index>(pin_idx)];
+        v_ref[static_cast<Eigen::Index>(pin_idx)];
   }
   for (int i = 0; i < hand_dof_; ++i) {
     const auto ext_i = static_cast<std::size_t>(arm_dof_ + i);
     const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[ext_i]);
     hand_computed_.positions[static_cast<std::size_t>(i)] =
-        q_next_full_[static_cast<Eigen::Index>(pin_idx)];
+        q_ref[static_cast<Eigen::Index>(pin_idx)];
     hand_computed_.velocities[static_cast<std::size_t>(i)] =
-        v_next_full_[static_cast<Eigen::Index>(pin_idx)];
+        v_ref[static_cast<Eigen::Index>(pin_idx)];
   }
 }
 
@@ -1115,10 +1020,11 @@ void DemoWbcController::FillDeviceWbcLogPod(
   }
 
   // accelerations: TSID solution a_opt sliced to this device. External order
-  // [arm0.., hand0..] → Pinocchio index via ext_to_pin_q_, reusing the exact
-  // mapping the integrator applies to v_next_full_ (compute.cpp:413-427). For
-  // these fixed-base demos q-index == v-index per joint, so the q-order map
-  // indexes the nv-sized a_opt correctly.
+  // [arm0.., hand0..] → Pinocchio index via ext_to_pin_q_, the same mapping
+  // ComputeKinematicWbc applies to the CLIK reference. For these fixed-base
+  // demos q-index == v-index per joint, so the q-order map indexes the
+  // nv-sized a_opt correctly. (a_opt is now log-only — Dynamic WBC produces it
+  // but no longer feeds position; the Kinematic CLIK-QP owns position.)
   const int dof = (role == 0) ? arm_dof_ : hand_dof_;
   const int ext_base = (role == 0) ? 0 : arm_dof_;
   const auto& a = tsid_output_.a_opt;
@@ -1195,16 +1101,12 @@ void DemoWbcController::FillWbcDiagLogPod(const ControllerState& state,
   pod.num_active_contacts = wbc_state_.num_active_contacts;
   pod.grasp_detected = wbc_state_.grasp_detected;
   pod.max_force = wbc_state_.max_force;
-  // Stage C-2: command source + CLIK A/B shadow (set in ComputeTSIDPosition
-  // step 7b this tick; zero/false on non-TSID phases — kFallback never reaches
-  // FillWbcDiagLogPod via a fresh solve).
-  pod.command_source = static_cast<std::uint8_t>(active_command_source_);
+  // CLIK-QP (Kinematic WBC) diagnostics, set in ComputeKinematicWbc this tick;
+  // zero/false on non-TSID phases (kFallback never reaches FillWbcDiagLogPod via
+  // a fresh solve).
   pod.clik_valid = clik_compute_ok_;
-  pod.shadow_valid = shadow_valid_;
   pod.clik_tcp_err = clik_tcp_err_;
   pod.clik_manipulability = clik_manip_;
-  pod.shadow_pos_delta = shadow_pos_delta_;
-  pod.shadow_vel_delta = shadow_vel_delta_;
   // lambda_opt is the fixed-dim QP contact solution (size == max_contact_vars,
   // matching the header's λ column count registered in on_configure).
   const auto& lam = tsid_output_.lambda_opt;

@@ -176,9 +176,20 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     // arm/hand v-index sets). Must run here — after LoadConfig (TSID built,
     // frames registered by SE3Task) and OnDeviceConfigsSet (reorder map +
     // frame ids) — and before on_activate spins up the RT loop whose first
-    // cache.Update() locks frame registration. No-op (integrator-only) when
-    // the model is nq != nv or frames are unresolved.
+    // cache.Update() locks frame registration.
     InitClik();
+
+    // DEC-1 ⓐ: CLIK-QP is the SOLE position backbone (the integrator was
+    // removed). A TSID-initialised controller that could not enable CLIK (the
+    // dominant cause being a non-reduced nq != nv model; InitClik logs the
+    // specific reason) has no position backbone — fail the transition rather
+    // than activate a controller that would hold-last forever.
+    if (tsid_initialized_ && !clik_enabled_) {
+      RCLCPP_ERROR(logger_,
+                   "DemoWbcController on_configure: CLIK could not be enabled but is the "
+                   "required position backbone (see prior error) — refusing to configure.");
+      return CallbackReturn::FAILURE;
+    }
   } catch (const std::exception& e) {
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;

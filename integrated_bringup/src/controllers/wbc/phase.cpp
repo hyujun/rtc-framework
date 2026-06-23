@@ -172,16 +172,12 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   switch (new_phase) {
     case WbcPhase::kIdle: {
       // TSID drives SE3 hold at current TCP + posture hold at current q.
-      // No phase-entry integrator seed (carry-forward is event-driven only).
-      // ComputeTSIDPosition fills robot_computed_/hand_computed_ from
-      // q_next_full_ per tick. No direct command-buffer writes here — they
-      // would be overwritten by the TSID mapping the same tick.
+      // ComputeTSIDPosition fills robot_computed_/hand_computed_ from the
+      // measured-anchored CLIK reference per tick. No direct command-buffer
+      // writes here — they would be overwritten by the CLIK mapping the same
+      // tick. CLIK needs no recovery seed on the kFallback→kIdle edge (it
+      // re-anchors to the measured state every tick).
       ExtractFullState(state);
-      // kFallback→kIdle recovery: ComputeFallback bypasses the integrator, so
-      // its state is cold. Hard re-seed from measured on the recovery edge.
-      if (prev_phase_ == WbcPhase::kFallback) {
-        reseed_on_fallback_exit_ = true;
-      }
 
       const auto idx = static_cast<std::size_t>(WbcPhase::kIdle);
       if (phase_preset_valid_[idx]) {
@@ -396,10 +392,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // Release uses self-hold posture (q_des = measured) — see
       // ComputeTSIDPosition; the finger-open is driven by hand_trajectory_ in
       // ComputeReleaseMode, so posture must not pull the hand toward targets[1].
-      // Re-anchor the integrator on entry: release is a fresh safe-hold episode
-      // (like fallback recovery), so it should not carry a drifted q_next.
       ExtractFullState(state);
-      reseed_integration_pending_ = true;
 
       // SE3 hold at current TCP (zero-displacement quintic).
       if (arm_handle_) {

@@ -404,13 +404,15 @@ void DemoWbcController::InitClik() noexcept {
   const int nv = full_model_ptr_->nv;
   // CLIK contract: nq == nv (reduced revolute/prismatic tree) so velocity
   // indices address q directly and q_ref = q + v·dt is valid. The full URDF
-  // fallback (nq=26, nv=21 with first-class mimic) violates this — CLIK stays
-  // disabled and the clik command source degrades to the integrator.
+  // model (nq=26, nv=21 with first-class mimic) violates this. CLIK is now the
+  // SOLE position backbone (the integrator was removed), so a non-reduced model
+  // has no backbone — leave CLIK disabled and let on_configure FAIL the
+  // lifecycle transition (DEC-1 ⓐ: reject the config rather than degrade).
   if (nq != nv) {
-    RCLCPP_WARN(logger_,
-                "[wbc] CLIK disabled: control model nq=%d != nv=%d (needs reduced nq==nv tree). "
-                "command_source=clik will fall back to the integrator.",
-                nq, nv);
+    RCLCPP_ERROR(logger_,
+                 "[wbc] CLIK disabled: control model nq=%d != nv=%d (needs reduced nq==nv tree). "
+                 "CLIK is the required position backbone — configure will fail.",
+                 nq, nv);
     return;
   }
 
@@ -718,16 +720,13 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
                 robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contacts);
   }
 
-  // ── 3. Integration buffers ────────────────────────────────────────────
+  // ── 3. State + reference buffers ───────────────────────────────────────
   const int nv = full_model_ptr_->nv;
   q_curr_full_ = Eigen::VectorXd::Zero(nv);
   v_curr_full_ = Eigen::VectorXd::Zero(nv);
-  q_next_full_ = Eigen::VectorXd::Zero(nv);
-  v_next_full_ = Eigen::VectorXd::Zero(nv);
   // Same layout as q_curr_full_ so it is a drop-in replacement for the
   // posture reference (control_ref_.q_des = q_curr_full_) on the RT path.
   q_des_target_full_ = Eigen::VectorXd::Zero(nv);
-  v_seed_ = Eigen::VectorXd::Zero(nv);
 
   // Joint limits with safety margins + force-rate filter (required)
   if (!cfg["integration"] || !cfg["integration"].IsMap()) {
@@ -737,14 +736,6 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     const auto int_node = cfg["integration"];
     position_margin_ = int_node["position_margin"].as<double>(0.02);
     velocity_scale_ = int_node["velocity_scale"].as<double>(0.95);
-    // Optional: bound (rad/s²) on the one-tick command-velocity step when the
-    // integrator re-seeds from measured q̇ on a target update. Default rarely
-    // engages when the low-level tracker keeps v_curr ≈ previous command.
-    v_jerk_limit_ = int_node["reseed_velocity_jerk"].as<double>(v_jerk_limit_);
-    // Optional experimental toggle: integrate from the freshly measured (q, v)
-    // each tick (closed-loop) instead of the carry-forward command buffers
-    // (open-loop). Default false preserves the carry-forward behaviour.
-    integrate_from_measured_ = int_node["integrate_from_measured"].as<bool>(false);
 
     if (!int_node["force_rate_alpha"]) {
       throw std::runtime_error(
@@ -763,19 +754,12 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   q_max_clamped_ = full_model_ptr_->upperPositionLimit.array() - position_margin_;
   v_limit_ = full_model_ptr_->velocityLimit * velocity_scale_;
 
-  // ── 3b. Stage C-2: low-level command source (integrator | clik) ───────
-  // command_source selects the driving path; clik.{damping_sq,v_limit} are
+  // ── 3b. Stage C-2: CLIK (Kinematic WBC) configuration ─────────────────
+  // CLIK is the sole position backbone. clik.{damping_sq,v_limit,w_*} are
   // structural (consumed by ClikReferenceGenerator::Init in on_configure);
-  // clik.{kx_pos,kx_rot,ka,kh} are runtime gains (SeqLock + ROS params). The
-  // CLIK generator is Init'd regardless of command_source so it is always
-  // available as the A/B shadow path. Defaults preserve integrator behaviour.
+  // clik.{kx_pos,kx_rot,ka,kh} are runtime gains (SeqLock + ROS params).
   {
     auto g = gains_lock_.Load();
-    const auto src = cfg["command_source"].as<std::string>("integrator");
-    g.command_source = (src == "clik") ? CommandSource::kClik : CommandSource::kIntegrator;
-    if (src != "integrator" && src != "clik") {
-      RCLCPP_WARN(logger_, "[wbc] unknown command_source '%s' — using 'integrator'", src.c_str());
-    }
     if (cfg["clik"] && cfg["clik"].IsMap()) {
       const auto clik = cfg["clik"];
       clik_damping_sq_ = clik["damping_sq"].as<double>(clik_damping_sq_);
@@ -1476,8 +1460,6 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
 
     target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
-    // Seed the carry-forward integrator from the (measured) first-tick state.
-    reseed_integration_pending_ = true;
   } else {
     // Restore RT-thread working SE3 from POD storage so reader sites see a
     // consistent rotation matrix every tick.
@@ -1528,11 +1510,9 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
     } else if (pending.device_idx == 1) {
       hand_new_target_pending_ = true;
     }
-    // Phase-independent: any target arrival re-seeds the integrator from the
-    // current measured state (the integral's initial condition), regardless of
-    // FSM phase. q_des_target_full_ itself is rebuilt at phase entry so the
-    // posture + SE3 references stay a consistent snapshot.
-    reseed_integration_pending_ = true;
+    // q_des_target_full_ is rebuilt at phase entry so the posture + SE3
+    // references stay a consistent snapshot. CLIK is measured-anchored, so a
+    // target arrival needs no integrator re-seed.
     slot_dirty = true;
   }
 

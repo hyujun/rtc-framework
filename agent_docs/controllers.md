@@ -49,15 +49,15 @@ ros2 service call /demo_task_controller/grasp_command \
 ## DemoWbcController — Kinematic WBC / Dynamic WBC
 
 DemoWbcController의 position-mode tick은 `ComputeTSIDPosition()`이 한 gains 스냅샷으로
-**`SolveWbcQp`**(공유 whole-body TSID QP) → **`ComputeKinematicWbc`**(arm 명령) →
-**`ComputeDynamicWbc`**(hand τ_ff)를 순차 orchestrate한다 (`src/controllers/wbc/compute.cpp`).
-두 보완 경로는 다음과 같다.
+**`ComputeWbcCommon`**(공유 stage: state/cache/reference, no solve) → **`ComputeKinematicWbc`**
+(arm/hand position) → **`ComputeDynamicWbc`**(hand τ_ff)를 순차 orchestrate한다
+(`src/controllers/wbc/compute.cpp`). 두 QP는 같은 Common reference를 독립 소비한다 (decision 5).
 
-- **Kinematic WBC** = CLIK 경로 (`rtc::tsid::ClikReferenceGenerator`). arm SE3 추종(L1) + arm
-  redundancy/nullspace posture(L2) + hand posture(L3)를 velocity-level CLIK으로 풀어
-  desired joint position을 낸다. **기본 command_source** (`command_source: clik`, 양 robot YAML).
-  CLIK 실패 / `clik_enabled_==false` 시 semi-implicit-Euler **integrator**가 fallback으로
-  per-tick shadow 계산되며, Δ는 `wbc_diag.csv`로 로깅된다 (runtime A/B는 `command_source` param).
+- **Kinematic WBC** = CLIK-QP 경로 (`rtc::tsid::ClikReferenceGenerator`). arm SE3 추종(L1) + arm
+  redundancy/nullspace posture(L2) + hand posture(L3)를 velocity-level box-QP로 풀어
+  `q_ref = q + v_ref·dt`를 낸다. **유일한 position backbone** — CLIK 실패는 critical
+  (hold-last → N회 연속 실패 시 `kFallback`). CLIK 계약은 `nq==nv` (reduced wbc 모델)이며,
+  비충족 시 `on_configure`가 lifecycle transition을 FAIL시킨다 (DEC-1: integrator fallback 없음).
 - **Dynamic WBC** = hand 전용 τ_ff 경로 (`hand_tauff_*` → `kPdFeedforward`). PD position
   backbone 위에 model-based feedforward torque(gravity_comp | tsid_tau)를 overlay. closure/hold
   에서만, `±hand_tauff_max` clamp, opt-in `hand_tauff_enable`.
