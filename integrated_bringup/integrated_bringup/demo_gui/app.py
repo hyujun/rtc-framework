@@ -18,8 +18,9 @@ their own modules.
                        claimed_groups (_active_groups), not hard-coded
 - Live joint state   → /rtc_cm/<group>/joint_states (sensor_msgs/JointState),
                        rewired per active controller's claimed_groups
-- Live TCP pose      → tf2 lookup `base → tool0_actual` (active controller's
-                       <config_key>/transforms feeds the listener buffer)
+- Live TCP pose      → tf2 lookup tcp_parent→tcp_child; the active
+                       controller's <config_key>/transforms is fed into the
+                       tf buffer by _transforms_cb (no /tf publisher exists)
 """
 
 import argparse
@@ -56,7 +57,8 @@ from rclpy.parameter_client import AsyncParameterClient
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
-from tf2_ros import Buffer, TransformException, TransformListener
+from tf2_msgs.msg import TFMessage
+from tf2_ros import Buffer, TransformException
 
 from rtc_msgs.msg import (
     CalibrationCommand,
@@ -113,8 +115,8 @@ class DemoControllerGUI(Node):
         # active controller (/<config_key>/...). We defer creating them until
         # /rtc_cm/active_controller_name tells us the namespace, and re-create
         # them whenever the name changes (controller switch). joint_states는
-        # ctrl-agnostic /rtc_cm/<group>/joint_states 로, TCP pose는 tf2
-        # listener (`base → tool0_actual`) 로 처리되어 rewire 불필요.
+        # ctrl-agnostic /rtc_cm/<group>/joint_states 로 처리되나, TCP pose 의
+        # {ns}/transforms 는 controller-owned 이라 rewire 대상 (_transforms_sub).
         self._active_ctrl: str = ""
         # (arm_group, hand_group) the controller-owned topics are currently
         # wired to. Resolved from the active controller's claimed_groups
@@ -130,6 +132,10 @@ class DemoControllerGUI(Node):
         # Subscribed alongside grasp_state — only the controller currently
         # active publishes anything, so both subs coexisting is harmless.
         self._wbc_state_sub = None
+        # The arm-tip TF is broadcast on the active controller's
+        # {ns}/transforms topic (there is NO /tf publisher in the bringup),
+        # so it is rebound on controller switch like the other owned topics.
+        self._transforms_sub = None
 
         # /rtc_cm/switch_controller srv client (single-CM scope per D-A2)
         self.switch_controller_client = self.create_client(
@@ -180,10 +186,12 @@ class DemoControllerGUI(Node):
         # created in the rewire (_rewire_owned_topics) against the active
         # controller's claimed_groups — not hard-wired here.
 
-        # Phase 4: tf2 listener for TCP pose (`<config_key>/transforms` 토픽이
-        # listener buffer 로 자동 수집됨).
+        # TCP pose: the controller broadcasts its arm-tip TF on the
+        # {ns}/transforms topic (not /tf — no /tf publisher exists), so
+        # _transforms_cb feeds this buffer manually (bound per active
+        # controller in _rewire_owned_topics); _arm_joint_cb reads
+        # tcp_parent→tcp_child back out via lookup_transform.
         self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
         self._tf_parent_frame = self._profile.tcp_parent
         self._tf_child_frame = self._profile.tcp_child
 
@@ -316,6 +324,7 @@ class DemoControllerGUI(Node):
             "_hand_gui_sub",
             "_grasp_state_sub",
             "_wbc_state_sub",
+            "_transforms_sub",
         ):
             sub = getattr(self, sub_attr, None)
             if sub is not None:
@@ -353,6 +362,13 @@ class DemoControllerGUI(Node):
         self._wbc_state_sub = self.create_subscription(
             WbcState, f"{ns}/{hand_group}/wbc_state", self._wbc_state_cb, 10
         )
+        # TCP pose: the controller broadcasts its arm-tip TF on {ns}/transforms
+        # (tf2_msgs/TFMessage). There is no /tf publisher in the bringup, so a
+        # bare TransformListener never sees it — feed the frames into the tf
+        # buffer manually here so _arm_joint_cb's lookup_transform resolves.
+        self._transforms_sub = self.create_subscription(
+            TFMessage, f"{ns}/transforms", self._transforms_cb, 10
+        )
         self.get_logger().info(
             f"rewired controller-owned topics to '{self._active_ctrl}' "
             f"(arm='{arm_group}', hand='{hand_group}')"
@@ -379,10 +395,23 @@ class DemoControllerGUI(Node):
             "the matching --robot value to pick up the right robot/hand schema."
         )
 
+    def _transforms_cb(self, msg: "TFMessage"):
+        """Feed the active controller's broadcast TF into the tf buffer.
+
+        The controller publishes its arm-tip transform on {ns}/transforms,
+        not /tf (no /tf publisher exists in the bringup), so a bare
+        TransformListener never receives it. Pushing each frame into the
+        buffer here lets _arm_joint_cb resolve tcp_parent→tcp_child via the
+        normal lookup_transform path.
+        """
+        for tf in msg.transforms:
+            self._tf_buffer.set_transform(tf, "demo_gui")
+
     def _arm_joint_cb(self, msg: JointState):
         """Phase 4: /rtc_cm/<arm_group>/joint_states 구독 콜백 (replaces _gui_pos_cb).
 
-        TCP pose는 별도 tf2 lookup 으로 처리 — 여기서는 joint state 만 다룬다.
+        TCP pose는 {ns}/transforms 를 _transforms_cb 가 버퍼에 넣고, 여기서
+        lookup 으로 읽는다 — 이 콜백은 joint state 만 다룬다.
         """
         arm_dof = self._shape.arm_dof
         if len(msg.position) >= arm_dof:
@@ -398,8 +427,8 @@ class DemoControllerGUI(Node):
                 self.current_positions = reordered
             else:
                 self.current_positions = list(msg.position[:arm_dof])
-        # TCP pose: tf2 lookup (failures are silent — RViz 등 다른 표시 도구가
-        # 같은 topic을 보는 경우 동일 listener buffer 가 공유됨).
+        # TCP pose: tf2 lookup of the frames fed by _transforms_cb (failures
+        # are silent — e.g. before the first transforms message arrives).
         try:
             tfs = self._tf_buffer.lookup_transform(
                 self._tf_parent_frame,
