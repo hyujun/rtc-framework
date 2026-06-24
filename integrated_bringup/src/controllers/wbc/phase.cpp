@@ -215,14 +215,13 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
 
     case WbcPhase::kApproach: {
       // TSID drives the arm via an SE3 quintic ramp (current FK → pregrasp
-      // pose). The hand stays at its current pose throughout Approach: the
-      // TSID posture task is rewritten to q_curr_full_ each tick inside
-      // ComputeTSIDPosition's MPC-disabled branch (q_des = q_curr_full_),
-      // so the user-provided hand close pose in current_target_slot_.
-      // targets[1] is NOT applied here. That target is consumed by the
-      // hand_trajectory_ ramp initialised on kClosure/kHold entry below,
-      // which interpolates from the current hand pose toward the user
-      // target over `hand_trajectory_speed`-shaped duration.
+      // pose). The hand tracks the posture reference: BuildTargetPosture below
+      // folds the live hand joint target (current_target_slot_.targets[1]) into
+      // q_des_target_full_'s hand block, and ComputeWbcCommon uses q_des =
+      // q_des_target_full_ in every driving phase, so the CLIK posture term
+      // (clik_kh) drives the hand toward the user target. A hand target that
+      // arrives mid-phase is re-folded per-tick by Compute()'s BuildHand-
+      // TargetPosture call (live in every phase but kRelease/kFallback).
       const auto idx = static_cast<std::size_t>(WbcPhase::kApproach);
       if (phase_preset_valid_[idx]) {
         tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
@@ -345,7 +344,14 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
           }
         }
 
-        // Ramp hand joint target toward stored target (user-provided close pose)
+        // Seed the hand finger-close ramp toward the stored target. NOTE: in the
+        // normal TSID path the hand is driven by the CLIK posture term toward
+        // q_des_target_full_'s hand block (live every tick via BuildHandTarget-
+        // Posture), so hand_trajectory_ here is consumed ONLY by the
+        // TSID-unavailable fallback (ComputePositionMode) and the kRelease
+        // finger-open (ComputeReleaseMode) — not by closure/hold in normal
+        // operation. Kept so a mid-grasp TSID-init failure degrades to a sane
+        // ramp instead of a stale hold.
         if (state.num_devices > 1 && dev1.valid) {
           trajectory::JointSpaceTrajectory<kMaxHandDof>::State hstart{};
           trajectory::JointSpaceTrajectory<kMaxHandDof>::State hgoal{};

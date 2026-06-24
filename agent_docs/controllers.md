@@ -63,10 +63,18 @@ DemoWbcController의 position-mode tick은 `ComputeTSIDPosition()`이 한 gains 
   에서만, `±hand_tauff_max` clamp, opt-in `hand_tauff_enable`.
 
 **Commanded SE3 target** — `RobotTarget{goal_type:"task"}`(arm, device 0)은 base interface의
-`SetDeviceTaskTarget`을 거쳐 commanded SE3 slot으로 들어가고, kIdle/kApproach 자유 phase에서
-`tcp_goal_`을 그 pose로 override한다 (joint posture slot과 독립). grasp/release/fallback phase는
-자신의 SE3 goal을 소유하므로 진입 시 commanded SE3를 clear한다. `goal_type:"joint"`(arm)은 기존대로
-arm posture로만 들어간다. (x,y,z,r,p,y)→SE3 변환은 ZYX(yaw·pitch·roll) 규약.
+`SetDeviceTaskTarget`을 거쳐 commanded SE3 slot으로 들어가고, `kRelease`/`kFallback`을 제외한
+**모든 phase에서 live override**로 `tcp_goal_`을 그 pose로 갱신한다 (joint posture slot과 독립; CLIK가
+추종). 단 `kPreGrasp`/`kClosure`/`kHold`/`kRelease`/`kFallback` **진입 시점**에는 직전의 stale
+commanded SE3를 clear하므로 (idle 복귀 시 pre-grasp 명령으로 jog되는 것 방지), 해당 phase에서는
+**진입 후 새로 도착한** SE3만 재적용된다. `kRelease`/`kFallback`은 자신의 SE3 goal을 소유하여 live
+override를 받지 않는다. `goal_type:"joint"`(arm)은 arm posture로 들어간다.
+(x,y,z,r,p,y)→SE3 변환은 ZYX(yaw·pitch·roll) 규약.
+
+**Hand joint target** — `RobotTarget{goal_type:"joint"}`(hand, device 1)은 `kRelease`(finger-open
+ramp가 hand 점유)/`kFallback`(safety hold)을 제외한 모든 phase에서 매 tick `BuildHandTargetPosture`로
+`q_des_target_full_` hand block에 fold되어 CLIK posture term(`clik_kh`)이 추종한다 — phase-entry
+edge를 기다리지 않는 live command. (FSM 의 hold/non-hold 판정은 hand τ_ff overlay만 게이트.)
 
 ## GraspController (Force-PI, internal only)
 

@@ -345,6 +345,8 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kIdle` (접촉 없음·hand 이미 open 인 no-op flash 방지) / `kRelease` (이미 release 중) / `kFallback` (수동 복구 필요) 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).
 
+**Target 추종 불변식:** GUI 의 **arm SE3 target** (commanded SE3) 과 **hand joint target** 은 `kRelease` (finger-open ramp 가 hand 점유) / `kFallback` (safety hold) 을 제외한 **모든 phase 에서 상시 live**. 새 SE3 는 매 tick `tcp_goal_` 에 재적용 (CLIK 추종), 새 hand target 은 매 tick `BuildHandTargetPosture` 로 `q_des_target_full_` hand block 에 fold (CLIK posture term `clik_kh` 추종) — phase-entry edge 를 기다리지 않는다. FSM (fingertip force 로 hold/non-hold 판정) 은 dynamic-WBC task 스케줄링 (force/contact/object task preset) 과 hand τ_ff overlay (`kClosure`/`kHold` 에서만) 만 게이트하며, target 추종을 막지 않는다.
+
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
 | `kIdle` (0) | TSID QP (SE3 hold @ current TCP + posture regulate @ init snapshot). 진입 시 `SeedHoldFromMeasured` 가 측정 config 를 `q_des_target_full_`(posture ref) + joint_goal mirror + `tcp_goal_` 로 스냅샷 → 외란 시 init 으로 복원하는 stiff hold (InitPositionHold). 진입 edge 없는 첫 enable 은 first-tick self-init 에서 동일 시드. | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |

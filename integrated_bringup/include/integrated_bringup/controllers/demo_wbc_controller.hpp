@@ -748,6 +748,14 @@ class DemoWbcController final : public RTControllerInterface {
   // one consistent target snapshot. No-op until joint_reorder_valid_.
   void BuildTargetPosture(const ControllerState& state) noexcept;
 
+  // RT-thread-only: fold the hand joint target (current_target_slot_.targets[1])
+  // into the hand block of q_des_target_full_ (external → Pinocchio order). Split
+  // out of BuildTargetPosture so Compute() can refresh it per-tick on a fresh
+  // hand target, making the hand joint target a live command in every phase
+  // (except kRelease/kFallback) rather than consumed only on a closure edge.
+  // Returns true iff the fold applied (reorder map ready + hand device valid).
+  bool BuildHandTargetPosture(const ControllerState& state) noexcept;
+
   // RT-thread-only: snapshot the current measured configuration as the idle
   // hold target. Sets current_target_slot_.targets[] (joint_goal mirror) =
   // measured, rebuilds q_des_target_full_ (posture reference), and seeds

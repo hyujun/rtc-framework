@@ -1238,17 +1238,20 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     return out;
   }
 
-  // Mid-phase commanded SE3 jog: a new SE3 target arrived while idling/approaching
-  // (no phase-entry edge, so OnPhaseEnter's seed did not run this tick). Re-point
-  // tcp_goal_ at the commanded pose; when the SE3 task is active in this phase
-  // (MPC-disabled), rebuild the TCP ramp from the current FK so the move is
-  // smoothed. Grasp/release/fallback own their goal and cleared the flag on entry.
+  // Mid-phase commanded SE3 jog: a new SE3 target arrived without a phase-entry
+  // edge (so OnPhaseEnter's seed did not run this tick). Re-point tcp_goal_ at
+  // the commanded pose; when the SE3 task is active in this phase (MPC-disabled),
+  // rebuild the TCP ramp from the current FK so the move is smoothed. The
+  // commanded SE3 is a LIVE arm target in every phase except the transient
+  // finger-open (kRelease) and the safety hold (kFallback), which own the arm
+  // goal. Idle (se3 task YAML-deactivated) tracks the goal step directly through
+  // CLIK, which rate-limits it via its own v_limit.
   if (arm_task_new_target_pending_) {
-    const bool free_jog_phase = (phase_ == WbcPhase::kIdle || phase_ == WbcPhase::kApproach);
+    const bool target_live_phase = (phase_ != WbcPhase::kRelease && phase_ != WbcPhase::kFallback);
     // Apply the commanded SE3 to tcp_goal_ unconditionally (URDF-independent
     // copy) so CLIK/SE3Task readers see the new goal. Only the trajectory ramp
     // re-init needs arm_handle_ FK; skip it when there is no model (unit tests).
-    if (free_jog_phase && ApplyCommandedSe3IfPresent()) {
+    if (target_live_phase && ApplyCommandedSe3IfPresent()) {
       target_seqlock_.Store(current_target_slot_);
       const bool mpc_on = mpc_enabled_ && mpc_manager_.Enabled();
       if (arm_handle_ && !mpc_on && Se3TaskActiveInPhase(phase_)) {
@@ -1259,6 +1262,23 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
       }
     }
     arm_task_new_target_pending_ = false;
+  }
+
+  // Mid-phase hand joint jog: the hand joint target is a LIVE command in every
+  // phase except kRelease (its finger-open hand_trajectory_ ramp owns the hand)
+  // and kFallback (safety hold). Fold the fresh target into the posture
+  // reference's hand block so the CLIK posture term drives the hand toward it
+  // THIS tick — instead of the target only being consumed on a closure
+  // phase-entry edge (BuildTargetPosture). DrainTargetSlot already stored the
+  // new values in current_target_slot_.targets[1].
+  if (hand_new_target_pending_ && phase_ != WbcPhase::kRelease && phase_ != WbcPhase::kFallback) {
+    // Clear the pending flag only when the fold actually applied (hand device
+    // valid + reorder map ready). Otherwise keep it pending so a target that
+    // arrives during a transient hand-device dropout is not silently lost — it
+    // re-folds on the next tick once the device is valid again.
+    if (BuildHandTargetPosture(state)) {
+      hand_new_target_pending_ = false;
+    }
   }
 
   ComputeControl(state, dt);

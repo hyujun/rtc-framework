@@ -910,14 +910,30 @@ void DemoWbcController::BuildTargetPosture(const ControllerState& state) noexcep
     const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
     q_des_target_full_[pq] = current_target_slot_.targets[0][eidx];
   }
-  // Hand target: external [arm_dof_..full_dof_-1] → Pinocchio order.
+  // Hand target — shared with the always-live mid-phase hand jog (Compute()).
+  BuildHandTargetPosture(state);
+}
+
+bool DemoWbcController::BuildHandTargetPosture(const ControllerState& state) noexcept {
+  // Fold the current hand joint target (current_target_slot_.targets[1]) into the
+  // posture reference's hand block (external [arm_dof_..full_dof_-1] → Pinocchio
+  // order). Called at phase entry via BuildTargetPosture AND per-tick from
+  // Compute() when a fresh hand target arrives, so the hand joint target is a
+  // live command in every driving phase — not consumed only on a closure edge.
+  // Returns true iff the fold applied (reorder map ready + hand device valid) so
+  // the caller can keep a target pending across a transient hand-device dropout.
+  if (!joint_reorder_valid_) {
+    return false;
+  }
   if (state.num_devices > 1 && state.devices[1].valid) {
     for (int i = 0; i < hand_dof_; ++i) {
       const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
       q_des_target_full_[pq] = current_target_slot_.targets[1][static_cast<std::size_t>(i)];
     }
+    return true;
   }
+  return false;
 }
 
 void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexcept {
