@@ -181,8 +181,8 @@ class RobotProfile:
 
     Carries the joint-name :class:`RobotShape` plus the tf frame pair the
     TCP-pose lookup uses (``<tcp_parent> → <tcp_child>``). Both frames are
-    robot-specific: ur5e publishes ``base → tool0_actual``; iiwa7 drives
-    ``link_0 → ee_link``.
+    robot-specific: ur5e publishes ``base → tool0_actual``; iiwa7 publishes
+    ``link_0 → ee_link_actual`` (controllers append the ``_actual`` suffix).
     """
 
     shape: RobotShape
@@ -214,7 +214,10 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
     "iiwa7_leap": RobotProfile(
         shape=RobotShape.default_iiwa7_leap(),
         tcp_parent="link_0",
-        tcp_child="ee_link",
+        # Controllers publish the arm-tip TF with the "_actual" suffix
+        # (owned_topics.cpp MakeActualChildFrame); sim.yaml tip_link is
+        # "ee_link" → published frame is "ee_link_actual".
+        tcp_child="ee_link_actual",
     ),
 }
 

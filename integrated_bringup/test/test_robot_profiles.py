@@ -82,7 +82,9 @@ def test_hand_reorder_is_name_based_not_order_based():
 def test_for_robot_known_keys():
     iiwa = RobotProfile.for_robot("iiwa7_leap")
     assert iiwa.shape.arm_dof == 7
-    assert (iiwa.tcp_parent, iiwa.tcp_child) == ("link_0", "ee_link")
+    # Controllers broadcast the arm-tip TF with the "_actual" suffix
+    # (owned_topics MakeActualChildFrame), matching the ur5e profile below.
+    assert (iiwa.tcp_parent, iiwa.tcp_child) == ("link_0", "ee_link_actual")
 
     ur5e = RobotProfile.for_robot("ur5e_hand")
     assert ur5e.shape.arm_dof == 6

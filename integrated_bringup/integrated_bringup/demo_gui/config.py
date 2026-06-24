@@ -344,6 +344,9 @@ GAIN_GROUP_PARENT_GRASP: set[str] = {"Grasp Detection"}
 # a single row inside the group box (default: 2 from SCALARS_PER_ROW).
 GROUP_SCALARS_PER_ROW = {
     "Grasp Detection": 3,
+    # Hand τ_ff: enable + gravity_gain + closure_bias + max + source combobox
+    # on a single row.
+    HAND_TAUFF_GROUP: 5,
 }
 
 # Sensor calibration entries displayed in the Control tab.
