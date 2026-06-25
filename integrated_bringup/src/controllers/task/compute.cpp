@@ -11,8 +11,8 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/math/rpy.hpp>
-#include <pinocchio/spatial/log.hpp>
+#include <pinocchio/math.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 namespace integrated_bringup {
@@ -483,9 +483,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
         max_force = mag;
       const bool native_path = has_native_contact_ && ft.valid;
       const bool force_active = ft.valid && (mag > force_thresh);
-      const bool active = native_path
-                              ? (ft.contact_flag > contact_thresh && force_active)
-                              : force_active;
+      const bool active =
+          native_path ? (ft.contact_flag > contact_thresh && force_active) : force_active;
       if (active) {
         ++active_count;
       }

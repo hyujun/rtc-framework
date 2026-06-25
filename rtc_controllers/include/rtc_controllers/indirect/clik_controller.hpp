@@ -3,8 +3,8 @@
 #pragma once
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_base/concurrency/spsc_queue.hpp>
+#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -14,8 +14,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/motion.hpp>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"

@@ -14,7 +14,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/math/rpy.hpp>
+#include <pinocchio/math.hpp>
 #pragma GCC diagnostic pop
 
 namespace integrated_bringup {
@@ -169,7 +169,7 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
   const Gains gains_now = gains_lock_.Load();
   ComputeWbcCommon(state, dt, gains_now);
   ComputeKinematicWbc(dt, gains_now);
-  ComputeDynamicWbc(state, dt, gains_now);
+  ComputeDynamicWbc(gains_now);
 }
 
 // ComputeWbcCommon — shared per-tick stage (decision 5): state extraction,
@@ -181,16 +181,6 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
                                          const Gains& gains_now) noexcept {
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
-
-  // 1a. Push fresh (q, v) to the MPC thread so HandlerMPCThread::Solve does
-  // not reject the snapshot via its dim-mismatch / staleness gates.
-  // Lives here (not at ComputeControl's top) because ExtractFullState +
-  // pinocchio_cache_.Update already need fresh state at this exact point;
-  // co-locating the WriteState avoids a per-tick double extraction.
-  if (mpc_enabled_ && mpc_manager_.Enabled()) {
-    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;
-    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
-  }
 
   // Stage A-5b: progress per-contact activation ramp by dt. ContactState
   // auto-flips the legacy `active : bool` once s_i crosses kActivationDeadband
@@ -228,7 +218,12 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   // fall through to the TSID self-hold behaviour.
   bool mpc_ref_valid = false;
   if (mpc_enabled_ && mpc_manager_.Enabled()) {
-    const uint64_t now_ns = static_cast<uint64_t>(state.iteration) * 2'000'000ULL;  // 500 Hz tick
+    // Synthetic monotonic tick clock for the MPC staleness / dim-mismatch gates:
+    // iteration × tick period, derived from dt so it tracks the configured
+    // control_rate (100 Hz–5 kHz) instead of a hardcoded 500 Hz. Pushes fresh
+    // (q, v) to the MPC thread, then consumes the freshest interpolated solution.
+    const uint64_t now_ns =
+        static_cast<uint64_t>(state.iteration) * static_cast<uint64_t>(dt * 1e9);
     rtc::mpc::InterpMeta meta;
     mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
     mpc_ref_valid =
@@ -430,8 +425,7 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
 // (decision 7) so the integrator A/B shadow consumes this-tick a_opt; on a
 // failed solve that a_opt is garbage, but the shadow is non-driving (CLIK is
 // primary) so only the diagnostic Δ spikes.
-void DemoWbcController::ComputeDynamicWbc(const ControllerState& /*state*/, double /*dt*/,
-                                          const Gains& gains_now) noexcept {
+void DemoWbcController::ComputeDynamicWbc(const Gains& gains_now) noexcept {
   // ── Dynamic WBC QP solve (was the SolveWbcQp tail) ────────────────────────
   // 5. TSID solve — consumes the common-stage ctrl_state_/control_ref_/cache.
   tsid_output_ =
@@ -627,7 +621,8 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
     out0.commands[i] = robot_computed_.positions[i];
   }
   rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
-                         std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
+                         std::span<const double>(device_position_upper_[0]),
+                         -kJointLimitFallbackRad, kJointLimitFallbackRad);
 
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
@@ -638,7 +633,8 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
       out1.commands[i] = hand_computed_.positions[i];
     }
     rtc::utils::ClampRange(out1.commands, nc1, std::span<const double>(device_position_lower_[1]),
-                           std::span<const double>(device_position_upper_[1]), -6.2832, 6.2832);
+                           std::span<const double>(device_position_upper_[1]),
+                           -kJointLimitFallbackRad, kJointLimitFallbackRad);
     // Stage C-3: when hand τ_ff is active this tick, drive the hand device via
     // kPdFeedforward — the position commands above are the PD target (hold pose)
     // and feedforward carries the model torque. The arm device leaves its
@@ -659,56 +655,67 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
   return output;
 }
 
+// Shared device joint-space fill: trajectory_* reference + goal_positions for
+// one device. target_* (publish-only) stays in FillPublishOutput.
+void DemoWbcController::FillDeviceTrajectoryPods(rtc::DeviceOutput& out, int num_channels,
+                                                 const ComputedTrajectory& computed,
+                                                 int target_slot) noexcept {
+  const auto slot = static_cast<std::size_t>(target_slot);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(num_channels); ++i) {
+    out.trajectory_positions[i] = computed.positions[i];
+    out.trajectory_velocities[i] = computed.velocities[i];
+    out.goal_positions[i] = current_target_slot_.targets[slot][i];
+  }
+}
+
+// Shared TCP FK → task-space pods: fills actual_task_positions + task_goal_positions
+// from the current arm FK (caller ensures FK fresh; arm_handle_ non-null). Returns
+// the TCP SE3 so the publish path can reuse it for arm_tip_pose.
+pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noexcept {
+  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+  if (use_root_frame_) {
+    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+  }
+  Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  output.actual_task_positions[0] = tcp.translation().x();
+  output.actual_task_positions[1] = tcp.translation().y();
+  output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy[0];
+  output.actual_task_positions[4] = rpy[1];
+  output.actual_task_positions[5] = rpy[2];
+
+  if (tcp_goal_valid_) {
+    Eigen::Vector3d grpy = pinocchio::rpy::matrixToRpy(tcp_goal_.rotation());
+    output.task_goal_positions[0] = tcp_goal_.translation().x();
+    output.task_goal_positions[1] = tcp_goal_.translation().y();
+    output.task_goal_positions[2] = tcp_goal_.translation().z();
+    output.task_goal_positions[3] = grpy[0];
+    output.task_goal_positions[4] = grpy[1];
+    output.task_goal_positions[5] = grpy[2];
+  } else {
+    output.task_goal_positions = output.actual_task_positions;
+  }
+  return tcp;
+}
+
 // ── Phase 3b: Fill log output ────────────────────────────────────────────────
 
 void DemoWbcController::FillLogOutput(const ControllerState& state,
                                       ControllerOutput& output) noexcept {
   const auto& dev0 = state.devices[0];
-  auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.trajectory_positions[i] = robot_computed_.positions[i];
-    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = current_target_slot_.targets[0][i];
-  }
+  FillDeviceTrajectoryPods(output.devices[0], nc0, robot_computed_, 0);
 
   // FK + actual_task_positions + task_goal_positions (log POD reads both).
   if (arm_handle_) {
     std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
-    pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-    if (use_root_frame_) {
-      tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
-    }
-    Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
-    output.actual_task_positions[0] = tcp.translation().x();
-    output.actual_task_positions[1] = tcp.translation().y();
-    output.actual_task_positions[2] = tcp.translation().z();
-    output.actual_task_positions[3] = rpy[0];
-    output.actual_task_positions[4] = rpy[1];
-    output.actual_task_positions[5] = rpy[2];
-
-    if (tcp_goal_valid_) {
-      Eigen::Vector3d grpy = pinocchio::rpy::matrixToRpy(tcp_goal_.rotation());
-      output.task_goal_positions[0] = tcp_goal_.translation().x();
-      output.task_goal_positions[1] = tcp_goal_.translation().y();
-      output.task_goal_positions[2] = tcp_goal_.translation().z();
-      output.task_goal_positions[3] = grpy[0];
-      output.task_goal_positions[4] = grpy[1];
-      output.task_goal_positions[5] = grpy[2];
-    } else {
-      output.task_goal_positions = output.actual_task_positions;
-    }
+    FillTaskPosePods(output);
   }
 
   if (state.num_devices > 1 && state.devices[1].valid) {
     const int nc1 = state.devices[1].num_channels;
-    auto& out1 = output.devices[1];
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
-      out1.trajectory_positions[i] = hand_computed_.positions[i];
-      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
-      out1.goal_positions[i] = current_target_slot_.targets[1][i];
-    }
+    FillDeviceTrajectoryPods(output.devices[1], nc1, hand_computed_, 1);
   }
 
   // WBC state aggregates (per-fingertip + FSM phase). Staging buffer feeds
@@ -747,6 +754,7 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
     // rtc_msgs/WbcState fields always referred to the TSID solve.
     ws.tsid_solver_ok = tsid_initialized_ && (dyn_qp_fail_count_ == 0);
     ws.qp_fail_count = dyn_qp_fail_count_;
+    ws.tsid_solve_us = static_cast<float>(tsid_output_.solve_time_us);
   }
   // SeqLock store = two atomic stores + memcpy (wait-free, RT-safe).
   // Read by PublishNonRtSnapshot.
@@ -768,45 +776,19 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = robot_computed_.positions[i];
     out0.target_velocities[i] = robot_computed_.velocities[i];
-    out0.trajectory_positions[i] = robot_computed_.positions[i];
-    out0.trajectory_velocities[i] = robot_computed_.velocities[i];
-    out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
+  FillDeviceTrajectoryPods(out0, nc0, robot_computed_, 0);
 
   if (arm_handle_) {
-    pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-    if (use_root_frame_) {
-      tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
-    }
-    Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
-    output.actual_task_positions[0] = tcp.translation().x();
-    output.actual_task_positions[1] = tcp.translation().y();
-    output.actual_task_positions[2] = tcp.translation().z();
-    output.actual_task_positions[3] = rpy[0];
-    output.actual_task_positions[4] = rpy[1];
-    output.actual_task_positions[5] = rpy[2];
-
-    if (tcp_goal_valid_) {
-      Eigen::Vector3d grpy = pinocchio::rpy::matrixToRpy(tcp_goal_.rotation());
-      output.task_goal_positions[0] = tcp_goal_.translation().x();
-      output.task_goal_positions[1] = tcp_goal_.translation().y();
-      output.task_goal_positions[2] = tcp_goal_.translation().z();
-      output.task_goal_positions[3] = grpy[0];
-      output.task_goal_positions[4] = grpy[1];
-      output.task_goal_positions[5] = grpy[2];
-    } else {
-      output.task_goal_positions = output.actual_task_positions;
-    }
+    const pinocchio::SE3 tcp = FillTaskPosePods(output);
 
     // TF source: arm tip only. Fingertip / virtual_tcp frames are not
     // produced by WBC compute — those slots stay invalid.
-    {
-      const Eigen::Vector3d& trans = tcp.translation();
-      const Eigen::Quaterniond quat(tcp.rotation());
-      output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
-      output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
-      output.arm_tip_pose_valid = true;
-    }
+    const Eigen::Vector3d& trans = tcp.translation();
+    const Eigen::Quaterniond quat(tcp.rotation());
+    output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
+    output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
+    output.arm_tip_pose_valid = true;
   }
 
   if (state.num_devices > 1 && state.devices[1].valid) {
@@ -815,10 +797,8 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
     for (std::size_t i = 0; i < static_cast<std::size_t>(nc1); ++i) {
       out1.target_positions[i] = hand_computed_.positions[i];
       out1.target_velocities[i] = hand_computed_.velocities[i];
-      out1.trajectory_positions[i] = hand_computed_.positions[i];
-      out1.trajectory_velocities[i] = hand_computed_.velocities[i];
-      out1.goal_positions[i] = current_target_slot_.targets[1][i];
     }
+    FillDeviceTrajectoryPods(out1, nc1, hand_computed_, 1);
   }
 }
 

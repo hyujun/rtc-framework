@@ -20,8 +20,8 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/math/rpy.hpp>
-#include <pinocchio/spatial/log.hpp>
+#include <pinocchio/math.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 namespace integrated_bringup {
@@ -198,8 +198,8 @@ void DemoTaskController::OnDeviceConfigsSet() {
   RCLCPP_INFO(logger_,
               "[task] fingertip sensor capability: has_native_contact=%d "
               "has_native_displacement=%d (secondary='%s')",
-              static_cast<int>(has_native_contact_),
-              static_cast<int>(has_native_displacement_), secondary.c_str());
+              static_cast<int>(has_native_contact_), static_cast<int>(has_native_displacement_),
+              secondary.c_str());
 }
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────

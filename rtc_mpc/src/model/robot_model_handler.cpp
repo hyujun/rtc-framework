@@ -8,7 +8,7 @@
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
-#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody.hpp>
 #include <pinocchio/multibody/fwd.hpp>
 #pragma GCC diagnostic pop
 

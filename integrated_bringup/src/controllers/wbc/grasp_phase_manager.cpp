@@ -71,13 +71,6 @@ std::string_view GraspPhaseManager::NameFor(int id) noexcept {
   return kPhaseNames[static_cast<std::size_t>(id)];
 }
 
-std::string_view GraspPhaseManager::OcpTypeFor(int id) const noexcept {
-  if (!initialised_ || id < 0 || id >= kNumGraspPhases) {
-    return "";
-  }
-  return phases_[static_cast<std::size_t>(id)].ocp_type;
-}
-
 GraspPhaseInitError GraspPhaseManager::LoadTransition(const YAML::Node& cfg,
                                                       GraspTransitionConfig& out) const noexcept {
   if (!cfg.IsDefined() || !cfg.IsMap()) {

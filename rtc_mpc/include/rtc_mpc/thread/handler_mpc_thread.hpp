@@ -62,7 +62,7 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <Eigen/Core>
-#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
 #include <yaml-cpp/yaml.h>

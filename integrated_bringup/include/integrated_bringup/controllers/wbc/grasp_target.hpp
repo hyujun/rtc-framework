@@ -20,7 +20,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <Eigen/Core>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 #include <array>

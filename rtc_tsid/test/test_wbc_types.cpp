@@ -5,7 +5,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
@@ -122,8 +122,8 @@ TEST_F(RobotModelInfoTest, ContactManagerMuNFacesAliases) {
   contact["name"] = "test_contact";
   contact["frame"] = frame_name;
   contact["type"] = "point";
-  contact["mu"] = 0.5;       // alias for friction_coeff
-  contact["n_faces"] = 8;    // alias for friction_faces
+  contact["mu"] = 0.5;     // alias for friction_coeff
+  contact["n_faces"] = 8;  // alias for friction_faces
   config["contacts"].push_back(contact);
 
   ContactManagerConfig mgr;

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # build_deps.sh — fmt + mimalloc + aligator 를 deps/install/ 로 소스 빌드.
 #
-# 의존성 위상: fmt → mimalloc → aligator (aligator 가 fmt + mimalloc + pinocchio + hpp-fcl 요구).
-# pinocchio · hpp-fcl 은 ROS distribution (jazzy 또는 humble) 판을 그대로 사용 (ABI 호환 확인됨).
+# 의존성 위상: fmt → mimalloc → aligator (aligator 가 fmt + mimalloc + pinocchio + coal 요구).
+# pinocchio · coal 은 ROS distribution (jazzy 또는 humble) 판을 그대로 사용 (ABI 호환 확인됨).
+# (pinocchio 4.0 은 hpp-fcl → coal 로 충돌 라이브러리 교체; pinocchioConfig 가 coal 을 강제.)
 #
 # 산출물: deps/install/{lib,include,lib/cmake/...}
 # RPATH: $ORIGIN/../lib + deps/install/lib + ROS lib — 시스템 /usr/local 참조 없음.
@@ -15,7 +16,7 @@ WS="$(cd "${_SCRIPT_DIR}/../../../.." && pwd)"
 REPO="$(cd "${_SCRIPT_DIR}/../.." && pwd)"
 DEPS_PREFIX="${WS}/deps/install"
 
-# ── ROS 소싱 (hpp-fcl_DIR resolve 용) ─────────────────────────────────────
+# ── ROS 소싱 (ROS_DISTRO + pinocchio/coal CMAKE_PREFIX_PATH resolve 용) ──────
 # NOTE: /opt/ros/*/setup.bash references unbound vars, so we don't use `set -u`.
 if [[ -z "${ROS_DISTRO:-}" ]]; then
   for _distro in jazzy humble; do
@@ -31,13 +32,6 @@ fi
 if [[ -z "${ROS_DISTRO:-}" ]]; then
   echo "ERROR: ROS 2 not found. Install jazzy or humble first:" >&2
   echo "       ./install.sh --skip-build  # apt deps + ROS auto-install only" >&2
-  exit 1
-fi
-
-HPPFCL_CMAKE_DIR="/opt/ros/${ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl"
-if [[ ! -d "$HPPFCL_CMAKE_DIR" ]]; then
-  echo "ERROR: ROS hpp-fcl cmake dir not found: $HPPFCL_CMAKE_DIR" >&2
-  echo "       Install: sudo apt-get install ros-${ROS_DISTRO}-hpp-fcl" >&2
   exit 1
 fi
 
@@ -94,7 +88,6 @@ build_one aligator \
   -DINSTALL_DOCUMENTATION=OFF \
   -DBUILD_PYTHON_INTERFACE=OFF \
   -DBUILD_WITH_PINOCCHIO_SUPPORT=ON \
-  -Dhpp-fcl_DIR="$HPPFCL_CMAKE_DIR" \
   -Dfmt_DIR="${DEPS_PREFIX}/lib/cmake/fmt"
 
 log "All deps built: $DEPS_PREFIX"

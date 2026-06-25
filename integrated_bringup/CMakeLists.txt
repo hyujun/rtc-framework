@@ -98,6 +98,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
 )
 
 target_link_libraries(${PROJECT_NAME}_demo_controllers
+  pinocchio::pinocchio
   yaml-cpp
 )
 
@@ -222,6 +223,7 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
   )
+  target_link_libraries(test_virtual_tcp pinocchio::pinocchio)
   ament_target_dependencies(test_virtual_tcp
     rtc_base
     pinocchio

@@ -63,6 +63,7 @@ target_include_directories(rtc_tsid PUBLIC
 ament_target_dependencies(rtc_tsid pinocchio)
 
 target_link_libraries(rtc_tsid
+  pinocchio::pinocchio
   Eigen3::Eigen
   yaml-cpp
   proxsuite::proxsuite

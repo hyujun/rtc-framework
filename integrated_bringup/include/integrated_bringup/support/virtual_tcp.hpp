@@ -2,8 +2,8 @@
 #pragma once
 
 #include <Eigen/Core>
-#include <pinocchio/math/rpy.hpp>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/math.hpp>
+#include <pinocchio/spatial.hpp>
 
 #include <array>
 #include <cmath>

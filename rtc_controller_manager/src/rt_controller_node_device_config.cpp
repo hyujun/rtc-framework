@@ -5,7 +5,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 
 #include <algorithm>
@@ -467,9 +467,10 @@ void RtControllerNode::LoadDeviceNameConfigs() {
                 lim.position_upper[ui] =
                     std::min(lim.position_upper[ui], model.upperPositionLimit[uidx]);
               if (!lim.max_velocity.empty())
-                lim.max_velocity[ui] = std::min(lim.max_velocity[ui], model.velocityLimit[uidx]);
+                lim.max_velocity[ui] =
+                    std::min(lim.max_velocity[ui], model.upperVelocityLimit[uidx]);
               if (!lim.max_torque.empty())
-                lim.max_torque[ui] = std::min(lim.max_torque[ui], model.effortLimit[uidx]);
+                lim.max_torque[ui] = std::min(lim.max_torque[ui], model.upperEffortLimit[uidx]);
             }
             RCLCPP_INFO(get_logger(), "[%s] Joint limits merged with URDF (tighter bounds applied)",
                         group_name.c_str());
@@ -487,8 +488,8 @@ void RtControllerNode::LoadDeviceNameConfigs() {
               const auto uidx = yaml_to_urdf[ui];
               lim.position_lower[ui] = model.lowerPositionLimit[uidx];
               lim.position_upper[ui] = model.upperPositionLimit[uidx];
-              lim.max_velocity[ui] = model.velocityLimit[uidx];
-              lim.max_torque[ui] = model.effortLimit[uidx];
+              lim.max_velocity[ui] = model.upperVelocityLimit[uidx];
+              lim.max_torque[ui] = model.upperEffortLimit[uidx];
             }
             cfg.joint_limits = std::move(lim);
             RCLCPP_INFO(get_logger(), "[%s] Joint limits loaded from URDF (no YAML overrides)",

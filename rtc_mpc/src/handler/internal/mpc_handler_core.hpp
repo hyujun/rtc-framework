@@ -25,7 +25,7 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <Eigen/Core>
 #include <aligator/solvers/proxddp/solver-proxddp.hpp>
-#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
 #include <memory>

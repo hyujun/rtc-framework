@@ -58,7 +58,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <Eigen/Core>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 #include <yaml-cpp/yaml.h>
@@ -186,13 +186,8 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
 
   [[nodiscard]] int FailureCount() const noexcept { return failure_count_; }
 
-  [[nodiscard]] GraspTransitionConfig Thresholds() const noexcept { return thresholds_; }
-
   /// @return canonical phase name for @p id; "" for invalid ids.
   [[nodiscard]] static std::string_view NameFor(int id) noexcept;
-
-  /// @return ocp_type key for @p id (valid after @ref Load). "" on invalid.
-  [[nodiscard]] std::string_view OcpTypeFor(int id) const noexcept;
 
  private:
   struct PhaseSlot {
