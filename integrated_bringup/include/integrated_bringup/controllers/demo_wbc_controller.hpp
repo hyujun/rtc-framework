@@ -123,6 +123,8 @@ class DemoWbcController final : public RTControllerInterface {
   static constexpr int kMaxHandDof = 32;
   static constexpr int kMaxFullDof = kMaxArmDof + kMaxHandDof;
   static constexpr int kNumPhases = 8;
+  // ±2π fallback joint-position clamp [rad] when a device omits explicit limits.
+  static constexpr double kJointLimitFallbackRad = 6.2832;
 
   struct Gains {
     double arm_trajectory_speed{0.5};    ///< Joint-space traj speed [rad/s]
@@ -389,6 +391,11 @@ class DemoWbcController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput WriteJointCommand(const ControllerState& state) noexcept;
   void FillLogOutput(const ControllerState& state, ControllerOutput& output) noexcept;
   void FillPublishOutput(const ControllerState& state, ControllerOutput& output) noexcept;
+  // Shared by FillLogOutput / FillPublishOutput. Fills output.actual_task_positions
+  // + task_goal_positions from the current arm FK (caller must ensure FK is fresh;
+  // arm_handle_ must be non-null) and returns the computed TCP SE3 so the publish
+  // path can reuse it for arm_tip_pose.
+  pinocchio::SE3 FillTaskPosePods(ControllerOutput& output) noexcept;
 
   // ── WBC CSV fill (controller-private data: a_opt / SE3 ramp / fingertip
   //    force / TSID-QP diagnostics — see ~/.claude/plans/wbc-csv-logging.md) ─
@@ -427,7 +434,7 @@ class DemoWbcController final : public RTControllerInterface {
   void ComputeTSIDPosition(const ControllerState& state, double dt) noexcept;
   void ComputeWbcCommon(const ControllerState& state, double dt, const Gains& gains_now) noexcept;
   void ComputeKinematicWbc(double dt, const Gains& gains_now) noexcept;
-  void ComputeDynamicWbc(const ControllerState& state, double dt, const Gains& gains_now) noexcept;
+  void ComputeDynamicWbc(const Gains& gains_now) noexcept;
   void ComputeReleaseMode(const ControllerState& state, double dt) noexcept;
   void ComputeFallback() noexcept;
 
@@ -694,6 +701,12 @@ class DemoWbcController final : public RTControllerInterface {
   ComputedTrajectory robot_computed_{};
   ComputedTrajectory hand_computed_{};
 
+  // Fills one device's trajectory_* + goal_positions from a computed trajectory.
+  // Shared by FillLogOutput / FillPublishOutput (declared here for nested-type
+  // visibility of ComputedTrajectory).
+  void FillDeviceTrajectoryPods(rtc::DeviceOutput& out, int num_channels,
+                                const ComputedTrajectory& computed, int target_slot) noexcept;
+
   // ── Target management ───────────────────────────────────────────────────
   // RT thread is the SOLE writer of target_seqlock_. Off-RT SetDeviceTarget
   // callers marshal onto pending_targets_; RT thread drains in Compute().
@@ -779,6 +792,11 @@ class DemoWbcController final : public RTControllerInterface {
   // path. MPCFactory is given a zero-initialised PhaseContext, matching the
   // legacy InitializeHoldPosition semantics.
   void SpawnMpcThreadIfNeeded() noexcept;
+
+  // LoadConfig section 7: parse `mpc:` and pre-build the handler-mode model /
+  // phase-manager preconditions. Self-contained (reads cfg, sets mpc_* members);
+  // extracted from LoadConfig to keep that method readable.
+  void ConfigureMpc(const YAML::Node& cfg);
 
   // RT-thread working SE3 (materialised from current_target_slot_.tcp_goal_*).
   pinocchio::SE3 tcp_goal_{pinocchio::SE3::Identity()};

@@ -890,18 +890,47 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── 7. MPC integration ────────────────────────────────────────────────
-  //
+  ConfigureMpc(cfg);
+
+  // ── Phase C: parse `logs:` section ──────────────────────────────────────
+  parsed_log_entries_.clear();
+  if (cfg["logs"]) {
+    if (!cfg["logs"].IsSequence()) {
+      throw std::runtime_error("DemoWbcController: 'logs' must be a sequence");
+    }
+    for (const auto& entry : cfg["logs"]) {
+      if (!entry.IsMap() || !entry["msg_type"]) {
+        throw std::runtime_error("DemoWbcController: each `logs` entry needs `msg_type`");
+      }
+      ParsedLogEntry e;
+      e.msg_type = entry["msg_type"].as<std::string>();
+      if (entry["instance"]) {
+        e.instance = entry["instance"].as<std::string>();
+      }
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
+          e.msg_type != "integrated_bringup/DeviceWbcLog" &&
+          e.msg_type != "integrated_bringup/WbcDiagLog") {
+        throw std::runtime_error("DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
+      }
+      parsed_log_entries_.push_back(std::move(e));
+    }
+  }
+}
+
+// LoadConfig section 7 — see header. Parses `mpc:` and pre-builds handler-mode
+// preconditions. mpc_engine_ may be downgraded to kMock on any precondition
+// failure; mpc_enabled_/TSID self-hold semantics preserved bit-exactly when
+// `mpc:` is absent or disabled.
+void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
   // If `mpc.enabled: true`, size the reference buffers and initialise the
   // MPC solution manager. The thread itself is spawned in
   // SpawnMpcThreadIfNeeded (called from on_activate on the aux thread) so the
-  // heap-allocating MPCFactory::Create stays off the RT path. If `mpc:` is
-  // missing or disabled, all MPC paths are
-  // short-circuited and TSID self-hold behaviour is preserved bit-exactly.
+  // heap-allocating MPCFactory::Create stays off the RT path.
   //
-  // `mpc.engine` (default "mock") selects MockMPCThread vs
-  // HandlerMPCThread. Handler mode additionally loads mpc/phase_config.yaml
-  // + mpc/contact_light.yaml + mpc/contact_rich.yaml from the package share
-  // and pre-builds the RobotModelHandler + GraspPhaseManager for startup.
+  // `mpc.engine` (default "mock") selects MockMPCThread vs HandlerMPCThread.
+  // Handler mode additionally loads mpc/phase_config.yaml + mpc/contact_light.yaml
+  // + mpc/contact_rich.yaml from the package share and pre-builds the
+  // RobotModelHandler + GraspPhaseManager for startup.
   if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && full_model_ptr_) {
     mpc_enabled_ = mpc_cfg["enabled"] && mpc_cfg["enabled"].as<bool>();
 
@@ -1046,30 +1075,6 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
                   mpc_engine_ == MpcEngine::kHandler ? "ready" : "DEGRADED");
     }
   }
-
-  // ── Phase C: parse `logs:` section ──────────────────────────────────────
-  parsed_log_entries_.clear();
-  if (cfg["logs"]) {
-    if (!cfg["logs"].IsSequence()) {
-      throw std::runtime_error("DemoWbcController: 'logs' must be a sequence");
-    }
-    for (const auto& entry : cfg["logs"]) {
-      if (!entry.IsMap() || !entry["msg_type"]) {
-        throw std::runtime_error("DemoWbcController: each `logs` entry needs `msg_type`");
-      }
-      ParsedLogEntry e;
-      e.msg_type = entry["msg_type"].as<std::string>();
-      if (entry["instance"]) {
-        e.instance = entry["instance"].as<std::string>();
-      }
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
-          e.msg_type != "integrated_bringup/DeviceWbcLog" &&
-          e.msg_type != "integrated_bringup/WbcDiagLog") {
-        throw std::runtime_error("DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
-      }
-      parsed_log_entries_.push_back(std::move(e));
-    }
-  }
 }
 
 void DemoWbcController::OnDeviceConfigsSet() {
@@ -1152,7 +1157,7 @@ void DemoWbcController::OnDeviceConfigsSet() {
   // in topic_config_ group order; missing slots get ±2π / 2 rad/s fallbacks
   // so RT clamping always has valid bounds.
   LoadDeviceLimitsFromConfig(device_position_lower_, device_position_upper_, device_max_velocity_,
-                             -6.2832, 6.2832, 2.0);
+                             -kJointLimitFallbackRad, kJointLimitFallbackRad, 2.0);
 
   // ── Joint reorder map ─────────────────────────────────────────────────
   BuildJointReorderMap();
