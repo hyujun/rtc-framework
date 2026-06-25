@@ -29,14 +29,9 @@ find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # ── MPC deps (isolated to deps/install/ via scripts/setup_env.sh) ────────────
-# hpp-fcl ABI: force ROS Jazzy's hpp-fcl *before* pinocchio's transitive
-# find_dependency. ROS版 hpp-fcl는 ColMajor addVertices; 다른 설치본이 CMAKE_PREFIX_PATH
-# 앞쪽에 있으면 ABI 깨짐.
-if(EXISTS /opt/ros/$ENV{ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl)
-  set(hpp-fcl_DIR
-    /opt/ros/$ENV{ROS_DISTRO}/lib/x86_64-linux-gnu/cmake/hpp-fcl
-    CACHE PATH "ROS hpp-fcl (avoid ABI break from stray installs)" FORCE)
-endif()
+# pinocchio 4.0 은 충돌 라이브러리로 coal 을 사용 (hpp-fcl 폐기). coal 은 ROS
+# distribution 판만 존재하고 pinocchioConfig 가 find_dependency(coal) 로 강제하므로
+# 별도 *_DIR 강제 불필요 (구 hpp-fcl_DIR ABI-pin 코드 제거).
 # fmt: deps/install (v11.1.4) 를 CMAKE_PREFIX_PATH 에서 찾음. v10 이상 요구.
 # apt libfmt-dev (9.1.0) 가 ROS transitive 로 들어와도 HINT 는 필요 없음 —
 # scripts/setup_env.sh 가 CMAKE_PREFIX_PATH 앞에 deps/install 을 둠.
