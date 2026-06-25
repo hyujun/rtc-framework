@@ -15,7 +15,7 @@
 
 이 저장소의 에이전트 가이드는 **agent-driven engineering** (harness engineering + spec-driven development + Anthropic 2026 agentic SDLC patterns) 의 5구성요소로 조직되어 있다. Agent = Model + Harness이며, 모델 바깥의 guides / sensors / orchestration / escalation / enforcement가 본 저장소의 1급 자산이다.
 
-출처: [Fowler — *Harness engineering for coding agent users* 2026.04](https://martinfowler.com/articles/harness-engineering.html) · [Anthropic — *Harness design for long-running application development* 2026.04](https://www.anthropic.com/engineering/harness-design-long-running-apps) · [Osmani — *Agent Harness Engineering* 2026](https://addyosmani.com/blog/agent-harness-engineering/) · [Anthropic — *2026 Agentic Coding Trends Report*](https://resources.anthropic.com/2026-agentic-coding-trends-report).
+근거·출처 (학술 문헌·Anthropic 공식 memory 가이드): [agent_docs/harness-rationale.md](agent_docs/harness-rationale.md).
 
 | 구성요소 | 목적 | 진입점 |
 |---|---|---|
@@ -31,18 +31,11 @@
 
 ## 3. Invariants (요약)
 
-전체: [agent_docs/invariants.md](agent_docs/invariants.md). 아래는 RT path 에서 자주 위반되는 핵심만.
+전체: [agent_docs/invariants.md](agent_docs/invariants.md).
 
 ### RT path 절대 금지 (정기 tick — `control_rate` YAML, 100 Hz–5 kHz, default 500 Hz)
 
-1. `new` / `malloc` / `push_back` / `emplace_back` / `resize` — pre-allocated fixed-size 사용
-2. `throw` / `catch` — error code, `std::optional`, `std::expected`
-3. `RCLCPP_INFO/WARN/ERROR/DEBUG/FATAL` 직접 호출 — SPSC → aux thread defer. **예외**: one-shot init, `RCLCPP_*_THROTTLE` with RT-safe msg (단순 format + 기본 타입만; `fmt::format` / `to_string` / string concat 금지)
-4. `std::mutex::lock` / `lock_guard` / `scoped_lock` — `try_lock`, `SeqLock`, SPSC, atomic
-5. `auto` with Eigen expression — aliasing 버그; 명시 타입
-6. Quaternion `lerp` / `nlerp` — `slerp` only
-7. 기존 test assertion 수정 — 새 코드를 고쳐라
-8. `std::shared_ptr` 복사 — atomic ref-count contention; raw ref 또는 `const std::shared_ptr<T>&`
+RT 핫패스 8개 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`resize`) · `throw`/`catch` · 직접 `RCLCPP_*` 로깅 · `mutex`/`lock_guard` · `auto`+Eigen · quaternion `lerp`/`nlerp` · 기존 test assertion 수정 · `shared_ptr` 복사 — 은 **`rtc_*` C++ 편집 시에만 로드되는 path-scoped rule** [.claude/rules/rt-path.md](.claude/rules/rt-path.md) 에 상세(예외·대안 포함). RT 코드 수정 전 반드시 확인하고, 위반 필요시 §6 `[CONCERN]`.
 
 ### Architecture / Process / Numerical
 
@@ -82,12 +75,12 @@
 
 다음 상황에서 사용자에게 inferential sensor 실행을 권한다:
 
-- `rtc_base` / `rtc_msgs` 변경 → `/review` (downstream 전 패키지 영향)
-- Abstract interface 신설 / 두 번째 구현 추가 (ARCH-3 후보) → `/review` (base 누락·#ifdef 유혹 검출)
-- `rtc_*` 에 robot-specific 코드 추가 의심 (ARCH-1 borderline) → `/review`
+- `rtc_base` / `rtc_msgs` 변경 → `/code-review` (downstream 전 패키지 영향)
+- Abstract interface 신설 / 두 번째 구현 추가 (ARCH-3 후보) → `/code-review` (base 누락·#ifdef 유혹 검출)
+- `rtc_*` 에 robot-specific 코드 추가 의심 (ARCH-1 borderline) → `/code-review`
 - E-STOP 경로 / safety publisher / lifecycle 콜백 수정 → `/security-review` (E-8)
-- PR 준비 (다파일 / 다패키지 commit) → `/ultrareview <PR#>`
-- 100+ 줄 변경 또는 신규 패키지 디렉토리 → `/review`
+- PR 준비 (다파일 / 다패키지 commit) → `/code-review ultra` (현재 branch) 또는 `/code-review ultra <PR#>` (GitHub PR). `/ultrareview` 는 deprecated alias
+- 100+ 줄 변경 또는 신규 패키지 디렉토리 → `/code-review`
 
 수동 trigger 인 이유: inferential 은 GPU/cost/지연이 크고 non-deterministic 이므로 모든 변경에 자동 적용하면 ROI 음성. 위 trigger 는 "false-negative 비용 > inferential 비용" 인 경우만 추렸다.
 

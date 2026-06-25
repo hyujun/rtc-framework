@@ -36,7 +36,7 @@
     - **P2** ROS 2 — `<rclcpp/*>`, `<std_msgs/*>` 등
     - **P3** third-party — Eigen, pinocchio, fmt, MuJoCo, BehaviorTree 등
     - **P4** stdlib — `<algorithm>` 등
-  - 같은 Priority 안의 blank line 은 clang-format 이 강제 collapse 한다. own header (`"foo.hpp"`) 와 `<rtc_base/...>` 가 같은 P1 이라 둘 사이 빈 줄 제거는 **의도된 동작** — `/review` 가 "include grouping 부족" 으로 지적하면 거절 정당.
+  - 같은 Priority 안의 blank line 은 clang-format 이 강제 collapse 한다. own header (`"foo.hpp"`) 와 `<rtc_base/...>` 가 같은 P1 이라 둘 사이 빈 줄 제거는 **의도된 동작** — `/code-review` 가 "include grouping 부족" 으로 지적하면 거절 정당.
   - 분리가 필요하면 `.clang-format` 패턴 추가가 정답이지 manual blank line 이 아니다.
   - **예외**: `#ifdef ... #endif` 사이에 낀 include 는 clang-format 이 grouping 못 해 blank line 이 살아 있다.
 
