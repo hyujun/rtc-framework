@@ -40,7 +40,13 @@ rtc_urdf_bridge/
 │   ├── urdf_analyzer.hpp               # URDF 파싱 및 트리 분석
 │   ├── kinematic_chain_extractor.hpp   # 서브모델/트리모델 체인 추출
 │   ├── pinocchio_model_builder.hpp     # YAML→Pinocchio 모델 빌드 파이프라인
-│   └── rt_model_handle.hpp             # RT-safe 계산 래퍼
+│   ├── rt_model_handle.hpp             # RT-safe 계산 래퍼
+│   └── se3/                            # SE(3) pose/twist error 모듈 (header-only, Eigen-only)
+│       ├── so3.hpp / se3.hpp           # log3/exp3/Jlog3, log6/exp6/adjoint/Jlog6
+│       ├── pose_error.hpp              # ErrorType + computePoseError (5 정의 + legacy)
+│       ├── velocity_error.hpp          # computeVelocityError / exactPoseErrorRate / transport
+│       ├── pinocchio_adapter.hpp       # pinocchio::SE3/Motion 오버로드
+│       └── README.md                   # 규약·ErrorType 표·선택 가이드
 ├── src/
 │   ├── urdf_analyzer.cpp
 │   ├── kinematic_chain_extractor.cpp
@@ -54,14 +60,33 @@ rtc_urdf_bridge/
 │   ├── example_basic_usage.cpp
 │   ├── example_submodel.cpp
 │   ├── example_tree_model.cpp
-│   └── example_rt_integration.cpp
+│   ├── example_rt_integration.cpp
+│   └── se3_error_compare.cpp           # SE(3) error 정의 비교 실험 (S1–S5, CSV 출력)
+├── scripts/
+│   └── plot_se3_compare.py             # 비교 실험 plot (matplotlib)
 └── test/                               # GTest 테스트
     ├── test_urdf_analyzer.cpp
     ├── test_chain_extractor.cpp
     ├── test_model_builder.cpp
     ├── test_load_model_config.cpp      # YAML 로드 + 폐쇄체인/lock 빌드
     ├── test_rt_model_handle.cpp
+    ├── test_se3_module.cpp             # SE(3) 모듈 (Pinocchio 교차검증 + 유한차분)
     └── urdf/                           # 테스트용 URDF 파일
+```
+
+### SE(3) Pose/Twist Error 모듈
+
+URDF 기반 매니퓰레이터의 SE(3) pose error와 정합하는 velocity(twist) error를
+계산하는 header-only 모듈 (`include/rtc_urdf_bridge/se3/`). 수치 코어는 Eigen만
+의존하며 Pinocchio 교차검증 (log6/Jlog6 < 1e-10). 5개 문헌 정의 (SplitWorld,
+BodyLog6, SpatialLog6, SplitLee, SplitQuat) + 워크스페이스 legacy (SplitBodyRot)
+를 `ErrorType` 으로 선택. 정의별 수식·frame·스케일·선택 가이드·Pinocchio frame
+정합 표는 [se3/README.md](include/rtc_urdf_bridge/se3/README.md) 참조.
+
+```bash
+# 비교 실험 실행 + plot
+ros2 run rtc_urdf_bridge se3_error_compare /tmp/se3out
+python3 scripts/plot_se3_compare.py /tmp/se3out
 ```
 
 ## Dependencies
