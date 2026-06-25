@@ -308,7 +308,7 @@ q_cmd  = q_des
 | `virtual_tcp_offset` | `[0, 0, 0]` | Constant 모드 오프셋 [x,y,z] (TCP 프레임, m) |
 | `fsm.pi_rotation_margin` | `0.15` rad | π 근처 quintic 궤적 분할 임계값. 범위 [0, π/2] (필수 키) |
 | `fsm.contact_stop_release_eps` | `0.005` rad | contact_stop release 히스테리시스. 범위 [0, 0.1] (필수 키) |
-| `command_type` | `"position"` | 출력 타입 |
+| `command_type` | `"position"` | 출력 타입 — `"position"` (PD 위치 추종) / `"torque"` (직접 토크) / `"pd_feedforward"` (PD 위치 + τ_ff, mujoco_sim 은 qfrc_applied 주입·중력보상 off) |
 
 **게인 업데이트 레이아웃 (16개 요소):**
 `[kp_trans*3, kp_rot*3, damping, null_kp, enable_null(0/1), control_6dof(0/1), traj_speed, traj_angular_speed, hand_traj_speed, max_vel, max_angular_vel, hand_max_vel]`

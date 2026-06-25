@@ -880,7 +880,13 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   // ── 6. Command type ───────────────────────────────────────────────────
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    if (s == "torque") {
+      command_type_ = CommandType::kTorque;
+    } else if (s == "pd_feedforward") {
+      command_type_ = CommandType::kPdFeedforward;
+    } else {
+      command_type_ = CommandType::kPosition;
+    }
   }
 
   // ── 7. MPC integration ────────────────────────────────────────────────
