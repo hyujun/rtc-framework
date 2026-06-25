@@ -7,8 +7,8 @@
 //
 // Usage: se3_error_compare [output_dir]   (default ".")
 // CSV schema: t,type,px,py,pz,theta_err,pos_err_norm,e1,e2,e3,e4,e5,e6
-#include "rtc_urdf_bridge/se3/pose_error.hpp"
-#include "rtc_urdf_bridge/se3/velocity_error.hpp"
+#include "rtc_math/se3/pose_error.hpp"
+#include "rtc_math/se3/velocity_error.hpp"
 
 #include <array>
 #include <cmath>
@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace se3 = rtc_urdf_bridge::se3;
+namespace se3 = rtc::math::se3;
 using se3::ErrorType;
 using se3::Iso3;
 using se3::Mat3;

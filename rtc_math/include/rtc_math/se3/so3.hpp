@@ -19,7 +19,7 @@
 
 #include <cmath>
 
-namespace rtc_urdf_bridge::se3 {
+namespace rtc::math::se3 {
 
 // ── Fixed-size aliases shared across the module ──────────────────────────────
 using Vec3 = Eigen::Vector3d;
@@ -160,4 +160,4 @@ inline constexpr double kQuatVecEps = 1e-8;
   return Mat3::Identity() + 0.5 * W + c * (W * W);
 }
 
-}  // namespace rtc_urdf_bridge::se3
+}  // namespace rtc::math::se3

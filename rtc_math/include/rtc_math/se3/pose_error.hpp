@@ -9,9 +9,9 @@
 // SO(3). All noexcept, fixed-size, no heap — RT-safe.
 #pragma once
 
-#include "rtc_urdf_bridge/se3/se3.hpp"
+#include "rtc_math/se3/se3.hpp"
 
-namespace rtc_urdf_bridge::se3 {
+namespace rtc::math::se3 {
 
 /// Pose-error definition. Each row lists frame, rotation scale (pure rotation
 /// of angle θ), and behaviour at θ=π. See computePoseError() doxygen per case.
@@ -82,4 +82,4 @@ enum class ErrorType {
   return Vec6::Zero();  // unreachable (all enum cases return)
 }
 
-}  // namespace rtc_urdf_bridge::se3
+}  // namespace rtc::math::se3

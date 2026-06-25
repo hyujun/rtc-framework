@@ -129,6 +129,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_tsid <-- Pinocchio, ProxSuite, Eigen3, yaml-cpp
   +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio, fmt ≥ 10
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
+rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional)
 rtc_urdf_bridge <-- Pinocchio, tinyxml2, yaml-cpp
 udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base
 robot_descriptions (data-only, no code deps)

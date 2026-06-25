@@ -13,10 +13,10 @@
 // size / no heap — RT-safe.
 #pragma once
 
-#include "rtc_urdf_bridge/se3/pose_error.hpp"
-#include "rtc_urdf_bridge/se3/se3.hpp"
+#include "rtc_math/se3/pose_error.hpp"
+#include "rtc_math/se3/se3.hpp"
 
-namespace rtc_urdf_bridge::se3 {
+namespace rtc::math::se3 {
 
 /// Frame convention of an input twist (mirrors pinocchio::ReferenceFrame).
 enum class TwistFrame {
@@ -160,4 +160,4 @@ namespace detail {
   return Vec6::Zero();  // unreachable
 }
 
-}  // namespace rtc_urdf_bridge::se3
+}  // namespace rtc::math::se3

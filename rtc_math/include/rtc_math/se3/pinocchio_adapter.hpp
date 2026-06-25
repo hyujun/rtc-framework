@@ -18,10 +18,10 @@
 #include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
-#include "rtc_urdf_bridge/se3/pose_error.hpp"
-#include "rtc_urdf_bridge/se3/velocity_error.hpp"
+#include "rtc_math/se3/pose_error.hpp"
+#include "rtc_math/se3/velocity_error.hpp"
 
-namespace rtc_urdf_bridge::se3 {
+namespace rtc::math::se3 {
 
 // ── Conversions (RT-safe, fixed size) ────────────────────────────────────────
 [[nodiscard]] inline Iso3 toIso3(const pinocchio::SE3& M) noexcept {
@@ -64,4 +64,4 @@ namespace rtc_urdf_bridge::se3 {
   return exactPoseErrorRate(toIso3(T), toIso3(T_d), toVec6(nu), toVec6(nu_d), type);
 }
 
-}  // namespace rtc_urdf_bridge::se3
+}  // namespace rtc::math::se3

@@ -1,16 +1,18 @@
-# SE(3) Pose/Twist Error Module (`rtc_urdf_bridge::se3`)
+# SE(3) Pose/Twist Error Module (`rtc::math::se3`)
 
 Header-only, Eigen-only numeric core for SE(3) pose error and the **matching
 velocity (twist) error**. Pinocchio is used only by the optional adapter and the
-tests. Lives in `rtc_urdf_bridge` (the workspace's lowest Eigen+Pinocchio
-kinematics layer) and is exported via `export_rtc_urdf_bridge` — any package that
-links `rtc_urdf_bridge::rtc_urdf_bridge` gets the headers.
+tests. Lives in `rtc_math` (the workspace's lowest Eigen-only geometric/control
+math layer) and is exported as an INTERFACE target — any package that depends on
+`rtc_math` gets the headers. The numeric core depends on Eigen only; the
+`pinocchio_adapter.hpp` overloads are an optional dependency, compiled and
+installed only when Pinocchio is found.
 
 ```cpp
-#include "rtc_urdf_bridge/se3/pose_error.hpp"
-#include "rtc_urdf_bridge/se3/velocity_error.hpp"
-#include "rtc_urdf_bridge/se3/pinocchio_adapter.hpp"  // optional: pinocchio::SE3/Motion overloads
-namespace se3 = rtc_urdf_bridge::se3;
+#include "rtc_math/se3/pose_error.hpp"
+#include "rtc_math/se3/velocity_error.hpp"
+#include "rtc_math/se3/pinocchio_adapter.hpp"  // optional: pinocchio::SE3/Motion overloads
+namespace se3 = rtc::math::se3;
 ```
 
 ## Conventions

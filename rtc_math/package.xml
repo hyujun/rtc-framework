@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rtc_math</name>
+  <version>0.1.0</version>
+  <description>Robot-agnostic geometric/control math for RT control loops. Header-only, Eigen-only SE(3) Lie-group primitives (so3/se3 log/exp/Jacobians) and the matching task-space pose-error + velocity(twist)-error definitions. Pinocchio is an optional adapter dependency, never required by the numeric core.</description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen</depend>
+
+  <!-- Pinocchio is only used by the optional pinocchio_adapter.hpp overloads and
+       by the cross-validation test; the Eigen-only core never requires it. -->
+  <test_depend>pinocchio</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

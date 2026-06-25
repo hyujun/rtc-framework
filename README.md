@@ -13,7 +13,7 @@
 
 ## 패키지 구성
 
-20개 ROS 2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 멀티-로봇 데이터/통합 패키지로 분리됩니다. 각 패키지는 자체 `README.md`를 포함하며, 패키지 버전 핀은 README 에서 의도적으로 생략합니다 (drift 방지 — 정확한 버전은 각 `package.xml` 참조).
+21개 ROS 2 패키지로 구성되어 있으며, 로봇 비의존적 프레임워크(`rtc_*`), 형상 추정(`shape_estimation_*`), 멀티-로봇 데이터/통합 패키지로 분리됩니다. 각 패키지는 자체 `README.md`를 포함하며, 패키지 버전 핀은 README 에서 의도적으로 생략합니다 (drift 방지 — 정확한 버전은 각 `package.xml` 참조).
 
 ### 로봇 비의존적 프레임워크 (rtc_*)
 
@@ -21,6 +21,7 @@
 |--------|------|------|
 | [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 14종 (JointCommand, FingertipSensor, HandSensorState, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, WbcState, ToFSnapshot, ControllerState, CalibrationCommand, CalibrationStatus, SimSensor, SimSensorState) | ament_cmake |
 | [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
+| [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`). Pinocchio 어댑터는 optional | ament_cmake |
 | [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket RAII, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
 | [`rtc_controllers`](rtc_controllers/) | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
@@ -71,6 +72,7 @@ rtc_msgs, rtc_base (독립)
   └── rtc_tools (독립, Python)
 
 repo_scripts (shell-only, no CMake)
+rtc_math (독립) ← Eigen3 (Pinocchio adapter optional)
 rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 
 shape_estimation_msgs (독립)
