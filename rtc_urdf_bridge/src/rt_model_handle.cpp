@@ -47,7 +47,7 @@ RtModelHandle::RtModelHandle(std::shared_ptr<const pinocchio::Model> model,
   if (!constraint_models_.empty()) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    pinocchio::initConstraintDynamics(*model_, data_, constraint_models_);
+    pinocchio::initConstraintDynamics(*model_, data_, constraint_models_, constraint_datas_);
 #pragma GCC diagnostic pop
   }
 }

@@ -50,6 +50,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 ament_target_dependencies(${PROJECT_NAME} rclcpp pinocchio)
 target_link_libraries(${PROJECT_NAME}
+  pinocchio::pinocchio
   Eigen3::Eigen
   yaml-cpp
   tinyxml2::tinyxml2

@@ -53,7 +53,7 @@ ament_target_dependencies(rtc_controllers
   pinocchio
   rtc_urdf_bridge
 )
-target_link_libraries(rtc_controllers yaml-cpp Eigen3::Eigen)
+target_link_libraries(rtc_controllers pinocchio::pinocchio yaml-cpp Eigen3::Eigen)
 
 # Position-independent code for static library (needed when linked into shared libs)
 set_target_properties(rtc_controllers PROPERTIES POSITION_INDEPENDENT_CODE ON)

@@ -242,8 +242,8 @@ void PinocchioModelBuilder::RegisterClosedChainConstraints() {
                                                joint2_id, placement_b, pinocchio::LOCAL);
 
     // Baumgarte 안정화 파라미터
-    constraint.corrector.Kp.setConstant(cc.baumgarte_kp);
-    constraint.corrector.Kd.setConstant(cc.baumgarte_kd);
+    constraint.baumgarte_corrector_parameters().Kp = cc.baumgarte_kp;
+    constraint.baumgarte_corrector_parameters().Kd = cc.baumgarte_kd;
 
     RCLCPP_INFO(logger(),
                 "폐쇄 체인 등록: '%s' (link_a='%s', link_b='%s', %s, "
