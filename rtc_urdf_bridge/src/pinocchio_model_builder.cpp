@@ -11,10 +11,10 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <pinocchio/algorithm/model.hpp>
-#include <pinocchio/math/rpy.hpp>
+#include <pinocchio/math.hpp>
 #include <pinocchio/multibody/joint/fwd.hpp>
 #include <pinocchio/parsers/urdf.hpp>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 #include <yaml-cpp/yaml.h>

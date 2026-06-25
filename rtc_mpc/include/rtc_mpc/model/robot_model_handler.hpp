@@ -25,7 +25,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
 #include <yaml-cpp/yaml.h>

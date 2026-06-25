@@ -28,12 +28,11 @@
 #include <Eigen/Core>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
 #include "mock_phase_manager.hpp"
-#include "wait_until.hpp"
 #include "rtc_mpc/handler/contact_light_mpc.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
@@ -42,6 +41,7 @@
 #include "rtc_mpc/phase/phase_cost_config.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
+#include "wait_until.hpp"
 
 #include <yaml-cpp/yaml.h>
 

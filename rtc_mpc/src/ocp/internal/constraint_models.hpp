@@ -21,7 +21,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#include <pinocchio/algorithm/contact-info.hpp>
+#include <pinocchio/constraints.hpp>
 #include <pinocchio/multibody/fwd.hpp>
 #pragma GCC diagnostic pop
 

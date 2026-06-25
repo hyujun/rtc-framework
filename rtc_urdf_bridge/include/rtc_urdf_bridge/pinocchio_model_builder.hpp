@@ -11,9 +11,8 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/contact-info.hpp>
-#include <pinocchio/multibody/data.hpp>
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/constraints.hpp>
+#include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
 #include <memory>

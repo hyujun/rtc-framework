@@ -50,7 +50,7 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <Eigen/Core>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 #include <yaml-cpp/yaml.h>

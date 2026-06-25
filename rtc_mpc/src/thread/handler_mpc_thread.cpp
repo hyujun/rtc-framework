@@ -11,7 +11,7 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
 #include <cstddef>

@@ -16,9 +16,9 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #include <Eigen/Core>
 #include <Eigen/Geometry>
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody.hpp>
 #include <pinocchio/parsers/urdf.hpp>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 #include "integrated_bringup/controllers/wbc/grasp_phase_manager.hpp"

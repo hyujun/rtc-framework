@@ -60,11 +60,11 @@ void RobotModelInfo::Build(const pinocchio::Model& model, const YAML::Node& conf
   tau_max.resize(n_actuated);
   tau_min.resize(n_actuated);
   if (floating_base) {
-    tau_max = model.effortLimit.tail(n_actuated);
-    tau_min = -model.effortLimit.tail(n_actuated);
+    tau_max = model.upperEffortLimit.tail(n_actuated);
+    tau_min = -model.upperEffortLimit.tail(n_actuated);
   } else {
-    tau_max = model.effortLimit.head(n_actuated);
-    tau_min = -model.effortLimit.head(n_actuated);
+    tau_max = model.upperEffortLimit.head(n_actuated);
+    tau_min = -model.upperEffortLimit.head(n_actuated);
   }
 
   if (config && config["tau_max"]) {
@@ -82,7 +82,7 @@ void RobotModelInfo::Build(const pinocchio::Model& model, const YAML::Node& conf
 
   q_upper = model.upperPositionLimit;
   q_lower = model.lowerPositionLimit;
-  v_max = model.velocityLimit;
+  v_max = model.upperVelocityLimit;
 }
 
 // ════════════════════════════════════════════════

@@ -40,8 +40,8 @@
 #include <aligator/core/traj-opt-problem.hpp>
 #include <aligator/modelling/multibody/frame-placement.hpp>
 #include <aligator/modelling/state-error.hpp>
-#include <pinocchio/algorithm/contact-info.hpp>
 #include <pinocchio/algorithm/proximal.hpp>
+#include <pinocchio/constraints.hpp>
 #pragma GCC diagnostic pop
 
 #include <memory>

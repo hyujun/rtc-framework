@@ -27,7 +27,7 @@
 #include <aligator/solvers/proxddp/solver-proxddp.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 

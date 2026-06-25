@@ -6,7 +6,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
-#include <pinocchio/math/rpy.hpp>
+#include <pinocchio/math.hpp>
 
 #include <array>
 #include <cmath>

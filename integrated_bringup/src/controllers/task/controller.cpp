@@ -20,8 +20,8 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/math/rpy.hpp>
-#include <pinocchio/spatial/explog.hpp>
+#include <pinocchio/math.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 namespace integrated_bringup {

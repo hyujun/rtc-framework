@@ -10,7 +10,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/math/rpy.hpp>
+#include <pinocchio/math.hpp>
 #pragma GCC diagnostic pop
 
 namespace integrated_bringup {
@@ -64,9 +64,8 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
         // capability AND per-fingertip inferencer freshness.
         const bool native_path =
             has_native_contact_ && dev1.inference_enable[static_cast<std::size_t>(f)];
-        ft.contact_flag = native_path
-                              ? dev1.inference_data[static_cast<std::size_t>(ft_base)]
-                              : 0.0F;
+        ft.contact_flag =
+            native_path ? dev1.inference_data[static_cast<std::size_t>(ft_base)] : 0.0F;
         const float fx = ft.force[0];
         const float fy = ft.force[1];
         const float fz = ft.force[2];

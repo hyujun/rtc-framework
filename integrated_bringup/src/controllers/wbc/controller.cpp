@@ -18,7 +18,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/math/rpy.hpp>
+#include <pinocchio/math.hpp>
 #pragma GCC diagnostic pop
 
 #include "rtc_tsid/constraints/contact_constraint.hpp"
@@ -753,7 +753,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   }
   q_min_clamped_ = full_model_ptr_->lowerPositionLimit.array() + position_margin_;
   q_max_clamped_ = full_model_ptr_->upperPositionLimit.array() - position_margin_;
-  v_limit_ = full_model_ptr_->velocityLimit * velocity_scale_;
+  v_limit_ = full_model_ptr_->upperVelocityLimit * velocity_scale_;
 
   // ── 3b. Stage C-2: CLIK (Kinematic WBC) configuration ─────────────────
   // CLIK is the sole position backbone. clik.{damping_sq,v_limit,w_*} are

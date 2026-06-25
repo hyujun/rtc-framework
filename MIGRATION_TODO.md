@@ -57,7 +57,8 @@ aligator solve 가 pinocchio/aligator 경계에서 allocator 교차 free → pin
 
 ## 후속 cleanup (비차단)
 
-- `model.velocityLimit` deprecated (rtc_tsid/src/types/wbc_types.cpp:85) → pin 4.0 신규 접근자 교체.
-- 131-header `deprecated/` shim 의존 제거 — 신규 4.0 경로로 include 전면 교체.
-- `-Dhpp-fcl_DIR` dead-code 제거 (build_deps.sh, rtc_mpc/CMakeLists.txt) — pin 4.0 은 coal 사용.
 - pinocchio 4.0 재고정: `sudo apt-mark hold ros-jazzy-pinocchio` (우발적 변경 방지).
+- `PINOCCHIO_ALIGNED_STD_VECTOR` deprecation — 4.0 에서 `aligned_vector` 가
+  `std::vector` 로 폐기 경고 (rtc_mpc/src/ocp/internal/constraint_models.hpp:35).
+  migration 시 "무변경" 결정했으나 `std::vector<RigidConstraintModel>` 직접 사용으로
+  정리 가능 (비차단).

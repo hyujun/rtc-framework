@@ -13,7 +13,7 @@
 #include <aligator/core/traj-opt-problem.hpp>
 #include <aligator/fwd.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
-#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody.hpp>
 #pragma GCC diagnostic pop
 
 #include <algorithm>

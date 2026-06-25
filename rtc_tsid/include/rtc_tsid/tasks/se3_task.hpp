@@ -8,8 +8,7 @@
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/spatial/explog.hpp>
-#include <pinocchio/spatial/se3.hpp>
+#include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
 namespace rtc::tsid {
@@ -46,9 +45,9 @@ class SE3Task final : public TaskBase {
   [[nodiscard]] int ResidualDim() const noexcept override { return active_dim_; }
 
   void ComputeResidual(const PinocchioCache& cache, const ControlReference& ref,
-                        const ContactState& contacts, int n_vars,
-                        Eigen::Ref<Eigen::MatrixXd> J_block,
-                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
+                       const ContactState& contacts, int n_vars,
+                       Eigen::Ref<Eigen::MatrixXd> J_block,
+                       Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
   /// @brief SE3 목표 설정 (RT-safe)
   /// @param placement_des 목표 SE3 pose, **base_frame 기준**.
@@ -62,7 +61,7 @@ class SE3Task final : public TaskBase {
 
   /// @brief PD gains 설정 (RT-safe)
   void SetGains(const Eigen::Matrix<double, 6, 1>& kp,
-                 const Eigen::Matrix<double, 6, 1>& kd) noexcept;
+                const Eigen::Matrix<double, 6, 1>& kd) noexcept;
 
  private:
   std::string name_{"se3"};
