@@ -36,7 +36,7 @@ For a pure rotation of angle θ, the rotation part has the listed magnitude.
 | `SpatialLog6` | `log6(T_d T⁻¹)` | spatial screw | θ | MLS 1994 (`= Ad_T · BodyLog6`) |
 | `SplitLee` | `[p_d−p ; ½(R_dRᵀ−RR_dᵀ)∨]` | world | sinθ | Lee et al. 2010 |
 | `SplitQuat` | `[p_d−p ; 2·sign(w)·vec(q_d⊗q⁻¹)]` | world | 2sin(θ/2) | Nakanishi 2008 |
-| `SplitBodyRot` | `[p_d−p ; log3(Rᵀ R_d)]` | base pos + **body** rot | θ | workspace legacy (`rtc::tsid::ComputeSe3Error`) |
+| `SplitBodyRot` | `[p_d−p ; log3(Rᵀ R_d)]` | base pos + **body** rot | θ | workspace legacy (former `rtc::tsid::ComputeSe3Error`, since removed) |
 
 `isBodyFrame(t)` is `true` only for `BodyLog6` (twist fully in the body frame).
 

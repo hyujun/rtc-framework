@@ -45,6 +45,11 @@ namespace rtc::tsid {
 /// `nu_lwa`   : current frame spatial twist (J·v) in LWA.
 /// `nu_d_lwa` : desired frame spatial twist (feedforward v_des) in LWA.
 ///
+/// CAUTION: BOTH inputs MUST be LOCAL_WORLD_ALIGNED twists (world-axis-aligned at
+/// the body origin), NOT LOCAL/body twists — they are rotated into the body
+/// frame internally (nu via T, nu_d via T_d). Passing an already-LOCAL twist
+/// double-rotates the linear part and corrupts the damping term.
+///
 /// rtc_math's exactPoseErrorRate expects LOCAL (body) twists, so each input is
 /// rotated into its own body frame first (nu via T, nu_d via T_d), and the
 /// resulting LOCAL ė is transported back to LWA. At small error this reduces to

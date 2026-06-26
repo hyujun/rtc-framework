@@ -136,9 +136,11 @@ void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReferenc
   error_full_ = ComputeTaskPoseError(tip_in_base, placement_des_);
 
   // ── 속도 오차: e_pos 의 정확한 시간미분 ė (Jlog6 정방향, LWA) ──
-  // 소오차서 v_des − J·v 로 환원되는 drop-in. nu_cur_ = 현재 frame 트위스트(LWA).
-  nu_cur_.noalias() = rf.J * cache.v;
-  v_error_full_ = ComputeTaskVelocityError(tip_in_base, placement_des_, nu_cur_, v_des_);
+  // 소오차서 v_des − J·v 로 환원되는 drop-in. nu_cur = 현재 frame 트위스트(LWA);
+  // fixed-size 스택 지역에 noalias GEMV (heap 0, ComputeIsAllocationFree 로 검증).
+  Eigen::Matrix<double, 6, 1> nu_cur;
+  nu_cur.noalias() = rf.J * cache.v;
+  v_error_full_ = ComputeTaskVelocityError(tip_in_base, placement_des_, nu_cur, v_des_);
 
   // ── desired acceleration: a_ff + Kp·e_pos + Kd·e_vel ──
   a_des_full_ = a_ff_ + kp_.cwiseProduct(error_full_) + kd_.cwiseProduct(v_error_full_);

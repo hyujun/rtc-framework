@@ -90,7 +90,6 @@ class SE3Task final : public TaskBase {
   Eigen::Matrix<double, 6, 1> error_full_;    // 6D pose error
   Eigen::Matrix<double, 6, 1> v_error_full_;  // 6D velocity error
   Eigen::Matrix<double, 6, 1> a_des_full_;    // 6D desired acceleration
-  Eigen::Matrix<double, 6, 1> nu_cur_;        // current frame twist J·v (LWA), RT scratch
 };
 
 }  // namespace rtc::tsid
