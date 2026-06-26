@@ -57,11 +57,16 @@ class OnnxEngine : public InferenceEngine {
     // ── Validate model I/O against config (loud failure on drift) ───────────
     // Catches output-head count/shape mismatch from a retrained/wrong .onnx
     // before any buffer is sized to the declared (possibly wrong) shape.
+    // NOTE: outputs are bound positionally (head o ↔ config.output_shapes[o]),
+    // so shape validation cannot detect a reorder of two heads with identical
+    // shapes (e.g. two [1,3] heads swapped) — that is the model's contract.
     const std::size_t n_out = config.output_shapes.size();
     if (model->session.GetInputCount() < 1)
       throw std::runtime_error("rtc_inference: model '" + config.model_path +
                                "' has no input tensor");
-    if (model->session.GetOutputCount() < n_out)
+    // Exact arity: a model with fewer OR more outputs than declared is a
+    // mismatch (extra heads would be silently dropped by positional binding).
+    if (model->session.GetOutputCount() != n_out)
       throw std::runtime_error("rtc_inference: model '" + config.model_path + "' exposes " +
                                std::to_string(model->session.GetOutputCount()) +
                                " outputs but config declares " + std::to_string(n_out));
@@ -108,13 +113,15 @@ class OnnxEngine : public InferenceEngine {
       model->output_name_ptrs[o] = model->output_names[o].c_str();  // stable: name owned by model
     }
 
-    models_.push_back(std::move(model));
-    initialized_ = true;
-
     // ── Warmup via the exact production path (RunModelDirect) ────────────────
+    // Run BEFORE registering so Init is atomic: a warmup throw propagates out
+    // without leaving a half-initialized model in models_ (register-or-nothing).
     // Re-uses the same marshalling RunModels() uses, so warmup exercises the
     // real inference path (no separate code that could drift / leave it cold).
-    RunModelDirect(*models_.back());  // throws on ORT error → propagates out of Init
+    RunModelDirect(*model);  // throws on ORT error → propagates out of Init
+
+    models_.push_back(std::move(model));
+    initialized_ = true;
   }
 
   /// Drop all registered models so Init() can re-register from scratch. Makes
@@ -128,11 +135,8 @@ class OnnxEngine : public InferenceEngine {
     if (!initialized_)
       return false;
     try {
-      for (auto& model : models_) {
-        model->io_binding->SynchronizeInputs();
-        model->session.Run(*run_options_, *model->io_binding);
-        model->io_binding->SynchronizeOutputs();
-      }
+      for (auto& model : models_)
+        RunOneBinding(*model);
       return true;
     } catch (...) {
       return false;
@@ -144,10 +148,7 @@ class OnnxEngine : public InferenceEngine {
     if (!initialized_ || model_idx < 0 || static_cast<std::size_t>(model_idx) >= models_.size())
       return false;
     try {
-      auto& model = *models_[static_cast<std::size_t>(model_idx)];
-      model.io_binding->SynchronizeInputs();
-      model.session.Run(*run_options_, *model.io_binding);
-      model.io_binding->SynchronizeOutputs();
+      RunOneBinding(*models_[static_cast<std::size_t>(model_idx)]);
       return true;
     } catch (...) {
       return false;
@@ -246,17 +247,33 @@ class OnnxEngine : public InferenceEngine {
   }
 
   // Throw if the model's actual tensor shape is incompatible with the declared
-  // one. A model dim < 0 is dynamic (e.g. dynamic batch/seq) and matches any
-  // declared size; static dims must match exactly. Non-RT (Init only).
+  // one. The declared shape sizes a real buffer, so every declared dim must be
+  // static positive (a dynamic -1 would make Numel() cast to SIZE_MAX and try a
+  // catastrophic allocation). A model dim < 0 is dynamic (e.g. dynamic batch/
+  // seq) and matches any declared size; static model dims must match exactly.
+  // Non-RT (Init only).
   static void CheckShape(const std::vector<int64_t>& model_shape,
                          const std::vector<int64_t>& declared, const char* what, int idx,
                          const std::string& model_path) {
+    for (auto d : declared)
+      if (d <= 0)
+        throw std::runtime_error(
+            "rtc_inference: model '" + model_path + "' " + what + "[" + std::to_string(idx) +
+            "] declared shape must be static positive (got " + std::to_string(d) + ")");
     bool ok = model_shape.size() == declared.size();
     for (std::size_t i = 0; ok && i < declared.size(); ++i)
       ok = (model_shape[i] < 0) || (model_shape[i] == declared[i]);
     if (!ok)
       throw std::runtime_error("rtc_inference: model '" + model_path + "' " + what + "[" +
                                std::to_string(idx) + "] shape mismatch vs config");
+  }
+
+  // IoBinding inference for one model (SynchronizeInputs → Run → Synchronize
+  // Outputs), shared by Run() and RunModel(). Single-sources the sync triplet.
+  void RunOneBinding(Model& m) {
+    m.io_binding->SynchronizeInputs();
+    m.session.Run(*run_options_, *m.io_binding);
+    m.io_binding->SynchronizeOutputs();
   }
 
   // Direct Session::Run marshalling shared by RunModels() (RT, wrapped in

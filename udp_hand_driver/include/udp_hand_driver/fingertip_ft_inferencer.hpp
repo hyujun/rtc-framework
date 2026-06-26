@@ -339,8 +339,9 @@ class FingertipFTInferencer {
       // ── 추론 (engine: direct Session::Run, 3 output buffers에 직접 기록) ──
       if (!engine_.RunModels(&mi, 1)) {
         // ORT 추론 실패 (engine 이 예외를 삼키고 false 반환). hot path 라 throttle.
-        static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-        RCLCPP_ERROR_THROTTLE(::udp_hand_driver::logging::FtLogger(), steady_clock,
+        // throttle_clock_ 은 멤버 (생성 시 1회 init) — static-local 의 first-call
+        // 생성이 noexcept Infer 밖으로 throw 해 terminate 되는 경로를 차단.
+        RCLCPP_ERROR_THROTTLE(::udp_hand_driver::logging::FtLogger(), throttle_clock_,
                               ::udp_hand_driver::logging::kThrottleHotMs,
                               "FT inference failed (finger=%d, model_idx=%d)", f, mi);
         all_ready = false;
@@ -406,6 +407,10 @@ class FingertipFTInferencer {
   // 모든 ONNX session/iobinding/tensor/buffer/warmup 를 소유 (per-fingertip = model).
   // 등록된 model 수 = engine_.num_models() (별도 카운터 불필요).
   rtc::OnnxEngine engine_;
+
+  // noexcept Infer() hot path 의 throttle 로깅용 clock. 멤버로 1회 생성하여
+  // static-local first-call 생성이 Infer 밖으로 throw 하는 경로를 제거.
+  rclcpp::Clock throttle_clock_{RCL_STEADY_TIME};
 
   // fingertip index → engine model index 매핑 (-1 = 모델 미로드/skip).
   // 빈 경로 finger 가 건너뛰어지므로 fingertip↔model 은 identity 가 아니다.
