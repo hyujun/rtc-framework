@@ -10,6 +10,7 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "alloc_counter.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
 
 namespace rtc::tsid {
@@ -331,6 +332,48 @@ TEST_F(SE3TaskTest, UnknownBaseFrameThrows) {
   cfg["frame"] = "panda_hand";
   cfg["base_frame"] = "not_a_real_frame";
   EXPECT_THROW(task.Init(*model_, robot_info_, cache_, cfg), std::runtime_error);
+}
+
+// ── RT zero-alloc guard for the shared-helper pose/velocity error path ───────
+// Exercises the full BodyLog6 + Jlog6 chain (nonzero v and v_des, combined
+// translation+rotation error) and asserts ComputeResidual allocates nothing.
+TEST_F(SE3TaskTest, ComputeIsAllocationFree) {
+  SE3Task task;
+  YAML::Node cfg;
+  cfg["frame"] = "panda_hand";
+  cfg["base_frame"] = "panda_link0";
+  cfg["mask"] = std::vector<int>{1, 1, 1, 1, 1, 1};
+  cfg["kp"] = 100.0;
+  cfg["kd"] = 20.0;
+  task.Init(*model_, robot_info_, cache_, cfg);
+
+  Eigen::VectorXd q = pinocchio::neutral(*model_);
+  Eigen::VectorXd v = Eigen::VectorXd::Constant(robot_info_.nv, 0.1);  // nonzero → velocity path
+  cache_.Update(q, v, contacts_);
+
+  pinocchio::SE3 des = cache_.registered_frames[0].oMf;
+  des.translation()(2) += 0.2;
+  des.rotation() =
+      des.rotation() * Eigen::AngleAxisd(0.3, Eigen::Vector3d::UnitX()).toRotationMatrix();
+  task.SetSe3Reference(des, Eigen::Matrix<double, 6, 1>::Constant(0.05));
+
+  const int n_vars = robot_info_.nv;
+  Eigen::MatrixXd J(6, n_vars);
+  Eigen::VectorXd r(6);
+  J.setZero();
+  r.setZero();
+
+  // Warm-up outside the armed window (first-call lazy state, if any).
+  task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
+
+  test::AllocCounter::Arm();
+  for (int i = 0; i < 100; ++i) {
+    task.ComputeResidual(cache_, ref_, contacts_, n_vars, J, r);
+  }
+  test::AllocCounter::Disarm();
+
+  EXPECT_EQ(test::AllocCounter::alloc_count.load(), 0)
+      << "SE3Task::ComputeResidual must be allocation-free in the RT path";
 }
 
 }  // namespace

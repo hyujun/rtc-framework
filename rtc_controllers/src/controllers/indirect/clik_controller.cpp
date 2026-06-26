@@ -324,9 +324,10 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   // position-rotation coupling), via rtc_math. The error is returned in the
   // LOCAL frame; J_full_ is expressed in LOCAL_WORLD_ALIGNED, so transport
   // LOCAL → LWA (rotation-only blockdiag(R,R), NOT the full adjoint).
+  const rtc::math::se3::Iso3 tcp_iso = rtc::math::se3::toIso3(tcp_pose);
   const rtc::math::se3::Vec6 e_body = rtc::math::se3::computePoseError(
-      tcp_pose, traj_state_.pose, rtc::math::se3::ErrorType::BodyLog6);
-  pos_error_6d_ = rtc::math::se3::twistLocalToWorld(rtc::math::se3::toIso3(tcp_pose), e_body);
+      tcp_iso, rtc::math::se3::toIso3(traj_state_.pose), rtc::math::se3::ErrorType::BodyLog6);
+  pos_error_6d_ = rtc::math::se3::twistLocalToWorld(tcp_iso, e_body);
 
   const Eigen::Vector3d p_err = pos_error_6d_.head<3>();
 

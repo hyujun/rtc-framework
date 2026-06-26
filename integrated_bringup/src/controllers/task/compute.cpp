@@ -296,15 +296,16 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   // ── Cartesian error ────────────────────────────────────────────────────
   // BodyLog6 = log6(T_cur⁻¹ T_d): body-frame screw error (preserves the
   // position-rotation coupling), via rtc_math.
+  const rtc::math::se3::Iso3 control_iso = rtc::math::se3::toIso3(control_pose);
   const rtc::math::se3::Vec6 e_body = rtc::math::se3::computePoseError(
-      control_pose, traj_state_.pose, rtc::math::se3::ErrorType::BodyLog6);
+      control_iso, rtc::math::se3::toIso3(traj_state_.pose), rtc::math::se3::ErrorType::BodyLog6);
   if (use_vtcp_frame) {
     // Jacobian is in vtcp (LOCAL) frame → use the LOCAL error directly.
     pos_error_6d_ = e_body;
   } else {
     // LOCAL_WORLD_ALIGNED Jacobian → transport LOCAL → LWA (rotation-only
     // blockdiag(R,R), NOT the full adjoint).
-    pos_error_6d_ = rtc::math::se3::twistLocalToWorld(rtc::math::se3::toIso3(control_pose), e_body);
+    pos_error_6d_ = rtc::math::se3::twistLocalToWorld(control_iso, e_body);
   }
 
   const Eigen::Vector3d p_err = pos_error_6d_.head<3>();

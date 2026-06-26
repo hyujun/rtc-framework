@@ -33,8 +33,10 @@ namespace rtc::tsid {
 [[nodiscard]] inline rtc::math::se3::Vec6 ComputeTaskPoseError(const pinocchio::SE3& T,
                                                                const pinocchio::SE3& T_d) noexcept {
   namespace se3 = rtc::math::se3;
-  return se3::twistLocalToWorld(se3::toIso3(T),
-                                se3::computePoseError(T, T_d, se3::ErrorType::BodyLog6));
+  // Convert T once (the SE3 overload of computePoseError would re-convert it).
+  const se3::Iso3 T_iso = se3::toIso3(T);
+  return se3::twistLocalToWorld(
+      T_iso, se3::computePoseError(T_iso, se3::toIso3(T_d), se3::ErrorType::BodyLog6));
 }
 
 /// 6D task velocity error in the LWA frame = exact time-derivative of

@@ -8,6 +8,7 @@
 #include <pinocchio/parsers/urdf.hpp>
 #pragma GCC diagnostic pop
 
+#include "alloc_counter.hpp"
 #include "rtc_tsid/contact/contact_manager.hpp"
 #include "rtc_tsid/contact/grasp_cache.hpp"
 #include "rtc_tsid/contact/object_state_provider.hpp"
@@ -250,6 +251,49 @@ TEST_F(ObjectSE3TaskTest, ProviderWatchdog) {
   provider_.SetValid(true);
   task.UpdateResidualDim(contacts_);
   EXPECT_EQ(task.ResidualDim(), 6);
+}
+
+// ── RT zero-alloc guard for the shared-helper pose/velocity error path ───────
+// Same BodyLog6 + Jlog6 helper as SE3Task, here through the object task's
+// grasp-projected residual. Nonzero v, v_obj, v_des and combined
+// translation+rotation error exercise the full path.
+TEST_F(ObjectSE3TaskTest, ComputeIsAllocationFree) {
+  Configure({{"panda_link3", 3}, {"panda_link5", 3}, {"panda_link7", 3}});
+  v_.setConstant(0.1);  // nonzero velocity → dJv + velocity-error path
+  cache_.Update(q_, v_, contacts_);
+  const int n_active = mgr_.ActiveLambdaDim(contacts_);
+  G_.setZero(6, n_active);
+  mgr_.ComputeGraspMatrix(cache_, contacts_, object_frame_, G_);
+  grasp_cache_.Compute(G_, n_active);
+
+  ObjectSE3Task task;
+  WireTask(task);
+  provider_.SetTwist(Eigen::Matrix<double, 6, 1>::Constant(0.02));  // nonzero v_obj
+  const pinocchio::SE3 des(Eigen::AngleAxisd(0.3, Eigen::Vector3d::UnitZ()).toRotationMatrix(),
+                           Eigen::Vector3d(0.1, -0.05, 0.2));
+  task.SetSe3Reference(des, Eigen::Matrix<double, 6, 1>::Constant(0.05));
+  task.SetGains(Eigen::Matrix<double, 6, 1>::Constant(50.0),
+                Eigen::Matrix<double, 6, 1>::Constant(5.0));
+  task.UpdateResidualDim(contacts_);
+
+  const int nv = robot_info_.nv;
+  const int n_vars = nv + contact_cfg_.max_contact_vars;
+  Eigen::MatrixXd J(6, n_vars);
+  Eigen::VectorXd r(6);
+  J.setZero();
+  r.setZero();
+  ControlReference ref;
+
+  task.ComputeResidual(cache_, ref, contacts_, n_vars, J, r);  // warm-up
+
+  test::AllocCounter::Arm();
+  for (int i = 0; i < 100; ++i) {
+    task.ComputeResidual(cache_, ref, contacts_, n_vars, J, r);
+  }
+  test::AllocCounter::Disarm();
+
+  EXPECT_EQ(test::AllocCounter::alloc_count.load(), 0)
+      << "ObjectSE3Task::ComputeResidual must be allocation-free in the RT path";
 }
 
 }  // namespace
