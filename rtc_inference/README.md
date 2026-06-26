@@ -19,9 +19,11 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 |------|------|--------|------|
 | `model_path` | `std::string` | -- | ONNX 모델 파일 경로 |
 | `optimized_model_path` | `std::string` | `""` | ORT 그래프 최적화 캐시 경로 (빈 문자열이면 비활성) |
-| `input_shape` | `std::vector<int64_t>` | -- | 입력 텐서 형상 (예: `{1, 12, 16}`) |
-| `output_shape` | `std::vector<int64_t>` | -- | 출력 텐서 형상 (예: `{1, 1, 13}`) |
+| `input_shape` | `std::vector<int64_t>` | -- | 단일 입력 텐서 형상 (예: `{1, 12, 16}`) |
+| `output_shapes` | `std::vector<std::vector<int64_t>>` | -- | 출력 head 별 형상. 단일 출력은 `{{1, 1, 13}}`, 3-head 모델은 `{{1, 1}, {1, 3}, {1, 3}}` |
 | `intra_op_threads` | `int` | `1` | 추론 내부 스레드 수 (RT 환경에서는 단일 스레드 권장) |
+
+엔진은 **단일 입력 / N 출력 head** 를 지원합니다 (multi-input 은 미지원 — 실제 소비자 수요에 맞춰 일반화).
 
 ---
 
@@ -35,10 +37,11 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 | `Run()` | `bool` | Yes | 모든 등록된 모델에 대해 추론 실행 (순수 가상) |
 | `RunModel(int model_idx)` | `bool` | Yes | 단일 모델 추론 (기본 구현: `Run()` 위임) |
 | `RunModels(const int*, int)` | `bool` | Yes | 복수 모델 배치 추론 (기본 구현: `RunModel()` 순차 호출) |
-| `input_buffer(int model_idx)` | `float*` | Yes | 사전 할당된 입력 버퍼 포인터 반환 (순수 가상) |
-| `output_buffer(int model_idx)` | `const float*` | Yes | 사전 할당된 출력 버퍼 포인터 반환 (순수 가상) |
-| `input_size(int model_idx)` | `std::size_t` | Yes | 입력 버퍼의 float 원소 수 (순수 가상) |
-| `output_size(int model_idx)` | `std::size_t` | Yes | 출력 버퍼의 float 원소 수 (순수 가상) |
+| `input_buffer(int model_idx)` | `float*` | Yes | 사전 할당된 입력 버퍼 포인터 반환 (범위 밖 → `nullptr`) |
+| `output_buffer(int model_idx, int output_idx)` | `const float*` | Yes | 출력 head 버퍼 포인터 반환 (범위 밖 → `nullptr`) |
+| `input_size(int model_idx)` | `std::size_t` | Yes | 입력 버퍼의 float 원소 수 (범위 밖 → `0`) |
+| `output_size(int model_idx, int output_idx)` | `std::size_t` | Yes | 출력 head 버퍼의 float 원소 수 (범위 밖 → `0`) |
+| `num_outputs(int model_idx)` | `int` | Yes | 모델의 출력 head 수 (범위 밖 → `0`) |
 | `is_initialized()` | `bool` | Yes | 초기화 완료 여부 (순수 가상) |
 | `num_models()` | `int` | Yes | 등록된 모델 수 (순수 가상) |
 
@@ -52,15 +55,19 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 
 #### 전체 구현 (`HAS_ONNXRUNTIME` 정의 시)
 
-`Init()`을 여러 번 호출하여 복수의 모델을 순차적으로 등록할 수 있습니다. 첫 번째 `Init()` 호출 시 `Ort::Env`를 생성하고, 이후 호출마다 다음 리소스를 사전 할당합니다:
+`Init()`을 여러 번 호출하여 복수의 모델을 순차적으로 등록할 수 있습니다. 각 모델은 `std::unique_ptr<Model>`로 보유되어 주소가 안정적이며 (텐서/IoBinding 의 버퍼·세션 참조가 `models_` 성장에도 무효화되지 않음), 첫 호출 시 `Ort::Env`를 생성하고 호출마다 다음 리소스를 사전 할당합니다:
 
 - `Ort::Session` (모델당 1개)
 - `Ort::IoBinding` (모델당 1개)
-- `Ort::Value` 입력/출력 텐서
-- `std::vector<float>` 입력/출력 데이터 버퍼
+- `Ort::Value` 입력 텐서 1개 + 출력 head 별 텐서 N개
+- `std::vector<float>` 입력 버퍼 1개 + 출력 head 별 버퍼 N개
 - `Ort::RunOptions` (전체에서 1개, 재사용)
 
-각 모델 등록 후 워밍업 추론을 1회 실행합니다.
+**RT 세션 옵션** (모델당): `ORT_SEQUENTIAL` 실행 모드, `intra_op_threads` 단일 스레드, `session.intra_op.allow_spinning=0` (intra-op 워커의 busy-spin 제거로 RT 루프 지터 차단), `ORT_ENABLE_ALL` 그래프 최적화.
+
+**모델 검증**: `Init()`은 버퍼를 할당하기 전에 모델의 실제 입출력 arity/shape 를 `config` 와 대조합니다. 출력 head 수가 부족하거나 정적 차원이 불일치하면 `std::runtime_error`를 던져 잘못된/재학습된 `.onnx`가 런타임에 조용히 틀린 값을 내지 않고 setup 단계에서 큰 소리로 실패합니다 (모델 차원이 `< 0`인 dynamic dim 은 임의 크기와 매칭). 각 모델 등록 후 워밍업 추론을 1회 실행합니다 (`RunModels()`와 동일한 direct `Session::Run` 경로 재사용 → warmup 이 production 경로를 정확히 데움).
+
+**`Reset()`** (non-RT): 등록된 모든 모델을 해제하여 `Init()` 재호출을 idempotent 하게 만듭니다 (`Ort::Env`/`RunOptions`는 재사용). 같은 엔진 인스턴스로 재초기화하는 소비자는 `Init()` 루프 전에 `Reset()`을 호출해 모델 중복 등록·세션 누수를 방지합니다.
 
 **추론 실행 경로:**
 
@@ -75,6 +82,8 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 **RT 안전 메커니즘:**
 - 모든 RT 메서드 내부에서 `try-catch`로 ONNX Runtime 예외를 포착하여 `false`를 반환
 - `RunModel()`, `RunModels()`는 인덱스 범위를 검증하고 범위 밖이면 `false` 반환
+- 모든 접근자 (`input_buffer`/`output_buffer`/`input_size`/`output_size`/`num_outputs`) 도 범위를 검증하여 OOR 시 `nullptr`/`0` 반환 (RT-safe, 예외 없음)
+- `Run()`/`RunModel()`/`RunModels()` 모두 사전 할당된 단일 `Ort::RunOptions`를 재사용
 - Non-copyable, non-movable (단일 스레드 소유 전제, 스레드 안전 보장 없음)
 
 #### 스텁 구현 (`HAS_ONNXRUNTIME` 미정의 시)
