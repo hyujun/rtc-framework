@@ -1,9 +1,16 @@
 build:
   symlink-install: true
+  # Ryzen 5 5600X (6C/12T): up to 8 packages built concurrently. Caps peak
+  # memory from heavy-template TUs (pinocchio/proxsuite/aligator/Eigen) while
+  # leaving threads for intra-package make -j (set MAKEFLAGS=-j2 in env).
+  parallel-workers: 8
   cmake-args:
     - -DCMAKE_BUILD_TYPE=Release
     - -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON
 test:
+  # RT timing-sensitive tests flake under heavy parallel contention; keep test
+  # concurrency well below build (6C physical).
+  parallel-workers: 6
   event-handlers:
     - console_cohesion+
