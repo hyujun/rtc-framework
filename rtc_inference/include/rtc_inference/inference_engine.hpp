@@ -20,13 +20,17 @@ class InferenceEngine {
   /// RT-safe: Run inference on pre-filled input buffer
   [[nodiscard]] virtual bool Run() noexcept = 0;
 
-  /// Access pre-allocated I/O buffers
+  /// Access pre-allocated I/O buffers. Out-of-range indices return nullptr.
   virtual float* input_buffer(int model_idx = 0) noexcept = 0;
-  virtual const float* output_buffer(int model_idx = 0) const noexcept = 0;
+  virtual const float* output_buffer(int model_idx = 0, int output_idx = 0) const noexcept = 0;
 
-  /// Buffer sizes
+  /// Buffer sizes (float element counts). Out-of-range indices return 0.
   [[nodiscard]] virtual std::size_t input_size(int model_idx = 0) const noexcept = 0;
-  [[nodiscard]] virtual std::size_t output_size(int model_idx = 0) const noexcept = 0;
+  [[nodiscard]] virtual std::size_t output_size(int model_idx = 0,
+                                                int output_idx = 0) const noexcept = 0;
+
+  /// Number of output heads for a model. Out-of-range model_idx returns 0.
+  [[nodiscard]] virtual int num_outputs(int model_idx = 0) const noexcept = 0;
 
   /// RT-safe: Run multiple models by index in a single batch call.
   /// Default implementation delegates to RunModel() sequentially.

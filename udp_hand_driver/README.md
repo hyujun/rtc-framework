@@ -106,7 +106,7 @@ Write 명령은 항상 `kJoint` 모드로 전송됩니다.
 
 1. **캘리브레이션**: 시작 시 N 샘플로 barometer baseline offset 자동 측정
 2. **전처리**: barometer 정규화 + delta 계산 + FIFO history shift (12 row)
-3. **추론**: per-fingertip ONNX 모델 (IoBinding, zero-alloc)
+3. **추론**: per-fingertip ONNX 모델. ONNX 실행은 `rtc::OnnxEngine` (single-input / 3-output) 에 위임, zero-alloc
 4. **출력**: contact probability (sigmoid), force vector (3), direction vector (3)
 
 > ⚠️ **컨트롤러 capability 일치 의무** — 컨슈머 (integrated_bringup) 의 device YAML
@@ -147,6 +147,7 @@ Write 명령은 항상 `kJoint` 모드로 전송됩니다.
 Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 - Input: `float32[1, H, 16]` (barometer 8ch + delta 8ch)
 - Output: contact logit(1) + F(3) + u(3)
+- ONNX session/IoBinding/tensor/warmup 은 `rtc::OnnxEngine` 이 소유 (이 클래스는 history/정규화/calibration/post-proc 만 담당)
 - `HAS_ONNXRUNTIME` 미정의 시 stub 구현 (추론 비활성)
 
 ### UdpHandFailureDetector (`udp_hand_failure_detector.hpp`)

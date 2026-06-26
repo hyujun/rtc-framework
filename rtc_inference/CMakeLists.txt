@@ -32,8 +32,10 @@ find_package(onnxruntime QUIET)
 if(onnxruntime_FOUND)
   set(HAS_ONNXRUNTIME TRUE)
 else()
-  # Discover versioned subdirectories under /opt/onnxruntime (e.g. onnxruntime-linux-x64-1.17.1)
-  file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime/onnxruntime-*")
+  # Discover versioned tarball dirs (e.g. /opt/onnxruntime-linux-x64-1.17.1, or
+  # nested under /opt/onnxruntime/). The bare /opt/onnxruntime symlink is also
+  # covered by the HINTS below.
+  file(GLOB _ORT_OPT_DIRS "/opt/onnxruntime-*" "/opt/onnxruntime/onnxruntime-*")
   find_library(ONNXRUNTIME_LIB onnxruntime
     HINTS ${_ORT_OPT_DIRS}
           /opt/onnxruntime /usr/local
