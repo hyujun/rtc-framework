@@ -49,8 +49,10 @@
 #          (code.claude.com/docs/en/best-practices). So a persistently-failing
 #          build/test will eventually let the turn end; the agent must still act
 #          on the injected report rather than relying on the hook to hard-stop.
-# Limits : 60s timeout per package (silent on overrun -- large packages may
-#          partial-pass). YAML config / Doxygen / cross-package docs NOT
+# Limits : per-package bounds: 180s build + 60s test (silent on overrun --
+#          large packages may partial-pass). PROC-3 path: 300s build + 180s
+#          test. All within the Stop hook's 540s budget (settings.json).
+#          YAML config / Doxygen / cross-package docs NOT
 #          checked (modification-guide.md "Updating an Existing Package" 6
 #          steps cover these manually). Only checks files vs HEAD: staged or
 #          unstaged.
@@ -289,7 +291,7 @@ if [ -n "$PROC3" ]; then
   if ! timeout 300 ./build.sh full >/dev/null 2>&1; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (./build.sh full) failed (rtc_base / rtc_msgs touched)\n"
   else
-    TEST_OUTPUT=$(timeout 180 bash -c "cd '$WORKSPACE' && colcon test --event-handlers console_direct+ 2>&1" || true)
+    timeout 180 bash -c "cd '$WORKSPACE' && colcon test --event-handlers console_direct+ 2>&1" >/dev/null || true
     RESULT=$(cd "$WORKSPACE" && colcon test-result 2>&1 || true)
     if echo "$RESULT" | grep -qE "[1-9][0-9]* failures"; then
       FAILED_TESTS=$(echo "$RESULT" | grep -E "FAILED|failures" | head -20 || true)
@@ -298,12 +300,17 @@ if [ -n "$PROC3" ]; then
   fi
 else
   for pkg in $CHANGED_PKGS; do
-    if ! ./build.sh -p "$pkg" >/dev/null 2>&1; then
+    # 180s build bound mirrors the PROC-3 path's `timeout 300 ./build.sh full`.
+    # Without it a slow/hung single-package build is unbounded, so N changed
+    # packages can blow past the Stop hook's 540s budget (settings.json) and get
+    # SIGKILLed mid-build -> the turn ends with the gate silently skipped.
+    # A timeout-killed build (exit 124) is reported as a build failure -> exit 2.
+    if ! timeout 180 ./build.sh -p "$pkg" >/dev/null 2>&1; then
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: build failed\n"
       continue
     fi
 
-    TEST_OUTPUT=$(timeout 60 bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" || true)
+    timeout 60 bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || true
     RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
 
     if echo "$RESULT" | grep -qE "[1-9][0-9]* failures"; then
