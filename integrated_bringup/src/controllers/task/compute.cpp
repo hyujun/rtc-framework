@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -293,26 +294,20 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   }
 
   // ── Cartesian error ────────────────────────────────────────────────────
-  pinocchio::SE3 T_current_desired = control_pose.actInv(traj_state_.pose);
-  pinocchio::Motion twist_error = pinocchio::log6(T_current_desired);
-
-  Eigen::Vector3d p_err;
-  Eigen::Vector3d r_err;
+  // BodyLog6 = log6(T_cur⁻¹ T_d): body-frame screw error (preserves the
+  // position-rotation coupling), via rtc_math.
+  const rtc::math::se3::Vec6 e_body = rtc::math::se3::computePoseError(
+      control_pose, traj_state_.pose, rtc::math::se3::ErrorType::BodyLog6);
   if (use_vtcp_frame) {
-    // Jacobian is in vtcp frame → error must also be in vtcp frame (local)
-    // log6 returns twist in local (control_pose = vtcp) frame — use directly
-    p_err = twist_error.linear();
-    r_err = twist_error.angular();
+    // Jacobian is in vtcp (LOCAL) frame → use the LOCAL error directly.
+    pos_error_6d_ = e_body;
   } else {
-    // Default: world-aligned frame (matches LOCAL_WORLD_ALIGNED Jacobian)
-    // Use log6 for both linear and angular to preserve position-rotation
-    // coupling (V⁻¹p)
-    p_err = control_pose.rotation() * twist_error.linear();
-    r_err = control_pose.rotation() * twist_error.angular();
+    // LOCAL_WORLD_ALIGNED Jacobian → transport LOCAL → LWA (rotation-only
+    // blockdiag(R,R), NOT the full adjoint).
+    pos_error_6d_ = rtc::math::se3::twistLocalToWorld(rtc::math::se3::toIso3(control_pose), e_body);
   }
 
-  pos_error_6d_.head<3>() = p_err;
-  pos_error_6d_.tail<3>() = r_err;
+  const Eigen::Vector3d p_err = pos_error_6d_.head<3>();
 
   for (int i = 0; i < 3; ++i) {
     pos_error_[i] = p_err[i];

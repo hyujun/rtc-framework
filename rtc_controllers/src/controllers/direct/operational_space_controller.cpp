@@ -3,6 +3,7 @@
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -268,16 +269,13 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   }
 
   // ── Step 4: 6D pose error w.r.t. trajectory setpoint ─────────────────────
-  // 3D position error
-  const Eigen::Vector3d pos_err = traj_state_.pose.translation() - tcp.translation();
+  // SplitWorld = [p_d−p ; log3(R_d Rᵀ)] (base position + world-frame rotation),
+  // computed via rtc_math (rtc::math::se3).
+  task_err_ = rtc::math::se3::computePoseError(tcp, traj_state_.pose,
+                                               rtc::math::se3::ErrorType::SplitWorld);
+  const Eigen::Vector3d pos_err = task_err_.head<3>();
+  const Eigen::Vector3d rot_err = task_err_.tail<3>();
   tcp_position_ = {tcp.translation()[0], tcp.translation()[1], tcp.translation()[2]};
-
-  // 3D orientation error via SO(3) logarithm
-  const Eigen::Matrix3d R_err = traj_state_.pose.rotation() * tcp.rotation().transpose();
-  const Eigen::Vector3d rot_err = pinocchio::log3(R_err);
-
-  task_err_.head<3>() = pos_err;
-  task_err_.tail<3>() = rot_err;
 
   // Cache for diagnostics (non-RT reads via pose_error())
   for (int i = 0; i < 6; ++i) {
