@@ -11,6 +11,7 @@
 
   <depend>eigen3_cmake_module</depend>
   <depend>pinocchio</depend>
+  <depend>rtc_math</depend>
   <depend>proxsuite</depend>
   <depend>yaml-cpp</depend>
 

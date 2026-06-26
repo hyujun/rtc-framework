@@ -130,12 +130,15 @@ void SE3Task::ComputeResidual(const PinocchioCache& cache, const ControlReferenc
           ? rf.oMf
           : cache.registered_frames[static_cast<size_t>(base_frame_idx_)].oMf.actInv(rf.oMf);
 
-  // ── 위치 + 자세 오차 (base 좌표계): 공용 SE(3) 오차 규약 ──
-  // kinematics/se3_error.hpp — ClikReferenceGenerator (Stage C-1) 와 동일 척도.
-  error_full_ = ComputeSe3Error(tip_in_base, placement_des_);
+  // ── 위치 + 자세 오차 (LWA frame, BodyLog6) — kinematics/dynamics WBC 공용 ──
+  // ComputeTaskPoseError = twistLocalToWorld(log6(T⁻¹T_d)); ClikReferenceGenerator
+  // 와 동일 척도(U1). 회전 0 이면 screw coupling 소멸 → 위치부는 p_d−p 로 환원.
+  error_full_ = ComputeTaskPoseError(tip_in_base, placement_des_);
 
-  // ── 속도 오차: v_des - J · v ──
-  v_error_full_.noalias() = v_des_ - rf.J * cache.v;
+  // ── 속도 오차: e_pos 의 정확한 시간미분 ė (Jlog6 정방향, LWA) ──
+  // 소오차서 v_des − J·v 로 환원되는 drop-in. nu_cur_ = 현재 frame 트위스트(LWA).
+  nu_cur_.noalias() = rf.J * cache.v;
+  v_error_full_ = ComputeTaskVelocityError(tip_in_base, placement_des_, nu_cur_, v_des_);
 
   // ── desired acceleration: a_ff + Kp·e_pos + Kd·e_vel ──
   a_des_full_ = a_ff_ + kp_.cwiseProduct(error_full_) + kd_.cwiseProduct(v_error_full_);

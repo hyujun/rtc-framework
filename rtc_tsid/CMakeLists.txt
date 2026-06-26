@@ -22,6 +22,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
+find_package(rtc_math REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # ProxSuite (installed at /usr/local via robotpkg)
@@ -59,8 +60,8 @@ target_include_directories(rtc_tsid PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-# pinocchio via ament (sets include dirs + link libs)
-ament_target_dependencies(rtc_tsid pinocchio)
+# pinocchio + rtc_math (SE(3) error core) via ament (sets include dirs + link libs)
+ament_target_dependencies(rtc_tsid pinocchio rtc_math)
 
 target_link_libraries(rtc_tsid
   pinocchio::pinocchio
@@ -113,6 +114,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_se3_task test/test_se3_task.cpp)
   target_link_libraries(test_se3_task rtc_tsid)
+
+  ament_add_gtest(test_task_se3_error test/test_task_se3_error.cpp)
+  target_link_libraries(test_task_se3_error rtc_tsid)
 
   ament_add_gtest(test_force_task test/test_force_task.cpp)
   target_link_libraries(test_force_task rtc_tsid)
