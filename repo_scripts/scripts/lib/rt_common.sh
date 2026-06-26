@@ -250,6 +250,7 @@ with_temporary_disable() {
     # trap 은 함수 scope 가 아닌 shell scope 라서 RETURN 으로는 깔끔히 못 잡는다.
     # subshell 로 격리하여 EXIT trap 이 해당 subshell 만 cleanup 하도록 한다.
     (
+      # shellcheck disable=SC2154  # rc is assigned inside the trap string (rc=$?)
       trap 'rc=$?; set +e; chmod +x "'"$hook"'" 2>/dev/null; exit $rc' EXIT
       chmod -x "$hook" || exit 1
       "$@"
@@ -592,7 +593,7 @@ parse_common_args() {
 # ── 공통 패키지 리스트 (build.sh / install.sh 공유) ─────────────────────────
 # 이 함수들은 패키지 리스트의 single source of truth를 제공한다.
 get_base_packages() {
-  echo "rtc_msgs rtc_base rtc_communication rtc_controller_interface rtc_urdf_bridge rtc_mpc rtc_tsid rtc_controllers rtc_controller_manager rtc_inference repo_scripts rtc_tools robot_descriptions shape_estimation_msgs shape_estimation"
+  echo "rtc_msgs rtc_base rtc_math rtc_communication rtc_controller_interface rtc_urdf_bridge rtc_mpc rtc_tsid rtc_controllers rtc_controller_manager rtc_inference repo_scripts rtc_tools robot_descriptions shape_estimation_msgs shape_estimation"
 }
 
 get_robot_packages() {

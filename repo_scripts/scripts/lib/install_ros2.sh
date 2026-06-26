@@ -77,7 +77,7 @@ check_prerequisites() {
   # ── Detect Ubuntu version early (needed for ROS2 auto-install) ───────────
   UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
   local SUPPORTED_UBUNTU=("22.04" "24.04")
-  if [[ ! " ${SUPPORTED_UBUNTU[*]} " =~ " ${UBUNTU_VERSION} " ]]; then
+  if [[ " ${SUPPORTED_UBUNTU[*]} " != *" ${UBUNTU_VERSION} "* ]]; then
     warn "Unsupported Ubuntu (${UBUNTU_VERSION}). Supported: 22.04 (Humble), 24.04 (Jazzy). Continuing..."
   fi
 
@@ -100,7 +100,7 @@ check_prerequisites() {
     fi
     if [[ "$_found_ros2" -eq 0 ]]; then
       warn "ROS2 not found on this system."
-      if [[ " ${SUPPORTED_UBUNTU[*]} " =~ " ${UBUNTU_VERSION} " ]]; then
+      if [[ " ${SUPPORTED_UBUNTU[*]} " == *" ${UBUNTU_VERSION} "* ]]; then
         info "Supported Ubuntu ${UBUNTU_VERSION} detected — attempting automatic ROS2 installation..."
         install_ros2 "$UBUNTU_VERSION"
       else

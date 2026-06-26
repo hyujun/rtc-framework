@@ -68,7 +68,8 @@ WARNINGS=()
 backup_file() {
   local file="$1"
   if [[ -f "$file" ]]; then
-    local bak="${file}.bak.$(date +%Y%m%d_%H%M%S)"
+    local bak
+    bak="${file}.bak.$(date +%Y%m%d_%H%M%S)"
     cp "$file" "$bak"
     BACKUP_FILES+=("$bak")
     info "백업: ${bak}"
@@ -449,8 +450,11 @@ if [[ "$DKMS_NEEDED" -eq 1 ]]; then
       # /var/lib/dkms/nvidia/ 에서 설치된 NVIDIA DKMS 소스 버전을 찾는다.
       NVIDIA_DKMS_VER=""
       if [[ -d /var/lib/dkms/nvidia ]]; then
-        NVIDIA_DKMS_VER=$(ls -1 /var/lib/dkms/nvidia/ 2>/dev/null \
-          | grep -E '^[0-9]+\.' | sort -V | tail -1 || true)
+        NVIDIA_DKMS_VER=$(
+          for _dkms_dir in /var/lib/dkms/nvidia/[0-9]*.*/; do
+            [[ -d "$_dkms_dir" ]] && basename "$_dkms_dir"
+          done | sort -V | tail -1
+        )
       fi
 
       if [[ -z "$NVIDIA_DKMS_VER" ]]; then

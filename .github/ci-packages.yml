@@ -37,6 +37,7 @@ build:
 #   loader: test_cpp = test_cpp_gated + test_cpp_besteffort (union) → 빌드/커버리지 입력.
 test_cpp_gated:
   - rtc_base
+  - rtc_math
   - rtc_communication
   - rtc_controller_interface
   - rtc_controller_manager
@@ -58,6 +59,7 @@ test_python:
 
 lint_cpp:
   - rtc_base
+  - rtc_math
   - rtc_communication
   - rtc_controller_interface
   - rtc_controller_manager
@@ -77,6 +79,7 @@ lint_cpp:
 # rtc_controller_manager 는 src 만) — 자동 유도 안 함 (분모가 바뀌므로).
 coverage_paths:
   - "*/rtc_base/include/*"
+  - "*/rtc_math/include/*"
   - "*/rtc_communication/include/*"
   - "*/rtc_controller_interface/include/*"
   - "*/rtc_controller_interface/src/*"

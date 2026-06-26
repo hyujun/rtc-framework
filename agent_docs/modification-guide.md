@@ -86,6 +86,15 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 2. Add to `SystemThreadConfigs`, update `ValidateSystemThreadConfigs()` + `SelectThreadConfigs()`
 3. Call `ApplyThreadConfig()` at thread entry; use SCHED_FIFO for RT threads
 
+## Adding a New Package (new colcon directory)
+
+새 `<pkg>/package.xml` 디렉토리를 추가하면 **두 build SSoT를 모두** 갱신해야 한다 — 서로 다른 colcon 셀렉터를 쓰므로 누락 시 실패 양상이 다르다:
+
+1. **[repo_scripts/scripts/lib/rt_common.sh](../repo_scripts/scripts/lib/rt_common.sh) `get_base_packages()` (또는 `get_robot_packages()`)** — `build.sh` / `install.sh` 가 `--packages-select`(**비전이**)로 소비. 누락 시 그 패키지를 의존하는 downstream 의 클린 `./build.sh` 가 `find_package(<pkg>)` 에서 실패. rtc_* 빌드 의존이 없으면 `rtc_base` 직후처럼 앞쪽에 둔다.
+2. **[.github/ci-packages.yml](../.github/ci-packages.yml)** — CI 는 `build` 를 `--packages-up-to`(**전이**)로 빌드하므로 빌드 자체는 안 깨지지만, gtest / cppcheck / coverage 는 `test_cpp_*` · `lint_cpp` · `coverage_paths` 에 명시해야 **실행**된다. 의도적으로 제외하면 파일 상단 "의도적 누락" 목록에 사유와 함께 기록 — 안 그러면 silent gap (테스트가 CI 에서 한 번도 안 돌아도 green). Header-only 패키지는 `rtc_base` 선례(test + lint + include-only coverage)를 따른다.
+
+README 패키지 표·count, [architecture.md](architecture.md) dependency graph 는 아래 §Updating an Existing Package 의 Doc 동기화 규칙(PROC-1)을 따른다.
+
 ## Updating an Existing Package
 
 코드 변경은 *대응 문서·메타데이터 동기화*를 포함해야 완료 ([invariants.md](invariants.md) PROC-1). 동기화 대상은:

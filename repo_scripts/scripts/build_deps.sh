@@ -91,4 +91,4 @@ build_one aligator \
   -Dfmt_DIR="${DEPS_PREFIX}/lib/cmake/fmt"
 
 log "All deps built: $DEPS_PREFIX"
-ls -la "${DEPS_PREFIX}/lib/" | grep -E 'libaligator|libfmt|libmimalloc' || true
+ls -la "${DEPS_PREFIX}"/lib/lib{aligator,fmt,mimalloc}* 2>/dev/null || true

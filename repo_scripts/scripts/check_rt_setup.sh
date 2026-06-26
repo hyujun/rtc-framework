@@ -661,7 +661,7 @@ check_network_udp() {
 
   for key in "${!expected_sysctl[@]}"; do
     ((sysctl_total++)) || true
-    local proc_path="/proc/sys/$(echo "$key" | tr '.' '/')"
+    local proc_path="/proc/sys/${key//.//}"
     local actual expected
     expected="${expected_sysctl[$key]}"
 

@@ -1037,8 +1037,11 @@ else
   elif [[ "$HAS_NVIDIA" == "yes" ]]; then
     NVIDIA_DKMS_VER=""
     if [[ -d /var/lib/dkms/nvidia ]]; then
-      NVIDIA_DKMS_VER=$(ls -1 /var/lib/dkms/nvidia/ 2>/dev/null \
-        | grep -E '^[0-9]+\.' | sort -V | tail -1 || true)
+      NVIDIA_DKMS_VER=$(
+        for _dkms_dir in /var/lib/dkms/nvidia/[0-9]*.*/; do
+          [[ -d "$_dkms_dir" ]] && basename "$_dkms_dir"
+        done | sort -V | tail -1
+      )
     fi
 
     if [[ -n "$NVIDIA_DKMS_VER" ]]; then

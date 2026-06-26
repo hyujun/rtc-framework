@@ -28,6 +28,9 @@
 #        - any deleted launch/*.py or config/**/*.yaml whose basename still
 #          resolves under install/ — warns about stray artefacts that
 #          colcon --symlink-install does not prune.
+#   4. shellcheck on changed *.sh (repo_scripts/**, build.sh, install.sh)
+#        - runs at --severity=warning (notes do not block); repo-root
+#          .shellcheckrc supplies external-sources + SC2034 suppression.
 #
 # Pure-format fast path:
 #   Phases 0 + 1 are SKIPPED when every changed source file is identical to
@@ -71,8 +74,15 @@ cd "$PROJECT_DIR" 2>/dev/null || exit 0
 WORKSPACE="$(cd "$PROJECT_DIR/../.." 2>/dev/null && pwd)"
 SETUP_ENV="$PROJECT_DIR/repo_scripts/scripts/setup_env.sh"
 if [ -z "${RTC_DEPS_PREFIX:-}" ] && [ -f "$SETUP_ENV" ]; then
+  # ROS /opt/ros/*/setup.bash references unbound vars (AMENT_TRACE_SETUP_FILES);
+  # under this script's `set -u` that aborts the hook before any phase runs when
+  # the parent shell has not pre-sourced setup_env. Relax -u only around the
+  # source (build_deps.sh sources ROS the same way, sans -u). -e stays on —
+  # ROS setup.bash is -e-clean.
+  set +u
   # shellcheck source=/dev/null
   source "$SETUP_ENV"
+  set -u
 fi
 
 # Get changed files (staged + unstaged vs HEAD)
@@ -81,7 +91,8 @@ CHANGED=$(git diff --name-only HEAD 2>/dev/null || true)
 
 # Filter to source files only
 CHANGED_SRC=$(echo "$CHANGED" | grep -E '\.(cpp|hpp|h|cc|py)$' || true)
-[ -z "$CHANGED_SRC" ] && exit 0
+CHANGED_SH=$(echo "$CHANGED" | grep -E '\.sh$' || true)
+[ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && exit 0
 
 # --- Pure-format fast path detection ---
 # Returns 0 if every changed source file is identical to HEAD after
@@ -333,6 +344,26 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
   fi
 fi
 
+# --- Phase 4: shellcheck on changed shell scripts ---
+# Lint gate for repo_scripts/**/*.sh + build.sh / install.sh. Runs at
+# --severity=warning so info-level notes (SC1091 source-following, intentional
+# SC2086 word-splitting in RT cpu-list code) do not block. The repo-root
+# .shellcheckrc (external-sources=true, disable=SC2034) is auto-loaded from
+# PROJECT_DIR cwd. Fail-open when shellcheck is absent — missing tooling must
+# not hard-block a turn (mirrors the clang-format fail-open above).
+SHELLCHECK_FAILURES=""
+if [ -n "$CHANGED_SH" ]; then
+  if command -v shellcheck >/dev/null 2>&1; then
+    for f in $CHANGED_SH; do
+      [ -f "$f" ] || continue
+      SC_OUT=$(shellcheck --severity=warning -f gcc "$f" 2>/dev/null || true)
+      [ -n "$SC_OUT" ] && SHELLCHECK_FAILURES="${SHELLCHECK_FAILURES}${SC_OUT}\n"
+    done
+  else
+    echo "verify-changes: shellcheck not found; shell-script lint gate skipped." >&2
+  fi
+fi
+
 # --- Report ---
 REPORT=""
 if [ -n "$ARCH_VIOLATIONS" ]; then
@@ -346,6 +377,9 @@ if [ -n "$TEST_FAILURES" ]; then
 fi
 if [ -n "$STALE_INSTALL" ]; then
   REPORT="${REPORT}Stale install/ artefacts (rename without prune — manual rm required):\n${STALE_INSTALL}\n"
+fi
+if [ -n "$SHELLCHECK_FAILURES" ]; then
+  REPORT="${REPORT}shellcheck (warning+) on changed shell scripts:\n${SHELLCHECK_FAILURES}\n"
 fi
 
 if [ -n "$REPORT" ]; then
