@@ -8,9 +8,9 @@
 // Barfoot 2017 (SE(3) Jacobian Q-block); Solà et al. arXiv:1812.01537.
 #pragma once
 
-#include "rtc_urdf_bridge/se3/so3.hpp"
+#include "rtc_math/se3/so3.hpp"
 
-namespace rtc_urdf_bridge::se3 {
+namespace rtc::math::se3 {
 
 // ── log6 / exp6 ──────────────────────────────────────────────────────────────
 //
@@ -130,4 +130,4 @@ namespace detail {
   return J;
 }
 
-}  // namespace rtc_urdf_bridge::se3
+}  // namespace rtc::math::se3

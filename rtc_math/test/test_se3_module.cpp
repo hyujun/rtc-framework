@@ -17,12 +17,12 @@
 #include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
 
-#include "rtc_urdf_bridge/se3/pose_error.hpp"
-#include "rtc_urdf_bridge/se3/se3.hpp"
-#include "rtc_urdf_bridge/se3/so3.hpp"
-#include "rtc_urdf_bridge/se3/velocity_error.hpp"
+#include "rtc_math/se3/pose_error.hpp"
+#include "rtc_math/se3/se3.hpp"
+#include "rtc_math/se3/so3.hpp"
+#include "rtc_math/se3/velocity_error.hpp"
 
-namespace se3 = rtc_urdf_bridge::se3;
+namespace se3 = rtc::math::se3;
 using se3::ErrorType;
 using se3::Iso3;
 using se3::Mat3;

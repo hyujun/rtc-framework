@@ -69,11 +69,6 @@ target_link_libraries(example_tree_model ${PROJECT_NAME})
 add_executable(example_rt_integration examples/example_rt_integration.cpp)
 target_link_libraries(example_rt_integration ${PROJECT_NAME})
 
-# SE(3) error-definition comparison experiment (S1–S5). Header-only se3 module;
-# links the lib only for Eigen include dirs.
-add_executable(se3_error_compare examples/se3_error_compare.cpp)
-target_link_libraries(se3_error_compare ${PROJECT_NAME})
-
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
@@ -96,7 +91,6 @@ install(
     example_submodel
     example_tree_model
     example_rt_integration
-    se3_error_compare
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -129,11 +123,6 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_xacro_processor test/test_xacro_processor.cpp)
   target_link_libraries(test_xacro_processor ${PROJECT_NAME})
-
-  # SE(3) pose/twist-error module (header-only core; links lib for pinocchio
-  # cross-validation only).
-  ament_add_gtest(test_se3_module test/test_se3_module.cpp)
-  target_link_libraries(test_se3_module ${PROJECT_NAME})
 endif()
 
 ament_package()
