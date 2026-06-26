@@ -74,8 +74,15 @@ cd "$PROJECT_DIR" 2>/dev/null || exit 0
 WORKSPACE="$(cd "$PROJECT_DIR/../.." 2>/dev/null && pwd)"
 SETUP_ENV="$PROJECT_DIR/repo_scripts/scripts/setup_env.sh"
 if [ -z "${RTC_DEPS_PREFIX:-}" ] && [ -f "$SETUP_ENV" ]; then
+  # ROS /opt/ros/*/setup.bash references unbound vars (AMENT_TRACE_SETUP_FILES);
+  # under this script's `set -u` that aborts the hook before any phase runs when
+  # the parent shell has not pre-sourced setup_env. Relax -u only around the
+  # source (build_deps.sh sources ROS the same way, sans -u). -e stays on —
+  # ROS setup.bash is -e-clean.
+  set +u
   # shellcheck source=/dev/null
   source "$SETUP_ENV"
+  set -u
 fi
 
 # Get changed files (staged + unstaged vs HEAD)
