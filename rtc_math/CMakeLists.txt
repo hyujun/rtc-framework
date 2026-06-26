@@ -67,18 +67,22 @@ ament_export_include_directories(include)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
-  # test_se3_module cross-validates log6/Jlog6 against Pinocchio, so it is built
-  # only when Pinocchio is available — the Eigen-only core itself has no such
-  # dependency (optional-dep contract; mirrors the MuJoCo/aligator pattern).
+  # The Eigen-only core tests (exp/log identities, θ→0/π robustness, error
+  # scales, finite-difference rate, scalar-gain decay) ALWAYS run — they need no
+  # Pinocchio, matching the optional-dep contract. Pinocchio is used only to
+  # cross-validate log3/log6/Jlog3/Jlog6, guarded behind RTC_MATH_HAVE_PINOCCHIO.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_se3_module test/test_se3_module.cpp)
+  target_link_libraries(test_se3_module ${PROJECT_NAME})
+
   find_package(pinocchio QUIET)
   if(pinocchio_FOUND)
-    find_package(ament_cmake_gtest REQUIRED)
-    ament_add_gtest(test_se3_module test/test_se3_module.cpp)
-    target_link_libraries(test_se3_module ${PROJECT_NAME} pinocchio::pinocchio)
+    target_link_libraries(test_se3_module pinocchio::pinocchio)
+    target_compile_definitions(test_se3_module PRIVATE RTC_MATH_HAVE_PINOCCHIO=1)
   else()
     message(STATUS
-      "rtc_math: Pinocchio not found — skipping test_se3_module "
-      "(Pinocchio cross-validation). Core is Eigen-only and unaffected.")
+      "rtc_math: Pinocchio not found — Eigen-only core tests still run; "
+      "Pinocchio cross-validation tests are skipped.")
   endif()
 endif()
 

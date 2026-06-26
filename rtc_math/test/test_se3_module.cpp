@@ -1,13 +1,16 @@
 // ── Unit tests for the SE(3) pose/twist-error module ─────────────────────────
-// Cross-validates the Eigen-only numeric core against Pinocchio (log6/Jlog6/
-// log3/Jlog3) and verifies the velocity-error trivialization via finite
-// differences. Fixed RNG seed for reproducibility.
+// The Eigen-only core tests (exp/log identities, θ→0/π robustness, error
+// scales, finite-difference velocity-error rate, scalar-gain decay) run with no
+// external dependency. When Pinocchio is found (RTC_MATH_HAVE_PINOCCHIO), the
+// additional cross-validation of log3/log6/Jlog3/Jlog6 is compiled in.
+// Fixed RNG seed for reproducibility.
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <random>
 
+#ifdef RTC_MATH_HAVE_PINOCCHIO
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wshadow"
@@ -16,6 +19,7 @@
 #include <pinocchio/spatial/explog.hpp>
 #include <pinocchio/spatial/se3.hpp>
 #pragma GCC diagnostic pop
+#endif  // RTC_MATH_HAVE_PINOCCHIO
 
 #include "rtc_math/se3/pose_error.hpp"
 #include "rtc_math/se3/se3.hpp"
@@ -59,9 +63,11 @@ Iso3 RandomPose(std::mt19937& rng) {
   return T;
 }
 
+#ifdef RTC_MATH_HAVE_PINOCCHIO
 pinocchio::SE3 ToPin(const Iso3& T) {
   return pinocchio::SE3(T.linear(), T.translation());
 }
+#endif  // RTC_MATH_HAVE_PINOCCHIO
 
 // Rotation of a given angle about a random axis.
 Mat3 RotationOfAngle(std::mt19937& rng, double angle) {
@@ -90,6 +96,7 @@ TEST(So3Core, ExpLogIdentity) {
 }
 
 // ── Test 1b: cross-check log6 / log3 against Pinocchio ────────────────────────
+#ifdef RTC_MATH_HAVE_PINOCCHIO
 TEST(So3Core, PinocchioLogMatch) {
   auto rng = MakeRng();
   for (int i = 0; i < kNumSamples; ++i) {
@@ -101,6 +108,7 @@ TEST(So3Core, PinocchioLogMatch) {
     EXPECT_LT((se3::log6(T) - xi_pin).norm(), kTight) << "log6 vs pin sample " << i;
   }
 }
+#endif  // RTC_MATH_HAVE_PINOCCHIO
 
 // ── Test 2: θ→0 branch continuity ────────────────────────────────────────────
 TEST(So3Core, SmallAngleContinuity) {
@@ -134,26 +142,30 @@ TEST(So3Core, NearPiRobust) {
   }
 }
 
-// ── Test 6: Jlog3 / Jlog6 vs central diff + Pinocchio ────────────────────────
+// ── Test 6: Jlog3 / Jlog6 vs central diff (+ Pinocchio when available) ────────
 TEST(So3Core, JacobianMatch) {
   auto rng = MakeRng();
   const double eps = 1e-6;
   for (int i = 0; i < kNumSamples; ++i) {
     const Iso3 T = RandomPose(rng);
 
+#ifdef RTC_MATH_HAVE_PINOCCHIO
     // Jlog3 vs Pinocchio.
     Mat3 Jlog3_pin;
     pinocchio::Jlog3(se3::log3(T.linear()).norm(), se3::log3(T.linear()), Jlog3_pin);
     EXPECT_LT((se3::Jlog3(T.linear()) - Jlog3_pin).norm(), 1e-9) << "Jlog3 vs pin sample " << i;
+#endif  // RTC_MATH_HAVE_PINOCCHIO
 
-    // Jlog6 analytic vs central diff.
+    // Jlog6 analytic vs central diff (Eigen-only ground truth — always runs).
     const Mat6 Jn = se3::Jlog6_numerical(T, eps);
     EXPECT_LT((se3::Jlog6(T) - Jn).norm(), 1e-4) << "Jlog6 vs num sample " << i;
 
+#ifdef RTC_MATH_HAVE_PINOCCHIO
     // Jlog6 analytic vs Pinocchio.
     Mat6 Jlog6_pin;
     pinocchio::Jlog6(ToPin(T), Jlog6_pin);
     EXPECT_LT((se3::Jlog6(T) - Jlog6_pin).norm(), 1e-9) << "Jlog6 vs pin sample " << i;
+#endif  // RTC_MATH_HAVE_PINOCCHIO
   }
 }
 
