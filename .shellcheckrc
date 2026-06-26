@@ -1,0 +1,11 @@
+# shellcheck configuration — rtc-framework shell scripts (repo_scripts/, build.sh, install.sh)
+#
+# external-sources: resolve `source lib/*.sh` so cross-file definitions
+# (loggers, get_base_packages, parse_common_args) are seen, not flagged SC1091.
+external-sources=true
+
+# SC2034 (unused variable): entry scripts (install.sh / build.sh) set many vars
+# — FMT_VERSION, SKIP_MPC, SET_PTRACE_SCOPE, color codes — that are consumed by
+# sourced lib/*.sh files or used conditionally. All current hits are confirmed
+# false positives, so we silence the class to keep real findings visible.
+disable=SC2034
