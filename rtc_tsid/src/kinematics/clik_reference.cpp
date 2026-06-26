@@ -128,10 +128,10 @@ bool ClikReferenceGenerator::Compute(const PinocchioCache& cache, int tcp_frame_
           ? rf.oMf
           : cache.registered_frames[static_cast<size_t>(base_frame_idx)].oMf.actInv(rf.oMf);
 
-  // ── L1: SE(3) 오차 (공용 규약) → task-velocity reference r_task = Kx ⊙ e_x ──
-  e_x_ = ComputeSe3Error(tip_in_base, placement_des);
-  // 회전 오차를 base 좌표로 정렬 (se3_error 규약 — header 참조).
-  e_x_.tail<3>() = tip_in_base.rotation() * e_x_.tail<3>();
+  // ── L1: SE(3) 오차 → task-velocity reference r_task = Kx ⊙ e_x ──
+  // ComputeTaskPoseError = LWA BodyLog6 — SE3Task/ObjectSE3Task (dynamics WBC) 와
+  // 동일 척도(U1 통일, A/B command-source 비교 전제). 속도 법칙은 1차 유지.
+  e_x_ = ComputeTaskPoseError(tip_in_base, placement_des);
   tcp_error_norm_ = e_x_.norm();
   r_task_ = kx_.cwiseProduct(e_x_);
 

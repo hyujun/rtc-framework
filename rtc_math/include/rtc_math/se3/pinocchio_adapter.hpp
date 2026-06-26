@@ -5,6 +5,12 @@
 // in Pinocchio, so consumers that already depend on it (all rtc controllers)
 // get ergonomic overloads while the core remains independently testable.
 //
+// DEPENDENCY NOTE: rtc_math does NOT propagate Pinocchio to its consumers
+// (Pinocchio is a <test_depend> only — optional-dep contract). Any package that
+// #includes THIS header must declare its own Pinocchio dependency
+// (find_package(pinocchio) + <depend>pinocchio</depend>); depending on rtc_math
+// alone is enough for the Eigen-only headers but NOT for this adapter.
+//
 // Ordering note: pinocchio::Motion::toVector() is [linear; angular] — identical
 // to the core's Vec6 convention, so no reordering is needed.
 #pragma once

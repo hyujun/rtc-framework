@@ -30,6 +30,7 @@ find_package(rtc_base REQUIRED)
 find_package(rtc_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
+find_package(rtc_math REQUIRED)
 find_package(rtc_urdf_bridge REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -51,6 +52,7 @@ ament_target_dependencies(rtc_controllers
   rtc_base
   rtc_msgs
   pinocchio
+  rtc_math
   rtc_urdf_bridge
 )
 target_link_libraries(rtc_controllers pinocchio::pinocchio yaml-cpp Eigen3::Eigen)

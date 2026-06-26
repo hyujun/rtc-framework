@@ -43,6 +43,7 @@ set(Python3_FIND_VIRTUALENV STANDARD)
 find_package(Python3 COMPONENTS Interpreter Development NumPy)
 
 find_package(pinocchio REQUIRED)
+find_package(rtc_math REQUIRED)
 find_package(rtc_urdf_bridge REQUIRED)
 find_package(rtc_controller_manager REQUIRED)
 find_package(rtc_tsid REQUIRED)
@@ -92,6 +93,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   rtc_base
   rtc_msgs
   pinocchio
+  rtc_math
   rtc_urdf_bridge
   rtc_tsid
   rtc_mpc

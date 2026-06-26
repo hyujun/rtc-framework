@@ -1,5 +1,7 @@
 #include "rtc_tsid/tasks/object_se3_task.hpp"
 
+#include "rtc_tsid/kinematics/se3_error.hpp"
+
 #include <cmath>
 
 namespace rtc::tsid {
@@ -132,21 +134,14 @@ void ObjectSE3Task::ComputeResidual(const PinocchioCache& cache, const ControlRe
   const ObjectFrame& obj = state_provider_->GetPose();
   const Eigen::Matrix<double, 6, 1>& v_obj = state_provider_->GetTwist();
 
-  // Position error: p_des - p_curr.
-  error_full_.head<3>() = placement_des_.translation() - obj.p_w;
+  // Pose / velocity error via the shared WBC helper (U1, LWA frame). The object
+  // frame is world-aligned at p_o, and v_obj is its world-aligned spatial twist,
+  // so the LWA convention applies directly (same as SE3Task / ClikReference).
+  const pinocchio::SE3 obj_pose(obj.R_w, obj.p_w);
+  error_full_ = ComputeTaskPoseError(obj_pose, placement_des_);
 
-  // Orientation error: log3(R_currᵀ · R_des). θ → π singularity guard.
-  const Eigen::Matrix3d R_err = obj.R_w.transpose() * placement_des_.rotation();
-  const Eigen::AngleAxisd aa(R_err);
-  const double angle = aa.angle();
-  if (angle < M_PI - 1e-4) {
-    error_full_.tail<3>() = pinocchio::log3(R_err);
-  } else {
-    error_full_.tail<3>() = aa.axis() * (M_PI - 1e-4);
-  }
-
-  // Velocity error: v_des - v_obj (object spatial velocity, world-aligned).
-  v_error_full_ = v_des_ - v_obj;
+  // Velocity error = exact ė (Jlog6 fwd); reduces to v_des − v_obj at small error.
+  v_error_full_ = ComputeTaskVelocityError(obj_pose, placement_des_, v_obj, v_des_);
 
   // Desired object acceleration.
   a_des_full_ = a_ff_ + kp_.cwiseProduct(error_full_) + kd_.cwiseProduct(v_error_full_);

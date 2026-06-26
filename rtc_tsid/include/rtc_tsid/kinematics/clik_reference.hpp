@@ -47,14 +47,13 @@ namespace rtc::tsid {
 // recovery direction — intentional). v_limit ≤ 0 disables the velocity bound;
 // an empty q_min/q_max disables the position bound (±∞).
 //
-// Error convention is identical to SE3Task (kinematics/se3_error.hpp):
-// PinocchioCache registered-frame LOCAL_WORLD_ALIGNED Jacobian, base-frame
-// position difference + separated log3 rotation error with θ→π clamp.
-// One velocity-law-specific alignment on top: the log3 rotation error is a
-// tip(body)-frame vector, while the LWA Jacobian's angular rows are
-// world(≈base)-aligned — so e_rot is rotated into the base frame before
-// feedback (e_base = R_tip_in_base·e_body = log3(R_des·R_curᵀ); norm
-// unchanged → same scale as SE3Task for A/B comparison). No separate FK —
+// Error convention: the SHARED helper kinematics/se3_error.hpp
+// (ComputeTaskPoseError) — identical to SE3Task / ObjectSE3Task (dynamics WBC),
+// the U1 unification. It is the LWA-frame BodyLog6 error
+// twistLocalToWorld(log6(T⁻¹T_d)), matching the registered-frame
+// LOCAL_WORLD_ALIGNED Jacobian rf.J. rtc_math's quaternion+atan2 log3 is robust
+// at θ=π (no explicit clamp). The velocity law stays first-order (U1):
+// r_task = Kx ⊙ e_x — no Jlog6⁻¹ on this kinematic path. No separate FK —
 // the caller registers tip/base frames on the shared PinocchioCache and
 // calls cache.Update() once per tick.
 //

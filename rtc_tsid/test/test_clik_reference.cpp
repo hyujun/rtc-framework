@@ -237,7 +237,7 @@ TEST_F(ClikReferenceTest, TcpConvergesToOffsetTarget) {
   }
 
   cache_.Update(q, v_zero_, contacts_);
-  const Vec6 err = ComputeSe3Error(TipInBase(), des);
+  const Vec6 err = ComputeTaskPoseError(TipInBase(), des);
   EXPECT_LT(err.head<3>().norm(), 1e-3);
   EXPECT_LT(err.tail<3>().norm(), 1e-3);
   EXPECT_LT(gen.TcpErrorNorm(), 2e-3);
@@ -338,7 +338,7 @@ TEST_F(ClikReferenceTest, SingularConfigVelocityBounded) {
   EXPECT_TRUE(v_sing.allFinite());
   EXPECT_TRUE(gen.QRef().allFinite());
 
-  const Vec6 e = ComputeSe3Error(TipInBase(), des);
+  const Vec6 e = ComputeTaskPoseError(TipInBase(), des);
   const double bound = (2.0 * e).norm() / (2.0 * std::sqrt(damping_sq));
   EXPECT_LE(v_sing.norm(), bound * (1.0 + 1e-9));
 
@@ -432,7 +432,8 @@ TEST_F(ClikReferenceTest, CarryForwardAnchorAccumulatesFromPreviousDesired) {
   double first_cf_drift = 0.0;
   double cf_drift = 0.0;
   for (int k = 0; k < kTicks; ++k) {
-    ASSERT_TRUE(gen_cf.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt, /*reseed_anchor=*/false));
+    ASSERT_TRUE(
+        gen_cf.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt, /*reseed_anchor=*/false));
     if (k == 0) {
       first_cf_drift = (gen_cf.QRef() - q_home_).norm();
     }
@@ -467,7 +468,8 @@ TEST_F(ClikReferenceTest, AnchorDriftClampBoundsCarryForward) {
 
   const double dt = 0.01;
   for (int k = 0; k < 200; ++k) {
-    ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt, /*reseed_anchor=*/false));
+    ASSERT_TRUE(
+        gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt, /*reseed_anchor=*/false));
     // Every per-joint |q_ref − q_meas| stays within the clamp (+ FP slack).
     const double max_excursion = (gen.QRef() - q_home_).cwiseAbs().maxCoeff();
     EXPECT_LE(max_excursion, kDriftMax + 1e-9);

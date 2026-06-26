@@ -33,9 +33,10 @@ enum class ErrorType {
   /// Source: Nakanishi et al. 2008. sign(w) ⇒ shortest path (no unwinding).
   SplitQuat,
   /// [p_d−p ; log3(Rᵀ R_d)] — workspace LEGACY default: base-frame position +
-  /// CURRENT-BODY-frame rotation (mixed). Numerically equals the historical
-  /// rtc::tsid::ComputeSe3Error. Scale θ. Documented 6th type for callsite
-  /// migration; prefer SplitWorld/BodyLog6 for new code.
+  /// CURRENT-BODY-frame rotation (mixed). Numerically equals the legacy
+  /// rtc::tsid::ComputeSe3Error (since removed — the rtc_tsid WBC paths now share
+  /// a unified BodyLog6 helper). Scale θ. Kept as a documented 6th type; prefer
+  /// SplitWorld/BodyLog6 for new code.
   SplitBodyRot,
 };
 

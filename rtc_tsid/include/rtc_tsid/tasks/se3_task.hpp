@@ -28,9 +28,10 @@ namespace rtc::tsid {
 //   기존 world-기준 동작과 동일 (fast-path). YAML에서 키가 누락되면 init은
 //   std::runtime_error를 throw 한다.
 //
-// 위치 오차: e_pos[0:3] = p_des - p_curr_b
-// 자세 오차: e_pos[3:6] = log3(R_currᵀ · R_des) — base frame에서
-// 속도 오차: e_vel = v_des - J_frame · v_curr  (base frame이 fixed인 경우만 유효)
+// 오차 규약: kinematics/se3_error.hpp 의 공용 helper (U1 통일, LWA frame).
+//   e_pos = ComputeTaskPoseError(tip_in_base, placement_des) = LWA BodyLog6.
+//   e_vel = ComputeTaskVelocityError(...) = e_pos 의 정확한 시간미분 ė (Jlog6).
+// 소오차서 e_pos→(p_d−p) / e_vel→(v_des − J·v) 로 환원된다.
 //
 // mask: 6D 중 제어할 축 선택 [vx,vy,vz,wx,wy,wz]
 // residual_dim = mask에서 활성 축 수

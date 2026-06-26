@@ -36,7 +36,7 @@ For a pure rotation of angle θ, the rotation part has the listed magnitude.
 | `SpatialLog6` | `log6(T_d T⁻¹)` | spatial screw | θ | MLS 1994 (`= Ad_T · BodyLog6`) |
 | `SplitLee` | `[p_d−p ; ½(R_dRᵀ−RR_dᵀ)∨]` | world | sinθ | Lee et al. 2010 |
 | `SplitQuat` | `[p_d−p ; 2·sign(w)·vec(q_d⊗q⁻¹)]` | world | 2sin(θ/2) | Nakanishi 2008 |
-| `SplitBodyRot` | `[p_d−p ; log3(Rᵀ R_d)]` | base pos + **body** rot | θ | workspace legacy (`rtc::tsid::ComputeSe3Error`) |
+| `SplitBodyRot` | `[p_d−p ; log3(Rᵀ R_d)]` | base pos + **body** rot | θ | workspace legacy (former `rtc::tsid::ComputeSe3Error`, since removed) |
 
 `isBodyFrame(t)` is `true` only for `BodyLog6` (twist fully in the body frame).
 
@@ -88,9 +88,11 @@ corrections matter **only for anisotropic gain matrices**:
 
 ## Validation & experiment
 
-- `test/test_se3_module.cpp` — 11 tests incl. Pinocchio cross-check (`log6`/`Jlog6`
-  < 1e-10), finite-difference `exactPoseErrorRate` (all 6 types), `J(ξ)ξ=ξ`,
-  scalar-gain exact exponential decay.
+- `test/test_se3_module.cpp` — the Eigen-only core tests (exp/log identities,
+  θ→0/π robustness, error scales, finite-difference `exactPoseErrorRate` for all
+  6 types, `J(ξ)ξ=ξ`, scalar-gain exact exponential decay) run with **no**
+  external dependency. When Pinocchio is found, two extra cross-checks compile in
+  (`log3`/`log6` and `Jlog3`/`Jlog6` < 1e-10), gated by `RTC_MATH_HAVE_PINOCCHIO`.
 - `examples/se3_error_compare` (+ `scripts/plot_se3_compare.py`) — S1 straight-line
   vs screw, S2 Lee stall, S3 θ=179.999° robustness, S4 anisotropic-gain Jlog
   compensation, S5 transport-map omission.

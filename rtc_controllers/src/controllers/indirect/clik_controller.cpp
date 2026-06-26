@@ -3,6 +3,7 @@
 #include "rtc_controllers/indirect/clik_controller.hpp"
 
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -319,19 +320,16 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
 
   tcp_position_ = {tcp[0], tcp[1], tcp[2]};
 
-  // Positional error is trajectory - current
-  // Rotation error is computed using log6/log3
-  pinocchio::SE3 T_current_desired = tcp_pose.actInv(traj_state_.pose);  // relative pose
-  pinocchio::Motion twist_error = pinocchio::log6(T_current_desired);
+  // BodyLog6 = log6(T_cur⁻¹ T_d): body-frame screw error (preserves the
+  // position-rotation coupling), via rtc_math. The error is returned in the
+  // LOCAL frame; J_full_ is expressed in LOCAL_WORLD_ALIGNED, so transport
+  // LOCAL → LWA (rotation-only blockdiag(R,R), NOT the full adjoint).
+  const rtc::math::se3::Iso3 tcp_iso = rtc::math::se3::toIso3(tcp_pose);
+  const rtc::math::se3::Vec6 e_body = rtc::math::se3::computePoseError(
+      tcp_iso, rtc::math::se3::toIso3(traj_state_.pose), rtc::math::se3::ErrorType::BodyLog6);
+  pos_error_6d_ = rtc::math::se3::twistLocalToWorld(tcp_iso, e_body);
 
-  // The twist_error is the spatial velocity needed in the LOCAL frame to reach
-  // target. Converting it to the LOCAL_WORLD_ALIGNED frame (where J_full_ is
-  // expressed).
-  Eigen::Vector3d p_err = tcp_pose.rotation() * twist_error.linear();
-  Eigen::Vector3d r_err = tcp_pose.rotation() * twist_error.angular();
-
-  pos_error_6d_.head<3>() = p_err;
-  pos_error_6d_.tail<3>() = r_err;
+  const Eigen::Vector3d p_err = pos_error_6d_.head<3>();
 
   for (int i = 0; i < 3; ++i) {
     pos_error_[i] = p_err[i];
