@@ -84,6 +84,7 @@ ament_export_dependencies(
   rtc_msgs
   Eigen3
   pinocchio
+  rtc_math
   rtc_urdf_bridge
   yaml-cpp
 )
