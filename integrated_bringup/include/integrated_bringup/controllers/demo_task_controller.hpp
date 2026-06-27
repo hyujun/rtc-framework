@@ -200,6 +200,7 @@ class DemoTaskController final : public RTControllerInterface {
     std::array<int32_t, 3> tof{};
     std::array<float, 3> force{};
     std::array<float, 3> displacement{};
+    float force_mag{0.0f};  ///< ‖force‖ cached in ReadState (reused by grasp + vtcp)
     float contact_flag{0.0f};
     bool valid{false};
   };
@@ -217,6 +218,11 @@ class DemoTaskController final : public RTControllerInterface {
 
   ComputedTrajectory hand_computed_{};
   bool estop_active_{false};
+  // RT-thread-only cache of gains.control_6dof, set in ComputeControl so the
+  // Fill* methods avoid a full Gains SeqLock copy just to read one bool.
+  // Set after ComputeControl's E-STOP early-return, so it is valid only on
+  // non-E-STOP ticks — every reader must sit behind an `estop_active_` guard.
+  bool control_6dof_cached_{false};
 
   // ── 3-phase pipeline ────────────────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
@@ -271,7 +277,6 @@ class DemoTaskController final : public RTControllerInterface {
   Eigen::Matrix3d JJt_;
   Eigen::Matrix3d JJt_inv_;
   Eigen::MatrixXd Jpinv_;
-  Eigen::MatrixXd N_;
   Eigen::VectorXd dq_;
   Eigen::VectorXd desired_q_;  ///< nv: integrated desired joint position
   Eigen::VectorXd traj_dq_;    // feedforward-only trajectory velocity (for logging)

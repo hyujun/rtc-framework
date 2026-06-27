@@ -147,13 +147,14 @@ class DemoJointController final : public RTControllerInterface {
   // (contact_flag) and slots 4..6 (displacement) are no longer consumed
   // by this controller — see Layer D for full backend/controller split.
   struct FingertipSensorData {
-    std::array<int32_t, 3> tof{};   ///< ToF distances (publish-only)
-    std::array<float, 3> force{};   ///< fx, fy, fz (link frame, N)
-    float contact_flag{0.0f};       ///< native sigmoid prob (sensor A only)
-    bool valid{false};              ///< inference_enable[f] (backend fresh)
-    bool in_contact{false};         ///< capability-aware: |F|>force_thresh AND
-                                    ///< (sensor A path also requires native
-                                    ///< prob > contact_thresh)
+    std::array<int32_t, 3> tof{};  ///< ToF distances (publish-only)
+    std::array<float, 3> force{};  ///< fx, fy, fz (link frame, N)
+    float force_mag{0.0f};         ///< ‖force‖ cached in ReadState (reused by grasp + vtcp)
+    float contact_flag{0.0f};      ///< native sigmoid prob (sensor A only)
+    bool valid{false};             ///< inference_enable[f] (backend fresh)
+    bool in_contact{false};        ///< capability-aware: |F|>force_thresh AND
+                                   ///< (sensor A path also requires native
+                                   ///< prob > contact_thresh)
   };
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
@@ -238,6 +239,11 @@ class DemoJointController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
+  // Arm base→tip FK computed once per tick in ComputeControl; FillLogOutput /
+  // FillPublishOutput reuse this instead of recomputing the full FK pass.
+  // Valid only on non-E-STOP ticks — ComputeEstop bypasses ComputeControl and
+  // recomputes its own FK, so estop readers must not touch this member.
+  pinocchio::SE3 arm_tcp_pose_{pinocchio::SE3::Identity()};
   // ── Hand tree-model for fingertip FK ──────────────────────────────────
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
   static constexpr std::size_t kNumFingertips = 4;
