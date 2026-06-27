@@ -65,7 +65,6 @@ void DemoTaskController::InitArmModel(const rtc_urdf_bridge::ModelConfig& config
   JJt_ = Eigen::Matrix3d::Zero();
   JJt_inv_ = Eigen::Matrix3d::Zero();
   Jpinv_ = Eigen::MatrixXd::Zero(nv, 3);
-  N_ = Eigen::MatrixXd::Identity(nv, nv);
   dq_ = Eigen::VectorXd::Zero(nv);
   desired_q_ = Eigen::VectorXd::Zero(nv);
   traj_dq_ = Eigen::VectorXd::Zero(nv);

@@ -75,10 +75,13 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
           ft.force[j] = dev1.inference_data[ft_base + 1 + j];
           ft.displacement[j] = dev1.inference_data[ft_base + 4 + j];
         }
+        ft.force_mag = std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
+                                 ft.force[2] * ft.force[2]);
       } else {
         ft.contact_flag = 0.0f;
         ft.force = {};
         ft.displacement = {};
+        ft.force_mag = 0.0f;
       }
     }
   }
@@ -102,13 +105,8 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
       ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
     }
     vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
-    // Force magnitude for weighted mode
-    const auto& ft = fingertip_data_[f];
-    vtcp_inputs_[f].force_magnitude =
-        ft.valid
-            ? static_cast<double>(std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
-                                            ft.force[2] * ft.force[2]))
-            : 0.0;
+    // Force magnitude for weighted mode (cached in ReadState; 0 when !valid).
+    vtcp_inputs_[f].force_magnitude = static_cast<double>(fingertip_data_[f].force_mag);
   }
 
   const auto result = ComputeVirtualTcp(gains.vtcp, T_base_tcp, vtcp_inputs_);
@@ -130,6 +128,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
 
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
+  control_6dof_cached_ = gains.control_6dof;  // reused by Fill* (avoids re-Load)
 
   const auto& dev0 = state.devices[0];
 
@@ -315,6 +314,9 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   }
 
   // ── Damped pseudoinverse & Primary task ────────────────────────────────
+  // The trajectory feedforward velocity (trajectory local → Jacobian frame) is
+  // computed once and reused for both the CLIK command dq_ and the log-only
+  // feedforward traj_dq_, so the frame rotation runs a single time per tick.
   if (gains.control_6dof) {
     JJt_6d_.noalias() = J_full_ * J_full_.transpose();
     JJt_6d_.diagonal().array() += gains.damping * gains.damping;
@@ -328,47 +330,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
       kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains.kp_rotation[i];
     }
 
-    Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
-    if (use_vtcp_frame) {
-      // Trajectory velocity is in trajectory-pose local frame.
-      // Jacobian is in current vtcp frame → rotate trajectory local → vtcp
-      // frame.
-      const Eigen::Matrix3d R_vtcp_traj =
-          control_pose.rotation().transpose() * traj_state_.pose.rotation();
-      task_vel_6d.head<3>() += R_vtcp_traj * traj_state_.velocity.linear();
-      task_vel_6d.tail<3>() += R_vtcp_traj * traj_state_.velocity.angular();
-    } else {
-      // Trajectory velocity is in trajectory-pose local frame.
-      // Jacobian is LOCAL_WORLD_ALIGNED → rotate trajectory local → world.
-      task_vel_6d.head<3>() += traj_state_.pose.rotation() * traj_state_.velocity.linear();
-      task_vel_6d.tail<3>() += traj_state_.pose.rotation() * traj_state_.velocity.angular();
-    }
-
-    dq_.noalias() = Jpinv_6d_ * task_vel_6d;
-  } else {
-    JJt_.noalias() = J_pos_ * J_pos_.transpose();
-    JJt_.diagonal().array() += gains.damping * gains.damping;
-    ldlt_.compute(JJt_);
-    JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
-    Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
-
-    Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
-                           gains.kp_translation[2]);
-    // Feedforward: trajectory local → Jacobian frame (vtcp or world-aligned)
-    Eigen::Vector3d ff_vel;
-    if (use_vtcp_frame) {
-      const Eigen::Matrix3d R_vtcp_traj =
-          control_pose.rotation().transpose() * traj_state_.pose.rotation();
-      ff_vel = R_vtcp_traj * traj_state_.velocity.linear();
-    } else {
-      ff_vel = traj_state_.pose.rotation() * traj_state_.velocity.linear();
-    }
-    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + ff_vel;
-    dq_.noalias() = Jpinv_ * task_vel;
-  }
-
-  // ── Feedforward-only trajectory velocity (for logging) ────────────────
-  if (gains.control_6dof) {
+    // Feedforward: trajectory local → Jacobian frame (vtcp or world-aligned).
     Eigen::Matrix<double, 6, 1> ff_vel_6d;
     if (use_vtcp_frame) {
       const Eigen::Matrix3d R_vtcp_traj =
@@ -379,8 +341,20 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
       ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
       ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
     }
+
+    const Eigen::Matrix<double, 6, 1> task_vel_6d =
+        kp_vec_6d.cwiseProduct(pos_error_6d_) + ff_vel_6d;
+    dq_.noalias() = Jpinv_6d_ * task_vel_6d;
     traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
   } else {
+    JJt_.noalias() = J_pos_ * J_pos_.transpose();
+    JJt_.diagonal().array() += gains.damping * gains.damping;
+    ldlt_.compute(JJt_);
+    JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
+    Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
+
+    Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
+                           gains.kp_translation[2]);
     Eigen::Vector3d ff_lin;
     if (use_vtcp_frame) {
       const Eigen::Matrix3d R_vtcp_traj =
@@ -389,19 +363,23 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     } else {
       ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
     }
+    const Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) + ff_lin;
+    dq_.noalias() = Jpinv_ * task_vel;
     traj_dq_.noalias() = Jpinv_ * ff_lin;
   }
 
   // ── Null-space secondary task ──────────────────────────────────────────
+  // null_dq = (I − Jpinv·J)·null_err = null_err − Jpinv·(J·null_err). Computing
+  // it this way avoids materialising the nv×nv projector N (and the Jpinv·J
+  // matmul) — only two matrix-vector products remain.
   if (gains.enable_null_space && !gains.control_6dof) {
-    N_.setIdentity();
-    N_.noalias() -= Jpinv_ * J_pos_;
-
     for (Eigen::Index i = 0; i < arm_handle_->nv(); ++i) {
       null_err_[i] = current_target_slot_.null_target[static_cast<std::size_t>(i)] -
                      dev0.positions[static_cast<std::size_t>(i)];
     }
-    null_dq_.noalias() = N_ * null_err_;
+    const Eigen::Vector3d j_nerr = J_pos_ * null_err_;
+    null_dq_.noalias() = Jpinv_ * j_nerr;
+    null_dq_ = null_err_ - null_dq_;
     null_dq_ *= gains.null_kp;
     dq_ += null_dq_;
   }
@@ -464,8 +442,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     for (int f = 0; f < num_active_fingertips_; ++f) {
       const auto idx = static_cast<std::size_t>(f);
       const auto& ft = fingertip_data_[idx];
-      const float mag = std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
-                                  ft.force[2] * ft.force[2]);
+      const float mag = ft.force_mag;  // cached in ReadState
 
       grasp_state_.force_magnitude[idx] = mag;
       // contact_flag publish policy mirrors joint/wbc: sensor A → native
@@ -719,7 +696,7 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
   output.task_goal_positions[0] = current_target_slot_.tcp_target[0];
   output.task_goal_positions[1] = current_target_slot_.tcp_target[1];
   output.task_goal_positions[2] = current_target_slot_.tcp_target[2];
-  if (gains_lock_.Load().control_6dof) {
+  if (control_6dof_cached_) {
     Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
     output.task_goal_positions[3] = goal_rpy[0];
     output.task_goal_positions[4] = goal_rpy[1];
@@ -801,7 +778,7 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
   output.task_goal_positions[0] = current_target_slot_.tcp_target[0];
   output.task_goal_positions[1] = current_target_slot_.tcp_target[1];
   output.task_goal_positions[2] = current_target_slot_.tcp_target[2];
-  if (gains_lock_.Load().control_6dof) {
+  if (control_6dof_cached_) {
     Eigen::Vector3d goal_rpy = pinocchio::rpy::matrixToRpy(tcp_target_pose_.rotation());
     output.task_goal_positions[3] = goal_rpy[0];
     output.task_goal_positions[4] = goal_rpy[1];

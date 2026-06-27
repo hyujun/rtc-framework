@@ -70,6 +70,7 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
         const float fy = ft.force[1];
         const float fz = ft.force[2];
         const float mag = std::sqrt(fx * fx + fy * fy + fz * fz);
+        ft.force_mag = mag;
         const bool force_active = (mag > force_threshold);
         // Sensor A (native): require both native prob AND force threshold.
         // Sensor B (force-only): force threshold alone.
@@ -77,6 +78,7 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
             native_path ? (ft.contact_flag > contact_threshold && force_active) : force_active;
       } else {
         ft.force = {};
+        ft.force_mag = 0.0F;
         ft.contact_flag = 0.0F;
         ft.in_contact = false;
       }
@@ -103,13 +105,8 @@ void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
       ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
     }
     vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
-    // Force magnitude for weighted mode
-    const auto& ft = fingertip_data_[f];
-    vtcp_inputs_[f].force_magnitude =
-        ft.valid
-            ? static_cast<double>(std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
-                                            ft.force[2] * ft.force[2]))
-            : 0.0;
+    // Force magnitude for weighted mode (cached in ReadState; 0 when !valid).
+    vtcp_inputs_[f].force_magnitude = static_cast<double>(fingertip_data_[f].force_mag);
   }
 
   const auto result = ComputeVirtualTcp(gains.vtcp, T_base_tcp, vtcp_inputs_);
@@ -212,6 +209,19 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     }
   }
 
+  // ── Arm FK: base → tip (computed once per tick; cached for Fill*) ──────
+  // WriteJointCommand / FillLogOutput do not touch arm_handle_, so the cached
+  // pose stays valid for the whole output-composition phase.
+  {
+    const int nc0 = dev0.num_channels;
+    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
+    arm_handle_->ComputeForwardKinematics(q_span);
+    arm_tcp_pose_ = arm_handle_->GetFramePlacement(tip_frame_id_);
+    if (use_root_frame_) {
+      arm_tcp_pose_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(arm_tcp_pose_);
+    }
+  }
+
   // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
   if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
@@ -221,15 +231,6 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     }
     hand_handle_->ComputeForwardKinematics(std::span<const double>(hand_q_.data(), hand_nq));
 
-    // Arm FK: base -> tcp (tool0)
-    const int nc0 = dev0.num_channels;
-    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-    arm_handle_->ComputeForwardKinematics(q_span);
-    pinocchio::SE3 T_base_tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-    if (use_root_frame_) {
-      T_base_tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(T_base_tcp);
-    }
-
     // Chain: T_base_fingertip = T_base_tcp * T_hand_fingertip
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
       if (fingertip_frame_ids_[f] != 0) {
@@ -237,14 +238,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
         if (use_hand_root_frame_) {
           T_hand_ft = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(T_hand_ft);
         }
-        const pinocchio::SE3 T_base_ft = T_base_tcp.act(T_hand_ft);
+        const pinocchio::SE3 T_base_ft = arm_tcp_pose_.act(T_hand_ft);
         fingertip_positions_[f] = T_base_ft.translation();
         fingertip_rotations_[f] = T_base_ft.rotation();
       }
     }
 
     // Virtual TCP computation (uses hand FK data computed above)
-    UpdateVirtualTcp(T_base_tcp, gains);
+    UpdateVirtualTcp(arm_tcp_pose_, gains);
   }
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
@@ -261,8 +262,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     for (int f = 0; f < num_active_fingertips_; ++f) {
       const auto idx = static_cast<std::size_t>(f);
       const auto& ft = fingertip_data_[idx];
-      const float mag = std::sqrt(ft.force[0] * ft.force[0] + ft.force[1] * ft.force[1] +
-                                  ft.force[2] * ft.force[2]);
+      const float mag = ft.force_mag;  // cached in ReadState
 
       grasp_state_.force_magnitude[idx] = mag;
       // contact_flag publish policy: sensor A path → native probability so
@@ -484,13 +484,8 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
     out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
 
-  std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-  arm_handle_->ComputeForwardKinematics(q_span);
-  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
-  }
-  const pinocchio::SE3& log_pose = vtcp_valid_ ? vtcp_pose_ : tcp;
+  // Arm FK was computed once in ComputeControl and cached in arm_tcp_pose_.
+  const pinocchio::SE3& log_pose = vtcp_valid_ ? vtcp_pose_ : arm_tcp_pose_;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
   output.actual_task_positions[0] = log_pose.translation().x();
   output.actual_task_positions[1] = log_pose.translation().y();
@@ -552,12 +547,8 @@ void DemoJointController::FillPublishOutput(const ControllerState& state, Contro
     out0.goal_positions[i] = current_target_slot_.targets[0][i];
   }
 
-  // FK already computed in FillLogOutput; GetFramePlacement is O(1) read of
-  // pinocchio::Data::oMf.
-  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
-  }
+  // Arm FK cached in ComputeControl (arm_tcp_pose_); reused here — no recompute.
+  const pinocchio::SE3& tcp = arm_tcp_pose_;
   const pinocchio::SE3& log_pose = vtcp_valid_ ? vtcp_pose_ : tcp;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
   output.actual_task_positions[0] = log_pose.translation().x();
