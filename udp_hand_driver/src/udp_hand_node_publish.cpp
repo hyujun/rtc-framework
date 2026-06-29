@@ -51,7 +51,7 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
   }
 
   if (state.num_fingertips > 0) {
-    sensor_msg_.header.stamp = this->now();
+    sensor_msg_.header.stamp = stamp;
 
     const bool ft_valid = ft_enabled_ && ft_state.valid;
 

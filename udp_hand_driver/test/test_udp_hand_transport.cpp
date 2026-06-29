@@ -177,9 +177,11 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMismatch_ReturnsFalse) {
 
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
-  std::array<int32_t, udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip> out{};
-  const bool result =
-      transport.RequestAllSensorRead(out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
+  std::array<int32_t,
+             udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip>
+      out{};
+  const bool result = transport.RequestAllSensorRead(
+      out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -200,9 +202,11 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
 
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
-  std::array<int32_t, udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip> out{};
-  const bool result =
-      transport.RequestAllSensorRead(out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
+  std::array<int32_t,
+             udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip>
+      out{};
+  const bool result = transport.RequestAllSensorRead(
+      out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
   dev_thread.join();
 
   EXPECT_TRUE(result);
@@ -279,16 +283,6 @@ TEST(UdpHandTransport, DestructorClosesSocket) {
     ASSERT_TRUE(transport.Open());
     // Destructor should close without crash
   }
-}
-
-// ── DrainStaleResponses on empty socket ────────────────────────────────────
-
-TEST(UdpHandTransport, DrainStaleResponses_EmptySocket) {
-  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
-  ASSERT_TRUE(transport.Open());
-  // Draining an empty socket should not block or crash
-  transport.DrainStaleResponses();
-  transport.Close();
 }
 
 // ── CommStats mutable access ───────────────────────────────────────────────

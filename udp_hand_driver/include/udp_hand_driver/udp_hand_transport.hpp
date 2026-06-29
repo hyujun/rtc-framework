@@ -422,16 +422,6 @@ class UdpHandTransport {
     return false;
   }
 
-  // Drain stale UDP responses from the socket buffer (non-blocking).
-  void DrainStaleResponses() noexcept {
-    std::array<uint8_t, packets::kMaxPacketSize> discard{};
-    for (int i = 0; i < 8; ++i) {
-      const ssize_t r = ::recv(socket_fd_, discard.data(), discard.size(), MSG_DONTWAIT);
-      if (r <= 0)
-        break;
-    }
-  }
-
   // ── Statistics accessors ──────────────────────────────────────────────────
 
   [[nodiscard]] const UdpHandCommStats& comm_stats() const noexcept { return comm_stats_; }
