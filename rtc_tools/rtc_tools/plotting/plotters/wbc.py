@@ -130,24 +130,75 @@ def plot_wbc_task_trajectory(df, save_dir=None):
 
 
 def plot_wbc_fingertip_force(df, save_dir=None):
-    """Per-fingertip contact force magnitude |F| (`fingertip_force_*`).
+    """Per-fingertip contact force (`fingertip_fx_/fy_/fz_*` vector + `fingertip_force_*` |F|).
 
-    Hand-role DeviceWbcLog only. One overlaid line per fingertip.
+    Hand-role DeviceWbcLog only. One subfigure per fingertip, each overlaying
+    the Fx/Fy/Fz force components with |F| as a faint dashed reference. Older
+    CSVs that only logged the |F| magnitude fall back to a single figure with
+    one overlaid line per fingertip.
     """
     force_cols, display_names = _detect_joint_columns(df, "fingertip_force_")
     if not force_cols:
         print("  Skipping WBC fingertip force plot (fingertip_force_* not found)")
         return
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    fig.suptitle("WBC Fingertip Contact Force |F|", fontsize=16, fontweight="bold")
+    fx_cols, _ = _detect_joint_columns(df, "fingertip_fx_")
+    fy_cols, _ = _detect_joint_columns(df, "fingertip_fy_")
+    fz_cols, _ = _detect_joint_columns(df, "fingertip_fz_")
     t = df["timestamp"]
-    for col, name in zip(force_cols, display_names, strict=False):
-        ax.plot(t, df[col], label=name, linewidth=1.3)
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("|F| (N)")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
+
+    # Backward-compat: pre-vector CSVs carry only |F| → single overlaid axes.
+    have_vector = (
+        len(fx_cols) >= len(force_cols)
+        and len(fy_cols) >= len(force_cols)
+        and len(fz_cols) >= len(force_cols)
+    )
+    if not have_vector:
+        fig, ax = plt.subplots(figsize=(14, 6))
+        fig.suptitle("WBC Fingertip Contact Force |F|", fontsize=16, fontweight="bold")
+        for col, name in zip(force_cols, display_names, strict=False):
+            ax.plot(t, df[col], label=name, linewidth=1.3)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("|F| (N)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if save_dir:
+            path = Path(save_dir) / "wbc_fingertip_force.png"
+            plt.savefig(path, dpi=300, bbox_inches="tight")
+            print(f"Saved: {path}")
+        else:
+            plt.show()
+        plt.close()
+        return
+
+    n_ft = len(display_names)
+    nrows, ncols = _auto_subplot_grid(n_ft)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4 * nrows), squeeze=False)
+    fig.suptitle("WBC Fingertip Contact Force (Fx / Fy / Fz)", fontsize=16, fontweight="bold")
+    flat = axes.flatten()
+
+    for i, name in enumerate(display_names):
+        ax = flat[i]
+        ax.plot(t, df[fx_cols[i]], label="Fx", linewidth=1.3, color="C0")
+        ax.plot(t, df[fy_cols[i]], label="Fy", linewidth=1.3, color="C1")
+        ax.plot(t, df[fz_cols[i]], label="Fz", linewidth=1.3, color="C2")
+        ax.plot(
+            t,
+            df[force_cols[i]],
+            label="|F|",
+            linewidth=1.0,
+            linestyle="--",
+            color="0.5",
+            alpha=0.7,
+        )
+        ax.set_title(name, fontsize=10)
+        ax.set_ylabel("Force (N)")
+        ax.set_xlabel("Time (s)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    for j in range(n_ft, len(flat)):
+        flat[j].axis("off")
 
     plt.tight_layout()
     if save_dir:

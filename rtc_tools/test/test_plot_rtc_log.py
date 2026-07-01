@@ -1013,18 +1013,20 @@ def _wbc_arm_header(joints):
 def _wbc_hand_header(joints, motors, fingertips, max_fingertips=8):
     """Column order of WriteDeviceWbcLogHeader(role=1).
 
-    The fingertip-force block is FIXED-WIDTH (kMaxFingertips=8): labelled by
+    The fingertip-force blocks are FIXED-WIDTH (kMaxFingertips=8): labelled by
     `fingertips` where provided, numeric index otherwise. This mirrors the C++
-    writer, which can't size the block from the runtime fingertip count.
+    writer, which can't size the block from the runtime fingertip count. The
+    |F| magnitude block is followed by the Fx/Fy/Fz vector blocks.
     """
     cols = ["t_relative_s"]
     for field in _WBC_JOINT_FIELDS:
         cols += [f"{field}_{j}" for j in joints]
     for field in ("motor_pos", "motor_vel", "motor_eff"):
         cols += [f"{field}_{m}" for m in motors]
-    for i in range(max_fingertips):
-        label = fingertips[i] if i < len(fingertips) else str(i)
-        cols.append(f"fingertip_force_{label}")
+    for prefix in ("fingertip_force_", "fingertip_fx_", "fingertip_fy_", "fingertip_fz_"):
+        for i in range(max_fingertips):
+            label = fingertips[i] if i < len(fingertips) else str(i)
+            cols.append(f"{prefix}{label}")
     cols += ["command_type", "goal_type"]
     return cols
 
@@ -1116,6 +1118,26 @@ class TestWbcLogRoundTrip:
 
     def test_hand_plots_render(self, tmp_path):
         df = self._hand_df(tmp_path)
+        _plot_wbc_fingertip_force(df, save_dir=str(tmp_path))
+        assert (tmp_path / "wbc_fingertip_force.png").exists()
+
+    def test_hand_fingertip_force_legacy_magnitude_only(self, tmp_path):
+        """Pre-vector CSVs (only fingertip_force_* |F|) fall back to the
+        single overlaid-lines figure instead of the per-finger subfigures."""
+        header = _wbc_hand_header(self.JOINTS, self.MOTORS, self.FINGERTIPS)
+        header = [
+            c
+            for c in header
+            if not c.startswith(("fingertip_fx_", "fingertip_fy_", "fingertip_fz_"))
+        ]
+        df = _build_wbc_log(
+            tmp_path,
+            "hand_state_legacy.csv",
+            header,
+            {"command_type": "position", "goal_type": "joint"},
+            "wbc_log",
+        )
+        assert _has_wbc_fingertip_force(df) is True
         _plot_wbc_fingertip_force(df, save_dir=str(tmp_path))
         assert (tmp_path / "wbc_fingertip_force.png").exists()
 

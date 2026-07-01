@@ -182,6 +182,10 @@ TEST(DeviceWbcLogPod, HandRoleHeaderColumnsMatchRow) {
 
   EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
   EXPECT_NE(hdr.find("fingertip_force_thumb"), std::string::npos);
+  // Per-axis force-vector blocks accompany the |F| magnitude block.
+  EXPECT_NE(hdr.find("fingertip_fx_thumb"), std::string::npos);
+  EXPECT_NE(hdr.find("fingertip_fy_thumb"), std::string::npos);
+  EXPECT_NE(hdr.find("fingertip_fz_thumb"), std::string::npos);
   EXPECT_NE(hdr.find("motor_eff_m3"), std::string::npos);
   EXPECT_EQ(hdr.find("task_goal_x"), std::string::npos);
 }
@@ -204,9 +208,12 @@ TEST(DeviceWbcLogPod, HandFingertipBlockFixedWidthWhenNamesEmpty) {
   integrated_bringup::WriteDeviceWbcLogRow(row_os, pod);
 
   EXPECT_EQ(CountCommas(hdr), CountCommas(row_os.str())) << "header: " << hdr;
-  // Fixed-width block → numeric-labelled columns present.
+  // Fixed-width blocks → numeric-labelled columns present for |F| and each axis.
   EXPECT_NE(hdr.find("fingertip_force_0"), std::string::npos);
   EXPECT_NE(hdr.find("fingertip_force_7"), std::string::npos);
+  EXPECT_NE(hdr.find("fingertip_fx_0"), std::string::npos);
+  EXPECT_NE(hdr.find("fingertip_fy_7"), std::string::npos);
+  EXPECT_NE(hdr.find("fingertip_fz_0"), std::string::npos);
 }
 
 TEST(DeviceWbcLogPod, RowRespectsRuntimeNumJoints) {

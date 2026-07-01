@@ -1076,6 +1076,12 @@ void DemoWbcController::FillDeviceWbcLogPod(
     pod.num_fingertips = static_cast<std::uint8_t>(nf);
     for (std::size_t i = 0; i < nf; ++i) {
       pod.fingertip_force[i] = static_cast<double>(wbc_state_.force_magnitude[i]);
+      // Force vector (link frame) straight from the per-tick fingertip staging
+      // buffer; wbc_state_ only carries the |F| magnitude aggregate.
+      const auto& fvec = fingertip_data_[i].force;
+      pod.fingertip_force_x[i] = static_cast<double>(fvec[0]);
+      pod.fingertip_force_y[i] = static_cast<double>(fvec[1]);
+      pod.fingertip_force_z[i] = static_cast<double>(fvec[2]);
     }
   }
 

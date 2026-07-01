@@ -9,6 +9,7 @@
 //   - accelerations  : TSID solution q̈ (a_opt device slice), NOT finite-diff
 //   - trajectory_task_*  : current SE3 quintic-ramp setpoint (arm role)
 //   - fingertip_force    : per-fingertip |F| from WbcStateData (hand role)
+//   - fingertip_force_[xyz] : per-fingertip contact-force vector (hand role)
 //
 // One POD serves both arm and hand devices; a `role` byte (0=arm, 1=hand)
 // drives role-gated column blocks in the writer so each CSV only carries the
@@ -74,8 +75,14 @@ struct DeviceWbcLogPod {
   std::array<double, kMaxMotors> motor_velocities{};
   std::array<double, kMaxMotors> motor_efforts{};
 
-  // ── Fingertip force (hand role only; |F| per fingertip [N]) ──────────────
-  std::array<double, kMaxFingertips> fingertip_force{};
+  // ── Fingertip force (hand role only; per fingertip [N]) ──────────────────
+  // |F| magnitude plus the contact-force vector (link frame). The vector
+  // blocks let plotters break force down per axis; magnitude is retained for
+  // grasp diagnostics and backward compatibility with older CSVs.
+  std::array<double, kMaxFingertips> fingertip_force{};    // |F|
+  std::array<double, kMaxFingertips> fingertip_force_x{};  // Fx
+  std::array<double, kMaxFingertips> fingertip_force_y{};  // Fy
+  std::array<double, kMaxFingertips> fingertip_force_z{};  // Fz
 
   // ── Categorical (mirrored as ints; writer translates) ────────────────────
   std::uint8_t command_type{0};  // 0=position, 1=torque, 2=pd_feedforward
@@ -145,14 +152,20 @@ inline void WriteDeviceWbcLogHeader(std::ostream& os, std::uint8_t role,
     // fixed block is the only width that guarantees header == row. Columns
     // beyond the runtime count carry zeros. Label by fingertip_names when
     // provided, else numeric index.
-    for (std::size_t i = 0; i < DeviceWbcLogPod::kMaxFingertips; ++i) {
-      os << ",fingertip_force_";
-      if (i < fingertip_names.size()) {
-        os << fingertip_names[i];
-      } else {
-        os << i;
+    auto emit_fingertip_block = [&](std::string_view prefix) {
+      for (std::size_t i = 0; i < DeviceWbcLogPod::kMaxFingertips; ++i) {
+        os << ',' << prefix;
+        if (i < fingertip_names.size()) {
+          os << fingertip_names[i];
+        } else {
+          os << i;
+        }
       }
-    }
+    };
+    emit_fingertip_block("fingertip_force_");  // |F| magnitude
+    emit_fingertip_block("fingertip_fx_");     // Fx
+    emit_fingertip_block("fingertip_fy_");     // Fy
+    emit_fingertip_block("fingertip_fz_");     // Fz
   }
 
   os << ",command_type,goal_type";
@@ -200,11 +213,18 @@ inline void WriteDeviceWbcLogRow(std::ostream& os, const DeviceWbcLogPod& p) {
     emit_motor_array(p.motor_positions);
     emit_motor_array(p.motor_velocities);
     emit_motor_array(p.motor_efforts);
-    // Fixed-width fingertip block (see WriteDeviceWbcLogHeader): emit all
-    // kMaxFingertips slots; entries beyond the runtime count are zero.
-    for (std::size_t i = 0; i < DeviceWbcLogPod::kMaxFingertips; ++i) {
-      os << ',' << p.fingertip_force[i];
-    }
+    // Fixed-width fingertip blocks (see WriteDeviceWbcLogHeader): emit all
+    // kMaxFingertips slots; entries beyond the runtime count are zero. Order
+    // must match the header: |F|, then Fx, Fy, Fz.
+    auto emit_fingertip_array = [&](const std::array<double, DeviceWbcLogPod::kMaxFingertips>& a) {
+      for (std::size_t i = 0; i < DeviceWbcLogPod::kMaxFingertips; ++i) {
+        os << ',' << a[i];
+      }
+    };
+    emit_fingertip_array(p.fingertip_force);
+    emit_fingertip_array(p.fingertip_force_x);
+    emit_fingertip_array(p.fingertip_force_y);
+    emit_fingertip_array(p.fingertip_force_z);
   }
 
   os << ',' << DeviceWbcLogCommandTypeStr(p.command_type);
