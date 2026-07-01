@@ -116,8 +116,28 @@ find_ruff() {
   return 1
 }
 
+# Resolve a clang-format invocation: prefer a system binary, else the
+# repo-pinned version via uvx (mirrors .claude/hooks/format-code.sh so the
+# pure-format fast path works on boxes without a system clang-format — e.g.
+# fresh dev/CI). Populates CLANG_FORMAT_CMD as an argv array; the pin matches
+# format-code.sh so the round-trip and the auto-formatter agree.
+CLANG_FORMAT_PIN="18.1.8"
+CLANG_FORMAT_CMD=()
+resolve_clang_format() {
+  if command -v clang-format >/dev/null 2>&1; then
+    CLANG_FORMAT_CMD=(clang-format)
+    return 0
+  fi
+  if command -v uvx >/dev/null 2>&1; then
+    CLANG_FORMAT_CMD=(uvx --from "clang-format==${CLANG_FORMAT_PIN}" clang-format)
+    return 0
+  fi
+  return 1
+}
+resolve_clang_format && HAVE_CLANG_FORMAT=1 || HAVE_CLANG_FORMAT=0
+
 is_pure_format() {
-  command -v clang-format >/dev/null 2>&1 || return 1
+  [ "$HAVE_CLANG_FORMAT" -eq 1 ] || return 1
   local RUFF_BIN
   RUFF_BIN=$(find_ruff) || RUFF_BIN=""
 
@@ -135,8 +155,8 @@ is_pure_format() {
         # Round-trip both versions through clang-format with $f as the
         # filename hint so .clang-format / file-type rules apply.
         diff <(git show "HEAD:$f" 2>/dev/null \
-                 | clang-format --assume-filename="$f" 2>/dev/null) \
-             <(clang-format --assume-filename="$f" < "$f" 2>/dev/null) \
+                 | "${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" 2>/dev/null) \
+             <("${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" < "$f" 2>/dev/null) \
              >/dev/null 2>&1 || return 1
         ;;
       *.py)
@@ -155,10 +175,12 @@ is_pure_format() {
 PURE_FORMAT=0
 if is_pure_format; then
   PURE_FORMAT=1
-elif ! command -v clang-format >/dev/null 2>&1; then
+elif [ "$HAVE_CLANG_FORMAT" -eq 0 ]; then
   # Diagnostic: formatter absence forces fail-closed; surface once so
-  # debugging stale-cache style fast-path misses isn't blind.
-  echo "verify-changes: clang-format not found; pure-format fast path disabled." >&2
+  # debugging stale-cache style fast-path misses isn't blind. Both a system
+  # clang-format and the uvx fallback are missing here.
+  echo "verify-changes: clang-format unavailable (no system binary or uvx);" \
+       "pure-format fast path disabled." >&2
 fi
 
 WARNINGS=""
@@ -179,7 +201,13 @@ done
 RTC_TOUCHED=""
 INTEGRATION_TOUCHED=""
 if [ "$PURE_FORMAT" -eq 0 ]; then
-  RTC_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^rtc_[a-z_]+/' || true)
+  # ARCH-1 scope is rtc_* production code (include|src|module dirs). Test files
+  # under rtc_*/test|tests/ legitimately instantiate concrete robots — a
+  # plotter test needs realistic fixtures like `leap_state.csv` — so excluding
+  # them keeps the header's stated "include|src" intent without punishing test
+  # fixtures (see memory feedback_arch1_grep_false_positive; test-fixture
+  # false-positive observed 2026-07-01 on rtc_tools/test/test_plot_rtc_log.py).
+  RTC_TOUCHED=$(echo "$CHANGED_SRC" | grep -E '^rtc_[a-z_]+/' | grep -vE '(^|/)tests?/' || true)
   # ARCH-4 target set is derived dynamically: any non-rtc_* package whose
   # package.xml depends on at least one rtc_* package. Previously this was
   # a hardcoded "^ur5e_*/" prefix which silently lost coverage after the
