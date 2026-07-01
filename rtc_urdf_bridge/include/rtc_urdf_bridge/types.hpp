@@ -170,18 +170,85 @@ struct TreeModelDefinition {
   std::vector<std::string> branching_points;  // 분기점 링크 이름
 };
 
-// ── 폐쇄 체인 정보 ──────────────────────────────────────────────────────────
+// ── 폐쇄 체인 구속 타입 (loop closure) ───────────────────────────────────────
+// Extended-URDF sidecar (<name>.closure.yaml) 파서와 constraint_builder가 공유하는
+// 중간 표현용 enum. Pinocchio ContactType / ReferenceFrame 로의 매핑은
+// constraint_builder 가 담당한다 (여기서 Pinocchio 헤더 의존 회피).
+enum class LoopConstraintType : std::uint8_t {
+  kContact3d,  // 점 접촉 (dim 3) — 평면/cross 4-bar 기본값 (과구속 회피, anti-pattern #3)
+  kContact6d,  // frame 접촉 (dim 6)
+};
+
+// ReferenceFrame 축: Pinocchio 는 LOCAL | LOCAL_WORLD_ALIGNED 만 허용 (WORLD 는
+// init() assert 에서 거부). kWorld 는 스키마 완전성을 위해 두되 builder 에서 검증.
+enum class LoopReferenceFrame : std::uint8_t {
+  kLocal,
+  kLocalWorldAligned,
+  kWorld,
+};
+
+[[nodiscard]] inline const char* LoopConstraintTypeToString(LoopConstraintType t) noexcept {
+  switch (t) {
+    case LoopConstraintType::kContact3d:
+      return "contact_3d";
+    case LoopConstraintType::kContact6d:
+      return "contact_6d";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] inline const char* LoopReferenceFrameToString(LoopReferenceFrame f) noexcept {
+  switch (f) {
+    case LoopReferenceFrame::kLocal:
+      return "LOCAL";
+    case LoopReferenceFrame::kLocalWorldAligned:
+      return "LOCAL_WORLD_ALIGNED";
+    case LoopReferenceFrame::kWorld:
+      return "WORLD";
+  }
+  return "unknown";
+}
+
+// ── 폐쇄 체인 정보 (Extended-URDF 중간 표현 / DTO) ────────────────────────────
+// POD 성격. XML/YAML 파싱 결과를 Pinocchio 객체로 직접 만들지 않고 이 구조체를 거친다
+// (prompt §4a). 두 가지 endpoint 지정 방식을 지원한다:
+//   1) frame 참조 (1순위, 권장): frame_1 / frame_2 에 URDF frame 이름.
+//      constraint_builder 가 model.getFrameId → frames[fid].placement 를 그대로 사용.
+//   2) link + origin fallback: frame_* 가 비었을 때만 link_a/link_b + offset_* 사용.
+//      offset 은 반드시 "해당 link frame 기준" 으로 해석하며 builder 가 joint frame 으로 변환.
+// 하위호환: link_a/link_b/offset_*/is_6d 필드는 기존 model-config `closed_chains:` 및
+// ClosedChainRegistration 테스트가 사용하므로 유지한다.
 struct ClosedChainInfo {
   std::string name;
+
+  // (1순위) frame 참조 — 비어있지 않으면 link+offset 대신 사용
+  std::string frame_1;
+  std::string frame_2;
+
+  // (fallback) link + link-frame 기준 origin
   std::string link_a;
   std::string link_b;
   Eigen::Vector3d offset_a_xyz{Eigen::Vector3d::Zero()};
   Eigen::Vector3d offset_a_rpy{Eigen::Vector3d::Zero()};
   Eigen::Vector3d offset_b_xyz{Eigen::Vector3d::Zero()};
   Eigen::Vector3d offset_b_rpy{Eigen::Vector3d::Zero()};
-  bool is_6d{true};  // true → CONTACT_6D, false → CONTACT_3D
+
+  // 구속 타입 저장소: true → CONTACT_6D, false → CONTACT_3D.
+  // 기본값은 하위호환(기존 model-config 로더 default)을 위해 6D 유지. 단, 신규 sidecar
+  // 스키마(<name>.closure.yaml)는 type 을 필수로 요구하고 예시/권장은 contact_3d 다
+  // (평면 4-bar 과구속 회피, anti-pattern #3). 즉 "contact_3d 우선"은 스키마 계층에서 강제.
+  bool is_6d{true};
+
+  LoopReferenceFrame reference_frame{LoopReferenceFrame::kLocal};
+
   double baumgarte_kp{0.0};
   double baumgarte_kd{0.0};
+
+  [[nodiscard]] LoopConstraintType Type() const noexcept {
+    return is_6d ? LoopConstraintType::kContact6d : LoopConstraintType::kContact3d;
+  }
+
+  [[nodiscard]] bool UsesFrameRefs() const noexcept { return !frame_1.empty() && !frame_2.empty(); }
 };
 
 // ── YAML 모델 설정 ──────────────────────────────────────────────────────────

@@ -1,0 +1,17 @@
+# four_bar.closure.yaml — Extended-URDF sidecar (four_bar_tree.urdf 짝).
+# URDF 는 순수 spanning-tree, loop closure 정보는 여기에 분리.
+name: four_bar_tree
+
+closures:
+  - name: fourbar_loop_0
+    type: contact_3d          # 평면/cross 4-bar 기본 (과구속 회피, anti-pattern #3)
+    # 1순위: URDF frame 이름 참조 (frames["c1"], frames["c2"])
+    frame_1: c1
+    frame_2: c2
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+actuation:
+  actuated_joints: [joint_a]   # 나머지(joint_ab, joint_c, joint_cd)는 passive
+
+joint_substitutions: []

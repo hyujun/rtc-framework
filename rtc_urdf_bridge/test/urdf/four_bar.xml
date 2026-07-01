@@ -1,0 +1,38 @@
+<!-- four_bar.xml — four_bar_tree.urdf 와 동일 물리의 MJCF (교차검증용, Phase 11).
+     base=worldbody(fixed), 4 hinge joint. q=0 에서 link_b tip(0.3,0,0)=world(0.6,0,0),
+     link_d 원점=world(0.6,0,0) 로 조립.
+
+     [경로 B — §6] Pinocchio 4.0 의 MJCF <equality><connect> body 해석이 compiled
+     파서에서 "Model does not have any body named ..." 예외를 던진다(파서 한계, fixture
+     문제 아님). 따라서 loop closure 는 MJCF 에 넣지 않고, 테스트에서 MJCF 모델을 독립
+     로드한 뒤 constraint_builder 로 동일 constraint 를 수동 구성해 URDF 경로와 비교한다.
+     이는 두 엔진의 joint order/frame 규약 일치(핵심 위험)를 검증한다. -->
+<mujoco model="four_bar_tree">
+  <compiler angle="radian"/>
+
+  <!-- 주의: pinocchio MJCF 파서는 joint 없는(고정) leaf body(c1/c2)를 부모로 흡수하므로
+       <connect> 는 실제 jointed body(link_b, link_d)를 참조하고 anchor 로 offset 을 준다.
+       anchor 는 body1(link_b) frame 기준 (0.3,0,0) → q=0 에서 world (0.6,0,0) 로 link_d
+       원점과 일치. URDF 경로의 c1(link_b+[0.3,0,0]) ↔ c2(link_d) 와 동일 물리. -->
+  <worldbody>
+    <!-- Branch 1: base → link_a → link_b -->
+    <body name="link_a" pos="0 0 0">
+      <joint name="joint_a" type="hinge" axis="0 0 1"/>
+      <inertial pos="0.15 0 0" mass="1" diaginertia="0.001 0.001 0.001"/>
+      <body name="link_b" pos="0.3 0 0">
+        <joint name="joint_ab" type="hinge" axis="0 1 0"/>
+        <inertial pos="0.15 0 0" mass="1" diaginertia="0.001 0.001 0.001"/>
+      </body>
+    </body>
+
+    <!-- Branch 2: base → link_c → link_d -->
+    <body name="link_c" pos="0.3 0 0">
+      <joint name="joint_c" type="hinge" axis="0 0 1"/>
+      <inertial pos="0.15 0 0" mass="1" diaginertia="0.001 0.001 0.001"/>
+      <body name="link_d" pos="0.3 0 0">
+        <joint name="joint_cd" type="hinge" axis="0 1 0"/>
+        <inertial pos="0.15 0 0" mass="1" diaginertia="0.001 0.001 0.001"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

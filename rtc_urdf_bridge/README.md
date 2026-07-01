@@ -40,12 +40,18 @@ rtc_urdf_bridge/
 │   ├── urdf_analyzer.hpp               # URDF 파싱 및 트리 분석
 │   ├── kinematic_chain_extractor.hpp   # 서브모델/트리모델 체인 추출
 │   ├── pinocchio_model_builder.hpp     # YAML→Pinocchio 모델 빌드 파이프라인
-│   └── rt_model_handle.hpp             # RT-safe 계산 래퍼
+│   ├── rt_model_handle.hpp             # RT-safe 계산 래퍼
+│   ├── closure_yaml_loader.hpp         # Extended-URDF sidecar 파서
+│   ├── constraint_builder.hpp          # ClosedChainInfo→RigidConstraintModel (§4b)
+│   ├── loop_verification.hpp           # closure error / Jc rank·Delassus
+│   ├── loop_projection.hpp             # q/v loop-consistent 사영 (로드 타임)
+│   └── closed_chain_model.hpp          # 통합 loader (BuildClosedChainModelFromExtendedUrdf)
 ├── src/
 │   ├── urdf_analyzer.cpp
 │   ├── kinematic_chain_extractor.cpp
 │   ├── pinocchio_model_builder.cpp
-│   └── rt_model_handle.cpp
+│   ├── rt_model_handle.cpp
+│   └── (closed_chain 모듈 대응 .cpp)
 ├── config/                             # YAML 설정 템플릿
 │   ├── serial_arm_config.yaml
 │   ├── hand_tree_config.yaml
@@ -61,7 +67,11 @@ rtc_urdf_bridge/
     ├── test_model_builder.cpp
     ├── test_load_model_config.cpp      # YAML 로드 + 폐쇄체인/lock 빌드
     ├── test_rt_model_handle.cpp
-    └── urdf/                           # 테스트용 URDF 파일
+    ├── test_closure_yaml_loader.cpp    # sidecar 파서
+    ├── test_constraint_builder.cpp     # endpoint transform / builder
+    ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
+    ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
+    └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF
 ```
 
 > **참고** — SE(3) pose/velocity(twist) error 모듈은 `rtc_math` 패키지로 이전되었다
@@ -310,6 +320,47 @@ closed_chains:
     baumgarte_kp: 10.0
     baumgarte_kd: 6.32
 ```
+
+### Extended-URDF closed-chain (sidecar `<name>.closure.yaml`)
+
+권장 방식. URDF 는 **순수 spanning-tree** 로 유지하고 (표준 `pinocchio::urdf::buildModel`
+이 그대로 소비), loop closure 정보는 **별도 sidecar YAML** 로 분리한다. `frame` 참조가
+1순위(가장 안전 — joint-frame placement 를 그대로 사용), `link + origin` 은 fallback
+이며 origin 은 **해당 link frame 기준**으로 해석된다. `type` 은 필수이며 평면/cross
+4-bar 는 과구속 회피를 위해 `contact_3d` 부터 검증한다.
+
+```yaml
+# four_bar.closure.yaml (URDF 와 같은 디렉토리)
+name: four_bar
+closures:
+  - name: fourbar_loop_0
+    type: contact_3d           # contact_3d | contact_6d (필수)
+    frame_1: c1                # 1순위: URDF frame 이름 참조
+    frame_2: c2
+    # fallback (frame 없을 때만):
+    # parent_link: link_b
+    # child_link:  link_d
+    # parent_origin: { xyz: [0.3, 0, 0], rpy: [0, 0, 0] }   # link frame 기준
+    reference_frame: LOCAL     # LOCAL | LOCAL_WORLD_ALIGNED (WORLD 미지원)
+    baumgarte: { Kp: 20.0, Kd: 5.0 }   # Kd 생략 시 2√Kp 자동
+actuation:
+  actuated_joints: [joint_a]   # 나머지 non-fixed 는 passive
+joint_substitutions: []
+```
+
+```cpp
+#include "rtc_urdf_bridge/closed_chain_model.hpp"
+// 통합 loader: {Model, RigidConstraintModel 목록, actuated_joint_ids, q_ref} 반환.
+auto ccm = rtc_urdf_bridge::BuildClosedChainModelFromExtendedUrdf(urdf_path, closure_yaml_path);
+// 검증/사영 (로드 타임 전용):
+//   loop_verification.hpp — ComputeClosureErrors / AnalyzeConstraintJacobian (rank·Delassus)
+//   loop_projection.hpp   — ProjectToConstraint (q_ref) / ProjectVelocity
+```
+
+계층 계약: YAML I/O·파싱·`buildModel`·constraint 생성·projection 은 **로드 타임**(예외
+허용). RT 경로는 `RtModelHandle::ComputeConstraintDynamics` 호출만 (사전 할당 재사용,
+noexcept). MJCF 교차검증은 Pinocchio 4.0 파서 한계(`<connect>` 예외 + 2번째 worldbody
+branch 미파싱)로 단일 branch 규약 일치 검증에 한정된다 (`test_mjcf_comparison.cpp` 주석 참조).
 
 ### Full Configuration Reference
 

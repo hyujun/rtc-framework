@@ -1,0 +1,122 @@
+<?xml version="1.0"?>
+<!-- four_bar_tree.urdf — Extended-URDF 방식용 4-bar linkage.
+     URDF 는 순수 spanning-tree 로만 유지한다 (loop closure 정보는 sidecar
+     four_bar.closure.yaml 에 분리). 표준 pinocchio::urdf::buildModel 이 그대로 소비.
+
+     Tree 구조 (두 branch 가 base 에서 갈라져 각 tip 에 closure frame 을 둠):
+       base_link ─(joint_a : rev z)─▶ link_a ─(joint_ab : rev y)─▶ link_b ─(c1_mount: fixed)─▶ c1
+       base_link ─(joint_c : rev z)─▶ link_c ─(joint_cd : rev y)─▶ link_d ─(c2_mount: fixed)─▶ c2
+
+     loop closure 는 c1(link_b tip) 과 c2(link_d) 의 점 일치 (contact_3d).
+
+     [설계 노트] joint 축을 z,y,z,y 로 섞은 spatial 4-bar 다. 순수 평면(모두 z축)
+     4-bar 에 contact_3d 를 걸면 world-z translation row 가 항상 0 → Jc rank 결손
+     (anti-pattern #3 의 과구속·5-DoF 성격). 검증 테스트가 rank==rows / 유한 조건수를
+     안정적으로 만족하도록 non-coplanar 축을 사용한다.
+
+     [§4b 검증 포인트] c1_mount origin 이 [0.3,0,0] (non-identity) 이므로
+     frames["c1"].placement (parentJoint=joint_ab 기준) 도 non-identity.
+     constraint_builder 의 joint-frame 합성이 올바른지 endpoint-transform 테스트로 대조.
+
+     nominal q=0 에서 c1 world = c2 world = (0.6, 0, 0) → 조립(loop-consistent) 상태. -->
+<robot name="four_bar_tree">
+
+  <!-- ── Links (각 link 에 mass/inertia — crba/constraintDynamics 요구) ─────── -->
+  <link name="base_link">
+    <inertial>
+      <mass value="10.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+
+  <link name="link_a">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <link name="link_b">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <link name="link_c">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <link name="link_d">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- closure frame link (질량 미소 — 순수 frame 용도) -->
+  <link name="c1">
+    <inertial>
+      <mass value="1e-4"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+
+  <link name="c2">
+    <inertial>
+      <mass value="1e-4"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+
+  <!-- ── Branch 1: base → link_a → link_b → c1 ─────────────────────────────── -->
+  <joint name="joint_a" type="revolute">
+    <parent link="base_link"/><child link="link_a"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.5" upper="2.5" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="joint_ab" type="revolute">
+    <parent link="link_a"/><child link="link_b"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="c1_mount" type="fixed">
+    <parent link="link_b"/><child link="c1"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ── Branch 2: base → link_c → link_d → c2 ─────────────────────────────── -->
+  <joint name="joint_c" type="revolute">
+    <parent link="base_link"/><child link="link_c"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.5" upper="2.5" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="joint_cd" type="revolute">
+    <parent link="link_c"/><child link="link_d"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="c2_mount" type="fixed">
+    <parent link="link_d"/><child link="c2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+</robot>

@@ -1,6 +1,7 @@
 // ── PinocchioModelBuilder 구현 ───────────────────────────────────────────────
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
+#include "rtc_urdf_bridge/constraint_builder.hpp"
 #include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
 
@@ -199,60 +200,13 @@ void PinocchioModelBuilder::BuildTreeModels() {
 }
 
 // ── 폐쇄 체인 구속 등록 ────────────────────────────────────────────────────
+// 실제 RigidConstraintModel 생성은 constraint_builder 로 위임한다 (§4b joint-frame
+// placement 합성, frame-first/link+origin 경로 지원, legacy→new API 교체 격리점 §7).
 void PinocchioModelBuilder::RegisterClosedChainConstraints() {
-  for (const auto& cc : config_.closed_chains) {
-    // link 이름 → frame ID → parent joint ID
-    pinocchio::FrameIndex fid_a = 0;
-    pinocchio::FrameIndex fid_b = 0;
-    bool found_a = false, found_b = false;
-
-    for (pinocchio::FrameIndex i = 0; i < static_cast<pinocchio::FrameIndex>(full_model_->nframes);
-         ++i) {
-      if (full_model_->frames[i].name == cc.link_a) {
-        fid_a = i;
-        found_a = true;
-      }
-      if (full_model_->frames[i].name == cc.link_b) {
-        fid_b = i;
-        found_b = true;
-      }
-    }
-
-    if (!found_a || !found_b) {
-      RCLCPP_ERROR(logger(), "폐쇄 체인 링크를 찾을 수 없습니다: %s / %s", cc.link_a.c_str(),
-                   cc.link_b.c_str());
-      throw std::runtime_error("PinocchioModelBuilder: 폐쇄 체인 링크를 찾을 수 없습니다: " +
-                               cc.link_a + " / " + cc.link_b);
-    }
-
-    auto joint1_id = full_model_->frames[fid_a].parentJoint;
-    auto joint2_id = full_model_->frames[fid_b].parentJoint;
-
-    // SE3 placement 구성
-    auto make_se3 = [](const Eigen::Vector3d& xyz, const Eigen::Vector3d& rpy) {
-      return pinocchio::SE3(pinocchio::rpy::rpyToMatrix(rpy[0], rpy[1], rpy[2]), xyz);
-    };
-
-    auto placement_a = make_se3(cc.offset_a_xyz, cc.offset_a_rpy);
-    auto placement_b = make_se3(cc.offset_b_xyz, cc.offset_b_rpy);
-
-    auto contact_type = cc.is_6d ? pinocchio::CONTACT_6D : pinocchio::CONTACT_3D;
-
-    pinocchio::RigidConstraintModel constraint(contact_type, *full_model_, joint1_id, placement_a,
-                                               joint2_id, placement_b, pinocchio::LOCAL);
-
-    // Baumgarte 안정화 파라미터
-    constraint.baumgarte_corrector_parameters().Kp = cc.baumgarte_kp;
-    constraint.baumgarte_corrector_parameters().Kd = cc.baumgarte_kd;
-
-    RCLCPP_INFO(logger(),
-                "폐쇄 체인 등록: '%s' (link_a='%s', link_b='%s', %s, "
-                "Kp=%.1f, Kd=%.1f)",
-                cc.name.c_str(), cc.link_a.c_str(), cc.link_b.c_str(), cc.is_6d ? "6D" : "3D",
-                cc.baumgarte_kp, cc.baumgarte_kd);
-
-    constraint_models_.push_back(std::move(constraint));
+  if (config_.closed_chains.empty()) {
+    return;
   }
+  constraint_models_ = BuildRigidConstraints(*full_model_, config_.closed_chains);
 }
 
 // ── 기준 설정값 구성 ────────────────────────────────────────────────────────
