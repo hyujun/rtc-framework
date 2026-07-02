@@ -26,6 +26,7 @@ endif()
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -49,12 +50,14 @@ add_library(${PROJECT_NAME} SHARED
   src/loop_verification.cpp
   src/loop_projection.cpp
   src/closed_chain_model.cpp
+  # Extended-URDF 폐쇄 체인 시각화 노드 (off-RT, 콜백 추종)
+  src/closure_state_publisher.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(${PROJECT_NAME} rclcpp pinocchio)
+ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs pinocchio)
 target_link_libraries(${PROJECT_NAME}
   pinocchio::pinocchio
   Eigen3::Eigen
@@ -74,6 +77,10 @@ target_link_libraries(example_tree_model ${PROJECT_NAME})
 
 add_executable(example_rt_integration examples/example_rt_integration.cpp)
 target_link_libraries(example_rt_integration ${PROJECT_NAME})
+
+# ── Nodes ─────────────────────────────────────────────────────────────────────
+add_executable(closure_state_publisher src/closure_state_publisher_main.cpp)
+target_link_libraries(closure_state_publisher ${PROJECT_NAME})
 
 # ── Install ───────────────────────────────────────────────────────────────────
 install(TARGETS ${PROJECT_NAME}
@@ -97,12 +104,13 @@ install(
     example_submodel
     example_tree_model
     example_rt_integration
+    closure_state_publisher
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp pinocchio Eigen3 yaml-cpp tinyxml2)
+ament_export_dependencies(rclcpp sensor_msgs pinocchio Eigen3 yaml-cpp tinyxml2)
 ament_export_include_directories(include)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
@@ -145,6 +153,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_loop_projection_passive test/test_loop_projection_passive.cpp)
   target_link_libraries(test_loop_projection_passive ${PROJECT_NAME})
+
+  ament_add_gtest(test_closure_state_publisher test/test_closure_state_publisher.cpp)
+  target_link_libraries(test_closure_state_publisher ${PROJECT_NAME})
 
   # Phase 11 (MJCF 교차검증)
   ament_add_gtest(test_mjcf_comparison test/test_mjcf_comparison.cpp)
