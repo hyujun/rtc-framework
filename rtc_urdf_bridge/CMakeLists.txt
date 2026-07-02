@@ -50,14 +50,16 @@ add_library(${PROJECT_NAME} SHARED
   src/loop_verification.cpp
   src/loop_projection.cpp
   src/closed_chain_model.cpp
-  # Extended-URDF 폐쇄 체인 시각화 노드 (off-RT, 콜백 추종)
-  src/closure_state_publisher.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs pinocchio)
+# sensor_msgs is intentionally NOT a core-lib dependency: only the off-RT
+# closure visualization node (closure_state_publisher, an executable) touches
+# JointState. Keeping it out of the shared lib avoids forcing sensor_msgs onto
+# RT-only consumers that just need the model-building API.
+ament_target_dependencies(${PROJECT_NAME} rclcpp pinocchio)
 target_link_libraries(${PROJECT_NAME}
   pinocchio::pinocchio
   Eigen3::Eigen
@@ -79,7 +81,13 @@ add_executable(example_rt_integration examples/example_rt_integration.cpp)
 target_link_libraries(example_rt_integration ${PROJECT_NAME})
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
-add_executable(closure_state_publisher src/closure_state_publisher_main.cpp)
+# The viz node (JointState I/O) lives in the executable, not the core lib, so
+# sensor_msgs stays off RT-only consumers of ${PROJECT_NAME}.
+add_executable(closure_state_publisher
+  src/closure_state_publisher_main.cpp
+  src/closure_state_publisher.cpp
+)
+ament_target_dependencies(closure_state_publisher sensor_msgs)
 target_link_libraries(closure_state_publisher ${PROJECT_NAME})
 
 # ── Install ───────────────────────────────────────────────────────────────────
@@ -110,7 +118,9 @@ install(
 
 # ── Export ────────────────────────────────────────────────────────────────────
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp sensor_msgs pinocchio Eigen3 yaml-cpp tinyxml2)
+# sensor_msgs is an executable-only dep (see closure_state_publisher target) —
+# not exported, so downstream consumers of the core lib don't inherit it.
+ament_export_dependencies(rclcpp pinocchio Eigen3 yaml-cpp tinyxml2)
 ament_export_include_directories(include)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
@@ -154,7 +164,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_loop_projection_passive test/test_loop_projection_passive.cpp)
   target_link_libraries(test_loop_projection_passive ${PROJECT_NAME})
 
-  ament_add_gtest(test_closure_state_publisher test/test_closure_state_publisher.cpp)
+  # Compiles the viz node source directly (it is no longer in the core lib).
+  ament_add_gtest(test_closure_state_publisher
+    test/test_closure_state_publisher.cpp
+    src/closure_state_publisher.cpp
+  )
+  ament_target_dependencies(test_closure_state_publisher sensor_msgs)
   target_link_libraries(test_closure_state_publisher ${PROJECT_NAME})
 
   # Phase 11 (MJCF 교차검증)
