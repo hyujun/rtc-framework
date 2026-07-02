@@ -77,6 +77,10 @@ class DigitalTwinNode(Node):
         self._joint_classification: JointClassification | None = None
         self._required_joints: set[str] = set()
         self._validation_done = False
+        # Joints ever seen on any source — lets the periodic re-validation tell a
+        # genuine actuated-source dropout (a joint we HAD been receiving goes
+        # missing) apart from loop-passive joints that are never sourced here.
+        self._ever_received: set[str] = set()
         if robot_description:
             try:
                 self._parser = UrdfParser.from_xml(robot_description)
@@ -459,6 +463,7 @@ class DigitalTwinNode(Node):
             self.get_logger().warn("No joint data received yet")
             return
 
+        self._ever_received |= received
         covered, missing = self._parser.validate_joints(received)
 
         if missing and self._closure_active:
@@ -496,8 +501,20 @@ class DigitalTwinNode(Node):
         if not received:
             return
 
+        self._ever_received |= received
         _, missing = self._parser.validate_joints(received)
-        if missing and not self._closure_active:
+        if self._closure_active:
+            # Loop-passive joints are filled downstream by the
+            # closure_state_publisher and are never sourced here, so they stay in
+            # `missing` permanently — do NOT warn on them. But a joint we HAD been
+            # receiving that is now missing is a genuine actuated-source dropout
+            # and must still be reported.
+            dropped = self._ever_received & missing
+            if dropped:
+                self.get_logger().warn(
+                    f"Actuated joint source dropout ({len(dropped)}): {sorted(dropped)}"
+                )
+        elif missing:
             self.get_logger().warn(f"Missing {len(missing)} required joints: {sorted(missing)}")
 
 

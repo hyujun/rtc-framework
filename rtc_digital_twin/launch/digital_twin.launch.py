@@ -130,8 +130,22 @@ def launch_setup(context, *args, **kwargs):
 
     if closure_path and not os.path.isabs(closure_path):
         # pkg-share relative (to robot_description_package, per ARCH-1 bringup)
-        if desc_pkg:
-            closure_path = os.path.join(get_package_share_directory(desc_pkg), closure_path)
+        if not desc_pkg:
+            raise RuntimeError(
+                f"closure_path '{closure_path}' is relative but robot_description_package "
+                "is not set (an absolute robot_description_file was given) — cannot resolve "
+                "the closure sidecar. Pass an absolute closure_path, or set "
+                "robot_description_package, or unset closure_path to disable closure mode."
+            )
+        closure_path = os.path.join(get_package_share_directory(desc_pkg), closure_path)
+
+    # Fail loudly at launch time rather than letting closure_state_publisher abort
+    # opaquely (which would leave /digital_twin/joint_states with no publisher).
+    if closure_path and not os.path.isfile(closure_path):
+        raise RuntimeError(
+            f"closure_path resolved to '{closure_path}' but no such file exists — "
+            "fix the path or unset closure_path to disable closure mode."
+        )
 
     closure_active = bool(closure_path)
     actuated_topic = "/digital_twin/actuated_joint_states"
