@@ -1,6 +1,7 @@
 // ── test_loop_projection_passive — ProjectPassiveToConstraint (actuated 고정, ────
 //    passive 만 사영). Extended-URDF 폐쇄 체인 시각화(actuated 스트림 → loop-consistent
 //    full q)의 core 수학. crank_rocker(비특이 crank-rocker) + four_bar(대칭 특이) 픽스처. ──
+#include "closure_test_fixtures.hpp"
 #include "rtc_urdf_bridge/closed_chain_model.hpp"
 #include "rtc_urdf_bridge/loop_projection.hpp"
 #include "test_urdf_path.hpp"
@@ -18,19 +19,8 @@
 #include <gtest/gtest.h>
 
 namespace rub = rtc_urdf_bridge;
-using rtc::test::TestUrdfPath;
-
-namespace {
-rub::ClosedChainModel CrankRocker() {
-  return rub::BuildClosedChainModelFromExtendedUrdf(TestUrdfPath("crank_rocker.urdf"),
-                                                    TestUrdfPath("crank_rocker.closure.yaml"));
-}
-
-rub::ClosedChainModel FourBar() {
-  return rub::BuildClosedChainModelFromExtendedUrdf(TestUrdfPath("four_bar_tree.urdf"),
-                                                    TestUrdfPath("four_bar.closure.yaml"));
-}
-}  // namespace
+using rtc::test::CrankRocker;
+using rtc::test::FourBar;
 
 // ── 성공기준 1: actuated(j_crank) 를 고정한 채 passive 를 풀어 loop 를 닫는다. ───────
 //    crank-rocker 의 비특이 구간에서 cold seed(neutral) 로도 수렴. actuated 는 불변.

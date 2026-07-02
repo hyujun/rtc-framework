@@ -34,6 +34,18 @@ namespace {
 auto logger() {
   return ::rtc::urdf::logging::BuilderLogger();
 }
+
+// Resolve a possibly-relative resource path against the directory of the YAML
+// file that declared it. Absolute paths (leading '/') and empty strings pass
+// through unchanged.
+std::string ResolveRelativeToYaml(std::string path, std::string_view yaml_path) {
+  if (path.empty() || path[0] == '/') {
+    return path;
+  }
+  const std::filesystem::path yaml_dir =
+      std::filesystem::path(std::string(yaml_path)).parent_path();
+  return (yaml_dir / path).string();
+}
 }  // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -432,23 +444,15 @@ ModelConfig PinocchioModelBuilder::LoadModelConfig(std::string_view yaml_path) {
   YAML::Node root = YAML::LoadFile(std::string(yaml_path));
   ModelConfig cfg;
 
-  // urdf_path
+  // urdf_path — 상대 경로면 YAML 파일 기준으로 해석.
   if (root["urdf_path"]) {
-    cfg.urdf_path = root["urdf_path"].as<std::string>();
-    // 상대 경로면 YAML 파일 기준으로 해석
-    if (!cfg.urdf_path.empty() && cfg.urdf_path[0] != '/') {
-      std::filesystem::path yaml_dir = std::filesystem::path(std::string(yaml_path)).parent_path();
-      cfg.urdf_path = (yaml_dir / cfg.urdf_path).string();
-    }
+    cfg.urdf_path = ResolveRelativeToYaml(root["urdf_path"].as<std::string>(), yaml_path);
   }
 
   // closure_yaml_path (Extended-URDF sidecar). 상대 경로면 YAML 파일 기준 해석.
   if (root["closure_yaml_path"]) {
-    cfg.closure_yaml_path = root["closure_yaml_path"].as<std::string>();
-    if (!cfg.closure_yaml_path.empty() && cfg.closure_yaml_path[0] != '/') {
-      std::filesystem::path yaml_dir = std::filesystem::path(std::string(yaml_path)).parent_path();
-      cfg.closure_yaml_path = (yaml_dir / cfg.closure_yaml_path).string();
-    }
+    cfg.closure_yaml_path =
+        ResolveRelativeToYaml(root["closure_yaml_path"].as<std::string>(), yaml_path);
   }
 
   // xacro_args

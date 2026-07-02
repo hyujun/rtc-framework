@@ -1,6 +1,7 @@
 // ── test_closure_state_publisher — 노드 end-to-end (성공기준 4). ──────────────────
 //    actuated JointState 주입 → 출력에 전체 model 관절 포함 + ‖φ(q_out)‖ < 1e-8 +
 //    actuated(j_crank) 불변. crank_rocker 비특이 픽스처(neutral 근방 crank 유효 구간). ──
+#include "closure_test_fixtures.hpp"
 #include "rtc_urdf_bridge/closed_chain_model.hpp"
 #include "rtc_urdf_bridge/closure_state_publisher.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
@@ -30,16 +31,11 @@
 #include <vector>
 
 namespace rub = rtc_urdf_bridge;
+using rtc::test::CrankRocker;
 using rtc::test::TestUrdfPath;
 using namespace std::chrono_literals;
 
 namespace {
-
-// crank_rocker 픽스처를 노드와 동일 파이프라인으로 재구성 (φ 검증용 ground truth).
-rub::ClosedChainModel CrankRocker() {
-  return rub::BuildClosedChainModelFromExtendedUrdf(TestUrdfPath("crank_rocker.urdf"),
-                                                    TestUrdfPath("crank_rocker.closure.yaml"));
-}
 
 rclcpp::NodeOptions NodeParams() {
   rclcpp::NodeOptions opts;
