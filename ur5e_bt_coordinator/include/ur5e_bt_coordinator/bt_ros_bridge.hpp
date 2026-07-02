@@ -69,6 +69,12 @@ class BtRosBridge {
   /// Current hand joint positions from /rtc_cm/hand/joint_states.
   std::vector<double> GetHandJointPositions() const;
 
+  /// Finger → hand-joint index list, derived at runtime from the hand
+  /// joint_states names by prefix-matching `<key>_` (see FingerJointIndices in
+  /// hand_pose_config.hpp). Supports variable per-finger DoF without hardcoding.
+  /// Returns empty if no joint_states received yet or no name matches `key`.
+  std::vector<int> GetFingerJointIndices(const std::string& key) const;
+
   /// Last published hand target (empty if never published)
   std::vector<double> GetLastHandTarget() const;
 
@@ -252,6 +258,7 @@ class BtRosBridge {
   Pose6D tcp_pose_;
   std::vector<double> arm_joint_positions_;
   std::vector<double> hand_joint_positions_;
+  std::vector<std::string> hand_joint_names_;  // from /rtc_cm/hand/joint_states name field
   CachedGraspState grasp_state_;
   CachedWbcState wbc_state_;
   Pose6D world_target_pose_;

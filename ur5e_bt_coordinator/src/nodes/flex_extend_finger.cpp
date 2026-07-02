@@ -42,7 +42,11 @@ BT::NodeStatus FlexExtendFinger::onStart() {
   const std::string flex_pose_name = finger_name_ + "_flex";
   flex_target_ = bridge_->GetHandPose(flex_pose_name);
   home_target_ = bridge_->GetHandPose("home");
-  joint_indices_ = LookupOrThrow(kFingerJointIndices, finger_name_, "FlexExtendFinger");
+  joint_indices_ = bridge_->GetFingerJointIndices(finger_name_);
+  if (joint_indices_.empty()) {
+    throw BT::RuntimeError("FlexExtendFinger: no hand joints for '" + finger_name_ +
+                           "' (joint_states not received or unknown finger)");
+  }
 
   // 현재 위치 → flex duration 추정
   auto current = bridge_->GetHandJointPositions();

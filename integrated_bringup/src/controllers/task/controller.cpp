@@ -588,10 +588,15 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   g.grasp_min_fingertips = shared.grasp_min_fingertips;
   gains_lock_.Store(g);
   grasp_controller_type_ = shared.grasp_controller_type;
+  num_grasp_fingers_ = shared.num_grasp_fingers;
+  finger_dof_ = shared.finger_dof;
   finger_joint_map_ = shared.hand_finger_joint_map;
-  hand_idx_thumb_cmc_fe_ = static_cast<std::size_t>(shared.hand_idx_thumb_cmc_fe);
-  hand_idx_index_mcp_fe_ = static_cast<std::size_t>(shared.hand_idx_index_mcp_fe);
-  hand_idx_middle_mcp_fe_ = static_cast<std::size_t>(shared.hand_idx_middle_mcp_fe);
+  num_release_gates_ = shared.num_release_gates;
+  for (int f = 0; f < num_release_gates_ && f < rtc::grasp::kMaxGraspFingers; ++f) {
+    const auto idx = static_cast<std::size_t>(f);
+    release_gate_idx_[idx] = static_cast<std::size_t>(shared.hand_release_gate[idx].joint_index);
+    release_gate_sign_[idx] = shared.hand_release_gate[idx].loosen_sign;
+  }
 
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();

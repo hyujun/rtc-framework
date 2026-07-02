@@ -356,16 +356,20 @@ class DemoTaskController final : public RTControllerInterface {
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
   std::string grasp_controller_type_{"contact_stop"};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
-  /// Finger index → hand motor indices mapping (thumb, index, middle).
-  /// Cached from `DemoSharedConfig::hand_finger_joint_map` in LoadConfig.
-  std::array<std::array<int, 3>, 3> finger_joint_map_{{{{0, 1, 2}}, {{3, 4, 5}}, {{6, 7, 8}}}};
+  /// Finger index → hand joint indices mapping (ragged; fingers may have
+  /// different DoF). finger_joint_map_[f][0 .. finger_dof_[f]) valid for
+  /// f < num_grasp_fingers_. Cached from `DemoSharedConfig` in LoadConfig.
+  int num_grasp_fingers_{3};
+  std::array<int, rtc::grasp::kMaxGraspFingers> finger_dof_{{3, 3, 3}};
+  std::array<std::array<int, rtc::grasp::kMaxDoFPerFinger>, rtc::grasp::kMaxGraspFingers>
+      finger_joint_map_{{{{0, 1, 2}}, {{3, 4, 5}}, {{6, 7, 8}}}};
 
-  /// Hand joint indices (matches ur5e hand joint order in YAML).
-  /// Used by the contact_stop release-phase gate.
-  /// Cached from `DemoSharedConfig::hand_idx_*` in LoadConfig.
-  std::size_t hand_idx_thumb_cmc_fe_{1};
-  std::size_t hand_idx_index_mcp_fe_{4};
-  std::size_t hand_idx_middle_mcp_fe_{7};
+  /// contact_stop release-phase gate, per finger: hand-joint index + loosening
+  /// sign (+1: angle-increase loosens; -1: angle-decrease loosens).
+  /// Cached from `DemoSharedConfig::hand_release_gate` in LoadConfig.
+  int num_release_gates_{3};
+  std::array<std::size_t, rtc::grasp::kMaxGraspFingers> release_gate_idx_{{1, 4, 7}};
+  std::array<int, rtc::grasp::kMaxGraspFingers> release_gate_sign_{{+1, -1, -1}};
 
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};

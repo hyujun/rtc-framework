@@ -6,10 +6,17 @@
 
 namespace rtc::grasp {
 
-/// Number of fingers under force control (thumb, index, middle).
-static constexpr int kNumGraspFingers = 3;
-/// Degrees of freedom per finger (MCP_AA, MCP_FE, DIP_FE).
-static constexpr int kDoFPerFinger = 3;
+/// Upper bound on the number of force-controlled fingers. The *actual* finger
+/// count is a runtime value (GraspController::Init(std::span<const FingerConfig>),
+/// GraspJointCommands::num_fingers). Kept as a compile-time cap so all
+/// per-finger storage stays fixed-size (RT no-alloc); 8 mirrors the repo-wide
+/// fingertip cap (kMaxFingertips / kMaxWbcFingertips / kMaxForceContacts).
+static constexpr int kMaxGraspFingers = 8;
+/// Upper bound on DoF per finger. Fingers may have *different* DoF counts
+/// (e.g. thumb:4, index:3, middle:2, ring:1); the per-finger actual count
+/// lives in FingerConfig::dof / GraspJointCommands::dof[f]. Loops iterate to
+/// the runtime count, never this cap.
+static constexpr int kMaxDoFPerFinger = 8;
 
 // ── State Machine ────────────────────────────────────────────────────────────
 
@@ -25,8 +32,9 @@ enum class GraspPhase : uint8_t {
 // ── Per-finger configuration (생성 시 고정) ─────────────────────────────────
 
 struct FingerConfig {
-  std::array<double, kDoFPerFinger> q_open{};   // fully open joint angles [rad]
-  std::array<double, kDoFPerFinger> q_close{};  // fully closed joint angles [rad]
+  int dof{0};  // actual DoF of this finger (≤ kMaxDoFPerFinger)
+  std::array<double, kMaxDoFPerFinger> q_open{};   // fully open joint angles [rad]
+  std::array<double, kMaxDoFPerFinger> q_close{};  // fully closed joint angles [rad]
 };
 
 // ── Grasp parameters ─────────────────────────────────────────────────────────
@@ -86,7 +94,11 @@ struct FingerState {
 // ── Output ───────────────────────────────────────────────────────────────────
 
 struct GraspJointCommands {
-  std::array<std::array<double, kDoFPerFinger>, kNumGraspFingers> q{};
+  int num_fingers{0};                       // fingers actually populated
+  std::array<int, kMaxGraspFingers> dof{};  // per-finger DoF (valid for f < num_fingers)
+  // q[f][0 .. dof[f]) are the joint commands for finger f; entries beyond
+  // dof[f] and fingers beyond num_fingers are left zero.
+  std::array<std::array<double, kMaxDoFPerFinger>, kMaxGraspFingers> q{};
 };
 
 }  // namespace rtc::grasp

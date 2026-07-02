@@ -290,11 +290,16 @@ FullDemo (Parallel, success_count=1)
 {"my_grasp",  DegToRad(HandPose{20.0, 50.0, 40.0,   0.0, 55.0, 35.0,   0.0, 55.0, 35.0,  50.0})},
 ```
 
-#### Step 2 (선택): 관절 그룹 정의 (`kFingerJointIndices`)
+#### Step 2 (선택): 관절 그룹 사용 (`FingerJointIndices()`)
+
+finger→joint index 는 상수 맵이 아니라 hand joint_states 의 name 을 접두사 매칭해
+런타임에 구성된다. 별도 정의 없이 joint 이름 규칙(`<finger>_<segment>_<axis>`)만 지키면
+whole-finger(`thumb`) / sub-group(`index_mcp`, `thumb_cmc`) key 로 조회할 수 있다:
 
 ```cpp
-{"index_mcp", {4}},        // index MCP flex/ext만
-{"thumb_cmc", {0, 1}},     // thumb CMC 2관절만
+// BtRosBridge 를 통해 런타임 조회 (joint_states name 접두사 매칭)
+bridge.GetFingerJointIndices("index_mcp");  // "index_mcp_*" joint 인덱스
+bridge.GetFingerJointIndices("thumb_cmc");  // "thumb_cmc_*" joint 인덱스
 ```
 
 #### Step 3: BT XML에서 사용

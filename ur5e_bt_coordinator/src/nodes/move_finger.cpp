@@ -43,7 +43,11 @@ BT::NodeStatus MoveFinger::onStart() {
   const double max_vel = kDefaultHandMaxTrajVelocity;
 
   target_pose_ = bridge_->GetHandPose(pose_name.value());
-  joint_indices_ = LookupOrThrow(kFingerJointIndices, finger_name.value(), "MoveFinger");
+  joint_indices_ = bridge_->GetFingerJointIndices(finger_name.value());
+  if (joint_indices_.empty()) {
+    throw BT::RuntimeError("MoveFinger: no hand joints for finger '" + finger_name.value() +
+                           "' (joint_states not received or unknown finger)");
+  }
 
   // 현재 위치 읽기 → trajectory duration 추정
   auto current = bridge_->GetHandJointPositions();

@@ -50,8 +50,11 @@ BT::NodeStatus MoveOpposition::onStart() {
 
   const auto& thumb_pose = bridge_->GetHandPose(thumb_pose_name.value());
   const auto& target_pose = bridge_->GetHandPose(target_pose_name.value());
-  const auto& target_indices =
-      LookupOrThrow(kFingerJointIndices, target_finger.value(), "MoveOpposition");
+  const auto target_indices = bridge_->GetFingerJointIndices(target_finger.value());
+  if (target_indices.empty()) {
+    throw BT::RuntimeError("MoveOpposition: no hand joints for finger '" + target_finger.value() +
+                           "' (joint_states not received or unknown finger)");
+  }
 
   // 현재 위치 읽기
   auto current = bridge_->GetHandJointPositions();
@@ -65,7 +68,7 @@ BT::NodeStatus MoveOpposition::onStart() {
   // 전체 10-DoF 기준 duration 추정 (비-target의 home 복귀 이동도 포함)
   const auto& home = bridge_->GetHandPose("home");
   std::vector<double> full_target(home.begin(), home.end());
-  for (int idx : kFingerJointIndices.at("thumb")) {
+  for (int idx : bridge_->GetFingerJointIndices("thumb")) {
     full_target[static_cast<std::size_t>(idx)] = thumb_pose[static_cast<std::size_t>(idx)];
   }
   for (int idx : target_indices) {

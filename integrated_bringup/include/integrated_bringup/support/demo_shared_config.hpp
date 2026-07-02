@@ -31,20 +31,35 @@ struct DemoSharedConfig {
 
   std::string grasp_controller_type{"contact_stop"};
 
-  // Hand joint topology (10-DoF UR5e hand, 3-finger × 3-joint per finger).
-  // Indices into device 1 (hand) joint arrays.
-  // hand_finger_joint_map[finger][i] = motor index for {MCP_AA, MCP_FE,
-  // DIP_FE}.
-  std::array<std::array<int, 3>, 3> hand_finger_joint_map{{{{0, 1, 2}}, {{3, 4, 5}}, {{6, 7, 8}}}};
-  // Per-finger MCP_FE index used by the contact_stop release gate.
-  int hand_idx_thumb_cmc_fe{1};
-  int hand_idx_index_mcp_fe{4};
-  int hand_idx_middle_mcp_fe{7};
+  // Hand joint topology — per-finger hand-joint index groups (ragged; fingers
+  // may have different DoF, e.g. proto_1b thumb:4/index:3/middle:2/ring:1).
+  // hand_finger_joint_map[f][0 .. finger_dof[f]) = index into device 1 (hand)
+  // joint arrays. num_grasp_fingers rows are valid. Loaded from demo_shared.yaml
+  // `hand_finger_joint_map`; default mirrors the assm_v1 3-finger × 3-DoF layout.
+  int num_grasp_fingers{3};
+  std::array<int, rtc::grasp::kMaxGraspFingers> finger_dof{{3, 3, 3}};
+  std::array<std::array<int, rtc::grasp::kMaxDoFPerFinger>, rtc::grasp::kMaxGraspFingers>
+      hand_finger_joint_map{{{{0, 1, 2}}, {{3, 4, 5}}, {{6, 7, 8}}}};
+
+  // contact_stop release-phase gate, per finger. joint_index = the hand-joint
+  // index whose motion signals loosening; loosen_sign encodes the convention:
+  //   +1 → 각도 증가 시 이완 (e.g. thumb CMC_FE)
+  //   -1 → 각도 감소 시 이완 (e.g. index/middle MCP_FE)
+  // release_phase = 모든 gate finger 가 이완 방향일 때. num_release_gates 유효.
+  struct HandReleaseGate {
+    int joint_index{0};
+    int loosen_sign{+1};
+  };
+
+  int num_release_gates{3};
+  std::array<HandReleaseGate, rtc::grasp::kMaxGraspFingers> hand_release_gate{
+      {{1, +1}, {4, -1}, {7, -1}}};
 
   // Force-PI grasp parameters; only consumed when grasp_controller_type ==
-  // "force_pi".
+  // "force_pi". force_pi_fingers[0 .. num_grasp_fingers) are valid; each
+  // FingerConfig::dof gives that finger's joint count.
   rtc::grasp::GraspParams force_pi_params{};
-  std::array<rtc::grasp::FingerConfig, rtc::grasp::kNumGraspFingers> force_pi_fingers{};
+  std::array<rtc::grasp::FingerConfig, rtc::grasp::kMaxGraspFingers> force_pi_fingers{};
   bool has_force_pi_block{false};
 };
 
