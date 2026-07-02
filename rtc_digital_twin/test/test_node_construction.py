@@ -38,6 +38,19 @@ class TestNodeConstruction:
             assert node._sensor_viz_active is False
             assert node._tcp_viz_active is False
             assert node._sources == []
+            # Closure mode is opt-in; disabled by default.
+            assert node._closure_active is False
+
+    def test_closure_path_enables_closure_mode(self):
+        # closure_path set → node forwards actuated joints to a downstream
+        # closure_state_publisher; loop-passive "missing joints" WARN suppressed.
+        args = [
+            "--ros-args",
+            "-p",
+            "closure_path:=/tmp/hand.closure.yaml",
+        ]
+        with running_node(args) as node:
+            assert node._closure_active is True
 
     def test_optional_viz_paths_wire_up(self):
         args = [

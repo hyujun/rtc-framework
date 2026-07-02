@@ -113,6 +113,34 @@ def launch_setup(context, *args, **kwargs):
     if display_rate:
         dt_overrides["display_rate"] = float(display_rate)
 
+    # ── Extended-URDF closure visualization (opt-in) ──────────────────────
+    # When `closure_path` (Extended-URDF `<stem>.closure.yaml`) is provided, a
+    # closure_state_publisher (rtc_urdf_bridge) node reconstructs the passive
+    # loop joints so RViz renders the closed chain. digital_twin_node then
+    # forwards actuated joints to that solver instead of publishing directly.
+    # Coupling is topic-only (no build-time dep) → ARCH-2 preserved.
+    closure_path = LaunchConfiguration("closure_path").perform(context)
+    if not closure_path:
+        # Fallback to YAML config key
+        import yaml as _cyaml
+
+        with open(config_file) as _cf:
+            _ccfg = _cyaml.safe_load(_cf)
+        closure_path = _ccfg.get("/**", {}).get("ros__parameters", {}).get("closure_path", "")
+
+    if closure_path and not os.path.isabs(closure_path):
+        # pkg-share relative (to robot_description_package, per ARCH-1 bringup)
+        if desc_pkg:
+            closure_path = os.path.join(get_package_share_directory(desc_pkg), closure_path)
+
+    closure_active = bool(closure_path)
+    actuated_topic = "/digital_twin/actuated_joint_states"
+    display_topic = "/digital_twin/joint_states"
+    if closure_active:
+        # digital_twin_node feeds the solver; solver publishes the full q.
+        dt_overrides["output_topic"] = actuated_topic
+        dt_overrides["closure_path"] = closure_path
+
     # ── robot_state_publisher ─────────────────────────────────────────────
     robot_state_publisher_node = Node(
         package="robot_state_publisher",
@@ -145,6 +173,25 @@ def launch_setup(context, *args, **kwargs):
         parameters=dt_params,
         output="screen",
     )
+
+    # ── closure_state_publisher (conditional, rtc_urdf_bridge) ────────────
+    closure_node = None
+    if closure_active:
+        closure_node = Node(
+            package="rtc_urdf_bridge",
+            executable="closure_state_publisher",
+            name="closure_state_publisher",
+            namespace="digital_twin",
+            parameters=[
+                {
+                    "robot_description": robot_description,
+                    "closure_path": closure_path,
+                    "input_topic": actuated_topic,
+                    "output_topic": display_topic,
+                }
+            ],
+            output="screen",
+        )
 
     # ── rviz2 (conditional) ───────────────────────────────────────────────
     use_rviz = LaunchConfiguration("use_rviz")
@@ -184,7 +231,10 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
-    return [robot_state_publisher_node, digital_twin_node, rviz_node, joint_gui_node]
+    nodes = [robot_state_publisher_node, digital_twin_node, rviz_node, joint_gui_node]
+    if closure_node is not None:
+        nodes.append(closure_node)
+    return nodes
 
 
 def generate_launch_description():
@@ -229,6 +279,16 @@ def generate_launch_description():
                 "use_joint_gui",
                 default_value="false",
                 description="Launch Joint State Publisher GUI",
+            ),
+            DeclareLaunchArgument(
+                "closure_path",
+                default_value="",
+                description=(
+                    "Extended-URDF <stem>.closure.yaml path (empty = disabled). "
+                    "When set, a closure_state_publisher reconstructs passive "
+                    "loop joints for closed-chain RViz visualization. "
+                    "Non-absolute paths resolve against robot_description_package share."
+                ),
             ),
             OpaqueFunction(function=launch_setup),
         ]

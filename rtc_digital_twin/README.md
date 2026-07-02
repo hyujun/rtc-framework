@@ -222,6 +222,7 @@ YAML의 `joint_gui.enabled: true` 또는 launch arg `use_joint_gui:=true` 시 �
     display_rate: 60.0                          # Hz — 퍼블리시 주기
     output_topic: "/digital_twin/joint_states"  # 병합 JointState 출력 토픽
     auto_compute_mimic: true                    # URDF mimic 조인트 자동 계산
+    closure_path: ""                            # Extended-URDF 폐쇄 체인 (loop-closed 핸드 전용)
 
     # -- JointState 소스 (robot bringup yaml이 채움) --
     num_sources: 0                              # 기본 0; bringup이 1+ 로 override
@@ -308,6 +309,7 @@ ros2 launch rtc_digital_twin digital_twin.launch.py \
 | `rviz_config` | 내장 기본값 | RViz 설정 파일 경로 |
 | `display_rate` | `''` (YAML 값 사용) | YAML의 display_rate 오버라이드 |
 | `use_joint_gui` | `false` | Joint State Publisher GUI 실행 여부 |
+| `closure_path` | `''` (비활성) | Extended-URDF `<stem>.closure.yaml` 경로 (YAML `closure_path` 키로도 설정 가능) |
 
 Launch 파일은 URDF/xacro를 처리하여 `robot_description` 문자열을 `robot_state_publisher`와 `digital_twin_node` 모두에 전달합니다. YAML에 `robot_description_package`/`robot_description_path`/`robot_description_file`을 설정해두면 launch 인자를 생략할 수 있습니다.
 
@@ -317,6 +319,21 @@ Launch 파일은 URDF/xacro를 처리하여 `robot_description` 문자열을 `ro
 2. **digital_twin_node** -- 다중 JointState 소스 병합, URDF 검증, 센서 시각화
 3. **rviz2** (조건부) -- 사전 설정된 디스플레이 (`use_rviz:=true` 시)
 4. **joint_gui_node** (조건부) -- Joint State Publisher GUI (`use_joint_gui:=true` 시)
+5. **closure_state_publisher** (조건부) -- Extended-URDF 폐쇄 체인 시각화 (`closure_path` 설정 시, [rtc_urdf_bridge](../rtc_urdf_bridge/README.md#nodes) 제공)
+
+#### Extended-URDF 폐쇄 체인 시각화 (opt-in)
+
+Loop-closed 핸드(예: linkage 핑거)는 spanning-tree URDF + `<stem>.closure.yaml` 짝으로 표현된다.
+`closure_path` (launch arg 또는 bringup YAML 키) 설정 시:
+
+- `digital_twin_node` 출력 → `/digital_twin/actuated_joint_states` (actuated 만 forward)
+- `closure_state_publisher` (rtc_urdf_bridge) 추가 -- 측정된 actuated q 고정 + passive loop q 를
+  closure 구속으로 풀어 **loop-consistent full q** 를 `/digital_twin/joint_states` 로 publish
+- `robot_state_publisher` 가 이를 TF 로 전개 → RViz 에 loop 가 닫힌 채 렌더링
+
+결합은 **토픽 전용**(build-time 의존 없음, ARCH-2). 미설정 시 현행 그대로 `digital_twin_node` 가
+`/digital_twin/joint_states` 로 직접 publish 한다. Mimic-coupled 핸드(예: LEAP)는 미설정 유지.
+경로가 절대경로가 아니면 `robot_description_package` share 기준으로 해석된다.
 
 ---
 
@@ -326,6 +343,9 @@ Launch 파일은 URDF/xacro를 처리하여 `robot_description` 문자열을 `ro
 - URDF에서 `fixed`, `mimic`, `closed-chain` 조인트를 자동 제외한 필수(active) 조인트 목록 생성
 - 수신된 JointState의 joint_names와 비교하여 누락 시 WARN 로그 출력
 - 모든 필수 조인트가 커버되면 INFO 로그 1회 출력 후 이후 누락 시에만 경고
+- **Closure 모드**(`closure_path` 설정): loop-passive 조인트는 spanning-tree URDF 에서 active 로
+  분류되지만 downstream `closure_state_publisher` 가 채우므로, 이 노드의 소스 책임이 아니다 →
+  누락 WARN 을 억제하고 1회 INFO 로만 보고
 
 ---
 
