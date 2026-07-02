@@ -2,10 +2,12 @@
 #include "rtc_urdf_bridge/closure_yaml_loader.hpp"
 
 #include "rtc_urdf_bridge/urdf_logging.hpp"
+#include "rtc_urdf_bridge/xacro_processor.hpp"
 
 #include <yaml-cpp/yaml.h>
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -154,6 +156,15 @@ ClosureSpec ParseClosureYaml(const std::string& yaml_text, std::string_view sour
   RCLCPP_DEBUG(logger(), "closure sidecar '%s' 로드: closures=%zu, actuated=%zu", spec.name.c_str(),
                spec.closures.size(), spec.actuated_joints.size());
   return spec;
+}
+
+std::string DeriveClosureSidecarPath(std::string_view urdf_path) {
+  std::filesystem::path p{std::string(urdf_path)};
+  if (IsXacroFile(p.string())) {
+    p.replace_extension();  // .xacro 제거 → foo.urdf
+  }
+  p.replace_extension();  // .urdf (또는 마지막 확장자) 제거 → foo
+  return p.string() + ".closure.yaml";
 }
 
 ClosureSpec LoadClosureYaml(std::string_view yaml_path) {

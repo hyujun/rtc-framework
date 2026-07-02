@@ -3,6 +3,7 @@
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/logging/session_dir.hpp>
+#include <rtc_urdf_bridge/closure_yaml_loader.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/urdf_analyzer.hpp>
 #include <rtc_urdf_bridge/xacro_processor.hpp>
@@ -16,6 +17,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,6 +25,11 @@
 namespace urtc = rtc;
 
 namespace {
+
+// Resolve `<pkg_share>/<rel>` for a package-share-relative resource path.
+std::string PackageSharePath(const std::string& pkg, const std::string& rel) {
+  return ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+}
 
 // Split `str` on `.` into non-empty components.
 std::vector<std::string> SplitDotPath(const std::string& str) {
@@ -214,6 +221,10 @@ void RtControllerNode::DeclareAndLoadParameters() {
 
   // ── Resolve system URDF and model topology ─────────────────────────────────
   std::string urdf_path;
+  // Package that owns the resolved URDF. Captured by whichever branch below
+  // wins so the Extended-URDF closure resolution can resolve a urdf.closure_path
+  // override against the same package share dir regardless of the source branch.
+  std::string urdf_pkg;
   std::shared_ptr<rtc_urdf_bridge::PinocchioModelBuilder> shared_builder;
   {
     // 1) Top-level urdf section (preferred)
@@ -221,8 +232,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
       try {
         const auto pkg = get_parameter("urdf.package").as_string();
         const auto rel = get_parameter("urdf.path").as_string();
-        urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+        urdf_path = PackageSharePath(pkg, rel);
         system_model_config_.urdf_path = urdf_path;
+        urdf_pkg = pkg;
 
         if (has_parameter("urdf.root_joint_type")) {
           system_model_config_.root_joint_type = get_parameter("urdf.root_joint_type").as_string();
@@ -234,41 +246,6 @@ void RtControllerNode::DeclareAndLoadParameters() {
         if (has_parameter("urdf.passive_joints")) {
           system_model_config_.passive_joints =
               get_parameter("urdf.passive_joints").as_string_array();
-        }
-
-        // Build the system PinocchioModelBuilder once and share it with every
-        // registered controller. Each controller would otherwise re-run the
-        // same xacro → tinyxml2 → Pinocchio pipeline against an identical
-        // ModelConfig (4× URDF parses on a 3-controller bring-up). Failure
-        // is non-fatal: controllers fall back to constructing their own
-        // builder from GetSystemModelConfig().
-        try {
-          shared_builder =
-              std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(system_model_config_);
-        } catch (const std::exception& e) {
-          RCLCPP_WARN(get_logger(),
-                      "Shared PinocchioModelBuilder build failed (%s) — "
-                      "controllers will build their own",
-                      e.what());
-        }
-
-        if (shared_builder) {
-          const auto& analyzer = shared_builder->GetAnalyzer();
-          RCLCPP_INFO(get_logger(),
-                      "System URDF: %s (%zu sub_models, %zu tree_models, "
-                      "%zu yaml-passive_joints; %zu <mimic> tags auto-locked by "
-                      "PinocchioModelBuilder, %zu transmission-less passive)",
-                      urdf_path.c_str(), system_model_config_.sub_models.size(),
-                      system_model_config_.tree_models.size(),
-                      system_model_config_.passive_joints.size(), analyzer.GetMimicJoints().size(),
-                      analyzer.GetPassiveJoints().size());
-        } else {
-          RCLCPP_INFO(get_logger(),
-                      "System URDF: %s (%zu sub_models, %zu tree_models, %zu "
-                      "yaml-passive_joints)",
-                      urdf_path.c_str(), system_model_config_.sub_models.size(),
-                      system_model_config_.tree_models.size(),
-                      system_model_config_.passive_joints.size());
         }
       } catch (const std::exception& e) {
         RCLCPP_WARN(get_logger(), "Failed to resolve system URDF config: %s", e.what());
@@ -285,8 +262,9 @@ void RtControllerNode::DeclareAndLoadParameters() {
           try {
             const auto pkg = get_parameter(pkg_key).as_string();
             const auto rel = get_parameter(path_key).as_string();
-            urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+            urdf_path = PackageSharePath(pkg, rel);
             system_model_config_.urdf_path = urdf_path;
+            urdf_pkg = pkg;
             RCLCPP_INFO(get_logger(), "URDF path from devices config (fallback): %s",
                         urdf_path.c_str());
           } catch (const std::exception& e) {
@@ -299,6 +277,92 @@ void RtControllerNode::DeclareAndLoadParameters() {
 
     if (urdf_path.empty()) {
       RCLCPP_WARN(get_logger(), "No URDF configured — controllers may lack kinematics");
+    }
+
+    // ── Extended-URDF: resolve the closure sidecar (both branches) ───────────
+    // urdf.extended=true declares a spanning-tree URDF whose loop-closure /
+    // actuation info lives in a sibling <stem>.closure.yaml. Resolved here —
+    // AFTER both the top-level and devices-fallback branches settle urdf_path —
+    // so a devices-config bring-up honours urdf.extended identically (this block
+    // used to be nested inside the top-level branch and was silently skipped on
+    // the fallback path). The shared builder below then runs the closed-chain
+    // pipeline (constraints + q_ref + actuated joints) on the full model.
+    //
+    // Isolated in its own try/catch so a bad urdf.extended type or an
+    // unresolvable closure_path cannot abort the shared-builder construction.
+    // A missing sidecar under extended:true is escalated to ERROR (not WARN):
+    // the model silently loses loop constraints, so a closed-chain robot's
+    // dynamics would be wrong — that must be loud.
+    if (!urdf_path.empty()) {
+      try {
+        const bool extended =
+            has_parameter("urdf.extended") && get_parameter("urdf.extended").as_bool();
+        if (extended) {
+          std::string closure_path;
+          if (has_parameter("urdf.closure_path")) {
+            // Explicit override, resolved against the URDF's package share dir.
+            const auto rel_closure = get_parameter("urdf.closure_path").as_string();
+            closure_path = PackageSharePath(urdf_pkg, rel_closure);
+          } else {
+            // <stem>.closure.yaml sibling — rtc_urdf_bridge owns the convention.
+            closure_path = rtc_urdf_bridge::DeriveClosureSidecarPath(urdf_path);
+          }
+
+          if (std::filesystem::exists(closure_path)) {
+            system_model_config_.closure_yaml_path = closure_path;
+            RCLCPP_INFO(get_logger(), "Extended-URDF closure sidecar: %s", closure_path.c_str());
+          } else {
+            RCLCPP_ERROR(get_logger(),
+                         "urdf.extended=true but closure sidecar not found (%s) — RT model "
+                         "will LACK loop constraints (closed-chain dynamics will be wrong). "
+                         "Fix the path/install the sidecar, or set urdf.extended=false.",
+                         closure_path.c_str());
+          }
+        }
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(get_logger(),
+                     "Failed to resolve Extended-URDF closure config (%s) — continuing "
+                     "without loop constraints",
+                     e.what());
+      }
+    }
+
+    // ── Build the shared PinocchioModelBuilder once (both branches) ──────────
+    // Built AFTER closure resolution so closure_yaml_path (when set) is bound
+    // into the RT model. Shared with every registered controller — each would
+    // otherwise re-run the same xacro → tinyxml2 → Pinocchio pipeline against an
+    // identical ModelConfig (4× URDF parses on a 3-controller bring-up). Failure
+    // is non-fatal: controllers fall back to constructing their own builder from
+    // GetSystemModelConfig().
+    if (!urdf_path.empty()) {
+      try {
+        shared_builder =
+            std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(system_model_config_);
+      } catch (const std::exception& e) {
+        RCLCPP_WARN(get_logger(),
+                    "Shared PinocchioModelBuilder build failed (%s) — "
+                    "controllers will build their own",
+                    e.what());
+      }
+
+      if (shared_builder) {
+        const auto& analyzer = shared_builder->GetAnalyzer();
+        RCLCPP_INFO(get_logger(),
+                    "System URDF: %s (%zu sub_models, %zu tree_models, "
+                    "%zu yaml-passive_joints; %zu <mimic> tags auto-locked by "
+                    "PinocchioModelBuilder, %zu transmission-less passive)",
+                    urdf_path.c_str(), system_model_config_.sub_models.size(),
+                    system_model_config_.tree_models.size(),
+                    system_model_config_.passive_joints.size(), analyzer.GetMimicJoints().size(),
+                    analyzer.GetPassiveJoints().size());
+      } else {
+        RCLCPP_INFO(get_logger(),
+                    "System URDF: %s (%zu sub_models, %zu tree_models, %zu "
+                    "yaml-passive_joints)",
+                    urdf_path.c_str(), system_model_config_.sub_models.size(),
+                    system_model_config_.tree_models.size(),
+                    system_model_config_.passive_joints.size());
+      }
     }
   }
 

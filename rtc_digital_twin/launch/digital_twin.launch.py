@@ -43,6 +43,26 @@ def _load_urdf(path: str) -> str:
     return parser.urdf_xml
 
 
+def _load_node_params(config_file: str, node_name: str) -> dict:
+    """Read ros__parameters from a config YAML, merging the ``/**`` wildcard
+    block with a node-scoped block (node-scoped keys win, matching ROS 2
+    parameter resolution). Reading only ``/**`` would silently drop overrides a
+    bringup YAML scopes under the node name — e.g. a node-scoped ``closure_path``
+    would yield ``''`` and disable closure mode without warning.
+    """
+    import yaml
+
+    with open(config_file) as f:
+        cfg = yaml.safe_load(f) or {}
+
+    def _params(key: str) -> dict:
+        return (cfg.get(key) or {}).get("ros__parameters", {}) or {}
+
+    merged = dict(_params("/**"))
+    merged.update(_params(node_name))
+    return merged
+
+
 def launch_setup(context, *args, **kwargs):
     # ── Resolve robot description ─────────────────────────────────────────
     desc_file = LaunchConfiguration("robot_description_file").perform(context)
@@ -69,11 +89,7 @@ def launch_setup(context, *args, **kwargs):
                 get_package_share_directory("rtc_digital_twin"), "config", "digital_twin.yaml"
             )
 
-        import yaml
-
-        with open(config_file) as f:
-            cfg = yaml.safe_load(f)
-        params = cfg.get("/**", {}).get("ros__parameters", {})
+        params = _load_node_params(config_file, "digital_twin_node")
 
         desc_file = params.get("robot_description_file", "")
         desc_pkg = params.get("robot_description_package", "")
@@ -113,6 +129,44 @@ def launch_setup(context, *args, **kwargs):
     if display_rate:
         dt_overrides["display_rate"] = float(display_rate)
 
+    # ── Extended-URDF closure visualization (opt-in) ──────────────────────
+    # When `closure_path` (Extended-URDF `<stem>.closure.yaml`) is provided, a
+    # closure_state_publisher (rtc_urdf_bridge) node reconstructs the passive
+    # loop joints so RViz renders the closed chain. digital_twin_node then
+    # forwards actuated joints to that solver instead of publishing directly.
+    # Coupling is topic-only (no build-time dep) → ARCH-2 preserved.
+    closure_path = LaunchConfiguration("closure_path").perform(context)
+    if not closure_path:
+        # Fallback to YAML config key (honours a node-scoped override, not just /**).
+        closure_path = _load_node_params(config_file, "digital_twin_node").get("closure_path", "")
+
+    if closure_path and not os.path.isabs(closure_path):
+        # pkg-share relative (to robot_description_package, per ARCH-1 bringup)
+        if not desc_pkg:
+            raise RuntimeError(
+                f"closure_path '{closure_path}' is relative but robot_description_package "
+                "is not set (an absolute robot_description_file was given) — cannot resolve "
+                "the closure sidecar. Pass an absolute closure_path, or set "
+                "robot_description_package, or unset closure_path to disable closure mode."
+            )
+        closure_path = os.path.join(get_package_share_directory(desc_pkg), closure_path)
+
+    # Fail loudly at launch time rather than letting closure_state_publisher abort
+    # opaquely (which would leave /digital_twin/joint_states with no publisher).
+    if closure_path and not os.path.isfile(closure_path):
+        raise RuntimeError(
+            f"closure_path resolved to '{closure_path}' but no such file exists — "
+            "fix the path or unset closure_path to disable closure mode."
+        )
+
+    closure_active = bool(closure_path)
+    actuated_topic = "/digital_twin/actuated_joint_states"
+    display_topic = "/digital_twin/joint_states"
+    if closure_active:
+        # digital_twin_node feeds the solver; solver publishes the full q.
+        dt_overrides["output_topic"] = actuated_topic
+        dt_overrides["closure_path"] = closure_path
+
     # ── robot_state_publisher ─────────────────────────────────────────────
     robot_state_publisher_node = Node(
         package="robot_state_publisher",
@@ -145,6 +199,25 @@ def launch_setup(context, *args, **kwargs):
         parameters=dt_params,
         output="screen",
     )
+
+    # ── closure_state_publisher (conditional, rtc_urdf_bridge) ────────────
+    closure_node = None
+    if closure_active:
+        closure_node = Node(
+            package="rtc_urdf_bridge",
+            executable="closure_state_publisher",
+            name="closure_state_publisher",
+            namespace="digital_twin",
+            parameters=[
+                {
+                    "robot_description": robot_description,
+                    "closure_path": closure_path,
+                    "input_topic": actuated_topic,
+                    "output_topic": display_topic,
+                }
+            ],
+            output="screen",
+        )
 
     # ── rviz2 (conditional) ───────────────────────────────────────────────
     use_rviz = LaunchConfiguration("use_rviz")
@@ -184,7 +257,10 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
-    return [robot_state_publisher_node, digital_twin_node, rviz_node, joint_gui_node]
+    nodes = [robot_state_publisher_node, digital_twin_node, rviz_node, joint_gui_node]
+    if closure_node is not None:
+        nodes.append(closure_node)
+    return nodes
 
 
 def generate_launch_description():
@@ -229,6 +305,16 @@ def generate_launch_description():
                 "use_joint_gui",
                 default_value="false",
                 description="Launch Joint State Publisher GUI",
+            ),
+            DeclareLaunchArgument(
+                "closure_path",
+                default_value="",
+                description=(
+                    "Extended-URDF <stem>.closure.yaml path (empty = disabled). "
+                    "When set, a closure_state_publisher reconstructs passive "
+                    "loop joints for closed-chain RViz visualization. "
+                    "Non-absolute paths resolve against robot_description_package share."
+                ),
             ),
             OpaqueFunction(function=launch_setup),
         ]

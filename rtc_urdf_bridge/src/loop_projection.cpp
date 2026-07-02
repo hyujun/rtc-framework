@@ -14,10 +14,19 @@
 
 namespace rtc_urdf_bridge {
 
-ProjectionResult ProjectToConstraint(
-    const pinocchio::Model& model, pinocchio::Data& data,
-    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_init,
-    const ProjectionOptions& opts) {
+namespace {
+
+// Damped least-squares Newton projection over a chosen set of velocity columns.
+// Only the tangent columns in `free_cols` may move; every other column keeps a
+// zero increment, so `integrate` leaves its q exactly unchanged. Shared core of
+// ProjectToConstraint (all columns free) and ProjectPassiveToConstraint (only
+// passive columns free — actuated q held fixed).
+//   dv_free = −Jc_freeᵀ (Jc_free Jc_freeᵀ + λ²I)⁻¹ φ(q); q ← integrate(model, q, dq).
+ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Data& data,
+                                    const std::vector<pinocchio::RigidConstraintModel>& constraints,
+                                    const Eigen::VectorXd& q_init,
+                                    const std::vector<int>& free_cols,
+                                    const ProjectionOptions& opts) {
   ProjectionResult result;
   result.q = q_init;
 
@@ -27,6 +36,7 @@ ProjectionResult ProjectToConstraint(
     return result;
   }
 
+  const int n_free = static_cast<int>(free_cols.size());
   const double lambda2 = opts.damping * opts.damping;  // λ²
   const Eigen::MatrixXd I = Eigen::MatrixXd::Identity(m, m);
 
@@ -41,12 +51,23 @@ ProjectionResult ProjectToConstraint(
       return result;
     }
 
-    // dq = −Jcᵀ (Jc Jcᵀ + λ²I)⁻¹ φ
-    const Eigen::MatrixXd JJt = kin.Jc * kin.Jc.transpose() + lambda2 * I;
-    const Eigen::VectorXd y = JJt.ldlt().solve(kin.phi);
-    const Eigen::VectorXd dq = -kin.Jc.transpose() * y;  // nv
+    // free 열만 추출: Jc_free (m × n_free)
+    Eigen::MatrixXd Jc_free(m, n_free);
+    for (int j = 0; j < n_free; ++j) {
+      Jc_free.col(j) = kin.Jc.col(free_cols[static_cast<std::size_t>(j)]);
+    }
 
-    // manifold 적분: q ← integrate(model, q, dq)
+    // dv_free = −Jc_freeᵀ (Jc_free Jc_freeᵀ + λ²I)⁻¹ φ
+    const Eigen::MatrixXd JJt = Jc_free * Jc_free.transpose() + lambda2 * I;
+    const Eigen::VectorXd y = JJt.ldlt().solve(kin.phi);
+    const Eigen::VectorXd dv_free = -Jc_free.transpose() * y;  // n_free
+
+    // 전체 tangent 로 scatter: 미포함(고정) 열 = 0 → integrate 시 해당 q 정확히 불변.
+    Eigen::VectorXd dq = Eigen::VectorXd::Zero(model.nv);
+    for (int j = 0; j < n_free; ++j) {
+      dq[free_cols[static_cast<std::size_t>(j)]] = dv_free[j];
+    }
+
     Eigen::VectorXd q_next(model.nq);
     pinocchio::integrate(model, result.q, dq, q_next);
     result.q = q_next;
@@ -57,6 +78,46 @@ ProjectionResult ProjectToConstraint(
   result.final_error = kin.phi.norm();
   result.converged = result.final_error < opts.tolerance;
   return result;
+}
+
+}  // namespace
+
+ProjectionResult ProjectToConstraint(
+    const pinocchio::Model& model, pinocchio::Data& data,
+    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_init,
+    const ProjectionOptions& opts) {
+  // 모든 velocity 열이 자유 (구속 없는 nv 전체 사영).
+  std::vector<int> all_cols(static_cast<std::size_t>(model.nv));
+  for (int c = 0; c < model.nv; ++c) {
+    all_cols[static_cast<std::size_t>(c)] = c;
+  }
+  return ProjectOverColumns(model, data, constraints, q_init, all_cols, opts);
+}
+
+ProjectionResult ProjectPassiveToConstraint(
+    const pinocchio::Model& model, pinocchio::Data& data,
+    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_init,
+    const std::vector<pinocchio::JointIndex>& actuated_joint_ids, const ProjectionOptions& opts) {
+  // actuated velocity 열 마스크 → passive(자유) 열 인덱스 목록.
+  std::vector<bool> is_actuated_col(static_cast<std::size_t>(model.nv), false);
+  for (const auto jid : actuated_joint_ids) {
+    if (jid == 0 || jid >= static_cast<pinocchio::JointIndex>(model.njoints)) {
+      continue;  // universe(0)/invalid — skip
+    }
+    const int vs = model.idx_vs[jid];
+    const int nvj = model.nvs[jid];
+    for (int k = 0; k < nvj; ++k) {
+      is_actuated_col[static_cast<std::size_t>(vs + k)] = true;
+    }
+  }
+  std::vector<int> passive_cols;
+  passive_cols.reserve(static_cast<std::size_t>(model.nv));
+  for (int c = 0; c < model.nv; ++c) {
+    if (!is_actuated_col[static_cast<std::size_t>(c)]) {
+      passive_cols.push_back(c);
+    }
+  }
+  return ProjectOverColumns(model, data, constraints, q_init, passive_cols, opts);
 }
 
 Eigen::VectorXd ProjectVelocity(const pinocchio::Model& model, pinocchio::Data& data,

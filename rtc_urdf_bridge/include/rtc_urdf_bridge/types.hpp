@@ -282,6 +282,11 @@ struct ModelConfig {
   // 폐쇄 체인 정의
   std::vector<ClosedChainInfo> closed_chains;
 
+  // Extended-URDF sidecar (<name>.closure.yaml) 경로. 비어 있으면 순수 URDF (plain).
+  // 비어 있지 않으면 이 sidecar 를 로드해 closed-chain 파이프라인(constraints + q_ref +
+  // actuated joints + 특이성 검사)을 full_model_ 위에서 실행한다 (closed_chains 필드 대신).
+  std::string closure_yaml_path;
+
   // 패시브 관절 hint/override 목록
   // - yaml_passive_override == false (기본): 자동 분류 보조 hint로만 사용
   //   subtype은 closed-chain 참여 여부로 자동 판정 (closed_chain/free).

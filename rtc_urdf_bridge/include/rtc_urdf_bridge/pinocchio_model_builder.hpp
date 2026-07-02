@@ -1,6 +1,7 @@
 // ── PinocchioModelBuilder: YAML + URDF → Pinocchio 모델 구축 ────────────────
 #pragma once
 
+#include "rtc_urdf_bridge/closure_yaml_loader.hpp"
 #include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
@@ -16,6 +17,7 @@
 #pragma GCC diagnostic pop
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -60,6 +62,28 @@ class PinocchioModelBuilder {
   [[nodiscard]] const std::vector<pinocchio::RigidConstraintModel>& GetConstraintModels()
       const noexcept;
 
+  // ── Extended-URDF closure (sidecar) 결과 ───────────────────────────────────
+  // closure_yaml_path 가 설정된 경우에만 채워진다. plain URDF 면 빈/기본값.
+
+  /// loop-consistent 기준 설정값 q_ref (full model, sidecar projection 통과).
+  /// closure sidecar 미사용 시 빈 벡터. @see IsClosureReferenceSingular,
+  /// IsClosureReferenceConverged
+  [[nodiscard]] const Eigen::VectorXd& GetClosureReferenceConfig() const noexcept;
+
+  /// sidecar actuation.actuated_joints → full model JointIndex 목록.
+  /// closure sidecar 미사용 시 빈 목록.
+  [[nodiscard]] const std::vector<pinocchio::JointIndex>& GetClosureActuatedJointIds()
+      const noexcept;
+
+  /// q_ref projection 수렴 여부. false 면 neutral 근방 조립이 loop-consistent 하지 않아
+  /// q_ref 가 부정확하다 (singular 여부와 별개 — full-rank 여도 미수렴일 수 있다).
+  /// closure sidecar 미사용 시 false.
+  [[nodiscard]] bool IsClosureReferenceConverged() const noexcept;
+
+  /// q_ref 가 rank 결손(특이 조립형상) 인지. true 면 이 형상에서 constraintDynamics 의
+  /// KKT 가 특이해져 NaN 을 낼 수 있으므로 operating configuration 으로 바로 쓰면 안 된다.
+  [[nodiscard]] bool IsClosureReferenceSingular() const noexcept;
+
   // ── 메타데이터 ─────────────────────────────────────────────────────────────
 
   /// 등록된 서브모델 이름 목록
@@ -95,9 +119,18 @@ class PinocchioModelBuilder {
   void BuildTreeModels();
   void RegisterClosedChainConstraints();
 
+  /// Extended-URDF sidecar 를 1회 로드해 closure_spec_ 에 캐시하고, loop-passive
+  /// 관절 이름 (= full model 의 movable 관절 − sidecar actuated_joints) 을
+  /// closure_passive_lock_names_ 에 계산한다. BuildFullModel() 직후·
+  /// BuildReducedModels() 전에 호출되어야 한다 (spanning-tree analyzer 는 loop 이
+  /// 없어 loop-passive 를 분류하지 못하므로 sidecar 가 유일한 출처).
+  /// closure_yaml_path 가 비어 있으면 no-op.
+  void LoadClosureSpecAndComputePassiveLocks();
+
   /// 축소 모델에서 잠금 대상이 될 passive 관절 이름 목록.
   ///   - yaml_passive_override == false: analyzer의 자동 분류 결과 사용
   ///   - yaml_passive_override == true : config_.passive_joints 그대로 사용
+  /// 두 경우 모두 closure_passive_lock_names_ (Extended-URDF loop-passive) 를 합집합.
   [[nodiscard]] std::vector<std::string> CollectPassiveLockNames() const;
 
   /// 잠금 관절의 기준 설정값 구성
@@ -123,6 +156,21 @@ class PinocchioModelBuilder {
 
   // 폐쇄 체인 구속
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;
+
+  // Extended-URDF sidecar spec 캐시 (closure_yaml_path 설정 시에만 값 보유).
+  // BuildFullModel() 후 1회 로드되어 BuildReducedModels()/BuildTreeModels() 의
+  // passive-lock 계산과 RegisterClosedChainConstraints() 의 constraint 생성이
+  // 이 단일 캐시를 공유한다 (중복 LoadClosureYaml 제거).
+  std::optional<ClosureSpec> closure_spec_;
+  // sidecar 가 passive 로 규정한 full-model movable 관절 (= movable − actuated).
+  // 모든 reduced/tree 서브모델에서 잠긴다. plain URDF 면 빈 목록.
+  std::vector<std::string> closure_passive_lock_names_;
+
+  // Extended-URDF sidecar closure 결과 (closure_yaml_path 설정 시에만 채워짐)
+  Eigen::VectorXd closure_q_ref_;
+  std::vector<pinocchio::JointIndex> closure_actuated_joint_ids_;
+  bool closure_q_ref_converged_{false};
+  bool closure_q_ref_singular_{false};
 };
 
 }  // namespace rtc_urdf_bridge

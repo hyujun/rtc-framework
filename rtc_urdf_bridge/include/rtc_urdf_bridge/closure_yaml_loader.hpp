@@ -25,6 +25,12 @@ struct ClosureSpec {
   std::vector<JointSubstitution> joint_substitutions;
 };
 
+/// @brief URDF 경로 → 관례적 sidecar 경로 (`<stem>.closure.yaml`, 같은 디렉토리).
+/// `.xacro` (IsXacroFile) 와 `.urdf` 확장자를 벗겨 stem 을 구하고 `.closure.yaml` 을 붙인다
+/// (예: `foo.urdf.xacro` → `foo.closure.yaml`). 파일 존재 여부는 검사하지 않고 경로만 만든다.
+/// Extended-URDF 소비자(예: rtc_controller_manager)가 이 규칙을 재구현하지 않도록 단일 출처.
+[[nodiscard]] std::string DeriveClosureSidecarPath(std::string_view urdf_path);
+
 /// @brief sidecar YAML 파일 경로 → ClosureSpec.
 /// @throws std::runtime_error 파일 없음 / 파싱 실패 / 필수 필드 누락 / endpoint 미지정.
 [[nodiscard]] ClosureSpec LoadClosureYaml(std::string_view yaml_path);

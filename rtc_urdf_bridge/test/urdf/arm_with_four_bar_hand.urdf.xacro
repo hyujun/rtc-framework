@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!-- arm_with_four_bar_hand.urdf.xacro — arm + closed-chain "hand" 조합 픽스처.
+
+     사용자 시나리오 재현: hand 는 Extended-URDF (spanning-tree URDF + 별도
+     <stem>.closure.yaml sidecar) 로 관리되는 폐쇄 체인이고, arm 과 hand 를
+     xacro <xacro:include> 로 prefix 없이 병합한다. closure sidecar 는 standalone
+     hand 이름 기준으로 작성됐지만, 병합 모델에서도 그 이름이 보존되므로
+     constraint_builder 의 이름 기반 resolve(existFrame/existJointName)가 그대로
+     성립해야 한다.
+
+       arm_base ─(arm_joint : rev z)─▶ arm_tip ─(arm_to_hand : fixed)─▶ base_link
+                                                                         └▶ [four-bar loop hand]
+
+     - hand = four_bar_tree.urdf (순수 spanning-tree, loop 은 four_bar.closure.yaml).
+       실제 linkage-driven 손가락의 최소 대역. include 는 prefix 를 붙이지 않으므로
+       hand 의 frame(c1,c2)/joint(joint_a…) 이름이 병합 모델에 그대로 나타난다.
+     - arm 은 loop 밖 1-DoF 직렬 관절 → 병합 모델 nq = 1(arm) + 4(hand) = 5.
+       arm 은 constraint Jacobian 에 기여하지 않으므로 loop 의 수렴/특이 성질은
+       standalone 과 동일해야 한다 (병합 불변).
+
+     robot_descriptions 의 ur5e_with_hand.urdf.xacro 와 동일한 조합 관례
+     (arm as-is + <xacro:include> hand + 접합 fixed joint). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="arm_with_four_bar_hand">
+
+  <!-- ── Closed-chain hand (spanning-tree; loop 은 four_bar.closure.yaml sidecar) ── -->
+  <!-- 상대 include: 같은 urdf/ 디렉토리 기준으로 xacro 가 해석. prefix 없음 →
+       base_link / c1 / c2 / joint_a 등 hand 이름이 그대로 병합된다. -->
+  <xacro:include filename="four_bar_tree.urdf"/>
+
+  <!-- ── Minimal 1-DoF arm (loop 밖) ─────────────────────────────────────────── -->
+  <link name="arm_base">
+    <inertial>
+      <mass value="5.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05"/>
+    </inertial>
+  </link>
+
+  <link name="arm_tip">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+  </link>
+
+  <joint name="arm_joint" type="revolute">
+    <parent link="arm_base"/><child link="arm_tip"/>
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="2"/>
+  </joint>
+
+  <!-- ── Attach hand to arm tip (robot_descriptions 조합 관례의 접합 fixed joint) ── -->
+  <joint name="arm_to_hand" type="fixed">
+    <parent link="arm_tip"/><child link="base_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+  </joint>
+
+</robot>

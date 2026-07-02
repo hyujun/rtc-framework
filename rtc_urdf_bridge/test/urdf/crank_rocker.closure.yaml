@@ -1,0 +1,16 @@
+# crank_rocker.closure.yaml — Extended-URDF sidecar (crank_rocker.urdf 짝).
+# 평면 Grashof crank-rocker. loop 는 coupler tip(c1) 과 rocker tip(c2) 의 점 일치.
+name: crank_rocker
+
+closures:
+  - name: crank_rocker_pin
+    type: contact_3d          # 평면 핀 (in-plane 2성분 유효, world-z 자명)
+    frame_1: c1
+    frame_2: c2
+    reference_frame: LOCAL
+    baumgarte: { Kp: 20.0, Kd: 5.0 }
+
+actuation:
+  actuated_joints: [j_crank]  # 나머지(j_coupler, j_rocker)는 passive
+
+joint_substitutions: []

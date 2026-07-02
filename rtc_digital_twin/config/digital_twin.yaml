@@ -25,6 +25,17 @@
     output_topic: "/digital_twin/joint_states"  # Combined output for robot_state_publisher
     auto_compute_mimic: true                    # Auto-compute mimic joint positions from URDF
 
+    # ── Extended-URDF closed-chain visualization (opt-in) ────────────────
+    # Loop-closed hands only (e.g. linkage fingers). When set to the sidecar
+    # `<stem>.closure.yaml` (pkg-share relative to robot_description_package),
+    # the launch adds a closure_state_publisher (rtc_urdf_bridge) that fixes
+    # measured actuated q and solves passive loop joints so RViz renders the
+    # closed chain. digital_twin then forwards actuated joints to that solver.
+    # Empty = disabled (digital_twin publishes /digital_twin/joint_states
+    # directly). Mimic-coupled hands (e.g. LEAP) leave this empty. ARCH-1:
+    # set the concrete path in the <robot>_bringup yaml, not here.
+    closure_path: ""                            # e.g. "robots/<robot>/urdf/<hand>.closure.yaml"
+
     # ── Joint state sources ──────────────────────────────────────────────
     # Robot bringup yaml supplies the per-source topic + joint_names. Defaults
     # below produce zero sources (num_sources: 0); standalone-launch users

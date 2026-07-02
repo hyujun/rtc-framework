@@ -45,12 +45,14 @@ rtc_urdf_bridge/
 │   ├── constraint_builder.hpp          # ClosedChainInfo→RigidConstraintModel (§4b)
 │   ├── loop_verification.hpp           # closure error / Jc rank·Delassus
 │   ├── loop_projection.hpp             # q/v loop-consistent 사영 (로드 타임)
-│   └── closed_chain_model.hpp          # 통합 loader (BuildClosedChainModelFromExtendedUrdf)
+│   ├── closed_chain_model.hpp          # 통합 loader (BuildClosedChainModelFromExtendedUrdf)
+│   └── closure_state_publisher.hpp     # Extended-URDF 폐쇄 체인 시각화 노드 (off-RT)
 ├── src/
 │   ├── urdf_analyzer.cpp
 │   ├── kinematic_chain_extractor.cpp
 │   ├── pinocchio_model_builder.cpp
 │   ├── rt_model_handle.cpp
+│   ├── closure_state_publisher{,_main}.cpp  # 노드 구현 + 실행 진입점
 │   └── (closed_chain 모듈 대응 .cpp)
 ├── config/                             # YAML 설정 템플릿
 │   ├── serial_arm_config.yaml
@@ -70,6 +72,8 @@ rtc_urdf_bridge/
     ├── test_closure_yaml_loader.cpp    # sidecar 파서
     ├── test_constraint_builder.cpp     # endpoint transform / builder
     ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
+    ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
+    ├── test_closure_state_publisher.cpp # 노드 end-to-end (actuated 주입→full q, loop 닫힘)
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
     └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF
 ```
@@ -354,8 +358,41 @@ joint_substitutions: []
 auto ccm = rtc_urdf_bridge::BuildClosedChainModelFromExtendedUrdf(urdf_path, closure_yaml_path);
 // 검증/사영 (로드 타임 전용):
 //   loop_verification.hpp — ComputeClosureErrors / AnalyzeConstraintJacobian (rank·Delassus)
-//   loop_projection.hpp   — ProjectToConstraint (q_ref) / ProjectVelocity
+//   loop_projection.hpp   — ProjectToConstraint (q_ref, 전체 q 사영) / ProjectVelocity
+//                           ProjectPassiveToConstraint (actuated 고정·passive 만 사영;
+//                           actuated 스트림 → loop-consistent full q 재구성, 시각화용)
 ```
+
+**PinocchioModelBuilder 경로 (bring-up SSoT).** raw URDF 뿐 아니라 xacro 도 소비하는
+`PinocchioModelBuilder` 는 `ModelConfig::closure_yaml_path` 가 설정되면 (`buildModel` 대신)
+전처리된 `full_model_` 위에서 같은 파이프라인을 실행하고 결과를 노출한다. `BuildClosedChainData`
+헬퍼가 이 재사용 지점이다 (이미 빌드된 model + `ClosureSpec` → constraints/actuated/q_ref).
+
+```cpp
+rtc_urdf_bridge::ModelConfig cfg;
+cfg.urdf_path = ".../foo.urdf.xacro";
+cfg.closure_yaml_path = ".../foo.closure.yaml";   // 비우면 순수 URDF (기본)
+rtc_urdf_bridge::PinocchioModelBuilder builder(cfg);
+builder.GetConstraintModels();          // RigidConstraintModel 목록
+builder.GetClosureReferenceConfig();    // loop-consistent q_ref (full model)
+builder.GetClosureActuatedJointIds();   // actuation.actuated_joints → JointIndex
+builder.IsClosureReferenceConverged();  // false 면 q_ref projection 미수렴 (부정확)
+builder.IsClosureReferenceSingular();   // true 면 q_ref 를 operating config 로 쓰지 말 것
+```
+
+integrated_bringup 은 system YAML `urdf:` 블록의 `extended: true` 로 이 경로를 켠다 (sidecar 는
+URDF 옆 `<stem>.closure.yaml`; `closure_path:` 로 명시 override 가능). `extended: true` 인데 sidecar
+가 없으면 top-level `urdf.path` 경로든 devices-fallback 경로든 동일하게 loud `RCLCPP_ERROR` 를 내고
+(RT 모델이 loop constraint 를 잃으므로) bring-up 은 계속된다. §"Adding a New ..." 참조.
+
+> **RT 모델 passive-lock 계약 (필독).** `closure_yaml_path` 가 설정되면 `PinocchioModelBuilder` 는
+> **full model 의 movable 관절 중 `actuated_joints` 에 없는 모든 관절을 loop-passive 로 간주해
+> 모든 reduced/tree 서브모델에서 잠근다** (spanning-tree URDF 에는 loop 이 없어 analyzer 가 이를
+> 분류하지 못하므로 sidecar 가 유일한 출처다). 따라서 `actuation.actuated_joints` 는 그 URDF 의
+> **완전한 active 집합**이어야 한다 — arm + closed-chain hand 를 병합했다면 arm 관절도 반드시
+> 포함해야 하며, 빠진 관절은 조용히 잠겨 컨트롤러 DOF 가 바뀐다. 빌드 시
+> `"Extended-URDF closure passive-lock: N joint 잠금 (movable M − actuated K)"` 로그의 N 이
+> 예상 passive 수와 일치하는지 확인해 이 실수를 조기에 잡는다.
 
 계층 계약: YAML I/O·파싱·`buildModel`·constraint 생성·projection 은 **로드 타임**(예외
 허용). RT 경로는 `RtModelHandle::ComputeConstraintDynamics` 호출만 (사전 할당 재사용,
@@ -384,7 +421,13 @@ tree_models:
     root_link: "root_link_name"
     tip_links: ["tip_1", "tip_2", ...]
 
-# 폐쇄 체인 구속
+# Extended-URDF closure sidecar (<name>.closure.yaml) 경로.
+# 설정 시 순수 spanning-tree URDF + 이 sidecar 로부터 loop constraints + q_ref +
+# actuated joints 를 로드한다 (아래 inline closed_chains 대신 사용; 둘 다 설정 시 sidecar 우선).
+# 상대 경로는 이 config YAML 파일 위치 기준으로 해석된다.
+closure_yaml_path: "path/to/robot.closure.yaml"
+
+# 폐쇄 체인 구속 (inline; closure_yaml_path 미설정 시)
 closed_chains:
   - name: "constraint_name"
     link_a: "link_name_a"
@@ -458,6 +501,31 @@ ros2 run rtc_urdf_bridge example_tree_model config/hand_tree_config.yaml
 # RT 통합 패턴
 ros2 run rtc_urdf_bridge example_rt_integration config/serial_arm_config.yaml
 ```
+
+## Nodes
+
+### closure_state_publisher
+
+Extended-URDF(spanning-tree URDF + `<stem>.closure.yaml`) 폐쇄 체인을 RViz 에 시각화하는
+off-RT 노드. actuated `JointState` 스트림을 입력받아 **측정된 actuated q 를 고정**하고 passive q 를
+closure 구속으로 풀어(`ProjectPassiveToConstraint`, warm-start) **loop-consistent full q** 를
+만들어 전체 model 관절을 publish 한다 → `robot_state_publisher` 가 TF 로 전개해 loop 가 닫힌 채
+렌더링된다. 모델 구축은 `PinocchioModelBuilder`(xacro 전처리 + closure 파이프라인) 재사용.
+
+| 파라미터 | 기본값 | 설명 |
+|---|---|---|
+| `urdf_path` | `""` | URDF/xacro 파일 경로 (또는 `robot_description` 중 하나 필수) |
+| `robot_description` | `""` | URDF XML 문자열 직접 전달 (`urdf_path` 대안) |
+| `closure_path` | `""` | **필수** — Extended-URDF sidecar `<stem>.closure.yaml` 경로 |
+| `root_joint_type` | `"fixed"` | root joint 타입 (`fixed` \| `floating`) |
+| `input_topic` | `/digital_twin/actuated_joint_states` | actuated `JointState` 입력 |
+| `output_topic` | `/digital_twin/joint_states` | loop-consistent full `JointState` 출력 |
+| `warn_on_singular` | `true` | 기준 형상 특이 시 기동 경고 |
+| `max_iterations` / `tolerance` | `100` / `1e-10` | passive 사영 수렴 옵션 |
+
+미수렴/특이 프레임은 **직전 loop-consistent 해를 hold**(NaN 미발행)하고 THROTTLE WARN 을 낸다.
+closure 비활성(param 미설정) 로봇은 이 노드를 기동하지 않고 digital_twin 이 직접 publish 한다
+(opt-in). launch 배선은 [rtc_digital_twin](../rtc_digital_twin/README.md) 참조.
 
 ## Logging
 

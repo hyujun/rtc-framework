@@ -1,6 +1,8 @@
 // ── PinocchioModelBuilder 구현 ───────────────────────────────────────────────
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
+#include "rtc_urdf_bridge/closed_chain_model.hpp"
+#include "rtc_urdf_bridge/closure_yaml_loader.hpp"
 #include "rtc_urdf_bridge/constraint_builder.hpp"
 #include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
@@ -31,6 +33,18 @@ namespace rtc_urdf_bridge {
 namespace {
 auto logger() {
   return ::rtc::urdf::logging::BuilderLogger();
+}
+
+// Resolve a possibly-relative resource path against the directory of the YAML
+// file that declared it. Absolute paths (leading '/') and empty strings pass
+// through unchanged.
+std::string ResolveRelativeToYaml(std::string path, std::string_view yaml_path) {
+  if (path.empty() || path[0] == '/') {
+    return path;
+  }
+  const std::filesystem::path yaml_dir =
+      std::filesystem::path(std::string(yaml_path)).parent_path();
+  return (yaml_dir / path).string();
 }
 }  // namespace
 
@@ -75,9 +89,42 @@ void PinocchioModelBuilder::Build() {
   //     mimic / closed-chain / hint 기반 passive 분류는 Analyzer가 완료.
   //     reduced 모델 lock 대상은 analyzer_->GetPassiveJointNames() 사용.
   BuildFullModel();
+  // Extended-URDF sidecar 는 full 모델이 있어야 loop-passive 를 계산할 수 있고,
+  // 그 결과가 reduced/tree 서브모델 잠금에 필요하므로 BuildReducedModels() 전에 로드.
+  LoadClosureSpecAndComputePassiveLocks();
   BuildReducedModels();
   BuildTreeModels();
   RegisterClosedChainConstraints();
+}
+
+// ── Extended-URDF closure spec 로드 + loop-passive 계산 ─────────────────────
+// spanning-tree URDF 는 루프가 없어 analyzer 가 loop-passive 를 분류하지 못한다.
+// sidecar 의 계약은 "actuated_joints 외 모든 non-fixed movable 관절 = passive" 이므로
+// full model 의 movable 관절 집합에서 actuated_joints 를 뺀 나머지가 loop-passive 다
+// (fixed 관절은 이미 Pinocchio 모델에서 흡수되어 names 에 없으므로 자동 제외).
+void PinocchioModelBuilder::LoadClosureSpecAndComputePassiveLocks() {
+  if (config_.closure_yaml_path.empty()) {
+    return;
+  }
+  closure_spec_ = LoadClosureYaml(config_.closure_yaml_path);
+
+  const auto& actuated = closure_spec_->actuated_joints;
+  // index 0 은 universe (root) 관절 — movable 아님, 건너뛴다.
+  for (std::size_t jid = 1; jid < full_model_->names.size(); ++jid) {
+    const std::string& jname = full_model_->names[jid];
+    if (std::find(actuated.begin(), actuated.end(), jname) != actuated.end()) {
+      continue;
+    }
+    closure_passive_lock_names_.push_back(jname);
+  }
+
+  // locked-count 를 loud 하게 노출 — sidecar actuated_joints 가 불완전하면
+  // 컨트롤러 active DoF 가 조용히 바뀌므로 (risk/contract) 잠긴 수를 항상 로깅.
+  RCLCPP_INFO(logger(),
+              "Extended-URDF closure passive-lock: %zu joint 잠금 "
+              "(movable %zu − actuated %zu), sidecar='%s'",
+              closure_passive_lock_names_.size(), full_model_->names.size() - 1, actuated.size(),
+              config_.closure_yaml_path.c_str());
 }
 
 // ── 전체 모델 구축 ──────────────────────────────────────────────────────────
@@ -117,10 +164,17 @@ void PinocchioModelBuilder::BuildFullModel() {
 //   - yaml_passive_override == false (hint): passive_joints = analyzer.passive
 //   - yaml_passive_override == true  (override): passive_joints = config 목록만
 std::vector<std::string> PinocchioModelBuilder::CollectPassiveLockNames() const {
-  if (config_.yaml_passive_override) {
-    return config_.passive_joints;
+  std::vector<std::string> names =
+      config_.yaml_passive_override ? config_.passive_joints : analyzer_->GetPassiveJointNames();
+
+  // Extended-URDF loop-passive 를 합집합. spanning-tree analyzer 는 loop 이 없어
+  // 이 관절들을 분류하지 못하므로 sidecar 유래 목록을 여기서 더한다 (중복 제거).
+  for (const auto& pj : closure_passive_lock_names_) {
+    if (std::find(names.begin(), names.end(), pj) == names.end()) {
+      names.push_back(pj);
+    }
   }
-  return analyzer_->GetPassiveJointNames();
+  return names;
 }
 
 // ── 축소 모델 구축 ──────────────────────────────────────────────────────────
@@ -202,7 +256,38 @@ void PinocchioModelBuilder::BuildTreeModels() {
 // ── 폐쇄 체인 구속 등록 ────────────────────────────────────────────────────
 // 실제 RigidConstraintModel 생성은 constraint_builder 로 위임한다 (§4b joint-frame
 // placement 합성, frame-first/link+origin 경로 지원, legacy→new API 교체 격리점 §7).
+//
+// 두 소스:
+//   (A) Extended-URDF sidecar (closure_yaml_path 설정): 순수 spanning-tree URDF +
+//       별도 <name>.closure.yaml 로부터 통합 파이프라인(constraints + q_ref +
+//       actuated joints + 특이성 검사)을 full_model_ 위에서 실행. xacro 는 이미
+//       BuildFullModel 에서 전처리되었으므로 raw buildModel 대신 여기서 재사용.
+//   (B) legacy inline: config_.closed_chains 목록 → constraints 만.
 void PinocchioModelBuilder::RegisterClosedChainConstraints() {
+  // sidecar 는 LoadClosureSpecAndComputePassiveLocks() 에서 이미 파싱해 캐시했다
+  // (closure_yaml_path 비었으면 nullopt). 여기서는 재로드 없이 캐시를 재사용한다.
+  if (closure_spec_.has_value()) {
+    if (!config_.closed_chains.empty()) {
+      RCLCPP_WARN(logger(),
+                  "closure_yaml_path 와 inline closed_chains 가 동시 설정됨 — sidecar 를 "
+                  "사용하고 inline closed_chains (%zu개) 는 무시합니다",
+                  config_.closed_chains.size());
+    }
+    const ClosureSpec& spec = *closure_spec_;
+    ClosedChainData data = BuildClosedChainData(*full_model_, spec);
+    constraint_models_ = std::move(data.constraints);
+    closure_actuated_joint_ids_ = std::move(data.actuated_joint_ids);
+    closure_q_ref_ = std::move(data.q_ref);
+    closure_q_ref_converged_ = data.q_ref_converged;
+    closure_q_ref_singular_ = data.q_ref_singular;
+    RCLCPP_INFO(logger(),
+                "Extended-URDF closure 로드: '%s' (%zu constraint, %zu actuated joint, "
+                "q_ref converged=%d singular=%d)",
+                config_.closure_yaml_path.c_str(), constraint_models_.size(),
+                closure_actuated_joint_ids_.size(), static_cast<int>(closure_q_ref_converged_),
+                static_cast<int>(closure_q_ref_singular_));
+    return;
+  }
   if (config_.closed_chains.empty()) {
     return;
   }
@@ -281,6 +366,23 @@ const std::vector<pinocchio::RigidConstraintModel>& PinocchioModelBuilder::GetCo
   return constraint_models_;
 }
 
+const Eigen::VectorXd& PinocchioModelBuilder::GetClosureReferenceConfig() const noexcept {
+  return closure_q_ref_;
+}
+
+const std::vector<pinocchio::JointIndex>& PinocchioModelBuilder::GetClosureActuatedJointIds()
+    const noexcept {
+  return closure_actuated_joint_ids_;
+}
+
+bool PinocchioModelBuilder::IsClosureReferenceConverged() const noexcept {
+  return closure_q_ref_converged_;
+}
+
+bool PinocchioModelBuilder::IsClosureReferenceSingular() const noexcept {
+  return closure_q_ref_singular_;
+}
+
 std::vector<std::string> PinocchioModelBuilder::GetSubModelNames() const {
   std::vector<std::string> names;
   names.reserve(reduced_models_.size());
@@ -342,14 +444,15 @@ ModelConfig PinocchioModelBuilder::LoadModelConfig(std::string_view yaml_path) {
   YAML::Node root = YAML::LoadFile(std::string(yaml_path));
   ModelConfig cfg;
 
-  // urdf_path
+  // urdf_path — 상대 경로면 YAML 파일 기준으로 해석.
   if (root["urdf_path"]) {
-    cfg.urdf_path = root["urdf_path"].as<std::string>();
-    // 상대 경로면 YAML 파일 기준으로 해석
-    if (!cfg.urdf_path.empty() && cfg.urdf_path[0] != '/') {
-      std::filesystem::path yaml_dir = std::filesystem::path(std::string(yaml_path)).parent_path();
-      cfg.urdf_path = (yaml_dir / cfg.urdf_path).string();
-    }
+    cfg.urdf_path = ResolveRelativeToYaml(root["urdf_path"].as<std::string>(), yaml_path);
+  }
+
+  // closure_yaml_path (Extended-URDF sidecar). 상대 경로면 YAML 파일 기준 해석.
+  if (root["closure_yaml_path"]) {
+    cfg.closure_yaml_path =
+        ResolveRelativeToYaml(root["closure_yaml_path"].as<std::string>(), yaml_path);
   }
 
   // xacro_args
