@@ -77,9 +77,42 @@ void PinocchioModelBuilder::Build() {
   //     mimic / closed-chain / hint 기반 passive 분류는 Analyzer가 완료.
   //     reduced 모델 lock 대상은 analyzer_->GetPassiveJointNames() 사용.
   BuildFullModel();
+  // Extended-URDF sidecar 는 full 모델이 있어야 loop-passive 를 계산할 수 있고,
+  // 그 결과가 reduced/tree 서브모델 잠금에 필요하므로 BuildReducedModels() 전에 로드.
+  LoadClosureSpecAndComputePassiveLocks();
   BuildReducedModels();
   BuildTreeModels();
   RegisterClosedChainConstraints();
+}
+
+// ── Extended-URDF closure spec 로드 + loop-passive 계산 ─────────────────────
+// spanning-tree URDF 는 루프가 없어 analyzer 가 loop-passive 를 분류하지 못한다.
+// sidecar 의 계약은 "actuated_joints 외 모든 non-fixed movable 관절 = passive" 이므로
+// full model 의 movable 관절 집합에서 actuated_joints 를 뺀 나머지가 loop-passive 다
+// (fixed 관절은 이미 Pinocchio 모델에서 흡수되어 names 에 없으므로 자동 제외).
+void PinocchioModelBuilder::LoadClosureSpecAndComputePassiveLocks() {
+  if (config_.closure_yaml_path.empty()) {
+    return;
+  }
+  closure_spec_ = LoadClosureYaml(config_.closure_yaml_path);
+
+  const auto& actuated = closure_spec_->actuated_joints;
+  // index 0 은 universe (root) 관절 — movable 아님, 건너뛴다.
+  for (std::size_t jid = 1; jid < full_model_->names.size(); ++jid) {
+    const std::string& jname = full_model_->names[jid];
+    if (std::find(actuated.begin(), actuated.end(), jname) != actuated.end()) {
+      continue;
+    }
+    closure_passive_lock_names_.push_back(jname);
+  }
+
+  // locked-count 를 loud 하게 노출 — sidecar actuated_joints 가 불완전하면
+  // 컨트롤러 active DoF 가 조용히 바뀌므로 (risk/contract) 잠긴 수를 항상 로깅.
+  RCLCPP_INFO(logger(),
+              "Extended-URDF closure passive-lock: %zu joint 잠금 "
+              "(movable %zu − actuated %zu), sidecar='%s'",
+              closure_passive_lock_names_.size(), full_model_->names.size() - 1, actuated.size(),
+              config_.closure_yaml_path.c_str());
 }
 
 // ── 전체 모델 구축 ──────────────────────────────────────────────────────────
@@ -119,10 +152,17 @@ void PinocchioModelBuilder::BuildFullModel() {
 //   - yaml_passive_override == false (hint): passive_joints = analyzer.passive
 //   - yaml_passive_override == true  (override): passive_joints = config 목록만
 std::vector<std::string> PinocchioModelBuilder::CollectPassiveLockNames() const {
-  if (config_.yaml_passive_override) {
-    return config_.passive_joints;
+  std::vector<std::string> names =
+      config_.yaml_passive_override ? config_.passive_joints : analyzer_->GetPassiveJointNames();
+
+  // Extended-URDF loop-passive 를 합집합. spanning-tree analyzer 는 loop 이 없어
+  // 이 관절들을 분류하지 못하므로 sidecar 유래 목록을 여기서 더한다 (중복 제거).
+  for (const auto& pj : closure_passive_lock_names_) {
+    if (std::find(names.begin(), names.end(), pj) == names.end()) {
+      names.push_back(pj);
+    }
   }
-  return analyzer_->GetPassiveJointNames();
+  return names;
 }
 
 // ── 축소 모델 구축 ──────────────────────────────────────────────────────────
@@ -212,14 +252,16 @@ void PinocchioModelBuilder::BuildTreeModels() {
 //       BuildFullModel 에서 전처리되었으므로 raw buildModel 대신 여기서 재사용.
 //   (B) legacy inline: config_.closed_chains 목록 → constraints 만.
 void PinocchioModelBuilder::RegisterClosedChainConstraints() {
-  if (!config_.closure_yaml_path.empty()) {
+  // sidecar 는 LoadClosureSpecAndComputePassiveLocks() 에서 이미 파싱해 캐시했다
+  // (closure_yaml_path 비었으면 nullopt). 여기서는 재로드 없이 캐시를 재사용한다.
+  if (closure_spec_.has_value()) {
     if (!config_.closed_chains.empty()) {
       RCLCPP_WARN(logger(),
                   "closure_yaml_path 와 inline closed_chains 가 동시 설정됨 — sidecar 를 "
                   "사용하고 inline closed_chains (%zu개) 는 무시합니다",
                   config_.closed_chains.size());
     }
-    const ClosureSpec spec = LoadClosureYaml(config_.closure_yaml_path);
+    const ClosureSpec& spec = *closure_spec_;
     ClosedChainData data = BuildClosedChainData(*full_model_, spec);
     constraint_models_ = std::move(data.constraints);
     closure_actuated_joint_ids_ = std::move(data.actuated_joint_ids);

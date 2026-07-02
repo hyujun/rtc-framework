@@ -49,6 +49,48 @@ TEST(PinocchioBuilderClosure, ExtendedUrdfPopulatesClosure) {
   EXPECT_TRUE(builder.IsClosureReferenceSingular());
 }
 
+// ── #11: sidecar loop-passive 관절이 reduced sub-model 의 active DoF 에서 제외 ────────
+//    four_bar sidecar 는 joint_a 만 actuated 로 선언 → joint_ab/joint_c/joint_cd 는
+//    passive. branch-1 sub_model(base_link→c1) 은 체인 위에 joint_a(actuated) +
+//    joint_ab(loop-passive) 를 갖는다. spanning-tree analyzer 는 loop 을 못 보므로
+//    plain 빌드에선 joint_ab 가 active(nv=2), sidecar 빌드에선 잠겨 nv=1 로 감소.
+TEST(PinocchioBuilderClosure, LoopPassiveJointsLockedInReducedModel) {
+  auto make_cfg = [](bool with_closure) {
+    rub::ModelConfig cfg;
+    cfg.urdf_path = TestUrdfPath("four_bar_tree.urdf");
+    if (with_closure) {
+      cfg.closure_yaml_path = TestUrdfPath("four_bar.closure.yaml");
+    }
+    rub::SubModelConfig sm;
+    sm.name = "branch1";
+    sm.root_link = "base_link";
+    sm.tip_link = "c1";
+    cfg.sub_models.push_back(std::move(sm));
+    return cfg;
+  };
+
+  const rub::PinocchioModelBuilder plain(make_cfg(false));
+  const rub::PinocchioModelBuilder closed(make_cfg(true));
+
+  // Plain spanning-tree 빌드는 loop 을 모르므로 joint_ab 가 active 로 남는다.
+  const auto plain_reduced = plain.GetReducedModel("branch1");
+  ASSERT_NE(plain_reduced, nullptr);
+  EXPECT_EQ(plain_reduced->nv, 2);
+  EXPECT_EQ(plain.GetSubModelDefinition("branch1").joint_names.size(), 2u);
+
+  // sidecar 빌드는 movable−actuated 를 passive 로 잠그므로 joint_ab 가 빠져 nv=1.
+  const auto closed_reduced = closed.GetReducedModel("branch1");
+  ASSERT_NE(closed_reduced, nullptr);
+  EXPECT_EQ(closed_reduced->nv, 1);
+  const auto& def = closed.GetSubModelDefinition("branch1");
+  ASSERT_EQ(def.joint_names.size(), 1u);
+  EXPECT_EQ(def.joint_names.front(), "joint_a");
+
+  // reduced 모델에 남은 유일한 active 관절이 actuated joint_a 임을 직접 확인.
+  EXPECT_TRUE(closed_reduced->existJointName("joint_a"));
+  EXPECT_FALSE(closed_reduced->existJointName("joint_ab"));
+}
+
 // ── closure_yaml_path 미설정(plain URDF)이면 closure 결과가 비어 있고 model 은 정상 ──
 TEST(PinocchioBuilderClosure, PlainUrdfLeavesClosureEmpty) {
   rub::ModelConfig cfg;

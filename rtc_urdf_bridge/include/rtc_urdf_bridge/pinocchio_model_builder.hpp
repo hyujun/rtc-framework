@@ -1,6 +1,7 @@
 // ── PinocchioModelBuilder: YAML + URDF → Pinocchio 모델 구축 ────────────────
 #pragma once
 
+#include "rtc_urdf_bridge/closure_yaml_loader.hpp"
 #include "rtc_urdf_bridge/kinematic_chain_extractor.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 #include "rtc_urdf_bridge/urdf_analyzer.hpp"
@@ -16,6 +17,7 @@
 #pragma GCC diagnostic pop
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -117,9 +119,18 @@ class PinocchioModelBuilder {
   void BuildTreeModels();
   void RegisterClosedChainConstraints();
 
+  /// Extended-URDF sidecar 를 1회 로드해 closure_spec_ 에 캐시하고, loop-passive
+  /// 관절 이름 (= full model 의 movable 관절 − sidecar actuated_joints) 을
+  /// closure_passive_lock_names_ 에 계산한다. BuildFullModel() 직후·
+  /// BuildReducedModels() 전에 호출되어야 한다 (spanning-tree analyzer 는 loop 이
+  /// 없어 loop-passive 를 분류하지 못하므로 sidecar 가 유일한 출처).
+  /// closure_yaml_path 가 비어 있으면 no-op.
+  void LoadClosureSpecAndComputePassiveLocks();
+
   /// 축소 모델에서 잠금 대상이 될 passive 관절 이름 목록.
   ///   - yaml_passive_override == false: analyzer의 자동 분류 결과 사용
   ///   - yaml_passive_override == true : config_.passive_joints 그대로 사용
+  /// 두 경우 모두 closure_passive_lock_names_ (Extended-URDF loop-passive) 를 합집합.
   [[nodiscard]] std::vector<std::string> CollectPassiveLockNames() const;
 
   /// 잠금 관절의 기준 설정값 구성
@@ -145,6 +156,15 @@ class PinocchioModelBuilder {
 
   // 폐쇄 체인 구속
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;
+
+  // Extended-URDF sidecar spec 캐시 (closure_yaml_path 설정 시에만 값 보유).
+  // BuildFullModel() 후 1회 로드되어 BuildReducedModels()/BuildTreeModels() 의
+  // passive-lock 계산과 RegisterClosedChainConstraints() 의 constraint 생성이
+  // 이 단일 캐시를 공유한다 (중복 LoadClosureYaml 제거).
+  std::optional<ClosureSpec> closure_spec_;
+  // sidecar 가 passive 로 규정한 full-model movable 관절 (= movable − actuated).
+  // 모든 reduced/tree 서브모델에서 잠긴다. plain URDF 면 빈 목록.
+  std::vector<std::string> closure_passive_lock_names_;
 
   // Extended-URDF sidecar closure 결과 (closure_yaml_path 설정 시에만 채워짐)
   Eigen::VectorXd closure_q_ref_;

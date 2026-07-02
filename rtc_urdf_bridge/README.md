@@ -381,7 +381,18 @@ builder.IsClosureReferenceSingular();   // true 면 q_ref 를 operating config �
 ```
 
 integrated_bringup 은 system YAML `urdf:` 블록의 `extended: true` 로 이 경로를 켠다 (sidecar 는
-URDF 옆 `<stem>.closure.yaml`; `closure_path:` 로 명시 override 가능). §"Adding a New ..." 참조.
+URDF 옆 `<stem>.closure.yaml`; `closure_path:` 로 명시 override 가능). `extended: true` 인데 sidecar
+가 없으면 top-level `urdf.path` 경로든 devices-fallback 경로든 동일하게 loud `RCLCPP_ERROR` 를 내고
+(RT 모델이 loop constraint 를 잃으므로) bring-up 은 계속된다. §"Adding a New ..." 참조.
+
+> **RT 모델 passive-lock 계약 (필독).** `closure_yaml_path` 가 설정되면 `PinocchioModelBuilder` 는
+> **full model 의 movable 관절 중 `actuated_joints` 에 없는 모든 관절을 loop-passive 로 간주해
+> 모든 reduced/tree 서브모델에서 잠근다** (spanning-tree URDF 에는 loop 이 없어 analyzer 가 이를
+> 분류하지 못하므로 sidecar 가 유일한 출처다). 따라서 `actuation.actuated_joints` 는 그 URDF 의
+> **완전한 active 집합**이어야 한다 — arm + closed-chain hand 를 병합했다면 arm 관절도 반드시
+> 포함해야 하며, 빠진 관절은 조용히 잠겨 컨트롤러 DOF 가 바뀐다. 빌드 시
+> `"Extended-URDF closure passive-lock: N joint 잠금 (movable M − actuated K)"` 로그의 N 이
+> 예상 passive 수와 일치하는지 확인해 이 실수를 조기에 잡는다.
 
 계층 계약: YAML I/O·파싱·`buildModel`·constraint 생성·projection 은 **로드 타임**(예외
 허용). RT 경로는 `RtModelHandle::ComputeConstraintDynamics` 호출만 (사전 할당 재사용,
