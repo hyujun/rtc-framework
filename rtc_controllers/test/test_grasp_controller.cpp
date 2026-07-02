@@ -9,6 +9,14 @@
 
 using namespace rtc::grasp;
 
+namespace {
+// This fixture exercises the historical 3-identical-fingers × 3-DoF layout
+// (assm_v1). The controller itself is DoF-agnostic; RaggedFingerLayout below
+// covers the variable per-finger DoF path (thumb:4/index:3/middle:2/ring:1).
+constexpr int kNumFingers = 3;
+constexpr int kDoF = 3;
+}  // namespace
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test fixture with Kelvin-Voigt contact model
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -22,6 +30,7 @@ class GraspControllerTest : public ::testing::Test {
   void SetUp() override {
     // 3 identical fingers: open at 0, close at ~60 deg per joint
     for (auto& fc : finger_configs_) {
+      fc.dof = kDoF;
       fc.q_open = {0.0, 0.0, 0.0};
       fc.q_close = {0.524, 1.047, 0.785};
     }
@@ -63,9 +72,9 @@ class GraspControllerTest : public ::testing::Test {
   void RunUntilPhase(GraspPhase target_phase, int max_steps = 50000) {
     for (int i = 0; i < max_steps; ++i) {
       // Compute forces based on current finger s values
-      std::array<double, kNumGraspFingers> forces{};
+      std::array<double, kNumFingers> forces{};
       const auto& states = controller_.finger_states();
-      for (int f = 0; f < kNumGraspFingers; ++f) {
+      for (int f = 0; f < kNumFingers; ++f) {
         const auto idx = static_cast<std::size_t>(f);
         const double ds_dt = (states[idx].s - states[idx].s_prev) / kDt;
         forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
@@ -81,9 +90,9 @@ class GraspControllerTest : public ::testing::Test {
   // Run N steps with force feedback
   void RunSteps(int n) {
     for (int i = 0; i < n; ++i) {
-      std::array<double, kNumGraspFingers> forces{};
+      std::array<double, kNumFingers> forces{};
       const auto& states = controller_.finger_states();
-      for (int f = 0; f < kNumGraspFingers; ++f) {
+      for (int f = 0; f < kNumFingers; ++f) {
         const auto idx = static_cast<std::size_t>(f);
         const double ds_dt = (states[idx].s - states[idx].s_prev) / kDt;
         forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
@@ -92,7 +101,7 @@ class GraspControllerTest : public ::testing::Test {
     }
   }
 
-  std::array<FingerConfig, kNumGraspFingers> finger_configs_{};
+  std::array<FingerConfig, kNumFingers> finger_configs_{};
   GraspParams params_{};
   GraspController controller_;
   double contact_s_{0.3};  // object contact at s=0.3
@@ -121,7 +130,7 @@ TEST_F(GraspControllerTest, ApproachingDetectsContact) {
   EXPECT_EQ(controller_.phase(), GraspPhase::kContact);
 
   // Verify all fingers detected contact
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     EXPECT_TRUE(controller_.finger_states()[static_cast<std::size_t>(f)].contact_detected);
     EXPECT_NEAR(controller_.finger_states()[static_cast<std::size_t>(f)].s_at_contact, contact_s_,
                 0.05);  // within tolerance of approach speed * dt
@@ -159,7 +168,7 @@ TEST_F(GraspControllerTest, ReleasingToIdleOnComplete) {
   EXPECT_EQ(controller_.phase(), GraspPhase::kIdle);
 
   // All fingers should be reset
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     EXPECT_NEAR(controller_.finger_states()[static_cast<std::size_t>(f)].s, 0.0, 0.02);
   }
 }
@@ -181,7 +190,7 @@ TEST_F(GraspControllerTest, ApproachingTransitionsWithoutMiddleContact) {
 
   // thumb/index 는 contact_s_=0.3 에서 접촉, middle 은 영영 접촉 안 함.
   for (int i = 0; i < 50000; ++i) {
-    std::array<double, kNumGraspFingers> forces{};
+    std::array<double, kNumFingers> forces{};
     const auto& states = controller_.finger_states();
     for (int f = 0; f < 2; ++f) {  // thumb, index 만 force 생성
       const auto idx = static_cast<std::size_t>(f);
@@ -213,12 +222,12 @@ TEST_F(GraspControllerTest, GraspFailsWhenThumbCannotContact) {
 
   // thumb 만 unreachable, index/middle 은 정상 접촉 가능.
   for (int i = 0; i < 50000; ++i) {
-    std::array<double, kNumGraspFingers> forces{};
+    std::array<double, kNumFingers> forces{};
     const auto& states = controller_.finger_states();
     // thumb (0): 항상 0 (unreachable object)
     forces[0] = 0.0;
     // index (1), middle (2): 정상 접촉
-    for (int f = 1; f < kNumGraspFingers; ++f) {
+    for (int f = 1; f < kNumFingers; ++f) {
       const auto idx = static_cast<std::size_t>(f);
       const double ds_dt = (states[idx].s - states[idx].s_prev) / kDt;
       forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
@@ -242,7 +251,7 @@ TEST_F(GraspControllerTest, ForceConvergesToTarget) {
   ASSERT_EQ(controller_.phase(), GraspPhase::kHolding);
 
   // In Holding, forces should be near target
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     const auto& fs = controller_.finger_states()[static_cast<std::size_t>(f)];
     EXPECT_NEAR(fs.f_measured, params_.f_target, params_.settle_epsilon * 2)
         << "Finger " << f << " force not converged";
@@ -254,9 +263,9 @@ TEST_F(GraspControllerTest, OvershootWithinBounds) {
 
   double max_force_seen = 0.0;
   for (int i = 0; i < 100000; ++i) {
-    std::array<double, kNumGraspFingers> forces{};
+    std::array<double, kNumFingers> forces{};
     const auto& states = controller_.finger_states();
-    for (int f = 0; f < kNumGraspFingers; ++f) {
+    for (int f = 0; f < kNumFingers; ++f) {
       const auto idx = static_cast<std::size_t>(f);
       const double ds_dt = (states[idx].s - states[idx].s_prev) / kDt;
       forces[idx] = SimulateContactForce(states[idx].s, contact_s_, ds_dt);
@@ -292,7 +301,7 @@ TEST_F(GraspControllerTest, DeformationGuardClampsS) {
   RunSteps(5000);
 
   // s should not exceed s_at_contact + delta_s_max
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     const auto& fs = controller_.finger_states()[static_cast<std::size_t>(f)];
     EXPECT_LE(fs.s, fs.s_at_contact + params_.delta_s_max + 0.01)
         << "Finger " << f << " exceeded deformation limit";
@@ -312,7 +321,7 @@ TEST_F(GraspControllerTest, DeformationGuardFreezesIntegrator) {
 
   // At least one finger should have frozen integrator
   bool any_frozen = false;
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     if (controller_.finger_states()[static_cast<std::size_t>(f)].integrator_frozen) {
       any_frozen = true;
     }
@@ -331,7 +340,7 @@ TEST_F(GraspControllerTest, DeformationGuardProportionalDeceleration) {
   RunUntilPhase(GraspPhase::kForceControl, 50000);
   RunSteps(3000);
 
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     const auto& fs = controller_.finger_states()[static_cast<std::size_t>(f)];
     const double deformation = fs.s - fs.s_at_contact;
     // Should be at or near the limit, not wildly overshooting
@@ -376,7 +385,7 @@ TEST_F(GraspControllerTest, AnomalyDetectionRespectsMaxMultiplier) {
 
   // f_desired should not exceed f_target * f_max_multiplier
   const double max_allowed = params_.f_target * params_.f_max_multiplier;
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     EXPECT_LE(controller_.finger_states()[static_cast<std::size_t>(f)].f_desired,
               max_allowed + 0.01)
         << "Finger " << f << " f_desired exceeded max multiplier";
@@ -399,7 +408,7 @@ TEST_F(GraspControllerTest, LPFConvergesOnDCInput) {
   }
 
   // Filtered force should converge to DC value
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     EXPECT_NEAR(controller_.finger_states()[static_cast<std::size_t>(f)].f_measured, 1.5, 0.01)
         << "Finger " << f << " LPF did not converge on DC input";
   }
@@ -445,9 +454,9 @@ TEST_F(GraspControllerTest, JointCommandsAreInterpolated) {
       controller_.Update(std::span<const double, 3>(zero), kDt);  // s += approach_speed*dt
 
   const double expected_s = params_.approach_speed * kDt;
-  for (int f = 0; f < kNumGraspFingers; ++f) {
+  for (int f = 0; f < kNumFingers; ++f) {
     const auto idx = static_cast<std::size_t>(f);
-    for (int j = 0; j < kDoFPerFinger; ++j) {
+    for (int j = 0; j < kDoF; ++j) {
       const auto jidx = static_cast<std::size_t>(j);
       const double expected_q = (1.0 - expected_s) * finger_configs_[idx].q_open[jidx] +
                                 expected_s * finger_configs_[idx].q_close[jidx];
@@ -467,4 +476,76 @@ TEST_F(GraspControllerTest, ReleaseFromForceControl) {
 
   RunUntilPhase(GraspPhase::kIdle, 50000);
   EXPECT_EQ(controller_.phase(), GraspPhase::kIdle);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 7. Variable per-finger DoF (proto_1b: thumb:4 / index:3 / middle:2 / ring:1)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// The controller must handle fingers with *different* DoF counts. This exercises
+// Init(span), the ragged GraspJointCommands output, and per-finger interpolation.
+TEST(GraspControllerRaggedTest, HandlesHeterogeneousFingerDoF) {
+  constexpr double kDt = 0.002;
+  constexpr int kDofs[4] = {4, 3, 2, 1};  // thumb, index, middle, ring
+
+  std::array<FingerConfig, 4> configs{};
+  for (std::size_t f = 0; f < configs.size(); ++f) {
+    configs[f].dof = kDofs[f];
+    // q_open = 0, q_close[j] = 1.0 for the finger's active joints (rest 0).
+    for (int j = 0; j < kDofs[f]; ++j) {
+      configs[f].q_close[static_cast<std::size_t>(j)] = 1.0;
+    }
+  }
+
+  GraspParams params{};
+  params.approach_speed = 0.5;
+  params.control_rate_hz = 500.0;
+  params.lpf_cutoff_hz = 100.0;
+
+  GraspController controller;
+  controller.Init(std::span<const FingerConfig>(configs), params);
+
+  // finger_states() spans the configured finger count.
+  EXPECT_EQ(controller.finger_states().size(), 4u);
+
+  // Idle → Approaching, then one step advances s = approach_speed * dt.
+  controller.CommandGrasp();
+  std::array<double, 4> zero_force{0.0, 0.0, 0.0, 0.0};
+  (void)controller.Update(std::span<const double>(zero_force), kDt);  // Idle→Approaching
+  const auto out = controller.Update(std::span<const double>(zero_force), kDt);
+
+  ASSERT_EQ(out.num_fingers, 4);
+  const double expected_s = params.approach_speed * kDt;
+  for (std::size_t f = 0; f < 4; ++f) {
+    EXPECT_EQ(out.dof[f], kDofs[f]) << "finger " << f << " dof mismatch";
+    // Active joints interpolate to expected_s; joints beyond this finger's
+    // DoF must stay exactly zero even though the storage is kMaxDoFPerFinger.
+    for (int j = 0; j < kMaxDoFPerFinger; ++j) {
+      const double expected_q = (j < kDofs[f]) ? expected_s : 0.0;
+      EXPECT_NEAR(out.q[f][static_cast<std::size_t>(j)], expected_q, 1e-6)
+          << "finger " << f << " joint " << j;
+    }
+  }
+}
+
+// A short f_raw span (fewer entries than fingers) must not throw / read OOB —
+// missing entries are treated as zero force (RT-safe degradation).
+TEST(GraspControllerRaggedTest, ShortForceSpanIsZeroPadded) {
+  constexpr double kDt = 0.002;
+  std::array<FingerConfig, 4> configs{};
+  for (auto& c : configs) {
+    c.dof = 2;
+    c.q_close = {1.0, 1.0};
+  }
+  GraspParams params{};
+  params.control_rate_hz = 500.0;
+  params.lpf_cutoff_hz = 100.0;
+
+  GraspController controller;
+  controller.Init(std::span<const FingerConfig>(configs), params);
+  controller.CommandGrasp();
+
+  std::array<double, 2> short_force{0.0, 0.0};  // only 2 of 4 fingers
+  const auto out = controller.Update(std::span<const double>(short_force), kDt);
+  EXPECT_EQ(out.num_fingers, 4);  // no crash, all fingers still reported
 }

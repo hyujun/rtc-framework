@@ -345,17 +345,25 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | `pick_ready` | 픽업 대기 (테이블 위 물체 집기 직전) |
 | `elevated` | 높은 위치 (물체를 들어올린 상태) |
 
-손가락-관절 인덱스 매핑 (`kFingerJointIndices`):
+손가락-관절 인덱스 매핑 (`FingerJointIndices()` — joint-name 접두사 기반, 가변 DoF):
 
-| 이름 | 관절 | DoF | 인덱스 |
+finger→joint index 는 상수가 아니라 `/rtc_cm/hand/joint_states` 의 name 을
+`<key>_` 로 접두사 매칭해 런타임에 구성한다 (`BtRosBridge::GetFingerJointIndices(key)`).
+손가락별 DoF 가 달라도 (예: proto_1b thumb:4/index:3/middle:2/ring:1) joint 이름만
+맞으면 코드 변경 없이 동작한다. key 는 whole-finger(`thumb`) 또는 sub-group
+(`thumb_mcp`, `index_dip`) 모두 지원 — sub-group 은 `<finger>_<segment>_` 접두사로 매칭.
+
+assm_v1 hand (joint_states 순서 thumb:3/index:3/middle:3/ring:1) 예시:
+
+| key | 매칭되는 joint 이름 | DoF | 인덱스 |
 |------|------|-----|--------|
-| `thumb` | CMC abd/add, CMC flex/ext, MCP flex/ext | 3 | 0-2 |
-| `thumb_mcp` | MCP flex/ext | 1 | 2 |
-| `index` | MCP abd/add, MCP flex/ext, DIP flex/ext | 3 | 3-5 |
-| `index_dip` | DIP flex/ext | 1 | 5 |
-| `middle` | MCP abd/add, MCP flex/ext, DIP flex/ext | 3 | 6-8 |
-| `middle_dip` | DIP flex/ext | 1 | 8 |
-| `ring` | MCP flex/ext | 1 | 9 |
+| `thumb` | thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe | 3 | 0-2 |
+| `thumb_mcp` | thumb_mcp_fe | 1 | 2 |
+| `index` | index_mcp_aa, index_mcp_fe, index_dip_fe | 3 | 3-5 |
+| `index_dip` | index_dip_fe | 1 | 5 |
+| `middle` | middle_mcp_aa, middle_mcp_fe, middle_dip_fe | 3 | 6-8 |
+| `middle_dip` | middle_dip_fe | 1 | 8 |
+| `ring` | ring_mcp_fe | 1 | 9 |
 
 ## SetGains 노드 (ROS 2 parameter API)
 

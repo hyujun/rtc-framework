@@ -25,17 +25,31 @@ inline constexpr std::array<double, N> DegToRad(std::array<double, N> pose_deg) 
   return pose_deg;
 }
 
-// ── 손가락-관절 인덱스 매핑 ─────────────────────────────────────────────────
-// | Finger | Joints                                  | DoF | Index |
-// |--------|-----------------------------------------|-----|-------|
-// | Thumb  | CMC abd/add, CMC flex/ext, MCP flex/ext | 3   | 0–2   |
-// | Index  | MCP abd/add, MCP flex/ext, DIP flex/ext | 3   | 3–5   |
-// | Middle | MCP abd/add, MCP flex/ext, DIP flex/ext | 3   | 6–8   |
-// | Ring   | MCP flex/ext                            | 1   | 9     |
-inline const std::map<std::string, std::vector<int>> kFingerJointIndices = {
-    {"thumb", {0, 1, 2}},  {"thumb_mcp", {2}},  {"index", {3, 4, 5}}, {"index_dip", {5}},
-    {"middle", {6, 7, 8}}, {"middle_dip", {8}}, {"ring", {9}},
-};
+// ── 손가락-관절 인덱스 매핑 (joint-name 기반, 가변 DoF) ─────────────────────
+// per-finger DoF 를 상수로 박지 않는다. hand joint_states 의 name 을 접두사
+// 매칭해 finger→joint index 리스트를 구성하므로, 손가락별 DoF 가 달라도
+// (예: proto_1b thumb:4/index:3/middle:2/ring:1) URDF/joint 이름만으로 동작한다.
+//
+// key 규칙: `<key>_` 로 시작하는 joint 이름들의 인덱스를 joint_states 순서대로.
+//   "thumb"      → thumb_* 전부           (whole-finger group)
+//   "thumb_mcp"  → thumb_mcp_* 만          (sub-group; FlexExtendFinger 부분 flex)
+//   "index_dip"  → index_dip_* / "ring" → ring_* …
+// assm_v1 예시 (10-DoF hand joint_states 순서):
+//   thumb_cmc_aa(0) thumb_cmc_fe(1) thumb_mcp_fe(2) index_mcp_aa(3) index_mcp_fe(4)
+//   index_dip_fe(5) middle_mcp_aa(6) middle_mcp_fe(7) middle_dip_fe(8) ring_mcp_fe(9)
+// → "thumb"={0,1,2} "thumb_mcp"={2} "index"={3,4,5} "index_dip"={5}
+//   "middle"={6,7,8} "middle_dip"={8} "ring"={9}
+[[nodiscard]] inline std::vector<int> FingerJointIndices(
+    const std::vector<std::string>& joint_names, const std::string& key) {
+  std::vector<int> out;
+  const std::string prefix = key + "_";
+  for (int i = 0; i < static_cast<int>(joint_names.size()); ++i) {
+    if (joint_names[static_cast<std::size_t>(i)].rfind(prefix, 0) == 0) {
+      out.push_back(i);
+    }
+  }
+  return out;
+}
 
 // ── Hand 포즈 (10-DoF, 단위: deg → 자동 rad 변환) ──────────────────────────
 // Placeholder 값 — 실제 하드웨어 캘리브레이션 후 교체

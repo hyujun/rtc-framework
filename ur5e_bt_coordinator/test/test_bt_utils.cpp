@@ -151,17 +151,41 @@ TEST(TrajectoryDuration, CustomMargin) {
 
 // ── Hand pose config constants ────────────────────────────────────────────
 
-TEST(HandPoseConfig, FingerJointIndices) {
-  EXPECT_EQ(kFingerJointIndices.at("thumb").size(), 3u);
-  EXPECT_EQ(kFingerJointIndices.at("index").size(), 3u);
-  EXPECT_EQ(kFingerJointIndices.at("middle").size(), 3u);
-  EXPECT_EQ(kFingerJointIndices.at("ring").size(), 1u);
+// FingerJointIndices() derives finger→joint index groups from joint_states
+// names by prefix matching, so per-finger DoF is not hardcoded.
+TEST(HandPoseConfig, FingerJointIndicesAssmV1) {
+  // assm_v1 hand joint order (thumb:3 / index:3 / middle:3 / ring:1).
+  const std::vector<std::string> names = {
+      "thumb_cmc_aa", "thumb_cmc_fe",  "thumb_mcp_fe",  "index_mcp_aa",  "index_mcp_fe",
+      "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe", "ring_mcp_fe"};
 
-  // Verify index ranges
-  EXPECT_EQ(kFingerJointIndices.at("thumb")[0], 0);
-  EXPECT_EQ(kFingerJointIndices.at("index")[0], 3);
-  EXPECT_EQ(kFingerJointIndices.at("middle")[0], 6);
-  EXPECT_EQ(kFingerJointIndices.at("ring")[0], 9);
+  EXPECT_EQ(FingerJointIndices(names, "thumb"), (std::vector<int>{0, 1, 2}));
+  EXPECT_EQ(FingerJointIndices(names, "index"), (std::vector<int>{3, 4, 5}));
+  EXPECT_EQ(FingerJointIndices(names, "middle"), (std::vector<int>{6, 7, 8}));
+  EXPECT_EQ(FingerJointIndices(names, "ring"), (std::vector<int>{9}));
+
+  // Sub-groups (used by FlexExtendFinger partial flex) via `<finger>_<seg>` prefix.
+  EXPECT_EQ(FingerJointIndices(names, "thumb_mcp"), (std::vector<int>{2}));
+  EXPECT_EQ(FingerJointIndices(names, "index_dip"), (std::vector<int>{5}));
+  EXPECT_EQ(FingerJointIndices(names, "middle_dip"), (std::vector<int>{8}));
+
+  // Unknown finger / empty names → empty (caller throws).
+  EXPECT_TRUE(FingerJointIndices(names, "pinky").empty());
+  EXPECT_TRUE(FingerJointIndices({}, "thumb").empty());
+}
+
+// Variable per-finger DoF (proto_1b: thumb:4 / index:3 / middle:2 / ring:1).
+// Same helper, no code change — driven entirely by the joint names.
+TEST(HandPoseConfig, FingerJointIndicesProto1b) {
+  const std::vector<std::string> names = {
+      "thumb_cmc_aa", "thumb_cmc_fe", "thumb_mcp_aa",  "thumb_mcp_fe",  "index_mcp_aa",
+      "index_mcp_fe", "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe", "ring_mcp_fe"};
+
+  EXPECT_EQ(FingerJointIndices(names, "thumb"), (std::vector<int>{0, 1, 2, 3}));  // 4 DoF
+  EXPECT_EQ(FingerJointIndices(names, "index"), (std::vector<int>{4, 5, 6}));     // 3 DoF
+  EXPECT_EQ(FingerJointIndices(names, "middle"), (std::vector<int>{7, 8}));       // 2 DoF
+  EXPECT_EQ(FingerJointIndices(names, "ring"), (std::vector<int>{9}));            // 1 DoF
+  EXPECT_EQ(FingerJointIndices(names, "thumb_mcp"), (std::vector<int>{2, 3}));
 }
 
 TEST(HandPoseConfig, DefaultPosesExist) {

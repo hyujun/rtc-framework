@@ -141,8 +141,8 @@ inline void ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pos
                                   const std::vector<int>& target_indices) {
   const auto& home = bridge.GetHandPose("home");
   std::vector<double> cmd(home.begin(), home.end());
-  // thumb 관절 덮어쓰기
-  for (int idx : kFingerJointIndices.at("thumb")) {
+  // thumb 관절 덮어쓰기 (finger→index 는 joint_states name 기반 런타임 조회)
+  for (int idx : bridge.GetFingerJointIndices("thumb")) {
     cmd[static_cast<std::size_t>(idx)] = thumb_pose[static_cast<std::size_t>(idx)];
   }
   // target 손가락 관절 덮어쓰기

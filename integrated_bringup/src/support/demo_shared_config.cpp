@@ -5,11 +5,14 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/logging.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace integrated_bringup {
 
@@ -106,26 +109,42 @@ void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
       }
     }
 
-    const std::array<std::string, 3> names = {"thumb", "index", "middle"};
-    for (int i = 0; i < rtc::grasp::kNumGraspFingers; ++i) {
+    // Finger name order. Defaults to the assm_v1 3-finger set; override via
+    // force_pi_grasp.fingers.finger_names to support other hands (e.g. proto_1b
+    // which adds "ring"). Each finger's DoF is inferred from its posture length,
+    // so heterogeneous per-finger DoF (thumb:4/index:3/middle:2) are supported.
+    std::vector<std::string> names = {"thumb", "index", "middle"};
+    if (fingers_node["finger_names"] && fingers_node["finger_names"].IsSequence()) {
+      names.clear();
+      for (const auto& n : fingers_node["finger_names"]) {
+        names.push_back(n.as<std::string>());
+      }
+    }
+
+    const int n_fingers =
+        std::min<int>(static_cast<int>(names.size()), rtc::grasp::kMaxGraspFingers);
+    for (int i = 0; i < n_fingers; ++i) {
       const auto fn = fingers_node[names[static_cast<std::size_t>(i)]];
       if (!fn) {
         continue;
       }
+      auto& fc = cfg.force_pi_fingers[static_cast<std::size_t>(i)];
+      int dof = 0;
       if (fn["q_open"]) {
         const auto seq = fn["q_open"];
-        for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
-          cfg.force_pi_fingers[static_cast<std::size_t>(i)].q_open[static_cast<std::size_t>(j)] =
-              seq[j].as<double>() * angle_scale;
+        for (int j = 0; j < rtc::grasp::kMaxDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
+          fc.q_open[static_cast<std::size_t>(j)] = seq[j].as<double>() * angle_scale;
         }
+        dof = std::max(dof, std::min(static_cast<int>(seq.size()), rtc::grasp::kMaxDoFPerFinger));
       }
       if (fn["q_close"]) {
         const auto seq = fn["q_close"];
-        for (int j = 0; j < rtc::grasp::kDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
-          cfg.force_pi_fingers[static_cast<std::size_t>(i)].q_close[static_cast<std::size_t>(j)] =
-              seq[j].as<double>() * angle_scale;
+        for (int j = 0; j < rtc::grasp::kMaxDoFPerFinger && j < static_cast<int>(seq.size()); ++j) {
+          fc.q_close[static_cast<std::size_t>(j)] = seq[j].as<double>() * angle_scale;
         }
+        dof = std::max(dof, std::min(static_cast<int>(seq.size()), rtc::grasp::kMaxDoFPerFinger));
       }
+      fc.dof = dof;
     }
   }
 }
@@ -156,25 +175,46 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
     const auto seq = node["hand_finger_joint_map"];
     const std::size_t n_fingers =
         std::min<std::size_t>(seq.size(), cfg.hand_finger_joint_map.size());
+    cfg.num_grasp_fingers = static_cast<int>(n_fingers);
     for (std::size_t f = 0; f < n_fingers; ++f) {
       if (!seq[f].IsSequence()) {
+        cfg.finger_dof[f] = 0;
         continue;
       }
       const std::size_t n_joints =
           std::min<std::size_t>(seq[f].size(), cfg.hand_finger_joint_map[f].size());
+      cfg.finger_dof[f] = static_cast<int>(n_joints);
       for (std::size_t j = 0; j < n_joints; ++j) {
         cfg.hand_finger_joint_map[f][j] = seq[f][j].as<int>();
       }
     }
   }
-  if (node["hand_idx_thumb_cmc_fe"]) {
-    cfg.hand_idx_thumb_cmc_fe = node["hand_idx_thumb_cmc_fe"].as<int>();
-  }
-  if (node["hand_idx_index_mcp_fe"]) {
-    cfg.hand_idx_index_mcp_fe = node["hand_idx_index_mcp_fe"].as<int>();
-  }
-  if (node["hand_idx_middle_mcp_fe"]) {
-    cfg.hand_idx_middle_mcp_fe = node["hand_idx_middle_mcp_fe"].as<int>();
+
+  // Release-gate: preferred `hand_release_gate` list of {joint_index, loosen_sign}.
+  if (node["hand_release_gate"] && node["hand_release_gate"].IsSequence()) {
+    const auto seq = node["hand_release_gate"];
+    const std::size_t n = std::min<std::size_t>(seq.size(), cfg.hand_release_gate.size());
+    cfg.num_release_gates = static_cast<int>(n);
+    for (std::size_t f = 0; f < n; ++f) {
+      const auto& g = seq[f];
+      if (g["joint_index"]) {
+        cfg.hand_release_gate[f].joint_index = g["joint_index"].as<int>();
+      }
+      if (g["loosen_sign"]) {
+        cfg.hand_release_gate[f].loosen_sign = (g["loosen_sign"].as<int>() >= 0) ? +1 : -1;
+      }
+    }
+  } else {
+    // Legacy fallback: the three named MCP_FE scalars (assm_v1 3-finger hand).
+    if (node["hand_idx_thumb_cmc_fe"]) {
+      cfg.hand_release_gate[0] = {node["hand_idx_thumb_cmc_fe"].as<int>(), +1};
+    }
+    if (node["hand_idx_index_mcp_fe"]) {
+      cfg.hand_release_gate[1] = {node["hand_idx_index_mcp_fe"].as<int>(), -1};
+    }
+    if (node["hand_idx_middle_mcp_fe"]) {
+      cfg.hand_release_gate[2] = {node["hand_idx_middle_mcp_fe"].as<int>(), -1};
+    }
   }
 
   if (node["force_pi_grasp"]) {
@@ -248,7 +288,10 @@ void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
   gp.control_rate_hz = control_rate_hz;
 
   grasp_controller = std::make_unique<rtc::grasp::GraspController>();
-  grasp_controller->Init(cfg.force_pi_fingers, gp);
+  const auto n =
+      static_cast<std::size_t>(std::clamp(cfg.num_grasp_fingers, 0, rtc::grasp::kMaxGraspFingers));
+  grasp_controller->Init(std::span<const rtc::grasp::FingerConfig>(cfg.force_pi_fingers.data(), n),
+                         gp);
 }
 
 }  // namespace integrated_bringup

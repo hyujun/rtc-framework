@@ -3,6 +3,7 @@
 #include "rtc_base/utils/clamp_commands.hpp"
 
 #include <algorithm>
+#include <span>
 #include <cmath>
 
 #pragma GCC diagnostic push
@@ -298,15 +299,15 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
     // freeze)
     if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
-      // Build force input: 3 fingers의 force magnitude
-      std::array<double, rtc::grasp::kNumGraspFingers> f_raw{};
-      for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
+      // Build force input: one force magnitude per grasp finger.
+      std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
+      for (int f = 0; f < num_grasp_fingers_; ++f) {
         f_raw[static_cast<std::size_t>(f)] =
             static_cast<double>(grasp_state_.force_magnitude[static_cast<std::size_t>(f)]);
       }
 
       const auto commands = grasp_controller_->Update(
-          std::span<const double, rtc::grasp::kNumGraspFingers>(f_raw), dt);
+          std::span<const double>(f_raw.data(), static_cast<std::size_t>(num_grasp_fingers_)), dt);
 
       // Phase-transition log: rare event (gated by phase change), but still
       // throttled as a defensive RT-safety net in case the FSM oscillates.
@@ -319,9 +320,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       }
 
       if (grasp_controller_->phase() != rtc::grasp::GraspPhase::kIdle) {
-        // Force PI 활성: fingers 0-2 (joints 0-8) 덮어쓰기
-        for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
-          for (int j = 0; j < rtc::grasp::kDoFPerFinger; ++j) {
+        // Force PI 활성: 매핑된 finger joint 들만 덮어쓰기; 나머지 hand joint
+        // (예: ring)은 trajectory 출력 그대로 유지.
+        for (int f = 0; f < commands.num_fingers; ++f) {
+          for (int j = 0; j < commands.dof[static_cast<std::size_t>(f)]; ++j) {
             const auto mi = static_cast<std::size_t>(
                 finger_joint_map_[static_cast<std::size_t>(f)][static_cast<std::size_t>(j)]);
             hand_computed_.positions[mi] =
@@ -329,7 +331,6 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
             hand_computed_.velocities[mi] = 0.0;
           }
         }
-        // joint 9 (ring)는 trajectory 출력 그대로 유지
       }
     } else {
       // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
@@ -337,50 +338,45 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
       //
       // Release-phase gate: 사용자가 손을 여는 방향으로 goal을 내린 경우에는
       // 접촉 잔존 힘이 있더라도 freeze 를 skip 해야 손이 열린다.
-      //   - thumb_cmc_fe: 각도 증가 = loosening → target > actual 이면 release
-      //   - index_mcp_fe: 각도 감소 = loosening → target < actual 이면 release
-      //   - middle_mcp_fe: 각도 감소 = loosening → target < actual 이면 release
-      // 세 조건이 모두 성립할 때만 "release 의도" 로 판단.
+      // per-finger gate: release_gate_sign_[f] 방향으로 target-actual 이 움직이면
+      // 해당 finger 는 이완 중. 모든 gate finger 가 이완 방향일 때만 "release 의도".
+      //   sign > 0: 각도 증가 = loosening (e.g. thumb CMC_FE) → target > actual
+      //   sign < 0: 각도 감소 = loosening (e.g. index/middle MCP_FE) → target < actual
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto& dev1 = state.devices[1];
 
-        const double d_thumb = current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] -
-                               dev1.positions[hand_idx_thumb_cmc_fe_];
-        const double d_index = current_target_slot_.targets[1][hand_idx_index_mcp_fe_] -
-                               dev1.positions[hand_idx_index_mcp_fe_];
-        const double d_middle = current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] -
-                                dev1.positions[hand_idx_middle_mcp_fe_];
-
-        const bool thumb_releasing = d_thumb > gains.contact_stop_release_eps;
-        const bool index_releasing = d_index < -gains.contact_stop_release_eps;
-        const bool middle_releasing = d_middle < -gains.contact_stop_release_eps;
-        const bool release_phase = thumb_releasing && index_releasing && middle_releasing;
+        // First 3 gate errors are surfaced in the diagnostic log (padded with 0).
+        std::array<double, 3> gate_err{};
+        bool release_phase = num_release_gates_ > 0;
+        for (int f = 0; f < num_release_gates_; ++f) {
+          const auto gi = release_gate_idx_[static_cast<std::size_t>(f)];
+          const double d = current_target_slot_.targets[1][gi] - dev1.positions[gi];
+          const bool releasing = (release_gate_sign_[static_cast<std::size_t>(f)] >= 0)
+                                     ? (d > gains.contact_stop_release_eps)
+                                     : (d < -gains.contact_stop_release_eps);
+          release_phase = release_phase && releasing;
+          if (f < 3) {
+            gate_err[static_cast<std::size_t>(f)] = d;
+          }
+        }
 
         if (release_phase) {
           RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
-                               "[contact_stop] SKIP (release) dthumb_fe=%+.3f "
-                               "dindex_fe=%+.3f dmid_fe=%+.3f",
-                               d_thumb, d_index, d_middle);
+                               "[contact_stop] SKIP (release) dgate=[%+.3f,%+.3f,%+.3f]",
+                               gate_err[0], gate_err[1], gate_err[2]);
         } else if (active_count > 0 && max_force > force_thresh) {
           for (int i = 0; i < hand_dof_; ++i) {
             const auto idx = static_cast<std::size_t>(i);
             hand_computed_.positions[idx] = dev1.positions[idx];
             hand_computed_.velocities[idx] = 0.0;
           }
-          // Errors (target - actual) encode both the actual position and the
-          // overshoot beyond target in a single number each, so 5 args are
-          // enough to diagnose contact_stop engagement.
-          const double err_thumb = current_target_slot_.targets[1][hand_idx_thumb_cmc_fe_] -
-                                   dev1.positions[hand_idx_thumb_cmc_fe_];
-          const double err_index = current_target_slot_.targets[1][hand_idx_index_mcp_fe_] -
-                                   dev1.positions[hand_idx_index_mcp_fe_];
-          const double err_middle = current_target_slot_.targets[1][hand_idx_middle_mcp_fe_] -
-                                    dev1.positions[hand_idx_middle_mcp_fe_];
+          // gate errors (target - actual) encode both the actual position and
+          // the overshoot beyond target, enough to diagnose contact_stop engage.
           RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                                "[contact_stop] FREEZE active=%d fmax=%.2fN "
-                               "err=[%+.3f,%+.3f,%+.3f]",
-                               active_count, static_cast<double>(max_force), err_thumb, err_index,
-                               err_middle);
+                               "dgate=[%+.3f,%+.3f,%+.3f]",
+                               active_count, static_cast<double>(max_force), gate_err[0],
+                               gate_err[1], gate_err[2]);
         }
       }
     }
@@ -509,9 +505,9 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
   if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
-    const auto& fs = grasp_controller_->finger_states();
-    for (int f = 0; f < rtc::grasp::kNumGraspFingers; ++f) {
-      const auto idx = static_cast<std::size_t>(f);
+    const auto fs = grasp_controller_->finger_states();
+    const std::size_t n = std::min(fs.size(), grasp_state_.finger_s.size());
+    for (std::size_t idx = 0; idx < n; ++idx) {
       grasp_state_.finger_s[idx] = static_cast<float>(fs[idx].s);
       grasp_state_.finger_filtered_force[idx] = static_cast<float>(fs[idx].f_measured);
       grasp_state_.finger_force_error[idx] =

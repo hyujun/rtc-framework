@@ -55,6 +55,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node
         {
           std::lock_guard lock(state_mutex_);
           hand_joint_positions_.assign(msg->position.begin(), msg->position.end());
+          hand_joint_names_.assign(msg->name.begin(), msg->name.end());
         }
         {
           std::lock_guard lock(health_mutex_);
@@ -187,6 +188,11 @@ std::vector<double> BtRosBridge::GetArmJointPositions() const {
 std::vector<double> BtRosBridge::GetHandJointPositions() const {
   std::lock_guard lock(state_mutex_);
   return hand_joint_positions_;
+}
+
+std::vector<int> BtRosBridge::GetFingerJointIndices(const std::string& key) const {
+  std::lock_guard lock(state_mutex_);
+  return FingerJointIndices(hand_joint_names_, key);
 }
 
 CachedGraspState BtRosBridge::GetGraspState() const {
