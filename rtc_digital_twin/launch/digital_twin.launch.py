@@ -43,6 +43,26 @@ def _load_urdf(path: str) -> str:
     return parser.urdf_xml
 
 
+def _load_node_params(config_file: str, node_name: str) -> dict:
+    """Read ros__parameters from a config YAML, merging the ``/**`` wildcard
+    block with a node-scoped block (node-scoped keys win, matching ROS 2
+    parameter resolution). Reading only ``/**`` would silently drop overrides a
+    bringup YAML scopes under the node name — e.g. a node-scoped ``closure_path``
+    would yield ``''`` and disable closure mode without warning.
+    """
+    import yaml
+
+    with open(config_file) as f:
+        cfg = yaml.safe_load(f) or {}
+
+    def _params(key: str) -> dict:
+        return (cfg.get(key) or {}).get("ros__parameters", {}) or {}
+
+    merged = dict(_params("/**"))
+    merged.update(_params(node_name))
+    return merged
+
+
 def launch_setup(context, *args, **kwargs):
     # ── Resolve robot description ─────────────────────────────────────────
     desc_file = LaunchConfiguration("robot_description_file").perform(context)
@@ -69,11 +89,7 @@ def launch_setup(context, *args, **kwargs):
                 get_package_share_directory("rtc_digital_twin"), "config", "digital_twin.yaml"
             )
 
-        import yaml
-
-        with open(config_file) as f:
-            cfg = yaml.safe_load(f)
-        params = cfg.get("/**", {}).get("ros__parameters", {})
+        params = _load_node_params(config_file, "digital_twin_node")
 
         desc_file = params.get("robot_description_file", "")
         desc_pkg = params.get("robot_description_package", "")
@@ -121,12 +137,8 @@ def launch_setup(context, *args, **kwargs):
     # Coupling is topic-only (no build-time dep) → ARCH-2 preserved.
     closure_path = LaunchConfiguration("closure_path").perform(context)
     if not closure_path:
-        # Fallback to YAML config key
-        import yaml as _cyaml
-
-        with open(config_file) as _cf:
-            _ccfg = _cyaml.safe_load(_cf)
-        closure_path = _ccfg.get("/**", {}).get("ros__parameters", {}).get("closure_path", "")
+        # Fallback to YAML config key (honours a node-scoped override, not just /**).
+        closure_path = _load_node_params(config_file, "digital_twin_node").get("closure_path", "")
 
     if closure_path and not os.path.isabs(closure_path):
         # pkg-share relative (to robot_description_package, per ARCH-1 bringup)
