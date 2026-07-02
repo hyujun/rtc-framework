@@ -410,7 +410,13 @@ tree_models:
     root_link: "root_link_name"
     tip_links: ["tip_1", "tip_2", ...]
 
-# 폐쇄 체인 구속
+# Extended-URDF closure sidecar (<name>.closure.yaml) 경로.
+# 설정 시 순수 spanning-tree URDF + 이 sidecar 로부터 loop constraints + q_ref +
+# actuated joints 를 로드한다 (아래 inline closed_chains 대신 사용; 둘 다 설정 시 sidecar 우선).
+# 상대 경로는 이 config YAML 파일 위치 기준으로 해석된다.
+closure_yaml_path: "path/to/robot.closure.yaml"
+
+# 폐쇄 체인 구속 (inline; closure_yaml_path 미설정 시)
 closed_chains:
   - name: "constraint_name"
     link_a: "link_name_a"

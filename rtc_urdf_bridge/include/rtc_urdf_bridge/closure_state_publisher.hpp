@@ -43,9 +43,6 @@ class ClosureStatePublisher : public rclcpp::Node {
   explicit ClosureStatePublisher(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
  private:
-  /// closure model 빌드 + q_full_/캐시 초기화. 실패 시 std::runtime_error 전파.
-  void BuildModel();
-
   /// 입력 actuated JointState 콜백: actuated 슬롯 갱신 → passive 사영 → publish.
   void OnJointState(const sensor_msgs::msg::JointState& msg);
 
@@ -61,7 +58,8 @@ class ClosureStatePublisher : public rclcpp::Node {
   // loop-consistent full configuration (프레임 간 유지 = warm-start seed / hold 값).
   Eigen::VectorXd q_full_;
 
-  // 입력 joint name → q index (nq==1 관절만). actuated 슬롯 갱신용.
+  // 입력 joint name → q index (actuated nq==1 관절만). actuated 슬롯 갱신용 —
+  // passive loop 관절은 제외해 warm-start seed 를 보존한다.
   std::unordered_map<std::string, int> name_to_q_idx_;
   // 출력 관절 이름·q index (전체 model 의 nq==1 관절, universe 제외).
   std::vector<std::string> output_names_;

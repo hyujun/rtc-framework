@@ -84,7 +84,8 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
                 "직전 해를 hold 합니다 (NaN 방지).");
   }
 
-  // ── 입력/출력 관절 매핑 캐시 (universe(0) 제외, nq==1 관절만) ─────────────────
+  // ── 출력 관절 캐시: 전체 model 의 nq==1 관절 (universe(0) 제외) ──────────────
+  //    q_full_ 전체를 JointState 로 publish 하므로 passive loop 관절도 포함한다.
   output_names_.reserve(static_cast<std::size_t>(model_.njoints - 1));
   output_q_idx_.reserve(static_cast<std::size_t>(model_.njoints - 1));
   for (int jid = 1; jid < model_.njoints; ++jid) {
@@ -92,11 +93,24 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
     if (model_.nqs[jidx] != 1) {
       continue;  // floating/multi-DoF root 등은 스칼라 JointState 로 표현 불가 → skip
     }
-    const std::string& name = model_.names[jidx];
-    const int q_idx = model_.idx_qs[jidx];
-    output_names_.push_back(name);
-    output_q_idx_.push_back(q_idx);
-    name_to_q_idx_.emplace(name, q_idx);
+    output_names_.push_back(model_.names[jidx]);
+    output_q_idx_.push_back(model_.idx_qs[jidx]);
+  }
+
+  // ── 입력 seed 맵: actuated 관절만 (measured actuated q 로 덮어쓸 슬롯) ───────────
+  //    passive loop 관절은 warm-start seed(직전 loop-consistent 해)를 보존해야 하므로
+  //    입력 맵에서 제외한다 — 입력 스트림이 passive 이름을 실어 보내도(예: 초기
+  //    _publish_display 가 전체 관절을 0 으로 발행) seed 를 파괴하지 않는다.
+  name_to_q_idx_.reserve(actuated_joint_ids_.size());
+  for (const auto jid : actuated_joint_ids_) {
+    if (jid == 0 || jid >= static_cast<pinocchio::JointIndex>(model_.njoints)) {
+      continue;  // universe(0)/invalid — skip
+    }
+    const auto jidx = static_cast<std::size_t>(jid);
+    if (model_.nqs[jidx] != 1) {
+      continue;  // 스칼라 JointState 로 표현 가능한 actuated 관절만
+    }
+    name_to_q_idx_.emplace(model_.names[jidx], model_.idx_qs[jidx]);
   }
 
   // ── pub/sub ─────────────────────────────────────────────────────────────────
