@@ -43,6 +43,21 @@ struct ProjectionResult {
     const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_init,
     const ProjectionOptions& opts = {});
 
+/// @brief actuated joint 을 **고정**하고 passive DoF 만 사영해 φ(q)=0 을 만족시킨다.
+///   측정된 actuated q (q_init 의 해당 슬롯) 를 그대로 두고, passive 열만 갱신한다.
+///     dv_pass = −Jc_passᵀ (Jc_pass Jc_passᵀ + λ²I)⁻¹ φ(q); actuated tangent = 0;
+///     q ← integrate(model, q, dv). → integrate(0) 이므로 actuated q 는 정확히 불변.
+///   @param actuated_joint_ids 고정할 joint (velocity 열은 idx_vs..+nvs 로 마스킹).
+///   @param q_init actuated 슬롯 = 측정값, passive 슬롯 = warm-start seed (직전 프레임 해).
+///   내부 loop 구속의 Jc 는 root/base 열이 0 이므로 floating base 도 안전(base 미이동).
+///   Extended-URDF 폐쇄 체인 시각화(actuated 스트림 → loop-consistent full q)용.
+///   수렴 실패 시 converged=false (마지막 q 유지 — 소비자는 직전 해 hold 권장). **RT 밖에서만.**
+[[nodiscard]] ProjectionResult ProjectPassiveToConstraint(
+    const pinocchio::Model& model, pinocchio::Data& data,
+    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_init,
+    const std::vector<pinocchio::JointIndex>& actuated_joint_ids,
+    const ProjectionOptions& opts = {});
+
 /// @brief velocity-level projection: v 를 Jc v = 0 을 만족하는 가장 가까운 벡터로 사영.
 ///   v_proj = v − Jcᵀ (Jc Jcᵀ + λ²I)⁻¹ Jc v. **RT 밖에서만 호출.**
 [[nodiscard]] Eigen::VectorXd ProjectVelocity(

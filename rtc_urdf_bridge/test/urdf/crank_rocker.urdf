@@ -1,0 +1,106 @@
+<?xml version="1.0"?>
+<!-- crank_rocker.urdf — 평면 Grashof crank-rocker 4-bar (Extended-URDF 방식).
+     four_bar_tree.urdf 와 달리 neutral 이 특이 조립형상이 아니라, crank 각도의
+     유한 구간에서 loop 가 매끄럽게 닫히는 **비특이 1-DoF 기구**다. streaming
+     passive projection(ProjectPassiveToConstraint) 검증용 — crank(actuated) 를
+     고정하면 coupler/rocker(passive) 가 유일하게 결정되고 local Newton 으로 도달.
+
+     기하 (모두 z축 회전, 평면 xy):
+       ground A=[0,0,0], D=[0.4,0,0].  crank L1=0.15, coupler L2=0.35, rocker L3=0.30.
+       Grashof: s+l = 0.15+0.40 = 0.55 ≤ p+q = 0.35+0.30 = 0.65,  최단(crank)=ground
+       인접 → crank-rocker (crank 완전 회전).
+
+     spanning-tree (loop 는 coupler-rocker 핀에서 절단, closure 는 crank_rocker.closure.yaml):
+       base ─j_crank(z@A)─▶ crank ─j_coupler(z@[0.15,0,0])─▶ coupler ─c1_mount(fix@[0.35,0,0])─▶ c1
+       base ─j_rocker(z@D=[0.4,0,0])─▶ rocker ─c2_mount(fix@[0.30,0,0])─▶ c2
+     closure: c1 == c2 (contact_3d; 평면이라 world-z row 는 항상 0 → 자명 만족, in-plane
+     2 성분만 유효 구속).  neutral(q=0): c1=[0.5,0,0], c2=[0.7,0,0] → 미조립 → q_ref
+     projection 이 조립 형상을 찾는다.
+
+     [주의] 이 fixture 는 "닫히는" 케이스 전용. 특이-조립/무NaN-hold 검증은
+     four_bar_tree.urdf(대칭 특이) 를 쓴다. -->
+<robot name="crank_rocker">
+
+  <link name="base_link">
+    <inertial>
+      <mass value="10.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/>
+    </inertial>
+  </link>
+
+  <link name="crank_link">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.075 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <link name="coupler_link">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.175 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <link name="rocker_link">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <!-- closure frame link (질량 미소 — 순수 frame 용도) -->
+  <link name="c1">
+    <inertial>
+      <mass value="1e-4"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+
+  <link name="c2">
+    <inertial>
+      <mass value="1e-4"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </link>
+
+  <!-- ── Branch 1: base → crank → coupler → c1 ─────────────────────────────── -->
+  <joint name="j_crank" type="revolute">
+    <parent link="base_link"/><child link="crank_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1416" upper="3.1416" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="j_coupler" type="revolute">
+    <parent link="crank_link"/><child link="coupler_link"/>
+    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1416" upper="3.1416" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="c1_mount" type="fixed">
+    <parent link="coupler_link"/><child link="c1"/>
+    <origin xyz="0.35 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ── Branch 2: base → rocker → c2 ──────────────────────────────────────── -->
+  <joint name="j_rocker" type="revolute">
+    <parent link="base_link"/><child link="rocker_link"/>
+    <origin xyz="0.4 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1416" upper="3.1416" effort="50" velocity="3"/>
+  </joint>
+
+  <joint name="c2_mount" type="fixed">
+    <parent link="rocker_link"/><child link="c2"/>
+    <origin xyz="0.30 0 0" rpy="0 0 0"/>
+  </joint>
+
+</robot>

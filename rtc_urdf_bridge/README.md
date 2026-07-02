@@ -70,6 +70,7 @@ rtc_urdf_bridge/
     ├── test_closure_yaml_loader.cpp    # sidecar 파서
     ├── test_constraint_builder.cpp     # endpoint transform / builder
     ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
+    ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
     └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF
 ```
@@ -354,7 +355,9 @@ joint_substitutions: []
 auto ccm = rtc_urdf_bridge::BuildClosedChainModelFromExtendedUrdf(urdf_path, closure_yaml_path);
 // 검증/사영 (로드 타임 전용):
 //   loop_verification.hpp — ComputeClosureErrors / AnalyzeConstraintJacobian (rank·Delassus)
-//   loop_projection.hpp   — ProjectToConstraint (q_ref) / ProjectVelocity
+//   loop_projection.hpp   — ProjectToConstraint (q_ref, 전체 q 사영) / ProjectVelocity
+//                           ProjectPassiveToConstraint (actuated 고정·passive 만 사영;
+//                           actuated 스트림 → loop-consistent full q 재구성, 시각화용)
 ```
 
 **PinocchioModelBuilder 경로 (bring-up SSoT).** raw URDF 뿐 아니라 xacro 도 소비하는
