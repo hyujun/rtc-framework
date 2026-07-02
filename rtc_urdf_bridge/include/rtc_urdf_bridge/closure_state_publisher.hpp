@@ -58,12 +58,20 @@ class ClosureStatePublisher : public rclcpp::Node {
   // loop-consistent full configuration (프레임 간 유지 = warm-start seed / hold 값).
   Eigen::VectorXd q_full_;
 
-  // 입력 joint name → q index (actuated nq==1 관절만). actuated 슬롯 갱신용 —
+  // 스칼라 JointState ↔ q 벡터 슬롯. continuous(revolute-unbounded) 관절은
+  // pinocchio 상 nq==2 (q=(cos θ, sin θ), nv==1) 이므로 각도 ↔ (cos,sin) 변환이
+  // 필요하다. nv==1(단일 DoF)이면 스칼라 position 하나로 표현 가능.
+  struct JointSlot {
+    int q_idx;           // q 벡터 시작 인덱스 (idx_qs)
+    bool is_continuous;  // true → nq==2, position=atan2(q[q_idx+1], q[q_idx])
+  };
+
+  // 입력 joint name → 슬롯 (actuated 단일-DoF 관절만). actuated 슬롯 갱신용 —
   // passive loop 관절은 제외해 warm-start seed 를 보존한다.
-  std::unordered_map<std::string, int> name_to_q_idx_;
-  // 출력 관절 이름·q index (전체 model 의 nq==1 관절, universe 제외).
+  std::unordered_map<std::string, JointSlot> name_to_slot_;
+  // 출력 관절 이름·슬롯 (전체 model 의 단일-DoF 관절, universe 제외).
   std::vector<std::string> output_names_;
-  std::vector<int> output_q_idx_;
+  std::vector<JointSlot> output_slots_;
 
   ProjectionOptions projection_opts_;
 

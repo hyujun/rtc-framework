@@ -14,6 +14,7 @@
 #pragma GCC diagnostic pop
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
@@ -84,33 +85,36 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
                 "직전 해를 hold 합니다 (NaN 방지).");
   }
 
-  // ── 출력 관절 캐시: 전체 model 의 nq==1 관절 (universe(0) 제외) ──────────────
+  // ── 출력 관절 캐시: 전체 model 의 단일-DoF 관절 (universe(0) 제외) ──────────────
   //    q_full_ 전체를 JointState 로 publish 하므로 passive loop 관절도 포함한다.
+  //    revolute(nq=1)·prismatic(nq=1)·continuous(nq=2, nv=1) 모두 스칼라 각/변위로
+  //    표현 가능 — 판정은 nv==1 로 한다 (nq==1 만 보면 continuous 관절이 누락된다).
   output_names_.reserve(static_cast<std::size_t>(model_.njoints - 1));
-  output_q_idx_.reserve(static_cast<std::size_t>(model_.njoints - 1));
+  output_slots_.reserve(static_cast<std::size_t>(model_.njoints - 1));
   for (int jid = 1; jid < model_.njoints; ++jid) {
     const auto jidx = static_cast<std::size_t>(jid);
-    if (model_.nqs[jidx] != 1) {
-      continue;  // floating/multi-DoF root 등은 스칼라 JointState 로 표현 불가 → skip
+    if (model_.nvs[jidx] != 1) {
+      continue;  // floating/planar/multi-DoF 등은 스칼라 JointState 로 표현 불가 → skip
     }
     output_names_.push_back(model_.names[jidx]);
-    output_q_idx_.push_back(model_.idx_qs[jidx]);
+    output_slots_.push_back({model_.idx_qs[jidx], model_.nqs[jidx] == 2});
   }
 
   // ── 입력 seed 맵: actuated 관절만 (measured actuated q 로 덮어쓸 슬롯) ───────────
   //    passive loop 관절은 warm-start seed(직전 loop-consistent 해)를 보존해야 하므로
   //    입력 맵에서 제외한다 — 입력 스트림이 passive 이름을 실어 보내도(예: 초기
   //    _publish_display 가 전체 관절을 0 으로 발행) seed 를 파괴하지 않는다.
-  name_to_q_idx_.reserve(actuated_joint_ids_.size());
+  name_to_slot_.reserve(actuated_joint_ids_.size());
   for (const auto jid : actuated_joint_ids_) {
     if (jid == 0 || jid >= static_cast<pinocchio::JointIndex>(model_.njoints)) {
       continue;  // universe(0)/invalid — skip
     }
     const auto jidx = static_cast<std::size_t>(jid);
-    if (model_.nqs[jidx] != 1) {
-      continue;  // 스칼라 JointState 로 표현 가능한 actuated 관절만
+    if (model_.nvs[jidx] != 1) {
+      continue;  // 스칼라 JointState 로 표현 가능한 단일-DoF actuated 관절만
     }
-    name_to_q_idx_.emplace(model_.names[jidx], model_.idx_qs[jidx]);
+    name_to_slot_.emplace(model_.names[jidx],
+                          JointSlot{model_.idx_qs[jidx], model_.nqs[jidx] == 2});
   }
 
   // ── pub/sub ─────────────────────────────────────────────────────────────────
@@ -132,9 +136,17 @@ void ClosureStatePublisher::OnJointState(const sensor_msgs::msg::JointState& msg
   Eigen::VectorXd q_seed = q_full_;
   const std::size_t n = std::min(msg.name.size(), msg.position.size());
   for (std::size_t i = 0; i < n; ++i) {
-    const auto it = name_to_q_idx_.find(msg.name[i]);
-    if (it != name_to_q_idx_.end()) {
-      q_seed[it->second] = msg.position[i];
+    const auto it = name_to_slot_.find(msg.name[i]);
+    if (it == name_to_slot_.end()) {
+      continue;
+    }
+    const JointSlot& slot = it->second;
+    if (slot.is_continuous) {
+      // continuous 관절: 스칼라 각 → (cos θ, sin θ) 로 seed.
+      q_seed[slot.q_idx] = std::cos(msg.position[i]);
+      q_seed[slot.q_idx + 1] = std::sin(msg.position[i]);
+    } else {
+      q_seed[slot.q_idx] = msg.position[i];
     }
   }
 
@@ -160,9 +172,11 @@ void ClosureStatePublisher::PublishState(const rclcpp::Time& stamp) {
   sensor_msgs::msg::JointState out;
   out.header.stamp = stamp;
   out.name = output_names_;
-  out.position.resize(output_q_idx_.size());
-  for (std::size_t i = 0; i < output_q_idx_.size(); ++i) {
-    out.position[i] = q_full_[output_q_idx_[i]];
+  out.position.resize(output_slots_.size());
+  for (std::size_t i = 0; i < output_slots_.size(); ++i) {
+    const JointSlot& slot = output_slots_[i];
+    out.position[i] = slot.is_continuous ? std::atan2(q_full_[slot.q_idx + 1], q_full_[slot.q_idx])
+                                         : q_full_[slot.q_idx];
   }
   publisher_->publish(std::move(out));
 }
