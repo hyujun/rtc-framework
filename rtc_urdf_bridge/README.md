@@ -46,6 +46,7 @@ rtc_urdf_bridge/
 │   ├── loop_verification.hpp           # closure error / Jc rank·Delassus
 │   ├── loop_projection.hpp             # q/v loop-consistent 사영 (로드 타임)
 │   ├── closed_chain_model.hpp          # 통합 loader (BuildClosedChainModelFromExtendedUrdf)
+│   ├── closed_chain_handle.hpp         # closed-chain 축약 동역학 질의 (M/g/h/J/FK, non-RT)
 │   └── closure_state_publisher.hpp     # Extended-URDF 폐쇄 체인 시각화 노드 (off-RT)
 ├── src/
 │   ├── urdf_analyzer.cpp
@@ -73,6 +74,7 @@ rtc_urdf_bridge/
     ├── test_constraint_builder.cpp     # endpoint transform / builder
     ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
     ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
+    ├── test_closed_chain_handle.cpp    # 축약 M/g/h/J/FK: serial 등가·round-trip·특이 flag
     ├── test_closure_state_publisher.cpp # 노드 end-to-end (actuated 주입→full q, loop 닫힘)
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
     └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF
@@ -264,6 +266,36 @@ handle.ComputeInverseDynamics(q, v, a);             // RNEA: τ = M·a + C·v + 
 handle.ComputeForwardDynamics(q, v, tau);           // ABA: a = M⁻¹(τ - C·v - g)
 handle.ComputeMassMatrix(q);                        // M(q)
 handle.ComputeConstraintDynamics(q, v, tau);        // 폐쇄 체인 구속 동역학
+```
+
+### 5. ClosedChainHandle (closed-chain 축약 동역학 질의, non-RT)
+
+closed-chain 로봇을 **serial chain 과 동일한 인터페이스**로 다루기 위한 핸들입니다.
+호출자가 actuated(독립) 좌표 `q_a` 만 넘기면, passive DoF 를 loop 구속에 사영(closed-loop
+FK)하고 독립 좌표 기준의 **축약된** 관성 `M_a`·중력 `g_a`·비선형효과 `h_a`·프레임
+Jacobian `J_a`·FK 를 돌려줍니다. 구속이 없는 serial 로봇이면 축약이 항등이 되어 값이
+full 모델과 같아집니다. computed-torque / task-space 컨트롤러가 loop 로봇의 동역학량을
+serial 과 똑같이 얻도록 준비하는 계층입니다 (컨트롤러·TSID 통합은 이 위에 얹힘).
+
+속도 축약 map `G`(nv×n_a, `Jc·G=0`)로 `M_a=GᵀMG`, `g_a=Gᵀg`, `J_a=J_full·G`,
+`h_a=Gᵀ·rnea(q, v_full, a_drift)` (drift 항 `γ=J̇c·v` 는 동일 `Jc` 함수의 중앙차분).
+planar `contact_3d` 처럼 구속이 redundant(rank<m) 여도 damped pseudo-inverse 로 처리하며,
+특이 조립형상은 NaN 대신 `Status::singular` 로 flag 합니다.
+
+> **non-RT.** `Update()` 는 반복 사영·SVD·행렬곱을 수행하므로 RT 핫패스에서 매 tick 호출
+> 금지 — init / 저주기 query / off-RT 컨트롤러 준비용입니다. RT-safe 경로는 `RtModelHandle`.
+
+```cpp
+#include "rtc_urdf_bridge/closed_chain_handle.hpp"
+
+rub::PinocchioModelBuilder builder(config);   // closure_yaml_path 설정 (Extended-URDF)
+rub::ClosedChainHandle handle(builder);
+
+handle.Update(q_a_span, v_a_span);            // [non-RT] actuated q_a → 사영 + 축약 재계산
+const auto& M = handle.GetMassMatrix();        // n_a × n_a
+const auto& g = handle.GetGeneralizedGravity();// n_a
+Eigen::MatrixXd J = Eigen::MatrixXd::Zero(6, handle.nv_independent());
+handle.GetFrameJacobian(fid, pinocchio::LOCAL_WORLD_ALIGNED, J);   // 6 × n_a
 ```
 
 ## YAML Configuration
