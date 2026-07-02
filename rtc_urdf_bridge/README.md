@@ -357,6 +357,26 @@ auto ccm = rtc_urdf_bridge::BuildClosedChainModelFromExtendedUrdf(urdf_path, clo
 //   loop_projection.hpp   — ProjectToConstraint (q_ref) / ProjectVelocity
 ```
 
+**PinocchioModelBuilder 경로 (bring-up SSoT).** raw URDF 뿐 아니라 xacro 도 소비하는
+`PinocchioModelBuilder` 는 `ModelConfig::closure_yaml_path` 가 설정되면 (`buildModel` 대신)
+전처리된 `full_model_` 위에서 같은 파이프라인을 실행하고 결과를 노출한다. `BuildClosedChainData`
+헬퍼가 이 재사용 지점이다 (이미 빌드된 model + `ClosureSpec` → constraints/actuated/q_ref).
+
+```cpp
+rtc_urdf_bridge::ModelConfig cfg;
+cfg.urdf_path = ".../foo.urdf.xacro";
+cfg.closure_yaml_path = ".../foo.closure.yaml";   // 비우면 순수 URDF (기본)
+rtc_urdf_bridge::PinocchioModelBuilder builder(cfg);
+builder.GetConstraintModels();          // RigidConstraintModel 목록
+builder.GetClosureReferenceConfig();    // loop-consistent q_ref (full model)
+builder.GetClosureActuatedJointIds();   // actuation.actuated_joints → JointIndex
+builder.IsClosureReferenceConverged();  // false 면 q_ref projection 미수렴 (부정확)
+builder.IsClosureReferenceSingular();   // true 면 q_ref 를 operating config 로 쓰지 말 것
+```
+
+integrated_bringup 은 system YAML `urdf:` 블록의 `extended: true` 로 이 경로를 켠다 (sidecar 는
+URDF 옆 `<stem>.closure.yaml`; `closure_path:` 로 명시 override 가능). §"Adding a New ..." 참조.
+
 계층 계약: YAML I/O·파싱·`buildModel`·constraint 생성·projection 은 **로드 타임**(예외
 허용). RT 경로는 `RtModelHandle::ComputeConstraintDynamics` 호출만 (사전 할당 재사용,
 noexcept). MJCF 교차검증은 Pinocchio 4.0 파서 한계(`<connect>` 예외 + 2번째 worldbody

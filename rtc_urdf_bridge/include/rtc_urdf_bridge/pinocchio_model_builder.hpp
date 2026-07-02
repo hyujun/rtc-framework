@@ -60,6 +60,28 @@ class PinocchioModelBuilder {
   [[nodiscard]] const std::vector<pinocchio::RigidConstraintModel>& GetConstraintModels()
       const noexcept;
 
+  // ── Extended-URDF closure (sidecar) 결과 ───────────────────────────────────
+  // closure_yaml_path 가 설정된 경우에만 채워진다. plain URDF 면 빈/기본값.
+
+  /// loop-consistent 기준 설정값 q_ref (full model, sidecar projection 통과).
+  /// closure sidecar 미사용 시 빈 벡터. @see IsClosureReferenceSingular,
+  /// IsClosureReferenceConverged
+  [[nodiscard]] const Eigen::VectorXd& GetClosureReferenceConfig() const noexcept;
+
+  /// sidecar actuation.actuated_joints → full model JointIndex 목록.
+  /// closure sidecar 미사용 시 빈 목록.
+  [[nodiscard]] const std::vector<pinocchio::JointIndex>& GetClosureActuatedJointIds()
+      const noexcept;
+
+  /// q_ref projection 수렴 여부. false 면 neutral 근방 조립이 loop-consistent 하지 않아
+  /// q_ref 가 부정확하다 (singular 여부와 별개 — full-rank 여도 미수렴일 수 있다).
+  /// closure sidecar 미사용 시 false.
+  [[nodiscard]] bool IsClosureReferenceConverged() const noexcept;
+
+  /// q_ref 가 rank 결손(특이 조립형상) 인지. true 면 이 형상에서 constraintDynamics 의
+  /// KKT 가 특이해져 NaN 을 낼 수 있으므로 operating configuration 으로 바로 쓰면 안 된다.
+  [[nodiscard]] bool IsClosureReferenceSingular() const noexcept;
+
   // ── 메타데이터 ─────────────────────────────────────────────────────────────
 
   /// 등록된 서브모델 이름 목록
@@ -123,6 +145,12 @@ class PinocchioModelBuilder {
 
   // 폐쇄 체인 구속
   std::vector<pinocchio::RigidConstraintModel> constraint_models_;
+
+  // Extended-URDF sidecar closure 결과 (closure_yaml_path 설정 시에만 채워짐)
+  Eigen::VectorXd closure_q_ref_;
+  std::vector<pinocchio::JointIndex> closure_actuated_joint_ids_;
+  bool closure_q_ref_converged_{false};
+  bool closure_q_ref_singular_{false};
 };
 
 }  // namespace rtc_urdf_bridge

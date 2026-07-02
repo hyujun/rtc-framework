@@ -3,6 +3,7 @@
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/logging/session_dir.hpp>
+#include <rtc_urdf_bridge/closure_yaml_loader.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/urdf_analyzer.hpp>
 #include <rtc_urdf_bridge/xacro_processor.hpp>
@@ -16,6 +17,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -234,6 +236,50 @@ void RtControllerNode::DeclareAndLoadParameters() {
         if (has_parameter("urdf.passive_joints")) {
           system_model_config_.passive_joints =
               get_parameter("urdf.passive_joints").as_string_array();
+        }
+
+        // ── Extended-URDF: resolve the closure sidecar ──────────────────────
+        // urdf.extended=true declares a spanning-tree URDF whose loop-closure /
+        // actuation info lives in a sibling <stem>.closure.yaml. The shared
+        // PinocchioModelBuilder then runs the closed-chain pipeline (constraints
+        // + q_ref + actuated joints) on the (xacro-processed) full model.
+        //
+        // Isolated in its own try/catch so a bad urdf.extended type or an
+        // unresolvable closure_path cannot abort the sub_model / tree_model
+        // parsing above nor the shared-builder construction below (those already
+        // ran). A missing sidecar under extended:true is escalated to ERROR (not
+        // WARN): the model silently loses loop constraints, so a closed-chain
+        // robot's dynamics would be wrong — that must be loud.
+        try {
+          const bool extended =
+              has_parameter("urdf.extended") && get_parameter("urdf.extended").as_bool();
+          if (extended) {
+            std::string closure_path;
+            if (has_parameter("urdf.closure_path")) {
+              // Explicit override, resolved against the same package share dir.
+              const auto rel_closure = get_parameter("urdf.closure_path").as_string();
+              closure_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel_closure;
+            } else {
+              // <stem>.closure.yaml sibling — rtc_urdf_bridge owns the convention.
+              closure_path = rtc_urdf_bridge::DeriveClosureSidecarPath(urdf_path);
+            }
+
+            if (std::filesystem::exists(closure_path)) {
+              system_model_config_.closure_yaml_path = closure_path;
+              RCLCPP_INFO(get_logger(), "Extended-URDF closure sidecar: %s", closure_path.c_str());
+            } else {
+              RCLCPP_ERROR(get_logger(),
+                           "urdf.extended=true but closure sidecar not found (%s) — RT model "
+                           "will LACK loop constraints (closed-chain dynamics will be wrong). "
+                           "Fix the path/install the sidecar, or set urdf.extended=false.",
+                           closure_path.c_str());
+            }
+          }
+        } catch (const std::exception& e) {
+          RCLCPP_ERROR(get_logger(),
+                       "Failed to resolve Extended-URDF closure config (%s) — continuing "
+                       "without loop constraints",
+                       e.what());
         }
 
         // Build the system PinocchioModelBuilder once and share it with every

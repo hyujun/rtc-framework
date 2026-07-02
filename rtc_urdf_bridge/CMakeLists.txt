@@ -140,6 +140,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_loop_closed_chain test/test_loop_closed_chain.cpp)
   target_link_libraries(test_loop_closed_chain ${PROJECT_NAME})
 
+  ament_add_gtest(test_pinocchio_builder_closure test/test_pinocchio_builder_closure.cpp)
+  target_link_libraries(test_pinocchio_builder_closure ${PROJECT_NAME})
+
   # Phase 11 (MJCF 교차검증)
   ament_add_gtest(test_mjcf_comparison test/test_mjcf_comparison.cpp)
   target_link_libraries(test_mjcf_comparison ${PROJECT_NAME})

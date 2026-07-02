@@ -1,6 +1,8 @@
 // ── PinocchioModelBuilder 구현 ───────────────────────────────────────────────
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
+#include "rtc_urdf_bridge/closed_chain_model.hpp"
+#include "rtc_urdf_bridge/closure_yaml_loader.hpp"
 #include "rtc_urdf_bridge/constraint_builder.hpp"
 #include "rtc_urdf_bridge/urdf_logging.hpp"
 #include "rtc_urdf_bridge/xacro_processor.hpp"
@@ -202,7 +204,36 @@ void PinocchioModelBuilder::BuildTreeModels() {
 // ── 폐쇄 체인 구속 등록 ────────────────────────────────────────────────────
 // 실제 RigidConstraintModel 생성은 constraint_builder 로 위임한다 (§4b joint-frame
 // placement 합성, frame-first/link+origin 경로 지원, legacy→new API 교체 격리점 §7).
+//
+// 두 소스:
+//   (A) Extended-URDF sidecar (closure_yaml_path 설정): 순수 spanning-tree URDF +
+//       별도 <name>.closure.yaml 로부터 통합 파이프라인(constraints + q_ref +
+//       actuated joints + 특이성 검사)을 full_model_ 위에서 실행. xacro 는 이미
+//       BuildFullModel 에서 전처리되었으므로 raw buildModel 대신 여기서 재사용.
+//   (B) legacy inline: config_.closed_chains 목록 → constraints 만.
 void PinocchioModelBuilder::RegisterClosedChainConstraints() {
+  if (!config_.closure_yaml_path.empty()) {
+    if (!config_.closed_chains.empty()) {
+      RCLCPP_WARN(logger(),
+                  "closure_yaml_path 와 inline closed_chains 가 동시 설정됨 — sidecar 를 "
+                  "사용하고 inline closed_chains (%zu개) 는 무시합니다",
+                  config_.closed_chains.size());
+    }
+    const ClosureSpec spec = LoadClosureYaml(config_.closure_yaml_path);
+    ClosedChainData data = BuildClosedChainData(*full_model_, spec);
+    constraint_models_ = std::move(data.constraints);
+    closure_actuated_joint_ids_ = std::move(data.actuated_joint_ids);
+    closure_q_ref_ = std::move(data.q_ref);
+    closure_q_ref_converged_ = data.q_ref_converged;
+    closure_q_ref_singular_ = data.q_ref_singular;
+    RCLCPP_INFO(logger(),
+                "Extended-URDF closure 로드: '%s' (%zu constraint, %zu actuated joint, "
+                "q_ref converged=%d singular=%d)",
+                config_.closure_yaml_path.c_str(), constraint_models_.size(),
+                closure_actuated_joint_ids_.size(), static_cast<int>(closure_q_ref_converged_),
+                static_cast<int>(closure_q_ref_singular_));
+    return;
+  }
   if (config_.closed_chains.empty()) {
     return;
   }
@@ -281,6 +312,23 @@ const std::vector<pinocchio::RigidConstraintModel>& PinocchioModelBuilder::GetCo
   return constraint_models_;
 }
 
+const Eigen::VectorXd& PinocchioModelBuilder::GetClosureReferenceConfig() const noexcept {
+  return closure_q_ref_;
+}
+
+const std::vector<pinocchio::JointIndex>& PinocchioModelBuilder::GetClosureActuatedJointIds()
+    const noexcept {
+  return closure_actuated_joint_ids_;
+}
+
+bool PinocchioModelBuilder::IsClosureReferenceConverged() const noexcept {
+  return closure_q_ref_converged_;
+}
+
+bool PinocchioModelBuilder::IsClosureReferenceSingular() const noexcept {
+  return closure_q_ref_singular_;
+}
+
 std::vector<std::string> PinocchioModelBuilder::GetSubModelNames() const {
   std::vector<std::string> names;
   names.reserve(reduced_models_.size());
@@ -349,6 +397,15 @@ ModelConfig PinocchioModelBuilder::LoadModelConfig(std::string_view yaml_path) {
     if (!cfg.urdf_path.empty() && cfg.urdf_path[0] != '/') {
       std::filesystem::path yaml_dir = std::filesystem::path(std::string(yaml_path)).parent_path();
       cfg.urdf_path = (yaml_dir / cfg.urdf_path).string();
+    }
+  }
+
+  // closure_yaml_path (Extended-URDF sidecar). 상대 경로면 YAML 파일 기준 해석.
+  if (root["closure_yaml_path"]) {
+    cfg.closure_yaml_path = root["closure_yaml_path"].as<std::string>();
+    if (!cfg.closure_yaml_path.empty() && cfg.closure_yaml_path[0] != '/') {
+      std::filesystem::path yaml_dir = std::filesystem::path(std::string(yaml_path)).parent_path();
+      cfg.closure_yaml_path = (yaml_dir / cfg.closure_yaml_path).string();
     }
   }
 

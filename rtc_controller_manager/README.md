@@ -144,6 +144,8 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 ```
 urdf.package + urdf.path → ament resolve → 절대 URDF 경로
 urdf.root_joint_type     → "fixed" | "floating"
+urdf.extended            → bool. true 면 sidecar <stem>.closure.yaml 로드 (loop closure)
+urdf.closure_path        → sidecar 명시 override (pkg 상대). 미지정 시 URDF 경로에서 유도
 urdf.sub_models.<name>   → {root_link, tip_link}                (직렬 체인, map 키 = 모델명)
 urdf.tree_models.<name>  → {root_link, tip_links[]}             (분기 체인, map 키 = 모델명)
 urdf.passive_joints      → [string, ...]                         (잠금 관절)
@@ -152,6 +154,7 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 - `sub_models`/`tree_models`의 map 키(모델명)는 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다
 - 디바이스별 `root_link`/`tip_link` 미지정 시 시스템 `sub_models`/`tree_models`에서 자동 해석
 - 디바이스별 URDF 경로 미지정 시 시스템 URDF 경로를 폴백으로 사용
+- **Extended-URDF**: `urdf.extended: true` 면 URDF 옆 `<stem>.closure.yaml` sidecar(예: `foo.urdf.xacro` → `foo.closure.yaml`)를 로드해 공유 `PinocchioModelBuilder`가 loop closure constraint + `q_ref`를 build (`GetConstraintModels()` 등으로 노출). sidecar 미발견 시 WARN 후 plain URDF로 폴백. 상세: [rtc_urdf_bridge/README.md](../rtc_urdf_bridge/README.md#extended-urdf-closed-chain-sidecar-nameclosureyaml)
 - **하위 호환**: 최상위 `urdf:` 없으면 기존 `devices.{group}.urdf` 에서 읽기
 
 ### 로딩 (시작 시)
@@ -393,6 +396,8 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 | `urdf.package` | string | 선택 | URDF가 포함된 ament 패키지명 |
 | `urdf.path` | string | 선택 | 패키지 내 URDF 상대 경로 |
 | `urdf.root_joint_type` | string | 선택 | `"fixed"` 또는 `"floating"` (기본: `"fixed"`) |
+| `urdf.extended` | bool | 선택 | `true` 면 sidecar `<stem>.closure.yaml` 로드 (loop closure, 기본 `false`) |
+| `urdf.closure_path` | string | 선택 | sidecar 명시 경로 (패키지 상대). 미지정 시 URDF 경로에서 유도 |
 | `urdf.sub_models.<name>` | map | 선택 | 직렬 체인 모델 (root_link/tip_link). map 키가 모델명 |
 | `urdf.tree_models.<name>` | map | 선택 | 분기 체인 모델 (root_link/tip_links[]). map 키가 모델명 |
 | `urdf.passive_joints` | string[] | 선택 | 모든 모델에서 잠금할 관절 이름 |
