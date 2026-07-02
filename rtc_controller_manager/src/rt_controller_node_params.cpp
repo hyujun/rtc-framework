@@ -26,6 +26,11 @@ namespace urtc = rtc;
 
 namespace {
 
+// Resolve `<pkg_share>/<rel>` for a package-share-relative resource path.
+std::string PackageSharePath(const std::string& pkg, const std::string& rel) {
+  return ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+}
+
 // Split `str` on `.` into non-empty components.
 std::vector<std::string> SplitDotPath(const std::string& str) {
   std::vector<std::string> out;
@@ -227,7 +232,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
       try {
         const auto pkg = get_parameter("urdf.package").as_string();
         const auto rel = get_parameter("urdf.path").as_string();
-        urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+        urdf_path = PackageSharePath(pkg, rel);
         system_model_config_.urdf_path = urdf_path;
         urdf_pkg = pkg;
 
@@ -257,7 +262,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
           try {
             const auto pkg = get_parameter(pkg_key).as_string();
             const auto rel = get_parameter(path_key).as_string();
-            urdf_path = ament_index_cpp::get_package_share_directory(pkg) + "/" + rel;
+            urdf_path = PackageSharePath(pkg, rel);
             system_model_config_.urdf_path = urdf_path;
             urdf_pkg = pkg;
             RCLCPP_INFO(get_logger(), "URDF path from devices config (fallback): %s",
@@ -297,8 +302,7 @@ void RtControllerNode::DeclareAndLoadParameters() {
           if (has_parameter("urdf.closure_path")) {
             // Explicit override, resolved against the URDF's package share dir.
             const auto rel_closure = get_parameter("urdf.closure_path").as_string();
-            closure_path =
-                ament_index_cpp::get_package_share_directory(urdf_pkg) + "/" + rel_closure;
+            closure_path = PackageSharePath(urdf_pkg, rel_closure);
           } else {
             // <stem>.closure.yaml sibling — rtc_urdf_bridge owns the convention.
             closure_path = rtc_urdf_bridge::DeriveClosureSidecarPath(urdf_path);
