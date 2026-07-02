@@ -9,7 +9,6 @@
 #pragma once
 
 #include "rtc_controller_manager/rt_controller_node.hpp"
-
 #include <rtc_msgs/msg/robot_target.hpp>
 
 #include <rclcpp/rclcpp.hpp>
@@ -68,13 +67,21 @@ class MockController : public RTControllerInterface {
   }
 
   int ActivateCount() const { return activate_count_.load(std::memory_order_relaxed); }
+
   int DeactivateCount() const { return deactivate_count_.load(std::memory_order_relaxed); }
+
   int TriggerEstopCount() const { return trigger_estop_count_.load(std::memory_order_relaxed); }
+
   int ClearEstopCount() const { return clear_estop_count_.load(std::memory_order_relaxed); }
+
   int SetHandEstopCount() const { return set_hand_estop_count_.load(std::memory_order_relaxed); }
+
   bool HandEstop() const { return hand_estop_.load(std::memory_order_relaxed); }
+
   int SetTargetCount() const { return set_target_count_.load(std::memory_order_relaxed); }
+
   int LastTargetSlot() const { return last_target_slot_; }
+
   const std::vector<double>& LastTarget() const { return last_target_; }
 
  private:
@@ -104,14 +111,22 @@ class ControllerLifecycleTestAccess {
     node.controller_name_to_idx_.clear();
     node.controller_types_.clear();
     for (std::size_t i = 0; i < node.controllers_.size(); ++i) {
-      node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] =
-          static_cast<int>(i);
+      node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] = static_cast<int>(i);
       node.controller_types_.push_back(i < types.size() ? types[i] : "");
     }
   }
 
   static void SetActiveIdx(RtControllerNode& node, int idx) {
     node.active_controller_idx_.store(idx, std::memory_order_release);
+  }
+
+  // ── System model config (URDF / Extended-URDF closure resolution) ───────────
+  // Exposes the closure sidecar path that DeclareAndLoadParameters resolved, so
+  // tests can assert the Extended-URDF branch behaviour (set when a sidecar
+  // exists, empty when missing/disabled) independent of which URDF source
+  // branch — top-level or devices-fallback — won.
+  static std::string GetResolvedClosureYamlPath(const RtControllerNode& node) {
+    return node.system_model_config_.closure_yaml_path;
   }
 
   // ── E-STOP ────────────────────────────────────────────────────────────────

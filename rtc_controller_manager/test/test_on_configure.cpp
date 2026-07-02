@@ -15,10 +15,10 @@
 // uses the repo-vendored panda model via the installed robot_descriptions
 // share dir (ament runtime lookup, ARCH-5 compliant — see <test_depend>).
 
-#include "rtc_controller_manager/rt_controller_node.hpp"
-
+#include "rt_cm_test_access.hpp"
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <lifecycle_msgs/msg/state.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -44,7 +44,9 @@ class OnConfigureTestController : public RTControllerInterface {
   ControllerOutput Compute(const ControllerState& /*state*/) noexcept override {
     return ControllerOutput{};
   }
+
   void SetDeviceTarget(int /*device_idx*/, std::span<const double> /*target*/) noexcept override {}
+
   std::string_view Name() const noexcept override { return "OnConfigureTestController"; }
 };
 
@@ -58,9 +60,11 @@ rclcpp_lifecycle::State StateUnconfigured() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
                                  "unconfigured");
 }
+
 rclcpp_lifecycle::State StateInactive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "inactive");
 }
+
 rclcpp_lifecycle::State StateActive() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
 }
@@ -72,6 +76,7 @@ class OnConfigureTest : public ::testing::Test {
       rclcpp::init(0, nullptr);
     }
   }
+
   static void TearDownTestSuite() {
     if (rclcpp::ok()) {
       rclcpp::shutdown();
@@ -142,6 +147,41 @@ TEST_F(OnConfigureTest, FullLifecycleCycle) {
 TEST_F(OnConfigureTest, ConfigureOutOfRangeControlRateStillSucceeds) {
   auto node = MakeNode(/*control_rate=*/10.0);  // below kMinControlRateHz
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── T4b/T4c: Extended-URDF closure resolution reaches BOTH URDF branches ─────
+//    #14 — the closure-sidecar resolution used to be nested inside the top-level
+//    urdf.package/urdf.path branch, so a devices-fallback URDF with
+//    urdf.extended=true silently skipped it. It now runs after either branch
+//    settles. panda ships no <stem>.closure.yaml, so both cases hit the missing-
+//    sidecar ERROR path — which is non-fatal (bring-up still SUCCEEDs) and
+//    leaves closure_yaml_path empty. Equivalence of the two branches is the
+//    contract (#14 "top-level 과 동치").
+
+TEST_F(OnConfigureTest, ExtendedUrdfTopLevelMissingSidecarIsNonFatal) {
+  auto node = MakeNode();
+  node->declare_parameter("urdf.package", std::string("robot_descriptions"));
+  node->declare_parameter("urdf.path", std::string("robots/panda/urdf/panda.urdf"));
+  node->declare_parameter("urdf.extended", true);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  // Missing sidecar → closure path left unset (ERROR logged, not bound).
+  EXPECT_TRUE(ControllerLifecycleTestAccess::GetResolvedClosureYamlPath(*node).empty());
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OnConfigureTest, ExtendedUrdfDevicesFallbackMissingSidecarIsNonFatal) {
+  auto node = MakeNode();
+  // No top-level urdf.* — force the devices-fallback URDF branch.
+  node->declare_parameter("devices.arm.urdf.package", std::string("robot_descriptions"));
+  node->declare_parameter("devices.arm.urdf.path", std::string("robots/panda/urdf/panda.urdf"));
+  node->declare_parameter("urdf.extended", true);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  // Same as the top-level case: extended=true is honoured on the fallback path,
+  // missing sidecar leaves closure_yaml_path unset without aborting bring-up.
+  EXPECT_TRUE(ControllerLifecycleTestAccess::GetResolvedClosureYamlPath(*node).empty());
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
