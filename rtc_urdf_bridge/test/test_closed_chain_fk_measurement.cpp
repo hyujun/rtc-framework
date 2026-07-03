@@ -28,15 +28,57 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <vector>
 
 namespace rub = rtc_urdf_bridge;
 
 namespace {
+
+// 정렬된 μs 샘플에서 percentile(선형 보간 없이 nearest-rank) 추출.
+double PercentileUs(const std::vector<double>& sorted_us, double pct) {
+  if (sorted_us.empty()) {
+    return 0.0;
+  }
+  const auto n = static_cast<double>(sorted_us.size());
+  auto idx = static_cast<std::size_t>(std::ceil(pct / 100.0 * n)) - 1;
+  idx = std::min(idx, sorted_us.size() - 1);
+  return sorted_us[idx];
+}
+
+// N 회 Update 를 반복하며 per-call μs 를 수집(수렴·비특이만) → min/mean/median/p95/p99/max 리포트.
+void BenchUpdate(rub::ClosedChainHandle& handle, bool with_velocity, const char* label) {
+  constexpr int kWarm = 20;
+  constexpr int kN = 2000;
+  for (int i = 0; i < kWarm; ++i) {
+    handle.Update(std::vector<double>{0.2});  // warm-up (캐시/할당 안정화)
+  }
+  std::vector<double> us;
+  us.reserve(kN);
+  const std::vector<double> v_a = with_velocity ? std::vector<double>{0.5} : std::vector<double>{};
+  for (int i = 0; i < kN; ++i) {
+    const double q_a = 0.15 + 0.01 * (i % 11);  // [0.15, 0.25] 비특이 crank 구간
+    const auto t0 = std::chrono::steady_clock::now();
+    const rub::ClosedChainHandle::Status st = handle.Update(std::vector<double>{q_a}, v_a);
+    const auto t1 = std::chrono::steady_clock::now();
+    if (!st.converged || st.singular) {
+      continue;
+    }
+    us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+  }
+  std::sort(us.begin(), us.end());
+  const double mean = us.empty() ? 0.0 : std::accumulate(us.begin(), us.end(), 0.0) / us.size();
+  std::printf(
+      "[timing] %-22s n=%zu  min=%.2f  mean=%.2f  median=%.2f  p95=%.2f  p99=%.2f  max=%.2f (us)\n",
+      label, us.size(), us.empty() ? 0.0 : us.front(), mean, PercentileUs(us, 50),
+      PercentileUs(us, 95), PercentileUs(us, 99), us.empty() ? 0.0 : us.back());
+}
 
 // full model q 에서 단일-DoF actuated 관절 슬롯만 q_a 로 덮어쓴다 (passive 는 고정 유지).
 // = 컨트롤러의 frozen-loop reduced 모델 FK 와 동치 (locked passive 를 reference 에 baked).
@@ -158,4 +200,29 @@ TEST(ClosedChainFkMeasurement, ClosedChainMatchesPublisherReconstruction) {
     EXPECT_LT((handle.GetFullConfiguration() - res.q).norm(), 1e-6)
         << "q_a=" << q_a << " 에서 handle FK 와 publisher 재구성이 갈라졌다";
   }
+}
+
+// ── 연산시간: ClosedChainHandle::Update (kinematics/dynamics) per-call latency ──
+//   Phase 2 격리 방식(non-RT 재사영 주기) 확정 근거이자 "Update 는 RT 불가" 계약의 실측.
+//   Update 는 passive 사영(반복 Newton)+SVD(G 축약 map)+crba/rnea(축약 M/g/h)로 heap 할당·
+//   반복을 포함한다. 두 경로를 잰다: (a) q_a 만(kinematics+gravity), (b) q_a+v_a(비선형효과
+//   h_a — drift γ 중앙차분 포함, 최대 비용).
+//   ⚠ 절대 수치는 머신 종속(빌드/부하/affinity)이라 order-of-magnitude 만 유효. RT-불가 결론은
+//     이 규모 + 할당/반복이라는 알고리즘 사실에 근거한다. crank-rocker(nv=3, m=3)는 소형이므로
+//     실제 다-DoF 폐쇄 손은 SVD/crba 가 nv 로 증가해 더 크다 (하한 추정).
+TEST(ClosedChainFkMeasurement, UpdateComputeTime) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::ClosedChainHandle handle(model, ccm.constraints, ccm.actuated_joint_ids, {});
+
+  std::printf("\n[timing] ClosedChainHandle::Update per-call (crank-rocker nv=%d, m=%d)\n",
+              handle.nv_full(), handle.constraint_dim());
+  BenchUpdate(handle, /*with_velocity=*/false, "kinematics+gravity");
+  BenchUpdate(handle, /*with_velocity=*/true, "full dynamics(+h_a)");
+  std::printf(
+      "[timing] RT budget @500Hz=2000us, @1kHz=1000us → non-RT 재사영 주기 사이징 참고\n\n");
+
+  // machine-종속 flaky 방지: 하드 assert 없이 리포트만. 규모가 RT tick(수백 us~ms)과 비교
+  // 가능함을 육안 확인용. (회귀 시 O(n) 폭주만 별도 감시하려면 median 상한을 아주 느슨히 둔다.)
+  SUCCEED();
 }
