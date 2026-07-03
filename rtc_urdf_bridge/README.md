@@ -298,6 +298,14 @@ Eigen::MatrixXd J = Eigen::MatrixXd::Zero(6, handle.nv_independent());
 handle.GetFrameJacobian(fid, pinocchio::LOCAL_WORLD_ALIGNED, J);   // 6 × n_a
 ```
 
+**Topology 판정 (소비자 배선용).** closed-chain FK 는 loop-passive 관절이 프레임 상류에
+있을 때만 frozen-loop 근사(reduced/tree 서브모델)와 달라집니다. `IsFrameDownstreamOfLoop(fid)`
+는 프레임의 support(조상) 경로에 movable & non-actuated(=loop-passive) 관절이 있는지로 이를
+판정합니다 — 소비자는 이 helper 로 **필요한 프레임만** `ClosedChainHandle` FK 로 배선하고,
+loop 상류가 없는 프레임(예: loop 상류 팔 끝)은 `RtModelHandle` 로 byte-for-byte 유지해 불필요한
+non-RT 사영을 회피합니다. 구속 없는 serial 등가이거나 frame 이 범위를 벗어나면 항상 `false`.
+loop-passive 관절 이름 목록은 `PinocchioModelBuilder::GetClosurePassiveLockNames()` 로 조회합니다.
+
 ## YAML Configuration
 
 ### Serial Arm (직렬 로봇팔)
@@ -408,6 +416,7 @@ rtc_urdf_bridge::PinocchioModelBuilder builder(cfg);
 builder.GetConstraintModels();          // RigidConstraintModel 목록
 builder.GetClosureReferenceConfig();    // loop-consistent q_ref (full model)
 builder.GetClosureActuatedJointIds();   // actuation.actuated_joints → JointIndex
+builder.GetClosurePassiveLockNames();   // loop-passive 관절 이름 (movable − actuated); topology 판정용
 builder.IsClosureReferenceConverged();  // false 면 q_ref projection 미수렴 (부정확)
 builder.IsClosureReferenceSingular();   // true 면 q_ref 를 operating config 로 쓰지 말 것
 ```
