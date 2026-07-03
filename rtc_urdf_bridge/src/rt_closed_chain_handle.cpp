@@ -390,24 +390,12 @@ pinocchio::FrameIndex RtClosedChainHandle::GetFrameId(std::string_view frame_nam
 }
 
 bool RtClosedChainHandle::IsFrameDownstreamOfLoop(pinocchio::FrameIndex frame_id) const noexcept {
-  const pinocchio::Model& model = *model_;
-  if (identity_ || frame_id >= model.frames.size()) {
+  // 구속 없음(serial 등가) 이면 loop-passive 가 없다. 그 외는 공용 topology helper 로 위임
+  // (ClosedChainHandle 과 단일 출처 — loop-membership 규칙 desync 방지, review #10).
+  if (identity_) {
     return false;
   }
-  const auto parent_joint = model.frames[frame_id].parentJoint;
-  const auto& support = model.supports[parent_joint];
-  for (const auto jid : support) {
-    const auto jidx = static_cast<std::size_t>(jid);
-    if (jid == 0 || model.nvs[jidx] == 0) {
-      continue;
-    }
-    const bool is_actuated = std::find(actuated_joint_ids_.begin(), actuated_joint_ids_.end(),
-                                       jid) != actuated_joint_ids_.end();
-    if (!is_actuated) {
-      return true;
-    }
-  }
-  return false;
+  return rtc_urdf_bridge::IsFrameDownstreamOfLoop(*model_, actuated_joint_ids_, frame_id);
 }
 
 }  // namespace rtc_urdf_bridge

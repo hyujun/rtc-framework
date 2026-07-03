@@ -14,6 +14,7 @@
 
 #include <Eigen/Core>
 
+#include <span>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,15 @@ struct JacobianReport {
 
 /// @brief 단일 constraint 의 residual 차원 (CONTACT_6D→6, else 3). RT/non-RT 공용.
 [[nodiscard]] int ConstraintDim(const pinocchio::RigidConstraintModel& cm) noexcept;
+
+/// @brief frame @p frame_id 가 loop-passive(movable & non-actuated) 관절의 하류인가.
+///   frame → 부모 joint → universe 의 support(조상) 경로에 movable non-actuated 관절이 하나라도
+///   있으면 true. @p frame_id 가 model.frames 범위 밖이면 false. **RT/non-RT 공용 pure 함수**
+///   (topology-driven wiring). @ref ClosedChainHandle 과 @ref RtClosedChainHandle 이 공유한다 —
+///   두 곳에 복제하면 loop-membership 규칙이 한쪽만 바뀌어 closed FK 활성화가 조용히 desync 된다.
+[[nodiscard]] bool IsFrameDownstreamOfLoop(
+    const pinocchio::Model& model, std::span<const pinocchio::JointIndex> actuated_joint_ids,
+    pinocchio::FrameIndex frame_id) noexcept;
 
 /// @brief @ref FillConstraintKinematicsRow 용 재사용 스크래치. RT 소비자는 멤버로 보유해
 ///   힙 할당을 회피한다. non-RT 소비자는 loop 밖에서 한 번 Resize 해 재사용한다.
