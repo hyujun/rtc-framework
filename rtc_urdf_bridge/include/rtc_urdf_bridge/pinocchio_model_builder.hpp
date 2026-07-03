@@ -58,6 +58,16 @@ class PinocchioModelBuilder {
   [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetTreeModel(
       std::string_view tree_model_name) const;
 
+  /// 폐쇄 체인(extended URDF) 제어용 actuated 모델. loop-passive 관절(sidecar 가
+  /// passive 로 규정한 것)만 잠그고 actuated 관절을 전부 movable 로 유지한 축소 모델
+  /// 이라 nq==nv 이며 device 가 선언한 actuated 집합과 1:1 대응한다. tree/reduced 모델
+  /// 과 달리 root→tip 직렬 경로 밖의 actuated 관절(예: 4-bar 손가락의 active DIP —
+  /// passive coupler 가지로 tip 에 도달)도 보존한다. lock 기준값은 tree/reduced 와 동일
+  /// 한 MakeReferenceConfig() 이므로 frozen passive 기하가 tree 모델과 일치한다.
+  /// @return closure sidecar 미사용(plain/mimic URDF)이면 nullptr — 소비자는 기존
+  ///   tree/full 경로로 fallback (byte-for-byte).
+  [[nodiscard]] std::shared_ptr<const pinocchio::Model> GetActuatedModel() const noexcept;
+
   /// 폐쇄 체인 구속 조건 모델 목록
   [[nodiscard]] const std::vector<pinocchio::RigidConstraintModel>& GetConstraintModels()
       const noexcept;
@@ -122,6 +132,10 @@ class PinocchioModelBuilder {
   void BuildFullModel();
   void BuildReducedModels();
   void BuildTreeModels();
+  /// Extended-URDF closure 시 actuated 제어 모델 구축 (loop-passive 만 잠금 → nq==nv).
+  /// closure_passive_lock_names_ 가 비면 no-op → actuated_model_ 는 nullptr 유지.
+  /// LoadClosureSpecAndComputePassiveLocks() 이후에 호출되어야 한다.
+  void BuildActuatedModel();
   void RegisterClosedChainConstraints();
 
   /// Extended-URDF sidecar 를 1회 로드해 closure_spec_ 에 캐시하고, loop-passive
@@ -154,6 +168,8 @@ class PinocchioModelBuilder {
   std::shared_ptr<pinocchio::Model> full_model_;
   std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>> reduced_models_;
   std::unordered_map<std::string, std::shared_ptr<pinocchio::Model>> tree_models_;
+  // 폐쇄 체인 actuated 제어 모델 (loop-passive 만 잠금, nq==nv). plain URDF 면 nullptr.
+  std::shared_ptr<pinocchio::Model> actuated_model_;
 
   // 서브모델/트리모델 정의 캐시
   std::unordered_map<std::string, SubModelDefinition> sub_model_defs_;

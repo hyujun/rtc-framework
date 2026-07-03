@@ -349,6 +349,8 @@ hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.cl
 
 UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 7-단계 FSM (slot 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다.
 
+**제어 모델 선택**: 컨트롤러는 `full_model_ptr_`(TSID/CLIK/MPC 공용 제어 모델)를 `PinocchioModelBuilder::GetActuatedModel()` 우선으로 잡는다. extended (loop closure) 핸드에서 `tree_models.wbc`(root→tip 직렬 경로 기반)는 4-bar 손가락의 active DIP 처럼 tip 을 passive coupler 가지로 거치는 actuated 관절을 경로 밖이라 잠가 13/16 로 축소되어 device joint reorder 가 실패한다. actuated 모델은 sidecar 가 passive 로 규정한 loop 관절만 잠그고 actuated 를 전부 유지해 `nq==nv==16` 이 되어 16/16 reorder 를 통과한다 (mimic 없는 proto_1b 는 `nq==nv`). 비-extended (plain/mimic) 핸드는 `GetActuatedModel()==nullptr` 이라 기존 `GetTreeModel("wbc")`→`GetFullModel()` fallback 경로를 그대로 밟는다 (byte-for-byte). 단, actuated 모델은 frozen-loop(직렬 등가)이므로 fingertip 접촉 프레임의 loop-consistent FK 는 별도 배선 대상이다 (아래 참조).
+
 #### 7-Phase FSM (slot 5 reserved)
 
 모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kIdle` (접촉 없음·hand 이미 open 인 no-op flash 방지) / `kRelease` (이미 release 중) / `kFallback` (수동 복구 필요) 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).

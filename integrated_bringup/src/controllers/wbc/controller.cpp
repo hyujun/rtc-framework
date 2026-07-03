@@ -85,16 +85,30 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
   // configured in YAML, fall back to the raw URDF-parsed full model (nq=26,
   // nv=21 with Pinocchio first-class mimic) — this preserves pre-reduction
   // behaviour for URDFs without <mimic> tags.
-  try {
-    full_model_ptr_ = builder_->GetTreeModel("wbc");
-    RCLCPP_INFO(logger_, "[wbc] control model: reduced tree 'wbc' (nq=%d nv=%d)",
+  // For extended (closed-chain) hands the path-based 'wbc' tree locks off-path
+  // actuated joints — a 4-bar finger's active DIP reaches the tip through a
+  // passive coupler branch, so it falls outside the root→tip path and gets
+  // locked (proto_1b: 13/16, reorder then fails). Prefer the builder's actuated
+  // model: it locks only the loop-passives and keeps every actuated joint
+  // movable, so nq==nv and the device's full actuated set maps 1:1 (16/16).
+  // Non-extended (plain/mimic) URDFs get a null actuated model and fall through
+  // to the existing tree/full path unchanged (byte-for-byte).
+  if (auto actuated = builder_->GetActuatedModel()) {
+    full_model_ptr_ = std::move(actuated);
+    RCLCPP_INFO(logger_, "[wbc] control model: actuated closed-chain (nq=%d nv=%d)",
                 full_model_ptr_->nq, full_model_ptr_->nv);
-  } catch (const std::exception& e) {
-    full_model_ptr_ = builder_->GetFullModel();
-    RCLCPP_INFO(logger_,
-                "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'wbc' "
-                "missing (%s); MPC handler-mode + TSID will see mimic joints",
-                full_model_ptr_->nq, full_model_ptr_->nv, e.what());
+  } else {
+    try {
+      full_model_ptr_ = builder_->GetTreeModel("wbc");
+      RCLCPP_INFO(logger_, "[wbc] control model: reduced tree 'wbc' (nq=%d nv=%d)",
+                  full_model_ptr_->nq, full_model_ptr_->nv);
+    } catch (const std::exception& e) {
+      full_model_ptr_ = builder_->GetFullModel();
+      RCLCPP_INFO(logger_,
+                  "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'wbc' "
+                  "missing (%s); MPC handler-mode + TSID will see mimic joints",
+                  full_model_ptr_->nq, full_model_ptr_->nv, e.what());
+    }
   }
 
   RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, control nq=%d nv=%d", arm_handle_->nv(),

@@ -91,6 +91,60 @@ TEST(PinocchioBuilderClosure, LoopPassiveJointsLockedInReducedModel) {
   EXPECT_FALSE(closed_reduced->existJointName("joint_ab"));
 }
 
+// ── GetActuatedModel: extended URDF 시 loop-passive 만 잠근 nq==nv actuated 모델 ──────
+//    four_bar sidecar 는 joint_a 만 actuated → passive {joint_ab, joint_c, joint_cd}
+//    3개 잠금. 결과 모델은 actuated 집합과 1:1 (nv=1, joint_a 만 유지).
+TEST(PinocchioBuilderClosure, ActuatedModelKeepsActuatedLocksPassive) {
+  const rub::PinocchioModelBuilder builder(FourBarConfig());
+
+  const auto actuated = builder.GetActuatedModel();
+  ASSERT_NE(actuated, nullptr);
+  // 잠근 관절 수 = passive 수, 유지된 관절 = actuated 집합 → nq==nv==actuated count.
+  EXPECT_EQ(actuated->nv, actuated->nq);
+  EXPECT_EQ(static_cast<std::size_t>(actuated->nv), builder.GetClosureActuatedJointIds().size());
+  EXPECT_TRUE(actuated->existJointName("joint_a"));
+  EXPECT_FALSE(actuated->existJointName("joint_ab"));
+  EXPECT_FALSE(actuated->existJointName("joint_c"));
+  EXPECT_FALSE(actuated->existJointName("joint_cd"));
+}
+
+// ── GetActuatedModel vs tree: tree 는 root→tip 경로 밖의 actuated 관절을 잠그지만
+//    actuated 모델은 유지한다 (proto_1b 의 4-bar active DIP 가 tip 을 coupler 가지로
+//    거쳐 경로 밖이 되는 상황의 최소 재현). tip=c2(branch2) 트리는 joint_a(branch1,
+//    actuated)를 경로 밖이라 잠근다. actuated 모델은 joint_a 를 유지 → 이 차이가
+//    WBC 제어 모델이 tree('wbc') 로는 13/16, actuated 로는 16/16 이 되는 근거다. ──────
+TEST(PinocchioBuilderClosure, ActuatedModelKeepsOffPathActuatedJoint) {
+  rub::ModelConfig cfg = FourBarConfig();
+  rub::TreeModelConfig tm;
+  tm.name = "branch2";
+  tm.root_link = "base_link";
+  tm.tip_links = {"c2"};  // branch2 경로 → joint_a(branch1)는 경로 밖
+  cfg.tree_models.push_back(std::move(tm));
+
+  const rub::PinocchioModelBuilder builder(cfg);
+
+  // tree 는 off-path actuated joint_a 를 잠근다.
+  const auto tree = builder.GetTreeModel("branch2");
+  ASSERT_NE(tree, nullptr);
+  EXPECT_FALSE(tree->existJointName("joint_a"));
+
+  // actuated 모델은 경로와 무관하게 joint_a 를 유지한다.
+  const auto actuated = builder.GetActuatedModel();
+  ASSERT_NE(actuated, nullptr);
+  EXPECT_TRUE(actuated->existJointName("joint_a"));
+}
+
+// ── GetActuatedModel: closure 미사용(plain URDF)이면 nullptr → 소비자는 tree/full
+//    fallback (byte-for-byte). WBC 의 비-extended 로봇 경로 보존 근거. ──────────────
+TEST(PinocchioBuilderClosure, ActuatedModelNullForPlainUrdf) {
+  rub::ModelConfig cfg;
+  cfg.urdf_path = TestUrdfPath("four_bar_tree.urdf");
+  // closure_yaml_path 비워둠 → plain spanning-tree.
+  const rub::PinocchioModelBuilder builder(cfg);
+
+  EXPECT_EQ(builder.GetActuatedModel(), nullptr);
+}
+
 // ── closure_yaml_path 미설정(plain URDF)이면 closure 결과가 비어 있고 model 은 정상 ──
 TEST(PinocchioBuilderClosure, PlainUrdfLeavesClosureEmpty) {
   rub::ModelConfig cfg;

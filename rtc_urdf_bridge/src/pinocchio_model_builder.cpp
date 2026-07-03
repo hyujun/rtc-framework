@@ -94,6 +94,7 @@ void PinocchioModelBuilder::Build() {
   LoadClosureSpecAndComputePassiveLocks();
   BuildReducedModels();
   BuildTreeModels();
+  BuildActuatedModel();
   RegisterClosedChainConstraints();
 }
 
@@ -253,6 +254,32 @@ void PinocchioModelBuilder::BuildTreeModels() {
   }
 }
 
+// ── Actuated 제어 모델 구축 (폐쇄 체인 전용) ─────────────────────────────────
+// tree/reduced 모델은 root→tip 직렬 경로 관절만 유지하므로, 4-bar 손가락의 active
+// DIP 처럼 passive coupler 가지를 통해 tip 에 도달하는 actuated 관절은 경로 밖이라
+// 잠긴다 (proto_1b: device 16 actuated 중 3 DIP 이 잠겨 tree='wbc' 가 13-DoF). 제어
+// (TSID/CLIK/MPC) 모델은 device 가 선언한 actuated 관절을 전부 담아야 reorder 가
+// 16/16 통과하므로, 여기서는 sidecar 가 passive 로 규정한 loop 관절만 잠그고
+// 나머지(= 모든 actuated)를 유지한 nq==nv 모델을 만든다. lock 기준값은 tree/reduced
+// 와 동일한 MakeReferenceConfig() 를 써서 frozen passive 기하가 tree 모델과 일치한다.
+void PinocchioModelBuilder::BuildActuatedModel() {
+  if (closure_passive_lock_names_.empty()) {
+    return;  // plain/mimic URDF — 소비자는 tree/full 로 fallback (byte-for-byte)
+  }
+  auto ref_config = MakeReferenceConfig();
+  auto joints_to_lock = ResolveJointIndicesToLock(closure_passive_lock_names_);
+
+  auto actuated = std::make_shared<pinocchio::Model>();
+  pinocchio::buildReducedModel(*full_model_, joints_to_lock, ref_config, *actuated);
+
+  RCLCPP_INFO(logger(),
+              "Actuated 제어모델 등록: loop-passive %zu개 잠금, nq=%d nv=%d "
+              "(full nq=%d nv=%d)",
+              joints_to_lock.size(), actuated->nq, actuated->nv, full_model_->nq, full_model_->nv);
+
+  actuated_model_ = std::move(actuated);
+}
+
 // ── 폐쇄 체인 구속 등록 ────────────────────────────────────────────────────
 // 실제 RigidConstraintModel 생성은 constraint_builder 로 위임한다 (§4b joint-frame
 // placement 합성, frame-first/link+origin 경로 지원, legacy→new API 교체 격리점 §7).
@@ -359,6 +386,10 @@ std::shared_ptr<const pinocchio::Model> PinocchioModelBuilder::GetTreeModel(
                             std::string(tree_model_name));
   }
   return it->second;
+}
+
+std::shared_ptr<const pinocchio::Model> PinocchioModelBuilder::GetActuatedModel() const noexcept {
+  return actuated_model_;
 }
 
 const std::vector<pinocchio::RigidConstraintModel>& PinocchioModelBuilder::GetConstraintModels()
