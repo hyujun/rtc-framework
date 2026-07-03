@@ -124,6 +124,60 @@ void DemoTaskController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*con
     r = Eigen::Matrix3d::Identity();
 }
 
+// ── #121: closed-chain hand FK wiring (non-RT configure + RT dispatch) ────────
+
+void DemoTaskController::ConfigureClosedChainHandFk() {
+  if (!builder_) {
+    return;
+  }
+  const auto primary = GetPrimaryDeviceName();
+  const auto secondary = GetSecondaryDeviceName();
+
+  // device_joint_names index order must match Compute()'s dev0/dev1: primary=0,
+  // secondary=1. The closed handle's independent joints may span both devices.
+  std::vector<std::vector<std::string>> dev_names;
+  if (auto* c = GetDeviceNameConfig(primary); c) {
+    dev_names.push_back(c->joint_state_names);
+  } else {
+    dev_names.emplace_back();
+  }
+  if (!secondary.empty()) {
+    if (auto* c = GetDeviceNameConfig(secondary); c) {
+      dev_names.push_back(c->joint_state_names);
+    } else {
+      dev_names.emplace_back();
+    }
+  }
+
+  // fingertip links + hand-root frame from the secondary tree-model definition.
+  std::vector<std::string> tips;
+  std::string hand_root;
+  if (const auto* sys = GetSystemModelConfig()) {
+    for (const auto& tm : sys->tree_models) {
+      if (tm.name == secondary) {
+        tips = tm.tip_links;
+        hand_root = tm.root_link;
+        break;
+      }
+    }
+  }
+
+  const auto res =
+      closed_hand_fk_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
+                                builder_->GetClosureActuatedJointIds(),
+                                builder_->GetClosureReferenceConfig(), dev_names, tips, hand_root);
+  LogHandFkWiring(logger_, "[task]", res, closed_hand_fk_.missing_joint());
+}
+
+bool DemoTaskController::ComputeHandForwardKinematics(const ControllerState& state) noexcept {
+  return RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state);
+}
+
+bool DemoTaskController::HandFingertipPose(std::size_t f, pinocchio::SE3& out) const noexcept {
+  return HandFingertipPoseDispatch(closed_hand_fk_, hand_handle_.get(), fingertip_frame_ids_,
+                                   use_hand_root_frame_, hand_root_frame_id_, f, out);
+}
+
 void DemoTaskController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
   const auto secondary = GetSecondaryDeviceName();
@@ -199,6 +253,10 @@ void DemoTaskController::OnDeviceConfigsSet() {
               "has_native_displacement=%d (secondary='%s')",
               static_cast<int>(has_native_contact_), static_cast<int>(has_native_displacement_),
               secondary.c_str());
+
+  // #121: wire closed-chain-consistent hand FK if the model has loop closure and a
+  // fingertip is downstream of a loop-passive joint. No-op (serial FK) otherwise.
+  ConfigureClosedChainHandFk();
 }
 
 // ── Virtual TCP computation ─────────────────────────────────────────────────
@@ -281,13 +339,7 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
     }
 
     pinocchio::SE3 hold_pose = tcp_pose;
-    if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-      const auto& dev1 = state.devices[1];
-      const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
-      for (std::size_t i = 0; i < hand_nq; ++i) {
-        hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
-      }
-      hand_handle_->ComputeForwardKinematics(std::span<const double>(hand_q_.data(), hand_nq));
+    if (ComputeHandForwardKinematics(state)) {
       UpdateVirtualTcp(tcp_pose, gains_lock_.Load());
       if (vtcp_valid_) {
         hold_pose = vtcp_pose_;

@@ -102,6 +102,60 @@ void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*co
     r = Eigen::Matrix3d::Identity();
 }
 
+// ── #121: closed-chain hand FK wiring (non-RT configure + RT dispatch) ────────
+
+void DemoJointController::ConfigureClosedChainHandFk() {
+  if (!builder_) {
+    return;
+  }
+  const auto primary = GetPrimaryDeviceName();
+  const auto secondary = GetSecondaryDeviceName();
+
+  // device_joint_names index order must match Compute()'s dev0/dev1: primary=0,
+  // secondary=1. The closed handle's independent joints may span both devices.
+  std::vector<std::vector<std::string>> dev_names;
+  if (auto* c = GetDeviceNameConfig(primary); c) {
+    dev_names.push_back(c->joint_state_names);
+  } else {
+    dev_names.emplace_back();
+  }
+  if (!secondary.empty()) {
+    if (auto* c = GetDeviceNameConfig(secondary); c) {
+      dev_names.push_back(c->joint_state_names);
+    } else {
+      dev_names.emplace_back();
+    }
+  }
+
+  // fingertip links + hand-root frame from the secondary tree-model definition.
+  std::vector<std::string> tips;
+  std::string hand_root;
+  if (const auto* sys = GetSystemModelConfig()) {
+    for (const auto& tm : sys->tree_models) {
+      if (tm.name == secondary) {
+        tips = tm.tip_links;
+        hand_root = tm.root_link;
+        break;
+      }
+    }
+  }
+
+  const auto res =
+      closed_hand_fk_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
+                                builder_->GetClosureActuatedJointIds(),
+                                builder_->GetClosureReferenceConfig(), dev_names, tips, hand_root);
+  LogHandFkWiring(logger_, "[joint]", res, closed_hand_fk_.missing_joint());
+}
+
+bool DemoJointController::ComputeHandForwardKinematics(const ControllerState& state) noexcept {
+  return RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state);
+}
+
+bool DemoJointController::HandFingertipPose(std::size_t f, pinocchio::SE3& out) const noexcept {
+  return HandFingertipPoseDispatch(closed_hand_fk_, hand_handle_.get(), fingertip_frame_ids_,
+                                   use_hand_root_frame_, hand_root_frame_id_, f, out);
+}
+
 void DemoJointController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
   const auto secondary = GetSecondaryDeviceName();
@@ -180,6 +234,10 @@ void DemoJointController::OnDeviceConfigsSet() {
               "has_native_displacement=%d (secondary='%s')",
               static_cast<int>(has_native_contact_), static_cast<int>(has_native_displacement_),
               secondary.c_str());
+
+  // #121: wire closed-chain-consistent hand FK if the model has loop closure and a
+  // fingertip is downstream of a loop-passive joint. No-op (serial FK) otherwise.
+  ConfigureClosedChainHandFk();
 }
 
 ControllerOutput DemoJointController::Compute(const ControllerState& state) noexcept {

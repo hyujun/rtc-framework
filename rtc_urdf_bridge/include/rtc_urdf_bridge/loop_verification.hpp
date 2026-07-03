@@ -67,4 +67,32 @@ struct JacobianReport {
 [[nodiscard]] int TotalConstraintDim(
     const std::vector<pinocchio::RigidConstraintModel>& constraints) noexcept;
 
+/// @brief 단일 constraint 의 residual 차원 (CONTACT_6D→6, else 3). RT/non-RT 공용.
+[[nodiscard]] int ConstraintDim(const pinocchio::RigidConstraintModel& cm) noexcept;
+
+/// @brief @ref FillConstraintKinematicsRow 용 재사용 스크래치. RT 소비자는 멤버로 보유해
+///   힙 할당을 회피한다. non-RT 소비자는 loop 밖에서 한 번 Resize 해 재사용한다.
+struct ConstraintKinScratch {
+  pinocchio::Data::Matrix6x J1, J2, Jc1, Jc2, Jrel;  ///< 6 × nv
+  Eigen::Matrix<double, 3, Eigen::Dynamic> tmp3;     ///< 3 × nv (3D 커플링 항)
+  /// nv 크기로 사전 할당 (non-RT — 생성/초기화 시 1회).
+  void Resize(int nv);
+};
+
+/// @brief constraint @p cm 의 residual 을 @p phi.segment(row,dim) 에, Jacobian 을
+///   @p Jc.middleRows(row,dim) 에 채운다. **호출 전 computeJointJacobians(model,data,q) 필수.**
+///   @p scratch 와 phi/Jc 가 모두 사전 할당돼 있으면 힙 할당·예외 없음(noexcept) — 폐쇄 체인
+///   constraint kinematics 규약(c1 LOCAL 상대 변위, 3D 는 −[p]×ω 커플링 포함)의 **단일 출처**.
+///   @ref ComputeConstraintKinematics (non-RT) 와 RtClosedChainHandle (RT) 가 공유한다.
+void FillConstraintKinematicsRow(const pinocchio::Model& model, pinocchio::Data& data,
+                                 const pinocchio::RigidConstraintModel& cm, int row, int dim,
+                                 ConstraintKinScratch& scratch, Eigen::Ref<Eigen::VectorXd> phi,
+                                 Eigen::Ref<Eigen::MatrixXd> Jc) noexcept;
+
+/// @brief 축약(reduction) Jacobian Jc_D 의 특이 조립형상 판정 임계 (σ_min(Jc_D) 대리).
+/// non-RT @ref ClosedChainHandle (SVD σ_min) 과 RT @ref RtClosedChainHandle (LDLT pivot 대리)
+/// 이 **동일 임계**를 공유해 singularity 의미를 동기화한다. 두 곳에 상수를 복제하면 한쪽만
+/// 튜닝 시 semantics 가 조용히 desync 되므로 여기 단일 출처로 둔다.
+inline constexpr double kClosedChainSingularSvThreshold = 1e-6;
+
 }  // namespace rtc_urdf_bridge

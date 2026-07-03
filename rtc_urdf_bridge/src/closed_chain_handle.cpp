@@ -31,8 +31,10 @@ namespace rtc_urdf_bridge {
 
 namespace {
 
-constexpr double kDriftEps = 1e-6;             // γ = J̇c·v 중앙차분 스텝
-constexpr double kSingularSvThreshold = 1e-6;  // Jc_D 최소 특이값 특이 판정
+constexpr double kDriftEps = 1e-6;  // γ = J̇c·v 중앙차분 스텝
+// Jc_D 최소 특이값 특이 판정 임계. RT @ref RtClosedChainHandle 과 공유 (단일 출처:
+// loop_verification.hpp) — 한쪽만 튜닝해 semantics 가 desync 되는 것을 방지한다.
+constexpr double kSingularSvThreshold = kClosedChainSingularSvThreshold;
 // G 축약 map 의 damped pinv 정규화 λ. σ⁺=σ/(σ²+λ²) 의 최대 증폭 1/(2λ) 를 유계화하기 위해
 // 특이 임계와 동급으로 고정한다 → 미-flag(σ≥λ) 구간 증폭 ≤ 1/(2λ). Newton 위치 사영의
 // damping(수렴 튜닝) 을 재사용하지 않는다 (출력 크기 안전이라는 다른 목적).

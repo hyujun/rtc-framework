@@ -7,6 +7,7 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
@@ -224,6 +225,17 @@ class DemoTaskController final : public RTControllerInterface {
   // non-E-STOP ticks — every reader must sit behind an `estop_active_` guard.
   bool control_6dof_cached_{false};
 
+  // ── Hand fingertip FK dispatch (serial hand_handle_ ↔ closed_hand_fk_) ────
+  // #121: single branch point for closed-chain vs serial hand FK so every call
+  // site stays byte-for-byte when closure is absent/inactive.
+  //   ComputeHandForwardKinematics: run the per-tick hand FK (closed Update or
+  //     serial ComputeForwardKinematics); returns false if no valid hand device.
+  //   HandFingertipPose: hand-root-relative fingertip pose for finger f (closed
+  //     or serial); false if that fingertip is inactive.
+  [[nodiscard]] bool ComputeHandForwardKinematics(const ControllerState& state) noexcept;
+  [[nodiscard]] bool HandFingertipPose(std::size_t f, pinocchio::SE3& out) const noexcept;
+  void ConfigureClosedChainHandFk();
+
   // ── 3-phase pipeline ────────────────────────────────────────────────────
   void ReadState(const ControllerState& state) noexcept;
   void ComputeControl(const ControllerState& state, double dt) noexcept;
@@ -257,6 +269,10 @@ class DemoTaskController final : public RTControllerInterface {
   std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
+  // #121: closed-chain-consistent hand fingertip FK. Active only for extended-URDF
+  // (loop-closure) hands whose fingertips are downstream of a loop-passive joint;
+  // otherwise inactive and the serial hand_handle_ path runs byte-for-byte.
+  ClosedChainHandFk closed_hand_fk_;
 
   // ── Virtual TCP (fingertip-based control point) ───────────────────────
   pinocchio::SE3 T_tcp_vtcp_{pinocchio::SE3::Identity()};  ///< TCP → virtual TCP transform

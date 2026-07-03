@@ -19,13 +19,11 @@
 
 namespace rtc_urdf_bridge {
 
-namespace {
 // CONTACT_6D → 6, 그 외(3D) → 3. RigidConstraintData/residualSize 의미 모호성 회피 위해
 // type 에서 직접 유도한다 (안정적·명시적).
 int ConstraintDim(const pinocchio::RigidConstraintModel& cm) noexcept {
   return cm.type == pinocchio::CONTACT_6D ? 6 : 3;
 }
-}  // namespace
 
 int TotalConstraintDim(const std::vector<pinocchio::RigidConstraintModel>& constraints) noexcept {
   int total = 0;
@@ -33,6 +31,62 @@ int TotalConstraintDim(const std::vector<pinocchio::RigidConstraintModel>& const
     total += ConstraintDim(cm);
   }
   return total;
+}
+
+void ConstraintKinScratch::Resize(int nv) {
+  J1.setZero(6, nv);
+  J2.setZero(6, nv);
+  Jc1.setZero(6, nv);
+  Jc2.setZero(6, nv);
+  Jrel.setZero(6, nv);
+  tmp3.setZero(3, nv);
+}
+
+void FillConstraintKinematicsRow(const pinocchio::Model& model, pinocchio::Data& data,
+                                 const pinocchio::RigidConstraintModel& cm, int row, int dim,
+                                 ConstraintKinScratch& scratch, Eigen::Ref<Eigen::VectorXd> phi,
+                                 Eigen::Ref<Eigen::MatrixXd> Jc) noexcept {
+  const pinocchio::JointIndex j1 = cm.joint1_id;
+  const pinocchio::JointIndex j2 = cm.joint2_id;
+
+  // 두 constraint frame 의 world placement 와 상대 변위.
+  const pinocchio::SE3 oMc1 = data.oMi[j1] * cm.joint1_placement;
+  const pinocchio::SE3 oMc2 = data.oMi[j2] * cm.joint2_placement;
+  const pinocchio::SE3 c1Mc2 = oMc1.actInv(oMc2);  // = oMc1.inverse() * oMc2
+
+  // joint LOCAL Jacobian → constraint frame(c) 로 이동: J_c = Ad(cMj) · J_joint.
+  scratch.J1.setZero();
+  scratch.J2.setZero();
+  pinocchio::getJointJacobian(model, data, j1, pinocchio::LOCAL, scratch.J1);
+  pinocchio::getJointJacobian(model, data, j2, pinocchio::LOCAL, scratch.J2);
+
+  const Eigen::Matrix<double, 6, 6> Ad_c1j1 = cm.joint1_placement.inverse().toActionMatrix();
+  const Eigen::Matrix<double, 6, 6> Ad_c2j2 = cm.joint2_placement.inverse().toActionMatrix();
+  const Eigen::Matrix<double, 6, 6> Ad_c1c2 = c1Mc2.toActionMatrix();
+
+  scratch.Jc1.noalias() = Ad_c1j1 * scratch.J1;  // 6 × nv, c1 frame
+  scratch.Jc2.noalias() = Ad_c2j2 * scratch.J2;  // 6 × nv, c2 frame
+  // c2 의 c1 기준 상대 spatial velocity: Ad(c1Mc2)·Jc2 − Jc1.
+  scratch.Jrel.noalias() = Ad_c1c2 * scratch.Jc2;
+  scratch.Jrel -= scratch.Jc1;  // 6 × nv
+
+  if (dim == 6) {
+    phi.segment<6>(row) = pinocchio::log6(c1Mc2).toVector();
+    Jc.middleRows(row, 6) = scratch.Jrel;
+  } else {
+    const Eigen::Vector3d p = c1Mc2.translation();
+    phi.segment<3>(row) = p;
+    // φ = translation(c1Mc2) 의 정확한 시간미분: dp/dt = v_s − [p]×·ω_s,
+    // 여기서 [v_s; ω_s] = Jrel (c1 frame 상대 spatial velocity). p→0(구속 만족) 에서만
+    // v_s 와 일치하므로 angular 커플링 항 −[p]×·ω_s 를 포함해야 non-consistent q 에서도
+    // Jc = ∂φ/∂v 가 정확하다 (projection/velocity/rank self-consistency).
+    Eigen::Matrix3d p_hat;
+    p_hat << 0.0, -p.z(), p.y(),  //
+        p.z(), 0.0, -p.x(),       //
+        -p.y(), p.x(), 0.0;
+    scratch.tmp3.noalias() = p_hat * scratch.Jrel.bottomRows<3>();
+    Jc.middleRows(row, 3) = scratch.Jrel.topRows<3>() - scratch.tmp3;
+  }
 }
 
 ConstraintKinematics ComputeConstraintKinematics(
@@ -48,51 +102,15 @@ ConstraintKinematics ComputeConstraintKinematics(
   out.row_offsets.reserve(constraints.size());
   out.row_sizes.reserve(constraints.size());
 
+  ConstraintKinScratch scratch;
+  scratch.Resize(model.nv);  // loop 밖 1회 할당 → constraint 간 재사용
+
   int row = 0;
   for (const auto& cm : constraints) {
     const int dim = ConstraintDim(cm);
     out.row_offsets.push_back(row);
     out.row_sizes.push_back(dim);
-
-    const pinocchio::JointIndex j1 = cm.joint1_id;
-    const pinocchio::JointIndex j2 = cm.joint2_id;
-
-    // 두 constraint frame 의 world placement 와 상대 변위.
-    const pinocchio::SE3 oMc1 = data.oMi[j1] * cm.joint1_placement;
-    const pinocchio::SE3 oMc2 = data.oMi[j2] * cm.joint2_placement;
-    const pinocchio::SE3 c1Mc2 = oMc1.actInv(oMc2);  // = oMc1.inverse() * oMc2
-
-    // joint LOCAL Jacobian → constraint frame(c) 로 이동: J_c = Ad(cMj) · J_joint.
-    pinocchio::Data::Matrix6x J1 = pinocchio::Data::Matrix6x::Zero(6, model.nv);
-    pinocchio::Data::Matrix6x J2 = pinocchio::Data::Matrix6x::Zero(6, model.nv);
-    pinocchio::getJointJacobian(model, data, j1, pinocchio::LOCAL, J1);
-    pinocchio::getJointJacobian(model, data, j2, pinocchio::LOCAL, J2);
-
-    const Eigen::Matrix<double, 6, 6> Ad_c1j1 = cm.joint1_placement.inverse().toActionMatrix();
-    const Eigen::Matrix<double, 6, 6> Ad_c2j2 = cm.joint2_placement.inverse().toActionMatrix();
-    const Eigen::Matrix<double, 6, 6> Ad_c1c2 = c1Mc2.toActionMatrix();
-
-    const Eigen::MatrixXd Jc1 = Ad_c1j1 * J1;  // 6 × nv, c1 frame
-    const Eigen::MatrixXd Jc2 = Ad_c2j2 * J2;  // 6 × nv, c2 frame
-    // c2 의 c1 기준 상대 spatial velocity: Ad(c1Mc2)·Jc2 − Jc1.
-    const Eigen::MatrixXd Jrel = Ad_c1c2 * Jc2 - Jc1;  // 6 × nv
-
-    if (dim == 6) {
-      out.phi.segment<6>(row) = pinocchio::log6(c1Mc2).toVector();
-      out.Jc.middleRows(row, 6) = Jrel;
-    } else {
-      const Eigen::Vector3d p = c1Mc2.translation();
-      out.phi.segment<3>(row) = p;
-      // φ = translation(c1Mc2) 의 정확한 시간미분: dp/dt = v_s − [p]×·ω_s,
-      // 여기서 [v_s; ω_s] = Jrel (c1 frame 상대 spatial velocity). p→0(구속 만족) 에서만
-      // v_s 와 일치하므로 angular 커플링 항 −[p]×·ω_s 를 포함해야 non-consistent q 에서도
-      // Jc = ∂φ/∂v 가 정확하다 (projection/velocity/rank self-consistency).
-      Eigen::Matrix3d p_hat;
-      p_hat << 0.0, -p.z(), p.y(),  //
-          p.z(), 0.0, -p.x(),       //
-          -p.y(), p.x(), 0.0;
-      out.Jc.middleRows(row, 3) = Jrel.topRows<3>() - p_hat * Jrel.bottomRows<3>();
-    }
+    FillConstraintKinematicsRow(model, data, cm, row, dim, scratch, out.phi, out.Jc);
     row += dim;
   }
 

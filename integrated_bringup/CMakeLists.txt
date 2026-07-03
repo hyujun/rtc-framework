@@ -68,6 +68,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/grasp_phase_manager.cpp
   src/controllers/wbc/force_reference_updater.cpp
   src/support/demo_shared_config.cpp
+  src/support/closed_chain_hand_fk.cpp
   src/support/owned_topics.cpp
   src/backends/mujoco_native_backend.cpp
   src/backends/ur_driver_native_backend.cpp
@@ -355,6 +356,24 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_demo_shared_config
     rclcpp
     rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── Closed-chain hand FK helper test (#121 Phase 2c) ───────────────────────
+  # Reuses rtc_urdf_bridge/test fixtures (closure_test_fixtures.hpp,
+  # test_urdf_path.hpp) — test-only, never-installed headers resolved via a
+  # source-relative include dir (same pattern as rtc_controllers tests).
+  ament_add_gtest(test_closed_chain_hand_fk test/test_closed_chain_hand_fk.cpp)
+  target_include_directories(test_closed_chain_hand_fk PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_closed_chain_hand_fk
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_closed_chain_hand_fk
+    rclcpp
+    rtc_urdf_bridge
     rtc_base
     pinocchio
     Eigen3
