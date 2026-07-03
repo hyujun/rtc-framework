@@ -3,6 +3,9 @@
 
 #include "rtc_base/types/types.hpp"
 #include "rtc_urdf_bridge/rt_closed_chain_handle.hpp"
+#include "rtc_urdf_bridge/rt_model_handle.hpp"
+
+#include <rclcpp/logger.hpp>
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -26,12 +29,16 @@
 
 namespace integrated_bringup {
 
-/// @brief Configure 결과 — 왜 (비)활성인지. 컨트롤러가 로깅에 사용.
+/// @brief Configure 결과 — 왜 (비)활성인지. 컨트롤러가 로깅에 사용. 활성이 아닌 모든 경우
+///   컨트롤러는 serial `RtModelHandle` 경로를 그대로 쓴다 (byte-for-byte).
 enum class HandFkWiringResult {
   kInactiveNoClosure,  ///< 구속 없음 (plain URDF) → serial FK 사용 (byte-for-byte)
   kInactiveNoDownstream,  ///< closure 有이나 어떤 fingertip 도 loop 하류 아님 → 보정 불필요
+  kInactiveNoHandRoot,  ///< hand_root 프레임이 full model 에서 해결 안 됨 → serial 합성과 정합 불가
   kInactiveBridgeIncomplete,  ///< 독립 관절 이름이 device joint_state_names 에 없음 → q_a 조립 불가
-  kActive,                    ///< closed-chain FK 활성
+  kInactiveConstructionFailed,  ///< RtClosedChainHandle 생성 실패(ill-posed closure) → serial
+                                ///< fallback
+  kActive,                      ///< closed-chain FK 활성
 };
 
 /// @brief task/joint 컨트롤러의 **hand fingertip FK** 를 closed-chain-consistent 로 얻는 래퍼.
@@ -67,23 +74,35 @@ class ClosedChainHandFk {
   /// @param q_seed loop-consistent warm-start seed (builder->GetClosureReferenceConfig()).
   /// @param device_joint_names device index 순서의 joint_state_names (q_a 브릿지 소스).
   /// @param fingertip_links fingertip link 이름 (최대 kMaxFingertips). 빈 슬롯은 무시.
-  /// @param hand_root_link fingertip 을 표현할 기준 프레임 (빈 문자열이면 full-model world).
+  /// @param hand_root_link fingertip 을 표현할 기준 프레임. **full model 에서 해결돼야** 활성화된다
+  ///   (해결 안 되면 kInactiveNoHandRoot → serial 경로. closed 핸들은 arm-base world 라 hand-root
+  ///   anchor 없이는 arm TCP 합성이 틀리기 때문).
+  /// @param closure_error_threshold 이 값 이상의 ‖φ‖(미수렴/특이) tick 은 신뢰 불가로 보고 직전
+  ///   유효 fingertip pose 를 hold 한다 (기본 1e-3 m).
+  /// @note ill-posed closure 로 RtClosedChainHandle 생성이 throw 하면 catch 해서
+  ///   kInactiveConstructionFailed 로 graceful 하게 serial 로 떨어진다 (컨트롤러 config abort
+  ///   방지).
   [[nodiscard]] HandFkWiringResult Configure(
       std::shared_ptr<const pinocchio::Model> model,
       std::vector<pinocchio::RigidConstraintModel> constraints,
       std::vector<pinocchio::JointIndex> actuated_joint_ids, Eigen::VectorXd q_seed,
       const std::vector<std::vector<std::string>>& device_joint_names,
-      std::span<const std::string> fingertip_links, std::string_view hand_root_link);
+      std::span<const std::string> fingertip_links, std::string_view hand_root_link,
+      double closure_error_threshold = 1e-3);
 
   [[nodiscard]] bool active() const noexcept { return active_; }
 
   /// @brief measured 상태에서 actuated q_a 를 모아 closed-chain 사영 + FK 갱신. **RT-safe.**
-  /// 비활성이면 no-op. 크기 계약 위반은 내부 핸들이 held 로 처리.
+  /// 비활성이면 no-op. 이 tick 이 **신뢰 가능**(모든 소스 device valid·in-range && !held &&
+  /// !singular && closure_error < threshold)하면 각 활성 fingertip 의 hand-root 상대 pose 를
+  /// 캐시에 갱신하고, 아니면 캐시(직전 유효 해)를 유지한다 — status 소비를 래퍼가 내부화한다.
   void Update(const rtc::ControllerState& state) noexcept;
 
-  /// @brief fingertip @p f 의 **hand-root 상대** placement 를 @p out 에 기록.
-  /// @return fingertip 이 활성(loop 하류로 배선됨)이면 true. 비활성/OOB 면 false (out 미변경).
-  /// **RT-safe.** hand_root_link 이 지정됐으면 `oMroot.actInv(oMtip)`, 아니면 full-model world.
+  /// @brief fingertip @p f 의 **hand-root 상대** placement(직전 신뢰 tick 값)를 @p out 에 기록.
+  /// @return 활성 fingertip 이고 유효 캐시가 있으면 true. 비활성/OOB/캐시없음이면 false (out
+  /// 미변경).
+  /// **RT-safe.** loop 하류 fingertip 은 loop-consistent, 비하류 fingertip 은 full-model FK(serial
+  /// 등가)로 둘 다 서비스된다 (#121: 활성 시 혼합 손의 serial 손가락도 유지).
   [[nodiscard]] bool GetFingertipHandRootPose(std::size_t f, pinocchio::SE3& out) const noexcept;
 
   /// @brief 직전 Update 의 loop-consistency/특이 상태.
@@ -101,14 +120,43 @@ class ClosedChainHandFk {
   std::unique_ptr<rtc_urdf_bridge::RtClosedChainHandle> handle_;
   bool active_{false};
   bool use_hand_root_{false};
+  double closure_error_threshold_{1e-3};
   pinocchio::FrameIndex hand_root_fid_{0};
   std::array<pinocchio::FrameIndex, kMaxFingertips> fingertip_fid_{};
   std::array<bool, kMaxFingertips> fingertip_active_{};
+
+  // 직전 신뢰 tick 의 hand-root 상대 fingertip pose 캐시 (untrustworthy tick 은 hold).
+  std::array<pinocchio::SE3, kMaxFingertips> last_pose_{};
+  std::array<bool, kMaxFingertips> last_pose_valid_{};
 
   std::vector<QSource>
       bridge_;  ///< 독립 관절별 측정 소스 (크기 n_a, GetIndependentJointNames 순서)
   Eigen::VectorXd q_a_;  ///< n_a, preallocated
   std::string missing_joint_;
 };
+
+// ── 컨트롤러 wiring 공용 dispatch (task/joint 공유, #121 Phase 2c) ─────────────
+// task/joint 컨트롤러가 동일하게 쓰는 hand-FK 분기·로깅을 단일 출처로 둔다.
+
+/// @brief 이번 tick 의 hand FK 를 실행한다: closed 활성이면 @p fk.Update(state), 아니면 serial
+///   @p hand_handle 의 ComputeForwardKinematics(measured hand q). **RT-safe.**
+/// @return hand device(devices[1]) 가 유효해 FK 를 돌렸으면 true.
+[[nodiscard]] bool RunHandForwardKinematics(ClosedChainHandFk& fk,
+                                            rtc_urdf_bridge::RtModelHandle* hand_handle,
+                                            Eigen::VectorXd& hand_q,
+                                            const rtc::ControllerState& state) noexcept;
+
+/// @brief fingertip @p f 의 **hand-root 상대** pose 를 closed(활성) 또는 serial 에서 얻어 @p out
+///   에 기록. serial 경로는 기존 tree-model 계산과 byte-for-byte 동일. **RT-safe.**
+/// @return 유효 pose 를 얻었으면 true (비활성/미해결 fingertip 이면 false, out 미변경).
+[[nodiscard]] bool HandFingertipPoseDispatch(
+    const ClosedChainHandFk& fk, const rtc_urdf_bridge::RtModelHandle* hand_handle,
+    const std::array<pinocchio::FrameIndex, ClosedChainHandFk::kMaxFingertips>& fingertip_ids,
+    bool use_hand_root, pinocchio::FrameIndex hand_root_id, std::size_t f,
+    pinocchio::SE3& out) noexcept;
+
+/// @brief Configure 결과를 컨트롤러 태그(@p tag, 예: "[task]")와 함께 로깅 (task/joint 공용).
+void LogHandFkWiring(const rclcpp::Logger& logger, const char* tag, HandFkWiringResult result,
+                     const std::string& missing_joint);
 
 }  // namespace integrated_bringup

@@ -144,55 +144,16 @@ void DemoJointController::ConfigureClosedChainHandFk() {
       closed_hand_fk_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
                                 builder_->GetClosureActuatedJointIds(),
                                 builder_->GetClosureReferenceConfig(), dev_names, tips, hand_root);
-  switch (res) {
-    case HandFkWiringResult::kActive:
-      RCLCPP_INFO(logger_, "[joint] closed-chain hand FK active (loop-consistent fingertip FK).");
-      break;
-    case HandFkWiringResult::kInactiveBridgeIncomplete:
-      RCLCPP_WARN(logger_,
-                  "[joint] loop closure present but actuated joint '%s' is not in any device "
-                  "joint_state_names — closed-chain hand FK disabled (serial FK).",
-                  closed_hand_fk_.missing_joint().c_str());
-      break;
-    case HandFkWiringResult::kInactiveNoDownstream:
-      RCLCPP_INFO(logger_,
-                  "[joint] loop closure present but no fingertip is downstream of a loop-passive "
-                  "joint — serial hand FK (byte-for-byte).");
-      break;
-    case HandFkWiringResult::kInactiveNoClosure:
-      break;  // plain URDF (no closure) — serial path, no log
-  }
+  LogHandFkWiring(logger_, "[joint]", res, closed_hand_fk_.missing_joint());
 }
 
 bool DemoJointController::ComputeHandForwardKinematics(const ControllerState& state) noexcept {
-  if (!hand_handle_ || state.num_devices <= 1 || !state.devices[1].valid) {
-    return false;
-  }
-  if (closed_hand_fk_.active()) {
-    closed_hand_fk_.Update(state);  // measured actuated q → loop-consistent full FK
-    return true;
-  }
-  const auto& dev1 = state.devices[1];
-  const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
-  for (std::size_t i = 0; i < hand_nq; ++i) {
-    hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
-  }
-  hand_handle_->ComputeForwardKinematics(std::span<const double>(hand_q_.data(), hand_nq));
-  return true;
+  return RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state);
 }
 
 bool DemoJointController::HandFingertipPose(std::size_t f, pinocchio::SE3& out) const noexcept {
-  if (closed_hand_fk_.active()) {
-    return closed_hand_fk_.GetFingertipHandRootPose(f, out);
-  }
-  if (f >= kNumFingertips || fingertip_frame_ids_[f] == 0) {
-    return false;
-  }
-  out = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
-  if (use_hand_root_frame_) {
-    out = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(out);
-  }
-  return true;
+  return HandFingertipPoseDispatch(closed_hand_fk_, hand_handle_.get(), fingertip_frame_ids_,
+                                   use_hand_root_frame_, hand_root_frame_id_, f, out);
 }
 
 void DemoJointController::OnDeviceConfigsSet() {

@@ -1,6 +1,8 @@
 // ── RtClosedChainHandle: RT-safe closed-chain FK (fixed-step loop projection) ─
 #pragma once
 
+#include "rtc_urdf_bridge/loop_verification.hpp"
+
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -195,12 +197,9 @@ class RtClosedChainHandle {
   Eigen::VectorXd dq_;      ///< nv tangent 증분
 
   // 구속 kinematics 버퍼
-  Eigen::VectorXd phi_;                            ///< (m)
-  Eigen::MatrixXd Jc_;                             ///< (m × nv)
-  pinocchio::Data::Matrix6x J1_, J2_;              ///< (6 × nv) joint LOCAL Jacobian
-  pinocchio::Data::Matrix6x Jc1_, Jc2_;            ///< (6 × nv) constraint frame Jacobian
-  pinocchio::Data::Matrix6x Jrel_;                 ///< (6 × nv) 상대 spatial velocity Jacobian
-  Eigen::Matrix<double, 3, Eigen::Dynamic> tmp3_;  ///< (3 × nv) 3D 커플링 항 scratch
+  Eigen::VectorXd phi_;           ///< (m)
+  Eigen::MatrixXd Jc_;            ///< (m × nv)
+  ConstraintKinScratch scratch_;  ///< 6×nv/3×nv 스크래치 (FillConstraintKinematicsRow 공용)
 
   // 사영 solve 버퍼 (m×m)
   Eigen::MatrixXd Jc_free_;                 ///< (m × dep) 종속 열

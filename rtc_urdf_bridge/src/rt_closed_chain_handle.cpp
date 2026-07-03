@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -26,10 +27,6 @@
 namespace rtc_urdf_bridge {
 
 namespace {
-
-int ConstraintDim(const pinocchio::RigidConstraintModel& cm) noexcept {
-  return cm.type == pinocchio::CONTACT_6D ? 6 : 3;
-}
 
 const pinocchio::Model& RequireModel(const std::shared_ptr<const pinocchio::Model>& m) {
   if (!m) {
@@ -134,12 +131,7 @@ void RtClosedChainHandle::Initialize() {
   dq_ = Eigen::VectorXd::Zero(nv_);
   phi_ = Eigen::VectorXd::Zero(m_);
   Jc_ = Eigen::MatrixXd::Zero(m_, nv_);
-  J1_ = pinocchio::Data::Matrix6x::Zero(6, nv_);
-  J2_ = pinocchio::Data::Matrix6x::Zero(6, nv_);
-  Jc1_ = pinocchio::Data::Matrix6x::Zero(6, nv_);
-  Jc2_ = pinocchio::Data::Matrix6x::Zero(6, nv_);
-  Jrel_ = pinocchio::Data::Matrix6x::Zero(6, nv_);
-  tmp3_ = Eigen::Matrix<double, 3, Eigen::Dynamic>::Zero(3, nv_);
+  scratch_.Resize(nv_);
 
   Jc_free_ = Eigen::MatrixXd::Zero(m_, std::max(dep_, 1));
   JJt_ = Eigen::MatrixXd::Zero(std::max(m_, 1), std::max(m_, 1));
@@ -167,7 +159,7 @@ void RtClosedChainHandle::Initialize() {
   pinocchio::updateFramePlacements(model, data_);
 }
 
-// ── 구속 kinematics (RT-safe 재구현: preallocated phi_/Jc_) ────────────────────
+// ── 구속 kinematics (RT-safe: preallocated phi_/Jc_ + 공용 FillConstraintKinematicsRow) ──
 
 void RtClosedChainHandle::ComputeConstraintKinematicsRt(const Eigen::VectorXd& q) noexcept {
   const pinocchio::Model& model = *model_;
@@ -176,41 +168,8 @@ void RtClosedChainHandle::ComputeConstraintKinematicsRt(const Eigen::VectorXd& q
   int row = 0;
   for (const auto& cm : constraints_) {
     const int dim = ConstraintDim(cm);
-    const pinocchio::JointIndex j1 = cm.joint1_id;
-    const pinocchio::JointIndex j2 = cm.joint2_id;
-
-    const pinocchio::SE3 oMc1 = data_.oMi[j1] * cm.joint1_placement;
-    const pinocchio::SE3 oMc2 = data_.oMi[j2] * cm.joint2_placement;
-    const pinocchio::SE3 c1Mc2 = oMc1.actInv(oMc2);
-
-    J1_.setZero();
-    J2_.setZero();
-    pinocchio::getJointJacobian(model, data_, j1, pinocchio::LOCAL, J1_);
-    pinocchio::getJointJacobian(model, data_, j2, pinocchio::LOCAL, J2_);
-
-    const Eigen::Matrix<double, 6, 6> Ad_c1j1 = cm.joint1_placement.inverse().toActionMatrix();
-    const Eigen::Matrix<double, 6, 6> Ad_c2j2 = cm.joint2_placement.inverse().toActionMatrix();
-    const Eigen::Matrix<double, 6, 6> Ad_c1c2 = c1Mc2.toActionMatrix();
-
-    Jc1_.noalias() = Ad_c1j1 * J1_;    // c1 frame
-    Jc2_.noalias() = Ad_c2j2 * J2_;    // c2 frame
-    Jrel_.noalias() = Ad_c1c2 * Jc2_;  // Ad(c1Mc2)·Jc2
-    Jrel_ -= Jc1_;                     // − Jc1
-
-    if (dim == 6) {
-      phi_.segment<6>(row) = pinocchio::log6(c1Mc2).toVector();
-      Jc_.middleRows(row, 6) = Jrel_;
-    } else {
-      const Eigen::Vector3d p = c1Mc2.translation();
-      phi_.segment<3>(row) = p;
-      // φ = translation 의 정확한 시간미분: Jc = v_s − [p]× ω_s (loop_verification 규약 동일).
-      Eigen::Matrix3d p_hat;
-      p_hat << 0.0, -p.z(), p.y(),  //
-          p.z(), 0.0, -p.x(),       //
-          -p.y(), p.x(), 0.0;
-      tmp3_.noalias() = p_hat * Jrel_.bottomRows<3>();
-      Jc_.middleRows(row, 3) = Jrel_.topRows<3>() - tmp3_;
-    }
+    // non-RT ComputeConstraintKinematics 와 동일 규약(단일 출처) — preallocated scratch 로 RT-safe.
+    FillConstraintKinematicsRow(model, data_, cm, row, dim, scratch_, phi_, Jc_);
     row += dim;
   }
 }
@@ -276,6 +235,8 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
   // 크기 불일치는 RT 에서 throw 대신 hold (직전 해 유지).
   if (static_cast<int>(q_a.size()) != n_a_) {
     status_.held = true;
+    status_.closure_error =
+        std::numeric_limits<double>::infinity();  // held → 임계 비교가 안전히 실패
     return status_;
   }
 
@@ -328,6 +289,8 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
   // q_full_ 로 FK 를 복원해 getter 가 직전 해를 돌려주도록 한다 (G_ 는 미갱신 → 직전 값 유지).
   if (!q_work_.allFinite() || !std::isfinite(status_.closure_error)) {
     status_.held = true;
+    status_.closure_error =
+        std::numeric_limits<double>::infinity();  // held → 임계 비교가 안전히 실패
     pinocchio::computeJointJacobians(model, data_, q_full_);
     pinocchio::updateFramePlacements(model, data_);
     return status_;
