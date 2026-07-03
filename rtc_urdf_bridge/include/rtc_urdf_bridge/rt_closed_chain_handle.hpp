@@ -81,11 +81,11 @@ class RtClosedChainHandle {
   /// @param model full spanning-tree 모델 (shared_ptr 로 수명 보장)
   /// @param constraints loop 구속 (빈 벡터면 serial 등가 항등 — 사영 없이 FK passthrough)
   /// @param actuated_joint_ids 독립(구동) 관절 JointIndex — 각 단일-DoF
-  /// @param q_seed loop-consistent warm-start seed (크기≠nq 이면 neutral)
+  /// @param q_seed loop-consistent warm-start seed (빈 벡터면 neutral; 그 외 크기≠nq 면 throw)
   /// @param num_iterations 고정 Newton 스텝 수 K (기본 2, #121 Phase 2a 채택)
   /// @param projection_damping 사영 DLS 정규화 λ (기본 1e-8)
   /// @param reduction_damping G left-pinv 정규화 λ (기본 1e-6, 특이 임계와 동급)
-  /// @throws std::invalid_argument model 이 null
+  /// @throws std::invalid_argument model 이 null, 또는 q_seed 가 비어있지 않은데 크기≠nq
   /// @throws std::runtime_error 독립 관절 non-single-DoF, 구속 有인데 독립 관절 無,
   ///   종속 DoF > 구속 rows m (reduction underdetermined)
   RtClosedChainHandle(std::shared_ptr<const pinocchio::Model> model,

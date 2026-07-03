@@ -35,6 +35,10 @@ const pinocchio::Model& RequireModel(const std::shared_ptr<const pinocchio::Mode
   return *m;
 }
 
+// 범위 밖 frame_id 접근 시 반환할 항등 pose. namespace-scope const → static-init 시 1회 구성,
+// RT 핫패스에서 local-static guard(락) 없이 참조만 한다.
+const pinocchio::SE3 kIdentitySE3 = pinocchio::SE3::Identity();
+
 }  // namespace
 
 // ── 생성자 ──────────────────────────────────────────────────────────────────
@@ -54,6 +58,15 @@ RtClosedChainHandle::RtClosedChainHandle(std::shared_ptr<const pinocchio::Model>
   nv_ = model_->nv;
   m_ = TotalConstraintDim(constraints_);
   identity_ = constraints_.empty();
+  // q_seed: 빈 벡터(size 0)는 명시적 "neutral 사용" 신호. 그 외 크기가 nq 와 다르면 misconfig
+  // 이므로 조용히 neutral 로 떨어뜨리지 않고 throw 한다 (Configure 가 catch → graceful serial
+  // fallback + WARN). 대칭 링키지의 neutral 은 특이 조립일 수 있어, silent fallback 은 매 tick 신뢰
+  // 불가 → fingertip 영구 저하로 이어진다.
+  if (q_seed.size() != 0 && q_seed.size() != model_->nq) {
+    throw std::invalid_argument("RtClosedChainHandle: q_seed 크기(" +
+                                std::to_string(q_seed.size()) + ") 가 model.nq(" +
+                                std::to_string(model_->nq) + ") 와 다릅니다.");
+  }
   q_full_ = (q_seed.size() == model_->nq) ? std::move(q_seed) : pinocchio::neutral(*model_);
   Initialize();
 }
@@ -253,7 +266,16 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
   }
 
   if (identity_) {
-    // 구속 없음 → 사영 불필요, FK passthrough. data_ 를 q_full_ 로 채우고 반환.
+    // 구속 없음 → 사영 불필요, FK passthrough. 단 비유한 q(측정 NaN/Inf)는 직전 유효 해로 hold —
+    // 비-identity 경로(아래 allFinite guard)와 대칭. NaN 이 held=false 로 누출되는 것을 막는다.
+    if (!q_work_.allFinite()) {
+      status_.held = true;
+      status_.closure_error = std::numeric_limits<double>::infinity();
+      pinocchio::computeJointJacobians(model, data_, q_full_);
+      pinocchio::updateFramePlacements(model, data_);
+      return status_;
+    }
+    // data_ 를 q_full_ 로 채우고 반환.
     q_full_ = q_work_;
     status_.closure_error = 0.0;
     pinocchio::computeJointJacobians(model, data_, q_full_);
@@ -307,16 +329,25 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
 
 const pinocchio::SE3& RtClosedChainHandle::GetFramePlacement(
     pinocchio::FrameIndex frame_id) const noexcept {
+  if (frame_id >= data_.oMf.size()) {
+    return kIdentitySE3;  // 범위 밖(stale/foreign id) → OOB 대신 항등 반환
+  }
   return data_.oMf[frame_id];
 }
 
 Eigen::Vector3d RtClosedChainHandle::GetFramePosition(
     pinocchio::FrameIndex frame_id) const noexcept {
+  if (frame_id >= data_.oMf.size()) {
+    return Eigen::Vector3d::Zero();
+  }
   return data_.oMf[frame_id].translation();
 }
 
 Eigen::Matrix3d RtClosedChainHandle::GetFrameRotation(
     pinocchio::FrameIndex frame_id) const noexcept {
+  if (frame_id >= data_.oMf.size()) {
+    return Eigen::Matrix3d::Identity();
+  }
   return data_.oMf[frame_id].rotation();
 }
 

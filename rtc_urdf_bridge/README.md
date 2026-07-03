@@ -76,7 +76,7 @@ rtc_urdf_bridge/
     ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
     ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
     ├── test_closed_chain_handle.cpp    # 축약 M/g/h/J/FK: serial 등가·round-trip·특이 flag
-    ├── test_rt_closed_chain_handle.cpp # RT-safe FK: converged 등가·J_a·serial 항등·hold·singular
+    ├── test_rt_closed_chain_handle.cpp # RT-safe FK: converged 등가·J_a·serial 항등·hold·singular·seed-guard·identity-NaN-hold·OOB-getter
     ├── test_closure_state_publisher.cpp # 노드 end-to-end (actuated 주입→full q, loop 닫힘)
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
     └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF
