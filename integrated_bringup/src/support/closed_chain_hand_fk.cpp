@@ -24,6 +24,7 @@ HandFkWiringResult ClosedChainHandFk::Configure(
   hand_root_fid_ = 0;
   fingertip_fid_ = {};
   fingertip_active_ = {};
+  fingertip_downstream_ = {};
   last_pose_valid_ = {};
   bridge_.clear();
   missing_joint_.clear();
@@ -72,6 +73,7 @@ HandFkWiringResult ClosedChainHandFk::Configure(
     fingertip_fid_[f] = fid;
     fingertip_active_[f] = true;
     if (handle_->IsFrameDownstreamOfLoop(fid)) {
+      fingertip_downstream_[f] = true;
       any_downstream = true;
     }
   }
@@ -79,6 +81,7 @@ HandFkWiringResult ClosedChainHandFk::Configure(
     handle_.reset();
     fingertip_fid_ = {};
     fingertip_active_ = {};
+    fingertip_downstream_ = {};
     return HandFkWiringResult::kInactiveNoDownstream;  // serial 경로가 이미 정확 (byte-for-byte)
   }
 
@@ -120,8 +123,7 @@ void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
     return;
   }
   // 독립 관절 순서로 device 전반에서 측정 q 를 모은다. 소스 device 가 invalid 이거나 channel 이
-  // 범위를 벗어나면 이 tick 은 신뢰 불가로 표시(#5) — 조용히 0 을 넣어 틀린 FK 를 commit 하지
-  // 않는다.
+  // 범위를 벗어나면 이 tick 은 신뢰 불가로 표시(#5).
   bool sources_ok = true;
   for (std::size_t i = 0; i < bridge_.size(); ++i) {
     const QSource& s = bridge_[i];
@@ -136,20 +138,36 @@ void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
     }
     q_a_[static_cast<Eigen::Index>(i)] = v;
   }
-  handle_->Update(std::span<const double>(q_a_.data(), static_cast<std::size_t>(q_a_.size())));
+  // 소스가 하나라도 invalid 이면 handle_->Update 를 호출하지 않는다: 0-fill 된 조작 q_a 를 사영하면
+  // handle 내부 warm-start seed(q_full_)가 그 관절=0 형상으로 commit
+  // 되어(rt_closed_chain_handle.cpp:299), 소스 복구 tick 에서 K=2 사영이 큰 불연속을 못 닫아 여러
+  // tick 동안 held 로 남는다. Update 를 건너뛰면 직전 loop-consistent seed 가 보존되어 복구 tick 이
+  // 즉시 수렴한다.
+  if (sources_ok) {
+    // 반환 status 는 아래에서 GetStatus() 로 다시 읽는다 (nodiscard 무시 명시).
+    static_cast<void>(handle_->Update(
+        std::span<const double>(q_a_.data(), static_cast<std::size_t>(q_a_.size()))));
+  }
 
   // status 소비를 래퍼가 내부화(#4): 신뢰 가능한 tick 에서만 fingertip pose 캐시를 갱신하고,
-  // 아니면(미수렴/특이/held/소스 이상) 직전 유효 pose 를 유지한다.
+  // 아니면(미수렴/특이/held/소스 이상) 직전 유효 pose 를 유지한다. sources_ok 가 false 면 아래
+  // trustworthy 가 반드시 false 이므로, Update 를 건너뛴 stale status 를 읽어도 안전하다.
   const rub::RtClosedChainHandle::Status st = handle_->GetStatus();
-  const bool trustworthy = sources_ok && !st.held && !st.singular &&
-                           std::isfinite(st.closure_error) &&
-                           st.closure_error < closure_error_threshold_;
-  if (!trustworthy) {
-    return;  // 캐시(last_pose_) 유지
+  // 결과가 유한(소스 유효 && !held && finite closure)하면 handle 내부 data_ 는 현재 actuated q 를
+  // 반영한다(사영은 passive 열만 이동, actuated 열은 측정값 고정). 비하류(serial 등가) fingertip 의
+  // pose 는 actuated q 만의 함수라 이 조건만으로 유효하다 (#3).
+  const bool finite_result = sources_ok && !st.held && std::isfinite(st.closure_error);
+  if (!finite_result) {
+    return;  // 캐시(last_pose_) 유지 — 소스 이상/비유한
   }
+  // loop 하류 fingertip 은 loop-consistency 까지 신뢰돼야 갱신 (미수렴/특이 tick 은 hold).
+  const bool loop_trustworthy = !st.singular && st.closure_error < closure_error_threshold_;
   for (std::size_t f = 0; f < kMaxFingertips; ++f) {
     if (!fingertip_active_[f]) {
       continue;
+    }
+    if (fingertip_downstream_[f] && !loop_trustworthy) {
+      continue;  // 하류 tip 은 loop-untrustworthy tick 에서 직전 유효 pose 유지
     }
     const pinocchio::SE3& tip = handle_->GetFramePlacement(fingertip_fid_[f]);
     last_pose_[f] = handle_->GetFramePlacement(hand_root_fid_).actInv(tip);  // hand-root 상대
@@ -177,15 +195,27 @@ rub::RtClosedChainHandle::Status ClosedChainHandFk::status() const noexcept {
 
 bool RunHandForwardKinematics(ClosedChainHandFk& fk, rub::RtModelHandle* hand_handle,
                               Eigen::VectorXd& hand_q, const rtc::ControllerState& state) noexcept {
-  if (hand_handle == nullptr || state.num_devices <= 1 || !state.devices[1].valid) {
+  if (hand_handle == nullptr) {
     return false;
   }
+  // closed 경로: 독립 관절 소스가 device 1(hand)에 한정되지 않는다(arm+hand 스팬 가능). 따라서
+  // device 1 valid 를 진입 게이트로 강제하지 않고, 각 소스 유효성은 ClosedChainHandFk::Update 가
+  // tick 내에서 확인해 unfit tick 을 hold 로 내부 처리한다 (#8).
   if (fk.active()) {
-    fk.Update(state);  // measured actuated q → loop-consistent full FK
+    fk.Update(state);  // measured actuated q → loop-consistent full FK (per-source hold 내부화)
     return true;
+  }
+  // serial 경로: device 1(hand) 측정값 필요.
+  if (state.num_devices <= 1 || !state.devices[1].valid) {
+    return false;
   }
   const auto& dev1 = state.devices[1];
   const auto hand_nq = static_cast<std::size_t>(hand_handle->nq());
+  // closed 경로와 대칭으로 channel 범위 검사(#4): num_channels < nq 이면 serial FK 불가 →
+  // positions[] out-of-bounds/stale read 대신 직전 FK 를 유지한다.
+  if (static_cast<std::size_t>(dev1.num_channels) < hand_nq) {
+    return false;
+  }
   for (std::size_t i = 0; i < hand_nq; ++i) {
     hand_q[static_cast<Eigen::Index>(i)] = dev1.positions[i];
   }

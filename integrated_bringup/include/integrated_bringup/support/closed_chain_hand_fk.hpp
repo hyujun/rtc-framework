@@ -93,9 +93,11 @@ class ClosedChainHandFk {
   [[nodiscard]] bool active() const noexcept { return active_; }
 
   /// @brief measured 상태에서 actuated q_a 를 모아 closed-chain 사영 + FK 갱신. **RT-safe.**
-  /// 비활성이면 no-op. 이 tick 이 **신뢰 가능**(모든 소스 device valid·in-range && !held &&
-  /// !singular && closure_error < threshold)하면 각 활성 fingertip 의 hand-root 상대 pose 를
-  /// 캐시에 갱신하고, 아니면 캐시(직전 유효 해)를 유지한다 — status 소비를 래퍼가 내부화한다.
+  /// 비활성이면 no-op. 소스가 유효하고 결과가 유한하면(sources_ok && !held && finite closure) 각
+  /// 활성 fingertip pose 캐시를 갱신하되, **loop 하류** tip 은 loop-trustworthy(!singular &&
+  /// closure_error<threshold)한 tick 에서만, **비하류** tip 은 유한 tick 이면 항상 갱신한다 —
+  /// 비하류 pose 는 actuated q 만의 함수라 loop 미수렴/특이와 무관하기 때문(#3). 아니면 캐시(직전
+  /// 유효 해)를 유지한다 — status 소비를 래퍼가 내부화한다.
   void Update(const rtc::ControllerState& state) noexcept;
 
   /// @brief fingertip @p f 의 **hand-root 상대** placement(직전 신뢰 tick 값)를 @p out 에 기록.
@@ -124,6 +126,9 @@ class ClosedChainHandFk {
   pinocchio::FrameIndex hand_root_fid_{0};
   std::array<pinocchio::FrameIndex, kMaxFingertips> fingertip_fid_{};
   std::array<bool, kMaxFingertips> fingertip_active_{};
+  // loop-passive 관절 하류 여부(Configure 판정). 비하류(serial 등가) tip 의 pose 는 actuated q 만의
+  // 함수라 loop 미수렴/특이와 무관 — untrustworthy tick 에도 유효하게 갱신한다 (#3).
+  std::array<bool, kMaxFingertips> fingertip_downstream_{};
 
   // 직전 신뢰 tick 의 hand-root 상대 fingertip pose 캐시 (untrustworthy tick 은 hold).
   std::array<pinocchio::SE3, kMaxFingertips> last_pose_{};

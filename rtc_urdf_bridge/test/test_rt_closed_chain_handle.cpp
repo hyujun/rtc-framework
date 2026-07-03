@@ -22,7 +22,9 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -197,4 +199,55 @@ TEST(RtClosedChainHandle, SingularAssemblyFlagsSingular) {
   EXPECT_TRUE(rt.GetFramePosition(fid).allFinite());
   EXPECT_TRUE(rt.GetReductionMap().allFinite());
   EXPECT_TRUE(rt.GetFullConfiguration().allFinite());
+}
+
+// ── (6) q_seed 크기 misconfig → 조용한 neutral fallback 대신 throw (review #5) ────
+//   빈 seed 는 명시적 neutral 신호(허용). 비어있지 않은데 크기≠nq 면 대칭 링키지에서 neutral 이
+//   특이 조립 → 영구 저하로 이어지므로 생성자가 throw 해 config 단계에서 표면화한다.
+TEST(RtClosedChainHandle, SeedSizeMismatchThrows) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+
+  // 빈 seed → neutral, throw 없음.
+  EXPECT_NO_THROW(
+      rub::RtClosedChainHandle(model, ccm.constraints, ccm.actuated_joint_ids, Eigen::VectorXd{}));
+
+  // 크기 nq+1 → throw.
+  Eigen::VectorXd bad = Eigen::VectorXd::Zero(model->nq + 1);
+  EXPECT_THROW(rub::RtClosedChainHandle(model, ccm.constraints, ccm.actuated_joint_ids, bad),
+               std::invalid_argument);
+}
+
+// ── (7) identity 경로 비유한 q_a → held (직전 해 유지, NaN 누출 없음) (review #2) ──
+//   비-identity 경로의 allFinite guard 와 대칭. 측정 NaN 이 held=false 로 새어나가면 안 된다.
+TEST(RtClosedChainHandle, IdentityNonFiniteHolds) {
+  const rub::ClosedChainModel ccm = rtc::test::FourBar();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::RtClosedChainHandle rt(model, {}, {}, {});  // 구속 없음 → identity
+
+  std::vector<double> q_a(static_cast<std::size_t>(model->nv), 0.1);
+  ASSERT_FALSE(rt.Update(q_a).held);  // 유효 tick → 캐시
+  const Eigen::VectorXd q_good = rt.GetFullConfiguration();
+  const auto fid = static_cast<pinocchio::FrameIndex>(model->nframes - 1);
+  const Eigen::Vector3d p_good = rt.GetFramePosition(fid);
+
+  // NaN 주입 → held, full q / FK 불변 + 유한 유지.
+  q_a[0] = std::numeric_limits<double>::quiet_NaN();
+  const rub::RtClosedChainHandle::Status bad = rt.Update(q_a);
+  EXPECT_TRUE(bad.held) << "identity 경로도 비유한 q 는 hold";
+  EXPECT_TRUE(rt.GetFramePosition(fid).allFinite()) << "NaN 누출 없음";
+  EXPECT_LT((rt.GetFullConfiguration() - q_good).norm(), 1e-15);
+  EXPECT_LT((rt.GetFramePosition(fid) - p_good).norm(), 1e-15);
+}
+
+// ── (8) 범위 밖 frame_id getter → OOB 대신 항등/0 (review #9) ───────────────────
+TEST(RtClosedChainHandle, OutOfRangeFrameGettersSafe) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::RtClosedChainHandle rt(model, ccm.constraints, ccm.actuated_joint_ids, {});
+
+  const auto oob = static_cast<pinocchio::FrameIndex>(model->nframes + 100);
+  EXPECT_TRUE(rt.GetFramePlacement(oob).isIdentity());
+  EXPECT_EQ(rt.GetFramePosition(oob).norm(), 0.0);
+  EXPECT_TRUE(rt.GetFrameRotation(oob).isIdentity());
 }
