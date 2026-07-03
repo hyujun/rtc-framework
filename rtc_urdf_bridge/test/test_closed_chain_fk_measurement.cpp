@@ -226,3 +226,94 @@ TEST(ClosedChainFkMeasurement, UpdateComputeTime) {
   // 가능함을 육안 확인용. (회귀 시 O(n) 폭주만 별도 감시하려면 median 상한을 아주 느슨히 둔다.)
   SUCCEED();
 }
+
+// ── Phase 2a 스파이크: RT-safe fixed-step projection 수렴 정확도 ────────────────
+//   Option A 의 RT 코어는 "warm-start(직전 tick 해) + 고정 K Newton iteration" DLS projection
+//   이다 (수렴 while-loop 없음 → deterministic·no-alloc 화 가능). 이 스파이크는 그 fixed-K
+//   projection 이 RT rate 에서 fully-converged(ClosedChainHandle) FK 대비 충분히 정확한 최소 K
+//   를 정한다. RT tick 궤적(actuated 정현파, 다양한 peak 속도)을 시뮬레이션하며 매 tick warm-start
+//   재사영 후 closure residual ‖φ‖ 와 loop-terminal FK 오차를 측정한다.
+//   ProjectPassiveToConstraint(max_iter=K, tol=0) 로 정확히 K 스텝을 강제 — 미래 RT 클래스의
+//   수식(동일 DLS)과 일치하므로 정확도 대리 측정으로 유효하다(할당 여부는 정확도와 무관).
+namespace {
+// scratch data 로 full q 의 프레임 위치 FK.
+Eigen::Vector3d FramePosOf(const pinocchio::Model& model, pinocchio::Data& data,
+                           const Eigen::VectorXd& q, pinocchio::FrameIndex fid) {
+  pinocchio::forwardKinematics(model, data, q);
+  pinocchio::updateFramePlacements(model, data);
+  return data.oMf[fid].translation();
+}
+}  // namespace
+
+TEST(ClosedChainFkMeasurement, FixedStepProjectionConvergence) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::ClosedChainHandle handle_ref(model, ccm.constraints, ccm.actuated_joint_ids, {});
+  const std::string actuated = handle_ref.GetIndependentJointNames().front();
+  const int qa_idx = model->idx_qs[model->getJointId(actuated)];
+  const auto fid_c1 = handle_ref.GetFrameId("c1");
+  ASSERT_NE(fid_c1, 0u);
+
+  constexpr double kDt = 1.0 / 500.0;            // 500 Hz RT tick
+  constexpr int kTicks = 1500;                   // 3 s
+  constexpr double kCenter = 0.2;                // 비특이 crank 중심
+  constexpr double kAmp = 0.08;                  // [0.12, 0.28] 비특이 band 유지
+  const double speeds[] = {0.5, 1.0, 2.0, 3.0};  // peak actuated 속도 (rad/s)
+  const int Ks[] = {1, 2, 3};
+
+  pinocchio::Data proj_data(*model);
+  pinocchio::Data fk_data(*model);
+  pinocchio::Data ref_fk_data(*model);
+
+  std::printf("\n[fixedK] warm-start + 고정 K iter projection vs fully-converged (crank-rocker)\n");
+  std::printf("[fixedK]  K  peak_v(rad/s)   max|phi|      max_FK_err(m)   mean_FK_err(m)\n");
+
+  double best_err_hi_speed = 1e9;  // K=3, 3rad/s 에서의 FK 오차 (성공 기준용)
+  for (int K : Ks) {
+    for (double peak_v : speeds) {
+      const double freq = peak_v / (2.0 * M_PI * kAmp);  // peak speed = A·2πf
+      rub::ProjectionOptions opts;
+      opts.max_iterations = K;
+      opts.tolerance = 0.0;  // early-stop 금지 → 정확히 K 스텝
+
+      // warm-start seed 를 loop-consistent 초기해로 설정.
+      handle_ref.Update(std::vector<double>{kCenter});
+      Eigen::VectorXd seed = handle_ref.GetFullConfiguration();
+
+      double max_phi = 0.0, max_err = 0.0, sum_err = 0.0;
+      int n = 0;
+      for (int t = 0; t < kTicks; ++t) {
+        const double q_a = kCenter + kAmp * std::sin(2.0 * M_PI * freq * (t * kDt));
+        seed[qa_idx] = q_a;  // 측정 actuated 슬롯 갱신 (passive 는 warm-start 유지)
+        const rub::ProjectionResult res = rub::ProjectPassiveToConstraint(
+            *model, proj_data, ccm.constraints, seed, ccm.actuated_joint_ids, opts);
+        seed = res.q;  // warm-start 다음 tick
+
+        const rub::ClosedChainHandle::Status rst = handle_ref.Update(std::vector<double>{q_a});
+        if (!rst.converged || rst.singular) {
+          continue;  // 특이 형상은 성공 기준 대상 아님 (RT 는 hold)
+        }
+        const Eigen::Vector3d fk_fixed = FramePosOf(*model, fk_data, res.q, fid_c1);
+        const Eigen::Vector3d fk_ref =
+            FramePosOf(*model, ref_fk_data, handle_ref.GetFullConfiguration(), fid_c1);
+        const double err = (fk_fixed - fk_ref).norm();
+        max_phi = std::max(max_phi, res.final_error);
+        max_err = std::max(max_err, err);
+        sum_err += err;
+        ++n;
+      }
+      const double mean_err = (n > 0) ? sum_err / n : 0.0;
+      std::printf("[fixedK]  %d     %.2f        %.3e     %.3e      %.3e\n", K, peak_v, max_phi,
+                  max_err, mean_err);
+      if (K == 3 && peak_v == 3.0) {
+        best_err_hi_speed = max_err;
+      }
+    }
+  }
+  std::printf("\n");
+
+  // 성공 기준: 최대 K(=3)·최대 속도(3rad/s)에서 FK 오차 <1mm (fully-converged 대비).
+  // → RT 에서 고정 K 재사영이 실용적으로 정확함을 확인. (실제 채택 K 는 위 테이블에서 결정.)
+  EXPECT_LT(best_err_hi_speed, 1e-3)
+      << "고정 K projection 이 RT rate 에서 fully-converged FK 를 <1mm 로 추종해야 한다";
+}
