@@ -168,6 +168,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_closed_chain_handle test/test_closed_chain_handle.cpp)
   target_link_libraries(test_closed_chain_handle ${PROJECT_NAME})
 
+  # #121 Phase 1: frozen-loop FK vs closed-chain FK 실측 하네스.
+  ament_add_gtest(test_closed_chain_fk_measurement test/test_closed_chain_fk_measurement.cpp)
+  target_link_libraries(test_closed_chain_fk_measurement ${PROJECT_NAME})
+
   # Compiles the viz node source directly (it is no longer in the core lib).
   ament_add_gtest(test_closure_state_publisher
     test/test_closure_state_publisher.cpp
