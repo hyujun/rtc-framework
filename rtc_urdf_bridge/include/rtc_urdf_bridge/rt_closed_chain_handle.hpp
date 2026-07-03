@@ -74,6 +74,10 @@ class RtClosedChainHandle {
     /// Jc_D near-singular (LDLT pivot 대리). J_a 는 damped 라 신뢰 저하.
     bool singular{false};
     /// 고정 K 스텝 후 최종 closure residual ‖φ‖. 소비자가 임계로 hold 정책을 정할 수 있다.
+    /// ⚠ CONTACT_6D 구속은 φ 가 [linear(m); angular(rad)] 혼합이라 ‖φ‖ 단위가 혼합된다 — m 단위
+    /// 임계(예 ClosedChainHandFk 의 closure_error_threshold, 기본 1e-3 m)와 비교하면 회전 잔차가
+    /// 가중 없이 섞인다. 현재 hand 링키지는 3D point 구속이라 무영향. 6D 구속 도입 시 병진/회전
+    /// 분리 임계 또는 가중 norm 필요 (review #7, 현재 defer).
     double closure_error{0.0};
   };
 
