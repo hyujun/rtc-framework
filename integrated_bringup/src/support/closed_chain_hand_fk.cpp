@@ -24,6 +24,7 @@ HandFkWiringResult ClosedChainHandFk::Configure(
   hand_root_fid_ = 0;
   fingertip_fid_ = {};
   fingertip_active_ = {};
+  fingertip_downstream_ = {};
   last_pose_valid_ = {};
   bridge_.clear();
   missing_joint_.clear();
@@ -72,6 +73,7 @@ HandFkWiringResult ClosedChainHandFk::Configure(
     fingertip_fid_[f] = fid;
     fingertip_active_[f] = true;
     if (handle_->IsFrameDownstreamOfLoop(fid)) {
+      fingertip_downstream_[f] = true;
       any_downstream = true;
     }
   }
@@ -79,6 +81,7 @@ HandFkWiringResult ClosedChainHandFk::Configure(
     handle_.reset();
     fingertip_fid_ = {};
     fingertip_active_ = {};
+    fingertip_downstream_ = {};
     return HandFkWiringResult::kInactiveNoDownstream;  // serial 경로가 이미 정확 (byte-for-byte)
   }
 
@@ -150,15 +153,21 @@ void ClosedChainHandFk::Update(const rtc::ControllerState& state) noexcept {
   // 아니면(미수렴/특이/held/소스 이상) 직전 유효 pose 를 유지한다. sources_ok 가 false 면 아래
   // trustworthy 가 반드시 false 이므로, Update 를 건너뛴 stale status 를 읽어도 안전하다.
   const rub::RtClosedChainHandle::Status st = handle_->GetStatus();
-  const bool trustworthy = sources_ok && !st.held && !st.singular &&
-                           std::isfinite(st.closure_error) &&
-                           st.closure_error < closure_error_threshold_;
-  if (!trustworthy) {
-    return;  // 캐시(last_pose_) 유지
+  // 결과가 유한(소스 유효 && !held && finite closure)하면 handle 내부 data_ 는 현재 actuated q 를
+  // 반영한다(사영은 passive 열만 이동, actuated 열은 측정값 고정). 비하류(serial 등가) fingertip 의
+  // pose 는 actuated q 만의 함수라 이 조건만으로 유효하다 (#3).
+  const bool finite_result = sources_ok && !st.held && std::isfinite(st.closure_error);
+  if (!finite_result) {
+    return;  // 캐시(last_pose_) 유지 — 소스 이상/비유한
   }
+  // loop 하류 fingertip 은 loop-consistency 까지 신뢰돼야 갱신 (미수렴/특이 tick 은 hold).
+  const bool loop_trustworthy = !st.singular && st.closure_error < closure_error_threshold_;
   for (std::size_t f = 0; f < kMaxFingertips; ++f) {
     if (!fingertip_active_[f]) {
       continue;
+    }
+    if (fingertip_downstream_[f] && !loop_trustworthy) {
+      continue;  // 하류 tip 은 loop-untrustworthy tick 에서 직전 유효 pose 유지
     }
     const pinocchio::SE3& tip = handle_->GetFramePlacement(fingertip_fid_[f]);
     last_pose_[f] = handle_->GetFramePlacement(hand_root_fid_).actInv(tip);  // hand-root 상대

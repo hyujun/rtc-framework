@@ -137,6 +137,35 @@ TEST(ClosedChainHandFk, UntrustworthyTickHoldsLastGood) {
   EXPECT_LT((held.translation() - good.translation()).norm(), 1e-15) << "hold 직전 유효 해";
 }
 
+// ── review #3: loop-untrustworthy tick 에도 비하류 fingertip 은 계속 서비스된다 ────
+//   비하류(serial 등가) tip 의 pose 는 actuated q 만의 함수라 loop 미수렴/특이와 무관. threshold=0
+//   으로 모든 tick 을 loop-untrustworthy 로 만들어 하류=hold / 비하류=live 를 확인한다.
+TEST(ClosedChainHandFk, NonDownstreamServedWhenLoopUntrustworthy) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  const Eigen::VectorXd seed = ConvergedSeed(ccm, model);
+  rub::ClosedChainHandle oracle(model, ccm.constraints, ccm.actuated_joint_ids, {});
+  oracle.Update(std::vector<double>{0.2});
+
+  ib::ClosedChainHandFk fk;
+  // c1 = loop 하류, crank_link = 비하류. closure_error_threshold=0 → loop 은 항상 untrustworthy.
+  ASSERT_EQ(fk.Configure(model, ccm.constraints, ccm.actuated_joint_ids, seed, {{"j_crank"}},
+                         std::vector<std::string>{"c1", "crank_link"}, kHandRoot,
+                         /*closure_error_threshold=*/0.0),
+            ib::HandFkWiringResult::kActive);
+
+  fk.Update(MakeState(0.2));
+  pinocchio::SE3 p_c1, p_crank;
+  EXPECT_FALSE(fk.GetFingertipHandRootPose(0, p_c1)) << "하류 c1: loop-untrustworthy → hold(무효)";
+  ASSERT_TRUE(fk.GetFingertipHandRootPose(1, p_crank))
+      << "#3: 비하류 crank_link 는 finite tick 이면 live";
+
+  const auto fid_root = oracle.GetFrameId(kHandRoot);
+  const pinocchio::SE3 ref_crank = oracle.GetFramePlacement(fid_root).actInv(
+      oracle.GetFramePlacement(oracle.GetFrameId("crank_link")));
+  EXPECT_LT((p_crank.translation() - ref_crank.translation()).norm(), 1e-9);
+}
+
 // ── #3: 유효 closure+하류지만 hand_root 미해결 → 비활성 (serial fallback) ────────
 TEST(ClosedChainHandFk, NoHandRootInactive) {
   const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
