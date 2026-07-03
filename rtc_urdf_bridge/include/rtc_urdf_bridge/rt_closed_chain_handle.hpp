@@ -83,7 +83,9 @@ class RtClosedChainHandle {
   /// @param actuated_joint_ids 독립(구동) 관절 JointIndex — 각 단일-DoF
   /// @param q_seed loop-consistent warm-start seed (빈 벡터면 neutral; 그 외 크기≠nq 면 throw)
   /// @param num_iterations 고정 Newton 스텝 수 K (기본 2, #121 Phase 2a 채택)
-  /// @param projection_damping 사영 DLS 정규화 λ (기본 1e-8)
+  /// @param projection_damping 사영 DLS 정규화 λ (기본 1e-6). λ²=1e-12 로 double rounding
+  ///   floor(~2e-16) 위에서 dead-center 근접 시 유효 정규화. 더 작으면(예 1e-8→λ²=1e-16)
+  ///   near-singular 에서 DLS 가 무력화된다 (review #6).
   /// @param reduction_damping G left-pinv 정규화 λ (기본 1e-6, 특이 임계와 동급)
   /// @throws std::invalid_argument model 이 null, 또는 q_seed 가 비어있지 않은데 크기≠nq
   /// @throws std::runtime_error 독립 관절 non-single-DoF, 구속 有인데 독립 관절 無,
@@ -92,7 +94,7 @@ class RtClosedChainHandle {
                       std::vector<pinocchio::RigidConstraintModel> constraints,
                       std::vector<pinocchio::JointIndex> actuated_joint_ids,
                       Eigen::VectorXd q_seed = {}, int num_iterations = 2,
-                      double projection_damping = 1e-8, double reduction_damping = 1e-6);
+                      double projection_damping = 1e-6, double reduction_damping = 1e-6);
 
   // 복사 금지, 이동 허용
   RtClosedChainHandle(const RtClosedChainHandle&) = delete;
