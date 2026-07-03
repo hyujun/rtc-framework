@@ -246,3 +246,36 @@ TEST(ClosedChainHandle, FourBarSingularConfigFlaggedNoNaN) {
   EXPECT_TRUE(handle.GetNonLinearEffects().allFinite());
   EXPECT_TRUE(handle.GetReductionMap().allFinite());
 }
+
+// ── topology 판정: loop-passive 하류 프레임만 closed-chain FK 필요 (#121) ──────
+//   four_bar_tree: base_link ─joint_a(구동)→ link_a ─joint_ab(passive)→ link_b→c1
+//                  base_link ─joint_c(passive)→ link_c ─joint_cd(passive)→ link_d→c2
+TEST(ClosedChainHandle, FrameDownstreamOfLoopTopology) {
+  const rub::ClosedChainModel ccm = rtc::test::FourBar();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::ClosedChainHandle handle(model, ccm.constraints, ccm.actuated_joint_ids, ccm.q_ref);
+  ASSERT_GT(handle.constraint_dim(), 0) << "four_bar 는 loop 구속을 가져야 한다";
+
+  // 구동 관절만 상류인 프레임 → frozen-loop 근사 무영향 (arm EE 유사).
+  EXPECT_FALSE(handle.IsFrameDownstreamOfLoop(handle.GetFrameId("link_a")));
+  // root / 미존재 프레임 → false.
+  EXPECT_FALSE(handle.IsFrameDownstreamOfLoop(handle.GetFrameId("base_link")));
+  EXPECT_FALSE(handle.IsFrameDownstreamOfLoop(handle.GetFrameId("no_such_frame")));
+
+  // passive 관절이 상류인 loop-terminal 프레임 → closed-chain FK 필요.
+  EXPECT_TRUE(handle.IsFrameDownstreamOfLoop(handle.GetFrameId("link_b")));
+  EXPECT_TRUE(handle.IsFrameDownstreamOfLoop(handle.GetFrameId("c1")));
+  EXPECT_TRUE(handle.IsFrameDownstreamOfLoop(handle.GetFrameId("link_c")));
+  EXPECT_TRUE(handle.IsFrameDownstreamOfLoop(handle.GetFrameId("c2")));
+}
+
+// ── serial 등가(구속 없음) → 모든 프레임 downstream=false ────────────────────
+TEST(ClosedChainHandle, FrameDownstreamOfLoopIdentityAlwaysFalse) {
+  const rub::ClosedChainModel ccm = rtc::test::FourBar();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::ClosedChainHandle handle(model, {}, {}, {});  // 구속/actuated 없음 → 항등
+  for (int fid = 0; fid < model->nframes; ++fid) {
+    EXPECT_FALSE(handle.IsFrameDownstreamOfLoop(static_cast<pinocchio::FrameIndex>(fid)))
+        << "serial 등가 모델은 loop-passive 가 없어야 한다 (frame " << fid << ")";
+  }
+}

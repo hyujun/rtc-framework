@@ -75,6 +75,11 @@ class PinocchioModelBuilder {
   [[nodiscard]] const std::vector<pinocchio::JointIndex>& GetClosureActuatedJointIds()
       const noexcept;
 
+  /// sidecar 가 passive 로 규정한 full-model movable 관절 이름 (= movable − actuated).
+  /// 모든 reduced/tree 서브모델에서 잠기는 loop-passive 관절이다 — topology 판정
+  /// (프레임이 loop-passive 하류인가) 에 쓴다. closure sidecar 미사용 시 빈 목록.
+  [[nodiscard]] const std::vector<std::string>& GetClosurePassiveLockNames() const noexcept;
+
   /// q_ref projection 수렴 여부. false 면 neutral 근방 조립이 loop-consistent 하지 않아
   /// q_ref 가 부정확하다 (singular 여부와 별개 — full-rank 여도 미수렴일 수 있다).
   /// closure sidecar 미사용 시 false.

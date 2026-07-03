@@ -156,6 +156,16 @@ class ClosedChainHandle {
   /// 프레임 이름 → FrameIndex. 없으면 0 (universe).
   [[nodiscard]] pinocchio::FrameIndex GetFrameId(std::string_view frame_name) const noexcept;
 
+  /// @brief 프레임 @p frame_id 가 loop-passive 관절의 **하류(downstream)** 인가.
+  ///
+  /// closed-chain FK 는 loop-passive 관절이 프레임 상류(support path)에 있을 때만 frozen-loop
+  /// 근사와 달라진다. 이 판정으로 소비자는 **필요한 프레임만** ClosedChainHandle FK 로 배선하고
+  /// (loop 상류가 없는 프레임은 RtModelHandle 로 byte-for-byte 유지) 불필요한 non-RT 사영을
+  /// 회피한다 (#121 topology-driven wiring). loop-passive = full model movable 관절 중 actuated
+  /// (독립) 집합에 없는 것. 구속 없는 serial 등가(항등 축약) 이거나 frame_id 가 범위를 벗어나면
+  /// 항상 false.
+  [[nodiscard]] bool IsFrameDownstreamOfLoop(pinocchio::FrameIndex frame_id) const noexcept;
+
   /// 내부 full 모델 const 참조.
   [[nodiscard]] const pinocchio::Model& GetModel() const noexcept;
 

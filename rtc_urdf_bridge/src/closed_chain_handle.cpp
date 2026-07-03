@@ -432,4 +432,28 @@ const pinocchio::Model& ClosedChainHandle::GetModel() const noexcept {
   return *model_;
 }
 
+bool ClosedChainHandle::IsFrameDownstreamOfLoop(pinocchio::FrameIndex frame_id) const noexcept {
+  const pinocchio::Model& model = *model_;
+  // 구속 없음(serial 등가) 이면 loop-passive 가 없어 frozen-loop 근사 자체가 없다.
+  if (identity_ || frame_id >= model.frames.size()) {
+    return false;
+  }
+  // frame → 부모 joint → universe 까지의 support(조상) 경로.
+  const auto parent_joint = model.frames[frame_id].parentJoint;
+  const auto& support = model.supports[parent_joint];
+  // 조상 중 movable & non-actuated(=loop-passive) 가 하나라도 있으면 하류다.
+  for (const auto jid : support) {
+    const auto jidx = static_cast<std::size_t>(jid);
+    if (jid == 0 || model.nvs[jidx] == 0) {
+      continue;  // universe / fixed
+    }
+    const bool is_actuated = std::find(actuated_joint_ids_.begin(), actuated_joint_ids_.end(),
+                                       jid) != actuated_joint_ids_.end();
+    if (!is_actuated) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace rtc_urdf_bridge

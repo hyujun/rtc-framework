@@ -375,6 +375,10 @@ const std::vector<pinocchio::JointIndex>& PinocchioModelBuilder::GetClosureActua
   return closure_actuated_joint_ids_;
 }
 
+const std::vector<std::string>& PinocchioModelBuilder::GetClosurePassiveLockNames() const noexcept {
+  return closure_passive_lock_names_;
+}
+
 bool PinocchioModelBuilder::IsClosureReferenceConverged() const noexcept {
   return closure_q_ref_converged_;
 }
