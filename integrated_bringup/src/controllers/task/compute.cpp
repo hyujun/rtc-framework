@@ -4,9 +4,9 @@
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
-#include <span>
 #include <cmath>
 #include <cstddef>
+#include <span>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -96,15 +96,13 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
   if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
     return;
 
-  // Build fingertip inputs from hand model FK
+  // Build fingertip inputs from hand model FK (closed-chain-consistent when the
+  // #121 helper is active; serial hand_handle_ FK otherwise — same value).
   for (std::size_t f = 0; f < kNumFingertips; ++f) {
-    vtcp_inputs_[f].active = (fingertip_frame_ids_[f] != 0);
+    pinocchio::SE3 ft_pose;
+    vtcp_inputs_[f].active = HandFingertipPose(f, ft_pose);
     if (!vtcp_inputs_[f].active)
       continue;
-    auto ft_pose = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
-    if (use_hand_root_frame_) {
-      ft_pose = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(ft_pose);
-    }
     vtcp_inputs_[f].position_in_tcp = ft_pose.translation();
     // Force magnitude for weighted mode (cached in ReadState; 0 when !valid).
     vtcp_inputs_[f].force_magnitude = static_cast<double>(fingertip_data_[f].force_mag);
@@ -140,21 +138,15 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   }
 
   // ── Hand FK + Virtual TCP (must run before CLIK) ──────────────────────
-  if (hand_handle_ && state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    const auto hand_nq = static_cast<std::size_t>(hand_handle_->nq());
-    for (std::size_t i = 0; i < hand_nq; ++i) {
-      hand_q_[static_cast<Eigen::Index>(i)] = dev1.positions[i];
-    }
-    hand_handle_->ComputeForwardKinematics(std::span<const double>(hand_q_.data(), hand_nq));
-
+  // #121: ComputeHandForwardKinematics runs the closed-chain projection when the
+  // hand has loop closure with downstream fingertips, else the serial hand FK;
+  // HandFingertipPose returns the hand-root-relative fingertip pose from whichever
+  // path is active (byte-for-byte in the serial case).
+  if (ComputeHandForwardKinematics(state)) {
     // Fingertip world poses (monitoring — always computed)
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
-      if (fingertip_frame_ids_[f] != 0) {
-        auto T_hand_ft = hand_handle_->GetFramePlacement(fingertip_frame_ids_[f]);
-        if (use_hand_root_frame_) {
-          T_hand_ft = hand_handle_->GetFramePlacement(hand_root_frame_id_).actInv(T_hand_ft);
-        }
+      pinocchio::SE3 T_hand_ft;
+      if (HandFingertipPose(f, T_hand_ft)) {
         const pinocchio::SE3 T_base_ft = tcp_pose.act(T_hand_ft);
         fingertip_positions_[f] = T_base_ft.translation();
         fingertip_rotations_[f] = T_base_ft.rotation();

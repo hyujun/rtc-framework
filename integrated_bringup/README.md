@@ -335,6 +335,14 @@ J_vtcp_angular = J_tcp_angular
 
 > **주의:** Centroid/Weighted 모드는 `tree_models`가 활성화되어 있어야 합니다 (hand FK 필요).
 
+#### Closed-chain hand FK (#121, extended-URDF 전용)
+
+hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.closure.yaml` sidecar; 예: 4-bar 손가락 링키지), loop-passive 관절 **하류**의 fingertip 은 tree 모델(passive 를 reference 형상에 동결)로 FK 하면 운영점 이탈 시 큰 오차가 난다 (#121 측정: ~5.6 mm/°). 이를 위해 task/joint 컨트롤러는 fingertip FK 를 **closed-chain-consistent** 로 계산하는 `ClosedChainHandFk` 헬퍼([support/closed_chain_hand_fk.hpp](include/integrated_bringup/support/closed_chain_hand_fk.hpp), `rtc_urdf_bridge::RtClosedChainHandle` 래핑)를 배선한다.
+
+- **자동·topology-driven·dormant**: `on_configure` 에서 (a) builder 에 closure 구속이 있고 (b) fingertip 이 loop-passive 관절 하류일 때만 활성. 그 외(대부분의 plain-URDF 로봇)는 비활성 → 기존 serial `RtModelHandle` 경로가 **byte-for-byte 동일**. 현재 `ur5e_hand`/`iiwa7_leap` 는 `extended` 미설정이라 비활성이다.
+- **RT-safe**: 매 tick 측정 actuated q 로 passive DoF 를 warm-start + 고정 K=2 Newton DLS 사영(preallocated, no-alloc). 비유한 → 직전 해 hold, 특이 조립형상 → flag.
+- **WBC 는 무변경**: DemoWbcController 의 유일한 FK 는 loop **상류**의 arm TCP(`tip_frame_id_`)이고, hand 는 TSID control model(동역학, #121 FK-only 범위 밖)에 접혀 있어 fingertip FK 를 별도로 돌리지 않는다. 따라서 closed-chain FK 배선 대상이 아니다.
+
 **E-STOP:** 안전 위치 `[0, -1.57, 1.57, -1.57, -1.57, 0]` rad로 이동, 핸드는 현재 위치 유지
 
 ### DemoWbcController (Index 6)
