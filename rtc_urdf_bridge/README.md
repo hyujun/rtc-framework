@@ -47,6 +47,7 @@ rtc_urdf_bridge/
 │   ├── loop_projection.hpp             # q/v loop-consistent 사영 (로드 타임)
 │   ├── closed_chain_model.hpp          # 통합 loader (BuildClosedChainModelFromExtendedUrdf)
 │   ├── closed_chain_handle.hpp         # closed-chain 축약 동역학 질의 (M/g/h/J/FK, non-RT)
+│   ├── rt_closed_chain_handle.hpp      # RT-safe closed-chain FK (warm-start + 고정 K 사영, J_a)
 │   └── closure_state_publisher.hpp     # Extended-URDF 폐쇄 체인 시각화 노드 (off-RT)
 ├── src/
 │   ├── urdf_analyzer.cpp
@@ -75,6 +76,7 @@ rtc_urdf_bridge/
     ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
     ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
     ├── test_closed_chain_handle.cpp    # 축약 M/g/h/J/FK: serial 등가·round-trip·특이 flag
+    ├── test_rt_closed_chain_handle.cpp # RT-safe FK: converged 등가·J_a·serial 항등·hold·singular
     ├── test_closure_state_publisher.cpp # 노드 end-to-end (actuated 주입→full q, loop 닫힘)
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
     └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF

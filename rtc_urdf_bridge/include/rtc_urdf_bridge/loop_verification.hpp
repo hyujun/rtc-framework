@@ -67,4 +67,10 @@ struct JacobianReport {
 [[nodiscard]] int TotalConstraintDim(
     const std::vector<pinocchio::RigidConstraintModel>& constraints) noexcept;
 
+/// @brief 축약(reduction) Jacobian Jc_D 의 특이 조립형상 판정 임계 (σ_min(Jc_D) 대리).
+/// non-RT @ref ClosedChainHandle (SVD σ_min) 과 RT @ref RtClosedChainHandle (LDLT pivot 대리)
+/// 이 **동일 임계**를 공유해 singularity 의미를 동기화한다. 두 곳에 상수를 복제하면 한쪽만
+/// 튜닝 시 semantics 가 조용히 desync 되므로 여기 단일 출처로 둔다.
+inline constexpr double kClosedChainSingularSvThreshold = 1e-6;
+
 }  // namespace rtc_urdf_bridge

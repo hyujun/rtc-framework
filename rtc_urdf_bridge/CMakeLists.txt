@@ -51,6 +51,7 @@ add_library(${PROJECT_NAME} SHARED
   src/loop_projection.cpp
   src/closed_chain_model.cpp
   src/closed_chain_handle.cpp
+  src/rt_closed_chain_handle.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -167,6 +168,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_closed_chain_handle test/test_closed_chain_handle.cpp)
   target_link_libraries(test_closed_chain_handle ${PROJECT_NAME})
+
+  ament_add_gtest(test_rt_closed_chain_handle test/test_rt_closed_chain_handle.cpp)
+  target_link_libraries(test_rt_closed_chain_handle ${PROJECT_NAME})
 
   # #121 Phase 1: frozen-loop FK vs closed-chain FK 실측 하네스.
   ament_add_gtest(test_closed_chain_fk_measurement test/test_closed_chain_fk_measurement.cpp)
