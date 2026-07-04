@@ -174,7 +174,9 @@ Commit 완료 또는 사용자가 task 종료를 알린 후:
 
 1. **Memory save / Memory prune / Harness pruning 신호 보고** — user-level CLAUDE.md `# Post-task housekeeping` 가 SSoT. *Harness pruning 신호* 의 RTC 발현 카테고리는 invariant·anti-pattern grep false-positive, [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) 오차단, agent_docs 간 규칙 중복 drift
 2. **Stale artifact 정리** — `~/.claude/plans/*.md` 완료 task 용, repo-root / `/tmp` scratch files. 내용이 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`) 에 보존됨을 확인 후 삭제
-3. **보고** — 실제 수행한 항목만 한 줄씩
+3. **캐시 정리** — repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` (§9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다** (§9.1)
+4. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
+5. **보고** — 실제 수행한 항목만 한 줄씩
 
 ## 12. Reference Docs (read when relevant)
 
