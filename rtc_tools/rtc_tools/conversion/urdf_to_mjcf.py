@@ -527,7 +527,7 @@ def _add_equality_constraints(
         count += 1
 
     # Closed-chain joints → <connect body1="parent" body2="child" anchor="x y z"/>
-    for name, info in classification.passive_closed_chain.items():
+    for _name, info in classification.passive_closed_chain.items():
         x, y, z = info.origin_xyz
         attrib = {
             "body1": info.parent_link,

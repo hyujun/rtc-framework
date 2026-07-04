@@ -132,8 +132,7 @@ CMD_READ_SENSORS = [CMD_READ_SENSOR0, CMD_READ_SENSOR1, CMD_READ_SENSOR2, CMD_RE
 def _is_sensor_command(cmd: int) -> bool:
     """센서 커맨드인지 확인 (udp_hand_packets.hpp IsSensorCommand 동일)"""
     return (
-        cmd == CMD_SET_SENSOR_MODE
-        or cmd == CMD_READ_ALL_SENSORS
+        cmd in (CMD_SET_SENSOR_MODE, CMD_READ_ALL_SENSORS)
         or CMD_READ_SENSOR0 <= cmd <= CMD_READ_SENSOR3
     )
 
@@ -450,7 +449,7 @@ class HandUDPSender:
         Returns:
             True if sensor confirmed RAW mode, False if all retries failed
         """
-        for attempt in range(max_retries):
+        for _attempt in range(max_retries):
             if self.set_sensor_mode(SENSOR_MODE_RAW):
                 return True
             time.sleep(retry_interval)

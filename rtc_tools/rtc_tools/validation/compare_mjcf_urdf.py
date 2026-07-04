@@ -509,7 +509,7 @@ def _check_inertia_plausibility(
         return ""
 
     try:
-        import numpy as np  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415, F401  (availability probe only)
     except ImportError:
         return ""
 
@@ -817,7 +817,7 @@ def compare(
         u_eigs = _urdf_principal_moments(urdf_ip)
         m_eigs = sorted((float(v) for v in mjcf_ip.diag_inertia), reverse=True)
 
-        eig_pairs = list(zip(m_eigs, u_eigs))
+        eig_pairs = list(zip(m_eigs, u_eigs, strict=False))
         eig_match = all(_close(m, u, tolerance) for m, u in eig_pairs)
 
         if eig_match:

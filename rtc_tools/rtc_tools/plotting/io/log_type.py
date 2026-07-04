@@ -36,7 +36,7 @@ def detect_log_type(filepath):
         return "state_log"
     elif stem.endswith("sensor_log"):
         return "sensor_log"
-    elif stem.startswith("cm_timing_log") or stem.startswith("hand_udp_timing_log"):
+    elif stem.startswith(("cm_timing_log", "hand_udp_timing_log")):
         return "cm_timing"
     elif stem.startswith("mpc_timing_log"):
         return "mpc_timing"
