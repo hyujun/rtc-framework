@@ -60,6 +60,7 @@ flags:
   cpp:
     paths:
       - rtc_base/
+      - rtc_math/
       - rtc_communication/
       - rtc_controller_interface/
       - rtc_controller_manager/
@@ -80,6 +81,9 @@ component_management:
     - component_id: base
       name: rtc_base
       paths: ["rtc_base/"]
+    - component_id: math
+      name: rtc_math
+      paths: ["rtc_math/"]
     - component_id: communication
       name: rtc_communication
       paths: ["rtc_communication/"]
