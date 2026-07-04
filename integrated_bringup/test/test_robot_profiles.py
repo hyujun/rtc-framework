@@ -1,7 +1,8 @@
 """Unit tests for the demo_controller_gui static robot profiles.
 
-Pure-Python (no rclpy / Tk): exercises RobotShape.default_iiwa7_leap and the
-RobotProfile.for_robot registry that backs the GUI's --robot selection.
+Pure-Python (no rclpy / Tk): exercises RobotShape.default_iiwa7_leap /
+default_ur5e_p1b and the RobotProfile.for_robot registry that backs the GUI's
+--robot selection.
 """
 
 from integrated_bringup.demo_gui.discovery import (
@@ -79,6 +80,61 @@ def test_hand_reorder_is_name_based_not_order_based():
     assert reordered == [float(name) for name in shape.hand_motor_names]
 
 
+# p1b hand roster the controller republishes on /rtc_cm/p1b/joint_states,
+# in wire order — SSoT is config/ur5e_p1b/_base.yaml p1b joint_state_names.
+# The profile names must match this exactly or name-based hand feedback
+# reordering reads zero (see default_ur5e_p1b docstring).
+UR5E_P1B_HAND = (
+    "thumb_cmc_aa_joint",
+    "thumb_cmc_fe_joint",
+    "thumb_mcp_joint",
+    "thumb_dip_fe_joint",
+    "index_mcp_aa_joint",
+    "index_mcp_fe_joint",
+    "index_dip_fe_joint",
+    "middle_mcp_fe_joint",
+    "middle_dip_fe_joint",
+    "ring_mcp_fe_joint",
+)
+
+
+def test_ur5e_p1b_shape_dof():
+    shape = RobotShape.default_ur5e_p1b()
+    assert shape.arm_dof == 6
+    assert shape.hand_dof == 10
+    assert shape.arm_joint_names == (
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint",
+    )
+    # exact match (names + order) with the wire roster — the correctness
+    # invariant behind the whole profile.
+    assert shape.hand_motor_names == UR5E_P1B_HAND
+
+
+def test_ur5e_p1b_finger_groups_cover_all_motors():
+    shape = RobotShape.default_ur5e_p1b()
+    labels = [label for label, _ in shape.hand_finger_groups]
+    assert labels == ["Thumb", "Index", "Middle", "Ring"]
+    # p1b splits 4/3/2/1 across the fingers (unlike assm_v1's 3/3/3/1).
+    counts = [len(motors) for _, motors in shape.hand_finger_groups]
+    assert counts == [4, 3, 2, 1]
+    flat = [m for _, motors in shape.hand_finger_groups for m in motors]
+    # every motor appears exactly once, no "Other" bucket, order preserved
+    assert flat == list(shape.hand_motor_names)
+    assert len(set(flat)) == 10
+
+
+def test_ur5e_p1b_name_to_idx_complete():
+    shape = RobotShape.default_ur5e_p1b()
+    assert set(shape.hand_name_to_idx) == set(UR5E_P1B_HAND)
+    for name, idx in shape.hand_name_to_idx.items():
+        assert shape.hand_motor_names[idx] == name
+
+
 def test_for_robot_known_keys():
     iiwa = RobotProfile.for_robot("iiwa7_leap")
     assert iiwa.shape.arm_dof == 7
@@ -90,6 +146,13 @@ def test_for_robot_known_keys():
     assert ur5e.shape.arm_dof == 6
     assert ur5e.shape.hand_dof == 10
     assert (ur5e.tcp_parent, ur5e.tcp_child) == ("base", "tool0_actual")
+
+    # p1b shares the UR5e arm and TCP frames; only the hand roster differs.
+    p1b = RobotProfile.for_robot("ur5e_p1b")
+    assert p1b.shape.arm_dof == 6
+    assert p1b.shape.hand_dof == 10
+    assert p1b.shape.hand_motor_names == UR5E_P1B_HAND
+    assert (p1b.tcp_parent, p1b.tcp_child) == ("base", "tool0_actual")
 
 
 def test_for_robot_unknown_raises():
@@ -104,4 +167,4 @@ def test_for_robot_unknown_raises():
 
 def test_registry_keys_match_config_dirs():
     # --robot keys mirror config/<key>/ bringup directory names
-    assert set(ROBOT_PROFILES) == {"ur5e_hand", "iiwa7_leap"}
+    assert set(ROBOT_PROFILES) == {"ur5e_hand", "ur5e_p1b", "iiwa7_leap"}

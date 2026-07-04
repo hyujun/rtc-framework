@@ -119,6 +119,50 @@ class RobotShape:
         )
 
     @classmethod
+    def default_ur5e_p1b(cls) -> RobotShape:
+        """UR5e (6-DoF) + proto_1b hand (10 motors) schema.
+
+        Same arm as ``default_ur5e_assm`` but a different hand: the p1b motor
+        names carry a ``_joint`` suffix (``thumb_cmc_aa_joint``) and split
+        4/3/2/1 across Thumb/Index/Middle/Ring — unlike assm_v1's
+        suffix-less 3/3/3/1 layout. The names here mirror the roster the
+        controller republishes on ``/rtc_cm/p1b/joint_states``
+        (``config/ur5e_p1b/_base.yaml`` p1b ``joint_state_names``); the
+        hand-callback reorders feedback by name, so an exact match is what
+        keeps hand feedback from silently reading zero. Finger groups are
+        given explicitly (not inferred) so the ``_joint``-suffixed names land
+        in the intended tab and the layout stays stable.
+        """
+        arm = (
+            "shoulder_pan_joint",
+            "shoulder_lift_joint",
+            "elbow_joint",
+            "wrist_1_joint",
+            "wrist_2_joint",
+            "wrist_3_joint",
+        )
+        hand_groups = (
+            (
+                "Thumb",
+                (
+                    "thumb_cmc_aa_joint",
+                    "thumb_cmc_fe_joint",
+                    "thumb_mcp_joint",
+                    "thumb_dip_fe_joint",
+                ),
+            ),
+            ("Index", ("index_mcp_aa_joint", "index_mcp_fe_joint", "index_dip_fe_joint")),
+            ("Middle", ("middle_mcp_fe_joint", "middle_dip_fe_joint")),
+            ("Ring", ("ring_mcp_fe_joint",)),
+        )
+        hand_flat = tuple(m for _, motors in hand_groups for m in motors)
+        return cls(
+            arm_joint_names=arm,
+            hand_motor_names=hand_flat,
+            hand_finger_groups=hand_groups,
+        )
+
+    @classmethod
     def default_iiwa7_leap(cls) -> RobotShape:
         """KUKA iiwa7 (7-DoF) + LEAP Hand (16 motors) schema.
 
@@ -208,6 +252,13 @@ class RobotProfile:
 ROBOT_PROFILES: dict[str, RobotProfile] = {
     "ur5e_hand": RobotProfile(
         shape=RobotShape.default_ur5e_assm(),
+        tcp_parent="base",
+        tcp_child="tool0_actual",
+    ),
+    "ur5e_p1b": RobotProfile(
+        # Same UR5e arm and TCP frames as ur5e_hand; only the hand roster
+        # differs (proto_1b, _joint-suffixed names). See default_ur5e_p1b.
+        shape=RobotShape.default_ur5e_p1b(),
         tcp_parent="base",
         tcp_child="tool0_actual",
     ),

@@ -2869,8 +2869,8 @@ class DemoControllerGUI(Node):
 def _parse_robot_arg(argv):
     """Extract the ``--robot`` value from ``argv`` (ROS args already removed).
 
-    Accepts ``--robot <key>`` plus convenience aliases ``--ur5e`` / ``--iiwa``
-    that map onto the canonical ``config/<key>/`` names. Unknown keys are not
+    Accepts ``--robot <key>`` plus convenience aliases ``--ur5e`` / ``--p1b`` /
+    ``--iiwa`` that map onto the canonical ``config/<key>/`` names. Unknown keys are not
     rejected here — ``RobotProfile.for_robot`` validates and raises so the
     error surfaces in one place.
     """
@@ -2878,7 +2878,8 @@ def _parse_robot_arg(argv):
     parser.add_argument(
         "--robot",
         default="ur5e_hand",
-        help="robot profile selecting arm/hand joint schema + TCP frames (ur5e_hand | iiwa7_leap)",
+        help="robot profile selecting arm/hand joint schema + TCP frames "
+        "(ur5e_hand | ur5e_p1b | iiwa7_leap)",
     )
     parser.add_argument(
         "--ur5e",
@@ -2886,6 +2887,13 @@ def _parse_robot_arg(argv):
         action="store_const",
         const="ur5e_hand",
         help="alias for --robot ur5e_hand",
+    )
+    parser.add_argument(
+        "--p1b",
+        dest="robot",
+        action="store_const",
+        const="ur5e_p1b",
+        help="alias for --robot ur5e_p1b",
     )
     parser.add_argument(
         "--iiwa",
