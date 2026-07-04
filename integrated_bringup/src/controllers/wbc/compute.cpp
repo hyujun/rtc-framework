@@ -712,8 +712,11 @@ bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
   }
   for (std::size_t f = 0; f < kNumFingertips; ++f) {
     pinocchio::SE3 T_hand_ft;
-    if (HandFingertipPoseDispatch(closed_hand_fk_, hand_handle_.get(), fingertip_frame_ids_,
-                                  use_hand_root_frame_, hand_root_frame_id_, f, T_hand_ft)) {
+    const bool produced =
+        HandFingertipPoseDispatch(closed_hand_fk_, hand_handle_.get(), fingertip_frame_ids_,
+                                  use_hand_root_frame_, hand_root_frame_id_, f, T_hand_ft);
+    fingertip_pose_valid_[f] = produced;
+    if (produced) {
       const pinocchio::SE3 T_base_ft = tcp.act(T_hand_ft);
       fingertip_positions_[f] = T_base_ft.translation();
       fingertip_rotations_[f] = T_base_ft.rotation();
@@ -819,7 +822,11 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
     // actuation; non-downstream tips match the serial tree-model FK.
     if (ComputeHandFingertipFk(state, tcp)) {
       for (std::size_t f = 0; f < kNumFingertips; ++f) {
-        if (fingertip_frame_ids_[f] != 0) {
+        // Gate on both a resolved serial frame id AND a pose actually produced
+        // this tick: a downstream (loop) tip holds no pose until the closed
+        // chain first converges, so publishing its zero-init cache would snap
+        // the fingertip TF to the base origin.
+        if (fingertip_frame_ids_[f] != 0 && fingertip_pose_valid_[f]) {
           const Eigen::Vector3d& ft_trans = fingertip_positions_[f];
           const Eigen::Quaterniond ft_quat(fingertip_rotations_[f]);
           output.task_link_poses[f].position = {ft_trans.x(), ft_trans.y(), ft_trans.z()};

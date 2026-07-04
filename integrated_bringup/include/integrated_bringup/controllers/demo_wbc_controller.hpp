@@ -513,14 +513,20 @@ class DemoWbcController final : public RTControllerInterface {
   bool use_hand_root_frame_{false};
   std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
+  // Per-tick: did ComputeHandFingertipFk produce a real pose for fingertip f?
+  // False for a downstream tip until the closed-chain loop first converges, so
+  // FillPublishOutput must not publish the zero-init cache as a valid TF.
+  std::array<bool, kNumFingertips> fingertip_pose_valid_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for serial hand FK
   ClosedChainHandFk closed_hand_fk_;
 
   // Control model — shared_ptr lifetime for PinocchioCache.
-  // InitModels prefers the mimic-locked reduced tree `mpc`
-  // (nq == nv == 16 for UR5e + 10-DoF hand). Falls back to the raw URDF
-  // full model (nq=26, nv=21 with first-class mimic) only if that tree
-  // isn't declared in urdf.tree_models. TSID + MPC share this model.
+  // InitModels prefers the builder's actuated closed-chain model (extended
+  // hands: locks only the loop-passives, keeping every actuated joint movable
+  // → nq == nv == 16 for UR5e + 10-DoF hand), else the reduced tree `wbc`,
+  // else the raw URDF full model (nq=26, nv=21 with first-class mimic). Plain/
+  // mimic URDFs get a null actuated model and take the tree/full path
+  // byte-for-byte. TSID + MPC share this model.
   std::shared_ptr<const pinocchio::Model> full_model_ptr_;
 
   // Joint reorder: external [arm0..arm_dof_-1, hand0..hand_dof_-1] →

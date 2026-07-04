@@ -65,7 +65,13 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         if (!secondary.empty()) {
           for (const auto& tm : sys_cfg->tree_models) {
             if (tm.name == secondary) {
-              AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/0);
+              // Register only as many hand-tip slots as ComputeHandFingertipFk
+              // fills (kNumFingertips): extra tip_links would register slots
+              // that never receive a pose and silently never broadcast.
+              const std::size_t n = std::min(tm.tip_links.size(), kNumFingertips);
+              const std::vector<std::string> capped_tips(
+                  tm.tip_links.begin(), tm.tip_links.begin() + static_cast<std::ptrdiff_t>(n));
+              AppendHandTipSlots(owned_topics_, tm.root_link, capped_tips, /*group_idx=*/0);
               break;
             }
           }
