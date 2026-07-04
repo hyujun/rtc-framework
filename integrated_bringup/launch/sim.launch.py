@@ -75,6 +75,9 @@ def launch_setup(context, *args, **kwargs):
     sim_config = PathJoinSubstitution(
         [pkg_bringup, "config", "ur5e_hand", "mujoco_simulator.yaml"]
     )
+    # Mode-agnostic base (URDF/model topology, rosters, limits, control_rate);
+    # sim.yaml overlays only the sim-specific delta on top.
+    base_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_hand", "_base.yaml"])
     ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_hand", "sim.yaml"])
 
     # udp_hand_driver is optional — may not be built in sim-only installs
@@ -118,8 +121,11 @@ def launch_setup(context, *args, **kwargs):
     import yaml
 
     try:
+        # control_rate is mode-agnostic → SSoT lives in _base.yaml (sim.yaml no
+        # longer carries it). Read from _base so the MuJoCo fake-hand rate stays
+        # locked to the RT node's rate instead of silently defaulting to 500.0.
         ctrl_yaml_path = os.path.join(
-            get_package_share_directory("integrated_bringup"), "config", "ur5e_hand", "sim.yaml"
+            get_package_share_directory("integrated_bringup"), "config", "ur5e_hand", "_base.yaml"
         )
         with open(ctrl_yaml_path) as f:
             ctrl_yaml = yaml.safe_load(f)
@@ -134,7 +140,7 @@ def launch_setup(context, *args, **kwargs):
         sim_params.append(sim_overrides)
 
     # ── Build controller parameters (YAML + overrides + launch args) ──────────
-    ctrl_params = [ctrl_config, sim_config]
+    ctrl_params = [base_config, ctrl_config, sim_config]
     if hand_config is not None:
         ctrl_params.append(hand_config)
     ctrl_overrides = {}

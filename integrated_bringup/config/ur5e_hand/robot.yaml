@@ -1,106 +1,29 @@
-# ur5e_hand/robot.yaml — UR5e + assm_v1 hand real-hardware config
-# ROS2 Humble / Jazzy compatible flat parameter structure
+# ur5e_hand/robot.yaml — real-hardware delta (overlaid on _base.yaml)
+# Used by robot.launch.py (UR driver + udp_hand_driver).
+# Loaded AFTER _base.yaml, which holds all mode-agnostic config (URDF/model
+# topology, joint & sensor rosters, limits, control_rate, logging). This file
+# owns ONLY what differs from simulation: real backends + wire topics, the
+# command/motor rosters, E-STOP enablement, hardware init timing, and the
+# startup controller.
 /**:
   ros__parameters:
-    # ── Config variant directory ─────────────────────────────────────────────
-    config_variant: "ur5e_hand"
-
-    # ── Control rate ──────────────────────────────────────────────────────────
-    control_rate: 500.0 # Hz — timer period = 1e6/rate us
-
     # ── Initial controller ────────────────────────────────────────────────────
     initial_controller: "demo_wbc_controller"
 
     # ── Initialization timeout ────────────────────────────────────────────────
     init_timeout_sec: 30.0 # E-STOP + shutdown if no robot/target data (sec)
 
-    # ── E-STOP configuration ─────────────────────────────────────────────────
+    # ── E-STOP configuration ──────────────────────────────────────────────────
     enable_estop: true # E-STOP timeout monitoring
-    # device_timeouts: matches topics group names, watches state topic for gaps
-    device_timeout_names: ["ur5e", "hand"]
-    device_timeout_values: [1000.0, 1000.0] # ms
+    device_timeout_values: [1000.0, 1000.0] # ms — tight for real HW watchdog
 
-    # ── Logging configuration ─────────────────────────────────────────────────
-    enable_logging: true
-    enable_timing_log: true
-    enable_device_log: true # auto-creates per-device log files
-    log_dir: ""
-    max_log_sessions: 10
-
-    # ── System URDF + model topology (shared by all controllers) ──────────
-    urdf:
-      package: "robot_descriptions"
-      path: "robots/ur5e_assm_v1/urdf/ur5e_with_hand.urdf.xacro"
-      root_joint_type: "fixed"
-      # ── Extended-URDF (loop closure) ────────────────────────────────────
-      # Set extended: true when the URDF is a pure spanning-tree and loop
-      # closures live in a sibling <stem>.closure.yaml sidecar (e.g.
-      # ur5e_with_hand.closure.yaml next to the .urdf.xacro above). The shared
-      # PinocchioModelBuilder then builds RigidConstraint models + a loop-
-      # consistent q_ref. Off by default — this robot is mimic-based, not
-      # loop-closed. Use closure_path (pkg-relative) to override the derived name.
-      # extended: true
-      # closure_path: "robots/ur5e_assm_v1/urdf/ur5e_with_hand.closure.yaml"
-      # ── Arm sub-model (6-DOF serial chain) ──────────────────────────────
-      # Name matches device group "ur5e". Extracts base → tool0 chain.
-      # All joints outside this chain (including hand passive_joints)
-      # are locked at their reference configuration.
-      sub_models:
-        ur5e:
-          root_link: "base"
-          tip_link: "tool0"
-      # ── Hand tree-model (10-DOF branching) ──────────────────────────────
-      # Name matches device group "hand".
-      tree_models:
-        hand:
-          root_link: "hand_base_link"
-          tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
-        # WBC control tree (arm + hand, shared by TSID and MPC). Mimic
-        # joints are auto-classified as passive/kMimic by UrdfAnalyzer and
-        # locked during buildReducedModel, yielding a clean nq == nv == 16
-        # model (6 arm + 10 actuated hand DoFs). TSID tasks/constraints and
-        # MPC handler-mode prediction both operate in this reduced space;
-        # mimic kinematics are handled downstream by the hardware driver /
-        # MuJoCo tendon.
-        wbc:
-          root_link: "base"
-          tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
-      # ── Passive joints (locked in all sub/tree models) ──────────────────
-      # Hand joints — locked when building the arm sub-model.
-      # Explicit hint: UrdfAnalyzer classifies these as kPassive/kFree
-      # regardless of whether <mimic> or closed-chain info is present.
-      # Set yaml_passive_override: true below to make this list authoritative
-      # (overrides auto-classification).
-      # passive_joints:
-      #   - "thumb_cmc_aa"
-      #   - "thumb_cmc_fe"
-      #   - "thumb_mcp_fe"
-      #   - "index_mcp_aa"
-      #   - "index_mcp_fe"
-      #   - "index_dip_fe"
-      #   - "middle_mcp_aa"
-      #   - "middle_mcp_fe"
-      #   - "middle_dip_fe"
-      #   - "ring_mcp_fe"
-
-    # ── Device configuration (keyed by controller topic group name) ─────────
-    # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +
-    # wire-format topics. CM creates one DeviceBackend per group from this
-    # block; controller YAMLs only own target / robot_transforms / grasp_state
-    # / wbc_state / tof_snapshot.
+    # ── Device backends + hardware rosters ────────────────────────────────────
     devices:
       ur5e:
         backend:
           type: "ur_driver_native"  # real UR5e via ros2_control
           state_topic: "/joint_states"
           command_topic: "/forward_position_controller/commands"
-        joint_state_names:
-          - "shoulder_pan_joint"
-          - "shoulder_lift_joint"
-          - "elbow_joint"
-          - "wrist_1_joint"
-          - "wrist_2_joint"
-          - "wrist_3_joint"
         # forward_position_controller receives Float64MultiArray.
         # Order matches joint_state_names; ur_driver_native uses these to
         # build a reorder map between controller output and the wire format.
@@ -111,12 +34,6 @@
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"
-        joint_limits:
-          max_velocity:     [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
-          max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
-          max_torque:       [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
-          position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
-          position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
       hand:
         backend:
           type: "udp_hand_native"   # UDP hand driver — joint + motor + sensor lanes
@@ -124,17 +41,6 @@
           command_topic: "/hand/joint_command"
           motor_topic:   "/hand/motor_states"
           sensor_topic:  "/hand/sensor_states"
-        joint_state_names:
-          - "thumb_cmc_aa"
-          - "thumb_cmc_fe"
-          - "thumb_mcp_fe"
-          - "index_mcp_aa"
-          - "index_mcp_fe"
-          - "index_dip_fe"
-          - "middle_mcp_aa"
-          - "middle_mcp_fe"
-          - "middle_dip_fe"
-          - "ring_mcp_fe"
         motor_state_names:
           - "motor_1"
           - "motor_2"
@@ -146,21 +52,6 @@
           - "motor_8"
           - "motor_9"
           - "motor_10"
-        sensor_names:
-          - "thumb"
-          - "index"
-          - "middle"
-          - "ring"
-        joint_limits:
-          max_velocity:   [6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28]
-          position_lower: [-1.57, -1.57, -1.57, -0.15, 0.0, 0.0, -0.15, 0.0, 0.0, 0.0]
-          position_upper: [1.57, 1.57, 0.00, 0.15, 1.57, 1.57, 0.15, 1.57, 1.57, 1.57]
-        # Sensor packing layout — CM uses these for stride/offset arithmetic
-        # only; the field semantics (barometer/ToF/contact/F/u) live in the
-        # device-driver package (udp_hand_driver). assm_v1 hand: per
-        # fingertip, primary=8 barometers + secondary=3 ToFs (= 11 sensor
-        # values); ML inference output = contact(1) + F(3) + u(3) = 7.
-        #
         # has_native_contact / has_native_displacement advertise that the
         # configured backend populates the corresponding inference_data slots
         # with real signal (not zero-fill). Controllers consult these to
@@ -169,10 +60,7 @@
         # — keep these in lockstep with the driver's ft_inferencer.enabled
         # YAML; setting true here while the driver runs without inference
         # silently degrades grasp detection to "always false probability".
+        # (Sensor packing counts live in _base sensor_layout.)
         sensor_layout:
-          primary_count_per_group:        8
-          secondary_count_per_group:      3
-          values_per_group:               11
-          inference_values_per_group:     7
           has_native_contact:             true
           has_native_displacement:        true

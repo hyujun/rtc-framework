@@ -244,6 +244,11 @@ def generate_launch_description():
     trace_action = OpaqueFunction(function=_build_trace_action)
 
     # ── Paths ──────────────────────────────────────────────────────────────────
+    # Mode-agnostic base (URDF/model topology, rosters, limits, control_rate);
+    # robot.yaml overlays only the real-hardware delta on top.
+    base_config = PathJoinSubstitution(
+        [FindPackageShare("integrated_bringup"), "config", "ur5e_p1b", "_base.yaml"]
+    )
     ur_control_config = PathJoinSubstitution(
         [FindPackageShare("integrated_bringup"), "config", "ur5e_p1b", "robot.yaml"]
     )
@@ -381,6 +386,7 @@ def generate_launch_description():
         namespace="",
         output="screen",
         parameters=[
+            base_config,
             ur_control_config,
             {
                 "log_dir": session_dir,
