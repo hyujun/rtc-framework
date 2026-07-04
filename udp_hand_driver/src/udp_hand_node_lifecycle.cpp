@@ -82,6 +82,27 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                              ? udp_hand_driver::HandCommunicationMode::kBulk
                              : udp_hand_driver::HandCommunicationMode::kIndividual;
 
+  // ── Sensor protocol (firmware version seam: 1a / 1b) ─────────────────
+  declare_parameter("protocol_version", std::string{"1a"});
+  const std::string protocol_version = get_parameter("protocol_version").as_string();
+  auto sensor_protocol = udp_hand_driver::CreateSensorProtocol(protocol_version);
+  if (!sensor_protocol) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "Unsupported protocol_version '%s' (expected \"1a\" or \"1b\")",
+                 protocol_version.c_str());
+    return CallbackReturn::FAILURE;
+  }
+  // Cache the publish-layout capability off the hot path. Force-layout protocols
+  // (1b) route sensor decode only through the bulk path, so they require bulk.
+  sensor_uses_force_layout_ = !sensor_protocol->RunsSensorPostProcess();
+  if (sensor_uses_force_layout_ && comm_mode != udp_hand_driver::HandCommunicationMode::kBulk) {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "protocol_version '%s' (force sensor layout) requires "
+                 "communication_mode \"bulk\" (got \"%s\")",
+                 protocol_version.c_str(), comm_mode_str.c_str());
+    return CallbackReturn::FAILURE;
+  }
+
   const bool baro_lpf_enabled = get_parameter("baro_lpf_enabled").as_bool();
   const double baro_lpf_cutoff_hz = get_parameter("baro_lpf_cutoff_hz").as_double();
   const bool tof_lpf_enabled = get_parameter("tof_lpf_enabled").as_bool();
@@ -134,6 +155,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       false /* enable_write_ack: deprecated */, 1, num_fingertips_, use_fake_hand_, ft_names,
       comm_mode, tof_lpf_enabled, tof_lpf_cutoff_hz, baro_lpf_enabled, baro_lpf_cutoff_hz,
       ft_config, drift_enabled, drift_threshold, drift_window_size);
+  controller_->SetSensorProtocol(std::move(sensor_protocol));
 
   // ── Topic names ──────────────────────────────────────────────────
   declare_parameter("command_topic", std::string("/hand/joint_command"));
@@ -278,8 +300,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
 
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
               "UdpHandNode configured: target %s:%d, direct publish from "
-              "EventLoop, comm=%s",
-              target_ip.c_str(), target_port, comm_mode_str.c_str());
+              "EventLoop, comm=%s, protocol=%s",
+              target_ip.c_str(), target_port, comm_mode_str.c_str(), protocol_version.c_str());
   return CallbackReturn::SUCCESS;
 }
 

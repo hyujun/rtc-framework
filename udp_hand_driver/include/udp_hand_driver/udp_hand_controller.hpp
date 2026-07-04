@@ -31,6 +31,7 @@
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
 #include "udp_hand_driver/fingertip_ft_inferencer.hpp"
+#include "udp_hand_driver/protocol/sensor_protocol.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_logging.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
@@ -152,6 +153,12 @@ class UdpHandController {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   [[nodiscard]] bool Start() {
+    // Default to the 1a sensor protocol when the node did not inject one
+    // (e.g. direct construction in unit tests). Off the RT path.
+    if (!sensor_protocol_) {
+      sensor_protocol_ = CreateSensorProtocol("1a");
+    }
+
     // F/T inferencer initialization. Non-RT init path — verbose diagnostics
     // here are intentional: when FT inference misbehaves at runtime, this
     // dump is the first thing the operator inspects.
@@ -265,6 +272,16 @@ class UdpHandController {
     RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
                 "UdpHandController stopped: %zu cycles in %.1fs (avg=%.1f Hz)", cycles, elapsed_sec,
                 avg_rate_hz);
+  }
+
+  // ── Sensor protocol injection (non-RT — call before Start()) ───────────
+
+  /// Inject the firmware sensor protocol (1a/1b). Must be called before Start();
+  /// if left unset, Start() defaults to 1a for backward compatibility. The
+  /// EventLoop dereferences this on the hot path, so it must not change while
+  /// running.
+  void SetSensorProtocol(std::unique_ptr<SensorProtocol> proto) noexcept {
+    sensor_protocol_ = std::move(proto);
   }
 
   // ── Callback ───────────────────────────────────────────────────────────
@@ -471,6 +488,12 @@ class UdpHandController {
     std::array<float, kNumHandMotors> pending_cmd{};
 
     std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data{};
+    // 1b force cache (persists across decimated cycles, mirroring
+    // cached_sensor_data for the 1a int32 pipeline). Zero on the 1a path.
+    std::array<float, udp_hand_driver::kMaxSensorForceValues> cached_sensor_force{};
+    // Raw bulk-sensor receive scratch (sized for the largest response, 259B).
+    // Decoded by sensor_protocol_ so the layout can vary by version.
+    std::array<uint8_t, packets::kMaxPacketSize> sensor_recv_buf{};
     int sensor_cycle_counter = 0;
 
     // First cycle: run immediately (no eventfd wait) to read initial state
@@ -552,16 +575,19 @@ class UdpHandController {
 
       if (is_bulk) {
         // ── Bulk mode ─────────────────────────────────────────────────────
-        // 2. Read all motors (motor-space: kMotor)
-        packets::JointMode received_mode{};
-        if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf, motor_cur_buf,
-                                           packets::JointMode::kMotor, &received_mode)) {
-          std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
-          std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
-          std::copy_n(motor_cur_buf.begin(), kNumHandMotors, state.motor_currents.begin());
-          state.received_joint_mode = static_cast<uint8_t>(received_mode);
-          state.motor_valid = true;
-          any_recv_ok = true;
+        // 2. Read all motors (motor-space: kMotor). Skipped when the protocol
+        //    has no motor-space read (1b) — motor_states is then not published.
+        if (sensor_protocol_->HasMotorSpaceRead()) {
+          packets::JointMode received_mode{};
+          if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf, motor_cur_buf,
+                                             packets::JointMode::kMotor, &received_mode)) {
+            std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
+            std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
+            std::copy_n(motor_cur_buf.begin(), kNumHandMotors, state.motor_currents.begin());
+            state.received_joint_mode = static_cast<uint8_t>(received_mode);
+            state.motor_valid = true;
+            any_recv_ok = true;
+          }
         }
 
         const auto t2 = std::chrono::steady_clock::now();
@@ -580,18 +606,28 @@ class UdpHandController {
 
         const auto t2j = std::chrono::steady_clock::now();
 
-        // 4. Read all sensors
+        // 4. Read all sensors — raw recv, decode via the injected protocol
+        //    (version seam). The request is identical across versions; only the
+        //    response size/layout and decode differ.
         if (is_sensor_cycle) {
-          if (transport_.RequestAllSensorRead(cached_sensor_data.data(), num_fingertips_,
-                                              packets::SensorMode::kRaw)) {
+          state.num_fingertips = num_fingertips_;  // decode input
+          const ssize_t recvd = transport_.RequestBulkSensorRaw(
+              sensor_recv_buf.data(), sensor_recv_buf.size(), sensor_protocol_->ResponseSize(),
+              packets::SensorMode::kRaw);
+          if (recvd >= 0 && sensor_protocol_->DecodeAllSensors(
+                                sensor_recv_buf.data(), static_cast<std::size_t>(recvd), state)) {
             any_recv_ok = true;
+            cached_sensor_data = state.sensor_data;    // 1a raw decode (0 for 1b)
+            cached_sensor_force = state.sensor_force;  // 1b force (0 for 1a)
           }
         }
 
         const auto t3 = std::chrono::steady_clock::now();
 
-        // Sensor processing + FT inference
-        if (is_sensor_cycle) {
+        // Sensor post-processing + FT inference. Gated on the protocol's
+        // polymorphic capability — 1a runs the LPF/drift/F-T pipeline; 1b skips
+        // it entirely (force is firmware-computed).
+        if (is_sensor_cycle && sensor_protocol_->RunsSensorPostProcess()) {
           cached_sensor_data_raw = cached_sensor_data;
           sensor_processor_.PreFilter();
           sensor_processor_.ApplyFilters(cached_sensor_data);
@@ -603,6 +639,7 @@ class UdpHandController {
 
         state.sensor_data_raw = cached_sensor_data_raw;
         state.sensor_data = cached_sensor_data;
+        state.sensor_force = cached_sensor_force;
         state.num_fingertips = num_fingertips_;
         state.valid = any_recv_ok;
 
@@ -858,6 +895,11 @@ class UdpHandController {
 
   // F/T inferencer config (before transport_ for initializer list order)
   FingertipFTInferencer::Config ft_config_;
+
+  // Firmware sensor protocol (version seam). Defaulted to 1a in Start() if the
+  // node did not inject one. Owned here; the EventLoop dispatches sensor decode
+  // and queries capabilities (motor-space read, post-process) through it.
+  std::unique_ptr<SensorProtocol> sensor_protocol_;
 
   // Sub-systems
   UdpHandTransport transport_;

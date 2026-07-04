@@ -18,9 +18,11 @@ struct UdpHandState {
   std::array<float, kNumHandMotors> joint_positions{};
   std::array<float, kNumHandMotors> joint_velocities{};
   std::array<float, kNumHandMotors> joint_currents{};
-  // Sensor
+  // Sensor (1a: barometer/ToF int32 pipeline)
   std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data{};
   std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data_raw{};
+  // Sensor (1b: per-fingertip float32 [fx,fy,fz,Lx,Ly,Temp]; zero on 1a)
+  std::array<float, udp_hand_driver::kMaxSensorForceValues> sensor_force{};
   int num_fingertips{udp_hand_driver::kDefaultNumFingertips};
   bool valid{false};                  ///< any read succeeded this cycle
   bool joint_valid{false};            ///< kJoint read succeeded this cycle

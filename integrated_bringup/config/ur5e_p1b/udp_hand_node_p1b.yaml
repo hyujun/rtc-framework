@@ -1,9 +1,21 @@
 # ur5e_p1b/udp_hand_node_p1b.yaml -- topic/name overlay for udp_hand_node
+#
+# 이 파일은 udp_hand_driver/config/udp_hand_node.yaml 위에 레이어된다
+# (launch parameters=[base, THIS, ft_inferencer]). communication_mode 는
+# base 의 "bulk" 를 상속하며, protocol_version 1b 는 bulk 전용이다.
+#
+# protocol_version 1b 효과:
+#   - /p1b/sensor_states = HandSensorState, 핑거당 f[3]={fx,fy,fz} (firmware force)
+#   - /p1b/motor_states  미발행 (0x10 kMotor read 스킵) — 아래 motor_state_topic
+#     은 publisher 이름만 잡아두며 실제 발행은 없다.
+#   - LPF/drift/F-T 파라미터(base yaml)는 1b 경로에서 무시된다 (후처리 없음).
 /**:
   ros__parameters:
+    protocol_version: "1b"
+
     command_topic: "/p1b/joint_command"
     joint_state_topic: "/p1b/joint_states"
-    motor_state_topic: "/p1b/motor_states"
+    motor_state_topic: "/p1b/motor_states"   # 미발행 (1b: motor-space read 스킵)
     sensor_topic: "/p1b/sensor_states"
     link_status_topic: "/p1b/link_status"
 
