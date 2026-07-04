@@ -38,6 +38,14 @@
     communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17
                                       # "bulk":       0x10+0x19
 
+    # -- 펌웨어 센서 프로토콜 (버전 seam) --
+    # "1a": barometer/ToF int32 센서 (259B bulk 응답) + LPF/drift/F-T 추론,
+    #       /motor_states 발행. (기본, 기존 동작)
+    # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답).
+    #       force 직접 발행(후처리 없음), motor-space read 스킵 → motor_states 미발행.
+    #       force layout 은 "bulk" 모드 전용 (individual 모드와 조합 시 configure 실패).
+    protocol_version: "1a"
+
     # -- Publish rate (link_status decimation) --
     # link_status는 EventLoop rate(~500Hz)로 보낼 필요 없음.
     # 500Hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).

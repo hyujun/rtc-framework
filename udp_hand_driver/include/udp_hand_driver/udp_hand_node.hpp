@@ -92,6 +92,13 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<std::string> fingertip_names_;
   int num_fingertips_{udp_hand_driver::kDefaultNumFingertips};
 
+  // Sensor-message layout selector, cached from the SensorProtocol capability
+  // at on_configure (off the hot path). true → publish the 1b per-fingertip
+  // force vector (fs.f) from state.sensor_force; false → publish the 1a
+  // barometer/ToF + F/T-inference payload. The publish branch reads this bool,
+  // never a version string (ARCH-3).
+  bool sensor_uses_force_layout_{false};
+
   // Link status — standalone rclcpp::Publisher (NOT LifecyclePublisher).
   // Safety-relevant: must remain publishable in any lifecycle state.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;

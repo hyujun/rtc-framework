@@ -39,8 +39,9 @@ inline constexpr std::size_t kMotorPacketSize =
     kHeaderSize + kMotorDataCount * sizeof(uint32_t);  // 43
 
 // Sensor packet constants
-inline constexpr std::size_t kSensorRequestSize = kHeaderSize;                 // 3 (no data)
-inline constexpr std::size_t kSensorResponseDataCount = udp_hand_driver::kSensorDataPerPacket;  // 16
+inline constexpr std::size_t kSensorRequestSize = kHeaderSize;  // 3 (no data)
+inline constexpr std::size_t kSensorResponseDataCount =
+    udp_hand_driver::kSensorDataPerPacket;  // 16
 inline constexpr std::size_t kSensorResponseSize =
     kHeaderSize + kSensorResponseDataCount * sizeof(int32_t);  // 67
 
@@ -52,14 +53,28 @@ inline constexpr std::size_t kAllMotorResponseSize =
     kHeaderSize + kAllMotorDataCount * sizeof(uint32_t);  // 123
 
 // Bulk sensor packet constants (cmd=0x19): response = 4 fingers × 16 uint32
-inline constexpr std::size_t kAllSensorFingertipCount = udp_hand_driver::kDefaultNumFingertips;  // 4
+inline constexpr std::size_t kAllSensorFingertipCount =
+    udp_hand_driver::kDefaultNumFingertips;  // 4
 inline constexpr std::size_t kAllSensorDataCount =
-    kAllSensorFingertipCount * udp_hand_driver::kSensorDataPerPacket;               // 64
-inline constexpr std::size_t kAllSensorRequestSize = kHeaderSize;  // 3 (no data)
+    kAllSensorFingertipCount * udp_hand_driver::kSensorDataPerPacket;  // 64
+inline constexpr std::size_t kAllSensorRequestSize = kHeaderSize;      // 3 (no data)
 inline constexpr std::size_t kAllSensorResponseSize =
     kHeaderSize + kAllSensorDataCount * sizeof(int32_t);  // 259
 
-// Max packet size (for receive buffer allocation)
+// Bulk sensor packet constants — Proto_1b (cmd=0x19): response = 3B header +
+// 4 fingers × 6 float32 LE [fx,fy,fz,Lx,Ly,Temp]. The *request* is identical to
+// 1a (cmd 0x19, header only); only the response size/layout differs.
+inline constexpr std::size_t kP1bSensorFingertipCount =
+    udp_hand_driver::kDefaultNumFingertips;  // 4
+inline constexpr std::size_t kP1bSensorFloatsPerFingertip =
+    udp_hand_driver::kP1bValuesPerFingertip;  // 6
+inline constexpr std::size_t kP1bSensorFloatCount =
+    kP1bSensorFingertipCount * kP1bSensorFloatsPerFingertip;  // 24
+inline constexpr std::size_t kP1bSensorResponseSize =
+    kHeaderSize + kP1bSensorFloatCount * sizeof(float);  // 99
+
+// Max packet size (for receive buffer allocation). 1a bulk sensor (259) is the
+// largest response across all protocol versions (1b bulk sensor = 99).
 inline constexpr std::size_t kMaxPacketSize = kAllSensorResponseSize;  // 259
 
 // Legacy alias
@@ -313,8 +328,9 @@ inline void ExtractMotorFloats(const MotorPacket& pkt,
 
 // Extract sensor values from a sensor response, skipping reserved fields.
 // Output: barometer[8] + tof[3] = 11 useful values (as float).
-inline void ExtractSensorValues(const SensorResponsePacket& pkt,
-                                std::array<float, udp_hand_driver::kSensorValuesPerFingertip>& out) noexcept {
+inline void ExtractSensorValues(
+    const SensorResponsePacket& pkt,
+    std::array<float, udp_hand_driver::kSensorValuesPerFingertip>& out) noexcept {
   // barometer: data[0..7] → out[0..7]
   for (std::size_t i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
     out[i] = static_cast<float>(pkt.data[i]);
@@ -322,19 +338,22 @@ inline void ExtractSensorValues(const SensorResponsePacket& pkt,
   // skip reserved: data[8..12]
   // tof: data[13..15] → out[8..10]
   for (std::size_t i = 0; i < udp_hand_driver::kTofCount; ++i) {
-    out[udp_hand_driver::kBarometerCount + i] = static_cast<float>(pkt.data[udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i]);
+    out[udp_hand_driver::kBarometerCount + i] = static_cast<float>(
+        pkt.data[udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i]);
   }
 }
 
 // Extract raw int32 sensor values from a sensor response, skipping reserved fields.
 // Output: barometer[8] + tof[3] = 11 raw int32 values (no float conversion).
-inline void ExtractSensorValuesRaw(const SensorResponsePacket& pkt,
-                                   std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip>& out) noexcept {
+inline void ExtractSensorValuesRaw(
+    const SensorResponsePacket& pkt,
+    std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip>& out) noexcept {
   for (std::size_t i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
     out[i] = pkt.data[i];
   }
   for (std::size_t i = 0; i < udp_hand_driver::kTofCount; ++i) {
-    out[udp_hand_driver::kBarometerCount + i] = pkt.data[udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i];
+    out[udp_hand_driver::kBarometerCount + i] =
+        pkt.data[udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i];
   }
 }
 
@@ -377,6 +396,34 @@ inline SensorRequestPacket MakeReadAllSensorsRequest(
   return true;
 }
 
+// Proto_1b bulk sensor packet (packed): 99 bytes (3B header + 24 float32 LE).
+#pragma pack(push, 1)
+
+struct P1bSensorResponsePacket {
+  uint8_t id;
+  uint8_t cmd;
+  uint8_t mode;
+  std::array<float, kP1bSensorFloatCount> data;  // finger0[6] + finger1[6] + ...
+};
+
+#pragma pack(pop)
+
+static_assert(sizeof(P1bSensorResponsePacket) == kP1bSensorResponseSize,
+              "P1bSensorResponsePacket size mismatch");
+static_assert(sizeof(P1bSensorResponsePacket) == 99, "1b bulk sensor response must be 99 bytes");
+static_assert(std::is_trivially_copyable_v<P1bSensorResponsePacket>, "Must be trivially copyable");
+
+// Decode raw bytes into a P1bSensorResponsePacket. Returns false if too small.
+// Host is assumed little-endian (consistent with Uint32ToFloat/the rest of this
+// header); the float32 payload is copied verbatim off the wire.
+[[nodiscard]] inline bool DecodeP1bSensorResponse(const uint8_t* buf, std::size_t len,
+                                                  P1bSensorResponsePacket& out) noexcept {
+  if (len < kP1bSensorResponseSize)
+    return false;
+  std::memcpy(&out, buf, kP1bSensorResponseSize);
+  return true;
+}
+
 // Extract motor data from bulk response (grouped layout: pos[10], vel[10], cur[10]).
 inline void ExtractAllMotorFloats(const AllMotorResponsePacket& pkt,
                                   std::array<float, kMotorDataCount>& positions,
@@ -395,8 +442,10 @@ inline void ExtractAllMotorFloats(const AllMotorResponsePacket& pkt,
 inline void ExtractAllSensorValuesRaw(const AllSensorResponsePacket& pkt, int32_t* out,
                                       int num_fingertips) noexcept {
   for (int f = 0; f < num_fingertips; ++f) {
-    const std::size_t pkt_base = static_cast<std::size_t>(f) * udp_hand_driver::kSensorDataPerPacket;
-    const std::size_t out_base = static_cast<std::size_t>(f) * udp_hand_driver::kSensorValuesPerFingertip;
+    const std::size_t pkt_base =
+        static_cast<std::size_t>(f) * udp_hand_driver::kSensorDataPerPacket;
+    const std::size_t out_base =
+        static_cast<std::size_t>(f) * udp_hand_driver::kSensorValuesPerFingertip;
     // barometer[8]
     for (std::size_t i = 0; i < udp_hand_driver::kBarometerCount; ++i) {
       out[out_base + i] = pkt.data[pkt_base + i];
@@ -404,7 +453,8 @@ inline void ExtractAllSensorValuesRaw(const AllSensorResponsePacket& pkt, int32_
     // skip reserved[5], tof[3]
     for (std::size_t i = 0; i < udp_hand_driver::kTofCount; ++i) {
       out[out_base + udp_hand_driver::kBarometerCount + i] =
-          pkt.data[pkt_base + udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount + i];
+          pkt.data[pkt_base + udp_hand_driver::kBarometerCount + udp_hand_driver::kReservedCount +
+                   i];
     }
   }
 }

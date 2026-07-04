@@ -393,6 +393,61 @@ class UdpHandTransport {
     return false;
   }
 
+  // Request bulk sensor read (cmd=0x19) returning the RAW response bytes.
+  // Send 3B, recv up to `capacity` into `buf`. Validates recvd >= expected_size
+  // and the echoed header (cmd==0x19, mode==sensor_mode). Returns the received
+  // byte count on success, -1 on timeout / short read / header mismatch.
+  //
+  // Unlike RequestAllSensorRead (which decodes the 1a 259B layout inline), this
+  // leaves decoding to the injected SensorProtocol so the response size/layout
+  // can vary by firmware version (1a=259B, 1b=99B). The request itself is
+  // identical across versions.
+  [[nodiscard]] ssize_t RequestBulkSensorRaw(
+      uint8_t* buf, std::size_t capacity, std::size_t expected_size,
+      packets::SensorMode sensor_mode = packets::SensorMode::kRaw) noexcept {
+    std::array<uint8_t, packets::kAllSensorRequestSize> send_buf{};
+    codec::EncodeReadAllSensorsRequest(send_buf, sensor_mode);
+
+    const ssize_t sent =
+        sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
+               reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
+    if (sent < 0)
+      return -1;
+
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      const ssize_t recvd = (attempt == 0) ? RecvWithTimeout(buf, capacity)
+                                           : ::recv(socket_fd_, buf, capacity, MSG_DONTWAIT);
+      if (recvd < 0) {
+        if (attempt == 0) {
+          recv_error_count_.fetch_add(1, std::memory_order_relaxed);
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ++comm_stats_.recv_timeout;
+          } else {
+            ++comm_stats_.recv_error;
+          }
+        }
+        return -1;
+      }
+      if (attempt == 0) {
+        ++comm_stats_.recv_ok;
+      }
+
+      if (recvd < static_cast<ssize_t>(expected_size))
+        continue;
+      if (buf[1] != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
+        ++comm_stats_.cmd_mismatch;
+        continue;
+      }
+      if (buf[2] != static_cast<uint8_t>(sensor_mode)) {
+        ++comm_stats_.mode_mismatch;
+        return -1;
+      }
+      return recvd;
+    }
+    return -1;
+  }
+
   // Set sensor mode (CMD=0x04, 3B send, 3B recv echo).
   [[nodiscard]] bool RequestSetSensorMode(packets::SensorMode sensor_mode) noexcept {
     std::array<uint8_t, packets::kSensorRequestSize> send_buf{};

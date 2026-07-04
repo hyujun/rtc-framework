@@ -88,6 +88,28 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
    -> 3B 송신 -> 67B 수신 x 4 fingertips
 ```
 
+### 센서 프로토콜 버전 (`protocol_version`)
+
+펌웨어 센서 응답의 wire 포맷은 버전마다 다르며, 이 차이는 abstract
+`SensorProtocol` (`protocol/sensor_protocol.hpp`) 로만 격리된다 — EventLoop 는
+버전 문자열이 아닌 polymorphic capability (`HasMotorSpaceRead`,
+`RunsSensorPostProcess`) 로 분기한다 (ARCH-3). joint/motor read·write 경로는
+버전 공통이며, bulk sensor **요청**(0x19)도 공통이다. **응답 크기·디코드만** 갈린다.
+
+| | `"1a"` (기본) | `"1b"` |
+|---|---|---|
+| bulk sensor 응답 | 259B (4 × 16 int32 baro/reserved/tof) | 99B (3B 헤더 + 4 × 6 float32) |
+| 핑거당 데이터 | barometer[8] + tof[3] | [fx, fy, fz, Lx, Ly, Temp] |
+| 후처리 | LPF / drift / F-T 추론 | 없음 (force 는 firmware 계산) |
+| motor-space read (0x10 kMotor) | 수행 → `motor_states` 발행 | 스킵 → `motor_states` 미발행 |
+| `sensor_states` 채움 | baro/tof + F-T `f`/`u` | `f`={fx,fy,fz}만 (Lx/Ly/Temp 는 디코드만·발행 보류) |
+| 지원 통신 모드 | individual / bulk | bulk 전용 |
+
+1b 는 `communication_mode: "bulk"` 를 요구하며, individual 과 조합 시 `on_configure`
+가 FAILURE 를 반환한다. Lx/Ly/Temp 는 현재 펌웨어에서 placeholder 이므로 디코드는
+하되(`UdpHandState::sensor_force`) 토픽 발행은 보류한다 — 실제 데이터 도착 시
+후속 PR 에서 `u`/신규 필드로 매핑.
+
 ### Dual Read (Motor + Joint 공간)
 
 매 사이클 모터 상태를 두 번 읽습니다:
@@ -244,6 +266,7 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `recv_timeout_ms` | `10.0` | ppoll 수신 타임아웃 (ms, sub-ms 지원) |
 | `publish_rate` | `100.0` | link_status decimation 기준 (Hz) |
 | `communication_mode` | `"individual"` | `"individual"` 또는 `"bulk"` |
+| `protocol_version` | `"1a"` | 센서 프로토콜 버전 (`"1a"`/`"1b"`, 위 "센서 프로토콜 버전" 참조) |
 | `baro_lpf_enabled` | `false` | Barometer LPF 활성화 |
 | `baro_lpf_cutoff_hz` | `30.0` | Barometer LPF 차단 주파수 |
 | `tof_lpf_enabled` | `false` | ToF LPF 활성화 |
@@ -436,6 +459,7 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 | **Hand 상수 흡수** | `ur5e_description/ur5e_constants.hpp` 폐기에 따라 hand 전용 상수와 타입을 본 패키지로 흡수: `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `include/udp_hand_driver/udp_hand_constants.hpp`, `UdpHandState` → `include/udp_hand_driver/udp_hand_state.hpp`. 이에 따라 `package.xml`/`CMakeLists.txt`에서 `ur5e_description` 의존을 제거 (이 패키지는 더 이상 description 헤더가 필요 없음). 다운스트림(`integrated_bringup`)은 `udp_hand_driver/udp_hand_constants.hpp`를 include. |
 | **Hand layout 상수 SSoT 통합** | `rtc_base/types/types.hpp` 에 있던 hand-specific packet/model layout 상수와 `FingertipFTState` 구조체, 필터 alias 들을 본 패키지의 `udp_hand_constants.hpp` 로 이주. 추가된 식별자: `kBarometerCount`, `kReservedCount`, `kTofCount`, `kSensorDataPerPacket`, `kSensorValuesPerFingertip`, `kMaxHandSensors`, `kFTValuesPerFingertip`, `kFTInputSize`, `kFTHistoryLength`, `kDefaultNumFingertips`, `kNumFingertips`, `kNumHandSensors`, `kMaxBaroChannels`, `kMaxTofChannels`, `FingertipFTState`, `BesselFilterBaro`, `BesselFilterTof`, `BarometerTrendDetector`. `integrated_bringup` 와의 boundary 는 이제 `rtc_msgs/HandSensorState.msg` / `FingertipSensor.msg` named field 만 — cross-package include 0건. |
 | **ARCH-1 Phase 4d — `kMaxFingertips` 자체 소유 (2026-05-16)** | `rtc::kMaxFingertips` 가 `rtc_base` 에서 제거됨 (robot-agnostic 보장). 본 패키지가 `udp_hand_driver::kMaxFingertips = 8` 자체 정의 — hand 도메인이므로 fingertip 어휘 정당. `FingertipFTState`, `fingertip_ft_inferencer`, `udp_hand_controller` 등 패키지 내부 사용처는 unqualified `kMaxFingertips` (자기 namespace) 로 통일. |
+| **Proto_1b 센서 디코드 seam (2026-07-04)** | 펌웨어 센서 프로토콜 버전을 abstract `SensorProtocol` (`protocol/sensor_protocol.hpp`, 정적 lib `udp_hand_protocol`) 로 격리 — `protocol_version` 파라미터 (`"1a"` 기본 / `"1b"`). 1b = 99B bulk 응답(4 × 6 float32 `[fx,fy,fz,Lx,Ly,Temp]`), force 직접 발행·후처리 없음·`motor_states` 미발행(0x10 kMotor 스킵)·bulk 전용. EventLoop 는 polymorphic capability(`HasMotorSpaceRead`/`RunsSensorPostProcess`)로만 분기(ARCH-3). `UdpHandState::sensor_force[]`, `packets::P1bSensorResponsePacket`, `UdpHandTransport::RequestBulkSensorRaw`, `test_sensor_protocol_1b` 추가. Lx/Ly/Temp 는 디코드만·발행 보류(현 펌웨어 placeholder). 1a 회귀 0. |
 
 ---
 

@@ -59,6 +59,24 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
          ++f) {
       auto& fs = sensor_msg_.fingertips[static_cast<std::size_t>(f)];
 
+      if (sensor_uses_force_layout_) {
+        // ── 1b: per-fingertip force vector [fx,fy,fz] measured by firmware ──
+        // barometer/ToF stay zero (unused on 1b); Lx/Ly (u) and Temp are
+        // decoded into state.sensor_force but held back this increment (current
+        // firmware ships placeholders), so only the real force datum is
+        // published. See proto-1b migration plan.
+        const std::size_t force_base =
+            static_cast<std::size_t>(f) * udp_hand_driver::kP1bValuesPerFingertip;
+        for (int j = 0; j < 3; ++j) {
+          const auto ju = static_cast<std::size_t>(j);
+          fs.f[ju] = state.sensor_force[force_base + ju];
+          fs.u[ju] = 0.0f;
+        }
+        fs.inference_enable = true;
+        fs.contact_flag = 0.0f;  // no contact classifier on the 1b path yet
+        continue;
+      }
+
       const int sensor_base = f * udp_hand_driver::kSensorValuesPerFingertip;
       for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
         const auto bu = static_cast<std::size_t>(b);

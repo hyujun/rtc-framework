@@ -52,6 +52,16 @@ inline constexpr int kMaxFingertips = 8;
 inline constexpr int kMaxHandSensors = kMaxFingertips * kSensorValuesPerFingertip;  // 88
 inline constexpr int kNumHandSensors = kNumFingertips * kSensorValuesPerFingertip;  // 44
 
+// ── Proto_1b fingertip force layout ──────────────────────────────────────────
+// The 1b firmware replaces the barometer/ToF int32 block with a per-fingertip
+// float32 vector [fx, fy, fz, Lx, Ly, Temp]. fx/fy/fz is the contact force
+// (the only real datum today); Lx/Ly (contact point) and Temp are placeholder
+// values in the current firmware — decoded for wire-format completeness but not
+// published until real data arrives (see proto-1b migration plan). The 1a path
+// leaves this buffer zero-filled.
+inline constexpr int kP1bValuesPerFingertip = 6;  // fx, fy, fz, Lx, Ly, Temp
+inline constexpr int kMaxSensorForceValues = kMaxFingertips * kP1bValuesPerFingertip;  // 48
+
 // ── Fingertip F/T inference (3-head ONNX model) ──────────────────────────────
 // Output layout: [contact_prob(1), F(3), u(3)] = 7
 // (output0 = contact logit→sigmoid, output1 = F, output2 = u)
