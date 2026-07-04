@@ -24,6 +24,7 @@ their own modules.
 """
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -326,18 +327,14 @@ class DemoControllerGUI(Node):
         ):
             sub = getattr(self, sub_attr, None)
             if sub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.destroy_subscription(sub)
-                except Exception:
-                    pass
                 setattr(self, sub_attr, None)
         for pub_attr in ("robot_cmd_pub", "hand_cmd_pub"):
             pub = getattr(self, pub_attr, None)
             if pub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.destroy_publisher(pub)
-                except Exception:
-                    pass
                 setattr(self, pub_attr, None)
 
         self.robot_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{arm_group}/joint_goal", 10)
@@ -1979,7 +1976,7 @@ class DemoControllerGUI(Node):
                 """Place an array row inside the group's array_area."""
                 area = box["array_area"]
                 row = box["array_row"]
-                names = row_names_map.get(label)
+                names = row_names_map.get(label)  # noqa: B023  (closure invoked in-place this iteration)
                 name_fg = "#f9e2af" if editable else "#585b70"
                 label_fg = "#cdd6f4" if editable else "#585b70"
                 if names:
@@ -2153,10 +2150,8 @@ class DemoControllerGUI(Node):
                     val = int(raw)
                     lbl.config(text="ON" if val else "OFF", fg="#a6e3a1" if val else "#f38ba8")
                 else:
-                    try:
+                    with contextlib.suppress(ValueError):
                         lbl.config(text=f"{float(raw):.4f}", fg="#a6e3a1")
-                    except ValueError:
-                        pass
 
     # ---- Button handlers -----------------------------------------------------
 

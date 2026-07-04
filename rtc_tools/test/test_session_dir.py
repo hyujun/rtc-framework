@@ -221,7 +221,8 @@ def _find_cpp_session_dir_header() -> str | None:
 
 def _parse_cpp_subdirs(header_path: str) -> tuple[str, ...]:
     """Extract the kSubdirs[] string-literal list from the C++ header."""
-    text = open(header_path, encoding="utf-8").read()
+    with open(header_path, encoding="utf-8") as f:
+        text = f.read()
     m = re.search(r"kSubdirs\[\]\s*=\s*\{(.*?)\}", text, re.DOTALL)
     assert m, f"kSubdirs[] initializer not found in {header_path}"
     return tuple(re.findall(r'"([^"]+)"', m.group(1)))

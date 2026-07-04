@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import contextlib
 import json
 import os
 import signal
@@ -284,9 +285,7 @@ QScrollBar::add-line, QScrollBar::sub-line {{
 def _has_data(pose, hand_pose=None):
     if np.linalg.norm(pose) > 0.001:
         return True
-    if hand_pose is not None and np.linalg.norm(hand_pose) > 0.001:
-        return True
-    return False
+    return bool(hand_pose is not None and np.linalg.norm(hand_pose) > 0.001)
 
 
 def _format_ur5e_preview(q):
@@ -598,9 +597,7 @@ class MotionTab(QWidget):
         if self.pose_descriptions[row] != snap["descriptions"][row]:
             return True
         traj, wait = self._get_row_timing(row)
-        if abs(traj - snap["traj"][row]) > 0.01 or abs(wait - snap["wait"][row]) > 0.01:
-            return True
-        return False
+        return bool(abs(traj - snap["traj"][row]) > 0.01 or abs(wait - snap["wait"][row]) > 0.01)
 
     def _update_diff_highlight(self):
         for i in range(self._num_poses):
@@ -1541,18 +1538,14 @@ class ROSNode(Node):
         for attr in ("task_pos_sub", "hand_gui_pos_sub"):
             sub = getattr(self, attr, None)
             if sub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.destroy_subscription(sub)
-                except Exception:
-                    pass
                 setattr(self, attr, None)
         for attr in ("cmd_pub", "hand_cmd_pub"):
             pub = getattr(self, attr, None)
             if pub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.destroy_publisher(pub)
-                except Exception:
-                    pass
                 setattr(self, attr, None)
 
         # Phase 4: arm/hand joint state는 init에서 1회 ctrl-agnostic 토픽

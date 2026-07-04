@@ -83,13 +83,13 @@ def plot_timing_breakdown(df, save_dir=None):
     colors = ["#2196F3", "#FF9800", "#4CAF50"]
 
     available = [
-        (p, l, c) for p, l, c in zip(phases, labels, colors, strict=False) if p in df.columns
+        (p, lbl, c) for p, lbl, c in zip(phases, labels, colors, strict=False) if p in df.columns
     ]
     if available:
         ax.stackplot(
             t,
             *[df[p] for p, _, _ in available],
-            labels=[l for _, l, _ in available],
+            labels=[lbl for _, lbl, _ in available],
             colors=[c for _, _, c in available],
             alpha=0.7,
         )

@@ -1,5 +1,7 @@
 """Tests for UrdfParser — URDF loading, graph construction, and joint classification."""
 
+import xml.etree.ElementTree as ET
+
 import pytest
 
 from rtc_digital_twin.urdf_parser import (
@@ -164,7 +166,7 @@ class TestConstruction:
             UrdfParser()
 
     def test_invalid_xml_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ET.ParseError):
             UrdfParser.from_xml("not valid xml")
 
 

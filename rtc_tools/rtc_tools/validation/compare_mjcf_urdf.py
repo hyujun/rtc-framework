@@ -349,11 +349,11 @@ def _urdf_principal_moments(params: "InertialParams") -> list[float]:
     try:
         import numpy as np  # noqa: PLC0415
 
-        I = np.array(
+        inertia = np.array(
             [[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]],
             dtype=float,
         )
-        eigs = np.linalg.eigvalsh(I)
+        eigs = np.linalg.eigvalsh(inertia)
         return sorted((float(v) for v in eigs), reverse=True)
     except ImportError:
         return sorted((ixx, iyy, izz), reverse=True)
@@ -389,14 +389,14 @@ def _shape_volume_and_local_inertia(shape_elem: ET.Element):
     if box is not None:
         sx, sy, sz = (float(v) for v in box.get("size", "0 0 0").split())
         vol = sx * sy * sz
-        I = np.diag(
+        inertia = np.diag(
             [
                 (sy * sy + sz * sz) / 12.0,
                 (sx * sx + sz * sz) / 12.0,
                 (sx * sx + sy * sy) / 12.0,
             ]
         )
-        return vol, I
+        return vol, inertia
 
     cyl = shape_elem.find("cylinder")
     if cyl is not None:
@@ -441,7 +441,7 @@ def _urdf_link_collision_inertia(
         return 0.0, 0
 
     link = next(
-        (l for l in urdf_root.findall("link") if l.get("name") == link_name),
+        (el for el in urdf_root.findall("link") if el.get("name") == link_name),
         None,
     )
     if link is None:
@@ -1040,9 +1040,9 @@ def _detect_link_mapping(
         if b.get("name") and b.find("inertial") is not None
     }
     urdf_inertial_links = {
-        l.get("name")
-        for l in urdf_root.findall("link")
-        if l.get("name") and l.find("inertial") is not None
+        el.get("name")
+        for el in urdf_root.findall("link")
+        if el.get("name") and el.find("inertial") is not None
     }
 
     return {name: name for name in sorted(mjcf_inertial_bodies & urdf_inertial_links)}

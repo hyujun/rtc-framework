@@ -962,7 +962,7 @@ class HandDataCsvLogger:
         self._timing_keys.append("timeouts")
         header.extend(f"t_{k}" for k in self._timing_keys)
 
-        self._file = open(self.filepath, "w", newline="")
+        self._file = open(self.filepath, "w", newline="")  # noqa: SIM115  (long-lived; closed in close())
         self._writer = csv.writer(self._file)
         self._writer.writerow(header)
         self._start_time = time.monotonic()
