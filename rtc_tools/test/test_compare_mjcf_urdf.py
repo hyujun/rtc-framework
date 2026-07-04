@@ -6,14 +6,24 @@ MJCF/URDF 파서, 데이터 클래스, 비교 로직, 유틸리티 함수를 검
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from rtc_tools.validation.compare_mjcf_urdf import (
     InertialParams,
     JointParams,
+    _axes_parallel,
     _close,
+    _compose_transform,
+    _compute_mjcf_world_frames,
+    _compute_urdf_world_frames,
     _fmt,
+    _identity_3x3,
     _parse_floats,
+    _quat_to_rot3,
+    _rpy_to_rot3,
+    _vec_close_3,
     compare,
     parse_mjcf,
     parse_urdf,
@@ -460,3 +470,179 @@ class TestCompare:
         compare(mjcf, urdf, link_map=LINK_MAP_FIXTURE, joint_names=JOINT_NAMES_FIXTURE)
         captured = capsys.readouterr()
         assert "WARN" in captured.out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SE(3) transform utilities
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestSE3Utilities:
+    def test_identity_3x3(self):
+        I = _identity_3x3()
+        assert I == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
+    def test_rpy_identity(self):
+        R = _rpy_to_rot3(0, 0, 0)
+        for i in range(3):
+            for j in range(3):
+                expected = 1.0 if i == j else 0.0
+                assert abs(R[i][j] - expected) < 1e-12
+
+    def test_rpy_90_roll(self):
+        R = _rpy_to_rot3(math.pi / 2, 0, 0)
+        assert abs(R[0][0] - 1.0) < 1e-12
+        assert abs(R[1][2] - (-1.0)) < 1e-12
+        assert abs(R[2][1] - 1.0) < 1e-12
+
+    def test_rpy_90_yaw(self):
+        R = _rpy_to_rot3(0, 0, math.pi / 2)
+        assert abs(R[0][1] - (-1.0)) < 1e-12
+        assert abs(R[1][0] - 1.0) < 1e-12
+
+    def test_quat_identity(self):
+        R = _quat_to_rot3(1, 0, 0, 0)
+        for i in range(3):
+            for j in range(3):
+                expected = 1.0 if i == j else 0.0
+                assert abs(R[i][j] - expected) < 1e-12
+
+    def test_quat_180_z(self):
+        R = _quat_to_rot3(0, 0, 0, 1)
+        assert abs(R[0][0] - (-1.0)) < 1e-12
+        assert abs(R[1][1] - (-1.0)) < 1e-12
+        assert abs(R[2][2] - 1.0) < 1e-12
+
+    def test_quat_unnormalized(self):
+        R = _quat_to_rot3(0, 0, 0, -2)
+        assert abs(R[0][0] - (-1.0)) < 1e-12
+
+    def test_compose_identity(self):
+        I = _identity_3x3()
+        R, p = _compose_transform(I, [0, 0, 0], I, [1, 2, 3])
+        assert _vec_close_3(p, [1, 2, 3], 1e-12)
+
+    def test_compose_rotation_then_translate(self):
+        R_parent = _rpy_to_rot3(0, 0, math.pi / 2)
+        _, p_world = _compose_transform(R_parent, [0, 0, 0], _identity_3x3(), [1, 0, 0])
+        assert _vec_close_3(p_world, [0, 1, 0], 1e-12)
+
+    def test_vec_close_3(self):
+        assert _vec_close_3([1, 2, 3], [1, 2, 3], 1e-12) is True
+        assert _vec_close_3([1, 2, 3], [1, 2, 4], 0.5) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FK chain computation — URDF and MJCF world-frame comparison
+# ═══════════════════════════════════════════════════════════════════════════
+
+URDF_FK = """\
+<?xml version="1.0"?>
+<robot name="fk_test">
+  <link name="world"/>
+  <link name="base"/>
+  <link name="link1"/>
+  <link name="link2"/>
+  <joint name="base_fixed" type="fixed">
+    <parent link="world"/>
+    <child link="base"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <joint name="joint1" type="revolute">
+    <parent link="base"/>
+    <child link="link1"/>
+    <origin xyz="0 0 1" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="100" lower="-3.14" upper="3.14" velocity="1"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="50" lower="-3.14" upper="3.14" velocity="1"/>
+  </joint>
+</robot>
+"""
+
+MJCF_FK = """\
+<mujoco model="fk_test">
+  <compiler angle="radian" autolimits="true"/>
+  <default>
+    <default class="fk_test">
+      <joint axis="0 1 0" range="-3.14 3.14"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="base" childclass="fk_test">
+      <body name="link1" pos="0 0 1">
+        <joint name="joint1" axis="0 0 1"/>
+        <body name="link2" pos="0 0 0" quat="1 0 1 0">
+          <joint name="joint2"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class TestURDFWorldFrames:
+    def test_joint1_position_and_axis(self, tmp_path):
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_FK)
+        frames = _compute_urdf_world_frames(urdf, {"joint1", "joint2"})
+        pos1, axis1 = frames["joint1"]
+        assert _vec_close_3(pos1, [0, 0, 1], 1e-6)
+        assert _vec_close_3(axis1, [0, 0, 1], 1e-6)
+
+    def test_joint2_axis_rotated(self, tmp_path):
+        """joint2 has rpy=(pi/2,0,0) so local Z maps to world -Y via Rx(90)."""
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_FK)
+        frames = _compute_urdf_world_frames(urdf, {"joint1", "joint2"})
+        pos2, axis2 = frames["joint2"]
+        assert _vec_close_3(pos2, [0, 0, 1], 1e-6)
+        assert _vec_close_3(axis2, [0, -1, 0], 1e-6)
+
+
+class TestMJCFWorldFrames:
+    def test_joint1_position_and_axis(self, tmp_path):
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(MJCF_FK)
+        frames = _compute_mjcf_world_frames(mjcf, {"joint1", "joint2"})
+        pos1, axis1 = frames["joint1"]
+        assert _vec_close_3(pos1, [0, 0, 1], 1e-6)
+        assert _vec_close_3(axis1, [0, 0, 1], 1e-6)
+
+    def test_joint2_inherited_axis_rotated(self, tmp_path):
+        """joint2 inherits default axis=(0,1,0), body quat Ry(90) preserves Y."""
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(MJCF_FK)
+        frames = _compute_mjcf_world_frames(mjcf, {"joint1", "joint2"})
+        pos2, axis2 = frames["joint2"]
+        assert _vec_close_3(pos2, [0, 0, 1], 1e-6)
+        assert _vec_close_3(axis2, [0, 1, 0], 1e-6)
+
+
+class TestCrossFormatWorldFrameMatch:
+    """Both formats describe the same physical robot — axes must be parallel."""
+
+    def test_all_joints_positions_and_axes_parallel(self, tmp_path):
+        """URDF Rx(90)+Z and MJCF Ry(90)+Y produce anti-parallel world axes.
+        This is a valid convention difference — same rotation line."""
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text(URDF_FK)
+        mjcf = tmp_path / "test.xml"
+        mjcf.write_text(MJCF_FK)
+
+        joints = {"joint1", "joint2"}
+        u_frames = _compute_urdf_world_frames(urdf, joints)
+        m_frames = _compute_mjcf_world_frames(mjcf, joints)
+
+        for jname in joints:
+            u_pos, u_axis = u_frames[jname]
+            m_pos, m_axis = m_frames[jname]
+            assert _vec_close_3(u_pos, m_pos, 1e-4), f"{jname} position mismatch"
+            is_parallel, _ = _axes_parallel(u_axis, m_axis, 1e-4)
+            assert is_parallel, f"{jname} axes not parallel: {u_axis} vs {m_axis}"
