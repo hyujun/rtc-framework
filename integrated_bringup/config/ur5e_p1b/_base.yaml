@@ -1,0 +1,121 @@
+# ur5e_p1b/_base.yaml — mode-agnostic UR5e + proto_1b config (shared base)
+#
+# Loaded FIRST under both robot.yaml (real HW) and sim.yaml (MuJoCo), which
+# each overlay only their mode-specific delta on top. ROS 2 flattens every
+# `/**: ros__parameters:` file to dotted keys and applies later param files
+# per-key, so anything mode-invariant lives here exactly once. Mode-only keys
+# (backend, joint_command_names, motor_state_names, has_native_*, enable_estop,
+# init_timeout_sec, device_timeout_values, use_sim_time_sync) are ABSENT here —
+# overlay can override a key but cannot delete one, so base must stay agnostic.
+# Arrays are replaced wholesale on overlay (never partially merged), so every
+# array param (joint_state_names, joint_limits, sensor_names) belongs here only.
+#
+# Launch wiring: sim_ur5e_p1b.launch.py / robot_ur5e_p1b.launch.py prepend this
+# file to the RT node's parameters list. control_rate SSoT also lives here —
+# sim.launch.py reads control_rate for the MuJoCo fake-hand from THIS file.
+/**:
+  ros__parameters:
+    # ── Config variant directory ─────────────────────────────────────────────
+    # Drives controller / shared / mpc YAML lookup paths:
+    # <pkg>/config/<config_variant>/controllers/<key>.yaml.
+    config_variant: "ur5e_p1b"
+
+    # ── Control rate ──────────────────────────────────────────────────────────
+    control_rate: 500.0 # Hz — timer period = 1e6/rate us
+
+    # ── E-STOP device roster (thresholds are mode-specific deltas) ────────────
+    device_timeout_names: ["ur5e", "p1b"]
+
+    # ── Logging configuration ─────────────────────────────────────────────────
+    enable_logging: true
+    enable_timing_log: true
+    enable_device_log: true # auto-creates per-device log files
+    log_dir: ""
+    max_log_sessions: 10
+
+    # ── System URDF + model topology (shared by all controllers) ──────────
+    urdf:
+      package: "hand_description"
+      path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro"
+      root_joint_type: "fixed"
+      # ── Extended-URDF (loop closure) ────────────────────────────────────
+      # extended: true because proto_1b is a genuine 5-loop closed chain
+      # (NOT mimic-based like ur5e_hand). The .urdf.xacro is a pure spanning
+      # tree and the loop closures live in the sibling closure.yaml sidecar
+      # below; the shared PinocchioModelBuilder builds RigidConstraint models
+      # + a loop-consistent q_ref from it. closure_path (pkg-relative) is set
+      # explicitly because the generic proto_1b sidecar would otherwise be
+      # derived by stem and declares only hand actuators, locking the UR5e
+      # arm joints when applied to the combined full model.
+      extended: true
+      closure_path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml"
+      sub_models:
+        ur5e:
+          root_link: "base"
+          tip_link: "tool0"
+      tree_models:
+        p1b:
+          root_link: "base_adapter"
+          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
+        # WBC control tree (arm + hand, shared by TSID and MPC). The extended
+        # full model exposes 16 actuated DoFs (6 arm + 10 hand) via
+        # GetActuatedModel; this tree_models.wbc entry (arm root → 4 fingertip
+        # tips) scopes the reduced 13/16 space TSID tasks/constraints and MPC
+        # handler-mode prediction operate in. Loop-passive finger joints are
+        # reconstructed downstream by the closure solver / MuJoCo tendon.
+        wbc:
+          root_link: "base"
+          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
+
+    # ── Device configuration (keyed by controller topic group name) ─────────
+    # Mode-agnostic identity only: joint/sensor rosters, limits, sensor packing.
+    # backend + wire-format topics + command/motor rosters + has_native_* live
+    # in the mode delta files (robot.yaml / sim.yaml).
+    devices:
+      ur5e:
+        joint_state_names:
+          - "shoulder_pan_joint"
+          - "shoulder_lift_joint"
+          - "elbow_joint"
+          - "wrist_1_joint"
+          - "wrist_2_joint"
+          - "wrist_3_joint"
+        joint_limits:
+          max_velocity: [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
+          max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+          max_torque: [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
+          position_lower: [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
+          position_upper: [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
+
+      p1b:
+        joint_state_names:
+          - "thumb_cmc_aa_joint"
+          - "thumb_cmc_fe_joint"
+          - "thumb_mcp_joint"
+          - "thumb_dip_fe_joint"
+          - "index_mcp_aa_joint"
+          - "index_mcp_fe_joint"
+          - "index_dip_fe_joint"
+          - "middle_mcp_fe_joint"
+          - "middle_dip_fe_joint"
+          - "ring_mcp_fe_joint"
+        sensor_names:
+          - "thumb"
+          - "index"
+          - "middle"
+          - "ring"
+        joint_limits:
+          max_velocity: [6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28]
+          position_lower: [-1.57, -1.57, -1.57, -1.57, -3.14, -3.14, -3.14, -1.57, -1.57, -3.14]
+          position_upper: [1.57, 1.57, 1.57, 1.57, 3.14, 3.14, 3.14, 1.57, 1.57, 3.14]
+        # Sensor packing layout — CM uses these for stride/offset arithmetic
+        # only; field semantics (barometer/ToF/contact/F/u) live in
+        # udp_hand_driver. assm_v1 hand: 8 baro + 3 ToF per fingertip, ML
+        # inference = contact(1) + F(3) + u(3) = 7. has_native_* (whether the
+        # backend synthesizes contact probability / displacement) is a
+        # mode-specific delta and lives in robot.yaml / sim.yaml.
+        sensor_layout:
+          primary_count_per_group: 8
+          secondary_count_per_group: 3
+          values_per_group: 11
+          inference_values_per_group: 7

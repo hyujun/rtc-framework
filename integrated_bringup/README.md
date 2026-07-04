@@ -163,7 +163,7 @@ urdf:
 
 ### Closed-chain (Extended-URDF) bringup — `ur5e_p1b`
 
-`ur5e_hand`(mimic 기반)와 달리 `ur5e_p1b`는 **진짜 5-loop 폐쇄 체인**(proto_1b 손)입니다. URDF 는 순수 spanning-tree 이고 loop closure 는 sibling **`<stem>.closure.yaml`** sidecar 에 있습니다. `config/ur5e_p1b/{robot,sim}.yaml` 의 `urdf:` 가 이를 켭니다:
+`ur5e_hand`(mimic 기반)와 달리 `ur5e_p1b`는 **진짜 5-loop 폐쇄 체인**(proto_1b 손)입니다. URDF 는 순수 spanning-tree 이고 loop closure 는 sibling **`<stem>.closure.yaml`** sidecar 에 있습니다. `ur5e_p1b` 는 mode-agnostic 설정(`urdf:` 블록·device roster·limits·`control_rate`)을 **`config/ur5e_p1b/_base.yaml`** 에 두고, `robot.yaml`(real HW)·`sim.yaml`(MuJoCo)은 mode-specific delta(backend/토픽·E-STOP·타이밍)만 담아 launch 가 `[_base.yaml, <mode>.yaml]` 순으로 overlay 합니다(뒤 파일이 per-key override). `_base.yaml` 의 `urdf:` 가 폐쇄 체인을 켭니다:
 
 ```yaml
 urdf:

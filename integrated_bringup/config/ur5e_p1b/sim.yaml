@@ -1,16 +1,11 @@
-# ur5e_p1b/sim.yaml — UR5e + proto_1b hand simulation config
-# Used by sim_ur5e_p1b.launch.py (MuJoCo simulation mode)
-# For real robot, use ur5e_p1b/robot.yaml instead.
+# ur5e_p1b/sim.yaml — MuJoCo-simulation delta (overlaid on _base.yaml)
+# Used by sim_ur5e_p1b.launch.py. For real robot, use robot.yaml instead.
+# Loaded AFTER _base.yaml, which holds all mode-agnostic config (URDF/model
+# topology, joint & sensor rosters, limits, control_rate, logging). This file
+# owns ONLY what differs from real hardware: MuJoCo backends + sim topics,
+# sim-time sync, relaxed E-STOP/timeouts, and the demo_joint startup controller.
 /**:
   ros__parameters:
-    # ── Config variant directory ─────────────────────────────────────────────
-    # Drives controller / shared / mpc YAML lookup paths:
-    # <pkg>/config/<config_variant>/controllers/<key>.yaml.
-    config_variant: "ur5e_p1b"
-
-    # ── Control rate ──────────────────────────────────────────────────────────
-    control_rate: 500.0 # Hz — timer period = 1e6/rate us
-
     # ── Initial controller ────────────────────────────────────────────────────
     initial_controller: "demo_joint_controller"
 
@@ -23,124 +18,23 @@
 
     # ── E-STOP configuration (relaxed for simulation) ────────────────────────
     enable_estop: false # Disabled for simulation
-    device_timeout_names: ["ur5e", "p1b"]
     device_timeout_values: [10000.0, 10000.0] # Relaxed for sim startup
 
-    # ── Logging configuration ─────────────────────────────────────────────────
-    enable_logging: true
-    enable_timing_log: true
-    enable_device_log: true # auto-creates per-device log files
-    log_dir: ""
-    max_log_sessions: 10
-
-    # ── System URDF + model topology (shared by all controllers) ──────────
-    urdf:
-      package: "hand_description"
-      path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro"
-      root_joint_type: "fixed"
-      # ── Extended-URDF (loop closure) ────────────────────────────────────
-      # Set extended: true when the URDF is a pure spanning-tree and loop
-      # closures live in a sibling <stem>.closure.yaml sidecar (e.g.
-      # ur5e_with_hand.closure.yaml next to the .urdf.xacro above). The shared
-      # PinocchioModelBuilder then builds RigidConstraint models + a loop-
-      # consistent q_ref. Off by default — this robot is mimic-based, not
-      # loop-closed. Use closure_path (pkg-relative) to override the derived name.
-      extended: true
-      # The generic proto_1b sidecar declares only hand actuators, which would
-      # lock the UR5e arm joints when applied to the combined full model.
-      closure_path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml"
-      sub_models:
-        ur5e:
-          root_link: "base"
-          tip_link: "tool0"
-      tree_models:
-        p1b:
-          root_link: "base_adapter"
-          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
-        # WBC control tree (arm + hand, shared by TSID and MPC). Mimic
-        # joints are auto-classified as passive/kMimic by UrdfAnalyzer and
-        # locked during buildReducedModel, yielding a clean nq == nv == 16
-        # model (6 arm + 10 actuated hand DoFs). TSID tasks/constraints and
-        # MPC handler-mode prediction both operate in this reduced space;
-        # mimic kinematics are handled downstream by the hardware driver /
-        # MuJoCo tendon.
-        wbc:
-          root_link: "base"
-          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
-      # passive_joints:
-      #   - "thumb_cmc_aa_joint"
-      #   - "thumb_cmc_fe_joint"
-      #   - "thumb_mcp_joint"
-      #   - "index_mcp_aa_joint"
-      #   - "index_mcp_fe_joint"
-      #   - "index_dip_fe_joint"
-      #   - "thumb_dip_fe_joint"
-      #   - "middle_mcp_fe_joint"
-      #   - "middle_dip_fe_joint"
-      #   - "ring_mcp_fe_joint"
-
-    # ── Device configuration (keyed by controller topic group name) ─────────
-    # Phase 4: devices.<group>.backend is the SSoT for HW/sim adapter type +
-    # wire-format topics. CM creates one DeviceBackend per group from this
-    # block; controller YAMLs only own target / robot_transforms / grasp_state
-    # / wbc_state / tof_snapshot.
+    # ── Device backends (MuJoCo bridge) ───────────────────────────────────────
     devices:
       ur5e:
         backend:
           type: "mujoco_native"            # sim mode: MuJoCo bridge
           state_topic: "/ur5e/joint_states"     # sim publishes full URDF joints here
           command_topic: "/ur5e/joint_command"
-        joint_state_names:
-          - "shoulder_pan_joint"
-          - "shoulder_lift_joint"
-          - "elbow_joint"
-          - "wrist_1_joint"
-          - "wrist_2_joint"
-          - "wrist_3_joint"
-        joint_limits:
-          max_velocity:     [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
-          max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
-          max_torque:       [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
-          position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
-          position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
       p1b:
         backend:
           type: "mujoco_native"            # sim mode: MuJoCo bridge (no motor / sensor lanes)
           state_topic: "/p1b/joint_states"
           command_topic: "/p1b/joint_command"
-        joint_state_names:
-          - "thumb_cmc_aa_joint"
-          - "thumb_cmc_fe_joint"
-          - "thumb_mcp_joint"
-          - "thumb_dip_fe_joint"
-          - "index_mcp_aa_joint"
-          - "index_mcp_fe_joint"
-          - "index_dip_fe_joint"
-          - "middle_mcp_fe_joint"
-          - "middle_dip_fe_joint"
-          - "ring_mcp_fe_joint"
-        sensor_names:
-          - "thumb"
-          - "index"
-          - "middle"
-          - "ring"
-        joint_limits:
-          max_velocity:   [6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28]
-          position_lower: [-1.57, -1.57, -1.57, -1.57, -3.14, -3.14, -3.14, -1.57, -1.57, -3.14]
-          position_upper: [1.57, 1.57, 1.57, 1.57, 3.14, 3.14, 3.14, 1.57, 1.57, 3.14]
-        # Sensor packing layout — CM uses these for stride/offset arithmetic
-        # only; field semantics (barometer/ToF/contact/F/u) live in
-        # udp_hand_driver. assm_v1 hand: 8 baro + 3 ToF per fingertip, ML
-        # inference = contact(1) + F(3) + u(3) = 7.
-        # (Not consumed in sim mode because backend.sensor_topic is unset.)
-        #
         # has_native_* both false: mujoco backend does not synthesize contact
-        # probability or displacement vectors. Controllers fall back to
-        # |force| > grasp_force_threshold derive.
+        # probability or displacement vectors (sensor_topic is unset in sim).
+        # Controllers fall back to |force| > grasp_force_threshold derive.
         sensor_layout:
-          primary_count_per_group:        8
-          secondary_count_per_group:      3
-          values_per_group:               11
-          inference_values_per_group:     7
-          has_native_contact:             false
-          has_native_displacement:        false
+          has_native_contact:  false
+          has_native_displacement: false
