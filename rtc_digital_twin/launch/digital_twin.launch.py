@@ -167,6 +167,16 @@ def launch_setup(context, *args, **kwargs):
         dt_overrides["output_topic"] = actuated_topic
         dt_overrides["closure_path"] = closure_path
 
+    # Optional projection-tolerance override for the closure solver. Rank-deficient
+    # closures (e.g. proto_1b's redundant contact_3d finger loops, rank 11<15) have
+    # an achievable ‖φ‖ floor (~1e-8 m) above the solver's default tolerance (1e-10),
+    # so the converged-gated closure_state_publisher would hold q_ref forever and
+    # render a frozen hand. A robot bringup relaxes it via `closure_tolerance` in the
+    # digital_twin config (agnostic mechanism; unset = solver default). See #124.
+    closure_tolerance = _load_node_params(config_file, "digital_twin_node").get(
+        "closure_tolerance", None
+    )
+
     # ── robot_state_publisher ─────────────────────────────────────────────
     robot_state_publisher_node = Node(
         package="robot_state_publisher",
@@ -203,19 +213,20 @@ def launch_setup(context, *args, **kwargs):
     # ── closure_state_publisher (conditional, rtc_urdf_bridge) ────────────
     closure_node = None
     if closure_active:
+        closure_params = {
+            "robot_description": robot_description,
+            "closure_path": closure_path,
+            "input_topic": actuated_topic,
+            "output_topic": display_topic,
+        }
+        if closure_tolerance is not None:
+            closure_params["tolerance"] = float(closure_tolerance)
         closure_node = Node(
             package="rtc_urdf_bridge",
             executable="closure_state_publisher",
             name="closure_state_publisher",
             namespace="digital_twin",
-            parameters=[
-                {
-                    "robot_description": robot_description,
-                    "closure_path": closure_path,
-                    "input_topic": actuated_topic,
-                    "output_topic": display_topic,
-                }
-            ],
+            parameters=[closure_params],
             output="screen",
         )
 

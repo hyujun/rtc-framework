@@ -161,6 +161,28 @@ urdf:
     # ... (10개 hand joints)
 ```
 
+### Closed-chain (Extended-URDF) bringup — `ur5e_p1b`
+
+`ur5e_hand`(mimic 기반)와 달리 `ur5e_p1b`는 **진짜 5-loop 폐쇄 체인**(proto_1b 손)입니다. URDF 는 순수 spanning-tree 이고 loop closure 는 sibling **`<stem>.closure.yaml`** sidecar 에 있습니다. `config/ur5e_p1b/{robot,sim}.yaml` 의 `urdf:` 가 이를 켭니다:
+
+```yaml
+urdf:
+  package: "hand_description"
+  path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro"
+  extended: true                                                  # loop closure 활성
+  closure_path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml"
+```
+
+- **컨트롤러 FK**: `PinocchioModelBuilder`가 sidecar 로 5 constraint + 16 actuated(arm6+hand10) + loop-consistent q_ref 를 만들고, 각 컨트롤러(joint/task/wbc)는 `ClosedChainHandFk`(→ RT-safe `RtClosedChainHandle`, fixed-K 사영)로 loop-passive 하류 fingertip 을 loop-consistent 하게 FK 합니다. device `joint_state_names` 가 16 actuated 를 모두 커버하면 configure 시 `closed-chain hand FK active` 로그가 뜹니다(아니면 serial FK 로 graceful fallback).
+- **디지털 트윈 시각화**: `config/ur5e_p1b/digital_twin.yaml` 의 `closure_path` 가 `digital_twin.launch.py`에서 `closure_state_publisher`(rtc_urdf_bridge)를 spawn 시켜 actuated 스트림에서 loop-passive 를 재구성, RViz 가 닫힌 손을 렌더합니다.
+- **⚠️ closure_tolerance (rank-deficiency)**: proto_1b 의 5 contact_3d 손가락 loop 은 **rank-deficient**(rank 11<15)라 DLS 사영의 도달 가능 ‖φ‖ floor(~3e-8 m)가 사영기 default tolerance(1e-10) 위에 있습니다. `converged` 게이트를 쓰는 `closure_state_publisher`는 그러면 해를 영영 채택 못 해 q_ref 에 얼어붙어 **RViz 에 정지된 손**을 렌더합니다. `digital_twin.yaml`의 `closure_tolerance: 1.0e-6`(floor 위)이 이를 완화해 트윈이 추종하도록 합니다. **제어 경로(`RtClosedChainHandle`, fixed-K)는 converged 게이트가 없어 무영향**입니다. (배경: `#124`.)
+
+실행:
+
+```bash
+ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # headless
+```
+
 ---
 
 ## 공통 파라미터 (`demo_shared.yaml`)
