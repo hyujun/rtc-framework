@@ -228,6 +228,7 @@ rub::PinocchioModelBuilder builder(config);
 auto full_model = builder.GetFullModel();           // 전체 모델
 auto arm_model  = builder.GetReducedModel("arm");   // 축소 서브모델
 auto hand_model = builder.GetTreeModel("hand");     // 트리모델
+auto ctrl_model = builder.GetActuatedModel();       // actuated 제어 모델 (extended 시)
 
 // 폐쇄 체인 구속 모델
 const auto & constraints = builder.GetConstraintModels();

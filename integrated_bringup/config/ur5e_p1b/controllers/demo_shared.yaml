@@ -1,0 +1,91 @@
+demo_shared:
+  # ── Virtual TCP (fingertip-based control point) ─────────────────────────────
+  # Mode: "disabled" (default), "centroid", "weighted", "constant"
+  virtual_tcp_mode: "centroid"
+  virtual_tcp_offset: [0.0, 0.0, 0.1]   # constant mode: [x, y, z] in TCP frame [m]
+  virtual_tcp_orientation: [1.5708, 0.0, -1.5708]  # RPY [rad] orientation of vtcp in TCP frame
+
+  # ── Grasp detection ─────────────────────────────────────────────────────────
+  # Capability-aware: controllers branch on
+  # devices.<hand>.sensor_layout.has_native_contact (set in robot/sim yaml):
+  #   key                      | sensor A (native contact) | sensor B (force-only)
+  #   grasp_contact_threshold  | required (AND with force) | unconsumed
+  #   grasp_force_threshold    | required (AND with prob)  | required (only check)
+  #   grasp_min_fingertips     | active_count ≥ N (common across types)
+  grasp_contact_threshold: 0.5   # [sensor A only] native sigmoid prob threshold (0..1)
+  grasp_force_threshold: 1.0     # [common]  |F| threshold [N]
+  grasp_min_fingertips: 2        # [common]  grasp_detected = active_count ≥ N
+
+  # ── Grasp controller selection ─────────────────────────────────────────────
+  # "contact_stop" (default): force 감지 시 hand position freeze
+  # "force_pi": adaptive PI force controller with state machine
+  grasp_controller_type: "contact_stop"
+
+  # ── Hand joint topology (UR5e p1b 10-DoF hand) ─────────────────────────────
+  # Variable per-finger DoF map for p1b profile:
+  # thumb:4, index:3, middle:2, ring:1
+  hand_finger_joint_map:
+    - [0, 1, 2, 3]  # thumb:  CMC_AA, CMC_FE, MCP, DIP_FE
+    - [4, 5, 6]     # index:  MCP_AA, MCP_FE, DIP_FE
+    - [7, 8]        # middle: MCP_FE, DIP_FE
+    - [9]           # ring:   MCP_FE
+  # contact_stop release gate per finger.
+  # loosen_sign > 0: open when q increases, < 0: open when q decreases.
+  hand_release_gate:
+    - { joint_index: 1, loosen_sign:  1 }   # thumb_cmc_fe_joint
+    - { joint_index: 5, loosen_sign: -1 }   # index_mcp_fe_joint
+    - { joint_index: 7, loosen_sign: -1 }   # middle_mcp_fe_joint
+    - { joint_index: 9, loosen_sign: -1 }   # ring_mcp_fe_joint
+
+  # ── Force-PI grasp parameters (grasp_controller_type: "force_pi" 전용) ──
+  force_pi_grasp:
+    # PI gains
+    Kp_base: 0.02               # [1/(N*s)] proportional gain base
+    Ki_base: 0.002              # [1/(N*s^2)] integral gain base
+
+    # Adaptive gain scheduling
+    alpha_ema: 0.95             # stiffness EMA coefficient [0,1]
+    beta: 0.3                   # adaptive gain sensitivity
+
+    # Force thresholds
+    f_contact_threshold: 0.8    # [N] contact detection threshold
+    f_target: 2.0               # [N] target grip force
+    f_ramp_rate: 2.0            # [N/s] force reference ramp rate
+
+    # Rate & saturation limits
+    ds_max: 0.05                # max ds/dt [1/s]
+    delta_s_max: 0.15           # max deformation delta_s after contact
+    integral_clamp: 0.1         # integrator saturation
+
+    # State machine timing
+    approach_speed: 0.4         # [1/s] approaching ds/dt
+    release_speed: 0.3          # [1/s] releasing ds/dt
+    settle_epsilon: 0.5         # [N] force convergence threshold
+    settle_time: 0.3            # [s] convergence hold time
+    contact_settle_time: 0.1    # [s] Contact phase dwell
+
+    # Anomaly detection
+    df_slip_threshold: 5.0      # [N/s] slip df/dt threshold
+    grip_tightening_ratio: 0.15 # force increase ratio on slip
+    f_max_multiplier: 2.0       # max force = f_target * multiplier
+
+    # Force filter
+    lpf_cutoff_hz: 25.0         # Bessel LPF cutoff [Hz]
+
+    # Finger postures are variable-length per finger DoF.
+    # units: "deg" or "rad" (default "rad"). Internally always converted to rad.
+    fingers:
+      units: "deg"
+      finger_names: ["thumb", "index", "middle", "ring"]
+      thumb:
+        q_open:  [0.0, 0.0, 0.0, 0.0]
+        q_close: [30.0, 60.0, 45.0, 45.0]
+      index:
+        q_open:  [0.0, 0.0, 0.0]
+        q_close: [0.0, 60.0, 45.0]
+      middle:
+        q_open:  [0.0, 0.0]
+        q_close: [60.0, 45.0]
+      ring:
+        q_open:  [0.0]
+        q_close: [45.0]

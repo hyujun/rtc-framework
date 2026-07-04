@@ -1,0 +1,23 @@
+# ur5e_p1b/udp_hand_node_p1b.yaml -- topic/name overlay for udp_hand_node
+/**:
+  ros__parameters:
+    command_topic: "/p1b/joint_command"
+    joint_state_topic: "/p1b/joint_states"
+    motor_state_topic: "/p1b/motor_states"
+    sensor_topic: "/p1b/sensor_states"
+    link_status_topic: "/p1b/link_status"
+
+    calibration_command_topic: "/p1b/calibration/command"
+    calibration_status_topic: "/p1b/calibration/status"
+
+    joint_state_names:
+      - "thumb_cmc_aa_joint"
+      - "thumb_cmc_fe_joint"
+      - "thumb_mcp_joint"
+      - "thumb_dip_fe_joint"
+      - "index_mcp_aa_joint"
+      - "index_mcp_fe_joint"
+      - "index_dip_fe_joint"
+      - "middle_mcp_fe_joint"
+      - "middle_dip_fe_joint"
+      - "ring_mcp_fe_joint"

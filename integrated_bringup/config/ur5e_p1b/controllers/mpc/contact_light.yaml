@@ -1,0 +1,45 @@
+# rtc_mpc ContactLightOCP factory config for UR5e + 10-DoF hand.
+#
+# Loaded by rtc::mpc::MPCFactory::Create when the active phase's
+# `ocp_type == "contact_light"`.
+#
+# RobotModelHandler side (end_effector_frame + contact_frames) is also
+# declared here so a single YAML drives the full `RobotModelHandler::Init +
+# MPCFactory::Create` pipeline on engine startup.
+#
+# The contact_frames ORDER is authoritative — phase_config.yaml's
+# `active_contact_indices` indexes into this list.
+
+mpc:
+  ocp_type: "contact_light"
+
+  # ── RobotModelHandler schema (consumed by RobotModelHandler::Init) ────────
+  model:
+    # SE3 control reference is interpreted in `base_frame` (parent),
+    # `end_effector_frame` is the controlled tip. `base_frame` should match
+    # the arm device config `urdf.root_link` so the TCP pose extracted in
+    # handler_mpc_thread.cpp lands in the same frame the GraspPhaseManager
+    # uses for pregrasp/grasp/approach comparisons.
+    end_effector_frame: "tool0"
+    base_frame: "base"
+    contact_frames:
+      - { name: "l_thumb_tip_link",  dim: 3 }
+      - { name: "l_index_tip_link",  dim: 3 }
+      - { name: "l_middle_tip_link", dim: 3 }
+
+  # ── Proximal-DDP solver tuning (see MPCSolverConfig) ──────────────────────
+  solver:
+    prim_tol:     1.0e-3
+    dual_tol:     1.0e-2
+    mu_init:      1.0e-2
+    max_iters:    30
+    max_al_iters: 20
+    verbose:      false
+
+  # ── OCP limits (see rtc_mpc::OCPLimits) ───────────────────────────────────
+  # friction_mu is ignored by ContactLightOCP (applies only to ContactRichOCP);
+  # retained here so a single limits block can serve both factory YAMLs.
+  limits:
+    friction_mu:       0.7
+    u_min: []                # optional; empty → use model-default torque lb
+    u_max: []                # optional; empty → use model-default torque ub

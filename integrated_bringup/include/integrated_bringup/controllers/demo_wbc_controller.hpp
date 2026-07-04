@@ -11,6 +11,7 @@
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/seqlock.hpp"
@@ -348,7 +349,24 @@ class DemoWbcController final : public RTControllerInterface {
  private:
   // ── Model initialization ────────────────────────────────────────────────
   void InitModels(const rtc_urdf_bridge::ModelConfig& config);
+  // Build the serial hand tree-model handle + resolve fingertip / hand-root
+  // frame ids from the secondary device's tree_model. Called from InitModels
+  // (frame ids only; SetJointOrder + closed-chain wiring need device configs,
+  // so they run in OnDeviceConfigsSet). No-op when there is no secondary device
+  // or no matching tree_model. (#123 Phase 2)
+  void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
   void BuildJointReorderMap();
+
+  // ── Hand fingertip FK dispatch (#123 Phase 2 — mirrors task/joint) ────────
+  // ConfigureClosedChainHandFk: non-RT wiring of closed_hand_fk_ + serial
+  //   hand_handle_ joint order; called from OnDeviceConfigsSet. No-op (serial
+  //   path) when the model has no loop closure / no downstream fingertip.
+  // ComputeHandFingertipFk: per-tick RT dispatch — runs the closed or serial
+  //   hand FK, composes each fingertip to the base frame via the arm TCP FK,
+  //   caches into fingertip_positions_/rotations_. RT-safe; call after the arm
+  //   FK (tcp is the base→tool0 placement). Returns false if no hand FK ran.
+  void ConfigureClosedChainHandFk();
+  bool ComputeHandFingertipFk(const ControllerState& state, const pinocchio::SE3& tcp) noexcept;
 
   // Stage C-2: initialise the CLIK reference generator (registers the
   // se3_tcp tip/base frames on pinocchio_cache_ — by frame_id, so it reuses
@@ -478,11 +496,37 @@ class DemoWbcController final : public RTControllerInterface {
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
 
+  // ── Hand fingertip FK (#123 Phase 2 — publish/observation surface only) ──
+  // Loop-consistent fingertip poses for kRobotTransforms. Mirrors the
+  // task/joint pattern: the serial hand tree-model (secondary device, e.g.
+  // "p1b") drives non-extended hands byte-for-byte; closed_hand_fk_ takes over
+  // for extended-URDF (loop-closure) hands whose fingertips are downstream of a
+  // loop-passive joint (proto_1b thumb/index/middle DIP). Fingertip poses feed
+  // ControllerOutput::task_link_poses (NOT the TSID contact dynamics — that
+  // stays on the actuated control model, Phase 3). hand_root frame ("base_adapter"
+  // ≡ tool0) makes HandFingertipPose hand-root-relative; ComputeHandFingertipFk
+  // composes with the arm TCP FK to base frame.
+  std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
+  static constexpr std::size_t kNumFingertips = ClosedChainHandFk::kMaxFingertips;
+  std::array<pinocchio::FrameIndex, kNumFingertips> fingertip_frame_ids_{};
+  pinocchio::FrameIndex hand_root_frame_id_{0};
+  bool use_hand_root_frame_{false};
+  std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
+  std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
+  // Per-tick: did ComputeHandFingertipFk produce a real pose for fingertip f?
+  // False for a downstream tip until the closed-chain loop first converges, so
+  // FillPublishOutput must not publish the zero-init cache as a valid TF.
+  std::array<bool, kNumFingertips> fingertip_pose_valid_{};
+  Eigen::VectorXd hand_q_;  // pre-allocated for serial hand FK
+  ClosedChainHandFk closed_hand_fk_;
+
   // Control model — shared_ptr lifetime for PinocchioCache.
-  // InitModels prefers the mimic-locked reduced tree `mpc`
-  // (nq == nv == 16 for UR5e + 10-DoF hand). Falls back to the raw URDF
-  // full model (nq=26, nv=21 with first-class mimic) only if that tree
-  // isn't declared in urdf.tree_models. TSID + MPC share this model.
+  // InitModels prefers the builder's actuated closed-chain model (extended
+  // hands: locks only the loop-passives, keeping every actuated joint movable
+  // → nq == nv == 16 for UR5e + 10-DoF hand), else the reduced tree `wbc`,
+  // else the raw URDF full model (nq=26, nv=21 with first-class mimic). Plain/
+  // mimic URDFs get a null actuated model and take the tree/full path
+  // byte-for-byte. TSID + MPC share this model.
   std::shared_ptr<const pinocchio::Model> full_model_ptr_;
 
   // Joint reorder: external [arm0..arm_dof_-1, hand0..hand_dof_-1] →

@@ -1,0 +1,78 @@
+demo_joint_controller:
+  # ── Trajectory speed ───────────────────────────────────────────────────────
+  # Desired joint speed for trajectory duration calculation [rad/s].
+  # Duration = max_joint_dist / trajectory_speed.
+  robot_trajectory_speed: 0.78
+  hand_trajectory_speed: 3.14
+
+  # ── Trajectory velocity limits ──────────────────────────────────────────────
+  # Max peak joint velocity during quintic trajectory [rad/s].
+  # Duration is extended so that peak velocity ≤ this limit.
+  # (quintic rest-to-rest peak = 15/8 × Δq / T)
+  robot_max_traj_velocity: 3.14
+  hand_max_traj_velocity: 6.28
+
+  # ── Shared parameters ───────────────────────────────────────────────────────
+  # Virtual TCP, grasp detection, and force-PI grasp parameters are loaded from
+  # config/ur5e_p1b/controllers/demo_shared.yaml. To override any shared key locally,
+  # add it under this section — per-controller values take precedence.
+
+  # ── FSM tuning ──────────────────────────────────────────────────────────────
+  # Required — LoadConfig throws if any key is missing or out of range.
+  fsm:
+    contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
+
+  # ── E-STOP ──────────────────────────────────────────────────────────────────
+  # Joint position the E-STOP path drives the arm toward (rad, length = arm DoF).
+  # Required — LoadConfig throws if missing or wrong length.
+  estop:
+    arm_safe_position:           # rad, 6 values = arm DoF (UR5e home pose)
+      - 0.0
+      - -1.57
+      - 1.57
+      - -1.57
+      - -1.57
+      - 0.0
+
+  # ── Output type ─────────────────────────────────────────────────────────────
+  command_type: "position"
+
+  # ── Topic configuration ─────────────────────────────────────────────────────
+  # Phase 4: device-wire lanes moved to devices.<group>.backend in
+  # sim.yaml / robot.yaml. Controller YAML keeps controller-owned roles only.
+  # ownership: "controller" → per-controller LifecycleNode owns it; relative
+  #                           paths resolve under namespace /<config_key>/
+  topics:
+    ur5e:
+      subscribe:
+        - topic: "ur5e/joint_goal"
+          role: "target"
+          ownership: "controller"
+      publish:
+        # Per-controller TF (Phase 2): controller당 1 토픽, tf2_msgs/TFMessage.
+        # frame_id는 system YAML urdf.{sub,tree}_models 기반 자동 결정 +
+        # virtual_tcp. Single publisher → entry는 첫 group(ur5e)에만 둠 (D-10).
+        - topic: "transforms"
+          role: "robot_transforms"
+          ownership: "controller"
+    p1b:
+      subscribe:
+        - topic: "p1b/joint_goal"
+          role: "target"
+          ownership: "controller"
+      # GraspState / ToFSnapshot publishers are controller-owned and created
+      # in on_configure (SetupGraspStatePublisher / SetupToFSnapshotPublisher);
+      # they no longer have a YAML role mapping.
+
+  # ── Controller-owned CSV logs (Phase C: msg-type-driven schema) ─────────────
+  # Each entry maps an rtc_msgs/<*Log> message type to a CSV file under
+  # <session>/controllers/<config_key>/<instance>.csv. Schema is the
+  # corresponding rtc_msgs message; RT path uses integrated_bringup POD mirrors
+  # (kMaxJoints=16, kMaxFingertips=8).
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: ur5e_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p1b_state
+    - msg_type: rtc_msgs/DeviceSensorLog
+      instance: p1b_sensor

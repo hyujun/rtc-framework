@@ -1,0 +1,119 @@
+# ur5e_p1b/robot.yaml -- UR5e + proto_1b hand real-hardware config
+/**:
+  ros__parameters:
+    # Config variant directory
+    config_variant: "ur5e_p1b"
+
+    # Control rate
+    control_rate: 500.0
+
+    # Initial controller
+    initial_controller: "demo_wbc_controller"
+
+    # Initialization timeout
+    init_timeout_sec: 30.0
+
+    # E-STOP configuration
+    enable_estop: true
+    device_timeout_names: ["ur5e", "p1b"]
+    device_timeout_values: [1000.0, 1000.0]
+
+    # Logging configuration
+    enable_logging: true
+    enable_timing_log: true
+    enable_device_log: true
+    log_dir: ""
+    max_log_sessions: 10
+
+    # System URDF + model topology
+    urdf:
+      package: "hand_description"
+      path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.urdf.xacro"
+      root_joint_type: "fixed"
+      extended: true
+      closure_path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml"
+      sub_models:
+        ur5e:
+          root_link: "base"
+          tip_link: "tool0"
+      tree_models:
+        p1b:
+          root_link: "base_adapter"
+          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
+        wbc:
+          root_link: "base"
+          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
+
+    # Device configuration
+    devices:
+      ur5e:
+        backend:
+          type: "ur_driver_native"
+          state_topic: "/joint_states"
+          command_topic: "/forward_position_controller/commands"
+        joint_state_names:
+          - "shoulder_pan_joint"
+          - "shoulder_lift_joint"
+          - "elbow_joint"
+          - "wrist_1_joint"
+          - "wrist_2_joint"
+          - "wrist_3_joint"
+        joint_command_names:
+          - "shoulder_pan_joint"
+          - "shoulder_lift_joint"
+          - "elbow_joint"
+          - "wrist_1_joint"
+          - "wrist_2_joint"
+          - "wrist_3_joint"
+        joint_limits:
+          max_velocity: [2.0, 2.0, 3.0, 3.0, 3.0, 3.0]
+          max_acceleration: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+          max_torque: [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
+          position_lower: [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
+          position_upper: [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
+
+      p1b:
+        backend:
+          type: "udp_hand_native"
+          state_topic: "/p1b/joint_states"
+          command_topic: "/p1b/joint_command"
+          motor_topic: "/p1b/motor_states"
+          sensor_topic: "/p1b/sensor_states"
+        joint_state_names:
+          - "thumb_cmc_aa_joint"
+          - "thumb_cmc_fe_joint"
+          - "thumb_mcp_joint"
+          - "thumb_dip_fe_joint"
+          - "index_mcp_aa_joint"
+          - "index_mcp_fe_joint"
+          - "index_dip_fe_joint"
+          - "middle_mcp_fe_joint"
+          - "middle_dip_fe_joint"
+          - "ring_mcp_fe_joint"
+        motor_state_names:
+          - "motor_1"
+          - "motor_2"
+          - "motor_3"
+          - "motor_4"
+          - "motor_5"
+          - "motor_6"
+          - "motor_7"
+          - "motor_8"
+          - "motor_9"
+          - "motor_10"
+        sensor_names:
+          - "thumb"
+          - "index"
+          - "middle"
+          - "ring"
+        joint_limits:
+          max_velocity: [6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28, 6.28]
+          position_lower: [-1.57, -1.57, -1.57, -1.57, -3.14, -3.14, -3.14, -1.57, -1.57, -3.14]
+          position_upper: [1.57, 1.57, 1.57, 1.57, 3.14, 3.14, 3.14, 1.57, 1.57, 3.14]
+        sensor_layout:
+          primary_count_per_group: 8
+          secondary_count_per_group: 3
+          values_per_group: 11
+          inference_values_per_group: 7
+          has_native_contact: true
+          has_native_displacement: true
