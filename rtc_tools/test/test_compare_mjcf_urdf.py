@@ -20,6 +20,7 @@ from rtc_tools.validation.compare_mjcf_urdf import (
     _compute_urdf_world_frames,
     _fmt,
     _identity_3x3,
+    _mjcf_body_rotation,
     _parse_floats,
     _quat_to_rot3,
     _rpy_to_rot3,
@@ -644,5 +645,65 @@ class TestCrossFormatWorldFrameMatch:
             u_pos, u_axis = u_frames[jname]
             m_pos, m_axis = m_frames[jname]
             assert _vec_close_3(u_pos, m_pos, 1e-4), f"{jname} position mismatch"
-            is_parallel, _ = _axes_parallel(u_axis, m_axis, 1e-4)
+            is_parallel, _ = _axes_parallel(u_axis, m_axis)
             assert is_parallel, f"{jname} axes not parallel: {u_axis} vs {m_axis}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _axes_parallel — fixed cosine tolerance, anti-parallel detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAxesParallel:
+    def test_same_direction(self):
+        ok, same = _axes_parallel([0, 0, 1], [0, 0, 1])
+        assert ok is True
+        assert same is True
+
+    def test_anti_parallel(self):
+        ok, same = _axes_parallel([0, 0, 1], [0, 0, -1])
+        assert ok is True
+        assert same is False
+
+    def test_not_parallel(self):
+        ok, _ = _axes_parallel([1, 0, 0], [0, 1, 0])
+        assert ok is False
+
+    def test_zero_vector(self):
+        ok, _ = _axes_parallel([0, 0, 0], [1, 0, 0])
+        assert ok is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _mjcf_body_rotation — multiple MuJoCo orientation formats
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestMjcfBodyRotation:
+    def _make_body(self, **attribs):
+        import xml.etree.ElementTree as ET
+
+        body = ET.Element("body")
+        for k, v in attribs.items():
+            body.set(k, v)
+        return body
+
+    def test_identity_no_attrs(self):
+        R = _mjcf_body_rotation(self._make_body())
+        assert _identity_3x3() == R
+
+    def test_quat(self):
+        R = _mjcf_body_rotation(self._make_body(quat="0 0 0 1"))
+        assert abs(R[0][0] - (-1.0)) < 1e-12
+        assert abs(R[2][2] - 1.0) < 1e-12
+
+    def test_euler(self):
+        R = _mjcf_body_rotation(self._make_body(euler=f"{math.pi / 2} 0 0"))
+        assert abs(R[0][0] - 1.0) < 1e-12
+        assert abs(R[1][2] - (-1.0)) < 1e-12
+
+    def test_axisangle(self):
+        R = _mjcf_body_rotation(self._make_body(axisangle=f"0 0 1 {math.pi}"))
+        assert abs(R[0][0] - (-1.0)) < 1e-12
+        assert abs(R[1][1] - (-1.0)) < 1e-12
+        assert abs(R[2][2] - 1.0) < 1e-12

@@ -3,11 +3,11 @@
 
 Parses both model files and reports differences in:
   - Link mass
-  - Link inertia (diagonal components only; MJCF stores diaginertia)
-  - Joint position limits (range)
+  - Link inertia (principal moments via eigenvalue decomposition)
+  - Joint position limits (range; sign-swapped for anti-parallel axes)
   - Joint effort / force limits
-  - Joint axis vectors
-  - Link-to-link offsets (DH-like origin positions)
+  - Joint axis vectors (world-frame FK, parallelism check)
+  - Joint positions (world-frame FK)
 
 Robot-agnostic — link/joint name sets and the MJCF default class are auto-
 detected from the MJCF root (`<mujoco model="...">` / `<default class="...">`)
@@ -156,7 +156,10 @@ def _vec_close_3(a: list[float], b: list[float], tol: float) -> bool:
     return all(math.isclose(a[i], b[i], abs_tol=tol) for i in range(3))
 
 
-def _axes_parallel(a: list[float], b: list[float], tol: float) -> tuple[bool, bool]:
+_AXIS_PARALLEL_COS_TOL = 1e-6
+
+
+def _axes_parallel(a: list[float], b: list[float]) -> tuple[bool, bool]:
     """Check if two 3-vectors are parallel (same rotation line).
 
     Returns ``(is_parallel, same_sign)``.  ``is_parallel`` is True when the
@@ -164,6 +167,10 @@ def _axes_parallel(a: list[float], b: list[float], tol: float) -> tuple[bool, bo
     ``same_sign`` is True when they also point in the same direction.
     Anti-parallel axes (same_sign=False) represent the same physical rotation
     axis but with opposite positive-rotation convention.
+
+    Uses a fixed cosine tolerance (``_AXIS_PARALLEL_COS_TOL``) independent of
+    the position tolerance so that axis parallelism is not coupled to the
+    caller's metric-space tolerance.
     """
     dot = sum(a[i] * b[i] for i in range(3))
     mag_a = math.sqrt(sum(v * v for v in a))
@@ -171,9 +178,84 @@ def _axes_parallel(a: list[float], b: list[float], tol: float) -> tuple[bool, bo
     if mag_a < 1e-15 or mag_b < 1e-15:
         return False, False
     cos_angle = dot / (mag_a * mag_b)
-    is_parallel = abs(abs(cos_angle) - 1.0) < tol
+    is_parallel = abs(abs(cos_angle) - 1.0) < _AXIS_PARALLEL_COS_TOL
     same_sign = cos_angle > 0
     return is_parallel, same_sign
+
+
+def _mjcf_body_rotation(body: ET.Element) -> list[list[float]]:
+    """Extract body-frame rotation from any MuJoCo orientation attribute.
+
+    MuJoCo supports ``quat``, ``axisangle``, ``euler``, ``xyaxes``, and
+    ``zaxis``.  Returns identity when none are present.
+    """
+    quat_str = body.get("quat")
+    if quat_str:
+        q = _parse_floats(quat_str)
+        return _quat_to_rot3(q[0], q[1], q[2], q[3])
+
+    axisangle_str = body.get("axisangle")
+    if axisangle_str:
+        vals = _parse_floats(axisangle_str)
+        ax, ay, az, angle = vals[0], vals[1], vals[2], vals[3]
+        n = math.sqrt(ax * ax + ay * ay + az * az)
+        if n < 1e-15:
+            return _identity_3x3()
+        ax, ay, az = ax / n, ay / n, az / n
+        c, s = math.cos(angle), math.sin(angle)
+        t = 1.0 - c
+        return [
+            [t * ax * ax + c, t * ax * ay - s * az, t * ax * az + s * ay],
+            [t * ax * ay + s * az, t * ay * ay + c, t * ay * az - s * ax],
+            [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c],
+        ]
+
+    euler_str = body.get("euler")
+    if euler_str:
+        vals = _parse_floats(euler_str)
+        return _rpy_to_rot3(vals[0], vals[1], vals[2])
+
+    xyaxes_str = body.get("xyaxes")
+    if xyaxes_str:
+        vals = _parse_floats(xyaxes_str)
+        x = vals[0:3]
+        y = vals[3:6]
+        z = [
+            x[1] * y[2] - x[2] * y[1],
+            x[2] * y[0] - x[0] * y[2],
+            x[0] * y[1] - x[1] * y[0],
+        ]
+        mag_z = math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2])
+        if mag_z > 1e-15:
+            z = [z[i] / mag_z for i in range(3)]
+        return [x, y, z]
+
+    zaxis_str = body.get("zaxis")
+    if zaxis_str:
+        z = _parse_floats(zaxis_str)
+        mag = math.sqrt(sum(v * v for v in z))
+        if mag > 1e-15:
+            z = [v / mag for v in z]
+        if abs(z[2]) < 0.99:
+            up = [0.0, 0.0, 1.0]
+        else:
+            up = [1.0, 0.0, 0.0]
+        x = [
+            up[1] * z[2] - up[2] * z[1],
+            up[2] * z[0] - up[0] * z[2],
+            up[0] * z[1] - up[1] * z[0],
+        ]
+        mag_x = math.sqrt(sum(v * v for v in x))
+        if mag_x > 1e-15:
+            x = [v / mag_x for v in x]
+        y = [
+            z[1] * x[2] - z[2] * x[1],
+            z[2] * x[0] - z[0] * x[2],
+            z[0] * x[1] - z[1] * x[0],
+        ]
+        return [x, y, z]
+
+    return _identity_3x3()
 
 
 # ── FK chain computation ─────────────────────────────────────────────────────
@@ -214,19 +296,22 @@ def _compute_urdf_world_frames(
         child_to_joint[child_link] = jname
 
     link_frames: dict[str, tuple[list[list[float]], list[float]]] = {}
+    _in_progress: set[str] = set()
 
     def get_link_frame(link_name: str) -> tuple[list[list[float]], list[float]]:
         if link_name in link_frames:
             return link_frames[link_name]
-        if link_name not in child_to_joint:
+        if link_name not in child_to_joint or link_name in _in_progress:
             link_frames[link_name] = (_identity_3x3(), [0.0, 0.0, 0.0])
             return link_frames[link_name]
+        _in_progress.add(link_name)
         jname = child_to_joint[link_name]
         parent_link, _, xyz, rpy, _ = all_joints[jname]
         parent_r, parent_p = get_link_frame(parent_link)
         local_r = _rpy_to_rot3(rpy[0], rpy[1], rpy[2])
         child_r, child_p = _compose_transform(parent_r, parent_p, local_r, xyz)
         link_frames[link_name] = (child_r, child_p)
+        _in_progress.discard(link_name)
         return child_r, child_p
 
     result: dict[str, tuple[list[float], list[float]]] = {}
@@ -250,10 +335,11 @@ def _compute_mjcf_world_frames(
 ) -> dict[str, tuple[list[float], list[float]]]:
     """Compute world-frame (position, axis) for each MJCF joint via FK.
 
-    Walks the ``<worldbody>`` hierarchy, accumulating body ``pos``/``quat``
-    transforms, and extracts joint axis in the body frame.  Default-class
-    axis inheritance is resolved so explicit and inherited axes are treated
-    uniformly.
+    Walks the ``<worldbody>`` hierarchy, accumulating body ``pos`` and
+    orientation transforms (quat/euler/axisangle/xyaxes/zaxis), and
+    extracts joint axis in the body frame.  Default-class axis inheritance
+    (including ``childclass``) is resolved so explicit and inherited axes
+    are treated uniformly.
     """
     root = ET.parse(path).getroot()
 
@@ -285,32 +371,38 @@ def _compute_mjcf_world_frames(
         elem: ET.Element,
         parent_r: list[list[float]],
         parent_p: list[float],
+        active_childclass: str,
     ) -> None:
         for body in elem.findall("body"):
             pos = _parse_floats(body.get("pos", "0 0 0"))
-            quat_str = body.get("quat")
-            if quat_str:
-                q = _parse_floats(quat_str)
-                r_local = _quat_to_rot3(q[0], q[1], q[2], q[3])
-            else:
-                r_local = _identity_3x3()
+            r_local = _mjcf_body_rotation(body)
 
             r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
+
+            body_childclass = body.get("childclass", active_childclass)
 
             for joint_elem in body.findall("joint"):
                 jname = joint_elem.get("name")
                 if jname not in joint_names:
                     continue
-                cls = joint_elem.get("class", root_class or "")
+                cls = joint_elem.get("class", body_childclass)
                 axis_local = resolve_axis(cls, joint_elem)
                 world_axis = _mat_vec_3(r_world, axis_local)
-                result[jname] = (list(p_world), world_axis)
 
-            traverse(body, r_world, p_world)
+                joint_pos_str = joint_elem.get("pos")
+                if joint_pos_str:
+                    jp = _parse_floats(joint_pos_str)
+                    j_world_pos = _vec_add_3(p_world, _mat_vec_3(r_world, jp))
+                else:
+                    j_world_pos = list(p_world)
+
+                result[jname] = (j_world_pos, world_axis)
+
+            traverse(body, r_world, p_world, body_childclass)
 
     worldbody = root.find("worldbody")
     if worldbody is not None:
-        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0])
+        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0], root_class or "")
 
     return result
 
@@ -595,20 +687,6 @@ def _urdf_principal_moments(params: "InertialParams") -> list[float]:
 # ── Physical plausibility (URDF inertia vs collision-shape mass distribution) ─
 
 
-def _rpy_to_rotmat(rpy: tuple[float, float, float]):
-    import numpy as np  # noqa: PLC0415
-
-    r, p, y = rpy
-    cr, sr = math.cos(r), math.sin(r)
-    cp, sp = math.cos(p), math.sin(p)
-    cy, sy = math.cos(y), math.sin(y)
-    return (
-        np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
-        @ np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
-        @ np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-    )
-
-
 def _shape_volume_and_local_inertia(shape_elem: ET.Element):
     """Return (volume, I_local_unit_mass) for a URDF collision/visual primitive.
 
@@ -706,7 +784,7 @@ def _urdf_link_collision_inertia(
     I_total = np.zeros((3, 3))
     for vol, I_local, xyz, rpy in primitives:
         m_i = total_mass * vol / total_vol
-        R = _rpy_to_rotmat(rpy)
+        R = np.asarray(_rpy_to_rot3(rpy[0], rpy[1], rpy[2]), dtype=float)
         I_at_origin_centroid = R @ (m_i * I_local) @ R.T
         r = np.asarray(xyz, dtype=float)
         I_total += I_at_origin_centroid + m_i * (np.dot(r, r) * np.eye(3) - np.outer(r, r))
@@ -1132,37 +1210,17 @@ def compare(
 
         print(f"  [{jname}]")
 
-        # Position limits (frame-independent)
-        if not _close(mjcf_jp.lower, urdf_jp.lower, tolerance) or not _close(
-            mjcf_jp.upper, urdf_jp.upper, tolerance
-        ):
-            print(
-                f"    RANGE MISMATCH:"
-                f"  MJCF=[{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]"
-                f"  URDF=[{_fmt(urdf_jp.lower)}, {_fmt(urdf_jp.upper)}]"
-            )
-            mismatches += 1
-        else:
-            print(f"    range: [{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]  OK")
-
-        # Effort limits (frame-independent)
-        if not _close(mjcf_jp.effort, urdf_jp.effort, tolerance):
-            print(
-                f"    EFFORT MISMATCH:  MJCF={_fmt(mjcf_jp.effort)}  URDF={_fmt(urdf_jp.effort)}"
-            )
-            mismatches += 1
-        else:
-            print(f"    effort: {_fmt(mjcf_jp.effort)}  OK")
-
-        # World-frame axis comparison (FK-based)
+        # World-frame axis comparison (FK-based) — run first so anti-parallel
+        # detection can inform the range comparison below.
         u_wf = urdf_world.get(jname)
         m_wf = mjcf_world.get(jname)
+        axis_anti_parallel = False
 
         if u_wf is not None and m_wf is not None:
             u_world_pos, u_world_axis = u_wf
             m_world_pos, m_world_axis = m_wf
 
-            is_parallel, same_sign = _axes_parallel(m_world_axis, u_world_axis, tolerance)
+            is_parallel, same_sign = _axes_parallel(m_world_axis, u_world_axis)
             if not is_parallel:
                 m_axis_s = " ".join(_fmt(v) for v in m_world_axis)
                 u_axis_s = " ".join(_fmt(v) for v in u_world_axis)
@@ -1172,6 +1230,7 @@ def compare(
                 print(f"      local axes: MJCF=[{m_local}]  URDF=[{u_local}]")
                 mismatches += 1
             elif not same_sign:
+                axis_anti_parallel = True
                 axis_str = " ".join(_fmt(v) for v in m_world_axis)
                 print(
                     f"    axis (world): [{axis_str}]  OK (anti-parallel — sign convention differs)"
@@ -1194,14 +1253,56 @@ def compare(
                 pos_str = " ".join(_fmt(v) for v in m_world_pos)
                 print(f"    position (world): [{pos_str}]  OK")
         else:
-            m_axis = " ".join(_fmt(v) for v in mjcf_jp.axis)
-            u_axis = " ".join(_fmt(v) for v in urdf_jp.axis)
-            if m_axis != u_axis:
-                print(
-                    f"    [WARN] axis (local only, FK unavailable):"
-                    f"  MJCF=[{m_axis}]  URDF=[{u_axis}]"
-                )
+            print("    [WARN] FK unavailable — falling back to local-frame comparison")
+            warnings += 1
+            axes_match = all(_close(mjcf_jp.axis[i], urdf_jp.axis[i], tolerance) for i in range(3))
+            if not axes_match:
+                m_axis = " ".join(_fmt(v) for v in mjcf_jp.axis)
+                u_axis = " ".join(_fmt(v) for v in urdf_jp.axis)
+                print(f"    AXIS MISMATCH (local):  MJCF=[{m_axis}]  URDF=[{u_axis}]")
+                mismatches += 1
+            origins_match = all(
+                _close(mjcf_jp.origin_xyz[i], urdf_jp.origin_xyz[i], tolerance) for i in range(3)
+            )
+            if not origins_match:
+                m_orig = " ".join(_fmt(v) for v in mjcf_jp.origin_xyz)
+                u_orig = " ".join(_fmt(v) for v in urdf_jp.origin_xyz)
+                print(f"    ORIGIN MISMATCH (local):  MJCF=[{m_orig}]  URDF=[{u_orig}]")
                 warnings += 1
+
+        # Position limits — when axes are anti-parallel, positive rotation in
+        # one format is negative in the other, so limits must be negated and
+        # swapped for a correct comparison.
+        m_lower = mjcf_jp.lower
+        m_upper = mjcf_jp.upper
+        u_lower = urdf_jp.lower
+        u_upper = urdf_jp.upper
+        if axis_anti_parallel:
+            u_lower, u_upper = -urdf_jp.upper, -urdf_jp.lower
+
+        if not _close(m_lower, u_lower, tolerance) or not _close(m_upper, u_upper, tolerance):
+            print(
+                f"    RANGE MISMATCH:"
+                f"  MJCF=[{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]"
+                f"  URDF=[{_fmt(urdf_jp.lower)}, {_fmt(urdf_jp.upper)}]"
+            )
+            if axis_anti_parallel:
+                print(
+                    f"      (compared with sign-swapped URDF limits"
+                    f" [{_fmt(u_lower)}, {_fmt(u_upper)}] due to anti-parallel axes)"
+                )
+            mismatches += 1
+        else:
+            print(f"    range: [{_fmt(m_lower)}, {_fmt(m_upper)}]  OK")
+
+        # Effort limits (frame-independent)
+        if not _close(mjcf_jp.effort, urdf_jp.effort, tolerance):
+            print(
+                f"    EFFORT MISMATCH:  MJCF={_fmt(mjcf_jp.effort)}  URDF={_fmt(urdf_jp.effort)}"
+            )
+            mismatches += 1
+        else:
+            print(f"    effort: {_fmt(mjcf_jp.effort)}  OK")
 
         # Armature (MJCF-only)
         if mjcf_jp.armature > 0:
