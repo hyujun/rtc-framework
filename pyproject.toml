@@ -21,6 +21,8 @@ extend-exclude = [
   ".venv",
   "**/__pycache__",
   "logging_data",
+  # vendored git submodule (see .gitmodules) — not ours to format/lint.
+  "robot_descriptions/object_sim",
 ]
 
 [tool.ruff.lint]
