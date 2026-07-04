@@ -13,7 +13,7 @@
 # 3 → ring (ring_tip_head).
 #
 # Dim contract: `q_posture_ref` must match the WBC control model loaded
-# from urdf.tree_models.wbc (iiwa7_leap/sim.yaml / robot.yaml). That tree
+# from urdf.tree_models.wbc (iiwa7_leap/sim.yaml — sim-only variant). That tree
 # yields nq == nv == 23 (7 iiwa7 arm + 16 actuated LEAP joints).
 # Joint ordering follows the joint_state_names of devices.iiwa7 then
 # devices.leap in the runtime YAML (leap is thumb-first: 12-15, 0-3,

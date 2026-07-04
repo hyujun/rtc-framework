@@ -61,8 +61,9 @@ integrated_bringup/
 │   │   └── udp_hand_native_backend.cpp
 │   └── support/                        <- demo_shared_config / owned_topics 구현
 ├── config/
-│   ├── ur5e_hand/robot.yaml                 <- 실제 로봇 RTC 프레임워크 설정 (URDF + 모델 토폴로지 포함)
-│   ├── ur5e_hand/sim.yaml                   <- 시뮬레이션 전용 설정 (URDF + 모델 토폴로지 포함)
+│   ├── ur5e_hand/_base.yaml                 <- mode-agnostic SSoT (URDF + 모델 토폴로지 + device roster/limits + control_rate/logging)
+│   ├── ur5e_hand/robot.yaml                 <- 실제 로봇 delta (backend/토픽 + E-STOP + init 타이밍, _base 위에 overlay)
+│   ├── ur5e_hand/sim.yaml                   <- 시뮬레이션 delta (MuJoCo backend + sim-sync + 완화된 E-STOP, _base 위에 overlay)
 │   └── controllers/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
@@ -95,7 +96,7 @@ integrated_bringup/
 
 ## 기구학 모델 설정 (rtc_urdf_bridge)
 
-데모 컨트롤러는 `rtc_urdf_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. URDF 경로와 모델 토폴로지(`sub_models`, `tree_models`, `passive_joints`)는 모두 `ur5e_hand/robot.yaml` / `ur5e_hand/sim.yaml`의 최상위 `urdf:` 섹션에 통합 정의됩니다.
+데모 컨트롤러는 `rtc_urdf_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. URDF 경로와 모델 토폴로지(`sub_models`, `tree_models`, `passive_joints`)는 mode-agnostic 이므로 `ur5e_hand/_base.yaml`의 최상위 `urdf:` 섹션에 단일 정의되며, `robot.yaml`(real HW)·`sim.yaml`(MuJoCo)은 그 위에 mode-specific delta 만 overlay 합니다 (launch 가 `[_base.yaml, <mode>.yaml]` 순으로 로드, 뒤 파일이 per-key override).
 
 > **관절 분류 규칙 (2026-04-24~)**: `<transmission>` 태그는 더 이상 active/passive 기준이 아닙니다. URDF `type == "fixed"`는 kFixed, `<mimic>` 태그는 kPassive/kMimic, closed-chain 루프 참여 관절은 kPassive/kClosedChain, YAML `passive_joints:`에 명시된 관절은 kPassive/kFree, 그 외 non-fixed는 모두 기본적으로 kActive로 분류됩니다. Active이지만 `<limit effort>` 등 physics가 누락되면 경고가 출력됩니다. 상세는 `rtc_urdf_bridge/README.md` 참조.
 
@@ -103,8 +104,9 @@ integrated_bringup/
 
 | 설정 영역 | 위치 | 역할 |
 |----------|------|------|
-| `urdf:` (최상위) | `ur5e_hand/robot.yaml` | URDF 경로, 모델 토폴로지 (sub_models/tree_models/passive_joints) |
-| `devices:` | `ur5e_hand/robot.yaml` | 디바이스별 joint_names, joint_limits, sensor_names |
+| `urdf:` (최상위) | `ur5e_hand/_base.yaml` | URDF 경로, 모델 토폴로지 (sub_models/tree_models/passive_joints) |
+| `devices:` (roster/limits) | `ur5e_hand/_base.yaml` | 디바이스별 joint_names, joint_limits, sensor_names, sensor_layout 카운트 |
+| `devices.<g>.backend` + `has_native_*` | `ur5e_hand/{robot,sim}.yaml` | mode-specific: backend/wire 토픽, joint_command/motor 로스터, native-signal 플래그 |
 | `demo_*_controller.yaml` | 컨트롤러별 YAML | 제어 게인, 토픽 라우팅 |
 | `demo_shared.yaml` | 공통 YAML | DemoJoint/DemoTask 공통 파라미터 (Virtual TCP, grasp 감지, force_pi_grasp) |
 
@@ -113,7 +115,7 @@ integrated_bringup/
 ### 데이터 흐름
 
 ```
-ur5e_hand/robot.yaml                            controller.yaml
+ur5e_hand/_base.yaml                            controller.yaml
 ┌──────────────────────────┐               ┌────────────────┐
 │ urdf:                    │               │ kp, damping,   │
 │   package + path ────────┼──(urdf)──→    │ trajectory_    │
@@ -629,7 +631,7 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 1. 세션 디렉토리 생성 (워크스페이스 내 `logging_data/YYMMDD_HHMM/`)
 2. `cpu_shield.sh on --sim` -- 경량 CPU 격리 (Tier 1)
 3. MuJoCo 시뮬레이터 노드 launch (`rtc_mujoco_sim/mujoco_simulator_node`)
-4. RT 컨트롤러 노드 launch (실행 파일 = ROS 노드 이름 = `integrated_rt_controller` — 정렬됨, params: `ur5e_hand/sim.yaml` + `mujoco_simulator.yaml`)
+4. RT 컨트롤러 노드 launch (실행 파일 = ROS 노드 이름 = `integrated_rt_controller` — 정렬됨, params: `ur5e_hand/_base.yaml` + `sim.yaml` + `mujoco_simulator.yaml`)
 5. MuJoCo 시뮬레이터 코어 핀닝 (2초 지연, 8코어 이상일 때만)
 
 **Lifecycle 순서:** 런치 시 mujoco_simulator → configure → activate 완료 후 integrated_rt_controller → configure → activate 순차 활성화.
@@ -647,7 +649,7 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 | 커맨드 대상 | UR5e 로봇 | MuJoCo 물리 엔진 |
 | CPU 격리 | Tier 1+2 (`--robot`) | Tier 1 (`--sim`) |
 | DDS 핀닝 | UR 드라이버 + RT 컨트롤러 | MuJoCo 시뮬레이터 |
-| 설정 | `ur5e_hand/robot.yaml` | `ur5e_hand/sim.yaml` + `mujoco_simulator.yaml` |
+| 설정 | `ur5e_hand/_base.yaml` + `robot.yaml` | `ur5e_hand/_base.yaml` + `sim.yaml` + `mujoco_simulator.yaml` |
 
 ---
 
@@ -746,15 +748,19 @@ ros2 run integrated_bringup motion_editor_gui
 
 ---
 
-## 전역 설정 (`ur5e_hand/robot.yaml`)
+## 전역 설정 (`ur5e_hand/_base.yaml` + `robot.yaml`)
+
+> 아래는 `_base.yaml`(mode-agnostic) 과 `robot.yaml`(real-HW delta) 을 overlay 한 **병합 뷰**입니다.
+> `control_rate`·`device_timeout_names`·`enable_logging`·`urdf:`·`devices` roster/limits/sensor_layout 카운트는 `_base.yaml` 에,
+> `initial_controller`·`init_timeout_sec`·`enable_estop`·`device_timeout_values`·`backend`·`joint_command_names`·`motor_state_names`·`has_native_*` 는 `robot.yaml` (sim 은 `sim.yaml`) 에 있습니다.
 
 ```yaml
 /**:
   ros__parameters:
-    control_rate: 500.0
-    initial_controller: "demo_joint_controller"
-    init_timeout_sec: 30.0          # 하드웨어 초기화 타임아웃 (sec)
-    enable_estop: true
+    control_rate: 500.0             # _base
+    initial_controller: "demo_wbc_controller"  # delta (robot.yaml / sim.yaml)
+    init_timeout_sec: 30.0          # delta — 하드웨어 초기화 타임아웃 (sec)
+    enable_estop: true              # delta
     device_timeout_names: ["ur5e", "hand"]
     device_timeout_values: [1000.0, 1000.0]  # ms
     enable_logging: true
@@ -812,7 +818,7 @@ ros2 run integrated_bringup motion_editor_gui
           position_upper: [1.57, ..., 1.57]
 ```
 
-**시뮬레이션 설정 (`ur5e_hand/sim.yaml`) 차이점:**
+**시뮬레이션 delta (`ur5e_hand/sim.yaml`) 차이점 (동일 `_base.yaml` 위에 overlay):**
 - `init_timeout_sec: 0.0` (비활성화), `enable_estop: false`
 - `use_sim_time_sync: true`, `sim_sync_timeout_sec: 5.0`
 - `device_timeout_values: [10000.0, 10000.0]` (시작 시 여유)
@@ -882,7 +888,7 @@ integrated_bringup  <- UR5e 로봇별 통합 패키지 ────────�
     ├── demo_controller_gui             │
     └── motion_editor_gui               │
                                         │
-    ur5e_hand/robot.yaml (urdf: sub_models) ─┘  (시스템 URDF + 모델 토폴로지)
+    ur5e_hand/_base.yaml (urdf: sub_models) ─┘  (시스템 URDF + 모델 토폴로지)
 ```
 
 ---
