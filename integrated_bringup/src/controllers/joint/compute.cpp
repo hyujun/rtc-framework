@@ -225,11 +225,18 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // #121: closed-chain projection when the hand has loop closure with downstream
   // fingertips, else the serial hand FK; HandFingertipPose returns the
   // hand-root-relative fingertip pose either way (byte-for-byte when serial).
+  // Default to invalid each tick so a tick where hand FK fails entirely (e.g.
+  // the hand device drops out) withholds the fingertip TF rather than
+  // republishing a prior tick's cached pose as valid — matches wbc, whose gate
+  // sits inside `if (ComputeHandFingertipFk(...))` on a fresh output (#125 F1).
+  fingertip_pose_valid_.fill(false);
   if (ComputeHandForwardKinematics(state)) {
     // Chain: T_base_fingertip = T_base_tcp * T_hand_fingertip
     for (std::size_t f = 0; f < kNumFingertips; ++f) {
       pinocchio::SE3 T_hand_ft;
-      if (HandFingertipPose(f, T_hand_ft)) {
+      const bool produced = HandFingertipPose(f, T_hand_ft);
+      fingertip_pose_valid_[f] = produced;
+      if (produced) {
         const pinocchio::SE3 T_base_ft = arm_tcp_pose_.act(T_hand_ft);
         fingertip_positions_[f] = T_base_ft.translation();
         fingertip_rotations_[f] = T_base_ft.rotation();
@@ -564,7 +571,11 @@ void DemoJointController::FillPublishOutput(const ControllerState& state, Contro
     output.virtual_tcp_pose_valid = false;
   }
   for (std::size_t f = 0; f < kNumFingertips; ++f) {
-    if (fingertip_frame_ids_[f] != 0) {
+    // Gate on both a resolved serial frame id AND a pose actually produced this
+    // tick: a downstream (loop) tip holds no pose until the closed chain first
+    // converges, so publishing its zero-init cache would snap the fingertip TF
+    // to the base origin (#125 F1).
+    if (fingertip_frame_ids_[f] != 0 && fingertip_pose_valid_[f]) {
       const Eigen::Vector3d& t = fingertip_positions_[f];
       const Eigen::Quaterniond q(fingertip_rotations_[f]);
       output.task_link_poses[f].position = {t.x(), t.y(), t.z()};

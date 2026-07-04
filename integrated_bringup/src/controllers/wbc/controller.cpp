@@ -129,7 +129,19 @@ void DemoWbcController::InitHandModel(const rtc_urdf_bridge::ModelConfig& config
   if (secondary.empty()) {
     return;
   }
-  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel(secondary));
+  // Guard the tree-model lookup: a malformed config (secondary device declared
+  // without a matching tree_model) would otherwise throw std::out_of_range,
+  // caught by the base class as an on_configure FAILURE. Mirror the control-
+  // model selection's fallback and graceful-degrade to no hand FK (#125 F2).
+  try {
+    hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel(secondary));
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(logger_,
+                "[wbc] secondary device '%s' has no matching tree_model (%s) — "
+                "hand fingertip FK disabled",
+                secondary.c_str(), e.what());
+    return;
+  }
 
   // Resolve fingertip tip_links + hand-root from the secondary tree-model.
   // The hand-only tree (root="base_adapter" ≡ tool0) yields nq == hand DoF, so

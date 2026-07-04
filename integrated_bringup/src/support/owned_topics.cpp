@@ -178,8 +178,10 @@ bool AppendArmTipSlot(ControllerTopicHandles& handles, const std::string& parent
 }
 
 void AppendHandTipSlots(ControllerTopicHandles& handles, const std::string& parent_frame,
-                        const std::vector<std::string>& tip_links, int group_idx) {
-  for (std::size_t i = 0; i < tip_links.size(); ++i) {
+                        const std::vector<std::string>& tip_links, int group_idx,
+                        std::size_t max_tips) {
+  const std::size_t n = std::min(tip_links.size(), max_tips);
+  for (std::size_t i = 0; i < n; ++i) {
     if (static_cast<std::size_t>(handles.num_tf_slots) >= kMaxControllerTransforms) {
       return;
     }

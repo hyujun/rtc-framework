@@ -268,6 +268,11 @@ class DemoTaskController final : public RTControllerInterface {
   std::array<pinocchio::SE3, kNumFingertips> T_tcp_fingertip_{};
   std::array<Eigen::Vector3d, kNumFingertips> fingertip_positions_{};
   std::array<Eigen::Matrix3d, kNumFingertips> fingertip_rotations_{};
+  // Per-tick: did HandFingertipPose produce a real pose for fingertip f this
+  // tick? False for a downstream (closed-chain loop) tip until the loop first
+  // converges, so FillPublishOutput must not publish the zero-init cache as a
+  // valid TF (#125 F1).
+  std::array<bool, kNumFingertips> fingertip_pose_valid_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for hand FK
   // #121: closed-chain-consistent hand fingertip FK. Active only for extended-URDF
   // (loop-closure) hands whose fingertips are downstream of a loop-passive joint;
