@@ -716,9 +716,9 @@ class TestTimingOutlierFilter:
         # Sloppy parsing: just ensure "340" doesn't appear in the Total Loop
         # block's numeric stats (it's only in the outlier list above).
         total_block = out.split("Total Loop:")[1].split("\n\n")[0]
-        assert (
-            "340" not in total_block
-        ), f"steady-state stats appear contaminated by outlier:\n{total_block}"
+        assert "340" not in total_block, (
+            f"steady-state stats appear contaminated by outlier:\n{total_block}"
+        )
 
     def test_empty_df_returns_no_outliers(self):
         from rtc_tools.plotting.plotters.timing import detect_outlier_indices

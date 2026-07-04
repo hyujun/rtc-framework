@@ -57,10 +57,7 @@ def has_fingertip_sensors(df):
 
 def has_ft_inference(df):
     """sensor_log has FT inference output (ft_*_contact or legacy ft_*_fx)."""
-    for c in df.columns:
-        if c.startswith("ft_") and (c.endswith("_contact") or c.endswith("_fx")):
-            return True
-    return False
+    return any(c.startswith("ft_") and c.endswith(("_contact", "_fx")) for c in df.columns)
 
 
 def has_raw_sensors(df):

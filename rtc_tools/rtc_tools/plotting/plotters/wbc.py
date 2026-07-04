@@ -296,7 +296,7 @@ def print_wbc_diag_statistics(df):
     print(f"Samples: {n}")
     if "solve_time_us" in df.columns:
         s = df["solve_time_us"]
-        print(f"Solve time (µs): mean={s.mean():.1f} p50={s.median():.1f} " f"max={s.max():.1f}")
+        print(f"Solve time (µs): mean={s.mean():.1f} p50={s.median():.1f} max={s.max():.1f}")
     if "qp_converged" in df.columns and n > 0:
         conv = df["qp_converged"].astype(float)
         print(f"QP converged: {conv.mean() * 100:.1f}% of ticks")

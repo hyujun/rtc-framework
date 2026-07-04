@@ -24,6 +24,7 @@ their own modules.
 """
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -33,24 +34,6 @@ import tkinter as tk
 from tkinter import font as tkfont, messagebox, ttk
 
 import rclpy
-
-
-def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
-    """Hamilton quaternion (w,x,y,z) → ZYX RPY (roll,pitch,yaw).
-
-    Mirrors `pinocchio::rpy::matrixToRpy` so values match what the demo
-    controllers used to publish in `GuiPosition.task_positions`.
-    """
-    roll = math.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy))
-    sinp = 2.0 * (qw * qy - qz * qx)
-    if abs(sinp) >= 1.0:
-        pitch = math.copysign(math.pi / 2.0, sinp)
-    else:
-        pitch = math.asin(sinp)
-    yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-    return roll, pitch, yaw
-
-
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
@@ -100,6 +83,22 @@ from .config import (
     target_panel_states,
 )
 from .discovery import RobotProfile, RobotShape
+
+
+def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
+    """Hamilton quaternion (w,x,y,z) → ZYX RPY (roll,pitch,yaw).
+
+    Mirrors `pinocchio::rpy::matrixToRpy` so values match what the demo
+    controllers used to publish in `GuiPosition.task_positions`.
+    """
+    roll = math.atan2(2.0 * (qw * qx + qy * qz), 1.0 - 2.0 * (qx * qx + qy * qy))
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+    yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    return roll, pitch, yaw
 
 
 class DemoControllerGUI(Node):
@@ -328,18 +327,14 @@ class DemoControllerGUI(Node):
         ):
             sub = getattr(self, sub_attr, None)
             if sub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.destroy_subscription(sub)
-                except Exception:
-                    pass
                 setattr(self, sub_attr, None)
         for pub_attr in ("robot_cmd_pub", "hand_cmd_pub"):
             pub = getattr(self, pub_attr, None)
             if pub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.destroy_publisher(pub)
-                except Exception:
-                    pass
                 setattr(self, pub_attr, None)
 
         self.robot_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{arm_group}/joint_goal", 10)
@@ -1981,7 +1976,7 @@ class DemoControllerGUI(Node):
                 """Place an array row inside the group's array_area."""
                 area = box["array_area"]
                 row = box["array_row"]
-                names = row_names_map.get(label)
+                names = row_names_map.get(label)  # noqa: B023  (closure invoked in-place this iteration)
                 name_fg = "#f9e2af" if editable else "#585b70"
                 label_fg = "#cdd6f4" if editable else "#585b70"
                 if names:
@@ -2155,10 +2150,8 @@ class DemoControllerGUI(Node):
                     val = int(raw)
                     lbl.config(text="ON" if val else "OFF", fg="#a6e3a1" if val else "#f38ba8")
                 else:
-                    try:
+                    with contextlib.suppress(ValueError):
                         lbl.config(text=f"{float(raw):.4f}", fg="#a6e3a1")
-                    except ValueError:
-                        pass
 
     # ---- Button handlers -----------------------------------------------------
 
@@ -2406,7 +2399,7 @@ class DemoControllerGUI(Node):
     def _collect_gain_values(self) -> list[float] | None:
         """Collect current gain values from UI widgets. Returns None on error."""
         values: list[float] = []
-        for widgets, is_bool in zip(self._gain_entries, self._gain_is_bool, strict=False):
+        for widgets, _is_bool in zip(self._gain_entries, self._gain_is_bool, strict=False):
             for w in widgets:
                 try:
                     values.append(float(w.get()))
@@ -2885,8 +2878,7 @@ def _parse_robot_arg(argv):
     parser.add_argument(
         "--robot",
         default="ur5e_hand",
-        help="robot profile selecting arm/hand joint schema + TCP frames "
-        "(ur5e_hand | iiwa7_leap)",
+        help="robot profile selecting arm/hand joint schema + TCP frames (ur5e_hand | iiwa7_leap)",
     )
     parser.add_argument(
         "--ur5e",

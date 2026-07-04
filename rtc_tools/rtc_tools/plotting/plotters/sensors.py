@@ -298,7 +298,7 @@ def plot_device_sensor_comparison(df, fingertip_labels, save_dir=None):
         return
 
     # 두 라벨 집합의 교집합 사용
-    common_labels = [l for l in labels if l in filtered_labels]
+    common_labels = [lbl for lbl in labels if lbl in filtered_labels]
     if not common_labels:
         print("  Skipping sensor comparison plot (no matching raw/filtered labels)")
         return
