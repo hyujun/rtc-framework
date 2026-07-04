@@ -87,7 +87,19 @@ void DemoTaskController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*con
   if (secondary.empty()) {
     return;
   }
-  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel(secondary));
+  // Guard the tree-model lookup: a malformed config (secondary device declared
+  // without a matching tree_model) would otherwise throw std::out_of_range,
+  // caught by the base class as an on_configure FAILURE. Mirror the control-
+  // model selection's fallback and graceful-degrade to no hand FK (#125 F2).
+  try {
+    hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel(secondary));
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(logger_,
+                "DemoTaskController: secondary device '%s' has no matching tree_model (%s) — "
+                "hand fingertip FK disabled",
+                secondary.c_str(), e.what());
+    return;
+  }
 
   // Set joint reorder mapping: YAML joint_state_names → Pinocchio model order
   if (auto* hand_cfg = GetDeviceNameConfig(secondary); hand_cfg) {

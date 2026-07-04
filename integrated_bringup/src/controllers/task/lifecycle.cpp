@@ -54,7 +54,9 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
         if (!secondary.empty()) {
           for (const auto& tm : sys_cfg->tree_models) {
             if (tm.name == secondary) {
-              AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1);
+              // Cap slots to the fingertip count the compute side fills (#125 F4).
+              AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/1,
+                                 /*max_tips=*/kNumFingertips);
               break;
             }
           }

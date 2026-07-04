@@ -137,10 +137,14 @@ bool AppendArmTipSlot(ControllerTopicHandles& handles, const std::string& parent
                       const std::string& child_link, int group_idx);
 
 // Append `<hand_root>` → `<tip>_actual` slot per fingertip, reading
-// group_commands[group_idx].task_link_poses[source_index]. Skips slots when
-// `tip_links` exceeds remaining capacity.
+// group_commands[group_idx].task_link_poses[source_index]. Registers at most
+// `max_tips` slots: the controllers only fill kNumFingertips fingertip poses,
+// so extra tip_links would register slots that never receive a pose and
+// silently never broadcast (#125 F4). Skips further slots when `tip_links`
+// exceeds remaining capacity.
 void AppendHandTipSlots(ControllerTopicHandles& handles, const std::string& parent_frame,
-                        const std::vector<std::string>& tip_links, int group_idx);
+                        const std::vector<std::string>& tip_links, int group_idx,
+                        std::size_t max_tips);
 
 // Append `<base>` → `virtual_tcp_actual` slot reading
 // group_commands[group_idx].virtual_tcp_pose. group_idx selects which slot
