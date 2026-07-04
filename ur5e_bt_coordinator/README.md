@@ -350,13 +350,18 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | `pick_ready` | 픽업 대기 (테이블 위 물체 집기 직전) |
 | `elevated` | 높은 위치 (물체를 들어올린 상태) |
 
-손가락-관절 인덱스 매핑 (`FingerJointIndices()` — joint-name 접두사 기반, 가변 DoF):
+손가락-관절 인덱스 매핑 (Seam C — `FingerResolver` 전략, 가변 DoF):
 
-finger→joint index 는 상수가 아니라 `/rtc_cm/hand/joint_states` 의 name 을
-`<key>_` 로 접두사 매칭해 런타임에 구성한다 (`BtRosBridge::GetFingerJointIndices(key)`).
-손가락별 DoF 가 달라도 (예: proto_1b thumb:4/index:3/middle:2/ring:1) joint 이름만
-맞으면 코드 변경 없이 동작한다. key 는 whole-finger(`thumb`) 또는 sub-group
-(`thumb_mcp`, `index_dip`) 모두 지원 — sub-group 은 `<finger>_<segment>_` 접두사로 매칭.
+finger→joint index 는 상수가 아니라 `BtRosBridge::GetFingerJointIndices(key)` 가
+런타임에 구성하며, 전략은 두 가지다 ([finger_resolver.hpp](include/ur5e_bt_coordinator/finger_resolver.hpp)):
+
+- **`PrefixFingerResolver`** (기본) — `/rtc_cm/<hand_group>/joint_states` 의 name 을
+  `<key>_` 로 접두사 매칭. 손가락별 DoF 가 달라도 (예: proto_1b thumb:4/index:3/middle:2/ring:1)
+  joint 이름만 맞으면 코드 변경 없이 동작한다. key 는 whole-finger(`thumb`) 또는 sub-group
+  (`thumb_mcp`, `index_dip`) 모두 지원 — sub-group 은 `<finger>_<segment>_` 접두사로 매칭.
+- **`ExplicitFingerResolver`** — joint 이름에 finger prefix 가 없는 hand (예: LEAP 숫자 이름
+  `"0".."15"`) 용. `config` 에 `finger_map.<finger>: [idx...]` 를 하나라도 선언하면 자동 전환되며,
+  map 이 authoritative 다 (sub-group 도 명시 필요). 선언 방법은 `config/bt_coordinator.yaml` 참조.
 
 assm_v1 hand (joint_states 순서 thumb:3/index:3/middle:3/ring:1) 예시:
 

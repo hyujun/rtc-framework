@@ -72,6 +72,9 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
   bridge_->LoadPoseOverrides(
       std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
 
+  bridge_->LoadFingerMap(
+      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+
   RegisterBtNodes();
   LoadTree();
   InitializeBlackboard();

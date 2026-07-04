@@ -15,6 +15,16 @@ bt_coordinator:
     arm_dof: 6                       # arm joint width (pose length; default 6)
     hand_dof: 10                     # hand joint width (pose length; default 10 — assm/p1b)
 
+    # Finger→joint 매핑 전략 (Seam C). 기본은 joint 이름 prefix 매칭
+    # (PrefixFingerResolver) — ur5e assm_v1/proto_1b 처럼 joint 이름에 finger
+    # prefix 가 있으면 설정 불필요. joint 이름에 prefix 가 없는 hand (예: LEAP
+    # 숫자 이름) 는 아래처럼 finger_map.<finger> 를 선언하면 ExplicitFingerResolver
+    # 로 자동 전환된다:
+    # finger_map.thumb:  [12, 13, 14, 15]
+    # finger_map.index:  [0, 1, 2, 3]
+    # finger_map.middle: [4, 5, 6, 7]
+    # finger_map.ring:   [8, 9, 10, 11]
+
     tick_rate_hz: 80.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
     repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]

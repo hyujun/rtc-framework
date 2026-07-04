@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ur5e_bt_coordinator/bt_types.hpp"
+#include "ur5e_bt_coordinator/finger_resolver.hpp"
 #include "ur5e_bt_coordinator/hand_pose_config.hpp"
 #include "ur5e_bt_coordinator/robot_profile.hpp"
 #include <rtc_msgs/msg/grasp_state.hpp>
@@ -187,6 +188,12 @@ class BtRosBridge {
   /// [double array]
   void LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
 
+  /// Select the finger-index strategy (Seam C). If any `finger_map.<finger>`
+  /// integer-array parameters are present, switch to an ExplicitFingerResolver
+  /// built from them; otherwise keep the default PrefixFingerResolver. Call
+  /// once in on_configure, before ticking.
+  void LoadFingerMap(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
+
   /// Lookup a hand pose by name. Falls back to compile-time defaults.
   const HandPose& GetHandPose(const std::string& name) const;
 
@@ -314,6 +321,12 @@ class BtRosBridge {
   // ── Pose library ──────────────────────────────────────────────────────────
   std::map<std::string, HandPose> hand_poses_;
   std::map<std::string, ArmPose> arm_poses_;
+
+  // ── Finger-index strategy (Seam C) ────────────────────────────────────────
+  // Defaults to PrefixFingerResolver; swapped to ExplicitFingerResolver by
+  // LoadFingerMap() during on_configure when finger_map.* params exist. Set
+  // before activation, so GetFingerJointIndices reads it without extra locking.
+  std::unique_ptr<FingerResolver> finger_resolver_;
 };
 
 }  // namespace rtc_bt

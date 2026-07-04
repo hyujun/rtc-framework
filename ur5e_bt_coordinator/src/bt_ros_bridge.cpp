@@ -33,6 +33,10 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
     hand_poses_ = kHandPoses;
   }
 
+  // Default finger-index strategy (Seam C). LoadFingerMap() may swap this to an
+  // ExplicitFingerResolver during on_configure when finger_map.* params exist.
+  finger_resolver_ = std::make_unique<PrefixFingerResolver>();
+
   // Pre-rewire health labels for controller-owned topics: relative form
   // (ns="") until the first controller activates and RewireControllerTopics
   // rebinds them to the live namespaced path.
@@ -210,7 +214,7 @@ std::vector<double> BtRosBridge::GetHandJointPositions() const {
 
 std::vector<int> BtRosBridge::GetFingerJointIndices(const std::string& key) const {
   std::lock_guard lock(state_mutex_);
-  return FingerJointIndices(hand_joint_names_, key);
+  return finger_resolver_->Resolve(hand_joint_names_, key);
 }
 
 CachedGraspState BtRosBridge::GetGraspState() const {
@@ -444,6 +448,38 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
   if (arm_poses_.empty()) {
     throw std::runtime_error(
         "no arm poses loaded: non-default arm_group requires arm_pose.* in a poses YAML");
+  }
+}
+
+void BtRosBridge::LoadFingerMap(rclcpp_lifecycle::LifecycleNode::SharedPtr node) {
+  // Discover finger_map.<finger> integer-array parameters. Their presence is
+  // the signal to switch from prefix-matching to an explicit finger→index map
+  // (needed for hands whose joint names carry no finger prefix, e.g. LEAP).
+  auto result = node->list_parameters({"finger_map"}, 1);
+  std::map<std::string, std::vector<int>> finger_map;
+  const std::string prefix = "finger_map.";
+  for (const auto& param_name : result.names) {
+    if (param_name.size() <= prefix.size())
+      continue;
+    std::string finger = param_name.substr(prefix.size());
+    try {
+      auto vals = node->get_parameter(param_name).as_integer_array();
+      std::vector<int> indices;
+      indices.reserve(vals.size());
+      for (auto v : vals) {
+        indices.push_back(static_cast<int>(v));
+      }
+      finger_map[finger] = std::move(indices);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(poses_log(), "failed to load finger_map.%s: %s", finger.c_str(), e.what());
+    }
+  }
+
+  if (!finger_map.empty()) {
+    RCLCPP_INFO(poses_log(), "finger resolver: explicit (%zu finger maps)", finger_map.size());
+    finger_resolver_ = std::make_unique<ExplicitFingerResolver>(std::move(finger_map));
+  } else {
+    RCLCPP_INFO(poses_log(), "finger resolver: prefix (joint-name matching)");
   }
 }
 
