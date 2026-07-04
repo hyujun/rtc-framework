@@ -46,19 +46,30 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     mpc_timing_cb_group_ =
         node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
-    // ── kRobotTransforms: register frame slots (Phase 3) ──────────────────
-    // DemoWbc broadcasts arm tip + alpha placeholder for now. The
-    // integrated `tree_models.wbc` (root=base, tip_links=4 fingertips)
-    // includes the fingertip frames but WBC compute does not yet do
-    // per-fingertip FK on the publish side; adding that is deferred to a
-    // follow-up so this phase lands the cutover plumbing without touching
-    // the TSID/MPC fast path. The placeholder slot reserves a future
-    // alpha frame (D-5) — slot_valid=false, publish path skips it.
+    // ── kRobotTransforms: register frame slots ─────────────────────────────
+    // DemoWbc broadcasts arm tip + 4 fingertip frames + an alpha placeholder.
+    // (#123 Phase 2) The fingertip poses are produced by ComputeHandFingertipFk
+    // on the publish side — loop-consistent (extended hands, DIP-responsive) or
+    // serial tree-model FK — and fed via task_link_poses (kHandTip). This is the
+    // observation surface only; the TSID/MPC control model is untouched. The
+    // placeholder slot reserves a future alpha frame (D-5) — slot_valid=false,
+    // publish path skips it.
     if (owned_topics_.tf_pub) {
       const auto* sys_cfg = GetSystemModelConfig();
       if (sys_cfg && !sys_cfg->sub_models.empty()) {
         const auto& submodel = sys_cfg->sub_models.front();
         AppendArmTipSlot(owned_topics_, submodel.root_link, submodel.tip_link, /*group_idx=*/0);
+      }
+      if (sys_cfg) {
+        const auto secondary = GetSecondaryDeviceName();
+        if (!secondary.empty()) {
+          for (const auto& tm : sys_cfg->tree_models) {
+            if (tm.name == secondary) {
+              AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/0);
+              break;
+            }
+          }
+        }
       }
       AppendCustomPlaceholderSlot(owned_topics_, "base", "wbc_alpha_actual");
     }

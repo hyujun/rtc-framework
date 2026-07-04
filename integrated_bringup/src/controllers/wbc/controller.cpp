@@ -113,6 +113,106 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
 
   RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, control nq=%d nv=%d", arm_handle_->nv(),
               full_model_ptr_->nq, full_model_ptr_->nv);
+
+  // #123 Phase 2: serial hand tree-model + fingertip/hand-root frame ids for
+  // the loop-consistent fingertip FK publish surface (SetJointOrder + closed-
+  // chain wiring run in OnDeviceConfigsSet once device configs are available).
+  InitHandModel(config);
+}
+
+// ── #123 Phase 2: hand fingertip FK — serial tree-model + frame resolution ───
+void DemoWbcController::InitHandModel(const rtc_urdf_bridge::ModelConfig& config) {
+  namespace rub = rtc_urdf_bridge;
+  // Secondary device name == tree_model name (robot-agnostic: e.g. "p1b" for
+  // ur5e_p1b). Single-device controllers leave this empty → no hand FK.
+  const auto secondary = GetSecondaryDeviceName();
+  if (secondary.empty()) {
+    return;
+  }
+  hand_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetTreeModel(secondary));
+
+  // Resolve fingertip tip_links + hand-root from the secondary tree-model.
+  // The hand-only tree (root="base_adapter" ≡ tool0) yields nq == hand DoF, so
+  // the serial FK path fills hand_q_ from the hand device 1:1.
+  for (const auto& tm : config.tree_models) {
+    if (tm.name != secondary) {
+      continue;
+    }
+    if (!tm.root_link.empty()) {
+      hand_root_frame_id_ = hand_handle_->GetFrameId(tm.root_link);
+      if (hand_root_frame_id_ != 0) {
+        use_hand_root_frame_ = true;
+      }
+    }
+    for (std::size_t i = 0; i < std::min(tm.tip_links.size(), kNumFingertips); ++i) {
+      fingertip_frame_ids_[i] = hand_handle_->GetFrameId(tm.tip_links[i]);
+      // Runtime check A: confirm the reduced tree retains the tip link frame
+      // after loop-passive branches are locked (0 = universe = not found).
+      if (fingertip_frame_ids_[i] == 0) {
+        RCLCPP_WARN(logger_, "[wbc] fingertip tip_link '%s' unresolved in tree '%s' — skipped",
+                    tm.tip_links[i].c_str(), secondary.c_str());
+      }
+    }
+    break;
+  }
+
+  hand_q_ = Eigen::VectorXd::Zero(hand_handle_->nq());
+  for (auto& p : fingertip_positions_) {
+    p = Eigen::Vector3d::Zero();
+  }
+  for (auto& r : fingertip_rotations_) {
+    r = Eigen::Matrix3d::Identity();
+  }
+}
+
+// ── #123 Phase 2: closed-chain-consistent hand FK wiring (non-RT) ─────────────
+// Mirrors DemoTaskController::ConfigureClosedChainHandFk. Wires closed_hand_fk_
+// over the full spanning-tree model when the hand has loop closure and a
+// fingertip is downstream of a loop-passive joint; else leaves it inactive and
+// the serial hand_handle_ path runs byte-for-byte. Called from OnDeviceConfigsSet
+// (needs device joint_state_names for the q_a bridge). Publish-surface only —
+// does not touch the TSID/actuated control model.
+void DemoWbcController::ConfigureClosedChainHandFk() {
+  if (!builder_) {
+    return;
+  }
+  const auto primary = GetPrimaryDeviceName();
+  const auto secondary = GetSecondaryDeviceName();
+
+  // device_joint_names index order must match ExtractFullState's dev0/dev1:
+  // primary=0, secondary=1. The closed handle's independent joints may span both.
+  std::vector<std::vector<std::string>> dev_names;
+  if (const auto* c = GetDeviceNameConfig(primary)) {
+    dev_names.push_back(c->joint_state_names);
+  } else {
+    dev_names.emplace_back();
+  }
+  if (!secondary.empty()) {
+    if (const auto* c = GetDeviceNameConfig(secondary)) {
+      dev_names.push_back(c->joint_state_names);
+    } else {
+      dev_names.emplace_back();
+    }
+  }
+
+  // fingertip links + hand-root frame from the secondary tree-model definition.
+  std::vector<std::string> tips;
+  std::string hand_root;
+  if (const auto* sys = GetSystemModelConfig()) {
+    for (const auto& tm : sys->tree_models) {
+      if (tm.name == secondary) {
+        tips = tm.tip_links;
+        hand_root = tm.root_link;
+        break;
+      }
+    }
+  }
+
+  const auto res =
+      closed_hand_fk_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
+                                builder_->GetClosureActuatedJointIds(),
+                                builder_->GetClosureReferenceConfig(), dev_names, tips, hand_root);
+  LogHandFkWiring(logger_, "[wbc]", res, closed_hand_fk_.missing_joint());
 }
 
 void DemoWbcController::BuildJointReorderMap() {
@@ -1202,6 +1302,26 @@ void DemoWbcController::OnDeviceConfigsSet() {
               "has_native_displacement=%d (secondary='%s')",
               static_cast<int>(has_native_contact_), static_cast<int>(has_native_displacement_),
               secondary_name.c_str());
+
+  // #123 Phase 2: wire the closed-chain-consistent hand FK (publish-surface only).
+  ConfigureClosedChainHandFk();
+
+  // Serial hand joint reorder (device joint_state_names → Pinocchio order) is
+  // only consulted when the closed path is inactive — RunHandForwardKinematics
+  // routes an active closure straight to closed_hand_fk_ without touching
+  // hand_handle_'s serial FK. So skip (and its warning) when closure is active:
+  // for a loop-closed hand the reduced serial tree deliberately omits the
+  // loop-locked DoFs, so the device names wouldn't all map anyway.
+  if (hand_handle_ && !secondary_name.empty() && !closed_hand_fk_.active()) {
+    if (const auto* hand_cfg = GetDeviceNameConfig(secondary_name)) {
+      if (!hand_handle_->SetJointOrder(hand_cfg->joint_state_names)) {
+        RCLCPP_WARN(logger_,
+                    "[wbc] secondary device '%s' SetJointOrder failed — joint_state_names "
+                    "not all in hand tree model",
+                    secondary_name.c_str());
+      }
+    }
+  }
 }
 
 DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesting(
