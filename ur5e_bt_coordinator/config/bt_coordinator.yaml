@@ -6,6 +6,13 @@ bt_coordinator:
     # ══════════════════════════════════════════════════════════════════════════
 
     tree_file: "pick_and_place_force_pi.xml"   # trees/ 디렉토리 내 XML 파일명 (절대 경로도 지원)
+
+    # ── Robot profile (Seam A) ───────────────────────────────────────────────
+    # 토픽 네임스페이스에 박히는 device group. default(ur5e/hand)는 기존 문자열과
+    # 동일. 예: hand_group: p1b → /rtc_cm/p1b/joint_states, <ctrl>/p1b/joint_goal.
+    arm_group: "ur5e"                # arm device group (/rtc_cm/<arm_group>/joint_states)
+    hand_group: "hand"               # hand device group (/rtc_cm/<hand_group>/joint_states)
+
     tick_rate_hz: 80.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
     repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]

@@ -116,6 +116,7 @@ if(BUILD_TESTING)
   set(TIER1_TESTS
     test_bt_types
     test_bt_utils
+    test_topic_naming
     test_compute_offset_pose
     test_set_pose_z
     test_compute_sweep_trajectory

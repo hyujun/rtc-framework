@@ -2,6 +2,7 @@
 
 #include "ur5e_bt_coordinator/bt_types.hpp"
 #include "ur5e_bt_coordinator/hand_pose_config.hpp"
+#include "ur5e_bt_coordinator/topic_namer.hpp"
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
@@ -51,7 +52,10 @@ struct TopicHealth {
 ///   - Topic health watchdog
 class BtRosBridge {
  public:
-  explicit BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
+  /// `topics` selects the arm/hand device groups woven into every topic path.
+  /// The default {ur5e, hand} reproduces the legacy hardcoded strings.
+  explicit BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                       TopicNamer topics = TopicNamer{});
 
   // ── Cached state (thread-safe reads) ──────────────────────────────────────
 
@@ -201,6 +205,10 @@ class BtRosBridge {
  private:
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
 
+  // Robot-agnostic topic-name factory (arm/hand device groups). Immutable
+  // after construction, so read without a lock.
+  TopicNamer topic_namer_;
+
   // ── Controller-owned topic rewiring (Phase 4) ─────────────────────────────
   // Rebuild grasp_state/wbc_state/tof/arm_target/hand_target sub/pub against
   // the /<ctrl_name>/... namespace. No-op when ctrl_name is empty or
@@ -280,6 +288,11 @@ class BtRosBridge {
   bool grasp_state_received_{false};
   TimePoint wbc_state_last_{};
   bool wbc_state_received_{false};
+  // Live topic paths for the controller-owned health entries, updated in
+  // RewireControllerTopics so the watchdog label matches the real subscribed
+  // topic (namespaced by the active controller). Guarded by health_mutex_.
+  std::string grasp_state_topic_;
+  std::string wbc_state_topic_;
   TimePoint world_target_last_{};
   bool world_target_received_{false};
   TimePoint estop_last_{};

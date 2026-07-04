@@ -16,10 +16,17 @@ auto poses_log() {
 }
 }  // namespace
 
-BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node_(std::move(node)) {
+BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, TopicNamer topics)
+    : node_(std::move(node)), topic_namer_(std::move(topics)) {
   // Initialize pose maps from compile-time defaults
   hand_poses_ = kHandPoses;
   arm_poses_ = kUR5ePoses;
+
+  // Pre-rewire health labels for controller-owned topics: relative form
+  // (ns="") until the first controller activates and RewireControllerTopics
+  // rebinds them to the live namespaced path.
+  grasp_state_topic_ = topic_namer_.GraspState("");
+  wbc_state_topic_ = topic_namer_.WbcState("");
 
   // ── Subscribers (all RELIABLE QoS) ──────────────────────────────────────
   //
@@ -37,7 +44,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node
 
   // Per-group joint states (CM publishes always — independent of active ctrl).
   arm_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      "/rtc_cm/ur5e/joint_states", rclcpp::QoS{10},
+      topic_namer_.ArmJointStates(), rclcpp::QoS{10},
       [this](sensor_msgs::msg::JointState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
@@ -50,7 +57,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node
         }
       });
   hand_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      "/rtc_cm/hand/joint_states", rclcpp::QoS{10},
+      topic_namer_.HandJointStates(), rclcpp::QoS{10},
       [this](sensor_msgs::msg::JointState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
@@ -451,10 +458,10 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const {
   };
 
   return {
-      make_health("/rtc_cm/ur5e/joint_states", arm_gui_received_, arm_gui_last_),
-      make_health("/rtc_cm/hand/joint_states", hand_gui_received_, hand_gui_last_),
-      make_health("/hand/grasp_state", grasp_state_received_, grasp_state_last_),
-      make_health("/hand/wbc_state", wbc_state_received_, wbc_state_last_),
+      make_health(topic_namer_.ArmJointStates(), arm_gui_received_, arm_gui_last_),
+      make_health(topic_namer_.HandJointStates(), hand_gui_received_, hand_gui_last_),
+      make_health(grasp_state_topic_, grasp_state_received_, grasp_state_last_),
+      make_health(wbc_state_topic_, wbc_state_received_, wbc_state_last_),
       make_health("/world_target_info", world_target_received_, world_target_last_),
       make_health("/system/estop_status", estop_received_, estop_last_),
   };
@@ -489,6 +496,14 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
 
   const std::string ns = "/" + ctrl_name;
 
+  // Rebind the controller-owned health labels to the live namespaced paths so
+  // the watchdog reports the topic actually subscribed below.
+  {
+    std::lock_guard lock(health_mutex_);
+    grasp_state_topic_ = topic_namer_.GraspState(ns);
+    wbc_state_topic_ = topic_namer_.WbcState(ns);
+  }
+
   // Drop previous sub/pub handles before recreating to avoid two live
   // subscribers holding references to the same state maps.
   // Phase 4: arm/hand joint state는 controller-agnostic /rtc_cm/<group>/
@@ -502,7 +517,8 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   hand_target_pub_.reset();
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
-      ns + "/hand/grasp_state", rclcpp::QoS{10}, [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
+      topic_namer_.GraspState(ns), rclcpp::QoS{10},
+      [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           const auto n = msg->force_magnitude.size();
@@ -554,7 +570,7 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   // publishes one of them, the other stays empty/stale. Caller picks via
   // GetGraspState() vs GetWbcState() based on the active controller.
   wbc_state_sub_ = node_->create_subscription<rtc_msgs::msg::WbcState>(
-      ns + "/hand/wbc_state", rclcpp::QoS{10}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
+      topic_namer_.WbcState(ns), rclcpp::QoS{10}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           const auto n = msg->force_magnitude.size();
@@ -585,10 +601,10 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
         }
       });
 
-  arm_target_pub_ =
-      node_->create_publisher<rtc_msgs::msg::RobotTarget>(ns + "/ur5e/joint_goal", rclcpp::QoS{10});
-  hand_target_pub_ =
-      node_->create_publisher<rtc_msgs::msg::RobotTarget>(ns + "/hand/joint_goal", rclcpp::QoS{10});
+  arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
+      topic_namer_.ArmJointGoal(ns), rclcpp::QoS{10});
+  hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
+      topic_namer_.HandJointGoal(ns), rclcpp::QoS{10});
 
   // Phase C: bind parameter + grasp_command clients to the active controller.
   //   Param services live on the LifecycleNode FQN /<ctrl>/<ctrl>; relative

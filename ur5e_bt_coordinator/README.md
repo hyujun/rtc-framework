@@ -51,12 +51,12 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 ### 발행 (Publish)
 
-Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다.
+Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다. 아래 표의 `ur5e`/`hand` 세그먼트는 `arm_group`/`hand_group` 파라미터 값 (default `ur5e`/`hand`) — robot-agnostic (Seam A).
 
 | Topic | 메시지 타입 | 설명 |
 |-------|------------|------|
-| `<ns>/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
-| `<ns>/hand/joint_goal` | `rtc_msgs/RobotTarget` | Hand 10-DoF 모터 목표 (controller-owned) |
+| `<ns>/<arm_group>/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
+| `<ns>/<hand_group>/joint_goal` | `rtc_msgs/RobotTarget` | Hand 모터 목표 (controller-owned) |
 
 게인 변경은 토픽이 아닌 active controller LifecycleNode의 ROS 2 parameter (`SetGains` BT node가 `set_parameters_atomically`로 호출). 컨트롤러 전환은 `/rtc_cm/switch_controller` srv (`SwitchController` BT node).
 
@@ -66,8 +66,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 |-------|------------|-----|------|
 | `<ns>/ur5e/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | TCP 포즈 + 관절 위치 (controller-owned) |
 | `<ns>/hand/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | Hand 관절 위치 (controller-owned) |
-| `<ns>/hand/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
-| `<ns>/hand/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
+| `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
+| `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
 | `/vision/object_pose` | `geometry_msgs/PoseStamped` | RELIABLE, depth 10 | 물체 위치 (쿼터니언 → RPY 변환) |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
@@ -130,6 +130,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
 | `tree_file` | `"hand_motions.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
+| `arm_group` | `"ur5e"` | Arm device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<arm_group>/joint_states`, `<ns>/<arm_group>/joint_goal`) |
+| `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b` |
 | `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |

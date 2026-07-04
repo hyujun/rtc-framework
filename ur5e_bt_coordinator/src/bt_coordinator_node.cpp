@@ -66,7 +66,8 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
     const rclcpp_lifecycle::State& /*state*/) {
   // shared_from_this() is safe here — node is managed via shared_ptr.
   bridge_ = std::make_shared<BtRosBridge>(
-      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()),
+      TopicNamer{arm_group_, hand_group_});
 
   bridge_->LoadPoseOverrides(
       std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
@@ -216,6 +217,9 @@ void BtCoordinatorNode::DeclareParameters() {
   };
 
   tree_file_ = safe_declare("tree_file", std::string("pick_and_place.xml"));
+  // Robot profile (Seam A): arm/hand device groups → topic namespaces.
+  arm_group_ = safe_declare("arm_group", std::string("ur5e"));
+  hand_group_ = safe_declare("hand_group", std::string("hand"));
   tick_rate_hz_ = safe_declare("tick_rate_hz", 20.0);
   repeat_ = safe_declare("repeat", false);
   repeat_delay_s_ = safe_declare("repeat_delay_s", 1.0);
