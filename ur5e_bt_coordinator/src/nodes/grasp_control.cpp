@@ -56,11 +56,12 @@ BT::NodeStatus GraspControl::onStart() {
   }
 
   // "close" or "pinch": start from current hand position
+  const int hand_dof = bridge_->HandDof();
   hand_target_ = bridge_->GetHandJointPositions();
-  if (hand_target_.size() < static_cast<std::size_t>(kHandDof)) {
+  if (hand_target_.size() < static_cast<std::size_t>(hand_dof)) {
     RCLCPP_DEBUG(logger(), "hand state undersized (%zu), padding to %d", hand_target_.size(),
-                 kHandDof);
-    hand_target_.resize(kHandDof, 0.0);
+                 hand_dof);
+    hand_target_.resize(static_cast<std::size_t>(hand_dof), 0.0);
   }
 
   return BT::NodeStatus::RUNNING;

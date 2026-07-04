@@ -16,11 +16,22 @@ auto poses_log() {
 }
 }  // namespace
 
-BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, TopicNamer topics)
-    : node_(std::move(node)), topic_namer_(std::move(topics)) {
-  // Initialize pose maps from compile-time defaults
-  hand_poses_ = kHandPoses;
-  arm_poses_ = kUR5ePoses;
+BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotProfile profile)
+    : node_(std::move(node)),
+      topic_namer_(std::move(profile.topics)),
+      arm_dof_(profile.arm_dof),
+      hand_dof_(profile.hand_dof) {
+  // Seed compile-time default poses only for the default variant. A non-default
+  // group (e.g. hand_group=p1b) carries robot-specific joint semantics, so it
+  // must supply its own poses via YAML (hand_pose.* / arm_pose.*); LoadPose
+  // Overrides errors out if none are provided (open-question 2a).
+  static const TopicNamer kDefaultTopics{};
+  if (topic_namer_.arm_group == kDefaultTopics.arm_group) {
+    arm_poses_ = kUR5ePoses;
+  }
+  if (topic_namer_.hand_group == kDefaultTopics.hand_group) {
+    hand_poses_ = kHandPoses;
+  }
 
   // Pre-rewire health labels for controller-owned topics: relative form
   // (ns="") until the first controller activates and RewireControllerTopics
@@ -377,13 +388,13 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
 
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
-      if (vals.size() != static_cast<std::size_t>(kHandDofCount)) {
+      if (vals.size() != static_cast<std::size_t>(hand_dof_)) {
         RCLCPP_WARN(poses_log(), "hand_pose.%s has %zu values (expected %d), skipped",
-                    pose_name.c_str(), vals.size(), kHandDofCount);
+                    pose_name.c_str(), vals.size(), hand_dof_);
         continue;
       }
-      HandPose pose{};
-      for (int i = 0; i < kHandDofCount; ++i) {
+      HandPose pose(static_cast<std::size_t>(hand_dof_), 0.0);
+      for (int i = 0; i < hand_dof_; ++i) {
         pose[i] = vals[i] * kDeg2Rad;
       }
       hand_poses_[pose_name] = pose;
@@ -404,13 +415,13 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
 
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
-      if (vals.size() != static_cast<std::size_t>(kArmDofCount)) {
+      if (vals.size() != static_cast<std::size_t>(arm_dof_)) {
         RCLCPP_WARN(poses_log(), "arm_pose.%s has %zu values (expected %d), skipped",
-                    pose_name.c_str(), vals.size(), kArmDofCount);
+                    pose_name.c_str(), vals.size(), arm_dof_);
         continue;
       }
-      ArmPose pose{};
-      for (int i = 0; i < kArmDofCount; ++i) {
+      ArmPose pose(static_cast<std::size_t>(arm_dof_), 0.0);
+      for (int i = 0; i < arm_dof_; ++i) {
         pose[i] = vals[i] * kDeg2Rad;
       }
       arm_poses_[pose_name] = pose;
@@ -422,6 +433,18 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
 
   RCLCPP_INFO(poses_log(), "loaded %d hand poses, %d arm poses (total: %zu hand, %zu arm)",
               hand_count, arm_count, hand_poses_.size(), arm_poses_.size());
+
+  // Non-default variants seed no compile-time defaults (see constructor), so an
+  // empty map means the operator forgot the poses YAML — fail fast rather than
+  // let every pose lookup throw an opaque "unknown pose" at tick time.
+  if (hand_poses_.empty()) {
+    throw std::runtime_error(
+        "no hand poses loaded: non-default hand_group requires hand_pose.* in a poses YAML");
+  }
+  if (arm_poses_.empty()) {
+    throw std::runtime_error(
+        "no arm poses loaded: non-default arm_group requires arm_pose.* in a poses YAML");
+  }
 }
 
 const HandPose& BtRosBridge::GetHandPose(const std::string& name) const {

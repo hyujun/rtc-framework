@@ -132,6 +132,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `tree_file` | `"hand_motions.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
 | `arm_group` | `"ur5e"` | Arm device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<arm_group>/joint_states`, `<ns>/<arm_group>/joint_goal`) |
 | `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b` |
+| `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT |
+| `hand_dof` | `10` | Hand 관절 폭 (hand pose 길이 검증 + 패딩). assm_v1·proto_1b 모두 10 |
 | `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
@@ -303,13 +305,14 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 
 #### 컴파일타임 포즈 (`hand_pose_config.hpp`)
 
-포즈 값은 **도(°) 단위**로 작성하고, `DegToRad()` 래퍼로 컴파일 타임에 자동 rad 변환된다:
+포즈 값은 **도(°) 단위**로 작성하고, `DegToRad()` 래퍼로 rad 변환된다. `HandPose`/`ArmPose` 는
+`std::vector<double>` (DoF 폭 런타임화, Seam B) 이므로 초기화 리스트 길이가 곧 DoF 다:
 
 ```cpp
 {"my_pose", DegToRad(HandPose{30.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0})},
 ```
 
-`kHandPoses` 맵에 정의된 명명 포즈 (10-DoF):
+`kHandPoses` 맵에 정의된 명명 포즈 (기본 hand, 10-DoF):
 
 | 포즈 이름 | 용도 |
 |-----------|------|

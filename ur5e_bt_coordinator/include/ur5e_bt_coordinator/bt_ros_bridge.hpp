@@ -2,7 +2,7 @@
 
 #include "ur5e_bt_coordinator/bt_types.hpp"
 #include "ur5e_bt_coordinator/hand_pose_config.hpp"
-#include "ur5e_bt_coordinator/topic_namer.hpp"
+#include "ur5e_bt_coordinator/robot_profile.hpp"
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
@@ -52,10 +52,15 @@ struct TopicHealth {
 ///   - Topic health watchdog
 class BtRosBridge {
  public:
-  /// `topics` selects the arm/hand device groups woven into every topic path.
-  /// The default {ur5e, hand} reproduces the legacy hardcoded strings.
+  /// `profile` selects the arm/hand device groups (topic paths) and joint
+  /// widths. The default {ur5e/hand, 6/10-DoF} reproduces the legacy behavior.
   explicit BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node,
-                       TopicNamer topics = TopicNamer{});
+                       RobotProfile profile = RobotProfile{});
+
+  /// Runtime joint widths from the active RobotProfile (default 6 / 10).
+  int ArmDof() const { return arm_dof_; }
+
+  int HandDof() const { return hand_dof_; }
 
   // ── Cached state (thread-safe reads) ──────────────────────────────────────
 
@@ -205,9 +210,11 @@ class BtRosBridge {
  private:
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
 
-  // Robot-agnostic topic-name factory (arm/hand device groups). Immutable
-  // after construction, so read without a lock.
+  // Robot-agnostic topic-name factory + joint widths (from RobotProfile).
+  // Immutable after construction, so read without a lock.
   TopicNamer topic_namer_;
+  int arm_dof_{kDefaultArmDof};
+  int hand_dof_{kDefaultHandDof};
 
   // ── Controller-owned topic rewiring (Phase 4) ─────────────────────────────
   // Rebuild grasp_state/wbc_state/tof/arm_target/hand_target sub/pub against

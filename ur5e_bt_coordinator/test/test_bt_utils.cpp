@@ -82,7 +82,7 @@ TEST(LookupOrThrow, NotFoundThrows) {
 
 TEST(TrajectoryDuration, IndexedZeroDistance) {
   std::vector<double> current(10, 0.5);
-  HandPose target{};
+  HandPose target(kDefaultHandDof, 0.0);
   for (auto& v : target)
     v = 0.5;
   std::vector<int> indices = {0, 1, 2};
@@ -94,7 +94,7 @@ TEST(TrajectoryDuration, IndexedZeroDistance) {
 
 TEST(TrajectoryDuration, IndexedKnownDistance) {
   std::vector<double> current(10, 0.0);
-  HandPose target{};
+  HandPose target(kDefaultHandDof, 0.0);
   target[0] = 1.0;  // 1 radian distance at index 0
   std::vector<int> indices = {0};
 
@@ -107,7 +107,7 @@ TEST(TrajectoryDuration, IndexedKnownDistance) {
 
 TEST(TrajectoryDuration, IndexedMaxVelDominates) {
   std::vector<double> current(10, 0.0);
-  HandPose target{};
+  HandPose target(kDefaultHandDof, 0.0);
   target[3] = 2.0;  // 2 radian distance
   std::vector<int> indices = {3};
 
@@ -197,7 +197,7 @@ TEST(HandPoseConfig, DefaultPosesExist) {
 
 TEST(HandPoseConfig, HomePoseIsZero) {
   const auto& home = kHandPoses.at("home");
-  for (int i = 0; i < kHandDofCount; ++i) {
+  for (std::size_t i = 0; i < home.size(); ++i) {
     EXPECT_DOUBLE_EQ(home[i], 0.0) << "home[" << i << "] != 0";
   }
 }

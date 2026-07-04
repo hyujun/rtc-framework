@@ -58,8 +58,8 @@ BT::NodeStatus MoveOpposition::onStart() {
 
   // 현재 위치 읽기
   auto current = bridge_->GetHandJointPositions();
-  if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
-    current.resize(kHandDofCount, 0.0);
+  if (current.size() < static_cast<std::size_t>(bridge_->HandDof())) {
+    current.resize(static_cast<std::size_t>(bridge_->HandDof()), 0.0);
   }
 
   // opposition 목표 전송 (비-target 손가락은 home으로 리셋)

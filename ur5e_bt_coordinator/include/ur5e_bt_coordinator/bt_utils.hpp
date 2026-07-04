@@ -78,12 +78,13 @@ std::vector<T> ParseCsvList(const std::string& str) {
 /// previously commanded targets instead of freezing at the current position.
 inline void ApplyPartialHandTarget(BtRosBridge& bridge, const HandPose& target_pose,
                                    const std::vector<int>& joint_indices) {
+  const auto hand_dof = static_cast<std::size_t>(bridge.HandDof());
   auto base = bridge.GetLastHandTarget();
-  if (base.size() < static_cast<std::size_t>(kHandDofCount)) {
+  if (base.size() < hand_dof) {
     // First publish in this session — fall back to current position
     base = bridge.GetHandJointPositions();
-    if (base.size() < static_cast<std::size_t>(kHandDofCount)) {
-      base.resize(kHandDofCount, 0.0);
+    if (base.size() < hand_dof) {
+      base.resize(hand_dof, 0.0);
     }
   }
   for (int idx : joint_indices) {
@@ -101,7 +102,7 @@ inline void ApplyPartialHandTarget(BtRosBridge& bridge, const HandPose& target_p
 /// Quintic rest-to-rest peak velocity = (15/8) * max_dist / T 이므로
 /// T >= 1.875 * max_dist / max_vel 조건으로 velocity limit 보장.
 inline double EstimateHandTrajectoryDuration(const std::vector<double>& current,
-                                             const std::array<double, kHandDofCount>& target,
+                                             const std::vector<double>& target,
                                              const std::vector<int>& indices, double speed,
                                              double max_vel, double margin = 1.1) {
   double max_dist = 0.0;

@@ -1,7 +1,6 @@
 // file: include/ur5e_bt_coordinator/hand_pose_config.hpp
 #pragma once
 
-#include <array>
 #include <map>
 #include <string>
 #include <vector>
@@ -9,17 +8,16 @@
 namespace rtc_bt {
 
 // ── 상수 ────────────────────────────────────────────────────────────────────
-inline constexpr int kHandDofCount = 10;
-inline constexpr int kArmDofCount = 6;
+// DoF 폭은 더 이상 컴파일타임 상수가 아니다 — RobotProfile 의 arm_dof/hand_dof
+// (default kDefaultArmDof/kDefaultHandDof, robot_profile.hpp) 런타임 값이 SSoT.
 inline constexpr double kMinDuration = 0.1;  // 최소 허용 duration [s]
 
 // ── 단위 변환 ───────────────────────────────────────────────────────────────
 inline constexpr double kPi = 3.14159265358979323846;
 inline constexpr double kDeg2Rad = kPi / 180.0;
 
-/// 포즈 배열을 deg → rad로 변환 (컴파일 타임)
-template <std::size_t N>
-inline constexpr std::array<double, N> DegToRad(std::array<double, N> pose_deg) {
+/// 포즈 벡터를 deg → rad로 변환.
+inline std::vector<double> DegToRad(std::vector<double> pose_deg) {
   for (auto& v : pose_deg)
     v *= kDeg2Rad;
   return pose_deg;
@@ -53,7 +51,7 @@ inline constexpr std::array<double, N> DegToRad(std::array<double, N> pose_deg) 
 
 // ── Hand 포즈 (10-DoF, 단위: deg → 자동 rad 변환) ──────────────────────────
 // Placeholder 값 — 실제 하드웨어 캘리브레이션 후 교체
-using HandPose = std::array<double, kHandDofCount>;
+using HandPose = std::vector<double>;
 
 inline const std::map<std::string, HandPose> kHandPoses = {
     //                        Thumb              Index              Middle           Ring
@@ -83,7 +81,7 @@ inline const std::map<std::string, HandPose> kHandPoses = {
 // TODO: 하드웨어 캘리브레이션 후 placeholder 값 교체
 
 // ── UR5e 포즈 (6-DoF, 단위: deg → 자동 rad 변환) ───────────────────────────
-using ArmPose = std::array<double, kArmDofCount>;
+using ArmPose = std::vector<double>;
 
 inline const std::map<std::string, ArmPose> kUR5ePoses = {
     {"home_pose", DegToRad(ArmPose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0})},

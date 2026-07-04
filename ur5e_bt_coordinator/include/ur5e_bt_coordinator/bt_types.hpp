@@ -74,7 +74,7 @@ struct CachedWbcState {
     float contact_flag{0.0f};
     // displacement: native (sensor A slots 4..6) when backend exposes it,
     // 0 otherwise. WBC controller-side deformation guard is stubbed.
-    float displacement{0.0f};     // [m]
+    float displacement{0.0f};  // [m]
   };
 
   std::vector<Fingertip> fingertips;
@@ -97,10 +97,6 @@ struct CachedWbcState {
   bool tsid_solver_ok{true};
   int qp_fail_count{0};
 };
-
-// ── Constants ───────────────────────────────────────────────────────────────
-inline constexpr int kArmDof = 6;
-inline constexpr int kHandDof = 10;
 
 }  // namespace rtc_bt
 
