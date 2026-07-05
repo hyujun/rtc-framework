@@ -167,6 +167,9 @@ class DigitalTwinNode(Node):
                 self.declare_parameter("sensor_viz.displacement_arrow_scale", 0.05)
                 self.declare_parameter("sensor_viz.displacement_arrow_shaft", 0.002)
                 self.declare_parameter("sensor_viz.contact_sphere_radius", 0.005)
+                # 0.0 = contact_flag gate only; robots without a contact
+                # classifier (e.g. proto_1b) set this > 0 in bringup yaml.
+                self.declare_parameter("sensor_viz.force_display_threshold", 0.0)
 
                 marker_topic = self.get_parameter("sensor_viz.marker_topic").value
                 try:
@@ -197,6 +200,9 @@ class DigitalTwinNode(Node):
                     ).value,
                     "contact_sphere_radius": self.get_parameter(
                         "sensor_viz.contact_sphere_radius"
+                    ).value,
+                    "force_display_threshold": self.get_parameter(
+                        "sensor_viz.force_display_threshold"
                     ).value,
                 }
 

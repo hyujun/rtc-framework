@@ -69,6 +69,13 @@ class SensorVisualizer:
         # Contact threshold (same as inferencer: contact_prob < 0.1 → no contact)
         self.contact_threshold = config.get("contact_threshold", 0.1)
 
+        # Force-magnitude fallback gate (N). Default 0.0 = disabled → robots
+        # with a contact classifier (contact_flag) are unaffected. Robots that
+        # only publish firmware force and never a contact_flag (e.g. proto_1b,
+        # contact_flag ≡ 0) set this > 0 in their bringup yaml so the F arrow
+        # renders on |F| ≥ threshold even though contact_flag stays 0.
+        self.force_display_threshold = config.get("force_display_threshold", 0.0)
+
         # Contact config
         self.contact_sphere_radius = config.get("contact_sphere_radius", 0.005)
 
@@ -115,36 +122,63 @@ class SensorVisualizer:
                     markers.markers.append(marker)
                     marker_id += 1
 
-            # Force + Displacement → 3D Arrow (only when contact detected)
-            has_contact = ft.inference_enable and float(ft.contact_flag) >= self.contact_threshold
+            # Force + Displacement → 3D Arrow (only when contact detected).
+            # A classifier-less robot (contact_flag ≡ 0) still shows the F arrow
+            # once |F| crosses force_display_threshold (fallback, opt-in > 0).
+            fx, fy, fz = float(ft.f[0]), float(ft.f[1]), float(ft.f[2])
+            f_mag = math.sqrt(fx * fx + fy * fy + fz * fz)
+            force_fallback = (
+                self.force_display_threshold > 0.0 and f_mag >= self.force_display_threshold
+            )
+            has_contact = ft.inference_enable and (
+                float(ft.contact_flag) >= self.contact_threshold or force_fallback
+            )
             if has_contact:
                 marker = self._make_force_arrow(frame_id, marker_id, name, ft.f, stamp)
                 markers.markers.append(marker)
                 marker_id += 1
 
-                marker = self._make_displacement_arrow(frame_id, marker_id, name, ft.u, stamp)
+                # Guard zero-length displacement on the fallback path only
+                # (proto_1b has u ≡ 0): a zero-length ARROW triggers an RViz
+                # warning, so DELETE instead. The classifier path is left as-is
+                # so its existing behavior/tests are preserved.
+                ux, uy, uz = float(ft.u[0]), float(ft.u[1]), float(ft.u[2])
+                if force_fallback and math.sqrt(ux * ux + uy * uy + uz * uz) <= 1e-6:
+                    marker = self._make_delete(frame_id, marker_id, f"{name}_displacement", stamp)
+                else:
+                    marker = self._make_displacement_arrow(frame_id, marker_id, name, ft.u, stamp)
                 markers.markers.append(marker)
                 marker_id += 1
             else:
                 # Delete stale arrows when contact lost
                 for ns_suffix in ("_force", "_displacement"):
-                    marker = Marker()
-                    marker.header.frame_id = frame_id
-                    marker.header.stamp = stamp
-                    marker.ns = f"{name}{ns_suffix}"
-                    marker.id = marker_id
-                    marker.action = Marker.DELETE
+                    marker = self._make_delete(frame_id, marker_id, f"{name}{ns_suffix}", stamp)
                     markers.markers.append(marker)
                     marker_id += 1
 
-            # Contact → Sphere
+            # Contact → Sphere. On force fallback contact_flag is 0 yet the F
+            # arrow is showing; force the sphere red so the two stay consistent.
+            sphere_flag = max(float(ft.contact_flag), 1.0) if force_fallback else ft.contact_flag
             marker = self._make_contact_sphere(
-                frame_id, marker_id, name, ft.contact_flag, ft.inference_enable, stamp
+                frame_id, marker_id, name, sphere_flag, ft.inference_enable, stamp
             )
             markers.markers.append(marker)
             marker_id += 1
 
         return markers
+
+    # ── DELETE marker ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_delete(frame_id, marker_id, ns, stamp):
+        """Marker with DELETE action for a given namespace/id."""
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = ns
+        marker.id = marker_id
+        marker.action = Marker.DELETE
+        return marker
 
     # ── Barometer: +Z Arrow ──────────────────────────────────────────────
 
