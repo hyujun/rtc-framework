@@ -651,7 +651,9 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   g.grasp_force_threshold = shared.grasp_force_threshold;
   g.grasp_min_fingertips = shared.grasp_min_fingertips;
   gains_lock_.Store(g);
-  grasp_controller_type_ = shared.grasp_controller_type;
+  // Already whitelist-validated in ApplyDemoSharedConfig; resolve to the enum
+  // the RT hot path branches on.
+  grasp_hand_mode_ = ParseGraspHandMode(shared.grasp_controller_type);
   num_grasp_fingers_ = shared.num_grasp_fingers;
   finger_dof_ = shared.finger_dof;
   finger_joint_map_ = shared.hand_finger_joint_map;

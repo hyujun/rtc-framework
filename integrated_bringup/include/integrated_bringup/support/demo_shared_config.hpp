@@ -13,6 +13,22 @@
 
 namespace integrated_bringup {
 
+// Hand grasp-intervention mode, resolved once from the whitelisted
+// `grasp_controller_type` string at on_configure so the RT hot path branches on
+// an enum instead of re-comparing a std::string every tick.
+//   kContactStop — freeze hand trajectory on contact (default)
+//   kForcePi     — adaptive PI force controller
+//   kNone        — no hand intervention (trajectory passes through)
+enum class GraspHandMode { kContactStop, kForcePi, kNone };
+
+// Parse + validate the `grasp_controller_type` whitelist. Throws
+// std::runtime_error on any value outside {force_pi, contact_stop, none}; runs
+// on the non-RT on_configure path and propagates to CallbackReturn::FAILURE.
+[[nodiscard]] GraspHandMode ParseGraspHandMode(const std::string& type);
+
+// Canonical string for a mode (logging). Never allocates.
+[[nodiscard]] const char* GraspHandModeName(GraspHandMode mode) noexcept;
+
 // Parameters that DemoJointController and DemoTaskController share.
 // Defaults live in config/ur5e_hand/controllers/demo_shared.yaml; per-controller YAMLs
 // may override individual keys via a second ApplyDemoSharedConfig() pass.

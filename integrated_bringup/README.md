@@ -28,6 +28,7 @@ integrated_bringup/
 │   │   ├── demo_joint_controller.hpp   <- 관절 공간 Quintic 궤적 제어 (로봇+핸드)
 │   │   ├── demo_task_controller.hpp    <- 태스크 공간 CLIK 제어 (로봇+핸드)
 │   │   ├── demo_wbc_controller.hpp     <- TSID whole-body + MPC 통합
+│   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
 │   │       ├── grasp_phase_manager.hpp    <- 8-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)

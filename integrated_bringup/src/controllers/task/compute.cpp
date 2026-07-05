@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
@@ -54,19 +55,11 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
   num_sensor_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    // Fingertip count: prefer num_inference_groups (set by mujoco_native and
-    // udp_hand backends regardless of sensor_layout), fall back to the sensor
-    // channel stride for older mocks that only fill the sensor lane.  This
-    // matches the wbc controller and keeps force-only streams (0 sensor
-    // channels) working.  num_sensor_fingertips_ tracks the raw sensor lane
-    // separately so the ToF snapshot is not published from junk zero data.
-    const int num_sensor_ch = dev1.num_sensor_channels;
-    const int sensor_fingertips =
-        num_sensor_ch / static_cast<int>(kHandSensorValuesPerFingertipCapacity);
-    num_sensor_fingertips_ = std::min(sensor_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
-    const int num_fingertips =
-        (dev1.num_inference_groups > 0) ? dev1.num_inference_groups : sensor_fingertips;
-    num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
+    // Shared derivation (joint / task / wbc): active = inference-group count,
+    // sensor = raw sensor-lane count. See DeriveFingertipCounts.
+    const auto counts = DeriveFingertipCounts(dev1);
+    num_active_fingertips_ = counts.active;
+    num_sensor_fingertips_ = counts.sensor;
 
     for (std::size_t f = 0; f < static_cast<std::size_t>(num_active_fingertips_); ++f) {
       auto& ft = fingertip_data_[f];
@@ -485,13 +478,13 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     // inside rclcpp logging macros is acceptable at this interval.
     RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
                          "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
-                         grasp_controller_type_.c_str(), active_count, num_active_fingertips_,
+                         GraspHandModeName(grasp_hand_mode_), active_count, num_active_fingertips_,
                          static_cast<double>(max_force), static_cast<double>(force_thresh),
                          grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
 
     // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
     // freeze)
-    if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+    if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
       std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
       for (int f = 0; f < num_grasp_fingers_; ++f) {
         f_raw[static_cast<std::size_t>(f)] =
@@ -522,7 +515,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
           }
         }
       }
-    } else if (grasp_controller_type_ != "none") {
+    } else if (grasp_hand_mode_ != GraspHandMode::kNone) {
       // grasp_controller_type=="none": no hand intervention — trajectory output
       // passes through untouched.  GraspState aggregation/publishing below is
       // unaffected (BT IsGrasped/IsForceAbove still observe contact).  The
@@ -586,7 +579,13 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     constexpr double kMmToM = 0.001;
     tof_snapshot_ = {};
 
-    if (hand_handle_ && num_sensor_fingertips_ >= kNumTofFingers) {
+    // Gate on BOTH counts: num_sensor_fingertips_ ensures a real raw sensor
+    // lane exists (not force-only junk); num_active_fingertips_ ensures
+    // ReadState actually refreshed fingertip_data_[0..2].tof this tick (its
+    // populate loop is bounded by the inference-group count, which can be < the
+    // sensor-lane count on an asymmetric stream).
+    if (hand_handle_ && num_sensor_fingertips_ >= kNumTofFingers &&
+        num_active_fingertips_ >= kNumTofFingers) {
       tof_snapshot_.num_fingers = kNumTofFingers;
       tof_snapshot_.sensors_per_finger = kSensorsPerFinger;
 
@@ -730,7 +729,7 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     }
   }
 
-  if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+  if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
     const auto fs = grasp_controller_->finger_states();

@@ -16,6 +16,31 @@
 
 namespace integrated_bringup {
 
+GraspHandMode ParseGraspHandMode(const std::string& type) {
+  if (type == "force_pi")
+    return GraspHandMode::kForcePi;
+  if (type == "contact_stop")
+    return GraspHandMode::kContactStop;
+  if (type == "none")
+    return GraspHandMode::kNone;
+  throw std::runtime_error(
+      "demo_shared: 'grasp_controller_type' must be one of "
+      "{force_pi, contact_stop, none}, got '" +
+      type + "'");
+}
+
+const char* GraspHandModeName(GraspHandMode mode) noexcept {
+  switch (mode) {
+    case GraspHandMode::kForcePi:
+      return "force_pi";
+    case GraspHandMode::kContactStop:
+      return "contact_stop";
+    case GraspHandMode::kNone:
+      return "none";
+  }
+  return "contact_stop";
+}
+
 namespace {
 
 constexpr const char* kSharedYamlFile = "/controllers/demo_shared.yaml";
@@ -169,17 +194,11 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
   }
   if (node["grasp_controller_type"]) {
     cfg.grasp_controller_type = node["grasp_controller_type"].as<std::string>();
-    // Whitelist: force_pi (PI force controller), contact_stop (freeze on
-    // contact), none (no hand intervention).  An unrecognized string must not
-    // fall through to a controller branch, so reject it here — this runs on the
-    // non-RT on_configure path and propagates to CallbackReturn::FAILURE.
-    const std::string& t = cfg.grasp_controller_type;
-    if (t != "force_pi" && t != "contact_stop" && t != "none") {
-      throw std::runtime_error(
-          "demo_shared: 'grasp_controller_type' must be one of "
-          "{force_pi, contact_stop, none}, got '" +
-          t + "'");
-    }
+    // Validate against the whitelist here (on_configure, non-RT). ParseGraspHandMode
+    // throws std::runtime_error on any value outside {force_pi, contact_stop,
+    // none} so an unrecognized string cannot fall through to a controller branch;
+    // the throw propagates to CallbackReturn::FAILURE.
+    (void)ParseGraspHandMode(cfg.grasp_controller_type);
   }
 
   if (node["hand_finger_joint_map"] && node["hand_finger_joint_map"].IsSequence()) {
