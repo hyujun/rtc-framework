@@ -32,11 +32,16 @@ inline std::vector<double> DegToRad(std::vector<double> pose_deg) {
 //   "thumb"      → thumb_* 전부           (whole-finger group)
 //   "thumb_mcp"  → thumb_mcp_* 만          (sub-group; FlexExtendFinger 부분 flex)
 //   "index_dip"  → index_dip_* / "ring" → ring_* …
-// assm_v1 예시 (10-DoF hand joint_states 순서):
+// assm_v1 예시 (10-DoF hand joint_states 순서, thumb3/index3/middle3/ring1):
 //   thumb_cmc_aa(0) thumb_cmc_fe(1) thumb_mcp_fe(2) index_mcp_aa(3) index_mcp_fe(4)
 //   index_dip_fe(5) middle_mcp_aa(6) middle_mcp_fe(7) middle_dip_fe(8) ring_mcp_fe(9)
 // → "thumb"={0,1,2} "thumb_mcp"={2} "index"={3,4,5} "index_dip"={5}
 //   "middle"={6,7,8} "middle_dip"={8} "ring"={9}
+// proto_1b 예시 (10-DoF, thumb4/index3/middle2/ring1 — poses_p1b.yaml):
+//   thumb_cmc_aa(0) thumb_cmc_fe(1) thumb_mcp(2) thumb_dip_fe(3) index_mcp_aa(4)
+//   index_mcp_fe(5) index_dip_fe(6) middle_mcp_fe(7) middle_dip_fe(8) ring_mcp_fe(9)
+// → "thumb"={0,1,2,3} "thumb_mcp"={2} "index"={4,5,6} "middle"={7,8} "ring"={9}
+// prefix 매칭이 per-finger DoF 차이를 흡수하므로 두 hand 모두 코드 변경 없이 동작.
 [[nodiscard]] inline std::vector<int> FingerJointIndices(
     const std::vector<std::string>& joint_names, const std::string& key) {
   std::vector<int> out;

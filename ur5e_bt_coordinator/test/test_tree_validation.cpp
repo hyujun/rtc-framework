@@ -38,8 +38,37 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
+#include <set>
+#include <string>
 
 using namespace rtc_bt;
+
+namespace {
+
+/// Extract the set of `hand_pose.<name>` / `arm_pose.<name>` keys declared in a
+/// poses YAML file (simple line scan — enough for the flat key:value layout the
+/// coordinator's poses files use; avoids a yaml-cpp test dependency).
+std::set<std::string> ReadPoseKeys(const std::filesystem::path& path) {
+  std::set<std::string> keys;
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line)) {
+    const auto first = line.find_first_not_of(" \t");
+    if (first == std::string::npos)
+      continue;
+    const std::string trimmed = line.substr(first);
+    if (trimmed.rfind("hand_pose.", 0) != 0 && trimmed.rfind("arm_pose.", 0) != 0)
+      continue;
+    const auto colon = trimmed.find(':');
+    if (colon == std::string::npos)
+      continue;
+    keys.insert(trimmed.substr(0, colon));
+  }
+  return keys;
+}
+
+}  // namespace
 
 class TreeValidationTest : public ::testing::Test {
  protected:
@@ -78,13 +107,16 @@ class TreeValidationTest : public ::testing::Test {
     factory_.registerNodeType<IsVisionTargetReady>("IsVisionTargetReady", null_bridge);
     factory_.registerNodeType<CheckShapeType>("CheckShapeType", null_bridge);
 
-    // Resolve trees directory
+    // Resolve trees + config directories
     try {
       std::string pkg_share = ament_index_cpp::get_package_share_directory("ur5e_bt_coordinator");
       trees_dir_ = std::filesystem::path(pkg_share) / "trees";
+      config_dir_ = std::filesystem::path(pkg_share) / "config";
     } catch (...) {
       // Fallback to source tree
-      trees_dir_ = std::filesystem::path(__FILE__).parent_path().parent_path() / "trees";
+      auto src = std::filesystem::path(__FILE__).parent_path().parent_path();
+      trees_dir_ = src / "trees";
+      config_dir_ = src / "config";
     }
   }
 
@@ -105,6 +137,7 @@ class TreeValidationTest : public ::testing::Test {
 
   BT::BehaviorTreeFactory factory_;
   std::filesystem::path trees_dir_;
+  std::filesystem::path config_dir_;
 };
 
 TEST_F(TreeValidationTest, CommonMotions) {
@@ -162,4 +195,20 @@ TEST_F(TreeValidationTest, InvalidXmlThrows) {
          </BehaviorTree></root>)";
 
   EXPECT_THROW(factory_.createTreeFromText(bad_xml), std::exception);
+}
+
+// Pose-name contract (Open Q3 / Sprint item 3): the p1b variant must supply
+// every pose name the default provides, so any tree that resolves a pose by
+// name under the default poses also resolves it under poses_p1b — that is what
+// lets the shipped trees be reused unmodified across variants. The two files
+// differ only in per-finger joint *values* (proto_1b's 4/3/2/1 split), never in
+// the key set.
+TEST_F(TreeValidationTest, PoseNameParityDefaultVsP1b) {
+  const auto default_keys = ReadPoseKeys(config_dir_ / "poses.yaml");
+  const auto p1b_keys = ReadPoseKeys(config_dir_ / "poses_p1b.yaml");
+
+  ASSERT_FALSE(default_keys.empty()) << "no pose keys parsed from poses.yaml";
+  EXPECT_EQ(default_keys, p1b_keys)
+      << "poses_p1b.yaml must declare exactly the same hand_pose.*/arm_pose.* "
+         "names as poses.yaml (values may differ, key set may not)";
 }
