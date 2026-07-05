@@ -138,6 +138,80 @@ class TestCreateMarkers:
         assert ids == list(range(len(ids)))
 
 
+# ── Force-magnitude fallback gate ─────────────────────────────────────────────
+
+
+class TestForceFallback:
+    """create_markers force_display_threshold gate (classifier-less robots)."""
+
+    def _viz(self, names=("index",), **cfg):
+        return SensorVisualizer(list(names), dict(cfg))
+
+    @staticmethod
+    def _ns(markers, ns):
+        return [m for m in markers if m.ns == ns]
+
+    def test_force_fallback_disabled_by_default(self):
+        # No threshold set (0.0): force alone must not open the gate, even with
+        # inference enabled — proves the existing contact_flag behavior is kept.
+        viz = self._viz()
+        ft = FakeFingertip(inference_enable=True, contact_flag=0.0, f=(0.0, 0.0, 5.0))
+        out = viz.create_markers([ft], _stamp())
+        force = self._ns(out.markers, "index_force")
+        disp = self._ns(out.markers, "index_displacement")
+        assert [m.action for m in force] == [Marker.DELETE]
+        assert [m.action for m in disp] == [Marker.DELETE]
+
+    def test_force_fallback_renders_above_threshold(self):
+        viz = self._viz(force_display_threshold=1.0)
+        ft = FakeFingertip(inference_enable=True, contact_flag=0.0, f=(0.0, 0.0, 2.0))
+        out = viz.create_markers([ft], _stamp())
+        force = self._ns(out.markers, "index_force")
+        assert [m.action for m in force] == [Marker.ADD]
+
+    def test_force_fallback_below_threshold_deletes(self):
+        viz = self._viz(force_display_threshold=1.0)
+        ft = FakeFingertip(inference_enable=True, contact_flag=0.0, f=(0.0, 0.0, 0.5))
+        out = viz.create_markers([ft], _stamp())
+        force = self._ns(out.markers, "index_force")
+        assert [m.action for m in force] == [Marker.DELETE]
+
+    def test_force_fallback_requires_inference_enable(self):
+        # inference_enable False → gate stays closed regardless of |F|; sphere grey.
+        viz = self._viz(force_display_threshold=1.0)
+        ft = FakeFingertip(inference_enable=False, contact_flag=0.0, f=(0.0, 0.0, 5.0))
+        out = viz.create_markers([ft], _stamp())
+        force = self._ns(out.markers, "index_force")
+        assert [m.action for m in force] == [Marker.DELETE]
+        sphere = self._ns(out.markers, "index_contact")[0]
+        assert (sphere.color.r, sphere.color.g, sphere.color.b, sphere.color.a) == pytest.approx(
+            (0.5, 0.5, 0.5, 0.3)
+        )
+
+    def test_fallback_zero_displacement_emits_delete(self):
+        # Fallback ADD path with u ≡ 0 → force ADD but displacement DELETE
+        # (no zero-length arrow); id sequence stays unique/contiguous.
+        viz = self._viz(force_display_threshold=1.0)
+        ft = FakeFingertip(
+            inference_enable=True, contact_flag=0.0, f=(0.0, 0.0, 2.0), u=(0.0, 0.0, 0.0)
+        )
+        out = viz.create_markers([ft], _stamp())
+        force = self._ns(out.markers, "index_force")[0]
+        disp = self._ns(out.markers, "index_displacement")[0]
+        assert force.action == Marker.ADD
+        assert disp.action == Marker.DELETE
+        ids = [m.id for m in out.markers]
+        assert ids == list(range(len(ids)))
+
+    def test_fallback_contact_sphere_red(self):
+        # Fallback active but contact_flag 0 → sphere forced red for consistency.
+        viz = self._viz(force_display_threshold=1.0)
+        ft = FakeFingertip(inference_enable=True, contact_flag=0.0, f=(0.0, 0.0, 2.0))
+        out = viz.create_markers([ft], _stamp())
+        sphere = self._ns(out.markers, "index_contact")[0]
+        assert (sphere.color.r, sphere.color.g) == pytest.approx((1.0, 0.0))
+
+
 # ── Marker geometry (private builders) ────────────────────────────────────────
 
 

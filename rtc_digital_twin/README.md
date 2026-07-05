@@ -132,8 +132,9 @@ YAML에 `sensor_viz` 블록이 있을 때만 활성화됩니다. 핑거팁별로
 | Contact | Sphere | 1개 | 고정 반지름 (기본 5mm) | 빨강(접촉)/초록(비접촉)/회색(미보정) |
 
 - F/u Arrow는 접촉이 감지될 때만 표시, 비접촉 시 DELETE 처리
-- 접촉 판정: `inference_enable == True`이고 `contact_flag >= 0.1` (threshold)
-- 마커 프레임: `{fingertip_name}_tip_link`, 수명: 100ms
+- 접촉 판정: `inference_enable == True`이고 (`contact_flag >= 0.1` (threshold) **또는** force fallback)
+- **Force fallback** (`sensor_viz.force_display_threshold`, 기본 0.0 = 비활성): contact classifier가 없어 `contact_flag ≡ 0`인 로봇(예: proto_1b)에서 `|F| >= threshold`이면 F Arrow를 표시한다. 이때 displacement `u ≡ 0`이면 zero-length arrow 대신 DELETE, contact Sphere는 적색으로 강제한다. `> 0`은 bringup yaml에서만 설정(ARCH-1)
+- 마커 프레임: `{fingertip_name}_tip_link`, 수명: 100ms — `fingertip_names`가 실제 URDF fingertip link 접두사(예: proto_1b는 `l_`)와 일치해야 RViz가 마커를 렌더한다
 
 ### TcpVisualizer (`tcp_visualizer.py`) -- 선택적
 
@@ -259,6 +260,9 @@ YAML의 `joint_gui.enabled: true` 또는 launch arg `use_joint_gui:=true` 시 �
 
     # Contact: Sphere
     sensor_viz.contact_sphere_radius: 0.005     # 구 반지름 (m)
+
+    # Force fallback: contact_flag 없는 로봇용 |F| 게이트
+    sensor_viz.force_display_threshold: 0.0     # N — 0=비활성; >0은 bringup yaml (ARCH-1)
 ```
 
 `sensor_viz.sensor_topic`을 빈 문자열로 설정하거나 해당 블록을 생략하면 센서 시각화가 비활성화됩니다.

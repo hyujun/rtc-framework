@@ -92,6 +92,13 @@
     # Contact: Sphere overlay at fingertip origin
     sensor_viz.contact_sphere_radius: 0.005         # sphere radius (m)
 
+    # Force-magnitude fallback gate (N). 0 = contact_flag gate only (F/u arrows
+    # show only when the classifier reports contact). Robots without a contact
+    # classifier (contact_flag ≡ 0, e.g. proto_1b) set this > 0 in the bringup
+    # yaml so the F arrow renders on |F| ≥ threshold. ARCH-1: concrete value in
+    # <robot>_bringup yaml, not here.
+    sensor_viz.force_display_threshold: 0.0
+
     # ── TCP visualization ───────────────────────────────────────────────
     # Phase 4: TCP pose는 tf2 (`base → tool0_actual`) 에서 lookup. Active
     # controller의 <config_key>/transforms 토픽이 listener buffer로 자동 수집
