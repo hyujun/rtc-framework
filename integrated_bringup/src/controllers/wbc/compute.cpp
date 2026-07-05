@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
+#include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
@@ -35,17 +36,10 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   }
 
   const auto& dev1 = state.devices[1];
-  // Prefer num_inference_groups (set by mujoco_native via ReadSensorState +
-  // udp_hand via ReadSensorState). Fall back to deriving from sensor channel
-  // stride for the older udp_hand-style mocks that only fill the sensor lane.
-  const int num_groups =
-      (dev1.num_inference_groups > 0)
-          ? dev1.num_inference_groups
-          : (kHandSensorValuesPerFingertipCapacity > 0
-                 ? static_cast<int>(dev1.num_sensor_channels /
-                                    static_cast<int>(kHandSensorValuesPerFingertipCapacity))
-                 : 0);
-  num_active_fingertips_ = std::min(num_groups, static_cast<int>(rtc::kMaxSensorGroups));
+  // Shared derivation (joint / task / wbc): prefer the inference-group count,
+  // fall back to the sensor-channel stride. See DeriveFingertipCounts. The wbc
+  // controller has no ToF snapshot, so only the active (inference) count is used.
+  num_active_fingertips_ = DeriveFingertipCounts(dev1).active;
 
   const double inv_dt = (state.dt > 0.0) ? (1.0 / state.dt) : 500.0;
   const auto gains_now = gains_lock_.Load();

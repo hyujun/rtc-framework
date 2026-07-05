@@ -48,8 +48,9 @@
           - "motor_8"
           - "motor_9"
           - "motor_10"
-        # udp_hand backend synthesizes native contact probability + displacement
-        # from the fingertip sensor stream (see _base sensor_layout for packing).
+        # p1b real hw has NO native contact/displacement channels: the udp_hand
+        # stream carries a fixed contact_flag=0.0 and a force-only inference lane.
+        # Consumers derive in_contact / grasp_detected from |F| > grasp_force_threshold.
         sensor_layout:
-          has_native_contact: true
-          has_native_displacement: true
+          has_native_contact: false
+          has_native_displacement: false

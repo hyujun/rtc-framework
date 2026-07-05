@@ -40,13 +40,15 @@ BT::NodeStatus IsForceAbove::tick() {
     // Controller defaults match — use pre-computed aggregate
     count = gs.num_active_contacts;
   } else {
-    // Custom threshold — recount from per-fingertip data.
-    // contact_flag is producer-capability dependent (sensor A native prob
-    // vs sensor B derived binary); `> 0.5f` works for both encodings.
+    // Custom threshold — recount from per-fingertip data on FORCE alone. We do
+    // not also require contact_flag > 0.5: for force-only producers contact_flag
+    // is a derived binary that bakes in the controller's grasp_force_threshold,
+    // so ANDing it would clamp any threshold below that floor up to it (a node
+    // named IsForceAbove must answer purely on force). inference_valid still
+    // gates staleness. Mirrors IsGrasped's custom recount.
     count = 0;
     for (const auto& ft : gs.fingertips) {
-      if (ft.inference_valid && ft.contact_flag > 0.5f &&
-          ft.force_magnitude > static_cast<float>(threshold)) {
+      if (ft.inference_valid && ft.force_magnitude > static_cast<float>(threshold)) {
         ++count;
       }
     }

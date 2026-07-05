@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
@@ -51,11 +52,14 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
 
   // Hand sensor data (per-fingertip)
   num_active_fingertips_ = 0;
+  num_sensor_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    const int num_sensor_ch = dev1.num_sensor_channels;
-    const int num_fingertips = num_sensor_ch / kHandSensorValuesPerFingertipCapacity;
-    num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
+    // Shared derivation (joint / task / wbc): active = inference-group count,
+    // sensor = raw sensor-lane count. See DeriveFingertipCounts.
+    const auto counts = DeriveFingertipCounts(dev1);
+    num_active_fingertips_ = counts.active;
+    num_sensor_fingertips_ = counts.sensor;
 
     for (std::size_t f = 0; f < static_cast<std::size_t>(num_active_fingertips_); ++f) {
       auto& ft = fingertip_data_[f];
@@ -474,13 +478,13 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     // inside rclcpp logging macros is acceptable at this interval.
     RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
                          "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
-                         grasp_controller_type_.c_str(), active_count, num_active_fingertips_,
+                         GraspHandModeName(grasp_hand_mode_), active_count, num_active_fingertips_,
                          static_cast<double>(max_force), static_cast<double>(force_thresh),
                          grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
 
     // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
     // freeze)
-    if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+    if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
       std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
       for (int f = 0; f < num_grasp_fingers_; ++f) {
         f_raw[static_cast<std::size_t>(f)] =
@@ -511,7 +515,14 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
           }
         }
       }
-    } else {
+    } else if (grasp_hand_mode_ != GraspHandMode::kNone) {
+      // grasp_controller_type=="none": no hand intervention — trajectory output
+      // passes through untouched.  GraspState aggregation/publishing below is
+      // unaffected (BT IsGrasped/IsForceAbove still observe contact).  The
+      // negated form (!= "none") is deliberate: a "force_pi" config whose
+      // grasp controller failed to build (null) must still fall into the
+      // contact_stop safety freeze, not silently become a no-op.
+      //
       // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
       // → BT tick(50ms) 사이에도 과도한 hand closure 방지
       //
@@ -568,7 +579,13 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     constexpr double kMmToM = 0.001;
     tof_snapshot_ = {};
 
-    if (hand_handle_ && num_active_fingertips_ >= kNumTofFingers) {
+    // Gate on BOTH counts: num_sensor_fingertips_ ensures a real raw sensor
+    // lane exists (not force-only junk); num_active_fingertips_ ensures
+    // ReadState actually refreshed fingertip_data_[0..2].tof this tick (its
+    // populate loop is bounded by the inference-group count, which can be < the
+    // sensor-lane count on an asymmetric stream).
+    if (hand_handle_ && num_sensor_fingertips_ >= kNumTofFingers &&
+        num_active_fingertips_ >= kNumTofFingers) {
       tof_snapshot_.num_fingers = kNumTofFingers;
       tof_snapshot_.sensors_per_finger = kSensorsPerFinger;
 
@@ -712,7 +729,7 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     }
   }
 
-  if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+  if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
     const auto fs = grasp_controller_->finger_states();

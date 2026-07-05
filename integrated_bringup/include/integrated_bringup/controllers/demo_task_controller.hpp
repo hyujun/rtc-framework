@@ -8,6 +8,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
+#include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
@@ -208,6 +209,11 @@ class DemoTaskController final : public RTControllerInterface {
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
   int num_active_fingertips_{0};
+  /// Fingertips carrying a raw sensor lane (baro/ToF), derived from
+  /// num_sensor_channels / stride.  Separate from num_active_fingertips_
+  /// (inference-group count) so a force-only stream (0 sensor channels) does
+  /// not publish an all-zero junk ToF snapshot.  Gates the ToF snapshot only.
+  int num_sensor_fingertips_{0};
   ::rtc::grasp::GraspStateData grasp_state_{};
   ::integrated_bringup::ToFSnapshotData tof_snapshot_{};
 
@@ -375,7 +381,10 @@ class DemoTaskController final : public RTControllerInterface {
   bool hand_new_target_pending_{false};  // RT-thread-only
 
   // ── Grasp controller (force_pi mode) ──────────────────────────────────────
-  std::string grasp_controller_type_{"contact_stop"};
+  // Hand grasp-intervention mode, resolved once from the whitelisted
+  // `grasp_controller_type` string in LoadConfig so the RT hot path branches on
+  // an enum instead of comparing a std::string every tick.
+  GraspHandMode grasp_hand_mode_{GraspHandMode::kContactStop};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
   /// Finger index → hand joint indices mapping (ragged; fingers may have
   /// different DoF). finger_joint_map_[f][0 .. finger_dof_[f]) valid for

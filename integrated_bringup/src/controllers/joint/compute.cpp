@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
+#include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 
@@ -35,11 +36,14 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // (sensor A path; backends without native contact zero-fill the slot).
   // Slots 4..6 (displacement) remain unconsumed in joint controller.
   num_active_fingertips_ = 0;
+  num_sensor_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    const int num_sensor_ch = dev1.num_sensor_channels;
-    const int num_fingertips = num_sensor_ch / kHandSensorValuesPerFingertipCapacity;
-    num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
+    // Shared derivation (joint / task / wbc): active = inference-group count,
+    // sensor = raw sensor-lane count. See DeriveFingertipCounts.
+    const auto counts = DeriveFingertipCounts(dev1);
+    num_active_fingertips_ = counts.active;
+    num_sensor_fingertips_ = counts.sensor;
 
     const auto gains_now = gains_lock_.Load();
     const float force_threshold = gains_now.grasp_force_threshold;
@@ -211,7 +215,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // ── Arm FK: base → tip (computed once per tick; cached for Fill*) ──────
   // WriteJointCommand / FillLogOutput do not touch arm_handle_, so the cached
   // pose stays valid for the whole output-composition phase.
-  {
+  // arm_handle_ is always non-null after LoadConfig in production; the guard
+  // mirrors the wbc controller so unit tests (empty urdf_path, grasp/sensor
+  // logic only) can drive Compute() without building an arm model.
+  if (arm_handle_) {
     const int nc0 = dev0.num_channels;
     std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
@@ -290,13 +297,13 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     // inside rclcpp logging macros is acceptable at this interval.
     RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleSlowMs,
                          "[grasp] type=%s active=%d/%d max_force=%.2fN thresh=%.2fN phase=%d",
-                         grasp_controller_type_.c_str(), active_count, num_active_fingertips_,
+                         GraspHandModeName(grasp_hand_mode_), active_count, num_active_fingertips_,
                          static_cast<double>(max_force), static_cast<double>(force_thresh),
                          grasp_controller_ ? static_cast<int>(grasp_controller_->phase()) : -1);
 
     // Hand grasp control: force_pi (adaptive PI) or contact_stop (binary
     // freeze)
-    if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+    if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
       // Build force input: one force magnitude per grasp finger.
       std::array<double, rtc::grasp::kMaxGraspFingers> f_raw{};
       for (int f = 0; f < num_grasp_fingers_; ++f) {
@@ -330,7 +337,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           }
         }
       }
-    } else {
+    } else if (grasp_hand_mode_ != GraspHandMode::kNone) {
+      // grasp_controller_type=="none": no hand intervention — trajectory output
+      // passes through untouched.  GraspState aggregation/publishing below is
+      // unaffected (BT IsGrasped/IsForceAbove still observe contact).  The
+      // negated form (!= "none") is deliberate: a "force_pi" config whose
+      // grasp controller failed to build (null) must still fall into the
+      // contact_stop safety freeze, not silently become a no-op.
+      //
       // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
       // → BT tick(50ms) 사이에도 과도한 hand closure 방지
       //
@@ -387,7 +401,13 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     constexpr double kMmToM = 0.001;
     tof_snapshot_ = {};
 
-    if (hand_handle_ && num_active_fingertips_ >= kNumTofFingers) {
+    // Gate on BOTH counts: num_sensor_fingertips_ ensures a real raw sensor
+    // lane exists (not force-only junk); num_active_fingertips_ ensures
+    // ReadState actually refreshed fingertip_data_[0..2].tof this tick (its
+    // populate loop is bounded by the inference-group count, which can be < the
+    // sensor-lane count on an asymmetric stream).
+    if (hand_handle_ && num_sensor_fingertips_ >= kNumTofFingers &&
+        num_active_fingertips_ >= kNumTofFingers) {
       tof_snapshot_.num_fingers = kNumTofFingers;
       tof_snapshot_.sensors_per_finger = kSensorsPerFinger;
 
@@ -500,7 +520,7 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
     }
   }
 
-  if (grasp_controller_ && grasp_controller_type_ == "force_pi") {
+  if (grasp_controller_ && grasp_hand_mode_ == GraspHandMode::kForcePi) {
     grasp_state_.grasp_phase = static_cast<uint8_t>(grasp_controller_->phase());
     grasp_state_.grasp_target_force = static_cast<float>(grasp_controller_->target_force());
     const auto fs = grasp_controller_->finger_states();
@@ -634,12 +654,17 @@ ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state)
     }
   }
 
-  // FK for task-space logging (same as normal path)
-  std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-  arm_handle_->ComputeForwardKinematics(q_span);
-  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+  // FK for task-space logging (same as normal path). arm_handle_ is always
+  // non-null in production; the guard mirrors ComputeControl so the empty-URDF
+  // unit fixture (null arm_handle_) can drive ComputeEstop without a crash.
+  pinocchio::SE3 tcp = pinocchio::SE3::Identity();
+  if (arm_handle_) {
+    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
+    arm_handle_->ComputeForwardKinematics(q_span);
+    tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+    if (use_root_frame_) {
+      tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+    }
   }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();

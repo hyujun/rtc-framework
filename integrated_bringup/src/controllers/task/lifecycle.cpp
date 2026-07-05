@@ -153,14 +153,14 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
             const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
             grasp_controller_->CommandGrasp(req->target_force);
             RCLCPP_INFO(logger_, "[grasp_command] GRASP target=%.2fN type=%s phase_before=%u",
-                        req->target_force, grasp_controller_type_.c_str(), phase_before);
+                        req->target_force, GraspHandModeName(grasp_hand_mode_), phase_before);
             resp->ok = true;
             resp->message = "grasp started @ " + std::to_string(req->target_force) + " N";
           } else if (req->command == Req::RELEASE) {
             const auto phase_before = static_cast<unsigned>(grasp_controller_->phase());
             grasp_controller_->CommandRelease();
             RCLCPP_INFO(logger_, "[grasp_command] RELEASE type=%s phase_before=%u",
-                        grasp_controller_type_.c_str(), phase_before);
+                        GraspHandModeName(grasp_hand_mode_), phase_before);
             resp->ok = true;
             resp->message = "release accepted";
           } else {

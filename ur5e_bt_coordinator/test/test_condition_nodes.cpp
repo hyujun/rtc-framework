@@ -171,6 +171,29 @@ TEST_F(ConditionNodeTest, IsGrasped_CustomThresholdRecount) {
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
+// Force-only producer (has_native_contact=false): contact_flag is a derived
+// binary that bakes in the controller's grasp_force_threshold. A BT drop-guard
+// threshold BELOW that floor must still count a fingertip whose force clears the
+// BT threshold, even though contact_flag is 0 — the custom recount is gated on
+// force alone, not on contact_flag.
+TEST_F(ConditionNodeTest, IsGrasped_CustomThresholdIgnoresDerivedContactFloor) {
+  auto gs = MakeDetailedGraspState({
+      {0.7f, 0.0f, true},  // force 0.7 N > BT 0.5, but derived contact_flag 0
+      {0.6f, 0.0f, true},  // force 0.6 N > BT 0.5, derived contact_flag 0
+      {0.1f, 0.0f, true},  // below BT threshold
+  });
+  gs.grasp_detected = false;
+  gs.force_threshold = 1.0f;  // controller floor differs → custom path
+  gs.min_fingertips = 2;
+  PublishGraspState(gs);
+  Spin();
+
+  // Two fingertips clear the 0.5 N BT guard; the 1.0 N-baked contact_flag must
+  // NOT clamp them out.
+  auto tree = CreateTree(R"(<IsGrasped force_threshold_N="0.5" min_fingertips="2"/>)");
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // IsGraspPhase
 // ══════════════════════════════════════════════════════════════════════════

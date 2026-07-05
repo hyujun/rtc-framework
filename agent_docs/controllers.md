@@ -9,8 +9,8 @@
 | ClikController | Position | Cartesian 3/6-DOF | Damped Jacobian pseudoinverse + null-space |
 | OSC | Torque | Cartesian 6-DOF | Full pose PD + SE3 quintic trajectory |
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
-| DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
-| DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"` |
+| DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
+| DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 7-phase FSM (Idle->Approach->PreGrasp->Closure->Hold->Release; slot 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: true` (Aligator HandlerMPCThread; runtime-togglable via `mpc_enable` parameter) |
 
 ## Gains (per-controller ROS 2 parameters)
@@ -78,7 +78,7 @@ edge를 기다리지 않는 live command. (FSM 의 hold/non-hold 판정은 hand 
 
 ## GraspController (Force-PI, internal only)
 
-Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`).
+Selected via `grasp_controller_type: "force_pi"` in demo controller YAML (default: `"contact_stop"`). Whitelist `{force_pi, contact_stop, none}` — `none` disables all hand intervention (trajectory passes through) while GraspState aggregation/publishing continues; any other string fails `on_configure`.
 
 **FSM**: Idle -> Approaching (position ramp) -> Contact (settle) -> ForceControl (PI + force ramp) -> Holding (anomaly monitor) -> Releasing
 

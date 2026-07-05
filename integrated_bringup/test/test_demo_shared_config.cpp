@@ -2,16 +2,17 @@
 // Unit tests for integrated_bringup::ApplyDemoSharedConfig and BuildGraspController
 // (demo_shared_config.hpp / demo_shared_config.cpp)
 // ─────────────────────────────────────────────────────────────────────────────
-#include "rtc_controllers/grasp/grasp_controller.hpp"
-#include "rtc_controllers/grasp/grasp_types.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
+#include "rtc_controllers/grasp/grasp_controller.hpp"
+#include "rtc_controllers/grasp/grasp_types.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <memory>
 #include <numbers>
+#include <stdexcept>
 #include <string>
 
 using integrated_bringup::ApplyDemoSharedConfig;
@@ -127,6 +128,28 @@ grasp_controller_type: force_pi
   EXPECT_FLOAT_EQ(cfg.grasp_force_threshold, 2.5f);
   EXPECT_EQ(cfg.grasp_min_fingertips, 3);
   EXPECT_EQ(cfg.grasp_controller_type, "force_pi");
+}
+
+// The whitelist { force_pi, contact_stop, none } is enforced at parse time so
+// an unrecognized string never falls through to a controller branch. All three
+// valid values must parse without throwing.
+TEST(DemoSharedConfigTest, GraspControllerTypeAcceptsWhitelist) {
+  for (const char* t : {"force_pi", "contact_stop", "none"}) {
+    DemoSharedConfig cfg;
+    YAML::Node node;
+    node["grasp_controller_type"] = t;
+    EXPECT_NO_THROW(ApplyDemoSharedConfig(node, cfg)) << "type=" << t;
+    EXPECT_EQ(cfg.grasp_controller_type, t);
+  }
+}
+
+// An unknown grasp_controller_type must be rejected (propagates to
+// on_configure → CallbackReturn::FAILURE), not silently accepted.
+TEST(DemoSharedConfigTest, GraspControllerTypeRejectsUnknown) {
+  DemoSharedConfig cfg;
+  YAML::Node node;
+  node["grasp_controller_type"] = "bogus_mode";
+  EXPECT_THROW(ApplyDemoSharedConfig(node, cfg), std::runtime_error);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

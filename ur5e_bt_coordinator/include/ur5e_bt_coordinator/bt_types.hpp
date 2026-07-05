@@ -37,7 +37,10 @@ struct CachedGraspState {
     std::string name;
     float force_magnitude{0.0f};  // |F| [N]
     // contact_flag: producer-capability dependent — sensor A native sigmoid
-    // prob [0,1] or sensor B derived binary 1.0/0.0. BT nodes test `> 0.5f`.
+    // prob [0,1] or sensor B derived binary 1.0/0.0 (bakes in the controller's
+    // grasp_force_threshold). IsGrasped/IsForceAbove custom-threshold recounts
+    // gate on force_magnitude alone, NOT contact_flag, so a BT threshold below
+    // that floor stays reachable; the aggregate path still uses grasp_detected.
     float contact_flag{0.0f};
     bool inference_valid{false};
   };
