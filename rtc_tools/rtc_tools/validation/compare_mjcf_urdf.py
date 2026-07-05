@@ -3,11 +3,11 @@
 
 Parses both model files and reports differences in:
   - Link mass
-  - Link inertia (diagonal components only; MJCF stores diaginertia)
-  - Joint position limits (range)
+  - Link inertia (principal moments via eigenvalue decomposition)
+  - Joint position limits (range; sign-swapped for anti-parallel axes)
   - Joint effort / force limits
-  - Joint axis vectors
-  - Link-to-link offsets (DH-like origin positions)
+  - Joint axis vectors (world-frame FK, parallelism check)
+  - Joint positions (world-frame FK)
 
 Robot-agnostic — link/joint name sets and the MJCF default class are auto-
 detected from the MJCF root (`<mujoco model="...">` / `<default class="...">`)
@@ -53,8 +53,10 @@ class InertialParams:
     diag_inertia: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
     # Off-diagonal (ixy, ixz, iyz) — URDF only; MJCF diaginertia assumes zero
     off_diag_inertia: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    # Inertial frame rotation — URDF uses rpy, MJCF uses quat
+    # Inertial frame rotation — URDF rpy
     origin_rpy: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    # Inertial frame rotation — MJCF quat (w, x, y, z); identity = [1,0,0,0]
+    origin_quat: list = field(default_factory=lambda: [1.0, 0.0, 0.0, 0.0])
 
 
 @dataclass
@@ -80,6 +82,329 @@ class JointParams:
 
 def _parse_floats(text: str) -> list:
     return [float(x) for x in text.split()]
+
+
+# ── SE(3) transform utilities (pure-Python, no numpy dependency) ─────────────
+#
+# URDF encodes joint frames as (xyz, rpy) while MJCF uses (pos, quat).
+# Comparing raw position/axis vectors is meaningless when the parent frames
+# differ in orientation.  These helpers compute Forward Kinematics (FK) to
+# world frame so that position and axis can be compared correctly.
+
+
+def _identity_3x3() -> list[list[float]]:
+    return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+
+def _rpy_to_rot3(roll: float, pitch: float, yaw: float) -> list[list[float]]:
+    """ZYX Euler angles (URDF convention) to 3x3 rotation matrix."""
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    return [
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr],
+    ]
+
+
+def _quat_to_rot3(w: float, x: float, y: float, z: float) -> list[list[float]]:
+    """Quaternion (w, x, y, z) to 3x3 rotation matrix."""
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    if n < 1e-15:
+        return _identity_3x3()
+    w, x, y, z = w / n, x / n, y / n, z / n
+    return [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ]
+
+
+def _mat_mul_33(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+
+def _mat_vec_3(r: list[list[float]], v: list[float]) -> list[float]:
+    return [sum(r[i][k] * v[k] for k in range(3)) for i in range(3)]
+
+
+def _vec_add_3(a: list[float], b: list[float]) -> list[float]:
+    return [a[i] + b[i] for i in range(3)]
+
+
+def _compose_transform(
+    r_parent: list[list[float]],
+    p_parent: list[float],
+    r_local: list[list[float]],
+    p_local: list[float],
+) -> tuple[list[list[float]], list[float]]:
+    """Compose parent and local SE(3) transforms.
+
+    Returns ``(R_world, p_world)`` where::
+
+        R_world = R_parent @ R_local
+        p_world = R_parent @ p_local + p_parent
+    """
+    r_world = _mat_mul_33(r_parent, r_local)
+    p_rotated = _mat_vec_3(r_parent, p_local)
+    p_world = _vec_add_3(p_parent, p_rotated)
+    return r_world, p_world
+
+
+def _vec_close_3(a: list[float], b: list[float], tol: float) -> bool:
+    return all(math.isclose(a[i], b[i], abs_tol=tol) for i in range(3))
+
+
+_AXIS_PARALLEL_COS_TOL = 1e-6
+
+
+def _axes_parallel(a: list[float], b: list[float]) -> tuple[bool, bool]:
+    """Check if two 3-vectors are parallel (same rotation line).
+
+    Returns ``(is_parallel, same_sign)``.  ``is_parallel`` is True when the
+    vectors point along the same line (either same or opposite direction).
+    ``same_sign`` is True when they also point in the same direction.
+    Anti-parallel axes (same_sign=False) represent the same physical rotation
+    axis but with opposite positive-rotation convention.
+
+    Uses a fixed cosine tolerance (``_AXIS_PARALLEL_COS_TOL``) independent of
+    the position tolerance so that axis parallelism is not coupled to the
+    caller's metric-space tolerance.
+    """
+    dot = sum(a[i] * b[i] for i in range(3))
+    mag_a = math.sqrt(sum(v * v for v in a))
+    mag_b = math.sqrt(sum(v * v for v in b))
+    if mag_a < 1e-15 or mag_b < 1e-15:
+        return False, False
+    cos_angle = dot / (mag_a * mag_b)
+    is_parallel = abs(abs(cos_angle) - 1.0) < _AXIS_PARALLEL_COS_TOL
+    same_sign = cos_angle > 0
+    return is_parallel, same_sign
+
+
+def _mjcf_body_rotation(body: ET.Element) -> list[list[float]]:
+    """Extract body-frame rotation from any MuJoCo orientation attribute.
+
+    MuJoCo supports ``quat``, ``axisangle``, ``euler``, ``xyaxes``, and
+    ``zaxis``.  Returns identity when none are present.
+    """
+    quat_str = body.get("quat")
+    if quat_str:
+        q = _parse_floats(quat_str)
+        return _quat_to_rot3(q[0], q[1], q[2], q[3])
+
+    axisangle_str = body.get("axisangle")
+    if axisangle_str:
+        vals = _parse_floats(axisangle_str)
+        ax, ay, az, angle = vals[0], vals[1], vals[2], vals[3]
+        n = math.sqrt(ax * ax + ay * ay + az * az)
+        if n < 1e-15:
+            return _identity_3x3()
+        ax, ay, az = ax / n, ay / n, az / n
+        c, s = math.cos(angle), math.sin(angle)
+        t = 1.0 - c
+        return [
+            [t * ax * ax + c, t * ax * ay - s * az, t * ax * az + s * ay],
+            [t * ax * ay + s * az, t * ay * ay + c, t * ay * az - s * ax],
+            [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c],
+        ]
+
+    euler_str = body.get("euler")
+    if euler_str:
+        vals = _parse_floats(euler_str)
+        return _rpy_to_rot3(vals[0], vals[1], vals[2])
+
+    xyaxes_str = body.get("xyaxes")
+    if xyaxes_str:
+        vals = _parse_floats(xyaxes_str)
+        x = vals[0:3]
+        y = vals[3:6]
+        z = [
+            x[1] * y[2] - x[2] * y[1],
+            x[2] * y[0] - x[0] * y[2],
+            x[0] * y[1] - x[1] * y[0],
+        ]
+        mag_z = math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2])
+        if mag_z > 1e-15:
+            z = [z[i] / mag_z for i in range(3)]
+        return [x, y, z]
+
+    zaxis_str = body.get("zaxis")
+    if zaxis_str:
+        z = _parse_floats(zaxis_str)
+        mag = math.sqrt(sum(v * v for v in z))
+        if mag > 1e-15:
+            z = [v / mag for v in z]
+        if abs(z[2]) < 0.99:
+            up = [0.0, 0.0, 1.0]
+        else:
+            up = [1.0, 0.0, 0.0]
+        x = [
+            up[1] * z[2] - up[2] * z[1],
+            up[2] * z[0] - up[0] * z[2],
+            up[0] * z[1] - up[1] * z[0],
+        ]
+        mag_x = math.sqrt(sum(v * v for v in x))
+        if mag_x > 1e-15:
+            x = [v / mag_x for v in x]
+        y = [
+            z[1] * x[2] - z[2] * x[1],
+            z[2] * x[0] - z[0] * x[2],
+            z[0] * x[1] - z[1] * x[0],
+        ]
+        return [x, y, z]
+
+    return _identity_3x3()
+
+
+# ── FK chain computation ─────────────────────────────────────────────────────
+
+
+def _compute_urdf_world_frames(
+    path: Path,
+    joint_names: set[str],
+) -> dict[str, tuple[list[float], list[float]]]:
+    """Compute world-frame (position, axis) for each URDF joint via FK.
+
+    Traces the full URDF kinematic chain (including fixed joints) from the
+    root link to each target joint, accumulating SE(3) transforms.  Returns
+    joint position and axis expressed in the world frame at zero configuration.
+    """
+    root = ET.parse(path).getroot()
+
+    all_joints: dict[str, tuple[str, str, list, list, list]] = {}
+    child_to_joint: dict[str, str] = {}
+
+    for jelem in root.findall("joint"):
+        jname = jelem.get("name", "")
+        parent_elem = jelem.find("parent")
+        child_elem = jelem.find("child")
+        if parent_elem is None or child_elem is None:
+            continue
+        parent_link = parent_elem.get("link", "")
+        child_link = child_elem.get("link", "")
+
+        origin = jelem.find("origin")
+        xyz = _parse_floats(origin.get("xyz", "0 0 0")) if origin is not None else [0, 0, 0]
+        rpy = _parse_floats(origin.get("rpy", "0 0 0")) if origin is not None else [0, 0, 0]
+
+        axis_elem = jelem.find("axis")
+        axis = _parse_floats(axis_elem.get("xyz", "0 0 1")) if axis_elem is not None else [0, 0, 1]
+
+        all_joints[jname] = (parent_link, child_link, xyz, rpy, axis)
+        child_to_joint[child_link] = jname
+
+    link_frames: dict[str, tuple[list[list[float]], list[float]]] = {}
+    _in_progress: set[str] = set()
+
+    def get_link_frame(link_name: str) -> tuple[list[list[float]], list[float]]:
+        if link_name in link_frames:
+            return link_frames[link_name]
+        if link_name not in child_to_joint or link_name in _in_progress:
+            link_frames[link_name] = (_identity_3x3(), [0.0, 0.0, 0.0])
+            return link_frames[link_name]
+        _in_progress.add(link_name)
+        jname = child_to_joint[link_name]
+        parent_link, _, xyz, rpy, _ = all_joints[jname]
+        parent_r, parent_p = get_link_frame(parent_link)
+        local_r = _rpy_to_rot3(rpy[0], rpy[1], rpy[2])
+        child_r, child_p = _compose_transform(parent_r, parent_p, local_r, xyz)
+        link_frames[link_name] = (child_r, child_p)
+        _in_progress.discard(link_name)
+        return child_r, child_p
+
+    result: dict[str, tuple[list[float], list[float]]] = {}
+    for jname in joint_names:
+        if jname not in all_joints:
+            continue
+        parent_link, child_link, xyz, rpy, axis = all_joints[jname]
+        parent_r, parent_p = get_link_frame(parent_link)
+        local_r = _rpy_to_rot3(rpy[0], rpy[1], rpy[2])
+        joint_r, joint_p = _compose_transform(parent_r, parent_p, local_r, xyz)
+        world_axis = _mat_vec_3(joint_r, axis)
+        result[jname] = (joint_p, world_axis)
+        link_frames[child_link] = (joint_r, joint_p)
+
+    return result
+
+
+def _compute_mjcf_world_frames(
+    path: Path,
+    joint_names: set[str],
+) -> dict[str, tuple[list[float], list[float]]]:
+    """Compute world-frame (position, axis) for each MJCF joint via FK.
+
+    Walks the ``<worldbody>`` hierarchy, accumulating body ``pos`` and
+    orientation transforms (quat/euler/axisangle/xyaxes/zaxis), and
+    extracts joint axis in the body frame.  Default-class axis inheritance
+    (including ``childclass``) is resolved so explicit and inherited axes
+    are treated uniformly.
+    """
+    root = ET.parse(path).getroot()
+
+    defaults: dict[str, dict] = {}
+    for default_elem in root.iter("default"):
+        cls = default_elem.get("class")
+        if cls is None:
+            continue
+        joint_elem = default_elem.find("joint")
+        if joint_elem is not None:
+            defaults[cls] = dict(joint_elem.attrib)
+
+    root_class = _detect_root_class(root)
+
+    def resolve_axis(cls_name: str, joint_elem: ET.Element) -> list[float]:
+        explicit = joint_elem.get("axis")
+        if explicit is not None:
+            return _parse_floats(explicit)
+        merged: dict[str, str] = {}
+        if root_class and root_class in defaults:
+            merged.update(defaults[root_class])
+        if cls_name in defaults:
+            merged.update(defaults[cls_name])
+        return _parse_floats(merged.get("axis", "0 1 0"))
+
+    result: dict[str, tuple[list[float], list[float]]] = {}
+
+    def traverse(
+        elem: ET.Element,
+        parent_r: list[list[float]],
+        parent_p: list[float],
+        active_childclass: str,
+    ) -> None:
+        for body in elem.findall("body"):
+            pos = _parse_floats(body.get("pos", "0 0 0"))
+            r_local = _mjcf_body_rotation(body)
+
+            r_world, p_world = _compose_transform(parent_r, parent_p, r_local, pos)
+
+            body_childclass = body.get("childclass", active_childclass)
+
+            for joint_elem in body.findall("joint"):
+                jname = joint_elem.get("name")
+                if jname not in joint_names:
+                    continue
+                cls = joint_elem.get("class", body_childclass)
+                axis_local = resolve_axis(cls, joint_elem)
+                world_axis = _mat_vec_3(r_world, axis_local)
+
+                joint_pos_str = joint_elem.get("pos")
+                if joint_pos_str:
+                    jp = _parse_floats(joint_pos_str)
+                    j_world_pos = _vec_add_3(p_world, _mat_vec_3(r_world, jp))
+                else:
+                    j_world_pos = list(p_world)
+
+                result[jname] = (j_world_pos, world_axis)
+
+            traverse(body, r_world, p_world, body_childclass)
+
+    worldbody = root.find("worldbody")
+    if worldbody is not None:
+        traverse(worldbody, _identity_3x3(), [0.0, 0.0, 0.0], root_class or "")
+
+    return result
 
 
 def _detect_root_class(root: ET.Element) -> str | None:
@@ -173,7 +498,7 @@ def parse_mjcf(
         params.diag_inertia = _parse_floats(inertial.get("diaginertia", "0 0 0"))
         quat = inertial.get("quat")
         if quat:
-            params.origin_rpy = _parse_floats(quat)  # Store raw quat for reporting
+            params.origin_quat = _parse_floats(quat)
         links[name] = params
 
     # ── Actuator → joint forcerange map ──
@@ -362,20 +687,6 @@ def _urdf_principal_moments(params: "InertialParams") -> list[float]:
 # ── Physical plausibility (URDF inertia vs collision-shape mass distribution) ─
 
 
-def _rpy_to_rotmat(rpy: tuple[float, float, float]):
-    import numpy as np  # noqa: PLC0415
-
-    r, p, y = rpy
-    cr, sr = math.cos(r), math.sin(r)
-    cp, sp = math.cos(p), math.sin(p)
-    cy, sy = math.cos(y), math.sin(y)
-    return (
-        np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
-        @ np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
-        @ np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-    )
-
-
 def _shape_volume_and_local_inertia(shape_elem: ET.Element):
     """Return (volume, I_local_unit_mass) for a URDF collision/visual primitive.
 
@@ -473,7 +784,7 @@ def _urdf_link_collision_inertia(
     I_total = np.zeros((3, 3))
     for vol, I_local, xyz, rpy in primitives:
         m_i = total_mass * vol / total_vol
-        R = _rpy_to_rotmat(rpy)
+        R = np.asarray(_rpy_to_rot3(rpy[0], rpy[1], rpy[2]), dtype=float)
         I_at_origin_centroid = R @ (m_i * I_local) @ R.T
         r = np.asarray(xyz, dtype=float)
         I_total += I_at_origin_centroid + m_i * (np.dot(r, r) * np.eye(3) - np.outer(r, r))
@@ -850,6 +1161,12 @@ def compare(
                 f"    [NOTE] URDF inertial frame rotated rpy=[{rpy_str}]; "
                 "compared via principal moments."
             )
+        if mjcf_ip.origin_quat != [1.0, 0.0, 0.0, 0.0]:
+            quat_str = " ".join(_fmt(v) for v in mjcf_ip.origin_quat)
+            print(
+                f"    [NOTE] MJCF inertial frame rotated quat=[{quat_str}]; "
+                "compared via principal moments."
+            )
 
         # Physical plausibility: compare URDF-declared inertia trace to the
         # estimate from collision-shape mass distribution.  Both quantities
@@ -864,7 +1181,19 @@ def compare(
         print()
 
     # ── Joint comparison ──
+    #
+    # URDF and MJCF may use different local coordinate conventions at each
+    # joint (e.g. URDF keeps all axes as Z and rotates frames via RPY;
+    # MJCF minimises body rotations and uses Y-axis instead).  Comparing
+    # raw local-frame position/axis vectors produces false mismatches.
+    #
+    # We compute Forward Kinematics (FK) to world frame for both files and
+    # compare positions and axes there — a frame-invariant comparison.
+
     print("--- Joint Parameters ---\n")
+
+    urdf_world = _compute_urdf_world_frames(urdf_path, joint_set)
+    mjcf_world = _compute_mjcf_world_frames(mjcf_path, joint_set)
 
     for jname in joint_names:
         mjcf_jp = mjcf_joints.get(jname)
@@ -881,20 +1210,92 @@ def compare(
 
         print(f"  [{jname}]")
 
-        # Position limits
-        if not _close(mjcf_jp.lower, urdf_jp.lower, tolerance) or not _close(
-            mjcf_jp.upper, urdf_jp.upper, tolerance
-        ):
+        # World-frame axis comparison (FK-based) — run first so anti-parallel
+        # detection can inform the range comparison below.
+        u_wf = urdf_world.get(jname)
+        m_wf = mjcf_world.get(jname)
+        axis_anti_parallel = False
+
+        if u_wf is not None and m_wf is not None:
+            u_world_pos, u_world_axis = u_wf
+            m_world_pos, m_world_axis = m_wf
+
+            is_parallel, same_sign = _axes_parallel(m_world_axis, u_world_axis)
+            if not is_parallel:
+                m_axis_s = " ".join(_fmt(v) for v in m_world_axis)
+                u_axis_s = " ".join(_fmt(v) for v in u_world_axis)
+                print(f"    AXIS MISMATCH (world frame):  MJCF=[{m_axis_s}]  URDF=[{u_axis_s}]")
+                m_local = " ".join(_fmt(v) for v in mjcf_jp.axis)
+                u_local = " ".join(_fmt(v) for v in urdf_jp.axis)
+                print(f"      local axes: MJCF=[{m_local}]  URDF=[{u_local}]")
+                mismatches += 1
+            elif not same_sign:
+                axis_anti_parallel = True
+                axis_str = " ".join(_fmt(v) for v in m_world_axis)
+                print(
+                    f"    axis (world): [{axis_str}]  OK (anti-parallel — sign convention differs)"
+                )
+            else:
+                axis_str = " ".join(_fmt(v) for v in m_world_axis)
+                print(f"    axis (world): [{axis_str}]  OK")
+
+            # World-frame position comparison (FK-based)
+            origins_match = _vec_close_3(m_world_pos, u_world_pos, tolerance)
+            if not origins_match:
+                m_pos_s = " ".join(_fmt(v) for v in m_world_pos)
+                u_pos_s = " ".join(_fmt(v) for v in u_world_pos)
+                print(f"    POSITION MISMATCH (world frame):  MJCF=[{m_pos_s}]  URDF=[{u_pos_s}]")
+                m_local_o = " ".join(_fmt(v) for v in mjcf_jp.origin_xyz)
+                u_local_o = " ".join(_fmt(v) for v in urdf_jp.origin_xyz)
+                print(f"      local origins: MJCF=[{m_local_o}]  URDF=[{u_local_o}]")
+                mismatches += 1
+            else:
+                pos_str = " ".join(_fmt(v) for v in m_world_pos)
+                print(f"    position (world): [{pos_str}]  OK")
+        else:
+            print("    [WARN] FK unavailable — falling back to local-frame comparison")
+            warnings += 1
+            axes_match = all(_close(mjcf_jp.axis[i], urdf_jp.axis[i], tolerance) for i in range(3))
+            if not axes_match:
+                m_axis = " ".join(_fmt(v) for v in mjcf_jp.axis)
+                u_axis = " ".join(_fmt(v) for v in urdf_jp.axis)
+                print(f"    AXIS MISMATCH (local):  MJCF=[{m_axis}]  URDF=[{u_axis}]")
+                mismatches += 1
+            origins_match = all(
+                _close(mjcf_jp.origin_xyz[i], urdf_jp.origin_xyz[i], tolerance) for i in range(3)
+            )
+            if not origins_match:
+                m_orig = " ".join(_fmt(v) for v in mjcf_jp.origin_xyz)
+                u_orig = " ".join(_fmt(v) for v in urdf_jp.origin_xyz)
+                print(f"    ORIGIN MISMATCH (local):  MJCF=[{m_orig}]  URDF=[{u_orig}]")
+                warnings += 1
+
+        # Position limits — when axes are anti-parallel, positive rotation in
+        # one format is negative in the other, so limits must be negated and
+        # swapped for a correct comparison.
+        m_lower = mjcf_jp.lower
+        m_upper = mjcf_jp.upper
+        u_lower = urdf_jp.lower
+        u_upper = urdf_jp.upper
+        if axis_anti_parallel:
+            u_lower, u_upper = -urdf_jp.upper, -urdf_jp.lower
+
+        if not _close(m_lower, u_lower, tolerance) or not _close(m_upper, u_upper, tolerance):
             print(
                 f"    RANGE MISMATCH:"
                 f"  MJCF=[{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]"
                 f"  URDF=[{_fmt(urdf_jp.lower)}, {_fmt(urdf_jp.upper)}]"
             )
+            if axis_anti_parallel:
+                print(
+                    f"      (compared with sign-swapped URDF limits"
+                    f" [{_fmt(u_lower)}, {_fmt(u_upper)}] due to anti-parallel axes)"
+                )
             mismatches += 1
         else:
-            print(f"    range: [{_fmt(mjcf_jp.lower)}, {_fmt(mjcf_jp.upper)}]  OK")
+            print(f"    range: [{_fmt(m_lower)}, {_fmt(m_upper)}]  OK")
 
-        # Effort limits
+        # Effort limits (frame-independent)
         if not _close(mjcf_jp.effort, urdf_jp.effort, tolerance):
             print(
                 f"    EFFORT MISMATCH:  MJCF={_fmt(mjcf_jp.effort)}  URDF={_fmt(urdf_jp.effort)}"
@@ -902,28 +1303,6 @@ def compare(
             mismatches += 1
         else:
             print(f"    effort: {_fmt(mjcf_jp.effort)}  OK")
-
-        # Axis
-        axes_match = all(_close(mjcf_jp.axis[i], urdf_jp.axis[i], tolerance) for i in range(3))
-        if not axes_match:
-            m_axis = " ".join(_fmt(v) for v in mjcf_jp.axis)
-            u_axis = " ".join(_fmt(v) for v in urdf_jp.axis)
-            print(f"    AXIS MISMATCH:  MJCF=[{m_axis}]  URDF=[{u_axis}]")
-            mismatches += 1
-        else:
-            axis_str = " ".join(_fmt(v) for v in mjcf_jp.axis)
-            print(f"    axis: [{axis_str}]  OK")
-
-        # Origin position
-        origins_match = all(
-            _close(mjcf_jp.origin_xyz[i], urdf_jp.origin_xyz[i], tolerance) for i in range(3)
-        )
-        if not origins_match:
-            m_orig = " ".join(_fmt(v) for v in mjcf_jp.origin_xyz)
-            u_orig = " ".join(_fmt(v) for v in urdf_jp.origin_xyz)
-            print(f"    ORIGIN MISMATCH:  MJCF=[{m_orig}]  URDF=[{u_orig}]")
-            print("           [NOTE] MJCF and URDF use different coordinate conventions.")
-            warnings += 1
 
         # Armature (MJCF-only)
         if mjcf_jp.armature > 0:

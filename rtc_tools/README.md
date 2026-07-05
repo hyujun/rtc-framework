@@ -215,8 +215,8 @@ ros2 run rtc_tools compare_mjcf_urdf --tolerance 0.01
 | Inertial frame rotation | quaternion | rpy (회전 시 경고) |
 | Joint position limits | `range` (default class 상속) | `<limit lower/upper>` |
 | Joint effort limits | `forcerange` (default class 상속) | `<limit effort>` |
-| Joint axis | `axis` | `<axis xyz>` |
-| Link origin offset | `<body pos>` | `<joint origin xyz>` (컨벤션 차이 경고) |
+| Joint axis (world frame) | `axis` (FK 변환) | `<axis xyz>` (FK 변환), 평행성 검사 (anti-parallel 허용) |
+| Joint position (world frame) | `<body pos/quat>` (FK 누적) | `<joint origin xyz/rpy>` (FK 누적) |
 | Armature | `<joint armature>` | N/A (MJCF 전용, 참고 표시) |
 
 **MJCF default class 해석**: `ur5e` → `size3` → `size3_limited` / `size1` 상속 체인 자동 해석
