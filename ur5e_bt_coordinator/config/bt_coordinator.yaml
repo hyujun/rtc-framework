@@ -25,6 +25,14 @@ bt_coordinator:
     # finger_map.middle: [4, 5, 6, 7]
     # finger_map.ring:   [8, 9, 10, 11]
 
+    # ── Optional-sensor capabilities (Seam D) ────────────────────────────────
+    # false → 해당 센서를 읽는 BT 노드군을 등록에서 제외. 그 노드를 참조하는 트리는
+    # 로드 시 "unknown node" 로 실패한다(on_configure FAILURE). 전부 true 가 default
+    # (ur5e/hand 는 세 센서 모두 존재 — 기존 동작과 동일).
+    has_grasp_sensing: true          # GraspControl/IsForceAbove/IsGraspPhase/IsGrasped
+    has_tof: true                    # StartToFCollection/StopToFCollection/ProcessSearchData
+    has_shape: true                  # TriggerShapeEstimation/WaitShapeResult/CheckShapeType
+
     tick_rate_hz: 80.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
     repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]

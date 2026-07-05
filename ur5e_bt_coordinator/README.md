@@ -134,6 +134,9 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b`. 빈 문자열이면 `on_configure` FAILURE |
 | `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT. `<= 0`이면 `on_configure` FAILURE |
 | `hand_dof` | `10` | Hand 관절 폭 (hand pose 길이 검증 + 패딩). assm_v1·proto_1b 모두 10. `<= 0`이면 `on_configure` FAILURE |
+| `has_grasp_sensing` | `true` | Grasp-force 센싱 노드군 (`GraspControl`/`IsForceAbove`/`IsGraspPhase`/`IsGrasped`) 등록 여부 (Seam D) |
+| `has_tof` | `true` | ToF 근접센싱 노드군 (`StartToFCollection`/`StopToFCollection`/`ProcessSearchData`) 등록 여부 (Seam D) |
+| `has_shape` | `true` | Shape estimation 노드군 (`TriggerShapeEstimation`/`WaitShapeResult`/`CheckShapeType`) 등록 여부 (Seam D) |
 | `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
@@ -144,6 +147,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `watchdog_interval_s` | `5.0` | 헬스 체크 주기 [s] (0 = 비활성) |
 
 반복 모드에서 트리 재시작 시 `object_pose` blackboard 변수가 자동으로 초기화된다.
+
+`has_*` capability 를 `false` 로 두면 해당 센서를 읽는 BT 노드가 factory 에 등록되지 않는다. 그 노드를 참조하는 트리는 로드 시 BehaviorTree.CPP 의 "unknown node" 에러로 실패하며, `on_configure` 가 이를 잡아 깨끗한 FAILURE 로 전환한다 (센서 없는 로봇이 데이터 없는 노드를 tick 하는 것을 설정 시점에 차단).
 
 ### 런타임 제어
 

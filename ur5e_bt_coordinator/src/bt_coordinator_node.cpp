@@ -1,38 +1,7 @@
 #include "ur5e_bt_coordinator/bt_coordinator_node.hpp"
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
-
-// Action nodes
-#include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
-#include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
-#include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
-#include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
-#include "ur5e_bt_coordinator/action_nodes/start_tof_collection.hpp"
-#include "ur5e_bt_coordinator/action_nodes/stop_tof_collection.hpp"
-#include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
-#include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
-#include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
-#include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
-#include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
-
-// Condition nodes
-#include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
+#include "ur5e_bt_coordinator/bt_node_registration.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -99,7 +68,21 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
   }
 
   RegisterBtNodes();
-  LoadTree();
+
+  // A tree referencing a capability-gated-out node (Seam D) surfaces here as
+  // BehaviorTree.CPP's "unknown node" error — turn it into a clean lifecycle
+  // FAILURE with a hint instead of an executor abort.
+  try {
+    LoadTree();
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(coord_log(),
+                 "tree load failed: %s. If the tree references a grasp/tof/shape "
+                 "node, the matching capability (has_grasp_sensing/has_tof/has_shape) "
+                 "must be true.",
+                 e.what());
+    bridge_.reset();
+    return CallbackReturn::FAILURE;
+  }
   InitializeBlackboard();
 
 #ifdef BT_GROOT2_AVAILABLE
@@ -249,6 +232,11 @@ void BtCoordinatorNode::DeclareParameters() {
   hand_group_ = safe_declare("hand_group", std::string("hand"));
   arm_dof_ = safe_declare("arm_dof", kDefaultArmDof);
   hand_dof_ = safe_declare("hand_dof", kDefaultHandDof);
+  // Optional-sensor capabilities (Seam D): false skips registering the node
+  // group that reads that sensor. Default true = every group registered.
+  has_grasp_sensing_ = safe_declare("has_grasp_sensing", true);
+  has_tof_ = safe_declare("has_tof", true);
+  has_shape_ = safe_declare("has_shape", true);
   tick_rate_hz_ = safe_declare("tick_rate_hz", 20.0);
   repeat_ = safe_declare("repeat", false);
   repeat_delay_s_ = safe_declare("repeat_delay_s", 1.0);
@@ -260,45 +248,11 @@ void BtCoordinatorNode::DeclareParameters() {
 }
 
 void BtCoordinatorNode::RegisterBtNodes() {
-  auto bridge = bridge_;
-
-  // ── Action nodes ──────────────────────────────────────────────────────
-  factory_.registerNodeType<MoveToPose>("MoveToPose", bridge);
-  factory_.registerNodeType<MoveToJoints>("MoveToJoints", bridge);
-  factory_.registerNodeType<GraspControl>("GraspControl", bridge);
-  factory_.registerNodeType<TrackTrajectory>("TrackTrajectory", bridge);
-  factory_.registerNodeType<SetGains>("SetGains", bridge);
-  factory_.registerNodeType<SwitchController>("SwitchController", bridge);
-  factory_.registerNodeType<ComputeOffsetPose>("ComputeOffsetPose");
-  factory_.registerNodeType<SetPoseZ>("SetPoseZ");
-  factory_.registerNodeType<ComputeSweepTrajectory>("ComputeSweepTrajectory");
-  factory_.registerNodeType<ComputeTiltSequence>("ComputeTiltSequence");
-  factory_.registerNodeType<GetCurrentPose>("GetCurrentPose", bridge);
-  factory_.registerNodeType<WaitDuration>("WaitDuration");
-
-  // ── Hand demo nodes ─────────────────────────────────────────────────
-  factory_.registerNodeType<MoveFinger>("MoveFinger", bridge);
-  factory_.registerNodeType<FlexExtendFinger>("FlexExtendFinger", bridge);
-  factory_.registerNodeType<SetHandPose>("SetHandPose", bridge);
-  factory_.registerNodeType<UR5eHoldPose>("UR5eHoldPose", bridge);
-  factory_.registerNodeType<MoveOpposition>("MoveOpposition", bridge);
-
-  // ── Shape estimation nodes ──────────────────────────────────────────
-  factory_.registerNodeType<TriggerShapeEstimation>("TriggerShapeEstimation", bridge);
-  factory_.registerNodeType<WaitShapeResult>("WaitShapeResult", bridge);
-
-  // ── ToF data collection nodes ─────────────────────────────────────
-  factory_.registerNodeType<StartToFCollection>("StartToFCollection", bridge);
-  factory_.registerNodeType<StopToFCollection>("StopToFCollection", bridge);
-  factory_.registerNodeType<ProcessSearchData>("ProcessSearchData", bridge);
-
-  // ── Condition nodes ───────────────────────────────────────────────────
-  factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge);
-  factory_.registerNodeType<IsGraspPhase>("IsGraspPhase", bridge);
-  factory_.registerNodeType<IsGrasped>("IsGrasped", bridge);
-  factory_.registerNodeType<IsObjectDetected>("IsObjectDetected", bridge);
-  factory_.registerNodeType<IsVisionTargetReady>("IsVisionTargetReady", bridge);
-  factory_.registerNodeType<CheckShapeType>("CheckShapeType", bridge);
+  // Seam D: gate optional-sensor node groups by capability so a robot without
+  // a sensor never exposes nodes that would read absent data. Defaults are all
+  // true (ur5e/hand), preserving the legacy register-everything behavior.
+  rtc_bt::RegisterBtNodes(factory_, bridge_,
+                          RobotCapabilities{has_grasp_sensing_, has_tof_, has_shape_});
 }
 
 void BtCoordinatorNode::LoadTree() {

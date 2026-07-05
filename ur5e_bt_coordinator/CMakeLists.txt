@@ -29,6 +29,7 @@ find_package(tf2_ros REQUIRED)
 # ── Library: all BT nodes + ROS bridge ─────────────────────────────────────
 add_library(bt_nodes SHARED
   src/bt_ros_bridge.cpp
+  src/bt_node_registration.cpp
   src/nodes/move_to_pose.cpp
   src/nodes/move_to_joints.cpp
   src/nodes/grasp_control.cpp
@@ -118,6 +119,7 @@ if(BUILD_TESTING)
     test_bt_utils
     test_topic_naming
     test_finger_resolver
+    test_node_registration
     test_compute_offset_pose
     test_set_pose_z
     test_compute_sweep_trajectory
