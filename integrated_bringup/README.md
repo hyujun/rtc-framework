@@ -580,7 +580,16 @@ ros2 launch integrated_bringup robot.launch.py use_mock_hardware:=true  # 모의
 | `use_mock_hardware` | `false` | 모의 하드웨어 사용 (Jazzy) |
 | `use_fake_hardware` | `false` | [호환성] Humble용 별칭 |
 | `use_cpu_affinity` | `true` | CPU 격리 + DDS 핀닝 활성화 |
+| `kinematics_params_file` | `ur_description/.../ur5e/default_kinematics.yaml` | `ur_calibration` 산출 factory calibration YAML. nested `ur_rsp.launch.py`가 소비 → 드라이버의 `robot_description`/TF에 실측 반영. 아래 [UR 캘리브레이션](#ur-캘리브레이션-kinematics_params_file) 참조 |
+| `headless_mode` | `true` | Teach Pendant의 External Control play 없이 headless 제어. 실로봇 운용 기본 true |
+| `reverse_ip` | `0.0.0.0` | UR 컨트롤러가 PC로 reverse connection 시 사용할 PC IP. multi-NIC/RT 전용 NIC에서는 명시값 권장 |
+| `launch_dashboard_client` | `true` | UR Dashboard client 노드 실행 (robot mode, program/power/brake). dashboard port 차단·완전 수동 운용 시 `false` |
+| `controller_spawner_timeout` | `10` | controller_manager spawner의 load/activate 대기(초). 부하로 startup이 느리면 상향 |
+| `activate_joint_controller` | `true` | `initial_joint_controller`를 시작 시 active로. `false`면 로드만 하고 inactive |
+| `initial_joint_controller` | `forward_position_controller` | UR 드라이버가 처음 로드/활성화할 joint controller. RTC backend가 `/forward_position_controller/commands`에 publish |
 | `enable_mpc` | `""` | DemoWbcController MPC 토글. **선언만 되어 있고 robot.launch.py는 OpaqueFunction 미사용** — 실제 제어는 런타임 gains topic index 7로 수행. |
+
+> **`robot_ur5e_p1b.launch.py`** (UR5e + proto_1b) 도 위 UR 드라이버 인자 집합을 **동일하게** 노출한다 (`kinematics_params_file` 외 6개 포함). p1b는 hand config·`/p1b/joint_states` gate만 다르다.
 
 **Launch 순서:**
 
@@ -598,6 +607,26 @@ ros2 launch integrated_bringup robot.launch.py use_mock_hardware:=true  # 모의
 
 **CycloneDDS 최적화** (`cyclone_dds.xml`):
 멀티캐스트 비활성화, 소켓 버퍼 확대(recv 8MB/send 2MB), write batching(8us), NACK 지연 최소화(10ms), 동기 전달 활성화. 상세: [`rtc_controller_manager` README](../rtc_controller_manager/README.md#설정-파일-상세)
+
+#### UR 캘리브레이션 (`kinematics_params_file`)
+
+각 UR5e는 공장 출하 시 관절 kinematics에 로봇별 오차가 있다. `ur_calibration`으로 실측 YAML을 추출해 `kinematics_params_file`로 넘기면 UR 드라이버가 publish하는 `robot_description`/TF에 반영된다.
+
+```bash
+# 1) 로봇별 calibration YAML 추출 (1회, robot_ip 대상)
+ros2 launch ur_calibration calibration_correction.launch.py \
+  robot_ip:=192.168.1.10 \
+  target_filename:=/absolute/path/to/ur5e_calibration.yaml
+
+# 2) bringup에 전달
+ros2 launch integrated_bringup robot_ur5e_p1b.launch.py \
+  robot_ip:=192.168.1.10 \
+  kinematics_params_file:=/absolute/path/to/ur5e_calibration.yaml
+```
+
+> **주의 (제어 모델 범위):** `kinematics_params_file`은 UR 드라이버가 publish하는 `robot_description`/TF에만 영향을 준다. RTC 컨트롤러의 Pinocchio 모델은 별도로 `config/<variant>/_base.yaml`의 `urdf:` 경로를 읽으므로, 제어 모델까지 calibration을 일치시키려면 후속 작업으로 URDF 생성 경로가 같은 YAML을 반영하도록 해야 한다 (본 범위 밖).
+>
+> `ur_calibration`은 `package.xml` `<exec_depend>`로 선언되어 `rosdep`(→ `ros-jazzy-ur-calibration`)이 설치한다.
 
 ---
 
