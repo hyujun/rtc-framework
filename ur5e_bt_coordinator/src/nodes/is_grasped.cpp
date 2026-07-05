@@ -51,15 +51,18 @@ BT::NodeStatus IsGrasped::tick() {
     return BT::NodeStatus::FAILURE;
   }
 
-  // Custom threshold: recount from per-fingertip data.
-  // contact_flag semantic depends on producer capability (see GraspState.msg):
-  // sensor A backends emit native sigmoid prob, sensor B backends emit
-  // derived binary 1.0/0.0 — both work with the `> 0.5f` predicate.
+  // Custom threshold: recount from per-fingertip data. The BT force_threshold_N
+  // is the sole gate here — we deliberately do NOT also require contact_flag >
+  // 0.5. For force-only producers (has_native_contact=false) contact_flag is a
+  // derived binary that already bakes in the controller's grasp_force_threshold,
+  // so ANDing it in would silently clamp any BT threshold below that floor
+  // (e.g. an in-transit drop guard of 0.5 N under a 1.0 N controller floor) up
+  // to the floor, making the lenient guard unreachable. inference_valid still
+  // gates per-fingertip staleness.
   int count = 0;
   float max_force = 0.0f;
   for (const auto& ft : gs.fingertips) {
-    if (ft.inference_valid && ft.contact_flag > 0.5f &&
-        ft.force_magnitude > static_cast<float>(threshold)) {
+    if (ft.inference_valid && ft.force_magnitude > static_cast<float>(threshold)) {
       ++count;
     }
     if (ft.force_magnitude > max_force)
