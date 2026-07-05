@@ -67,7 +67,9 @@ TEST(NodeRegistration, DefaultRegistersEveryGroup) {
 TEST(NodeRegistration, NoGraspSensingDropsGraspGroupOnly) {
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<rtc_bt::BtRosBridge> null_bridge;
-  RegisterBtNodes(factory, null_bridge, RobotCapabilities{/*grasp=*/false, true, true});
+  RegisterBtNodes(
+      factory, null_bridge,
+      RobotCapabilities{.has_grasp_sensing = false, .has_tof = true, .has_shape = true});
 
   ExpectAll(factory, kGraspNodes, false);
   ExpectAll(factory, kToFNodes, true);
@@ -78,7 +80,9 @@ TEST(NodeRegistration, NoGraspSensingDropsGraspGroupOnly) {
 TEST(NodeRegistration, NoToFDropsToFGroupOnly) {
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<rtc_bt::BtRosBridge> null_bridge;
-  RegisterBtNodes(factory, null_bridge, RobotCapabilities{true, /*tof=*/false, true});
+  RegisterBtNodes(
+      factory, null_bridge,
+      RobotCapabilities{.has_grasp_sensing = true, .has_tof = false, .has_shape = true});
 
   ExpectAll(factory, kToFNodes, false);
   ExpectAll(factory, kGraspNodes, true);
@@ -89,7 +93,9 @@ TEST(NodeRegistration, NoToFDropsToFGroupOnly) {
 TEST(NodeRegistration, NoShapeDropsShapeGroupOnly) {
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<rtc_bt::BtRosBridge> null_bridge;
-  RegisterBtNodes(factory, null_bridge, RobotCapabilities{true, true, /*shape=*/false});
+  RegisterBtNodes(
+      factory, null_bridge,
+      RobotCapabilities{.has_grasp_sensing = true, .has_tof = true, .has_shape = false});
 
   ExpectAll(factory, kShapeNodes, false);
   ExpectAll(factory, kGraspNodes, true);
@@ -102,7 +108,9 @@ TEST(NodeRegistration, NoShapeDropsShapeGroupOnly) {
 TEST(NodeRegistration, PositionOnlyDropsAllSensorGroups) {
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<rtc_bt::BtRosBridge> null_bridge;
-  RegisterBtNodes(factory, null_bridge, RobotCapabilities{false, false, false});
+  RegisterBtNodes(
+      factory, null_bridge,
+      RobotCapabilities{.has_grasp_sensing = false, .has_tof = false, .has_shape = false});
 
   ExpectAll(factory, kGraspNodes, false);
   ExpectAll(factory, kToFNodes, false);
@@ -122,7 +130,9 @@ TEST(NodeRegistration, TreeReferencingGatedNodeFailsToBuild) {
   {
     BT::BehaviorTreeFactory factory;
     std::shared_ptr<rtc_bt::BtRosBridge> null_bridge;
-    RegisterBtNodes(factory, null_bridge, RobotCapabilities{/*grasp=*/false, true, true});
+    RegisterBtNodes(
+        factory, null_bridge,
+        RobotCapabilities{.has_grasp_sensing = false, .has_tof = true, .has_shape = true});
     // GraspControl is not registered → factory rejects the tree.
     EXPECT_THROW(factory.createTreeFromText(grasp_tree), std::exception);
   }

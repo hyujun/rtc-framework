@@ -248,15 +248,20 @@ bt_coordinator:
 `variant` launch arg 로 device group + poses 파일을 통째로 선택한다. 공통 설정(bb.* 등)은
 base `bt_coordinator.yaml` 한 곳에서만 관리되고, variant 는 delta 만 얹는다.
 
-| variant | 로드되는 파일 | hand_group | hand 분할 |
+| variant | 로드되는 파일 (순서) | hand_group | hand 분할 |
 |---------|--------------|-----------|-----------|
 | `ur5e_hand` (default) | `bt_coordinator.yaml` + `poses.yaml` | `hand` | thumb3/index3/middle3/ring1 |
 | `ur5e_p1b` | 위 + `bt_coordinator_p1b.yaml` + `poses_p1b.yaml` | `p1b` | thumb4/index3/middle2/ring1 |
 
-**Pose-name 계약**: variant 의 poses 파일은 default 가 제공하는 `hand_pose.*`/`arm_pose.*`
-이름 집합을 **그대로** 정의해야 한다 (값만 다르고 이름 집합은 동일). 이래야 트리가 참조하는
-포즈 이름이 두 variant 모두에서 해석되어 **트리를 무수정 재사용**할 수 있다. 이 계약은
-`test_tree_validation` 의 `PoseNameParityDefaultVsP1b` 테스트가 강제한다.
+`ur5e_p1b` 는 `poses.yaml` 을 먼저 로드한 뒤 `poses_p1b.yaml` 로 `hand_pose.*` 만 덮어쓴다.
+따라서 **arm_pose.\* 는 `poses.yaml` 한 곳에서만 관리**되고(UR5e 팔 공용), `poses_p1b.yaml`
+에는 hand 포즈만 둔다.
+
+**Pose-name 계약**: `poses_p1b.yaml` 은 default 의 `hand_pose.*` 이름을 **모두** override
+해야 한다 (하나라도 빠지면 그 포즈가 assm 레이아웃 값을 그대로 물려받아 joint 순서가 어긋난다).
+동시에 `arm_pose.*` 를 재정의해선 안 된다. 이 두 조건을 `test_tree_validation` 의
+`PoseNameParityDefaultVsP1b` 가 강제한다. 이래야 트리가 참조하는 포즈 이름이 두 variant 모두에서
+해석되어 **트리를 무수정 재사용**할 수 있다.
 
 **Capability 계약**: `has_*` 가 false 인 센서의 노드군은 등록되지 않으므로, 그 노드를 참조하는
 트리는 로드 시 실패한다(`on_configure` FAILURE). position-only variant 설계 시 사용.

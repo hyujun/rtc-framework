@@ -516,7 +516,7 @@ ur5e_bt_coordinator/
 │   ├── bt_coordinator.yaml          # ROS2 파라미터 (트리, tick rate, 런타임 제어, bb.*)
 │   ├── bt_coordinator_p1b.yaml      # ur5e_p1b variant delta (hand_group=p1b)
 │   ├── poses.yaml                   # Hand/UR5e 포즈 오버라이드 (deg 단위, 재컴파일 불필요)
-│   └── poses_p1b.yaml               # proto_1b 포즈 (thumb4/index3/middle2/ring1)
+│   └── poses_p1b.yaml               # proto_1b hand 포즈만 (poses.yaml 위 override; arm 은 공용)
 ├── launch/
 │   └── bt_coordinator.launch.py     # Launch 파일 (YAML + poses 자동 로드, launch arg 지원)
 ├── trees/

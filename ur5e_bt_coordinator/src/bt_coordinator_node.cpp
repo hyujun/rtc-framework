@@ -67,6 +67,12 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
     return CallbackReturn::FAILURE;
   }
 
+  // Reset the factory to a fresh instance before (re)registering. on_configure
+  // can run more than once — after on_cleanup, or after a prior configure
+  // returned FAILURE — and registerNodeType throws "already registered" on a
+  // populated factory. A fresh factory also lets a reconfigure pick up changed
+  // capability params. (factory_ is not owned by on_cleanup, so it persists.)
+  factory_ = BT::BehaviorTreeFactory{};
   RegisterBtNodes();
 
   // A tree referencing a capability-gated-out node (Seam D) surfaces here as
@@ -251,8 +257,10 @@ void BtCoordinatorNode::RegisterBtNodes() {
   // Seam D: gate optional-sensor node groups by capability so a robot without
   // a sensor never exposes nodes that would read absent data. Defaults are all
   // true (ur5e/hand), preserving the legacy register-everything behavior.
-  rtc_bt::RegisterBtNodes(factory_, bridge_,
-                          RobotCapabilities{has_grasp_sensing_, has_tof_, has_shape_});
+  rtc_bt::RegisterBtNodes(
+      factory_, bridge_,
+      RobotCapabilities{
+          .has_grasp_sensing = has_grasp_sensing_, .has_tof = has_tof_, .has_shape = has_shape_});
 }
 
 void BtCoordinatorNode::LoadTree() {

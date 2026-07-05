@@ -11,9 +11,11 @@ bt_coordinator:
     # | Middle | mcp_fe, dip_fe                                  | 2   | 7–8   |
     # | Ring   | mcp_fe                                          | 1   | 9     |
     #
-    # 포즈 이름 집합은 default(poses.yaml)와 동일해야 한다 — 기존 트리가 참조하는
-    # 포즈 이름이 그대로 해석되어야 무수정 재사용이 성립 (test_tree_validation
-    # PoseNameParity 가 강제). 값은 placeholder — 하드웨어 캘리브레이션 후 교체.
+    # 이 파일은 poses.yaml 위에 얹혀 hand_pose.* 만 proto_1b 레이아웃으로 덮어쓴다
+    # (launch 가 poses.yaml → poses_p1b.yaml 순으로 로드). arm_pose.* 는 poses.yaml
+    # 한 곳에서만 관리된다 (p1b 도 UR5e 팔 공용 — 복사본 drift 방지). hand_pose 이름
+    # 집합은 poses.yaml 과 동일해야 default assm 레이아웃 포즈가 새어나오지 않는다
+    # (test_tree_validation PoseNameParity 가 강제). 값은 placeholder — 캘리브레이션 후 교체.
 
     #                          Thumb                Index          Middle    Ring
     #                          aa   cmc  mcp  dip    aa   fe   dip   fe   dip  fe
@@ -43,18 +45,5 @@ bt_coordinator:
     hand_pose.middle_dip_flex: [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 45.0,  0.0]
     hand_pose.ring_flex:       [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  60.0]
 
-    # ── UR5e 포즈 (6-DoF) ─────────────────────────────────────────────────────
-    # p1b variant 는 UR5e 팔을 그대로 쓴다 — arm 포즈는 poses.yaml 과 동일.
-    arm_pose.home_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
-    arm_pose.ready:         [0.0, -90.0, 0.0, -90.0, -90.0, 0.0]
-    arm_pose.table_top:     [0.0, -50.0, 100.0, -140.0, -90.0, 0.0]
-    arm_pose.front_reach:   [0.0, -45.0, 60.0, -105.0, -90.0, 0.0]
-    arm_pose.side_reach:    [90.0, -60.0, 80.0, -110.0, -90.0, 0.0]
-    arm_pose.handover:      [45.0, -60.0, 70.0, -100.0, -90.0, 0.0]
-    arm_pose.stow:          [0.0, -150.0, 120.0, -60.0, -90.0, 0.0]
-    arm_pose.look_up:       [0.0, -90.0, 0.0, 0.0, -90.0, 0.0]
-    arm_pose.look_down:     [0.0, -50.0, 100.0, -140.0, -90.0, 0.0]
-    arm_pose.vision_ready:  [0.0, -50.0, 100.0, -140.0, -90.0, 0.0]
-    arm_pose.pick_ready:    [0.0, -65.0, 105.0, -130.0, -90.0, 0.0]
-    arm_pose.elevated:      [0.0, -90.0, 45.0, -45.0, -90.0, 0.0]
+    # arm_pose.* 는 여기에 두지 않는다 — p1b 는 UR5e 팔을 그대로 쓰므로 poses.yaml
+    # 의 arm 포즈가 그대로 적용된다 (launch 가 poses.yaml 을 먼저 로드).
