@@ -64,16 +64,39 @@ BtCoordinatorNode::BtCoordinatorNode(const rclcpp::NodeOptions& options)
 
 BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
     const rclcpp_lifecycle::State& /*state*/) {
-  // shared_from_this() is safe here — node is managed via shared_ptr.
-  bridge_ = std::make_shared<BtRosBridge>(
-      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()),
-      RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_});
+  // Validate the robot profile before it is woven into topic names / pose
+  // widths: an empty group segment yields an invalid "//" topic name and a
+  // non-positive DoF makes every pose-length check nonsensical. Fail the
+  // transition cleanly instead of letting the bridge throw later.
+  if (arm_group_.empty() || hand_group_.empty()) {
+    RCLCPP_ERROR(coord_log(), "arm_group/hand_group must be non-empty (got '%s'/'%s')",
+                 arm_group_.c_str(), hand_group_.c_str());
+    return CallbackReturn::FAILURE;
+  }
+  if (arm_dof_ <= 0 || hand_dof_ <= 0) {
+    RCLCPP_ERROR(coord_log(), "arm_dof/hand_dof must be positive (got %d/%d)", arm_dof_, hand_dof_);
+    return CallbackReturn::FAILURE;
+  }
 
-  bridge_->LoadPoseOverrides(
-      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+  // shared_from_this() is safe here — node is managed via shared_ptr. Bridge
+  // construction and pose/finger-map loading validate their inputs by throwing
+  // (invalid topic name, missing poses YAML, out-of-range finger_map); catch so
+  // a misconfiguration is a clean lifecycle FAILURE, not an executor abort.
+  try {
+    bridge_ = std::make_shared<BtRosBridge>(
+        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()),
+        RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_});
 
-  bridge_->LoadFingerMap(
-      std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+    bridge_->LoadPoseOverrides(
+        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+
+    bridge_->LoadFingerMap(
+        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(coord_log(), "bridge configuration failed: %s", e.what());
+    bridge_.reset();
+    return CallbackReturn::FAILURE;
+  }
 
   RegisterBtNodes();
   LoadTree();

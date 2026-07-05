@@ -130,10 +130,10 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
 | `tree_file` | `"hand_motions.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
-| `arm_group` | `"ur5e"` | Arm device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<arm_group>/joint_states`, `<ns>/<arm_group>/joint_goal`) |
-| `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b` |
-| `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT |
-| `hand_dof` | `10` | Hand 관절 폭 (hand pose 길이 검증 + 패딩). assm_v1·proto_1b 모두 10 |
+| `arm_group` | `"ur5e"` | Arm device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<arm_group>/joint_states`, `<ns>/<arm_group>/joint_goal`). 빈 문자열이면 `on_configure` FAILURE (`//` 잘못된 토픽 방지) |
+| `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b`. 빈 문자열이면 `on_configure` FAILURE |
+| `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT. `<= 0`이면 `on_configure` FAILURE |
+| `hand_dof` | `10` | Hand 관절 폭 (hand pose 길이 검증 + 패딩). assm_v1·proto_1b 모두 10. `<= 0`이면 `on_configure` FAILURE |
 | `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
@@ -362,6 +362,9 @@ finger→joint index 는 상수가 아니라 `BtRosBridge::GetFingerJointIndices
 - **`ExplicitFingerResolver`** — joint 이름에 finger prefix 가 없는 hand (예: LEAP 숫자 이름
   `"0".."15"`) 용. `config` 에 `finger_map.<finger>: [idx...]` 를 하나라도 선언하면 자동 전환되며,
   map 이 authoritative 다 (sub-group 도 명시 필요). 선언 방법은 `config/bt_coordinator.yaml` 참조.
+  index 는 `on_configure` 에서 `[0, hand_dof)` 범위 검증 — 범위 밖이면 FAILURE (런타임 OOB 대신
+  설정 시점 fail-fast). 주의: `finger_map.*` 를 하나라도 선언하면 prefix 매칭이 전면 비활성화되므로,
+  Explicit 로 전환 시 사용하는 모든 finger/sub-group key 를 빠짐없이 선언해야 한다.
 
 assm_v1 hand (joint_states 순서 thumb:3/index:3/middle:3/ring:1) 예시:
 

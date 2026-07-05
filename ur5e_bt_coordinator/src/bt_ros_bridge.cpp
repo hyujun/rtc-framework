@@ -476,6 +476,18 @@ void BtRosBridge::LoadFingerMap(rclcpp_lifecycle::LifecycleNode::SharedPtr node)
   }
 
   if (!finger_map.empty()) {
+    // Validate indices against the hand DoF now, at configure time: an out-of-
+    // range index would otherwise become an OOB vector subscript the first time
+    // that finger is commanded, far from the config error. Throwing here surfaces
+    // as a clean on_configure FAILURE (the transition wraps this call).
+    for (const auto& [finger, indices] : finger_map) {
+      for (int idx : indices) {
+        if (idx < 0 || idx >= hand_dof_) {
+          throw std::runtime_error("finger_map." + finger + " index " + std::to_string(idx) +
+                                   " out of range [0," + std::to_string(hand_dof_) + ")");
+        }
+      }
+    }
     RCLCPP_INFO(poses_log(), "finger resolver: explicit (%zu finger maps)", finger_map.size());
     finger_resolver_ = std::make_unique<ExplicitFingerResolver>(std::move(finger_map));
   } else {

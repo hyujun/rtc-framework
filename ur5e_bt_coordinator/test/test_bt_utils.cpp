@@ -118,6 +118,21 @@ TEST(TrajectoryDuration, IndexedMaxVelDominates) {
   EXPECT_NEAR(d, 4.125, 1e-6);
 }
 
+TEST(TrajectoryDuration, IndexBeyondTargetIsIgnored) {
+  // Regression: target's width is the pose DoF and may be shorter than current
+  // (padded joint-state width). An index valid for current but beyond target
+  // must be skipped, not read out of bounds.
+  std::vector<double> current(10, 0.0);
+  HandPose target(4, 0.0);            // narrower than current
+  target[3] = 5.0;                    // large distance, but index 3 is in range
+  std::vector<int> indices = {3, 7};  // 7 is valid for current, beyond target
+
+  // Only index 3 contributes; index 7 is ignored (no OOB read).
+  double d = EstimateHandTrajectoryDuration(current, target, indices, 10.0, 1.0);
+  // max_dist = 5.0 → T_vel = 1.875*5.0/1.0 = 9.375 * margin(1.1) = 10.3125
+  EXPECT_NEAR(d, 10.3125, 1e-6);
+}
+
 // ── EstimateHandTrajectoryDuration (full 10-DoF version) ──────────────────
 
 TEST(TrajectoryDuration, FullZeroDistance) {

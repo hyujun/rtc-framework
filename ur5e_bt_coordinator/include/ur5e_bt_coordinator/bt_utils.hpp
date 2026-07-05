@@ -88,7 +88,13 @@ inline void ApplyPartialHandTarget(BtRosBridge& bridge, const HandPose& target_p
     }
   }
   for (int idx : joint_indices) {
-    base[idx] = target_pose[idx];
+    const auto ui = static_cast<std::size_t>(idx);
+    // Finger indices come from the resolver (config- or joint-name-derived) and
+    // are decoupled from base/pose widths; skip any out-of-range index instead
+    // of an OOB heap access on a misconfigured DoF / finger_map.
+    if (idx < 0 || ui >= base.size() || ui >= target_pose.size())
+      continue;
+    base[ui] = target_pose[ui];
   }
   bridge.PublishHandTarget(base);
 }
@@ -108,7 +114,9 @@ inline double EstimateHandTrajectoryDuration(const std::vector<double>& current,
   double max_dist = 0.0;
   for (int idx : indices) {
     const auto ui = static_cast<std::size_t>(idx);
-    if (ui < current.size()) {
+    // Guard both vectors: target's width is the pose DoF, current's is the
+    // padded joint-state width — they are no longer the same fixed size.
+    if (ui < current.size() && ui < target.size()) {
       max_dist = std::max(max_dist, std::abs(target[ui] - current[ui]));
     }
   }
@@ -142,14 +150,21 @@ inline void ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pos
                                   const std::vector<int>& target_indices) {
   const auto& home = bridge.GetHandPose("home");
   std::vector<double> cmd(home.begin(), home.end());
+  // Overlay finger joints, skipping any index the resolver returns that is out
+  // of range for cmd or the source pose (misconfigured DoF / finger_map) rather
+  // than performing an OOB heap access.
+  auto overlay = [&cmd](const std::vector<int>& indices, const HandPose& src) {
+    for (int idx : indices) {
+      const auto ui = static_cast<std::size_t>(idx);
+      if (idx < 0 || ui >= cmd.size() || ui >= src.size())
+        continue;
+      cmd[ui] = src[ui];
+    }
+  };
   // thumb 관절 덮어쓰기 (finger→index 는 joint_states name 기반 런타임 조회)
-  for (int idx : bridge.GetFingerJointIndices("thumb")) {
-    cmd[static_cast<std::size_t>(idx)] = thumb_pose[static_cast<std::size_t>(idx)];
-  }
+  overlay(bridge.GetFingerJointIndices("thumb"), thumb_pose);
   // target 손가락 관절 덮어쓰기
-  for (int idx : target_indices) {
-    cmd[static_cast<std::size_t>(idx)] = target_pose[static_cast<std::size_t>(idx)];
-  }
+  overlay(target_indices, target_pose);
   bridge.PublishHandTarget(cmd);
 }
 
