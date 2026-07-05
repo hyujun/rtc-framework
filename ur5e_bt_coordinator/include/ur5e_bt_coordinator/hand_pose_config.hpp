@@ -1,7 +1,6 @@
 // file: include/ur5e_bt_coordinator/hand_pose_config.hpp
 #pragma once
 
-#include <array>
 #include <map>
 #include <string>
 #include <vector>
@@ -9,17 +8,16 @@
 namespace rtc_bt {
 
 // ── 상수 ────────────────────────────────────────────────────────────────────
-inline constexpr int kHandDofCount = 10;
-inline constexpr int kArmDofCount = 6;
+// DoF 폭은 더 이상 컴파일타임 상수가 아니다 — RobotProfile 의 arm_dof/hand_dof
+// (default kDefaultArmDof/kDefaultHandDof, robot_profile.hpp) 런타임 값이 SSoT.
 inline constexpr double kMinDuration = 0.1;  // 최소 허용 duration [s]
 
 // ── 단위 변환 ───────────────────────────────────────────────────────────────
 inline constexpr double kPi = 3.14159265358979323846;
 inline constexpr double kDeg2Rad = kPi / 180.0;
 
-/// 포즈 배열을 deg → rad로 변환 (컴파일 타임)
-template <std::size_t N>
-inline constexpr std::array<double, N> DegToRad(std::array<double, N> pose_deg) {
+/// 포즈 벡터를 deg → rad로 변환.
+inline std::vector<double> DegToRad(std::vector<double> pose_deg) {
   for (auto& v : pose_deg)
     v *= kDeg2Rad;
   return pose_deg;
@@ -34,11 +32,16 @@ inline constexpr std::array<double, N> DegToRad(std::array<double, N> pose_deg) 
 //   "thumb"      → thumb_* 전부           (whole-finger group)
 //   "thumb_mcp"  → thumb_mcp_* 만          (sub-group; FlexExtendFinger 부분 flex)
 //   "index_dip"  → index_dip_* / "ring" → ring_* …
-// assm_v1 예시 (10-DoF hand joint_states 순서):
+// assm_v1 예시 (10-DoF hand joint_states 순서, thumb3/index3/middle3/ring1):
 //   thumb_cmc_aa(0) thumb_cmc_fe(1) thumb_mcp_fe(2) index_mcp_aa(3) index_mcp_fe(4)
 //   index_dip_fe(5) middle_mcp_aa(6) middle_mcp_fe(7) middle_dip_fe(8) ring_mcp_fe(9)
 // → "thumb"={0,1,2} "thumb_mcp"={2} "index"={3,4,5} "index_dip"={5}
 //   "middle"={6,7,8} "middle_dip"={8} "ring"={9}
+// proto_1b 예시 (10-DoF, thumb4/index3/middle2/ring1 — poses_p1b.yaml):
+//   thumb_cmc_aa(0) thumb_cmc_fe(1) thumb_mcp(2) thumb_dip_fe(3) index_mcp_aa(4)
+//   index_mcp_fe(5) index_dip_fe(6) middle_mcp_fe(7) middle_dip_fe(8) ring_mcp_fe(9)
+// → "thumb"={0,1,2,3} "thumb_mcp"={2} "index"={4,5,6} "middle"={7,8} "ring"={9}
+// prefix 매칭이 per-finger DoF 차이를 흡수하므로 두 hand 모두 코드 변경 없이 동작.
 [[nodiscard]] inline std::vector<int> FingerJointIndices(
     const std::vector<std::string>& joint_names, const std::string& key) {
   std::vector<int> out;
@@ -53,7 +56,7 @@ inline constexpr std::array<double, N> DegToRad(std::array<double, N> pose_deg) 
 
 // ── Hand 포즈 (10-DoF, 단위: deg → 자동 rad 변환) ──────────────────────────
 // Placeholder 값 — 실제 하드웨어 캘리브레이션 후 교체
-using HandPose = std::array<double, kHandDofCount>;
+using HandPose = std::vector<double>;
 
 inline const std::map<std::string, HandPose> kHandPoses = {
     //                        Thumb              Index              Middle           Ring
@@ -83,7 +86,7 @@ inline const std::map<std::string, HandPose> kHandPoses = {
 // TODO: 하드웨어 캘리브레이션 후 placeholder 값 교체
 
 // ── UR5e 포즈 (6-DoF, 단위: deg → 자동 rad 변환) ───────────────────────────
-using ArmPose = std::array<double, kArmDofCount>;
+using ArmPose = std::vector<double>;
 
 inline const std::map<std::string, ArmPose> kUR5ePoses = {
     {"home_pose", DegToRad(ArmPose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0})},

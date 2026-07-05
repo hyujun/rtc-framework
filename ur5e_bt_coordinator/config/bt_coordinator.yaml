@@ -6,6 +6,33 @@ bt_coordinator:
     # ══════════════════════════════════════════════════════════════════════════
 
     tree_file: "pick_and_place_force_pi.xml"   # trees/ 디렉토리 내 XML 파일명 (절대 경로도 지원)
+
+    # ── Robot profile (Seam A) ───────────────────────────────────────────────
+    # 토픽 네임스페이스에 박히는 device group. default(ur5e/hand)는 기존 문자열과
+    # 동일. 예: hand_group: p1b → /rtc_cm/p1b/joint_states, <ctrl>/p1b/joint_goal.
+    arm_group: "ur5e"                # arm device group (/rtc_cm/<arm_group>/joint_states)
+    hand_group: "hand"               # hand device group (/rtc_cm/<hand_group>/joint_states)
+    arm_dof: 6                       # arm joint width (pose length; default 6)
+    hand_dof: 10                     # hand joint width (pose length; default 10 — assm/p1b)
+
+    # Finger→joint 매핑 전략 (Seam C). 기본은 joint 이름 prefix 매칭
+    # (PrefixFingerResolver) — ur5e assm_v1/proto_1b 처럼 joint 이름에 finger
+    # prefix 가 있으면 설정 불필요. joint 이름에 prefix 가 없는 hand (예: LEAP
+    # 숫자 이름) 는 아래처럼 finger_map.<finger> 를 선언하면 ExplicitFingerResolver
+    # 로 자동 전환된다:
+    # finger_map.thumb:  [12, 13, 14, 15]
+    # finger_map.index:  [0, 1, 2, 3]
+    # finger_map.middle: [4, 5, 6, 7]
+    # finger_map.ring:   [8, 9, 10, 11]
+
+    # ── Optional-sensor capabilities (Seam D) ────────────────────────────────
+    # false → 해당 센서를 읽는 BT 노드군을 등록에서 제외. 그 노드를 참조하는 트리는
+    # 로드 시 "unknown node" 로 실패한다(on_configure FAILURE). 전부 true 가 default
+    # (ur5e/hand 는 세 센서 모두 존재 — 기존 동작과 동일).
+    has_grasp_sensing: true          # GraspControl/IsForceAbove/IsGraspPhase/IsGrasped
+    has_tof: true                    # StartToFCollection/StopToFCollection/ProcessSearchData
+    has_shape: true                  # TriggerShapeEstimation/WaitShapeResult/CheckShapeType
+
     tick_rate_hz: 80.0               # BT tick 주기 [Hz]
     repeat: false                     # true: SUCCESS 완료 후 자동 반복, FAILURE 시 정지
     repeat_delay_s: 1.0               # 반복 시 재시작 전 대기 시간 [s]

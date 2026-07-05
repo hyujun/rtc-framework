@@ -87,6 +87,17 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
 
   // Parameters
   std::string tree_file_;
+  // Robot profile (Seam A/B): device groups woven into every topic path +
+  // joint widths (default 6/10) so DoF is not hardcoded (kDefault*Dof).
+  std::string arm_group_{"ur5e"};
+  std::string hand_group_{"hand"};
+  int arm_dof_{kDefaultArmDof};
+  int hand_dof_{kDefaultHandDof};
+  // Optional-sensor capabilities (Seam D) — false skips that node group's
+  // registration. Default true reproduces the legacy register-everything path.
+  bool has_grasp_sensing_{true};
+  bool has_tof_{true};
+  bool has_shape_{true};
   double tick_rate_hz_{20.0};
   bool repeat_{false};
   double repeat_delay_s_{1.0};

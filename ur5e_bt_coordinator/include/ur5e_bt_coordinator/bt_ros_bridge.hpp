@@ -1,7 +1,9 @@
 #pragma once
 
 #include "ur5e_bt_coordinator/bt_types.hpp"
+#include "ur5e_bt_coordinator/finger_resolver.hpp"
 #include "ur5e_bt_coordinator/hand_pose_config.hpp"
+#include "ur5e_bt_coordinator/robot_profile.hpp"
 #include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/msg/to_f_snapshot.hpp>
@@ -51,7 +53,15 @@ struct TopicHealth {
 ///   - Topic health watchdog
 class BtRosBridge {
  public:
-  explicit BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
+  /// `profile` selects the arm/hand device groups (topic paths) and joint
+  /// widths. The default {ur5e/hand, 6/10-DoF} reproduces the legacy behavior.
+  explicit BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                       RobotProfile profile = RobotProfile{});
+
+  /// Runtime joint widths from the active RobotProfile (default 6 / 10).
+  int ArmDof() const { return arm_dof_; }
+
+  int HandDof() const { return hand_dof_; }
 
   // ── Cached state (thread-safe reads) ──────────────────────────────────────
 
@@ -178,6 +188,12 @@ class BtRosBridge {
   /// [double array]
   void LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
 
+  /// Select the finger-index strategy (Seam C). If any `finger_map.<finger>`
+  /// integer-array parameters are present, switch to an ExplicitFingerResolver
+  /// built from them; otherwise keep the default PrefixFingerResolver. Call
+  /// once in on_configure, before ticking.
+  void LoadFingerMap(rclcpp_lifecycle::LifecycleNode::SharedPtr node);
+
   /// Lookup a hand pose by name. Falls back to compile-time defaults.
   const HandPose& GetHandPose(const std::string& name) const;
 
@@ -200,6 +216,12 @@ class BtRosBridge {
 
  private:
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+
+  // Robot-agnostic topic-name factory + joint widths (from RobotProfile).
+  // Immutable after construction, so read without a lock.
+  TopicNamer topic_namer_;
+  int arm_dof_{kDefaultArmDof};
+  int hand_dof_{kDefaultHandDof};
 
   // ── Controller-owned topic rewiring (Phase 4) ─────────────────────────────
   // Rebuild grasp_state/wbc_state/tof/arm_target/hand_target sub/pub against
@@ -280,6 +302,11 @@ class BtRosBridge {
   bool grasp_state_received_{false};
   TimePoint wbc_state_last_{};
   bool wbc_state_received_{false};
+  // Live topic paths for the controller-owned health entries, updated in
+  // RewireControllerTopics so the watchdog label matches the real subscribed
+  // topic (namespaced by the active controller). Guarded by health_mutex_.
+  std::string grasp_state_topic_;
+  std::string wbc_state_topic_;
   TimePoint world_target_last_{};
   bool world_target_received_{false};
   TimePoint estop_last_{};
@@ -294,6 +321,12 @@ class BtRosBridge {
   // ── Pose library ──────────────────────────────────────────────────────────
   std::map<std::string, HandPose> hand_poses_;
   std::map<std::string, ArmPose> arm_poses_;
+
+  // ── Finger-index strategy (Seam C) ────────────────────────────────────────
+  // Defaults to PrefixFingerResolver; swapped to ExplicitFingerResolver by
+  // LoadFingerMap() during on_configure when finger_map.* params exist. Set
+  // before activation, so GetFingerJointIndices reads it without extra locking.
+  std::unique_ptr<FingerResolver> finger_resolver_;
 };
 
 }  // namespace rtc_bt

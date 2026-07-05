@@ -51,8 +51,8 @@ BT::NodeStatus MoveFinger::onStart() {
 
   // 현재 위치 읽기 → trajectory duration 추정
   auto current = bridge_->GetHandJointPositions();
-  if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
-    current.resize(kHandDofCount, 0.0);
+  if (current.size() < static_cast<std::size_t>(bridge_->HandDof())) {
+    current.resize(static_cast<std::size_t>(bridge_->HandDof()), 0.0);
   }
 
   duration_ = EstimateHandTrajectoryDuration(current, target_pose_, joint_indices_, speed, max_vel);

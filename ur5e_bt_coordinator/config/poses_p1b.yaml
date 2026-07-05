@@ -1,0 +1,49 @@
+bt_coordinator:
+  ros__parameters:
+    # ── Hand 포즈 (proto_1b, 10-DoF, 단위: degree → 로드 시 radian 변환) ──────
+    # proto_1b 핑거 분할은 assm_v1(3/3/3/1)과 다르다 — thumb 4 / index 3 /
+    # middle 2 / ring 1. joint_states 순서 (integrated_bringup ur5e_p1b/_base.yaml
+    # devices.p1b.joint_state_names 가 SSoT):
+    # | Finger | Joints                                          | DoF | Index |
+    # |--------|-------------------------------------------------|-----|-------|
+    # | Thumb  | cmc_aa, cmc_fe, mcp, dip_fe                     | 4   | 0–3   |
+    # | Index  | mcp_aa, mcp_fe, dip_fe                          | 3   | 4–6   |
+    # | Middle | mcp_fe, dip_fe                                  | 2   | 7–8   |
+    # | Ring   | mcp_fe                                          | 1   | 9     |
+    #
+    # 이 파일은 poses.yaml 위에 얹혀 hand_pose.* 만 proto_1b 레이아웃으로 덮어쓴다
+    # (launch 가 poses.yaml → poses_p1b.yaml 순으로 로드). arm_pose.* 는 poses.yaml
+    # 한 곳에서만 관리된다 (p1b 도 UR5e 팔 공용 — 복사본 drift 방지). hand_pose 이름
+    # 집합은 poses.yaml 과 동일해야 default assm 레이아웃 포즈가 새어나오지 않는다
+    # (test_tree_validation PoseNameParity 가 강제). 값은 placeholder — 캘리브레이션 후 교체.
+
+    #                          Thumb                Index          Middle    Ring
+    #                          aa   cmc  mcp  dip    aa   fe   dip   fe   dip  fe
+    hand_pose.home:           [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0]
+    hand_pose.full_flex:      [30.0, 60.0, 45.0, 45.0,  0.0, 60.0, 45.0,  60.0, 45.0,  60.0]
+
+    # Pose-based grasp 포즈 (grip 강도별, pick_and_place.xml 용)
+    hand_pose.hand_open:         [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0]
+    hand_pose.hand_close_soft:   [10.0, 25.0, 18.0, 18.0,  0.0, 25.0, 18.0,  25.0, 18.0,  25.0]
+    hand_pose.hand_close_medium: [20.0, 45.0, 33.0, 33.0,  0.0, 45.0, 33.0,  45.0, 33.0,  45.0]
+    hand_pose.hand_close_hard:   [30.0, 60.0, 45.0, 45.0,  0.0, 60.0, 45.0,  60.0, 45.0,  60.0]
+
+    # Opposition 포즈: 엄지 → 각 손가락
+    hand_pose.thumb_index_oppose:   [15.0, 45.0, 35.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0]
+    hand_pose.index_oppose:         [0.0, 0.0, 0.0, 0.0,  -5.0, 40.0, 30.0,  0.0, 0.0,  0.0]
+    hand_pose.thumb_middle_oppose:  [25.0, 40.0, 30.0, 30.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0]
+    hand_pose.middle_oppose:        [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  40.0, 30.0,  0.0]
+    hand_pose.thumb_ring_oppose:    [30.0, 35.0, 25.0, 25.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0]
+    hand_pose.ring_oppose:          [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  45.0]
+
+    # Flex 타겟 (FlexExtendFinger용, 손가락별)
+    hand_pose.thumb_flex:      [30.0, 60.0, 45.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0]
+    hand_pose.thumb_mcp_flex:  [0.0, 0.0, 45.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  0.0]
+    hand_pose.index_flex:      [0.0, 0.0, 0.0, 0.0,  0.0, 60.0, 45.0,  0.0, 0.0,  0.0]
+    hand_pose.index_dip_flex:  [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 45.0,  0.0, 0.0,  0.0]
+    hand_pose.middle_flex:     [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  60.0, 45.0,  0.0]
+    hand_pose.middle_dip_flex: [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 45.0,  0.0]
+    hand_pose.ring_flex:       [0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0,  60.0]
+
+    # arm_pose.* 는 여기에 두지 않는다 — p1b 는 UR5e 팔을 그대로 쓰므로 poses.yaml
+    # 의 arm 포즈가 그대로 적용된다 (launch 가 poses.yaml 을 먼저 로드).

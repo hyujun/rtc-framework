@@ -16,10 +16,32 @@ auto poses_log() {
 }
 }  // namespace
 
-BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node_(std::move(node)) {
-  // Initialize pose maps from compile-time defaults
-  hand_poses_ = kHandPoses;
-  arm_poses_ = kUR5ePoses;
+BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotProfile profile)
+    : node_(std::move(node)),
+      topic_namer_(std::move(profile.topics)),
+      arm_dof_(profile.arm_dof),
+      hand_dof_(profile.hand_dof) {
+  // Seed compile-time default poses only for the default variant. A non-default
+  // group (e.g. hand_group=p1b) carries robot-specific joint semantics, so it
+  // must supply its own poses via YAML (hand_pose.* / arm_pose.*); LoadPose
+  // Overrides errors out if none are provided (open-question 2a).
+  static const TopicNamer kDefaultTopics{};
+  if (topic_namer_.arm_group == kDefaultTopics.arm_group) {
+    arm_poses_ = kUR5ePoses;
+  }
+  if (topic_namer_.hand_group == kDefaultTopics.hand_group) {
+    hand_poses_ = kHandPoses;
+  }
+
+  // Default finger-index strategy (Seam C). LoadFingerMap() may swap this to an
+  // ExplicitFingerResolver during on_configure when finger_map.* params exist.
+  finger_resolver_ = std::make_unique<PrefixFingerResolver>();
+
+  // Pre-rewire health labels for controller-owned topics: relative form
+  // (ns="") until the first controller activates and RewireControllerTopics
+  // rebinds them to the live namespaced path.
+  grasp_state_topic_ = topic_namer_.GraspState("");
+  wbc_state_topic_ = topic_namer_.WbcState("");
 
   // ── Subscribers (all RELIABLE QoS) ──────────────────────────────────────
   //
@@ -37,7 +59,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node
 
   // Per-group joint states (CM publishes always — independent of active ctrl).
   arm_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      "/rtc_cm/ur5e/joint_states", rclcpp::QoS{10},
+      topic_namer_.ArmJointStates(), rclcpp::QoS{10},
       [this](sensor_msgs::msg::JointState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
@@ -50,7 +72,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node) : node
         }
       });
   hand_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      "/rtc_cm/hand/joint_states", rclcpp::QoS{10},
+      topic_namer_.HandJointStates(), rclcpp::QoS{10},
       [this](sensor_msgs::msg::JointState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
@@ -192,7 +214,7 @@ std::vector<double> BtRosBridge::GetHandJointPositions() const {
 
 std::vector<int> BtRosBridge::GetFingerJointIndices(const std::string& key) const {
   std::lock_guard lock(state_mutex_);
-  return FingerJointIndices(hand_joint_names_, key);
+  return finger_resolver_->Resolve(hand_joint_names_, key);
 }
 
 CachedGraspState BtRosBridge::GetGraspState() const {
@@ -370,13 +392,13 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
 
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
-      if (vals.size() != static_cast<std::size_t>(kHandDofCount)) {
+      if (vals.size() != static_cast<std::size_t>(hand_dof_)) {
         RCLCPP_WARN(poses_log(), "hand_pose.%s has %zu values (expected %d), skipped",
-                    pose_name.c_str(), vals.size(), kHandDofCount);
+                    pose_name.c_str(), vals.size(), hand_dof_);
         continue;
       }
-      HandPose pose{};
-      for (int i = 0; i < kHandDofCount; ++i) {
+      HandPose pose(static_cast<std::size_t>(hand_dof_), 0.0);
+      for (int i = 0; i < hand_dof_; ++i) {
         pose[i] = vals[i] * kDeg2Rad;
       }
       hand_poses_[pose_name] = pose;
@@ -397,13 +419,13 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
 
     try {
       auto vals = node->get_parameter(param_name).as_double_array();
-      if (vals.size() != static_cast<std::size_t>(kArmDofCount)) {
+      if (vals.size() != static_cast<std::size_t>(arm_dof_)) {
         RCLCPP_WARN(poses_log(), "arm_pose.%s has %zu values (expected %d), skipped",
-                    pose_name.c_str(), vals.size(), kArmDofCount);
+                    pose_name.c_str(), vals.size(), arm_dof_);
         continue;
       }
-      ArmPose pose{};
-      for (int i = 0; i < kArmDofCount; ++i) {
+      ArmPose pose(static_cast<std::size_t>(arm_dof_), 0.0);
+      for (int i = 0; i < arm_dof_; ++i) {
         pose[i] = vals[i] * kDeg2Rad;
       }
       arm_poses_[pose_name] = pose;
@@ -415,6 +437,62 @@ void BtRosBridge::LoadPoseOverrides(rclcpp_lifecycle::LifecycleNode::SharedPtr n
 
   RCLCPP_INFO(poses_log(), "loaded %d hand poses, %d arm poses (total: %zu hand, %zu arm)",
               hand_count, arm_count, hand_poses_.size(), arm_poses_.size());
+
+  // Non-default variants seed no compile-time defaults (see constructor), so an
+  // empty map means the operator forgot the poses YAML — fail fast rather than
+  // let every pose lookup throw an opaque "unknown pose" at tick time.
+  if (hand_poses_.empty()) {
+    throw std::runtime_error(
+        "no hand poses loaded: non-default hand_group requires hand_pose.* in a poses YAML");
+  }
+  if (arm_poses_.empty()) {
+    throw std::runtime_error(
+        "no arm poses loaded: non-default arm_group requires arm_pose.* in a poses YAML");
+  }
+}
+
+void BtRosBridge::LoadFingerMap(rclcpp_lifecycle::LifecycleNode::SharedPtr node) {
+  // Discover finger_map.<finger> integer-array parameters. Their presence is
+  // the signal to switch from prefix-matching to an explicit finger→index map
+  // (needed for hands whose joint names carry no finger prefix, e.g. LEAP).
+  auto result = node->list_parameters({"finger_map"}, 1);
+  std::map<std::string, std::vector<int>> finger_map;
+  const std::string prefix = "finger_map.";
+  for (const auto& param_name : result.names) {
+    if (param_name.size() <= prefix.size())
+      continue;
+    std::string finger = param_name.substr(prefix.size());
+    try {
+      auto vals = node->get_parameter(param_name).as_integer_array();
+      std::vector<int> indices;
+      indices.reserve(vals.size());
+      for (auto v : vals) {
+        indices.push_back(static_cast<int>(v));
+      }
+      finger_map[finger] = std::move(indices);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(poses_log(), "failed to load finger_map.%s: %s", finger.c_str(), e.what());
+    }
+  }
+
+  if (!finger_map.empty()) {
+    // Validate indices against the hand DoF now, at configure time: an out-of-
+    // range index would otherwise become an OOB vector subscript the first time
+    // that finger is commanded, far from the config error. Throwing here surfaces
+    // as a clean on_configure FAILURE (the transition wraps this call).
+    for (const auto& [finger, indices] : finger_map) {
+      for (int idx : indices) {
+        if (idx < 0 || idx >= hand_dof_) {
+          throw std::runtime_error("finger_map." + finger + " index " + std::to_string(idx) +
+                                   " out of range [0," + std::to_string(hand_dof_) + ")");
+        }
+      }
+    }
+    RCLCPP_INFO(poses_log(), "finger resolver: explicit (%zu finger maps)", finger_map.size());
+    finger_resolver_ = std::make_unique<ExplicitFingerResolver>(std::move(finger_map));
+  } else {
+    RCLCPP_INFO(poses_log(), "finger resolver: prefix (joint-name matching)");
+  }
 }
 
 const HandPose& BtRosBridge::GetHandPose(const std::string& name) const {
@@ -451,10 +529,10 @@ std::vector<TopicHealth> BtRosBridge::GetTopicHealth(double timeout_s) const {
   };
 
   return {
-      make_health("/rtc_cm/ur5e/joint_states", arm_gui_received_, arm_gui_last_),
-      make_health("/rtc_cm/hand/joint_states", hand_gui_received_, hand_gui_last_),
-      make_health("/hand/grasp_state", grasp_state_received_, grasp_state_last_),
-      make_health("/hand/wbc_state", wbc_state_received_, wbc_state_last_),
+      make_health(topic_namer_.ArmJointStates(), arm_gui_received_, arm_gui_last_),
+      make_health(topic_namer_.HandJointStates(), hand_gui_received_, hand_gui_last_),
+      make_health(grasp_state_topic_, grasp_state_received_, grasp_state_last_),
+      make_health(wbc_state_topic_, wbc_state_received_, wbc_state_last_),
       make_health("/world_target_info", world_target_received_, world_target_last_),
       make_health("/system/estop_status", estop_received_, estop_last_),
   };
@@ -489,6 +567,14 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
 
   const std::string ns = "/" + ctrl_name;
 
+  // Rebind the controller-owned health labels to the live namespaced paths so
+  // the watchdog reports the topic actually subscribed below.
+  {
+    std::lock_guard lock(health_mutex_);
+    grasp_state_topic_ = topic_namer_.GraspState(ns);
+    wbc_state_topic_ = topic_namer_.WbcState(ns);
+  }
+
   // Drop previous sub/pub handles before recreating to avoid two live
   // subscribers holding references to the same state maps.
   // Phase 4: arm/hand joint state는 controller-agnostic /rtc_cm/<group>/
@@ -502,7 +588,8 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   hand_target_pub_.reset();
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
-      ns + "/hand/grasp_state", rclcpp::QoS{10}, [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
+      topic_namer_.GraspState(ns), rclcpp::QoS{10},
+      [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           const auto n = msg->force_magnitude.size();
@@ -554,7 +641,7 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   // publishes one of them, the other stays empty/stale. Caller picks via
   // GetGraspState() vs GetWbcState() based on the active controller.
   wbc_state_sub_ = node_->create_subscription<rtc_msgs::msg::WbcState>(
-      ns + "/hand/wbc_state", rclcpp::QoS{10}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
+      topic_namer_.WbcState(ns), rclcpp::QoS{10}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           const auto n = msg->force_magnitude.size();
@@ -585,10 +672,10 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
         }
       });
 
-  arm_target_pub_ =
-      node_->create_publisher<rtc_msgs::msg::RobotTarget>(ns + "/ur5e/joint_goal", rclcpp::QoS{10});
-  hand_target_pub_ =
-      node_->create_publisher<rtc_msgs::msg::RobotTarget>(ns + "/hand/joint_goal", rclcpp::QoS{10});
+  arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
+      topic_namer_.ArmJointGoal(ns), rclcpp::QoS{10});
+  hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
+      topic_namer_.HandJointGoal(ns), rclcpp::QoS{10});
 
   // Phase C: bind parameter + grasp_command clients to the active controller.
   //   Param services live on the LifecycleNode FQN /<ctrl>/<ctrl>; relative

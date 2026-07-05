@@ -51,12 +51,12 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 ### 발행 (Publish)
 
-Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다.
+Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다. 아래 표의 `ur5e`/`hand` 세그먼트는 `arm_group`/`hand_group` 파라미터 값 (default `ur5e`/`hand`) — robot-agnostic (Seam A).
 
 | Topic | 메시지 타입 | 설명 |
 |-------|------------|------|
-| `<ns>/ur5e/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
-| `<ns>/hand/joint_goal` | `rtc_msgs/RobotTarget` | Hand 10-DoF 모터 목표 (controller-owned) |
+| `<ns>/<arm_group>/joint_goal` | `rtc_msgs/RobotTarget` | Arm task-space 또는 joint-space 목표 (controller-owned) |
+| `<ns>/<hand_group>/joint_goal` | `rtc_msgs/RobotTarget` | Hand 모터 목표 (controller-owned) |
 
 게인 변경은 토픽이 아닌 active controller LifecycleNode의 ROS 2 parameter (`SetGains` BT node가 `set_parameters_atomically`로 호출). 컨트롤러 전환은 `/rtc_cm/switch_controller` srv (`SwitchController` BT node).
 
@@ -66,8 +66,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 |-------|------------|-----|------|
 | `<ns>/ur5e/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | TCP 포즈 + 관절 위치 (controller-owned) |
 | `<ns>/hand/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | Hand 관절 위치 (controller-owned) |
-| `<ns>/hand/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
-| `<ns>/hand/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
+| `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
+| `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
 | `/vision/object_pose` | `geometry_msgs/PoseStamped` | RELIABLE, depth 10 | 물체 위치 (쿼터니언 → RPY 변환) |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
@@ -130,6 +130,13 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
 | `tree_file` | `"hand_motions.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
+| `arm_group` | `"ur5e"` | Arm device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<arm_group>/joint_states`, `<ns>/<arm_group>/joint_goal`). 빈 문자열이면 `on_configure` FAILURE (`//` 잘못된 토픽 방지) |
+| `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b`. 빈 문자열이면 `on_configure` FAILURE |
+| `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT. `<= 0`이면 `on_configure` FAILURE |
+| `hand_dof` | `10` | Hand 관절 폭 (hand pose 길이 검증 + 패딩). assm_v1·proto_1b 모두 10. `<= 0`이면 `on_configure` FAILURE |
+| `has_grasp_sensing` | `true` | Grasp-force 센싱 노드군 (`GraspControl`/`IsForceAbove`/`IsGraspPhase`/`IsGrasped`) 등록 여부 (Seam D) |
+| `has_tof` | `true` | ToF 근접센싱 노드군 (`StartToFCollection`/`StopToFCollection`/`ProcessSearchData`) 등록 여부 (Seam D) |
+| `has_shape` | `true` | Shape estimation 노드군 (`TriggerShapeEstimation`/`WaitShapeResult`/`CheckShapeType`) 등록 여부 (Seam D) |
 | `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
@@ -140,6 +147,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `watchdog_interval_s` | `5.0` | 헬스 체크 주기 [s] (0 = 비활성) |
 
 반복 모드에서 트리 재시작 시 `object_pose` blackboard 변수가 자동으로 초기화된다.
+
+`has_*` capability 를 `false` 로 두면 해당 센서를 읽는 BT 노드가 factory 에 등록되지 않는다. 그 노드를 참조하는 트리는 로드 시 BehaviorTree.CPP 의 "unknown node" 에러로 실패하며, `on_configure` 가 이를 잡아 깨끗한 FAILURE 로 전환한다 (센서 없는 로봇이 데이터 없는 노드를 tick 하는 것을 설정 시점에 차단).
 
 ### 런타임 제어
 
@@ -299,15 +308,20 @@ hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,
 arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 ```
 
+Variant 별 포즈 파일 (`poses.yaml` / `poses_p1b.yaml`) 선택과 pose-name 계약은
+[configuration.md](docs/configuration.md) Robot variant 절 참고. proto_1b 는 핑거 분할이
+달라(thumb4/index3/middle2/ring1) 같은 포즈 이름이라도 joint 순서가 다르다.
+
 #### 컴파일타임 포즈 (`hand_pose_config.hpp`)
 
-포즈 값은 **도(°) 단위**로 작성하고, `DegToRad()` 래퍼로 컴파일 타임에 자동 rad 변환된다:
+포즈 값은 **도(°) 단위**로 작성하고, `DegToRad()` 래퍼로 rad 변환된다. `HandPose`/`ArmPose` 는
+`std::vector<double>` (DoF 폭 런타임화, Seam B) 이므로 초기화 리스트 길이가 곧 DoF 다:
 
 ```cpp
 {"my_pose", DegToRad(HandPose{30.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0})},
 ```
 
-`kHandPoses` 맵에 정의된 명명 포즈 (10-DoF):
+`kHandPoses` 맵에 정의된 명명 포즈 (기본 hand, 10-DoF):
 
 | 포즈 이름 | 용도 |
 |-----------|------|
@@ -345,13 +359,21 @@ arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 | `pick_ready` | 픽업 대기 (테이블 위 물체 집기 직전) |
 | `elevated` | 높은 위치 (물체를 들어올린 상태) |
 
-손가락-관절 인덱스 매핑 (`FingerJointIndices()` — joint-name 접두사 기반, 가변 DoF):
+손가락-관절 인덱스 매핑 (Seam C — `FingerResolver` 전략, 가변 DoF):
 
-finger→joint index 는 상수가 아니라 `/rtc_cm/hand/joint_states` 의 name 을
-`<key>_` 로 접두사 매칭해 런타임에 구성한다 (`BtRosBridge::GetFingerJointIndices(key)`).
-손가락별 DoF 가 달라도 (예: proto_1b thumb:4/index:3/middle:2/ring:1) joint 이름만
-맞으면 코드 변경 없이 동작한다. key 는 whole-finger(`thumb`) 또는 sub-group
-(`thumb_mcp`, `index_dip`) 모두 지원 — sub-group 은 `<finger>_<segment>_` 접두사로 매칭.
+finger→joint index 는 상수가 아니라 `BtRosBridge::GetFingerJointIndices(key)` 가
+런타임에 구성하며, 전략은 두 가지다 ([finger_resolver.hpp](include/ur5e_bt_coordinator/finger_resolver.hpp)):
+
+- **`PrefixFingerResolver`** (기본) — `/rtc_cm/<hand_group>/joint_states` 의 name 을
+  `<key>_` 로 접두사 매칭. 손가락별 DoF 가 달라도 (예: proto_1b thumb:4/index:3/middle:2/ring:1)
+  joint 이름만 맞으면 코드 변경 없이 동작한다. key 는 whole-finger(`thumb`) 또는 sub-group
+  (`thumb_mcp`, `index_dip`) 모두 지원 — sub-group 은 `<finger>_<segment>_` 접두사로 매칭.
+- **`ExplicitFingerResolver`** — joint 이름에 finger prefix 가 없는 hand (예: LEAP 숫자 이름
+  `"0".."15"`) 용. `config` 에 `finger_map.<finger>: [idx...]` 를 하나라도 선언하면 자동 전환되며,
+  map 이 authoritative 다 (sub-group 도 명시 필요). 선언 방법은 `config/bt_coordinator.yaml` 참조.
+  index 는 `on_configure` 에서 `[0, hand_dof)` 범위 검증 — 범위 밖이면 FAILURE (런타임 OOB 대신
+  설정 시점 fail-fast). 주의: `finger_map.*` 를 하나라도 선언하면 prefix 매칭이 전면 비활성화되므로,
+  Explicit 로 전환 시 사용하는 모든 finger/sub-group key 를 빠짐없이 선언해야 한다.
 
 assm_v1 hand (joint_states 순서 thumb:3/index:3/middle:3/ring:1) 예시:
 
@@ -423,6 +445,9 @@ ros2 launch integrated_bringup sim.launch.py
 # 기본 실행 (hand_motions.xml, YAML 설정 + 포즈 자동 로드)
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
 
+# proto_1b hand variant (hand_group=p1b, poses_p1b.yaml)
+ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py variant:=ur5e_p1b
+
 # Pick and Place (pose-based grasp, 기본 medium grip)
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xml
 
@@ -453,6 +478,7 @@ ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py paused:=true
 
 | Argument | 기본값 | 설명 |
 |----------|--------|------|
+| `variant` | `ur5e_hand` | Robot variant → config/poses 선택: `ur5e_hand` / `ur5e_p1b` ([configuration.md](docs/configuration.md) Robot variant) |
 | `tree` | (YAML 기본값) | BT tree XML 파일명 |
 | `tick_rate` | 0 (=YAML 80Hz) | BT tick 주기 [Hz] |
 | `repeat` | (YAML 기본값) | SUCCESS 시 자동 반복 |
@@ -488,7 +514,9 @@ ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
 ur5e_bt_coordinator/
 ├── config/
 │   ├── bt_coordinator.yaml          # ROS2 파라미터 (트리, tick rate, 런타임 제어, bb.*)
-│   └── poses.yaml                   # Hand/UR5e 포즈 오버라이드 (deg 단위, 재컴파일 불필요)
+│   ├── bt_coordinator_p1b.yaml      # ur5e_p1b variant delta (hand_group=p1b)
+│   ├── poses.yaml                   # Hand/UR5e 포즈 오버라이드 (deg 단위, 재컴파일 불필요)
+│   └── poses_p1b.yaml               # proto_1b hand 포즈만 (poses.yaml 위 override; arm 은 공용)
 ├── launch/
 │   └── bt_coordinator.launch.py     # Launch 파일 (YAML + poses 자동 로드, launch arg 지원)
 ├── trees/

@@ -12,6 +12,9 @@ Usage:
   # Pick and Place (Force-PI grasp)
   ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place_force_pi.xml
 
+  # proto_1b hand variant (p1b device group + proto_1b poses)
+  ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py variant:=ur5e_p1b
+
   # Towel Unfold
   ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=towel_unfold.xml
 
@@ -49,6 +52,14 @@ def generate_launch_description():
     pkg_share = FindPackageShare("ur5e_bt_coordinator")
 
     declared_args = [
+        DeclareLaunchArgument(
+            "variant",
+            default_value="ur5e_hand",
+            choices=["ur5e_hand", "ur5e_p1b"],
+            description="Robot variant → selects config + poses files. "
+            "ur5e_hand = default (bt_coordinator.yaml + poses.yaml); "
+            "ur5e_p1b = proto_1b hand (adds bt_coordinator_p1b.yaml + poses_p1b.yaml)",
+        ),
         DeclareLaunchArgument(
             "tree",
             default_value="",
@@ -89,8 +100,24 @@ def generate_launch_description():
     ]
 
     def launch_setup(context):
-        config_yaml = PathJoinSubstitution([pkg_share, "config", "bt_coordinator.yaml"])
+        # Base config is always loaded; a non-default variant overlays a small
+        # delta file (device group) and swaps the poses file. Loading base first
+        # keeps bb.* / tick_rate shared in one place (no per-variant drift).
+        variant = LaunchConfiguration("variant").perform(context)
+        base_yaml = PathJoinSubstitution([pkg_share, "config", "bt_coordinator.yaml"])
         poses_yaml = PathJoinSubstitution([pkg_share, "config", "poses.yaml"])
+        if variant == "ur5e_p1b":
+            # poses.yaml supplies the shared UR5e arm poses; poses_p1b.yaml
+            # (loaded last) overrides only hand_pose.* with the proto_1b layout,
+            # so the arm poses are single-sourced (no per-variant copy).
+            param_files = [
+                base_yaml,
+                PathJoinSubstitution([pkg_share, "config", "bt_coordinator_p1b.yaml"]),
+                poses_yaml,
+                PathJoinSubstitution([pkg_share, "config", "poses_p1b.yaml"]),
+            ]
+        else:  # ur5e_hand (default)
+            param_files = [base_yaml, poses_yaml]
 
         # Resolve launch arguments
         tree = LaunchConfiguration("tree").perform(context)
@@ -127,7 +154,7 @@ def generate_launch_description():
             name="bt_coordinator",
             namespace="",
             output="screen",
-            parameters=[config_yaml, poses_yaml, overrides],
+            parameters=[*param_files, overrides],
         )
 
         auto_activate = RegisterEventHandler(

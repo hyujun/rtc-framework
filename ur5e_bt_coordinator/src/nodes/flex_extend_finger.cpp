@@ -50,8 +50,8 @@ BT::NodeStatus FlexExtendFinger::onStart() {
 
   // 현재 위치 → flex duration 추정
   auto current = bridge_->GetHandJointPositions();
-  if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
-    current.resize(kHandDofCount, 0.0);
+  if (current.size() < static_cast<std::size_t>(bridge_->HandDof())) {
+    current.resize(static_cast<std::size_t>(bridge_->HandDof()), 0.0);
   }
 
   flex_duration_ =
@@ -76,8 +76,8 @@ BT::NodeStatus FlexExtendFinger::onRunning() {
   if (phase_ == Phase::kFlex && elapsed >= flex_duration_) {
     // 현재 위치 다시 읽어서 extend duration 추정
     auto current = bridge_->GetHandJointPositions();
-    if (current.size() < static_cast<std::size_t>(kHandDofCount)) {
-      current.resize(kHandDofCount, 0.0);
+    if (current.size() < static_cast<std::size_t>(bridge_->HandDof())) {
+      current.resize(static_cast<std::size_t>(bridge_->HandDof()), 0.0);
     }
 
     extend_duration_ =
