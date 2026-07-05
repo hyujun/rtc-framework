@@ -110,12 +110,13 @@
           position_upper: [1.57, 1.57, 1.57, 1.57, 3.14, 3.14, 3.14, 1.57, 1.57, 3.14]
         # Sensor packing layout — CM uses these for stride/offset arithmetic
         # only; field semantics (barometer/ToF/contact/F/u) live in
-        # udp_hand_driver. assm_v1 hand: 8 baro + 3 ToF per fingertip, ML
-        # inference = contact(1) + F(3) + u(3) = 7. has_native_* (whether the
-        # backend synthesizes contact probability / displacement) is a
-        # mode-specific delta and lives in robot.yaml / sim.yaml.
+        # udp_hand_driver. p1b real hw has NO baro/ToF hardware — the udp_hand
+        # stream is a force-only inference lane, so the raw sensor lanes are 0.
+        # ML inference = contact(1) + F(3) + u(3) = 7 (contact_flag fixed 0;
+        # consumers derive contact from |F|). has_native_* lives in
+        # robot.yaml / sim.yaml.
         sensor_layout:
-          primary_count_per_group: 8
-          secondary_count_per_group: 3
-          values_per_group: 11
+          primary_count_per_group: 0
+          secondary_count_per_group: 0
+          values_per_group: 0
           inference_values_per_group: 7
