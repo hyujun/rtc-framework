@@ -169,6 +169,17 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
   }
   if (node["grasp_controller_type"]) {
     cfg.grasp_controller_type = node["grasp_controller_type"].as<std::string>();
+    // Whitelist: force_pi (PI force controller), contact_stop (freeze on
+    // contact), none (no hand intervention).  An unrecognized string must not
+    // fall through to a controller branch, so reject it here — this runs on the
+    // non-RT on_configure path and propagates to CallbackReturn::FAILURE.
+    const std::string& t = cfg.grasp_controller_type;
+    if (t != "force_pi" && t != "contact_stop" && t != "none") {
+      throw std::runtime_error(
+          "demo_shared: 'grasp_controller_type' must be one of "
+          "{force_pi, contact_stop, none}, got '" +
+          t + "'");
+    }
   }
 
   if (node["hand_finger_joint_map"] && node["hand_finger_joint_map"].IsSequence()) {

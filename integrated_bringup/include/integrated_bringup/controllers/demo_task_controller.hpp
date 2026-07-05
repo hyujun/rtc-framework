@@ -208,6 +208,11 @@ class DemoTaskController final : public RTControllerInterface {
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
   int num_active_fingertips_{0};
+  /// Fingertips carrying a raw sensor lane (baro/ToF), derived from
+  /// num_sensor_channels / stride.  Separate from num_active_fingertips_
+  /// (inference-group count) so a force-only stream (0 sensor channels) does
+  /// not publish an all-zero junk ToF snapshot.  Gates the ToF snapshot only.
+  int num_sensor_fingertips_{0};
   ::rtc::grasp::GraspStateData grasp_state_{};
   ::integrated_bringup::ToFSnapshotData tof_snapshot_{};
 

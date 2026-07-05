@@ -728,6 +728,22 @@ TEST_F(WbcFSMTest, NumActiveFingertipsScalesWithSensorChannels) {
   EXPECT_EQ(ctrl_.GetNumActiveFingertipsForTesting(), 5);
 }
 
+// Force-only stream (p1b-style): num_inference_groups populated, zero sensor
+// channels. The fingertip count must come from the inference groups, not the
+// (empty) sensor lane — the priority wbc already had and that joint/task now
+// mirror.
+TEST_F(WbcFSMTest, InferenceGroupsPriorityWithZeroSensorChannels) {
+  auto& dev1 = state_.devices[1];
+  dev1.valid = true;
+  dev1.num_sensor_channels = 0;
+  dev1.num_inference_groups = 4;
+  for (int f = 0; f < 4; ++f) {
+    dev1.inference_enable[static_cast<std::size_t>(f)] = true;
+  }
+  (void)ctrl_.Compute(state_);
+  EXPECT_EQ(ctrl_.GetNumActiveFingertipsForTesting(), 4);
+}
+
 TEST_F(WbcFSMTest, ContactFlagPropagatesToReport) {
   // Backend = hardware raw / controller = behavior: controller no longer
   // forwards the raw inference slot 0 probability when sensor A capability

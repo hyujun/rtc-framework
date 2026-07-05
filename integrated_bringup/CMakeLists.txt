@@ -248,6 +248,22 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_joint_controller grasp-detection tests ────────────────────────────
+  # Empty-URDF unit test: grasp detection / fingertip derivation / ToF gate /
+  # none no-op. No rtc_tsid (joint controller is joint-space only).
+  ament_add_gtest(test_demo_joint_controller test/test_demo_joint_controller.cpp)
+  target_link_libraries(test_demo_joint_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_joint_controller
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── demo_wbc_controller base_frame consistency (F-2) ───────────────────────
   ament_add_gtest(test_demo_wbc_base_frame_consistency
     test/test_demo_wbc_base_frame_consistency.cpp)

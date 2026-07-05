@@ -141,6 +141,19 @@ class DemoJointController final : public RTControllerInterface {
     return tof_snapshot_;
   }
 
+  /// Test-only: override the grasp_controller_type_ that LoadConfig would set
+  /// from demo_shared.yaml, so the "none" no-op / contact_stop branches can be
+  /// exercised without a full YAML load.
+  void SetGraspControllerTypeForTesting(std::string_view type) {
+    grasp_controller_type_ = std::string(type);
+  }
+
+  /// Test-only: fingertips carrying a raw sensor lane (gates the ToF snapshot),
+  /// separate from the inference-group count reported in GraspState.
+  [[nodiscard]] int GetNumSensorFingertipsForTesting() const noexcept {
+    return num_sensor_fingertips_;
+  }
+
  private:
   // ── Phase 1→2 intermediate: parsed sensor data ──────────────────────────
   // Backend = hardware raw, controller = behavior: force/in_contact for
@@ -160,6 +173,11 @@ class DemoJointController final : public RTControllerInterface {
 
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
   int num_active_fingertips_{0};
+  /// Fingertips carrying a raw sensor lane (baro/ToF), derived from
+  /// num_sensor_channels / stride.  Separate from num_active_fingertips_
+  /// (inference-group count) so a force-only stream (0 sensor channels) does
+  /// not publish an all-zero junk ToF snapshot.  Gates the ToF snapshot only.
+  int num_sensor_fingertips_{0};
   ::rtc::grasp::GraspStateData grasp_state_{};
   ::integrated_bringup::ToFSnapshotData tof_snapshot_{};
 

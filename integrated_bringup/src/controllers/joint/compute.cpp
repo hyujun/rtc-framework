@@ -35,10 +35,21 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // (sensor A path; backends without native contact zero-fill the slot).
   // Slots 4..6 (displacement) remain unconsumed in joint controller.
   num_active_fingertips_ = 0;
+  num_sensor_fingertips_ = 0;
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
+    // Fingertip count: prefer num_inference_groups (set by mujoco_native and
+    // udp_hand backends regardless of sensor_layout), fall back to the sensor
+    // channel stride for older mocks that only fill the sensor lane.  This
+    // matches the wbc controller and keeps force-only streams (0 sensor
+    // channels) working.  num_sensor_fingertips_ tracks the raw sensor lane
+    // separately so the ToF snapshot is not published from junk zero data.
     const int num_sensor_ch = dev1.num_sensor_channels;
-    const int num_fingertips = num_sensor_ch / kHandSensorValuesPerFingertipCapacity;
+    const int sensor_fingertips =
+        num_sensor_ch / static_cast<int>(kHandSensorValuesPerFingertipCapacity);
+    num_sensor_fingertips_ = std::min(sensor_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
+    const int num_fingertips =
+        (dev1.num_inference_groups > 0) ? dev1.num_inference_groups : sensor_fingertips;
     num_active_fingertips_ = std::min(num_fingertips, static_cast<int>(rtc::kMaxSensorGroups));
 
     const auto gains_now = gains_lock_.Load();
@@ -211,7 +222,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // ── Arm FK: base → tip (computed once per tick; cached for Fill*) ──────
   // WriteJointCommand / FillLogOutput do not touch arm_handle_, so the cached
   // pose stays valid for the whole output-composition phase.
-  {
+  // arm_handle_ is always non-null after LoadConfig in production; the guard
+  // mirrors the wbc controller so unit tests (empty urdf_path, grasp/sensor
+  // logic only) can drive Compute() without building an arm model.
+  if (arm_handle_) {
     const int nc0 = dev0.num_channels;
     std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
     arm_handle_->ComputeForwardKinematics(q_span);
@@ -330,7 +344,14 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
           }
         }
       }
-    } else {
+    } else if (grasp_controller_type_ != "none") {
+      // grasp_controller_type=="none": no hand intervention — trajectory output
+      // passes through untouched.  GraspState aggregation/publishing below is
+      // unaffected (BT IsGrasped/IsForceAbove still observe contact).  The
+      // negated form (!= "none") is deliberate: a "force_pi" config whose
+      // grasp controller failed to build (null) must still fall into the
+      // contact_stop safety freeze, not silently become a no-op.
+      //
       // ContactStopHand: 힘 감지 시 hand trajectory 출력을 현재 위치로 동결
       // → BT tick(50ms) 사이에도 과도한 hand closure 방지
       //
@@ -387,7 +408,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     constexpr double kMmToM = 0.001;
     tof_snapshot_ = {};
 
-    if (hand_handle_ && num_active_fingertips_ >= kNumTofFingers) {
+    if (hand_handle_ && num_sensor_fingertips_ >= kNumTofFingers) {
       tof_snapshot_.num_fingers = kNumTofFingers;
       tof_snapshot_.sensors_per_finger = kSensorsPerFinger;
 

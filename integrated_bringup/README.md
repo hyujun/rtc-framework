@@ -195,7 +195,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
 |---------|------|
 | `virtual_tcp_mode` / `virtual_tcp_offset` / `virtual_tcp_orientation` | Virtual TCP 설정 (아래 DemoTask 섹션 참조) |
 | `grasp_contact_threshold` / `grasp_force_threshold` / `grasp_min_fingertips` | Grasp 감지 임계값 (capability-aware — 아래 표 참조) |
-| `grasp_controller_type` | `"contact_stop"` 또는 `"force_pi"` |
+| `grasp_controller_type` | `"contact_stop"` · `"force_pi"` · `"none"` (hand 무개입, GraspState 발행은 유지). 화이트리스트 검증 — 그 외 값은 `on_configure` FAILURE |
 | `force_pi_grasp.*` | Force-PI grasp 파라미터 + 핑거별 q_open/q_close |
 
 **Grasp threshold capability matrix.** 컨트롤러는 `devices.<hand>.sensor_layout.has_native_contact` (robot/sim yaml) 를 보고 두 경로로 분기합니다.
