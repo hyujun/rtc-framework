@@ -1,78 +1,491 @@
 Panels:
   - Class: rviz_common/Displays
+    Help Height: 70
     Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /TF1
+        - /TF1/Frames1
+      Splitter Ratio: 0.5824176073074341
+    Tree Height: 349
   - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
     Name: Views
+    Splitter Ratio: 0.5
 Visualization Manager:
   Class: ""
   Displays:
-    - Class: rviz_default_plugins/Grid
-      Name: Grid
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
       Enabled: true
       Line Style:
-        Line Width: 0.03
+        Line Width: 0.029999999329447746
         Value: Lines
+      Name: Grid
       Normal Cell Count: 0
-      Cell Size: 1
-      Color: 160; 160; 164
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
       Plane: XY
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
-
-    - Class: rviz_default_plugins/RobotModel
-      Name: RobotModel
-      Enabled: true
+      Value: true
+    - Alpha: 0.8999999761581421
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
       Description Source: Topic
       Description Topic:
-        Value: /digital_twin/robot_description
         Depth: 5
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-      Alpha: 0.9
-      Visual Enabled: true
-      Collision Enabled: false
-
-    - Class: rviz_default_plugins/TF
-      Name: TF
+        Value: /digital_twin/robot_description
       Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_adapter:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_link_inertia:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        flange:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        forearm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ft_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_index_dip_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_index_mcp_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_index_pip_linkage_a:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_index_pip_linkage_b:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_index_tip_bracket:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_index_tip_constraint_ab:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_index_tip_constraint_ba:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_index_tip_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_middle_dip_a_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_middle_dip_b_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_middle_mcp_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_middle_tip_bracket:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_middle_tip_constraint_ab:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_middle_tip_constraint_ba:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_middle_tip_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_palm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_ring_dip_linkage_a:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_ring_dip_linkage_b:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_ring_pip_b_constraint_ab:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_ring_pip_b_constraint_ba:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_ring_pip_linkage_a:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_ring_pip_linkage_b:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_ring_tip_bracket:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_ring_tip_constraint_ab:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_ring_tip_constraint_ba:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_ring_tip_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_thumb_cmc_link_a:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_thumb_cmc_link_b:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_thumb_dip_link_a:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_thumb_dip_link_b:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_thumb_mcp_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        l_thumb_tip_bracket:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_thumb_tip_constraint_ab:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_thumb_tip_constraint_ba:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        l_thumb_tip_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        shoulder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        tool0:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        upper_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        wrist_1_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wrist_2_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wrist_3_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Filter (blacklist): ""
+      Filter (whitelist): ""
       Frame Timeout: 15
       Frames:
         All Enabled: false
         base:
           Value: true
+        base_adapter:
+          Value: false
+        base_link:
+          Value: false
+        base_link_inertia:
+          Value: false
+        flange:
+          Value: false
+        forearm_link:
+          Value: false
+        ft_frame:
+          Value: false
+        l_index_dip_link:
+          Value: false
+        l_index_mcp_link:
+          Value: false
+        l_index_pip_linkage_a:
+          Value: false
+        l_index_pip_linkage_b:
+          Value: false
+        l_index_tip_bracket:
+          Value: false
+        l_index_tip_constraint_ab:
+          Value: false
+        l_index_tip_constraint_ba:
+          Value: false
+        l_index_tip_link:
+          Value: true
+        l_middle_dip_a_link:
+          Value: false
+        l_middle_dip_b_link:
+          Value: false
+        l_middle_mcp_link:
+          Value: false
+        l_middle_tip_bracket:
+          Value: false
+        l_middle_tip_constraint_ab:
+          Value: false
+        l_middle_tip_constraint_ba:
+          Value: false
+        l_middle_tip_link:
+          Value: true
+        l_palm_link:
+          Value: false
+        l_ring_dip_linkage_a:
+          Value: false
+        l_ring_dip_linkage_b:
+          Value: false
+        l_ring_pip_b_constraint_ab:
+          Value: false
+        l_ring_pip_b_constraint_ba:
+          Value: false
+        l_ring_pip_linkage_a:
+          Value: false
+        l_ring_pip_linkage_b:
+          Value: false
+        l_ring_tip_bracket:
+          Value: false
+        l_ring_tip_constraint_ab:
+          Value: false
+        l_ring_tip_constraint_ba:
+          Value: false
+        l_ring_tip_link:
+          Value: true
+        l_thumb_cmc_link_a:
+          Value: false
+        l_thumb_cmc_link_b:
+          Value: false
+        l_thumb_dip_link_a:
+          Value: false
+        l_thumb_dip_link_b:
+          Value: false
+        l_thumb_mcp_link:
+          Value: false
+        l_thumb_tip_bracket:
+          Value: false
+        l_thumb_tip_constraint_ab:
+          Value: false
+        l_thumb_tip_constraint_ba:
+          Value: false
+        l_thumb_tip_link:
+          Value: true
+        shoulder_link:
+          Value: false
         tool0:
           Value: true
-        virtual_tcp:
-          Value: true
-      Marker Scale: 0.3
+        upper_arm_link:
+          Value: false
+        world:
+          Value: false
+        wrist_1_link:
+          Value: false
+        wrist_2_link:
+          Value: false
+        wrist_3_link:
+          Value: false
+      Marker Scale: 0.30000001192092896
+      Name: TF
       Show Arrows: true
       Show Axes: true
       Show Names: true
+      Tree:
+        world:
+          base_link:
+            base:
+              {}
+            base_link_inertia:
+              shoulder_link:
+                upper_arm_link:
+                  forearm_link:
+                    wrist_1_link:
+                      wrist_2_link:
+                        wrist_3_link:
+                          flange:
+                            tool0:
+                              base_adapter:
+                                l_palm_link:
+                                  l_index_mcp_link:
+                                    l_index_dip_link:
+                                      l_index_pip_linkage_a:
+                                        l_index_tip_link:
+                                          l_index_tip_bracket:
+                                            {}
+                                          l_index_tip_constraint_ab:
+                                            {}
+                                      l_index_pip_linkage_b:
+                                        l_index_tip_constraint_ba:
+                                          {}
+                                  l_middle_mcp_link:
+                                    l_middle_dip_a_link:
+                                      l_middle_tip_link:
+                                        l_middle_tip_bracket:
+                                          {}
+                                        l_middle_tip_constraint_ab:
+                                          {}
+                                    l_middle_dip_b_link:
+                                      l_middle_tip_constraint_ba:
+                                        {}
+                                  l_ring_pip_linkage_a:
+                                    l_ring_dip_linkage_b:
+                                      l_ring_pip_b_constraint_ab:
+                                        {}
+                                      l_ring_tip_constraint_ba:
+                                        {}
+                                  l_ring_pip_linkage_b:
+                                    l_ring_dip_linkage_a:
+                                      l_ring_tip_link:
+                                        l_ring_tip_bracket:
+                                          {}
+                                        l_ring_tip_constraint_ab:
+                                          {}
+                                    l_ring_pip_b_constraint_ba:
+                                      {}
+                                  l_thumb_cmc_link_a:
+                                    l_thumb_cmc_link_b:
+                                      l_thumb_mcp_link:
+                                        l_thumb_dip_link_a:
+                                          l_thumb_tip_link:
+                                            l_thumb_tip_bracket:
+                                              {}
+                                            l_thumb_tip_constraint_ab:
+                                              {}
+                                        l_thumb_dip_link_b:
+                                          l_thumb_tip_constraint_ba:
+                                            {}
+                          ft_frame:
+                            {}
       Update Interval: 0
-
+      Value: true
     - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
       Name: FingertipSensors
-      Enabled: true
-      Namespaces: {}
+      Namespaces:
+        {}
       Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /digital_twin/fingertip_markers
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-
+      Value: true
     - Class: rviz_default_plugins/MarkerArray
-      Name: TCP Visualization
       Enabled: true
-      Namespaces: {}
+      Name: TCP Visualization
+      Namespaces:
+        {}
       Topic:
-        Value: /digital_twin/tcp_markers
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-
+        Value: /digital_twin/tcp_markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -84,29 +497,42 @@ Visualization Manager:
       Hide Inactive Objects: true
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/FocusCamera
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
   Value: true
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.5
+      Distance: 1.4931145906448364
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0.5
+        X: 0.2343103438615799
+        Y: -0.25735342502593994
+        Z: 0.41046062111854553
       Focal Shape Fixed Size: true
-      Focal Shape Size: 0.05
+      Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
-      Near Clip Distance: 0.01
-      Pitch: 0.5
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.2849993407726288
       Target Frame: base_link
       Value: Orbit (rviz)
-      Yaw: 0.785
+      Yaw: 1.3099974393844604
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
   Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000100000000000001c900000326fc0200000002fb000000100044006900730070006c006100790073010000003f000001e3000000cc00fffffffb0000000a0056006900650077007301000002280000013d000000a900ffffff000002e10000032600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Views:
+    collapsed: false
   Width: 1200
-  X: 100
-  Y: 100
+  X: 1979
+  Y: 159
