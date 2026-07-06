@@ -17,6 +17,8 @@
 
 #include <rclcpp/logging.hpp>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -28,13 +30,14 @@
 namespace udp_hand_driver {
 
 struct UdpHandFailureDetectorConfig {
-  int failure_threshold{5};     ///< 연속 감지 횟수 임계값
-  bool check_motor{true};       ///< 모터 위치 데이터 검사
-  bool check_sensor{true};      ///< 센서 데이터 검사
-  double min_rate_hz{30.0};     ///< 최소 허용 polling rate
-  int rate_fail_threshold{5};   ///< 연속 N회 미달 시 failure
-  bool check_link{true};        ///< UDP 링크 상태 검사
-  int link_fail_threshold{10};  ///< 연속 N회 recv 전체 실패 시 link_down
+  int failure_threshold{5};         ///< 연속 감지 횟수 임계값
+  bool check_motor{true};           ///< 모터 위치 데이터 검사
+  bool check_sensor{true};          ///< 센서 데이터 검사
+  bool sensor_force_layout{false};  ///< 1b: sensor_data(int32) 대신 sensor_force 의 fx,fy,fz 검사
+  double min_rate_hz{30.0};         ///< 최소 허용 polling rate
+  int rate_fail_threshold{5};       ///< 연속 N회 미달 시 failure
+  bool check_link{true};            ///< UDP 링크 상태 검사
+  int link_fail_threshold{10};      ///< 연속 N회 recv 전체 실패 시 link_down
 };
 
 class UdpHandFailureDetector {
@@ -46,7 +49,7 @@ class UdpHandFailureDetector {
   /// @param cfg          Detection configuration.
   /// @param thread_cfg   Thread scheduling / CPU affinity configuration.
   explicit UdpHandFailureDetector(UdpHandController& controller, Config cfg = Config{},
-                               rtc::ThreadConfig thread_cfg = rtc::kNrtLoggingConfig)
+                                  rtc::ThreadConfig thread_cfg = rtc::kNrtLoggingConfig)
       : controller_(controller), cfg_(cfg), thread_cfg_(thread_cfg) {}
 
   ~UdpHandFailureDetector() { Stop(); }
@@ -115,6 +118,14 @@ class UdpHandFailureDetector {
   }
 
   void CheckMotor(const UdpHandState& state) {
+    // Motor-space read is protocol-optional (1b skips it entirely). Without a
+    // fresh motor read the buffer stays zero/stale, which would otherwise
+    // false-trigger all-zero and duplicate — gate on the per-cycle validity flag
+    // so 1b (motor_valid always false) is a no-op and 1a ignores dropped reads.
+    if (!state.motor_valid) {
+      return;
+    }
+
     const auto& pos = state.motor_positions;
 
     // All-zero check
@@ -155,29 +166,24 @@ class UdpHandFailureDetector {
   }
 
   void CheckSensor(const UdpHandState& state) {
-    const auto& sens = state.sensor_data;
-
-    bool all_zero = true;
-    const int num_sensors = state.num_fingertips * udp_hand_driver::kSensorValuesPerFingertip;
-    for (int i = 0; i < num_sensors; ++i) {
-      if (sens[static_cast<std::size_t>(i)] != 0u) {
-        all_zero = false;
-        break;
-      }
+    bool all_zero = false;
+    bool duplicate = false;
+    if (cfg_.sensor_force_layout) {
+      EvaluateForceSensor(state, all_zero, duplicate);
+    } else {
+      EvaluateRawSensor(state, all_zero, duplicate);
     }
+
     if (all_zero) {
       ++sensor_zero_count_;
     } else {
       sensor_zero_count_ = 0;
     }
-
-    if (prev_sensor_valid_ && sens == prev_sensor_) {
+    if (duplicate) {
       ++sensor_dup_count_;
     } else {
       sensor_dup_count_ = 0;
     }
-    prev_sensor_ = sens;
-    prev_sensor_valid_ = true;
 
     if (sensor_zero_count_ >= cfg_.failure_threshold) {
       RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
@@ -191,6 +197,57 @@ class UdpHandFailureDetector {
                   cfg_.failure_threshold);
       RaiseFailure("hand_sensor_duplicate (count=" + std::to_string(sensor_dup_count_) + ")");
     }
+  }
+
+  // 1a path: barometer/ToF int32 buffer (sensor_data). All-zero + exact
+  // duplicate over num_fingertips × kSensorValuesPerFingertip values.
+  void EvaluateRawSensor(const UdpHandState& state, bool& all_zero, bool& duplicate) {
+    const auto& sens = state.sensor_data;
+    all_zero = true;
+    const int num_sensors = state.num_fingertips * udp_hand_driver::kSensorValuesPerFingertip;
+    for (int i = 0; i < num_sensors; ++i) {
+      if (sens[static_cast<std::size_t>(i)] != 0) {
+        all_zero = false;
+        break;
+      }
+    }
+    duplicate = prev_sensor_valid_ && sens == prev_sensor_;
+    prev_sensor_ = sens;
+    prev_sensor_valid_ = true;
+  }
+
+  // 1b path: per-fingertip firmware force (sensor_force). Only fx,fy,fz (offsets
+  // 0,1,2 within the 6-value [fx,fy,fz,Lx,Ly,Temp] stride) are the real datum —
+  // Lx/Ly/Temp are firmware placeholders and are excluded so a constant
+  // placeholder can neither mask a genuine all-zero nor gate the duplicate
+  // comparison. Firmware emits ADC noise at rest, so an exact-0 force block means
+  // a dead/disconnected sensor and a bit-frozen fx,fy,fz block means a stalled
+  // feed — both distinguishable from normal no-contact operation.
+  void EvaluateForceSensor(const UdpHandState& state, bool& all_zero, bool& duplicate) {
+    const int nf = std::min(state.num_fingertips, udp_hand_driver::kMaxFingertips);
+    if (nf <= 0) {
+      all_zero = false;
+      duplicate = false;
+      return;
+    }
+    constexpr std::size_t kStride =
+        static_cast<std::size_t>(udp_hand_driver::kP1bValuesPerFingertip);
+    all_zero = true;
+    duplicate = prev_force_valid_;
+    for (int f = 0; f < nf; ++f) {
+      for (std::size_t j = 0; j < 3; ++j) {
+        const std::size_t idx = static_cast<std::size_t>(f) * kStride + j;
+        const float v = state.sensor_force[idx];
+        if (v != 0.0f) {
+          all_zero = false;
+        }
+        if (prev_force_valid_ && v != prev_sensor_force_[idx]) {
+          duplicate = false;
+        }
+      }
+    }
+    prev_sensor_force_ = state.sensor_force;
+    prev_force_valid_ = true;
   }
 
   void CheckRate() {
@@ -255,9 +312,12 @@ class UdpHandFailureDetector {
   int motor_zero_count_{0};
   int motor_dup_count_{0};
 
-  // Sensor state
+  // Sensor state (1a: int32 barometer/ToF buffer)
   std::array<int32_t, udp_hand_driver::kMaxHandSensors> prev_sensor_{};
   bool prev_sensor_valid_{false};
+  // Sensor state (1b: per-fingertip float force buffer)
+  std::array<float, udp_hand_driver::kMaxSensorForceValues> prev_sensor_force_{};
+  bool prev_force_valid_{false};
   int sensor_zero_count_{0};
   int sensor_dup_count_{0};
 

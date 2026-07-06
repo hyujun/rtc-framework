@@ -22,8 +22,8 @@ using namespace std::chrono_literals;
 class HandFailureDetectorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    controller_ = std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false,
-                                                   1, 4, true);  // fake_hand=true
+    controller_ = std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0,
+                                                      false, 1, 4, true);  // fake_hand=true
     ASSERT_TRUE(controller_->Start());
   }
 
@@ -160,6 +160,93 @@ TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure) {
 
   EXPECT_TRUE(detector.failed());
   EXPECT_NE(failure_reason.find("hand_sensor_all_zero"), std::string::npos);
+}
+
+// ── 1b force-layout sensor detection (sensor_force fx,fy,fz) ─────────────────
+// Fake mode mirrors the command into sensor_force, so a zero command → all-zero
+// force, a constant command → duplicate force, and a changing command → neither.
+
+TEST_F(HandFailureDetectorTest, SensorForceAllZero_TriggersFailure) {
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.failure_threshold = 3;
+  cfg.check_motor = false;
+  cfg.check_sensor = true;
+  cfg.sensor_force_layout = true;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 0.0;
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+
+  std::string failure_reason;
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
+
+  // Zero command → sensor_force is all-zero (dead/disconnected sensor signature).
+  std::array<float, kNumHandMotors> cmd{};
+  FeedCommands(cmd, 10);
+
+  detector.Start();
+  std::this_thread::sleep_for(200ms);
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_NE(failure_reason.find("hand_sensor_all_zero"), std::string::npos);
+}
+
+TEST_F(HandFailureDetectorTest, SensorForceDuplicate_TriggersFailure) {
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.failure_threshold = 3;
+  cfg.check_motor = false;
+  cfg.check_sensor = true;
+  cfg.sensor_force_layout = true;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 0.0;
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+
+  std::string failure_reason;
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
+
+  // Constant non-zero command → non-zero but frozen force (stalled feed). all_zero
+  // cannot fire (non-zero), so duplicate is the expected signal.
+  std::array<float, kNumHandMotors> same_cmd{};
+  same_cmd[0] = 3.0f;
+  FeedCommands(same_cmd, 20);
+
+  detector.Start();
+  std::this_thread::sleep_for(200ms);
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_NE(failure_reason.find("hand_sensor_duplicate"), std::string::npos);
+  EXPECT_EQ(failure_reason.find("all_zero"), std::string::npos);
+}
+
+TEST_F(HandFailureDetectorTest, SensorForceChanging_NoFailure) {
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.failure_threshold = 5;
+  cfg.check_motor = false;
+  cfg.check_sensor = true;
+  cfg.sensor_force_layout = true;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 0.0;
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+
+  std::string failure_reason;
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
+
+  // Feed a changing non-zero command faster than the 50 Hz detector polls so each
+  // poll sees a fresh, distinct force block — neither all-zero nor duplicate.
+  detector.Start();
+  for (int i = 0; i < 40; ++i) {
+    std::array<float, kNumHandMotors> cmd{};
+    cmd[0] = 1.0f + 0.1f * static_cast<float>(i);
+    controller_->SendCommandAndRequestStates(cmd);
+    std::this_thread::sleep_for(10ms);
+  }
+  detector.Stop();
+
+  EXPECT_FALSE(detector.failed());
 }
 
 // ── Config: disable checks ──────────────────────────────────────────────────

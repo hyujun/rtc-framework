@@ -360,6 +360,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     fd_cfg.failure_threshold = static_cast<int>(get_parameter("failure_threshold").as_int());
     fd_cfg.check_motor = get_parameter("check_motor").as_bool();
     fd_cfg.check_sensor = get_parameter("check_sensor").as_bool();
+    // 1b force layout → detector checks fx,fy,fz in sensor_force, not the int32
+    // sensor_data buffer (which stays zero on 1b and would false-trigger).
+    fd_cfg.sensor_force_layout = sensor_uses_force_layout_;
     fd_cfg.min_rate_hz = get_parameter("min_rate_hz").as_double();
     fd_cfg.rate_fail_threshold = static_cast<int>(get_parameter("rate_fail_threshold").as_int());
     fd_cfg.check_link = get_parameter("check_link").as_bool();

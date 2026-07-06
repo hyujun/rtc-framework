@@ -336,6 +336,20 @@ class UdpHandController {
       fake_state.joint_valid = true;
       fake_state.motor_valid = true;
 
+      // Mirror the command into the 1b force channel (fx,fy,fz per fingertip) so
+      // the force pipeline — sensor publish + failure detector — is exercisable
+      // in standalone fake mode (protocol_version "1b" + use_fake_hand). Harmless
+      // on 1a, where sensor_force is unused. Consumers read only fx,fy,fz.
+      for (int f = 0; f < num_fingertips_ && f < udp_hand_driver::kMaxFingertips; ++f) {
+        for (int j = 0; j < 3; ++j) {
+          const auto src = static_cast<std::size_t>((f * 3 + j) % kNumHandMotors);
+          const auto dst = static_cast<std::size_t>(f) *
+                               static_cast<std::size_t>(udp_hand_driver::kP1bValuesPerFingertip) +
+                           static_cast<std::size_t>(j);
+          fake_state.sensor_force[dst] = cmd[src];
+        }
+      }
+
       if (ft_enabled_ && ft_inferencer_) {
         if (!ft_inferencer_->is_calibrated()) {
           static_cast<void>(

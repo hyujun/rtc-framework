@@ -67,8 +67,8 @@
     # -- Failure Detector 설정 (50Hz non-RT jthread) --
     enable_failure_detector: true
     failure_threshold: 5
-    check_motor: true
-    check_sensor: true
+    check_motor: false               # 1b: motor-space read 미수행 → motor_valid 항상 false (검사 무의미)
+    check_sensor: true               # 1b: sensor_force 의 fx,fy,fz all-zero/duplicate 검사
     min_rate_hz: 30.0
     rate_fail_threshold: 5
     check_link: true

@@ -181,6 +181,8 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 3. Low rate: polling rate가 `min_rate_hz` 미만
 4. Link down: `consecutive_recv_failures` >= `link_fail_threshold`
 
+센서 검사 대상은 프로토콜 레이아웃에 따른다 (`sensor_force_layout` capability, 컨트롤러가 `sensor_uses_force_layout_` 주입). 1a 는 int32 `sensor_data` (barometer/ToF) 전체를, 1b 는 `sensor_force` 의 **fx,fy,fz 만** 검사한다 — Lx/Ly/Temp placeholder 는 제외해 상수 placeholder 가 all-zero 를 가리거나 duplicate 를 왜곡하지 못하게 한다. 펌웨어가 rest 에서 ADC 노이즈로 non-zero 를 내므로 exact-0 force = dead/단선 센서, bit-frozen fx,fy,fz = stalled feed 로 정상 무접촉과 구별된다. 모터 검사는 `state.motor_valid` 로 gate 되어 motor-space read 가 없는 1b (`motor_valid` 항상 false) 에서는 no-op 이다 (`check_motor: false` 권장).
+
 ### UdpHandTimingProfiler (`udp_hand_timing_profiler.hpp`)
 
 EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분위수, 예산(2000us) 초과 카운트. `TimingProfilerBase<250, 20, 2000>` 상속 — 250개 버킷 × 20 µs (= [0, 5000) µs 범위, 20 µs 백분위 해상도). 보간 결과는 `max_us`로 clamp되어 p95, p99 ≤ max를 보장.
@@ -462,6 +464,7 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 | **ARCH-1 Phase 4d — `kMaxFingertips` 자체 소유 (2026-05-16)** | `rtc::kMaxFingertips` 가 `rtc_base` 에서 제거됨 (robot-agnostic 보장). 본 패키지가 `udp_hand_driver::kMaxFingertips = 8` 자체 정의 — hand 도메인이므로 fingertip 어휘 정당. `FingertipFTState`, `fingertip_ft_inferencer`, `udp_hand_controller` 등 패키지 내부 사용처는 unqualified `kMaxFingertips` (자기 namespace) 로 통일. |
 | **Proto_1b 센서 디코드 seam (2026-07-04)** | 펌웨어 센서 프로토콜 버전을 abstract `SensorProtocol` (`protocol/sensor_protocol.hpp`, 정적 lib `udp_hand_protocol`) 로 격리 — `protocol_version` 파라미터 (`"1a"` 기본 / `"1b"`). 1b = 99B bulk 응답(4 × 6 float32 `[fx,fy,fz,Lx,Ly,Temp]`), force 직접 발행·후처리 없음·`motor_states` 미발행(0x10 kMotor 스킵)·bulk 전용. EventLoop 는 polymorphic capability(`HasMotorSpaceRead`/`RunsSensorPostProcess`)로만 분기(ARCH-3). `UdpHandState::sensor_force[]`, `packets::P1bSensorResponsePacket`, `UdpHandTransport::RequestBulkSensorRaw`, `test_sensor_protocol_1b` 추가. Lx/Ly/Temp 는 디코드만·발행 보류(현 펌웨어 placeholder). 1a 회귀 0. |
 | **1b MODE don't-care (2026-07-06)** | 1b 펌웨어가 응답 MODE byte 를 임의값으로 채우고 항상 raw 로 동작 → strict MODE 검증이 정상 데이터를 버리는 문제 해결. `SensorProtocol::VerifiesResponseMode()` capability 신설(1a=true/1b=false), `UdpHandTransport::verify_response_mode_` 플래그로 5개 request 경로의 MODE 비교를 gate. 컨트롤러 `Start()` 가 capability 를 주입(EventLoop 시작 전, race 없음). `RequestSetSensorMode` 는 gate 무관 cmd echo(`kSetSensorMode`) floor 신설. version-string/`#ifdef` 분기 없음(ARCH-3). 1a strict 유지·회귀 0. |
+| **1b failure detector force-layout 검사 (2026-07-06)** | 1b 에서 `UdpHandFailureDetector` 가 int32 `sensor_data`(1b 에선 항상 0)와 `motor_positions`(motor read 없음)를 검사해 정상 동작 중 all-zero/duplicate 오탐 → E-STOP 유발하던 문제 해결. `Config::sensor_force_layout` capability 신설(node 가 `sensor_uses_force_layout_` 주입), 1b 는 `sensor_force` 의 fx,fy,fz(offset 0,1,2/stride 6)만 검사(Lx/Ly/Temp placeholder 제외). `CheckMotor` 는 `state.motor_valid` gate 로 1b no-op. p1b yaml `check_motor: false`. fake-hand 가 cmd 를 `sensor_force` 로 미러링(standalone 1b 테스트 가능) + force all-zero/duplicate/changing 테스트 3종 추가. 1a 회귀 0(기존 assertion 무수정). |
 
 ---
 
