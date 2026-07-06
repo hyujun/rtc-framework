@@ -6,8 +6,11 @@
 //   (5) 특이 조립형상 → singular flag + 유한 유지.
 #include "closure_test_fixtures.hpp"
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"
+#include "rtc_urdf_bridge/loop_verification.hpp"
+#include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_closed_chain_handle.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
+#include "rtc_urdf_bridge/types.hpp"
 
 // Pinocchio 헤더 (경고 억제)
 #pragma GCC diagnostic push
@@ -15,13 +18,21 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include <pinocchio/algorithm/constrained-dynamics.hpp>
+#include <pinocchio/algorithm/crba.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
+#include <pinocchio/algorithm/proximal.hpp>
+#include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/multibody/data.hpp>
 #pragma GCC diagnostic pop
 
+#include <Eigen/Cholesky>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -29,6 +40,22 @@
 #include <vector>
 
 namespace rub = rtc_urdf_bridge;
+
+namespace {
+
+// 독립 관절 순서로 full q(또는 v)에서 스칼라 성분 추출 (RT 핸들 입력 순서 =
+// GetIndependentJointNames).
+std::vector<double> IndepQSlice(const rub::RtClosedChainHandle& handle,
+                                const pinocchio::Model& model, const Eigen::VectorXd& q_full) {
+  std::vector<double> q_a;
+  for (const auto& name : handle.GetIndependentJointNames()) {
+    const auto jid = model.getJointId(name);
+    q_a.push_back(q_full[static_cast<Eigen::Index>(model.idx_qs[jid])]);
+  }
+  return q_a;
+}
+
+}  // namespace
 
 // ── (1) warm-start + 고정 K=2 사영이 fully-converged FK 를 <1mm 로 추종 ──────────
 //   Phase 2a 스파이크(ProjectPassiveToConstraint, max_iter=K)와 동일 궤적을 RtClosedChainHandle
@@ -250,4 +277,265 @@ TEST(RtClosedChainHandle, OutOfRangeFrameGettersSafe) {
   EXPECT_TRUE(rt.GetFramePlacement(oob).isIdentity());
   EXPECT_EQ(rt.GetFramePosition(oob).norm(), 0.0);
   EXPECT_TRUE(rt.GetFrameRotation(oob).isIdentity());
+}
+
+// ── (9) 축약 동역학 M_a/g_a/h_a 가 non-RT ClosedChainHandle 과 일치 (crank_rocker 비특이) ──
+//   RT 는 SVD damped-pinv 대신 정규방정식 left-pinv(=수치 등가) 로 G/Jc_D⁺ 를 쓰므로
+//   비특이 조립형상에서 M_a=GᵀMG, g_a=Gᵀg, h_a=Gᵀrnea(...) 가 non-RT 와 일치해야 한다.
+TEST(RtClosedChainHandle, ReducedDynamicsMatchesConverged) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+
+  rub::ClosedChainHandle ref(model, ccm.constraints, ccm.actuated_joint_ids, {});
+  ref.Update(std::vector<double>{0.2});
+  const Eigen::VectorXd seed = ref.GetFullConfiguration();
+
+  rub::RtClosedChainHandle rt(model, ccm.constraints, ccm.actuated_joint_ids, seed, 2);
+  const int n_a = rt.nv_independent();
+  ASSERT_EQ(n_a, ref.nv_independent());
+
+  const std::vector<double> q_a(static_cast<std::size_t>(n_a), 0.2);  // 비특이 crank
+  std::vector<double> v_a(static_cast<std::size_t>(n_a));
+  for (int i = 0; i < n_a; ++i)
+    v_a[static_cast<std::size_t>(i)] = 0.37 * (i + 1) - 0.2;
+
+  const rub::ClosedChainHandle::Status rst = ref.Update(q_a, v_a);
+  ASSERT_TRUE(rst.converged);
+  ASSERT_FALSE(rst.singular) << "crank=0.2 는 비특이 조립 구간";
+
+  const rub::RtClosedChainHandle::Status st = rt.Update(q_a);
+  ASSERT_FALSE(st.held);
+  ASSERT_FALSE(st.singular);
+  const rub::RtClosedChainHandle::Status dst = rt.UpdateDynamics(v_a);
+  ASSERT_FALSE(dst.held);
+
+  EXPECT_LT((rt.GetMassMatrix() - ref.GetMassMatrix()).norm(), 1e-5) << "M_a parity";
+  EXPECT_LT((rt.GetGeneralizedGravity() - ref.GetGeneralizedGravity()).norm(), 1e-5)
+      << "g_a parity";
+  EXPECT_LT((rt.GetNonLinearEffects() - ref.GetNonLinearEffects()).norm(), 1e-4) << "h_a parity";
+
+  // v_a 미제공 → h_a == g_a (bias 없음).
+  ASSERT_FALSE(rt.Update(q_a).held);
+  ASSERT_FALSE(rt.UpdateDynamics({}).held);
+  EXPECT_LT((rt.GetNonLinearEffects() - rt.GetGeneralizedGravity()).norm(), 1e-12);
+}
+
+// ── (10) 축약 역동역학 round-trip: M_a·a_I + h_a == Gᵀτ (constraintDynamics 오라클) ──
+//   non-RT CrankRockerReducedRoundTrip 를 RtClosedChainHandle 로 재현 — RT 축약 EOM 이
+//   pinocchio 순동역학과 일치함을 독립 검증 (spec [SPRINT] 1b).
+TEST(RtClosedChainHandle, ReducedRoundTripConstraintDynamics) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+
+  rub::ClosedChainHandle ref(model, ccm.constraints, ccm.actuated_joint_ids, {});
+  ref.Update(std::vector<double>{0.2});
+  const Eigen::VectorXd seed = ref.GetFullConfiguration();
+
+  rub::RtClosedChainHandle rt(model, ccm.constraints, ccm.actuated_joint_ids, seed, 2);
+  const int n_a = rt.nv_independent();
+  ASSERT_GT(n_a, 0);
+
+  const std::vector<double> q_a(static_cast<std::size_t>(n_a), 0.2);
+  std::vector<double> v_a(static_cast<std::size_t>(n_a));
+  for (int i = 0; i < n_a; ++i)
+    v_a[static_cast<std::size_t>(i)] = 0.37 * (i + 1) - 0.2;
+
+  const rub::RtClosedChainHandle::Status st = rt.Update(q_a);
+  ASSERT_FALSE(st.held);
+  ASSERT_FALSE(st.singular);
+  ASSERT_LT(st.closure_error, 1e-6) << "warm-start + K=2 로 잘 닫혀야 한다";
+  ASSERT_FALSE(rt.UpdateDynamics(v_a).held);
+
+  const Eigen::VectorXd q_full = rt.GetFullConfiguration();
+  const Eigen::MatrixXd G = rt.GetReductionMap();
+  Eigen::VectorXd v_a_vec(n_a);
+  for (int i = 0; i < n_a; ++i)
+    v_a_vec[i] = v_a[static_cast<std::size_t>(i)];
+  const Eigen::VectorXd v_full = G * v_a_vec;
+
+  // v_full 은 구속-정합 (Jc v_full ≈ 0).
+  {
+    pinocchio::Data d(*model);
+    const auto ck = rub::ComputeConstraintKinematics(*model, d, ccm.constraints, q_full);
+    EXPECT_LT((ck.Jc * v_full).norm(), 1e-6);
+  }
+
+  // 오라클: 임의 τ_full → constraintDynamics → ddq (구속-정합).
+  Eigen::VectorXd tau_full(model->nv);
+  for (int i = 0; i < model->nv; ++i)
+    tau_full[i] = 0.5 * (i + 1) - 1.1;
+
+  pinocchio::Data data(*model);
+  std::vector<pinocchio::RigidConstraintData> cdatas;
+  cdatas.reserve(ccm.constraints.size());
+  for (const auto& cm : ccm.constraints)
+    cdatas.emplace_back(cm);
+  pinocchio::initConstraintDynamics(*model, data, ccm.constraints, cdatas);
+  pinocchio::ProximalSettings prox(1e-12, 1e-10, 50);  // redundant contact_3d → mu>0 정칙화
+  const Eigen::VectorXd ddq = pinocchio::constraintDynamics(*model, data, q_full, v_full, tau_full,
+                                                            ccm.constraints, cdatas, prox);
+
+  // a_I = ddq 의 독립 성분.
+  Eigen::VectorXd a_I(n_a);
+  {
+    int k = 0;
+    for (const auto& name : rt.GetIndependentJointNames()) {
+      const auto jid = model->getJointId(name);
+      a_I[k++] = ddq[static_cast<Eigen::Index>(model->idx_vs[jid])];
+    }
+  }
+
+  const Eigen::VectorXd lhs = rt.GetMassMatrix() * a_I + rt.GetNonLinearEffects();
+  const Eigen::VectorXd rhs = G.transpose() * tau_full;
+  ASSERT_GT(rhs.norm(), 1e-3) << "Gᵀτ 가 0 — 축약 map 미충전(공허 통과 방지)";
+  ASSERT_GT(rt.GetMassMatrix().norm(), 1e-6) << "M_a 가 0 — 재계산 안 됨";
+  EXPECT_LT((lhs - rhs).norm(), 1e-5) << "RT reduced EOM 이 constraintDynamics 와 불일치";
+}
+
+// ── (11) serial 항등 동역학: 구속 없으면 M_a==crba(model), g_a==g, h_a==nle ──────
+TEST(RtClosedChainHandle, SerialModelDynamicsIdentity) {
+  const rub::ClosedChainModel ccm = rtc::test::FourBar();  // all-revolute tree
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::RtClosedChainHandle rt(model, {}, {}, {});  // 구속/actuated 없음 → 항등
+  const int n = model->nv;
+  ASSERT_EQ(rt.nv_independent(), n);
+
+  std::vector<double> q_a(static_cast<std::size_t>(n));
+  std::vector<double> v_a(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    q_a[static_cast<std::size_t>(i)] = 0.13 * (i + 1);
+    v_a[static_cast<std::size_t>(i)] = 0.05 * (i + 1);
+  }
+  ASSERT_FALSE(rt.Update(q_a).held);
+  ASSERT_FALSE(rt.UpdateDynamics(v_a).held);
+
+  Eigen::VectorXd qv(n);
+  Eigen::VectorXd vv(n);
+  for (int i = 0; i < n; ++i) {
+    qv[i] = q_a[static_cast<std::size_t>(i)];
+    vv[i] = v_a[static_cast<std::size_t>(i)];
+  }
+  pinocchio::Data d(*model);
+  pinocchio::crba(*model, d, qv);
+  d.M.triangularView<Eigen::StrictlyLower>() =
+      d.M.transpose().triangularView<Eigen::StrictlyLower>();
+  EXPECT_LT((rt.GetMassMatrix() - d.M).norm(), 1e-10) << "G=I → M_a == crba(model)";
+  pinocchio::computeGeneralizedGravity(*model, d, qv);
+  EXPECT_LT((rt.GetGeneralizedGravity() - d.g).norm(), 1e-10);
+  pinocchio::nonLinearEffects(*model, d, qv, vv);
+  EXPECT_LT((rt.GetNonLinearEffects() - d.nle).norm(), 1e-10) << "identity → h_a == nle";
+}
+
+// ── (12) 특이 조립형상 동역학: singular flag + M_a/g_a/h_a 유한 (damped, NaN 없음) ──
+TEST(RtClosedChainHandle, SingularAssemblyDynamicsFinite) {
+  const rub::ClosedChainModel ccm = rtc::test::FourBar();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::RtClosedChainHandle rt(model, ccm.constraints, ccm.actuated_joint_ids, ccm.q_ref, 2);
+
+  const std::vector<double> q_a = IndepQSlice(rt, *model, ccm.q_ref);
+  const std::vector<double> v_a(static_cast<std::size_t>(rt.nv_independent()), 0.1);
+
+  const rub::RtClosedChainHandle::Status st = rt.Update(q_a);
+  EXPECT_TRUE(st.singular) << "대칭 4-bar q_ref 는 특이 조립형상";
+  const rub::RtClosedChainHandle::Status dst = rt.UpdateDynamics(v_a);
+  EXPECT_FALSE(dst.held) << "damped → 유한, NaN hold 아님";
+
+  EXPECT_TRUE(rt.GetMassMatrix().allFinite());
+  EXPECT_TRUE(rt.GetGeneralizedGravity().allFinite());
+  EXPECT_TRUE(rt.GetNonLinearEffects().allFinite());
+}
+
+// ── (13) Update 가 held 면 UpdateDynamics 도 직전 동역학 hold (byte-불변) ─────────
+TEST(RtClosedChainHandle, DynamicsHeldWhenUpdateHeld) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::ClosedChainHandle ref(model, ccm.constraints, ccm.actuated_joint_ids, {});
+  ref.Update(std::vector<double>{0.2});
+  rub::RtClosedChainHandle rt(model, ccm.constraints, ccm.actuated_joint_ids,
+                              ref.GetFullConfiguration(), 2);
+  const int n_a = rt.nv_independent();
+  const std::vector<double> q_a(static_cast<std::size_t>(n_a), 0.2);
+  const std::vector<double> v_a(static_cast<std::size_t>(n_a), 0.1);
+
+  ASSERT_FALSE(rt.Update(q_a).held);
+  ASSERT_FALSE(rt.UpdateDynamics(v_a).held);
+  const Eigen::MatrixXd M_good = rt.GetMassMatrix();
+  const Eigen::VectorXd h_good = rt.GetNonLinearEffects();
+
+  // 잘못된 크기 Update → held → UpdateDynamics 미갱신 (직전값 유지).
+  const rub::RtClosedChainHandle::Status bad = rt.Update(std::vector<double>{0.2, 0.3});
+  ASSERT_TRUE(bad.held);
+  const rub::RtClosedChainHandle::Status dyn = rt.UpdateDynamics(v_a);
+  EXPECT_TRUE(dyn.held);
+  EXPECT_LT((rt.GetMassMatrix() - M_good).norm(), 1e-15);
+  EXPECT_LT((rt.GetNonLinearEffects() - h_good).norm(), 1e-15);
+}
+
+// ── (14) arm + closed-chain hand 축약 동역학 (topology archetype: arm 무영향 + hand loop) ──
+//   현재 build-only 이던 arm_with_four_bar_hand 픽스처에 동역학 테스트 신설 (spec [SPRINT] 1).
+//   독립 집합 = 모든 movable − loop-passive lock (full-model index) → dep = hand passive 만
+//   (dep ≤ m well-posed). Phase 2 WBC 배선이 동일 로직을 쓴다.
+TEST(RtClosedChainHandle, ArmWithFourBarHandReducedDynamics) {
+  rub::ModelConfig cfg;
+  cfg.urdf_path = rtc::test::TestUrdfPath("arm_with_four_bar_hand.urdf.xacro");
+  cfg.root_joint_type = "fixed";
+  cfg.closure_yaml_path = rtc::test::TestUrdfPath("four_bar.closure.yaml");
+  const rub::PinocchioModelBuilder builder(cfg);
+
+  const auto full = builder.GetFullModel();
+  ASSERT_NE(full, nullptr);
+  ASSERT_FALSE(builder.GetConstraintModels().empty()) << "arm+hand 은 loop 구속을 가져야 한다";
+
+  // 독립 집합 = movable − **loop-passive** {joint_ab, joint_c, joint_cd}. builder 의
+  // passive-lock(movable−actuated) 은 arm_joint 도 잠그지만(사이드카가 standalone hand 기준
+  // 이라 arm 미선언), arm_joint 는 loop 밖 독립 DoF 다 → dep = 3(hand passive) = m 로 well-posed.
+  // (실로봇 사이드카는 arm/hand 를 모두 actuated 로 선언하므로 movable−actuated 가 곧
+  // loop-passive.)
+  const std::vector<std::string> loop_passive{"joint_ab", "joint_c", "joint_cd"};
+  std::vector<pinocchio::JointIndex> actuated_ids;
+  for (int jid = 1; jid < full->njoints; ++jid) {
+    const auto jidx = static_cast<std::size_t>(jid);
+    if (full->nvs[jidx] == 0) {
+      continue;  // fixed
+    }
+    if (std::find(loop_passive.begin(), loop_passive.end(), full->names[jidx]) ==
+        loop_passive.end()) {
+      actuated_ids.push_back(static_cast<pinocchio::JointIndex>(jid));
+    }
+  }
+  ASSERT_EQ(actuated_ids.size(), 2u) << "독립 = {arm_joint, joint_a}";
+
+  const Eigen::VectorXd& q_ref = builder.GetClosureReferenceConfig();
+  rub::ClosedChainHandle ref(full, builder.GetConstraintModels(), actuated_ids, q_ref);
+  rub::RtClosedChainHandle rt(full, builder.GetConstraintModels(), actuated_ids, q_ref, 2);
+  const int n_a = rt.nv_independent();
+  ASSERT_EQ(n_a, static_cast<int>(actuated_ids.size()));
+  ASSERT_EQ(ref.nv_independent(), n_a);
+
+  const std::vector<double> q_a = IndepQSlice(rt, *full, q_ref);
+  std::vector<double> v_a(static_cast<std::size_t>(n_a));
+  for (int i = 0; i < n_a; ++i)
+    v_a[static_cast<std::size_t>(i)] = 0.02 * (i + 1);
+
+  const rub::ClosedChainHandle::Status ref_st = ref.Update(q_a, v_a);
+  const rub::RtClosedChainHandle::Status st = rt.Update(q_a);
+  ASSERT_FALSE(st.held);
+  ASSERT_FALSE(rt.UpdateDynamics(v_a).held);
+
+  // 항상: 차원 + 유한 + 대칭 (특이/비특이 무관).
+  EXPECT_EQ(rt.GetMassMatrix().rows(), n_a);
+  EXPECT_EQ(rt.GetMassMatrix().cols(), n_a);
+  EXPECT_TRUE(rt.GetMassMatrix().allFinite());
+  EXPECT_TRUE(rt.GetGeneralizedGravity().allFinite());
+  EXPECT_TRUE(rt.GetNonLinearEffects().allFinite());
+  EXPECT_LT((rt.GetMassMatrix() - rt.GetMassMatrix().transpose()).norm(), 1e-9) << "M_a 대칭";
+
+  // 비특이 조립일 때만 non-RT parity + SPD (특이는 damped 라 값이 갈릴 수 있음).
+  if (!st.singular && !ref_st.singular && ref_st.converged) {
+    EXPECT_LT((rt.GetMassMatrix() - ref.GetMassMatrix()).norm(), 1e-4) << "M_a parity";
+    EXPECT_LT((rt.GetGeneralizedGravity() - ref.GetGeneralizedGravity()).norm(), 1e-4);
+    EXPECT_LT((rt.GetNonLinearEffects() - ref.GetNonLinearEffects()).norm(), 1e-3);
+    Eigen::LLT<Eigen::MatrixXd> llt(rt.GetMassMatrix().eval());
+    EXPECT_EQ(llt.info(), Eigen::Success) << "비특이 → M_a SPD";
+  }
 }

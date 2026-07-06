@@ -9,10 +9,12 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/crba.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/spatial/explog.hpp>
 #pragma GCC diagnostic pop
 
@@ -38,6 +40,10 @@ const pinocchio::Model& RequireModel(const std::shared_ptr<const pinocchio::Mode
 // 범위 밖 frame_id 접근 시 반환할 항등 pose. namespace-scope const → static-init 시 1회 구성,
 // RT 핫패스에서 local-static guard(락) 없이 참조만 한다.
 const pinocchio::SE3 kIdentitySE3 = pinocchio::SE3::Identity();
+
+// γ = J̇c·v 중앙차분 스텝. non-RT @ref ClosedChainHandle 과 동일 값 (규약 정합) — 한쪽만
+// 바꾸면 drift(h_a) 가 desync 되므로 동일 상수를 유지한다.
+constexpr double kDriftEps = 1e-6;
 
 }  // namespace
 
@@ -160,6 +166,22 @@ void RtClosedChainHandle::Initialize() {
   ldlt_G_ = Eigen::LDLT<Eigen::MatrixXd>(std::max(dep_, 1));
 
   J_full_ = Eigen::MatrixXd::Zero(6, nv_);
+
+  // 축약 동역학 버퍼 (UpdateDynamics 재사용). 0-차원 차단용 max(,1) 가드.
+  v_indep_ = Eigen::VectorXd::Zero(std::max(n_a_, 1));
+  v_full_ = Eigen::VectorXd::Zero(nv_);
+  MG_ = Eigen::MatrixXd::Zero(nv_, std::max(n_a_, 1));
+  M_a_ = Eigen::MatrixXd::Zero(std::max(n_a_, 1), std::max(n_a_, 1));
+  M_sym_ = Eigen::MatrixXd::Zero(std::max(n_a_, 1), std::max(n_a_, 1));
+  g_a_ = Eigen::VectorXd::Zero(std::max(n_a_, 1));
+  h_a_ = Eigen::VectorXd::Zero(std::max(n_a_, 1));
+  dq_drift_ = Eigen::VectorXd::Zero(nv_);
+  q_plus_ = q_full_;
+  q_minus_ = q_full_;
+  gamma_ = Eigen::VectorXd::Zero(m_);
+  JtGamma_ = Eigen::VectorXd::Zero(std::max(dep_, 1));
+  a_dep_ = Eigen::VectorXd::Zero(std::max(dep_, 1));
+  a_drift_ = Eigen::VectorXd::Zero(nv_);
 
   // 독립 블록 = I (정적). serial 등가면 G = I 로 고정.
   G_.setZero();
@@ -325,6 +347,83 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
   return status_;
 }
 
+// ── 축약 동역학 갱신 (RT-safe) ───────────────────────────────────────────────
+
+RtClosedChainHandle::Status RtClosedChainHandle::UpdateDynamics(
+    std::span<const double> v_a) noexcept {
+  // 직전 Update 가 hold 했으면 동역학도 직전값 유지 (data_ 는 직전 유효 q_full_ 상태).
+  if (status_.held) {
+    return status_;
+  }
+
+  // v_full_ = G v_a. v_a 없거나 크기 불일치 → 0 → h_a = g_a.
+  const bool have_velocity = (n_a_ > 0) && (static_cast<int>(v_a.size()) == n_a_);
+  if (have_velocity) {
+    for (int i = 0; i < n_a_; ++i) {
+      v_indep_[i] = v_a[static_cast<std::size_t>(i)];
+    }
+    v_full_.noalias() = G_ * v_indep_;
+  } else {
+    v_full_.setZero();
+  }
+
+  RebuildReducedDynamics(have_velocity);
+  return status_;
+}
+
+// ── 축약 동역학 재계산 (closed_chain_handle.cpp:257-354 의 RT-safe 포팅) ────────
+
+void RtClosedChainHandle::RebuildReducedDynamics(bool have_velocity) noexcept {
+  const pinocchio::Model& model = *model_;
+
+  // (1) 축약 관성 M_a = Gᵀ M G. crba 는 상삼각만 채우므로 하삼각 복사 후 축약.
+  pinocchio::crba(model, data_, q_full_);
+  data_.M.triangularView<Eigen::StrictlyLower>() =
+      data_.M.transpose().triangularView<Eigen::StrictlyLower>();
+  MG_.noalias() = data_.M * G_;           // nv × n_a
+  M_a_.noalias() = G_.transpose() * MG_;  // n_a × n_a
+  // 부동소수점 비대칭 제거 (하류 LLT/LDLT). M_sym_ 은 별도 버퍼 → alias 없음.
+  M_sym_.noalias() = M_a_.transpose();
+  M_a_ = 0.5 * (M_a_ + M_sym_);  // 계수별 연산 → 재할당 없음
+
+  // (2) 축약 중력 g_a = Gᵀ g.
+  pinocchio::computeGeneralizedGravity(model, data_, q_full_);
+  g_a_.noalias() = G_.transpose() * data_.g;
+
+  // (3) 축약 비선형효과 h_a = Gᵀ rnea(q, v_full, a_drift). v=0 이면 h_a = g_a.
+  if (have_velocity) {
+    a_drift_.setZero();
+    if (dep_ > 0) {
+      // a_drift 종속 성분 = −Jc_D⁺ γ (γ = J̇c v_full 중앙차분). Jc_D⁺ = damped 정규방정식
+      // left-pinv = (Jc_Dᵀ Jc_D + λ²I)⁻¹ Jc_Dᵀ — 직전 RebuildReductionMap 이 factor 한
+      // ldlt_G_ 와 q_full 형상 Jc_D(Jc_free_) 를 재사용 (non-RT DampedPinv 와 수치 등가).
+      dq_drift_ = kDriftEps * v_full_;
+      pinocchio::integrate(model, q_full_, dq_drift_, q_plus_);
+      dq_drift_ *= -1.0;
+      pinocchio::integrate(model, q_full_, dq_drift_, q_minus_);
+      ComputeConstraintKinematicsRt(q_plus_);  // Jc_ = Jc(q_plus)
+      gamma_.noalias() = Jc_ * v_full_;
+      ComputeConstraintKinematicsRt(q_minus_);  // Jc_ = Jc(q_minus)
+      gamma_.noalias() -= Jc_ * v_full_;
+      gamma_ /= (2.0 * kDriftEps);
+      JtGamma_.noalias() = Jc_free_.transpose() * gamma_;  // Jc_D 는 q_full 형상 (보존)
+      a_dep_ = ldlt_G_.solve(JtGamma_);                    // (Jc_Dᵀ Jc_D + λ²I)⁻¹ Jc_Dᵀ γ
+      for (int r = 0; r < dep_; ++r) {
+        a_drift_[dep_v_idx_[static_cast<std::size_t>(r)]] = -a_dep_[r];
+      }
+    }
+    pinocchio::rnea(model, data_, q_full_, v_full_, a_drift_);
+    h_a_.noalias() = G_.transpose() * data_.tau;
+  } else {
+    h_a_ = g_a_;
+  }
+
+  // (4) FK/Jacobian getter 를 위해 data_ 를 q_full_ 상태로 복원 (drift 유한차분이
+  //     data_.J/oMi 를 q_plus/minus 로 오염시켰을 수 있음). closed_chain_handle.cpp:350-353 동일.
+  pinocchio::computeJointJacobians(model, data_, q_full_);
+  pinocchio::updateFramePlacements(model, data_);
+}
+
 // ── FK / Jacobian getter ────────────────────────────────────────────────────
 
 const pinocchio::SE3& RtClosedChainHandle::GetFramePlacement(
@@ -365,6 +464,20 @@ void RtClosedChainHandle::GetFrameJacobian(pinocchio::FrameIndex frame_id,
 
 Eigen::Ref<const Eigen::MatrixXd> RtClosedChainHandle::GetReductionMap() const noexcept {
   return G_;
+}
+
+// ── 축약 동역학 결과 접근 (UpdateDynamics 이후 유효) ──────────────────────────
+
+Eigen::Ref<const Eigen::MatrixXd> RtClosedChainHandle::GetMassMatrix() const noexcept {
+  return M_a_;
+}
+
+Eigen::Ref<const Eigen::VectorXd> RtClosedChainHandle::GetGeneralizedGravity() const noexcept {
+  return g_a_;
+}
+
+Eigen::Ref<const Eigen::VectorXd> RtClosedChainHandle::GetNonLinearEffects() const noexcept {
+  return h_a_;
 }
 
 // ── 메타데이터 ──────────────────────────────────────────────────────────────
