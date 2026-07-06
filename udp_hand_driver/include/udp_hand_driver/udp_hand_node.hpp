@@ -92,6 +92,15 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   std::vector<std::string> fingertip_names_;
   int num_fingertips_{udp_hand_driver::kDefaultNumFingertips};
 
+  // Per-joint position offset (URDF/controller frame − firmware zero), radians.
+  // Parsed once in on_configure from the `joint_position_offsets_deg` YAML list
+  // (degrees, joint_state_names order). Applied at the two ROS boundaries only:
+  //   read/publish : controller_pos = udp_pos + offset  (PublishFromEventLoop)
+  //   command/write: udp_cmd        = controller_cmd − offset  (command sub)
+  // so the round-trip is identity. Zero by default → backward compatible.
+  // Position-only: velocity/effort and motor-space positions are untouched.
+  std::array<float, udp_hand_driver::kNumHandMotors> joint_offset_rad_{};
+
   // Sensor-message layout selector, cached from the SensorProtocol capability
   // at on_configure (off the hot path). true → publish the 1b per-fingertip
   // force vector (fs.f) from state.sensor_force; false → publish the 1a

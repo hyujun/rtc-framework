@@ -45,6 +45,23 @@
       - "middle_dip_fe_joint"
       - "ring_mcp_fe_joint"
 
+    # -- Joint position offset (degree) --
+    # joint_state_names 와 동일 순서(10개). 프레임 정의: URDF/controller − firmware zero.
+    #   수신(joint_states 발행): udp_pos + offset  → controller-side
+    #   송신(joint_command→UDP): controller_cmd − offset → 펌웨어
+    # 두 경계가 대칭이라 명령↔상태 왕복이 항등. 전부 0 이면 offset 없음(기본).
+    joint_position_offsets_deg:
+      - 0.0   # thumb_cmc_aa_joint
+      - 0.0   # thumb_cmc_fe_joint
+      - 0.0   # thumb_mcp_joint
+      - 0.0   # thumb_dip_fe_joint
+      - 0.0   # index_mcp_aa_joint
+      - 0.0   # index_mcp_fe_joint
+      - 0.0   # index_dip_fe_joint
+      - 0.0   # middle_mcp_fe_joint
+      - 0.0   # middle_dip_fe_joint
+      - 0.0   # ring_mcp_fe_joint
+
     # -- 핑거팁 이름 (1b: 핑거당 force 발행에 사용) --
     hand_fingertip_names:
       - "thumb"

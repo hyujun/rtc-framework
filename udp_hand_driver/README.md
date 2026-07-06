@@ -278,6 +278,7 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `drift_threshold` | `5.0` | 드리프트 기울기 임계값 |
 | `drift_window_size` | `2500` | 드리프트 윈도우 크기 |
 | `joint_state_names` | `[]` (기본 이름 사용) | 관절 이름 배열 (10개) |
+| `joint_position_offsets_deg` | `[]` (offset 0) | 관절 position offset (degree, `joint_state_names` 순서 10개). 수신 시 `+offset`(펌웨어→controller), 송신 시 `−offset`(controller→펌웨어). 크기 불일치 시 무시(0). position 전용 |
 | `motor_state_names` | `[]` (기본 이름 사용) | 모터 이름 배열 (10개) |
 | `hand_fingertip_names` | `[]` (기본 이름 사용) | 핑거팁 이름 배열 (4개) |
 | `calibration_command_topic` | `"/hand/calibration/command"` | 캘리브레이션 명령 구독 토픽 |

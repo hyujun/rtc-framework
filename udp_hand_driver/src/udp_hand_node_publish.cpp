@@ -32,7 +32,10 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
     joint_js_msg_.header.stamp = stamp;
     for (int i = 0; i < udp_hand_driver::kNumHandMotors; ++i) {
       const auto iu = static_cast<std::size_t>(i);
-      joint_js_msg_.position[iu] = static_cast<double>(state.joint_positions[iu]);
+      // Add the per-joint offset: firmware frame → controller frame.
+      // Position-only; velocity/effort are unaffected by a constant offset.
+      joint_js_msg_.position[iu] =
+          static_cast<double>(state.joint_positions[iu] + joint_offset_rad_[iu]);
       joint_js_msg_.velocity[iu] = static_cast<double>(state.joint_velocities[iu]);
       joint_js_msg_.effort[iu] = static_cast<double>(state.joint_currents[iu]);
     }

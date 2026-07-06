@@ -7,6 +7,7 @@
 #include <lifecycle_msgs/msg/state.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -52,6 +53,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_parameter("joint_state_names", std::vector<std::string>{});
   declare_parameter("motor_state_names", std::vector<std::string>{});
   declare_parameter("hand_fingertip_names", std::vector<std::string>{});
+
+  // Per-joint position offset in degrees (joint_state_names order, 10 values).
+  // Converted to radians into joint_offset_rad_ below. Empty → all-zero.
+  declare_parameter("joint_position_offsets_deg", std::vector<double>{});
 
   declare_parameter("communication_mode", std::string{"individual"});
 
@@ -217,6 +222,32 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   }
   fingertip_names_ = fingertip_names;
 
+  // ── Joint position offsets (degree YAML → radian) ──────────────────
+  // Boundary conversion (degrees only at the config edge; radians internal).
+  // Applied at +offset on publish and −offset on command so the round-trip
+  // is identity. Size must match kNumHandMotors; otherwise fall back to zero
+  // (same lenient pattern as the *_names params above).
+  joint_offset_rad_.fill(0.0f);
+  {
+    const auto offsets_deg = get_parameter("joint_position_offsets_deg").as_double_array();
+    if (!offsets_deg.empty()) {
+      if (offsets_deg.size() != static_cast<std::size_t>(udp_hand_driver::kNumHandMotors)) {
+        RCLCPP_WARN(
+            ::udp_hand_driver::logging::NodeLogger(),
+            "joint_position_offsets_deg size %zu (expected %d) — ignoring, using zero offset",
+            offsets_deg.size(), udp_hand_driver::kNumHandMotors);
+      } else {
+        constexpr double kDeg2Rad = M_PI / 180.0;
+        for (std::size_t i = 0; i < offsets_deg.size(); ++i) {
+          joint_offset_rad_[i] = static_cast<float>(offsets_deg[i] * kDeg2Rad);
+        }
+        RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                    "Joint position offsets applied (%d joints, degree YAML → radian)",
+                    udp_hand_driver::kNumHandMotors);
+      }
+    }
+  }
+
   // ── Link status decimation ─────────────────────────────────────────
   const double publish_rate = get_parameter("publish_rate").as_double();
   link_decimation_ = std::max(1, static_cast<int>(500.0 / publish_rate));
@@ -248,7 +279,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
         std::array<float, udp_hand_driver::kNumHandMotors> cmd;
         for (std::size_t i = 0; i < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors);
              ++i) {
-          cmd[i] = static_cast<float>(msg->values[i]);
+          // Subtract the per-joint offset: controller frame → firmware frame.
+          cmd[i] = static_cast<float>(msg->values[i]) - joint_offset_rad_[i];
         }
         if (use_fake_hand_) {
           std::lock_guard lock(last_cmd_mutex_);
