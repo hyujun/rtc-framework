@@ -58,6 +58,13 @@ class SensorProtocol {
   [[nodiscard]] virtual bool DecodeAllSensors(const uint8_t* buf, std::size_t len,
                                               UdpHandState& state) noexcept = 0;
 
+  /// Whether the firmware echoes a meaningful MODE byte in responses. 1a = true
+  /// (MODE echoes the requested joint/sensor mode; validated on receive). 1b =
+  /// false (firmware fills MODE with arbitrary values and only ever runs raw
+  /// sensor mode, so the driver treats MODE as don't-care and skips mode
+  /// validation on every response).
+  [[nodiscard]] virtual bool VerifiesResponseMode() const noexcept = 0;
+
   /// Version tag ("1a"/"1b") for diagnostics/logging.
   [[nodiscard]] virtual const char* Version() const noexcept = 0;
 };

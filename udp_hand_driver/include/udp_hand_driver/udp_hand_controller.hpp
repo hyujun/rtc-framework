@@ -159,6 +159,13 @@ class UdpHandController {
       sensor_protocol_ = CreateSensorProtocol("1a");
     }
 
+    // Propagate the protocol's MODE-echo capability to the transport before any
+    // request runs (InitializeSensors below, then the EventLoop jthread). 1b
+    // firmware fills MODE with arbitrary values, so its transport skips MODE
+    // validation; 1a keeps strict checking. Set here (off the RT path) so there
+    // is no race with the EventLoop thread started further down.
+    transport_.set_verify_response_mode(sensor_protocol_->VerifiesResponseMode());
+
     // F/T inferencer initialization. Non-RT init path — verbose diagnostics
     // here are intentional: when FT inference misbehaves at runtime, this
     // dump is the first thing the operator inspects.

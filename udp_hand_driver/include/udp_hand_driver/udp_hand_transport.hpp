@@ -207,7 +207,7 @@ class UdpHandTransport {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (mode_out != static_cast<uint8_t>(joint_mode)) {
+      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
         ++comm_stats_.mode_mismatch;
         return false;
       }
@@ -267,7 +267,7 @@ class UdpHandTransport {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (mode_out != static_cast<uint8_t>(sensor_mode)) {
+      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(sensor_mode)) {
         ++comm_stats_.mode_mismatch;
         return false;
       }
@@ -325,7 +325,7 @@ class UdpHandTransport {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (mode_out != static_cast<uint8_t>(joint_mode)) {
+      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
         ++comm_stats_.mode_mismatch;
         return false;
       }
@@ -384,7 +384,7 @@ class UdpHandTransport {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (mode_out != static_cast<uint8_t>(sensor_mode)) {
+      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(sensor_mode)) {
         ++comm_stats_.mode_mismatch;
         return false;
       }
@@ -439,7 +439,7 @@ class UdpHandTransport {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (buf[2] != static_cast<uint8_t>(sensor_mode)) {
+      if (verify_response_mode_ && buf[2] != static_cast<uint8_t>(sensor_mode)) {
         ++comm_stats_.mode_mismatch;
         return -1;
       }
@@ -459,7 +459,16 @@ class UdpHandTransport {
     if (recvd < static_cast<ssize_t>(packets::kSensorRequestSize)) {
       return false;
     }
-    return recv_buf[2] == static_cast<uint8_t>(sensor_mode);
+    // cmd floor: reject a wrong-command echo regardless of MODE gating, so the
+    // 1b MODE-don't-care path still validates that the firmware acknowledged the
+    // set-mode command (not just "any 3 bytes = success").
+    if (recv_buf[1] != static_cast<uint8_t>(packets::Command::kSetSensorMode)) {
+      return false;
+    }
+    if (verify_response_mode_ && recv_buf[2] != static_cast<uint8_t>(sensor_mode)) {
+      return false;
+    }
+    return true;
   }
 
   // Sensor initialization: switch from NN to RAW mode with retries.
@@ -482,6 +491,14 @@ class UdpHandTransport {
   [[nodiscard]] const UdpHandCommStats& comm_stats() const noexcept { return comm_stats_; }
 
   [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return comm_stats_; }
+
+  // MODE-byte validation gate. Default true = strict (1a: firmware echoes the
+  // requested joint/sensor mode). 1b sets this false because its firmware fills
+  // MODE with arbitrary values and only ever runs raw sensor mode, so a MODE
+  // mismatch on receive is meaningless and must not drop otherwise-valid data.
+  void set_verify_response_mode(bool v) noexcept { verify_response_mode_ = v; }
+
+  [[nodiscard]] bool verify_response_mode() const noexcept { return verify_response_mode_; }
 
   [[nodiscard]] uint64_t recv_error_count() const noexcept {
     return recv_error_count_.load(std::memory_order_relaxed);
@@ -542,6 +559,7 @@ class UdpHandTransport {
 
   UdpHandCommStats comm_stats_;
   std::atomic<uint64_t> recv_error_count_{0};
+  bool verify_response_mode_{true};  // default strict (1a); 1b turns off (firmware MODE unreliable)
 };
 
 }  // namespace udp_hand_driver

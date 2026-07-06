@@ -101,6 +101,7 @@ TEST(SensorProtocolFactory, CreatesKnownVersions) {
   EXPECT_EQ(p1a->ResponseSize(), packets::kAllSensorResponseSize);  // 259
   EXPECT_TRUE(p1a->HasMotorSpaceRead());
   EXPECT_TRUE(p1a->RunsSensorPostProcess());
+  EXPECT_TRUE(p1a->VerifiesResponseMode());  // 1a: MODE echo is meaningful
 
   auto p1b = CreateSensorProtocol("1b");
   ASSERT_NE(p1b, nullptr);
@@ -108,6 +109,7 @@ TEST(SensorProtocolFactory, CreatesKnownVersions) {
   EXPECT_EQ(p1b->ResponseSize(), packets::kP1bSensorResponseSize);  // 99
   EXPECT_FALSE(p1b->HasMotorSpaceRead());
   EXPECT_FALSE(p1b->RunsSensorPostProcess());
+  EXPECT_FALSE(p1b->VerifiesResponseMode());  // 1b: firmware MODE is don't-care
 }
 
 TEST(SensorProtocolFactory, RejectsUnknownVersion) {

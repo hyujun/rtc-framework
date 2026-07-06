@@ -213,6 +213,130 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
 }
 
+// ── verify_response_mode gate (1b MODE don't-care) ──────────────────────────────
+// 1b firmware fills the MODE byte with arbitrary values and only ever runs raw
+// mode, so the transport is told to skip MODE validation. A MODE-mismatched
+// response must then be accepted and must NOT bump mode_mismatch.
+
+TEST(HandUdpTransportModeGate, DefaultIsStrict) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
+  EXPECT_TRUE(transport.verify_response_mode());  // default strict (1a)
+  transport.set_verify_response_mode(false);
+  EXPECT_FALSE(transport.verify_response_mode());
+}
+
+TEST(HandUdpTransportModeGate, AllMotorRead_ModeMismatch_GateOff_Accepts) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  transport.set_verify_response_mode(false);  // 1b: MODE is don't-care
+
+  // Mode deliberately differs from the requested kJoint (as 1b firmware would).
+  AllMotorResponsePacket response{};
+  response.id = kDeviceId;
+  response.cmd = static_cast<uint8_t>(Command::kReadAllMotors);
+  response.mode = static_cast<uint8_t>(JointMode::kMotor);  // arbitrary / mismatched
+  for (std::size_t i = 0; i < kAllMotorDataCount; ++i) {
+    response.data[i] = FloatToUint32(static_cast<float>(i));
+  }
+  std::array<uint8_t, kAllMotorResponseSize> resp_buf{};
+  std::memcpy(resp_buf.data(), &response, kAllMotorResponseSize);
+
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+
+  std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
+  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint);
+  dev_thread.join();
+
+  EXPECT_TRUE(result);
+  EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
+}
+
+TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_GateOff_Accepts) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  transport.set_verify_response_mode(false);  // 1b: MODE is don't-care
+
+  // 99-byte 1b bulk-sensor response with a valid cmd but an arbitrary MODE byte.
+  std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};
+  resp_buf[0] = kDeviceId;
+  resp_buf[1] = static_cast<uint8_t>(Command::kReadAllSensors);
+  resp_buf[2] = 0x7F;  // arbitrary MODE (requested kRaw = 0x00)
+
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+
+  std::array<uint8_t, kP1bSensorResponseSize> buf{};
+  const ssize_t recvd = transport.RequestBulkSensorRaw(buf.data(), buf.size(),
+                                                       kP1bSensorResponseSize, SensorMode::kRaw);
+  dev_thread.join();
+
+  EXPECT_EQ(recvd, static_cast<ssize_t>(kP1bSensorResponseSize));
+  EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
+}
+
+TEST(HandUdpTransportModeGate, BulkSensorRaw_GateOff_StillRejectsWrongCmd) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  transport.set_verify_response_mode(false);
+
+  // Wrong cmd must still be rejected even with the MODE gate off (cmd floor).
+  std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};
+  resp_buf[0] = kDeviceId;
+  resp_buf[1] = static_cast<uint8_t>(Command::kReadAllMotors);  // WRONG cmd
+  resp_buf[2] = 0x00;
+
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+
+  std::array<uint8_t, kP1bSensorResponseSize> buf{};
+  const ssize_t recvd = transport.RequestBulkSensorRaw(buf.data(), buf.size(),
+                                                       kP1bSensorResponseSize, SensorMode::kRaw);
+  dev_thread.join();
+
+  EXPECT_EQ(recvd, -1);
+  EXPECT_EQ(transport.comm_stats().cmd_mismatch, 1u);
+}
+
+// ── RequestSetSensorMode cmd floor + MODE gate ──────────────────────────────────
+
+TEST(HandUdpTransportSetSensorMode, WrongCmdEcho_Rejected) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+
+  // Echo a wrong command — the cmd floor rejects it regardless of MODE gating.
+  std::array<uint8_t, kSensorRequestSize> resp_buf{};
+  resp_buf[0] = kDeviceId;
+  resp_buf[1] = static_cast<uint8_t>(Command::kReadAllSensors);  // WRONG cmd
+  resp_buf[2] = static_cast<uint8_t>(SensorMode::kRaw);
+
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+  const bool result = transport.RequestSetSensorMode(SensorMode::kRaw);
+  dev_thread.join();
+
+  EXPECT_FALSE(result);
+}
+
+TEST(HandUdpTransportSetSensorMode, ModeMismatch_GateOff_Accepts) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  transport.set_verify_response_mode(false);  // 1b
+
+  // Correct cmd echo but arbitrary MODE — accepted with the gate off.
+  std::array<uint8_t, kSensorRequestSize> resp_buf{};
+  resp_buf[0] = kDeviceId;
+  resp_buf[1] = static_cast<uint8_t>(Command::kSetSensorMode);
+  resp_buf[2] = 0x5A;  // arbitrary MODE (requested kRaw)
+
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+  const bool result = transport.RequestSetSensorMode(SensorMode::kRaw);
+  dev_thread.join();
+
+  EXPECT_TRUE(result);
+}
+
 // ── UdpHandCommStats defaults ─────────────────────────────────────────────────
 
 TEST(UdpHandCommStats, DefaultValues) {

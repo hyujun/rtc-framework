@@ -50,6 +50,8 @@ class SensorProtocol1a final : public SensorProtocol {
     return true;
   }
 
+  [[nodiscard]] bool VerifiesResponseMode() const noexcept override { return true; }
+
   [[nodiscard]] const char* Version() const noexcept override { return "1a"; }
 };
 
@@ -89,6 +91,8 @@ class SensorProtocol1b final : public SensorProtocol {
     }
     return true;
   }
+
+  [[nodiscard]] bool VerifiesResponseMode() const noexcept override { return false; }
 
   [[nodiscard]] const char* Version() const noexcept override { return "1b"; }
 };
