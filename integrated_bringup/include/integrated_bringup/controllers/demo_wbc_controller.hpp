@@ -13,6 +13,7 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/wbc_reduced_dynamics_provider.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
@@ -368,6 +369,12 @@ class DemoWbcController final : public RTControllerInterface {
   void ConfigureClosedChainHandFk();
   bool ComputeHandFingertipFk(const ControllerState& state, const pinocchio::SE3& tcp) noexcept;
 
+  // #120: closed-chain 축약 동역학 provider 배선 (non-RT; LoadConfig 의 pinocchio_cache_.Init
+  //   직후 호출). control model 이 actuated(closed-chain) 모델일 때만 provider 를 Configure 해
+  //   pinocchio_cache_.reduced_provider 로 주입 → TSID EOM 의 M/h/g 를 축약값으로 대체. 비-extended
+  //   (GetActuatedModel()==null) 이거나 정렬 미매칭이면 미주입 → open-chain 경로 byte-for-byte.
+  void ConfigureReducedDynamicsProvider();
+
   // Stage C-2: initialise the CLIK reference generator (registers the
   // se3_tcp tip/base frames on pinocchio_cache_ — by frame_id, so it reuses
   // the SE3Task registration — and Init's clik_ with the arm/hand v-index
@@ -519,6 +526,11 @@ class DemoWbcController final : public RTControllerInterface {
   std::array<bool, kNumFingertips> fingertip_pose_valid_{};
   Eigen::VectorXd hand_q_;  // pre-allocated for serial hand FK
   ClosedChainHandFk closed_hand_fk_;
+
+  // #120: closed-chain 축약 동역학 provider (extended 로봇의 TSID EOM M/h/g 대체). 활성 시
+  // pinocchio_cache_.reduced_provider 가 이것을 가리킨다 → 수명은 controller 가 보장. 비활성이면
+  // cache.reduced_provider==nullptr (open-chain, byte-for-byte).
+  WbcReducedDynamicsProvider wbc_reduced_dynamics_;
 
   // Control model — shared_ptr lifetime for PinocchioCache.
   // InitModels prefers the builder's actuated closed-chain model (extended

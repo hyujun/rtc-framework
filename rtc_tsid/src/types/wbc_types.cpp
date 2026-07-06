@@ -1,6 +1,7 @@
 #include "rtc_tsid/types/wbc_types.hpp"
 
 #include "rtc_tsid/types/qp_types.hpp"
+#include "rtc_tsid/types/reduced_dynamics_provider.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -287,6 +288,12 @@ void PinocchioCache::Init(std::shared_ptr<const pinocchio::Model> model,
   Ag.setZero(6, nv);
   hg_drift.setZero();
 
+  // #120: 축약 동역학 provider 는 이 model 좌표(nv)에 맞춰 배선되므로 model 재바인딩 시
+  // 반드시 무효화한다. 현재는 호출처(WBC LoadConfig)가 Init 직후 ConfigureReducedDynamicsProvider
+  // 로 재배선하지만, 그 순서에 의존하지 않도록 여기서 stale 포인터를 끊는다 (재-Init 시 옛 nv
+  // 기준 permutation 으로 M/h/g 를 out-of-bounds 로 덮는 것을 방지).
+  reduced_provider = nullptr;
+
   registration_locked = false;
 }
 
@@ -334,6 +341,13 @@ void PinocchioCache::Update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& 
   // Gravity only
   pinocchio::computeGeneralizedGravity(mdl, data, q);
   g = data.g;
+
+  // #120: closed-chain 축약 동역학 주입. provider 가 set 돼 있으면 open-chain M/h/g 를
+  // constraint-consistent 축약값으로 덮는다 (nullptr=미변경, byte-동일). frame Jacobian/dJv 는
+  // 1차 scope 에서 open-chain(actuated-model) 값 유지 — frozen-loop 근사 (spec Phase 2).
+  if (reduced_provider != nullptr) {
+    (void)reduced_provider->FillReducedDynamics(q, v, M, h, g);
+  }
 
   // Contact frame Jacobian + dJv
   for (size_t i = 0; i < contacts_state.contacts.size(); ++i) {

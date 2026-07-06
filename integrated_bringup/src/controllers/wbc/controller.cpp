@@ -227,6 +227,42 @@ void DemoWbcController::ConfigureClosedChainHandFk() {
   LogHandFkWiring(logger_, "[wbc]", res, closed_hand_fk_.missing_joint());
 }
 
+// ── #120: closed-chain 축약 동역학 provider 배선 (non-RT) ─────────────────────
+// control model 이 actuated(closed-chain) 모델일 때만 provider 를 Configure 해
+// pinocchio_cache_.reduced_provider 로 주입한다. 이후 매 RT tick 의 cache.Update 가 open-chain
+// M/h/g 계산 직후 provider 를 호출해 constraint-consistent 축약값으로 덮는다. 비-extended
+// (GetActuatedModel()==null → control model 이 tree/full) 이거나 좌표 정렬 미매칭이면 미주입 →
+// cache.reduced_provider==nullptr → open-chain 경로 byte-for-byte 유지.
+void DemoWbcController::ConfigureReducedDynamicsProvider() {
+  pinocchio_cache_.reduced_provider = nullptr;
+  if (!builder_ || !full_model_ptr_) {
+    return;
+  }
+  // 게이트: control model 이 정확히 actuated 모델이어야 한다 (InitModels 의 선택과 동일 인스턴스).
+  const auto actuated = builder_->GetActuatedModel();
+  if (!actuated || actuated.get() != full_model_ptr_.get()) {
+    return;  // tree/full fallback control model → 축약 동역학 비대상
+  }
+
+  const bool ok =
+      wbc_reduced_dynamics_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
+                                      builder_->GetClosureActuatedJointIds(),
+                                      builder_->GetClosureReferenceConfig(), *full_model_ptr_);
+  if (ok) {
+    pinocchio_cache_.reduced_provider = &wbc_reduced_dynamics_;
+    RCLCPP_INFO(logger_, "[wbc] closed-chain 축약 동역학 활성 (n_a=%d) — TSID EOM M/h/g 대체",
+                wbc_reduced_dynamics_.n_a());
+  } else if (!wbc_reduced_dynamics_.missing_joint().empty()) {
+    RCLCPP_WARN(
+        logger_,
+        "[wbc] closed-chain 축약 동역학 비활성 — 좌표 정렬 미매칭 joint '%s' (open-chain 유지)",
+        wbc_reduced_dynamics_.missing_joint().c_str());
+  } else {
+    RCLCPP_INFO(logger_,
+                "[wbc] closed-chain 축약 동역학 비활성 (well-posed closure 아님, open-chain 유지)");
+  }
+}
+
 void DemoWbcController::BuildJointReorderMap() {
   if (!full_model_ptr_) {
     return;
@@ -699,6 +735,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
 
     // PinocchioCache
     pinocchio_cache_.Init(full_model_ptr_, contact_mgr_config_);
+
+    // #120: closed-chain 축약 동역학 provider 배선 (extended 로봇에서 M/h/g 대체). 비-extended
+    // 는 게이트 미충족 → open-chain byte-for-byte. cache.Init 직후 (model_ptr 확정) 배선.
+    ConfigureReducedDynamicsProvider();
 
     // ContactState
     contact_state_.Init(contact_mgr_config_.max_contacts);

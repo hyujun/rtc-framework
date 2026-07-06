@@ -164,10 +164,18 @@ struct ContactState {
 // ────────────────────────────────────────────────
 // Pinocchio 계산 캐시 (매 tick 1회 갱신, task/constraint 공유)
 // ────────────────────────────────────────────────
+// #120: closed-chain 축약 동역학 주입 인터페이스 (전방 선언 — rtc_urdf_bridge 미의존).
+class ReducedDynamicsProvider;
+
 struct PinocchioCache {
   // Pinocchio model/data (model은 공유, data는 소유)
   std::shared_ptr<const pinocchio::Model> model_ptr;
   pinocchio::Data data;
+
+  // #120: optional closed-chain 축약 동역학 provider (non-owning; nullptr=open-chain, byte-동일).
+  // set 시 Update() 의 open-chain M/h/g 계산 직후 호출돼 M/h/g 를 constraint-consistent 축약값으로
+  // 덮는다. 소유·수명은 주입 측(integrated_bringup WBC)이 보장. RT tick 매번 호출 → RT-safe 계약.
+  ReducedDynamicsProvider* reduced_provider{nullptr};
 
   // 질량 행렬, 비선형 항
   Eigen::MatrixXd M;  // [nv × nv]

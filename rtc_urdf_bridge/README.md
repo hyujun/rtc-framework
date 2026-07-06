@@ -47,7 +47,7 @@ rtc_urdf_bridge/
 │   ├── loop_projection.hpp             # q/v loop-consistent 사영 (로드 타임)
 │   ├── closed_chain_model.hpp          # 통합 loader (BuildClosedChainModelFromExtendedUrdf)
 │   ├── closed_chain_handle.hpp         # closed-chain 축약 동역학 질의 (M/g/h/J/FK, non-RT)
-│   ├── rt_closed_chain_handle.hpp      # RT-safe closed-chain FK (warm-start + 고정 K 사영, J_a)
+│   ├── rt_closed_chain_handle.hpp      # RT-safe closed-chain FK + 축약 동역학 (warm-start + 고정 K 사영, J_a, M_a/g_a/h_a)
 │   └── closure_state_publisher.hpp     # Extended-URDF 폐쇄 체인 시각화 노드 (off-RT)
 ├── src/
 │   ├── urdf_analyzer.cpp
@@ -286,7 +286,11 @@ planar `contact_3d` 처럼 구속이 redundant(rank<m) 여도 damped pseudo-inve
 특이 조립형상은 NaN 대신 `Status::singular` 로 flag 합니다.
 
 > **non-RT.** `Update()` 는 반복 사영·SVD·행렬곱을 수행하므로 RT 핫패스에서 매 tick 호출
-> 금지 — init / 저주기 query / off-RT 컨트롤러 준비용입니다. RT-safe 경로는 `RtModelHandle`.
+> 금지 — init / 저주기 query / off-RT 컨트롤러 준비용입니다. RT 핫패스용 축약 동역학은
+> `RtClosedChainHandle::UpdateDynamics(v_a)` + `GetMassMatrix/GetGeneralizedGravity/
+> GetNonLinearEffects` 가 동일 수학을 warm-start + 고정 K 사영 + damped 정규방정식 LDLT 로
+> **힙 할당 없이** 제공합니다 (non-RT SVD damped-pinv 와 수치 등가; #120). 개방 체인 RT 는
+> `RtModelHandle`.
 
 ```cpp
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"

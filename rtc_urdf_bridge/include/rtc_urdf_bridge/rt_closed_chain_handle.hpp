@@ -90,7 +90,11 @@ class RtClosedChainHandle {
   /// @param projection_damping 사영 DLS 정규화 λ (기본 1e-6). λ²=1e-12 로 double rounding
   ///   floor(~2e-16) 위에서 dead-center 근접 시 유효 정규화. 더 작으면(예 1e-8→λ²=1e-16)
   ///   near-singular 에서 DLS 가 무력화된다 (review #6).
-  /// @param reduction_damping G left-pinv 정규화 λ (기본 1e-6, 특이 임계와 동급)
+  /// @param reduction_damping G left-pinv 정규화 λ (기본 1e-6 = kClosedChainSingularSvThreshold).
+  ///   **비-기본값 주의 (#120)**: non-RT `ClosedChainHandle` 은 reduction λ 를 특이 임계값에
+  ///   하드코딩(`kReductionDamping = kSingularSvThreshold`)하므로, 여기에 1e-6 이 아닌 값을 넘기면
+  ///   축약 M_a/g_a/h_a·J_a 가 non-RT ground truth 와 조용히 갈라지고 singular flag 는 여전히
+  ///   임계값에 고정돼 λ 와 decouple 된다. 기본값을 유지하는 한 non-RT 와 수치 등가다.
   /// @throws std::invalid_argument model 이 null, 또는 q_seed 가 비어있지 않은데 크기≠nq
   /// @throws std::runtime_error 독립 관절 non-single-DoF, 구속 有인데 독립 관절 無,
   ///   종속 DoF > 구속 rows m (reduction underdetermined)
@@ -115,6 +119,35 @@ class RtClosedChainHandle {
   /// @note **RT-safe.** noexcept, 힙 할당 없음. q_a 크기가 n_a 와 다르면 held=true 로 즉시
   ///   반환 (직전 해 유지) — RT 에서 throw 대신 hold.
   [[nodiscard]] Status Update(std::span<const double> q_a) noexcept;
+
+  /// @brief 직전 `Update(q_a)` 형상에서 **축약 동역학** M_a/g_a/h_a 를 갱신한다.
+  ///
+  /// @ref ClosedChainHandle::RebuildReducedDynamics (`closed_chain_handle.cpp`) 의 수학을
+  /// RT-safe 로 포팅한다:
+  ///   - `M_a = Gᵀ·M·G` (crba 후 대칭화), `g_a = Gᵀ·g` (computeGeneralizedGravity),
+  ///   - `h_a = Gᵀ·rnea(q, v_full, a_drift)`, `v_full = G·v_a`, `a_drift` 는 a_I=0 일 때
+  ///     구속-정합 가속 (종속 = −Jc_D⁺·γ, γ = J̇c·v_full 는 Jc 중앙차분). v_a=0 이면 h_a=g_a.
+  /// non-RT 핸들의 SVD damped-pinv 대신 직전 Update 가 factor 한 damped 정규방정식 LDLT
+  /// (`ldlt_G_`) 와 Jc_D (`Jc_free_`) 를 재사용해 동일 결과를 힙 할당 없이 얻는다.
+  ///
+  /// @param v_a 독립 관절 속도 (n_a). 비우거나 크기≠n_a 면 v_full=0 → h_a=g_a.
+  /// @return 직전 `Update` 상태를 그대로 반환. `held==true` 면 동역학 미갱신 (직전값 hold).
+  ///   `singular==true` 면 M_a/g_a/h_a 는 damped — 소비자 hold 정책.
+  /// @note **RT-safe.** noexcept, 힙 할당 없음. **반드시 같은 tick 의 `Update(q_a)` 직후 호출** —
+  ///   G/Jc_D/ldlt_G_ (q_full 형상) 를 재사용한다. drift 유한차분이 `data_` 를 오염시키므로
+  ///   내부에서 FK 상태(q_full)로 복원 → 이후 `GetFrame*` getter 는 계속 유효.
+  [[nodiscard]] Status UpdateDynamics(std::span<const double> v_a = {}) noexcept;
+
+  // ── 축약 동역학 결과 (UpdateDynamics 이후 유효, 독립 좌표 n_a 기준) ────────────
+
+  /// 축약 질량행렬 M_a = Gᵀ M G (n_a × n_a, 대칭 SPD). **RT-safe.**
+  [[nodiscard]] Eigen::Ref<const Eigen::MatrixXd> GetMassMatrix() const noexcept;
+
+  /// 축약 일반화 중력 g_a = Gᵀ g (n_a). **RT-safe.**
+  [[nodiscard]] Eigen::Ref<const Eigen::VectorXd> GetGeneralizedGravity() const noexcept;
+
+  /// 축약 비선형효과 h_a = C_a v_a + g_a (n_a). v_a=0 이면 g_a. **RT-safe.**
+  [[nodiscard]] Eigen::Ref<const Eigen::VectorXd> GetNonLinearEffects() const noexcept;
 
   // ── FK 결과 (loop-consistent full q 기준, full 모델 frame 인덱스) ─────────────
 
@@ -179,6 +212,10 @@ class RtClosedChainHandle {
   /// 사영된 q_full_ 에서 G 를 재계산 (damped 정규방정식 left-pinv, dep×dep LDLT). RT-safe.
   void RebuildReductionMap() noexcept;
 
+  /// 현재 q_full_/G_ 에서 M_a/g_a/h_a 를 재계산 (UpdateDynamics 본체). RT-safe.
+  /// @param have_velocity v_full_ 가 채워졌는가 (false → h_a = g_a).
+  void RebuildReducedDynamics(bool have_velocity) noexcept;
+
   std::shared_ptr<const pinocchio::Model> model_;
   pinocchio::Data data_;
   std::vector<pinocchio::RigidConstraintModel> constraints_;
@@ -223,6 +260,22 @@ class RtClosedChainHandle {
   Eigen::LDLT<Eigen::MatrixXd> ldlt_G_;  ///< dep×dep in-place 분해
 
   Eigen::MatrixXd J_full_;  ///< (6 × nv) GetFrameJacobian scratch
+
+  // ── 축약 동역학 버퍼 (UpdateDynamics 핫패스에서 재사용) ─────────────────────
+  Eigen::VectorXd v_indep_;   ///< (n_a) span → Eigen
+  Eigen::VectorXd v_full_;    ///< (nv) G v_a
+  Eigen::MatrixXd MG_;        ///< (nv × n_a) M·G
+  Eigen::MatrixXd M_a_;       ///< (n_a × n_a) Gᵀ M G
+  Eigen::MatrixXd M_sym_;     ///< (n_a × n_a) 대칭화 임시 (M_aᵀ)
+  Eigen::VectorXd g_a_;       ///< (n_a) Gᵀ g
+  Eigen::VectorXd h_a_;       ///< (n_a) Gᵀ rnea(q, v_full, a_drift)
+  Eigen::VectorXd dq_drift_;  ///< (nv) ±ε v_full (유한차분 스텝)
+  Eigen::VectorXd q_plus_;    ///< (nq) integrate(q_full, +dq)
+  Eigen::VectorXd q_minus_;   ///< (nq) integrate(q_full, −dq)
+  Eigen::VectorXd gamma_;     ///< (m) J̇c v_full 중앙차분
+  Eigen::VectorXd JtGamma_;   ///< (dep) Jc_Dᵀ γ
+  Eigen::VectorXd a_dep_;     ///< (dep) (Jc_Dᵀ Jc_D + λ²)⁻¹ Jc_Dᵀ γ
+  Eigen::VectorXd a_drift_;   ///< (nv) 구속-정합 drift 가속 (scatter)
 
   Status status_;
 };

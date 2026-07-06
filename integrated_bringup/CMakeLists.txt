@@ -69,6 +69,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/force_reference_updater.cpp
   src/support/demo_shared_config.cpp
   src/support/closed_chain_hand_fk.cpp
+  src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
   src/backends/mujoco_native_backend.cpp
   src/backends/ur_driver_native_backend.cpp
@@ -390,6 +391,23 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_closed_chain_hand_fk
     rclcpp
     rtc_urdf_bridge
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # #120: closed-chain 축약 동역학 provider (WbcReducedDynamicsProvider) 단위 테스트.
+  # 좌표 정렬(이름 permutation)·scatter 값 일치·held last-good·open-chain fallback 검증.
+  ament_add_gtest(test_wbc_reduced_dynamics_provider test/test_wbc_reduced_dynamics_provider.cpp)
+  target_include_directories(test_wbc_reduced_dynamics_provider PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_wbc_reduced_dynamics_provider
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_reduced_dynamics_provider
+    rclcpp
+    rtc_urdf_bridge
+    rtc_tsid
     rtc_base
     pinocchio
     Eigen3

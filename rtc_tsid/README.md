@@ -247,6 +247,9 @@ Position/velocity limit에서 acceleration bound를 도출하여 QP inequality�
 | `Ag` | `MatrixXd` | Centroidal Momentum Matrix [6 × nv] (`compute_centroidal` 활성 시) |
 | `h_centroidal` | `Vector6d` | Centroidal momentum [6] (`compute_centroidal` 활성 시) |
 | `hg_drift` | `Vector6d` | dAg·v — centroidal momentum rate drift (`compute_centroidal` 활성 시) |
+| `reduced_provider` | `ReducedDynamicsProvider*` | (#120) optional closed-chain 축약 동역학 주입점 (non-owning). set 시 `Update()` 의 open-chain `M/h/g` 계산 직후 호출돼 `M/h/g` 를 constraint-consistent 축약값으로 덮는다 (`nullptr`=open-chain, byte-for-byte). |
+
+> **#120 closed-chain EOM 주입**: `ReducedDynamicsProvider` (순수 인터페이스, `types/reduced_dynamics_provider.hpp`) 는 rtc_tsid 가 rtc_urdf_bridge 를 의존하지 않도록(ARCH-2) `M/h/g` 축약 대체를 추상화한다. 구체 구현(`RtClosedChainHandle` 소유)은 상위 패키지 `integrated_bringup` 의 `WbcReducedDynamicsProvider` — extended 로봇의 actuated control model 에서 loop-passive DoF 를 사영해 축약 `M_a/g_a/h_a` 를 제공한다. frame Jacobian/dJv 는 1차 scope 에서 open-chain(frozen-loop) 유지.
 
 ### CommandOutput
 
