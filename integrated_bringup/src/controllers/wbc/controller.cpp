@@ -1554,29 +1554,24 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
   bool slot_dirty = false;
 
   if (!target_initialized_.load(std::memory_order_acquire)) {
-    // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
-    // dimensions (e.g. unit tests that bypass YAML).
-    if (arm_dof_ == 0 && state.num_devices > 0) {
-      arm_dof_ = std::min(state.devices[0].num_channels, kMaxArmDof);
-    }
-    if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
-      hand_dof_ = std::min(state.devices[1].num_channels, kMaxHandDof);
-    }
-    if (full_dof_ == 0) {
-      full_dof_ = arm_dof_ + hand_dof_;
-    }
-
-    // First-tick self-init must capture a VALID measured arm configuration.
-    // If device 0 (arm) has not published a real state yet (the simulator is
-    // not yet streaming on the first control tick), seeding now would lock the
-    // idle hold target (posture ref + SE3 hold pose) to q=0; idle then
-    // regulates toward the zero config and drives the arm hard toward it,
-    // saturating the joint/torque-limit constraints into an infeasible QP
-    // (ProxQP grind 0.5–1.4 s → fallback cycling). Defer: leave
-    // target_initialized_ false and command a passthrough hold so the next
-    // tick re-attempts the seed from a real measured configuration. The hand
-    // path below already guards on dev.valid; device 0 is the missing guard.
-    if (state.num_devices == 0 || !state.devices[0].valid) {
+    // First-tick self-init must capture a VALID measured configuration for
+    // EVERY configured device (arm AND hand). If device 0 (arm) has not
+    // published a real state yet (the simulator is not yet streaming on the
+    // first control tick), seeding now would lock the idle hold target (posture
+    // ref + SE3 hold pose) to q=0; idle then regulates toward the zero config
+    // and drives the arm hard toward it, saturating the joint/torque-limit
+    // constraints into an infeasible QP (ProxQP grind 0.5–1.4 s → fallback
+    // cycling). The hand (device 1) has the SAME failure mode: the inline hand
+    // loop below guards on dev.valid, so a hand that is still coming up would
+    // leave the posture reference's hand block (q_des_target_full_) at zero and
+    // drive every finger to 0 (ur5e fine / p1b collapse) — while
+    // target_initialized_ latches true and never re-seeds. Defer the WHOLE init
+    // until both are valid: leave target_initialized_ false and command a
+    // passthrough hold so the next tick re-attempts the seed from a real
+    // measured configuration once every device streams.
+    const bool arm_ready = state.num_devices > 0 && state.devices[0].valid;
+    const bool hand_ready = state.num_devices <= 1 || state.devices[1].valid;
+    if (!arm_ready || !hand_ready) {
       const auto& dev0 = state.devices[0];
       for (int i = 0; i < arm_dof_; ++i) {
         const auto idx = static_cast<std::size_t>(i);
@@ -1592,6 +1587,20 @@ void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
         }
       }
       return;
+    }
+
+    // Fallback DoF when LoadConfig/OnDeviceConfigsSet hasn't populated runtime
+    // dimensions (e.g. unit tests that bypass YAML). Resolved AFTER the defer
+    // guard so hand_dof_/full_dof_ are computed only once the hand device is
+    // valid — otherwise full_dof_ would latch to arm_dof_ and never grow.
+    if (arm_dof_ == 0 && state.num_devices > 0) {
+      arm_dof_ = std::min(state.devices[0].num_channels, kMaxArmDof);
+    }
+    if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
+      hand_dof_ = std::min(state.devices[1].num_channels, kMaxHandDof);
+    }
+    if (full_dof_ == 0) {
+      full_dof_ = arm_dof_ + hand_dof_;
     }
 
     // Robot arm: initialize trajectory at current position (zero velocity)

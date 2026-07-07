@@ -333,12 +333,10 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
   current_target_slot_ = target_seqlock_.Load();
   bool slot_dirty = false;
 
-  if (!target_initialized_.load(std::memory_order_acquire)) {
+  // ── Arm / TCP self-init — runs on the first tick, unconditionally ───────────
+  if (!arm_target_initialized_.load(std::memory_order_acquire)) {
     if (arm_dof_ == 0 && state.num_devices > 0) {
       arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
-    }
-    if (hand_dof_ == 0 && state.num_devices > 1 && state.devices[1].valid) {
-      hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
     }
 
     const auto& dev0 = state.devices[0];
@@ -384,29 +382,7 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
     has_pending_segment_ = false;
     new_target_pending_ = false;
 
-    for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
-      const auto& dev = state.devices[d];
-      if (!dev.valid) {
-        continue;
-      }
-      for (std::size_t i = 0;
-           i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
-        current_target_slot_.targets[d][i] = dev.positions[i];
-      }
-      if (d == 1) {
-        trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State hold_state;
-        for (int i = 0; i < hand_dof_; ++i) {
-          const auto idx = static_cast<std::size_t>(i);
-          hold_state.positions[idx] = dev.positions[idx];
-          hold_state.velocities[idx] = 0.0;
-          hold_state.accelerations[idx] = 0.0;
-        }
-        hand_trajectory_.initialize(hold_state, hold_state, 0.01);
-        hand_trajectory_time_ = 0.0;
-        hand_new_target_pending_ = false;
-      }
-    }
-    target_initialized_.store(true, std::memory_order_release);
+    arm_target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
   } else {
     // Restore RT-thread working SE3 from POD storage.
@@ -414,6 +390,44 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
                 sizeof(current_target_slot_.tcp_target_rot));
     std::memcpy(tcp_target_pose_.translation().data(), current_target_slot_.tcp_target_t.data(),
                 sizeof(current_target_slot_.tcp_target_t));
+  }
+
+  // ── Hand (device 1) self-init — DEFERRED until device 1 is first valid ──────
+  // Seeding while the hand is still coming up would lock targets[1] to its zero
+  // init and drive every finger to 0. Retried each tick until valid; when no
+  // hand device is configured the flag latches true immediately.
+  if (!hand_target_initialized_.load(std::memory_order_acquire)) {
+    if (state.num_devices <= 1) {
+      hand_target_initialized_.store(true, std::memory_order_release);
+    } else if (state.devices[1].valid) {
+      if (hand_dof_ == 0) {
+        hand_dof_ = std::min(state.devices[1].num_channels, kDemoTaskMaxHandDof);
+      }
+      for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
+        const auto& dev = state.devices[d];
+        if (!dev.valid) {
+          continue;
+        }
+        for (std::size_t i = 0;
+             i < static_cast<std::size_t>(dev.num_channels) && i < kMaxDeviceChannels; ++i) {
+          current_target_slot_.targets[d][i] = dev.positions[i];
+        }
+        if (d == 1) {
+          trajectory::JointSpaceTrajectory<kDemoTaskMaxHandDof>::State hold_state;
+          for (int i = 0; i < hand_dof_; ++i) {
+            const auto idx = static_cast<std::size_t>(i);
+            hold_state.positions[idx] = dev.positions[idx];
+            hold_state.velocities[idx] = 0.0;
+            hold_state.accelerations[idx] = 0.0;
+          }
+          hand_trajectory_.initialize(hold_state, hold_state, 0.01);
+          hand_trajectory_time_ = 0.0;
+          hand_new_target_pending_ = false;
+        }
+      }
+      hand_target_initialized_.store(true, std::memory_order_release);
+      slot_dirty = true;
+    }
   }
 
   PendingTarget pending{};

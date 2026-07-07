@@ -198,4 +198,35 @@ TEST_F(JointGraspTest, ContactStopFreezesHandAtCurrentPosition) {
   EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-6);
 }
 
+// ── Deferred hand hold-seed (device-1 startup race) ─────────────────────────
+// If the hand device (device 1) is not yet valid on the controller's first
+// Compute() tick, its hold target must NOT latch to the zero-initialized
+// targets[1] — otherwise every finger is commanded toward 0 the moment the
+// device becomes valid (the reported ur5e-fine / p1b-collapse asymmetry). The
+// hand self-init is deferred (split from the arm flag) and re-seeds from the
+// measured pose on the first valid tick.
+TEST(JointHandSeedTest, DeferredHandSeedHoldsMeasuredWhenDeviceValidLate) {
+  DemoJointController ctrl{""};
+
+  // Tick 1: arm valid, hand NOT valid yet, at a non-zero rest pose (0.5 rad).
+  ControllerState state = MakeState();
+  state.devices[1].valid = false;
+  for (int i = 0; i < 10; ++i) {
+    state.devices[1].positions[static_cast<std::size_t>(i)] = 0.5;
+  }
+  (void)ctrl.Compute(state);  // arm seeds immediately; hand seed deferred
+
+  // Tick 2: the hand now streams a valid measured state.
+  state.devices[1].valid = true;
+  state.iteration = 2;
+  const auto out = ctrl.Compute(state);
+
+  // Hand command holds the measured 0.5 rest pose, not a 0-collapse.
+  ASSERT_GT(out.num_devices, 1);
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_NEAR(out.devices[1].commands[static_cast<std::size_t>(i)], 0.5, 1e-6)
+        << "finger " << i << " collapsed toward 0 instead of holding measured pose";
+  }
+}
+
 }  // namespace

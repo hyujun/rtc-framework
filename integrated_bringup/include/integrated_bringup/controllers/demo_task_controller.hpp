@@ -356,7 +356,12 @@ class DemoTaskController final : public RTControllerInterface {
 
   rtc::SeqLock<TargetSlot> target_seqlock_;
   rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
-  std::atomic<bool> target_initialized_{false};
+  // Per-device self-init flags — see demo_joint_controller.hpp. The arm/TCP
+  // hold is seeded on the first tick; the hand (device 1) hold-seed is deferred
+  // until device 1 first reports a valid measured state so it is never locked to
+  // the zero-initialized targets[1] (ur5e fine / p1b finger collapse).
+  std::atomic<bool> arm_target_initialized_{false};
+  std::atomic<bool> hand_target_initialized_{false};
   TargetSlot current_target_slot_{};
 
   // RT-thread-only: refresh current_target_slot_ from the SeqLock, drain any

@@ -181,7 +181,8 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
 RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
-  target_initialized_.store(false, std::memory_order_release);
+  arm_target_initialized_.store(false, std::memory_order_release);
+  hand_target_initialized_.store(false, std::memory_order_release);
   return RTControllerInterface::on_activate(prev);
 }
 

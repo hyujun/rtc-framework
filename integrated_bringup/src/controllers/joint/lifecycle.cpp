@@ -199,7 +199,8 @@ RTControllerInterface::CallbackReturn DemoJointController::on_activate(
   // so a previously-active controller's stale slot does not persist across
   // an Inactive↔Active cycle. Single-writer invariant preserved — the RT
   // thread is still the only one that stores into target_seqlock_.
-  target_initialized_.store(false, std::memory_order_release);
+  arm_target_initialized_.store(false, std::memory_order_release);
+  hand_target_initialized_.store(false, std::memory_order_release);
   return RTControllerInterface::on_activate(prev);
 }
 
