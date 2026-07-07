@@ -50,13 +50,14 @@
 
     # ── Sensor visualization (proto_1b fingertip sensors) ─────────────
     sensor_viz.sensor_topic: "/p1b/sensor_states/monitor"
-    # Marker frame_id/ns derive from these names as `<name>_tip_link`. proto_1b
-    # URDF (proto_1b.urdf, included prefix-free by ur5e_with_proto_1b.urdf.xacro)
-    # names its fingertip links `l_thumb_tip_link` … `l_ring_tip_link`, so the
-    # names must carry the `l_` prefix or RViz drops every marker (unknown frame).
-    # Data mapping is positional in _sensor_cb (thumb,index,middle,ring order),
-    # so renaming only changes frame_id/ns — sensor pairing is unaffected.
-    sensor_viz.fingertip_names: ["l_thumb", "l_index", "l_middle", "l_ring"]
+    # Each name is used verbatim as the marker frame_id (and marker-ns prefix),
+    # so it must equal a link in the combined URDF or RViz drops every marker
+    # (unknown frame). These are proto_1b's fingertip bracket links (proto_1b.urdf,
+    # included prefix-free by ur5e_with_proto_1b.urdf.xacro). Data mapping is
+    # positional in _sensor_cb (thumb,index,middle,ring order), so the frame the
+    # markers attach to changes but sensor pairing is unaffected.
+    sensor_viz.fingertip_names:
+      ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
     # proto_1b has no contact classifier (contact_flag ≡ 0), so gate the F arrow
     # on firmware force magnitude instead. 1.0 N aligns with the p1b controller's
     # grasp_force_threshold (controllers/demo_shared.yaml). Viz-only — tune freely.

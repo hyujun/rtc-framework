@@ -45,6 +45,10 @@ class SensorVisualizer:
     ]
 
     def __init__(self, fingertip_names, config):
+        # fingertip_names are used directly as marker frame_ids (and as the
+        # prefix for marker namespaces), so each name must equal a link that
+        # exists in the robot's URDF. Positional order matches the incoming
+        # FingertipSensor list (thumb, index, middle, ring, …).
         self.fingertip_names = fingertip_names
 
         # Barometer config
@@ -105,7 +109,9 @@ class SensorVisualizer:
                 logger.debug("Fingertip %s: no data", name)
                 continue
 
-            frame_id = f"{name}_tip_link"
+            # fingertip_names ARE the RViz frame_ids (must match a link in the
+            # robot's URDF, else RViz drops the markers). ns is derived per name.
+            frame_id = name
 
             # Barometer → +Z Arrow markers
             for j in range(8):

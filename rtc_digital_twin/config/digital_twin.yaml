@@ -68,7 +68,9 @@
     # Robot bringup yaml provides the sensor topic + fingertip names.
     sensor_viz.sensor_topic: ""                            # e.g. "/<hand>/sensor_states/monitor"
     sensor_viz.marker_topic: "/digital_twin/fingertip_markers"
-    sensor_viz.fingertip_names: []                         # e.g. ["thumb","index","middle","ring"]
+    # Each name is used verbatim as the marker frame_id (and marker-ns prefix),
+    # so it must match a fingertip link in the robot's URDF.
+    sensor_viz.fingertip_names: []                         # e.g. ["index_tip_link","thumb_tip_link"]
 
     # Barometer: +Z Arrow markers (2×4 grid, 1mm spacing)
     sensor_viz.barometer_min: 0.0

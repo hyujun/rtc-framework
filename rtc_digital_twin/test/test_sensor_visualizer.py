@@ -126,6 +126,14 @@ class TestCreateMarkers:
         assert len(out.markers) == 14
         assert sum(1 for m in out.markers if m.ns == "index_tof") == 3
 
+    def test_frame_id_equals_name_verbatim(self):
+        # Marker frame_id is the fingertip name used as-is (no suffix), so a
+        # bringup yaml carries the full URDF link name.
+        viz = self._viz(names=("l_index_tip_bracket",))
+        out = viz.create_markers([FakeFingertip()], _stamp())
+        assert out.markers  # sanity: markers were emitted
+        assert {m.header.frame_id for m in out.markers} == {"l_index_tip_bracket"}
+
     def test_two_fingertips(self):
         viz = self._viz(names=("index", "thumb"))
         out = viz.create_markers([FakeFingertip(), FakeFingertip()], _stamp())
