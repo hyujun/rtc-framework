@@ -559,7 +559,7 @@ class UdpHandTransport {
 
   UdpHandCommStats comm_stats_;
   std::atomic<uint64_t> recv_error_count_{0};
-  bool verify_response_mode_{true};  // default strict (1a); 1b turns off (firmware MODE unreliable)
+  bool verify_response_mode_{true};  // strict MODE echo check; injected per protocol capability
 };
 
 }  // namespace udp_hand_driver

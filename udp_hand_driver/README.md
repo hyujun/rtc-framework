@@ -94,16 +94,19 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 
 펌웨어 센서 응답의 wire 포맷은 버전마다 다르며, 이 차이는 abstract
 `SensorProtocol` (`protocol/sensor_protocol.hpp`) 로만 격리된다 — EventLoop 는
-버전 문자열이 아닌 polymorphic capability (`HasMotorSpaceRead`,
-`RunsSensorPostProcess`, `VerifiesResponseMode`) 로 분기한다 (ARCH-3). joint/motor read·write 경로는
-버전 공통이며, bulk sensor **요청**(0x19)도 공통이다. **응답 크기·디코드만** 갈린다.
+버전 문자열이 아닌 polymorphic capability (`HasMotorSpaceRead`, `JointIoMode`,
+`RunsSensorPostProcess`, `VerifiesResponseMode`) 로 분기한다 (ARCH-3). read·write 경로 골격은
+버전 공통이나, joint-space I/O 의 **MODE byte** 는 `JointIoMode()` 로 갈린다 (1a=kJoint, 1b=kMotor —
+1b 펌웨어는 kMotor 로만 joint state/command 를 서비스한다). bulk sensor **요청**(0x19)은 공통이고
+**응답 크기·디코드만** 갈린다.
 
 | | `"1a"` (기본) | `"1b"` |
 |---|---|---|
 | bulk sensor 응답 | 259B (4 × 16 int32 baro/reserved/tof) | 99B (3B 헤더 + 4 × 6 float32) |
 | 핑거당 데이터 | barometer[8] + tof[3] | [fx, fy, fz, Lx, Ly, Temp] |
 | 후처리 | LPF / drift / F-T 추론 | 없음 (force 는 firmware 계산) |
-| 응답 MODE byte 검증 | strict (요청 mode echo) | don't-care (임의값·항상 raw → 검증 skip) |
+| joint I/O MODE (`JointIoMode`, write + joint read) | `kJoint` (기어비 매핑) | `kMotor` (kJoint 요청 시 joint 데이터 미응답) |
+| 응답 MODE byte 검증 | strict (요청 mode echo) | strict (요청 mode 를 정확히 echo) |
 | motor-space read (0x10 kMotor) | 수행 → `motor_states` 발행 | 스킵 → `motor_states` 미발행 |
 | `sensor_states` 채움 | baro/tof + F-T `f`/`u` | `f`={fx,fy,fz}만 (Lx/Ly/Temp 는 디코드만·발행 보류) |
 | 지원 통신 모드 | individual / bulk | bulk 전용 |
@@ -115,11 +118,16 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 
 ### Dual Read (Motor + Joint 공간)
 
-매 사이클 모터 상태를 두 번 읽습니다:
+1a 는 매 사이클 모터 상태를 두 번 읽습니다:
 - **kMotor (0x00)**: 모터 엔코더 값 -> `motor_positions/velocities/currents`
 - **kJoint (0x01)**: 펌웨어 기어비 변환 -> `joint_positions/velocities/currents`
 
-Write 명령은 항상 `kJoint` 모드로 전송됩니다.
+1a 의 write 명령은 `kJoint` 모드로 전송됩니다.
+
+**1b**: motor-space read (kMotor 스텝) 를 스킵하고 joint-space read 를 **kMotor** 로 한 번만
+수행합니다 (1b 펌웨어의 유일한 joint-serving 모드). write 도 kMotor 로 보냅니다. joint I/O MODE 는
+하드코딩이 아니라 `SensorProtocol::JointIoMode()` 로 주입되며, EventLoop 는 이를 한 번 hoist 해
+write / joint read / E-Stop zero-write 에 사용합니다.
 
 ### Sensor Decimation
 
@@ -158,7 +166,7 @@ Write 명령은 항상 `kJoint` 모드로 전송됩니다.
 
 저수준 UDP 소켓 관리. `ppoll()` 기반 sub-ms 수신 타임아웃 (hrtimer on PREEMPT_RT).
 
-**Mode 검증**: request-response 메서드(`RequestMotorRead`, `RequestAllMotorRead`, `RequestSensorRead`, `RequestAllSensorRead`, `RequestBulkSensorRaw`)는 응답 패킷의 mode 필드가 요청한 mode와 일치하는지 검증합니다. 불일치 시 `comm_stats_.mode_mismatch` 카운터를 증가시키고 `false`를 반환합니다. 단 이 검증은 `verify_response_mode_` 플래그로 gate 되며, 1b 처럼 펌웨어가 MODE byte 를 임의값으로 채우는 버전에서는 `set_verify_response_mode(false)` (컨트롤러가 `SensorProtocol::VerifiesResponseMode()` 로 주입) 로 skip 합니다. `RequestSetSensorMode` 는 MODE gate 와 무관하게 항상 cmd echo(`kSetSensorMode`)를 검증합니다 (cmd floor).
+**Mode 검증**: request-response 메서드(`RequestMotorRead`, `RequestAllMotorRead`, `RequestSensorRead`, `RequestAllSensorRead`, `RequestBulkSensorRaw`)는 응답 패킷의 mode 필드가 요청한 mode와 일치하는지 검증합니다. 불일치 시 `comm_stats_.mode_mismatch` 카운터를 증가시키고 `false`를 반환합니다. 단 이 검증은 `verify_response_mode_` 플래그로 gate 되며, 컨트롤러가 `SensorProtocol::VerifiesResponseMode()` 로 주입합니다. 현재 1a·1b 모두 요청 MODE 를 정확히 echo 하므로 둘 다 strict(true) 이고, 이 gate 는 향후 MODE 를 신뢰 불가하게 echo 하는 펌웨어를 위한 seam 으로 남겨둡니다. `RequestSetSensorMode` 는 MODE gate 와 무관하게 항상 cmd echo(`kSetSensorMode`)를 검증합니다 (cmd floor).
 
 ### UdpHandSensorProcessor (`udp_hand_sensor_processor.hpp`)
 
@@ -468,6 +476,7 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 | **Proto_1b 센서 디코드 seam (2026-07-04)** | 펌웨어 센서 프로토콜 버전을 abstract `SensorProtocol` (`protocol/sensor_protocol.hpp`, 정적 lib `udp_hand_protocol`) 로 격리 — `protocol_version` 파라미터 (`"1a"` 기본 / `"1b"`). 1b = 99B bulk 응답(4 × 6 float32 `[fx,fy,fz,Lx,Ly,Temp]`), force 직접 발행·후처리 없음·`motor_states` 미발행(0x10 kMotor 스킵)·bulk 전용. EventLoop 는 polymorphic capability(`HasMotorSpaceRead`/`RunsSensorPostProcess`)로만 분기(ARCH-3). `UdpHandState::sensor_force[]`, `packets::P1bSensorResponsePacket`, `UdpHandTransport::RequestBulkSensorRaw`, `test_sensor_protocol_1b` 추가. Lx/Ly/Temp 는 디코드만·발행 보류(현 펌웨어 placeholder). 1a 회귀 0. |
 | **1b MODE don't-care (2026-07-06)** | 1b 펌웨어가 응답 MODE byte 를 임의값으로 채우고 항상 raw 로 동작 → strict MODE 검증이 정상 데이터를 버리는 문제 해결. `SensorProtocol::VerifiesResponseMode()` capability 신설(1a=true/1b=false), `UdpHandTransport::verify_response_mode_` 플래그로 5개 request 경로의 MODE 비교를 gate. 컨트롤러 `Start()` 가 capability 를 주입(EventLoop 시작 전, race 없음). `RequestSetSensorMode` 는 gate 무관 cmd echo(`kSetSensorMode`) floor 신설. version-string/`#ifdef` 분기 없음(ARCH-3). 1a strict 유지·회귀 0. |
 | **1b failure detector force-layout 검사 (2026-07-06)** | 1b 에서 `UdpHandFailureDetector` 가 int32 `sensor_data`(1b 에선 항상 0)와 `motor_positions`(motor read 없음)를 검사해 정상 동작 중 all-zero/duplicate 오탐 → E-STOP 유발하던 문제 해결. `Config::sensor_force_layout` capability 신설(node 가 `sensor_uses_force_layout_` 주입), 1b 는 `sensor_force` 의 fx,fy,fz(offset 0,1,2/stride 6)만 검사(Lx/Ly/Temp placeholder 제외). `CheckMotor` 는 `state.motor_valid` gate 로 1b no-op. p1b yaml `check_motor: false`. fake-hand 가 cmd 를 `sensor_force` 로 미러링(standalone 1b 테스트 가능) + force all-zero/duplicate/changing 테스트 3종 추가. 1a 회귀 0(기존 assertion 무수정). |
+| **1b joint I/O = kMotor + MODE 검증 복원 (2026-07-07)** | 위 "1b MODE don't-care" 진단 정정. 실제로 1b 펌웨어는 요청 MODE 를 정확히 echo 하며, **kMotor 로만 joint state/command 를 서비스**한다 — 이전에 driver 가 kJoint 를 요청해 mode_mismatch 로 joint 데이터가 버려지던 것을 "MODE don't-care" 로 오진해 검증을 껐던 것. `SensorProtocol::JointIoMode()` capability 신설(1a=kJoint/1b=kMotor)로 write·joint read·E-Stop zero-write 의 하드코딩 kJoint 를 대체(EventLoop 가 1회 hoist). `SensorProtocol1b::VerifiesResponseMode()` 를 true 로 복원(1a·1b 모두 strict; gate 는 seam 유지). motor-space read 는 `JointIoMode` 와 무관하게 kMotor 고정·1b 는 여전히 스킵. version-string/`#ifdef` 없음(ARCH-3). 1a 회귀 0. |
 
 ---
 

@@ -100,6 +100,7 @@ TEST(SensorProtocolFactory, CreatesKnownVersions) {
   EXPECT_STREQ(p1a->Version(), "1a");
   EXPECT_EQ(p1a->ResponseSize(), packets::kAllSensorResponseSize);  // 259
   EXPECT_TRUE(p1a->HasMotorSpaceRead());
+  EXPECT_EQ(p1a->JointIoMode(), packets::JointMode::kJoint);  // 1a: gear-mapped joint mode
   EXPECT_TRUE(p1a->RunsSensorPostProcess());
   EXPECT_TRUE(p1a->VerifiesResponseMode());  // 1a: MODE echo is meaningful
 
@@ -108,8 +109,9 @@ TEST(SensorProtocolFactory, CreatesKnownVersions) {
   EXPECT_STREQ(p1b->Version(), "1b");
   EXPECT_EQ(p1b->ResponseSize(), packets::kP1bSensorResponseSize);  // 99
   EXPECT_FALSE(p1b->HasMotorSpaceRead());
+  EXPECT_EQ(p1b->JointIoMode(), packets::JointMode::kMotor);  // 1b: joint served under kMotor
   EXPECT_FALSE(p1b->RunsSensorPostProcess());
-  EXPECT_FALSE(p1b->VerifiesResponseMode());  // 1b: firmware MODE is don't-care
+  EXPECT_TRUE(p1b->VerifiesResponseMode());  // 1b: firmware echoes requested MODE accurately
 }
 
 TEST(SensorProtocolFactory, RejectsUnknownVersion) {
