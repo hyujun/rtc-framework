@@ -523,6 +523,15 @@ class UdpHandController {
     //   2. /hand/joint_states is published for rtc_controller_manager auto-hold
     //   3. No zero-command jump on startup
     bool first_cycle = true;
+    // Gate writes until the FIRST real command has been staged. state_read_once_
+    // alone is not enough: it flips true after the first state read (cycle 1),
+    // but pending_cmd stays zero-initialised until the controller publishes its
+    // first /hand/joint_command (many cycles later — lifecycle activate + hold
+    // seed + publish). Writing pending_cmd in that window commands the hand to
+    // q=0 and drags it off its measured pose (visible p1b startup collapse).
+    // Read-only cycles (state publish) continue meanwhile; the firmware holds
+    // its position while uncommanded — the documented startup contract above.
+    bool cmd_received_once = false;
 
     while (!stop_token.stop_requested()) {
       if (first_cycle) {
@@ -554,6 +563,7 @@ class UdpHandController {
           break;
         if (event_pending_.exchange(false, std::memory_order_acquire)) {
           pending_cmd = staged_cmd_seqlock_.Load();
+          cmd_received_once = true;
         }
       }
 
@@ -577,9 +587,11 @@ class UdpHandController {
       const auto t0 = std::chrono::steady_clock::now();
 
       // 1. Write position + recv echo (always kJoint)
-      // Skip write until first state has been read — prevents sending
-      // uninitialized/zero commands before knowing the hand position.
-      if (state_read_once_) {
+      // Skip write until BOTH the first state has been read AND the first real
+      // command has been staged — prevents sending the zero-initialised
+      // pending_cmd (which drives the hand to q=0) in the startup window before
+      // the controller publishes its first /hand/joint_command.
+      if (state_read_once_ && cmd_received_once) {
         if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf,
                                              packets::JointMode::kJoint)) {
           any_recv_ok = true;

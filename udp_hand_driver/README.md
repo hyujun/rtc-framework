@@ -65,6 +65,8 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
                     -> ROS2 직접 publish (timer 없음)
 ```
 
+**Startup write-gate**: EventLoop 의 write(`WritePosition`)는 `state_read_once_`(첫 상태 read 완료) **및** `cmd_received_once`(첫 실명령 stage 완료) 가 **둘 다** 참이어야 실행된다. `pending_cmd` 는 첫 `/hand/joint_command` 도착 전까지 zero-init 이므로, state read 만으로 write 를 열면 컨트롤러가 hold 명령을 publish 하기 전(lifecycle activate + seed + publish 지연 창)에 손을 q=0 으로 끌어내린다. 그 창 동안은 read-only cycle(상태 publish)만 돌고 펌웨어는 마지막 위치를 hold 한다. E-Stop 종료 시에만 명시적으로 zero 를 write 한다.
+
 ### 통신 모드
 
 **Bulk 모드** (기본값: `communication_mode: "bulk"`):
