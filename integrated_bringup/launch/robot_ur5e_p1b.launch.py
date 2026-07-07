@@ -171,7 +171,7 @@ def generate_launch_description():
 
     # ── Arguments ──────────────────────────────────────────────────────────────
     robot_ip_arg = DeclareLaunchArgument(
-        "robot_ip", default_value="192.168.1.10", description="IP address of the UR robot"
+        "robot_ip", default_value="192.168.0.3", description="IP address of the UR robot"
     )
 
     use_mock_hardware_arg = DeclareLaunchArgument(

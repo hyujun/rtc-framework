@@ -16,7 +16,7 @@ def generate_launch_description():
     # ── Launch arguments ────────────────────────────────────────────────
     target_ip_arg = DeclareLaunchArgument(
         "target_ip",
-        default_value="192.168.1.2",
+        default_value="192.168.0.100",
         description="Target IP for hand controller",
     )
 

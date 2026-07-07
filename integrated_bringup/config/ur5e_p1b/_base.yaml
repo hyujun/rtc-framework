@@ -56,7 +56,7 @@
       tree_models:
         p1b:
           root_link: "base_adapter"
-          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
+          tip_links: ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
         # WBC control tree (arm + hand, shared by TSID and MPC). The extended
         # full model exposes 16 actuated DoFs (6 arm + 10 hand) via
         # GetActuatedModel; this tree_models.wbc entry (arm root → 4 fingertip
@@ -65,7 +65,7 @@
         # reconstructed downstream by the closure solver / MuJoCo tendon.
         wbc:
           root_link: "base"
-          tip_links: ["l_thumb_tip_link", "l_index_tip_link", "l_middle_tip_link", "l_ring_tip_link"]
+          tip_links: ["l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket", "l_ring_tip_bracket"]
 
     # ── Device configuration (keyed by controller topic group name) ─────────
     # Mode-agnostic identity only: joint/sensor rosters, limits, sensor packing.
