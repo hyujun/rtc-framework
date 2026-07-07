@@ -37,17 +37,9 @@
           command_topic: "/p1b/joint_command"
           motor_topic: "/p1b/motor_states"
           sensor_topic: "/p1b/sensor_states"
-        motor_state_names:
-          - "motor_1"
-          - "motor_2"
-          - "motor_3"
-          - "motor_4"
-          - "motor_5"
-          - "motor_6"
-          - "motor_7"
-          - "motor_8"
-          - "motor_9"
-          - "motor_10"
+        # No motor_state_names roster: p1b does not use the motor-space lane, so
+        # the device falls back to _base.yaml joint_state_names for its 10 joints
+        # and secondary_motor_names_ stays empty.
         # p1b real hw has NO native contact/displacement channels: the udp_hand
         # stream carries a fixed contact_flag=0.0 and a force-only inference lane.
         # Consumers derive in_contact / grasp_detected from |F| > grasp_force_threshold.
