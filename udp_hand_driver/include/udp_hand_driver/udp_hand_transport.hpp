@@ -439,7 +439,7 @@ class UdpHandTransport {
         ++comm_stats_.cmd_mismatch;
         continue;
       }
-      if (verify_response_mode_ && buf[2] != static_cast<uint8_t>(sensor_mode)) {
+      if (verify_bulk_sensor_mode_ && buf[2] != static_cast<uint8_t>(sensor_mode)) {
         ++comm_stats_.mode_mismatch;
         return -1;
       }
@@ -492,13 +492,22 @@ class UdpHandTransport {
 
   [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return comm_stats_; }
 
-  // MODE-byte validation gate. Default true = strict (1a: firmware echoes the
-  // requested joint/sensor mode). 1b sets this false because its firmware fills
-  // MODE with arbitrary values and only ever runs raw sensor mode, so a MODE
-  // mismatch on receive is meaningless and must not drop otherwise-valid data.
+  // MODE-byte validation gate for the joint / motor / set-sensor-mode responses.
+  // Default true = strict (both 1a and 1b echo the requested joint/sensor mode
+  // accurately on these paths). Injected from SensorProtocol::VerifiesResponseMode().
   void set_verify_response_mode(bool v) noexcept { verify_response_mode_ = v; }
 
   [[nodiscard]] bool verify_response_mode() const noexcept { return verify_response_mode_; }
+
+  // MODE-byte validation gate for the bulk-sensor (0x19) response specifically.
+  // Default true; 1b sets this false because its bulk-sensor response fills the
+  // MODE byte with an arbitrary value, so a MODE mismatch there is meaningless
+  // and must not drop otherwise-valid sensor data. Injected from
+  // SensorProtocol::VerifiesBulkSensorResponseMode(); independent of the
+  // joint/set-mode gate above.
+  void set_verify_bulk_sensor_mode(bool v) noexcept { verify_bulk_sensor_mode_ = v; }
+
+  [[nodiscard]] bool verify_bulk_sensor_mode() const noexcept { return verify_bulk_sensor_mode_; }
 
   [[nodiscard]] uint64_t recv_error_count() const noexcept {
     return recv_error_count_.load(std::memory_order_relaxed);
@@ -559,7 +568,10 @@ class UdpHandTransport {
 
   UdpHandCommStats comm_stats_;
   std::atomic<uint64_t> recv_error_count_{0};
-  bool verify_response_mode_{true};  // strict MODE echo check; injected per protocol capability
+  bool verify_response_mode_{
+      true};  // strict MODE echo check (joint/set-mode); injected per protocol capability
+  bool verify_bulk_sensor_mode_{
+      true};  // strict MODE echo check (bulk-sensor 0x19); injected per protocol capability
 };
 
 }  // namespace udp_hand_driver

@@ -104,11 +104,17 @@ class SensorProtocol1b final : public SensorProtocol {
     return true;
   }
 
-  // 1b firmware echoes the requested MODE accurately, so strict validation is
-  // kept (matching 1a). The earlier `false` here assumed MODE was don't-care;
-  // that masked the real bug — requesting kJoint on a kMotor-only firmware (now
-  // fixed via JointIoMode()).
+  // 1b firmware echoes the requested MODE accurately on the joint / set-mode
+  // responses, so strict validation is kept there (matching 1a). The earlier
+  // blanket `false` masked a real, separate bug — requesting kJoint on a
+  // kMotor-only firmware (now fixed via JointIoMode()).
   [[nodiscard]] bool VerifiesResponseMode() const noexcept override { return true; }
+
+  // ...but the 1b bulk-sensor (0x19) response fills the MODE byte with an
+  // arbitrary value, so validating it there drops every valid sensor frame.
+  // Gate that path off while keeping joint / set-mode MODE checks on. CMD (0x19)
+  // + length validation still guard the bulk-sensor read.
+  [[nodiscard]] bool VerifiesBulkSensorResponseMode() const noexcept override { return false; }
 
   [[nodiscard]] const char* Version() const noexcept override { return "1b"; }
 };

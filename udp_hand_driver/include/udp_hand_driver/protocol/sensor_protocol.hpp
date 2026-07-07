@@ -68,14 +68,27 @@ class SensorProtocol {
   [[nodiscard]] virtual bool DecodeAllSensors(const uint8_t* buf, std::size_t len,
                                               UdpHandState& state) noexcept = 0;
 
-  /// Whether the firmware echoes a meaningful MODE byte in responses (both
-  /// versions do — MODE echoes the requested joint/sensor mode and is validated
-  /// on receive). Kept as a capability for future firmware that may not echo
-  /// MODE reliably. NOTE: an earlier revision set this false for 1b under a
-  /// "MODE is don't-care" reading; that was a misdiagnosis — 1b dropped joint
-  /// data because the driver requested kJoint while 1b only serves kMotor (see
-  /// JointIoMode()), not because MODE was garbage. Both now return true.
+  /// Whether the firmware echoes a meaningful MODE byte in the joint / set-mode
+  /// responses (both versions do — MODE echoes the requested joint/sensor mode
+  /// and is validated on receive). Kept as a capability for future firmware that
+  /// may not echo MODE reliably. NOTE: an earlier revision set this false for 1b
+  /// under a "MODE is don't-care" reading; that was a partial misdiagnosis — 1b
+  /// dropped joint data because the driver requested kJoint while 1b only serves
+  /// kMotor (see JointIoMode()), not (only) because MODE was garbage. The joint
+  /// / set-mode paths echo MODE correctly on both versions, so both return true;
+  /// the bulk-sensor path is gated separately (see VerifiesBulkSensorResponseMode()).
   [[nodiscard]] virtual bool VerifiesResponseMode() const noexcept = 0;
+
+  /// Whether the firmware echoes a meaningful MODE byte specifically in the
+  /// bulk-sensor (0x19) response. Defaults to VerifiesResponseMode() — firmware
+  /// that echoes MODE at all usually echoes it on every response. 1b overrides
+  /// this to false: its 0x19 bulk-sensor response fills the MODE byte with an
+  /// arbitrary value even though its joint / set-mode responses echo MODE
+  /// correctly, so a strict MODE check there drops every otherwise-valid sensor
+  /// frame. Length + CMD (0x19) validation still guard the bulk-sensor path.
+  [[nodiscard]] virtual bool VerifiesBulkSensorResponseMode() const noexcept {
+    return VerifiesResponseMode();
+  }
 
   /// Version tag ("1a"/"1b") for diagnostics/logging.
   [[nodiscard]] virtual const char* Version() const noexcept = 0;

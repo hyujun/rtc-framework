@@ -213,18 +213,22 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
 }
 
-// ── verify_response_mode gate (mechanism) ───────────────────────────────────────
-// The transport can be told to skip MODE validation (a seam for firmware that
-// does not echo MODE reliably). With the gate off, a MODE-mismatched response
-// must be accepted and must NOT bump mode_mismatch. No shipping protocol uses
-// the gate off today (both 1a and 1b echo MODE accurately); these exercise the
-// mechanism directly.
+// ── MODE gates (mechanism) ──────────────────────────────────────────────────────
+// The transport has two independent MODE-validation gates: verify_response_mode
+// (joint / motor / set-mode paths) and verify_bulk_sensor_mode (the bulk-sensor
+// 0x19 path). With a gate off, a MODE-mismatched response on that path must be
+// accepted and must NOT bump mode_mismatch. 1b runs with the bulk-sensor gate
+// off (its 0x19 response echoes an arbitrary MODE) while keeping the joint/set-
+// mode gate on; these exercise both gates and their independence directly.
 
 TEST(HandUdpTransportModeGate, DefaultIsStrict) {
   UdpHandTransport transport("127.0.0.1", 55151, 10.0);
-  EXPECT_TRUE(transport.verify_response_mode());  // default strict (1a)
+  EXPECT_TRUE(transport.verify_response_mode());     // default strict (joint/set-mode)
+  EXPECT_TRUE(transport.verify_bulk_sensor_mode());  // default strict (bulk-sensor)
   transport.set_verify_response_mode(false);
+  transport.set_verify_bulk_sensor_mode(false);
   EXPECT_FALSE(transport.verify_response_mode());
+  EXPECT_FALSE(transport.verify_bulk_sensor_mode());
 }
 
 TEST(HandUdpTransportModeGate, AllMotorRead_ModeMismatch_GateOff_Accepts) {
@@ -254,18 +258,40 @@ TEST(HandUdpTransportModeGate, AllMotorRead_ModeMismatch_GateOff_Accepts) {
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
 }
 
-TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_GateOff_Accepts) {
-  LoopbackDevice device;
-  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
-  ASSERT_TRUE(transport.Open());
-  transport.set_verify_response_mode(false);  // gate off
-
-  // 99-byte 1b bulk-sensor response with a valid cmd but an arbitrary MODE byte.
-  std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};
+// Helper: craft a 1b bulk-sensor response with a deliberately arbitrary MODE byte.
+static void FillBulkSensorArbitraryMode(std::array<uint8_t, kP1bSensorResponseSize>& resp_buf) {
   resp_buf[0] = kDeviceId;
   resp_buf[1] = static_cast<uint8_t>(Command::kReadAllSensors);
   resp_buf[2] = 0x7F;  // arbitrary MODE (requested kRaw = 0x00)
+}
 
+TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_Default_Rejects) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  // Default: both gates strict — an arbitrary MODE on the bulk-sensor path is rejected.
+
+  std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};
+  FillBulkSensorArbitraryMode(resp_buf);
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+
+  std::array<uint8_t, kP1bSensorResponseSize> buf{};
+  const ssize_t recvd = transport.RequestBulkSensorRaw(buf.data(), buf.size(),
+                                                       kP1bSensorResponseSize, SensorMode::kRaw);
+  dev_thread.join();
+
+  EXPECT_EQ(recvd, -1);
+  EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
+}
+
+TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_BulkGateOff_Accepts) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  transport.set_verify_bulk_sensor_mode(false);  // 1b: bulk-sensor gate off
+
+  std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};
+  FillBulkSensorArbitraryMode(resp_buf);
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<uint8_t, kP1bSensorResponseSize> buf{};
@@ -277,11 +303,32 @@ TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_GateOff_Accepts) {
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
 }
 
+// The two gates are independent: turning off the joint/set-mode gate must NOT
+// relax the bulk-sensor path (guards against a single-flag regression).
+TEST(HandUdpTransportModeGate, BulkSensorRaw_JointGateOff_BulkGateOn_StillRejects) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  transport.set_verify_response_mode(false);  // joint/set-mode gate off, bulk gate still on
+
+  std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};
+  FillBulkSensorArbitraryMode(resp_buf);
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+
+  std::array<uint8_t, kP1bSensorResponseSize> buf{};
+  const ssize_t recvd = transport.RequestBulkSensorRaw(buf.data(), buf.size(),
+                                                       kP1bSensorResponseSize, SensorMode::kRaw);
+  dev_thread.join();
+
+  EXPECT_EQ(recvd, -1);
+  EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
+}
+
 TEST(HandUdpTransportModeGate, BulkSensorRaw_GateOff_StillRejectsWrongCmd) {
   LoopbackDevice device;
   UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
-  transport.set_verify_response_mode(false);
+  transport.set_verify_bulk_sensor_mode(false);
 
   // Wrong cmd must still be rejected even with the MODE gate off (cmd floor).
   std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};

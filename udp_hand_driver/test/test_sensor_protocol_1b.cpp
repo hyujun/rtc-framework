@@ -102,7 +102,8 @@ TEST(SensorProtocolFactory, CreatesKnownVersions) {
   EXPECT_TRUE(p1a->HasMotorSpaceRead());
   EXPECT_EQ(p1a->JointIoMode(), packets::JointMode::kJoint);  // 1a: gear-mapped joint mode
   EXPECT_TRUE(p1a->RunsSensorPostProcess());
-  EXPECT_TRUE(p1a->VerifiesResponseMode());  // 1a: MODE echo is meaningful
+  EXPECT_TRUE(p1a->VerifiesResponseMode());            // 1a: MODE echo is meaningful
+  EXPECT_TRUE(p1a->VerifiesBulkSensorResponseMode());  // 1a: bulk-sensor MODE also meaningful
 
   auto p1b = CreateSensorProtocol("1b");
   ASSERT_NE(p1b, nullptr);
@@ -111,7 +112,9 @@ TEST(SensorProtocolFactory, CreatesKnownVersions) {
   EXPECT_FALSE(p1b->HasMotorSpaceRead());
   EXPECT_EQ(p1b->JointIoMode(), packets::JointMode::kMotor);  // 1b: joint served under kMotor
   EXPECT_FALSE(p1b->RunsSensorPostProcess());
-  EXPECT_TRUE(p1b->VerifiesResponseMode());  // 1b: firmware echoes requested MODE accurately
+  EXPECT_TRUE(
+      p1b->VerifiesResponseMode());  // 1b: joint/set-mode echo the requested MODE accurately
+  EXPECT_FALSE(p1b->VerifiesBulkSensorResponseMode());  // 1b: bulk-sensor (0x19) MODE is arbitrary
 }
 
 TEST(SensorProtocolFactory, RejectsUnknownVersion) {
