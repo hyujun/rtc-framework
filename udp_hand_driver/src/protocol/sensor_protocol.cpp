@@ -23,6 +23,10 @@ class SensorProtocol1a final : public SensorProtocol {
 
   [[nodiscard]] bool HasMotorSpaceRead() const noexcept override { return true; }
 
+  [[nodiscard]] packets::JointMode JointIoMode() const noexcept override {
+    return packets::JointMode::kJoint;
+  }
+
   [[nodiscard]] bool RunsSensorPostProcess() const noexcept override { return true; }
 
   // Caller sets state.num_fingertips before decode (a decode input, not filled
@@ -66,6 +70,14 @@ class SensorProtocol1b final : public SensorProtocol {
 
   [[nodiscard]] bool HasMotorSpaceRead() const noexcept override { return false; }
 
+  // 1b firmware only services joint state/command under kMotor (0x00); a kJoint
+  // request returns no joint data. The single joint-space read is issued in this
+  // mode and published as joint_states (there is no separate motor-space read —
+  // HasMotorSpaceRead() is false).
+  [[nodiscard]] packets::JointMode JointIoMode() const noexcept override {
+    return packets::JointMode::kMotor;
+  }
+
   [[nodiscard]] bool RunsSensorPostProcess() const noexcept override { return false; }
 
   // Caller sets state.num_fingertips before decode; clamped to the wire's fixed
@@ -92,7 +104,11 @@ class SensorProtocol1b final : public SensorProtocol {
     return true;
   }
 
-  [[nodiscard]] bool VerifiesResponseMode() const noexcept override { return false; }
+  // 1b firmware echoes the requested MODE accurately, so strict validation is
+  // kept (matching 1a). The earlier `false` here assumed MODE was don't-care;
+  // that masked the real bug — requesting kJoint on a kMotor-only firmware (now
+  // fixed via JointIoMode()).
+  [[nodiscard]] bool VerifiesResponseMode() const noexcept override { return true; }
 
   [[nodiscard]] const char* Version() const noexcept override { return "1b"; }
 };

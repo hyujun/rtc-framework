@@ -9,10 +9,11 @@
 # protocol_version "1b":
 #   - communication_mode 는 반드시 "bulk" — 1b force layout 은 bulk 전용이고
 #     C++ 기본값 "individual" 로 두면 on_configure 가 실패한다.
-#   - 응답 MODE byte 는 don't-care (펌웨어가 임의값으로 채우고 항상 raw 로 동작)
-#     → 드라이버는 1b 에서 수신 MODE 검증을 skip 한다 (VerifiesResponseMode()=false).
+#   - joint state/command 는 kMotor MODE 로 주고받는다 (1b 펌웨어의 유일한
+#     joint-serving 모드; JointIoMode()=kMotor). 펌웨어가 요청 MODE 를 정확히
+#     echo 하므로 수신 MODE 검증은 strict 유지 (VerifiesResponseMode()=true).
 #   - /p1b/sensor_states = HandSensorState, 핑거당 f[3]={fx,fy,fz} (firmware force).
-#   - /p1b/motor_states 미발행 (0x10 kMotor read 스킵) → motor_state_names 생략.
+#   - /p1b/motor_states 미발행 (별도 motor-space read 스킵) → motor_state_names 생략.
 #   - LPF/drift/F-T 후처리 파라미터는 1b 경로에서 무시되므로 생략 (C++ 기본 off).
 /**:
   ros__parameters:

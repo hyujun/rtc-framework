@@ -213,10 +213,12 @@ TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
 }
 
-// ── verify_response_mode gate (1b MODE don't-care) ──────────────────────────────
-// 1b firmware fills the MODE byte with arbitrary values and only ever runs raw
-// mode, so the transport is told to skip MODE validation. A MODE-mismatched
-// response must then be accepted and must NOT bump mode_mismatch.
+// ── verify_response_mode gate (mechanism) ───────────────────────────────────────
+// The transport can be told to skip MODE validation (a seam for firmware that
+// does not echo MODE reliably). With the gate off, a MODE-mismatched response
+// must be accepted and must NOT bump mode_mismatch. No shipping protocol uses
+// the gate off today (both 1a and 1b echo MODE accurately); these exercise the
+// mechanism directly.
 
 TEST(HandUdpTransportModeGate, DefaultIsStrict) {
   UdpHandTransport transport("127.0.0.1", 55151, 10.0);
@@ -229,9 +231,9 @@ TEST(HandUdpTransportModeGate, AllMotorRead_ModeMismatch_GateOff_Accepts) {
   LoopbackDevice device;
   UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
-  transport.set_verify_response_mode(false);  // 1b: MODE is don't-care
+  transport.set_verify_response_mode(false);  // gate off
 
-  // Mode deliberately differs from the requested kJoint (as 1b firmware would).
+  // Mode deliberately differs from the requested kJoint.
   AllMotorResponsePacket response{};
   response.id = kDeviceId;
   response.cmd = static_cast<uint8_t>(Command::kReadAllMotors);
@@ -256,7 +258,7 @@ TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_GateOff_Accepts) {
   LoopbackDevice device;
   UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
-  transport.set_verify_response_mode(false);  // 1b: MODE is don't-care
+  transport.set_verify_response_mode(false);  // gate off
 
   // 99-byte 1b bulk-sensor response with a valid cmd but an arbitrary MODE byte.
   std::array<uint8_t, kP1bSensorResponseSize> resp_buf{};
@@ -322,7 +324,7 @@ TEST(HandUdpTransportSetSensorMode, ModeMismatch_GateOff_Accepts) {
   LoopbackDevice device;
   UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
-  transport.set_verify_response_mode(false);  // 1b
+  transport.set_verify_response_mode(false);  // gate off
 
   // Correct cmd echo but arbitrary MODE — accepted with the gate off.
   std::array<uint8_t, kSensorRequestSize> resp_buf{};

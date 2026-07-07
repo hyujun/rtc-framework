@@ -160,10 +160,11 @@ class UdpHandController {
     }
 
     // Propagate the protocol's MODE-echo capability to the transport before any
-    // request runs (InitializeSensors below, then the EventLoop jthread). 1b
-    // firmware fills MODE with arbitrary values, so its transport skips MODE
-    // validation; 1a keeps strict checking. Set here (off the RT path) so there
-    // is no race with the EventLoop thread started further down.
+    // request runs (InitializeSensors below, then the EventLoop jthread). Both
+    // 1a and 1b echo the requested MODE accurately, so both keep strict
+    // validation; the capability stays as a seam for future firmware. Set here
+    // (off the RT path) so there is no race with the EventLoop thread started
+    // further down.
     transport_.set_verify_response_mode(sensor_protocol_->VerifiesResponseMode());
 
     // F/T inferencer initialization. Non-RT init path — verbose diagnostics
@@ -500,6 +501,12 @@ class UdpHandController {
 
     const bool is_bulk = (communication_mode_ == HandCommunicationMode::kBulk);
 
+    // Joint-space I/O MODE for this protocol (1a=kJoint, 1b=kMotor). Hoisted off
+    // the per-tick path: sensor_protocol_ is fixed for the loop's lifetime (set
+    // in Start() before this thread launches). Drives the position write and the
+    // joint-space read; the motor-space read below keeps its own kMotor.
+    const packets::JointMode joint_io_mode = sensor_protocol_->JointIoMode();
+
     std::array<uint8_t, packets::kMotorPacketSize> send_buf{};
     std::array<uint8_t, packets::kMotorPacketSize> echo_buf{};
     std::array<float, packets::kMotorDataCount> motor_pos_buf{};
@@ -574,7 +581,7 @@ class UdpHandController {
         RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
                     "EventLoop: E-Stop active, sending zero command and exiting");
         std::array<float, kNumHandMotors> zeros{};
-        transport_.WritePositionFireAndForget(zeros, packets::JointMode::kJoint);
+        transport_.WritePositionFireAndForget(zeros, joint_io_mode);
         busy_.store(false, std::memory_order_release);
         break;
       }
@@ -586,14 +593,13 @@ class UdpHandController {
 
       const auto t0 = std::chrono::steady_clock::now();
 
-      // 1. Write position + recv echo (always kJoint)
+      // 1. Write position + recv echo (joint_io_mode: 1a=kJoint, 1b=kMotor)
       // Skip write until BOTH the first state has been read AND the first real
       // command has been staged — prevents sending the zero-initialised
       // pending_cmd (which drives the hand to q=0) in the startup window before
       // the controller publishes its first /hand/joint_command.
       if (state_read_once_ && cmd_received_once) {
-        if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf,
-                                             packets::JointMode::kJoint)) {
+        if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf, joint_io_mode)) {
           any_recv_ok = true;
         }
       }
@@ -625,10 +631,12 @@ class UdpHandController {
 
         const auto t2 = std::chrono::steady_clock::now();
 
-        // 3. Read all motors (joint-space: kJoint) — pos/vel/cur
+        // 3. Read all motors (joint-space: joint_io_mode) — pos/vel/cur. 1b
+        //    issues this in kMotor (its only joint-serving mode) and still
+        //    publishes the result as joint_states.
         {
           std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
-          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, packets::JointMode::kJoint)) {
+          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, joint_io_mode)) {
             std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
             std::copy_n(jv_buf.begin(), kNumHandMotors, state.joint_velocities.begin());
             std::copy_n(jc_buf.begin(), kNumHandMotors, state.joint_currents.begin());
@@ -736,11 +744,11 @@ class UdpHandController {
 
         const auto t2 = std::chrono::steady_clock::now();
 
-        // 3. Read joint position (kJoint)
+        // 3. Read joint position (joint-space: joint_io_mode). Individual mode is
+        //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
         {
           std::array<float, packets::kMotorDataCount> jp_buf{};
-          if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf,
-                                          packets::JointMode::kJoint)) {
+          if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf, joint_io_mode)) {
             std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
             state.joint_valid = true;
             any_recv_ok = true;

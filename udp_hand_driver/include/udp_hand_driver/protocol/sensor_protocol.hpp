@@ -21,6 +21,7 @@
 // noexcept and allocation-free. Construction/selection happens off the RT path
 // (on_configure) via CreateSensorProtocol().
 
+#include "udp_hand_driver/udp_hand_packets.hpp"
 #include "udp_hand_driver/udp_hand_state.hpp"
 
 #include <cstddef>
@@ -42,6 +43,15 @@ class SensorProtocol {
   /// 1b = false (no motor_states published — see migration plan).
   [[nodiscard]] virtual bool HasMotorSpaceRead() const noexcept = 0;
 
+  /// Joint-space I/O MODE byte the driver must send for the position write and
+  /// the joint-space (pos/vel/cur) read. 1a firmware uses kJoint (gear-ratio
+  /// mapped by firmware); 1b firmware only services joint state/command under
+  /// kMotor (0x00) — a kJoint request returns no joint data there. The EventLoop
+  /// routes the write + joint read through this instead of a hardcoded mode so
+  /// the version difference stays in the seam (ARCH-3). The motor-space read
+  /// keeps its own kMotor and is separately gated by HasMotorSpaceRead().
+  [[nodiscard]] virtual packets::JointMode JointIoMode() const noexcept = 0;
+
   /// Whether the barometer/ToF post-processing pipeline (LPF, drift detection,
   /// F/T inference) runs after decode. 1a = true; 1b = false (force values are
   /// pre-computed by firmware). This is the single polymorphic gate the
@@ -58,11 +68,13 @@ class SensorProtocol {
   [[nodiscard]] virtual bool DecodeAllSensors(const uint8_t* buf, std::size_t len,
                                               UdpHandState& state) noexcept = 0;
 
-  /// Whether the firmware echoes a meaningful MODE byte in responses. 1a = true
-  /// (MODE echoes the requested joint/sensor mode; validated on receive). 1b =
-  /// false (firmware fills MODE with arbitrary values and only ever runs raw
-  /// sensor mode, so the driver treats MODE as don't-care and skips mode
-  /// validation on every response).
+  /// Whether the firmware echoes a meaningful MODE byte in responses (both
+  /// versions do — MODE echoes the requested joint/sensor mode and is validated
+  /// on receive). Kept as a capability for future firmware that may not echo
+  /// MODE reliably. NOTE: an earlier revision set this false for 1b under a
+  /// "MODE is don't-care" reading; that was a misdiagnosis — 1b dropped joint
+  /// data because the driver requested kJoint while 1b only serves kMotor (see
+  /// JointIoMode()), not because MODE was garbage. Both now return true.
   [[nodiscard]] virtual bool VerifiesResponseMode() const noexcept = 0;
 
   /// Version tag ("1a"/"1b") for diagnostics/logging.
