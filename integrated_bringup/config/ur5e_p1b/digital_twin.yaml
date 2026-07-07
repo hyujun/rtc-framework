@@ -61,7 +61,7 @@
     # proto_1b has no contact classifier (contact_flag ≡ 0), so gate the F arrow
     # on firmware force magnitude instead. 1.0 N aligns with the p1b controller's
     # grasp_force_threshold (controllers/demo_shared.yaml). Viz-only — tune freely.
-    sensor_viz.force_display_threshold: 1.0
+    sensor_viz.force_display_threshold: 0.7
 
     # ── TCP visualization ─────────────────────────────────────────────
     # tf2 lookup (`base → tool0_actual`); active controller 의

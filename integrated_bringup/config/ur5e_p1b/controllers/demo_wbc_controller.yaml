@@ -203,17 +203,17 @@ demo_wbc_controller:
 
     contacts:
       - name: "thumb_tip"
-        frame: "l_thumb_tip_link"
+        frame: "l_thumb_tip_bracket"
         type: "point"
         mu: 0.5
         n_faces: 8
       - name: "index_tip"
-        frame: "l_index_tip_link"
+        frame: "l_index_tip_bracket"
         type: "point"
         mu: 0.5
         n_faces: 8
       - name: "middle_tip"
-        frame: "l_middle_tip_link"
+        frame: "l_middle_tip_bracket"
         type: "point"
         mu: 0.5
         n_faces: 8

@@ -23,9 +23,9 @@ mpc:
     end_effector_frame: "tool0"
     base_frame: "base"
     contact_frames:
-      - { name: "l_thumb_tip_link",  dim: 3 }
-      - { name: "l_index_tip_link",  dim: 3 }
-      - { name: "l_middle_tip_link", dim: 3 }
+      - { name: "l_thumb_tip_bracket",  dim: 3 }
+      - { name: "l_index_tip_bracket",  dim: 3 }
+      - { name: "l_middle_tip_bracket", dim: 3 }
 
   # ── Proximal-DDP solver tuning (see MPCSolverConfig) ──────────────────────
   solver:
