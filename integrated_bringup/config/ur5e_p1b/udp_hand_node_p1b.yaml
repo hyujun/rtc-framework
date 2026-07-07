@@ -35,8 +35,8 @@
 
     # -- 조인트 이름 (p1b URDF joint 명) --
     joint_state_names:
-      - "thumb_cmc_aa_joint"
       - "thumb_cmc_fe_joint"
+      - "thumb_cmc_aa_joint"
       - "thumb_mcp_joint"
       - "thumb_dip_fe_joint"
       - "index_mcp_aa_joint"

@@ -111,7 +111,7 @@
           max_velocity: [10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384, 10.384]
           max_torque: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
           position_lower: [0.0, -1.5707963, -1.5707963, 0.0, -0.296705973, 0.0, 0.0, 0.0, 0.0, 0.0]
-          position_upper: [1.5707963, 1.5707963, 1.5707963, 1.5707963, 0.122173048, 1.5707963, 1.5707963, 1.5707963, 1.5707963, 1.5707963]
+          position_upper: [2.356194487, 1.5707963, 1.5707963, 1.5707963, 0.122173048, 1.5707963, 1.5707963, 1.5707963, 1.5707963, 1.5707963]
         # Sensor packing layout — CM uses these for stride/offset arithmetic
         # only; field semantics (barometer/ToF/contact/F/u) live in
         # udp_hand_driver. p1b real hw has NO baro/ToF hardware — the udp_hand
