@@ -135,6 +135,25 @@ write / joint read / E-Stop zero-write 에 사용합니다.
 
 `sensor_decimation` 값에 따라 N cycle마다 센서를 읽습니다. 현재 노드 코드에서는 `sensor_decimation=1`로 고정되어 있어 매 사이클 센서를 읽습니다.
 
+### 통신 Decimation (`comm_decimation`)
+
+UDP 통신 부하를 강제로 줄여 테스트하기 위한 knob (ROS param, 기본 `1`). `sensor_decimation` 이 **센서 read 만** 감쇠하는 것과 달리, `comm_decimation` 은 EventLoop 사이클의 **전체 UDP 트랜잭션 (write + 모든 read)** 을 감쇠한다:
+
+- `1`: 매 사이클 통신 (기존 동작과 bit-identical, 회귀 0)
+- `2`: 1 사이클 통신, 1 사이클 skip (통신 안 함)
+- `3`: 1 사이클 통신, 2 사이클 skip
+
+skip 사이클의 동작:
+- UDP send/recv 없음, 상태 publish 없음, cycle 카운트에 포함 안 됨 (진짜 no-op tick). stale 상태를 재발행하지 않으므로 downstream 이 감쇠된 rate 를 실제로 관측한다 (부하 테스트의 목적).
+- **E-Stop 은 skip 여부와 무관하게 매 사이클 검사** (안전 불변).
+- **첫 사이클은 항상 통신** (초기 상태 read 보장).
+- eventfd drain + 최신 명령 latch 는 skip 사이클에서도 수행 → 다음 통신 사이클이 가장 최근 명령을 전송 (명령 유실 없음, last-wins).
+- `any_recv_ok` / `consecutive_recv_failures` 를 건드리지 않아 link-down false-positive 없음.
+
+> ⚠️ **failure detector 상호작용** — 유효 통신 rate = EventLoop rate / `comm_decimation`. `comm_decimation` 을 크게 하면 (예: 500 Hz 구동 시 N=20 → 25 Hz) rate 가 `min_rate_hz` 미만으로 떨어져 rate failure 오탐 → E-STOP 이 발생할 수 있다. 높은 감쇠로 테스트할 때는 `min_rate_hz` 를 비례해 낮추거나 `enable_failure_detector` 의 rate/link 검사를 조정한다.
+
+감쇠량은 `hand_udp_stats.json` 의 `comm_decimation` / `comm_decimation_skip_count` 로 확인한다.
+
 ### ONNX F/T 추론
 
 센서 사이클에서 `FingertipFTInferencer`를 통해 핑거팁별 접촉/힘 추론을 수행합니다:
@@ -226,7 +245,7 @@ phase 매핑 (hand UDP loop):
 
 스키마 (`comm_stats` 섹션):
 
-- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `event_skip_count`, `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등
+- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `event_skip_count`, `comm_decimation`, `comm_decimation_skip_count`, `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등 (`total_cycles`/`avg_rate_hz` 는 통신 사이클만 카운트 — comm_decimation skip 은 제외)
 - **`per_request`**: request kind (`write_echo` / `motor_read` / `joint_read` / `sensor_read` / `bulk_sensor` / `set_mode`) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}`. `ok` 는 request-level 성공 (검증 통과), `short_or_decode` 는 short packet + codec decode 실패. joint/motor read 는 wire format 이 동일하므로 controller 가 `RequestKind` 파라미터로 명시 attribution
 - **`last_unexpected_cmd` / `last_unexpected_len`**: 가장 최근 거부된 패킷의 CMD byte / 수신 길이 — 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처
 

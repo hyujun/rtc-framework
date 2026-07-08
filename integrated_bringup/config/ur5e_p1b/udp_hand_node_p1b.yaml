@@ -30,6 +30,11 @@
     communication_mode: "bulk"        # 1b force layout 전용 (individual 조합 시 configure 실패)
     protocol_version: "1b"
 
+    # -- UDP 통신 decimation (부하 감쇠 테스트용, 기본 1 = 매 사이클 통신) --
+    # N 이면 N 사이클 중 1번만 실제 UDP 통신, 나머지는 건너뜀. N 을 크게 하면
+    # min_rate_hz 를 낮추거나 rate/link 검사를 조정해 failure detector 오탐 방지.
+    comm_decimation: 1
+
     # -- Publish rate (link_status decimation) --
     publish_rate: 100.0
 

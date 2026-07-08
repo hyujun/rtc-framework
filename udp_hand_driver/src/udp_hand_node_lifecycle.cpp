@@ -50,6 +50,11 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_parameter("use_fake_hand", false);
   declare_parameter("fake_tick_rate_hz", 500.0);
 
+  // Whole-cycle UDP decimation (load-reduction test knob): 1 = communicate every
+  // cycle (default). N>1 skips the entire UDP transaction on N-1 of every N
+  // EventLoop cycles. See udp_hand_controller.hpp / README "통신 decimation".
+  declare_parameter("comm_decimation", 1);
+
   declare_parameter("joint_state_names", std::vector<std::string>{});
   declare_parameter("motor_state_names", std::vector<std::string>{});
   declare_parameter("hand_fingertip_names", std::vector<std::string>{});
@@ -155,11 +160,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
   num_fingertips_ = udp_hand_driver::kDefaultNumFingertips;
   use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
+  const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
   controller_ = std::make_unique<udp_hand_driver::UdpHandController>(
       target_ip, target_port, udp_hand_driver::kHandUdpRecvConfig, recv_timeout_ms,
       false /* enable_write_ack: deprecated */, 1, num_fingertips_, use_fake_hand_, ft_names,
       comm_mode, tof_lpf_enabled, tof_lpf_cutoff_hz, baro_lpf_enabled, baro_lpf_cutoff_hz,
-      ft_config, drift_enabled, drift_threshold, drift_window_size);
+      ft_config, drift_enabled, drift_threshold, drift_window_size, comm_decimation);
   controller_->SetSensorProtocol(std::move(sensor_protocol));
 
   // ── Topic names ──────────────────────────────────────────────────
@@ -601,7 +607,9 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       // dropped valid frames — the InitPositionHold-to-zero regression signature.
       << "    \"cmd_mismatch\": " << stats.cmd_mismatch << ",\n"
       << "    \"mode_mismatch\": " << stats.mode_mismatch << ",\n"
-      << "    \"event_skip_count\": " << stats.event_skip_count << ",\n";
+      << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
+      << "    \"comm_decimation\": " << controller_->comm_decimation() << ",\n"
+      << "    \"comm_decimation_skip_count\": " << stats.comm_decimation_skip_count << ",\n";
 
   // Per-request-kind breakdown (link-down forensics): which request kind eats
   // the failures, and whether drops are timeouts or stale/desync mismatches.

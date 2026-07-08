@@ -140,9 +140,10 @@ class UdpHandController {
       bool tof_lpf_enabled = false, double tof_lpf_cutoff_hz = 15.0, bool baro_lpf_enabled = false,
       double baro_lpf_cutoff_hz = 30.0, FingertipFTInferencer::Config ft_config = {},
       bool drift_detection_enabled = false, double drift_threshold = 5.0,
-      int drift_window_size = 2500) noexcept
+      int drift_window_size = 2500, int comm_decimation = 1) noexcept
       : thread_cfg_(thread_cfg),
         sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
+        comm_decimation_(comm_decimation < 1 ? 1 : comm_decimation),
         num_fingertips_(num_fingertips > kMaxFingertips
                             ? kMaxFingertips
                             : (num_fingertips < 0 ? 0 : num_fingertips)),
@@ -483,6 +484,12 @@ class UdpHandController {
     return event_skip_count_.load(std::memory_order_relaxed);
   }
 
+  [[nodiscard]] int comm_decimation() const noexcept { return comm_decimation_; }
+
+  [[nodiscard]] uint64_t comm_skip_count() const noexcept {
+    return comm_skip_count_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] uint64_t consecutive_recv_failures() const noexcept {
     return consecutive_recv_failures_.load(std::memory_order_relaxed);
   }
@@ -490,6 +497,7 @@ class UdpHandController {
   [[nodiscard]] UdpHandCommStats comm_stats() const noexcept {
     UdpHandCommStats stats = transport_.comm_stats();
     stats.event_skip_count = event_skip_count_.load(std::memory_order_relaxed);
+    stats.comm_decimation_skip_count = comm_skip_count_.load(std::memory_order_relaxed);
     return stats;
   }
 
@@ -552,6 +560,9 @@ class UdpHandController {
     // Decoded by sensor_protocol_ so the layout can vary by version.
     std::array<uint8_t, packets::kMaxPacketSize> sensor_recv_buf{};
     int sensor_cycle_counter = 0;
+    // Whole-cycle UDP decimation counter (see comm_decimation_). Advances only
+    // on non-first cycles; the first cycle always communicates.
+    int comm_cycle_counter = 0;
 
     // First cycle: run immediately (no eventfd wait) to read initial state
     // before any write command is sent. This ensures:
@@ -570,6 +581,10 @@ class UdpHandController {
     bool cmd_received_once = false;
 
     while (!stop_token.stop_requested()) {
+      // Whole-cycle UDP decimation decision. The first cycle always
+      // communicates (needs the initial state read); afterwards only every
+      // comm_decimation_-th cycle does the UDP transaction.
+      bool is_comm_cycle = true;
       if (first_cycle) {
         // First cycle: skip eventfd wait, run read-only immediately
         first_cycle = false;
@@ -601,6 +616,12 @@ class UdpHandController {
           pending_cmd = staged_cmd_seqlock_.Load();
           cmd_received_once = true;
         }
+        // Decimate: only every comm_decimation_-th non-first cycle communicates.
+        ++comm_cycle_counter;
+        is_comm_cycle = (comm_cycle_counter >= comm_decimation_);
+        if (is_comm_cycle) {
+          comm_cycle_counter = 0;
+        }
       }
 
       busy_.store(true, std::memory_order_release);
@@ -613,6 +634,16 @@ class UdpHandController {
         transport_.WritePositionFireAndForget(zeros, joint_io_mode);
         busy_.store(false, std::memory_order_release);
         break;
+      }
+
+      // Comm decimation: on a skipped cycle do no UDP I/O, no state publish, no
+      // cycle accounting — the eventfd was already drained and the latest
+      // command latched (sent on the next real comm cycle). Placed after the
+      // E-Stop check so E-Stop is honored every cycle regardless of decimation.
+      if (!is_comm_cycle) {
+        comm_skip_count_.fetch_add(1, std::memory_order_relaxed);
+        busy_.store(false, std::memory_order_release);
+        continue;
       }
 
       UdpHandState state{};
@@ -1012,6 +1043,10 @@ class UdpHandController {
 
   rtc::ThreadConfig thread_cfg_;
   int sensor_decimation_;
+  // Whole-cycle UDP decimation (load-reduction test knob). N → 1 real comm
+  // cycle per N EventLoop cycles; the other N-1 do no send/recv/publish. 1 =
+  // communicate every cycle (default; bit-identical to pre-feature behavior).
+  int comm_decimation_;
   int num_fingertips_;
   bool use_fake_hand_;
   std::vector<std::string> fingertip_names_;
@@ -1050,6 +1085,8 @@ class UdpHandController {
   // EventLoop busy flag
   std::atomic<bool> busy_{false};
   std::atomic<uint64_t> event_skip_count_{0};
+  // Count of cycles skipped by comm_decimation_ (load-reduction telemetry).
+  std::atomic<uint64_t> comm_skip_count_{0};
 
   // Shared state
   std::atomic<bool> running_{false};

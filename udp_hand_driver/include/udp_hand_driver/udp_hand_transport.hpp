@@ -71,6 +71,7 @@ struct UdpHandCommStats {
   uint64_t mode_mismatch{0};
   uint64_t total_cycles{0};
   uint64_t event_skip_count{0};
+  uint64_t comm_decimation_skip_count{0};  // cycles skipped by comm_decimation
 
   // Per-request-kind breakdown. Unlike aggregate recv_ok (any first-attempt
   // packet arrival), per-kind `ok` counts request-level success — the method

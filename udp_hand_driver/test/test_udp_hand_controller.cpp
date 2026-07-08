@@ -440,6 +440,18 @@ std::pair<int, int> OpenSilentLoopbackSocket() {
   return {fd, ntohs(addr.sin_port)};
 }
 
+// Real-mode controller (individual mode, no fingertips) with an explicit
+// comm_decimation — the parameter is last in the ctor, so all preceding
+// positional args must be spelled out.
+std::unique_ptr<UdpHandController> MakeDecimatedController(int port, int comm_decimation) {
+  return std::make_unique<UdpHandController>(
+      "127.0.0.1", port, kHandUdpRecvConfig, 1.0 /*recv_timeout_ms*/, false /*enable_write_ack*/,
+      1 /*sensor_decimation*/, 0 /*num_fingertips*/, false /*use_fake_hand*/,
+      std::vector<std::string>{}, HandCommunicationMode::kIndividual, false /*tof_lpf*/, 15.0,
+      false /*baro_lpf*/, 30.0, FingertipFTInferencer::Config{}, false /*drift*/, 5.0, 2500,
+      comm_decimation);
+}
+
 }  // namespace
 
 TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
@@ -471,6 +483,57 @@ TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
   EXPECT_GT(stats.per_kind[static_cast<std::size_t>(RequestKind::kJointRead)].timeout, 0u);
 
   ctrl->Stop();
+  ::close(fd);
+}
+
+// ── Comm decimation (whole-cycle UDP load reduction) ────────────────────────
+
+TEST(HandControllerCommDecimation, ClampedToOne) {
+  // < 1 is clamped to 1 (communicate every cycle). Fake mode, no threads run.
+  auto ctrl = std::make_unique<UdpHandController>(
+      "127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false, 1, 4, /*use_fake_hand=*/true,
+      std::vector<std::string>{}, HandCommunicationMode::kIndividual, false, 15.0, false, 30.0,
+      FingertipFTInferencer::Config{}, false, 5.0, 2500, /*comm_decimation=*/0);
+  EXPECT_EQ(ctrl->comm_decimation(), 1);
+}
+
+TEST(HandControllerCommDecimation, DefaultCommunicatesEveryCycle) {
+  // decim=1: no cycle is ever skipped (bit-identical to pre-feature behavior).
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
+  ASSERT_TRUE(ctrl->Start());
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  ctrl->Stop();
+
+  EXPECT_EQ(ctrl->comm_decimation(), 1);
+  EXPECT_EQ(ctrl->comm_skip_count(), 0u);
+  EXPECT_GT(ctrl->cycle_count(), 0u);
+  ::close(fd);
+}
+
+TEST(HandControllerCommDecimation, SkipsExpectedRatio) {
+  // decim=N: after the always-comm first cycle, each group of N cycles yields
+  // exactly 1 comm + (N-1) skips. So with `comm` comm-cycles recorded,
+  // skips ∈ [(N-1)(comm-1), (N-1)(comm-1) + (N-1)] — a tight, non-flaky bound.
+  constexpr int kDecim = 4;
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  auto ctrl = MakeDecimatedController(port, kDecim);
+  ASSERT_TRUE(ctrl->Start());
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  ctrl->Stop();
+
+  const uint64_t comm = ctrl->cycle_count();
+  const uint64_t skip = ctrl->comm_skip_count();
+  ASSERT_GE(comm, 2u);  // decimation actually exercised
+  EXPECT_GT(skip, 0u);
+
+  const uint64_t base = static_cast<uint64_t>(kDecim - 1) * (comm - 1);
+  EXPECT_GE(skip, base);
+  EXPECT_LE(skip, base + static_cast<uint64_t>(kDecim - 1));
   ::close(fd);
 }
 
