@@ -363,7 +363,7 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 
 ### Per-group JointState 자동 퍼블리셔
 
-각 디바이스 그룹에 대해 `/rtc_cm/{group}/joint_states` (RELIABLE/10) JointState를 자동 생성합니다. 설정 순서(joint_state_names)로 재정렬된 관절 데이터를 republish합니다. 이 토픽은 active controller와 무관하게 항상 발행되는 측정 상태의 단일 소스이며, `rtc_digital_twin` 같은 외부 노드가 이를 merge해 `robot_state_publisher` / RViz로 공급합니다.
+각 디바이스 그룹에 대해 `/rtc_cm/{group}/joint_states` (RELIABLE/10) JointState를 자동 생성합니다. 설정 순서(joint_state_names)로 재정렬된 관절 데이터를 republish합니다. 이 토픽은 active controller와 무관하게 항상 발행되는 측정 상태의 단일 소스이며, `rtc_digital_twin` 같은 외부 노드가 이를 merge해 `robot_state_publisher` / RViz로 공급합니다. Republish 는 backend state-ready 콜백에서 이뤄지므로 `on_configure` 중(백엔드 sub 은 이미 활성, 그러나 노드는 아직 Inactive)에 상류가 상태를 흘리면 콜백이 조기 발화할 수 있다 — 이때는 LifecyclePublisher `is_activated()` 로 가드해 노드 `on_activate` 이전 발행을 건너뛴다("publisher is not activated" 경고 방지).
 
 ---
 

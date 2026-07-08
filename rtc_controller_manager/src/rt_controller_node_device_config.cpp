@@ -629,7 +629,12 @@ void RtControllerNode::CreateDeviceBackends() {
       auto dt_it = slot_to_dt_topic_.find(slot);
       if (dt_it != slot_to_dt_topic_.end()) {
         auto pub_it = digital_twin_publishers_.find(dt_it->second);
-        if (pub_it != digital_twin_publishers_.end()) {
+        // is_activated() is an atomic bool load (RT-safe on this rt_callback
+        // executor). The backend state-lane sub can fire during on_configure —
+        // mock/UR driver already streams /joint_states before on_activate flips
+        // the LifecyclePublisher — so guard the republish to avoid a "publisher
+        // is not activated" warning on every startup.
+        if (pub_it != digital_twin_publishers_.end() && pub_it->second.publisher->is_activated()) {
           auto& dte = pub_it->second;
           urtc::DeviceStateCache cache{};
           (void)backends_[static_cast<std::size_t>(slot)]->ReadState(cache);
