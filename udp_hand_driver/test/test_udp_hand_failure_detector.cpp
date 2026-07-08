@@ -26,8 +26,12 @@ using namespace std::chrono_literals;
 class HandFailureDetectorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    controller_ = std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0,
-                                                      false, 1, 4, true);  // fake_hand=true
+    controller_ = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+        .target_ip = "127.0.0.1",
+        .target_port = 55151,
+        .num_fingertips = 4,
+        .use_fake_hand = true,
+    });
     ASSERT_TRUE(controller_->Start());
   }
 
@@ -382,8 +386,12 @@ TEST(HandFailureDetectorLinkDown, DumpRunsAndFailureLatchesOnce) {
   const int port = ntohs(addr.sin_port);
 
   // Real mode, 1 ms recv timeout, no fingertips (skips sensor init retries).
-  auto controller = std::make_unique<UdpHandController>("127.0.0.1", port, kHandUdpRecvConfig, 1.0,
-                                                        false, 1, 0, /*use_fake_hand=*/false);
+  auto controller = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = port,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = 0,
+  });
   ASSERT_TRUE(controller->Start());
 
   UdpHandFailureDetectorConfig cfg{};

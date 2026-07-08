@@ -132,38 +132,55 @@ inline const rtc::ThreadConfig kHandUdpRecvConfig{.cpu_core = -1,
                                                   .nice_value = 0,
                                                   .name = "hand_udp_recv"};
 
+// Construction parameters for UdpHandController (same pattern as
+// UdpHandSensorProcessorConfig). Field defaults preserve the historical
+// constructor defaults; callers use designated initializers and set only
+// what differs.
+struct UdpHandControllerConfig {
+  std::string target_ip{};
+  int target_port{0};
+  rtc::ThreadConfig thread_cfg{kHandUdpRecvConfig};
+  double recv_timeout_ms{10.0};
+  int sensor_decimation{1};
+  int num_fingertips{udp_hand_driver::kDefaultNumFingertips};
+  bool use_fake_hand{false};
+  std::vector<std::string> fingertip_names{};
+  HandCommunicationMode communication_mode{HandCommunicationMode::kIndividual};
+  bool tof_lpf_enabled{false};
+  double tof_lpf_cutoff_hz{15.0};
+  bool baro_lpf_enabled{false};
+  double baro_lpf_cutoff_hz{30.0};
+  FingertipFTInferencer::Config ft_config{};
+  bool drift_detection_enabled{false};
+  double drift_threshold{5.0};
+  int drift_window_size{2500};
+  int comm_decimation{1};
+  double loop_rate_hz{500.0};
+};
+
 class UdpHandController {
  public:
   using StateCallback =
       std::function<void(const UdpHandState&, const udp_hand_driver::FingertipFTState&)>;
 
-  explicit UdpHandController(
-      std::string target_ip, int target_port,
-      const rtc::ThreadConfig& thread_cfg = kHandUdpRecvConfig, double recv_timeout_ms = 10.0,
-      bool /*enable_write_ack*/ = false,  // deprecated
-      int sensor_decimation = 1, int num_fingertips = udp_hand_driver::kDefaultNumFingertips,
-      bool use_fake_hand = false, const std::vector<std::string>& fingertip_names = {},
-      HandCommunicationMode communication_mode = HandCommunicationMode::kIndividual,
-      bool tof_lpf_enabled = false, double tof_lpf_cutoff_hz = 15.0, bool baro_lpf_enabled = false,
-      double baro_lpf_cutoff_hz = 30.0, FingertipFTInferencer::Config ft_config = {},
-      bool drift_detection_enabled = false, double drift_threshold = 5.0,
-      int drift_window_size = 2500, int comm_decimation = 1, double loop_rate_hz = 500.0) noexcept
-      : thread_cfg_(thread_cfg),
-        loop_rate_hz_(loop_rate_hz),
-        sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
-        comm_decimation_(comm_decimation < 1 ? 1 : comm_decimation),
-        num_fingertips_(num_fingertips > kMaxFingertips
+  explicit UdpHandController(UdpHandControllerConfig cfg) noexcept
+      : thread_cfg_(cfg.thread_cfg),
+        loop_rate_hz_(cfg.loop_rate_hz),
+        sensor_decimation_(cfg.sensor_decimation < 1 ? 1 : cfg.sensor_decimation),
+        comm_decimation_(cfg.comm_decimation < 1 ? 1 : cfg.comm_decimation),
+        num_fingertips_(cfg.num_fingertips > kMaxFingertips
                             ? kMaxFingertips
-                            : (num_fingertips < 0 ? 0 : num_fingertips)),
-        use_fake_hand_(use_fake_hand),
-        fingertip_names_(fingertip_names.empty() ? kDefaultFingertipNames : fingertip_names),
-        communication_mode_(communication_mode),
-        ft_config_(std::move(ft_config)),
-        transport_(std::move(target_ip), target_port, recv_timeout_ms),
+                            : (cfg.num_fingertips < 0 ? 0 : cfg.num_fingertips)),
+        use_fake_hand_(cfg.use_fake_hand),
+        fingertip_names_(cfg.fingertip_names.empty() ? kDefaultFingertipNames
+                                                     : cfg.fingertip_names),
+        communication_mode_(cfg.communication_mode),
+        ft_config_(std::move(cfg.ft_config)),
+        transport_(std::move(cfg.target_ip), cfg.target_port, cfg.recv_timeout_ms),
         sensor_processor_(UdpHandSensorProcessorConfig{
-            num_fingertips_, sensor_decimation_, tof_lpf_enabled, tof_lpf_cutoff_hz,
-            baro_lpf_enabled, baro_lpf_cutoff_hz, drift_detection_enabled, drift_threshold,
-            drift_window_size}) {
+            num_fingertips_, sensor_decimation_, cfg.tof_lpf_enabled, cfg.tof_lpf_cutoff_hz,
+            cfg.baro_lpf_enabled, cfg.baro_lpf_cutoff_hz, cfg.drift_detection_enabled,
+            cfg.drift_threshold, cfg.drift_window_size}) {
     const int name_count = static_cast<int>(fingertip_names_.size());
     if (name_count < num_fingertips_) {
       num_fingertips_ = name_count;

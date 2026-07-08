@@ -27,16 +27,12 @@ namespace udp_hand_driver::test {
 class FakeHandControllerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    controller_ =
-        std::make_unique<UdpHandController>("127.0.0.1",         // target_ip (unused in fake mode)
-                                            55151,               // target_port
-                                            kHandUdpRecvConfig,  // thread_cfg
-                                            10.0,                // recv_timeout_ms
-                                            false,               // enable_write_ack (deprecated)
-                                            1,                   // sensor_decimation
-                                            4,                   // num_fingertips
-                                            true                 // use_fake_hand
-        );
+    controller_ = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+        .target_ip = "127.0.0.1",  // unused in fake mode
+        .target_port = 55151,
+        .num_fingertips = 4,
+        .use_fake_hand = true,
+    });
   }
 
   void TearDown() override {
@@ -197,9 +193,13 @@ TEST_F(FakeHandControllerTest, CommunicationMode_DefaultIndividual) {
 }
 
 TEST(HandControllerConfig, BulkMode) {
-  auto ctrl = std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0,
-                                                  false, 1, 4, true, std::vector<std::string>{},
-                                                  HandCommunicationMode::kBulk);
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 55151,
+      .num_fingertips = 4,
+      .use_fake_hand = true,
+      .communication_mode = HandCommunicationMode::kBulk,
+  });
 
   EXPECT_EQ(ctrl->communication_mode(), HandCommunicationMode::kBulk);
   ctrl->Stop();
@@ -257,11 +257,13 @@ TEST_F(FakeHandControllerTest, SensorInit_FakeModeNotInitialized) {
 
 TEST(HandControllerConfig, NumFingertips_ClampedToNames) {
   // If fingertip_names has fewer entries than num_fingertips, it should be clamped
-  auto ctrl =
-      std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false, 1,
-                                          10,    // num_fingertips = 10 (but only 2 names below)
-                                          true,  // fake_hand
-                                          std::vector<std::string>{"thumb", "index"});
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 55151,
+      .num_fingertips = 10,  // only 2 names below
+      .use_fake_hand = true,
+      .fingertip_names = {"thumb", "index"},
+  });
 
   ASSERT_TRUE(ctrl->Start());
 
@@ -274,10 +276,12 @@ TEST(HandControllerConfig, NumFingertips_ClampedToNames) {
 }
 
 TEST(HandControllerConfig, NumFingertips_NegativeClamped) {
-  auto ctrl =
-      std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false, 1,
-                                          -1,  // negative
-                                          true);
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 55151,
+      .num_fingertips = -1,
+      .use_fake_hand = true,
+  });
 
   ASSERT_TRUE(ctrl->Start());
 
@@ -305,9 +309,13 @@ TEST_F(FakeHandControllerTest, HasStateBeenRead_TrueAfterCommand) {
 // ── Bulk mode with fake hand ───────────────────────────────────────────────
 
 TEST(HandControllerConfig, BulkMode_FakeEchoBack) {
-  auto ctrl = std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0,
-                                                  false, 1, 4, true, std::vector<std::string>{},
-                                                  HandCommunicationMode::kBulk);
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 55151,
+      .num_fingertips = 4,
+      .use_fake_hand = true,
+      .communication_mode = HandCommunicationMode::kBulk,
+  });
 
   ASSERT_TRUE(ctrl->Start());
 
@@ -363,10 +371,12 @@ TEST_F(FakeHandControllerTest, ActualSensorRateHz_NonNegative) {
 // ── Zero fingertips mode ───────────────────────────────────────────────────
 
 TEST(HandControllerConfig, ZeroFingertips_NoSensor) {
-  auto ctrl =
-      std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false, 1,
-                                          0,      // num_fingertips = 0
-                                          true);  // fake_hand
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 55151,
+      .num_fingertips = 0,
+      .use_fake_hand = true,
+  });
 
   ASSERT_TRUE(ctrl->Start());
 
@@ -384,10 +394,12 @@ TEST(HandControllerConfig, ZeroFingertips_NoSensor) {
 // ── Max fingertips clamping ────────────────────────────────────────────────
 
 TEST(HandControllerConfig, MaxFingertips_Clamped) {
-  auto ctrl =
-      std::make_unique<UdpHandController>("127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false, 1,
-                                          100,  // num_fingertips > kMaxFingertips
-                                          true);
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 55151,
+      .num_fingertips = 100,  // > kMaxFingertips
+      .use_fake_hand = true,
+  });
 
   ASSERT_TRUE(ctrl->Start());
 
@@ -424,15 +436,15 @@ std::pair<int, int> OpenSilentLoopbackSocket() {
 }
 
 // Real-mode controller (individual mode, no fingertips) with an explicit
-// comm_decimation — the parameter is last in the ctor, so all preceding
-// positional args must be spelled out.
+// comm_decimation.
 std::unique_ptr<UdpHandController> MakeDecimatedController(int port, int comm_decimation) {
-  return std::make_unique<UdpHandController>(
-      "127.0.0.1", port, kHandUdpRecvConfig, 1.0 /*recv_timeout_ms*/, false /*enable_write_ack*/,
-      1 /*sensor_decimation*/, 0 /*num_fingertips*/, false /*use_fake_hand*/,
-      std::vector<std::string>{}, HandCommunicationMode::kIndividual, false /*tof_lpf*/, 15.0,
-      false /*baro_lpf*/, 30.0, FingertipFTInferencer::Config{}, false /*drift*/, 5.0, 2500,
-      comm_decimation);
+  return std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = port,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = 0,
+      .comm_decimation = comm_decimation,
+  });
 }
 
 }  // namespace
@@ -442,8 +454,12 @@ TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
   ASSERT_GE(fd, 0);
 
   // Real mode, 1 ms recv timeout, no fingertips (skips sensor init retries).
-  auto ctrl = std::make_unique<UdpHandController>("127.0.0.1", port, kHandUdpRecvConfig, 1.0, false,
-                                                  1, 0, /*use_fake_hand=*/false);
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = port,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = 0,
+  });
   ASSERT_TRUE(ctrl->Start());
 
   // Idle EventLoop ticks every ~20 ms; each cycle attempts motor+joint reads
@@ -473,10 +489,13 @@ TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
 
 TEST(HandControllerCommDecimation, ClampedToOne) {
   // < 1 is clamped to 1 (communicate every cycle). Fake mode, no threads run.
-  auto ctrl = std::make_unique<UdpHandController>(
-      "127.0.0.1", 55151, kHandUdpRecvConfig, 10.0, false, 1, 4, /*use_fake_hand=*/true,
-      std::vector<std::string>{}, HandCommunicationMode::kIndividual, false, 15.0, false, 30.0,
-      FingertipFTInferencer::Config{}, false, 5.0, 2500, /*comm_decimation=*/0);
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = 55151,
+      .num_fingertips = 4,
+      .use_fake_hand = true,
+      .comm_decimation = 0,
+  });
   EXPECT_EQ(ctrl->comm_decimation(), 1);
 }
 
@@ -600,8 +619,12 @@ TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
   const auto [fd, port] = OpenSilentLoopbackSocket();
   ASSERT_GE(fd, 0);
 
-  auto ctrl = std::make_unique<UdpHandController>("127.0.0.1", port, kHandUdpRecvConfig, 1.0, false,
-                                                  1, 0, /*use_fake_hand=*/false);
+  auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = port,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = 0,
+  });
   ASSERT_TRUE(ctrl->Start());
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   ctrl->Stop();

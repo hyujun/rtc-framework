@@ -41,7 +41,6 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // the link_status decimation ratio below).
   declare_parameter("loop_rate_hz", 500.0);
   declare_parameter("recv_timeout_ms", 10.0);
-  declare_parameter("enable_write_ack", false);
   declare_parameter("enable_failure_detector", true);
   declare_parameter("failure_threshold", 5);
   declare_parameter("check_motor", true);
@@ -58,6 +57,11 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // cycle (default). N>1 skips the entire UDP transaction on N-1 of every N
   // EventLoop cycles. See udp_hand_controller.hpp / README "통신 decimation".
   declare_parameter("comm_decimation", 1);
+
+  // Sensor-read decimation: 1 = read sensors every comm cycle (default). N>1
+  // reads sensors on 1 of every N comm cycles (motor/joint reads unaffected —
+  // unlike comm_decimation, which skips the whole transaction).
+  declare_parameter("sensor_decimation", 1);
 
   declare_parameter("joint_state_names", std::vector<std::string>{});
   declare_parameter("motor_state_names", std::vector<std::string>{});
@@ -165,12 +169,29 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   num_fingertips_ = udp_hand_driver::kDefaultNumFingertips;
   use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
   const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
+  const int sensor_decimation = static_cast<int>(get_parameter("sensor_decimation").as_int());
   const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();
-  controller_ = std::make_unique<udp_hand_driver::UdpHandController>(
-      target_ip, target_port, udp_hand_driver::kHandUdpRecvConfig, recv_timeout_ms,
-      false /* enable_write_ack: deprecated */, 1, num_fingertips_, use_fake_hand_, ft_names,
-      comm_mode, tof_lpf_enabled, tof_lpf_cutoff_hz, baro_lpf_enabled, baro_lpf_cutoff_hz,
-      ft_config, drift_enabled, drift_threshold, drift_window_size, comm_decimation, loop_rate_hz);
+  controller_ =
+      std::make_unique<udp_hand_driver::UdpHandController>(udp_hand_driver::UdpHandControllerConfig{
+          .target_ip = target_ip,
+          .target_port = target_port,
+          .recv_timeout_ms = recv_timeout_ms,
+          .sensor_decimation = sensor_decimation,
+          .num_fingertips = num_fingertips_,
+          .use_fake_hand = use_fake_hand_,
+          .fingertip_names = ft_names,
+          .communication_mode = comm_mode,
+          .tof_lpf_enabled = tof_lpf_enabled,
+          .tof_lpf_cutoff_hz = tof_lpf_cutoff_hz,
+          .baro_lpf_enabled = baro_lpf_enabled,
+          .baro_lpf_cutoff_hz = baro_lpf_cutoff_hz,
+          .ft_config = std::move(ft_config),
+          .drift_detection_enabled = drift_enabled,
+          .drift_threshold = drift_threshold,
+          .drift_window_size = drift_window_size,
+          .comm_decimation = comm_decimation,
+          .loop_rate_hz = loop_rate_hz,
+      });
   controller_->SetSensorProtocol(std::move(sensor_protocol));
 
   // ── Topic names ──────────────────────────────────────────────────

@@ -35,7 +35,6 @@
     target_ip: "192.168.0.100"         # 핸드 컨트롤러 IP
     target_port: 55151                # 핸드 컨트롤러 포트
     recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 -> 400us
-    # enable_write_ack: deprecated -- write echo는 항상 수신 (RT 안전성)
 
     # -- 통신 모드 --
     communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17
@@ -48,6 +47,12 @@
     # 주의: 유효 comm rate = EventLoop rate / N. N 을 크게 하면 min_rate_hz 를
     # 낮추거나 check_link/rate 검사를 끄지 않으면 failure detector 가 오탐할 수 있음.
     comm_decimation: 1
+
+    # -- 센서 read decimation --
+    # N 이면 comm 사이클 N 번 중 1번만 센서 read (motor/joint read 는 매 사이클
+    # 유지 — 전체 트랜잭션을 감쇠하는 comm_decimation 과 별개). 1 = 매 사이클 (기본).
+    # 유효 센서 레이트 = loop_rate_hz / (comm_decimation * sensor_decimation).
+    sensor_decimation: 1
 
     # -- 펌웨어 센서 프로토콜 (버전 seam) --
     # "1a": barometer/ToF int32 센서 (259B bulk 응답) + LPF/drift/F-T 추론,
@@ -68,7 +73,7 @@
     publish_rate: 100.0
 
     # -- 센서 LPF 설정 (4차 Bessel LPF) --
-    # 유효 센서 샘플링 레이트 = 500Hz (sensor_decimation은 현재 1로 고정)
+    # 유효 센서 샘플링 레이트 = loop_rate_hz / (comm_decimation * sensor_decimation)
     baro_lpf_enabled: true            # Barometer 센서 Low-Pass Filter 활성화
     baro_lpf_cutoff_hz: 100.0         # Barometer LPF 차단 주파수 (Hz)
     tof_lpf_enabled: true             # VL53L4CD TOF 센서 Low-Pass Filter 활성화

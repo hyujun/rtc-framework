@@ -134,7 +134,7 @@ write / joint read / E-Stop zero-write 에 사용합니다.
 
 ### Sensor Decimation
 
-`sensor_decimation` 값에 따라 N cycle마다 센서를 읽습니다. 현재 노드 코드에서는 `sensor_decimation=1`로 고정되어 있어 매 사이클 센서를 읽습니다.
+`sensor_decimation` 값(ROS param, 기본 `1`)에 따라 comm 사이클 N번 중 1번만 센서를 읽습니다. motor/joint read 는 매 사이클 유지되며, 유효 센서 레이트 = `loop_rate_hz / (comm_decimation * sensor_decimation)` 입니다.
 
 ### 통신 Decimation (`comm_decimation`)
 
@@ -321,6 +321,8 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
 | `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
 | `communication_mode` | `"individual"` | `"individual"` 또는 `"bulk"` |
+| `comm_decimation` | `1` | 전체 UDP 트랜잭션 감쇠 (위 "통신 Decimation" 참조) |
+| `sensor_decimation` | `1` | 센서 read 감쇠 (위 "Sensor Decimation" 참조) |
 | `protocol_version` | `"1a"` | 센서 프로토콜 버전 (`"1a"`/`"1b"`, 위 "센서 프로토콜 버전" 참조) |
 | `baro_lpf_enabled` | `false` | Barometer LPF 활성화 |
 | `baro_lpf_cutoff_hz` | `30.0` | Barometer LPF 차단 주파수 |
@@ -350,7 +352,7 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `check_link` | `true` | UDP 링크 검사 |
 | `link_fail_threshold` | `10` | 연속 recv 실패 임계값 |
 
-> 참고: `sensor_decimation`은 현재 노드 코드에서 `1`로 고정되어 있습니다. `joint_mode`는 사용되지 않습니다 (코드에서 항상 write=kJoint, read=kMotor+kJoint dual read). `enable_write_ack`는 deprecated (echo 항상 수신).
+> 참고: `joint_mode`는 사용되지 않습니다 (코드에서 항상 write=kJoint, read=kMotor+kJoint dual read).
 
 ### `config/fingertip_ft_inferencer.yaml`
 
