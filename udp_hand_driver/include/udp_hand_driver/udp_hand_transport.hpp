@@ -71,6 +71,11 @@ struct UdpHandCommStats {
   uint64_t mode_mismatch{0};
   uint64_t total_cycles{0};
   uint64_t comm_decimation_skip_count{0};  // cycles skipped by comm_decimation
+  // Datagrams dropped by the cycle-start drain (DrainStaleDatagrams): a
+  // 1-cycle desync leaves the previous request's late response queued, which
+  // this cycle would otherwise consume as a cmd_mismatch. Pre-request stage —
+  // not attributable to a RequestKind, so aggregate-only (no per_kind entry).
+  uint64_t stale_drained{0};
 
   // Per-request-kind breakdown. Unlike aggregate recv_ok (any first-attempt
   // packet arrival), per-kind `ok` counts request-level success — the method
@@ -402,6 +407,33 @@ class UdpHandTransport {
     return false;
   }
 
+  // ── Cycle-start stale drain ───────────────────────────────────────────────
+
+  // Drain datagrams queued on the socket before a comm cycle's first request.
+  // A 1-cycle desync (a request whose response arrives after its RecvWithTimeout
+  // already expired) leaves that late response sitting in the recv queue; the
+  // next cycle's first read then consumes the stale packet (cmd_mismatch) and
+  // burns retries. Draining at cycle start clears the backlog so the fresh
+  // request reads its own response. Bounded to kMaxDrainPerCall non-blocking
+  // reads per call — RT hot path must not spin on an unbounded queue. Returns
+  // the number drained; accumulates into comm_stats_.stale_drained. Socket not
+  // open (fake mode) → 0. noexcept, allocation-free.
+  int DrainStaleDatagrams() noexcept {
+    if (socket_fd_ < 0) {
+      return 0;
+    }
+    int drained = 0;
+    for (int i = 0; i < kMaxDrainPerCall; ++i) {
+      const ssize_t r = ::recv(socket_fd_, drain_buf_.data(), drain_buf_.size(), MSG_DONTWAIT);
+      if (r < 0) {
+        break;  // EAGAIN / EWOULDBLOCK: queue drained (or transient error)
+      }
+      ++drained;
+    }
+    comm_stats_.stale_drained += static_cast<uint64_t>(drained);
+    return drained;
+  }
+
   // ── Statistics accessors ──────────────────────────────────────────────────
 
   // Snapshot of the comm stats. Returned by value: the last-unexpected forensics
@@ -607,6 +639,12 @@ class UdpHandTransport {
     return recvd;
   }
 
+  // Max non-blocking reads per DrainStaleDatagrams() call. Bounds the RT
+  // cycle-start drain so a flooded socket can never stall the loop; a residual
+  // backlog is picked up on the next cycle. A healthy link has 0-1 stale
+  // datagrams, so 8 is generous headroom.
+  static constexpr int kMaxDrainPerCall = 8;
+
   std::string target_ip_;
   int target_port_;
   int socket_fd_{-1};
@@ -624,6 +662,11 @@ class UdpHandTransport {
       true};  // strict MODE echo check (joint/set-mode); injected per protocol capability
   bool verify_bulk_sensor_mode_{
       true};  // strict MODE echo check (bulk-sensor 0x19); injected per protocol capability
+
+  // Scratch sink for DrainStaleDatagrams() — the drained bytes are discarded, so
+  // one buffer sized to the largest datagram (kMaxPacketSize) suffices. Single-
+  // writer (CommLoop thread), never read back.
+  std::array<uint8_t, packets::kMaxPacketSize> drain_buf_{};
 };
 
 }  // namespace udp_hand_driver

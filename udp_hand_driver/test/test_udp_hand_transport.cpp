@@ -638,4 +638,93 @@ TEST(HandUdpTransportPerKind, BulkSensorTimeout_AttributedToBulkSensor) {
   EXPECT_EQ(transport.comm_stats().per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
 }
 
+// ── Cycle-start stale drain (DrainStaleDatagrams) ───────────────────────────
+// Phase 2 recv stabilization: a 1-cycle desync leaves the previous request's
+// late response queued. DrainStaleDatagrams() clears that backlog before the
+// cycle's first request so it is not consumed as a cmd_mismatch.
+
+TEST(HandUdpTransportDrain, SocketClosed_ReturnsZero) {
+  UdpHandTransport transport("127.0.0.1", 55151, 50.0);
+  // Not opened (fake mode): drain must be a safe no-op.
+  EXPECT_EQ(transport.DrainStaleDatagrams(), 0);
+  EXPECT_EQ(transport.comm_stats().stale_drained, 0u);
+}
+
+TEST(HandUdpTransportDrain, EmptySocket_ReturnsZero) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+  EXPECT_EQ(transport.DrainStaleDatagrams(), 0);
+  EXPECT_EQ(transport.comm_stats().stale_drained, 0u);
+}
+
+TEST(HandUdpTransportDrain, TwoStale_DrainedThenFreshRequestOk) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+
+  // Teach the device the transport's source address, then pre-inject.
+  std::array<float, kNumHandMotors> cmd{};
+  transport.WritePositionFireAndForget(cmd);
+  device.CaptureClientAddr();
+
+  // Two stale echoes of the previous cycle's write, queued before the request.
+  MotorPacket stale{};
+  stale.id = kDeviceId;
+  stale.cmd = static_cast<uint8_t>(Command::kWritePosition);
+  stale.mode = static_cast<uint8_t>(JointMode::kMotor);
+  std::array<uint8_t, kMotorPacketSize> stale_buf{};
+  std::memcpy(stale_buf.data(), &stale, kMotorPacketSize);
+  device.Send(stale_buf.data(), stale_buf.size());
+  device.Send(stale_buf.data(), stale_buf.size());
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  EXPECT_EQ(transport.DrainStaleDatagrams(), 2);
+  EXPECT_EQ(transport.comm_stats().stale_drained, 2u);
+
+  // The fresh request now reads its own response — no stale cmd_mismatch.
+  MotorPacket fresh{};
+  fresh.id = kDeviceId;
+  fresh.cmd = static_cast<uint8_t>(Command::kReadPosition);
+  fresh.mode = static_cast<uint8_t>(JointMode::kMotor);
+  for (std::size_t i = 0; i < kMotorDataCount; ++i) {
+    fresh.data[i] = FloatToUint32(static_cast<float>(i));
+  }
+  std::array<uint8_t, kMotorPacketSize> fresh_buf{};
+  std::memcpy(fresh_buf.data(), &fresh, kMotorPacketSize);
+  std::thread dev_thread([&]() { device.RespondWith(fresh_buf.data(), fresh_buf.size()); });
+
+  std::array<float, kMotorDataCount> out{};
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor,
+                                                 nullptr, RequestKind::kMotorRead);
+  dev_thread.join();
+
+  EXPECT_TRUE(result);
+  EXPECT_EQ(transport.comm_stats().cmd_mismatch, 0u);
+}
+
+TEST(HandUdpTransportDrain, NineStale_BoundedToEightThenOne) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+
+  std::array<float, kNumHandMotors> cmd{};
+  transport.WritePositionFireAndForget(cmd);
+  device.CaptureClientAddr();
+
+  // Nine queued datagrams: one call drains the kMaxDrainPerCall bound (8), the
+  // next picks up the residual (1). Bounds the RT cycle-start drain.
+  std::array<uint8_t, kHeaderSize> pkt{};
+  pkt[0] = kDeviceId;
+  pkt[1] = static_cast<uint8_t>(Command::kWritePosition);
+  for (int i = 0; i < 9; ++i) {
+    device.Send(pkt.data(), pkt.size());
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  EXPECT_EQ(transport.DrainStaleDatagrams(), 8);
+  EXPECT_EQ(transport.DrainStaleDatagrams(), 1);
+  EXPECT_EQ(transport.comm_stats().stale_drained, 9u);
+}
+
 }  // namespace udp_hand_driver::test

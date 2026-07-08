@@ -650,6 +650,15 @@ class UdpHandController {
       return;
     }
 
+    // Drain any datagram left queued from a prior cycle before this cycle's
+    // first request. A 1-cycle desync parks the previous request's late response
+    // in the recv buffer; without draining it, the first read below would
+    // consume that stale packet (cmd_mismatch) and burn retries. Bounded
+    // non-blocking drain — the count is observed via comm_stats().stale_drained
+    // only (no hot-path logging). Runs only on real comm cycles (after the
+    // decimation skip return above); a no-op in fake mode (socket closed).
+    transport_.DrainStaleDatagrams();
+
     // Latch the most recent staged command (last-command-wins). Per-command:
     // cleared after one write attempt below, so an uncommanded interval is
     // read-only and the firmware holds its last position.

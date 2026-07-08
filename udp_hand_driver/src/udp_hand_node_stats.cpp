@@ -67,7 +67,12 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       << "    \"cmd_mismatch\": " << stats.cmd_mismatch << ",\n"
       << "    \"mode_mismatch\": " << stats.mode_mismatch << ",\n"
       << "    \"comm_decimation\": " << controller_->comm_decimation() << ",\n"
-      << "    \"comm_decimation_skip_count\": " << stats.comm_decimation_skip_count << ",\n";
+      << "    \"comm_decimation_skip_count\": " << stats.comm_decimation_skip_count
+      << ",\n"
+      // Datagrams dropped by the cycle-start drain (desync backlog). A rising
+      // count with 0.4 ms timeout means the drain is actively unmasking stale
+      // reads — see Phase 2 recv-stabilization notes.
+      << "    \"stale_drained\": " << stats.stale_drained << ",\n";
 
   // Per-request-kind breakdown (link-down forensics): which request kind eats
   // the failures, and whether drops are timeouts or stale/desync mismatches.

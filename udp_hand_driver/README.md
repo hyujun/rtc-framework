@@ -195,6 +195,8 @@ skip 사이클의 동작:
 
 **Per-request-kind 통계**: `UdpHandCommStats.per_kind[]` 가 request kind (`RequestKind` enum: write_echo / motor_read / joint_read / sensor_read / bulk_sensor / set_mode) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}` 를 기록한다. joint/motor read 는 같은 메서드·cmd byte 를 쓰므로 caller(controller) 가 `RequestKind` 파라미터로 명시한다. 거부된 최신 패킷의 `last_unexpected_cmd`(CMD byte)/`last_unexpected_len` 도 보존 — link-down 시 timeout vs stale-desync 판별용. hot path 에는 카운터 증가만 추가 (로깅/alloc 없음). 스키마 상세는 아래 "통계 저장" 절.
 
+**Cycle-start stale drain**: `DrainStaleDatagrams()` 는 매 comm cycle 첫 request 직전에 소켓에 남은 datagram 을 비운다. 1-cycle desync (직전 request 의 응답이 그 `RecvWithTimeout` 만료 후 도착) 로 큐에 남은 stale 패킷을 다음 cycle 첫 read 가 `cmd_mismatch` 로 소비하고 retry 를 소모하는 문제를 제거한다. RT hot path 이므로 `kMaxDrainPerCall`(8) 회 non-blocking `recv(MSG_DONTWAIT)` 로 **bounded** — 잔여 backlog 은 다음 cycle 이 회수한다. drain 개수는 `UdpHandCommStats.stale_drained` (aggregate — pre-request 단계라 `per_kind` 귀속 불가) 에만 누적되고 hot path 로깅은 없다. fake mode(소켓 미오픈) → no-op(0). controller `RunCommCycle` 은 decimation skip return 직후·command latch 직전에 호출한다. 기존 per-request 3-attempt retry 는 drain 이후 잔존 러너를 위한 2차 방어로 존치.
+
 ### UdpHandSensorProcessor (`udp_hand_sensor_processor.hpp`)
 
 센서 후처리 파이프라인 (noexcept):
@@ -250,7 +252,7 @@ phase 매핑 (hand UDP loop, `MarkState()`/`MarkCompute()` 브레이크포인트
 
 스키마 (`comm_stats` 섹션):
 
-- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `comm_decimation`, `comm_decimation_skip_count`, `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등 (`total_cycles`/`avg_rate_hz` 는 통신 사이클만 카운트 — comm_decimation skip 은 제외)
+- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `comm_decimation`, `comm_decimation_skip_count`, `stale_drained` (cycle-start drain 이 버린 datagram 누계), `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등 (`total_cycles`/`avg_rate_hz` 는 통신 사이클만 카운트 — comm_decimation skip 은 제외)
 - **`per_request`**: request kind (`write_echo` / `motor_read` / `joint_read` / `sensor_read` / `bulk_sensor` / `set_mode`) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}`. `ok` 는 request-level 성공 (검증 통과), `short_or_decode` 는 short packet + codec decode 실패. joint/motor read 는 wire format 이 동일하므로 controller 가 `RequestKind` 파라미터로 명시 attribution
 - **`last_unexpected_cmd` / `last_unexpected_len`**: 가장 최근 거부된 패킷의 CMD byte / 수신 길이 — 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처
 
