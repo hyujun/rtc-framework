@@ -224,10 +224,6 @@ TEST_F(FakeHandControllerTest, RecvErrorCount_Zero) {
   EXPECT_EQ(controller_->recv_error_count(), 0u);
 }
 
-TEST_F(FakeHandControllerTest, EventSkipCount_Zero) {
-  EXPECT_EQ(controller_->event_skip_count(), 0u);
-}
-
 TEST_F(FakeHandControllerTest, ConsecutiveRecvFailures_Zero) {
   EXPECT_EQ(controller_->consecutive_recv_failures(), 0u);
 }
@@ -247,19 +243,6 @@ TEST_F(FakeHandControllerTest, SetEstopFlag_Settable) {
 
   std::array<float, kNumHandMotors> cmd{};
   controller_->SendCommandAndRequestStates(cmd);
-}
-
-// ── Legacy API ──────────────────────────────────────────────────────────────
-
-TEST_F(FakeHandControllerTest, SetTargetPositions_IsAlias) {
-  ASSERT_TRUE(controller_->Start());
-
-  std::array<float, kNumHandMotors> cmd{};
-  cmd[0] = 99.0f;
-  controller_->SetTargetPositions(cmd);
-
-  const auto state = controller_->GetLatestState();
-  EXPECT_FLOAT_EQ(state.motor_positions[0], 99.0f);
 }
 
 // ── Sensor init status ──────────────────────────────────────────────────────

@@ -350,16 +350,10 @@ class UdpHandController {
   /// Inject a producer for the unified per-tick timing CSV (see
   /// rtc/timing/rt_tick_timing_sample.hpp). Owned by the caller; must
   /// outlive this controller. Pass nullptr to disable. Call before Start()
-  /// (Start() forwards it to the CommLoop base).
-  ///
-  /// `expected_period_us` is retained for API compatibility but IGNORED: the
-  /// CommLoop is deadline-driven at loop_rate_hz_, so PeriodicRtThread computes
-  /// jitter against its own period budget. The parameter no longer influences
-  /// the emitted jitter.
-  void SetTimingProducer(rtc::HandUdpTimingBuffer* producer,
-                         double expected_period_us = 0.0) noexcept {
+  /// (Start() forwards it to the CommLoop base). Jitter is computed by the
+  /// CommLoop base against its own loop_rate_hz_ period budget.
+  void SetTimingProducer(rtc::HandUdpTimingBuffer* producer) noexcept {
     timing_producer_ = producer;
-    expected_period_us_ = expected_period_us;  // retained for ABI; unused (see above)
   }
 
   [[nodiscard]] rtc::HandUdpTimingBuffer* TimingProducer() const noexcept {
@@ -431,12 +425,6 @@ class UdpHandController {
     // one write attempt, so an uncommanded interval is read-only.
     staged_cmd_seqlock_.Store(cmd);
     event_pending_.store(true, std::memory_order_release);
-  }
-
-  // ── Legacy API (standalone udp_hand_node) ──────────────────────────────
-
-  void SetTargetPositions(const std::array<float, kNumHandMotors>& positions) noexcept {
-    SendCommandAndRequestStates(positions);
   }
 
   // ── Sensor calibration trigger (ROS thread -> CommLoop handoff) ────────
@@ -511,10 +499,6 @@ class UdpHandController {
 
   [[nodiscard]] uint64_t recv_error_count() const noexcept { return transport_.recv_error_count(); }
 
-  [[nodiscard]] uint64_t event_skip_count() const noexcept {
-    return event_skip_count_.load(std::memory_order_relaxed);
-  }
-
   [[nodiscard]] int comm_decimation() const noexcept { return comm_decimation_; }
 
   [[nodiscard]] uint64_t comm_skip_count() const noexcept {
@@ -527,7 +511,6 @@ class UdpHandController {
 
   [[nodiscard]] UdpHandCommStats comm_stats() const noexcept {
     UdpHandCommStats stats = transport_.comm_stats();
-    stats.event_skip_count = event_skip_count_.load(std::memory_order_relaxed);
     stats.comm_decimation_skip_count = comm_skip_count_.load(std::memory_order_relaxed);
     return stats;
   }
@@ -1034,11 +1017,6 @@ class UdpHandController {
   rtc::SeqLock<std::array<float, kNumHandMotors>> staged_cmd_seqlock_{};
   std::atomic<bool> event_pending_{false};
 
-  // Retained for UdpHandCommStats ABI (stats JSON / forensic consumers). The
-  // old busy-skip path that incremented this no longer exists (the self-clocked
-  // loop never rejects a stage), so it stays 0. Do not remove without bumping
-  // the stats consumers.
-  std::atomic<uint64_t> event_skip_count_{0};
   // Count of cycles skipped by comm_decimation_ (load-reduction telemetry).
   std::atomic<uint64_t> comm_skip_count_{0};
 
@@ -1047,9 +1025,6 @@ class UdpHandController {
   bool state_read_once_{false};  // True after first successful state read
   StateCallback callback_;
   rtc::HandUdpTimingBuffer* timing_producer_{nullptr};
-  // Retained for SetTimingProducer() API compatibility; unused — the CommLoop
-  // base computes jitter against its own period budget (see SetTimingProducer).
-  double expected_period_us_{0.0};
   rtc::SeqLock<UdpHandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
 

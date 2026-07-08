@@ -301,7 +301,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
           std::lock_guard lock(last_cmd_mutex_);
           last_cmd_ = cmd;
         }
-        controller_->SetTargetPositions(cmd);
+        controller_->SendCommandAndRequestStates(cmd);
       });
 
   calib_cmd_sub_ = create_subscription<rtc_msgs::msg::CalibrationCommand>(
@@ -360,15 +360,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
 
   // ── Per-tick timing CSV setup ──────────────────────────────────────
   // Inject producer before Start() so the CommLoop thread sees a non-null
-  // producer on its first iteration. The expected-period argument is retained
-  // for API compatibility but IGNORED — the CommLoop (PeriodicRtThread) computes
-  // jitter against its own loop_rate_hz period budget. Passed here from
-  // loop_rate_hz (the real cadence) for clarity only.
-  {
-    const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();
-    const double expected_period_us = (loop_rate_hz > 0.0) ? (1.0e6 / loop_rate_hz) : 0.0;
-    controller_->SetTimingProducer(&hand_udp_timing_producer_, expected_period_us);
-  }
+  // producer on its first iteration. The CommLoop (PeriodicRtThread) computes
+  // jitter against its own loop_rate_hz period budget.
+  controller_->SetTimingProducer(&hand_udp_timing_producer_);
 
   if (!controller_->Start()) {
     RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
@@ -488,7 +482,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::S
   if (controller_) {
     // Drop the producer pointer so a stopped EventLoop cannot push into a
     // potentially-recreated buffer on a future activation.
-    controller_->SetTimingProducer(nullptr, 0.0);
+    controller_->SetTimingProducer(nullptr);
   }
   if (fake_tick_timer_) {
     fake_tick_timer_->cancel();
@@ -618,7 +612,6 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       // dropped valid frames — the InitPositionHold-to-zero regression signature.
       << "    \"cmd_mismatch\": " << stats.cmd_mismatch << ",\n"
       << "    \"mode_mismatch\": " << stats.mode_mismatch << ",\n"
-      << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
       << "    \"comm_decimation\": " << controller_->comm_decimation() << ",\n"
       << "    \"comm_decimation_skip_count\": " << stats.comm_decimation_skip_count << ",\n";
 

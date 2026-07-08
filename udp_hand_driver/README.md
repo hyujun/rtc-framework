@@ -188,7 +188,7 @@ skip 사이클의 동작:
 
 저수준 UDP 소켓 관리. `ppoll()` 기반 sub-ms 수신 타임아웃 (hrtimer on PREEMPT_RT).
 
-**Mode 검증**: request-response 메서드(`RequestMotorRead`, `RequestAllMotorRead`, `RequestSensorRead`, `RequestAllSensorRead`, `RequestBulkSensorRaw`)는 응답 패킷의 mode 필드가 요청한 mode와 일치하는지 검증합니다. 불일치 시 `comm_stats_.mode_mismatch` 카운터를 증가시키고 `false`(bulk raw 는 `-1`)를 반환합니다. 이 검증은 **두 개의 독립 gate** 로 나뉩니다: joint / motor / set-mode 경로는 `verify_response_mode_`(컨트롤러가 `SensorProtocol::VerifiesResponseMode()` 로 주입), bulk sensor(0x19) 경로는 `verify_bulk_sensor_mode_`(`SensorProtocol::VerifiesBulkSensorResponseMode()` 로 주입)로 gate 됩니다. 1a 는 두 gate 모두 strict(true). 1b 는 **두 gate 모두 off** — 1b 펌웨어가 bulk sensor 응답뿐 아니라 motor/joint read(`ReadAllMotors`) 응답에서도 MODE byte 를 임의값으로 echo 하기 때문입니다. joint read 만 strict 로 두면 kMotor joint read 가 매 사이클 mode_mismatch 로 폐기되어 `state.joint_valid=false` → `/hand/joint_states` 미발행 → 컨트롤러 device 1 이 valid 가 못 되고 InitPositionHold 의 deferred hand-seed 가 발화하지 못해 손가락이 0 으로 붕괴합니다. `VerifiesBulkSensorResponseMode` 는 default(`VerifiesResponseMode`)로 off 를 상속합니다. gate 와 무관하게 모든 read 경로는 cmd·length 검증이 유지됩니다(stale/wrong-command 패킷은 계속 거부). `RequestSetSensorMode` 도 MODE gate 와 무관하게 항상 cmd echo(`kSetSensorMode`)를 검증합니다 (cmd floor).
+**Mode 검증**: request-response 메서드(`RequestMotorRead`, `RequestAllMotorRead`, `RequestSensorRead`, `RequestBulkSensorRaw`)는 응답 패킷의 mode 필드가 요청한 mode와 일치하는지 검증합니다. 불일치 시 `comm_stats_.mode_mismatch` 카운터를 증가시키고 `false`(bulk raw 는 `-1`)를 반환합니다. 이 검증은 **두 개의 독립 gate** 로 나뉩니다: joint / motor / set-mode 경로는 `verify_response_mode_`(컨트롤러가 `SensorProtocol::VerifiesResponseMode()` 로 주입), bulk sensor(0x19) 경로는 `verify_bulk_sensor_mode_`(`SensorProtocol::VerifiesBulkSensorResponseMode()` 로 주입)로 gate 됩니다. 1a 는 두 gate 모두 strict(true). 1b 는 **두 gate 모두 off** — 1b 펌웨어가 bulk sensor 응답뿐 아니라 motor/joint read(`ReadAllMotors`) 응답에서도 MODE byte 를 임의값으로 echo 하기 때문입니다. joint read 만 strict 로 두면 kMotor joint read 가 매 사이클 mode_mismatch 로 폐기되어 `state.joint_valid=false` → `/hand/joint_states` 미발행 → 컨트롤러 device 1 이 valid 가 못 되고 InitPositionHold 의 deferred hand-seed 가 발화하지 못해 손가락이 0 으로 붕괴합니다. `VerifiesBulkSensorResponseMode` 는 default(`VerifiesResponseMode`)로 off 를 상속합니다. gate 와 무관하게 모든 read 경로는 cmd·length 검증이 유지됩니다(stale/wrong-command 패킷은 계속 거부). `RequestSetSensorMode` 도 MODE gate 와 무관하게 항상 cmd echo(`kSetSensorMode`)를 검증합니다 (cmd floor).
 
 **Per-request-kind 통계**: `UdpHandCommStats.per_kind[]` 가 request kind (`RequestKind` enum: write_echo / motor_read / joint_read / sensor_read / bulk_sensor / set_mode) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}` 를 기록한다. joint/motor read 는 같은 메서드·cmd byte 를 쓰므로 caller(controller) 가 `RequestKind` 파라미터로 명시한다. 거부된 최신 패킷의 `last_unexpected_cmd`(CMD byte)/`last_unexpected_len` 도 보존 — link-down 시 timeout vs stale-desync 판별용. hot path 에는 카운터 증가만 추가 (로깅/alloc 없음). 스키마 상세는 아래 "통계 저장" 절.
 
@@ -228,7 +228,7 @@ CommLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 �
 데이터 흐름:
 - producer: `RunCommCycle` 이 UDP read 직후 `MarkState()`, sensor 후처리+FT 직후 `MarkCompute()` 를 호출하면 `rtc::PeriodicRtThread` (CommLoop) 기반이 매 tick 1개 `RtTickTimingPayload` 를 `HandUdpTimingBuffer` 에 push (RT-safe, wait-free)
 - drain: `udp_hand_node` 가 1 Hz `wall_timer` 로 SPSC 버퍼를 비우고 `ThreadTimingCsvLogger<RtTickTimingPayload>` 에 row 추가
-- jitter: CommLoop 이 `loop_rate_hz` period budget 대비 `|actual_period − budget|` 을 자동 계산 (컨트롤러의 `SetTimingProducer` expected_period 인자는 무시됨)
+- jitter: CommLoop 이 `loop_rate_hz` period budget 대비 `|actual_period − budget|` 을 자동 계산
 
 phase 매핑 (hand UDP loop, `MarkState()`/`MarkCompute()` 브레이크포인트):
 - bulk: `t_state = write+read (t0→t3)`, `t_compute = sensor 후처리+FT`, `t_publish = state store+callback`
@@ -247,7 +247,7 @@ phase 매핑 (hand UDP loop, `MarkState()`/`MarkCompute()` 브레이크포인트
 
 스키마 (`comm_stats` 섹션):
 
-- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `event_skip_count`, `comm_decimation`, `comm_decimation_skip_count`, `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등 (`total_cycles`/`avg_rate_hz` 는 통신 사이클만 카운트 — comm_decimation skip 은 제외)
+- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `comm_decimation`, `comm_decimation_skip_count`, `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등 (`total_cycles`/`avg_rate_hz` 는 통신 사이클만 카운트 — comm_decimation skip 은 제외)
 - **`per_request`**: request kind (`write_echo` / `motor_read` / `joint_read` / `sensor_read` / `bulk_sensor` / `set_mode`) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}`. `ok` 는 request-level 성공 (검증 통과), `short_or_decode` 는 short packet + codec decode 실패. joint/motor read 는 wire format 이 동일하므로 controller 가 `RequestKind` 파라미터로 명시 attribution
 - **`last_unexpected_cmd` / `last_unexpected_len`**: 가장 최근 거부된 패킷의 CMD byte / 수신 길이 — 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처
 

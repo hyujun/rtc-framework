@@ -184,58 +184,6 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMismatch_ReturnsFalse) {
   EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
 }
 
-// ── RequestAllSensorRead mode validation (already correct, regression test) ─────
-
-TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMismatch_ReturnsFalse) {
-  LoopbackDevice device;
-  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
-  ASSERT_TRUE(transport.Open());
-
-  AllSensorResponsePacket response{};
-  response.id = kDeviceId;
-  response.cmd = static_cast<uint8_t>(Command::kReadAllSensors);
-  response.mode = static_cast<uint8_t>(SensorMode::kNn);  // MISMATCH (requested kRaw)
-  std::array<uint8_t, kAllSensorResponseSize> resp_buf{};
-  std::memcpy(resp_buf.data(), &response, kAllSensorResponseSize);
-
-  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
-
-  std::array<int32_t,
-             udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip>
-      out{};
-  const bool result = transport.RequestAllSensorRead(
-      out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
-  dev_thread.join();
-
-  EXPECT_FALSE(result);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
-}
-
-TEST(HandUdpTransportModeValidation, AllSensorRead_ModeMatch_ReturnsTrue) {
-  LoopbackDevice device;
-  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
-  ASSERT_TRUE(transport.Open());
-
-  AllSensorResponsePacket response{};
-  response.id = kDeviceId;
-  response.cmd = static_cast<uint8_t>(Command::kReadAllSensors);
-  response.mode = static_cast<uint8_t>(SensorMode::kRaw);
-  std::array<uint8_t, kAllSensorResponseSize> resp_buf{};
-  std::memcpy(resp_buf.data(), &response, kAllSensorResponseSize);
-
-  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
-
-  std::array<int32_t,
-             udp_hand_driver::kDefaultNumFingertips * udp_hand_driver::kSensorValuesPerFingertip>
-      out{};
-  const bool result = transport.RequestAllSensorRead(
-      out.data(), udp_hand_driver::kDefaultNumFingertips, SensorMode::kRaw);
-  dev_thread.join();
-
-  EXPECT_TRUE(result);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
-}
-
 // ── MODE gates (mechanism) ──────────────────────────────────────────────────────
 // The transport has two independent MODE-validation gates: verify_response_mode
 // (joint / motor / set-mode paths) and verify_bulk_sensor_mode (the bulk-sensor
@@ -419,7 +367,6 @@ TEST(UdpHandCommStats, DefaultValues) {
   EXPECT_EQ(stats.cmd_mismatch, 0u);
   EXPECT_EQ(stats.mode_mismatch, 0u);
   EXPECT_EQ(stats.total_cycles, 0u);
-  EXPECT_EQ(stats.event_skip_count, 0u);
 }
 
 // ── Construction ───────────────────────────────────────────────────────────

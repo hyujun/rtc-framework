@@ -70,7 +70,6 @@ struct UdpHandCommStats {
   uint64_t cmd_mismatch{0};
   uint64_t mode_mismatch{0};
   uint64_t total_cycles{0};
-  uint64_t event_skip_count{0};
   uint64_t comm_decimation_skip_count{0};  // cycles skipped by comm_decimation
 
   // Per-request-kind breakdown. Unlike aggregate recv_ok (any first-attempt
@@ -388,68 +387,12 @@ class UdpHandTransport {
     return false;
   }
 
-  // Request bulk sensor read (cmd=0x19). 3B send, 259B recv.
-  [[nodiscard]] bool RequestAllSensorRead(
-      int32_t* out, int num_fingertips,
-      packets::SensorMode sensor_mode = packets::SensorMode::kRaw) noexcept {
-    std::array<uint8_t, packets::kAllSensorRequestSize> send_buf{};
-    std::array<uint8_t, packets::kAllSensorResponseSize> recv_buf{};
-
-    codec::EncodeReadAllSensorsRequest(send_buf, sensor_mode);
-
-    const ssize_t sent =
-        sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
-               reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
-    if (sent < 0)
-      return false;
-
-    constexpr int kMaxAttempts = 3;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const ssize_t recvd =
-          (attempt == 0) ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
-                         : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
-      if (recvd < 0) {
-        if (attempt == 0) {
-          CountRecvFail(RequestKind::kBulkSensor);
-        }
-        return false;
-      }
-      if (attempt == 0) {
-        ++comm_stats_.recv_ok;
-      }
-
-      if (recvd < static_cast<ssize_t>(packets::kAllSensorResponseSize)) {
-        CountShortOrDecode(RequestKind::kBulkSensor, recvd);
-        continue;
-      }
-
-      uint8_t cmd_out, mode_out;
-      if (!codec::DecodeAllSensorResponseRaw(recv_buf.data(), static_cast<std::size_t>(recvd),
-                                             cmd_out, mode_out, out, num_fingertips)) {
-        CountShortOrDecode(RequestKind::kBulkSensor, recvd);
-        continue;
-      }
-      if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
-        CountCmdMismatch(RequestKind::kBulkSensor, cmd_out, recvd);
-        continue;
-      }
-      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(sensor_mode)) {
-        CountModeMismatch(RequestKind::kBulkSensor);
-        return false;
-      }
-      ++PerKindStats(RequestKind::kBulkSensor).ok;
-      return true;
-    }
-    return false;
-  }
-
   // Request bulk sensor read (cmd=0x19) returning the RAW response bytes.
   // Send 3B, recv up to `capacity` into `buf`. Validates recvd >= expected_size
   // and the echoed header (cmd==0x19, mode==sensor_mode). Returns the received
   // byte count on success, -1 on timeout / short read / header mismatch.
   //
-  // Unlike RequestAllSensorRead (which decodes the 1a 259B layout inline), this
-  // leaves decoding to the injected SensorProtocol so the response size/layout
+  // Decoding is left to the injected SensorProtocol so the response size/layout
   // can vary by firmware version (1a=259B, 1b=99B). The request itself is
   // identical across versions.
   [[nodiscard]] ssize_t RequestBulkSensorRaw(
