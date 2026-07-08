@@ -630,7 +630,6 @@ class UdpHandController {
     bool any_recv_ok = false;
     uint8_t attempted_mask = 0;
     uint8_t ok_mask = 0;
-    double ft_infer_elapsed_us = 0.0;
     std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data_raw{};
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -720,42 +719,11 @@ class UdpHandController {
       const auto t3 = std::chrono::steady_clock::now();
       comm_loop_.MarkState();  // end of UDP read phase (base t1)
 
-      // Sensor post-processing + FT inference. Gated on the protocol's
-      // polymorphic capability — 1a runs the LPF/drift/F-T pipeline; 1b skips
-      // it entirely (force is firmware-computed).
-      if (is_sensor_cycle && sensor_protocol_->RunsSensorPostProcess()) {
-        cached_sensor_data_raw = cached_sensor_data_;
-        sensor_processor_.PreFilter();
-        sensor_processor_.ApplyFilters(cached_sensor_data_);
-        sensor_processor_.DetectDrift(cached_sensor_data_raw);
-        ft_infer_elapsed_us = RunFTInference(cached_sensor_data_);
-      }
-
-      const auto t4 = std::chrono::steady_clock::now();
-      comm_loop_.MarkCompute();  // end of compute phase (base t2)
-
-      state.sensor_data_raw = cached_sensor_data_raw;
-      state.sensor_data = cached_sensor_data_;
+      // Bulk-only state field (1b firmware-computed force; 0 for 1a). Set before
+      // the shared tail so the SeqLock store captures it.
       state.sensor_force = cached_sensor_force_;
-      state.num_fingertips = num_fingertips_;
-      state.valid = any_recv_ok;
-
-      if (any_recv_ok && !state_read_once_) {
-        state_read_once_ = true;
-        // Throttled as a defensive RT-safety net; the state_read_once_ gate
-        // already guarantees this fires at most once per Start().
-        static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
-        RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
-                             ::udp_hand_driver::logging::kThrottleIdleMs,
-                             "First hand state received (write commands now enabled)");
-      }
-
-      state_seqlock_.Store(state);
-      if (callback_) {
-        callback_(state, ft_seqlock_.Load());
-      }
-
-      const auto t5 = std::chrono::steady_clock::now();
+      const CommCycleTailResult tail =
+          RunCommCycleTail(state, cached_sensor_data_raw, any_recv_ok, is_sensor_cycle);
 
       UdpHandTimingProfiler::PhaseTiming pt;
       pt.is_bulk_mode = true;
@@ -764,9 +732,10 @@ class UdpHandController {
       pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
       pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
       pt.sensor_proc_us =
-          std::chrono::duration<double, std::micro>(t4 - t3).count() - ft_infer_elapsed_us;
-      pt.ft_infer_us = ft_infer_elapsed_us;
-      pt.total_us = std::chrono::duration<double, std::micro>(t5 - t0).count();
+          std::chrono::duration<double, std::micro>(tail.compute_done - t3).count() -
+          tail.ft_infer_us;
+      pt.ft_infer_us = tail.ft_infer_us;
+      pt.total_us = std::chrono::duration<double, std::micro>(tail.callback_done - t0).count();
       pt.is_sensor_cycle = is_sensor_cycle;
       timing_profiler_.Update(pt);
 
@@ -835,38 +804,8 @@ class UdpHandController {
       const auto t4 = std::chrono::steady_clock::now();
       comm_loop_.MarkState();  // end of UDP read phase (base t1)
 
-      if (is_sensor_cycle) {
-        cached_sensor_data_raw = cached_sensor_data_;
-        sensor_processor_.PreFilter();
-        sensor_processor_.ApplyFilters(cached_sensor_data_);
-        sensor_processor_.DetectDrift(cached_sensor_data_raw);
-        ft_infer_elapsed_us = RunFTInference(cached_sensor_data_);
-      }
-
-      const auto t5 = std::chrono::steady_clock::now();
-      comm_loop_.MarkCompute();  // end of compute phase (base t2)
-
-      state.sensor_data_raw = cached_sensor_data_raw;
-      state.sensor_data = cached_sensor_data_;
-      state.num_fingertips = num_fingertips_;
-      state.valid = any_recv_ok;
-
-      if (any_recv_ok && !state_read_once_) {
-        state_read_once_ = true;
-        // Throttled as a defensive RT-safety net; the state_read_once_ gate
-        // already guarantees this fires at most once per Start().
-        static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
-        RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
-                             ::udp_hand_driver::logging::kThrottleIdleMs,
-                             "First hand state received (write commands now enabled)");
-      }
-
-      state_seqlock_.Store(state);
-      if (callback_) {
-        callback_(state, ft_seqlock_.Load());
-      }
-
-      const auto t6 = std::chrono::steady_clock::now();
+      const CommCycleTailResult tail =
+          RunCommCycleTail(state, cached_sensor_data_raw, any_recv_ok, is_sensor_cycle);
 
       UdpHandTimingProfiler::PhaseTiming pt;
       pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
@@ -875,9 +814,10 @@ class UdpHandController {
       pt.read_vel_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
       pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
       pt.sensor_proc_us =
-          std::chrono::duration<double, std::micro>(t5 - t4).count() - ft_infer_elapsed_us;
-      pt.ft_infer_us = ft_infer_elapsed_us;
-      pt.total_us = std::chrono::duration<double, std::micro>(t6 - t0).count();
+          std::chrono::duration<double, std::micro>(tail.compute_done - t4).count() -
+          tail.ft_infer_us;
+      pt.ft_infer_us = tail.ft_infer_us;
+      pt.total_us = std::chrono::duration<double, std::micro>(tail.callback_done - t0).count();
       pt.is_sensor_cycle = is_sensor_cycle;
       timing_profiler_.Update(pt);
     }
@@ -927,6 +867,62 @@ class UdpHandController {
                              static_cast<unsigned>(cs.last_unexpected_cmd));
       }
     }
+  }
+
+  // Intermediate timestamps + FT cost from RunCommCycleTail, so each mode's
+  // caller can fill its own PhaseTiming (the phase fields differ per mode).
+  struct CommCycleTailResult {
+    std::chrono::steady_clock::time_point compute_done;   // end of sensor post-process
+    std::chrono::steady_clock::time_point callback_done;  // end of store + callback
+    double ft_infer_us{0.0};
+  };
+
+  // Common bulk/individual cycle tail (CommLoop thread only — no sync). Runs the
+  // gated sensor post-process (PreFilter/ApplyFilters/DetectDrift/RunFTInference),
+  // MarkCompute, shared state finalize, the first-state latch + log, then the
+  // SeqLock store and callback. The caller has already captured the read-end
+  // timestamp and called MarkState(); mode-specific state fields (bulk's
+  // sensor_force) must be set on `state` before calling. The post-process gate is
+  // unified to `is_sensor_cycle && RunsSensorPostProcess()`: individual mode is
+  // 1a-only (the node rejects 1b+individual), where RunsSensorPostProcess() is
+  // always true, so the added predicate is behavior-neutral there.
+  // noexcept + allocation-free (rt-path.md compliant).
+  [[nodiscard]] CommCycleTailResult RunCommCycleTail(
+      UdpHandState& state, std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data_raw,
+      bool any_recv_ok, bool is_sensor_cycle) noexcept {
+    CommCycleTailResult result{};
+    if (is_sensor_cycle && sensor_protocol_->RunsSensorPostProcess()) {
+      sensor_data_raw = cached_sensor_data_;
+      sensor_processor_.PreFilter();
+      sensor_processor_.ApplyFilters(cached_sensor_data_);
+      sensor_processor_.DetectDrift(sensor_data_raw);
+      result.ft_infer_us = RunFTInference(cached_sensor_data_);
+    }
+
+    result.compute_done = std::chrono::steady_clock::now();
+    comm_loop_.MarkCompute();  // end of compute phase (base t2)
+
+    state.sensor_data_raw = sensor_data_raw;
+    state.sensor_data = cached_sensor_data_;
+    state.num_fingertips = num_fingertips_;
+    state.valid = any_recv_ok;
+
+    if (any_recv_ok && !state_read_once_) {
+      state_read_once_ = true;
+      // Throttled as a defensive RT-safety net; the state_read_once_ gate
+      // already guarantees this fires at most once per Start().
+      static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
+      RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
+                           ::udp_hand_driver::logging::kThrottleIdleMs,
+                           "First hand state received (write commands now enabled)");
+    }
+
+    state_seqlock_.Store(state);
+    if (callback_) {
+      callback_(state, ft_seqlock_.Load());
+    }
+    result.callback_done = std::chrono::steady_clock::now();
+    return result;
   }
 
   // Consume any pending calibration request. Called on CommLoop thread.
