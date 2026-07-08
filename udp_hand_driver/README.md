@@ -43,29 +43,30 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 
 ## 아키텍처
 
-### Event-Driven 통신
+### Self-Clocked 통신
 
-`UdpHandController`는 `rtc_controller_manager`의 `ControlLoop`가 호출하는 `SendCommandAndRequestStates()`에 의해 event-driven으로 구동됩니다. 단독 실행(standalone) 시에는 `/hand/joint_command` 구독으로 명령을 수신합니다.
+`UdpHandController`의 `CommLoop`(`rtc::PeriodicRtThread` 서브클래스)는 `loop_rate_hz`(기본 500Hz)로 **자율 tick**한다. read + state publish 는 명령 도착과 **무관하게** 매 주기 수행되고, write UDP 는 `SendCommandAndRequestStates()`로 명령이 stage 됐을 때만 실행된다. 통합 모드에서는 `rtc_controller_manager`의 `ControlLoop`가 active controller 있을 때만 `/hand/joint_command`를 publish → write 는 control_rate 로, deactivate 시 정지(read/publish 는 계속). 단독 실행(standalone) 시에는 `/hand/joint_command` 구독으로 명령을 수신한다. CM clock 과 hand clock 은 독립(topic 경유).
 
 ```
-[rt_control core] ControlLoop 500Hz
+[명령 소스] ControlLoop(통합) 또는 /hand/joint_command sub(standalone)
              |
-             | Phase 4: SendCommandAndRequestStates(cmd)
-             |           -> busy_ 체크 -> SeqLock store + atomic flag
-             |           -> eventfd write (RT-safe, lock-free)
-             |           -> busy_ 시 skip + event_skip_count 증가
+             | SendCommandAndRequestStates(cmd)
+             |   -> staged_cmd_seqlock_ store + event_pending_ set (release)
+             |      (RT-safe, lock-free, 별도 wake 없음)
              v
-[hand_driver core] EventLoop -- poll(event_fd, 20ms) -> wake
-                    -> WritePosition(cmd, kJoint) + recv echo
+[hand_driver core] CommLoop -- clock_nanosleep(loop_rate_hz) 자율 tick
+                    -> [event_pending_ latch 시] WritePosition + recv echo (명령 있을 때만)
                     -> ReadAllMotors(kMotor) -- motor pos/vel/cur
-                    -> ReadAllMotors(kJoint) -- joint pos/vel/cur
+                    -> ReadAllMotors(joint_io_mode) -- joint pos/vel/cur
                     -> ReadSensors (sensor_decimation cycle마다)
                     -> FT Inference (sensor cycle + calibrated)
                     -> state_seqlock_ 갱신 (lock-free)
                     -> ROS2 직접 publish (timer 없음)
 ```
 
-**Startup write-gate**: EventLoop 의 write(`WritePosition`)는 `state_read_once_`(첫 상태 read 완료) **및** `cmd_received_once`(첫 실명령 stage 완료) 가 **둘 다** 참이어야 실행된다. `pending_cmd` 는 첫 `/hand/joint_command` 도착 전까지 zero-init 이므로, state read 만으로 write 를 열면 컨트롤러가 hold 명령을 publish 하기 전(lifecycle activate + seed + publish 지연 창)에 손을 q=0 으로 끌어내린다. 그 창 동안은 read-only cycle(상태 publish)만 돌고 펌웨어는 마지막 위치를 hold 한다. E-Stop 종료 시에만 명시적으로 zero 를 write 한다.
+**Command-gated write**: write(`WritePosition`)는 **per-command** 게이트다 — `event_pending_`가 set 된 cycle 에서 `pending_cmd_`를 latch 하고 `has_pending_write_`를 세운 뒤, 1회 write 시도 후 성공/실패 무관 clear 한다. 명령이 끊긴 구간은 read-only cycle 만 돌고 펌웨어는 마지막 위치를 hold 한다(이전의 영구 latch → stale 재전송 문제 제거).
+
+**Startup write-gate**: write 는 `state_read_once_`(첫 상태 read 완료) **및** `has_pending_write_`(pending 명령) 가 **둘 다** 참이어야 실행된다. 첫 상태 read 전에는 명령을 latch 만 하고 write 는 보류 → lifecycle activate 직후 hold 명령 publish 전 창에서 손을 q=0 으로 끌어내리지 않는다(no-jump 계약). E-Stop 시에만 명시적으로 zero 를 write 하고 loop 를 정지한다.
 
 ### 통신 모드
 
@@ -128,7 +129,7 @@ MODE byte 를 임의값으로 echo 하므로 그 경로만 검증을 끈다 (`Ve
 
 **1b**: motor-space read (kMotor 스텝) 를 스킵하고 joint-space read 를 **kMotor** 로 한 번만
 수행합니다 (1b 펌웨어의 유일한 joint-serving 모드). write 도 kMotor 로 보냅니다. joint I/O MODE 는
-하드코딩이 아니라 `SensorProtocol::JointIoMode()` 로 주입되며, EventLoop 는 이를 한 번 hoist 해
+하드코딩이 아니라 `SensorProtocol::JointIoMode()` 로 주입되며, `Start()` 가 이를 한 번 hoist 해
 write / joint read / E-Stop zero-write 에 사용합니다.
 
 ### Sensor Decimation
@@ -137,7 +138,7 @@ write / joint read / E-Stop zero-write 에 사용합니다.
 
 ### 통신 Decimation (`comm_decimation`)
 
-UDP 통신 부하를 강제로 줄여 테스트하기 위한 knob (ROS param, 기본 `1`). `sensor_decimation` 이 **센서 read 만** 감쇠하는 것과 달리, `comm_decimation` 은 EventLoop 사이클의 **전체 UDP 트랜잭션 (write + 모든 read)** 을 감쇠한다:
+UDP 통신 부하를 강제로 줄여 테스트하기 위한 knob (ROS param, 기본 `1`). `sensor_decimation` 이 **센서 read 만** 감쇠하는 것과 달리, `comm_decimation` 은 CommLoop 사이클의 **전체 UDP 트랜잭션 (write + 모든 read)** 을 감쇠한다:
 
 - `1`: 매 사이클 통신 (기존 동작과 bit-identical, 회귀 0)
 - `2`: 1 사이클 통신, 1 사이클 skip (통신 안 함)
@@ -146,11 +147,11 @@ UDP 통신 부하를 강제로 줄여 테스트하기 위한 knob (ROS param, �
 skip 사이클의 동작:
 - UDP send/recv 없음, 상태 publish 없음, cycle 카운트에 포함 안 됨 (진짜 no-op tick). stale 상태를 재발행하지 않으므로 downstream 이 감쇠된 rate 를 실제로 관측한다 (부하 테스트의 목적).
 - **E-Stop 은 skip 여부와 무관하게 매 사이클 검사** (안전 불변).
-- **첫 사이클은 항상 통신** (초기 상태 read 보장).
-- eventfd drain + 최신 명령 latch 는 skip 사이클에서도 수행 → 다음 통신 사이클이 가장 최근 명령을 전송 (명령 유실 없음, last-wins).
+- **첫 사이클은 항상 통신** (초기 상태 read 보장 — `comm_cycle_counter_` 를 `comm_decimation_ - 1` 로 seed).
+- 최신 명령은 `event_pending_` 에 persist → skip 사이클이 삼키지 않고 다음 통신 사이클이 latch·전송 (명령 유실 없음, last-wins).
 - `any_recv_ok` / `consecutive_recv_failures` 를 건드리지 않아 link-down false-positive 없음.
 
-> ⚠️ **failure detector 상호작용** — 유효 통신 rate = EventLoop rate / `comm_decimation`. `comm_decimation` 을 크게 하면 (예: 500 Hz 구동 시 N=20 → 25 Hz) rate 가 `min_rate_hz` 미만으로 떨어져 rate failure 오탐 → E-STOP 이 발생할 수 있다. 높은 감쇠로 테스트할 때는 `min_rate_hz` 를 비례해 낮추거나 `enable_failure_detector` 의 rate/link 검사를 조정한다.
+> ⚠️ **failure detector 상호작용** — 유효 통신 rate = `loop_rate_hz` / `comm_decimation`. `comm_decimation` 을 크게 하면 (예: 500 Hz 구동 시 N=20 → 25 Hz) rate 가 `min_rate_hz` 미만으로 떨어져 rate failure 오탐 → E-STOP 이 발생할 수 있다. 높은 감쇠로 테스트할 때는 `min_rate_hz` 를 비례해 낮추거나 `enable_failure_detector` 의 rate/link 검사를 조정한다.
 
 감쇠량은 `hand_udp_stats.json` 의 `comm_decimation` / `comm_decimation_skip_count` 로 확인한다.
 
@@ -178,7 +179,7 @@ skip 사이클의 동작:
 핵심 드라이버 클래스. Event-driven jthread (hand_driver core, SCHED_FIFO/65) 로 동작합니다. 코어 번호는 tier-aware (`rtc_base/threading/thread_config.hpp::SelectThreadConfigs().hand_driver.cpu_core` — 6-core 에서 Core 1, ≥ 8-core 에서 dedicated; SSoT 참조). 프로세스가 launch-level taskset 으로 pin 되고 내부 receive thread (priority 65) 가 affinity 상속.
 
 - **SeqLock** 기반 lock-free 상태 공유 (priority inversion 방지)
-- **busy_ flag**: EventLoop 실행 중 이벤트 skip 보호
+- **per-command write gate**: `event_pending_`(release) → CommLoop latch(acquire); 1회 write 후 clear (stale 재전송 없음)
 - **Write echo 항상 수신**: 소켓 버퍼 오염 방지
 - **첫 사이클 read-only**: 초기 상태를 모르는 상태에서 zero 명령 전송 방지
 - **Fake hand 모드**: `use_fake_hand=true` 시 UDP 소켓 없이 echo-back mock 동작
@@ -222,16 +223,17 @@ EventLoop 단계별 소요시간 추적. 히스토그램 기반 p95/p99 백분�
 
 ### UdpHandTimingLogger (`udp_hand_timing_logger.hpp`)
 
-EventLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용.
+CommLoop per-tick 타이밍을 `<session>/timing/hand_udp_timing_log.csv` 로 기록한다. CM (`cm_timing_log.csv`) 및 MPC (`mpc_timing_log.csv`) 와 동일한 통합 스키마 (`t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us`) 를 사용 — `rtc_base/timing/rt_tick_timing_sample.hpp` 의 `RtTickTimingPayload` 직접 재사용.
 
 데이터 흐름:
-- producer: `UdpHandController::EventLoop` 내부에서 phase timestamps (t0~t6) 로 `RtTickTimingPayload` 빌드 후 `HandUdpTimingBuffer` 에 push (RT-safe, wait-free)
+- producer: `RunCommCycle` 이 UDP read 직후 `MarkState()`, sensor 후처리+FT 직후 `MarkCompute()` 를 호출하면 `rtc::PeriodicRtThread` (CommLoop) 기반이 매 tick 1개 `RtTickTimingPayload` 를 `HandUdpTimingBuffer` 에 push (RT-safe, wait-free)
 - drain: `udp_hand_node` 가 1 Hz `wall_timer` 로 SPSC 버퍼를 비우고 `ThreadTimingCsvLogger<RtTickTimingPayload>` 에 row 추가
-- expected period: `publish_rate` 파라미터 (`1e6 / publish_rate µs`) — jitter 계산에 사용 (0이면 jitter 컬럼 0)
+- jitter: CommLoop 이 `loop_rate_hz` period budget 대비 `|actual_period − budget|` 을 자동 계산 (컨트롤러의 `SetTimingProducer` expected_period 인자는 무시됨)
 
-phase 매핑 (hand UDP loop):
-- bulk: `t_state = t3 - t0`, `t_compute = t4 - t3`, `t_publish = t5 - t4`
-- individual: `t_state = t4 - t0`, `t_compute = t5 - t4`, `t_publish = t6 - t5`
+phase 매핑 (hand UDP loop, `MarkState()`/`MarkCompute()` 브레이크포인트):
+- bulk: `t_state = write+read (t0→t3)`, `t_compute = sensor 후처리+FT`, `t_publish = state store+callback`
+- individual: `t_state = write+read (t0→t4)`, `t_compute = sensor 후처리+FT`, `t_publish = state store+callback`
+- 내부 phase breakdown (`UdpHandTimingProfiler`) 은 별도 local t0~t5/t6 timestamps 로 유지 (write/read 세부 항목별).
 
 `UdpHandTimingProfiler` 와 공존 — Profiler 는 in-process p95/p99 텔레메트리, Logger 는 raw per-tick CSV 로그.
 
@@ -278,7 +280,7 @@ phase 매핑 (hand UDP loop):
 ### 센서 캘리브레이션 재트리거
 
 `baseline_offset` 을 런타임에 재측정하고 싶을 때 `/hand/calibration/command` 에
-`CalibrationCommand` 를 publish 합니다. 드라이버는 EventLoop 스레드에서 요청을
+`CalibrationCommand` 를 publish 합니다. 드라이버는 CommLoop 스레드에서 요청을
 consume 하여 `FingertipFTInferencer::ResetCalibration()` 을 호출한 뒤 다음
 500 샘플(기본값) 동안 재누적합니다. 재누적 중에는 `baseline_offset_` 이 0 으로
 초기화되어 FT inference 가 일시적으로 중지됩니다 (`is_calibrated()==false`).
@@ -316,7 +318,8 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `target_ip` | `"192.168.1.2"` | 핸드 컨트롤러 IP |
 | `target_port` | `55151` | 핸드 컨트롤러 포트 |
 | `recv_timeout_ms` | `10.0` | ppoll 수신 타임아웃 (ms, sub-ms 지원) |
-| `publish_rate` | `100.0` | link_status decimation 기준 (Hz) |
+| `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
+| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
 | `communication_mode` | `"individual"` | `"individual"` 또는 `"bulk"` |
 | `protocol_version` | `"1a"` | 센서 프로토콜 버전 (`"1a"`/`"1b"`, 위 "센서 프로토콜 버전" 참조) |
 | `baro_lpf_enabled` | `false` | Barometer LPF 활성화 |
@@ -388,7 +391,8 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 |----------|--------|------|
 | `target_ip` | `192.168.1.2` | 손 컨트롤러 IP |
 | `target_port` | `55151` | 손 컨트롤러 포트 |
-| `publish_rate` | `100.0` | link_status decimation 기준 (Hz) |
+| `loop_rate_hz` | `500.0` | self-clocked CommLoop 주기 (Hz) — read/state publish 자율 tick rate |
+| `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
 | `communication_mode` | `bulk` | `"individual"` 또는 `"bulk"` |
 | `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 (ms) |
 | `use_fake_hand` | `false` | Fake hand echo-back mock |
@@ -429,7 +433,7 @@ source install/setup.bash
 - 고정 크기 배열만 사용 (`std::array`)
 - `trivially_copyable` 패킷 구조체 (`#pragma pack`, `static_assert` 검증)
 - **SeqLock** 기반 lock-free 상태 공유
-- **printf 제거** -- EventLoop (SCHED_FIFO) 스레드에서 stdout 출력 없음
+- **printf 제거** -- CommLoop (SCHED_FIFO) 스레드에서 stdout 출력 없음
 - **ppoll** 기반 sub-ms 수신 타임아웃 (hrtimer on PREEMPT_RT)
 - Main thread: Core 0-1로 affinity 설정 (DDS 스레드가 RT 코어에 배치되는 것 방지)
 
@@ -449,7 +453,7 @@ source install/setup.bash
 
 **핵심 규칙**:
 
-- `UdpHandController::EventLoop`, `UdpHandTransport::Send/Recv`, `UdpHandSensorProcessor::PreFilter/ApplyFilters`, `FingertipFTInferencer::Infer` 는 모두 **500 Hz UDP 폴링 hot path** 다. 정상 경로의 `INFO`/`WARN` 직접 호출은 **금지** — 반복될 수 있는 메시지는 반드시 `*_THROTTLE` 매크로를 사용한다.
+- `UdpHandController::RunCommCycle`, `UdpHandTransport::Send/Recv`, `UdpHandSensorProcessor::PreFilter/ApplyFilters`, `FingertipFTInferencer::Infer` 는 모두 **`loop_rate_hz` (기본 500 Hz) UDP 폴링 hot path** 다. 정상 경로의 `INFO`/`WARN` 직접 호출은 **금지** — 반복될 수 있는 메시지는 반드시 `*_THROTTLE` 매크로를 사용한다.
 - **`RCLCPP_*_ONCE` 금지**. `_ONCE` 도 첫 호출에서는 동일한 fmt 포맷 할당을 수행하므로 RT 안전이 아니며, 조건이 다시 참이 될 때 침묵해 버린다. 대신 `*_THROTTLE` 을 `kThrottleIdleMs` 와 함께 사용한다 (예: `UdpHandSensorProcessor::PreFilter` 의 BesselFilter 재초기화 실패 경고).
 - **루프 기반 per-element 로그 금지.** RT 스레드에서 `for` 로 돌며 per-channel 로그를 내보내는 패턴은 1초 주기 throttle 을 만족하더라도 집계 1회로 축소해야 한다. 예: `UdpHandSensorProcessor::ThrottledDriftWarning` 은 플래그된 채널 수 + 첫 위반 id/slope 를 **단 1 개의 `WARN_THROTTLE`** 로만 내보낸다 (최대 길이 고정 → 절단 없음).
 - **RT 핫패스의 포맷 인자 수를 최소화한다.** 엣지 트리거되는 링크 UP/DOWN 조차 arg 0~1개로 유지. 상세 데이터는 `SeqLock` 상태나 `CommStats`/`drift_result_` 구조체 쪽에 쌓아 두고, 필요한 쪽(`SaveCommStats`, 비-RT consumer)이 끌어가도록 한다.
@@ -462,7 +466,7 @@ source install/setup.bash
 | 서브-로거 | 사용처 |
 |-----------|--------|
 | `hand.node` | `UdpHandNode` (ROS2 노드 lifecycle, 토픽 구독/발행, link 상태 전이) |
-| `hand.ctrl` | `UdpHandController` (lifecycle + EventLoop, 캘리브레이션 dispatch) |
+| `hand.ctrl` | `UdpHandController` (lifecycle + CommLoop, 캘리브레이션 dispatch) |
 | `hand.udp` | `UdpHandTransport` (소켓 open/close, 센서모드 전환) |
 | `hand.sensor` | `UdpHandSensorProcessor` (LPF init, drift detection, BesselFilter 재초기화) |
 | `hand.fail` | `UdpHandFailureDetector` (50 Hz 워치독 스레드) |

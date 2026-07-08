@@ -24,15 +24,16 @@
 
 // Unified hand UDP node using request-response protocol.
 //
-// Owns a UdpHandController that polls the hand device:
-//   write position -> read position -> read velocity -> read sensors x 4
+// Owns a UdpHandController with a self-clocked CommLoop that polls the hand
+// device at loop_rate_hz (default 500 Hz):
+//   [write position (only when commanded)] -> read motors -> read sensors
 //
-// Publishes full state directly from EventLoop callback (no timer).
-// This eliminates the 100 Hz timer bottleneck -- state is published at the
-// EventLoop rate (500 Hz when driven by rtc_controller_manager).
+// Publishes full state directly from the CommLoop callback (no ROS timer). The
+// read/state-publish rate is autonomous at loop_rate_hz and does not depend on
+// command arrival; the write UDP runs only when /…/joint_command was received.
 //
 // Pre-allocated messages avoid dynamic allocation on the publish path.
-// Receives commands on /hand/command.
+// Receives commands on the command_topic (default /hand/joint_command).
 //
 // Lifecycle states:
 //   Unconfigured -> on_configure -> Inactive -> on_activate -> Active

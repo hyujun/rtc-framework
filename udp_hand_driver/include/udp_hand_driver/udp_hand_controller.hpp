@@ -1,30 +1,40 @@
 #ifndef UDP_HAND_DRIVER_UDP_HAND_CONTROLLER_HPP_
 #define UDP_HAND_DRIVER_UDP_HAND_CONTROLLER_HPP_
 
-// High-level hand controller: event-driven UDP driver.
+// High-level hand controller: self-clocked UDP driver.
 //
-// Uses a single UDP socket for both send and receive.
-// Driven by ControlLoop events (pipeline mode):
-//   Phase 4 of tick N: SendCommandAndRequestStates(cmd)
-//     -> Hand thread wakes and executes (individual mode):
-//       1. Write position  (0x01) + recv echo
-//       2. Read position   (0x11)
-//       3. Read velocity   (0x12)
-//       4. Read sensor 0-3 (0x14..0x17) x 4
-//     -> Hand thread (bulk mode):
-//       1. Write position  (0x01) + recv echo
-//       2. Read all motors (0x10)
-//       3. Read all sensors (0x19)
-//     -> State ready for tick N+1
-//   Phase 1 of tick N+1: GetLatestState() returns pre-fetched state
+// Uses a single UDP socket for both send and receive. A dedicated
+// rtc::PeriodicRtThread (CommLoop) drives one RunCommCycle() per period at a
+// fixed `loop_rate_hz` (default 500 Hz) — the read/state-publish cadence is
+// autonomous and does NOT depend on how often commands arrive.
+//
+// Per comm cycle (bulk mode):
+//   1. Write position (0x01) + recv echo — ONLY when a command is pending
+//   2. Read all motors (0x10)            — every cycle (state)
+//   3. Read all sensors (0x19)           — every sensor cycle (state)
+// Per comm cycle (individual mode):
+//   1. Write position (0x01) + recv echo — ONLY when a command is pending
+//   2. Read position  (0x11)
+//   3. Read velocity  (0x12)
+//   4. Read sensor 0-3 (0x14..0x17) x 4
+//
+// Write gating: SendCommandAndRequestStates(cmd) stages the command
+// (SeqLock) and sets event_pending_. The next cycle latches it, writes once,
+// and clears the pending flag (per-command, not a permanent latch). When no
+// command has been staged since the last write, cycles are read-only — the
+// firmware holds its last commanded position. Under integrated_bringup the
+// controller-manager RT loop publishes /…/joint_command only while a
+// controller is active, so writes track control_rate and stop on deactivate
+// while reads/publishes continue at loop_rate_hz.
 //
 // RT safety:
 //   - All hot-path operations are allocation-free.
-//   - No printf/stdout on the EventLoop thread.
+//   - No printf/stdout on the CommLoop thread (THROTTLE-only, RT-safe msgs).
 //   - Shared state uses rtc::SeqLock (lock-free) instead of mutex.
-//   - ControlLoop -> EventLoop wake uses eventfd (Linux) + atomic flag,
-//     no std::mutex / std::condition_variable on the RT producer path.
+//   - Command handoff is a lock-free SeqLock store + release-ordered flag;
+//     no eventfd / condition_variable on the RT producer path.
 
+#include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -43,8 +53,6 @@
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 
-#include <poll.h>
-#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -58,7 +66,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -98,9 +105,9 @@ struct CalibrationStatusSnapshot {
 };
 
 // ── Cycle outcome ring (link-down forensics) ─────────────────────────────
-// One entry per EventLoop cycle: which request kinds were attempted and which
+// One entry per CommLoop cycle: which request kinds were attempted and which
 // succeeded (bit i = RequestKindBit(RequestKind(i))). POD, single writer
-// (EventLoop), exposed as a rtc::SeqLock snapshot so the non-RT failure
+// (CommLoop), exposed as a rtc::SeqLock snapshot so the non-RT failure
 // detector can decode the last kCapacity cycles at link-down time.
 struct CycleOutcomeEntry {
   uint32_t cycle_seq{0};
@@ -140,8 +147,9 @@ class UdpHandController {
       bool tof_lpf_enabled = false, double tof_lpf_cutoff_hz = 15.0, bool baro_lpf_enabled = false,
       double baro_lpf_cutoff_hz = 30.0, FingertipFTInferencer::Config ft_config = {},
       bool drift_detection_enabled = false, double drift_threshold = 5.0,
-      int drift_window_size = 2500, int comm_decimation = 1) noexcept
+      int drift_window_size = 2500, int comm_decimation = 1, double loop_rate_hz = 500.0) noexcept
       : thread_cfg_(thread_cfg),
+        loop_rate_hz_(loop_rate_hz),
         sensor_decimation_(sensor_decimation < 1 ? 1 : sensor_decimation),
         comm_decimation_(comm_decimation < 1 ? 1 : comm_decimation),
         num_fingertips_(num_fingertips > kMaxFingertips
@@ -172,6 +180,15 @@ class UdpHandController {
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   [[nodiscard]] bool Start() {
+    // Self-clock rate must be positive. PeriodicRtThread::Start() is a silent
+    // no-op on a non-positive frequency, so validate explicitly here (off the
+    // RT path) and fail Start() loudly rather than launch a dead loop.
+    if (!(loop_rate_hz_ > 0.0)) {
+      RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(),
+                   "loop_rate_hz must be > 0 (got %.3f)", loop_rate_hz_);
+      return false;
+    }
+
     // Default to the 1a sensor protocol when the node did not inject one
     // (e.g. direct construction in unit tests). Off the RT path.
     if (!sensor_protocol_) {
@@ -179,13 +196,21 @@ class UdpHandController {
     }
 
     // Propagate the protocol's MODE-echo capabilities to the transport before
-    // any request runs (InitializeSensors below, then the EventLoop jthread).
+    // any request runs (InitializeSensors below, then the CommLoop thread).
     // The joint / set-mode gate stays strict on both 1a and 1b; the bulk-sensor
     // gate is separate because 1b's 0x19 response echoes an arbitrary MODE byte
     // (see VerifiesBulkSensorResponseMode()). Set here (off the RT path) so there
-    // is no race with the EventLoop thread started further down.
+    // is no race with the CommLoop thread started further down.
     transport_.set_verify_response_mode(sensor_protocol_->VerifiesResponseMode());
     transport_.set_verify_bulk_sensor_mode(sensor_protocol_->VerifiesBulkSensorResponseMode());
+
+    // Hoist per-loop-lifetime constants off the RunCommCycle hot path. Both are
+    // fixed once sensor_protocol_ is set (above) and read every cycle:
+    //   is_bulk_       — communication-mode branch (bulk 0x10/0x19 vs individual)
+    //   joint_io_mode_ — joint-space I/O MODE (1a=kJoint, 1b=kMotor); drives the
+    //                    position write, the joint read, and the E-Stop zero-write
+    is_bulk_ = (communication_mode_ == HandCommunicationMode::kBulk);
+    joint_io_mode_ = sensor_protocol_->JointIoMode();
 
     // F/T inferencer initialization. Non-RT init path — verbose diagnostics
     // here are intentional: when FT inference misbehaves at runtime, this
@@ -239,14 +264,6 @@ class UdpHandController {
       return false;
     }
 
-    // EventLoop wake primitive: non-blocking + close-on-exec eventfd.
-    // Producer (RT path) does write(8 bytes); consumer drains in EventLoop.
-    event_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (event_fd_ < 0) {
-      RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
-                  "eventfd() failed (errno=%d); EventLoop will fall back to timed sleep", errno);
-    }
-
     // Sensor initialization: NN -> RAW mode
     if (num_fingertips_ > 0) {
       sensor_init_ok_ = transport_.InitializeSensors();
@@ -262,12 +279,34 @@ class UdpHandController {
       RCLCPP_DEBUG(::udp_hand_driver::logging::ControllerLogger(), "Sensor processor initialized");
     }
 
+    // Reset per-run cycle state so a deactivate→activate restart begins clean:
+    // no stale pending write, fresh decimation phase, write re-gated until the
+    // first state read (startup no-jump contract).
+    has_pending_write_ = false;
+    event_pending_.store(false, std::memory_order_release);
+    state_read_once_ = false;
+    // Seed so the FIRST tick is a comm cycle (++counter reaches comm_decimation_
+    // immediately), preserving the "first cycle always communicates" contract —
+    // the initial state read is not delayed by comm_decimation_ periods. For
+    // decimation=1 this is 0 (every cycle communicates).
+    comm_cycle_counter_ = comm_decimation_ - 1;
+    sensor_cycle_counter_ = 0;
+    outcome_ring_working_ = CycleOutcomeRing{};
+    cached_sensor_data_ = {};
+    cached_sensor_force_ = {};
+
     running_.store(true, std::memory_order_release);
     start_time_ = std::chrono::steady_clock::now();
-    event_thread_ = std::jthread([this](std::stop_token st) { EventLoop(std::move(st)); });
+
+    // Self-clocked comm loop: PeriodicRtThread ticks RunCommCycle() at
+    // loop_rate_hz_ (clock_nanosleep TIMER_ABSTIME + overrun recovery). The
+    // per-tick RtTickTimingPayload is pushed by the base after each OnTick
+    // (see MarkStateAcquired/MarkComputeDone in RunCommCycle).
+    comm_loop_.SetTimingProducer(timing_producer_);
+    comm_loop_.Start({.thread_config = thread_cfg_, .frequency_hz = loop_rate_hz_});
     RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
-                "EventLoop thread started (mode=%s)",
-                communication_mode_ == HandCommunicationMode::kBulk ? "bulk" : "individual");
+                "CommLoop thread started (mode=%s, loop_rate=%.1f Hz)",
+                is_bulk_ ? "bulk" : "individual", loop_rate_hz_);
 
     return true;
   }
@@ -277,20 +316,10 @@ class UdpHandController {
     if (use_fake_hand_) {
       return;
     }
-    event_thread_.request_stop();
-    // Wake the EventLoop immediately so it observes request_stop() within
-    // one poll() iteration instead of waiting out the 20ms timeout.
-    if (event_fd_ >= 0) {
-      static_cast<void>(::eventfd_write(event_fd_, 1));
-    }
-    if (event_thread_.joinable()) {
-      event_thread_.join();
-    }
-    // EventLoop has exited; the eventfd is no longer touched by either side.
-    if (event_fd_ >= 0) {
-      ::close(event_fd_);
-      event_fd_ = -1;
-    }
+    // Join() requests stop (cooperative stop_token) and waits for the CommLoop
+    // to exit its current tick + clock_nanosleep. Idempotent; safe on a loop
+    // that already self-stopped via the E-Stop path (RequestStop in RunCommCycle).
+    comm_loop_.Join();
     transport_.Close();
     const auto cycles = cycle_count_.load(std::memory_order_relaxed);
     const double elapsed_sec =
@@ -305,9 +334,9 @@ class UdpHandController {
   // ── Sensor protocol injection (non-RT — call before Start()) ───────────
 
   /// Inject the firmware sensor protocol (1a/1b). Must be called before Start();
-  /// if left unset, Start() defaults to 1a for backward compatibility. The
-  /// EventLoop dereferences this on the hot path, so it must not change while
-  /// running.
+  /// if left unset, Start() defaults to 1a for backward compatibility. Start()
+  /// hoists its capabilities (JointIoMode, MODE-verify) before launching the
+  /// CommLoop, so it must not change while running.
   void SetSensorProtocol(std::unique_ptr<SensorProtocol> proto) noexcept {
     sensor_protocol_ = std::move(proto);
   }
@@ -320,14 +349,17 @@ class UdpHandController {
 
   /// Inject a producer for the unified per-tick timing CSV (see
   /// rtc/timing/rt_tick_timing_sample.hpp). Owned by the caller; must
-  /// outlive this controller. Pass nullptr to disable.
-  /// `expected_period_us` is used to compute jitter; pass 0 to leave the
-  /// jitter field at zero (e.g. when the EventLoop is not driven on a
-  /// fixed cadence).
+  /// outlive this controller. Pass nullptr to disable. Call before Start()
+  /// (Start() forwards it to the CommLoop base).
+  ///
+  /// `expected_period_us` is retained for API compatibility but IGNORED: the
+  /// CommLoop is deadline-driven at loop_rate_hz_, so PeriodicRtThread computes
+  /// jitter against its own period budget. The parameter no longer influences
+  /// the emitted jitter.
   void SetTimingProducer(rtc::HandUdpTimingBuffer* producer,
                          double expected_period_us = 0.0) noexcept {
     timing_producer_ = producer;
-    expected_period_us_ = expected_period_us;
+    expected_period_us_ = expected_period_us;  // retained for ABI; unused (see above)
   }
 
   [[nodiscard]] rtc::HandUdpTimingBuffer* TimingProducer() const noexcept {
@@ -341,10 +373,12 @@ class UdpHandController {
   // ── State readiness ─────────────────────────────────────────────────────
 
   /// True after at least one successful state read from the hand hardware.
-  /// Write commands are suppressed until this returns true.
+  /// Write commands are suppressed until this returns true (startup no-jump
+  /// contract — see the write gate in RunCommCycle). Reset to false on each
+  /// Start() so a restart re-reads before writing.
   [[nodiscard]] bool HasStateBeenRead() const noexcept { return state_read_once_; }
 
-  // ── Event-driven API (called from ControlLoop) ─────────────────────────
+  // ── Command API (ROS command sub / CM ControlLoop → self-clocked loop) ──
 
   void SendCommandAndRequestStates(const std::array<float, kNumHandMotors>& cmd) noexcept {
     // Fake mode: echo-back
@@ -389,17 +423,14 @@ class UdpHandController {
       return;
     }
 
-    if (busy_.load(std::memory_order_acquire)) {
-      event_skip_count_.fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-    // RT-safe handoff: lock-free SeqLock store, release-ordered flag, then
-    // non-blocking eventfd write to wake the EventLoop.
+    // RT-safe handoff to the self-clocked CommLoop: lock-free SeqLock store +
+    // release-ordered pending flag. No wake primitive — the loop is already
+    // ticking at loop_rate_hz_ and latches the flag at the top of its next
+    // cycle (last-command-wins; a burst before the next tick collapses to the
+    // latest). Per-command, not a permanent latch: the cycle clears it after
+    // one write attempt, so an uncommanded interval is read-only.
     staged_cmd_seqlock_.Store(cmd);
     event_pending_.store(true, std::memory_order_release);
-    if (event_fd_ >= 0) {
-      static_cast<void>(::eventfd_write(event_fd_, 1));
-    }
   }
 
   // ── Legacy API (standalone udp_hand_node) ──────────────────────────────
@@ -408,13 +439,13 @@ class UdpHandController {
     SendCommandAndRequestStates(positions);
   }
 
-  // ── Sensor calibration trigger (ROS thread -> EventLoop handoff) ───────
+  // ── Sensor calibration trigger (ROS thread -> CommLoop handoff) ────────
 
   /// Request a sensor calibration action. Safe to call from ROS subscriber
-  /// threads. The actual reset/state mutation happens on the EventLoop
+  /// threads. The actual reset/state mutation happens on the CommLoop
   /// thread, so existing sensor data structures stay single-threaded.
   /// Only one request is in-flight at a time; additional requests before the
-  /// EventLoop consumes the pending one will overwrite it (last-wins).
+  /// CommLoop consumes the pending one will overwrite it (last-wins).
   void RequestCalibration(uint8_t sensor_type, uint8_t action, uint16_t sample_count) noexcept {
     pending_calib_.sensor_type = sensor_type;
     pending_calib_.action = action;
@@ -423,7 +454,7 @@ class UdpHandController {
   }
 
   /// Snapshot of the latest calibration progress for a given sensor.
-  /// Safe to call from any thread (reads EventLoop-owned state via snapshot
+  /// Safe to call from any thread (reads CommLoop-owned state via snapshot
   /// accessors that are either atomic or only mutated in known contexts).
   [[nodiscard]] CalibrationStatusSnapshot GetCalibrationStatus(uint8_t sensor_type) const noexcept {
     CalibrationStatusSnapshot snap{};
@@ -501,7 +532,7 @@ class UdpHandController {
     return stats;
   }
 
-  /// Snapshot of the last CycleOutcomeRing::kCapacity EventLoop cycle outcomes
+  /// Snapshot of the last CycleOutcomeRing::kCapacity CommLoop cycle outcomes
   /// (attempted/ok request-kind masks). Safe from any thread (SeqLock).
   [[nodiscard]] CycleOutcomeRing GetCycleOutcomeRing() const noexcept {
     return outcome_ring_seqlock_.Load();
@@ -524,462 +555,381 @@ class UdpHandController {
   }
 
  private:
-  // Event-driven loop: eventfd poll -> write + read -> sensor processing ->
-  // state publish.
-  void EventLoop(std::stop_token stop_token) {
-    if (!rtc::ApplyThreadConfig(thread_cfg_)) {
-      RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
-                  "EventLoop: rtc::ApplyThreadConfig failed (running at default priority)");
+  // ── Self-clocked comm loop (PeriodicRtThread subclass) ───────────────────
+  // CommLoop ticks OnTick() -> owner_->RunCommCycle() once per loop_rate_hz_
+  // period (clock_nanosleep TIMER_ABSTIME + overrun recovery in the base). The
+  // base captures t0 before OnTick and t3 after; MarkState()/MarkCompute()
+  // forward the intra-tick breakpoints so the base can push one
+  // RtTickTimingPayload per tick. Nested so it can reach the owner's private
+  // members through the back-pointer.
+  class CommLoop final : public rtc::PeriodicRtThread {
+   public:
+    explicit CommLoop(UdpHandController* owner) noexcept : owner_(owner) {}
+
+    // Forwarders: RunCommCycle lives on the owner (not this subclass), so it
+    // cannot reach the base's protected MarkStateAcquired/MarkComputeDone
+    // directly. These expose them for the state / compute breakpoints.
+    void MarkState() noexcept { MarkStateAcquired(); }
+
+    void MarkCompute() noexcept { MarkComputeDone(); }
+
+   protected:
+    void OnTick() override { owner_->RunCommCycle(); }
+
+   private:
+    UdpHandController* owner_;
+  };
+
+  // One self-clocked comm cycle — the CommLoop tick body. Runs on the CommLoop
+  // SCHED_FIFO thread every loop_rate_hz_ period (RT hot path). Order:
+  //   decimation decision → E-Stop → (skip? return) → latch command →
+  //   command-gated write → reads → sensor post-process → publish → forensics.
+  // Allocation-free; logging is THROTTLE-only with RT-safe (primitive-arg) msgs.
+  void RunCommCycle() noexcept {
+    // Whole-cycle UDP decimation: only every comm_decimation_-th cycle runs the
+    // UDP transaction (default 1 = every cycle). Decided first so the E-Stop
+    // check below still runs on every tick, decimated or not.
+    ++comm_cycle_counter_;
+    const bool is_comm_cycle = (comm_cycle_counter_ >= comm_decimation_);
+    if (is_comm_cycle) {
+      comm_cycle_counter_ = 0;
     }
 
-    const bool is_bulk = (communication_mode_ == HandCommunicationMode::kBulk);
+    // E-Stop (checked every tick, before the decimation skip): zero-write once
+    // and self-stop the loop. Terminal — semantically the old EventLoop `break`.
+    if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
+      static rclcpp::Clock estop_clock(RCL_STEADY_TIME);
+      RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), estop_clock,
+                           ::udp_hand_driver::logging::kThrottleFastMs,
+                           "RunCommCycle: E-Stop active, sending zero and stopping loop");
+      std::array<float, kNumHandMotors> zeros{};
+      transport_.WritePositionFireAndForget(zeros, joint_io_mode_);
+      // One-shot shutdown request (not recurring tick work): RequestStop()
+      // touches the base pause-mutex once here so the loop exits after this tick.
+      comm_loop_.RequestStop();
+      return;
+    }
 
-    // Joint-space I/O MODE for this protocol (1a=kJoint, 1b=kMotor). Hoisted off
-    // the per-tick path: sensor_protocol_ is fixed for the loop's lifetime (set
-    // in Start() before this thread launches). Drives the position write and the
-    // joint-space read; the motor-space read below keeps its own kMotor.
-    const packets::JointMode joint_io_mode = sensor_protocol_->JointIoMode();
+    // Decimated skip cycle: no UDP I/O, no publish, no cycle accounting. The
+    // staged command (if any) stays latched in event_pending_ for the next real
+    // comm cycle.
+    if (!is_comm_cycle) {
+      comm_skip_count_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
 
-    std::array<uint8_t, packets::kMotorPacketSize> send_buf{};
-    std::array<uint8_t, packets::kMotorPacketSize> echo_buf{};
-    std::array<float, packets::kMotorDataCount> motor_pos_buf{};
-    std::array<float, packets::kMotorDataCount> motor_vel_buf{};
-    std::array<float, packets::kMotorDataCount> motor_cur_buf{};
-    std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip> sensor_raw_buf{};
-    std::array<float, kNumHandMotors> pending_cmd{};
+    // Latch the most recent staged command (last-command-wins). Per-command:
+    // cleared after one write attempt below, so an uncommanded interval is
+    // read-only and the firmware holds its last position.
+    if (event_pending_.exchange(false, std::memory_order_acquire)) {
+      pending_cmd_ = staged_cmd_seqlock_.Load();
+      has_pending_write_ = true;
+    }
 
-    // Cycle outcome working copy — mutated here, snapshotted into
-    // outcome_ring_seqlock_ once per cycle (see end of loop body).
-    CycleOutcomeRing outcome_ring{};
+    UdpHandState state{};
+    bool any_recv_ok = false;
+    uint8_t attempted_mask = 0;
+    uint8_t ok_mask = 0;
+    double ft_infer_elapsed_us = 0.0;
+    std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data_raw{};
 
-    std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data{};
-    // 1b force cache (persists across decimated cycles, mirroring
-    // cached_sensor_data for the 1a int32 pipeline). Zero on the 1a path.
-    std::array<float, udp_hand_driver::kMaxSensorForceValues> cached_sensor_force{};
-    // Raw bulk-sensor receive scratch (sized for the largest response, 259B).
-    // Decoded by sensor_protocol_ so the layout can vary by version.
-    std::array<uint8_t, packets::kMaxPacketSize> sensor_recv_buf{};
-    int sensor_cycle_counter = 0;
-    // Whole-cycle UDP decimation counter (see comm_decimation_). Advances only
-    // on non-first cycles; the first cycle always communicates.
-    int comm_cycle_counter = 0;
+    const auto t0 = std::chrono::steady_clock::now();
 
-    // First cycle: run immediately (no eventfd wait) to read initial state
-    // before any write command is sent. This ensures:
-    //   1. Hand current position is known before any command
-    //   2. /hand/joint_states is published for rtc_controller_manager auto-hold
-    //   3. No zero-command jump on startup
-    bool first_cycle = true;
-    // Gate writes until the FIRST real command has been staged. state_read_once_
-    // alone is not enough: it flips true after the first state read (cycle 1),
-    // but pending_cmd stays zero-initialised until the controller publishes its
-    // first /hand/joint_command (many cycles later — lifecycle activate + hold
-    // seed + publish). Writing pending_cmd in that window commands the hand to
-    // q=0 and drags it off its measured pose (visible p1b startup collapse).
-    // Read-only cycles (state publish) continue meanwhile; the firmware holds
-    // its position while uncommanded — the documented startup contract above.
-    bool cmd_received_once = false;
-
-    while (!stop_token.stop_requested()) {
-      // Whole-cycle UDP decimation decision. The first cycle always
-      // communicates (needs the initial state read); afterwards only every
-      // comm_decimation_-th cycle does the UDP transaction.
-      bool is_comm_cycle = true;
-      if (first_cycle) {
-        // First cycle: skip eventfd wait, run read-only immediately
-        first_cycle = false;
-      } else {
-        // poll() instead of unconditional sleep to prevent startup deadlock:
-        // rtc_controller_manager needs continuous /hand/joint_states to
-        // initialize auto-hold, but only publishes /hand/joint_command after
-        // init. Timeout ensures read cycles continue even without commands.
-        static constexpr int kEventTimeoutMs = 20;
-        if (event_fd_ >= 0) {
-          struct pollfd pfd {};
-
-          pfd.fd = event_fd_;
-          pfd.events = POLLIN;
-          pfd.revents = 0;
-          const int poll_rc = ::poll(&pfd, 1, kEventTimeoutMs);
-          if (poll_rc > 0 && (pfd.revents & POLLIN) != 0) {
-            std::uint64_t drained{};
-            static_cast<void>(::eventfd_read(event_fd_, &drained));
-          }
-        } else {
-          // No eventfd available (fallback): degrade to a short sleep so the
-          // loop still ticks for the read-only cadence used during startup.
-          std::this_thread::sleep_for(std::chrono::milliseconds(kEventTimeoutMs));
-        }
-        if (stop_token.stop_requested())
-          break;
-        if (event_pending_.exchange(false, std::memory_order_acquire)) {
-          pending_cmd = staged_cmd_seqlock_.Load();
-          cmd_received_once = true;
-        }
-        // Decimate: only every comm_decimation_-th non-first cycle communicates.
-        ++comm_cycle_counter;
-        is_comm_cycle = (comm_cycle_counter >= comm_decimation_);
-        if (is_comm_cycle) {
-          comm_cycle_counter = 0;
-        }
+    // 1. Write position + recv echo (joint_io_mode_: 1a=kJoint, 1b=kMotor).
+    // Gated on BOTH the first state read (startup no-jump contract) AND a
+    // pending command. has_pending_write_ is cleared only here, inside the open
+    // gate, so a command staged before the first state read is held (not lost)
+    // until state_read_once_ flips true. Success/failure both clear — a dropped
+    // write is not re-sent stale (control_rate delivers a fresh one).
+    if (state_read_once_ && has_pending_write_) {
+      attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
+      if (transport_.WritePositionWithEcho(pending_cmd_, send_buf_, echo_buf_, joint_io_mode_)) {
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
       }
+      has_pending_write_ = false;
+    }
 
-      busy_.store(true, std::memory_order_release);
+    const auto t1 = std::chrono::steady_clock::now();
 
-      // E-Stop check
-      if (estop_flag_ && estop_flag_->load(std::memory_order_acquire)) {
-        RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
-                    "EventLoop: E-Stop active, sending zero command and exiting");
-        std::array<float, kNumHandMotors> zeros{};
-        transport_.WritePositionFireAndForget(zeros, joint_io_mode);
-        busy_.store(false, std::memory_order_release);
-        break;
-      }
+    // Sensor decimation
+    ++sensor_cycle_counter_;
+    const bool is_sensor_cycle = (sensor_cycle_counter_ >= sensor_decimation_);
+    if (is_sensor_cycle)
+      sensor_cycle_counter_ = 0;
 
-      // Comm decimation: on a skipped cycle do no UDP I/O, no state publish, no
-      // cycle accounting — the eventfd was already drained and the latest
-      // command latched (sent on the next real comm cycle). Placed after the
-      // E-Stop check so E-Stop is honored every cycle regardless of decimation.
-      if (!is_comm_cycle) {
-        comm_skip_count_.fetch_add(1, std::memory_order_relaxed);
-        busy_.store(false, std::memory_order_release);
-        continue;
-      }
-
-      UdpHandState state{};
-      bool any_recv_ok = false;
-      uint8_t attempted_mask = 0;
-      uint8_t ok_mask = 0;
-      double ft_infer_elapsed_us = 0.0;
-      std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data_raw{};
-
-      const auto t0 = std::chrono::steady_clock::now();
-
-      // 1. Write position + recv echo (joint_io_mode: 1a=kJoint, 1b=kMotor)
-      // Skip write until BOTH the first state has been read AND the first real
-      // command has been staged — prevents sending the zero-initialised
-      // pending_cmd (which drives the hand to q=0) in the startup window before
-      // the controller publishes its first /hand/joint_command.
-      if (state_read_once_ && cmd_received_once) {
-        attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
-        if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf, joint_io_mode)) {
-          any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
-        }
-      }
-
-      const auto t1 = std::chrono::steady_clock::now();
-
-      // Sensor decimation
-      ++sensor_cycle_counter;
-      const bool is_sensor_cycle = (sensor_cycle_counter >= sensor_decimation_);
-      if (is_sensor_cycle)
-        sensor_cycle_counter = 0;
-
-      if (is_bulk) {
-        // ── Bulk mode ─────────────────────────────────────────────────────
-        // 2. Read all motors (motor-space: kMotor). Skipped when the protocol
-        //    has no motor-space read (1b) — motor_states is then not published.
-        if (sensor_protocol_->HasMotorSpaceRead()) {
-          packets::JointMode received_mode{};
-          attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
-          if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf, motor_cur_buf,
-                                             packets::JointMode::kMotor, &received_mode,
-                                             RequestKind::kMotorRead)) {
-            std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
-            std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
-            std::copy_n(motor_cur_buf.begin(), kNumHandMotors, state.motor_currents.begin());
-            state.received_joint_mode = static_cast<uint8_t>(received_mode);
-            state.motor_valid = true;
-            any_recv_ok = true;
-            ok_mask |= RequestKindBit(RequestKind::kMotorRead);
-          }
-        }
-
-        const auto t2 = std::chrono::steady_clock::now();
-
-        // 3. Read all motors (joint-space: joint_io_mode) — pos/vel/cur. 1b
-        //    issues this in kMotor (its only joint-serving mode) and still
-        //    publishes the result as joint_states.
-        {
-          std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
-          attempted_mask |= RequestKindBit(RequestKind::kJointRead);
-          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, joint_io_mode, nullptr,
-                                             RequestKind::kJointRead)) {
-            std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
-            std::copy_n(jv_buf.begin(), kNumHandMotors, state.joint_velocities.begin());
-            std::copy_n(jc_buf.begin(), kNumHandMotors, state.joint_currents.begin());
-            state.joint_valid = true;
-            any_recv_ok = true;
-            ok_mask |= RequestKindBit(RequestKind::kJointRead);
-          }
-        }
-
-        const auto t2j = std::chrono::steady_clock::now();
-
-        // 4. Read all sensors — raw recv, decode via the injected protocol
-        //    (version seam). The request is identical across versions; only the
-        //    response size/layout and decode differ.
-        if (is_sensor_cycle) {
-          state.num_fingertips = num_fingertips_;  // decode input
-          attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
-          const ssize_t recvd = transport_.RequestBulkSensorRaw(
-              sensor_recv_buf.data(), sensor_recv_buf.size(), sensor_protocol_->ResponseSize(),
-              packets::SensorMode::kRaw);
-          if (recvd >= 0 && sensor_protocol_->DecodeAllSensors(
-                                sensor_recv_buf.data(), static_cast<std::size_t>(recvd), state)) {
-            any_recv_ok = true;
-            ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
-            cached_sensor_data = state.sensor_data;    // 1a raw decode (0 for 1b)
-            cached_sensor_force = state.sensor_force;  // 1b force (0 for 1a)
-          }
-        }
-
-        const auto t3 = std::chrono::steady_clock::now();
-
-        // Sensor post-processing + FT inference. Gated on the protocol's
-        // polymorphic capability — 1a runs the LPF/drift/F-T pipeline; 1b skips
-        // it entirely (force is firmware-computed).
-        if (is_sensor_cycle && sensor_protocol_->RunsSensorPostProcess()) {
-          cached_sensor_data_raw = cached_sensor_data;
-          sensor_processor_.PreFilter();
-          sensor_processor_.ApplyFilters(cached_sensor_data);
-          sensor_processor_.DetectDrift(cached_sensor_data_raw);
-          ft_infer_elapsed_us = RunFTInference(cached_sensor_data);
-        }
-
-        const auto t4 = std::chrono::steady_clock::now();
-
-        state.sensor_data_raw = cached_sensor_data_raw;
-        state.sensor_data = cached_sensor_data;
-        state.sensor_force = cached_sensor_force;
-        state.num_fingertips = num_fingertips_;
-        state.valid = any_recv_ok;
-
-        if (any_recv_ok && !state_read_once_) {
-          state_read_once_ = true;
-          // Throttled as a defensive RT-safety net; the state_read_once_ gate
-          // already guarantees this fires at most once per Start().
-          static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
-          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
-                               ::udp_hand_driver::logging::kThrottleIdleMs,
-                               "First hand state received (write commands now enabled)");
-        }
-
-        state_seqlock_.Store(state);
-        if (callback_) {
-          callback_(state, ft_seqlock_.Load());
-        }
-
-        const auto t5 = std::chrono::steady_clock::now();
-
-        UdpHandTimingProfiler::PhaseTiming pt;
-        pt.is_bulk_mode = true;
-        pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
-        pt.read_all_motor_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
-        pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
-        pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
-        pt.sensor_proc_us =
-            std::chrono::duration<double, std::micro>(t4 - t3).count() - ft_infer_elapsed_us;
-        pt.ft_infer_us = ft_infer_elapsed_us;
-        pt.total_us = std::chrono::duration<double, std::micro>(t5 - t0).count();
-        pt.is_sensor_cycle = is_sensor_cycle;
-        timing_profiler_.Update(pt);
-
-        if (timing_producer_) {
-          rtc::RtTickTimingPayload tp{};
-          tp.t_state_us = std::chrono::duration<double, std::micro>(t3 - t0).count();
-          tp.t_compute_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
-          tp.t_publish_us = std::chrono::duration<double, std::micro>(t5 - t4).count();
-          tp.t_total_us = pt.total_us;
-          if (prev_tick_valid_ && expected_period_us_ > 0.0) {
-            const double period_us =
-                std::chrono::duration<double, std::micro>(t0 - prev_tick_t0_).count();
-            tp.jitter_us = std::abs(period_us - expected_period_us_);
-          }
-          prev_tick_t0_ = t0;
-          prev_tick_valid_ = true;
-          (void)timing_producer_->Push(tp);
-        }
-
-      } else {
-        // ── Individual mode ───────────────────────────────────────────────
-        // 2. Read motor position (kMotor)
+    if (is_bulk_) {
+      // ── Bulk mode ─────────────────────────────────────────────────────
+      // 2. Read all motors (motor-space: kMotor). Skipped when the protocol
+      //    has no motor-space read (1b) — motor_states is then not published.
+      if (sensor_protocol_->HasMotorSpaceRead()) {
         packets::JointMode received_mode{};
         attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
-        if (transport_.RequestMotorRead(packets::Command::kReadPosition, motor_pos_buf,
-                                        packets::JointMode::kMotor, &received_mode,
-                                        RequestKind::kMotorRead)) {
-          std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
+        if (transport_.RequestAllMotorRead(motor_pos_buf_, motor_vel_buf_, motor_cur_buf_,
+                                           packets::JointMode::kMotor, &received_mode,
+                                           RequestKind::kMotorRead)) {
+          std::copy_n(motor_pos_buf_.begin(), kNumHandMotors, state.motor_positions.begin());
+          std::copy_n(motor_vel_buf_.begin(), kNumHandMotors, state.motor_velocities.begin());
+          std::copy_n(motor_cur_buf_.begin(), kNumHandMotors, state.motor_currents.begin());
           state.received_joint_mode = static_cast<uint8_t>(received_mode);
           state.motor_valid = true;
           any_recv_ok = true;
           ok_mask |= RequestKindBit(RequestKind::kMotorRead);
         }
+      }
 
-        const auto t2 = std::chrono::steady_clock::now();
+      const auto t2 = std::chrono::steady_clock::now();
 
-        // 3. Read joint position (joint-space: joint_io_mode). Individual mode is
-        //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
-        {
-          std::array<float, packets::kMotorDataCount> jp_buf{};
-          attempted_mask |= RequestKindBit(RequestKind::kJointRead);
-          if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf, joint_io_mode,
-                                          nullptr, RequestKind::kJointRead)) {
-            std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
-            state.joint_valid = true;
-            any_recv_ok = true;
-            ok_mask |= RequestKindBit(RequestKind::kJointRead);
-          }
-        }
-
-        const auto t2j = std::chrono::steady_clock::now();
-
-        // 4. Read motor velocity (kMotor)
-        attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
-        if (transport_.RequestMotorRead(packets::Command::kReadVelocity, motor_vel_buf,
-                                        packets::JointMode::kMotor, nullptr,
-                                        RequestKind::kMotorRead)) {
-          std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
+      // 3. Read all motors (joint-space: joint_io_mode_) — pos/vel/cur. 1b
+      //    issues this in kMotor (its only joint-serving mode) and still
+      //    publishes the result as joint_states.
+      {
+        std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
+        attempted_mask |= RequestKindBit(RequestKind::kJointRead);
+        if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, joint_io_mode_, nullptr,
+                                           RequestKind::kJointRead)) {
+          std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
+          std::copy_n(jv_buf.begin(), kNumHandMotors, state.joint_velocities.begin());
+          std::copy_n(jc_buf.begin(), kNumHandMotors, state.joint_currents.begin());
+          state.joint_valid = true;
           any_recv_ok = true;
-          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
-        }
-
-        const auto t3 = std::chrono::steady_clock::now();
-
-        // 5. Read sensors
-        if (is_sensor_cycle) {
-          if (num_fingertips_ > 0) {
-            attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
-          }
-          for (int i = 0; i < num_fingertips_; ++i) {
-            auto cmd = packets::SensorCommand(i);
-            if (transport_.RequestSensorRead(cmd, sensor_raw_buf, packets::SensorMode::kRaw)) {
-              std::copy_n(
-                  sensor_raw_buf.begin(), udp_hand_driver::kSensorValuesPerFingertip,
-                  cached_sensor_data.begin() + i * udp_hand_driver::kSensorValuesPerFingertip);
-              any_recv_ok = true;
-              ok_mask |= RequestKindBit(RequestKind::kSensorRead);
-            }
-          }
-        }
-
-        const auto t4 = std::chrono::steady_clock::now();
-
-        if (is_sensor_cycle) {
-          cached_sensor_data_raw = cached_sensor_data;
-          sensor_processor_.PreFilter();
-          sensor_processor_.ApplyFilters(cached_sensor_data);
-          sensor_processor_.DetectDrift(cached_sensor_data_raw);
-          ft_infer_elapsed_us = RunFTInference(cached_sensor_data);
-        }
-
-        const auto t5 = std::chrono::steady_clock::now();
-
-        state.sensor_data_raw = cached_sensor_data_raw;
-        state.sensor_data = cached_sensor_data;
-        state.num_fingertips = num_fingertips_;
-        state.valid = any_recv_ok;
-
-        if (any_recv_ok && !state_read_once_) {
-          state_read_once_ = true;
-          // Throttled as a defensive RT-safety net; the state_read_once_ gate
-          // already guarantees this fires at most once per Start().
-          static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
-          RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
-                               ::udp_hand_driver::logging::kThrottleIdleMs,
-                               "First hand state received (write commands now enabled)");
-        }
-
-        state_seqlock_.Store(state);
-        if (callback_) {
-          callback_(state, ft_seqlock_.Load());
-        }
-
-        const auto t6 = std::chrono::steady_clock::now();
-
-        UdpHandTimingProfiler::PhaseTiming pt;
-        pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
-        pt.read_pos_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
-        pt.read_joint_pos_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
-        pt.read_vel_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
-        pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
-        pt.sensor_proc_us =
-            std::chrono::duration<double, std::micro>(t5 - t4).count() - ft_infer_elapsed_us;
-        pt.ft_infer_us = ft_infer_elapsed_us;
-        pt.total_us = std::chrono::duration<double, std::micro>(t6 - t0).count();
-        pt.is_sensor_cycle = is_sensor_cycle;
-        timing_profiler_.Update(pt);
-
-        if (timing_producer_) {
-          rtc::RtTickTimingPayload tp{};
-          tp.t_state_us = std::chrono::duration<double, std::micro>(t4 - t0).count();
-          tp.t_compute_us = std::chrono::duration<double, std::micro>(t5 - t4).count();
-          tp.t_publish_us = std::chrono::duration<double, std::micro>(t6 - t5).count();
-          tp.t_total_us = pt.total_us;
-          if (prev_tick_valid_ && expected_period_us_ > 0.0) {
-            const double period_us =
-                std::chrono::duration<double, std::micro>(t0 - prev_tick_t0_).count();
-            tp.jitter_us = std::abs(period_us - expected_period_us_);
-          }
-          prev_tick_t0_ = t0;
-          prev_tick_valid_ = true;
-          (void)timing_producer_->Push(tp);
+          ok_mask |= RequestKindBit(RequestKind::kJointRead);
         }
       }
 
-      transport_.comm_stats_mut().total_cycles++;
-      const auto cycle_seq = cycle_count_.fetch_add(1, std::memory_order_relaxed);
+      const auto t2j = std::chrono::steady_clock::now();
 
-      // Record this cycle's outcome into the forensic ring and snapshot it.
-      outcome_ring.entries[outcome_ring.count % CycleOutcomeRing::kCapacity] = {
-          static_cast<uint32_t>(cycle_seq), attempted_mask, ok_mask};
-      ++outcome_ring.count;
-      outcome_ring_seqlock_.Store(outcome_ring);
-
-      if (any_recv_ok) {
-        consecutive_recv_failures_.store(0, std::memory_order_relaxed);
-      } else {
-        const auto failures =
-            consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed) + 1;
-        // Same-thread (EventLoop) reference — no copy, no race with the writer.
-        const UdpHandCommStats& cs = transport_.comm_stats();
-        if (failures == 1) {
-          // 0→1 transition: name the FIRST failed request kind of this cycle
-          // and the last rejected CMD byte — a stale echo of the *previous*
-          // request implies desync rather than timeout. Throttled; static
-          // string literal + primitive args only (RT-safe).
-          const auto failed_mask = static_cast<uint8_t>(attempted_mask & ~ok_mask);
-          const int first_failed = (failed_mask != 0) ? std::countr_zero(failed_mask) : -1;
-          static rclcpp::Clock onset_clock(RCL_STEADY_TIME);
-          RCLCPP_WARN_THROTTLE(
-              ::udp_hand_driver::logging::ControllerLogger(), onset_clock,
-              ::udp_hand_driver::logging::kThrottleFastMs,
-              "EventLoop: recv failure onset: first_failed=%s attempted=0x%02X ok=0x%02X "
-              "last_unexpected_cmd=0x%02X last_unexpected_len=%u",
-              (first_failed >= 0 && first_failed < kNumRequestKinds)
-                  ? kRequestKindNames[static_cast<std::size_t>(first_failed)]
-                  : "none",
-              static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
-              static_cast<unsigned>(cs.last_unexpected_cmd),
-              static_cast<unsigned>(cs.last_unexpected_len));
-        } else if (failures >= 5) {
-          static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-          RCLCPP_WARN_THROTTLE(
-              ::udp_hand_driver::logging::ControllerLogger(), steady_clock,
-              ::udp_hand_driver::logging::kThrottleFastMs,
-              "EventLoop: consecutive recv failures=%lu (attempted=0x%02X "
-              "ok=0x%02X last_unexpected_cmd=0x%02X)",
-              static_cast<unsigned long>(failures), static_cast<unsigned>(attempted_mask),
-              static_cast<unsigned>(ok_mask), static_cast<unsigned>(cs.last_unexpected_cmd));
+      // 4. Read all sensors — raw recv, decode via the injected protocol
+      //    (version seam). The request is identical across versions; only the
+      //    response size/layout and decode differ.
+      if (is_sensor_cycle) {
+        state.num_fingertips = num_fingertips_;  // decode input
+        attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
+        const ssize_t recvd = transport_.RequestBulkSensorRaw(
+            sensor_recv_buf_.data(), sensor_recv_buf_.size(), sensor_protocol_->ResponseSize(),
+            packets::SensorMode::kRaw);
+        if (recvd >= 0 && sensor_protocol_->DecodeAllSensors(
+                              sensor_recv_buf_.data(), static_cast<std::size_t>(recvd), state)) {
+          any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
+          cached_sensor_data_ = state.sensor_data;    // 1a raw decode (0 for 1b)
+          cached_sensor_force_ = state.sensor_force;  // 1b force (0 for 1a)
         }
       }
 
-      busy_.store(false, std::memory_order_release);
+      const auto t3 = std::chrono::steady_clock::now();
+      comm_loop_.MarkState();  // end of UDP read phase (base t1)
+
+      // Sensor post-processing + FT inference. Gated on the protocol's
+      // polymorphic capability — 1a runs the LPF/drift/F-T pipeline; 1b skips
+      // it entirely (force is firmware-computed).
+      if (is_sensor_cycle && sensor_protocol_->RunsSensorPostProcess()) {
+        cached_sensor_data_raw = cached_sensor_data_;
+        sensor_processor_.PreFilter();
+        sensor_processor_.ApplyFilters(cached_sensor_data_);
+        sensor_processor_.DetectDrift(cached_sensor_data_raw);
+        ft_infer_elapsed_us = RunFTInference(cached_sensor_data_);
+      }
+
+      const auto t4 = std::chrono::steady_clock::now();
+      comm_loop_.MarkCompute();  // end of compute phase (base t2)
+
+      state.sensor_data_raw = cached_sensor_data_raw;
+      state.sensor_data = cached_sensor_data_;
+      state.sensor_force = cached_sensor_force_;
+      state.num_fingertips = num_fingertips_;
+      state.valid = any_recv_ok;
+
+      if (any_recv_ok && !state_read_once_) {
+        state_read_once_ = true;
+        // Throttled as a defensive RT-safety net; the state_read_once_ gate
+        // already guarantees this fires at most once per Start().
+        static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
+        RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
+                             ::udp_hand_driver::logging::kThrottleIdleMs,
+                             "First hand state received (write commands now enabled)");
+      }
+
+      state_seqlock_.Store(state);
+      if (callback_) {
+        callback_(state, ft_seqlock_.Load());
+      }
+
+      const auto t5 = std::chrono::steady_clock::now();
+
+      UdpHandTimingProfiler::PhaseTiming pt;
+      pt.is_bulk_mode = true;
+      pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+      pt.read_all_motor_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
+      pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
+      pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+      pt.sensor_proc_us =
+          std::chrono::duration<double, std::micro>(t4 - t3).count() - ft_infer_elapsed_us;
+      pt.ft_infer_us = ft_infer_elapsed_us;
+      pt.total_us = std::chrono::duration<double, std::micro>(t5 - t0).count();
+      pt.is_sensor_cycle = is_sensor_cycle;
+      timing_profiler_.Update(pt);
+
+    } else {
+      // ── Individual mode ───────────────────────────────────────────────
+      // 2. Read motor position (kMotor)
+      packets::JointMode received_mode{};
+      attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
+      if (transport_.RequestMotorRead(packets::Command::kReadPosition, motor_pos_buf_,
+                                      packets::JointMode::kMotor, &received_mode,
+                                      RequestKind::kMotorRead)) {
+        std::copy_n(motor_pos_buf_.begin(), kNumHandMotors, state.motor_positions.begin());
+        state.received_joint_mode = static_cast<uint8_t>(received_mode);
+        state.motor_valid = true;
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+      }
+
+      const auto t2 = std::chrono::steady_clock::now();
+
+      // 3. Read joint position (joint-space: joint_io_mode_). Individual mode is
+      //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
+      {
+        std::array<float, packets::kMotorDataCount> jp_buf{};
+        attempted_mask |= RequestKindBit(RequestKind::kJointRead);
+        if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf, joint_io_mode_,
+                                        nullptr, RequestKind::kJointRead)) {
+          std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
+          state.joint_valid = true;
+          any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kJointRead);
+        }
+      }
+
+      const auto t2j = std::chrono::steady_clock::now();
+
+      // 4. Read motor velocity (kMotor)
+      attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
+      if (transport_.RequestMotorRead(packets::Command::kReadVelocity, motor_vel_buf_,
+                                      packets::JointMode::kMotor, nullptr,
+                                      RequestKind::kMotorRead)) {
+        std::copy_n(motor_vel_buf_.begin(), kNumHandMotors, state.motor_velocities.begin());
+        any_recv_ok = true;
+        ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+      }
+
+      const auto t3 = std::chrono::steady_clock::now();
+
+      // 5. Read sensors
+      if (is_sensor_cycle) {
+        if (num_fingertips_ > 0) {
+          attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
+        }
+        for (int i = 0; i < num_fingertips_; ++i) {
+          auto cmd = packets::SensorCommand(i);
+          if (transport_.RequestSensorRead(cmd, sensor_raw_buf_, packets::SensorMode::kRaw)) {
+            std::copy_n(
+                sensor_raw_buf_.begin(), udp_hand_driver::kSensorValuesPerFingertip,
+                cached_sensor_data_.begin() + i * udp_hand_driver::kSensorValuesPerFingertip);
+            any_recv_ok = true;
+            ok_mask |= RequestKindBit(RequestKind::kSensorRead);
+          }
+        }
+      }
+
+      const auto t4 = std::chrono::steady_clock::now();
+      comm_loop_.MarkState();  // end of UDP read phase (base t1)
+
+      if (is_sensor_cycle) {
+        cached_sensor_data_raw = cached_sensor_data_;
+        sensor_processor_.PreFilter();
+        sensor_processor_.ApplyFilters(cached_sensor_data_);
+        sensor_processor_.DetectDrift(cached_sensor_data_raw);
+        ft_infer_elapsed_us = RunFTInference(cached_sensor_data_);
+      }
+
+      const auto t5 = std::chrono::steady_clock::now();
+      comm_loop_.MarkCompute();  // end of compute phase (base t2)
+
+      state.sensor_data_raw = cached_sensor_data_raw;
+      state.sensor_data = cached_sensor_data_;
+      state.num_fingertips = num_fingertips_;
+      state.valid = any_recv_ok;
+
+      if (any_recv_ok && !state_read_once_) {
+        state_read_once_ = true;
+        // Throttled as a defensive RT-safety net; the state_read_once_ gate
+        // already guarantees this fires at most once per Start().
+        static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
+        RCLCPP_INFO_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), first_state_clock,
+                             ::udp_hand_driver::logging::kThrottleIdleMs,
+                             "First hand state received (write commands now enabled)");
+      }
+
+      state_seqlock_.Store(state);
+      if (callback_) {
+        callback_(state, ft_seqlock_.Load());
+      }
+
+      const auto t6 = std::chrono::steady_clock::now();
+
+      UdpHandTimingProfiler::PhaseTiming pt;
+      pt.write_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+      pt.read_pos_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
+      pt.read_joint_pos_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
+      pt.read_vel_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+      pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
+      pt.sensor_proc_us =
+          std::chrono::duration<double, std::micro>(t5 - t4).count() - ft_infer_elapsed_us;
+      pt.ft_infer_us = ft_infer_elapsed_us;
+      pt.total_us = std::chrono::duration<double, std::micro>(t6 - t0).count();
+      pt.is_sensor_cycle = is_sensor_cycle;
+      timing_profiler_.Update(pt);
+    }
+
+    transport_.comm_stats_mut().total_cycles++;
+    const auto cycle_seq = cycle_count_.fetch_add(1, std::memory_order_relaxed);
+
+    // Record this cycle's outcome into the forensic ring and snapshot it.
+    outcome_ring_working_.entries[outcome_ring_working_.count % CycleOutcomeRing::kCapacity] = {
+        static_cast<uint32_t>(cycle_seq), attempted_mask, ok_mask};
+    ++outcome_ring_working_.count;
+    outcome_ring_seqlock_.Store(outcome_ring_working_);
+
+    if (any_recv_ok) {
+      consecutive_recv_failures_.store(0, std::memory_order_relaxed);
+    } else {
+      const auto failures = consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed) + 1;
+      // Same-thread (CommLoop) reference — no copy, no race with the writer.
+      const UdpHandCommStats& cs = transport_.comm_stats();
+      if (failures == 1) {
+        // 0→1 transition: name the FIRST failed request kind of this cycle
+        // and the last rejected CMD byte — a stale echo of the *previous*
+        // request implies desync rather than timeout. Throttled; static
+        // string literal + primitive args only (RT-safe).
+        const auto failed_mask = static_cast<uint8_t>(attempted_mask & ~ok_mask);
+        const int first_failed = (failed_mask != 0) ? std::countr_zero(failed_mask) : -1;
+        static rclcpp::Clock onset_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(
+            ::udp_hand_driver::logging::ControllerLogger(), onset_clock,
+            ::udp_hand_driver::logging::kThrottleFastMs,
+            "RunCommCycle: recv failure onset: first_failed=%s attempted=0x%02X ok=0x%02X "
+            "last_unexpected_cmd=0x%02X last_unexpected_len=%u",
+            (first_failed >= 0 && first_failed < kNumRequestKinds)
+                ? kRequestKindNames[static_cast<std::size_t>(first_failed)]
+                : "none",
+            static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
+            static_cast<unsigned>(cs.last_unexpected_cmd),
+            static_cast<unsigned>(cs.last_unexpected_len));
+      } else if (failures >= 5) {
+        static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), steady_clock,
+                             ::udp_hand_driver::logging::kThrottleFastMs,
+                             "RunCommCycle: consecutive recv failures=%lu (attempted=0x%02X "
+                             "ok=0x%02X last_unexpected_cmd=0x%02X)",
+                             static_cast<unsigned long>(failures),
+                             static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
+                             static_cast<unsigned>(cs.last_unexpected_cmd));
+      }
     }
   }
 
-  // Consume any pending calibration request. Called on EventLoop thread.
+  // Consume any pending calibration request. Called on CommLoop thread.
   void DispatchCalibrationRequest() noexcept {
     if (!calib_request_pending_.load(std::memory_order_acquire))
       return;
@@ -994,7 +944,7 @@ class UdpHandController {
           return;
         }
         // Calibration START/ABORT are externally triggered, but the dispatch
-        // runs on the EventLoop hot path. Throttle as a defensive RT-safety
+        // runs on the CommLoop hot path. Throttle as a defensive RT-safety
         // net even though duplicate requests are already de-duped upstream.
         static rclcpp::Clock calib_clock(RCL_STEADY_TIME);
         if (req.action == calibration::kActionStart) {
@@ -1042,9 +992,12 @@ class UdpHandController {
   }
 
   rtc::ThreadConfig thread_cfg_;
+  // CommLoop cadence (Hz). Drives the self-clocked read/publish period; write
+  // is command-gated (see RunCommCycle). Validated (> 0) in Start().
+  double loop_rate_hz_;
   int sensor_decimation_;
   // Whole-cycle UDP decimation (load-reduction test knob). N → 1 real comm
-  // cycle per N EventLoop cycles; the other N-1 do no send/recv/publish. 1 =
+  // cycle per N CommLoop cycles; the other N-1 do no send/recv/publish. 1 =
   // communicate every cycle (default; bit-identical to pre-feature behavior).
   int comm_decimation_;
   int num_fingertips_;
@@ -1057,7 +1010,7 @@ class UdpHandController {
   FingertipFTInferencer::Config ft_config_;
 
   // Firmware sensor protocol (version seam). Defaulted to 1a in Start() if the
-  // node did not inject one. Owned here; the EventLoop dispatches sensor decode
+  // node did not inject one. Owned here; the CommLoop dispatches sensor decode
   // and queries capabilities (motor-space read, post-process) through it.
   std::unique_ptr<SensorProtocol> sensor_protocol_;
 
@@ -1072,18 +1025,19 @@ class UdpHandController {
   // E-Stop flag (set by RtControllerNode, null if not used)
   std::atomic<bool>* estop_flag_{nullptr};
 
-  // Event synchronisation (RT-safe: SeqLock + atomic flag + eventfd wake).
-  // Producer (ControlLoop, RT path) stores latest cmd into the SeqLock,
-  // sets event_pending_, and writes to event_fd_ to wake the consumer.
-  // Consumer (EventLoop, aux thread) polls event_fd_ then drains the flag.
+  // Command handoff (RT-safe, no wake primitive): the producer
+  // (SendCommandAndRequestStates — ROS command sub / CM ControlLoop) stores the
+  // latest cmd into the SeqLock and sets event_pending_ (release). The
+  // self-clocked CommLoop latches it at the top of its next cycle (acquire).
   static_assert(std::is_trivially_copyable_v<std::array<float, kNumHandMotors>>,
                 "SeqLock payload must be trivially copyable");
   rtc::SeqLock<std::array<float, kNumHandMotors>> staged_cmd_seqlock_{};
   std::atomic<bool> event_pending_{false};
-  int event_fd_{-1};
 
-  // EventLoop busy flag
-  std::atomic<bool> busy_{false};
+  // Retained for UdpHandCommStats ABI (stats JSON / forensic consumers). The
+  // old busy-skip path that incremented this no longer exists (the self-clocked
+  // loop never rejects a stage), so it stays 0. Do not remove without bumping
+  // the stats consumers.
   std::atomic<uint64_t> event_skip_count_{0};
   // Count of cycles skipped by comm_decimation_ (load-reduction telemetry).
   std::atomic<uint64_t> comm_skip_count_{0};
@@ -1093,9 +1047,9 @@ class UdpHandController {
   bool state_read_once_{false};  // True after first successful state read
   StateCallback callback_;
   rtc::HandUdpTimingBuffer* timing_producer_{nullptr};
+  // Retained for SetTimingProducer() API compatibility; unused — the CommLoop
+  // base computes jitter against its own period budget (see SetTimingProducer).
   double expected_period_us_{0.0};
-  std::chrono::steady_clock::time_point prev_tick_t0_{};
-  bool prev_tick_valid_{false};
   rtc::SeqLock<UdpHandState> state_seqlock_{};
   std::atomic<std::size_t> cycle_count_{0};
 
@@ -1105,16 +1059,50 @@ class UdpHandController {
   // Link health
   std::atomic<uint64_t> consecutive_recv_failures_{0};
 
-  // Cycle outcome ring snapshot (writer: EventLoop; readers: failure detector,
-  // stats save). The working copy lives on the EventLoop stack; each cycle ends
-  // with one Store() (~0.5 KB memcpy — negligible at 500 Hz).
+  // Cycle outcome ring (writer: CommLoop; readers: failure detector, stats
+  // save). outcome_ring_working_ accumulates across cycles (CommLoop-thread
+  // only); each cycle ends with one Store() into the SeqLock (~0.5 KB memcpy —
+  // negligible at loop_rate_hz).
   static_assert(std::is_trivially_copyable_v<CycleOutcomeRing>,
                 "SeqLock payload must be trivially copyable");
   rtc::SeqLock<CycleOutcomeRing> outcome_ring_seqlock_{};
+  CycleOutcomeRing outcome_ring_working_{};
 
-  // Pending calibration request (ROS thread -> EventLoop handoff).
+  // ── RunCommCycle hot-path state (CommLoop thread only — no sync) ─────────
+  // Per-loop-lifetime constants hoisted in Start() from sensor_protocol_ /
+  // communication_mode_.
+  bool is_bulk_{false};
+  packets::JointMode joint_io_mode_{packets::JointMode::kJoint};
+
+  // Latched write command + its pending flag (per-command gate). pending_cmd_
+  // holds the last staged command; has_pending_write_ is set when latched and
+  // cleared after one write attempt (see the write gate in RunCommCycle).
+  std::array<float, kNumHandMotors> pending_cmd_{};
+  bool has_pending_write_{false};
+
+  // Scratch buffers reused every cycle (avoid per-tick re-zeroing of large
+  // arrays; overwritten by the transport before use).
+  std::array<uint8_t, packets::kMotorPacketSize> send_buf_{};
+  std::array<uint8_t, packets::kMotorPacketSize> echo_buf_{};
+  std::array<float, packets::kMotorDataCount> motor_pos_buf_{};
+  std::array<float, packets::kMotorDataCount> motor_vel_buf_{};
+  std::array<float, packets::kMotorDataCount> motor_cur_buf_{};
+  std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip> sensor_raw_buf_{};
+  // Raw bulk-sensor receive scratch (sized for the largest response, 259B).
+  std::array<uint8_t, packets::kMaxPacketSize> sensor_recv_buf_{};
+
+  // Sensor caches (persist across decimated sensor cycles). 1a int32 pipeline
+  // vs 1b float force; the unused one stays zero.
+  std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data_{};
+  std::array<float, udp_hand_driver::kMaxSensorForceValues> cached_sensor_force_{};
+
+  // Decimation counters (CommLoop thread only).
+  int sensor_cycle_counter_{0};
+  int comm_cycle_counter_{0};
+
+  // Pending calibration request (ROS thread -> CommLoop handoff).
   // Written by RequestCalibration() (arbitrary thread), consumed by
-  // DispatchCalibrationRequest() (EventLoop thread). Last-wins semantics.
+  // DispatchCalibrationRequest() (CommLoop thread). Last-wins semantics.
   struct PendingCalibration {
     uint8_t sensor_type{0};
     uint8_t action{0};
@@ -1124,7 +1112,10 @@ class UdpHandController {
   PendingCalibration pending_calib_{};
   std::atomic<bool> calib_request_pending_{false};
 
-  std::jthread event_thread_;
+  // Self-clocked comm thread. Declared last so ~PeriodicRtThread joins the loop
+  // before any member it touches (transport_, sensor_processor_, …) is
+  // destroyed. Stop()/~UdpHandController also Join() it explicitly.
+  CommLoop comm_loop_{this};
 };
 
 }  // namespace udp_hand_driver

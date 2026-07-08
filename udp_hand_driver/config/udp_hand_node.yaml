@@ -1,8 +1,11 @@
 # udp_hand_node.yaml -- Hand UDP 드라이버 설정
 #
-# 동작 모드:
-#   - rtc_controller_manager 통합 (기본): ControlLoop에서 event-driven으로 구동
-#     Phase 4에서 SendCommandAndRequestStates() -> EventLoop가 write + read 수행
+# 동작 모드 (self-clocked):
+#   - CommLoop 가 loop_rate_hz 로 자율 tick — read + state publish 는 명령 도착과
+#     무관하게 항상 loop_rate_hz 로 수행. write UDP 는 joint_command 수신 시에만.
+#   - rtc_controller_manager 통합 (기본): CM RT loop 가 active controller 있을 때만
+#     /hand/joint_command 를 publish → write 는 control_rate 로, deactivate 시 정지
+#     (read/publish 는 계속). CM clock 과 hand clock 은 독립.
 #   - standalone (udp_hand_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
 #
 # 통신 프로토콜 (1 사이클, Bulk mode):
@@ -54,9 +57,14 @@
     #       force layout 은 "bulk" 모드 전용 (individual 모드와 조합 시 configure 실패).
     protocol_version: "1a"
 
+    # -- Self-clocked 루프 주기 (Hz) --
+    # CommLoop 가 이 주기로 자율 tick: read + state publish (joint_states 등) 를
+    # 명령 도착과 무관하게 loop_rate_hz 로 수행. write UDP 는 joint_command 수신 시에만.
+    loop_rate_hz: 500.0
+
     # -- Publish rate (link_status decimation) --
-    # link_status는 EventLoop rate(~500Hz)로 보낼 필요 없음.
-    # 500Hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).
+    # link_status는 loop_rate_hz(~500Hz)로 보낼 필요 없음.
+    # loop_rate_hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).
     publish_rate: 100.0
 
     # -- 센서 LPF 설정 (4차 Bessel LPF) --

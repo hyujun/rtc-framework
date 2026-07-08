@@ -537,6 +537,82 @@ TEST(HandControllerCommDecimation, SkipsExpectedRatio) {
   ::close(fd);
 }
 
+// ── Self-clocked read loop + command-gated write ────────────────────────────
+// Real (non-fake) controller on a silent loopback socket: the CommLoop ticks
+// autonomously (no command needed), and the write UDP stays suppressed until a
+// command has been staged AND the first state has been read. The positive path
+// (write attempted exactly when commanded + state-read) needs a live echo peer
+// and is covered by the Phase 5 hardware verification, not here.
+
+TEST(HandControllerSelfClocked, CyclesWithoutCommand) {
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
+  ASSERT_TRUE(ctrl->Start());
+  // No SendCommandAndRequestStates() — the loop is self-clocked, so cycles must
+  // accumulate on their own.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  ctrl->Stop();
+
+  // Lenient lower bound (timing-robust; the exact rate depends on recv timeouts
+  // and scheduler, so do not assert it).
+  EXPECT_GT(ctrl->cycle_count(), 20u);
+  ::close(fd);
+}
+
+TEST(HandControllerSelfClocked, NoWriteAttempted_WithoutCommand) {
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
+  ASSERT_TRUE(ctrl->Start());
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  ctrl->Stop();
+
+  // Every recorded cycle ran read-only: with no command ever staged, the
+  // write-echo bit must be absent from every attempted_mask.
+  const CycleOutcomeRing ring = ctrl->GetCycleOutcomeRing();
+  ASSERT_GT(ring.count, 0u);
+  const uint32_t n = std::min(ring.count, CycleOutcomeRing::kCapacity);
+  const uint8_t write_bit = RequestKindBit(RequestKind::kWriteEcho);
+  for (uint32_t i = 0; i < n; ++i) {
+    const auto& e = ring.entries[(ring.count - n + i) % CycleOutcomeRing::kCapacity];
+    EXPECT_EQ(e.attempted_mask & write_bit, 0u);
+  }
+  ::close(fd);
+}
+
+TEST(HandControllerSelfClocked, NoWriteAttempted_BeforeFirstStateRead) {
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
+  ASSERT_TRUE(ctrl->Start());
+
+  // Stage commands repeatedly, but the silent socket fails every read so
+  // state_read_once_ never flips true — the startup no-jump gate must still
+  // suppress the write (write requires state_read_once_ AND a pending command).
+  for (int i = 0; i < 20; ++i) {
+    std::array<float, kNumHandMotors> cmd{};
+    cmd.fill(0.3f);
+    ctrl->SendCommandAndRequestStates(cmd);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ctrl->Stop();
+
+  ASSERT_FALSE(ctrl->HasStateBeenRead());
+  const CycleOutcomeRing ring = ctrl->GetCycleOutcomeRing();
+  ASSERT_GT(ring.count, 0u);
+  const uint32_t n = std::min(ring.count, CycleOutcomeRing::kCapacity);
+  const uint8_t write_bit = RequestKindBit(RequestKind::kWriteEcho);
+  for (uint32_t i = 0; i < n; ++i) {
+    const auto& e = ring.entries[(ring.count - n + i) % CycleOutcomeRing::kCapacity];
+    EXPECT_EQ(e.attempted_mask & write_bit, 0u);
+  }
+  ::close(fd);
+}
+
 TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
   const auto [fd, port] = OpenSilentLoopbackSocket();
   ASSERT_GE(fd, 0);

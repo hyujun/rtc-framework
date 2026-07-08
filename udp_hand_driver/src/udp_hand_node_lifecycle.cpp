@@ -36,6 +36,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_parameter("target_ip", std::string{"192.168.1.2"});
   declare_parameter("target_port", 55151);
   declare_parameter("publish_rate", 100.0);
+  // Self-clocked CommLoop cadence (Hz). Drives the autonomous read/state-publish
+  // period; write is command-gated. Independent of publish_rate (which only sets
+  // the link_status decimation ratio below).
+  declare_parameter("loop_rate_hz", 500.0);
   declare_parameter("recv_timeout_ms", 10.0);
   declare_parameter("enable_write_ack", false);
   declare_parameter("enable_failure_detector", true);
@@ -161,11 +165,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   num_fingertips_ = udp_hand_driver::kDefaultNumFingertips;
   use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
   const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
+  const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();
   controller_ = std::make_unique<udp_hand_driver::UdpHandController>(
       target_ip, target_port, udp_hand_driver::kHandUdpRecvConfig, recv_timeout_ms,
       false /* enable_write_ack: deprecated */, 1, num_fingertips_, use_fake_hand_, ft_names,
       comm_mode, tof_lpf_enabled, tof_lpf_cutoff_hz, baro_lpf_enabled, baro_lpf_cutoff_hz,
-      ft_config, drift_enabled, drift_threshold, drift_window_size, comm_decimation);
+      ft_config, drift_enabled, drift_threshold, drift_window_size, comm_decimation, loop_rate_hz);
   controller_->SetSensorProtocol(std::move(sensor_protocol));
 
   // ── Topic names ──────────────────────────────────────────────────
@@ -255,8 +260,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   }
 
   // ── Link status decimation ─────────────────────────────────────────
+  // link_status is decimated relative to the CommLoop cadence: one link_status
+  // publish per (loop_rate_hz / publish_rate) state cycles (e.g. 500/100 = 5 →
+  // ~100 Hz link_status at a 500 Hz loop). Derived from loop_rate_hz, not a
+  // hardcoded 500, so a non-500 loop keeps the intended link_status rate.
   const double publish_rate = get_parameter("publish_rate").as_double();
-  link_decimation_ = std::max(1, static_cast<int>(500.0 / publish_rate));
+  link_decimation_ = std::max(1, static_cast<int>(loop_rate_hz / publish_rate));
 
   // ── Pre-allocate ROS2 messages ─────────────────────────────────────
   PreallocateMessages();
@@ -350,12 +359,14 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   start_time_ = std::chrono::steady_clock::now();
 
   // ── Per-tick timing CSV setup ──────────────────────────────────────
-  // Inject producer before Start() so the EventLoop thread sees a non-null
-  // producer on its first iteration. Expected period is the publish_rate
-  // setpoint (set at on_configure); jitter is computed against it.
+  // Inject producer before Start() so the CommLoop thread sees a non-null
+  // producer on its first iteration. The expected-period argument is retained
+  // for API compatibility but IGNORED — the CommLoop (PeriodicRtThread) computes
+  // jitter against its own loop_rate_hz period budget. Passed here from
+  // loop_rate_hz (the real cadence) for clarity only.
   {
-    const double publish_rate = get_parameter("publish_rate").as_double();
-    const double expected_period_us = (publish_rate > 0.0) ? (1.0e6 / publish_rate) : 0.0;
+    const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();
+    const double expected_period_us = (loop_rate_hz > 0.0) ? (1.0e6 / loop_rate_hz) : 0.0;
     controller_->SetTimingProducer(&hand_udp_timing_producer_, expected_period_us);
   }
 

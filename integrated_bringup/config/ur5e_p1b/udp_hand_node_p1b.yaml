@@ -35,7 +35,16 @@
     # min_rate_hz 를 낮추거나 rate/link 검사를 조정해 failure detector 오탐 방지.
     comm_decimation: 1
 
+    # -- Self-clocked 루프 주기 (Hz) --
+    # CommLoop 가 이 주기로 자율 tick: read + /p1b/joint_states publish 를 명령과
+    # 무관하게 loop_rate_hz 로 수행. write UDP 는 /p1b/joint_command 수신 시에만 —
+    # CM RT loop 가 active controller 있을 때만 publish 하므로 write 는 control_rate
+    # 로, deactivate 시 정지 (read/publish 는 계속). control_rate SSoT=500 과 일치
+    # 시켜 CM 이 매 tick fresh state 를 소비 (clock 드리프트 최소).
+    loop_rate_hz: 500.0
+
     # -- Publish rate (link_status decimation) --
+    # loop_rate_hz / publish_rate 비율 (500/100=5 -> ~100Hz link_status).
     publish_rate: 100.0
 
     # -- 조인트 이름 (p1b URDF joint 명) --
