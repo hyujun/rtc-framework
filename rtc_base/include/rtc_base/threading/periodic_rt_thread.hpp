@@ -87,6 +87,10 @@ class PeriodicRtThread {
       running_.store(false);
       return;
     }
+    // Clear any loop-exit request left from a prior run so a restart (e.g. the
+    // hand driver's deactivate→activate after an E-Stop, which self-exits via
+    // RequestLoopExit) does not immediately abort the fresh loop.
+    exit_from_loop_.store(false, std::memory_order_release);
     cfg_ = cfg;
     period_ns_ = static_cast<std::uint64_t>(1.0e9 / cfg.frequency_hz + 0.5);
     budget_us_ = static_cast<double>(period_ns_) / 1000.0;
@@ -229,6 +233,22 @@ class PeriodicRtThread {
   /// the loop thread.
   [[nodiscard]] virtual bool JitterMeaningful() const noexcept { return true; }
 
+  /// Request the loop to exit after the current tick, from *inside* OnTick()
+  /// on the loop thread. Pure atomic store — no mutex / condition_variable, so
+  /// it is safe on the RT hot path (unlike RequestStop(), which touches the
+  /// pause-mutex + cv). The loop finishes the current iteration, breaks, and
+  /// invokes OnLoopAborted() exactly once. Use this for a self-triggered
+  /// terminal condition detected during a tick (e.g. E-Stop); external
+  /// shutdown from another thread still uses RequestStop()/Join().
+  void RequestLoopExit() noexcept { exit_from_loop_.store(true, std::memory_order_release); }
+
+  /// Suppress the per-tick RtTickTimingPayload push for the *current* tick.
+  /// Call from inside OnTick() when this tick did no representative work (a
+  /// decimated skip cycle, or the terminal E-Stop cycle) so its degenerate
+  /// phase timings do not pollute the timing CSV. Reset to false by the base
+  /// at the top of every tick. Loop-thread only — no synchronisation.
+  void SuppressTimingThisTick() noexcept { suppress_timing_ = true; }
+
   /// Period in nanoseconds, derived from cfg.frequency_hz. Available to
   /// subclasses that override WaitForNextTick.
   [[nodiscard]] std::uint64_t PeriodNs() const noexcept { return period_ns_; }
@@ -242,7 +262,7 @@ class PeriodicRtThread {
     wake_initialised_ = true;
     have_prev_t0_ = false;
 
-    while (!stoken.stop_requested()) {
+    while (!stoken.stop_requested() && !exit_from_loop_.load(std::memory_order_acquire)) {
       // ── Pause gate ──────────────────────────────────────────────────────
       if (paused_.load()) {
         std::unique_lock<std::mutex> lock(pause_mutex_);
@@ -269,6 +289,10 @@ class PeriodicRtThread {
       }
 
       // ── Tick body ───────────────────────────────────────────────────────
+      // Reset the per-tick timing-suppression flag; OnTick may set it (via
+      // SuppressTimingThisTick) for a skip / terminal cycle.
+      suppress_timing_ = false;
+
       t0_ = std::chrono::steady_clock::now();
       t1_ = t0_;
       t2_ = t0_;
@@ -279,7 +303,7 @@ class PeriodicRtThread {
       tick_count_.fetch_add(1, std::memory_order_relaxed);
 
       // ── Per-tick payload push ───────────────────────────────────────────
-      if (timing_push_) {
+      if (timing_push_ && !suppress_timing_) {
         RtTickTimingPayload p{};
         p.t_state_us = std::chrono::duration<double, std::micro>(t1_ - t0_).count();
         p.t_compute_us = std::chrono::duration<double, std::micro>(t2_ - t1_).count();
@@ -294,6 +318,15 @@ class PeriodicRtThread {
       }
       prev_t0_ = t0_;
       have_prev_t0_ = true;
+    }
+
+    // Self-triggered terminal exit (RequestLoopExit from inside OnTick): the
+    // loop condition dropped out above; run the one-shot abort hook exactly
+    // once so subclasses can do their terminal work (e.g. the hand driver's
+    // E-Stop zero-write) on the loop thread. Not reached on stop_requested()
+    // (external Join) or the kAbort break (which already ran OnLoopAborted).
+    if (exit_from_loop_.load(std::memory_order_acquire)) {
+      OnLoopAborted();
     }
   }
 
@@ -355,6 +388,12 @@ class PeriodicRtThread {
   std::mutex pause_mutex_;
   std::condition_variable pause_cv_;
 
+  // Self-triggered terminal exit (set by RequestLoopExit from inside OnTick —
+  // pure atomic, RT-safe). Distinct from stop_token (external Join): this path
+  // runs OnLoopAborted() once as the loop unwinds. Cleared in Start() so the
+  // thread can be restarted after a terminal exit.
+  std::atomic<bool> exit_from_loop_{false};
+
   // Period / wakeup.
   std::uint64_t period_ns_{0};
   double budget_us_{0.0};
@@ -369,6 +408,11 @@ class PeriodicRtThread {
   std::chrono::steady_clock::time_point t2_{};
   std::chrono::steady_clock::time_point prev_t0_{};
   bool have_prev_t0_{false};
+
+  // Per-tick timing-suppression flag (loop-thread only). Reset false at the
+  // top of every tick; SuppressTimingThisTick() sets it so the base skips the
+  // RtTickTimingPayload push for a degenerate cycle (decimated skip / E-Stop).
+  bool suppress_timing_{false};
 
   // Counters (consumed off-loop).
   std::atomic<std::uint64_t> tick_count_{0};

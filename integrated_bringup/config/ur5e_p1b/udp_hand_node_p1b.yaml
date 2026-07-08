@@ -31,8 +31,9 @@
     protocol_version: "1b"
 
     # -- UDP 통신 decimation (부하 감쇠 테스트용, 기본 1 = 매 사이클 통신) --
-    # N 이면 N 사이클 중 1번만 실제 UDP 통신, 나머지는 건너뜀. N 을 크게 하면
-    # min_rate_hz 를 낮추거나 rate/link 검사를 조정해 failure detector 오탐 방지.
+    # N 이면 N 사이클 중 1번만 실제 UDP 통신, 나머지는 건너뜀. on_activate 가
+    # min_rate_hz 를 comm_decimation 으로 자동 스케일하므로 failure detector 오탐
+    # 방지를 위한 수동 조정은 불필요.
     comm_decimation: 1
 
     # -- Self-clocked 루프 주기 (Hz) --
@@ -101,7 +102,7 @@
     failure_threshold: 5
     check_motor: false               # 1b: motor-space read 미수행 → motor_valid 항상 false (검사 무의미)
     check_sensor: true               # 1b: sensor_force 의 fx,fy,fz all-zero/duplicate 검사
-    min_rate_hz: 30.0
+    min_rate_hz: 30.0               # comm_decimation 으로 on_activate 에서 자동 스케일됨
     rate_fail_threshold: 5
     check_link: true
     link_fail_threshold: 10

@@ -67,7 +67,9 @@ rtc_base, rtc_communication, rtc_inference, rtc_msgs  <--  udp_hand_driver
 
 **Command-gated write**: write(`WritePosition`)는 **per-command** 게이트다 — `event_pending_`가 set 된 cycle 에서 `pending_cmd_`를 latch 하고 `has_pending_write_`를 세운 뒤, 1회 write 시도 후 성공/실패 무관 clear 한다. 명령이 끊긴 구간은 read-only cycle 만 돌고 펌웨어는 마지막 위치를 hold 한다(이전의 영구 latch → stale 재전송 문제 제거).
 
-**Startup write-gate**: write 는 `state_read_once_`(첫 상태 read 완료) **및** `has_pending_write_`(pending 명령) 가 **둘 다** 참이어야 실행된다. 첫 상태 read 전에는 명령을 latch 만 하고 write 는 보류 → lifecycle activate 직후 hold 명령 publish 전 창에서 손을 q=0 으로 끌어내리지 않는다(no-jump 계약). E-Stop 시에만 명시적으로 zero 를 write 하고 loop 를 정지한다.
+**Startup write-gate**: write 는 `state_read_once_`(첫 상태 read 완료) **및** `has_pending_write_`(pending 명령) 가 **둘 다** 참이어야 실행된다. 첫 상태 read 전에는 명령을 latch 만 하고 write 는 보류 → lifecycle activate 직후 hold 명령 publish 전 창에서 손을 q=0 으로 끌어내리지 않는다(no-jump 계약).
+
+**E-Stop self-exit**: E-Stop 은 매 tick(감쇠 skip 여부와 무관) 검사한다. 활성 시 CommLoop 은 RT 핫패스에서 **순수 atomic** `RequestLoopExit()`(mutex/condition_variable 미사용, RT-10 준수)로 자기 종료를 예약하고 `running_` 을 내린 뒤 return 한다. zero-write 는 핫패스가 아니라 loop unwind 시 base 가 1회 호출하는 `OnLoopAborted()`(→`OnCommLoopAborted()`)에서 수행된다. 재시작(`deactivate→activate`) 시 `Start()` 가 `exit_from_loop_` 및 link/telemetry 카운터(`consecutive_recv_failures_`, `cycle_count_`, `comm_skip_count_`, transport comm-stats)를 리셋하므로 정상 링크에서 오탐 link-down/rate E-STOP 이 발생하지 않는다.
 
 ### 통신 모드
 
@@ -152,7 +154,7 @@ skip 사이클의 동작:
 - 최신 명령은 `event_pending_` 에 persist → skip 사이클이 삼키지 않고 다음 통신 사이클이 latch·전송 (명령 유실 없음, last-wins).
 - `any_recv_ok` / `consecutive_recv_failures` 를 건드리지 않아 link-down false-positive 없음.
 
-> ⚠️ **failure detector 상호작용** — 유효 통신 rate = `loop_rate_hz` / `comm_decimation`. `comm_decimation` 을 크게 하면 (예: 500 Hz 구동 시 N=20 → 25 Hz) rate 가 `min_rate_hz` 미만으로 떨어져 rate failure 오탐 → E-STOP 이 발생할 수 있다. 높은 감쇠로 테스트할 때는 `min_rate_hz` 를 비례해 낮추거나 `enable_failure_detector` 의 rate/link 검사를 조정한다.
+> ℹ️ **failure detector 상호작용** — 유효 통신 rate = `loop_rate_hz` / `comm_decimation` (rate 검사는 `cycle_count` 증가분을 보며, skip 사이클은 카운트되지 않는다). `on_activate` 가 `min_rate_hz` 를 `comm_decimation` 으로 **자동 스케일**(`min_rate_hz /= comm_decimation`)하므로, 높은 감쇠에서도 rate failure 오탐 → E-STOP 이 발생하지 않는다 (별도 수동 조정 불필요). 마찬가지로 `link_status` publish 감쇠도 유효 state-publish rate = `loop_rate_hz` / `comm_decimation` 기준으로 계산된다.
 
 감쇠량은 `hand_udp_stats.json` 의 `comm_decimation` / `comm_decimation_skip_count` 로 확인한다.
 

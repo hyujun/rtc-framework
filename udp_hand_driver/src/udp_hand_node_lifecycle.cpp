@@ -281,7 +281,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // ~100 Hz link_status at a 500 Hz loop). Derived from loop_rate_hz, not a
   // hardcoded 500, so a non-500 loop keeps the intended link_status rate.
   const double publish_rate = get_parameter("publish_rate").as_double();
-  link_decimation_ = std::max(1, static_cast<int>(loop_rate_hz / publish_rate));
+  // State-publish callbacks fire once per comm cycle — i.e. at
+  // loop_rate_hz / comm_decimation, not loop_rate_hz — because decimated skip
+  // cycles do no publish. Base the link_status decimation on that effective
+  // cadence so the intended publish_rate holds when comm_decimation > 1. Guard
+  // publish_rate > 0 (a non-positive value would divide by zero / yield garbage).
+  const int comm_dec_guarded = (comm_decimation < 1) ? 1 : comm_decimation;
+  const double effective_state_hz = loop_rate_hz / static_cast<double>(comm_dec_guarded);
+  link_decimation_ =
+      (publish_rate > 0.0) ? std::max(1, static_cast<int>(effective_state_hz / publish_rate)) : 1;
 
   // ── Pre-allocate ROS2 messages ─────────────────────────────────────
   PreallocateMessages();
@@ -422,7 +430,19 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     // 1b force layout → detector checks fx,fy,fz in sensor_force, not the int32
     // sensor_data buffer (which stays zero on 1b and would false-trigger).
     fd_cfg.sensor_force_layout = sensor_uses_force_layout_;
-    fd_cfg.min_rate_hz = get_parameter("min_rate_hz").as_double();
+    // The rate detector measures controller_.cycle_count() growth, which
+    // increments once per comm cycle — i.e. at loop_rate_hz / comm_decimation,
+    // since decimated skip cycles do no I/O and no cycle accounting. A
+    // min_rate_hz set against the nominal loop rate would therefore false-
+    // trigger when comm_decimation > 1. Scale the floor down to match.
+    const int comm_dec = std::max(1, static_cast<int>(get_parameter("comm_decimation").as_int()));
+    const double min_rate_nominal = get_parameter("min_rate_hz").as_double();
+    fd_cfg.min_rate_hz = min_rate_nominal / static_cast<double>(comm_dec);
+    if (comm_dec > 1) {
+      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                  "min_rate_hz scaled by comm_decimation=%d: %.1f -> %.1f Hz", comm_dec,
+                  min_rate_nominal, fd_cfg.min_rate_hz);
+    }
     fd_cfg.rate_fail_threshold = static_cast<int>(get_parameter("rate_fail_threshold").as_int());
     fd_cfg.check_link = get_parameter("check_link").as_bool();
     fd_cfg.link_fail_threshold = static_cast<int>(get_parameter("link_fail_threshold").as_int());
@@ -539,7 +559,11 @@ void UdpHandNode::StopRuntime() {
     failure_detector_->Stop();
     failure_detector_.reset();
   }
-  if (controller_ && controller_->IsRunning()) {
+  // Call Stop() unconditionally (it is idempotent). The IsRunning() guard was
+  // removed because the E-Stop self-exit path now clears running_ from inside
+  // the CommLoop (#4), so a guarded Stop() would skip the required Join() +
+  // socket close + stats log after an E-Stop.
+  if (controller_) {
     controller_->Stop();
   }
   if (fake_tick_timer_) {

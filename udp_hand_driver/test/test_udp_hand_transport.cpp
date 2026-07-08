@@ -104,7 +104,8 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMatch_ReturnsTrue) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> out{};
-  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor);
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor,
+                                                 nullptr, RequestKind::kMotorRead);
   dev_thread.join();
 
   EXPECT_TRUE(result);
@@ -127,7 +128,8 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMismatch_ReturnsFalse) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> out{};
-  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor);
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor,
+                                                 nullptr, RequestKind::kMotorRead);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -154,7 +156,8 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMatch_ReturnsTrue) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
-  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint);
+  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint, nullptr,
+                                                    RequestKind::kMotorRead);
   dev_thread.join();
 
   EXPECT_TRUE(result);
@@ -177,7 +180,8 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMismatch_ReturnsFalse) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
-  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint);
+  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint, nullptr,
+                                                    RequestKind::kMotorRead);
   dev_thread.join();
 
   EXPECT_FALSE(result);
@@ -222,7 +226,8 @@ TEST(HandUdpTransportModeGate, AllMotorRead_ModeMismatch_GateOff_Accepts) {
   std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
 
   std::array<float, kMotorDataCount> pos{}, vel{}, cur{};
-  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint);
+  const bool result = transport.RequestAllMotorRead(pos, vel, cur, JointMode::kJoint, nullptr,
+                                                    RequestKind::kMotorRead);
   dev_thread.join();
 
   EXPECT_TRUE(result);

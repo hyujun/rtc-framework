@@ -312,6 +312,16 @@ class UdpHandController {
     cached_sensor_data_ = {};
     cached_sensor_force_ = {};
 
+    // Reset per-run link/telemetry counters so a deactivate→activate restart
+    // (including after an E-Stop self-exit) does not carry stale failure or
+    // cycle history into the fresh run — otherwise the failure detector could
+    // observe a non-zero consecutive_recv_failures_ / recv_error_count before
+    // the first cycle and false-trigger a link-down E-STOP. Off the RT path.
+    consecutive_recv_failures_.store(0, std::memory_order_relaxed);
+    cycle_count_.store(0, std::memory_order_relaxed);
+    comm_skip_count_.store(0, std::memory_order_relaxed);
+    transport_.ResetCommStats();
+
     running_.store(true, std::memory_order_release);
     start_time_ = std::chrono::steady_clock::now();
 
@@ -573,8 +583,21 @@ class UdpHandController {
 
     void MarkCompute() noexcept { MarkComputeDone(); }
 
+    // Forwarders for the base's protected RT-safe controls, so RunCommCycle
+    // (which lives on the owner) can drive them: RequestLoopExit() is the
+    // pure-atomic self-exit used by the E-Stop path (no pause-mutex / cv);
+    // SuppressTiming() drops the current tick's timing row (skip / E-Stop).
+    void RequestLoopExit() noexcept { PeriodicRtThread::RequestLoopExit(); }
+
+    void SuppressTiming() noexcept { SuppressTimingThisTick(); }
+
    protected:
     void OnTick() override { owner_->RunCommCycle(); }
+
+    // Terminal-exit hook: the base invokes this once on the loop thread after
+    // RunCommCycle requested RequestLoopExit() (E-Stop). Performs the zero-write
+    // off the RT hot path (moved out of the E-Stop branch per review #2-A).
+    void OnLoopAborted() noexcept override { owner_->OnCommLoopAborted(); }
 
    private:
     UdpHandController* owner_;
@@ -602,11 +625,17 @@ class UdpHandController {
       RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), estop_clock,
                            ::udp_hand_driver::logging::kThrottleFastMs,
                            "RunCommCycle: E-Stop active, sending zero and stopping loop");
-      std::array<float, kNumHandMotors> zeros{};
-      transport_.WritePositionFireAndForget(zeros, joint_io_mode_);
-      // One-shot shutdown request (not recurring tick work): RequestStop()
-      // touches the base pause-mutex once here so the loop exits after this tick.
-      comm_loop_.RequestStop();
+      // #4 Mark not-running so command / calibration subscriber callbacks (which
+      // gate on IsRunning()) stop feeding a loop that is about to exit.
+      running_.store(false, std::memory_order_release);
+      // #5 This terminal cycle does no representative I/O — keep its degenerate
+      // phase timings out of the per-tick timing CSV.
+      comm_loop_.SuppressTiming();
+      // #2-A RT-safe self-exit: a pure atomic store (no pause-mutex / condition
+      // variable, unlike RequestStop()). The base drops out of its loop after
+      // this tick and runs OnLoopAborted() → OnCommLoopAborted(), which performs
+      // the zero-write off this RT hot path.
+      comm_loop_.RequestLoopExit();
       return;
     }
 
@@ -615,6 +644,9 @@ class UdpHandController {
     // comm cycle.
     if (!is_comm_cycle) {
       comm_skip_count_.fetch_add(1, std::memory_order_relaxed);
+      // #5 A decimated skip cycle does no UDP I/O — keep its degenerate phase
+      // timings out of the per-tick timing CSV.
+      comm_loop_.SuppressTiming();
       return;
     }
 
@@ -825,18 +857,34 @@ class UdpHandController {
     transport_.comm_stats_mut().total_cycles++;
     const auto cycle_seq = cycle_count_.fetch_add(1, std::memory_order_relaxed);
 
-    // Record this cycle's outcome into the forensic ring and snapshot it.
+    // Record this cycle's outcome into the working forensic ring (cheap in-place
+    // write, every cycle).
     outcome_ring_working_.entries[outcome_ring_working_.count % CycleOutcomeRing::kCapacity] = {
         static_cast<uint32_t>(cycle_seq), attempted_mask, ok_mask};
     ++outcome_ring_working_.count;
-    outcome_ring_seqlock_.Store(outcome_ring_working_);
+
+    // #6 Publish the SeqLock snapshot (~0.5 KB memcpy) conditionally: the
+    // off-loop forensic reader only consults it when the link is unhealthy, so
+    // on the steady healthy path the store is redundant work. Store when this
+    // cycle failed, when we are already mid-failure-streak (pre-update value —
+    // the failure/recovery counters are updated just below), or every
+    // kCapacity-th cycle as a heartbeat so a healthy snapshot never goes fully
+    // stale. The working ring still accumulates every cycle regardless.
+    const bool publish_outcome_ring =
+        !any_recv_ok || consecutive_recv_failures_.load(std::memory_order_relaxed) > 0 ||
+        (cycle_seq % CycleOutcomeRing::kCapacity == 0);
+    if (publish_outcome_ring) {
+      outcome_ring_seqlock_.Store(outcome_ring_working_);
+    }
 
     if (any_recv_ok) {
       consecutive_recv_failures_.store(0, std::memory_order_relaxed);
     } else {
       const auto failures = consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed) + 1;
-      // Same-thread (CommLoop) reference — no copy, no race with the writer.
-      const UdpHandCommStats& cs = transport_.comm_stats();
+      // Decode the last-unexpected forensics via lightweight atomic loads rather
+      // than copying the full comm_stats() snapshot on this hot path.
+      const auto last_cmd = transport_.last_unexpected_cmd();
+      const auto last_len = transport_.last_unexpected_len();
       if (failures == 1) {
         // 0→1 transition: name the FIRST failed request kind of this cycle
         // and the last rejected CMD byte — a stale echo of the *previous*
@@ -854,8 +902,7 @@ class UdpHandController {
                 ? kRequestKindNames[static_cast<std::size_t>(first_failed)]
                 : "none",
             static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
-            static_cast<unsigned>(cs.last_unexpected_cmd),
-            static_cast<unsigned>(cs.last_unexpected_len));
+            static_cast<unsigned>(last_cmd), static_cast<unsigned>(last_len));
       } else if (failures >= 5) {
         static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
         RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), steady_clock,
@@ -864,9 +911,18 @@ class UdpHandController {
                              "ok=0x%02X last_unexpected_cmd=0x%02X)",
                              static_cast<unsigned long>(failures),
                              static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
-                             static_cast<unsigned>(cs.last_unexpected_cmd));
+                             static_cast<unsigned>(last_cmd));
       }
     }
+  }
+
+  // Terminal E-Stop zero-write, invoked once by CommLoop::OnLoopAborted() on
+  // the loop thread as the loop unwinds (moved out of RunCommCycle's E-Stop
+  // branch per review #2-A so the hot path stays free of the write + its recv).
+  // Fire-and-forget: no echo wait, allocation-free, noexcept.
+  void OnCommLoopAborted() noexcept {
+    std::array<float, kNumHandMotors> zeros{};
+    transport_.WritePositionFireAndForget(zeros, joint_io_mode_);
   }
 
   // Intermediate timestamps + FT cost from RunCommCycleTail, so each mode's

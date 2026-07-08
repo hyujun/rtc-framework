@@ -451,6 +451,8 @@ CM, MPC, udp_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. �
 > **Phase C 정리 (2026-05-01)**: 기존 CM-side `data_logger.hpp` / `log_buffer.hpp` 는 삭제됐다. 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 로 이전. CM 은 `cm_timing_log.csv` (per-tick scheduling timing) 만 자체 소유한다. `cm_timing_log` 의 schema 는 `t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 7-col `RtTickTimingPayload` 사용 (`rtc_base/timing/rt_tick_timing_sample.hpp`).
 >
 > **Sim 모드 (2026-05-02)**: `PeriodicRtThread::JitterMeaningful()` 가상 함수로 producer가 자기 wakeup이 deadline-driven 인지 선언한다. CM `ControlLoopThread` 는 `use_sim_time_sync=true` 일 때 `false` 반환 → base 가 `jitter_us` 를 0.0 으로 둔다 (CV cadence 대비 budget 차이는 RT 잡음 지표가 아니므로). MPC / hand_udp 는 default `true` 유지 → 기존 동작 그대로. 다른 6 개 컬럼은 두 모드 동일.
+>
+> **RT-safe self-exit + timing suppression (2026-07-09)**: `PeriodicRtThread` 에 두 protected 훅이 추가됐다. `RequestLoopExit()` 는 OnTick 내부(loop 스레드)에서 호출하는 **순수 `atomic<bool>` store** 로, 루프가 현재 tick 후 종료하도록 예약하고 unwind 시 `OnLoopAborted()` 를 1회 호출한다 — `RequestStop()`(pause-mutex + `pause_cv_.notify_all()`)과 달리 mutex/CV 를 잡지 않아 RT 핫패스에서 안전(RT-10). `Start()` 가 `exit_from_loop_` 를 리셋하므로 종료 후 재시작 가능. `SuppressTimingThisTick()` 은 해당 tick 의 `RtTickTimingPayload` push 를 건너뛰어(매 tick 초기화) skip / terminal cycle 의 degenerate timing 이 CSV 를 오염시키지 않게 한다. 첫 소비자는 `UdpHandController` 의 E-Stop self-exit (zero-write 는 `OnLoopAborted` 로 이동) 및 comm-decimation skip cycle. CM / MPC 는 두 훅 미사용 → 동작 불변.
 
 #### Generic CSV 인프라 (`thread_csv_producer.hpp` + `thread_csv_logger.hpp`)
 

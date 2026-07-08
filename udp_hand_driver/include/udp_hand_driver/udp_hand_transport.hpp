@@ -210,9 +210,9 @@ class UdpHandTransport {
   // joint-space use of this method (identical wire format, different MODE).
   [[nodiscard]] bool RequestMotorRead(packets::Command cmd,
                                       std::array<float, packets::kMotorDataCount>& out,
-                                      packets::JointMode joint_mode = packets::JointMode::kMotor,
-                                      packets::JointMode* received_mode = nullptr,
-                                      RequestKind kind = RequestKind::kMotorRead) noexcept {
+                                      packets::JointMode joint_mode,
+                                      packets::JointMode* received_mode,
+                                      RequestKind kind) noexcept {
     std::array<uint8_t, packets::kSensorRequestSize> send_buf{};
     std::array<uint8_t, packets::kMotorPacketSize> recv_buf{};
 
@@ -288,9 +288,9 @@ class UdpHandTransport {
   [[nodiscard]] bool RequestAllMotorRead(std::array<float, packets::kMotorDataCount>& positions,
                                          std::array<float, packets::kMotorDataCount>& velocities,
                                          std::array<float, packets::kMotorDataCount>& currents,
-                                         packets::JointMode joint_mode = packets::JointMode::kMotor,
-                                         packets::JointMode* received_mode = nullptr,
-                                         RequestKind kind = RequestKind::kMotorRead) noexcept {
+                                         packets::JointMode joint_mode,
+                                         packets::JointMode* received_mode,
+                                         RequestKind kind) noexcept {
     std::array<uint8_t, packets::kAllMotorRequestSize> send_buf{};
     std::array<uint8_t, packets::kAllMotorResponseSize> recv_buf{};
 
@@ -404,9 +404,40 @@ class UdpHandTransport {
 
   // ── Statistics accessors ──────────────────────────────────────────────────
 
-  [[nodiscard]] const UdpHandCommStats& comm_stats() const noexcept { return comm_stats_; }
+  // Snapshot of the comm stats. Returned by value: the last-unexpected forensics
+  // (cmd + len) live in a single atomic (packed cmd<<16 | len) so a reader on a
+  // non-writer thread cannot observe a torn cmd/len pair; they are decoded into
+  // the returned struct here. The aggregate counters are copied racily (relaxed
+  // single-writer, same pattern as before).
+  [[nodiscard]] UdpHandCommStats comm_stats() const noexcept {
+    UdpHandCommStats snap = comm_stats_;
+    const uint32_t packed = last_unexpected_.load(std::memory_order_relaxed);
+    snap.last_unexpected_cmd = static_cast<uint8_t>((packed >> 16) & 0xFFu);
+    snap.last_unexpected_len = static_cast<uint16_t>(packed & 0xFFFFu);
+    return snap;
+  }
 
   [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return comm_stats_; }
+
+  // Decoded last-unexpected forensics (single atomic load each). Used on the
+  // CommLoop RT logging path in place of a full comm_stats() copy.
+  [[nodiscard]] uint8_t last_unexpected_cmd() const noexcept {
+    return static_cast<uint8_t>((last_unexpected_.load(std::memory_order_relaxed) >> 16) & 0xFFu);
+  }
+
+  [[nodiscard]] uint16_t last_unexpected_len() const noexcept {
+    return static_cast<uint16_t>(last_unexpected_.load(std::memory_order_relaxed) & 0xFFFFu);
+  }
+
+  // Reset all comm statistics + forensics to zero. Non-RT (called from Start()
+  // on the ROS thread before the CommLoop launches) so a deactivate→activate
+  // restart begins with clean counters — a stale recv_error_count / mismatch
+  // history must not carry into the fresh run. noexcept.
+  void ResetCommStats() noexcept {
+    comm_stats_ = {};
+    recv_error_count_.store(0, std::memory_order_relaxed);
+    last_unexpected_.store(0, std::memory_order_relaxed);
+  }
 
   // MODE-byte validation gate for the joint / motor / set-sensor-mode responses.
   // Default true = strict (both 1a and 1b echo the requested joint/sensor mode
@@ -514,8 +545,11 @@ class UdpHandTransport {
   void CountCmdMismatch(RequestKind kind, uint8_t got_cmd, ssize_t recvd) noexcept {
     ++comm_stats_.cmd_mismatch;
     ++PerKindStats(kind).cmd_mismatch;
-    comm_stats_.last_unexpected_cmd = got_cmd;
-    comm_stats_.last_unexpected_len = static_cast<uint16_t>(recvd);
+    // Pack cmd + len into one atomic store so cross-thread readers never see a
+    // torn cmd/len pair (single writer — the CommLoop thread).
+    last_unexpected_.store((static_cast<uint32_t>(got_cmd) << 16) |
+                               (static_cast<uint32_t>(static_cast<uint16_t>(recvd))),
+                           std::memory_order_relaxed);
   }
 
   void CountModeMismatch(RequestKind kind) noexcept {
@@ -525,7 +559,12 @@ class UdpHandTransport {
 
   void CountShortOrDecode(RequestKind kind, ssize_t recvd) noexcept {
     ++PerKindStats(kind).short_or_decode;
-    comm_stats_.last_unexpected_len = static_cast<uint16_t>(recvd);
+    // Update only the len half, preserving the last cmd byte. Single writer, so
+    // a plain load-modify-store (no CAS) keeps the pair atomic for readers.
+    const uint32_t cur = last_unexpected_.load(std::memory_order_relaxed);
+    last_unexpected_.store(
+        (cur & 0xFFFF0000u) | static_cast<uint32_t>(static_cast<uint16_t>(recvd)),
+        std::memory_order_relaxed);
   }
 
   // Sub-ms precision recv using ppoll (hrtimer on PREEMPT_RT kernels).
@@ -576,6 +615,11 @@ class UdpHandTransport {
 
   UdpHandCommStats comm_stats_;
   std::atomic<uint64_t> recv_error_count_{0};
+  // Last-unexpected forensics packed as (cmd << 16) | len into one atomic so a
+  // cross-thread reader never sees a torn cmd/len pair. Single writer: the
+  // CommLoop thread (CountCmdMismatch / CountShortOrDecode). Decoded by
+  // comm_stats() / last_unexpected_cmd() / last_unexpected_len().
+  std::atomic<uint32_t> last_unexpected_{0};
   bool verify_response_mode_{
       true};  // strict MODE echo check (joint/set-mode); injected per protocol capability
   bool verify_bulk_sensor_mode_{

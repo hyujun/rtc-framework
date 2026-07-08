@@ -105,8 +105,7 @@ TEST(PeriodicRtThread, StartIsNoopOnNonPositiveFrequency) {
 TEST(PeriodicRtThread, JoinIsIdempotent) {
   CountingThread t;
   t.Start(MakeCfg("rtc_test_c", 100.0));
-  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 1; }))
-      << "thread never ticked before Join";
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 1; })) << "thread never ticked before Join";
   t.Join();
   // Second join must not block, throw, or restart anything.
   t.Join();
@@ -116,8 +115,7 @@ TEST(PeriodicRtThread, JoinIsIdempotent) {
 TEST(PeriodicRtThread, PauseHaltsTicksAndResumeRestarts) {
   CountingThread t;
   t.Start(MakeCfg("rtc_test_d", 100.0));
-  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 1; }))
-      << "thread never ticked before Pause";
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 1; })) << "thread never ticked before Pause";
 
   t.Pause();
   EXPECT_TRUE(t.Paused());
@@ -311,4 +309,103 @@ TEST(PeriodicRtThread, OverrunHookFiresOnDeadlineMiss) {
   EXPECT_GE(t.OverrunCount(), 3u);
   EXPECT_GT(t.SkipCount(), 0u);
   EXPECT_GE(t.last_consecutive.load(), 1u);
+}
+
+namespace {
+
+// Subclass that self-exits from inside OnTick via RequestLoopExit() (the
+// pure-atomic RT-safe exit) once `exit_after` ticks have run, and records how
+// many times OnLoopAborted fired. Used to verify the terminal-exit path
+// (mirrors the hand driver's E-Stop self-exit) and that the thread can be
+// restarted afterwards (exit_from_loop_ cleared in Start()).
+class ExitingThread : public rtc::PeriodicRtThread {
+ public:
+  std::atomic<int> ticks{0};
+  std::atomic<int> aborts{0};
+  std::atomic<int> exit_after{3};
+
+ protected:
+  void OnTick() noexcept override {
+    const int n = ticks.fetch_add(1) + 1;
+    if (n >= exit_after.load()) {
+      SuppressTimingThisTick();  // terminal tick does no representative work
+      RequestLoopExit();
+    }
+  }
+
+  void OnLoopAborted() noexcept override { aborts.fetch_add(1); }
+};
+
+}  // namespace
+
+TEST(PeriodicRtThread, RequestLoopExitStopsLoopAndFiresAbortOnce) {
+  ExitingThread t;
+  t.exit_after.store(3);
+  t.Start(MakeCfg("rtc_test_le", 200.0));
+
+  // The loop self-exits without RequestStop(); OnLoopAborted fires exactly once.
+  EXPECT_TRUE(WaitUntil([&] { return t.aborts.load() >= 1; }))
+      << "loop did not self-exit via RequestLoopExit within timeout";
+  t.Join();
+  EXPECT_EQ(t.aborts.load(), 1) << "OnLoopAborted must fire exactly once on a loop-exit";
+  EXPECT_FALSE(t.Running());
+  const int first_run_ticks = t.ticks.load();
+  EXPECT_GE(first_run_ticks, 3);
+
+  // Restart: Start() must clear exit_from_loop_ so the fresh loop runs again
+  // rather than aborting immediately (regression for the hand driver's
+  // deactivate→activate after an E-Stop self-exit).
+  t.exit_after.store(first_run_ticks + 3);
+  t.Start(MakeCfg("rtc_test_le2", 200.0));
+  EXPECT_TRUE(t.Running());
+  EXPECT_TRUE(WaitUntil([&] { return t.aborts.load() >= 2; }))
+      << "restarted loop did not run and self-exit again";
+  t.Join();
+  EXPECT_EQ(t.aborts.load(), 2);
+  EXPECT_GE(t.ticks.load(), first_run_ticks + 3);
+}
+
+namespace {
+
+// Subclass that suppresses the per-tick timing push on even ticks, so exactly
+// the odd ticks emit a timing sample. Verifies SuppressTimingThisTick()
+// (used by the hand driver for decimated skip / E-Stop cycles).
+class SuppressTimingThread : public rtc::PeriodicRtThread {
+ public:
+  rtc::CmTimingBuffer producer;
+
+  SuppressTimingThread() { SetTimingProducer<rtc::kCmTimingBufferCapacity>(&producer); }
+
+ protected:
+  void OnTick() noexcept override {
+    MarkStateAcquired();
+    const int n = ticks_.fetch_add(1) + 1;
+    if (n % 2 == 0) {
+      SuppressTimingThisTick();
+    }
+    MarkComputeDone();
+  }
+
+ private:
+  std::atomic<int> ticks_{0};
+};
+
+}  // namespace
+
+TEST(PeriodicRtThread, SuppressTimingThisTickSkipsPush) {
+  SuppressTimingThread t;
+  t.Start(MakeCfg("rtc_test_st", 100.0));
+  EXPECT_TRUE(WaitUntil([&] { return t.TickCount() >= 8; }))
+      << "fewer than 8 ticks produced within timeout";
+  t.RequestStop();
+  t.Join();
+
+  const std::uint64_t final_ticks = t.TickCount();
+  std::vector<rtc::RtTickTimingSample> samples;
+  t.producer.Drain([&](const rtc::RtTickTimingSample& s) { samples.push_back(s); });
+
+  // Only odd-numbered ticks push; count of odd n in [1, final_ticks] = ceil/2.
+  EXPECT_EQ(samples.size(), (final_ticks + 1) / 2)
+      << "suppressed (even) ticks must not emit a timing sample";
+  EXPECT_LT(samples.size(), final_ticks) << "some ticks must have been suppressed";
 }

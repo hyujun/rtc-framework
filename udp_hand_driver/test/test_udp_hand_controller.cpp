@@ -640,4 +640,87 @@ TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
   ::close(fd);
 }
 
+// ── E-Stop self-exit + restart reset (review #1/#2-A/#4) ────────────────────
+// Real (non-fake) controller on a silent loopback socket with an E-Stop flag.
+// The E-Stop is now serviced by a pure-atomic RequestLoopExit() from inside the
+// CommLoop (no mutex/CV on the RT hot path), which clears running_ and unwinds
+// the loop; the zero-write happens off the hot path in OnLoopAborted.
+
+namespace {
+
+// Polls `pred` every 2 ms up to `timeout`, returning the final predicate value.
+template <typename Pred>
+[[nodiscard]] bool PollUntil(Pred pred, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!pred()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST(HandControllerEStop, SelfExitClearsRunning) {
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  std::atomic<bool> estop{true};  // asserted before Start → first tick self-exits
+  auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
+  ctrl->SetEstopFlag(&estop);
+  ASSERT_TRUE(ctrl->Start());
+
+  // The first CommLoop tick observes the E-Stop and self-exits: running_ is
+  // cleared from inside the loop (#4) and the loop breaks via RequestLoopExit
+  // (#2-A) with no mutex/CV on the hot path.
+  EXPECT_TRUE(PollUntil([&] { return !ctrl->IsRunning(); }, std::chrono::milliseconds(500)))
+      << "E-Stop did not clear IsRunning() within timeout";
+
+  // The E-Stop branch returns before any read / cycle accounting, so nothing is
+  // recorded from the terminal tick.
+  EXPECT_EQ(ctrl->cycle_count(), 0u);
+  EXPECT_EQ(ctrl->consecutive_recv_failures(), 0u);
+
+  ctrl->Stop();  // idempotent after a self-exit
+  ::close(fd);
+}
+
+TEST(HandControllerEStop, RestartResetsCountersAfterFailures) {
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  std::atomic<bool> estop{false};
+  auto ctrl = MakeDecimatedController(port, /*comm_decimation=*/1);
+  ctrl->SetEstopFlag(&estop);
+
+  // Run 1: no E-Stop; the silent device makes every read time out, so recv
+  // failures and cycles accumulate.
+  ASSERT_TRUE(ctrl->Start());
+  ASSERT_TRUE(
+      PollUntil([&] { return ctrl->consecutive_recv_failures() > 3; }, std::chrono::seconds(1)))
+      << "failures did not accumulate against the silent device";
+  ASSERT_GT(ctrl->cycle_count(), 0u);
+  ctrl->Stop();
+  // Stop() does not reset the link counters — stale state persists into restart.
+  ASSERT_GT(ctrl->consecutive_recv_failures(), 0u);
+
+  // Run 2: restart with E-Stop asserted so the first tick self-exits before it
+  // can accrue fresh failures. This isolates the Start() reset (#1): the stale
+  // consecutive_recv_failures / cycle_count / recv_error_count must be cleared
+  // so the failure detector cannot observe a false link-down E-STOP on restart.
+  estop.store(true);
+  ASSERT_TRUE(ctrl->Start());
+  EXPECT_TRUE(PollUntil([&] { return !ctrl->IsRunning(); }, std::chrono::milliseconds(500)))
+      << "restarted controller did not self-exit on the asserted E-Stop";
+
+  EXPECT_EQ(ctrl->consecutive_recv_failures(), 0u);
+  EXPECT_EQ(ctrl->cycle_count(), 0u);
+  EXPECT_EQ(ctrl->recv_error_count(), 0u);
+
+  ctrl->Stop();
+  ::close(fd);
+}
+
 }  // namespace udp_hand_driver::test
