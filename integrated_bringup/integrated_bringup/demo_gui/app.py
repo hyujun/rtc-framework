@@ -2857,12 +2857,29 @@ class DemoControllerGUI(Node):
         self._refresh_preset_tree()
         self.get_logger().info(f"Deleted preset '{name}'")
 
+    def shutdown_cleanup(self):
+        """Tear down ROS entities (catalog timer/client + node). MUST run on
+        the main thread after ``rclpy.spin`` has returned — destroying entities
+        that the running executor owns from another thread contends with the
+        executor's wait-set locks and can hang. Idempotent; wrapped by callers
+        in ``contextlib.suppress`` so a partial teardown never blocks exit."""
+        with contextlib.suppress(Exception):
+            self._catalog.stop()
+        with contextlib.suppress(Exception):
+            self.destroy_node()
+
     def _on_close(self):
-        self._catalog.stop()
-        self.root.destroy()
-        self.destroy_node()
-        # try_shutdown is idempotent; safe even if main()'s finally has
-        # already run (e.g. KeyboardInterrupt → finally → window close).
+        """Window-close handler — runs on the Tk (daemon) thread. Do the
+        minimum here: close the window (ends mainloop) and signal the main
+        thread's ``rclpy.spin`` to return via the thread-safe ``try_shutdown``.
+        ROS-entity teardown is deferred to main()'s finally on the main thread;
+        doing it here raced the still-spinning executor and left ``ros2 run``
+        alive because ``try_shutdown`` — the only thing that wakes spin — was
+        sequenced after a teardown that could hang."""
+        with contextlib.suppress(Exception):
+            self.root.destroy()
+        # Thread-safe; wakes rclpy.spin on the main thread, which then runs the
+        # ROS teardown in main()'s finally (shutdown_cleanup).
         rclpy.try_shutdown()
 
 
@@ -2922,8 +2939,14 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if rclpy.ok():
-            node.destroy_node()
+        # All ROS teardown happens here on the main thread, after spin has
+        # returned — whether shutdown was initiated by Ctrl-C (SIGINT →
+        # context shutdown) or by the window-X path (_on_close →
+        # try_shutdown). The executor is no longer running, so destroying the
+        # catalog timer/client + node no longer races it. Unconditional
+        # (no `if rclpy.ok()`) so the window-X path — where the context is
+        # already shut down — still destroys the node exactly once.
+        node.shutdown_cleanup()
         # try_shutdown silently no-ops if the context is already shut
         # down by _on_close (window-X path); plain shutdown() would
         # raise rclpy.handle.InvalidHandle in that race.
