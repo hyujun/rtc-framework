@@ -5,14 +5,20 @@
 
 #include "udp_hand_driver/udp_hand_controller.hpp"
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace udp_hand_driver::test {
 
@@ -22,14 +28,14 @@ class FakeHandControllerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     controller_ =
-        std::make_unique<UdpHandController>("127.0.0.1",          // target_ip (unused in fake mode)
-                                            55151,                // target_port
+        std::make_unique<UdpHandController>("127.0.0.1",         // target_ip (unused in fake mode)
+                                            55151,               // target_port
                                             kHandUdpRecvConfig,  // thread_cfg
-                                            10.0,                 // recv_timeout_ms
-                                            false,                // enable_write_ack (deprecated)
-                                            1,                    // sensor_decimation
-                                            4,                    // num_fingertips
-                                            true                  // use_fake_hand
+                                            10.0,                // recv_timeout_ms
+                                            false,               // enable_write_ack (deprecated)
+                                            1,                   // sensor_decimation
+                                            4,                   // num_fingertips
+                                            true                 // use_fake_hand
         );
   }
 
@@ -409,6 +415,84 @@ TEST(HandControllerConfig, MaxFingertips_Clamped) {
   // Clamped to kMaxFingertips (8), but further clamped by default fingertip_names (4)
   EXPECT_LE(state.num_fingertips, kMaxFingertips);
   ctrl->Stop();
+}
+
+// ── Cycle outcome ring (link-down forensics) ────────────────────────────────
+// Real (non-fake) controller against a bound-but-silent loopback socket: every
+// EventLoop cycle times out, so the ring must record attempted-but-not-ok masks
+// and consecutive_recv_failures must climb.
+
+namespace {
+
+// Bind a loopback UDP socket that never answers; returns {fd, port}.
+std::pair<int, int> OpenSilentLoopbackSocket() {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return {-1, 0};
+  }
+  socklen_t len = sizeof(addr);
+  ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
+  return {fd, ntohs(addr.sin_port)};
+}
+
+}  // namespace
+
+TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  // Real mode, 1 ms recv timeout, no fingertips (skips sensor init retries).
+  auto ctrl = std::make_unique<UdpHandController>("127.0.0.1", port, kHandUdpRecvConfig, 1.0, false,
+                                                  1, 0, /*use_fake_hand=*/false);
+  ASSERT_TRUE(ctrl->Start());
+
+  // Idle EventLoop ticks every ~20 ms; each cycle attempts motor+joint reads
+  // that all time out. Give it a few cycles.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  const CycleOutcomeRing ring = ctrl->GetCycleOutcomeRing();
+  EXPECT_GT(ring.count, 0u);
+
+  const auto& latest = ring.entries[(ring.count - 1) % CycleOutcomeRing::kCapacity];
+  const uint8_t expected_attempted =
+      RequestKindBit(RequestKind::kMotorRead) | RequestKindBit(RequestKind::kJointRead);
+  EXPECT_EQ(latest.attempted_mask, expected_attempted);
+  EXPECT_EQ(latest.ok_mask, 0u);
+  EXPECT_GT(ctrl->consecutive_recv_failures(), 0u);
+
+  // Per-kind stats attribute the timeouts to both read kinds.
+  const auto stats = ctrl->comm_stats();
+  EXPECT_GT(stats.per_kind[static_cast<std::size_t>(RequestKind::kMotorRead)].timeout, 0u);
+  EXPECT_GT(stats.per_kind[static_cast<std::size_t>(RequestKind::kJointRead)].timeout, 0u);
+
+  ctrl->Stop();
+  ::close(fd);
+}
+
+TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
+  const auto [fd, port] = OpenSilentLoopbackSocket();
+  ASSERT_GE(fd, 0);
+
+  auto ctrl = std::make_unique<UdpHandController>("127.0.0.1", port, kHandUdpRecvConfig, 1.0, false,
+                                                  1, 0, /*use_fake_hand=*/false);
+  ASSERT_TRUE(ctrl->Start());
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  ctrl->Stop();
+
+  const CycleOutcomeRing ring = ctrl->GetCycleOutcomeRing();
+  ASSERT_GT(ring.count, 1u);
+  const uint32_t n = std::min(ring.count, CycleOutcomeRing::kCapacity);
+  for (uint32_t i = 1; i < n; ++i) {
+    const auto& prev = ring.entries[(ring.count - n + i - 1) % CycleOutcomeRing::kCapacity];
+    const auto& cur = ring.entries[(ring.count - n + i) % CycleOutcomeRing::kCapacity];
+    EXPECT_EQ(cur.cycle_seq, prev.cycle_seq + 1);
+  }
+  ::close(fd);
 }
 
 }  // namespace udp_hand_driver::test

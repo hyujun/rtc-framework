@@ -170,6 +170,8 @@ write / joint read / E-Stop zero-write 에 사용합니다.
 
 **Mode 검증**: request-response 메서드(`RequestMotorRead`, `RequestAllMotorRead`, `RequestSensorRead`, `RequestAllSensorRead`, `RequestBulkSensorRaw`)는 응답 패킷의 mode 필드가 요청한 mode와 일치하는지 검증합니다. 불일치 시 `comm_stats_.mode_mismatch` 카운터를 증가시키고 `false`(bulk raw 는 `-1`)를 반환합니다. 이 검증은 **두 개의 독립 gate** 로 나뉩니다: joint / motor / set-mode 경로는 `verify_response_mode_`(컨트롤러가 `SensorProtocol::VerifiesResponseMode()` 로 주입), bulk sensor(0x19) 경로는 `verify_bulk_sensor_mode_`(`SensorProtocol::VerifiesBulkSensorResponseMode()` 로 주입)로 gate 됩니다. 1a 는 두 gate 모두 strict(true). 1b 는 **두 gate 모두 off** — 1b 펌웨어가 bulk sensor 응답뿐 아니라 motor/joint read(`ReadAllMotors`) 응답에서도 MODE byte 를 임의값으로 echo 하기 때문입니다. joint read 만 strict 로 두면 kMotor joint read 가 매 사이클 mode_mismatch 로 폐기되어 `state.joint_valid=false` → `/hand/joint_states` 미발행 → 컨트롤러 device 1 이 valid 가 못 되고 InitPositionHold 의 deferred hand-seed 가 발화하지 못해 손가락이 0 으로 붕괴합니다. `VerifiesBulkSensorResponseMode` 는 default(`VerifiesResponseMode`)로 off 를 상속합니다. gate 와 무관하게 모든 read 경로는 cmd·length 검증이 유지됩니다(stale/wrong-command 패킷은 계속 거부). `RequestSetSensorMode` 도 MODE gate 와 무관하게 항상 cmd echo(`kSetSensorMode`)를 검증합니다 (cmd floor).
 
+**Per-request-kind 통계**: `UdpHandCommStats.per_kind[]` 가 request kind (`RequestKind` enum: write_echo / motor_read / joint_read / sensor_read / bulk_sensor / set_mode) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}` 를 기록한다. joint/motor read 는 같은 메서드·cmd byte 를 쓰므로 caller(controller) 가 `RequestKind` 파라미터로 명시한다. 거부된 최신 패킷의 `last_unexpected_cmd`(CMD byte)/`last_unexpected_len` 도 보존 — link-down 시 timeout vs stale-desync 판별용. hot path 에는 카운터 증가만 추가 (로깅/alloc 없음). 스키마 상세는 아래 "통계 저장" 절.
+
 ### UdpHandSensorProcessor (`udp_hand_sensor_processor.hpp`)
 
 센서 후처리 파이프라인 (noexcept):
@@ -191,7 +193,7 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 1. All-zero 데이터: N회 연속 감지
 2. Duplicate 데이터: N회 연속 반복
 3. Low rate: polling rate가 `min_rate_hz` 미만
-4. Link down: `consecutive_recv_failures` >= `link_fail_threshold`
+4. Link down: `consecutive_recv_failures` >= `link_fail_threshold` — threshold 도달 시 **1회 forensic dump** (per-request-kind 통계 테이블 + 최근 64 cycle 의 attempted/ok mask ring 디코드) 를 WARN 으로 출력 후 RaiseFailure
 
 센서 검사 대상은 프로토콜 레이아웃에 따른다 (`sensor_force_layout` capability, 컨트롤러가 `sensor_uses_force_layout_` 주입). 1a 는 int32 `sensor_data` (barometer/ToF) 전체를, 1b 는 `sensor_force` 의 **fx,fy,fz 만** 검사한다 — Lx/Ly/Temp placeholder 는 제외해 상수 placeholder 가 all-zero 를 가리거나 duplicate 를 왜곡하지 못하게 한다. 펌웨어가 rest 에서 ADC 노이즈로 non-zero 를 내므로 exact-0 force = dead/단선 센서, bit-frozen fx,fy,fz = stalled feed 로 정상 무접촉과 구별된다. 모터 검사는 `state.motor_valid` 로 gate 되어 motor-space read 가 없는 1b (`motor_valid` 항상 false) 에서는 no-op 이다 (`check_motor: false` 권장).
 
@@ -213,6 +215,22 @@ phase 매핑 (hand UDP loop):
 - individual: `t_state = t4 - t0`, `t_compute = t5 - t4`, `t_publish = t6 - t5`
 
 `UdpHandTimingProfiler` 와 공존 — Profiler 는 in-process p95/p99 텔레메트리, Logger 는 raw per-tick CSV 로그.
+
+### 통계 저장 (`hand_udp_stats.json`)
+
+`<session>/device/hand_udp_stats.json` 에 통신·타이밍 통계를 저장한다. 저장 시점:
+
+- **주기 저장**: activate 후 10 s 고정 상수 wall timer (ROS param 아님) — SIGKILL/전원 유실에도 최근 10 s 이내 상태 유지 (quiet, INFO 로그 없음)
+- **failure 시점**: failure detector 콜백에서 즉시 1회 (E-STOP teardown 전에 forensic 카운터 보존)
+- **정상 teardown**: deactivate/cleanup/error/소멸자
+
+스키마 (`comm_stats` 섹션):
+
+- 집계 필드: `total_cycles`, `recv_ok`, `recv_timeout`, `recv_error`, `cmd_mismatch`, `mode_mismatch`, `event_skip_count`, `avg_rate_hz`, `consecutive_recv_failures`, `link_ok`, `failure_detected` 등
+- **`per_request`**: request kind (`write_echo` / `motor_read` / `joint_read` / `sensor_read` / `bulk_sensor` / `set_mode`) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}`. `ok` 는 request-level 성공 (검증 통과), `short_or_decode` 는 short packet + codec decode 실패. joint/motor read 는 wire format 이 동일하므로 controller 가 `RequestKind` 파라미터로 명시 attribution
+- **`last_unexpected_cmd` / `last_unexpected_len`**: 가장 최근 거부된 패킷의 CMD byte / 수신 길이 — 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처
+
+`timing_stats` 섹션은 `UdpHandTimingProfiler` 요약 (mean/min/max/p95/p99, phase 별).
 
 ---
 

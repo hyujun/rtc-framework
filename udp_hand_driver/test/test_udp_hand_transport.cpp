@@ -55,10 +55,33 @@ class LoopbackDevice {
     ::sendto(fd_, data, len, 0, reinterpret_cast<const sockaddr*>(&client_addr), addr_len);
   }
 
+  // Learn the transport's ephemeral source address from one received packet
+  // (the packet itself is dropped). Enables Send() pre-injection below.
+  void CaptureClientAddr() {
+    std::array<uint8_t, kMaxPacketSize> req{};
+    client_addr_len_ = sizeof(client_addr_);
+    ::recvfrom(fd_, req.data(), req.size(), 0, reinterpret_cast<sockaddr*>(&client_addr_),
+               &client_addr_len_);
+  }
+
+  // Send a raw packet to the captured client address without waiting for a
+  // request — used to pre-inject stale packets into the transport's socket
+  // buffer (desync simulation). Requires a prior CaptureClientAddr().
+  void Send(const uint8_t* data, std::size_t len) {
+    ::sendto(fd_, data, len, 0, reinterpret_cast<const sockaddr*>(&client_addr_), client_addr_len_);
+  }
+
  private:
   int fd_{-1};
   int port_{0};
+  sockaddr_in client_addr_{};
+  socklen_t client_addr_len_{sizeof(sockaddr_in)};
 };
+
+// Per-kind stats index shorthand.
+constexpr std::size_t KindIdx(RequestKind k) {
+  return static_cast<std::size_t>(k);
+}
 
 // ── RequestMotorRead mode validation ────────────────────────────────────────────
 
@@ -477,6 +500,190 @@ TEST(UdpHandTransport, WritePositionFireAndForget_NoRecv) {
   // Fire-and-forget: should not block or crash (no receiver)
   transport.WritePositionFireAndForget(cmd);
   transport.Close();
+}
+
+// ── Per-request-kind statistics ─────────────────────────────────────────────
+// Link-down forensics: each request kind gets its own {ok, timeout, error,
+// cmd_mismatch, mode_mismatch, short_or_decode} bucket, and the transport
+// records the CMD byte / length of the most recent rejected packet.
+
+TEST(HandUdpTransportPerKind, Defaults_AllZero) {
+  UdpHandCommStats stats{};
+  for (int k = 0; k < kNumRequestKinds; ++k) {
+    const auto& pk = stats.per_kind[static_cast<std::size_t>(k)];
+    EXPECT_EQ(pk.ok, 0u);
+    EXPECT_EQ(pk.timeout, 0u);
+    EXPECT_EQ(pk.error, 0u);
+    EXPECT_EQ(pk.cmd_mismatch, 0u);
+    EXPECT_EQ(pk.mode_mismatch, 0u);
+    EXPECT_EQ(pk.short_or_decode, 0u);
+  }
+  EXPECT_EQ(stats.last_unexpected_cmd, 0u);
+  EXPECT_EQ(stats.last_unexpected_len, 0u);
+}
+
+TEST(HandUdpTransportPerKind, Timeout_AttributedToCallerKind) {
+  // Silent device: request times out. The caller-specified kind (kJointRead)
+  // must receive the timeout — not the method-default kMotorRead bucket.
+  LoopbackDevice device;  // bound but never responds
+  UdpHandTransport transport("127.0.0.1", device.port(), 5.0);
+  ASSERT_TRUE(transport.Open());
+
+  std::array<float, kMotorDataCount> out{};
+  EXPECT_FALSE(transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kJoint, nullptr,
+                                          RequestKind::kJointRead));
+
+  const auto& stats = transport.comm_stats();
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 0u);
+  EXPECT_EQ(stats.recv_timeout, 1u);
+}
+
+TEST(HandUdpTransportPerKind, JointVsMotor_SeparateBuckets) {
+  LoopbackDevice device;  // never responds
+  UdpHandTransport transport("127.0.0.1", device.port(), 5.0);
+  ASSERT_TRUE(transport.Open());
+
+  std::array<float, kMotorDataCount> out{};
+  EXPECT_FALSE(transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor, nullptr,
+                                          RequestKind::kMotorRead));
+  EXPECT_FALSE(transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kJoint, nullptr,
+                                          RequestKind::kJointRead));
+
+  const auto& stats = transport.comm_stats();
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
+  EXPECT_EQ(stats.recv_timeout, 2u);
+}
+
+TEST(HandUdpTransportPerKind, CmdMismatch_RecordsLastUnexpectedCmd) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+
+  // Full-size motor packet echoing the WRONG command (velocity for a position
+  // request) — the stale-echo/desync signature.
+  MotorPacket response{};
+  response.id = kDeviceId;
+  response.cmd = static_cast<uint8_t>(Command::kReadVelocity);  // WRONG
+  response.mode = static_cast<uint8_t>(JointMode::kMotor);
+  std::array<uint8_t, kMotorPacketSize> resp_buf{};
+  std::memcpy(resp_buf.data(), &response, kMotorPacketSize);
+
+  std::thread dev_thread([&]() { device.RespondWith(resp_buf.data(), resp_buf.size()); });
+
+  std::array<float, kMotorDataCount> out{};
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor,
+                                                 nullptr, RequestKind::kMotorRead);
+  dev_thread.join();
+
+  EXPECT_FALSE(result);
+  const auto& stats = transport.comm_stats();
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].cmd_mismatch, 1u);
+  EXPECT_EQ(stats.last_unexpected_cmd, static_cast<uint8_t>(Command::kReadVelocity));
+  EXPECT_EQ(stats.last_unexpected_len, kMotorPacketSize);
+}
+
+TEST(HandUdpTransportPerKind, StalePreinjected_RetryRecovers) {
+  // Desync simulation: a stale wrong-cmd packet already sits in the socket
+  // buffer when the request is issued. Attempt 0 consumes and rejects it
+  // (cmd_mismatch), the MSG_DONTWAIT retry picks up the fresh response.
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+
+  // Teach the device the transport's source address, then pre-inject.
+  std::array<float, kNumHandMotors> cmd{};
+  transport.WritePositionFireAndForget(cmd);
+  device.CaptureClientAddr();
+
+  MotorPacket stale{};
+  stale.id = kDeviceId;
+  stale.cmd = static_cast<uint8_t>(Command::kWritePosition);  // stale echo
+  stale.mode = static_cast<uint8_t>(JointMode::kMotor);
+  std::array<uint8_t, kMotorPacketSize> stale_buf{};
+  std::memcpy(stale_buf.data(), &stale, kMotorPacketSize);
+  device.Send(stale_buf.data(), stale_buf.size());
+
+  MotorPacket fresh{};
+  fresh.id = kDeviceId;
+  fresh.cmd = static_cast<uint8_t>(Command::kReadPosition);
+  fresh.mode = static_cast<uint8_t>(JointMode::kMotor);
+  for (std::size_t i = 0; i < kMotorDataCount; ++i) {
+    fresh.data[i] = FloatToUint32(static_cast<float>(i));
+  }
+  std::array<uint8_t, kMotorPacketSize> fresh_buf{};
+  std::memcpy(fresh_buf.data(), &fresh, kMotorPacketSize);
+  device.Send(fresh_buf.data(), fresh_buf.size());
+
+  // Both packets are queued before the request: deterministic retry path.
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  std::array<float, kMotorDataCount> out{};
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor,
+                                                 nullptr, RequestKind::kMotorRead);
+
+  EXPECT_TRUE(result);
+  const auto& stats = transport.comm_stats();
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].ok, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].cmd_mismatch, 1u);
+  EXPECT_EQ(stats.last_unexpected_cmd, static_cast<uint8_t>(Command::kWritePosition));
+}
+
+TEST(HandUdpTransportPerKind, ShortPacket_CountsShortOrDecode) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+
+  // Header-only response (3 B) to a motor read expecting kMotorPacketSize.
+  std::array<uint8_t, kHeaderSize> short_buf{};
+  short_buf[0] = kDeviceId;
+  short_buf[1] = static_cast<uint8_t>(Command::kReadPosition);
+
+  std::thread dev_thread([&]() { device.RespondWith(short_buf.data(), short_buf.size()); });
+
+  std::array<float, kMotorDataCount> out{};
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor,
+                                                 nullptr, RequestKind::kMotorRead);
+  dev_thread.join();
+
+  EXPECT_FALSE(result);
+  const auto& stats = transport.comm_stats();
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].short_or_decode, 1u);
+  EXPECT_EQ(stats.last_unexpected_len, kHeaderSize);
+}
+
+TEST(HandUdpTransportPerKind, WriteEcho_OkCounted) {
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
+  ASSERT_TRUE(transport.Open());
+
+  std::array<uint8_t, kHeaderSize> echo{};
+  echo[0] = kDeviceId;
+  echo[1] = static_cast<uint8_t>(Command::kWritePosition);
+
+  std::thread dev_thread([&]() { device.RespondWith(echo.data(), echo.size()); });
+
+  std::array<float, kNumHandMotors> cmd{};
+  std::array<uint8_t, kMotorPacketSize> send_buf{};
+  std::array<uint8_t, kMotorPacketSize> echo_buf{};
+  const bool result = transport.WritePositionWithEcho(cmd, send_buf, echo_buf);
+  dev_thread.join();
+
+  EXPECT_TRUE(result);
+  EXPECT_EQ(transport.comm_stats().per_kind[KindIdx(RequestKind::kWriteEcho)].ok, 1u);
+}
+
+TEST(HandUdpTransportPerKind, BulkSensorTimeout_AttributedToBulkSensor) {
+  LoopbackDevice device;  // never responds
+  UdpHandTransport transport("127.0.0.1", device.port(), 5.0);
+  ASSERT_TRUE(transport.Open());
+
+  std::array<uint8_t, kP1bSensorResponseSize> buf{};
+  EXPECT_EQ(transport.RequestBulkSensorRaw(buf.data(), buf.size(), kP1bSensorResponseSize,
+                                           SensorMode::kRaw),
+            -1);
+  EXPECT_EQ(transport.comm_stats().per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
 }
 
 }  // namespace udp_hand_driver::test

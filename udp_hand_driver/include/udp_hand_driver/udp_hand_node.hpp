@@ -71,7 +71,11 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
   void PublishCalibrationStatus();
 
-  void SaveCommStats() const;
+  // Persist comm/timing stats to <session>/device/hand_udp_stats.json.
+  // Callable from the executor thread (lifecycle, periodic timer) and the
+  // failure-detector callback thread — serialized by save_stats_mutex_.
+  // verbose=false (periodic saves) skips the INFO summary logs.
+  void SaveCommStats(bool verbose = true) const;
 
   std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
   std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;
@@ -134,6 +138,12 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   std::array<float, udp_hand_driver::kNumHandMotors> last_cmd_{};
 
   std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};
+
+  // Periodic stats persistence (crash-safety): without it the stats JSON is
+  // written only on graceful teardown and is lost on SIGKILL/crash. Interval
+  // is a fixed constant — see on_activate (no ROS param on purpose).
+  rclcpp::TimerBase::SharedPtr stats_save_timer_;
+  mutable std::mutex save_stats_mutex_;
 
   // Cached config for on_activate logging
   std::string target_ip_;

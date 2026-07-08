@@ -406,10 +406,21 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     failure_detector_->SetFailureCallback([this](const std::string& reason) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Hand failure detected: %s",
                    reason.c_str());
+      // Persist the forensic counters at failure time — the process may be
+      // torn down (E-STOP) before any graceful-teardown save runs.
+      SaveCommStats();
     });
     failure_detector_->Start();
     RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
                 "UdpHandFailureDetector started (50 Hz, threshold=%d)", fd_cfg.failure_threshold);
+  }
+
+  // ── Periodic stats save (crash-safety) ─────────────────────────────
+  // Fixed 10 s interval (constant, not a ROS param): keeps the stats JSON at
+  // most 10 s stale after SIGKILL / power loss. Quiet (verbose=false).
+  {
+    constexpr auto kStatsSavePeriod = std::chrono::seconds(10);
+    stats_save_timer_ = create_wall_timer(kStatsSavePeriod, [this]() { SaveCommStats(false); });
   }
 
   // ── Per-tick timing CSV: open + start drain timer ──────────────────
@@ -446,6 +457,10 @@ void UdpHandNode::DrainHandUdpTiming() noexcept {
 }
 
 UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::State& state) {
+  if (stats_save_timer_) {
+    stats_save_timer_->cancel();
+    stats_save_timer_.reset();
+  }
   if (failure_detector_) {
     failure_detector_->Stop();
     failure_detector_.reset();
@@ -477,6 +492,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_deactivate(const rclcpp_lifecycle::S
 UdpHandNode::CallbackReturn UdpHandNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) {
   SaveCommStats();
 
+  stats_save_timer_.reset();
   calib_status_timer_.reset();
   calib_cmd_sub_.reset();
   joint_command_sub_.reset();
@@ -501,6 +517,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_shutdown(const rclcpp_lifecycle::Sta
 
 UdpHandNode::CallbackReturn UdpHandNode::on_error(const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode error — attempting recovery");
+  if (stats_save_timer_) {
+    stats_save_timer_->cancel();
+    stats_save_timer_.reset();
+  }
   if (failure_detector_) {
     failure_detector_->Stop();
     failure_detector_.reset();
@@ -529,9 +549,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_error(const rclcpp_lifecycle::State&
   return CallbackReturn::SUCCESS;
 }
 
-void UdpHandNode::SaveCommStats() const {
+void UdpHandNode::SaveCommStats(bool verbose) const {
   if (!controller_)
     return;
+
+  // Serialize concurrent saves (periodic timer / failure callback / teardown)
+  // so two writers cannot interleave into a corrupt JSON.
+  std::lock_guard lock(save_stats_mutex_);
 
   const auto stats = controller_->comm_stats();
   const bool fd_failed = failure_detector_ ? failure_detector_->failed() : false;
@@ -577,7 +601,25 @@ void UdpHandNode::SaveCommStats() const {
       // dropped valid frames — the InitPositionHold-to-zero regression signature.
       << "    \"cmd_mismatch\": " << stats.cmd_mismatch << ",\n"
       << "    \"mode_mismatch\": " << stats.mode_mismatch << ",\n"
-      << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
+      << "    \"event_skip_count\": " << stats.event_skip_count << ",\n";
+
+  // Per-request-kind breakdown (link-down forensics): which request kind eats
+  // the failures, and whether drops are timeouts or stale/desync mismatches.
+  ofs << "    \"per_request\": {\n";
+  for (int k = 0; k < udp_hand_driver::kNumRequestKinds; ++k) {
+    const auto& pk = stats.per_kind[static_cast<std::size_t>(k)];
+    ofs << "      \"" << udp_hand_driver::kRequestKindNames[static_cast<std::size_t>(k)]
+        << "\": { \"ok\": " << pk.ok << ", \"timeout\": " << pk.timeout
+        << ", \"error\": " << pk.error << ", \"cmd_mismatch\": " << pk.cmd_mismatch
+        << ", \"mode_mismatch\": " << pk.mode_mismatch
+        << ", \"short_or_decode\": " << pk.short_or_decode << " }"
+        << (k + 1 < udp_hand_driver::kNumRequestKinds ? "," : "") << "\n";
+  }
+  ofs << "    },\n"
+      << "    \"last_unexpected_cmd\": " << static_cast<unsigned>(stats.last_unexpected_cmd)
+      << ",\n"
+      << "    \"last_unexpected_len\": " << static_cast<unsigned>(stats.last_unexpected_len)
+      << ",\n"
       << "    \"avg_rate_hz\": " << std::fixed << std::setprecision(2) << avg_rate_hz << ",\n"
       << "    \"elapsed_sec\": " << std::fixed << std::setprecision(2) << elapsed_sec << ",\n"
       << "    \"failure_detected\": " << (fd_failed ? "true" : "false") << ",\n"
@@ -636,6 +678,11 @@ void UdpHandNode::SaveCommStats() const {
       << "  }\n"
       << "}\n";
   ofs.close();
+
+  // Periodic (verbose=false) saves stay quiet — a 10 s INFO cadence would
+  // drown the log while adding nothing over the final teardown summary.
+  if (!verbose)
+    return;
 
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "%s", controller_->TimingSummary().c_str());
 

@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -94,6 +95,23 @@ struct CalibrationStatusSnapshot {
   uint8_t state{calibration::kStateIdle};
   uint16_t progress_count{0};
   uint16_t target_count{0};
+};
+
+// ── Cycle outcome ring (link-down forensics) ─────────────────────────────
+// One entry per EventLoop cycle: which request kinds were attempted and which
+// succeeded (bit i = RequestKindBit(RequestKind(i))). POD, single writer
+// (EventLoop), exposed as a rtc::SeqLock snapshot so the non-RT failure
+// detector can decode the last kCapacity cycles at link-down time.
+struct CycleOutcomeEntry {
+  uint32_t cycle_seq{0};
+  uint8_t attempted_mask{0};
+  uint8_t ok_mask{0};
+};
+
+struct CycleOutcomeRing {
+  static constexpr uint32_t kCapacity = 64;
+  std::array<CycleOutcomeEntry, kCapacity> entries{};
+  uint32_t count{0};  ///< total cycles recorded; latest = entries[(count-1) % kCapacity]
 };
 
 // Hand-private UDP receive thread config (Phase 5 — was rtc::kUdpRecvConfig
@@ -475,6 +493,12 @@ class UdpHandController {
     return stats;
   }
 
+  /// Snapshot of the last CycleOutcomeRing::kCapacity EventLoop cycle outcomes
+  /// (attempted/ok request-kind masks). Safe from any thread (SeqLock).
+  [[nodiscard]] CycleOutcomeRing GetCycleOutcomeRing() const noexcept {
+    return outcome_ring_seqlock_.Load();
+  }
+
   [[nodiscard]] UdpHandTimingProfiler::Stats timing_stats() const noexcept {
     return timing_profiler_.GetStats();
   }
@@ -515,6 +539,10 @@ class UdpHandController {
     std::array<float, packets::kMotorDataCount> motor_cur_buf{};
     std::array<int32_t, udp_hand_driver::kSensorValuesPerFingertip> sensor_raw_buf{};
     std::array<float, kNumHandMotors> pending_cmd{};
+
+    // Cycle outcome working copy — mutated here, snapshotted into
+    // outcome_ring_seqlock_ once per cycle (see end of loop body).
+    CycleOutcomeRing outcome_ring{};
 
     std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data{};
     // 1b force cache (persists across decimated cycles, mirroring
@@ -589,6 +617,8 @@ class UdpHandController {
 
       UdpHandState state{};
       bool any_recv_ok = false;
+      uint8_t attempted_mask = 0;
+      uint8_t ok_mask = 0;
       double ft_infer_elapsed_us = 0.0;
       std::array<int32_t, udp_hand_driver::kMaxHandSensors> cached_sensor_data_raw{};
 
@@ -600,8 +630,10 @@ class UdpHandController {
       // pending_cmd (which drives the hand to q=0) in the startup window before
       // the controller publishes its first /hand/joint_command.
       if (state_read_once_ && cmd_received_once) {
+        attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
         if (transport_.WritePositionWithEcho(pending_cmd, send_buf, echo_buf, joint_io_mode)) {
           any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
         }
       }
 
@@ -619,14 +651,17 @@ class UdpHandController {
         //    has no motor-space read (1b) — motor_states is then not published.
         if (sensor_protocol_->HasMotorSpaceRead()) {
           packets::JointMode received_mode{};
+          attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
           if (transport_.RequestAllMotorRead(motor_pos_buf, motor_vel_buf, motor_cur_buf,
-                                             packets::JointMode::kMotor, &received_mode)) {
+                                             packets::JointMode::kMotor, &received_mode,
+                                             RequestKind::kMotorRead)) {
             std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
             std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
             std::copy_n(motor_cur_buf.begin(), kNumHandMotors, state.motor_currents.begin());
             state.received_joint_mode = static_cast<uint8_t>(received_mode);
             state.motor_valid = true;
             any_recv_ok = true;
+            ok_mask |= RequestKindBit(RequestKind::kMotorRead);
           }
         }
 
@@ -637,12 +672,15 @@ class UdpHandController {
         //    publishes the result as joint_states.
         {
           std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
-          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, joint_io_mode)) {
+          attempted_mask |= RequestKindBit(RequestKind::kJointRead);
+          if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, joint_io_mode, nullptr,
+                                             RequestKind::kJointRead)) {
             std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
             std::copy_n(jv_buf.begin(), kNumHandMotors, state.joint_velocities.begin());
             std::copy_n(jc_buf.begin(), kNumHandMotors, state.joint_currents.begin());
             state.joint_valid = true;
             any_recv_ok = true;
+            ok_mask |= RequestKindBit(RequestKind::kJointRead);
           }
         }
 
@@ -653,12 +691,14 @@ class UdpHandController {
         //    response size/layout and decode differ.
         if (is_sensor_cycle) {
           state.num_fingertips = num_fingertips_;  // decode input
+          attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
           const ssize_t recvd = transport_.RequestBulkSensorRaw(
               sensor_recv_buf.data(), sensor_recv_buf.size(), sensor_protocol_->ResponseSize(),
               packets::SensorMode::kRaw);
           if (recvd >= 0 && sensor_protocol_->DecodeAllSensors(
                                 sensor_recv_buf.data(), static_cast<std::size_t>(recvd), state)) {
             any_recv_ok = true;
+            ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
             cached_sensor_data = state.sensor_data;    // 1a raw decode (0 for 1b)
             cached_sensor_force = state.sensor_force;  // 1b force (0 for 1a)
           }
@@ -735,12 +775,15 @@ class UdpHandController {
         // ── Individual mode ───────────────────────────────────────────────
         // 2. Read motor position (kMotor)
         packets::JointMode received_mode{};
+        attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
         if (transport_.RequestMotorRead(packets::Command::kReadPosition, motor_pos_buf,
-                                        packets::JointMode::kMotor, &received_mode)) {
+                                        packets::JointMode::kMotor, &received_mode,
+                                        RequestKind::kMotorRead)) {
           std::copy_n(motor_pos_buf.begin(), kNumHandMotors, state.motor_positions.begin());
           state.received_joint_mode = static_cast<uint8_t>(received_mode);
           state.motor_valid = true;
           any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
         }
 
         const auto t2 = std::chrono::steady_clock::now();
@@ -749,26 +792,35 @@ class UdpHandController {
         //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
         {
           std::array<float, packets::kMotorDataCount> jp_buf{};
-          if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf, joint_io_mode)) {
+          attempted_mask |= RequestKindBit(RequestKind::kJointRead);
+          if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf, joint_io_mode,
+                                          nullptr, RequestKind::kJointRead)) {
             std::copy_n(jp_buf.begin(), kNumHandMotors, state.joint_positions.begin());
             state.joint_valid = true;
             any_recv_ok = true;
+            ok_mask |= RequestKindBit(RequestKind::kJointRead);
           }
         }
 
         const auto t2j = std::chrono::steady_clock::now();
 
         // 4. Read motor velocity (kMotor)
+        attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
         if (transport_.RequestMotorRead(packets::Command::kReadVelocity, motor_vel_buf,
-                                        packets::JointMode::kMotor)) {
+                                        packets::JointMode::kMotor, nullptr,
+                                        RequestKind::kMotorRead)) {
           std::copy_n(motor_vel_buf.begin(), kNumHandMotors, state.motor_velocities.begin());
           any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
         }
 
         const auto t3 = std::chrono::steady_clock::now();
 
         // 5. Read sensors
         if (is_sensor_cycle) {
+          if (num_fingertips_ > 0) {
+            attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
+          }
           for (int i = 0; i < num_fingertips_; ++i) {
             auto cmd = packets::SensorCommand(i);
             if (transport_.RequestSensorRead(cmd, sensor_raw_buf, packets::SensorMode::kRaw)) {
@@ -776,6 +828,7 @@ class UdpHandController {
                   sensor_raw_buf.begin(), udp_hand_driver::kSensorValuesPerFingertip,
                   cached_sensor_data.begin() + i * udp_hand_driver::kSensorValuesPerFingertip);
               any_recv_ok = true;
+              ok_mask |= RequestKindBit(RequestKind::kSensorRead);
             }
           }
         }
@@ -845,19 +898,49 @@ class UdpHandController {
       }
 
       transport_.comm_stats_mut().total_cycles++;
-      cycle_count_.fetch_add(1, std::memory_order_relaxed);
+      const auto cycle_seq = cycle_count_.fetch_add(1, std::memory_order_relaxed);
+
+      // Record this cycle's outcome into the forensic ring and snapshot it.
+      outcome_ring.entries[outcome_ring.count % CycleOutcomeRing::kCapacity] = {
+          static_cast<uint32_t>(cycle_seq), attempted_mask, ok_mask};
+      ++outcome_ring.count;
+      outcome_ring_seqlock_.Store(outcome_ring);
 
       if (any_recv_ok) {
         consecutive_recv_failures_.store(0, std::memory_order_relaxed);
       } else {
         const auto failures =
             consecutive_recv_failures_.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (failures >= 5) {
+        // Same-thread (EventLoop) reference — no copy, no race with the writer.
+        const UdpHandCommStats& cs = transport_.comm_stats();
+        if (failures == 1) {
+          // 0→1 transition: name the FIRST failed request kind of this cycle
+          // and the last rejected CMD byte — a stale echo of the *previous*
+          // request implies desync rather than timeout. Throttled; static
+          // string literal + primitive args only (RT-safe).
+          const auto failed_mask = static_cast<uint8_t>(attempted_mask & ~ok_mask);
+          const int first_failed = (failed_mask != 0) ? std::countr_zero(failed_mask) : -1;
+          static rclcpp::Clock onset_clock(RCL_STEADY_TIME);
+          RCLCPP_WARN_THROTTLE(
+              ::udp_hand_driver::logging::ControllerLogger(), onset_clock,
+              ::udp_hand_driver::logging::kThrottleFastMs,
+              "EventLoop: recv failure onset: first_failed=%s attempted=0x%02X ok=0x%02X "
+              "last_unexpected_cmd=0x%02X last_unexpected_len=%u",
+              (first_failed >= 0 && first_failed < kNumRequestKinds)
+                  ? kRequestKindNames[static_cast<std::size_t>(first_failed)]
+                  : "none",
+              static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
+              static_cast<unsigned>(cs.last_unexpected_cmd),
+              static_cast<unsigned>(cs.last_unexpected_len));
+        } else if (failures >= 5) {
           static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
-          RCLCPP_WARN_THROTTLE(::udp_hand_driver::logging::ControllerLogger(), steady_clock,
-                               ::udp_hand_driver::logging::kThrottleFastMs,
-                               "EventLoop: consecutive recv failures=%lu",
-                               static_cast<unsigned long>(failures));
+          RCLCPP_WARN_THROTTLE(
+              ::udp_hand_driver::logging::ControllerLogger(), steady_clock,
+              ::udp_hand_driver::logging::kThrottleFastMs,
+              "EventLoop: consecutive recv failures=%lu (attempted=0x%02X "
+              "ok=0x%02X last_unexpected_cmd=0x%02X)",
+              static_cast<unsigned long>(failures), static_cast<unsigned>(attempted_mask),
+              static_cast<unsigned>(ok_mask), static_cast<unsigned>(cs.last_unexpected_cmd));
         }
       }
 
@@ -984,6 +1067,13 @@ class UdpHandController {
 
   // Link health
   std::atomic<uint64_t> consecutive_recv_failures_{0};
+
+  // Cycle outcome ring snapshot (writer: EventLoop; readers: failure detector,
+  // stats save). The working copy lives on the EventLoop stack; each cycle ends
+  // with one Store() (~0.5 KB memcpy — negligible at 500 Hz).
+  static_assert(std::is_trivially_copyable_v<CycleOutcomeRing>,
+                "SeqLock payload must be trivially copyable");
+  rtc::SeqLock<CycleOutcomeRing> outcome_ring_seqlock_{};
 
   // Pending calibration request (ROS thread -> EventLoop handoff).
   // Written by RequestCalibration() (arbitrary thread), consumed by

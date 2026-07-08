@@ -5,7 +5,11 @@
 
 #include "udp_hand_driver/udp_hand_failure_detector.hpp"
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <array>
 #include <atomic>
@@ -356,6 +360,60 @@ TEST_F(HandFailureDetectorTest, DoubleStart_Ignored) {
   detector.Start();  // Second start should be ignored
   std::this_thread::sleep_for(50ms);
   detector.Stop();
+}
+
+// ── Link-down forensic dump + single-shot latch ─────────────────────────────
+// Real (non-fake) controller against a bound-but-silent loopback socket: every
+// EventLoop cycle times out, consecutive_recv_failures crosses the threshold,
+// CheckLink runs the one-shot forensic dump (per-kind table + ring decode) and
+// RaiseFailure latches exactly once even though the condition persists.
+
+TEST(HandFailureDetectorLinkDown, DumpRunsAndFailureLatchesOnce) {
+  // Silent loopback socket (never answers).
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  ASSERT_GE(fd, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+  socklen_t len = sizeof(addr);
+  ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
+  const int port = ntohs(addr.sin_port);
+
+  // Real mode, 1 ms recv timeout, no fingertips (skips sensor init retries).
+  auto controller = std::make_unique<UdpHandController>("127.0.0.1", port, kHandUdpRecvConfig, 1.0,
+                                                        false, 1, 0, /*use_fake_hand=*/false);
+  ASSERT_TRUE(controller->Start());
+
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.check_motor = false;
+  cfg.check_sensor = false;
+  cfg.check_link = true;
+  cfg.link_fail_threshold = 3;
+  cfg.min_rate_hz = 0.0;
+
+  UdpHandFailureDetector detector(*controller, cfg);
+
+  std::atomic<int> callback_count{0};
+  std::string failure_reason;
+  detector.SetFailureCallback([&](const std::string& reason) {
+    failure_reason = reason;
+    callback_count.fetch_add(1);
+  });
+
+  detector.Start();
+  // Failures accumulate at the ~50 Hz idle EventLoop cadence; the link stays
+  // down for many detector polls — the latch must still fire only once.
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_EQ(callback_count.load(), 1);
+  EXPECT_NE(failure_reason.find("hand_udp_link_down"), std::string::npos);
+
+  controller->Stop();
+  ::close(fd);
 }
 
 // ── Link health (fake_hand always has 0 failures) ───────────────────────────

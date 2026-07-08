@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <thread>
@@ -283,8 +284,59 @@ class UdpHandFailureDetector {
       RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
                   "UDP link down (consecutive_recv_failures=%lu, threshold=%d)",
                   static_cast<unsigned long>(failures), cfg_.link_fail_threshold);
+      if (!link_dump_done_) {
+        link_dump_done_ = true;
+        DumpLinkForensics();
+      }
       RaiseFailure("hand_udp_link_down (consecutive_recv_failures=" + std::to_string(failures) +
                    ")");
+    }
+  }
+
+  // One-shot forensic dump at link-down: per-request-kind comm stats table +
+  // the last CycleOutcomeRing::kCapacity cycle outcomes. Non-RT detector
+  // thread — string building / unthrottled WARN are fine here.
+  void DumpLinkForensics() {
+    const UdpHandCommStats stats = controller_.comm_stats();
+    RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                "Link-down forensics: per-request stats "
+                "(last_unexpected_cmd=0x%02X last_unexpected_len=%u):",
+                static_cast<unsigned>(stats.last_unexpected_cmd),
+                static_cast<unsigned>(stats.last_unexpected_len));
+    for (int k = 0; k < kNumRequestKinds; ++k) {
+      const auto& pk = stats.per_kind[static_cast<std::size_t>(k)];
+      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                  "  %-11s ok=%lu timeout=%lu error=%lu cmd_mismatch=%lu "
+                  "mode_mismatch=%lu short_or_decode=%lu",
+                  kRequestKindNames[static_cast<std::size_t>(k)], static_cast<unsigned long>(pk.ok),
+                  static_cast<unsigned long>(pk.timeout), static_cast<unsigned long>(pk.error),
+                  static_cast<unsigned long>(pk.cmd_mismatch),
+                  static_cast<unsigned long>(pk.mode_mismatch),
+                  static_cast<unsigned long>(pk.short_or_decode));
+    }
+
+    // Ring decode, oldest → newest: "seq:attempted>ok" per cycle, hex masks
+    // (bit i = RequestKind i), chunked to keep individual log lines short.
+    const CycleOutcomeRing ring = controller_.GetCycleOutcomeRing();
+    const uint32_t n = std::min(ring.count, CycleOutcomeRing::kCapacity);
+    constexpr uint32_t kPerLine = 16;
+    std::string line;
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint32_t idx = (ring.count - n + i) % CycleOutcomeRing::kCapacity;
+      const auto& e = ring.entries[idx];
+      char buf[32];
+      std::snprintf(buf, sizeof(buf), "%u:%02X>%02X ", e.cycle_seq,
+                    static_cast<unsigned>(e.attempted_mask), static_cast<unsigned>(e.ok_mask));
+      line += buf;
+      if ((i + 1) % kPerLine == 0 || i + 1 == n) {
+        RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "  cycles[%u..%u]: %s",
+                    i - (i % kPerLine) + 1, i + 1, line.c_str());
+        line.clear();
+      }
+    }
+    if (n == 0) {
+      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
+                  "  cycle outcome ring empty (no EventLoop cycles recorded)");
     }
   }
 
@@ -325,6 +377,9 @@ class UdpHandFailureDetector {
   int rate_fail_count_{0};
   std::size_t prev_cycle_count_{0};
   std::chrono::steady_clock::time_point prev_rate_check_{};
+
+  // Link-down forensic dump one-shot latch (detector thread only)
+  bool link_dump_done_{false};
 };
 
 }  // namespace udp_hand_driver
