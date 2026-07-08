@@ -22,8 +22,9 @@ udp_hand_driver/
 │   └── fingertip_ft_inferencer.hpp -- ONNX 기반 핑거팁 F/T 추론
 ├── src/
 │   ├── udp_hand_node.cpp           -- main() (mlockall, CPU affinity, spin)
-│   ├── udp_hand_node_lifecycle.cpp -- 6 lifecycle 콜백 + dtor + Drain + SaveCommStats
-│   └── udp_hand_node_publish.cpp   -- Preallocate / PublishFromEventLoop / PublishCalibrationStatus
+│   ├── udp_hand_node_lifecycle.cpp -- 6 lifecycle 콜백 + dtor + Drain + teardown helper
+│   ├── udp_hand_node_publish.cpp   -- Preallocate / PublishFromEventLoop / PublishCalibrationStatus
+│   └── udp_hand_node_stats.cpp     -- SaveCommStats (hand_udp_stats.json writer)
 ├── config/
 │   ├── udp_hand_node.yaml        -- 노드 파라미터 설정 (ros__parameters)
 │   └── fingertip_ft_inferencer.yaml -- ONNX 모델 경로 + 캘리브레이션 설정

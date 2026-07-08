@@ -76,7 +76,17 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Callable from the executor thread (lifecycle, periodic timer) and the
   // failure-detector callback thread — serialized by save_stats_mutex_.
   // verbose=false (periodic saves) skips the INFO summary logs.
+  // Defined in udp_hand_node_stats.cpp.
   void SaveCommStats(bool verbose = true) const;
+
+  // Cancel timers and stop the worker threads (failure detector + comm loop),
+  // leaving controller_ constructed for possible reactivation. Idempotent;
+  // shared by on_deactivate and on_error.
+  void StopRuntime();
+
+  // Release all publisher/subscription/timer handles and the controller.
+  // Idempotent; shared by on_cleanup and on_error.
+  void ReleaseResources();
 
   std::unique_ptr<udp_hand_driver::UdpHandController> controller_;
   std::unique_ptr<udp_hand_driver::UdpHandFailureDetector> failure_detector_;

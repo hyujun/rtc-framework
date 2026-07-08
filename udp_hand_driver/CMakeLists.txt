@@ -50,6 +50,7 @@ add_executable(udp_hand_node
   src/udp_hand_node.cpp
   src/udp_hand_node_lifecycle.cpp
   src/udp_hand_node_publish.cpp
+  src/udp_hand_node_stats.cpp
 )
 target_include_directories(udp_hand_node PRIVATE include)
 target_link_libraries(udp_hand_node udp_hand_protocol)
