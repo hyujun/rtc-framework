@@ -569,7 +569,14 @@ void UdpHandNode::SaveCommStats() const {
       << "    \"total_cycles\": " << stats.total_cycles << ",\n"
       << "    \"recv_ok\": " << stats.recv_ok << ",\n"
       << "    \"recv_timeout\": " << stats.recv_timeout << ",\n"
-      << "    \"recv_error\": " << stats.recv_error << ",\n"
+      << "    \"recv_error\": " << stats.recv_error
+      << ",\n"
+      // cmd_mismatch / mode_mismatch surface the two read-drop causes: a wrong
+      // CMD echo, and a MODE echo that fails the verify gate. A rising
+      // mode_mismatch with a lenient protocol (1b) means the gate would have
+      // dropped valid frames — the InitPositionHold-to-zero regression signature.
+      << "    \"cmd_mismatch\": " << stats.cmd_mismatch << ",\n"
+      << "    \"mode_mismatch\": " << stats.mode_mismatch << ",\n"
       << "    \"event_skip_count\": " << stats.event_skip_count << ",\n"
       << "    \"avg_rate_hz\": " << std::fixed << std::setprecision(2) << avg_rate_hz << ",\n"
       << "    \"elapsed_sec\": " << std::fixed << std::setprecision(2) << elapsed_sec << ",\n"

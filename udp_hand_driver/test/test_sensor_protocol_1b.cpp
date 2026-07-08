@@ -112,9 +112,9 @@ TEST(SensorProtocolFactory, CreatesKnownVersions) {
   EXPECT_FALSE(p1b->HasMotorSpaceRead());
   EXPECT_EQ(p1b->JointIoMode(), packets::JointMode::kMotor);  // 1b: joint served under kMotor
   EXPECT_FALSE(p1b->RunsSensorPostProcess());
-  EXPECT_TRUE(
-      p1b->VerifiesResponseMode());  // 1b: joint/set-mode echo the requested MODE accurately
-  EXPECT_FALSE(p1b->VerifiesBulkSensorResponseMode());  // 1b: bulk-sensor (0x19) MODE is arbitrary
+  EXPECT_FALSE(p1b->VerifiesResponseMode());  // 1b: MODE byte arbitrary on every response family
+  EXPECT_FALSE(
+      p1b->VerifiesBulkSensorResponseMode());  // 1b: inherits false (whole protocol lenient)
 }
 
 TEST(SensorProtocolFactory, RejectsUnknownVersion) {

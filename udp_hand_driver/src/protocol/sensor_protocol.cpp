@@ -104,17 +104,19 @@ class SensorProtocol1b final : public SensorProtocol {
     return true;
   }
 
-  // 1b firmware echoes the requested MODE accurately on the joint / set-mode
-  // responses, so strict validation is kept there (matching 1a). The earlier
-  // blanket `false` masked a real, separate bug — requesting kJoint on a
-  // kMotor-only firmware (now fixed via JointIoMode()).
-  [[nodiscard]] bool VerifiesResponseMode() const noexcept override { return true; }
-
-  // ...but the 1b bulk-sensor (0x19) response fills the MODE byte with an
-  // arbitrary value, so validating it there drops every valid sensor frame.
-  // Gate that path off while keeping joint / set-mode MODE checks on. CMD (0x19)
-  // + length validation still guard the bulk-sensor read.
-  [[nodiscard]] bool VerifiesBulkSensorResponseMode() const noexcept override { return false; }
+  // 1b firmware fills the MODE byte with an arbitrary value on ALL response
+  // families — not just the bulk-sensor (0x19) response but the motor/joint
+  // read (ReadAllMotors) too. The prior split (strict joint/set-mode, lenient
+  // bulk) was a second misdiagnosis: with strict verify restored, the kMotor
+  // joint read (JointIoMode()) failed the MODE check every cycle → return false
+  // → state.joint_valid=false → /hand/joint_states never published → the
+  // controller's device 1 never went valid → InitPositionHold's deferred
+  // hand-seed never fired and every finger collapsed to 0. Turn the MODE gate
+  // off for the whole 1b protocol (matching the original don't-care state that
+  // held correctly); CMD + length validation still guard every read path, so
+  // stale/wrong-command packets are still rejected. VerifiesBulkSensorResponse
+  // Mode() inherits false from the base default (== VerifiesResponseMode()).
+  [[nodiscard]] bool VerifiesResponseMode() const noexcept override { return false; }
 
   [[nodiscard]] const char* Version() const noexcept override { return "1b"; }
 };

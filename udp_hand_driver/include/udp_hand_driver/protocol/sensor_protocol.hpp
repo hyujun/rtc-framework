@@ -71,21 +71,22 @@ class SensorProtocol {
   /// Whether the firmware echoes a meaningful MODE byte in the joint / set-mode
   /// responses (both versions do — MODE echoes the requested joint/sensor mode
   /// and is validated on receive). Kept as a capability for future firmware that
-  /// may not echo MODE reliably. NOTE: an earlier revision set this false for 1b
-  /// under a "MODE is don't-care" reading; that was a partial misdiagnosis — 1b
-  /// dropped joint data because the driver requested kJoint while 1b only serves
-  /// kMotor (see JointIoMode()), not (only) because MODE was garbage. The joint
-  /// / set-mode paths echo MODE correctly on both versions, so both return true;
-  /// the bulk-sensor path is gated separately (see VerifiesBulkSensorResponseMode()).
+  /// may not echo MODE reliably. History (two corrected misdiagnoses): 1a echoes
+  /// MODE meaningfully → true. 1b returns false: its firmware fills the MODE byte
+  /// with an arbitrary value on every response family — bulk-sensor AND the
+  /// motor/joint read — so a strict check drops otherwise-valid frames. (An
+  /// interim revision kept this true for 1b believing only bulk-sensor was
+  /// affected; that dropped the kMotor joint read every cycle and collapsed
+  /// InitPositionHold to zero.) CMD + length validation still guard each path.
   [[nodiscard]] virtual bool VerifiesResponseMode() const noexcept = 0;
 
   /// Whether the firmware echoes a meaningful MODE byte specifically in the
   /// bulk-sensor (0x19) response. Defaults to VerifiesResponseMode() — firmware
-  /// that echoes MODE at all usually echoes it on every response. 1b overrides
-  /// this to false: its 0x19 bulk-sensor response fills the MODE byte with an
-  /// arbitrary value even though its joint / set-mode responses echo MODE
-  /// correctly, so a strict MODE check there drops every otherwise-valid sensor
-  /// frame. Length + CMD (0x19) validation still guard the bulk-sensor path.
+  /// that echoes MODE at all usually echoes it on every response, and a version
+  /// whose MODE is unreliable is unreliable everywhere (1b returns false for the
+  /// whole protocol, so it inherits false here). This seam stays so a future
+  /// firmware that echoes MODE on joint/set-mode but garbles only the 0x19
+  /// bulk-sensor response can gate that one path off in isolation.
   [[nodiscard]] virtual bool VerifiesBulkSensorResponseMode() const noexcept {
     return VerifiesResponseMode();
   }
