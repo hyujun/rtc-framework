@@ -218,53 +218,32 @@ class UdpHandTransport {
 
     codec::EncodeMotorReadRequest(cmd, send_buf, joint_mode);
 
-    const ssize_t sent =
-        sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
-               reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
-    if (sent < 0)
-      return false;
-
-    constexpr int kMaxAttempts = 3;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const ssize_t recvd =
-          (attempt == 0) ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
-                         : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
-      if (recvd < 0) {
-        if (attempt == 0) {
-          CountRecvFail(kind);
-        }
-        return false;
-      }
-      if (attempt == 0) {
-        ++comm_stats_.recv_ok;
-      }
-
-      if (recvd < static_cast<ssize_t>(packets::kMotorPacketSize)) {
-        CountShortOrDecode(kind, recvd);
-        continue;
-      }
-
-      uint8_t cmd_out, mode_out;
-      if (!codec::DecodeMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd), cmd_out,
-                                      mode_out, out)) {
-        CountShortOrDecode(kind, recvd);
-        continue;
-      }
-      if (cmd_out != static_cast<uint8_t>(cmd)) {
-        CountCmdMismatch(kind, cmd_out, recvd);
-        continue;
-      }
-      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
-        CountModeMismatch(kind);
-        return false;
-      }
-      if (received_mode) {
-        *received_mode = static_cast<packets::JointMode>(mode_out);
-      }
-      ++PerKindStats(kind).ok;
-      return true;
-    }
-    return false;
+    return RequestWithRetry(
+               send_buf.data(), send_buf.size(), recv_buf.data(), recv_buf.size(), kind,
+               [&](ssize_t recvd) noexcept {
+                 if (recvd < static_cast<ssize_t>(packets::kMotorPacketSize)) {
+                   CountShortOrDecode(kind, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 uint8_t cmd_out, mode_out;
+                 if (!codec::DecodeMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd),
+                                                 cmd_out, mode_out, out)) {
+                   CountShortOrDecode(kind, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 if (cmd_out != static_cast<uint8_t>(cmd)) {
+                   CountCmdMismatch(kind, cmd_out, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
+                   CountModeMismatch(kind);
+                   return ValidateResult::kFail;
+                 }
+                 if (received_mode) {
+                   *received_mode = static_cast<packets::JointMode>(mode_out);
+                 }
+                 return ValidateResult::kOk;
+               }) >= 0;
   }
 
   // Request sensor read (individual: 0x14~0x17). 3B send, 67B recv.
@@ -276,52 +255,31 @@ class UdpHandTransport {
 
     codec::EncodeSensorReadRequest(cmd, send_buf, sensor_mode);
 
-    const ssize_t sent =
-        sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
-               reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
-    if (sent < 0)
-      return false;
-
-    constexpr int kMaxAttempts = 3;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const ssize_t recvd =
-          (attempt == 0) ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
-                         : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
-      if (recvd < 0) {
-        if (attempt == 0) {
-          CountRecvFail(RequestKind::kSensorRead);
-        }
-        return false;
-      }
-      if (attempt == 0) {
-        ++comm_stats_.recv_ok;
-      }
-
-      if (recvd < static_cast<ssize_t>(packets::kSensorResponseSize)) {
-        CountShortOrDecode(RequestKind::kSensorRead, recvd);
-        continue;
-      }
-
-      uint8_t cmd_out, mode_out;
-      const bool ok = codec::DecodeSensorResponseRaw(
-          recv_buf.data(), static_cast<std::size_t>(recvd), cmd_out, mode_out, out);
-      if (!ok) {
-        CountShortOrDecode(RequestKind::kSensorRead, recvd);
-        continue;
-      }
-
-      if (cmd_out != static_cast<uint8_t>(cmd)) {
-        CountCmdMismatch(RequestKind::kSensorRead, cmd_out, recvd);
-        continue;
-      }
-      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(sensor_mode)) {
-        CountModeMismatch(RequestKind::kSensorRead);
-        return false;
-      }
-      ++PerKindStats(RequestKind::kSensorRead).ok;
-      return true;
-    }
-    return false;
+    const RequestKind kind = RequestKind::kSensorRead;
+    return RequestWithRetry(
+               send_buf.data(), send_buf.size(), recv_buf.data(), recv_buf.size(), kind,
+               [&](ssize_t recvd) noexcept {
+                 if (recvd < static_cast<ssize_t>(packets::kSensorResponseSize)) {
+                   CountShortOrDecode(kind, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 uint8_t cmd_out, mode_out;
+                 if (!codec::DecodeSensorResponseRaw(recv_buf.data(),
+                                                     static_cast<std::size_t>(recvd), cmd_out,
+                                                     mode_out, out)) {
+                   CountShortOrDecode(kind, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 if (cmd_out != static_cast<uint8_t>(cmd)) {
+                   CountCmdMismatch(kind, cmd_out, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 if (verify_response_mode_ && mode_out != static_cast<uint8_t>(sensor_mode)) {
+                   CountModeMismatch(kind);
+                   return ValidateResult::kFail;
+                 }
+                 return ValidateResult::kOk;
+               }) >= 0;
   }
 
   // Request bulk motor read (cmd=0x10). 3B send, 123B recv.
@@ -338,53 +296,33 @@ class UdpHandTransport {
 
     codec::EncodeReadAllMotorsRequest(send_buf, joint_mode);
 
-    const ssize_t sent =
-        sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
-               reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
-    if (sent < 0)
-      return false;
-
-    constexpr int kMaxAttempts = 3;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const ssize_t recvd =
-          (attempt == 0) ? RecvWithTimeout(recv_buf.data(), recv_buf.size())
-                         : ::recv(socket_fd_, recv_buf.data(), recv_buf.size(), MSG_DONTWAIT);
-      if (recvd < 0) {
-        if (attempt == 0) {
-          CountRecvFail(kind);
-        }
-        return false;
-      }
-      if (attempt == 0) {
-        ++comm_stats_.recv_ok;
-      }
-
-      if (recvd < static_cast<ssize_t>(packets::kAllMotorResponseSize)) {
-        CountShortOrDecode(kind, recvd);
-        continue;
-      }
-
-      uint8_t cmd_out, mode_out;
-      if (!codec::DecodeAllMotorResponse(recv_buf.data(), static_cast<std::size_t>(recvd), cmd_out,
-                                         mode_out, positions, velocities, currents)) {
-        CountShortOrDecode(kind, recvd);
-        continue;
-      }
-      if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllMotors)) {
-        CountCmdMismatch(kind, cmd_out, recvd);
-        continue;
-      }
-      if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
-        CountModeMismatch(kind);
-        return false;
-      }
-      if (received_mode) {
-        *received_mode = static_cast<packets::JointMode>(mode_out);
-      }
-      ++PerKindStats(kind).ok;
-      return true;
-    }
-    return false;
+    return RequestWithRetry(
+               send_buf.data(), send_buf.size(), recv_buf.data(), recv_buf.size(), kind,
+               [&](ssize_t recvd) noexcept {
+                 if (recvd < static_cast<ssize_t>(packets::kAllMotorResponseSize)) {
+                   CountShortOrDecode(kind, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 uint8_t cmd_out, mode_out;
+                 if (!codec::DecodeAllMotorResponse(recv_buf.data(),
+                                                    static_cast<std::size_t>(recvd), cmd_out,
+                                                    mode_out, positions, velocities, currents)) {
+                   CountShortOrDecode(kind, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllMotors)) {
+                   CountCmdMismatch(kind, cmd_out, recvd);
+                   return ValidateResult::kRetry;
+                 }
+                 if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
+                   CountModeMismatch(kind);
+                   return ValidateResult::kFail;
+                 }
+                 if (received_mode) {
+                   *received_mode = static_cast<packets::JointMode>(mode_out);
+                 }
+                 return ValidateResult::kOk;
+               }) >= 0;
   }
 
   // Request bulk sensor read (cmd=0x19) returning the RAW response bytes.
@@ -401,42 +339,23 @@ class UdpHandTransport {
     std::array<uint8_t, packets::kAllSensorRequestSize> send_buf{};
     codec::EncodeReadAllSensorsRequest(send_buf, sensor_mode);
 
-    const ssize_t sent =
-        sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
-               reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
-    if (sent < 0)
-      return -1;
-
-    constexpr int kMaxAttempts = 3;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const ssize_t recvd = (attempt == 0) ? RecvWithTimeout(buf, capacity)
-                                           : ::recv(socket_fd_, buf, capacity, MSG_DONTWAIT);
-      if (recvd < 0) {
-        if (attempt == 0) {
-          CountRecvFail(RequestKind::kBulkSensor);
-        }
-        return -1;
-      }
-      if (attempt == 0) {
-        ++comm_stats_.recv_ok;
-      }
-
-      if (recvd < static_cast<ssize_t>(expected_size)) {
-        CountShortOrDecode(RequestKind::kBulkSensor, recvd);
-        continue;
-      }
-      if (buf[1] != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
-        CountCmdMismatch(RequestKind::kBulkSensor, buf[1], recvd);
-        continue;
-      }
-      if (verify_bulk_sensor_mode_ && buf[2] != static_cast<uint8_t>(sensor_mode)) {
-        CountModeMismatch(RequestKind::kBulkSensor);
-        return -1;
-      }
-      ++PerKindStats(RequestKind::kBulkSensor).ok;
-      return recvd;
-    }
-    return -1;
+    const RequestKind kind = RequestKind::kBulkSensor;
+    return RequestWithRetry(
+        send_buf.data(), send_buf.size(), buf, capacity, kind, [&](ssize_t recvd) noexcept {
+          if (recvd < static_cast<ssize_t>(expected_size)) {
+            CountShortOrDecode(kind, recvd);
+            return ValidateResult::kRetry;
+          }
+          if (buf[1] != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
+            CountCmdMismatch(kind, buf[1], recvd);
+            return ValidateResult::kRetry;
+          }
+          if (verify_bulk_sensor_mode_ && buf[2] != static_cast<uint8_t>(sensor_mode)) {
+            CountModeMismatch(kind);
+            return ValidateResult::kFail;
+          }
+          return ValidateResult::kOk;
+        });
   }
 
   // Set sensor mode (CMD=0x04, 3B send, 3B recv echo).
@@ -513,6 +432,67 @@ class UdpHandTransport {
   [[nodiscard]] double recv_timeout_ms() const noexcept { return recv_timeout_ms_; }
 
  private:
+  // ── Shared request-retry skeleton ─────────────────────────────────────────
+
+  // Three-valued verdict from a per-method `validate` callable (see
+  // RequestWithRetry): accept the datagram, drain the next queued one, or
+  // abort the request immediately (MODE-mismatch semantics — no retry).
+  enum class ValidateResult : uint8_t { kOk, kRetry, kFail };
+
+  // Shared 3-attempt skeleton for the request-response read paths
+  // (RequestMotorRead / RequestSensorRead / RequestAllMotorRead /
+  // RequestBulkSensorRaw). Sends `send_len` bytes, then receives up to
+  // kMaxAttempts times: attempt 0 blocks in RecvWithTimeout (ppoll);
+  // attempts 1-2 drain already-queued datagrams non-blocking (MSG_DONTWAIT)
+  // so a stale packet (e.g. the previous request's late echo after a 1-cycle
+  // desync) doesn't consume the whole cycle. Aggregate/per-kind accounting:
+  // recv failure is counted (CountRecvFail) only on attempt 0, and recv_ok
+  // counts only first-attempt packet arrival (validity-independent).
+  // `validate(recvd)` classifies the payload and must itself count the drop
+  // cause (CountShortOrDecode / CountCmdMismatch / CountModeMismatch):
+  //   kOk    → count per-kind ok, return recvd
+  //   kRetry → try the next queued datagram
+  //   kFail  → return -1 immediately
+  // Returns bytes received on success, -1 on send/recv/validation failure or
+  // attempts exhausted. `validate` is a template param, not std::function —
+  // RT hot path stays noexcept and allocation-free.
+  template <typename ValidateFn>
+  [[nodiscard]] ssize_t RequestWithRetry(const uint8_t* send_buf, std::size_t send_len,
+                                         uint8_t* recv_buf, std::size_t recv_capacity,
+                                         RequestKind kind, ValidateFn&& validate) noexcept {
+    const ssize_t sent =
+        sendto(socket_fd_, send_buf, send_len, 0, reinterpret_cast<const sockaddr*>(&target_addr_),
+               sizeof(target_addr_));
+    if (sent < 0)
+      return -1;
+
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      const ssize_t recvd = (attempt == 0)
+                                ? RecvWithTimeout(recv_buf, recv_capacity)
+                                : ::recv(socket_fd_, recv_buf, recv_capacity, MSG_DONTWAIT);
+      if (recvd < 0) {
+        if (attempt == 0) {
+          CountRecvFail(kind);
+        }
+        return -1;
+      }
+      if (attempt == 0) {
+        ++comm_stats_.recv_ok;
+      }
+      switch (validate(recvd)) {
+        case ValidateResult::kOk:
+          ++PerKindStats(kind).ok;
+          return recvd;
+        case ValidateResult::kRetry:
+          break;  // next attempt
+        case ValidateResult::kFail:
+          return -1;
+      }
+    }
+    return -1;
+  }
+
   // ── Per-kind stat counting (hot path: counter increments only) ────────────
 
   [[nodiscard]] UdpHandCommStats::PerKind& PerKindStats(RequestKind kind) noexcept {
