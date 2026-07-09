@@ -347,11 +347,45 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                       udp_hand_driver::kNumHandMotors);
           return;
         }
+        // The publisher labels values in its own (controller / URDF) joint_names
+        // order, which can differ from this hand's firmware slot order
+        // (joint_names_ = joint_state_names). Build the firmware-slot ← message
+        // map once and remap; fall back to positional consumption (with a
+        // one-shot warning) when the message omits names or a firmware joint is
+        // unmatched.
+        if (!cmd_name_reorder_ready_ && !msg->joint_names.empty()) {
+          cmd_name_reorder_ =
+              udp_hand_driver::BuildCommandNameReorder(joint_names_, msg->joint_names);
+          bool complete = true;
+          for (std::size_t i = 0; i < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors);
+               ++i) {
+            if (cmd_name_reorder_[i] < 0) {
+              complete = false;
+              break;
+            }
+          }
+          if (complete) {
+            cmd_name_reorder_ready_ = true;
+          } else {
+            RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                        "JointCommand joint_names do not cover all %d hand joints — using "
+                        "positional order",
+                        udp_hand_driver::kNumHandMotors);
+          }
+        }
         std::array<float, udp_hand_driver::kNumHandMotors> cmd;
         for (std::size_t i = 0; i < static_cast<std::size_t>(udp_hand_driver::kNumHandMotors);
              ++i) {
-          // Subtract the per-joint offset: controller frame → firmware frame.
-          cmd[i] = static_cast<float>(msg->values[i]) - joint_offset_rad_[i];
+          // Pick the source value by name (firmware slot i ← published index),
+          // then subtract the per-joint offset: controller frame → firmware
+          // frame. offset stays aligned to firmware slot order (joint_names_).
+          std::size_t src = i;
+          if (cmd_name_reorder_ready_) {
+            src = static_cast<std::size_t>(cmd_name_reorder_[i]);
+          }
+          const float value =
+              (src < msg->values.size()) ? static_cast<float>(msg->values[src]) : 0.0f;
+          cmd[i] = value - joint_offset_rad_[i];
         }
         if (use_fake_hand_) {
           std::lock_guard lock(last_cmd_mutex_);

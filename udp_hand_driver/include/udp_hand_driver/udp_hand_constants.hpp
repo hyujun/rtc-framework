@@ -5,6 +5,7 @@
 #include <rtc_base/filters/sliding_trend_detector.hpp>
 #include <rtc_base/types/types.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <string>
@@ -21,6 +22,31 @@ inline const std::vector<std::string> kDefaultHandMotorNames = {
     "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe", "ring_mcp_fe"};
 
 inline const std::vector<std::string> kDefaultFingertipNames = {"thumb", "index", "middle", "ring"};
+
+// Build a firmware-slot ← command-index reorder map for an incoming
+// JointCommand. The publisher (controller/backend) sends values in its own
+// joint_names order (URDF / _base.yaml); the hand serves motors in firmware
+// slot order (`firmware_names` = joint_state_names / the UDP wire order). The
+// two orders can differ (p1b swaps thumb_cmc_aa/fe). result[i] is the index j
+// into the published `cmd_names` such that cmd_names[j] == firmware_names[i], or
+// -1 when that firmware joint is absent from the message. Then the consumer
+// applies cmd[i] = values[result[i]] (positional fallback when a name is
+// unmatched). Fixed-size output → no heap; safe to call once and cache.
+inline std::array<int, kNumHandMotors> BuildCommandNameReorder(
+    const std::vector<std::string>& firmware_names, const std::vector<std::string>& cmd_names) {
+  std::array<int, kNumHandMotors> map{};
+  map.fill(-1);
+  const std::size_t n = std::min(firmware_names.size(), static_cast<std::size_t>(kNumHandMotors));
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < cmd_names.size(); ++j) {
+      if (firmware_names[i] == cmd_names[j]) {
+        map[i] = static_cast<int>(j);
+        break;
+      }
+    }
+  }
+  return map;
+}
 
 // ── Hand UDP packet layout (16 uint32 values per fingertip) ──────────────────
 // Packet schema is fixed by the hand firmware. These constants describe the

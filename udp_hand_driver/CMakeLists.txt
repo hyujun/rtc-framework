@@ -106,6 +106,11 @@ if(BUILD_TESTING)
   target_include_directories(test_udp_hand_codec PRIVATE include)
   ament_target_dependencies(test_udp_hand_codec rtc_base)
 
+  ament_add_gtest(test_udp_hand_joint_command_reorder
+    test/test_udp_hand_joint_command_reorder.cpp)
+  target_include_directories(test_udp_hand_joint_command_reorder PRIVATE include)
+  ament_target_dependencies(test_udp_hand_joint_command_reorder rtc_base)
+
   ament_add_gtest(test_sensor_protocol_1b test/test_sensor_protocol_1b.cpp)
   target_include_directories(test_sensor_protocol_1b PRIVATE include)
   target_link_libraries(test_sensor_protocol_1b udp_hand_protocol)

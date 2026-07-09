@@ -116,6 +116,17 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Position-only: velocity/effort and motor-space positions are untouched.
   std::array<float, udp_hand_driver::kNumHandMotors> joint_offset_rad_{};
 
+  // Firmware-slot ← command-index map for incoming /…/joint_command. The
+  // publisher (controller/backend) labels the message in its own joint_names
+  // order (URDF / _base.yaml) and — per the "receiver reorders by name"
+  // convention that the backend already applies to /…/joint_states — this node
+  // remaps each value into firmware slot order (joint_names_ = joint_state_names,
+  // the UDP wire order) before the positional CommLoop write. Built once from
+  // the first message that carries joint_names; -1 / no-names ⇒ positional
+  // fallback. Callback-thread only (no cross-thread access), so no atomic.
+  std::array<int, udp_hand_driver::kNumHandMotors> cmd_name_reorder_{};
+  bool cmd_name_reorder_ready_{false};
+
   // Sensor-message layout selector, cached from the SensorProtocol capability
   // at on_configure (off the hot path). true → publish the 1b per-fingertip
   // force vector (fs.f) from state.sensor_force; false → publish the 1a
