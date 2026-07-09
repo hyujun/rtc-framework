@@ -130,6 +130,20 @@ class UdpHandFailureDetector {
     prev_cycle_count_ = controller_.cycle_count();
 
     while (!st.stop_requested() && running_.load(std::memory_order_relaxed)) {
+      // Comm-loop-alive gate (#6). When the CommLoop self-exits on an external
+      // E-Stop (or is being torn down by on_deactivate) it stores running_=false
+      // and stops advancing cycle_count_ / publishing state — but this detector
+      // jthread keeps polling until on_deactivate joins it. Re-evaluating the
+      // frozen counter/state would spuriously raise hand_polling_rate_low (rate
+      // 0), hand_motor_duplicate (unchanged frozen state), and redundantly
+      // re-invoke the failure callback (SaveCommStats) — all AFTER the real cause
+      // (the external E-Stop) already fired. Skip every check while the loop is
+      // inactive. A genuine silent stall keeps running_=true, so CheckRate still
+      // catches it; running_=false means an intentional stop, nothing to detect.
+      if (!controller_.IsRunning()) {
+        std::this_thread::sleep_for(20ms);
+        continue;
+      }
       const UdpHandState state = controller_.GetLatestState();
       if (state.valid) {
         Check(state);

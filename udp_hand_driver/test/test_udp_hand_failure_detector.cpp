@@ -494,6 +494,66 @@ TEST_F(HandFailureDetectorTest, LinkCheck_FakeHandNoFailure) {
   EXPECT_FALSE(callback_called);
 }
 
+// ── Comm-loop-alive gate: no churn after E-Stop self-exit (#6) ───────────────
+
+TEST_F(HandFailureDetectorTest, NoChurnAfterCommLoopStopped) {
+  // Simulate the E-Stop self-exit: run a few cycles, then the comm loop stops
+  // (running_ false, cycle_count_ frozen). The detector must NOT then false-fire
+  // hand_polling_rate_low on the frozen counter nor re-invoke the failure
+  // callback (which the node uses to re-save comm stats).
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.check_motor = false;
+  cfg.check_sensor = false;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 100.0;      // a frozen (0 Hz) counter would trip this
+  cfg.rate_fail_threshold = 2;  // and fast
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+  std::atomic<int> cb_count{0};
+  detector.SetFailureCallback([&](const std::string&) { cb_count.fetch_add(1); });
+
+  std::array<float, kNumHandMotors> cmd{};
+  cmd[0] = 1.0f;
+  FeedCommands(cmd, 5);
+  controller_->Stop();  // == E-Stop self-exit: running_ -> false, counter frozen
+
+  detector.Start();
+  std::this_thread::sleep_for(200ms);  // many polls of the frozen counter
+  detector.Stop();
+
+  EXPECT_FALSE(detector.failed());
+  EXPECT_EQ(cb_count.load(), 0);
+}
+
+TEST_F(HandFailureDetectorTest, RateLowFiresWhileCommLoopRunning) {
+  // Guard: the comm-loop-alive gate must NOT disable normal rate detection.
+  // Controller still running (IsRunning true) but the cycle counter frozen (no
+  // more feeds) → hand_polling_rate_low must still fire.
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.check_motor = false;
+  cfg.check_sensor = false;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 100.0;
+  cfg.rate_fail_threshold = 2;
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+  std::string reason;
+  detector.SetFailureCallback([&](const std::string& r) { reason = r; });
+
+  // Seed a baseline, then stop feeding — counter freezes while running_ stays
+  // true (no Stop() / E-Stop).
+  std::array<float, kNumHandMotors> cmd{};
+  cmd[0] = 1.0f;
+  FeedCommands(cmd, 2);
+
+  detector.Start();
+  std::this_thread::sleep_for(200ms);
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_NE(reason.find("hand_polling_rate_low"), std::string::npos);
+}
+
 // ── link_fail_timeout_ms → cycles conversion (node-layer helper) ─────────────
 // The node converts the time-based link-fail budget into the cycle count the
 // detector's CheckLink consumes: cycles = ms/1000 · loop_rate_hz / comm_dec,
