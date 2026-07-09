@@ -975,7 +975,8 @@ class UdpHandController {
         // onset line names what was on the wire rather than an opaque hex mask.
         // Stack buffer, alloc-free (RT-safe).
         char attempted_desc[256];
-        FormatRequestMask(attempted_mask, joint_io_mode_, attempted_desc, sizeof(attempted_desc));
+        FormatRequestMask(attempted_mask, joint_io_mode_, is_bulk_, attempted_desc,
+                          sizeof(attempted_desc));
         static rclcpp::Clock onset_clock(RCL_STEADY_TIME);
         RCLCPP_WARN_THROTTLE(
             ::udp_hand_driver::logging::ControllerLogger(), onset_clock,
