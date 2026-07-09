@@ -52,6 +52,14 @@ inline constexpr int kMaxFingertips = 8;
 inline constexpr int kMaxHandSensors = kMaxFingertips * kSensorValuesPerFingertip;  // 88
 inline constexpr int kNumHandSensors = kNumFingertips * kSensorValuesPerFingertip;  // 44
 
+// Decimation is a divisor of the comm cadence — a value < 1 would divide by zero
+// or invert the rate. Every consumer (controller ctor, lifecycle rate/publish
+// scaling, failure detector) clamps to a floor of 1; this is the single source
+// of that rule so the four sites cannot drift apart.
+[[nodiscard]] inline constexpr int ClampCommDecimation(int comm_decimation) noexcept {
+  return comm_decimation < 1 ? 1 : comm_decimation;
+}
+
 // ── Proto_1b fingertip force layout ──────────────────────────────────────────
 // The 1b firmware replaces the barometer/ToF int32 block with a per-fingertip
 // float32 vector [fx, fy, fz, Lx, Ly, Temp]. fx/fy/fz is the contact force

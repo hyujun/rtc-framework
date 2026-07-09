@@ -30,6 +30,7 @@
 #include <rclcpp/logging.hpp>
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -185,12 +186,12 @@ class FingertipFTInferencer {
     if (config_.calibration_enabled) {
       for (auto& s : calibration_sum_)
         s.fill(0.0);
-      calibration_count_ = 0;
-      calibrated_ = false;
+      calibration_count_.store(0, std::memory_order_relaxed);
+      calibrated_.store(false, std::memory_order_relaxed);
     } else {
       for (auto& b : baseline_offset_)
         b.fill(0.0f);
-      calibrated_ = true;
+      calibrated_.store(true, std::memory_order_relaxed);
     }
 
     // input_max 역수 사전 계산 (Infer()에서 div → mul 최적화)
@@ -206,7 +207,7 @@ class FingertipFTInferencer {
     initialized_ = (engine_.num_models() > 0);
     RCLCPP_INFO(::udp_hand_driver::logging::FtLogger(),
                 "InitFT done: initialized=%d, calibrated=%d", initialized_ ? 1 : 0,
-                calibrated_ ? 1 : 0);
+                calibrated_.load(std::memory_order_relaxed) ? 1 : 0);
   }
 
   // ── Calibration (noexcept — EventLoop hot path) ───────────────────────────
@@ -216,7 +217,7 @@ class FingertipFTInferencer {
   [[nodiscard]] bool FeedCalibration(
       const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data,
       int num_fingertips) noexcept {
-    if (calibrated_)
+    if (calibrated_.load(std::memory_order_relaxed))
       return true;
 
     const int n = std::min(num_fingertips, std::min(config_.num_fingertips, kMaxFingertips));
@@ -227,10 +228,10 @@ class FingertipFTInferencer {
             static_cast<double>(sensor_data[static_cast<std::size_t>(base + b)]);
       }
     }
-    ++calibration_count_;
+    const int count = calibration_count_.fetch_add(1, std::memory_order_relaxed) + 1;
 
-    if (calibration_count_ >= config_.calibration_samples) {
-      const double inv_count = 1.0 / static_cast<double>(calibration_count_);
+    if (count >= config_.calibration_samples) {
+      const double inv_count = 1.0 / static_cast<double>(count);
       for (int f = 0; f < n; ++f) {
         for (int b = 0; b < udp_hand_driver::kBarometerCount; ++b) {
           baseline_offset_[static_cast<std::size_t>(f)][static_cast<std::size_t>(b)] =
@@ -239,9 +240,9 @@ class FingertipFTInferencer {
                   inv_count);
         }
       }
-      calibrated_ = true;
+      calibrated_.store(true, std::memory_order_relaxed);
       RCLCPP_INFO(::udp_hand_driver::logging::FtLogger(), "Calibration COMPLETE (%d samples)",
-                  calibration_count_);
+                  count);
       return true;
     }
     return false;
@@ -260,8 +261,8 @@ class FingertipFTInferencer {
       s.fill(0.0);
     for (auto& b : baseline_offset_)
       b.fill(0.0f);
-    calibration_count_ = 0;
-    calibrated_ = false;
+    calibration_count_.store(0, std::memory_order_relaxed);
+    calibrated_.store(false, std::memory_order_relaxed);
     RCLCPP_INFO(::udp_hand_driver::logging::FtLogger(), "Calibration RESET (target=%d samples)",
                 config_.calibration_samples);
   }
@@ -275,7 +276,7 @@ class FingertipFTInferencer {
       const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data,
       int num_fingertips) noexcept {
     udp_hand_driver::FingertipFTState result{};
-    if (!initialized_ || !calibrated_)
+    if (!initialized_ || !calibrated_.load(std::memory_order_relaxed))
       return result;
 
     // No try/catch: engine_.RunModels() is noexcept (it catches ORT exceptions
@@ -389,11 +390,15 @@ class FingertipFTInferencer {
 
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
 
-  [[nodiscard]] bool is_calibrated() const noexcept { return calibrated_; }
+  [[nodiscard]] bool is_calibrated() const noexcept {
+    return calibrated_.load(std::memory_order_relaxed);
+  }
 
   [[nodiscard]] int num_models() const noexcept { return engine_.num_models(); }
 
-  [[nodiscard]] int calibration_count() const noexcept { return calibration_count_; }
+  [[nodiscard]] int calibration_count() const noexcept {
+    return calibration_count_.load(std::memory_order_relaxed);
+  }
 
   [[nodiscard]] int calibration_target() const noexcept { return config_.calibration_samples; }
 
@@ -424,8 +429,11 @@ class FingertipFTInferencer {
       calibration_sum_{};
   std::array<std::array<float, udp_hand_driver::kBarometerCount>, kMaxFingertips>
       baseline_offset_{};
-  int calibration_count_{0};
-  bool calibrated_{false};
+  // Writer = comm/event-loop thread (FeedCalibration/InitFT/ResetCalibration);
+  // readers = ROS callback + status timer threads (is_calibrated/calibration_count).
+  // relaxed atomics: no cross-field ordering required, just tear-free scalar access.
+  std::atomic<int> calibration_count_{0};
+  std::atomic<bool> calibrated_{false};
 
   // input_max 역수 (div → mul 최적화, InitFT()에서 사전 계산)
   std::array<std::array<float, udp_hand_driver::kFTInputSize>, kMaxFingertips>

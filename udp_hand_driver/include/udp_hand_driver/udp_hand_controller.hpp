@@ -167,7 +167,7 @@ class UdpHandController {
       : thread_cfg_(cfg.thread_cfg),
         loop_rate_hz_(cfg.loop_rate_hz),
         sensor_decimation_(cfg.sensor_decimation < 1 ? 1 : cfg.sensor_decimation),
-        comm_decimation_(cfg.comm_decimation < 1 ? 1 : cfg.comm_decimation),
+        comm_decimation_(ClampCommDecimation(cfg.comm_decimation)),
         num_fingertips_(cfg.num_fingertips > kMaxFingertips
                             ? kMaxFingertips
                             : (cfg.num_fingertips < 0 ? 0 : cfg.num_fingertips)),
@@ -772,13 +772,7 @@ class UdpHandController {
       pt.read_all_motor_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
       pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
       pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
-      pt.sensor_proc_us =
-          std::chrono::duration<double, std::micro>(tail.compute_done - t3).count() -
-          tail.ft_infer_us;
-      pt.ft_infer_us = tail.ft_infer_us;
-      pt.total_us = std::chrono::duration<double, std::micro>(tail.callback_done - t0).count();
-      pt.is_sensor_cycle = is_sensor_cycle;
-      timing_profiler_.Update(pt);
+      FinalizePhaseTiming(pt, tail, t3, t0, is_sensor_cycle);
 
     } else {
       // ── Individual mode ───────────────────────────────────────────────
@@ -854,17 +848,16 @@ class UdpHandController {
       pt.read_joint_pos_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
       pt.read_vel_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
       pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
-      pt.sensor_proc_us =
-          std::chrono::duration<double, std::micro>(tail.compute_done - t4).count() -
-          tail.ft_infer_us;
-      pt.ft_infer_us = tail.ft_infer_us;
-      pt.total_us = std::chrono::duration<double, std::micro>(tail.callback_done - t0).count();
-      pt.is_sensor_cycle = is_sensor_cycle;
-      timing_profiler_.Update(pt);
+      FinalizePhaseTiming(pt, tail, t4, t0, is_sensor_cycle);
     }
 
-    transport_.comm_stats_mut().total_cycles++;
+    // cycle_count_ is the SSoT comm-cycle counter (read by the rate detector).
+    // comm_stats.total_cycles mirrors it for the forensic JSON — derive it from
+    // the fetch_add result instead of maintaining a second independent counter
+    // that could drift. cycle_seq is the pre-increment value; total_cycles wants
+    // the post-increment count.
     const auto cycle_seq = cycle_count_.fetch_add(1, std::memory_order_relaxed);
+    transport_.comm_stats_mut().total_cycles = cycle_seq + 1;
 
     // Record this cycle's outcome into the working forensic ring (cheap in-place
     // write, every cycle).
@@ -988,6 +981,23 @@ class UdpHandController {
     }
     result.callback_done = std::chrono::steady_clock::now();
     return result;
+  }
+
+  // Fill the mode-independent tail of a PhaseTiming record and push it to the
+  // profiler. Bulk and individual modes differ only in the read-end timestamp
+  // that anchors sensor_proc_us (bulk t3, individual t4) — passed as
+  // sensor_proc_base. CommLoop thread only; noexcept + allocation-free.
+  void FinalizePhaseTiming(UdpHandTimingProfiler::PhaseTiming& pt, const CommCycleTailResult& tail,
+                           std::chrono::steady_clock::time_point sensor_proc_base,
+                           std::chrono::steady_clock::time_point t0,
+                           bool is_sensor_cycle) noexcept {
+    pt.sensor_proc_us =
+        std::chrono::duration<double, std::micro>(tail.compute_done - sensor_proc_base).count() -
+        tail.ft_infer_us;
+    pt.ft_infer_us = tail.ft_infer_us;
+    pt.total_us = std::chrono::duration<double, std::micro>(tail.callback_done - t0).count();
+    pt.is_sensor_cycle = is_sensor_cycle;
+    timing_profiler_.Update(pt);
   }
 
   // Consume any pending calibration request. Called on CommLoop thread.

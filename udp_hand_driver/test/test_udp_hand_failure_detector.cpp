@@ -480,6 +480,23 @@ TEST(LinkFailCyclesFromTimeoutMs, FlooredAtOne) {
   EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 0), 50);
 }
 
+// ── ClampCommDecimation: shared divisor floor (constants header) ─────────────
+TEST(ClampCommDecimation, PassesThroughValidValues) {
+  EXPECT_EQ(udp_hand_driver::ClampCommDecimation(1), 1);
+  EXPECT_EQ(udp_hand_driver::ClampCommDecimation(2), 2);
+  EXPECT_EQ(udp_hand_driver::ClampCommDecimation(100), 100);
+}
+
+TEST(ClampCommDecimation, FloorsNonPositiveToOne) {
+  // A < 1 decimation would divide by zero / invert the rate → clamp to 1.
+  EXPECT_EQ(udp_hand_driver::ClampCommDecimation(0), 1);
+  EXPECT_EQ(udp_hand_driver::ClampCommDecimation(-5), 1);
+}
+
+// constexpr-evaluable: the floor rule holds at compile time.
+static_assert(udp_hand_driver::ClampCommDecimation(0) == 1, "clamp floor");
+static_assert(udp_hand_driver::ClampCommDecimation(3) == 3, "clamp passthrough");
+
 // ── Startup grace: suppress link/rate failure during the boot transient ──────
 // A silent socket makes every EventLoop cycle time out; with a large startup
 // grace the link-down failure must NOT fire within the window, and with a short

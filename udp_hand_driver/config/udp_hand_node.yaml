@@ -41,11 +41,12 @@
                                       # "bulk":       0x10+0x19
 
     # -- UDP 통신 decimation (부하 감쇠 테스트용) --
-    # N 이면 EventLoop N 사이클 중 1번만 실제 UDP write+read 수행, 나머지 N-1
+    # N 이면 CommLoop N 사이클 중 1번만 실제 UDP write+read 수행, 나머지 N-1
     # 사이클은 통신/publish 없이 건너뜀 (sensor_decimation 과 별개 — 이쪽은 전체
     # 트랜잭션을 감쇠). 1 = 매 사이클 통신 (기본, 기존 동작과 동일).
-    # 주의: 유효 comm rate = EventLoop rate / N. N 을 크게 하면 min_rate_hz 를
-    # 낮추거나 check_link/rate 검사를 끄지 않으면 failure detector 가 오탐할 수 있음.
+    # 유효 comm rate = CommLoop rate / N. on_activate 가 min_rate_hz 를
+    # comm_decimation 으로 자동 스케일하므로 failure detector 오탐 방지를 위한
+    # 수동 조정은 불필요.
     comm_decimation: 1
 
     # -- 센서 read decimation --

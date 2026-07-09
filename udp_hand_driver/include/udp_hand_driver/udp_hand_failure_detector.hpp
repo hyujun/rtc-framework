@@ -53,7 +53,7 @@ struct UdpHandFailureDetectorConfig {
 // direct unit testing.
 [[nodiscard]] inline int LinkFailCyclesFromTimeoutMs(double timeout_ms, double loop_rate_hz,
                                                      int comm_decimation) noexcept {
-  const int dec = std::max(1, comm_decimation);
+  const int dec = ClampCommDecimation(comm_decimation);
   const double cycles = timeout_ms / 1000.0 * loop_rate_hz / static_cast<double>(dec);
   return std::max(1, static_cast<int>(std::lround(cycles)));
 }

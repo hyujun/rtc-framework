@@ -303,7 +303,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // cycles do no publish. Base the link_status decimation on that effective
   // cadence so the intended publish_rate holds when comm_decimation > 1. Guard
   // publish_rate > 0 (a non-positive value would divide by zero / yield garbage).
-  const int comm_dec_guarded = (comm_decimation < 1) ? 1 : comm_decimation;
+  const int comm_dec_guarded = udp_hand_driver::ClampCommDecimation(comm_decimation);
   const double effective_state_hz = loop_rate_hz / static_cast<double>(comm_dec_guarded);
   link_decimation_ =
       (publish_rate > 0.0) ? std::max(1, static_cast<int>(effective_state_hz / publish_rate)) : 1;
@@ -452,7 +452,8 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     // since decimated skip cycles do no I/O and no cycle accounting. A
     // min_rate_hz set against the nominal loop rate would therefore false-
     // trigger when comm_decimation > 1. Scale the floor down to match.
-    const int comm_dec = std::max(1, static_cast<int>(get_parameter("comm_decimation").as_int()));
+    const int comm_dec = udp_hand_driver::ClampCommDecimation(
+        static_cast<int>(get_parameter("comm_decimation").as_int()));
     const double min_rate_nominal = get_parameter("min_rate_hz").as_double();
     fd_cfg.min_rate_hz = min_rate_nominal / static_cast<double>(comm_dec);
     if (comm_dec > 1) {
