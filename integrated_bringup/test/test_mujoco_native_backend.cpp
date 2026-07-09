@@ -7,17 +7,22 @@
 //     max_consecutive_missed_ticks empty RT ticks, but the last force
 //     values are preserved so the controller can keep using them
 //   - NaN/Inf wrench messages are dropped without disturbing the mirror
-
-#include <gtest/gtest.h>
-
-#include <geometry_msgs/msg/wrench_stamped.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp_lifecycle/lifecycle_node.hpp>
+//
+// Plus the WriteCommand direct-copy contract (command-ordering convention):
+//   - published JointCommand carries joint_names == joint_command_names and
+//     values[i] == slot.commands[i] — no command-side reorder
 
 #include "integrated_bringup/backends/mujoco_native_backend.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
+#include <rtc_msgs/msg/joint_command.hpp>
+
+#include <geometry_msgs/msg/wrench_stamped.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <cmath>
@@ -57,8 +62,7 @@ class MujocoNativeBackendTest : public ::testing::Test {
                           static_cast<int64_t>(kMaxMissedTicks)),
     });
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_backend", options);
-    state_cb_group_ =
-        node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    state_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     rtc::DeviceBackendConfig cfg;
     cfg.group_name = kGroupName;
@@ -73,9 +77,8 @@ class MujocoNativeBackendTest : public ::testing::Test {
 
     // Publishers live on the same node — cb_group=default is fine for outbound.
     for (const auto& topic : kWrenchTopics) {
-      wrench_pubs_.push_back(
-          node_->create_publisher<geometry_msgs::msg::WrenchStamped>(
-              topic, rclcpp::SensorDataQoS()));
+      wrench_pubs_.push_back(node_->create_publisher<geometry_msgs::msg::WrenchStamped>(
+          topic, rclcpp::SensorDataQoS()));
     }
   }
 
@@ -272,6 +275,115 @@ TEST_F(MujocoNativeBackendTest, Stride7_DeadSlotsAreZero) {
   EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 4], 0.0F);
   EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 5], 0.0F);
   EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 6], 0.0F);
+}
+
+// ── WriteCommand direct-copy contract ────────────────────────────────────────
+//
+// Pins the command-ordering convention: `slot.commands` is already in
+// `joint_command_names` order, so the published JointCommand carries
+// `joint_names == config.joint_command_names` and `values[i] ==
+// slot.commands[i]` — no command-side reorder. Wire-order differences are the
+// receiver's job (it reorders by `joint_names`).
+
+const std::vector<std::string> kCmdNames = {"j2", "j0", "j3", "j1"};
+
+class MujocoBackendWriteCommandTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_backend_cmd");
+    state_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    rtc::DeviceBackendConfig cfg;
+    cfg.group_name = "test_leap_cmd";
+    cfg.type = "mujoco_native";
+    cfg.state_topic = "/test_mujoco_cmd/joint_states";
+    cfg.command_topic = "/test_mujoco_cmd/joint_command";
+    cfg.joint_command_names = kCmdNames;
+    backend_ = std::make_unique<rtc::MujocoNativeBackend>();
+    backend_->Configure(node_.get(), cfg, state_cb_group_);
+    backend_->Activate();  // LifecyclePublisher publishes only when active.
+
+    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_node(node_->get_node_base_interface());
+
+    rclcpp::QoS qos{1};
+    qos.best_effort();
+    cmd_sub_ = node_->create_subscription<rtc_msgs::msg::JointCommand>(
+        cfg.command_topic, qos,
+        [this](rtc_msgs::msg::JointCommand::SharedPtr msg) { received_.push_back(*msg); });
+  }
+
+  void TearDown() override {
+    cmd_sub_.reset();
+    executor_->remove_node(node_->get_node_base_interface());
+    executor_.reset();
+    backend_.reset();
+    node_.reset();
+  }
+
+  // Publishes via the backend and spins until the sub delivers (or timeout).
+  rtc_msgs::msg::JointCommand WriteAndReceive(const rtc::PublishSnapshot::GroupCommandSlot& slot,
+                                              rtc::CommandType command_type) {
+    received_.clear();
+    backend_->WriteCommand(slot, command_type);
+    const auto deadline = std::chrono::steady_clock::now() + 500ms;
+    while (received_.empty() && std::chrono::steady_clock::now() < deadline) {
+      executor_->spin_some(20ms);
+    }
+    EXPECT_FALSE(received_.empty()) << "JointCommand not delivered within timeout";
+    return received_.empty() ? rtc_msgs::msg::JointCommand{} : received_.back();
+  }
+
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  rclcpp::CallbackGroup::SharedPtr state_cb_group_;
+  rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
+  std::unique_ptr<rtc::MujocoNativeBackend> backend_;
+  rclcpp::Subscription<rtc_msgs::msg::JointCommand>::SharedPtr cmd_sub_;
+  std::vector<rtc_msgs::msg::JointCommand> received_;
+};
+
+// 11. Position command: names follow config order, values are a direct copy of
+//     slot.commands (index-aligned), feedforward stays zeroed.
+TEST_F(MujocoBackendWriteCommandTest, WriteCommand_DirectCopy_PositionMode) {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  const std::vector<double> cmds = {0.1, -0.2, 0.3, -0.4};
+  for (std::size_t i = 0; i < cmds.size(); ++i) {
+    slot.commands[i] = cmds[i];
+    slot.feedforward[i] = 100.0 + static_cast<double>(i);  // must NOT leak out
+  }
+
+  const auto msg = WriteAndReceive(slot, rtc::CommandType::kPosition);
+
+  EXPECT_EQ(msg.joint_names, kCmdNames);
+  ASSERT_EQ(msg.values.size(), kCmdNames.size());
+  ASSERT_EQ(msg.feedforward.size(), kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    EXPECT_DOUBLE_EQ(msg.values[i], cmds[i]) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.feedforward[i], 0.0) << "i=" << i;
+  }
+}
+
+// 12. PD-feedforward command: feedforward is also a direct index-aligned copy.
+TEST_F(MujocoBackendWriteCommandTest, WriteCommand_DirectCopy_PdFeedforwardMode) {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  const std::vector<double> cmds = {1.0, 2.0, 3.0, 4.0};
+  const std::vector<double> ffs = {-0.5, 0.25, -0.125, 0.0625};
+  for (std::size_t i = 0; i < cmds.size(); ++i) {
+    slot.commands[i] = cmds[i];
+    slot.feedforward[i] = ffs[i];
+  }
+
+  const auto msg = WriteAndReceive(slot, rtc::CommandType::kPdFeedforward);
+
+  EXPECT_EQ(msg.joint_names, kCmdNames);
+  ASSERT_EQ(msg.values.size(), kCmdNames.size());
+  ASSERT_EQ(msg.feedforward.size(), kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    EXPECT_DOUBLE_EQ(msg.values[i], cmds[i]) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.feedforward[i], ffs[i]) << "i=" << i;
+  }
 }
 
 }  // namespace

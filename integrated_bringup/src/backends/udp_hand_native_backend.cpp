@@ -12,27 +12,6 @@
 
 namespace rtc {
 
-namespace {
-
-std::vector<int> BuildReorderMap(const std::vector<std::string>& state_names,
-                                 const std::vector<std::string>& cmd_names) {
-  if (state_names.empty() || cmd_names.empty() || state_names == cmd_names) {
-    return {};
-  }
-  std::vector<int> map(cmd_names.size(), -1);
-  for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
-    for (std::size_t si = 0; si < state_names.size(); ++si) {
-      if (cmd_names[ci] == state_names[si]) {
-        map[ci] = static_cast<int>(si);
-        break;
-      }
-    }
-  }
-  return map;
-}
-
-}  // namespace
-
 void UdpHandNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
                                      const DeviceBackendConfig& config,
                                      rclcpp::CallbackGroup::SharedPtr state_cb_group) {
@@ -103,7 +82,6 @@ void UdpHandNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr 
         }
       }
       state_reorder_ = std::move(map);
-      cmd_reorder_ = BuildReorderMap(config_.joint_command_names, config_.joint_command_names);
     }
     state_reorder_built_.store(true, std::memory_order_release);
   }
@@ -261,17 +239,12 @@ void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot&
   // torque/current drive is a separate backend/firmware track (τ→I, mode bits).
   cmd_msg_.command_type = CommandTypeToString(command_type);
 
+  // Direct copy: slot.commands is always in joint_command_names order (same
+  // order the message labels carry) — wire-order differences are the
+  // receiver's job (udp_hand_node reorders by joint_names).
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
-  if (!cmd_reorder_.empty()) {
-    for (std::size_t i = 0; i < n; ++i) {
-      const int src = (i < cmd_reorder_.size()) ? cmd_reorder_[i] : -1;
-      cmd_msg_.values[i] =
-          (src >= 0 && src < nc) ? slot.commands[static_cast<std::size_t>(src)] : 0.0;
-    }
-  } else {
-    for (std::size_t i = 0; i < n; ++i)
-      cmd_msg_.values[i] = slot.commands[i];
-  }
+  for (std::size_t i = 0; i < n; ++i)
+    cmd_msg_.values[i] = slot.commands[i];
   cmd_pub_->publish(cmd_msg_);
 }
 

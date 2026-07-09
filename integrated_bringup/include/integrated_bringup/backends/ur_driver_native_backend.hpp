@@ -23,8 +23,8 @@ namespace rtc {
 //     `/forward_position_controller/commands` (name-less, fixed ordering).
 //
 // The Float64MultiArray ordering must match `joint_command_names` (from YAML),
-// which is the ros2_control resource order. Controllers emit values in the
-// device's `joint_state_names` order; the backend reorders at publish time.
+// which is the ros2_control resource order. `slot.commands` is already in
+// `joint_command_names` order, so WriteCommand is a direct copy.
 class UrDriverNativeBackend : public DeviceBackend {
  public:
   UrDriverNativeBackend() = default;
@@ -55,11 +55,6 @@ class UrDriverNativeBackend : public DeviceBackend {
   // Lazy state reorder from incoming `msg->name` order to device-config order.
   std::vector<int> state_reorder_;
   std::atomic<bool> state_reorder_built_{false};
-
-  // Command-side reorder: cmd_reorder_[output_idx] = input_idx (gc.commands
-  // is in device joint_state_names order; output is in joint_command_names
-  // order).
-  std::vector<int> cmd_reorder_;
 
   SeqLock<DeviceStateCache> state_cache_{};
   std::atomic<int64_t> last_state_ns_{0};

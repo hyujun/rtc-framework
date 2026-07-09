@@ -40,13 +40,18 @@ namespace rtc {
 //     sensor_topic  = "/<hand>/sensor_states"
 //     sensor_layout = { ... }  // resolved separately via DeviceSensorLayout
 struct DeviceBackendConfig {
-  std::string group_name;                        ///< owning device-group key
-  std::string type;                              ///< type tag matching a registered backend
-  std::string state_topic;                       ///< joint-state subscription
-  std::string command_topic;                     ///< joint-command publication
-  std::vector<std::string> joint_command_names;  ///< output ordering (optional)
-  std::string motor_topic;                       ///< optional motor-lane state topic
-  std::string sensor_topic;                      ///< optional sensor-lane state topic
+  std::string group_name;     ///< owning device-group key
+  std::string type;           ///< type tag matching a registered backend
+  std::string state_topic;    ///< joint-state subscription
+  std::string command_topic;  ///< joint-command publication
+  /// Output ordering (optional). Ordering contract: `slot.commands` handed to
+  /// WriteCommand and the published JointCommand are ALWAYS in this order —
+  /// backends direct-copy, never reorder on the command side. Wire-order
+  /// differences are absorbed by the receiver (udp_hand_node /
+  /// mujoco_simulator_node), which reorders by the message's `joint_names`.
+  std::vector<std::string> joint_command_names;
+  std::string motor_topic;   ///< optional motor-lane state topic
+  std::string sensor_topic;  ///< optional sensor-lane state topic
   // Sensor layout is resolved by CM (DeviceSensorLayout) and forwarded to the
   // backend via a separate setter to avoid pulling rtc_base into this header.
 };

@@ -33,8 +33,9 @@ namespace rtc {
 //
 // Command path (controller → HW):
 //   - Publishes JointCommand on `command_topic` (BEST_EFFORT, depth 1).
-//   - Reorders from device order (`joint_state_names`) to command order
-//     (`joint_command_names`) at build time; the RT path only copies values.
+//   - Direct copy: `slot.commands` is already in `joint_command_names` order
+//     (the message label order). Wire-order differences are absorbed by the
+//     receiver, which reorders by `joint_names`.
 class MujocoNativeBackend : public DeviceBackend {
  public:
   MujocoNativeBackend() = default;
@@ -58,18 +59,13 @@ class MujocoNativeBackend : public DeviceBackend {
   // HasSensorState() stays true but ReadSensorState reports
   // num_inference_groups=0 and inference_enable all false.
   [[nodiscard]] bool HasSensorState() const noexcept override { return true; }
+
   void ReadSensorState(DeviceStateCache& cache) noexcept override;
 
   [[nodiscard]] std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
     const auto ns = last_state_ns_.load(std::memory_order_acquire);
     return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(ns));
   }
-
-  /// Used by tests + Phase 3 cutover to inspect/inject device naming. Empty
-  /// vectors mean the YAML did not provide names — caller should handle that
-  /// in Configure(). Must be called before Activate().
-  void SetNameConfig(std::vector<std::string> joint_state_names,
-                     std::vector<std::string> joint_command_names);
 
  private:
   void OnJointState(sensor_msgs::msg::JointState::SharedPtr msg);
@@ -88,23 +84,21 @@ class MujocoNativeBackend : public DeviceBackend {
     float fz{0.0F};
     bool received_at_least_once{false};
   };
+
   struct SensorMirror {
     std::array<FingertipForceMirror, kMaxSensorGroups> tips{};
     int num_tips{0};
   };
+
   static_assert(std::is_trivially_copyable_v<SensorMirror>,
                 "SensorMirror must be trivially copyable for SeqLock");
 
   DeviceBackendConfig config_{};
 
-  // Reorder maps (built at Configure or first-message time).
-  // state_reorder_[msg_idx] = device_slot_idx (state path, lazy build).
+  // State reorder map (built lazily from the first named message).
+  // state_reorder_[msg_idx] = device_slot_idx.
   std::vector<int> state_reorder_;
   std::atomic<bool> state_reorder_built_{false};
-
-  // cmd_reorder_[output_idx] = input_idx into GroupCommandSlot::commands.
-  // Built deterministically at Configure() from name lists.
-  std::vector<int> cmd_reorder_;
 
   // SeqLock holds the decoded state — sensor callback writes, RT reads via
   // ReadState(). Trivially copyable (POD).

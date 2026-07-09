@@ -347,6 +347,8 @@ CM은 device-wire 토픽을 직접 만들지 않습니다. `DeviceBackend` 구�
 | `motor_topic` | `JointState` | BEST_EFFORT/2 | 모터 공간 상태 (선택, `udp_hand_native` 전용) |
 | `sensor_topic` | `HandSensorState` | BEST_EFFORT/2 | 촉각 센서 상태 (선택, `udp_hand_native` 전용) |
 
+**명령 순서 규약** (`DeviceBackendConfig::joint_command_names` doc 참조): `WriteCommand` 에 전달되는 `slot.commands` 와 발행 메시지는 **항상 `joint_command_names` 순서** — backend 는 direct-copy 하며 command-side reorder 를 하지 않습니다. wire 순서가 다른 디바이스는 **수신자** (udp_hand_node / mujoco_simulator_node) 가 메시지의 `joint_names` 로 재정렬해 흡수합니다. state-side 는 반대로 backend 가 수신자로서 첫 named 메시지에서 `msg->name` → `joint_command_names` reorder map 을 lazy build 합니다.
+
 ### CM 동적 구독 (컨트롤러 TopicConfig 기반)
 
 | 역할 | 메시지 타입 | QoS | 설명 |

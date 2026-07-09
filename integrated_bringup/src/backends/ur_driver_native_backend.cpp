@@ -12,27 +12,6 @@
 
 namespace rtc {
 
-namespace {
-
-std::vector<int> BuildReorderMap(const std::vector<std::string>& state_names,
-                                 const std::vector<std::string>& cmd_names) {
-  if (state_names.empty() || cmd_names.empty() || state_names == cmd_names) {
-    return {};
-  }
-  std::vector<int> map(cmd_names.size(), -1);
-  for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
-    for (std::size_t si = 0; si < state_names.size(); ++si) {
-      if (cmd_names[ci] == state_names[si]) {
-        map[ci] = static_cast<int>(si);
-        break;
-      }
-    }
-  }
-  return map;
-}
-
-}  // namespace
-
 void UrDriverNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
                                       const DeviceBackendConfig& config,
                                       rclcpp::CallbackGroup::SharedPtr state_cb_group) {
@@ -97,11 +76,6 @@ void UrDriverNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr
         }
       }
       state_reorder_ = std::move(map);
-
-      // Also build the command-side reorder once we have both lists. For UR
-      // the controller emits values in joint_state order; we re-pack to
-      // joint_command order (often identical, hence map may be empty).
-      cmd_reorder_ = BuildReorderMap(config_.joint_command_names, config_.joint_command_names);
     }
     state_reorder_built_.store(true, std::memory_order_release);
   }
@@ -163,17 +137,11 @@ void UrDriverNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot
   if (nc <= 0)
     return;
 
+  // Direct copy: slot.commands is always in joint_command_names order, which
+  // is exactly the Float64MultiArray packing order this backend declares.
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.data.size());
-  if (!cmd_reorder_.empty()) {
-    for (std::size_t i = 0; i < n; ++i) {
-      const int src = (i < cmd_reorder_.size()) ? cmd_reorder_[i] : -1;
-      cmd_msg_.data[i] =
-          (src >= 0 && src < nc) ? slot.commands[static_cast<std::size_t>(src)] : 0.0;
-    }
-  } else {
-    for (std::size_t i = 0; i < n; ++i)
-      cmd_msg_.data[i] = slot.commands[i];
-  }
+  for (std::size_t i = 0; i < n; ++i)
+    cmd_msg_.data[i] = slot.commands[i];
   cmd_pub_->publish(cmd_msg_);
 }
 

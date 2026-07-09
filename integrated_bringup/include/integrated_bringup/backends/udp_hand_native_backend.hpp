@@ -80,7 +80,6 @@ class UdpHandNativeBackend : public DeviceBackend {
 
   std::vector<int> state_reorder_;
   std::atomic<bool> state_reorder_built_{false};
-  std::vector<int> cmd_reorder_;
 
   // Separate SeqLocks per lane keeps writers independent — joint, motor and
   // sensor callbacks each fire on the sensor executor; serializing through one

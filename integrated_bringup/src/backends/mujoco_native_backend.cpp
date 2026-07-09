@@ -17,39 +17,6 @@
 
 namespace rtc {
 
-namespace {
-
-// Same algorithm as BuildPublisherReorderMap in CM. Returns empty when no
-// reorder is needed (both empty or already aligned).
-std::vector<int> BuildReorderMap(const std::vector<std::string>& state_names,
-                                 const std::vector<std::string>& cmd_names) {
-  if (state_names.empty() || cmd_names.empty() || state_names == cmd_names) {
-    return {};
-  }
-  std::vector<int> map(cmd_names.size(), -1);
-  for (std::size_t ci = 0; ci < cmd_names.size(); ++ci) {
-    for (std::size_t si = 0; si < state_names.size(); ++si) {
-      if (cmd_names[ci] == state_names[si]) {
-        map[ci] = static_cast<int>(si);
-        break;
-      }
-    }
-  }
-  return map;
-}
-
-}  // namespace
-
-void MujocoNativeBackend::SetNameConfig(std::vector<std::string> joint_state_names,
-                                        std::vector<std::string> joint_command_names) {
-  cmd_msg_.joint_names = joint_command_names;
-  cmd_msg_.values.assign(joint_command_names.size(), 0.0);
-  // Pre-size the feedforward channel once here so WriteCommand (RT thread) only
-  // fills it in place — no allocation on the actuator-publish path.
-  cmd_msg_.feedforward.assign(joint_command_names.size(), 0.0);
-  cmd_reorder_ = BuildReorderMap(joint_state_names, joint_command_names);
-}
-
 void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
                                     const DeviceBackendConfig& config,
                                     rclcpp::CallbackGroup::SharedPtr state_cb_group) {
@@ -59,8 +26,10 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
     return;  // Nothing to bind; degenerate config — caller logs.
   }
 
-  // joint_command_names → command publisher layout (when provided).
-  if (cmd_msg_.joint_names.empty() && !config_.joint_command_names.empty()) {
+  // joint_command_names → command publisher layout (when provided). Pre-size
+  // values/feedforward once here so WriteCommand (RT thread) only fills them
+  // in place — no allocation on the actuator-publish path.
+  if (!config_.joint_command_names.empty()) {
     cmd_msg_.joint_names = config_.joint_command_names;
     cmd_msg_.values.assign(config_.joint_command_names.size(), 0.0);
     cmd_msg_.feedforward.assign(config_.joint_command_names.size(), 0.0);
@@ -305,23 +274,15 @@ void MujocoNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& 
   const bool pd_ff = (command_type == CommandType::kPdFeedforward);
   cmd_msg_.command_type = CommandTypeToString(command_type);
 
+  // Direct copy: slot.commands is always in joint_command_names order (same
+  // order the message labels carry) — wire-order differences are the
+  // receiver's job (mujoco_simulator_node remaps by joint_names).
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
   const std::size_t nff = std::min(n, cmd_msg_.feedforward.size());
-  if (!cmd_reorder_.empty()) {
-    for (std::size_t i = 0; i < n; ++i) {
-      const int src = (i < cmd_reorder_.size()) ? cmd_reorder_[i] : -1;
-      const bool src_ok = (src >= 0 && src < nc);
-      cmd_msg_.values[i] = src_ok ? slot.commands[static_cast<std::size_t>(src)] : 0.0;
-      if (i < nff)
-        cmd_msg_.feedforward[i] =
-            (pd_ff && src_ok) ? slot.feedforward[static_cast<std::size_t>(src)] : 0.0;
-    }
-  } else {
-    for (std::size_t i = 0; i < n; ++i) {
-      cmd_msg_.values[i] = slot.commands[i];
-      if (i < nff)
-        cmd_msg_.feedforward[i] = pd_ff ? slot.feedforward[i] : 0.0;
-    }
+  for (std::size_t i = 0; i < n; ++i) {
+    cmd_msg_.values[i] = slot.commands[i];
+    if (i < nff)
+      cmd_msg_.feedforward[i] = pd_ff ? slot.feedforward[i] : 0.0;
   }
   cmd_pub_->publish(cmd_msg_);
 }
