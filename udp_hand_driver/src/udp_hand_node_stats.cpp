@@ -94,9 +94,14 @@ void UdpHandNode::SaveCommStats(bool verbose) const {
       << "    \"avg_rate_hz\": " << std::fixed << std::setprecision(2) << avg_rate_hz << ",\n"
       << "    \"elapsed_sec\": " << std::fixed << std::setprecision(2) << elapsed_sec << ",\n"
       << "    \"failure_detected\": " << (fd_failed ? "true" : "false") << ",\n"
-      << "    \"consecutive_recv_failures\": " << controller_->consecutive_recv_failures() << ",\n"
+      << "    \"consecutive_recv_failures\": " << controller_->consecutive_recv_failures()
+      << ",\n"
+      // Strict per-channel decision (#1), same source as the detector E-STOP.
       << "    \"link_ok\": "
-      << (controller_->consecutive_recv_failures() < link_fail_threshold_ ? "true" : "false")
+      << (!controller_->LinkDown(static_cast<uint32_t>(link_fail_threshold_),
+                                 static_cast<uint32_t>(link_fail_threshold_sensor_))
+              ? "true"
+              : "false")
       << "\n"
       << "  },\n"
       << "  \"timing_stats\": {\n"

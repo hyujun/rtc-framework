@@ -156,6 +156,69 @@ TEST_F(FakeHandControllerTest, SensorSeq_AdvancesPerFreshRead) {
   EXPECT_EQ(controller_->GetLatestState().sensor_seq, 3u);
 }
 
+// ── Strict per-channel link-down policy (#1) ─────────────────────────────────
+// LinkDownDecision is the pure policy: a single dead channel latches even while
+// others stay healthy. Crafted streak vectors exercise the channel→threshold
+// mapping, write-echo/set-mode exclusion, and the threshold-0 disable.
+
+namespace {
+constexpr uint32_t kCommThr = 50;
+constexpr uint32_t kSensorThr = 10;  // shorter (sensor polled at 1/5 the rate)
+
+std::array<uint32_t, kNumRequestKinds> MakeFails(RequestKind kind, uint32_t streak) {
+  std::array<uint32_t, kNumRequestKinds> fails{};
+  fails[static_cast<std::size_t>(kind)] = streak;
+  return fails;
+}
+}  // namespace
+
+TEST(LinkDownDecision, AllHealthy_NoLatch) {
+  const std::array<uint32_t, kNumRequestKinds> fails{};
+  EXPECT_FALSE(UdpHandController::LinkDownDecision(fails, kCommThr, kSensorThr));
+}
+
+TEST(LinkDownDecision, MotorLatchesAtCommThreshold) {
+  EXPECT_TRUE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kMotorRead, kCommThr),
+                                                  kCommThr, kSensorThr));
+  EXPECT_FALSE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kMotorRead, kCommThr - 1),
+                                                   kCommThr, kSensorThr));
+}
+
+TEST(LinkDownDecision, JointDeadWhileMotorHealthy_StillLatches) {
+  // The core #1 case: one channel dead, another perfectly healthy → strict latch.
+  auto fails = MakeFails(RequestKind::kJointRead, kCommThr);
+  fails[static_cast<std::size_t>(RequestKind::kMotorRead)] = 0;  // motor fully healthy
+  EXPECT_TRUE(UdpHandController::LinkDownDecision(fails, kCommThr, kSensorThr));
+}
+
+TEST(LinkDownDecision, SensorUsesShorterSensorThreshold) {
+  // Sensor latches at the sensor threshold, NOT the (longer) comm threshold.
+  EXPECT_TRUE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kBulkSensor, kSensorThr),
+                                                  kCommThr, kSensorThr));
+  EXPECT_FALSE(UdpHandController::LinkDownDecision(
+      MakeFails(RequestKind::kBulkSensor, kSensorThr - 1), kCommThr, kSensorThr));
+  // Individual-mode sensor kind behaves identically.
+  EXPECT_TRUE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kSensorRead, kSensorThr),
+                                                  kCommThr, kSensorThr));
+}
+
+TEST(LinkDownDecision, CommandDrivenChannelsExcluded) {
+  // write-echo + set-mode are not periodic health polls → never latch link-down,
+  // even with an enormous streak.
+  EXPECT_FALSE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kWriteEcho, 100000),
+                                                   kCommThr, kSensorThr));
+  EXPECT_FALSE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kSetMode, 100000),
+                                                   kCommThr, kSensorThr));
+}
+
+TEST(LinkDownDecision, ZeroThresholdDisablesChannelClass) {
+  // comm_threshold 0 disables motor/joint; sensor still active.
+  EXPECT_FALSE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kMotorRead, 100000), 0,
+                                                   kSensorThr));
+  EXPECT_TRUE(UdpHandController::LinkDownDecision(MakeFails(RequestKind::kBulkSensor, kSensorThr),
+                                                  0, kSensorThr));
+}
+
 // ── Callback ────────────────────────────────────────────────────────────────
 
 TEST_F(FakeHandControllerTest, Callback_Invoked) {

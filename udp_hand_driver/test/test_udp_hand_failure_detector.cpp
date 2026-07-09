@@ -521,6 +521,19 @@ TEST(LinkFailCyclesFromTimeoutMs, FlooredAtOne) {
   EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 0), 50);
 }
 
+TEST(LinkFailCyclesFromTimeoutMs, SensorRateExtraDecimation) {
+  // #1 sensor unit conversion: the sensor channel is attempted every
+  // sensor_decimation-th comm cycle, so the SAME wall-clock budget maps to
+  // 1/sensor_decimation as many of its own attempts. 100 ms at 500 Hz / comm 1:
+  //   motor/joint (extra=1) → 50 cycles; sensor extra=5 → 10 cycles.
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 1, 1), 50);
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 1, 5), 10);
+  // Composes with comm_decimation: 0.1·500 / (comm 2 · sensor 5 = 10) → 5.
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 2, 5), 5);
+  // extra_decimation floored at 1 (never divide by zero / invert).
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 1, 0), 50);
+}
+
 // ── ClampCommDecimation: shared divisor floor (constants header) ─────────────
 TEST(ClampCommDecimation, PassesThroughValidValues) {
   EXPECT_EQ(udp_hand_driver::ClampCommDecimation(1), 1);

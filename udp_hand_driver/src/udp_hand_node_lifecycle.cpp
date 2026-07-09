@@ -239,12 +239,20 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // comm_decimation are the on_configure locals above.
   {
     const double link_fail_timeout_ms = get_parameter("link_fail_timeout_ms").as_double();
+    // Motor/joint attempted every comm cycle → comm-rate cycles. Sensor attempted
+    // every sensor_decimation-th comm cycle → the extra divisor gives the shorter
+    // sensor-rate cycle count for the SAME wall-clock budget (#1 unit conversion).
     const int link_fail_cycles = udp_hand_driver::LinkFailCyclesFromTimeoutMs(
         link_fail_timeout_ms, loop_rate_hz, comm_decimation);
+    const int link_fail_cycles_sensor = udp_hand_driver::LinkFailCyclesFromTimeoutMs(
+        link_fail_timeout_ms, loop_rate_hz, comm_decimation, sensor_decimation);
     link_fail_threshold_ = static_cast<uint64_t>(link_fail_cycles);
+    link_fail_threshold_sensor_ = static_cast<uint64_t>(link_fail_cycles_sensor);
     RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
-                "link_fail_timeout_ms=%.1f -> %d cycles (loop_rate=%.1f Hz, comm_decimation=%d)",
-                link_fail_timeout_ms, link_fail_cycles, loop_rate_hz, comm_decimation);
+                "link_fail_timeout_ms=%.1f -> comm=%d cycles, sensor=%d cycles "
+                "(loop_rate=%.1f Hz, comm_decimation=%d, sensor_decimation=%d)",
+                link_fail_timeout_ms, link_fail_cycles, link_fail_cycles_sensor, loop_rate_hz,
+                comm_decimation, sensor_decimation);
   }
 
   ft_enabled_ = ft_config.enabled;
@@ -463,9 +471,11 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     }
     fd_cfg.rate_fail_threshold = static_cast<int>(get_parameter("rate_fail_threshold").as_int());
     fd_cfg.check_link = get_parameter("check_link").as_bool();
-    // Cycle count converted from link_fail_timeout_ms at on_configure — same
-    // value the publish / stats link_ok reads (single source, no drift).
+    // Per-channel cycle counts converted from link_fail_timeout_ms at
+    // on_configure — the SAME values the publish / stats link_ok reads through
+    // UdpHandController::LinkDown (single source, no drift).
     fd_cfg.link_fail_threshold = static_cast<int>(link_fail_threshold_);
+    fd_cfg.link_fail_threshold_sensor = static_cast<int>(link_fail_threshold_sensor_);
     // Startup grace: a fixed constant (not a ROS param — same rationale as the
     // 10 s stats timer). Suppresses rate/link E-STOP for the first second so an
     // ARP / firmware-boot / first-packet round-trip stall at activation cannot

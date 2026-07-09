@@ -39,22 +39,36 @@ struct UdpHandFailureDetectorConfig {
   double min_rate_hz{30.0};         ///< 최소 허용 polling rate
   int rate_fail_threshold{5};       ///< 연속 N회 미달 시 failure
   bool check_link{true};            ///< UDP 링크 상태 검사
-  int link_fail_threshold{10};      ///< 연속 N회 recv 전체 실패 시 link_down (cycles)
+  // Per-channel strict link-down (#1): a channel latches link-down when ITS
+  // consecutive-failure streak reaches the threshold at ITS effective attempt
+  // rate. Motor/joint are attempted every comm cycle → link_fail_threshold;
+  // sensor is attempted every sensor_decimation-th comm cycle → the shorter
+  // link_fail_threshold_sensor (= comm threshold / sensor_decimation) so the
+  // sensor channel latches within the same wall-clock budget, not sensor_dec×
+  // later.
+  int link_fail_threshold{10};         ///< motor/joint 연속 실패 임계 (comm-rate cycles)
+  int link_fail_threshold_sensor{10};  ///< sensor 연속 실패 임계 (sensor-rate cycles)
   double startup_grace_ms{0.0};  ///< 기동 후 이 시간까지 rate/link 판정 유예 (0=즉시)
 };
 
-// Convert a time-based link-fail timeout (ms) into the consecutive-recv-failure
-// cycle count that CheckLink consumes. The EventLoop reads at loop_rate_hz /
-// comm_decimation (decimated skip cycles do no I/O and no failure accounting),
-// so cycles = timeout_ms/1000 · loop_rate_hz / comm_decimation, floored at 1 (a
-// positive timeout must map to at least one cycle). The node owns this
-// conversion so UdpHandFailureDetectorConfig::link_fail_threshold stays a pure
-// cycle count and the detector need not know the loop rate. Free function for
-// direct unit testing.
+// Convert a time-based link-fail timeout (ms) into the consecutive-failure cycle
+// count that CheckLink consumes, expressed in a CHANNEL's own attempt cadence.
+// The comm loop reads at loop_rate_hz / comm_decimation (decimated skip cycles
+// do no I/O and no failure accounting). A channel attempted every comm cycle
+// (motor/joint) uses extra_decimation = 1; a channel attempted every N-th comm
+// cycle (sensor, N = sensor_decimation) uses extra_decimation = N so the same
+// wall-clock budget maps to fewer of its own attempts. So
+//   cycles = timeout_ms/1000 · loop_rate_hz / (comm_decimation · extra_decimation),
+// floored at 1 (a positive timeout must map to at least one attempt). The node
+// owns this conversion so the detector's thresholds stay pure cycle counts and
+// the detector need not know the loop rate. Free function for direct unit testing.
 [[nodiscard]] inline int LinkFailCyclesFromTimeoutMs(double timeout_ms, double loop_rate_hz,
-                                                     int comm_decimation) noexcept {
+                                                     int comm_decimation,
+                                                     int extra_decimation = 1) noexcept {
   const int dec = ClampCommDecimation(comm_decimation);
-  const double cycles = timeout_ms / 1000.0 * loop_rate_hz / static_cast<double>(dec);
+  const int extra = ClampCommDecimation(extra_decimation);
+  const double cycles =
+      timeout_ms / 1000.0 * loop_rate_hz / (static_cast<double>(dec) * static_cast<double>(extra));
   return std::max(1, static_cast<int>(std::lround(cycles)));
 }
 
@@ -333,18 +347,46 @@ class UdpHandFailureDetector {
   }
 
   void CheckLink() {
-    const uint64_t failures = controller_.consecutive_recv_failures();
-    if (failures >= static_cast<uint64_t>(cfg_.link_fail_threshold)) {
-      RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(),
-                  "UDP link down (consecutive_recv_failures=%lu, threshold=%d)",
-                  static_cast<unsigned long>(failures), cfg_.link_fail_threshold);
-      if (!link_dump_done_) {
-        link_dump_done_ = true;
-        DumpLinkForensics();
-      }
-      RaiseFailure("hand_udp_link_down (consecutive_recv_failures=" + std::to_string(failures) +
-                   ")");
+    const auto comm_thr = static_cast<uint32_t>(std::max(0, cfg_.link_fail_threshold));
+    const auto sensor_thr = static_cast<uint32_t>(std::max(0, cfg_.link_fail_threshold_sensor));
+    if (!controller_.LinkDown(comm_thr, sensor_thr)) {
+      return;
     }
+    // Name the latched channels + their streaks for the log/E-STOP reason.
+    // Non-RT detector thread — string building is fine here.
+    const std::string detail = LinkDownChannelDetail(comm_thr, sensor_thr);
+    RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "UDP link down (%s)", detail.c_str());
+    if (!link_dump_done_) {
+      link_dump_done_ = true;
+      DumpLinkForensics();
+    }
+    RaiseFailure("hand_udp_link_down (" + detail + ")");
+  }
+
+  // Build a "kind=streak/threshold" list of the channels that have latched, for
+  // the link-down log + E-STOP reason. Detector thread only (allocates).
+  [[nodiscard]] std::string LinkDownChannelDetail(uint32_t comm_thr, uint32_t sensor_thr) const {
+    struct Ch {
+      RequestKind kind;
+      uint32_t thr;
+    };
+
+    const std::array<Ch, 4> channels = {{{RequestKind::kMotorRead, comm_thr},
+                                         {RequestKind::kJointRead, comm_thr},
+                                         {RequestKind::kSensorRead, sensor_thr},
+                                         {RequestKind::kBulkSensor, sensor_thr}}};
+    std::string detail;
+    for (const auto& ch : channels) {
+      const uint32_t streak = controller_.channel_consec_fail(ch.kind);
+      if (ch.thr > 0 && streak >= ch.thr) {
+        if (!detail.empty()) {
+          detail += ", ";
+        }
+        detail += kRequestKindNames[static_cast<std::size_t>(ch.kind)];
+        detail += "=" + std::to_string(streak) + "/" + std::to_string(ch.thr);
+      }
+    }
+    return detail;
   }
 
   // One-shot forensic dump at link-down: per-request-kind comm stats table +

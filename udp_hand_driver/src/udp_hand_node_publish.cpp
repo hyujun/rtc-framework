@@ -123,14 +123,18 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
   if (link_cycle_counter_ >= link_decimation_) {
     link_cycle_counter_ = 0;
 
-    const uint64_t failures = controller_->consecutive_recv_failures();
-    const bool link_ok = (failures < link_fail_threshold_);
+    // Strict per-channel link health (#1): mirrors the detector's E-STOP decision
+    // exactly (same UdpHandController::LinkDown, same thresholds) so the
+    // link_status Bool never disagrees with hand_udp_link_down.
+    const bool link_ok = !controller_->LinkDown(static_cast<uint32_t>(link_fail_threshold_),
+                                                static_cast<uint32_t>(link_fail_threshold_sensor_));
     if (link_ok != prev_link_ok_) {
       if (link_ok) {
         RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "Hand UDP link UP");
       } else {
-        RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(), "Hand UDP link DOWN (failures=%lu)",
-                    static_cast<unsigned long>(failures));
+        RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
+                    "Hand UDP link DOWN (consecutive_recv_failures=%lu)",
+                    static_cast<unsigned long>(controller_->consecutive_recv_failures()));
       }
       prev_link_ok_ = link_ok;
     }

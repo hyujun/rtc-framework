@@ -318,6 +318,9 @@ class UdpHandController {
     // observe a non-zero consecutive_recv_failures_ / recv_error_count before
     // the first cycle and false-trigger a link-down E-STOP. Off the RT path.
     consecutive_recv_failures_.store(0, std::memory_order_relaxed);
+    for (auto& c : channel_consec_fail_) {
+      c.store(0, std::memory_order_relaxed);
+    }
     cycle_count_.store(0, std::memory_order_relaxed);
     comm_skip_count_.store(0, std::memory_order_relaxed);
     sensor_seq_ = 0;  // CommLoop-thread-only; restart begins fresh at 0 so the
@@ -541,6 +544,47 @@ class UdpHandController {
 
   [[nodiscard]] uint64_t consecutive_recv_failures() const noexcept {
     return consecutive_recv_failures_.load(std::memory_order_relaxed);
+  }
+
+  // Per-channel consecutive-failure streak (attempts of `kind` that failed in a
+  // row). For forensics / detector messages. Reader-thread safe (relaxed load).
+  [[nodiscard]] uint32_t channel_consec_fail(RequestKind kind) const noexcept {
+    return channel_consec_fail_[static_cast<std::size_t>(kind)].load(std::memory_order_relaxed);
+  }
+
+  // Strict per-channel link-down decision (#1): true when ANY periodically-polled
+  // channel's consecutive-failure streak has reached its threshold, so a single
+  // dead channel latches even while others stay healthy. Single source of the
+  // decision so detector / publish / stats cannot drift. Snapshots the atomics
+  // and delegates to the pure LinkDownDecision (directly unit-tested).
+  [[nodiscard]] bool LinkDown(uint32_t comm_threshold, uint32_t sensor_threshold) const noexcept {
+    std::array<uint32_t, kNumRequestKinds> fails{};
+    for (int k = 0; k < kNumRequestKinds; ++k) {
+      fails[static_cast<std::size_t>(k)] =
+          channel_consec_fail_[static_cast<std::size_t>(k)].load(std::memory_order_relaxed);
+    }
+    return LinkDownDecision(fails, comm_threshold, sensor_threshold);
+  }
+
+  // Pure per-channel link-down policy. Motor/joint are polled every comm cycle →
+  // compared to comm_threshold; sensor (individual kSensorRead or bulk
+  // kBulkSensor) is polled every sensor_decimation-th cycle → compared to the
+  // shorter sensor_threshold. write-echo / set-mode are command/config-driven
+  // (not periodic health polls) and are EXCLUDED — their cadence is unpredictable,
+  // so a cycles-based timeout would false-latch during a legitimately idle
+  // interval; a genuinely dead link still latches via the read channels. A
+  // threshold of 0 disables that channel class. Static + input-only so it can be
+  // unit-tested with crafted streak vectors.
+  [[nodiscard]] static bool LinkDownDecision(const std::array<uint32_t, kNumRequestKinds>& fails,
+                                             uint32_t comm_threshold,
+                                             uint32_t sensor_threshold) noexcept {
+    const auto latched = [&fails](RequestKind kind, uint32_t thr) noexcept {
+      return thr > 0 && fails[static_cast<std::size_t>(kind)] >= thr;
+    };
+    return latched(RequestKind::kMotorRead, comm_threshold) ||
+           latched(RequestKind::kJointRead, comm_threshold) ||
+           latched(RequestKind::kSensorRead, sensor_threshold) ||
+           latched(RequestKind::kBulkSensor, sensor_threshold);
   }
 
   [[nodiscard]] UdpHandCommStats comm_stats() const noexcept {
@@ -877,16 +921,37 @@ class UdpHandController {
         static_cast<uint32_t>(cycle_seq), attempted_mask, ok_mask};
     ++outcome_ring_working_.count;
 
+    // Per-channel consecutive-failure tracking (strict link-down, #1). A channel
+    // attempted-but-failed this cycle increments; attempted-and-ok resets; a
+    // channel NOT attempted this cycle (sensor on a non-sensor cycle, motor-space
+    // on 1b, write-echo with no pending command) is left unchanged so its streak
+    // counts only real attempts. any_channel_failing feeds the forensic-ring
+    // publish gate so a partial (single-channel) loss still captures forensics —
+    // strictly a superset of the old aggregate-only gate. RT-safe: bounded loop,
+    // relaxed atomics, no alloc.
+    bool any_channel_failing = false;
+    for (int k = 0; k < kNumRequestKinds; ++k) {
+      const auto bit = static_cast<uint8_t>(1u << static_cast<unsigned>(k));
+      if (attempted_mask & bit) {
+        if (ok_mask & bit) {
+          channel_consec_fail_[static_cast<std::size_t>(k)].store(0, std::memory_order_relaxed);
+        } else {
+          channel_consec_fail_[static_cast<std::size_t>(k)].fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+      if (channel_consec_fail_[static_cast<std::size_t>(k)].load(std::memory_order_relaxed) > 0) {
+        any_channel_failing = true;
+      }
+    }
+
     // #6 Publish the SeqLock snapshot (~0.5 KB memcpy) conditionally: the
     // off-loop forensic reader only consults it when the link is unhealthy, so
     // on the steady healthy path the store is redundant work. Store when this
-    // cycle failed, when we are already mid-failure-streak (pre-update value —
-    // the failure/recovery counters are updated just below), or every
-    // kCapacity-th cycle as a heartbeat so a healthy snapshot never goes fully
-    // stale. The working ring still accumulates every cycle regardless.
+    // cycle failed, when ANY channel is mid-failure-streak, or every kCapacity-th
+    // cycle as a heartbeat so a healthy snapshot never goes fully stale. The
+    // working ring still accumulates every cycle regardless.
     const bool publish_outcome_ring =
-        !any_recv_ok || consecutive_recv_failures_.load(std::memory_order_relaxed) > 0 ||
-        (cycle_seq % CycleOutcomeRing::kCapacity == 0);
+        !any_recv_ok || any_channel_failing || (cycle_seq % CycleOutcomeRing::kCapacity == 0);
     if (publish_outcome_ring) {
       outcome_ring_seqlock_.Store(outcome_ring_working_);
     }
@@ -1132,8 +1197,14 @@ class UdpHandController {
   // Non-RT: captured in Start() to report the average cycle rate in Stop().
   std::chrono::steady_clock::time_point start_time_{};
 
-  // Link health
+  // Link health. consecutive_recv_failures_ is the aggregate "no channel
+  // answered this cycle" streak — kept for onset/steady logging + the forensic
+  // JSON field. channel_consec_fail_ is the PER-CHANNEL streak that drives the
+  // strict link-down decision (#1): one healthy channel no longer masks a dead
+  // one. Writer = CommLoop; readers = detector / publish / stats threads
+  // (relaxed atomics, tear-free scalar reads).
   std::atomic<uint64_t> consecutive_recv_failures_{0};
+  std::array<std::atomic<uint32_t>, kNumRequestKinds> channel_consec_fail_{};
 
   // Cycle outcome ring (writer: CommLoop; readers: failure detector, stats
   // save). outcome_ring_working_ accumulates across cycles (CommLoop-thread

@@ -127,7 +127,13 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   // Safety-relevant: must remain publishable in any lifecycle state.
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr link_status_pub_;
   bool ft_enabled_{false};
+  // Per-channel link-down thresholds (strict, #1). Computed once in on_configure
+  // from link_fail_timeout_ms at each channel's effective attempt rate; the SSoT
+  // the detector cfg + publish + stats all read (via UdpHandController::LinkDown)
+  // so the E-STOP decision and the link_status Bool cannot disagree. comm =
+  // motor/joint (every comm cycle); sensor = the shorter sensor-rate budget.
   uint64_t link_fail_threshold_{10};
+  uint64_t link_fail_threshold_sensor_{10};
   bool prev_link_ok_{true};
 
   // Pre-allocated messages

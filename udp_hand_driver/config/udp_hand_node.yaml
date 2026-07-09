@@ -140,6 +140,11 @@
     min_rate_hz: 30.0                 # 최소 허용 polling rate
     rate_fail_threshold: 5            # 연속 N회 미달 시 failure
     check_link: true                  # UDP 링크 상태 검사
-    # cycles = ms/1000 × loop_rate_hz / comm_decimation 로 on_configure 에서 환산.
-    # CM device_timeout(1000 ms) 보다 아래여야 hand link-down 이 먼저 latch 된다.
-    link_fail_timeout_ms: 100.0        # link_down 판정 시간 budget
+    # 채널별 strict link-down (#1): 어느 한 채널(motor/joint/sensor)이라도 이
+    # 시간 budget 만큼 연속 실패하면 link_down latch (한 채널이 살아있어도 마스킹
+    # 안 됨). on_configure 에서 채널별 cycle 수로 환산 —
+    #   motor/joint: ms/1000 × loop_rate_hz / comm_decimation (매 comm 사이클 폴)
+    #   sensor:      추가로 / sensor_decimation (센서는 sensor_decimation 사이클마다 폴)
+    # 로 같은 wall-clock budget 을 유지. CM device_timeout(1000 ms) 보다 아래여야
+    # hand link-down 이 먼저 latch 된다.
+    link_fail_timeout_ms: 100.0        # link_down 판정 시간 budget (채널별 공통)
