@@ -48,7 +48,8 @@ struct UdpHandFailureDetectorConfig {
   // later.
   int link_fail_threshold{10};         ///< motor/joint 연속 실패 임계 (comm-rate cycles)
   int link_fail_threshold_sensor{10};  ///< sensor 연속 실패 임계 (sensor-rate cycles)
-  double startup_grace_ms{0.0};  ///< 기동 후 이 시간까지 rate/link 판정 유예 (0=즉시)
+  double startup_grace_ms{0.0};       ///< 기동 후 이 시간까지 RATE 판정 유예 (0=즉시)
+  double link_startup_grace_ms{0.0};  ///< 기동 후 이 시간까지 LINK 판정 유예 (0=즉시, #2)
 };
 
 // Convert a time-based link-fail timeout (ms) into the consecutive-failure cycle
@@ -133,35 +134,38 @@ class UdpHandFailureDetector {
       if (state.valid) {
         Check(state);
       }
-      // Startup grace: suppress the rate/link failure paths during the boot
-      // transient (ARP resolution, firmware boot, first-packet round trip) so a
-      // momentary cold-start silence does not trip E-STOP. Motor/sensor
-      // data-validity checks above are unaffected (they only run once a state
-      // read has arrived). Keep the rate baseline fresh while suppressed so the
-      // first post-grace CheckRate measures a clean interval.
-      if (InStartupGrace()) {
+      // Startup grace, split per #2. The RATE grace (long) suppresses the
+      // polling-rate check while the loop reaches steady cadence; while suppressed
+      // keep the rate baseline fresh so the first post-grace CheckRate measures a
+      // clean interval. The LINK grace (independent, much shorter) only spans the
+      // ARP/firmware-boot first-packet transient, so a genuinely dead link latches
+      // well below the CM device_timeout instead of waiting out the rate warmup.
+      // Motor/sensor data-validity checks above are unaffected (they run once a
+      // state read has arrived).
+      if (InGrace(cfg_.startup_grace_ms)) {
         prev_rate_check_ = std::chrono::steady_clock::now();
         prev_cycle_count_ = controller_.cycle_count();
       } else {
         CheckRate();
-        if (cfg_.check_link) {
-          CheckLink();
-        }
+      }
+      if (cfg_.check_link && !InGrace(cfg_.link_startup_grace_ms)) {
+        CheckLink();
       }
       std::this_thread::sleep_for(20ms);  // ~50 Hz
     }
   }
 
-  // True while still inside the configured startup grace window. grace 0 (the
-  // default) → always false, so existing callers are unaffected (RT-7).
-  [[nodiscard]] bool InStartupGrace() const {
-    if (cfg_.startup_grace_ms <= 0.0) {
+  // True while still inside a grace window of the given width measured from
+  // loop_start_. grace ≤ 0 → always false (grace disabled). Shared by the rate
+  // and link startup-grace gates (#2), which pass different widths.
+  [[nodiscard]] bool InGrace(double grace_ms) const {
+    if (grace_ms <= 0.0) {
       return false;
     }
     const double elapsed_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - loop_start_)
             .count();
-    return elapsed_ms < cfg_.startup_grace_ms;
+    return elapsed_ms < grace_ms;
   }
 
   void Check(const UdpHandState& state) {

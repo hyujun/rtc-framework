@@ -111,3 +111,7 @@
     # sensor_decimation. CM device_timeout 1000 ms 보다 한참 아래라 hand
     # link-down 이 먼저 latch 된다.
     link_fail_timeout_ms: 100.0
+    # Startup grace 2-window (#2): rate warmup 은 길게, link 유예는 짧게 — 죽은
+    # 링크가 rate warmup 에 가려지지 않고 CM device_timeout 전에 latch.
+    startup_grace_ms: 1000.0
+    link_startup_grace_ms: 100.0

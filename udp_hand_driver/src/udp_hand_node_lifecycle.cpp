@@ -49,6 +49,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // raw cycle count. Default 100 ms sits an order below the CM device_timeout
   // (1000 ms) so the hand link-down latches first.
   declare_parameter("link_fail_timeout_ms", 100.0);
+  // Two independent startup-grace windows (#2). startup_grace_ms warms the RATE
+  // check (the polling loop needs time to reach steady cadence). link grace is
+  // SEPARATE and much shorter — it only needs to outlast the ARP / firmware-boot
+  // first-packet transient — so a genuinely dead link latches well below the CM
+  // device_timeout (1000 ms) instead of being masked for the full rate warmup.
+  declare_parameter("startup_grace_ms", 1000.0);
+  declare_parameter("link_startup_grace_ms", 100.0);
 
   declare_parameter("use_fake_hand", false);
   declare_parameter("fake_tick_rate_hz", 500.0);
@@ -476,12 +483,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     // UdpHandController::LinkDown (single source, no drift).
     fd_cfg.link_fail_threshold = static_cast<int>(link_fail_threshold_);
     fd_cfg.link_fail_threshold_sensor = static_cast<int>(link_fail_threshold_sensor_);
-    // Startup grace: a fixed constant (not a ROS param — same rationale as the
-    // 10 s stats timer). Suppresses rate/link E-STOP for the first second so an
-    // ARP / firmware-boot / first-packet round-trip stall at activation cannot
-    // false-trigger before the link has had a chance to come up.
-    constexpr double kStartupGraceMs = 1000.0;
-    fd_cfg.startup_grace_ms = kStartupGraceMs;
+    // Split startup grace (#2): rate warmup (long) vs link grace (short). The
+    // rate grace suppresses the polling-rate E-STOP while the loop reaches steady
+    // cadence; the link grace only spans the ARP/firmware-boot transient, so a
+    // dead link latches well below the CM device_timeout (1000 ms) instead of
+    // waiting out the full rate warmup.
+    fd_cfg.startup_grace_ms = get_parameter("startup_grace_ms").as_double();
+    fd_cfg.link_startup_grace_ms = get_parameter("link_startup_grace_ms").as_double();
 
     const auto cfgs = rtc::SelectThreadConfigs();
     failure_detector_ = std::make_unique<udp_hand_driver::UdpHandFailureDetector>(

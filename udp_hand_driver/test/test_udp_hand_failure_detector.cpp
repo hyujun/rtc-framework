@@ -552,10 +552,10 @@ static_assert(udp_hand_driver::ClampCommDecimation(0) == 1, "clamp floor");
 static_assert(udp_hand_driver::ClampCommDecimation(3) == 3, "clamp passthrough");
 
 // ── Startup grace: suppress link/rate failure during the boot transient ──────
-// A silent socket makes every EventLoop cycle time out; with a large startup
-// grace the link-down failure must NOT fire within the window, and with a short
-// grace it must fire once the window elapses. Default grace 0 leaves every test
-// above unaffected (RT-7).
+// A silent socket makes every EventLoop cycle time out. Post-#2 the rate and
+// link graces are independent: a large LINK grace holds link-down off, a short
+// one lets it fire after elapse, and a large RATE grace does NOT mask a dead
+// link. Default grace 0 leaves every test above unaffected (RT-7).
 
 namespace {
 // Bind a silent loopback UDP socket (never answers). Returns {fd, port}.
@@ -583,7 +583,10 @@ std::unique_ptr<UdpHandController> MakeSilentController(int port) {
 }
 }  // namespace
 
-TEST(HandFailureDetectorStartupGrace, LargeGrace_SuppressesLinkDown) {
+TEST(HandFailureDetectorStartupGrace, LargeLinkGrace_SuppressesLinkDown) {
+  // Post-#2 split: the LINK grace (not the rate grace) is the knob that
+  // suppresses link-down during the boot transient. A large link grace holds
+  // link-down off for the whole run.
   auto [fd, port] = MakeSilentSocket();
   ASSERT_GE(fd, 0);
   auto controller = MakeSilentController(port);
@@ -595,7 +598,7 @@ TEST(HandFailureDetectorStartupGrace, LargeGrace_SuppressesLinkDown) {
   cfg.check_link = true;
   cfg.link_fail_threshold = 3;
   cfg.min_rate_hz = 0.0;
-  cfg.startup_grace_ms = 10000.0;  // 10 s — far longer than the run
+  cfg.link_startup_grace_ms = 10000.0;  // 10 s — far longer than the run
 
   UdpHandFailureDetector detector(*controller, cfg);
   std::atomic<bool> fired{false};
@@ -612,7 +615,10 @@ TEST(HandFailureDetectorStartupGrace, LargeGrace_SuppressesLinkDown) {
   ::close(fd);
 }
 
-TEST(HandFailureDetectorStartupGrace, ShortGrace_FiresAfterElapse) {
+TEST(HandFailureDetectorStartupGrace, LargeRateGrace_DoesNotSuppressLinkDown) {
+  // #2 core fix: a long RATE warmup must NOT mask a dead link. With a large rate
+  // grace but a short link grace, link-down still latches well before the rate
+  // window would have elapsed — so it beats the CM device_timeout at startup.
   auto [fd, port] = MakeSilentSocket();
   ASSERT_GE(fd, 0);
   auto controller = MakeSilentController(port);
@@ -624,7 +630,37 @@ TEST(HandFailureDetectorStartupGrace, ShortGrace_FiresAfterElapse) {
   cfg.check_link = true;
   cfg.link_fail_threshold = 3;
   cfg.min_rate_hz = 0.0;
-  cfg.startup_grace_ms = 50.0;  // elapses well within the run
+  cfg.startup_grace_ms = 10000.0;    // long rate warmup
+  cfg.link_startup_grace_ms = 50.0;  // short link grace — link latches after this
+
+  UdpHandFailureDetector detector(*controller, cfg);
+  std::string reason;
+  detector.SetFailureCallback([&](const std::string& r) { reason = r; });
+
+  detector.Start();
+  std::this_thread::sleep_for(400ms);  // >> 50 ms link grace, << 10 s rate grace
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_NE(reason.find("hand_udp_link_down"), std::string::npos);
+
+  controller->Stop();
+  ::close(fd);
+}
+
+TEST(HandFailureDetectorStartupGrace, ShortLinkGrace_FiresAfterElapse) {
+  auto [fd, port] = MakeSilentSocket();
+  ASSERT_GE(fd, 0);
+  auto controller = MakeSilentController(port);
+  ASSERT_TRUE(controller->Start());
+
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.check_motor = false;
+  cfg.check_sensor = false;
+  cfg.check_link = true;
+  cfg.link_fail_threshold = 3;
+  cfg.min_rate_hz = 0.0;
+  cfg.link_startup_grace_ms = 50.0;  // elapses well within the run
 
   UdpHandFailureDetector detector(*controller, cfg);
   std::string reason;
