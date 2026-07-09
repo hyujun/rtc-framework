@@ -75,7 +75,10 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
           fs.f[ju] = state.sensor_force[force_base + ju];
           fs.u[ju] = 0.0f;
         }
-        fs.inference_enable = true;
+        // Firmware-measured force is always published on 1b, but the
+        // inference_enable flag tracks the configured ft_inferencer.enabled so
+        // it never claims "on" when the operator turned FT estimation off.
+        fs.inference_enable = ft_enabled_;
         fs.contact_flag = 0.0f;  // no contact classifier on the 1b path yet
         continue;
       }
