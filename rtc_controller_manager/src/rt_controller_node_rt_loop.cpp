@@ -144,7 +144,12 @@ void RtControllerNode::ControlLoop() {
   {
     urtc::PublishSnapshot snap{};
     snap.actual_task_positions = output.actual_task_positions;
-    snap.stamp_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+    // Topic-boundary header stamp is ROS wall clock (CLOCK_REALTIME) so
+    // published headers (joint_command / grasp_state / transforms) share the
+    // ecosystem time axis. VDSO-backed, no syscall/lock — RT-safe like the
+    // steady_clock read used for internal timing (t0). Watchdog/staleness stay
+    // on monotonic steady_clock elsewhere.
+    snap.stamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
     snap.active_controller_idx = active_idx;
 
     // Per-group commands → group_commands slots
@@ -160,6 +165,7 @@ void RtControllerNode::ControlLoop() {
       const auto snc = static_cast<std::size_t>(dstate.num_channels);
       gc.num_channels = dout.num_channels;
       gc.actual_num_channels = dstate.num_channels;
+      gc.stamp_ns = snap.stamp_ns;  // wall-clock ns for JointCommand header
       std::copy_n(dout.commands.data(), onc, gc.commands.data());
       std::copy_n(dout.goal_positions.data(), onc, gc.goal_positions.data());
       std::copy_n(dout.target_positions.data(), onc, gc.target_positions.data());

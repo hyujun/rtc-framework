@@ -36,6 +36,12 @@ struct PublishSnapshot {
   struct GroupCommandSlot {
     int num_channels{0};         // from controller output (command channels)
     int actual_num_channels{0};  // from device state (state channels for GUI)
+    // Wall-clock nanoseconds (CLOCK_REALTIME) captured by the RT loop at tick
+    // start, mirrored per-group from PublishSnapshot::stamp_ns. Backends stamp
+    // the JointCommand header from this so /<key>/joint_command shares the ROS
+    // wall-clock time axis (rosbag/tf2/message_filters compatible). NOT for
+    // staleness/watchdog decisions — those use monotonic steady_clock.
+    int64_t stamp_ns{0};
     std::array<double, kMaxDeviceChannels> commands{};
     std::array<double, kMaxDeviceChannels> goal_positions{};
     std::array<double, kMaxDeviceChannels> target_positions{};
@@ -98,7 +104,11 @@ struct PublishSnapshot {
   // field. No group-independent command_type is kept here.
   std::array<double, kTaskSpaceDim> actual_task_positions{};
 
-  // JointCommand header stamp (monotonic nanoseconds)
+  // Topic-boundary header stamp: wall-clock nanoseconds (CLOCK_REALTIME),
+  // captured once per tick by the RT loop. Consumed by owned_topics.cpp for
+  // grasp_state / wbc_state / transforms header.stamp and mirrored into each
+  // GroupCommandSlot::stamp_ns for JointCommand. Internal timing/watchdog paths
+  // keep using monotonic steady_clock — do NOT use this for staleness checks.
   int64_t stamp_ns{0};
 
   // Active controller index (for topic config lookup in publish thread)

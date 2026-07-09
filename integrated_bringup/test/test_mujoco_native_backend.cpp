@@ -386,6 +386,25 @@ TEST_F(MujocoBackendWriteCommandTest, WriteCommand_DirectCopy_PdFeedforwardMode)
   }
 }
 
+// 13. Header stamp: WriteCommand propagates slot.stamp_ns (wall-clock ns) into
+//     the JointCommand header, split into sec/nanosec. Pins the wall-clock time
+//     axis contract for /<key>/joint_command (rosbag/tf2/message_filters).
+TEST_F(MujocoBackendWriteCommandTest, WriteCommand_PropagatesStampToHeader) {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  const std::vector<double> cmds = {0.1, 0.2, 0.3, 0.4};
+  for (std::size_t i = 0; i < cmds.size(); ++i)
+    slot.commands[i] = cmds[i];
+  // Arbitrary wall-clock ns with a non-zero sub-second remainder.
+  constexpr int64_t kStampNs = 1'752'000'000'123'456'789LL;
+  slot.stamp_ns = kStampNs;
+
+  const auto msg = WriteAndReceive(slot, rtc::CommandType::kPosition);
+
+  EXPECT_EQ(msg.header.stamp.sec, static_cast<int32_t>(kStampNs / 1'000'000'000LL));
+  EXPECT_EQ(msg.header.stamp.nanosec, static_cast<uint32_t>(kStampNs % 1'000'000'000LL));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

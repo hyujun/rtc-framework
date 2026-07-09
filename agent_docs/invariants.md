@@ -30,6 +30,10 @@ RT path 에 포함되는 subscription / UDP receive / timer callback 은 **mailb
 - 컨트롤러 / lifecycle state transition
 - 무거운 수치 연산 — `ControlLoop()` 으로 위임
 
+### Clock 시간축 규칙
+
+두 시간축을 명확히 분리한다. **Topic 경계 (`header.stamp`)** = ROS wall clock (`std::chrono::system_clock`, CLOCK_REALTIME) — rosbag / tf2 / message_filters / 외부 노드 호환. **내부 timing / watchdog / staleness** = monotonic (`std::chrono::steady_clock`) — NTP step·역행에 불변. **`header.stamp` 를 staleness / E-STOP / deadline 판단에 사용 금지** (wall clock 은 NTP 로 역행·점프 가능). 현 코드는 `last_state_ns_` 등 watchdog 을 steady_clock 으로 유지해 이미 준수.
+
 ### RT pub/sub primitive catalog
 
 RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free + heap-free + single-owner) 를 default 로 하고, 정당한 이유 (신규 단일-토픽 publisher, MPSC 필요 등) 가 있을 때만 2순위로 내려간다. 금지 항목은 RT-1~10 위반.

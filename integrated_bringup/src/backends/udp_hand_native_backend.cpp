@@ -239,6 +239,12 @@ void UdpHandNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot&
   // torque/current drive is a separate backend/firmware track (τ→I, mode bits).
   cmd_msg_.command_type = CommandTypeToString(command_type);
 
+  // Stamp the JointCommand header from the RT-loop wall-clock capture (integer
+  // div/mod only — RT-safe). slot.stamp_ns is CLOCK_REALTIME ns so the topic
+  // shares the ROS wall time axis; 0 (unset) yields a zero stamp harmlessly.
+  cmd_msg_.header.stamp.sec = static_cast<int32_t>(slot.stamp_ns / 1'000'000'000LL);
+  cmd_msg_.header.stamp.nanosec = static_cast<uint32_t>(slot.stamp_ns % 1'000'000'000LL);
+
   // Direct copy: slot.commands is always in joint_command_names order (same
   // order the message labels carry) — wire-order differences are the
   // receiver's job (udp_hand_node reorders by joint_names).
