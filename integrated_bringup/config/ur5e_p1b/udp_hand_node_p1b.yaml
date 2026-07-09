@@ -105,4 +105,7 @@
     min_rate_hz: 30.0               # comm_decimation 으로 on_activate 에서 자동 스케일됨
     rate_fail_threshold: 5
     check_link: true
-    link_fail_threshold: 10
+    # link_fail_timeout_ms → cycles = ms/1000 × loop_rate_hz / comm_decimation
+    # (여기서 100 × 500Hz / 1 = 50 cycle). CM device_timeout 1000 ms 보다 한참
+    # 아래라 hand link-down 이 먼저 latch 된다.
+    link_fail_timeout_ms: 100.0

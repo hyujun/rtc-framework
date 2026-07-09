@@ -21,6 +21,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -38,8 +39,24 @@ struct UdpHandFailureDetectorConfig {
   double min_rate_hz{30.0};         ///< 최소 허용 polling rate
   int rate_fail_threshold{5};       ///< 연속 N회 미달 시 failure
   bool check_link{true};            ///< UDP 링크 상태 검사
-  int link_fail_threshold{10};      ///< 연속 N회 recv 전체 실패 시 link_down
+  int link_fail_threshold{10};      ///< 연속 N회 recv 전체 실패 시 link_down (cycles)
+  double startup_grace_ms{0.0};  ///< 기동 후 이 시간까지 rate/link 판정 유예 (0=즉시)
 };
+
+// Convert a time-based link-fail timeout (ms) into the consecutive-recv-failure
+// cycle count that CheckLink consumes. The EventLoop reads at loop_rate_hz /
+// comm_decimation (decimated skip cycles do no I/O and no failure accounting),
+// so cycles = timeout_ms/1000 · loop_rate_hz / comm_decimation, floored at 1 (a
+// positive timeout must map to at least one cycle). The node owns this
+// conversion so UdpHandFailureDetectorConfig::link_fail_threshold stays a pure
+// cycle count and the detector need not know the loop rate. Free function for
+// direct unit testing.
+[[nodiscard]] inline int LinkFailCyclesFromTimeoutMs(double timeout_ms, double loop_rate_hz,
+                                                     int comm_decimation) noexcept {
+  const int dec = std::max(1, comm_decimation);
+  const double cycles = timeout_ms / 1000.0 * loop_rate_hz / static_cast<double>(dec);
+  return std::max(1, static_cast<int>(std::lround(cycles)));
+}
 
 class UdpHandFailureDetector {
  public:
@@ -93,7 +110,8 @@ class UdpHandFailureDetector {
                     msg.c_str());
       }
     }
-    prev_rate_check_ = std::chrono::steady_clock::now();
+    loop_start_ = std::chrono::steady_clock::now();
+    prev_rate_check_ = loop_start_;
     prev_cycle_count_ = controller_.cycle_count();
 
     while (!st.stop_requested() && running_.load(std::memory_order_relaxed)) {
@@ -101,12 +119,35 @@ class UdpHandFailureDetector {
       if (state.valid) {
         Check(state);
       }
-      CheckRate();
-      if (cfg_.check_link) {
-        CheckLink();
+      // Startup grace: suppress the rate/link failure paths during the boot
+      // transient (ARP resolution, firmware boot, first-packet round trip) so a
+      // momentary cold-start silence does not trip E-STOP. Motor/sensor
+      // data-validity checks above are unaffected (they only run once a state
+      // read has arrived). Keep the rate baseline fresh while suppressed so the
+      // first post-grace CheckRate measures a clean interval.
+      if (InStartupGrace()) {
+        prev_rate_check_ = std::chrono::steady_clock::now();
+        prev_cycle_count_ = controller_.cycle_count();
+      } else {
+        CheckRate();
+        if (cfg_.check_link) {
+          CheckLink();
+        }
       }
       std::this_thread::sleep_for(20ms);  // ~50 Hz
     }
+  }
+
+  // True while still inside the configured startup grace window. grace 0 (the
+  // default) → always false, so existing callers are unaffected (RT-7).
+  [[nodiscard]] bool InStartupGrace() const {
+    if (cfg_.startup_grace_ms <= 0.0) {
+      return false;
+    }
+    const double elapsed_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - loop_start_)
+            .count();
+    return elapsed_ms < cfg_.startup_grace_ms;
   }
 
   void Check(const UdpHandState& state) {
@@ -377,6 +418,9 @@ class UdpHandFailureDetector {
   int rate_fail_count_{0};
   std::size_t prev_cycle_count_{0};
   std::chrono::steady_clock::time_point prev_rate_check_{};
+
+  // DetectLoop start time — baseline for the startup grace window.
+  std::chrono::steady_clock::time_point loop_start_{};
 
   // Link-down forensic dump one-shot latch (detector thread only)
   bool link_dump_done_{false};

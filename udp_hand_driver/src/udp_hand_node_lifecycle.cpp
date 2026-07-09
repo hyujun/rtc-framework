@@ -43,7 +43,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_parameter("min_rate_hz", 30.0);
   declare_parameter("rate_fail_threshold", 5);
   declare_parameter("check_link", true);
-  declare_parameter("link_fail_threshold", 10);
+  // Link-down declared as a time budget (ms), converted to a consecutive-recv-
+  // failure cycle count at on_configure via loop_rate_hz / comm_decimation. A
+  // time param stays meaningful across loop-rate / decimation changes, unlike a
+  // raw cycle count. Default 100 ms sits an order below the CM device_timeout
+  // (1000 ms) so the hand link-down latches first.
+  declare_parameter("link_fail_timeout_ms", 100.0);
 
   declare_parameter("use_fake_hand", false);
   declare_parameter("fake_tick_rate_hz", 500.0);
@@ -228,7 +233,19 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   link_pub_qos.transient_local();
   link_status_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(
       this->get_node_topics_interface(), link_status_topic, link_pub_qos);
-  link_fail_threshold_ = static_cast<uint64_t>(get_parameter("link_fail_threshold").as_int());
+  // Convert the time-based link-fail budget to a cycle count once here; the three
+  // consumers (failure detector CheckLink, publish link_ok, stats JSON link_ok)
+  // all read this single member so they cannot drift. loop_rate_hz /
+  // comm_decimation are the on_configure locals above.
+  {
+    const double link_fail_timeout_ms = get_parameter("link_fail_timeout_ms").as_double();
+    const int link_fail_cycles = udp_hand_driver::LinkFailCyclesFromTimeoutMs(
+        link_fail_timeout_ms, loop_rate_hz, comm_decimation);
+    link_fail_threshold_ = static_cast<uint64_t>(link_fail_cycles);
+    RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                "link_fail_timeout_ms=%.1f -> %d cycles (loop_rate=%.1f Hz, comm_decimation=%d)",
+                link_fail_timeout_ms, link_fail_cycles, loop_rate_hz, comm_decimation);
+  }
 
   ft_enabled_ = ft_config.enabled;
 
@@ -445,7 +462,15 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     }
     fd_cfg.rate_fail_threshold = static_cast<int>(get_parameter("rate_fail_threshold").as_int());
     fd_cfg.check_link = get_parameter("check_link").as_bool();
-    fd_cfg.link_fail_threshold = static_cast<int>(get_parameter("link_fail_threshold").as_int());
+    // Cycle count converted from link_fail_timeout_ms at on_configure — same
+    // value the publish / stats link_ok reads (single source, no drift).
+    fd_cfg.link_fail_threshold = static_cast<int>(link_fail_threshold_);
+    // Startup grace: a fixed constant (not a ROS param — same rationale as the
+    // 10 s stats timer). Suppresses rate/link E-STOP for the first second so an
+    // ARP / firmware-boot / first-packet round-trip stall at activation cannot
+    // false-trigger before the link has had a chance to come up.
+    constexpr double kStartupGraceMs = 1000.0;
+    fd_cfg.startup_grace_ms = kStartupGraceMs;
 
     const auto cfgs = rtc::SelectThreadConfigs();
     failure_detector_ = std::make_unique<udp_hand_driver::UdpHandFailureDetector>(

@@ -139,4 +139,6 @@
     min_rate_hz: 30.0                 # 최소 허용 polling rate
     rate_fail_threshold: 5            # 연속 N회 미달 시 failure
     check_link: true                  # UDP 링크 상태 검사
-    link_fail_threshold: 10           # 연속 N회 recv 전체 실패 시 link_down 판정
+    # cycles = ms/1000 × loop_rate_hz / comm_decimation 로 on_configure 에서 환산.
+    # CM device_timeout(1000 ms) 보다 아래여야 hand link-down 이 먼저 latch 된다.
+    link_fail_timeout_ms: 100.0        # link_down 판정 시간 budget

@@ -218,7 +218,7 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 1. All-zero 데이터: N회 연속 감지
 2. Duplicate 데이터: N회 연속 반복
 3. Low rate: polling rate가 `min_rate_hz` 미만
-4. Link down: `consecutive_recv_failures` >= `link_fail_threshold` — threshold 도달 시 **1회 forensic dump** (per-request-kind 통계 테이블 + 최근 64 cycle 의 attempted/ok mask ring 디코드) 를 WARN 으로 출력 후 RaiseFailure
+4. Link down: `consecutive_recv_failures` >= `link_fail_timeout_ms` 환산 cycle 수 (`ms/1000 × loop_rate_hz / comm_decimation`) — threshold 도달 시 **1회 forensic dump** (per-request-kind 통계 테이블 + 최근 64 cycle 의 attempted/ok mask ring 디코드) 를 WARN 으로 출력 후 RaiseFailure. 기동 직후 `startup_grace_ms`(node 상수 1000 ms) 구간에는 rate/link 판정을 유예해 ARP/부팅/첫 왕복 지연이 오탐 E-STOP 을 내지 않게 한다 (motor/sensor data-validity 검사는 유예 대상 아님)
 
 센서 검사 대상은 프로토콜 레이아웃에 따른다 (`sensor_force_layout` capability, 컨트롤러가 `sensor_uses_force_layout_` 주입). 1a 는 int32 `sensor_data` (barometer/ToF) 전체를, 1b 는 `sensor_force` 의 **fx,fy,fz 만** 검사한다 — Lx/Ly/Temp placeholder 는 제외해 상수 placeholder 가 all-zero 를 가리거나 duplicate 를 왜곡하지 못하게 한다. 펌웨어가 rest 에서 ADC 노이즈로 non-zero 를 내므로 exact-0 force = dead/단선 센서, bit-frozen fx,fy,fz = stalled feed 로 정상 무접촉과 구별된다. 모터 검사는 `state.motor_valid` 로 gate 되어 motor-space read 가 없는 1b (`motor_valid` 항상 false) 에서는 no-op 이다 (`check_motor: false` 권장).
 
@@ -355,7 +355,7 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `min_rate_hz` | `30.0` | 최소 허용 polling rate |
 | `rate_fail_threshold` | `5` | 연속 N회 미달 시 failure |
 | `check_link` | `true` | UDP 링크 검사 |
-| `link_fail_threshold` | `10` | 연속 recv 실패 임계값 |
+| `link_fail_timeout_ms` | `100.0` | link-down 판정 시간 budget. cycles = ms/1000 × loop_rate_hz / comm_decimation 로 on_configure 에서 환산 |
 
 > 참고: `joint_mode`는 사용되지 않습니다 (코드에서 항상 write=kJoint, read=kMotor+kJoint dual read).
 

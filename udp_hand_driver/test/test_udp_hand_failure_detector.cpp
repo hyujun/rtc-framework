@@ -453,4 +453,121 @@ TEST_F(HandFailureDetectorTest, LinkCheck_FakeHandNoFailure) {
   EXPECT_FALSE(callback_called);
 }
 
+// ── link_fail_timeout_ms → cycles conversion (node-layer helper) ─────────────
+// The node converts the time-based link-fail budget into the cycle count the
+// detector's CheckLink consumes: cycles = ms/1000 · loop_rate_hz / comm_dec,
+// floored at 1. Verified directly on the free function.
+
+TEST(LinkFailCyclesFromTimeoutMs, NominalRate) {
+  // 100 ms at 500 Hz, no decimation → 50 cycles.
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 1), 50);
+}
+
+TEST(LinkFailCyclesFromTimeoutMs, DecimationScalesDown) {
+  // comm_decimation halves the effective read rate → half the cycles.
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 2), 25);
+}
+
+TEST(LinkFailCyclesFromTimeoutMs, RoundsToNearest) {
+  // 100 ms at 333 Hz → 33.3 → 33.
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 333.0, 1), 33);
+}
+
+TEST(LinkFailCyclesFromTimeoutMs, FlooredAtOne) {
+  // A tiny-but-positive timeout must still map to at least one cycle.
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(0.1, 100.0, 1), 1);
+  // Guards against a zero/negative comm_decimation dividing by zero.
+  EXPECT_EQ(LinkFailCyclesFromTimeoutMs(100.0, 500.0, 0), 50);
+}
+
+// ── Startup grace: suppress link/rate failure during the boot transient ──────
+// A silent socket makes every EventLoop cycle time out; with a large startup
+// grace the link-down failure must NOT fire within the window, and with a short
+// grace it must fire once the window elapses. Default grace 0 leaves every test
+// above unaffected (RT-7).
+
+namespace {
+// Bind a silent loopback UDP socket (never answers). Returns {fd, port}.
+std::pair<int, int> MakeSilentSocket() {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  EXPECT_GE(fd, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  EXPECT_EQ(::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+  socklen_t len = sizeof(addr);
+  ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
+  return {fd, ntohs(addr.sin_port)};
+}
+
+std::unique_ptr<UdpHandController> MakeSilentController(int port) {
+  auto controller = std::make_unique<UdpHandController>(UdpHandControllerConfig{
+      .target_ip = "127.0.0.1",
+      .target_port = port,
+      .recv_timeout_ms = 1.0,
+      .num_fingertips = 0,
+  });
+  return controller;
+}
+}  // namespace
+
+TEST(HandFailureDetectorStartupGrace, LargeGrace_SuppressesLinkDown) {
+  auto [fd, port] = MakeSilentSocket();
+  ASSERT_GE(fd, 0);
+  auto controller = MakeSilentController(port);
+  ASSERT_TRUE(controller->Start());
+
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.check_motor = false;
+  cfg.check_sensor = false;
+  cfg.check_link = true;
+  cfg.link_fail_threshold = 3;
+  cfg.min_rate_hz = 0.0;
+  cfg.startup_grace_ms = 10000.0;  // 10 s — far longer than the run
+
+  UdpHandFailureDetector detector(*controller, cfg);
+  std::atomic<bool> fired{false};
+  detector.SetFailureCallback([&](const std::string&) { fired.store(true); });
+
+  detector.Start();
+  std::this_thread::sleep_for(300ms);
+  detector.Stop();
+
+  EXPECT_FALSE(detector.failed());
+  EXPECT_FALSE(fired.load());
+
+  controller->Stop();
+  ::close(fd);
+}
+
+TEST(HandFailureDetectorStartupGrace, ShortGrace_FiresAfterElapse) {
+  auto [fd, port] = MakeSilentSocket();
+  ASSERT_GE(fd, 0);
+  auto controller = MakeSilentController(port);
+  ASSERT_TRUE(controller->Start());
+
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.check_motor = false;
+  cfg.check_sensor = false;
+  cfg.check_link = true;
+  cfg.link_fail_threshold = 3;
+  cfg.min_rate_hz = 0.0;
+  cfg.startup_grace_ms = 50.0;  // elapses well within the run
+
+  UdpHandFailureDetector detector(*controller, cfg);
+  std::string reason;
+  detector.SetFailureCallback([&](const std::string& r) { reason = r; });
+
+  detector.Start();
+  std::this_thread::sleep_for(400ms);
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_NE(reason.find("hand_udp_link_down"), std::string::npos);
+
+  controller->Stop();
+  ::close(fd);
+}
+
 }  // namespace udp_hand_driver::test
