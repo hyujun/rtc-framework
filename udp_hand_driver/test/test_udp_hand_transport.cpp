@@ -614,7 +614,8 @@ TEST(HandUdpTransportPerKind, CmdMismatch_RecordsLastUnexpectedCmd) {
 TEST(HandUdpTransportPerKind, StalePreinjected_RetryRecovers) {
   // Desync simulation: a stale wrong-cmd packet already sits in the socket
   // buffer when the request is issued. Attempt 0 consumes and rejects it
-  // (cmd_mismatch), the MSG_DONTWAIT retry picks up the fresh response.
+  // (cmd_mismatch), the cmd-mismatch blocking re-recv picks up the fresh
+  // response (already queued here, so RecvWithTimeout returns immediately).
   LoopbackDevice device;
   UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
@@ -655,6 +656,57 @@ TEST(HandUdpTransportPerKind, StalePreinjected_RetryRecovers) {
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].ok, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].cmd_mismatch, 1u);
   EXPECT_EQ(stats.last_unexpected_cmd, static_cast<uint8_t>(Command::kWritePosition));
+}
+
+TEST(HandUdpTransportPerKind, StaleThenDelayedFresh_BlockingRetryRecovers) {
+  // Desync recovery that requires the *blocking* retry: only the stale wrong-cmd
+  // packet is queued when the request is issued; the fresh response arrives a
+  // few ms later. Attempt 0 consumes and rejects the stale (cmd_mismatch); the
+  // blocking re-recv then WAITS and picks up the delayed fresh response. A
+  // non-blocking (MSG_DONTWAIT) retry would have hit EAGAIN and failed here.
+  LoopbackDevice device;
+  UdpHandTransport transport("127.0.0.1", device.port(), 50.0);  // 50ms >> 5ms delay
+  ASSERT_TRUE(transport.Open());
+
+  // Teach the device the transport's source address, then pre-inject the stale.
+  std::array<float, kNumHandMotors> warm{};
+  transport.WritePositionFireAndForget(warm);
+  device.CaptureClientAddr();
+
+  MotorPacket stale{};
+  stale.id = kDeviceId;
+  stale.cmd = static_cast<uint8_t>(Command::kWritePosition);  // stale echo
+  stale.mode = static_cast<uint8_t>(JointMode::kMotor);
+  std::array<uint8_t, kMotorPacketSize> stale_buf{};
+  std::memcpy(stale_buf.data(), &stale, kMotorPacketSize);
+  device.Send(stale_buf.data(), stale_buf.size());  // queued before the request
+
+  MotorPacket fresh{};
+  fresh.id = kDeviceId;
+  fresh.cmd = static_cast<uint8_t>(Command::kReadPosition);
+  fresh.mode = static_cast<uint8_t>(JointMode::kMotor);
+  for (std::size_t i = 0; i < kMotorDataCount; ++i) {
+    fresh.data[i] = FloatToUint32(static_cast<float>(i));
+  }
+  std::array<uint8_t, kMotorPacketSize> fresh_buf{};
+  std::memcpy(fresh_buf.data(), &fresh, kMotorPacketSize);
+
+  // Fresh response arrives only after the request has consumed the stale one,
+  // so recovery depends on the retry blocking rather than draining the queue.
+  std::thread late([&]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    device.Send(fresh_buf.data(), fresh_buf.size());
+  });
+
+  std::array<float, kMotorDataCount> out{};
+  const bool result = transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kMotor,
+                                                 nullptr, RequestKind::kMotorRead);
+  late.join();
+
+  EXPECT_TRUE(result);
+  const auto& stats = PubStats(transport);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].ok, 1u);
+  EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].cmd_mismatch, 1u);
 }
 
 TEST(HandUdpTransportPerKind, ShortPacket_CountsShortOrDecode) {

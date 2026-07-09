@@ -231,7 +231,11 @@ class UdpHandTransport {
 
   // ── Protocol requests ─────────────────────────────────────────────────────
 
-  // Write position command + recv echo. Returns true if echo cmd matches.
+  // Write position command + recv echo. Returns true if the echo cmd matches.
+  // A cmd-mismatched echo (a stale echo of the previous request under a 1-cycle
+  // desync) gets ONE blocking re-recv to wait for this write's own echo; still
+  // mismatched → false. Short read / recv failure are not retried. recv_ok and
+  // CountRecvFail account attempt 0 only (first-attempt packet arrival).
   [[nodiscard]] bool WritePositionWithEcho(
       const std::array<float, kNumHandMotors>& cmd,
       std::array<uint8_t, packets::kMotorPacketSize>& send_buf,
@@ -241,21 +245,28 @@ class UdpHandTransport {
     sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
            reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
 
-    const ssize_t recvd = RecvWithTimeout(echo_buf.data(), echo_buf.size());
-    if (recvd >= static_cast<ssize_t>(packets::kHeaderSize)) {
-      const bool echo_ok = (echo_buf[1] == static_cast<uint8_t>(packets::Command::kWritePosition));
-      if (!echo_ok) {
-        CountCmdMismatch(RequestKind::kWriteEcho, echo_buf[1], recvd);
-      } else {
-        ++PerKindStats(RequestKind::kWriteEcho).ok;
+    constexpr int kMaxAttempts = 2;  // initial + one blocking retry on cmd mismatch
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+      const ssize_t recvd = RecvWithTimeout(echo_buf.data(), echo_buf.size());
+      if (recvd < static_cast<ssize_t>(packets::kHeaderSize)) {
+        if (recvd < 0) {
+          if (attempt == 0) {
+            CountRecvFail(RequestKind::kWriteEcho);
+          }
+        } else {
+          CountShortOrDecode(RequestKind::kWriteEcho, recvd);
+        }
+        return false;  // short read / recv failure: not retried
       }
-      ++comm_stats_working_.recv_ok;
-      return echo_ok;
-    }
-    if (recvd < 0) {
-      CountRecvFail(RequestKind::kWriteEcho);
-    } else {
-      CountShortOrDecode(RequestKind::kWriteEcho, recvd);
+      if (attempt == 0) {
+        ++comm_stats_working_.recv_ok;
+      }
+      if (echo_buf[1] == static_cast<uint8_t>(packets::Command::kWritePosition)) {
+        ++PerKindStats(RequestKind::kWriteEcho).ok;
+        return true;
+      }
+      CountCmdMismatch(RequestKind::kWriteEcho, echo_buf[1], recvd);
+      // cmd mismatch → block once more (next iteration) for the fresh echo.
     }
     return false;
   }
@@ -298,7 +309,7 @@ class UdpHandTransport {
                  }
                  if (cmd_out != static_cast<uint8_t>(cmd)) {
                    CountCmdMismatch(kind, cmd_out, recvd);
-                   return ValidateResult::kRetry;
+                   return ValidateResult::kRetryBlocking;
                  }
                  if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
                    CountModeMismatch(kind);
@@ -337,7 +348,7 @@ class UdpHandTransport {
                  }
                  if (cmd_out != static_cast<uint8_t>(cmd)) {
                    CountCmdMismatch(kind, cmd_out, recvd);
-                   return ValidateResult::kRetry;
+                   return ValidateResult::kRetryBlocking;
                  }
                  if (verify_response_mode_ && mode_out != static_cast<uint8_t>(sensor_mode)) {
                    CountModeMismatch(kind);
@@ -377,7 +388,7 @@ class UdpHandTransport {
                  }
                  if (cmd_out != static_cast<uint8_t>(packets::Command::kReadAllMotors)) {
                    CountCmdMismatch(kind, cmd_out, recvd);
-                   return ValidateResult::kRetry;
+                   return ValidateResult::kRetryBlocking;
                  }
                  if (verify_response_mode_ && mode_out != static_cast<uint8_t>(joint_mode)) {
                    CountModeMismatch(kind);
@@ -413,7 +424,7 @@ class UdpHandTransport {
           }
           if (buf[1] != static_cast<uint8_t>(packets::Command::kReadAllSensors)) {
             CountCmdMismatch(kind, buf[1], recvd);
-            return ValidateResult::kRetry;
+            return ValidateResult::kRetryBlocking;
           }
           if (verify_bulk_sensor_mode_ && buf[2] != static_cast<uint8_t>(sensor_mode)) {
             CountModeMismatch(kind);
@@ -561,25 +572,32 @@ class UdpHandTransport {
  private:
   // ── Shared request-retry skeleton ─────────────────────────────────────────
 
-  // Three-valued verdict from a per-method `validate` callable (see
-  // RequestWithRetry): accept the datagram, drain the next queued one, or
-  // abort the request immediately (MODE-mismatch semantics — no retry).
-  enum class ValidateResult : uint8_t { kOk, kRetry, kFail };
+  // Four-valued verdict from a per-method `validate` callable (see
+  // RequestWithRetry): accept the datagram, drain the next queued one
+  // (non-blocking), block once more for a fresh datagram (cmd-mismatch / desync
+  // recovery), or abort immediately (MODE-mismatch semantics — no retry).
+  enum class ValidateResult : uint8_t { kOk, kRetry, kRetryBlocking, kFail };
 
-  // Shared 3-attempt skeleton for the request-response read paths
-  // (RequestMotorRead / RequestSensorRead / RequestAllMotorRead /
-  // RequestBulkSensorRaw). Sends `send_len` bytes, then receives up to
-  // kMaxAttempts times: attempt 0 blocks in RecvWithTimeout (ppoll);
-  // attempts 1-2 drain already-queued datagrams non-blocking (MSG_DONTWAIT)
-  // so a stale packet (e.g. the previous request's late echo after a 1-cycle
-  // desync) doesn't consume the whole cycle. Aggregate/per-kind accounting:
-  // recv failure is counted (CountRecvFail) only on attempt 0, and recv_ok
-  // counts only first-attempt packet arrival (validity-independent).
-  // `validate(recvd)` classifies the payload and must itself count the drop
-  // cause (CountShortOrDecode / CountCmdMismatch / CountModeMismatch):
-  //   kOk    → count per-kind ok, return recvd
-  //   kRetry → try the next queued datagram
-  //   kFail  → return -1 immediately
+  // Shared request-response read skeleton for the read paths (RequestMotorRead /
+  // RequestSensorRead / RequestAllMotorRead / RequestBulkSensorRaw). Sends
+  // `send_len` bytes, then receives up to kMaxAttempts times:
+  //   * attempt 0 blocks in RecvWithTimeout (ppoll).
+  //   * A cmd-mismatched datagram (kRetryBlocking — a stale echo of the previous
+  //     request after a 1-cycle desync) triggers ONE more *blocking* recv to
+  //     wait for this request's own response; still mismatched → fail. This
+  //     re-aligns a pipeline that has slipped by one response. Bounded to
+  //     kMaxBlockingRetries so a persistently wrong link can't stall the cycle.
+  //   * A short/decode drop (kRetry) instead drains the next already-queued
+  //     datagram non-blocking (MSG_DONTWAIT) — cheap, no extra wait.
+  // Aggregate/per-kind accounting: recv failure is counted (CountRecvFail) only
+  // on attempt 0, and recv_ok counts only first-attempt packet arrival
+  // (validity-independent). `validate(recvd)` classifies the payload and must
+  // itself count the drop cause (CountShortOrDecode / CountCmdMismatch /
+  // CountModeMismatch):
+  //   kOk            → count per-kind ok, return recvd
+  //   kRetry         → drain the next queued datagram (non-blocking)
+  //   kRetryBlocking → block once more for a fresh datagram (cmd-mismatch)
+  //   kFail          → return -1 immediately
   // Returns bytes received on success, -1 on send/recv/validation failure or
   // attempts exhausted. `validate` is a template param, not std::function —
   // RT hot path stays noexcept and allocation-free.
@@ -594,10 +612,14 @@ class UdpHandTransport {
       return -1;
 
     constexpr int kMaxAttempts = 3;
+    constexpr int kMaxBlockingRetries = 1;
+    int blocking_retries = 0;
+    bool next_blocking = false;
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-      const ssize_t recvd = (attempt == 0)
-                                ? RecvWithTimeout(recv_buf, recv_capacity)
-                                : ::recv(socket_fd_, recv_buf, recv_capacity, MSG_DONTWAIT);
+      const bool blocking = (attempt == 0) || next_blocking;
+      next_blocking = false;
+      const ssize_t recvd = blocking ? RecvWithTimeout(recv_buf, recv_capacity)
+                                     : ::recv(socket_fd_, recv_buf, recv_capacity, MSG_DONTWAIT);
       if (recvd < 0) {
         if (attempt == 0) {
           CountRecvFail(kind);
@@ -612,7 +634,14 @@ class UdpHandTransport {
           ++PerKindStats(kind).ok;
           return recvd;
         case ValidateResult::kRetry:
-          break;  // next attempt
+          break;  // next attempt: drain queued datagram (non-blocking)
+        case ValidateResult::kRetryBlocking:
+          if (blocking_retries >= kMaxBlockingRetries) {
+            return -1;  // one blocking re-recv already spent → give up
+          }
+          ++blocking_retries;
+          next_blocking = true;  // block once more for the fresh response
+          break;
         case ValidateResult::kFail:
           return -1;
       }
