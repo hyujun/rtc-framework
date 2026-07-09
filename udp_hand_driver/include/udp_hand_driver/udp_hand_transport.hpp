@@ -30,7 +30,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -60,64 +59,6 @@ inline constexpr std::array<const char*, kNumRequestKinds> kRequestKindNames = {
 // Bit for a RequestKind in the cycle-outcome attempted/ok masks.
 [[nodiscard]] constexpr uint8_t RequestKindBit(RequestKind kind) noexcept {
   return static_cast<uint8_t>(1u << static_cast<unsigned>(kind));
-}
-
-// Wire (CMD, MODE) bytes a RequestKind maps to, for decoding cycle-outcome masks
-// in forensic logs. `joint_io_mode` disambiguates the two joint-mode-dependent
-// kinds (write_echo, joint_read — same READ/WRITE cmd, MODE = kMotor vs kJoint);
-// motor_read is always kMotor and the sensor kinds are always kRaw. `is_bulk`
-// selects the read cmd: bulk mode reads via kReadAllMotors (0x10), individual
-// mode via kReadPosition (0x11 — motor_read also issues kReadVelocity 0x12, so
-// 0x11 is the representative primary read).
-[[nodiscard]] inline std::pair<uint8_t, uint8_t> RequestKindWire(RequestKind kind,
-                                                                 packets::JointMode joint_io_mode,
-                                                                 bool is_bulk) noexcept {
-  const auto io = static_cast<uint8_t>(joint_io_mode);
-  const auto motor = static_cast<uint8_t>(packets::JointMode::kMotor);
-  const auto raw = static_cast<uint8_t>(packets::SensorMode::kRaw);
-  const auto read_cmd = static_cast<uint8_t>(is_bulk ? packets::Command::kReadAllMotors
-                                                     : packets::Command::kReadPosition);
-  switch (kind) {
-    case RequestKind::kWriteEcho:
-      return {static_cast<uint8_t>(packets::Command::kWritePosition), io};
-    case RequestKind::kMotorRead:
-      return {read_cmd, motor};
-    case RequestKind::kJointRead:
-      return {read_cmd, io};
-    case RequestKind::kSensorRead:
-      return {static_cast<uint8_t>(packets::Command::kReadSensor0), raw};
-    case RequestKind::kBulkSensor:
-      return {static_cast<uint8_t>(packets::Command::kReadAllSensors), raw};
-    case RequestKind::kSetMode:
-      return {static_cast<uint8_t>(packets::Command::kSetSensorMode), raw};
-  }
-  return {0, 0};
-}
-
-// Decode a cycle-outcome mask into space-separated "name(cmd=0x..,mode=0x..)"
-// tokens in a caller-provided buffer, writing "none" when empty. RT-safe: no
-// allocation, at most kNumRequestKinds tokens, always NUL-terminated.
-inline void FormatRequestMask(uint8_t mask, packets::JointMode joint_io_mode, bool is_bulk,
-                              char* out, std::size_t out_size) noexcept {
-  if (out_size == 0)
-    return;
-  std::size_t pos = 0;
-  bool any = false;
-  for (int k = 0; k < kNumRequestKinds; ++k) {
-    if (!(mask & static_cast<uint8_t>(1U << k)))
-      continue;
-    const auto [cmd, mode] = RequestKindWire(static_cast<RequestKind>(k), joint_io_mode, is_bulk);
-    const int written =
-        std::snprintf(out + pos, out_size - pos, "%s%s(cmd=0x%02X,mode=0x%02X)", any ? " " : "",
-                      kRequestKindNames[static_cast<std::size_t>(k)], static_cast<unsigned>(cmd),
-                      static_cast<unsigned>(mode));
-    if (written <= 0 || static_cast<std::size_t>(written) >= out_size - pos)
-      break;
-    pos += static_cast<std::size_t>(written);
-    any = true;
-  }
-  if (!any)
-    static_cast<void>(std::snprintf(out, out_size, "none"));
 }
 
 // Communication statistics (recv success/timeout/error and total cycles).

@@ -971,22 +971,16 @@ class UdpHandController {
         // string literal + primitive args only (RT-safe).
         const auto failed_mask = static_cast<uint8_t>(attempted_mask & ~ok_mask);
         const int first_failed = (failed_mask != 0) ? std::countr_zero(failed_mask) : -1;
-        // Decode the attempted mask into per-kind (cmd, mode) wire bytes so the
-        // onset line names what was on the wire rather than an opaque hex mask.
-        // Stack buffer, alloc-free (RT-safe).
-        char attempted_desc[256];
-        FormatRequestMask(attempted_mask, joint_io_mode_, is_bulk_, attempted_desc,
-                          sizeof(attempted_desc));
         static rclcpp::Clock onset_clock(RCL_STEADY_TIME);
         RCLCPP_WARN_THROTTLE(
             ::udp_hand_driver::logging::ControllerLogger(), onset_clock,
             ::udp_hand_driver::logging::kThrottleFastMs,
-            "RunCommCycle: recv failure onset: first_failed=%s attempted=0x%02X [%s] ok=0x%02X "
+            "RunCommCycle: recv failure onset: first_failed=%s attempted=0x%02X ok=0x%02X "
             "last_unexpected_cmd=0x%02X last_unexpected_len=%u",
             (first_failed >= 0 && first_failed < kNumRequestKinds)
                 ? kRequestKindNames[static_cast<std::size_t>(first_failed)]
                 : "none",
-            static_cast<unsigned>(attempted_mask), attempted_desc, static_cast<unsigned>(ok_mask),
+            static_cast<unsigned>(attempted_mask), static_cast<unsigned>(ok_mask),
             static_cast<unsigned>(last_cmd), static_cast<unsigned>(last_len));
       } else if (failures >= 5) {
         static rclcpp::Clock steady_clock(RCL_STEADY_TIME);

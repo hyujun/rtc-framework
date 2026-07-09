@@ -258,8 +258,6 @@ phase 매핑 (hand UDP loop, `MarkState()`/`MarkCompute()` 브레이크포인트
 - **`per_request`**: request kind (`write_echo` / `motor_read` / `joint_read` / `sensor_read` / `bulk_sensor` / `set_mode`) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}`. `ok` 는 request-level 성공 (검증 통과), `short_or_decode` 는 short packet + codec decode 실패. joint/motor read 는 wire format 이 동일하므로 controller 가 `RequestKind` 파라미터로 명시 attribution
 - **`last_unexpected_cmd` / `last_unexpected_len`**: 가장 최근 거부된 패킷의 CMD byte / 수신 길이 — 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처
 
-recv failure onset (0→1 전이) WARN 로그는 `attempted` mask 를 raw hex 와 함께 per-kind `name(cmd=0x..,mode=0x..)` 로 디코드해 출력한다 (`FormatRequestMask`, RT-safe stack 버퍼). read cmd 는 통신 모드에 따라 다르다 — bulk 는 `kReadAllMotors`(0x10), individual 은 `kReadPosition`(0x11) — 이므로 `is_bulk` 를 넘겨 실제 wire cmd 를 반영한다. motor_read/joint_read 는 같은 READ cmd 를 공유하고 MODE(kMotor/kJoint) 로만 구분되므로 이 디코드가 wire 상 실제 요청을 드러낸다.
-
 `timing_stats` 섹션은 `UdpHandTimingProfiler` 요약 (mean/min/max/p95/p99, phase 별).
 
 ---
