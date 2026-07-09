@@ -18,7 +18,7 @@
 
 ## Threading Model
 
-Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_config.hpp` (`SystemThreadConfigs` 정의 + `SelectThreadConfigs()` core-tier 분기). 4/6/8/10/12/14/16-core 레이아웃을 자동 선택. 문서엔 *불변 원칙*만 박는다.
+Thread roster·core·priority 의 SSoT 는 `rtc_base/threading/thread_utils.hpp` (`SystemThreadConfigs` 정의 + `SelectThreadConfigs()` core-tier 분기; tier 상수값은 `thread_config.hpp`). 4/6/8/10/12/14/16-core 레이아웃을 자동 선택. 문서엔 *불변 원칙*만 박는다.
 
 **RT thread 정의 (layout v4)**: "RT thread" = controller ↔ hardware/sim 경계의 결정적 tick 만. 즉 `rt_control` (정기 tick + inline actuator WriteCommand) 과 `rt_callback` (backend state sub 처리) — 둘이 SCHED_FIFO 로 묶이는 그룹이다. 다른 thread (`nrt_callback`, `nrt_logging`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`) 는 RT 가 아니다 (mpc_main/workers 는 별도 RT 그룹 — controller 가 producer/consumer 양쪽).
 

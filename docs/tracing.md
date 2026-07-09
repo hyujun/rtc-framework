@@ -2,8 +2,7 @@
 
 이 문서는 *operational guide* 다. RT 안전성 / invariant / sensor matrix 등 헌법성 규칙은 [../agent_docs/](../agent_docs/) 참조 — 여기는 LTTng / babeltrace2 / Perfetto 사용법만.
 
-CSV timing logs (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv`)
-은 **per-tick 총 시간**만 기록한다. RT 회귀가 보이지만 어느 thread 가 어느 core 에서 언제 run 했는지 / 어떤 callback 이 시간을 쓰는지 모를 때 LTTng 트레이스를 캡처해 Perfetto 로 본다.
+CSV timing log 는 per-tick 총 시간만 기록하므로, 어느 thread 가 어느 core 에서 언제 run 했는지 / 어떤 callback 이 시간을 쓰는지 모를 때 LTTng 트레이스를 캡처해 Perfetto 로 본다. sensor matrix 상 위치·언제 트레이싱을 켜는지는 SSoT [../agent_docs/testing-debug.md](../agent_docs/testing-debug.md) §Tracing 참조.
 
 ## ros2_tracing vs perf
 
@@ -15,18 +14,19 @@ CSV timing logs (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_l
 * `sched_switch` (kernel tracepoint) — 어느 thread 가 어느 core 에서 언제 run 했는지의 정확한 timeline
 * `irq_handler_entry/exit` — IRQ leak 검출
 
-대신 callback **enter ~ exit 사이** 만 본다. 그 안의 함수 단위 breakdown 은 수동 `tracetools` tracepoint instrumentation 이 필요 (Phase 2 작업).
+대신 callback **enter ~ exit 사이** 만 본다 — 그 안의 함수 단위 breakdown 이나 RT pthread tick 경계는 자동 모드로 안 잡힌다 (§Limits 참조).
 
 ## One-time setup (Fresh Ubuntu 24.04)
 
 ```bash
 ./install.sh --tracing
-# 또는 수동 동등 명령:
-sudo apt install lttng-tools lttng-modules-dkms babeltrace2 python3-bt2 \
-                 ros-jazzy-ros2trace ros-jazzy-tracetools-launch \
-                 ros-jazzy-tracetools-read
+# lttng-tools / lttng-modules-dkms / babeltrace2 / python3-bt2 / ros-jazzy-ros2trace
+# 등 동등 패키지를 install_dev.sh install_tracing_tools() (SSoT) 가 설치한다 —
+# 수동 apt 목록은 여기 박제하지 않는다 (drift 방지). 소스: repo_scripts/scripts/lib/install_dev.sh
+
+# 별도로 tracing 그룹 멤버십만 필요하면:
 sudo usermod -a -G tracing "$USER"
-# tracing 그룹 멤버십 적용은 logout/login 또는 'newgrp tracing'
+# 적용은 logout/login 또는 'newgrp tracing'
 ```
 
 검증: `./repo_scripts/scripts/check_rt_setup.sh --summary` →
@@ -163,6 +163,14 @@ babeltrace2 logging_data/<session>/tracing/<lttng_session>/ | grep ros2:callback
 babeltrace2 logging_data/<session>/tracing/<lttng_session>/ | grep sched_switch | awk '{print $NF}' | sort -u
 ```
 
+babeltrace2 텍스트 출력을 그대로 파이프해 Chrome trace JSON 으로 변환할 수도 있다
+(`--stdin` — subprocess 없이 stdin 파싱):
+
+```bash
+babeltrace2 logging_data/<session>/tracing/<lttng_session>/ \
+    | python3 -m rtc_tools.conversion.ctf_to_chrome_trace --stdin --output trace.json
+```
+
 ## ros2 trace CLI (수동 capture)
 
 launch 안에서가 아니라 별도로 trace 를 시작/정지하려면:
@@ -173,7 +181,8 @@ ros2 trace start --session-name manual_trace \
     --kernel sched_switch
 # … 다른 터미널에서 노드 실행 …
 ros2 trace stop manual_trace
-# 출력: ~/.ros2_tracing/manual_trace/ (CLI 기본 위치 — launch 와 다름)
+# 출력: ~/.ros/tracing/manual_trace/ (CLI 기본 위치 — launch 와 다름)
+#   경로는 $ROS_HOME/tracing 에서 파생 ($ROS_HOME 기본 ~/.ros). $ROS_TRACE_DIR 로 override 가능.
 ```
 
 CLI 와 launch action 동시 사용 금지 (같은 lttng-sessiond 에 접근하므로 session_name 충돌).
@@ -187,7 +196,7 @@ sudo apt install ros-jazzy-tracetools-analysis
 #   from tracetools_analysis.processor.ros2 import Ros2Handler
 ```
 
-자세한 사용은 ros2_tracing 공식 문서 참조. Phase 2 이후 RT-specific tracepoint 가 추가되면 분석 notebook 도 합본 예정.
+자세한 사용은 ros2_tracing 공식 문서 참조. (RT-specific manual tracepoint 는 아직 미착수 — §Limits.)
 
 ## Permissions
 

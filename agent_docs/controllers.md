@@ -11,7 +11,7 @@
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
-| DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 7-phase FSM (Idle->Approach->PreGrasp->Closure->Hold->Release; slot 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: true` (Aligator HandlerMPCThread; runtime-togglable via `mpc_enable` parameter) |
+| DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 7-phase FSM (Idle->Approach->PreGrasp->Closure->Hold->Release; slot 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
 ## Gains (per-controller ROS 2 parameters)
 

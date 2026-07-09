@@ -112,6 +112,9 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 | `Python: Launch File (sim.launch.py)` | `ros2 launch integrated_bringup sim.launch.py` | — |
 | `Python: Current File` | 현재 편집 중인 `.py` | — |
 
+> [!NOTE]
+> 위 표의 `--params-file` · launch 파일은 **기본 로봇 `ur5e_hand`** 기준입니다. 다른 로봇은 `sim_<robot>.launch.py` / `robot_<robot>.launch.py` (예: `sim_iiwa7_leap.launch.py`, `sim_ur5e_p1b.launch.py`) 를 쓰고 각자의 `config/<robot>/` 파라미터를 전달합니다 — 사용 가능한 조합은 [`integrated_bringup/launch/`](../integrated_bringup/launch/) 를 확인하세요.
+
 ### 3-1. `integrated_rt_controller` 노드 디버깅
 
 1. **`F5`** 키 또는 사이드바 `Run and Debug` (▷ 아이콘) 클릭
@@ -140,9 +143,9 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 `C++: Run GTest (Selected Package)`를 선택하면 GTest 바이너리 경로를 입력받아 그 테스트만 GDB로 실행합니다. 경로 예시:
 
 ```
-${workspaceFolder}/../../build/rtc_base/test/test_seqlock
-${workspaceFolder}/../../build/rtc_controllers/test/test_grasp_controller
-${workspaceFolder}/../../build/rtc_tsid/test/test_wqp_formulation
+${workspaceFolder}/../../build/rtc_base/test_seqlock
+${workspaceFolder}/../../build/rtc_controllers/test_grasp_controller
+${workspaceFolder}/../../build/rtc_tsid/test_tsid_wqp
 ```
 
 전체 테스트 실행은 `Ctrl+Shift+P` → `Run Task` → **`colcon: Test All`** 또는 **`colcon: Test Selected Package`**.
@@ -196,158 +199,36 @@ sudo gdb -p <PID>
 
 ## 5. Breakpoint 사용법
 
-### 기본 Breakpoint
+Breakpoint 토글·Step/Continue 등 기본 조작(`F9` / `F5` / `F10` / `F11` / `Shift+F11`)과 우클릭 → `Edit Breakpoint` 로 여는 **조건부 Breakpoint**(`loop_count == 100`, `joint_pos[0] > 1.5` 같은 표현식)·**Hit Count**(N회 실행 후 정지)는 VS Code 표준 기능이므로 [공식 문서](https://code.visualstudio.com/docs/editor/debugging)를 참고하세요. 여기서는 **RT 제어에 특화된 주의점**만 다룹니다.
 
-소스 코드 줄 번호 왼쪽 여백을 클릭하면 빨간 원(●)이 생깁니다.
+> [!WARNING]
+> **실시간 루프(`control_rate`, 기본 500 Hz~최대 5 kHz)에서 Breakpoint 로 멈추는 것은 위험합니다.** 정지 동안 ROS 타이머가 쌓이거나 WatchDog / E-STOP 이 트리거되고, 재개 후 타이밍이 완전히 깨집니다. 특정 순간만 포착해야 할 때도 Hit Count/조건부 Breakpoint 로 멈추기보다 아래 **Logpoint** 를 우선하세요.
 
-```
-단축키:
-  F9          — 현재 줄에 Breakpoint 토글
-  F5          — 다음 Breakpoint까지 계속 실행 (Continue)
-  F10         — 한 줄 실행, 함수 진입 안 함 (Step Over)
-  F11         — 한 줄 실행, 함수 내부로 진입 (Step Into)
-  Shift+F11   — 현재 함수에서 빠져나옴 (Step Out)
-  Shift+F5    — 디버깅 종료
-```
+### Logpoint — 멈추지 않고 값 관찰 (RT 루프 권장)
 
-### 조건부 Breakpoint (Conditional)
-
-특정 조건일 때만 멈추게 합니다.
-
-1. Breakpoint 위에서 **우클릭** → `Edit Breakpoint`
-2. 조건식 입력 예시:
-
-```cpp
-// 예: 100번째 루프에서만 멈춤
-loop_count == 100
-
-// 예: 특정 관절 각도 초과 시 멈춤
-joint_pos[0] > 1.5
-
-// 예: 포인터가 null일 때 멈춤
-ptr == nullptr
-```
-
-### Hit Count Breakpoint
-
-N번 실행된 후 처음으로 멈춥니다.
-
-1. Breakpoint 우클릭 → `Edit Breakpoint` → `Hit Count` 선택
-2. 숫자 입력 (예: `500` → 500번 실행 후 정지)
-
-실시간 제어 루프(1kHz)에서 **특정 순간만 포착**할 때 유용합니다.
-
-### Logpoint (실행을 멈추지 않고 로그 출력)
-
-Breakpoint처럼 멈추지 않고, 대신 메시지를 출력합니다.
+Breakpoint 처럼 멈추지 않고 메시지만 출력하므로 루프 타이밍을 유지합니다.
 
 1. 줄 번호 여백 우클릭 → `Add Logpoint`
 2. 메시지 입력: `"joint_pos[0] = {joint_pos[0]}, time = {t}"` (`{}` 안에 변수)
 
 > [!TIP]
-> 실시간 루프에서 Breakpoint는 루프 타이밍을 완전히 망가뜨립니다.
-> 타이밍을 유지하면서 값을 관찰하려면 **Logpoint**를 사용하세요.
+> Logpoint 로도 부족하면 코드에 `RCLCPP_DEBUG` 추가 후 `rqt_console` 관찰, 또는 `data_logger` 로 파일 기록 후 오프라인 분석을 사용하세요 (§8 참고).
 
 ---
 
 ## 6. 변수 및 메모리 검사
 
-디버거가 Breakpoint에서 멈췄을 때 사용할 수 있는 기능입니다.
-
-### Variables 패널
-
-왼쪽 `Run and Debug` 사이드바 상단에 자동으로 표시됩니다.
-
-- **Locals**: 현재 함수의 지역 변수
-- **Globals**: 전역 변수
-- **Registers**: CPU 레지스터 값
-
-### Watch 표현식
-
-원하는 표현식을 등록해서 실시간으로 값을 추적합니다.
-
-1. `Watch` 패널 → `+` 클릭
-2. 표현식 입력:
-
-```cpp
-// 배열 전체 표시
-joint_pos
-
-// 특정 인덱스
-joint_pos[2]
-
-// 포인터 역참조
-*controller_ptr
-
-// 멤버 접근
-state.q[0]
-
-// 수식
-state.q[0] * (180.0 / 3.14159)   // rad → degree 변환
-```
-
-### Hover로 즉시 확인
-
-소스 코드에서 **변수 위에 마우스를 올리면** 현재 값이 팝업으로 표시됩니다.
-
-### Call Stack
-
-현재 함수가 어떤 호출 경로로 실행됐는지 보여줍니다.
-`CALL STACK` 패널에서 이전 프레임을 클릭하면 해당 시점의 변수도 볼 수 있습니다.
+Breakpoint 에서 멈췄을 때 `Run and Debug` 사이드바의 **Variables**(Locals/Globals/Registers)·**Watch**(표현식 등록)·**Call Stack** 패널과 변수 Hover 는 VS Code 표준 기능입니다. Watch 에는 `joint_pos[2]`, `*controller_ptr`, `state.q[0]` 같은 인덱싱·역참조·멤버 접근은 물론 `state.q[0] * (180.0 / 3.14159)`(rad→degree) 같은 수식도 넣을 수 있습니다.
 
 ---
 
 ## 7. GDB 콘솔 직접 사용
 
-VS Code 하단 `DEBUG CONSOLE` 탭에서 GDB 명령어를 직접 실행할 수 있습니다.
+VS Code 하단 `DEBUG CONSOLE` 은 GDB MI 위에서 동작하므로, 순수 GDB 명령은 앞에 **`-exec`** 를 붙입니다 (`-exec print joint_pos[0]`, `-exec ptype state`, `-exec bt`, `-exec info threads` / `thread 2` 등 표준 GDB 명령 전체 사용 가능).
 
-> [!NOTE]
-> VS Code의 DEBUG CONSOLE은 GDB MI(Machine Interface) 위에서 동작합니다.
-> 순수 GDB 명령어를 쓰려면 앞에 `-exec`를 붙이거나 `-interpreter-exec console` 형식을 사용합니다.
+### Eigen / STL pretty-printing
 
-### 자주 쓰는 DEBUG CONSOLE 명령
-
-```
-// 변수 출력
--exec print joint_pos[0]
--exec print *controller_ptr
-
-// 타입 확인
--exec ptype state
-
-// 메모리 덤프 (addr 기준 10개 double 출력)
--exec x/10g &joint_pos[0]
-
-// 역참조 배열 출력
--exec print joint_pos[0]@7        // index 0부터 7개 출력
-
-// 함수 호출
--exec call compute_torque(state)
-
-// 현재 스레드 목록
--exec info threads
-
-// 특정 스레드로 전환
--exec thread 2
-
-// 백트레이스 (콜스택)
--exec bt
-
-// 레지스터 값
--exec info registers
-```
-
-### Eigen / STL 컨테이너 보기
-
-STL pretty-printer가 설정되어 있으므로 `std::vector`, `std::array` 등을 가독성 있게 표시합니다.
-
-```
-// std::vector 출력
--exec print my_vector
-
-// Eigen 행렬 (pretty-printer 없으면 내부 구조 표시)
--exec print q.data()@7
-```
+모든 C++ launch 구성의 `setupCommands` 에 `-enable-pretty-printing` + `set print pretty on` 이 포함되어 있어(§launch.json) `std::vector` / `std::array` 및 Eigen 타입이 가독성 있게 표시됩니다. pretty-printer 가 안 붙는 raw 버퍼는 `-exec print q.data()@7`(포인터 + 개수)로 펼쳐 볼 수 있습니다.
 
 ---
 
@@ -410,7 +291,7 @@ ros2 node list
 
 ---
 
-### ❌ Breakpoint에서 멈추면 1kHz 루프 타이밍 깨짐
+### ❌ Breakpoint에서 멈추면 RT 정기 tick 타이밍 깨짐
 
 **실시간 루프** 디버깅 특이사항입니다. Breakpoint에서 멈추는 동안 ROS 타이머가 쌓이거나 WatchDog가 트리거될 수 있습니다.
 
