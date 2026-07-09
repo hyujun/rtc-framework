@@ -327,6 +327,13 @@ class PeriodicRtThread {
     // (external Join) or the kAbort break (which already ran OnLoopAborted).
     if (exit_from_loop_.load(std::memory_order_acquire)) {
       OnLoopAborted();
+      // Self-exit: the thread is about to die, so clear running_ here (Join()
+      // would otherwise be the only place it is cleared). Without this,
+      // Running() reports a dead thread as alive and a Start() before Join()
+      // silently no-ops on the exchange(true) guard. Join() keys on
+      // thread_.joinable(), not running_, so it still joins correctly; a later
+      // Start() move-assigns a fresh jthread (which joins this dead one first).
+      running_.store(false, std::memory_order_release);
     }
   }
 

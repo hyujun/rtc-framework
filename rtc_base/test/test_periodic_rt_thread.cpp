@@ -365,6 +365,34 @@ TEST(PeriodicRtThread, RequestLoopExitStopsLoopAndFiresAbortOnce) {
   EXPECT_GE(t.ticks.load(), first_run_ticks + 3);
 }
 
+TEST(PeriodicRtThread, SelfExitClearsRunningAndRestartsWithoutJoin) {
+  // Regression (#8): a RequestLoopExit self-exit must clear running_ on the loop
+  // thread — otherwise Running() reports a dead thread as alive and a Start()
+  // BEFORE Join() silently no-ops on the exchange(true) guard. The prior test
+  // Joins before checking, so it never exercised this precondition that the hand
+  // driver's new self-exit feature imposes on all PeriodicRtThread users.
+  ExitingThread t;
+  t.exit_after.store(3);
+  t.Start(MakeCfg("rtc_test_le_nojoin", 200.0));
+
+  EXPECT_TRUE(WaitUntil([&] { return t.aborts.load() >= 1; }))
+      << "loop did not self-exit via RequestLoopExit within timeout";
+  // Running() must go false after the self-exit WITHOUT any Join().
+  EXPECT_TRUE(WaitUntil([&] { return !t.Running(); }))
+      << "Running() must be false after a self-exit, before any Join()";
+
+  // Restart with NO intervening Join(): the guard must let it through and spawn a
+  // fresh live loop (the new jthread move-assign joins the dead one first).
+  const int ticks_before = t.ticks.load();
+  t.exit_after.store(ticks_before + 1000);  // do not self-exit again immediately
+  t.Start(MakeCfg("rtc_test_le_nojoin2", 200.0));
+  EXPECT_TRUE(t.Running());
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() > ticks_before + 2; }))
+      << "Start() before Join() did not spawn a live loop";
+  t.Join();
+  EXPECT_FALSE(t.Running());
+}
+
 namespace {
 
 // Subclass that suppresses the per-tick timing push on even ticks, so exactly
