@@ -103,7 +103,7 @@ ros2 param set /bt_coordinator hand_pose.home "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
-| `[Watchdog] /ur5e/gui_position: no messages` | RT 컨트롤러 미실행 | `sim.launch.py` 또는 `robot.launch.py` 먼저 시작 |
+| `[Watchdog] /rtc_cm/<arm_group>/joint_states: no messages` | RT 컨트롤러 미실행 | `sim.launch.py` 또는 `robot.launch.py` 먼저 시작 |
 | `[FAILED] IsObjectDetected` | 비전 미감지 | `/world_target_info` 토픽 확인 |
 | `[FAILED] MoveToPose` (timeout) | 목표 도달 실패 | tolerance 완화 또는 gains 조정 |
 | `[FAILED] IsForceAbove` | 힘 미감지 | threshold_N 낮추기, 물체 위치 확인 |

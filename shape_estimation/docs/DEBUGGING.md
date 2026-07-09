@@ -115,8 +115,8 @@ ros2 action send_goal /shape/explore \
 # E-STOP 상태 확인
 ros2 topic echo /system/estop_status
 
-# 현재 EE 위치 확인
-ros2 topic echo /ur5e/gui_position --once
+# 현재 EE 위치 확인 (Phase 4: GuiPosition 폐기 → tf2 lookup)
+ros2 run tf2_ros tf2_echo base tool0_actual
 
 # 컨트롤러 전환 확인
 ros2 topic echo /rtc_cm/active_controller_name
@@ -204,7 +204,7 @@ ros2 topic pub /shape/trigger std_msgs/msg/String "data: 'start'" --once
 |-------|-------|-----|
 | `enable_exploration: false` | YAML 설정 | `enable_exploration: true` |
 | E-STOP 활성 | `ros2 topic echo /system/estop_status` | E-STOP 해제 |
-| GuiPosition 미수신 | `ros2 topic hz /ur5e/gui_position` | RT controller 실행 확인 |
+| EE pose(tf2) 미수신 | `ros2 run tf2_ros tf2_echo base tool0_actual` | RT controller 실행 확인 |
 | 컨트롤러 전환 실패 | `ros2 topic echo /rtc_cm/active_controller_name` | controller_name 설정 확인 |
 | 물체 위치 미설정 | goal의 `object_position`이 원점 | 유효한 좌표 입력 |
 

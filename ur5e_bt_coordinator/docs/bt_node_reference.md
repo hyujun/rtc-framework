@@ -1,6 +1,6 @@
 # BT 노드 레퍼런스
 
-30개 커스텀 BT 노드의 포트 및 동작 문서.
+28개 커스텀 BT 노드 (22 action, 6 condition)의 포트 및 동작 문서.
 
 ---
 
@@ -208,6 +208,24 @@ active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_para
 | `arc_height` | input | double | (필수) | 호 최대 높이 [m] |
 | `num_waypoints` | input | int | 8 | 생성할 경유점 수 |
 | `waypoints` | output | vector\<Pose6D\> | - | 생성된 경유점 |
+
+#### ComputeTiltSequence
+
+기준 포즈를 중심으로 roll/pitch를 번갈아 오실레이션하는 tilt-scan 경유점 시퀀스를 생성한다 (position 고정). `ExplorationMotionGenerator`의 tilt phase를 모사.
+
+```xml
+<ComputeTiltSequence base_pose="{current_pose}"
+                     amplitude_deg="15.0"
+                     num_steps="6"
+                     waypoints="{tilt_waypoints}"/>
+```
+
+| 포트 | 방향 | 타입 | 기본값 | 설명 |
+|------|------|------|--------|------|
+| `base_pose` | input | Pose6D | (필수) | 기준 포즈 (position 고정) |
+| `amplitude_deg` | input | double | 15.0 | Tilt 진폭 [deg] |
+| `num_steps` | input | int | 6 | 생성할 경유점 수 (짝수 step=pitch, 홀수 step=roll 오실레이션) |
+| `waypoints` | output | vector\<Pose6D\> | - | 생성된 경유점 (마지막은 기준 자세로 복귀) |
 
 #### WaitDuration
 

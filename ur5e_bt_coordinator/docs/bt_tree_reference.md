@@ -30,6 +30,23 @@
 
 ---
 
+### Vision Approach (`vision_approach.xml`)
+
+**Vision 기반 approach 데모 (arm-only, 핸드 미사용).** 비전으로 물체를 감지해 그 위 10cm 지점까지 task-space로 접근하는 최소 데모.
+
+**필수 Blackboard 변수:** 없음
+
+| Phase | 동작 | 주요 파라미터 |
+|-------|------|--------------|
+| 1 | MoveToJoints `table_top` | joint controller, traj_speed 0.15 |
+| 2 | IsVisionTargetReady (비전 감지) | 최대 60회 재시도 × 0.5s |
+| 3 | SwitchController → task controller | |
+| 4 | ComputeOffsetPose + MoveToPose (+10cm Z) | traj_speed: 0.1 |
+
+**실패 처리:** 없음 (단순 데모 — EmergencyAbort SubTree 미사용)
+
+---
+
 ### Pick and Place — Pose-based (`pick_and_place.xml`)
 
 **Grasp controller 미사용.** 미리 정의된 hand pose(soft/medium/hard)로 물체를 집는 가장 단순한 pick-and-place.
@@ -155,6 +172,30 @@
 - 버퍼: 최대 8192 snapshots (~16초분)
 - 수집 예: search 10cm @ 0.02 m/s = 5초 → ~2500 samples
 - Index finger ToF: `distances[2]` (index_A), `distances[3]` (index_B)
+
+---
+
+### Search Motion (`search_motion.xml`)
+
+**팔 sweep + tilt scan 탐색 모션 (ToF 센서 불필요).** Vision 감지 위치로 접근한 뒤 X/Y lateral sweep + roll/pitch tilt scan을 수행하는 순수 arm 모션 데모. `shape_inspect*.xml`과 달리 shape estimation 서비스나 ToF 데이터 수집을 사용하지 않는다.
+
+**필수 Blackboard 변수:**
+- `inspect_offset_x/y` — object_pose 기준 inspect 위치 x/y 오프셋 [m]
+- `inspect_offset_z` — object_pose 기준 inspect 위치 z 오프셋 [m]
+
+| Phase | 동작 | 주요 파라미터 |
+|-------|------|--------------|
+| 1 | MoveToJoints `ready` | joint controller, traj_speed 0.15 |
+| 2 | IsVisionTargetReady (비전 감지) | 최대 60회 재시도 × 0.5s |
+| 3 | SwitchController → task controller | |
+| 4 | ComputeOffsetPose + MoveToPose (inspect 위치) | traj_speed: 0.08 |
+| 5a | Approach (-3cm Z) | traj_speed: 0.05 |
+| 5b | X-direction sweep (±6cm) | `ComputeSweepTrajectory`, 10 waypoints |
+| 5c | Y-direction sweep (±6cm) | `ComputeSweepTrajectory`, 10 waypoints |
+| 5d | Tilt scan (roll/pitch ±15°) | `ComputeTiltSequence`, 6 steps |
+| 6 | 복귀 (joint-space `ready`) | traj_speed: 0.15 |
+
+**실패 처리:** 없음 (단순 데모 — EmergencyAbort SubTree 미사용)
 
 ---
 

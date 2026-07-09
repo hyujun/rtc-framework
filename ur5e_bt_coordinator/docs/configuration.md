@@ -14,7 +14,7 @@ BehaviorTree 기반 UR5e + Hand 비실시간 태스크 코디네이터.
 | `rclcpp` | ROS2 C++ 클라이언트 |
 | `behaviortree_cpp` | BehaviorTree.CPP v4 (`ros-jazzy-behaviortree-cpp`) |
 | `std_msgs`, `std_srvs`, `geometry_msgs` | ROS2 표준 메시지 및 서비스 |
-| `rtc_msgs` | 커스텀 메시지 (GuiPosition, GraspState, RobotTarget, ToFSnapshot) |
+| `rtc_msgs` | 커스텀 메시지 (GraspState, WbcState, RobotTarget, ToFSnapshot) |
 | `shape_estimation_msgs` | ShapeEstimate 메시지 (shape_inspect 트리용) |
 | `Eigen3` | 쿼터니언 ↔ RPY 변환 (ComputeOffsetPose quat 모드) |
 | `ament_index_cpp` | 패키지 share 디렉토리 탐색 |
@@ -23,7 +23,7 @@ BehaviorTree 기반 UR5e + Hand 비실시간 태스크 코디네이터.
 
 BT coordinator를 실행하기 전에 다음 노드들이 먼저 실행되어 있어야 한다:
 
-1. **UR5e RT Controller** — `/<active_ctrl>/{ur5e,hand}/gui_position`, `/<active_ctrl>/hand/grasp_state`, `/rtc_cm/active_controller_name`, `/<active_ctrl>/tof/snapshot` 토픽 발행
+1. **UR5e RT Controller** — `/rtc_cm/{<arm_group>,<hand_group>}/joint_states` (fixed path), `base → tool0_actual` tf2 transform, `/<active_ctrl>/hand/{grasp_state,wbc_state}`, `/rtc_cm/active_controller_name`, `/<active_ctrl>/tof/snapshot` 토픽 발행
 2. **Vision Node** (선택) — `/world_target_info` 토픽 발행 (물체 감지 사용 시)
 3. **Shape Estimation Node** (선택) — `/shape/estimate` 토픽 발행, `/shape/trigger` 수신, `/shape/clear` 서비스 (shape_inspect 트리용)
 4. **E-STOP Node** (선택) — `/system/estop_status` 토픽 발행
