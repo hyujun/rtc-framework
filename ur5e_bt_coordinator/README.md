@@ -20,18 +20,17 @@ E-STOP이 활성화되면 트리 tick이 자동으로 일시 정지된다.
 ```
 bt_coordinator (non-RT, 80 Hz)
   │
-  │ publish                          subscribe
-  ├─ /ur5e/joint_goal ──────────►  RtControllerNode (500 Hz RT)
-  ├─ /hand/joint_goal ──────────►    └─ DemoTaskController
-  ├─ /ur5e/gains                       └─ DemoJointController
-  ├─ /ur5e/select_controller
-  │
+  │ publish                              subscribe
+  ├─ <ns>/<arm_group>/joint_goal ──►  RtControllerNode (500 Hz RT)
+  ├─ <ns>/<hand_group>/joint_goal ─►    └─ DemoTaskController
+  │                                      └─ DemoJointController
   │ subscribe
-  ├─ /ur5e/gui_position  ◄──────  RtControllerNode
-  ├─ /hand/gui_position  ◄──────  RtControllerNode
-  ├─ /<ctrl>/hand/grasp_state ◄─  Force-PI grasp 컨트롤러 (500Hz)
-  ├─ /<ctrl>/hand/wbc_state   ◄─  WBC 컨트롤러 (500Hz, TSID FSM phase + 진단)
-  ├─ /vision/object_pose ◄──────  Vision 노드 (외부)
+  ├─ /rtc_cm/<arm_group>/joint_states  ◄──  RtControllerNode (fixed path, sensor_msgs/JointState)
+  ├─ /rtc_cm/<hand_group>/joint_states ◄──  RtControllerNode (fixed path, sensor_msgs/JointState)
+  ├─ base → tool0_actual (tf2 lookup)  ◄──  TCP pose (controller publishes transforms)
+  ├─ <ns>/<hand_group>/grasp_state ◄─  Force-PI grasp 컨트롤러 (500Hz)
+  ├─ <ns>/<hand_group>/wbc_state   ◄─  WBC 컨트롤러 (500Hz, TSID FSM phase + 진단)
+  ├─ /world_target_info ◄───────────  Vision 노드 (외부)
   ├─ /rtc_cm/active_controller_name
   └─ /system/estop_status
 ```
@@ -64,14 +63,19 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 
 | Topic | 메시지 타입 | QoS | 설명 |
 |-------|------------|-----|------|
-| `<ns>/ur5e/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | TCP 포즈 + 관절 위치 (controller-owned) |
-| `<ns>/hand/gui_position` | `rtc_msgs/GuiPosition` | RELIABLE, depth 10 | Hand 관절 위치 (controller-owned) |
+| `/rtc_cm/<arm_group>/joint_states` | `sensor_msgs/JointState` | depth 10 | Arm 관절 위치 (fixed path, active controller 와 무관 — controller-agnostic) |
+| `/rtc_cm/<hand_group>/joint_states` | `sensor_msgs/JointState` | depth 10 | Hand 관절 위치 (fixed path, controller-agnostic) |
 | `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
 | `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
-| `/vision/object_pose` | `geometry_msgs/PoseStamped` | RELIABLE, depth 10 | 물체 위치 (쿼터니언 → RPY 변환) |
+| `/world_target_info` | `geometry_msgs/Polygon` | depth 10 | 비전 물체 위치 (`points[0]` = x,y,z; orientation 없음 — roll/pitch/yaw는 0으로 채움) |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
 | `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 10 | E-STOP 상태 |
+
+### TF
+
+TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer`/`TransformListener` lookup으로 얻는다:
+`base` → `tool0_actual` (active controller가 발행하는 transforms 토픽을 자동 수집).
 
 ## BT 트리
 
@@ -103,6 +107,8 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `ComputeOffsetPose` | SyncAction | Pose에 XYZ offset 적용 (approach, lift, retreat 계산) | `input_pose`, `offset_x`(0.0), `offset_y`(0.0), `offset_z`(0.0) → 출력: `output_pose` |
 | `SetPoseZ` | SyncAction | Pose의 Z좌표를 절대값으로 덮어씀 (X, Y, 방향 유지). `z`가 NaN(기본값)이면 pass-through. Object final goal의 Z를 고정하는 용도 | `input_pose`, `z`(NaN) → 출력: `output_pose` |
 | `ComputeSweepTrajectory` | SyncAction | Arc sweep 경로 waypoint 생성 (towel unfold용, sinusoidal arc 프로파일) | `start_pose`, `direction_x`(1.0), `direction_y`(0.0), `distance`(0.3), `arc_height`(0.05), `num_waypoints`(8) → 출력: `waypoints` |
+| `ComputeTiltSequence` | SyncAction | Roll/pitch를 번갈아 오실레이션하는 tilt-scan waypoint 시퀀스 생성 (position 고정, ExplorationMotionGenerator tilt phase 모사) | `base_pose`, `amplitude_deg`(15.0), `num_steps`(6) → 출력: `waypoints` |
+| `GetCurrentPose` | SyncAction | ROS bridge에서 현재 TCP pose를 읽어 Blackboard에 기록 (sweep/tilt 시퀀스 시작점 캡처용) | 출력: `pose` |
 | `WaitDuration` | StatefulAction | 지정 시간 대기 | `duration_s`(0.5) |
 | `MoveFinger` | StatefulAction | 특정 손가락을 명명된 포즈로 이동 (trajectory duration 추정 기반 완료, partial hand update) | `finger_name`, `pose`, `hand_trajectory_speed`(1.0) |
 | `FlexExtendFinger` | StatefulAction | 손가락 flex→extend 1 cycle (2-phase, phase별 trajectory duration 추정) | `finger_name`, `hand_trajectory_speed`(1.0) |
@@ -111,6 +117,9 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 완료) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0) |
 | `TriggerShapeEstimation` | SyncAction | Shape estimation 시작/정지 제어 (서비스 호출) | `action`(start/stop) |
 | `WaitShapeResult` | StatefulAction | Shape estimation 결과 대기 (confidence 임계값 도달까지) | `min_confidence`(0.8), `timeout_s`(10.0) |
+| `StartToFCollection` | SyncAction | `<ns>/tof/snapshot` 메시지 버퍼링 시작 (기존 데이터 초기화) | — |
+| `StopToFCollection` | SyncAction | ToF 버퍼링 중지, 수집된 스냅샷 수 반환 | 출력: `count` |
+| `ProcessSearchData` | SyncAction | 수집된 ToF 데이터로부터 목표 pose 계산 (현재 processing 로직 미구현 — 현재 TCP pose를 그대로 반환하는 stub) | 출력: `output_pose` |
 
 ### Condition 노드
 
@@ -129,7 +138,7 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
-| `tree_file` | `"hand_motions.xml"` | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
+| `tree_file` | `"pick_and_place.xml"` (코드 기본값), `"pick_and_place_force_pi.xml"` (배포 `config/bt_coordinator.yaml`이 덮어씀) | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
 | `arm_group` | `"ur5e"` | Arm device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<arm_group>/joint_states`, `<ns>/<arm_group>/joint_goal`). 빈 문자열이면 `on_configure` FAILURE (`//` 잘못된 토픽 방지) |
 | `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b`. 빈 문자열이면 `on_configure` FAILURE |
 | `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT. `<= 0`이면 `on_configure` FAILURE |
@@ -275,18 +284,39 @@ YAML의 `bb.<key>` 형식으로 선언하면 트리 로드 후 Blackboard에 자
 - `bb.place_pose`: 물체를 놓을 목표 pose (형식: `"x;y;z;roll;pitch;yaw"`)
 - `bb.object_final_z` (double, 기본 `.nan`): Phase 5 (`SlowDescend`)에서 object
   final goal의 Z를 이 절대값으로 덮어씀. `.nan`이면 비전 감지 Z를 그대로 사용
-  (pass-through). 테이블 표면이 알려진 경우 ��, 고정 Z로 최종 접근하고 싶을 때
+  (pass-through). 테이블 표면이 알려진 경우처럼, 고정 Z로 최종 접근하고 싶을 때
   실제 값(예: `0.085`)을 지정. `SetPoseZ` 노드가 `SlowDescend` 내부에서 Z만
-  교체하며 X, Y, 방향은 감지된 object pose를 그��로 유지한다. Phase 4
+  교체하며 X, Y, 방향은 감지된 object pose를 그대로 유지한다. Phase 4
   (ApproachFromAbove)와 Phase 7 (LiftAndVerify)는 원본 `{object_pose}` 기준으로
   동작하므로 영향이 없다.
+- `bb.grasp_target_force_N` (기본 `1.5`): 주 검출 / Force-PI 목표력 [N] (contact_stop, force_pi 공유)
+- `bb.grasp_verify_force_N` (기본 `0.8`): 닫힘 후 / 리프트 후 검증 floor [N]
+- `bb.grasp_sustained_ms` (기본 `200`): `IsForceAbove` sustained 윈도우 [ms]
+- `bb.grasp_min_fingertips` (기본 `2`): 최소 접촉 손가락 수
+- `bb.grasp_abort_retreat_z` (기본 `0.05`): 실패 시 EmergencyAbort 후퇴 거리 [m] (`0`=skip)
+- `bb.grasp_in_transit_min_N` (기본 `0.5`): transport/lower 가드 임계 [N] (verify 보다 느슨)
+- `bb.grasp_max_attempts` (기본 `2`): ForcePIGrasp retry 횟수 (`1`=비활성화, force_pi only)
+- `bb.grasp_retry_settle_s` (기본 `0.3`): retry release 후 sensor settling [s]
+- `bb.tcp_rpy_offset_r_deg` / `bb.tcp_rpy_offset_p_deg` / `bb.tcp_rpy_offset_y_deg` (기본 `0.0`):
+  task controller 전환 직후 현재 pose 기준 roll/pitch/yaw offset [deg]
+- `bb.tcp_rotation_mode` (기본 `"add"`): offset 적용 방식 — `"add"` (단순 산술합),
+  `"quat_body"` (TCP 프레임 회전, intrinsic), `"quat_world"` (World 프레임 회전, extrinsic)
 
 **Pose-based grasp (`pick_and_place.xml` 전용):**
 - `bb.hand_close_pose` (string, 기본 `"hand_close_medium"`): grip 강도별 hand 포즈 이름.
   `"hand_close_soft"`, `"hand_close_medium"`, `"hand_close_hard"` 중 선택.
   Launch arg `grip:=soft/medium/hard`로 설정 가능. 향후 vision topic 기반
-  `ResolveGripFromVision` 노���가 blackboard에서 덮어쓸 수 있도록 설계됨.
+  `ResolveGripFromVision` 노드가 blackboard에서 덮어쓸 수 있도록 설계됨.
 - `bb.hand_close_settle_s` (double, 기본 `0.5`): hand close 후 안정 대기 시간 [s]
+
+**Shape Inspect 공용 (`shape_inspect.xml` / `shape_inspect_simple.xml`):**
+- `bb.inspect_offset_x`, `bb.inspect_offset_y` (기본 `0.0`): object_pose 기준 inspect 위치 x/y 오프셋 [m]
+- `bb.inspect_approach_z` (기본 `0.15`): inspect_pose 위 접근/후퇴 클리어런스 [m]
+
+**Shape Inspect Simple (`shape_inspect_simple.xml` 전용):**
+- `bb.inspect_constant_z` (기본 `0.06`): inspect 위치 고정 Z [m] (비전 Z 노이즈 회피용, `object_pose.z` 대체)
+- `bb.search_offset_x` (기본 `-0.1`): -x 방향 search 이동 거리 [m]
+- `bb.search_speed` (기본 `0.02`): search 시 trajectory speed [m/s]
 
 **Towel Unfold (`towel_unfold.xml`):**
 - `bb.sweep_direction_x`, `bb.sweep_direction_y`: sweep 방향 벡터
@@ -409,12 +439,16 @@ Read-only 파라미터 (`max_traj_velocity` / `max_traj_angular_velocity` / `han
 | 패키지 | 용도 |
 |--------|------|
 | `rclcpp` | ROS2 C++ 클라이언트 |
+| `rclcpp_lifecycle` | `BtCoordinatorNode` (LifecycleNode) |
 | `behaviortree_cpp` | BehaviorTree.CPP v4 (`ros-jazzy-behaviortree-cpp`) |
 | `std_msgs` | Float64MultiArray, String, Bool |
 | `std_srvs` | Trigger (step 모드 서비스) |
-| `geometry_msgs` | PoseStamped (vision 인터페이스) |
-| `rtc_msgs` | GuiPosition, GraspState, RobotTarget |
-| `tf2` | 쿼터니언 → RPY 변환 |
+| `geometry_msgs` | Polygon (vision 인터페이스), Pose6D 변환 |
+| `rtc_msgs` | GraspState, WbcState, RobotTarget, ToFSnapshot |
+| `shape_estimation_msgs` | ShapeEstimate, ExploreShape (shape estimation 노드군) |
+| `sensor_msgs` | JointState (`/rtc_cm/<group>/joint_states`) |
+| `tf2` / `tf2_ros` | TCP 포즈 lookup (base → tool0_actual), 쿼터니언 → RPY 변환 |
+| `eigen` | 선형대수 |
 | `ament_index_cpp` | 패키지 share 디렉토리 탐색 (빌드 의존성) |
 
 ## 빌드
@@ -536,15 +570,21 @@ ur5e_bt_coordinator/
 │   ├── bt_ros_bridge.hpp            # ROS topic ↔ BT bridge 헤더
 │   ├── bt_coordinator_node.hpp      # 메인 노드 헤더
 │   ├── hand_pose_config.hpp         # Hand/UR5e 포즈 lookup map, 손가락-관절 인덱스 매핑
-│   ├── action_nodes/                # 14개 action 노드 헤더
-│   └── condition_nodes/             # 3개 condition 노드 헤더
+│   ├── bt_node_registration.hpp     # BT 노드 factory 등록 헤더 (capability 기반)
+│   ├── action_nodes/                # Action 노드 헤더 (§BT 노드 참조)
+│   └── condition_nodes/             # Condition 노드 헤더 (§BT 노드 참조)
 └── src/
     ├── main.cpp                     # 진입점
     ├── bt_coordinator_node.cpp      # 노드 초기화, BT tick 루프, 런타임 트리 전환
     ├── bt_ros_bridge.cpp            # Topic 구독/발행, 포즈 라이브러리, 토픽 헬스 모니터링
+    ├── bt_node_registration.cpp     # BT 노드 factory 등록 (capability 기반, §BT 노드 참조)
     ├── validate_tree.cpp            # 오프라인 트리 XML 검증 도구
-    └── nodes/                       # 17개 노드 구현체
+    └── nodes/                       # 노드 구현체 (§BT 노드 참조)
 ```
+
+노드/헤더 개수는 `include/ur5e_bt_coordinator/{action_nodes,condition_nodes}/` 및
+`src/nodes/`를 직접 확인하거나 위 [BT 노드](#bt-노드) 절 표를 참조 (등록된 노드 목록의
+단일 출처는 [src/bt_node_registration.cpp](src/bt_node_registration.cpp)).
 
 ---
 

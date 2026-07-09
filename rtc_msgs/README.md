@@ -6,13 +6,14 @@
 
 ## 개요
 
-RTC 프레임워크를 위한 **커스텀 ROS2 메시지 정의** 패키지입니다. 로봇 암 관절 커맨드, 핑거팁 센서 데이터 (원시/필터링), 추론 결과 (힘/변위/접촉), 파지 상태 판정, ToF 스냅샷, GUI 표시, 디바이스 상태/센서 로깅을 위한 메시지 타입을 정의합니다.
+RTC 프레임워크를 위한 **커스텀 ROS2 메시지 + 서비스 정의** 패키지입니다. 로봇 암 관절 커맨드, 핑거팁 센서 데이터 (원시/필터링), 추론 결과 (힘/변위/접촉), 파지 상태 판정, 컨트롤러 lifecycle 조회/전환, ToF 스냅샷, 디바이스 상태/센서 로깅을 위한 메시지·서비스 타입을 정의합니다.
 
 **핵심 특징:**
 - 로봇 비의존적(robot-agnostic) 메시지 설계
 - 관절/태스크 공간 목표 지원 (JointCommand, RobotTarget)
 - 핑거팁 센서: 원시(raw) + 필터링(filtered) 데이터 + ONNX 추론 출력 통합
-- 파지 상태: 컨트롤러 주기 (RT 정기 tick @ `control_rate`, default 500 Hz) 에서 계산된 접촉/힘/파지 판정 (GraspState)
+- 파지 상태: 컨트롤러 주기 (RT 정기 tick @ `control_rate`, default 500 Hz) 에서 계산된 접촉/힘/파지 판정 (Force-PI: GraspState, TSID-based WBC: WbcState)
+- 컨트롤러 관리: lifecycle 상태 조회(ListControllers) + activate/deactivate(SwitchController), `/rtc_cm/*` API
 - CSV 로깅 전용 메시지: 상태/커맨드/궤적 통합 (DeviceStateLog, DeviceSensorLog)
 - C++ 및 Python 바인딩 자동 생성 (rosidl)
 
@@ -26,11 +27,13 @@ rtc_msgs/
 ├── package.xml
 ├── README.md
 ├── msg/
-│   ├── JointCommand.msg       <- 로봇 암 관절 커맨드 (position/torque)
+│   ├── JointCommand.msg       <- 로봇 암 관절 커맨드 (position/torque/pd_feedforward)
 │   ├── FingertipSensor.msg    <- 단일 핑거팁 센서 + 추론 결과
 │   ├── HandSensorState.msg    <- 전체 핸드 센서 상태 (핑거팁 집계)
 │   ├── GraspState.msg         <- 파지 상태 판정 (접촉/힘/grasp 감지)
+│   ├── WbcState.msg           <- TSID 기반 WBC 컨트롤러 파지 상태 (GraspState의 WBC 대응)
 │   ├── RobotTarget.msg        <- 관절/태스크 공간 목표
+│   ├── ControllerState.msg    <- 컨트롤러 lifecycle 상태 스냅샷 (list_controllers 응답용)
 │   ├── DeviceStateLog.msg     <- 디바이스 상태 종합 로그
 │   ├── DeviceSensorLog.msg    <- 디바이스 센서 로그
 │   ├── SimSensor.msg          <- MuJoCo 단일 센서 출력 (로봇 비의존적)
@@ -39,7 +42,9 @@ rtc_msgs/
 │   ├── CalibrationCommand.msg <- 센서 캘리브레이션 명령 (확장 가능 enum)
 │   └── CalibrationStatus.msg  <- 센서 캘리브레이션 진행/완료 상태
 └── srv/
-    └── GraspCommand.srv       <- Force-PI 그래스프 one-shot 이벤트 (start/release)
+    ├── GraspCommand.srv       <- Force-PI 그래스프 one-shot 이벤트 (start/release)
+    ├── ListControllers.srv    <- 등록된 컨트롤러 lifecycle 상태 조회 (/rtc_cm/list_controllers)
+    └── SwitchController.srv   <- 컨트롤러 activate/deactivate 요청 (/rtc_cm/switch_controller)
 ```
 
 ---
@@ -53,7 +58,6 @@ rtc_msgs/
 | `builtin_interfaces` | `Time` 타입 (ToFSnapshot 타임스탬프) |
 | `ament_cmake` | 빌드 시스템 |
 | `rosidl_default_generators` | 메시지 C++/Python 코드 생성 |
-| `ament_cmake_cppcheck` / `ament_cmake_lint_cmake` / `ament_cmake_xmllint` | 테스트 의존성 (개별 lint — `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 `bdedac7` 으로 사용 금지, 자세한 사유는 [agent_docs/conventions.md](../agent_docs/conventions.md)) |
 
 ---
 
@@ -61,16 +65,21 @@ rtc_msgs/
 
 ### `JointCommand.msg`
 
-로봇 암 관절 커맨드 메시지 -- position 또는 torque 모드를 지원합니다.
+로봇 암 관절 커맨드 메시지 -- position, torque, pd_feedforward 모드를 지원합니다.
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
 | `joint_names` | `string[]` | 관절 이름 배열 (비어있으면 기본 순서 fallback) |
-| `values` | `float64[]` | 커맨드 값 배열 (라디안 또는 N*m) |
-| `command_type` | `string` | `"position"` 또는 `"torque"` |
+| `values` | `float64[]` | 커맨드 값 배열 -- position(rad) \| torque(Nm) \| pd_feedforward: PD position target(rad) |
+| `command_type` | `string` | `"position"` \| `"torque"` \| `"pd_feedforward"` |
+| `feedforward` | `float64[]` | `pd_feedforward` 전용 -- per-joint feedforward 토크 (Nm, gravity 포함). 다른 모드에선 무시. 비면 0 |
+| `kp` | `float64[]` | `pd_feedforward` 전용 -- PD 위치 게인 (>= 0). sticky (비면 현재 게인 유지) |
+| `kd` | `float64[]` | `pd_feedforward` 전용 -- PD 속도 게인 (>= 0). sticky (비면 현재 게인 유지) |
 
 - `joint_names`와 `values`는 1:1 대응 관계입니다.
+- `command_type == "pd_feedforward"`: PD position-servo backbone(`values`) + per-joint feedforward 토크(`feedforward[]`) 오버레이. `rtc::CommandType::kPdFeedforward`로 컨트롤러 스택이 발행 가능하지만, `mujoco_sim`만 feedforward를 `qfrc_applied`로 주입하고 실 하드웨어(`udp_hand_driver` 등 position-only)는 feedforward를 무시한다.
+- `kp`/`kd`는 all-or-nothing: 둘 중 하나만 채우거나 그룹 조인트 전체를 덮지 못하면 무시된다.
 
 ---
 
@@ -139,6 +148,31 @@ rtc_msgs/
 
 ---
 
+### `WbcState.msg`
+
+TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 파지 상태 메시지입니다. `GraspState`의 역할을 WBC 컨트롤러용으로 대응하되, 필드 구성은 WBC의 TSID 기반 파지 알고리즘을 반영합니다 (phase enum이 WBC FSM, force/contact는 raw 핑거팁 센서 파싱에서 옴; Force-PI 전용 필드인 `finger_s`/`finger_filtered_force`/`finger_force_error`는 없음). BT coordinator는 활성 컨트롤러 이름에 따라 `grasp_state` 또는 `wbc_state`를 구독합니다.
+
+| 카테고리 | 필드 | 타입 | 설명 |
+|---------|------|------|------|
+| **헤더** | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
+| **phase** | `phase` | `uint8` | `PHASE_IDLE=0` / `PHASE_APPROACH=1` / `PHASE_PRE_GRASP=2` / `PHASE_CLOSURE=3` / `PHASE_HOLD=4` / `PHASE_RETREAT=5` (deprecated, 더 이상 publish 안 됨 — ABI 호환용 예약) / `PHASE_RELEASE=6` / `PHASE_FALLBACK=7` |
+| **핑거팁별** | `fingertip_names` | `string[]` | 핑거팁 이름 배열 (크기 = num_fingertips, 보통 4) |
+| | `force_magnitude` | `float32[]` | 핑거팁별 힘 크기 \|F\| [N] |
+| | `contact_flag` | `float32[]` | 접촉 판정 -- backend capability (`has_native_contact`)에 따라 native sigmoid 확률([0,1]) 또는 controller-derived binary(1.0/0.0). 두 경우 모두 `> 0.5f`가 in-contact 판정 |
+| | `displacement` | `float32[]` | 핑거팁 변위 [m] -- native 지원 시에만 값 존재, 그 외 0 |
+| **집계** | `num_active_contacts` | `int32` | 활성 접촉 핑거팁 수 |
+| | `max_force` | `float32` | 전체 핑거팁 중 최대 힘 크기 [N] |
+| | `grasp_target_force` | `float32` | 현재 목표 힘 [N] (gain에서 유래) |
+| | `grasp_detected` | `bool` | 파지 감지 여부 (`num_active_contacts >= min_fingertips`) |
+| | `min_fingertips` | `int32` | 파지 판정 최소 핑거팁 수 |
+| **TSID 진단** | `tsid_solve_us` | `float32` | 마지막 solver 계산 시간 [us] (informational) |
+| | `tsid_solver_ok` | `bool` | 마지막 QP 수렴 여부 |
+| | `qp_fail_count` | `int32` | 활성화 이후 누적 QP 실패 횟수 |
+
+- Per-controller 토픽: `/<config_key>/hand/wbc_state` (500 Hz 컨트롤러, ~50 Hz publish thread).
+
+---
+
 ### `RobotTarget.msg`
 
 관절 공간 또는 태스크 공간의 목표 위치입니다.
@@ -152,6 +186,20 @@ rtc_msgs/
 | `task_target` | `float64[6]` | 태스크 공간 목표 [x, y, z, roll, pitch, yaw] |
 
 - `joint_names`와 `joint_target`은 1:1 대응, `task_target`은 항상 6개 고정값입니다.
+
+---
+
+### `ControllerState.msg`
+
+`/rtc_cm/list_controllers` 가 반환하는, 단일 컨트롤러의 메타데이터 + lifecycle 상태 스냅샷입니다. ros2_control의 `ControllerState` 의미를 따르되 RTC가 실제로 추적하는 필드만 남겼습니다 (chaining/동적 로드 없음).
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `name` | `string` | `RTC_REGISTER_CONTROLLER`로 등록된 컨트롤러 인스턴스 이름 (`RTControllerInterface::Name()`) |
+| `state` | `string` | lifecycle 상태 -- `"unconfigured"` (on_configure 이전) \| `"inactive"` (configure 완료, 비활성) \| `"active"` (RT 루프가 디스패치 중) \| `"finalized"` (on_cleanup 완료) |
+| `type` | `string` | 컨트롤러 타입 -- `RTC_REGISTER_CONTROLLER`의 registry plugin 이름 키 |
+| `is_active` | `bool` | `state == "active"`와 동일한 정보의 편의 플래그 |
+| `claimed_groups` | `string[]` | 이 컨트롤러가 인지하는 디바이스 토픽 그룹 이름 (`controller_topic_configs_[i].groups` 키, ownership 무관). 진단용 -- 독점 소유를 의미하지 않음 |
 
 ---
 
@@ -281,8 +329,7 @@ publish (QoS: RELIABLE + TRANSIENT_LOCAL + depth 1, late-join 구독자가 최�
 ### `GraspCommand.srv`
 
 Force-PI 그래스프의 **one-shot 이벤트** 채널입니다. State가 아닌 transition이라
-ROS 2 parameter로 표현하기에 부적절하므로 별도 srv로 분리되어 있습니다 (Phase A
-migration, 2026-04-26).
+ROS 2 parameter로 표현하기에 부적절하므로 별도 srv로 분리되어 있습니다.
 
 **Request:**
 
@@ -315,6 +362,45 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ---
 
+### `ListControllers.srv`
+
+`/rtc_cm/list_controllers` -- `rtc_controller_manager`에 등록된 모든 컨트롤러의 lifecycle 상태를 조회합니다.
+
+**Request:** 없음 (empty).
+
+**Response:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `controllers` | `rtc_msgs/ControllerState[]` | 로드된 컨트롤러마다 1개씩 |
+
+---
+
+### `SwitchController.srv`
+
+`/rtc_cm/switch_controller` -- 컨트롤러 activate/deactivate를 요청합니다. Single-active 모델(D-A1)이므로 `activate_controllers`/`deactivate_controllers` 각각 최대 1개 항목만 허용됩니다.
+
+**Request:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `activate_controllers` | `string[]` | 활성화할 컨트롤러 이름 (≤ 1개) |
+| `deactivate_controllers` | `string[]` | 비활성화할 컨트롤러 이름 (≤ 1개) |
+| `strictness` | `int32` | `STRICT=1` (위반 시 무조건 `ok=false`) \| `BEST_EFFORT=2` (첫 유효 항목만 적용, 나머지는 warn) |
+| `timeout` | `builtin_interfaces/Duration` | RT 루프의 swap 커밋을 기다릴 최대 시간 (0 = 무제한, 기본 호출자는 1.0s 권장) |
+
+**Response:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `ok` | `bool` | 선택된 strictness 하에서 전환이 커밋됐는지 여부 |
+| `message` | `string` | 사람-읽기용 결과 ("switched <prev> -> <next>", "no-op (already active)", 실패 사유) |
+
+- 응답은 동기(sync)입니다 -- `ok=true`가 반환되기 전에 새 활성 컨트롤러가 RT 루프에 반영되고 `/<robot_ns>/active_controller_name` (latched) 이 publish됩니다.
+- E-STOP 활성 시 모든 호출이 `ok=false, message="E-STOP active"`.
+
+---
+
 ## 빌드
 
 ```bash
@@ -332,19 +418,27 @@ source install/setup.bash
 ```
 커맨드 (로봇으로 송신)                센서 상태 (하드웨어에서 수신)
 └── JointCommand                    └── HandSensorState
-    (float64, position/torque)          └── FingertipSensor[]
+    (position/torque/pd_feedforward)    └── FingertipSensor[]
                                             ├── barometer[8] + tof[3] (filtered)
                                             ├── barometer_raw[8] + tof_raw[3] (raw)
                                             └── f[3] + u[3] + contact_flag (추론)
 
 파지 판정 (컨트롤러에서 계산)        목표
-└── GraspState                      └── RobotTarget
-    ├── 핑거팁별: force/contact/valid    (관절/태스크 공간 목표)
-    └── 집계: grasp_detected/max_force
+├── GraspState (Force-PI)           └── RobotTarget
+│   ├── 핑거팁별: force/contact/valid    (관절/태스크 공간 목표)
+│   └── 집계: grasp_detected/max_force
+└── WbcState (TSID-based WBC)
+    ├── phase: WBC FSM (PHASE_*)
+    ├── 핑거팁별: force/contact/displacement
+    └── TSID 진단: tsid_solve_us/tsid_solver_ok/qp_fail_count
 
 (GUI/외부 도구는 sensor_msgs/JointState `/rtc_cm/<group>/joint_states` +
- tf2_msgs/TFMessage `<config_key>/transforms` 표준 토픽으로 위치 정보를 받음.
- 이전 GuiPosition 메시지는 Phase 4에서 폐기.)
+ tf2_msgs/TFMessage `<config_key>/transforms` 표준 토픽으로 위치 정보를 받음.)
+
+컨트롤러 관리 (서비스)
+├── ControllerState                 (list_controllers 응답 요소: name/state/type/is_active)
+├── ListControllers.srv             /rtc_cm/list_controllers  → ControllerState[]
+└── SwitchController.srv            /rtc_cm/switch_controller → activate/deactivate
 
 로깅 (CSV 세션 기록)                ToF 스냅샷 (형상 추정용)
 ├── DeviceStateLog                  └── ToFSnapshot

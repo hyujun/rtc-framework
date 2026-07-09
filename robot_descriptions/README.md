@@ -86,11 +86,13 @@ robot_descriptions/
     │       └── ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 결합 xacro
     │
     ├── iiwa7/                             # KUKA iiwa7 7-DoF arm
+    │   ├── mjcf/                          # iiwa7.xml + scene.xml
     │   ├── urdf/
     │   │   └── iiwa7.urdf                 # OBJ mesh 참조
     │   └── meshes/{visual,collision}/
     │
     ├── leap_hand/                         # LEAP Hand 16-DoF
+    │   ├── mjcf/                          # leap_hand_{left,right}.xml + scene_{left,right}.xml
     │   ├── urdf/
     │   │   └── leap_hand_{left,right}.urdf
     │   └── meshes/{visual,collision}/
@@ -101,52 +103,58 @@ robot_descriptions/
     │   │   └── iiwa7_with_leap_right.urdf.xacro   # iiwa7 + leap_hand_right
     │   ├── mjcf/                                  # urdf_to_mjcf 변환 산출
     │   │   ├── iiwa7_with_leap_{left,right}.xml   # 로봇 본체 MJCF
-    │   │   └── scene_{left,right}.xml             # 씬 (floor + light + skybox)
+    │   │   └── scene_{left,right}.xml             # 씬 (floor + light + skybox, right 는 scene_right(_with_object).xml 2종)
     │   └── meshes/{visual,collision}/             # iiwa7/leap_hand mesh hardlink
     │
-    └── schunk_hand/                       # Schunk SVH 5-finger hand
-        ├── urdf/
-        │   └── schunk_svh_hand_{left,right}.urdf
-        └── meshes/{visual,collision}/
+    ├── schunk_hand/                       # Schunk SVH 5-finger hand (mjcf 없음)
+    │   ├── urdf/
+    │   │   └── schunk_svh_hand_{left,right}.urdf
+    │   └── meshes/{visual,collision}/
+    │
+    └── panda/                             # Franka Panda 7-DoF (kinematics-only test fixture)
+        └── urdf/
+            └── panda.urdf                 # meshes 없음 — pinocchio::buildModel 전용
 ```
 
 **Mesh 참조 규약**: 새로 입주하는 robot의 URDF는 mesh를 `package://robot_descriptions/robots/<name>/meshes/...` 절대 URL로 참조한다 (URDF가 어느 디렉토리로 옮겨져도 깨지지 않음). `ur5e/`는 ROS 표준 dependency 호환을 위해 ament share 경로 기반의 기존 패턴을 유지한다.
 
 ---
 
-## 4. MJCF 모델 (MuJoCo)
+## 4. 자산 레이아웃 패턴
 
-3개 디렉토리에 총 5개의 MJCF XML 파일이 있습니다.
+각 `robots/<name>/` 서브디렉토리는 그 로봇에 실제로 필요한 자산만 보유합니다 — 모든 로봇이 URDF+MJCF+mesh 3종을 다 갖추는 것은 아닙니다 (예: `panda`는 kinematics-only URDF만, `assm_v1`/`ur5e_assm_v1`은 primitive geometry만이라 mesh 없음).
 
-| 파일 | 경로 | 설명 |
-|------|------|------|
-| `ur5e.xml` | `robots/ur5e/mjcf/` | UR5e 로봇 단독 모델. capsule collision geometry, position actuator (PD 제어), OBJ 메시 시각화. `implicitfast` 적분기 사용. |
-| `scene.xml` | `robots/ur5e/mjcf/` | 시뮬레이션 진입점. `ur5e.xml`을 include하고 지면(checker 평면), 조명, 스카이박스를 추가한 씬 파일. |
-| `hand.xml` | `robots/assm_v1/mjcf/` | 10-DOF 커스텀 핸드 단독 모델. cylinder geometry 기반 간소화 형상. 4개 손가락(thumb, index, middle, ring) 포함. |
-| `ur5e_with_hand.xml` | `robots/ur5e_assm_v1/mjcf/` | UR5e 로봇과 커스텀 핸드를 하나의 모델로 통합. wrist3 말단에 핸드가 부착됨. |
-| `scene_with_hand.xml` | `robots/ur5e_assm_v1/mjcf/` | 시뮬레이션 진입점. `ur5e_with_hand.xml`을 include하고 지면, 조명, 스카이박스를 추가한 씬 파일. |
+| 로봇 | `urdf/` | `mjcf/` | `meshes/` |
+|------|:---:|:---:|:---:|
+| `ur5e` | O | O | O |
+| `assm_v1` | O (xacro) | O | - |
+| `ur5e_assm_v1` | O (xacro) | O | - |
+| `iiwa7` | O | O | O |
+| `leap_hand` | O | O | O |
+| `iiwa7_leap` | O (xacro) | O | O (iiwa7 + leap_hand mesh hardlink) |
+| `schunk_hand` | O | - | O |
+| `panda` | O (kinematics-only) | - | - |
 
-### MJCF 액추에이터 설정
+새 robot/파일 추가·삭제 시 이 표가 바로 stale 해지므로, 정확한 목록은 항상 직접 조회합니다:
+
+```bash
+find robot_descriptions/robots \( -iname "*.urdf" -o -iname "*.urdf.xacro" \)   # URDF
+find robot_descriptions/robots -iname "*.xml"                                    # MJCF
+```
+
+**Mesh 참조 규약**: 새로 입주하는 robot의 URDF는 mesh를 `package://robot_descriptions/robots/<name>/meshes/...` 절대 URL로 참조합니다 (URDF가 어느 디렉토리로 옮겨져도 깨지지 않음). `ur5e/`는 ROS 표준 dependency 호환을 위해 ament share 경로 기반의 기존 패턴을 유지합니다.
+
+---
+
+## 5. 예시: UR5e / assm_v1 상세 사양
+
+아래는 첫 입주자인 UR5e + assm_v1 hand 의 실측 사양입니다. **다른 로봇(iiwa7, leap_hand, iiwa7_leap, schunk_hand, panda)의 관절 사양·메시 구성·액추에이터 게인은 이 절의 수치와 다르므로, 각 URDF/MJCF 소스 또는 `ros2 run rtc_tools compare_mjcf_urdf`로 직접 확인하세요.**
+
+### MJCF 액추에이터 설정 (`robots/ur5e/mjcf/ur5e.xml`, `robots/assm_v1/mjcf/hand.xml`)
 
 - **UR5e 관절 (shoulder/elbow)**: `gainprm=2000`, `biasprm="0 -2000 -400"`, `forcerange=[-150, 150]`
 - **UR5e 관절 (wrist)**: `gainprm=500`, `biasprm="0 -500 -100"`, `forcerange=[-28, 28]`
 - **핸드 관절**: `gainprm=500`, `biasprm="0 -500 -100"`, `forcerange=[-5, 5]`
-
----
-
-## 5. URDF 모델
-
-3개 디렉토리에 총 3개의 URDF 파일이 있습니다.
-
-| 파일 | 경로 | 설명 |
-|------|------|------|
-| `ur5e.urdf` | `robots/ur5e/urdf/` | UR5e 로봇 사전 생성 URDF. UR 공식 `ur_description` 패키지의 `ur.urdf.xacro`를 `ur_type:=ur5e`로 변환하여 생성. DAE/STL 메시 참조. Pinocchio 모델 빌드의 진입점. |
-| `hand.urdf.xacro` | `robots/assm_v1/urdf/` | 10-DOF 커스텀 핸드 xacro. 기하학적 프리미티브(box, cylinder, sphere)만 사용하며 메시 파일 불필요. 4개 핑거팁 프레임 정의. |
-| `ur5e_with_hand.urdf.xacro` | `robots/ur5e_assm_v1/urdf/` | `ur5e.urdf`와 `hand.urdf.xacro`를 결합. tool0 링크에 fixed joint로 핸드를 부착. `xacro` 처리 필요. |
-
----
-
-## 6. 관절 사양
 
 ### UR5e 로봇 관절 (6 revolute)
 
@@ -185,23 +193,21 @@ robot_descriptions/
 > URDF는 UR 공식 xacro 기반, MJCF는 MuJoCo Menagerie 기반이므로 mass/inertia 값에 차이가 있습니다.
 > `ros2 run rtc_tools compare_mjcf_urdf` 명령으로 상세 비교가 가능합니다.
 
----
+### 메시 파일 (UR5e)
 
-## 7. 메시 파일
-
-### 시각화용 (visual/)
+#### 시각화용 (visual/)
 
 | 파일 | 형식 | 용도 |
 |------|------|------|
 | `base.dae` ~ `wrist3.dae` (7개) | Collada (DAE) | URDF 시각화. CAD 기반 고해상도 렌더링. |
 
-### 충돌 감지용 (collision/)
+#### 충돌 감지용 (collision/)
 
 | 파일 | 형식 | 용도 |
 |------|------|------|
 | `base.stl` ~ `wrist3.stl` (7개) | STL | URDF 충돌 감지. 단순화된 저폴리곤 형상. |
 
-### MJCF 시각화용 (assets/)
+#### MJCF 시각화용 (assets/)
 
 | 파일 | 형식 | 용도 |
 |------|------|------|
@@ -225,40 +231,16 @@ sudo apt install -y ros-humble-ur-description ros-humble-xacro
 sudo apt install -y ros-jazzy-ur-description ros-jazzy-xacro
 ```
 
+이 저장소는 `robot_descriptions/object_sim` (mesh 데이터, [vikashplus/object_sim](https://github.com/vikashplus/object_sim)) 을 git submodule 로 포함합니다. `--recursive` 없이 클론했다면 빌드 전에 `git submodule update --init --recursive` 로 채워야 일부 MuJoCo scene (예: `robots/iiwa7_leap/mjcf/scene_right_with_object.xml`) 의 mesh 로드가 성공합니다 — 상세 절차는 [루트 README "클론 (submodule 포함)"](../README.md#클론-submodule-포함) 참조.
+
 ### 빌드 명령
 
 ```bash
-cd ~/ur_ws
+cd ~/ros2_ws/rtc_ws
 colcon build --packages-select robot_descriptions --symlink-install
 ```
 
-빌드 후 `install/robot_descriptions/share/robot_descriptions/robots/` 아래에 모든 모델 파일이 설치됩니다.
-
----
-
-## 설치 경로 (빌드 후)
-
-```bash
-# ament_index로 share 경로 획득
-$(ros2 pkg prefix robot_descriptions)/share/robot_descriptions/
-
-# MJCF
-robots/ur5e/mjcf/ur5e.xml                       # 로봇 모델
-robots/ur5e/mjcf/scene.xml                      # MuJoCo 시뮬레이션 진입점 (로봇 단독)
-robots/assm_v1/mjcf/hand.xml                   # 핸드 단독 모델
-robots/ur5e_assm_v1/mjcf/ur5e_with_hand.xml    # 로봇 + 핸드 모델
-robots/ur5e_assm_v1/mjcf/scene_with_hand.xml   # MuJoCo 시뮬레이션 진입점 (로봇 + 핸드)
-
-# URDF
-robots/ur5e/urdf/ur5e.urdf                      # Pinocchio 진입점 (로봇 팔만)
-robots/assm_v1/urdf/hand.urdf.xacro            # 10-DOF 커스텀 핸드
-robots/ur5e_assm_v1/urdf/ur5e_with_hand.urdf.xacro  # 로봇 + 핸드 조합
-
-# Mesh
-robots/ur5e/meshes/visual/*.dae                 # 시각화용 (7 files)
-robots/ur5e/meshes/collision/*.stl              # 충돌용 (7 files)
-robots/ur5e/meshes/assets/*.obj                 # MJCF 시각화용 (20 files)
-```
+빌드 후 `install/robot_descriptions/share/robot_descriptions/robots/<name>/` 아래에 각 robot 의 모델 파일이 설치됩니다 (ament_index share 경로 획득: `$(ros2 pkg prefix robot_descriptions)/share/robot_descriptions/`). 정확한 설치 파일 목록은 §4 의 `find` 명령을 `install/robot_descriptions/share/robot_descriptions/robots` 에 대해 실행해 확인하세요.
 
 ---
 
@@ -299,36 +281,6 @@ robot_descriptions  <-- 독립 (MJCF/URDF/메시 제공)
     |-- rtc_controllers        (URDF 경유 FK/IK/Dynamics 계산)
     +-- integrated_bringup           (launch 파일에서 URDF 경로 설정)
 ```
-
----
-
-## 변경 내역
-
-### Unreleased
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **패키지 rename** | `ur5e_description` → `robot_descriptions`. 더 이상 robot-specific 패키지가 아니라 multi-robot data hub임을 이름이 반영. UR5e는 첫 입주자일 뿐. |
-| **서브디렉토리 rename** | `robots/hand_tmp/` → `robots/assm_v1/`, `robots/ur5e_hand_tmp/` → `robots/ur5e_assm_v1/`. `_tmp` 접미사 제거 — 이제 정식 이름. |
-| **README 톤 변경** | 1절을 robot-agnostic hub 선언으로 다시 작성. 추가 robot/hand 입주 절차(서브디렉토리 추가만으로 충분, 본 패키지 빌드 변경 없음) 명시. |
-| **신규 입주 robots** | `robots/{allegro_hand,allegro_hand_fsr,iiwa7,leap_hand,schunk_hand}/` 추가. 권장 레이아웃(`urdf/` + `meshes/{visual,collision}/`)에 맞춰 정렬, URDF 내부 mesh 참조는 모두 `package://robot_descriptions/robots/<name>/meshes/...` 절대 URL. `allegro_hand_fsr`은 형제 robot으로 분리 — 공유 mesh는 `allegro_hand/`를 cross-reference하고 FSR 전용 mesh(`tactile`, `longer_finger_tip`)만 자체 `meshes/` 보유. |
-| **신규 assembly** | `robots/iiwa7_leap/` 추가 — iiwa7 `ee_link`에 LEAP Hand(left/right) `base` 링크를 fixed joint로 부착한 URDF xacro 2종 + `rtc_tools/urdf_to_mjcf`로 변환한 MJCF 2종 + scene 2종. fixed joint orientation `rpy="0 +π/2 0"`으로 hand fingertip이 ee_link의 +Z 방향을 향하도록 회전. URDF에 `<mujoco><compiler balanceinertia="true" discardvisual="false" fusestatic="false"/></mujoco>` extension. mesh는 iiwa7 + leap_hand의 visual/collision OBJ/MTL을 `meshes/{visual,collision}/`에 hardlink로 모아 두고, MJCF는 `meshdir="../meshes"`로 두 디렉토리를 모두 보면서 iiwa7 link_0..7만 `link_N_vis` / `link_N_col` 이름으로 visual/collision을 분리 등록 (LEAP 부품은 box primitive로 collision 표현, white_tip{,_thumb}는 같은 저폴리 mesh를 visual + contact sensor에 공유). |
-| **제거된 assembly** | `robots/iiwa7_allegro/` 삭제. 작업 트리에 `robots/allegro_hand/`가 부재해 xacro include가 dangling 상태였고, 후속 작업은 LEAP Hand로 진행. |
-
-### v5.17.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **순수 데이터화** | `include/ur5e_description/ur5e_constants.hpp` 제거. `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `udp_hand_driver`, `UdpHandState` → `udp_hand_driver/udp_hand_state.hpp`. `RobotState`/`kNumHandJoints`/`kDefaultRobotJointNames`는 사용처가 없어 삭제. `rtc_base` 의존도 제거 — 이 패키지는 URDF/MJCF/mesh만 담는다. |
-| **URDF 구조** | `ur5e.urdf` 사전 생성 포함, `hand.urdf.xacro`/`ur5e_with_hand.urdf.xacro` 추가 |
-| **관절 사양** | shoulder_pan/lift 최대 속도 수정: 2.0944 -> 3.1416 rad/s (URDF 실제 값 반영) |
-| **메시 에셋** | assets 디렉토리 파일 수 명확화: 20개 OBJ 파일 |
-
-### v5.16.1
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **코드 검증** | 데이터 패키지 (URDF/MJCF/메시) -- 리소스 구조 확인 완료 |
 
 ---
 

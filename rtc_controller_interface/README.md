@@ -46,6 +46,23 @@ virtual void SetDeviceTarget(int device_idx, std::span<const double> target) noe
 | `SetDeviceTarget` | 디바이스 인덱스 및 가변 크기 목표값 설정. 구현체는 off-RT 콜백에서 호출되며, RT 스레드와의 race를 피하기 위해 SPSC 큐로 marshal한 뒤 `Compute()` 안에서 drain한다 (single-writer SeqLock invariant) |
 | `Name` | 사람이 읽을 수 있는 컨트롤러 이름 반환 |
 
+### SetDeviceTaskTarget (default-virtual, SE3 goal 전용 슬롯)
+
+```cpp
+virtual void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) noexcept {
+  SetDeviceTarget(device_idx, task6);
+}
+```
+
+`device_idx`용 6-DoF 태스크 공간(SE3) 목표 `(x, y, z, r, p, y)`를 전달합니다. 순수 가상이 아니라 **기본 구현이 `SetDeviceTarget`로 forwarding** 하는 default-virtual — joint 슬롯과 SE3 슬롯을 분리하지 않는 기존 태스크 컨트롤러(예: DemoTask는 device-0 버퍼를 이미 SE3 pose로 해석)는 override 없이 동작이 그대로 유지됩니다. joint 목표와 태스크 목표를 별도 슬롯에 보관해야 하는 컨트롤러(예: DemoWbc — arm joint posture 슬롯과 commanded SE3 슬롯이 분리)는 이 메서드를 override해 SE3 슬롯에만 쓰고 joint 슬롯을 clobber하지 않도록 합니다. `SetDeviceTarget`과 동일하게 `noexcept` + RT-marshal-safe (SPSC 큐 경유)여야 합니다.
+
+`RTControllerInterface::DeliverTargetMessage()`(`rt_controller_interface.cpp`)는 컨트롤러-owned target 구독 콜백에서 호출되며, 수신한 `RobotTarget.goal_type`에 따라 디스패치를 분기합니다.
+
+| `goal_type` | 데이터 소스 | 리오더링 | 디스패치 |
+|---|---|---|---|
+| `"task"` | `msg.task_target` | 없음 (그대로 전달) | `SetDeviceTaskTarget(device_idx, ordered_span)` |
+| 그 외 (joint) | `msg.joint_target` | `msg.joint_names` → `device_name_configs_[group_name].joint_state_names` 순서로 재정렬 | `SetDeviceTarget(device_idx, ordered_span)` |
+
 > **Hold-init 책임 분리 (2026-05-17, RT-4)**: 과거에는 `InitializeHoldPosition(state)` 순수 가상이 CM의 auto-hold 경로에서 RT 스레드로 호출됐다. 이는 `target_mutex_` (RT-4 위반) + writer-multiplicity race (lifecycle/RT/aux 3 thread)의 근원이었고 v1 시도에서 SeqLock 단순 적용으로는 해결되지 않았다. v2 cleanup으로 hold-init은 controller 내부 책임이 되었다 — 각 controller는 `target_initialized_` atomic을 두고 `Compute()` 첫 진입 시 현재 device state로 자체 seed. CM의 auto-hold 코드 / `BuildDeviceSnapshot` / `InitializeHoldPosition` 가상 함수는 모두 삭제됐다.
 
 ### 가상 메서드 (기본 구현 제공)
@@ -328,6 +345,8 @@ Phase 4 trailing cleanup (`104796f`): 컨트롤러 소유 non-RT 토픽 (`grasp_
 | `rtc_msgs` | 커스텀 ROS2 메시지 |
 | `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 + `ModelConfig` 타입 (시스템 모델 설정) |
 | `pinocchio` | 로보틱스 기구학/동역학 (하위 패키지에 전이적 제공) |
+| `rclcpp` | ROS2 클라이언트 라이브러리 |
+| `rclcpp_lifecycle` | `LifecycleNodeInterface` 동형 훅 (`on_configure` 등) + `LifecycleNode::SharedPtr` 타입 |
 | `yaml-cpp` | YAML 설정 파싱 |
 
 테스트 의존성: 개별 lint (`ament_cmake_cppcheck`, `ament_cmake_lint_cmake`, `ament_cmake_xmllint`). `ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 (`bdedac7`) 으로 사용 금지 — 자세한 사유는 [agent_docs/conventions.md](../agent_docs/conventions.md).

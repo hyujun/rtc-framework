@@ -6,7 +6,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **로봇 비의존(robot-agnostic) RT 시스템 구성·검증 + 의존성 격리 스크립트 모음**입니다. PREEMPT_RT 커널 빌드, CPU 격리, IRQ 어피니티, 네트워크 최적화, NVIDIA 공존 설정, 환경 검증, 그리고 ABI 민감 C++ 의존성(fmt/mimalloc/aligator) 소스 빌드 및 격리 관리를 위한 **14개 스크립트**와 공유 라이브러리를 제공합니다.
+RTC 프레임워크의 **로봇 비의존(robot-agnostic) RT 시스템 구성·검증 + 의존성 격리 스크립트 모음**입니다. PREEMPT_RT 커널 빌드, CPU 격리, IRQ 어피니티, 네트워크 최적화, NVIDIA 공존 설정, 환경 검증, LTTng 트레이싱, 그리고 ABI 민감 C++ 의존성(fmt/mimalloc/aligator) 소스 빌드 및 격리 관리를 위한 스크립트 모음과 공유 라이브러리를 제공합니다 (전체 목록·개수는 아래 "패키지 구조"의 실제 트리를 참조 — README에 개수를 박제하지 않음, `CMakeLists.txt`의 `install(PROGRAMS ...)`가 SSoT).
 
 **설계 목표:**
 - 500 Hz 실시간 제어에서 200 us 이하 지터 달성
@@ -26,7 +26,17 @@ repo_scripts/
 ├── package.xml
 └── scripts/
     ├── lib/
-    │   └── rt_common.sh                  <- 공유 유틸리티 라이브러리
+    │   ├── rt_common.sh                  <- 공유 유틸리티 라이브러리 (모든 스크립트가 source)
+    │   ├── rt_report.sh                  <- check_rt_setup.sh / verify_rt_runtime.sh 공유 PASS/WARN/FAIL 리포트 인프라
+    │   ├── bootstrap.sh                  <- build.sh/install.sh 공통 entry-script 초기화 (setup_env.sh 자동 source)
+    │   │
+    │   │   # ── install.sh 모듈형 helper (install.sh가 source) ──────
+    │   ├── install_ros2.sh               <- ROS2/Ubuntu prerequisites + workspace 셋업
+    │   ├── install_python.sh             <- .venv 생성 + requirements.lock 동기화 (uv pip sync)
+    │   ├── install_uv.sh                 <- uv 부트스트랩 (Astral installer)
+    │   ├── install_deps.sh               <- C++ 외부 의존성 (ur_driver/pinocchio/proxsuite/behaviortree/ONNX Runtime 1.17.1/MuJoCo 3.7.0 tarball installer)
+    │   ├── install_dev.sh                <- VS Code GDB 디버그 툴 + LTTng 트레이싱 툴체인 설치
+    │   └── install_rt.sh                 <- 7개 setup_*.sh RT 스크립트 sudo wrapper + RT 권한/sudoers/cset
     │
     │   # ── RT 시스템 구성/검증 ─────────────────────────────────────
     ├── build_rt_kernel.sh                <- PREEMPT_RT 커널 빌드/설치
@@ -40,11 +50,17 @@ repo_scripts/
     ├── check_rt_setup.sh                 <- 정적 RT 환경 검증 (9개 카테고리)
     ├── verify_rt_runtime.sh              <- 런타임 스레드 검증 (7개 카테고리)
     │
+    │   # ── LTTng 트레이싱 ──────────────────────────────────────────
+    ├── timeline.sh                       <- LTTng CTF trace -> Chrome Trace JSON 변환 (스레드/CPU swimlane)
+    ├── enroll_lttng_mok.sh               <- Secure Boot 환경에서 lttng-modules DKMS 빌드에 MOK 서명
+    │
     │   # ── 의존성 격리 (배포 가이드 참조) ────────────────────────
     ├── setup_env.sh                      <- 개발 쉘 env 활성화 (ROS + deps/install + venv + overlay)
     ├── build_deps.sh                     <- fmt/mimalloc/aligator 소스 빌드 -> deps/install/
     └── verify_isolation.sh               <- ELF RPATH/ldd 격리 검증
 ```
+
+`scripts/lib/` 중 `install(PROGRAMS ...)`로 배포되는 것은 `CMakeLists.txt` 기준 SSoT — 정확한 install 대상 목록은 `CMakeLists.txt`를 직접 참조.
 
 ---
 

@@ -4,7 +4,7 @@
 > 이 패키지는 [RTC Framework](../README.md) 워크스페이스의 일부입니다.
 > 설치/빌드: [Root README](../README.md)
 
-RTC 프레임워크의 **Python 개발 유틸리티 패키지**입니다. 컨트롤러 GUI, 로그 시각화, UDP 손 통신, MJCF/URDF 모델 변환 및 검증 도구를 포함합니다.
+RTC 프레임워크의 **Python 개발 유틸리티 패키지**입니다. 로그 시각화, UDP 손 통신, MJCF/URDF 모델 변환 및 검증, 트레이싱/스레드 배치 launch 헬퍼 도구를 포함합니다 (레거시 컨트롤러 GUI는 아래 참고 참조).
 
 ## 개요
 
@@ -20,15 +20,24 @@ rtc_tools/
 │   ├── monitoring/
 │   │   └── __init__.py
 │   ├── plotting/
-│   │   └── plot_rtc_log.py              ← Matplotlib 로그 시각화 (v5, 4-카테고리)
+│   │   └── plot_rtc_log.py              ← Matplotlib 로그 시각화 (v5, 4-카테고리) —
+│   │                                       thin orchestration layer; 실제 구현은
+│   │                                       columns/, io/, pipelines/, plotters/,
+│   │                                       layout.py 서브모듈로 분리되어 있음
 │   ├── validation/
 │   │   └── compare_mjcf_urdf.py         ← MJCF vs URDF 파라미터 비교 검증
 │   ├── conversion/
-│   │   └── urdf_to_mjcf.py             ← URDF/XACRO → MJCF 변환 (관절 분류 + 후처리)
+│   │   ├── urdf_to_mjcf.py             ← URDF/XACRO → MJCF 변환 (관절 분류 + 후처리)
+│   │   └── ctf_to_chrome_trace.py      ← LTTng CTF trace → Chrome Trace JSON (Perfetto UI)
+│   ├── launch/
+│   │   ├── thread_layout.py            ← 스레드 코어 배치 SSoT의 Python mirror
+│   │   │                                  (rtc_base SelectThreadConfigs, drift-tested)
+│   │   └── trace_action.py             ← ros2_tracing (LTTng) capture 액션 헬퍼
 │   └── utils/
 │       ├── hand_udp_sender_example.py   ← 10-DOF 손 UDP 프로토콜 라이브러리 + 예제
 │       ├── session_dir.py               ← 세션 디렉토리 유틸리티 (RTC_SESSION_DIR 관리)
 │       └── hand_data_plot.py            ← 손 CSV 데이터 시각화
+├── test/                                 ← pytest 유닛 테스트 (Testing 섹션 참조)
 ├── resource/
 │   └── rtc_tools
 ├── package.xml
@@ -189,6 +198,25 @@ robot_dir/
 
 ---
 
+### `ctf_to_chrome_trace.py` — LTTng CTF trace → Chrome Trace JSON
+
+`ros2 launch ... enable_tracing:=true` (`rtc_tools.launch.trace_action`) 로 수집한 LTTng CTF trace 를 [Perfetto UI](https://ui.perfetto.dev)에 드래그-드롭 가능한 Chrome Trace JSON 으로 변환합니다. `console_scripts` entry point 로 등록되어 있지 않으므로 `python3 -m`으로 직접 실행합니다.
+
+```bash
+python3 -m rtc_tools.conversion.ctf_to_chrome_trace \
+    --input ~/.ros/tracing/260520_1430 --output trace.json
+
+# 또는 babeltrace2 CLI 출력을 직접 파이프
+babeltrace2 ~/.ros/tracing/260520_1430 \
+    | python3 -m rtc_tools.conversion.ctf_to_chrome_trace --stdin --output trace.json
+```
+
+- Perfetto 에 **Threads (by TID)** / **Cpus** 2개 swimlane 그룹을 동시에 생성 — 스레드별 실행 구간과 core별 스케줄링(taskset 핀 검증, migration/IRQ 탐지)을 모두 확인 가능
+- 처리 이벤트: `ros2:callback_start/end` (B/E 슬라이스), `sched_switch` (Cpu 레인), `irq_handler_entry/exit` (Cpu/IRQ 레인). 그 외 이벤트는 기본 drop — `--keep-events name[,...]` 로 개별 opt-in, `--keep-all` 로 전체 복원
+- 파서: `python3-bt2` (LTTng Python binding) 우선, 미설치 시 `babeltrace2` CLI 텍스트 출력 파싱으로 폴백 (느림)
+
+---
+
 ### `compare_mjcf_urdf.py` — MJCF vs URDF 파라미터 비교 검증
 
 `robot_descriptions` 패키지의 MJCF와 URDF를 파싱하여 물리 파라미터 동일성을 검증합니다.
@@ -244,6 +272,13 @@ ros2 run rtc_tools hand_udp_sender_example
 | 센서 요청 | 3B | `[ID:1B][CMD:1B][MODE:1B]` (헤더만) |
 | 센서 응답 | 67B | `[ID:1B][CMD:1B][MODE:1B][16 x uint32]` → 유효 11개 (기압 x8 + ToF x3) |
 | 센서 일괄 응답 | 259B | `[ID:1B][CMD:1B][MODE:1B][64 x uint32]` (4핑거) |
+
+**MODE 필드**: joint 관련 명령(`WritePosition` 0x01, `ReadAllMotors` 0x10, `ReadPosition` 0x11, `ReadVelocity` 0x12)에서 motor-space 대 joint-space 를 구분합니다:
+
+| 상수 | 값 | 의미 |
+|------|-----|------|
+| `JOINT_MODE_MOTOR` | `0x00` | raw motor encoder position (기본값, 하위 호환) |
+| `JOINT_MODE_JOINT` | `0x01` | joint-space position (기어비 적용, 펌웨어 변환) |
 
 **명령 코드:**
 
@@ -362,6 +397,56 @@ plots = get_session_subdir('plots')  # 환경변수 읽기 전용, None 반환 �
 | `get_session_dir()` | `RTC_SESSION_DIR` 읽기 (없으면 `None`) |
 | `get_or_create_session_dir()` | env 우선, 없으면 새 세션 생성 |
 | `get_session_subdir(name)` | 현재 세션 하위 폴더 경로 반환 (자동 생성, 세션 미설정 시 `None`) |
+
+---
+
+### `thread_layout.py` — 스레드 코어 배치 SSoT의 Python mirror
+
+C++ SSoT (`rtc_base/include/rtc_base/threading/thread_config.hpp` + `thread_utils.hpp::SelectThreadConfigs`)의 코어 티어 breakpoint 를 Python 으로 재인코딩합니다. Launch 파일(Python)이 외부 driver/simulator 프로세스에 `taskset` 핀을 적용할 때 C++ RT 루프와 동일한 코어 배치 결정을 내리기 위해 사용됩니다.
+
+```python
+from rtc_tools.launch.thread_layout import select_thread_layout, get_physical_cpu_count
+
+layout = select_thread_layout()          # physical core 자동 감지
+arm_core = layout.arm_driver_core        # -1 = pinning 생략 (no-op)
+```
+
+| 함수 | 설명 |
+|------|------|
+| `get_physical_cpu_count()` | `lscpu -p=Core,Socket` 기반 physical(non-SMT) 코어 수 (실패 시 `os.cpu_count()` 폴백) |
+| `select_thread_layout(physical_cores=None)` | 코어 수 → `ThreadLayout` (arm/hand/sim/viewer/rt_callback 코어) |
+| `get_arm_driver_core()` / `get_hand_driver_core()` / `get_sim_core()` / `get_viewer_core()` / `get_rt_callback_core()` | 개별 코어 인덱스 accessor |
+
+C++ SSoT와의 drift는 `test/test_thread_layout.py`가 계약 형태로 고정해 검증합니다 — 어느 한쪽의 티어 breakpoint 가 바뀌면 테스트가 실패합니다.
+
+---
+
+### `trace_action.py` — ros2_tracing (LTTng) capture 액션 헬퍼
+
+Bringup launch 파일이 `enable_tracing` / `trace_session_name` / `trace_events_ust` / `trace_events_kernel` LaunchArgument 를 선언하고, 세션 디렉토리가 결정된 `OpaqueFunction` 안에서 `make_trace_action()`을 호출하는 패턴을 위한 헬퍼입니다.
+
+```python
+from rtc_tools.launch.trace_action import make_trace_action
+
+def launch_setup(context):
+    actions = make_trace_action(context, session_dir=session_dir)  # [] 가능
+    return actions
+```
+
+- `tracetools_launch.action.Trace` 를 lazy import — ros2_tracing 미설치 환경에서도 launch 파싱은 가능하며, `enable_tracing:=true`인데 미설치면 `./install.sh --tracing` 안내 메시지 후 no-op
+- Trace 결과물은 `<session_dir>/tracing/<session_name>/` (CSV timing log 와 같은 세션 트리) 에 저장 — `~/.ros/tracing/`의 ros2_tracing 기본 경로가 아님
+- `enable_tracing:=false` 시 빈 리스트 반환 (no-op)
+
+---
+
+## Testing
+
+`rtc_tools/test/` 에 pytest 기반 유닛 테스트가 있습니다 (validation / conversion / launch / plotting / utils 서브모듈 커버). 개수는 여기 박제하지 않음 — 실측은 아래 명령으로 확인:
+
+```bash
+colcon test --packages-select rtc_tools --event-handlers console_direct+
+colcon test-result --verbose
+```
 
 ---
 

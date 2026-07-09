@@ -65,7 +65,7 @@ RTC 프레임워크의 **실시간 안전(RT-safe) ONNX Runtime 추론 엔진** 
 
 **RT 세션 옵션** (모델당): `ORT_SEQUENTIAL` 실행 모드, `intra_op_threads` 단일 스레드, `session.intra_op.allow_spinning=0` (intra-op 워커의 busy-spin 제거로 RT 루프 지터 차단), `ORT_ENABLE_ALL` 그래프 최적화.
 
-**모델 검증**: `Init()`은 버퍼를 할당하기 전에 모델의 실제 입출력 arity/shape 를 `config` 와 대조합니다. 출력 head 수가 부족하거나 정적 차원이 불일치하면 `std::runtime_error`를 던져 잘못된/재학습된 `.onnx`가 런타임에 조용히 틀린 값을 내지 않고 setup 단계에서 큰 소리로 실패합니다 (모델 차원이 `< 0`인 dynamic dim 은 임의 크기와 매칭). 각 모델 등록 후 워밍업 추론을 1회 실행합니다 (`RunModels()`와 동일한 direct `Session::Run` 경로 재사용 → warmup 이 production 경로를 정확히 데움).
+**모델 검증**: `Init()`은 버퍼를 할당하기 전에 모델의 실제 입출력 arity/shape 를 `config` 와 대조합니다. 출력 head 수가 `config.output_shapes`와 정확히 일치하지 않거나(부족·과다 모두 거부 — positional binding 이라 extra head 는 조용히 drop 되므로) 정적 차원이 불일치하면 `std::runtime_error`를 던져 잘못된/재학습된 `.onnx`가 런타임에 조용히 틀린 값을 내지 않고 setup 단계에서 큰 소리로 실패합니다 (모델 쪽 dim `< 0`인 dynamic dim 은 임의 크기와 매칭). `config`에 선언된 shape 의 각 dim 도 static positive 여야 하며 `<= 0`이면 즉시 reject — 그렇지 않으면 dynamic `-1`이 버퍼 크기 계산(`Numel()`)에서 `SIZE_MAX`로 캐스트되어 catastrophic allocation을 시도할 수 있습니다. 워밍업 추론은 모델을 `models_`에 등록하기 **전에** 실행됩니다 (`RunModels()`와 동일한 direct `Session::Run` 경로 재사용 → warmup 이 production 경로를 정확히 데움) — 이 순서 덕분에 `Init()`이 원자적입니다: 워밍업이 예외를 던지면 반쯤 초기화된 모델이 `models_`에 남지 않고 그대로 전파됩니다 (register-or-nothing).
 
 **`Reset()`** (non-RT): 등록된 모든 모델을 해제하여 `Init()` 재호출을 idempotent 하게 만듭니다 (`Ort::Env`/`RunOptions`는 재사용). 같은 엔진 인스턴스로 재초기화하는 소비자는 `Init()` 루프 전에 `Reset()`을 호출해 모델 중복 등록·세션 누수를 방지합니다.
 
@@ -141,6 +141,17 @@ colcon build --packages-select rtc_inference
 | (lint depend 없음) | — | 워크스페이스 정책 (`bdedac7`): `ament_lint_common` meta / `ament_uncrustify` 사용 금지 — 필요 시 개별 `ament_cmake_{cppcheck,lint_cmake,xmllint}` 만 추가. 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md) |
 
 C++ 20 표준이 요구됩니다 (`CMAKE_CXX_STANDARD 20`).
+
+---
+
+## 테스트
+
+```bash
+colcon test --packages-select rtc_inference --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+`test/test_inference_engine.cpp` (`test_inference_engine`, `BUILD_TESTING`)가 `InferenceEngine`의 기본 델리게이트 동작(`RunModel`/`RunModels`)과 미초기화·범위 밖 접근자의 안전한 fallback을 검증하며, `HAS_ONNXRUNTIME` 빌드에서는 실제 `OnnxEngine` 경로도 함께 검증됩니다.
 
 ---
 

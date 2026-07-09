@@ -19,12 +19,19 @@ udp_hand_driver/
 │   ├── udp_hand_timing_profiler.hpp  -- EventLoop 단계별 타이밍 프로파일러
 │   ├── udp_hand_timing_logger.hpp -- per-tick CSV writer (mpc_timing_log 패턴)
 │   ├── udp_hand_node.hpp         -- UdpHandNode 클래스 선언 (LifecycleNode)
+│   ├── udp_hand_constants.hpp    -- hand 전용 상수/타입 (kNumHandMotors 등), 필터 alias
+│   ├── udp_hand_state.hpp        -- UdpHandState 구조체 (SeqLock 공유 상태)
+│   ├── udp_hand_logging.hpp      -- 계층적 sub-logger 팩토리 + THROTTLE 상수
+│   ├── protocol/
+│   │   └── sensor_protocol.hpp   -- SensorProtocol version seam (1a/1b bulk-sensor 추상화)
 │   └── fingertip_ft_inferencer.hpp -- ONNX 기반 핑거팁 F/T 추론
 ├── src/
 │   ├── udp_hand_node.cpp           -- main() (mlockall, CPU affinity, spin)
 │   ├── udp_hand_node_lifecycle.cpp -- 6 lifecycle 콜백 + dtor + Drain + teardown helper
 │   ├── udp_hand_node_publish.cpp   -- Preallocate / PublishFromEventLoop / PublishCalibrationStatus
-│   └── udp_hand_node_stats.cpp     -- SaveCommStats (hand_udp_stats.json writer)
+│   ├── udp_hand_node_stats.cpp     -- SaveCommStats (hand_udp_stats.json writer)
+│   └── protocol/
+│       └── sensor_protocol.cpp     -- SensorProtocol 구현 (정적 lib `udp_hand_protocol`)
 ├── config/
 │   ├── udp_hand_node.yaml        -- 노드 파라미터 설정 (ros__parameters)
 │   └── fingertip_ft_inferencer.yaml -- ONNX 모델 경로 + 캘리브레이션 설정
@@ -220,7 +227,7 @@ Per-fingertip ONNX 모델 기반 힘/토크 추론 (3-head output):
 1. All-zero 데이터: N회 연속 감지
 2. Duplicate 데이터: N회 연속 반복
 3. Low rate: polling rate가 `min_rate_hz` 미만
-4. Link down: `consecutive_recv_failures` >= `link_fail_timeout_ms` 환산 cycle 수 (`ms/1000 × loop_rate_hz / comm_decimation`) — threshold 도달 시 **1회 forensic dump** (per-request-kind 통계 테이블 + 최근 64 cycle 의 attempted/ok mask ring 디코드) 를 WARN 으로 출력 후 RaiseFailure. 기동 직후 `startup_grace_ms`(node 상수 1000 ms) 구간에는 rate/link 판정을 유예해 ARP/부팅/첫 왕복 지연이 오탐 E-STOP 을 내지 않게 한다 (motor/sensor data-validity 검사는 유예 대상 아님)
+4. Link down: `consecutive_recv_failures` >= `link_fail_timeout_ms` 환산 cycle 수 (`ms/1000 × loop_rate_hz / comm_decimation`) — threshold 도달 시 **1회 forensic dump** (per-request-kind 통계 테이블 + 최근 64 cycle 의 attempted/ok mask ring 디코드) 를 WARN 으로 출력 후 RaiseFailure. 기동 직후 `startup_grace_ms`(ROS param, 기본 1000 ms) 구간에는 rate/link 판정을 유예해 ARP/부팅/첫 왕복 지연이 오탐 E-STOP 을 내지 않게 한다 (motor/sensor data-validity 검사는 유예 대상 아님)
 
 센서 검사 대상은 프로토콜 레이아웃에 따른다 (`sensor_force_layout` capability, 컨트롤러가 `sensor_uses_force_layout_` 주입). 1a 는 int32 `sensor_data` (barometer/ToF) 전체를, 1b 는 `sensor_force` 의 **fx,fy,fz 만** 검사한다 — Lx/Ly/Temp placeholder 는 제외해 상수 placeholder 가 all-zero 를 가리거나 duplicate 를 왜곡하지 못하게 한다. 펌웨어가 rest 에서 ADC 노이즈로 non-zero 를 내므로 exact-0 force = dead/단선 센서, bit-frozen fx,fy,fz = stalled feed 로 정상 무접촉과 구별된다. 모터 검사는 `state.motor_valid` 로 gate 되어 motor-space read 가 없는 1b (`motor_valid` 항상 false) 에서는 no-op 이다 (`check_motor: false` 권장).
 
@@ -358,6 +365,10 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `rate_fail_threshold` | `5` | 연속 N회 미달 시 failure |
 | `check_link` | `true` | UDP 링크 검사 |
 | `link_fail_timeout_ms` | `100.0` | link-down 판정 시간 budget. cycles = ms/1000 × loop_rate_hz / comm_decimation 로 on_configure 에서 환산 |
+| `startup_grace_ms` | `1000.0` | 기동 직후 rate/link 판정 유예 시간 (ms, "UdpHandFailureDetector" 절 참조) |
+| `link_startup_grace_ms` | `100.0` | 기동 직후 link-down 검사 유예 (ms) — ARP/부팅 transient 만 넘기는 짧은 유예 |
+| `use_fake_hand` | `false` | `true` 시 UDP 소켓/스레드 없이 command echo, `fake_tick_rate_hz` 로 상태 publish |
+| `fake_tick_rate_hz` | `500.0` | fake hand 모드 상태 publish 주기 (Hz). `0` 이하이면 node-side 타이머 생략 (외부 tick 과의 충돌 회피용) |
 
 > 참고: `joint_mode`는 사용되지 않습니다 (코드에서 항상 write=kJoint, read=kMotor+kJoint dual read).
 
@@ -419,6 +430,7 @@ source install/setup.bash
 ## 의존성
 
 - `rclcpp` -- ROS2 C++ 클라이언트
+- `rclcpp_lifecycle` -- LifecycleNode 기반 관리 상태 전환
 - `sensor_msgs` -- JointState 메시지
 - `std_msgs` -- Bool 메시지
 - `rtc_base` -- types, threading (SeqLock, ThreadConfig), filters (BesselFilter, SensorRateEstimator, SlidingTrendDetector), timing
@@ -513,26 +525,6 @@ ros2 service call /udp_hand_node/set_logger_levels rcl_interfaces/srv/SetLoggerL
 ```bash
 export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 ```
-
----
-
-## 변경 내역
-
-### Unreleased
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **Hand 상수 흡수** | `ur5e_description/ur5e_constants.hpp` 폐기에 따라 hand 전용 상수와 타입을 본 패키지로 흡수: `kNumHandMotors`/`kDefaultHandMotorNames`/`kDefaultFingertipNames` → `include/udp_hand_driver/udp_hand_constants.hpp`, `UdpHandState` → `include/udp_hand_driver/udp_hand_state.hpp`. 이에 따라 `package.xml`/`CMakeLists.txt`에서 `ur5e_description` 의존을 제거 (이 패키지는 더 이상 description 헤더가 필요 없음). 다운스트림(`integrated_bringup`)은 `udp_hand_driver/udp_hand_constants.hpp`를 include. |
-| **Hand layout 상수 SSoT 통합** | `rtc_base/types/types.hpp` 에 있던 hand-specific packet/model layout 상수와 `FingertipFTState` 구조체, 필터 alias 들을 본 패키지의 `udp_hand_constants.hpp` 로 이주. 추가된 식별자: `kBarometerCount`, `kReservedCount`, `kTofCount`, `kSensorDataPerPacket`, `kSensorValuesPerFingertip`, `kMaxHandSensors`, `kFTValuesPerFingertip`, `kFTInputSize`, `kFTHistoryLength`, `kDefaultNumFingertips`, `kNumFingertips`, `kNumHandSensors`, `kMaxBaroChannels`, `kMaxTofChannels`, `FingertipFTState`, `BesselFilterBaro`, `BesselFilterTof`, `BarometerTrendDetector`. `integrated_bringup` 와의 boundary 는 이제 `rtc_msgs/HandSensorState.msg` / `FingertipSensor.msg` named field 만 — cross-package include 0건. |
-| **ARCH-1 Phase 4d — `kMaxFingertips` 자체 소유 (2026-05-16)** | `rtc::kMaxFingertips` 가 `rtc_base` 에서 제거됨 (robot-agnostic 보장). 본 패키지가 `udp_hand_driver::kMaxFingertips = 8` 자체 정의 — hand 도메인이므로 fingertip 어휘 정당. `FingertipFTState`, `fingertip_ft_inferencer`, `udp_hand_controller` 등 패키지 내부 사용처는 unqualified `kMaxFingertips` (자기 namespace) 로 통일. |
-| **Proto_1b 센서 디코드 seam (2026-07-04)** | 펌웨어 센서 프로토콜 버전을 abstract `SensorProtocol` (`protocol/sensor_protocol.hpp`, 정적 lib `udp_hand_protocol`) 로 격리 — `protocol_version` 파라미터 (`"1a"` 기본 / `"1b"`). 1b = 99B bulk 응답(4 × 6 float32 `[fx,fy,fz,Lx,Ly,Temp]`), force 직접 발행·후처리 없음·`motor_states` 미발행(0x10 kMotor 스킵)·bulk 전용. EventLoop 는 polymorphic capability(`HasMotorSpaceRead`/`RunsSensorPostProcess`)로만 분기(ARCH-3). `UdpHandState::sensor_force[]`, `packets::P1bSensorResponsePacket`, `UdpHandTransport::RequestBulkSensorRaw`, `test_sensor_protocol_1b` 추가. Lx/Ly/Temp 는 디코드만·발행 보류(현 펌웨어 placeholder). 1a 회귀 0. |
-| **1b MODE don't-care (2026-07-06)** | 1b 펌웨어가 응답 MODE byte 를 임의값으로 채우고 항상 raw 로 동작 → strict MODE 검증이 정상 데이터를 버리는 문제 해결. `SensorProtocol::VerifiesResponseMode()` capability 신설(1a=true/1b=false), `UdpHandTransport::verify_response_mode_` 플래그로 5개 request 경로의 MODE 비교를 gate. 컨트롤러 `Start()` 가 capability 를 주입(EventLoop 시작 전, race 없음). `RequestSetSensorMode` 는 gate 무관 cmd echo(`kSetSensorMode`) floor 신설. version-string/`#ifdef` 분기 없음(ARCH-3). 1a strict 유지·회귀 0. |
-| **1b failure detector force-layout 검사 (2026-07-06)** | 1b 에서 `UdpHandFailureDetector` 가 int32 `sensor_data`(1b 에선 항상 0)와 `motor_positions`(motor read 없음)를 검사해 정상 동작 중 all-zero/duplicate 오탐 → E-STOP 유발하던 문제 해결. `Config::sensor_force_layout` capability 신설(node 가 `sensor_uses_force_layout_` 주입), 1b 는 `sensor_force` 의 fx,fy,fz(offset 0,1,2/stride 6)만 검사(Lx/Ly/Temp placeholder 제외). `CheckMotor` 는 `state.motor_valid` gate 로 1b no-op. p1b yaml `check_motor: false`. fake-hand 가 cmd 를 `sensor_force` 로 미러링(standalone 1b 테스트 가능) + force all-zero/duplicate/changing 테스트 3종 추가. 1a 회귀 0(기존 assertion 무수정). |
-| **1b joint I/O = kMotor + MODE 검증 복원 (2026-07-07)** | 위 "1b MODE don't-care" 진단 정정. 실제로 1b 펌웨어는 요청 MODE 를 정확히 echo 하며, **kMotor 로만 joint state/command 를 서비스**한다 — 이전에 driver 가 kJoint 를 요청해 mode_mismatch 로 joint 데이터가 버려지던 것을 "MODE don't-care" 로 오진해 검증을 껐던 것. `SensorProtocol::JointIoMode()` capability 신설(1a=kJoint/1b=kMotor)로 write·joint read·E-Stop zero-write 의 하드코딩 kJoint 를 대체(EventLoop 가 1회 hoist). `SensorProtocol1b::VerifiesResponseMode()` 를 true 로 복원(1a·1b 모두 strict; gate 는 seam 유지). motor-space read 는 `JointIoMode` 와 무관하게 kMotor 고정·1b 는 여전히 스킵. version-string/`#ifdef` 없음(ARCH-3). 1a 회귀 0. |
-| **1b bulk sensor MODE gate 분리 (2026-07-08)** | 위 "MODE 검증 복원" 의 잔여 케이스. joint/set-mode 경로는 MODE 를 정확히 echo 하지만 **bulk sensor(0x19) 응답은 MODE byte 를 임의값으로 echo** 하여, 복원된 strict 검증이 매 사이클 정상 force 데이터를 폐기(`return -1`)하던 문제 해결. 단일 `verify_response_mode_` 가 5개 응답 타입을 전부 gate 하던 것을 command-family 별로 분리 — `SensorProtocol::VerifiesBulkSensorResponseMode()` capability 신설(default `VerifiesResponseMode()`, 1b override=false) + `UdpHandTransport::verify_bulk_sensor_mode_` 독립 플래그. bulk sensor 경로만 gate off, joint/set-mode gate 는 1b 에서도 strict 유지. cmd(0x19)·length 검증은 유지. 두 gate 독립성 테스트 추가. version-string/`#ifdef` 없음(ARCH-3). 1a 회귀 0. |
-| **joint_command 이름기반 재정렬 (2026-07-09)** | `/hand/joint_command` 수신 콜백이 `msg->joint_names` 를 무시하고 `values[i]` 를 firmware 슬롯 i 로 positional 소비하던 문제 해결 — 발행측(controller/backend)은 자기 `joint_names` 순서(URDF / `_base.yaml`)로 라벨링하는데, hand 는 `joint_state_names`(UDP wire) 순서로 서비스하므로 두 순서가 다르면(p1b 는 `thumb_cmc_aa`↔`thumb_cmc_fe` 슬롯 0·1 스왑) 엄지 두 축 명령이 교차 배선됐다. `/hand/joint_states` 를 수신하는 backend 가 이미 적용하는 "수신자가 `joint_names` 로 재정렬" 규약을 대칭으로 구현: 순수 helper `BuildCommandNameReorder(firmware_names, cmd_names)` 신설(`udp_hand_constants.hpp`), 첫 name-포함 메시지에서 firmware-슬롯 ← 발행-index map 을 build-once 하여 `cmd[i] = values[map[i]] − offset[i]`. 이름 누락(legacy/fake) 또는 미매칭(설정 오류) 시 positional fallback + warn-once. offset 은 firmware 슬롯 정렬 유지 → round-trip 항등 보존. backend·config 무변경. RT-safe(build-once + `std::array`, 콜백 단일 스레드). `test_udp_hand_joint_command_reorder` 5종 추가. |
-| **1b `inference_enable` 플래그 config 연동 (2026-07-09)** | 1b force-layout publish 경로가 `FingertipSensor.inference_enable` 를 무조건 `true` 로 하드코딩해, `ft_inferencer.enabled: false` 여도 `sensor_states` 토픽에 `inference_enable=true` 로 나가던 문제 해결. barometer/ONNX 경로는 이미 `ft_valid = ft_enabled_ && ft_state.valid` 로 게이트되지만 1b 는 펌웨어가 힘을 직접 계산해 ONNX inferencer 를 우회하므로 이 플래그만 별도 하드코딩돼 있었다. `fs.inference_enable = ft_enabled_` 로 변경 — 펌웨어 측정 힘 `f[]` 는 config 와 무관하게 계속 발행하되 플래그만 configured `ft_inferencer.enabled` 를 반영. 힘 데이터 손실 없음. 1a 회귀 0. |
-| **1b MODE 검증 전면 off — InitPositionHold 0 붕괴 수정 (2026-07-08)** | 위 "MODE 검증 복원"·"bulk gate 분리" 진단의 최종 정정. 1b 펌웨어는 **bulk sensor 뿐 아니라 motor/joint read(`ReadAllMotors`) 응답의 MODE byte 도 임의값으로 echo** 한다. joint read 만 strict(`VerifiesResponseMode`=true) 로 남겨두니 kMotor joint read 가 매 사이클 mode_mismatch 로 폐기 → `state.joint_valid=false` → `/hand/joint_states` 미발행 → 컨트롤러 device 1 이 valid 가 못 됨 → InitPositionHold 의 deferred hand-seed(defer-until-device-valid) 가 발화 못 하고 손가락이 zero-init 로 붕괴하던 문제. `SensorProtocol1b::VerifiesResponseMode()` 를 false 로 (bulk override 는 base default 로 상속되어 제거). JointIoMode()=kMotor 라우팅은 유지. cmd·length 검증은 모든 경로에서 유지되어 stale/wrong-command 패킷은 계속 거부. 진단 가시성 위해 `hand_udp_stats.json` 에 `cmd_mismatch`/`mode_mismatch` 노출. version-string/`#ifdef` 없음(ARCH-3). 1a 회귀 0. |
 
 ---
 

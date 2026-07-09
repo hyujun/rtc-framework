@@ -55,7 +55,13 @@ rtc_urdf_bridge/
 │   ├── pinocchio_model_builder.cpp
 │   ├── rt_model_handle.cpp
 │   ├── closure_state_publisher{,_main}.cpp  # 노드 구현 + 실행 진입점
-│   └── (closed_chain 모듈 대응 .cpp)
+│   ├── closure_yaml_loader.cpp         # Extended-URDF sidecar 파서
+│   ├── constraint_builder.cpp          # ClosedChainInfo→RigidConstraintModel
+│   ├── loop_verification.cpp           # closure error / Jc rank·Delassus
+│   ├── loop_projection.cpp             # q/v loop-consistent 사영 (로드 타임)
+│   ├── closed_chain_model.cpp          # 통합 loader
+│   ├── closed_chain_handle.cpp         # closed-chain 축약 동역학 질의 (non-RT)
+│   └── rt_closed_chain_handle.cpp      # RT-safe closed-chain FK + 축약 동역학
 ├── config/                             # YAML 설정 템플릿
 │   ├── serial_arm_config.yaml
 │   ├── hand_tree_config.yaml
@@ -65,20 +71,24 @@ rtc_urdf_bridge/
 │   ├── example_submodel.cpp
 │   ├── example_tree_model.cpp
 │   └── example_rt_integration.cpp
-└── test/                               # GTest 테스트
+└── test/                               # GTest 테스트 -- 전체 목록은 test/ 디렉토리 참조
     ├── test_urdf_analyzer.cpp
     ├── test_chain_extractor.cpp
     ├── test_model_builder.cpp
+    ├── test_joint_classification.cpp   # role/subtype 분류 규칙
     ├── test_load_model_config.cpp      # YAML 로드 + 폐쇄체인/lock 빌드
     ├── test_rt_model_handle.cpp
     ├── test_closure_yaml_loader.cpp    # sidecar 파서
     ├── test_constraint_builder.cpp     # endpoint transform / builder
+    ├── test_pinocchio_builder_closure.cpp # closure_yaml_path 경로 (Extended-URDF via builder)
     ├── test_loop_closed_chain.cpp      # closure error/projection/rank/dynamics
     ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
     ├── test_closed_chain_handle.cpp    # 축약 M/g/h/J/FK: serial 등가·round-trip·특이 flag
+    ├── test_closed_chain_fk_measurement.cpp # frozen-loop FK vs closed-chain FK 실측 오차
     ├── test_rt_closed_chain_handle.cpp # RT-safe FK: converged 등가·J_a·serial 항등·hold·singular·seed-guard·identity-NaN-hold·OOB-getter
     ├── test_closure_state_publisher.cpp # 노드 end-to-end (actuated 주입→full q, loop 닫힘)
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
+    ├── test_xacro_processor.cpp        # xacro 전처리
     └── urdf/                           # 테스트용 URDF / closure.yaml / MJCF
 ```
 
@@ -94,6 +104,9 @@ rtc_urdf_bridge/
 | Eigen3 | 선형대수 연산 |
 | yaml-cpp | YAML 설정 파일 파싱 |
 | tinyxml2 | URDF XML 파싱 |
+| rclcpp | `closure_state_publisher` 노드 (ROS2 C++ 클라이언트) |
+| sensor_msgs | `closure_state_publisher` 노드의 `JointState` 입출력 |
+| xacro (exec_depend) | xacro 전처리 (`ProcessXacro`, popen 기반) |
 | ament_cmake | ROS 2 빌드 시스템 |
 
 ## Build

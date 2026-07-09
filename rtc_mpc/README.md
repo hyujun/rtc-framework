@@ -28,6 +28,7 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 | `interpolation/` | `trajectory_interpolator.hpp` | Cubic Hermite interpolation between OCP nodes |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` with optional accel-only mode |
 | `manager/` | `mpc_solution_manager.hpp` | Facade combining TripleBuffer + Interpolator + Feedback + SeqLock |
+| `logging/` | `mpc_timing_logger.hpp` | `MpcTimingLogger` — thin wrapper resolving `<session>/timing/mpc_timing_log.csv` and pre-binding the unified `RtTickTimingPayload` header/row writers (shared schema with the CM RT loop / hand_udp EventLoop) |
 | `thread/` | `mpc_thread.hpp` | `MPCThread` solve loop: inherits `rtc::PeriodicRtThread` for lifecycle / `clock_nanosleep` cadence / Pause/Resume / per-tick t0~t3 capture; subclass adds the worker-thread frame (up to `kMaxMpcWorkers`) and the `Solve(state, out, span<jthread>)` virtual. `OnTick` runs `ReadState → MarkStateAcquired → Solve(workers) → MarkComputeDone → PublishSolution`. `MockMPCThread` is the deterministic test impl. `Pause()` / `Resume()` come from base and cv-gate the solve loop so an inactive controller can keep the thread alive without burning a core (used by `DemoWbcController::on_deactivate` under the rtc_cm lifecycle plan). |
 | `thread/` | `handler_mpc_thread.hpp` | Concrete `MPCThread` wiring a `PhaseManagerBase` FSM into an `MPCHandlerBase` solver: per-tick FK → `phase_manager.Update` → `handler.Solve` → `PublishSolution`; cross-mode swap via `MPCFactory` + `SeedWarmStart`; observability atomics |
 | `handler/` | `mpc_handler_base.hpp` | Abstract MPC solve orchestrator: owns an `OCPHandlerBase` + `SolverProxDDP`, drives warm-started solves via `Init` / `Solve(PhaseContext, state, MPCSolution&)` / `SeedWarmStart`. Enums `MPCInitError`, `MPCSolveError`, POD `MPCSolverConfig`. |
@@ -39,7 +40,10 @@ skeleton. Concrete solver integrations (Aligator ProxDDP) plug in via
 
 ```
 rtc_mpc ← rtc_base (SeqLock, threading), Eigen3, yaml-cpp,
-          Pinocchio (robot model), fmt ≥ 10 (Aligator ABI),
+          Pinocchio 4.0 (robot model; collision backend is coal,
+          hpp-fcl's successor -- no separate coal find_package needed,
+          pinocchioConfig pulls it in via find_dependency),
+          fmt >= 10 (Aligator ABI; deps/install ships 11.1.4),
           Aligator 0.19.x (ProxDDP solver, residuals, stages)
 ```
 
@@ -47,13 +51,22 @@ rtc_mpc ← rtc_base (SeqLock, threading), Eigen3, yaml-cpp,
 (e.g. `integrated_bringup::DemoWbcController`) inject MPC-generated references
 into TSID tasks themselves.
 
-### CMake workarounds (dual-install conflicts on dev machine)
+### CMake / build notes
 
-`rtc_mpc/CMakeLists.txt` forces ROS-Jazzy hpp-fcl and source-built fmt
-before any `find_package(pinocchio)` call (Aligator was built against
-fmt ≥ 10, hpp-fcl ABI must match the Pinocchio install). Any downstream
-package linking `rtc_mpc` inherits the workarounds via
-`ament_export_dependencies`.
+`fmt`, `pinocchio`, and `aligator` are isolated to `deps/install/` (see
+`repo_scripts/scripts/setup_env.sh`, which prepends it to
+`CMAKE_PREFIX_PATH`); no explicit `*_DIR` hints are needed. The old
+hpp-fcl `*_DIR` ABI-pin workaround was removed once the package migrated
+from Pinocchio 3.9 to 4.0, which drops hpp-fcl for `coal`.
+
+Aligator's ProxDDP solve path allocates via mimalloc, but frees can route
+through glibc across the pinocchio/aligator ABI boundary; under
+Pinocchio 4.0 this surfaces as `free(): invalid pointer` in the
+`contact_rich` solve tests. `CMakeLists.txt` `LD_PRELOAD`s mimalloc
+(resolved via `RTC_DEPS_PREFIX` or the `aligator_DIR`-relative `lib/`)
+into every aligator-solve gtest via `set_property(TEST ... ENVIRONMENT
+LD_PRELOAD=...)` — the sanctioned workaround; do not deactivate it or run
+the affected gtest binaries bare.
 
 ## Design invariants
 

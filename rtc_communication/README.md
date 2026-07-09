@@ -194,7 +194,7 @@ struct MyCodec {
 | `send_count()` | `[[nodiscard]] size_t const noexcept` | 송신 성공 패킷 카운터 (`Send()` 성공 시 증가) |
 | `transport()` | `TransportInterface* const noexcept` | 하위 전송 계층 포인터 반환 |
 
-생성자: `Transceiver(unique_ptr<TransportInterface>, const ThreadConfig& = kUdpRecvConfig)`
+생성자: `Transceiver(unique_ptr<TransportInterface>, const ThreadConfig& = kRtUdpRecvConfig)`
 
 ```cpp
 auto transport = std::make_unique<UdpTransport>(config);
@@ -278,7 +278,6 @@ colcon test --packages-select rtc_communication --event-handlers console_direct+
 |--------|------|------|
 | `ament_cmake` | 빌드 도구 | ROS 2 빌드 시스템 |
 | `rtc_base` | 런타임 | `ThreadConfig`, `ApplyThreadConfig` (스레드 설정) |
-| `ament_cmake_cppcheck` / `ament_cmake_lint_cmake` / `ament_cmake_xmllint` | 테스트 | 개별 lint (`ament_lint_common` meta + `ament_uncrustify` 는 워크스페이스 정책 `bdedac7` 으로 사용 금지 — 자세한 사유: [agent_docs/conventions.md](../agent_docs/conventions.md)) |
 | `ament_cmake_gtest` | 테스트 | UDP 루프백 / Transceiver 통합 테스트 |
 
 **시스템 의존성:** POSIX 소켓 API (`sys/socket.h`, `arpa/inet.h`, `netinet/in.h`, `unistd.h`)

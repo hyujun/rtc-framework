@@ -48,7 +48,8 @@ rtc_digital_twin/
     ├── test_urdf_parser.py         <- URDF 분류/검증 단위 테스트
     ├── test_sensor_visualizer.py   <- FingertipSensor → MarkerArray 변환
     ├── test_tcp_visualizer.py      <- TCP pose ↔ marker/TF, 회전 변환 수학
-    └── test_joint_state_cache.py   <- JointStateCache static/dynamic 모드
+    ├── test_joint_state_cache.py   <- JointStateCache static/dynamic 모드
+    └── test_node_construction.py   <- DigitalTwinNode 생성/파라미터 선언 스모크 테스트
 ```
 
 ---
@@ -83,7 +84,7 @@ rtc_digital_twin/
 |------|------|-----|------|
 | `source_N.topic` (YAML 정의) | `sensor_msgs/JointState` | RELIABLE, depth=10 | rtc_controller_manager가 republish한 조인트 상태 |
 | `sensor_viz.sensor_topic` (선택) | `rtc_msgs/HandSensorState` | RELIABLE, depth=10 | 핑거팁 센서 데이터 |
-| `tcp_viz.source_topic` (선택) | `rtc_msgs/GuiPosition` | SensorData (BE/5) | TCP 위치/자세 데이터 |
+| `/tf`, `/tf_static` (TF, 선택) | `tf2_msgs/TFMessage` | tf2 기본 | TCP 시각화용 `tcp_viz.frame_id` -> `tcp_viz.source_topic`(child frame) transform. 토픽 구독이 아닌 `lookup_transform()` |
 
 ### 퍼블리시
 
@@ -108,16 +109,19 @@ rtc_digital_twin/
 - `auto_compute_mimic` 활성 시 mimic 조인트 위치를 자동 계산하여 JointState에 추가
 - 데이터 미수신 시에도 URDF의 모든 조인트를 position=0으로 퍼블리시 (TF 트리 유지)
 
-### URDFValidator (`urdf_validator.py`)
+### UrdfParser (`urdf_parser.py`)
 
-- `classify_joints(urdf_xml)`: URDF XML을 파싱하여 `active`, `passive_mimic`, `passive_closed_chain`, `fixed` 관절로 분류
+`UrdfParser` 클래스가 URDF/xacro 파일 경로(`UrdfParser.from_file(path)`, xacro 자동 감지) 또는 XML 문자열(`UrdfParser.from_xml(xml)`)로부터 파싱 파이프라인(링크 수집 -> 조인트 파싱 -> adjacency graph -> 분류)을 실행합니다.
+
+- `.classification` (property): `JointClassification` 반환 — `active`, `passive_mimic`, `passive_closed_chain`, `fixed` 관절로 분류
   - `active`: 외부 JointState 데이터가 필요한 관절
   - `passive_mimic`: `<mimic>` 태그가 있는 관절 (마스터 조인트로부터 자동 계산)
   - `passive_closed_chain`: 동일 child_link를 공유하는 폐쇄 루프 관절
   - `fixed`: 고정 관절 (분류 대상에서 제외)
-- `parse_required_joints(urdf_xml)`: active 관절 이름 set 추출
-- `compute_mimic_positions(classification, positions)`: mimic 관절 위치 자동 계산 (`multiplier * master + offset`)
-- `validate_joints(required, received)`: 커버리지 비교 -> `(covered, missing)` 반환
+  - `.active_names` / `.passive_names`: 이름 `set` 프로퍼티
+- `.compute_mimic_positions(joint_positions)`: mimic 관절 위치 자동 계산 (`multiplier * master + offset`)
+- `.validate_joints(received)`: 커버리지 비교 -> `(covered, missing)` set 튜플 반환
+- `.urdf_xml` / `.robot_name` / `.link_nodes` / `.get_active_joint_names()` 등 추가 접근자
 
 ### SensorVisualizer (`sensor_visualizer.py`) -- 선택적
 
@@ -138,28 +142,33 @@ YAML에 `sensor_viz` 블록이 있을 때만 활성화됩니다. 핑거팁별로
 
 ### TcpVisualizer (`tcp_visualizer.py`) -- 선택적
 
-YAML에 `tcp_viz.source_topic`이 비어있지 않을 때 활성화됩니다. `GuiPosition` 메시지로부터 TCP 위치/자세를 받아 RViz2에서 시각화합니다.
+**Phase 4에서 `GuiPosition` 메시지 구독 방식이 제거되고 tf2 조회로 대체되었습니다** (`GuiPosition` 메시지 자체도 폐기됨). YAML에 `tcp_viz.source_topic`이 비어있지 않을 때 활성화되며, 매 표시 주기마다 `tf2_ros.Buffer.lookup_transform(tcp_viz.frame_id, tcp_viz.source_topic, ...)`로 TCP pose를 조회해 RViz2 마커로 변환합니다. 능동 컨트롤러가 `<config_key>/transforms` (`tf2_msgs/TFMessage`)를 브로드캐스트하면 별도 rewire 없이 자동 수신됩니다 (컨트롤러는 전용 `/tf` publisher 없이 이 토픽으로만 transform 을 노출; 상세: [agent_docs/architecture.md](../agent_docs/architecture.md)).
+
+**`tcp_viz.source_topic`은 더 이상 토픽 이름이 아니라 TF child frame 이름**입니다 (예: `"tool0_actual"`). `/`가 포함되지 않은 값은 그대로 child frame으로 쓰이고, `/`가 포함된 legacy 값(과거 절대 토픽 경로 형태)은 활성화 플래그로만 취급되어 child frame은 기본값 `"tool0_actual"`로 폴백합니다.
 
 **시각화 마커:**
 
 | 마커 | 타입 | 설명 |
 |------|------|------|
 | TCP Sphere | Sphere | 현재 TCP 위치 (파란색, 불투명) |
-| Goal Sphere | Sphere | 목표 TCP 위치 (반투명, `show_goal: true` 시) |
+| Goal Sphere | Sphere | 목표 TCP 위치 (반투명, `show_goal: true` 시) — `TcpVisualizer.create_markers_from_tf`는 `goal_positions` 인자를 받지만 `digital_twin_node`가 현재 이를 채우는 소스를 연결하지 않아 항상 미표시 |
 | RGB Axes | Arrow × 3 | TCP 자세 방향 (R=X, G=Y, B=Z) |
 
-- 선택적 TF 브로드캐스팅: `broadcast_tf: true` 시 `virtual_tcp` 프레임을 TF 트리에 발행
-- 설정 가능한 구체 반지름 (`sphere_radius`), 축 길이 (`axes_length`)
+- 선택적 TF 재브로드캐스팅: `broadcast_tf: true` 시 조회한 pose를 `tf_child_frame` (기본 `virtual_tcp`) 프레임으로 재발행
+- 마커 `header.frame_id` 및 tf2 lookup의 parent frame은 모두 `tcp_viz.frame_id` (기본 `"base"`)
 
 ```yaml
 # YAML tcp_viz 설정 예시
-tcp_viz.source_topic: "/ur5e/gui_position"
+tcp_viz.source_topic: "tool0_actual"   # TF child frame 이름 (토픽 아님)
+tcp_viz.frame_id: "base"               # TF parent frame + 마커 frame_id
 tcp_viz.marker_topic: "/digital_twin/tcp_markers"
 tcp_viz.broadcast_tf: true
-tcp_viz.tf_child_frame: "virtual_tcp"
+tcp_viz.tf_child_frame: "virtual_tcp"  # 재브로드캐스팅 시 child frame 이름
 tcp_viz.sphere_radius: 0.012
 tcp_viz.axes_length: 0.05
+tcp_viz.axes_shaft: 0.004
 tcp_viz.show_goal: true
+tcp_viz.goal_sphere_radius: 0.010
 ```
 
 ### JointGuiNode (`joint_gui.py`) -- 선택적
@@ -377,12 +386,13 @@ Loop-closed 핸드(예: linkage 핑거)는 spanning-tree URDF + `<stem>.closure.
 | `visualization_msgs` | `Marker`, `MarkerArray` (센서 시각화) |
 | `geometry_msgs` | `Point`, `Vector3` (마커 좌표/스케일) |
 | `builtin_interfaces` | ROS2 기본 인터페이스 |
-| `rtc_msgs` | `HandSensorState`, `FingertipSensor`, `GuiPosition` (센서/TCP 데이터) |
-| `tf2_ros` | TCP TF 브로드캐스팅 (tcp_visualizer에서 사용) |
+| `rtc_msgs` | `HandSensorState` (`FingertipSensor` 필드 포함, 센서 데이터). TCP pose는 Phase 4부터 tf2 lookup으로 대체 (`GuiPosition` 폐기) |
+| `tf2_ros` | TCP pose 조회 (`lookup_transform`) + 선택적 TF 브로드캐스팅 (tcp_visualizer/digital_twin_node에서 사용) |
 | `robot_state_publisher` | URDF -> TF 변환 (launch에서 사용) |
 | `rviz2` | 3D 시각화 (launch에서 사용) |
 | `xacro` | URDF 매크로 처리 (launch에서 사용) |
 | `python_qt_binding` | Qt GUI 프레임워크 (Joint GUI) |
+| `python3-yaml` | YAML 설정 파일 파싱 (launch에서 사용) |
 
 ---
 

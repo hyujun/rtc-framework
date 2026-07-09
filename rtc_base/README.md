@@ -43,12 +43,16 @@ rtc_base/
     │   ├── thread_timing_producer.hpp <- ThreadTimingProducer<Payload,N> SPSC + tick counter
     │   ├── thread_timing_csv_logger.hpp <- ThreadTimingCsvLogger<Payload> CSV writer
     │   └── rt_tick_timing_sample.hpp  <- RtTickTimingPayload (CM/MPC 공용) + 버퍼 alias
-    └── threading/
-        ├── thread_config.hpp      <- CPU 코어별 스레드 레이아웃 프리셋
-        ├── thread_utils.hpp       <- 스레드 구성/검증 유틸리티
-        ├── periodic_rt_thread.hpp <- 고정 주파수 RT 루프 base (CM/MPC 공유)
-        ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
-        └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
+    ├── threading/
+    │   ├── thread_config.hpp      <- CPU 코어별 스레드 레이아웃 프리셋
+    │   ├── thread_utils.hpp       <- 스레드 구성/검증 유틸리티
+    │   ├── cpu_topology.hpp       <- 하이브리드(P/E-core) CPU 토폴로지 감지 (NucGeneration)
+    │   ├── periodic_rt_thread.hpp <- 고정 주파수 RT 루프 base (CM/MPC 공유)
+    │   ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
+    │   └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
+    └── utils/
+        ├── clamp_commands.hpp     <- ClampSymmetric/ClampRange: RT-safe 커맨드 클램프
+        └── device_passthrough.hpp <- PassthroughSecondaryDevices: secondary device joint passthrough
 ```
 
 ---
@@ -79,6 +83,8 @@ rtc_base/
 | `kMaxTaskLinks` | 8 | capacity | `ControllerOutput::task_link_poses[]` 의 컴파일타임 상한 — controller 가 publish 하는 임의 FK frame (fingertip/TCP/elbow/mounting plate 등) |
 | `kDefaultMaxJointVelocity` | 2.0 | 기본 최대 관절 속도 (rad/s) |
 | `kDefaultMaxJointTorque` | 150.0 | 기본 최대 관절 토크 (N-m) |
+| `ControllerState::kMaxDevices` / `ControllerOutput::kMaxDevices` | 8 | capacity | 구조체 스코프 상수 — `devices[]` 배열 상한 (컨트롤러 당 디바이스 그룹 수) |
+| `PublishSnapshot::kMaxGroups` | 8 | capacity | `threading/publish_buffer.hpp` 스코프 상수 — `group_commands[]` 배열 상한 |
 
 > **참고:** assm_v1 hand 전용 packet/model layout 상수 (`kBarometerCount`, `kReservedCount`, `kTofCount`, `kSensorDataPerPacket`, `kSensorValuesPerFingertip`, `kMaxHandSensors`, `kNumFingertips`, `kNumHandSensors`, `kFTValuesPerFingertip`, `kFTInputSize`, `kFTHistoryLength`, `kDefaultNumFingertips`, `kMaxBaroChannels`, `kMaxTofChannels`)와 `FingertipFTState`, `BesselFilterBaro`/`BesselFilterTof`/`BarometerTrendDetector` alias 들은 `udp_hand_driver/udp_hand_constants.hpp` 로 이주했습니다. `BesselFilter6/11/1` dead alias 는 삭제. rtc_* 패키지는 robot/sensor agnostic — 디바이스별 stride 는 YAML `devices.<name>.sensor_layout` 으로 런타임 주입 (`rtc::DeviceSensorLayout`).
 
@@ -93,29 +99,29 @@ rtc_base/
 
 | 열거형 | 값 | 설명 |
 |--------|---|------|
-| `CommandType` | `kPosition`, `kTorque` | 커맨드 모드 |
+| `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` | 커맨드 모드. `kPdFeedforward`는 PD 위치 서보(`values`) + per-joint feedforward 토크(`DeviceOutput::feedforward`) 오버레이 — arm=kPosition, hand=kPdFeedforward 같은 mixed-command 출력에 사용 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
-| `PublishRole` | `kRobotTarget`, `kDigitalTwinState`, `kRobotTransforms` | 퍼블리시 역할. Phase 4 trailing cleanup (`104796f`): `kGraspState`/`kWbcState`/`kToFSnapshot` 도 enum/parser/snapshot 에서 제거되어 각 controller 가 직접 `SeqLock<{Grasp,Wbc,ToF}StateData>` + `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼로 소유. 더 일찍 제거된 항목 (`b9a2587`): `kJointCommand`/`kRos2Command`/`kDeviceStateLog`/`kDeviceSensorLog`/`kGuiPosition` — device-wire 명령은 `devices.<group>.backend`, joint state는 `/rtc_cm/<group>/joint_states`, TCP pose는 `<config_key>/transforms` |
+| `PublishRole` | `kRobotTarget`, `kDigitalTwinState`, `kRobotTransforms` | CM이 소유하는 퍼블리시 역할. `kRobotTarget`=`rtc_msgs/RobotTarget`, `kDigitalTwinState`=`sensor_msgs/JointState` (RELIABLE republish), `kRobotTransforms`=`tf2_msgs/TFMessage` (controller가 사용하는 frame들을 묶어 발행). Device-wire 명령 발행은 `devices.<group>.backend`가, grasp/wbc/tof 상태는 각 controller가 소유하는 `SeqLock<T>` + `Setup*Publisher` 헬퍼가 담당하며 `PublishRole`을 거치지 않는다 |
 | `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` | 디바이스 기능 비트마스크 (RT 루프 선택적 데이터 복사) |
 
-`GoalTypeToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수.
-구독 역할은 Phase 4 trailing cleanup에서 singleton (`target`) 만 남아 enum이 삭제되었고, YAML parser가 `role:` 문자열 (`target` / 호환용 `goal`) 만 validate 한다.
+`GoalTypeToString()`, `CommandTypeToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수. `CommandTypeToString()`은 `JointCommand.command_type`와 동일한 와이어 문자열(`"position"`/`"torque"`/`"pd_feedforward"`)을 반환한다.
+구독 역할은 singleton(`target`)만 남아 있어 enum이 없고, YAML parser가 `role:` 문자열(`target` / 호환용 `goal`)만 validate 한다.
 
 #### 주요 구조체
 
-> **참고:** 레거시 타입 `UdpHandState`는 `udp_hand_driver/udp_hand_state.hpp`로 이동되었습니다. `RobotState`는 사용처가 없어 삭제되었습니다.
+> **참고:** `UdpHandState`는 `udp_hand_driver/udp_hand_state.hpp`에 있습니다 -- `rtc_base`에는 robot-agnostic 타입만 둡니다.
 
 **일반화된 디바이스 타입 (가변 DOF):**
 
 | 구조체 | 설명 |
 |--------|------|
 | `DeviceState` | 가변 채널 디바이스 상태 -- `positions[64]`, `velocities[64]`, `efforts[64]`, 모터 공간 (`motor_positions[64]`, `motor_velocities[64]`, `motor_efforts[64]`), 센서 (`sensor_data[128]`, `sensor_data_raw[128]`), 추론 (`inference_data[64]`, `inference_enable[8]`, `num_inference_groups`) |
-| `ControllerState` | `devices[4]` (DeviceState 배열) + `num_devices`, `dt`, `iteration`, `t_relative_s` (CM 가 매 tick 채워주는 session-wide 상대 시간; controller 는 `chrono::*::now()` 대신 이 값을 읽어 로그 timestamp 으로 사용) |
-| `DeviceOutput` | 가변 채널 출력 -- `commands[64]`, `goal_positions[64]`, `target_positions[64]`, `target_velocities[64]`, `trajectory_positions[64]`, `trajectory_velocities[64]`, `goal_type` |
-| `ControllerOutput` | `devices[4]` (DeviceOutput 배열) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type`, **TF 발행용 SE3** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid). Phase 4c 이후 `grasp_state`/`wbc_state`/`tof_snapshot` 는 controller 별 SeqLock 으로 분리되어 ControllerOutput 에서 제거됨. |
+| `ControllerState` | `devices[8]` (DeviceState 배열, `kMaxDevices`) + `num_devices`, `dt`, `iteration`, `t_relative_s` (CM 가 매 tick 채워주는 session-wide 상대 시간; controller 는 `chrono::*::now()` 대신 이 값을 읽어 로그 timestamp 으로 사용) |
+| `DeviceOutput` | 가변 채널 출력 -- `commands[64]`, `goal_positions[64]`, `target_positions[64]`, `target_velocities[64]`, `trajectory_positions[64]`, `trajectory_velocities[64]`, `feedforward[64]` (per-joint feedforward 토크 Nm, `kPdFeedforward` 전용, 그 외 모드는 무시), `goal_type`, `command_type` (`std::optional<CommandType>` — per-device override; `nullopt` 이면 `ControllerOutput::command_type` 전역 기본값을 상속) |
+| `ControllerOutput` | `devices[8]` (DeviceOutput 배열, `kMaxDevices`) + `actual_task_positions[6]`, `task_goal_positions[6]`, `trajectory_task_positions[6]`, `trajectory_task_velocities[6]`, `valid`, `command_type` (전역 기본 `CommandType`), **TF 발행용 SE3** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid). `grasp_state`/`wbc_state`/`tof_snapshot` 는 controller 별 SeqLock 으로 분리되어 ControllerOutput 에서 제거됨. |
 | `Pose` | RT-safe SE3 carrier — `position[3]`, `quaternion[4]` (Hamilton w,x,y,z; identity = (1,0,0,0)). free-standing struct, `PublishSnapshot::GroupCommandSlot::{arm_tip,virtual_tcp,task_link}_pose` 가 공유 |
 
-> **Phase 4d (2026-05-16)**: domain-specific POD 들은 자연스러운 owner 로 이동했다. `rtc::grasp::GraspStateData` → `rtc_controllers/grasp/grasp_state.hpp`, `integrated_bringup::WbcStateData` → `integrated_bringup/controllers/wbc/wbc_state.hpp`, `integrated_bringup::ToFSnapshotData` → `integrated_bringup/controllers/tof_snapshot.hpp`. `rtc_base` 는 robot-agnostic primitive (Pose, DeviceState, DeviceOutput) 만 보유.
+> **참고:** domain-specific POD (`rtc::grasp::GraspStateData`, `integrated_bringup::WbcStateData`, `integrated_bringup::ToFSnapshotData`)는 각각의 자연스러운 owner 패키지에 있습니다 -- `rtc_base`는 robot-agnostic primitive (`Pose`, `DeviceState`, `DeviceOutput`)만 보유합니다.
 
 **설정 타입:**
 
@@ -131,7 +137,7 @@ rtc_base/
 
 | 구조체 | 설명 |
 |--------|------|
-| `SubscribeTopicEntry` | `topic_name` + `TopicOwnership` (role enum은 Phase 4 trailing cleanup에서 삭제) |
+| `SubscribeTopicEntry` | `topic_name` + `TopicOwnership` (구독 role은 singleton이라 enum 없음) |
 | `PublishTopicEntry` | `topic_name` + `PublishRole` + `data_size` + `TopicOwnership` |
 | `DeviceTopicGroup` | `subscribe` + `publish` 토픽 엔트리 벡터 |
 
@@ -368,7 +374,7 @@ Phase 5 이후 `SystemThreadConfigs.sim_thread` / `.viewer` 가 SSoT 입니다 (
 
 `ThreadHealthFlag` 비트 플래그: `kOk`, `kWrongCore`, `kPolicyChanged`, `kPriorityChanged`, `kNiceChanged`.
 
-`SystemThreadConfigs` 구조체 (layout v4): `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`). v3 의 `rt_outbound` 필드는 v4 에서 제거 — actuator publish 는 `rt_control` 이 inline 으로 수행. `udp_recv` 필드도 없음 — hand UDP receive thread 는 hand_driver 프로세스 내부 (`udp_hand_driver/udp_hand_constants.hpp::kHandUdpRecvConfig`) 로 이주, 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1 sentinel) 을 caller 가 명시 사용.
+`SystemThreadConfigs` 구조체: `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`). `rt_outbound`/`udp_recv` 필드는 없음 — actuator publish 는 `rt_control` 이 rt_loop tick 안에서 inline 으로 수행하고, hand UDP receive thread 는 hand_driver 프로세스 내부 (`udp_hand_driver/udp_hand_constants.hpp::kHandUdpRecvConfig`) 에 있으며, 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (cpu_core=-1 sentinel) 을 caller 가 명시적으로 사용한다.
 
 `MpcThreadConfig` 구조체:
 - `main`: MPC solve 스레드의 `ThreadConfig`.
@@ -441,18 +447,18 @@ CM, MPC, udp_hand_driver의 hand UDP EventLoop가 이 패턴의 세 사용처. �
 
 | 카테고리 | 필드 |
 |---------|------|
-| 디바이스별 (`GroupCommandSlot[4]`) | `num_channels`, `actual_num_channels`, `commands[]`, `goal_positions[]`, `target_positions[]`, `target_velocities[]`, `trajectory_positions[]`, `trajectory_velocities[]`, `actual_positions[]`, `actual_velocities[]`, `efforts[]`, `motor_positions[]`, `motor_velocities[]`, `motor_efforts[]`, `sensor_data[]`, `sensor_data_raw[]`, `inference_output[]`, `goal_type`, **TF source poses** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid — `kRobotTransforms` publish role 용). `grasp_state`/`wbc_state`/`tof_snapshot` 은 controller-owned isolation (`104796f`) 으로 슬롯에서 빠지고 controller 별 SeqLock 으로 이관됨; Phase 4c 에서 ControllerOutput 에서도 제거됨. |
-| 공유 | `command_type`, `actual_task_positions[6]`, `stamp_ns`, `active_controller_idx`, `num_groups` |
+| 디바이스별 (`GroupCommandSlot[8]`, `kMaxGroups`) | `num_channels`, `actual_num_channels`, `stamp_ns` (per-group wall-clock ns, snapshot-level `stamp_ns`에서 미러; backend가 `JointCommand` header stamp에 사용), `commands[]`, `goal_positions[]`, `target_positions[]`, `target_velocities[]`, `trajectory_positions[]`, `trajectory_velocities[]`, `feedforward[]` (per-joint feedforward 토크 Nm, `DeviceOutput::feedforward` 미러), `command_type` (resolved per-group `CommandType` — mixed-command 디스패치는 이 필드를 읽고 공유 필드는 없음), `actual_positions[]`, `actual_velocities[]`, `efforts[]`, `motor_positions[]`, `motor_velocities[]`, `motor_efforts[]`, `sensor_data[]`, `sensor_data_raw[]`, `inference_output[]`, `goal_type`, **TF source poses** (`arm_tip_pose` + valid, `virtual_tcp_pose` + valid, `task_link_poses[8]` + valid — `kRobotTransforms` publish role 용). `grasp_state`/`wbc_state`/`tof_snapshot` 는 controller 별 SeqLock 으로 이관되어 슬롯에 없음. |
+| 공유 | `actual_task_positions[6]`, `stamp_ns` (헤더 스탬프 원본; grasp/wbc/transforms header.stamp 및 각 그룹 `stamp_ns`의 소스), `active_controller_idx`, `num_groups` |
 
 ---
 
 ### 로깅 (`logging/`)
 
-> **Phase C 정리 (2026-05-01)**: 기존 CM-side `data_logger.hpp` / `log_buffer.hpp` 는 삭제됐다. 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 로 이전. CM 은 `cm_timing_log.csv` (per-tick scheduling timing) 만 자체 소유한다. `cm_timing_log` 의 schema 는 `t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 7-col `RtTickTimingPayload` 사용 (`rtc_base/timing/rt_tick_timing_sample.hpp`).
->
-> **Sim 모드 (2026-05-02)**: `PeriodicRtThread::JitterMeaningful()` 가상 함수로 producer가 자기 wakeup이 deadline-driven 인지 선언한다. CM `ControlLoopThread` 는 `use_sim_time_sync=true` 일 때 `false` 반환 → base 가 `jitter_us` 를 0.0 으로 둔다 (CV cadence 대비 budget 차이는 RT 잡음 지표가 아니므로). MPC / hand_udp 는 default `true` 유지 → 기존 동작 그대로. 다른 6 개 컬럼은 두 모드 동일.
->
-> **RT-safe self-exit + timing suppression (2026-07-09)**: `PeriodicRtThread` 에 두 protected 훅이 추가됐다. `RequestLoopExit()` 는 OnTick 내부(loop 스레드)에서 호출하는 **순수 `atomic<bool>` store** 로, 루프가 현재 tick 후 종료하도록 예약하고 unwind 시 `OnLoopAborted()` 를 1회 호출한다 — `RequestStop()`(pause-mutex + `pause_cv_.notify_all()`)과 달리 mutex/CV 를 잡지 않아 RT 핫패스에서 안전(RT-10). `Start()` 가 `exit_from_loop_` 를 리셋하므로 종료 후 재시작 가능. `SuppressTimingThisTick()` 은 해당 tick 의 `RtTickTimingPayload` push 를 건너뛰어(매 tick 초기화) skip / terminal cycle 의 degenerate timing 이 CSV 를 오염시키지 않게 한다. 첫 소비자는 `UdpHandController` 의 E-Stop self-exit (zero-write 는 `OnLoopAborted` 로 이동) 및 comm-decimation skip cycle. CM / MPC 는 두 훅 미사용 → 동작 불변.
+CM-side 컨트롤러 데이터 CSV 는 `rtc_controller_interface/controller_log_set.hpp` 의 `ControllerLogSet` + 각 컨트롤러가 소유한 POD 미러 (예: `integrated_bringup/include/integrated_bringup/logging/`) 가 담당한다. CM 자신은 `cm_timing_log.csv` (per-tick scheduling timing) 만 소유하며, schema 는 `t_wall_ns, tick_count, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` — MPC / hand_udp 와 동일한 7-col `RtTickTimingPayload` 를 사용한다 (`rtc_base/timing/rt_tick_timing_sample.hpp`).
+
+`PeriodicRtThread::JitterMeaningful()` 가상 함수로 producer가 자기 wakeup이 deadline-driven 인지 선언한다. CM `ControlLoopThread` 는 `use_sim_time_sync=true` 일 때 `false` 를 반환해 `jitter_us` 를 0.0 으로 고정한다 (CV cadence 대비 budget 차이는 RT 잡음 지표가 아니므로). MPC / hand_udp 는 default `true` 유지. 나머지 6개 컬럼은 두 모드 동일.
+
+`PeriodicRtThread` 는 두 개의 RT-safe protected 훅을 제공한다. `RequestLoopExit()` 는 OnTick 내부(loop 스레드)에서 호출하는 **순수 `atomic<bool>` store** 로, 루프가 현재 tick 후 종료하도록 예약하고 unwind 시 `OnLoopAborted()` 를 1회 호출한다 — `RequestStop()`(pause-mutex + `pause_cv_.notify_all()`)과 달리 mutex/CV 를 잡지 않아 RT 핫패스에서 안전하다. `Start()` 가 `exit_from_loop_` 를 리셋하므로 종료 후 재시작 가능. `SuppressTimingThisTick()` 은 해당 tick 의 `RtTickTimingPayload` push 를 건너뛰어(매 tick 초기화) skip / terminal cycle 의 degenerate timing 이 CSV 를 오염시키지 않게 한다. 소비 예: `UdpHandController` 의 E-Stop self-exit (zero-write 는 `OnLoopAborted` 로 이동) 및 comm-decimation skip cycle. CM / MPC 는 두 훅을 사용하지 않는다.
 
 #### Generic CSV 인프라 (`thread_csv_producer.hpp` + `thread_csv_logger.hpp`)
 

@@ -131,15 +131,17 @@ YAML: solver: "Newton", iterations: 100, cone: "elliptic"
 결과: solver=CG (XML), iterations=50 (XML), cone=elliptic (YAML fallback)
 ```
 
-| 카테고리 | 파라미터 | 기본값 | 설명 |
+**SSoT는 [config/solver_param.yaml](config/solver_param.yaml)** — 모든 sim launch가 항상 먼저 로드하는 실제 shipped 기본값이며, 값이 바뀌어도 이 표를 갱신할 필요 없이 YAML을 참조한다. 아래 표의 "코드 Fallback"은 `mujoco_simulator_node.cpp`의 `declare_parameter()` 값(파라미터가 어디서도 설정되지 않았을 때만 적용)이고, 코드 Fallback과 shipped YAML 값이 다른 경우에만 `(shipped: ...)`로 병기했다.
+
+| 카테고리 | 파라미터 | 코드 Fallback | 설명 |
 |----------|----------|--------|------|
 | **알고리즘** | `solver` | `"Newton"` | constraint solver (`PGS`, `CG`, `Newton`) |
-| | `cone` | `"pyramidal"` | 마찰 원뿔 모델 (`pyramidal`, `elliptic`) |
+| | `cone` | `"pyramidal"` (shipped: `"elliptic"`) | 마찰 원뿔 모델 (`pyramidal`, `elliptic`) |
 | | `jacobian` | `"auto"` | Jacobian 표현 (`dense`, `sparse`, `auto`) |
-| | `integrator` | `"Euler"` | 적분기 (`Euler`, `RK4`, `implicit`, `implicitfast`) |
-| **반복 계산** | `iterations` | `100` | 메인 solver 최대 반복 횟수 |
+| | `integrator` | `"Euler"` (shipped: `"implicitfast"`) | 적분기 (`Euler`, `RK4`, `implicit`, `implicitfast`) |
+| **반복 계산** | `iterations` | `100` (shipped: `20`) | 메인 solver 최대 반복 횟수 |
 | | `tolerance` | `1e-8` | 메인 solver 수렴 threshold |
-| | `ls_iterations` | `50` | CG/Newton linesearch 최대 반복 |
+| | `ls_iterations` | `50` (shipped: `20`) | CG/Newton linesearch 최대 반복 |
 | | `ls_tolerance` | `0.01` | linesearch 수렴 threshold |
 | | `noslip_iterations` | `0` | Noslip 후처리 반복 (0=비활성화, 매니퓰레이션에서 10~20 권장) |
 | | `noslip_tolerance` | `1e-6` | Noslip solver 수렴 threshold |
@@ -153,13 +155,15 @@ YAML: solver: "Newton", iterations: 100, cone: "elliptic"
 | | `island` | `false` | constraint island discovery (CG 병렬화) |
 | | `eulerdamp` | `true` | Euler에서 joint damping implicit 처리 |
 | | `filterparent` | `true` | 부모-자식 body collision 필터링 |
-| | `multiccd` | `false` | convex pair 당 다점 contact (object grasp / pinch 권장) |
+| | `multiccd` | `false` (shipped: `true`) | convex pair 당 다점 contact (object grasp / pinch 권장) |
 | | `autoreset` | `true` | NaN/blow-up 시 silently `mj_resetData` (개발 중 `false` 권장) |
 | | `nativeccd` | `true` | MuJoCo 3.3+ native CCD (legacy MPR fallback 필요 시 `false`) |
 | **Contact Override** | `contact_override.enable` | `false` | 전체 contact 파라미터 일괄 덮어쓰기 |
 | | `contact_override.o_solref` | `[0.02, 1.0]` | override solref [timeconst, dampratio] |
 | | `contact_override.o_solimp` | `[0.9, 0.95, 0.001, 0.5, 2.0]` | override solimp [d0, dwidth, width, midpoint, power] |
 | | `contact_override.o_friction` | `[1.0, 1.0, 0.005, 0.0001, 0.0001]` | override friction [tan1, tan2, spin, roll1, roll2] |
+
+> `n_substeps` (top-level 파라미터, `solver.*` 밖)도 동일하게 drift한다: 코드 fallback `1`, shipped `config/solver_param.yaml` 값 `3`. SSoT는 [config/solver_param.yaml](config/solver_param.yaml).
 
 **Runtime 변경 가능 파라미터** (atomic, viewer 단축키 연동):
 `solver`, `integrator`, `iterations`, `tolerance`, `cone`, `jacobian`, `ls_iterations`, `ls_tolerance`, `noslip_iterations`, `noslip_tolerance`, `impratio`
@@ -585,6 +589,7 @@ ros2 topic hz /hand/joint_states
 | Esc | 카메라 초기화 (Free 모드, 기본 거리/방위각) |
 | Backspace | 시각화 옵션 초기화 |
 | G | 전역 중력 ON/OFF (디버깅용; 로봇 gravcomp 와 무관) |
+| B | link frame overlay ON/OFF (`mjFRAME_BODY`) |
 | N | 접촉 제약 ON/OFF |
 | I | integrator 순환 (Euler → RK4 → Implicit → ImplFast) |
 | S | solver 순환 (PGS → CG → Newton) |
@@ -641,6 +646,12 @@ sim->HasSensors(0);                       // 그룹에 센서 있는지 확인
 auto& infos = sim->GetSensorInfos(0);     // SensorInfo 목록 (name, type, adr, dim)
 sim->SetSensorCallback(0, [](const auto& infos, const auto& values) {
   // infos: 센서 메타데이터, values: flat double 배열
+});
+
+// Contact wrench API (robot 그룹, MJCF <sensor><contact> 자동 발견 시)
+sim->SetContactWrenchCallback(0, [](const auto& infos, const auto& samples) {
+  // infos: ContactWrenchInfo 목록 (target_name, frame_id 등)
+  // samples: infos와 동일 인덱스의 link-frame force/torque (ContactWrenchSample)
 });
 
 // Fake response API (fake 그룹)
@@ -706,6 +717,7 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 | 패키지 | 용도 |
 |--------|------|
 | `rclcpp` | ROS2 C++ 클라이언트 |
+| `rclcpp_lifecycle` | LifecycleNode 기반 상태 관리 |
 | `std_msgs` | Float64MultiArray (sim/status) |
 | `sensor_msgs` | JointState (state publish) |
 | `ament_index_cpp` | package:// URI 해석 |
@@ -720,6 +732,7 @@ MJCF 파일 안에서 `package://` URI를 별도 변환 없이 사용 가능:
 | `robot_descriptions` | MJCF 모델, URDF, 메시 파일 |
 | `udp_hand_driver` | udp_hand_node.yaml 참조 (선택) |
 | `rtc_controller_manager` | 런치 파일에서 rtc_controller_manager 노드 실행 (실행 파일: `rt_controller`) |
+| `rtc_tools` | `mujoco_sim.launch.py`의 세션 디렉토리 헬퍼 (`session_dir.resolve_logging_root()`) |
 
 ### 외부 라이브러리 (비ROS2)
 
@@ -750,6 +763,14 @@ colcon build --packages-select rtc_mujoco_sim --symlink-install \
 > GLFW가 설치되지 않은 경우 뷰어 없이 headless 모드로만 빌드됩니다.
 > 빌드 시 C++20 표준을 사용합니다 (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`).
 
+### Coverage (gcov/lcov)
+
+```bash
+colcon build --packages-select rtc_mujoco_sim --cmake-args -DENABLE_COVERAGE=ON
+```
+
+`mujoco_simulator_lib` + 전체 테스트를 `--coverage -fprofile-arcs -ftest-coverage`로 계측 (기본 `OFF`).
+
 ---
 
 ## Testing
@@ -760,34 +781,24 @@ colcon test --packages-select rtc_mujoco_sim --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
-77 GTest 케이스 (7 파일):
+GTest 스위트 (11 파일, `test/` 디렉토리). 최신 케이스 수·pass/fail 은 `colcon test-result --verbose` 실측 — 표에 개수를 박지 않는다 (drift 방지):
 
-| Test | Count | Scope |
-|------|-------|-------|
-| `test_pure_helpers` | 15 | `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep` (순수 로직) |
-| `test_simulator_init` | 15 | `Initialize` happy/실패 경로, joint/sensor 디스커버리, 검증 |
-| `test_solver_config` | 9 | XML `<option>`/`<flag>` 우선순위, YAML fallback, ContactOverride |
-| `test_command_state_io` | 12 | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
-| `test_lifecycle` | 10 | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
-| `test_runtime_controls` | 11 | atomic setter/getter, 클램핑, world gravity 토글 |
-| `test_gravcomp_scene` | 4 | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증 (`scene_with_object.xml`) |
-| `test_data_flow` | 5 | 상태/센서 콜백 firing, StepCount 단조, RTF |
+| Test | Scope |
+|------|-------|
+| `test_pure_helpers` | `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep` (순수 로직) |
+| `test_resource_provider` | `ResolveModelPath` — package:// URI 해석 (순수 문자열 + ament, MJCF fixture 불필요) |
+| `test_simulator_init` | `Initialize` happy/실패 경로, joint/sensor 디스커버리, 검증 |
+| `test_solver_config` | XML `<option>`/`<flag>` 우선순위, YAML fallback, ContactOverride |
+| `test_command_state_io` | `SetCommand`/`SetControlMode`/`SetFakeTarget` 정합성 (스레드 미사용) |
+| `test_lifecycle` | Start/Stop/Pause/Resume/Reset/StepOnce/SyncTimeout |
+| `test_runtime_controls` | atomic setter/getter, 클램핑, world gravity 토글 |
+| `test_gravcomp_scene` | per-body gravcomp 회귀 — robot link 만 보상, free body 는 낙하, `qfrc_gravcomp` 실효 검증 (`scene_with_object.xml`) |
+| `test_data_flow` | 상태/센서 콜백 firing, StepCount 단조, RTF |
+| `test_contact_wrench` | MJCF `<sensor><contact>` 자동 발견, world→link frame 변환, 비접촉 시 0 발행 (`contact_minimal.xml`) |
+| `test_sim_effort_force` | effort 값 유효성, `SetExternalForce`/`qfrc_applied` 기록·초기화 |
 
-Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서).
+Fixture: [test/fixtures/minimal.xml](test/fixtures/minimal.xml) (2-hinge 체인 + 2 센서), [test/fixtures/scene_with_object.xml](test/fixtures/scene_with_object.xml), [test/fixtures/contact_minimal.xml](test/fixtures/contact_minimal.xml).
 GLFW 뷰어 통합 테스트는 헤드리스 CI 제약으로 제외.
-
----
-
-## 변경 내역
-
-| 버전 | 변경 내용 |
-|------|----------|
-| **v5.21.0** | MuJoCo 3.2.4 → 3.7.0 호환 업데이트. `mjpResourceProvider.getdir` 콜백 제거 (3.5.0 에서 shared impl 로 대체), `mjENBL_ISLAND` → `mjDSBL_ISLAND` polarity 반전 (3.3.6 에서 islanding default-on 승격), `mjVERSION_HEADER` 자릿수 변경에 대응한 `RTC_MUJOCO_HAS_CCD` helper macro 도입. YAML `solver.island` 의미 (`true=enable`) 그대로 유지 — 내부에서만 polarity 처리. |
-| **v5.20.0** | 단위 테스트 스위트 추가 (77 GTest 케이스, 7 파일). `SolverNameToEnum`/`ConeNameToEnum`/`JacobianNameToEnum`/`IntegratorNameToEnum`/`ApplyFakeLpfStep`를 public static helper로 추출. 소스를 `mujoco_simulator_lib` 정적 라이브러리로 분리. |
-| **v5.19.0** | MuJoCo 센서 publish 지원 추가. 그룹별 `sensor_topic` + `sensor_names` YAML 설정으로 XML 센서 데이터를 `rtc_msgs/SimSensorState`로 매 physics step 퍼블리시. 로봇 독립적(robot-agnostic) 구현. |
-| **v5.18.0** | `n_substeps` 파라미터 추가 — 제어 주기당 `mj_step` 호출 횟수 제어. Physics Load 측정 및 뷰어 상태 오버레이에 Substeps/Physics Load 표시 추가. |
-| **v5.17.0** | `SimMode` enum (`free_run`/`sync_step`) 제거 → 동기식 단일 루프로 통합. rtc_controller_manager CV 기반 wakeup (`use_sim_time_sync`) 지원. `publish_decimation` 파라미터 제거. |
-| **v5.16.1** | C++20 표준 및 컴파일러 경고 플래그 확인 완료 |
 
 ---
 

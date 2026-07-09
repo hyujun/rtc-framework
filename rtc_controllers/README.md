@@ -303,14 +303,32 @@ operational_space_controller:
 
 ### 5. GraspController (적응형 PI 힘 제어)
 
-3-finger 핸드를 위한 위치 제어 기반 적응형 PI 힘 제어기입니다. 스칼라 그래스프 파라미터 `s in [0,1]`로 finger별 open/close 자세를 선형 보간하며, 외부 루프 PI 제어기와 온라인 강성(stiffness) 추정을 통해 목표 접촉력을 달성합니다. ROS2 독립적이며 `Init()` 호출 이후 RT-safe합니다.
+가변 개수·가변 DoF 핸드를 위한 위치 제어 기반 적응형 PI 힘 제어기입니다. 스칼라 그래스프 파라미터 `s in [0,1]`로 finger별 open/close 자세를 선형 보간하며, 외부 루프 PI 제어기와 온라인 강성(stiffness) 추정을 통해 목표 접촉력을 달성합니다. ROS2 독립적이며 `Init()` 호출 이후 RT-safe합니다.
 
 > **내부 컨트롤러**: `RTC_REGISTER_CONTROLLER` 매크로로 직접 등록되지 않습니다. `DemoJointController`, `DemoTaskController`, `DemoWbcController` 등 상위 컨트롤러에서 `grasp_controller_type: "force_pi"` 설정으로 내부적으로 인스턴스화하여 사용합니다.
+
+**가변 finger 수 / 가변 DoF (`grasp_types.hpp`):**
+
+| 타입/상수 | 설명 |
+|---|---|
+| `FingerConfig` | `{int dof; std::array<double, kMaxDoFPerFinger> q_open; std::array<double, kMaxDoFPerFinger> q_close;}` — finger 1개의 실제 DoF + open/close 관절각. Finger마다 DoF가 다를 수 있음 (예: thumb:4, index:3, middle:2, ring:1) |
+| `kMaxGraspFingers` (=8) | 컴파일 타임 상한 — 실제 finger 수는 런타임 값 (`Init()` 인자 `configs.size()`, 클램프됨). 저장은 항상 fixed-size (RT no-alloc) |
+| `kMaxDoFPerFinger` (=8) | finger당 DoF 컴파일 타임 상한 — 실제 DoF는 `FingerConfig::dof` / `GraspJointCommands::dof[f]`, 루프는 런타임 카운트까지만 순회 |
+| `GraspJointCommands` | `{int num_fingers; std::array<int, kMaxGraspFingers> dof; std::array<std::array<double, kMaxDoFPerFinger>, kMaxGraspFingers> q;}` — `Update()` 반환값. `q[f][0..dof[f])`만 유효, 나머지는 0 |
+
+**API:**
+
+| 메서드 | 설명 |
+|---|---|
+| `Init(std::span<const FingerConfig> configs, const GraspParams& params)` | non-RT. finger 수 = `min(configs.size(), kMaxGraspFingers)`, 각 finger DoF = `FingerConfig::dof`. 필터 계수 계산 포함 |
+| `Update(std::span<const double> f_raw, double dt) noexcept` | RT-safe, 매 제어 주기 호출. `f_raw[f]`는 `Init()` configs와 동일 순서의 finger별 힘 크기(3축 norm) — 부족한 entry는 0 취급, 초과 entry는 무시. `GraspJointCommands` 반환 |
+| `finger_states()` | `std::span<const FingerState>` — `Init()`에서 설정된 `num_fingers_`개 활성 finger 범위만 span |
+| `CommandGrasp(target_force=0)` / `CommandRelease()` | atomic 플래그 기반 크로스 스레드 명령 |
 
 **상태 머신 (GraspPhase):**
 
 ```
-  Idle ──[CommandGrasp()]──> Approaching ──[thumb+index 접촉]──> Contact
+  Idle ──[CommandGrasp()]──> Approaching ──[primary fingers 접촉]──> Contact
    ^                            |                                   |
    |                     [s=1.0, 미접촉]                    [settle_time 경과]
    |                            |                                   v
@@ -324,7 +342,7 @@ operational_space_controller:
 | 단계 | 설명 |
 |------|------|
 | `kIdle` | 대기 상태, `s` 유지. `CommandGrasp()` 시 Approaching으로 전이 |
-| `kApproaching` | `approach_speed` (1/s)로 `s`를 증가시키며 closing. `f_measured > f_contact_threshold`이면 접촉 감지. thumb(0)+index(1) 모두 접촉 시 Contact로 전이 |
+| `kApproaching` | `approach_speed` (1/s)로 `s`를 증가시키며 closing. `f_measured > f_contact_threshold`이면 접촉 감지. **Primary-contact gate**: `kPrimaryContacts = min(2, num_fingers_)`, 즉 `Init()` configs 순서상 앞 2개 finger (finger 수 < 2면 가용한 전부)가 모두 접촉하면 Contact로 전이 — 나머지 finger는 접촉 여부와 무관 |
 | `kContact` | 안정화 대기 (`contact_settle_time` 초). 경과 후 ForceControl 진입 |
 | `kForceControl` | PI 힘 제어 활성화. `f_desired`를 `f_ramp_rate` (N/s)로 `f_target`까지 램프. 모든 finger가 `settle_epsilon` 이내로 `settle_time` 이상 수렴하면 Holding 전이 |
 | `kHolding` | 힘 유지 + 이상 감지. 슬립 (`df/dt < -df_slip_threshold`) 또는 힘 급감 시 grip tightening 적용 |
@@ -380,15 +398,15 @@ deformation = s - s_at_contact
 if deformation >= delta_s_max:      ds = min(ds, 0)   # closing 금지
 elif deformation >= 0.9*delta_s_max: ds *= remaining / (0.1*delta_s_max)   # 비례 감속
 
-# 자세 보간
+# 자세 보간 (finger의 실제 DoF만큼, InterpolatePosture)
 s += ds * dt
-q[j] = (1 - s) * q_open[j] + s * q_close[j]       (j = 0..2, MCP_AA/MCP_FE/DIP_FE)
+q[j] = (1 - s) * q_open[j] + s * q_close[j]       (j = 0 .. dof[finger]-1)
 ```
 
 **RT 안전성:**
 
 - `Update()` 메서드: `noexcept`, 매 제어 주기 (`control_rate` Hz; default 500) 호출
-- 4차 Bessel LPF (`BesselFilterN<3>`)로 힘 신호 필터링 (RT 경로에서 동적 할당 없음)
+- 4차 Bessel LPF (`BesselFilterN<kMaxGraspFingers>`, per-finger 채널)로 힘 신호 필터링 (RT 경로에서 동적 할당 없음)
 - `CommandGrasp()` / `CommandRelease()`: `std::atomic<bool>` + `memory_order_release/acq_rel`로 크로스 스레드 명령 전달
 - 모든 상태 (`FingerState`, `GraspParams`)는 `trivially_copyable` 구조체
 - `Init()`은 non-RT (필터 계수 계산), 이후 모든 호출은 RT-safe
@@ -631,6 +649,8 @@ RTC_REGISTER_CONTROLLER(
 | `rtc_msgs` | RTC 프레임워크 커스텀 ROS2 메시지 |
 | `eigen` | 선형 대수 연산 (Eigen3) |
 | `pinocchio` | 기구학/동역학 (FK, Jacobian, Gravity, Coriolis, SE3/SO3, exp/log) |
+| `rtc_math` | SE3 헬퍼 (`rtc_math/se3/pinocchio_adapter.hpp` — ClikController/OperationalSpaceController의 log/exp 오차 계산) |
+| `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 (`ModelConfig`/`PinocchioModelBuilder`) |
 | `yaml-cpp` | YAML 설정 파싱 |
 
 ---
@@ -659,42 +679,6 @@ rtc_controllers  -- 4개 내장 컨트롤러 구현
     |-- rtc_controller_manager  (컨트롤러 인스턴스화 + Compute 호출)
     |-- integrated_bringup            (launch에서 컨트롤러 선택)
 ```
-
----
-
-## 변경 내역
-
-### v5.19.0 (Phase 1b)
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **스레드 안전 (SeqLock)** | 4개 컨트롤러(`PController`, `JointPDController`, `ClikController`, `OperationalSpaceController`) 모두 `Gains gains_` → `rtc::SeqLock<Gains> gains_lock_` 전환. RT 경로는 `Compute()` 진입 시 단일 `Load()` 스냅샷 사용, aux 스레드 writer는 Load/mutate/Store 패턴. Phase 1의 bool 플래그 스냅샷을 SeqLock으로 대체 — 전체 구조체 단위 일관성 보장. |
-| **API 유지** | `set_gains`/`get_gains` 시그니처 동일, 내부 구현만 SeqLock 경유로 변경. `set_kp()` (PController)도 Load/modify/Store 적용. (`GetCurrentGains` 가상 메서드는 v5.21 게인 → parameter 마이그레이션에서 제거됨) |
-
-### v5.18.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **스레드 안전** | `Compute()`에서 bool 플래그 (control_6dof, enable_null_space, enable_gravity/coriolis) 틱 시작 시 로컬 스냅샷 -- aux 스레드 게인 writer 동시 실행 시 분기 일관성 보장 (v5.19.0에서 SeqLock으로 대체) |
-| **RT 안전** | `InitializeHoldPosition()`에서 `std::lock_guard` → `std::try_to_lock` 변경 -- RT 경로 blocking lock 제거 (JointPD, CLIK, OSC) |
-| **입력 검증** | `trajectory_speed`, `trajectory_angular_speed`에 `std::max(1e-6, val)` 클램프 적용 (LoadConfig + 데모 컨트롤러 parameter callback) -- 0/음수 값 입력 시 무한 궤적 duration 방지 |
-| **테스트** | `test_core_controllers.cpp` 추가 -- PController(10), JointPD(8), CLIK(8), OSC(7) = 33개 단위 테스트 |
-
-### v5.17.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **JointPDController** | 피드포워드 속도 (`ff_vel`) 항 추가 -- 궤적 추적 정확도 향상 |
-| **DeviceOutput 확장** | `trajectory_positions`/`trajectory_velocities` 필드 활용 -- 궤적 레퍼런스와 컨트롤러 타겟 분리 |
-| **ControllerOutput 확장** | `task_goal_positions`, `trajectory_task_positions`/`velocities` 필드 활용 (CLIK/OSC) |
-| **DeviceNameConfig** | `safe_position` 기반 E-STOP 위치 설정 (YAML 로드), `OnDeviceConfigsSet()` 오버라이드에서 max_velocity 캐싱 |
-
-### v0.1.1
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **p_controller.hpp** | include 순서 수정 -- project header를 최상단으로 이동 (Google C++ style) |
-| **joint_space_trajectory.hpp** | `static_assert(N > 0)` 추가 -- 템플릿 파라미터 컴파일 타임 검증 |
 
 ---
 

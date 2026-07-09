@@ -9,8 +9,8 @@
 UR5e 로봇을 위한 **launch, 설정, 데모 컨트롤러** 통합 패키지입니다. 실제 로봇과 MuJoCo 시뮬레이션 모드를 지원하며, CPU 격리, DDS 스레드 핀닝, 세션 기반 로깅을 자동으로 설정합니다.
 
 **핵심 기능:**
-- 2개 데모 컨트롤러 (DemoJointController, DemoTaskController)
-- 3개 launch 파일 (robot, sim, hand)
+- 3개 데모 컨트롤러 (DemoJointController, DemoTaskController, DemoWbcController — TSID QP whole-body + MPC 통합)
+- 5개 launch 파일: `robot.launch.py` / `robot_ur5e_p1b.launch.py` (실로봇), `sim.launch.py` / `sim_ur5e_p1b.launch.py` / `sim_iiwa7_leap.launch.py` (MuJoCo)
 - 2개 GUI 도구 (컨트롤러 튜닝, 모션 에디터)
 - 자동 CPU 격리 + DDS 스레드 핀닝
 - 세션 디렉토리 자동 생성 및 정리
@@ -75,8 +75,11 @@ integrated_bringup/
 │           ├── contact_light.yaml      <- rtc_mpc ContactLightOCP factory config
 │           └── contact_rich.yaml       <- rtc_mpc ContactRichOCP factory config
 ├── launch/
-│   ├── robot.launch.py                 <- 실제 UR5e 로봇 launch (udp_hand_node 포함)
-│   └── sim.launch.py                   <- MuJoCo 시뮬레이션 launch
+│   ├── robot.launch.py                 <- 실제 UR5e(+assm_v1 hand) 로봇 launch (udp_hand_node 포함)
+│   ├── robot_ur5e_p1b.launch.py        <- 실제 UR5e + proto_1b(closed-chain hand) 로봇 launch
+│   ├── sim.launch.py                   <- MuJoCo 시뮬레이션 launch (ur5e_hand)
+│   ├── sim_ur5e_p1b.launch.py          <- MuJoCo 시뮬레이션 launch (ur5e_p1b, closed-chain)
+│   └── sim_iiwa7_leap.launch.py        <- MuJoCo 시뮬레이션 launch (iiwa7 + LEAP Hand)
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈)
 │   └── demo_gui/
 │       ├── app.py                      <- DemoControllerGUI Tk 클래스 + main()
@@ -372,15 +375,13 @@ hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.cl
 
 ### DemoWbcController (Index 6)
 
-UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 7-단계 FSM (slot 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다.
+UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 7-단계 FSM (slot 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다. Kinematic WBC(CLIK-QP position backbone)/Dynamic WBC(hand τ_ff overlay) 구조와 TSID task/constraint 세부는 [agent_docs/controllers.md](../agent_docs/controllers.md)가 SSoT — 본 절은 bringup 관점(YAML 위치·launch 사용법·GUI 연동)만 다룬다.
 
-**제어 모델 선택**: 컨트롤러는 `full_model_ptr_`(TSID/CLIK/MPC 공용 제어 모델)를 `PinocchioModelBuilder::GetActuatedModel()` 우선으로 잡는다. extended (loop closure) 핸드에서 `tree_models.wbc`(root→tip 직렬 경로 기반)는 4-bar 손가락의 active DIP 처럼 tip 을 passive coupler 가지로 거치는 actuated 관절을 경로 밖이라 잠가 13/16 로 축소되어 device joint reorder 가 실패한다. actuated 모델은 sidecar 가 passive 로 규정한 loop 관절만 잠그고 actuated 를 전부 유지해 `nq==nv==16` 이 되어 16/16 reorder 를 통과한다 (mimic 없는 proto_1b 는 `nq==nv`). 비-extended (plain/mimic) 핸드는 `GetActuatedModel()==nullptr` 이라 기존 `GetTreeModel("wbc")`→`GetFullModel()` fallback 경로를 그대로 밟는다 (byte-for-byte). actuated 모델의 open-chain EOM(`M/h/g`)은 `WbcReducedDynamicsProvider` 가 loop-consistent 축약값으로 대체하며(#120, 위 "closed-chain hand fingertip FK" 의 TSID EOM 절 참조), fingertip 접촉 프레임의 loop-consistent **FK** 는 별도 `ClosedChainHandFk` 로 배선한다 (#123 Phase 2 — publish 표면 전용). 즉 EOM inertia/nonlinear/gravity 는 loop-consistent, task/contact frame Jacobian 은 아직 frozen-loop 근사다.
+> Extended (closed-chain) 손에서는 제어 모델을 `PinocchioModelBuilder::GetActuatedModel()` 우선으로 선택하고 EOM은 `WbcReducedDynamicsProvider`가 loop-consistent 값으로 대체한다 (위 "Closed-chain hand FK" 절 참조). 비-extended 손은 기존 `GetTreeModel("wbc")` fallback 경로로 byte-for-byte 동일하게 동작한다.
 
 #### 7-Phase FSM (slot 5 reserved)
 
-모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2` (RELEASE) 는 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 `kRelease` 로 preempt, `grasp_cmd=0` (abort) 도 동일하게 `kIdle` 로 복귀 — 두 가드 모두 `kIdle` (접촉 없음·hand 이미 open 인 no-op flash 방지) / `kRelease` (이미 release 중) / `kFallback` (수동 복구 필요) 은 면제. 값 5 는 과거 `kRetreat` 슬롯으로 reserved (WbcState.msg PHASE_RETREAT=5 는 deprecated 호환용 — 더 이상 publish 안 됨).
-
-**Target 추종 불변식:** GUI 의 **arm SE3 target** (commanded SE3) 과 **hand joint target** 은 `kRelease` (finger-open ramp 가 hand 점유) / `kFallback` (safety hold) 을 제외한 **모든 phase 에서 상시 live**. 새 SE3 는 매 tick `tcp_goal_` 에 재적용 (CLIK 추종), 새 hand target 은 매 tick `BuildHandTargetPosture` 로 `q_des_target_full_` hand block 에 fold (CLIK posture term `clik_kh` 추종) — phase-entry edge 를 기다리지 않는다. FSM (fingertip force 로 hold/non-hold 판정) 은 dynamic-WBC task 스케줄링 (force/contact/object task preset) 과 hand τ_ff overlay (`kClosure`/`kHold` 에서만) 만 게이트하며, target 추종을 막지 않는다.
+모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2`(RELEASE)는 active grasp phase(`kApproach`/`kPreGrasp`/`kClosure`/`kHold`)에서 즉시 `kRelease`로 preempt, `grasp_cmd=0`(abort)도 동일하게 `kIdle`로 복귀. 값 5는 과거 `kRetreat` 슬롯으로 reserved(더 이상 publish 안 됨). GUI의 arm SE3 target / hand joint target은 `kRelease`/`kFallback`을 제외한 모든 phase에서 매 tick 상시 반영된다(phase-entry edge 대기 없음).
 
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
@@ -417,44 +418,15 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 #### YAML 구조 (`config/ur5e_hand/controllers/demo_wbc_controller.yaml`)
 
-- `tsid.tasks`: `posture` / `se3_tcp` / `force` (contact force tracking) / `contact_consistency` (Stage A-2 soft no-slip) / `object_wrench` / `internal_force` / `object_se3` (Stage B-5 object-level trio — closure/hold 에서만 활성, controller-owned `ContactManager` / `GraspCache` / `ObjectFrame` / `IdentityObjectStateProvider` 공유. RT-tick 마다 `ComputeGraspMatrix → grasp_cache_.Compute` 1회 호출 후 세 task 가 `GPinv()` / `GTPinv()` / `ProjN()` / `Rank()` 를 *읽기만* 함)
-  - `posture` 게인: 스칼라/벡터 `kp`·`kd` (generic `PostureTask::Init` 소비, Pinocchio nv 순) **또는** body-group split `arm: {kp, kd}` + `hand: {kp, kd}`. split 키가 둘 다 있으면 `DemoWbcController::ApplyPostureGains` 가 reorder map 으로 per-DoF 조립해 `on_configure` 끝에서 `SetGains` (arm/hand 가 Pinocchio 순에서 비연속이라 controller-side 매핑 — rtc_tsid 는 robot-agnostic 유지). 둘 다 없으면 스칼라/벡터 경로로 폴백. 권장 초기값: 두 그룹 모두 ζ=1 (`Kd=2√Kp`), ωn 은 각 그룹 joint-position-controller inner-loop dominant pole (servo `kp/kd`) 아래로 — iiwa7_leap 은 arm 36/12(ωn=6), hand 49/14(ωn=7).
-- `tsid.constraints`: `eom` / `joint_limit` / `friction_cone` (n_faces=8, Stage A-4 normal-aware) / `torque_limit` (Stage A-1, `tau_scale`). `eom`·`friction_cone` 은 controller 가 `ContactManagerConfig` 를 주입 — surface(cdim=6) contact 도 λ block offset 정확히 정렬됨.
-- `tsid.contacts.*` (Stage A-4 옵션): 각 contact 에 `normal: [x, y, z]` 키 추가하면 world-frame seed normal 로 사용 (기본 `(0,0,1)`). `tsid.contacts_normal_filter_alpha`: runtime `ContactState::UpdateNormal` LPF gain (default 0.1, 1.0 = no filter).
-- `tsid.contacts_default_ramp_sec` (Stage A-5b, optional): contact activation linear-ramp 시간 (초). Phase FSM 이 kClosure / kHold 진입 시 `SetActivationTarget(i, 1.0, this)`, kIdle 진입 시 0.0 으로 ramp 호출. ForceTask / ContactConsistencyTask 의 행이 √s_i 로 scaling 되어 contact on/off 시 cost surface 가 부드럽게 변함. Default 0.1 (100 ms). `kRelease` 는 별도 `fsm.release_ramp_sec` (default 30 ms) 으로 더 빠른 deactivation ramp 사용 — finger-open 시작 전 contact 를 안전히 떼기 위함.
-- `tsid.force_pi` (Stage A-3, optional): per-contact normal-force PI updater. Keys: `kp` / `ki` / `i_max` / `lambda_min` / `lambda_max` / `f_des_default`. Stage A-4 부터 출력은 contact normal 방향으로 푸시되어 FrictionCone 과 일관성을 유지 (default +Z 면 byte-identical).
-- `tsid.object_frame` (Stage B-5, optional): object 의 world-frame placement + mass. Keys: `p_w: [x,y,z]` (default `[0,0,0]`) / `mass` (default `0.0`). R_w 는 reserved (identity 고정). closure/hold entry 마다 `mass × 9.81` 이 `ObjectWrenchTask` 의 ẑ 성분으로 push 되고, `IdentityObjectStateProvider` 가 동일한 `p_w` 를 `ObjectSE3Task` placement reference 로 사용. mass=0 은 ObjectWrenchTask 를 no-op residual 로 만듦. Stage B-5+ 에서 vision/pose-topic provider 가 watchdog (`pose_timeout_sec`) 와 함께 plug-in 예정.
-- `tsid.phase_presets`: pre_grasp / closure / hold 별 task weight + active 토글
-- `tsid.wqp.solver`: `max_iter` / `eps_abs` / `eps_rel` / `verbose` (ProxSuite 설정, rtc_tsid가 직접 읽음)
-- `integration`: `position_margin` / `velocity_scale` / **`force_rate_alpha`** (필수, [0,1])
-- `fsm`: epsilon_approach/pregrasp, force_contact_threshold, `min_contacts_for_hold`, `slip_rate_threshold`, `deformation_threshold`
-- **`estop.arm_safe_position`** (필수): E-STOP 목표 arm pose. 길이가 곧 런타임 arm DoF (Sprint β, 2026-05-12) — `LoadConfig`가 `arm_dof_`를 이 값으로 결정 (1 ≤ size ≤ `kMaxArmDof=32`). `hand_dof_`는 `OnDeviceConfigsSet`이 secondary device의 `joint_state_names` 크기에서 결정. 누락 시 throw
-- **`mpc`**: `enabled`, `engine` (`mock`/`handler`), `max_stale_solutions`(기본 5), `phase_config_path` + `contact_light_path` + `contact_rich_path` (handler 전용, 기본 `config/ur5e_hand/controllers/mpc/*.yaml`), `riccati.{enabled, gain_scale, accel_only, max_delta_x_norm}`. `enabled: false`가 기본이라 MPC는 inert이고 TSID가 self-hold한다.
-
-> **yaml-cpp iterator 함정:** `BuildTsidTasks` / `BuildTsidConstraints` 같이 `tsid.tasks` / `tsid.constraints` 를 iterate 할 때 `it->first` / `it->second` 는 prvalue Node 를 담은 proxy 임시를 통해 반환된다. `const auto& cfg = it->second` 로 reference 를 잡으면 statement 끝에서 dangling — `YAML::Node cfg = it->second` 로 복사 (Node 는 lightweight handle). `controller.cpp` 의 `BuildTsidTasks` / `BuildTsidConstraints` 주석 참고.
-
-> **base_frame 일관성 게이트 (F-2):** SE3 task의 `base_frame`(예: `tsid.tasks.se3_tcp.base_frame`)과 MPC YAML의 `mpc.model.base_frame`(`contact_light.yaml` / `contact_rich.yaml`)은 모두 1차 디바이스 (`ur5e`)의 `urdf.root_link`와 동일한 frame 이름이어야 한다. `on_configure`가 한쪽만 변경된 mismatch를 감지하면 `RCLCPP_ERROR` 이후 `CallbackReturn::FAILURE`로 lifecycle 전이를 막는다. `base_frame` 키를 모두 비우면 universe(world) fallback으로 동작하며 게이트는 silent (F-4에서 strict 전환 예정).
+주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`estop.arm_safe_position`** (필수 — 길이가 런타임 arm DoF를 결정), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 TSID가 self-hold한다. 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석 + [agent_docs/controllers.md](../agent_docs/controllers.md)를 SSoT로 참조.
 
 #### MPC 통합 동작
 
-`mpc.enabled: true`일 때 `on_activate`에서 (aux 스레드, heap-alloc 가능 경로) MPC 스레드가 기동되며, `mpc.engine` 값에 따라 두 경로 중 하나를 선택한다. 과거에는 RT 스레드의 첫 `InitializeHoldPosition` 호출에서 lazy spawn했으나, 2026-05-17 RT-4 cleanup에서 thread spawn (MPCFactory::Create + std::make_unique + Pinocchio init)이 RT-safe하지 않다는 점이 명확해져 aux 스레드로 이동했다. trajectory / FSM seed는 여전히 controller가 RT thread의 첫 `Compute()` tick에서 self-init한다 (controller-internal init policy).
-
-- **`engine: "mock"` (기본값)** — `MockMPCThread`가 기동되어 `rtc::SelectThreadConfigs().mpc`이 지정한 코어/우선순위로 20 Hz solve 루프를 돌린다. 현재 state에서 target까지의 선형 trajectory + identity Riccati gain을 공급하는 placeholder. TSID self-hold 동작과 bit-identical.
-- **`engine: "handler"` (옵트인)** — `HandlerMPCThread`가 기동되어 `rtc_mpc::MPCFactory`로 `ContactLightMPC` 또는 `ContactRichMPC`를 생성하고, `GraspPhaseManager`(아래 참조)의 `PhaseContext`에 따라 실제 Aligator ProxDDP solve를 수행한다. 핸들러 factory / 모델 초기화가 실패하면 경고 로그와 함께 자동으로 mock 경로로 폴백해 RT 루프는 계속 진행된다. Cross-mode swap(light↔rich)은 `HandlerMPCThread` 내부에서 처리된다.
-
-두 모드 모두 `rtc::mpc::MPCThread`가 `rtc::PeriodicRtThread` (header `rtc_base/threading/periodic_rt_thread.hpp`)를 상속해 lifecycle / `clock_nanosleep(TIMER_ABSTIME)` cadence / Pause·Resume / per-tick t0~t3 timing capture를 base로부터 받는다 (CM RT loop과 같은 base, 같은 5-col `RtTickTimingPayload`). `OnTick`이 `ReadState → MarkStateAcquired → Solve(workers) → MarkComputeDone → PublishSolution`을 한 사이클로 실행하며, worker thread (kMaxMpcWorkers=2 — Aligator 병렬 솔버 등)는 `MPCThread` subclass가 자체 보유한다.
-
-**Shutdown 순서.** `~DemoWbcController()`는 멤버 자동 파괴 *전에* `mpc_thread_->StopAndJoin()`을 호출해 MPC solve thread를 먼저 join한다. 멤버 선언 순서상 `mpc_model_handler_` / `phase_manager_owned_` / `mpc_manager_`가 `mpc_thread_`보다 *나중에* 선언되어 reverse-order 자동 파괴에서는 *먼저* 사라지는데, 이 시점에 `mpc_main` thread가 `Solve()` 안에서 Pinocchio 모델/data를 사용 중이면 use-after-free가 일어나기 때문(과거 sim Ctrl+C SEGV의 직접 원인 — `pinocchio::CATForwardStep` visitor 안에서 fault). SIGINT 경로에서는 `on_deactivate`/`on_cleanup`이 호출되지 않을 수 있으므로 destructor join이 유일한 안전 보장이다.
-
-매 RT tick에서 `ComputeTSIDPosition`이 `ExtractFullState` 직후 `mpc_manager_.WriteState(q, v, now_ns)`를 실행해 MPC 스레드가 항상 최신 `(q, v)`를 보도록 한다 — `HandlerMPCThread::Solve`의 dim-mismatch gate(`state.nq != model_->nq()`)를 통과시키기 위함. TSID-everywhere refactor 이후 5 phase (`kIdle/kApproach/kPreGrasp/kClosure/kHold`) 와 `kRelease` 모두 `ComputeTSIDPosition` 을 통해 동일한 reference 주입 경로를 사용하므로 dim-mismatch gate 는 정상 phase 에서는 거의 트립하지 않는다 (kFallback 만 self-hold). `ComputeTSIDPosition`이 최신 solution을 cubic-Hermite 보간한 `q_ref, v_ref, a_ff`를 TSID task reference로 주입하고, Riccati 피드백(`K·Δx`)은 `control_ref_.a_des`의 상위 `nv`개 원소에 가산된다. MPC가 solution을 공급하지 못하거나 `stale_count >= max_stale_solutions`면 자동으로 TSID self-hold reference로 fallback한다. `kFallback` 은 WriteState 를 호출하지 않으므로 MPC 가 마지막 snapshot 을 유지하지만, fallback 자체가 self-hold 이고 복귀 (cmd=0 → kIdle) 즉시 per-tick WriteState 가 재개되므로 안전하다.
-
-`DemoWbcController` 자체 LifecycleNode의 aux 1 Hz 타이머(`on_activate` 시 `mpc_enabled_`인 경우만 spawn)는 `MPCThread::TimingProducer()` SPSC ring을 drain하여 `<session>/timing/mpc_timing_log.csv`에 per-MPC-tick raw 샘플을 한 row씩 append한다 (CM과 동일한 7-col 스키마 `t_wall_ns,tick_count,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`, MPC 주파수로 행이 쌓임 — generic 인프라 `rtc_base/timing/thread_timing_*` + 공용 `RtTickTimingPayload`). 위 phase-independent state write 덕분에 grasp 명령이 오지 않은 kIdle 상태에서도 row가 쌓이며, solver가 publish 못한 구간(dim-mismatch / solver error / 워밍업)은 `t_publish_us == 0` 으로 식별 가능. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (handler self-report `solve_duration_ns`의 256-sample 슬라이딩 윈도우)로 10초마다 aggregate `RCLCPP_INFO` 라인을 출력 — 디스크엔 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산. Stage B 레이아웃 변경 전후 분포 비교의 baseline.
+`mpc.enabled: true`일 때 `on_activate`에서 aux 스레드로 MPC 스레드가 기동되며, `mpc.engine`이 `"mock"`(`MockMPCThread` placeholder — 선형 trajectory + identity Riccati gain, TSID self-hold와 bit-identical) 또는 `"handler"`(`HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` — 실제 Aligator ProxDDP solve, 초기화 실패 시 mock으로 자동 폴백)를 선택한다. `rtc::mpc::MPCThread`는 CM RT loop과 같은 `PeriodicRtThread` 기반 timing 인프라를 공유하며, per-MPC-tick 샘플이 `<session>/timing/mpc_timing_log.csv`에 쌓인다. 매 RT tick `ComputeTSIDPosition`이 최신 `(q, v)`를 MPC 스레드에 WriteState하고, MPC solution을 cubic-Hermite 보간한 `q_ref/v_ref/a_ff` + Riccati 피드백을 TSID reference로 주입한다 — solution 부재/stale 시 TSID self-hold로 자동 폴백. Shutdown 순서·dim-mismatch gate·worker thread 구성 등 구현 세부는 `src/controllers/wbc/` 소스와 [agent_docs/controllers.md](../agent_docs/controllers.md) 참조.
 
 ##### GraspPhaseManager 연동
 
-`engine: "handler"`일 때 WBC의 7-state FSM(`WbcPhase`, slot 5 reserved)이 authoritative이며, `OnPhaseEnter` 말미에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다(매핑: `kApproach→kApproach`, `kClosure→kClosure`, `kHold→kHold`, `kRelease→kRelease`, `kFallback→kIdle`). WBC 는 더 이상 kRetreat 로 가지 않으므로 grasp 측 `GraspPhaseId::kRetreat` 슬롯은 MPC-only 잔재 (carry-then-release 시나리오를 별도 PR 로 도입 시 재활용 가능). `kApproach` 진입 시 `tcp_goal_`이 valid하면 `GraspPhaseManager::SetTaskTarget`으로 grasp/pregrasp/approach_start pose가 푸시된다. `ForcePhase`는 atomic-only여서 RT-safe; `SetTaskTarget`은 `SeqLock<GraspTargetPOD>` writer 한 번으로 wait-free 발행되며 MPC thread reader도 wait-free (RT-4).
-
-grasp 측 phase별 OCP 설정(`ocp_type`, `PhaseCostConfig`, `ContactPlan`)은 `config/ur5e_hand/controllers/mpc/phase_config.yaml`에서 로드된다. Factory 설정(`RobotModelHandler.Init` 입력 + solver 튜닝 + friction_mu)은 `config/ur5e_hand/controllers/mpc/contact_light.yaml` / `config/ur5e_hand/controllers/mpc/contact_rich.yaml`에서 로드되며, 두 YAML의 `mpc.model:` 블록은 구조적으로 동일해야 한다(cross-mode swap이 같은 `RobotModelHandler`를 공유하므로 contact_frames 불일치는 index-based 활성화를 깬다).
+`engine: "handler"`일 때 WBC 7-state FSM이 authoritative이며 `OnPhaseEnter`에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다. Grasp 측 phase별 OCP 설정은 `config/ur5e_hand/controllers/mpc/phase_config.yaml`, factory 설정은 `mpc/contact_light.yaml`/`mpc/contact_rich.yaml`에서 로드된다 (두 YAML의 `mpc.model:` 블록은 구조 동일 필수 — cross-mode swap이 같은 `RobotModelHandler`를 공유).
 
 #### 사용법 (시뮬레이션)
 
@@ -580,7 +552,7 @@ ros2 launch integrated_bringup robot.launch.py use_mock_hardware:=true  # 모의
 | `use_mock_hardware` | `false` | 모의 하드웨어 사용 (Jazzy) |
 | `use_fake_hardware` | `false` | [호환성] Humble용 별칭 |
 | `use_cpu_affinity` | `true` | CPU 격리 + DDS 핀닝 활성화 |
-| `kinematics_params_file` | `ur_description/.../ur5e/default_kinematics.yaml` | `ur_calibration` 산출 factory calibration YAML. nested `ur_rsp.launch.py`가 소비 → 드라이버의 `robot_description`/TF에 실측 반영. 아래 [UR 캘리브레이션](#ur-캘리브레이션-kinematics_params_file) 참조 |
+| `kinematics_params_file` | `$HOME/ur5e_calibration.yaml` | `ur_calibration` 산출 factory calibration YAML. nested `ur_rsp.launch.py`가 소비 → 드라이버의 `robot_description`/TF에 실측 반영. 아래 [UR 캘리브레이션](#ur-캘리브레이션-kinematics_params_file) 참조 |
 | `headless_mode` | `true` | Teach Pendant의 External Control play 없이 headless 제어. 실로봇 운용 기본 true |
 | `reverse_ip` | `0.0.0.0` | UR 컨트롤러가 PC로 reverse connection 시 사용할 PC IP. multi-NIC/RT 전용 NIC에서는 명시값 권장 |
 | `launch_dashboard_client` | `true` | UR Dashboard client 노드 실행 (robot mode, program/power/brake). dashboard port 차단·완전 수동 운용 시 `false` |
@@ -588,8 +560,12 @@ ros2 launch integrated_bringup robot.launch.py use_mock_hardware:=true  # 모의
 | `activate_joint_controller` | `true` | `initial_joint_controller`를 시작 시 active로. `false`면 로드만 하고 inactive |
 | `initial_joint_controller` | `forward_position_controller` | UR 드라이버가 처음 로드/활성화할 joint controller. RTC backend가 `/forward_position_controller/commands`에 publish |
 | `enable_mpc` | `""` | DemoWbcController MPC 토글. **선언만 되어 있고 robot.launch.py는 OpaqueFunction 미사용** — 실제 제어는 런타임 gains topic index 7로 수행. |
+| `enable_tracing` | `false` | LTTng trace 캡처 (ros2_tracing). 출력: `<session_dir>/tracing/<trace_session_name>/` (`repo_scripts/scripts/timeline.sh`로 Chrome Trace 변환 가능). 1회 `./install.sh --tracing` 설정 필요 |
+| `trace_session_name` | `""` | LTTng 세션 이름 — `<session_dir>/tracing/`의 leaf 디렉토리명. 빈 값 = `"trace"` |
+| `trace_events_ust` | `""` | 콤마 구분 UST 이벤트. 빈 값 = ros2_tracing `DEFAULT_EVENTS_ROS` |
+| `trace_events_kernel` | `sched_switch,sched_waking,sched_wakeup,irq_handler_entry,irq_handler_exit` | 콤마 구분 커널 이벤트. 빈 값 = kernel tracing 비활성 (UST만). `lttng-modules-dkms` + `tracing` 그룹 필요 |
 
-> **`robot_ur5e_p1b.launch.py`** (UR5e + proto_1b) 도 위 UR 드라이버 인자 집합을 **동일하게** 노출한다 (`kinematics_params_file` 외 6개 포함). p1b는 hand config·`/p1b/joint_states` gate만 다르다.
+> **`robot_ur5e_p1b.launch.py`** (UR5e + proto_1b closed-chain hand) 는 위 인자 집합을 **동일하게** 노출한다 — 유일한 기본값 차이는 `robot_ip` (`192.168.0.3`). p1b는 hand config·`/p1b/joint_states` gate만 다르다.
 
 **Launch 순서:**
 
@@ -653,8 +629,15 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 | `max_log_sessions` | `10` | 세션 폴더 최대 보관 수 |
 | `initial_controller` | `""` (YAML 사용) | 시작 컨트롤러 이름 (예: `demo_wbc_controller`) 오버라이드 |
 | `enable_mpc` | `""` (YAML 사용) | DemoWbcController의 `mpc.enabled` YAML 키를 launch 시점에 오버라이드. `true`/`false` 명시. `initial_controller:=demo_wbc_controller`와 함께 사용. 런타임 토글은 gains topic index 7로도 가능. |
+| `mpc_engine` | `""` (YAML 사용) | DemoWbcController의 `mpc.engine` 오버라이드: `"mock"` = `MockMPCThread` placeholder, `"handler"` = `HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` (실제 Aligator ProxDDP solve, `mpc/phase_config.yaml`+`mpc/contact_light.yaml`+`mpc/contact_rich.yaml` 필요). 빈 값 = YAML 기본값 (현재 `demo_wbc_controller.yaml`은 `"handler"`) |
+| `enable_tracing` | `false` | LTTng trace 캡처 (ros2_tracing). robot.launch.py와 동일 시맨틱 |
+| `trace_session_name` | `""` | LTTng 세션 이름. 빈 값 = `"trace"` |
+| `trace_events_ust` | `""` | 콤마 구분 UST 이벤트. 빈 값 = ros2_tracing 기본 이벤트 |
+| `trace_events_kernel` | `sched_switch,sched_waking,sched_wakeup,irq_handler_entry,irq_handler_exit` | 콤마 구분 커널 이벤트. 빈 값 = kernel tracing 비활성 |
 
 빈 문자열(`""`) 기본값은 YAML 설정 파일의 값을 그대로 사용한다는 의미입니다. 명시적으로 값을 지정하면 YAML 값을 오버라이드합니다.
+
+> **`sim_ur5e_p1b.launch.py`** (UR5e + proto_1b closed-chain hand) / **`sim_iiwa7_leap.launch.py`** (iiwa7 + LEAP Hand, hand sensor 스택 없음 — `grasp_controller_type: none`)는 위 인자 집합을 **동일하게** 노출한다. iiwa7_leap은 `enable_mpc:=false`가 YAML 기본값(TSID self-hold 검증 후 수동 활성 권장).
 
 **Launch 순서:**
 
@@ -866,13 +849,16 @@ ros2 run integrated_bringup motion_editor_gui
 | 의존성 | 용도 |
 |--------|------|
 | `ament_cmake` | 빌드 시스템 |
+| `ament_cmake_python` | Python 패키지(`demo_gui`) 빌드 |
 | `ament_index_cpp` | 패키지 경로 해석 (bridge YAML 로드) |
 | `rclcpp` | ROS2 클라이언트 |
+| `rclcpp_lifecycle` | LifecycleNode 기반 컨트롤러 |
 | `rtc_controller_interface` | 컨트롤러 추상 인터페이스 |
 | `rtc_controllers` | 내장 컨트롤러 |
 | `rtc_controller_manager` | RT 제어 루프 (library — `RtControllerMain()` 제공, exec는 본 패키지가 소유) |
 | `rtc_base` | 타입, 스레딩 |
 | `rtc_msgs` | 커스텀 메시지 |
+| `rtc_math` | SE(3) Lie-group 연산 (task-space error) |
 | `rtc_urdf_bridge` | URDF→Pinocchio 모델 빌더 + RT-safe handle |
 | `rtc_tsid` | TSID QP 프레임워크 (DemoWbcController) |
 | `rtc_mpc` | MPC↔RT 인터페이스 (TripleBuffer + Hermite + Riccati + MPCThread) |
@@ -880,12 +866,18 @@ ros2 run integrated_bringup motion_editor_gui
 | `proxsuite` | QP 솔버 (rtc_tsid가 transitively 요구) |
 | `yaml-cpp` | YAML 파싱 |
 | `sensor_msgs` | JointState |
+| `geometry_msgs` | TF/pose 메시지 |
 | `std_msgs` | 표준 메시지 |
+| `tf2_msgs` | `robot_transforms` 토픽 (`tf2_msgs/TFMessage`) |
 | `rclpy` | Python GUI (exec) |
+| `tf2_ros` | GUI의 TF lookup (exec) |
 | `repo_scripts` | CPU 격리 스크립트 (exec) |
-| `robot_descriptions` | URDF/MJCF 모델 (data hub) |
+| `rtc_tools` | `session_dir` 로깅 경로 유틸 (exec) |
+| `robot_descriptions` | URDF/MJCF 모델 (data hub, exec) |
 | `udp_hand_driver` | 핸드 드라이버 (exec) |
-| `PyQt5` | 모션 에디터 GUI (exec) |
+| `ur_robot_driver` | UR5e 실로봇 드라이버 launch (exec) |
+| `ur_calibration` | factory calibration YAML 추출 (`kinematics_params_file`, exec) |
+| `PyQt5` | 모션 에디터 GUI (exec, venv 책임 — requirements.lock) |
 
 ---
 
@@ -911,77 +903,18 @@ rtc_controller_manager + rtc_controllers + repo_scripts + robot_descriptions
     |                                                         |
     |   rtc_urdf_bridge (URDF→Pinocchio 모델)           |
     |       |                                                 |
-integrated_bringup  <- UR5e 로봇별 통합 패키지 ────────────────────┘
+integrated_bringup  <- 멀티 로봇 통합 패키지 (ur5e_hand / ur5e_p1b / iiwa7_leap) ─┘
     |
-    ├── robot.launch.py  -> UR 드라이버 + RT 컨트롤러 + CPU 격리
-    ├── sim.launch.py    -> MuJoCo + RT 컨트롤러 + CPU 격리
+    ├── robot.launch.py / robot_ur5e_p1b.launch.py           -> UR 드라이버 + RT 컨트롤러 + CPU 격리
+    ├── sim.launch.py / sim_ur5e_p1b.launch.py / sim_iiwa7_leap.launch.py -> MuJoCo + RT 컨트롤러 + CPU 격리
     ├── DemoJointController (index 4)  ─┐
-    ├── DemoTaskController (index 5)   ─┤── RtModelHandle (arm sub-model)
-    ├── demo_controller_gui             │
-    └── motion_editor_gui               │
-                                        │
-    ur5e_hand/_base.yaml (urdf: sub_models) ─┘  (시스템 URDF + 모델 토폴로지)
+    ├── DemoTaskController (index 5)   ─┤── RtModelHandle (arm sub-model) / TSID+MPC (WBC)
+    ├── DemoWbcController (index 6)    ─┘
+    ├── demo_controller_gui
+    └── motion_editor_gui
+
+    ur5e_hand/_base.yaml (urdf: sub_models)  <- 시스템 URDF + 모델 토폴로지 (robot 당 config/<key>/_base.yaml)
 ```
-
----
-
-## 변경 내역
-
-### Unreleased
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **Backend command-reorder dead code 제거** | 3개 backend (mujoco/udp_hand/ur_driver) 의 command-side reorder 잔재 (`cmd_reorder_`, anon-ns `BuildReorderMap`, mujoco `SetNameConfig` — 호출처 0) 제거. Ground truth: `slot.commands[i]` 는 항상 `joint_command_names[i]` 순서 (CM RT loop 는 reorder 없이 `std::copy_n` 만) 이고 발행 메시지 라벨도 같은 순서이므로 `WriteCommand` 는 direct copy 가 항상 정답 — 기존 reorder 분기는 udp/ur 에서 동일-인자 build 로 항상 empty (dead), mujoco 에선 unreachable 이나 활성화 시 inverted reorder 버그. 순서 규약 명문화: publisher 는 native 순서로 name+value 발행, **수신자** (udp_hand_node `5db8b60` / mujoco_simulator_node `remap()`) 가 `joint_names` 로 재정렬 (`DeviceBackendConfig::joint_command_names` doc 참조). state-side lazy reorder (`state_reorder_`) 는 그 규약의 live 구현으로 유지. 회귀 테스트: mujoco backend `WriteCommand` direct-copy 규약 고정. 실행 경로 불변 (dead 분기만 제거). |
-| **DemoWbc closed-chain FK publish 리뷰 수정 (#123)** | (F1) `FillPublishOutput`의 손끝 TF publish가 serial frame id 존재 여부만 보고 `task_link_pose_valid=true`로 발행하던 것을, per-tick `fingertip_pose_valid_` gate로 교체 — closed-chain loop 첫 수렴 전 downstream 손끝의 zero-init 캐시가 base 원점 TF로 스냅되는 startup transient 제거. (F4) `AppendHandTipSlots` 등록을 wbc callsite에서 `kNumFingertips`(4)로 cap — tip_links 5개 이상 손이 채워지지 않는 slot을 등록하던 mismatch 방지(shared helper·DemoTask/DemoJoint callsite 무변경). (F5) `full_model_ptr_` 주석을 실제 model-selection(actuated closed-chain → tree `wbc` → full)과 일치하게 정정. RT wire/log/publish 스키마·비-closure 경로 불변. |
-| **손끝 FK publish 리뷰 잔여 — task/joint 공유 (#125)** | #123 wbc 수정(F1/F4)을 동일 패턴의 DemoTask/DemoJoint로 전파 + 세 컨트롤러 공통 guard. (F1) task/joint `FillPublishOutput`의 손끝 TF gate를 per-tick `fingertip_pose_valid_`로 교체 — FK loop에서 `HandFingertipPose` 산출 여부를 캡처해 startup transient(zero-init 캐시 → base 원점 스냅) 제거, wbc와 byte-for-byte 동일 시맨틱. (F2) `InitHandModel`의 `GetTreeModel(secondary)`를 try/catch로 guard(wbc/task/joint 모두) — malformed config(secondary 선언 + 매칭 tree_model 부재)에서 `std::out_of_range` → `on_configure` FAILURE 대신 hand FK graceful 비활성(`hand_handle_` null, WARN 1회). (F4) `AppendHandTipSlots`에 `max_tips` 인자 추가해 slot cap을 shared helper로 일원화(altitude) — 세 callsite 모두 `kNumFingertips` 전달, wbc inline `capped_tips` 임시 제거. RT wire/log/publish 스키마·비-closure 경로 불변. |
-| **DemoJoint/DemoTask RT 핫패스 최적화** | tick당 중복 연산 5종 제거 (외부 동작 불변). (1) Joint: arm FK를 `ComputeControl`에서 1회만 계산해 `arm_tcp_pose_` 멤버에 캐시 — `FillLogOutput`/`FillPublishOutput`은 재계산 없이 재사용 (hand 구성에서 full FK 패스 2→1회). (2) Task: 궤적 feedforward 속도를 1회 계산해 CLIK 명령 `dq_`와 로그용 `traj_dq_`가 공유 (`R_vtcp_traj` 회전·matvec 중복 제거). (3) Task: `control_6dof`를 `control_6dof_cached_`에 캐시해 `Fill*`의 full-`Gains` SeqLock load 2회 제거. (4) Task: null-space를 `null_err − Jpinv·(J·null_err)`로 계산 — nv×nv 투영자 `N_` (및 `Jpinv·J` matmul) materialize 제거. (5) Joint+Task: 손끝 `‖force‖`를 `ReadState`에서 1회 sqrt 후 `FingertipSensorData::force_mag`로 grasp/vtcp 재사용. wire/log/publish/CSV 스키마 변경 없음 — (1)(2)(3)(5)는 bit-identical, (4)는 대수적 동등(연산 순서 차이로 ~1e-15 FP 가능). |
-| **컨트롤러 `WriteOutput` 3단 분리 (consumer 명시)** | DemoJoint/DemoTask/DemoWbc 컨트롤러의 `WriteOutput`이 consumer별로 3 메소드로 분리됨. (1) `WriteJointCommand` — DeviceBackend wire path가 읽는 필드만 (`devices[i].commands`, `num_channels`, `goal_type`, `command_type`, `valid`) + position clamp. (2) `FillLogOutput` — DeviceStateLogPod이 읽는 필드 (`goal_positions`, `trajectory_positions`, `trajectory_velocities`, `actual_task_positions`, `task_goal_positions`) + FK (joint은 `ComputeControl` 캐시 재사용, task/wbc는 `GetFramePlacement` O(1)) + grasp/tof/wbc SeqLock store. (3) `FillPublishOutput` — publish snapshot / owned_topics이 읽는 필드 (`target_*`, `trajectory_task_*`, `arm_tip_pose*`, `virtual_tcp_pose*`, `task_link_poses*`) + log와 공유되는 필드도 명시적으로 다시 채움 (의도 일관성 > DRY). `Compute()`가 세 메소드를 순서대로 호출. `ControllerOutput` struct / `ComputeEstop` / log POD 스키마 / wire-format 변경 없음 — RT path / publish topic / CSV 모두 bit-identical. |
-| **Description 패키지 rename** | `ur5e_description` → `robot_descriptions` (multi-robot data hub로 일반화). `package.xml`/`CMakeLists.txt`에서 `find_package(robot_descriptions)`, `<depend>robot_descriptions</depend>`로 갱신. URDF YAML(`config/*.yaml`) 의 `urdf.package`/`mujoco.model_path`는 `robot_descriptions/robots/ur5e_assm_v1/...` 로 갱신. xacro/launch/test/README의 path 모두 동기화. |
-| **Hand 상수 의존 이전** | `ur5e_description/ur5e_constants.hpp` 삭제에 따라 demo 컨트롤러 헤더가 `udp_hand_driver/udp_hand_constants.hpp`를 include. `package.xml`에서 `<exec_depend>udp_hand_driver</exec_depend>` → `<depend>` 승격, `CMakeLists.txt`에 `find_package(udp_hand_driver)` + `ament_target_dependencies` 추가. |
-| **Cross-package decoupling (hand 상수)** | `udp_hand_driver`와 `integrated_bringup`은 서로 모르는 관계로 복원. 컨트롤러가 사용하던 hand-specific 컴파일타임 상수(`kBarometerCount`, `kTofCount`, `kSensorValuesPerFingertip`, `kFTValuesPerFingertip`, `kNumHandMotors`)를 `integrated_bringup/controllers/hand_sensor_layout.hpp`(자체 SSoT, `kHandBaroChannelsCapacity` / `kHandTofChannelsCapacity` / `kHandSensorValuesPerFingertipCapacity` / `kHandInferenceValuesPerFingertipCapacity` / `kHandMotorCount`)로 이전. `package.xml`에서 `<depend>udp_hand_driver</depend>` → `<exec_depend>` 강등, `CMakeLists.txt`에서 `find_package(udp_hand_driver)` + `ament_target_dependencies` 항목 제거. 패키지 경계는 `rtc_msgs/HandSensorState.msg` / `FingertipSensor.msg` named field. CM은 YAML `devices.<name>.sensor_layout`을 통해 런타임 stride/offset을 받음. |
-
-### v5.21.0 (Phase 7a + 7b)
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **GraspPhaseManager (7a)** | 신규 모듈 `integrated_bringup/phase/` 추가. `rtc::mpc::PhaseManagerBase`를 상속한 8-state grasp FSM(`idle → approach → pre_grasp → closure → hold → manipulate → retreat → release`) + `GraspTarget`/`GraspCommand` 보조 타입. 전이 가드: TCP-proximity(approach/pregrasp/retreat), 센서 합 기반 force threshold(closure→hold), 명시적 외부 명령(idle/hold/manipulate/retreat/release) + `max_failures` closure 가드. 모든 phase name이 libstdc++ SSO(≤15자) 범위 내임을 `static_assert`로 고정. 로봇-agnostic: Panda 기반 fixture로 13-case gtest 통과. |
-| **Phase config (7a)** | `config/ur5e_hand/controllers/mpc/phase_config.yaml` 추가 — 8개 phase × `PhaseCostConfig` + `ocp_type`(`contact_light`/`contact_rich`) + `active_contact_indices`. YAML anchor로 close/open posture 및 placement weight 중복 제거. `transition` 블록에 `approach_tolerance`/`pregrasp_tolerance`/`force_threshold`/`max_failures` 수록. |
-| **MPC factory YAMLs (7b)** | `config/ur5e_hand/controllers/mpc/contact_light.yaml`/`mpc/contact_rich.yaml` 추가 — `rtc::mpc::MPCFactory::Create`가 소비하는 `mpc.ocp_type`/`mpc.model`/`mpc.solver`/`mpc.limits` 블록. 두 파일의 `mpc.model` 블록(end_effector_frame + contact_frames) 구조 일치 규약으로 cross-mode swap 무결성 보장. friction_mu는 contact_rich 전용. |
-| **DemoWbcController handler 모드 (7b)** | `mpc.engine` 스위치 추가(기본 `"mock"`, Phase 4/5 동작 bit-identical 보존). `"handler"` 선택 시 `LoadConfig`에서 phase/light/rich YAML을 ament share 경로로 로드하고 `RobotModelHandler.Init` + `GraspPhaseManager::Load`를 선제 실행; 실패 시 WARN/ERROR 로그와 함께 mock으로 폴백. `InitializeHoldPosition`에서 초기 `PhaseContext`를 만들어 `MPCFactory::Create` 후 `HandlerMPCThread::Configure`로 ownership 이관, 기존과 동일한 thread-launch config로 기동. `OnPhaseEnter` 말미에 WBC FSM → grasp FSM bridge 추가(WBC authoritative, ForcePhase + 필요 시 SetTaskTarget). sensor 채널은 Phase 6과 동일하게 zero-length 유지 — CLOSURE→HOLD는 WBC의 force detection이 ForcePhase(kHold)로 bridge. |
-
-### v5.21.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **게인 채널: parameter API 이관 (Phase A~E)** | DemoJoint/DemoTask/DemoWbc 3개 컨트롤러의 게인이 컨트롤러별 LifecycleNode (`/<config_key>`) 의 ROS 2 parameter로 노출됨 — `declare_parameter` + `add_on_set_parameters_callback`(SeqLock writer) 패턴. Read-only 캡(`*_max_traj_velocity`)은 `ParameterDescriptor::read_only=true`. `RTControllerInterface::UpdateGainsFromMsg`/`GetCurrentGains` 가상 메서드와 `~/controller_gains` / `~/request_gains` / `~/current_gains` 토픽은 모두 제거. |
-| **Force-PI grasp srv 분리** | One-shot 이벤트는 parameter로 표현 부적합 → 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv)). DemoJoint/DemoTask는 `grasp_controller_`(Force-PI FSM)에 직접 위임, DemoWbc는 `grasp_cmd_` atomic + `gains.grasp_target_force` 갱신 후 WBC FSM이 `kApproach`/`kRelease` 진입. 활성 컨트롤러만 server advertise. E-STOP 활성 시 모든 호출 거절. |
-| **BT 어댑터** | `ur5e_bt_coordinator` `bt_ros_bridge` 가 `AsyncParametersClient` + `GraspCommand` srv client를 active controller에 따라 rebind (`/rtc_cm/active_controller_name` latched topic 트리거). `SetGains` BT node는 입력 키를 active controller별 parameter 이름으로 dispatch (`trajectory_speed` → DemoJoint 면 `robot_trajectory_speed`, DemoWbc 면 `arm_trajectory_speed`, DemoTask 면 `trajectory_speed`); `grasp_command` 키는 srv로 분기. BT XML의 `load_gains` / `current_gains` 포트와 `SwitchController`의 게인 캐시 로직 제거. |
-| **shape_estimation gain 코드 제거** | 사용처가 없어 `pub_controller_gains_`, `LoadExplorationGains()`, `exploration.exploration_gains.*` YAML/parameter 12개 일괄 삭제. |
-
-### v5.20.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **YAML 필수 키 이관** | 기존 C++ 하드코딩 상수 4개를 컨트롤러 YAML의 필수 키로 이관. `LoadConfig`에서 누락/범위 초과 시 `std::runtime_error` throw. (1) `DemoTaskController`: `fsm.pi_rotation_margin` (π 궤적 분할), `fsm.contact_stop_release_eps` (release 히스테리시스). (2) `DemoWbcController`: `estop.arm_safe_position` (E-STOP arm pose, 길이 = arm DoF 검증), `integration.force_rate_alpha` (df/dt EMA smoothing, [0,1] 검증). 멤버 기본값은 기존 하드코딩 값과 동일하게 유지 → 단위 테스트 호환성 보존 (LoadConfig 미호출 경로). |
-| **TSID WQP 솔버 패스스루** | `demo_wbc_controller.yaml`의 `tsid.wqp.solver.{max_iter, eps_abs, eps_rel, verbose}` 4개 키 모두 공식 노출. `rtc_tsid::WQPFormulation::init` (+ `HQPFormulation::init` `solver_per_level`)에서 읽음. 기본값 (20, 1e-6, 0.0, false)로 동작 변화 없음. |
-
-### Build hygiene (post-v5.20.0)
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **Compiler warning silencing** | `DemoJoint/Task/Wbc` 헤더의 `ControllerTopicHandles owned_topics_{}` brace-init 제거 + `owned_topics.hpp`의 `gui_msgs{}` brace-init 제거 (ROS msg explicit ctor 호출 회피). `InitHandModel`에서 `RtModelHandle::SetJointOrder` nodiscard 결과 검사 + 실패 시 `RCLCPP_WARN`. Behavior 동일 — 모든 demo controller gtest 통과 확인. |
-
-### v5.19.0 (Phase 1b)
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **스레드 안전 (SeqLock)** | 3개 데모 컨트롤러(`DemoJointController`, `DemoTaskController`, `DemoWbcController`) `Gains gains_` → `rtc::SeqLock<Gains> gains_lock_` 전환. RT 경로 스냅샷 포인트: DemoJoint/DemoTask는 `ComputeControl()` 진입 시, DemoWbc는 `OnPhaseEnter()` 진입 시 단일 `Load()` 수행. `UpdateVirtualTcp()` 시그니처가 `const Gains&`를 받도록 확장되어 DemoJoint/DemoTask가 동일 스냅샷을 헬퍼에 전파. Aux 스레드 writer(`LoadConfig`, parameter callback)는 Load/mutate/Store 패턴. `SetDeviceTarget()`에서 `control_6dof` 읽기는 `gains_lock_.Load().control_6dof` 사용 (ROS executor가 aux 스레드 직렬화 보장). DemoWbc의 `grasp_cmd_`는 기존 `std::atomic<int>` 유지 (gains 스냅샷 외). |
-
-### v5.18.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **입력 검증** | DemoJoint/DemoTask/DemoWbc 3개 컨트롤러의 `trajectory_speed` 관련 필드에 `std::max(1e-6, val)` 클램프 적용 (LoadConfig + parameter callback, 총 13곳) -- 0/음수 값 입력 시 무한 궤적 duration 방지 |
 
 ---
 

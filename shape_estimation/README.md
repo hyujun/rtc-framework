@@ -25,7 +25,8 @@ ToF(Time-of-Flight) 센서 기반 물체 형상 추정 패키지. UR5e + 커스�
 |                                          |
 |  Pub: /shape/estimate, /shape/point_cloud, /shape/primitive_marker
 |       /shape/tof_beams, /shape/curvature_text, /shape/protuberance_marker
-|  Sub: /tof/snapshot, /shape/trigger, /ur5e/gui_position, /system/estop_status
+|  Sub: /tof/snapshot, /shape/trigger, /system/estop_status
+|  TF:  base -> tool0_actual (tf2 lookup, TCP pose for exploration)
 |  Srv: /shape/clear                       |
 |  Act: /shape/explore (ExploreShape)      |
 +==========================================+
@@ -35,7 +36,7 @@ ToF(Time-of-Flight) 센서 기반 물체 형상 추정 패키지. UR5e + 커스�
 
 | Layer | Library | Role | ROS Dependency |
 |-------|---------|------|----------------|
-| **Core** | `shape_estimation_core` | Voxel, classifier, fitter, protuberance, exploration FSM | None (Eigen only) |
+| **Core** | `shape_estimation_core` | Voxel, classifier, fitter, protuberance, exploration FSM | rclcpp (RCLCPP_* logging only, no node/topic API) |
 | **ROS** | `shape_estimation_ros` | Message conversion, RViz markers, node logic | rclcpp, visualization_msgs, etc. |
 | **Executable** | `shape_estimation_node` | Entry point | rclcpp |
 
@@ -108,9 +109,14 @@ ROS 비의존 순수 C++ FSM 기반 탐색 모션 생성기. `enable_exploration
 |-------|------|-----|-------------|
 | `/tof/snapshot` | `rtc_msgs/ToFSnapshot` | SensorData(5) | ToF + fingertip pose @500Hz |
 | `/shape/trigger` | `std_msgs/String` | Reliable | `start`/`stop`/`pause`/`resume`/`single` |
-| `/ur5e/gui_position` | `rtc_msgs/GuiPosition` | SensorData | Current EE pose (exploration) |
 | `/system/estop_status` | `std_msgs/Bool` | Reliable | E-STOP signal |
 | `/object/pose_estimate` | `geometry_msgs/PoseStamped` | Reliable | Object position override |
+
+### TF
+
+Current TCP pose (used by exploration) is looked up via `tf2_ros::Buffer`/`TransformListener`,
+not a topic subscription: `base` -> `tool0_actual` (hardcoded frame names, `TryLookupTcpPose()`
+in `shape_estimation_node.cpp`).
 
 ### Publications
 
@@ -137,13 +143,8 @@ ROS 비의존 순수 C++ FSM 기반 탐색 모션 생성기. `enable_exploration
 |--------|------|-------------|
 | `/shape/explore` | `ExploreShape` | Autonomous exploration |
 
-> **2026-04-26 migration note.** The legacy publisher to
-> `/<robot_ns>/controller_type` (which the action server used to switch the
-> RT controller before launching exploration) was retired in `55b10f5` —
-> the topic itself was removed, so for a brief window between commits
-> `55b10f5` and `F-1` the action's controller switch was a silent no-op
-> against a non-existent topic. The action now uses the `SwitchController`
-> srv synchronously and aborts cleanly on `ok=false`.
+The action switches the RT controller via the `SwitchController` srv (see Service table above)
+synchronously before launching exploration, and aborts cleanly on `ok=false`.
 
 ---
 
@@ -180,12 +181,16 @@ ros2 action send_goal /shape/explore shape_estimation_msgs/action/ExploreShape \
 | Package | Purpose |
 |---------|---------|
 | `shape_estimation_msgs` | Shape/Explore message & action types (3 msg + 1 action) |
-| `rtc_msgs` | GuiPosition, RobotTarget, ToFSnapshot messages |
+| `rtc_msgs` | RobotTarget, ToFSnapshot messages |
 | `Eigen3` | Linear algebra (SVD, PCA, geometry) |
 | `rclcpp` / `rclcpp_action` | ROS 2 C++ client + action server |
+| `rclcpp_lifecycle` | LifecycleNode |
 | `sensor_msgs` | PointCloud2 |
+| `geometry_msgs` | PoseStamped (object position override) |
 | `visualization_msgs` | MarkerArray |
+| `std_msgs` | E-STOP / trigger messages |
 | `std_srvs` | Trigger service |
+| `tf2` / `tf2_ros` | TCP pose lookup (base -> tool0_actual) |
 
 ---
 
@@ -197,7 +202,7 @@ colcon test --packages-select shape_estimation
 colcon test-result --verbose --all
 ```
 
-3 test suites: `test_tof_shape`, `test_exploration_motion`, `test_protuberance_detector`
+Test targets are defined in the `if(BUILD_TESTING)` block of [CMakeLists.txt](CMakeLists.txt).
 
 ---
 

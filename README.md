@@ -7,6 +7,8 @@
 
 **Ubuntu 22.04 (ROS 2 Humble) / Ubuntu 24.04 (ROS 2 Jazzy) | 모듈형 rtc_* 프레임워크 기반 UR5e 실시간 제어 시스템**
 
+> CI ([.github/workflows/](.github/workflows/))는 현재 Jazzy만 실행합니다. Humble은 지원 대상이지만 CI로 검증되지 않습니다.
+
 로봇 비의존적(robot-agnostic) RTC 프레임워크 위에 구축된 실시간 제어 솔루션입니다. 가변 DOF, 설정 가능한 RT 루프 주기 (`control_rate` YAML; 설계 범위 100Hz–5kHz, default 500Hz), 전략 패턴 기반 다중 제어기(P/JointPD/CLIK/OSC/TSID-WBC), TSID QP 전신 제어 (`rtc_tsid` + ProxSuite), **MPC↔RT 인터페이스 계층 (`rtc_mpc`: zero-copy TripleBuffer + cubic-Hermite 보간 + Riccati 피드백, dedicated-core MPC thread)**, 전송 계층 추상화(UDP/CAN-FD/EtherCAT/RS485), RT-안전 ONNX 추론 엔진, MuJoCo 3.x 물리 시뮬레이터, E-STOP 안전 시스템, CSV 데이터 로깅, GUI 도구를 포함합니다.
 
 ---
@@ -31,8 +33,8 @@
 | [`rtc_inference`](rtc_inference/) | 헤더-전용 RT-안전 추론 엔진: ONNX Runtime IoBinding, 사전 할당 버퍼, 배치/다중 모델 | ament_cmake |
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | MuJoCo 3.x 물리 시뮬레이터: 멀티 그룹 물리, GLFW 뷰어, fake_hand 1차 필터, `max_rtf` 속도 제어, `n_substeps` 서브스텝 | ament_cmake |
 | [`rtc_digital_twin`](rtc_digital_twin/) | RViz2 디지털 트윈 시각화: 다중 소스 관절 상태 통합, mimic 자동 계산, 핑거팁 센서 Arrow/Sphere 마커 | ament_python |
-| [`rtc_tools`](rtc_tools/) | Python 유틸리티 7종: controller_gui, plot_rtc_log, compare_mjcf_urdf, urdf_to_mjcf, hand_udp_sender, hand_data_plot, session_dir | ament_python |
-| [`repo_scripts`](repo_scripts/) | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화, `setup_env.sh`, MPC 코어 헬퍼 `get_mpc_cores`/`get_rt_cores`/`get_os_cores`) — shell-only (CMake 빌드 없음) |
+| [`rtc_tools`](rtc_tools/) | Python 유틸리티: `plot_rtc_log`/`plot_ur_log`/`plot_ur_trajectory` (CSV 궤적 시각화), `hand_udp_sender_example`, `compare_mjcf_urdf`, `urdf_to_mjcf` — console_scripts 전체 목록은 [rtc_tools/setup.py](rtc_tools/setup.py) 참조. 컨트롤러 튜닝 GUI (`demo_controller_gui`)는 이 패키지가 아니라 [`integrated_bringup`](integrated_bringup/)이 소유 | ament_python |
+| [`repo_scripts`](repo_scripts/) | RT 시스템 설정 스크립트 (PREEMPT_RT 커널, CPU 격리, IRQ 어피니티, 네트워크 최적화, `setup_env.sh`, MPC 코어 헬퍼 `get_mpc_cores`/`get_rt_cores`/`get_os_cores`) | ament_cmake |
 
 ### 브릿지 패키지
 
@@ -51,7 +53,7 @@
 
 | 패키지 | 설명 | 빌드 |
 |--------|------|------|
-| [`robot_descriptions`](robot_descriptions/) | Robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (현재: ur5e, ur5e_assm_v1, assm_v1, iiwa7, iiwa7_leap, leap_hand, schunk_hand). data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 사용 (ARCH-5) | ament_cmake |
+| [`robot_descriptions`](robot_descriptions/) | Robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (현재: ur5e, ur5e_assm_v1, assm_v1, iiwa7, iiwa7_leap, leap_hand, schunk_hand, panda). data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 사용 (ARCH-5) | ament_cmake |
 | [`udp_hand_driver`](udp_hand_driver/) | 가변-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
 | [`integrated_bringup`](integrated_bringup/) | per-robot launch/config (`config/<robot>/`: ur5e_hand, iiwa7_leap, ...) + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 7-phase WBC + MPC 통합 경로, `enable_mpc` launch arg) + CPU 격리/DDS 핀닝 | ament_cmake |
@@ -71,7 +73,7 @@ rtc_msgs, rtc_base (독립)
   ├── rtc_digital_twin (독립, Python)
   └── rtc_tools (독립, Python)
 
-repo_scripts (shell-only, no CMake)
+repo_scripts (ament_cmake — 스크립트 install + ament_add_test, 라이브러리/실행파일 없음)
 rtc_math (독립) ← Eigen3 (Pinocchio adapter optional)
 rtc_urdf_bridge ← Pinocchio, tinyxml2, yaml-cpp
 
@@ -122,10 +124,10 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 - **ROS2 파라미터 인트로스펙션**: 컨트롤러별 토픽 매핑을 읽기 전용 파라미터로 노출
 
 ### 도구
-- **controller_gui**: tkinter 기반 실시간 게인 튜닝 GUI
-- **plot_rtc_log**: Matplotlib CSV 궤적 시각화 (robot/device 자동 감지)
-- **compare_mjcf_urdf**: MJCF/URDF 물리 파라미터 교차 검증
-- **urdf_to_mjcf**: URDF → MJCF 자동 변환
+- **demo_controller_gui** (`integrated_bringup`): tkinter 기반 실시간 게인 튜닝 GUI
+- **plot_rtc_log** (`rtc_tools`): Matplotlib CSV 궤적 시각화 (robot/device 자동 감지)
+- **compare_mjcf_urdf** (`rtc_tools`): MJCF/URDF 물리 파라미터 교차 검증
+- **urdf_to_mjcf** (`rtc_tools`): URDF → MJCF 자동 변환
 
 ---
 

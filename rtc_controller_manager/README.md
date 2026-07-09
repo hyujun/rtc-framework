@@ -123,6 +123,7 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 - **Actuator publish (inline, RT-safe)**: rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 그룹별로 직접 호출 (RT-safe contract)
 - **Controller-owned non-RT publish (오프로드)**: `nrt_publish_buffer_.Push()` (SPSC cap 16) → `nrt_publish_thread` 가 드레인하여 `controller.PublishNonRtSnapshot` 호출 (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot)
 - 그룹별 commands, actual, motor, sensor, inference 데이터 포함
+- **Per-group command type 해석 (`CommandType::kPdFeedforward`, C-3 S1)**: `DeviceOutput::command_type` (per-device `std::optional<CommandType>`, nullopt = 상속) 이 설정돼 있으면 `ControllerOutput::command_type` (글로벌 기본값) 을 override 한다 — `gc.command_type = dout.command_type.value_or(output.command_type)`. `DeviceOutput::feedforward[]` (per-joint Nm) 도 `GroupCommandSlot::feedforward[]` 로 그대로 복사된다. RT loop 는 그룹별로 resolve 된 `gc.command_type` 을 `WriteCommand(slot, gc.command_type)` 에 전달 — snapshot-global `command_type` 이 아니다. Mixed-command 컨트롤러(예: WBC — arm=`kPosition`, hand=`kPdFeedforward`)가 그룹마다 다른 command type 을 낼 수 있는 이유. `kPdFeedforward` = PD position-servo backbone(`values`=position target) + per-joint feedforward torque overlay; wire 상 `JointCommand.command_type = "pd_feedforward"` 문자열로 인코딩되며, feedforward 채널을 모르는 backend 는 position tracking 으로 폴백한다.
 
 ### Phase 4: 타이밍 & 로깅
 - 위상별 소요 시간 계산 (state_acquire, compute, publish) + 지터 측정
@@ -343,7 +344,7 @@ CM은 device-wire 토픽을 직접 만들지 않습니다. `DeviceBackend` 구�
 | 키 | 메시지 타입 | QoS | 설명 |
 |---|---|---|---|
 | `state_topic` | `JointState` | BEST_EFFORT/2 | 디바이스 관절 상태 (필수) |
-| `command_topic` | `JointCommand` 또는 `Float64MultiArray` | BEST_EFFORT/1 또는 RELIABLE/1 | 관절 커맨드 → HW/sim (필수, backend 별로 페이로드 형식 다름) |
+| `command_topic` | `JointCommand` 또는 `Float64MultiArray` | BEST_EFFORT/1 또는 RELIABLE/1 | 관절 커맨드 → HW/sim (필수, backend 별로 페이로드 형식 다름). `WriteCommand(slot, command_type)` 의 `command_type` 은 RT loop 가 그룹별로 resolve 한 값 (`kPosition`/`kTorque`/`kPdFeedforward`) — `JointCommand.command_type` 문자열 필드로 그대로 인코딩됨 |
 | `motor_topic` | `JointState` | BEST_EFFORT/2 | 모터 공간 상태 (선택, `udp_hand_native` 전용) |
 | `sensor_topic` | `HandSensorState` | BEST_EFFORT/2 | 촉각 센서 상태 (선택, `udp_hand_native` 전용) |
 
@@ -538,29 +539,6 @@ rtc_controller_manager  <- RT 제어 실행 엔진 (@ control_rate)
     ^
     +-- integrated_bringup  (로봇별 진입점 + launch 파일)
 ```
-
----
-
-## 변경 내역
-
-### Build hygiene (post-v5.21.0)
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **Deprecated rmw QoS** | `CreateServices()`의 `rmw_qos_profile_services_default` → `rclcpp::ServicesQoS()` 로 마이그레이션 (`-Wdeprecated-declarations` 제거). Behavior 동일. |
-
-### v5.21.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **게인 채널 이관** | `/{robot_ns}/controller_gains` (Sub), `/{robot_ns}/request_gains` (Sub), `/{robot_ns}/current_gains` (Pub) 3개 고정 토픽 + 멤버 (`controller_gains_sub_`, `request_gains_sub_`, `current_gains_pub_`) 제거. `RTControllerInterface::UpdateGainsFromMsg`/`GetCurrentGains` 가상 메서드 제거. 게인은 컨트롤러 자체 LifecycleNode (`/<config_key>`) 의 ROS 2 parameter로 이관 (`declare_parameter` + `add_on_set_parameters_callback`). Force-PI 같은 one-shot 이벤트는 컨트롤러 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv))로 분리. |
-
-### v5.18.0
-
-| 영역 | 변경 내용 |
-|------|----------|
-| **E-STOP RT 안전** | `estop_reason_`를 `std::string` → `std::array<char, 128>` 고정 버퍼로 변경 -- RT 경로 힙 할당 제거 |
-| **E-STOP 로깅** | `RCLCPP_ERROR`/`INFO`를 `estop_log_pending_` atomic 플래그로 대체 -- non-RT `DrainLog()` 스레드에서 지연 출력 |
 
 ---
 
