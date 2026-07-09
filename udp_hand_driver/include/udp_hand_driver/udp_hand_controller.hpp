@@ -320,6 +320,8 @@ class UdpHandController {
     consecutive_recv_failures_.store(0, std::memory_order_relaxed);
     cycle_count_.store(0, std::memory_order_relaxed);
     comm_skip_count_.store(0, std::memory_order_relaxed);
+    sensor_seq_ = 0;  // CommLoop-thread-only; restart begins fresh at 0 so the
+                      // detector's prev_sensor_seq_ (also 0) sees the first read.
     transport_.ResetCommStats();
 
     running_.store(true, std::memory_order_release);
@@ -436,6 +438,11 @@ class UdpHandController {
         }
       }
 
+      // Each fake tick mirrors a fresh sensor read, so advance the freshness
+      // sequence — otherwise the detector's freshness gate would treat every
+      // fake snapshot as a stale republish and never evaluate the sensor path.
+      ++sensor_seq_;
+      fake_state.sensor_seq = sensor_seq_;
       state_seqlock_.Store(fake_state);
       if (callback_) {
         callback_(fake_state, ft_seqlock_.Load());
@@ -754,6 +761,7 @@ class UdpHandController {
           ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
           cached_sensor_data_ = state.sensor_data;    // 1a raw decode (0 for 1b)
           cached_sensor_force_ = state.sensor_force;  // 1b force (0 for 1a)
+          ++sensor_seq_;  // fresh validated sensor read (freshness gate for detector)
         }
       }
 
@@ -824,6 +832,7 @@ class UdpHandController {
         if (num_fingertips_ > 0) {
           attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
         }
+        bool sensor_validated = false;
         for (int i = 0; i < num_fingertips_; ++i) {
           auto cmd = packets::SensorCommand(i);
           if (transport_.RequestSensorRead(cmd, sensor_raw_buf_, packets::SensorMode::kRaw)) {
@@ -832,8 +841,11 @@ class UdpHandController {
                 cached_sensor_data_.begin() + i * udp_hand_driver::kSensorValuesPerFingertip);
             any_recv_ok = true;
             ok_mask |= RequestKindBit(RequestKind::kSensorRead);
+            sensor_validated = true;
           }
         }
+        if (sensor_validated)
+          ++sensor_seq_;  // one bump per cycle with ≥1 fresh finger read
       }
 
       const auto t4 = std::chrono::steady_clock::now();
@@ -964,6 +976,7 @@ class UdpHandController {
     state.sensor_data = cached_sensor_data_;
     state.num_fingertips = num_fingertips_;
     state.valid = any_recv_ok;
+    state.sensor_seq = sensor_seq_;  // freshness gate for the failure detector
 
     if (any_recv_ok && !state_read_once_) {
       state_read_once_ = true;
@@ -1162,6 +1175,12 @@ class UdpHandController {
   // Decimation counters (CommLoop thread only).
   int sensor_cycle_counter_{0};
   int comm_cycle_counter_{0};
+
+  // Monotonic sensor-freshness sequence (CommLoop thread only). Bumped once per
+  // cycle that produced a fresh validated sensor read; published into
+  // UdpHandState::sensor_seq so the ~50 Hz detector can distinguish a genuine
+  // firmware stall from a decimated byte-frozen republish it polled twice.
+  uint32_t sensor_seq_{0};
 
   // Pending calibration request (ROS thread -> CommLoop handoff).
   // Written by RequestCalibration() (arbitrary thread), consumed by

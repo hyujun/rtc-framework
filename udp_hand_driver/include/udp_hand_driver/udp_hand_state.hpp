@@ -28,6 +28,13 @@ struct UdpHandState {
   bool joint_valid{false};            ///< kJoint read succeeded this cycle
   bool motor_valid{false};            ///< kMotor read succeeded this cycle
   uint8_t received_joint_mode{0x00};  ///< 0x00=motor, 0x01=joint (from response packet)
+  /// Monotonic count of cycles that produced a FRESH validated sensor read.
+  /// Frozen across decimated / non-sensor / failed-read cycles. The failure
+  /// detector evaluates sensor all-zero/duplicate only when this advances, so a
+  /// zero-init snapshot (seq 0, never read) and a decimated byte-frozen
+  /// republish (seq unchanged) are skipped while a genuine firmware stall (same
+  /// value, seq keeps advancing on each real read) is still caught.
+  uint32_t sensor_seq{0};
 };
 
 }  // namespace udp_hand_driver

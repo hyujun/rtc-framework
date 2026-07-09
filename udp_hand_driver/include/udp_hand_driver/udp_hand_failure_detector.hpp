@@ -208,6 +208,19 @@ class UdpHandFailureDetector {
   }
 
   void CheckSensor(const UdpHandState& state) {
+    // Freshness gate. The detector (~50 Hz) polls faster than the decimated
+    // sensor rate, so most polls carry the SAME published snapshot. Evaluate the
+    // all-zero / duplicate heuristics ONLY when a fresh validated sensor read has
+    // advanced the sequence; otherwise a byte-identical republish would read as a
+    // false duplicate (#4), and a zero-init snapshot before the first read (seq
+    // still 0) would read as false all-zero (#3). A genuine firmware stall — same
+    // value returned on every REAL read — still advances the seq each cycle, so
+    // it is caught here as a true duplicate.
+    if (state.sensor_seq == prev_sensor_seq_) {
+      return;
+    }
+    prev_sensor_seq_ = state.sensor_seq;
+
     bool all_zero = false;
     bool duplicate = false;
     if (cfg_.sensor_force_layout) {
@@ -413,6 +426,10 @@ class UdpHandFailureDetector {
   bool prev_force_valid_{false};
   int sensor_zero_count_{0};
   int sensor_dup_count_{0};
+  // Last sensor-freshness sequence evaluated. Starts at 0 == the zero-init
+  // UdpHandState::sensor_seq, so pre-first-read polls are skipped (see
+  // CheckSensor). Bumped to the published seq on each evaluated cycle.
+  uint32_t prev_sensor_seq_{0};
 
   // Rate monitoring state
   int rate_fail_count_{0};

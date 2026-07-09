@@ -135,6 +135,27 @@ TEST_F(FakeHandControllerTest, CycleCount_IncrementsPerCall) {
   EXPECT_EQ(controller_->cycle_count(), before + 3);
 }
 
+// ── Sensor freshness sequence (#3/#4 gate) ───────────────────────────────────
+
+TEST_F(FakeHandControllerTest, SensorSeq_ZeroBeforeFirstRead) {
+  ASSERT_TRUE(controller_->Start());
+  // No SendCommandAndRequestStates yet → no fresh sensor read → seq stays 0.
+  // The failure detector's freshness gate keys on this to skip evaluating a
+  // never-read (zero-init) sensor snapshot as a false all-zero (#3).
+  EXPECT_EQ(controller_->GetLatestState().sensor_seq, 0u);
+}
+
+TEST_F(FakeHandControllerTest, SensorSeq_AdvancesPerFreshRead) {
+  ASSERT_TRUE(controller_->Start());
+  std::array<float, kNumHandMotors> cmd{};
+  controller_->SendCommandAndRequestStates(cmd);
+  EXPECT_EQ(controller_->GetLatestState().sensor_seq, 1u);
+  controller_->SendCommandAndRequestStates(cmd);
+  controller_->SendCommandAndRequestStates(cmd);
+  // Monotonic, one bump per fresh read — the detector uses the delta to gate.
+  EXPECT_EQ(controller_->GetLatestState().sensor_seq, 3u);
+}
+
 // ── Callback ────────────────────────────────────────────────────────────────
 
 TEST_F(FakeHandControllerTest, Callback_Invoked) {

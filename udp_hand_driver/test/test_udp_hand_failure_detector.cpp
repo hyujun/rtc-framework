@@ -157,13 +157,16 @@ TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure) {
   std::string failure_reason;
   detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
 
-  // Fake mode echoes sensor_data as all-zeros
+  // Fake mode echoes sensor_data as all-zeros. Feed DURING the detector run so
+  // each fresh read advances sensor_seq — the freshness gate evaluates only
+  // fresh snapshots, exactly as a genuinely dead sensor read every cycle.
   std::array<float, kNumHandMotors> cmd{};
   cmd[0] = 1.0f;  // non-zero motor to avoid motor failures
-  FeedCommands(cmd, 10);
-
   detector.Start();
-  std::this_thread::sleep_for(200ms);
+  for (int i = 0; i < 40; ++i) {
+    controller_->SendCommandAndRequestStates(cmd);
+    std::this_thread::sleep_for(5ms);
+  }
   detector.Stop();
 
   EXPECT_TRUE(detector.failed());
@@ -189,11 +192,13 @@ TEST_F(HandFailureDetectorTest, SensorForceAllZero_TriggersFailure) {
   detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
 
   // Zero command → sensor_force is all-zero (dead/disconnected sensor signature).
+  // Feed DURING the run so each fresh read advances sensor_seq (freshness gate).
   std::array<float, kNumHandMotors> cmd{};
-  FeedCommands(cmd, 10);
-
   detector.Start();
-  std::this_thread::sleep_for(200ms);
+  for (int i = 0; i < 40; ++i) {
+    controller_->SendCommandAndRequestStates(cmd);
+    std::this_thread::sleep_for(5ms);
+  }
   detector.Stop();
 
   EXPECT_TRUE(detector.failed());
@@ -214,14 +219,17 @@ TEST_F(HandFailureDetectorTest, SensorForceDuplicate_TriggersFailure) {
   std::string failure_reason;
   detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
 
-  // Constant non-zero command → non-zero but frozen force (stalled feed). all_zero
-  // cannot fire (non-zero), so duplicate is the expected signal.
+  // Constant non-zero command → non-zero but identical force on every fresh read
+  // (genuine stalled feed: sensor IS read each cycle, seq advances, value frozen).
+  // all_zero cannot fire (non-zero), so duplicate is the expected signal. Feed
+  // DURING the run so seq advances on each read (freshness gate).
   std::array<float, kNumHandMotors> same_cmd{};
   same_cmd[0] = 3.0f;
-  FeedCommands(same_cmd, 20);
-
   detector.Start();
-  std::this_thread::sleep_for(200ms);
+  for (int i = 0; i < 40; ++i) {
+    controller_->SendCommandAndRequestStates(same_cmd);
+    std::this_thread::sleep_for(5ms);
+  }
   detector.Stop();
 
   EXPECT_TRUE(detector.failed());
@@ -252,6 +260,39 @@ TEST_F(HandFailureDetectorTest, SensorForceChanging_NoFailure) {
     controller_->SendCommandAndRequestStates(cmd);
     std::this_thread::sleep_for(10ms);
   }
+  detector.Stop();
+
+  EXPECT_FALSE(detector.failed());
+}
+
+// ── Freshness gate: frozen sensor_seq must not false-fire (#4) ────────────────
+// The detector (~50 Hz) polls faster than the decimated sensor rate, so most
+// polls carry the SAME published snapshot. A single fresh read followed by many
+// polls of that frozen snapshot (sensor_seq unchanged) is a decimated republish,
+// NOT a stalled feed — the freshness gate must evaluate it only once, so no
+// duplicate accumulates. (Pre-fix this false-fired hand_sensor_duplicate.)
+TEST_F(HandFailureDetectorTest, SensorFrozenSeq_NoFalseDuplicate) {
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.failure_threshold = 3;
+  cfg.check_motor = false;
+  cfg.check_sensor = true;
+  cfg.sensor_force_layout = true;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 0.0;
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+
+  std::string failure_reason;
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
+
+  // One fresh non-zero read → sensor_seq advances exactly once, then freezes
+  // (no further feeds), mimicking a snapshot republished at the decimated rate.
+  std::array<float, kNumHandMotors> cmd{};
+  cmd[0] = 3.0f;
+  controller_->SendCommandAndRequestStates(cmd);
+
+  detector.Start();
+  std::this_thread::sleep_for(200ms);  // ~10 polls of the frozen snapshot
   detector.Stop();
 
   EXPECT_FALSE(detector.failed());
