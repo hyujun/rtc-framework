@@ -19,6 +19,15 @@ namespace udp_hand_driver::test {
 
 using namespace packets;
 
+// comm_stats() returns the published SeqLock snapshot, not the live working copy
+// — the CommLoop publishes it once per cycle via PublishCommStats(). These
+// single-threaded unit tests run no cycle, so publish the working copy first to
+// observe the mutations they just made (models one comm-cycle publish).
+[[nodiscard]] inline UdpHandCommStats PubStats(UdpHandTransport& t) {
+  t.PublishCommStats();
+  return t.comm_stats();
+}
+
 // ── Helper: loopback UDP device simulator ──────────────────────────────────────
 
 class LoopbackDevice {
@@ -109,7 +118,7 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMatch_ReturnsTrue) {
   dev_thread.join();
 
   EXPECT_TRUE(result);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 0u);
 }
 
 TEST(HandUdpTransportModeValidation, MotorRead_ModeMismatch_ReturnsFalse) {
@@ -133,7 +142,7 @@ TEST(HandUdpTransportModeValidation, MotorRead_ModeMismatch_ReturnsFalse) {
   dev_thread.join();
 
   EXPECT_FALSE(result);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 1u);
 }
 
 // ── RequestAllMotorRead mode validation ─────────────────────────────────────────
@@ -161,7 +170,7 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMatch_ReturnsTrue) {
   dev_thread.join();
 
   EXPECT_TRUE(result);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 0u);
 }
 
 TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMismatch_ReturnsFalse) {
@@ -185,7 +194,7 @@ TEST(HandUdpTransportModeValidation, AllMotorRead_ModeMismatch_ReturnsFalse) {
   dev_thread.join();
 
   EXPECT_FALSE(result);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 1u);
 }
 
 // ── MODE gates (mechanism) ──────────────────────────────────────────────────────
@@ -231,7 +240,7 @@ TEST(HandUdpTransportModeGate, AllMotorRead_ModeMismatch_GateOff_Accepts) {
   dev_thread.join();
 
   EXPECT_TRUE(result);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 0u);
 }
 
 // Helper: craft a 1b bulk-sensor response with a deliberately arbitrary MODE byte.
@@ -257,7 +266,7 @@ TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_Default_Rejects) {
   dev_thread.join();
 
   EXPECT_EQ(recvd, -1);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 1u);
 }
 
 TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_BulkGateOff_Accepts) {
@@ -276,7 +285,7 @@ TEST(HandUdpTransportModeGate, BulkSensorRaw_ModeMismatch_BulkGateOff_Accepts) {
   dev_thread.join();
 
   EXPECT_EQ(recvd, static_cast<ssize_t>(kP1bSensorResponseSize));
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 0u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 0u);
 }
 
 // The two gates are independent: turning off the joint/set-mode gate must NOT
@@ -297,7 +306,7 @@ TEST(HandUdpTransportModeGate, BulkSensorRaw_JointGateOff_BulkGateOn_StillReject
   dev_thread.join();
 
   EXPECT_EQ(recvd, -1);
-  EXPECT_EQ(transport.comm_stats().mode_mismatch, 1u);
+  EXPECT_EQ(PubStats(transport).mode_mismatch, 1u);
 }
 
 TEST(HandUdpTransportModeGate, BulkSensorRaw_GateOff_StillRejectsWrongCmd) {
@@ -320,7 +329,7 @@ TEST(HandUdpTransportModeGate, BulkSensorRaw_GateOff_StillRejectsWrongCmd) {
   dev_thread.join();
 
   EXPECT_EQ(recvd, -1);
-  EXPECT_EQ(transport.comm_stats().cmd_mismatch, 1u);
+  EXPECT_EQ(PubStats(transport).cmd_mismatch, 1u);
 }
 
 // ── RequestSetSensorMode cmd floor + MODE gate ──────────────────────────────────
@@ -388,7 +397,7 @@ TEST(UdpHandTransport, RecvTimeoutMs_StoredCorrectly) {
 
 TEST(UdpHandTransport, CommStats_InitiallyZero) {
   UdpHandTransport transport("127.0.0.1", 55151, 10.0);
-  const auto& stats = transport.comm_stats();
+  const auto& stats = PubStats(transport);
   EXPECT_EQ(stats.recv_ok, 0u);
   EXPECT_EQ(stats.recv_timeout, 0u);
   EXPECT_EQ(stats.recv_error, 0u);
@@ -438,7 +447,73 @@ TEST(UdpHandTransport, DestructorClosesSocket) {
 TEST(UdpHandTransport, CommStatsMut_Writable) {
   UdpHandTransport transport("127.0.0.1", 55151, 10.0);
   transport.comm_stats_mut().total_cycles = 42;
-  EXPECT_EQ(transport.comm_stats().total_cycles, 42u);
+  EXPECT_EQ(PubStats(transport).total_cycles, 42u);
+}
+
+// ── #7 SeqLock snapshot consistency ────────────────────────────────────────
+// The published snapshot must be internally consistent: each aggregate equals
+// the sum of its per-kind breakdown, and cmd/len are not torn.
+
+TEST(UdpHandTransport, CommStatsSnapshot_PerKindSumsMatchAggregates) {
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
+  auto& w = transport.comm_stats_mut();
+  // Spread failures across several kinds (as the real Count* helpers would),
+  // then publish one snapshot.
+  w.cmd_mismatch = 3;
+  w.per_kind[KindIdx(RequestKind::kMotorRead)].cmd_mismatch = 2;
+  w.per_kind[KindIdx(RequestKind::kBulkSensor)].cmd_mismatch = 1;
+  w.mode_mismatch = 2;
+  w.per_kind[KindIdx(RequestKind::kJointRead)].mode_mismatch = 2;
+  w.last_unexpected_cmd = 0x19;
+  w.last_unexpected_len = 123;
+
+  const UdpHandCommStats snap = PubStats(transport);
+  uint64_t cmd_sum = 0;
+  uint64_t mode_sum = 0;
+  for (const auto& pk : snap.per_kind) {
+    cmd_sum += pk.cmd_mismatch;
+    mode_sum += pk.mode_mismatch;
+  }
+  EXPECT_EQ(cmd_sum, snap.cmd_mismatch);
+  EXPECT_EQ(mode_sum, snap.mode_mismatch);
+  EXPECT_EQ(snap.last_unexpected_cmd, 0x19);
+  EXPECT_EQ(snap.last_unexpected_len, 123u);
+}
+
+TEST(UdpHandTransport, CommStatsSnapshot_ConsistentUnderConcurrentReads) {
+  // A reader on another thread must never observe a torn snapshot — aggregate
+  // updated but its per-kind not yet (the pre-SeqLock shear #7). The writer keeps
+  // both in lockstep and publishes; the reader retry-reads and checks the
+  // invariant on every sample.
+  UdpHandTransport transport("127.0.0.1", 55151, 10.0);
+  std::atomic<bool> stop{false};
+  std::atomic<bool> torn{false};
+
+  std::thread reader([&]() {
+    while (!stop.load(std::memory_order_relaxed)) {
+      const UdpHandCommStats s = transport.comm_stats();
+      uint64_t sum = 0;
+      for (const auto& pk : s.per_kind) {
+        sum += pk.cmd_mismatch;
+      }
+      if (sum != s.cmd_mismatch) {
+        torn.store(true, std::memory_order_relaxed);
+      }
+    }
+  });
+
+  auto& w = transport.comm_stats_mut();
+  for (int i = 0; i < 200000; ++i) {
+    // Keep aggregate == sum(per_kind) at every publish; alternate the kind.
+    ++w.cmd_mismatch;
+    ++w.per_kind[KindIdx(static_cast<RequestKind>(i % kNumRequestKinds))].cmd_mismatch;
+    transport.PublishCommStats();
+  }
+  stop.store(true, std::memory_order_relaxed);
+  reader.join();
+
+  EXPECT_FALSE(torn.load());
+  EXPECT_EQ(transport.comm_stats().cmd_mismatch, 200000u);
 }
 
 // ── WritePositionFireAndForget on open socket ──────────────────────────────
@@ -485,7 +560,7 @@ TEST(HandUdpTransportPerKind, Timeout_AttributedToCallerKind) {
   EXPECT_FALSE(transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kJoint, nullptr,
                                           RequestKind::kJointRead));
 
-  const auto& stats = transport.comm_stats();
+  const auto& stats = PubStats(transport);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 0u);
   EXPECT_EQ(stats.recv_timeout, 1u);
@@ -502,7 +577,7 @@ TEST(HandUdpTransportPerKind, JointVsMotor_SeparateBuckets) {
   EXPECT_FALSE(transport.RequestMotorRead(Command::kReadPosition, out, JointMode::kJoint, nullptr,
                                           RequestKind::kJointRead));
 
-  const auto& stats = transport.comm_stats();
+  const auto& stats = PubStats(transport);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].timeout, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kJointRead)].timeout, 1u);
   EXPECT_EQ(stats.recv_timeout, 2u);
@@ -530,7 +605,7 @@ TEST(HandUdpTransportPerKind, CmdMismatch_RecordsLastUnexpectedCmd) {
   dev_thread.join();
 
   EXPECT_FALSE(result);
-  const auto& stats = transport.comm_stats();
+  const auto& stats = PubStats(transport);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].cmd_mismatch, 1u);
   EXPECT_EQ(stats.last_unexpected_cmd, static_cast<uint8_t>(Command::kReadVelocity));
   EXPECT_EQ(stats.last_unexpected_len, kMotorPacketSize);
@@ -576,7 +651,7 @@ TEST(HandUdpTransportPerKind, StalePreinjected_RetryRecovers) {
                                                  nullptr, RequestKind::kMotorRead);
 
   EXPECT_TRUE(result);
-  const auto& stats = transport.comm_stats();
+  const auto& stats = PubStats(transport);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].ok, 1u);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].cmd_mismatch, 1u);
   EXPECT_EQ(stats.last_unexpected_cmd, static_cast<uint8_t>(Command::kWritePosition));
@@ -600,7 +675,7 @@ TEST(HandUdpTransportPerKind, ShortPacket_CountsShortOrDecode) {
   dev_thread.join();
 
   EXPECT_FALSE(result);
-  const auto& stats = transport.comm_stats();
+  const auto& stats = PubStats(transport);
   EXPECT_EQ(stats.per_kind[KindIdx(RequestKind::kMotorRead)].short_or_decode, 1u);
   EXPECT_EQ(stats.last_unexpected_len, kHeaderSize);
 }
@@ -623,7 +698,7 @@ TEST(HandUdpTransportPerKind, WriteEcho_OkCounted) {
   dev_thread.join();
 
   EXPECT_TRUE(result);
-  EXPECT_EQ(transport.comm_stats().per_kind[KindIdx(RequestKind::kWriteEcho)].ok, 1u);
+  EXPECT_EQ(PubStats(transport).per_kind[KindIdx(RequestKind::kWriteEcho)].ok, 1u);
 }
 
 TEST(HandUdpTransportPerKind, BulkSensorTimeout_AttributedToBulkSensor) {
@@ -635,7 +710,7 @@ TEST(HandUdpTransportPerKind, BulkSensorTimeout_AttributedToBulkSensor) {
   EXPECT_EQ(transport.RequestBulkSensorRaw(buf.data(), buf.size(), kP1bSensorResponseSize,
                                            SensorMode::kRaw),
             -1);
-  EXPECT_EQ(transport.comm_stats().per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
+  EXPECT_EQ(PubStats(transport).per_kind[KindIdx(RequestKind::kBulkSensor)].timeout, 1u);
 }
 
 // ── Cycle-start stale drain (DrainStaleDatagrams) ───────────────────────────
@@ -647,7 +722,7 @@ TEST(HandUdpTransportDrain, SocketClosed_ReturnsZero) {
   UdpHandTransport transport("127.0.0.1", 55151, 50.0);
   // Not opened (fake mode): drain must be a safe no-op.
   EXPECT_EQ(transport.DrainStaleDatagrams(), 0);
-  EXPECT_EQ(transport.comm_stats().stale_drained, 0u);
+  EXPECT_EQ(PubStats(transport).stale_drained, 0u);
 }
 
 TEST(HandUdpTransportDrain, EmptySocket_ReturnsZero) {
@@ -655,7 +730,7 @@ TEST(HandUdpTransportDrain, EmptySocket_ReturnsZero) {
   UdpHandTransport transport("127.0.0.1", device.port(), 50.0);
   ASSERT_TRUE(transport.Open());
   EXPECT_EQ(transport.DrainStaleDatagrams(), 0);
-  EXPECT_EQ(transport.comm_stats().stale_drained, 0u);
+  EXPECT_EQ(PubStats(transport).stale_drained, 0u);
 }
 
 TEST(HandUdpTransportDrain, TwoStale_DrainedThenFreshRequestOk) {
@@ -680,7 +755,7 @@ TEST(HandUdpTransportDrain, TwoStale_DrainedThenFreshRequestOk) {
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
   EXPECT_EQ(transport.DrainStaleDatagrams(), 2);
-  EXPECT_EQ(transport.comm_stats().stale_drained, 2u);
+  EXPECT_EQ(PubStats(transport).stale_drained, 2u);
 
   // The fresh request now reads its own response — no stale cmd_mismatch.
   MotorPacket fresh{};
@@ -700,7 +775,7 @@ TEST(HandUdpTransportDrain, TwoStale_DrainedThenFreshRequestOk) {
   dev_thread.join();
 
   EXPECT_TRUE(result);
-  EXPECT_EQ(transport.comm_stats().cmd_mismatch, 0u);
+  EXPECT_EQ(PubStats(transport).cmd_mismatch, 0u);
 }
 
 TEST(HandUdpTransportDrain, NineStale_BoundedToEightThenOne) {
@@ -724,7 +799,7 @@ TEST(HandUdpTransportDrain, NineStale_BoundedToEightThenOne) {
 
   EXPECT_EQ(transport.DrainStaleDatagrams(), 8);
   EXPECT_EQ(transport.DrainStaleDatagrams(), 1);
-  EXPECT_EQ(transport.comm_stats().stale_drained, 9u);
+  EXPECT_EQ(PubStats(transport).stale_drained, 9u);
 }
 
 }  // namespace udp_hand_driver::test

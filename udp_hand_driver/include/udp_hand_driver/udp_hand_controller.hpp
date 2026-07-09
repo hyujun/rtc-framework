@@ -993,6 +993,12 @@ class UdpHandController {
                              static_cast<unsigned>(last_cmd));
       }
     }
+
+    // #7 Publish the cycle's comm-stats working copy as one consistent SeqLock
+    // snapshot. All this cycle's transport mutations (per_kind, aggregates,
+    // last_unexpected) and the total_cycles stamp above are now captured, so an
+    // off-loop reader never sees a torn per_kind/aggregate pair. RT-safe memcpy.
+    transport_.PublishCommStats();
   }
 
   // Terminal E-Stop zero-write, invoked once by CommLoop::OnLoopAborted() on

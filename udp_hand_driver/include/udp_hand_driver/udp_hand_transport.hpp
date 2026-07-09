@@ -9,6 +9,7 @@
 // All hot-path methods are noexcept and allocation-free (RT-safe).
 // Uses ppoll for sub-ms recv timeout (hrtimer on PREEMPT_RT kernels).
 
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
 #include "udp_hand_driver/udp_hand_codec.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
@@ -189,7 +190,7 @@ class UdpHandTransport {
       } else {
         ++PerKindStats(RequestKind::kWriteEcho).ok;
       }
-      ++comm_stats_.recv_ok;
+      ++comm_stats_working_.recv_ok;
       return echo_ok;
     }
     if (recvd < 0) {
@@ -416,7 +417,7 @@ class UdpHandTransport {
   // burns retries. Draining at cycle start clears the backlog so the fresh
   // request reads its own response. Bounded to kMaxDrainPerCall non-blocking
   // reads per call — RT hot path must not spin on an unbounded queue. Returns
-  // the number drained; accumulates into comm_stats_.stale_drained. Socket not
+  // the number drained; accumulates into comm_stats_working_.stale_drained. Socket not
   // open (fake mode) → 0. noexcept, allocation-free.
   int DrainStaleDatagrams() noexcept {
     if (socket_fd_ < 0) {
@@ -430,45 +431,49 @@ class UdpHandTransport {
       }
       ++drained;
     }
-    comm_stats_.stale_drained += static_cast<uint64_t>(drained);
+    comm_stats_working_.stale_drained += static_cast<uint64_t>(drained);
     return drained;
   }
 
   // ── Statistics accessors ──────────────────────────────────────────────────
 
   // Snapshot of the comm stats. Returned by value: the last-unexpected forensics
-  // (cmd + len) live in a single atomic (packed cmd<<16 | len) so a reader on a
-  // non-writer thread cannot observe a torn cmd/len pair; they are decoded into
-  // the returned struct here. The aggregate counters are copied racily (relaxed
-  // single-writer, same pattern as before).
-  [[nodiscard]] UdpHandCommStats comm_stats() const noexcept {
-    UdpHandCommStats snap = comm_stats_;
-    const uint32_t packed = last_unexpected_.load(std::memory_order_relaxed);
-    snap.last_unexpected_cmd = static_cast<uint8_t>((packed >> 16) & 0xFFu);
-    snap.last_unexpected_len = static_cast<uint16_t>(packed & 0xFFFFu);
-    return snap;
-  }
+  // Consistent snapshot for off-loop readers (stats timer, failure detector).
+  // The whole struct — aggregates + per_kind[6] + last_unexpected cmd/len —
+  // shears if plain-copied while the CommLoop mutates it, so it is published as
+  // one SeqLock snapshot (PublishCommStats) and read here with a retry loop: no
+  // reader can observe a torn per_kind/aggregate pair or a half-updated cmd/len.
+  [[nodiscard]] UdpHandCommStats comm_stats() const noexcept { return comm_stats_seqlock_.Load(); }
 
-  [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return comm_stats_; }
+  // Mutable working copy for the CommLoop's own per-cycle writes (e.g. the
+  // controller stamping total_cycles). CommLoop thread only — published via
+  // PublishCommStats() at cycle end.
+  [[nodiscard]] UdpHandCommStats& comm_stats_mut() noexcept { return comm_stats_working_; }
 
-  // Decoded last-unexpected forensics (single atomic load each). Used on the
-  // CommLoop RT logging path in place of a full comm_stats() copy.
+  // Publish the working copy as the reader-visible snapshot. Called once at the
+  // end of each real comm cycle (CommLoop thread). RT-safe: ~400 B memcpy + 2
+  // fences, no alloc/lock.
+  void PublishCommStats() noexcept { comm_stats_seqlock_.Store(comm_stats_working_); }
+
+  // Last-unexpected forensics for the CommLoop RT logging path. Same-thread reads
+  // of the working copy (the writer), so no atomic needed.
   [[nodiscard]] uint8_t last_unexpected_cmd() const noexcept {
-    return static_cast<uint8_t>((last_unexpected_.load(std::memory_order_relaxed) >> 16) & 0xFFu);
+    return comm_stats_working_.last_unexpected_cmd;
   }
 
   [[nodiscard]] uint16_t last_unexpected_len() const noexcept {
-    return static_cast<uint16_t>(last_unexpected_.load(std::memory_order_relaxed) & 0xFFFFu);
+    return comm_stats_working_.last_unexpected_len;
   }
 
   // Reset all comm statistics + forensics to zero. Non-RT (called from Start()
   // on the ROS thread before the CommLoop launches) so a deactivate→activate
   // restart begins with clean counters — a stale recv_error_count / mismatch
-  // history must not carry into the fresh run. noexcept.
+  // history must not carry into the fresh run. Publishes the cleared snapshot so
+  // a reader between restart and the first cycle sees zeros, not stale data.
   void ResetCommStats() noexcept {
-    comm_stats_ = {};
+    comm_stats_working_ = {};
     recv_error_count_.store(0, std::memory_order_relaxed);
-    last_unexpected_.store(0, std::memory_order_relaxed);
+    comm_stats_seqlock_.Store(comm_stats_working_);
   }
 
   // MODE-byte validation gate for the joint / motor / set-sensor-mode responses.
@@ -541,7 +546,7 @@ class UdpHandTransport {
         return -1;
       }
       if (attempt == 0) {
-        ++comm_stats_.recv_ok;
+        ++comm_stats_working_.recv_ok;
       }
       switch (validate(recvd)) {
         case ValidateResult::kOk:
@@ -559,44 +564,41 @@ class UdpHandTransport {
   // ── Per-kind stat counting (hot path: counter increments only) ────────────
 
   [[nodiscard]] UdpHandCommStats::PerKind& PerKindStats(RequestKind kind) noexcept {
-    return comm_stats_.per_kind[static_cast<std::size_t>(kind)];
+    return comm_stats_working_.per_kind[static_cast<std::size_t>(kind)];
   }
 
   // First-attempt recv failure: classify timeout (EAGAIN) vs socket error.
   void CountRecvFail(RequestKind kind) noexcept {
     recv_error_count_.fetch_add(1, std::memory_order_relaxed);
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      ++comm_stats_.recv_timeout;
+      ++comm_stats_working_.recv_timeout;
       ++PerKindStats(kind).timeout;
     } else {
-      ++comm_stats_.recv_error;
+      ++comm_stats_working_.recv_error;
       ++PerKindStats(kind).error;
     }
   }
 
   void CountCmdMismatch(RequestKind kind, uint8_t got_cmd, ssize_t recvd) noexcept {
-    ++comm_stats_.cmd_mismatch;
+    ++comm_stats_working_.cmd_mismatch;
     ++PerKindStats(kind).cmd_mismatch;
-    // Pack cmd + len into one atomic store so cross-thread readers never see a
-    // torn cmd/len pair (single writer — the CommLoop thread).
-    last_unexpected_.store((static_cast<uint32_t>(got_cmd) << 16) |
-                               (static_cast<uint32_t>(static_cast<uint16_t>(recvd))),
-                           std::memory_order_relaxed);
+    // Record the rejected cmd + len into the working copy; the whole-struct
+    // SeqLock publish (PublishCommStats) keeps the cmd/len pair consistent for
+    // cross-thread readers, so no separate packed atomic is needed.
+    comm_stats_working_.last_unexpected_cmd = got_cmd;
+    comm_stats_working_.last_unexpected_len = static_cast<uint16_t>(recvd);
   }
 
   void CountModeMismatch(RequestKind kind) noexcept {
-    ++comm_stats_.mode_mismatch;
+    ++comm_stats_working_.mode_mismatch;
     ++PerKindStats(kind).mode_mismatch;
   }
 
   void CountShortOrDecode(RequestKind kind, ssize_t recvd) noexcept {
     ++PerKindStats(kind).short_or_decode;
-    // Update only the len half, preserving the last cmd byte. Single writer, so
-    // a plain load-modify-store (no CAS) keeps the pair atomic for readers.
-    const uint32_t cur = last_unexpected_.load(std::memory_order_relaxed);
-    last_unexpected_.store(
-        (cur & 0xFFFF0000u) | static_cast<uint32_t>(static_cast<uint16_t>(recvd)),
-        std::memory_order_relaxed);
+    // Update only the len, preserving the last cmd byte. The SeqLock publish
+    // keeps the cmd/len pair consistent for readers.
+    comm_stats_working_.last_unexpected_len = static_cast<uint16_t>(recvd);
   }
 
   // Sub-ms precision recv using ppoll (hrtimer on PREEMPT_RT kernels).
@@ -634,7 +636,7 @@ class UdpHandTransport {
     if (recvd < 0) {
       CountRecvFail(kind);
     } else {
-      ++comm_stats_.recv_ok;
+      ++comm_stats_working_.recv_ok;
     }
     return recvd;
   }
@@ -651,13 +653,18 @@ class UdpHandTransport {
   double recv_timeout_ms_;
   sockaddr_in target_addr_{};
 
-  UdpHandCommStats comm_stats_;
+  // CommLoop-thread-only working copy: mutated in place every cycle (aggregates,
+  // per_kind, stale_drained, total_cycles, last_unexpected cmd/len) then
+  // published as one consistent snapshot at cycle end.
+  UdpHandCommStats comm_stats_working_{};
+  // Reader-visible snapshot. Single writer = CommLoop via PublishCommStats() /
+  // ResetCommStats(); readers = stats timer + failure detector (comm_stats()).
+  // Whole-struct SeqLock so no reader observes a torn per_kind/aggregate or
+  // cmd/len pair — replaces the old plain copy + separate packed atomic.
+  static_assert(std::is_trivially_copyable_v<UdpHandCommStats>,
+                "SeqLock payload must be trivially copyable");
+  rtc::SeqLock<UdpHandCommStats> comm_stats_seqlock_{};
   std::atomic<uint64_t> recv_error_count_{0};
-  // Last-unexpected forensics packed as (cmd << 16) | len into one atomic so a
-  // cross-thread reader never sees a torn cmd/len pair. Single writer: the
-  // CommLoop thread (CountCmdMismatch / CountShortOrDecode). Decoded by
-  // comm_stats() / last_unexpected_cmd() / last_unexpected_len().
-  std::atomic<uint32_t> last_unexpected_{0};
   bool verify_response_mode_{
       true};  // strict MODE echo check (joint/set-mode); injected per protocol capability
   bool verify_bulk_sensor_mode_{
