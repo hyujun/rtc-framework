@@ -232,6 +232,11 @@ class RobotProfile:
     shape: RobotShape
     tcp_parent: str
     tcp_child: str
+    # Hand device-group token — the driver namespaces its hand topics under
+    # /<hand_group>/... (e.g. sensor calibration /<hand_group>/calibration/*),
+    # matching the CM device group and the *_bringup config. Robot-specific:
+    # p1a→"p1a", p1b→"p1b", iiwa7_leap→"leap".
+    hand_group: str
 
     @classmethod
     def for_robot(cls, key: str) -> RobotProfile:
@@ -254,6 +259,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         shape=RobotShape.default_ur5e_assm(),
         tcp_parent="base",
         tcp_child="tool0_actual",
+        hand_group="p1a",
     ),
     "ur5e_p1b": RobotProfile(
         # Same UR5e arm and TCP frames as ur5e_p1a; only the hand roster
@@ -261,6 +267,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         shape=RobotShape.default_ur5e_p1b(),
         tcp_parent="base",
         tcp_child="tool0_actual",
+        hand_group="p1b",
     ),
     "iiwa7_leap": RobotProfile(
         shape=RobotShape.default_iiwa7_leap(),
@@ -269,6 +276,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # (owned_topics.cpp MakeActualChildFrame); sim.yaml tip_link is
         # "ee_link" → published frame is "ee_link_actual".
         tcp_child="ee_link_actual",
+        hand_group="leap",
     ),
 }
 

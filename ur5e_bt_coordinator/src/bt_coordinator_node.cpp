@@ -235,7 +235,12 @@ void BtCoordinatorNode::DeclareParameters() {
   // Robot profile (Seam A/B): arm/hand device groups → topic namespaces, and
   // joint widths (default 6/10) so DoF is not hardcoded.
   arm_group_ = safe_declare("arm_group", std::string("ur5e"));
-  hand_group_ = safe_declare("hand_group", std::string("hand"));
+  // No default hand_group: it is variant-specific and supplied by the launch's
+  // variant delta (bt_coordinator_p1a.yaml=p1a, bt_coordinator_p1b.yaml=p1b).
+  // Empty default → the non-empty check below fails fast if the delta was not
+  // loaded (standalone run), instead of silently subscribing to a dead
+  // /rtc_cm/hand/* group that no longer exists after the p1a rename.
+  hand_group_ = safe_declare("hand_group", std::string(""));
   arm_dof_ = safe_declare("arm_dof", kDefaultArmDof);
   hand_dof_ = safe_declare("hand_dof", kDefaultHandDof);
   // Optional-sensor capabilities (Seam D): false skips registering the node

@@ -745,7 +745,7 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 - 핸드 모터 슬라이더 (Thumb / Index / Middle / Ring — finger 그루핑은 motor name prefix 로 자동 추론)
 - E-STOP 상태 (`/system/estop_status`), 실시간 TCP/관절 위치 표시
 - 핸드 자세 프리셋 저장/로드 (JSON)
-- 센서 캘리브레이션 (`/p1a/calibration/command`)
+- 센서 캘리브레이션 (`/<hand_group>/calibration/command` — `--robot` 프로파일의 hand group 으로 파생: p1a→`/p1a/`, p1b→`/p1b/`)
 
 ### motion_editor_gui
 

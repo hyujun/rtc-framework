@@ -50,7 +50,7 @@ BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 
 ### 발행 (Publish)
 
-Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다. 아래 표의 `ur5e`/`hand` 세그먼트는 `arm_group`/`hand_group` 파라미터 값 (default `ur5e`/`hand`) — robot-agnostic (Seam A).
+Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/demo_task_controller`, `/demo_wbc_controller` 등). `/rtc_cm/active_controller_name`이 수신될 때마다 `RewireControllerTopics()`가 sub/pub을 재바인딩합니다. 아래 표의 `ur5e`/`<hand_group>` 세그먼트는 `arm_group`/`hand_group` 파라미터 값 (`arm_group` default `ur5e`; `hand_group` 은 default 없음 — variant delta 가 공급: p1a→`p1a`, p1b→`p1b`) — robot-agnostic (Seam A).
 
 | Topic | 메시지 타입 | 설명 |
 |-------|------------|------|
@@ -143,7 +143,7 @@ TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` 
 |----------|--------|------|
 | `tree_file` | `"pick_and_place.xml"` (코드 기본값), `"pick_and_place_force_pi.xml"` (배포 `config/bt_coordinator.yaml`이 덮어씀) | BT XML 파일명 (`trees/` 디렉토리 기준, 절대 경로도 지원) |
 | `arm_group` | `"ur5e"` | Arm device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<arm_group>/joint_states`, `<ns>/<arm_group>/joint_goal`). 빈 문자열이면 `on_configure` FAILURE (`//` 잘못된 토픽 방지) |
-| `hand_group` | `"hand"` | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). 예: `p1b`. 빈 문자열이면 `on_configure` FAILURE |
+| `hand_group` | *(default 없음)* | Hand device group — 토픽 네임스페이스 세그먼트 (`/rtc_cm/<hand_group>/joint_states`, `<ns>/<hand_group>/{joint_goal,grasp_state,wbc_state}`). variant delta 가 공급 (p1a→`p1a`, p1b→`p1b`); 미공급(빈 문자열)이면 `on_configure` FAILURE — 존재하지 않는 legacy `hand` 그룹 silent 구독 방지 |
 | `arm_dof` | `6` | Arm 관절 폭 (arm pose 길이 검증 + 패딩). DoF 는 컴파일타임 상수가 아닌 이 파라미터가 SSoT. `<= 0`이면 `on_configure` FAILURE |
 | `hand_dof` | `10` | Hand 관절 폭 (hand pose 길이 검증 + 패딩). assm_v1·proto_1b 모두 10. `<= 0`이면 `on_configure` FAILURE |
 | `has_grasp_sensing` | `true` | Grasp-force 센싱 노드군 (`GraspControl`/`IsForceAbove`/`IsGraspPhase`/`IsGrasped`) 등록 여부 (Seam D) |

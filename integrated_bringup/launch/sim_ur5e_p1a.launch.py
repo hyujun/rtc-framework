@@ -139,9 +139,9 @@ def launch_setup(context, *args, **kwargs):
         sim_params.append(sim_overrides)
 
     # ── Build controller parameters (YAML + overrides + launch args) ──────────
-    ctrl_params = [base_config, ctrl_config, sim_config]
-    if hand_config is not None:
-        ctrl_params.append(hand_config)
+    # hand_config lives in integrated_bringup (this launch's own package), so it
+    # is always present — no optional/None guard needed.
+    ctrl_params = [base_config, ctrl_config, sim_config, hand_config]
     ctrl_overrides = {}
 
     kp = LaunchConfiguration("kp").perform(context)

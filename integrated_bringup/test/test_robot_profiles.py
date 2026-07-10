@@ -141,11 +141,14 @@ def test_for_robot_known_keys():
     # Controllers broadcast the arm-tip TF with the "_actual" suffix
     # (owned_topics MakeActualChildFrame), matching the ur5e profile below.
     assert (iiwa.tcp_parent, iiwa.tcp_child) == ("link_0", "ee_link_actual")
+    # hand_group namespaces the driver's hand topics (e.g. calibration).
+    assert iiwa.hand_group == "leap"
 
     ur5e = RobotProfile.for_robot("ur5e_p1a")
     assert ur5e.shape.arm_dof == 6
     assert ur5e.shape.hand_dof == 10
     assert (ur5e.tcp_parent, ur5e.tcp_child) == ("base", "tool0_actual")
+    assert ur5e.hand_group == "p1a"
 
     # p1b shares the UR5e arm and TCP frames; only the hand roster differs.
     p1b = RobotProfile.for_robot("ur5e_p1b")
@@ -153,6 +156,7 @@ def test_for_robot_known_keys():
     assert p1b.shape.hand_dof == 10
     assert p1b.shape.hand_motor_names == UR5E_P1B_HAND
     assert (p1b.tcp_parent, p1b.tcp_child) == ("base", "tool0_actual")
+    assert p1b.hand_group == "p1b"
 
 
 def test_for_robot_unknown_raises():

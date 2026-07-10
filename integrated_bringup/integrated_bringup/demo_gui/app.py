@@ -149,9 +149,13 @@ class DemoControllerGUI(Node):
         self._param_clients: dict[str, AsyncParameterClient] = {}
         self._grasp_clients: dict[str, rclpy.client.Client] = {}
 
-        # Sensor calibration (Control tab)
+        # Sensor calibration (Control tab). The driver namespaces these under the
+        # hand device group (/<hand_group>/calibration/*), so derive the prefix
+        # from the --robot profile — hard-wiring /p1a/ here would send p1b's GUI
+        # calibration to the wrong namespace.
+        calib_ns = self._profile.hand_group
         self.calib_cmd_pub = self.create_publisher(
-            CalibrationCommand, "/p1a/calibration/command", 1
+            CalibrationCommand, f"/{calib_ns}/calibration/command", 1
         )
         # sensor_type -> latest CalibrationStatus snapshot
         self._calib_status: dict[int, CalibrationStatus] = {}
@@ -160,7 +164,7 @@ class DemoControllerGUI(Node):
         # sensor_type -> tk.Label widget (for colour updates)
         self._calib_status_labels: dict[int, tk.Label] = {}
         self.create_subscription(
-            CalibrationStatus, "/p1a/calibration/status", self._calib_status_cb, 10
+            CalibrationStatus, f"/{calib_ns}/calibration/status", self._calib_status_cb, 10
         )
 
         # Robot shape comes from the --robot profile so widgets size to the
@@ -1615,8 +1619,9 @@ class DemoControllerGUI(Node):
         ).pack(side="left", padx=(12, 0))
 
         # ── Sensor Calibration ─────────────────────────────────────────
-        # Triggers recalibration of hand sensors via /p1a/calibration/command.
-        # Status updates arrive via /p1a/calibration/status subscription.
+        # Triggers recalibration of hand sensors via /<hand_group>/calibration/command.
+        # Status updates arrive via /<hand_group>/calibration/status subscription
+        # (hand_group derived from the --robot profile, see __init__).
         calib_frame = ttk.LabelFrame(parent, text="Sensor Calibration", padding=4)
         calib_frame.pack(fill="x", padx=8, pady=2)
 
