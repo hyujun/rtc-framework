@@ -8,6 +8,13 @@
 //
 // All hot-path methods are noexcept and allocation-free (RT-safe).
 // Uses ppoll for sub-ms recv timeout (hrtimer on PREEMPT_RT kernels).
+//
+// The socket is connect()-ed to the single hand peer: send() replaces sendto()
+// (the kernel caches the route and skips a per-send destination lookup), the
+// recv queue is kernel-filtered to datagrams from that peer, and a dead peer
+// surfaces as ECONNREFUSED on the next send/recv instead of a silent recv
+// timeout. Low-latency socket options (SO_BUSY_POLL, IPTOS_LOWDELAY) are set
+// best-effort in Open().
 
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_base/types/types.hpp"
@@ -20,6 +27,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -135,12 +143,68 @@ class UdpHandTransport {
       return false;
     }
 
+    // Connect the datagram socket to the single hand peer. UDP connect() sets a
+    // default destination (so send() replaces sendto() — the kernel caches the
+    // route and skips a per-send destination lookup + address copy on the hot
+    // path), filters the recv queue to datagrams from this peer at the socket
+    // layer (stray sources dropped by the kernel, not counted as cmd_mismatch),
+    // and surfaces ICMP port-unreachable as ECONNREFUSED on the next send/recv —
+    // a faster, deterministic link-down signal than waiting out the recv timeout.
+    // Non-blocking for UDP (no handshake), so safe on this off-RT open path.
+    if (::connect(socket_fd_, reinterpret_cast<const sockaddr*>(&target_addr_),
+                  sizeof(target_addr_)) != 0) {
+      RCLCPP_ERROR(logger, "UDP connect failed (%s:%d, errno=%d: %s)", target_ip_.c_str(),
+                   target_port_, errno, strerror(errno));
+      close(socket_fd_);
+      socket_fd_ = -1;
+      return false;
+    }
+
     constexpr int kUdpBufSize = 65536;
     if (setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &kUdpBufSize, sizeof(kUdpBufSize)) != 0) {
       RCLCPP_WARN(logger, "setsockopt SO_RCVBUF failed (errno=%d)", errno);
     }
     if (setsockopt(socket_fd_, SOL_SOCKET, SO_SNDBUF, &kUdpBufSize, sizeof(kUdpBufSize)) != 0) {
       RCLCPP_WARN(logger, "setsockopt SO_SNDBUF failed (errno=%d)", errno);
+    }
+
+    // Low-latency tuning for the sub-ms request-response loop. All best-effort:
+    // a kernel lacking the option (or CAP_NET_ADMIN for the privileged ones)
+    // keeps the default — never fatal, same posture as SO_RCVBUF above.
+#ifdef SO_BUSY_POLL
+    {
+      // Busy-poll the NIC on recv instead of sleeping for the IRQ/softirq +
+      // scheduler wakeup — removes the wake latency that dominates a sub-ms RTT.
+      // The CommLoop is a dedicated SCHED_FIFO thread, so the extra CPU spin is
+      // within the RT budget. Needs CAP_NET_ADMIN to exceed net.core.busy_poll.
+      constexpr int kBusyPollUs = 50;
+      if (setsockopt(socket_fd_, SOL_SOCKET, SO_BUSY_POLL, &kBusyPollUs, sizeof(kBusyPollUs)) !=
+          0) {
+        RCLCPP_WARN(logger, "setsockopt SO_BUSY_POLL failed (errno=%d) — needs CAP_NET_ADMIN",
+                    errno);
+      }
+    }
+#endif
+#ifdef SO_PREFER_BUSY_POLL
+    {
+      constexpr int kOn = 1;
+      if (setsockopt(socket_fd_, SOL_SOCKET, SO_PREFER_BUSY_POLL, &kOn, sizeof(kOn)) != 0) {
+        RCLCPP_WARN(logger, "setsockopt SO_PREFER_BUSY_POLL failed (errno=%d)", errno);
+      }
+    }
+#endif
+    {
+      // Mark egress low-delay (DSCP) and raise the socket's qdisc priority so the
+      // request datagram is not queued behind bulk traffic on a shared NIC.
+      constexpr int kTos = IPTOS_LOWDELAY;
+      if (setsockopt(socket_fd_, IPPROTO_IP, IP_TOS, &kTos, sizeof(kTos)) != 0) {
+        RCLCPP_WARN(logger, "setsockopt IP_TOS failed (errno=%d)", errno);
+      }
+      // 0-6 need no privilege; >6 requires CAP_NET_ADMIN. 6 = highest unprivileged.
+      constexpr int kPriority = 6;
+      if (setsockopt(socket_fd_, SOL_SOCKET, SO_PRIORITY, &kPriority, sizeof(kPriority)) != 0) {
+        RCLCPP_WARN(logger, "setsockopt SO_PRIORITY failed (errno=%d)", errno);
+      }
     }
 
     // Safety fallback SO_RCVTIMEO (ppoll is primary timeout mechanism)
@@ -153,6 +217,13 @@ class UdpHandTransport {
         RCLCPP_WARN(logger, "setsockopt SO_RCVTIMEO failed (errno=%d)", errno);
       }
     }
+
+    // Precompute the ppoll timeout timespec once — recv_timeout_ms_ is fixed for
+    // the socket's lifetime, so RecvWithTimeout (hot path, called up to 4×/cycle)
+    // reads this instead of redoing the float multiply + div/mod every recv.
+    const long total_ns = static_cast<long>(recv_timeout_ms_ * 1'000'000.0);
+    recv_timeout_ts_.tv_sec = total_ns / 1'000'000'000;
+    recv_timeout_ts_.tv_nsec = total_ns % 1'000'000'000;
 
     RCLCPP_INFO(logger, "UDP socket opened: %s:%d (recv_timeout=%.2fms)", target_ip_.c_str(),
                 target_port_, recv_timeout_ms_);
@@ -183,8 +254,8 @@ class UdpHandTransport {
       std::array<uint8_t, packets::kMotorPacketSize>& echo_buf,
       packets::JointMode joint_mode = packets::JointMode::kMotor) noexcept {
     codec::EncodeWritePosition(cmd, send_buf, joint_mode);
-    sendto(socket_fd_, send_buf.data(), send_buf.size(), 0,
-           reinterpret_cast<const sockaddr*>(&target_addr_), sizeof(target_addr_));
+    // Connected socket: send() to the cached peer (see Open()'s connect()).
+    ::send(socket_fd_, send_buf.data(), send_buf.size(), 0);
 
     constexpr int kMaxAttempts = 2;  // initial + one blocking retry on cmd mismatch
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
@@ -218,8 +289,7 @@ class UdpHandTransport {
       packets::JointMode joint_mode = packets::JointMode::kMotor) noexcept {
     std::array<uint8_t, packets::kMotorPacketSize> buf{};
     codec::EncodeWritePosition(cmd, buf, joint_mode);
-    sendto(socket_fd_, buf.data(), buf.size(), 0, reinterpret_cast<const sockaddr*>(&target_addr_),
-           sizeof(target_addr_));
+    ::send(socket_fd_, buf.data(), buf.size(), 0);
   }
 
   // Request motor read (individual: 0x11 pos, 0x12 vel). 3B send, 43B recv.
@@ -546,9 +616,8 @@ class UdpHandTransport {
   [[nodiscard]] ssize_t RequestWithRetry(const uint8_t* send_buf, std::size_t send_len,
                                          uint8_t* recv_buf, std::size_t recv_capacity,
                                          RequestKind kind, ValidateFn&& validate) noexcept {
-    const ssize_t sent =
-        sendto(socket_fd_, send_buf, send_len, 0, reinterpret_cast<const sockaddr*>(&target_addr_),
-               sizeof(target_addr_));
+    // Connected socket: send() to the cached peer (see Open()'s connect()).
+    const ssize_t sent = ::send(socket_fd_, send_buf, send_len, 0);
     if (sent < 0)
       return -1;
 
@@ -630,20 +699,15 @@ class UdpHandTransport {
     comm_stats_working_.last_unexpected_len = static_cast<uint16_t>(recvd);
   }
 
-  // Sub-ms precision recv using ppoll (hrtimer on PREEMPT_RT kernels).
+  // Sub-ms precision recv using ppoll (hrtimer on PREEMPT_RT kernels). The
+  // timeout timespec is precomputed once in Open() (recv_timeout_ts_).
   [[nodiscard]] ssize_t RecvWithTimeout(void* buf, std::size_t len) noexcept {
     struct pollfd pfd {};
 
     pfd.fd = socket_fd_;
     pfd.events = POLLIN;
 
-    struct timespec ts {};
-
-    const long total_ns = static_cast<long>(recv_timeout_ms_ * 1'000'000.0);
-    ts.tv_sec = total_ns / 1'000'000'000;
-    ts.tv_nsec = total_ns % 1'000'000'000;
-
-    const int ret = ::ppoll(&pfd, 1, &ts, nullptr);
+    const int ret = ::ppoll(&pfd, 1, &recv_timeout_ts_, nullptr);
     if (ret <= 0) {
       errno = EAGAIN;
       return -1;
@@ -655,9 +719,8 @@ class UdpHandTransport {
   [[nodiscard]] ssize_t SendAndRecvRaw(const uint8_t* send_data, std::size_t send_len,
                                        uint8_t* recv_data, std::size_t recv_len,
                                        RequestKind kind) noexcept {
-    const ssize_t sent =
-        sendto(socket_fd_, send_data, send_len, 0, reinterpret_cast<const sockaddr*>(&target_addr_),
-               sizeof(target_addr_));
+    // Connected socket: send() to the cached peer (see Open()'s connect()).
+    const ssize_t sent = ::send(socket_fd_, send_data, send_len, 0);
     if (sent < 0)
       return -1;
 
@@ -681,6 +744,10 @@ class UdpHandTransport {
   int socket_fd_{-1};
   double recv_timeout_ms_;
   sockaddr_in target_addr_{};
+
+  // ppoll timeout, precomputed from recv_timeout_ms_ in Open() (fixed for the
+  // socket's lifetime) so the hot-path RecvWithTimeout skips the per-call math.
+  struct timespec recv_timeout_ts_ {};
 
   // CommLoop-thread-only working copy: mutated in place every cycle (aggregates,
   // per_kind, stale_drained, total_cycles, last_unexpected cmd/len) then
