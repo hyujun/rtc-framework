@@ -238,6 +238,28 @@ TEST(CanTransportTest, ExtendedFrameRoundTrip) {
   EXPECT_EQ(0, std::memcmp(buf.data(), payload.data(), payload.size()));
 }
 
+// ── CanTransport: RTR frames are dropped even without a filter ──────────────
+TEST(CanTransportTest, RtrFrameDropped) {
+  SKIP_IF_NO_VCAN();
+
+  rtc::CanTransportConfig recv_cfg{};
+  recv_cfg.interface_name = kVcanInterface;  // rx_can_mask = 0: no filter
+  recv_cfg.recv_timeout_ms = 50;
+  rtc::CanTransport receiver(recv_cfg);
+  ASSERT_TRUE(receiver.Open());
+
+  rtc::CanSocket rtr_sender;
+  ASSERT_TRUE(rtr_sender.Bind(kVcanInterface));
+
+  can_frame rtr{};
+  rtr.can_id = 0x123 | CAN_RTR_FLAG;
+  rtr.len = 4;  // requested length; RTR frames carry no data
+  ASSERT_GT(rtr_sender.SendFrame(rtr), 0);
+
+  std::array<uint8_t, 64> buf{};
+  EXPECT_LT(receiver.Recv(buf), 0);  // RTR dropped -> times out
+}
+
 // ── CanTransport: receive_own_messages echoes own frames ────────────────────
 TEST(CanTransportTest, ReceiveOwnMessages) {
   SKIP_IF_NO_VCAN();

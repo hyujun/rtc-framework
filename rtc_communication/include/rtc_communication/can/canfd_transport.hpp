@@ -24,7 +24,8 @@ struct CanFdTransportConfig {
   canid_t tx_can_id{0};
   canid_t rx_can_id{0};
   // Filter is installed only when rx_can_mask != 0; the default 0 accepts all
-  // frames (kernel default). RTR frames are always excluded (payload-only).
+  // frames (kernel default). Note rx_can_id has no effect while rx_can_mask
+  // stays 0. RTR frames are always dropped in Recv() (payload-only).
   canid_t rx_can_mask{0};
   bool extended_frame{false};
   bool bitrate_switch{false};         // CANFD_BRS: transmit data phase at higher bitrate
@@ -85,14 +86,16 @@ class CanFdTransport : public TransportInterface {
 
   // Receives one frame — classic (CAN_MTU) or FD (CANFD_MTU), both arrive on
   // an FD-enabled socket — and copies its payload into buffer (truncating if
-  // the buffer is smaller). Returns payload bytes copied, or -1 on
-  // error/timeout.
+  // the buffer is smaller). RTR frames are dropped (their data has no
+  // meaning). Returns payload bytes copied, or -1 on error/timeout/RTR.
   [[nodiscard]] ssize_t Recv(std::span<uint8_t> buffer) noexcept override {
     canfd_frame frame{};
     const ssize_t n = socket_.RecvFdFrame(frame);
     // can_frame and canfd_frame share the can_id/len/data layout, so a
     // classic frame read into a canfd_frame is directly usable.
     if (n != static_cast<ssize_t>(CAN_MTU) && n != static_cast<ssize_t>(CANFD_MTU))
+      return -1;
+    if (frame.can_id & CAN_RTR_FLAG)
       return -1;
     const std::size_t copy_len = std::min(static_cast<std::size_t>(frame.len), buffer.size());
     std::memcpy(buffer.data(), frame.data, copy_len);

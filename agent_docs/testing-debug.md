@@ -18,7 +18,7 @@
 | `rtc_mujoco_sim/` | gtest (parse, lifecycle, solver, I/O, contact_wrench) | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` smoke. Contact wrench: `ros2 topic hz /<prefix>/<target>/contact_wrench` 후 fingertip 으로 객체 접촉 → magnitude 가시화 |
 | `rtc_urdf_bridge/` | gtest (URDF/model parsing, xacro, chain extractor) | 실제 URDF 파싱 smoke |
 | `rtc_inference/` | ONNX engine unit test | 실제 모델 로드 smoke |
-| `rtc_communication/` | UDP loopback + Transceiver lifecycle/decode/callback | 실제 HW UDP 테스트 (선택) |
+| `rtc_communication/` | UDP loopback + CAN/CANFD loopback (vcan0 없으면 skip) + Transceiver lifecycle/decode/callback | vcan0 셋업 후 CAN 테스트 실행 (`sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0`), 실제 HW UDP/CAN 테스트 (선택) |
 | `rtc_digital_twin/` | pytest + RViz2 smoke | `/rtc_cm/{group}/joint_states` hz |
 | `rtc_tools/` (pytest) | pytest | GUI/plot 수동 smoke |
 | `repo_scripts/` | `test_rt_common` + shell unit test | `check_rt_setup.sh --summary` |

@@ -23,7 +23,8 @@ struct CanTransportConfig {
   canid_t tx_can_id{0};
   canid_t rx_can_id{0};
   // Filter is installed only when rx_can_mask != 0; the default 0 accepts all
-  // frames (kernel default). RTR frames are always excluded (payload-only).
+  // frames (kernel default). Note rx_can_id has no effect while rx_can_mask
+  // stays 0. RTR frames are always dropped in Recv() (payload-only).
   canid_t rx_can_mask{0};
   bool extended_frame{false};
   bool receive_own_messages{false};  // kernel default: off
@@ -73,10 +74,13 @@ class CanTransport : public TransportInterface {
   }
 
   // Receives one frame and copies its payload into buffer (truncating if the
-  // buffer is smaller). Returns payload bytes copied, or -1 on error/timeout.
+  // buffer is smaller). RTR frames are dropped (their data has no meaning).
+  // Returns payload bytes copied, or -1 on error/timeout/RTR.
   [[nodiscard]] ssize_t Recv(std::span<uint8_t> buffer) noexcept override {
     can_frame frame{};
     if (socket_.RecvFrame(frame) < static_cast<ssize_t>(sizeof(frame)))
+      return -1;
+    if (frame.can_id & CAN_RTR_FLAG)
       return -1;
     const std::size_t copy_len = std::min(static_cast<std::size_t>(frame.len), buffer.size());
     std::memcpy(buffer.data(), frame.data, copy_len);

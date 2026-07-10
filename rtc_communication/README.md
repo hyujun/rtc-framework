@@ -162,7 +162,7 @@ Linux SocketCAN raw 소켓(`PF_CAN`, `SOCK_RAW`, `CAN_RAW`)의 RAII 래퍼입니
 | `interface_name` | `string` | `"can0"` | CAN 인터페이스 이름 |
 | `tx_can_id` | `canid_t` | `0` | 송신 frame의 CAN ID |
 | `rx_can_id` | `canid_t` | `0` | 수신 필터 ID |
-| `rx_can_mask` | `canid_t` | `0` | 수신 필터 mask. **0이면 필터 미설치(전체 수신, 커널 기본)**. 설치 시 EFF/RTR 비트가 mask에 자동 포함되어 RTR frame은 항상 배제 |
+| `rx_can_mask` | `canid_t` | `0` | 수신 필터 mask. **0이면 필터 미설치(전체 수신, 커널 기본)** — 이때 `rx_can_id`는 효력 없음. 설치 시 EFF/RTR 비트가 mask에 자동 포함. RTR frame은 필터와 무관하게 `Recv()`에서 항상 drop |
 | `extended_frame` | `bool` | `false` | `true`면 29-bit ID (`CAN_EFF_FLAG`) 송신 및 필터 적용 |
 | `receive_own_messages` | `bool` | `false` | 자기 송신 frame 수신 (`CAN_RAW_RECV_OWN_MSGS`) |
 | `loopback` | `bool` | `true` | 동일 호스트 다른 소켓으로 로컬 echo (`CAN_RAW_LOOPBACK`) |
@@ -348,7 +348,7 @@ RT 루프에서 디코딩된 상태가 필요하면 `GetLatestState()`를 직접
 | 테스트 파일 | 프레임워크 | 다루는 항목 |
 |------------|-----------|------------|
 | `test/test_udp_loopback.cpp` | GTest | UdpSocket bind/connect 라운드 트립, `SO_RCVTIMEO` 만료, RAII fd 닫힘, UdpTransport bind+connect 수명 (5 케이스) |
-| `test/test_can_loopback.cpp` | GTest | CanSocket/CanTransport 수명, invalid interface, vcan0 라운드 트립, 타임아웃, RAII, >8B 거부, 필터 accept/reject, extended ID, receive_own_messages (9 케이스, vcan 의존 7개는 guarded) |
+| `test/test_can_loopback.cpp` | GTest | CanSocket/CanTransport 수명, invalid interface, vcan0 라운드 트립, 타임아웃, RAII, >8B 거부, 필터 accept/reject, extended ID, RTR drop, receive_own_messages (12 케이스, vcan 의존 8개는 guarded) |
 | `test/test_canfd_loopback.cpp` | GTest | CanFdTransport invalid interface, 64B 라운드 트립, >64B 거부, classic/FD 혼재 수신 (4 케이스, vcan 의존 3개는 guarded) |
 | `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 (4 케이스) |
 | `test/fake_codec.hpp` | -- | `PacketCodec` concept을 만족하는 최소 코덱 (테스트 하니스용) |
