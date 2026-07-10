@@ -38,6 +38,11 @@ struct TopicNamer {
 
   std::string WbcState(const std::string& ns) const { return ns + "/" + hand_group + "/wbc_state"; }
 
+  // Active controller's broadcast TF (arm-tip `_actual` frames). Controller-
+  // owned but NOT group-scoped — it is the whole controller's TFMessage stream,
+  // so no arm/hand token appears (mirrors demo_gui `{ns}/transforms`).
+  std::string Transforms(const std::string& ns) const { return ns + "/transforms"; }
+
   std::string ArmJointGoal(const std::string& ns) const {
     return ns + "/" + arm_group + "/joint_goal";
   }

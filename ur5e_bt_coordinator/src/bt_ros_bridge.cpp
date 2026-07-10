@@ -49,11 +49,15 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
   // arm_target / hand_target) live under /<active_controller_name>/... and
   // are rebound on every /rtc_cm/active_controller_name transition via
   // RewireControllerTopics. arm/hand joint state는 controller-agnostic
-  // /rtc_cm/<group>/joint_states 로 이동했고 (rewire 불필요), TCP pose는 tf2
-  // listener (`base → tool0_actual`) 가 active controller 의 transforms
-  // 토픽을 자동 수집한다. Manager-owned topics stay at their fixed paths.
+  // /rtc_cm/<group>/joint_states 로 이동했고 (rewire 불필요). TCP pose 의
+  // `base → tool0_actual` 는 active controller 가 `<ns>/transforms` 로만
+  // 발행하므로 (전용 /tf publisher 없음) transforms_sub_ 가 rewire 되며
+  // tf_buffer_ 에 직접 feed 한다 — bare listener 만으로는 못 받는다.
+  // Manager-owned topics stay at their fixed paths.
 
-  // tf2 listener for TCP pose (Phase 4: replaces GuiPosition.task_positions).
+  // tf2 buffer + bare listener (kept for any /tf_static). The controller's
+  // `base → tool0_actual` frames arrive via transforms_sub_ (RewireControllerTopics),
+  // not the listener — the controller has no /tf publisher.
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -555,6 +559,16 @@ bool BtRosBridge::AreTopicsHealthy(double timeout_s) const {
 // ── Phase 4: dynamic rewiring for controller-owned topics ────────────────
 // Invoked from the active_ctrl_sub_ callback. Idempotent — skips when the
 // controller name has not changed since the last call.
+//
+// THREADING: the sub `.reset()` + `create_subscription` sequence below is NOT
+// externally locked against the callbacks it rewires (transforms_sub_,
+// grasp_state_sub_, …) or against GetTcpPose (tick timer). Safe ONLY because
+// the node runs under a SingleThreadedExecutor (main.cpp `rclcpp::spin`) with
+// the default MutuallyExclusive callback group — so rewire, those callbacks,
+// and GetTcpPose are mutually exclusive by construction. If a future change
+// adopts a MultiThreadedExecutor or a Reentrant group for any of these,
+// revisit: `.reset()`-while-callback-in-flight and interleaved tf_buffer_
+// writes would become racy and this must gain an explicit shared group / lock.
 void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   if (ctrl_name.empty())
     return;
@@ -579,13 +593,28 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   // subscribers holding references to the same state maps.
   // Phase 4: arm/hand joint state는 controller-agnostic /rtc_cm/<group>/
   // joint_states 로 이동 — rewire 대상 아님 (constructor에서 1회 설정).
-  // TCP pose는 tf2 listener (constructor에서 1회 설정) 가 모든 controller
-  // transforms 토픽을 자동 수집.
+  // TCP pose 의 `base → tool0_actual` 는 active controller 의 `<ns>/transforms`
+  // 로만 발행되므로 transforms_sub_ 를 여기서 rewire 해 tf_buffer_ 에 직접 feed.
   grasp_state_sub_.reset();
   wbc_state_sub_.reset();
   tof_snapshot_sub_.reset();
+  transforms_sub_.reset();
   arm_target_pub_.reset();
   hand_target_pub_.reset();
+
+  // Feed the active controller's broadcast TF into tf_buffer_ so GetTcpPose's
+  // `base → tool0_actual` lookup resolves. The controller publishes these on
+  // `<ns>/transforms`, not /tf, so this manual feed (mirroring demo_gui
+  // _transforms_cb) is what makes the bare TransformListener's buffer usable —
+  // no external /tf re-broadcaster required. No restamp: GetTcpPose looks up
+  // the latest transform (TimePointZero), so the source stamp is fine.
+  transforms_sub_ = node_->create_subscription<tf2_msgs::msg::TFMessage>(
+      topic_namer_.Transforms(ns), rclcpp::QoS{10},
+      [this](tf2_msgs::msg::TFMessage::SharedPtr msg) {
+        for (const auto& tf : msg->transforms) {
+          tf_buffer_->setTransform(tf, "bt_ros_bridge", /*is_static=*/false);
+        }
+      });
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
       topic_namer_.GraspState(ns), rclcpp::QoS{10},

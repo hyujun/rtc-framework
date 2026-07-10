@@ -39,6 +39,17 @@ TEST(TopicNamer, DefaultControllerOwnedMatchLegacy) {
   EXPECT_EQ(t.WbcState(kCtrlNs), "/demo_task_controller/hand/wbc_state");
   EXPECT_EQ(t.ArmJointGoal(kCtrlNs), "/demo_task_controller/ur5e/joint_goal");
   EXPECT_EQ(t.HandJointGoal(kCtrlNs), "/demo_task_controller/hand/joint_goal");
+  // Transforms is the whole-controller TFMessage stream — controller-owned but
+  // NOT group-scoped (no arm/hand token), fed into tf_buffer_ for TCP lookup.
+  EXPECT_EQ(t.Transforms(kCtrlNs), "/demo_task_controller/transforms");
+}
+
+TEST(TopicNamer, TransformsIsGroupAgnostic) {
+  // Transforms carries no arm/hand token, so swapping the hand group (p1b) or
+  // both groups (iiwa7/leap) must NOT change the path — only `ns` matters.
+  EXPECT_EQ(TopicNamer{}.Transforms(kCtrlNs), "/demo_task_controller/transforms");
+  EXPECT_EQ((TopicNamer{"ur5e", "p1b"}.Transforms(kCtrlNs)), "/demo_task_controller/transforms");
+  EXPECT_EQ((TopicNamer{"iiwa7", "leap"}.Transforms(kCtrlNs)), "/demo_task_controller/transforms");
 }
 
 TEST(TopicNamer, EmptyNsGivesRelativeHealthLabel) {

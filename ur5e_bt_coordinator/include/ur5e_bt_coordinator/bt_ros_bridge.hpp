@@ -20,6 +20,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -67,8 +68,9 @@ class BtRosBridge {
 
   /// Current TCP pose from tf2 lookup (`base → tool0_actual`).
   /// Phase 4: replaces GuiPosition.task_positions consumer; the active
-  /// controller broadcasts `<config_key>/transforms` (tf2_msgs/TFMessage)
-  /// and tf2 listener collects the frame.
+  /// controller broadcasts `<config_key>/transforms` (tf2_msgs/TFMessage),
+  /// which `transforms_sub_` feeds into tf_buffer_ manually (the controller
+  /// has no /tf publisher, so the bare listener alone would never see it).
   Pose6D GetTcpPose() const;
 
   /// Current arm joint positions from /rtc_cm/ur5e/joint_states.
@@ -244,8 +246,16 @@ class BtRosBridge {
   rclcpp::Subscription<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr shape_estimate_sub_;
 
   // ── tf2 listener (TCP pose source, Phase 4) ───────────────────────────
+  // The active controller broadcasts `base → tool0_actual` on
+  // `<config_key>/transforms` (tf2_msgs/TFMessage), NOT on /tf — so the bare
+  // TransformListener below never receives it. `transforms_sub_` (rewired per
+  // active controller in RewireControllerTopics) feeds those frames into
+  // tf_buffer_ manually so GetTcpPose's lookup resolves without depending on
+  // any external /tf re-broadcaster (e.g. rtc_digital_twin). The listener is
+  // kept only for any /tf_static frames a bringup might publish.
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr transforms_sub_;
   std::string tf_parent_frame_{"base"};
   std::string tf_child_frame_{"tool0_actual"};
 

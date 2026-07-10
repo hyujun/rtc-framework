@@ -68,14 +68,17 @@ Phase 4~: `<ns>`는 active controller namespace (`/demo_joint_controller`, `/dem
 | `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE, depth 10 | 500Hz 사전 계산된 grasp 상태 (Force-PI grasp 컨트롤러 전용; controller-owned) |
 | `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE, depth 10 | 500Hz WBC FSM phase + 핑거팁 raw + TSID 진단 (TSID-based WBC 컨트롤러 전용; controller-owned). BT 는 grasp_state 와 함께 항상 subscribe — active controller 가 발행하는 쪽이 캐시 채움 |
 | `<ns>/tof/snapshot` | `rtc_msgs/ToFSnapshot` | BEST_EFFORT, depth 100 | ToF + 핑거팁 pose snapshot (controller-owned) |
+| `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE, depth 10 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). `tf_buffer_`에 직접 feed → TCP pose lookup 소스 |
 | `/world_target_info` | `geometry_msgs/Polygon` | depth 10 | 비전 물체 위치 (`points[0]` = x,y,z; orientation 없음 — roll/pitch/yaw는 0으로 채움) |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | TRANSIENT_LOCAL, depth 1 | 현재 활성 컨트롤러 이름 — rewire 트리거 |
 | `/system/estop_status` | `std_msgs/Bool` | RELIABLE, depth 10 | E-STOP 상태 |
 
 ### TF
 
-TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer`/`TransformListener` lookup으로 얻는다:
-`base` → `tool0_actual` (active controller가 발행하는 transforms 토픽을 자동 수집).
+TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` → `tool0_actual`.
+이 프레임은 active controller가 `<ns>/transforms` (전용 `/tf` publisher 없음) 로만 발행하므로,
+`transforms_sub_`가 controller 전환마다 rewire 되어 그 `TFMessage`를 `tf_buffer_`에 직접 feed 한다
+(bare `TransformListener`는 `/tf`만 듣기 때문에 이 프레임을 못 받는다 — 외부 `/tf` 재발행 불필요).
 
 ## BT 트리
 

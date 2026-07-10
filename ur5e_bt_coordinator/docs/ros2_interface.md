@@ -12,6 +12,7 @@ BT coordinator가 구독/발행하는 ROS2 토픽과 서비스 목록.
 | `/rtc_cm/<hand_group>/joint_states` | `sensor_msgs/JointState` | RELIABLE/10 | 손 관절 위치 (10 DOF, fixed path, active controller 와 무관) |
 | `<ns>/<hand_group>/grasp_state` | `rtc_msgs/GraspState` | RELIABLE/10 | 500Hz 사전 계산된 grasp 상태 (controller-owned) |
 | `<ns>/<hand_group>/wbc_state` | `rtc_msgs/WbcState` | RELIABLE/10 | 500Hz WBC FSM phase + 진단 (controller-owned) |
+| `<ns>/transforms` | `tf2_msgs/TFMessage` | RELIABLE/10 | active controller의 FK `base → tool0_actual` (controller-owned, rewire). tf_buffer_에 직접 feed → TCP pose lookup 소스 |
 | `/world_target_info` | `geometry_msgs/Polygon` | RELIABLE/10 | 비전 물체 위치 (points[0] = x,y,z) |
 | `/rtc_cm/active_controller_name` | `std_msgs/String` | RELIABLE/1 transient_local | 현재 활성 컨트롤러 이름 (rewire 트리거) |
 | `/system/estop_status` | `std_msgs/Bool` | RELIABLE/10 | E-STOP 상태 (true면 트리 일시정지) |
@@ -20,7 +21,7 @@ BT coordinator가 구독/발행하는 ROS2 토픽과 서비스 목록.
 
 `<ns>`는 active controller namespace (예: `/demo_task_controller`), `<arm_group>`/`<hand_group>`는 robot-agnostic 파라미터 세그먼트 (default `ur5e`/`hand`).
 
-TCP 포즈는 토픽이 아닌 `tf2_ros` lookup으로 얻는다: `base` → `tool0_actual` (active controller가 발행하는 transforms 토픽을 자동 수집).
+TCP 포즈는 토픽이 아닌 `tf2_ros` lookup으로 얻는다: `base` → `tool0_actual`. 이 프레임은 active controller가 `<ns>/transforms` (전용 `/tf` publisher 없음) 로만 발행하므로, `transforms_sub_`가 controller 전환마다 rewire 되어 그 TFMessage를 `tf_buffer_`에 직접 feed 한다 (외부 `/tf` 재발행에 의존하지 않음).
 
 ## 발행 토픽
 
