@@ -100,7 +100,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 [Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
 [rtc_digital_twin]: merge /rtc_cm/{group}/joint_states --> RViz2
-[ur5e_bt_coordinator]: subscribes grasp_state + /rtc_cm/<group>/joint_states + tf2 listener (`<config_key>/transforms`), publishes goals; tunes gains via per-controller ROS 2 parameters
+[ur5e_bt_coordinator]: subscribes grasp_state + /rtc_cm/<group>/joint_states + tf2 buffer fed by a `<config_key>/transforms` sub (self-feed — see TF invariant below), publishes goals; tunes gains via per-controller ROS 2 parameters
 ```
 
 ## RT vs non-RT Topic Ownership
@@ -113,6 +113,8 @@ YAML `ownership:` field (per `<topic>` entry in controller config) drives 2-tier
 RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nrt_callback thread 가 read + ROS publish.
 
 외부 도구 (BT, GUIs, digital_twin, shape_estimation) 는 `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL) 구독 → switch 시 active controller 의 `/<config_key>/...` 토픽으로 rewire.
+
+**TF `_actual` 프레임 — `/tf` publisher 없음 (framework invariant).** 컨트롤러는 arm-tip / fingertip `_actual` 프레임 (`base → tool0_actual`, `<link>_actual`) 을 `/tf` 로 발행하지 **않는다** — 오직 controller-owned `/<config_key>/transforms` (`tf2_msgs/TFMessage`, PublishRole) 로만 노출한다. 따라서 bare `tf2_ros::TransformListener` (`/tf`·`/tf_static` 만 청취) 는 이 프레임을 **절대 받지 못한다**. tf 소비자는 반드시 둘 중 하나: **(a) self-feed** — `/<config_key>/transforms` 를 직접 구독해 buffer 에 `setTransform` (ur5e_bt_coordinator `transforms_sub_`, demo_gui `_transforms_cb`; active controller 전환 시 rewire); **(b) `/tf` 재발행 의존** — `rtc_digital_twin` 의 `controller_tf` 재발행 (`<active>/transforms` → restamp → `/tf`, RViz TF 디스플레이·bare-listener 소비자용, default on). 이 함정은 digital_twin tcp_viz·bt_coordinator 두 곳에서 각각 silent-fail 버그로 발현했다 — **새 tf 소비자 추가 시 (a)/(b) 중 하나를 반드시 적용**하고, bare listener 만 두지 말 것.
 
 구현: `rtc::TopicOwnership` enum (`rtc_controllers/topic_config.hpp`). CM 은 controller-owned sub/pub 을 configure 시 skip; `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
 
