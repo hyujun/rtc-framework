@@ -61,7 +61,6 @@ using integrated_bringup::phase::GraspPhaseManager;
 constexpr const char* kPandaPhaseConfig = R"(
 transition:
   approach_tolerance: 0.05
-  pregrasp_tolerance: 0.01
   force_threshold: 0.5
   max_failures: 100
 phases:
@@ -80,7 +79,6 @@ phases:
       q_posture_ref: [0, 0, 0, -1.57, 0, 1.57, 0.785, 0.02, 0.02]
       F_target: [0, 0, 0, 0, 0, 0]
   approach:    { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
-  pre_grasp:   { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
   closure:
     ocp_type: "contact_rich"
     active_contact_indices: [0, 1]
@@ -96,8 +94,6 @@ phases:
       q_posture_ref: [0, 0, 0, -1.57, 0, 1.57, 0.785, 0.02, 0.02]
       F_target: [0, 0, 2, 0, 0, 2]
   hold:        { ocp_type: "contact_rich", active_contact_indices: [0, 1], cost: *rich }
-  manipulate:  { ocp_type: "contact_rich", active_contact_indices: [0, 1], cost: *rich }
-  retreat:     { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
   release:     { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
 )";
 

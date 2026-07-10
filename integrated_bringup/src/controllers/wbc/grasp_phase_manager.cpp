@@ -25,17 +25,14 @@ namespace {
 // tick and break the Phase 6 alloc tracer when the grasp FSM is wired in.
 static_assert(sizeof("idle") <= 16, "phase name 'idle' exceeds SSO");
 static_assert(sizeof("approach") <= 16, "phase name 'approach' exceeds SSO");
-static_assert(sizeof("pre_grasp") <= 16, "phase name 'pre_grasp' exceeds SSO");
 static_assert(sizeof("closure") <= 16, "phase name 'closure' exceeds SSO");
 static_assert(sizeof("hold") <= 16, "phase name 'hold' exceeds SSO");
-static_assert(sizeof("manipulate") <= 16, "phase name 'manipulate' exceeds SSO");
-static_assert(sizeof("retreat") <= 16, "phase name 'retreat' exceeds SSO");
 static_assert(sizeof("release") <= 16, "phase name 'release' exceeds SSO");
 static_assert(sizeof("contact_light") <= 16, "ocp_type 'contact_light' exceeds SSO");
 static_assert(sizeof("contact_rich") <= 16, "ocp_type 'contact_rich' exceeds SSO");
 
 constexpr std::array<const char*, kNumGraspPhases> kPhaseNames = {
-    "idle", "approach", "pre_grasp", "closure", "hold", "manipulate", "retreat", "release",
+    "idle", "approach", "closure", "hold", "release",
 };
 
 double Distance(const pinocchio::SE3& a, const pinocchio::SE3& b) noexcept {
@@ -78,13 +75,11 @@ GraspPhaseInitError GraspPhaseManager::LoadTransition(const YAML::Node& cfg,
   }
   GraspTransitionConfig tmp{};
   if (!TryReadScalar<double>(cfg["approach_tolerance"], tmp.approach_tolerance) ||
-      !TryReadScalar<double>(cfg["pregrasp_tolerance"], tmp.pregrasp_tolerance) ||
       !TryReadScalar<double>(cfg["force_threshold"], tmp.force_threshold) ||
       !TryReadScalar<int>(cfg["max_failures"], tmp.max_failures)) {
     return GraspPhaseInitError::kInvalidYamlSchema;
   }
-  if (tmp.approach_tolerance <= 0.0 || tmp.pregrasp_tolerance <= 0.0 || tmp.force_threshold < 0.0 ||
-      tmp.max_failures <= 0) {
+  if (tmp.approach_tolerance <= 0.0 || tmp.force_threshold < 0.0 || tmp.max_failures <= 0) {
     return GraspPhaseInitError::kInvalidThreshold;
   }
   out = tmp;
@@ -200,6 +195,7 @@ GraspPhaseInitError GraspPhaseManager::Load(const YAML::Node& cfg) noexcept {
   current_id_.store(static_cast<int>(GraspPhaseId::kIdle), std::memory_order_relaxed);
   forced_phase_id_.store(kNoForcedPhase, std::memory_order_relaxed);
   command_.store(static_cast<int>(GraspCommand::kNone), std::memory_order_relaxed);
+  mirror_latched_.store(false, std::memory_order_relaxed);
   failure_count_ = 0;
 
   return GraspPhaseInitError::kNoError;
@@ -296,6 +292,10 @@ void GraspPhaseManager::ForcePhase(int phase_id) {
   if (phase_id < 0 || phase_id >= kNumGraspPhases) {
     return;
   }
+  // Latch into mirror mode: the caller (WBC FSM) is now authoritative and
+  // will ForcePhase on every edge; between edges Update holds this id and
+  // stops the guards from self-advancing. Cleared only by Load/Init.
+  mirror_latched_.store(true, std::memory_order_release);
   forced_phase_id_.store(phase_id, std::memory_order_release);
 }
 
@@ -334,13 +334,10 @@ int GraspPhaseManager::EvaluateTransition(int current_id, const pinocchio::SE3& 
       break;
 
     case GraspPhaseId::kApproach:
+      // Reaching the pregrasp pose enters closure directly; the residual
+      // travel to grasp_pose happens under the contact_rich closure OCP
+      // (the former separate pre_grasp fine-positioning state was folded in).
       if (have_target && Distance(tcp, tgt.pregrasp_pose) < thresholds_.approach_tolerance) {
-        return static_cast<int>(GraspPhaseId::kPreGrasp);
-      }
-      break;
-
-    case GraspPhaseId::kPreGrasp:
-      if (have_target && Distance(tcp, tgt.grasp_pose) < thresholds_.pregrasp_tolerance) {
         failure_count_ = 0;
         return static_cast<int>(GraspPhaseId::kClosure);
       }
@@ -364,19 +361,9 @@ int GraspPhaseManager::EvaluateTransition(int current_id, const pinocchio::SE3& 
     }
 
     case GraspPhaseId::kHold:
-      if (cmd == GraspCommand::kManipulate) {
-        return static_cast<int>(GraspPhaseId::kManipulate);
-      }
-      break;
-
-    case GraspPhaseId::kManipulate:
-      if (cmd == GraspCommand::kRetreat) {
-        return static_cast<int>(GraspPhaseId::kRetreat);
-      }
-      break;
-
-    case GraspPhaseId::kRetreat:
-      if (have_target && Distance(tcp, tgt.approach_start) < thresholds_.approach_tolerance) {
+      // First kRelease starts the hand-open; a second kRelease (below) marks
+      // it complete and returns to idle.
+      if (cmd == GraspCommand::kRelease) {
         return static_cast<int>(GraspPhaseId::kRelease);
       }
       break;
@@ -410,22 +397,18 @@ rtc::mpc::PhaseContext GraspPhaseManager::BuildContext(int id, bool changed) con
   ctx.cost_config = slot.cost;
   ctx.ocp_type = slot.ocp_type;
 
-  // EE target: grasp_pose for CLOSURE/HOLD/MANIPULATE, pregrasp_pose for
-  // APPROACH/PRE_GRASP, approach_start for RETREAT/RELEASE, identity for
-  // IDLE.
+  // EE target: pregrasp_pose for APPROACH, grasp_pose for CLOSURE/HOLD,
+  // approach_start for RELEASE, identity for IDLE.
   if (has_target_.load(std::memory_order_acquire)) {
     const GraspTarget tgt = FromPOD(target_seqlock_.Load());
     switch (static_cast<GraspPhaseId>(id)) {
       case GraspPhaseId::kApproach:
-      case GraspPhaseId::kPreGrasp:
         ctx.ee_target = tgt.pregrasp_pose;
         break;
       case GraspPhaseId::kClosure:
       case GraspPhaseId::kHold:
-      case GraspPhaseId::kManipulate:
         ctx.ee_target = tgt.grasp_pose;
         break;
-      case GraspPhaseId::kRetreat:
       case GraspPhaseId::kRelease:
         ctx.ee_target = tgt.approach_start;
         break;
@@ -456,6 +439,11 @@ rtc::mpc::PhaseContext GraspPhaseManager::Update(const Eigen::VectorXd& /*q*/,
   if (forced != kNoForcedPhase && forced >= 0 && forced < kNumGraspPhases) {
     next_id = forced;
     failure_count_ = 0;
+  } else if (mirror_latched_.load(std::memory_order_acquire)) {
+    // Mirror mode: a ForcePhase has latched us to the WBC FSM. Hold the last
+    // forced id between WBC edges — do not let the guards or the command bus
+    // advance the phase (that would desync the OCP type from the WBC phase).
+    next_id = prev_id;
   } else {
     const auto cmd = static_cast<GraspCommand>(command_.load(std::memory_order_acquire));
     next_id = EvaluateTransition(prev_id, tcp, sensor, cmd);

@@ -2,29 +2,39 @@
 #define UR5E_BRINGUP_CONTROLLERS_WBC_GRASP_PHASE_MANAGER_HPP_
 
 /// @file grasp_phase_manager.hpp
-/// @brief Concrete `rtc::mpc::PhaseManagerBase` implementing an 8-state grasp
+/// @brief Concrete `rtc::mpc::PhaseManagerBase` implementing a 5-state grasp
 ///        FSM for the UR5e + 10-DoF-hand bringup.
 ///
 /// State graph (id → name, matching libstdc++ SSO budget):
 ///
-///   0 idle       ─► 1 approach ─► 2 pre_grasp ─► 3 closure ─► 4 hold
-///   7 release ◄─ 6 retreat    ◄─ 5 manipulate ◄─ 4 hold
+///   0 idle ─► 1 approach ─► 2 closure ─► 3 hold ─► 4 release ─► 0 idle
 ///
-/// Edge guards:
+/// Edge guards (standalone / guard-driven mode):
 ///
-///   idle       ─► approach    : `command == kApproach` AND a valid target set
-///   approach   ─► pre_grasp   : ‖tcp − pregrasp_pose‖ < approach_tolerance
-///   pre_grasp  ─► closure     : ‖tcp − grasp_pose‖    < pregrasp_tolerance
-///   closure    ─► hold        : Σ sensor[i] > force_threshold  (i ∈ frames)
-///   hold       ─► manipulate  : `command == kManipulate`
-///   manipulate ─► retreat     : `command == kRetreat`
-///   retreat    ─► release     : ‖tcp − approach_start‖ < approach_tolerance
-///   release    ─► idle        : `command == kRelease` (hand open complete)
-///   any        ─► idle        : `command == kAbort`
-///   closure    ─► idle        : `failure_count >= max_failures`
+///   idle     ─► approach : `command == kApproach` AND a valid target set
+///   approach ─► closure  : ‖tcp − pregrasp_pose‖ < approach_tolerance
+///   closure  ─► hold     : Σ sensor[i] > force_threshold  (i ∈ frames)
+///   hold     ─► release  : `command == kRelease`
+///   release  ─► idle     : `command == kRelease` (hand open complete)
+///   any      ─► idle     : `command == kAbort`
+///   closure  ─► idle     : `failure_count >= max_failures`
+///
+/// The former dedicated `pre_grasp` fine-positioning state is folded into
+/// `approach` (which drives to `pregrasp_pose`); residual travel to
+/// `grasp_pose` happens under the contact_rich `closure` OCP. The `manipulate`
+/// and `retreat` states were unused by every consumer and were removed.
 ///
 /// All edges fire exactly once per tick; `PhaseContext::phase_changed` is
 /// true on the transition tick.
+///
+/// Mirror mode (WBC bringup): when the WBC controller owns the FSM it calls
+/// @ref ForcePhase on each of its own phase edges. The first `ForcePhase`
+/// *latches* the manager (see @c mirror_latched_): subsequent ticks hold the
+/// last forced id and suppress both the guard evaluation and the command bus,
+/// so the manager stays a pure OCP-type / cost-table mirror of the WBC FSM
+/// instead of self-advancing (e.g. a slow contact-forming closure will not
+/// trip the standalone `max_failures` abort and flip the OCP back to
+/// contact_light). @ref Load / @ref Init clear the latch.
 ///
 /// Thread-safety contract (per `PhaseManagerBase`):
 /// - `Update` runs on the MPC thread (RT-equivalent SCHED_FIFO).
@@ -70,28 +80,25 @@
 
 namespace integrated_bringup::phase {
 
-/// @brief Stable integer ids for the 8 grasp FSM states. Matches the index
+/// @brief Stable integer ids for the 5 grasp FSM states. Matches the index
 ///        into the `phases` YAML map loaded by @ref GraspPhaseManager::Init.
 enum class GraspPhaseId : int {
   kIdle = 0,
   kApproach = 1,
-  kPreGrasp = 2,
-  kClosure = 3,
-  kHold = 4,
-  kManipulate = 5,
-  kRetreat = 6,
-  kRelease = 7,
+  kClosure = 2,
+  kHold = 3,
+  kRelease = 4,
 };
 
-inline constexpr int kNumGraspPhases = 8;
+inline constexpr int kNumGraspPhases = 5;
 
 /// @brief Failure modes for @ref GraspPhaseManager::Init.
 enum class GraspPhaseInitError {
   kNoError = 0,
   kModelNotInitialised,  ///< RobotModelHandler unusable
   kInvalidYamlSchema,    ///< required key missing / wrong kind
-  kMissingPhase,         ///< one of the 8 required phase entries absent
-  kInvalidThreshold,     ///< approach_tolerance / pregrasp_tolerance <= 0
+  kMissingPhase,         ///< one of the 5 required phase entries absent
+  kInvalidThreshold,     ///< approach_tolerance <= 0
                          ///< or force_threshold < 0 or max_failures <= 0
   kInvalidOcpType,       ///< per-phase ocp_type not in {contact_light,
                          ///< contact_rich}
@@ -101,13 +108,12 @@ enum class GraspPhaseInitError {
 
 /// @brief Transition thresholds + failure guard, loaded from YAML once.
 struct GraspTransitionConfig {
-  double approach_tolerance{0.05};  ///< m — APPROACH → PRE_GRASP guard
-  double pregrasp_tolerance{0.01};  ///< m — PRE_GRASP → CLOSURE guard
+  double approach_tolerance{0.05};  ///< m — APPROACH → CLOSURE guard (tcp-to-pregrasp)
   double force_threshold{0.5};      ///< N — Σ sensor for CLOSURE → HOLD
   int max_failures{50};             ///< consecutive CLOSURE ticks without force
 };
 
-/// @brief 8-state grasp FSM producing a `PhaseContext` per MPC tick.
+/// @brief 5-state grasp FSM producing a `PhaseContext` per MPC tick.
 class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
  public:
   /// @param model  initialised handler; stays owned by the caller and must
@@ -123,7 +129,6 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
   /// ```yaml
   /// transition:
   ///   approach_tolerance: 0.05
-  ///   pregrasp_tolerance: 0.01
   ///   force_threshold: 0.5
   ///   max_failures: 50
   /// phases:
@@ -131,12 +136,9 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
   ///                  cost: { ... PhaseCostConfig YAML ... } }
   ///   approach:    { ocp_type: "contact_light", active_contact_indices: [],
   ///                  cost: { ... } }
-  ///   pre_grasp:   { ... }
   ///   closure:     { ocp_type: "contact_rich",
   ///                  active_contact_indices: [0,1,2], cost: { ... } }
   ///   hold:        { ... }
-  ///   manipulate:  { ... }
-  ///   retreat:     { ... }
   ///   release:     { ... }
   /// ```
   ///
@@ -219,6 +221,10 @@ class GraspPhaseManager final : public rtc::mpc::PhaseManagerBase {
   std::atomic<int> current_id_{static_cast<int>(GraspPhaseId::kIdle)};
   std::atomic<int> forced_phase_id_{kNoForcedPhase};
   std::atomic<int> command_{static_cast<int>(GraspCommand::kNone)};
+  // Set by the first ForcePhase; cleared only by Load/Init. While set, Update
+  // holds the last forced id and skips guard + command evaluation (mirror
+  // mode — the WBC FSM is authoritative). See the class-level "Mirror mode".
+  std::atomic<bool> mirror_latched_{false};
   int failure_count_{0};  // MPC-thread only; plain int.
 
   // Grasp target — single-writer wait-free publication to the MPC reader.

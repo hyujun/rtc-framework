@@ -47,7 +47,6 @@ using integrated_bringup::phase::GraspTarget;
 constexpr const char* kPandaPhaseConfig = R"(
 transition:
   approach_tolerance: 0.05
-  pregrasp_tolerance: 0.01
   force_threshold: 0.5
   max_failures: 3
 
@@ -72,11 +71,6 @@ phases:
     active_contact_indices: []
     cost: *cost_light
 
-  pre_grasp:
-    ocp_type: "contact_light"
-    active_contact_indices: []
-    cost: *cost_light
-
   closure:
     ocp_type: "contact_rich"
     active_contact_indices: [0, 1]
@@ -96,16 +90,6 @@ phases:
     ocp_type: "contact_rich"
     active_contact_indices: [0, 1]
     cost: *cost_rich
-
-  manipulate:
-    ocp_type: "contact_rich"
-    active_contact_indices: [0, 1]
-    cost: *cost_rich
-
-  retreat:
-    ocp_type: "contact_light"
-    active_contact_indices: []
-    cost: *cost_light
 
   release:
     ocp_type: "contact_light"
@@ -210,7 +194,7 @@ TEST_F(GraspPhaseManagerTest, FullHappyPathTraversal) {
             integrated_bringup::phase::GraspPhaseInitError::kNoError);
 
   // Set up poses: start at origin, pregrasp at (0.1, 0, 0), grasp at
-  // (0.15, 0, 0), retreat back to start.
+  // (0.15, 0, 0), approach_start back to start.
   const Eigen::Vector3d start{0.0, 0.0, 0.0};
   const Eigen::Vector3d pregrasp{0.1, 0.0, 0.0};
   const Eigen::Vector3d grasp{0.15, 0.0, 0.0};
@@ -226,17 +210,11 @@ TEST_F(GraspPhaseManagerTest, FullHappyPathTraversal) {
     EXPECT_EQ(ctx.ocp_type, "contact_light");
   }
 
-  // APPROACH → PRE_GRASP when TCP close to pregrasp (< 0.05).
+  // APPROACH → CLOSURE when TCP close to pregrasp (< 0.05) — cross-mode swap!
+  // (The former separate PRE_GRASP fine-positioning state is folded in; the
+  // residual travel to grasp_pose happens under the contact_rich OCP.)
   {
     auto ctx = Step(PoseAt(Eigen::Vector3d{0.07, 0.0, 0.0}));
-    EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kPreGrasp));
-    EXPECT_TRUE(ctx.phase_changed);
-    EXPECT_EQ(ctx.ocp_type, "contact_light");
-  }
-
-  // PRE_GRASP → CLOSURE when TCP close to grasp (< 0.01) — cross-mode swap!
-  {
-    auto ctx = Step(PoseAt(Eigen::Vector3d{0.145, 0.0, 0.0}));
     EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kClosure));
     EXPECT_TRUE(ctx.phase_changed);
     EXPECT_EQ(ctx.ocp_type, "contact_rich");
@@ -254,33 +232,16 @@ TEST_F(GraspPhaseManagerTest, FullHappyPathTraversal) {
     EXPECT_EQ(ctx.ocp_type, "contact_rich");
   }
 
-  // HOLD → MANIPULATE on kManipulate.
-  manager_->SetCommand(GraspCommand::kManipulate);
+  // HOLD → RELEASE on the first kRelease.
+  manager_->SetCommand(GraspCommand::kRelease);
   {
     auto ctx = Step(PoseAt(Eigen::Vector3d{0.15, 0.0, 0.0}));
-    EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kManipulate));
-    EXPECT_TRUE(ctx.phase_changed);
-  }
-
-  // MANIPULATE → RETREAT on kRetreat.
-  manager_->SetCommand(GraspCommand::kRetreat);
-  {
-    auto ctx = Step(PoseAt(Eigen::Vector3d{0.15, 0.0, 0.0}));
-    EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRetreat));
+    EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRelease));
     EXPECT_TRUE(ctx.phase_changed);
     EXPECT_EQ(ctx.ocp_type, "contact_light");
   }
 
-  // RETREAT → RELEASE when back near approach_start.
-  // (approach_start was snapshotted to TCP at IDLE→APPROACH, i.e. pose
-  // `start`.)
-  {
-    auto ctx = Step(PoseAt(Eigen::Vector3d{0.02, 0.0, 0.0}));
-    EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kRelease));
-    EXPECT_TRUE(ctx.phase_changed);
-  }
-
-  // RELEASE → IDLE on kRelease.
+  // RELEASE → IDLE on the second kRelease (hand-open complete).
   manager_->SetCommand(GraspCommand::kRelease);
   {
     auto ctx = Step(PoseAt(start));
@@ -295,15 +256,19 @@ TEST_F(GraspPhaseManagerTest, ClosureFailureCountAbortsToIdle) {
   ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
             integrated_bringup::phase::GraspPhaseInitError::kNoError);
 
-  manager_->SetTaskTarget(MakeTarget({0.1, 0, 0}, {0.1, 0, 0}, {0.0, 0, 0}));
-  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kClosure));
-  // Consume the force edge.
+  // Reach CLOSURE through the guards — ForcePhase would latch mirror mode and
+  // suppress exactly the failure-count abort this test exercises.
+  manager_->SetTaskTarget(MakeTarget({0.15, 0, 0}, {0.1, 0, 0}, {0.0, 0, 0}));
+  manager_->SetCommand(GraspCommand::kApproach);
+  ASSERT_EQ(Step(PoseAt({0.0, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kApproach));
   {
+    // Within approach_tolerance (0.05) of pregrasp → CLOSURE. failure_count
+    // is reset to 0 on this edge.
     auto ctx = Step(PoseAt({0.1, 0, 0}));
-    EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kClosure));
+    ASSERT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kClosure));
   }
 
-  // max_failures = 3 → after 3 zero-force ticks, revert to IDLE.
+  // max_failures = 3 → after 3 zero-force ticks in CLOSURE, revert to IDLE.
   for (int i = 0; i < 2; ++i) {
     auto ctx = Step(PoseAt({0.1, 0, 0}));
     EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kClosure));
@@ -317,12 +282,14 @@ TEST_F(GraspPhaseManagerTest, ClosureFailureCountAbortsToIdle) {
 
 // ── Abort ───────────────────────────────────────────────────────────────────
 
-TEST_F(GraspPhaseManagerTest, AbortFromAnyPhaseReturnsToIdle) {
+TEST_F(GraspPhaseManagerTest, AbortFromActivePhaseReturnsToIdle) {
   ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
             integrated_bringup::phase::GraspPhaseInitError::kNoError);
 
-  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kHold));
-  (void)Step(PoseAt({0.0, 0, 0}));
+  // Enter APPROACH via the guards (unlatched), then abort.
+  manager_->SetTaskTarget(MakeTarget({0.15, 0, 0}, {0.1, 0, 0}, {0.0, 0, 0}));
+  manager_->SetCommand(GraspCommand::kApproach);
+  ASSERT_EQ(Step(PoseAt({0.0, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kApproach));
 
   manager_->SetCommand(GraspCommand::kAbort);
   auto ctx = Step(PoseAt({0.0, 0, 0}));
@@ -330,23 +297,59 @@ TEST_F(GraspPhaseManagerTest, AbortFromAnyPhaseReturnsToIdle) {
   EXPECT_TRUE(ctx.phase_changed);
 }
 
-// ── ForcePhase ──────────────────────────────────────────────────────────────
+// ── ForcePhase / mirror latch ────────────────────────────────────────────────
 
-TEST_F(GraspPhaseManagerTest, ForcePhaseBypassesGuards) {
+TEST_F(GraspPhaseManagerTest, ForcePhaseJumpsImmediately) {
   ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
             integrated_bringup::phase::GraspPhaseInitError::kNoError);
 
-  // Jump from IDLE straight to MANIPULATE without a target or TCP proximity.
-  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kManipulate));
+  // Jump from IDLE straight to HOLD without a target or TCP proximity.
+  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kHold));
   auto ctx = Step(PoseAt({0.0, 0, 0}));
-  EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kManipulate));
+  EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kHold));
   EXPECT_TRUE(ctx.phase_changed);
 
   // Invalid ids are silently ignored.
   manager_->ForcePhase(999);
   ctx = Step(PoseAt({0.0, 0, 0}));
-  EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kManipulate));
+  EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kHold));
   EXPECT_FALSE(ctx.phase_changed);
+}
+
+TEST_F(GraspPhaseManagerTest, MirrorLatchSuppressesFailureAbort) {
+  // Once ForcePhase latches mirror mode, the standalone CLOSURE max_failures
+  // guard must NOT fire — otherwise the OCP type would flip back to
+  // contact_light mid-grasp while the WBC FSM is still driving closure.
+  ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
+            integrated_bringup::phase::GraspPhaseInitError::kNoError);
+
+  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kClosure));
+  ASSERT_EQ(Step(PoseAt({0.0, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kClosure));
+
+  // Zero force for well beyond max_failures (=3): stays CLOSURE / contact_rich.
+  for (int i = 0; i < 10; ++i) {
+    auto ctx = Step(PoseAt({0.0, 0, 0}));
+    EXPECT_EQ(ctx.phase_id, static_cast<int>(GraspPhaseId::kClosure));
+    EXPECT_EQ(ctx.ocp_type, "contact_rich");
+  }
+  EXPECT_EQ(manager_->CurrentPhaseId(), static_cast<int>(GraspPhaseId::kClosure));
+}
+
+TEST_F(GraspPhaseManagerTest, MirrorLatchIgnoresCommands) {
+  ASSERT_EQ(manager_->Load(YAML::Load(kPandaPhaseConfig)),
+            integrated_bringup::phase::GraspPhaseInitError::kNoError);
+
+  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kHold));
+  ASSERT_EQ(Step(PoseAt({0.0, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kHold));
+
+  // A command that drives HOLD → RELEASE in standalone mode is ignored while
+  // latched; only a further ForcePhase moves the mirror.
+  manager_->SetCommand(GraspCommand::kRelease);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_EQ(Step(PoseAt({0.0, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kHold));
+  }
+  manager_->ForcePhase(static_cast<int>(GraspPhaseId::kRelease));
+  EXPECT_EQ(Step(PoseAt({0.0, 0, 0})).phase_id, static_cast<int>(GraspPhaseId::kRelease));
 }
 
 // ── PhaseContext contents ───────────────────────────────────────────────────
