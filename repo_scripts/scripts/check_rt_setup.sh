@@ -257,6 +257,18 @@ check_hybrid_cpu() {
       else
         _pass "Homogeneous CPU (AMD 또는 non-hybrid Intel) — hybrid 처리 불필요"
         _category_set_detail "hybrid_cpu" "none"
+        # Guard against a false "homogeneous" verdict. On a genuine Intel hybrid
+        # part whose kernel does not expose types/ sysfs (kernel < 6.9, or a
+        # custom RT .config without the nuc-profile options), detection falls
+        # back to the CPUID 0x1A path — which needs the `cpuid` tool. If it is
+        # absent, every detection path fails and a hybrid CPU is silently
+        # mis-classified as homogeneous. Surface the one-command fix.
+        if [[ "${CPU_VENDOR:-}" == "GenuineIntel" ]] && ! command -v cpuid >/dev/null 2>&1; then
+          _warn "Intel CPU인데 hybrid 미감지 — \`cpuid\` 미설치로 인한 오검출일 수 있습니다"
+          _fix "sudo apt install -y cpuid  후 재실행 (Raptor/Meteor Lake 등 hybrid는 kernel<6.9 시 fallback 감지에 cpuid 필요)"
+          _category_update "hybrid_cpu" "WARN"
+          _category_set_detail "hybrid_cpu" "none (cpuid 미설치 — 오검출 가능)"
+        fi
       fi
       ;;
     raptor_lake_p)
@@ -304,11 +316,12 @@ check_hybrid_cpu() {
       ;;
   esac
 
-  # Surface which detection path fired — useful on custom RT kernels where
-  # the sysfs hybrid topology is stripped and only fallbacks succeed. Fallback
-  # success implies the kernel is missing intel_core/intel_atom exposure, which
-  # typically points to a missing CONFIG (INTEL_HFI_THERMAL / SCHED_MC_PRIO /
-  # SCHED_CLUSTER) or to /proc/config.gz being disabled.
+  # Surface which detection path fired. The fallback paths still classify P/E
+  # cores correctly — the WARN is about the *primary* sysfs path being absent,
+  # not a functional failure. `/sys/.../cpu/types/{intel_core,intel_atom}` is
+  # only created on kernel >= 6.9 built with the nuc-profile options; on older
+  # or minimally-configured RT kernels the dir is missing, so detection relies
+  # on the CPUID 0x1A fallback (needs `cpuid`) or freq clustering.
   if [[ "$IS_HYBRID" -eq 1 ]]; then
     case "${HYBRID_DETECT_SOURCE:-none}" in
       sysfs_types)
@@ -316,15 +329,16 @@ check_hybrid_cpu() {
           && echo -e "         ${DIM}detect source: sysfs_types (primary)${NC}"
         ;;
       cpuid_0x1a)
-        _warn "Hybrid 감지 경로: CPUID leaf 0x1A fallback (sysfs types/ 미노출)"
-        _fix "커널 재빌드 권장: CONFIG_INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER 활성화"
+        _warn "Hybrid 감지 경로: CPUID leaf 0x1A fallback (sysfs types/ 미노출 — 감지는 정상)"
+        _fix "primary(sysfs) 경로 복구: 커널 >= 6.9 + nuc 프로파일 재빌드 (sudo ${SCRIPT_DIR}/build_rt_kernel.sh --profile nuc)"
+        _fix "  └ nuc 프로파일이 SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL 활성화 (types/ 노출은 kernel >= 6.9 도 필요)"
         _category_update "hybrid_cpu" "WARN"
         ;;
       cpufreq_cluster)
         _warn "Hybrid 감지 경로: cpuinfo_max_freq clustering fallback"
         _warn "sysfs 도 CPUID 도 hybrid 를 노출하지 않음 — \`sudo apt install cpuid\` 후 재검사 또는 커널 재빌드"
-        _fix "sudo apt install -y cpuid  && 재실행"
-        _fix "또는 커널 .config 에 INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER 추가 후 재빌드"
+        _fix "sudo apt install -y cpuid  && 재실행  (CPUID 0x1A fallback 활성화 — 가장 빠름)"
+        _fix "또는 primary(sysfs) 복구: 커널 >= 6.9 + nuc 프로파일 재빌드 (sudo ${SCRIPT_DIR}/build_rt_kernel.sh --profile nuc)"
         _category_update "hybrid_cpu" "WARN"
         ;;
     esac
