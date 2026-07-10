@@ -70,18 +70,22 @@ using rtc::kMaxDeviceChannels;
 using rtc::RTControllerInterface;
 namespace trajectory = rtc::trajectory;
 
-// ── WBC Phase (7-state reachable FSM, slot 5 reserved) ─────────────────────
+// ── WBC Phase (6-state reachable FSM, slots 2 & 5 reserved) ────────────────
 //
-// All non-fallback phases run TSID QP → position. Value 5 was kRetreat in
-// older WBC builds and is reserved here to keep WbcState.msg PHASE_RETREAT=5
-// stable for downstream consumers (demo_gui, BT, rosbag). Reintroducing a
-// carry-then-release semantic should reuse the slot rather than shift values.
+// All non-fallback phases run TSID QP → position. Values 2 and 5 are reserved
+// holes: value 5 was kRetreat in older WBC builds, and value 2 was kPreGrasp
+// (a separate fine-positioning phase folded into kApproach — approach now
+// drives straight to closure on the tight epsilon_pregrasp_ threshold). Both
+// stay reserved to keep WbcState.msg PHASE_RETREAT=5 / PHASE_PRE_GRASP=2 stable
+// for downstream consumers (demo_gui, BT, rosbag). Reintroducing either
+// semantic should reuse the slot rather than shift values.
 enum class WbcPhase : uint8_t {
   kIdle = 0,      ///< SE3 hold at current TCP via TSID
-  kApproach = 1,  ///< TSID drives TCP toward pre-grasp pose (quintic SE3 ramp)
-  kPreGrasp = 2,  ///< TSID fine positioning at pre-grasp pose
-  kClosure = 3,   ///< TSID with contact-forming tasks
-  kHold = 4,      ///< TSID grasp holding
+  kApproach = 1,  ///< TSID drives TCP toward grasp pose (quintic SE3 ramp),
+                  ///< straight through to closure on epsilon_pregrasp_
+  // 2 reserved (was kPreGrasp — merged into kApproach; PHASE_PRE_GRASP=2 deprecated)
+  kClosure = 3,  ///< TSID with contact-forming tasks
+  kHold = 4,     ///< TSID grasp holding
   // 5 reserved (was kRetreat — removed; WbcState.msg PHASE_RETREAT=5 deprecated)
   kRelease = 6,  ///< Contact ramp-down → finger-open trajectory
   kFallback = 7  ///< Safety: position hold at last valid q
@@ -972,8 +976,7 @@ class DemoWbcController final : public RTControllerInterface {
   void LogMpcSolveTimingTick() noexcept;
 
   // ── FSM thresholds ──────────────────────────────────────────────────────
-  double epsilon_approach_{0.01};        ///< m, approach → pre-grasp
-  double epsilon_pregrasp_{0.005};       ///< m, pre-grasp → closure
+  double epsilon_pregrasp_{0.005};       ///< m, approach → closure (TCP-to-goal)
   double force_contact_threshold_{0.2};  ///< N, contact detection
   int min_contacts_for_hold_{2};         ///< # fingertips required -> kHold
   double slip_rate_threshold_{5.0};      ///< N/s, |df/dt| slip guard (kHold)

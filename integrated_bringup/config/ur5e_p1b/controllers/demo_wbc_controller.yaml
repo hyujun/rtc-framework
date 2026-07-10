@@ -120,7 +120,7 @@ demo_wbc_controller:
         weight: 10.0
         priority: 1
       # Stage A-2: soft contact acceleration consistency — penalises
-      # ‖J_c·a + dotJ_c·v‖². Activated in closure/hold; off during pre_grasp
+      # ‖J_c·a + dotJ_c·v‖². Activated in closure/hold; off during idle/approach
       # (no contacts → residual_dim=0 anyway, but explicit deactivation
       # keeps the cost matrix lean).
       contact_consistency:
@@ -131,7 +131,7 @@ demo_wbc_controller:
       # ContactManager / GraspCache / ObjectFrame instances; the per-tick
       # grasp cache is populated once inside ComputeTSIDPosition (call-order
       # invariant in compute.cpp). Activated in closure/hold only (no
-      # contacts in pre_grasp → ResidualDim()=0 anyway).
+      # contacts in idle/approach → ResidualDim()=0 anyway).
       #
       # object_wrench: r = w_obj_des, J = [0_{6×nv} | G]. Drives Σ G·λ →
       # mass·gravity·ẑ (object support).
@@ -253,21 +253,6 @@ demo_wbc_controller:
           friction_cone: { active: false }
           torque_limit:  { active: true }
 
-      pre_grasp:
-        tasks:
-          posture:             { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:             { active: true,  weight: 200.0, priority: 0 }
-          force:               { active: false, weight: 0.0,   priority: 1 }
-          contact_consistency: { active: false, weight: 0.0,   priority: 1 }
-          object_wrench:       { active: false, weight: 0.0,   priority: 1 }
-          internal_force:      { active: false, weight: 0.0,   priority: 1 }
-          object_se3:          { active: false, weight: 0.0,   priority: 0 }
-        constraints:
-          eom:           { active: true }
-          joint_limit:   { active: true }
-          friction_cone: { active: false }
-          torque_limit:  { active: true }
-
       closure:
         tasks:
           posture:             { active: true,  weight: 0.1,   priority: 0 }
@@ -360,8 +345,7 @@ demo_wbc_controller:
 
   # ── FSM thresholds ───────────────────────────────────────────────────
   fsm:
-    epsilon_approach: 0.01       # m, approach → pre-grasp threshold
-    epsilon_pregrasp: 0.005      # m, pre-grasp → closure threshold
+    epsilon_pregrasp: 0.005      # m, approach → closure threshold (TCP-to-goal)
     force_contact_threshold: 0.2 # N, per-fingertip contact detection
     min_contacts_for_hold: 2     # # of fingertips required for kClosure→kHold
     slip_rate_threshold: 5.0     # N/s, |df/dt| anomaly guard in kHold

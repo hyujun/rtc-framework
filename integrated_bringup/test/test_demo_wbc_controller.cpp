@@ -522,16 +522,6 @@ TEST_F(WbcFSMTest, ApproachPreemptedToReleaseOnCmd2) {
   EXPECT_LT(ctrl_.GetReleaseElapsedSecForTesting(), 1.0);
 }
 
-TEST_F(WbcFSMTest, PreGraspPreemptedToReleaseOnCmd2) {
-  ctrl_.ForcePhaseForTesting(WbcPhase::kPreGrasp);
-  ctrl_.ForceReleaseStateForTesting(1, 5.0);
-  ctrl_.SetGraspCmdForTesting(2);
-  (void)ctrl_.Compute(state_);
-  EXPECT_EQ(ctrl_.GetPhaseForTesting(), WbcPhase::kRelease);
-  EXPECT_EQ(ctrl_.GetReleaseStageForTesting(), 0);
-  EXPECT_LT(ctrl_.GetReleaseElapsedSecForTesting(), 1.0);
-}
-
 TEST_F(WbcFSMTest, ClosurePreemptedToReleaseOnCmd2) {
   ctrl_.ForcePhaseForTesting(WbcPhase::kClosure);
   ctrl_.ForceReleaseStateForTesting(1, 5.0);

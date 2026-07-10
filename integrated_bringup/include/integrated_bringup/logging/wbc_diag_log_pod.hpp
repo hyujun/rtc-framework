@@ -62,7 +62,9 @@ static_assert(std::is_trivially_copyable_v<WbcDiagLogPod>,
 
 /// Translate the WbcPhase enum value to its name for the CSV. Values mirror
 /// integrated_bringup::WbcPhase (kept standalone so this header has no
-/// controller dependency; slot 5 is reserved/deprecated).
+/// controller dependency; slots 2 & 5 are reserved/deprecated). Slot 2
+/// (pre_grasp) is retained for replay of pre-merge rosbags/CSVs even though
+/// no live controller emits it.
 inline std::string_view WbcDiagLogPhaseStr(std::uint8_t v) noexcept {
   switch (v) {
     case 0:

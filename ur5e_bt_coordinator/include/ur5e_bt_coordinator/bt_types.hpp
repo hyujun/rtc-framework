@@ -89,10 +89,11 @@ struct CachedWbcState {
   bool grasp_detected{false};
   int min_fingertips{2};
 
-  // WbcPhase enum (0=Idle, 1=Approach, 2=PreGrasp, 3=Closure, 4=Hold,
-  // 5=reserved (was Retreat, no longer published), 6=Release, 7=Fallback).
-  // Exact enum values match WbcPhase in demo_wbc_controller.hpp and PHASE_*
-  // constants in WbcState.msg.
+  // WbcPhase enum (0=Idle, 1=Approach, 3=Closure, 4=Hold, 6=Release,
+  // 7=Fallback). Slots 2 (was PreGrasp, merged into Approach) and 5 (was
+  // Retreat) are reserved/deprecated and no longer published. Exact enum
+  // values match WbcPhase in demo_wbc_controller.hpp and PHASE_* constants
+  // in WbcState.msg.
   uint8_t phase{0};
 
   // TSID solver diagnostics (informational)

@@ -109,15 +109,16 @@ GRASP_PHASE_NAMES = {
 }
 
 # WbcPhase enum → (display_text, bg_color, fg_color).
-# Source: WbcState.msg (TSID-based WBC controllers; 7 reachable states +
-# slot 5 reserved). Indices must match WbcState.PHASE_* constants and the
-# C++ integrated_bringup::WbcPhase enum. Slot 5 (RETREAT) is reserved
-# deprecated — no controller publishes it; kept here so the display
-# fallback for stale rosbags stays readable.
+# Source: WbcState.msg (TSID-based WBC controllers; 6 reachable states +
+# slots 2 & 5 reserved). Indices must match WbcState.PHASE_* constants and
+# the C++ integrated_bringup::WbcPhase enum. Slot 2 (PRE_GRASP, merged into
+# APPROACH) and slot 5 (RETREAT) are reserved deprecated — no controller
+# publishes them; kept here so the display fallback for stale rosbags stays
+# readable.
 WBC_PHASE_NAMES = {
     0: ("IDLE", "#585b70", "#cdd6f4"),
     1: ("APPROACH", "#89b4fa", "#1e1e2e"),
-    2: ("PRE-GRASP", "#cba6f7", "#1e1e2e"),
+    2: ("PRE-GRASP (deprecated)", "#6c7086", "#bac2de"),
     3: ("CLOSURE", "#fab387", "#1e1e2e"),
     4: ("HOLD", "#a6e3a1", "#1e1e2e"),
     5: ("RETREAT (deprecated)", "#6c7086", "#bac2de"),

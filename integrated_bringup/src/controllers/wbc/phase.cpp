@@ -12,15 +12,18 @@
 
 namespace integrated_bringup {
 
-// ── 7-state grasp FSM (Idle → Approach → PreGrasp → Closure → Hold →
-//                       Release → Fallback; slot 5 reserved) ───────────────
+// ── 6-state grasp FSM (Idle → Approach → Closure → Hold → Release →
+//                       Fallback; slots 2 & 5 reserved) ──────────────────────
 //
 // RELEASE preempt: grasp_cmd=2 jumps to kRelease from any active grasp phase
-// (kApproach/kPreGrasp/kClosure/kHold). Terminal/safe phases — kIdle (no
-// contacts, hand already open), kRelease (already releasing), kFallback
-// (latched safe state) — are exempt to keep the guard a no-op there.
-// Abort (cmd=0) returns to kIdle from the same active set. Both preempt the
-// per-case transitions below.
+// (kApproach/kClosure/kHold). Terminal/safe phases — kIdle (no contacts, hand
+// already open), kRelease (already releasing), kFallback (latched safe state)
+// — are exempt to keep the guard a no-op there. Abort (cmd=0) returns to kIdle
+// from the same active set. Both preempt the per-case transitions below.
+//
+// kApproach drives the TCP straight to the grasp goal and enters kClosure on
+// the tight epsilon_pregrasp_ threshold (the old separate kPreGrasp fine-
+// positioning phase is folded in — its preset was identical to approach).
 void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
   const int cmd = grasp_cmd_.load(std::memory_order_acquire);
   WbcPhase next = phase_;
@@ -42,23 +45,16 @@ void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
         break;
 
       case WbcPhase::kApproach: {
-        // TCP close enough to approach goal → fine positioning. epsilon_approach_
-        // (formerly unused) is the loose threshold; pre_grasp tightens to
-        // epsilon_pregrasp_ for closure entry.
-        if (tcp_goal_valid_ && ComputeTcpError(tcp_goal_) < epsilon_approach_) {
+        // TCP close enough to the grasp goal → closure. The former kPreGrasp
+        // fine-positioning phase is folded in: approach drives straight to the
+        // goal and closes on the tight epsilon_pregrasp_ threshold. A dropped
+        // TSID init aborts to kIdle rather than commanding a contact phase.
+        if (tcp_goal_valid_ && ComputeTcpError(tcp_goal_) < epsilon_pregrasp_) {
           if (tsid_initialized_) {
-            next = WbcPhase::kPreGrasp;
+            next = WbcPhase::kClosure;
           } else {
             next = WbcPhase::kIdle;
           }
-        }
-        break;
-      }
-
-      case WbcPhase::kPreGrasp: {
-        // TCP close enough to goal → closure
-        if (tcp_goal_valid_ && ComputeTcpError(tcp_goal_) < epsilon_pregrasp_) {
-          next = WbcPhase::kClosure;
         }
         break;
       }
@@ -138,7 +134,6 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   // command instead of self-holding). Persisted to the SeqLock since the next
   // tick reloads current_target_slot_ from it.
   switch (new_phase) {
-    case WbcPhase::kPreGrasp:
     case WbcPhase::kClosure:
     case WbcPhase::kHold:
     case WbcPhase::kRelease:
@@ -271,7 +266,6 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       break;
     }
 
-    case WbcPhase::kPreGrasp:
     case WbcPhase::kClosure:
     case WbcPhase::kHold: {
       // Apply TSID phase preset (RT-safe: uses pre-resolved PhasePreset)
@@ -454,8 +448,11 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
   // (contact_light vs contact_rich) on every WBC edge. `ForcePhase` is
   // atomic and RT-safe; `SetTaskTarget` uses SeqLock::Store (wait-free,
   // RT-4 safe). See grasp_phase_manager.hpp thread-safety notes.
-  // WBC has no direct MANIPULATE analogue — kClosure maps to CLOSURE and
-  // kHold to HOLD; MANIPULATE is reserved for a future WBC extension.
+  // The WBC FSM is authoritative; the grasp phase manager is a pure mirror in
+  // handler mode — the first ForcePhase latches it (guards suppressed) so its
+  // OCP-type / cost table follow the WBC edge instead of self-advancing. kIdle
+  // and kFallback both map to IDLE (contact_light); kApproach/kClosure/kHold/
+  // kRelease map 1:1.
   if (phase_manager_ptr_) {
     namespace phase = integrated_bringup::phase;
     int grasp_id = static_cast<int>(phase::GraspPhaseId::kIdle);
@@ -472,9 +469,6 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
           gt.approach_start = tcp_goal_;
           phase_manager_ptr_->SetTaskTarget(gt);
         }
-        break;
-      case WbcPhase::kPreGrasp:
-        grasp_id = static_cast<int>(phase::GraspPhaseId::kPreGrasp);
         break;
       case WbcPhase::kClosure:
         grasp_id = static_cast<int>(phase::GraspPhaseId::kClosure);

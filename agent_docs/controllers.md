@@ -11,7 +11,7 @@
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
-| DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 7-phase FSM (Idle->Approach->PreGrasp->Closure->Hold->Release; slot 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
+| DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
 ## Gains (per-controller ROS 2 parameters)
 
@@ -65,8 +65,8 @@ DemoWbcController의 position-mode tick은 `ComputeTSIDPosition()`이 한 gains 
 **Commanded SE3 target** — `RobotTarget{goal_type:"task"}`(arm, device 0)은 base interface의
 `SetDeviceTaskTarget`을 거쳐 commanded SE3 slot으로 들어가고, `kRelease`/`kFallback`을 제외한
 **모든 phase에서 live override**로 `tcp_goal_`을 그 pose로 갱신한다 (joint posture slot과 독립; CLIK가
-추종). 단 `kPreGrasp`/`kClosure`/`kHold`/`kRelease`/`kFallback` **진입 시점**에는 직전의 stale
-commanded SE3를 clear하므로 (idle 복귀 시 pre-grasp 명령으로 jog되는 것 방지), 해당 phase에서는
+추종). 단 `kClosure`/`kHold`/`kRelease`/`kFallback` **진입 시점**에는 직전의 stale
+commanded SE3를 clear하므로 (idle 복귀 시 grasp 명령으로 jog되는 것 방지), 해당 phase에서는
 **진입 후 새로 도착한** SE3만 재적용된다. `kRelease`/`kFallback`은 자신의 SE3 goal을 소유하여 live
 override를 받지 않는다. `goal_type:"joint"`(arm)은 arm posture로 들어간다.
 (x,y,z,r,p,y)→SE3 변환은 ZYX(yaw·pitch·roll) 규약.

@@ -155,7 +155,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | 카테고리 | 필드 | 타입 | 설명 |
 |---------|------|------|------|
 | **헤더** | `header` | `std_msgs/Header` | 타임스탬프 및 프레임 ID |
-| **phase** | `phase` | `uint8` | `PHASE_IDLE=0` / `PHASE_APPROACH=1` / `PHASE_PRE_GRASP=2` / `PHASE_CLOSURE=3` / `PHASE_HOLD=4` / `PHASE_RETREAT=5` (deprecated, 더 이상 publish 안 됨 — ABI 호환용 예약) / `PHASE_RELEASE=6` / `PHASE_FALLBACK=7` |
+| **phase** | `phase` | `uint8` | `PHASE_IDLE=0` / `PHASE_APPROACH=1` / `PHASE_PRE_GRASP=2` (deprecated, APPROACH 로 병합 — ABI 호환용 예약) / `PHASE_CLOSURE=3` / `PHASE_HOLD=4` / `PHASE_RETREAT=5` (deprecated, 더 이상 publish 안 됨 — ABI 호환용 예약) / `PHASE_RELEASE=6` / `PHASE_FALLBACK=7` |
 | **핑거팁별** | `fingertip_names` | `string[]` | 핑거팁 이름 배열 (크기 = num_fingertips, 보통 4) |
 | | `force_magnitude` | `float32[]` | 핑거팁별 힘 크기 \|F\| [N] |
 | | `contact_flag` | `float32[]` | 접촉 판정 -- backend capability (`has_native_contact`)에 따라 native sigmoid 확률([0,1]) 또는 controller-derived binary(1.0/0.0). 두 경우 모두 `> 0.5f`가 in-contact 판정 |

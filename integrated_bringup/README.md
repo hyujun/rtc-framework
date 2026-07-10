@@ -381,16 +381,15 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 #### 7-Phase FSM (slot 5 reserved)
 
-모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2`(RELEASE)는 active grasp phase(`kApproach`/`kPreGrasp`/`kClosure`/`kHold`)에서 즉시 `kRelease`로 preempt, `grasp_cmd=0`(abort)도 동일하게 `kIdle`로 복귀. 값 5는 과거 `kRetreat` 슬롯으로 reserved(더 이상 publish 안 됨). GUI의 arm SE3 target / hand joint target은 `kRelease`/`kFallback`을 제외한 모든 phase에서 매 tick 상시 반영된다(phase-entry edge 대기 없음).
+모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2`(RELEASE)는 active grasp phase(`kApproach`/`kClosure`/`kHold`)에서 즉시 `kRelease`로 preempt, `grasp_cmd=0`(abort)도 동일하게 `kIdle`로 복귀. 값 2는 과거 `kPreGrasp` 슬롯으로 `kApproach`에 병합되어 reserved(더 이상 publish 안 됨), 값 5는 과거 `kRetreat` 슬롯으로 reserved. GUI의 arm SE3 target / hand joint target은 `kRelease`/`kFallback`을 제외한 모든 phase에서 매 tick 상시 반영된다(phase-entry edge 대기 없음).
 
 | Phase | 제어 모드 | 진입 조건 | 종료 조건 |
 |-------|----------|----------|----------|
 | `kIdle` (0) | TSID QP (SE3 hold @ current TCP + posture regulate @ init snapshot). 진입 시 `SeedHoldFromMeasured` 가 측정 config 를 `q_des_target_full_`(posture ref) + joint_goal mirror + `tcp_goal_` 로 스냅샷 → 외란 시 init 으로 복원하는 stiff hold (InitPositionHold). 진입 edge 없는 첫 enable 은 first-tick self-init 에서 동일 시드 — 단 이 self-init 은 **모든 구성 device (arm+hand) 가 valid 측정 상태를 스트림할 때까지 defer** 되고 그동안 passthrough hold 를 명령한다 (hand device 가 늦게 올라오는 startup race 에서 posture ref hand block 이 zero 로 고정돼 손가락을 0 으로 붕괴시키는 것을 방지; joint/task 컨트롤러는 arm 즉시 시드 + hand 시드만 per-device 플래그로 defer). | 초기 / `grasp_cmd=0` / `release_done_` | `grasp_cmd=1` + `robot_new_target` |
-| `kApproach` (1) | TSID QP (SE3 quintic ramp → pregrasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_approach` |
-| `kPreGrasp` (2) | TSID QP (no contact, fine SE3 tracking) | kApproach 종료 | `||tcp_err|| < epsilon_pregrasp` |
-| `kClosure` (3) | TSID QP + contact + ForceTask | kPreGrasp 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
+| `kApproach` (1) | TSID QP (SE3 quintic ramp → grasp pose) | kIdle 종료 | `tcp_goal_valid && ||tcp_err|| < epsilon_pregrasp` (구 kPreGrasp fine-positioning 병합) |
+| `kClosure` (3) | TSID QP + contact + ForceTask | kApproach 종료 | active fingertip force ≥ N개 (`min_contacts_for_hold`) |
 | `kHold` (4) | TSID QP + contact + ForceTask | kClosure 종료 | slip 감지 시 `kFallback` (RELEASE preempt 는 top-level guard) |
-| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) | `release_done_` (stage 1 hand trajectory 완료) |
+| `kRelease` (6) | TSID QP (SE3 hold) + 2-stage overlay (contact ramp `release_ramp_sec` → finger open) | `grasp_cmd=2` from active grasp phase (`kApproach`/`kClosure`/`kHold`) | `release_done_` (stage 1 hand trajectory 완료) |
 | `kFallback` (7) | Position hold | QP 연속 실패 N회, slip/deformation | `grasp_cmd=0` (수동 복구; top-level abort guard 면제) |
 
 #### Runtime Gains (per-controller ROS 2 parameters)

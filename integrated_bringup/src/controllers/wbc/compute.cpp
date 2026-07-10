@@ -95,7 +95,7 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
 
   // MPC WriteState moved into ComputeTSIDPosition (next to its
   // ExtractFullState), which is reached every tick by all TSID-routing
-  // phases (kIdle/kApproach/kPreGrasp/kClosure/kHold and kRelease via
+  // phases (kIdle/kApproach/kClosure/kHold and kRelease via
   // ComputeReleaseMode → ComputeTSIDPosition). kFallback no longer pushes
   // state; the MPC retains its last snapshot until recovery to kIdle, which
   // is safe because MPC output is not driving control during fallback and
@@ -105,7 +105,6 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
   switch (phase_) {
     case WbcPhase::kIdle:
     case WbcPhase::kApproach:
-    case WbcPhase::kPreGrasp:
     case WbcPhase::kClosure:
     case WbcPhase::kHold:
       if (tsid_initialized_) {
@@ -192,7 +191,7 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   //   cache.Update → UpdateActivation → RecomputeActive →
   //   ActiveLambdaDim → ComputeGraspMatrix(G_workspace_) → grasp_cache_.Compute
   // Tasks must never re-Compute on their own — they only read GPinv/GTPinv/
-  // ProjN/Rank from grasp_cache_. n_active=0 (idle/pre_grasp) leaves the
+  // ProjN/Rank from grasp_cache_. n_active=0 (idle/approach) leaves the
   // cache empty (Rank()=0); object-level tasks then report ResidualDim=0.
   n_lambda_active_ = contact_mgr_.ActiveLambdaDim(contact_state_);
   if (n_lambda_active_ > 0) {

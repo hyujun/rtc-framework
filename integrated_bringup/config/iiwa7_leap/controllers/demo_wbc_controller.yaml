@@ -133,7 +133,7 @@ demo_wbc_controller:
         weight: 10.0
         priority: 1
       # Stage A-2: soft contact acceleration consistency — penalises
-      # ‖J_c·a + dotJ_c·v‖². Activated in closure/hold; off during pre_grasp.
+      # ‖J_c·a + dotJ_c·v‖². Activated in closure/hold; off during idle/approach.
       contact_consistency:
         type: "contact_consistency"
         weight: 100.0
@@ -262,21 +262,6 @@ demo_wbc_controller:
           friction_cone: { active: false }
           torque_limit:  { active: true }
 
-      pre_grasp:
-        tasks:
-          posture:             { active: true,  weight: 1.0,   priority: 0 }
-          se3_tcp:             { active: true,  weight: 200.0, priority: 0 }
-          force:               { active: false, weight: 0.0,   priority: 1 }
-          contact_consistency: { active: false, weight: 0.0,   priority: 1 }
-          object_wrench:       { active: false, weight: 0.0,   priority: 1 }
-          internal_force:      { active: false, weight: 0.0,   priority: 1 }
-          object_se3:          { active: false, weight: 0.0,   priority: 0 }
-        constraints:
-          eom:           { active: true }
-          joint_limit:   { active: true }
-          friction_cone: { active: false }
-          torque_limit:  { active: true }
-
       closure:
         tasks:
           posture:             { active: true,  weight: 0.1,   priority: 0 }
@@ -368,10 +353,9 @@ demo_wbc_controller:
   # ── FSM thresholds ─────────────────────────────────────────────────────────
   # Force/contact thresholds retained for schema compliance but the contact
   # detection edge will rarely fire without tactile sensing — FSM tends to
-  # stay in pre_grasp on iiwa7+LEAP sim unless |λ| from QP solution crosses
+  # stay in approach on iiwa7+LEAP sim unless |λ| from QP solution crosses
   # force_contact_threshold via the friction cone bound.
   fsm:
-    epsilon_approach: 0.01
     epsilon_pregrasp: 0.005
     force_contact_threshold: 0.2
     min_contacts_for_hold: 2

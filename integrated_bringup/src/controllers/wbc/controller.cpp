@@ -379,7 +379,7 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       formulation.AddTask(std::move(task));
     } else if (type == "contact_consistency") {
       // Stage A-2: soft task — residual J_c·a + dotJ_c·v. Activated in
-      // closure/hold per phase preset; deactivated in pre_grasp.
+      // closure/hold per phase preset; deactivated in idle/approach.
       auto task = std::make_unique<rtc::tsid::ContactConsistencyTask>();
       task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
       task->SetContactManager(&contact_mgr_config_);
@@ -858,7 +858,6 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
       };
       map_preset(WbcPhase::kIdle, "idle");
       map_preset(WbcPhase::kApproach, "approach");
-      map_preset(WbcPhase::kPreGrasp, "pre_grasp");
       map_preset(WbcPhase::kClosure, "closure");
       map_preset(WbcPhase::kHold, "hold");
       map_preset(WbcPhase::kRelease, "release");
@@ -947,7 +946,6 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   // ── 4. FSM thresholds ─────────────────────────────────────────────────
   if (cfg["fsm"]) {
     const auto fsm = cfg["fsm"];
-    epsilon_approach_ = fsm["epsilon_approach"].as<double>(0.01);
     epsilon_pregrasp_ = fsm["epsilon_pregrasp"].as<double>(0.005);
     force_contact_threshold_ = fsm["force_contact_threshold"].as<double>(0.2);
     min_contacts_for_hold_ = fsm["min_contacts_for_hold"].as<int>(min_contacts_for_hold_);
