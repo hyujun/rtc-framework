@@ -60,7 +60,12 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         const auto& submodel = sys_cfg->sub_models.front();
         AppendArmTipSlot(owned_topics_, submodel.root_link, submodel.tip_link, /*group_idx=*/0);
       }
-      if (sys_cfg) {
+      // Parent = ARM root (sub_models[0].root_link, e.g. base), NOT the hand tree
+      // root: ComputeHandFingertipFk composes each fingertip pose to the arm base
+      // frame via the TCP placement (tcp = base→tool0), so the published
+      // translation is base-relative. Labelling the parent as the hand root
+      // (base_adapter / hand_base_link) double-counts the arm reach in RViz.
+      if (sys_cfg && !sys_cfg->sub_models.empty()) {
         const auto secondary = GetSecondaryDeviceName();
         if (!secondary.empty()) {
           for (const auto& tm : sys_cfg->tree_models) {
@@ -68,7 +73,8 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
               // Register only as many hand-tip slots as ComputeHandFingertipFk
               // fills (kNumFingertips): extra tip_links would register slots
               // that never receive a pose and silently never broadcast (#125 F4).
-              AppendHandTipSlots(owned_topics_, tm.root_link, tm.tip_links, /*group_idx=*/0,
+              AppendHandTipSlots(owned_topics_, sys_cfg->sub_models.front().root_link, tm.tip_links,
+                                 /*group_idx=*/0,
                                  /*max_tips=*/kNumFingertips);
               break;
             }
