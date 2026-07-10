@@ -143,22 +143,33 @@ TEST_F(TreeValidationTest, InvalidXmlThrows) {
   EXPECT_THROW(factory_.createTreeFromText(bad_xml), std::exception);
 }
 
-// Pose-name contract (Open Q3 / Sprint item 3): poses_p1b.yaml overlays
-// poses.yaml and overrides hand_pose.* with the proto_1b layout. It must
-// override *every* default hand pose — any it misses would silently keep the
-// assm-layout values from poses.yaml (wrong joint order for p1b). It must also
-// NOT redefine arm_pose.* (the UR5e arm poses are single-sourced in poses.yaml)
-// — an arm copy here would drift undetectably. Together these keep every pose a
-// tree references resolvable under both variants without editing the trees.
-TEST_F(TreeValidationTest, PoseNameParityDefaultVsP1b) {
-  const auto default_hand = ReadPoseKeys(config_dir_ / "poses.yaml", "hand_pose.");
+// Pose-name contract (Open Q3 / Sprint item 3): hand poses live in symmetric
+// variant deltas (poses_p1a.yaml = assm_v1, poses_p1b.yaml = proto_1b), each
+// overlaid on the shared base poses.yaml. The contract has three parts:
+//   1. base poses.yaml defines NO hand_pose.* — its joint layout differs per
+//      hand, so a hand pose here would leak the wrong joint order into whichever
+//      variant does not override it. Only arm_pose.* (UR5e, single-sourced).
+//   2. p1a and p1b declare the *same* hand_pose.* name set — a tree referencing
+//      any hand pose must resolve under both variants without editing the tree.
+//   3. neither delta redefines arm_pose.* — an arm copy would drift undetectably
+//      from the single source in poses.yaml.
+TEST_F(TreeValidationTest, PoseNameParityP1aVsP1b) {
+  const auto base_hand = ReadPoseKeys(config_dir_ / "poses.yaml", "hand_pose.");
+  const auto p1a_hand = ReadPoseKeys(config_dir_ / "poses_p1a.yaml", "hand_pose.");
+  const auto p1a_arm = ReadPoseKeys(config_dir_ / "poses_p1a.yaml", "arm_pose.");
   const auto p1b_hand = ReadPoseKeys(config_dir_ / "poses_p1b.yaml", "hand_pose.");
   const auto p1b_arm = ReadPoseKeys(config_dir_ / "poses_p1b.yaml", "arm_pose.");
 
-  ASSERT_FALSE(default_hand.empty()) << "no hand_pose keys parsed from poses.yaml";
-  EXPECT_EQ(default_hand, p1b_hand)
-      << "poses_p1b.yaml must override exactly the hand_pose.* names poses.yaml "
-         "defines (values differ, key set may not — else an assm-layout pose leaks)";
+  ASSERT_FALSE(p1a_hand.empty()) << "no hand_pose keys parsed from poses_p1a.yaml";
+  EXPECT_TRUE(base_hand.empty())
+      << "base poses.yaml must not define hand_pose.* — the hand joint layout is "
+         "variant-specific, so hand poses belong in poses_<variant>.yaml";
+  EXPECT_EQ(p1a_hand, p1b_hand)
+      << "poses_p1a.yaml and poses_p1b.yaml must declare the same hand_pose.* name "
+         "set (values differ per layout, names must not — else a tree pose is "
+         "unresolvable under one variant)";
+  EXPECT_TRUE(p1a_arm.empty())
+      << "poses_p1a.yaml must not redefine arm_pose.* — arm poses are shared via poses.yaml";
   EXPECT_TRUE(p1b_arm.empty())
       << "poses_p1b.yaml must not redefine arm_pose.* — arm poses are shared via poses.yaml";
 }

@@ -56,9 +56,10 @@ def generate_launch_description():
             "variant",
             default_value="ur5e_p1a",
             choices=["ur5e_p1a", "ur5e_p1b"],
-            description="Robot variant → selects config + poses files. "
-            "ur5e_p1a = default (bt_coordinator.yaml + poses.yaml); "
-            "ur5e_p1b = proto_1b hand (adds bt_coordinator_p1b.yaml + poses_p1b.yaml)",
+            description="Robot variant → selects config + poses delta files. "
+            "base (bt_coordinator.yaml + poses.yaml) is always loaded; the variant "
+            "overlays bt_coordinator_<v>.yaml (device group) + poses_<v>.yaml (hand poses). "
+            "ur5e_p1a = assm_v1 hand (default); ur5e_p1b = proto_1b hand",
         ),
         DeclareLaunchArgument(
             "tree",
@@ -100,24 +101,21 @@ def generate_launch_description():
     ]
 
     def launch_setup(context):
-        # Base config is always loaded; a non-default variant overlays a small
-        # delta file (device group) and swaps the poses file. Loading base first
-        # keeps bb.* / tick_rate shared in one place (no per-variant drift).
+        # Base config + base poses are always loaded first; every variant then
+        # overlays a symmetric delta pair: bt_coordinator_<v>.yaml (device group)
+        # and poses_<v>.yaml (hand_pose.* for that hand's joint layout). Loading
+        # base first keeps bb.* / tick_rate / arm_pose.* single-sourced (no
+        # per-variant drift). p1a and p1b differ only in their two delta files.
         variant = LaunchConfiguration("variant").perform(context)
+        suffix = "p1b" if variant == "ur5e_p1b" else "p1a"  # ur5e_p1a is the default
         base_yaml = PathJoinSubstitution([pkg_share, "config", "bt_coordinator.yaml"])
         poses_yaml = PathJoinSubstitution([pkg_share, "config", "poses.yaml"])
-        if variant == "ur5e_p1b":
-            # poses.yaml supplies the shared UR5e arm poses; poses_p1b.yaml
-            # (loaded last) overrides only hand_pose.* with the proto_1b layout,
-            # so the arm poses are single-sourced (no per-variant copy).
-            param_files = [
-                base_yaml,
-                PathJoinSubstitution([pkg_share, "config", "bt_coordinator_p1b.yaml"]),
-                poses_yaml,
-                PathJoinSubstitution([pkg_share, "config", "poses_p1b.yaml"]),
-            ]
-        else:  # ur5e_p1a (default)
-            param_files = [base_yaml, poses_yaml]
+        param_files = [
+            base_yaml,
+            PathJoinSubstitution([pkg_share, "config", f"bt_coordinator_{suffix}.yaml"]),
+            poses_yaml,
+            PathJoinSubstitution([pkg_share, "config", f"poses_{suffix}.yaml"]),
+        ]
 
         # Resolve launch arguments
         tree = LaunchConfiguration("tree").perform(context)

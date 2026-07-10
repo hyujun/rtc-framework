@@ -49,8 +49,9 @@ source install/setup.bash
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
 
 # ── Robot variant (device group + poses 선택) ──
-# ur5e_p1a (default): bt_coordinator.yaml + poses.yaml
-# ur5e_p1b: 위에 bt_coordinator_p1b.yaml(hand_group=p1b) + poses_p1b.yaml 를 얹음
+# base(bt_coordinator.yaml + poses.yaml) 위에 variant delta 를 얹음:
+# ur5e_p1a (default): + bt_coordinator_p1a.yaml(hand_group=p1a) + poses_p1a.yaml
+# ur5e_p1b: + bt_coordinator_p1b.yaml(hand_group=p1b) + poses_p1b.yaml
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py variant:=ur5e_p1b
 
 # ── Pick and Place (pose-based grasp, grasp controller 미사용) ──
@@ -94,18 +95,23 @@ ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xm
 ### ros2 run (직접 실행)
 
 ```bash
-# 기본 실행 (YAML config + poses 직접 지정)
+# 기본 실행 (ur5e_p1a: base + p1a delta 를 순서대로 직접 지정)
+# launch 는 이 4개 params-file 로드를 자동화한다 (variant:=ur5e_p1a).
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args \
   --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator_p1a.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses_p1a.yaml
 
 # Pick and Place (pose-based, soft grip)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args -p tree_file:=pick_and_place.xml \
   -p bb.hand_close_pose:=hand_close_soft \
   --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator_p1a.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses_p1a.yaml
 ```
 
 ### 반복 실행
@@ -167,8 +173,8 @@ bt_coordinator:
     tree_file: "pick_and_place_force_pi.xml"
 
     # ── Robot profile (Seam A/B) — device group + joint 폭 ──
-    arm_group: "ur5e"                 # arm topic 세그먼트 (/rtc_cm/<arm_group>/joint_states)
-    hand_group: "hand"                # hand topic 세그먼트. 예: p1b
+    arm_group: "ur5e"                 # arm topic 세그먼트 (두 variant 공용, base 에 둠)
+    # hand_group 은 base 에 없다 — variant delta 가 공급 (p1a/p1b). C++ default "hand".
     arm_dof: 6                        # arm pose 길이 (DoF 는 이 파라미터가 SSoT)
     hand_dof: 10                      # hand pose 길이 (assm_v1·proto_1b 모두 10)
 
@@ -227,41 +233,50 @@ bt_coordinator:
     # bb.sweep_distance: 0.3
 ```
 
-### `config/poses.yaml`
+### `config/poses.yaml` (base, arm 전용) + `config/poses_<variant>.yaml` (hand)
 
-Hand/UR5e 포즈를 재컴파일 없이 튜닝할 수 있다. 값은 **도(deg) 단위**로 작성하고, 로드 시 자동으로 radian 변환된다.
+포즈를 재컴파일 없이 튜닝할 수 있다. 값은 **도(deg) 단위**로 작성하고, 로드 시 자동으로 radian
+변환된다. base `poses.yaml` 은 UR5e `arm_pose.*` 만 담고(두 variant 공용), `hand_pose.*` 는
+variant delta(`poses_p1a.yaml`=assm_v1, `poses_p1b.yaml`=proto_1b)가 공급한다.
 
 ```yaml
+# poses.yaml (base) — arm 전용
 bt_coordinator:
   ros__parameters:
-    hand_pose.home: [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
     arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
     arm_pose.ready: [0.0, -90.0, 0.0, -90.0, -90.0, 0.0]
     arm_pose.table_top: [0.0, -70.0, 110.0, -130.0, -90.0, 0.0]
     # ... (추가 포즈: front_reach, side_reach, handover, stow,
     #      look_up, look_down, pick_ready, elevated, vision_ready)
+
+# poses_p1a.yaml (delta) — hand 전용 (assm_v1 레이아웃)
+bt_coordinator:
+  ros__parameters:
+    hand_pose.home: [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+    hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
 ```
 
 ### Robot variant (`ur5e_p1a` / `ur5e_p1b`)
 
-`variant` launch arg 로 device group + poses 파일을 통째로 선택한다. 공통 설정(bb.* 등)은
-base `bt_coordinator.yaml` 한 곳에서만 관리되고, variant 는 delta 만 얹는다.
+`variant` launch arg 로 device group + poses 파일을 통째로 선택한다. base(`bt_coordinator.yaml`
++ `poses.yaml`)는 항상 먼저 로드되어 공통 설정(bb.* / tick_rate / arm_pose.*)을 한 곳에서만
+관리하고, 모든 variant 는 대칭적으로 delta 쌍(device group + hand poses)을 얹는다.
 
 | variant | 로드되는 파일 (순서) | hand_group | hand 분할 |
 |---------|--------------|-----------|-----------|
-| `ur5e_p1a` (default) | `bt_coordinator.yaml` + `poses.yaml` | `hand` | thumb3/index3/middle3/ring1 |
-| `ur5e_p1b` | 위 + `bt_coordinator_p1b.yaml` + `poses_p1b.yaml` | `p1b` | thumb4/index3/middle2/ring1 |
+| `ur5e_p1a` (default) | base + `bt_coordinator_p1a.yaml` + `poses_p1a.yaml` | `p1a` | thumb3/index3/middle3/ring1 |
+| `ur5e_p1b` | base + `bt_coordinator_p1b.yaml` + `poses_p1b.yaml` | `p1b` | thumb4/index3/middle2/ring1 |
 
-`ur5e_p1b` 는 `poses.yaml` 을 먼저 로드한 뒤 `poses_p1b.yaml` 로 `hand_pose.*` 만 덮어쓴다.
-따라서 **arm_pose.\* 는 `poses.yaml` 한 곳에서만 관리**되고(UR5e 팔 공용), `poses_p1b.yaml`
-에는 hand 포즈만 둔다.
+두 variant 모두 `poses.yaml`(arm)을 먼저 로드한 뒤 `poses_<variant>.yaml` 로 `hand_pose.*` 를
+공급한다. 따라서 **arm_pose.\* 는 `poses.yaml` 한 곳에서만 관리**되고(UR5e 팔 공용), 각 delta
+에는 hand 포즈만 둔다. base `poses.yaml` 에는 `hand_pose.*` 가 없다 — hand joint 레이아웃이
+variant 마다 다르기 때문.
 
-**Pose-name 계약**: `poses_p1b.yaml` 은 default 의 `hand_pose.*` 이름을 **모두** override
-해야 한다 (하나라도 빠지면 그 포즈가 assm 레이아웃 값을 그대로 물려받아 joint 순서가 어긋난다).
-동시에 `arm_pose.*` 를 재정의해선 안 된다. 이 두 조건을 `test_tree_validation` 의
-`PoseNameParityDefaultVsP1b` 가 강제한다. 이래야 트리가 참조하는 포즈 이름이 두 variant 모두에서
-해석되어 **트리를 무수정 재사용**할 수 있다.
+**Pose-name 계약**: `poses_p1a.yaml` 과 `poses_p1b.yaml` 은 **동일한 `hand_pose.*` 이름 집합**
+을 선언해야 한다 (값은 레이아웃마다 다르되 이름은 같아야 트리가 두 variant 모두에서 해석된다).
+base `poses.yaml` 은 `hand_pose.*` 를 정의해선 안 되고(variant 별 레이아웃 누출 방지), 두 delta
+모두 `arm_pose.*` 를 재정의해선 안 된다(단일 소스 drift 방지). 이 세 조건을 `test_tree_validation`
+의 `PoseNameParityP1aVsP1b` 가 강제한다. 이래야 트리를 **무수정 재사용**할 수 있다.
 
 **Capability 계약**: `has_*` 가 false 인 센서의 노드군은 등록되지 않으므로, 그 노드를 참조하는
 트리는 로드 시 실패한다(`on_configure` FAILURE). position-only variant 설계 시 사용.

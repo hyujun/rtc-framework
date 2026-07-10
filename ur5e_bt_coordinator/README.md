@@ -330,18 +330,20 @@ YAML의 `bb.<key>` 형식으로 선언하면 트리 로드 후 Blackboard에 자
 포즈는 두 곳에서 정의할 수 있다:
 
 1. **컴파일타임 기본값** (`hand_pose_config.hpp`) — 코드 내 `kHandPoses`, `kUR5ePoses` 맵
-2. **런타임 오버라이드** (`config/poses.yaml`) — 재컴파일 없이 포즈 튜닝 가능
+2. **런타임 오버라이드** (`config/poses.yaml` + `config/poses_<variant>.yaml`) — 재컴파일 없이 포즈 튜닝 가능
 
-`poses.yaml`에서 `hand_pose.<이름>` / `arm_pose.<이름>` 형식으로 선언하면 컴파일타임 기본값을 덮어쓴다.
+`arm_pose.<이름>` 은 base `poses.yaml`(UR5e 공용), `hand_pose.<이름>` 은 variant delta
+(`poses_p1a.yaml`=assm_v1 / `poses_p1b.yaml`=proto_1b)에 선언하면 컴파일타임 기본값을 덮어쓴다.
 값은 **도(deg) 단위**로 작성하고, 로드 시 자동으로 radian 변환된다.
 
 ```yaml
-# 예: 엄지-검지 opposition 포즈 조정
+# poses_p1a.yaml — 예: 엄지-검지 opposition 포즈 조정 (hand, assm_v1 레이아웃)
 hand_pose.thumb_index_oppose: [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
+# poses.yaml (base) — arm 포즈
 arm_pose.demo_pose: [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 ```
 
-Variant 별 포즈 파일 (`poses.yaml` / `poses_p1b.yaml`) 선택과 pose-name 계약은
+Variant 별 포즈 파일 (`poses_p1a.yaml` / `poses_p1b.yaml`) 선택과 pose-name 계약은
 [configuration.md](docs/configuration.md) Robot variant 절 참고. proto_1b 는 핑거 분할이
 달라(thumb4/index3/middle2/ring1) 같은 포즈 이름이라도 joint 순서가 다르다.
 
@@ -527,11 +529,14 @@ ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py paused:=true
 ### 직접 실행 (ros2 run)
 
 ```bash
-# YAML 설정 + 포즈 파일을 직접 지정
+# YAML 설정 + 포즈 파일을 직접 지정 (ur5e_p1a: base + p1a delta 순서대로;
+# launch variant:=ur5e_p1a 가 이 로드를 자동화)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
   --ros-args \
   --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator_p1a.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses_p1a.yaml
 
 # Towel Unfold (Blackboard 변수 지정)
 ros2 run ur5e_bt_coordinator bt_coordinator_node \
@@ -539,7 +544,10 @@ ros2 run ur5e_bt_coordinator bt_coordinator_node \
   -p bb.sweep_direction_x:=1.0 \
   -p bb.sweep_direction_y:=0.0 \
   -p bb.sweep_distance:=0.3 \
-  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/bt_coordinator_p1a.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses.yaml \
+  --params-file $(ros2 pkg prefix ur5e_bt_coordinator)/share/ur5e_bt_coordinator/config/poses_p1a.yaml
 
 # 오프라인 트리 검증 (ROS 실행 불필요)
 ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
@@ -550,10 +558,12 @@ ros2 run ur5e_bt_coordinator validate_tree pick_and_place.xml
 ```
 ur5e_bt_coordinator/
 ├── config/
-│   ├── bt_coordinator.yaml          # ROS2 파라미터 (트리, tick rate, 런타임 제어, bb.*)
+│   ├── bt_coordinator.yaml          # base 파라미터 (트리, tick rate, 런타임 제어, bb.*, arm_group)
+│   ├── bt_coordinator_p1a.yaml      # ur5e_p1a variant delta (hand_group=p1a, default)
 │   ├── bt_coordinator_p1b.yaml      # ur5e_p1b variant delta (hand_group=p1b)
-│   ├── poses.yaml                   # Hand/UR5e 포즈 오버라이드 (deg 단위, 재컴파일 불필요)
-│   └── poses_p1b.yaml               # proto_1b hand 포즈만 (poses.yaml 위 override; arm 은 공용)
+│   ├── poses.yaml                   # base: UR5e arm 포즈만 (deg 단위, 재컴파일 불필요)
+│   ├── poses_p1a.yaml               # assm_v1 hand 포즈 (poses.yaml 위 override; arm 은 공용)
+│   └── poses_p1b.yaml               # proto_1b hand 포즈 (poses.yaml 위 override; arm 은 공용)
 ├── launch/
 │   └── bt_coordinator.launch.py     # Launch 파일 (YAML + poses 자동 로드, launch arg 지원)
 ├── trees/

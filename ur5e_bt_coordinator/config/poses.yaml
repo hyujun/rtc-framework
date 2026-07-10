@@ -1,45 +1,13 @@
 bt_coordinator:
   ros__parameters:
-    # ── Hand 포즈 (10-DoF, 단위: degree → 로드 시 radian 변환) ──────────────
-    # | Finger | Joints                                  | DoF | Index |
-    # |--------|-----------------------------------------|-----|-------|
-    # | Thumb  | CMC abd/add, CMC flex/ext, MCP flex/ext | 3   | 0–2   |
-    # | Index  | MCP abd/add, MCP flex/ext, DIP flex/ext | 3   | 3–5   |
-    # | Middle | MCP abd/add, MCP flex/ext, DIP flex/ext | 3   | 6–8   |
-    # | Ring   | MCP flex/ext                            | 1   | 9     |
-    #
-    # 형식: hand_pose.<이름>: [10개 값 (deg)]
-    # 재컴파일 없이 이 파일만 수정하면 포즈 튜닝 가능
-
-    # 기본 포즈
-    hand_pose.home:       [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.full_flex:  [30.0, 60.0, 45.0,  0.0, 60.0, 45.0,  0.0, 60.0, 45.0,  60.0]
-
-    # Pose-based grasp 포즈 (grip 강도별, pick_and_place.xml 용)
-    # hand_open: 완전 개방 (home과 동일, 의미적 구분을 위해 별도 정의)
-    # hand_close_soft/medium/hard: full_flex 대비 약 40%/70%/100%
-    # 실제 물체에 맞게 튜닝 필요
-    hand_pose.hand_open:         [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.hand_close_soft:   [10.0, 25.0, 18.0,  0.0, 25.0, 18.0,  0.0, 25.0, 18.0,  25.0]
-    hand_pose.hand_close_medium: [20.0, 45.0, 33.0,  0.0, 45.0, 33.0,  0.0, 45.0, 33.0,  45.0]
-    hand_pose.hand_close_hard:   [30.0, 60.0, 45.0,  0.0, 60.0, 45.0,  0.0, 60.0, 45.0,  60.0]
-
-    # Opposition 포즈: 엄지 → 각 손가락
-    hand_pose.thumb_index_oppose:   [15.0, 45.0, 35.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.index_oppose:         [0.0, 0.0, 0.0,  -5.0, 40.0, 30.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.thumb_middle_oppose:  [25.0, 40.0, 30.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.middle_oppose:        [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  -5.0, 40.0, 30.0,  0.0]
-    hand_pose.thumb_ring_oppose:    [30.0, 35.0, 25.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.ring_oppose:          [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  45.0]
-
-    # Flex 타겟 (FlexExtendFinger용, 손가락별)
-    hand_pose.thumb_flex:      [30.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.thumb_mcp_flex:  [0.0, 0.0, 45.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.index_flex:      [0.0, 0.0, 0.0,  0.0, 60.0, 45.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.index_dip_flex:  [0.0, 0.0, 0.0,  0.0, 0.0, 45.0,  0.0, 0.0, 0.0,  0.0]
-    hand_pose.middle_flex:     [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 60.0, 45.0,  0.0]
-    hand_pose.middle_dip_flex: [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 45.0,  0.0]
-    hand_pose.ring_flex:       [0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  0.0, 0.0, 0.0,  60.0]
+    # ══════════════════════════════════════════════════════════════════════════
+    # base poses — UR5e 팔 포즈만 (arm_pose.*). variant-중립.
+    # ══════════════════════════════════════════════════════════════════════════
+    # hand_pose.* 는 여기 없다 — hand 조인트 레이아웃이 variant 마다 다르므로 (assm_v1
+    # 3/3/3/1 vs proto_1b 4/3/2/1) variant delta 가 공급한다: poses_p1a.yaml(assm_v1),
+    # poses_p1b.yaml(proto_1b). launch 가 poses.yaml → poses_<variant>.yaml 순으로
+    # 로드하므로 arm_pose.* 는 이 한 곳에서만 관리되고(UR5e 팔 공용) hand_pose.* 만
+    # variant 별로 갈린다. 이름 집합 parity 는 test_tree_validation 이 강제한다.
 
     # ── UR5e 포즈 (6-DoF, 단위: degree → 로드 시 radian 변환) ──────────────
     # 형식: arm_pose.<이름>: [6개 값 (deg)]
