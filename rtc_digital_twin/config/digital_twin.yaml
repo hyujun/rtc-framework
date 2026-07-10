@@ -101,10 +101,22 @@
     # <robot>_bringup yaml, not here.
     sensor_viz.force_display_threshold: 0.0
 
+    # ── Controller TF re-broadcast (active-controller → /tf) ─────────────
+    # The active controller broadcasts its FK `_actual` frames on
+    # `<config_key>/transforms` (tf2_msgs/TFMessage), NOT on /tf. This node
+    # follows `/rtc_cm/active_controller_name` and re-publishes the active
+    # controller's transforms onto /tf (restamped with this node's clock), so
+    # RViz renders the `_actual` axes automatically and the tcp_viz tf2 lookup
+    # below resolves. Robot-agnostic: the controller key comes from the topic,
+    # never hardcoded (ARCH-1). Disable to get a pure URDF-driven twin.
+    controller_tf.rebroadcast_enable: true
+    controller_tf.active_controller_topic: "/rtc_cm/active_controller_name"
+
     # ── TCP visualization ───────────────────────────────────────────────
     # Phase 4: TCP pose는 tf2 (`base → tool0_actual`) 에서 lookup. Active
-    # controller의 <config_key>/transforms 토픽이 listener buffer로 자동 수집
-    # 되므로 active controller 변경 시 별도 rewire가 필요 없다.
+    # controller의 <config_key>/transforms 는 위 controller_tf 재발행이 /tf 로
+    # 올려주므로 (해당 재발행이 켜져 있어야) tcp_viz 의 bare TransformListener
+    # 가 그 프레임을 받아 lookup 이 해결된다.
     # tcp_viz.source_topic 은 이제 child frame_id 로 해석된다 (예: "tool0_actual").
     # 빈 문자열 또는 슬래시("/")가 포함되면 기본값 "tool0_actual" 적용.
     tcp_viz.source_topic: ""                        # e.g. "tool0_actual"

@@ -12,9 +12,21 @@ from dataclasses import dataclass, field
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from sensor_msgs.msg import JointState
-from tf2_ros import Buffer, TransformException, TransformListener
+from std_msgs.msg import String
+from tf2_msgs.msg import TFMessage
+from tf2_ros import (
+    Buffer,
+    TransformBroadcaster,
+    TransformException,
+    TransformListener,
+)
 from visualization_msgs.msg import MarkerArray
 
 from rtc_digital_twin.urdf_parser import JointClassification, UrdfParser
@@ -262,8 +274,11 @@ class DigitalTwinNode(Node):
 
                 # Phase 4: TCP pose comes from tf2 (`base → tool0_actual`).
                 # The active controller broadcasts <config_key>/transforms
-                # (tf2_msgs/TFMessage) and our listener buffer collects every
-                # transform automatically — no per-controller rewire needed.
+                # (tf2_msgs/TFMessage), NOT /tf — so this bare TransformListener
+                # only sees those frames because the controller_tf re-broadcast
+                # below re-publishes them onto /tf. Keep that enabled (default)
+                # for this lookup to resolve; disabling it leaves this buffer
+                # empty and _lookup_tcp_transform returns None.
                 # `tcp_source_topic` is now interpreted as a child frame_id
                 # suffix (e.g. "tool0_actual"); use a leading slash to keep
                 # the legacy "absolute" semantics interpreted as full
@@ -285,8 +300,6 @@ class DigitalTwinNode(Node):
                 self._tcp_broadcast_tf = self.get_parameter("tcp_viz.broadcast_tf").value
                 self._tcp_tf_child_frame = self.get_parameter("tcp_viz.tf_child_frame").value
                 if self._tcp_broadcast_tf:
-                    from tf2_ros import TransformBroadcaster
-
                     self._tcp_tf_broadcaster = TransformBroadcaster(self)
 
                 self._tcp_viz_active = True
@@ -297,6 +310,45 @@ class DigitalTwinNode(Node):
         except Exception as e:
             if tcp_source_topic:
                 self.get_logger().error(f"Failed to initialize TCP visualization: {e}")
+
+        # ── Controller TF re-broadcast (active-controller → /tf) ─────────
+        # The active controller broadcasts its FK `_actual` frames on
+        # `<config_key>/transforms` (tf2_msgs/TFMessage), NOT on /tf — there is
+        # no /tf publisher for those frames in the bringup. So RViz (which only
+        # subscribes to /tf) never renders them, and the tcp_viz TransformListener
+        # above (also a bare /tf listener) can't resolve `base → tool0_actual`.
+        # Re-publish the active controller's transforms onto /tf: RViz then shows
+        # the `_actual` axes automatically, and the tcp_viz lookup starts
+        # resolving as a side effect. We follow `/rtc_cm/active_controller_name`
+        # and rewire the transforms subscription on each switch, staying
+        # robot-agnostic (no controller key hardcoded — ARCH-1). Mirrors
+        # demo_gui app.py `_on_active_controller` / `_transforms_cb`.
+        self.declare_parameter("controller_tf.rebroadcast_enable", True)
+        self.declare_parameter(
+            "controller_tf.active_controller_topic", "/rtc_cm/active_controller_name"
+        )
+        self._ctf_enable = self.get_parameter("controller_tf.rebroadcast_enable").value
+        self._ctf_active = ""
+        self._ctf_transforms_sub = None
+        self._ctf_broadcaster = None
+        if self._ctf_enable:
+            self._ctf_broadcaster = TransformBroadcaster(self)
+            active_ctrl_topic = self.get_parameter("controller_tf.active_controller_topic").value
+            # TRANSIENT_LOCAL so a controller that latched its name before this
+            # node started is still delivered on subscribe.
+            latched_qos = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                String, active_ctrl_topic, self._on_active_controller, latched_qos
+            )
+            self.get_logger().info(
+                f"Controller TF re-broadcast enabled: following {active_ctrl_topic} "
+                "→ re-publishing <active>/transforms on /tf"
+            )
 
         # ── Publisher ────────────────────────────────────────────────────
         self._joint_pub = self.create_publisher(JointState, output_topic, 10)
@@ -378,6 +430,45 @@ class DigitalTwinNode(Node):
             )
         except TransformException:
             return None
+
+    def _on_active_controller(self, msg: "String"):
+        """Rewire the `<active>/transforms` subscription when the active
+        controller changes (robot-agnostic — the controller key comes from the
+        message, never hardcoded). Mirrors demo_gui `_on_active_controller`."""
+        name = (msg.data or "").strip()
+        if not name or name == self._ctf_active:
+            return
+        self._ctf_active = name
+        # Drop the previous subscription so the old controller's transforms go
+        # silent, then bind the new one. `/<name>/transforms` matches the
+        # controller-owned topic path (see owned_topics.cpp / demo_gui app.py).
+        if self._ctf_transforms_sub is not None:
+            self.destroy_subscription(self._ctf_transforms_sub)
+            self._ctf_transforms_sub = None
+        transforms_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self._ctf_transforms_sub = self.create_subscription(
+            TFMessage, f"/{name}/transforms", self._controller_transforms_cb, transforms_qos
+        )
+        self.get_logger().info(f"Controller TF re-broadcast rewired to '/{name}/transforms'")
+
+    def _controller_transforms_cb(self, msg: "TFMessage"):
+        """Re-publish the active controller's transforms onto /tf.
+
+        Each TransformStamped is restamped with this node's clock before
+        re-broadcast so sim-time consumers (RViz) don't reject them as
+        extrapolation into the past; frame_id / child_frame_id / transform are
+        forwarded unchanged.
+        """
+        if self._ctf_broadcaster is None or not msg.transforms:
+            return
+        now = self.get_clock().now().to_msg()
+        for tf in msg.transforms:
+            tf.header.stamp = now
+        self._ctf_broadcaster.sendTransform(list(msg.transforms))
 
     def _sensor_cb(self, msg: HandSensorState):
         """Cache latest fingertip sensor data from HandSensorState."""

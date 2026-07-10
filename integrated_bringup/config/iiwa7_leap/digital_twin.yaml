@@ -30,7 +30,8 @@
     # in rtc_digital_twin/config/digital_twin.yaml keep it inert.
 
     # ── TCP visualization ─────────────────────────────────────────────
-    # Phase 4: tf2 lookup (`base → ee_link_actual`); active controller 의
-    # <config_key>/transforms 가 listener buffer 로 자동 수집된다.
+    # tf2 lookup (`base → ee_link_actual`); active controller 의
+    # <config_key>/transforms 는 digital_twin_node 의 controller_tf 재발행이
+    # /tf 로 올려주므로 (기본 활성) tcp_viz listener 가 그 프레임을 받는다.
     # (iiwa7 task controller tip_link = "ee_link" → "_actual" suffix per D-3.)
     tcp_viz.source_topic: "ee_link_actual"
