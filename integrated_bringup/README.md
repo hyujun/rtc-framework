@@ -31,7 +31,7 @@ integrated_bringup/
 │   │   ├── fingertip_counts.hpp        <- DeriveFingertipCounts (inference-group vs sensor-lane fingertip count SSoT, joint/task/wbc 공용)
 │   │   └── wbc/                        <- WBC 전용 모듈 헤더
 │   │       ├── grasp_target.hpp           <- grasp 목표 pose 구조체 + 외부 명령 enum
-│   │       ├── grasp_phase_manager.hpp    <- 8-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
+│   │       ├── grasp_phase_manager.hpp    <- 5-state grasp FSM (rtc_mpc::PhaseManagerBase 구현)
 │   │       └── force_reference_updater.hpp <- Stage A-3 per-contact normal-force PI helper
 │   ├── support/                        <- controller 인프라 (로깅 매크로, owned topics, vTCP, log 등록 헬퍼)
 │   │   ├── bringup_logging.hpp
@@ -71,7 +71,7 @@ integrated_bringup/
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
-│           ├── phase_config.yaml       <- GraspPhaseManager 8-phase 설정
+│           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정
 │           ├── contact_light.yaml      <- rtc_mpc ContactLightOCP factory config
 │           └── contact_rich.yaml       <- rtc_mpc ContactRichOCP factory config
 ├── launch/
@@ -375,11 +375,11 @@ hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.cl
 
 ### DemoWbcController (Index 6)
 
-UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 7-단계 FSM (slot 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다. Kinematic WBC(CLIK-QP position backbone)/Dynamic WBC(hand τ_ff overlay) 구조와 TSID task/constraint 세부는 [agent_docs/controllers.md](../agent_docs/controllers.md)가 SSoT — 본 절은 bringup 관점(YAML 위치·launch 사용법·GUI 연동)만 다룬다.
+UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller. TSID QP가 풀어내는 최적 가속도 `a*`를 semi-implicit Euler로 적분해 위치 명령을 산출하고, 6-단계 FSM (slots 2 & 5 reserved) 이 phase별 task 가중치/contact 활성화를 자동 전환한다. Kinematic WBC(CLIK-QP position backbone)/Dynamic WBC(hand τ_ff overlay) 구조와 TSID task/constraint 세부는 [agent_docs/controllers.md](../agent_docs/controllers.md)가 SSoT — 본 절은 bringup 관점(YAML 위치·launch 사용법·GUI 연동)만 다룬다.
 
 > Extended (closed-chain) 손에서는 제어 모델을 `PinocchioModelBuilder::GetActuatedModel()` 우선으로 선택하고 EOM은 `WbcReducedDynamicsProvider`가 loop-consistent 값으로 대체한다 (위 "Closed-chain hand FK" 절 참조). 비-extended 손은 기존 `GetTreeModel("wbc")` fallback 경로로 byte-for-byte 동일하게 동작한다.
 
-#### 7-Phase FSM (slot 5 reserved)
+#### 6-Phase FSM (slots 2 & 5 reserved)
 
 모든 비-fallback phase 는 TSID QP 를 돈다. `grasp_cmd=2`(RELEASE)는 active grasp phase(`kApproach`/`kClosure`/`kHold`)에서 즉시 `kRelease`로 preempt, `grasp_cmd=0`(abort)도 동일하게 `kIdle`로 복귀. 값 2는 과거 `kPreGrasp` 슬롯으로 `kApproach`에 병합되어 reserved(더 이상 publish 안 됨), 값 5는 과거 `kRetreat` 슬롯으로 reserved. GUI의 arm SE3 target / hand joint target은 `kRelease`/`kFallback`을 제외한 모든 phase에서 매 tick 상시 반영된다(phase-entry edge 대기 없음).
 
@@ -425,7 +425,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 ##### GraspPhaseManager 연동
 
-`engine: "handler"`일 때 WBC 7-state FSM이 authoritative이며 `OnPhaseEnter`에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다. Grasp 측 phase별 OCP 설정은 `config/ur5e_p1a/controllers/mpc/phase_config.yaml`, factory 설정은 `mpc/contact_light.yaml`/`mpc/contact_rich.yaml`에서 로드된다 (두 YAML의 `mpc.model:` 블록은 구조 동일 필수 — cross-mode swap이 같은 `RobotModelHandler`를 공유).
+`engine: "handler"`일 때 WBC 6-state FSM이 authoritative이며 `OnPhaseEnter`에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다 (첫 `ForcePhase`가 grasp manager를 mirror 모드로 latch — guard/command 자가 진행 억제). Grasp 측 phase별 OCP 설정은 `config/ur5e_p1a/controllers/mpc/phase_config.yaml`, factory 설정은 `mpc/contact_light.yaml`/`mpc/contact_rich.yaml`에서 로드된다 (두 YAML의 `mpc.model:` 블록은 구조 동일 필수 — cross-mode swap이 같은 `RobotModelHandler`를 공유).
 
 #### 사용법 (시뮬레이션)
 
@@ -734,9 +734,9 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 #### Grasp/Release 버튼 동작
 
 - **`demo_joint_controller` / `demo_task_controller`**: `grasp_controller_type: "force_pi"` (`demo_shared.yaml` 기본값) 일 때만 동작. `"contact_stop"` 모드에서는 controller 가 명령을 silent ignore + `/rosout` 에 throttled WARN.
-- **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 7-state FSM (slot 5 reserved) 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP 명령은 `kApproach` 진입, RELEASE 는 어떤 비-terminal phase 에서도 `kRelease` 로 즉시 preempt (PreGrasp/Closure/Hold 중 GUI 로 RELEASE 누르면 즉시 반응). phase 표시기가 WbcPhase enum 라벨로 갱신됩니다.
+- **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 6-state FSM (slots 2 & 5 reserved) 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP 명령은 `kApproach` 진입, RELEASE 는 어떤 비-terminal phase 에서도 `kRelease` 로 즉시 preempt (Approach/Closure/Hold 중 GUI 로 RELEASE 누르면 즉시 반응). phase 표시기가 WbcPhase enum 라벨로 갱신됩니다.
 
-phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC publisher 인지에 따라 `GRASP_PHASE_NAMES` (6 상태) 또는 `WBC_PHASE_NAMES` (8 슬롯, 7 reachable — slot 5 RETREAT 는 deprecated reserved) 라벨 표를 자동 선택합니다 — 두 publisher 가 GUI 에 동시에 구독되지만 active 한 쪽만 발행하므로 자동 분기.
+phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC publisher 인지에 따라 `GRASP_PHASE_NAMES` (6 상태) 또는 `WBC_PHASE_NAMES` (8 슬롯, 6 reachable — slot 2 PRE-GRASP / slot 5 RETREAT 는 deprecated reserved) 라벨 표를 자동 선택합니다 — 두 publisher 가 GUI 에 동시에 구독되지만 active 한 쪽만 발행하므로 자동 분기.
 
 #### 기타 기능
 
