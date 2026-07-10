@@ -1,10 +1,11 @@
 # ur5e_p1b/udp_hand_node_p1b.yaml -- standalone config for the p1b hand
 #
 # 완전 독립(self-contained) 파일이다. robot_ur5e_p1b.launch.py 는 이 파일만
-# udp_hand_node 에 넘긴다 (+ 공용 fingertip_ft_inferencer.yaml). p1a 용
-# udp_hand_driver/config/udp_hand_node.yaml 과는 더 이상 base+overlay 관계가
-# 아니다 — 여기서 명시하지 않은 키는 udp_hand_node 의 C++ declare_parameter()
-# 기본값으로 fallback 한다 (p1a yaml 값이 아님).
+# udp_hand_node 에 넘긴다 (+ 공용 fingertip_ft_inferencer.yaml).
+# ur5e_p1a/udp_hand_node_p1a.yaml 과 대칭인 per-robot overlay 이며,
+# udp_hand_driver/config/udp_hand_node.yaml (standalone udp_hand.launch.py 용
+# generic /hand/ reference) 과는 base+overlay 관계가 아니다 — 여기서 명시하지
+# 않은 키는 udp_hand_node 의 C++ declare_parameter() 기본값으로 fallback 한다.
 #
 # protocol_version "1b":
 #   - communication_mode 는 반드시 "bulk" — 1b force layout 은 bulk 전용이고
@@ -35,6 +36,12 @@
     # min_rate_hz 를 comm_decimation 으로 자동 스케일하므로 failure detector 오탐
     # 방지를 위한 수동 조정은 불필요.
     comm_decimation: 1
+
+    # -- 센서 read decimation --
+    # N 이면 comm 사이클 N 번 중 1번만 센서 read. 1b 경로에서도 소비 — 센서 read
+    # 주기 및 failure detector 의 sensor 채널 link-timeout cycle 환산에 사용.
+    # 유효 센서 레이트 = loop_rate_hz / (comm_decimation * sensor_decimation).
+    sensor_decimation: 1
 
     # -- Self-clocked 루프 주기 (Hz) --
     # CommLoop 가 이 주기로 자율 tick: read + /p1b/joint_states publish 를 명령과
@@ -67,8 +74,8 @@
     #   송신(joint_command→UDP): controller_cmd − offset → 펌웨어
     # 두 경계가 대칭이라 명령↔상태 왕복이 항등. 전부 0 이면 offset 없음(기본).
     joint_position_offsets_deg:
-      - 0.0   # thumb_cmc_aa_joint
       - 0.0   # thumb_cmc_fe_joint
+      - 0.0   # thumb_cmc_aa_joint
       - 0.0   # thumb_mcp_joint
       - 0.0   # thumb_dip_fe_joint
       - 0.0   # index_mcp_aa_joint
