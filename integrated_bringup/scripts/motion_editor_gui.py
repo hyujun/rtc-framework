@@ -1504,7 +1504,7 @@ class ROSNode(Node):
             JointState, "/rtc_cm/ur5e/joint_states", self.arm_joint_callback, self._qos
         )
         self.create_subscription(
-            JointState, "/rtc_cm/hand/joint_states", self.hand_joint_callback, self._qos
+            JointState, "/rtc_cm/p1a/joint_states", self.hand_joint_callback, self._qos
         )
         # tf2 listener for TCP pose.
         self._tf_buffer = Buffer()
@@ -1551,7 +1551,7 @@ class ROSNode(Node):
         # Phase 4: arm/hand joint state는 init에서 1회 ctrl-agnostic 토픽
         # 구독; rewire에서는 target publisher만 갱신.
         self.cmd_pub = self.create_publisher(RobotTarget, ns + "/ur5e/joint_goal", self._qos)
-        self.hand_cmd_pub = self.create_publisher(RobotTarget, ns + "/hand/joint_goal", self._qos)
+        self.hand_cmd_pub = self.create_publisher(RobotTarget, ns + "/p1a/joint_goal", self._qos)
         self.get_logger().info(f"rewired controller-owned target publishers to '{name}'")
 
     def arm_joint_callback(self, msg: JointState):
@@ -1578,7 +1578,7 @@ class ROSNode(Node):
             pass
 
     def hand_joint_callback(self, msg: JointState):
-        """Phase 4: /rtc_cm/hand/joint_states (replaces hand_gui_pos_callback)."""
+        """Phase 4: /rtc_cm/p1a/joint_states (replaces hand_gui_pos_callback)."""
         if len(msg.position) >= NUM_HAND_MOTORS:
             if msg.name and len(msg.name) >= NUM_HAND_MOTORS:
                 reordered = [0.0] * NUM_HAND_MOTORS

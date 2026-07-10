@@ -38,11 +38,11 @@ bt_coordinator (non-RT, 80 Hz)
 ## QoS 정책
 
 BT coordinator는 RT Controller 파이프라인의 **RELIABLE QoS topic만 subscribe**한다.
-BEST_EFFORT topic (`/hand/sensor_states`, `/joint_states` 등)은 RT 제어 전용이므로
-BT에서 subscribe하지 않는다.
+BEST_EFFORT topic (`/p1a/sensor_states`, `/joint_states` 등; hand_group 세그먼트는
+variant 별로 결정 — ur5e_p1a 기준)은 RT 제어 전용이므로 BT에서 subscribe하지 않는다.
 
 Grasp 상태 데이터는 RT Controller가 500Hz로 계산하여 publish하는
-`/hand/grasp_state` (`rtc_msgs/GraspState`, depth 10) topic을 사용한다.
+`/<active_ctrl>/p1a/grasp_state` (`rtc_msgs/GraspState`, depth 10) topic을 사용한다.
 Fingertip별 force magnitude와 aggregate grasp detection 결과가 포함되어 있어
 BT 노드에서 별도 계산 없이 직접 활용 가능하다.
 

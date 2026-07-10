@@ -12,7 +12,7 @@
 | `[FAILED] MoveToPose` (timeout) | 목표 도달 실패 | tolerance 완화 또는 gains 조정 |
 | `[FAILED] IsForceAbove` | 힘 미감지 | threshold_N 낮추기, 물체 위치 확인 |
 | 팔이 움직이지 않음 | RT Controller 미실행 또는 E-STOP 활성 | 컨트롤러 상태 및 E-STOP 확인 |
-| 파지 타임아웃 | 힘 임계값이 너무 높거나 센서 미연결 | `threshold_N` 조정, `/<active_ctrl>/hand/grasp_state` 확인 |
+| 파지 타임아웃 | 힘 임계값이 너무 높거나 센서 미연결 | `threshold_N` 조정, `/<active_ctrl>/p1a/grasp_state` 확인 (hand_group 세그먼트, ur5e_p1a) |
 | 게인 변경이 반영 안 됨 | active 컨트롤러 LifecycleNode parameter 서비스 미준비 (또는 read-only 파라미터에 set 시도) | `ros2 param list /<active_ctrl>` 로 노출 확인. read-only 거절 시 SetGains 응답 message 확인 |
 | "Tree completed with FAILURE" 로그 | 시퀀스 중 하나의 노드가 실패 | Groot2로 트리 실행 추적하여 실패 노드 확인 |
 | `Tree file not found` | 경로 오류 | 절대 경로 사용 또는 trees/ 디렉토리 확인 |
@@ -25,7 +25,7 @@
 ```bash
 # 토픽 모니터링
 ros2 topic echo /rtc_cm/ur5e/joint_states
-ros2 topic echo /<active_ctrl>/hand/grasp_state
+ros2 topic echo /<active_ctrl>/p1a/grasp_state   # hand_group 세그먼트 (ur5e_p1a)
 ros2 topic echo /world_target_info
 
 # TCP 포즈 확인 (토픽이 아닌 tf2 lookup)

@@ -703,8 +703,8 @@ sudo cyclictest --mlockall --smp --priority=90 --policy=fifo \
 # UR 의 forward_position_controller 명령 (rt_control inline → DDS, v4)
 ros2 topic hz /forward_position_controller/commands
 
-# Hand UDP joint_command (rt_control inline → UDP via udp_hand_node, v4)
-ros2 topic hz /hand/joint_command
+# Hand UDP joint_command (rt_control inline → UDP via udp_hand_node, v4; ur5e_p1a)
+ros2 topic hz /p1a/joint_command
 
 # 출력:
 # average rate: 500.012
