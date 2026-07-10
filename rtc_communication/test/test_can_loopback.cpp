@@ -16,13 +16,13 @@
 //   - CanTransport payload round-trip, >8-byte send rejection, rx filter,
 //     extended-frame IDs, receive_own_messages, is_open() lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
+#include "can_test_support.hpp"
 #include "rtc_communication/can/can_socket.hpp"
 #include "rtc_communication/can/can_transport.hpp"
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <linux/can.h>
-#include <net/if.h>
 #include <unistd.h>
 
 #include <array>
@@ -32,18 +32,7 @@
 
 namespace {
 
-constexpr char kVcanInterface[] = "vcan0";
-
-[[nodiscard]] bool HasVcan() {
-  return if_nametoindex(kVcanInterface) != 0;
-}
-
-#define SKIP_IF_NO_VCAN()                                         \
-  if (!HasVcan()) {                                               \
-    GTEST_SKIP() << "vcan0 not available (sudo modprobe vcan && " \
-                    "sudo ip link add dev vcan0 type vcan && "    \
-                    "sudo ip link set up vcan0)";                 \
-  }
+using rtc::test::kVcanInterface;
 
 // ── CanSocket: lifecycle ────────────────────────────────────────────────────
 TEST(CanSocketTest, DefaultConstructedIsNotOpen) {

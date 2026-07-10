@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_communication VERSION 5.18.0 LANGUAGES CXX)
+project(rtc_communication VERSION 5.18.1 LANGUAGES CXX)
 
 # ── C++20 requirement (concepts, jthread, span, stop_token) ───────────────────
 set(CMAKE_CXX_STANDARD 20)

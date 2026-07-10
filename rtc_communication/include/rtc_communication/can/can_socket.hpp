@@ -11,6 +11,8 @@
 // Unlike UDP (separate bind/connect sockets), a single CAN raw socket bound to
 // an interface both sends and receives on that interface.
 
+#include "rtc_communication/socket_options.hpp"
+
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
@@ -120,23 +122,10 @@ class CanSocket {
   }
 
   // Set receive buffer size (SO_RCVBUF).
-  void SetRecvBufferSize(int bytes) noexcept {
-    if (fd_ >= 0) {
-      setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bytes, sizeof(bytes));
-    }
-  }
+  void SetRecvBufferSize(int bytes) noexcept { SetSocketRecvBufferSize(fd_, bytes); }
 
   // Set receive timeout (SO_RCVTIMEO).
-  void SetRecvTimeout(int timeout_ms) noexcept {
-    if (fd_ < 0)
-      return;
-
-    struct timeval tv {};
-
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  }
+  void SetRecvTimeout(int timeout_ms) noexcept { SetSocketRecvTimeout(fd_, timeout_ms); }
 
   // -- I/O (allocation-free, noexcept) ---------------------------------------
 

@@ -2,13 +2,13 @@
 #define RTC_COMMUNICATION_CAN_CANFD_TRANSPORT_HPP_
 
 #include "rtc_communication/can/can_socket.hpp"
+#include "rtc_communication/can/can_transport.hpp"
 #include "rtc_communication/transport_interface.hpp"
 
 #include <linux/can.h>
 
 #include <algorithm>
 #include <cstring>
-#include <string>
 
 namespace rtc {
 
@@ -19,20 +19,12 @@ namespace rtc {
 // classic and FD frames; Recv() handles both. Non-standard payload lengths
 // (not in the CAN FD DLC set 0-8/12/16/20/24/32/48/64) are padded up by the
 // kernel when sent to real controllers.
-struct CanFdTransportConfig {
-  std::string interface_name{"can0"};
-  canid_t tx_can_id{0};
-  canid_t rx_can_id{0};
-  // Filter is installed only when rx_can_mask != 0; the default 0 accepts all
-  // frames (kernel default). Note rx_can_id has no effect while rx_can_mask
-  // stays 0. RTR frames are always dropped in Recv() (payload-only).
-  canid_t rx_can_mask{0};
-  bool extended_frame{false};
+//
+// Shared fields (interface, tx/rx IDs, filter, loopback, timeout) are
+// inherited from CanTransportConfig and documented there.
+struct CanFdTransportConfig : CanTransportConfig {
   bool bitrate_switch{false};         // CANFD_BRS: transmit data phase at higher bitrate
   bool error_state_indicator{false};  // CANFD_ESI
-  bool receive_own_messages{false};   // kernel default: off
-  bool loopback{true};                // kernel default: on
-  int recv_timeout_ms{100};
 };
 
 class CanFdTransport : public TransportInterface {
@@ -46,26 +38,10 @@ class CanFdTransport : public TransportInterface {
   [[nodiscard]] bool Open() override {
     if (!socket_.Bind(config_.interface_name))
       return false;
-    if (!socket_.SetFdFrames(true)) {
+    if (!socket_.SetFdFrames(true) || !ApplyCanSocketConfig(socket_, config_)) {
       socket_.Close();
       return false;
     }
-    if (config_.rx_can_mask != 0) {
-      // Include EFF/RTR in the mask so the filter distinguishes frame types
-      // (kernel-recommended for single-ID filters); RTR frames are rejected.
-      const canid_t filter_id = config_.rx_can_id | (config_.extended_frame ? CAN_EFF_FLAG : 0);
-      const canid_t filter_mask = config_.rx_can_mask | CAN_EFF_FLAG | CAN_RTR_FLAG;
-      if (!socket_.SetFilter(filter_id, filter_mask)) {
-        socket_.Close();
-        return false;
-      }
-    }
-    if (!socket_.SetLoopback(config_.loopback) ||
-        !socket_.SetRecvOwnMessages(config_.receive_own_messages)) {
-      socket_.Close();
-      return false;
-    }
-    socket_.SetRecvTimeout(config_.recv_timeout_ms);
     return true;
   }
 

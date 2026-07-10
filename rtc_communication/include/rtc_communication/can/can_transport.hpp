@@ -32,6 +32,27 @@ struct CanTransportConfig {
   int recv_timeout_ms{100};
 };
 
+// Applies the config-driven socket options shared by the classic and FD
+// transports (rx filter, loopback, receive-own-messages, timeout). Bind and
+// FD-mode selection stay in each transport's Open(); the caller closes the
+// socket on failure.
+[[nodiscard]] inline bool ApplyCanSocketConfig(CanSocket& socket,
+                                               const CanTransportConfig& config) noexcept {
+  if (config.rx_can_mask != 0) {
+    // Include EFF/RTR in the mask so the filter distinguishes frame types
+    // (kernel-recommended for single-ID filters); RTR frames are rejected.
+    const canid_t filter_id = config.rx_can_id | (config.extended_frame ? CAN_EFF_FLAG : 0);
+    const canid_t filter_mask = config.rx_can_mask | CAN_EFF_FLAG | CAN_RTR_FLAG;
+    if (!socket.SetFilter(filter_id, filter_mask))
+      return false;
+  }
+  if (!socket.SetLoopback(config.loopback) ||
+      !socket.SetRecvOwnMessages(config.receive_own_messages))
+    return false;
+  socket.SetRecvTimeout(config.recv_timeout_ms);
+  return true;
+}
+
 class CanTransport : public TransportInterface {
  public:
   explicit CanTransport(const CanTransportConfig& config) noexcept
@@ -40,22 +61,10 @@ class CanTransport : public TransportInterface {
   [[nodiscard]] bool Open() override {
     if (!socket_.Bind(config_.interface_name))
       return false;
-    if (config_.rx_can_mask != 0) {
-      // Include EFF/RTR in the mask so the filter distinguishes frame types
-      // (kernel-recommended for single-ID filters); RTR frames are rejected.
-      const canid_t filter_id = config_.rx_can_id | (config_.extended_frame ? CAN_EFF_FLAG : 0);
-      const canid_t filter_mask = config_.rx_can_mask | CAN_EFF_FLAG | CAN_RTR_FLAG;
-      if (!socket_.SetFilter(filter_id, filter_mask)) {
-        socket_.Close();
-        return false;
-      }
-    }
-    if (!socket_.SetLoopback(config_.loopback) ||
-        !socket_.SetRecvOwnMessages(config_.receive_own_messages)) {
+    if (!ApplyCanSocketConfig(socket_, config_)) {
       socket_.Close();
       return false;
     }
-    socket_.SetRecvTimeout(config_.recv_timeout_ms);
     return true;
   }
 

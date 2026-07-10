@@ -23,6 +23,7 @@ rtc_communication/
 ├── package.xml
 ├── include/rtc_communication/
 │   ├── transport_interface.hpp    -- 전송 계층 추상 인터페이스
+│   ├── socket_options.hpp        -- UDP/CAN 공용 SOL_SOCKET 옵션 헬퍼 (SO_RCVBUF/SO_RCVTIMEO)
 │   ├── packet_codec.hpp          -- 패킷 코덱 C++20 Concept + 헬퍼
 │   ├── transceiver.hpp           -- 전이중 트랜시버 템플릿 (수신 루프 + 코덱)
 │   ├── udp/
@@ -34,6 +35,7 @@ rtc_communication/
 │       └── canfd_transport.hpp   -- TransportInterface의 CAN FD 구현체 (payload ≤ 64B)
 └── test/
     ├── fake_codec.hpp            -- PacketCodec concept을 만족하는 최소 코덱 (테스트 하니스용)
+    ├── can_test_support.hpp      -- vcan 감지·SKIP 매크로 공용 헬퍼 (CAN/CANFD 테스트용)
     ├── test_udp_loopback.cpp     -- UdpSocket/UdpTransport 바인드·연결·타임아웃·RAII 테스트
     ├── test_can_loopback.cpp     -- CanSocket/CanTransport vcan0 라운드 트립·필터·RAII 테스트
     ├── test_canfd_loopback.cpp   -- CanFdTransport 64B 라운드 트립·classic/FD 혼재 수신 테스트
@@ -195,7 +197,7 @@ transport->Open();
 
 #### 설정 (`CanFdTransportConfig`)
 
-`CanTransportConfig`와 동일 필드에 FD 전용 2개 추가:
+`CanTransportConfig`를 **상속**하며 (공유 필드는 위 표 참조) FD 전용 2개 추가:
 
 | 필드 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
@@ -352,6 +354,7 @@ RT 루프에서 디코딩된 상태가 필요하면 `GetLatestState()`를 직접
 | `test/test_canfd_loopback.cpp` | GTest | CanFdTransport invalid interface, 64B 라운드 트립, >64B 거부, classic/FD 혼재 수신 (4 케이스, vcan 의존 3개는 guarded) |
 | `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 (4 케이스) |
 | `test/fake_codec.hpp` | -- | `PacketCodec` concept을 만족하는 최소 코덱 (테스트 하니스용) |
+| `test/can_test_support.hpp` | -- | vcan 감지 (`HasVcan`/`GetInterfaceMtu`)·`SKIP_IF_NO_VCAN`/`SKIP_IF_NO_FD_VCAN` 매크로 공용 헬퍼 |
 
 ```bash
 colcon test --packages-select rtc_communication --event-handlers console_direct+

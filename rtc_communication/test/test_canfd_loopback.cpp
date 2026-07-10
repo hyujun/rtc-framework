@@ -15,14 +15,12 @@
 //   - Mixed reception: an FD-enabled socket receives classic (CAN_MTU) and
 //     FD (CANFD_MTU) frames on the same socket
 // ─────────────────────────────────────────────────────────────────────────────
+#include "can_test_support.hpp"
 #include "rtc_communication/can/can_transport.hpp"
 #include "rtc_communication/can/canfd_transport.hpp"
 
 #include <gtest/gtest.h>
 #include <linux/can.h>
-#include <net/if.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
 
 #include <array>
 #include <cstdint>
@@ -31,30 +29,7 @@
 
 namespace {
 
-constexpr char kVcanInterface[] = "vcan0";
-
-// Returns the interface MTU, or -1 if the interface does not exist.
-[[nodiscard]] int GetInterfaceMtu(const char* name) {
-  const int fd = ::socket(PF_CAN, SOCK_RAW, CAN_RAW);
-  if (fd < 0)
-    return -1;
-  ifreq ifr{};
-  std::strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
-  const int rc = ::ioctl(fd, SIOCGIFMTU, &ifr);
-  ::close(fd);
-  return (rc < 0) ? -1 : ifr.ifr_mtu;
-}
-
-#define SKIP_IF_NO_FD_VCAN()                                           \
-  if (if_nametoindex(kVcanInterface) == 0) {                           \
-    GTEST_SKIP() << "vcan0 not available (sudo modprobe vcan && "      \
-                    "sudo ip link add dev vcan0 type vcan && "         \
-                    "sudo ip link set up vcan0)";                      \
-  }                                                                    \
-  if (GetInterfaceMtu(kVcanInterface) < static_cast<int>(CANFD_MTU)) { \
-    GTEST_SKIP() << "vcan0 is not CAN FD capable (MTU < " << CANFD_MTU \
-                 << "); sudo ip link set vcan0 mtu 72";                \
-  }
+using rtc::test::kVcanInterface;
 
 // ── CanFdTransport: invalid interface fails Open ────────────────────────────
 TEST(CanFdTransportTest, OpenFailsOnInvalidInterface) {

@@ -12,6 +12,8 @@
 //   1. Bind mode (receiver): Bind() -> Recv()
 //   2. Connect mode (sender): Connect() -> Send()
 
+#include "rtc_communication/socket_options.hpp"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -111,23 +113,10 @@ class UdpSocket {
   // -- Socket options --------------------------------------------------------
 
   // Set receive buffer size (SO_RCVBUF).
-  void SetRecvBufferSize(int bytes) noexcept {
-    if (fd_ >= 0) {
-      setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bytes, sizeof(bytes));
-    }
-  }
+  void SetRecvBufferSize(int bytes) noexcept { SetSocketRecvBufferSize(fd_, bytes); }
 
   // Set receive timeout (SO_RCVTIMEO).
-  void SetRecvTimeout(int timeout_ms) noexcept {
-    if (fd_ < 0)
-      return;
-
-    struct timeval tv {};
-
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  }
+  void SetRecvTimeout(int timeout_ms) noexcept { SetSocketRecvTimeout(fd_, timeout_ms); }
 
   // -- I/O (allocation-free, noexcept) ---------------------------------------
 
