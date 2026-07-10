@@ -14,6 +14,13 @@
 //   - Back-to-back frames are returned one per Recv()
 //   - A frame split across two writes is reassembled
 //   - Recv() returns -1 on timeout with no data
+//   - Recv() deadline bounds a continuous non-frame byte stream
+//   - Recv() returns -1 (not a truncated frame) when the caller buffer is
+//     smaller than the frame, and the stream recovers on the next frame
+//   - recv_timeout_ms <= 0 disables the timeout (blocking read) instead of
+//     busy-polling
+//   - Fixed-length framing (empty sync, length_size 0)
+//   - discard_echo consumes the transmitted frame's self-echo
 //   - Transceiver<DynamixelTestCodec> over Rs485Transport: full stack decode
 // ─────────────────────────────────────────────────────────────────────────────
 #include "rtc_communication/packet_codec.hpp"
@@ -25,6 +32,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -252,6 +260,182 @@ TEST(Rs485TransportTest, RecvTimesOutToMinusOne) {
   EXPECT_EQ(n, -1);
   const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
   EXPECT_LT(elapsed_ms, 2000);
+
+  ::close(pty.master_fd);
+}
+
+// ── Framer: deadline bounds Recv() under a continuous garbage stream ────────
+// A trickle of non-frame bytes arriving faster than the per-read VTIME window
+// must not pin Recv(): the overall deadline (recv_timeout_ms + one VTIME
+// window slack) has to trip even though every individual read succeeds.
+TEST(Rs485TransportTest, RecvDeadlineBoundsGarbageStream) {
+  PtyPair pty = OpenPtyPair();
+  ASSERT_TRUE(pty.ok);
+
+  auto transport = MakeTransport(pty.slave_path, /*timeout_ms=*/100);
+  ASSERT_TRUE(transport->Open());
+
+  std::atomic<bool> stop{false};
+  std::thread pump([&] {
+    const std::array<uint8_t, 8> junk{};  // 0x00s: never matches the sync
+    while (!stop.load()) {
+      (void)!::write(pty.master_fd, junk.data(), junk.size());
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+
+  std::array<uint8_t, 64> buf{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const ssize_t n = transport->Recv(buf);
+  const auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+          .count();
+
+  stop.store(true);
+  pump.join();
+
+  EXPECT_EQ(n, -1);
+  // Deadline 100 ms + at most one extra VTIME window (100 ms) + CI slack.
+  EXPECT_LT(elapsed_ms, 700);
+
+  ::close(pty.master_fd);
+}
+
+// ── Framer: oversize frame yields -1, stream recovers on the next frame ─────
+TEST(Rs485TransportTest, OversizeFrameReturnsErrorAndRecovers) {
+  PtyPair pty = OpenPtyPair();
+  ASSERT_TRUE(pty.ok);
+
+  auto transport = MakeTransport(pty.slave_path);
+  ASSERT_TRUE(transport->Open());
+
+  const std::vector<uint8_t> big_params(40, 0xEE);
+  const auto big = BuildStatusFrame(0x08, 0x00, big_params);
+  const std::array<uint8_t, 2> small_params{0x10, 0x20};
+  const auto small = BuildStatusFrame(0x09, 0x00, small_params);
+
+  std::vector<uint8_t> both;
+  both.insert(both.end(), big.begin(), big.end());
+  both.insert(both.end(), small.begin(), small.end());
+  ASSERT_EQ(::write(pty.master_fd, both.data(), both.size()), static_cast<ssize_t>(both.size()));
+
+  std::array<uint8_t, 16> buf{};  // smaller than big (51 B), larger than small (13 B)
+  ASSERT_LT(buf.size(), big.size());
+  ASSERT_GE(buf.size(), small.size());
+
+  EXPECT_EQ(transport->Recv(buf), -1);  // oversize frame dropped, not truncated
+
+  const ssize_t n = transport->Recv(buf);
+  ASSERT_EQ(n, static_cast<ssize_t>(small.size()));
+  EXPECT_EQ(0, std::memcmp(buf.data(), small.data(), small.size()));
+
+  ::close(pty.master_fd);
+}
+
+// ── Timeout <= 0 blocks (socket SO_RCVTIMEO=0 semantics) instead of polling ─
+TEST(Rs485TransportTest, ZeroTimeoutBlocksUntilFrame) {
+  PtyPair pty = OpenPtyPair();
+  ASSERT_TRUE(pty.ok);
+
+  auto transport = MakeTransport(pty.slave_path, /*timeout_ms=*/0);
+  ASSERT_TRUE(transport->Open());
+
+  const std::array<uint8_t, 2> params{0x77, 0x88};
+  const auto frame = BuildStatusFrame(0x0A, 0x00, params);
+  std::thread writer([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    (void)!::write(pty.master_fd, frame.data(), frame.size());
+  });
+
+  std::array<uint8_t, 64> buf{};
+  const auto t0 = std::chrono::steady_clock::now();
+  const ssize_t n = transport->Recv(buf);
+  const auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+          .count();
+  writer.join();
+
+  // The old VMIN=0/VTIME=0 mapping returned -1 immediately (busy poll); the
+  // blocking mapping waits for the late frame instead.
+  ASSERT_EQ(n, static_cast<ssize_t>(frame.size()));
+  EXPECT_EQ(0, std::memcmp(buf.data(), frame.data(), frame.size()));
+  EXPECT_GE(elapsed_ms, 100);
+
+  ::close(pty.master_fd);
+}
+
+// ── Fixed-length framing: empty sync, length_size 0 ─────────────────────────
+TEST(Rs485TransportTest, FixedLengthFramingReturnsWholeFrames) {
+  PtyPair pty = OpenPtyPair();
+  ASSERT_TRUE(pty.ok);
+
+  constexpr std::size_t kFrameSize = 8;
+  Rs485TransportConfig cfg;
+  cfg.device = pty.slave_path;
+  cfg.recv_timeout_ms = 500;
+  cfg.rs485_enabled = false;
+  cfg.drain_after_send = false;
+  cfg.sync_pattern.clear();
+  cfg.length_offset = 0;
+  cfg.length_size = 0;
+  cfg.length_adjust = kFrameSize;
+  Rs485Transport transport(cfg);
+  ASSERT_TRUE(transport.Open());
+
+  std::array<uint8_t, 2 * kFrameSize> two{};
+  for (std::size_t i = 0; i < two.size(); ++i)
+    two[i] = static_cast<uint8_t>(i);
+  ASSERT_EQ(::write(pty.master_fd, two.data(), two.size()), static_cast<ssize_t>(two.size()));
+
+  std::array<uint8_t, 64> buf{};
+  ssize_t n1 = transport.Recv(buf);
+  ASSERT_EQ(n1, static_cast<ssize_t>(kFrameSize));
+  EXPECT_EQ(0, std::memcmp(buf.data(), two.data(), kFrameSize));
+
+  ssize_t n2 = transport.Recv(buf);
+  ASSERT_EQ(n2, static_cast<ssize_t>(kFrameSize));
+  EXPECT_EQ(0, std::memcmp(buf.data(), two.data() + kFrameSize, kFrameSize));
+
+  ::close(pty.master_fd);
+}
+
+// ── discard_echo: Send() consumes the echoed frame, Recv() sees the reply ───
+// Simulates a 2-wire bus whose receiver stays enabled during transmit: the
+// "echo" (a byte-exact copy of the instruction frame) is pre-loaded into the
+// rx path before Send(), followed by the device response. With discard_echo,
+// Send() must consume exactly the echoed bytes so Recv() returns the response,
+// not the echo.
+TEST(Rs485TransportTest, DiscardEchoSkipsSentFrame) {
+  PtyPair pty = OpenPtyPair();
+  ASSERT_TRUE(pty.ok);
+
+  Rs485TransportConfig cfg;
+  cfg.device = pty.slave_path;
+  cfg.recv_timeout_ms = 500;
+  cfg.rs485_enabled = false;
+  cfg.drain_after_send = false;
+  cfg.discard_echo = true;
+  Rs485Transport transport(cfg);
+  ASSERT_TRUE(transport.Open());
+
+  const std::array<uint8_t, 2> req_params{0x01, 0x02};
+  const auto request = BuildStatusFrame(0x0B, 0x00, req_params);
+  const std::array<uint8_t, 2> rsp_params{0x03, 0x04};
+  const auto response = BuildStatusFrame(0x0C, 0x00, rsp_params);
+
+  // Echo arrives on the rx path (master -> slave) as the frame is transmitted,
+  // then the device response follows.
+  ASSERT_EQ(::write(pty.master_fd, request.data(), request.size()),
+            static_cast<ssize_t>(request.size()));
+  ASSERT_EQ(::write(pty.master_fd, response.data(), response.size()),
+            static_cast<ssize_t>(response.size()));
+
+  ASSERT_EQ(transport.Send(request), static_cast<ssize_t>(request.size()));
+
+  std::array<uint8_t, 64> buf{};
+  const ssize_t n = transport.Recv(buf);
+  ASSERT_EQ(n, static_cast<ssize_t>(response.size()));
+  EXPECT_EQ(0, std::memcmp(buf.data(), response.data(), response.size()));
 
   ::close(pty.master_fd);
 }

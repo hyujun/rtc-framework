@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -177,32 +178,53 @@ class SerialPort {
 
   // -- Options ---------------------------------------------------------------
 
-  // Sets the receive timeout via termios VMIN=0 / VTIME (deciseconds). A Read()
-  // then blocks until at least one byte arrives or the timeout expires (in
-  // which case it returns 0). Sub-100 ms values round up to one decisecond.
+  // Sets the receive timeout via termios. timeout_ms <= 0 disables the timeout
+  // (VMIN=1/VTIME=0: Read() blocks until at least one byte arrives), matching
+  // the socket transports' SO_RCVTIMEO=0 semantics. Positive values use
+  // VMIN=0/VTIME: Read() blocks until at least one byte arrives or the timeout
+  // expires (returning 0). VTIME has decisecond granularity, so the value is
+  // rounded UP to the next 100 ms and capped at 25.5 s.
   void SetRecvTimeout(int timeout_ms) noexcept {
     if (fd_ < 0)
       return;
     termios tio{};
     if (::tcgetattr(fd_, &tio) < 0)
       return;
-    tio.c_cc[VMIN] = 0;
-    const int deciseconds = (timeout_ms <= 0) ? 0 : std::max(1, timeout_ms / 100);
-    tio.c_cc[VTIME] = static_cast<cc_t>(std::min(deciseconds, 255));
+    if (timeout_ms <= 0) {
+      tio.c_cc[VMIN] = 1;
+      tio.c_cc[VTIME] = 0;
+    } else {
+      tio.c_cc[VMIN] = 0;
+      const int deciseconds = (timeout_ms + 99) / 100;
+      tio.c_cc[VTIME] = static_cast<cc_t>(std::min(deciseconds, 255));
+    }
     ::tcsetattr(fd_, TCSANOW, &tio);
   }
 
   // -- I/O (allocation-free, noexcept) ---------------------------------------
 
   // Reads up to buf.size() bytes. Returns bytes read (0 on VTIME timeout with
-  // no data), or -1 on error.
+  // no data; blocks indefinitely when the timeout is disabled), or -1 on error.
   [[nodiscard]] ssize_t Read(std::span<uint8_t> buf) noexcept {
     return ::read(fd_, buf.data(), buf.size());
   }
 
-  // Writes all bytes in data. Returns bytes written, or -1 on error.
+  // Writes all bytes in data, looping over short writes (full tty tx buffer)
+  // and retrying on EINTR — a tty write is not frame-atomic like a UDP/CAN
+  // send, so a single ::write could otherwise put a torn frame on the wire.
+  // Returns data.size() on success, or -1 on error.
   [[nodiscard]] ssize_t Write(std::span<const uint8_t> data) noexcept {
-    return ::write(fd_, data.data(), data.size());
+    std::size_t written = 0;
+    while (written < data.size()) {
+      const ssize_t n = ::write(fd_, data.data() + written, data.size() - written);
+      if (n < 0) {
+        if (errno == EINTR)
+          continue;
+        return -1;
+      }
+      written += static_cast<std::size_t>(n);
+    }
+    return static_cast<ssize_t>(written);
   }
 
   // Blocks until the kernel tx buffer has been transmitted. On a half-duplex
