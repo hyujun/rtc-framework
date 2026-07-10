@@ -732,11 +732,21 @@ class UdpHandController {
     // gate, so a command staged before the first state read is held (not lost)
     // until state_read_once_ flips true. Success/failure both clear — a dropped
     // write is not re-sent stale (control_rate delivers a fresh one).
+    // Per-phase timing validity: a phase's latency is recorded only when its
+    // request was attempted AND echoed/decoded OK. Not-attempted phases (no
+    // pending write, 1b motor-space read, sensor on a non-sensor cycle) and
+    // failed phases are excluded so recv-timeout ticks never inflate the timing
+    // distribution. Failure counting itself lives in comm_stats (transport
+    // per_kind), so a dropped read is still tallied there.
+    bool write_attempted = false;
+    bool write_ok = false;
     if (state_read_once_ && has_pending_write_) {
+      write_attempted = true;
       attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
       if (transport_.WritePositionWithEcho(pending_cmd_, send_buf_, echo_buf_, joint_io_mode_)) {
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kWriteEcho);
+        write_ok = true;
       }
       has_pending_write_ = false;
     }
@@ -753,7 +763,10 @@ class UdpHandController {
       // ── Bulk mode ─────────────────────────────────────────────────────
       // 2. Read all motors (motor-space: kMotor). Skipped when the protocol
       //    has no motor-space read (1b) — motor_states is then not published.
+      bool motor_space_attempted = false;
+      bool read_all_motor_ok = false;
       if (sensor_protocol_->HasMotorSpaceRead()) {
+        motor_space_attempted = true;
         packets::JointMode received_mode{};
         attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
         if (transport_.RequestAllMotorRead(motor_pos_buf_, motor_vel_buf_, motor_cur_buf_,
@@ -766,6 +779,7 @@ class UdpHandController {
           state.motor_valid = true;
           any_recv_ok = true;
           ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+          read_all_motor_ok = true;
         }
       }
 
@@ -774,6 +788,7 @@ class UdpHandController {
       // 3. Read all motors (joint-space: joint_io_mode_) — pos/vel/cur. 1b
       //    issues this in kMotor (its only joint-serving mode) and still
       //    publishes the result as joint_states.
+      bool read_all_joint_motor_ok = false;
       {
         std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
         attempted_mask |= RequestKindBit(RequestKind::kJointRead);
@@ -785,6 +800,7 @@ class UdpHandController {
           state.joint_valid = true;
           any_recv_ok = true;
           ok_mask |= RequestKindBit(RequestKind::kJointRead);
+          read_all_joint_motor_ok = true;
         }
       }
 
@@ -793,6 +809,7 @@ class UdpHandController {
       // 4. Read all sensors — raw recv, decode via the injected protocol
       //    (version seam). The request is identical across versions; only the
       //    response size/layout and decode differ.
+      bool read_all_sensor_ok = false;
       if (is_sensor_cycle) {
         state.num_fingertips = num_fingertips_;  // decode input
         attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
@@ -803,6 +820,7 @@ class UdpHandController {
                               sensor_recv_buf_.data(), static_cast<std::size_t>(recvd), state)) {
           any_recv_ok = true;
           ok_mask |= RequestKindBit(RequestKind::kBulkSensor);
+          read_all_sensor_ok = true;
           cached_sensor_data_ = state.sensor_data;    // 1a raw decode (0 for 1b)
           cached_sensor_force_ = state.sensor_force;  // 1b force (0 for 1a)
           ++sensor_seq_;  // fresh validated sensor read (freshness gate for detector)
@@ -824,6 +842,16 @@ class UdpHandController {
       pt.read_all_motor_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
       pt.read_all_joint_motor_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
       pt.read_all_sensor_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
+      pt.write_ok = write_ok;
+      pt.read_all_motor_ok = read_all_motor_ok;
+      pt.read_all_joint_motor_ok = read_all_joint_motor_ok;
+      pt.read_all_sensor_ok = read_all_sensor_ok;
+      // total_us spans the whole cycle, so it is a valid sample only when every
+      // ATTEMPTED channel succeeded. Not-attempted channels (no pending write,
+      // 1b motor-space read, non-sensor cycle) do not gate.
+      pt.total_ok = (!write_attempted || write_ok) &&
+                    (!motor_space_attempted || read_all_motor_ok) && read_all_joint_motor_ok &&
+                    (!is_sensor_cycle || read_all_sensor_ok);
       FinalizePhaseTiming(pt, tail, t3, t0, is_sensor_cycle);
 
     } else {
@@ -831,6 +859,7 @@ class UdpHandController {
       // 2. Read motor position (kMotor)
       packets::JointMode received_mode{};
       attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
+      bool read_pos_ok = false;
       if (transport_.RequestMotorRead(packets::Command::kReadPosition, motor_pos_buf_,
                                       packets::JointMode::kMotor, &received_mode,
                                       RequestKind::kMotorRead)) {
@@ -839,12 +868,14 @@ class UdpHandController {
         state.motor_valid = true;
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+        read_pos_ok = true;
       }
 
       const auto t2 = std::chrono::steady_clock::now();
 
       // 3. Read joint position (joint-space: joint_io_mode_). Individual mode is
       //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
+      bool read_joint_pos_ok = false;
       {
         std::array<float, packets::kMotorDataCount> jp_buf{};
         attempted_mask |= RequestKindBit(RequestKind::kJointRead);
@@ -854,6 +885,7 @@ class UdpHandController {
           state.joint_valid = true;
           any_recv_ok = true;
           ok_mask |= RequestKindBit(RequestKind::kJointRead);
+          read_joint_pos_ok = true;
         }
       }
 
@@ -861,22 +893,30 @@ class UdpHandController {
 
       // 4. Read motor velocity (kMotor)
       attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
+      bool read_vel_ok = false;
       if (transport_.RequestMotorRead(packets::Command::kReadVelocity, motor_vel_buf_,
                                       packets::JointMode::kMotor, nullptr,
                                       RequestKind::kMotorRead)) {
         std::copy_n(motor_vel_buf_.begin(), kNumHandMotors, state.motor_velocities.begin());
         any_recv_ok = true;
         ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+        read_vel_ok = true;
       }
 
       const auto t3 = std::chrono::steady_clock::now();
 
-      // 5. Read sensors
+      // 5. Read sensors. read_sensor_ok gates the timing sample on ALL attempted
+      //    fingers succeeding — a partial-finger read would bundle a timeout into
+      //    the phase duration.
+      bool sensor_attempted = false;
+      bool read_sensor_ok = false;
       if (is_sensor_cycle) {
         if (num_fingertips_ > 0) {
+          sensor_attempted = true;
           attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
         }
         bool sensor_validated = false;
+        bool all_fingers_ok = (num_fingertips_ > 0);
         for (int i = 0; i < num_fingertips_; ++i) {
           auto cmd = packets::SensorCommand(i);
           if (transport_.RequestSensorRead(cmd, sensor_raw_buf_, packets::SensorMode::kRaw)) {
@@ -886,8 +926,11 @@ class UdpHandController {
             any_recv_ok = true;
             ok_mask |= RequestKindBit(RequestKind::kSensorRead);
             sensor_validated = true;
+          } else {
+            all_fingers_ok = false;
           }
         }
+        read_sensor_ok = all_fingers_ok;
         if (sensor_validated)
           ++sensor_seq_;  // one bump per cycle with ≥1 fresh finger read
       }
@@ -904,6 +947,15 @@ class UdpHandController {
       pt.read_joint_pos_us = std::chrono::duration<double, std::micro>(t2j - t2).count();
       pt.read_vel_us = std::chrono::duration<double, std::micro>(t3 - t2j).count();
       pt.read_sensor_us = std::chrono::duration<double, std::micro>(t4 - t3).count();
+      pt.write_ok = write_ok;
+      pt.read_pos_ok = read_pos_ok;
+      pt.read_joint_pos_ok = read_joint_pos_ok;
+      pt.read_vel_ok = read_vel_ok;
+      pt.read_sensor_ok = read_sensor_ok;
+      // total_us is valid only when every attempted channel succeeded; write and
+      // sensor gate only when they were actually attempted this cycle.
+      pt.total_ok = (!write_attempted || write_ok) && read_pos_ok && read_joint_pos_ok &&
+                    read_vel_ok && (!sensor_attempted || read_sensor_ok);
       FinalizePhaseTiming(pt, tail, t4, t0, is_sensor_cycle);
     }
 

@@ -251,6 +251,88 @@ TEST(UdpHandTimingProfiler, Reset_ClearsAll) {
   EXPECT_FALSE(s.is_bulk_mode);
 }
 
+// ── Failed-packet exclusion (success-only timing) ────────────────────────────
+
+// A phase whose request failed (recv timeout) must not enter the timing stats,
+// and a cycle with any failed attempted channel must not enter total_us.
+TEST(UdpHandTimingProfiler, FailedPhase_ExcludedFromTiming) {
+  UdpHandTimingProfiler profiler;
+
+  // Cycle 1: full success (ok flags default true).
+  UdpHandTimingProfiler::PhaseTiming ok{};
+  ok.write_us = 100.0;
+  ok.read_pos_us = 200.0;
+  ok.read_joint_pos_us = 150.0;
+  ok.read_vel_us = 180.0;
+  ok.total_us = 630.0;
+  profiler.Update(ok);
+
+  // Cycle 2: read_vel timed out (5000 µs) — its phase and the whole-cycle total
+  // are excluded; the other successful phases are still recorded.
+  UdpHandTimingProfiler::PhaseTiming bad{};
+  bad.write_us = 100.0;
+  bad.read_pos_us = 205.0;
+  bad.read_joint_pos_us = 150.0;
+  bad.read_vel_us = 5000.0;
+  bad.total_us = 5850.0;
+  bad.read_vel_ok = false;
+  bad.total_ok = false;
+  profiler.Update(bad);
+
+  const auto s = profiler.GetStats();
+  // total_us: only the clean cycle counted.
+  EXPECT_EQ(s.count, 1u);
+  EXPECT_DOUBLE_EQ(s.mean_us, 630.0);
+  EXPECT_DOUBLE_EQ(s.max_us, 630.0);
+  // read_vel: the 5000 µs timeout excluded, only 180 recorded.
+  EXPECT_DOUBLE_EQ(s.read_vel.mean_us, 180.0);
+  EXPECT_DOUBLE_EQ(s.read_vel.max_us, 180.0);
+  // read_pos: both cycles succeeded → averaged.
+  EXPECT_DOUBLE_EQ(s.read_pos.mean_us, 202.5);
+  // individual_count still tracks every individual cycle (reporting counter).
+  EXPECT_EQ(s.individual_count, 2u);
+}
+
+// A phase not attempted this cycle (e.g. no pending write) contributes nothing.
+TEST(UdpHandTimingProfiler, UnattemptedWrite_NotRecorded) {
+  UdpHandTimingProfiler profiler;
+
+  UdpHandTimingProfiler::PhaseTiming pt{};
+  pt.write_us = 999.0;  // stale inter-timestamp gap, must be ignored
+  pt.write_ok = false;  // no pending write this cycle
+  pt.read_pos_us = 200.0;
+  pt.read_joint_pos_us = 150.0;
+  pt.read_vel_us = 180.0;
+  pt.total_us = 530.0;
+  profiler.Update(pt);
+
+  const auto s = profiler.GetStats();
+  EXPECT_DOUBLE_EQ(s.write.mean_us, 0.0);
+  EXPECT_DOUBLE_EQ(s.write.max_us, 0.0);
+  EXPECT_DOUBLE_EQ(s.read_pos.mean_us, 200.0);
+}
+
+// Compute phases (sensor_proc) are packet-independent: recorded even when the
+// sensor recv failed and the cycle total is excluded.
+TEST(UdpHandTimingProfiler, ComputePhase_KeptWhenNetworkFails) {
+  UdpHandTimingProfiler profiler;
+
+  UdpHandTimingProfiler::PhaseTiming pt{};
+  pt.read_sensor_us = 5000.0;  // sensor timed out
+  pt.read_sensor_ok = false;
+  pt.sensor_proc_us = 42.0;  // compute still ran
+  pt.total_us = 6000.0;
+  pt.total_ok = false;
+  pt.is_sensor_cycle = true;
+  profiler.Update(pt);
+
+  const auto s = profiler.GetStats();
+  EXPECT_EQ(s.count, 0u);                         // total excluded
+  EXPECT_DOUBLE_EQ(s.read_sensor.mean_us, 0.0);   // failed sensor read excluded
+  EXPECT_DOUBLE_EQ(s.sensor_proc.mean_us, 42.0);  // compute kept
+  EXPECT_EQ(s.sensor_cycle_count, 1u);            // sensor cycle still counted
+}
+
 // ── Summary strings ─────────────────────────────────────────────────────────
 
 TEST(UdpHandTimingProfiler, Summary_IndividualMode) {

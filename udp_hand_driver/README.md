@@ -267,7 +267,7 @@ phase 매핑 (hand UDP loop, `MarkState()`/`MarkCompute()` 브레이크포인트
 - **`per_request`**: request kind (`write_echo` / `motor_read` / `joint_read` / `sensor_read` / `bulk_sensor` / `set_mode`) 별 `{ok, timeout, error, cmd_mismatch, mode_mismatch, short_or_decode}`. `ok` 는 request-level 성공 (검증 통과), `short_or_decode` 는 short packet + codec decode 실패. joint/motor read 는 wire format 이 동일하므로 controller 가 `RequestKind` 파라미터로 명시 attribution
 - **`last_unexpected_cmd` / `last_unexpected_len`**: 가장 최근 거부된 패킷의 CMD byte / 수신 길이 — 직전 request 의 cmd echo 가 찍히면 timeout 이 아니라 1-cycle stale desync 시그니처
 
-`timing_stats` 섹션은 `UdpHandTimingProfiler` 요약 (mean/min/max/p95/p99, phase 별).
+`timing_stats` 섹션은 `UdpHandTimingProfiler` 요약 (mean/min/max/p95/p99, phase 별). **성공한 패킷의 latency 만 집계한다** — 어떤 phase (`write` / `read_pos` / `read_vel` / `read_sensor` / bulk 의 `read_all_*`) 의 request 가 timeout/error/mismatch 로 실패하면 그 phase 의 sample 은 제외되고 (recv-timeout 값이 분포를 오염시키지 않도록), `count` / `over_budget` / percentile 을 좌우하는 `total_us` 는 그 cycle 에서 **attempt 한 모든 채널이 성공했을 때만** 기록된다. 시도하지 않은 phase (pending write 없음, 1b motor-space read, 비-sensor cycle) 도 제외. 순수 연산 phase (`sensor_proc` / `ft_infer`) 는 packet 과 무관하므로 항상 집계. 제외된 실패 자체의 카운트는 위 `comm_stats.per_request` (RequestKind 단위) 에서 확인한다 (`timing_stats.count` < `comm_stats.total_cycles` 는 실패 cycle 존재를 의미).
 
 ---
 

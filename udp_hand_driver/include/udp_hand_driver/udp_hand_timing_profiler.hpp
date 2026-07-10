@@ -74,39 +74,92 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
     double total_us{0.0};
     bool is_sensor_cycle{false};
     bool is_bulk_mode{false};
+
+    // Per-phase validity (single-producer sets these). A network phase is
+    // accumulated only when its request(s) for this cycle were attempted AND
+    // succeeded; a phase not attempted (no pending write, 1b motor-space read,
+    // sensor on a non-sensor cycle) or that timed out is left false so its
+    // inflated recv-timeout duration never pollutes the latency distribution.
+    // total_* (and hence count/over_budget/percentiles) is accumulated only
+    // when every attempted channel this cycle succeeded. Compute phases
+    // (sensor_proc, ft_infer) are packet-independent and always recorded.
+    // Defaults are true so a caller that leaves them unset (unit tests) keeps
+    // the record-everything behavior.
+    bool write_ok{true};
+    bool read_pos_ok{true};
+    bool read_joint_pos_ok{true};
+    bool read_vel_ok{true};
+    bool read_sensor_ok{true};
+    bool read_all_motor_ok{true};
+    bool read_all_joint_motor_ok{true};
+    bool read_all_sensor_ok{true};
+    bool total_ok{true};
   };
 
   // ── Update (single-producer: EventLoop thread) ────────────────────────────
 
   void Update(const PhaseTiming& t) noexcept {
-    UpdateTotal(t.total_us);
+    // total_us bundles write + all reads + compute, so it is a valid cycle
+    // sample only when every attempted channel succeeded. Gating it here keeps
+    // count / over_budget / percentiles free of recv-timeout inflation.
+    if (t.total_ok) {
+      UpdateTotal(t.total_us);
+    }
 
-    UpdatePhase(write_sum_, write_min_, write_max_, t.write_us);
+    // Each network phase accumulates only when its own request succeeded; the
+    // per-phase sample counter is the divisor used by GetStats(), so it must be
+    // bumped in lock-step with the sum.
+    if (t.write_ok) {
+      UpdatePhase(write_sum_, write_min_, write_max_, t.write_us);
+      write_count_.fetch_add(1, std::memory_order_relaxed);
+    }
 
     if (t.is_bulk_mode) {
       is_bulk_mode_.store(true, std::memory_order_relaxed);
       bulk_count_.fetch_add(1, std::memory_order_relaxed);
-      UpdatePhase(read_all_motor_sum_, read_all_motor_min_, read_all_motor_max_,
-                  t.read_all_motor_us);
-      UpdatePhase(read_all_joint_motor_sum_, read_all_joint_motor_min_, read_all_joint_motor_max_,
-                  t.read_all_joint_motor_us);
+      if (t.read_all_motor_ok) {
+        UpdatePhase(read_all_motor_sum_, read_all_motor_min_, read_all_motor_max_,
+                    t.read_all_motor_us);
+        read_all_motor_count_.fetch_add(1, std::memory_order_relaxed);
+      }
+      if (t.read_all_joint_motor_ok) {
+        UpdatePhase(read_all_joint_motor_sum_, read_all_joint_motor_min_, read_all_joint_motor_max_,
+                    t.read_all_joint_motor_us);
+        read_all_joint_motor_count_.fetch_add(1, std::memory_order_relaxed);
+      }
       if (t.is_sensor_cycle) {
         sensor_cycle_count_.fetch_add(1, std::memory_order_relaxed);
-        UpdatePhase(read_all_sensor_sum_, read_all_sensor_min_, read_all_sensor_max_,
-                    t.read_all_sensor_us);
+        if (t.read_all_sensor_ok) {
+          UpdatePhase(read_all_sensor_sum_, read_all_sensor_min_, read_all_sensor_max_,
+                      t.read_all_sensor_us);
+          read_all_sensor_count_.fetch_add(1, std::memory_order_relaxed);
+        }
       }
     } else {
       individual_count_.fetch_add(1, std::memory_order_relaxed);
-      UpdatePhase(read_pos_sum_, read_pos_min_, read_pos_max_, t.read_pos_us);
-      UpdatePhase(read_joint_pos_sum_, read_joint_pos_min_, read_joint_pos_max_,
-                  t.read_joint_pos_us);
-      UpdatePhase(read_vel_sum_, read_vel_min_, read_vel_max_, t.read_vel_us);
+      if (t.read_pos_ok) {
+        UpdatePhase(read_pos_sum_, read_pos_min_, read_pos_max_, t.read_pos_us);
+        read_pos_count_.fetch_add(1, std::memory_order_relaxed);
+      }
+      if (t.read_joint_pos_ok) {
+        UpdatePhase(read_joint_pos_sum_, read_joint_pos_min_, read_joint_pos_max_,
+                    t.read_joint_pos_us);
+        read_joint_pos_count_.fetch_add(1, std::memory_order_relaxed);
+      }
+      if (t.read_vel_ok) {
+        UpdatePhase(read_vel_sum_, read_vel_min_, read_vel_max_, t.read_vel_us);
+        read_vel_count_.fetch_add(1, std::memory_order_relaxed);
+      }
       if (t.is_sensor_cycle) {
         sensor_cycle_count_.fetch_add(1, std::memory_order_relaxed);
-        UpdatePhase(read_sensor_sum_, read_sensor_min_, read_sensor_max_, t.read_sensor_us);
+        if (t.read_sensor_ok) {
+          UpdatePhase(read_sensor_sum_, read_sensor_min_, read_sensor_max_, t.read_sensor_us);
+          read_sensor_count_.fetch_add(1, std::memory_order_relaxed);
+        }
       }
     }
 
+    // Compute phases are packet-independent — record every sensor cycle.
     if (t.is_sensor_cycle) {
       UpdatePhase(sensor_proc_sum_, sensor_proc_min_, sensor_proc_max_, t.sensor_proc_us);
     }
@@ -125,37 +178,56 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
 
     s.individual_count = individual_count_.load(std::memory_order_relaxed);
     s.bulk_count = bulk_count_.load(std::memory_order_relaxed);
-
-    if (s.count > 0) {
-      s.write = LoadPhaseStats(write_sum_, write_min_, write_max_, s.count);
-    }
-
-    if (s.individual_count > 0) {
-      s.read_pos = LoadPhaseStats(read_pos_sum_, read_pos_min_, read_pos_max_, s.individual_count);
-      s.read_joint_pos = LoadPhaseStats(read_joint_pos_sum_, read_joint_pos_min_,
-                                        read_joint_pos_max_, s.individual_count);
-      s.read_vel = LoadPhaseStats(read_vel_sum_, read_vel_min_, read_vel_max_, s.individual_count);
-    }
-
     s.is_bulk_mode = is_bulk_mode_.load(std::memory_order_relaxed);
-    if (s.bulk_count > 0) {
+
+    // Each network phase divides by its OWN success-sample counter (not the
+    // aggregate cycle count) so excluded recv-timeout ticks never dilute the
+    // mean. A phase with no successful samples keeps its default-zero stats.
+    const uint64_t write_n = write_count_.load(std::memory_order_relaxed);
+    if (write_n > 0) {
+      s.write = LoadPhaseStats(write_sum_, write_min_, write_max_, write_n);
+    }
+
+    const uint64_t read_pos_n = read_pos_count_.load(std::memory_order_relaxed);
+    if (read_pos_n > 0) {
+      s.read_pos = LoadPhaseStats(read_pos_sum_, read_pos_min_, read_pos_max_, read_pos_n);
+    }
+    const uint64_t read_joint_pos_n = read_joint_pos_count_.load(std::memory_order_relaxed);
+    if (read_joint_pos_n > 0) {
+      s.read_joint_pos = LoadPhaseStats(read_joint_pos_sum_, read_joint_pos_min_,
+                                        read_joint_pos_max_, read_joint_pos_n);
+    }
+    const uint64_t read_vel_n = read_vel_count_.load(std::memory_order_relaxed);
+    if (read_vel_n > 0) {
+      s.read_vel = LoadPhaseStats(read_vel_sum_, read_vel_min_, read_vel_max_, read_vel_n);
+    }
+
+    const uint64_t read_all_motor_n = read_all_motor_count_.load(std::memory_order_relaxed);
+    if (read_all_motor_n > 0) {
       s.read_all_motor = LoadPhaseStats(read_all_motor_sum_, read_all_motor_min_,
-                                        read_all_motor_max_, s.bulk_count);
+                                        read_all_motor_max_, read_all_motor_n);
+    }
+    const uint64_t read_all_joint_motor_n =
+        read_all_joint_motor_count_.load(std::memory_order_relaxed);
+    if (read_all_joint_motor_n > 0) {
       s.read_all_joint_motor = LoadPhaseStats(read_all_joint_motor_sum_, read_all_joint_motor_min_,
-                                              read_all_joint_motor_max_, s.bulk_count);
+                                              read_all_joint_motor_max_, read_all_joint_motor_n);
     }
 
+    const uint64_t read_all_sensor_n = read_all_sensor_count_.load(std::memory_order_relaxed);
+    if (read_all_sensor_n > 0) {
+      s.read_all_sensor = LoadPhaseStats(read_all_sensor_sum_, read_all_sensor_min_,
+                                         read_all_sensor_max_, read_all_sensor_n);
+    }
+    const uint64_t read_sensor_n = read_sensor_count_.load(std::memory_order_relaxed);
+    if (read_sensor_n > 0) {
+      s.read_sensor =
+          LoadPhaseStats(read_sensor_sum_, read_sensor_min_, read_sensor_max_, read_sensor_n);
+    }
+
+    // sensor_proc is a compute phase recorded every sensor cycle, so its
+    // divisor stays the full sensor-cycle count.
     s.sensor_cycle_count = sensor_cycle_count_.load(std::memory_order_relaxed);
-    if (s.sensor_cycle_count > 0) {
-      if (s.is_bulk_mode) {
-        s.read_all_sensor = LoadPhaseStats(read_all_sensor_sum_, read_all_sensor_min_,
-                                           read_all_sensor_max_, s.sensor_cycle_count);
-      } else {
-        s.read_sensor = LoadPhaseStats(read_sensor_sum_, read_sensor_min_, read_sensor_max_,
-                                       s.sensor_cycle_count);
-      }
-    }
-
     if (s.sensor_cycle_count > 0) {
       s.sensor_proc = LoadPhaseStats(sensor_proc_sum_, sensor_proc_min_, sensor_proc_max_,
                                      s.sensor_cycle_count);
@@ -227,6 +299,14 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
     is_bulk_mode_.store(false, std::memory_order_relaxed);
     individual_count_.store(0, std::memory_order_relaxed);
     bulk_count_.store(0, std::memory_order_relaxed);
+    write_count_.store(0, std::memory_order_relaxed);
+    read_pos_count_.store(0, std::memory_order_relaxed);
+    read_joint_pos_count_.store(0, std::memory_order_relaxed);
+    read_vel_count_.store(0, std::memory_order_relaxed);
+    read_sensor_count_.store(0, std::memory_order_relaxed);
+    read_all_motor_count_.store(0, std::memory_order_relaxed);
+    read_all_joint_motor_count_.store(0, std::memory_order_relaxed);
+    read_all_sensor_count_.store(0, std::memory_order_relaxed);
     ResetPhase(sensor_proc_sum_, sensor_proc_min_, sensor_proc_max_);
     ResetPhase(ft_infer_sum_, ft_infer_min_, ft_infer_max_);
     ft_infer_count_.store(0, std::memory_order_relaxed);
@@ -261,6 +341,17 @@ class UdpHandTimingProfiler : public rtc::TimingProfilerBase<250, 20, 2000> {
   std::atomic<bool> is_bulk_mode_{false};
   std::atomic<uint64_t> individual_count_{0};
   std::atomic<uint64_t> bulk_count_{0};
+  // Per-phase success-sample counters (divisors for the phase means; a phase is
+  // counted only when its request was attempted AND succeeded — recv-timeout
+  // ticks are excluded so they never inflate the latency distribution).
+  std::atomic<uint64_t> write_count_{0};
+  std::atomic<uint64_t> read_pos_count_{0};
+  std::atomic<uint64_t> read_joint_pos_count_{0};
+  std::atomic<uint64_t> read_vel_count_{0};
+  std::atomic<uint64_t> read_sensor_count_{0};
+  std::atomic<uint64_t> read_all_motor_count_{0};
+  std::atomic<uint64_t> read_all_joint_motor_count_{0};
+  std::atomic<uint64_t> read_all_sensor_count_{0};
   std::atomic<double> sensor_proc_sum_{0.0};
   std::atomic<double> sensor_proc_min_{1e9};
   std::atomic<double> sensor_proc_max_{0.0};
