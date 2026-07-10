@@ -4,7 +4,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **헤더 전용(header-only) C++ 라이브러리**로, 실시간(RT-safe) 네트워크 전송 추상화를 제공합니다. UDP 전송, 패킷 코덱, 전이중 트랜시버 템플릿으로 구성되어 있으며, 실시간 제어 루프에서 외부 디바이스와의 통신에 사용됩니다.
+RTC 프레임워크의 **헤더 전용(header-only) C++ 라이브러리**로, 실시간(RT-safe) 네트워크 전송 추상화를 제공합니다. UDP·CAN·CAN FD 전송, 패킷 코덱, 전이중 트랜시버 템플릿으로 구성되어 있으며, 실시간 제어 루프에서 외부 디바이스와의 통신에 사용됩니다.
 
 **설계 원칙:**
 - 생성 이후 동적 메모리 할당 없음 (RT-safe)
@@ -25,12 +25,18 @@ rtc_communication/
 │   ├── transport_interface.hpp    -- 전송 계층 추상 인터페이스
 │   ├── packet_codec.hpp          -- 패킷 코덱 C++20 Concept + 헬퍼
 │   ├── transceiver.hpp           -- 전이중 트랜시버 템플릿 (수신 루프 + 코덱)
-│   └── udp/
-│       ├── udp_socket.hpp        -- RAII UDP 소켓 래퍼
-│       └── udp_transport.hpp     -- TransportInterface의 UDP 구현체
+│   ├── udp/
+│   │   ├── udp_socket.hpp        -- RAII UDP 소켓 래퍼
+│   │   └── udp_transport.hpp     -- TransportInterface의 UDP 구현체
+│   └── can/
+│       ├── can_socket.hpp        -- RAII SocketCAN raw 소켓 래퍼 (classic + FD frame I/O)
+│       ├── can_transport.hpp     -- TransportInterface의 classic CAN 구현체 (payload ≤ 8B)
+│       └── canfd_transport.hpp   -- TransportInterface의 CAN FD 구현체 (payload ≤ 64B)
 └── test/
     ├── fake_codec.hpp            -- PacketCodec concept을 만족하는 최소 코덱 (테스트 하니스용)
     ├── test_udp_loopback.cpp     -- UdpSocket/UdpTransport 바인드·연결·타임아웃·RAII 테스트
+    ├── test_can_loopback.cpp     -- CanSocket/CanTransport vcan0 라운드 트립·필터·RAII 테스트
+    ├── test_canfd_loopback.cpp   -- CanFdTransport 64B 라운드 트립·classic/FD 혼재 수신 테스트
     └── test_transceiver.cpp      -- Transceiver 기동·종료·디코딩·콜백·Send 경로 테스트
 ```
 
@@ -127,6 +133,85 @@ UdpTransportConfig config{
 auto transport = std::make_unique<UdpTransport>(config);
 transport->Open();
 ```
+
+---
+
+### CanSocket (`can/can_socket.hpp`)
+
+Linux SocketCAN raw 소켓(`PF_CAN`, `SOCK_RAW`, `CAN_RAW`)의 RAII 래퍼입니다. UDP와 달리 **인터페이스에 바인드한 단일 fd로 송수신을 모두** 수행합니다.
+
+주요 특징:
+- `Bind(interface_name)` -- `if_nametoindex()`로 인터페이스 이름(`"can0"`, `"vcan0"`)을 index로 변환 후 `sockaddr_can`에 바인드. 존재하지 않는 인터페이스면 `false` 반환 + 소켓 닫힘
+- `SetFilter(can_id, can_mask)` -- `CAN_RAW_FILTER` 수신 필터. matching: `(recv_id & mask) == (can_id & mask)`
+- `SetLoopback(bool)` / `SetRecvOwnMessages(bool)` -- `CAN_RAW_LOOPBACK`(커널 기본 on) / `CAN_RAW_RECV_OWN_MSGS`(커널 기본 off)
+- `SetFdFrames(bool)` -- `CAN_RAW_FD_FRAMES` 활성화. 활성 시 classic·FD frame 모두 수신 가능
+- `SendFrame`/`RecvFrame` -- `can_frame` 단위 I/O. `SendFdFrame`/`RecvFdFrame` -- `canfd_frame` 단위 I/O
+- `SetRecvTimeout`/`SetRecvBufferSize`, `fd()`, `is_open()` -- UdpSocket과 동일 계약
+- Non-copyable, non-movable, 소멸자에서 fd `close()`
+
+---
+
+### CanTransport (`can/can_transport.hpp`)
+
+`TransportInterface`의 classic CAN 구현체입니다. **payload-only 계약**: `Send(span)`은 payload를 설정된 `tx_can_id`의 단일 frame으로 송신하고, `Recv(span)`은 필터를 통과한 frame의 payload만 반환합니다. frame metadata(CAN ID, flags)는 config에 고정되므로 인스턴스 하나가 tx ID 하나 / rx 필터 하나에 대응합니다.
+
+#### 설정 (`CanTransportConfig`)
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `interface_name` | `string` | `"can0"` | CAN 인터페이스 이름 |
+| `tx_can_id` | `canid_t` | `0` | 송신 frame의 CAN ID |
+| `rx_can_id` | `canid_t` | `0` | 수신 필터 ID |
+| `rx_can_mask` | `canid_t` | `0` | 수신 필터 mask. **0이면 필터 미설치(전체 수신, 커널 기본)**. 설치 시 EFF/RTR 비트가 mask에 자동 포함되어 RTR frame은 항상 배제 |
+| `extended_frame` | `bool` | `false` | `true`면 29-bit ID (`CAN_EFF_FLAG`) 송신 및 필터 적용 |
+| `receive_own_messages` | `bool` | `false` | 자기 송신 frame 수신 (`CAN_RAW_RECV_OWN_MSGS`) |
+| `loopback` | `bool` | `true` | 동일 호스트 다른 소켓으로 로컬 echo (`CAN_RAW_LOOPBACK`) |
+| `recv_timeout_ms` | `int` | `100` | 수신 타임아웃 (`SO_RCVTIMEO`) |
+
+- **payload는 최대 8 bytes (`CAN_MAX_DLEN`)** — 초과 시 `Send()`가 `-1` 반환
+- `is_open()`은 단일 소켓 상태 반환 (UDP의 recv/send 2-소켓 구조와 다름)
+
+```cpp
+CanTransportConfig config{
+    .interface_name = "can0",
+    .tx_can_id = 0x123,
+    .rx_can_id = 0x456,
+    .rx_can_mask = CAN_SFF_MASK,
+    .recv_timeout_ms = 100
+};
+auto transport = std::make_unique<CanTransport>(config);
+transport->Open();
+```
+
+---
+
+### CanFdTransport (`can/canfd_transport.hpp`)
+
+`TransportInterface`의 CAN FD 구현체입니다. `CanTransport`와 동일한 payload-only 계약에 다음이 추가됩니다.
+
+- **payload 최대 64 bytes (`CANFD_MAX_DLEN`)** — 초과 시 `Send()`가 `-1` 반환
+- `Open()`에서 `CAN_RAW_FD_FRAMES`를 활성화 — 소켓이 classic frame(`CAN_MTU`)과 FD frame(`CANFD_MTU`)을 **모두 수신**하며 `Recv()`가 양쪽을 처리
+- 비표준 payload 길이(CAN FD DLC 집합 0-8/12/16/20/24/32/48/64 외)는 실제 컨트롤러 송신 시 커널이 상향 패딩
+
+#### 설정 (`CanFdTransportConfig`)
+
+`CanTransportConfig`와 동일 필드에 FD 전용 2개 추가:
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `bitrate_switch` | `bool` | `false` | `CANFD_BRS` — 데이터 구간을 높은 bitrate로 송신 |
+| `error_state_indicator` | `bool` | `false` | `CANFD_ESI` flag |
+
+#### PacketCodec 크기 제약 (중요)
+
+`Transceiver<Codec>::Send`는 `sizeof(SendPacket)` 전체를 한 번에 `transport_->Send()`로 넘기고, 수신 루프는 `n < sizeof(RecvPacket)`인 frame을 버립니다. 따라서 CAN 계열 transport 위에서 쓰는 codec은 **packet 타입 크기가 payload 한도 안**이어야 합니다:
+
+| Transport | `sizeof(SendPacket)` / `sizeof(RecvPacket)` 한도 |
+|-----------|--------------------------------------------------|
+| `CanTransport` | ≤ 8 bytes |
+| `CanFdTransport` | ≤ 64 bytes |
+
+한도 초과 시 `Transceiver::Send`는 조용히 `false`를 반환합니다 (transport guard가 `-1` 리턴). multi-frame 분할이나 frame별 CAN ID 해석이 필요한 프로토콜은 payload-only 계약 범위 밖입니다 (frame-aware API는 후속 확장).
 
 ---
 
@@ -263,11 +348,32 @@ RT 루프에서 디코딩된 상태가 필요하면 `GetLatestState()`를 직접
 | 테스트 파일 | 프레임워크 | 다루는 항목 |
 |------------|-----------|------------|
 | `test/test_udp_loopback.cpp` | GTest | UdpSocket bind/connect 라운드 트립, `SO_RCVTIMEO` 만료, RAII fd 닫힘, UdpTransport bind+connect 수명 (5 케이스) |
+| `test/test_can_loopback.cpp` | GTest | CanSocket/CanTransport 수명, invalid interface, vcan0 라운드 트립, 타임아웃, RAII, >8B 거부, 필터 accept/reject, extended ID, receive_own_messages (9 케이스, vcan 의존 7개는 guarded) |
+| `test/test_canfd_loopback.cpp` | GTest | CanFdTransport invalid interface, 64B 라운드 트립, >64B 거부, classic/FD 혼재 수신 (4 케이스, vcan 의존 3개는 guarded) |
 | `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 (4 케이스) |
 | `test/fake_codec.hpp` | -- | `PacketCodec` concept을 만족하는 최소 코덱 (테스트 하니스용) |
 
 ```bash
 colcon test --packages-select rtc_communication --event-handlers console_direct+
+```
+
+### CAN 테스트 환경 (vcan)
+
+CAN/CANFD 통합 테스트는 가상 CAN 인터페이스 `vcan0`이 있어야 실행되며, 없으면 `GTEST_SKIP()`으로 건너뜁니다 (CI green 유지):
+
+```bash
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set up vcan0
+```
+
+수동 smoke test는 [can-utils](https://github.com/linux-can/can-utils) 사용 (`sudo apt install can-utils`):
+
+```bash
+candump vcan0          # 수신 모니터
+cansend vcan0 123#11223344
+cangen vcan0           # 랜덤 트래픽 생성
+canfdtest vcan0        # CAN FD 검증
 ```
 
 ---
@@ -278,9 +384,9 @@ colcon test --packages-select rtc_communication --event-handlers console_direct+
 |--------|------|------|
 | `ament_cmake` | 빌드 도구 | ROS 2 빌드 시스템 |
 | `rtc_base` | 런타임 | `ThreadConfig`, `ApplyThreadConfig` (스레드 설정) |
-| `ament_cmake_gtest` | 테스트 | UDP 루프백 / Transceiver 통합 테스트 |
+| `ament_cmake_gtest` | 테스트 | UDP/CAN 루프백 / Transceiver 통합 테스트 |
 
-**시스템 의존성:** POSIX 소켓 API (`sys/socket.h`, `arpa/inet.h`, `netinet/in.h`, `unistd.h`)
+**시스템 의존성:** POSIX 소켓 API (`sys/socket.h`, `arpa/inet.h`, `netinet/in.h`, `unistd.h`), Linux SocketCAN 커널 헤더 (`linux/can.h`, `linux/can/raw.h`, `net/if.h`) — 별도 패키지 설치 불필요
 
 **컴파일러 요구 사항:** C++20 (`-std=c++20`), 엄격 경고 플래그 (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`)
 

@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rtc_communication</name>
-  <version>5.17.0</version>
-  <description>Header-only transport abstraction layer for RTC framework. UDP transport with RT-safe packet codec and full-duplex transceiver template.</description>
+  <version>5.18.0</version>
+  <description>Header-only transport abstraction layer for RTC framework. UDP, SocketCAN classic CAN, and CAN FD transports with RT-safe packet codec and full-duplex transceiver template.</description>
   <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
