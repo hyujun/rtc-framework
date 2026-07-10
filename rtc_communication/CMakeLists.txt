@@ -33,6 +33,11 @@ if(BUILD_TESTING)
     target_include_directories(test_udp_loopback PRIVATE include ${rtc_base_INCLUDE_DIRS})
   endif()
 
+  ament_add_gtest(test_can_loopback test/test_can_loopback.cpp)
+  if(TARGET test_can_loopback)
+    target_include_directories(test_can_loopback PRIVATE include ${rtc_base_INCLUDE_DIRS})
+  endif()
+
   ament_add_gtest(test_transceiver test/test_transceiver.cpp)
   if(TARGET test_transceiver)
     target_include_directories(test_transceiver PRIVATE include ${rtc_base_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
