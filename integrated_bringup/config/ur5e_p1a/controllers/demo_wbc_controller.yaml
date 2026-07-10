@@ -48,9 +48,9 @@ demo_wbc_controller:
         - topic: "transforms"
           role: "robot_transforms"
           ownership: "controller"
-    hand:
+    p1a:
       subscribe:
-        - topic: "hand/joint_goal"
+        - topic: "p1a/joint_goal"
           role: "target"
           ownership: "controller"
       # WbcState publisher is controller-owned and created in on_configure
@@ -65,11 +65,11 @@ demo_wbc_controller:
     - msg_type: integrated_bringup/DeviceWbcLog
       instance: ur5e_state
     - msg_type: integrated_bringup/DeviceWbcLog
-      instance: hand_state
+      instance: p1a_state
     - msg_type: integrated_bringup/WbcDiagLog
       instance: wbc_diag
     - msg_type: rtc_msgs/DeviceSensorLog
-      instance: hand_sensor
+      instance: p1a_sensor
 
   # ── TSID QP configuration ────────────────────────────────────────────
   tsid:

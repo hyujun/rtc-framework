@@ -72,21 +72,20 @@ def launch_setup(context, *args, **kwargs):
     # names, topics, model_path (integrated_bringup/config/ur5e_p1a/
     # mujoco_simulator.yaml — overlaid on top).
     sim_default = PathJoinSubstitution([pkg_sim, "config", "solver_param.yaml"])
-    sim_config = PathJoinSubstitution(
-        [pkg_bringup, "config", "ur5e_p1a", "mujoco_simulator.yaml"]
-    )
+    sim_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1a", "mujoco_simulator.yaml"])
     # Mode-agnostic base (URDF/model topology, rosters, limits, control_rate);
     # sim.yaml overlays only the sim-specific delta on top.
     base_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1a", "_base.yaml"])
     ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1a", "sim.yaml"])
 
-    # udp_hand_driver is optional — may not be built in sim-only installs
-    hand_config = None
-    try:
-        hand_share = get_package_share_directory("udp_hand_driver")
-        hand_config = os.path.join(hand_share, "config", "udp_hand_node.yaml")
-    except Exception:
-        pass
+    # Hand UDP config -- p1a self-contained overlay (in integrated_bringup, always
+    # present). The driver's own config stays generic (/hand/) for standalone use.
+    hand_config = os.path.join(
+        get_package_share_directory("integrated_bringup"),
+        "config",
+        "ur5e_p1a",
+        "udp_hand_node_p1a.yaml",
+    )
 
     # ── Build simulator parameters (defaults → robot YAML → CLI overrides) ──
     sim_params = [sim_default, sim_config]

@@ -26,7 +26,7 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
 
   // Hand motor data: dev1.motor_positions[], motor_velocities[],
   // motor_efforts[] available via state.devices[1].motor_* (populated from
-  // /hand/motor_states)
+  // /p1a/motor_states)
 
   // Hand sensor data (per-fingertip).
   // ToF (raw distances) is still read from sensor_data for the publish-only

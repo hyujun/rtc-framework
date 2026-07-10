@@ -1,0 +1,166 @@
+# udp_hand_node_p1a.yaml -- ur5e_p1a 전용 Hand UDP 드라이버 오버레이
+#
+# p1a device group 의 self-contained UDP 설정 (ur5e_p1b/udp_hand_node_p1b.yaml 와
+# 대칭). robot_ur5e_p1a.launch.py / sim_ur5e_p1a.launch.py 가 이 파일을 로드한다.
+# udp_hand_driver/config/udp_hand_node.yaml 은 driver 의 generic (/hand/) reference
+# 로 남으며 standalone udp_hand.launch.py 가 사용 — 여기서 topic 만 /p1a/ 로 오버레이.
+#
+# 동작 모드 (self-clocked):
+#   - CommLoop 가 loop_rate_hz 로 자율 tick — read + state publish 는 명령 도착과
+#     무관하게 항상 loop_rate_hz 로 수행. write UDP 는 joint_command 수신 시에만.
+#   - rtc_controller_manager 통합 (기본): CM RT loop 가 active controller 있을 때만
+#     /p1a/joint_command 를 publish → write 는 control_rate 로, deactivate 시 정지
+#     (read/publish 는 계속). CM clock 과 hand clock 은 독립.
+#   - standalone (udp_hand_node 단독 실행): ROS2 토픽으로 상태 퍼블리시/명령 구독
+#
+# 통신 프로토콜 (1 사이클, Bulk mode):
+#   1. Write position  (cmd=0x01, kJoint) + recv echo
+#   2. Read all motors (cmd=0x10, kMotor) -> request 3B & recv 123B (pos+vel+cur)
+#   3. Read all motors (cmd=0x10, kJoint) -> request 3B & recv 123B (pos+vel+cur)
+#   4. Read all sensors(cmd=0x19)         -> request 3B & recv 259B (4 fingers)
+#
+# Standalone 모드 ROS2 토픽:
+#   pub: /p1a/joint_states    JointState (joint-space pos:10 + vel:10 + effort:10)
+#   pub: /p1a/motor_states    JointState (motor pos:10 + vel:10 + effort=cur:10)
+#   pub: /p1a/sensor_states   HandSensorState (FingertipSensor[] per fingertip)
+#   pub: /p1a/sensor_states/monitor  HandSensorState (RELIABLE QoS, 비-RT용)
+#   pub: /p1a/link_status     Bool (UDP 링크 상태)
+#   sub: /p1a/joint_command   JointCommand (values[10])
+
+/**:
+  ros__parameters:
+    # -- Fake hand 모드 (하드웨어 없이 standalone 테스트용) --
+    # true: UDP 소켓/스레드 없이 command echo, fake_tick_rate_hz 로 상태 publish.
+    # rtc_controller_manager 통합 모드에서는 CM 측에서 자체 호출하므로 타이머
+    # 충돌을 피하려면 fake_tick_rate_hz 를 0 으로 설정해 node-side 타이머를 생략.
+    use_fake_hand: false
+    fake_tick_rate_hz: 500.0          # 0 이하이면 타이머 생략
+
+    # -- UDP 통신 설정 --
+    target_ip: "192.168.0.100"         # 핸드 컨트롤러 IP
+    target_port: 55151                # 핸드 컨트롤러 포트
+    recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), sub-ms 지원: 0.4 -> 400us
+
+    # -- 통신 모드 --
+    communication_mode: "bulk"        # "individual": 0x11+0x12+0x14~0x17
+                                      # "bulk":       0x10+0x19
+
+    # -- UDP 통신 decimation (부하 감쇠 테스트용) --
+    # N 이면 CommLoop N 사이클 중 1번만 실제 UDP write+read 수행, 나머지 N-1
+    # 사이클은 통신/publish 없이 건너뜀 (sensor_decimation 과 별개 — 이쪽은 전체
+    # 트랜잭션을 감쇠). 1 = 매 사이클 통신 (기본, 기존 동작과 동일).
+    # 유효 comm rate = CommLoop rate / N. on_activate 가 min_rate_hz 를
+    # comm_decimation 으로 자동 스케일하므로 failure detector 오탐 방지를 위한
+    # 수동 조정은 불필요.
+    comm_decimation: 1
+
+    # -- 센서 read decimation --
+    # N 이면 comm 사이클 N 번 중 1번만 센서 read (motor/joint read 는 매 사이클
+    # 유지 — 전체 트랜잭션을 감쇠하는 comm_decimation 과 별개). 1 = 매 사이클 (기본).
+    # 유효 센서 레이트 = loop_rate_hz / (comm_decimation * sensor_decimation).
+    sensor_decimation: 1
+
+    # -- 펌웨어 센서 프로토콜 (버전 seam) --
+    # "1a": barometer/ToF int32 센서 (259B bulk 응답) + LPF/drift/F-T 추론,
+    #       /motor_states 발행. (기본, 기존 동작)
+    # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답).
+    #       force 직접 발행(후처리 없음), motor-space read 스킵 → motor_states 미발행.
+    #       force layout 은 "bulk" 모드 전용 (individual 모드와 조합 시 configure 실패).
+    protocol_version: "1a"
+
+    # -- Self-clocked 루프 주기 (Hz) --
+    # CommLoop 가 이 주기로 자율 tick: read + state publish (joint_states 등) 를
+    # 명령 도착과 무관하게 loop_rate_hz 로 수행. write UDP 는 joint_command 수신 시에만.
+    loop_rate_hz: 500.0
+
+    # -- Publish rate (link_status decimation) --
+    # link_status는 loop_rate_hz(~500Hz)로 보낼 필요 없음.
+    # loop_rate_hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).
+    publish_rate: 100.0
+
+    # -- 센서 LPF 설정 (4차 Bessel LPF) --
+    # 유효 센서 샘플링 레이트 = loop_rate_hz / (comm_decimation * sensor_decimation)
+    baro_lpf_enabled: true            # Barometer 센서 Low-Pass Filter 활성화
+    baro_lpf_cutoff_hz: 100.0         # Barometer LPF 차단 주파수 (Hz)
+    tof_lpf_enabled: true             # VL53L4CD TOF 센서 Low-Pass Filter 활성화
+    tof_lpf_cutoff_hz: 15.0           # TOF LPF 차단 주파수 (Hz)
+
+    # -- Barometer drift detection (one-shot, OLS) --
+    drift_detection_enabled: false    # Drift detection 활성화
+    drift_threshold: 5.0              # |slope| 임계값 (units/sample-index)
+    drift_window_size: 2500           # OLS 윈도우 크기 (samples, 500Hz 기준 5초)
+
+    # -- 모터/핑거팁 이름 (빈 배열이면 기본 이름 사용) --
+    joint_state_names:
+      - "thumb_cmc_aa"
+      - "thumb_cmc_fe"
+      - "thumb_mcp_fe"
+      - "index_mcp_aa"
+      - "index_mcp_fe"
+      - "index_dip_fe"
+      - "middle_mcp_aa"
+      - "middle_mcp_fe"
+      - "middle_dip_fe"
+      - "ring_mcp_fe"
+
+    motor_state_names:
+      - "motor_1"
+      - "motor_2"
+      - "motor_3"
+      - "motor_4"
+      - "motor_5"
+      - "motor_6"
+      - "motor_7"
+      - "motor_8"
+      - "motor_9"
+      - "motor_10"
+
+    hand_fingertip_names:
+      - "thumb"
+      - "index"
+      - "middle"
+      - "ring"
+
+    # -- ROS2 토픽 설정 --
+    command_topic: "/p1a/joint_command"      # JointCommand 구독
+    joint_state_topic: "/p1a/joint_states"   # JointState 발행 (joint pos/vel/effort)
+    motor_state_topic: "/p1a/motor_states"   # JointState 발행 (motor pos/vel/effort)
+    sensor_topic: "/p1a/sensor_states"       # HandSensorState 발행
+    link_status_topic: "/p1a/link_status"    # Bool 발행 (UDP 링크 상태)
+
+    # -- Sensor calibration (trigger + status) --
+    # CalibrationCommand 를 publish 하면 udp_hand_driver 가 지정 센서의
+    # baseline 재측정을 수행 (현재 barometer 지원).
+    # Status 토픽은 transient_local 이므로 late-join 구독자(GUI)가 최신 상태
+    # 즉시 수신. 진행률은 progress_count / target_count 로 계산.
+    calibration_command_topic: "/p1a/calibration/command"
+    calibration_status_topic:  "/p1a/calibration/status"
+    calibration_status_rate_hz: 5.0            # 상태 publish 주기 (Hz)
+
+    # -- Failure Detector 설정 (50Hz non-RT jthread) --
+    enable_failure_detector: true     # Failure detector 활성화
+    failure_threshold: 5              # 연속 감지 횟수 임계값
+    check_motor: true                 # 모터 position 데이터 검사
+    check_sensor: true                # 센서 데이터 검사
+    min_rate_hz: 30.0                 # 최소 허용 polling rate
+    rate_fail_threshold: 5            # 연속 N회 미달 시 failure
+    check_link: true                  # UDP 링크 상태 검사
+    # 채널별 strict link-down (#1): 어느 한 채널(motor/joint/sensor)이라도 이
+    # 시간 budget 만큼 연속 실패하면 link_down latch (한 채널이 살아있어도 마스킹
+    # 안 됨). on_configure 에서 채널별 cycle 수로 환산 —
+    #   motor/joint: ms/1000 × loop_rate_hz / comm_decimation (매 comm 사이클 폴)
+    #   sensor:      추가로 / sensor_decimation (센서는 sensor_decimation 사이클마다 폴)
+    # 로 같은 wall-clock budget 을 유지. CM device_timeout(1000 ms) 보다 아래여야
+    # hand link-down 이 먼저 latch 된다.
+    link_fail_timeout_ms: 100.0        # link_down 판정 시간 budget (채널별 공통)
+
+    # -- Startup grace (#2, 독립 2-window) --
+    # 기동 직후 boot transient (ARP resolution, 펌웨어 부팅, 첫 패킷 왕복) 동안
+    # 오탐 억제. RATE 와 LINK 를 분리:
+    #   startup_grace_ms      : polling-rate 검사 warmup (루프가 정상 cadence 도달까지).
+    #   link_startup_grace_ms : link-down 검사 유예 — ARP/부팅 transient 만 넘기면
+    #                           되므로 훨씬 짧게. CM device_timeout(1000 ms) 보다
+    #                           한참 아래로 두어야 죽은 링크가 rate warmup 에 가려지지
+    #                           않고 먼저 latch 된다. 0 = 즉시 검사.
+    startup_grace_ms: 1000.0
+    link_startup_grace_ms: 100.0

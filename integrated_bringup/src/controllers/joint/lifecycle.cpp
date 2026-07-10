@@ -26,7 +26,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
 
     // ── Controller-owned non-RT publishers (no YAML role mapping) ─────────
     // GraspState rides under the secondary device's namespace, robot-agnostic
-    // (e.g. "hand/grasp_state" for ur5e_p1a). The full topic path is
+    // (e.g. "p1a/grasp_state" for ur5e_p1a). The full topic path is
     // /<config_key>/<secondary>/<topic> because the controller's
     // LifecycleNode lives under /<config_key>/. Only created when the
     // secondary device has fingertip sensors (sensor_names non-empty) —
@@ -92,7 +92,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     // The helper iterates parsed_log_entries_ once, returns instance-keyed
     // handles, and we plug the ones we own into typed members below.
     // Log instance keys are derived from device names so YAML `instance:`
-    // values track the active config_variant (e.g. ur5e_state/hand_state
+    // values track the active config_variant (e.g. ur5e_state/p1a_state
     // for ur5e_p1a vs iiwa7_state/leap_state for iiwa7_leap).
     const auto primary = GetPrimaryDeviceName();
     const auto secondary = GetSecondaryDeviceName();

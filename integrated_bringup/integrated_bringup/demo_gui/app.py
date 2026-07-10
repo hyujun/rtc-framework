@@ -151,7 +151,7 @@ class DemoControllerGUI(Node):
 
         # Sensor calibration (Control tab)
         self.calib_cmd_pub = self.create_publisher(
-            CalibrationCommand, "/hand/calibration/command", 1
+            CalibrationCommand, "/p1a/calibration/command", 1
         )
         # sensor_type -> latest CalibrationStatus snapshot
         self._calib_status: dict[int, CalibrationStatus] = {}
@@ -160,7 +160,7 @@ class DemoControllerGUI(Node):
         # sensor_type -> tk.Label widget (for colour updates)
         self._calib_status_labels: dict[int, tk.Label] = {}
         self.create_subscription(
-            CalibrationStatus, "/hand/calibration/status", self._calib_status_cb, 10
+            CalibrationStatus, "/p1a/calibration/status", self._calib_status_cb, 10
         )
 
         # Robot shape comes from the --robot profile so widgets size to the
@@ -181,7 +181,7 @@ class DemoControllerGUI(Node):
         self.create_subscription(Bool, "/system/estop_status", self._estop_cb, 10)
 
         # Per-group JointState lives on /rtc_cm/<group>/joint_states. The group
-        # names are robot-specific (iiwa7/leap vs ur5e/hand), so these subs are
+        # names are robot-specific (iiwa7/leap vs ur5e/p1a), so these subs are
         # created in the rewire (_rewire_owned_topics) against the active
         # controller's claimed_groups — not hard-wired here.
 
@@ -297,9 +297,9 @@ class DemoControllerGUI(Node):
         for e in self._catalog.latest():
             if e.is_active and e.claimed_groups:
                 arm = e.claimed_groups[0]
-                hand = e.claimed_groups[1] if len(e.claimed_groups) >= 2 else "hand"
+                hand = e.claimed_groups[1] if len(e.claimed_groups) >= 2 else "p1a"
                 return arm, hand
-        return "ur5e", "hand"
+        return "ur5e", "p1a"
 
     def _rewire_if_groups_changed(self) -> None:
         """Re-wire controller-owned topics when the active controller's resolved
@@ -1615,8 +1615,8 @@ class DemoControllerGUI(Node):
         ).pack(side="left", padx=(12, 0))
 
         # ── Sensor Calibration ─────────────────────────────────────────
-        # Triggers recalibration of hand sensors via /hand/calibration/command.
-        # Status updates arrive via /hand/calibration/status subscription.
+        # Triggers recalibration of hand sensors via /p1a/calibration/command.
+        # Status updates arrive via /p1a/calibration/status subscription.
         calib_frame = ttk.LabelFrame(parent, text="Sensor Calibration", padding=4)
         calib_frame.pack(fill="x", padx=8, pady=2)
 

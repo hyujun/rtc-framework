@@ -38,7 +38,7 @@ mujoco_simulator:
     # joint_names:         하위호환 — command_joint_names 미지정 시 대체 사용.
     # 하나라도 다르면 Initialize() FAIL.
     robot_response:
-      groups: ["ur5e", "hand"]
+      groups: ["ur5e", "p1a"]
       ur5e:
         command_joint_names:
           - shoulder_pan_joint
@@ -59,7 +59,7 @@ mujoco_simulator:
         # sensor_topic: "/ur5e/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
         # sensor_names: ["ft_sensor"]          # example: explicit sensor names
-      hand:
+      p1a:
         command_joint_names:
           - thumb_cmc_aa
           - thumb_cmc_fe
@@ -72,7 +72,7 @@ mujoco_simulator:
           - middle_dip_fe
           - ring_mcp_fe
         # state_joint_names 명시: 미지정 시 XML 전체 joint(arm 6 + hand 10)
-        # 가 /hand/joint_states 로 publish 되어 ur5e arm 상태가 hand 그룹에 섞임
+        # 가 /p1a/joint_states 로 publish 되어 ur5e arm 상태가 p1a 그룹에 섞임
         state_joint_names:
           - thumb_cmc_aa
           - thumb_cmc_fe
@@ -84,18 +84,18 @@ mujoco_simulator:
           - middle_mcp_fe
           - middle_dip_fe
           - ring_mcp_fe
-        command_topic: "/hand/joint_command"
-        state_topic: "/hand/joint_states"
-        # sensor_topic: "/hand/sim_sensors"   # uncomment + add sensor_names to enable
+        command_topic: "/p1a/joint_command"
+        state_topic: "/p1a/joint_states"
+        # sensor_topic: "/p1a/sim_sensors"   # uncomment + add sensor_names to enable
         # sensor_names: ["auto"]               # "auto" = all XML sensors, or list specific names
 
     # ── Fake Response (LPF 에코백, MuJoCo 물리 아님) ─────────────────────────
     # robot_response와 같은 그룹 이름 중복 불가.
     # 토픽 이름이 비어있으면 에러.
-    # XML에 hand가 없는 모델 사용 시 hand를 fake_response로 이동.
+    # XML에 hand가 없는 모델 사용 시 p1a 그룹을 fake_response로 이동.
     # fake_response:
-    #   groups: ["hand"]
-    #   hand:
+    #   groups: ["p1a"]
+    #   p1a:
     #     command_joint_names:
     #       - thumb_cmc_aa
     #       - thumb_cmc_fe
@@ -108,7 +108,7 @@ mujoco_simulator:
     #       - middle_dip_fe
     #       - ring_mcp_fe
     #     # state_joint_names: 비우면 command_joint_names와 동일
-    #     command_topic: "/hand/joint_command"
-    #     state_topic: "/hand/joint_states"
+    #     command_topic: "/p1a/joint_command"
+    #     state_topic: "/p1a/joint_states"
     #     filter_alpha: 0.1
 

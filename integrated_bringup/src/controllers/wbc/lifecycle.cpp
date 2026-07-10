@@ -34,7 +34,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
 
     // ── Controller-owned non-RT publisher (no YAML role mapping) ─────────
     // WbcState rides under the secondary device's namespace (e.g.
-    // "hand/wbc_state" for ur5e_p1a, "leap/wbc_state" for iiwa7_leap).
+    // "p1a/wbc_state" for ur5e_p1a, "leap/wbc_state" for iiwa7_leap).
     // Robot-agnostic — derives the prefix from GetSecondaryDeviceName().
     {
       const auto secondary = GetSecondaryDeviceName();

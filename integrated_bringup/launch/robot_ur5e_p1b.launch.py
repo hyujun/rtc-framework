@@ -324,10 +324,10 @@ def generate_launch_description():
         [FindPackageShare("integrated_bringup"), "config", "ur5e_p1b", "robot.yaml"]
     )
 
-    # Hand UDP config -- p1b standalone (self-contained; NOT layered on
-    # udp_hand_driver/config/udp_hand_node.yaml, which is p1a-only). This file
-    # carries every p1b-specific value (bulk/1b, target_ip, /p1b/* topics,
-    # joint/fingertip names) so no p1a base leaks in.
+    # Hand UDP config -- p1b self-contained overlay (symmetric with p1a's
+    # integrated_bringup/config/ur5e_p1a/udp_hand_node_p1a.yaml). Carries every
+    # p1b-specific value (bulk/1b, target_ip, /p1b/* topics, joint/fingertip
+    # names). The driver's own config/udp_hand_node.yaml stays generic (/hand/).
     p1b_hand_udp_config = PathJoinSubstitution(
         [FindPackageShare("integrated_bringup"), "config", "ur5e_p1b", "udp_hand_node_p1b.yaml"]
     )

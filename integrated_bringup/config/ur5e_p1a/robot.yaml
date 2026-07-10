@@ -34,13 +34,13 @@
           - "wrist_1_joint"
           - "wrist_2_joint"
           - "wrist_3_joint"
-      hand:
+      p1a:
         backend:
           type: "udp_hand_native"   # UDP hand driver — joint + motor + sensor lanes
-          state_topic:   "/hand/joint_states"
-          command_topic: "/hand/joint_command"
-          motor_topic:   "/hand/motor_states"
-          sensor_topic:  "/hand/sensor_states"
+          state_topic:   "/p1a/joint_states"
+          command_topic: "/p1a/joint_command"
+          motor_topic:   "/p1a/motor_states"
+          sensor_topic:  "/p1a/sensor_states"
         motor_state_names:
           - "motor_1"
           - "motor_2"

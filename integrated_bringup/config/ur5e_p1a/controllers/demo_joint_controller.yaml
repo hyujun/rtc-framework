@@ -55,9 +55,9 @@ demo_joint_controller:
         - topic: "transforms"
           role: "robot_transforms"
           ownership: "controller"
-    hand:
+    p1a:
       subscribe:
-        - topic: "hand/joint_goal"
+        - topic: "p1a/joint_goal"
           role: "target"
           ownership: "controller"
       # GraspState / ToFSnapshot publishers are controller-owned and created
@@ -73,6 +73,6 @@ demo_joint_controller:
     - msg_type: rtc_msgs/DeviceStateLog
       instance: ur5e_state
     - msg_type: rtc_msgs/DeviceStateLog
-      instance: hand_state
+      instance: p1a_state
     - msg_type: rtc_msgs/DeviceSensorLog
-      instance: hand_sensor
+      instance: p1a_sensor

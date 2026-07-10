@@ -15,7 +15,7 @@
 # from urdf.tree_models.wbc (ur5e_p1a/sim.yaml / ur5e_p1a/robot.yaml). That tree
 # locks all URDF <mimic> joints, yielding nq == nv == 16 (6 UR5e arm
 # + 10 actuated hand joints). Joint ordering follows the joint_state_names
-# of devices.ur5e then devices.hand in the runtime YAML.
+# of devices.ur5e then devices.p1a in the runtime YAML.
 
 grasp_phase_manager:
   transition:
@@ -26,9 +26,9 @@ grasp_phase_manager:
 
   # ── Cost anchors (reusable per-phase blocks) ──────────────────────────────
   # Postures are 16-vec. Layout (Pinocchio idx_q order in the reduced "mpc"
-  # tree; matches devices.ur5e + devices.hand joint_state_names):
+  # tree; matches devices.ur5e + devices.p1a joint_state_names):
   #   [0..5]   UR5e:  shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3
-  #   [6..15]  hand:  thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe,
+  #   [6..15]  p1a:  thumb_cmc_aa, thumb_cmc_fe, thumb_mcp_fe,
   #                   index_mcp_aa, index_mcp_fe, index_dip_fe,
   #                   middle_mcp_aa, middle_mcp_fe, middle_dip_fe,
   #                   ring_mcp_fe

@@ -27,11 +27,11 @@
           type: "mujoco_native"            # sim mode: MuJoCo bridge
           state_topic: "/joint_states"     # sim publishes full URDF joints here
           command_topic: "/ur5e/joint_command"
-      hand:
+      p1a:
         backend:
           type: "mujoco_native"            # sim mode: MuJoCo bridge (no motor / sensor lanes)
-          state_topic: "/hand/joint_states"
-          command_topic: "/hand/joint_command"
+          state_topic: "/p1a/joint_states"
+          command_topic: "/p1a/joint_command"
         # has_native_* both false: mujoco backend does not synthesize contact
         # probability or displacement vectors (sensor_topic is unset in sim).
         # Controllers fall back to |force| > grasp_force_threshold derive.

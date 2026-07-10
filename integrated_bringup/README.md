@@ -238,7 +238,7 @@ demo_task_controller:
 | `robot_transforms` (Phase 2-3; 모든 데모 컨트롤러) | 컨트롤러 | YAML `topics:` `role: robot_transforms` (`kRobotTransforms`) — `<config_key>/transforms` (`tf2_msgs/TFMessage`, RELIABLE/10). **DemoJoint / DemoTask**: `base→tool0_actual` + `base→{thumb,index,middle,ring}_tip_link_actual` + `base→virtual_tcp_actual` = 6 frame. **DemoWbc** (#123 Phase 2): `base→tool0_actual` + `base→{thumb,index,middle,ring}_tip_link_actual` (loop-consistent fingertip FK, publish 표면 — DIP 구동에 반응) + `base→wbc_alpha_actual` placeholder (D-5, valid=false). 단일 publisher per controller (D-2/D-10) — YAML entry는 첫 group의 `publish:` 에 두고 owned_topics가 system YAML `urdf.{sub,tree}_models` 로 frame slot 자동 빌드. Active controller만 LifecyclePublisher 활성 |
 | `state` (per-group `joint_states`) | CM | `/rtc_cm/<group>/joint_states` (`JointState`) |
 | device-wire command lane (`joint_command`, `ros2_command`) | **DeviceBackend** (`b9a2587`) | `devices.<group>.backend:` SSoT — backend 구현체가 직접 publish/serialize. CM/controller YAML 에서 device-wire role 라인 사라짐 |
-| `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/<device>_{state,sensor}.csv` — instance 키는 `GetPrimaryDeviceName()`/`GetSecondaryDeviceName()` 에서 동적 파생 (ur5e_p1a → `ur5e_state.csv`/`hand_state.csv`/`hand_sensor.csv`, iiwa7_leap → `iiwa7_state.csv`/`leap_state.csv`) |
+| `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/<device>_{state,sensor}.csv` — instance 키는 `GetPrimaryDeviceName()`/`GetSecondaryDeviceName()` 에서 동적 파생 (ur5e_p1a → `ur5e_state.csv`/`p1a_state.csv`/`p1a_sensor.csv`, iiwa7_leap → `iiwa7_state.csv`/`leap_state.csv`) |
 | `device_wbc_log` / `wbc_diag_log` (CSV, WBC 전용) | `DemoWbcController` (`ControllerLogSet`) | WBC 는 arm/hand `<device>_state.csv` 를 generic DeviceStateLog 대신 superset `DeviceWbcLog` (`msg_type: integrated_bringup/DeviceWbcLog`) 로 쓴다 — TSID `a_opt` 가속도 + SE3 trajectory(arm role)/fingertip force(hand role — |F| `fingertip_force_*` + 벡터 `fingertip_fx_/fy_/fz_*`). 추가로 per-tick `wbc_diag.csv` (`msg_type: integrated_bringup/WbcDiagLog`) 에 solve time / λ / 수렴 / grasp 진단을 1행씩. Path A — POD-only, rtc_msgs `.msg` 무변경. fill 은 controller-private (`compute.cpp`); E-STOP 경로는 push 안 함 |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
@@ -275,7 +275,7 @@ position_output = quintic(t, q_start, q_goal, duration)
 
 **ContactStopHand:** 핑거팁 센서에서 힘 감지 시 핸드 궤적 출력을 현재 위치로 동결하여 과도한 hand closure를 방지합니다.
 
-**Release-Phase Skip (contact_stop 모드 전용):** 사용자가 토픽(`/hand/joint_goal`)으로 손을 여는 방향의 goal을 내린 경우에는 접촉 잔존 힘이 있더라도 contact_stop 동결을 자동으로 건너뜁니다. 아래 3개 조건이 모두 성립해야 release 의도로 인정됩니다 (ε = `fsm.contact_stop_release_eps` rad 히스테리시스, 기본 0.005):
+**Release-Phase Skip (contact_stop 모드 전용):** 사용자가 토픽(`/p1a/joint_goal`)으로 손을 여는 방향의 goal을 내린 경우에는 접촉 잔존 힘이 있더라도 contact_stop 동결을 자동으로 건너뜁니다. 아래 3개 조건이 모두 성립해야 release 의도로 인정됩니다 (ε = `fsm.contact_stop_release_eps` rad 히스테리시스, 기본 0.005):
 
 - `thumb_cmc_fe`: `target > actual + ε` (각도 증가 = loosening)
 - `index_mcp_fe`: `target < actual − ε` (각도 감소 = loosening)
@@ -443,7 +443,7 @@ ros2 topic pub /demo_wbc_controller/ur5e/joint_goal rtc_msgs/RobotTarget \
   "{joint_target: [0.0, -1.2, 1.0, -1.4, -1.57, 0.0]}" -1
 
 # 2. Hand close target
-ros2 topic pub /demo_wbc_controller/hand/joint_goal rtc_msgs/RobotTarget \
+ros2 topic pub /demo_wbc_controller/p1a/joint_goal rtc_msgs/RobotTarget \
   "{joint_target: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]}" -1
 
 # 3. grasp 시작 (Force-PI one-shot srv) + se3_weight 튜닝
@@ -745,7 +745,7 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 - 핸드 모터 슬라이더 (Thumb / Index / Middle / Ring — finger 그루핑은 motor name prefix 로 자동 추론)
 - E-STOP 상태 (`/system/estop_status`), 실시간 TCP/관절 위치 표시
 - 핸드 자세 프리셋 저장/로드 (JSON)
-- 센서 캘리브레이션 (`/hand/calibration/command`)
+- 센서 캘리브레이션 (`/p1a/calibration/command`)
 
 ### motion_editor_gui
 
@@ -817,13 +817,13 @@ ros2 run integrated_bringup motion_editor_gui
           max_torque: [150, 150, 150, 28, 28, 28]
           position_lower: [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
           position_upper: [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
-      hand:
+      p1a:
         backend:                                # Phase 4 SSoT
           type: "udp_hand_native"
-          state_topic:   "/hand/joint_states"
-          command_topic: "/hand/joint_command"
-          motor_topic:   "/hand/motor_states"
-          sensor_topic:  "/hand/sensor_states"
+          state_topic:   "/p1a/joint_states"
+          command_topic: "/p1a/joint_command"
+          motor_topic:   "/p1a/motor_states"
+          sensor_topic:  "/p1a/sensor_states"
         joint_state_names: [thumb_cmc_aa, ..., ring_mcp_fe]  # 10
         motor_state_names: [motor_1, ..., motor_10]          # 10
         sensor_names: [thumb, index, middle, ring]            # 4

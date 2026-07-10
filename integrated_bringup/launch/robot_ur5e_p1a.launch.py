@@ -3,7 +3,7 @@
 # Launch order (event-driven):
 #   1. Environment vars (RMW, CycloneDDS, session dir)
 #   2. CPU shield, UR driver, udp_hand_node  (parallel)
-#   3. Readiness gate: polls /joint_states and /hand/joint_states publishers
+#   3. Readiness gate: polls /joint_states and /p1a/joint_states publishers
 #   4. integrated_rt_controller node starts ONLY after gate exits successfully
 #   5. DDS thread pinning runs 5 s after the CM process starts
 #
@@ -324,9 +324,11 @@ def generate_launch_description():
         [FindPackageShare("integrated_bringup"), "config", "ur5e_p1a", "robot.yaml"]
     )
 
-    # Hand UDP config (udp_hand_driver package)
+    # Hand UDP config -- p1a self-contained overlay (/p1a/* topics). The driver's
+    # own config/udp_hand_node.yaml stays generic (/hand/) for standalone use;
+    # p1a ships its variant config in integrated_bringup (symmetric with p1b).
     hand_udp_config = PathJoinSubstitution(
-        [FindPackageShare("udp_hand_driver"), "config", "udp_hand_node.yaml"]
+        [FindPackageShare("integrated_bringup"), "config", "ur5e_p1a", "udp_hand_node_p1a.yaml"]
     )
 
     # Fingertip F/T inferencer config (udp_hand_driver package)
@@ -473,7 +475,7 @@ def generate_launch_description():
     )
 
     # ── Hand UDP driver node (LifecycleNode) ──────────────────────────────────
-    # Publishes /hand/joint_states and /hand/sensor_states for integrated_rt_controller.
+    # Publishes /p1a/joint_states and /p1a/sensor_states for integrated_rt_controller.
     udp_hand_node = LifecycleNode(
         package="udp_hand_driver",
         executable="udp_hand_node",
@@ -535,7 +537,7 @@ def generate_launch_description():
 
     # ── Readiness gate ────────────────────────────────────────────────────────
     # Polls until UR driver publishes /joint_states AND udp_hand_node publishes
-    # /hand/joint_states.  integrated_rt_controller is chained to start only after
+    # /p1a/joint_states.  integrated_rt_controller is chained to start only after
     # this gate process exits successfully (via OnProcessExit event handler).
     comm_readiness_gate = ExecuteProcess(
         cmd=[
@@ -548,12 +550,12 @@ def generate_launch_description():
             '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
             '  && echo "[RT]   /joint_states publisher OK" '
             '  || { echo "[RT] FATAL: /joint_states not available after 30 s"; exit 1; }; '
-            # --- Wait for /hand/joint_states publisher (udp_hand_node) ---
+            # --- Wait for /p1a/joint_states publisher (udp_hand_node) ---
             "timeout 30 bash -c '"
-            "while ! ros2 topic info /hand/joint_states 2>/dev/null "
+            "while ! ros2 topic info /p1a/joint_states 2>/dev/null "
             '  | grep -q "Publisher count: [1-9]"; do sleep 0.5; done\' '
-            '  && echo "[RT]   /hand/joint_states publisher OK" '
-            '  || { echo "[RT] FATAL: /hand/joint_states not available after 30 s"; exit 1; }; '
+            '  && echo "[RT]   /p1a/joint_states publisher OK" '
+            '  || { echo "[RT] FATAL: /p1a/joint_states not available after 30 s"; exit 1; }; '
             # --- Wait for forward_position_controller subscriber (ros2_control) ---
             "timeout 30 bash -c '"
             "while ! ros2 topic info /forward_position_controller/commands 2>/dev/null "

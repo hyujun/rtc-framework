@@ -26,7 +26,7 @@
 
     # ── E-STOP device roster (thresholds are mode-specific deltas) ────────────
     # device_timeouts: matches topics group names, watches state topic for gaps
-    device_timeout_names: ["ur5e", "hand"]
+    device_timeout_names: ["ur5e", "p1a"]
 
     # ── Logging configuration ─────────────────────────────────────────────────
     enable_logging: true
@@ -58,9 +58,9 @@
           root_link: "base"
           tip_link: "tool0"
       # ── Hand tree-model (10-DOF branching) ──────────────────────────────
-      # Name matches device group "hand".
+      # Name matches device group "p1a".
       tree_models:
-        hand:
+        p1a:
           root_link: "hand_base_link"
           tip_links: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
         # WBC control tree (arm + hand, shared by TSID and MPC). Mimic
@@ -93,7 +93,7 @@
           max_torque:       [150.0, 150.0, 150.0, 28.0, 28.0, 28.0]
           position_lower:   [-6.28, -6.28, -3.14, -6.28, -6.28, -6.28]
           position_upper:   [6.28, 6.28, 3.14, 6.28, 6.28, 6.28]
-      hand:
+      p1a:
         joint_state_names:
           - "thumb_cmc_aa"
           - "thumb_cmc_fe"
@@ -116,7 +116,7 @@
           position_upper: [1.57, 1.57, 0.00, 0.15, 1.57, 1.57, 0.15, 1.57, 1.57, 1.57]
         # Sensor packing layout — CM uses these for stride/offset arithmetic
         # only; the field semantics (barometer/ToF/contact/F/u) live in the
-        # device-driver package (udp_hand_driver). assm_v1 hand: per
+        # device-driver package (udp_hand_driver). assm_v1 p1a: per
         # fingertip, primary=8 barometers + secondary=3 ToFs (= 11 sensor
         # values); ML inference output = contact(1) + F(3) + u(3) = 7.
         # has_native_contact / has_native_displacement (whether the configured

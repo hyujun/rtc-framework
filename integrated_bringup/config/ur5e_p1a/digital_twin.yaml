@@ -21,11 +21,11 @@
     source_0.topic: "/rtc_cm/ur5e/joint_states"
     source_0.joint_names: [""]        # empty/"" = accept all joints from topic
 
-    source_1.topic: "/rtc_cm/hand/joint_states"
+    source_1.topic: "/rtc_cm/p1a/joint_states"
     source_1.joint_names: [""]
 
     # ── Sensor visualization (10-DOF hand fingertip sensors) ──────────
-    sensor_viz.sensor_topic: "/hand/sensor_states/monitor"
+    sensor_viz.sensor_topic: "/p1a/sensor_states/monitor"
     # Each name is used verbatim as the marker frame_id (must match a link in
     # the combined URDF); assm_v1 hand names its fingertips `<finger>_tip_link`.
     sensor_viz.fingertip_names: ["thumb_tip_link", "index_tip_link", "middle_tip_link", "ring_tip_link"]
