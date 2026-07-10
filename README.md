@@ -219,10 +219,10 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py
 
 # 실제 로봇 (CycloneDDS 성능 최적화 설정 자동 로드)
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10
+ros2 launch integrated_bringup robot_ur5e_p1a.launch.py robot_ip:=192.168.1.10
 
 # 가상 하드웨어 (로봇 불필요)
-ros2 launch integrated_bringup robot.launch.py use_fake_hardware:=true
+ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_fake_hardware:=true
 
 # 핸드 드라이버 노드
 ros2 launch udp_hand_driver udp_hand.launch.py target_ip:=192.168.1.2

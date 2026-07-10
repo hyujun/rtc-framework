@@ -112,7 +112,7 @@ void SetYamlScalarFromParam(YAML::Node node, const std::string& key,
 //
 // Rationale — the controller config is read via `YAML::LoadFile(...)` and
 // does NOT participate in the ROS parameter tree, so launch-arg overrides
-// (e.g. sim.launch.py's `enable_mpc` / `mpc_engine` flags) would otherwise
+// (e.g. sim_ur5e_p1a.launch.py's `enable_mpc` / `mpc_engine` flags) would otherwise
 // be silently discarded. This helper is the single bridge between the two.
 void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode& node, YAML::Node ctrl_node,
                                    const std::string& config_key) {

@@ -441,7 +441,7 @@ def generate_launch_description():
     # The `enable_mpc` launch arg is declared below but takes effect through
     # the runtime gains topic (index 7) rather than a param override here —
     # robot_ur5e_p1b.launch.py does not use OpaqueFunction, and nested YAML overrides
-    # would require restructuring the launch. The sim.launch.py flow does
+    # would require restructuring the launch. The sim_ur5e_p1a.launch.py flow does
     # inject the override directly via its OpaqueFunction setup.
     # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
     # in LifecycleNode.__init__); earlier distros defaulted it implicitly.

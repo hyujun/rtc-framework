@@ -62,9 +62,9 @@ Secure Boot 가 disabled 라면 helper 는 그 사실을 알리고 즉시 종료
 ## Capture (sim 또는 robot)
 
 ```bash
-ros2 launch integrated_bringup sim.launch.py enable_tracing:=true
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true
 # 또는
-ros2 launch integrated_bringup robot.launch.py enable_tracing:=true
+ros2 launch integrated_bringup robot_ur5e_p1a.launch.py enable_tracing:=true
 
 # 출력: <ws>/logging_data/<YYMMDD_HHMM>/tracing/<session_name>/  (LTTng CTF 디렉토리)
 # CSV timing log 와 동일한 session_dir 트리에 들어가므로 archive / 분석이 1:1 매칭.
@@ -90,18 +90,18 @@ LaunchArgument:
 
 ```bash
 # 기본 (UST 전체 + kernel sched + IRQ)
-ros2 launch integrated_bringup sim.launch.py enable_tracing:=true
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true
 
 # UST only (kernel module / tracing group 없을 때)
-ros2 launch integrated_bringup sim.launch.py enable_tracing:=true \
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
     trace_events_kernel:=
 
 # callback timing 만 (좁은 UST + 풀 kernel)
-ros2 launch integrated_bringup sim.launch.py enable_tracing:=true \
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
     trace_events_ust:=ros2:callback_start,ros2:callback_end
 
 # 명시적 session 이름 (CI / 여러 run 비교)
-ros2 launch integrated_bringup sim.launch.py enable_tracing:=true \
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
     trace_session_name:=mpc_phase4_baseline
 ```
 

@@ -194,7 +194,7 @@ def launch_setup(context, *args, **kwargs):
     actions = [set_session_dir]
 
     if use_affinity.lower() in ("true", "1", "yes"):
-        # Mirror robot.launch.py: probe `sudo -n true` first.  Launch's stdin
+        # Mirror robot_ur5e_p1a.launch.py: probe `sudo -n true` first.  Launch's stdin
         # isn't a tty so an interactive sudo prompt would silently hang and
         # leave the cores un-isolated — better to warn loudly and skip.
         enable_sim_cpu_shield = ExecuteProcess(

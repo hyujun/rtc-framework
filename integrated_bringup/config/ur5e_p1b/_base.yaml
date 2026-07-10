@@ -12,7 +12,7 @@
 #
 # Launch wiring: sim_ur5e_p1b.launch.py / robot_ur5e_p1b.launch.py prepend this
 # file to the RT node's parameters list. control_rate SSoT also lives here —
-# sim.launch.py reads control_rate for the MuJoCo fake-hand from THIS file.
+# sim_ur5e_p1b.launch.py reads control_rate for the MuJoCo fake-hand from THIS file.
 /**:
   ros__parameters:
     # ── Config variant directory ─────────────────────────────────────────────

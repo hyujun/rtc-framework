@@ -74,7 +74,7 @@ if [[ -z "$INPUT" ]]; then
   INPUT="$(ls -1dt "$WS"/logging_data/[0-9]*/tracing/*/ 2>/dev/null | head -1 || true)"
   if [[ -z "$INPUT" ]]; then
     echo "[timeline] no CTF trace found under $WS/logging_data/*/tracing/" >&2
-    echo "[timeline] capture first:  ros2 launch integrated_bringup sim.launch.py enable_tracing:=true" >&2
+    echo "[timeline] capture first:  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true" >&2
     exit 1
   fi
   INPUT="${INPUT%/}"

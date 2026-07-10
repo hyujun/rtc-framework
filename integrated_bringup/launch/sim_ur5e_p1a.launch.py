@@ -1,23 +1,23 @@
 """
-sim.launch.py — MuJoCo simulation launch file for UR5e
+sim_ur5e_p1a.launch.py — MuJoCo simulation launch file for UR5e
 ======================================================
 
 Usage:
   # Default (uses YAML config)
-  ros2 launch integrated_bringup sim.launch.py
+  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 
   # Headless mode (no display)
-  ros2 launch integrated_bringup sim.launch.py enable_viewer:=false
+  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false
 
   # External Menagerie model
-  ros2 launch integrated_bringup sim.launch.py \
+  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py \
       model_path:=/path/to/mujoco_menagerie/universal_robots_ur5e/scene.xml
 
   # PD gain tuning
-  ros2 launch integrated_bringup sim.launch.py kp:=10.0 kd:=1.0
+  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py kp:=10.0 kd:=1.0
 
   # max_rtf override
-  ros2 launch integrated_bringup sim.launch.py max_rtf:=10.0
+  ros2 launch integrated_bringup sim_ur5e_p1a.launch.py max_rtf:=10.0
 
 Nodes launched:
   1. mujoco_simulator_node  — MuJoCo physics simulator (replaces UR driver)
@@ -196,7 +196,7 @@ def launch_setup(context, *args, **kwargs):
     actions = [set_session_dir]
 
     if use_affinity.lower() in ("true", "1", "yes"):
-        # Mirror robot.launch.py: probe `sudo -n true` first.  Launch's stdin
+        # Mirror robot_ur5e_p1a.launch.py: probe `sudo -n true` first.  Launch's stdin
         # isn't a tty so an interactive sudo prompt would silently hang and
         # leave the cores un-isolated — better to warn loudly and skip.
         enable_sim_cpu_shield = ExecuteProcess(

@@ -8,7 +8,7 @@ update, deleted ``__init__.py``, renamed module), this test fails at
 ``ros2 launch`` time on a fresh install.
 
 The symbols listed below are the exact ones imported by
-``integrated_bringup/launch/{robot,sim,sim_iiwa7_leap}.launch.py``.
+``integrated_bringup/launch/{robot_ur5e_p1a,sim_ur5e_p1a,sim_iiwa7_leap}.launch.py``.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import pytest
 
 
 def test_trace_action_helper_importable() -> None:
-    """``make_trace_action`` is used by sim*.launch.py / robot.launch.py for
+    """``make_trace_action`` is used by sim*.launch.py / robot_ur5e_p1a.launch.py for
     opt-in ros2_tracing capture.
 
     ``trace_action`` depends on the ROS 2 ``launch`` package, which is unavailable
@@ -50,7 +50,7 @@ def test_thread_layout_helpers_importable() -> None:
 
 
 def test_session_dir_helpers_importable() -> None:
-    """``session_dir`` helpers are used by both robot.launch.py and sim*.launch.py."""
+    """``session_dir`` helpers are used by both robot_ur5e_p1a.launch.py and sim*.launch.py."""
     from rtc_tools.utils.session_dir import (
         cleanup_old_sessions,
         create_session_dir,

@@ -1,7 +1,7 @@
 # MuJoCo Simulator — UR5e + 10-DOF hand configuration
 # ─────────────────────────────────────────────────────
 # Robot-specific overrides for the agnostic mujoco_simulator_node.
-# Loaded by integrated_bringup/launch/sim.launch.py.
+# Loaded by integrated_bringup/launch/sim_ur5e_p1a.launch.py.
 #
 # Agnostic defaults + solver SSoT live in rtc_mujoco_sim/config/solver_param.yaml
 #   (이 파일이 먼저 로드되고, 본 yaml이 robot-specific 키를 override함).

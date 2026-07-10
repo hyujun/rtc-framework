@@ -8,7 +8,7 @@
     2. Discovery tuning — reduced lease/heartbeat for faster failover
     3. Nack delay minimized — faster reliable data delivery
 
-  Thread affinity: handled by taskset in robot.launch.py (CycloneDDS 0.11+
+  Thread affinity: handled by taskset in robot_ur5e_p1a.launch.py (CycloneDDS 0.11+
   removed <Internal><Threads> XML support).
 
   Loaded automatically via CYCLONEDDS_URI env var set in launch files.

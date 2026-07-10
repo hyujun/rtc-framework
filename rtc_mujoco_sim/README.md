@@ -507,7 +507,7 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... max_rtf:=10.0
 ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... enable_viewer:=false
 ```
 
-> **이 launch는 mujoco_simulator_node 단독만 띄우는 agnostic smoke test입니다.** RT 컨트롤러를 함께 실행하는 통합 시나리오는 robot-specific bringup의 launch (예: `ros2 launch integrated_bringup sim.launch.py`)를 사용하세요.
+> **이 launch는 mujoco_simulator_node 단독만 띄우는 agnostic smoke test입니다.** RT 컨트롤러를 함께 실행하는 통합 시나리오는 robot-specific bringup의 launch (예: `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py`)를 사용하세요.
 
 ### Launch 파라미터
 

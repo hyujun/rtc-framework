@@ -1,5 +1,5 @@
 # ur5e_p1a/sim.yaml — MuJoCo-simulation delta (overlaid on _base.yaml)
-# Used by sim.launch.py. For real robot, use robot.yaml instead.
+# Used by sim_ur5e_p1a.launch.py. For real robot, use robot.yaml instead.
 # Loaded AFTER _base.yaml, which holds all mode-agnostic config (URDF/model
 # topology, joint & sensor rosters, limits, control_rate, logging). This file
 # owns ONLY what differs from real hardware: MuJoCo backends + sim topics,

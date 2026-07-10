@@ -671,7 +671,7 @@ taskset -cp $(pgrep -f ur_ros2_control_node)   # UR driver
 
 **측정 방법**:
 ```bash
-ros2 launch integrated_bringup sim.launch.py  # 또는 robot.launch.py
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py  # 또는 robot_ur5e_p1a.launch.py
 # 충분한 샘플 (≥ 30s @ 500 Hz = 15k tick) 후 종료
 # 결과는 logging_data/<session_id>/timing/cm_timing_log.csv
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --stats   # 통계만 (plot 생략)
@@ -728,7 +728,7 @@ sudo perf stat -e context-switches,cpu-migrations -p $PID sleep 10
 
 ```bash
 ./install.sh --tracing                                              # 1회 setup
-ros2 launch integrated_bringup sim.launch.py enable_tracing:=true   # 캡처
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true   # 캡처
 ./repo_scripts/scripts/timeline.sh                                  # Perfetto JSON 변환
 ```
 
@@ -826,7 +826,7 @@ done
 **원인 3**: DDS 스레드가 RT 코어 사용
 ```bash
 # CycloneDDS 0.11+ (Jazzy): <Internal><Threads> XML은 더 이상 지원되지 않음.
-# 대신 taskset으로 DDS 스레드를 비-RT 코어에 고정 (robot.launch.py에서 자동 처리).
+# 대신 taskset으로 DDS 스레드를 비-RT 코어에 고정 (robot_ur5e_p1a.launch.py에서 자동 처리).
 # 수동 확인:
 PID=$(pgrep -nf "integrated_rt_controller")
 for TID in $(ls /proc/$PID/task/); do
@@ -906,7 +906,7 @@ export CYCLONEDDS_URI=file://$(ros2 pkg prefix rtc_controller_manager)/share/rtc
 | `MaxQueuedRexmitMessages` | `256` | 버스트 퍼블리시 시 패킷 병합 |
 
 > **NOTE**: CycloneDDS 0.11+ (Jazzy)에서 `<Internal><Threads>` 제거됨.
-> DDS 스레드 affinity는 `taskset`으로 처리 (`robot.launch.py` 참조).
+> DDS 스레드 affinity는 `taskset`으로 처리 (`robot_ur5e_p1a.launch.py` 참조).
 
 #### Fast DDS
 ```xml

@@ -6,7 +6,7 @@
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
-| `[Watchdog] /rtc_cm/<arm_group>/joint_states: no messages` | RT 컨트롤러 미실행 | `sim.launch.py` 또는 `robot.launch.py` 먼저 시작 |
+| `[Watchdog] /rtc_cm/<arm_group>/joint_states: no messages` | RT 컨트롤러 미실행 | `sim_ur5e_p1a.launch.py` 또는 `robot_ur5e_p1a.launch.py` 먼저 시작 |
 | 트리가 즉시 FAILURE | 비전 토픽 미발행 | `/world_target_info` 발행 확인 |
 | `[FAILED] IsObjectDetected` | 비전 미감지 | `/world_target_info` 토픽 확인 |
 | `[FAILED] MoveToPose` (timeout) | 목표 도달 실패 | tolerance 완화 또는 gains 조정 |

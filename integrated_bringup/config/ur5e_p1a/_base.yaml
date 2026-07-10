@@ -11,8 +11,8 @@
 # merged), so every array param (joint_state_names, joint_limits, sensor_names)
 # belongs here only.
 #
-# Launch wiring: sim.launch.py / robot.launch.py prepend this file to the RT
-# node's parameters list. control_rate SSoT also lives here — sim.launch.py
+# Launch wiring: sim_ur5e_p1a.launch.py / robot_ur5e_p1a.launch.py prepend this file to the RT
+# node's parameters list. control_rate SSoT also lives here — sim_ur5e_p1a.launch.py
 # reads control_rate for the MuJoCo fake-hand from THIS file.
 /**:
   ros__parameters:

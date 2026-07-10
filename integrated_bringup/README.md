@@ -10,7 +10,7 @@ UR5e 로봇을 위한 **launch, 설정, 데모 컨트롤러** 통합 패키지�
 
 **핵심 기능:**
 - 3개 데모 컨트롤러 (DemoJointController, DemoTaskController, DemoWbcController — TSID QP whole-body + MPC 통합)
-- 5개 launch 파일: `robot.launch.py` / `robot_ur5e_p1b.launch.py` (실로봇), `sim.launch.py` / `sim_ur5e_p1b.launch.py` / `sim_iiwa7_leap.launch.py` (MuJoCo)
+- 5개 launch 파일: `robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` (실로봇), `sim_ur5e_p1a.launch.py` / `sim_ur5e_p1b.launch.py` / `sim_iiwa7_leap.launch.py` (MuJoCo)
 - 2개 GUI 도구 (컨트롤러 튜닝, 모션 에디터)
 - 자동 CPU 격리 + DDS 스레드 핀닝
 - 세션 디렉토리 자동 생성 및 정리
@@ -75,9 +75,9 @@ integrated_bringup/
 │           ├── contact_light.yaml      <- rtc_mpc ContactLightOCP factory config
 │           └── contact_rich.yaml       <- rtc_mpc ContactRichOCP factory config
 ├── launch/
-│   ├── robot.launch.py                 <- 실제 UR5e(+assm_v1 hand) 로봇 launch (udp_hand_node 포함)
+│   ├── robot_ur5e_p1a.launch.py                 <- 실제 UR5e(+assm_v1 hand) 로봇 launch (udp_hand_node 포함)
 │   ├── robot_ur5e_p1b.launch.py        <- 실제 UR5e + proto_1b(closed-chain hand) 로봇 launch
-│   ├── sim.launch.py                   <- MuJoCo 시뮬레이션 launch (ur5e_p1a)
+│   ├── sim_ur5e_p1a.launch.py                   <- MuJoCo 시뮬레이션 launch (ur5e_p1a)
 │   ├── sim_ur5e_p1b.launch.py          <- MuJoCo 시뮬레이션 launch (ur5e_p1b, closed-chain)
 │   └── sim_iiwa7_leap.launch.py        <- MuJoCo 시뮬레이션 launch (iiwa7 + LEAP Hand)
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈)
@@ -432,10 +432,10 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 ```bash
 # MPC 비활성 (TSID self-hold만)
-ros2 launch integrated_bringup sim.launch.py initial_controller:=demo_wbc_controller
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py initial_controller:=demo_wbc_controller
 
-# MPC 활성 (sim.launch.py는 launch arg 오버라이드 지원)
-ros2 launch integrated_bringup sim.launch.py \
+# MPC 활성 (sim_ur5e_p1a.launch.py는 launch arg 오버라이드 지원)
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py \
     initial_controller:=demo_wbc_controller enable_mpc:=true
 
 # 1. Pre-grasp 위치로 approach  (target 토픽은 active controller가 소유)
@@ -461,7 +461,7 @@ ros2 service call /demo_wbc_controller/grasp_command \
   rtc_msgs/srv/GraspCommand "{command: 2, target_force: 0.0}"
 ```
 
-> `robot.launch.py`의 `enable_mpc` launch arg는 선언만 되어 있고 OpaqueFunction을 쓰지 않으므로 런타임 `mpc_enable` 파라미터로 토글해야 한다. `sim.launch.py`는 `ctrl_overrides`에 `demo_wbc_controller.mpc.enabled`를 주입해 launch 시점에 반영한다.
+> `robot_ur5e_p1a.launch.py`의 `enable_mpc` launch arg는 선언만 되어 있고 OpaqueFunction을 쓰지 않으므로 런타임 `mpc_enable` 파라미터로 토글해야 한다. `sim_ur5e_p1a.launch.py`는 `ctrl_overrides`에 `demo_wbc_controller.mpc.enabled`를 주입해 launch 시점에 반영한다.
 
 #### Anomaly 보호
 
@@ -537,11 +537,11 @@ export RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}"
 
 ## Launch 파일
 
-### robot.launch.py -- 실제 로봇
+### robot_ur5e_p1a.launch.py -- 실제 로봇
 
 ```bash
-ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10
-ros2 launch integrated_bringup robot.launch.py use_mock_hardware:=true  # 모의 테스트
+ros2 launch integrated_bringup robot_ur5e_p1a.launch.py robot_ip:=192.168.1.10
+ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_mock_hardware:=true  # 모의 테스트
 ```
 
 **Launch 인자:**
@@ -559,7 +559,7 @@ ros2 launch integrated_bringup robot.launch.py use_mock_hardware:=true  # 모의
 | `controller_spawner_timeout` | `10` | controller_manager spawner의 load/activate 대기(초). 부하로 startup이 느리면 상향 |
 | `activate_joint_controller` | `true` | `initial_joint_controller`를 시작 시 active로. `false`면 로드만 하고 inactive |
 | `initial_joint_controller` | `forward_position_controller` | UR 드라이버가 처음 로드/활성화할 joint controller. RTC backend가 `/forward_position_controller/commands`에 publish |
-| `enable_mpc` | `""` | DemoWbcController MPC 토글. **선언만 되어 있고 robot.launch.py는 OpaqueFunction 미사용** — 실제 제어는 런타임 gains topic index 7로 수행. |
+| `enable_mpc` | `""` | DemoWbcController MPC 토글. **선언만 되어 있고 robot_ur5e_p1a.launch.py는 OpaqueFunction 미사용** — 실제 제어는 런타임 gains topic index 7로 수행. |
 | `enable_tracing` | `false` | LTTng trace 캡처 (ros2_tracing). 출력: `<session_dir>/tracing/<trace_session_name>/` (`repo_scripts/scripts/timeline.sh`로 Chrome Trace 변환 가능). 1회 `./install.sh --tracing` 설정 필요 |
 | `trace_session_name` | `""` | LTTng 세션 이름 — `<session_dir>/tracing/`의 leaf 디렉토리명. 빈 값 = `"trace"` |
 | `trace_events_ust` | `""` | 콤마 구분 UST 이벤트. 빈 값 = ros2_tracing `DEFAULT_EVENTS_ROS` |
@@ -606,12 +606,12 @@ ros2 launch integrated_bringup robot_ur5e_p1b.launch.py \
 
 ---
 
-### sim.launch.py -- MuJoCo 시뮬레이션
+### sim_ur5e_p1a.launch.py -- MuJoCo 시뮬레이션
 
 ```bash
-ros2 launch integrated_bringup sim.launch.py
-ros2 launch integrated_bringup sim.launch.py enable_viewer:=true
-ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=true
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false max_rtf:=10.0
 ```
 
 **Launch 인자:**
@@ -630,7 +630,7 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 | `initial_controller` | `""` (YAML 사용) | 시작 컨트롤러 이름 (예: `demo_wbc_controller`) 오버라이드 |
 | `enable_mpc` | `""` (YAML 사용) | DemoWbcController의 `mpc.enabled` YAML 키를 launch 시점에 오버라이드. `true`/`false` 명시. `initial_controller:=demo_wbc_controller`와 함께 사용. 런타임 토글은 gains topic index 7로도 가능. |
 | `mpc_engine` | `""` (YAML 사용) | DemoWbcController의 `mpc.engine` 오버라이드: `"mock"` = `MockMPCThread` placeholder, `"handler"` = `HandlerMPCThread` + `MPCFactory` + `GraspPhaseManager` (실제 Aligator ProxDDP solve, `mpc/phase_config.yaml`+`mpc/contact_light.yaml`+`mpc/contact_rich.yaml` 필요). 빈 값 = YAML 기본값 (현재 `demo_wbc_controller.yaml`은 `"handler"`) |
-| `enable_tracing` | `false` | LTTng trace 캡처 (ros2_tracing). robot.launch.py와 동일 시맨틱 |
+| `enable_tracing` | `false` | LTTng trace 캡처 (ros2_tracing). robot_ur5e_p1a.launch.py와 동일 시맨틱 |
 | `trace_session_name` | `""` | LTTng 세션 이름. 빈 값 = `"trace"` |
 | `trace_events_ust` | `""` | 콤마 구분 UST 이벤트. 빈 값 = ros2_tracing 기본 이벤트 |
 | `trace_events_kernel` | `sched_switch,sched_waking,sched_wakeup,irq_handler_entry,irq_handler_exit` | 콤마 구분 커널 이벤트. 빈 값 = kernel tracing 비활성 |
@@ -905,8 +905,8 @@ rtc_controller_manager + rtc_controllers + repo_scripts + robot_descriptions
     |       |                                                 |
 integrated_bringup  <- 멀티 로봇 통합 패키지 (ur5e_p1a / ur5e_p1b / iiwa7_leap) ─┘
     |
-    ├── robot.launch.py / robot_ur5e_p1b.launch.py           -> UR 드라이버 + RT 컨트롤러 + CPU 격리
-    ├── sim.launch.py / sim_ur5e_p1b.launch.py / sim_iiwa7_leap.launch.py -> MuJoCo + RT 컨트롤러 + CPU 격리
+    ├── robot_ur5e_p1a.launch.py / robot_ur5e_p1b.launch.py           -> UR 드라이버 + RT 컨트롤러 + CPU 격리
+    ├── sim_ur5e_p1a.launch.py / sim_ur5e_p1b.launch.py / sim_iiwa7_leap.launch.py -> MuJoCo + RT 컨트롤러 + CPU 격리
     ├── DemoJointController (index 4)  ─┐
     ├── DemoTaskController (index 5)   ─┤── RtModelHandle (arm sub-model) / TSID+MPC (WBC)
     ├── DemoWbcController (index 6)    ─┘

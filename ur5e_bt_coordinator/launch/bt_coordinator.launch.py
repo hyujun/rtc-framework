@@ -29,8 +29,8 @@ Usage:
 
 Prerequisites:
   RT controller + simulator (or real robot) must be running:
-    ros2 launch integrated_bringup sim.launch.py
-    ros2 launch integrated_bringup robot.launch.py robot_ip:=192.168.1.10
+    ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
+    ros2 launch integrated_bringup robot_ur5e_p1a.launch.py robot_ip:=192.168.1.10
 """
 
 from launch import LaunchDescription

@@ -109,7 +109,7 @@ VS Code가 프로세스를 직접 실행하면서 디버깅을 시작합니다. 
 | `C++: Launch shape_estimation_node (Debug)` | `install/shape_estimation/lib/shape_estimation/shape_estimation_node` | — |
 | `C++: Attach to Node (Pick Process)` | (실행 중인 프로세스 선택) | — |
 | `C++: Run GTest (Selected Package)` | 프롬프트로 GTest 바이너리 경로 입력 | — |
-| `Python: Launch File (sim.launch.py)` | `ros2 launch integrated_bringup sim.launch.py` | — |
+| `Python: Launch File (sim_ur5e_p1a.launch.py)` | `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py` | — |
 | `Python: Current File` | 현재 편집 중인 `.py` | — |
 
 > [!NOTE]
@@ -164,7 +164,7 @@ ${workspaceFolder}/../../build/rtc_tsid/test_tsid_wqp
 ```bash
 cd /home/junho/ros2_ws/rtc_ws
 source /opt/ros/${ROS_DISTRO}/setup.bash && source install/setup.bash  # Humble 또는 Jazzy
-ros2 launch integrated_bringup robot.launch.py
+ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
 ```
 
 ### 4-2. VS Code에서 Attach
