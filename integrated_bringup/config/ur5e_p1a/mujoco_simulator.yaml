@@ -5,7 +5,7 @@
 #
 # Agnostic defaults + solver SSoT live in rtc_mujoco_sim/config/solver_param.yaml
 #   (이 파일이 먼저 로드되고, 본 yaml이 robot-specific 키를 override함).
-# RTC controller param overrides live in integrated_bringup/config/ur5e_hand/sim.yaml.
+# RTC controller param overrides live in integrated_bringup/config/ur5e_p1a/sim.yaml.
 
 mujoco_simulator:
   ros__parameters:

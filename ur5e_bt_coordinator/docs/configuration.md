@@ -49,7 +49,7 @@ source install/setup.bash
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py
 
 # ── Robot variant (device group + poses 선택) ──
-# ur5e_hand (default): bt_coordinator.yaml + poses.yaml
+# ur5e_p1a (default): bt_coordinator.yaml + poses.yaml
 # ur5e_p1b: 위에 bt_coordinator_p1b.yaml(hand_group=p1b) + poses_p1b.yaml 를 얹음
 ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py variant:=ur5e_p1b
 
@@ -82,7 +82,7 @@ ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py tree:=pick_and_place.xm
 
 | Argument | 기본값 | 설명 |
 |----------|--------|------|
-| `variant` | `ur5e_hand` | Robot variant → config/poses 파일 선택. `ur5e_hand`(default) / `ur5e_p1b`(proto_1b hand) |
+| `variant` | `ur5e_p1a` | Robot variant → config/poses 파일 선택. `ur5e_p1a`(default) / `ur5e_p1b`(proto_1b hand) |
 | `tree` | (YAML 기본값) | BT tree XML 파일명 |
 | `tick_rate` | 0 (=YAML 80Hz) | BT tick 주기 [Hz] |
 | `repeat` | (YAML 기본값) | SUCCESS 시 자동 반복 |
@@ -243,14 +243,14 @@ bt_coordinator:
     #      look_up, look_down, pick_ready, elevated, vision_ready)
 ```
 
-### Robot variant (`ur5e_hand` / `ur5e_p1b`)
+### Robot variant (`ur5e_p1a` / `ur5e_p1b`)
 
 `variant` launch arg 로 device group + poses 파일을 통째로 선택한다. 공통 설정(bb.* 등)은
 base `bt_coordinator.yaml` 한 곳에서만 관리되고, variant 는 delta 만 얹는다.
 
 | variant | 로드되는 파일 (순서) | hand_group | hand 분할 |
 |---------|--------------|-----------|-----------|
-| `ur5e_hand` (default) | `bt_coordinator.yaml` + `poses.yaml` | `hand` | thumb3/index3/middle3/ring1 |
+| `ur5e_p1a` (default) | `bt_coordinator.yaml` + `poses.yaml` | `hand` | thumb3/index3/middle3/ring1 |
 | `ur5e_p1b` | 위 + `bt_coordinator_p1b.yaml` + `poses_p1b.yaml` | `p1b` | thumb4/index3/middle2/ring1 |
 
 `ur5e_p1b` 는 `poses.yaml` 을 먼저 로드한 뒤 `poses_p1b.yaml` 로 `hand_pose.*` 만 덮어쓴다.

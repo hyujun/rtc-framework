@@ -1,4 +1,4 @@
-# ur5e_hand/robot.yaml — real-hardware delta (overlaid on _base.yaml)
+# ur5e_p1a/robot.yaml — real-hardware delta (overlaid on _base.yaml)
 # Used by robot.launch.py (UR driver + udp_hand_driver).
 # Loaded AFTER _base.yaml, which holds all mode-agnostic config (URDF/model
 # topology, joint & sensor rosters, limits, control_rate, logging). This file

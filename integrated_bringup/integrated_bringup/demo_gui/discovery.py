@@ -6,7 +6,7 @@ finger-group breakdown for the assm_v1 hand. Those constants now live in a
 
   1. ``RobotProfile.for_robot(key)`` (``ROBOT_PROFILES`` registry) returns
      the static ``RobotShape`` + TCP tf frames for the selected robot
-     (``ur5e_hand`` 6+10, ``iiwa7_leap`` 7+16). Widgets size to that shape
+     (``ur5e_p1a`` 6+10, ``iiwa7_leap`` 7+16). Widgets size to that shape
      immediately at ``__init__`` — no "waiting for first message".
   2. ``DemoControllerGUI._warn_shape_mismatch_once`` *advisorily* warns once
      per unique mismatch when a ``JointState`` arrives whose ``name`` span
@@ -250,13 +250,13 @@ class RobotProfile:
 
 # key matches the config/<key>/ directory name so --robot mirrors the bringup config.
 ROBOT_PROFILES: dict[str, RobotProfile] = {
-    "ur5e_hand": RobotProfile(
+    "ur5e_p1a": RobotProfile(
         shape=RobotShape.default_ur5e_assm(),
         tcp_parent="base",
         tcp_child="tool0_actual",
     ),
     "ur5e_p1b": RobotProfile(
-        # Same UR5e arm and TCP frames as ur5e_hand; only the hand roster
+        # Same UR5e arm and TCP frames as ur5e_p1a; only the hand roster
         # differs (proto_1b, _joint-suffixed names). See default_ur5e_p1b.
         shape=RobotShape.default_ur5e_p1b(),
         tcp_parent="base",

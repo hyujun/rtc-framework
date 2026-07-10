@@ -1159,15 +1159,15 @@ void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
         const auto phase_path =
             mpc_cfg["phase_config_path"]
                 ? mpc_cfg["phase_config_path"].as<std::string>()
-                : std::string{"config/ur5e_hand/controllers/mpc/phase_config.yaml"};
+                : std::string{"config/ur5e_p1a/controllers/mpc/phase_config.yaml"};
         const auto light_path =
             mpc_cfg["contact_light_path"]
                 ? mpc_cfg["contact_light_path"].as<std::string>()
-                : std::string{"config/ur5e_hand/controllers/mpc/contact_light.yaml"};
+                : std::string{"config/ur5e_p1a/controllers/mpc/contact_light.yaml"};
         const auto rich_path =
             mpc_cfg["contact_rich_path"]
                 ? mpc_cfg["contact_rich_path"].as<std::string>()
-                : std::string{"config/ur5e_hand/controllers/mpc/contact_rich.yaml"};
+                : std::string{"config/ur5e_p1a/controllers/mpc/contact_rich.yaml"};
 
         const auto join = [&](const std::string& p) { return share + "/" + p; };
 

@@ -1,7 +1,7 @@
 #ifndef INTEGRATED_BRINGUP_CONTROLLERS_TOF_SNAPSHOT_HPP_
 #define INTEGRATED_BRINGUP_CONTROLLERS_TOF_SNAPSHOT_HPP_
 
-// ToF snapshot data — produced by demo_* controllers when the ur5e_hand
+// ToF snapshot data — produced by demo_* controllers when the ur5e_p1a
 // fingertip ToF sensor stack is active. Lives in integrated_bringup
 // (not rtc_base) because ToF is a hand-domain payload specific to this
 // integration; rtc_base stays robot-agnostic.

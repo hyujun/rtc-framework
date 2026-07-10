@@ -142,7 +142,7 @@ def test_for_robot_known_keys():
     # (owned_topics MakeActualChildFrame), matching the ur5e profile below.
     assert (iiwa.tcp_parent, iiwa.tcp_child) == ("link_0", "ee_link_actual")
 
-    ur5e = RobotProfile.for_robot("ur5e_hand")
+    ur5e = RobotProfile.for_robot("ur5e_p1a")
     assert ur5e.shape.arm_dof == 6
     assert ur5e.shape.hand_dof == 10
     assert (ur5e.tcp_parent, ur5e.tcp_child) == ("base", "tool0_actual")
@@ -160,11 +160,11 @@ def test_for_robot_unknown_raises():
         RobotProfile.for_robot("bogus")
     except ValueError as e:
         assert "bogus" in str(e)
-        assert "iiwa7_leap" in str(e) and "ur5e_hand" in str(e)
+        assert "iiwa7_leap" in str(e) and "ur5e_p1a" in str(e)
     else:
         raise AssertionError("expected ValueError for unknown robot key")
 
 
 def test_registry_keys_match_config_dirs():
     # --robot keys mirror config/<key>/ bringup directory names
-    assert set(ROBOT_PROFILES) == {"ur5e_hand", "ur5e_p1b", "iiwa7_leap"}
+    assert set(ROBOT_PROFILES) == {"ur5e_p1a", "ur5e_p1b", "iiwa7_leap"}

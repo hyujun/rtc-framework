@@ -515,7 +515,7 @@ ros2 launch ur5e_bt_coordinator bt_coordinator.launch.py paused:=true
 
 | Argument | 기본값 | 설명 |
 |----------|--------|------|
-| `variant` | `ur5e_hand` | Robot variant → config/poses 선택: `ur5e_hand` / `ur5e_p1b` ([configuration.md](docs/configuration.md) Robot variant) |
+| `variant` | `ur5e_p1a` | Robot variant → config/poses 선택: `ur5e_p1a` / `ur5e_p1b` ([configuration.md](docs/configuration.md) Robot variant) |
 | `tree` | (YAML 기본값) | BT tree XML 파일명 |
 | `tick_rate` | 0 (=YAML 80Hz) | BT tick 주기 [Hz] |
 | `repeat` | (YAML 기본값) | SUCCESS 시 자동 반복 |

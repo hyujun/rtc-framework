@@ -102,7 +102,7 @@ def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, flo
 
 
 class DemoControllerGUI(Node):
-    def __init__(self, robot: str = "ur5e_hand"):
+    def __init__(self, robot: str = "ur5e_p1a"):
         super().__init__("demo_controller_gui")
 
         # --robot selects the static joint/frame profile (see discovery.py).
@@ -164,7 +164,7 @@ class DemoControllerGUI(Node):
         )
 
         # Robot shape comes from the --robot profile so widgets size to the
-        # right arm/hand at launch (ur5e_hand 6+10, iiwa7_leap 7+16).
+        # right arm/hand at launch (ur5e_p1a 6+10, iiwa7_leap 7+16).
         # ``_shape_mismatch_warned`` keeps joint-state callbacks from spamming
         # /rosout — one WARN per (side, observed-name-tuple) if the live
         # controller's joint span still disagrees with the chosen profile.
@@ -282,7 +282,7 @@ class DemoControllerGUI(Node):
         """(arm_group, hand_group) for the active controller, taken from the
         CM's per-controller ``claimed_groups`` (ordered [arm, hand] by device /
         YAML order — ``TopicConfig::groups`` is an ordered vector). Falls back
-        to the ur5e_hand group names until the catalog carries the entry, so an
+        to the ur5e_p1a group names until the catalog carries the entry, so an
         old CM that does not populate ``claimed_groups`` still drives the
         legacy robot.
 
@@ -2894,16 +2894,16 @@ def _parse_robot_arg(argv):
     parser = argparse.ArgumentParser(prog="demo_controller_gui")
     parser.add_argument(
         "--robot",
-        default="ur5e_hand",
+        default="ur5e_p1a",
         help="robot profile selecting arm/hand joint schema + TCP frames "
-        "(ur5e_hand | ur5e_p1b | iiwa7_leap)",
+        "(ur5e_p1a | ur5e_p1b | iiwa7_leap)",
     )
     parser.add_argument(
         "--ur5e",
         dest="robot",
         action="store_const",
-        const="ur5e_hand",
-        help="alias for --robot ur5e_hand",
+        const="ur5e_p1a",
+        help="alias for --robot ur5e_p1a",
     )
     parser.add_argument(
         "--p1b",

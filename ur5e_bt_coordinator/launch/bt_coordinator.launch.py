@@ -54,10 +54,10 @@ def generate_launch_description():
     declared_args = [
         DeclareLaunchArgument(
             "variant",
-            default_value="ur5e_hand",
-            choices=["ur5e_hand", "ur5e_p1b"],
+            default_value="ur5e_p1a",
+            choices=["ur5e_p1a", "ur5e_p1b"],
             description="Robot variant → selects config + poses files. "
-            "ur5e_hand = default (bt_coordinator.yaml + poses.yaml); "
+            "ur5e_p1a = default (bt_coordinator.yaml + poses.yaml); "
             "ur5e_p1b = proto_1b hand (adds bt_coordinator_p1b.yaml + poses_p1b.yaml)",
         ),
         DeclareLaunchArgument(
@@ -116,7 +116,7 @@ def generate_launch_description():
                 poses_yaml,
                 PathJoinSubstitution([pkg_share, "config", "poses_p1b.yaml"]),
             ]
-        else:  # ur5e_hand (default)
+        else:  # ur5e_p1a (default)
             param_files = [base_yaml, poses_yaml]
 
         # Resolve launch arguments

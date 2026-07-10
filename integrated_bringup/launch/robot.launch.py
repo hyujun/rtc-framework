@@ -318,10 +318,10 @@ def generate_launch_description():
     # Mode-agnostic base (URDF/model topology, rosters, limits, control_rate);
     # robot.yaml overlays only the real-hardware delta on top.
     base_config = PathJoinSubstitution(
-        [FindPackageShare("integrated_bringup"), "config", "ur5e_hand", "_base.yaml"]
+        [FindPackageShare("integrated_bringup"), "config", "ur5e_p1a", "_base.yaml"]
     )
     ur_control_config = PathJoinSubstitution(
-        [FindPackageShare("integrated_bringup"), "config", "ur5e_hand", "robot.yaml"]
+        [FindPackageShare("integrated_bringup"), "config", "ur5e_p1a", "robot.yaml"]
     )
 
     # Hand UDP config (udp_hand_driver package)

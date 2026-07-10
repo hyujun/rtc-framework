@@ -442,9 +442,9 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 
 ### YAML 소유권 (ARCH-1)
 
-`rtc_controller_manager` 는 **default YAML을 동봉하지 않습니다**. 모든 파라미터는 `DeclareAndLoadParameters()` 가 robot-agnostic 코드 기본값(예: `initial_controller=""`, `device_timeout_names=[]`, `urdf` / `devices` 미선언)으로 declare 합니다. 실제 production 값은 `<robot>_bringup` 패키지의 YAML이 단독 소유 — 예: `integrated_bringup/config/{ur5e_hand,iiwa7_leap}/sim.yaml`. 새 robot 도입 시 자체 YAML을 만들어 launch에서 주입하세요. `config_variant` ROS 파라미터(예: `"ur5e_hand"`, `"iiwa7_leap"`)가 `config/<variant>/controllers/...` 경로 조회를 결정합니다.
+`rtc_controller_manager` 는 **default YAML을 동봉하지 않습니다**. 모든 파라미터는 `DeclareAndLoadParameters()` 가 robot-agnostic 코드 기본값(예: `initial_controller=""`, `device_timeout_names=[]`, `urdf` / `devices` 미선언)으로 declare 합니다. 실제 production 값은 `<robot>_bringup` 패키지의 YAML이 단독 소유 — 예: `integrated_bringup/config/{ur5e_p1a,iiwa7_leap}/sim.yaml`. 새 robot 도입 시 자체 YAML을 만들어 launch에서 주입하세요. `config_variant` ROS 파라미터(예: `"ur5e_p1a"`, `"iiwa7_leap"`)가 `config/<variant>/controllers/...` 경로 조회를 결정합니다.
 
-UR5e bringup의 예시 YAML 구조 (`integrated_bringup/config/ur5e_hand/sim.yaml`):
+UR5e bringup의 예시 YAML 구조 (`integrated_bringup/config/ur5e_p1a/sim.yaml`):
 
 ```yaml
 /**:

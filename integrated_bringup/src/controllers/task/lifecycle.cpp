@@ -23,7 +23,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
 
     // ── Controller-owned non-RT publishers (no YAML role mapping) ─────────
     // GraspState rides under the secondary device's namespace (e.g.
-    // "hand/grasp_state" for ur5e_hand). Only created when the secondary
+    // "hand/grasp_state" for ur5e_p1a). Only created when the secondary
     // device has fingertip sensors (sensor_names non-empty) — robots
     // without tactile sensing skip these.
     {

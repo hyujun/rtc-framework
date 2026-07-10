@@ -69,16 +69,16 @@ def launch_setup(context, *args, **kwargs):
 
     # MuJoCo sim params: agnostic defaults + solver SSoT (rtc_mujoco_sim/
     # config/solver_param.yaml) + UR5e-specific robot_response groups, joint
-    # names, topics, model_path (integrated_bringup/config/ur5e_hand/
+    # names, topics, model_path (integrated_bringup/config/ur5e_p1a/
     # mujoco_simulator.yaml — overlaid on top).
     sim_default = PathJoinSubstitution([pkg_sim, "config", "solver_param.yaml"])
     sim_config = PathJoinSubstitution(
-        [pkg_bringup, "config", "ur5e_hand", "mujoco_simulator.yaml"]
+        [pkg_bringup, "config", "ur5e_p1a", "mujoco_simulator.yaml"]
     )
     # Mode-agnostic base (URDF/model topology, rosters, limits, control_rate);
     # sim.yaml overlays only the sim-specific delta on top.
-    base_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_hand", "_base.yaml"])
-    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_hand", "sim.yaml"])
+    base_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1a", "_base.yaml"])
+    ctrl_config = PathJoinSubstitution([pkg_bringup, "config", "ur5e_p1a", "sim.yaml"])
 
     # udp_hand_driver is optional — may not be built in sim-only installs
     hand_config = None
@@ -125,7 +125,7 @@ def launch_setup(context, *args, **kwargs):
         # longer carries it). Read from _base so the MuJoCo fake-hand rate stays
         # locked to the RT node's rate instead of silently defaulting to 500.0.
         ctrl_yaml_path = os.path.join(
-            get_package_share_directory("integrated_bringup"), "config", "ur5e_hand", "_base.yaml"
+            get_package_share_directory("integrated_bringup"), "config", "ur5e_p1a", "_base.yaml"
         )
         with open(ctrl_yaml_path) as f:
             ctrl_yaml = yaml.safe_load(f)
@@ -486,7 +486,7 @@ def generate_launch_description():
         default_value="",
         description=(
             "Override initial controller name (e.g. demo_wbc_controller). "
-            "Empty = use value from config/ur5e_hand/sim.yaml."
+            "Empty = use value from config/ur5e_p1a/sim.yaml."
         ),
     )
 

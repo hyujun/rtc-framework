@@ -1,4 +1,4 @@
-# ur5e_hand/_base.yaml — mode-agnostic UR5e + assm_v1 hand config (shared base)
+# ur5e_p1a/_base.yaml — mode-agnostic UR5e + assm_v1 hand config (shared base)
 #
 # Loaded FIRST under both robot.yaml (real HW) and sim.yaml (MuJoCo), which
 # each overlay only their mode-specific delta on top. ROS 2 flattens every
@@ -19,7 +19,7 @@
     # ── Config variant directory ─────────────────────────────────────────────
     # Drives controller / shared / mpc YAML lookup paths:
     # <pkg>/config/<config_variant>/controllers/<key>.yaml.
-    config_variant: "ur5e_hand"
+    config_variant: "ur5e_p1a"
 
     # ── Control rate ──────────────────────────────────────────────────────────
     control_rate: 500.0 # Hz — timer period = 1e6/rate us

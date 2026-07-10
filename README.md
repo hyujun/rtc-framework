@@ -56,7 +56,7 @@
 | [`robot_descriptions`](robot_descriptions/) | Robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (현재: ur5e, ur5e_assm_v1, assm_v1, iiwa7, iiwa7_leap, leap_hand, schunk_hand, panda). data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 사용 (ARCH-5) | ament_cmake |
 | [`udp_hand_driver`](udp_hand_driver/) | 가변-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
-| [`integrated_bringup`](integrated_bringup/) | per-robot launch/config (`config/<robot>/`: ur5e_hand, iiwa7_leap, ...) + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 7-phase WBC + MPC 통합 경로, `enable_mpc` launch arg) + CPU 격리/DDS 핀닝 | ament_cmake |
+| [`integrated_bringup`](integrated_bringup/) | per-robot launch/config (`config/<robot>/`: ur5e_p1a, iiwa7_leap, ...) + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 7-phase WBC + MPC 통합 경로, `enable_mpc` launch arg) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
 

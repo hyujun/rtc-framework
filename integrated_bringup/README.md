@@ -62,9 +62,9 @@ integrated_bringup/
 │   │   └── udp_hand_native_backend.cpp
 │   └── support/                        <- demo_shared_config / owned_topics 구현
 ├── config/
-│   ├── ur5e_hand/_base.yaml                 <- mode-agnostic SSoT (URDF + 모델 토폴로지 + device roster/limits + control_rate/logging)
-│   ├── ur5e_hand/robot.yaml                 <- 실제 로봇 delta (backend/토픽 + E-STOP + init 타이밍, _base 위에 overlay)
-│   ├── ur5e_hand/sim.yaml                   <- 시뮬레이션 delta (MuJoCo backend + sim-sync + 완화된 E-STOP, _base 위에 overlay)
+│   ├── ur5e_p1a/_base.yaml                 <- mode-agnostic SSoT (URDF + 모델 토폴로지 + device roster/limits + control_rate/logging)
+│   ├── ur5e_p1a/robot.yaml                 <- 실제 로봇 delta (backend/토픽 + E-STOP + init 타이밍, _base 위에 overlay)
+│   ├── ur5e_p1a/sim.yaml                   <- 시뮬레이션 delta (MuJoCo backend + sim-sync + 완화된 E-STOP, _base 위에 overlay)
 │   └── controllers/
 │       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
@@ -77,7 +77,7 @@ integrated_bringup/
 ├── launch/
 │   ├── robot.launch.py                 <- 실제 UR5e(+assm_v1 hand) 로봇 launch (udp_hand_node 포함)
 │   ├── robot_ur5e_p1b.launch.py        <- 실제 UR5e + proto_1b(closed-chain hand) 로봇 launch
-│   ├── sim.launch.py                   <- MuJoCo 시뮬레이션 launch (ur5e_hand)
+│   ├── sim.launch.py                   <- MuJoCo 시뮬레이션 launch (ur5e_p1a)
 │   ├── sim_ur5e_p1b.launch.py          <- MuJoCo 시뮬레이션 launch (ur5e_p1b, closed-chain)
 │   └── sim_iiwa7_leap.launch.py        <- MuJoCo 시뮬레이션 launch (iiwa7 + LEAP Hand)
 ├── integrated_bringup/                 <- ament_python 패키지 (GUI 모듈)
@@ -100,7 +100,7 @@ integrated_bringup/
 
 ## 기구학 모델 설정 (rtc_urdf_bridge)
 
-데모 컨트롤러는 `rtc_urdf_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. URDF 경로와 모델 토폴로지(`sub_models`, `tree_models`, `passive_joints`)는 mode-agnostic 이므로 `ur5e_hand/_base.yaml`의 최상위 `urdf:` 섹션에 단일 정의되며, `robot.yaml`(real HW)·`sim.yaml`(MuJoCo)은 그 위에 mode-specific delta 만 overlay 합니다 (launch 가 `[_base.yaml, <mode>.yaml]` 순으로 로드, 뒤 파일이 per-key override).
+데모 컨트롤러는 `rtc_urdf_bridge` 패키지를 통해 Pinocchio 기구학 모델을 구축합니다. URDF 경로와 모델 토폴로지(`sub_models`, `tree_models`, `passive_joints`)는 mode-agnostic 이므로 `ur5e_p1a/_base.yaml`의 최상위 `urdf:` 섹션에 단일 정의되며, `robot.yaml`(real HW)·`sim.yaml`(MuJoCo)은 그 위에 mode-specific delta 만 overlay 합니다 (launch 가 `[_base.yaml, <mode>.yaml]` 순으로 로드, 뒤 파일이 per-key override).
 
 > **관절 분류 규칙 (2026-04-24~)**: `<transmission>` 태그는 더 이상 active/passive 기준이 아닙니다. URDF `type == "fixed"`는 kFixed, `<mimic>` 태그는 kPassive/kMimic, closed-chain 루프 참여 관절은 kPassive/kClosedChain, YAML `passive_joints:`에 명시된 관절은 kPassive/kFree, 그 외 non-fixed는 모두 기본적으로 kActive로 분류됩니다. Active이지만 `<limit effort>` 등 physics가 누락되면 경고가 출력됩니다. 상세는 `rtc_urdf_bridge/README.md` 참조.
 
@@ -108,9 +108,9 @@ integrated_bringup/
 
 | 설정 영역 | 위치 | 역할 |
 |----------|------|------|
-| `urdf:` (최상위) | `ur5e_hand/_base.yaml` | URDF 경로, 모델 토폴로지 (sub_models/tree_models/passive_joints) |
-| `devices:` (roster/limits) | `ur5e_hand/_base.yaml` | 디바이스별 joint_names, joint_limits, sensor_names, sensor_layout 카운트 |
-| `devices.<g>.backend` + `has_native_*` | `ur5e_hand/{robot,sim}.yaml` | mode-specific: backend/wire 토픽, joint_command/motor 로스터, native-signal 플래그 |
+| `urdf:` (최상위) | `ur5e_p1a/_base.yaml` | URDF 경로, 모델 토폴로지 (sub_models/tree_models/passive_joints) |
+| `devices:` (roster/limits) | `ur5e_p1a/_base.yaml` | 디바이스별 joint_names, joint_limits, sensor_names, sensor_layout 카운트 |
+| `devices.<g>.backend` + `has_native_*` | `ur5e_p1a/{robot,sim}.yaml` | mode-specific: backend/wire 토픽, joint_command/motor 로스터, native-signal 플래그 |
 | `demo_*_controller.yaml` | 컨트롤러별 YAML | 제어 게인, 토픽 라우팅 |
 | `demo_shared.yaml` | 공통 YAML | DemoJoint/DemoTask 공통 파라미터 (Virtual TCP, grasp 감지, force_pi_grasp) |
 
@@ -119,7 +119,7 @@ integrated_bringup/
 ### 데이터 흐름
 
 ```
-ur5e_hand/_base.yaml                            controller.yaml
+ur5e_p1a/_base.yaml                            controller.yaml
 ┌──────────────────────────┐               ┌────────────────┐
 │ urdf:                    │               │ kp, damping,   │
 │   package + path ────────┼──(urdf)──→    │ trajectory_    │
@@ -169,7 +169,7 @@ urdf:
 
 ### Closed-chain (Extended-URDF) bringup — `ur5e_p1b`
 
-`ur5e_hand`(mimic 기반)와 달리 `ur5e_p1b`는 **진짜 5-loop 폐쇄 체인**(proto_1b 손)입니다. URDF 는 순수 spanning-tree 이고 loop closure 는 sibling **`<stem>.closure.yaml`** sidecar 에 있습니다. `ur5e_p1b` 는 mode-agnostic 설정(`urdf:` 블록·device roster·limits·`control_rate`)을 **`config/ur5e_p1b/_base.yaml`** 에 두고, `robot.yaml`(real HW)·`sim.yaml`(MuJoCo)은 mode-specific delta(backend/토픽·E-STOP·타이밍)만 담아 launch 가 `[_base.yaml, <mode>.yaml]` 순으로 overlay 합니다(뒤 파일이 per-key override). `_base.yaml` 의 `urdf:` 가 폐쇄 체인을 켭니다:
+`ur5e_p1a`(mimic 기반)와 달리 `ur5e_p1b`는 **진짜 5-loop 폐쇄 체인**(proto_1b 손)입니다. URDF 는 순수 spanning-tree 이고 loop closure 는 sibling **`<stem>.closure.yaml`** sidecar 에 있습니다. `ur5e_p1b` 는 mode-agnostic 설정(`urdf:` 블록·device roster·limits·`control_rate`)을 **`config/ur5e_p1b/_base.yaml`** 에 두고, `robot.yaml`(real HW)·`sim.yaml`(MuJoCo)은 mode-specific delta(backend/토픽·E-STOP·타이밍)만 담아 launch 가 `[_base.yaml, <mode>.yaml]` 순으로 overlay 합니다(뒤 파일이 per-key override). `_base.yaml` 의 `urdf:` 가 폐쇄 체인을 켭니다:
 
 ```yaml
 urdf:
@@ -193,7 +193,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
 
 ## 공통 파라미터 (`demo_shared.yaml`)
 
-`DemoJointController` · `DemoTaskController` · `DemoWbcController` 가 다음 파라미터를 공유합니다. 기본값은 `config/ur5e_hand/controllers/demo_shared.yaml` 에 단일 소스로 정의되며, 세 컨트롤러가 `LoadConfig()` 시점에 동일하게 로드합니다 (WBC 는 layer-d 에서 추가됨).
+`DemoJointController` · `DemoTaskController` · `DemoWbcController` 가 다음 파라미터를 공유합니다. 기본값은 `config/ur5e_p1a/controllers/demo_shared.yaml` 에 단일 소스로 정의되며, 세 컨트롤러가 `LoadConfig()` 시점에 동일하게 로드합니다 (WBC 는 layer-d 에서 추가됨).
 
 | 파라미터 | 설명 |
 |---------|------|
@@ -238,7 +238,7 @@ demo_task_controller:
 | `robot_transforms` (Phase 2-3; 모든 데모 컨트롤러) | 컨트롤러 | YAML `topics:` `role: robot_transforms` (`kRobotTransforms`) — `<config_key>/transforms` (`tf2_msgs/TFMessage`, RELIABLE/10). **DemoJoint / DemoTask**: `base→tool0_actual` + `base→{thumb,index,middle,ring}_tip_link_actual` + `base→virtual_tcp_actual` = 6 frame. **DemoWbc** (#123 Phase 2): `base→tool0_actual` + `base→{thumb,index,middle,ring}_tip_link_actual` (loop-consistent fingertip FK, publish 표면 — DIP 구동에 반응) + `base→wbc_alpha_actual` placeholder (D-5, valid=false). 단일 publisher per controller (D-2/D-10) — YAML entry는 첫 group의 `publish:` 에 두고 owned_topics가 system YAML `urdf.{sub,tree}_models` 로 frame slot 자동 빌드. Active controller만 LifecyclePublisher 활성 |
 | `state` (per-group `joint_states`) | CM | `/rtc_cm/<group>/joint_states` (`JointState`) |
 | device-wire command lane (`joint_command`, `ros2_command`) | **DeviceBackend** (`b9a2587`) | `devices.<group>.backend:` SSoT — backend 구현체가 직접 publish/serialize. CM/controller YAML 에서 device-wire role 라인 사라짐 |
-| `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/<device>_{state,sensor}.csv` — instance 키는 `GetPrimaryDeviceName()`/`GetSecondaryDeviceName()` 에서 동적 파생 (ur5e_hand → `ur5e_state.csv`/`hand_state.csv`/`hand_sensor.csv`, iiwa7_leap → `iiwa7_state.csv`/`leap_state.csv`) |
+| `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/<device>_{state,sensor}.csv` — instance 키는 `GetPrimaryDeviceName()`/`GetSecondaryDeviceName()` 에서 동적 파생 (ur5e_p1a → `ur5e_state.csv`/`hand_state.csv`/`hand_sensor.csv`, iiwa7_leap → `iiwa7_state.csv`/`leap_state.csv`) |
 | `device_wbc_log` / `wbc_diag_log` (CSV, WBC 전용) | `DemoWbcController` (`ControllerLogSet`) | WBC 는 arm/hand `<device>_state.csv` 를 generic DeviceStateLog 대신 superset `DeviceWbcLog` (`msg_type: integrated_bringup/DeviceWbcLog`) 로 쓴다 — TSID `a_opt` 가속도 + SE3 trajectory(arm role)/fingertip force(hand role — |F| `fingertip_force_*` + 벡터 `fingertip_fx_/fy_/fz_*`). 추가로 per-tick `wbc_diag.csv` (`msg_type: integrated_bringup/WbcDiagLog`) 에 solve time / λ / 수렴 / grasp 진단을 1행씩. Path A — POD-only, rtc_msgs `.msg` 무변경. fill 은 controller-private (`compute.cpp`); E-STOP 경로는 push 안 함 |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
@@ -367,7 +367,7 @@ J_vtcp_angular = J_tcp_angular
 
 hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.closure.yaml` sidecar; 예: 4-bar 손가락 링키지), loop-passive 관절 **하류**의 fingertip 은 tree 모델(passive 를 reference 형상에 동결)로 FK 하면 운영점 이탈 시 큰 오차가 난다 (#121 측정: ~5.6 mm/°). 이를 위해 task/joint 컨트롤러는 fingertip FK 를 **closed-chain-consistent** 로 계산하는 `ClosedChainHandFk` 헬퍼([support/closed_chain_hand_fk.hpp](include/integrated_bringup/support/closed_chain_hand_fk.hpp), `rtc_urdf_bridge::RtClosedChainHandle` 래핑)를 배선한다.
 
-- **자동·topology-driven·dormant**: `on_configure` 에서 (a) builder 에 closure 구속이 있고 (b) fingertip 이 loop-passive 관절 하류일 때만 활성. 그 외(대부분의 plain-URDF 로봇)는 비활성 → 기존 serial `RtModelHandle` 경로가 **byte-for-byte 동일**. 현재 `ur5e_hand`/`iiwa7_leap` 는 `extended` 미설정이라 비활성이다.
+- **자동·topology-driven·dormant**: `on_configure` 에서 (a) builder 에 closure 구속이 있고 (b) fingertip 이 loop-passive 관절 하류일 때만 활성. 그 외(대부분의 plain-URDF 로봇)는 비활성 → 기존 serial `RtModelHandle` 경로가 **byte-for-byte 동일**. 현재 `ur5e_p1a`/`iiwa7_leap` 는 `extended` 미설정이라 비활성이다.
 - **RT-safe**: 매 tick 측정 actuated q 로 passive DoF 를 warm-start + 고정 K=2 Newton DLS 사영(preallocated, no-alloc). 헬퍼가 status 를 내부 소비해 fingertip pose 캐시를 **per-tip** 갱신한다: 소스 유효·결과 유한(sources_ok && !held && finite closure)이면 **loop 하류** tip 은 loop-trustworthy(`!singular && closure_error<임계`)한 tick 에서만, **비하류** tip 은 유한 tick 이면 항상 갱신하고, 그 외에는 직전 유효 pose 를 hold 한다. 비하류(serial 등가) tip 의 pose 는 actuated q 만의 함수라 loop 미수렴/특이와 무관하므로, 하류 tip 이 hold 되는 tick 에도 vtcp 입력이 붕괴하지 않는다(#121 review #3). 소스 device/channel 이 invalid 인 tick 은 사영 자체를 건너뛰어(0-fill 된 q 를 사영하면 handle 내부 warm-start seed 가 오염돼 복구 tick 재수렴 실패) 직전 loop-consistent seed 를 보존한다. 독립 관절 소스는 hand device 에 한정되지 않으므로(arm+hand 스팬 가능) 진입 게이트는 device 인덱스가 아니라 per-source validity 로 판정한다. 활성 시 loop 하류 fingertip 은 loop-consistent, 비하류 fingertip 은 full-model FK(serial 등가)로 **모두** 서비스된다. closure 가 있어도 hand-root 프레임이 full model 에서 안 풀리거나 closure 가 ill-posed 면 안전하게 serial 로 fallback.
 - **WBC (#123 Phase 2)**: DemoWbcController 도 동일 `ClosedChainHandFk` 를 배선하되 **관찰/publish 표면 전용**이다 — `InitHandModel`(secondary hand-only tree = `p1b`) + `ConfigureClosedChainHandFk`(OnDeviceConfigsSet) + per-tick `ComputeHandFingertipFk` 가 fingertip 을 arm TCP(`tcp.act`)로 base 합성해 `task_link_poses`(kHandTip) 로 publish 한다. 이 publish-surface FK 는 아래 TSID EOM 축약과 **독립**이다. **TSID EOM 동역학 (#120)**: extended 로봇(control model==actuated)에서는 `PinocchioCache` 의 EOM 항 `M/h/g` 를 `WbcReducedDynamicsProvider`(→ RT-safe `RtClosedChainHandle::UpdateDynamics`) 가 **loop-consistent 축약값**으로 덮는다 (open-chain frozen-loop M/h/g → 축약 M_a/g_a/h_a). 단 task/contact **frame Jacobian·dJv 는 1차 scope 에서 frozen-loop(actuated open-chain) 유지**, CLIK(kinematic)·MPC(handler mode)는 무변경. 비-extended 는 provider 미주입 → byte-for-byte. arm TCP FK(`tip_frame_id_`)는 종전대로. serial `hand_handle_` 은 closure 활성 시 non-null gate 겸 비-extended fallback 이며, `SetJointOrder` 는 `!closed_hand_fk_.active()` 일 때만 적용한다(loop-locked DoF 를 뺀 reduced serial tree 는 device 관절 전체와 매핑되지 않으므로).
 
@@ -416,7 +416,7 @@ UR5e + 10-DoF 핸드를 단일 16-DoF 모델로 통합한 whole-body controller.
 
 Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv), Phase A) — `command=GRASP/RELEASE` + `target_force` (one-shot transition, parameter 부적합).
 
-#### YAML 구조 (`config/ur5e_hand/controllers/demo_wbc_controller.yaml`)
+#### YAML 구조 (`config/ur5e_p1a/controllers/demo_wbc_controller.yaml`)
 
 주요 최상위 키: `tsid.tasks` (posture/se3_tcp/force/contact_consistency/object_wrench/internal_force/object_se3), `tsid.constraints` (eom/joint_limit/friction_cone/torque_limit), `tsid.contacts.*`/`tsid.force_pi`/`tsid.object_frame` (contact·force-PI·object 옵션), `tsid.phase_presets`, `tsid.wqp.solver`, `integration` (`force_rate_alpha` 등 필수 키), `fsm`, **`estop.arm_safe_position`** (필수 — 길이가 런타임 arm DoF를 결정), **`mpc`** (`enabled`/`engine`/`max_stale_solutions`/`phase_config_path`+`contact_light_path`+`contact_rich_path`/`riccati.*`). `mpc.enabled: false`가 기본값이라 MPC는 inert이고 TSID가 self-hold한다. 각 키의 의미·기본값·제약은 YAML 자체의 인라인 주석 + [agent_docs/controllers.md](../agent_docs/controllers.md)를 SSoT로 참조.
 
@@ -426,7 +426,7 @@ Force-PI grasp는 별도 `~/grasp_command` srv ([rtc_msgs/srv/GraspCommand](../r
 
 ##### GraspPhaseManager 연동
 
-`engine: "handler"`일 때 WBC 7-state FSM이 authoritative이며 `OnPhaseEnter`에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다. Grasp 측 phase별 OCP 설정은 `config/ur5e_hand/controllers/mpc/phase_config.yaml`, factory 설정은 `mpc/contact_light.yaml`/`mpc/contact_rich.yaml`에서 로드된다 (두 YAML의 `mpc.model:` 블록은 구조 동일 필수 — cross-mode swap이 같은 `RobotModelHandler`를 공유).
+`engine: "handler"`일 때 WBC 7-state FSM이 authoritative이며 `OnPhaseEnter`에서 `GraspPhaseManager::ForcePhase`로 grasp 측 FSM을 동기화한다. Grasp 측 phase별 OCP 설정은 `config/ur5e_p1a/controllers/mpc/phase_config.yaml`, factory 설정은 `mpc/contact_light.yaml`/`mpc/contact_rich.yaml`에서 로드된다 (두 YAML의 `mpc.model:` 블록은 구조 동일 필수 — cross-mode swap이 같은 `RobotModelHandler`를 공유).
 
 #### 사용법 (시뮬레이션)
 
@@ -644,7 +644,7 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 1. 세션 디렉토리 생성 (워크스페이스 내 `logging_data/YYMMDD_HHMM/`)
 2. `cpu_shield.sh on --sim` -- 경량 CPU 격리 (Tier 1)
 3. MuJoCo 시뮬레이터 노드 launch (`rtc_mujoco_sim/mujoco_simulator_node`)
-4. RT 컨트롤러 노드 launch (실행 파일 = ROS 노드 이름 = `integrated_rt_controller` — 정렬됨, params: `ur5e_hand/_base.yaml` + `sim.yaml` + `mujoco_simulator.yaml`)
+4. RT 컨트롤러 노드 launch (실행 파일 = ROS 노드 이름 = `integrated_rt_controller` — 정렬됨, params: `ur5e_p1a/_base.yaml` + `sim.yaml` + `mujoco_simulator.yaml`)
 5. MuJoCo 시뮬레이터 코어 핀닝 (2초 지연, 8코어 이상일 때만)
 
 **Lifecycle 순서:** 런치 시 mujoco_simulator → configure → activate 완료 후 integrated_rt_controller → configure → activate 순차 활성화.
@@ -662,7 +662,7 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 | 커맨드 대상 | UR5e 로봇 | MuJoCo 물리 엔진 |
 | CPU 격리 | Tier 1+2 (`--robot`) | Tier 1 (`--sim`) |
 | DDS 핀닝 | UR 드라이버 + RT 컨트롤러 | MuJoCo 시뮬레이터 |
-| 설정 | `ur5e_hand/_base.yaml` + `robot.yaml` | `ur5e_hand/_base.yaml` + `sim.yaml` + `mujoco_simulator.yaml` |
+| 설정 | `ur5e_p1a/_base.yaml` + `robot.yaml` | `ur5e_p1a/_base.yaml` + `sim.yaml` + `mujoco_simulator.yaml` |
 
 ---
 
@@ -673,7 +673,7 @@ ros2 launch integrated_bringup sim.launch.py enable_viewer:=false max_rtf:=10.0
 실시간 컨트롤러 선택, 게인 튜닝, 상태 모니터링 GUI입니다 (tkinter).
 
 ```bash
-ros2 run integrated_bringup demo_controller_gui                      # 기본 ur5e_hand
+ros2 run integrated_bringup demo_controller_gui                      # 기본 ur5e_p1a
 ros2 run integrated_bringup demo_controller_gui --robot ur5e_p1b     # ur5e + proto_1b hand
 ros2 run integrated_bringup demo_controller_gui --robot iiwa7_leap   # iiwa7 + LEAP
 ros2 run integrated_bringup demo_controller_gui --p1b                # 별칭 (= --robot ur5e_p1b)
@@ -681,7 +681,7 @@ ros2 run integrated_bringup demo_controller_gui --iiwa               # 별칭 (=
 ```
 
 `--robot <key>` 는 arm/hand joint 스키마(이름·DoF·finger group)와 TCP tf frame 을
-선택합니다. `key` 는 `config/<key>/` bringup 디렉토리명과 동일 (`ur5e_hand` |
+선택합니다. `key` 는 `config/<key>/` bringup 디렉토리명과 동일 (`ur5e_p1a` |
 `ur5e_p1b` | `iiwa7_leap`); `--ur5e` / `--p1b` / `--iiwa` 별칭도 동일 dest 로 매핑됩니다. 잘못된 key 는
 즉시 에러 후 종료합니다. 프로파일 정의는 `demo_gui/discovery.py` 의
 `ROBOT_PROFILES` 레지스트리 — 새 로봇은 여기에 한 항목 추가. 실행 후 컨트롤러가
@@ -728,7 +728,7 @@ GUI 시작 시:
 | `demo_wbc_controller` | Grasp Detection | (joint 와 동일 — layer-d 에서 추가, capability-aware) | — |
 | `demo_wbc_controller` | MPC | `mpc_enable` (bool), `riccati_gain_scale` | — |
 
-WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_hand/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
+WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mpc.enabled` flag 와 AND 됩니다. YAML 에서 `mpc.enabled: false` 로 설정된 경우 GUI toggle 은 no-op 입니다 (MPC 스레드가 spawn 되지 않음). 자세한 의미는 `config/ur5e_p1a/controllers/demo_wbc_controller.yaml` 의 `mpc:` 블록 주석 참조.
 
 **Target 패널 (관절 vs task):** `demo_joint_controller` 는 관절 목표만, `demo_task_controller` 는 task-space (EE SE3) 목표만 입력 패널이 활성화됩니다. `demo_wbc_controller` 는 **둘 다 활성화** — 암 posture (nullspace reference) 와 commanded EE SE3 jog 를 독립적으로 받기 때문 (`demo_gui/config.py` `DUAL_TARGET_SPACE`). WBC 에서 `Send Command` 는 두 `RobotTarget` (goal_type `joint` + `task`) 을 모두 publish 하며, controller `DeliverTargetMessage` 가 goal_type 별로 라우팅합니다. EE SE3 패널 값은 TF (`virtual_tcp`/`ee_link`) 가 wiring 되어 있어야 current pose 로 seed 됩니다.
 
@@ -763,7 +763,7 @@ ros2 run integrated_bringup motion_editor_gui
 
 ---
 
-## 전역 설정 (`ur5e_hand/_base.yaml` + `robot.yaml`)
+## 전역 설정 (`ur5e_p1a/_base.yaml` + `robot.yaml`)
 
 > 아래는 `_base.yaml`(mode-agnostic) 과 `robot.yaml`(real-HW delta) 을 overlay 한 **병합 뷰**입니다.
 > `control_rate`·`device_timeout_names`·`enable_logging`·`urdf:`·`devices` roster/limits/sensor_layout 카운트는 `_base.yaml` 에,
@@ -833,7 +833,7 @@ ros2 run integrated_bringup motion_editor_gui
           position_upper: [1.57, ..., 1.57]
 ```
 
-**시뮬레이션 delta (`ur5e_hand/sim.yaml`) 차이점 (동일 `_base.yaml` 위에 overlay):**
+**시뮬레이션 delta (`ur5e_p1a/sim.yaml`) 차이점 (동일 `_base.yaml` 위에 overlay):**
 - `init_timeout_sec: 0.0` (비활성화), `enable_estop: false`
 - `use_sim_time_sync: true`, `sim_sync_timeout_sec: 5.0`
 - `device_timeout_values: [10000.0, 10000.0]` (시작 시 여유)
@@ -903,7 +903,7 @@ rtc_controller_manager + rtc_controllers + repo_scripts + robot_descriptions
     |                                                         |
     |   rtc_urdf_bridge (URDF→Pinocchio 모델)           |
     |       |                                                 |
-integrated_bringup  <- 멀티 로봇 통합 패키지 (ur5e_hand / ur5e_p1b / iiwa7_leap) ─┘
+integrated_bringup  <- 멀티 로봇 통합 패키지 (ur5e_p1a / ur5e_p1b / iiwa7_leap) ─┘
     |
     ├── robot.launch.py / robot_ur5e_p1b.launch.py           -> UR 드라이버 + RT 컨트롤러 + CPU 격리
     ├── sim.launch.py / sim_ur5e_p1b.launch.py / sim_iiwa7_leap.launch.py -> MuJoCo + RT 컨트롤러 + CPU 격리
@@ -913,7 +913,7 @@ integrated_bringup  <- 멀티 로봇 통합 패키지 (ur5e_hand / ur5e_p1b / ii
     ├── demo_controller_gui
     └── motion_editor_gui
 
-    ur5e_hand/_base.yaml (urdf: sub_models)  <- 시스템 URDF + 모델 토폴로지 (robot 당 config/<key>/_base.yaml)
+    ur5e_p1a/_base.yaml (urdf: sub_models)  <- 시스템 URDF + 모델 토폴로지 (robot 당 config/<key>/_base.yaml)
 ```
 
 ---

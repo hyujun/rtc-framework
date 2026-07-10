@@ -172,7 +172,7 @@ TEST_F(GraspMatrixTest, TwoFinger_PinchGrasp_RankFour) {
 
 // Case 3: three non-coplanar point contacts → full row-rank 6 (object is
 // fully restrained at force/moment level). This is the typical 3-finger
-// fingertip grasp targeted by Stage A-1+ (ur5e_hand thumb/index/middle).
+// fingertip grasp targeted by Stage A-1+ (ur5e_p1a thumb/index/middle).
 TEST_F(GraspMatrixTest, ThreeFinger_NonCoplanar_RankSix) {
   auto frames = PickFrames(*model_, {"panda_link3", "panda_link5", "panda_link7"});
   ASSERT_EQ(frames.size(), 3u);

@@ -318,7 +318,7 @@ Fake 타이머 (100Hz): AdvanceFakeLPF(group_idx), GetFakeState(group_idx) 호�
 - `config/solver_param.yaml` — **모든 sim launch가 항상 가장 먼저 로드**. agnostic 기본값 (sync timeout, max_rtf, viewer, physics_timestep 등) + solver 파라미터 SSoT. 우선순위: XML `<option>` → robot bringup mujoco_simulator.yaml → 본 파일.
 - `config/mujoco_default.yaml` — **예제/템플릿** (어떤 launch에도 로드되지 않음). 새 robot bringup 패키지가 자신의 `mujoco_simulator.yaml`을 작성할 때 복사용 reference로만 사용. 헤더의 경고 참조.
 
-robot-specific 오버라이드(예: UR5e 설정 — `model_path`, `robot_response.groups`, joint names, command/state 토픽, servo gains)는 robot bringup 패키지에 위치합니다 — 예시: [integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml](../integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml).
+robot-specific 오버라이드(예: UR5e 설정 — `model_path`, `robot_response.groups`, joint names, command/state 토픽, servo gains)는 robot bringup 패키지에 위치합니다 — 예시: [integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml](../integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml).
 
 ### Contact point 시각화 크기
 
@@ -395,7 +395,7 @@ mujoco_simulator:
     #     filter_alpha: 0.1
 
 # RT 컨트롤러 노드용 시뮬레이션 오버라이드는 robot-specific bringup YAML
-# (예: integrated_bringup/config/ur5e_hand/sim.yaml)에서 `/**:` wildcard로 관리.
+# (예: integrated_bringup/config/ur5e_p1a/sim.yaml)에서 `/**:` wildcard로 관리.
 ```
 
 > **참고:** `joint_names`는 `command_joint_names` 미지정 시 하위 호환 대체로 사용됩니다. `state_joint_names`가 빈 배열이면 robot 그룹은 XML 전체 조인트, fake 그룹은 command_joint_names와 동일하게 사용됩니다. 다중 그룹(arm + hand)에서는 각 그룹의 `state_joint_names`를 명시적으로 지정해야 그룹별 state 토픽이 자기 도메인 조인트만 publish 합니다 (미지정 시 전 그룹이 XML 전체를 publish).
@@ -500,7 +500,7 @@ ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \
 
 # Robot-specific 그룹 설정이 들어간 params 파일 추가
 ros2 launch rtc_mujoco_sim mujoco_sim.launch.py \
-    params_file:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_hand/mujoco_simulator.yaml
+    params_file:=$(ros2 pkg prefix integrated_bringup)/share/integrated_bringup/config/ur5e_p1a/mujoco_simulator.yaml
 
 # 10배속 / 헤드리스
 ros2 launch rtc_mujoco_sim mujoco_sim.launch.py model_path:=... max_rtf:=10.0

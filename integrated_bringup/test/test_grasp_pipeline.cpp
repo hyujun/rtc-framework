@@ -56,7 +56,7 @@ using integrated_bringup::phase::GraspCommand;
 using integrated_bringup::phase::GraspPhaseId;
 using integrated_bringup::phase::GraspPhaseManager;
 
-// Panda-sized equivalent of config/ur5e_hand/controllers/phase_config.yaml. Kept
+// Panda-sized equivalent of config/ur5e_p1a/controllers/phase_config.yaml. Kept
 // minimal — only the dimensions the real YAML varies are exercised here.
 constexpr const char* kPandaPhaseConfig = R"(
 transition:
@@ -101,7 +101,7 @@ phases:
   release:     { ocp_type: "contact_light", active_contact_indices: [], cost: *light }
 )";
 
-// Panda-flavoured analogue of config/ur5e_hand/controllers/mpc/contact_light.yaml.
+// Panda-flavoured analogue of config/ur5e_p1a/controllers/mpc/contact_light.yaml.
 // The `mpc.model` block is built by the test fixture before this YAML is
 // consumed — MPCFactory only reads `mpc.ocp_type`, `mpc.solver`, `mpc.limits`.
 constexpr const char* kLightFactoryYaml = R"(

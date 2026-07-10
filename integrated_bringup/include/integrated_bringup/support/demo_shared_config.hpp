@@ -30,7 +30,7 @@ enum class GraspHandMode { kContactStop, kForcePi, kNone };
 [[nodiscard]] const char* GraspHandModeName(GraspHandMode mode) noexcept;
 
 // Parameters that DemoJointController and DemoTaskController share.
-// Defaults live in config/ur5e_hand/controllers/demo_shared.yaml; per-controller YAMLs
+// Defaults live in config/ur5e_p1a/controllers/demo_shared.yaml; per-controller YAMLs
 // may override individual keys via a second ApplyDemoSharedConfig() pass.
 struct DemoSharedConfig {
   VirtualTcpConfig vtcp{};
@@ -88,7 +88,7 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg);
 // On error (file missing / parse failure), `cfg` is left unchanged.
 //
 // `config_variant` mirrors the rt_controller_node `config_variant` ROS
-// parameter (e.g. "ur5e_hand", "iiwa7_leap").  Empty → legacy flat layout
+// parameter (e.g. "ur5e_p1a", "iiwa7_leap").  Empty → legacy flat layout
 // (config/controllers/demo_shared.yaml); non-empty → variant path
 // (config/<config_variant>/controllers/demo_shared.yaml).  Per-controller call
 // sites forward the value from their LifecycleNode's `config_variant` param.

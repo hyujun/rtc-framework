@@ -33,7 +33,7 @@ struct ConfigCase {
 std::vector<ConfigCase> ShippedConfigs() {
   const std::string dir = RTC_WBC_CONFIG_DIR;
   return {
-      {"ur5e_hand", dir + "/ur5e_hand/controllers/demo_wbc_controller.yaml"},
+      {"ur5e_p1a", dir + "/ur5e_p1a/controllers/demo_wbc_controller.yaml"},
       {"iiwa7_leap", dir + "/iiwa7_leap/controllers/demo_wbc_controller.yaml"},
   };
 }

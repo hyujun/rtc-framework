@@ -40,7 +40,7 @@
       root_joint_type: "fixed"
       # ── Extended-URDF (loop closure) ────────────────────────────────────
       # extended: true because proto_1b is a genuine 5-loop closed chain
-      # (NOT mimic-based like ur5e_hand). The .urdf.xacro is a pure spanning
+      # (NOT mimic-based like ur5e_p1a). The .urdf.xacro is a pure spanning
       # tree and the loop closures live in the sibling closure.yaml sidecar
       # below; the shared PinocchioModelBuilder builds RigidConstraint models
       # + a loop-consistent q_ref from it. closure_path (pkg-relative) is set

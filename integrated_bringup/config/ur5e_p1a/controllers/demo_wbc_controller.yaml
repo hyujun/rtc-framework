@@ -410,9 +410,9 @@ demo_wbc_controller:
     # Handler-mode inputs — ignored when engine == "mock".
     # Paths are resolved relative to the integrated_bringup package share dir
     # (ament_index_cpp::get_package_share_directory).
-    phase_config_path:  "config/ur5e_hand/controllers/mpc/phase_config.yaml"
-    contact_light_path: "config/ur5e_hand/controllers/mpc/contact_light.yaml"
-    contact_rich_path:  "config/ur5e_hand/controllers/mpc/contact_rich.yaml"
+    phase_config_path:  "config/ur5e_p1a/controllers/mpc/phase_config.yaml"
+    contact_light_path: "config/ur5e_p1a/controllers/mpc/contact_light.yaml"
+    contact_rich_path:  "config/ur5e_p1a/controllers/mpc/contact_rich.yaml"
 
     riccati:
       enabled: true              # include K·Δx in the reference accel

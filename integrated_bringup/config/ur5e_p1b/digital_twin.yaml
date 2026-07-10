@@ -9,7 +9,7 @@
 # Robot identity (URDF, joint topics, sensor topics, fingertip names) lives
 # here per ARCH-1; rtc_digital_twin stays robot-agnostic.
 #
-# Unlike ur5e_hand (mimic-based), proto_1b is a genuine 5-loop closed chain
+# Unlike ur5e_p1a (mimic-based), proto_1b is a genuine 5-loop closed chain
 # (urdf.extended). `closure_path` below is the Extended-URDF `<stem>.closure.yaml`
 # sidecar — its presence makes digital_twin.launch.py spawn a
 # `closure_state_publisher` (rtc_urdf_bridge) that reconstructs the loop-passive
