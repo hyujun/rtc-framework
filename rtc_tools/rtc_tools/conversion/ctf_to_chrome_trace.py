@@ -2,9 +2,10 @@
 
 Input: a directory containing an LTTng CTF trace (the output of
 ``ros2 launch ... enable_tracing:=true`` lives at
-``~/.ros/tracing/<session_name>/``). The directory is expected to contain
-``metadata`` plus one or more channel binaries — babeltrace2 walks any
-sub-tree automatically.
+``<ws>/logging_data/<YYMMDD_HHMM>/tracing/<session_name>/``; manual
+``ros2 trace`` CLI captures land under ``~/.ros/tracing/``). The directory
+is expected to contain ``metadata`` plus one or more channel binaries —
+babeltrace2 walks any sub-tree automatically.
 
 Output: a Chrome Trace JSON file. Drag-drop it onto
 https://ui.perfetto.dev to see two swimlane groups simultaneously:
@@ -20,9 +21,12 @@ Unlike the prior perf-sampling converter, ros2_tracing events carry
 events handled today:
 
 * ``ros2:callback_start`` / ``ros2:callback_end`` — paired into
-  ``B`` / ``E`` slices on the (process_name, tid) lane. The callback
-  symbol falls back to the address when ``ros2_tracing`` did not record
-  it via ``rcl_publisher_init``.
+  ``B`` / ``E`` slices on the (process_name, tid) lane. The slice is
+  labelled with the callback's function symbol, resolved through the
+  address→symbol map built from ``ros2:rclcpp_callback_register`` events
+  (part of ros2_tracing's default UST set). Falls back to the raw
+  address when no registration was captured (e.g. a manual ``ros2 trace``
+  started after node init, or a narrowed ``trace_events_ust`` list).
 * ``sched_switch`` — emits ``E`` for the prev_tid and ``B`` for the
   next_tid on the corresponding **Cpu** lane, so each lane shows a
   contiguous timeline of "who ran here." Threads not in ``Threads``
@@ -47,9 +51,9 @@ hosts where ``apt install python3-bt2`` has not been run.
 Usage::
 
     python -m rtc_tools.conversion.ctf_to_chrome_trace \
-        --input ~/.ros/tracing/260520_1430 --output trace.json
+        --input logging_data/260520_1430/tracing/trace --output trace.json
     # Or pipe babeltrace2 yourself:
-    babeltrace2 ~/.ros/tracing/260520_1430 \
+    babeltrace2 logging_data/260520_1430/tracing/trace \
         | python -m rtc_tools.conversion.ctf_to_chrome_trace --stdin --output trace.json
 """
 
@@ -80,6 +84,11 @@ STRUCTURED_EVENTS = frozenset(
         "irq_handler_exit",
     }
 )
+
+# Events consumed for side-band metadata (never emitted as slices, never
+# counted as dropped). rclcpp_callback_register carries the callback
+# address → function-symbol mapping used to label callback slices.
+METADATA_EVENTS = frozenset({"ros2:rclcpp_callback_register"})
 
 
 def _truncate(label: str, limit: int = 80) -> str:
@@ -187,7 +196,9 @@ def _try_parse_bt2(trace_dir: Path):
 _BT2_LINE_RE = re.compile(
     r"^\[(?P<ts>[\d:.]+)\]\s+\(\+(?P<delta>[\d.]+)\)\s+"
     r"(?:\S+\s+)?"  # hostname (optional)
-    r"(?P<name>[\w]+:[\w_]+):\s*"
+    # UST events are "provider:name" but kernel events (sched_switch,
+    # irq_handler_*) have no provider prefix — the colon is optional.
+    r"(?P<name>\w+(?::\w+)?):\s*"
     r"(?P<rest>.*)$"
 )
 _BT2_FIELD_RE = re.compile(r"(\w+)\s*=\s*(0x[0-9a-fA-F]+|-?\d+|\"[^\"]*\"|\w+)")
@@ -263,9 +274,10 @@ def build_trace(
     """Walk the event stream once, emit Chrome Trace events.
 
     Maintains per-CPU "currently-running" tid so sched_switch produces a
-    closed B/E pair on the Cpu lane every time a thread is scheduled.
-    Callback B/E and IRQ B/E are 1:1 with their tracepoints, no state
-    needed.
+    closed B/E pair on the Cpu lane every time a thread is scheduled, and
+    an address→symbol map (fed by ``ros2:rclcpp_callback_register``) so
+    callback slices are labelled with their function symbol. Callback B/E
+    and IRQ B/E are 1:1 with their tracepoints, no further state needed.
 
     Args:
         events_iter: yields ``(ts_ns, name, payload, cpu_id)``.
@@ -285,6 +297,7 @@ def build_trace(
     """
     keep_extra = keep_events or frozenset()
     thread_names: dict[int, str] = {}
+    symbol_by_addr: dict[int, str] = {}
     cpus_seen: set[int] = set()
     irqs_seen: set[int] = set()
     out: list[dict] = []
@@ -323,9 +336,35 @@ def build_trace(
         if cpu_id is not None:
             cpus_seen.add(int(cpu_id))
 
-        if name == "ros2:callback_start":
+        if name == "ros2:rclcpp_callback_register":
+            # Side-band metadata: address → function symbol, used to label
+            # callback slices below. Consumed, not dropped; the legacy
+            # instant-marker emission still applies under keep_all /
+            # keep_events so --keep-all remains a faithful firehose.
+            try:
+                addr = int(payload.get("callback", 0))
+            except (TypeError, ValueError):
+                addr = 0
+            sym = payload.get("symbol")
+            if addr and sym:
+                symbol_by_addr[addr] = str(sym)
+            if keep_all or name in keep_extra:
+                out.append(
+                    {
+                        "name": _truncate(name),
+                        "cat": "ros2",
+                        "ph": "i",
+                        "ts": ts_us,
+                        "pid": THREAD_PID,
+                        "tid": vtid,
+                        "s": "t",
+                        "args": payload,
+                    }
+                )
+
+        elif name == "ros2:callback_start":
             cb = int(payload.get("callback", 0))
-            sym = payload.get("symbol") or f"callback@0x{cb:x}"
+            sym = payload.get("symbol") or symbol_by_addr.get(cb) or f"callback@0x{cb:x}"
             key = (vtid, cb)
             callbacks_open[key] = ts_us
             out.append(

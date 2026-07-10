@@ -21,6 +21,7 @@ from rtc_tools.conversion.ctf_to_chrome_trace import (
     IRQ_PID,
     STRUCTURED_EVENTS,
     THREAD_PID,
+    _parse_bt2_cli,
     build_trace,
 )
 
@@ -298,3 +299,158 @@ def test_swimlane_groups_labelled():
     }
     assert proc_meta[THREAD_PID] == "Threads (by TID)"
     assert proc_meta[CPU_PID] == "Cpus"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# babeltrace2 CLI fallback parser (_parse_bt2_cli) — text-line fixtures
+# ─────────────────────────────────────────────────────────────────────────────
+
+_UST_LINE = (
+    "[14:30:42.123456789] (+0.000002112) myhost ros2:callback_start: "
+    "{ cpu_id = 4 }, { vpid = 123, vtid = 124 }, "
+    "{ callback = 0x7F12, is_intra_process = 0 }"
+)
+_SCHED_LINE = (
+    "[14:30:42.223456789] (+0.100000000) myhost sched_switch: "
+    '{ cpu_id = 2 }, { prev_comm = "rt_control", prev_tid = 100, '
+    "prev_prio = 20, prev_state = 0, "
+    'next_comm = "swapper/2", next_tid = 0, next_prio = 20 }'
+)
+_IRQ_LINE = (
+    "[14:30:42.323456789] (+0.100000000) myhost irq_handler_entry: "
+    '{ cpu_id = 2 }, { irq = 27, name = "eth0" }'
+)
+
+
+def test_cli_parser_parses_ust_line():
+    events = list(_parse_bt2_cli([_UST_LINE]))
+    assert len(events) == 1
+    _ts, name, payload, cpu_id = events[0]
+    assert name == "ros2:callback_start"
+    assert payload["vtid"] == 124
+    assert payload["callback"] == 0x7F12
+    assert cpu_id == 4
+
+
+def test_cli_parser_parses_kernel_sched_switch_line():
+    # Regression guard: kernel events carry no "provider:" prefix — a
+    # colon-mandatory name pattern silently dropped every sched_switch,
+    # leaving the Cpus swimlane empty on CLI-fallback hosts.
+    events = list(_parse_bt2_cli([_SCHED_LINE]))
+    assert len(events) == 1
+    _ts, name, payload, cpu_id = events[0]
+    assert name == "sched_switch"
+    assert payload["prev_comm"] == "rt_control"
+    assert payload["prev_tid"] == 100
+    assert payload["next_comm"] == "swapper/2"
+    assert payload["next_tid"] == 0
+    assert cpu_id == 2
+
+
+def test_cli_parser_parses_irq_line():
+    events = list(_parse_bt2_cli([_IRQ_LINE]))
+    assert len(events) == 1
+    _ts, name, payload, cpu_id = events[0]
+    assert name == "irq_handler_entry"
+    assert payload["irq"] == 27
+    assert payload["name"] == "eth0"
+    assert cpu_id == 2
+
+
+def test_cli_parser_skips_non_event_lines():
+    lines = [
+        "",
+        "[warning] Some babeltrace2 diagnostic without an event",
+        _UST_LINE,
+    ]
+    events = list(_parse_bt2_cli(lines))
+    assert [name for _ts, name, _p, _c in events] == ["ros2:callback_start"]
+
+
+def test_cli_parser_handles_missing_hostname():
+    line = (
+        "[14:30:42.123456789] (+0.000002112) sched_switch: "
+        '{ cpu_id = 0 }, { prev_comm = "a", prev_tid = 1, '
+        'next_comm = "b", next_tid = 2 }'
+    )
+    events = list(_parse_bt2_cli([line]))
+    assert len(events) == 1
+    assert events[0][1] == "sched_switch"
+
+
+def test_cli_parsed_kernel_lines_reach_cpu_lane():
+    # End-to-end for the fallback path: text lines → parser → build_trace
+    # must yield Cpu-lane run slices and IRQ-lane slices.
+    out = build_trace(_parse_bt2_cli([_SCHED_LINE, _IRQ_LINE]))
+    cats = {ev.get("cat") for ev in out["traceEvents"]}
+    assert "irq" in cats
+    # next_tid == 0 (idle) closes the lane without opening a slice; feed a
+    # non-idle switch to observe a "run" B slice.
+    sched_busy = _SCHED_LINE.replace(
+        'next_comm = "swapper/2", next_tid = 0', 'next_comm = "rt_control", next_tid = 100'
+    )
+    out = build_trace(_parse_bt2_cli([sched_busy]))
+    run_b = [ev for ev in out["traceEvents"] if ev.get("cat") == "run" and ev["ph"] == "B"]
+    assert len(run_b) == 1
+    assert run_b[0]["pid"] == CPU_PID
+    assert run_b[0]["tid"] == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Callback symbol resolution via ros2:rclcpp_callback_register
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _callback_register(ts_ns, *, callback, symbol, vtid=1, procname="rt_control"):
+    return (
+        ts_ns,
+        "ros2:rclcpp_callback_register",
+        {"vtid": vtid, "procname": procname, "callback": callback, "symbol": symbol},
+        None,
+    )
+
+
+def _callback_pair_no_symbol(ts_start_ns, ts_end_ns, *, vtid, callback):
+    # Real ros2:callback_start payloads carry only the address (+
+    # is_intra_process) — no symbol field. Mirrors tracetools tp_call.h.
+    return [
+        (ts_start_ns, "ros2:callback_start", {"vtid": vtid, "callback": callback}, None),
+        (ts_end_ns, "ros2:callback_end", {"vtid": vtid, "callback": callback}, None),
+    ]
+
+
+def test_callback_symbol_resolved_from_register_event():
+    events = [_callback_register(500_000, callback=0xABCD, symbol="WbcController::Tick()")]
+    events += _callback_pair_no_symbol(1_000_000, 1_500_000, vtid=42, callback=0xABCD)
+    out = build_trace(iter(events))
+    b = [ev for ev in out["traceEvents"] if ev.get("cat") == "callback" and ev["ph"] == "B"]
+    assert len(b) == 1
+    assert b[0]["name"] == "WbcController::Tick()"
+    assert b[0]["args"]["symbol"] == "WbcController::Tick()"
+
+
+def test_callback_symbol_falls_back_to_address_without_register():
+    events = _callback_pair_no_symbol(1_000_000, 1_500_000, vtid=42, callback=0xABCD)
+    out = build_trace(iter(events))
+    b = [ev for ev in out["traceEvents"] if ev.get("cat") == "callback" and ev["ph"] == "B"]
+    assert b[0]["name"] == "callback@0xabcd"
+
+
+def test_register_event_not_counted_as_dropped():
+    events = [_callback_register(500_000, callback=0x1, symbol="x")]
+    out = build_trace(iter(events))
+    assert out["_dropped_event_counts"] == {}
+    # Consumed silently: no slice, no instant marker in default mode.
+    assert [ev for ev in out["traceEvents"] if ev["ph"] != "M"] == []
+
+
+def test_register_event_emitted_as_marker_under_keep_all():
+    events = [_callback_register(500_000, callback=0xABCD, symbol="x")]
+    events += _callback_pair_no_symbol(1_000_000, 1_500_000, vtid=42, callback=0xABCD)
+    out = build_trace(iter(events), keep_all=True)
+    instants = [ev for ev in out["traceEvents"] if ev["ph"] == "i"]
+    assert {ev["name"] for ev in instants} == {"ros2:rclcpp_callback_register"}
+    # Consumption and marker emission are not mutually exclusive: the
+    # symbol map must still label the callback slice.
+    b = [ev for ev in out["traceEvents"] if ev.get("cat") == "callback" and ev["ph"] == "B"]
+    assert b[0]["name"] == "x"
