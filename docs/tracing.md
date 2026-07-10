@@ -97,8 +97,9 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
     trace_events_kernel:=
 
 # callback timing 만 (좁은 UST + 풀 kernel)
+# rclcpp_callback_register 를 빼면 callback 이름이 symbol 대신 주소로만 표시된다.
 ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
-    trace_events_ust:=ros2:callback_start,ros2:callback_end
+    trace_events_ust:=ros2:callback_start,ros2:callback_end,ros2:rclcpp_callback_register
 
 # 명시적 session 이름 (CI / 여러 run 비교)
 ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
@@ -127,6 +128,8 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
     한눈에.
 * Perfetto UI tip: 좌측 swimlane 헤더 클릭 → 그 lane 만 펼침. 마우스 휠로 zoom,
   shift+드래그로 범위 측정. Ctrl+F 으로 callback symbol 검색.
+* Callback 슬라이스의 symbol 은 `ros2:rclcpp_callback_register` 이벤트 (기본 UST
+  캡처에 포함) 로 해석된다 — register 가 없는 캡처는 `callback@0x...` 주소로 표시.
 
 ### Event drop policy (JSON size)
 

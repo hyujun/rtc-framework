@@ -8,10 +8,11 @@ an ``OpaqueFunction`` once the session directory is known.
 The helper:
     * imports ``tracetools_launch.action.Trace`` lazily (so the launch file
       can be parsed even when ros2_tracing is not installed)
-    * writes traces to ``~/.ros/tracing/<session_name>/`` — the
-      ros2_tracing default. The session_name defaults to the logging_data
-      session directory's basename so traces cross-reference cleanly with
-      CSV timing logs.
+    * writes traces to ``<session_dir>/tracing/<session_name>/`` — the same
+      session tree as the CSV timing logs, so trace and CSV cross-reference
+      1:1 (not the ``~/.ros/tracing/`` ros2_tracing default). The
+      session_name defaults to ``"trace"``; the surrounding session_dir
+      already carries the YYMMDD_HHMM stamp.
     * is a no-op when ``enable_tracing:=false`` (returns ``[]``)
     * declines to act with a clear message when ros2_tracing is not on the
       Python path (so ``./install.sh --tracing`` is suggested instead of

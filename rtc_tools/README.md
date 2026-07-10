@@ -204,15 +204,16 @@ robot_dir/
 
 ```bash
 python3 -m rtc_tools.conversion.ctf_to_chrome_trace \
-    --input ~/.ros/tracing/260520_1430 --output trace.json
+    --input logging_data/260520_1430/tracing/trace --output trace.json
 
 # 또는 babeltrace2 CLI 출력을 직접 파이프
-babeltrace2 ~/.ros/tracing/260520_1430 \
+babeltrace2 logging_data/260520_1430/tracing/trace \
     | python3 -m rtc_tools.conversion.ctf_to_chrome_trace --stdin --output trace.json
 ```
 
 - Perfetto 에 **Threads (by TID)** / **Cpus** 2개 swimlane 그룹을 동시에 생성 — 스레드별 실행 구간과 core별 스케줄링(taskset 핀 검증, migration/IRQ 탐지)을 모두 확인 가능
 - 처리 이벤트: `ros2:callback_start/end` (B/E 슬라이스), `sched_switch` (Cpu 레인), `irq_handler_entry/exit` (Cpu/IRQ 레인). 그 외 이벤트는 기본 drop — `--keep-events name[,...]` 로 개별 opt-in, `--keep-all` 로 전체 복원
+- Callback 슬라이스 이름: `ros2:rclcpp_callback_register` 이벤트의 주소→symbol 매핑으로 해석 (기본 UST 캡처에 포함). register 이벤트가 없는 캡처 (노드 기동 후 시작한 수동 trace, 좁힌 `trace_events_ust`) 는 `callback@0x...` 주소로 fallback
 - 파서: `python3-bt2` (LTTng Python binding) 우선, 미설치 시 `babeltrace2` CLI 텍스트 출력 파싱으로 폴백 (느림)
 
 ---
