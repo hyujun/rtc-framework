@@ -4,7 +4,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **헤더 전용(header-only) C++ 라이브러리**로, 실시간(RT-safe) 네트워크 전송 추상화를 제공합니다. UDP·CAN·CAN FD 전송, 패킷 코덱, 전이중 트랜시버 템플릿으로 구성되어 있으며, 실시간 제어 루프에서 외부 디바이스와의 통신에 사용됩니다.
+RTC 프레임워크의 **헤더 전용(header-only) C++ 라이브러리**로, 실시간(RT-safe) 네트워크 전송 추상화를 제공합니다. UDP·CAN·CAN FD·RS485 전송, 패킷 코덱, 전이중 트랜시버 템플릿으로 구성되어 있으며, 실시간 제어 루프에서 외부 디바이스와의 통신에 사용됩니다.
 
 **설계 원칙:**
 - 생성 이후 동적 메모리 할당 없음 (RT-safe)
@@ -29,16 +29,22 @@ rtc_communication/
 │   ├── udp/
 │   │   ├── udp_socket.hpp        -- RAII UDP 소켓 래퍼
 │   │   └── udp_transport.hpp     -- TransportInterface의 UDP 구현체
-│   └── can/
-│       ├── can_socket.hpp        -- RAII SocketCAN raw 소켓 래퍼 (classic + FD frame I/O)
-│       ├── can_transport.hpp     -- TransportInterface의 classic CAN 구현체 (payload ≤ 8B)
-│       └── canfd_transport.hpp   -- TransportInterface의 CAN FD 구현체 (payload ≤ 64B)
+│   ├── can/
+│   │   ├── can_socket.hpp        -- RAII SocketCAN raw 소켓 래퍼 (classic + FD frame I/O)
+│   │   ├── can_transport.hpp     -- TransportInterface의 classic CAN 구현체 (payload ≤ 8B)
+│   │   └── canfd_transport.hpp   -- TransportInterface의 CAN FD 구현체 (payload ≤ 64B)
+│   └── rs485/
+│       ├── serial_port.hpp       -- RAII termios 시리얼 tty 래퍼 (라인 설정 + RS485 방향 제어)
+│       └── rs485_transport.hpp   -- TransportInterface의 RS485 구현체 (length-prefixed 프레이머)
 └── test/
     ├── fake_codec.hpp            -- PacketCodec concept을 만족하는 최소 코덱 (테스트 하니스용)
     ├── can_test_support.hpp      -- vcan 감지·SKIP 매크로 공용 헬퍼 (CAN/CANFD 테스트용)
+    ├── serial_test_support.hpp   -- PTY 페어 루프백 헬퍼 (RS485 테스트용)
     ├── test_udp_loopback.cpp     -- UdpSocket/UdpTransport 바인드·연결·타임아웃·RAII 테스트
     ├── test_can_loopback.cpp     -- CanSocket/CanTransport vcan0 라운드 트립·필터·RAII 테스트
     ├── test_canfd_loopback.cpp   -- CanFdTransport 64B 라운드 트립·classic/FD 혼재 수신 테스트
+    ├── test_serial_loopback.cpp  -- SerialPort PTY 라인 설정·바이트 왕복·VTIME 타임아웃·RAII 테스트
+    ├── test_rs485_transport.cpp  -- Rs485Transport 프레이머(리싱크·분할·연속) + Transceiver 디코드 테스트
     └── test_transceiver.cpp      -- Transceiver 기동·종료·디코딩·콜백·Send 경로 테스트
 ```
 
@@ -217,6 +223,64 @@ transport->Open();
 
 ---
 
+### SerialPort (`rs485/serial_port.hpp`)
+
+POSIX 시리얼(tty) 파일 디스크립터의 RAII 래퍼입니다. UDP/CAN 소켓과 달리 시리얼 라인은 **커널 프레이밍이 없는 raw 바이트 스트림**이므로, 이 클래스는 라인 소유(open/설정/방향 제어/raw I/O)만 담당하고 프레임 재조립은 `Rs485Transport`가 수행합니다.
+
+- `Open(device)` -- tty 열기 (`O_RDWR|O_NOCTTY`). blocking 모드로 두고 타임아웃은 VMIN/VTIME으로 제어
+- `ConfigureLine(baud, data_bits, parity, stop_bits)` -- `cfmakeraw` 기반 raw 모드 설정. baud는 `speed_t` 매핑(9600~4M), Dynamixel은 8N1
+- `EnableRs485(rts_on_send, rts_after_send, delay_before_us, delay_after_us)` -- `TIOCSRS485` ioctl로 커널 DE/RE 반이중 방향 제어. 지원 안 하는 어댑터(하드웨어 자동 방향)에서는 `false` 반환 → 호출자가 `Drain()`으로 대체
+- `SetRecvTimeout(ms)` -- **`socket_options.hpp` 재사용 안 함**. `SO_RCVTIMEO`는 tty에 무효이므로 termios로 구현. `ms <= 0`은 **타임아웃 비활성(무한 대기, VMIN=1)** 으로 소켓 `SO_RCVTIMEO=0` 의미론과 일치. 양수는 VMIN=0/VTIME — decisecond 단위로 **올림**(최대 25.5 s), `Read()`는 타임아웃 시 `0` 반환
+- `Read()`/`Write()` -- raw `::read`/`::write`, `noexcept`. `Write()`는 short write(tty tx 버퍼 포화)와 `EINTR`을 루프로 완성해 **torn frame을 방지** (전량 기록 또는 `-1`). `Drain()` = `tcdrain` (반이중 turnaround)
+- Non-copyable, non-movable
+
+---
+
+### Rs485Transport (`rs485/rs485_transport.hpp`)
+
+`TransportInterface`의 RS485 구현체입니다. 시리얼 바이트 스트림에서 패킷 경계를 복원하기 위해 `Recv()` 내부에 **stateful length-prefixed 프레이머**를 실행합니다. 프레이머는 **벤더-중립**이며 sync prefix + length 필드로 파라미터화되어, 임의의 header/length-prefixed 와이어 포맷(예: ROBOTIS Dynamixel Protocol 2.0)에 맞출 수 있습니다.
+
+- **payload-only 계약**: `Recv(span)`은 호출당 완전한 raw frame 하나(sync..trailer)를 반환하고, `Send(span)`은 호출자가 인코딩한 frame을 그대로 write합니다. 프레임이 호출자 버퍼보다 크면 **잘라서 반환하지 않고 프레임을 버리고 `-1`** (silent truncation 없음). **CRC 검증·필드 파싱은 codec 책임** — transport에는 벤더별 로직이 없습니다
+- **`Recv()` 전체 deadline**: `recv_timeout_ms`는 read 1회가 아니라 **`Recv()` 호출 전체**를 bound합니다 (`CLOCK_MONOTONIC` 기준, 최악 VTIME 1윈도우 초과). 프레임이 안 되는 바이트가 계속 흘러들어와도(baud 불일치·노이즈) 호출자가 무한정 잡히지 않습니다. `recv_timeout_ms <= 0`이면 프레임 완성까지 무한 대기
+- 반이중 방향: `rs485_enabled`면 `TIOCSRS485`(best-effort). **ioctl 성공 시 `Open()`이 `drain_after_send`를 자동 비활성** (커널이 turnaround를 보장하므로 중복 drain 제거), 실패 시 `drain_after_send`로 대체 — 정확히 한 경로만 활성. drain fallback 경로의 `Send()`는 프레임이 UART를 물리적으로 떠날 때까지 블록하므로(≈ `frame_bytes × 10 / baud` 초) **정기 RT tick에서 호출 시 예산에 반영 필요**
+- **self-echo**: 수신기가 송신 중에도 켜져 있는 2-wire 어댑터(TIOCSRS485 미지원 + 하드웨어 echo 억제 없음)는 송신 프레임이 rx로 되돌아옵니다. `discard_echo=true`면 `Send()`가 drain 후 송신 바이트 수만큼 읽어 버립니다 (echo가 확실한 하드웨어에서만 활성 — 비-echo 라인에서는 Send당 수신 타임아웃 1회 비용 + 응답 바이트를 소비할 수 있음)
+- 프레임 total 계산: `frame_total = length_offset + length_size + length_value + length_adjust`. 미완성 프레임은 다음 `Recv()`로 이월, garbage/corrupt length는 1바이트씩 drop 후 리싱크. 물리 재조립 버퍼 상한 `kBufferCapacity`(1024B)
+
+#### 설정 (`Rs485TransportConfig`)
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `device` | `string` | `"/dev/ttyUSB0"` | tty 디바이스 경로 |
+| `baud_rate` | `int` | `57600` | 통신 속도 (Dynamixel 기본) |
+| `data_bits` / `parity` / `stop_bits` | -- | 8 / `kNone` / 1 | 라인 프레이밍 |
+| `rs485_enabled` | `bool` | `true` | `TIOCSRS485` 커널 방향 제어 활성 |
+| `rts_on_send` / `rts_after_send` | `bool` | `true` / `false` | DE 극성 |
+| `delay_rts_before_us` / `delay_rts_after_us` | `int` | `0` | 방향 전환 지연 |
+| `drain_after_send` | `bool` | `true` | `TIOCSRS485` 실패 시 `tcdrain` fallback (ioctl 성공 시 `Open()`이 자동 비활성) |
+| `discard_echo` | `bool` | `false` | 송신 후 self-echo 바이트를 읽어 버림 (2-wire echo 어댑터 전용, 옵트인) |
+| `sync_pattern` | `vector<uint8_t>` | `{FF,FF,FD,00}` | 프레임 시작 sync 시퀀스 (비우면 고정 길이) |
+| `length_offset` | `size_t` | `5` | 프레임 시작 기준 length 필드 offset |
+| `length_size` | `size_t` | `2` | length 필드 폭 (0/1/2). 0이면 고정 길이 |
+| `length_little_endian` | `bool` | `true` | 2바이트 length 엔디안 |
+| `length_adjust` | `int` | `0` | length 보정값 (고정 길이 모드에서 프레임 크기) |
+| `max_frame_size` | `size_t` | `512` | 단일 프레임 상한 (초과 시 corrupt 처리, `kBufferCapacity`로 clamp) |
+| `recv_timeout_ms` | `int` | `100` | `Recv()` 전체 deadline. `<= 0`이면 무한 대기 (소켓 `SO_RCVTIMEO=0` 의미론), 양수는 100 ms 단위 올림 |
+
+Dynamixel Protocol 2.0 프레임 `FF FF FD 00 | ID | LEN(2,LE) | INST | PARAMS | CRC16(2)`은 기본값이 그대로 매핑됩니다 (`frame_total = 7 + LEN`). 고정 길이 프레이밍이 필요하면 `sync_pattern`을 비우고 **`length_offset=0`**, `length_size=0`, `length_adjust`에 프레임 크기를 지정합니다 — `frame_total` 공식의 모든 필드가 합산되므로 `length_offset` 기본값(5)을 그대로 두면 프레임이 5바이트 길게 잘립니다.
+
+```cpp
+Rs485TransportConfig config{
+    .device = "/dev/ttyUSB0",
+    .baud_rate = 1000000,
+};  // sync/length 기본값 = Dynamixel Protocol 2.0
+auto transport = std::make_unique<Rs485Transport>(config);
+transport->Open();
+```
+
+> **참고**: RS485 버스는 반이중 master-initiated 트랜잭션이 일반적입니다. `Transceiver`의 상시 수신 스레드 모델은 스트리밍 디바이스에 적합하며, request→status 동기 트랜잭션이나 벤더 CRC/byte-stuffing이 필요한 프로덕션 Dynamixel 드라이버는 별도 downstream 패키지(codec + 트랜잭션 계층)로 구현합니다.
+
+---
+
 ### PacketCodec Concept (`packet_codec.hpp`)
 
 사용자 정의 패킷 코덱을 위한 C++20 Concept입니다.
@@ -352,9 +416,12 @@ RT 루프에서 디코딩된 상태가 필요하면 `GetLatestState()`를 직접
 | `test/test_udp_loopback.cpp` | GTest | UdpSocket bind/connect 라운드 트립, `SO_RCVTIMEO` 만료, RAII fd 닫힘, UdpTransport bind+connect 수명 (5 케이스) |
 | `test/test_can_loopback.cpp` | GTest | CanSocket/CanTransport 수명, invalid interface, vcan0 라운드 트립, 타임아웃, RAII, >8B 거부, 필터 accept/reject, extended ID, RTR drop, receive_own_messages (12 케이스, vcan 의존 8개는 guarded) |
 | `test/test_canfd_loopback.cpp` | GTest | CanFdTransport invalid interface, 64B 라운드 트립, >64B 거부, classic/FD 혼재 수신 (4 케이스, vcan 의존 3개는 guarded) |
+| `test/test_serial_loopback.cpp` | GTest | SerialPort PTY 수명, 잘못된 device 실패, 라인 설정, 양방향 바이트 왕복, VTIME 타임아웃, RAII fd 닫힘 (6 케이스) |
+| `test/test_rs485_transport.cpp` | GTest | Rs485Transport 단일 프레임, 헤더 앞 garbage 리싱크, 연속 프레임 분리, read 분할 재조립, 타임아웃 `-1`, garbage 스트림 하 전체 deadline, oversize 프레임 `-1` 후 복구, timeout=0 무한 대기, 고정 길이 프레이밍, `discard_echo`, `Transceiver<DynamixelTestCodec>` 풀스택 디코드 (11 케이스) |
 | `test/test_transceiver.cpp` | GTest | `Transceiver<FakeCodec>` 기동·종료, 외부 송신 디코딩, 콜백 호출, 짧은 데이터그램 무시, Send 경로 외부 수신자 도달 (4 케이스) |
 | `test/fake_codec.hpp` | -- | `PacketCodec` concept을 만족하는 최소 코덱 (테스트 하니스용) |
 | `test/can_test_support.hpp` | -- | vcan 감지 (`HasVcan`/`GetInterfaceMtu`)·`SKIP_IF_NO_VCAN`/`SKIP_IF_NO_FD_VCAN` 매크로 공용 헬퍼 |
+| `test/serial_test_support.hpp` | -- | PTY master/slave 페어 루프백 헬퍼 (`OpenPtyPair`). PTY는 상시 사용 가능하므로 RS485 테스트는 SKIP 없이 실행 |
 
 ```bash
 colcon test --packages-select rtc_communication --event-handlers console_direct+
@@ -379,6 +446,10 @@ cangen vcan0           # 랜덤 트래픽 생성
 canfdtest vcan0        # CAN FD 검증
 ```
 
+### RS485 테스트 환경 (PTY)
+
+RS485 테스트는 PTY(pseudo-terminal) 페어를 실제 시리얼 링크 대용으로 사용합니다. PTY는 root·커널 모듈 없이 항상 사용 가능하므로 CAN과 달리 **SKIP 없이 상시 실행**됩니다. PTY는 실제 UART가 아니므로 `TIOCSRS485` ioctl은 미지원이며(`EnableRs485`가 `false` 반환, transport가 허용), 프레이밍·타임아웃·바이트 투명성만 충실히 검증합니다. 실제 HW 검증은 USB-RS485 어댑터 + Dynamixel 모터로 별도 수행합니다.
+
 ---
 
 ## 의존성
@@ -387,9 +458,9 @@ canfdtest vcan0        # CAN FD 검증
 |--------|------|------|
 | `ament_cmake` | 빌드 도구 | ROS 2 빌드 시스템 |
 | `rtc_base` | 런타임 | `ThreadConfig`, `ApplyThreadConfig` (스레드 설정) |
-| `ament_cmake_gtest` | 테스트 | UDP/CAN 루프백 / Transceiver 통합 테스트 |
+| `ament_cmake_gtest` | 테스트 | UDP/CAN/RS485 루프백 / Transceiver 통합 테스트 |
 
-**시스템 의존성:** POSIX 소켓 API (`sys/socket.h`, `arpa/inet.h`, `netinet/in.h`, `unistd.h`), Linux SocketCAN 커널 헤더 (`linux/can.h`, `linux/can/raw.h`, `net/if.h`) — 별도 패키지 설치 불필요
+**시스템 의존성:** POSIX 소켓 API (`sys/socket.h`, `arpa/inet.h`, `netinet/in.h`, `unistd.h`), Linux SocketCAN 커널 헤더 (`linux/can.h`, `linux/can/raw.h`, `net/if.h`), POSIX termios + Linux RS485 헤더 (`termios.h`, `linux/serial.h`, `sys/ioctl.h`) — 모두 표준 libc/커널 헤더로 별도 패키지 설치 불필요
 
 **컴파일러 요구 사항:** C++20 (`-std=c++20`), 엄격 경고 플래그 (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`)
 

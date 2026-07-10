@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(rtc_communication VERSION 5.18.1 LANGUAGES CXX)
+project(rtc_communication VERSION 5.19.0 LANGUAGES CXX)
 
 # ── C++20 requirement (concepts, jthread, span, stop_token) ───────────────────
 set(CMAKE_CXX_STANDARD 20)
@@ -41,6 +41,17 @@ if(BUILD_TESTING)
   ament_add_gtest(test_canfd_loopback test/test_canfd_loopback.cpp)
   if(TARGET test_canfd_loopback)
     target_include_directories(test_canfd_loopback PRIVATE include ${rtc_base_INCLUDE_DIRS})
+  endif()
+
+  ament_add_gtest(test_serial_loopback test/test_serial_loopback.cpp)
+  if(TARGET test_serial_loopback)
+    target_include_directories(test_serial_loopback PRIVATE include ${rtc_base_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/test)
+  endif()
+
+  ament_add_gtest(test_rs485_transport test/test_rs485_transport.cpp)
+  if(TARGET test_rs485_transport)
+    target_include_directories(test_rs485_transport PRIVATE include ${rtc_base_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/test)
+    target_link_libraries(test_rs485_transport pthread)
   endif()
 
   ament_add_gtest(test_transceiver test/test_transceiver.cpp)

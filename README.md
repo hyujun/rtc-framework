@@ -24,7 +24,7 @@
 | [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 14종 (JointCommand, FingertipSensor, HandSensorState, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, WbcState, ToFSnapshot, ControllerState, CalibrationCommand, CalibrationStatus, SimSensor, SimSensorState) | ament_cmake |
 | [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
 | [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`). Pinocchio 어댑터는 optional | ament_cmake |
-| [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket/CanSocket RAII, UDP·CAN·CAN FD transport, PacketCodec concept, Transceiver 템플릿 | ament_cmake |
+| [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket/CanSocket/SerialPort RAII, UDP·CAN·CAN FD·RS485 transport (length-prefixed 프레이머), PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
 | [`rtc_controllers`](rtc_controllers/) | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
 | [`rtc_tsid`](rtc_tsid/) | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
@@ -119,7 +119,7 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 - **RT-안전 ONNX 추론**: IoBinding + 사전 할당 버퍼로 RT 경로 힙 할당 제거, 배치/다중 모델 지원
 
 ### 통신 & 로깅
-- **전송 계층 추상화**: UDP·CAN·CAN FD (SocketCAN) 구현 완료, EtherCAT/RS485 확장 가능
+- **전송 계층 추상화**: UDP·CAN·CAN FD (SocketCAN)·RS485 (termios, length-prefixed 프레이머) 구현 완료, EtherCAT 확장 가능
 - **세션 기반 CSV 로깅**: `logging_data/YYMMDD_HHMM/` — timing, robot, device 3파일 분리
 - **ROS2 파라미터 인트로스펙션**: 컨트롤러별 토픽 매핑을 읽기 전용 파라미터로 노출
 
@@ -253,7 +253,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 [integrated_rt_controller]  ←  /target_joint_positions (goal)
     │  RT 루프 (clock_nanosleep @ control_rate)
     │  제어기: rtc_controllers (P / JointPD / CLIK / OSC)
-    │  전송: rtc_communication (UDP · CAN/CAN FD)
+    │  전송: rtc_communication (UDP · CAN/CAN FD · RS485)
     ├── inline ────────────────────→ DeviceBackend.WriteCommand (actuator, RT-safe contract)
     │                                 → /forward_position_controller/commands · hand UDP
     ├──→ SPSC (cap 16)  ──→ [nrt_publish_thread (CFS)] ──→ controller.PublishNonRtSnapshot
