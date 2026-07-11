@@ -1,0 +1,17 @@
+# Dependabot — GitHub Actions 버전 최신화 자동 PR.
+# third-party action 은 full-SHA 로 핀되어 있고(재현성·공급망 보안), Dependabot 이
+# 새 릴리스마다 SHA + 버전 주석을 갱신하는 PR 을 연다 (수동 추적 대체).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      # 사소한 patch/minor 는 한 PR 로 묶어 노이즈 감소.
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch

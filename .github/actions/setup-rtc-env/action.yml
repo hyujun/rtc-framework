@@ -35,13 +35,13 @@ runs:
   steps:
     - name: Setup ROS 2 (full distribution)
       if: inputs.install-ros == 'true'
-      uses: ros-tooling/setup-ros@v0.7
+      uses: ros-tooling/setup-ros@649ef6bcd696da05bc27ceb3fab69d810c0daeab # v0.7
       with:
         required-ros-distributions: ${{ inputs.ros-distro }}
 
     - name: Setup ROS 2 tooling only
       if: inputs.install-ros != 'true'
-      uses: ros-tooling/setup-ros@v0.7
+      uses: ros-tooling/setup-ros@649ef6bcd696da05bc27ceb3fab69d810c0daeab # v0.7
 
     # setup-ros@v0.7.15 의 colcon-cmake 는 CMAKE_PREFIX_PATH 세미콜론 버그 fix 됨
     # (이전 workflow 의 `pip install -U colcon-cmake colcon-core` 는 user site-packages
@@ -50,7 +50,7 @@ runs:
 
     - name: Cache apt packages
       if: inputs.apt-packages != ''
-      uses: awalsh128/cache-apt-pkgs-action@v1
+      uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
       with:
         packages: ${{ inputs.apt-packages }}
         version: ${{ inputs.ros-distro }}-${{ inputs.apt-cache-version }}
