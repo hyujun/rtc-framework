@@ -5,10 +5,10 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
 
 | Action | Purpose | Used by |
 |--------|---------|---------|
-| [`setup-rtc-env`](setup-rtc-env/action.yml) | ROS 2 distro/tooling + apt cache + colcon upgrade + numpy fix | every job |
-| [`build-isolated-deps`](build-isolated-deps/action.yml) | Build & cache fmt 11 / mimalloc / aligator from `deps.repos` → publish artifact | `build-deps` (one-shot) |
-| [`colcon-build`](colcon-build/action.yml) | `colcon build --packages-up-to <pkgs>` with deps prepend + failure-log artifact | `build-test`, `clang-tidy`, `codeql` |
-| [`colcon-test-report`](colcon-test-report/action.yml) | `colcon test` + `GITHUB_STEP_SUMMARY` table + failure-log artifact | `build-test`, `python-test` |
+| [`setup-rtc-env`](setup-rtc-env/action.yml) | ROS 2 distro/tooling + apt cache + colcon upgrade + numpy fix | every job (+ codeql) |
+| [`build-isolated-deps`](build-isolated-deps/action.yml) | Build & cache fmt 11 / mimalloc / aligator from `deps.repos` → publish artifact | `build-deps`, `codeql` |
+| [`colcon-build`](colcon-build/action.yml) | `colcon build --packages-up-to <pkgs>` with deps prepend + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test`, `codeql` |
+| [`colcon-test-report`](colcon-test-report/action.yml) | `colcon test` + `GITHUB_STEP_SUMMARY` table + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test` |
 
 ## Conventions
 

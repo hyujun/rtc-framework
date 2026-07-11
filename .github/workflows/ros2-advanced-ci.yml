@@ -14,11 +14,14 @@ name: ROS2 Advanced CI
 on:
   push:
     branches: [main]
+    # repo_scripts/** 는 통째로 ignore 하지 않는다: repo_scripts/scripts/build_deps.sh
+    # 는 cpp 필터(changes job)의 트리거 입력이므로 ignore 하면 워크플로 자체가 시작되지
+    # 않아 필터가 死한다. build 무관한 repo_scripts 변경은 트리거되되 cpp/python 필터가
+    # 모두 false → heavy job 은 skip(changes/packages 만, 수 초).
     paths-ignore:
       - 'docs/**'
       - 'agent_docs/**'
       - '*.md'
-      - 'repo_scripts/**'
       - 'LICENSE'
       - '.gitignore'
   pull_request:
@@ -27,7 +30,6 @@ on:
       - 'docs/**'
       - 'agent_docs/**'
       - '*.md'
-      - 'repo_scripts/**'
       - 'LICENSE'
       - '.gitignore'
 
@@ -35,6 +37,11 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# 최소 권한 원칙 — 전 job 은 read-only GITHUB_TOKEN 을 상속. Codecov 는 별도 secret
+# (CODECOV_TOKEN) 을 쓰므로 token write 불요. write 가 필요한 job 은 job-level override.
+permissions:
+  contents: read
 
 env:
   ROS_DISTRO: jazzy
