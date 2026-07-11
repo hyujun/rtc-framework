@@ -46,7 +46,7 @@ runs:
 
     - name: Restore deps cache
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ steps.paths.outputs.ws-root }}/deps/install
         key: rtc-deps-${{ inputs.ros-distro }}-${{ inputs.cache-version }}-${{ hashFiles('deps.repos', 'repo_scripts/scripts/build_deps.sh') }}

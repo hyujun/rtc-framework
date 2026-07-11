@@ -323,7 +323,7 @@ jobs:
           path: _rtc_ws/deps/install
 
       - name: Cache colcon workspace
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             build/
@@ -407,7 +407,7 @@ jobs:
       # gated-test 와 분리된 키 (Debug + gcov 계측이라 산출물이 다름). restore-keys
       # prefix 매치로 colcon 증분 빌드 → 변경 패키지만 재컴파일 (cold 33min 단축).
       - name: Cache colcon workspace (coverage)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             build/
