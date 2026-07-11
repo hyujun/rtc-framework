@@ -17,13 +17,21 @@
 #                   integration package set (auto-derived from package.xml
 #                   files that <depend> on any rtc_*).
 #   1. Doc / metadata co-update
-#        - README.md change required when src/ or include/ changed
-#        - new .cpp must appear in CMakeLists.txt
-#        - package.xml change required when find_package() added in CMakeLists.txt
+#        - README.md: NON-BLOCKING checklist reminder, and only when the change
+#          touches public surface (include/ header, launch/, config/, a source
+#          file add/delete, or package.xml). src/-only internal refactors / bug
+#          fixes do NOT trigger it -- they carry no doc-visible delta and the
+#          old "any src change requires README" gate over-blocked them.
+#        - new .cpp must appear in CMakeLists.txt        (blocking)
+#        - package.xml change required when find_package() added (blocking)
 #   2. Build + test on changed packages
 #        - rtc_base / rtc_msgs change -> ./build.sh full + colcon test all
 #          (PROC-3: broad downstream impact)
 #        - else                       -> ./build.sh -p <pkg> + colcon test <pkg>
+#        A test run that TIMES OUT or fails to launch is reported as UNVERIFIED
+#        and blocks (exit 2) -- the colcon test exit code is preserved and
+#        handled explicitly rather than inferred from test-result alone, so a
+#        killed/partial run can no longer masquerade as "0 failures".
 #   3. Stale install/ detection (rename-aware)
 #        - any deleted launch/*.py or config/**/*.yaml whose basename still
 #          resolves under install/ — warns about stray artefacts that
@@ -41,21 +49,25 @@
 #   to document). Phase 2 (build/test) still runs because formatter changes
 #   like include reordering can break compilation.
 #
-# Exit   : 0 on pass (silent). 2 on any failure -> Claude is blocked, stderr
-#          message is auto-injected next turn. Pointer to modification-guide.md
-#          is appended so the agent has a recovery entry point.
-#          NOTE: this gate is not infinitely blocking — Claude Code overrides a
-#          Stop hook after 8 consecutive exit-2 blocks and ends the turn anyway
-#          (code.claude.com/docs/en/best-practices). So a persistently-failing
-#          build/test will eventually let the turn end; the agent must still act
-#          on the injected report rather than relying on the hook to hard-stop.
-# Limits : per-package bounds: 180s build + 60s test (silent on overrun --
-#          large packages may partial-pass). PROC-3 path: 300s build + 180s
-#          test. All within the Stop hook's 540s budget (settings.json).
-#          YAML config / Doxygen / cross-package docs NOT
-#          checked (modification-guide.md "Updating an Existing Package" 6
-#          steps cover these manually). Only checks files vs HEAD: staged or
-#          unstaged.
+# Exit   : 0 on pass (a non-blocking doc checklist may still print to stderr).
+#          2 on any hard failure -> Claude is blocked, stderr message is
+#          auto-injected next turn. Pointer to modification-guide.md is appended
+#          so the agent has a recovery entry point.
+#          Loop safety: re-entry is gated by {stop_hook_active} (read from stdin
+#          below) -- the hook fires once per stop cycle, so it cannot wedge the
+#          turn in an infinite block. Official Stop-hook exit-2 semantics:
+#          "Prevents Claude from stopping, continues the conversation"
+#          (code.claude.com/docs/en/hooks). The agent must act on the injected
+#          report; do not rely on any undocumented consecutive-block cap.
+# Limits : per-package bounds: 180s build + 60s test. PROC-3 path: 300s build +
+#          180s test. A build OR test that hits its timeout (exit 124) or fails
+#          to launch (exit >=125) is reported as a failure/unverified and blocks
+#          -- overrun is no longer silent. If a package's tests legitimately
+#          exceed the bound, raise it here rather than letting the gate pass
+#          blind. All within the Stop hook's 540s budget (settings.json).
+#          YAML config / Doxygen / cross-package docs NOT checked
+#          (modification-guide.md "Updating an Existing Package" 6 steps cover
+#          these manually). Only checks files vs HEAD: staged or unstaged.
 set -euo pipefail
 
 INPUT=$(cat)
@@ -183,7 +195,8 @@ elif [ "$HAVE_CLANG_FORMAT" -eq 0 ]; then
        "pure-format fast path disabled." >&2
 fi
 
-WARNINGS=""
+WARNINGS=""       # blocking doc/metadata issues (CMake / package.xml)
+CHECKLIST=""      # non-blocking reminders (README co-update) -- never exit 2 alone
 ARCH_VIOLATIONS=""
 CHANGED_PKGS=""
 
@@ -269,11 +282,19 @@ fi
 # find_package) cannot fire because pure-format excludes file adds.
 if [ "$PURE_FORMAT" -eq 0 ]; then
 for pkg_dir in $CHANGED_PKGS; do
-  # README.md co-update for source changes
-  PKG_SRC=$(echo "$CHANGED" | grep "^${pkg_dir}/\(src\|include\)/" || true)
-  if [ -n "$PKG_SRC" ]; then
+  # README.md co-update -- NON-BLOCKING checklist, and only for public-surface
+  # changes. A src/-only edit (internal refactor, bug fix, private-impl change)
+  # carries no doc-visible delta, so requiring a README bump there was pure
+  # over-blocking. We flag only when the change plausibly alters documented
+  # behavior/usage: a public header (include/), launch/ or config/, a source
+  # file add/delete (structural), or package.xml (deps/exec surface).
+  PKG_PUBLIC=$(echo "$CHANGED" | grep -E "^${pkg_dir}/(include|launch|config)/" || true)
+  PKG_STRUCT=$(git diff --diff-filter=AD --name-only HEAD 2>/dev/null \
+                 | grep -E "^${pkg_dir}/(src|include)/.*\.(cpp|hpp|h|cc|py)$" || true)
+  PKG_PKGXML=$(echo "$CHANGED" | grep -E "^${pkg_dir}/package.xml$" || true)
+  if [ -n "$PKG_PUBLIC" ] || [ -n "$PKG_STRUCT" ] || [ -n "$PKG_PKGXML" ]; then
     if ! echo "$CHANGED" | grep -q "^${pkg_dir}/README.md$"; then
-      WARNINGS="${WARNINGS}  - ${pkg_dir}: source changed but README.md not updated\n"
+      CHECKLIST="${CHECKLIST}  - ${pkg_dir}: public surface changed (header / launch / config / file add-del / dep) — confirm README.md reflects it, or note in your report why no doc change is needed\n"
     fi
   fi
 
@@ -319,11 +340,21 @@ if [ -n "$PROC3" ]; then
   if ! timeout 300 ./build.sh full >/dev/null 2>&1; then
     TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad build (./build.sh full) failed (rtc_base / rtc_msgs touched)\n"
   else
-    timeout 180 bash -c "cd '$WORKSPACE' && colcon test --event-handlers console_direct+ 2>&1" >/dev/null || true
+    # Preserve `colcon test`'s exit code: 124 = timed out, >=125 = could not
+    # launch (env/build), 0 or 1 = ran (pass/fail read from test-result). Never
+    # swallow it with `|| true`, or a killed run reads as "0 failures".
+    TEST_RC=0
+    timeout 180 bash -c "cd '$WORKSPACE' && colcon test --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
     RESULT=$(cd "$WORKSPACE" && colcon test-result 2>&1 || true)
-    if echo "$RESULT" | grep -qE "[1-9][0-9]* failures"; then
-      FAILED_TESTS=$(echo "$RESULT" | grep -E "FAILED|failures" | head -20 || true)
+    if [ "$TEST_RC" -eq 124 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test TIMED OUT after 180s — UNVERIFIED, treat as failure (raise the bound in verify-changes.sh or run 'colcon test' manually)\n"
+    elif [ "$TEST_RC" -ge 125 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
+    elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
+      FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" | head -20 || true)
       TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad test failed:\n${FAILED_TESTS}\n"
+    elif [ "$TEST_RC" -ne 0 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - PROC-3 broad 'colcon test' exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
     fi
   fi
 else
@@ -338,12 +369,21 @@ else
       continue
     fi
 
-    timeout 60 bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || true
+    # Preserve the exit code (see PROC-3 path above): distinguish timeout /
+    # launch failure / real test failure instead of inferring from test-result.
+    TEST_RC=0
+    timeout 60 bash -c "cd '$WORKSPACE' && colcon test --packages-select $pkg --event-handlers console_direct+ 2>&1" >/dev/null || TEST_RC=$?
     RESULT=$(cd "$WORKSPACE" && colcon test-result --packages-select "$pkg" 2>&1 || true)
 
-    if echo "$RESULT" | grep -qE "[1-9][0-9]* failures"; then
-      FAILED_TESTS=$(echo "$RESULT" | grep -E "FAILED|failures" || true)
+    if [ "$TEST_RC" -eq 124 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test TIMED OUT after 60s — UNVERIFIED, treat as failure (raise the bound in verify-changes.sh or run 'colcon test' manually)\n"
+    elif [ "$TEST_RC" -ge 125 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test could not launch (exit ${TEST_RC}; env/build issue) — UNVERIFIED\n"
+    elif echo "$RESULT" | grep -qE "[1-9][0-9]* (error|failure)s?"; then
+      FAILED_TESTS=$(echo "$RESULT" | grep -iE "FAILED|error|failure" || true)
       TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: ${FAILED_TESTS}\n"
+    elif [ "$TEST_RC" -ne 0 ]; then
+      TEST_FAILURES="${TEST_FAILURES}  - ${pkg}: colcon test exited ${TEST_RC} with no parseable result summary — UNVERIFIED\n"
     fi
   done
 fi
@@ -418,8 +458,20 @@ if [ -n "$SHELLCHECK_FAILURES" ]; then
 fi
 
 if [ -n "$REPORT" ]; then
+  # A hard failure is blocking. Ride the non-blocking checklist along so the
+  # agent sees doc reminders while it is already addressing the real failure.
+  if [ -n "$CHECKLIST" ]; then
+    REPORT="${REPORT}Doc checklist (reminder — not itself blocking):\n${CHECKLIST}\n"
+  fi
   echo -e "${REPORT}See agent_docs/modification-guide.md for the full checklist." >&2
   exit 2
+fi
+
+# No hard failure: surface the doc checklist as a non-blocking reminder and let
+# the turn end. README co-update is a judgement call the agent/user makes, not a
+# gate -- so it prints but never forces exit 2.
+if [ -n "$CHECKLIST" ]; then
+  echo -e "Doc checklist (non-blocking — turn NOT blocked):\n${CHECKLIST}\nSee agent_docs/modification-guide.md. If a public-surface change genuinely needs no README edit, note that in your report." >&2
 fi
 
 exit 0
