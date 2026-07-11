@@ -58,7 +58,13 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_parameter("link_startup_grace_ms", 100.0);
 
   declare_parameter("use_fake_hand", false);
-  declare_parameter("fake_tick_rate_hz", 500.0);
+  // Fake-hand dynamics (use_fake_hand only). The CommLoop RT thread runs exactly
+  // as in real mode; the commanded pose is driven through a first-order LPF to
+  // produce read-back pos, its derivative (vel), and a PD-torque effort. See
+  // udp_hand_controller.hpp StepFakeModel / README "use_fake_hand".
+  declare_parameter("fake_lpf_time_constant_s", 0.1);
+  declare_parameter("fake_effort_stiffness", 1.0);
+  declare_parameter("fake_effort_damping", 0.1);
 
   // Whole-cycle UDP decimation (load-reduction test knob): 1 = communicate every
   // cycle (default). N>1 skips the entire UDP transaction on N-1 of every N
@@ -178,6 +184,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
   const int sensor_decimation = static_cast<int>(get_parameter("sensor_decimation").as_int());
   const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();
+  const double fake_lpf_time_constant_s = get_parameter("fake_lpf_time_constant_s").as_double();
+  const double fake_effort_stiffness = get_parameter("fake_effort_stiffness").as_double();
+  const double fake_effort_damping = get_parameter("fake_effort_damping").as_double();
   controller_ =
       std::make_unique<udp_hand_driver::UdpHandController>(udp_hand_driver::UdpHandControllerConfig{
           .target_ip = target_ip,
@@ -198,6 +207,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
           .drift_window_size = drift_window_size,
           .comm_decimation = comm_decimation,
           .loop_rate_hz = loop_rate_hz,
+          .fake_lpf_time_constant_s = fake_lpf_time_constant_s,
+          .fake_effort_stiffness = fake_effort_stiffness,
+          .fake_effort_damping = fake_effort_damping,
       });
   controller_->SetSensorProtocol(std::move(sensor_protocol));
 
@@ -387,10 +399,6 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
               (src < msg->values.size()) ? static_cast<float>(msg->values[src]) : 0.0f;
           cmd[i] = value - joint_offset_rad_[i];
         }
-        if (use_fake_hand_) {
-          std::lock_guard lock(last_cmd_mutex_);
-          last_cmd_ = cmd;
-        }
         controller_->SendCommandAndRequestStates(cmd);
       });
 
@@ -460,31 +468,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     return CallbackReturn::FAILURE;
   }
 
-  // Fake-hand self tick
-  if (use_fake_hand_) {
-    const double fake_rate = get_parameter("fake_tick_rate_hz").as_double();
-    if (fake_rate > 0.0) {
-      const auto period = std::chrono::nanoseconds(static_cast<int64_t>(1.0e9 / fake_rate));
-      fake_tick_timer_ = create_wall_timer(period, [this]() {
-        if (!controller_ || !controller_->IsRunning())
-          return;
-        std::array<float, udp_hand_driver::kNumHandMotors> cmd;
-        {
-          std::lock_guard lock(last_cmd_mutex_);
-          cmd = last_cmd_;
-        }
-        controller_->SendCommandAndRequestStates(cmd);
-      });
-      RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                  "UdpHandNode: FAKE mode enabled — no UDP, self-tick=%.1f Hz", fake_rate);
-    } else {
-      RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
-                  "UdpHandNode: FAKE mode enabled — self-tick disabled "
-                  "(fake_tick_rate_hz=%.1f). Drive SendCommandAndRequestStates "
-                  "externally (e.g. rtc_controller_manager ControlLoop).",
-                  fake_rate);
-    }
-  }
+  // Fake mode needs no node-side self-tick: the controller's CommLoop RT thread
+  // self-clocks at loop_rate_hz exactly as in real mode and latches the staged
+  // command each cycle (see UdpHandController::RunFakeCommCycle). Commands flow
+  // through the normal command sub → SendCommandAndRequestStates staging path.
 
   // Failure Detector (skipped in fake mode)
   const bool enable_fd = get_parameter("enable_failure_detector").as_bool() && !use_fake_hand_;
@@ -643,10 +630,6 @@ void UdpHandNode::StopRuntime() {
   // socket close + stats log after an E-Stop.
   if (controller_) {
     controller_->Stop();
-  }
-  if (fake_tick_timer_) {
-    fake_tick_timer_->cancel();
-    fake_tick_timer_.reset();
   }
 }
 

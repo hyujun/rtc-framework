@@ -47,15 +47,9 @@ def generate_launch_description():
     use_fake_hand_arg = DeclareLaunchArgument(
         "use_fake_hand",
         default_value="false",
-        description="Use fake hand echo-back mock (no UDP socket)",
-    )
-
-    fake_tick_rate_hz_arg = DeclareLaunchArgument(
-        "fake_tick_rate_hz",
-        default_value="500.0",
-        description="Internal tick rate for fake hand mode (Hz). "
-        "0 or negative disables the node-side timer (use when "
-        "rtc_controller_manager drives the fake controller directly).",
+        description="Fake hand mode (no UDP socket): the CommLoop RT thread runs "
+        "as in real mode and drives commands through a first-order LPF model. "
+        "LPF/effort tuning via fake_lpf_time_constant_s / fake_effort_* params.",
     )
 
     # ── Config files ────────────────────────────────────────────────────
@@ -94,7 +88,6 @@ def generate_launch_description():
                 "communication_mode": LaunchConfiguration("communication_mode"),
                 "recv_timeout_ms": LaunchConfiguration("recv_timeout_ms"),
                 "use_fake_hand": LaunchConfiguration("use_fake_hand"),
-                "fake_tick_rate_hz": LaunchConfiguration("fake_tick_rate_hz"),
             },
         ],
         emulate_tty=True,
@@ -131,7 +124,6 @@ def generate_launch_description():
             communication_mode_arg,
             recv_timeout_ms_arg,
             use_fake_hand_arg,
-            fake_tick_rate_hz_arg,
             udp_hand_node,
             auto_activate,
             trigger_configure,
