@@ -189,6 +189,12 @@ urdf:
 ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # headless
 ```
 
+- **⚠️ 기본 시작 컨트롤러**: `ur5e_p1b` 는 `robot.yaml`·`sim.yaml` 모두 `initial_controller: "demo_joint_controller"` 로 시작합니다 (`ur5e_p1a`·`iiwa7_leap` 는 `demo_wbc_controller` 기본). WBC 로 시작하려면 launch 오버라이드로 지정하거나 `demo_controller_gui` 의 컨트롤러 라디오에서 전환합니다:
+
+  ```bash
+  ros2 launch integrated_bringup sim_ur5e_p1b.launch.py initial_controller:=demo_wbc_controller
+  ```
+
 ---
 
 ## 공통 파라미터 (`demo_shared.yaml`)

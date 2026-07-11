@@ -56,7 +56,6 @@ from .catalog import ControllerCatalog
 from .config import (
     _CALIB_STATE_COLORS,
     _CALIB_STATE_NAMES,
-    _DEFAULT_PRESETS,
     ANGLE_INDICES,  # noqa: F401  (preserved for downstream compat)
     FINGERTIP_NAMES,
     FORCE_PI_FINGER_NAMES,
@@ -80,6 +79,8 @@ from .config import (
     _set_double,
     _set_double_array,
     _set_int,
+    default_presets_for,
+    preset_hand_targets,
     target_panel_states,
 )
 from .discovery import RobotProfile, RobotShape
@@ -233,8 +234,10 @@ class DemoControllerGUI(Node):
             String, "/rtc_cm/active_controller_name", self._on_active_controller, latched_qos
         )
 
-        # Hand presets (loaded from JSON)
-        self._preset_path = _resolve_preset_path()
+        # Hand presets (loaded from JSON). Path + defaults are hand-scoped so a
+        # 10-DoF roster saved for one hand can't be loaded against a 16-DoF hand
+        # (issue #137 finding 3).
+        self._preset_path = _resolve_preset_path(self._profile.hand_group)
         self._presets = self._load_presets()
 
         # Dirty-check caches for GUI refresh (avoid redundant Tk redraws)
@@ -286,9 +289,10 @@ class DemoControllerGUI(Node):
         """(arm_group, hand_group) for the active controller, taken from the
         CM's per-controller ``claimed_groups`` (ordered [arm, hand] by device /
         YAML order — ``TopicConfig::groups`` is an ordered vector). Falls back
-        to the ur5e_p1a group names until the catalog carries the entry, so an
-        old CM that does not populate ``claimed_groups`` still drives the
-        legacy robot.
+        to the selected ``--robot`` profile's groups until the catalog carries
+        the entry, so an old CM that does not populate ``claimed_groups`` — and
+        the pre-catalog startup window — bind to *this* robot's topics rather
+        than the ur5e_p1a default (issue #137 finding 2).
 
         Selection is by the CM's ``is_active`` flag, NOT a name match: the
         active controller is published as its config_key (snake_case, e.g.
@@ -298,12 +302,13 @@ class DemoControllerGUI(Node):
         ``config_key == self._active_ctrl`` would stay on the fallback forever.
         ``is_active`` is set by controller index in the CM, independent of the
         name spelling."""
+        _, profile_hand = self._profile.fallback_groups()
         for e in self._catalog.latest():
             if e.is_active and e.claimed_groups:
                 arm = e.claimed_groups[0]
-                hand = e.claimed_groups[1] if len(e.claimed_groups) >= 2 else "p1a"
+                hand = e.claimed_groups[1] if len(e.claimed_groups) >= 2 else profile_hand
                 return arm, hand
-        return "ur5e", "p1a"
+        return self._profile.fallback_groups()
 
     def _rewire_if_groups_changed(self) -> None:
         """Re-wire controller-owned topics when the active controller's resolved
@@ -566,9 +571,11 @@ class DemoControllerGUI(Node):
                 return data
         except (FileNotFoundError, json.JSONDecodeError):
             pass
-        # Write defaults
-        self._save_presets_to_file(_DEFAULT_PRESETS)
-        return dict(_DEFAULT_PRESETS)
+        # Write robot-appropriate defaults (10-DoF UR5e hand vs 16-DoF LEAP)
+        # so iiwa7_leap gets a length-matched, usable preset set.
+        defaults = default_presets_for(self._shape.hand_dof)
+        self._save_presets_to_file(defaults)
+        return defaults
 
     def _save_presets_to_file(self, presets: dict | None = None):
         if presets is None:
@@ -2695,7 +2702,19 @@ class DemoControllerGUI(Node):
                     )
 
         # ── Hand target ────────────────────────────────────────────────
-        positions_deg = data.get("positions_deg", [0.0] * self._shape.hand_dof)
+        # Guard: a preset whose positions_deg length != the active hand DoF
+        # would publish a RobotTarget with mismatched joint_names/joint_target
+        # (issue #137 finding 3). Reject with a clear warning — the robot
+        # target above (if any) was already sent.
+        positions_deg = preset_hand_targets(data, self._shape.hand_dof)
+        if positions_deg is None:
+            self.get_logger().warn(
+                f"Preset '{name}': hand positions "
+                f"({len(data.get('positions_deg', []))}) do not match the active "
+                f"hand DoF ({self._shape.hand_dof}) — skipping hand target. "
+                f"Re-create this preset for the current robot."
+            )
+            return
         grasp_time = data.get("grasp_time", 1.0)
         positions_rad = [math.radians(d) for d in positions_deg]
 

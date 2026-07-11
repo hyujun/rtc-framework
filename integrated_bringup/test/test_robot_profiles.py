@@ -172,3 +172,20 @@ def test_for_robot_unknown_raises():
 def test_registry_keys_match_config_dirs():
     # --robot keys mirror config/<key>/ bringup directory names
     assert set(ROBOT_PROFILES) == {"ur5e_p1a", "ur5e_p1b", "iiwa7_leap"}
+
+
+# issue #137 finding 2: the GUI's pre-catalog fallback groups must come from
+# the selected profile, not the hard-coded ur5e_p1a default — otherwise
+# --robot ur5e_p1b / iiwa7_leap bind to p1a topics before catalog discovery.
+def test_fallback_groups_are_profile_derived():
+    assert RobotProfile.for_robot("ur5e_p1a").fallback_groups() == ("ur5e", "p1a")
+    assert RobotProfile.for_robot("ur5e_p1b").fallback_groups() == ("ur5e", "p1b")
+    assert RobotProfile.for_robot("iiwa7_leap").fallback_groups() == ("iiwa7", "leap")
+
+
+def test_fallback_groups_never_default_to_p1a_for_non_p1a():
+    # explicit guard: no non-p1a robot's fallback should mention p1a
+    for key in ("ur5e_p1b", "iiwa7_leap"):
+        arm, hand = RobotProfile.for_robot(key).fallback_groups()
+        assert hand != "p1a"
+        assert (arm, hand) != ("ur5e", "p1a")

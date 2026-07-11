@@ -54,6 +54,46 @@ class ControllerEntry:
     has_gain_schema: bool  # True iff config_key has a GAIN_DEFS entry
 
 
+def build_entries(
+    controllers,
+    schema_keys,
+    label_overrides: dict[str, str] | None = None,
+) -> tuple[ControllerEntry, ...]:
+    """Map a ``ListControllers`` response's controllers to ``ControllerEntry``.
+
+    Pure (no Node / Tk) so the identity contract is unit-testable
+    (``test_demo_gui_catalog.py``). ``schema_keys`` is the set of config
+    keys with a GUI gain panel; ``label_overrides`` is an optional
+    ``{config_key: label}`` map.
+
+    Config key is taken from ``ControllerState.type`` (registry plugin name
+    == snake_case config key, e.g. ``demo_joint_controller``), NOT from
+    ``ControllerState.name`` — the latter is the C++ class name returned by
+    ``RTControllerInterface::Name()`` (e.g. ``DemoJointController``) and
+    never matches ``GAIN_DEFS`` keys. The CM guarantees ``type == config
+    key`` (rt_controller_node_params.cpp: ``controller_types_.push_back
+    (entry.config_key)``).
+    """
+    schema = frozenset(schema_keys)
+    overrides = label_overrides or {}
+    entries = []
+    for cs in controllers:
+        config_key = cs.type
+        label = overrides.get(config_key, prettify_config_key(config_key))
+        entries.append(
+            ControllerEntry(
+                config_key=config_key,
+                display_label=label,
+                ctrl_type=cs.type,
+                state=cs.state,
+                is_active=cs.is_active,
+                claimed_groups=tuple(cs.claimed_groups),
+                has_gain_schema=(config_key in schema),
+            )
+        )
+    return tuple(entries)
+
+
 class ControllerCatalog:
     """Lazy enumerator for controllers loaded by the active CM.
 
@@ -193,21 +233,7 @@ class ControllerCatalog:
         if resp is None:
             return
 
-        entries = []
-        for cs in resp.controllers:
-            label = self._label_overrides.get(cs.name, prettify_config_key(cs.name))
-            entries.append(
-                ControllerEntry(
-                    config_key=cs.name,
-                    display_label=label,
-                    ctrl_type=cs.type,
-                    state=cs.state,
-                    is_active=cs.is_active,
-                    claimed_groups=tuple(cs.claimed_groups),
-                    has_gain_schema=(cs.name in self._schema_keys),
-                )
-            )
-        self._entries = tuple(entries)
+        self._entries = build_entries(resp.controllers, self._schema_keys, self._label_overrides)
         self._ever_succeeded = True
 
         if self._on_update is not None:

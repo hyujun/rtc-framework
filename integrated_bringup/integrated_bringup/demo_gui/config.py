@@ -13,7 +13,7 @@ Public surface (imported by app.py):
 - TARGET_LABELS, ANGLE_INDICES, JOINT_SPACE
 - DUAL_TARGET_SPACE, target_panel_states
 - FINGERTIP_NAMES, FORCE_PI_FINGER_NAMES, GRASP_PHASE_NAMES
-- _DEFAULT_PRESETS, _resolve_preset_path
+- _DEFAULT_PRESETS, default_presets_for, preset_hand_targets, _resolve_preset_path
 - GAIN_DEFS, GAIN_ROW_NAMES, GAIN_PARAM_DISPATCH,
   GAIN_GROUP_LAYOUT, GAIN_GROUP_PARENT_GRASP, GROUP_SCALARS_PER_ROW
 - HAND_TAUFF_GROUP, HAND_TAUFF_SOURCE_PARAM, HAND_TAUFF_SOURCES
@@ -22,6 +22,7 @@ Public surface (imported by app.py):
   _read_only
 """
 
+import copy
 import os
 
 from rclpy.parameter import Parameter
@@ -126,8 +127,12 @@ WBC_PHASE_NAMES = {
     7: ("FALLBACK", "#f9e2af", "#1e1e2e"),
 }
 
-# Default hand presets (positions in degrees for readability, converted to rad at runtime)
-_DEFAULT_PRESETS = {
+# Default hand presets (positions in degrees for readability, converted to rad
+# at runtime). Two rosters keyed by hand DoF — a preset's positions_deg length
+# MUST equal the active RobotShape.hand_dof or the publish is rejected (see
+# preset_hand_targets / issue #137 finding 3). The 10-DoF set covers the UR5e
+# hand variants (p1a/p1b); the 16-DoF set covers the LEAP hand (iiwa7_leap).
+_DEFAULT_PRESETS_10 = {
     "open_flat": {
         "type": "open",
         "positions_deg": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -145,9 +150,70 @@ _DEFAULT_PRESETS = {
     },
 }
 
+# 16-DoF LEAP hand. positions_deg map by index onto the profile's
+# hand_motor_names order (thumb 4, index 4, middle 4, ring 4 — see
+# RobotShape.default_iiwa7_leap). Values are demo defaults, not tuned targets;
+# the point is a length-matched, usable preset set so iiwa7_leap isn't left
+# with zero presets.
+_DEFAULT_PRESETS_16 = {
+    "open_flat": {
+        "type": "open",
+        "positions_deg": [0.0] * 16,
+        "grasp_time": 1.0,
+    },
+    "power_grasp": {
+        "type": "close",
+        # uniform moderate flexion across all four fingers
+        "positions_deg": [30.0] * 16,
+        "grasp_time": 2.0,
+    },
+    "pinch_grasp": {
+        "type": "close",
+        # thumb + index emphasis, middle/ring relaxed
+        "positions_deg": [40.0] * 4 + [40.0] * 4 + [0.0] * 4 + [0.0] * 4,
+        "grasp_time": 1.5,
+    },
+}
 
-def _resolve_preset_path() -> str:
-    """Resolve hand_presets.json path using the workspace logging directory."""
+# Backwards-compatible alias — historical name for the 10-DoF roster.
+_DEFAULT_PRESETS = _DEFAULT_PRESETS_10
+
+
+def default_presets_for(hand_dof: int) -> dict:
+    """Robot-appropriate default hand presets, keyed by hand DoF.
+
+    16-DoF → LEAP (iiwa7_leap); otherwise the 10-DoF UR5e-hand roster. Returns
+    a deep copy so the caller can persist/edit without mutating the module
+    constants. For any DoF without a dedicated roster the 10-DoF set is
+    returned as a best effort — the length guard in ``preset_hand_targets``
+    still rejects a mismatched publish, so no malformed target escapes.
+    """
+    roster = _DEFAULT_PRESETS_16 if hand_dof == 16 else _DEFAULT_PRESETS_10
+    return copy.deepcopy(roster)
+
+
+def preset_hand_targets(preset: dict, hand_dof: int) -> list[float] | None:
+    """Return a preset's ``positions_deg`` iff its length matches ``hand_dof``.
+
+    Guards issue #137 finding 3: a 10-DoF preset must never be published
+    against a 16-name hand (or vice versa), which would emit a ``RobotTarget``
+    with mismatched ``joint_names`` / ``joint_target`` lengths. Returns None on
+    mismatch so the caller can skip the hand publish with a clear warning.
+    """
+    positions = preset.get("positions_deg", [])
+    if len(positions) != hand_dof:
+        return None
+    return [float(p) for p in positions]
+
+
+def _resolve_preset_path(hand_group: str = "") -> str:
+    """Resolve the hand-presets JSON path in the workspace logging directory.
+
+    Scoped per hand device group (``hand_presets_<hand_group>.json``) so each
+    robot keeps its own roster and a 10-DoF file saved for one hand can't be
+    loaded against a 16-DoF hand. Falls back to the legacy unscoped
+    ``hand_presets.json`` when no group is given.
+    """
     from rtc_tools.utils.session_dir import get_session_dir, resolve_logging_root
 
     session_dir = get_session_dir()
@@ -156,7 +222,8 @@ def _resolve_preset_path() -> str:
     else:
         logging_root = resolve_logging_root()
     os.makedirs(logging_root, exist_ok=True)
-    return os.path.join(logging_root, "hand_presets.json")
+    filename = f"hand_presets_{hand_group}.json" if hand_group else "hand_presets.json"
+    return os.path.join(logging_root, filename)
 
 
 # Hand τ_ff (kPdFeedforward) widgets. Four numeric/bool params ride the

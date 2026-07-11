@@ -237,6 +237,22 @@ class RobotProfile:
     # matching the CM device group and the *_bringup config. Robot-specific:
     # p1a→"p1a", p1b→"p1b", iiwa7_leap→"leap".
     hand_group: str
+    # Arm device-group token — pairs with hand_group as the (arm, hand) topic
+    # namespace the GUI binds to before the controller catalog reports live
+    # claimed_groups. Robot-specific: ur5e_p1a/ur5e_p1b→"ur5e", iiwa7_leap→
+    # "iiwa7". Keeping it here (not hard-coded in app.py) is what stops
+    # --robot ur5e_p1b / iiwa7_leap from falling back to ur5e_p1a topics.
+    arm_group: str
+
+    def fallback_groups(self) -> tuple[str, str]:
+        """(arm_group, hand_group) used by the GUI's ``_active_groups`` before
+        the controller catalog carries live claimed_groups.
+
+        Profile-derived so an early publish (or an old CM that never populates
+        claimed_groups) binds to *this* robot's topics, not the ur5e_p1a
+        default. See issue #137 finding 2.
+        """
+        return self.arm_group, self.hand_group
 
     @classmethod
     def for_robot(cls, key: str) -> RobotProfile:
@@ -260,6 +276,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         tcp_parent="base",
         tcp_child="tool0_actual",
         hand_group="p1a",
+        arm_group="ur5e",
     ),
     "ur5e_p1b": RobotProfile(
         # Same UR5e arm and TCP frames as ur5e_p1a; only the hand roster
@@ -268,6 +285,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         tcp_parent="base",
         tcp_child="tool0_actual",
         hand_group="p1b",
+        arm_group="ur5e",
     ),
     "iiwa7_leap": RobotProfile(
         shape=RobotShape.default_iiwa7_leap(),
@@ -277,6 +295,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         # "ee_link" → published frame is "ee_link_actual".
         tcp_child="ee_link_actual",
         hand_group="leap",
+        arm_group="iiwa7",
     ),
 }
 
