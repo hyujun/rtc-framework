@@ -66,9 +66,23 @@ ament_target_dependencies(udp_hand_node
   ament_index_cpp
 )
 
+# ── Full-SIL loopback firmware simulator (device side) ───────────────────────
+# Peer UDP server that answers the real udp_hand_node's requests with
+# protocol-correct responses (no hardware). Core logic is the header-only
+# FakeHandFirmware class; this executable is just the socket/param/log shell.
+add_executable(fake_hand_firmware
+  src/fake_hand_firmware_main.cpp
+)
+target_include_directories(fake_hand_firmware PRIVATE include)
+ament_target_dependencies(fake_hand_firmware
+  rclcpp
+  rtc_base
+)
+
 # ── Install ────────────────────────────────────────────────────────────────────
 install(TARGETS
   udp_hand_node
+  fake_hand_firmware
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -119,6 +133,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_udp_hand_transport test/test_udp_hand_transport.cpp)
   target_include_directories(test_udp_hand_transport PRIVATE include)
   ament_target_dependencies(test_udp_hand_transport rtc_base rclcpp)
+
+  ament_add_gtest(test_fake_hand_firmware test/test_fake_hand_firmware.cpp)
+  target_include_directories(test_fake_hand_firmware PRIVATE include)
+  ament_target_dependencies(test_fake_hand_firmware rtc_base)
 
   ament_add_gtest(test_udp_hand_timing_profiler test/test_udp_hand_timing_profiler.cpp)
   target_include_directories(test_udp_hand_timing_profiler PRIVATE include)

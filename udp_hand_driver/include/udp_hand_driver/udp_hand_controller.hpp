@@ -40,6 +40,7 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
+#include "udp_hand_driver/fake_hand_lpf.hpp"
 #include "udp_hand_driver/fingertip_ft_inferencer.hpp"
 #include "udp_hand_driver/protocol/sensor_protocol.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
@@ -156,6 +157,13 @@ struct UdpHandControllerConfig {
   int drift_window_size{2500};
   int comm_decimation{1};
   double loop_rate_hz{500.0};
+  // Fake-hand dynamics (use_fake_hand only). The commanded pose is driven
+  // through a first-order LPF to produce the read-back position; velocity is
+  // its numerical derivative and effort a PD-torque placeholder. Ignored when
+  // use_fake_hand is false. See StepFakeModel().
+  double fake_lpf_time_constant_s{0.1};  ///< LPF time constant τ (s)
+  double fake_effort_stiffness{1.0};     ///< effort kp: kp·(cmd−pos)
+  double fake_effort_damping{0.1};       ///< effort kd: −kd·vel
 };
 
 class UdpHandController {
@@ -172,6 +180,9 @@ class UdpHandController {
                             ? kMaxFingertips
                             : (cfg.num_fingertips < 0 ? 0 : cfg.num_fingertips)),
         use_fake_hand_(cfg.use_fake_hand),
+        fake_lpf_tau_s_(cfg.fake_lpf_time_constant_s),
+        fake_effort_stiffness_(cfg.fake_effort_stiffness),
+        fake_effort_damping_(cfg.fake_effort_damping),
         fingertip_names_(cfg.fingertip_names.empty() ? kDefaultFingertipNames
                                                      : cfg.fingertip_names),
         communication_mode_(cfg.communication_mode),
@@ -196,7 +207,12 @@ class UdpHandController {
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
-  [[nodiscard]] bool Start() {
+  // Shared setup for Start() and the test-only InitFakeForTest(): everything up
+  // to (but not including) launching the CommLoop — protocol default, transport
+  // verify modes, hoisted per-loop constants, FT init, socket open / fake LPF
+  // init, and the per-run counter resets. Returns false on invalid loop rate or
+  // socket-open failure. Off the RT path.
+  [[nodiscard]] bool PrepareRun() {
     // Self-clock rate must be positive. PeriodicRtThread::Start() is a silent
     // no-op on a non-positive frequency, so validate explicitly here (off the
     // RT path) and fail Start() loudly rather than launch a dead loop.
@@ -268,26 +284,38 @@ class UdpHandController {
                   num_fingertips_);
     }
 
-    if (use_fake_hand_) {
-      running_.store(true, std::memory_order_release);
-      start_time_ = std::chrono::steady_clock::now();
-      RCLCPP_INFO(::udp_hand_driver::logging::ControllerLogger(),
-                  "UdpHandController started in FAKE mode (num_fingertips=%d)", num_fingertips_);
-      return true;
-    }
-
-    if (!transport_.Open()) {
-      RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(), "UDP socket open failed");
-      return false;
-    }
-
-    // Sensor initialization: NN -> RAW mode
-    if (num_fingertips_ > 0) {
-      sensor_init_ok_ = transport_.InitializeSensors();
-      if (!sensor_init_ok_) {
-        RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
-                    "Sensor initialization failed (sensor_init_ok=false)");
+    if (!use_fake_hand_) {
+      if (!transport_.Open()) {
+        RCLCPP_ERROR(::udp_hand_driver::logging::ControllerLogger(), "UDP socket open failed");
+        return false;
       }
+
+      // Sensor initialization: NN -> RAW mode
+      if (num_fingertips_ > 0) {
+        sensor_init_ok_ = transport_.InitializeSensors();
+        if (!sensor_init_ok_) {
+          RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                      "Sensor initialization failed (sensor_init_ok=false)");
+        }
+      }
+    } else {
+      // Fake mode: skip the socket open + firmware sensor handshake, but let the
+      // CommLoop RT thread start below exactly as in real mode (ros2_control
+      // use_fake_hardware parity — the control PC's thread layout is exercised).
+      // Derive the LPF coefficients once here, off the RT path: a fixed
+      // dt = 1/loop_rate_hz avoids a per-cycle clock read in StepFakeModel().
+      // τ ≤ 0 → alpha = 1 (instantaneous follow); loop_rate_hz_ is already
+      // validated > 0 above.
+      fake_dt_ = 1.0 / loop_rate_hz_;
+      const double tau = fake_lpf_tau_s_ > 0.0 ? fake_lpf_tau_s_ : 0.0;
+      fake_alpha_ = fake_dt_ / (tau + fake_dt_);
+      fake_cmd_target_ = {};
+      fake_pos_ = {};
+      RCLCPP_WARN(::udp_hand_driver::logging::ControllerLogger(),
+                  "UdpHandController FAKE mode: no UDP; LPF tau=%.3fs kp=%.3f kd=%.3f, "
+                  "CommLoop self-clock=%.1f Hz (num_fingertips=%d)",
+                  fake_lpf_tau_s_, fake_effort_stiffness_, fake_effort_damping_, loop_rate_hz_,
+                  num_fingertips_);
     }
 
     // Sensor processor initialization (rate estimator, filters, drift detector)
@@ -326,7 +354,13 @@ class UdpHandController {
     sensor_seq_ = 0;  // CommLoop-thread-only; restart begins fresh at 0 so the
                       // detector's prev_sensor_seq_ (also 0) sees the first read.
     transport_.ResetCommStats();
+    return true;
+  }
 
+  [[nodiscard]] bool Start() {
+    if (!PrepareRun()) {
+      return false;
+    }
     running_.store(true, std::memory_order_release);
     start_time_ = std::chrono::steady_clock::now();
 
@@ -343,16 +377,47 @@ class UdpHandController {
     return true;
   }
 
+  // ── Test-only synchronous fake driving ──────────────────────────────────
+  // These let failure-detector tests drive fake cycles deterministically WITHOUT
+  // the self-clocked CommLoop (which advances counters autonomously): counters
+  // move only when StepFakeCycleForTest() is called, so a test can "freeze" the
+  // controller (running_ still true) simply by not calling it — reproducing the
+  // hung-loop / frozen-seq scenarios the production self-clocked loop cannot.
+  // Not for production use; the node always uses Start().
+
+  /// Initialize fake mode WITHOUT launching the CommLoop. Mirrors Start()'s
+  /// setup (PrepareRun) and marks the controller running. Requires use_fake_hand.
+  [[nodiscard]] bool InitFakeForTest() {
+    if (!use_fake_hand_) {
+      return false;
+    }
+    if (!PrepareRun()) {
+      return false;
+    }
+    running_.store(true, std::memory_order_release);
+    start_time_ = std::chrono::steady_clock::now();
+    return true;
+  }
+
+  /// Run exactly one fake comm cycle synchronously on the calling thread: stages
+  /// `cmd`, drives the LPF model, publishes state + invokes the callback, and
+  /// advances cycle_count / sensor_seq by one. Requires a prior InitFakeForTest().
+  void StepFakeCycleForTest(const std::array<float, kNumHandMotors>& cmd) noexcept {
+    staged_cmd_seqlock_.Store(cmd);
+    event_pending_.store(true, std::memory_order_release);
+    RunFakeCommCycle();
+  }
+
   void Stop() noexcept {
     running_.store(false, std::memory_order_release);
-    if (use_fake_hand_) {
-      return;
-    }
     // Join() requests stop (cooperative stop_token) and waits for the CommLoop
     // to exit its current tick + clock_nanosleep. Idempotent; safe on a loop
     // that already self-stopped via the E-Stop path (RequestStop in RunCommCycle).
+    // Runs in fake mode too — the CommLoop thread is started there as well.
     comm_loop_.Join();
-    transport_.Close();
+    if (!use_fake_hand_) {
+      transport_.Close();
+    }
     const auto cycles = cycle_count_.load(std::memory_order_relaxed);
     const double elapsed_sec =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time_).count();
@@ -404,62 +469,29 @@ class UdpHandController {
   /// Start() so a restart re-reads before writing.
   [[nodiscard]] bool HasStateBeenRead() const noexcept { return state_read_once_; }
 
+  // ── Fake-hand model (use_fake_hand; public+static for unit testing) ──────
+  // The per-joint step lives in fake_hand_lpf.hpp so the device-side
+  // FakeHandFirmware shares the exact same first-order dynamics. Re-exported
+  // here to keep the UdpHandController::FakeLpfStep unit-test entry point.
+
+  using FakeJointSample = ::udp_hand_driver::FakeJointSample;
+
+  [[nodiscard]] static FakeJointSample FakeLpfStep(float target, float pos_old, float alpha,
+                                                   float inv_dt, float kp, float kd) noexcept {
+    return ::udp_hand_driver::FakeLpfStep(target, pos_old, alpha, inv_dt, kp, kd);
+  }
+
   // ── Command API (ROS command sub / CM ControlLoop → self-clocked loop) ──
 
   void SendCommandAndRequestStates(const std::array<float, kNumHandMotors>& cmd) noexcept {
-    // Fake mode: echo-back
-    if (use_fake_hand_) {
-      UdpHandState fake_state{};
-      std::copy(cmd.begin(), cmd.end(), fake_state.motor_positions.begin());
-      std::copy(cmd.begin(), cmd.end(), fake_state.joint_positions.begin());
-      fake_state.num_fingertips = num_fingertips_;
-      fake_state.valid = true;
-      fake_state.joint_valid = true;
-      fake_state.motor_valid = true;
-
-      // Mirror the command into the 1b force channel (fx,fy,fz per fingertip) so
-      // the force pipeline — sensor publish + failure detector — is exercisable
-      // in standalone fake mode (protocol_version "1b" + use_fake_hand). Harmless
-      // on 1a, where sensor_force is unused. Consumers read only fx,fy,fz.
-      for (int f = 0; f < num_fingertips_ && f < udp_hand_driver::kMaxFingertips; ++f) {
-        for (int j = 0; j < 3; ++j) {
-          const auto src = static_cast<std::size_t>((f * 3 + j) % kNumHandMotors);
-          const auto dst = static_cast<std::size_t>(f) *
-                               static_cast<std::size_t>(udp_hand_driver::kP1bValuesPerFingertip) +
-                           static_cast<std::size_t>(j);
-          fake_state.sensor_force[dst] = cmd[src];
-        }
-      }
-
-      if (ft_enabled_ && ft_inferencer_) {
-        if (!ft_inferencer_->is_calibrated()) {
-          static_cast<void>(
-              ft_inferencer_->FeedCalibration(fake_state.sensor_data, num_fingertips_));
-        } else {
-          auto ft_result = ft_inferencer_->Infer(fake_state.sensor_data, num_fingertips_);
-          ft_seqlock_.Store(ft_result);
-        }
-      }
-
-      // Each fake tick mirrors a fresh sensor read, so advance the freshness
-      // sequence — otherwise the detector's freshness gate would treat every
-      // fake snapshot as a stale republish and never evaluate the sensor path.
-      ++sensor_seq_;
-      fake_state.sensor_seq = sensor_seq_;
-      state_seqlock_.Store(fake_state);
-      if (callback_) {
-        callback_(fake_state, ft_seqlock_.Load());
-      }
-      cycle_count_.fetch_add(1, std::memory_order_relaxed);
-      return;
-    }
-
     // RT-safe handoff to the self-clocked CommLoop: lock-free SeqLock store +
     // release-ordered pending flag. No wake primitive — the loop is already
     // ticking at loop_rate_hz_ and latches the flag at the top of its next
     // cycle (last-command-wins; a burst before the next tick collapses to the
     // latest). Per-command, not a permanent latch: the cycle clears it after
-    // one write attempt, so an uncommanded interval is read-only.
+    // one write attempt, so an uncommanded interval is read-only. Fake mode uses
+    // this same path — RunFakeCommCycle latches the staged command and drives it
+    // through the LPF model (no synchronous echo).
     staged_cmd_seqlock_.Store(cmd);
     event_pending_.store(true, std::memory_order_release);
   }
@@ -698,6 +730,16 @@ class UdpHandController {
       // #5 A decimated skip cycle does no UDP I/O — keep its degenerate phase
       // timings out of the per-tick timing CSV.
       comm_loop_.SuppressTiming();
+      return;
+    }
+
+    // Fake mode: synthesize state via the LPF model instead of the UDP
+    // transaction. Runs on this same CommLoop thread and reuses the tail +
+    // timing path, so fake mode exercises the identical thread/publish structure
+    // as real mode (only the hardware I/O is replaced). Single branch here keeps
+    // the real hot path below untouched.
+    if (use_fake_hand_) {
+      RunFakeCommCycle();
       return;
     }
 
@@ -1053,6 +1095,99 @@ class UdpHandController {
     transport_.PublishCommStats();
   }
 
+  // Fake-hand comm cycle (CommLoop thread only; use_fake_hand). Replaces the UDP
+  // write+read transaction with the first-order LPF model (StepFakeModel) and
+  // reuses RunCommCycleTail (store + callback + state_read_once latch) and the
+  // timing path, so fake mode drives the same thread + publish structure as real
+  // mode. Link/forensic telemetry is skipped (no real link). noexcept +
+  // allocation-free (rt-path.md compliant).
+  void RunFakeCommCycle() noexcept {
+    // Latch the most recent staged command (last-command-wins), the same RT-safe
+    // handoff the real path uses. An uncommanded interval keeps the last target
+    // latched so the LPF continues settling toward it.
+    if (event_pending_.exchange(false, std::memory_order_acquire)) {
+      fake_cmd_target_ = staged_cmd_seqlock_.Load();
+    }
+
+    // Sensor decimation — mirror the real cycle so the sensor post-process +
+    // publish cadence match (is_sensor_cycle gates RunCommCycleTail's work).
+    ++sensor_cycle_counter_;
+    const bool is_sensor_cycle = (sensor_cycle_counter_ >= sensor_decimation_);
+    if (is_sensor_cycle)
+      sensor_cycle_counter_ = 0;
+
+    const auto t0 = std::chrono::steady_clock::now();
+
+    UdpHandState state{};
+    StepFakeModel(state);  // fills motor/joint pos, vel, effort from the LPF
+
+    // Mirror the commanded pose into the 1b force channel (fx,fy,fz per
+    // fingertip) so the force pipeline — sensor publish + FT inference — is
+    // exercisable in fake mode. Harmless on 1a (sensor_force unused there).
+    for (int f = 0; f < num_fingertips_ && f < udp_hand_driver::kMaxFingertips; ++f) {
+      for (int j = 0; j < 3; ++j) {
+        const auto src = static_cast<std::size_t>((f * 3 + j) % kNumHandMotors);
+        const auto dst = static_cast<std::size_t>(f) *
+                             static_cast<std::size_t>(udp_hand_driver::kP1bValuesPerFingertip) +
+                         static_cast<std::size_t>(j);
+        state.sensor_force[dst] = fake_cmd_target_[src];
+      }
+    }
+    cached_sensor_force_ = state.sensor_force;
+
+    // Advance the freshness sequence only on a sensor cycle — parity with the
+    // real read path (bumps under is_sensor_cycle at lines ~876/985). On a
+    // decimated non-sensor cycle the sensor snapshot is NOT refreshed, so
+    // leaving sensor_seq unchanged lets the detector's freshness gate treat the
+    // republished snapshot as stale, exactly as in real mode. RunCommCycleTail
+    // stamps state.sensor_seq from this counter.
+    if (is_sensor_cycle)
+      ++sensor_seq_;
+
+    comm_loop_.MarkState();  // end of the (fake) read phase (base t1)
+
+    std::array<int32_t, udp_hand_driver::kMaxHandSensors> sensor_data_raw{};
+    const CommCycleTailResult tail =
+        RunCommCycleTail(state, sensor_data_raw, /*any_recv_ok=*/true, is_sensor_cycle);
+
+    // Minimal timing record: fake mode has no per-channel UDP phases, so only the
+    // whole-cycle span is meaningful. Marks the cycle valid so it is retained.
+    UdpHandTimingProfiler::PhaseTiming pt;
+    pt.is_bulk_mode = is_bulk_;
+    pt.total_ok = true;
+    FinalizePhaseTiming(pt, tail, t0, t0, is_sensor_cycle);
+
+    cycle_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  // First-order LPF hand model (CommLoop thread only). Steps fake_pos_ toward
+  // fake_cmd_target_ and fills both motor- and joint-space pos/vel/effort of
+  // `state` identically (fake has no gearing distinction). Per-joint math is
+  // delegated to the pure static FakeLpfStep for unit testing. noexcept + alloc-
+  // free.
+  void StepFakeModel(UdpHandState& state) noexcept {
+    const float alpha = static_cast<float>(fake_alpha_);
+    const float inv_dt = static_cast<float>(loop_rate_hz_);  // 1/dt = loop_rate_hz
+    const float kp = static_cast<float>(fake_effort_stiffness_);
+    const float kd = static_cast<float>(fake_effort_damping_);
+    for (int i = 0; i < kNumHandMotors; ++i) {
+      const auto iu = static_cast<std::size_t>(i);
+      const FakeJointSample s =
+          FakeLpfStep(fake_cmd_target_[iu], fake_pos_[iu], alpha, inv_dt, kp, kd);
+      fake_pos_[iu] = s.pos;
+      state.motor_positions[iu] = s.pos;
+      state.motor_velocities[iu] = s.vel;
+      state.motor_currents[iu] = s.effort;
+      state.joint_positions[iu] = s.pos;
+      state.joint_velocities[iu] = s.vel;
+      state.joint_currents[iu] = s.effort;
+    }
+    state.num_fingertips = num_fingertips_;
+    state.motor_valid = true;
+    state.joint_valid = true;
+    state.received_joint_mode = static_cast<uint8_t>(joint_io_mode_);
+  }
+
   // Terminal E-Stop zero-write, invoked once by CommLoop::OnLoopAborted() on
   // the loop thread as the loop unwinds (moved out of RunCommCycle's E-Stop
   // branch per review #2-A so the hot path stays free of the write + its recv).
@@ -1209,6 +1344,10 @@ class UdpHandController {
   int comm_decimation_;
   int num_fingertips_;
   bool use_fake_hand_;
+  // Fake-hand dynamics config (use_fake_hand only; see StepFakeModel).
+  double fake_lpf_tau_s_;
+  double fake_effort_stiffness_;
+  double fake_effort_damping_;
   std::vector<std::string> fingertip_names_;
   HandCommunicationMode communication_mode_;
   bool sensor_init_ok_{false};
@@ -1247,6 +1386,14 @@ class UdpHandController {
   // Shared state
   std::atomic<bool> running_{false};
   bool state_read_once_{false};  // True after first successful state read
+
+  // Fake-hand model state (CommLoop thread only; use_fake_hand). Preallocated
+  // so StepFakeModel() stays allocation-free on the RT path. fake_alpha_ and
+  // fake_dt_ are derived once in Start() from loop_rate_hz_ and fake_lpf_tau_s_.
+  std::array<float, kNumHandMotors> fake_cmd_target_{};  // latest commanded pose (LPF input)
+  std::array<float, kNumHandMotors> fake_pos_{};         // filtered pose (LPF state)
+  double fake_alpha_{0.0};                               // LPF coeff dt/(τ+dt)
+  double fake_dt_{0.0};                                  // 1/loop_rate_hz (s)
   StateCallback callback_;
   rtc::HandUdpTimingBuffer* timing_producer_{nullptr};
   rtc::SeqLock<UdpHandState> state_seqlock_{};

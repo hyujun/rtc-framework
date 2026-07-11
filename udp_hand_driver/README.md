@@ -24,19 +24,23 @@ udp_hand_driver/
 │   ├── udp_hand_logging.hpp      -- 계층적 sub-logger 팩토리 + THROTTLE 상수
 │   ├── protocol/
 │   │   └── sensor_protocol.hpp   -- SensorProtocol version seam (1a/1b bulk-sensor 추상화)
+│   ├── fake_hand_firmware.hpp    -- full-SIL 루프백 firmware 시뮬레이터 (device-side, header-only)
+│   ├── fake_hand_lpf.hpp         -- fake-hand 1차 LPF joint step (controller/firmware 공유)
 │   └── fingertip_ft_inferencer.hpp -- ONNX 기반 핑거팁 F/T 추론
 ├── src/
 │   ├── udp_hand_node.cpp           -- main() (mlockall, CPU affinity, spin)
 │   ├── udp_hand_node_lifecycle.cpp -- 6 lifecycle 콜백 + dtor + Drain + teardown helper
 │   ├── udp_hand_node_publish.cpp   -- Preallocate / PublishFromEventLoop / PublishCalibrationStatus
 │   ├── udp_hand_node_stats.cpp     -- SaveCommStats (hand_udp_stats.json writer)
+│   ├── fake_hand_firmware_main.cpp -- fake_hand_firmware 실행파일 (socket/param/log 껍데기)
 │   └── protocol/
 │       └── sensor_protocol.cpp     -- SensorProtocol 구현 (정적 lib `udp_hand_protocol`)
 ├── config/
 │   ├── udp_hand_node.yaml        -- 노드 파라미터 설정 (ros__parameters)
+│   ├── fake_hand_firmware.yaml   -- SIL firmware 시뮬레이터 설정
 │   └── fingertip_ft_inferencer.yaml -- ONNX 모델 경로 + 캘리브레이션 설정
 ├── launch/
-│   └── udp_hand.launch.py        -- Hand UDP 런치
+│   └── udp_hand.launch.py        -- Hand UDP 런치 (sil_mode: off/loopmodel/firmware 단일 진입점)
 ├── CMakeLists.txt
 └── package.xml
 ```
@@ -192,7 +196,7 @@ skip 사이클의 동작:
 - **per-command write gate**: `event_pending_`(release) → CommLoop latch(acquire); 1회 write 후 clear (stale 재전송 없음)
 - **Write echo 항상 수신**: 소켓 버퍼 오염 방지
 - **첫 사이클 read-only**: 초기 상태를 모르는 상태에서 zero 명령 전송 방지
-- **Fake hand 모드**: `use_fake_hand=true` 시 UDP 소켓 없이 echo-back mock 동작
+- **Fake hand 모드**: `use_fake_hand=true` 시 UDP 소켓 없이 **CommLoop RT 스레드는 실제 모드와 동일하게** self-clock(`loop_rate_hz`)하고, command pose 를 1차 LPF 모델(`RunFakeCommCycle`/`StepFakeModel`)에 통과시켜 read joint state(pos/vel/effort)를 생성한다 (ros2_control `use_fake_hardware:=true` 등가 — 제어 PC 의 thread 할당/RT 구조 검증용). LPF/effort 는 `fake_lpf_time_constant_s`·`fake_effort_stiffness`·`fake_effort_damping` 로 튜닝
 
 ### UdpHandTransport (`udp_hand_transport.hpp`)
 
@@ -369,8 +373,10 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `link_fail_timeout_ms` | `100.0` | link-down 판정 시간 budget. cycles = ms/1000 × loop_rate_hz / comm_decimation 로 on_configure 에서 환산 |
 | `startup_grace_ms` | `1000.0` | 기동 직후 rate/link 판정 유예 시간 (ms, "UdpHandFailureDetector" 절 참조) |
 | `link_startup_grace_ms` | `100.0` | 기동 직후 link-down 검사 유예 (ms) — ARP/부팅 transient 만 넘기는 짧은 유예 |
-| `use_fake_hand` | `false` | `true` 시 UDP 소켓/스레드 없이 command echo, `fake_tick_rate_hz` 로 상태 publish |
-| `fake_tick_rate_hz` | `500.0` | fake hand 모드 상태 publish 주기 (Hz). `0` 이하이면 node-side 타이머 생략 (외부 tick 과의 충돌 회피용) |
+| `use_fake_hand` | `false` | `true` 시 UDP 없이 CommLoop RT 스레드 self-clock + 1차 LPF 모델로 read state(pos/vel/effort) 생성 (`use_fake_hardware` 등가) |
+| `fake_lpf_time_constant_s` | `0.1` | (fake) 1차 LPF 시정수 τ [s] — read-back position 이 command 를 추종하는 지연 |
+| `fake_effort_stiffness` | `1.0` | (fake) effort kp: `kp·(cmd−pos)` |
+| `fake_effort_damping` | `0.1` | (fake) effort kd: `−kd·vel` (PD-torque placeholder) |
 
 > 참고: `joint_mode`는 사용되지 않습니다 (코드에서 항상 write=kJoint, read=kMotor+kJoint dual read).
 
@@ -417,7 +423,52 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 | `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
 | `communication_mode` | `bulk` | `"individual"` 또는 `"bulk"` |
 | `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 (ms) |
-| `use_fake_hand` | `false` | Fake hand echo-back mock |
+| `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B). 노드+firmware 양쪽 전파 |
+| `sil_mode` | `off` | SIL 진입점 (아래 "SIL 모드" 참조): `off` (실 HW) / `loopmodel` (controller-side LPF) / `firmware` (device-side loopback) |
+
+### SIL 모드 (`sil_mode`)
+
+하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 인자 하나**로 선택한다. 두 계층은
+직교하는 두 축(in-process fake 여부 / 실 소켓 peer 존재)을 검증하므로 삭제 없이
+공존하며, 진입점만 `udp_hand.launch.py` 로 단일화됐다.
+
+| `sil_mode` | 계층 | `use_fake_hand` | firmware | `target_ip` | 검증 대상 |
+|------------|------|:---:|:---:|------|-----------|
+| `off` (기본) | 실 하드웨어 | false | 미실행 | 인자값 | — |
+| `loopmodel` | Mode A (controller-side loop-model SIL) | true | 미실행 | 무관 (소켓 미오픈) | thread/RT 구조 (실 모드와 동일 self-clock) |
+| `firmware` | Mode B (device-side network-level SIL) | false | 실행 | `127.0.0.1` (자동) | 전체 UDP transport (send/recv, framing, echo/MODE 검증, decode, publish) |
+
+**`loopmodel`** — UDP 소켓을 우회하고 command 를 노드 in-process 1차 LPF 모델에
+직접 통과시켜 read state(pos/vel/effort)를 생성한다. CommLoop RT 스레드는 실 모드와
+동일하게 self-clock 하므로 제어 PC 의 thread 할당/RT 구조를 검증한다.
+
+```bash
+ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=loopmodel
+ros2 topic echo /hand/joint_states --once     # LPF 추종 joint state 발행
+```
+
+**`firmware`** — `fake_hand_firmware` 실행파일이 hand 프로토콜의 *디바이스 측*
+(펌웨어)을 시뮬레이션하고, 수정하지 않은 실제 `udp_hand_node`(`use_fake_hand=false`,
+`target_ip=127.0.0.1`)가 loopback UDP 소켓으로 통신한다. firmware bind 포트는
+`target_port`, wire 포맷은 `protocol_version` 으로 노드와 공유된다.
+
+```bash
+ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=1a
+# 별도 터미널에서 링크/상태 확인
+ros2 topic echo /hand/link_status --once      # data: true 면 전체 경로 정상
+ros2 topic echo /hand/joint_states --once
+```
+
+firmware 합성 튜닝(LPF τ, effort 게인, 센서 base 대역/노이즈, seed)은
+`config/fake_hand_firmware.yaml` 참조. 핵심 로직은 헤더 전용
+`FakeHandFirmware` 클래스(`fake_hand_firmware.hpp`, 단위 test 대상)이고,
+`fake_hand_firmware_main.cpp` 는 socket/param/log 껍데기다.
+
+**한계:** loopback latency ~µs 라 `firmware` 모드는 timing 검증엔 부적합하다.
+firmware 는 driver decoder 의 거울상(self-consistency)이라 driver↔실제 firmware
+일치는 보장 못 하며 실기 Phase-5 가 ground truth. commander(controller/CM) 없이
+단독 실행하면 firmware 모터가 LPF rest(0)에 머물러 failure detector 의
+all-zero/duplicate 경고가 뜨는데, 이는 정상 동작(명령이 오면 해소)이다.
 
 ### 빌드
 

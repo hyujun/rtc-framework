@@ -1,7 +1,12 @@
-// Unit tests for udp_hand_controller.hpp — UdpHandController (fake_hand mode).
+// Unit tests for udp_hand_controller.hpp — UdpHandController.
 //
-// Tier 2: Uses fake_hand=true to bypass UDP. Requires rclcpp for logging.
-// rclcpp::init() is NOT required — rclcpp logging works without node context.
+// Tier 2: fake_hand=true bypasses UDP but — like ros2_control use_fake_hardware
+// — still runs the CommLoop RT thread, driving commands through the first-order
+// LPF model (RunFakeCommCycle / StepFakeModel). State therefore flows
+// ASYNCHRONOUSLY through the self-clocked loop, so tests poll the published
+// state instead of expecting a synchronous echo. The LPF math itself is covered
+// deterministically (thread-free) by the FakeLpfStep suite. rclcpp::init() is
+// NOT required — rclcpp logging works without node context.
 
 #include "udp_hand_driver/udp_hand_controller.hpp"
 
@@ -15,12 +20,68 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <string>
 #include <thread>
 #include <utility>
 
 namespace udp_hand_driver::test {
+
+using namespace std::chrono_literals;
+
+namespace {
+
+// Polls `pred` every 2 ms up to `timeout`, returning the final predicate value.
+template <typename Pred>
+[[nodiscard]] bool PollUntil(Pred pred, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!pred()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return true;
+}
+
+// Wait for the self-clocked fake CommLoop to publish at least one valid state.
+UdpHandState WaitForFirstState(UdpHandController& ctrl) {
+  UdpHandState st{};
+  static_cast<void>(PollUntil(
+      [&] {
+        st = ctrl.GetLatestState();
+        return st.valid;
+      },
+      1s));
+  return st;
+}
+
+// Stage a command and wait until the LPF settles the read-back position onto it
+// (fixtures use τ=0 → alpha=1 → settles within a couple of ticks). Returns the
+// settled state (or the last observed state on timeout).
+UdpHandState SendAndSettle(UdpHandController& ctrl, const std::array<float, kNumHandMotors>& cmd) {
+  ctrl.SendCommandAndRequestStates(cmd);
+  UdpHandState st{};
+  static_cast<void>(PollUntil(
+      [&] {
+        st = ctrl.GetLatestState();
+        if (!st.valid) {
+          return false;
+        }
+        for (int i = 0; i < kNumHandMotors; ++i) {
+          const auto iu = static_cast<std::size_t>(i);
+          if (std::abs(st.motor_positions[iu] - cmd[iu]) > 1e-4f) {
+            return false;
+          }
+        }
+        return true;
+      },
+      1s));
+  return st;
+}
+
+}  // namespace
 
 // ── Test fixture: FakeHand UdpHandController ───────────────────────────────────
 
@@ -32,6 +93,10 @@ class FakeHandControllerTest : public ::testing::Test {
         .target_port = 55151,
         .num_fingertips = 4,
         .use_fake_hand = true,
+        // τ=0 → LPF alpha=1 → instantaneous follow, so the read-back position
+        // equals the command at steady state. Keeps the follow assertions exact
+        // even though state now flows asynchronously through the CommLoop.
+        .fake_lpf_time_constant_s = 0.0,
     });
   }
 
@@ -67,12 +132,12 @@ TEST_F(FakeHandControllerTest, DoubleStop_Safe) {
 TEST_F(FakeHandControllerTest, StartWithoutStop_DestructorStops) {
   ASSERT_TRUE(controller_->Start());
   EXPECT_TRUE(controller_->IsRunning());
-  // Destructor in TearDown should cleanly stop
+  // Destructor in TearDown should cleanly stop (CommLoop Join()).
 }
 
-// ── State echo-back ─────────────────────────────────────────────────────────
+// ── LPF follow (fake mode; τ=0 → exact follow) ───────────────────────────────
 
-TEST_F(FakeHandControllerTest, EchoBack_MotorPositions) {
+TEST_F(FakeHandControllerTest, LpfFollow_MotorPositions) {
   ASSERT_TRUE(controller_->Start());
 
   std::array<float, kNumHandMotors> cmd{};
@@ -80,80 +145,107 @@ TEST_F(FakeHandControllerTest, EchoBack_MotorPositions) {
     cmd[static_cast<std::size_t>(i)] = static_cast<float>(i) * 0.1f;
   }
 
-  controller_->SendCommandAndRequestStates(cmd);
-
-  const auto state = controller_->GetLatestState();
+  const auto state = SendAndSettle(*controller_, cmd);
   for (std::size_t i = 0; i < kNumHandMotors; ++i) {
     EXPECT_FLOAT_EQ(state.motor_positions[i], cmd[i]);
   }
 }
 
-TEST_F(FakeHandControllerTest, EchoBack_NumFingertips) {
+TEST_F(FakeHandControllerTest, State_NumFingertips) {
   ASSERT_TRUE(controller_->Start());
-
-  std::array<float, kNumHandMotors> cmd{};
-  controller_->SendCommandAndRequestStates(cmd);
-
-  const auto state = controller_->GetLatestState();
-  EXPECT_EQ(state.num_fingertips, 4);
+  EXPECT_EQ(WaitForFirstState(*controller_).num_fingertips, 4);
 }
 
-TEST_F(FakeHandControllerTest, EchoBack_ValidFlag) {
+TEST_F(FakeHandControllerTest, State_ValidFlag) {
   ASSERT_TRUE(controller_->Start());
-
-  std::array<float, kNumHandMotors> cmd{};
-  controller_->SendCommandAndRequestStates(cmd);
-
-  const auto state = controller_->GetLatestState();
-  EXPECT_TRUE(state.valid);
+  EXPECT_TRUE(WaitForFirstState(*controller_).valid);
 }
 
-TEST_F(FakeHandControllerTest, GetLatestPositions_MatchesCmd) {
+TEST_F(FakeHandControllerTest, GetLatestPositions_FollowsCmd) {
   ASSERT_TRUE(controller_->Start());
 
   std::array<float, kNumHandMotors> cmd{};
   cmd[0] = 1.5f;
   cmd[5] = -3.0f;
-  controller_->SendCommandAndRequestStates(cmd);
+  SendAndSettle(*controller_, cmd);
 
   const auto positions = controller_->GetLatestPositions();
   EXPECT_FLOAT_EQ(positions[0], 1.5f);
   EXPECT_FLOAT_EQ(positions[5], -3.0f);
 }
 
-// ── CycleCount ──────────────────────────────────────────────────────────────
+// ── CycleCount (self-clocked, advances on its own) ───────────────────────────
 
-TEST_F(FakeHandControllerTest, CycleCount_IncrementsPerCall) {
+TEST_F(FakeHandControllerTest, CycleCount_AdvancesWhileRunning) {
   ASSERT_TRUE(controller_->Start());
-
-  const auto before = controller_->cycle_count();
-  std::array<float, kNumHandMotors> cmd{};
-  controller_->SendCommandAndRequestStates(cmd);
-  controller_->SendCommandAndRequestStates(cmd);
-  controller_->SendCommandAndRequestStates(cmd);
-
-  EXPECT_EQ(controller_->cycle_count(), before + 3);
+  // The CommLoop self-clocks in fake mode — cycles accumulate without commands.
+  ASSERT_TRUE(PollUntil([&] { return controller_->cycle_count() > 0; }, 1s));
+  const auto c1 = controller_->cycle_count();
+  ASSERT_TRUE(PollUntil([&] { return controller_->cycle_count() > c1 + 5; }, 1s));
+  EXPECT_GT(controller_->cycle_count(), c1);
 }
 
-// ── Sensor freshness sequence (#3/#4 gate) ───────────────────────────────────
+// ── Sensor freshness sequence (advances per fake cycle) ──────────────────────
 
-TEST_F(FakeHandControllerTest, SensorSeq_ZeroBeforeFirstRead) {
+TEST_F(FakeHandControllerTest, SensorSeq_AdvancesWhileRunning) {
   ASSERT_TRUE(controller_->Start());
-  // No SendCommandAndRequestStates yet → no fresh sensor read → seq stays 0.
-  // The failure detector's freshness gate keys on this to skip evaluating a
-  // never-read (zero-init) sensor snapshot as a false all-zero (#3).
-  EXPECT_EQ(controller_->GetLatestState().sensor_seq, 0u);
+  // Each fake cycle mirrors a fresh sensor read, so sensor_seq climbs monotonically
+  // (the failure detector's freshness gate keys on the delta).
+  ASSERT_TRUE(PollUntil([&] { return controller_->GetLatestState().sensor_seq > 0u; }, 1s));
+  const auto s1 = controller_->GetLatestState().sensor_seq;
+  ASSERT_TRUE(PollUntil([&] { return controller_->GetLatestState().sensor_seq > s1; }, 1s));
+  EXPECT_GT(controller_->GetLatestState().sensor_seq, s1);
 }
 
-TEST_F(FakeHandControllerTest, SensorSeq_AdvancesPerFreshRead) {
-  ASSERT_TRUE(controller_->Start());
-  std::array<float, kNumHandMotors> cmd{};
-  controller_->SendCommandAndRequestStates(cmd);
-  EXPECT_EQ(controller_->GetLatestState().sensor_seq, 1u);
-  controller_->SendCommandAndRequestStates(cmd);
-  controller_->SendCommandAndRequestStates(cmd);
-  // Monotonic, one bump per fresh read — the detector uses the delta to gate.
-  EXPECT_EQ(controller_->GetLatestState().sensor_seq, 3u);
+// ── Fake-hand LPF model (pure, deterministic — no threads) ───────────────────
+// StepFakeModel delegates its per-joint math to the static FakeLpfStep, so the
+// dynamics are verified here without the CommLoop.
+
+TEST(FakeLpfStep, InstantFollowWhenAlphaOne) {
+  // alpha=1 (τ=0): position jumps straight to the target in one step.
+  const auto s = UdpHandController::FakeLpfStep(/*target=*/2.0f, /*pos_old=*/0.0f,
+                                                /*alpha=*/1.0f, /*inv_dt=*/500.0f,
+                                                /*kp=*/1.0f, /*kd=*/0.0f);
+  EXPECT_FLOAT_EQ(s.pos, 2.0f);
+  EXPECT_FLOAT_EQ(s.vel, (2.0f - 0.0f) * 500.0f);
+  EXPECT_FLOAT_EQ(s.effort, 0.0f);  // kp*(target-pos) = kp*0
+}
+
+TEST(FakeLpfStep, SettledStateZeroVelZeroEffort) {
+  // pos already at target → no motion, no PD torque.
+  const auto s = UdpHandController::FakeLpfStep(1.0f, 1.0f, 0.02f, 500.0f, 3.0f, 0.5f);
+  EXPECT_FLOAT_EQ(s.pos, 1.0f);
+  EXPECT_FLOAT_EQ(s.vel, 0.0f);
+  EXPECT_FLOAT_EQ(s.effort, 0.0f);
+}
+
+TEST(FakeLpfStep, FirstOrderLag) {
+  // One step moves a fraction alpha toward the target; vel is its derivative.
+  const auto s =
+      UdpHandController::FakeLpfStep(4.0f, 0.0f, /*alpha=*/0.25f, /*inv_dt=*/500.0f, 0.0f, 0.0f);
+  EXPECT_FLOAT_EQ(s.pos, 1.0f);           // 0 + 0.25*(4-0)
+  EXPECT_FLOAT_EQ(s.vel, 1.0f * 500.0f);  // (1-0)*inv_dt
+}
+
+TEST(FakeLpfStep, ConvergesOverManySteps) {
+  float pos = 0.0f;
+  constexpr float kTarget = 1.0f;
+  for (int i = 0; i < 2000; ++i) {
+    pos =
+        UdpHandController::FakeLpfStep(kTarget, pos, /*alpha=*/0.02f, /*inv_dt=*/500.0f, 0.0f, 0.0f)
+            .pos;
+  }
+  EXPECT_NEAR(pos, kTarget, 1e-3f);
+}
+
+TEST(FakeLpfStep, EffortPdForm) {
+  // Transient effort = kp*(target-pos) - kd*vel.
+  constexpr float kTarget = 2.0f, kPosOld = 0.0f, kAlpha = 0.5f, kInvDt = 100.0f, kKp = 2.0f,
+                  kKd = 0.1f;
+  const auto s = UdpHandController::FakeLpfStep(kTarget, kPosOld, kAlpha, kInvDt, kKp, kKd);
+  const float pos = kPosOld + kAlpha * (kTarget - kPosOld);      // 1.0
+  const float vel = (pos - kPosOld) * kInvDt;                    // 100
+  EXPECT_FLOAT_EQ(s.effort, kKp * (kTarget - pos) - kKd * vel);  // 2*1 - 0.1*100 = -8
 }
 
 // ── Strict per-channel link-down policy (#1) ─────────────────────────────────
@@ -220,41 +312,39 @@ TEST(LinkDownDecision, ZeroThresholdDisablesChannelClass) {
 }
 
 // ── Callback ────────────────────────────────────────────────────────────────
+// The callback runs on the CommLoop thread, so it is set BEFORE Start() (the
+// loop reads callback_ each tick) and its state is shared via atomics.
 
 TEST_F(FakeHandControllerTest, Callback_Invoked) {
-  ASSERT_TRUE(controller_->Start());
-
-  int callback_count = 0;
-  UdpHandState last_state{};
+  std::atomic<int> callback_count{0};
+  std::atomic<float> last_pos0{0.0f};
   controller_->SetCallback(
       [&](const UdpHandState& state, const udp_hand_driver::FingertipFTState& /*ft*/) {
-        ++callback_count;
-        last_state = state;
+        callback_count.fetch_add(1);
+        last_pos0.store(state.motor_positions[0]);
       });
+
+  ASSERT_TRUE(controller_->Start());
 
   std::array<float, kNumHandMotors> cmd{};
   cmd[0] = 42.0f;
-  controller_->SendCommandAndRequestStates(cmd);
+  SendAndSettle(*controller_, cmd);
 
-  EXPECT_EQ(callback_count, 1);
-  EXPECT_FLOAT_EQ(last_state.motor_positions[0], 42.0f);
-  EXPECT_TRUE(last_state.valid);
+  EXPECT_GT(callback_count.load(), 0);
+  EXPECT_FLOAT_EQ(last_pos0.load(), 42.0f);
 }
 
 TEST_F(FakeHandControllerTest, Callback_MultipleInvocations) {
-  ASSERT_TRUE(controller_->Start());
-
-  int callback_count = 0;
+  std::atomic<int> callback_count{0};
   controller_->SetCallback(
       [&](const UdpHandState& /*state*/, const udp_hand_driver::FingertipFTState& /*ft*/) {
-        ++callback_count;
+        callback_count.fetch_add(1);
       });
 
-  std::array<float, kNumHandMotors> cmd{};
-  for (int i = 0; i < 5; ++i) {
-    controller_->SendCommandAndRequestStates(cmd);
-  }
-  EXPECT_EQ(callback_count, 5);
+  ASSERT_TRUE(controller_->Start());
+  // Self-clocked: the callback fires once per tick, no command needed.
+  ASSERT_TRUE(PollUntil([&] { return callback_count.load() >= 5; }, 1s));
+  EXPECT_GE(callback_count.load(), 5);
 }
 
 // ── FT inference (stub) ─────────────────────────────────────────────────────
@@ -313,6 +403,7 @@ TEST_F(FakeHandControllerTest, ConsecutiveRecvFailures_Zero) {
 }
 
 TEST_F(FakeHandControllerTest, TimingSummary_NoData) {
+  // No Start() → no cycles → summary reports "no data".
   const auto summary = controller_->TimingSummary();
   EXPECT_NE(summary.find("no data"), std::string::npos);
 }
@@ -321,26 +412,36 @@ TEST_F(FakeHandControllerTest, TimingSummary_NoData) {
 
 TEST_F(FakeHandControllerTest, SetEstopFlag_Settable) {
   std::atomic<bool> flag{false};
-  controller_->SetEstopFlag(&flag);
-  // Should not crash
+  controller_->SetEstopFlag(&flag);  // set before Start (read on the loop thread)
   ASSERT_TRUE(controller_->Start());
 
   std::array<float, kNumHandMotors> cmd{};
   controller_->SendCommandAndRequestStates(cmd);
+  // Loop runs with the E-Stop unset — cycles accumulate, no crash.
+  EXPECT_TRUE(PollUntil([&] { return controller_->cycle_count() > 0; }, 1s));
 }
 
 // ── Sensor init status ──────────────────────────────────────────────────────
 
 TEST_F(FakeHandControllerTest, SensorInit_FakeModeNotInitialized) {
-  // In fake mode, no sensor init happens (no UDP)
+  // In fake mode, no sensor init happens (no UDP handshake).
   ASSERT_TRUE(controller_->Start());
   EXPECT_FALSE(controller_->IsSensorInitialized());
+}
+
+// ── HasStateBeenRead ─────────────────────────────────────────────────────────
+
+TEST_F(FakeHandControllerTest, HasStateBeenRead_TrueAfterFirstCycle) {
+  ASSERT_TRUE(controller_->Start());
+  // Fake cycles report any_recv_ok=true, so the first-state latch flips true.
+  ASSERT_TRUE(PollUntil([&] { return controller_->HasStateBeenRead(); }, 1s));
+  EXPECT_TRUE(controller_->GetLatestState().valid);
 }
 
 // ── Num fingertips clamping ─────────────────────────────────────────────────
 
 TEST(HandControllerConfig, NumFingertips_ClampedToNames) {
-  // If fingertip_names has fewer entries than num_fingertips, it should be clamped
+  // If fingertip_names has fewer entries than num_fingertips, it should be clamped.
   auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
       .target_ip = "127.0.0.1",
       .target_port = 55151,
@@ -350,11 +451,7 @@ TEST(HandControllerConfig, NumFingertips_ClampedToNames) {
   });
 
   ASSERT_TRUE(ctrl->Start());
-
-  std::array<float, kNumHandMotors> cmd{};
-  ctrl->SendCommandAndRequestStates(cmd);
-
-  const auto state = ctrl->GetLatestState();
+  const auto state = WaitForFirstState(*ctrl);
   EXPECT_EQ(state.num_fingertips, 2);  // clamped to name count
   ctrl->Stop();
 }
@@ -368,37 +465,21 @@ TEST(HandControllerConfig, NumFingertips_NegativeClamped) {
   });
 
   ASSERT_TRUE(ctrl->Start());
-
-  std::array<float, kNumHandMotors> cmd{};
-  ctrl->SendCommandAndRequestStates(cmd);
-
-  const auto state = ctrl->GetLatestState();
+  const auto state = WaitForFirstState(*ctrl);
   EXPECT_EQ(state.num_fingertips, 0);
   ctrl->Stop();
 }
 
-// ── HasStateBeenRead ───────────────────────────────────────────────────────
-
-TEST_F(FakeHandControllerTest, HasStateBeenRead_TrueAfterCommand) {
-  ASSERT_TRUE(controller_->Start());
-  // In fake mode, HasStateBeenRead is always false (no real UDP reads)
-  // but SendCommandAndRequestStates always succeeds
-  std::array<float, kNumHandMotors> cmd{};
-  controller_->SendCommandAndRequestStates(cmd);
-  // Fake mode state is always stored, but state_read_once_ only tracks real reads
-  // Verify the state is valid regardless
-  EXPECT_TRUE(controller_->GetLatestState().valid);
-}
-
 // ── Bulk mode with fake hand ───────────────────────────────────────────────
 
-TEST(HandControllerConfig, BulkMode_FakeEchoBack) {
+TEST(HandControllerConfig, BulkMode_FakeFollow) {
   auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
       .target_ip = "127.0.0.1",
       .target_port = 55151,
       .num_fingertips = 4,
       .use_fake_hand = true,
       .communication_mode = HandCommunicationMode::kBulk,
+      .fake_lpf_time_constant_s = 0.0,  // exact follow
   });
 
   ASSERT_TRUE(ctrl->Start());
@@ -406,9 +487,7 @@ TEST(HandControllerConfig, BulkMode_FakeEchoBack) {
   std::array<float, kNumHandMotors> cmd{};
   cmd[0] = 7.77f;
   cmd[9] = -2.5f;
-  ctrl->SendCommandAndRequestStates(cmd);
-
-  const auto state = ctrl->GetLatestState();
+  const auto state = SendAndSettle(*ctrl, cmd);
   EXPECT_FLOAT_EQ(state.motor_positions[0], 7.77f);
   EXPECT_FLOAT_EQ(state.motor_positions[9], -2.5f);
   EXPECT_TRUE(state.valid);
@@ -420,30 +499,26 @@ TEST(HandControllerConfig, BulkMode_FakeEchoBack) {
 TEST_F(FakeHandControllerTest, RapidCommands_LastValueWins) {
   ASSERT_TRUE(controller_->Start());
 
+  std::array<float, kNumHandMotors> cmd{};
   for (int i = 0; i < 100; ++i) {
-    std::array<float, kNumHandMotors> cmd{};
     cmd[0] = static_cast<float>(i);
     controller_->SendCommandAndRequestStates(cmd);
   }
 
-  const auto state = controller_->GetLatestState();
-  EXPECT_FLOAT_EQ(state.motor_positions[0], 99.0f);
+  // The staged SeqLock is last-wins; the loop latches 99 and (τ=0) tracks it.
+  ASSERT_TRUE(PollUntil(
+      [&] { return std::abs(controller_->GetLatestState().motor_positions[0] - 99.0f) < 1e-4f; },
+      1s));
+  EXPECT_FLOAT_EQ(controller_->GetLatestState().motor_positions[0], 99.0f);
 }
 
-// ── Timing stats after commands ────────────────────────────────────────────
+// ── Timing stats after cycles ──────────────────────────────────────────────
 
-TEST_F(FakeHandControllerTest, TimingSummary_AfterCommands) {
+TEST_F(FakeHandControllerTest, TimingSummary_AfterCycles) {
   ASSERT_TRUE(controller_->Start());
-
-  std::array<float, kNumHandMotors> cmd{};
-  for (int i = 0; i < 5; ++i) {
-    controller_->SendCommandAndRequestStates(cmd);
-  }
-
-  // Fake mode doesn't update timing profiler (no EventLoop phases)
-  // but TimingSummary should still return a valid string
-  const auto summary = controller_->TimingSummary();
-  EXPECT_FALSE(summary.empty());
+  // Fake cycles now push per-tick timing records, so the summary is populated.
+  ASSERT_TRUE(PollUntil([&] { return controller_->cycle_count() > 5; }, 1s));
+  EXPECT_FALSE(controller_->TimingSummary().empty());
 }
 
 // ── ActualSensorRateHz accessor ────────────────────────────────────────────
@@ -460,15 +535,14 @@ TEST(HandControllerConfig, ZeroFingertips_NoSensor) {
       .target_port = 55151,
       .num_fingertips = 0,
       .use_fake_hand = true,
+      .fake_lpf_time_constant_s = 0.0,
   });
 
   ASSERT_TRUE(ctrl->Start());
 
   std::array<float, kNumHandMotors> cmd{};
   cmd[0] = 3.14f;
-  ctrl->SendCommandAndRequestStates(cmd);
-
-  const auto state = ctrl->GetLatestState();
+  const auto state = SendAndSettle(*ctrl, cmd);
   EXPECT_FLOAT_EQ(state.motor_positions[0], 3.14f);
   EXPECT_EQ(state.num_fingertips, 0);
   EXPECT_TRUE(state.valid);
@@ -486,12 +560,8 @@ TEST(HandControllerConfig, MaxFingertips_Clamped) {
   });
 
   ASSERT_TRUE(ctrl->Start());
-
-  std::array<float, kNumHandMotors> cmd{};
-  ctrl->SendCommandAndRequestStates(cmd);
-
-  const auto state = ctrl->GetLatestState();
-  // Clamped to kMaxFingertips (8), but further clamped by default fingertip_names (4)
+  const auto state = WaitForFirstState(*ctrl);
+  // Clamped to kMaxFingertips (8), but further clamped by default fingertip_names (4).
   EXPECT_LE(state.num_fingertips, kMaxFingertips);
   ctrl->Stop();
 }
@@ -572,7 +642,7 @@ TEST(HandControllerOutcomeRing, SilentDevice_RecordsFailedCycles) {
 // ── Comm decimation (whole-cycle UDP load reduction) ────────────────────────
 
 TEST(HandControllerCommDecimation, ClampedToOne) {
-  // < 1 is clamped to 1 (communicate every cycle). Fake mode, no threads run.
+  // < 1 is clamped to 1 (communicate every cycle). Fake mode.
   auto ctrl = std::make_unique<UdpHandController>(UdpHandControllerConfig{
       .target_ip = "127.0.0.1",
       .target_port = 55151,
@@ -729,23 +799,6 @@ TEST(HandControllerOutcomeRing, CycleSeq_Monotonic) {
 // The E-Stop is now serviced by a pure-atomic RequestLoopExit() from inside the
 // CommLoop (no mutex/CV on the RT hot path), which clears running_ and unwinds
 // the loop; the zero-write happens off the hot path in OnLoopAborted.
-
-namespace {
-
-// Polls `pred` every 2 ms up to `timeout`, returning the final predicate value.
-template <typename Pred>
-[[nodiscard]] bool PollUntil(Pred pred, std::chrono::milliseconds timeout) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (!pred()) {
-    if (std::chrono::steady_clock::now() >= deadline) {
-      return false;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  return true;
-}
-
-}  // namespace
 
 TEST(HandControllerEStop, SelfExitClearsRunning) {
   const auto [fd, port] = OpenSilentLoopbackSocket();

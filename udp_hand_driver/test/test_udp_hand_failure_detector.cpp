@@ -32,7 +32,11 @@ class HandFailureDetectorTest : public ::testing::Test {
         .num_fingertips = 4,
         .use_fake_hand = true,
     });
-    ASSERT_TRUE(controller_->Start());
+    // Drive fake cycles synchronously (no self-clocked CommLoop) so the tests
+    // control cycle_count / sensor_seq exactly — a live loop would advance them
+    // autonomously and make the frozen-counter / frozen-seq scenarios below
+    // unreproducible. See UdpHandController::StepFakeCycleForTest.
+    ASSERT_TRUE(controller_->InitFakeForTest());
   }
 
   void TearDown() override {
@@ -44,7 +48,7 @@ class HandFailureDetectorTest : public ::testing::Test {
   // Helper: feed N identical commands to the controller
   void FeedCommands(const std::array<float, kNumHandMotors>& cmd, int count) {
     for (int i = 0; i < count; ++i) {
-      controller_->SendCommandAndRequestStates(cmd);
+      controller_->StepFakeCycleForTest(cmd);
     }
   }
 
@@ -98,7 +102,7 @@ TEST_F(HandFailureDetectorTest, MotorNonZero_NoAllZeroFailure) {
   for (int i = 0; i < 10; ++i) {
     std::array<float, kNumHandMotors> cmd{};
     cmd[0] = static_cast<float>(i + 1);
-    controller_->SendCommandAndRequestStates(cmd);
+    controller_->StepFakeCycleForTest(cmd);
   }
 
   detector.Start();
@@ -164,7 +168,7 @@ TEST_F(HandFailureDetectorTest, SensorAllZero_TriggersFailure) {
   cmd[0] = 1.0f;  // non-zero motor to avoid motor failures
   detector.Start();
   for (int i = 0; i < 40; ++i) {
-    controller_->SendCommandAndRequestStates(cmd);
+    controller_->StepFakeCycleForTest(cmd);
     std::this_thread::sleep_for(5ms);
   }
   detector.Stop();
@@ -196,7 +200,7 @@ TEST_F(HandFailureDetectorTest, SensorForceAllZero_TriggersFailure) {
   std::array<float, kNumHandMotors> cmd{};
   detector.Start();
   for (int i = 0; i < 40; ++i) {
-    controller_->SendCommandAndRequestStates(cmd);
+    controller_->StepFakeCycleForTest(cmd);
     std::this_thread::sleep_for(5ms);
   }
   detector.Stop();
@@ -227,7 +231,7 @@ TEST_F(HandFailureDetectorTest, SensorForceDuplicate_TriggersFailure) {
   same_cmd[0] = 3.0f;
   detector.Start();
   for (int i = 0; i < 40; ++i) {
-    controller_->SendCommandAndRequestStates(same_cmd);
+    controller_->StepFakeCycleForTest(same_cmd);
     std::this_thread::sleep_for(5ms);
   }
   detector.Stop();
@@ -257,7 +261,7 @@ TEST_F(HandFailureDetectorTest, SensorForceChanging_NoFailure) {
   for (int i = 0; i < 40; ++i) {
     std::array<float, kNumHandMotors> cmd{};
     cmd[0] = 1.0f + 0.1f * static_cast<float>(i);
-    controller_->SendCommandAndRequestStates(cmd);
+    controller_->StepFakeCycleForTest(cmd);
     std::this_thread::sleep_for(10ms);
   }
   detector.Stop();
@@ -289,7 +293,7 @@ TEST_F(HandFailureDetectorTest, SensorFrozenSeq_NoFalseDuplicate) {
   // (no further feeds), mimicking a snapshot republished at the decimated rate.
   std::array<float, kNumHandMotors> cmd{};
   cmd[0] = 3.0f;
-  controller_->SendCommandAndRequestStates(cmd);
+  controller_->StepFakeCycleForTest(cmd);
 
   detector.Start();
   std::this_thread::sleep_for(200ms);  // ~10 polls of the frozen snapshot

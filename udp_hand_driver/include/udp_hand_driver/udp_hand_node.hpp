@@ -159,11 +159,11 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
 
   std::size_t publish_count_{0};
 
-  // Fake-hand standalone support
+  // Fake-hand standalone support. The controller's CommLoop RT thread self-clocks
+  // and runs the LPF model in fake mode (UdpHandController::RunFakeCommCycle), so
+  // the node needs no self-tick timer or command cache — commands flow through the
+  // normal command sub → SendCommandAndRequestStates path.
   bool use_fake_hand_{false};
-  rclcpp::TimerBase::SharedPtr fake_tick_timer_;
-  std::mutex last_cmd_mutex_;
-  std::array<float, udp_hand_driver::kNumHandMotors> last_cmd_{};
 
   std::chrono::steady_clock::time_point start_time_{std::chrono::steady_clock::now()};
 
