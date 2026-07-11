@@ -39,8 +39,7 @@ udp_hand_driver/
 │   ├── fake_hand_firmware.yaml   -- SIL firmware 시뮬레이터 설정
 │   └── fingertip_ft_inferencer.yaml -- ONNX 모델 경로 + 캘리브레이션 설정
 ├── launch/
-│   ├── udp_hand.launch.py        -- Hand UDP 런치
-│   └── fake_hand_sil.launch.py   -- full-SIL 루프백 (firmware + udp_hand_node@127.0.0.1)
+│   └── udp_hand.launch.py        -- Hand UDP 런치 (sil_mode: off/loopmodel/firmware 단일 진입점)
 ├── CMakeLists.txt
 └── package.xml
 ```
@@ -423,45 +422,52 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 | `publish_rate` | `100.0` | link_status decimation 기준 (Hz, `loop_rate_hz / publish_rate` 비율) |
 | `communication_mode` | `bulk` | `"individual"` 또는 `"bulk"` |
 | `recv_timeout_ms` | `0.4` | ppoll 수신 타임아웃 (ms) |
-| `use_fake_hand` | `false` | Fake hand (no UDP): CommLoop RT 스레드 + 1차 LPF 모델 (`use_fake_hardware` 등가) |
+| `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B). 노드+firmware 양쪽 전파 |
+| `sil_mode` | `off` | SIL 진입점 (아래 "SIL 모드" 참조): `off` (실 HW) / `loopmodel` (controller-side LPF) / `firmware` (device-side loopback) |
 
-### Full-SIL 루프백 (`fake_hand_firmware`)
+### SIL 모드 (`sil_mode`)
 
-하드웨어 없이 **전체 UDP transport 경로**(send/recv, 프레이밍, echo/MODE 검증,
-실패감지, decode, publish)를 검증하는 network-level SIL. `fake_hand_firmware`
-실행파일이 hand 프로토콜의 *디바이스 측*(펌웨어)을 시뮬레이션하고, 수정하지 않은
-실제 `udp_hand_node`(`use_fake_hand:=false`, `target_ip:=127.0.0.1`)가 loopback UDP
-소켓으로 통신한다.
+하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 인자 하나**로 선택한다. 두 계층은
+직교하는 두 축(in-process fake 여부 / 실 소켓 peer 존재)을 검증하므로 삭제 없이
+공존하며, 진입점만 `udp_hand.launch.py` 로 단일화됐다.
+
+| `sil_mode` | 계층 | `use_fake_hand` | firmware | `target_ip` | 검증 대상 |
+|------------|------|:---:|:---:|------|-----------|
+| `off` (기본) | 실 하드웨어 | false | 미실행 | 인자값 | — |
+| `loopmodel` | Mode A (controller-side loop-model SIL) | true | 미실행 | 무관 (소켓 미오픈) | thread/RT 구조 (실 모드와 동일 self-clock) |
+| `firmware` | Mode B (device-side network-level SIL) | false | 실행 | `127.0.0.1` (자동) | 전체 UDP transport (send/recv, framing, echo/MODE 검증, decode, publish) |
+
+**`loopmodel`** — UDP 소켓을 우회하고 command 를 노드 in-process 1차 LPF 모델에
+직접 통과시켜 read state(pos/vel/effort)를 생성한다. CommLoop RT 스레드는 실 모드와
+동일하게 self-clock 하므로 제어 PC 의 thread 할당/RT 구조를 검증한다.
 
 ```bash
-ros2 launch udp_hand_driver fake_hand_sil.launch.py protocol_version:=1a
+ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=loopmodel
+ros2 topic echo /hand/joint_states --once     # LPF 추종 joint state 발행
+```
+
+**`firmware`** — `fake_hand_firmware` 실행파일이 hand 프로토콜의 *디바이스 측*
+(펌웨어)을 시뮬레이션하고, 수정하지 않은 실제 `udp_hand_node`(`use_fake_hand=false`,
+`target_ip=127.0.0.1`)가 loopback UDP 소켓으로 통신한다. firmware bind 포트는
+`target_port`, wire 포맷은 `protocol_version` 으로 노드와 공유된다.
+
+```bash
+ros2 launch udp_hand_driver udp_hand.launch.py sil_mode:=firmware protocol_version:=1a
 # 별도 터미널에서 링크/상태 확인
 ros2 topic echo /hand/link_status --once      # data: true 면 전체 경로 정상
 ros2 topic echo /hand/joint_states --once
 ```
-
-| 파라미터 | 기본값 | 설명 |
-|----------|--------|------|
-| `port` | `55151` | firmware bind + node target_port 공유 포트 |
-| `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B) |
 
 firmware 합성 튜닝(LPF τ, effort 게인, 센서 base 대역/노이즈, seed)은
 `config/fake_hand_firmware.yaml` 참조. 핵심 로직은 헤더 전용
 `FakeHandFirmware` 클래스(`fake_hand_firmware.hpp`, 단위 test 대상)이고,
 `fake_hand_firmware_main.cpp` 는 socket/param/log 껍데기다.
 
-**두 SIL 계층 (상보적):**
-
-- **`use_fake_hand=true`** (controller-side) — UDP 소켓을 우회하고 command 를 1차
-  LPF 모델에 직접 통과. thread/RT 구조 검증용 (loop-model SIL).
-- **`fake_hand_firmware`** (device-side, 이 절) — 실제 소켓 왕복을 거침. 프로토콜
-  프레이밍/decode/실패감지 검증용 (network-level SIL).
-
-**한계:** loopback latency ~µs 라 timing 검증엔 부적합하다. firmware 는 driver
-decoder 의 거울상(self-consistency)이라 driver↔실제 firmware 일치는 보장 못 하며
-실기 Phase-5 가 ground truth. commander(controller/CM) 없이 단독 실행하면
-firmware 모터가 LPF rest(0)에 머물러 failure detector 의 all-zero/duplicate 경고가
-뜨는데, 이는 정상 동작(명령이 오면 해소)이다.
+**한계:** loopback latency ~µs 라 `firmware` 모드는 timing 검증엔 부적합하다.
+firmware 는 driver decoder 의 거울상(self-consistency)이라 driver↔실제 firmware
+일치는 보장 못 하며 실기 Phase-5 가 ground truth. commander(controller/CM) 없이
+단독 실행하면 firmware 모터가 LPF rest(0)에 머물러 failure detector 의
+all-zero/duplicate 경고가 뜨는데, 이는 정상 동작(명령이 오면 해소)이다.
 
 ### 빌드
 
