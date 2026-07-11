@@ -142,11 +142,11 @@
 - **증상**: 문서 A = N, 문서 B = N+1, 실측 = N+k (mesh count / 테스트 수 / 패키지 수 등 historical 사례 다수)
 - **복구**: 단일 출처 (코드/YAML/git) + 측정 명령 박제. 문서엔 수치 자체를 넣지 말 것
 
-### AP-PROC-4: 기존 test assertion을 통과시키려 수정 ([invariants.md](invariants.md) RT-7 위반)
+### AP-PROC-4: 기존 test assertion을 통과시키려 수정 ([invariants.md](invariants.md) PROC-6 위반)
 
 - **증상**: 회귀 은폐
 - **탐지**: `git diff test/` 에서 `EXPECT_*` / `ASSERT_*` 상수 변경
-- **복구**: 새 코드를 고쳐라. assertion이 진짜 틀렸다면 별도 commit으로 근거 제시
+- **복구**: 새 코드를 고쳐라. assertion이 진짜 틀렸거나 spec 이 바뀐 경우는 정당한 변경 — 새 코드 fix 와 **별도 commit** 으로 근거 제시 + regression test 갱신, 착수 전 E-6 escalate. ("절대 못 고친다" 가 아니라 "몰래 약화 금지")
 
 ### AP-PROC-5: ROS 2 Jazzy 파라미터 타입·launch 호환
 

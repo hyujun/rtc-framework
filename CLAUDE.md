@@ -4,7 +4,7 @@
 
 ## 1. Snapshot
 
-**RTC (Real-Time Control) Framework** — URDF 기반 매니퓰레이터를 위한 robot-agnostic real-time control framework. 변수 DOF, 설정 가능한 RT 루프 주기 (`control_rate` YAML, 100 Hz ~ 5 kHz, default 500 Hz), transport 추상화 (UDP/CAN-FD/EtherCAT/RS485), lock-free SPSC, E-STOP.
+**RTC (Real-Time Control) Framework** — URDF 기반 매니퓰레이터를 위한 robot-agnostic real-time control framework. 변수 DOF, 설정 가능한 RT 루프 주기 (`control_rate` YAML — rate 범위·default 는 [agent_docs/invariants.md](agent_docs/invariants.md) §RT Path 가 SSoT), transport 추상화 (UDP/CAN-FD/EtherCAT/RS485 등), lock-free SPSC, E-STOP.
 
 - 패키지 구성·count·역할: [README.md](README.md#패키지-구성) · [agent_docs/architecture.md](agent_docs/architecture.md)
 - 로봇 데이터 (URDF/MJCF/mesh, multi-robot data hub): [robot_descriptions/README.md](robot_descriptions/README.md)
@@ -33,9 +33,9 @@
 
 전체: [agent_docs/invariants.md](agent_docs/invariants.md).
 
-### RT path 절대 금지 (정기 tick — `control_rate` YAML, 100 Hz–5 kHz, default 500 Hz)
+### RT path 절대 금지 (정기 tick — `control_rate` YAML)
 
-RT 핫패스 8개 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`resize`) · `throw`/`catch` · 직접 `RCLCPP_*` 로깅 · `mutex`/`lock_guard` · `auto`+Eigen · quaternion `lerp`/`nlerp` · 기존 test assertion 수정 · `shared_ptr` 복사 — 은 **`rtc_*` C++ 편집 시에만 로드되는 path-scoped rule** [.claude/rules/rt-path.md](.claude/rules/rt-path.md) 에 상세(예외·대안 포함). RT 코드 수정 전 반드시 확인하고, 위반 필요시 §6 `[CONCERN]`.
+RT 핫패스 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`resize`) · `throw`/`catch` · 직접 `RCLCPP_*` 로깅 · `mutex`/`lock_guard` · `auto`+Eigen · quaternion `lerp`/`nlerp` · `shared_ptr` 복사 — 은 **`rtc_*` C++ 편집 시에만 로드되는 path-scoped rule** [.claude/rules/rt-path.md](.claude/rules/rt-path.md) 에 상세(예외·대안 포함). 이 규칙은 RT tick / SCHED_FIFO 경로에만 구속되고 lifecycle·aux·test·init 코드는 면제 (판정 절차는 rule 파일·invariants.md). RT 코드 수정 전 반드시 확인하고, 위반 필요시 §6 `[CONCERN]`.
 
 ### Architecture / Process / Numerical
 
@@ -45,6 +45,7 @@ RT 핫패스 8개 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back
 - `robot_descriptions` 는 data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 (ARCH-5)
 - 새 utility 작성 전 기존 `rtc_*` 패키지에 유사 기능 검색 — 맞지 않으면 fork 대신 일반화 ([agent_docs/design-principles.md](agent_docs/design-principles.md) P5)
 - 코드 변경 → 대응 문서·YAML·CMakeLists·package.xml 동기화 필수 (PROC-1)
+- 기존 test assertion 을 통과시키려 **약화 금지** — 새 코드를 고치되, test 가 진짜 틀렸거나 spec 이 바뀌면 별도 commit + 근거 (PROC-6, §6 E-6)
 - `rtc_base` / `rtc_msgs` 변경 시 전체 빌드·테스트 (PROC-3)
 - 수치 특이점: damped pseudoinverse (NUM-1), zero guard (NUM-2, NUM-4)
 
@@ -52,11 +53,11 @@ RT 핫패스 8개 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back
 
 ## 4. Workflow Loop
 
-7단계: **Type → Locate → Read → Edit → Build → Test → Verify**. 단계 건너뛰기는 §6 escalation 사유. 실패 시 절대 **"try harder" 금지** — 누락된 capability (test, lint, interface) 를 엔지니어링하거나 §6 escalate.
+7단계: **Type → Locate → Read → Edit → Build → Test → Verify**. 규모에 맞춰 압축한다 — 오타·포매팅·자명한 단일 라인 수정은 단계를 합쳐도 되나, **검증(Build/Test/Verify)을 생략했다면 최종 보고에 무엇을·왜 생략했는지 명시**한다. 다파일·다패키지·`rtc_base`/`rtc_msgs` 변경에서 검증 단계를 건너뛰는 것은 §6 escalation 사유. 실패 시 절대 **"try harder" 금지** — 누락된 capability (test, lint, interface) 를 엔지니어링하거나 §6 escalate.
 
 **Type 분기**: "수정" 인가 "추가 (새 기능 / 컨트롤러 / 메시지 / 디바이스 / 스레드)" 인가? 추가 task 는 단계 1 진입 전에 [agent_docs/design-principles.md](agent_docs/design-principles.md) 5원칙 + [agent_docs/modification-guide.md](agent_docs/modification-guide.md) "Adding a New ..." 절을 먼저 읽는다 (rtc_* 추가는 P1·P2 + ARCH-3 결합; integration package 또는 `shape_estimation*` 추가 시 rtc_* 일반화 가능성부터 검토).
 
-**4·5·6 자동화**: [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 실행하고 실패 시 `exit 2` 로 다음 turn 까지 차단한다. 변경 패키지만 빌드·테스트 (60s timeout per pkg) + README/CMake co-update 검사 — `package.xml` / YAML / Doxygen 은 에이전트가 직접 검증. Pure-format commit (clang-format / ruff round-trip 동치) 은 ARCH grep + README/CMake 단계만 skip, build/test 는 그대로.
+**4·5·6 자동화**: [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 실행하고 hard failure 시 `exit 2` 로 다음 turn 까지 차단한다 (loop 방지는 `stop_hook_active` 가드; stop cycle 당 1회 발화). 변경 패키지만 빌드·테스트하며 **build/test 의 timeout·launch 실패는 "미검증"으로 차단** (silent pass 아님 — bound 초과 test 는 hook 의 timeout 상향). README co-update 는 public surface (header/launch/config/파일 add·del/dep) 변경 시 **non-blocking checklist** (내부 리팩터·bug fix 는 미요구); CMake/`package.xml` co-update 는 blocking. YAML / Doxygen 은 에이전트가 직접 검증. Pure-format commit (clang-format / ruff round-trip 동치) 은 ARCH grep + doc 단계만 skip, build/test 는 그대로.
 
 단계별 액션·grep 패턴·Completion Checklist: [agent_docs/modification-guide.md](agent_docs/modification-guide.md).
 
@@ -73,7 +74,7 @@ RT 핫패스 8개 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back
 
 §5 의 computational sensor (build / test / grep) 는 **문법·빌드·기존 테스트 통과** 만 검증한다. 의미 회귀 — 설계 일관성, robot-agnostic 위반, abstract interface 누락, 재사용 가능성 — 은 잡지 못한다 (Anthropic 2026.04 *Harness design*: 에이전트의 자기 평가는 신뢰 불가).
 
-다음 상황에서 사용자에게 inferential sensor 실행을 권한다:
+다음 상황에서 사용자에게 inferential sensor 실행을 권한다 (`/code-review`·`/security-review` 는 Claude Code slash command — 미지원 환경/툴에서는 동등한 수동 code review 로 대체):
 
 - `rtc_base` / `rtc_msgs` 변경 → `/code-review` (downstream 전 패키지 영향)
 - Abstract interface 신설 / 두 번째 구현 추가 (ARCH-3 후보) → `/code-review` (base 누락·#ifdef 유혹 검출)
@@ -93,7 +94,7 @@ RT 핫패스 8개 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back
 - **E-3** (Critical) — `rtc_msgs` / `shape_estimation_msgs` public ABI 변경 필요
 - **E-4** (Warning) — Abstract interface 없이 두 번째 구현 추가 필요 (ARCH-3)
 - **E-5** (Warning) — Optional dep (MuJoCo, aligator) fallback 제거 필요
-- **E-6** (Critical) — 기존 test assertion 수정 필요 (RT-7)
+- **E-6** (Critical) — 기존 test assertion 을 약화·수정해야 할 것 같음 — 회귀 은폐 vs 정당한 spec 변경/test-bug 구분, 후자는 별도 commit + 근거 (PROC-6)
 - **E-7** (Critical) — Thread model (core 배치, priority) 변경
 - **E-8** (Critical) — E-STOP 경로 수정
 - **E-9** (Warning) — 문서-코드 불일치를 어느 쪽에 맞출지 결정 필요
@@ -152,7 +153,7 @@ post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하�
 
 > **`.venv` 는 runtime PC 가 본 workspace 외에 다른 control project 들과 공존하는 환경에서 dependency 를 격리하기 위한 의도된 설계다.** venv 활성 상태에서 `colcon test` / `colcon build` / `ros2 run` / `ros2 launch` 가 실패하면 **반드시 근본 원인을 해결** (sys.path / shebang / wrapper / dep resolution 디버그). gtest binary 직접 실행, venv deactivate 후 colcon 호출, `PYTHONPATH` 강제 우회 등 **격리 무력화 우회 금지** — runtime PC 에서 silent breakage 경로.
 
-상세 원칙·과거 위반 사례: [feedback_venv_isolation_intent](file:///home/junho/.claude/projects/-home-junho-ros2-ws-rtc-ws-src-rtc-framework/memory/feedback_venv_isolation_intent.md).
+위 규칙은 self-contained 하다 — 실패 시 격리를 무력화(gtest 직접 실행 / venv deactivate / `PYTHONPATH` 우회)하지 말고 sys.path / shebang / wrapper / dep resolution 을 디버그한다. 근거·과거 위반 사례는 git log + auto-memory 참조 (머신 종속 절대경로는 박제하지 않는다).
 
 ## 10. Style Cheatsheet
 

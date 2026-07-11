@@ -35,7 +35,7 @@
 | 2. Read | 컨텍스트 불충분 (호출자 / 테스트 미확인) | 인접 파일 + 테스트 추가 읽기. 추측하지 말 것 |
 | 3. Edit | Invariant 위반 유혹 | [invariants.md](invariants.md) 확인 후 [CLAUDE.md](../CLAUDE.md) §6 Escalate. 우회로 찾지 말 것 |
 | 4. Build | 빌드 실패 | 에러 메시지를 **먼저** 기록. 원인 파악 전 재시도 금지 |
-| 5. Test | 테스트 실패 | assertion 수정 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-4). 새 코드를 고칠 것 |
+| 5. Test | 테스트 실패 | assertion 을 통과시키려 약화 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-4 / [invariants.md](invariants.md) PROC-6). 새 코드를 고칠 것 — 단 test 가 진짜 틀렸으면 별도 commit + 근거 + E-6 |
 | 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-1) |
 
 ## Sprint Contract & Spec (착수 전 성공 기준)
@@ -99,7 +99,7 @@ README 패키지 표·count, [architecture.md](architecture.md) dependency graph
 
 코드 변경은 *대응 문서·메타데이터 동기화*를 포함해야 완료 ([invariants.md](invariants.md) PROC-1). 동기화 대상은:
 
-- **Tests** — `<package>/test/` 의 affected suite 갱신 + 신규 동작에 대한 test 추가 (RT-7: 기존 assertion 수정 금지, 새 코드 수정)
+- **Tests** — `<package>/test/` 의 affected suite 갱신 + 신규 동작에 대한 test 추가 (PROC-6: 기존 assertion 을 통과시키려 약화 금지 — 새 코드를 고치되, test 가 진짜 틀렸으면 별도 commit + 근거 + E-6)
 - **CMakeLists.txt** — source / install / `find_package` / `ament_add_gtest` / `rosidl_generate_interfaces` 일관성
 - **package.xml** — deps · version. `CMakeLists.txt` `find_package` 와 1:1 매칭
 - **YAML config** — 추가/제거/이름변경된 parameter, `topics:` 섹션, valid range·unit 주석. Robot-specific 값은 `<robot>_bringup/config/<robot>/...`, 기본값은 agnostic 패키지에
