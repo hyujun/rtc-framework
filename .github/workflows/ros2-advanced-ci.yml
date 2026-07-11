@@ -278,21 +278,24 @@ jobs:
           fail_ci_if_error: false
 
   # ============================================================
-  #  Build (C++) — fmt 11 deps 사용
+  #  C++ Build & Gated Test — MERGE GATE (fast, RelWithDebInfo, 비계측)
   #
-  #  단순화 (2026-04-28): colcon test / coverage / clang-tidy 모두 제거.
-  #  ament_cmake_test 가 ctest child process 에서 module not found 로 깨짐
-  #  (4 차례 fix 시도 후에도 미해결, agent_docs/ci-rewrite-plan.md §6 risk).
+  #  Fast-gate 분리 (2026-07-11): 이전엔 merge gate(test_cpp_gated)가 coverage-cpp
+  #  의 Debug+gcov 계측 빌드(60min) 안에 있어 merge 판정이 느린 커버리지 job 종료까지
+  #  묶였다. 이제 gated 테스트를 이 빠른 비계측 job 으로 분리해 merge 신호를 즉시 낸다.
+  #  coverage-cpp 는 non-blocking observability(추세)로 강등된다.
   #
-  #  현재 신호: 빌드만 통과 → fmt 11 root cause fix 검증 충분.
-  #  복원 예정: main 머지 후 별도 PR 에서 colcon test 환경 디버깅 + clang-tidy.
+  #  구성: 전체 build 리스트 RelWithDebInfo 빌드(compile-all 신호, enable-testing) +
+  #  test_cpp_gated colcon test(--return-code-on-test-failure → job 실패 = merge 차단).
+  #  best-effort(rtc_tsid perf / integrated_bringup grasp) 는 여기서 돌리지 않는다 —
+  #  coverage-cpp 에서 coverage 전용으로 수집.
   # ============================================================
-  build-test:
-    name: Build (C++)
+  gated-test:
+    name: C++ Build & Gated Test
     needs: [changes, packages, build-deps]
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v5
 
@@ -336,8 +339,20 @@ jobs:
           ros-distro: ${{ env.ROS_DISTRO }}
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           build-type: RelWithDebInfo
-          enable-testing: "false"
+          enable-testing: "true"
           artifact-suffix: cpp-build
+
+      # GATE: CI 실측 통과 패키지. --return-code-on-test-failure 가 job 을 그대로
+      # 실패시킨다 (continue-on-error 없음) → 여기 red 면 PR merge 차단. 비계측
+      # RelWithDebInfo 라 coverage-cpp 의 Debug+gcov 보다 빠르게 판정이 난다.
+      - name: Run gated C++ tests (merge gate)
+        uses: ./.github/actions/colcon-test-report
+        with:
+          packages: ${{ needs.packages.outputs.test_cpp_gated }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          summary-title: C++ Gated Test Results
+          artifact-suffix: cpp-gated-test
 
   # ============================================================
   #  C++ Coverage — gcov/lcov instrumented build + colcon test → Codecov
@@ -345,15 +360,15 @@ jobs:
   #  복원 (2026-05-31): build-test 단순화 (2026-04-28) 로 제거됐던 C++ coverage
   #  upload 를 별도 job 으로 분리 복원. colcon test 의 ModuleNotFoundError root
   #  cause 는 colcon-test-report action 의 PYTHONPATH 보강으로 해결됨 (python-test
-  #  job 에서 검증됨). build-test 는 RelWithDebInfo 빌드 신호로 그대로 유지하고,
+  #  job 에서 검증됨). gated-test 는 RelWithDebInfo 빌드+merge gate 를 담당하고,
   #  여기서는 ENABLE_COVERAGE=ON (Debug 계측) 으로 분리한다.
   #
-  #  Test 게이트 복원 (2026-06-03): test 를 2 tier 로 나눈다 (CI 실측 기반, ci-packages.yml).
-  #    - test_cpp_gated      : CI 통과 패키지 → --return-code-on-test-failure 가 job 을
-  #                            그대로 실패시킨다 (merge GATE). continue-on-error 없음.
-  #    - test_cpp_besteffort : CI-fragile (rtc_tsid perf / integrated_bringup grasp) →
-  #                            continue-on-error 로 coverage 만 수집, PR 차단 안 함.
-  #  빌드 캐시: build-test 와 분리된 키(coverage-v1, Debug+gcov), restore-keys 로 증분.
+  #  NON-BLOCKING observability (2026-07-11): merge gate 는 gated-test job 으로
+  #  이전됐다. 이 job 은 coverage 추세 측정 전용 — gated+besteffort 테스트를 모두
+  #  continue-on-error 로 돌려 .gcda 를 최대 수집하고 Codecov 에 올린다. 여기서
+  #  test 가 red 여도 PR merge 는 차단하지 않는다 (branch protection 에서 이 job 을
+  #  required 로 두지 말 것). 실 결함 신호는 gated-test job 이 담당한다.
+  #  빌드 캐시: gated-test 와 분리된 키(coverage-v1, Debug+gcov), restore-keys 로 증분.
   #  캐시 복원분의 stale .gcda 는 test 직전 정리 (커버리지 카운트 오염 방지).
   # ============================================================
   coverage-cpp:
@@ -389,7 +404,7 @@ jobs:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
 
-      # build-test 와 분리된 키 (Debug + gcov 계측이라 산출물이 다름). restore-keys
+      # gated-test 와 분리된 키 (Debug + gcov 계측이라 산출물이 다름). restore-keys
       # prefix 매치로 colcon 증분 빌드 → 변경 패키지만 재컴파일 (cold 33min 단축).
       - name: Cache colcon workspace (coverage)
         uses: actions/cache@v4
@@ -430,15 +445,18 @@ jobs:
         shell: bash
         run: find build -name '*.gcda' -delete 2>/dev/null || true
 
-      # GATE: CI 실측 통과 패키지. colcon-test-report 의 --return-code-on-test-failure
-      # 가 job 을 그대로 실패시킨다 (continue-on-error 없음) → 여기 red 면 PR merge 차단.
-      - name: Run gated C++ tests (merge gate)
+      # COVERAGE-ONLY: merge gate 는 gated-test job 으로 이전됐다. 여기서는 동일
+      # gated 패키지를 계측 빌드로 다시 돌려 coverage .gcda 를 얻되, continue-on-error
+      # 로 job 은 실패시키지 않는다(non-blocking). 실 결함 차단은 gated-test 담당.
+      - name: Run gated C++ tests (coverage only)
+        if: always()
+        continue-on-error: true
         uses: ./.github/actions/colcon-test-report
         with:
           packages: ${{ needs.packages.outputs.test_cpp_gated }}
           ros-distro: ${{ env.ROS_DISTRO }}
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
-          summary-title: C++ Gated Test Results
+          summary-title: C++ Gated Test Results (coverage)
           artifact-suffix: cpp-coverage-test-gated
 
       # BEST-EFFORT: CI-fragile (rtc_tsid perf / integrated_bringup grasp). coverage 만

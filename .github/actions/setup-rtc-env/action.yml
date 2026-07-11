@@ -11,8 +11,8 @@ inputs:
     default: jazzy
   install-ros:
     description: |
-      "true"  → install full ROS distribution via setup-ros (build-test, codeql).
-      "false" → ROS apt repo + tooling only, no ros-<distro>-desktop (clang-tidy).
+      "true"  → install full ROS distribution via setup-ros (gated-test, coverage-cpp, codeql).
+      "false" → ROS apt repo + tooling only, no ros-<distro>-desktop (lint-cpp, python-test).
     required: false
     default: "true"
   apt-packages:
