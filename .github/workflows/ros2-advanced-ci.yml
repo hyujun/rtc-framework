@@ -317,7 +317,7 @@ jobs:
             libeigen3-dev
 
       - name: Download deps artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
@@ -399,7 +399,7 @@ jobs:
             libeigen3-dev
 
       - name: Download deps artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
