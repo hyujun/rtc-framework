@@ -40,6 +40,7 @@
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 #include "rtc_base/types/types.hpp"
+#include "udp_hand_driver/fake_hand_lpf.hpp"
 #include "udp_hand_driver/fingertip_ft_inferencer.hpp"
 #include "udp_hand_driver/protocol/sensor_protocol.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
@@ -469,24 +470,15 @@ class UdpHandController {
   [[nodiscard]] bool HasStateBeenRead() const noexcept { return state_read_once_; }
 
   // ── Fake-hand model (use_fake_hand; public+static for unit testing) ──────
+  // The per-joint step lives in fake_hand_lpf.hpp so the device-side
+  // FakeHandFirmware shares the exact same first-order dynamics. Re-exported
+  // here to keep the UdpHandController::FakeLpfStep unit-test entry point.
 
-  /// One joint's fake-hand sample: filtered position, its numerical derivative
-  /// (velocity), and a PD-torque effort placeholder.
-  struct FakeJointSample {
-    float pos;
-    float vel;
-    float effort;
-  };
+  using FakeJointSample = ::udp_hand_driver::FakeJointSample;
 
-  /// Pure first-order LPF step for one joint (no state — unit-testable):
-  ///   pos = pos_old + alpha·(target − pos_old),  alpha = dt/(τ+dt)
-  ///   vel = (pos − pos_old)·inv_dt               (inv_dt = 1/dt = loop_rate_hz)
-  ///   effort = kp·(target − pos) − kd·vel        (PD-torque placeholder)
   [[nodiscard]] static FakeJointSample FakeLpfStep(float target, float pos_old, float alpha,
                                                    float inv_dt, float kp, float kd) noexcept {
-    const float pos = pos_old + alpha * (target - pos_old);
-    const float vel = (pos - pos_old) * inv_dt;
-    return {pos, vel, kp * (target - pos) - kd * vel};
+    return ::udp_hand_driver::FakeLpfStep(target, pos_old, alpha, inv_dt, kp, kd);
   }
 
   // ── Command API (ROS command sub / CM ControlLoop → self-clocked loop) ──
@@ -1143,9 +1135,14 @@ class UdpHandController {
     }
     cached_sensor_force_ = state.sensor_force;
 
-    // Each fake cycle mirrors a fresh sensor read — advance the freshness
-    // sequence (parity with the real read path; RunCommCycleTail stamps it).
-    ++sensor_seq_;
+    // Advance the freshness sequence only on a sensor cycle — parity with the
+    // real read path (bumps under is_sensor_cycle at lines ~876/985). On a
+    // decimated non-sensor cycle the sensor snapshot is NOT refreshed, so
+    // leaving sensor_seq unchanged lets the detector's freshness gate treat the
+    // republished snapshot as stale, exactly as in real mode. RunCommCycleTail
+    // stamps state.sensor_seq from this counter.
+    if (is_sensor_cycle)
+      ++sensor_seq_;
 
     comm_loop_.MarkState();  // end of the (fake) read phase (base t1)
 

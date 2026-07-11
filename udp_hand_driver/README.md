@@ -25,6 +25,7 @@ udp_hand_driver/
 │   ├── protocol/
 │   │   └── sensor_protocol.hpp   -- SensorProtocol version seam (1a/1b bulk-sensor 추상화)
 │   ├── fake_hand_firmware.hpp    -- full-SIL 루프백 firmware 시뮬레이터 (device-side, header-only)
+│   ├── fake_hand_lpf.hpp         -- fake-hand 1차 LPF joint step (controller/firmware 공유)
 │   └── fingertip_ft_inferencer.hpp -- ONNX 기반 핑거팁 F/T 추론
 ├── src/
 │   ├── udp_hand_node.cpp           -- main() (mlockall, CPU affinity, spin)

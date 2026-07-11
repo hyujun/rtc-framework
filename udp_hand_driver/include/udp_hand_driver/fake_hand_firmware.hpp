@@ -28,9 +28,11 @@
 // second production implementation, so ARCH-3 (abstract-interface-first) does
 // not apply.
 
+#include "udp_hand_driver/fake_hand_lpf.hpp"
 #include "udp_hand_driver/udp_hand_constants.hpp"
 #include "udp_hand_driver/udp_hand_packets.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -120,8 +122,9 @@ class FakeHandFirmware {
   }
 
   // Advance the first-order joint model one fixed step (dt = 1/step_rate_hz).
-  // Identical formula to UdpHandController::FakeLpfStep (cross-referenced —
-  // keep in sync):
+  // Delegates the per-joint math to the shared FakeLpfStep (fake_hand_lpf.hpp)
+  // so this device-side model and UdpHandController's controller-side model
+  // stay identical by construction:
   //   pos += alpha·(target − pos),  alpha = dt/(τ+dt)
   //   vel  = Δpos/dt
   //   effort = kp·(target − pos) − kd·vel
@@ -131,12 +134,10 @@ class FakeHandFirmware {
     const float kp = static_cast<float>(cfg_.effort_stiffness);
     const float kd = static_cast<float>(cfg_.effort_damping);
     for (std::size_t i = 0; i < kNumHandMotors; ++i) {
-      const float pos_old = pos_[i];
-      const float pos_new = pos_old + alpha * (target_[i] - pos_old);
-      const float vel = (pos_new - pos_old) * inv_dt;
-      pos_[i] = pos_new;
-      vel_[i] = vel;
-      effort_[i] = kp * (target_[i] - pos_new) - kd * vel;
+      const FakeJointSample s = FakeLpfStep(target_[i], pos_[i], alpha, inv_dt, kp, kd);
+      pos_[i] = s.pos;
+      vel_[i] = s.vel;
+      effort_[i] = s.effort;
     }
   }
 

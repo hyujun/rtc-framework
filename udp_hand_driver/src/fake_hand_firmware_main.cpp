@@ -3,7 +3,8 @@
 // Binds a UDP socket and answers the real udp_hand_node's request datagrams with
 // protocol-correct responses (see fake_hand_firmware.hpp). Run alongside an
 // unmodified udp_hand_node (use_fake_hand=false, target_ip=127.0.0.1) to exercise
-// the whole transport path with no hardware. See fake_hand_sil.launch.py.
+// the whole transport path with no hardware. Launch both via
+// `udp_hand.launch.py sil_mode:=firmware`.
 //
 // This is a thin socket/param/log shell; all response logic lives in the
 // header-only FakeHandFirmware class (unit-tested independently). The node reads
