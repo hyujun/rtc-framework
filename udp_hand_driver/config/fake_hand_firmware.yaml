@@ -1,0 +1,42 @@
+# fake_hand_firmware.yaml -- full-SIL loopback firmware simulator 설정
+#
+# fake_hand_firmware 는 hand UDP 프로토콜의 *디바이스 측*(펌웨어)을 시뮬레이션한다.
+# 실제 udp_hand_node(use_fake_hand=false, target_ip=127.0.0.1)와 짝지어 실행하면
+# 하드웨어 없이 전체 UDP transport 경로(send/recv, 프레이밍, echo/MODE 검증,
+# 실패감지, decode, publish)를 검증한다. controller 측 use_fake_hand(소켓 우회 +
+# command mirror)와 상보적 — 이건 network-level SIL, 저건 loop-model SIL.
+#
+# 통합 실행: launch/fake_hand_sil.launch.py (firmware + udp_hand_node@127.0.0.1).
+#
+# 한계: loopback latency ~µs 라 timing 검증엔 부적합하다. firmware 는 driver
+# decoder 의 거울상(self-consistency)이라 driver↔실제 firmware 일치는 보장 못 하며
+# 실기 Phase-5 가 ground truth.
+
+/**:
+  ros__parameters:
+    # -- UDP 소켓 --
+    port: 55151                       # bind 포트 (driver target_port 와 일치해야 함)
+
+    # -- 프로토콜 --
+    # "1a": barometer/ToF int32 센서 (259B bulk 응답). MODE strict verify → 모든
+    #       프레임 mode=req[2] mirror.
+    # "1b": 핑거당 float32 힘벡터 [fx,fy,fz,Lx,Ly,Temp] (99B bulk 응답). MODE verify
+    #       off (arbitrary 허용) 이지만 여기서도 mirror.
+    protocol_version: "1a"
+    num_fingertips: 4                 # live 센서 데이터를 채우는 핑거 수 (나머지 0)
+
+    # -- Joint dynamics (1차 LPF, controller FakeLpfStep 동일 공식) --
+    # write(0x01) 수신 시 target←payload, 고정 dt=1/step_rate_hz 로 1 step 전진.
+    # read 는 현재 pos/vel/effort snapshot.
+    lpf_time_constant_s: 0.1          # 1차 LPF 시정수 τ [s]
+    effort_stiffness: 1.0             # effort kp: kp·(target−pos)
+    effort_damping: 0.1               # effort kd: −kd·vel
+    step_rate_hz: 500.0               # LPF step rate (dt = 1/step_rate_hz)
+
+    # -- Sensor 합성 --
+    # 채널별 base = U[min, max] (ctor 1회 고정), 응답마다 base + N(0, stddev).
+    # 1a=int32(lround), 1b=float. std::mt19937(seed).
+    sensor_base_min: 100
+    sensor_base_max: 4000
+    sensor_noise_stddev: 5.0
+    seed: 42
