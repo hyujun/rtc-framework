@@ -196,7 +196,7 @@ skip 사이클의 동작:
 - **per-command write gate**: `event_pending_`(release) → CommLoop latch(acquire); 1회 write 후 clear (stale 재전송 없음)
 - **Write echo 항상 수신**: 소켓 버퍼 오염 방지
 - **첫 사이클 read-only**: 초기 상태를 모르는 상태에서 zero 명령 전송 방지
-- **Fake hand 모드**: `use_fake_hand=true` 시 UDP 소켓 없이 **CommLoop RT 스레드는 실제 모드와 동일하게** self-clock(`loop_rate_hz`)하고, command pose 를 1차 LPF 모델(`RunFakeCommCycle`/`StepFakeModel`)에 통과시켜 read joint state(pos/vel/effort)를 생성한다 (ros2_control `use_fake_hardware:=true` 등가 — 제어 PC 의 thread 할당/RT 구조 검증용). LPF/effort 는 `fake_lpf_time_constant_s`·`fake_effort_stiffness`·`fake_effort_damping` 로 튜닝
+- **Fake hand 모드**: `sil_mode=loopmodel` (노드가 파생하는 내부 플래그 `use_fake_hand=true`) 시 UDP 소켓 없이 **CommLoop RT 스레드는 실제 모드와 동일하게** self-clock(`loop_rate_hz`)하고, command pose 를 1차 LPF 모델(`RunFakeCommCycle`/`StepFakeModel`)에 통과시켜 read joint state(pos/vel/effort)를 생성한다 (ros2_control `use_fake_hardware:=true` 등가 — 제어 PC 의 thread 할당/RT 구조 검증용). LPF/effort 는 `fake_lpf_time_constant_s`·`fake_effort_stiffness`·`fake_effort_damping` 로 튜닝
 
 ### UdpHandTransport (`udp_hand_transport.hpp`)
 
@@ -373,7 +373,7 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 | `link_fail_timeout_ms` | `100.0` | link-down 판정 시간 budget. cycles = ms/1000 × loop_rate_hz / comm_decimation 로 on_configure 에서 환산 |
 | `startup_grace_ms` | `1000.0` | 기동 직후 rate/link 판정 유예 시간 (ms, "UdpHandFailureDetector" 절 참조) |
 | `link_startup_grace_ms` | `100.0` | 기동 직후 link-down 검사 유예 (ms) — ARP/부팅 transient 만 넘기는 짧은 유예 |
-| `use_fake_hand` | `false` | `true` 시 UDP 없이 CommLoop RT 스레드 self-clock + 1차 LPF 모델로 read state(pos/vel/effort) 생성 (`use_fake_hardware` 등가) |
+| `sil_mode` | `off` | SIL 진입점 (아래 "SIL 모드"). `off`=실 HW / `loopmodel`=controller-side in-process LPF (소켓 미오픈) / `firmware`=device-side loopback (노드가 `target_ip`→127.0.0.1 강제). 노드 `on_configure` 가 해석해 `use_fake_hand`·`target_ip` 파생; launch `sil_mode:=` 가 override |
 | `fake_lpf_time_constant_s` | `0.1` | (fake) 1차 LPF 시정수 τ [s] — read-back position 이 command 를 추종하는 지연 |
 | `fake_effort_stiffness` | `1.0` | (fake) effort kp: `kp·(cmd−pos)` |
 | `fake_effort_damping` | `0.1` | (fake) effort kd: `−kd·vel` (PD-torque placeholder) |
@@ -383,6 +383,10 @@ Calibration** 패널에서 `Calibrate` 버튼 클릭으로 동일하게 트리�
 ### `config/fingertip_ft_inferencer.yaml`
 
 F/T 추론 설정. `udp_hand_node`에서 `ft_inferencer.*` 네임스페이스로 읽습니다.
+이 파일은 standalone `udp_hand.launch.py` 의 **예시(enabled:false)** 이며, per-robot
+튜닝본은 `integrated_bringup/config/ur5e_p1a/fingertip_ft_inferencer_p1a.yaml` 에 둔다.
+p1b 는 이 파일을 넘기지 않아 노드의 `ft_inferencer.enabled=false` 기본값으로 추론이
+자동 비활성된다.
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
@@ -426,17 +430,28 @@ ros2 launch udp_hand_driver udp_hand.launch.py \
 | `protocol_version` | `1a` | `"1a"` (int32 baro/ToF, bulk 259B) 또는 `"1b"` (float force, bulk 99B). 노드+firmware 양쪽 전파 |
 | `sil_mode` | `off` | SIL 진입점 (아래 "SIL 모드" 참조): `off` (실 HW) / `loopmodel` (controller-side LPF) / `firmware` (device-side loopback) |
 
+> launch 인자는 모두 yaml 값의 **override** 다 — 값을 주지 않으면(빈 문자열) 해당
+> yaml 파라미터를 그대로 쓴다(입력 config 는 `config/udp_hand_node.yaml` 1개 + 예시
+> ft yaml). 위 '기본값' 은 generic yaml / 노드 C++ declare 기본값이다.
+
 ### SIL 모드 (`sil_mode`)
 
-하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 인자 하나**로 선택한다. 두 계층은
-직교하는 두 축(in-process fake 여부 / 실 소켓 peer 존재)을 검증하므로 삭제 없이
-공존하며, 진입점만 `udp_hand.launch.py` 로 단일화됐다.
+하드웨어 없이 두 상보적 SIL 계층을 **`sil_mode` 하나**로 선택한다. `sil_mode` 는
+각 hand yaml(`udp_hand_node*.yaml`)의 정식 노드 파라미터(SSoT)이고, 노드
+`on_configure` 가 이를 해석해 아래 표의 `use_fake_hand`(컨트롤러 config 내부 플래그)
+와 실효 `target_ip` 를 파생한다. launch 인자 `sil_mode:=` 는 yaml 값을 override(우선).
+단, `firmware` 프로세스 spawn 은 노드가 못 하므로 launch 가 `sil_mode`(yaml+CLI)를
+읽어 `fake_hand_firmware` 노드를 조건부로 띄운다.
 
-| `sil_mode` | 계층 | `use_fake_hand` | firmware | `target_ip` | 검증 대상 |
+standalone `udp_hand.launch.py` 뿐 아니라 `integrated_bringup` 의
+`robot_ur5e_p1a.launch.py` / `robot_ur5e_p1b.launch.py` 도 동일하게 `sil_mode:=` 를
+지원한다 (각자의 per-robot yaml 이 default).
+
+| `sil_mode` | 계층 | `use_fake_hand` (파생) | firmware | `target_ip` (파생) | 검증 대상 |
 |------------|------|:---:|:---:|------|-----------|
-| `off` (기본) | 실 하드웨어 | false | 미실행 | 인자값 | — |
+| `off` (기본) | 실 하드웨어 | false | 미실행 | yaml 값 | — |
 | `loopmodel` | Mode A (controller-side loop-model SIL) | true | 미실행 | 무관 (소켓 미오픈) | thread/RT 구조 (실 모드와 동일 self-clock) |
-| `firmware` | Mode B (device-side network-level SIL) | false | 실행 | `127.0.0.1` (자동) | 전체 UDP transport (send/recv, framing, echo/MODE 검증, decode, publish) |
+| `firmware` | Mode B (device-side network-level SIL) | false | 실행 | `127.0.0.1` (노드가 강제) | 전체 UDP transport (send/recv, framing, echo/MODE 검증, decode, publish) |
 
 **`loopmodel`** — UDP 소켓을 우회하고 command 를 노드 in-process 1차 LPF 모델에
 직접 통과시켜 read state(pos/vel/effort)를 생성한다. CommLoop RT 스레드는 실 모드와

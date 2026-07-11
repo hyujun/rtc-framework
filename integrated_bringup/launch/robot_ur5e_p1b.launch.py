@@ -19,6 +19,7 @@
 
 import os
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -35,8 +36,12 @@ from launch.actions import (
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import LifecycleNode
+from launch.substitutions import (
+    EqualsSubstitution,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
+from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
@@ -53,6 +58,21 @@ from rtc_tools.utils.session_dir import (
     create_session_dir,
     resolve_logging_root,
 )
+
+
+def _load_hand_params(pkg, *relpath):
+    """Return the `/**` ros__parameters dict from an installed hand-node yaml.
+
+    Used at launch-build time to seed the sil_mode arg default and the
+    fake_hand_firmware peer's port/protocol_version. Returns {} on any error.
+    """
+    path = os.path.join(get_package_share_directory(pkg), *relpath)
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("/**", {}).get("ros__parameters", {}) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
 
 
 def _pin_external_driver(label: str, process_grep: str, core: int) -> ExecuteProcess:
@@ -332,9 +352,22 @@ def generate_launch_description():
         [FindPackageShare("integrated_bringup"), "config", "ur5e_p1b", "udp_hand_node_p1b.yaml"]
     )
 
-    # Fingertip F/T inferencer config (udp_hand_driver package)
-    ft_inferencer_config = PathJoinSubstitution(
-        [FindPackageShare("udp_hand_driver"), "config", "fingertip_ft_inferencer.yaml"]
+    # No fingertip F/T inferencer config for p1b: the 1b force path has no
+    # barometer input, so the node's ft_inferencer.enabled=false default keeps
+    # inference disabled (single yaml input for the node).
+
+    # SIL mode: default from the p1b hand yaml (SSoT); CLI `sil_mode:=` overrides.
+    # firmware mode spawns fake_hand_firmware on loopback (below); the node C++
+    # derives use_fake_hand / target_ip=127.0.0.1 from sil_mode.
+    _p1b_hand_params = _load_hand_params(
+        "integrated_bringup", "config", "ur5e_p1b", "udp_hand_node_p1b.yaml"
+    )
+    sil_mode_arg = DeclareLaunchArgument(
+        "sil_mode",
+        default_value=str(_p1b_hand_params.get("sil_mode", "off")),
+        choices=["off", "loopmodel", "firmware"],
+        description="SIL mode (default from udp_hand_node_p1b.yaml). "
+        "firmware → fake_hand_firmware over loopback.",
     )
 
     cyclone_dds_xml = PathJoinSubstitution(
@@ -485,7 +518,31 @@ def generate_launch_description():
         output="screen",
         parameters=[
             p1b_hand_udp_config,
-            ft_inferencer_config,
+            # sil_mode override: default == yaml value (no drift); CLI wins when set.
+            {"sil_mode": LaunchConfiguration("sil_mode")},
+        ],
+        emulate_tty=True,
+    )
+
+    # ── Device-side firmware simulator (sil_mode=firmware only) ───────────────
+    # Binds the hand target_port on loopback and echoes protocol_version so the
+    # node (which forces target_ip=127.0.0.1 in firmware mode) has a real peer.
+    # Unpinned: SIL helper, not part of the RT hot path.
+    fake_hand_firmware_node = Node(
+        package="udp_hand_driver",
+        executable="fake_hand_firmware",
+        name="fake_hand_firmware",
+        namespace="",
+        output="screen",
+        condition=IfCondition(EqualsSubstitution(LaunchConfiguration("sil_mode"), "firmware")),
+        parameters=[
+            PathJoinSubstitution(
+                [FindPackageShare("udp_hand_driver"), "config", "fake_hand_firmware.yaml"]
+            ),
+            {
+                "port": int(_p1b_hand_params.get("target_port", 55151)),
+                "protocol_version": str(_p1b_hand_params.get("protocol_version", "1b")),
+            },
         ],
         emulate_tty=True,
     )
@@ -622,6 +679,7 @@ def generate_launch_description():
             trace_session_name_arg,
             trace_events_ust_arg,
             trace_events_kernel_arg,
+            sil_mode_arg,
             # 2) Environment
             set_session_dir,
             set_rmw,
@@ -630,6 +688,7 @@ def generate_launch_description():
             enable_cpu_shield,
             ur_driver_launch_action,
             pin_ur_driver,
+            fake_hand_firmware_node,
             udp_hand_node,
             pin_hand_driver,
             hand_auto_activate,

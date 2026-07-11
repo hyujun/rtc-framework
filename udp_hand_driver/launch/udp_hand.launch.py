@@ -1,210 +1,189 @@
-# udp_hand.launch.py -- UdpHandNode 런치 (SIL 진입점 단일화)
+# udp_hand.launch.py -- UdpHandNode 런치 (단일 yaml 입력, SIL 진입점 단일화)
 # Event-driven request-response polling 기반 통합 핸드 UDP 노드.
 #
-# `sil_mode` (enum, default `off`) 하나로 두 상보적 SIL 계층을 선택한다:
-#   off       — 실 하드웨어. use_fake_hand=false, firmware 미실행, target_ip=인자값.
-#   loopmodel — Mode A (controller-side loop-model SIL). use_fake_hand=true
-#               (노드 in-process 1차 LPF 모델), firmware 미실행, 소켓 미오픈.
-#               thread/RT 구조를 실 모드와 동일하게 검증.
-#   firmware  — Mode B (device-side network-level SIL). use_fake_hand=false +
-#               fake_hand_firmware 조건부 실행 + target_ip:=127.0.0.1. 실 loopback
-#               소켓으로 전체 transport(send/recv, framing, echo/MODE 검증, decode)를 검증.
+# 입력 config 는 `config/udp_hand_node.yaml` 1개(+ 예시용 fingertip_ft_inferencer.yaml).
+# SIL 모드는 그 yaml 의 `sil_mode` 파라미터가 SSoT 이고, 노드 C++ on_configure 가
+# 해석한다 (use_fake_hand / target_ip 파생). launch 인자는 yaml 값의 override 로만
+# 작동한다 — 미지정(빈 문자열)이면 yaml 값을 그대로 쓴다.
 #
-# 두 직교 개념(in-process fake 여부 / 실 소켓 peer 존재)을 하나의 enum 으로 매핑한다.
-# 노드 C++ 는 무변경 — mode 분기는 순수 launch(Python) 레이어.
+#   sil_mode (off/loopmodel/firmware):
+#     off       — 실 하드웨어. socket → target_ip.
+#     loopmodel — 노드 in-process 1차 LPF 모델(소켓 미오픈).
+#     firmware  — device-side fake_hand_firmware 를 loopback 으로. 노드가 target_ip 를
+#                 127.0.0.1 로 강제하고, 이 launch 가 firmware 프로세스를 조건부로 띄운다
+#                 (프로세스 spawn 은 launch 전용 — 노드는 peer 프로세스를 못 띄운다).
+#
+# `sil_mode:=firmware` 처럼 CLI 로 준 값이 yaml 의 sil_mode 를 이긴다.
+import os
+
+import yaml
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
-from launch.conditions import IfCondition
-from launch.substitutions import (
-    EqualsSubstitution,
-    LaunchConfiguration,
-    PathJoinSubstitution,
-    PythonExpression,
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    OpaqueFunction,
+    RegisterEventHandler,
 )
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
-from launch_ros.parameter_descriptions import ParameterValue
-from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+VALID_SIL_MODES = ("off", "loopmodel", "firmware")
 
-def generate_launch_description():
-    pkg_share = FindPackageShare("udp_hand_driver")
+# yaml 미기재 시 firmware peer 구성에 쓰는 fallback (노드 C++ declare 기본과 일치).
+_FW_PORT_DEFAULT = 55151
+_FW_PROTO_DEFAULT = "1a"
 
-    # ── Launch arguments ────────────────────────────────────────────────
-    target_ip_arg = DeclareLaunchArgument(
-        "target_ip",
-        default_value="192.168.0.100",
-        description="Target IP for hand controller (ignored when sil_mode=firmware "
-        "→ auto-rewritten to 127.0.0.1)",
-    )
+# launch arg → (yaml key, python caster). 빈 문자열이면 override 하지 않음(yaml 우선).
+_OVERRIDE_ARGS = [
+    ("target_ip", str),
+    ("target_port", int),
+    ("publish_rate", float),
+    ("communication_mode", str),
+    ("recv_timeout_ms", float),
+    ("protocol_version", str),
+]
 
-    target_port_arg = DeclareLaunchArgument(
-        "target_port",
-        default_value="55151",
-        description="Target port for hand controller (also firmware bind port when "
-        "sil_mode=firmware)",
-    )
 
-    publish_rate_arg = DeclareLaunchArgument(
-        "publish_rate",
-        default_value="100.0",
-        description="Link status decimation base rate (Hz)",
-    )
+def _load_ros_params(yaml_path):
+    """hand-node yaml(`/**` wildcard)의 ros__parameters dict 반환 (실패 시 {})."""
+    try:
+        with open(yaml_path) as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("/**", {}).get("ros__parameters", {}) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
 
-    communication_mode_arg = DeclareLaunchArgument(
-        "communication_mode",
-        default_value="bulk",
-        description='Communication mode: "individual" or "bulk"',
-    )
 
-    recv_timeout_ms_arg = DeclareLaunchArgument(
-        "recv_timeout_ms",
-        default_value="0.4",
-        description="ppoll recv timeout in ms (sub-ms supported)",
-    )
+def _launch_setup(context):
+    pkg_share = get_package_share_directory("udp_hand_driver")
+    hand_config = os.path.join(pkg_share, "config", "udp_hand_node.yaml")
+    # 예시용(enabled:false) F/T inferencer config — 실제 추론은 off 지만 튜닝 템플릿.
+    ft_config = os.path.join(pkg_share, "config", "fingertip_ft_inferencer.yaml")
+    firmware_config = os.path.join(pkg_share, "config", "fake_hand_firmware.yaml")
+    yaml_params = _load_ros_params(hand_config)
 
-    protocol_version_arg = DeclareLaunchArgument(
-        "protocol_version",
-        default_value="1a",
-        description='Sensor protocol version: "1a" (int32 baro/ToF) or "1b" (float force). '
-        "Propagated to both node and firmware (sil_mode=firmware).",
-    )
+    # sil_mode: CLI(빈 문자열 아님) 우선, 아니면 yaml, 아니면 off.
+    cli_sil = LaunchConfiguration("sil_mode").perform(context)
+    eff_sil = cli_sil if cli_sil else str(yaml_params.get("sil_mode", "off"))
+    if eff_sil not in VALID_SIL_MODES:
+        raise RuntimeError(f"invalid sil_mode '{eff_sil}' (expected one of {VALID_SIL_MODES})")
 
-    sil_mode_arg = DeclareLaunchArgument(
-        "sil_mode",
-        default_value="off",
-        choices=["off", "loopmodel", "firmware"],
-        description="SIL entry point. off = real hardware; loopmodel = controller-side "
-        "in-process LPF (use_fake_hand, no socket); firmware = device-side "
-        "fake_hand_firmware over loopback (target_ip auto 127.0.0.1).",
-    )
+    # 노드 파라미터 = [단일 yaml, 예시 ft yaml] + {CLI 로 명시된 override 만}.
+    # sil_mode / target_ip 파생은 노드 on_configure 가 담당하므로 여기선 주입하지 않는다.
+    overrides = {}
+    if cli_sil:
+        overrides["sil_mode"] = cli_sil
+    for key, caster in _OVERRIDE_ARGS:
+        val = LaunchConfiguration(key).perform(context)
+        if val:
+            overrides[key] = caster(val)
 
-    # ── Derived node params (sil_mode → use_fake_hand / target_ip) ───────
-    # use_fake_hand must be a real bool param: wrap the PythonExpression in
-    # ParameterValue(value_type=bool) so the "True"/"False" substitution string
-    # is not mis-typed as a string param (launch gotcha).
-    use_fake_hand = ParameterValue(
-        PythonExpression(["'", LaunchConfiguration("sil_mode"), "' == 'loopmodel'"]),
-        value_type=bool,
-    )
-    # firmware mode forces loopback; otherwise honour the target_ip argument.
-    target_ip = PythonExpression(
-        [
-            "'127.0.0.1' if '",
-            LaunchConfiguration("sil_mode"),
-            "' == 'firmware' else '",
-            LaunchConfiguration("target_ip"),
-            "'",
-        ]
-    )
+    node_params = [hand_config, ft_config]
+    if overrides:
+        node_params.append(overrides)
 
-    # ── Config files ────────────────────────────────────────────────────
-    hand_config = PathJoinSubstitution(
-        [
-            pkg_share,
-            "config",
-            "udp_hand_node.yaml",
-        ]
-    )
-
-    ft_config = PathJoinSubstitution(
-        [
-            pkg_share,
-            "config",
-            "fingertip_ft_inferencer.yaml",
-        ]
-    )
-
-    firmware_config = PathJoinSubstitution(
-        [
-            pkg_share,
-            "config",
-            "fake_hand_firmware.yaml",
-        ]
-    )
-
-    # ── Device-side firmware simulator (sil_mode=firmware only) ──────────
-    # Plain node with its own recv loop; binds target_port and echoes the
-    # selected protocol_version so node/firmware stay wire-consistent.
-    firmware_node = Node(
-        package="udp_hand_driver",
-        executable="fake_hand_firmware",
-        name="fake_hand_firmware",
-        namespace="",
-        output="screen",
-        condition=IfCondition(EqualsSubstitution(LaunchConfiguration("sil_mode"), "firmware")),
-        parameters=[
-            firmware_config,
-            {
-                "port": LaunchConfiguration("target_port"),
-                "protocol_version": LaunchConfiguration("protocol_version"),
-            },
-        ],
-        emulate_tty=True,
-    )
-
-    # ── Lifecycle Node ──────────────────────────────────────────────────
-    # `namespace=''` is required by launch_ros >= jazzy (keyword-only arg
-    # in LifecycleNode.__init__); earlier distros defaulted it implicitly.
     udp_hand_node = LifecycleNode(
         package="udp_hand_driver",
         executable="udp_hand_node",
         name="udp_hand_node",
         namespace="",
         output="screen",
-        parameters=[
-            hand_config,
-            ft_config,
-            {
-                "target_ip": target_ip,
-                "target_port": LaunchConfiguration("target_port"),
-                "publish_rate": LaunchConfiguration("publish_rate"),
-                "communication_mode": LaunchConfiguration("communication_mode"),
-                "recv_timeout_ms": LaunchConfiguration("recv_timeout_ms"),
-                "protocol_version": LaunchConfiguration("protocol_version"),
-                "use_fake_hand": use_fake_hand,
-            },
-        ],
+        parameters=node_params,
         emulate_tty=True,
     )
 
-    # ── Auto-configure → auto-activate chain ─────────────────────────
-    auto_activate = RegisterEventHandler(
-        OnStateTransition(
-            target_lifecycle_node=udp_hand_node,
-            start_state="configuring",
-            goal_state="inactive",
-            entities=[
-                EmitEvent(
-                    event=ChangeState(
-                        lifecycle_node_matcher=lambda n: n == udp_hand_node,
-                        transition_id=Transition.TRANSITION_ACTIVATE,
-                    )
-                )
-            ],
-        )
-    )
-    trigger_configure = EmitEvent(
-        event=ChangeState(
-            lifecycle_node_matcher=lambda n: n == udp_hand_node,
-            transition_id=Transition.TRANSITION_CONFIGURE,
-        )
-    )
+    actions = []
 
-    return LaunchDescription(
-        [
-            target_ip_arg,
-            target_port_arg,
-            publish_rate_arg,
-            communication_mode_arg,
-            recv_timeout_ms_arg,
-            protocol_version_arg,
-            sil_mode_arg,
-            firmware_node,
-            udp_hand_node,
-            auto_activate,
-            trigger_configure,
-        ]
+    # ── Device-side firmware simulator (sil_mode=firmware 일 때만) ──────────
+    # target_port 를 bind 하고 선택된 protocol_version 을 echo → 노드와 wire 일치.
+    if eff_sil == "firmware":
+        fw_port = int(
+            overrides.get("target_port", yaml_params.get("target_port", _FW_PORT_DEFAULT))
+        )
+        fw_proto = str(
+            overrides.get(
+                "protocol_version", yaml_params.get("protocol_version", _FW_PROTO_DEFAULT)
+            )
+        )
+        actions.append(
+            Node(
+                package="udp_hand_driver",
+                executable="fake_hand_firmware",
+                name="fake_hand_firmware",
+                namespace="",
+                output="screen",
+                parameters=[firmware_config, {"port": fw_port, "protocol_version": fw_proto}],
+                emulate_tty=True,
+            )
+        )
+
+    actions.append(udp_hand_node)
+
+    # ── Auto-configure → auto-activate chain ─────────────────────────
+    actions.append(
+        RegisterEventHandler(
+            OnStateTransition(
+                target_lifecycle_node=udp_hand_node,
+                start_state="configuring",
+                goal_state="inactive",
+                entities=[
+                    EmitEvent(
+                        event=ChangeState(
+                            lifecycle_node_matcher=lambda n: n == udp_hand_node,
+                            transition_id=Transition.TRANSITION_ACTIVATE,
+                        )
+                    )
+                ],
+            )
+        )
     )
+    actions.append(
+        EmitEvent(
+            event=ChangeState(
+                lifecycle_node_matcher=lambda n: n == udp_hand_node,
+                transition_id=Transition.TRANSITION_CONFIGURE,
+            )
+        )
+    )
+    return actions
+
+
+def generate_launch_description():
+    # 모든 인자는 override-only: 빈 문자열 default 이면 yaml 값을 그대로 사용한다.
+    # (choices= 를 쓰면 빈 문자열 default 가 거부되므로 sil_mode 검증은 _launch_setup 에서.)
+    override_arg_decls = [
+        DeclareLaunchArgument(
+            "sil_mode",
+            default_value="",
+            description="SIL mode override (off|loopmodel|firmware). 빈 값이면 yaml 의 sil_mode 사용.",
+        ),
+        DeclareLaunchArgument(
+            "target_ip", default_value="", description="yaml target_ip override (빈 값=yaml)"
+        ),
+        DeclareLaunchArgument(
+            "target_port", default_value="", description="yaml target_port override (빈 값=yaml)"
+        ),
+        DeclareLaunchArgument(
+            "publish_rate", default_value="", description="yaml publish_rate override (빈 값=yaml)"
+        ),
+        DeclareLaunchArgument(
+            "communication_mode",
+            default_value="",
+            description="yaml communication_mode override (빈 값=yaml)",
+        ),
+        DeclareLaunchArgument(
+            "recv_timeout_ms",
+            default_value="",
+            description="yaml recv_timeout_ms override (빈 값=yaml)",
+        ),
+        DeclareLaunchArgument(
+            "protocol_version",
+            default_value="",
+            description="yaml protocol_version override (빈 값=yaml). firmware peer 에도 전파.",
+        ),
+    ]
+    return LaunchDescription([*override_arg_decls, OpaqueFunction(function=_launch_setup)])

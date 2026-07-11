@@ -57,11 +57,18 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_parameter("startup_grace_ms", 1000.0);
   declare_parameter("link_startup_grace_ms", 100.0);
 
-  declare_parameter("use_fake_hand", false);
-  // Fake-hand dynamics (use_fake_hand only). The CommLoop RT thread runs exactly
-  // as in real mode; the commanded pose is driven through a first-order LPF to
-  // produce read-back pos, its derivative (vel), and a PD-torque effort. See
-  // udp_hand_controller.hpp StepFakeModel / README "use_fake_hand".
+  // SIL entry point. Device-side firmware-process spawn is the launch layer's
+  // job (a node cannot spawn a peer process); this param drives the node-side
+  // effects, interpreted in the target_ip block below:
+  //   off       — real hardware. use_fake_hand_=false, socket to target_ip.
+  //   loopmodel — controller-side in-process LPF. use_fake_hand_=true, no socket.
+  //   firmware  — device-side fake_hand_firmware over loopback. use_fake_hand_=false,
+  //               target_ip forced to 127.0.0.1 (launch spawns the peer process).
+  declare_parameter("sil_mode", std::string{"off"});
+  // Fake-hand dynamics (sil_mode=loopmodel only). The CommLoop RT thread runs
+  // exactly as in real mode; the commanded pose is driven through a first-order
+  // LPF to produce read-back pos, its derivative (vel), and a PD-torque effort.
+  // See udp_hand_controller.hpp StepFakeModel / README sil_mode table.
   declare_parameter("fake_lpf_time_constant_s", 0.1);
   declare_parameter("fake_effort_stiffness", 1.0);
   declare_parameter("fake_effort_damping", 0.1);
@@ -105,7 +112,23 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
     declare_parameter("ft_inferencer." + std::string(name) + "_max", std::vector<double>(16, 1.0));
   }
 
-  const std::string target_ip = get_parameter("target_ip").as_string();
+  // ── SIL mode → use_fake_hand_ + effective target_ip ──────────────────
+  const std::string sil_mode = get_parameter("sil_mode").as_string();
+  if (sil_mode != "off" && sil_mode != "loopmodel" && sil_mode != "firmware") {
+    RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(),
+                 "Invalid sil_mode '%s' (expected \"off\", \"loopmodel\", or \"firmware\")",
+                 sil_mode.c_str());
+    return CallbackReturn::FAILURE;
+  }
+  use_fake_hand_ = (sil_mode == "loopmodel");
+  std::string target_ip = get_parameter("target_ip").as_string();
+  if (sil_mode == "firmware") {
+    if (target_ip != "127.0.0.1") {
+      RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(),
+                  "sil_mode=firmware → target_ip forced to 127.0.0.1 (was %s)", target_ip.c_str());
+    }
+    target_ip = "127.0.0.1";
+  }
   const int target_port = static_cast<int>(get_parameter("target_port").as_int());
   const double recv_timeout_ms = get_parameter("recv_timeout_ms").as_double();
   const std::string comm_mode_str = get_parameter("communication_mode").as_string();
@@ -180,7 +203,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // ── UdpHandController ─────────────────────────────────────────────────
   const auto ft_names = get_parameter("hand_fingertip_names").as_string_array();
   num_fingertips_ = udp_hand_driver::kDefaultNumFingertips;
-  use_fake_hand_ = get_parameter("use_fake_hand").as_bool();
+  // use_fake_hand_ was derived from sil_mode in the target_ip block above.
   const int comm_decimation = static_cast<int>(get_parameter("comm_decimation").as_int());
   const int sensor_decimation = static_cast<int>(get_parameter("sensor_decimation").as_int());
   const double loop_rate_hz = get_parameter("loop_rate_hz").as_double();

@@ -18,10 +18,12 @@
 #   - LPF/drift/F-T 후처리 파라미터는 1b 경로에서 무시되므로 생략 (C++ 기본 off).
 /**:
   ros__parameters:
-    # -- Fake hand 모드 (하드웨어 없이 thread 할당/RT 구조 검증용) --
-    # UDP 없이 CommLoop RT 스레드 self-clock + 1차 LPF 모델로 read state 생성.
-    use_fake_hand: false
-    fake_lpf_time_constant_s: 0.1     # 1차 LPF 시정수 τ [s]
+    # -- SIL mode (하드웨어 없이 thread 할당/RT 구조 검증용) --
+    # off=실 HW / loopmodel=in-process LPF(소켓 없음) / firmware=fake_hand_firmware
+    # loopback(노드가 target_ip→127.0.0.1 강제, launch 가 프로세스 spawn).
+    # launch 인자 sil_mode:= 가 override(우선). 미기재 시 노드 기본 off.
+    sil_mode: "off"
+    fake_lpf_time_constant_s: 0.1     # 1차 LPF 시정수 τ [s] (loopmodel 전용)
     fake_effort_stiffness: 1.0        # effort kp: kp·(cmd−pos)
     fake_effort_damping: 0.1          # effort kd: −kd·vel
 

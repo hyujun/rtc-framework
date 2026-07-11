@@ -24,12 +24,17 @@
 
 /**:
   ros__parameters:
-    # -- Fake hand 모드 (하드웨어 없이 thread 할당/RT 구조 검증용) --
-    # true: UDP 소켓 없이 CommLoop RT 스레드는 실제 모드와 동일하게 self-clock
-    # (loop_rate_hz) 하고, command pose 를 1차 LPF 모델에 통과시켜 read joint
-    # state(pos/vel/effort)를 생성한다 (ros2_control use_fake_hardware 등가).
-    use_fake_hand: false
-    # LPF/effort 튜닝 (use_fake_hand 일 때만 사용)
+    # -- SIL mode (하드웨어 없이 thread 할당/RT 구조 검증용) --
+    # off       : 실 하드웨어. socket → target_ip.
+    # loopmodel : UDP 소켓 없이 CommLoop RT 스레드가 실제 모드와 동일하게 self-clock
+    #             (loop_rate_hz) 하고 command pose 를 1차 LPF 모델에 통과시켜 read joint
+    #             state(pos/vel/effort) 생성 (ros2_control use_fake_hardware 등가).
+    # firmware  : device-side fake_hand_firmware 를 loopback 으로. 노드가 target_ip 를
+    #             127.0.0.1 로 강제하고, launch 가 firmware 프로세스를 띄운다 (프로세스
+    #             spawn 은 launch 전용 — `udp_hand.launch.py sil_mode:=firmware`).
+    # launch 인자 sil_mode:= 가 이 값을 override(우선). 미기재 시 노드 기본 off.
+    sil_mode: "off"
+    # LPF/effort 튜닝 (sil_mode=loopmodel 일 때만 사용)
     fake_lpf_time_constant_s: 0.1     # 1차 LPF 시정수 τ [s]
     fake_effort_stiffness: 1.0        # effort kp: kp·(cmd−pos)
     fake_effort_damping: 0.1          # effort kd: −kd·vel
