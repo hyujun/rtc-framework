@@ -1553,6 +1553,7 @@ void DemoWbcController::SetDeviceTaskTarget(int device_idx,
 // RT-thread-only. Refreshes current_target_slot_, drains pending entries,
 // runs first-tick self-init (seeded from current device state).
 void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::DrainTargetSlot");
   current_target_slot_ = target_seqlock_.Load();
   bool slot_dirty = false;
 

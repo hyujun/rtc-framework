@@ -3,6 +3,7 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -276,6 +277,7 @@ void DemoTaskController::OnDeviceConfigsSet() {
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
   DrainTargetSlot(state);
@@ -330,6 +332,7 @@ void DemoTaskController::SetDeviceTarget(int device_idx, std::span<const double>
 // RT-thread-only. Refreshes current_target_slot_, drains off-RT pending
 // entries, and runs first-tick self-init seeded from the current TCP pose.
 void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::DrainTargetSlot");
   current_target_slot_ = target_seqlock_.Load();
   bool slot_dirty = false;
 

@@ -23,6 +23,7 @@ namespace integrated_bringup {
 
 // ── Phase 1: Read state ─────────────────────────────────────────────────────
 void DemoWbcController::ReadState(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ReadState");
   // Read fingertip data from inference_data: slots 1..3 (fx/fy/fz) always,
   // slot 0 (native contact probability) only when has_native_contact_=true
   // (sensor A path; otherwise backend zero-fills the slot). Slots 4..6
@@ -609,6 +610,7 @@ void DemoWbcController::ComputeFallback() noexcept {
 // ── Phase 3a: Write joint command (wire-bound only) ──────────────────────────
 
 ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::WriteJointCommand");
   ControllerOutput output;
   output.num_devices = state.num_devices;
   output.command_type = command_type_;
@@ -662,6 +664,7 @@ ControllerOutput DemoWbcController::WriteJointCommand(const ControllerState& sta
 void DemoWbcController::FillDeviceTrajectoryPods(rtc::DeviceOutput& out, int num_channels,
                                                  const ComputedTrajectory& computed,
                                                  int target_slot) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillDeviceTrajectoryPods");
   const auto slot = static_cast<std::size_t>(target_slot);
   for (std::size_t i = 0; i < static_cast<std::size_t>(num_channels); ++i) {
     out.trajectory_positions[i] = computed.positions[i];
@@ -674,6 +677,7 @@ void DemoWbcController::FillDeviceTrajectoryPods(rtc::DeviceOutput& out, int num
 // from the current arm FK (caller ensures FK fresh; arm_handle_ non-null). Returns
 // the TCP SE3 so the publish path can reuse it for arm_tip_pose.
 pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillTaskPosePods");
   pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
   if (use_root_frame_) {
     tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
@@ -709,6 +713,7 @@ pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noe
 // the SE3 temporaries are stack locals and the dispatch helpers are RT-safe.
 bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
                                                const pinocchio::SE3& tcp) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeHandFingertipFk");
   if (!RunHandForwardKinematics(closed_hand_fk_, hand_handle_.get(), hand_q_, state)) {
     return false;
   }
@@ -731,6 +736,7 @@ bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
 
 void DemoWbcController::FillLogOutput(const ControllerState& state,
                                       ControllerOutput& output) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillLogOutput");
   const auto& dev0 = state.devices[0];
   const int nc0 = dev0.num_channels;
   FillDeviceTrajectoryPods(output.devices[0], nc0, robot_computed_, 0);
@@ -799,6 +805,7 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
 
 void DemoWbcController::FillPublishOutput(const ControllerState& state,
                                           ControllerOutput& output) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillPublishOutput");
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
@@ -858,6 +865,7 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
 // ── E-STOP compute path ──────────────────────────────────────────────────────
 
 ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeEstop");
   const auto& dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;
@@ -904,6 +912,7 @@ ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) n
 // ── Helpers (full state extraction, TCP error, MPC timing log) ──────────────
 
 void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ExtractFullState");
   if (!joint_reorder_valid_) {
     return;
   }
@@ -932,6 +941,7 @@ void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept 
 }
 
 void DemoWbcController::BuildTargetPosture(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::BuildTargetPosture");
   if (!joint_reorder_valid_) {
     return;
   }
@@ -946,6 +956,7 @@ void DemoWbcController::BuildTargetPosture(const ControllerState& state) noexcep
 }
 
 bool DemoWbcController::BuildHandTargetPosture(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::BuildHandTargetPosture");
   // Fold the current hand joint target (current_target_slot_.targets[1]) into the
   // posture reference's hand block (external [arm_dof_..full_dof_-1] → Pinocchio
   // order). Called at phase entry via BuildTargetPosture AND per-tick from
@@ -968,6 +979,7 @@ bool DemoWbcController::BuildHandTargetPosture(const ControllerState& state) noe
 }
 
 void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::SeedHoldFromMeasured");
   // joint_goal mirror = current measured config (arm + hand). This makes the
   // logged joint_goal match the posture reference idle actually regulates to.
   const auto& dev0 = state.devices[0];
@@ -1051,6 +1063,7 @@ void DemoWbcController::LogMpcSolveTimingTick() noexcept {
 void DemoWbcController::FillDeviceWbcLogPod(
     const ControllerState& state, const ControllerOutput& output, std::size_t device_idx,
     std::uint8_t role, ::integrated_bringup::DeviceWbcLogPod& pod) const noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillDeviceWbcLogPod");
   pod.role = role;
   pod.t_relative_s = state.t_relative_s;
   if (static_cast<std::size_t>(state.num_devices) <= device_idx) {
@@ -1149,6 +1162,7 @@ void DemoWbcController::FillDeviceWbcLogPod(
 
 void DemoWbcController::FillWbcDiagLogPod(const ControllerState& state,
                                           ::integrated_bringup::WbcDiagLogPod& pod) const noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillWbcDiagLogPod");
   pod.t_relative_s = state.t_relative_s;
   pod.phase = static_cast<std::uint8_t>(phase_);
   pod.solve_time_us = tsid_output_.solve_time_us;

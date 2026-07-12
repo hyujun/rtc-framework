@@ -92,6 +92,15 @@ rt_control_tick                          (RT tick 전체; raw clock_nanosleep �
          └─ ComputeDynamicWbc … (FSM 경로에 따라 PositionMode/ReleaseMode/Fallback)
 ```
 
+위 스택은 대표 경로다 — WBC `Compute` 아래에는 per-tick 헬퍼 span 도 함께 찍힌다
+(`ReadState` / `DrainTargetSlot` / `WriteJointCommand` / `FillLogOutput` /
+`FillPublishOutput` / `ExtractFullState` / `BuildTargetPosture` /
+`SeedHoldFromMeasured` / `Fill*LogPod` / `ComputeEstop`). `DemoJointController` /
+`DemoTaskController` 도 동일 패턴으로 계측돼 있으며 (`Compute` → `ReadState` /
+`DrainTargetSlot` / `ComputeControl` / `WriteJointCommand` / `FillLogOutput` /
+`FillPublishOutput` / `ComputeEstop`), **그 컨트롤러가 active 일 때만** span 이
+발생한다 (inactive controller 의 `Compute` 는 호출되지 않음).
+
 MuJoCo sim 스레드 (`mujoco_simulator_node` 의 `sim_thread`, sim 빌드 한정):
 
 ```
