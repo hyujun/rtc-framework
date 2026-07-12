@@ -548,6 +548,22 @@ logging_data/YYMMDD_HHMM/
 > **주의:** `ResolveSessionDir()`은 `std::filesystem::filesystem_error`를 throw할 수 있습니다. 초기화 시에만 호출하세요.
 > Python 측 동일 로직은 `rtc_tools.utils.session_dir.resolve_logging_root()` 참고.
 
+### 트레이싱 (`tracing/`)
+
+RT hot-path 를 Perfetto 로 관찰하기 위한 LTTng UST scoped span. **컴파일타임 opt-in** —
+CMake 옵션 `RTC_ENABLE_TRACING` (default OFF) 이 켜져야만 존재하며, 꺼진 빌드는
+완전 no-op (RT 비용 0, lttng-ust 의존성 0).
+
+| 헤더 | 역할 |
+|------|------|
+| `tracing/trace_scope.hpp` | `RTC_TRACE_SCOPE("Name")` — RAII scoped span 매크로. OFF 빌드에선 no-op |
+| `tracing/rtc_tracepoints.hpp` | LTTng `rtc:span_begin/end` provider 정의 (double-include 레이아웃) |
+
+`RTC_ENABLE_TRACING=ON` 빌드는 `rtc:*` probe 를 shared lib `rtc_tracing` (export
+target `rtc_base::rtc_tracing`) 로 컴파일한다. 소비 패키지는 이 target 을 링크해
+`RTC_TRACING_ENABLED` define + lttng include 를 상속받는다. 사용법·flame 스택
+예시는 [docs/tracing.md](../docs/tracing.md) §RT trace spans.
+
 ---
 
 ## 의존성
@@ -555,8 +571,9 @@ logging_data/YYMMDD_HHMM/
 | 의존성 | 용도 |
 |--------|------|
 | `ament_cmake` | 빌드 시스템 |
+| `lttng-ust` *(optional)* | `RTC_ENABLE_TRACING=ON` 일 때만. `install.sh --tracing` 이 제공 (apt `liblttng-ust-dev`) |
 
-> **외부 의존성 없음** -- 표준 C++ 라이브러리와 POSIX API만 사용합니다.
+> **기본 빌드는 외부 의존성 없음** -- 표준 C++ 라이브러리와 POSIX API만 사용합니다. lttng-ust 는 트레이싱 opt-in 시에만.
 
 ---
 

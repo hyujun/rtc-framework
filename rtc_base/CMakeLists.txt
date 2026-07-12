@@ -23,6 +23,44 @@ find_package(ament_cmake REQUIRED)
 install(DIRECTORY include/ DESTINATION include)
 ament_export_include_directories(include)
 
+# ── RT tracing (LTTng UST) — opt-in, compile-time gated ──────────────────────
+# Default OFF: RTC_TRACE_SCOPE (rtc_base/tracing/trace_scope.hpp) expands to a
+# no-op, no lttng-ust header/link is pulled in, and the RT hot path pays zero
+# cost. Enable a tracing build with:
+#   colcon build --cmake-args -DRTC_ENABLE_TRACING=ON
+# which compiles the rtc:* UST probes into librtc_tracing and makes
+# RTC_TRACE_SCOPE emit span_begin/span_end. Downstream packages that link the
+# exported `rtc_tracing` target inherit the RTC_TRACING_ENABLED define + lttng
+# include path (PUBLIC), so their RTC_TRACE_SCOPE call sites activate too.
+# liblttng-ust-dev is provided by `install.sh --tracing` (optional apt dep,
+# same contract as MuJoCo/aligator — intentionally not a package.xml <depend>).
+option(RTC_ENABLE_TRACING "Compile rtc:* LTTng UST tracepoints (RT tracing)" OFF)
+if(RTC_ENABLE_TRACING)
+  find_package(LTTngUST REQUIRED)
+  add_library(rtc_tracing SHARED src/tracing/rtc_tracepoints.cpp)
+  target_include_directories(rtc_tracing PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  target_link_libraries(rtc_tracing PUBLIC LTTng::UST)
+  target_compile_definitions(rtc_tracing PUBLIC RTC_TRACING_ENABLED)
+  # The probe TU is lttng-generated boilerplate; silence this repo's strict
+  # -Wconversion/-Wpedantic wall on it only (never on call-site code).
+  target_compile_options(rtc_tracing PRIVATE -w)
+  install(TARGETS rtc_tracing EXPORT export_rtc_base
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+  )
+  # Consumers link the imported target `rtc_base::rtc_tracing` (full .so path +
+  # PUBLIC RTC_TRACING_ENABLED). Deliberately NOT ament_export_libraries() — that
+  # would leak a bare `-lrtc_tracing` into every rtc_base consumer via
+  # ament_target_dependencies, unresolvable without a link dir.
+  ament_export_targets(export_rtc_base)
+  ament_export_dependencies(LTTngUST)
+  message(STATUS "rtc_base: RT tracing ENABLED (rtc:* UST probes -> librtc_tracing)")
+endif()
+
 # ── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

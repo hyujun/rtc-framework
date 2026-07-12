@@ -79,6 +79,17 @@ target_link_libraries(rtc_controller_manager_lib
   pinocchio::pinocchio
 )
 
+# ── RT tracing (opt-in) ──────────────────────────────────────────────────────
+# When rtc_base was built with -DRTC_ENABLE_TRACING=ON it exports the
+# `rtc_tracing` target carrying RTC_TRACING_ENABLED (PUBLIC) + the lttng include
+# path. Linking it PUBLIC activates the RTC_TRACE_SCOPE spans in this lib's RT
+# loop and propagates the define to downstream bringup packages that link this
+# lib. Default OFF → no-op, no lttng dependency. See rtc_base/CMakeLists.txt.
+option(RTC_ENABLE_TRACING "Compile rtc:* LTTng UST tracepoints (RT tracing)" OFF)
+if(RTC_ENABLE_TRACING)
+  target_link_libraries(rtc_controller_manager_lib rtc_base::rtc_tracing)
+endif()
+
 # ── Install ───────────────────────────────────────────────────────────────────
 # rtc_controller_manager is library-only (no executable). Robot-specific
 # bringup packages (e.g. integrated_bringup) link rtc_controller_manager_lib and

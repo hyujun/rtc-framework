@@ -14,7 +14,7 @@ CSV timing log 는 per-tick 총 시간만 기록하므로, 어느 thread 가 어
 * `sched_switch` (kernel tracepoint) — 어느 thread 가 어느 core 에서 언제 run 했는지의 정확한 timeline
 * `irq_handler_entry/exit` — IRQ leak 검출
 
-대신 callback **enter ~ exit 사이** 만 본다 — 그 안의 함수 단위 breakdown 이나 RT pthread tick 경계는 자동 모드로 안 잡힌다 (§Limits 참조).
+대신 자동 모드는 callback **enter ~ exit 사이** 만 본다 — 그 안의 함수 단위 breakdown 이나 RT pthread tick 경계는 `--tracing` 빌드 + `RTC_TRACE_SCOPE` 계측으로 본다 (§RT trace spans).
 
 ## One-time setup (Fresh Ubuntu 24.04)
 
@@ -58,6 +58,42 @@ lttng list --kernel                                 # 이벤트 목록 표시됨
 ```
 
 Secure Boot 가 disabled 라면 helper 는 그 사실을 알리고 즉시 종료한다.
+
+## RT trace spans (`rtc:*` — RT-tick 내부, 빌드 opt-in)
+
+ros2_tracing 자동 모드는 rclcpp 콜백 (`ros2:callback_*`) 만 본다. RT 제어 루프는
+raw `clock_nanosleep` pthread 라 콜백이 아니고, 그 안의 `Compute()` /
+`ComputeControl` / WBC sub-step 은 평범한 C++ 호출이라 **자동 트레이스에 안 잡힌다**.
+
+이를 보려면 `rtc_base` 의 `RTC_TRACE_SCOPE(name)` (LTTng UST `rtc:span_begin/end`)
+로 계측된 구간을 **컴파일해 넣어야** 한다. 컴파일타임 게이트라, 켜지 않은 기본
+빌드는 완전 no-op (RT hot-path 비용 0, lttng-ust 의존성 0).
+
+```bash
+# 트레이싱 빌드 (rtc:* span 컴파일). liblttng-ust-dev 필요 (install.sh --tracing).
+./build.sh sim --tracing
+# 또는 직접:
+colcon build --cmake-args -DRTC_ENABLE_TRACING=ON
+```
+
+빌드 후 `enable_tracing:=true` 로 캡처하면 (아래 §Capture) `rtc:span_begin/end` 가
+UST 채널에 함께 기록되고, `timeline.sh` 변환기가 이를 emit 스레드 레인의 **중첩
+flame 스택**으로 렌더한다:
+
+```
+rt_control_tick                          (RT tick 전체; raw clock_nanosleep 경계)
+└─ CM::Compute                           (ControllerManager dispatch)
+   └─ DemoWbcController::Compute          (controller 진입)
+      └─ DemoWbcController::ComputeControl
+         ├─ ComputeWbcCommon / ComputeTSIDPosition
+         ├─ ComputeKinematicWbc
+         └─ ComputeDynamicWbc … (FSM 경로에 따라 PositionMode/ReleaseMode/Fallback)
+```
+
+계측점 추가는 해당 함수 첫 줄에 `RTC_TRACE_SCOPE("Name");` 한 줄. RAII 라
+early-return 에도 span 이 닫힌다. build flag OFF 면 그 줄은 사라진다.
+런타임 게이트는 여전히 LTTng 세션 — `enable_tracing:=false` 로 실행하면 span 은
+컴파일돼 있어도 기록되지 않는다.
 
 ## Capture (sim 또는 robot)
 
@@ -120,7 +156,9 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
 * 세 가지 swimlane 그룹:
   - **Threads (by TID)** — `mpc_main-NNNN`, `rt_control-NNNN`, `mujoco_simulato-NNNN`
     등 각 thread 의 callback B/E 슬라이스. WBC tick 의 주기성, MPC 8 ms
-    주기를 시간축에서 직접 확인.
+    주기를 시간축에서 직접 확인. `--tracing` 빌드면 RT 스레드 레인에 `rtc:*` span
+    (rt_control_tick → CM::Compute → …ComputeControl → sub-step) 중첩 스택도 함께
+    (위 §RT trace spans).
   - **Cpus** — `Cpu 000` ~ `Cpu 011` 코어별 sched_switch 기반 timeline.
     ApplyThreadConfig pinning 의 의도대로 rt_control 이 Core 2 에 고정됐는지,
     mpc_main 이 MPC 코어에 머물렀는지 검증.
@@ -199,7 +237,7 @@ sudo apt install ros-jazzy-tracetools-analysis
 #   from tracetools_analysis.processor.ros2 import Ros2Handler
 ```
 
-자세한 사용은 ros2_tracing 공식 문서 참조. (RT-specific manual tracepoint 는 아직 미착수 — §Limits.)
+자세한 사용은 ros2_tracing 공식 문서 참조. (RT-specific manual tracepoint 는 `RTC_TRACE_SCOPE` 로 구현됨 — §RT trace spans.)
 
 ## Permissions
 
@@ -215,11 +253,13 @@ sudo apt install ros-jazzy-tracetools-analysis
 
 ## Limits
 
-* **Callback 내부의 함수 단위 breakdown** 은 ros2_tracing 자동 모드로는 안 보인다.
-  WBC tick 안의 Pinocchio FK / ProxSuite QP 비율 같은 건 별도 manual tracepoint
-  필요 (Phase 2).
-* **RT thread (rt_control / mpc_main / hand UDP)** 의 tick 경계는 자동 tracepoint
-  로는 잡히지 않음 — pthread 기반이라 rclcpp executor 콜백이 아니기 때문 (Phase 2).
+* **자동 모드**로는 콜백 내부 함수 breakdown 도, RT pthread tick 경계도 안 보인다
+  (rclcpp executor 콜백이 아니므로). `--tracing` 빌드 + `RTC_TRACE_SCOPE` 계측이
+  이를 해결한다 (§RT trace spans) — 현재 RT tick / CM dispatch / WBC Compute·
+  sub-step 까지 커버. Pinocchio FK / ProxSuite QP 등 더 깊은 구간은 그 함수에
+  `RTC_TRACE_SCOPE` 한 줄을 추가하면 즉시 스택에 나타난다.
+* `rtc:*` span 은 **컴파일타임 opt-in** (`-DRTC_ENABLE_TRACING=ON`) — 켜지 않은
+  빌드에는 존재하지 않는다. 기본 프로덕션 빌드는 RT hot-path 비용 0.
 * Trace 파일 크기는 캡처 시간 + UST/kernel event volume 에 선형. 1 분 캡처 ~ 10–100 MB.
   너무 길게 캡처하면 `lttng-sessiond` 가 디스크 부담을 받음.
 * `lttng-modules` 가 빌드되지 않은 환경 (DKMS 실패 / 비표준 kernel) 에서는 kernel

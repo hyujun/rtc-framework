@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/se3_task.hpp"
@@ -91,6 +92,7 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 // ── Phase 2: Compute control (phase dispatch) ───────────────────────────────
 
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeControl");
   UpdatePhase(state);
 
   // MPC WriteState moved into ComputeTSIDPosition (next to its
@@ -129,6 +131,7 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
 // ── Position-mode and TSID solvers ──────────────────────────────────────────
 
 void DemoWbcController::ComputePositionMode(double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputePositionMode");
   // Robot arm trajectory
   robot_trajectory_time_ += dt;
   const auto rstate =
@@ -151,6 +154,7 @@ void DemoWbcController::ComputePositionMode(double dt) noexcept {
 }
 
 void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeTSIDPosition");
   // Orchestrator: common stage (references) → Kinematic WBC (CLIK-QP position
   // backbone) → Dynamic WBC (TSID solve + hand τ_ff). One gains snapshot is
   // shared by all three so the whole tick sees a consistent set of runtime
@@ -172,6 +176,7 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
 // tcp_traj_state_, n_lambda_active_).
 void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt,
                                          const Gains& gains_now) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeWbcCommon");
   // 1. Extract full state (sensor values, every tick)
   ExtractFullState(state);
 
@@ -335,6 +340,7 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
 // position backbone (the integrator A/B shadow was removed once its numerical
 // equivalence was verified): a CLIK failure is therefore CRITICAL.
 void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeKinematicWbc");
   clik_compute_ok_ = false;
   clik_tcp_err_ = 0.0;
   clik_manip_ = 0.0;
@@ -419,6 +425,7 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
 // failed solve that a_opt is garbage, but the shadow is non-driving (CLIK is
 // primary) so only the diagnostic Δ spikes.
 void DemoWbcController::ComputeDynamicWbc(const Gains& gains_now) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeDynamicWbc");
   // ── Dynamic WBC QP solve (was the SolveWbcQp tail) ────────────────────────
   // 5. TSID solve — consumes the common-stage ctrl_state_/control_ref_/cache.
   tsid_output_ =
@@ -505,6 +512,7 @@ void DemoWbcController::ComputeDynamicWbc(const Gains& gains_now) noexcept {
 }
 
 void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeReleaseMode");
   // Stage 0: TSID holds the arm SE3 at current TCP while ContactState ramps
   // activation toward 0 (set in OnPhaseEnter(kRelease)). Posture preset
   // damps hand at its current pose during this brief window.
@@ -587,6 +595,7 @@ void DemoWbcController::ComputeReleaseMode(const ControllerState& state, double 
 }
 
 void DemoWbcController::ComputeFallback() noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::ComputeFallback");
   // Hold last computed positions (already in robot_computed_/hand_computed_)
   // Set velocities to zero
   for (int i = 0; i < arm_dof_; ++i) {

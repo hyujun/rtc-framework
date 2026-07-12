@@ -27,6 +27,7 @@
 //   kSyncStep mode — step latency ≈ pure Compute() time (1:1 sync).
 
 #include "rtc_base/timing/timing_profiler_base.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 
 #include <chrono>
@@ -49,6 +50,10 @@ class ControllerTimingProfiler : public TimingProfilerBase<200, 10, 2000> {
 
   [[nodiscard]] ControllerOutput MeasuredCompute(RTControllerInterface& ctrl,
                                                  const ControllerState& state) noexcept {
+    // Layer 1 span: the controller-dispatch boundary inside the RT tick.
+    // Nests under "rt_control_tick" and wraps the concrete controller's
+    // own "<Controller>::Compute" span (layer 2).
+    RTC_TRACE_SCOPE("CM::Compute");
     const auto t0 = std::chrono::steady_clock::now();
     auto output = ctrl.Compute(state);
     const auto t1 = std::chrono::steady_clock::now();
