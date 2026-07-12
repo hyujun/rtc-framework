@@ -1116,10 +1116,10 @@ check_benchmark() {
 # Summary output
 # ══════════════════════════════════════════════════════════════════════════════
 print_summary() {
-  local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
+  local categories=("rt_kernel" "cpu_isolation" "hybrid_cpu" "scheduler_memory" "grub_params"
                     "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency"
                     "tracing_setup")
-  local labels=("RT Kernel" "CPU Isolation" "Sched/Memory" "GRUB Params"
+  local labels=("RT Kernel" "CPU Isolation" "Hybrid CPU" "Sched/Memory" "GRUB Params"
                 "RT Permissions" "IRQ Affinity" "Network/UDP" "NVIDIA" "CPU Frequency"
                 "Tracing")
 
@@ -1144,8 +1144,12 @@ print_summary() {
 # JSON output
 # ══════════════════════════════════════════════════════════════════════════════
 print_json() {
-  local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
-                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency")
+  # Must mirror print_summary's category set so exit-2 FAILs (e.g. hybrid_cpu on
+  # BIOS-HT-off) always have an explanatory row — else JSON `categories` disagrees
+  # with the `summary` counts a CI consumer sees.
+  local categories=("rt_kernel" "cpu_isolation" "hybrid_cpu" "scheduler_memory" "grub_params"
+                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency"
+                    "tracing_setup")
   if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
     categories+=("benchmark")
   fi

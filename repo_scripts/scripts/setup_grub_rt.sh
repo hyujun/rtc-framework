@@ -177,10 +177,14 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
 
   success "GRUB configuration updated"
 
-  # update-grub 실행
+  # update-grub 실행 — 실패를 삼키고 success 를 찍으면 grub.cfg 미재생성이 은폐된다.
   info "  Running update-grub..."
-  update-grub 2>/dev/null || true
-  success "update-grub complete"
+  if update-grub 2>/dev/null; then
+    success "update-grub complete"
+  else
+    warn "update-grub FAILED — /etc/default/grub 은 수정됐으나 grub.cfg 가 재생성되지 않음"
+    warn "  RT 파라미터가 reboot 후 적용되지 않는다. 수동 실행: sudo update-grub"
+  fi
 else
   info "  All GRUB parameters already configured — no changes needed"
 fi

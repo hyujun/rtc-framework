@@ -508,6 +508,8 @@ if [[ "$DO_RT" -eq 1 ]]; then
       setup_udp_optimization
       setup_nvidia_rt
       setup_cpu_governor
+      # RT 구성 단계 실패를 요약 노출 (best-effort 유지, install 은 계속).
+      report_rt_setup_failures || true
       ;;
     sim)
       info "Skipping RT setup (sim mode does not require RT configuration)"
@@ -519,6 +521,12 @@ else
   fi
 fi
 
-verify_installation
+# --skip-build/--rt 는 workspace 를 빌드하지 않으므로 package 검증을 건너뛴다
+# (안 그러면 모든 sudo RT 작업 후 미빌드 workspace 로 hard-fail).
+if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  verify_installation
+else
+  info "Skipping package verification (--skip-build/--rt: workspace not built this run)"
+fi
 verify_mpc_deps || true
 print_summary

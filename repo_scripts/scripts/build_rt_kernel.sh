@@ -403,10 +403,10 @@ show_verify() {
       local ver
       ver=$(dpkg -s "$pkg" 2>/dev/null | grep '^Version:' | awk '{print $2}')
       echo -e "  ${pass_icon} ${pkg}  ${DIM}(${ver})${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} ${pkg}  ${DIM}— 미설치${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   done
   if [[ "$WITH_NVIDIA" -eq 1 && "$HAS_NVIDIA" == "yes" ]]; then
@@ -414,10 +414,10 @@ show_verify() {
     nvidia_dkms=$(dpkg -l 'nvidia-dkms-*' 2>/dev/null | grep '^ii' | awk '{print $2, $3}' | head -1)
     if [[ -n "$nvidia_dkms" ]]; then
       echo -e "  ${pass_icon} ${nvidia_dkms}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} nvidia-dkms-*  ${DIM}— NVIDIA DKMS 드라이버 미설치${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
   echo ""
@@ -429,10 +429,10 @@ show_verify() {
     local sz
     sz=$(du -h "$kernel_tar" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} linux-${KERNEL_VERSION}.tar.xz  ${DIM}(${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-${KERNEL_VERSION}.tar.xz  ${DIM}— 파일 없음${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if [[ -f "${BUILD_DIR}/linux-${KERNEL_VERSION}.tar.sign" ]]; then
     echo -e "  ${pass_icon} GPG 서명 파일 존재 (linux-${KERNEL_VERSION}.tar.sign)"
@@ -445,17 +445,17 @@ show_verify() {
   echo -e "${BOLD}[3/7] 압축 해제${NC}"
   if [[ -d "${KERNEL_SRC_DIR}" ]]; then
     echo -e "  ${pass_icon} 소스 디렉토리 존재: ${KERNEL_SRC_DIR}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} 소스 디렉토리 없음: ${KERNEL_SRC_DIR}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if [[ -f "${KERNEL_SRC_DIR}/.rt_extracted" ]]; then
     echo -e "  ${pass_icon} 압축 해제됨 (.rt_extracted 마커 존재)"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} 압축 미해제 (.rt_extracted 마커 없음)"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   echo ""
 
@@ -464,7 +464,7 @@ show_verify() {
   local kconfig="${KERNEL_SRC_DIR}/.config"
   if [[ -f "$kconfig" ]]; then
     echo -e "  ${pass_icon} .config 파일 존재"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
 
     # 주요 설정값 확인 — 공통 + profile별 (profile 무관 옵션을 FAIL 로 오인하지 않도록 분기)
     local config_checks=(
@@ -499,21 +499,21 @@ show_verify() {
         # key=value 형태: 해당 값이 있어야 pass
         if grep -q "^${key}$" "$kconfig" 2>/dev/null; then
           echo -e "  ${pass_icon} ${desc}  ${DIM}(${key})${NC}"
-          ((total_pass++))
+          total_pass=$((total_pass+1))
         else
           local actual
           actual=$(grep "^${config_key}=" "$kconfig" 2>/dev/null | head -1)
           echo -e "  ${fail_icon} ${desc}  ${DIM}(기대: ${key}, 실제: ${actual:-미설정})${NC}"
-          ((total_fail++))
+          total_fail=$((total_fail+1))
         fi
       else
         # key= 형태 (빈 값): 해당 키가 'is not set' 이거나 없어야 pass
         if grep -q "^${config_key}=y" "$kconfig" 2>/dev/null; then
           echo -e "  ${fail_icon} ${desc}  ${DIM}(${config_key}=y 가 아직 활성화됨)${NC}"
-          ((total_fail++))
+          total_fail=$((total_fail+1))
         else
           echo -e "  ${pass_icon} ${desc}  ${DIM}(${config_key} 비활성화 확인)${NC}"
-          ((total_pass++))
+          total_pass=$((total_pass+1))
         fi
       fi
     done
@@ -523,14 +523,14 @@ show_verify() {
     localver=$(grep '^CONFIG_LOCALVERSION=' "$kconfig" 2>/dev/null | sed 's/CONFIG_LOCALVERSION="\(.*\)"/\1/')
     if [[ -n "$localver" ]]; then
       echo -e "  ${pass_icon} LOCALVERSION = \"${localver}\""
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} LOCALVERSION 미설정"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   else
     echo -e "  ${fail_icon} .config 파일 없음"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   echo ""
 
@@ -546,19 +546,19 @@ show_verify() {
     local sz
     sz=$(du -h "$deb_image" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} linux-image .deb  ${DIM}($(basename "$deb_image"), ${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-image .deb  ${DIM}— 빌드 산출물 없음${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if [[ -n "$deb_headers" ]]; then
     local sz
     sz=$(du -h "$deb_headers" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} linux-headers .deb  ${DIM}($(basename "$deb_headers"), ${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-headers .deb  ${DIM}— 빌드 산출물 없음${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   echo ""
 
@@ -568,17 +568,17 @@ show_verify() {
     local installed_ver
     installed_ver=$(dpkg -l "linux-image-${RT_KERNEL_FULL}" 2>/dev/null | grep "^ii" | awk '{print $3}')
     echo -e "  ${pass_icon} linux-image-${RT_KERNEL_FULL}  ${DIM}(${installed_ver})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-image-${RT_KERNEL_FULL}  ${DIM}— dpkg 미설치${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if dpkg -l "linux-headers-${RT_KERNEL_FULL}" 2>/dev/null | grep -q "^ii"; then
     echo -e "  ${pass_icon} linux-headers-${RT_KERNEL_FULL}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-headers-${RT_KERNEL_FULL}  ${DIM}— dpkg 미설치${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   # /boot에 커널 이미지 존재 확인
   local vmlinuz="/boot/vmlinuz-${RT_KERNEL_FULL}"
@@ -586,17 +586,17 @@ show_verify() {
     local sz
     sz=$(du -h "$vmlinuz" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} ${vmlinuz}  ${DIM}(${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     # 와일드카드로 rt-custom 패턴 검색
     local found_vmlinuz
     found_vmlinuz=$(ls /boot/vmlinuz-*rt*custom* 2>/dev/null | head -1)
     if [[ -n "$found_vmlinuz" ]]; then
       echo -e "  ${pass_icon} ${found_vmlinuz}  ${DIM}(이름 다를 수 있음)${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} /boot/vmlinuz-*rt*custom*  ${DIM}— 커널 이미지 없음${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
   echo ""
@@ -607,7 +607,7 @@ show_verify() {
   # grub.cfg에 RT 커널 항목 존재 확인
   if [[ -f /boot/grub/grub.cfg ]]; then
     echo -e "  ${pass_icon} /boot/grub/grub.cfg 존재"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
 
     local grub_rt_entry
     grub_rt_entry=$(grep -v recovery /boot/grub/grub.cfg 2>/dev/null \
@@ -616,14 +616,14 @@ show_verify() {
     if [[ -n "$grub_rt_entry" ]]; then
       echo -e "  ${pass_icon} GRUB 메뉴에 RT 커널 등록됨"
       echo -e "      ${DIM}→ ${grub_rt_entry}${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} GRUB 메뉴에 RT 커널 항목 없음"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   else
     echo -e "  ${fail_icon} /boot/grub/grub.cfg 없음"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
 
   # GRUB_DEFAULT 확인
@@ -635,15 +635,15 @@ show_verify() {
       if echo "$grub_default" | grep -q "rt.*custom\|${KERNEL_VERSION}.*rt"; then
         echo -e "  ${pass_icon} GRUB_DEFAULT → RT 커널"
         echo -e "      ${DIM}→ ${grub_default}${NC}"
-        ((total_pass++))
+        total_pass=$((total_pass+1))
       else
         echo -e "  ${fail_icon} GRUB_DEFAULT → RT 커널이 아님"
         echo -e "      ${DIM}→ 현재: ${grub_default}${NC}"
-        ((total_fail++))
+        total_fail=$((total_fail+1))
       fi
     else
       echo -e "  ${fail_icon} GRUB_DEFAULT 설정 없음"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
 
@@ -651,10 +651,10 @@ show_verify() {
   if [[ "$HAS_NVIDIA" == "yes" && -f /etc/default/grub ]]; then
     if grep -q "nvidia.NVreg_EnableMSI=1" /etc/default/grub 2>/dev/null; then
       echo -e "  ${pass_icon} NVIDIA MSI 활성화  ${DIM}(nvidia.NVreg_EnableMSI=1)${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} NVIDIA MSI 미설정  ${DIM}(nvidia.NVreg_EnableMSI=1 없음)${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
 
@@ -664,11 +664,11 @@ show_verify() {
   echo -e "  커널 버전: $(uname -r)"
   if uname -v 2>/dev/null | grep -q PREEMPT_RT; then
     echo -e "  ${pass_icon} PREEMPT_RT 활성  ${DIM}($(uname -v))${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} PREEMPT_RT 비활성 — 재부팅 필요"
     echo -e "      ${DIM}현재: $(uname -v)${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
 
   # ── 요약 ────────────────────────────────────────────────────────────────

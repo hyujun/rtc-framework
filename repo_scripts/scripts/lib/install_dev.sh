@@ -186,8 +186,14 @@ verify_lttng_tracer_loadable() {
   fi
 
   local DRY_OUT DRY_RC
-  DRY_OUT=$(sudo modprobe --dry-run -v lttng-tracer 2>&1) || true
-  DRY_RC=$?
+  # NOTE: `cmd || true; rc=$?` always yields rc=0 (the `true`), silently masking
+  # a modprobe rejection and disabling the Secure Boot diagnosis below. Capture
+  # the real status via the if-condition (set -e safe).
+  if DRY_OUT=$(sudo modprobe --dry-run -v lttng-tracer 2>&1); then
+    DRY_RC=0
+  else
+    DRY_RC=$?
+  fi
   if [[ $DRY_RC -eq 0 ]]; then
     success "lttng-tracer loadable (modprobe dry-run OK, version $(modinfo -F version lttng-tracer 2>/dev/null || echo '?'))"
     return
