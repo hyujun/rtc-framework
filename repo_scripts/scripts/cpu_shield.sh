@@ -51,21 +51,17 @@ make_logger "SHIELD"
 # for forward compatibility and so callers (`on --sim`, `on --robot`) need
 # no further changes.
 #
-# SSoT: get_rt_cores() in rt_common.sh — the same CSV is consumed by
-# setup_grub_rt.sh (via get_rt_cores_with_siblings) for nohz_full / rcu_nocbs
-# and by setup_irq_affinity.sh for IRQ affinity. Range expansion comes from
-# _format_cpu_range so cset gets compact notation (e.g. "1-5") regardless of
-# tier.
+# SSoT: get_rt_shield_cpus() in rt_common.sh. get_rt_cores() alone returns slot
+# indices, NOT logical CPU ids — on SMT/hybrid the RT threads pin to logical
+# cpus that differ from the slot numbers (slot→logical via PHYSICAL_CORE_SLOTS,
+# same map C++ ApplyThreadConfig uses), and their HT siblings must be shielded
+# too. get_rt_shield_cpus() performs both steps and returns compact range
+# notation (e.g. "1-3" non-SMT, "2-7"/"1-3,7-9" SMT).
 compute_shield_cores() {
   # Args $1 (mode) and $2 (phys_cores) are accepted for forward compat with
-  # legacy callers; both modes share the same shield range, and get_rt_cores
-  # auto-detects the physical core count via rt_common.sh.
-  local rt_csv
-  rt_csv=$(get_rt_cores)
-  local rt_ids
-  rt_ids=$(_rt_parse_cpulist "$rt_csv")
-  # shellcheck disable=SC2086  # word splitting intended
-  _format_cpu_range $rt_ids
+  # legacy callers; both modes share the same shield range, and get_rt_shield_cpus
+  # auto-detects core count + topology via rt_common.sh.
+  get_rt_shield_cpus
 }
 
 # ── Status mode marker file ──────────────────────────────────────────────────
@@ -81,6 +77,9 @@ do_on() {
 
   local phys_cores
   phys_cores=$(get_physical_cores)
+  if [[ "$phys_cores" -lt 6 ]]; then
+    warn "물리 코어 ${phys_cores}개 (<6) — degraded layout: RT 결정성이 보장되지 않는다 (RTC 권장 ≥6코어)."
+  fi
   local shield_cores
   shield_cores=$(compute_shield_cores "$mode" "$phys_cores")
 
@@ -126,42 +125,14 @@ do_on() {
     fi
   fi
 
-  # Fallback: cgroup v2 통합 경로 또는 cgroup v1 cpuset
-  local cpuset_root=""
-  if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
-    # cgroup v2: 통합 경로
-    cpuset_root="/sys/fs/cgroup"
-  elif [[ -d /sys/fs/cgroup/cpuset ]]; then
-    # cgroup v1: 별도 cpuset 경로
-    cpuset_root="/sys/fs/cgroup/cpuset"
-  fi
-
-  if [[ -n "$cpuset_root" ]]; then
-    local shield_dir="${cpuset_root}/rt_shield"
-    mkdir -p "$shield_dir" 2>/dev/null || true
-    if [[ -d "$shield_dir" ]]; then
-      if [[ -f /sys/fs/cgroup/cgroup.controllers ]]; then
-        # cgroup v2: cpuset 컨트롤러 활성화
-        echo "+cpuset" > "${cpuset_root}/cgroup.subtree_control" 2>/dev/null || {
-          warn "Failed to enable cpuset controller on cgroup v2"
-        }
-        echo "$shield_cores" > "${shield_dir}/cpuset.cpus" 2>/dev/null || {
-          warn "Failed to set cpuset.cpus=${shield_cores} in cgroup v2"
-        }
-        echo "0" > "${shield_dir}/cpuset.mems" 2>/dev/null || true
-      else
-        # cgroup v1
-        echo "$shield_cores" > "${shield_dir}/cpuset.cpus" 2>/dev/null
-        echo 0 > "${shield_dir}/cpuset.mems" 2>/dev/null
-        echo 1 > "${shield_dir}/cpuset.cpu_exclusive" 2>/dev/null || true
-      fi
-      echo "$mode" > "$SHIELD_MODE_FILE"
-      success "cpuset fallback: Core ${shield_cores} isolated via ${shield_dir}"
-      return 0
-    fi
-  fi
-
-  fatal "No isolation mechanism available (cset not installed, cpuset not accessible). Install: sudo apt-get install -y cpuset"
+  # cset 없이는 실질 격리 불가 — 허상 success 금지 (P1-2).
+  # 이전 cgroup fallback 은 rt_shield cpuset 에 cpuset.cpus 만 세팅하고 (a) 어떤
+  # 태스크도 그 안으로 옮기지 않았으며 (b) RT 코어에서 다른 태스크를 밀어내는
+  # complement(housekeeping) cpuset 도 만들지 않아 격리 효과가 0 이면서 success
+  # 를 보고했다. RT-HOST-3 를 못 지키면서 성공으로 위장하지 않도록 명확히 실패한다.
+  # (올바른 cgroup 격리 = 전 태스크 housekeeping cpuset 이주 + cpu_exclusive; 실기
+  # 검증이 필요한 별도 작업. do_off 는 legacy rt_shield 정리를 위해 유지.)
+  fatal "cset 미설치 — CPU shield 를 적용할 수 없다. cgroup fallback 은 실질 격리를 제공하지 못해 비활성화됨. 설치: sudo apt-get install -y cpuset (RT 코어 격리 없이 제어 루프 실행 시 RT-HOST-3 격리 보장이 깨진다)"
 }
 
 # ── Command: off ─────────────────────────────────────────────────────────────

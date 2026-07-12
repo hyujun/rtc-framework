@@ -403,10 +403,10 @@ show_verify() {
       local ver
       ver=$(dpkg -s "$pkg" 2>/dev/null | grep '^Version:' | awk '{print $2}')
       echo -e "  ${pass_icon} ${pkg}  ${DIM}(${ver})${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} ${pkg}  ${DIM}— 미설치${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   done
   if [[ "$WITH_NVIDIA" -eq 1 && "$HAS_NVIDIA" == "yes" ]]; then
@@ -414,10 +414,10 @@ show_verify() {
     nvidia_dkms=$(dpkg -l 'nvidia-dkms-*' 2>/dev/null | grep '^ii' | awk '{print $2, $3}' | head -1)
     if [[ -n "$nvidia_dkms" ]]; then
       echo -e "  ${pass_icon} ${nvidia_dkms}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} nvidia-dkms-*  ${DIM}— NVIDIA DKMS 드라이버 미설치${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
   echo ""
@@ -429,10 +429,10 @@ show_verify() {
     local sz
     sz=$(du -h "$kernel_tar" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} linux-${KERNEL_VERSION}.tar.xz  ${DIM}(${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-${KERNEL_VERSION}.tar.xz  ${DIM}— 파일 없음${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if [[ -f "${BUILD_DIR}/linux-${KERNEL_VERSION}.tar.sign" ]]; then
     echo -e "  ${pass_icon} GPG 서명 파일 존재 (linux-${KERNEL_VERSION}.tar.sign)"
@@ -445,17 +445,17 @@ show_verify() {
   echo -e "${BOLD}[3/7] 압축 해제${NC}"
   if [[ -d "${KERNEL_SRC_DIR}" ]]; then
     echo -e "  ${pass_icon} 소스 디렉토리 존재: ${KERNEL_SRC_DIR}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} 소스 디렉토리 없음: ${KERNEL_SRC_DIR}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if [[ -f "${KERNEL_SRC_DIR}/.rt_extracted" ]]; then
     echo -e "  ${pass_icon} 압축 해제됨 (.rt_extracted 마커 존재)"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} 압축 미해제 (.rt_extracted 마커 없음)"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   echo ""
 
@@ -464,7 +464,7 @@ show_verify() {
   local kconfig="${KERNEL_SRC_DIR}/.config"
   if [[ -f "$kconfig" ]]; then
     echo -e "  ${pass_icon} .config 파일 존재"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
 
     # 주요 설정값 확인 — 공통 + profile별 (profile 무관 옵션을 FAIL 로 오인하지 않도록 분기)
     local config_checks=(
@@ -499,21 +499,21 @@ show_verify() {
         # key=value 형태: 해당 값이 있어야 pass
         if grep -q "^${key}$" "$kconfig" 2>/dev/null; then
           echo -e "  ${pass_icon} ${desc}  ${DIM}(${key})${NC}"
-          ((total_pass++))
+          total_pass=$((total_pass+1))
         else
           local actual
           actual=$(grep "^${config_key}=" "$kconfig" 2>/dev/null | head -1)
           echo -e "  ${fail_icon} ${desc}  ${DIM}(기대: ${key}, 실제: ${actual:-미설정})${NC}"
-          ((total_fail++))
+          total_fail=$((total_fail+1))
         fi
       else
         # key= 형태 (빈 값): 해당 키가 'is not set' 이거나 없어야 pass
         if grep -q "^${config_key}=y" "$kconfig" 2>/dev/null; then
           echo -e "  ${fail_icon} ${desc}  ${DIM}(${config_key}=y 가 아직 활성화됨)${NC}"
-          ((total_fail++))
+          total_fail=$((total_fail+1))
         else
           echo -e "  ${pass_icon} ${desc}  ${DIM}(${config_key} 비활성화 확인)${NC}"
-          ((total_pass++))
+          total_pass=$((total_pass+1))
         fi
       fi
     done
@@ -523,14 +523,14 @@ show_verify() {
     localver=$(grep '^CONFIG_LOCALVERSION=' "$kconfig" 2>/dev/null | sed 's/CONFIG_LOCALVERSION="\(.*\)"/\1/')
     if [[ -n "$localver" ]]; then
       echo -e "  ${pass_icon} LOCALVERSION = \"${localver}\""
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} LOCALVERSION 미설정"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   else
     echo -e "  ${fail_icon} .config 파일 없음"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   echo ""
 
@@ -546,19 +546,19 @@ show_verify() {
     local sz
     sz=$(du -h "$deb_image" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} linux-image .deb  ${DIM}($(basename "$deb_image"), ${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-image .deb  ${DIM}— 빌드 산출물 없음${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if [[ -n "$deb_headers" ]]; then
     local sz
     sz=$(du -h "$deb_headers" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} linux-headers .deb  ${DIM}($(basename "$deb_headers"), ${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-headers .deb  ${DIM}— 빌드 산출물 없음${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   echo ""
 
@@ -568,17 +568,17 @@ show_verify() {
     local installed_ver
     installed_ver=$(dpkg -l "linux-image-${RT_KERNEL_FULL}" 2>/dev/null | grep "^ii" | awk '{print $3}')
     echo -e "  ${pass_icon} linux-image-${RT_KERNEL_FULL}  ${DIM}(${installed_ver})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-image-${RT_KERNEL_FULL}  ${DIM}— dpkg 미설치${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   if dpkg -l "linux-headers-${RT_KERNEL_FULL}" 2>/dev/null | grep -q "^ii"; then
     echo -e "  ${pass_icon} linux-headers-${RT_KERNEL_FULL}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} linux-headers-${RT_KERNEL_FULL}  ${DIM}— dpkg 미설치${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
   # /boot에 커널 이미지 존재 확인
   local vmlinuz="/boot/vmlinuz-${RT_KERNEL_FULL}"
@@ -586,17 +586,17 @@ show_verify() {
     local sz
     sz=$(du -h "$vmlinuz" 2>/dev/null | awk '{print $1}')
     echo -e "  ${pass_icon} ${vmlinuz}  ${DIM}(${sz})${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     # 와일드카드로 rt-custom 패턴 검색
     local found_vmlinuz
     found_vmlinuz=$(ls /boot/vmlinuz-*rt*custom* 2>/dev/null | head -1)
     if [[ -n "$found_vmlinuz" ]]; then
       echo -e "  ${pass_icon} ${found_vmlinuz}  ${DIM}(이름 다를 수 있음)${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} /boot/vmlinuz-*rt*custom*  ${DIM}— 커널 이미지 없음${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
   echo ""
@@ -607,7 +607,7 @@ show_verify() {
   # grub.cfg에 RT 커널 항목 존재 확인
   if [[ -f /boot/grub/grub.cfg ]]; then
     echo -e "  ${pass_icon} /boot/grub/grub.cfg 존재"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
 
     local grub_rt_entry
     grub_rt_entry=$(grep -v recovery /boot/grub/grub.cfg 2>/dev/null \
@@ -616,14 +616,14 @@ show_verify() {
     if [[ -n "$grub_rt_entry" ]]; then
       echo -e "  ${pass_icon} GRUB 메뉴에 RT 커널 등록됨"
       echo -e "      ${DIM}→ ${grub_rt_entry}${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} GRUB 메뉴에 RT 커널 항목 없음"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   else
     echo -e "  ${fail_icon} /boot/grub/grub.cfg 없음"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
 
   # GRUB_DEFAULT 확인
@@ -635,15 +635,15 @@ show_verify() {
       if echo "$grub_default" | grep -q "rt.*custom\|${KERNEL_VERSION}.*rt"; then
         echo -e "  ${pass_icon} GRUB_DEFAULT → RT 커널"
         echo -e "      ${DIM}→ ${grub_default}${NC}"
-        ((total_pass++))
+        total_pass=$((total_pass+1))
       else
         echo -e "  ${fail_icon} GRUB_DEFAULT → RT 커널이 아님"
         echo -e "      ${DIM}→ 현재: ${grub_default}${NC}"
-        ((total_fail++))
+        total_fail=$((total_fail+1))
       fi
     else
       echo -e "  ${fail_icon} GRUB_DEFAULT 설정 없음"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
 
@@ -651,10 +651,10 @@ show_verify() {
   if [[ "$HAS_NVIDIA" == "yes" && -f /etc/default/grub ]]; then
     if grep -q "nvidia.NVreg_EnableMSI=1" /etc/default/grub 2>/dev/null; then
       echo -e "  ${pass_icon} NVIDIA MSI 활성화  ${DIM}(nvidia.NVreg_EnableMSI=1)${NC}"
-      ((total_pass++))
+      total_pass=$((total_pass+1))
     else
       echo -e "  ${fail_icon} NVIDIA MSI 미설정  ${DIM}(nvidia.NVreg_EnableMSI=1 없음)${NC}"
-      ((total_fail++))
+      total_fail=$((total_fail+1))
     fi
   fi
 
@@ -664,11 +664,11 @@ show_verify() {
   echo -e "  커널 버전: $(uname -r)"
   if uname -v 2>/dev/null | grep -q PREEMPT_RT; then
     echo -e "  ${pass_icon} PREEMPT_RT 활성  ${DIM}($(uname -v))${NC}"
-    ((total_pass++))
+    total_pass=$((total_pass+1))
   else
     echo -e "  ${fail_icon} PREEMPT_RT 비활성 — 재부팅 필요"
     echo -e "      ${DIM}현재: $(uname -v)${NC}"
-    ((total_fail++))
+    total_fail=$((total_fail+1))
   fi
 
   # ── 요약 ────────────────────────────────────────────────────────────────
@@ -878,6 +878,10 @@ else
   scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
 
   # PREEMPT_RT 활성화 (6.12+ mainline — 외부 패치 불요)
+  # CONFIG_PREEMPT_RT 는 CONFIG_EXPERT 에 의존한다. /boot/config fallback 대신
+  # `make defconfig` 로 시작한 경우 EXPERT 가 꺼져 있어 olddefconfig 가 PREEMPT_RT 를
+  # silent drop → -rt-custom 라벨의 비-RT 커널이 빌드된다. 먼저 EXPERT 를 활성화한다.
+  scripts/config --enable CONFIG_EXPERT
   scripts/config --disable CONFIG_PREEMPT_NONE
   scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
   scripts/config --enable CONFIG_PREEMPT_RT
@@ -923,6 +927,14 @@ else
 
   # 새 옵션에 대한 기본값 적용
   make olddefconfig
+
+  # PREEMPT_RT 는 절대 조건 — olddefconfig 가 드롭했으면 hard-fail 한다. 그대로
+  # 진행하면 LOCALVERSION="-rt-custom" 라벨을 단 *비-RT* 커널이 빌드/설치되어
+  # 부팅 후 RT 로 오인된다 (batch 모드에서 특히 위험). 다른 profile 옵션은 성능
+  # fallback 이라 fail-soft 로 두되, RT 활성만은 여기서 막는다.
+  if ! grep -q "^CONFIG_PREEMPT_RT=y$" .config 2>/dev/null; then
+    error "CONFIG_PREEMPT_RT 가 .config 에 반영되지 않았습니다 (olddefconfig 가 드롭 — EXPERT 의존성/아키텍처 미지원 가능). -rt-custom 라벨의 비-RT 커널 빌드를 막기 위해 중단합니다. menuconfig 에서 'General setup → Preemption Model → Fully Preemptible Kernel (Real-Time)' 를 확인하세요."
+  fi
 
   # Post-verify: profile별 필수 옵션이 실제로 = y 인지 점검 (olddefconfig 가
   # 의존성 불만족으로 드롭시킬 수 있음 — 그 경우 사용자에게 알림, fail-soft).
@@ -1122,7 +1134,9 @@ else
 
   # ── Secure Boot 감지 ──────────────────────────────────────────────────────
   # 미서명 custom 커널 / DKMS 모듈은 Secure Boot 활성 시 부팅·로드가 차단된다.
+  SECURE_BOOT_ACTIVE=0
   if command -v mokutil &>/dev/null && mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
+    SECURE_BOOT_ACTIVE=1
     warn "Secure Boot 가 활성 상태입니다 — 미서명 custom RT 커널은 부팅이 차단될 수 있습니다."
     warn "  대응: BIOS 에서 Secure Boot 비활성화, 또는 MOK 서명 후 enroll (enroll_lttng_mok.sh 참고)."
   fi
@@ -1162,23 +1176,32 @@ else
     if [[ -n "$GRUB_ENTRY" ]]; then
       info "GRUB 메뉴 항목: ${GRUB_ENTRY}"
 
-      GRUB_FILE="/etc/default/grub"
-      cp "$GRUB_FILE" "${GRUB_FILE}.bak.rt.$(date +%Y%m%d%H%M%S)"
-
-      if grep -q '^GRUB_DEFAULT=' "$GRUB_FILE"; then
-        sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${GRUB_ENTRY}\"|" "$GRUB_FILE"
+      if [[ "$SECURE_BOOT_ACTIVE" -eq 1 ]]; then
+        # Secure Boot 활성 + 미서명 커널을 기본 부팅으로 지정하면, shim 이 로드를
+        # 거부해 기본 부팅 자체가 실패한다 (headless/짧은 timeout 에서 원격 복구
+        # 난이도 급상승). known-good 커널을 기본으로 남겨두고 수동 전환만 안내한다.
+        warn "Secure Boot 활성 — 미서명 RT 커널을 기본 부팅으로 설정하지 않습니다 (기본 부팅 실패 방지)."
+        warn "  RT 커널로 부팅: GRUB 메뉴에서 수동 선택, 또는 MOK 서명·enroll 후 아래로 기본 설정:"
+        warn "    sudo grub-set-default '${GRUB_ENTRY}' && sudo update-grub"
       else
-        echo "GRUB_DEFAULT=\"${GRUB_ENTRY}\"" >> "$GRUB_FILE"
-      fi
+        GRUB_FILE="/etc/default/grub"
+        cp "$GRUB_FILE" "${GRUB_FILE}.bak.rt.$(date +%Y%m%d%H%M%S)"
 
-      if update-grub >/dev/null 2>&1; then
-        success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
-      else
-        warn "update-grub 실패 — GRUB_DEFAULT 는 기록됐으나 grub.cfg 재생성 실패. 수동: sudo update-grub"
-      fi
+        if grep -q '^GRUB_DEFAULT=' "$GRUB_FILE"; then
+          sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${GRUB_ENTRY}\"|" "$GRUB_FILE"
+        else
+          echo "GRUB_DEFAULT=\"${GRUB_ENTRY}\"" >> "$GRUB_FILE"
+        fi
 
-      info "검증 — /etc/default/grub 의 GRUB_DEFAULT:"
-      grep '^GRUB_DEFAULT=' "$GRUB_FILE" | sed 's/^/  /'
+        if update-grub >/dev/null 2>&1; then
+          success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
+        else
+          warn "update-grub 실패 — GRUB_DEFAULT 는 기록됐으나 grub.cfg 재생성 실패. 수동: sudo update-grub"
+        fi
+
+        info "검증 — /etc/default/grub 의 GRUB_DEFAULT:"
+        grep '^GRUB_DEFAULT=' "$GRUB_FILE" | sed 's/^/  /'
+      fi
     else
       warn "GRUB 메뉴에서 RT 커널 항목을 찾을 수 없습니다"
       warn "수동 설정 방법:"

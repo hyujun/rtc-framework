@@ -382,7 +382,7 @@ sudo cpu_shield.sh off           # 격리 해제
 cpu_shield.sh status             # 상태 확인 (sudo 불필요)
 ```
 
-**격리 방식:** cset shield 우선 -> cgroup v2/v1 cpuset fallback
+**격리 방식:** cset shield (필수). 과거 cgroup v2/v1 cpuset fallback 은 태스크 이주·complement cpuset 없이 빈 `rt_shield` 만 만들어 **실질 격리를 제공하지 못했으므로 비활성화**되었다 — `cset` 미설치 시 shield 는 허상 success 대신 명확히 실패한다 (`sudo apt-get install -y cpuset` 로 설치; `install_cset_tools` 가 robot/full 설치 시 자동 처리).
 
 **Tier 모델:**
 

@@ -20,8 +20,10 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
 # ROS prefix — setup_env.sh sources /opt/ros/<distro>/setup.bash and exports
 # $ROS_DISTRO. Fall back to the literal /opt/ros/ prefix so the audit still
 # catches ROS-resident libraries when $ROS_DISTRO is unset (verify mode).
+# No trailing slash: the allowlist patterns below append "/", so a trailing
+# slash here would yield "/opt/ros//" and never match ldd output (double slash).
 ROS_PREFIX="/opt/ros/${ROS_DISTRO:-}"
-[[ -z "${ROS_DISTRO:-}" ]] && ROS_PREFIX="/opt/ros/"
+[[ -z "${ROS_DISTRO:-}" ]] && ROS_PREFIX="/opt/ros"
 
 echo "═══ RPATH + ldd 격리 검증 (${WS}) ═══"
 echo ""

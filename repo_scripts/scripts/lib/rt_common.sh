@@ -737,6 +737,108 @@ get_rt_cores_with_siblings() {
   _rt_expand_smt_siblings "$rt_csv"
 }
 
+# Translate a thread_config *slot index* into the kernel logical CPU id that
+# ApplyThreadConfig actually pins. Mirrors C++ rtc::SlotToLogicalCpu():
+# PHYSICAL_CORE_SLOTS[slot] is the primary logical cpu of that physical core
+# (SMT sibling excluded). Canonical home — verify_rt_runtime.sh consumes this
+# too (previously a local duplicate). Empty PHYSICAL_CORE_SLOTS (container /
+# no sysfs) or out-of-range slot → identity fallback (legacy behaviour).
+# Requires detect_hybrid_capability to have populated PHYSICAL_CORE_SLOTS.
+slot_to_logical_cpu() {
+  local slot="$1"
+  if [[ "$slot" -lt 0 ]]; then
+    echo "$slot"
+    return 0
+  fi
+  local -a _slot_arr=()
+  read -ra _slot_arr <<<"${PHYSICAL_CORE_SLOTS:-}"
+  local count=${#_slot_arr[@]}
+  if (( count == 0 || slot >= count )); then
+    echo "$slot"
+    return 0
+  fi
+  echo "${_slot_arr[$slot]}"
+}
+
+# Expand a CSV/range list of LOGICAL cpu ids to include each one's SMT siblings
+# (cpus sharing the same physical_package_id + core_id), sorted + range-collapsed.
+# Distinct from _rt_expand_smt_siblings(), which takes *physical core ids* and
+# matches them against core_id; this takes already-resolved logical cpus. Honors
+# $RTC_SYSFS_ROOT for unit tests.
+_rt_expand_logical_siblings() {
+  local raw="$1"
+  local cpu_root="${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu"
+  local ids
+  ids=$(_rt_parse_cpulist "$raw")
+  [[ -z "$ids" ]] && { echo ""; return 0; }
+
+  # Build (pkg,core_id) → "cpuA cpuB ..." map from sysfs topology.
+  local -A key_to_cpus=()
+  local cpu_dir cpu pkg core key
+  for cpu_dir in "$cpu_root"/cpu[0-9]*; do
+    [[ -d "$cpu_dir" ]] || continue
+    cpu="${cpu_dir##*/cpu}"
+    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
+    core=$(_rt_read_trim "$cpu_dir/topology/core_id")
+    [[ -z "$core" ]] && continue
+    pkg=$(_rt_read_trim "$cpu_dir/topology/physical_package_id")
+    key="${pkg:-0}_${core}"
+    key_to_cpus[$key]="${key_to_cpus[$key]:+${key_to_cpus[$key]} }$cpu"
+  done
+
+  # Resolve each logical cpu to its full sibling set.
+  local result_cpus=()
+  local lg pkgl corel keyl sib
+  for lg in $ids; do
+    corel=$(_rt_read_trim "$cpu_root/cpu${lg}/topology/core_id")
+    pkgl=$(_rt_read_trim "$cpu_root/cpu${lg}/topology/physical_package_id")
+    keyl="${pkgl:-0}_${corel}"
+    if [[ -n "$corel" && -n "${key_to_cpus[$keyl]+x}" ]]; then
+      for sib in ${key_to_cpus[$keyl]}; do
+        result_cpus+=("$sib")
+      done
+    elif [[ -d "$cpu_root/cpu${lg}" ]]; then
+      # cpuN 디렉토리는 있으나 topology(core_id) 만 없음 — 그대로 통과.
+      result_cpus+=("$lg")
+    fi
+    # cpuN 디렉토리 자체가 없으면 존재하지 않는 코어(저코어 머신에서 degraded
+    # layout 이 만든 phantom, 예: 2코어에서 core 2·3) → shield 대상에서 제외한다.
+    # cset/taskset 에 없는 코어를 넘겨 실패하는 것을 막는다.
+  done
+
+  local sorted
+  sorted=$(printf '%s\n' "${result_cpus[@]}" | sort -nu | tr '\n' ' ')
+  # shellcheck disable=SC2086  # word splitting intended
+  _format_cpu_range $sorted
+}
+
+# The LOGICAL CPU set that cset/cgroup must isolate for RT threads.
+# get_rt_cores() returns *slot indices* (== C++ ThreadConfig::cpu_core), NOT
+# logical cpu ids. On SMT/hybrid systems the two differ (e.g. slot 1 → logical
+# cpu 2 on a P-core-HT NUC), so shielding the raw slots would leave the real RT
+# logical CPUs unprotected and shield the wrong siblings. This translates each
+# RT slot → logical cpu (slot_to_logical_cpu) and adds HT siblings, matching
+# where ApplyThreadConfig pins and keeping the shared L1/L2 free of other work.
+# Range-collapsed CSV (e.g. "1-3" non-SMT, "2-7" interleaved SMT, "1-3,7-9"
+# primaries-first SMT).
+#
+# NOTE: get_rt_cores_with_siblings() (GRUB nohz_full/rcu_nocbs) still expands via
+# core_id, not slot→logical. The two agree on primaries-first enumeration but can
+# diverge on interleaved/hybrid layouts — unifying GRUB onto this logical basis is
+# tracked as a follow-up (needs its own real-hardware validation).
+get_rt_shield_cpus() {
+  detect_hybrid_capability >/dev/null 2>&1 || true
+  # Build a CSV of logical cpus (_rt_expand_logical_siblings / _rt_parse_cpulist
+  # split on commas, not whitespace — a space-joined list would collapse to one
+  # token, e.g. "1 2 3" → "123").
+  local slot logicals="" lg
+  for slot in $(_rt_parse_cpulist "$(get_rt_cores)"); do
+    lg=$(slot_to_logical_cpu "$slot")
+    logicals="${logicals:+$logicals,}$lg"
+  done
+  _rt_expand_logical_siblings "$logicals"
+}
+
 # ── Canonical thread layout printout ───────────────────────────────────────
 # Mirrors rtc_base/threading/thread_config.hpp::SelectThreadConfigs().
 # Callers (cpu_shield.sh::do_status, setup_irq_affinity.sh) used to keep
@@ -752,7 +854,10 @@ get_rt_cores_with_siblings() {
 print_thread_layout() {
   local ncpu="${1:-$(get_physical_cores)}"
   echo -e "  ${BOLD}Thread layout (${ncpu}-core, layout v4.1)${NC}"
-  if [[ "$ncpu" -le 4 ]]; then
+  # 경계는 SelectThreadConfigs() dispatch 와 일치해야 한다: <6 → degraded(4-core,
+  # MPC CFS), {6,7} → 6-core(MPC FIFO). ncpu=5 를 6-core 블록으로 그리면 런타임이
+  # 실제로 쓰지 않는 hard-RT MPC 를 표시하게 된다 (dispatch 는 5 를 degraded 로 처리).
+  if [[ "$ncpu" -le 5 ]]; then
     echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (degraded)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin, degraded)"

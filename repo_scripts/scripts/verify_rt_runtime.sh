@@ -100,25 +100,9 @@ PHYSICAL_CORES="$TOTAL_CORES"
 # because slot 1 maps to logical cpu 2 (P-core 1 primary), not cpu 1 (sibling).
 detect_hybrid_capability
 
-# Translate a thread_config slot index into the kernel logical CPU id that
-# ApplyThreadConfig actually pinned. Mirrors C++ rtc::SlotToLogicalCpu()
-# (thread_utils.hpp). Empty PHYSICAL_CORE_SLOTS (container without sysfs) or
-# out-of-range slot → identity fallback (preserves legacy behaviour).
-slot_to_logical_cpu() {
-  local slot="$1"
-  if [[ "$slot" -lt 0 ]]; then
-    echo "$slot"
-    return 0
-  fi
-  local -a slots=()
-  read -ra slots <<<"${PHYSICAL_CORE_SLOTS:-}"
-  local count=${#slots[@]}
-  if (( count == 0 || slot >= count )); then
-    echo "$slot"
-    return 0
-  fi
-  echo "${slots[$slot]}"
-}
+# slot_to_logical_cpu() is now canonical in rt_common.sh (sourced above) — the
+# same translator cpu_shield.sh::get_rt_shield_cpus uses, so the shield set and
+# the runtime affinity check agree by construction. (Previously duplicated here.)
 
 # ── thread_config.hpp 기반 기대값 테이블 ──────────────────────────────────────
 # 코어 수에 따라 기대값이 달라진다.
@@ -269,8 +253,11 @@ get_thread_cpu_affinity() {
   if command -v taskset &>/dev/null; then
     local out
     out=$(taskset -p "$tid" 2>/dev/null) || return 1
-    # "pid N's current affinity mask: 4" → hex mask
-    echo "$out" | grep -oE "[0-9a-fA-F]+$"
+    # "pid N's current affinity mask: 2,00000000" — taskset groups large masks
+    # into comma-separated 32-bit words (most-significant first). Strip the label
+    # and commas to reassemble the full hex; grabbing only the trailing word
+    # (`[0-9a-fA-F]+$`) would drop every CPU ≥ 32 → false FAIL / false migration.
+    echo "$out" | sed 's/.*: *//' | tr -d ','
   fi
 }
 
@@ -552,16 +539,21 @@ check_scheduling_policy() {
       prio_ok=0
     fi
 
-    if [[ "$policy_ok" -eq 1 && "$prio_ok" -eq 1 ]]; then
+    if [[ "$policy_ok" -eq 0 ]]; then
+      _fail "${ename} (TID ${tid}): ${actual_policy} (기대값: ${expected_policy_name})"
+      _category_update "scheduling_policy" "FAIL"
+    elif [[ "$epolicy" -eq 1 && -z "$actual_prio" ]]; then
+      # 정책은 맞지만 우선순위를 못 읽음 (chrt 미설치 — /proc fallback 없음).
+      # 빈 값을 PASS 로 위장하지 않고 "미검증" WARN 으로 노출한다.
+      _warn "${ename} (TID ${tid}): ${actual_policy} (우선순위 확인 불가 — chrt 미설치)"
+      _category_update "scheduling_policy" "WARN"
+    elif [[ "$prio_ok" -eq 1 ]]; then
       if [[ "$epolicy" -eq 1 ]]; then
         _pass "${ename} (TID ${tid}): ${actual_policy} prio ${actual_prio}"
       else
         _pass "${ename} (TID ${tid}): ${actual_policy}"
       fi
       ((ok++)) || true
-    elif [[ "$policy_ok" -eq 0 ]]; then
-      _fail "${ename} (TID ${tid}): ${actual_policy} (기대값: ${expected_policy_name})"
-      _category_update "scheduling_policy" "FAIL"
     else
       _warn "${ename} (TID ${tid}): ${actual_policy} prio ${actual_prio} (기대값: prio ${eprio})"
       _category_update "scheduling_policy" "WARN"
@@ -902,12 +894,14 @@ check_rt_throttling() {
   local rt_period
   rt_period=$(sysctl -n kernel.sched_rt_period_us 2>/dev/null || echo "unknown")
 
-  # RT throttle event 확인 (/proc/sched_debug에서 rt_throttled 카운터)
+  # RT throttle event 확인. sched_debug 는 rt_rq 마다 `.rt_throttled : 0` 필드를
+  # 출력하므로 `grep -c "rt_throttled"` 는 *필드 존재*(≈nCPU, 항상 >0)를 세어
+  # 튜닝 안 된 모든 머신에서 오탐한다. 값이 실제로 1 이상인 줄만 센다.
   if [[ -r "/proc/sched_debug" ]]; then
     local throttled_count
-    throttled_count=$(grep -c "rt_throttled" /proc/sched_debug 2>/dev/null || echo "0")
+    throttled_count=$(grep -cE 'rt_throttled[[:space:]]*:[[:space:]]*[1-9]' /proc/sched_debug 2>/dev/null) || throttled_count=0
     if [[ "$throttled_count" -gt 0 && "$rt_runtime" != "-1" ]]; then
-      _warn "RT 쓰로틀링 이벤트 감지 (sched_debug에 rt_throttled 존재)"
+      _warn "RT 쓰로틀링 이벤트 감지 (${throttled_count}개 rt_rq 에서 rt_throttled≥1)"
       _category_update "rt_throttling" "WARN"
     fi
   fi

@@ -173,7 +173,10 @@ setup_workspace() {
 # 기존 install_ur_driver / install_pinocchio / install_proxsuite / install_behaviortree
 # 와 멱등 — rosdep이 동일 apt 패키지를 먼저 설치하면 후속 함수는 이미 설치됨.
 install_rosdep_deps() {
-  info "Resolving package.xml deps via rosdep (${ROS_DISTRO})..."
+  # check_prerequisites 가 세운 ROS_DISTRO_DETECTED 를 쓴다 — $ROS_DISTRO 는 비표준
+  # 소싱 경로에서 비어 있을 수 있어 rosdep --rosdistro="" 로 실행될 위험이 있다.
+  local rosdistro="${ROS_DISTRO_DETECTED:-${ROS_DISTRO:-}}"
+  info "Resolving package.xml deps via rosdep (${rosdistro})..."
 
   if ! command -v rosdep &>/dev/null; then
     warn "rosdep not found — skipping (install_ros2 should have set it up)"
@@ -182,7 +185,7 @@ install_rosdep_deps() {
 
   # Ensure rosdep database is current. Failures are non-fatal (network).
   sudo rosdep init 2>/dev/null || true
-  rosdep update --rosdistro="${ROS_DISTRO}" 2>/dev/null || true
+  rosdep update --rosdistro="${rosdistro}" 2>/dev/null || true
 
   # Run from workspace root so --from-paths resolves correctly.
   local ws_src="${WORKSPACE}/src"
@@ -194,7 +197,7 @@ install_rosdep_deps() {
   rosdep install \
       --from-paths "$ws_src" \
       --ignore-src \
-      --rosdistro="${ROS_DISTRO}" \
+      --rosdistro="${rosdistro}" \
       -y \
       || warn "rosdep install reported errors (likely distro-missing keys handled by manual install path — continuing)"
   success "rosdep deps installed"

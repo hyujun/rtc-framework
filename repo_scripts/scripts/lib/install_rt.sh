@@ -25,13 +25,19 @@ fi
 [[ -n "${_INSTALL_RT_LOADED:-}" ]] && return 0
 _INSTALL_RT_LOADED=1
 
+# RT host 구성 중 실패한 단계 누적 (report_rt_setup_failures 가 요약 출력).
+RT_SETUP_FAILURES=()
+
 # ── 공통 wrapper ────────────────────────────────────────────────────────────
 # Usage: run_setup_script "Description" "script_basename.sh" [extra args...]
 # 동작:
-#   1) repo_scripts/scripts/<basename> 존재 확인 (없으면 warn + return 0)
+#   1) repo_scripts/scripts/<basename> 존재 확인 (없으면 warn + 실패 기록)
 #   2) info "Description..." → sudo bash <script> [args] 실행
-#   3) 성공 시 success, 실패 시 warn (install.sh 흐름은 계속)
-# 반환: 0 (스크립트 실패 시도 caller 종료를 막기 위해 항상 0)
+#   3) 성공 시 success + return 0, 실패/미존재 시 warn + RT_SETUP_FAILURES 기록 + return 1
+# 반환: 실제 상태 (0=성공, 1=실패). RT 구성 실패를 install 성공으로 숨기지 않는다.
+#   bare 호출자(setup_rt_kernel_params/setup_cpu_governor)는 `|| true` 로 set -e
+#   중단을 막되 실패는 RT_SETUP_FAILURES 에 남는다. `if run_setup_script` 호출자
+#   (irq/udp/nvidia)는 실패 시 reboot/persistence 안내를 올바르게 건너뛴다.
 run_setup_script() {
   local desc="$1"
   local basename="$2"
@@ -42,24 +48,41 @@ run_setup_script() {
   if [[ ! -f "$script" ]]; then
     warn "${basename} not found — skipping ${desc,,}"
     warn "Run manually: sudo ${script} [args]"
-    return 0
+    RT_SETUP_FAILURES+=("${desc} (script not found: ${basename})")
+    return 1
   fi
 
   info "${desc}..."
   if sudo bash "$script" "$@"; then
     success "${desc} complete"
-  else
-    warn "${desc} failed — continuing without it"
-    warn "Run manually: sudo ${script} [args]"
+    return 0
   fi
-  return 0
+  warn "${desc} failed — continuing (RT host not fully configured)"
+  warn "Run manually: sudo ${script} [args]"
+  RT_SETUP_FAILURES+=("${desc}")
+  return 1
+}
+
+# RT 구성 중 누적된 실패를 눈에 띄게 요약. 실패가 있으면 1 반환 (호출자가 exit
+# 정책 결정 — Phase 0 은 best-effort 유지, install 은 계속).
+report_rt_setup_failures() {
+  [[ ${#RT_SETUP_FAILURES[@]} -eq 0 ]] && return 0
+  warn "━━━ RT host 구성이 완전하지 않습니다 (${#RT_SETUP_FAILURES[@]}개 단계 실패) ━━━"
+  local f
+  for f in "${RT_SETUP_FAILURES[@]}"; do
+    warn "  ✗ ${f}"
+  done
+  warn "  위 단계는 수동 재실행이 필요하다. check_rt_setup.sh 로 상태 확인 권장."
+  return 1
 }
 
 # ── RT permissions (robot + full) ──────────────────────────────────────────────
 install_rt_permissions() {
   info "Configuring RT scheduling permissions..."
   sudo groupadd -f realtime
-  sudo usermod -aG realtime "$USER"
+  # sudo 로 install.sh 를 실행하면 $USER 가 root 일 수 있다 — realtime 그룹은 실제
+  # 조작 사용자에게 부여해야 하므로 SUDO_USER 를 우선한다.
+  sudo usermod -aG realtime "${SUDO_USER:-$USER}"
 
   if ! grep -q "@realtime.*rtprio" /etc/security/limits.conf; then
     echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf > /dev/null
@@ -151,7 +174,8 @@ install_cset_tools() {
 # NVIDIA 시스템은 setup_nvidia_rt.sh [3/11]에서도 같은 GRUB 파라미터를 설정하지만,
 # "이미 존재" 로 건너뛰므로 중복 문제는 없다.
 setup_rt_kernel_params() {
-  run_setup_script "Configuring GRUB RT kernel parameters" "setup_grub_rt.sh"
+  # || true: bare 호출이라 set -e 중단을 막는다 (실패는 RT_SETUP_FAILURES 에 기록됨).
+  run_setup_script "Configuring GRUB RT kernel parameters" "setup_grub_rt.sh" || true
 }
 
 # ── [방안 D] NIC IRQ affinity (robot + full) ────────────────────────────────
@@ -207,5 +231,6 @@ setup_cpu_governor() {
   if lspci 2>/dev/null | grep -qi 'nvidia'; then
     return
   fi
-  run_setup_script "Setting CPU governor to performance" "setup_cpu_governor.sh"
+  # || true: bare 호출이라 set -e 중단을 막는다 (실패는 RT_SETUP_FAILURES 에 기록됨).
+  run_setup_script "Setting CPU governor to performance" "setup_cpu_governor.sh" || true
 }

@@ -85,7 +85,7 @@ show_help() {
   echo "             Installs: everything above"
   echo ""
   echo "  verify — Verify installation only (no deps, no build, no RT setup)"
-  echo "             Checks: MPC libraries under /usr/local, Panda URDF, workspace install/"
+  echo "             Checks: MPC libraries under deps/install, Panda URDF, workspace install/"
   echo ""
   echo "Scope:"
   echo "  --all             Install everything: deps + build + RT system setup"
@@ -195,8 +195,8 @@ done
 
 case "$MODE" in
   sim)   MODE_DESC="Simulation  (MuJoCo + Pinocchio + ProxSuite + MPC deps, hand: fake response, no RT perms)" ;;
-  robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + ProxSuite + MPC deps + RT permissions, no MuJoCo)" ;;
-  full)  MODE_DESC="Full        (UR driver + Pinocchio + ProxSuite + MPC deps + MuJoCo + RT permissions)" ;;
+  robot) MODE_DESC="Real Robot  (UR driver + Pinocchio + ProxSuite + MPC deps, no MuJoCo; RT setup: --rt/--all)" ;;
+  full)  MODE_DESC="Full        (UR driver + Pinocchio + ProxSuite + MPC deps + MuJoCo; RT setup: --rt/--all)" ;;
 esac
 [[ "$MODE_VERIFY" -eq 1 ]] && MODE_DESC="Verify      (no deps, no build — check install artifacts only)"
 
@@ -225,25 +225,14 @@ echo ""
 
 # ── Clone / update package ─────────────────────────────────────────────────────
 setup_package() {
-  # Determine the repo directory.
-  # If install.sh is already inside <workspace>/src/<repo>/, use that directly.
-  local SCRIPT_DIR
+  # install.sh 는 항상 <workspace>/src/<repo>/ 안에서 실행된다 (그 전에
+  # check_workspace_structure 가 이를 강제). 과거 여기 있던 git clone 분기는
+  # 도달 불가능한 dead code 였고(clone 하려면 이미 repo 를 확보한 상태여야 함)
+  # cwd 를 복원 없이 변경하는 부작용까지 있었다. 현재는 위치 확인만 한다.
+  local SCRIPT_DIR REPO_NAME
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local REPO_NAME
   REPO_NAME="$(basename "$SCRIPT_DIR")"
-
-  cd "$WORKSPACE/src"
-
-  if [[ -d "$REPO_NAME" && "$SCRIPT_DIR" == "$WORKSPACE/src/$REPO_NAME" ]]; then
-    info "Repository already present at $WORKSPACE/src/$REPO_NAME — skipping clone"
-  elif [[ ! -d "rtc-framework" ]]; then
-    info "Cloning rtc-framework..."
-    git clone https://github.com/hyujun/rtc-framework.git
-    REPO_NAME="rtc-framework"
-  else
-    warn "rtc-framework already exists — skipping clone"
-    REPO_NAME="rtc-framework"
-  fi
+  info "Repository: ${WORKSPACE}/src/${REPO_NAME}"
 }
 
 # ── Build (build.sh에 위임) ───────────────────────────────────────────────────
@@ -508,6 +497,8 @@ if [[ "$DO_RT" -eq 1 ]]; then
       setup_udp_optimization
       setup_nvidia_rt
       setup_cpu_governor
+      # RT 구성 단계 실패를 요약 노출 (best-effort 유지, install 은 계속).
+      report_rt_setup_failures || true
       ;;
     sim)
       info "Skipping RT setup (sim mode does not require RT configuration)"
@@ -519,6 +510,12 @@ else
   fi
 fi
 
-verify_installation
+# --skip-build/--rt 는 workspace 를 빌드하지 않으므로 package 검증을 건너뛴다
+# (안 그러면 모든 sudo RT 작업 후 미빌드 workspace 로 hard-fail).
+if [[ "$SKIP_BUILD" -eq 0 ]]; then
+  verify_installation
+else
+  info "Skipping package verification (--skip-build/--rt: workspace not built this run)"
+fi
 verify_mpc_deps || true
 print_summary

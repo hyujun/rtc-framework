@@ -136,16 +136,23 @@ fi
 GRUB_MODIFIED=0
 NEW_CMDLINE="$CURRENT_CMDLINE"
 
-# ── 값이 있는 파라미터: 이미 존재하면 건너뛰고, 없으면 추가 ──────────────────
+# ── 값이 있는 파라미터: 값까지 비교 (값-인식 멱등성) ──────────────────────────
+# 이름만 비교하면 core 수 변경 시 nohz_full/rcu_nocbs 의 stale 값(예: 이전
+# 6c "1-3")이 그대로 남아 잘못된 RT 코어셋으로 부팅한다. 값이 다르면 교체한다.
 for param in "${!GRUB_PARAMS_WITH_VALUE[@]}"; do
   value="${GRUB_PARAMS_WITH_VALUE[$param]}"
-  # 파라미터 이름이 이미 존재하는지 확인 (값이 다를 수 있으므로 이름만 체크)
-  if ! echo "$NEW_CMDLINE" | grep -qE "(^| )${param}="; then
+  if echo "$NEW_CMDLINE" | grep -qE "(^| )${param}=${value}( |$)"; then
+    info "  Already present: ${param}=${value} — skipped"
+  elif echo "$NEW_CMDLINE" | grep -qE "(^| )${param}="; then
+    # 이름은 있으나 값이 다름 → in-place 교체 (core 수 변화 등으로 stale)
+    _grub_old=$(echo "$NEW_CMDLINE" | grep -oE "${param}=[^ ]*" | head -1)
+    NEW_CMDLINE=$(echo "$NEW_CMDLINE" | sed -E "s#(^| )${param}=[^ ]*#\1${param}=${value}#")
+    GRUB_MODIFIED=1
+    info "  Updating: ${_grub_old} → ${param}=${value} (값 변경)"
+  else
     NEW_CMDLINE="${NEW_CMDLINE:+${NEW_CMDLINE} }${param}=${value}"
     GRUB_MODIFIED=1
     info "  Adding: ${param}=${value}"
-  else
-    info "  Already present: ${param} — skipped"
   fi
 done
 
@@ -177,10 +184,14 @@ if [[ "$GRUB_MODIFIED" -eq 1 ]]; then
 
   success "GRUB configuration updated"
 
-  # update-grub 실행
+  # update-grub 실행 — 실패를 삼키고 success 를 찍으면 grub.cfg 미재생성이 은폐된다.
   info "  Running update-grub..."
-  update-grub 2>/dev/null || true
-  success "update-grub complete"
+  if update-grub 2>/dev/null; then
+    success "update-grub complete"
+  else
+    warn "update-grub FAILED — /etc/default/grub 은 수정됐으나 grub.cfg 가 재생성되지 않음"
+    warn "  RT 파라미터가 reboot 후 적용되지 않는다. 수동 실행: sudo update-grub"
+  fi
 else
   info "  All GRUB parameters already configured — no changes needed"
 fi

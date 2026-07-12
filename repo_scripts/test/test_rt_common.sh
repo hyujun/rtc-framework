@@ -762,32 +762,85 @@ test_get_rt_cores_with_siblings_smt_12c24t() {
   expect_eq "rtcs_smt.12c24t" "1-5,13-17" "$got"
 }
 
-test_compute_shield_cores_v4_1_tiers() {
-  # cpu_shield.sh::compute_shield_cores migrated to call get_rt_cores() under
-  # the hood. Verify the post-migration output matches the v4.1 tier table.
-  # Inline-replicate the function body so the test breaks if cpu_shield.sh
-  # drifts from this expectation without sourcing the script (which has
-  # side effects: require_root, file IO).
-  compute_shield_cores_v41() {
-    local rt_csv
-    rt_csv=$(get_rt_cores)
-    local rt_ids
-    rt_ids=$(_rt_parse_cpulist "$rt_csv")
-    # shellcheck disable=SC2086
-    _format_cpu_range $rt_ids
-  }
-  declare -A expected=(
-    [4]="1-3" [6]="1-3" [9]="1-3"
-    [10]="1-4" [11]="1-4"
-    [12]="1-5" [16]="1-5"
-  )
+# ── slot→logical translation (canonical rt_common.sh helper) ─────────────────
+test_slot_to_logical_cpu() {
+  PHYSICAL_CORE_SLOTS="0 2 4 6 8 10"
+  expect_eq "slot2log.s0"       "0"  "$(slot_to_logical_cpu 0)"
+  expect_eq "slot2log.s1"       "2"  "$(slot_to_logical_cpu 1)"
+  expect_eq "slot2log.s3"       "6"  "$(slot_to_logical_cpu 3)"
+  expect_eq "slot2log.sentinel" "-1" "$(slot_to_logical_cpu -1)"   # cpu_core=-1 (no pin)
+  expect_eq "slot2log.oob"      "20" "$(slot_to_logical_cpu 20)"   # out-of-range → identity
+  PHYSICAL_CORE_SLOTS=""
+  expect_eq "slot2log.empty"    "3"  "$(slot_to_logical_cpu 3)"    # container → identity
+  unset PHYSICAL_CORE_SLOTS
+}
+
+# ── cpu_shield.sh::compute_shield_cores → get_rt_shield_cpus (slot→logical+sibling) ─
+# The shield set is the LOGICAL CPUs RT threads pin to (via PHYSICAL_CORE_SLOTS,
+# the same map C++ ApplyThreadConfig uses) plus HT siblings — NOT the raw slot
+# indices get_rt_cores() returns. These tests lock that behaviour under mock sysfs.
+
+test_get_rt_shield_cpus_non_smt() {
+  local root="$TMP/shield_nonsmt"
+  declare -A expected=( [6]="1-3" [8]="1-3" [9]="1-3" [10]="1-4" [11]="1-4" [12]="1-5" [16]="1-5" )
   local n
-  for n in 4 6 9 10 11 12 16; do
+  for n in 6 8 9 10 11 12 16; do
+    _mock_sysfs_non_smt "$root" "$n"
+    mock_write_cpuinfo "$TMP/shield_nonsmt_cpuinfo" "false"
     _force_physical_cores "$n"
     local got
-    got=$(compute_shield_cores_v41)
-    expect_eq "shield.${n}c" "${expected[$n]}" "$got"
+    got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/shield_nonsmt_cpuinfo" \
+          RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus)
+    expect_eq "shield.nonsmt.${n}c" "${expected[$n]}" "$got"
   done
+}
+
+test_get_rt_shield_cpus_smt_primaries_first() {
+  # Standard enum: cpu 0..5 primaries (core_id i), cpu 6..11 siblings.
+  # Slots 1,2,3 → logical 1,2,3 (identity) → + siblings 7,8,9.
+  local root="$TMP/shield_smt_std"
+  _mock_sysfs_smt "$root" 6
+  mock_write_cpuinfo "$TMP/shield_smt_std_cpuinfo" "false"
+  _force_physical_cores 6
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/shield_smt_std_cpuinfo" \
+        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus)
+  expect_eq "shield.smt_primaries.6c" "1-3,7-9" "$got"
+}
+
+test_get_rt_shield_cpus_smt_interleaved() {
+  # Interleaved enum (AMD SMT style): cpu 2i, 2i+1 share core_id i. So slot 1 →
+  # logical 2, slot 2 → logical 4, slot 3 → logical 6 (NOT 1,2,3). Shield =
+  # {2,3,4,5,6,7} = "2-7". The pre-fix code returned raw "1-3", which shielded
+  # logical 1 (core 0's HT sibling — the OS core's hyperthread) instead of the
+  # real RT logical CPUs. This is the regression this whole change fixes.
+  local root="$TMP/shield_smt_il"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5400000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5400000
+  done
+  mock_write_cpuinfo "$TMP/shield_smt_il_cpuinfo" "false"
+  _force_physical_cores 8
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/shield_smt_il_cpuinfo" \
+        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus)
+  expect_eq "shield.smt_interleaved.8c" "2-7" "$got"
+}
+
+test_get_rt_shield_cpus_low_core_no_phantom() {
+  # 2-core machine: the degraded layout still references slots 1,2,3 but cores 2
+  # and 3 do not exist. Phantom cores must be dropped so cset/taskset never gets
+  # an invalid core id (would fail). Only the one existing RT core (1) survives.
+  local root="$TMP/shield_2core"
+  _mock_sysfs_non_smt "$root" 2
+  mock_write_cpuinfo "$TMP/shield_2core_cpuinfo" "false"
+  _force_physical_cores 2
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/shield_2core_cpuinfo" \
+        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus)
+  expect_eq "shield.2core.no_phantom" "1" "$got"
 }
 
 # ── Run all ─────────────────────────────────────────────────────────────────
@@ -818,7 +871,11 @@ test_sanity_check_disagreement
 test_get_rt_cores_with_siblings_non_smt
 test_get_rt_cores_with_siblings_smt_6c12t
 test_get_rt_cores_with_siblings_smt_12c24t
-test_compute_shield_cores_v4_1_tiers
+test_slot_to_logical_cpu
+test_get_rt_shield_cpus_non_smt
+test_get_rt_shield_cpus_smt_primaries_first
+test_get_rt_shield_cpus_smt_interleaved
+test_get_rt_shield_cpus_low_core_no_phantom
 
 # ── Phase 1 safety primitives: write_file_if_changed / with_temporary_disable ──
 

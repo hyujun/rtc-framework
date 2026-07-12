@@ -684,8 +684,19 @@ check_network_udp() {
       if [[ "$actual" == "$expected" ]]; then
         _pass "${key} = ${actual}"
         ((sysctl_ok++)) || true
+      elif [[ "$key" == *_default ]]; then
+        # rmem/wmem_default 는 상한이 아니라 "모든 소켓에 거대 버퍼 방지" 목표값이다.
+        # 초과는 회귀(소켓별 과다 버퍼) → WARN, 미만 → FAIL. `>= expected` 로 통과시키면
+        # 정확히 경고 대상인 과대 설정이 false-pass 한다.
+        if [[ "$actual" -gt "$expected" ]] 2>/dev/null; then
+          _warn "${key} = ${actual} (기대 ${expected} 초과 — 소켓별 과다 버퍼 가능)"
+          _category_update "network_udp" "WARN"
+        else
+          _fail "${key} = ${actual} (기대값: ${expected})"
+          _category_update "network_udp" "FAIL"
+        fi
       elif [[ "$actual" -ge "$expected" ]] 2>/dev/null; then
-        # 현재 값이 기대값 이상이면 OK
+        # _max / backlog 는 상한이므로 기대값 이상이면 OK
         _pass "${key} = ${actual} (>= ${expected})"
         ((sysctl_ok++)) || true
       else
@@ -1116,10 +1127,10 @@ check_benchmark() {
 # Summary output
 # ══════════════════════════════════════════════════════════════════════════════
 print_summary() {
-  local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
+  local categories=("rt_kernel" "cpu_isolation" "hybrid_cpu" "scheduler_memory" "grub_params"
                     "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency"
                     "tracing_setup")
-  local labels=("RT Kernel" "CPU Isolation" "Sched/Memory" "GRUB Params"
+  local labels=("RT Kernel" "CPU Isolation" "Hybrid CPU" "Sched/Memory" "GRUB Params"
                 "RT Permissions" "IRQ Affinity" "Network/UDP" "NVIDIA" "CPU Frequency"
                 "Tracing")
 
@@ -1144,8 +1155,12 @@ print_summary() {
 # JSON output
 # ══════════════════════════════════════════════════════════════════════════════
 print_json() {
-  local categories=("rt_kernel" "cpu_isolation" "scheduler_memory" "grub_params"
-                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency")
+  # Must mirror print_summary's category set so exit-2 FAILs (e.g. hybrid_cpu on
+  # BIOS-HT-off) always have an explanatory row — else JSON `categories` disagrees
+  # with the `summary` counts a CI consumer sees.
+  local categories=("rt_kernel" "cpu_isolation" "hybrid_cpu" "scheduler_memory" "grub_params"
+                    "rt_permissions" "irq_affinity" "network_udp" "nvidia" "cpu_frequency"
+                    "tracing_setup")
   if [[ "$BENCHMARK_MODE" -eq 1 ]]; then
     categories+=("benchmark")
   fi

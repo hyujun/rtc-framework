@@ -44,10 +44,10 @@ export PKG_CONFIG_PATH="${RTC_DEPS_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 [[ -d /opt/onnxruntime ]] && export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}:/opt/onnxruntime"
 
 # MuJoCo binary tarball (no cmake config — rtc_mujoco_sim falls back to find_library).
-# Pick the latest /opt/mujoco-*/ that exists.
-for _mj in /opt/mujoco-3.*; do
-  [[ -d "$_mj" && -f "$_mj/lib/libmujoco.so" ]] && export MUJOCO_DIR="$_mj"
-done
+# Pick the latest /opt/mujoco-*/ that exists. Use `sort -V` (version sort, matches
+# build.sh) — a lexical glob would rank mujoco-3.7.0 above mujoco-3.10.0.
+_mj=$(ls -d /opt/mujoco-* 2>/dev/null | sort -V | tail -1)
+[[ -n "${_mj:-}" && -d "$_mj" && -f "$_mj/lib/libmujoco.so" ]] && export MUJOCO_DIR="$_mj"
 unset _mj
 
 # rtc_mujoco_sim find_package(mujoco) hint — build.sh injects -Dmujoco_ROOT
