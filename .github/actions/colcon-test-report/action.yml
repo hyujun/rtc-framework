@@ -89,9 +89,13 @@ runs:
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
 
-        # Failed test → annotation (GitHub Checks API 노출)
+        # Failed test → annotation (GitHub Checks API 노출). colcon test-result 의
+        # 요약 라인은 "N tests, 0 errors, 0 failures, 0 skipped" 처럼 error/failure 를
+        # 항상 단어로 포함하므로 "errors|failures" 매칭은 0 실패에도 오해성 "Test Failure"
+        # annotation 을 만든다 (실제 실패 특정을 방해). 비-0 카운트("1 error", "4 failures")
+        # 만 매칭해 실제 실패한 test-result 라인만 노출한다.
         colcon test-result --all --verbose 2>&1 \
-          | grep -E "FAILED|errors|failures" \
+          | grep -E "[1-9][0-9]* (errors?|failures?)" \
           | while IFS= read -r line; do
               echo "::error title=Test Failure::${line}"
             done || true
