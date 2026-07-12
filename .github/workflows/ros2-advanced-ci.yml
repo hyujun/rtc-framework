@@ -259,20 +259,30 @@ jobs:
           artifact-suffix: pytest
 
       - name: Collect Python coverage
+        id: pycov
         if: always()
         run: |
-          find build/ -name 'coverage.xml' -print 2>/dev/null | head -5 || true
-          if [ ! -f coverage.xml ]; then
-            FIRST=$(find build/ -name 'coverage.xml' | head -1 || true)
-            [ -n "$FIRST" ] && cp "$FIRST" coverage.xml || true
+          set -eo pipefail
+          # colcon 은 패키지별 build dir 에서 pytest 를 개별 실행하므로 coverage.xml 이
+          # 패키지마다 따로 생성된다. 이전엔 `head -1` 로 하나만 업로드 → 나머지 패키지
+          # 커버리지가 조용히 누락됐다 (python flag under-measured). 이제 발견된 모든 XML
+          # 을 콤마 목록으로 업로드해 Codecov 가 병합(line-max)하도록 한다.
+          mapfile -t FILES < <(find build/ -name 'coverage.xml' 2>/dev/null | sort -u)
+          echo "Found ${#FILES[@]} coverage.xml file(s):"
+          printf '  %s\n' "${FILES[@]}"
+          # 측정 무결성 게이트: python 패키지 2개(rtc_tools, rtc_digital_twin) 미만이면
+          # 부분 업로드이므로 annotation 으로 가시화한다 (silent partial upload 차단).
+          if [ "${#FILES[@]}" -lt 2 ]; then
+            echo "::warning title=Python coverage incomplete::found ${#FILES[@]} coverage.xml (expected 2: rtc_tools + rtc_digital_twin)"
           fi
+          IFS=,; echo "files=${FILES[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Upload Python coverage to Codecov
-        if: always()
+        if: always() && steps.pycov.outputs.files != ''
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.xml
+          files: ${{ steps.pycov.outputs.files }}
           flags: python
           name: rtc-framework-python
           fail_ci_if_error: false
@@ -506,6 +516,15 @@ jobs:
 
           echo "=== Coverage summary ==="
           lcov --summary coverage.info --ignore-errors empty || true
+
+          # 측정 무결성 게이트: coverage.info 가 없거나 SF(파일) 레코드가 0 이면
+          # 빈/부분 리포트가 조용히 업로드되는 것이므로 annotation 으로 가시화한다.
+          # (테스트 timeout/fail 로 .gcda 미생성 시 여기서 드러난다 — silent pass 방지.)
+          SF_COUNT=$(grep -c '^SF:' coverage.info 2>/dev/null || echo 0)
+          echo "coverage.info source files: ${SF_COUNT}"
+          if [ ! -s coverage.info ] || [ "${SF_COUNT}" -eq 0 ]; then
+            echo "::warning title=C++ coverage empty::coverage.info missing or has 0 source records — upload will be empty/partial"
+          fi
 
       - name: Upload C++ coverage to Codecov
         if: always()
