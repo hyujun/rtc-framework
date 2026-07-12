@@ -268,17 +268,26 @@ jobs:
         if: always()
         run: |
           set -eo pipefail
-          # colcon 은 패키지별 build dir 에서 pytest 를 개별 실행하므로 coverage.xml 이
-          # 패키지마다 따로 생성된다. 이전엔 `head -1` 로 하나만 업로드 → 나머지 패키지
-          # 커버리지가 조용히 누락됐다 (python flag under-measured). 이제 발견된 모든 XML
-          # 을 콤마 목록으로 업로드해 Codecov 가 병합(line-max)하도록 한다.
-          mapfile -t FILES < <(find build/ -name 'coverage.xml' 2>/dev/null | sort -u)
+          # colcon 은 각 python 패키지 pytest 를 그 패키지 소스 dir(rootdir)에서 실행하므로
+          # pytest-cov 는 coverage.xml 을 rtc_tools/coverage.xml · rtc_digital_twin/coverage.xml
+          # (소스 트리)에 각각 쓴다 — build/ 도 ws-root 도 아니다. 이전엔 ./coverage.xml 과
+          # build/ 만 봐서 둘 다 놓쳐 항상 0개 → carryforward 였다. ws 전체를 검색해(install/
+          # log/deps 제외) 두 파일을 모두 업로드하면 Codecov 가 병합(line-max)한다.
+          mapfile -t FILES < <(find . -name 'coverage.xml' \
+            -not -path './install/*' -not -path './log/*' -not -path './_rtc_ws/*' \
+            2>/dev/null | sort -u)
           echo "Found ${#FILES[@]} coverage.xml file(s):"
           printf '  %s\n' "${FILES[@]}"
-          # 측정 무결성 게이트: python 패키지 2개(rtc_tools, rtc_digital_twin) 미만이면
-          # 부분 업로드이므로 annotation 으로 가시화한다 (silent partial upload 차단).
-          if [ "${#FILES[@]}" -lt 2 ]; then
-            echo "::warning title=Python coverage incomplete::found ${#FILES[@]} coverage.xml (expected 2: rtc_tools + rtc_digital_twin)"
+          # 측정 무결성 게이트 (내용 기반): 두 python 패키지가 실제로 리포트에 들어갔는지
+          # 확인한다. 하나라도 없으면 부분/빈 업로드이므로 annotation 으로 가시화한다.
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::warning title=Python coverage missing::pytest-cov produced no coverage.xml"
+          else
+            for pkg in rtc_tools rtc_digital_twin; do
+              if ! grep -q "${pkg}" "${FILES[@]}" 2>/dev/null; then
+                echo "::warning title=Python coverage incomplete::${pkg} absent from coverage.xml (partial upload)"
+              fi
+            done
           fi
           IFS=,; echo "files=${FILES[*]}" >> "$GITHUB_OUTPUT"
 
