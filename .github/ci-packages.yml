@@ -42,6 +42,11 @@ test_cpp_gated:
   - rtc_controller_interface
   - rtc_controller_manager
   - rtc_controllers
+  # rtc_inference: STAGING(2026-07-12, PR #144)에서 besteffort CI 실측 통과 확인 후 gated 승격
+  #   (PR #145 merge 후). test_inference_engine 은 fixture-free 순수 로직 (base-class 위임 /
+  #   pre-Init guard / batch 첫 실패 중단 / zero-count) — 타이밍·네트워크 비의존이라
+  #   RelWithDebInfo merge gate 에서 결정적. 분모 0% drag 제거.
+  - rtc_inference
   - rtc_urdf_bridge
   - shape_estimation
   - ur5e_bt_coordinator
@@ -50,13 +55,8 @@ test_cpp_gated:
 test_cpp_besteffort:
   # rtc_tsid           : TSIDPerformanceTest.*SolveTime — CI 러너에서 solve-time 초과로 실패
   # integrated_bringup : GraspPipelineTest — contact_rich/mimalloc grasp (10~20s) CI-fragile
-  # rtc_inference      : STAGING (2026-07-12) — test_inference_engine (fixture-free 순수 로직:
-  #                      base-class 위임 / pre-Init guard / batch 첫 실패 중단 / zero-count) 은
-  #                      기존에 어느 test 목록에도 없어 CI 미실행 → 분모 0% drag 였다. 우선
-  #                      besteffort 로 CI 실측을 확인한 뒤 안정적이면 test_cpp_gated 로 승격한다.
   - rtc_tsid
   - integrated_bringup
-  - rtc_inference
 
 test_python:
   - rtc_tools
