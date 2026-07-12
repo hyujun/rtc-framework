@@ -2,6 +2,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -1393,6 +1394,10 @@ DemoWbcController::FingertipReport DemoWbcController::GetFingertipReportForTesti
 // ── RT control loop ──────────────────────────────────────────────────────────
 
 ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexcept {
+  // Layer 2 span: this controller's entire Compute() (the concrete work the
+  // CM dispatches). Nests under "CM::Compute"; the FSM-dispatched sub-steps
+  // (ComputeControl → ComputeWbcCommon/ComputeKinematicWbc/...) nest below.
+  RTC_TRACE_SCOPE("DemoWbcController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
 
   // #1 (safety): single per-tick owner of the hand τ_ff active flag. Reset here
@@ -1548,6 +1553,7 @@ void DemoWbcController::SetDeviceTaskTarget(int device_idx,
 // RT-thread-only. Refreshes current_target_slot_, drains pending entries,
 // runs first-tick self-init (seeded from current device state).
 void DemoWbcController::DrainTargetSlot(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::DrainTargetSlot");
   current_target_slot_ = target_seqlock_.Load();
   bool slot_dirty = false;
 

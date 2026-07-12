@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
@@ -22,6 +23,7 @@ namespace integrated_bringup {
 
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 void DemoTaskController::ReadState(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::ReadState");
   // Robot arm joint positions → FK + Jacobians via arm_handle_
   const auto& dev0 = state.devices[0];
   const int nc0 = dev0.num_channels;
@@ -96,6 +98,7 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
 
 void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
                                           const Gains& gains) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::UpdateVirtualTcp");
   vtcp_valid_ = false;
   if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
     return;
@@ -123,6 +126,7 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 // ── Phase 2: Compute control (CLIK/IK + trajectory + sensor logic) ──────────
 
 void DemoTaskController::ComputeControl(const ControllerState& state, double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::ComputeControl");
   // ── E-stop check ───────────────────────────────────────────────────────
   estop_active_ = estopped_.load(std::memory_order_acquire);
   if (estop_active_) {
@@ -629,6 +633,7 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
 
 ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& state,
                                                        double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::WriteJointCommand");
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
@@ -675,6 +680,7 @@ ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& st
 
 void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerOutput& output,
                                        double /*dt*/) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::FillLogOutput");
   if (estop_active_) {
     return;  // ComputeEstop path skipped log-fill in legacy WriteOutput too.
   }
@@ -749,6 +755,7 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
 
 void DemoTaskController::FillPublishOutput(const ControllerState& state, ControllerOutput& output,
                                            double /*dt*/) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::FillPublishOutput");
   if (estop_active_) {
     return;
   }
@@ -869,6 +876,7 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
 // ── E-STOP compute path ──────────────────────────────────────────────────────
 
 ControllerOutput DemoTaskController::ComputeEstop(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoTaskController::ComputeEstop");
   const auto& dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;

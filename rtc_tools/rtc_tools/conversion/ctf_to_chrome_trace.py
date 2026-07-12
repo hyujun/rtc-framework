@@ -27,6 +27,13 @@ events handled today:
   (part of ros2_tracing's default UST set). Falls back to the raw
   address when no registration was captured (e.g. a manual ``ros2 trace``
   started after node init, or a narrowed ``trace_events_ust`` list).
+* ``rtc:span_begin`` / ``rtc:span_end`` — rtc_base ``RTC_TRACE_SCOPE``
+  spans, paired into ``B`` / ``E`` slices on the (process_name, tid) lane
+  and labelled from the begin event's ``name`` field. These expose RT-tick
+  internals — control loop → controller ``Compute`` → sub-steps — that
+  ros2_tracing's callback events cannot, since the RT loop is a raw
+  ``clock_nanosleep`` thread rather than an rclcpp callback. Absent unless
+  the run was built with ``-DRTC_ENABLE_TRACING=ON`` (see docs/tracing.md).
 * ``sched_switch`` — emits ``E`` for the prev_tid and ``B`` for the
   next_tid on the corresponding **Cpu** lane, so each lane shows a
   contiguous timeline of "who ran here." Threads not in ``Threads``
@@ -82,6 +89,13 @@ STRUCTURED_EVENTS = frozenset(
         "sched_switch",
         "irq_handler_entry",
         "irq_handler_exit",
+        # rtc_base RTC_TRACE_SCOPE spans — nested B/E on the emitting thread
+        # lane, labelled from the begin event's `name` field. These surface
+        # RT-tick internals (control loop → controller Compute → sub-steps)
+        # that ros2_tracing cannot see, because the RT loop is a raw
+        # clock_nanosleep thread, not an rclcpp callback.
+        "rtc:span_begin",
+        "rtc:span_end",
     }
 )
 
@@ -391,6 +405,35 @@ def build_trace(
                     "pid": THREAD_PID,
                     "tid": vtid,
                     "cat": "callback",
+                }
+            )
+
+        elif name == "rtc:span_begin":
+            # RAII scope entered (RTC_TRACE_SCOPE). The `name` field is a
+            # compile-time literal (e.g. "DemoWbcController::ComputeControl").
+            # Perfetto stacks consecutive B/E on the same (pid, tid) lane, and
+            # the RAII helper guarantees balanced nesting, so no per-tid stack
+            # bookkeeping is needed here.
+            label = payload.get("name") or "rtc:span"
+            out.append(
+                {
+                    "name": _truncate(str(label)),
+                    "cat": "rtc",
+                    "ph": "B",
+                    "ts": ts_us,
+                    "pid": THREAD_PID,
+                    "tid": vtid,
+                }
+            )
+
+        elif name == "rtc:span_end":
+            out.append(
+                {
+                    "ph": "E",
+                    "ts": ts_us,
+                    "pid": THREAD_PID,
+                    "tid": vtid,
+                    "cat": "rtc",
                 }
             )
 

@@ -29,10 +29,25 @@ import os
 
 from launch.substitutions import LaunchConfiguration
 
+# rtc_base's RTC_TRACE_SCOPE UST provider. Always enabled alongside the ros2:*
+# events so RT-tick spans are captured whenever tracing is on. Harmless if the
+# binary was built without -DRTC_ENABLE_TRACING (no provider registers these
+# names → LTTng simply matches nothing, no error). See docs/tracing.md.
+RTC_UST_EVENTS = ("rtc:span_begin", "rtc:span_end")
+
 
 def _split_csv(value: str) -> list[str]:
     """Comma-separated string → stripped non-empty list."""
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _with_rtc_events(base: list[str]) -> list[str]:
+    """Append the rtc:* span events to `base`, preserving order, de-duped."""
+    out = list(base)
+    for ev in RTC_UST_EVENTS:
+        if ev not in out:
+            out.append(ev)
+    return out
 
 
 def make_trace_action(
@@ -59,7 +74,9 @@ def make_trace_action(
             Empty = ``"trace"``.
         events_ust_arg: LaunchArgument carrying a comma-separated list of
             UST events to enable. Empty = ros2_tracing's DEFAULT_EVENTS_ROS
-            (broad ros2:* coverage).
+            (broad ros2:* coverage). The rtc:* span events (RTC_UST_EVENTS)
+            are always appended regardless, so RT-tick spans are captured
+            whenever tracing is on.
         events_kernel_arg: LaunchArgument carrying a comma-separated list
             of kernel events. Empty list disables kernel tracing — common
             choices are ``sched_switch,sched_waking,sched_wakeup,
@@ -95,14 +112,18 @@ def make_trace_action(
     # by create_session_dir (_SESSION_SUBDIRS).
     base_path = os.path.join(session_dir, "tracing")
 
-    # Empty events_ust → omit the kwarg so tracetools_launch.Trace falls back
-    # to its default ros2:* set. Passing events_ust=None explicitly crashes
-    # Trace.__init__ with 'NoneType is not iterable' (Jazzy 8.2.5).
     trace_kwargs: dict = {"session_name": session_name, "base_path": base_path}
 
+    # events_ust = (user list if given, else ros2_tracing's DEFAULT_EVENTS_ROS)
+    # + rtc:* spans. We always pass an explicit list — the previous "omit kwarg
+    # to inherit the default" path would silently drop rtc:* (the default set is
+    # ros2:* only), so the RT-tick spans never got recorded. DEFAULT_EVENTS_ROS
+    # is imported here (same package family as Trace, guarded by the import above).
+    from tracetools_trace.tools.names import DEFAULT_EVENTS_ROS
+
     events_ust_raw = LaunchConfiguration(events_ust_arg).perform(context)
-    if events_ust_raw:
-        trace_kwargs["events_ust"] = _split_csv(events_ust_raw)
+    base_ust = _split_csv(events_ust_raw) if events_ust_raw else list(DEFAULT_EVENTS_ROS)
+    trace_kwargs["events_ust"] = _with_rtc_events(base_ust)
 
     events_kernel_raw = LaunchConfiguration(events_kernel_arg).perform(context)
     trace_kwargs["events_kernel"] = _split_csv(events_kernel_raw) if events_kernel_raw else []

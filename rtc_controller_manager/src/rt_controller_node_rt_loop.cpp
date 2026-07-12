@@ -1,6 +1,7 @@
 // ── RT control loop, timeout watchdog, log drain ──────────────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/threading/thread_utils.hpp>
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <sys/eventfd.h>  // eventfd_write
 #include <time.h>         // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
@@ -38,6 +39,11 @@ bool RtControllerNode::AllTimeoutDevicesReceived() const noexcept {
 // ── RT control loop (period = 1 / control_rate)
 // ───────────────────────────────────────────────────────
 void RtControllerNode::ControlLoop() {
+  // Layer 0 span: the whole RT tick (raw clock_nanosleep thread — invisible to
+  // ros2_tracing). All nested Compute spans stack under this. Early returns
+  // below (not-ready / init-wait) close the span via RAII, so idle ticks show
+  // as empty rt_control_tick slices.
+  RTC_TRACE_SCOPE("rt_control_tick");
   // ── Phase 0: tick start + readiness check ──────────────────────────────
   const auto t0 = std::chrono::steady_clock::now();
 

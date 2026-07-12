@@ -63,12 +63,16 @@ show_help() {
   echo "  --no-banner                Suppress the build banner (used by install.sh)"
   echo "  --mujoco <path>            Path to MuJoCo install dir (e.g. /opt/mujoco-3.7.0)"
   echo "                             Auto-detected from $MJ_DEFAULT if not specified"
+  echo "  --tracing                  Compile rtc:* LTTng UST tracepoints (RT trace spans)"
+  echo "                             Adds -DRTC_ENABLE_TRACING=ON. Needs liblttng-ust-dev"
+  echo "                             (install.sh --tracing). Default OFF = zero RT overhead."
   echo "  --help                     Show this help"
   echo ""
   echo "Examples:"
   echo "  ./build.sh robot"
   echo "  ./build.sh sim"
   echo "  ./build.sh sim --mujoco /opt/mujoco-3.7.0"
+  echo "  ./build.sh sim --tracing                 # sim build with RT trace spans"
   echo "  ./build.sh full"
   echo ""
 }
@@ -96,6 +100,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-banner)
       SHOW_BANNER=0
+      shift
+      ;;
+    --tracing)
+      ENABLE_TRACING=1
       shift
       ;;
     -h|--help|help)
@@ -220,6 +228,13 @@ fi
 # 빌드 후 merge_compile_commands.py 가 패키지별 산출물을 단일 파일로 머지한다
 # (.clangd 의 CompilationDatabase: . 와 일치 — repo-root 에 직접 둔다).
 CMAKE_ARGS+=("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
+
+# RT tracing (--tracing): compile the rtc:* LTTng UST spans. OFF by default so
+# production builds pay zero RT hot-path cost and pull no lttng-ust dependency.
+if [[ "${ENABLE_TRACING:-0}" -eq 1 ]]; then
+  CMAKE_ARGS+=("-DRTC_ENABLE_TRACING=ON")
+  info "RT tracing ENABLED (rtc:* UST spans; needs liblttng-ust-dev)"
+fi
 
 COLCON_ARGS=("--packages-select" "${PACKAGES[@]}")
 

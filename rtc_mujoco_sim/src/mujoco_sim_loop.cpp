@@ -5,6 +5,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 #include "rtc_mujoco_sim/mujoco_simulator.hpp"
 #include <rtc_base/threading/thread_utils.hpp>
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -17,6 +18,7 @@ namespace rtc {
 // ── Private helpers ────────────────────────────────────────────────────────────
 
 void MuJoCoSimulator::ApplyCommand() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ApplyCommand");
   if (!model_) {
     return;
   }
@@ -43,10 +45,10 @@ void MuJoCoSimulator::ApplyCommand() noexcept {
       if (i >= g->qvel_indices.size())
         break;
       const int dof = g->qvel_indices[i];
-      data_->qfrc_applied[dof] = (mode == JointControlMode::kPdFeedforward &&
-                                  i < g->pending_feedforward.size())
-                                     ? g->pending_feedforward[i]
-                                     : 0.0;
+      data_->qfrc_applied[dof] =
+          (mode == JointControlMode::kPdFeedforward && i < g->pending_feedforward.size())
+              ? g->pending_feedforward[i]
+              : 0.0;
     }
 
     // Runtime PD gains: stage→gainprm_yaml here (SimLoop-only) and flag a
@@ -68,6 +70,7 @@ void MuJoCoSimulator::ApplyCommand() noexcept {
 }
 
 void MuJoCoSimulator::ReadState() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ReadState");
   if (!model_ || !data_) {
     return;
   }
@@ -88,6 +91,7 @@ void MuJoCoSimulator::ReadState() noexcept {
 }
 
 void MuJoCoSimulator::ReadSensors() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ReadSensors");
   if (!model_ || !data_ || model_->nsensor <= 0) {
     return;
   }
@@ -106,6 +110,7 @@ void MuJoCoSimulator::ReadSensors() noexcept {
 }
 
 void MuJoCoSimulator::InvokeSensorCallback() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::InvokeSensorCallback");
   for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
@@ -124,31 +129,26 @@ constexpr int kContactSensorFoundOffset = 0;
 constexpr int kContactSensorForceOffset = 1;   // force[3]
 constexpr int kContactSensorTorqueOffset = 4;  // torque[3] (about contact point)
 constexpr int kContactSensorDistOffset = 7;
-constexpr int kContactSensorPosOffset = 8;     // pos[3] (contact point in world)
-constexpr int kRotationMatrixStride = 9;       // mjData.xmat per body (row-major 3x3)
-constexpr int kSitePosStride = 3;              // mjData.site_xpos per site
+constexpr int kContactSensorPosOffset = 8;  // pos[3] (contact point in world)
+constexpr int kRotationMatrixStride = 9;    // mjData.xmat per body (row-major 3x3)
+constexpr int kSitePosStride = 3;           // mjData.site_xpos per site
 
 // Apply transpose of body rotation matrix R_WB (row-major 9 elements) to a
 // world vector — produces the vector expressed in the body frame.
 // v_B = R_WB^T * v_W. noexcept, heap-free.
-inline void WorldVecToBody(const mjtNum* rwb_rowmajor,
-                           const std::array<double, 3>& v_world,
+inline void WorldVecToBody(const mjtNum* rwb_rowmajor, const std::array<double, 3>& v_world,
                            std::array<double, 3>& v_body) noexcept {
-  v_body[0] = rwb_rowmajor[0] * v_world[0]
-            + rwb_rowmajor[3] * v_world[1]
-            + rwb_rowmajor[6] * v_world[2];
-  v_body[1] = rwb_rowmajor[1] * v_world[0]
-            + rwb_rowmajor[4] * v_world[1]
-            + rwb_rowmajor[7] * v_world[2];
-  v_body[2] = rwb_rowmajor[2] * v_world[0]
-            + rwb_rowmajor[5] * v_world[1]
-            + rwb_rowmajor[8] * v_world[2];
+  v_body[0] =
+      rwb_rowmajor[0] * v_world[0] + rwb_rowmajor[3] * v_world[1] + rwb_rowmajor[6] * v_world[2];
+  v_body[1] =
+      rwb_rowmajor[1] * v_world[0] + rwb_rowmajor[4] * v_world[1] + rwb_rowmajor[7] * v_world[2];
+  v_body[2] =
+      rwb_rowmajor[2] * v_world[0] + rwb_rowmajor[5] * v_world[1] + rwb_rowmajor[8] * v_world[2];
 }
 
 inline std::array<double, 3> Cross3(const std::array<double, 3>& lhs,
                                     const std::array<double, 3>& rhs) noexcept {
-  return {lhs[1] * rhs[2] - lhs[2] * rhs[1],
-          lhs[2] * rhs[0] - lhs[0] * rhs[2],
+  return {lhs[1] * rhs[2] - lhs[2] * rhs[1], lhs[2] * rhs[0] - lhs[0] * rhs[2],
           lhs[0] * rhs[1] - lhs[1] * rhs[0]};
 }
 
@@ -158,6 +158,7 @@ inline std::array<double, 3> Cross3(const std::array<double, 3>& lhs,
 // from the reported contact point to the ft_site origin, then express both
 // vectors in the ft_site's body frame. Heap-free, noexcept.
 void MuJoCoSimulator::ReadContactWrenches() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ReadContactWrenches");
   if (!model_ || !data_)
     return;
   for (auto& g : groups_) {
@@ -200,20 +201,17 @@ void MuJoCoSimulator::ReadContactWrenches() noexcept {
 
       // Torque shift to ft_site origin: τ_link_world = τ_pc + (p_c − p_L) × f_W.
       const mjtNum* p_link_w =
-          data_->site_xpos +
-          (static_cast<std::ptrdiff_t>(kSitePosStride) * info.ft_site_id);
-      const std::array<double, 3> r_w = {
-          sample.point_world[0] - static_cast<double>(p_link_w[0]),
-          sample.point_world[1] - static_cast<double>(p_link_w[1]),
-          sample.point_world[2] - static_cast<double>(p_link_w[2])};
+          data_->site_xpos + (static_cast<std::ptrdiff_t>(kSitePosStride) * info.ft_site_id);
+      const std::array<double, 3> r_w = {sample.point_world[0] - static_cast<double>(p_link_w[0]),
+                                         sample.point_world[1] - static_cast<double>(p_link_w[1]),
+                                         sample.point_world[2] - static_cast<double>(p_link_w[2])};
       const auto r_cross_f = Cross3(r_w, f_w);
-      const std::array<double, 3> tau_link_w = {tau_pc_w[0] + r_cross_f[0],
-                                                tau_pc_w[1] + r_cross_f[1],
-                                                tau_pc_w[2] + r_cross_f[2]};
+      const std::array<double, 3> tau_link_w = {
+          tau_pc_w[0] + r_cross_f[0], tau_pc_w[1] + r_cross_f[1], tau_pc_w[2] + r_cross_f[2]};
 
       // Transform world-frame vectors into the ft_site's body frame.
-      const mjtNum* rwb = data_->xmat + (static_cast<std::ptrdiff_t>(kRotationMatrixStride) *
-                                         info.body_id);
+      const mjtNum* rwb =
+          data_->xmat + (static_cast<std::ptrdiff_t>(kRotationMatrixStride) * info.body_id);
       WorldVecToBody(rwb, f_w, sample.force);
       WorldVecToBody(rwb, tau_link_w, sample.torque);
     }
@@ -221,6 +219,7 @@ void MuJoCoSimulator::ReadContactWrenches() noexcept {
 }
 
 void MuJoCoSimulator::InvokeContactWrenchCallback() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::InvokeContactWrenchCallback");
   for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
@@ -231,6 +230,7 @@ void MuJoCoSimulator::InvokeContactWrenchCallback() noexcept {
 }
 
 void MuJoCoSimulator::ReadSolverStats() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ReadSolverStats");
   if (!data_) {
     return;
   }
@@ -249,6 +249,7 @@ void MuJoCoSimulator::ReadSolverStats() noexcept {
 }
 
 void MuJoCoSimulator::InvokeStateCallback() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::InvokeStateCallback");
   for (auto& g : groups_) {
     if (!g->is_robot)
       continue;
@@ -266,6 +267,7 @@ void MuJoCoSimulator::InvokeStateCallback() noexcept {
 }
 
 void MuJoCoSimulator::UpdateVizBuffer() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::UpdateVizBuffer");
   if (viz_mutex_.try_lock()) {
     std::memcpy(viz_qpos_.data(), data_->qpos,
                 static_cast<std::size_t>(model_->nq) * sizeof(double));
@@ -276,6 +278,7 @@ void MuJoCoSimulator::UpdateVizBuffer() noexcept {
 }
 
 void MuJoCoSimulator::UpdateRtf(uint64_t step) noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::UpdateRtf");
   constexpr uint64_t kRtfUpdateInterval = 200;
   if (step % kRtfUpdateInterval != 0) {
     return;
@@ -291,6 +294,7 @@ void MuJoCoSimulator::UpdateRtf(uint64_t step) noexcept {
 }
 
 void MuJoCoSimulator::ThrottleIfNeeded() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ThrottleIfNeeded");
   const double max_rtf = current_max_rtf_.load(std::memory_order_relaxed);
   if (max_rtf != throttle_rtf_) {
     throttle_wall_start_ = std::chrono::steady_clock::now();
@@ -313,6 +317,7 @@ void MuJoCoSimulator::ThrottleIfNeeded() noexcept {
 // ── PreparePhysicsStep ─────────────────────────────────────────────────────────
 
 void MuJoCoSimulator::PreparePhysicsStep() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::PreparePhysicsStep");
   // 0. Per-group actuator mode switch (torque / position-servo / pd_feedforward)
   bool gravcomp_dirty = false;
   for (auto& g : groups_) {
@@ -328,8 +333,8 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
     // so all mjModel mutations stay on the SimLoop thread). Only kPosition lets
     // MuJoCo cancel gravity; kTorque and kPdFeedforward leave it to the
     // controller's torque (feedforward must include gravity).
-    const mjtNum gravcomp = (mode == JointControlMode::kPosition) ? static_cast<mjtNum>(1.0)
-                                                                  : static_cast<mjtNum>(0.0);
+    const mjtNum gravcomp =
+        (mode == JointControlMode::kPosition) ? static_cast<mjtNum>(1.0) : static_cast<mjtNum>(0.0);
     for (int body_id : g->body_indices) {
       if (body_id > 0 && body_id < model_->nbody)
         model_->body_gravcomp[body_id] = gravcomp;
@@ -410,6 +415,7 @@ void MuJoCoSimulator::PreparePhysicsStep() noexcept {
 }
 
 void MuJoCoSimulator::ClearContactForces() noexcept {
+  RTC_TRACE_SCOPE("MuJoCoSimulator::ClearContactForces");
   if (!pert_active_ && !ext_xfrc_dirty_) {
     mju_zero(data_->xfrc_applied, static_cast<int>(model_->nbody) * 6);
   }
@@ -511,6 +517,11 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       continue;
     }
     // 1. Publish current state (and sensors) for ALL robot groups
+    // Per-iteration span (one sim step of the raw sim_thread). All the
+    // MuJoCoSimulator member-function spans below nest under this; the visible
+    // gap between the state-publish spans and the ApplyCommand/substep spans is
+    // the sync_cv_ wait for the controller's command (sim lock-step).
+    RTC_TRACE_SCOPE("sim_step");
     ReadState();
     ReadSensors();
     ReadContactWrenches();
@@ -539,8 +550,12 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ApplyCommand();
     const auto step_start = std::chrono::steady_clock::now();
     for (int sub = 0; sub < cfg_.n_substeps; ++sub) {
+      RTC_TRACE_SCOPE("sim_substep");
       PreparePhysicsStep();
-      mj_step(model_, data_);
+      {
+        RTC_TRACE_SCOPE("mj_step");
+        mj_step(model_, data_);
+      }
       ClearContactForces();
     }
     const double step_wall_sec =

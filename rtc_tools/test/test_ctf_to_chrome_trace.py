@@ -110,6 +110,53 @@ def test_irq_pair_emits_b_e_on_irq_lane():
     assert irq_slices[0]["tid"] == 4
 
 
+def _rtc_span(ts_begin_ns, ts_end_ns, *, vtid, name, procname="integrated_rt_c"):
+    return [
+        (ts_begin_ns, "rtc:span_begin", {"vtid": vtid, "procname": procname, "name": name}, 2),
+        (ts_end_ns, "rtc:span_end", {"vtid": vtid}, 2),
+    ]
+
+
+def test_rtc_span_emits_b_e_on_thread_lane_with_name():
+    events = _rtc_span(1_000_000, 1_500_000, vtid=55, name="DemoWbcController::ComputeControl")
+    out = build_trace(iter(events))
+    spans = [ev for ev in out["traceEvents"] if ev.get("cat") == "rtc"]
+    assert [ev["ph"] for ev in spans] == ["B", "E"]
+    b = spans[0]
+    assert b["pid"] == THREAD_PID
+    assert b["tid"] == 55
+    assert b["name"] == "DemoWbcController::ComputeControl"
+
+
+def test_rtc_spans_nest_in_stack_order():
+    # RT tick → CM::Compute → ComputeControl → sub-step, closed inside-out.
+    # Perfetto reconstructs the flame stack from B/E order on the tid lane, so
+    # the converter must preserve emission order without reordering.
+    labels = [
+        "rt_control_tick",
+        "CM::Compute",
+        "DemoWbcController::ComputeControl",
+        "ComputeKinematicWbc",
+    ]
+    events = []
+    for i, lbl in enumerate(labels):  # nested begins
+        events.append((1_000_000 + i * 1000, "rtc:span_begin", {"vtid": 9, "name": lbl}, 2))
+    for i in range(len(labels)):  # ends, inside-out
+        events.append((2_000_000 + i * 1000, "rtc:span_end", {"vtid": 9}, 2))
+    out = build_trace(iter(events))
+    spans = [ev for ev in out["traceEvents"] if ev.get("cat") == "rtc"]
+    begins = [ev["name"] for ev in spans if ev["ph"] == "B"]
+    assert begins == labels
+    assert sum(1 for ev in spans if ev["ph"] == "E") == len(labels)
+
+
+def test_rtc_span_survives_empty_keep():
+    events = _rtc_span(1_000_000, 1_500_000, vtid=1, name="x")
+    out = build_trace(iter(events), keep_events=frozenset())
+    assert {ev.get("cat") for ev in out["traceEvents"]} & {"rtc"}
+    assert out["_dropped_event_counts"] == {}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Drop policy
 # ─────────────────────────────────────────────────────────────────────────────
@@ -177,6 +224,8 @@ def test_structured_events_set_matches_documented_list():
                 "sched_switch",
                 "irq_handler_entry",
                 "irq_handler_exit",
+                "rtc:span_begin",
+                "rtc:span_end",
             }
         )
         == STRUCTURED_EVENTS

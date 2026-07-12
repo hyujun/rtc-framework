@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/controllers/fingertip_counts.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 
 #include <algorithm>
@@ -20,6 +21,7 @@ namespace integrated_bringup {
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 
 void DemoJointController::ReadState(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::ReadState");
   // Robot arm joint positions (used for FK logging in WriteOutput)
   const auto& dev0 = state.devices[0];
   (void)dev0;  // positions accessed directly via span in WriteOutput
@@ -95,6 +97,7 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
 
 void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
                                            const Gains& gains) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::UpdateVirtualTcp");
   vtcp_valid_ = false;
   if (!hand_handle_ || gains.vtcp.mode == VirtualTcpMode::kDisabled)
     return;
@@ -122,6 +125,7 @@ void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 // ── Phase 2: Compute control (trajectory + sensor-based logic) ──────────────
 
 void DemoJointController::ComputeControl(const ControllerState& state, double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::ComputeControl");
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
   const auto& dev0 = state.devices[0];
@@ -446,6 +450,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
 
 ControllerOutput DemoJointController::WriteJointCommand(const ControllerState& state,
                                                         double /*dt*/) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::WriteJointCommand");
   ControllerOutput output;
   output.num_devices = state.num_devices;
   output.command_type = command_type_;
@@ -489,6 +494,7 @@ ControllerOutput DemoJointController::WriteJointCommand(const ControllerState& s
 
 void DemoJointController::FillLogOutput(const ControllerState& state, ControllerOutput& output,
                                         double /*dt*/) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::FillLogOutput");
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
@@ -550,6 +556,7 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
 
 void DemoJointController::FillPublishOutput(const ControllerState& state, ControllerOutput& output,
                                             double /*dt*/) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::FillPublishOutput");
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
@@ -620,6 +627,7 @@ void DemoJointController::FillPublishOutput(const ControllerState& state, Contro
 }
 
 ControllerOutput DemoJointController::ComputeEstop(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::ComputeEstop");
   const auto& dev0 = state.devices[0];
   ControllerOutput output;
   output.num_devices = state.num_devices;

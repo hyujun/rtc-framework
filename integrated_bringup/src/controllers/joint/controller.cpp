@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_joint_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -253,6 +254,7 @@ void DemoJointController::OnDeviceConfigsSet() {
 }
 
 ControllerOutput DemoJointController::Compute(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
@@ -336,6 +338,7 @@ void DemoJointController::SetDeviceTarget(int device_idx, std::span<const double
 // from the current device state + trajectories). The RT thread is the sole
 // writer of target_seqlock_; SetDeviceTarget is marshal-only.
 void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::DrainTargetSlot");
   current_target_slot_ = target_seqlock_.Load();
   bool slot_dirty = false;
 
