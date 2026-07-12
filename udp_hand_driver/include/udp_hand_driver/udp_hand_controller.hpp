@@ -329,7 +329,7 @@ class UdpHandController {
     // first state read (startup no-jump contract).
     has_pending_write_ = false;
     event_pending_.store(false, std::memory_order_release);
-    state_read_once_ = false;
+    state_read_once_.store(false, std::memory_order_release);
     // Seed so the FIRST tick is a comm cycle (++counter reaches comm_decimation_
     // immediately), preserving the "first cycle always communicates" contract —
     // the initial state read is not delayed by comm_decimation_ periods. For
@@ -467,7 +467,9 @@ class UdpHandController {
   /// Write commands are suppressed until this returns true (startup no-jump
   /// contract — see the write gate in RunCommCycle). Reset to false on each
   /// Start() so a restart re-reads before writing.
-  [[nodiscard]] bool HasStateBeenRead() const noexcept { return state_read_once_; }
+  [[nodiscard]] bool HasStateBeenRead() const noexcept {
+    return state_read_once_.load(std::memory_order_acquire);
+  }
 
   // ── Fake-hand model (use_fake_hand; public+static for unit testing) ──────
   // The per-joint step lives in fake_hand_lpf.hpp so the device-side
@@ -782,7 +784,7 @@ class UdpHandController {
     // per_kind), so a dropped read is still tallied there.
     bool write_attempted = false;
     bool write_ok = false;
-    if (state_read_once_ && has_pending_write_) {
+    if (state_read_once_.load(std::memory_order_relaxed) && has_pending_write_) {
       write_attempted = true;
       attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
       if (transport_.WritePositionWithEcho(pending_cmd_, send_buf_, echo_buf_, joint_io_mode_)) {
@@ -1236,8 +1238,16 @@ class UdpHandController {
     state.valid = any_recv_ok;
     state.sensor_seq = sensor_seq_;  // freshness gate for the failure detector
 
-    if (any_recv_ok && !state_read_once_) {
-      state_read_once_ = true;
+    // Publish the state BEFORE flipping the first-state latch. HasStateBeenRead()
+    // gates write-enable and freshness consumers, so the latch must imply the
+    // valid state is already visible via GetLatestState(). Setting it before the
+    // Store left a window where HasStateBeenRead()==true but GetLatestState().valid
+    // was still false — harmless-looking but it widens under non-RT scheduling
+    // (flaky test_udp_hand_controller in CI). The release store pairs with the
+    // acquire load in HasStateBeenRead() so the seqlock publish is visible first.
+    state_seqlock_.Store(state);
+    if (any_recv_ok && !state_read_once_.load(std::memory_order_relaxed)) {
+      state_read_once_.store(true, std::memory_order_release);
       // Throttled as a defensive RT-safety net; the state_read_once_ gate
       // already guarantees this fires at most once per Start().
       static rclcpp::Clock first_state_clock(RCL_STEADY_TIME);
@@ -1246,7 +1256,6 @@ class UdpHandController {
                            "First hand state received (write commands now enabled)");
     }
 
-    state_seqlock_.Store(state);
     if (callback_) {
       callback_(state, ft_seqlock_.Load());
     }
@@ -1385,7 +1394,12 @@ class UdpHandController {
 
   // Shared state
   std::atomic<bool> running_{false};
-  bool state_read_once_{false};  // True after first successful state read
+  // Atomic: written on the CommLoop thread (release, AFTER state_seqlock_.Store),
+  // read cross-thread via HasStateBeenRead() (acquire). The release/acquire pair
+  // guarantees the published state is visible once the latch reads true.
+  std::atomic<bool> state_read_once_{false};  // True after first successful state read
+  static_assert(std::atomic<bool>::is_always_lock_free,
+                "state_read_once_ must be lock-free on the RT CommLoop path");
 
   // Fake-hand model state (CommLoop thread only; use_fake_hand). Preallocated
   // so StepFakeModel() stays allocation-free on the RT path. fake_alpha_ and
