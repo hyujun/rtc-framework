@@ -684,8 +684,19 @@ check_network_udp() {
       if [[ "$actual" == "$expected" ]]; then
         _pass "${key} = ${actual}"
         ((sysctl_ok++)) || true
+      elif [[ "$key" == *_default ]]; then
+        # rmem/wmem_default 는 상한이 아니라 "모든 소켓에 거대 버퍼 방지" 목표값이다.
+        # 초과는 회귀(소켓별 과다 버퍼) → WARN, 미만 → FAIL. `>= expected` 로 통과시키면
+        # 정확히 경고 대상인 과대 설정이 false-pass 한다.
+        if [[ "$actual" -gt "$expected" ]] 2>/dev/null; then
+          _warn "${key} = ${actual} (기대 ${expected} 초과 — 소켓별 과다 버퍼 가능)"
+          _category_update "network_udp" "WARN"
+        else
+          _fail "${key} = ${actual} (기대값: ${expected})"
+          _category_update "network_udp" "FAIL"
+        fi
       elif [[ "$actual" -ge "$expected" ]] 2>/dev/null; then
-        # 현재 값이 기대값 이상이면 OK
+        # _max / backlog 는 상한이므로 기대값 이상이면 OK
         _pass "${key} = ${actual} (>= ${expected})"
         ((sysctl_ok++)) || true
       else

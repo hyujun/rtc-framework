@@ -136,16 +136,23 @@ fi
 GRUB_MODIFIED=0
 NEW_CMDLINE="$CURRENT_CMDLINE"
 
-# ── 값이 있는 파라미터: 이미 존재하면 건너뛰고, 없으면 추가 ──────────────────
+# ── 값이 있는 파라미터: 값까지 비교 (값-인식 멱등성) ──────────────────────────
+# 이름만 비교하면 core 수 변경 시 nohz_full/rcu_nocbs 의 stale 값(예: 이전
+# 6c "1-3")이 그대로 남아 잘못된 RT 코어셋으로 부팅한다. 값이 다르면 교체한다.
 for param in "${!GRUB_PARAMS_WITH_VALUE[@]}"; do
   value="${GRUB_PARAMS_WITH_VALUE[$param]}"
-  # 파라미터 이름이 이미 존재하는지 확인 (값이 다를 수 있으므로 이름만 체크)
-  if ! echo "$NEW_CMDLINE" | grep -qE "(^| )${param}="; then
+  if echo "$NEW_CMDLINE" | grep -qE "(^| )${param}=${value}( |$)"; then
+    info "  Already present: ${param}=${value} — skipped"
+  elif echo "$NEW_CMDLINE" | grep -qE "(^| )${param}="; then
+    # 이름은 있으나 값이 다름 → in-place 교체 (core 수 변화 등으로 stale)
+    _grub_old=$(echo "$NEW_CMDLINE" | grep -oE "${param}=[^ ]*" | head -1)
+    NEW_CMDLINE=$(echo "$NEW_CMDLINE" | sed -E "s#(^| )${param}=[^ ]*#\1${param}=${value}#")
+    GRUB_MODIFIED=1
+    info "  Updating: ${_grub_old} → ${param}=${value} (값 변경)"
+  else
     NEW_CMDLINE="${NEW_CMDLINE:+${NEW_CMDLINE} }${param}=${value}"
     GRUB_MODIFIED=1
     info "  Adding: ${param}=${value}"
-  else
-    info "  Already present: ${param} — skipped"
   fi
 done
 
