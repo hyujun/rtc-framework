@@ -878,6 +878,10 @@ else
   scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
 
   # PREEMPT_RT 활성화 (6.12+ mainline — 외부 패치 불요)
+  # CONFIG_PREEMPT_RT 는 CONFIG_EXPERT 에 의존한다. /boot/config fallback 대신
+  # `make defconfig` 로 시작한 경우 EXPERT 가 꺼져 있어 olddefconfig 가 PREEMPT_RT 를
+  # silent drop → -rt-custom 라벨의 비-RT 커널이 빌드된다. 먼저 EXPERT 를 활성화한다.
+  scripts/config --enable CONFIG_EXPERT
   scripts/config --disable CONFIG_PREEMPT_NONE
   scripts/config --disable CONFIG_PREEMPT_VOLUNTARY
   scripts/config --enable CONFIG_PREEMPT_RT
@@ -923,6 +927,14 @@ else
 
   # 새 옵션에 대한 기본값 적용
   make olddefconfig
+
+  # PREEMPT_RT 는 절대 조건 — olddefconfig 가 드롭했으면 hard-fail 한다. 그대로
+  # 진행하면 LOCALVERSION="-rt-custom" 라벨을 단 *비-RT* 커널이 빌드/설치되어
+  # 부팅 후 RT 로 오인된다 (batch 모드에서 특히 위험). 다른 profile 옵션은 성능
+  # fallback 이라 fail-soft 로 두되, RT 활성만은 여기서 막는다.
+  if ! grep -q "^CONFIG_PREEMPT_RT=y$" .config 2>/dev/null; then
+    error "CONFIG_PREEMPT_RT 가 .config 에 반영되지 않았습니다 (olddefconfig 가 드롭 — EXPERT 의존성/아키텍처 미지원 가능). -rt-custom 라벨의 비-RT 커널 빌드를 막기 위해 중단합니다. menuconfig 에서 'General setup → Preemption Model → Fully Preemptible Kernel (Real-Time)' 를 확인하세요."
+  fi
 
   # Post-verify: profile별 필수 옵션이 실제로 = y 인지 점검 (olddefconfig 가
   # 의존성 불만족으로 드롭시킬 수 있음 — 그 경우 사용자에게 알림, fail-soft).
@@ -1122,7 +1134,9 @@ else
 
   # ── Secure Boot 감지 ──────────────────────────────────────────────────────
   # 미서명 custom 커널 / DKMS 모듈은 Secure Boot 활성 시 부팅·로드가 차단된다.
+  SECURE_BOOT_ACTIVE=0
   if command -v mokutil &>/dev/null && mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
+    SECURE_BOOT_ACTIVE=1
     warn "Secure Boot 가 활성 상태입니다 — 미서명 custom RT 커널은 부팅이 차단될 수 있습니다."
     warn "  대응: BIOS 에서 Secure Boot 비활성화, 또는 MOK 서명 후 enroll (enroll_lttng_mok.sh 참고)."
   fi
@@ -1162,23 +1176,32 @@ else
     if [[ -n "$GRUB_ENTRY" ]]; then
       info "GRUB 메뉴 항목: ${GRUB_ENTRY}"
 
-      GRUB_FILE="/etc/default/grub"
-      cp "$GRUB_FILE" "${GRUB_FILE}.bak.rt.$(date +%Y%m%d%H%M%S)"
-
-      if grep -q '^GRUB_DEFAULT=' "$GRUB_FILE"; then
-        sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${GRUB_ENTRY}\"|" "$GRUB_FILE"
+      if [[ "$SECURE_BOOT_ACTIVE" -eq 1 ]]; then
+        # Secure Boot 활성 + 미서명 커널을 기본 부팅으로 지정하면, shim 이 로드를
+        # 거부해 기본 부팅 자체가 실패한다 (headless/짧은 timeout 에서 원격 복구
+        # 난이도 급상승). known-good 커널을 기본으로 남겨두고 수동 전환만 안내한다.
+        warn "Secure Boot 활성 — 미서명 RT 커널을 기본 부팅으로 설정하지 않습니다 (기본 부팅 실패 방지)."
+        warn "  RT 커널로 부팅: GRUB 메뉴에서 수동 선택, 또는 MOK 서명·enroll 후 아래로 기본 설정:"
+        warn "    sudo grub-set-default '${GRUB_ENTRY}' && sudo update-grub"
       else
-        echo "GRUB_DEFAULT=\"${GRUB_ENTRY}\"" >> "$GRUB_FILE"
-      fi
+        GRUB_FILE="/etc/default/grub"
+        cp "$GRUB_FILE" "${GRUB_FILE}.bak.rt.$(date +%Y%m%d%H%M%S)"
 
-      if update-grub >/dev/null 2>&1; then
-        success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
-      else
-        warn "update-grub 실패 — GRUB_DEFAULT 는 기록됐으나 grub.cfg 재생성 실패. 수동: sudo update-grub"
-      fi
+        if grep -q '^GRUB_DEFAULT=' "$GRUB_FILE"; then
+          sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${GRUB_ENTRY}\"|" "$GRUB_FILE"
+        else
+          echo "GRUB_DEFAULT=\"${GRUB_ENTRY}\"" >> "$GRUB_FILE"
+        fi
 
-      info "검증 — /etc/default/grub 의 GRUB_DEFAULT:"
-      grep '^GRUB_DEFAULT=' "$GRUB_FILE" | sed 's/^/  /'
+        if update-grub >/dev/null 2>&1; then
+          success "GRUB 기본 부팅이 RT 커널(${RT_KERNEL_VER})로 설정되었습니다"
+        else
+          warn "update-grub 실패 — GRUB_DEFAULT 는 기록됐으나 grub.cfg 재생성 실패. 수동: sudo update-grub"
+        fi
+
+        info "검증 — /etc/default/grub 의 GRUB_DEFAULT:"
+        grep '^GRUB_DEFAULT=' "$GRUB_FILE" | sed 's/^/  /'
+      fi
     else
       warn "GRUB 메뉴에서 RT 커널 항목을 찾을 수 없습니다"
       warn "수동 설정 방법:"

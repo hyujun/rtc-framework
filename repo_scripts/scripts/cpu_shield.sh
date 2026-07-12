@@ -77,6 +77,9 @@ do_on() {
 
   local phys_cores
   phys_cores=$(get_physical_cores)
+  if [[ "$phys_cores" -lt 6 ]]; then
+    warn "물리 코어 ${phys_cores}개 (<6) — degraded layout: RT 결정성이 보장되지 않는다 (RTC 권장 ≥6코어)."
+  fi
   local shield_cores
   shield_cores=$(compute_shield_cores "$mode" "$phys_cores")
 

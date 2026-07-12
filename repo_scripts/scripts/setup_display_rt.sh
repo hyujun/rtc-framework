@@ -118,13 +118,19 @@ Section \"Screen\"
     Option         \"AllowIndirectGLXProtocol\" \"off\"
 EndSection"
 
-# 멱등성: 디렉토리 생성 후 기존 파일과 비교하여 동일하면 건너뜀
-mkdir -p "$XORG_CONF_DIR"
-
-if write_file_if_changed "$XORG_CONF" "$XORG_CONTENT"; then
-  success "X11 anti-tearing 설정 완료: ${XORG_CONF}"
+# NVIDIA 전용 스니펫이다 (Device0/Monitor0/MetaModes 참조). NVIDIA GPU 가 없는
+# 머신(Intel/AMD/headless)에 무조건 설치하면 정의 안 된 Device 를 참조해 X 시작을
+# 깨뜨릴 수 있으므로 GPU 감지로 가드한다. compositor 우선순위 부스트(아래)는 GPU
+# 무관하게 계속 적용된다.
+if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
+  info "NVIDIA GPU 미감지 — NVIDIA 전용 anti-tearing xorg 스니펫(${XORG_CONF}) 설치를 건너뜁니다"
 else
-  info "이미 동일한 X11 설정이 존재합니다 — 건너뜀"
+  mkdir -p "$XORG_CONF_DIR"
+  if write_file_if_changed "$XORG_CONF" "$XORG_CONTENT"; then
+    success "X11 anti-tearing 설정 완료: ${XORG_CONF}"
+  else
+    info "이미 동일한 X11 설정이 존재합니다 — 건너뜀"
+  fi
 fi
 
 # Wayland 환경 경고: 순수 Wayland 앱에는 적용되지 않음

@@ -30,6 +30,7 @@ install(PROGRAMS
   # install.sh modular helpers (sourced from <repo>/install.sh)
   scripts/lib/install_ros2.sh
   scripts/lib/install_python.sh
+  scripts/lib/install_uv.sh
   scripts/lib/install_deps.sh
   scripts/lib/install_dev.sh
   scripts/lib/install_rt.sh

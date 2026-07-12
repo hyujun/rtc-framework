@@ -829,6 +829,20 @@ test_get_rt_shield_cpus_smt_interleaved() {
   expect_eq "shield.smt_interleaved.8c" "2-7" "$got"
 }
 
+test_get_rt_shield_cpus_low_core_no_phantom() {
+  # 2-core machine: the degraded layout still references slots 1,2,3 but cores 2
+  # and 3 do not exist. Phantom cores must be dropped so cset/taskset never gets
+  # an invalid core id (would fail). Only the one existing RT core (1) survives.
+  local root="$TMP/shield_2core"
+  _mock_sysfs_non_smt "$root" 2
+  mock_write_cpuinfo "$TMP/shield_2core_cpuinfo" "false"
+  _force_physical_cores 2
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/shield_2core_cpuinfo" \
+        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus)
+  expect_eq "shield.2core.no_phantom" "1" "$got"
+}
+
 # ── Run all ─────────────────────────────────────────────────────────────────
 test_cpulist_parser
 test_nuc13_i7_1360p
@@ -861,6 +875,7 @@ test_slot_to_logical_cpu
 test_get_rt_shield_cpus_non_smt
 test_get_rt_shield_cpus_smt_primaries_first
 test_get_rt_shield_cpus_smt_interleaved
+test_get_rt_shield_cpus_low_core_no_phantom
 
 # ── Phase 1 safety primitives: write_file_if_changed / with_temporary_disable ──
 

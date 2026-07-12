@@ -80,7 +80,9 @@ report_rt_setup_failures() {
 install_rt_permissions() {
   info "Configuring RT scheduling permissions..."
   sudo groupadd -f realtime
-  sudo usermod -aG realtime "$USER"
+  # sudo 로 install.sh 를 실행하면 $USER 가 root 일 수 있다 — realtime 그룹은 실제
+  # 조작 사용자에게 부여해야 하므로 SUDO_USER 를 우선한다.
+  sudo usermod -aG realtime "${SUDO_USER:-$USER}"
 
   if ! grep -q "@realtime.*rtprio" /etc/security/limits.conf; then
     echo "@realtime - rtprio 99" | sudo tee -a /etc/security/limits.conf > /dev/null

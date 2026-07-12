@@ -797,10 +797,13 @@ _rt_expand_logical_siblings() {
       for sib in ${key_to_cpus[$keyl]}; do
         result_cpus+=("$sib")
       done
-    else
-      # sysfs missing / no topology — pass the id through unchanged.
+    elif [[ -d "$cpu_root/cpu${lg}" ]]; then
+      # cpuN 디렉토리는 있으나 topology(core_id) 만 없음 — 그대로 통과.
       result_cpus+=("$lg")
     fi
+    # cpuN 디렉토리 자체가 없으면 존재하지 않는 코어(저코어 머신에서 degraded
+    # layout 이 만든 phantom, 예: 2코어에서 core 2·3) → shield 대상에서 제외한다.
+    # cset/taskset 에 없는 코어를 넘겨 실패하는 것을 막는다.
   done
 
   local sorted
@@ -851,7 +854,10 @@ get_rt_shield_cpus() {
 print_thread_layout() {
   local ncpu="${1:-$(get_physical_cores)}"
   echo -e "  ${BOLD}Thread layout (${ncpu}-core, layout v4.1)${NC}"
-  if [[ "$ncpu" -le 4 ]]; then
+  # 경계는 SelectThreadConfigs() dispatch 와 일치해야 한다: <6 → degraded(4-core,
+  # MPC CFS), {6,7} → 6-core(MPC FIFO). ncpu=5 를 6-core 블록으로 그리면 런타임이
+  # 실제로 쓰지 않는 hard-RT MPC 를 표시하게 된다 (dispatch 는 5 를 degraded 로 처리).
+  if [[ "$ncpu" -le 5 ]]; then
     echo "    Core 0:   OS / DDS / NIC IRQ + nrt_logging + nrt_callback + arm/hand_driver (degraded)"
     echo "    Core 1:   rt_control   (SCHED_FIFO 90)"
     echo "    Core 2:   rt_callback  (SCHED_FIFO 70; DDS recv co-pin, degraded)"
