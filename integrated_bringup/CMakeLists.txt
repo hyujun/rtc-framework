@@ -114,6 +114,9 @@ target_link_libraries(${PROJECT_NAME}_demo_controllers
 option(RTC_ENABLE_TRACING "Compile rtc:* LTTng UST tracepoints (RT tracing)" OFF)
 if(RTC_ENABLE_TRACING)
   target_link_libraries(${PROJECT_NAME}_demo_controllers rtc_base::rtc_tracing)
+  # PRIVATE (not inherited from rtc_tracing) — see interface-leak note in
+  # rtc_base/CMakeLists.txt. Keeps the opt-in local to this target.
+  target_compile_definitions(${PROJECT_NAME}_demo_controllers PRIVATE RTC_TRACING_ENABLED)
 endif()
 
 # ── UR5e-specific executable (links built-in + demo controllers) ──────────────

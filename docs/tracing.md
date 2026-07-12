@@ -80,6 +80,8 @@ colcon build --cmake-args -DRTC_ENABLE_TRACING=ON
 UST 채널에 함께 기록되고, `timeline.sh` 변환기가 이를 emit 스레드 레인의 **중첩
 flame 스택**으로 렌더한다:
 
+RT 제어 스레드 (`integrated_rt_controller`):
+
 ```
 rt_control_tick                          (RT tick 전체; raw clock_nanosleep 경계)
 └─ CM::Compute                           (ControllerManager dispatch)
@@ -90,10 +92,28 @@ rt_control_tick                          (RT tick 전체; raw clock_nanosleep �
          └─ ComputeDynamicWbc … (FSM 경로에 따라 PositionMode/ReleaseMode/Fallback)
 ```
 
+MuJoCo sim 스레드 (`mujoco_simulator_node` 의 `sim_thread`, sim 빌드 한정):
+
+```
+sim_step                                 (sim_thread 1 iteration; raw std::jthread)
+├─ MuJoCoSimulator::ReadState / ReadSensors / ReadContactWrenches
+├─ MuJoCoSimulator::InvokeStateCallback / InvokeSensorCallback / InvokeContactWrenchCallback
+├─ MuJoCoSimulator::ApplyCommand
+├─ sim_substep  ×n_substeps
+│  └─ PreparePhysicsStep → mj_step → ClearContactForces
+└─ ReadSolverStats / UpdateRtf / ThrottleIfNeeded
+```
+
 계측점 추가는 해당 함수 첫 줄에 `RTC_TRACE_SCOPE("Name");` 한 줄. RAII 라
 early-return 에도 span 이 닫힌다. build flag OFF 면 그 줄은 사라진다.
 런타임 게이트는 여전히 LTTng 세션 — `enable_tracing:=false` 로 실행하면 span 은
 컴파일돼 있어도 기록되지 않는다.
+
+> **빌드 전환 주의**: `RTC_ENABLE_TRACING` 을 ON↔OFF 로 바꿀 때 colcon 이 소스
+> 재컴파일을 건너뛸 수 있다 (define 변경을 dependency 로 안 봄). 확실히 전환하려면
+> `--cmake-clean-first` 또는 `./build.sh ... --clean`. opt-in 은 **타겟별 PRIVATE
+> define** 이라, rtc_base 만 ON 으로 빌드해도 OFF 소비자는 계측되지 않는다
+> (인터페이스 누출 없음).
 
 ## Capture (sim 또는 robot)
 

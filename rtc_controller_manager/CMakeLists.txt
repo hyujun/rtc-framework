@@ -88,6 +88,10 @@ target_link_libraries(rtc_controller_manager_lib
 option(RTC_ENABLE_TRACING "Compile rtc:* LTTng UST tracepoints (RT tracing)" OFF)
 if(RTC_ENABLE_TRACING)
   target_link_libraries(rtc_controller_manager_lib rtc_base::rtc_tracing)
+  # Define set here (PRIVATE), not inherited from rtc_tracing — see the
+  # interface-leak note in rtc_base/CMakeLists.txt. This keeps the opt-in local
+  # so an ON rtc_base never silently instruments an OFF consumer.
+  target_compile_definitions(rtc_controller_manager_lib PRIVATE RTC_TRACING_ENABLED)
 endif()
 
 # ── Install ───────────────────────────────────────────────────────────────────

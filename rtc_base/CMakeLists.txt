@@ -28,10 +28,17 @@ ament_export_include_directories(include)
 # no-op, no lttng-ust header/link is pulled in, and the RT hot path pays zero
 # cost. Enable a tracing build with:
 #   colcon build --cmake-args -DRTC_ENABLE_TRACING=ON
-# which compiles the rtc:* UST probes into librtc_tracing and makes
-# RTC_TRACE_SCOPE emit span_begin/span_end. Downstream packages that link the
-# exported `rtc_tracing` target inherit the RTC_TRACING_ENABLED define + lttng
-# include path (PUBLIC), so their RTC_TRACE_SCOPE call sites activate too.
+# which compiles the rtc:* UST probes into librtc_tracing. Consumers activate
+# their RTC_TRACE_SCOPE call sites by BOTH linking the exported target
+# `rtc_base::rtc_tracing` (lttng include path + probe .so) AND setting the
+# RTC_TRACING_ENABLED define themselves (PRIVATE) in their own
+# if(RTC_ENABLE_TRACING) block. The define is deliberately NOT on the exported
+# target's interface: ament_target_dependencies(<pkg> rtc_base) propagates an
+# exported target's INTERFACE_COMPILE_DEFINITIONS, so a PUBLIC define here would
+# silently instrument EVERY rtc_base consumer whenever rtc_base itself is built
+# ON — even ones built with RTC_ENABLE_TRACING=OFF — breaking the per-target
+# opt-in and the zero-cost guarantee. Keeping it per-consumer-PRIVATE makes the
+# opt-in strictly local.
 # liblttng-ust-dev is provided by `install.sh --tracing` (optional apt dep,
 # same contract as MuJoCo/aligator — intentionally not a package.xml <depend>).
 option(RTC_ENABLE_TRACING "Compile rtc:* LTTng UST tracepoints (RT tracing)" OFF)
@@ -43,7 +50,9 @@ if(RTC_ENABLE_TRACING)
     $<INSTALL_INTERFACE:include>
   )
   target_link_libraries(rtc_tracing PUBLIC LTTng::UST)
-  target_compile_definitions(rtc_tracing PUBLIC RTC_TRACING_ENABLED)
+  # RTC_TRACING_ENABLED for the probe TU itself (harmless — it does not gate on
+  # it) but NOT exported: see the interface-leak note above. PRIVATE only.
+  target_compile_definitions(rtc_tracing PRIVATE RTC_TRACING_ENABLED)
   # The probe TU is lttng-generated boilerplate; silence this repo's strict
   # -Wconversion/-Wpedantic wall on it only (never on call-site code).
   target_compile_options(rtc_tracing PRIVATE -w)
