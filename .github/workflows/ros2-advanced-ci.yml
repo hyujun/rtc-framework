@@ -90,6 +90,11 @@ jobs:
               - 'rtc_digital_twin/setup.cfg'
               - 'rtc_msgs/msg/*.msg'
               - 'rtc_msgs/srv/*.srv'
+              # 워크플로/composite action 변경도 python job 을 재실행해야 한다 —
+              # 그러지 않으면 coverage 업로드 로직 수정이 python 경로에서 실증되지
+              # 않고 skip 된다 (cpp 필터가 .github/ci-packages.yml·actions 를 포함하는 것과 대칭).
+              - '.github/workflows/ros2-advanced-ci.yml'
+              - '.github/actions/**'
 
   # ============================================================
   #  Package list loader — .github/ci-packages.yml 을 4개 output 으로 노출
