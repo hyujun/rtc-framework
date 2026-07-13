@@ -104,6 +104,13 @@ STRUCTURED_EVENTS = frozenset(
 # address → function-symbol mapping used to label callback slices.
 METADATA_EVENTS = frozenset({"ros2:rclcpp_callback_register"})
 
+# Events whose ``cpu_id`` (packet context) is actually consumed: only the
+# Cpu / Cpu-IRQ lanes read it. Fetching the packet context field for every
+# event is a large slice of parse time (a bt2 wrapper object per access),
+# so the parser skips it for everything else — the Cpu lane is fully
+# reconstructed from sched_switch, which fires on every scheduled CPU.
+CPU_LANE_EVENTS = frozenset({"sched_switch", "irq_handler_entry", "irq_handler_exit"})
+
 
 def _truncate(label: str, limit: int = 80) -> str:
     return label if len(label) <= limit else label[: limit - 3] + "..."
@@ -114,11 +121,20 @@ def _truncate(label: str, limit: int = 80) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _try_parse_bt2(trace_dir: Path):
+def _try_parse_bt2(trace_dir: Path, needed_names: frozenset[str] | None = None):
     """Yield ``(time_ns, event_name, payload_dict, cpu_id_or_None)`` via bt2 binding.
 
     Returns ``None`` when ``bt2`` cannot be imported, signalling the caller
     to fall back to the CLI parser.
+
+    ``needed_names`` is an optional whitelist of event names whose payload
+    the consumer will actually read. For any event *not* in the set the
+    payload dict is left empty — dropped events reach ``build_trace`` only
+    to be counted, so materialising their fields (a bt2 wrapper object per
+    field) is pure waste. ``None`` (the default) disables the filter and
+    parses every field of every event, preserving the legacy firehose used
+    by ``--keep-all``. ``ts_ns`` and ``name`` are always produced so the
+    time origin and drop tally stay identical to the unfiltered walk.
     """
     try:
         import bt2  # type: ignore[import-not-found]
@@ -172,31 +188,38 @@ def _try_parse_bt2(trace_dir: Path):
             if not isinstance(msg, bt2._EventMessageConst):  # pylint: disable=protected-access
                 continue
             ev = msg.event
+            name = ev.name
             ts_ns = msg.default_clock_snapshot.ns_from_origin
             # Payload + context fields flattened into one dict for our use.
+            # Skip the (expensive) field materialisation for events the
+            # consumer will drop — they only need name + ts to be counted.
             payload: dict = {}
-            for field_container in (
-                ev.payload_field,
-                ev.specific_context_field,
-                ev.common_context_field,
-            ):
-                if field_container is None:
-                    continue
-                try:
-                    for k in field_container:
-                        with contextlib.suppress(Exception):
-                            payload[k] = _to_py(field_container[k])
-                except TypeError:
-                    pass
+            if needed_names is None or name in needed_names:
+                for field_container in (
+                    ev.payload_field,
+                    ev.specific_context_field,
+                    ev.common_context_field,
+                ):
+                    if field_container is None:
+                        continue
+                    try:
+                        for k in field_container:
+                            with contextlib.suppress(Exception):
+                                payload[k] = _to_py(field_container[k])
+                    except TypeError:
+                        pass
             cpu_id = None
-            try:
-                # CPU id lives in the packet context for LTTng kernel/UST.
-                pctx = ev.packet.context_field
-                if pctx is not None and "cpu_id" in pctx:
-                    cpu_id = int(_to_py(pctx["cpu_id"]))
-            except Exception:  # noqa: BLE001
-                pass
-            yield ts_ns, ev.name, payload, cpu_id
+            # Only the Cpu / IRQ lanes read cpu_id; fetching the packet
+            # context for every event is a large slice of parse time.
+            if needed_names is None or name in CPU_LANE_EVENTS:
+                try:
+                    # CPU id lives in the packet context for LTTng kernel/UST.
+                    pctx = ev.packet.context_field
+                    if pctx is not None and "cpu_id" in pctx:
+                        cpu_id = int(_to_py(pctx["cpu_id"]))
+                except Exception:  # noqa: BLE001
+                    pass
+            yield ts_ns, name, payload, cpu_id
 
     return _gen()
 
@@ -218,35 +241,46 @@ _BT2_LINE_RE = re.compile(
 _BT2_FIELD_RE = re.compile(r"(\w+)\s*=\s*(0x[0-9a-fA-F]+|-?\d+|\"[^\"]*\"|\w+)")
 
 
-def _parse_bt2_cli_line(line: str, base_ns: int | None) -> tuple | None:
+def _parse_bt2_cli_line(
+    line: str, base_ns: int | None, needed_names: frozenset[str] | None = None
+) -> tuple | None:
     m = _BT2_LINE_RE.match(line)
     if not m:
         return None
+    name = m["name"]
     # Convert HH:MM:SS.NNNNNNNNN → ns. We only care about *relative* offsets
     # for the trace; the first event becomes t=0 (ts - base_ns).
     h, mi, s = m["ts"].split(":")
     sec_total = int(h) * 3600 + int(mi) * 60 + float(s)
     ts_ns_abs = int(round(sec_total * 1_000_000_000))
     payload: dict = {}
-    for k, v in _BT2_FIELD_RE.findall(m["rest"]):
-        if v.startswith("0x"):
-            payload[k] = int(v, 16)
-        elif v.startswith('"'):
-            payload[k] = v.strip('"')
-        else:
-            try:
-                payload[k] = int(v)
-            except ValueError:
-                payload[k] = v
-    cpu_id = payload.pop("cpu_id", None)
-    return ts_ns_abs, m["name"], payload, cpu_id, base_ns
+    cpu_id = None
+    # Skip the field regex for events the consumer will drop — same policy
+    # as the bt2 path; ts + name still flow so origin and drop tally match.
+    if needed_names is None or name in needed_names or name in CPU_LANE_EVENTS:
+        for k, v in _BT2_FIELD_RE.findall(m["rest"]):
+            if v.startswith("0x"):
+                payload[k] = int(v, 16)
+            elif v.startswith('"'):
+                payload[k] = v.strip('"')
+            else:
+                try:
+                    payload[k] = int(v)
+                except ValueError:
+                    payload[k] = v
+        cpu_id = payload.pop("cpu_id", None)
+        # A dropped event whose fields were parsed only for cpu_id must not
+        # leak its payload downstream (keeps output identical to bt2 path).
+        if needed_names is not None and name not in needed_names:
+            payload = {}
+    return ts_ns_abs, name, payload, cpu_id, base_ns
 
 
-def _parse_bt2_cli(stream):
+def _parse_bt2_cli(stream, needed_names: frozenset[str] | None = None):
     """Yield ``(time_ns, event_name, payload_dict, cpu_id_or_None)`` from babeltrace2 stdout."""
     base_ns: int | None = None
     for line in stream:
-        parsed = _parse_bt2_cli_line(line, base_ns)
+        parsed = _parse_bt2_cli_line(line, base_ns, needed_names)
         if parsed is None:
             continue
         ts_ns_abs, name, payload, cpu_id, base_ns = parsed
@@ -255,18 +289,26 @@ def _parse_bt2_cli(stream):
         yield ts_ns_abs, name, payload, cpu_id
 
 
-def iter_events(trace_dir: Path | None, stdin: bool):
+def iter_events(
+    trace_dir: Path | None,
+    stdin: bool,
+    needed_names: frozenset[str] | None = None,
+):
     """Dispatch to bt2 binding if available, else babeltrace2 CLI.
 
     Announces the chosen parser on stderr so the user knows which path is
     active — the CLI fallback is markedly slower, and that explains a long
     silent parse on hosts without ``python3-bt2``.
+
+    ``needed_names`` (see :func:`_try_parse_bt2`) restricts payload
+    materialisation to events the consumer reads; ``None`` parses
+    everything. Both parser paths honour it identically.
     """
     if stdin:
         print("[ctf_to_chrome] parser: babeltrace2 CLI text (stdin)", file=sys.stderr)
-        return _parse_bt2_cli(sys.stdin)
+        return _parse_bt2_cli(sys.stdin, needed_names)
     assert trace_dir is not None
-    gen = _try_parse_bt2(trace_dir)
+    gen = _try_parse_bt2(trace_dir, needed_names)
     if gen is not None:
         print("[ctf_to_chrome] parser: python3-bt2 binding", file=sys.stderr)
         return gen
@@ -283,7 +325,7 @@ def iter_events(trace_dir: Path | None, stdin: bool):
         text=True,
     )
     assert proc.stdout is not None
-    return _parse_bt2_cli(proc.stdout)
+    return _parse_bt2_cli(proc.stdout, needed_names)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -665,7 +707,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[ctf_to_chrome] input not a directory: {args.input}", file=sys.stderr)
         return 1
 
-    events_iter = iter_events(args.input, args.stdin)
+    # Only these events' payloads are read downstream; let the parser skip
+    # field materialisation for the rest (large parse-time win on big
+    # traces). --keep-all needs every payload, so disable the filter then.
+    needed_names = None if args.keep_all else STRUCTURED_EVENTS | METADATA_EVENTS | keep_events
+    events_iter = iter_events(args.input, args.stdin, needed_names)
     print("[ctf_to_chrome] parsing events...", file=sys.stderr)
     trace = build_trace(
         events_iter,
