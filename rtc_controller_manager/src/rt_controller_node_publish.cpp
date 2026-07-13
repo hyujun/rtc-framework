@@ -1,6 +1,7 @@
 // ── Publish offload threads (SPSC drain + ROS2 publish) ─────────────────────
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/threading/thread_utils.hpp>
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <poll.h>         // poll
 #include <sched.h>        // sched_yield (fallback if eventfd unavailable)
@@ -33,6 +34,10 @@ void RtControllerNode::NrtPublishLoopEntry(const urtc::ThreadConfig& cfg) {
       WaitForNrtPublishWakeup();
       continue;
     }
+
+    // L1 span covers only the drained-work section — the 1 ms poll wait above
+    // stays outside so idle polling does not pollute the slice statistics.
+    RTC_TRACE_SCOPE("nrt_publish_drain");
 
     // Forward the snapshot to the active controller so it can publish its
     // own (controller-owned) topics. Index is captured by the RT loop this

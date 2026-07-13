@@ -1,5 +1,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 
+#include <rtc_base/tracing/trace_scope.hpp>
+
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 
@@ -281,6 +283,9 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
                                     ControllerTopicHandles& handles,
                                     const rtc::grasp::GraspStateData* grasp,
                                     const WbcStateData* wbc, const ToFSnapshotData* tof) noexcept {
+  // L2 under nrt_publish_drain — shared by every controller's
+  // PublishNonRtSnapshot, so one span here covers the whole owned-topics path.
+  RTC_TRACE_SCOPE("owned_topics_publish");
   const auto sec = static_cast<int32_t>(snap.stamp_ns / 1'000'000'000L);
   const auto nsec = static_cast<uint32_t>(snap.stamp_ns % 1'000'000'000L);
 

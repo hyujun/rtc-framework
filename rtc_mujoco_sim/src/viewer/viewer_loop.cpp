@@ -16,6 +16,7 @@
 
 #include <rtc_base/logging/session_dir.hpp>
 #include <rtc_base/threading/thread_utils.hpp>
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -159,16 +160,23 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
 
   // ── Render loop ────────────────────────────────────────────────────────────
   while (!stop.stop_requested() && running_.load() && !glfwWindowShouldClose(window)) {
+    // L1 span covers one rendered frame; the pacing sleep below stays outside
+    // so the slice length reads as frame cost, not the ~60 Hz cadence.
+    RTC_TRACE_SCOPE("viewer_frame");
+
     // Sync latest physics qpos into vis_data (try_lock — never blocks SimLoop)
     {
-      std::lock_guard lock(viz_mutex_);
-      if (viz_dirty_) {
-        std::memcpy(vis_data->qpos, viz_qpos_.data(),
-                    static_cast<std::size_t>(model_->nq) * sizeof(double));
-        viz_dirty_ = false;
+      RTC_TRACE_SCOPE("viewer_sync");
+      {
+        std::lock_guard lock(viz_mutex_);
+        if (viz_dirty_) {
+          std::memcpy(vis_data->qpos, viz_qpos_.data(),
+                      static_cast<std::size_t>(model_->nq) * sizeof(double));
+          viz_dirty_ = false;
+        }
       }
+      mj_forward(model_, vis_data);  // update kinematics + sensor data
     }
-    mj_forward(model_, vis_data);  // update kinematics + sensor data
 
     // Populate vis_data->xfrc_applied so PERTFORCE arrow renders and the
     // overlay can read |F| / |τ|.  Replicates the physics-side call but on
@@ -190,35 +198,40 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
     glfwGetFramebufferSize(window, &width, &height);
     const mjrRect viewport{0, 0, width, height};
 
-    mjv_updateScene(model_, vis_data, &opt, &vs.pert, &cam, mjCAT_ALL, &scn);
-    AddJointFrameGeoms(vs);
-    mjr_render(viewport, &scn, &con);
-
-    // ── Overlays ──────────────────────────────────────────────────────────
-    // Status (top-right, always visible)
-    RenderStatusOverlay(vs, viewport, cur_rtf);
-
-    // Bottom-left hint or solver stats
-    if (vs.show_solver) {
-      RenderSolverOverlay(vs, viewport);
-    } else {
-      mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, viewport, "F1: help", nullptr, &con);
+    {
+      RTC_TRACE_SCOPE("viewer_render");
+      mjv_updateScene(model_, vis_data, &opt, &vs.pert, &cam, mjCAT_ALL, &scn);
+      AddJointFrameGeoms(vs);
+      mjr_render(viewport, &scn, &con);
     }
 
-    // Top-left: help pages (F1) take priority over sensor (F9)
-    if (vs.help_page > 0) {
-      RenderHelpOverlay(vs, viewport, vs.help_page);
-    } else if (vs.show_sensor) {
-      RenderSensorOverlay(vs, viewport);
-    }
+    {
+      RTC_TRACE_SCOPE("viewer_overlays");
+      // Status (top-right, always visible)
+      RenderStatusOverlay(vs, viewport, cur_rtf);
 
-    // Bottom-right: model info (F10)
-    if (vs.show_model_info) {
-      RenderModelInfoOverlay(vs, viewport);
-    }
+      // Bottom-left hint or solver stats
+      if (vs.show_solver) {
+        RenderSolverOverlay(vs, viewport);
+      } else {
+        mjr_overlay(mjFONT_NORMAL, mjGRID_BOTTOMLEFT, viewport, "F1: help", nullptr, &con);
+      }
 
-    // Bottom-right corner graph: RTF profiler (F3)
-    RenderRtfProfiler(vs, viewport);
+      // Top-left: help pages (F1) take priority over sensor (F9)
+      if (vs.help_page > 0) {
+        RenderHelpOverlay(vs, viewport, vs.help_page);
+      } else if (vs.show_sensor) {
+        RenderSensorOverlay(vs, viewport);
+      }
+
+      // Bottom-right: model info (F10)
+      if (vs.show_model_info) {
+        RenderModelInfoOverlay(vs, viewport);
+      }
+
+      // Bottom-right corner graph: RTF profiler (F3)
+      RenderRtfProfiler(vs, viewport);
+    }
 
     // ── Screenshot (P key, written after all overlays are drawn) ─────────
     if (vs.take_screenshot) {
@@ -262,8 +275,11 @@ void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
       }
     }
 
-    glfwSwapBuffers(window);
-    glfwPollEvents();
+    {
+      RTC_TRACE_SCOPE("viewer_swap");
+      glfwSwapBuffers(window);
+      glfwPollEvents();
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(viewer_sleep_ms_));
   }
 

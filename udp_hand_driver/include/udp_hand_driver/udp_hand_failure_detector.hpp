@@ -12,6 +12,7 @@
 
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/types/types.hpp"
 #include "udp_hand_driver/udp_hand_controller.hpp"
 
@@ -142,26 +143,34 @@ class UdpHandFailureDetector {
         std::this_thread::sleep_for(20ms);
         continue;
       }
-      const UdpHandState state = controller_.GetLatestState();
-      if (state.valid) {
-        Check(state);
-      }
-      // Startup grace, split per #2. The RATE grace (long) suppresses the
-      // polling-rate check while the loop reaches steady cadence; while suppressed
-      // keep the rate baseline fresh so the first post-grace CheckRate measures a
-      // clean interval. The LINK grace (independent, much shorter) only spans the
-      // ARP/firmware-boot first-packet transient, so a genuinely dead link latches
-      // well below the CM device_timeout instead of waiting out the rate warmup.
-      // Motor/sensor data-validity checks above are unaffected (they run once a
-      // state read has arrived).
-      if (InGrace(cfg_.startup_grace_ms)) {
-        prev_rate_check_ = std::chrono::steady_clock::now();
-        prev_cycle_count_ = controller_.cycle_count();
-      } else {
-        CheckRate();
-      }
-      if (cfg_.check_link && !InGrace(cfg_.link_startup_grace_ms)) {
-        CheckLink();
+      {
+        // L1 span covers one detector pass — the 20 ms pacing sleep below
+        // stays outside so slices read as check cost, not the 50 Hz cadence.
+        RTC_TRACE_SCOPE("hand_detector_tick");
+        const UdpHandState state = controller_.GetLatestState();
+        if (state.valid) {
+          RTC_TRACE_SCOPE("hand_detector_check");
+          Check(state);
+        }
+        // Startup grace, split per #2. The RATE grace (long) suppresses the
+        // polling-rate check while the loop reaches steady cadence; while suppressed
+        // keep the rate baseline fresh so the first post-grace CheckRate measures a
+        // clean interval. The LINK grace (independent, much shorter) only spans the
+        // ARP/firmware-boot first-packet transient, so a genuinely dead link latches
+        // well below the CM device_timeout instead of waiting out the rate warmup.
+        // Motor/sensor data-validity checks above are unaffected (they run once a
+        // state read has arrived).
+        if (InGrace(cfg_.startup_grace_ms)) {
+          prev_rate_check_ = std::chrono::steady_clock::now();
+          prev_cycle_count_ = controller_.cycle_count();
+        } else {
+          RTC_TRACE_SCOPE("hand_detector_rate");
+          CheckRate();
+        }
+        if (cfg_.check_link && !InGrace(cfg_.link_startup_grace_ms)) {
+          RTC_TRACE_SCOPE("hand_detector_link");
+          CheckLink();
+        }
       }
       std::this_thread::sleep_for(20ms);  // ~50 Hz
     }
