@@ -80,18 +80,24 @@ colcon build --cmake-args -DRTC_ENABLE_TRACING=ON
 UST 채널에 함께 기록되고, `timeline.sh` 변환기가 이를 emit 스레드 레인의 **중첩
 flame 스택**으로 렌더한다:
 
-RT 제어 스레드 (`integrated_rt_controller`):
+RT 제어 스레드 (`integrated_rt_controller` 의 `rt_control`):
 
 ```
 rt_control_tick                          (RT tick 전체; raw clock_nanosleep 경계)
-└─ CM::Compute                           (ControllerManager dispatch)
-   └─ DemoWbcController::Compute          (controller 진입)
-      └─ DemoWbcController::ComputeControl
-         ├─ ComputeWbcCommon / ComputeTSIDPosition
-         ├─ ComputeKinematicWbc
-         └─ ComputeDynamicWbc … (FSM 경로에 따라 PositionMode/ReleaseMode/Fallback)
+├─ CM::ReadDeviceState                    (backend ReadState/ReadMotorState/ReadSensorState + state fill)
+├─ CM::Compute                            (ControllerManager dispatch)
+│  └─ DemoWbcController::Compute           (controller 진입)
+│     └─ DemoWbcController::ComputeControl
+│        ├─ ComputeWbcCommon / ComputeTSIDPosition
+│        ├─ ComputeKinematicWbc
+│        └─ ComputeDynamicWbc … (FSM 경로에 따라 PositionMode/ReleaseMode/Fallback)
+├─ CM::FillPublishSnapshot                (PublishSnapshot group_commands 채우기)
+└─ CM::WriteCommand                       (inline actuator WriteCommand 루프 — actuator lane)
+CM::CheckTimeouts                         (50 Hz watchdog; 10 tick 마다, rt_control_tick 밖 sibling)
 ```
 
+`CM::CheckTimeouts` 는 `ControlLoop()` 반환 **후** `OnTick` 에서 실행되므로
+`rt_control_tick` 의 자식이 아니라 같은 레인의 형제 span 이다 (10 tick 마다만 발생).
 위 스택은 대표 경로다 — WBC `Compute` 아래에는 per-tick 헬퍼 span 도 함께 찍힌다
 (`ReadState` / `DrainTargetSlot` / `WriteJointCommand` / `FillLogOutput` /
 `FillPublishOutput` / `ExtractFullState` / `BuildTargetPosture` /
@@ -107,11 +113,16 @@ MuJoCo sim 스레드 (`mujoco_simulator_node` 의 `sim_thread`, sim 빌드 한�
 sim_step                                 (sim_thread 1 iteration; raw std::jthread)
 ├─ MuJoCoSimulator::ReadState / ReadSensors / ReadContactWrenches
 ├─ MuJoCoSimulator::InvokeStateCallback / InvokeSensorCallback / InvokeContactWrenchCallback
+├─ sim_wait_command                       (controller command sync_cv_ 대기; lock-step)
 ├─ MuJoCoSimulator::ApplyCommand
 ├─ sim_substep  ×n_substeps
 │  └─ PreparePhysicsStep → mj_step → ClearContactForces
 └─ ReadSolverStats / UpdateRtf / ThrottleIfNeeded
 ```
+
+`sim_wait_command` 은 예전에 state-publish span 과 ApplyCommand span 사이의 "빈
+구간" 으로 추정하던 controller 명령 대기 (sim lock-step) 를 명시적 span 으로 만든
+것이다 — 이 구간이 길면 controller RT tick 이 느린 것이지 sim 물리가 느린 게 아니다.
 
 Hand UDP 드라이버 CommLoop 스레드 (`udp_hand_node`, `-DRTC_ENABLE_TRACING=ON` 한정):
 
@@ -129,8 +140,73 @@ hand_comm_tick                           (CommLoop 1 tick; raw PeriodicRtThread 
 
 fake 모드(`use_fake_hand`)는 read 대신 `hand_comm_tick └─ hand_fake_cycle └─ hand_fake_step`
 (LPF 모델) 이 찍히고, tail 은 실모드와 공유한다. decimated-skip / E-Stop tick 도
-`hand_comm_tick` 하위 없이 짧은 span 으로 나타난다. 계측 대상은 RT CommLoop 뿐 —
-failure_detector 의 50 Hz aux jthread 는 제외.
+`hand_comm_tick` 하위 없이 짧은 span 으로 나타난다.
+
+Hand 실패 감지 스레드 (`udp_hand_node` 의 `failure_detector`, 50 Hz aux jthread):
+
+```
+hand_detector_tick                       (감지 1 pass; IsRunning 게이트 통과 후 work 만, 20 ms sleep 제외)
+├─ hand_detector_check                    (Check — motor/sensor data-validity)
+├─ hand_detector_rate                     (CheckRate — polling-rate; startup grace 밖에서만)
+└─ hand_detector_link                     (CheckLink — dead-link 감지; check_link 켜졌을 때만)
+```
+
+MPC 스레드 (`integrated_rt_controller` 의 `mpc_main`, `-DRTC_ENABLE_TRACING=ON` +
+handler 모드 한정):
+
+```
+mpc_tick                                 (MPC solve tick; raw PeriodicRtThread 경계)
+├─ mpc_read_state                         (MPCSolutionManager::ReadState)
+├─ mpc_solve                              (Solve — handler 모드면 아래 L3)
+│  ├─ mpc_mode_swap                        (cross-mode OCP rebuild; phase 전환 시에만)
+│  └─ mpc_handler_solve                    (handler_->Solve — aligator ProxDDP)
+└─ mpc_publish                            (PublishSolution SPSC 핸드오프)
+```
+
+MPC **workers 는 계측 제외** — jthread body 가 config apply 후 즉시 종료하는 passive
+placeholder 이고, 실제 병렬성은 solver 라이브러리(aligator) 내부에 있다.
+
+Non-RT publish 스레드 (`integrated_rt_controller` 의 `nrt_publish`):
+
+```
+nrt_publish_drain                        (SPSC Pop 성공 후 work 만; 1 ms poll 대기 제외)
+└─ owned_topics_publish                   (controller-owned 토픽 publish — grasp/wbc/tof/tf)
+```
+
+MuJoCo viewer 스레드 (`mujoco_simulator_node` 의 `viewer`, sim + viewer 빌드 한정):
+
+```
+viewer_frame                             (1 프레임 렌더; ~60 Hz pacing sleep 제외)
+├─ viewer_sync                            (viz qpos sync + mj_forward)
+├─ viewer_render                          (mjv_updateScene + AddJointFrameGeoms + mjr_render)
+├─ viewer_overlays                        (status/solver/help/sensor/modelinfo/RTF 오버레이)
+└─ viewer_swap                            (glfwSwapBuffers + glfwPollEvents)
+```
+
+### Executor callback 내부 L2 span
+
+ros2_tracing 의 `ros2:callback_start/end` 가 이미 각 executor 콜백 바깥을 L1 으로
+감싸므로, 콜백 **본문** 에는 named L2 span 만 추가해 어느 lane 이 무슨 일을 하는지 본다.
+콜백 심볼은 `ros2:rclcpp_callback_register` 로 해석된 L1 슬라이스 안에 이 L2 가 중첩된다.
+
+| Lane (priority) | L2 span | 하는 일 |
+|---|---|---|
+| `rt_callback` (FIFO 70) | `MujocoNativeBackend::OnJointState` / `OnWrench`, `UrDriverNativeBackend::OnJointState`, `UdpHandNativeBackend::OnJointState` / `OnMotorState` / `OnSensorState` | device state SeqLock write |
+| `nrt_callback` | `CM::TargetCb` | RobotTarget reorder + SPSC marshal |
+| `nrt_logging` | `CM::DrainLog` | timing-CSV drain + summary print |
+| hand node executor | `hand_joint_command_cb` | JointCommand name-reorder + offset + send |
+
+### 계측 제외 (의도적)
+
+다음은 span 을 넣지 않는다 — 관측 수단이 따로 있거나 계측 대상이 아니다:
+
+* **DDS / rclcpp 내부 스레드** — kernel `sched_switch` timeline 으로 관측 (UST span 불필요).
+* **프로세스 main 스레드** — 노드 구성 후 50 ms sleep 루프만 도는 대기 스레드.
+* **일시적 lifecycle 스레드** — on_configure/on_activate 1회성 경로.
+* **MPC workers** — 위 참조 (passive placeholder).
+* **python 노드** (target generator / GUI 등) — `RTC_TRACE_SCOPE` 는 C++ 매크로.
+* **`rtc_communication::Transceiver::RecvLoop`** — production 사용처 0. 첫 실사용
+  driver 도입 시 계측.
 
 계측점 추가는 해당 함수 첫 줄에 `RTC_TRACE_SCOPE("Name");` 한 줄. RAII 라
 early-return 에도 span 이 닫힌다. build flag OFF 면 그 줄은 사라진다.
@@ -303,9 +379,12 @@ sudo apt install ros-jazzy-tracetools-analysis
 
 * **자동 모드**로는 콜백 내부 함수 breakdown 도, RT pthread tick 경계도 안 보인다
   (rclcpp executor 콜백이 아니므로). `--tracing` 빌드 + `RTC_TRACE_SCOPE` 계측이
-  이를 해결한다 (§RT trace spans) — 현재 RT tick / CM dispatch / WBC Compute·
-  sub-step, MuJoCo sim_step, hand UDP CommLoop tick 까지 커버. Pinocchio FK / ProxSuite QP 등 더 깊은 구간은 그 함수에
-  `RTC_TRACE_SCOPE` 한 줄을 추가하면 즉시 스택에 나타난다.
+  이를 해결한다 (§RT trace spans) — 현재 RT control tick (CM dispatch + read/publish/
+  write/watchdog L2) / WBC·Joint·Task Compute sub-step, MPC solve tick, MuJoCo
+  sim_step + viewer frame, hand UDP CommLoop + failure_detector tick, nrt_publish
+  drain, 그리고 executor 콜백 본문 (device backend / target / log / hand cmd) 까지
+  커버. Pinocchio FK / ProxSuite QP 등 더 깊은 구간은 그 함수에 `RTC_TRACE_SCOPE`
+  한 줄을 추가하면 즉시 스택에 나타난다.
 * `rtc:*` span 은 **컴파일타임 opt-in** (`-DRTC_ENABLE_TRACING=ON`) — 켜지 않은
   빌드에는 존재하지 않는다. 기본 프로덕션 빌드는 RT hot-path 비용 0.
 * Trace 파일 크기는 캡처 시간 + UST/kernel event volume 에 선형. 1 분 캡처 ~ 10–100 MB.
