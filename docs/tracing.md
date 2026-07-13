@@ -276,6 +276,8 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
 
 `timeline.sh` 가 babeltrace2 (또는 `python3-bt2` binding) 로 CTF 를 읽어 Chrome trace JSON 으로 변환한다. 출력은 `<trace_dir>/trace.json`.
 
+변환 진행상황은 stderr 에 찍힌다 — 선택된 파서 (`parser: python3-bt2 binding` vs 느린 `babeltrace2 CLI`), 대용량 트레이스 순회 중 10 만 이벤트마다 `parsed N events ...`, 그리고 `writing N events → <out>`. 대형 트레이스 변환이 멈춘 게 아니라 진행 중임을 이 로그로 확인한다.
+
 * https://ui.perfetto.dev 에 JSON drag-drop. 설치 0, 브라우저만.
 * 세 가지 swimlane 그룹:
   - **Threads (by TID)** — `mpc_main-NNNN`, `rt_control-NNNN`, `mujoco_simulato-NNNN`

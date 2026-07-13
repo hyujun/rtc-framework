@@ -256,14 +256,26 @@ def _parse_bt2_cli(stream):
 
 
 def iter_events(trace_dir: Path | None, stdin: bool):
-    """Dispatch to bt2 binding if available, else babeltrace2 CLI."""
+    """Dispatch to bt2 binding if available, else babeltrace2 CLI.
+
+    Announces the chosen parser on stderr so the user knows which path is
+    active — the CLI fallback is markedly slower, and that explains a long
+    silent parse on hosts without ``python3-bt2``.
+    """
     if stdin:
+        print("[ctf_to_chrome] parser: babeltrace2 CLI text (stdin)", file=sys.stderr)
         return _parse_bt2_cli(sys.stdin)
     assert trace_dir is not None
     gen = _try_parse_bt2(trace_dir)
     if gen is not None:
+        print("[ctf_to_chrome] parser: python3-bt2 binding", file=sys.stderr)
         return gen
     # CLI fallback.
+    print(
+        "[ctf_to_chrome] parser: babeltrace2 CLI (slower; "
+        "'apt install python3-bt2' for the faster binding)",
+        file=sys.stderr,
+    )
     proc = subprocess.Popen(
         ["babeltrace2", str(trace_dir)],
         stdout=subprocess.PIPE,
@@ -284,6 +296,7 @@ def build_trace(
     *,
     keep_events: frozenset[str] | None = None,
     keep_all: bool = False,
+    progress_every: int = 0,
 ) -> dict:
     """Walk the event stream once, emit Chrome Trace events.
 
@@ -302,6 +315,10 @@ def build_trace(
         keep_all: if True, emit every non-structured event as an instant
             marker (legacy behaviour, useful for debugging which
             tracepoints fired). Overrides ``keep_events``.
+        progress_every: if > 0, print a running "parsed N events" line to
+            stderr every ``progress_every`` input events. Large CTF traces
+            take tens of seconds to walk with no other output; this shows
+            the pass is alive. 0 (the default, used by tests) stays silent.
 
     Returns:
         ``{"traceEvents": [...], "displayTimeUnit": "ms",
@@ -324,7 +341,14 @@ def build_trace(
     # Open callbacks by (tid, callback) so we close the right one.
     callbacks_open: dict[tuple[int, int], int] = {}  # value = start_ts_us
 
+    n_events = 0
     for ts_ns, name, payload, cpu_id in events_iter:
+        n_events += 1
+        if progress_every and n_events % progress_every == 0:
+            print(
+                f"[ctf_to_chrome] parsed {n_events:,} events ({len(out):,} slices so far)...",
+                file=sys.stderr,
+            )
         if base_ns is None:
             base_ns = ts_ns
         ts_us = (ts_ns - base_ns) // 1_000
@@ -642,7 +666,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     events_iter = iter_events(args.input, args.stdin)
-    trace = build_trace(events_iter, keep_events=keep_events, keep_all=args.keep_all)
+    print("[ctf_to_chrome] parsing events...", file=sys.stderr)
+    trace = build_trace(
+        events_iter,
+        keep_events=keep_events,
+        keep_all=args.keep_all,
+        progress_every=100_000,
+    )
 
     # Strip the in-process sentinel before JSON dump (Chrome Trace
     # spec rejects unknown top-level keys with leading underscore on
@@ -658,6 +688,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    print(
+        f"[ctf_to_chrome] writing {len(trace['traceEvents']):,} events → {args.output}",
+        file=sys.stderr,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as f:
         json.dump(trace, f)
