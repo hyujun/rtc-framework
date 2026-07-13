@@ -85,6 +85,22 @@ ament_target_dependencies(rtc_mpc PUBLIC
   rtc_base
 )
 
+# ── RT tracing (opt-in) ──────────────────────────────────────────────────────
+# When rtc_base was built with -DRTC_ENABLE_TRACING=ON it exports the
+# `rtc_tracing` target (lttng include path + probe .so). Linking it activates
+# the RTC_TRACE_SCOPE spans in the MPC thread loop (mpc_tick → sub-phases).
+# Default OFF → no-op, no lttng dependency. PRIVATE (this target uses keyword
+# signatures): spans live only in this lib's TUs and the define below never
+# leaks to consumers. See rtc_base/CMakeLists.txt.
+option(RTC_ENABLE_TRACING "Compile rtc:* LTTng UST tracepoints (RT tracing)" OFF)
+if(RTC_ENABLE_TRACING)
+  target_link_libraries(rtc_mpc PRIVATE rtc_base::rtc_tracing)
+  # Define set here (PRIVATE), not inherited from rtc_tracing — see the
+  # interface-leak note in rtc_base/CMakeLists.txt. This keeps the opt-in local
+  # so an ON rtc_base never silently instruments an OFF consumer.
+  target_compile_definitions(rtc_mpc PRIVATE RTC_TRACING_ENABLED)
+endif()
+
 # ── Install & Export ─────────────────────────────────────────────────────────
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)

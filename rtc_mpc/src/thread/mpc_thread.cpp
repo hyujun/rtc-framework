@@ -1,6 +1,7 @@
 #include "rtc_mpc/thread/mpc_thread.hpp"
 
 #include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 
 namespace rtc::mpc {
 
@@ -62,20 +63,31 @@ void MPCThread::Start() {
 }
 
 void MPCThread::OnTick() noexcept {
+  RTC_TRACE_SCOPE("mpc_tick");
+
   // Phase 1: state acquisition.
-  const MPCStateSnapshot state = manager_->ReadState();
-  MarkStateAcquired();
+  MPCStateSnapshot state;
+  {
+    RTC_TRACE_SCOPE("mpc_read_state");
+    state = manager_->ReadState();
+    MarkStateAcquired();
+  }
 
   // Phase 2: solve. Worker span lets parallel solvers schedule onto the
   // class-owned worker threads.
-  std::span<std::jthread> worker_span(workers_.data(),
-                                      static_cast<std::size_t>(launch_config_.num_workers));
-  const bool ok = Solve(state, scratch_, worker_span);
-  MarkComputeDone();
+  bool ok = false;
+  {
+    RTC_TRACE_SCOPE("mpc_solve");
+    std::span<std::jthread> worker_span(workers_.data(),
+                                        static_cast<std::size_t>(launch_config_.num_workers));
+    ok = Solve(state, scratch_, worker_span);
+    MarkComputeDone();
+  }
 
   // Phase 3: publish. PublishSolution is noexcept and runs off the RT
   // control loop, so the SPSC handoff is RT-safe for the controller side.
   if (ok) {
+    RTC_TRACE_SCOPE("mpc_publish");
     manager_->PublishSolution(scratch_);
   }
 }

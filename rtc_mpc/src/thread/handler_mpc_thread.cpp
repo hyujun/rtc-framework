@@ -1,5 +1,6 @@
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
 
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 
@@ -148,6 +149,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out,
 
   // ── Cross-mode swap branch (try-wrapped; Solve stays noexcept) ────────
   if (ctx.phase_changed && ctx.ocp_type != handler_->ocp_type()) {
+    RTC_TRACE_SCOPE("mpc_mode_swap");
     bool swapped = false;
     try {
       swapped = TryCrossModeSwap(ctx);
@@ -164,7 +166,11 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out,
   }
 
   // ── Solve ─────────────────────────────────────────────────────────────
-  const MPCSolveError err = handler_->Solve(ctx, state, out);
+  MPCSolveError err = MPCSolveError::kNoError;
+  {
+    RTC_TRACE_SCOPE("mpc_handler_solve");
+    err = handler_->Solve(ctx, state, out);
+  }
   total_solves_.fetch_add(1, std::memory_order_relaxed);
   last_err_.store(static_cast<int>(err), std::memory_order_relaxed);
 
