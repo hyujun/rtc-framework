@@ -44,6 +44,7 @@ from launch.substitutions import (
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
@@ -527,7 +528,10 @@ def generate_launch_description():
             hand_udp_config,
             ft_inferencer_config,
             # sil_mode override: default == yaml value (no drift); CLI wins when set.
-            {"sil_mode": LaunchConfiguration("sil_mode")},
+            # value_type=str pins the type: "off"/"on"/etc. are YAML 1.1 booleans,
+            # so an unqualified LaunchConfiguration coerces to bool and clashes with
+            # the node's string declaration during on_configure.
+            {"sil_mode": ParameterValue(LaunchConfiguration("sil_mode"), value_type=str)},
         ],
         emulate_tty=True,
     )
