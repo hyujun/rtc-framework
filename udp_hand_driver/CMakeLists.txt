@@ -66,6 +66,23 @@ ament_target_dependencies(udp_hand_node
   ament_index_cpp
 )
 
+# ── RT tracing (opt-in) ──────────────────────────────────────────────────────
+# udp_hand_node is the only target that compiles the header-only
+# UdpHandController::RunCommCycle CommLoop tick, so the RTC_TRACE_SCOPE spans
+# (hand_comm_tick → read/tail → ft_infer) live here. When rtc_base was built
+# with -DRTC_ENABLE_TRACING=ON it exports rtc_base::rtc_tracing (lttng include
+# path). Default OFF → macro is a no-op, no lttng dependency. The test targets
+# include the same header but leave RTC_TRACING_ENABLED undefined, so they stay
+# no-op. See rtc_base/CMakeLists.txt and docs/tracing.md.
+option(RTC_ENABLE_TRACING "Compile rtc:* LTTng UST tracepoints (RT tracing)" OFF)
+if(RTC_ENABLE_TRACING)
+  target_link_libraries(udp_hand_node rtc_base::rtc_tracing)
+  # Define set here (PRIVATE), not inherited from rtc_tracing — see the
+  # interface-leak note in rtc_base/CMakeLists.txt. Keeps the opt-in local so an
+  # ON rtc_base never silently instruments an OFF consumer.
+  target_compile_definitions(udp_hand_node PRIVATE RTC_TRACING_ENABLED)
+endif()
+
 # ── Full-SIL loopback firmware simulator (device side) ───────────────────────
 # Peer UDP server that answers the real udp_hand_node's requests with
 # protocol-correct responses (no hardware). Core logic is the header-only

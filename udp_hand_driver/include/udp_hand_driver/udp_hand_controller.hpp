@@ -39,6 +39,7 @@
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/types/types.hpp"
 #include "udp_hand_driver/fake_hand_lpf.hpp"
 #include "udp_hand_driver/fingertip_ft_inferencer.hpp"
@@ -694,6 +695,11 @@ class UdpHandController {
   //   command-gated write → reads → sensor post-process → publish → forensics.
   // Allocation-free; logging is THROTTLE-only with RT-safe (primitive-arg) msgs.
   void RunCommCycle() noexcept {
+    // RT-tick span: the CommLoop pthread boundary (analog of rt_control_tick /
+    // sim_step). Covers the whole tick incl. decimated-skip and E-Stop early
+    // returns and the fake-mode dispatch below. No-op unless RTC_TRACING_ENABLED.
+    RTC_TRACE_SCOPE("hand_comm_tick");
+
     // Whole-cycle UDP decimation: only every comm_decimation_-th cycle runs the
     // UDP transaction (default 1 = every cycle). Decided first so the E-Stop
     // check below still runs on every tick, decimated or not.
@@ -752,7 +758,10 @@ class UdpHandController {
     // non-blocking drain — the count is observed via comm_stats().stale_drained
     // only (no hot-path logging). Runs only on real comm cycles (after the
     // decimation skip return above); a no-op in fake mode (socket closed).
-    transport_.DrainStaleDatagrams();
+    {
+      RTC_TRACE_SCOPE("hand_drain_stale");
+      transport_.DrainStaleDatagrams();
+    }
 
     // Latch the most recent staged command (last-command-wins). Per-command:
     // cleared after one write attempt below, so an uncommanded interval is
@@ -785,6 +794,7 @@ class UdpHandController {
     bool write_attempted = false;
     bool write_ok = false;
     if (state_read_once_.load(std::memory_order_relaxed) && has_pending_write_) {
+      RTC_TRACE_SCOPE("hand_write_echo");
       write_attempted = true;
       attempted_mask |= RequestKindBit(RequestKind::kWriteEcho);
       if (transport_.WritePositionWithEcho(pending_cmd_, send_buf_, echo_buf_, joint_io_mode_)) {
@@ -810,6 +820,7 @@ class UdpHandController {
       bool motor_space_attempted = false;
       bool read_all_motor_ok = false;
       if (sensor_protocol_->HasMotorSpaceRead()) {
+        RTC_TRACE_SCOPE("hand_read_motor");
         motor_space_attempted = true;
         packets::JointMode received_mode{};
         attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
@@ -834,6 +845,7 @@ class UdpHandController {
       //    publishes the result as joint_states.
       bool read_all_joint_motor_ok = false;
       {
+        RTC_TRACE_SCOPE("hand_read_joint");
         std::array<float, packets::kMotorDataCount> jp_buf{}, jv_buf{}, jc_buf{};
         attempted_mask |= RequestKindBit(RequestKind::kJointRead);
         if (transport_.RequestAllMotorRead(jp_buf, jv_buf, jc_buf, joint_io_mode_, nullptr,
@@ -855,6 +867,7 @@ class UdpHandController {
       //    response size/layout and decode differ.
       bool read_all_sensor_ok = false;
       if (is_sensor_cycle) {
+        RTC_TRACE_SCOPE("hand_read_sensor");
         state.num_fingertips = num_fingertips_;  // decode input
         attempted_mask |= RequestKindBit(RequestKind::kBulkSensor);
         const ssize_t recvd = transport_.RequestBulkSensorRaw(
@@ -904,15 +917,18 @@ class UdpHandController {
       packets::JointMode received_mode{};
       attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
       bool read_pos_ok = false;
-      if (transport_.RequestMotorRead(packets::Command::kReadPosition, motor_pos_buf_,
-                                      packets::JointMode::kMotor, &received_mode,
-                                      RequestKind::kMotorRead)) {
-        std::copy_n(motor_pos_buf_.begin(), kNumHandMotors, state.motor_positions.begin());
-        state.received_joint_mode = static_cast<uint8_t>(received_mode);
-        state.motor_valid = true;
-        any_recv_ok = true;
-        ok_mask |= RequestKindBit(RequestKind::kMotorRead);
-        read_pos_ok = true;
+      {
+        RTC_TRACE_SCOPE("hand_read_pos");
+        if (transport_.RequestMotorRead(packets::Command::kReadPosition, motor_pos_buf_,
+                                        packets::JointMode::kMotor, &received_mode,
+                                        RequestKind::kMotorRead)) {
+          std::copy_n(motor_pos_buf_.begin(), kNumHandMotors, state.motor_positions.begin());
+          state.received_joint_mode = static_cast<uint8_t>(received_mode);
+          state.motor_valid = true;
+          any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+          read_pos_ok = true;
+        }
       }
 
       const auto t2 = std::chrono::steady_clock::now();
@@ -921,6 +937,7 @@ class UdpHandController {
       //    1a-only (1b requires bulk), so this resolves to kJoint in practice.
       bool read_joint_pos_ok = false;
       {
+        RTC_TRACE_SCOPE("hand_read_joint_pos");
         std::array<float, packets::kMotorDataCount> jp_buf{};
         attempted_mask |= RequestKindBit(RequestKind::kJointRead);
         if (transport_.RequestMotorRead(packets::Command::kReadPosition, jp_buf, joint_io_mode_,
@@ -938,13 +955,16 @@ class UdpHandController {
       // 4. Read motor velocity (kMotor)
       attempted_mask |= RequestKindBit(RequestKind::kMotorRead);
       bool read_vel_ok = false;
-      if (transport_.RequestMotorRead(packets::Command::kReadVelocity, motor_vel_buf_,
-                                      packets::JointMode::kMotor, nullptr,
-                                      RequestKind::kMotorRead)) {
-        std::copy_n(motor_vel_buf_.begin(), kNumHandMotors, state.motor_velocities.begin());
-        any_recv_ok = true;
-        ok_mask |= RequestKindBit(RequestKind::kMotorRead);
-        read_vel_ok = true;
+      {
+        RTC_TRACE_SCOPE("hand_read_vel");
+        if (transport_.RequestMotorRead(packets::Command::kReadVelocity, motor_vel_buf_,
+                                        packets::JointMode::kMotor, nullptr,
+                                        RequestKind::kMotorRead)) {
+          std::copy_n(motor_vel_buf_.begin(), kNumHandMotors, state.motor_velocities.begin());
+          any_recv_ok = true;
+          ok_mask |= RequestKindBit(RequestKind::kMotorRead);
+          read_vel_ok = true;
+        }
       }
 
       const auto t3 = std::chrono::steady_clock::now();
@@ -955,6 +975,7 @@ class UdpHandController {
       bool sensor_attempted = false;
       bool read_sensor_ok = false;
       if (is_sensor_cycle) {
+        RTC_TRACE_SCOPE("hand_read_sensor");
         if (num_fingertips_ > 0) {
           sensor_attempted = true;
           attempted_mask |= RequestKindBit(RequestKind::kSensorRead);
@@ -1104,6 +1125,10 @@ class UdpHandController {
   // mode. Link/forensic telemetry is skipped (no real link). noexcept +
   // allocation-free (rt-path.md compliant).
   void RunFakeCommCycle() noexcept {
+    // Fake-mode cycle body, nested under the hand_comm_tick span still open in
+    // RunCommCycle (this is reached via its use_fake_hand_ early return).
+    RTC_TRACE_SCOPE("hand_fake_cycle");
+
     // Latch the most recent staged command (last-command-wins), the same RT-safe
     // handoff the real path uses. An uncommanded interval keeps the last target
     // latched so the LPF continues settling toward it.
@@ -1168,6 +1193,7 @@ class UdpHandController {
   // delegated to the pure static FakeLpfStep for unit testing. noexcept + alloc-
   // free.
   void StepFakeModel(UdpHandState& state) noexcept {
+    RTC_TRACE_SCOPE("hand_fake_step");
     const float alpha = static_cast<float>(fake_alpha_);
     const float inv_dt = static_cast<float>(loop_rate_hz_);  // 1/dt = loop_rate_hz
     const float kp = static_cast<float>(fake_effort_stiffness_);
@@ -1220,12 +1246,16 @@ class UdpHandController {
   [[nodiscard]] CommCycleTailResult RunCommCycleTail(
       UdpHandState& state, std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data_raw,
       bool any_recv_ok, bool is_sensor_cycle) noexcept {
+    RTC_TRACE_SCOPE("hand_comm_tail");
     CommCycleTailResult result{};
     if (is_sensor_cycle && sensor_protocol_->RunsSensorPostProcess()) {
       sensor_data_raw = cached_sensor_data_;
-      sensor_processor_.PreFilter();
-      sensor_processor_.ApplyFilters(cached_sensor_data_);
-      sensor_processor_.DetectDrift(sensor_data_raw);
+      {
+        RTC_TRACE_SCOPE("hand_sensor_postproc");
+        sensor_processor_.PreFilter();
+        sensor_processor_.ApplyFilters(cached_sensor_data_);
+        sensor_processor_.DetectDrift(sensor_data_raw);
+      }
       result.ft_infer_us = RunFTInference(cached_sensor_data_);
     }
 
@@ -1257,6 +1287,7 @@ class UdpHandController {
     }
 
     if (callback_) {
+      RTC_TRACE_SCOPE("hand_callback");
       callback_(state, ft_seqlock_.Load());
     }
     result.callback_done = std::chrono::steady_clock::now();
@@ -1324,6 +1355,7 @@ class UdpHandController {
   // Run FT calibration or inference. Returns inference elapsed time in us.
   double RunFTInference(
       const std::array<int32_t, udp_hand_driver::kMaxHandSensors>& sensor_data) noexcept {
+    RTC_TRACE_SCOPE("hand_ft_infer");
     // Consume any pending calibration request before processing this cycle.
     DispatchCalibrationRequest();
 
