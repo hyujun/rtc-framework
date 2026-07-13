@@ -473,7 +473,7 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
   // (≤ 6-core), in which case ApplyThreadConfig skips the affinity call and
   // leaves MuJoCo to roam under CFS — the cpu_shield --sim path is what
   // releases those cores in the first place.
-  (void)rtc::ApplyThreadConfig(rtc::SelectThreadConfigs().sim_thread);
+  (void)rtc::ApplyThreadConfigVerbose(rtc::SelectThreadConfigs().sim_thread);
 
   const auto timeout = std::chrono::milliseconds(
       static_cast<int64_t>(cfg_.sync_timeout_ms > 0.0 ? cfg_.sync_timeout_ms : 50.0));

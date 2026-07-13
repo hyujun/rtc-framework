@@ -23,7 +23,7 @@ namespace urtc = rtc;
 // non-RT consumer on the nrt_callback core (SCHED_OTHER nice 0).
 
 void RtControllerNode::NrtPublishLoopEntry(const urtc::ThreadConfig& cfg) {
-  static_cast<void>(urtc::ApplyThreadConfig(cfg));
+  static_cast<void>(urtc::ApplyThreadConfigVerbose(cfg));
   nrt_publish_running_.store(true, std::memory_order_release);
 
   urtc::PublishSnapshot snap{};

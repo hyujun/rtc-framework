@@ -133,7 +133,7 @@ class Transceiver {
 
  private:
   void RecvLoop(std::stop_token stop_token) {
-    (void)ApplyThreadConfig(thread_cfg_);  // best-effort; non-RT users may lack rtprio
+    (void)ApplyThreadConfigVerbose(thread_cfg_);  // best-effort; non-RT users may lack rtprio
 
     // Buffer slightly larger than the recv packet to detect oversized datagrams.
     std::array<uint8_t, sizeof(RecvPacket) + 64> buffer{};

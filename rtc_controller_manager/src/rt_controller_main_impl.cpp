@@ -173,15 +173,7 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
   // Helper lambda to create executor thread with RT config
   auto make_thread = [](auto& executor, const ThreadConfig& cfg) {
     return std::thread([&executor, cfg]() {
-      if (!ApplyThreadConfig(cfg)) {
-        fprintf(stderr,
-                "[WARN] Thread config failed for '%s' (need realtime "
-                "permissions)\n",
-                cfg.name);
-      } else {
-        fprintf(stdout, "[INFO] Thread '%s' configured:\n%s", cfg.name,
-                VerifyThreadConfig().c_str());
-      }
+      static_cast<void>(ApplyThreadConfigVerbose(cfg));
       executor.spin();
     });
   };

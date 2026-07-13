@@ -15,6 +15,7 @@
 #endif
 
 #include <rtc_base/logging/session_dir.hpp>
+#include <rtc_base/threading/thread_utils.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -28,6 +29,11 @@
 namespace rtc {
 
 void MuJoCoSimulator::ViewerLoop(std::stop_token stop) noexcept {
+  // Apply SystemThreadConfigs.viewer (taskset pin + SCHED_OTHER nice 0 + thread
+  // name) and announce the resolved config. Like sim_thread, cpu_core may be -1
+  // on small tiers, in which case affinity is left to CFS.
+  (void)rtc::ApplyThreadConfigVerbose(rtc::SelectThreadConfigs().viewer);
+
 #ifdef MUJOCO_HAVE_GLFW
   if (!glfwInit()) {
     fprintf(stderr, "[Viewer] glfwInit failed — viewer disabled\n");

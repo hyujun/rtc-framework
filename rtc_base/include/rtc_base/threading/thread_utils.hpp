@@ -338,6 +338,33 @@ inline std::string VerifyThreadConfig() noexcept {
   return result;
 }
 
+// Apply thread configuration and emit the standard success/failure log lines.
+//
+// Single source of truth for the "[INFO] Thread '<name>' configured:" /
+// "[WARN] Thread config failed for '<name>'" format historically emitted only
+// by the RT controller's executor threads. Wrap every ApplyThreadConfig call at
+// a thread's entry point with this so each runtime thread (rt_control, the
+// executor dispatchers, nrt_publish, UDP receive, MuJoCo sim/viewer, MPC
+// main/workers, hand detector) announces its resolved CPU affinity / scheduler
+// / priority / nice / name on startup.
+//
+// Runs once at thread entry (one-shot init, before any periodic loop), so the
+// fprintf + VerifyThreadConfig() string build stay off the RT hot path. On
+// failure ApplyThreadConfig itself has already printed the specific
+// "[ApplyThreadConfig] '<name>' setschedparam/setaffinity failed …" line to
+// stderr; this adds the higher-level one-line summary. Returns ApplyThreadConfig's
+// result; callers that only want the side-effect may discard it.
+inline bool ApplyThreadConfigVerbose(const ThreadConfig& cfg) noexcept {
+  const char* name = cfg.name ? cfg.name : "<null>";
+  if (!ApplyThreadConfig(cfg)) {
+    std::fprintf(stderr, "[WARN] Thread config failed for '%s' (need realtime permissions)\n",
+                 name);
+    return false;
+  }
+  std::fprintf(stdout, "[INFO] Thread '%s' configured:\n%s", name, VerifyThreadConfig().c_str());
+  return true;
+}
+
 // Get thread statistics (for jitter measurement).
 // Returns {min_latency_us, max_latency_us, avg_latency_us}.
 //

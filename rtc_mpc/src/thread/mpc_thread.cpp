@@ -47,8 +47,8 @@ void MPCThread::Start() {
   // worker pool.
   for (int i = 0; i < launch_config_.num_workers; ++i) {
     const rtc::ThreadConfig& wcfg = launch_config_.workers[static_cast<std::size_t>(i)];
-    workers_[static_cast<std::size_t>(i)] =
-        std::jthread([wcfg](std::stop_token /*stoken*/) { (void)rtc::ApplyThreadConfig(wcfg); });
+    workers_[static_cast<std::size_t>(i)] = std::jthread(
+        [wcfg](std::stop_token /*stoken*/) { (void)rtc::ApplyThreadConfigVerbose(wcfg); });
   }
 
   // Wire the SPSC ring before the base spawns its loop thread so the very

@@ -255,7 +255,7 @@ class PeriodicRtThread {
 
  private:
   void RunLoop(std::stop_token stoken) {
-    static_cast<void>(rtc::ApplyThreadConfig(cfg_.thread_config));
+    static_cast<void>(rtc::ApplyThreadConfigVerbose(cfg_.thread_config));
 
     // Anchor the absolute-time wake schedule to "now".
     clock_gettime(CLOCK_MONOTONIC, &next_wake_);

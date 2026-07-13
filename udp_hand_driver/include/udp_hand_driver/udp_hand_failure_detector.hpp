@@ -118,13 +118,11 @@ class UdpHandFailureDetector {
  private:
   void DetectLoop(std::stop_token st) {
     using std::chrono_literals::operator""ms;
-    {
-      auto [ok, msg] = rtc::ApplyThreadConfigWithFallback(thread_cfg_);
-      if (!ok) {
-        RCLCPP_WARN(::udp_hand_driver::logging::FailureLogger(), "Thread config apply failed: %s",
-                    msg.c_str());
-      }
-    }
+    // Detector runs on the nrt_logging config (SCHED_OTHER), so the strict
+    // verbose apply is equivalent to the former graceful fallback here while
+    // giving the same "[INFO] Thread '<name>' configured:" line as every other
+    // runtime thread. The loop continues regardless of the result.
+    (void)rtc::ApplyThreadConfigVerbose(thread_cfg_);
     loop_start_ = std::chrono::steady_clock::now();
     prev_rate_check_ = loop_start_;
     prev_cycle_count_ = controller_.cycle_count();
