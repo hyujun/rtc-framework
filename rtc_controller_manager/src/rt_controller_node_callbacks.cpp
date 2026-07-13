@@ -5,11 +5,15 @@
 // kTarget itself, since it is controller-target lane (RobotTarget message)
 // independent of the HW/sim adapter.
 #include "rtc_controller_manager/rt_controller_node.hpp"
+#include <rtc_base/tracing/trace_scope.hpp>
 
 namespace urtc = rtc;
 
 void RtControllerNode::DeviceTargetCallback(int device_slot,
                                             rtc_msgs::msg::RobotTarget::SharedPtr msg) {
+  // L2 under the executor's ros2:callback_* (L1) — the reorder + SPSC marshal
+  // body on the nrt_callback lane.
+  RTC_TRACE_SCOPE("CM::TargetCb");
   // Select data source based on goal_type
   const double* data_ptr = nullptr;
   int data_size = 0;

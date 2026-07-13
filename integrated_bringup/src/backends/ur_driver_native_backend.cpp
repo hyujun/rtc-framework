@@ -1,6 +1,7 @@
 #include "integrated_bringup/backends/ur_driver_native_backend.hpp"
 
 #include "rtc_controller_manager/device_backend_registry.hpp"
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <rclcpp/qos.hpp>
 
@@ -58,6 +59,9 @@ void UrDriverNativeBackend::Deactivate() {
 }
 
 void UrDriverNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr msg) {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the joint-state
+  // decode + SeqLock write on the rt_callback lane.
+  RTC_TRACE_SCOPE("UrDriverNativeBackend::OnJointState");
   if (msg->position.empty())
     return;
 

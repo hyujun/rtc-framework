@@ -1,6 +1,7 @@
 #include "integrated_bringup/backends/udp_hand_native_backend.hpp"
 
 #include "rtc_controller_manager/device_backend_registry.hpp"
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <rclcpp/qos.hpp>
 
@@ -66,6 +67,9 @@ void UdpHandNativeBackend::Deactivate() {
 }
 
 void UdpHandNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr msg) {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the joint-lane
+  // decode + SeqLock write on the rt_callback lane.
+  RTC_TRACE_SCOPE("UdpHandNativeBackend::OnJointState");
   if (msg->position.empty())
     return;
 
@@ -128,6 +132,9 @@ void UdpHandNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr 
 }
 
 void UdpHandNativeBackend::OnMotorState(sensor_msgs::msg::JointState::SharedPtr msg) {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the motor-lane
+  // decode + SeqLock write on the rt_callback lane.
+  RTC_TRACE_SCOPE("UdpHandNativeBackend::OnMotorState");
   if (msg->position.empty())
     return;
 
@@ -150,6 +157,9 @@ void UdpHandNativeBackend::OnMotorState(sensor_msgs::msg::JointState::SharedPtr 
 }
 
 void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedPtr msg) {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the sensor-lane
+  // decode + SeqLock write on the rt_callback lane.
+  RTC_TRACE_SCOPE("UdpHandNativeBackend::OnSensorState");
   if (!sensor_layout_.has_value())
     return;  // YAML did not configure the layout.
 

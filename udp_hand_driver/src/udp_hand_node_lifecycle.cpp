@@ -1,6 +1,7 @@
 #include "udp_hand_driver/udp_hand_logging.hpp"
 #include "udp_hand_driver/udp_hand_node.hpp"
 #include <rtc_base/threading/thread_utils.hpp>
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
@@ -382,6 +383,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
                       udp_hand_driver::kNumHandMotors);
           return;
         }
+        // L2 under the executor's ros2:callback_* (L1) — the name-reorder +
+        // offset + SendCommandAndRequestStates body (guards excluded above).
+        RTC_TRACE_SCOPE("hand_joint_command_cb");
         // The publisher labels values in its own (controller / URDF) joint_names
         // order, which can differ from this hand's firmware slot order
         // (joint_names_ = joint_state_names). Build the firmware-slot ← message

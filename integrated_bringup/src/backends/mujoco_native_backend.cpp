@@ -1,6 +1,7 @@
 #include "integrated_bringup/backends/mujoco_native_backend.hpp"
 
 #include "rtc_controller_manager/device_backend_registry.hpp"
+#include <rtc_base/tracing/trace_scope.hpp>
 
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/logging.hpp>
@@ -117,6 +118,9 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
 
 void MujocoNativeBackend::OnWrench(int finger_idx,
                                    const geometry_msgs::msg::WrenchStamped& msg) noexcept {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the fingertip
+  // wrench SeqLock write on the rt_callback lane.
+  RTC_TRACE_SCOPE("MujocoNativeBackend::OnWrench");
   if (finger_idx < 0 || finger_idx >= static_cast<int>(kMaxSensorGroups)) {
     return;
   }
@@ -195,6 +199,9 @@ void MujocoNativeBackend::Deactivate() {
 }
 
 void MujocoNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr msg) {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the joint-state
+  // decode + SeqLock write on the rt_callback lane.
+  RTC_TRACE_SCOPE("MujocoNativeBackend::OnJointState");
   if (msg->position.empty())
     return;
 

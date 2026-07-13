@@ -289,6 +289,9 @@ void RtControllerNode::ControlLoop() {
 
 // File I/O and diagnostic logging stay exclusively in the log thread (Core 4).
 void RtControllerNode::DrainLog() {
+  // L2 under the log-timer executor's ros2:callback_* (L1) — the CSV drain +
+  // deferred E-STOP log + timing-summary print body on the nrt_logging lane.
+  RTC_TRACE_SCOPE("CM::DrainLog");
   // Drain per-tick CM timing samples → CSV. Producer is the RT thread; this
   // drain runs at the log-thread cadence (10 ms timer ⇒ ≤5 samples/drain
   // at the default 500 Hz; scales as control_rate / 100). Controller-owned
