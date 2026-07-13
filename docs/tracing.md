@@ -113,6 +113,25 @@ sim_step                                 (sim_thread 1 iteration; raw std::jthre
 └─ ReadSolverStats / UpdateRtf / ThrottleIfNeeded
 ```
 
+Hand UDP 드라이버 CommLoop 스레드 (`udp_hand_node`, `-DRTC_ENABLE_TRACING=ON` 한정):
+
+```
+hand_comm_tick                           (CommLoop 1 tick; raw PeriodicRtThread 경계)
+├─ hand_drain_stale                      (직전 cycle 잔여 datagram non-blocking drain)
+├─ hand_write_echo                       (position write + echo; pending command 시에만)
+├─ hand_read_motor / hand_read_joint / hand_read_sensor        (bulk 모드)
+│  또는 hand_read_pos / hand_read_joint_pos / hand_read_vel / hand_read_sensor  (individual)
+└─ hand_comm_tail
+   ├─ hand_sensor_postproc               (PreFilter → ApplyFilters → DetectDrift)
+   ├─ hand_ft_infer                      (FT calibration/Infer)
+   └─ hand_callback                      (StateCallback → node publish 핸드오프)
+```
+
+fake 모드(`use_fake_hand`)는 read 대신 `hand_comm_tick └─ hand_fake_cycle └─ hand_fake_step`
+(LPF 모델) 이 찍히고, tail 은 실모드와 공유한다. decimated-skip / E-Stop tick 도
+`hand_comm_tick` 하위 없이 짧은 span 으로 나타난다. 계측 대상은 RT CommLoop 뿐 —
+failure_detector 의 50 Hz aux jthread 는 제외.
+
 계측점 추가는 해당 함수 첫 줄에 `RTC_TRACE_SCOPE("Name");` 한 줄. RAII 라
 early-return 에도 span 이 닫힌다. build flag OFF 면 그 줄은 사라진다.
 런타임 게이트는 여전히 LTTng 세션 — `enable_tracing:=false` 로 실행하면 span 은
@@ -285,7 +304,7 @@ sudo apt install ros-jazzy-tracetools-analysis
 * **자동 모드**로는 콜백 내부 함수 breakdown 도, RT pthread tick 경계도 안 보인다
   (rclcpp executor 콜백이 아니므로). `--tracing` 빌드 + `RTC_TRACE_SCOPE` 계측이
   이를 해결한다 (§RT trace spans) — 현재 RT tick / CM dispatch / WBC Compute·
-  sub-step 까지 커버. Pinocchio FK / ProxSuite QP 등 더 깊은 구간은 그 함수에
+  sub-step, MuJoCo sim_step, hand UDP CommLoop tick 까지 커버. Pinocchio FK / ProxSuite QP 등 더 깊은 구간은 그 함수에
   `RTC_TRACE_SCOPE` 한 줄을 추가하면 즉시 스택에 나타난다.
 * `rtc:*` span 은 **컴파일타임 opt-in** (`-DRTC_ENABLE_TRACING=ON`) — 켜지 않은
   빌드에는 존재하지 않는다. 기본 프로덕션 빌드는 RT hot-path 비용 0.
