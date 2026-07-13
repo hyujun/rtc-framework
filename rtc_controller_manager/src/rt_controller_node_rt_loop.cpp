@@ -72,69 +72,72 @@ void RtControllerNode::ControlLoop() {
   const auto& slot_mapping = controller_slot_mappings_[static_cast<std::size_t>(active_idx)];
 
   urtc::ControllerState state{};
-  std::size_t di = 0;
-  for ([[maybe_unused]] const auto& [gname, ggroup] : active_tc.groups) {
-    const auto slot = static_cast<std::size_t>(slot_mapping.slots[di]);
-    const auto cap = slot_mapping.capabilities[di];
-    auto& dev = state.devices[di];
-    urtc::DeviceStateCache cache{};
-    if (backends_[slot]) {
-      (void)backends_[slot]->ReadState(cache);
-      if (backends_[slot]->HasMotorState())
-        backends_[slot]->ReadMotorState(cache);
-      if (backends_[slot]->HasSensorState())
-        backends_[slot]->ReadSensorState(cache);
+  {
+    RTC_TRACE_SCOPE("CM::ReadDeviceState");
+    std::size_t di = 0;
+    for ([[maybe_unused]] const auto& [gname, ggroup] : active_tc.groups) {
+      const auto slot = static_cast<std::size_t>(slot_mapping.slots[di]);
+      const auto cap = slot_mapping.capabilities[di];
+      auto& dev = state.devices[di];
+      urtc::DeviceStateCache cache{};
+      if (backends_[slot]) {
+        (void)backends_[slot]->ReadState(cache);
+        if (backends_[slot]->HasMotorState())
+          backends_[slot]->ReadMotorState(cache);
+        if (backends_[slot]->HasSensorState())
+          backends_[slot]->ReadSensorState(cache);
+      }
+      const auto nc = static_cast<std::size_t>(cache.num_channels);
+      dev.num_channels = cache.num_channels;
+      std::copy_n(cache.positions.data(), nc, dev.positions.data());
+      std::copy_n(cache.velocities.data(), nc, dev.velocities.data());
+      std::copy_n(cache.efforts.data(), nc, dev.efforts.data());
+      if (urtc::HasCapability(cap, urtc::DeviceCapability::kMotorState) &&
+          cache.num_motor_channels > 0) {
+        const auto nmc = static_cast<std::size_t>(cache.num_motor_channels);
+        dev.num_motor_channels = cache.num_motor_channels;
+        std::copy_n(cache.motor_positions.data(), nmc, dev.motor_positions.data());
+        std::copy_n(cache.motor_velocities.data(), nmc, dev.motor_velocities.data());
+        std::copy_n(cache.motor_efforts.data(), nmc, dev.motor_efforts.data());
+      }
+      if (urtc::HasCapability(cap, urtc::DeviceCapability::kSensorData) &&
+          cache.num_sensor_channels > 0) {
+        const auto nsc = static_cast<std::size_t>(cache.num_sensor_channels);
+        dev.num_sensor_channels = cache.num_sensor_channels;
+        std::copy_n(cache.sensor_data.data(), nsc, dev.sensor_data.data());
+        std::copy_n(cache.sensor_data_raw.data(), nsc, dev.sensor_data_raw.data());
+      }
+      if (urtc::HasCapability(cap, urtc::DeviceCapability::kInference) &&
+          cache.num_inference_groups > 0 && slot < slot_to_sensor_layout_.size() &&
+          slot_to_sensor_layout_[slot].has_value()) {
+        const int infer_per_group = slot_to_sensor_layout_[slot]->inference_values_per_group;
+        const auto nif = static_cast<std::size_t>(cache.num_inference_groups * infer_per_group);
+        dev.num_inference_groups = cache.num_inference_groups;
+        std::copy_n(cache.inference_data.data(), nif, dev.inference_data.data());
+        std::copy_n(cache.inference_enable.data(),
+                    static_cast<std::size_t>(cache.num_inference_groups),
+                    dev.inference_enable.data());
+      }
+      dev.valid = cache.valid;
+      ++di;
     }
-    const auto nc = static_cast<std::size_t>(cache.num_channels);
-    dev.num_channels = cache.num_channels;
-    std::copy_n(cache.positions.data(), nc, dev.positions.data());
-    std::copy_n(cache.velocities.data(), nc, dev.velocities.data());
-    std::copy_n(cache.efforts.data(), nc, dev.efforts.data());
-    if (urtc::HasCapability(cap, urtc::DeviceCapability::kMotorState) &&
-        cache.num_motor_channels > 0) {
-      const auto nmc = static_cast<std::size_t>(cache.num_motor_channels);
-      dev.num_motor_channels = cache.num_motor_channels;
-      std::copy_n(cache.motor_positions.data(), nmc, dev.motor_positions.data());
-      std::copy_n(cache.motor_velocities.data(), nmc, dev.motor_velocities.data());
-      std::copy_n(cache.motor_efforts.data(), nmc, dev.motor_efforts.data());
-    }
-    if (urtc::HasCapability(cap, urtc::DeviceCapability::kSensorData) &&
-        cache.num_sensor_channels > 0) {
-      const auto nsc = static_cast<std::size_t>(cache.num_sensor_channels);
-      dev.num_sensor_channels = cache.num_sensor_channels;
-      std::copy_n(cache.sensor_data.data(), nsc, dev.sensor_data.data());
-      std::copy_n(cache.sensor_data_raw.data(), nsc, dev.sensor_data_raw.data());
-    }
-    if (urtc::HasCapability(cap, urtc::DeviceCapability::kInference) &&
-        cache.num_inference_groups > 0 && slot < slot_to_sensor_layout_.size() &&
-        slot_to_sensor_layout_[slot].has_value()) {
-      const int infer_per_group = slot_to_sensor_layout_[slot]->inference_values_per_group;
-      const auto nif = static_cast<std::size_t>(cache.num_inference_groups * infer_per_group);
-      dev.num_inference_groups = cache.num_inference_groups;
-      std::copy_n(cache.inference_data.data(), nif, dev.inference_data.data());
-      std::copy_n(cache.inference_enable.data(),
-                  static_cast<std::size_t>(cache.num_inference_groups),
-                  dev.inference_enable.data());
-    }
-    dev.valid = cache.valid;
-    ++di;
-  }
-  state.num_devices = static_cast<int>(di);
+    state.num_devices = static_cast<int>(di);
 
-  // Per-controller targets are owned by the active controller (SeqLock +
-  // SPSC marshal). CM no longer mirrors them — Compute() reads its own
-  // SeqLock snapshot internally.
-  state.dt = 1.0 / control_rate_;
-  state.iteration = loop_count_;
+    // Per-controller targets are owned by the active controller (SeqLock +
+    // SPSC marshal). CM no longer mirrors them — Compute() reads its own
+    // SeqLock snapshot internally.
+    state.dt = 1.0 / control_rate_;
+    state.iteration = loop_count_;
 
-  // Session origin (captured once on the very first tick — independent
-  // of enable_logging_, never reset on controller switch). Controllers
-  // read state.t_relative_s for any timestamp embedded in their own
-  // logs/telemetry instead of calling chrono::*::now().
-  if (loop_count_ == 0) {
-    log_start_time_ = t0;
+    // Session origin (captured once on the very first tick — independent
+    // of enable_logging_, never reset on controller switch). Controllers
+    // read state.t_relative_s for any timestamp embedded in their own
+    // logs/telemetry instead of calling chrono::*::now().
+    if (loop_count_ == 0) {
+      log_start_time_ = t0;
+    }
+    state.t_relative_s = std::chrono::duration<double>(t0 - log_start_time_).count();
   }
-  state.t_relative_s = std::chrono::duration<double>(t0 - log_start_time_).count();
 
   rt_loop_.StampStateAcquired();
 
@@ -149,92 +152,95 @@ void RtControllerNode::ControlLoop() {
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
   {
     urtc::PublishSnapshot snap{};
-    snap.actual_task_positions = output.actual_task_positions;
-    // Topic-boundary header stamp is ROS wall clock (CLOCK_REALTIME) so
-    // published headers (joint_command / grasp_state / transforms) share the
-    // ecosystem time axis. VDSO-backed, no syscall/lock — RT-safe like the
-    // steady_clock read used for internal timing (t0). Watchdog/staleness stay
-    // on monotonic steady_clock elsewhere.
-    snap.stamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
-    snap.active_controller_idx = active_idx;
+    {
+      RTC_TRACE_SCOPE("CM::FillPublishSnapshot");
+      snap.actual_task_positions = output.actual_task_positions;
+      // Topic-boundary header stamp is ROS wall clock (CLOCK_REALTIME) so
+      // published headers (joint_command / grasp_state / transforms) share the
+      // ecosystem time axis. VDSO-backed, no syscall/lock — RT-safe like the
+      // steady_clock read used for internal timing (t0). Watchdog/staleness stay
+      // on monotonic steady_clock elsewhere.
+      snap.stamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+      snap.active_controller_idx = active_idx;
 
-    // Per-group commands → group_commands slots
-    std::size_t gi = 0;
-    for (const auto& [gname, ggroup] : active_tc.groups) {
-      static_cast<void>(gname);
-      if (gi >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups))
-        break;
-      auto& gc = snap.group_commands[gi];
-      const auto& dout = output.devices[gi];
-      const auto& dstate = state.devices[gi];
-      const auto onc = static_cast<std::size_t>(dout.num_channels);
-      const auto snc = static_cast<std::size_t>(dstate.num_channels);
-      gc.num_channels = dout.num_channels;
-      gc.actual_num_channels = dstate.num_channels;
-      gc.stamp_ns = snap.stamp_ns;  // wall-clock ns for JointCommand header
-      std::copy_n(dout.commands.data(), onc, gc.commands.data());
-      std::copy_n(dout.goal_positions.data(), onc, gc.goal_positions.data());
-      std::copy_n(dout.target_positions.data(), onc, gc.target_positions.data());
-      std::copy_n(dout.target_velocities.data(), onc, gc.target_velocities.data());
-      std::copy_n(dout.trajectory_positions.data(), onc, gc.trajectory_positions.data());
-      std::copy_n(dout.trajectory_velocities.data(), onc, gc.trajectory_velocities.data());
-      std::copy_n(dout.feedforward.data(), onc, gc.feedforward.data());
-      // Resolve per-device command type: nullopt inherits the global default,
-      // so single-mode controllers keep their existing behaviour while mixed
-      // controllers (WBC arm=kPosition, hand=kPdFeedforward) override per group.
-      gc.command_type = dout.command_type.value_or(output.command_type);
-      gc.goal_type = dout.goal_type;
-      std::copy_n(dstate.positions.data(), snc, gc.actual_positions.data());
-      std::copy_n(dstate.velocities.data(), snc, gc.actual_velocities.data());
-      std::copy_n(dstate.efforts.data(), snc, gc.efforts.data());
-      if (dstate.num_motor_channels > 0) {
-        const auto nmc = static_cast<std::size_t>(dstate.num_motor_channels);
-        gc.num_motor_channels = dstate.num_motor_channels;
-        std::copy_n(dstate.motor_positions.data(), nmc, gc.motor_positions.data());
-        std::copy_n(dstate.motor_velocities.data(), nmc, gc.motor_velocities.data());
-        std::copy_n(dstate.motor_efforts.data(), nmc, gc.motor_efforts.data());
-      }
-      if (dstate.num_sensor_channels > 0) {
-        const auto nsc = static_cast<std::size_t>(dstate.num_sensor_channels);
-        gc.num_sensor_channels = dstate.num_sensor_channels;
-        std::copy_n(dstate.sensor_data.data(), nsc, gc.sensor_data.data());
-        std::copy_n(dstate.sensor_data_raw.data(), nsc, gc.sensor_data_raw.data());
-      }
-      // Inference output for DeviceSensorLog. Layout (values per inference
-      // group) is configured via YAML per device — CM stays sensor-agnostic.
-      if (dstate.num_inference_groups > 0) {
-        const auto group_slot = static_cast<std::size_t>(slot_mapping.slots[gi]);
-        if (group_slot < slot_to_sensor_layout_.size() &&
-            slot_to_sensor_layout_[group_slot].has_value()) {
-          const int infer_per_group =
-              slot_to_sensor_layout_[group_slot]->inference_values_per_group;
-          gc.inference_valid = true;
-          gc.num_inference_values = dstate.num_inference_groups * infer_per_group;
-          const auto niv = static_cast<std::size_t>(gc.num_inference_values);
-          for (std::size_t i = 0; i < niv && i < gc.inference_output.size(); ++i) {
-            gc.inference_output[i] = dstate.inference_data[i];
+      // Per-group commands → group_commands slots
+      std::size_t gi = 0;
+      for (const auto& [gname, ggroup] : active_tc.groups) {
+        static_cast<void>(gname);
+        if (gi >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups))
+          break;
+        auto& gc = snap.group_commands[gi];
+        const auto& dout = output.devices[gi];
+        const auto& dstate = state.devices[gi];
+        const auto onc = static_cast<std::size_t>(dout.num_channels);
+        const auto snc = static_cast<std::size_t>(dstate.num_channels);
+        gc.num_channels = dout.num_channels;
+        gc.actual_num_channels = dstate.num_channels;
+        gc.stamp_ns = snap.stamp_ns;  // wall-clock ns for JointCommand header
+        std::copy_n(dout.commands.data(), onc, gc.commands.data());
+        std::copy_n(dout.goal_positions.data(), onc, gc.goal_positions.data());
+        std::copy_n(dout.target_positions.data(), onc, gc.target_positions.data());
+        std::copy_n(dout.target_velocities.data(), onc, gc.target_velocities.data());
+        std::copy_n(dout.trajectory_positions.data(), onc, gc.trajectory_positions.data());
+        std::copy_n(dout.trajectory_velocities.data(), onc, gc.trajectory_velocities.data());
+        std::copy_n(dout.feedforward.data(), onc, gc.feedforward.data());
+        // Resolve per-device command type: nullopt inherits the global default,
+        // so single-mode controllers keep their existing behaviour while mixed
+        // controllers (WBC arm=kPosition, hand=kPdFeedforward) override per group.
+        gc.command_type = dout.command_type.value_or(output.command_type);
+        gc.goal_type = dout.goal_type;
+        std::copy_n(dstate.positions.data(), snc, gc.actual_positions.data());
+        std::copy_n(dstate.velocities.data(), snc, gc.actual_velocities.data());
+        std::copy_n(dstate.efforts.data(), snc, gc.efforts.data());
+        if (dstate.num_motor_channels > 0) {
+          const auto nmc = static_cast<std::size_t>(dstate.num_motor_channels);
+          gc.num_motor_channels = dstate.num_motor_channels;
+          std::copy_n(dstate.motor_positions.data(), nmc, gc.motor_positions.data());
+          std::copy_n(dstate.motor_velocities.data(), nmc, gc.motor_velocities.data());
+          std::copy_n(dstate.motor_efforts.data(), nmc, gc.motor_efforts.data());
+        }
+        if (dstate.num_sensor_channels > 0) {
+          const auto nsc = static_cast<std::size_t>(dstate.num_sensor_channels);
+          gc.num_sensor_channels = dstate.num_sensor_channels;
+          std::copy_n(dstate.sensor_data.data(), nsc, gc.sensor_data.data());
+          std::copy_n(dstate.sensor_data_raw.data(), nsc, gc.sensor_data_raw.data());
+        }
+        // Inference output for DeviceSensorLog. Layout (values per inference
+        // group) is configured via YAML per device — CM stays sensor-agnostic.
+        if (dstate.num_inference_groups > 0) {
+          const auto group_slot = static_cast<std::size_t>(slot_mapping.slots[gi]);
+          if (group_slot < slot_to_sensor_layout_.size() &&
+              slot_to_sensor_layout_[group_slot].has_value()) {
+            const int infer_per_group =
+                slot_to_sensor_layout_[group_slot]->inference_values_per_group;
+            gc.inference_valid = true;
+            gc.num_inference_values = dstate.num_inference_groups * infer_per_group;
+            const auto niv = static_cast<std::size_t>(gc.num_inference_values);
+            for (std::size_t i = 0; i < niv && i < gc.inference_output.size(); ++i) {
+              gc.inference_output[i] = dstate.inference_data[i];
+            }
           }
         }
+        // Controller-owned non-RT outputs (grasp / wbc / tof) are no longer
+        // ferried through PublishSnapshot — each controller owns a per-output
+        // SeqLock<T> and publishes via its own LifecyclePublisher. CM mirrors
+        // only SE3 poses (kRobotTransforms) and per-group device data here.
+        //
+        // SE3 poses for kRobotTransforms are populated regardless of which
+        // group hosts the TF publisher (D-10): owned_topics walks tf_slots[]
+        // and reads from group_commands[slot.group_idx], so we mirror the
+        // output's pose fields into every group slot. Controllers that don't
+        // broadcast TF leave *_valid = false → publish path is a no-op.
+        gc.arm_tip_pose = output.arm_tip_pose;
+        gc.arm_tip_pose_valid = output.arm_tip_pose_valid;
+        gc.virtual_tcp_pose = output.virtual_tcp_pose;
+        gc.virtual_tcp_pose_valid = output.virtual_tcp_pose_valid;
+        gc.task_link_poses = output.task_link_poses;
+        gc.task_link_pose_valid = output.task_link_pose_valid;
+        ++gi;
       }
-      // Controller-owned non-RT outputs (grasp / wbc / tof) are no longer
-      // ferried through PublishSnapshot — each controller owns a per-output
-      // SeqLock<T> and publishes via its own LifecyclePublisher. CM mirrors
-      // only SE3 poses (kRobotTransforms) and per-group device data here.
-      //
-      // SE3 poses for kRobotTransforms are populated regardless of which
-      // group hosts the TF publisher (D-10): owned_topics walks tf_slots[]
-      // and reads from group_commands[slot.group_idx], so we mirror the
-      // output's pose fields into every group slot. Controllers that don't
-      // broadcast TF leave *_valid = false → publish path is a no-op.
-      gc.arm_tip_pose = output.arm_tip_pose;
-      gc.arm_tip_pose_valid = output.arm_tip_pose_valid;
-      gc.virtual_tcp_pose = output.virtual_tcp_pose;
-      gc.virtual_tcp_pose_valid = output.virtual_tcp_pose_valid;
-      gc.task_link_poses = output.task_link_poses;
-      gc.task_link_pose_valid = output.task_link_pose_valid;
-      ++gi;
+      snap.num_groups = static_cast<int>(gi);
     }
-    snap.num_groups = static_cast<int>(gi);
 
     // Layout v4.1: actuator command publish is performed inline on the
     // rt_control thread (Core 1 FIFO 90) — DeviceBackend.WriteCommand is
@@ -248,6 +254,7 @@ void RtControllerNode::ControlLoop() {
     // lane drained by NrtPublishLoopEntry on the nrt_callback core.
     // Reuses active_tc / slot_mapping resolved at the top of ControlLoop().
     {
+      RTC_TRACE_SCOPE("CM::WriteCommand");
       std::size_t out_idx = 0;
       for ([[maybe_unused]] const auto& [group_name, group] : active_tc.groups) {
         if (out_idx >= static_cast<std::size_t>(urtc::PublishSnapshot::kMaxGroups))
@@ -364,6 +371,7 @@ void RtControllerNode::ControlLoopThread::OnTick() noexcept {
   static thread_local std::uint32_t timeout_tick = 0;
   static constexpr int kWatchdogCheckDivisor = 10;
   if (owner_->enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {
+    RTC_TRACE_SCOPE("CM::CheckTimeouts");
     owner_->CheckTimeouts();
   }
 }

@@ -518,9 +518,10 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     }
     // 1. Publish current state (and sensors) for ALL robot groups
     // Per-iteration span (one sim step of the raw sim_thread). All the
-    // MuJoCoSimulator member-function spans below nest under this; the visible
-    // gap between the state-publish spans and the ApplyCommand/substep spans is
-    // the sync_cv_ wait for the controller's command (sim lock-step).
+    // MuJoCoSimulator member-function spans below nest under this; the
+    // sync_cv_ wait for the controller's command (sim lock-step) shows up as
+    // the explicit sim_wait_command span between the state-publish spans and
+    // the ApplyCommand/substep spans.
     RTC_TRACE_SCOPE("sim_step");
     ReadState();
     ReadSensors();
@@ -531,6 +532,7 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
 
     // 2. Wait for command from PRIMARY group
     {
+      RTC_TRACE_SCOPE("sim_wait_command");
       std::unique_lock lock(sync_mutex_);
       sync_cv_.wait_for(lock, timeout, [this, &stop, primary_idx] {
         return groups_[primary_idx]->cmd_pending.load(std::memory_order_relaxed) ||
