@@ -143,11 +143,12 @@ inline double EstimateHandTrajectoryDuration(const std::vector<double>& current,
 // ── Opposition helper ──────────────────────────────────────────────────────
 
 /// Opposition 전용: thumb + target 손가락만 목표 포즈, 나머지는 home으로 리셋.
-/// 비-target 손가락 잔류 문제를 방지한다.
-/// Bridge의 pose library에서 home 포즈를 읽는다.
-inline void ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pose,
-                                  const HandPose& target_pose,
-                                  const std::vector<int>& target_indices) {
+/// 비-target 손가락 잔류 문제를 방지한다. Bridge의 pose library에서 home 포즈를
+/// 읽어 조합한 뒤 PublishHandTarget 하고, 조합된 full-DoF cmd를 반환한다 — 호출자가
+/// 같은 조합을 duration 추정 등에 재사용할 수 있도록(중복·OOB 재계산 방지).
+inline std::vector<double> ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pose,
+                                                 const HandPose& target_pose,
+                                                 const std::vector<int>& target_indices) {
   const auto& home = bridge.GetHandPose("home");
   std::vector<double> cmd(home.begin(), home.end());
   // Overlay finger joints, skipping any index the resolver returns that is out
@@ -166,6 +167,7 @@ inline void ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pos
   // target 손가락 관절 덮어쓰기
   overlay(target_indices, target_pose);
   bridge.PublishHandTarget(cmd);
+  return cmd;
 }
 
 }  // namespace rtc_bt

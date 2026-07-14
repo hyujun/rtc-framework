@@ -169,6 +169,44 @@ TEST_F(HandNodeTest, MoveOpposition_InvalidFingerThrows) {
   EXPECT_THROW(tree.tickOnce(), BT::RuntimeError);
 }
 
+TEST_F(HandNodeTest, MoveOpposition_OobResolverIndexIsSkipped) {
+  // Regression (Phase 2b): if the finger resolver returns an index beyond the
+  // pose/cmd width (more joint_states than pose DoF, or a misconfigured
+  // finger_map), MoveOpposition must skip it — not perform an OOB heap write.
+  // Publish an 11-joint state whose 11th joint is a thumb joint (index 10), one
+  // past the 10-wide home/opposition poses. The old raw-index duration loop
+  // wrote full_target[10] on a 10-element vector (UB); the guarded
+  // ApplyOppositionTarget reused here skips it and stays at pose width.
+  const std::vector<std::string> names = {
+      "thumb_cmc_aa",  "thumb_cmc_fe", "thumb_mcp_fe",  "index_mcp_aa",
+      "index_mcp_fe",  "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe",
+      "middle_dip_fe", "ring_mcp_fe",  "thumb_extra_fe"};  // index 10 → resolves into "thumb", OOB
+                                                           // for 10-wide pose
+  PublishUntilObserved(
+      [this, &names]() {
+        sensor_msgs::msg::JointState js;
+        js.name = names;
+        js.position.assign(names.size(), 0.0);
+        hand_joint_pub_->publish(js);
+      },
+      [this, &names]() { return bridge_->GetHandJointPositions().size() == names.size(); });
+
+  // Precondition: the resolver really does surface the out-of-range index.
+  ASSERT_FALSE(bridge_->GetFingerJointIndices("thumb").empty());
+  ASSERT_EQ(bridge_->GetFingerJointIndices("thumb").back(), 10);
+
+  auto tree = CreateTree(
+      R"(<MoveOpposition thumb_pose="thumb_index_oppose"
+                         target_finger="index"
+                         target_pose="index_oppose"/>)");
+
+  // Must not crash/OOB; the composed target stays at pose width (idx 10 skipped).
+  BT::NodeStatus status = BT::NodeStatus::IDLE;
+  ASSERT_NO_THROW(status = tree.tickOnce());
+  EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+  EXPECT_EQ(bridge_->GetLastHandTarget().size(), 10U);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // UR5eHoldPose
 // ══════════════════════════════════════════════════════════════════════════

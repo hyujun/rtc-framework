@@ -62,18 +62,12 @@ BT::NodeStatus MoveOpposition::onStart() {
     current.resize(static_cast<std::size_t>(bridge_->HandDof()), 0.0);
   }
 
-  // opposition 목표 전송 (비-target 손가락은 home으로 리셋)
-  ApplyOppositionTarget(*bridge_, thumb_pose, target_pose, target_indices);
+  // opposition 목표 전송 (비-target 손가락은 home으로 리셋). 반환된 full-DoF cmd를
+  // duration 추정에 재사용 — 동일 조합을 raw-index로 재계산하던 OOB-취약 루프 제거.
+  const std::vector<double> full_target =
+      ApplyOppositionTarget(*bridge_, thumb_pose, target_pose, target_indices);
 
   // 전체 10-DoF 기준 duration 추정 (비-target의 home 복귀 이동도 포함)
-  const auto& home = bridge_->GetHandPose("home");
-  std::vector<double> full_target(home.begin(), home.end());
-  for (int idx : bridge_->GetFingerJointIndices("thumb")) {
-    full_target[static_cast<std::size_t>(idx)] = thumb_pose[static_cast<std::size_t>(idx)];
-  }
-  for (int idx : target_indices) {
-    full_target[static_cast<std::size_t>(idx)] = target_pose[static_cast<std::size_t>(idx)];
-  }
   duration_ = EstimateHandTrajectoryDuration(current, full_target, speed, max_vel);
 
   RCLCPP_INFO(logger(), "thumb=%s target=%s(%s) estimated_duration=%.3fs",
