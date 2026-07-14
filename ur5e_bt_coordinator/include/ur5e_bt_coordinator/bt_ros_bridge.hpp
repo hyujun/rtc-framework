@@ -39,6 +39,10 @@
 
 namespace rtc_bt {
 
+namespace test {
+struct BridgeStateInjector;  // test-only state-inject seam (test/inject_fixture.hpp, issue #154)
+}  // namespace test
+
 /// Topic health status for watchdog monitoring.
 struct TopicHealth {
   std::string name;
@@ -268,6 +272,23 @@ class BtRosBridge {
   void RewireControllerTopics(const std::string& ctrl_name);
   std::string rewired_controller_;
   mutable std::mutex controller_topics_mutex_;
+
+  // ── Subscription handlers ─────────────────────────────────────────────────
+  // Extracted callback bodies: every subscription lambda is a one-line forward
+  // to exactly one handler, and the test-only BridgeStateInjector (friend
+  // below) calls the same handlers — so the DDS-free inject path exercises the
+  // identical parsing/mutex/health-stamp code as production, by construction.
+  void OnArmJointState(sensor_msgs::msg::JointState::SharedPtr msg);
+  void OnHandJointState(sensor_msgs::msg::JointState::SharedPtr msg);
+  void OnWorldTarget(geometry_msgs::msg::Polygon::SharedPtr msg);
+  void OnActiveController(std_msgs::msg::String::SharedPtr msg);
+  void OnEstop(std_msgs::msg::Bool::SharedPtr msg);
+  void OnShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate::SharedPtr msg);
+  void OnGraspState(rtc_msgs::msg::GraspState::SharedPtr msg);
+  void OnWbcState(rtc_msgs::msg::WbcState::SharedPtr msg);
+  void OnTransforms(tf2_msgs::msg::TFMessage::SharedPtr msg);
+  void OnToFSnapshot(rtc_msgs::msg::ToFSnapshot::SharedPtr msg);
+  friend struct test::BridgeStateInjector;
 
   // ── Subscribers ───────────────────────────────────────────────────────────
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr arm_joint_sub_;

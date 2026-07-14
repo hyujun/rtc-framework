@@ -64,105 +64,29 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
   // Per-group joint states (CM publishes always — independent of active ctrl).
   arm_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
       topic_namer_.ArmJointStates(), rclcpp::QoS{1},
-      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          arm_joint_positions_.assign(msg->position.begin(), msg->position.end());
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          arm_gui_last_ = std::chrono::steady_clock::now();
-          arm_gui_received_ = true;
-        }
-      });
+      [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnArmJointState(std::move(msg)); });
   hand_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
       topic_namer_.HandJointStates(), rclcpp::QoS{1},
-      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          hand_joint_positions_.assign(msg->position.begin(), msg->position.end());
-          hand_joint_names_.assign(msg->name.begin(), msg->name.end());
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          hand_gui_last_ = std::chrono::steady_clock::now();
-          hand_gui_received_ = true;
-        }
-      });
+      [this](sensor_msgs::msg::JointState::SharedPtr msg) { OnHandJointState(std::move(msg)); });
 
   world_target_sub_ = node_->create_subscription<geometry_msgs::msg::Polygon>(
-      "/world_target_info", rclcpp::QoS{1}, [this](geometry_msgs::msg::Polygon::SharedPtr msg) {
-        if (msg->points.empty())
-          return;
-
-        // Check if all coordinates are zero (data not ready)
-        bool all_zero = true;
-        for (const auto& pt : msg->points) {
-          if (pt.x != 0.0f || pt.y != 0.0f || pt.z != 0.0f) {
-            all_zero = false;
-            break;
-          }
-        }
-
-        {
-          std::lock_guard lock(state_mutex_);
-          if (all_zero) {
-            world_target_valid_ = false;
-          } else {
-            // points[0] = position (x, y, z) only
-            world_target_pose_.x = static_cast<double>(msg->points[0].x);
-            world_target_pose_.y = static_cast<double>(msg->points[0].y);
-            world_target_pose_.z = static_cast<double>(msg->points[0].z);
-            world_target_pose_.roll = 0.0;
-            world_target_pose_.pitch = 0.0;
-            world_target_pose_.yaw = 0.0;
-            world_target_valid_ = true;
-          }
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          world_target_last_ = std::chrono::steady_clock::now();
-          world_target_received_ = true;
-        }
-      });
+      "/world_target_info", rclcpp::QoS{1},
+      [this](geometry_msgs::msg::Polygon::SharedPtr msg) { OnWorldTarget(std::move(msg)); });
 
   active_ctrl_sub_ = node_->create_subscription<std_msgs::msg::String>(
       "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local(),
-      [this](std_msgs::msg::String::SharedPtr msg) {
-        // Rebind the controller-owned topics/clients FIRST, then publish the
-        // name — so a reader that observes GetActiveController() == msg->data is
-        // guaranteed the param/grasp clients are already bound (they are created
-        // inside RewireControllerTopics). Setting the name first would expose a
-        // window where the controller reads as active but its clients are still
-        // null / point at the previous controller.
-        RewireControllerTopics(msg->data);
-        {
-          std::lock_guard lock(state_mutex_);
-          active_controller_ = msg->data;
-        }
-      });
+      [this](std_msgs::msg::String::SharedPtr msg) { OnActiveController(std::move(msg)); });
 
   estop_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
-      "/system/estop_status", rclcpp::QoS{1}, [this](std_msgs::msg::Bool::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          estopped_ = msg->data;
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          estop_last_ = std::chrono::steady_clock::now();
-          estop_received_ = true;
-        }
-      });
+      "/system/estop_status", rclcpp::QoS{1},
+      [this](std_msgs::msg::Bool::SharedPtr msg) { OnEstop(std::move(msg)); });
 
   // ── Shape estimation ──────────────────────────────────────────────────
 
   shape_estimate_sub_ = node_->create_subscription<shape_estimation_msgs::msg::ShapeEstimate>(
       "/shape/estimate", rclcpp::QoS{1},
       [this](shape_estimation_msgs::msg::ShapeEstimate::SharedPtr msg) {
-        std::lock_guard lock(state_mutex_);
-        shape_estimate_ = *msg;
-        shape_estimate_valid_ = true;
+        OnShapeEstimate(std::move(msg));
       });
 
   shape_trigger_pub_ =
@@ -177,6 +101,183 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
       node_->create_client<rtc_msgs::srv::ListControllers>("/rtc_cm/list_controllers");
 
   RCLCPP_INFO(bridge_log(), "initialized");
+}
+
+// ── Subscription handlers ─────────────────────────────────────────────────
+// Extracted callback bodies (see the header note): the subscription lambdas
+// above and in RewireControllerTopics forward here 1:1, and the test-only
+// BridgeStateInjector calls the same handlers directly.
+
+void BtRosBridge::OnArmJointState(sensor_msgs::msg::JointState::SharedPtr msg) {
+  {
+    std::lock_guard lock(state_mutex_);
+    arm_joint_positions_.assign(msg->position.begin(), msg->position.end());
+  }
+  {
+    std::lock_guard lock(health_mutex_);
+    arm_gui_last_ = std::chrono::steady_clock::now();
+    arm_gui_received_ = true;
+  }
+}
+
+void BtRosBridge::OnHandJointState(sensor_msgs::msg::JointState::SharedPtr msg) {
+  {
+    std::lock_guard lock(state_mutex_);
+    hand_joint_positions_.assign(msg->position.begin(), msg->position.end());
+    hand_joint_names_.assign(msg->name.begin(), msg->name.end());
+  }
+  {
+    std::lock_guard lock(health_mutex_);
+    hand_gui_last_ = std::chrono::steady_clock::now();
+    hand_gui_received_ = true;
+  }
+}
+
+void BtRosBridge::OnWorldTarget(geometry_msgs::msg::Polygon::SharedPtr msg) {
+  if (msg->points.empty())
+    return;
+
+  // Check if all coordinates are zero (data not ready)
+  bool all_zero = true;
+  for (const auto& pt : msg->points) {
+    if (pt.x != 0.0f || pt.y != 0.0f || pt.z != 0.0f) {
+      all_zero = false;
+      break;
+    }
+  }
+
+  {
+    std::lock_guard lock(state_mutex_);
+    if (all_zero) {
+      world_target_valid_ = false;
+    } else {
+      // points[0] = position (x, y, z) only
+      world_target_pose_.x = static_cast<double>(msg->points[0].x);
+      world_target_pose_.y = static_cast<double>(msg->points[0].y);
+      world_target_pose_.z = static_cast<double>(msg->points[0].z);
+      world_target_pose_.roll = 0.0;
+      world_target_pose_.pitch = 0.0;
+      world_target_pose_.yaw = 0.0;
+      world_target_valid_ = true;
+    }
+  }
+  {
+    std::lock_guard lock(health_mutex_);
+    world_target_last_ = std::chrono::steady_clock::now();
+    world_target_received_ = true;
+  }
+}
+
+void BtRosBridge::OnActiveController(std_msgs::msg::String::SharedPtr msg) {
+  // Rebind the controller-owned topics/clients FIRST, then publish the
+  // name — so a reader that observes GetActiveController() == msg->data is
+  // guaranteed the param/grasp clients are already bound (they are created
+  // inside RewireControllerTopics). Setting the name first would expose a
+  // window where the controller reads as active but its clients are still
+  // null / point at the previous controller.
+  RewireControllerTopics(msg->data);
+  {
+    std::lock_guard lock(state_mutex_);
+    active_controller_ = msg->data;
+  }
+}
+
+void BtRosBridge::OnEstop(std_msgs::msg::Bool::SharedPtr msg) {
+  {
+    std::lock_guard lock(state_mutex_);
+    estopped_ = msg->data;
+  }
+  {
+    std::lock_guard lock(health_mutex_);
+    estop_last_ = std::chrono::steady_clock::now();
+    estop_received_ = true;
+  }
+}
+
+void BtRosBridge::OnShapeEstimate(shape_estimation_msgs::msg::ShapeEstimate::SharedPtr msg) {
+  std::lock_guard lock(state_mutex_);
+  shape_estimate_ = *msg;
+  shape_estimate_valid_ = true;
+}
+
+void BtRosBridge::OnTransforms(tf2_msgs::msg::TFMessage::SharedPtr msg) {
+  for (const auto& tf : msg->transforms) {
+    tf_buffer_->setTransform(tf, "bt_ros_bridge", /*is_static=*/false);
+  }
+}
+
+void BtRosBridge::OnGraspState(rtc_msgs::msg::GraspState::SharedPtr msg) {
+  {
+    std::lock_guard lock(state_mutex_);
+    const auto n = msg->force_magnitude.size();
+    grasp_state_.fingertips.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      auto& ft = grasp_state_.fingertips[i];
+      ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
+      ft.force_magnitude = msg->force_magnitude[i];
+      // contact_flag passthrough — sensor A producers send native
+      // sigmoid prob [0..1], sensor B producers send derived binary
+      // 1.0/0.0. Downstream BT nodes test with `> 0.5f` either way.
+      ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
+      ft.inference_valid = (i < msg->inference_valid.size()) ? msg->inference_valid[i] : false;
+    }
+    grasp_state_.num_active_contacts = msg->num_active_contacts;
+    grasp_state_.max_force = msg->max_force;
+    grasp_state_.grasp_detected = msg->grasp_detected;
+    grasp_state_.force_threshold = msg->force_threshold;
+    grasp_state_.min_fingertips = msg->min_fingertips;
+    grasp_state_.grasp_phase = msg->grasp_phase;
+    grasp_state_.grasp_target_force = msg->grasp_target_force;
+    grasp_state_.finger_s.assign(msg->finger_s.begin(), msg->finger_s.end());
+    grasp_state_.finger_filtered_force.assign(msg->finger_filtered_force.begin(),
+                                              msg->finger_filtered_force.end());
+    grasp_state_.finger_force_error.assign(msg->finger_force_error.begin(),
+                                           msg->finger_force_error.end());
+    grasp_state_.received_at = std::chrono::steady_clock::now();
+  }
+  {
+    std::lock_guard lock(health_mutex_);
+    grasp_state_last_ = std::chrono::steady_clock::now();
+    grasp_state_received_ = true;
+  }
+}
+
+void BtRosBridge::OnWbcState(rtc_msgs::msg::WbcState::SharedPtr msg) {
+  {
+    std::lock_guard lock(state_mutex_);
+    const auto n = msg->force_magnitude.size();
+    wbc_state_.fingertips.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      auto& ft = wbc_state_.fingertips[i];
+      ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
+      ft.force_magnitude = msg->force_magnitude[i];
+      // contact_flag passthrough — same sensor-A/B capability semantics
+      // as GraspState branch above (see WbcState.msg).
+      ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
+      ft.displacement = (i < msg->displacement.size()) ? msg->displacement[i] : 0.0f;
+    }
+    wbc_state_.num_active_contacts = msg->num_active_contacts;
+    wbc_state_.max_force = msg->max_force;
+    wbc_state_.grasp_target_force = msg->grasp_target_force;
+    wbc_state_.grasp_detected = msg->grasp_detected;
+    wbc_state_.min_fingertips = msg->min_fingertips;
+    wbc_state_.phase = msg->phase;
+    wbc_state_.tsid_solve_us = msg->tsid_solve_us;
+    wbc_state_.tsid_solver_ok = msg->tsid_solver_ok;
+    wbc_state_.qp_fail_count = msg->qp_fail_count;
+  }
+  {
+    std::lock_guard lock(health_mutex_);
+    wbc_state_last_ = std::chrono::steady_clock::now();
+    wbc_state_received_ = true;
+  }
+}
+
+void BtRosBridge::OnToFSnapshot(rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
+  if (!tof_collecting_.load(std::memory_order_relaxed))
+    return;
+  std::lock_guard lock(tof_mutex_);
+  tof_buffer_.push_back(*msg);
 }
 
 // ── Cached state accessors ────────────────────────────────────────────────
@@ -613,50 +714,12 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   // no external /tf re-broadcaster required. No restamp: GetTcpPose looks up
   // the latest transform (TimePointZero), so the source stamp is fine.
   transforms_sub_ = node_->create_subscription<tf2_msgs::msg::TFMessage>(
-      topic_namer_.Transforms(ns), rclcpp::QoS{1}, [this](tf2_msgs::msg::TFMessage::SharedPtr msg) {
-        for (const auto& tf : msg->transforms) {
-          tf_buffer_->setTransform(tf, "bt_ros_bridge", /*is_static=*/false);
-        }
-      });
+      topic_namer_.Transforms(ns), rclcpp::QoS{1},
+      [this](tf2_msgs::msg::TFMessage::SharedPtr msg) { OnTransforms(std::move(msg)); });
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
       topic_namer_.GraspState(ns), rclcpp::QoS{1},
-      [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          const auto n = msg->force_magnitude.size();
-          grasp_state_.fingertips.resize(n);
-          for (std::size_t i = 0; i < n; ++i) {
-            auto& ft = grasp_state_.fingertips[i];
-            ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
-            ft.force_magnitude = msg->force_magnitude[i];
-            // contact_flag passthrough — sensor A producers send native
-            // sigmoid prob [0..1], sensor B producers send derived binary
-            // 1.0/0.0. Downstream BT nodes test with `> 0.5f` either way.
-            ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
-            ft.inference_valid =
-                (i < msg->inference_valid.size()) ? msg->inference_valid[i] : false;
-          }
-          grasp_state_.num_active_contacts = msg->num_active_contacts;
-          grasp_state_.max_force = msg->max_force;
-          grasp_state_.grasp_detected = msg->grasp_detected;
-          grasp_state_.force_threshold = msg->force_threshold;
-          grasp_state_.min_fingertips = msg->min_fingertips;
-          grasp_state_.grasp_phase = msg->grasp_phase;
-          grasp_state_.grasp_target_force = msg->grasp_target_force;
-          grasp_state_.finger_s.assign(msg->finger_s.begin(), msg->finger_s.end());
-          grasp_state_.finger_filtered_force.assign(msg->finger_filtered_force.begin(),
-                                                    msg->finger_filtered_force.end());
-          grasp_state_.finger_force_error.assign(msg->finger_force_error.begin(),
-                                                 msg->finger_force_error.end());
-          grasp_state_.received_at = std::chrono::steady_clock::now();
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          grasp_state_last_ = std::chrono::steady_clock::now();
-          grasp_state_received_ = true;
-        }
-      });
+      [this](rtc_msgs::msg::GraspState::SharedPtr msg) { OnGraspState(std::move(msg)); });
 
   {
     // ARCH-6 exception: the callback push_backs every snapshot into a
@@ -665,48 +728,16 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
     auto tof_qos = rclcpp::SensorDataQoS();
     tof_qos.keep_last(100);  // ARCH-6-exempt
     tof_snapshot_sub_ = node_->create_subscription<rtc_msgs::msg::ToFSnapshot>(
-        ns + "/tof/snapshot", tof_qos, [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
-          if (!tof_collecting_.load(std::memory_order_relaxed))
-            return;
-          std::lock_guard lock(tof_mutex_);
-          tof_buffer_.push_back(*msg);
-        });
+        ns + "/tof/snapshot", tof_qos,
+        [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) { OnToFSnapshot(std::move(msg)); });
   }
 
   // Subscribe to wbc_state alongside grasp_state — only the active controller
   // publishes one of them, the other stays empty/stale. Caller picks via
   // GetGraspState() vs GetWbcState() based on the active controller.
   wbc_state_sub_ = node_->create_subscription<rtc_msgs::msg::WbcState>(
-      topic_namer_.WbcState(ns), rclcpp::QoS{1}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
-        {
-          std::lock_guard lock(state_mutex_);
-          const auto n = msg->force_magnitude.size();
-          wbc_state_.fingertips.resize(n);
-          for (std::size_t i = 0; i < n; ++i) {
-            auto& ft = wbc_state_.fingertips[i];
-            ft.name = (i < msg->fingertip_names.size()) ? msg->fingertip_names[i] : "";
-            ft.force_magnitude = msg->force_magnitude[i];
-            // contact_flag passthrough — same sensor-A/B capability semantics
-            // as GraspState branch above (see WbcState.msg).
-            ft.contact_flag = (i < msg->contact_flag.size()) ? msg->contact_flag[i] : 0.0f;
-            ft.displacement = (i < msg->displacement.size()) ? msg->displacement[i] : 0.0f;
-          }
-          wbc_state_.num_active_contacts = msg->num_active_contacts;
-          wbc_state_.max_force = msg->max_force;
-          wbc_state_.grasp_target_force = msg->grasp_target_force;
-          wbc_state_.grasp_detected = msg->grasp_detected;
-          wbc_state_.min_fingertips = msg->min_fingertips;
-          wbc_state_.phase = msg->phase;
-          wbc_state_.tsid_solve_us = msg->tsid_solve_us;
-          wbc_state_.tsid_solver_ok = msg->tsid_solver_ok;
-          wbc_state_.qp_fail_count = msg->qp_fail_count;
-        }
-        {
-          std::lock_guard lock(health_mutex_);
-          wbc_state_last_ = std::chrono::steady_clock::now();
-          wbc_state_received_ = true;
-        }
-      });
+      topic_namer_.WbcState(ns), rclcpp::QoS{1},
+      [this](rtc_msgs::msg::WbcState::SharedPtr msg) { OnWbcState(std::move(msg)); });
 
   arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
       topic_namer_.ArmJointGoal(ns), rclcpp::QoS{1});
