@@ -102,3 +102,49 @@ TEST_F(DataNodeTest, ProcessSearchDataFallsBackToCurrentPose) {
   EXPECT_NEAR(goal.pitch, 0.05, 1e-6);
   EXPECT_NEAR(goal.yaw, 0.2, 1e-6);
 }
+
+// ── GetTopicHealth staleness arithmetic ─────────────────────────────────────
+
+namespace {
+const TopicHealth* FindHealth(const std::vector<TopicHealth>& health, const std::string& substr) {
+  for (const auto& h : health) {
+    if (h.name.find(substr) != std::string::npos)
+      return &h;
+  }
+  return nullptr;
+}
+}  // namespace
+
+TEST_F(DataNodeTest, GetTopicHealthReflectsReceiptAndStaleness) {
+  // A topic with no message yet: received=false, sentinel age, unhealthy.
+  {
+    auto health = bridge_->GetTopicHealth(100.0);
+    const auto* hand = FindHealth(health, "hand/joint_states");
+    ASSERT_NE(hand, nullptr);
+    EXPECT_FALSE(hand->received);
+    EXPECT_DOUBLE_EQ(hand->seconds_since_last, -1.0);
+    EXPECT_FALSE(hand->healthy);
+  }
+
+  // After a hand joint_states sample lands, the entry is received and — with a
+  // generous timeout — healthy, with a non-negative age.
+  PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+  {
+    auto health = bridge_->GetTopicHealth(100.0);
+    const auto* hand = FindHealth(health, "hand/joint_states");
+    ASSERT_NE(hand, nullptr);
+    EXPECT_TRUE(hand->received);
+    EXPECT_GE(hand->seconds_since_last, 0.0);
+    EXPECT_TRUE(hand->healthy);
+  }
+
+  // Same received sample, but a zero timeout makes any positive age stale:
+  // healthy = (age <= timeout) must now be false while received stays true.
+  {
+    auto health = bridge_->GetTopicHealth(0.0);
+    const auto* hand = FindHealth(health, "hand/joint_states");
+    ASSERT_NE(hand, nullptr);
+    EXPECT_TRUE(hand->received);
+    EXPECT_FALSE(hand->healthy);
+  }
+}

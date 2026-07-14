@@ -173,6 +173,18 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_tree_validation
     rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
   )
+
+  # on_configure safety-net coverage — capability gating + finger_map range
+  # check, exercised at the RegisterBtNodes / BtRosBridge level (bt_nodes).
+  ament_add_gtest(test_lifecycle_config test/test_lifecycle_config.cpp)
+  target_link_libraries(test_lifecycle_config bt_nodes)
+  target_include_directories(test_lifecycle_config PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+  )
+  ament_target_dependencies(test_lifecycle_config
+    rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs sensor_msgs rtc_msgs shape_estimation_msgs tf2 tf2_ros tf2_msgs
+  )
 endif()
 
 ament_package()
