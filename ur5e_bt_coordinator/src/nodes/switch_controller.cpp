@@ -1,10 +1,12 @@
 #include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
+#include "ur5e_bt_coordinator/bt_utils.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
 #include <cctype>
+#include <chrono>
 
 namespace rtc_bt {
 
@@ -30,7 +32,7 @@ std::string NormalizeName(const std::string& s) {
 
 SwitchController::SwitchController(const std::string& name, const BT::NodeConfig& config,
                                    std::shared_ptr<BtRosBridge> bridge)
-    : BT::SyncActionNode(name, config), bridge_(std::move(bridge)) {}
+    : BT::StatefulActionNode(name, config), bridge_(std::move(bridge)) {}
 
 BT::PortsList SwitchController::providedPorts() {
   return {
@@ -39,34 +41,78 @@ BT::PortsList SwitchController::providedPorts() {
   };
 }
 
-BT::NodeStatus SwitchController::tick() {
+BT::NodeStatus SwitchController::onStart() {
   auto name = getInput<std::string>("controller_name");
   if (!name) {
     RCLCPP_ERROR(logger(), "missing controller_name port");
     throw BT::RuntimeError("SwitchController: missing controller_name");
   }
-  const auto target = name.value();
-  const auto timeout_s = getInput<double>("timeout_s").value_or(3.0);
+  target_ = name.value();
+  timeout_s_ = getInput<double>("timeout_s").value_or(3.0);
 
   const auto current = bridge_->GetActiveController();
-  if (NormalizeName(current) == NormalizeName(target)) {
-    RCLCPP_DEBUG(logger(), "already active: %s", target.c_str());
+  if (NormalizeName(current) == NormalizeName(target_)) {
+    RCLCPP_DEBUG(logger(), "already active: %s", target_.c_str());
     return BT::NodeStatus::SUCCESS;
   }
 
-  RCLCPP_INFO(logger(), "switching: %s -> %s (timeout=%.1fs)", current.c_str(), target.c_str(),
-              timeout_s);
+  RCLCPP_INFO(logger(), "switching: %s -> %s (timeout=%.1fs)", current.c_str(), target_.c_str(),
+              timeout_s_);
 
-  // Sync srv. The bridge's underlying client returns ok only after CM has
-  // committed the swap (D-A4) and published the latched
-  // /rtc_cm/active_controller_name update, so the active controller is
-  // immediately ready for subsequent SetGains parameter calls.
+  start_time_ = std::chrono::steady_clock::now();
+  sent_ = false;
+  // Fire without blocking; if the service is not ready yet, onRunning retries
+  // (poll-based grace) until timeout_s_. The srv returns ok only after CM has
+  // committed the swap (D-A4) and latched /rtc_cm/active_controller_name, so
+  // the active controller is immediately ready for a following SetGains.
   std::string err;
-  if (!bridge_->RequestSwitchController(target, timeout_s, err)) {
-    RCLCPP_ERROR(logger(), "switch_controller srv rejected '%s': %s", target.c_str(), err.c_str());
+  handle_ = bridge_->RequestSwitchControllerAsync(target_, err);
+  sent_ = handle_.future.valid();
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus SwitchController::onRunning() {
+  // Not yet sent (service was not ready): retry within the timeout budget.
+  if (!sent_) {
+    if (ElapsedSeconds(start_time_) > timeout_s_) {
+      RCLCPP_ERROR(logger(), "switch_controller service unavailable within %.1fs (target=%s)",
+                   timeout_s_, target_.c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+    std::string err;
+    handle_ = bridge_->RequestSwitchControllerAsync(target_, err);
+    if (handle_.future.valid()) {
+      sent_ = true;
+      start_time_ = std::chrono::steady_clock::now();  // response clock starts at send
+    }
+    return BT::NodeStatus::RUNNING;
+  }
+
+  // Sent: poll the response future without blocking the executor.
+  if (handle_.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    auto resp = handle_.future.get();
+    if (!resp->ok) {
+      RCLCPP_ERROR(logger(), "switch_controller srv rejected '%s': %s", target_.c_str(),
+                   resp->message.c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  if (ElapsedSeconds(start_time_) > timeout_s_) {
+    RCLCPP_ERROR(logger(), "switch_controller timeout (%.1fs) target=%s", timeout_s_,
+                 target_.c_str());
+    bridge_->CancelSwitchControllerRequest(handle_.request_id);
     return BT::NodeStatus::FAILURE;
   }
-  return BT::NodeStatus::SUCCESS;
+  return BT::NodeStatus::RUNNING;
+}
+
+void SwitchController::onHalted() {
+  if (sent_) {
+    bridge_->CancelSwitchControllerRequest(handle_.request_id);
+  }
+  RCLCPP_INFO(logger(), "halted (target=%s)", target_.c_str());
 }
 
 }  // namespace rtc_bt

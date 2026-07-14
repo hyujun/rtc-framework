@@ -27,6 +27,22 @@ class SwitchControllerTest : public RosTestFixture {
     return factory_.createTreeFromText(full);
   }
 
+  // SwitchController is now a StatefulActionNode: onStart fires the srv async
+  // and onRunning polls the response across ticks. Tick until it leaves
+  // RUNNING (the fixture's background spin fulfils the future between ticks).
+  static BT::NodeStatus TickUntilComplete(
+      BT::Tree& tree, std::chrono::milliseconds timeout = std::chrono::milliseconds(6000)) {
+    const auto start = std::chrono::steady_clock::now();
+    BT::NodeStatus status = tree.tickOnce();
+    while (status == BT::NodeStatus::RUNNING) {
+      if (std::chrono::steady_clock::now() - start > timeout)
+        break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      status = tree.tickOnce();
+    }
+    return status;
+  }
+
   BT::BehaviorTreeFactory factory_;
 };
 
@@ -120,7 +136,7 @@ TEST_F(SwitchControllerSrvTest, SrvSwitchSucceedsImmediately) {
       R"(<SwitchController controller_name="demo_joint_controller"
                           timeout_s="2.0"/>)");
 
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(captured_target, "demo_joint_controller");
 }
 
@@ -137,5 +153,5 @@ TEST_F(SwitchControllerSrvTest, SrvRejectionPropagatesAsFailure) {
       R"(<SwitchController controller_name="demo_joint_controller"
                           timeout_s="2.0"/>)");
 
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::FAILURE);
 }

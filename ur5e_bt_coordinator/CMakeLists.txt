@@ -144,6 +144,7 @@ if(BUILD_TESTING)
     test_move_to_joints
     test_switch_controller
     test_set_gains
+    test_service_singlethread
     test_grasp_control
     test_condition_nodes
     test_hand_nodes

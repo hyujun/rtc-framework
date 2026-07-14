@@ -7,6 +7,7 @@
 #include <rclcpp/parameter.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include <future>
 #include <string>
 #include <vector>
 
@@ -36,7 +37,7 @@ constexpr double kSrvTimeoutS = 2.0;
 
 SetGains::SetGains(const std::string& name, const BT::NodeConfig& config,
                    std::shared_ptr<BtRosBridge> bridge)
-    : BT::SyncActionNode(name, config), bridge_(std::move(bridge)) {}
+    : BT::StatefulActionNode(name, config), bridge_(std::move(bridge)) {}
 
 BT::PortsList SetGains::providedPorts() {
   return {
@@ -74,7 +75,7 @@ BT::PortsList SetGains::providedPorts() {
   };
 }
 
-BT::NodeStatus SetGains::tick() {
+bool SetGains::BuildParams() {
   const auto active = NormalizeName(bridge_->GetActiveController());
   const bool is_joint = (active == "demojointcontroller");
   const bool is_task = (active == "demotaskcontroller");
@@ -82,10 +83,11 @@ BT::NodeStatus SetGains::tick() {
   if (!is_joint && !is_task && !is_wbc) {
     RCLCPP_WARN(logger(), "unknown active controller: '%s' — skipping",
                 bridge_->GetActiveController().c_str());
-    return BT::NodeStatus::FAILURE;
+    return false;
   }
 
-  std::vector<rclcpp::Parameter> params;
+  std::vector<rclcpp::Parameter>& params = params_;
+  params.clear();
   params.reserve(16);
 
   // ── Map trajectory_speed input → controller-specific param name ──────────
@@ -169,35 +171,135 @@ BT::NodeStatus SetGains::tick() {
     }
   }
 
-  // ── Set parameters (skipped when no port set) ────────────────────────────
-  if (!params.empty()) {
-    std::string msg;
-    if (!bridge_->SetActiveControllerGains(params, kSrvTimeoutS, msg)) {
-      RCLCPP_ERROR(logger(), "set_parameters_atomically failed: %s", msg.c_str());
-      return BT::NodeStatus::FAILURE;
-    }
-    RCLCPP_INFO(logger(), "%s: %zu parameter(s) updated", bridge_->GetActiveController().c_str(),
-                params.size());
+  // ── Force-PI grasp command (one-shot, separate srv) — validated here so an
+  // invalid value fails before any service call ────────────────────────────
+  grasp_command_ = getInput<int>("grasp_command").value_or(0);
+  grasp_force_ = getInput<double>("grasp_target_force").value_or(2.0);
+  if (grasp_command_ != 0 &&
+      grasp_command_ != static_cast<int>(rtc_msgs::srv::GraspCommand::Request::GRASP) &&
+      grasp_command_ != static_cast<int>(rtc_msgs::srv::GraspCommand::Request::RELEASE)) {
+    RCLCPP_ERROR(logger(), "grasp_command must be 1 (GRASP) or 2 (RELEASE), got %d",
+                 grasp_command_);
+    return false;
+  }
+  return true;
+}
+
+BT::NodeStatus SetGains::onStart() {
+  if (!BuildParams()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  stage_sent_ = false;
+  stage_start_ = std::chrono::steady_clock::now();
+  last_err_.clear();
+
+  // Choose the first stage: parameters (if any) then grasp; nothing → SUCCESS.
+  if (!params_.empty()) {
+    stage_ = Stage::kParams;
+  } else if (grasp_command_ != 0) {
+    stage_ = Stage::kGrasp;
+  } else {
+    return BT::NodeStatus::SUCCESS;  // no ports set → no-op
+  }
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus SetGains::onRunning() {
+  if (ElapsedSeconds(stage_start_) > kSrvTimeoutS) {
+    RCLCPP_ERROR(logger(), "timeout (%.1fs) in %s stage: %s", kSrvTimeoutS,
+                 stage_ == Stage::kParams ? "set_parameters" : "grasp_command",
+                 last_err_.empty() ? "no response" : last_err_.c_str());
+    return BT::NodeStatus::FAILURE;
   }
 
-  // ── Force-PI grasp command (one-shot, separate srv) ─────────────────────
-  if (auto cmd = getInput<int>("grasp_command"); cmd && cmd.value() != 0) {
-    const auto cmd_val = cmd.value();
-    if (cmd_val != static_cast<int>(rtc_msgs::srv::GraspCommand::Request::GRASP) &&
-        cmd_val != static_cast<int>(rtc_msgs::srv::GraspCommand::Request::RELEASE)) {
-      RCLCPP_ERROR(logger(), "grasp_command must be 1 (GRASP) or 2 (RELEASE), got %d", cmd_val);
-      return BT::NodeStatus::FAILURE;
+  switch (stage_) {
+    case Stage::kParams: {
+      if (!stage_sent_) {
+        param_future_ = bridge_->SetActiveControllerGainsAsync(params_, last_err_);
+        if (param_future_.valid()) {
+          stage_sent_ = true;
+          stage_start_ = std::chrono::steady_clock::now();  // response clock starts at send
+        }
+        return BT::NodeStatus::RUNNING;  // retry next tick if not ready
+      }
+      if (param_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return BT::NodeStatus::RUNNING;
+      }
+      // A future can become ready with a broken promise if the active
+      // controller changed and RewireControllerTopics dropped the client that
+      // owned this pending request. .get() then throws std::future_error;
+      // surface it as FAILURE instead of letting it escape the tick timer
+      // callback (which would propagate through rclcpp::spin and crash).
+      rcl_interfaces::msg::SetParametersResult result;
+      try {
+        result = param_future_.get();
+      } catch (const std::future_error& e) {
+        RCLCPP_ERROR(logger(), "set_parameters future broken (controller rebound?): %s", e.what());
+        return BT::NodeStatus::FAILURE;
+      }
+      if (!result.successful) {
+        RCLCPP_ERROR(logger(), "set_parameters_atomically rejected: %s", result.reason.c_str());
+        return BT::NodeStatus::FAILURE;
+      }
+      RCLCPP_INFO(logger(), "%s: %zu parameter(s) updated", bridge_->GetActiveController().c_str(),
+                  params_.size());
+      // Advance to the grasp stage, or finish if none requested.
+      if (grasp_command_ == 0) {
+        return BT::NodeStatus::SUCCESS;
+      }
+      stage_ = Stage::kGrasp;
+      stage_sent_ = false;
+      stage_start_ = std::chrono::steady_clock::now();
+      last_err_.clear();
+      return BT::NodeStatus::RUNNING;
     }
-    const double force = getInput<double>("grasp_target_force").value_or(2.0);
-    std::string msg;
-    if (!bridge_->SendGraspCommand(static_cast<uint8_t>(cmd_val), force, kSrvTimeoutS, msg)) {
-      RCLCPP_ERROR(logger(), "grasp_command srv failed: %s", msg.c_str());
-      return BT::NodeStatus::FAILURE;
+    case Stage::kGrasp: {
+      if (!stage_sent_) {
+        grasp_future_ = bridge_->SendGraspCommandAsync(static_cast<uint8_t>(grasp_command_),
+                                                       grasp_force_, last_err_);
+        if (grasp_future_.valid()) {
+          stage_sent_ = true;
+          stage_start_ = std::chrono::steady_clock::now();  // response clock starts at send
+        }
+        return BT::NodeStatus::RUNNING;  // retry next tick if not ready
+      }
+      if (grasp_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return BT::NodeStatus::RUNNING;
+      }
+      // See the set_parameters stage: guard against a broken promise from a
+      // client rebind so the exception cannot escape the tick timer callback.
+      rtc_msgs::srv::GraspCommand::Response::SharedPtr resp;
+      try {
+        resp = grasp_future_.get();
+      } catch (const std::future_error& e) {
+        RCLCPP_ERROR(logger(), "grasp_command future broken (controller rebound?): %s", e.what());
+        return BT::NodeStatus::FAILURE;
+      }
+      if (!resp->ok) {
+        RCLCPP_ERROR(logger(), "grasp_command srv failed: %s", resp->message.c_str());
+        return BT::NodeStatus::FAILURE;
+      }
+      RCLCPP_INFO(logger(), "grasp_command %s: %s", grasp_command_ == 1 ? "GRASP" : "RELEASE",
+                  resp->message.c_str());
+      return BT::NodeStatus::SUCCESS;
     }
-    RCLCPP_INFO(logger(), "grasp_command %s: %s", cmd_val == 1 ? "GRASP" : "RELEASE", msg.c_str());
+    case Stage::kDone:
+      break;
   }
-
   return BT::NodeStatus::SUCCESS;
+}
+
+void SetGains::onHalted() {
+  // Unlike SwitchController::onHalted this does not cancel the in-flight
+  // param/grasp request: the parameter client is an AsyncParametersClient with
+  // no request-id cancel API, and a rebind-broken future is already handled
+  // defensively at the .get() sites above (→ FAILURE, no throw). A halted
+  // request simply resolves and is discarded, harmless under the single-thread
+  // executor. Adding a Cancel* pair would be needed only if that model changes.
+  RCLCPP_INFO(logger(), "halted (stage=%s)",
+              stage_ == Stage::kParams  ? "set_parameters"
+              : stage_ == Stage::kGrasp ? "grasp_command"
+                                        : "done");
 }
 
 }  // namespace rtc_bt

@@ -89,7 +89,10 @@ UR5e 팔을 목표 자세로 이동 후, halt될 때까지 영구 RUNNING. 반�
 
 #### SwitchController
 
-활성 컨트롤러를 전환한다 (`/rtc_cm/switch_controller` srv 동기 호출).
+활성 컨트롤러를 전환한다 (`/rtc_cm/switch_controller` srv). StatefulAction — 요청을
+non-blocking 으로 발사하고 응답 future 를 tick 마다 `wait_for(0)` 으로 폴링한다 (single-thread
+executor 가 tick 안에서 blocking wait 하면 응답을 dispatch 못 해 데드락하므로). 이미 target 이
+active 면 첫 tick 에 SUCCESS. srv `ok=false`(E-STOP/unknown) 또는 `timeout_s` 초과 시 FAILURE.
 
 ```xml
 <SwitchController controller_name="demo_task_controller"
@@ -103,7 +106,7 @@ UR5e 팔을 목표 자세로 이동 후, halt될 때까지 영구 RUNNING. 반�
 
 #### SetGains
 
-active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_parameters_atomically`). 설정하지 않은 입력 포트는 dispatch에서 제외되어 현재 값 유지.
+active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_parameters_atomically`). 설정하지 않은 입력 포트는 dispatch에서 제외되어 현재 값 유지. StatefulAction — parameter set 과 (선택적) `grasp_command` srv 를 non-blocking 으로 발사하고 tick 마다 폴링한다 (SwitchController 와 동일한 single-thread executor 데드락 회피). 두 단계는 순차 실행 — parameter 가 commit 된 뒤에만 grasp 를 보내므로 거절된 게인 위에서 grasp 하지 않는다.
 
 ```xml
 <SetGains trajectory_speed="0.05"/>

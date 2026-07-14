@@ -14,6 +14,7 @@
 #include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
 #include <geometry_msgs/msg/polygon.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/parameter.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -30,6 +31,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <future>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -128,28 +131,53 @@ class BtRosBridge {
   /// Publish hand motor target [m0..m9]
   void PublishHandTarget(const std::vector<double>& target);
 
-  /// Set ROS 2 parameters atomically on the active controller's LifecycleNode
-  /// via the rebound AsyncParametersClient. Sync wrapper — blocks until the
-  /// remote node responds or `timeout_s` elapses. Returns false on timeout,
-  /// service unavailable, or any-parameter-rejected; populates `message`
-  /// with the failure reason.
-  bool SetActiveControllerGains(const std::vector<rclcpp::Parameter>& params, double timeout_s,
-                                std::string& message);
+  // ── Async service calls (non-blocking send/poll) ─────────────────────────
+  //
+  // The BT runs under a SingleThreadedExecutor (main.cpp `rclcpp::spin`) that
+  // ticks the tree from a timer callback. A blocking service wait inside a tick
+  // would deadlock: the same executor that must dispatch the service RESPONSE
+  // is stuck in the tick waiting for it. These methods only SEND (fire the
+  // request, return immediately); the caller (a StatefulActionNode) polls the
+  // returned future with wait_for(0) across ticks, letting the executor
+  // dispatch the response between ticks. See switch_controller / set_gains.
 
-  /// Issue a one-shot Force-PI grasp command via the active controller's
-  /// /<active>/grasp_command srv. `command` uses the rtc_msgs/GraspCommand
-  /// constants (GRASP=1, RELEASE=2). `target_force` is ignored for RELEASE.
-  /// Sync wrapper — same blocking semantics as SetActiveControllerGains.
-  bool SendGraspCommand(uint8_t command, double target_force, double timeout_s,
-                        std::string& message);
+  using SwitchControllerFuture = rclcpp::Client<rtc_msgs::srv::SwitchController>::SharedFuture;
+  using GraspCommandFuture = rclcpp::Client<rtc_msgs::srv::GraspCommand>::SharedFuture;
+  using SetParametersFuture = std::shared_future<rcl_interfaces::msg::SetParametersResult>;
 
-  /// Request a controller switch via /rtc_cm/switch_controller (sync srv).
-  /// Returns true when the service responded ok=true within `timeout_s`.
-  /// On false, `message` carries the failure reason (E-STOP active, unknown
-  /// name, timeout, ...). Caller (BT switch_controller node) treats the
-  /// boolean as a synchronous switch confirmation — no follow-up polling on
-  /// /rtc_cm/active_controller_name is required.
-  bool RequestSwitchController(const std::string& name, double timeout_s, std::string& message);
+  /// Handle for an in-flight switch request: the response future plus the
+  /// request id needed to cancel it on tree halt. `future.valid()==false` means
+  /// the request was NOT sent (service not ready — caller retries or times out).
+  struct SwitchRequestHandle {
+    SwitchControllerFuture future;
+    int64_t request_id{0};
+  };
+
+  /// Fire a controller switch via /rtc_cm/switch_controller without blocking.
+  /// If the service is not ready this instant, returns an invalid future
+  /// (`message` explains) so the caller can retry on a later tick until its own
+  /// timeout — replacing the former 200ms blocking grace with poll-based grace.
+  SwitchRequestHandle RequestSwitchControllerAsync(const std::string& name, std::string& message);
+
+  /// Cancel an in-flight switch request (from onHalted). No-op for id 0 or an
+  /// already-resolved request.
+  void CancelSwitchControllerRequest(int64_t request_id);
+
+  /// Fire a set_parameters_atomically on the active controller's rebound
+  /// AsyncParametersClient without blocking. Returns an invalid future when
+  /// there is no active controller or the parameter service is not ready
+  /// (`message` explains); the caller retries/times out. Assumes `params`
+  /// non-empty (callers guard the no-op case).
+  SetParametersFuture SetActiveControllerGainsAsync(const std::vector<rclcpp::Parameter>& params,
+                                                    std::string& message);
+
+  /// Fire a one-shot Force-PI grasp command via the active controller's
+  /// /<active>/grasp_command srv without blocking. `command` uses the
+  /// rtc_msgs/GraspCommand constants (GRASP=1, RELEASE=2); `target_force` is
+  /// ignored for RELEASE. Returns an invalid future when there is no active
+  /// controller or the srv is not ready (`message` explains).
+  GraspCommandFuture SendGraspCommandAsync(uint8_t command, double target_force,
+                                           std::string& message);
 
   // ── Shape estimation ────────────────────────────────────────────────────
 
@@ -228,9 +256,15 @@ class BtRosBridge {
   // ── Controller-owned topic rewiring (Phase 4) ─────────────────────────────
   // Rebuild grasp_state/wbc_state/tof/arm_target/hand_target sub/pub against
   // the /<ctrl_name>/... namespace. No-op when ctrl_name is empty or
-  // unchanged. Protected by controller_topics_mutex_. (Phase 4: arm/hand
-  // GuiPosition subs are replaced by /rtc_cm/<group>/joint_states which is
-  // controller-agnostic, so no rewire on those.)
+  // unchanged. (Phase 4: arm/hand GuiPosition subs are replaced by
+  // /rtc_cm/<group>/joint_states which is controller-agnostic, so no rewire on
+  // those.)
+  //
+  // controller_topics_mutex_ guards the fields read cross-method by the async
+  // service senders: rewired_controller_ and the two rebindable clients
+  // (active_param_client_ / grasp_command_client_). The sub/pub .reset()+create
+  // sequence itself is NOT locked and relies on the single-thread executor
+  // invariant (see the THREADING note on RewireControllerTopics in the .cpp).
   void RewireControllerTopics(const std::string& ctrl_name);
   std::string rewired_controller_;
   mutable std::mutex controller_topics_mutex_;
