@@ -50,7 +50,8 @@ BT Blackboard에서 사용하는 문자열 포맷:
 
 | 포트 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
-| `target` | vector\<double\> | (필수) | 6개 관절 목표 [rad] |
+| `target` | vector\<double\> | (필수) | 6개 관절 목표 [rad] (pose_name 지정 시 무시) |
+| `pose_name` | string | - | poses.yaml의 명명된 arm 포즈 (target 대체) |
 | `tolerance` | double | 0.01 rad | 관절별 허용오차 |
 | `timeout_s` | double | 10.0 s | 타임아웃 |
 

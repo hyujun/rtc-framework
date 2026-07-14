@@ -16,6 +16,7 @@ namespace rtc_bt {
 namespace {
 constexpr const char* kDegSuffix = "_deg";
 constexpr std::size_t kDegSuffixLen = 4;  // strlen("_deg")
+constexpr std::size_t kBbPrefixLen = 3;   // strlen("bb.")
 
 auto coord_log() {
   return ::rtc_bt::logging::CoordLogger();
@@ -59,15 +60,13 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
   // (invalid topic name, missing poses YAML, out-of-range finger_map); catch so
   // a misconfiguration is a clean lifecycle FAILURE, not an executor abort.
   try {
+    auto self = std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this());
     bridge_ = std::make_shared<BtRosBridge>(
-        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()),
-        RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_});
+        self, RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_});
 
-    bridge_->LoadPoseOverrides(
-        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+    bridge_->LoadPoseOverrides(self);
 
-    bridge_->LoadFingerMap(
-        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+    bridge_->LoadFingerMap(self);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(coord_log(), "bridge configuration failed: %s", e.what());
     bridge_.reset();
@@ -159,8 +158,7 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_deactivate(
-    const rclcpp_lifecycle::State& state) {
+void BtCoordinatorNode::CancelActiveTimersAndHalt() {
   if (tick_timer_)
     tick_timer_->cancel();
   if (repeat_timer_)
@@ -169,14 +167,9 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_deactivate(
     watchdog_timer_->cancel();
   if (tree_)
     tree_->haltTree();
-
-  LifecycleNode::on_deactivate(state);
-  RCLCPP_INFO(coord_log(), "BtCoordinatorNode deactivated");
-  return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_cleanup(
-    const rclcpp_lifecycle::State& /*state*/) {
+void BtCoordinatorNode::ReleaseAllResources() {
   tick_timer_.reset();
   repeat_timer_.reset();
   watchdog_timer_.reset();
@@ -188,6 +181,20 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_cleanup(
 #endif
   tree_.reset();
   bridge_.reset();
+}
+
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_deactivate(
+    const rclcpp_lifecycle::State& state) {
+  CancelActiveTimersAndHalt();
+
+  LifecycleNode::on_deactivate(state);
+  RCLCPP_INFO(coord_log(), "BtCoordinatorNode deactivated");
+  return CallbackReturn::SUCCESS;
+}
+
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_cleanup(
+    const rclcpp_lifecycle::State& /*state*/) {
+  ReleaseAllResources();
 
   RCLCPP_INFO(coord_log(), "BtCoordinatorNode cleaned up");
   return CallbackReturn::SUCCESS;
@@ -204,26 +211,8 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_shutdown(
 BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_error(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_ERROR(coord_log(), "BtCoordinatorNode error — attempting recovery");
-  if (tick_timer_)
-    tick_timer_->cancel();
-  if (repeat_timer_)
-    repeat_timer_->cancel();
-  if (watchdog_timer_)
-    watchdog_timer_->cancel();
-  if (tree_)
-    tree_->haltTree();
-
-  tick_timer_.reset();
-  repeat_timer_.reset();
-  watchdog_timer_.reset();
-  step_service_.reset();
-  param_callback_.reset();
-  failure_logger_.reset();
-#ifdef BT_GROOT2_AVAILABLE
-  groot2_publisher_.reset();
-#endif
-  tree_.reset();
-  bridge_.reset();
+  CancelActiveTimersAndHalt();
+  ReleaseAllResources();
 
   return CallbackReturn::SUCCESS;
 }
@@ -290,7 +279,10 @@ void BtCoordinatorNode::LoadTree() {
   }
 
   if (!std::filesystem::exists(tree_path)) {
-    RCLCPP_FATAL(coord_log(), "Tree file not found: %s", tree_path.c_str());
+    // ERROR not FATAL: the caller (on_configure / runtime tree switch) catches
+    // this and turns it into a clean lifecycle FAILURE / rejected param — the
+    // process is not aborting, so FATAL overstated the severity.
+    RCLCPP_ERROR(coord_log(), "Tree file not found: %s", tree_path.c_str());
     throw std::runtime_error("BT tree file not found: " + tree_path.string());
   }
 
@@ -307,10 +299,9 @@ void BtCoordinatorNode::InitializeBlackboard() {
   auto result = list_parameters({"bb"}, 1);
 
   for (const auto& param_name : result.names) {
-    const std::string prefix = "bb.";
-    if (param_name.size() <= prefix.size())
+    if (param_name.size() <= kBbPrefixLen)
       continue;
-    std::string key = param_name.substr(prefix.size());
+    std::string key = param_name.substr(kBbPrefixLen);
 
     auto param = get_parameter(param_name);
     switch (param.get_type()) {
@@ -341,9 +332,9 @@ void BtCoordinatorNode::InitializeBlackboard() {
   // Auto-convert *_deg variables: store a rad counterpart without the suffix.
   // e.g. bb.tcp_rpy_offset_r_deg: 45.0 → blackboard "tcp_rpy_offset_r" = 0.785
   for (const auto& param_name : result.names) {
-    if (param_name.size() <= 3)
-      continue;                              // "bb." minimum
-    std::string key = param_name.substr(3);  // strip "bb."
+    if (param_name.size() <= kBbPrefixLen)
+      continue;                                         // "bb." minimum
+    std::string key = param_name.substr(kBbPrefixLen);  // strip "bb."
     if (key.size() > kDegSuffixLen &&
         key.compare(key.size() - kDegSuffixLen, kDegSuffixLen, kDegSuffix) == 0) {
       auto param = get_parameter(param_name);

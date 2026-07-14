@@ -102,7 +102,7 @@ TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` 
 | 노드 | 타입 | 설명 | 입력 포트 |
 |------|------|------|----------|
 | `MoveToPose` | StatefulAction | Task-space 6D 목표 이동, position/orientation tolerance 도달 판정 | `target`, `position_tolerance`(0.005), `orientation_tolerance`(0.05), `timeout_s`(10.0) |
-| `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `tolerance`(0.01), `timeout_s`(10.0) |
+| `MoveToJoints` | StatefulAction | Joint-space 목표 이동, per-joint tolerance 도달 판정 | `target`, `pose_name`(poses.yaml named arm pose, target 대체), `tolerance`(0.01), `timeout_s`(10.0) |
 | `GraspControl` | StatefulAction | Hand open/close/pinch/preset 제어, 점진적 닫기 지원 | `mode`(close), `target_positions`, `close_speed`(0.3), `max_position`(1.4), `pinch_fingers`("thumb,index"), `timeout_s`(8.0) |
 | `TrackTrajectory` | StatefulAction | Waypoint 시퀀스 순차 추적 (sweep motion 등) | `waypoints`, `position_tolerance`(0.01), `timeout_s`(30.0) |
 | `SetGains` | StatefulAction | active controller LifecycleNode의 ROS 2 parameter 동적 변경 (`set_parameters_atomically`). 입력 포트 중 채워진 것만 dispatch — 컨트롤러별 매핑은 `set_gains.cpp` 참조 (예: `trajectory_speed` → DemoJoint면 `robot_trajectory_speed`, DemoWbc면 `arm_trajectory_speed`). `grasp_command`/`grasp_target_force`는 ROS 2 srv (`rtc_msgs/srv/GraspCommand`)로 분기. read-only 파라미터 (`*_max_traj_velocity`)는 변경 불가 (rejected) | `trajectory_speed`, `trajectory_angular_speed`, `hand_trajectory_speed`, `kp_translation`, `kp_rotation`, `damping`, `null_kp`, `enable_null_space`, `control_6dof`, `grasp_contact_threshold`, `grasp_force_threshold`, `grasp_min_fingertips`, `se3_weight`, `force_weight`, `posture_weight`, `mpc_enable`, `riccati_gain_scale`, `grasp_command`, `grasp_target_force` |
@@ -118,8 +118,8 @@ TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` 
 | `SetHandPose` | StatefulAction | 전체 Hand 10-DoF를 명명된 포즈로 이동 (trajectory duration 추정 + 수렴 게이트) | `pose`, `hand_trajectory_speed`(1.0), `tolerance`(0.15), `timeout_s`(10.0) |
 | `UR5eHoldPose` | StatefulAction | UR5e 목표 자세 도달 후 영구 RUNNING (halt까지 유지) | `pose` |
 | `MoveOpposition` | StatefulAction | Opposition 동작 (thumb+target 포즈, 비-target home 리셋, trajectory duration 추정 + 수렴 게이트) | `thumb_pose`, `target_finger`, `target_pose`, `hand_trajectory_speed`(1.0), `tolerance`(0.15), `timeout_s`(10.0) |
-| `TriggerShapeEstimation` | SyncAction | Shape estimation 시작/정지 제어 (서비스 호출) | `action`(start/stop) |
-| `WaitShapeResult` | StatefulAction | Shape estimation 결과 대기 (confidence 임계값 도달까지) | `min_confidence`(0.8), `timeout_s`(10.0) |
+| `TriggerShapeEstimation` | SyncAction | Shape estimation 시작/정지 제어 (서비스 호출) | `command`(start; start\|stop\|pause\|resume\|single) |
+| `WaitShapeResult` | StatefulAction | Shape estimation 결과 대기 (confidence 임계값 도달까지) | `confidence_threshold`(0.7), `timeout_s`(10.0), 출력: `estimate` |
 | `StartToFCollection` | SyncAction | `<ns>/tof/snapshot` 메시지 버퍼링 시작 (기존 데이터 초기화) | — |
 | `StopToFCollection` | SyncAction | ToF 버퍼링 중지, 수집된 스냅샷 수 반환 | 출력: `count` |
 | `ProcessSearchData` | SyncAction | 수집된 ToF 데이터로부터 목표 pose 계산 (현재 processing 로직 미구현 — 현재 TCP pose를 그대로 반환하는 stub) | 출력: `output_pose` |
@@ -131,9 +131,9 @@ TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` 
 | `IsForceAbove` | Fingertip force가 threshold 초과 여부 확인 (500Hz 사전 계산 활용, sustained 판정 지원) | `threshold_N`(1.5), `min_fingertips`(2), `sustained_ms`(0) |
 | `IsGrasped` | 물체 파지 상태 확인 (500Hz 사전 계산된 grasp_detected 활용) | `force_threshold_N`(1.0), `min_fingertips`(2) |
 | `IsObjectDetected` | Vision 결과 수신 여부 확인 | 출력: `pose` |
-| `IsGraspPhase` | Force-PI grasp phase 상태 확인 (GraspState.grasp_phase 비교) | `expected_phase` |
-| `IsVisionTargetReady` | Vision target 데이터 유효성 확인 (최신 데이터 존재 여부) | — |
-| `CheckShapeType` | ShapeEstimate 결과에서 shape 타입 추출 및 비교 | `expected_type`, 출력: `shape_type` |
+| `IsGraspPhase` | Force-PI grasp phase 상태 확인 (GraspState.grasp_phase 비교) | `phase`(holding) |
+| `IsVisionTargetReady` | Vision target 데이터 유효성 확인 (최신 데이터 존재 여부) | 출력: `pose` |
+| `CheckShapeType` | ShapeEstimate 결과에서 shape 타입 추출 및 비교 | `estimate`, `expected_type`(생략 시 추출만), 출력: `shape_type`/`shape_name`/`confidence` |
 
 ## 설정 파일
 
@@ -149,7 +149,7 @@ TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` 
 | `has_grasp_sensing` | `true` | Grasp-force 센싱 노드군 (`GraspControl`/`IsForceAbove`/`IsGraspPhase`/`IsGrasped`) 등록 여부 (Seam D) |
 | `has_tof` | `true` | ToF 근접센싱 노드군 (`StartToFCollection`/`StopToFCollection`/`ProcessSearchData`) 등록 여부 (Seam D) |
 | `has_shape` | `true` | Shape estimation 노드군 (`TriggerShapeEstimation`/`WaitShapeResult`/`CheckShapeType`) 등록 여부 (Seam D) |
-| `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] |
+| `tick_rate_hz` | `80.0` | BT tick 주기 [Hz] (배포 config 기본값; 코드 declare 기본은 20.0 — standalone 실행 시 적용) |
 | `repeat` | `false` | `true`면 트리 SUCCESS 완료 후 자동 반복 (FAILURE 시 정지) |
 | `repeat_delay_s` | `1.0` | 반복 시 재시작 전 대기 시간 [s] |
 | `paused` | `false` | `true`면 BT tick 일시 정지 |
