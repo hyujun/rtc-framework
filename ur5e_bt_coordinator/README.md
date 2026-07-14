@@ -469,6 +469,28 @@ colcon build --packages-select ur5e_bt_coordinator
 
 또는 `./build.sh` 실행 시 자동으로 빌드됨.
 
+## 테스트
+
+```bash
+cd ~/ros2_ws/rtc_ws
+colcon test --packages-select ur5e_bt_coordinator --event-handlers console_direct+
+```
+
+테스트는 3개 tier 로 구성된다 (suite 목록의 단일 출처는 [CMakeLists.txt](CMakeLists.txt)):
+
+- **Tier 1** (`TIER1_TESTS`) — 순수 연산 테스트, ROS2 fixture 불필요.
+- **Tier 2 inject** (`TIER2_INJECT`, [test/inject_fixture.hpp](test/inject_fixture.hpp)) —
+  DDS-free 상태 주입 테스트. `BridgeStateInjector` 가 `BtRosBridge` 의 추출된 `On*`
+  subscription 핸들러 (production 콜백 경로 그대로) 를 직접 호출하므로 topic 전달·
+  discovery 를 기다리지 않는다. 캐시 상태만 소비하는 테스트가 여기 속한다.
+- **Tier 2 e2e** (`TIER2_E2E`, [test/test_helpers.hpp](test/test_helpers.hpp)) —
+  real-DDS fixture (mock controller + background spin). service 호출·controller
+  rebind 경로 자체가 테스트 대상인 suite 만 남긴다.
+- **Tier 3** — BT XML 트리 검증.
+
+새 테스트가 topic 전달이 아니라 bridge 캐시 상태만 필요하면 `InjectTestFixture` 를
+사용한다 (fixture 분리 배경: issue #154).
+
 ## 실행
 
 RT 컨트롤러와 시뮬레이터(또는 실제 로봇)가 먼저 실행되어 있어야 한다:
