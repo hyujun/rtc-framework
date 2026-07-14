@@ -11,6 +11,7 @@
 #include <behaviortree_cpp/bt_factory.h>
 #include <gtest/gtest.h>
 
+#include <map>
 #include <thread>
 
 using namespace rtc_bt;

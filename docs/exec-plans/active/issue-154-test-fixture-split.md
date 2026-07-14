@@ -22,7 +22,7 @@
   - Phase 1 (`e68d028`): 콜백 람다 10개 → `On*` private 핸들러 추출 + `BridgeStateInjector` friend 선언. 22/22 통과.
   - Phase 2+3 (`f50e3fb`): `test/inject_fixture.hpp` 신설 (injector + `InjectTestFixture`), 6개 바이너리 base-class 교체 (assertion diff 0건 — `git diff -U0 | grep 'EXPECT\|ASSERT'` 빈 출력 확인), `test_hand_nodes.cpp` raw `PublishUntilObserved` 1곳 injector 치환, CMake `TIER2_INJECT`(6)/`TIER2_E2E`(4) 분리, `test_helpers.hpp` 미사용 helper/publisher prune.
   - Phase 4: Release 10회 연속 ctest **10/10 green** (아래 Evidence).
-- Phase 5 진행 중: testing-debug.md sensor matrix 행 + 패키지 README 테스트 절 갱신 완료. 남은 것: `/code-review` → PR (`Closes #154`) → merge 후 auto-memory prune + artifact `completed/` 이동.
+- Phase 5 진행 중: testing-debug.md sensor matrix 행 + 패키지 README 테스트 절 갱신 완료. `/code-review` (8-angle find → 1-vote verify) 완료 — CONFIRMED 4·PLAUSIBLE 2 전부 반영: `<map>` 직접 include (test_condition_nodes.cpp + bt_ros_bridge.hpp), `assm_v1_joint_names` 2중 복제 → `test/hand_joint_names.hpp` 공용화, inject 쪽 미사용 `TickUntilComplete` 사본 삭제, injector `bridge` 멤버 네이밍 (struct public), `Spin(dur)` 실제 sleep 화, `kRosContextEnv` inline→static. REFUTED 4 (Env shutdown 소유권 / RPY hand-roll 이동코드 / 10-핸들러 mirror 완전성 by-design / friend 폭 D2·D4 확정사항). 남은 것: PR (`Closes #154`) → merge 후 auto-memory prune + artifact `completed/` 이동.
 - 이슈 #154 착수 코멘트 (구현 세부 3가지) — 미게시 (Phase 0 잔여분, PR 게시로 갈음 가능 여부는 사용자 판단).
 
 ## Next action
@@ -36,7 +36,7 @@
 3. **Phase 2** — `test/inject_fixture.hpp` 신설:
    - `BridgeStateInjector` (`namespace rtc_bt::test`): 각 `On*` 핸들러로 메시지를 만들어 포워딩하는 thin friend. 필드 직접 조작 금지 — 핸들러 경유만 (아래 Decisions D2).
    - `InjectTestFixture`: bridge 노드 + `BtRosBridge` + injector 만. mock controller 3개·픽스처 publisher 8개·background spin thread·`PublishUntilObserved` 재시도 루프 전부 없음. `rclcpp::init` 은 `::testing::Environment` 로 1회/binary 공식화.
-   - 기존 helper 와 **동일 이름·시그니처** 제공 (`PublishArmState`, `PublishHandState`, `PublishGraspState`, `PublishWorldTarget`, `PublishEstop`, `PublishShapeEstimate`, `SetActiveAlias`, `Spin`(no-op), `TickUntilComplete`) → 테스트 본문 무변경으로 base class 만 교체.
+   - 기존 helper 와 **동일 이름·시그니처** 제공 (`PublishArmState`, `PublishHandState`, `PublishGraspState`, `PublishWorldTarget`, `PublishEstop`, `PublishShapeEstimate`, `SetActiveAlias`, `Spin`) → 테스트 본문 무변경으로 base class 만 교체. (구현 보정: `TickUntilComplete` 는 inject 6개가 미사용이라 사본 제공 안 함 — e2e 원본만 유지; `Spin` 은 no-op 대신 요청 duration 만 실제 sleep — cross-tier wall-clock 의미 보존, /code-review finding.)
    - `SetActiveAlias` → injector → `OnActiveController` → 실제 `RewireControllerTopics` 호출 (Decisions D3 함정 1).
 4. **Phase 2 계속** — 6개 바이너리 전환: `test_data_nodes`, `test_condition_nodes`, `test_shape_nodes`, `test_hand_nodes`, `test_move_to_joints`, `test_move_to_pose`. include + base class 교체 외 본문 무변경. 예외 1곳: `test/test_hand_nodes.cpp:208` 의 raw `PublishUntilObserved` (11-joint OOB 케이스) → injector 직접 호출로 치환 (assertion 은 그대로).
 5. **Phase 3** — `CMakeLists.txt` `TIER2_TESTS` → `TIER2_INJECT`(6) / `TIER2_E2E`(4: `test_set_gains`, `test_grasp_control`, `test_switch_controller`, `test_service_singlethread`) 분리. `test/test_helpers.hpp` 에서 inject 전환 후 미사용이 된 helper prune (e2e 4개가 아직 쓰는 것은 유지).

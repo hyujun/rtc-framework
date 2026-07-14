@@ -19,6 +19,7 @@
 /// subject is the real service/rebind path (switch_controller, set_gains,
 /// grasp_control, service_singlethread) stay on RosTestFixture.
 
+#include "hand_joint_names.hpp"
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
 #include "ur5e_bt_coordinator/bt_types.hpp"
 #include <rtc_msgs/msg/grasp_state.hpp>
@@ -49,40 +50,23 @@
 
 namespace rtc_bt::test {
 
-/// Tick `tree` until its root leaves RUNNING or `timeout` expires, returning
-/// the final status. Duration-based nodes (SetHandPose, MoveFinger, …) advance
-/// on wall clock, so the sleep between ticks is still required even without an
-/// executor. Same signature as the test_helpers.hpp original (the two headers
-/// are never included together — one fixture per binary).
-inline BT::NodeStatus TickUntilComplete(
-    BT::Tree& tree, std::chrono::milliseconds timeout = std::chrono::milliseconds(6000)) {
-  const auto start = std::chrono::steady_clock::now();
-  BT::NodeStatus status = tree.tickOnce();
-  while (status == BT::NodeStatus::RUNNING) {
-    if (std::chrono::steady_clock::now() - start > timeout)
-      break;
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    status = tree.tickOnce();
-  }
-  return status;
-}
-
 /// Test-only state-inject seam (friend of BtRosBridge). Each method wraps its
 /// payload in the wire message type and calls the corresponding On* handler
 /// synchronously — handler-mediated only, no field pokes (exec-plan D2).
 struct BridgeStateInjector {
-  explicit BridgeStateInjector(std::shared_ptr<BtRosBridge> bridge) : bridge_(std::move(bridge)) {}
+  explicit BridgeStateInjector(std::shared_ptr<BtRosBridge> bridge_in)
+      : bridge(std::move(bridge_in)) {}
 
   void ArmJointState(sensor_msgs::msg::JointState msg) const {
-    bridge_->OnArmJointState(std::make_shared<sensor_msgs::msg::JointState>(std::move(msg)));
+    bridge->OnArmJointState(std::make_shared<sensor_msgs::msg::JointState>(std::move(msg)));
   }
 
   void HandJointState(sensor_msgs::msg::JointState msg) const {
-    bridge_->OnHandJointState(std::make_shared<sensor_msgs::msg::JointState>(std::move(msg)));
+    bridge->OnHandJointState(std::make_shared<sensor_msgs::msg::JointState>(std::move(msg)));
   }
 
   void WorldTarget(geometry_msgs::msg::Polygon msg) const {
-    bridge_->OnWorldTarget(std::make_shared<geometry_msgs::msg::Polygon>(std::move(msg)));
+    bridge->OnWorldTarget(std::make_shared<geometry_msgs::msg::Polygon>(std::move(msg)));
   }
 
   /// Runs the full production transition: RewireControllerTopics(name) first
@@ -91,36 +75,36 @@ struct BridgeStateInjector {
   void ActiveController(const std::string& name) const {
     std_msgs::msg::String msg;
     msg.data = name;
-    bridge_->OnActiveController(std::make_shared<std_msgs::msg::String>(std::move(msg)));
+    bridge->OnActiveController(std::make_shared<std_msgs::msg::String>(std::move(msg)));
   }
 
   void Estop(bool active) const {
     std_msgs::msg::Bool msg;
     msg.data = active;
-    bridge_->OnEstop(std::make_shared<std_msgs::msg::Bool>(msg));
+    bridge->OnEstop(std::make_shared<std_msgs::msg::Bool>(msg));
   }
 
   void ShapeEstimate(const shape_estimation_msgs::msg::ShapeEstimate& msg) const {
-    bridge_->OnShapeEstimate(std::make_shared<shape_estimation_msgs::msg::ShapeEstimate>(msg));
+    bridge->OnShapeEstimate(std::make_shared<shape_estimation_msgs::msg::ShapeEstimate>(msg));
   }
 
   void GraspState(rtc_msgs::msg::GraspState msg) const {
-    bridge_->OnGraspState(std::make_shared<rtc_msgs::msg::GraspState>(std::move(msg)));
+    bridge->OnGraspState(std::make_shared<rtc_msgs::msg::GraspState>(std::move(msg)));
   }
 
   void WbcState(rtc_msgs::msg::WbcState msg) const {
-    bridge_->OnWbcState(std::make_shared<rtc_msgs::msg::WbcState>(std::move(msg)));
+    bridge->OnWbcState(std::make_shared<rtc_msgs::msg::WbcState>(std::move(msg)));
   }
 
   void Transforms(tf2_msgs::msg::TFMessage msg) const {
-    bridge_->OnTransforms(std::make_shared<tf2_msgs::msg::TFMessage>(std::move(msg)));
+    bridge->OnTransforms(std::make_shared<tf2_msgs::msg::TFMessage>(std::move(msg)));
   }
 
   void ToFSnapshot(const rtc_msgs::msg::ToFSnapshot& msg) const {
-    bridge_->OnToFSnapshot(std::make_shared<rtc_msgs::msg::ToFSnapshot>(msg));
+    bridge->OnToFSnapshot(std::make_shared<rtc_msgs::msg::ToFSnapshot>(msg));
   }
 
-  std::shared_ptr<BtRosBridge> bridge_;
+  std::shared_ptr<BtRosBridge> bridge;
 };
 
 /// One rclcpp context per binary, formalized as a gtest global Environment
@@ -141,12 +125,16 @@ class RosContextEnvironment : public ::testing::Environment {
   }
 };
 
-inline const ::testing::Environment* const kRosContextEnv =
+// static (not inline): each inject binary is a single TU including this header,
+// and a namespace-scope non-inline variable's dynamic init is guaranteed to run
+// before main's first odr-use of the TU ([basic.start.dynamic]/4) — an inline
+// variable that is never odr-used forfeits that guarantee (/5).
+static const ::testing::Environment* const kRosContextEnv =
     ::testing::AddGlobalTestEnvironment(new RosContextEnvironment);
 
 /// DDS-free fixture: bridge node + BtRosBridge + BridgeStateInjector. State
-/// helpers are synchronous handler calls, so there is nothing to wait for —
-/// Spin() is a no-op kept only for test-body compatibility.
+/// helpers are synchronous handler calls, so there is no delivery to wait for —
+/// Spin() only elapses the requested wall-clock time.
 class InjectTestFixture : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -173,9 +161,16 @@ class InjectTestFixture : public ::testing::Test {
   /// Inject the active-controller transition through the production callback.
   void SetActiveAlias(const std::string& name) { injector_->ActiveController(name); }
 
-  /// No-op: injection is synchronous, there is no executor to let run. Kept so
-  /// test bodies are identical across the inject and e2e tiers.
-  void Spin(std::chrono::milliseconds duration = std::chrono::milliseconds(0)) { (void)duration; }
+  /// Injection is synchronous, so there is no delivery to wait for — but the
+  /// duration still elapses on the wall clock (bare Spin() defaults to 0ms).
+  /// Keeps cross-tier semantics: a test that uses Spin(dur) to age health
+  /// stamps or advance duration-based nodes behaves identically on the e2e
+  /// tier, whose Spin really sleeps.
+  void Spin(std::chrono::milliseconds duration = std::chrono::milliseconds(0)) {
+    if (duration.count() > 0) {
+      std::this_thread::sleep_for(duration);
+    }
+  }
 
   // ── State injection helpers (signatures mirror RosTestFixture) ──────────
 
@@ -213,14 +208,11 @@ class InjectTestFixture : public ::testing::Test {
   void PublishHandState(const std::vector<double>& joints) {
     // Hand nodes map finger→joint via joint_states name prefixes
     // (FingerJointIndices), so name must be populated, not just position.
-    // assm_v1 10-DoF order (thumb:3 / index:3 / middle:3 / ring:1).
-    static const std::vector<std::string> assm_v1_joint_names = {
-        "thumb_cmc_aa", "thumb_cmc_fe",  "thumb_mcp_fe",  "index_mcp_aa",  "index_mcp_fe",
-        "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe", "ring_mcp_fe"};
+    const auto& names = AssmV1JointNames();
     sensor_msgs::msg::JointState js;
     js.position.assign(joints.begin(), joints.end());
-    const std::size_t n = std::min(joints.size(), assm_v1_joint_names.size());
-    js.name.assign(assm_v1_joint_names.begin(), assm_v1_joint_names.begin() + static_cast<long>(n));
+    const std::size_t n = std::min(joints.size(), names.size());
+    js.name.assign(names.begin(), names.begin() + static_cast<long>(n));
     injector_->HandJointState(std::move(js));
   }
 

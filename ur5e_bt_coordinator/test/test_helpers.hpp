@@ -11,6 +11,7 @@
 ///                     AsyncParametersClient + grasp_command_client_ to the
 ///                     matching mock automatically.
 
+#include "hand_joint_names.hpp"
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
 
@@ -205,18 +206,14 @@ class RosTestFixture : public ::testing::Test {
   void PublishHandState(const std::vector<double>& joints) {
     // Hand nodes map finger→joint via joint_states name prefixes
     // (FingerJointIndices), so name must be populated, not just position.
-    // assm_v1 10-DoF order (thumb:3 / index:3 / middle:3 / ring:1).
-    static const std::vector<std::string> assm_v1_joint_names = {
-        "thumb_cmc_aa", "thumb_cmc_fe",  "thumb_mcp_fe",  "index_mcp_aa",  "index_mcp_fe",
-        "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe", "ring_mcp_fe"};
     // Retry until the bridge caches the hand sample (empty→populated edge).
     PublishUntilObserved(
         [this, &joints]() {
+          const auto& names = AssmV1JointNames();
           sensor_msgs::msg::JointState js;
           js.position.assign(joints.begin(), joints.end());
-          const std::size_t n = std::min(joints.size(), assm_v1_joint_names.size());
-          js.name.assign(assm_v1_joint_names.begin(),
-                         assm_v1_joint_names.begin() + static_cast<long>(n));
+          const std::size_t n = std::min(joints.size(), names.size());
+          js.name.assign(names.begin(), names.begin() + static_cast<long>(n));
           hand_joint_pub_->publish(js);
         },
         [this, &joints]() {
