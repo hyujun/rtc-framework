@@ -1,7 +1,7 @@
 /// Unit tests for shape estimation nodes:
 /// TriggerShapeEstimation, WaitShapeResult.
 
-#include "test_helpers.hpp"
+#include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
 #include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
 
@@ -13,10 +13,10 @@
 using namespace rtc_bt;
 using namespace rtc_bt::test;
 
-class ShapeNodeTest : public RosTestFixture {
+class ShapeNodeTest : public InjectTestFixture {
  protected:
   void SetUp() override {
-    RosTestFixture::SetUp();
+    InjectTestFixture::SetUp();
     factory_.registerNodeType<TriggerShapeEstimation>("TriggerShapeEstimation", bridge_);
     factory_.registerNodeType<WaitShapeResult>("WaitShapeResult", bridge_);
   }

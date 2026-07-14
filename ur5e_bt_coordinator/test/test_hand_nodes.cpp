@@ -2,7 +2,7 @@
 /// SetHandPose, MoveFinger, FlexExtendFinger, MoveOpposition, UR5eHoldPose,
 /// TrackTrajectory.
 
-#include "test_helpers.hpp"
+#include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
@@ -18,10 +18,10 @@
 using namespace rtc_bt;
 using namespace rtc_bt::test;
 
-class HandNodeTest : public RosTestFixture {
+class HandNodeTest : public InjectTestFixture {
  protected:
   void SetUp() override {
-    RosTestFixture::SetUp();
+    InjectTestFixture::SetUp();
     factory_.registerNodeType<SetHandPose>("SetHandPose", bridge_);
     factory_.registerNodeType<MoveFinger>("MoveFinger", bridge_);
     factory_.registerNodeType<FlexExtendFinger>("FlexExtendFinger", bridge_);
@@ -205,14 +205,10 @@ TEST_F(HandNodeTest, MoveOpposition_OobResolverIndexIsSkipped) {
       "index_mcp_fe",  "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe",
       "middle_dip_fe", "ring_mcp_fe",  "thumb_extra_fe"};  // index 10 → resolves into "thumb", OOB
                                                            // for 10-wide pose
-  PublishUntilObserved(
-      [this, &names]() {
-        sensor_msgs::msg::JointState js;
-        js.name = names;
-        js.position.assign(names.size(), 0.0);
-        hand_joint_pub_->publish(js);
-      },
-      [this, &names]() { return bridge_->GetHandJointPositions().size() == names.size(); });
+  sensor_msgs::msg::JointState js;
+  js.name = names;
+  js.position.assign(names.size(), 0.0);
+  injector_->HandJointState(std::move(js));
 
   // Precondition: the resolver really does surface the out-of-range index.
   ASSERT_FALSE(bridge_->GetFingerJointIndices("thumb").empty());

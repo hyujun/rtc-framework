@@ -1,6 +1,6 @@
 /// Unit tests for all condition nodes.
 
-#include "test_helpers.hpp"
+#include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
@@ -11,15 +11,16 @@
 #include <behaviortree_cpp/bt_factory.h>
 #include <gtest/gtest.h>
 
+#include <map>
 #include <thread>
 
 using namespace rtc_bt;
 using namespace rtc_bt::test;
 
-class ConditionNodeTest : public RosTestFixture {
+class ConditionNodeTest : public InjectTestFixture {
  protected:
   void SetUp() override {
-    RosTestFixture::SetUp();
+    InjectTestFixture::SetUp();
     factory_.registerNodeType<IsForceAbove>("IsForceAbove", bridge_);
     factory_.registerNodeType<IsGrasped>("IsGrasped", bridge_);
     factory_.registerNodeType<IsGraspPhase>("IsGraspPhase", bridge_);
