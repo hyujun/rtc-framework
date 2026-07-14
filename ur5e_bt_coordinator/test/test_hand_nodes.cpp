@@ -64,6 +64,29 @@ TEST_F(HandNodeTest, SetHandPose_CompletesAfterDuration) {
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
+TEST_F(HandNodeTest, SetHandPose_NoFeedbackSucceedsAfterDuration) {
+  // Review Finding 2: when hand joint feedback is absent (no /hand/joint_states
+  // ever published), MaxHandJointError is +inf and convergence is UNVERIFIABLE.
+  // The D4 gate must fall back to the pre-gate "trust the estimated duration"
+  // behavior — SUCCESS shortly after the duration — instead of blocking to a
+  // timeout FAILURE, so a variant without hand feedback does not fail every hand
+  // motion. Deliberately publish NO hand state here (contrast the test above).
+  auto tree = CreateTree(R"(<SetHandPose pose="home" timeout_s="2.0"/>)");
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+
+  // Poll well past the (short) estimated duration but comfortably under the 2s
+  // timeout: the fallback yields SUCCESS fast; the pre-fix bug would stay RUNNING
+  // here and only FAIL at 2s.
+  BT::NodeStatus status = BT::NodeStatus::RUNNING;
+  const auto start = std::chrono::steady_clock::now();
+  while (status == BT::NodeStatus::RUNNING &&
+         std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1000)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    status = tree.tickOnce();
+  }
+  EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+
 TEST_F(HandNodeTest, SetHandPose_UnknownPoseThrows) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();

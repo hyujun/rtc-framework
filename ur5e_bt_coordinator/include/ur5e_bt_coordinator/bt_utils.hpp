@@ -186,6 +186,28 @@ inline double MaxHandJointError(const std::vector<double>& current,
   return max_err;
 }
 
+/// Terminal decision for the hand-motion nodes' post-duration convergence gate.
+enum class HandConvergence { kConverged, kRunning, kTimedOut };
+
+/// Shared convergence-gate logic (D4). Call only after the estimated trajectory
+/// duration has elapsed; `max_err` is MaxHandJointError to the commanded target.
+///   - max_err == +inf  → no comparable joint feedback (state not received yet,
+///     DoF mismatch, all indices out of range). Convergence is UNVERIFIABLE, so
+///     fall back to the pre-gate "trust the estimated duration" behavior and
+///     report kConverged rather than blocking to a FAILURE timeout — a variant
+///     without hand joint feedback must not have every hand motion fail.
+///   - max_err < tolerance → measured convergence → kConverged.
+///   - otherwise keep kRunning until `elapsed > timeout_s` → kTimedOut (a real,
+///     finite non-convergence: joint-limit clamp, contact, controller stall).
+inline HandConvergence ClassifyHandConvergence(double max_err, double elapsed, double tolerance,
+                                               double timeout_s) {
+  if (std::isinf(max_err) || max_err < tolerance)
+    return HandConvergence::kConverged;
+  if (elapsed > timeout_s)
+    return HandConvergence::kTimedOut;
+  return HandConvergence::kRunning;
+}
+
 // ── Opposition helper ──────────────────────────────────────────────────────
 
 /// Opposition 전용: thumb + target 손가락만 목표 포즈, 나머지는 home으로 리셋.

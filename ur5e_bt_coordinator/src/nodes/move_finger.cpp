@@ -82,14 +82,16 @@ BT::NodeStatus MoveFinger::onRunning() {
   // D4 convergence gate: confirm the commanded finger joints reached the target.
   const double max_err =
       MaxHandJointError(bridge_->GetHandJointPositions(), target_pose_, joint_indices_);
-  if (max_err < tolerance_) {
-    RCLCPP_INFO(logger(), "complete (max_err=%.4f elapsed=%.2fs)", max_err, elapsed);
-    return BT::NodeStatus::SUCCESS;
-  }
-  if (elapsed > timeout_s_) {
-    RCLCPP_WARN(logger(), "timeout (%.1fs) — not converged (max_err=%.4f tol=%.4f)", timeout_s_,
-                max_err, tolerance_);
-    return BT::NodeStatus::FAILURE;
+  switch (ClassifyHandConvergence(max_err, elapsed, tolerance_, timeout_s_)) {
+    case HandConvergence::kConverged:
+      RCLCPP_INFO(logger(), "complete (max_err=%.4f elapsed=%.2fs)", max_err, elapsed);
+      return BT::NodeStatus::SUCCESS;
+    case HandConvergence::kTimedOut:
+      RCLCPP_WARN(logger(), "timeout (%.1fs) — not converged (max_err=%.4f tol=%.4f)", timeout_s_,
+                  max_err, tolerance_);
+      return BT::NodeStatus::FAILURE;
+    case HandConvergence::kRunning:
+      break;
   }
   return BT::NodeStatus::RUNNING;
 }

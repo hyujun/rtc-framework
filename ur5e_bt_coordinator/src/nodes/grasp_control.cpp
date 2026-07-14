@@ -14,6 +14,15 @@ namespace {
 auto logger() {
   return ::rtc_bt::logging::ActionLogger("grasp_control");
 }
+
+// Upper bound [s] on the measured inter-tick dt used to advance the close/pinch
+// target. While this node is RUNNING the coordinator can stop ticking for an
+// arbitrary span (paused param / E-STOP — TickCallback returns early without a
+// halt), freezing last_tick_time_; the cap keeps the first tick after such a gap
+// from jumping the target to max_position in one step. Sits well above both the
+// 12.5–50 ms nominal tick and the measured-dt regression test's 300 ms probe, so
+// only genuine multi-hundred-ms stalls clip.
+constexpr double kMaxGraspTickDt = 0.5;
 }  // namespace
 
 GraspControl::GraspControl(const std::string& name, const BT::NodeConfig& config,
@@ -110,9 +119,17 @@ BT::NodeStatus GraspControl::onRunning() {
 
   // "close" or "pinch": increment targets by measured tick dt so the closing
   // rate is independent of BT tick_rate_hz. First tick dt≈0 (harmless).
+  //
+  // Clamp dt to one long tick's worth: while this node is RUNNING the coordinator
+  // may stop ticking for an arbitrary span (paused param, E-STOP — TickCallback
+  // returns early without a halt), which freezes last_tick_time_. Without the
+  // clamp the first tick after resume would see dt = the whole gap and jump the
+  // target straight to max_position, defeating the gradual close. Normal ticks
+  // (12.5–50 ms at 20–80 Hz) stay well under the cap, so only resume gaps clip.
   const auto now = std::chrono::steady_clock::now();
-  const double dt = std::chrono::duration<double>(now - last_tick_time_).count();
+  double dt = std::chrono::duration<double>(now - last_tick_time_).count();
   last_tick_time_ = now;
+  dt = std::min(dt, kMaxGraspTickDt);
   const double increment = close_speed_ * dt;
   bool all_at_max = true;
 

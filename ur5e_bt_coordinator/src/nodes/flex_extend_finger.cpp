@@ -101,15 +101,17 @@ BT::NodeStatus FlexExtendFinger::onRunning() {
   if (phase_ == Phase::kExtend && elapsed >= flex_duration_ + extend_duration_) {
     const double max_err =
         MaxHandJointError(bridge_->GetHandJointPositions(), home_target_, joint_indices_);
-    if (max_err < tolerance_) {
-      RCLCPP_INFO(logger(), "complete finger=%s (max_err=%.4f total=%.2fs)", finger_name_.c_str(),
-                  max_err, elapsed);
-      return BT::NodeStatus::SUCCESS;
-    }
-    if (elapsed > timeout_s_) {
-      RCLCPP_WARN(logger(), "timeout (%.1fs) finger=%s — not converged (max_err=%.4f tol=%.4f)",
-                  timeout_s_, finger_name_.c_str(), max_err, tolerance_);
-      return BT::NodeStatus::FAILURE;
+    switch (ClassifyHandConvergence(max_err, elapsed, tolerance_, timeout_s_)) {
+      case HandConvergence::kConverged:
+        RCLCPP_INFO(logger(), "complete finger=%s (max_err=%.4f total=%.2fs)", finger_name_.c_str(),
+                    max_err, elapsed);
+        return BT::NodeStatus::SUCCESS;
+      case HandConvergence::kTimedOut:
+        RCLCPP_WARN(logger(), "timeout (%.1fs) finger=%s — not converged (max_err=%.4f tol=%.4f)",
+                    timeout_s_, finger_name_.c_str(), max_err, tolerance_);
+        return BT::NodeStatus::FAILURE;
+      case HandConvergence::kRunning:
+        break;
     }
   }
   return BT::NodeStatus::RUNNING;

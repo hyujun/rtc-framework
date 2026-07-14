@@ -157,6 +157,36 @@ TEST_F(GraspControlTest, CloseIncrementScalesWithMeasuredTickDt) {
   EXPECT_GT(inc2, inc1 * 1.4);
 }
 
+TEST_F(GraspControlTest, CloseIncrementClampsResumeGapDt) {
+  // Regression (review Finding 1): while a close/pinch is RUNNING the coordinator
+  // can stop ticking for an arbitrary span (paused param / E-STOP — TickCallback
+  // returns early without halting the node), freezing last_tick_time_. The
+  // measured dt is clamped (kMaxGraspTickDt=0.5s) so the first tick after such a
+  // gap advances by at most close_speed*0.5, NOT close_speed*(whole gap) which
+  // would slam the target to max_position. A ~1s gap must yield an increment near
+  // the clamp, well below the ~1.0 an unclamped measured dt would produce.
+  PublishHandState({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  Spin();
+
+  constexpr double kCloseSpeed = 1.0;  // rad/s
+  auto tree = CreateTree(
+      R"(<GraspControl mode="close"
+                       close_speed="1.0" max_position="999.0"
+                       timeout_s="30.0"/>)");
+
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);  // onStart: target starts at 0
+
+  // Simulate a long non-tick gap (pause/E-STOP), then a single resumed tick.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+  const double inc = bridge_->GetLastHandTarget().at(0);  // from 0
+
+  // Clamped to ~close_speed*0.5; must sit clearly below the ~close_speed*1.0 an
+  // unclamped measured dt would have produced (proving the clamp fired).
+  EXPECT_LT(inc, kCloseSpeed * 0.7);
+  EXPECT_GT(inc, kCloseSpeed * 0.3);
+}
+
 TEST_F(GraspControlTest, PresetModeSucceeds) {
   auto tree = CreateTree(
       R"(<GraspControl mode="preset"
