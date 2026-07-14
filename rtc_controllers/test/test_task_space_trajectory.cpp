@@ -174,4 +174,17 @@ TEST(TaskSpaceTrajectory, ReinitializeResetsState) {
   EXPECT_FALSE(std::isnan(s2.acceleration.toVector().norm()));
 }
 
+// --- Default State is identity/zero, never uninitialized (#150) ---
+// pinocchio::SE3 / Motion default-construct with garbage. Controllers read a
+// default State in log-fill paths before any trajectory starts; a garbage
+// rotation trips pinocchio's assert(R.isUnitary()) in matrixToRpy on
+// non-NDEBUG builds and silently logs garbage on Release. Pin the contract.
+TEST(TaskSpaceTrajectory, DefaultStateIsIdentityPoseZeroMotion) {
+  TaskSpaceTrajectory::State state;
+  EXPECT_TRUE(state.pose.rotation().isUnitary());
+  EXPECT_TRUE(state.pose.isIdentity());
+  EXPECT_EQ(state.velocity.toVector().norm(), 0.0);
+  EXPECT_EQ(state.acceleration.toVector().norm(), 0.0);
+}
+
 }  // namespace rtc::trajectory

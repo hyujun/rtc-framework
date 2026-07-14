@@ -22,9 +22,14 @@ namespace trajectory {
 class TaskSpaceTrajectory {
  public:
   struct State {
-    pinocchio::SE3 pose;
-    pinocchio::Motion velocity;      // spatial velocity in LOCAL frame
-    pinocchio::Motion acceleration;  // spatial acceleration in LOCAL frame
+    // pinocchio::SE3 / Motion default-construct UNINITIALIZED. A default State
+    // is read before initialize() runs (e.g. log-fill paths in phases that
+    // never start a trajectory), and garbage rotation trips pinocchio's
+    // assert(R.isUnitary()) in matrixToRpy on non-NDEBUG builds (#150).
+    pinocchio::SE3 pose{pinocchio::SE3::Identity()};
+    pinocchio::Motion velocity{pinocchio::Motion::Zero()};  // spatial velocity in LOCAL frame
+    pinocchio::Motion acceleration{
+        pinocchio::Motion::Zero()};  // spatial acceleration in LOCAL frame
   };
 
   TaskSpaceTrajectory() {
