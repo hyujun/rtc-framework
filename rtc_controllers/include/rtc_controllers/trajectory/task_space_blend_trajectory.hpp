@@ -178,7 +178,9 @@ class TaskSpaceBlendTrajectory {
   std::array<std::array<QuinticPolynomial, 6>, kMaxWaypoints - 1> segments_{};
   std::array<double, kMaxWaypoints> segment_start_times_{};
   std::array<pinocchio::SE3, kMaxWaypoints> segment_start_poses_{};
-  pinocchio::SE3 hold_pose_;
+  // Identity-init: compute() before initialize() returns hold_pose_ as
+  // State::pose — must never be an uninitialized rotation (#150).
+  pinocchio::SE3 hold_pose_{pinocchio::SE3::Identity()};
   double duration_{0.0};
   std::size_t num_segments_{0};
 };
