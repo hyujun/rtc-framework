@@ -23,6 +23,10 @@ BT::PortsList SetHandPose::providedPorts() {
       BT::InputPort<std::string>("pose", "명명된 Hand 포즈 (예: home, full_flex)"),
       BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                             "Trajectory speed [rad/s]"),
+      BT::InputPort<double>("tolerance", kDefaultHandConvergenceTol,
+                            "Per-joint convergence tolerance [rad]"),
+      BT::InputPort<double>("timeout_s", kDefaultHandConvergenceTimeout,
+                            "Convergence timeout [s] (FAILURE upper bound)"),
   };
 }
 
@@ -35,6 +39,8 @@ BT::NodeStatus SetHandPose::onStart() {
   const double speed =
       getInput<double>("hand_trajectory_speed").value_or(kDefaultHandTrajectorySpeed);
   const double max_vel = kDefaultHandMaxTrajVelocity;
+  tolerance_ = getInput<double>("tolerance").value_or(kDefaultHandConvergenceTol);
+  timeout_s_ = getInput<double>("timeout_s").value_or(kDefaultHandConvergenceTimeout);
 
   const auto& target = bridge_->GetHandPose(pose_name.value());
   target_vec_.assign(target.begin(), target.end());
@@ -58,9 +64,22 @@ BT::NodeStatus SetHandPose::onStart() {
 }
 
 BT::NodeStatus SetHandPose::onRunning() {
-  if (ElapsedSeconds(start_time_) >= duration_) {
-    RCLCPP_INFO(logger(), "complete (%.3fs)", duration_);
+  const double elapsed = ElapsedSeconds(start_time_);
+  if (elapsed < duration_) {
+    return BT::NodeStatus::RUNNING;  // trajectory still in progress
+  }
+
+  // D4 convergence gate: after the estimated trajectory duration, confirm the
+  // hand actually reached the target before reporting SUCCESS.
+  const double max_err = MaxHandJointError(bridge_->GetHandJointPositions(), target_vec_);
+  if (max_err < tolerance_) {
+    RCLCPP_INFO(logger(), "complete (max_err=%.4f elapsed=%.2fs)", max_err, elapsed);
     return BT::NodeStatus::SUCCESS;
+  }
+  if (elapsed > timeout_s_) {
+    RCLCPP_WARN(logger(), "timeout (%.1fs) — not converged (max_err=%.4f tol=%.4f)", timeout_s_,
+                max_err, tolerance_);
+    return BT::NodeStatus::FAILURE;
   }
   return BT::NodeStatus::RUNNING;
 }

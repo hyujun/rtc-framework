@@ -23,6 +23,7 @@ BT::PortsList IsVisionTargetReady::providedPorts() {
 }
 
 BT::NodeStatus IsVisionTargetReady::tick() {
+  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
   Pose6D pose;
   if (bridge_->GetWorldTargetPose(pose)) {
     // Use current TCP orientation (position only from vision)
@@ -31,12 +32,12 @@ BT::NodeStatus IsVisionTargetReady::tick() {
     pose.pitch = tcp.pitch;
     pose.yaw = tcp.yaw;
 
-    RCLCPP_INFO(logger(), "target pos=[%.3f, %.3f, %.3f] orient(tcp)=[%.3f, %.3f, %.3f]", pose.x,
-                pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
+    RCLCPP_INFO_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                         "target pos=[%.3f, %.3f, %.3f] orient(tcp)=[%.3f, %.3f, %.3f]", pose.x,
+                         pose.y, pose.z, pose.roll, pose.pitch, pose.yaw);
     setOutput("pose", pose);
     return BT::NodeStatus::SUCCESS;
   }
-  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
   RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
                        "no valid target pose (waiting for /world_target_info)");
   return BT::NodeStatus::FAILURE;

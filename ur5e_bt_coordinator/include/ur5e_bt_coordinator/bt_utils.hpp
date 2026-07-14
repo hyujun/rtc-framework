@@ -10,11 +10,22 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace rtc_bt {
+
+// ── Hand-pose convergence gate defaults (D4) ────────────────────────────────
+//
+// Hand-motion nodes wait for the estimated trajectory duration and then confirm
+// the commanded joints actually reached the target before reporting SUCCESS.
+// The default tolerance is deliberately lenient — the gate is a coarse "did the
+// hand roughly get there" guard, not a precision check — and both are tunable
+// per node via the `tolerance` / `timeout_s` ports.
+inline constexpr double kDefaultHandConvergenceTol = 0.15;      // [rad]
+inline constexpr double kDefaultHandConvergenceTimeout = 10.0;  // [s]
 
 // ── Hand trajectory gain defaults ───────────────────────────────────────────
 //
@@ -138,6 +149,41 @@ inline double EstimateHandTrajectoryDuration(const std::vector<double>& current,
   const double T_speed = (speed > 0.0) ? (max_dist / speed) : 0.0;
   const double T_vel = (max_vel > 0.0) ? (1.875 * max_dist / max_vel) : 0.0;
   return std::max(0.01, std::max(T_speed, T_vel)) * margin;
+}
+
+// ── Convergence check (D4 hand-pose gate) ───────────────────────────────────
+
+/// Max |current − target| over the given joint indices. Returns +inf when no
+/// index is comparable (state not received yet / all out of range), so a
+/// convergence gate keeps waiting rather than declaring premature success.
+/// Mirrors the OOB-safe index guards of ApplyPartialHandTarget.
+inline double MaxHandJointError(const std::vector<double>& current,
+                                const std::vector<double>& target,
+                                const std::vector<int>& indices) {
+  double max_err = 0.0;
+  bool compared = false;
+  for (int idx : indices) {
+    const auto ui = static_cast<std::size_t>(idx);
+    if (idx < 0 || ui >= current.size() || ui >= target.size())
+      continue;
+    max_err = std::max(max_err, std::abs(current[ui] - target[ui]));
+    compared = true;
+  }
+  return compared ? max_err : std::numeric_limits<double>::infinity();
+}
+
+/// Full-DoF overload: max error over the overlapping prefix of both vectors.
+/// Returns +inf when there is no overlap (no state yet).
+inline double MaxHandJointError(const std::vector<double>& current,
+                                const std::vector<double>& target) {
+  const std::size_t n = std::min(current.size(), target.size());
+  if (n == 0)
+    return std::numeric_limits<double>::infinity();
+  double max_err = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    max_err = std::max(max_err, std::abs(current[i] - target[i]));
+  }
+  return max_err;
 }
 
 // ── Opposition helper ──────────────────────────────────────────────────────

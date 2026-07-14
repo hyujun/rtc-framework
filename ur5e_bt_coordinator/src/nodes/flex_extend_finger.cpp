@@ -25,6 +25,10 @@ BT::PortsList FlexExtendFinger::providedPorts() {
       BT::InputPort<std::string>("finger_name", "손가락 이름 (thumb/index/middle/ring)"),
       BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                             "Trajectory speed [rad/s]"),
+      BT::InputPort<double>("tolerance", kDefaultHandConvergenceTol,
+                            "Per-joint convergence tolerance [rad]"),
+      BT::InputPort<double>("timeout_s", kDefaultHandConvergenceTimeout,
+                            "Convergence timeout [s] (FAILURE upper bound)"),
   };
 }
 
@@ -37,6 +41,8 @@ BT::NodeStatus FlexExtendFinger::onStart() {
 
   speed_ = getInput<double>("hand_trajectory_speed").value_or(kDefaultHandTrajectorySpeed);
   max_vel_ = kDefaultHandMaxTrajVelocity;
+  tolerance_ = getInput<double>("tolerance").value_or(kDefaultHandConvergenceTol);
+  timeout_s_ = getInput<double>("timeout_s").value_or(kDefaultHandConvergenceTimeout);
 
   // 포즈 lookup (bridge pose library 사용)
   const std::string flex_pose_name = finger_name_ + "_flex";
@@ -90,11 +96,21 @@ BT::NodeStatus FlexExtendFinger::onRunning() {
     phase_ = Phase::kExtend;
   }
 
-  // 전체 완료
+  // 전체 완료 — D4 convergence gate: after both phases' estimated durations,
+  // confirm the finger actually returned to the home (extend) target.
   if (phase_ == Phase::kExtend && elapsed >= flex_duration_ + extend_duration_) {
-    RCLCPP_INFO(logger(), "complete finger=%s (total=%.3fs)", finger_name_.c_str(),
-                flex_duration_ + extend_duration_);
-    return BT::NodeStatus::SUCCESS;
+    const double max_err =
+        MaxHandJointError(bridge_->GetHandJointPositions(), home_target_, joint_indices_);
+    if (max_err < tolerance_) {
+      RCLCPP_INFO(logger(), "complete finger=%s (max_err=%.4f total=%.2fs)", finger_name_.c_str(),
+                  max_err, elapsed);
+      return BT::NodeStatus::SUCCESS;
+    }
+    if (elapsed > timeout_s_) {
+      RCLCPP_WARN(logger(), "timeout (%.1fs) finger=%s — not converged (max_err=%.4f tol=%.4f)",
+                  timeout_s_, finger_name_.c_str(), max_err, tolerance_);
+      return BT::NodeStatus::FAILURE;
+    }
   }
   return BT::NodeStatus::RUNNING;
 }

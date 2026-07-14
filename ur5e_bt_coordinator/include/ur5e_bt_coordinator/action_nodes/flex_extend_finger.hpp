@@ -42,6 +42,8 @@ class FlexExtendFinger : public BT::StatefulActionNode {
   std::string finger_name_;
   double speed_{1.0};
   double max_vel_{2.0};
+  double tolerance_{0.15};
+  double timeout_s_{10.0};
   Phase phase_{Phase::kFlex};
   double flex_duration_{0.01};
   double extend_duration_{0.01};

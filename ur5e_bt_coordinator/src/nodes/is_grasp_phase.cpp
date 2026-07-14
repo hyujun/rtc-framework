@@ -50,6 +50,21 @@ BT::NodeStatus IsGraspPhase::tick() {
   }
 
   auto gs = bridge_->GetGraspState();
+
+  // Throttle: IsGraspPhase is typically polled inside RetryUntilSuccessful,
+  // so we don't want to flood the log every tick.
+  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+
+  // Fail closed on a stale grasp state: a dead Force-PI producer would freeze
+  // grasp_phase at its last value, so a phase gate could latch indefinitely.
+  const double age_s = CachedStateAgeSec(gs.received_at);
+  if (age_s > kGraspStateStaleSec) {
+    RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                         "grasp state stale (%.2fs > %.2fs) — failing closed", age_s,
+                         kGraspStateStaleSec);
+    return BT::NodeStatus::FAILURE;
+  }
+
   const bool match = (gs.grasp_phase == it->second);
 
   auto current_name = kPhaseNames.find(gs.grasp_phase);
@@ -60,13 +75,10 @@ BT::NodeStatus IsGraspPhase::tick() {
                target.c_str(), match ? "true" : "false");
 
   if (match) {
-    RCLCPP_INFO(logger(), "phase '%s' reached", target.c_str());
+    RCLCPP_INFO_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                         "phase '%s' reached", target.c_str());
     return BT::NodeStatus::SUCCESS;
   }
-
-  // Throttle: IsGraspPhase is typically polled inside RetryUntilSuccessful,
-  // so we don't want to flood the log every tick.
-  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
   RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
                        "phase mismatch current=%s(%d) target=%s(%d). "
                        "If this persists, check that grasp_controller_type='force_pi' is set "

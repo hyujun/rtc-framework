@@ -95,15 +95,30 @@ TEST_F(GraspControlTest, PinchModeOnlyAffectsSpecifiedMotors) {
   PublishHandState({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
   Spin();
 
+  // pinch_fingers resolves "thumb" → hand-joint indices [0,1,2] (assm_v1
+  // thumb_cmc_aa/thumb_cmc_fe/thumb_mcp_fe); only those must close.
   auto tree = CreateTree(
       R"(<GraspControl mode="pinch"
-                       pinch_motors="0,1"
+                       pinch_fingers="thumb"
                        close_speed="0.3" max_position="1.4"
                        timeout_s="5.0"/>)");
 
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
-  // Should be running since motors 0,1 haven't reached max
+  // Sleep so the measured tick dt yields a non-zero increment on the next tick.
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  // Should be running since the thumb joints haven't reached max.
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+
+  // Only the resolved thumb joints (0,1,2) moved; every other joint stays home.
+  const auto cmd = bridge_->GetLastHandTarget();
+  ASSERT_EQ(cmd.size(), 10U);
+  for (std::size_t i = 0; i < cmd.size(); ++i) {
+    if (i <= 2) {
+      EXPECT_GT(cmd[i], 0.0) << "thumb joint " << i << " should have closed";
+    } else {
+      EXPECT_DOUBLE_EQ(cmd[i], 0.0) << "non-pinch joint " << i << " must stay home";
+    }
+  }
 }
 
 TEST_F(GraspControlTest, CloseIncrementScalesWithMeasuredTickDt) {

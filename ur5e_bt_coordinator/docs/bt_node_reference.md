@@ -254,7 +254,7 @@ active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_para
 | `target_positions` | vector\<double\> | - | 10개 모터 목표 위치 [rad] |
 | `close_speed` | double | 0.3 rad/s | close/pinch 모드에서 증가 속도 |
 | `max_position` | double | 1.4 rad | close/pinch 모드 최대 위치 |
-| `pinch_motors` | string | "0,1,2,3" | pinch 모드에서 사용할 모터 인덱스 |
+| `pinch_fingers` | string | "thumb,index" | pinch 모드에서 사용할 손가락 이름 (런타임에 hand-joint 인덱스로 resolve) |
 | `timeout_s` | double | 8.0 s | 타임아웃 |
 
 #### SetHandPose
@@ -269,6 +269,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 |------|------|--------|------|
 | `pose` | string | (필수) | 명명된 Hand 포즈 (예: `"home"`, `"full_flex"`) |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | duration 경과 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 #### MoveFinger
 
@@ -283,6 +285,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 | `finger_name` | string | (필수) | 손가락 이름 (`"thumb"` / `"index"` / `"middle"` / `"ring"` 등) |
 | `pose` | string | (필수) | 명명된 타겟 포즈 |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | duration 경과 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 #### FlexExtendFinger
 
@@ -296,6 +300,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 |------|------|--------|------|
 | `finger_name` | string | (필수) | 손가락 이름 |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | 양 phase 완료 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 #### MoveOpposition
 
@@ -314,6 +320,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 | `target_finger` | string | (필수) | 대상 손가락 (`"index"` / `"middle"` / `"ring"`) |
 | `target_pose` | string | (필수) | 대상 손가락 포즈 이름 |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | duration 경과 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 ### Shape Estimation / ToF
 

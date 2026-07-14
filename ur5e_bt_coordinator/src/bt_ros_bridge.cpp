@@ -649,6 +649,7 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
                                                     msg->finger_filtered_force.end());
           grasp_state_.finger_force_error.assign(msg->finger_force_error.begin(),
                                                  msg->finger_force_error.end());
+          grasp_state_.received_at = std::chrono::steady_clock::now();
         }
         {
           std::lock_guard lock(health_mutex_);
@@ -699,6 +700,7 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
           wbc_state_.tsid_solve_us = msg->tsid_solve_us;
           wbc_state_.tsid_solver_ok = msg->tsid_solver_ok;
           wbc_state_.qp_fail_count = msg->qp_fail_count;
+          wbc_state_.received_at = std::chrono::steady_clock::now();
         }
         {
           std::lock_guard lock(health_mutex_);

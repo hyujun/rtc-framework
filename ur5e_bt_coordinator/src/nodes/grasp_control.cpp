@@ -26,7 +26,7 @@ BT::PortsList GraspControl::providedPorts() {
       BT::InputPort<std::vector<double>>("target_positions"),
       BT::InputPort<double>("close_speed", 0.3, "Closing speed [rad/s]"),
       BT::InputPort<double>("max_position", 1.4, "Max motor position [rad]"),
-      BT::InputPort<std::string>("pinch_motors", "0,1,2,3", "Motor indices for pinch"),
+      BT::InputPort<std::string>("pinch_fingers", "thumb,index", "Finger names for pinch mode"),
       BT::InputPort<double>("timeout_s", 8.0, "Timeout [s]"),
   };
 }
@@ -39,8 +39,22 @@ BT::NodeStatus GraspControl::onStart() {
   start_time_ = std::chrono::steady_clock::now();
   last_tick_time_ = start_time_;
 
-  auto pinch_str = getInput<std::string>("pinch_motors").value_or("0,1,2,3");
-  pinch_motor_indices_ = ParseCsvList<int>(pinch_str);
+  // Resolve pinch_fingers (finger names) → hand-joint indices at runtime, so a
+  // variable per-finger DoF / joint layout is not hardcoded as raw indices.
+  auto pinch_str = getInput<std::string>("pinch_fingers").value_or("thumb,index");
+  pinch_joint_indices_.clear();
+  std::istringstream fss(pinch_str);
+  std::string finger;
+  while (std::getline(fss, finger, ',')) {
+    // Trim surrounding whitespace so "thumb, index" resolves both names.
+    const auto b = finger.find_first_not_of(" \t");
+    const auto e = finger.find_last_not_of(" \t");
+    if (b == std::string::npos)
+      continue;
+    finger = finger.substr(b, e - b + 1);
+    const auto idx = bridge_->GetFingerJointIndices(finger);
+    pinch_joint_indices_.insert(pinch_joint_indices_.end(), idx.begin(), idx.end());
+  }
 
   RCLCPP_INFO(logger(), "mode=%s speed=%.2f max_pos=%.2f timeout=%.1fs", mode_.c_str(),
               close_speed_, max_position_, timeout_s_);
@@ -109,7 +123,7 @@ BT::NodeStatus GraspControl::onRunning() {
         all_at_max = false;
     }
   } else {  // pinch
-    for (int idx : pinch_motor_indices_) {
+    for (int idx : pinch_joint_indices_) {
       auto ui = static_cast<std::size_t>(idx);
       if (ui < hand_target_.size()) {
         hand_target_[ui] = std::min(hand_target_[ui] + increment, max_position_);

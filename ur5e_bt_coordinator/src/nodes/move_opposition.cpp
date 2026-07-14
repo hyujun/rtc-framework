@@ -25,6 +25,10 @@ BT::PortsList MoveOpposition::providedPorts() {
       BT::InputPort<std::string>("target_pose", "대상 손가락 포즈 이름"),
       BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                             "Trajectory speed [rad/s]"),
+      BT::InputPort<double>("tolerance", kDefaultHandConvergenceTol,
+                            "Per-joint convergence tolerance [rad]"),
+      BT::InputPort<double>("timeout_s", kDefaultHandConvergenceTimeout,
+                            "Convergence timeout [s] (FAILURE upper bound)"),
   };
 }
 
@@ -47,6 +51,8 @@ BT::NodeStatus MoveOpposition::onStart() {
   const double speed =
       getInput<double>("hand_trajectory_speed").value_or(kDefaultHandTrajectorySpeed);
   const double max_vel = kDefaultHandMaxTrajVelocity;
+  tolerance_ = getInput<double>("tolerance").value_or(kDefaultHandConvergenceTol);
+  timeout_s_ = getInput<double>("timeout_s").value_or(kDefaultHandConvergenceTimeout);
 
   const auto& thumb_pose = bridge_->GetHandPose(thumb_pose_name.value());
   const auto& target_pose = bridge_->GetHandPose(target_pose_name.value());
@@ -64,11 +70,10 @@ BT::NodeStatus MoveOpposition::onStart() {
 
   // opposition 목표 전송 (비-target 손가락은 home으로 리셋). 반환된 full-DoF cmd를
   // duration 추정에 재사용 — 동일 조합을 raw-index로 재계산하던 OOB-취약 루프 제거.
-  const std::vector<double> full_target =
-      ApplyOppositionTarget(*bridge_, thumb_pose, target_pose, target_indices);
+  target_vec_ = ApplyOppositionTarget(*bridge_, thumb_pose, target_pose, target_indices);
 
   // 전체 10-DoF 기준 duration 추정 (비-target의 home 복귀 이동도 포함)
-  duration_ = EstimateHandTrajectoryDuration(current, full_target, speed, max_vel);
+  duration_ = EstimateHandTrajectoryDuration(current, target_vec_, speed, max_vel);
 
   RCLCPP_INFO(logger(), "thumb=%s target=%s(%s) estimated_duration=%.3fs",
               thumb_pose_name.value().c_str(), target_finger.value().c_str(),
@@ -79,9 +84,21 @@ BT::NodeStatus MoveOpposition::onStart() {
 }
 
 BT::NodeStatus MoveOpposition::onRunning() {
-  if (ElapsedSeconds(start_time_) >= duration_) {
-    RCLCPP_INFO(logger(), "complete (%.3fs)", duration_);
+  const double elapsed = ElapsedSeconds(start_time_);
+  if (elapsed < duration_) {
+    return BT::NodeStatus::RUNNING;  // trajectory still in progress
+  }
+
+  // D4 convergence gate: confirm the composed opposition target was reached.
+  const double max_err = MaxHandJointError(bridge_->GetHandJointPositions(), target_vec_);
+  if (max_err < tolerance_) {
+    RCLCPP_INFO(logger(), "complete (max_err=%.4f elapsed=%.2fs)", max_err, elapsed);
     return BT::NodeStatus::SUCCESS;
+  }
+  if (elapsed > timeout_s_) {
+    RCLCPP_WARN(logger(), "timeout (%.1fs) — not converged (max_err=%.4f tol=%.4f)", timeout_s_,
+                max_err, tolerance_);
+    return BT::NodeStatus::FAILURE;
   }
   return BT::NodeStatus::RUNNING;
 }
