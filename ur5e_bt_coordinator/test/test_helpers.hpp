@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>
@@ -41,15 +42,58 @@
 
 namespace rtc_bt::test {
 
-/// Spin the node until a condition is met or timeout expires.
-inline void SpinUntil(rclcpp::Node::SharedPtr node, std::function<bool()> condition,
-                      std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
-  auto start = std::chrono::steady_clock::now();
+/// Default poll budget — matches SetGains' kSrvTimeoutS so a rebind wait cannot
+/// expire before the tick's own service wait would.
+inline constexpr std::chrono::milliseconds kDefaultWaitTimeout{2000};
+
+/// Delivery-match tolerances for Publish* blocking waits (exact-ish: values are
+/// round-tripped through message fields, not computed).
+inline constexpr double kJointMatchTol = 1e-6;  // rad
+inline constexpr double kPoseMatchTol = 1e-4;   // m
+
+/// Poll `condition` until it holds or `timeout` expires; returns whether it
+/// held. Deliberately does NOT call rclcpp::spin_some — the fixture's dedicated
+/// background thread is the sole spinner (see RosTestFixture::spin_thread_).
+/// Spinning here too would drive the same executor concurrently, which rclcpp
+/// does not permit; the removed SpinUntil made exactly that mistake. Callers
+/// observe delivery through the bridge's thread-safe cached-state getters, which
+/// the background spin populates.
+inline bool WaitUntil(const std::function<bool()>& condition,
+                      std::chrono::milliseconds timeout = kDefaultWaitTimeout) {
+  const auto start = std::chrono::steady_clock::now();
   while (!condition()) {
-    rclcpp::spin_some(node);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
     if (std::chrono::steady_clock::now() - start > timeout)
-      break;
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+
+/// Publish via `publish`, then wait (polling `observed`) for the bridge to cache
+/// it, re-publishing only if a whole poll window passes without delivery.
+/// Returns whether it was observed before the timeout.
+///
+/// The fixture's state publishers are volatile (non-transient_local), so a lone
+/// sample sent before the bridge's freshly-created subscription has matched is
+/// dropped with no redelivery — and the bridge rebinds those subs late, inside
+/// the active-controller callback. The first publish therefore races discovery
+/// and can be silently lost (the flake the old fixed-sleep masked as a stale
+/// read); a bounded re-publish covers that. Re-publishing is deliberately GENTLE
+/// (at most once per poll window, not a tight loop): flooding the topic backs up
+/// rmw and induces its own drops, which manifested as later publishes in a rapid
+/// sequence (IsGraspPhase_AllPhases) never landing at all. Idempotent: the state
+/// topics are latest-value, so a repeat is a no-op once the sample has settled.
+inline bool PublishUntilObserved(const std::function<void()>& publish,
+                                 const std::function<bool()>& observed,
+                                 std::chrono::milliseconds timeout = kDefaultWaitTimeout) {
+  constexpr std::chrono::milliseconds kRepublishWindow{100};
+  const auto start = std::chrono::steady_clock::now();
+  for (;;) {
+    publish();
+    if (WaitUntil(observed, kRepublishWindow))
+      return true;
+    if (std::chrono::steady_clock::now() - start >= timeout)
+      return false;
   }
 }
 
@@ -75,9 +119,13 @@ struct MockController {
 class RosTestFixture : public ::testing::Test {
  protected:
   void SetUp() override {
+    // Initialize the ROS context ONCE for the whole test binary, not per test.
+    // Each test still creates/destroys its own nodes, but tearing the context
+    // (DDS participant) up and down ~20 times per binary churns FastDDS enough
+    // that discovery/delivery latency spikes past the wait budget in later tests.
+    // Left running until the process exits (standard rclcpp test pattern).
     if (!rclcpp::ok()) {
       rclcpp::init(0, nullptr);
-      owns_rclcpp_ = true;
     }
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
         "bt_test_node", rclcpp::NodeOptions().use_intra_process_comms(true));
@@ -138,19 +186,22 @@ class RosTestFixture : public ::testing::Test {
     mock_task_.node.reset();
     mock_wbc_.node.reset();
     node_.reset();
-    if (owns_rclcpp_ && rclcpp::ok()) {
-      rclcpp::shutdown();
-      owns_rclcpp_ = false;
-    }
+    // Intentionally do NOT rclcpp::shutdown() here — the context is shared
+    // across the binary's tests (see SetUp). Repeated shutdown/init churns DDS.
   }
 
-  /// Publish the active controller name and wait for the bridge to rebind.
-  void SetActiveAlias(const std::string& name) {
-    PublishActiveController(name);
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
-  }
+  /// Publish the active controller name and block (via the now-synchronous
+  /// PublishActiveController) until the bridge has processed the transition —
+  /// GetActiveController reflects `name`, set by the /rtc_cm/active_controller_name
+  /// callback immediately before it rebinds the param/grasp clients through
+  /// RewireControllerTopics. Replaces a fixed 150ms sleep that raced delivery —
+  /// the flake source behind the set_gains failures (rebind not yet applied →
+  /// tick hit the previous controller's clients).
+  void SetActiveAlias(const std::string& name) { PublishActiveController(name); }
 
-  /// Sleep wrapper preserved for legacy test bodies.
+  /// Sleep wrapper preserved for legacy test bodies. Delivery is now guaranteed
+  /// by the blocking Publish* helpers, so this is a residual settle, not a
+  /// synchronization point.
   void Spin(std::chrono::milliseconds duration = std::chrono::milliseconds(50)) {
     std::this_thread::sleep_for(duration);
   }
@@ -158,30 +209,50 @@ class RosTestFixture : public ::testing::Test {
   // ── State injection helpers ─────────────────────────────────────────────
 
   void PublishArmState(const Pose6D& tcp, const std::vector<double>& joints) {
-    // Phase 4: TCP pose via tf2, joint via sensor_msgs/JointState.
-    sensor_msgs::msg::JointState js;
-    js.position.assign(joints.begin(), joints.end());
-    arm_joint_pub_->publish(js);
+    // Phase 4: TCP pose via tf2, joint via sensor_msgs/JointState. Retry until
+    // the bridge caches both the joint sample (empty→populated is an unambiguous
+    // delivery edge, so this holds even for all-zero joints) and the tf pose
+    // (translation carries the delivery signal for pose tests; rotation arrives
+    // atomically in the same tf message). Zero-valued targets may match the
+    // pre-delivery default early, but every such test's assertion is
+    // delivery-independent (still-far / not-yet-converged → RUNNING).
+    PublishUntilObserved(
+        [this, &tcp, &joints]() {
+          sensor_msgs::msg::JointState js;
+          js.position.assign(joints.begin(), joints.end());
+          arm_joint_pub_->publish(js);
 
-    geometry_msgs::msg::TransformStamped tfs;
-    tfs.header.stamp = node_->now();
-    tfs.header.frame_id = "base";
-    tfs.child_frame_id = "tool0_actual";
-    tfs.transform.translation.x = tcp.x;
-    tfs.transform.translation.y = tcp.y;
-    tfs.transform.translation.z = tcp.z;
-    // RPY → quaternion (ZYX, matches GetTcpPose's inverse mapping).
-    const double cr = std::cos(tcp.roll * 0.5);
-    const double sr = std::sin(tcp.roll * 0.5);
-    const double cp = std::cos(tcp.pitch * 0.5);
-    const double sp = std::sin(tcp.pitch * 0.5);
-    const double cy = std::cos(tcp.yaw * 0.5);
-    const double sy = std::sin(tcp.yaw * 0.5);
-    tfs.transform.rotation.w = cr * cp * cy + sr * sp * sy;
-    tfs.transform.rotation.x = sr * cp * cy - cr * sp * sy;
-    tfs.transform.rotation.y = cr * sp * cy + sr * cp * sy;
-    tfs.transform.rotation.z = cr * cp * sy - sr * sp * cy;
-    tf_broadcaster_->sendTransform(tfs);
+          geometry_msgs::msg::TransformStamped tfs;
+          tfs.header.stamp = node_->now();
+          tfs.header.frame_id = "base";
+          tfs.child_frame_id = "tool0_actual";
+          tfs.transform.translation.x = tcp.x;
+          tfs.transform.translation.y = tcp.y;
+          tfs.transform.translation.z = tcp.z;
+          // RPY → quaternion (ZYX, matches GetTcpPose's inverse mapping).
+          const double cr = std::cos(tcp.roll * 0.5);
+          const double sr = std::sin(tcp.roll * 0.5);
+          const double cp = std::cos(tcp.pitch * 0.5);
+          const double sp = std::sin(tcp.pitch * 0.5);
+          const double cy = std::cos(tcp.yaw * 0.5);
+          const double sy = std::sin(tcp.yaw * 0.5);
+          tfs.transform.rotation.w = cr * cp * cy + sr * sp * sy;
+          tfs.transform.rotation.x = sr * cp * cy - cr * sp * sy;
+          tfs.transform.rotation.y = cr * sp * cy + sr * cp * sy;
+          tfs.transform.rotation.z = cr * cp * sy - sr * sp * cy;
+          tf_broadcaster_->sendTransform(tfs);
+        },
+        [this, &tcp, &joints]() {
+          const auto cur = bridge_->GetArmJointPositions();
+          if (cur.size() != joints.size())
+            return false;
+          for (std::size_t i = 0; i < joints.size(); ++i)
+            if (std::fabs(cur[i] - joints[i]) > kJointMatchTol)
+              return false;
+          const Pose6D p = bridge_->GetTcpPose();
+          return std::fabs(p.x - tcp.x) < kPoseMatchTol && std::fabs(p.y - tcp.y) < kPoseMatchTol &&
+                 std::fabs(p.z - tcp.z) < kPoseMatchTol;
+        });
   }
 
   void PublishHandState(const std::vector<double>& joints) {
@@ -191,62 +262,124 @@ class RosTestFixture : public ::testing::Test {
     static const std::vector<std::string> assm_v1_joint_names = {
         "thumb_cmc_aa", "thumb_cmc_fe",  "thumb_mcp_fe",  "index_mcp_aa",  "index_mcp_fe",
         "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe", "middle_dip_fe", "ring_mcp_fe"};
-    sensor_msgs::msg::JointState js;
-    js.position.assign(joints.begin(), joints.end());
-    const std::size_t n = std::min(joints.size(), assm_v1_joint_names.size());
-    js.name.assign(assm_v1_joint_names.begin(), assm_v1_joint_names.begin() + static_cast<long>(n));
-    hand_joint_pub_->publish(js);
+    // Retry until the bridge caches the hand sample (empty→populated edge).
+    PublishUntilObserved(
+        [this, &joints]() {
+          sensor_msgs::msg::JointState js;
+          js.position.assign(joints.begin(), joints.end());
+          const std::size_t n = std::min(joints.size(), assm_v1_joint_names.size());
+          js.name.assign(assm_v1_joint_names.begin(),
+                         assm_v1_joint_names.begin() + static_cast<long>(n));
+          hand_joint_pub_->publish(js);
+        },
+        [this, &joints]() {
+          const auto cur = bridge_->GetHandJointPositions();
+          if (cur.size() != joints.size())
+            return false;
+          for (std::size_t i = 0; i < joints.size(); ++i)
+            if (std::fabs(cur[i] - joints[i]) > kJointMatchTol)
+              return false;
+          return true;
+        });
   }
 
   void PublishGraspState(const CachedGraspState& gs) {
-    rtc_msgs::msg::GraspState msg;
-    msg.num_active_contacts = gs.num_active_contacts;
-    msg.max_force = gs.max_force;
-    msg.grasp_detected = gs.grasp_detected;
-    msg.force_threshold = gs.force_threshold;
-    msg.min_fingertips = gs.min_fingertips;
-    msg.grasp_phase = gs.grasp_phase;
-    msg.grasp_target_force = gs.grasp_target_force;
-    for (const auto& ft : gs.fingertips) {
-      msg.fingertip_names.push_back(ft.name);
-      msg.force_magnitude.push_back(ft.force_magnitude);
-      msg.contact_flag.push_back(ft.contact_flag);
-      msg.inference_valid.push_back(ft.inference_valid);
-    }
-    msg.finger_s = gs.finger_s;
-    msg.finger_filtered_force = gs.finger_filtered_force;
-    msg.finger_force_error = gs.finger_force_error;
-    grasp_state_pub_->publish(msg);
+    // Retry until the bridge caches this sample, matched on the scalar fields the
+    // condition-node tests key on. An all-default grasp state is
+    // indistinguishable from the pre-delivery default and returns immediately,
+    // but those tests assert a negative (not-grasped / idle) that the default
+    // also satisfies, so no assertion is weakened.
+    PublishUntilObserved(
+        [this, &gs]() {
+          rtc_msgs::msg::GraspState msg;
+          msg.num_active_contacts = gs.num_active_contacts;
+          msg.max_force = gs.max_force;
+          msg.grasp_detected = gs.grasp_detected;
+          msg.force_threshold = gs.force_threshold;
+          msg.min_fingertips = gs.min_fingertips;
+          msg.grasp_phase = gs.grasp_phase;
+          msg.grasp_target_force = gs.grasp_target_force;
+          for (const auto& ft : gs.fingertips) {
+            msg.fingertip_names.push_back(ft.name);
+            msg.force_magnitude.push_back(ft.force_magnitude);
+            msg.contact_flag.push_back(ft.contact_flag);
+            msg.inference_valid.push_back(ft.inference_valid);
+          }
+          msg.finger_s = gs.finger_s;
+          msg.finger_filtered_force = gs.finger_filtered_force;
+          msg.finger_force_error = gs.finger_force_error;
+          grasp_state_pub_->publish(msg);
+        },
+        [this, &gs]() {
+          const auto cur = bridge_->GetGraspState();
+          return cur.grasp_phase == gs.grasp_phase &&
+                 cur.num_active_contacts == gs.num_active_contacts &&
+                 cur.grasp_detected == gs.grasp_detected &&
+                 cur.min_fingertips == gs.min_fingertips &&
+                 cur.fingertips.size() == gs.fingertips.size() &&
+                 std::fabs(cur.max_force - gs.max_force) < kJointMatchTol &&
+                 std::fabs(cur.force_threshold - gs.force_threshold) < kJointMatchTol;
+        });
   }
 
   void PublishWorldTarget(double x, double y, double z) {
-    geometry_msgs::msg::Polygon msg;
-    geometry_msgs::msg::Point32 pt;
-    pt.x = static_cast<float>(x);
-    pt.y = static_cast<float>(y);
-    pt.z = static_cast<float>(z);
-    msg.points.push_back(pt);
-    world_target_pub_->publish(msg);
+    // GetWorldTargetPose's valid flag is a delivery signal independent of value.
+    PublishUntilObserved(
+        [this, x, y, z]() {
+          geometry_msgs::msg::Polygon msg;
+          geometry_msgs::msg::Point32 pt;
+          pt.x = static_cast<float>(x);
+          pt.y = static_cast<float>(y);
+          pt.z = static_cast<float>(z);
+          msg.points.push_back(pt);
+          world_target_pub_->publish(msg);
+        },
+        [this, x, y, z]() {
+          Pose6D p;
+          return bridge_->GetWorldTargetPose(p) && std::fabs(p.x - x) < kPoseMatchTol &&
+                 std::fabs(p.y - y) < kPoseMatchTol && std::fabs(p.z - z) < kPoseMatchTol;
+        });
   }
 
   void PublishActiveController(const std::string& name) {
-    std_msgs::msg::String msg;
-    msg.data = name;
-    active_ctrl_pub_->publish(msg);
+    // active_ctrl_pub_ is transient_local, so a late-matching bridge sub still
+    // latches the last name — but retry anyway for symmetry and to also cover
+    // the rebind completing (GetActiveController is set only after the bridge's
+    // RewireControllerTopics finishes; see bt_ros_bridge active_ctrl_sub_).
+    PublishUntilObserved(
+        [this, &name]() {
+          std_msgs::msg::String msg;
+          msg.data = name;
+          active_ctrl_pub_->publish(msg);
+        },
+        [this, &name]() { return bridge_->GetActiveController() == name; });
   }
 
   void PublishEstop(bool active) {
-    std_msgs::msg::Bool msg;
-    msg.data = active;
-    estop_pub_->publish(msg);
+    PublishUntilObserved(
+        [this, active]() {
+          std_msgs::msg::Bool msg;
+          msg.data = active;
+          estop_pub_->publish(msg);
+        },
+        [this, active]() { return bridge_->IsEstopped() == active; });
   }
 
   void PublishShapeEstimate(uint8_t shape_type, double confidence, uint32_t num_points = 100) {
-    shape_estimation_msgs::msg::ShapeEstimate msg;
-    msg.shape_type = shape_type;
-    msg.confidence = confidence;
-    msg.num_points_used = num_points;
-    shape_estimate_pub_->publish(msg);
+    // GetShapeEstimate's valid flag is a delivery signal independent of value.
+    PublishUntilObserved(
+        [this, shape_type, confidence, num_points]() {
+          shape_estimation_msgs::msg::ShapeEstimate msg;
+          msg.shape_type = shape_type;
+          msg.confidence = confidence;
+          msg.num_points_used = num_points;
+          shape_estimate_pub_->publish(msg);
+        },
+        [this, shape_type, num_points]() {
+          shape_estimation_msgs::msg::ShapeEstimate out;
+          return bridge_->GetShapeEstimate(out) && out.shape_type == shape_type &&
+                 out.num_points_used == num_points;
+        });
   }
 
   // ── Data members ────────────────────────────────────────────────────────
@@ -309,7 +442,6 @@ class RosTestFixture : public ::testing::Test {
         });
   }
 
-  bool owns_rclcpp_{false};
   std::atomic<bool> spin_running_{false};
   std::thread spin_thread_;
 };
