@@ -1,5 +1,6 @@
 #pragma once
-/// Test helpers for ur5e_bt_coordinator unit tests.
+/// Test helpers for the ur5e_bt_coordinator real-DDS e2e tier (issue #154:
+/// the DDS-free cached-state tier lives in inject_fixture.hpp).
 ///
 /// Provides:
 ///   - RosTestFixture: RAII rclcpp::init/shutdown with a test ROS2 node +
@@ -11,21 +12,12 @@
 ///                     matching mock automatically.
 
 #include "ur5e_bt_coordinator/bt_ros_bridge.hpp"
-#include "ur5e_bt_coordinator/bt_types.hpp"
-#include <rtc_msgs/msg/grasp_state.hpp>
 #include <rtc_msgs/srv/grasp_command.hpp>
-#include <shape_estimation_msgs/msg/shape_estimate.hpp>
 
-#include <geometry_msgs/msg/polygon.hpp>
-#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
-#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <tf2_msgs/msg/tf_message.hpp>
-#include <tf2_ros/static_transform_broadcaster.h>
-#include <tf2_ros/transform_broadcaster.h>
 
 #include <behaviortree_cpp/bt_factory.h>
 #include <gtest/gtest.h>
@@ -34,7 +26,6 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -46,10 +37,9 @@ namespace rtc_bt::test {
 /// expire before the tick's own service wait would.
 inline constexpr std::chrono::milliseconds kDefaultWaitTimeout{2000};
 
-/// Delivery-match tolerances for Publish* blocking waits (exact-ish: values are
-/// round-tripped through message fields, not computed).
+/// Delivery-match tolerance for PublishHandState's blocking wait (exact-ish:
+/// values are round-tripped through message fields, not computed).
 inline constexpr double kJointMatchTol = 1e-6;  // rad
-inline constexpr double kPoseMatchTol = 1e-4;   // m
 
 /// Poll `condition` until it holds or `timeout` expires; returns whether it
 /// held. Deliberately does NOT call rclcpp::spin_some — the fixture's dedicated
@@ -152,26 +142,13 @@ class RosTestFixture : public ::testing::Test {
     SpawnMock("demo_task_controller", mock_task_);
     SpawnMock("demo_wbc_controller", mock_wbc_);
 
-    // State injection publishers — pick demo_task_controller as the default
-    // active for state-injection tests; SetActiveAlias() can override later.
-    const std::string ctrl_ns = "/demo_task_controller";
-    // Phase 4: arm/hand state는 controller-agnostic /rtc_cm/<group>/joint_states
-    // 로 이동. TCP pose는 tf2 broadcaster (`base → tool0_actual`) 로 주입.
-    arm_joint_pub_ = node_->create_publisher<sensor_msgs::msg::JointState>(
-        "/rtc_cm/ur5e/joint_states", rclcpp::QoS{10});
+    // State injection publishers — only the two the e2e tier still drives
+    // (hand joint state + active controller). All other cached-state topics
+    // are exercised DDS-free via inject_fixture.hpp.
     hand_joint_pub_ = node_->create_publisher<sensor_msgs::msg::JointState>(
         "/rtc_cm/hand/joint_states", rclcpp::QoS{10});
-    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
-    grasp_state_pub_ = node_->create_publisher<rtc_msgs::msg::GraspState>(
-        ctrl_ns + "/hand/grasp_state", rclcpp::QoS{10});
-    world_target_pub_ =
-        node_->create_publisher<geometry_msgs::msg::Polygon>("/world_target_info", rclcpp::QoS{10});
     active_ctrl_pub_ = node_->create_publisher<std_msgs::msg::String>(
         "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local());
-    estop_pub_ =
-        node_->create_publisher<std_msgs::msg::Bool>("/system/estop_status", rclcpp::QoS{10});
-    shape_estimate_pub_ = node_->create_publisher<shape_estimation_msgs::msg::ShapeEstimate>(
-        "/shape/estimate", rclcpp::QoS{10});
 
     // Background spin drives bridge + all mock nodes.
     spin_running_.store(true);
@@ -225,53 +202,6 @@ class RosTestFixture : public ::testing::Test {
 
   // ── State injection helpers ─────────────────────────────────────────────
 
-  void PublishArmState(const Pose6D& tcp, const std::vector<double>& joints) {
-    // Phase 4: TCP pose via tf2, joint via sensor_msgs/JointState. Retry until
-    // the bridge caches both the joint sample (empty→populated is an unambiguous
-    // delivery edge, so this holds even for all-zero joints) and the tf pose
-    // (translation carries the delivery signal for pose tests; rotation arrives
-    // atomically in the same tf message). Zero-valued targets may match the
-    // pre-delivery default early, but every such test's assertion is
-    // delivery-independent (still-far / not-yet-converged → RUNNING).
-    PublishUntilObserved(
-        [this, &tcp, &joints]() {
-          sensor_msgs::msg::JointState js;
-          js.position.assign(joints.begin(), joints.end());
-          arm_joint_pub_->publish(js);
-
-          geometry_msgs::msg::TransformStamped tfs;
-          tfs.header.stamp = node_->now();
-          tfs.header.frame_id = "base";
-          tfs.child_frame_id = "tool0_actual";
-          tfs.transform.translation.x = tcp.x;
-          tfs.transform.translation.y = tcp.y;
-          tfs.transform.translation.z = tcp.z;
-          // RPY → quaternion (ZYX, matches GetTcpPose's inverse mapping).
-          const double cr = std::cos(tcp.roll * 0.5);
-          const double sr = std::sin(tcp.roll * 0.5);
-          const double cp = std::cos(tcp.pitch * 0.5);
-          const double sp = std::sin(tcp.pitch * 0.5);
-          const double cy = std::cos(tcp.yaw * 0.5);
-          const double sy = std::sin(tcp.yaw * 0.5);
-          tfs.transform.rotation.w = cr * cp * cy + sr * sp * sy;
-          tfs.transform.rotation.x = sr * cp * cy - cr * sp * sy;
-          tfs.transform.rotation.y = cr * sp * cy + sr * cp * sy;
-          tfs.transform.rotation.z = cr * cp * sy - sr * sp * cy;
-          tf_broadcaster_->sendTransform(tfs);
-        },
-        [this, &tcp, &joints]() {
-          const auto cur = bridge_->GetArmJointPositions();
-          if (cur.size() != joints.size())
-            return false;
-          for (std::size_t i = 0; i < joints.size(); ++i)
-            if (std::fabs(cur[i] - joints[i]) > kJointMatchTol)
-              return false;
-          const Pose6D p = bridge_->GetTcpPose();
-          return std::fabs(p.x - tcp.x) < kPoseMatchTol && std::fabs(p.y - tcp.y) < kPoseMatchTol &&
-                 std::fabs(p.z - tcp.z) < kPoseMatchTol;
-        });
-  }
-
   void PublishHandState(const std::vector<double>& joints) {
     // Hand nodes map finger→joint via joint_states name prefixes
     // (FingerJointIndices), so name must be populated, not just position.
@@ -300,64 +230,6 @@ class RosTestFixture : public ::testing::Test {
         });
   }
 
-  void PublishGraspState(const CachedGraspState& gs) {
-    // Retry until the bridge caches this sample, matched on the scalar fields the
-    // condition-node tests key on. An all-default grasp state is
-    // indistinguishable from the pre-delivery default and returns immediately,
-    // but those tests assert a negative (not-grasped / idle) that the default
-    // also satisfies, so no assertion is weakened.
-    PublishUntilObserved(
-        [this, &gs]() {
-          rtc_msgs::msg::GraspState msg;
-          msg.num_active_contacts = gs.num_active_contacts;
-          msg.max_force = gs.max_force;
-          msg.grasp_detected = gs.grasp_detected;
-          msg.force_threshold = gs.force_threshold;
-          msg.min_fingertips = gs.min_fingertips;
-          msg.grasp_phase = gs.grasp_phase;
-          msg.grasp_target_force = gs.grasp_target_force;
-          for (const auto& ft : gs.fingertips) {
-            msg.fingertip_names.push_back(ft.name);
-            msg.force_magnitude.push_back(ft.force_magnitude);
-            msg.contact_flag.push_back(ft.contact_flag);
-            msg.inference_valid.push_back(ft.inference_valid);
-          }
-          msg.finger_s = gs.finger_s;
-          msg.finger_filtered_force = gs.finger_filtered_force;
-          msg.finger_force_error = gs.finger_force_error;
-          grasp_state_pub_->publish(msg);
-        },
-        [this, &gs]() {
-          const auto cur = bridge_->GetGraspState();
-          return cur.grasp_phase == gs.grasp_phase &&
-                 cur.num_active_contacts == gs.num_active_contacts &&
-                 cur.grasp_detected == gs.grasp_detected &&
-                 cur.min_fingertips == gs.min_fingertips &&
-                 cur.fingertips.size() == gs.fingertips.size() &&
-                 std::fabs(cur.max_force - gs.max_force) < kJointMatchTol &&
-                 std::fabs(cur.force_threshold - gs.force_threshold) < kJointMatchTol;
-        });
-  }
-
-  void PublishWorldTarget(double x, double y, double z) {
-    // GetWorldTargetPose's valid flag is a delivery signal independent of value.
-    PublishUntilObserved(
-        [this, x, y, z]() {
-          geometry_msgs::msg::Polygon msg;
-          geometry_msgs::msg::Point32 pt;
-          pt.x = static_cast<float>(x);
-          pt.y = static_cast<float>(y);
-          pt.z = static_cast<float>(z);
-          msg.points.push_back(pt);
-          world_target_pub_->publish(msg);
-        },
-        [this, x, y, z]() {
-          Pose6D p;
-          return bridge_->GetWorldTargetPose(p) && std::fabs(p.x - x) < kPoseMatchTol &&
-                 std::fabs(p.y - y) < kPoseMatchTol && std::fabs(p.z - z) < kPoseMatchTol;
-        });
-  }
-
   void PublishActiveController(const std::string& name) {
     // active_ctrl_pub_ is transient_local, so a late-matching bridge sub still
     // latches the last name — but retry anyway for symmetry and to also cover
@@ -372,33 +244,6 @@ class RosTestFixture : public ::testing::Test {
         [this, &name]() { return bridge_->GetActiveController() == name; });
   }
 
-  void PublishEstop(bool active) {
-    PublishUntilObserved(
-        [this, active]() {
-          std_msgs::msg::Bool msg;
-          msg.data = active;
-          estop_pub_->publish(msg);
-        },
-        [this, active]() { return bridge_->IsEstopped() == active; });
-  }
-
-  void PublishShapeEstimate(uint8_t shape_type, double confidence, uint32_t num_points = 100) {
-    // GetShapeEstimate's valid flag is a delivery signal independent of value.
-    PublishUntilObserved(
-        [this, shape_type, confidence, num_points]() {
-          shape_estimation_msgs::msg::ShapeEstimate msg;
-          msg.shape_type = shape_type;
-          msg.confidence = confidence;
-          msg.num_points_used = num_points;
-          shape_estimate_pub_->publish(msg);
-        },
-        [this, shape_type, num_points]() {
-          shape_estimation_msgs::msg::ShapeEstimate out;
-          return bridge_->GetShapeEstimate(out) && out.shape_type == shape_type &&
-                 out.num_points_used == num_points;
-        });
-  }
-
   // ── Data members ────────────────────────────────────────────────────────
 
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
@@ -408,14 +253,8 @@ class RosTestFixture : public ::testing::Test {
   MockController mock_task_;
   MockController mock_wbc_;
 
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr arm_joint_pub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr hand_joint_pub_;
-  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
-  rclcpp::Publisher<rtc_msgs::msg::GraspState>::SharedPtr grasp_state_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::Polygon>::SharedPtr world_target_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_ctrl_pub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;
-  rclcpp::Publisher<shape_estimation_msgs::msg::ShapeEstimate>::SharedPtr shape_estimate_pub_;
 
  private:
   void SpawnMock(const std::string& name, MockController& out) {

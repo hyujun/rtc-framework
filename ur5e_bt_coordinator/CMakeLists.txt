@@ -138,20 +138,27 @@ if(BUILD_TESTING)
     )
   endforeach()
 
-  # Tier 2: ROS2 test fixture tests (use test_helpers.hpp)
-  set(TIER2_TESTS
+  # Tier 2 inject: DDS-free state-inject tests (use inject_fixture.hpp) —
+  # cached-state consumers driven through the BridgeStateInjector handler seam,
+  # no cross-node pub/sub delivery (issue #154).
+  set(TIER2_INJECT
     test_move_to_pose
     test_move_to_joints
-    test_switch_controller
-    test_set_gains
-    test_service_singlethread
-    test_grasp_control
     test_condition_nodes
     test_hand_nodes
     test_shape_nodes
     test_data_nodes
   )
-  foreach(test_name ${TIER2_TESTS})
+  # Tier 2 e2e: real-DDS fixture tests (use test_helpers.hpp) — the
+  # service/rebind path itself is the test subject, so these keep the mock
+  # controllers + background spin.
+  set(TIER2_E2E
+    test_switch_controller
+    test_set_gains
+    test_service_singlethread
+    test_grasp_control
+  )
+  foreach(test_name ${TIER2_INJECT} ${TIER2_E2E})
     ament_add_gtest(${test_name} test/${test_name}.cpp)
     target_link_libraries(${test_name} bt_nodes)
     target_include_directories(${test_name} PRIVATE

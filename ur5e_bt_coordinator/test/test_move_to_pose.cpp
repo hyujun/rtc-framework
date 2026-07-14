@@ -1,6 +1,6 @@
 /// Unit tests for MoveToPose action node.
 
-#include "test_helpers.hpp"
+#include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
 
 #include <behaviortree_cpp/bt_factory.h>
@@ -11,10 +11,10 @@
 using namespace rtc_bt;
 using namespace rtc_bt::test;
 
-class MoveToPoseTest : public RosTestFixture {
+class MoveToPoseTest : public InjectTestFixture {
  protected:
   void SetUp() override {
-    RosTestFixture::SetUp();
+    InjectTestFixture::SetUp();
     factory_.registerNodeType<MoveToPose>("MoveToPose", bridge_);
   }
 

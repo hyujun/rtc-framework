@@ -1,4 +1,4 @@
-/// Unit tests for the bridge-backed data nodes (Tier 2, RosTestFixture):
+/// Unit tests for the bridge-backed data nodes (Tier 2 inject, InjectTestFixture):
 ///   StartToFCollection, StopToFCollection, ProcessSearchData, GetCurrentPose.
 ///
 /// These nodes read/write BtRosBridge state (ToF buffer, TCP pose). No ToF
@@ -7,7 +7,7 @@
 /// via PublishArmState() (tf2 base→tool0_actual) and read back through the
 /// quaternion↔RPY round-trip GetTcpPose() performs.
 
-#include "test_helpers.hpp"
+#include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
 #include "ur5e_bt_coordinator/action_nodes/process_search_data.hpp"
 #include "ur5e_bt_coordinator/action_nodes/start_tof_collection.hpp"
@@ -19,10 +19,10 @@
 using namespace rtc_bt;
 using namespace rtc_bt::test;
 
-class DataNodeTest : public RosTestFixture {
+class DataNodeTest : public InjectTestFixture {
  protected:
   void SetUp() override {
-    RosTestFixture::SetUp();
+    InjectTestFixture::SetUp();
     factory_.registerNodeType<StartToFCollection>("StartToFCollection", bridge_);
     factory_.registerNodeType<StopToFCollection>("StopToFCollection", bridge_);
     factory_.registerNodeType<ProcessSearchData>("ProcessSearchData", bridge_);
