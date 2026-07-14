@@ -127,9 +127,12 @@ Alternative: <우회 안 1개 이상>
 
 ## 6.6 Long-running task — Context handoff
 
-Long-running task handoff 절차·능동 제안 트리거 (도메인 전환 / 실패 trace 누적 / 대용량 호출 / 세션 누적 신호 / 사용자 모니터링)·메커니즘 선택 (`/clear` / `/compact` / subagent / `/fork`)·면제 조항은 user-level CLAUDE.md `# Context handoff policy` 가 SSoT.
+**Handoff 계약**(무엇이 handoff 이고, artifact 가 무엇을 담고, 받는 쪽이 어떻게 재개하는가 — trigger 분류표·artifact template·sender/receiver checklist·storage)의 tool-neutral 단일 출처는 [agent_docs/handoff.md](agent_docs/handoff.md) 다. [AGENTS.md](AGENTS.md) §9 는 그 요약 계약을 담는다. 이 절은 **Claude 전용 메커니즘**만 소유한다.
 
-**RTC override** — handoff 파일 경로는 user-level default (`.claude/handoff/YYYY-MM-DD-<topic>.md`) 대신 `~/.claude/plans/<task-slug>.md` 를 사용한다. §6.5 Sprint Contract spec 과 같은 파일에 누적되며 `## Spec` / `## Progress` / `## Handoff` 섹션으로 구분 — handoff 본문 필드 (State / Decisions / Open / Constraints / Pointers) 는 `## Handoff` 아래에 그대로.
+- 능동 제안 트리거·메커니즘 선택 (`/rename`+`/clear` / `/compact <focus>` / subagent / `/btw` / fork)·보존 우선순위 (`# Compact instructions`)의 글로벌 기본값은 user-level CLAUDE.md `# Context handoff policy` 가 SSoT. **handoff.md 의 tool-neutral 계약과 충돌하면 repo 계약이 우선**한다.
+- 반복 실패: handoff.md 는 "3회 시도 → 중단·진단·escalate"(tool-neutral), Claude 세션은 "동일 문제 2회 초과 교정 → `/clear`"(context 위생) — 다른 축, 공존.
+
+**RTC storage override** — Claude 전용·transient plan 은 `~/.claude/plans/<task-slug>.md` (§6.5 Sprint Contract spec 과 동일 파일, `## Spec` / `## Progress` / `## Handoff` 섹션). Multi-agent·review 관련·cross-tool 작업의 durable artifact 는 repo 소유 `docs/exec-plans/active/<slug>.md` 가 SSoT (handoff.md §5) — artifact 필수 섹션·template 은 handoff.md §2 를 따른다. private plan 은 링크만, diverge 금지.
 
 ## 7. Anti-patterns
 
@@ -174,7 +177,7 @@ post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하�
 Commit 완료 또는 사용자가 task 종료를 알린 후:
 
 1. **Memory save / Memory prune / Harness pruning 신호 보고** — user-level CLAUDE.md `# Post-task housekeeping` 가 SSoT. *Harness pruning 신호* 의 RTC 발현 카테고리는 invariant·anti-pattern grep false-positive, [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) 오차단, agent_docs 간 규칙 중복 drift
-2. **Stale artifact 정리** — `~/.claude/plans/*.md` 완료 task 용, repo-root / `/tmp` scratch files. 내용이 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`) 에 보존됨을 확인 후 삭제
+2. **Stale artifact 정리** — `~/.claude/plans/*.md` (Claude 전용 완료 task), `docs/exec-plans/active/*.md` 완료분은 결정 기록 보존 가치가 있으면 `completed/` 로 이동·아니면 삭제 ([agent_docs/handoff.md](agent_docs/handoff.md) §5), repo-root / `/tmp` scratch files. 내용이 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`) 에 보존됨을 확인 후 삭제
 3. **캐시 정리** — repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` (§9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다** (§9.1)
 4. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
 5. **보고** — 실제 수행한 항목만 한 줄씩

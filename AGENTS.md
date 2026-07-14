@@ -141,7 +141,17 @@ gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으
 
 작업 후에는 repository root에 잘못 생성된 `build/`, `install/`, `log/`와 재생성 가능한 Python cache(`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`)가 있는지 확인한다. 삭제는 사용자 변경물이나 workspace root의 정상 cache를 건드리지 않는 범위에서만 수행한다.
 
-## 9. Reference Documentation
+## 9. Context Handoff
+
+미완료 작업이 session · agent · model · 책임 경계를 넘을 때는 **handoff artifact** 를 만든다. artifact 는 받는 에이전트가 **이전 transcript 없이 재개**할 수 있어야 완료다 (Goal, Acceptance criteria, Out of scope, Current state, Next action, Decisions, Evidence, Failed approaches, Workspace(git), Pointers).
+
+- 받는 쪽은 진행 전에 `git status` 와 핵심 evidence(build/test)가 artifact 와 일치하는지 검증하고, 불일치 시 **구현 전에 artifact 를 먼저 갱신**한다.
+- 단순 오타·단일 세션 short task 는 artifact 불필요다. 다단계 작업은 [CLAUDE.md](CLAUDE.md) §6.5 Sprint Contract 를 적용한다.
+- credentials · secret · raw 대용량 log · 미검증 주장은 넣지 않는다.
+
+trigger 분류표, artifact template, sender/receiver checklist, storage·retention 규칙의 단일 출처는 [agent_docs/handoff.md](agent_docs/handoff.md) 다. Claude 전용 메커니즘(`/compact`·`/clear`·fork 등)은 [CLAUDE.md](CLAUDE.md) §6.6 을 따른다.
+
+## 10. Reference Documentation
 
 - [agent_docs/architecture.md](agent_docs/architecture.md) — threading, data flow, core types, lock-free rules, lifecycle, E-STOP, dependency graph
 - [agent_docs/controllers.md](agent_docs/controllers.md) — controller, gain, FSM, topic, config
@@ -151,5 +161,6 @@ gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으
 - [agent_docs/testing-debug.md](agent_docs/testing-debug.md) — sensor matrix, test commands, debug topics, RT permissions
 - [agent_docs/invariants.md](agent_docs/invariants.md) — RT, architecture, process, numerical invariants
 - [agent_docs/anti-patterns.md](agent_docs/anti-patterns.md) — 반복 실수의 탐지와 복구
+- [agent_docs/handoff.md](agent_docs/handoff.md) — tool-neutral context handoff 계약(trigger 분류·artifact template·sender/receiver checklist·storage)
 - [README.md](README.md) — install, build, dependency, quick start
 - [repo_scripts/README.md](repo_scripts/README.md) — PREEMPT_RT, CPU shield, environment activation, isolated dependencies
