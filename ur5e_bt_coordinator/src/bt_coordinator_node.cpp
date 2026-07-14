@@ -73,12 +73,14 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
     return CallbackReturn::FAILURE;
   }
 
-  // Reset the factory to a fresh instance before (re)registering. on_configure
-  // can run more than once — after on_cleanup, or after a prior configure
-  // returned FAILURE — and registerNodeType throws "already registered" on a
-  // populated factory. A fresh factory also lets a reconfigure pick up changed
+  // Rebuild the factory in place before (re)registering. on_configure can run
+  // more than once — after on_cleanup, or after a prior configure returned
+  // FAILURE — and registerNodeType throws "already registered" on a populated
+  // factory. A fresh factory also lets a reconfigure pick up changed
   // capability params. (factory_ is not owned by on_cleanup, so it persists.)
-  factory_ = BT::BehaviorTreeFactory{};
+  // emplace(), never move-assign: see the factory_ declaration for the BT.CPP
+  // dangling-parser SIGSEGV a moved factory causes.
+  factory_.emplace();
   RegisterBtNodes();
 
   // A tree referencing a capability-gated-out node (Seam D) surfaces here as
@@ -262,7 +264,7 @@ void BtCoordinatorNode::RegisterBtNodes() {
   // a sensor never exposes nodes that would read absent data. Defaults are all
   // true (ur5e/hand), preserving the legacy register-everything behavior.
   rtc_bt::RegisterBtNodes(
-      factory_, bridge_,
+      *factory_, bridge_,
       RobotCapabilities{
           .has_grasp_sensing = has_grasp_sensing_, .has_tof = has_tof_, .has_shape = has_shape_});
 }
@@ -288,7 +290,7 @@ void BtCoordinatorNode::LoadTree() {
 
   RCLCPP_DEBUG(coord_log(), "Loading tree from: %s", tree_path.c_str());
 
-  tree_ = std::make_unique<BT::Tree>(factory_.createTreeFromFile(tree_path.string()));
+  tree_ = std::make_unique<BT::Tree>(factory_->createTreeFromFile(tree_path.string()));
 }
 
 void BtCoordinatorNode::InitializeBlackboard() {

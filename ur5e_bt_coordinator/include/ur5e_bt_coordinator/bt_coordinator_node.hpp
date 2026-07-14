@@ -17,6 +17,7 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace rtc_bt {
@@ -87,7 +88,12 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   void StepCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
-  BT::BehaviorTreeFactory factory_;
+  // optional so on_configure can rebuild it in place with emplace(). Never
+  // move a BehaviorTreeFactory: its ctor binds an internal XMLParser to the
+  // object's own address and the defaulted move ops (BT.CPP 4.9) don't rebind
+  // it, so any moved-into factory SIGSEGVs in createTree* via the dangling
+  // parser→factory reference.
+  std::optional<BT::BehaviorTreeFactory> factory_;
   std::unique_ptr<BT::Tree> tree_;
   std::shared_ptr<BtRosBridge> bridge_;
 
