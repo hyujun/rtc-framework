@@ -321,7 +321,9 @@ class BtRosBridge {
 
   // ── Cached state ──────────────────────────────────────────────────────────
   mutable std::mutex state_mutex_;
-  Pose6D tcp_pose_;
+  // Mutable: GetTcpPose() is const but caches each successful tf2 lookup here
+  // so a subsequent lookup failure returns the last-known pose, not zeros.
+  mutable Pose6D tcp_pose_;
   std::vector<double> arm_joint_positions_;
   std::vector<double> hand_joint_positions_;
   std::vector<std::string> hand_joint_names_;  // from /rtc_cm/hand/joint_states name field

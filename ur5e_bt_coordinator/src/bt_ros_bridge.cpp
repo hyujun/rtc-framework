@@ -198,12 +198,17 @@ Pose6D BtRosBridge::GetTcpPose() const {
       const double pitch =
           (std::abs(sinp) >= 1.0) ? std::copysign(M_PI / 2.0, sinp) : std::asin(sinp);
       const double yaw = std::atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz));
-      return Pose6D{tfs.transform.translation.x,
-                    tfs.transform.translation.y,
-                    tfs.transform.translation.z,
-                    roll,
-                    pitch,
-                    yaw};
+      const Pose6D pose{tfs.transform.translation.x,
+                        tfs.transform.translation.y,
+                        tfs.transform.translation.z,
+                        roll,
+                        pitch,
+                        yaw};
+      // Cache the fresh lookup so a later lookup failure (transform gap, halt)
+      // falls back to this last-known pose rather than a zero-initialized one.
+      std::lock_guard lock(state_mutex_);
+      tcp_pose_ = pose;
+      return pose;
     } catch (const tf2::TransformException&) {
       // fall through to cached value
     }

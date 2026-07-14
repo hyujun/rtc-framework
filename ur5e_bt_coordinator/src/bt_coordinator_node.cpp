@@ -46,6 +46,13 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
     RCLCPP_ERROR(coord_log(), "arm_dof/hand_dof must be positive (got %d/%d)", arm_dof_, hand_dof_);
     return CallbackReturn::FAILURE;
   }
+  // tick_rate_hz feeds a 1/rate timer period in on_activate; a non-positive
+  // value yields an infinite/negative period (division by zero) that would
+  // surface as a cryptic timer error much later. Reject it here.
+  if (tick_rate_hz_ <= 0.0) {
+    RCLCPP_ERROR(coord_log(), "tick_rate_hz must be positive (got %.3f)", tick_rate_hz_);
+    return CallbackReturn::FAILURE;
+  }
 
   // shared_from_this() is safe here — node is managed via shared_ptr. Bridge
   // construction and pose/finger-map loading validate their inputs by throwing
@@ -129,12 +136,15 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_activate(
     const rclcpp_lifecycle::State& state) {
   LifecycleNode::on_activate(state);
 
-  // Tick timer (only if not in step mode)
-  if (!step_mode_) {
-    const auto period = std::chrono::duration<double>(1.0 / tick_rate_hz_);
-    tick_timer_ = create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-                                    std::bind(&BtCoordinatorNode::TickCallback, this));
-  } else {
+  // Always create the tick timer, then cancel it if we start in step mode.
+  // Creating it unconditionally means a runtime step_mode→false toggle can just
+  // reset() an existing timer; if the timer were null (never created) that
+  // reset() would be a silent no-op and auto-ticking would never resume.
+  const auto period = std::chrono::duration<double>(1.0 / tick_rate_hz_);
+  tick_timer_ = create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+                                  std::bind(&BtCoordinatorNode::TickCallback, this));
+  if (step_mode_) {
+    tick_timer_->cancel();
     RCLCPP_INFO(coord_log(), "Step mode enabled — use ~/step service to tick");
   }
 
@@ -518,6 +528,7 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
     if (param.get_name() == "tree_file") {
       // Runtime tree switching
       std::string new_file = param.as_string();
+      const std::string old_file = tree_file_;
       RCLCPP_INFO(coord_log(), "Switching tree: %s → %s", tree_file_.c_str(), new_file.c_str());
 
       try {
@@ -536,7 +547,9 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
         // internal subscriptions don't dangle over freed TreeNodes.
         failure_logger_.reset();
 
-        // Load new tree
+        // LoadTree() reads tree_file_, so set it first. On a load failure it is
+        // restored to old_file below (LoadTree throws before reassigning tree_,
+        // so the old BT::Tree object survives intact for the rollback path).
         tree_file_ = new_file;
         LoadTree();
         InitializeBlackboard();
@@ -563,9 +576,19 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
 
         RCLCPP_INFO(coord_log(), "Tree switched to: %s", new_file.c_str());
       } catch (const std::exception& e) {
+        // Rollback to a running old tree: LoadTree threw without swapping tree_,
+        // so the previous tree object is still valid. Restore the recorded file
+        // name, re-attach the failure logger to it, and resume ticking so a bad
+        // switch request is a clean no-op rather than a silently stopped node.
+        tree_file_ = old_file;
+        InstallFailureLogger();
+        if (!step_mode_ && tick_timer_) {
+          tick_timer_->reset();
+        }
         result.successful = false;
         result.reason = std::string("Failed to load tree: ") + e.what();
-        RCLCPP_ERROR(coord_log(), "Tree switch failed: %s", e.what());
+        RCLCPP_ERROR(coord_log(), "Tree switch failed: %s — kept previous tree '%s'", e.what(),
+                     old_file.c_str());
       }
     } else if (param.get_name() == "paused") {
       paused_ = param.as_bool();
