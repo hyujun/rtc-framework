@@ -85,7 +85,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   CreatePublishers();      // digital twin + fixed safety; HW publishers live in backends.
   CreateDeviceBackends();  // state/motor/sensor subs + joint/ros2 command publishers.
   PropagateCapabilitiesIntoMappings();  // patch ControllerSlotMapping after backends decide caps.
-  CreateSubscriptions();  // kTarget lanes only (state/motor/sensor moved to backends).
   CreateServices();
   ExposeTopicParameters();
   CreateTimers();

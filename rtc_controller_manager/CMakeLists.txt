@@ -45,11 +45,9 @@ find_package(rtc_msgs REQUIRED)
 add_library(rtc_controller_manager_lib STATIC
   src/rt_controller_node.cpp
   src/rt_controller_node_params.cpp
-  src/rt_controller_node_subscriptions.cpp
   src/rt_controller_node_publishers.cpp
   src/rt_controller_node_switch.cpp
   src/rt_controller_node_services.cpp
-  src/rt_controller_node_callbacks.cpp
   src/rt_controller_node_rt_loop.cpp
   src/rt_controller_node_publish.cpp
   src/rt_controller_node_estop.cpp
@@ -189,16 +187,6 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib)
   endif()
 
-  ament_add_gtest(test_robot_target_cb_group_invariant
-    test/test_robot_target_cb_group_invariant.cpp)
-  if(TARGET test_robot_target_cb_group_invariant)
-    target_include_directories(test_robot_target_cb_group_invariant PRIVATE include)
-    ament_target_dependencies(test_robot_target_cb_group_invariant
-      rclcpp rclcpp_lifecycle rtc_base)
-    target_link_libraries(test_robot_target_cb_group_invariant
-      rtc_controller_manager_lib)
-  endif()
-
   ament_add_gtest(test_estop
     test/test_estop.cpp)
   if(TARGET test_estop)
@@ -207,17 +195,6 @@ if(BUILD_TESTING)
       rclcpp rclcpp_lifecycle std_msgs sensor_msgs
       rtc_controller_interface rtc_base rtc_msgs)
     target_link_libraries(test_estop
-      rtc_controller_manager_lib)
-  endif()
-
-  ament_add_gtest(test_device_target_callback
-    test/test_device_target_callback.cpp)
-  if(TARGET test_device_target_callback)
-    target_include_directories(test_device_target_callback PRIVATE include test)
-    ament_target_dependencies(test_device_target_callback
-      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
-      rtc_controller_interface rtc_base rtc_msgs)
-    target_link_libraries(test_device_target_callback
       rtc_controller_manager_lib)
   endif()
 

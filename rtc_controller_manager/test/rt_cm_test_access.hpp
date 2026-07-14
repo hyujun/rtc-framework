@@ -176,19 +176,9 @@ class ControllerLifecycleTestAccess {
     return node.AllTimeoutDevicesReceived();
   }
 
-  // ── Device-target callback ──────────────────────────────────────────────────
-  static void SetSlotToGroupName(RtControllerNode& node, std::vector<std::string> names) {
-    node.slot_to_group_name_ = std::move(names);
-  }
-
   static void InjectDeviceNameConfigs(RtControllerNode& node,
                                       std::map<std::string, DeviceNameConfig> configs) {
     node.device_name_configs_ = std::move(configs);
-  }
-
-  static void CallDeviceTargetCallback(RtControllerNode& node, int slot,
-                                       rtc_msgs::msg::RobotTarget::SharedPtr msg) {
-    node.DeviceTargetCallback(slot, std::move(msg));
   }
 
   // ── Device-backend creation (CreateDeviceBackends / PropagateCapabilities) ──

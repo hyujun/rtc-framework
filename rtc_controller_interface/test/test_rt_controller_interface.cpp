@@ -46,7 +46,6 @@ class StubController : public rtc::RTControllerInterface {
 
   [[nodiscard]] std::string_view Name() const noexcept override { return "StubController"; }
 
-
   // Expose protected statics for direct testing.
   using RTControllerInterface::LoadDeviceLimitsFromConfig;
   using RTControllerInterface::ParseArmSafePosition;
@@ -264,7 +263,7 @@ ur5e:
     - {topic: /ur5e/target, role: target}
   publish:
     - {topic: /ur5e/robot_target, role: robot_target}
-    - {topic: transforms, role: robot_transforms, ownership: controller}
+    - {topic: transforms, role: robot_transforms}
 hand:
   subscribe:
     - {topic: /hand/target, role: target}
@@ -870,6 +869,124 @@ TEST(ParseArmSafePosition, ErrorMessageIncludesControllerName) {
   } catch (const std::runtime_error& e) {
     EXPECT_NE(std::string(e.what()).find("my_special_ctrl"), std::string::npos);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DeliverTargetMessage — reorder / goal-type routing / clip
+//
+// Issue #138: the controller-owned target subscription (integrated_bringup
+// owned_topics) routes RobotTarget through this base method. It absorbs the
+// reorder + goal-type + clip logic that formerly lived in CM's manager-owned
+// DeviceTargetCallback (removed with the manager-target path). The
+// "dispatch to the currently-active controller" concern is now structural —
+// only the active controller's LifecycleNode subscription is active — and is
+// covered by integrated_bringup's controller-switch / cb-group invariant tests.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Recording controller — captures the target slot + payload that
+// DeliverTargetMessage forwards. Task targets land in SetDeviceTaskTarget,
+// whose default implementation forwards to SetDeviceTarget (see the base),
+// so both goal types record into the same slot/vector.
+class TargetRecordingController : public rtc::RTControllerInterface {
+ public:
+  [[nodiscard]] rtc::ControllerOutput Compute(const rtc::ControllerState&) noexcept override {
+    return rtc::ControllerOutput{};
+  }
+
+  void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override {
+    last_slot = device_idx;
+    last_target.assign(target.begin(), target.end());
+    ++set_target_count;
+  }
+
+  [[nodiscard]] std::string_view Name() const noexcept override {
+    return "TargetRecordingController";
+  }
+
+  int set_target_count{0};
+  int last_slot{-1};
+  std::vector<double> last_target;
+};
+
+rtc_msgs::msg::RobotTarget MakeJointTarget(const std::vector<double>& joints,
+                                           const std::vector<std::string>& names = {}) {
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "joint";
+  msg.joint_target = joints;
+  msg.joint_names = names;
+  return msg;
+}
+
+TEST(DeliverTargetMessage, JointTargetForwardedToSlot) {
+  TargetRecordingController ctrl;
+  const auto msg = MakeJointTarget({1.0, 2.0, 3.0});
+  ctrl.DeliverTargetMessage("arm", /*device_idx=*/0, msg);
+
+  EXPECT_EQ(1, ctrl.set_target_count);
+  EXPECT_EQ(0, ctrl.last_slot);
+  ASSERT_EQ(3u, ctrl.last_target.size());
+  EXPECT_DOUBLE_EQ(1.0, ctrl.last_target[0]);
+  EXPECT_DOUBLE_EQ(3.0, ctrl.last_target[2]);
+}
+
+TEST(DeliverTargetMessage, TaskTargetForwardedAsSixElements) {
+  TargetRecordingController ctrl;
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "task";
+  msg.task_target = {0.1, 0.2, 0.3, 0.4, 0.5, 0.6};
+  ctrl.DeliverTargetMessage("arm", /*device_idx=*/0, msg);
+
+  EXPECT_EQ(1, ctrl.set_target_count);
+  ASSERT_EQ(6u, ctrl.last_target.size());
+  EXPECT_DOUBLE_EQ(0.1, ctrl.last_target[0]);
+  EXPECT_DOUBLE_EQ(0.6, ctrl.last_target[5]);
+}
+
+TEST(DeliverTargetMessage, EmptyJointTargetIsIgnored) {
+  TargetRecordingController ctrl;
+  const auto msg = MakeJointTarget({});  // joint goal with no payload → early return
+  ctrl.DeliverTargetMessage("arm", /*device_idx=*/0, msg);
+  EXPECT_EQ(0, ctrl.set_target_count);
+}
+
+TEST(DeliverTargetMessage, JointNamesReorderedAgainstDeviceConfig) {
+  TargetRecordingController ctrl;
+  std::map<std::string, rtc::DeviceNameConfig> cfgs;
+  rtc::DeviceNameConfig arm;
+  arm.device_name = "arm";
+  arm.joint_state_names = {"j1", "j2", "j3"};
+  cfgs.emplace("arm", std::move(arm));
+  ctrl.SetDeviceNameConfigs(std::move(cfgs));
+
+  // msg lists joints out of device order: j3, j1, j2 → 30, 10, 20.
+  const auto msg = MakeJointTarget({30.0, 10.0, 20.0}, {"j3", "j1", "j2"});
+  ctrl.DeliverTargetMessage("arm", /*device_idx=*/0, msg);
+
+  ASSERT_EQ(3u, ctrl.last_target.size());
+  // Reordered back into device order j1, j2, j3.
+  EXPECT_DOUBLE_EQ(10.0, ctrl.last_target[0]);
+  EXPECT_DOUBLE_EQ(20.0, ctrl.last_target[1]);
+  EXPECT_DOUBLE_EQ(30.0, ctrl.last_target[2]);
+}
+
+TEST(DeliverTargetMessage, UnknownGroupFallsThroughUnreordered) {
+  TargetRecordingController ctrl;  // no device configs registered
+  const auto msg = MakeJointTarget({7.0, 8.0}, {"jx", "jy"});
+  ctrl.DeliverTargetMessage("unknown", /*device_idx=*/0, msg);
+
+  ASSERT_EQ(2u, ctrl.last_target.size());
+  EXPECT_DOUBLE_EQ(7.0, ctrl.last_target[0]);
+  EXPECT_DOUBLE_EQ(8.0, ctrl.last_target[1]);
+}
+
+TEST(DeliverTargetMessage, OverlongJointTargetClippedToMaxChannels) {
+  TargetRecordingController ctrl;
+  const std::vector<double> big(rtc::kMaxDeviceChannels + 5, 1.0);
+  const auto msg = MakeJointTarget(big);  // no joint_names → no reorder, just clip
+  ctrl.DeliverTargetMessage("arm", /*device_idx=*/0, msg);
+
+  ASSERT_EQ(1, ctrl.set_target_count);
+  EXPECT_EQ(static_cast<std::size_t>(rtc::kMaxDeviceChannels), ctrl.last_target.size());
 }
 
 }  // namespace

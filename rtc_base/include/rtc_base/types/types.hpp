@@ -382,40 +382,23 @@ enum class PublishRole {
   kRobotTransforms,  // tf2_msgs/TFMessage (controller-owned)
 };
 
-// ── Topic ownership tier ────────────────────────────────────────────────────
-// Who creates the ROS2 subscription/publisher for a given topic entry:
-//   kManager    : RtControllerNode (CM) — RT-adjacent, HW ↔ control-loop
-//                 traffic (state, commands, logs). Default when YAML omits
-//                 the field.
-//   kController : per-controller LifecycleNode — external GUI / BT / planner
-//                 traffic that is non-RT and may differ per controller.
-//                 Controller-owned topics inherit the node's namespace
-//                 (`/<config_key>/...`) when the YAML path is relative.
-enum class TopicOwnership : uint8_t {
-  kManager = 0,
-  kController = 1,
-};
-
-[[nodiscard]] inline constexpr const char* TopicOwnershipToString(TopicOwnership own) noexcept {
-  switch (own) {
-    case TopicOwnership::kManager:
-      return "manager";
-    case TopicOwnership::kController:
-      return "controller";
-  }
-  return "unknown";
-}
+// ── Topic entries ───────────────────────────────────────────────────────────
+// Issue #138 (post-Phase 4): controller-YAML topic entries are controller-owned
+// by contract — the per-controller LifecycleNode creates every subscribe/publish
+// entry (external GUI / BT / planner traffic, relative paths inheriting the
+// node's `/<config_key>/...` namespace). Device-wire state/command lanes live in
+// `devices.<group>.backend` (DeviceBackend-owned); CM's own fixed topics are
+// hard-coded, not YAML-declared. There is no manager-owned controller-YAML lane,
+// so the former `TopicOwnership` tier no longer exists.
 
 struct SubscribeTopicEntry {
   std::string topic_name;
-  TopicOwnership ownership{TopicOwnership::kManager};
 };
 
 struct PublishTopicEntry {
   std::string topic_name;
   PublishRole role;
   int data_size{0};  // pre-allocate message size (0 = use default for role)
-  TopicOwnership ownership{TopicOwnership::kManager};
 };
 
 // ── Device topic grouping ────────────────────────────────────────────────────

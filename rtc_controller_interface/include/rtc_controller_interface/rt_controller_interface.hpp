@@ -188,9 +188,9 @@ class RTControllerInterface {
 
   // PublishNonRtSnapshot()
   //   Called from the non-RT publish thread after CM has drained the SPSC
-  //   snapshot and dispatched manager-owned publishers. Override to publish
-  //   controller-owned topics (ownership == TopicOwnership::kController) via
-  //   publishers the controller created in on_configure/on_activate.
+  //   snapshot and dispatched its fixed publishers. Override to publish
+  //   controller-owned topics via publishers the controller created in
+  //   on_configure/on_activate.
   //
   //   Group iteration order in `snap.group_commands` matches the controller's
   //   own `topic_config_.groups` order (set by the RT loop), so overrides can
@@ -201,7 +201,8 @@ class RTControllerInterface {
   virtual void PublishNonRtSnapshot(const PublishSnapshot& snap) noexcept { (void)snap; }
 
   // DeliverTargetMessage()
-  //   Relocates CM's legacy DeviceTargetCallback logic into the controller.
+  //   Owns the target reorder/route/clip logic for controller-owned target
+  //   subscriptions (formerly CM's manager-owned callback, removed in #138).
   //   Use from controller-owned target-topic subscription callbacks:
   //     - joint_target goal: reorders by msg.joint_names against
   //       device_name_configs_[group_name].joint_state_names;

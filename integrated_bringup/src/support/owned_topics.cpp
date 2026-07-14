@@ -62,9 +62,7 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
     const auto gi = static_cast<std::size_t>(group_idx);
 
     for (const auto& sub : group.subscribe) {
-      if (sub.ownership != rtc::TopicOwnership::kController) {
-        continue;
-      }
+      // Issue #138: every controller-YAML subscribe entry is controller-owned.
       // Phase 4 trailing cleanup: SubscribeRole enum dropped — the only
       // remaining subscribe lane is the controller target (RobotTarget).
       if (gi < kMaxOwnedGroups) {
@@ -79,9 +77,7 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
     }
 
     for (const auto& pub : group.publish) {
-      if (pub.ownership != rtc::TopicOwnership::kController) {
-        continue;
-      }
+      // Issue #138: every controller-YAML publish entry is controller-owned.
       switch (pub.role) {
         case rtc::PublishRole::kRobotTransforms: {
           // Single TF publisher per controller (D-2). YAML places the entry

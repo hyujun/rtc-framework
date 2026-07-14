@@ -10,33 +10,17 @@
 // per-controller SeqLock<T> handoffs.
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace urtc = rtc;
 
 void RtControllerNode::CreatePublishers() {
-  // Phase 4: device-wire command publication is owned by DeviceBackend impls;
-  // controller-output roles (kRobotTarget / kRobotTransforms /
-  // kDigitalTwinState) are controller-owned. Reject any manager-ownership
-  // publish entry so YAML mistakes surface early.
-  for (const auto& tc : controller_topic_configs_) {
-    for (const auto& [group_name, group] : tc.groups) {
-      if (!active_groups_.contains(group_name))
-        continue;
-      for (const auto& entry : group.publish) {
-        if (entry.ownership == urtc::TopicOwnership::kController)
-          continue;
-        throw std::logic_error(std::string("CreatePublishers: role '") +
-                               urtc::PublishRoleToString(entry.role) + "' for topic '" +
-                               entry.topic_name + "' (group '" + group_name +
-                               "') is controller-owned only; set ownership: controller in the YAML "
-                               "or remove the entry.");
-      }
-    }
-  }
-
+  // Phase 4 + issue #138: device-wire command publication is owned by
+  // DeviceBackend impls; controller-output roles (kRobotTarget /
+  // kRobotTransforms / kDigitalTwinState) are always controller-owned and are
+  // created on each controller's LifecycleNode (integrated_bringup
+  // owned_topics). CM only owns its fixed publishers below.
   CreateDigitalTwinPublishers();
   CreateFixedSafetyPublishers();
 }
