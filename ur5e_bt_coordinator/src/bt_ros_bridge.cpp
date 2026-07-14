@@ -129,11 +129,17 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
   active_ctrl_sub_ = node_->create_subscription<std_msgs::msg::String>(
       "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local(),
       [this](std_msgs::msg::String::SharedPtr msg) {
+        // Rebind the controller-owned topics/clients FIRST, then publish the
+        // name — so a reader that observes GetActiveController() == msg->data is
+        // guaranteed the param/grasp clients are already bound (they are created
+        // inside RewireControllerTopics). Setting the name first would expose a
+        // window where the controller reads as active but its clients are still
+        // null / point at the previous controller.
+        RewireControllerTopics(msg->data);
         {
           std::lock_guard lock(state_mutex_);
           active_controller_ = msg->data;
         }
-        RewireControllerTopics(msg->data);
       });
 
   estop_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
