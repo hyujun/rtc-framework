@@ -22,7 +22,8 @@
   - Phase 1 (`e68d028`): 콜백 람다 10개 → `On*` private 핸들러 추출 + `BridgeStateInjector` friend 선언. 22/22 통과.
   - Phase 2+3 (`f50e3fb`): `test/inject_fixture.hpp` 신설 (injector + `InjectTestFixture`), 6개 바이너리 base-class 교체 (assertion diff 0건 — `git diff -U0 | grep 'EXPECT\|ASSERT'` 빈 출력 확인), `test_hand_nodes.cpp` raw `PublishUntilObserved` 1곳 injector 치환, CMake `TIER2_INJECT`(6)/`TIER2_E2E`(4) 분리, `test_helpers.hpp` 미사용 helper/publisher prune.
   - Phase 4: Release 10회 연속 ctest **10/10 green** (아래 Evidence).
-- Phase 5 진행 중: testing-debug.md sensor matrix 행 + 패키지 README 테스트 절 갱신 완료. `/code-review` (8-angle find → 1-vote verify) 완료 — CONFIRMED 4·PLAUSIBLE 2 전부 반영: `<map>` 직접 include (test_condition_nodes.cpp + bt_ros_bridge.hpp), `assm_v1_joint_names` 2중 복제 → `test/hand_joint_names.hpp` 공용화, inject 쪽 미사용 `TickUntilComplete` 사본 삭제, injector `bridge` 멤버 네이밍 (struct public), `Spin(dur)` 실제 sleep 화, `kRosContextEnv` inline→static. REFUTED 4 (Env shutdown 소유권 / RPY hand-roll 이동코드 / 10-핸들러 mirror 완전성 by-design / friend 폭 D2·D4 확정사항). 남은 것: PR (`Closes #154`) → merge 후 auto-memory prune + artifact `completed/` 이동.
+- Phase 5 완료: testing-debug.md sensor matrix 행 + 패키지 README 테스트 절 갱신. `/code-review` (8-angle find → 1-vote verify) — CONFIRMED 4·PLAUSIBLE 2 전부 반영: `<map>` 직접 include (test_condition_nodes.cpp + bt_ros_bridge.hpp), `assm_v1_joint_names` 2중 복제 → `test/hand_joint_names.hpp` 공용화, inject 쪽 미사용 `TickUntilComplete` 사본 삭제, injector `bridge` 멤버 네이밍 (struct public), `Spin(dur)` 실제 sleep 화, `kRosContextEnv` inline→static. REFUTED 4 (Env shutdown 소유권 / RPY hand-roll 이동코드 / 10-핸들러 mirror 완전성 by-design / friend 폭 D2·D4 확정사항).
+- **종결 (2026-07-15)**: 사용자 결정 — PR 없이 main 직접 merge. #154 close (정리 코멘트 포함), e2e 잔존 flake 는 **#160** (Direction 4) 으로 분리. 이 artifact 는 `completed/` 로 이동.
 - 이슈 #154 착수 코멘트 (구현 세부 3가지) — 미게시 (Phase 0 잔여분, PR 게시로 갈음 가능 여부는 사용자 판단).
 
 ## Next action
@@ -87,7 +88,8 @@
 
 ## Pointers
 
-- Issue: https://github.com/hyujun/rtc-framework/issues/154 (owner 분석 코멘트 2026-07-14 포함)
+- Issue: https://github.com/hyujun/rtc-framework/issues/154 (owner 분석 코멘트 2026-07-14 포함; 2026-07-15 closed)
+- Follow-up: https://github.com/hyujun/rtc-framework/issues/160 (e2e tier 잔존 flake — Direction 4)
 - Refs: ec89e93 (depth-1 QoS, ARCH-6), f6cc942, 22a4269 (선행 point-fix)
 - `ur5e_bt_coordinator/src/bt_ros_bridge.cpp` — 추출 대상 콜백: 생성자 65-166 (arm/hand joint, world_target, active_ctrl, estop, shape), `RewireControllerTopics` 576-733 (transforms 615, grasp_state 622, tof 667, wbc_state 679; target pub 711-714)
 - `ur5e_bt_coordinator/src/bt_ros_bridge.cpp:269-295` — `PublishArmTarget`/`PublishHandTarget` null-deref (D3 근거)
