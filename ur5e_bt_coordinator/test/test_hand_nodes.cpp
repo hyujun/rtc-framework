@@ -64,6 +64,29 @@ TEST_F(HandNodeTest, SetHandPose_CompletesAfterDuration) {
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
 }
 
+TEST_F(HandNodeTest, SetHandPose_NoFeedbackSucceedsAfterDuration) {
+  // Review Finding 2: when hand joint feedback is absent (no /hand/joint_states
+  // ever published), MaxHandJointError is +inf and convergence is UNVERIFIABLE.
+  // The D4 gate must fall back to the pre-gate "trust the estimated duration"
+  // behavior — SUCCESS shortly after the duration — instead of blocking to a
+  // timeout FAILURE, so a variant without hand feedback does not fail every hand
+  // motion. Deliberately publish NO hand state here (contrast the test above).
+  auto tree = CreateTree(R"(<SetHandPose pose="home" timeout_s="2.0"/>)");
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+
+  // Poll well past the (short) estimated duration but comfortably under the 2s
+  // timeout: the fallback yields SUCCESS fast; the pre-fix bug would stay RUNNING
+  // here and only FAIL at 2s.
+  BT::NodeStatus status = BT::NodeStatus::RUNNING;
+  const auto start = std::chrono::steady_clock::now();
+  while (status == BT::NodeStatus::RUNNING &&
+         std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1000)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    status = tree.tickOnce();
+  }
+  EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+
 TEST_F(HandNodeTest, SetHandPose_UnknownPoseThrows) {
   PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
   Spin();
@@ -167,6 +190,44 @@ TEST_F(HandNodeTest, MoveOpposition_InvalidFingerThrows) {
                          target_finger="pinky"
                          target_pose="index_oppose"/>)");
   EXPECT_THROW(tree.tickOnce(), BT::RuntimeError);
+}
+
+TEST_F(HandNodeTest, MoveOpposition_OobResolverIndexIsSkipped) {
+  // Regression (Phase 2b): if the finger resolver returns an index beyond the
+  // pose/cmd width (more joint_states than pose DoF, or a misconfigured
+  // finger_map), MoveOpposition must skip it — not perform an OOB heap write.
+  // Publish an 11-joint state whose 11th joint is a thumb joint (index 10), one
+  // past the 10-wide home/opposition poses. The old raw-index duration loop
+  // wrote full_target[10] on a 10-element vector (UB); the guarded
+  // ApplyOppositionTarget reused here skips it and stays at pose width.
+  const std::vector<std::string> names = {
+      "thumb_cmc_aa",  "thumb_cmc_fe", "thumb_mcp_fe",  "index_mcp_aa",
+      "index_mcp_fe",  "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe",
+      "middle_dip_fe", "ring_mcp_fe",  "thumb_extra_fe"};  // index 10 → resolves into "thumb", OOB
+                                                           // for 10-wide pose
+  PublishUntilObserved(
+      [this, &names]() {
+        sensor_msgs::msg::JointState js;
+        js.name = names;
+        js.position.assign(names.size(), 0.0);
+        hand_joint_pub_->publish(js);
+      },
+      [this, &names]() { return bridge_->GetHandJointPositions().size() == names.size(); });
+
+  // Precondition: the resolver really does surface the out-of-range index.
+  ASSERT_FALSE(bridge_->GetFingerJointIndices("thumb").empty());
+  ASSERT_EQ(bridge_->GetFingerJointIndices("thumb").back(), 10);
+
+  auto tree = CreateTree(
+      R"(<MoveOpposition thumb_pose="thumb_index_oppose"
+                         target_finger="index"
+                         target_pose="index_oppose"/>)");
+
+  // Must not crash/OOB; the composed target stays at pose width (idx 10 skipped).
+  BT::NodeStatus status = BT::NodeStatus::IDLE;
+  ASSERT_NO_THROW(status = tree.tickOnce());
+  EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+  EXPECT_EQ(bridge_->GetLastHandTarget().size(), 10U);
 }
 
 // ══════════════════════════════════════════════════════════════════════════

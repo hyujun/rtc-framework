@@ -4,8 +4,10 @@
 
 #include <behaviortree_cpp/bt_factory.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -60,6 +62,11 @@ struct CachedGraspState {
   std::vector<float> finger_s;               // grasp parameter per finger [0,1]
   std::vector<float> finger_filtered_force;  // filtered force per finger [N]
   std::vector<float> finger_force_error;     // force error per finger [N]
+
+  // steady_clock receive time of the message this state was decoded from.
+  // Default (epoch) means never received; the staleness gate treats that as
+  // stale so a condition node fails closed instead of trusting a zero aggregate.
+  std::chrono::steady_clock::time_point received_at{};
 };
 
 // ── Cached WBC state (from /<ctrl>/hand/wbc_state, computed at 500Hz) ───────
@@ -100,7 +107,26 @@ struct CachedWbcState {
   float tsid_solve_us{0.0f};
   bool tsid_solver_ok{true};
   int qp_fail_count{0};
+
+  // No received_at here (unlike CachedGraspState): no condition node reads WBC
+  // state, so there is no staleness gate to feed. Add it back alongside the
+  // consumer if a WBC-reading gate is introduced. Health is still tracked via
+  // the wbc_state topic watchdog.
 };
+
+// Max age (s) a cached grasp/wbc aggregate may reach before condition nodes
+// treat it as stale and fail closed. Shorter than the default watchdog_timeout
+// (2.0s) so a dead 500Hz producer trips these gates well before the watchdog.
+constexpr double kGraspStateStaleSec = 0.5;
+
+/// Age in seconds of a cached state given its `received_at`. Returns +inf when
+/// unset (never received) so a staleness comparison fails closed.
+inline double CachedStateAgeSec(std::chrono::steady_clock::time_point received_at) {
+  if (received_at == std::chrono::steady_clock::time_point{}) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - received_at).count();
+}
 
 }  // namespace rtc_bt
 

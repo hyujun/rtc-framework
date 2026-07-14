@@ -27,6 +27,9 @@ class SwitchControllerTest : public RosTestFixture {
     return factory_.createTreeFromText(full);
   }
 
+  // TickUntilComplete (poll a StatefulActionNode across ticks) lives in
+  // test_helpers.hpp — shared with test_set_gains.
+
   BT::BehaviorTreeFactory factory_;
 };
 
@@ -120,7 +123,7 @@ TEST_F(SwitchControllerSrvTest, SrvSwitchSucceedsImmediately) {
       R"(<SwitchController controller_name="demo_joint_controller"
                           timeout_s="2.0"/>)");
 
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(captured_target, "demo_joint_controller");
 }
 
@@ -137,5 +140,5 @@ TEST_F(SwitchControllerSrvTest, SrvRejectionPropagatesAsFailure) {
       R"(<SwitchController controller_name="demo_joint_controller"
                           timeout_s="2.0"/>)");
 
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::FAILURE);
 }

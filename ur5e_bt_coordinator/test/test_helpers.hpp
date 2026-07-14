@@ -97,6 +97,23 @@ inline bool PublishUntilObserved(const std::function<void()>& publish,
   }
 }
 
+/// Tick `tree` until its root leaves RUNNING or `timeout` expires, returning the
+/// final status. For StatefulActionNode-based nodes (SwitchController, SetGains)
+/// whose onStart fires a service async and onRunning polls the future across
+/// ticks — the fixture's background spin fulfils the future between ticks.
+inline BT::NodeStatus TickUntilComplete(
+    BT::Tree& tree, std::chrono::milliseconds timeout = std::chrono::milliseconds(6000)) {
+  const auto start = std::chrono::steady_clock::now();
+  BT::NodeStatus status = tree.tickOnce();
+  while (status == BT::NodeStatus::RUNNING) {
+    if (std::chrono::steady_clock::now() - start > timeout)
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    status = tree.tickOnce();
+  }
+  return status;
+}
+
 /// Mock per-controller LifecycleNode hosting a representative gain parameter
 /// set + grasp_command srv. Mirrors the real demo controllers' surface so
 /// the bridge's AsyncParametersClient + grasp_command_client_ can round-trip

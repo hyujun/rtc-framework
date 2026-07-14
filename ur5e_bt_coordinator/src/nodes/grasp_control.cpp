@@ -14,6 +14,15 @@ namespace {
 auto logger() {
   return ::rtc_bt::logging::ActionLogger("grasp_control");
 }
+
+// Upper bound [s] on the measured inter-tick dt used to advance the close/pinch
+// target. While this node is RUNNING the coordinator can stop ticking for an
+// arbitrary span (paused param / E-STOP — TickCallback returns early without a
+// halt), freezing last_tick_time_; the cap keeps the first tick after such a gap
+// from jumping the target to max_position in one step. Sits well above both the
+// 12.5–50 ms nominal tick and the measured-dt regression test's 300 ms probe, so
+// only genuine multi-hundred-ms stalls clip.
+constexpr double kMaxGraspTickDt = 0.5;
 }  // namespace
 
 GraspControl::GraspControl(const std::string& name, const BT::NodeConfig& config,
@@ -26,7 +35,7 @@ BT::PortsList GraspControl::providedPorts() {
       BT::InputPort<std::vector<double>>("target_positions"),
       BT::InputPort<double>("close_speed", 0.3, "Closing speed [rad/s]"),
       BT::InputPort<double>("max_position", 1.4, "Max motor position [rad]"),
-      BT::InputPort<std::string>("pinch_motors", "0,1,2,3", "Motor indices for pinch"),
+      BT::InputPort<std::string>("pinch_fingers", "thumb,index", "Finger names for pinch mode"),
       BT::InputPort<double>("timeout_s", 8.0, "Timeout [s]"),
   };
 }
@@ -37,9 +46,24 @@ BT::NodeStatus GraspControl::onStart() {
   max_position_ = getInput<double>("max_position").value_or(1.4);
   timeout_s_ = getInput<double>("timeout_s").value_or(8.0);
   start_time_ = std::chrono::steady_clock::now();
+  last_tick_time_ = start_time_;
 
-  auto pinch_str = getInput<std::string>("pinch_motors").value_or("0,1,2,3");
-  pinch_motor_indices_ = ParseCsvList<int>(pinch_str);
+  // Resolve pinch_fingers (finger names) → hand-joint indices at runtime, so a
+  // variable per-finger DoF / joint layout is not hardcoded as raw indices.
+  auto pinch_str = getInput<std::string>("pinch_fingers").value_or("thumb,index");
+  pinch_joint_indices_.clear();
+  std::istringstream fss(pinch_str);
+  std::string finger;
+  while (std::getline(fss, finger, ',')) {
+    // Trim surrounding whitespace so "thumb, index" resolves both names.
+    const auto b = finger.find_first_not_of(" \t");
+    const auto e = finger.find_last_not_of(" \t");
+    if (b == std::string::npos)
+      continue;
+    finger = finger.substr(b, e - b + 1);
+    const auto idx = bridge_->GetFingerJointIndices(finger);
+    pinch_joint_indices_.insert(pinch_joint_indices_.end(), idx.begin(), idx.end());
+  }
 
   RCLCPP_INFO(logger(), "mode=%s speed=%.2f max_pos=%.2f timeout=%.1fs", mode_.c_str(),
               close_speed_, max_position_, timeout_s_);
@@ -93,8 +117,20 @@ BT::NodeStatus GraspControl::onRunning() {
     return BT::NodeStatus::RUNNING;
   }
 
-  // "close" or "pinch": increment targets
-  double increment = close_speed_ * tick_dt_;
+  // "close" or "pinch": increment targets by measured tick dt so the closing
+  // rate is independent of BT tick_rate_hz. First tick dt≈0 (harmless).
+  //
+  // Clamp dt to one long tick's worth: while this node is RUNNING the coordinator
+  // may stop ticking for an arbitrary span (paused param, E-STOP — TickCallback
+  // returns early without a halt), which freezes last_tick_time_. Without the
+  // clamp the first tick after resume would see dt = the whole gap and jump the
+  // target straight to max_position, defeating the gradual close. Normal ticks
+  // (12.5–50 ms at 20–80 Hz) stay well under the cap, so only resume gaps clip.
+  const auto now = std::chrono::steady_clock::now();
+  double dt = std::chrono::duration<double>(now - last_tick_time_).count();
+  last_tick_time_ = now;
+  dt = std::min(dt, kMaxGraspTickDt);
+  const double increment = close_speed_ * dt;
   bool all_at_max = true;
 
   if (mode_ == "close") {
@@ -104,7 +140,7 @@ BT::NodeStatus GraspControl::onRunning() {
         all_at_max = false;
     }
   } else {  // pinch
-    for (int idx : pinch_motor_indices_) {
+    for (int idx : pinch_joint_indices_) {
       auto ui = static_cast<std::size_t>(idx);
       if (ui < hand_target_.size()) {
         hand_target_[ui] = std::min(hand_target_[ui] + increment, max_position_);

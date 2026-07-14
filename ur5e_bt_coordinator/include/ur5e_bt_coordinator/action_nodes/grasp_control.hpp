@@ -16,7 +16,7 @@ namespace rtc_bt {
 /// Modes:
 ///   - "open":   Move all motors to target_positions
 ///   - "close":  Incrementally close all motors at close_speed until max_position
-///   - "pinch":  Incrementally close only pinch_motors at close_speed
+///   - "pinch":  Incrementally close only the joints of pinch_fingers
 ///   - "preset": Move all motors to target_positions
 ///
 /// In "close"/"pinch" mode, returns RUNNING each tick while incrementing
@@ -28,7 +28,8 @@ namespace rtc_bt {
 ///   - target_positions (vector<double>): target for "open"/"preset" modes
 ///   - close_speed (double): closing speed [rad/s] (default 0.3)
 ///   - max_position (double): max motor position [rad] (default 1.4)
-///   - pinch_motors (string): comma-separated motor indices for pinch mode (default "0,1,2,3")
+///   - pinch_fingers (string): comma-separated finger names for pinch mode,
+///     resolved to hand-joint indices at runtime (default "thumb,index")
 ///   - timeout_s (double): timeout [s] (default 8.0)
 class GraspControl : public BT::StatefulActionNode {
  public:
@@ -45,12 +46,14 @@ class GraspControl : public BT::StatefulActionNode {
   std::shared_ptr<BtRosBridge> bridge_;
   std::string mode_;
   std::vector<double> hand_target_;
-  std::vector<int> pinch_motor_indices_;
+  // Hand-joint indices to close in "pinch" mode, resolved from the
+  // pinch_fingers finger names via BtRosBridge::GetFingerJointIndices.
+  std::vector<int> pinch_joint_indices_;
   double close_speed_{0.3};
   double max_position_{1.4};
   double timeout_s_{8.0};
-  double tick_dt_{0.05};  // 20 Hz default
   std::chrono::steady_clock::time_point start_time_;
+  std::chrono::steady_clock::time_point last_tick_time_;  // for measured dt in close/pinch
 };
 
 }  // namespace rtc_bt

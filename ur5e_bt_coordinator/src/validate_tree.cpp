@@ -11,31 +11,7 @@
 /// Exit codes:
 ///   0 = valid, 1 = invalid, 2 = file not found
 
-#include "ur5e_bt_coordinator/action_nodes/compute_offset_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/compute_sweep_trajectory.hpp"
-#include "ur5e_bt_coordinator/action_nodes/compute_tilt_sequence.hpp"
-#include "ur5e_bt_coordinator/action_nodes/flex_extend_finger.hpp"
-#include "ur5e_bt_coordinator/action_nodes/get_current_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/grasp_control.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_finger.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_opposition.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_to_joints.hpp"
-#include "ur5e_bt_coordinator/action_nodes/move_to_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_hand_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/set_pose_z.hpp"
-#include "ur5e_bt_coordinator/action_nodes/switch_controller.hpp"
-#include "ur5e_bt_coordinator/action_nodes/track_trajectory.hpp"
-#include "ur5e_bt_coordinator/action_nodes/trigger_shape_estimation.hpp"
-#include "ur5e_bt_coordinator/action_nodes/ur5e_hold_pose.hpp"
-#include "ur5e_bt_coordinator/action_nodes/wait_duration.hpp"
-#include "ur5e_bt_coordinator/action_nodes/wait_shape_result.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/check_shape_type.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
-#include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
+#include "ur5e_bt_coordinator/bt_node_registration.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -79,38 +55,14 @@ int main(int argc, char** argv) {
 
   std::cout << "[validate_tree] Checking: " << tree_path << "\n";
 
-  // Register all node types with a null bridge (validation only, no ROS comms)
+  // Register every node type with a null bridge (validation only, no ROS comms),
+  // reusing the single production registration path so this tool can never drift
+  // out of sync with the node set. All capabilities on = validate against the
+  // full superset (incl. ToF/shape nodes), so a tree using any registered node
+  // resolves regardless of a robot's runtime capability gating.
   BT::BehaviorTreeFactory factory;
   std::shared_ptr<rtc_bt::BtRosBridge> null_bridge;  // nullptr
-
-  // Action nodes
-  factory.registerNodeType<rtc_bt::MoveToPose>("MoveToPose", null_bridge);
-  factory.registerNodeType<rtc_bt::MoveToJoints>("MoveToJoints", null_bridge);
-  factory.registerNodeType<rtc_bt::GraspControl>("GraspControl", null_bridge);
-  factory.registerNodeType<rtc_bt::TrackTrajectory>("TrackTrajectory", null_bridge);
-  factory.registerNodeType<rtc_bt::SetGains>("SetGains", null_bridge);
-  factory.registerNodeType<rtc_bt::SwitchController>("SwitchController", null_bridge);
-  factory.registerNodeType<rtc_bt::ComputeOffsetPose>("ComputeOffsetPose");
-  factory.registerNodeType<rtc_bt::SetPoseZ>("SetPoseZ");
-  factory.registerNodeType<rtc_bt::ComputeSweepTrajectory>("ComputeSweepTrajectory");
-  factory.registerNodeType<rtc_bt::ComputeTiltSequence>("ComputeTiltSequence");
-  factory.registerNodeType<rtc_bt::GetCurrentPose>("GetCurrentPose", null_bridge);
-  factory.registerNodeType<rtc_bt::WaitDuration>("WaitDuration");
-  factory.registerNodeType<rtc_bt::MoveFinger>("MoveFinger", null_bridge);
-  factory.registerNodeType<rtc_bt::FlexExtendFinger>("FlexExtendFinger", null_bridge);
-  factory.registerNodeType<rtc_bt::SetHandPose>("SetHandPose", null_bridge);
-  factory.registerNodeType<rtc_bt::UR5eHoldPose>("UR5eHoldPose", null_bridge);
-  factory.registerNodeType<rtc_bt::MoveOpposition>("MoveOpposition", null_bridge);
-  factory.registerNodeType<rtc_bt::TriggerShapeEstimation>("TriggerShapeEstimation", null_bridge);
-  factory.registerNodeType<rtc_bt::WaitShapeResult>("WaitShapeResult", null_bridge);
-
-  // Condition nodes
-  factory.registerNodeType<rtc_bt::IsForceAbove>("IsForceAbove", null_bridge);
-  factory.registerNodeType<rtc_bt::IsGraspPhase>("IsGraspPhase", null_bridge);
-  factory.registerNodeType<rtc_bt::IsGrasped>("IsGrasped", null_bridge);
-  factory.registerNodeType<rtc_bt::IsObjectDetected>("IsObjectDetected", null_bridge);
-  factory.registerNodeType<rtc_bt::IsVisionTargetReady>("IsVisionTargetReady", null_bridge);
-  factory.registerNodeType<rtc_bt::CheckShapeType>("CheckShapeType", null_bridge);
+  rtc_bt::RegisterBtNodes(factory, null_bridge, rtc_bt::RobotCapabilities{true, true, true});
 
   try {
     auto tree = factory.createTreeFromFile(tree_path.string());

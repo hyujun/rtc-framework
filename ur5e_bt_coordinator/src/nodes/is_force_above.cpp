@@ -1,6 +1,7 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/grasp_staleness.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -34,6 +35,14 @@ BT::NodeStatus IsForceAbove::tick() {
   // Use 500Hz pre-computed grasp state from controller
   auto gs = bridge_->GetGraspState();
 
+  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
+
+  // Fail closed on a stale grasp state (dead/paused 500Hz producer would leave
+  // the last message's forces frozen). Mirrors IsGrasped.
+  if (GraspStateStale(gs.received_at, logger(), steady_clock)) {
+    return BT::NodeStatus::FAILURE;
+  }
+
   int count;
   if (std::abs(threshold - static_cast<double>(gs.force_threshold)) < 0.01 &&
       min_ft == gs.min_fingertips) {
@@ -56,15 +65,14 @@ BT::NodeStatus IsForceAbove::tick() {
 
   bool condition_met = (count >= min_ft);
 
-  static rclcpp::Clock steady_clock{RCL_STEADY_TIME};
-
   RCLCPP_DEBUG_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
                         "count=%d/%d max_force=%.2fN threshold=%.2fN", count, min_ft, gs.max_force,
                         threshold);
 
   if (sustained_ms <= 0) {
     if (condition_met) {
-      RCLCPP_INFO(logger(), "triggered (%d fingertips >= %.2fN)", count, threshold);
+      RCLCPP_INFO_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
+                           "triggered (%d fingertips >= %.2fN)", count, threshold);
       return BT::NodeStatus::SUCCESS;
     }
     RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,

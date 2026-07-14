@@ -16,6 +16,7 @@ namespace rtc_bt {
 namespace {
 constexpr const char* kDegSuffix = "_deg";
 constexpr std::size_t kDegSuffixLen = 4;  // strlen("_deg")
+constexpr std::size_t kBbPrefixLen = 3;   // strlen("bb.")
 
 auto coord_log() {
   return ::rtc_bt::logging::CoordLogger();
@@ -46,33 +47,40 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_configure(
     RCLCPP_ERROR(coord_log(), "arm_dof/hand_dof must be positive (got %d/%d)", arm_dof_, hand_dof_);
     return CallbackReturn::FAILURE;
   }
+  // tick_rate_hz feeds a 1/rate timer period in on_activate; a non-positive
+  // value yields an infinite/negative period (division by zero) that would
+  // surface as a cryptic timer error much later. Reject it here.
+  if (tick_rate_hz_ <= 0.0) {
+    RCLCPP_ERROR(coord_log(), "tick_rate_hz must be positive (got %.3f)", tick_rate_hz_);
+    return CallbackReturn::FAILURE;
+  }
 
   // shared_from_this() is safe here — node is managed via shared_ptr. Bridge
   // construction and pose/finger-map loading validate their inputs by throwing
   // (invalid topic name, missing poses YAML, out-of-range finger_map); catch so
   // a misconfiguration is a clean lifecycle FAILURE, not an executor abort.
   try {
+    auto self = std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this());
     bridge_ = std::make_shared<BtRosBridge>(
-        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()),
-        RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_});
+        self, RobotProfile{TopicNamer{arm_group_, hand_group_}, arm_dof_, hand_dof_});
 
-    bridge_->LoadPoseOverrides(
-        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+    bridge_->LoadPoseOverrides(self);
 
-    bridge_->LoadFingerMap(
-        std::dynamic_pointer_cast<rclcpp_lifecycle::LifecycleNode>(shared_from_this()));
+    bridge_->LoadFingerMap(self);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(coord_log(), "bridge configuration failed: %s", e.what());
     bridge_.reset();
     return CallbackReturn::FAILURE;
   }
 
-  // Reset the factory to a fresh instance before (re)registering. on_configure
-  // can run more than once — after on_cleanup, or after a prior configure
-  // returned FAILURE — and registerNodeType throws "already registered" on a
-  // populated factory. A fresh factory also lets a reconfigure pick up changed
+  // Rebuild the factory in place before (re)registering. on_configure can run
+  // more than once — after on_cleanup, or after a prior configure returned
+  // FAILURE — and registerNodeType throws "already registered" on a populated
+  // factory. A fresh factory also lets a reconfigure pick up changed
   // capability params. (factory_ is not owned by on_cleanup, so it persists.)
-  factory_ = BT::BehaviorTreeFactory{};
+  // emplace(), never move-assign: see the factory_ declaration for the BT.CPP
+  // dangling-parser SIGSEGV a moved factory causes.
+  factory_.emplace();
   RegisterBtNodes();
 
   // A tree referencing a capability-gated-out node (Seam D) surfaces here as
@@ -129,12 +137,15 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_activate(
     const rclcpp_lifecycle::State& state) {
   LifecycleNode::on_activate(state);
 
-  // Tick timer (only if not in step mode)
-  if (!step_mode_) {
-    const auto period = std::chrono::duration<double>(1.0 / tick_rate_hz_);
-    tick_timer_ = create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-                                    std::bind(&BtCoordinatorNode::TickCallback, this));
-  } else {
+  // Always create the tick timer, then cancel it if we start in step mode.
+  // Creating it unconditionally means a runtime step_mode→false toggle can just
+  // reset() an existing timer; if the timer were null (never created) that
+  // reset() would be a silent no-op and auto-ticking would never resume.
+  const auto period = std::chrono::duration<double>(1.0 / tick_rate_hz_);
+  tick_timer_ = create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+                                  std::bind(&BtCoordinatorNode::TickCallback, this));
+  if (step_mode_) {
+    tick_timer_->cancel();
     RCLCPP_INFO(coord_log(), "Step mode enabled — use ~/step service to tick");
   }
 
@@ -149,8 +160,7 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_deactivate(
-    const rclcpp_lifecycle::State& state) {
+void BtCoordinatorNode::CancelActiveTimersAndHalt() {
   if (tick_timer_)
     tick_timer_->cancel();
   if (repeat_timer_)
@@ -159,14 +169,9 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_deactivate(
     watchdog_timer_->cancel();
   if (tree_)
     tree_->haltTree();
-
-  LifecycleNode::on_deactivate(state);
-  RCLCPP_INFO(coord_log(), "BtCoordinatorNode deactivated");
-  return CallbackReturn::SUCCESS;
 }
 
-BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_cleanup(
-    const rclcpp_lifecycle::State& /*state*/) {
+void BtCoordinatorNode::ReleaseAllResources() {
   tick_timer_.reset();
   repeat_timer_.reset();
   watchdog_timer_.reset();
@@ -178,6 +183,20 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_cleanup(
 #endif
   tree_.reset();
   bridge_.reset();
+}
+
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_deactivate(
+    const rclcpp_lifecycle::State& state) {
+  CancelActiveTimersAndHalt();
+
+  LifecycleNode::on_deactivate(state);
+  RCLCPP_INFO(coord_log(), "BtCoordinatorNode deactivated");
+  return CallbackReturn::SUCCESS;
+}
+
+BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_cleanup(
+    const rclcpp_lifecycle::State& /*state*/) {
+  ReleaseAllResources();
 
   RCLCPP_INFO(coord_log(), "BtCoordinatorNode cleaned up");
   return CallbackReturn::SUCCESS;
@@ -194,26 +213,8 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_shutdown(
 BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_error(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_ERROR(coord_log(), "BtCoordinatorNode error — attempting recovery");
-  if (tick_timer_)
-    tick_timer_->cancel();
-  if (repeat_timer_)
-    repeat_timer_->cancel();
-  if (watchdog_timer_)
-    watchdog_timer_->cancel();
-  if (tree_)
-    tree_->haltTree();
-
-  tick_timer_.reset();
-  repeat_timer_.reset();
-  watchdog_timer_.reset();
-  step_service_.reset();
-  param_callback_.reset();
-  failure_logger_.reset();
-#ifdef BT_GROOT2_AVAILABLE
-  groot2_publisher_.reset();
-#endif
-  tree_.reset();
-  bridge_.reset();
+  CancelActiveTimersAndHalt();
+  ReleaseAllResources();
 
   return CallbackReturn::SUCCESS;
 }
@@ -263,7 +264,7 @@ void BtCoordinatorNode::RegisterBtNodes() {
   // a sensor never exposes nodes that would read absent data. Defaults are all
   // true (ur5e/hand), preserving the legacy register-everything behavior.
   rtc_bt::RegisterBtNodes(
-      factory_, bridge_,
+      *factory_, bridge_,
       RobotCapabilities{
           .has_grasp_sensing = has_grasp_sensing_, .has_tof = has_tof_, .has_shape = has_shape_});
 }
@@ -280,13 +281,16 @@ void BtCoordinatorNode::LoadTree() {
   }
 
   if (!std::filesystem::exists(tree_path)) {
-    RCLCPP_FATAL(coord_log(), "Tree file not found: %s", tree_path.c_str());
+    // ERROR not FATAL: the caller (on_configure / runtime tree switch) catches
+    // this and turns it into a clean lifecycle FAILURE / rejected param — the
+    // process is not aborting, so FATAL overstated the severity.
+    RCLCPP_ERROR(coord_log(), "Tree file not found: %s", tree_path.c_str());
     throw std::runtime_error("BT tree file not found: " + tree_path.string());
   }
 
   RCLCPP_DEBUG(coord_log(), "Loading tree from: %s", tree_path.c_str());
 
-  tree_ = std::make_unique<BT::Tree>(factory_.createTreeFromFile(tree_path.string()));
+  tree_ = std::make_unique<BT::Tree>(factory_->createTreeFromFile(tree_path.string()));
 }
 
 void BtCoordinatorNode::InitializeBlackboard() {
@@ -297,10 +301,9 @@ void BtCoordinatorNode::InitializeBlackboard() {
   auto result = list_parameters({"bb"}, 1);
 
   for (const auto& param_name : result.names) {
-    const std::string prefix = "bb.";
-    if (param_name.size() <= prefix.size())
+    if (param_name.size() <= kBbPrefixLen)
       continue;
-    std::string key = param_name.substr(prefix.size());
+    std::string key = param_name.substr(kBbPrefixLen);
 
     auto param = get_parameter(param_name);
     switch (param.get_type()) {
@@ -331,9 +334,9 @@ void BtCoordinatorNode::InitializeBlackboard() {
   // Auto-convert *_deg variables: store a rad counterpart without the suffix.
   // e.g. bb.tcp_rpy_offset_r_deg: 45.0 → blackboard "tcp_rpy_offset_r" = 0.785
   for (const auto& param_name : result.names) {
-    if (param_name.size() <= 3)
-      continue;                              // "bb." minimum
-    std::string key = param_name.substr(3);  // strip "bb."
+    if (param_name.size() <= kBbPrefixLen)
+      continue;                                         // "bb." minimum
+    std::string key = param_name.substr(kBbPrefixLen);  // strip "bb."
     if (key.size() > kDegSuffixLen &&
         key.compare(key.size() - kDegSuffixLen, kDegSuffixLen, kDegSuffix) == 0) {
       auto param = get_parameter(param_name);
@@ -518,6 +521,7 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
     if (param.get_name() == "tree_file") {
       // Runtime tree switching
       std::string new_file = param.as_string();
+      const std::string old_file = tree_file_;
       RCLCPP_INFO(coord_log(), "Switching tree: %s → %s", tree_file_.c_str(), new_file.c_str());
 
       try {
@@ -536,7 +540,9 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
         // internal subscriptions don't dangle over freed TreeNodes.
         failure_logger_.reset();
 
-        // Load new tree
+        // LoadTree() reads tree_file_, so set it first. On a load failure it is
+        // restored to old_file below (LoadTree throws before reassigning tree_,
+        // so the old BT::Tree object survives intact for the rollback path).
         tree_file_ = new_file;
         LoadTree();
         InitializeBlackboard();
@@ -563,9 +569,19 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
 
         RCLCPP_INFO(coord_log(), "Tree switched to: %s", new_file.c_str());
       } catch (const std::exception& e) {
+        // Rollback to a running old tree: LoadTree threw without swapping tree_,
+        // so the previous tree object is still valid. Restore the recorded file
+        // name, re-attach the failure logger to it, and resume ticking so a bad
+        // switch request is a clean no-op rather than a silently stopped node.
+        tree_file_ = old_file;
+        InstallFailureLogger();
+        if (!step_mode_ && tick_timer_) {
+          tick_timer_->reset();
+        }
         result.successful = false;
         result.reason = std::string("Failed to load tree: ") + e.what();
-        RCLCPP_ERROR(coord_log(), "Tree switch failed: %s", e.what());
+        RCLCPP_ERROR(coord_log(), "Tree switch failed: %s — kept previous tree '%s'", e.what(),
+                     old_file.c_str());
       }
     } else if (param.get_name() == "paused") {
       paused_ = param.as_bool();

@@ -50,7 +50,8 @@ BT Blackboard에서 사용하는 문자열 포맷:
 
 | 포트 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
-| `target` | vector\<double\> | (필수) | 6개 관절 목표 [rad] |
+| `target` | vector\<double\> | (필수) | 6개 관절 목표 [rad] (pose_name 지정 시 무시) |
+| `pose_name` | string | - | poses.yaml의 명명된 arm 포즈 (target 대체) |
 | `tolerance` | double | 0.01 rad | 관절별 허용오차 |
 | `timeout_s` | double | 10.0 s | 타임아웃 |
 
@@ -89,7 +90,10 @@ UR5e 팔을 목표 자세로 이동 후, halt될 때까지 영구 RUNNING. 반�
 
 #### SwitchController
 
-활성 컨트롤러를 전환한다 (`/rtc_cm/switch_controller` srv 동기 호출).
+활성 컨트롤러를 전환한다 (`/rtc_cm/switch_controller` srv). StatefulAction — 요청을
+non-blocking 으로 발사하고 응답 future 를 tick 마다 `wait_for(0)` 으로 폴링한다 (single-thread
+executor 가 tick 안에서 blocking wait 하면 응답을 dispatch 못 해 데드락하므로). 이미 target 이
+active 면 첫 tick 에 SUCCESS. srv `ok=false`(E-STOP/unknown) 또는 `timeout_s` 초과 시 FAILURE.
 
 ```xml
 <SwitchController controller_name="demo_task_controller"
@@ -103,7 +107,7 @@ UR5e 팔을 목표 자세로 이동 후, halt될 때까지 영구 RUNNING. 반�
 
 #### SetGains
 
-active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_parameters_atomically`). 설정하지 않은 입력 포트는 dispatch에서 제외되어 현재 값 유지.
+active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_parameters_atomically`). 설정하지 않은 입력 포트는 dispatch에서 제외되어 현재 값 유지. StatefulAction — parameter set 과 (선택적) `grasp_command` srv 를 non-blocking 으로 발사하고 tick 마다 폴링한다 (SwitchController 와 동일한 single-thread executor 데드락 회피). 두 단계는 순차 실행 — parameter 가 commit 된 뒤에만 grasp 를 보내므로 거절된 게인 위에서 grasp 하지 않는다.
 
 ```xml
 <SetGains trajectory_speed="0.05"/>
@@ -251,7 +255,7 @@ active 컨트롤러 LifecycleNode의 ROS 2 parameter를 atomic 변경 (`set_para
 | `target_positions` | vector\<double\> | - | 10개 모터 목표 위치 [rad] |
 | `close_speed` | double | 0.3 rad/s | close/pinch 모드에서 증가 속도 |
 | `max_position` | double | 1.4 rad | close/pinch 모드 최대 위치 |
-| `pinch_motors` | string | "0,1,2,3" | pinch 모드에서 사용할 모터 인덱스 |
+| `pinch_fingers` | string | "thumb,index" | pinch 모드에서 사용할 손가락 이름 (런타임에 hand-joint 인덱스로 resolve) |
 | `timeout_s` | double | 8.0 s | 타임아웃 |
 
 #### SetHandPose
@@ -266,6 +270,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 |------|------|--------|------|
 | `pose` | string | (필수) | 명명된 Hand 포즈 (예: `"home"`, `"full_flex"`) |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | duration 경과 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 #### MoveFinger
 
@@ -280,6 +286,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 | `finger_name` | string | (필수) | 손가락 이름 (`"thumb"` / `"index"` / `"middle"` / `"ring"` 등) |
 | `pose` | string | (필수) | 명명된 타겟 포즈 |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | duration 경과 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 #### FlexExtendFinger
 
@@ -293,6 +301,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 |------|------|--------|------|
 | `finger_name` | string | (필수) | 손가락 이름 |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | 양 phase 완료 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 #### MoveOpposition
 
@@ -311,6 +321,8 @@ Hand 전체 10-DoF를 명명된 포즈로 이동한다.
 | `target_finger` | string | (필수) | 대상 손가락 (`"index"` / `"middle"` / `"ring"`) |
 | `target_pose` | string | (필수) | 대상 손가락 포즈 이름 |
 | `hand_trajectory_speed` | double | 1.0 rad/s | RT 컨트롤러 trajectory speed |
+| `tolerance` | double | 0.15 rad | duration 경과 후 수렴 판정 per-joint tolerance |
+| `timeout_s` | double | 10.0 s | 수렴 실패 시 FAILURE 상한 |
 
 ### Shape Estimation / ToF
 

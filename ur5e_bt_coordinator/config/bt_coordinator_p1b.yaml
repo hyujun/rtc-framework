@@ -17,8 +17,12 @@ bt_coordinator:
     hand_group: "p1b"
 
     # ── Capabilities ──────────────────────────────────────────────────────────
-    # proto_1b 는 grasp-force / ToF / shape 센싱을 모두 갖춘다 → base default(all
-    # true)와 동일. 명시적으로 재확인만 (position-only variant 는 여기서 false).
+    # proto_1b 는 grasp-force sensing 만 갖춘다; ToF/shape 하드웨어는 없다.
+    # 근거: _base.yaml devices.hand.p1b.sensor_layout.values_per_group=0 →
+    # udp_hand 스트림은 force-only inference lane 이라 raw ToF lane 이 비어 있고
+    # (sim mujoco 백엔드도 ToF lane 미기록), shape estimation 은 ToF snapshot 이
+    # 유일 입력이므로 함께 불가. 따라서 ToF/shape 트리는 로드 시 capability-gate
+    # 로 깨끗한 FAILURE 가 되어야 한다.
     has_grasp_sensing: true
-    has_tof: true
-    has_shape: true
+    has_tof: false
+    has_shape: false

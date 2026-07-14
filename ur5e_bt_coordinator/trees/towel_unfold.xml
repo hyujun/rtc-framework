@@ -52,12 +52,12 @@
                timeout_s="8.0"/>
 
       <!-- Pinch grasp — low force for thin fabric -->
-      <!-- pinch_motors 사용하므로 ForceGrasp SubTree 대신 인라인 -->
+      <!-- pinch_fingers 사용하므로 ForceGrasp SubTree 대신 인라인 -->
       <Parallel success_count="1" failure_count="1">
         <GraspControl mode="pinch"
                       close_speed="0.2"
                       max_position="0.8"
-                      pinch_motors="0,1,2,3"
+                      pinch_fingers="thumb,index"
                       timeout_s="8.0"/>
         <RetryUntilSuccessful num_attempts="200">
           <Sequence>

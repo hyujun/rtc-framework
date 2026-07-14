@@ -40,6 +40,9 @@ class MoveOpposition : public BT::StatefulActionNode {
  private:
   std::shared_ptr<BtRosBridge> bridge_;
   double duration_{0.01};
+  double tolerance_{0.15};
+  double timeout_s_{10.0};
+  std::vector<double> target_vec_;  // composed full-DoF opposition target
   std::chrono::steady_clock::time_point start_time_;
 };
 

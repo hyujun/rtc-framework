@@ -10,11 +10,22 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace rtc_bt {
+
+// ── Hand-pose convergence gate defaults (D4) ────────────────────────────────
+//
+// Hand-motion nodes wait for the estimated trajectory duration and then confirm
+// the commanded joints actually reached the target before reporting SUCCESS.
+// The default tolerance is deliberately lenient — the gate is a coarse "did the
+// hand roughly get there" guard, not a precision check — and both are tunable
+// per node via the `tolerance` / `timeout_s` ports.
+inline constexpr double kDefaultHandConvergenceTol = 0.15;      // [rad]
+inline constexpr double kDefaultHandConvergenceTimeout = 10.0;  // [s]
 
 // ── Hand trajectory gain defaults ───────────────────────────────────────────
 //
@@ -140,14 +151,72 @@ inline double EstimateHandTrajectoryDuration(const std::vector<double>& current,
   return std::max(0.01, std::max(T_speed, T_vel)) * margin;
 }
 
+// ── Convergence check (D4 hand-pose gate) ───────────────────────────────────
+
+/// Max |current − target| over the given joint indices. Returns +inf when no
+/// index is comparable (state not received yet / all out of range), so a
+/// convergence gate keeps waiting rather than declaring premature success.
+/// Mirrors the OOB-safe index guards of ApplyPartialHandTarget.
+inline double MaxHandJointError(const std::vector<double>& current,
+                                const std::vector<double>& target,
+                                const std::vector<int>& indices) {
+  double max_err = 0.0;
+  bool compared = false;
+  for (int idx : indices) {
+    const auto ui = static_cast<std::size_t>(idx);
+    if (idx < 0 || ui >= current.size() || ui >= target.size())
+      continue;
+    max_err = std::max(max_err, std::abs(current[ui] - target[ui]));
+    compared = true;
+  }
+  return compared ? max_err : std::numeric_limits<double>::infinity();
+}
+
+/// Full-DoF overload: max error over the overlapping prefix of both vectors.
+/// Returns +inf when there is no overlap (no state yet).
+inline double MaxHandJointError(const std::vector<double>& current,
+                                const std::vector<double>& target) {
+  const std::size_t n = std::min(current.size(), target.size());
+  if (n == 0)
+    return std::numeric_limits<double>::infinity();
+  double max_err = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    max_err = std::max(max_err, std::abs(current[i] - target[i]));
+  }
+  return max_err;
+}
+
+/// Terminal decision for the hand-motion nodes' post-duration convergence gate.
+enum class HandConvergence { kConverged, kRunning, kTimedOut };
+
+/// Shared convergence-gate logic (D4). Call only after the estimated trajectory
+/// duration has elapsed; `max_err` is MaxHandJointError to the commanded target.
+///   - max_err == +inf  → no comparable joint feedback (state not received yet,
+///     DoF mismatch, all indices out of range). Convergence is UNVERIFIABLE, so
+///     fall back to the pre-gate "trust the estimated duration" behavior and
+///     report kConverged rather than blocking to a FAILURE timeout — a variant
+///     without hand joint feedback must not have every hand motion fail.
+///   - max_err < tolerance → measured convergence → kConverged.
+///   - otherwise keep kRunning until `elapsed > timeout_s` → kTimedOut (a real,
+///     finite non-convergence: joint-limit clamp, contact, controller stall).
+inline HandConvergence ClassifyHandConvergence(double max_err, double elapsed, double tolerance,
+                                               double timeout_s) {
+  if (std::isinf(max_err) || max_err < tolerance)
+    return HandConvergence::kConverged;
+  if (elapsed > timeout_s)
+    return HandConvergence::kTimedOut;
+  return HandConvergence::kRunning;
+}
+
 // ── Opposition helper ──────────────────────────────────────────────────────
 
 /// Opposition 전용: thumb + target 손가락만 목표 포즈, 나머지는 home으로 리셋.
-/// 비-target 손가락 잔류 문제를 방지한다.
-/// Bridge의 pose library에서 home 포즈를 읽는다.
-inline void ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pose,
-                                  const HandPose& target_pose,
-                                  const std::vector<int>& target_indices) {
+/// 비-target 손가락 잔류 문제를 방지한다. Bridge의 pose library에서 home 포즈를
+/// 읽어 조합한 뒤 PublishHandTarget 하고, 조합된 full-DoF cmd를 반환한다 — 호출자가
+/// 같은 조합을 duration 추정 등에 재사용할 수 있도록(중복·OOB 재계산 방지).
+inline std::vector<double> ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pose,
+                                                 const HandPose& target_pose,
+                                                 const std::vector<int>& target_indices) {
   const auto& home = bridge.GetHandPose("home");
   std::vector<double> cmd(home.begin(), home.end());
   // Overlay finger joints, skipping any index the resolver returns that is out
@@ -166,6 +235,7 @@ inline void ApplyOppositionTarget(BtRosBridge& bridge, const HandPose& thumb_pos
   // target 손가락 관절 덮어쓰기
   overlay(target_indices, target_pose);
   bridge.PublishHandTarget(cmd);
+  return cmd;
 }
 
 }  // namespace rtc_bt

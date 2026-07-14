@@ -17,6 +17,7 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace rtc_bt {
@@ -71,6 +72,14 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   /// Log topic health status.
   void WatchdogCheck();
 
+  /// Cancel the tick/repeat/watchdog timers and halt the tree. Shared by the
+  /// transitions that leave the ACTIVE state (on_deactivate, on_error).
+  void CancelActiveTimersAndHalt();
+
+  /// Destroy all owned resources (timers, service, param callback, failure
+  /// logger, Groot2 publisher, tree, bridge). Shared by on_cleanup and on_error.
+  void ReleaseAllResources();
+
   /// Parameter change callback for runtime tree switching and pause control.
   rcl_interfaces::msg::SetParametersResult OnParameterChange(
       const std::vector<rclcpp::Parameter>& params);
@@ -79,7 +88,12 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   void StepCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
-  BT::BehaviorTreeFactory factory_;
+  // optional so on_configure can rebuild it in place with emplace(). Never
+  // move a BehaviorTreeFactory: its ctor binds an internal XMLParser to the
+  // object's own address and the defaulted move ops (BT.CPP 4.9) don't rebind
+  // it, so any moved-into factory SIGSEGVs in createTree* via the dangling
+  // parser→factory reference.
+  std::optional<BT::BehaviorTreeFactory> factory_;
   std::unique_ptr<BT::Tree> tree_;
   std::shared_ptr<BtRosBridge> bridge_;
 
@@ -126,9 +140,6 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
 
   // Real-time failure logger — prints every FAILURE transition via rclcpp.
   std::unique_ptr<FailureLogger> failure_logger_;
-
-  // Step mode pending flag
-  bool step_pending_{false};
 };
 
 }  // namespace rtc_bt

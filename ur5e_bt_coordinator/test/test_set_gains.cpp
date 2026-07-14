@@ -4,8 +4,9 @@
 /// (demo_joint_controller, demo_task_controller, demo_wbc_controller),
 /// each declaring the relevant parameter subset and a grasp_command srv.
 /// SetActiveAlias() rebinds the bridge to the matching mock; SetGains
-/// ticks then call SetActiveControllerGains / SendGraspCommand against
-/// that mock and tests verify parameter values or recorded grasp calls.
+/// ticks then call SetActiveControllerGainsAsync / SendGraspCommandAsync
+/// against that mock and tests verify parameter values or recorded grasp
+/// calls (polling via TickUntilComplete since the node is now async).
 
 #include "test_helpers.hpp"
 #include "ur5e_bt_coordinator/action_nodes/set_gains.hpp"
@@ -30,6 +31,9 @@ class SetGainsTest : public RosTestFixture {
     return factory_.createTreeFromText(full);
   }
 
+  // TickUntilComplete (poll a StatefulActionNode across ticks) lives in
+  // test_helpers.hpp — shared with test_switch_controller.
+
   BT::BehaviorTreeFactory factory_;
 };
 
@@ -42,7 +46,7 @@ TEST_F(SetGainsTest, NoPortsIsNoop) {
 TEST_F(SetGainsTest, DemoJointSetsRobotTrajectorySpeed) {
   SetActiveAlias("demo_joint_controller");
   auto tree = CreateTree(R"(<SetGains trajectory_speed="0.15"/>)");
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
 
   // SetGains maps trajectory_speed → robot_trajectory_speed for DemoJoint.
   EXPECT_DOUBLE_EQ(mock_joint_.node->get_parameter("robot_trajectory_speed").as_double(), 0.15);
@@ -54,7 +58,7 @@ TEST_F(SetGainsTest, DemoTaskSetsKpAndDamping) {
       R"(<SetGains kp_translation="500,500,500"
                    kp_rotation="250,250,250"
                    damping="0.05"/>)");
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
 
   const auto kp_t = mock_task_.node->get_parameter("kp_translation").as_double_array();
   ASSERT_EQ(kp_t.size(), 3u);
@@ -69,7 +73,7 @@ TEST_F(SetGainsTest, DemoTaskSetsKpAndDamping) {
 
 TEST_F(SetGainsTest, DemoTaskMapsTrajectorySpeedDirectly) {
   auto tree = CreateTree(R"(<SetGains trajectory_speed="0.08"/>)");
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
 
   EXPECT_DOUBLE_EQ(mock_task_.node->get_parameter("trajectory_speed").as_double(), 0.08);
 }
@@ -77,7 +81,7 @@ TEST_F(SetGainsTest, DemoTaskMapsTrajectorySpeedDirectly) {
 TEST_F(SetGainsTest, DemoWbcMapsTrajectorySpeedToArm) {
   SetActiveAlias("demo_wbc_controller");
   auto tree = CreateTree(R"(<SetGains trajectory_speed="0.4" se3_weight="200.0"/>)");
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
 
   EXPECT_DOUBLE_EQ(mock_wbc_.node->get_parameter("arm_trajectory_speed").as_double(), 0.4);
   EXPECT_DOUBLE_EQ(mock_wbc_.node->get_parameter("se3_weight").as_double(), 200.0);
@@ -86,7 +90,7 @@ TEST_F(SetGainsTest, DemoWbcMapsTrajectorySpeedToArm) {
 TEST_F(SetGainsTest, GraspCommandGraspCallsServer) {
   SetActiveAlias("demo_joint_controller");
   auto tree = CreateTree(R"(<SetGains grasp_command="1" grasp_target_force="3.0"/>)");
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
 
   EXPECT_GE(mock_joint_.grasp_cmd_calls.load(), 1);
   EXPECT_EQ(mock_joint_.last_grasp_cmd, rtc_msgs::srv::GraspCommand::Request::GRASP);
@@ -96,7 +100,7 @@ TEST_F(SetGainsTest, GraspCommandGraspCallsServer) {
 TEST_F(SetGainsTest, GraspCommandReleaseCallsServer) {
   SetActiveAlias("demo_joint_controller");
   auto tree = CreateTree(R"(<SetGains grasp_command="2"/>)");
-  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
 
   EXPECT_GE(mock_joint_.grasp_cmd_calls.load(), 1);
   EXPECT_EQ(mock_joint_.last_grasp_cmd, rtc_msgs::srv::GraspCommand::Request::RELEASE);

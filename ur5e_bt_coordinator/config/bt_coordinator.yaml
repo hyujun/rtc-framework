@@ -112,6 +112,11 @@ bt_coordinator:
     bb.inspect_offset_x: 0.0
     bb.inspect_offset_y: 0.0
 
+    # search_motion / shape_inspect 의 수직 standoff [m] (ComputeOffsetPose
+    # offset_z 포트). 미선언 시 트리가 dangling {inspect_offset_z} 를 참조하므로
+    # inspect_approach_z 와 동일한 기본으로 선언.
+    bb.inspect_offset_z: 0.15
+
     # inspect_pose 위 접근/후퇴 클리어런스 [m].
     #   접근 시 inspect_pose 위 이 높이에서 x/y 이동 후 z 하강.
     #   복귀 시 현재 위치에서 이 높이만큼 상승 후 ready pose 이동.

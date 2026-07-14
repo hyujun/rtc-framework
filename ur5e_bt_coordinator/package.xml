@@ -22,7 +22,9 @@
   <depend>tf2_ros</depend>
   <depend>tf2_msgs</depend>
   <depend>eigen</depend>
-  <build_depend>ament_index_cpp</build_depend>
+  <!-- ament_index_cpp is used at runtime too (get_package_share_directory in
+       LoadTree / validate_tree), so it must be an exec dep, not build-only. -->
+  <depend>ament_index_cpp</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 

@@ -24,6 +24,10 @@ BT::PortsList MoveFinger::providedPorts() {
       BT::InputPort<std::string>("pose", "명명된 타겟 포즈"),
       BT::InputPort<double>("hand_trajectory_speed", kDefaultHandTrajectorySpeed,
                             "Trajectory speed [rad/s]"),
+      BT::InputPort<double>("tolerance", kDefaultHandConvergenceTol,
+                            "Per-joint convergence tolerance [rad]"),
+      BT::InputPort<double>("timeout_s", kDefaultHandConvergenceTimeout,
+                            "Convergence timeout [s] (FAILURE upper bound)"),
   };
 }
 
@@ -41,6 +45,8 @@ BT::NodeStatus MoveFinger::onStart() {
   const double speed =
       getInput<double>("hand_trajectory_speed").value_or(kDefaultHandTrajectorySpeed);
   const double max_vel = kDefaultHandMaxTrajVelocity;
+  tolerance_ = getInput<double>("tolerance").value_or(kDefaultHandConvergenceTol);
+  timeout_s_ = getInput<double>("timeout_s").value_or(kDefaultHandConvergenceTimeout);
 
   target_pose_ = bridge_->GetHandPose(pose_name.value());
   joint_indices_ = bridge_->GetFingerJointIndices(finger_name.value());
@@ -68,9 +74,24 @@ BT::NodeStatus MoveFinger::onStart() {
 }
 
 BT::NodeStatus MoveFinger::onRunning() {
-  if (ElapsedSeconds(start_time_) >= duration_) {
-    RCLCPP_INFO(logger(), "complete (%.3fs)", duration_);
-    return BT::NodeStatus::SUCCESS;
+  const double elapsed = ElapsedSeconds(start_time_);
+  if (elapsed < duration_) {
+    return BT::NodeStatus::RUNNING;  // trajectory still in progress
+  }
+
+  // D4 convergence gate: confirm the commanded finger joints reached the target.
+  const double max_err =
+      MaxHandJointError(bridge_->GetHandJointPositions(), target_pose_, joint_indices_);
+  switch (ClassifyHandConvergence(max_err, elapsed, tolerance_, timeout_s_)) {
+    case HandConvergence::kConverged:
+      RCLCPP_INFO(logger(), "complete (max_err=%.4f elapsed=%.2fs)", max_err, elapsed);
+      return BT::NodeStatus::SUCCESS;
+    case HandConvergence::kTimedOut:
+      RCLCPP_WARN(logger(), "timeout (%.1fs) — not converged (max_err=%.4f tol=%.4f)", timeout_s_,
+                  max_err, tolerance_);
+      return BT::NodeStatus::FAILURE;
+    case HandConvergence::kRunning:
+      break;
   }
   return BT::NodeStatus::RUNNING;
 }

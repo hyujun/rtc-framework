@@ -39,6 +39,8 @@ class MoveFinger : public BT::StatefulActionNode {
  private:
   std::shared_ptr<BtRosBridge> bridge_;
   double duration_{0.01};
+  double tolerance_{0.15};
+  double timeout_s_{10.0};
   HandPose target_pose_{};
   std::vector<int> joint_indices_;
   std::chrono::steady_clock::time_point start_time_;
