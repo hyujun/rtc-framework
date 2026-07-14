@@ -105,10 +105,11 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 ## RT vs non-RT Topic Ownership
 
-YAML `ownership:` field (per `<topic>` entry in controller config) drives 2-tier split:
+토픽 소유는 3개 lane 으로 나뉜다 (issue #138: controller YAML 에는 `ownership:` field 가 없다 — controller-YAML entry 는 전부 controller-owned):
 
-- **Manager-owned** (default, `ownership: manager`) — RT-adjacent traffic 가 `RtControllerNode` (CM, exec process) 에서. RT loop sub (state/motor/sensor), RT loop pub (commands / per-group joint_states / device logs), safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name` latched rewire trigger) 모두 lifecycle 무관 standalone publisher 로 active
-- **Controller-owned** (`ownership: controller`) — Per-controller `LifecycleNode` (namespace `/<config_key>/`, `nrt_callback_executor` 에 add_node) 가 외부 facing snapshot 소유. Subscribe (target/joint_goal/ee_pose), publish (transforms via PublishRole; grasp_state/wbc_state/tof_snapshot 는 controller-owned SeqLock + Setup*Publisher 헬퍼 — PublishRole 없음)
+- **Controller-owned** (controller YAML `topics:` entry 전부) — Per-controller `LifecycleNode` (namespace `/<config_key>/`, `nrt_callback_executor` 에 add_node) 가 외부 facing snapshot 소유. Subscribe (target/joint_goal/ee_pose), publish (transforms via PublishRole; grasp_state/wbc_state/tof_snapshot 는 controller-owned SeqLock + Setup*Publisher 헬퍼 — PublishRole 없음)
+- **DeviceBackend-owned** — device-wire state/motor/sensor sub + joint/ros2 command pub, `devices.<group>.backend:` (sim.yaml/robot.yaml) 에서 선언
+- **CM fixed publishers** — `RtControllerNode` 가 hardcode 로 소유 (YAML 무관): per-group digital-twin `/rtc_cm/<group>/joint_states`, safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name` latched rewire trigger). 모두 lifecycle 무관 standalone publisher 로 active
 
 RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nrt_callback thread 가 read + ROS publish.
 
@@ -116,7 +117,7 @@ RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nr
 
 **TF `_actual` 프레임 — `/tf` publisher 없음 (framework invariant).** 컨트롤러는 arm-tip / fingertip `_actual` 프레임 (`base → tool0_actual`, `<link>_actual`) 을 `/tf` 로 발행하지 **않는다** — 오직 controller-owned `/<config_key>/transforms` (`tf2_msgs/TFMessage`, PublishRole) 로만 노출한다. 따라서 bare `tf2_ros::TransformListener` (`/tf`·`/tf_static` 만 청취) 는 이 프레임을 **절대 받지 못한다**. tf 소비자는 반드시 둘 중 하나: **(a) self-feed** — `/<config_key>/transforms` 를 직접 구독해 buffer 에 `setTransform` (ur5e_bt_coordinator `transforms_sub_`, demo_gui `_transforms_cb`; active controller 전환 시 rewire); **(b) `/tf` 재발행 의존** — `rtc_digital_twin` 의 `controller_tf` 재발행 (`<active>/transforms` → restamp → `/tf`, RViz TF 디스플레이·bare-listener 소비자용, default on). 이 함정은 digital_twin tcp_viz·bt_coordinator 두 곳에서 각각 silent-fail 버그로 발현했다 — **새 tf 소비자 추가 시 (a)/(b) 중 하나를 반드시 적용**하고, bare listener 만 두지 말 것.
 
-구현: `rtc::TopicOwnership` enum (`rtc_controllers/topic_config.hpp`). CM 은 controller-owned sub/pub 을 configure 시 skip; `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
+구현: controller YAML `topics:` entry (`SubscribeTopicEntry` / `PublishTopicEntry`, `rtc_base/types/types.hpp`) 는 모두 controller-owned 이며 `integrated_bringup/support/owned_topics.cpp` 가 controller LifecycleNode 에 sub/pub 을 생성한다. CM 은 controller-YAML target sub 을 만들지 않는다 (manager-target 경로 폐기, issue #138); `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
 
 Session logs: `logging_data/YYMMDD_HHMM/{timing,monitor,device,sim,plots,motions,tracing}/`. Per-controller logs 는 `controllers/<config_key>/` (controller LifecycleNode 가 owner, 예: `demo_wbc_controller/mpc_solve_timing.csv`), per-tick 스레드 타이밍 CSV 는 `timing/` (`cm_timing_log` / `mpc_timing_log` / `hand_udp_timing_log`). 레거시 singular `controller/` (CM RT-loop DataLogger) 는 Phase C 에서 제거됨 — 더 이상 생성하지 않는다. 새 logger 추가 시 producer thread 의 소유자 기준으로 위치 선택. Session subdir 목록은 `rtc_base/logging/session_dir.hpp` (`kSubdirs`) + `rtc_tools.utils.session_dir` (`_SESSION_SUBDIRS`) 가 mirror SSoT — 한쪽 변경 시 반드시 동기화.
 

@@ -137,8 +137,8 @@ rtc_base/
 
 | 구조체 | 설명 |
 |--------|------|
-| `SubscribeTopicEntry` | `topic_name` + `TopicOwnership` (구독 role은 singleton이라 enum 없음) |
-| `PublishTopicEntry` | `topic_name` + `PublishRole` + `data_size` + `TopicOwnership` |
+| `SubscribeTopicEntry` | `topic_name` (구독 role은 singleton이라 enum 없음; issue #138: `ownership` field 제거 — controller-owned only) |
+| `PublishTopicEntry` | `topic_name` + `PublishRole` + `data_size` (issue #138: `ownership` field 제거) |
 | `DeviceTopicGroup` | `subscribe` + `publish` 토픽 엔트리 벡터 |
 
 `TopicConfig` 주요 메서드:

@@ -276,42 +276,30 @@ my_controller:
   topics:
     ur5e:
       subscribe:
-        - topic: "/joint_states"
-          role: "state"                # ownership omitted → manager (default)
-        - topic: "ur5e/joint_goal"     # relative path (controller namespace)
+        - topic: "ur5e/joint_goal"     # relative path → /<config_key>/ur5e/joint_goal
           role: "target"
-          ownership: "controller"
       publish:
-        - topic: "/ur5e/joint_command"
-          role: "joint_command"
-          data_size: 6
-        - topic: "transforms"          # relative path (controller namespace)
+        - topic: "transforms"          # relative path → /<config_key>/transforms
           role: "robot_transforms"
-          ownership: "controller"
     hand:
       subscribe:
-        - topic: "/hand/joint_states"
-          role: "state"
+        - topic: "hand/joint_goal"
+          role: "target"
 ```
 
 > 폐기된 flat format (`topics.subscribe`를 직접 사용)은 마이그레이션 에러를 발생시킵니다.
 
-### 토픽 소유권 (TopicOwnership)
+### 토픽 소유권 (issue #138)
 
-각 subscribe/publish entry는 optional `ownership` 필드를 갖습니다. 누락 시 기본값은 `"manager"`.
+컨트롤러 YAML `topics:` 의 모든 subscribe/publish entry 는 **controller-owned** 입니다 — `ownership` 필드는 없습니다. 컨트롤러별 `LifecycleNode` 가 `on_configure` (via `integrated_bringup/support/owned_topics.cpp`) 에서 `node_->create_subscription(...)` / `node_->create_publisher(...)` 로 직접 생성하며, 상대 경로는 노드 namespace `/<config_key>/...` 로 자동 해석됩니다. CM 의 publish thread 는 SPSC snapshot 을 드레인한 뒤 `controllers_[active]->PublishNonRtSnapshot(snap)` 을 호출해 controller-owned 발행을 위임합니다.
 
-| YAML 값 | enum 값 | 주체 | 용도 |
-|---------|---------|------|------|
-| `manager` (default) | `kManager` | `RtControllerNode` (CM) | RT-adjacent HW 트래픽 (state/command/log). RT 정기 tick (`control_rate`, default 500 Hz) 루프와 SPSC 드레인을 경유 |
-| `controller` | `kController` | 컨트롤러별 `LifecycleNode` | 외부 GUI/BT/planner용 non-RT 트래픽. 상대 경로는 노드 namespace `/<config_key>/...`로 자동 해석 |
-
-Controller-owned 토픽은 on_configure에서 컨트롤러가 직접 `node_->create_subscription(...)` / `node_->create_publisher(...)`로 생성합니다. CM의 publish thread는 SPSC snapshot을 드레인한 뒤 `controllers_[active]->PublishNonRtSnapshot(snap)` 을 호출해 controller-owned 발행을 위임합니다.
+컨트롤러 YAML 밖의 두 lane 은 별도 소유입니다: device-wire state/command 는 `devices.<group>.backend:` (DeviceBackend-owned), CM 고정 퍼블리셔 (`/rtc_cm/<group>/joint_states`, `/system/estop_status`, `/rtc_cm/active_controller_name`) 는 `RtControllerNode` 가 hardcode 로 소유 (YAML 무관). Phase 4 이전의 manager/controller 2-tier 선택자 (`TopicOwnership` enum) 는 issue #138 에서 제거되었습니다.
 
 ### 구독 역할 (`role:` 문자열)
 
 Phase 4: 디바이스 와이어 lane (`state` / `motor_state` / `sensor_state`) 은 `devices.<group>.backend:` 로 이관되어 `DeviceBackend` 가 소유합니다. 컨트롤러 YAML 의 `topics:` 섹션에서는 `target` 만 남습니다.
 
-Phase 4 trailing cleanup: 남은 값이 singleton 이라 `SubscribeRole` enum 자체는 삭제되었습니다. `SubscribeTopicEntry` 는 `{topic_name, ownership}` 으로 단순화 되었고, parser 는 YAML `role:` 문자열을 documentation + drift 검출용으로 여전히 validate (`target` / 호환용 `goal` 외 거부) 합니다.
+Phase 4 trailing cleanup: 남은 값이 singleton 이라 `SubscribeRole` enum 자체는 삭제되었습니다. `SubscribeTopicEntry` 는 `{topic_name}` 으로 단순화 되었고 (issue #138: `ownership` 필드 제거), parser 는 YAML `role:` 문자열을 documentation + drift 검출용으로 여전히 validate (`target` / 호환용 `goal` 외 거부) 합니다.
 
 | YAML 역할 문자열 | 설명 |
 |-----------------|------|
