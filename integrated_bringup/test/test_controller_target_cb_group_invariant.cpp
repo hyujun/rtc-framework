@@ -97,8 +97,7 @@ class ControllerTargetCbGroupInvariantTest : public ::testing::Test {
 
     rtc::TopicConfig cfg;
     auto& group = cfg["arm"];
-    group.subscribe.push_back(rtc::SubscribeTopicEntry{"/test/controller_owned_robot_target",
-                                                       rtc::TopicOwnership::kController});
+    group.subscribe.push_back(rtc::SubscribeTopicEntry{"/test/controller_owned_robot_target"});
     ctrl_->SetTopicConfigForTest(std::move(cfg));
 
     CreateOwnedTopics(*ctrl_, handles_);

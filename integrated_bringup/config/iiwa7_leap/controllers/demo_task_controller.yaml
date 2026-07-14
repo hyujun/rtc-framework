@@ -52,16 +52,13 @@ demo_task_controller:
       subscribe:
         - topic: "iiwa7/joint_goal"
           role: "target"
-          ownership: "controller"
       publish:
         - topic: "transforms"
           role: "robot_transforms"
-          ownership: "controller"
     leap:
       subscribe:
         - topic: "leap/joint_goal"
           role: "target"
-          ownership: "controller"
 
   # ── Controller-owned CSV logs ──────────────────────────────────────────────
   logs:

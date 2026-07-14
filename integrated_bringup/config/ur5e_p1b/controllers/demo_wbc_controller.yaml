@@ -34,25 +34,23 @@ demo_wbc_controller:
   # joint_command / ros2_command) moved to devices.<group>.backend in
   # sim.yaml / robot.yaml. Controller YAML keeps only controller-owned
   # roles (target / robot_transforms / wbc_state).
-  # ownership: "controller" → per-controller LifecycleNode owns it; relative
-  #                           paths resolve under namespace /<config_key>/
+  # All controller-YAML topics are controller-owned (issue #138): the
+  # per-controller LifecycleNode owns each sub/pub; relative paths resolve
+  # under namespace /<config_key>/.
   topics:
     ur5e:
       subscribe:
         - topic: "ur5e/joint_goal"
           role: "target"
-          ownership: "controller"
       publish:
         # Per-controller TF (Phase 3): WBC publishes arm tip + alpha placeholder.
         # Fingertip frames are not yet broadcast — see wbc/lifecycle.cpp note.
         - topic: "transforms"
           role: "robot_transforms"
-          ownership: "controller"
     p1b:
       subscribe:
         - topic: "p1b/joint_goal"
           role: "target"
-          ownership: "controller"
       # WbcState publisher is controller-owned and created in on_configure
       # (SetupWbcStatePublisher); it no longer has a YAML role mapping.
 

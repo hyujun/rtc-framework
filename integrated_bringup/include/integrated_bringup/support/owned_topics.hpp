@@ -7,8 +7,8 @@
 //
 // Each demo owns one ControllerTopicHandles instance and delegates to the
 // free functions here from its lifecycle overrides + PublishNonRtSnapshot.
-// Manager-owned entries (ownership == TopicOwnership::kManager) are left to
-// RtControllerNode.
+// Every controller-YAML topic entry is controller-owned (issue #138); CM's
+// own fixed publishers and DeviceBackend device-wire lanes are separate.
 
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/controllers/wbc/wbc_state.hpp"
@@ -93,9 +93,9 @@ struct ControllerTopicHandles {
   int num_tf_slots{0};
 };
 
-// Walk ctrl.GetTopicConfig().groups and for every entry with
-// ownership == TopicOwnership::kController create the matching sub/pub on
-// ctrl.get_lifecycle_node(). Subscriptions route through
+// Walk ctrl.GetTopicConfig().groups and create the matching sub/pub for every
+// entry on ctrl.get_lifecycle_node() (all controller-YAML entries are
+// controller-owned, issue #138). Subscriptions route through
 // ctrl.DeliverTargetMessage(group_name, group_idx, msg). Throws on
 // allocation failure — callers must wrap in try/catch.
 void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles);

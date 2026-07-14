@@ -124,13 +124,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // ── Initialisation helpers ────────────────────────────────────────────────
   void CreateCallbackGroups();
   void DeclareAndLoadParameters();
-  void CreateSubscriptions();
-  // CreateSubscriptions helper — state/motor/sensor lanes are owned by
-  // DeviceBackend implementations (CreateDeviceBackends); CM only binds
-  // kTarget itself.
-  void CreateTargetSubscription(const rtc::SubscribeTopicEntry& entry,
-                                const std::string& group_name, int slot,
-                                const rclcpp::SubscriptionOptions& sub_options);
+  // Issue #138: controller-YAML target subscriptions are controller-owned
+  // (per-controller LifecycleNode, created in integrated_bringup owned_topics).
+  // Device-wire state/motor/sensor lanes are owned by DeviceBackend impls
+  // (CreateDeviceBackends). CM therefore creates no controller-target subs.
   void CreatePublishers();
   void CreateDigitalTwinPublishers();
   void CreateFixedSafetyPublishers();
@@ -152,9 +149,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // CreateDeviceBackends, this helper patches `controller_slot_mappings_`
   // with `slot_to_capability_` so the RT loop has correct gating bits.
   void PropagateCapabilitiesIntoMappings();
-
-  // ── Subscription callbacks (unified per-device) ──────────────────────────
-  void DeviceTargetCallback(int device_slot, rtc_msgs::msg::RobotTarget::SharedPtr msg);
 
   // ── System model configuration (top-level "urdf:" YAML) ──────────────────
   void ParseSystemModelConfig(rtc_urdf_bridge::ModelConfig& config);
@@ -396,8 +390,9 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // (ControlLoop) via backend->ReadState.
   //
   // Per-controller target slots live on each controller (SeqLock<TargetSlot>
-  // + SpscQueue marshal). CM forwards DeviceTargetCallback into the active
-  // controller's SetDeviceTarget — there is no CM-side target mirror.
+  // + SpscQueue marshal). The controller-owned target subscription forwards
+  // into its own SetDeviceTarget (DeliverTargetMessage) — there is no CM-side
+  // target subscription or mirror (issue #138).
 
   std::atomic<bool> print_timing_summary_{false};
   std::atomic<bool> state_received_{false};

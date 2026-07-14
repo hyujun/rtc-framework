@@ -176,15 +176,17 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 
 > Lifecycle 훅 규약은 [`rtc_controller_interface/README.md`](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공) 참조. 컨트롤러는 per-node topic 소유권을 가지며(`/<config_key>/<topic>`), RT 경로에서 `node_` 접근은 금지입니다.
 
-### 토픽 소유권 tier
+### 토픽 소유 lane
 
-| ownership | 생성 주체 | 역할 예시 | QoS 경로 |
+토픽 소유는 3개 lane 으로 나뉜다 (issue #138: controller YAML 에는 `ownership:` field 가 없다 — YAML `topics:` entry 는 전부 controller-owned):
+
+| 소유 lane | 생성 주체 | 역할 예시 | QoS 경로 |
 |-----------|-----------|-----------|---------|
-| `manager` — backend | `DeviceBackend` (CM이 group마다 1 instance 보유) | HW/sim ↔ controller 경계 트래픽: `state`, `motor_state`, `sensor_state`, `joint_command`, `ros2_command` | Backend 자체 sub/pub + SeqLock state cache. RT loop → `WriteCommand(slot, cmd_type)` |
-| `manager` — CM 고정 | `RtControllerNode` | digital twin republish (`/rtc_cm/<group>/joint_states`), `/system/estop_status`, `/rtc_cm/active_controller_name`, `/rtc_cm/list_controllers`, `/rtc_cm/switch_controller` | CM 직접 publish / service |
-| `controller` | 컨트롤러별 `LifecycleNode` | 컨트롤러 입력/출력: `target`, `grasp_state`, `wbc_state`, `tof_snapshot`, `robot_transforms` | 컨트롤러가 on_configure에서 sub/pub 생성, publish 스레드가 SPSC 소비 후 `controllers_[active]->PublishNonRtSnapshot(snap)` 호출 |
+| DeviceBackend | `DeviceBackend` (CM이 group마다 1 instance 보유) | HW/sim ↔ controller 경계 트래픽: `state`, `motor_state`, `sensor_state`, `joint_command`, `ros2_command` (`devices.<group>.backend:` 선언) | Backend 자체 sub/pub + SeqLock state cache. RT loop → `WriteCommand(slot, cmd_type)` |
+| CM 고정 | `RtControllerNode` (hardcode, YAML 무관) | digital twin republish (`/rtc_cm/<group>/joint_states`), `/system/estop_status`, `/rtc_cm/active_controller_name`, `/rtc_cm/list_controllers`, `/rtc_cm/switch_controller` | CM 직접 publish / service |
+| controller-owned | 컨트롤러별 `LifecycleNode` (YAML `topics:` entry 전부) | 컨트롤러 입력/출력: `target`, `grasp_state`, `wbc_state`, `tof_snapshot`, `robot_transforms` | 컨트롤러가 on_configure에서 sub/pub 생성, publish 스레드가 SPSC 소비 후 `controllers_[active]->PublishNonRtSnapshot(snap)` 호출 |
 
-원칙: CM은 **HW/sim과 controller 사이의 boundary 토픽** + **controller-node 관리** (switch / active / E-STOP) 만 소유한다. 컨트롤러가 생산하거나 소비하는 의미적 데이터(목표·GUI·grasp·wbc·tof) 는 controller-owned 로 분류해 컨트롤러 LifecycleNode가 직접 sub/pub. CM은 YAML `ownership: controller` entry에 대해 sub/pub 생성과 publish 디스패치를 건너뜁니다. Target topic은 controller가 자체 sub하고 그 콜백에서 `SetDeviceTarget`을 호출 — SetDeviceTarget은 SPSC 큐로 marshal한 뒤 RT thread가 `Compute()` 안에서 drain한다 (single-writer SeqLock invariant, 2026-05-17 RT-4 cleanup).
+원칙: CM은 **CM 고정 토픽** + **controller-node 관리** (switch / active / E-STOP) 만 소유하고, controller YAML 의 sub/pub 은 만들지 않는다 (issue #138: manager-target 경로 폐기). 컨트롤러가 생산하거나 소비하는 의미적 데이터(목표·GUI·grasp·wbc·tof) 는 컨트롤러 LifecycleNode가 직접 sub/pub. Target topic은 controller가 자체 sub하고 그 콜백에서 `DeliverTargetMessage` → `SetDeviceTarget`을 호출 — SetDeviceTarget은 SPSC 큐로 marshal한 뒤 RT thread가 `Compute()` 안에서 drain한다 (single-writer SeqLock invariant, 2026-05-17 RT-4 cleanup).
 
 ### 런타임 전환 (`/rtc_cm/switch_controller` 서비스, sync)
 
@@ -358,7 +360,7 @@ CM은 device-wire 토픽을 직접 만들지 않습니다. `DeviceBackend` 구�
 
 ### 컨트롤러-owned 퍼블리셔 (LifecycleNode 자체 보유)
 
-Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointCommand` / `kRos2Command` 는 DeviceBackend 로 이동.) 컨트롤러 LifecycleNode가 `on_configure`에서 직접 퍼블리셔를 생성합니다. YAML role-mapped 채널은 `kRobotTarget` / `kRobotTransforms` / `kDigitalTwinState` 세 가지. `PublishNonRtSnapshot()` 안에서 발행합니다 (CM은 SPSC snapshot 운반만 담당). YAML 에서 `ownership: manager` 로 설정하더라도 CM은 퍼블리셔를 만들지 않습니다. Phase 4 에서 `kGuiPosition` 은 폐기되었고, GUI/외부 도구는 ctrl-agnostic `/rtc_cm/<group>/joint_states` (`sensor_msgs/JointState`) + active controller's `<config_key>/transforms` (`tf2_msgs/TFMessage`) 두 표준 토픽 조합으로 동일 정보를 얻습니다.
+Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointCommand` / `kRos2Command` 는 DeviceBackend 로 이동.) 컨트롤러 LifecycleNode가 `on_configure`에서 직접 퍼블리셔를 생성합니다. YAML role-mapped 채널은 `kRobotTarget` / `kRobotTransforms` / `kDigitalTwinState` 세 가지. `PublishNonRtSnapshot()` 안에서 발행합니다 (CM은 SPSC snapshot 운반만 담당). controller YAML `topics:` entry 는 전부 controller-owned 이므로 CM은 이들에 대해 퍼블리셔를 만들지 않습니다 (issue #138: `ownership:` field 및 manager fallback 제거). Phase 4 에서 `kGuiPosition` 은 폐기되었고, GUI/외부 도구는 ctrl-agnostic `/rtc_cm/<group>/joint_states` (`sensor_msgs/JointState`) + active controller's `<config_key>/transforms` (`tf2_msgs/TFMessage`) 두 표준 토픽 조합으로 동일 정보를 얻습니다.
 
 `GraspState` / `WbcState` / `ToFSnapshot` 은 더 이상 `PublishRole` enum / YAML role 매핑을 거치지 않습니다. 각 컨트롤러가 `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼 (integrated_bringup/support/owned_topics.hpp) 로 자체 LifecyclePublisher 를 만들고, RT compute 가 결과를 컨트롤러 멤버 `rtc::SeqLock<T>` (`grasp_state_lock_` / `wbc_state_lock_` / `tof_snapshot_lock_`) 에 Store 합니다. Publish thread 는 `PublishNonRtSnapshot()` 안에서 SeqLock 을 Load 하고 `PublishOwnedTopicsFromSnapshot` 에 `&loaded` 를 넘겨 발행합니다. CM 은 의미를 모르며 `PublishSnapshot` 도 이 세 payload 를 운반하지 않습니다 — single-producer / single-consumer 데이터에 적합한 wait-free SeqLock 핸드오프입니다.
 

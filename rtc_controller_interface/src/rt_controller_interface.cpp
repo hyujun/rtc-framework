@@ -37,22 +37,6 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
     {"digital_twin_state", PublishRole::kDigitalTwinState},
 };
 
-// Parse the optional "ownership" field on a subscribe/publish entry.
-// Missing → kManager; unknown string → runtime_error.
-TopicOwnership ParseOwnership(const YAML::Node& entry) {
-  if (!entry["ownership"]) {
-    return TopicOwnership::kManager;
-  }
-  const auto str = entry["ownership"].as<std::string>();
-  if (str == "manager") {
-    return TopicOwnership::kManager;
-  }
-  if (str == "controller") {
-    return TopicOwnership::kController;
-  }
-  throw std::runtime_error("Unknown topic ownership: " + str);
-}
-
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
 void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) {
   if (group_node["subscribe"] && group_node["subscribe"].IsSequence()) {
@@ -62,7 +46,7 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
       if (kSubscribeRoleStrings.find(role_str) == kSubscribeRoleStrings.end()) {
         throw std::runtime_error("Unknown subscribe role: " + role_str);
       }
-      out.subscribe.push_back({topic, ParseOwnership(entry)});
+      out.subscribe.push_back({topic});
     }
   }
 
@@ -78,7 +62,7 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
       if (entry["data_size"]) {
         data_size = entry["data_size"].as<int>();
       }
-      out.publish.push_back({topic, it->second, data_size, ParseOwnership(entry)});
+      out.publish.push_back({topic, it->second, data_size});
     }
   }
 }

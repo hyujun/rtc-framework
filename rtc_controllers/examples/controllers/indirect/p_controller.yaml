@@ -24,6 +24,9 @@ p_controller:
   # Phase 4: device-wire lanes owned by DeviceBackend impls (see
   # `devices.<robot>.backend:` in your `<robot>_bringup` sim.yaml/robot.yaml).
   # Controller YAML keeps only target / robot_target / robot_transforms.
+  # All topic entries are controller-owned (issue #138); these `<robot>`
+  # configs are templates — replace placeholders before use, they are not
+  # loaded at runtime as-is.
   topics:
     <robot>:
       subscribe:

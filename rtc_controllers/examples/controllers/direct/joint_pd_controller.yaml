@@ -34,6 +34,9 @@ joint_pd_controller:
   # them in `<robot>_bringup` sim.yaml/robot.yaml under
   # `devices.<robot>.backend: {type, state_topic, command_topic, ...}`.
   # Controller YAML keeps only target / robot_target / robot_transforms.
+  # All topic entries are controller-owned (issue #138); these `<robot>`
+  # configs are templates — replace placeholders before use, they are not
+  # loaded at runtime as-is.
   # `<robot>` is a device-group placeholder; replace with your CM group key.
   topics:
     <robot>:
