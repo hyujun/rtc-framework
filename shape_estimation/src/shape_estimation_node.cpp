@@ -84,24 +84,24 @@ ShapeEstimationNode::CallbackReturn ShapeEstimationNode::on_configure(
       [this](std_msgs::msg::String::SharedPtr msg) { RewireControllerTopics(msg->data); });
 
   trigger_sub_ = create_subscription<std_msgs::msg::String>(
-      "/shape/trigger", rclcpp::QoS(5).reliable(),
+      "/shape/trigger", rclcpp::QoS(1).reliable(),
       [this](std_msgs::msg::String::SharedPtr msg) { TriggerCallback(std::move(msg)); });
 
   // ── Publishers (LifecyclePublisher) ────────────────────────────────────────
   estimate_pub_ = create_publisher<shape_estimation_msgs::msg::ShapeEstimate>(
-      "/shape/estimate", rclcpp::QoS(10).reliable());
+      "/shape/estimate", rclcpp::QoS(1).reliable());
 
-  point_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/shape/point_cloud",
-                                                                     rclcpp::SensorDataQoS());
+  point_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/shape/point_cloud", rclcpp::SensorDataQoS().keep_last(1));
 
   primitive_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
       "/shape/primitive_marker", rclcpp::QoS(1).reliable().transient_local());
 
-  tof_beams_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/shape/tof_beams",
-                                                                          rclcpp::SensorDataQoS());
+  tof_beams_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/shape/tof_beams", rclcpp::SensorDataQoS().keep_last(1));
 
   curvature_text_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/shape/curvature_text", rclcpp::SensorDataQoS());
+      "/shape/curvature_text", rclcpp::SensorDataQoS().keep_last(1));
 
   protuberance_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
       "/shape/protuberance_marker", rclcpp::QoS(1).reliable().transient_local());
@@ -521,7 +521,7 @@ void ShapeEstimationNode::InitExploration() {
 
   // ── 탐색 시각화 publisher ──────────────────────────────────────────────────
   explore_status_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/shape/explore_status", rclcpp::SensorDataQoS());
+      "/shape/explore_status", rclcpp::SensorDataQoS().keep_last(1));
 
   // ── 탐색 루프 타이머 ──────────────────────────────────────────────────────
   const double explore_rate = get_parameter("exploration.explore_rate_hz").as_double();
@@ -857,7 +857,10 @@ void ShapeEstimationNode::RewireControllerTopics(const std::string& ctrl_name) {
   rclcpp::SubscriptionOptions sub_options;
   sub_options.callback_group = cb_group_;
   snapshot_sub_ = create_subscription<rtc_msgs::msg::ToFSnapshot>(
-      ns + "/tof/snapshot", rclcpp::SensorDataQoS().keep_last(5),
+      // ARCH-6 exception: SnapshotCallback accumulates every snapshot (voxel
+      // cloud + snapshot_history) at up to control_rate — keep a deep queue so
+      // burst snapshots are not dropped before the executor drains them.
+      ns + "/tof/snapshot", rclcpp::SensorDataQoS().keep_last(5),  // ARCH-6-exempt
       [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) { SnapshotCallback(std::move(msg)); },
       sub_options);
 

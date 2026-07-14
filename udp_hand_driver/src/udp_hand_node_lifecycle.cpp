@@ -267,7 +267,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
       create_publisher<rtc_msgs::msg::HandSensorState>(sensor_topic, sensor_pub_qos);
 
   sensor_monitor_pub_ =
-      create_publisher<rtc_msgs::msg::HandSensorState>(sensor_topic + "/monitor", rclcpp::QoS{10});
+      create_publisher<rtc_msgs::msg::HandSensorState>(sensor_topic + "/monitor", rclcpp::QoS{1});
 
   // Link status: standalone rclcpp::Publisher (NOT LifecyclePublisher).
   // Must remain publishable in any lifecycle state — link status is a

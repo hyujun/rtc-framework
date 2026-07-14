@@ -118,9 +118,9 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
   }
 
   // ── pub/sub ─────────────────────────────────────────────────────────────────
-  publisher_ = create_publisher<sensor_msgs::msg::JointState>(output_topic, rclcpp::QoS(10));
+  publisher_ = create_publisher<sensor_msgs::msg::JointState>(output_topic, rclcpp::QoS(1));
   subscription_ = create_subscription<sensor_msgs::msg::JointState>(
-      input_topic, rclcpp::QoS(10),
+      input_topic, rclcpp::QoS(1),
       [this](const sensor_msgs::msg::JointState& msg) { OnJointState(msg); });
 
   RCLCPP_INFO(get_logger(),

@@ -290,7 +290,7 @@ class JointGuiNode(Node):
         self.get_logger().debug(f"Active joints: {active_names}")
 
         # Publisher
-        self._pub = self.create_publisher(JointState, output_topic, 10)
+        self._pub = self.create_publisher(JointState, output_topic, 1)
 
         # Publish timer
         self._timer = self.create_timer(1.0 / publish_rate, self._publish)

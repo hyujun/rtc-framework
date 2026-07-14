@@ -63,7 +63,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
 
   // Per-group joint states (CM publishes always — independent of active ctrl).
   arm_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      topic_namer_.ArmJointStates(), rclcpp::QoS{10},
+      topic_namer_.ArmJointStates(), rclcpp::QoS{1},
       [this](sensor_msgs::msg::JointState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
@@ -76,7 +76,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
         }
       });
   hand_joint_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      topic_namer_.HandJointStates(), rclcpp::QoS{10},
+      topic_namer_.HandJointStates(), rclcpp::QoS{1},
       [this](sensor_msgs::msg::JointState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
@@ -91,7 +91,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
       });
 
   world_target_sub_ = node_->create_subscription<geometry_msgs::msg::Polygon>(
-      "/world_target_info", rclcpp::QoS{10}, [this](geometry_msgs::msg::Polygon::SharedPtr msg) {
+      "/world_target_info", rclcpp::QoS{1}, [this](geometry_msgs::msg::Polygon::SharedPtr msg) {
         if (msg->points.empty())
           return;
 
@@ -137,7 +137,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
       });
 
   estop_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
-      "/system/estop_status", rclcpp::QoS{10}, [this](std_msgs::msg::Bool::SharedPtr msg) {
+      "/system/estop_status", rclcpp::QoS{1}, [this](std_msgs::msg::Bool::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           estopped_ = msg->data;
@@ -152,7 +152,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
   // ── Shape estimation ──────────────────────────────────────────────────
 
   shape_estimate_sub_ = node_->create_subscription<shape_estimation_msgs::msg::ShapeEstimate>(
-      "/shape/estimate", rclcpp::QoS{10},
+      "/shape/estimate", rclcpp::QoS{1},
       [this](shape_estimation_msgs::msg::ShapeEstimate::SharedPtr msg) {
         std::lock_guard lock(state_mutex_);
         shape_estimate_ = *msg;
@@ -160,7 +160,7 @@ BtRosBridge::BtRosBridge(rclcpp_lifecycle::LifecycleNode::SharedPtr node, RobotP
       });
 
   shape_trigger_pub_ =
-      node_->create_publisher<std_msgs::msg::String>("/shape/trigger", rclcpp::QoS{10});
+      node_->create_publisher<std_msgs::msg::String>("/shape/trigger", rclcpp::QoS{1});
 
   shape_clear_client_ = node_->create_client<std_srvs::srv::Trigger>("/shape/clear");
 
@@ -609,15 +609,14 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   // no external /tf re-broadcaster required. No restamp: GetTcpPose looks up
   // the latest transform (TimePointZero), so the source stamp is fine.
   transforms_sub_ = node_->create_subscription<tf2_msgs::msg::TFMessage>(
-      topic_namer_.Transforms(ns), rclcpp::QoS{10},
-      [this](tf2_msgs::msg::TFMessage::SharedPtr msg) {
+      topic_namer_.Transforms(ns), rclcpp::QoS{1}, [this](tf2_msgs::msg::TFMessage::SharedPtr msg) {
         for (const auto& tf : msg->transforms) {
           tf_buffer_->setTransform(tf, "bt_ros_bridge", /*is_static=*/false);
         }
       });
 
   grasp_state_sub_ = node_->create_subscription<rtc_msgs::msg::GraspState>(
-      topic_namer_.GraspState(ns), rclcpp::QoS{10},
+      topic_namer_.GraspState(ns), rclcpp::QoS{1},
       [this](rtc_msgs::msg::GraspState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
@@ -655,8 +654,11 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
       });
 
   {
+    // ARCH-6 exception: the callback push_backs every snapshot into a
+    // collection buffer (GetCollectedToFData iterates all) — depth 1 would
+    // drop intermediate samples during a live scan. Deep sensor queue by design.
     auto tof_qos = rclcpp::SensorDataQoS();
-    tof_qos.keep_last(100);
+    tof_qos.keep_last(100);  // ARCH-6-exempt
     tof_snapshot_sub_ = node_->create_subscription<rtc_msgs::msg::ToFSnapshot>(
         ns + "/tof/snapshot", tof_qos, [this](rtc_msgs::msg::ToFSnapshot::SharedPtr msg) {
           if (!tof_collecting_.load(std::memory_order_relaxed))
@@ -670,7 +672,7 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
   // publishes one of them, the other stays empty/stale. Caller picks via
   // GetGraspState() vs GetWbcState() based on the active controller.
   wbc_state_sub_ = node_->create_subscription<rtc_msgs::msg::WbcState>(
-      topic_namer_.WbcState(ns), rclcpp::QoS{10}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
+      topic_namer_.WbcState(ns), rclcpp::QoS{1}, [this](rtc_msgs::msg::WbcState::SharedPtr msg) {
         {
           std::lock_guard lock(state_mutex_);
           const auto n = msg->force_magnitude.size();
@@ -702,9 +704,9 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
       });
 
   arm_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
-      topic_namer_.ArmJointGoal(ns), rclcpp::QoS{10});
+      topic_namer_.ArmJointGoal(ns), rclcpp::QoS{1});
   hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
-      topic_namer_.HandJointGoal(ns), rclcpp::QoS{10});
+      topic_namer_.HandJointGoal(ns), rclcpp::QoS{1});
 
   // Phase C: bind parameter + grasp_command clients to the active controller.
   //   Param services live on the LifecycleNode FQN /<ctrl>/<ctrl>; relative

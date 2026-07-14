@@ -149,6 +149,17 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 | ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 새 `.cpp`에 대응하는 pure-virtual base 부재 |
 | ARCH-4 | `ur5e_*` 헤더가 `rtc_*` private 헤더 include 금지 | 경계 훼손, robot-specific leak | `grep -rn '#include "rtc_.*/src/' ur5e_*/` |
 | ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | `grep -rn 'find_package(robot_descriptions\|ament_target_dependencies.*robot_descriptions' --include=CMakeLists.txt .` 그리고 `grep -rn '<depend>robot_descriptions</depend>\|<build_depend>robot_descriptions' --include=package.xml .` |
+| ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | `grep -rnE 'rclcpp::QoS[({][2-9]\|keep_last\([2-9]\|depth *= *[2-9]' --include=*.cpp --include=*.hpp --include=*.py .` + 인자 없는 `SensorDataQoS()` (기본 depth 5) 는 `.keep_last(1)` 필요. 검증은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) grep sensor. test fixture 는 면제. |
+
+### ARCH-6 세부 스펙
+
+- 변환 규칙: `rclcpp::QoS(N)`→`QoS(1)`, `.keep_last(N)`→`.keep_last(1)`, `rclcpp::SensorDataQoS()`→`SensorDataQoS().keep_last(1)` (best_effort 보존), create_pub/sub 정수 리터럴→`1`, Python `QoSProfile(depth=N)`→`depth=1`.
+- **reliability / durability 는 절대 함께 바꾸지 않는다**: `transient_local` (latched), `best_effort` (sensor/RT lane), `reliable` 은 그대로. depth 만 이동.
+- 적용 범위: 프로덕션 C++ + Python. test fixture 제외. 위반이 정당한 경우 (수집 버퍼 등 다중 샘플 누적 의존) 는 §Escalation `[CONCERN]` (E-1) 로 보고 후 예외 기록.
+
+**기록된 예외 — ToF snapshot 토픽** (`<ns>/tof/snapshot`): 최대 `control_rate` (예: 500 Hz) 로 발행되는 sensor stream 이며 subscriber 가 **매 샘플을 누적**한다 (`shape_estimation` voxel cloud + snapshot_history, `ur5e_bt_coordinator` collection buffer). depth 1 이면 executor 가 못 따라갈 때 중간 스냅샷이 유실되므로 deep best_effort 큐를 유지한다 — publisher 5 (`integrated_bringup/src/support/owned_topics.cpp` `SetupToFSnapshotPublisher`), shape_estimation sub 5, bt_coordinator collection sub 100. latest-value 소비자 (wrench, marker, state 토픽) 는 예외 아님 — depth 1.
+
+**`ARCH-6-exempt` 마커**: 예외 lane 의 QoS 코드 라인 끝에 `// ARCH-6-exempt` 주석을 달면 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0b grep sensor 가 그 라인을 건너뛴다 (매 편집마다 재-flag 방지). 예외 근거는 코드 주석 + 본 절에 남긴다.
 
 ### ARCH-5 세부 스펙
 

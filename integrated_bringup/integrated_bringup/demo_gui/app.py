@@ -165,7 +165,7 @@ class DemoControllerGUI(Node):
         # sensor_type -> tk.Label widget (for colour updates)
         self._calib_status_labels: dict[int, tk.Label] = {}
         self.create_subscription(
-            CalibrationStatus, f"/{calib_ns}/calibration/status", self._calib_status_cb, 10
+            CalibrationStatus, f"/{calib_ns}/calibration/status", self._calib_status_cb, 1
         )
 
         # Robot shape comes from the --robot profile so widgets size to the
@@ -183,7 +183,7 @@ class DemoControllerGUI(Node):
         self.current_hand_positions = [0.0] * self._shape.hand_dof
 
         self.estop_active = False
-        self.create_subscription(Bool, "/system/estop_status", self._estop_cb, 10)
+        self.create_subscription(Bool, "/system/estop_status", self._estop_cb, 1)
 
         # Per-group JointState lives on /rtc_cm/<group>/joint_states. The group
         # names are robot-specific (iiwa7/leap vs ur5e/p1a), so these subs are
@@ -346,32 +346,32 @@ class DemoControllerGUI(Node):
                     self.destroy_publisher(pub)
                 setattr(self, pub_attr, None)
 
-        self.robot_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{arm_group}/joint_goal", 10)
-        self.hand_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{hand_group}/joint_goal", 10)
+        self.robot_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{arm_group}/joint_goal", 1)
+        self.hand_cmd_pub = self.create_publisher(RobotTarget, f"{ns}/{hand_group}/joint_goal", 1)
         # Per-group JointState: the topic ROLE is controller-agnostic but the
         # group segment is robot-specific, so (re)bind against the discovered
         # group names here. TCP pose comes from the tf2 listener (__init__).
         self._arm_gui_sub = self.create_subscription(
-            JointState, f"/rtc_cm/{arm_group}/joint_states", self._arm_joint_cb, 10
+            JointState, f"/rtc_cm/{arm_group}/joint_states", self._arm_joint_cb, 1
         )
         self._hand_gui_sub = self.create_subscription(
-            JointState, f"/rtc_cm/{hand_group}/joint_states", self._hand_joint_cb, 10
+            JointState, f"/rtc_cm/{hand_group}/joint_states", self._hand_joint_cb, 1
         )
         self._grasp_state_sub = self.create_subscription(
-            GraspState, f"{ns}/{hand_group}/grasp_state", self._grasp_state_cb, 10
+            GraspState, f"{ns}/{hand_group}/grasp_state", self._grasp_state_cb, 1
         )
         # Phase 3: subscribe to wbc_state regardless of active controller —
         # only the WBC publisher actually emits, so the joint/task case
         # silently no-ops. Topic path mirrors demo_wbc_controller.yaml.
         self._wbc_state_sub = self.create_subscription(
-            WbcState, f"{ns}/{hand_group}/wbc_state", self._wbc_state_cb, 10
+            WbcState, f"{ns}/{hand_group}/wbc_state", self._wbc_state_cb, 1
         )
         # TCP pose: the controller broadcasts its arm-tip TF on {ns}/transforms
         # (tf2_msgs/TFMessage). There is no /tf publisher in the bringup, so a
         # bare TransformListener never sees it — feed the frames into the tf
         # buffer manually here so _arm_joint_cb's lookup_transform resolves.
         self._transforms_sub = self.create_subscription(
-            TFMessage, f"{ns}/transforms", self._transforms_cb, 10
+            TFMessage, f"{ns}/transforms", self._transforms_cb, 1
         )
         self.get_logger().info(
             f"rewired controller-owned topics to '{self._active_ctrl}' "

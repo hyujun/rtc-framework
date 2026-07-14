@@ -107,7 +107,7 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
     for (std::size_t i = 0; i < n_topics; ++i) {
       const int idx = static_cast<int>(i);
       wrench_subs_.push_back(node->create_subscription<geometry_msgs::msg::WrenchStamped>(
-          wrench_topics[i], rclcpp::SensorDataQoS(),
+          wrench_topics[i], rclcpp::SensorDataQoS().keep_last(1),
           [this, idx](const geometry_msgs::msg::WrenchStamped::ConstSharedPtr msg) {
             OnWrench(idx, *msg);
           },

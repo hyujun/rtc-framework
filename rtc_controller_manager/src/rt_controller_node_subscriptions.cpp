@@ -41,7 +41,7 @@ void RtControllerNode::CreateTargetSubscription(const urtc::SubscribeTopicEntry&
                                                 const std::string& group_name, int slot,
                                                 const rclcpp::SubscriptionOptions& sub_options) {
   auto sub = create_subscription<rtc_msgs::msg::RobotTarget>(
-      entry.topic_name, 10,
+      entry.topic_name, 1,
       [this, slot](rtc_msgs::msg::RobotTarget::SharedPtr msg) {
         DeviceTargetCallback(slot, std::move(msg));
       },

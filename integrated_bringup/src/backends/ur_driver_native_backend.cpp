@@ -26,7 +26,7 @@ void UrDriverNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
                                    : config_.joint_command_names.size();
   cmd_msg_.data.assign(out_size, 0.0);
 
-  rclcpp::QoS state_qos{10};
+  rclcpp::QoS state_qos{1};
   state_qos.reliable();  // UR driver publishes /joint_states RELIABLE.
   rclcpp::QoS cmd_qos{1};
   cmd_qos.reliable();

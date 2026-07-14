@@ -123,6 +123,12 @@
 - **탐지**: device_group별 publisher 분리 여부, `SetDeviceTarget(device_idx)` 호출자에서 인덱스 정합
 - **복구**: device_group당 별도 publisher, state/target 모두 `device_idx` tagging
 
+### AP-ARCH-5: Topic QoS depth ≠ 1 ([invariants.md](invariants.md) ARCH-6 위반)
+
+- **증상**: `create_publisher`/`create_subscription` 에 depth 10 (rclcpp 기본값) 또는 `SensorDataQoS()` (기본 depth 5) 를 무심코 사용 → stale 샘플 큐잉
+- **탐지**: `grep -rnE 'rclcpp::QoS[({][2-9]\|keep_last\([2-9]\|depth *= *[2-9]'` + 인자 없는 `SensorDataQoS()`
+- **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 §Escalation E-1 로 예외 기록
+
 ## Process / Drift
 
 ### AP-PROC-1: "✅ complete" 주장 후 실제 미완료

@@ -42,7 +42,7 @@ void RtControllerNode::CreatePublishers() {
 }
 
 void RtControllerNode::CreateDigitalTwinPublishers() {
-  rclcpp::QoS dt_qos{10};
+  rclcpp::QoS dt_qos{1};
   dt_qos.reliable();
   for (const auto& [group_name, slot] : group_slot_map_) {
     std::string dt_topic = "/rtc_cm/" + group_name + "/joint_states";
@@ -58,7 +58,7 @@ void RtControllerNode::CreateDigitalTwinPublishers() {
     }
     digital_twin_publishers_[dt_topic] = std::move(dte);
     slot_to_dt_topic_[slot] = dt_topic;
-    RCLCPP_INFO(get_logger(), "  CM JointState publish: %s (RELIABLE/10)", dt_topic.c_str());
+    RCLCPP_INFO(get_logger(), "  CM JointState publish: %s (RELIABLE/1)", dt_topic.c_str());
   }
 }
 
@@ -67,7 +67,7 @@ void RtControllerNode::CreateFixedSafetyPublishers() {
   // rclcpp::Publisher (not LifecyclePublisher) — E-STOP status and active
   // controller name must be publishable regardless of lifecycle state.
   estop_pub_ = rclcpp::create_publisher<std_msgs::msg::Bool>(
-      this->get_node_topics_interface(), "/system/estop_status", rclcpp::QoS(10));
+      this->get_node_topics_interface(), "/system/estop_status", rclcpp::QoS(1));
 
   rclcpp::QoS latch_qos{1};
   latch_qos.transient_local();

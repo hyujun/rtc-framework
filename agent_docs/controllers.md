@@ -95,9 +95,9 @@ PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/incl
 - **CM-owned (controller YAML)** — Subscribe: `kTarget` (외부 RobotTarget→controller).
 - **Controller-owned (`<config_key>/` namespace, `PublishNonRtSnapshot`)** — YAML role-mapped: `kRobotTarget`, `kRobotTransforms`, `kDigitalTwinState`. CM은 SPSC snapshot 운반만 담당하며 퍼블리셔를 만들지 않는다 (YAML `ownership: manager` 라도 CM은 무시). Phase 4: `kGuiPosition` 폐기 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체.
 - **Controller-owned (no YAML role)** — `GraspState` / `WbcState` / `ToFSnapshot` 은 각 컨트롤러가 `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼로 직접 생성하고 자체 `SeqLock<T>` 로 RT compute → publish thread 전달. `PublishSnapshot` 에서 완전히 분리되어 CM 은 의미를 모름.
-- **상호 배타**: `GraspState` 와 `WbcState` — Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state. DemoWbcController는 `<config_key>/<secondary>/wbc_state` (RELIABLE/10) 로 발행 (secondary = `p1a` for ur5e_p1a, `leap` for iiwa7_leap).
+- **상호 배타**: `GraspState` 와 `WbcState` — Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state. DemoWbcController는 `<config_key>/<secondary>/wbc_state` (RELIABLE/1) 로 발행 (secondary = `p1a` for ur5e_p1a, `leap` for iiwa7_leap).
 
-**CM per-group JointState**: `/rtc_cm/{group}/joint_states` (RELIABLE) -> `rtc_digital_twin` merges -> RViz2
+**CM per-group JointState**: `/rtc_cm/{group}/joint_states` (RELIABLE, depth 1) -> `rtc_digital_twin` merges -> RViz2
 
 **Hand Driver** (ur5e_p1a instance; generic driver default is `/hand/`, remapped per variant): `/p1a/joint_states`, `/p1a/motor_states`, `/p1a/sensor_states` (Pub); `/p1a/joint_command` (Sub)
 

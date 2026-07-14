@@ -276,6 +276,31 @@ if [ -n "$INTEGRATION_TOUCHED" ]; then
   done
 fi
 
+# --- Phase 0b: ARCH-6 topic QoS depth sensor (NON-BLOCKING) ---
+# All ROS 2 topics must use KEEP_LAST depth 1 (invariants.md ARCH-6). Flag any
+# changed production source (test fixtures exempt) that sets depth != 1:
+#   rclcpp::QoS(N) / QoS{N} where N != 1, keep_last(N != 1), Python depth=N != 1,
+#   and a bare SensorDataQoS() (default depth 5) not narrowed with keep_last(1).
+# Non-blocking (rides the checklist) — the numeric patterns are precise but the
+# bare-SensorDataQoS line filter can false-positive across a two-line construct,
+# so this warns rather than exit-2s. Skipped on pure-format commits.
+QOS_VIOLATIONS=""
+if [ "$PURE_FORMAT" -eq 0 ]; then
+  QOS_SRC=$(echo "$CHANGED_SRC" | grep -vE '(^|/)tests?/|(^|/)test_[^/]*\.py$|_test\.(cpp|cc|hpp|h)$' || true)
+  for f in $QOS_SRC; do
+    [ -f "$f" ] || continue
+    # A line carrying the `ARCH-6-exempt` marker is a recorded exception
+    # (invariants.md ARCH-6 세부 스펙 — e.g. accumulating sensor streams) and
+    # is dropped from the sensor so it does not re-flag every time the file changes.
+    HITS=$(grep -nE 'rclcpp::QoS[({]([0-9]{2,}|[02-9])[)}]|keep_last\(([0-9]{2,}|[02-9])\)|depth[[:space:]]*=[[:space:]]*([0-9]{2,}|[02-9])' "$f" 2>/dev/null | grep -v 'ARCH-6-exempt' || true)
+    BARE=$(grep -nE 'SensorDataQoS\(\)' "$f" 2>/dev/null | grep -v 'keep_last' | grep -v 'ARCH-6-exempt' || true)
+    ALL=$(printf '%s\n%s' "$HITS" "$BARE" | grep -vE '^[[:space:]]*$' || true)
+    if [ -n "$ALL" ]; then
+      QOS_VIOLATIONS="${QOS_VIOLATIONS}  - ARCH-6 (topic QoS depth != 1): ${f}\n${ALL}\n"
+    fi
+  done
+fi
+
 # --- Phase 1: Doc/metadata co-update check ---
 # Skipped on pure-format commits — there is no semantic delta to mirror in
 # READMEs, and CMake/package.xml co-update triggers (new .cpp file, new
@@ -455,6 +480,12 @@ if [ -n "$STALE_INSTALL" ]; then
 fi
 if [ -n "$SHELLCHECK_FAILURES" ]; then
   REPORT="${REPORT}shellcheck (warning+) on changed shell scripts:\n${SHELLCHECK_FAILURES}\n"
+fi
+
+# ARCH-6 QoS depth is a non-blocking sensor: fold it into the checklist stream
+# so it surfaces alongside (never as) a hard failure.
+if [ -n "$QOS_VIOLATIONS" ]; then
+  CHECKLIST="${CHECKLIST}${QOS_VIOLATIONS}"
 fi
 
 if [ -n "$REPORT" ]; then

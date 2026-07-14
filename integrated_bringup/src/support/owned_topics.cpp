@@ -71,7 +71,7 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
         const std::string name_capture = group_name;
         const int idx_capture = group_idx;
         handles.target_subs[gi] = node->create_subscription<rtc_msgs::msg::RobotTarget>(
-            sub.topic_name, 10,
+            sub.topic_name, 1,
             [&ctrl, name_capture, idx_capture](rtc_msgs::msg::RobotTarget::SharedPtr msg) {
               ctrl.DeliverTargetMessage(name_capture, idx_capture, *msg);
             });
@@ -90,7 +90,7 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
           if (handles.tf_pub) {
             break;
           }
-          rclcpp::QoS tf_qos{10};
+          rclcpp::QoS tf_qos{1};
           tf_qos.reliable();  // D-7: display purpose, not control
           handles.tf_pub = node->create_publisher<tf2_msgs::msg::TFMessage>(pub.topic_name, tf_qos);
           // Reserve capacity once; controller fills tf_slots[] later via
@@ -124,7 +124,7 @@ void SetupGraspStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicH
         "SetupGraspStatePublisher: controller has no LifecycleNode (on_configure "
         "not yet called?)");
   }
-  rclcpp::QoS grasp_qos{10};
+  rclcpp::QoS grasp_qos{1};
   handles.grasp_pub = node->create_publisher<rtc_msgs::msg::GraspState>(topic_name, grasp_qos);
   PrefillGraspMessage(ctrl.GetDeviceNameConfig(device_group), handles.grasp_msg);
 }
@@ -140,7 +140,7 @@ void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHan
         "SetupWbcStatePublisher: controller has no LifecycleNode (on_configure "
         "not yet called?)");
   }
-  rclcpp::QoS wbc_qos{10};
+  rclcpp::QoS wbc_qos{1};
   handles.wbc_pub = node->create_publisher<rtc_msgs::msg::WbcState>(topic_name, wbc_qos);
   PrefillWbcMessage(ctrl.GetDeviceNameConfig(device_group), handles.wbc_msg);
 }
@@ -156,6 +156,10 @@ void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopic
         "SetupToFSnapshotPublisher: controller has no LifecycleNode "
         "(on_configure not yet called?)");
   }
+  // ARCH-6 exception: ToF snapshot is a high-rate (up to control_rate) sensor
+  // stream whose subscribers accumulate every sample (shape_estimation voxel
+  // cloud / snapshot_history, bt_coordinator collection buffer) — depth 1 would
+  // drop intermediate snapshots under burst. Deep best_effort queue by design.
   rclcpp::QoS tof_qos{5};
   tof_qos.best_effort();
   handles.tof_pub = node->create_publisher<rtc_msgs::msg::ToFSnapshot>(topic_name, tof_qos);

@@ -117,11 +117,11 @@ class DigitalTwinNode(Node):
             except Exception as e:
                 self.get_logger().error(f"Failed to parse URDF for classification: {e}")
 
-        # ── QoS — RELIABLE, depth 10 ────────────────────────────────────
+        # ── QoS — RELIABLE, depth 1 ─────────────────────────────────────
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,
         )
 
         # ── Joint state sources ──────────────────────────────────────────
@@ -225,7 +225,7 @@ class DigitalTwinNode(Node):
                 self._fingertip_data = [None] * len(fingertip_names)
 
                 self.create_subscription(HandSensorState, sensor_topic, self._sensor_cb, qos)
-                self._sensor_pub = self.create_publisher(MarkerArray, marker_topic, 10)
+                self._sensor_pub = self.create_publisher(MarkerArray, marker_topic, 1)
                 self._sensor_viz_active = True
 
                 self.get_logger().info(
@@ -294,7 +294,7 @@ class DigitalTwinNode(Node):
                     self._tcp_child_frame = tcp_source_topic
                 else:
                     self._tcp_child_frame = "tool0_actual"
-                self._tcp_marker_pub = self.create_publisher(MarkerArray, tcp_marker_topic, 10)
+                self._tcp_marker_pub = self.create_publisher(MarkerArray, tcp_marker_topic, 1)
 
                 # TF broadcaster (optional)
                 self._tcp_broadcast_tf = self.get_parameter("tcp_viz.broadcast_tf").value
@@ -351,7 +351,7 @@ class DigitalTwinNode(Node):
             )
 
         # ── Publisher ────────────────────────────────────────────────────
-        self._joint_pub = self.create_publisher(JointState, output_topic, 10)
+        self._joint_pub = self.create_publisher(JointState, output_topic, 1)
 
         # ── Display timer ────────────────────────────────────────────────
         timer_period = 1.0 / display_rate
@@ -448,7 +448,7 @@ class DigitalTwinNode(Node):
         transforms_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,
         )
         self._ctf_transforms_sub = self.create_subscription(
             TFMessage, f"/{name}/transforms", self._controller_transforms_cb, transforms_qos

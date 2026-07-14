@@ -1488,7 +1488,7 @@ class ROSNode(Node):
         self.gui = gui
         gui.ros_node = self
 
-        self._qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        self._qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
 
         # Phase 4: controller-owned target publishers are bound on every
         # /rtc_cm/active_controller_name transition. arm/hand joint state는
