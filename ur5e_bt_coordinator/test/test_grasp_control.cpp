@@ -106,6 +106,42 @@ TEST_F(GraspControlTest, PinchModeOnlyAffectsSpecifiedMotors) {
   EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
 }
 
+TEST_F(GraspControlTest, CloseIncrementScalesWithMeasuredTickDt) {
+  // Regression (Phase 2a): the closing increment must scale with the MEASURED
+  // tick dt so the effective closing rate equals close_speed regardless of BT
+  // tick_rate_hz. The old code used a hardcoded 0.05 s dt, so a slow/fast tick
+  // closed slower/faster than close_speed advertised. Proof: two ticks with a
+  // ~2x sleep ratio must yield a ~2x increment ratio, and each increment must
+  // track close_speed * elapsed (far above the old fixed 0.05 * close_speed).
+  PublishHandState({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  Spin();
+
+  constexpr double kCloseSpeed = 1.0;  // rad/s
+  auto tree = CreateTree(
+      R"(<GraspControl mode="close"
+                       close_speed="1.0" max_position="999.0"
+                       timeout_s="30.0"/>)");
+
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);  // onStart: target starts at 0
+
+  // First interval (~150ms) → increment ≈ close_speed * 0.15.
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+  const double inc1 = bridge_->GetLastHandTarget().at(0);  // from 0
+
+  // Second interval (~2x longer) → increment ≈ 2x larger.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+  const double inc2 = bridge_->GetLastHandTarget().at(0) - inc1;
+
+  // Each increment tracks close_speed * elapsed; generous bounds absorb
+  // scheduler overrun (sleep_for is a lower bound on real elapsed).
+  EXPECT_GT(inc1, kCloseSpeed * 0.15 * 0.8);
+  EXPECT_LT(inc1, kCloseSpeed * 0.15 * 3.0);
+  // Proportionality: the ~2x-longer interval yields a clearly larger increment.
+  EXPECT_GT(inc2, inc1 * 1.4);
+}
+
 TEST_F(GraspControlTest, PresetModeSucceeds) {
   auto tree = CreateTree(
       R"(<GraspControl mode="preset"

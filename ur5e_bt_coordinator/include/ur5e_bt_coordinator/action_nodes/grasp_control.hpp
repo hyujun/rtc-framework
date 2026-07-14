@@ -49,8 +49,8 @@ class GraspControl : public BT::StatefulActionNode {
   double close_speed_{0.3};
   double max_position_{1.4};
   double timeout_s_{8.0};
-  double tick_dt_{0.05};  // 20 Hz default
   std::chrono::steady_clock::time_point start_time_;
+  std::chrono::steady_clock::time_point last_tick_time_;  // for measured dt in close/pinch
 };
 
 }  // namespace rtc_bt

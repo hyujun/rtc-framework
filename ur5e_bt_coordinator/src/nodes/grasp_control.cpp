@@ -37,6 +37,7 @@ BT::NodeStatus GraspControl::onStart() {
   max_position_ = getInput<double>("max_position").value_or(1.4);
   timeout_s_ = getInput<double>("timeout_s").value_or(8.0);
   start_time_ = std::chrono::steady_clock::now();
+  last_tick_time_ = start_time_;
 
   auto pinch_str = getInput<std::string>("pinch_motors").value_or("0,1,2,3");
   pinch_motor_indices_ = ParseCsvList<int>(pinch_str);
@@ -93,8 +94,12 @@ BT::NodeStatus GraspControl::onRunning() {
     return BT::NodeStatus::RUNNING;
   }
 
-  // "close" or "pinch": increment targets
-  double increment = close_speed_ * tick_dt_;
+  // "close" or "pinch": increment targets by measured tick dt so the closing
+  // rate is independent of BT tick_rate_hz. First tick dt≈0 (harmless).
+  const auto now = std::chrono::steady_clock::now();
+  const double dt = std::chrono::duration<double>(now - last_tick_time_).count();
+  last_tick_time_ = now;
+  const double increment = close_speed_ * dt;
   bool all_at_max = true;
 
   if (mode_ == "close") {
