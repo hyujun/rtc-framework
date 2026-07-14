@@ -56,26 +56,23 @@ demo_task_controller:
   command_type: "position"
 
   # ── Topic configuration ─────────────────────────────────────────────────────
-  # ownership: "manager"   → CM owns the sub/pub (RT-adjacent, default)
-  # ownership: "controller"→ per-controller LifecycleNode owns it; relative
-  #                          paths resolve under namespace /<config_key>/
+  # All controller-YAML topics are controller-owned (issue #138): the
+  # per-controller LifecycleNode owns each sub/pub; relative paths resolve
+  # under namespace /<config_key>/.
   # Phase 4: device-wire lanes moved to devices.<group>.backend.
   topics:
     ur5e:
       subscribe:
         - topic: "ur5e/joint_goal"
           role: "target"
-          ownership: "controller"
       publish:
         # Per-controller TF (Phase 3): see demo_joint_controller.yaml.
         - topic: "transforms"
           role: "robot_transforms"
-          ownership: "controller"
     p1b:
       subscribe:
         - topic: "p1b/joint_goal"
           role: "target"
-          ownership: "controller"
       # GraspState / ToFSnapshot publishers are controller-owned and created
       # in on_configure (SetupGraspStatePublisher / SetupToFSnapshotPublisher);
       # they no longer have a YAML role mapping.

@@ -40,26 +40,24 @@ demo_joint_controller:
   # ── Topic configuration ─────────────────────────────────────────────────────
   # Phase 4: device-wire lanes moved to devices.<group>.backend in
   # sim.yaml / robot.yaml. Controller YAML keeps controller-owned roles only.
-  # ownership: "controller" → per-controller LifecycleNode owns it; relative
-  #                           paths resolve under namespace /<config_key>/
+  # All controller-YAML topics are controller-owned (issue #138): the
+  # per-controller LifecycleNode owns each sub/pub; relative paths resolve
+  # under namespace /<config_key>/.
   topics:
     ur5e:
       subscribe:
         - topic: "ur5e/joint_goal"
           role: "target"
-          ownership: "controller"
       publish:
         # Per-controller TF (Phase 2): controller당 1 토픽, tf2_msgs/TFMessage.
         # frame_id는 system YAML urdf.{sub,tree}_models 기반 자동 결정 +
         # virtual_tcp. Single publisher → entry는 첫 group(ur5e)에만 둠 (D-10).
         - topic: "transforms"
           role: "robot_transforms"
-          ownership: "controller"
     p1a:
       subscribe:
         - topic: "p1a/joint_goal"
           role: "target"
-          ownership: "controller"
       # GraspState / ToFSnapshot publishers are controller-owned and created
       # in on_configure (SetupGraspStatePublisher / SetupToFSnapshotPublisher);
       # they no longer have a YAML role mapping.
