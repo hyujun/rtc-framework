@@ -1,6 +1,7 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_grasp_phase.hpp"
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/grasp_staleness.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -57,11 +58,7 @@ BT::NodeStatus IsGraspPhase::tick() {
 
   // Fail closed on a stale grasp state: a dead Force-PI producer would freeze
   // grasp_phase at its last value, so a phase gate could latch indefinitely.
-  const double age_s = CachedStateAgeSec(gs.received_at);
-  if (age_s > kGraspStateStaleSec) {
-    RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
-                         "grasp state stale (%.2fs > %.2fs) — failing closed", age_s,
-                         kGraspStateStaleSec);
+  if (GraspStateStale(gs.received_at, logger(), steady_clock)) {
     return BT::NodeStatus::FAILURE;
   }
 

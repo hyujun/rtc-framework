@@ -700,7 +700,6 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
           wbc_state_.tsid_solve_us = msg->tsid_solve_us;
           wbc_state_.tsid_solver_ok = msg->tsid_solver_ok;
           wbc_state_.qp_fail_count = msg->qp_fail_count;
-          wbc_state_.received_at = std::chrono::steady_clock::now();
         }
         {
           std::lock_guard lock(health_mutex_);

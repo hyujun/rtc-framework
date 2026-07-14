@@ -108,8 +108,10 @@ struct CachedWbcState {
   bool tsid_solver_ok{true};
   int qp_fail_count{0};
 
-  // See CachedGraspState::received_at.
-  std::chrono::steady_clock::time_point received_at{};
+  // No received_at here (unlike CachedGraspState): no condition node reads WBC
+  // state, so there is no staleness gate to feed. Add it back alongside the
+  // consumer if a WBC-reading gate is introduced. Health is still tracked via
+  // the wbc_state topic watchdog.
 };
 
 // Max age (s) a cached grasp/wbc aggregate may reach before condition nodes

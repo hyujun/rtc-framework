@@ -1,6 +1,7 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_grasped.hpp"
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/grasp_staleness.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -35,11 +36,7 @@ BT::NodeStatus IsGrasped::tick() {
   // Fail closed on a stale grasp state: a dead/paused 500Hz producer would
   // otherwise leave the last message's grasp_detected/forces frozen, so the
   // gate could report a grasp long after the sensor stream stopped.
-  const double age_s = CachedStateAgeSec(gs.received_at);
-  if (age_s > kGraspStateStaleSec) {
-    RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
-                         "grasp state stale (%.2fs > %.2fs) — failing closed", age_s,
-                         kGraspStateStaleSec);
+  if (GraspStateStale(gs.received_at, logger(), steady_clock)) {
     return BT::NodeStatus::FAILURE;
   }
 

@@ -1,6 +1,7 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_force_above.hpp"
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
+#include "ur5e_bt_coordinator/condition_nodes/grasp_staleness.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -38,11 +39,7 @@ BT::NodeStatus IsForceAbove::tick() {
 
   // Fail closed on a stale grasp state (dead/paused 500Hz producer would leave
   // the last message's forces frozen). Mirrors IsGrasped.
-  const double age_s = CachedStateAgeSec(gs.received_at);
-  if (age_s > kGraspStateStaleSec) {
-    RCLCPP_WARN_THROTTLE(logger(), steady_clock, ::rtc_bt::logging::kThrottleSlowMs,
-                         "grasp state stale (%.2fs > %.2fs) — failing closed", age_s,
-                         kGraspStateStaleSec);
+  if (GraspStateStale(gs.received_at, logger(), steady_clock)) {
     return BT::NodeStatus::FAILURE;
   }
 

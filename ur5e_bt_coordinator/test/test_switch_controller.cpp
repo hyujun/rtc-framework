@@ -27,21 +27,8 @@ class SwitchControllerTest : public RosTestFixture {
     return factory_.createTreeFromText(full);
   }
 
-  // SwitchController is now a StatefulActionNode: onStart fires the srv async
-  // and onRunning polls the response across ticks. Tick until it leaves
-  // RUNNING (the fixture's background spin fulfils the future between ticks).
-  static BT::NodeStatus TickUntilComplete(
-      BT::Tree& tree, std::chrono::milliseconds timeout = std::chrono::milliseconds(6000)) {
-    const auto start = std::chrono::steady_clock::now();
-    BT::NodeStatus status = tree.tickOnce();
-    while (status == BT::NodeStatus::RUNNING) {
-      if (std::chrono::steady_clock::now() - start > timeout)
-        break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-      status = tree.tickOnce();
-    }
-    return status;
-  }
+  // TickUntilComplete (poll a StatefulActionNode across ticks) lives in
+  // test_helpers.hpp — shared with test_set_gains.
 
   BT::BehaviorTreeFactory factory_;
 };
