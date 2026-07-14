@@ -262,10 +262,10 @@ bt_coordinator:
 + `poses.yaml`)는 항상 먼저 로드되어 공통 설정(bb.* / tick_rate / arm_pose.*)을 한 곳에서만
 관리하고, 모든 variant 는 대칭적으로 delta 쌍(device group + hand poses)을 얹는다.
 
-| variant | 로드되는 파일 (순서) | hand_group | hand 분할 |
-|---------|--------------|-----------|-----------|
-| `ur5e_p1a` (default) | base + `bt_coordinator_p1a.yaml` + `poses_p1a.yaml` | `p1a` | thumb3/index3/middle3/ring1 |
-| `ur5e_p1b` | base + `bt_coordinator_p1b.yaml` + `poses_p1b.yaml` | `p1b` | thumb4/index3/middle2/ring1 |
+| variant | 로드되는 파일 (순서) | hand_group | hand 분할 | capabilities (`has_grasp_sensing`/`has_tof`/`has_shape`) |
+|---------|--------------|-----------|-----------|-----------|
+| `ur5e_p1a` (default) | base + `bt_coordinator_p1a.yaml` + `poses_p1a.yaml` | `p1a` | thumb3/index3/middle3/ring1 | true / true / true |
+| `ur5e_p1b` | base + `bt_coordinator_p1b.yaml` + `poses_p1b.yaml` | `p1b` | thumb4/index3/middle2/ring1 | true / **false / false** (grasp-force 만; ToF/shape 하드웨어 없음) |
 
 두 variant 모두 `poses.yaml`(arm)을 먼저 로드한 뒤 `poses_<variant>.yaml` 로 `hand_pose.*` 를
 공급한다. 따라서 **arm_pose.\* 는 `poses.yaml` 한 곳에서만 관리**되고(UR5e 팔 공용), 각 delta
@@ -279,7 +279,10 @@ base `poses.yaml` 은 `hand_pose.*` 를 정의해선 안 되고(variant 별 레�
 의 `PoseNameParityP1aVsP1b` 가 강제한다. 이래야 트리를 **무수정 재사용**할 수 있다.
 
 **Capability 계약**: `has_*` 가 false 인 센서의 노드군은 등록되지 않으므로, 그 노드를 참조하는
-트리는 로드 시 실패한다(`on_configure` FAILURE). position-only variant 설계 시 사용.
+트리는 로드 시 실패한다(`on_configure` FAILURE). position-only variant 설계 시 사용. `ur5e_p1b`
+는 grasp-force 만 갖고 ToF/shape 하드웨어가 없어(`_base.yaml` sensor_layout `values_per_group:0`;
+shape estimation 은 ToF snapshot 이 유일 입력) `has_tof`/`has_shape` 를 false 로 둔다 — 따라서
+p1b 에서 shape/ToF 트리(`shape_inspect*`)는 로드 시 깨끗한 FAILURE 가 된다.
 
 런타임에도 변경 가능:
 ```bash

@@ -60,7 +60,11 @@
     # loop_rate_hz / publish_rate 비율 (500/100=5 -> ~100Hz link_status).
     publish_rate: 100.0
 
-    # -- 조인트 이름 (p1b URDF joint 명) --
+    # -- 조인트 이름 (firmware wire-slot order) --
+    # 이 순서는 펌웨어 wire-slot 순서다 — URDF/_base.yaml 의 joint 순서와
+    # thumb slot 0/1 이 의도적으로 뒤바뀌어 있다 (_base 는 aa-first
+    # thumb_cmc_aa→fe, 여기는 fe-first thumb_cmc_fe→aa; 근거 커밋 80825e1,
+    # 실기 wire mapping 정답). offsets 블록도 이 순서를 그대로 따른다.
     joint_state_names:
       - "thumb_cmc_fe_joint"
       - "thumb_cmc_aa_joint"
