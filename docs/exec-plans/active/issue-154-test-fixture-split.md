@@ -62,8 +62,11 @@
   colcon build --packages-select ur5e_bt_coordinator --cmake-args -DCMAKE_BUILD_TYPE=Release
   for i in $(seq 10); do ctest --test-dir build/ur5e_bt_coordinator; done
   ```
-- 구현 후 10-run 결과 (2026-07-15, Release, ws-root + setup_env.sh, branch @ `f50e3fb`):
-  **run 1–10 전부 "100% tests passed, 0 tests failed out of 22"** — 10/10 연속 green (acceptance 2 충족).
+- 구현 후 10-run 결과 (2026-07-15, Release, ws-root + setup_env.sh):
+  - batch 1 @ `f50e3fb`: **10/10 연속 green** (22/22 each) — acceptance 2 충족.
+  - batch 2 @ review-fix 직후 (= `2b6e26f` 내용): 9/10 — run 2 에서 **e2e tier** `test_service_singlethread` `SetGainsGraspCompletesUnderSharedExecutor` 1건 실패 (rewire 간 수 초 지연 → grasp service wait timeout; Jul 14 로그에도 동일 테스트 실패 이력 — pre-existing DDS churn, inject 전환과 무관).
+  - batch 3 @ `2b6e26f` (최종 HEAD): **full 10/10 연속 green + inject-only 6개 바이너리 10/10 green**.
+  - 종합: 30 full run 중 29 green; 유일 실패는 e2e 잔존 flake (D6 예상 케이스) — inject tier 는 30/30 무결.
   부수 관찰: 22-test 전체 suite 시간 15.6s → 8.2s (inject tier 가 delivery-wait 제거).
 
 ## Failed approaches
