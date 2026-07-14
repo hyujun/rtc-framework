@@ -454,7 +454,7 @@ Read-only 파라미터 (`max_traj_velocity` / `max_traj_angular_velocity` / `han
 | `sensor_msgs` | JointState (`/rtc_cm/<group>/joint_states`) |
 | `tf2` / `tf2_ros` | TCP 포즈 lookup (base → tool0_actual), 쿼터니언 → RPY 변환 |
 | `eigen` | 선형대수 |
-| `ament_index_cpp` | 패키지 share 디렉토리 탐색 (빌드 의존성) |
+| `ament_index_cpp` | 패키지 share 디렉토리 탐색 (빌드·런타임 의존성 — LoadTree/validate_tree 가 런타임에 호출) |
 
 ## 빌드
 
