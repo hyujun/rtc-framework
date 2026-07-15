@@ -75,6 +75,10 @@ class RewireGateTest : public ::testing::Test {
   /// cancels the tick timer and ~/step becomes the only path to the tree.
   [[nodiscard]] virtual bool StepMode() const { return false; }
 
+  /// Long enough that the default fixtures never trip the controller-wait
+  /// escalation; ControllerWaitTimeoutTest shortens it to exercise it.
+  [[nodiscard]] virtual double ControllerWaitTimeoutS() const { return 10.0; }
+
   void SetUp() override {
     tree_path_ = std::filesystem::temp_directory_path() / "rewire_gate_tree.xml";
     std::ofstream(tree_path_) << R"(<root BTCPP_format="4"><BehaviorTree ID="T">)"
@@ -90,6 +94,7 @@ class RewireGateTest : public ::testing::Test {
         rclcpp::Parameter("hand_group", "p1b"),
         rclcpp::Parameter("tick_rate_hz", kTickRateHz),
         rclcpp::Parameter("step_mode", StepMode()),
+        rclcpp::Parameter("controller_wait_timeout_s", ControllerWaitTimeoutS()),
         // The watchdog only logs; keep it out of the way of the tick timer.
         rclcpp::Parameter("watchdog_interval_s", 0.0),
         // A non-default hand_group seeds no compile-time hand poses and
@@ -182,6 +187,12 @@ class StepGateTest : public RewireGateTest {
   [[nodiscard]] bool StepMode() const override { return true; }
 };
 
+/// Threshold well below the spins below, so the escalation has certainly run.
+class ControllerWaitTimeoutTest : public RewireGateTest {
+ protected:
+  [[nodiscard]] double ControllerWaitTimeoutS() const override { return 0.05; }
+};
+
 // ── Acceptance 1, first half: no crash, no progress before the rewire ───────
 
 TEST_F(RewireGateTest, TicksBeforeRewireDoNotCrashOrAdvanceTree) {
@@ -258,6 +269,25 @@ TEST_F(StepGateTest, StepTicksOnceWired) {
   // The timer is cancelled in step_mode, so this tick — and the arm target it
   // published — can only have come from the service.
   EXPECT_TRUE(response->success);
+  EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::RUNNING);
+  EXPECT_GT(arm_targets_seen_, 0);
+}
+
+// ── The wait escalates but never gives up ──────────────────────────────────
+
+TEST_F(ControllerWaitTimeoutTest, WaitTimeoutDiagnosesButKeepsWaiting) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+  SpinTicks();  // 100ms ≫ the 50ms threshold → the ERROR has fired by now
+  EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::IDLE);
+
+  // The escalation is diagnostic only. Abandoning the wait (failing the tree,
+  // transitioning to error) would mean a CM that is merely slow to come up
+  // could never recover on its own — so a late controller must still open the
+  // gate and let the tree run.
+  InjectActiveController(kController);
+  SpinTicks();
+
   EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::RUNNING);
   EXPECT_GT(arm_targets_seen_, 0);
 }

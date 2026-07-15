@@ -16,6 +16,7 @@
 
 #include <std_srvs/srv/trigger.hpp>
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -70,6 +71,15 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   void LoadTree();
   void TickCallback();
 
+  /// Why a tick cannot run right now, or kNone if it can.
+  ///
+  /// Callers that only need "may I tick?" compare against kNone; the specific
+  /// value exists because the blockers are not equivalent. kEstopped is a
+  /// healthy, expected state, while kControllerUnwired is only healthy for the
+  /// first moments after activation — TickCallback escalates that one once it
+  /// outlasts controller_wait_timeout_s_.
+  enum class TickBlocker { kNone, kNoTree, kEstopped, kControllerUnwired };
+
   /// Preconditions every tick must satisfy, shared by both tick paths: the
   /// timer (TickCallback) and the ~/step service (StepCallback). Ticking a
   /// tree that fails any of these is what issue #158 was — a gate on one path
@@ -78,9 +88,15 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   /// `paused_` is deliberately NOT checked here: it gates *auto*-ticking, so a
   /// manual ~/step is still expected to work while paused.
   ///
-  /// On false, `reason` gets a human-readable cause suitable for both a log
-  /// line and a Trigger response message.
-  [[nodiscard]] bool CanTick(std::string& reason) const;
+  /// `reason` gets a human-readable cause suitable for both a log line and a
+  /// Trigger response message; it is left untouched when kNone is returned.
+  [[nodiscard]] TickBlocker TickBlockedBy(std::string& reason) const;
+
+  /// Escalate a controller wait that has outlasted controller_wait_timeout_s_.
+  /// Logs ERROR exactly once per activation and keeps waiting — a CM that is
+  /// merely slow still recovers, while a misconfigured one stops being a
+  /// silent stall behind a throttled WARN.
+  void ReportControllerWaitTimeout();
 
   /// Inject bb.* parameters into the tree's root blackboard.
   void InitializeBlackboard();
@@ -143,6 +159,14 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   int groot2_port_{0};
   double watchdog_timeout_s_{2.0};
   double watchdog_interval_s_{5.0};
+  /// How long the tick gate may wait for the first active controller before
+  /// saying so at ERROR (<= 0 disables the escalation). The wait itself is
+  /// never bounded — see ReportControllerWaitTimeout.
+  double controller_wait_timeout_s_{10.0};
+
+  // Controller-wait escalation state, re-armed on every on_activate.
+  std::chrono::steady_clock::time_point activate_time_;
+  bool controller_wait_reported_{false};
 
   // Repeat state
   rclcpp::TimerBase::SharedPtr repeat_timer_;
