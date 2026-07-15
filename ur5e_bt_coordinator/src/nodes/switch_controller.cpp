@@ -63,8 +63,16 @@ BT::NodeStatus SwitchController::onStart() {
   sent_ = false;
   // Fire without blocking; if the service is not ready yet, onRunning retries
   // (poll-based grace) until timeout_s_. The srv returns ok only after CM has
-  // committed the swap (D-A4) and latched /rtc_cm/active_controller_name, so
-  // the active controller is immediately ready for a following SetGains.
+  // committed the swap (D-A4) and latched /rtc_cm/active_controller_name.
+  //
+  // That ok does NOT mean a following SetGains can reach the new controller.
+  // CM latching the name and this node's bridge acting on it are different
+  // channels, and DDS orders neither against the srv response: the bridge must
+  // still receive the latched name, run RewireControllerTopics to build the
+  // param/grasp clients, and let those clients discover the controller's
+  // services. Issue #158 is what that gap looks like when the tree does not
+  // wait for it. SetGains therefore budgets for discovery on its own
+  // (kReadyTimeoutS) rather than assuming readiness here.
   std::string err;
   handle_ = bridge_->RequestSwitchControllerAsync(target_, err);
   sent_ = handle_.future.valid();

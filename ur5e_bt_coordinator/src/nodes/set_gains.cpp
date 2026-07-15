@@ -32,7 +32,24 @@ std::string NormalizeName(const std::string& s) {
   return r;
 }
 
-constexpr double kSrvTimeoutS = 2.0;
+// Two distinct waits, two budgets — sharing one made the readiness wait fail
+// far too eagerly (issue #158).
+//
+// Before the send, the wait is for the active controller's service to be
+// *discovered*: SetGains typically runs right after a SwitchController, and the
+// switch srv returning ok does not mean this node's clients are bound yet — the
+// bridge still has to receive the latched /rtc_cm/active_controller_name and
+// rewire, and the fresh client then has to discover the service. That is
+// DDS discovery, which stretches under participant churn.
+//
+// After the send, the wait is for the controller to *answer* a request it has
+// already received. That is a live controller's compute time, not discovery,
+// and a slow answer there is a real fault worth failing on quickly.
+//
+// Neither is unbounded: a service that never appears still fails, just with
+// enough grace to cover discovery.
+constexpr double kReadyTimeoutS = 5.0;  // stage entry → send (discovery grace)
+constexpr double kSrvTimeoutS = 2.0;    // send → response
 }  // namespace
 
 SetGains::SetGains(const std::string& name, const BT::NodeConfig& config,
@@ -205,8 +222,11 @@ BT::NodeStatus SetGains::onStart() {
 }
 
 BT::NodeStatus SetGains::onRunning() {
-  if (ElapsedSeconds(stage_start_) > kSrvTimeoutS) {
-    RCLCPP_ERROR(logger(), "timeout (%.1fs) in %s stage: %s", kSrvTimeoutS,
+  // stage_start_ is re-stamped at send, so each budget times only its own wait.
+  const double budget = stage_sent_ ? kSrvTimeoutS : kReadyTimeoutS;
+  if (ElapsedSeconds(stage_start_) > budget) {
+    RCLCPP_ERROR(logger(), "timeout (%.1fs) waiting for %s in %s stage: %s", budget,
+                 stage_sent_ ? "response" : "service discovery",
                  stage_ == Stage::kParams ? "set_parameters" : "grasp_command",
                  last_err_.empty() ? "no response" : last_err_.c_str());
     return BT::NodeStatus::FAILURE;
