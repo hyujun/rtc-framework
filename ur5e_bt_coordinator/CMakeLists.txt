@@ -115,6 +115,31 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   # Tier 1: Pure computation tests (no ROS2 fixture needed)
+  # Every test here links bt_nodes, sees the same include roots, and needs the
+  # same dependency floor. Only two things genuinely vary — extra ament deps and
+  # extra sources — so a helper makes those the only thing a test declares.
+  # Hand-rolling the whole block per target is what let the tiers drift apart.
+  set(BT_TEST_DEPS
+    rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
+  )
+  # Additional deps for tests that build a BtRosBridge / BtCoordinatorNode
+  # themselves instead of reaching them through bt_nodes' registered nodes:
+  # the LifecycleNode plus the tf/sensor types on the bridge's own surface.
+  set(BT_BRIDGE_DEPS rclcpp_lifecycle sensor_msgs tf2 tf2_ros tf2_msgs)
+
+  # add_bt_gtest(<name> [EXTRA_DEPS ...] [EXTRA_SOURCES ...])
+  #   Sources default to test/<name>.cpp.
+  function(add_bt_gtest test_name)
+    cmake_parse_arguments(ARG "" "" "EXTRA_DEPS;EXTRA_SOURCES" ${ARGN})
+    ament_add_gtest(${test_name} test/${test_name}.cpp ${ARG_EXTRA_SOURCES})
+    target_link_libraries(${test_name} bt_nodes)
+    target_include_directories(${test_name} PRIVATE
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+    )
+    ament_target_dependencies(${test_name} ${BT_TEST_DEPS} ${ARG_EXTRA_DEPS})
+  endfunction()
+
   set(TIER1_TESTS
     test_bt_types
     test_bt_utils
@@ -128,14 +153,7 @@ if(BUILD_TESTING)
     test_wait_duration
   )
   foreach(test_name ${TIER1_TESTS})
-    ament_add_gtest(${test_name} test/${test_name}.cpp)
-    target_link_libraries(${test_name} bt_nodes)
-    target_include_directories(${test_name} PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
-    )
-    ament_target_dependencies(${test_name}
-      rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
-    )
+    add_bt_gtest(${test_name})
   endforeach()
 
   # Tier 2 inject: DDS-free state-inject tests (use inject_fixture.hpp) —
@@ -159,54 +177,25 @@ if(BUILD_TESTING)
     test_grasp_control
   )
   foreach(test_name ${TIER2_INJECT} ${TIER2_E2E})
-    ament_add_gtest(${test_name} test/${test_name}.cpp)
-    target_link_libraries(${test_name} bt_nodes)
-    target_include_directories(${test_name} PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
-    )
-    ament_target_dependencies(${test_name}
-      rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs
-    )
+    add_bt_gtest(${test_name})
   endforeach()
 
-  # Tier 3: XML tree validation
-  ament_add_gtest(test_tree_validation test/test_tree_validation.cpp)
-  target_link_libraries(test_tree_validation bt_nodes)
-  target_include_directories(test_tree_validation PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
-  )
-  ament_target_dependencies(test_tree_validation
-    rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
-  )
+  # Tier 3: XML tree validation — ament_index_cpp resolves the tree share dir.
+  add_bt_gtest(test_tree_validation EXTRA_DEPS ament_index_cpp)
 
   # Rewire-gap regression (issue #158) — drives the real BtCoordinatorNode
-  # lifecycle + tick timer, so it compiles the node TU in (bt_coordinator_node
+  # lifecycle + tick/step paths, so it compiles the node TU in (bt_coordinator_node
   # is an executable, not a library) and needs ament_index_cpp for LoadTree.
   # DDS-free: the active-controller transition is injected via the bridge
   # handler seam, so this stays out of the e2e tier.
-  ament_add_gtest(test_rewire_gate test/test_rewire_gate.cpp src/bt_coordinator_node.cpp)
-  target_link_libraries(test_rewire_gate bt_nodes)
-  target_include_directories(test_rewire_gate PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
-  )
-  ament_target_dependencies(test_rewire_gate
-    rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs sensor_msgs rtc_msgs shape_estimation_msgs tf2 tf2_ros tf2_msgs ament_index_cpp
+  add_bt_gtest(test_rewire_gate
+    EXTRA_DEPS ${BT_BRIDGE_DEPS} ament_index_cpp
+    EXTRA_SOURCES src/bt_coordinator_node.cpp
   )
 
   # on_configure safety-net coverage — capability gating + finger_map range
   # check, exercised at the RegisterBtNodes / BtRosBridge level (bt_nodes).
-  ament_add_gtest(test_lifecycle_config test/test_lifecycle_config.cpp)
-  target_link_libraries(test_lifecycle_config bt_nodes)
-  target_include_directories(test_lifecycle_config PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
-  )
-  ament_target_dependencies(test_lifecycle_config
-    rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs sensor_msgs rtc_msgs shape_estimation_msgs tf2 tf2_ros tf2_msgs
-  )
+  add_bt_gtest(test_lifecycle_config EXTRA_DEPS ${BT_BRIDGE_DEPS})
 endif()
 
 ament_package()

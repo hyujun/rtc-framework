@@ -33,6 +33,7 @@
 
 #include <gtest/gtest.h>
 #include <std_srvs/srv/trigger.hpp>
+#include <unistd.h>  // getpid — per-process temp tree name
 
 #include <chrono>
 #include <filesystem>
@@ -80,10 +81,23 @@ class RewireGateTest : public ::testing::Test {
   [[nodiscard]] virtual double ControllerWaitTimeoutS() const { return 10.0; }
 
   void SetUp() override {
-    tree_path_ = std::filesystem::temp_directory_path() / "rewire_gate_tree.xml";
-    std::ofstream(tree_path_) << R"(<root BTCPP_format="4"><BehaviorTree ID="T">)"
-                                 R"(<UR5eHoldPose pose="demo_pose"/>)"
-                                 R"(</BehaviorTree></root>)";
+    // Per-test, per-process filename. colcon runs test binaries in parallel and
+    // a machine can host two workspaces, so a fixed name in the shared /tmp
+    // races: one TearDown unlinks the file while another SetUp sits between the
+    // write and configure(), and LoadTree then fails on a missing tree.
+    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    tree_path_ = std::filesystem::temp_directory_path() /
+                 ("rewire_gate_" + std::string(info->test_suite_name()) + "_" + info->name() + "_" +
+                  std::to_string(::getpid()) + ".xml");
+
+    std::ofstream tree_out(tree_path_);
+    tree_out << R"(<root BTCPP_format="4"><BehaviorTree ID="T">)"
+                R"(<UR5eHoldPose pose="demo_pose"/>)"
+                R"(</BehaviorTree></root>)";
+    tree_out.close();
+    // Unchecked, a failed write (leftover file owned by another user, full /tmp)
+    // would surface as a confusing configure() failure instead.
+    ASSERT_TRUE(tree_out) << "failed to write " << tree_path_;
 
     rclcpp::NodeOptions opts;
     opts.use_intra_process_comms(true);
