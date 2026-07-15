@@ -26,8 +26,8 @@ discovery 미완" 뿌리에서 나오는 `SetGains` 의 `kSrvTimeoutS` 여유 �
 
 ## Current state
 
-**commits 1–3 완료 (2026-07-15). Acceptance 1·2·3 충족. 남은 것: commit 4 (D4), Acceptance 4
-sim smoke, 이슈 업데이트 U1–U4, `/code-review`.**
+**commits 1–4 완료 (2026-07-15). Acceptance 1·2·3 충족. 남은 것: Acceptance 4 sim smoke,
+이슈 업데이트 U1–U4, `/code-review`, 이슈 본문 편집 여부 결정.**
 
 근본 원인은 이제 **재현으로 확정**했다 (E7) — 더 이상 인스펙션 전용이 아니다.
 
@@ -36,6 +36,7 @@ sim smoke, 이슈 업데이트 U1–U4, `/code-review`.**
 | `ef09b06` | bridge null 가드 3곳 (Acceptance 2 grep 통과) | build clean, 226/226 green |
 | `e826fe4` | `TickCallback` first-rewire gate (D5 설계) | build clean, 226/226 green |
 | `e75878c` | `test_rewire_gate.cpp` 회귀 테스트 3개 + node test seam | build clean, **230/230 green** |
+| `216ccbb` | `SetGains` 예산 분리 (D4-정정) + `switch_controller` 주석 정정 | build clean, 230/230 green |
 
 230 = 이전 226 + 신규 gtest case 3 + 신규 ctest 항목 1 (`colcon test-result` 는 둘 다 센다).
 세 commit 모두 기존 `EXPECT`/`ASSERT` 수정·삭제 **0건** (Acceptance 3 충족).
@@ -78,10 +79,9 @@ without a null check, and those publishers are only created inside the rewire". 
 3. ~~**commit 2** — `TickCallback` first-rewire latch gate (D1)~~ — done (`e826fe4`, D5 로 설계 변경)
 4. ~~**commit 3** — 회귀 테스트 (Acceptance 1)~~ — done (`e75878c`). fix 없이 SIGSEGV 재현
    확인 완료 (E7). D6 으로 tier 결정 변경 (node seam 추가, 2026-07-15 사용자 결정).
-5. **commit 4** — `SetGains` discovery 여유 (D4). `kSrvTimeoutS` 의미 재검토:
-   not-ready 재시도 구간을 timeout 시계에서 제외(전송 성공 시점부터 시계 시작)하는 쪽이
-   상수 상향보다 정확 — `set_gains.cpp:208` 의 `stage_start_` 의미를 바꾸는 작업.
-   `switch_controller.cpp:64-68` 의 cross-channel 순서 가정 주석도 같이 정정.
+5. ~~**commit 4** — `SetGains` discovery 여유 (D4)~~ — done (`216ccbb`). **단 이 항목의 전제는
+   틀렸었다 — D4-정정 참조.** 실제로는 예산 분리(`kReadyTimeoutS` 5s / `kSrvTimeoutS` 2s)를 했고,
+   `switch_controller.cpp` 순서 가정 주석 정정은 지시대로 수행.
 6. Sensor: `agent_docs/testing-debug.md` 의 `ur5e_bt_coordinator` 행 + p1b sim smoke (Acceptance 4)
 7. `/code-review` — production 코드 + lifecycle 콜백 변경이므로 §5.5 trigger 해당
 
@@ -146,6 +146,17 @@ receiver 가 "검증됐다"고 오독한다. handoff.md §3 — `done` 을 쓰�
 - **D4 — `kSrvTimeoutS` 는 이번 범위 포함** (2026-07-15 사용자 결정).
   별도 이슈 등록 대신 #158 브랜치에서 처리 — 같은 "rewire 직후 discovery 미완" 뿌리다.
   폐기한 대안: 새 이슈로 분리, exec-plan 에 기록만.
+- **D4-정정 — commit 4 의 지시는 전제가 stale 이었다** (2026-07-15 구현 중 발견, 사용자 결정으로
+  예산 분리 채택). Next action 5 는 "전송 성공 시점부터 시계 시작" 을 지시했으나 그 동작은
+  `1b301c3` (`// response clock starts at send`) 로 **이미 구현돼 있었다** — plan 이 코드를
+  잘못 읽었다 (`set_gains.cpp` 두 stage 모두 send 시 `stage_start_` 재스탬프).
+  **실제 gap**: readiness(discovery) 창과 response 창이 같은 `kSrvTimeoutS = 2.0` 예산을
+  공유해, rewire 직후 param service discovery 가 2초를 넘기면 멀쩡한 controller 에 대해
+  `SetGains` 가 FAILURE. → `kReadyTimeoutS = 5.0` (stage 진입→send) / `kSrvTimeoutS = 2.0`
+  (send→response) 로 분리. 둘 다 bounded 유지 (unbounded RUNNING 방지).
+  폐기한 대안: 상수 단순 상향(response 창까지 같이 늘어남), 주석만 정정(실 gap 방치).
+  **교훈** — 이슈 본문뿐 아니라 **exec-plan 자신의 "Next action" 도 미검증 가설**일 수 있다.
+  #158·#160 에 이어 세 번째 사례. 착수 전 grep 반증은 plan 지시에도 적용한다.
 - **D5 — gate 는 node 의 `rewire_seen_` 이 아니라 bridge 소유 latch** (2026-07-15 구현 중 결정,
   D1 의 semantics 는 그대로). `BtRosBridge::IsControllerWired()` = 두 target pub 이 non-null.
   근거: pub 은 `RewireControllerTopics` 안에서만 생성되고 **절대 null 로 돌아가지 않는다**
@@ -219,8 +230,9 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
 ## Workspace
 
 - Branch: **`fix/issue-158-rewire-tick-gate`** (분기점 `main` @ `b152a49`) — 새 세션이 재개할 브랜치
-- 커밋: `2175758` (artifact) → `ef09b06` → `e826fe4` → `5c56af0` (artifact) → `e75878c`.
-  미커밋 변경 없음. **다음 세션은 commit 4 (D4) 부터 시작한다.**
+- 커밋: `2175758` (artifact) → `ef09b06` → `e826fe4` → `5c56af0` (artifact) → `e75878c` →
+  `9935670` (artifact) → `216ccbb`. 미커밋 변경 없음.
+  **다음 세션은 Acceptance 4 sim smoke + 이슈 업데이트 U1–U4 부터 시작한다** (코드 변경 완료).
 - 신규 파일: `ur5e_bt_coordinator/test/test_rewire_gate.cpp` (+ CMake `test_rewire_gate` 타깃 —
   node 가 라이브러리가 아니라 실행파일이라 `src/bt_coordinator_node.cpp` TU 를 함께 컴파일)
 - ~~이 브랜치의 첫 커밋 = 본 artifact 뿐 (docs-only). 코드 변경은 아직 0건.~~
