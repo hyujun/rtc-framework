@@ -26,8 +26,17 @@ discovery 미완" 뿌리에서 나오는 `SetGains` 의 `kSrvTimeoutS` 여유 �
 
 ## Current state
 
-**분석 완료, 코드 미변경.** 근본 원인은 코드 인스펙션으로 확정했다 (아래 Evidence).
-아직 **재현으로는 확인하지 않았다** — #158 은 1회 관측 후 ~28회 재현 실패한 타이밍 의존 버그다.
+**commits 1–2 완료 (2026-07-15), commit 3 (회귀 테스트) 착수 전.**
+근본 원인은 코드 인스펙션으로 확정했다 (아래 Evidence). 아직 **재현으로는 확인하지 않았다** —
+#158 은 1회 관측 후 ~28회 재현 실패한 타이밍 의존 버그다. 재현 입증은 commit 3 이 담당한다.
+
+| commit | 내용 | sensor |
+|---|---|---|
+| `ef09b06` | bridge null 가드 3곳 (Acceptance 2 grep 통과) | build clean, 226/226 green |
+| `e826fe4` | `TickCallback` first-rewire gate | build clean, 226/226 green |
+
+두 commit 모두 기존 `EXPECT`/`ASSERT` 수정·삭제 **0건** (Acceptance 3 부분 충족 — Release
+full-suite 는 commit 3 후 재확인).
 
 ### 근본 원인 (inspection-confirmed)
 
@@ -62,14 +71,12 @@ without a null check, and those publishers are only created inside the rewire". 
 
 ## Next action
 
-1. 브랜치 `fix/issue-158-rewire-tick-gate` 생성 (from `main` @ `b152a49`)
-2. **commit 1** — `bt_ros_bridge.cpp` choke-point null 가드 3곳
-   (`PublishArmTarget:375`, `PublishArmJointTarget:383`, `PublishHandTarget:395`).
-   `RCLCPP_WARN_THROTTLE` + early return. **RT 경로 아님** (BT tick 은 non-RT) — RT-1 무관.
-3. **commit 2** — `bt_coordinator_node.cpp` `TickCallback` first-rewire latch gate (D1).
-   `rewire_seen_` 멤버 추가, `on_cleanup`/`on_deactivate` 에서 리셋 여부 확인.
+1. ~~브랜치 `fix/issue-158-rewire-tick-gate` 생성~~ — done
+2. ~~**commit 1** — bridge choke-point null 가드 3곳~~ — done (`ef09b06`)
+3. ~~**commit 2** — `TickCallback` first-rewire latch gate (D1)~~ — done (`e826fe4`, D5 로 설계 변경)
 4. **commit 3** — inject-tier 회귀 테스트 (Acceptance 1). `BridgeStateInjector` 로
-   rewire 전/후 상태를 만들 수 있으므로 DDS 불필요.
+   rewire 전/후 상태를 만들 수 있으므로 DDS 불필요. **fix 를 임시로 되돌린 상태에서 먼저
+   SIGSEGV 를 확인**해야 회귀 테스트로서 유효하다 (Constraints 1).
 5. **commit 4** — `SetGains` discovery 여유 (D4). `kSrvTimeoutS` 의미 재검토:
    not-ready 재시도 구간을 timeout 시계에서 제외(전송 성공 시점부터 시계 시작)하는 쪽이
    상수 상향보다 정확 — `set_gains.cpp:208` 의 `stage_start_` 의미를 바꾸는 작업.
@@ -138,6 +145,16 @@ receiver 가 "검증됐다"고 오독한다. handoff.md §3 — `done` 을 쓰�
 - **D4 — `kSrvTimeoutS` 는 이번 범위 포함** (2026-07-15 사용자 결정).
   별도 이슈 등록 대신 #158 브랜치에서 처리 — 같은 "rewire 직후 discovery 미완" 뿌리다.
   폐기한 대안: 새 이슈로 분리, exec-plan 에 기록만.
+- **D5 — gate 는 node 의 `rewire_seen_` 이 아니라 bridge 소유 latch** (2026-07-15 구현 중 결정,
+  D1 의 semantics 는 그대로). `BtRosBridge::IsControllerWired()` = 두 target pub 이 non-null.
+  근거: pub 은 `RewireControllerTopics` 안에서만 생성되고 **절대 null 로 돌아가지 않는다**
+  (rewire 가 빈 이름에 early-return — `bt_ros_bridge.cpp:695-696`). 따라서 pub-nullness 자체가
+  이미 bridge lifetime 에 묶인 monotone latch 다. 이로써 **Constraints 의 "D1 latch 리셋 범위
+  미결" 이 소멸**한다 — `on_cleanup` → `ReleaseAllResources` 가 `bridge_.reset()` 하므로
+  재-configure 시 gate 가 자동 재무장하고, `on_deactivate` 는 bridge 를 남기므로 (publisher 도
+  살아있음) latch 가 true 로 유지되는 것이 정확하다. 별도 bool 은 리셋을 손으로 관리해야 하고
+  (누락 시 cleanup→activate 경로에서 gate 가 죽은 채 버그 재발), gate 가 막아야 할 대상(null pub)
+  과 다른 것을 추적한다. 폐기한 대안: node 멤버 `rewire_seen_` + 수동 리셋.
 
 ## Evidence
 
@@ -174,12 +191,12 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
   는 **음성 증거**일 뿐 fix 를 증명하지 못한다. fix 의 실증은 Acceptance 1 의 결정적
   inject-tier 테스트가 담당한다 (rewire 전 tick 을 강제 → 현재 코드에서 SIGSEGV 재현,
   fix 후 통과). **먼저 fix 없이 그 테스트가 실제로 죽는지 확인**해야 회귀 테스트로서 유효하다.
-- **D1 latch 리셋 범위 미결** — `on_deactivate` → `on_activate` 재순환 시 `rewire_seen_` 을
-  리셋할지. bridge 가 살아있으면 publisher 도 살아있으므로 리셋 불필요할 수 있다.
-  `ReleaseAllResources` / `on_cleanup` 이 bridge 를 reset 하는지 확인 후 결정.
-- **D1 이 기존 테스트를 깨뜨릴 가능성** — active controller 없이 activate → tick 을 기대하는
-  기존 테스트가 있으면 E-6 충돌. 구현 전 `test_lifecycle_config.cpp` + step-mode 경로 grep 필요.
-  **assertion 을 약화시키지 말고**, 충돌 시 §6 E-6 으로 escalate.
+- ~~**D1 latch 리셋 범위 미결**~~ — **해소 (2026-07-15, D5)**. 리셋 로직 자체가 불필요해졌다:
+  latch 가 bridge 소유이고 `on_cleanup` 만 bridge 를 파괴한다 (`bt_coordinator_node.cpp:185`).
+- ~~**D1 이 기존 테스트를 깨뜨릴 가능성**~~ — **해소 (2026-07-15)**. `BtCoordinatorNode` 를
+  구동하는 테스트가 **하나도 없다** (`grep -rn 'BtCoordinatorNode' test/*.cpp` → 주석 1건뿐;
+  전 테스트가 `tree.tickOnce()` 로 트리를 직접 tick 한다). `TickCallback` gate 는 테스트 경로에
+  닿지 않는다 → E-6 충돌 없음. 226/226 green 으로 확인.
 
 ## Workspace
 
