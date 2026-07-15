@@ -26,17 +26,19 @@ discovery 미완" 뿌리에서 나오는 `SetGains` 의 `kSrvTimeoutS` 여유 �
 
 ## Current state
 
-**commits 1–2 완료 (2026-07-15), commit 3 (회귀 테스트) 착수 전.**
-근본 원인은 코드 인스펙션으로 확정했다 (아래 Evidence). 아직 **재현으로는 확인하지 않았다** —
-#158 은 1회 관측 후 ~28회 재현 실패한 타이밍 의존 버그다. 재현 입증은 commit 3 이 담당한다.
+**commits 1–3 완료 (2026-07-15). Acceptance 1·2·3 충족. 남은 것: commit 4 (D4), Acceptance 4
+sim smoke, 이슈 업데이트 U1–U4, `/code-review`.**
+
+근본 원인은 이제 **재현으로 확정**했다 (E7) — 더 이상 인스펙션 전용이 아니다.
 
 | commit | 내용 | sensor |
 |---|---|---|
 | `ef09b06` | bridge null 가드 3곳 (Acceptance 2 grep 통과) | build clean, 226/226 green |
-| `e826fe4` | `TickCallback` first-rewire gate | build clean, 226/226 green |
+| `e826fe4` | `TickCallback` first-rewire gate (D5 설계) | build clean, 226/226 green |
+| `e75878c` | `test_rewire_gate.cpp` 회귀 테스트 3개 + node test seam | build clean, **230/230 green** |
 
-두 commit 모두 기존 `EXPECT`/`ASSERT` 수정·삭제 **0건** (Acceptance 3 부분 충족 — Release
-full-suite 는 commit 3 후 재확인).
+230 = 이전 226 + 신규 gtest case 3 + 신규 ctest 항목 1 (`colcon test-result` 는 둘 다 센다).
+세 commit 모두 기존 `EXPECT`/`ASSERT` 수정·삭제 **0건** (Acceptance 3 충족).
 
 ### 근본 원인 (inspection-confirmed)
 
@@ -74,9 +76,8 @@ without a null check, and those publishers are only created inside the rewire". 
 1. ~~브랜치 `fix/issue-158-rewire-tick-gate` 생성~~ — done
 2. ~~**commit 1** — bridge choke-point null 가드 3곳~~ — done (`ef09b06`)
 3. ~~**commit 2** — `TickCallback` first-rewire latch gate (D1)~~ — done (`e826fe4`, D5 로 설계 변경)
-4. **commit 3** — inject-tier 회귀 테스트 (Acceptance 1). `BridgeStateInjector` 로
-   rewire 전/후 상태를 만들 수 있으므로 DDS 불필요. **fix 를 임시로 되돌린 상태에서 먼저
-   SIGSEGV 를 확인**해야 회귀 테스트로서 유효하다 (Constraints 1).
+4. ~~**commit 3** — 회귀 테스트 (Acceptance 1)~~ — done (`e75878c`). fix 없이 SIGSEGV 재현
+   확인 완료 (E7). D6 으로 tier 결정 변경 (node seam 추가, 2026-07-15 사용자 결정).
 5. **commit 4** — `SetGains` discovery 여유 (D4). `kSrvTimeoutS` 의미 재검토:
    not-ready 재시도 구간을 timeout 시계에서 제외(전송 성공 시점부터 시계 시작)하는 쪽이
    상수 상향보다 정확 — `set_gains.cpp:208` 의 `stage_start_` 의미를 바꾸는 작업.
@@ -155,10 +156,28 @@ receiver 가 "검증됐다"고 오독한다. handoff.md §3 — `done` 을 쓰�
   살아있음) latch 가 true 로 유지되는 것이 정확하다. 별도 bool 은 리셋을 손으로 관리해야 하고
   (누락 시 cleanup→activate 경로에서 gate 가 죽은 채 버그 재발), gate 가 막아야 할 대상(null pub)
   과 다른 것을 추적한다. 폐기한 대안: node 멤버 `rewire_seen_` + 수동 리셋.
+- **D6 — 회귀 테스트는 node test seam 을 추가해 실제 tick 경로를 구동** (2026-07-15 사용자 결정).
+  Acceptance 1 의 "`on_activate` → 다수 tick" 은 원안(inject tier, 프로덕션 변경 0)으로는
+  **불가능**했다 — `TickCallback` 과 `bridge_` 가 private 이고 seam 이 없어, 실제 tick 경로에서
+  rewire 상태를 통제하려면 real DDS(=범위 밖 e2e tier)뿐이었다. 따라서 `BtCoordinatorNode` 에
+  `friend struct test::CoordinatorTickInjector` 를 추가했다 (#154 의 `BridgeStateInjector`
+  선례와 동형 — 관찰 전용, 필드 poke·private 전이 호출 없음). 테스트는 임시 단일-leaf
+  `UR5eHoldPose` 트리(LoadTree 가 절대경로 허용)로 configure→activate→timer tick 을 실제
+  구동하고, active controller 는 bridge 핸들러로 주입해 **DDS 없이** 유지한다. arm target 관찰은
+  intra-process. 폐기한 대안: bridge 단위 테스트만 (gate 3줄이 미커버 → E7 재현이 불가능했을 것).
 
 ## Evidence
 
-모두 2026-07-15, `main` @ `b152a49` 기준. **정적 인스펙션만 — 빌드·테스트·재현 미실행.**
+E1–E6 은 2026-07-15, `main` @ `b152a49` 기준 **정적 인스펙션** (당시 빌드·테스트·재현 미실행).
+**E7 이 2026-07-15 재현·검증으로 이를 승격했다** — E1–E6 의 인스펙션 결론이 실측으로 확인됐다.
+
+- **E7 — 재현 확정 (결정적, #158 최초 재현)**: `e826fe4`+`ef09b06` 의 gate·가드를 작업 트리에서
+  임시로 제거하고 `test_rewire_gate` 실행 → `RewireGateTest.TicksBeforeRewireDoNotCrashOrAdvance`
+  가 `run_test.py: return code -11` (**SIGSEGV**) 로 사망. #158 이 보고한 `exit -11` 과 동일
+  signature 이며, tick 1 에서 즉시 발생. fix 복원 후 230/230 green.
+  → **Constraints 1 (재현 검증의 한계) 해소**: 이제 fix 는 음성 증거(sim smoke)가 아니라
+  결정적 재현 테스트로 실증된다. #158 은 "1회 관측 후 ~28회 재현 실패" 였으나 rewire 전 tick 을
+  강제하면 100% 재현된다 — 타이밍이 아니라 **순서**가 원인임을 확증.
 
 - **E1** — 생성자에 publisher 생성 없음:
   `sed -n '19,104p' src/bt_ros_bridge.cpp | grep 'arm_target_pub_\|hand_target_pub_'` → **0 hit**
@@ -187,10 +206,9 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
 
 ## Constraints / pending human decisions
 
-- **재현 검증의 한계** — #158 은 1회 관측 / ~28회 재현 실패다. Acceptance 4 (sim smoke)
-  는 **음성 증거**일 뿐 fix 를 증명하지 못한다. fix 의 실증은 Acceptance 1 의 결정적
-  inject-tier 테스트가 담당한다 (rewire 전 tick 을 강제 → 현재 코드에서 SIGSEGV 재현,
-  fix 후 통과). **먼저 fix 없이 그 테스트가 실제로 죽는지 확인**해야 회귀 테스트로서 유효하다.
+- ~~**재현 검증의 한계**~~ — **해소 (2026-07-15, E7)**. fix 없이 SIGSEGV(-11) 재현 확인,
+  fix 후 230/230. Acceptance 4 sim smoke 는 여전히 음성 증거지만, 이제 실증은 E7 이 담당하므로
+  smoke 는 보조 확인으로 격하된다.
 - ~~**D1 latch 리셋 범위 미결**~~ — **해소 (2026-07-15, D5)**. 리셋 로직 자체가 불필요해졌다:
   latch 가 bridge 소유이고 `on_cleanup` 만 bridge 를 파괴한다 (`bt_coordinator_node.cpp:185`).
 - ~~**D1 이 기존 테스트를 깨뜨릴 가능성**~~ — **해소 (2026-07-15)**. `BtCoordinatorNode` 를
@@ -201,7 +219,11 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
 ## Workspace
 
 - Branch: **`fix/issue-158-rewire-tick-gate`** (분기점 `main` @ `b152a49`) — 새 세션이 재개할 브랜치
-- 이 브랜치의 첫 커밋 = **본 artifact 뿐** (docs-only). **코드 변경은 아직 0건.**
+- 커밋: `2175758` (artifact) → `ef09b06` → `e826fe4` → `5c56af0` (artifact) → `e75878c`.
+  미커밋 변경 없음. **다음 세션은 commit 4 (D4) 부터 시작한다.**
+- 신규 파일: `ur5e_bt_coordinator/test/test_rewire_gate.cpp` (+ CMake `test_rewire_gate` 타깃 —
+  node 가 라이브러리가 아니라 실행파일이라 `src/bt_coordinator_node.cpp` TU 를 함께 컴파일)
+- ~~이 브랜치의 첫 커밋 = 본 artifact 뿐 (docs-only). 코드 변경은 아직 0건.~~
   #154 관례를 따랐다 — exec-plan 은 feature 브랜치에서 작업과 함께 살다가 merge 로 main 에 들어간다
   (`bf45d91` 이 main 의 first-parent 가 아님을 확인)
 - 미커밋 변경: 없음
