@@ -26,10 +26,12 @@ discovery 미완" 뿌리에서 나오는 `SetGains` 의 `kSrvTimeoutS` 여유 �
 
 ## Current state
 
-**commits 1–4 완료 (2026-07-15). Acceptance 1·2·3 충족. 남은 것: Acceptance 4 sim smoke,
-이슈 업데이트 U1–U4, `/code-review`, 이슈 본문 편집 여부 결정.**
+**commits 1–10 완료 (2026-07-15). Acceptance 1·2·3 충족. 남은 것: Acceptance 4 sim smoke,
+U4 종결 코멘트, 이슈 본문 편집 여부 결정.**
 
-근본 원인은 이제 **재현으로 확정**했다 (E7) — 더 이상 인스펙션 전용이 아니다.
+근본 원인은 **재현으로 확정**했고 (E7), `/code-review` (high) 가 찾은 7건을 commits 5–10 이
+모두 처리했다. 리뷰는 **기존 결정 두 개를 뒤집었다** — D5 의 근거가 사실과 달랐고 (→ D5-정정),
+D4-정정 이 닫았다고 본 gap 이 실은 열려 있었다 (→ D7). 상세는 Decisions.
 
 | commit | 내용 | sensor |
 |---|---|---|
@@ -37,9 +39,19 @@ discovery 미완" 뿌리에서 나오는 `SetGains` 의 `kSrvTimeoutS` 여유 �
 | `e826fe4` | `TickCallback` first-rewire gate (D5 설계) | build clean, 226/226 green |
 | `e75878c` | `test_rewire_gate.cpp` 회귀 테스트 3개 + node test seam | build clean, **230/230 green** |
 | `216ccbb` | `SetGains` 예산 분리 (D4-정정) + `switch_controller` 주석 정정 | build clean, 230/230 green |
+| `27e336a` | **C1/리뷰#2** — `SwitchController` 가 rewire 까지 SUCCESS 보류 (D7) | 208/208 green, E11 |
+| `8d3bbf8` | **C2/리뷰#1** — `~/step` 도 게이트, 공유 `CanTick` (D8) | 210/210 green, E10 |
+| `4740d1c` | **C3/리뷰#4** — 컨트롤러 대기 상한 진단 (D9) | 211/211 green, E12 |
+| `94a8989` | **C4/리뷰#3** — latch 계약 정정 + rewire 커밋 순서 (D5-정정) | 211/211 green |
+| `6f8f845` | **C5/리뷰#5** — target pub → `LifecyclePublisher` + 명시 활성 (D10) | 212/212 green, E8·E9 |
+| `bc6cf49` | **C6/리뷰#6·#7** — temp 파일 고유화 + CMake 중복 제거 | 212/212 green, 23 바이너리 |
 
-230 = 이전 226 + 신규 gtest case 3 + 신규 ctest 항목 1 (`colcon test-result` 는 둘 다 센다).
-세 commit 모두 기존 `EXPECT`/`ASSERT` 수정·삭제 **0건** (Acceptance 3 충족).
+카운트 추이: 226 → 230 (회귀 테스트 3 + ctest 항목 1) → 208. **208 로 줄어든 것은 회귀가 아니라
+집계 기준 차이**다 — 위 4개 행은 `colcon test-result` 기준(ctest 항목 포함), 아래 6개 행은
+gtest XML 의 testcase 합계다. 최종 = 23 gtest 바이너리 / 212 testcase / 0 failure.
+
+10 commit 전부 기존 `EXPECT`/`ASSERT` 수정·삭제 **0건** (Acceptance 3 유지). C1 이 mock 2곳을
+고쳤으나 **assertion 이 아니라 mock 이 프로덕션 계약을 덜 구현한 것**이었다 (E11) — E-6 무해.
 
 ### 근본 원인 (inspection-confirmed)
 
@@ -82,8 +94,15 @@ without a null check, and those publishers are only created inside the rewire". 
 5. ~~**commit 4** — `SetGains` discovery 여유 (D4)~~ — done (`216ccbb`). **단 이 항목의 전제는
    틀렸었다 — D4-정정 참조.** 실제로는 예산 분리(`kReadyTimeoutS` 5s / `kSrvTimeoutS` 2s)를 했고,
    `switch_controller.cpp` 순서 가정 주석 정정은 지시대로 수행.
-6. Sensor: `agent_docs/testing-debug.md` 의 `ur5e_bt_coordinator` 행 + p1b sim smoke (Acceptance 4)
-7. `/code-review` — production 코드 + lifecycle 콜백 변경이므로 §5.5 trigger 해당
+6. ~~`/code-review` — §5.5 trigger~~ — done (2026-07-15, high effort). 7건 발견,
+   **전건 수정 = commits 5–10** (C1–C6). 리뷰가 D5·D4-정정을 뒤집었다 (D5-정정, D7).
+7. **Acceptance 4 — p1b sim smoke** — 남음. HP-2 대로 subagent 위임.
+8. **U4 종결 코멘트** + artifact → `completed/` 이동 (§11-2)
+9. 이슈 본문 편집 여부 — 사용자 컨펌 대기 (아래 `## Issue updates` 미결)
+
+**리뷰 후 재-`/code-review` 는 하지 않기로** (2026-07-15). commits 5–10 은 리뷰 지적을 좁게
+반영한 것이고 각 항목이 "고치기 전 실패하는 테스트"로 실증됐다 (E8–E12). PR 직전
+`/code-review ultra` 는 §5.5 상 여전히 유효한 선택지.
 
 ## Issue updates (#158)
 
@@ -95,7 +114,7 @@ without a null check, and those publishers are only created inside the rewire". 
 | **U1 — 착수 전 (즉시)** | 가설 기각. E1–E6 근거로 "race 아님" 선언. core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사 **불필요** 명시 | ✅ **done** (2026-07-15) |
 | **U2 — 착수 시** | 범위 확장 고지 (D4 = `SetGains` 예산 분리 + `switch_controller` 주석), 브랜치 링크 | ✅ **done** — U1 과 통합 |
 | **U3 — commit 3 후 (결정적)** | fix 없이 SIGSEGV(-11) 하는 로그 + fix 후 230/230 | ✅ **done** — U1 과 통합 |
-| **U4 — 종결** | Acceptance 1–4 결과, 커밋 목록, artifact → `completed/` 이동 링크 | ⬜ **남음** — sim smoke 후 |
+| **U4 — 종결** | Acceptance 1–4 결과, 커밋 목록 (10개), `/code-review` 7건 및 그중 **본문 가설과 무관한 별건 2개**(step 경로, lifecycle publisher), artifact → `completed/` 이동 링크 | ⬜ **남음** — sim smoke 후 |
 
 **U1–U3 은 하나의 코멘트로 통합 게시** ([#158 comment-4976488580](https://github.com/hyujun/rtc-framework/issues/158#issuecomment-4976488580),
 2026-07-15). 세 시점이 모두 지난 뒤 한꺼번에 쓰게 되어 3연속 코멘트는 노이즈였다.
@@ -110,24 +129,23 @@ stale 임을 명시하고 편집 의사를 물어둔 상태.
 
 ## Handoff plan
 
-**현재 = handoff 완료 상태 (2026-07-15).** 코드 변경 4 commit + artifact 갱신이 모두
-`origin/fix/issue-158-rewire-tick-gate` 에 push 돼 있고 (`4ae2ded` 이후 코드 commit 없음),
-로컬 미커밋 변경 없음. 새 세션은 transcript 없이 아래 **재개 진입점**부터 시작하면 된다.
+**현재 = 코드 완료 + 리뷰 완료 (2026-07-15).** 10 commit 전부 로컬에 있고 미커밋 변경 없음.
+**push 는 아직** — `origin` 은 `4ae2ded` 까지만 안다. 남은 것은 sim smoke 와 이슈 종결뿐이다.
+
+리뷰어가 볼 곳으로 지목했던 세 가지의 결말: **D5 는 뒤집혔고** (근거가 거짓 — D5-정정),
+**D4-정정도 뒤집혔으며** (gap 이 안 닫혀 있었음 — D7), D6 seam 은 문제 없었다.
+`kReadyTimeoutS` 가 판단값이라는 지적은 유효하게 남아 Constraints 로 이동했다.
 
 ### 새 세션 재개 진입점 (우선순위 순)
 
-1. **`/code-review`** — 사용자가 새 세션에서 진행하기로 결정 (2026-07-15). §5.5 trigger 해당:
-   production 코드 + lifecycle 콜백 (`TickCallback` gate) + 다파일/PR 준비.
-   리뷰 대상 = `main..fix/issue-158-rewire-tick-gate` 의 code commit 4개
-   (`ef09b06`, `e826fe4`, `e75878c`, `216ccbb`). **리뷰어가 특히 볼 곳**:
-   D5 (bridge 소유 latch 가 정말 monotone 인가 — rewire 가 pub 을 null 로 되돌리는 경로가
-   없는지), D6 (node friend seam 이 프로덕션 계약을 넓히지 않는지),
-   D4-정정 (`kReadyTimeoutS = 5.0` 값의 근거가 실측이 아니라 판단임).
+1. **push** — `git push origin fix/issue-158-rewire-tick-gate` (10 commit 중 6개가 미push).
 2. **Acceptance 4 — p1b sim smoke** — HP-2 대로 **subagent 위임** (대용량 log, 메인 세션 금지).
    이슈 본문 `## Repro` 의 명령 그대로: 전체 스택 launch **직후** bt_coordinator 를 동시 launch,
    반복. exit -11 부재 확인. **음성 증거**임에 유의 (실증은 E7 이 담당) — 실패 시에만 raw log 회수.
+   관측 가치: 실제 CM 기동 시간 (Constraints 의 두 판단값 근거).
 3. **U4 종결 코멘트** + artifact → `completed/` 이동 (§11-2).
-4. **이슈 본문 편집 여부** — 위 `## Issue updates` 미결 항목. 사용자 컨펌 필요.
+4. **이슈 본문 편집 여부** — 아래 `## Issue updates` 미결 항목. 사용자 컨펌 필요.
+5. PR 준비 시 **`/code-review ultra`** (§5.5 — 다파일/다커밋 PR).
 
 ### 원래 계획된 분기점 (이력)
 
@@ -179,10 +197,13 @@ receiver 가 "검증됐다"고 오독한다. handoff.md §3 — `done` 을 쓰�
   폐기한 대안: 상수 단순 상향(response 창까지 같이 늘어남), 주석만 정정(실 gap 방치).
   **교훈** — 이슈 본문뿐 아니라 **exec-plan 자신의 "Next action" 도 미검증 가설**일 수 있다.
   #158·#160 에 이어 세 번째 사례. 착수 전 grep 반증은 plan 지시에도 적용한다.
+  **↑ 이 정정 자체가 또 불충분했다 — D7 참조 (네 번째 사례).** 예산 분리는 맞지만, 그것이
+  닫는다고 본 gap 은 `kReadyTimeoutS` 로 닫히지 않는다.
 - **D5 — gate 는 node 의 `rewire_seen_` 이 아니라 bridge 소유 latch** (2026-07-15 구현 중 결정,
   D1 의 semantics 는 그대로). `BtRosBridge::IsControllerWired()` = 두 target pub 이 non-null.
-  근거: pub 은 `RewireControllerTopics` 안에서만 생성되고 **절대 null 로 돌아가지 않는다**
-  (rewire 가 빈 이름에 early-return — `bt_ros_bridge.cpp:695-696`). 따라서 pub-nullness 자체가
+  근거: ~~pub 은 `RewireControllerTopics` 안에서만 생성되고 **절대 null 로 돌아가지 않는다**
+  (rewire 가 빈 이름에 early-return — `bt_ros_bridge.cpp:695-696`)~~ **← 사실이 아니다,
+  D5-정정 참조.** 따라서 pub-nullness 자체가
   이미 bridge lifetime 에 묶인 monotone latch 다. 이로써 **Constraints 의 "D1 latch 리셋 범위
   미결" 이 소멸**한다 — `on_cleanup` → `ReleaseAllResources` 가 `bridge_.reset()` 하므로
   재-configure 시 gate 가 자동 재무장하고, `on_deactivate` 는 bridge 를 남기므로 (publisher 도
@@ -198,6 +219,57 @@ receiver 가 "검증됐다"고 오독한다. handoff.md §3 — `done` 을 쓰�
   `UR5eHoldPose` 트리(LoadTree 가 절대경로 허용)로 configure→activate→timer tick 을 실제
   구동하고, active controller 는 bridge 핸들러로 주입해 **DDS 없이** 유지한다. arm target 관찰은
   intra-process. 폐기한 대안: bridge 단위 테스트만 (gate 3줄이 미커버 → E7 재현이 불가능했을 것).
+
+### `/code-review` (2026-07-15) 이후 — D5-정정 및 D7–D10
+
+- **D5-정정 — latch 가 monotone 인 이유는 "pub 이 안 죽어서"가 아니다** (리뷰 #3 → `94a8989`).
+  D5 의 결론(bridge 소유 latch)은 옳지만 **근거가 사실과 달랐다**. `RewireControllerTopics` 는
+  컨트롤러 스위치마다 두 pub 을 `reset()` 하고 재생성한다 — "절대 null 로 돌아가지 않는다" 는
+  거짓이다. 실제로 latch 를 지탱하는 것은 **rewire 와 reader 가 같은 single-threaded executor 의
+  mutually-exclusive 콜백 그룹에서 돈다**는 사실뿐이다 (E4 가 확인한 그 불변식). reset→recreate
+  창을 관측할 수 있는 주체가 없다. → rewire 에 전용 콜백 그룹을 주거나 multi-threaded executor 로
+  가거나 rewire 를 콜백 여러 개로 쪼개면 **#158 이 그대로 재발**하며, 기존 테스트
+  (`WiredLatchSurvivesControllerSwitch`) 는 `OnActiveController` 반환 *후*에만 샘플링하므로
+  못 잡는다. 헤더에 이 조건을 명시했다. 덤: `rewired_controller_` 커밋을 rewire 끝으로 이동 —
+  기존엔 이름을 먼저 커밋해 create 가 throw 하면 같은 이름 재전달이 중복으로 skip 되고 pub 은
+  영원히 null (게이트 영구 폐쇄, 복구 불가) 였다.
+  **교훈**: D5 는 "결론이 맞아서" 검증을 통과했다. 근거의 오류는 결론이 맞을 때 더 오래 산다.
+- **D7 — `SwitchController` 가 rewire 를 기다린다** (리뷰 #2 → `27e336a`, 사용자 결정).
+  D4-정정이 닫았다고 본 gap 이 **실제로는 열려 있었다**. `SwitchController` 는 srv `ok` 즉시
+  SUCCESS 했고, 뒤따르는 `SetGains::onStart` → `BuildParams` 가 아직 갱신 안 된
+  `GetActiveController()` (= 이전 이름, 알려진 이름이라 거부도 안 됨) 로 params 를 만들어
+  아직 rebind 안 된 param client 로 보냈다. 이전 컨트롤러의 param service 는 살아있으므로
+  (deactivate 된 LifecycleNode 도 param 을 서빙) **엉뚱한 컨트롤러에 gains 가 적용되고 SUCCESS**.
+  `kReadyTimeoutS` 는 이 경로에서 **발동조차 안 한다** — 예산은 send 재시도 중에만 흐르는데
+  stale 경로는 첫 시도에 send 한다. 실제 트리 4개(`vision_approach` / `shape_inspect_simple` /
+  `pick_and_place_force_pi` / `search_motion`)가 `SwitchController` 직후 `SetGains` 를 둔다.
+  → `onRunning` 에 stage 2 추가: `ok` 후 `GetActiveController()` 가 target 과 일치할 때까지
+  `timeout_s_` 예산으로 대기. `OnActiveController` 가 rewire 를 먼저 하고 이름을 나중에 쓰므로
+  일치 관측 = 바인딩 완료 보장. **SUCCESS 의 의미가 "CM 이 스왑했다" → "트리가 이 컨트롤러와
+  대화할 수 있다"** 로 바뀌고, switch 뒤에 오는 모든 노드가 그 보장을 물려받는다.
+  폐기한 대안: `SetGains` 에 `controller_name` 포트 추가 (트리 XML 4곳에 이름 중복, 두 값이
+  어긋나면 조용히 틀림, switch 뒤 다른 노드는 여전히 무방비), 둘 다 (예산 상호작용으로 진단 복잡).
+- **D8 — 게이트는 두 tick 경로가 공유, `paused_` 는 제외** (리뷰 #1 → `8d3bbf8`).
+  게이트가 `TickCallback` 에만 있어 `~/step` 서비스로 같은 gap 도달 가능했다. `TickBlockedBy`
+  (당초 `CanTick`) 가 세 선행조건(tree/E-STOP/wired)을 소유하고 두 경로가 호출한다.
+  **`paused_` 는 의도적으로 제외** — auto-tick 만 막는 개념이고 "일시정지 중 수동 step" 이
+  서비스의 존재 이유다. 이 비대칭은 원래도 동작이었으나 "각 경로가 어떤 가드를 복사했는가" 에
+  우연히 의존했고, 이제 명시된다.
+- **D9 — 컨트롤러 대기 상한은 진단 전용, 대기는 무제한 유지** (리뷰 #4 → `4740d1c`, 사용자 결정).
+  `controller_wait_timeout_s` (기본 10.0, `<=0` 비활성) 초과 시 ERROR 1회 후 계속 대기.
+  폐기한 대안: lifecycle error 전이 (늦게 뜨는 CM 의 자동 복구가 사라지고 노드 재시작 필요),
+  현상 유지 (오설정이 정상 startup 과 구분 불가한 무한 정지). `CanTick` → `TickBlockedBy` +
+  `TickBlocker` enum 으로 진화한 이유: E-STOP 은 정상 상태라 ERROR 를 내면 안 되는데, 사유
+  **문자열 비교로 구분하는 것은 fragile**하다.
+- **D10 — target pub 은 `LifecyclePublisher` 타입 + 생성 시 명시 활성** (리뷰 #5 → `6f8f845`,
+  사용자 결정). pub 들이 `rclcpp::Publisher` base 핸들에 담겨 있어 `publish()` 가 base 의
+  non-virtual 오버로드로 가고 `is_activated()` 검사를 통째로 건너뛰었다 — **INACTIVE 노드가
+  명령을 발행**했다 (E8). 동시에 그 slicing 이 발행이 동작하던 **유일한 이유**였다: pub 은
+  rewire 에서 태어나는데 rewire 는 보통 `on_activate` 이후에 돌므로 managed-entity sweep 을
+  놓쳐 영원히 비활성 상태였다 (E9). 따라서 타입 정정만 하면 모든 target 이 조용히 드롭된다 —
+  둘은 **한 커밋에서 같이** 가야 한다. `shape_trigger_pub_` 는 base-handle 결함만 있고
+  (생성자 출생 → sweep 커버) 함께 정정했다 — 하나만 남기면 "왜 얘만 자기 게이트를 우회하나".
+  폐기한 대안: 주석만 추가 (게이트는 여전히 무효, 함정은 그대로).
 
 ## Evidence
 
@@ -228,8 +300,32 @@ E1–E6 은 2026-07-15, `main` @ `b152a49` 기준 **정적 인스펙션** (당�
   `<UR5eHoldPose pose="demo_pose"/>`; `src/nodes/ur5e_hold_pose.cpp:36` 이 `onStart` 에서
   무조건 `PublishArmJointTarget` 호출 (`SwitchController` 완료와 무관하게 동시 tick)
 - **E6** — tick timer 무조건 시작: `bt_coordinator_node.cpp:144-146` (`on_activate`),
-  `TickCallback:354-370` 의 가드는 `!tree_` / `paused_` / `IsEstopped()` 뿐 — rewire 검사 없음.
-  `config/bt_coordinator.yaml:37` `tick_rate_hz: 80.0` → 첫 tick 12.5 ms
+  `TickCallback` 의 가드는 `!tree_` / `paused_` / `IsEstopped()` 뿐 — rewire 검사 없음.
+  `config/bt_coordinator.yaml:37` `tick_rate_hz: 80.0` → 첫 tick 12.5 ms.
+  **(라인 번호는 pre-fix 기준. 현재는 `TickBlockedBy` 가 rewire 를 검사하고 `StepCallback` 도
+  같은 것을 쓴다 — E6 이 놓쳤던 두 번째 tick 경로가 리뷰 #1 = E10 이다.)**
+
+### `/code-review` 후속 실증 (2026-07-15) — 각 fix 는 "고치기 전 실패"로 확인했다
+
+- **E8 — lifecycle 게이트 우회 실증 (리뷰 #5)**: fix 전 `DeactivatedNodePublishesNoArmTarget`
+  실패 — 노드를 `deactivate()` 한 뒤 `PublishArmTarget` 호출했는데 구독자가 메시지를 **받았다**
+  (`arm_targets_seen_` 1 → 2). base-handle slicing 이 `is_activated()` 를 건너뛴다는 직접 증거.
+- **E9 — "타입만 정정" 이 위험하다는 실증 (리뷰 #5)**: 타입을 `LifecyclePublisher` 로 바꾸고
+  명시적 `on_activate()` 를 뺀 상태로 실행 → arm target 을 기대하는 **4개 테스트 전부 실패**
+  (`TickPublishesArmTargetOnceWired`, `StepTicksOnceWired`, `WaitTimeoutDiagnosesButKeepsWaiting`,
+  `DeactivatedNodePublishesNoArmTarget` 의 baseline). 리뷰가 예측한 함정이 실재함을 확인.
+- **E10 — step 경로 gap 실증 (리뷰 #1)**: `StepCallback` 의 게이트만 무력화 →
+  `StepRefusesToTickBeforeRewire` **만** 실패하고 timer 경로 3개는 통과. 새 테스트가 정확히
+  두 번째 tick 경로만 겨냥함을 확인.
+- **E11 — mock 이 CM 계약을 덜 구현 (리뷰 #2)**: D7 적용 직후 `SrvSwitchSucceedsImmediately` 가
+  2.22s (= `timeout_s=2.0` 초과) 후 FAILURE. 원인은 회귀가 아니라 mock srv 가 `resp->ok=true` 만
+  하고 name latch 를 안 한 것 — **`test_switch_controller` 와 `test_service_singlethread` 두 곳**.
+  후자는 known-flake 스위트(#160)라 flake 로 오인할 뻔했으나 결정적 실패였다. 둘 다 CM 순서
+  (latch → ok)대로 non-blocking publish 하도록 보강; **assertion 무변경** (E-6 무해).
+- **E12 — 대기 상한 진단 발화 확인 (리뷰 #4)**: `controller_wait_timeout_s=0.05` 로
+  `[ERROR] ... No active controller after 0.1s — ... Still waiting; check that a controller is
+  active and publishing /rtc_cm/active_controller_name.` 1회 발화 후, 늦게 주입한 컨트롤러가
+  게이트를 열고 트리가 RUNNING 도달 — 진단은 하되 포기하지 않음을 로그로 확인.
 
 ## Failed approaches
 
@@ -244,17 +340,26 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
   smoke 는 보조 확인으로 격하된다.
 - ~~**D1 latch 리셋 범위 미결**~~ — **해소 (2026-07-15, D5)**. 리셋 로직 자체가 불필요해졌다:
   latch 가 bridge 소유이고 `on_cleanup` 만 bridge 를 파괴한다 (`bt_coordinator_node.cpp:185`).
-- ~~**D1 이 기존 테스트를 깨뜨릴 가능성**~~ — **해소 (2026-07-15)**. `BtCoordinatorNode` 를
-  구동하는 테스트가 **하나도 없다** (`grep -rn 'BtCoordinatorNode' test/*.cpp` → 주석 1건뿐;
-  전 테스트가 `tree.tickOnce()` 로 트리를 직접 tick 한다). `TickCallback` gate 는 테스트 경로에
-  닿지 않는다 → E-6 충돌 없음. 226/226 green 으로 확인.
+- ~~**D1 이 기존 테스트를 깨뜨릴 가능성**~~ — **해소 (2026-07-15)**. ~~`BtCoordinatorNode` 를
+  구동하는 테스트가 **하나도 없다**~~ — commit 3 이후로는 `test_rewire_gate` 가 구동한다
+  (D6 의 seam). 판단 자체는 유효했다: 당시 `TickCallback` gate 는 어떤 테스트 경로에도 닿지
+  않았고 226/226 green 으로 확인됐다. 이후 게이트를 덮는 테스트는 **의도적으로 추가**한 것이다.
+- **`IsControllerWired()` latch 는 콜백 그룹 불변식에 종속** (신규, D5-정정). E4 가 확인한
+  단일 스레드 불변식이 깨지면 latch 가 조용히 무너진다. rewire 에 콜백 그룹을 주거나
+  multi-threaded executor 로 가는 변경은 **#158 재발 검토를 동반**해야 한다. 현재 테스트로는
+  못 잡는다 (헤더에 명시).
+- **`kReadyTimeoutS = 5.0` / `controller_wait_timeout_s = 10.0` 은 실측이 아니라 판단**
+  (미해소). 전자는 D4-정정에서, 후자는 D9 에서 도입했고 둘 다 근거가 "충분히 넉넉해 보임" 이다.
+  실기 CM 기동 시간 실측이 있으면 조정 대상 — sim smoke (Acceptance 4) 때 관측 가치 있음.
 
 ## Workspace
 
 - Branch: **`fix/issue-158-rewire-tick-gate`** (분기점 `main` @ `b152a49`) — 새 세션이 재개할 브랜치
 - 커밋: `2175758` (artifact) → `ef09b06` → `e826fe4` → `5c56af0` (artifact) → `e75878c` →
-  `9935670` (artifact) → `216ccbb`. 미커밋 변경 없음.
-  **다음 세션은 Acceptance 4 sim smoke + 이슈 업데이트 U1–U4 부터 시작한다** (코드 변경 완료).
+  `9935670` (artifact) → `216ccbb` → `4ae2ded` (artifact) → `7e4235e` (artifact) →
+  **`27e336a` → `8d3bbf8` → `4740d1c` → `94a8989` → `6f8f845` → `bc6cf49`** (리뷰 C1–C6).
+  미커밋 변경 없음. **`7e4235e` 이후 6개는 아직 push 안 됨.**
+  **다음 세션은 push → Acceptance 4 sim smoke → U4 부터 시작한다** (코드·리뷰 완료).
 - 신규 파일: `ur5e_bt_coordinator/test/test_rewire_gate.cpp` (+ CMake `test_rewire_gate` 타깃 —
   node 가 라이브러리가 아니라 실행파일이라 `src/bt_coordinator_node.cpp` TU 를 함께 컴파일)
 - ~~이 브랜치의 첫 커밋 = 본 artifact 뿐 (docs-only). 코드 변경은 아직 0건.~~
@@ -272,16 +377,21 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
 - Issue #154 / `docs/exec-plans/completed/issue-154-test-fixture-split.md` — 2026-07-14 코멘트가
   null-pub 위험을 독립 지적 (교차검증)
 - `docs/exec-plans/active/issue-160-e2e-clock-split.md` — 자매 작업 (테스트 전용)
-- `src/bt_ros_bridge.cpp:375,383,395` — 역참조 3곳 (commit 1 대상)
-- `src/bt_ros_bridge.cpp:742-745` — 유일한 publisher 할당처 (rewire 내부)
-- `src/bt_ros_bridge.cpp:672-676` — THREADING 주석 (E4 로 유효성 확인됨)
-- `src/bt_coordinator_node.cpp:144-146` — tick timer 무조건 시작 (commit 2 대상)
-- `src/bt_coordinator_node.cpp:354-370` — `TickCallback` 가드 (commit 2 대상)
-- `src/nodes/ur5e_hold_pose.cpp:36` — tick 1 무조건 publish (crash trigger)
-- `trees/hand_motions.xml:242-254` — `FullDemo` Parallel (crash 경로)
-- `src/nodes/set_gains.cpp:35,208` — `kSrvTimeoutS = 2.0` + stage 시계 (commit 4 대상)
-- `src/nodes/switch_controller.cpp:64-68` — DDS 가 보장 않는 cross-channel 순서 가정 (commit 4)
-- `src/nodes/set_gains.cpp:79-87` — `BuildParams` 의 모범 방어 패턴 (D3 근거)
+**라인 번호는 commits 1–10 으로 대부분 밀렸다 — 심볼로 찾을 것** (박제하면 재-stale).
+
+- `BtRosBridge::Publish{ArmTarget,ArmJointTarget,HandTarget}` — 역참조 3곳, 이제 null 가드 있음
+- `BtRosBridge::RewireControllerTopics` — 유일한 pub 할당처이자 **reset 처** (D5-정정의 핵심).
+  끝에서 `rewired_controller_` 커밋 + 조건부 `on_activate()` (D10)
+- `BtRosBridge::RewireControllerTopics` 위의 THREADING 주석 — E4 로 유효성 확인, D5-정정이
+  latch 를 여기에 **명시적으로 종속**시킴
+- `BtCoordinatorNode::on_activate` — tick timer 무조건 시작 (+ D9 의 `activate_time_` 스탬프)
+- `BtCoordinatorNode::TickBlockedBy` — 두 tick 경로 공유 게이트 (D8). 호출부 = `TickCallback`,
+  `StepCallback`
+- `src/nodes/ur5e_hold_pose.cpp` `onStart` — tick 1 무조건 publish (crash trigger, 1회성)
+- `trees/hand_motions.xml` `FullDemo` Parallel — crash 경로
+- `src/nodes/set_gains.cpp` `kReadyTimeoutS` / `kSrvTimeoutS` — 예산 분리 (D4-정정).
+  **`BuildParams` 가 stale 이름을 읽는 것이 D7 의 출발점**
+- `src/nodes/switch_controller.cpp` `onRunning` stage 2 (`awaiting_rewire_`) — D7
 - 잠재 동일 위험 (범위 밖, 가드로 커버): `src/nodes/move_to_pose.cpp:47`,
   `move_to_joints.cpp:64`, `track_trajectory.cpp:43,69`, `grasp_control.cpp:78,153`
 - `CLAUDE.md` §5.5 (`/code-review` trigger), §6 E-6 (assertion 약화 금지), §9.1 (colcon CWD)
