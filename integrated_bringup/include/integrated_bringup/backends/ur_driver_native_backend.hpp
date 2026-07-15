@@ -1,6 +1,7 @@
 #ifndef INTEGRATED_BRINGUP_BACKENDS_UR_DRIVER_NATIVE_BACKEND_H_
 #define INTEGRATED_BRINGUP_BACKENDS_UR_DRIVER_NATIVE_BACKEND_H_
 
+#include "integrated_bringup/backends/joint_state_reorder.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
@@ -11,7 +12,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <vector>
 
 namespace rtc {
 
@@ -52,8 +52,10 @@ class UrDriverNativeBackend : public DeviceBackend {
 
   DeviceBackendConfig config_{};
 
-  // Lazy state reorder from incoming `msg->name` order to device-config order.
-  std::vector<int> state_reorder_;
+  // State reorder from incoming `msg->name` order to device-config order,
+  // built once from the first named message. Fixed-capacity — the build runs
+  // inside the rt_callback lane (RT callback rule, issue #156).
+  JointStateReorder state_reorder_{};
   std::atomic<bool> state_reorder_built_{false};
 
   SeqLock<DeviceStateCache> state_cache_{};

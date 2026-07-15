@@ -73,54 +73,16 @@ void UdpHandNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr 
   if (msg->position.empty())
     return;
 
+  // One-shot reorder build from the first message that carries names —
+  // fixed-capacity, allocation-free (RT callback rule, issue #156). Reference
+  // order = joint_command_names (the device-canonical order).
   if (!state_reorder_built_.load(std::memory_order_acquire) && !msg->name.empty()) {
-    const auto& ref_names = config_.joint_command_names;
-    if (!ref_names.empty()) {
-      std::vector<int> map(msg->name.size(), -1);
-      for (std::size_t msg_i = 0; msg_i < msg->name.size(); ++msg_i) {
-        for (std::size_t ref_i = 0; ref_i < ref_names.size(); ++ref_i) {
-          if (msg->name[msg_i] == ref_names[ref_i]) {
-            map[msg_i] = static_cast<int>(ref_i);
-            break;
-          }
-        }
-      }
-      state_reorder_ = std::move(map);
-    }
+    BuildJointStateReorder(msg->name, config_.joint_command_names, state_reorder_);
     state_reorder_built_.store(true, std::memory_order_release);
   }
 
   auto ds = joint_cache_.Load();
-  ds.num_channels = static_cast<int>(msg->position.size());
-
-  if (!state_reorder_.empty()) {
-    const std::size_t n = std::min(msg->position.size(), state_reorder_.size());
-    for (std::size_t src = 0; src < n; ++src) {
-      const int idx = state_reorder_[src];
-      if (idx < 0 || idx >= kMaxDeviceChannels)
-        continue;
-      const auto uidx = static_cast<std::size_t>(idx);
-      ds.positions[uidx] = msg->position[src];
-      if (src < msg->velocity.size())
-        ds.velocities[uidx] = msg->velocity[src];
-      if (src < msg->effort.size())
-        ds.efforts[uidx] = msg->effort[src];
-    }
-  } else {
-    const std::size_t n =
-        std::min(msg->position.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < n; ++i)
-      ds.positions[i] = msg->position[i];
-    const std::size_t nv =
-        std::min(msg->velocity.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < nv; ++i)
-      ds.velocities[i] = msg->velocity[i];
-    const std::size_t ne =
-        std::min(msg->effort.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < ne; ++i)
-      ds.efforts[i] = msg->effort[i];
-  }
-  ds.valid = true;
+  WriteJointStateToCache(*msg, state_reorder_, ds);
   joint_cache_.Store(ds);
 
   last_state_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(

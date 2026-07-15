@@ -1,6 +1,7 @@
 #ifndef INTEGRATED_BRINGUP_BACKENDS_MUJOCO_NATIVE_BACKEND_H_
 #define INTEGRATED_BRINGUP_BACKENDS_MUJOCO_NATIVE_BACKEND_H_
 
+#include "integrated_bringup/backends/joint_state_reorder.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_state_cache.hpp"
@@ -95,9 +96,10 @@ class MujocoNativeBackend : public DeviceBackend {
 
   DeviceBackendConfig config_{};
 
-  // State reorder map (built lazily from the first named message).
-  // state_reorder_[msg_idx] = device_slot_idx.
-  std::vector<int> state_reorder_;
+  // State reorder map (built once from the first named message).
+  // state_reorder_.map[msg_idx] = device_slot_idx. Fixed-capacity — the build
+  // runs inside the rt_callback lane (RT callback rule, issue #156).
+  JointStateReorder state_reorder_{};
   std::atomic<bool> state_reorder_built_{false};
 
   // SeqLock holds the decoded state — sensor callback writes, RT reads via

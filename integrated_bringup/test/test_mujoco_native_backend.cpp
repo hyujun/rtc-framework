@@ -405,6 +405,62 @@ TEST_F(MujocoBackendWriteCommandTest, WriteCommand_PropagatesStampToHeader) {
   EXPECT_EQ(msg.header.stamp.nanosec, static_cast<uint32_t>(kStampNs % 1'000'000'000LL));
 }
 
+// End-to-end named-JointState reorder (issue #156): a shuffled named message
+// published onto the state topic must land in joint_command_names (device)
+// order in ReadState(). All three backends delegate to the same
+// JointStateReorder helper (unit-tested in test_joint_state_reorder.cpp);
+// this locks the topic→callback→SeqLock wiring on one representative backend.
+TEST(MujocoNativeBackendReorderTest, NamedShuffledJointState_ReadsBackInDeviceOrder) {
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_reorder");
+  auto cb_group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  rtc::DeviceBackendConfig cfg;
+  cfg.group_name = "test_leap_reorder";
+  cfg.type = "mujoco_native";
+  cfg.state_topic = "/test_mujoco_reorder/joint_states";
+  cfg.command_topic = "/test_mujoco_reorder/joint_command";
+  cfg.joint_command_names = {"j0", "j1", "j2"};
+
+  auto backend = std::make_unique<rtc::MujocoNativeBackend>();
+  backend->Configure(node.get(), cfg, cb_group);
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+
+  auto pub = node->create_publisher<sensor_msgs::msg::JointState>(
+      cfg.state_topic, rclcpp::SensorDataQoS().keep_last(1));
+  // LifecycleNode::create_publisher returns a gated LifecyclePublisher —
+  // publish() silently drops until on_activate().
+  pub->on_activate();
+
+  sensor_msgs::msg::JointState msg;
+  msg.name = {"j2", "j0", "j1"};
+  msg.position = {12.0, 10.0, 11.0};
+  msg.velocity = {22.0, 20.0, 21.0};
+  msg.effort = {32.0, 30.0, 31.0};
+
+  rtc::DeviceStateCache cache{};
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    pub->publish(msg);
+    exec.spin_some(20ms);
+    if (backend->ReadState(cache))
+      break;
+  }
+
+  ASSERT_TRUE(cache.valid) << "state message never delivered";
+  EXPECT_EQ(cache.num_channels, 3);
+  EXPECT_DOUBLE_EQ(cache.positions[0], 10.0);
+  EXPECT_DOUBLE_EQ(cache.positions[1], 11.0);
+  EXPECT_DOUBLE_EQ(cache.positions[2], 12.0);
+  EXPECT_DOUBLE_EQ(cache.velocities[0], 20.0);
+  EXPECT_DOUBLE_EQ(cache.velocities[2], 22.0);
+  EXPECT_DOUBLE_EQ(cache.efforts[0], 30.0);
+  EXPECT_DOUBLE_EQ(cache.efforts[2], 32.0);
+
+  exec.remove_node(node->get_node_base_interface());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

@@ -447,6 +447,21 @@ if(BUILD_TESTING)
     std_msgs
   )
 
+  # ── JointStateReorder fixed-capacity helper test (issue #156) ──────────────
+  # Header-only helper shared by the three device backends: behavior parity
+  # with the former lazy std::vector reorder (named/un-named/unknown/over-
+  # capacity) plus an operator-new counter guarding allocation-freedom on the
+  # rt_callback lane.
+  ament_add_gtest(test_joint_state_reorder test/test_joint_state_reorder.cpp)
+  target_include_directories(test_joint_state_reorder PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_joint_state_reorder
+    rtc_controller_manager
+    rtc_base
+    sensor_msgs
+  )
+
   # ── MujocoNativeBackend fingertip wrench lane test ─────────────────────────
   # Layer C: verifies HasSensorState / ReadSensorState / OnWrench contract —
   # stride-7 inference_data packing, stale detection, NaN guard, per-tip
