@@ -905,6 +905,38 @@ def _report_capture_gaps(census: dict[str, int]) -> list[str]:
     return lines
 
 
+# Chrome-Trace JSON that Perfetto's legacy importer handles comfortably in
+# a browser tab. Measured: a 30 s traced sim run = ~2.9 M events / ~295 MB
+# (≈100 B per event), dominated by rtc:* spans + sched_switch.
+_JSON_SIZE_WARN_MB = 250
+
+
+def _report_size_risk(n_events: int, size_mb: float) -> list[str]:
+    """Warn when the JSON is large enough for the viewer to struggle.
+
+    Metadata records are emitted *before* the slices, so a viewer that
+    gives up partway through a huge file still draws the process/thread
+    groups — they just come out empty. That failure is indistinguishable
+    from "the converter produced nothing", so name it explicitly.
+    """
+    if size_mb < _JSON_SIZE_WARN_MB:
+        return []
+    lines = [
+        f"[ctf_to_chrome] WARNING: {size_mb:,.0f} MB / {n_events:,} events is large "
+        "for Perfetto's JSON importer. If the UI shows the process groups but "
+        "their lanes look EMPTY, the viewer ran out of room part-way — the "
+        "group labels are metadata at the top of the file, the slices come "
+        "after. Narrow the capture rather than the view:",
+        "[ctf_to_chrome]   - capture for less wall-clock time (size is linear in it)",
+        "[ctf_to_chrome]   - drop kernel events if you only need rtc:* spans "
+        "(trace_events_kernel:=), or narrow trace_events_ust if you only need the Cpus view",
+        "[ctf_to_chrome]   - keep only the processes you care about (--focus-proc)",
+    ]
+    for line in lines:
+        print(line, file=sys.stderr)
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     src = p.add_mutually_exclusive_group(required=True)
@@ -1018,6 +1050,7 @@ def main(argv: list[str] | None = None) -> int:
         f"[ctf_to_chrome] wrote {args.output} ({len(trace['traceEvents'])} events: {phase_str})",
         file=sys.stderr,
     )
+    _report_size_risk(len(trace["traceEvents"]), args.output.stat().st_size / (1024 * 1024))
     if dropped_counts:
         total_dropped = sum(dropped_counts.values())
         # Show the top contributors so the user can decide what to add

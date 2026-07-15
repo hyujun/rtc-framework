@@ -23,6 +23,7 @@ from rtc_tools.conversion.ctf_to_chrome_trace import (
     THREAD_PID,
     _parse_bt2_cli,
     _report_capture_gaps,
+    _report_size_risk,
     build_trace,
 )
 
@@ -736,6 +737,15 @@ def test_capture_gap_warnings_name_the_capture_side_cause():
     )
     assert len(lines) == 1
     assert "capture census" in lines[0]
+
+
+def test_size_risk_warns_only_above_threshold():
+    # A 30s traced sim run measured ~2.9M events / ~295MB — big enough that a
+    # viewer giving up mid-file leaves the (metadata-declared) groups empty.
+    lines = "\n".join(_report_size_risk(2_900_000, 295.0))
+    assert "EMPTY" in lines
+    assert "--focus-proc" in lines
+    assert _report_size_risk(50_000, 12.0) == []
 
 
 def test_missing_vpid_context_warns_only_when_ust_present():
