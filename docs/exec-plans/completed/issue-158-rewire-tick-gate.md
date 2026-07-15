@@ -26,14 +26,13 @@ discovery 미완" 뿌리에서 나오는 `SetGains` 의 `kSrvTimeoutS` 여유 �
 
 ## Current state
 
-> **종결 (2026-07-15).** `main` 에 no-ff merge (`e71ff6e`), post-merge 재검증 green
-> (23 바이너리 / 212 tests / 0 failure). 본 artifact 는 `completed/` 로 이동됐다.
-> **미완 1건 — Acceptance 4 (p1b sim smoke) 는 실행하지 않았다.** 사용자 판단으로 merge 를
-> 진행했다: sim smoke 는 음성 증거이고 실증은 E7(결정적 재현)이 담당한다. 실기에서 #158
-> signature (`exit -11`) 가 재발하면 이 artifact 를 먼저 읽을 것 — E7 이 반증된다는 뜻이므로
-> 근본 원인 가설 자체를 재개봉해야 한다 (HP-3).
+> **종결 — #158 closed (2026-07-15).** `main` 에 no-ff merge (`e71ff6e`), post-merge 재검증
+> green (23 바이너리 / 212 tests / 0 failure). **Acceptance 1–4 전부 충족.**
+> Acceptance 4 는 10회 sim smoke 로 `exit -11` 0/10 (E13) — 게이트가 10/10 발동해 vacuous
+> 아님. 부수 성과 둘: `controller_wait_timeout_s = 10.0` 이 실측 근거를 얻었고 (max 3.764s),
+> **#158 fix 가 별건 SIGABRT 를 unmask 해 #161 로 분리**했다 (E14).
 
-**commits 1–10 완료 (2026-07-15). Acceptance 1·2·3 충족. Acceptance 4 미실행 (위 참조).**
+**commits 1–10 완료 (2026-07-15). Acceptance 1·2·3·4 전부 충족.**
 
 근본 원인은 **재현으로 확정**했고 (E7), `/code-review` (high) 가 찾은 7건을 commits 5–10 이
 모두 처리했다. 리뷰는 **기존 결정 두 개를 뒤집었다** — D5 의 근거가 사실과 달랐고 (→ D5-정정),
@@ -102,9 +101,10 @@ without a null check, and those publishers are only created inside the rewire". 
    `switch_controller.cpp` 순서 가정 주석 정정은 지시대로 수행.
 6. ~~`/code-review` — §5.5 trigger~~ — done (2026-07-15, high effort). 7건 발견,
    **전건 수정 = commits 5–10** (C1–C6). 리뷰가 D5·D4-정정을 뒤집었다 (D5-정정, D7).
-7. **Acceptance 4 — p1b sim smoke** — 남음. HP-2 대로 subagent 위임.
-8. **U4 종결 코멘트** + artifact → `completed/` 이동 (§11-2)
-9. 이슈 본문 편집 여부 — 사용자 컨펌 대기 (아래 `## Issue updates` 미결)
+7. ~~**Acceptance 4 — p1b sim smoke**~~ — done (E13). `exit -11` 0/10, 게이트 10/10 발동.
+   별건 SIGABRT 3/10 발견 → **#161** (E14).
+8. ~~**U4 종결 코멘트** + artifact → `completed/` 이동~~ — done (§11-2)
+9. ~~이슈 본문 편집 여부~~ — done. 사용자 결정 = **편집 + 원문 보존** (아래 `## Issue updates`)
 
 **리뷰 후 재-`/code-review` 는 하지 않기로** (2026-07-15). commits 5–10 은 리뷰 지적을 좁게
 반영한 것이고 각 항목이 "고치기 전 실패하는 테스트"로 실증됐다 (E8–E12). PR 직전
@@ -120,23 +120,26 @@ without a null check, and those publishers are only created inside the rewire". 
 | **U1 — 착수 전 (즉시)** | 가설 기각. E1–E6 근거로 "race 아님" 선언. core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사 **불필요** 명시 | ✅ **done** (2026-07-15) |
 | **U2 — 착수 시** | 범위 확장 고지 (D4 = `SetGains` 예산 분리 + `switch_controller` 주석), 브랜치 링크 | ✅ **done** — U1 과 통합 |
 | **U3 — commit 3 후 (결정적)** | fix 없이 SIGSEGV(-11) 하는 로그 + fix 후 230/230 | ✅ **done** — U1 과 통합 |
-| **U4 — 종결** | merge `e71ff6e`, 커밋 10개, `/code-review` 7건 (그중 본문 가설과 무관한 별건 2개 — step 경로, lifecycle publisher), Acceptance 4 미실행 명시, artifact → `completed/` | ✅ **done** (2026-07-15) |
+| **U4 — merge 보고** | merge `e71ff6e`, 커밋 10개, `/code-review` 7건 (그중 본문 가설과 무관한 별건 2개 — step 경로, lifecycle publisher), 당시 Acceptance 4 미실행 명시 | ✅ **done** ([comment-4977166480](https://github.com/hyujun/rtc-framework/issues/158#issuecomment-4977166480)) |
+| **U5 — Acceptance 4 + close** | sim smoke 10회 `exit -11` 0/10, vacuous 아님의 근거(게이트 10/10 + 지연 실측), 두 timeout 상수 데이터, 별건 SIGABRT → #161. **이슈 close** (`state_reason=completed`) | ✅ **done** ([comment-4977435064](https://github.com/hyujun/rtc-framework/issues/158#issuecomment-4977435064)) |
 
 **U1–U3 은 하나의 코멘트로 통합 게시** ([#158 comment-4976488580](https://github.com/hyujun/rtc-framework/issues/158#issuecomment-4976488580),
 2026-07-15). 세 시점이 모두 지난 뒤 한꺼번에 쓰게 되어 3연속 코멘트는 노이즈였다.
 본문 언어에 맞춰 **영어**로 작성 (artifact 는 한글, 이슈는 영어 — 혼용이 아니라 각 매체의 관례).
 
-**미결 — 이슈 본문 편집 여부 (사용자 판단, 여전히 열림):** #158 본문의 `## Suspected cause` 와
-`## Next steps to get a backtrace` 두 절은 이제 **전체가 stale** 이다. 코멘트만 달면
-본문을 먼저 읽은 사람이 여전히 오도된다. 선택지 — (a) 본문의 두 절을 편집하고 원문을 U1
-코멘트에 보존, (b) 코멘트만 달고 본문은 이력으로 남김. 단일 라인이 아니라 **절 전체**가
-뒤집히는 경우이므로 컨펌 없이 편집하지 않는다. **현재 상태 = (b) 잠정** — U1 코멘트가 두 절이
-stale 임을 명시하고 편집 의사를 물어둔 상태.
+~~**미결 — 이슈 본문 편집 여부**~~ — **해소 (2026-07-15, 사용자 결정 = (a) 편집 + 원문 보존)**.
+`## Suspected cause` / `## Next steps to get a backtrace` 두 절 전체가 stale 이었고, 코멘트만
+달면 본문을 먼저 읽는 사람이 계속 core dump·gdb-under-churn 으로 샜다. 두 절을
+`## Cause — RESOLVED` 로 교체하고 **원문 verbatim + 각 항목이 왜 틀렸는지**를 보존 코멘트
+([comment-4977177984](https://github.com/hyujun/rtc-framework/issues/158#issuecomment-4977177984))
+에 남긴 뒤 본문에서 링크했다. 다른 절(`Summary`/`Repro`/`Not reproducible after settle`/
+`Context`)은 건드리지 않았다 — 관측 기록은 여전히 유효하다.
 
 ## Handoff plan
 
-**현재 = 코드 완료 + 리뷰 완료 (2026-07-15).** 10 commit 전부 로컬에 있고 미커밋 변경 없음.
-**push 는 아직** — `origin` 은 `4ae2ded` 까지만 안다. 남은 것은 sim smoke 와 이슈 종결뿐이다.
+**현재 = 전부 종결 (2026-07-15).** merge·push 완료, #158 closed, Acceptance 1–4 충족.
+후속은 **#161** (별건 SIGABRT) 과 **#160** (e2e 시계 분리, 브랜치 `fix/issue-160-e2e-clock-split`
+= origin 에 push 됨) 이 각자 소유한다.
 
 리뷰어가 볼 곳으로 지목했던 세 가지의 결말: **D5 는 뒤집혔고** (근거가 거짓 — D5-정정),
 **D4-정정도 뒤집혔으며** (gap 이 안 닫혀 있었음 — D7), D6 seam 은 문제 없었다.
@@ -145,11 +148,9 @@ stale 임을 명시하고 편집 의사를 물어둔 상태.
 ### 재개 진입점 — **모두 소진됨** (2026-07-15 종결)
 
 1. ~~push~~ — done (`96d7e96` 까지 push 후 `e71ff6e` 로 merge)
-2. **Acceptance 4 — p1b sim smoke** — **실행하지 않고 종결**. 사용자 판단 (2026-07-15).
-   재개하려면 HP-2 대로 **subagent 위임** (대용량 log). 이슈 본문 `## Repro` 명령 그대로:
-   전체 스택 launch **직후** bt_coordinator 동시 launch, 반복, exit -11 부재 확인.
-   관측 가치가 남아 있다: 실제 CM 기동 시간 = Constraints 의 두 판단값(`kReadyTimeoutS` 5.0,
-   `controller_wait_timeout_s` 10.0) 근거. 실기 투입 시 이 둘을 재검토할 것.
+2. ~~Acceptance 4 — p1b sim smoke~~ — **done (2026-07-15, E13)**. HP-2 대로 subagent 위임.
+   10회 중 `exit -11` 0회, 게이트 10/10 발동. 부산물: `controller_wait_timeout_s` 실측 근거
+   확보(Constraints 해소), 별건 SIGABRT 발견 → **#161**.
 3. ~~U4 종결 코멘트 + artifact → `completed/`~~ — done
 4. ~~이슈 본문 편집 여부~~ — 종결 코멘트에서 처리 (아래 `## Issue updates`)
 5. ~~`/code-review ultra`~~ — high-effort `/code-review` 로 갈음, 7건 전건 수정 후 merge
@@ -312,6 +313,33 @@ E1–E6 은 2026-07-15, `main` @ `b152a49` 기준 **정적 인스펙션** (당�
   **(라인 번호는 pre-fix 기준. 현재는 `TickBlockedBy` 가 rewire 를 검사하고 `StepCallback` 도
   같은 것을 쓴다 — E6 이 놓쳤던 두 번째 tick 경로가 리뷰 #1 = E10 이다.)**
 
+### Acceptance 4 실측 (2026-07-15, subagent 위임 — HP-2 대로)
+
+- **E13 — sim smoke 10회, `exit -11` 0/10**: 전체 스택 + bt_coordinator 동시 launch ×10.
+  **vacuous 아님이 핵심** — 게이트가 10/10 발동 (`Tick skipped: No active controller wired
+  yet`) 했고 `rewired controller-owned topics` 후 ~120µs 내에 트리가 tick 했다. 즉 게이트
+  개방이 tick 1 을 풀어준 것이 관측됐다. activation→wired 지연 n=10: **min 1.006s /
+  median 1.043s / max 3.764s** — tick 1 이 12.5ms 이므로 트리는 매번 80–300 tick 주기만큼
+  붙잡혔다 (pre-fix 라면 확실히 죽을 창). **단서**: 이 지연은 DDS churn 이 아니라 컨트롤러
+  기동 비용(URDF/pinocchio/mujoco 로드)이 지배 — 같은 창을 재현하나 원인이 다르고 ~1s 는
+  sim 특정. 음성 증거 성격은 유지되며 실증은 여전히 E7 담당.
+  → **Constraints 의 `controller_wait_timeout_s = 10.0` 해소**: max 3.764s = 2.7× 여유.
+  컨트롤러 미기동 대조군에서 escalation 이 정확히 10.000s 에 1회 발화 후 계속 대기 (D9 설계
+  확인). **`kReadyTimeoutS = 5.0` 는 미해소** — 게이트가 insulate 해서 (stage 진입이 post-gate)
+  관측 여유가 76× 였고, 정작 겨냥한 discovery-churn 케이스는 스트레스되지 않았다.
+- **E14 — #158 fix 가 별건을 unmask 했다 (→ #161)**: 같은 10회 중 **3회가 `exit -6`
+  (SIGABRT)** — `MoveOpposition: no hand joints for finger 'index'`. 코드로 검증한 원인:
+  `move_opposition.cpp:61` / `move_finger.cpp:54` 가 `GetFingerJointIndices()` empty 시
+  throw → hand joint_states 는 생성자에서 1회 구독되는 controller-agnostic 채널
+  (`bt_ros_bridge.cpp:70`, rewire 대상 아님) → `TickBlockedBy` 는 joint 준비를 안 봄
+  → **게이트가 컨트롤러 기준으로 열려도 `hand_joint_names_` 가 비어 있을 수 있고**, throw 가
+  tick 타이머 콜백을 탈출해 `std::terminate`. 대조군(15s settle)에서 `index` 정상 동작 →
+  p1b 설정 오류가 아니라 startup race. pre-fix 는 tick 1 에 `-11` 로 죽어 이 노드에 도달조차
+  못 했다. **이 게이트로는 구조적으로 못 닫는다** (컨트롤러를 추적하는데 joint_states 는
+  컨트롤러를 안 따라감) → #161 로 분리. 아이러니: `set_gains.cpp:248-252` 가 바로 이 위험을
+  ("예외가 tick 타이머 콜백을 탈출하면 rclcpp::spin 을 타고 crash") 자기 future 에 대해서만
+  방어해 뒀다.
+
 ### `/code-review` 후속 실증 (2026-07-15) — 각 fix 는 "고치기 전 실패"로 확인했다
 
 - **E8 — lifecycle 게이트 우회 실증 (리뷰 #5)**: fix 전 `DeactivatedNodePublishesNoArmTarget`
@@ -355,9 +383,18 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
   단일 스레드 불변식이 깨지면 latch 가 조용히 무너진다. rewire 에 콜백 그룹을 주거나
   multi-threaded executor 로 가는 변경은 **#158 재발 검토를 동반**해야 한다. 현재 테스트로는
   못 잡는다 (헤더에 명시).
-- **`kReadyTimeoutS = 5.0` / `controller_wait_timeout_s = 10.0` 은 실측이 아니라 판단**
-  (미해소). 전자는 D4-정정에서, 후자는 D9 에서 도입했고 둘 다 근거가 "충분히 넉넉해 보임" 이다.
-  실기 CM 기동 시간 실측이 있으면 조정 대상 — sim smoke (Acceptance 4) 때 관측 가치 있음.
+- ~~**`controller_wait_timeout_s = 10.0` 은 실측이 아니라 판단**~~ — **해소 (2026-07-15, E13)**.
+  sim 실측 max 3.764s → 2.7× 여유, escalation 이 정확히 10.000s 에 발화 후 계속 대기 확인.
+  단 sim 기준이며 지연의 지배 요인은 컨트롤러 기동 비용이다 (실기 값은 다를 수 있음).
+- **`kReadyTimeoutS = 5.0` 은 여전히 판단값** (미해소). D4-정정에서 discovery-churn 을 겨냥해
+  도입했으나 E13 이 그 케이스를 스트레스하지 못했다 — 게이트가 insulate 한다 (`SetGains`
+  stage 진입 자체가 post-gate). 관측된 gate-open→success 는 0.024–0.065s (76× 여유).
+  D7 이후로는 `SwitchController` 가 rewire 를 기다리므로 이 예산이 실제로 소진되는 경로가
+  더 좁아졌다 — 조정보다 "언제 발동하는지" 를 먼저 물을 것.
+- **joint_states 준비는 이 게이트 밖** (신규, E14 → #161). `TickBlockedBy` 는 컨트롤러만
+  추적하고 `/rtc_cm/<group>/joint_states` 는 컨트롤러를 안 따라간다. hand_motions.xml 동시
+  launch 시 3/10 SIGABRT. 이 artifact 의 범위 밖이나, "#158 을 고쳤는데 왜 여전히 죽나" 로
+  되돌아올 사람을 위해 기록한다.
 
 ## Workspace
 
