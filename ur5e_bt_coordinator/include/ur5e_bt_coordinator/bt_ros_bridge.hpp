@@ -125,6 +125,14 @@ class BtRosBridge {
   /// E-STOP status
   bool IsEstopped() const;
 
+  /// True once RewireControllerTopics has bound the controller-owned target
+  /// publishers at least once. Monotone for the bridge's lifetime: the target
+  /// pubs are created only in the rewire and are never reset (the rewire
+  /// early-returns on an empty controller name), so this latches false→true and
+  /// stays true even across a later controller switch. Callers use it to hold
+  /// off work that would otherwise publish into unbound topics (#158).
+  [[nodiscard]] bool IsControllerWired() const;
+
   // ── Publishers (send commands) ────────────────────────────────────────────
 
   /// Publish arm task-space target [x,y,z,roll,pitch,yaw]

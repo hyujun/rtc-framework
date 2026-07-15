@@ -365,6 +365,14 @@ bool BtRosBridge::IsEstopped() const {
   return estopped_;
 }
 
+bool BtRosBridge::IsControllerWired() const {
+  // Unlocked read, symmetric with the Publish* dereferences below: the rewire
+  // writes these and the tick reads them, and both run on the single-threaded
+  // executor's mutually-exclusive callback group (see the THREADING note on
+  // RewireControllerTopics).
+  return arm_target_pub_ != nullptr && hand_target_pub_ != nullptr;
+}
+
 // ── Publishers ────────────────────────────────────────────────────────────
 
 void BtRosBridge::PublishArmTarget(const Pose6D& target) {

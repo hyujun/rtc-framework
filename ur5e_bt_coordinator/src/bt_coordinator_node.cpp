@@ -368,6 +368,22 @@ void BtCoordinatorNode::TickCallback() {
     return;
   }
 
+  // Hold off the first tick until the controller-owned topics are wired (#158).
+  // The timer starts in on_activate regardless of whether the latched
+  // /rtc_cm/active_controller_name has been delivered yet, and tick 1 lands
+  // 1/tick_rate_hz later — under DDS churn that can precede the rewire, and the
+  // first tick of a tree whose root publishes on onStart (e.g. UR5eHoldPose in
+  // hand_motions.xml) would then dereference a null target publisher.
+  //
+  // This is deliberately not re-checked per tick: IsControllerWired() latches
+  // once and stays true, so a controller dropping out later cannot freeze a
+  // running tree. Nodes handle a mid-run switch through their own FAILURE paths.
+  if (!bridge_->IsControllerWired()) {
+    RCLCPP_WARN_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleSlowMs,
+                         "Waiting for active controller before first tick");
+    return;
+  }
+
   auto status = tree_->tickOnce();
   RCLCPP_DEBUG(coord_log(), "tick -> %s", BT::toStr(status).c_str());
 
