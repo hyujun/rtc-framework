@@ -335,9 +335,15 @@ class BtRosBridge {
   std::string tf_child_frame_{"tool0_actual"};
 
   // ── Publishers ────────────────────────────────────────────────────────────
-  rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
-  rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr shape_trigger_pub_;
+  // LifecyclePublisher, deliberately not the rclcpp::Publisher base: publish()
+  // is virtual only on the derived type, so a base-typed handle calls straight
+  // through to rclcpp::Publisher::publish and silently skips the is_activated()
+  // check — an INACTIVE node would still put commands on the wire. The target
+  // pubs additionally need an explicit on_activate() at creation; see
+  // RewireControllerTopics.
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::String>::SharedPtr shape_trigger_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr shape_clear_client_;
 
   // ── /rtc_cm/* service clients (Phase 4) ─────────────────────────────────

@@ -273,6 +273,33 @@ TEST_F(StepGateTest, StepTicksOnceWired) {
   EXPECT_GT(arm_targets_seen_, 0);
 }
 
+// ── The target pubs honour the lifecycle, not just the gate ────────────────
+
+TEST_F(RewireGateTest, DeactivatedNodePublishesNoArmTarget) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);
+  SpinTicks();
+  ASSERT_GT(arm_targets_seen_, 0) << "baseline: an ACTIVE node must publish";
+
+  ASSERT_EQ(node_->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  const int before = arm_targets_seen_;
+
+  // on_deactivate cancels the tick timer, so drive the bridge directly — the
+  // question is whether the publisher itself refuses, not whether anything
+  // still calls it. An INACTIVE LifecycleNode must put nothing on the wire.
+  //
+  // The pubs are created by the rewire, which runs after on_activate, so they
+  // miss the managed-entity sweep that on_activate performs. They must be
+  // activated explicitly at creation; without that they are LifecyclePublishers
+  // that were never enabled, and only reach the wire because the declared type
+  // is the rclcpp::Publisher base whose publish() is non-virtual. That slicing
+  // is what this test refuses to let the code depend on.
+  injector_->Bridge()->PublishArmTarget(Pose6D{0.4, 0.0, 0.3, 0.0, 0.0, 0.0});
+  SpinTicks(50ms);
+
+  EXPECT_EQ(arm_targets_seen_, before);
+}
+
 // ── The wait escalates but never gives up ──────────────────────────────────
 
 TEST_F(ControllerWaitTimeoutTest, WaitTimeoutDiagnosesButKeepsWaiting) {

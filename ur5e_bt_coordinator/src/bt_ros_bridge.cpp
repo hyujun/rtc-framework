@@ -2,6 +2,8 @@
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
+#include <lifecycle_msgs/msg/state.hpp>
+
 #include <cmath>
 
 namespace rtc_bt {
@@ -772,6 +774,16 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
       topic_namer_.ArmJointGoal(ns), rclcpp::QoS{1});
   hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
       topic_namer_.HandJointGoal(ns), rclcpp::QoS{1});
+  // LifecycleNode::on_activate sweeps only the managed entities that exist when
+  // it runs. Unlike the constructor's publishers, these are born in the rewire,
+  // which fires whenever the latched name arrives — usually well after the node
+  // went ACTIVE. They would miss that sweep and stay disabled for good, so
+  // enable them here. A rewire that lands while still INACTIVE needs nothing:
+  // the on_activate to come sweeps them like any other entity.
+  if (node_->get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    arm_target_pub_->on_activate();
+    hand_target_pub_->on_activate();
+  }
 
   // Phase C: bind parameter + grasp_command clients to the active controller.
   //   Param services live on the LifecycleNode FQN /<ctrl>/<ctrl>; relative
