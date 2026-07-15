@@ -137,6 +137,11 @@ BtCoordinatorNode::CallbackReturn BtCoordinatorNode::on_activate(
     const rclcpp_lifecycle::State& state) {
   LifecycleNode::on_activate(state);
 
+  // Re-arm the controller-wait escalation: a deactivate/activate cycle is a
+  // fresh startup, and the previous cycle's ERROR must not suppress this one's.
+  activate_time_ = std::chrono::steady_clock::now();
+  controller_wait_reported_ = false;
+
   // Always create the tick timer, then cancel it if we start in step mode.
   // Creating it unconditionally means a runtime step_mode→false toggle can just
   // reset() an existing timer; if the timer were null (never created) that
@@ -257,6 +262,9 @@ void BtCoordinatorNode::DeclareParameters() {
   groot2_port_ = safe_declare("groot2_port", 0);
   watchdog_timeout_s_ = safe_declare("watchdog_timeout_s", 2.0);
   watchdog_interval_s_ = safe_declare("watchdog_interval_s", 5.0);
+  // Diagnostic-only: the tick gate waits for the first active controller
+  // forever either way, but says so at ERROR once this elapses (<= 0 = never).
+  controller_wait_timeout_s_ = safe_declare("controller_wait_timeout_s", 10.0);
 }
 
 void BtCoordinatorNode::RegisterBtNodes() {
@@ -351,20 +359,76 @@ void BtCoordinatorNode::InitializeBlackboard() {
   }
 }
 
-void BtCoordinatorNode::TickCallback() {
-  if (!tree_)
+BtCoordinatorNode::TickBlocker BtCoordinatorNode::TickBlockedBy(std::string& reason) const {
+  if (!tree_) {
+    reason = "No tree loaded";
+    return TickBlocker::kNoTree;
+  }
+
+  if (bridge_->IsEstopped()) {
+    reason = "E-STOP active";
+    return TickBlocker::kEstopped;
+  }
+
+  // Hold off the first tick until the controller-owned topics are wired (#158).
+  // The timer starts in on_activate regardless of whether the latched
+  // /rtc_cm/active_controller_name has been delivered yet, and tick 1 lands
+  // 1/tick_rate_hz later — under DDS churn that can precede the rewire, and the
+  // first tick of a tree whose root publishes on onStart (e.g. UR5eHoldPose in
+  // hand_motions.xml) would then dereference a null target publisher.
+  //
+  // IsControllerWired() latches once and stays true, so this cannot freeze a
+  // running tree if a controller drops out later. Nodes handle a mid-run
+  // switch through their own FAILURE paths.
+  if (!bridge_->IsControllerWired()) {
+    reason = "No active controller wired yet";
+    return TickBlocker::kControllerUnwired;
+  }
+
+  return TickBlocker::kNone;
+}
+
+void BtCoordinatorNode::ReportControllerWaitTimeout() {
+  if (controller_wait_reported_ || controller_wait_timeout_s_ <= 0.0)
+    return;
+  const double waited =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - activate_time_).count();
+  if (waited <= controller_wait_timeout_s_)
     return;
 
-  // Paused check
+  controller_wait_reported_ = true;
+  // Say it once, then fall back to the throttled WARN and keep waiting: a CM
+  // that is merely slow to come up still recovers on its own. What must not
+  // happen is the misconfigured case (wrong CM namespace, controller that
+  // failed on_activate) staying indistinguishable from normal startup — the
+  // tree never ticks, nothing fails, and the only trace is a WARN every 2s.
+  RCLCPP_ERROR(coord_log(),
+               "No active controller after %.1fs — the tree has not ticked once. Still waiting; "
+               "check that a controller is active and publishing /rtc_cm/active_controller_name.",
+               waited);
+}
+
+void BtCoordinatorNode::TickCallback() {
+  // Checked here rather than in TickBlockedBy: pausing stops the auto-tick, but
+  // a manual ~/step is still expected to work while paused.
   if (paused_) {
     RCLCPP_INFO_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleIdleMs,
                          "Paused (set 'paused' param to false to resume)");
     return;
   }
 
-  if (bridge_->IsEstopped()) {
+  std::string reason;
+  const TickBlocker blocker = TickBlockedBy(reason);
+  if (blocker != TickBlocker::kNone) {
+    // Only the controller wait escalates: an E-STOP hold is a healthy state,
+    // and a step-only path reports its own blockers through the srv response.
+    if (blocker == TickBlocker::kControllerUnwired) {
+      ReportControllerWaitTimeout();
+    }
+    // Throttled: this runs at tick_rate_hz, so an unmet precondition would
+    // otherwise emit one line per tick.
     RCLCPP_WARN_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleSlowMs,
-                         "E-STOP active, tree paused");
+                         "Tick skipped: %s", reason.c_str());
     return;
   }
 
@@ -612,17 +676,14 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
 void BtCoordinatorNode::StepCallback(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-  if (!tree_) {
-    RCLCPP_ERROR(coord_log(), "step: no tree loaded");
+  // Same preconditions as the timer path — a step must not be able to reach a
+  // tree the auto-tick is (correctly) holding back from (#158). `paused_` is
+  // not among them: stepping while paused is the point of the service.
+  std::string reason;
+  if (TickBlockedBy(reason) != TickBlocker::kNone) {
+    RCLCPP_WARN(coord_log(), "step: %s", reason.c_str());
     response->success = false;
-    response->message = "No tree loaded";
-    return;
-  }
-
-  if (bridge_->IsEstopped()) {
-    RCLCPP_WARN(coord_log(), "step: E-STOP active, cannot tick");
-    response->success = false;
-    response->message = "E-STOP active";
+    response->message = reason;
     return;
   }
 

@@ -93,9 +93,22 @@ TEST(ServiceSingleThread, SwitchControllerCompletesUnderSharedExecutor) {
   auto bridge = std::make_shared<BtRosBridge>(node);
 
   auto srv_node = std::make_shared<rclcpp::Node>("srv_mock_switch_st");
+  auto active_ctrl_pub = srv_node->create_publisher<std_msgs::msg::String>(
+      "/rtc_cm/active_controller_name", rclcpp::QoS{1}.transient_local());
   auto srv = srv_node->create_service<rtc_msgs::srv::SwitchController>(
-      "/rtc_cm/switch_controller", [](const rtc_msgs::srv::SwitchController::Request::SharedPtr,
-                                      rtc_msgs::srv::SwitchController::Response::SharedPtr resp) {
+      "/rtc_cm/switch_controller",
+      [active_ctrl_pub](const rtc_msgs::srv::SwitchController::Request::SharedPtr req,
+                        rtc_msgs::srv::SwitchController::Response::SharedPtr resp) {
+        // Mirror CM's ordering: commit the swap by latching the name, then
+        // answer ok. SwitchController's stage 2 then waits for the bridge to
+        // consume that name — under this one executor the delivery can only
+        // happen on a later spin iteration, interleaved with the ticks, which
+        // is precisely the structure this file regression-tests.
+        if (!req->activate_controllers.empty()) {
+          std_msgs::msg::String msg;
+          msg.data = req->activate_controllers.front();
+          active_ctrl_pub->publish(msg);
+        }
         resp->ok = true;
         resp->message = "switched";
       });
@@ -114,8 +127,12 @@ TEST(ServiceSingleThread, SwitchControllerCompletesUnderSharedExecutor) {
   exec.add_node(ticker);
 
   // Under the old blocking RequestSwitchController this deadlocks and the guard
-  // fires at 8s → RUNNING. The async node polls the future across ticks → SUCCESS.
+  // fires at 8s → RUNNING. The async node polls the future across ticks, then
+  // polls for the bridge's rewire across further ticks → SUCCESS. Both waits
+  // are fulfilled by the same executor the ticks run on, so a blocking wait in
+  // either stage would show up here as RUNNING.
   EXPECT_EQ(SpinTickToCompletion(ticker, exec, tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(bridge->GetActiveController(), "demo_joint_controller");
 }
 
 TEST(ServiceSingleThread, SetGainsGraspCompletesUnderSharedExecutor) {

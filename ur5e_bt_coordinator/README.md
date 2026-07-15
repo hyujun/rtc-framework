@@ -157,6 +157,7 @@ TCP 포즈는 토픽이 아닌 `tf2_ros::Buffer` lookup으로 얻는다: `base` 
 | `groot2_port` | `0` | Groot2 ZMQ 포트 (0 = 비활성, 1667 = Groot2 기본 포트) |
 | `watchdog_timeout_s` | `2.0` | 토픽 수신 타임아웃 [s] (이 시간 동안 메시지 없으면 경고) |
 | `watchdog_interval_s` | `5.0` | 헬스 체크 주기 [s] (0 = 비활성) |
+| `controller_wait_timeout_s` | `10.0` | 첫 active controller 대기가 이 시간을 넘기면 ERROR 1회 (`<= 0` = 미발생). 대기 자체는 무제한 — 진단 전용 |
 
 반복 모드에서 트리 재시작 시 `object_pose` blackboard 변수가 자동으로 초기화된다.
 

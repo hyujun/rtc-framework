@@ -2,6 +2,8 @@
 
 #include "ur5e_bt_coordinator/bt_logging.hpp"
 
+#include <lifecycle_msgs/msg/state.hpp>
+
 #include <cmath>
 
 namespace rtc_bt {
@@ -365,9 +367,22 @@ bool BtRosBridge::IsEstopped() const {
   return estopped_;
 }
 
+bool BtRosBridge::IsControllerWired() const {
+  // Unlocked read, symmetric with the Publish* dereferences below: the rewire
+  // writes these and the tick reads them, and both run on the single-threaded
+  // executor's mutually-exclusive callback group (see the THREADING note on
+  // RewireControllerTopics).
+  return arm_target_pub_ != nullptr && hand_target_pub_ != nullptr;
+}
+
 // ── Publishers ────────────────────────────────────────────────────────────
 
 void BtRosBridge::PublishArmTarget(const Pose6D& target) {
+  if (!arm_target_pub_) {
+    RCLCPP_WARN_THROTTLE(bridge_log(), *node_->get_clock(), logging::kThrottleSlowMs,
+                         "arm target dropped: no active controller wired yet");
+    return;
+  }
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
   msg.goal_type = "task";
@@ -376,6 +391,11 @@ void BtRosBridge::PublishArmTarget(const Pose6D& target) {
 }
 
 void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
+  if (!arm_target_pub_) {
+    RCLCPP_WARN_THROTTLE(bridge_log(), *node_->get_clock(), logging::kThrottleSlowMs,
+                         "arm joint target dropped: no active controller wired yet");
+    return;
+  }
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
@@ -384,6 +404,13 @@ void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
 }
 
 void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
+  // Guard before the state write: last_hand_target_ is the incremental base for
+  // grasp commands (bt_utils.hpp), so it must track what actually went out.
+  if (!hand_target_pub_) {
+    RCLCPP_WARN_THROTTLE(bridge_log(), *node_->get_clock(), logging::kThrottleSlowMs,
+                         "hand target dropped: no active controller wired yet");
+    return;
+  }
   {
     std::lock_guard lock(state_mutex_);
     last_hand_target_ = target;
@@ -681,8 +708,12 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
     std::lock_guard lock(controller_topics_mutex_);
     if (ctrl_name == rewired_controller_)
       return;
-    rewired_controller_ = ctrl_name;
   }
+  // rewired_controller_ is committed at the END, together with the clients it
+  // describes. Committing it here instead would make a throw from any create_*
+  // below unrecoverable: the name is already recorded, so a re-delivery of the
+  // same name early-returns above, and the pubs reset below stay null forever —
+  // IsControllerWired() never latches and the tree never ticks again.
 
   const std::string ns = "/" + ctrl_name;
 
@@ -743,6 +774,16 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
       topic_namer_.ArmJointGoal(ns), rclcpp::QoS{1});
   hand_target_pub_ = node_->create_publisher<rtc_msgs::msg::RobotTarget>(
       topic_namer_.HandJointGoal(ns), rclcpp::QoS{1});
+  // LifecycleNode::on_activate sweeps only the managed entities that exist when
+  // it runs. Unlike the constructor's publishers, these are born in the rewire,
+  // which fires whenever the latched name arrives — usually well after the node
+  // went ACTIVE. They would miss that sweep and stay disabled for good, so
+  // enable them here. A rewire that lands while still INACTIVE needs nothing:
+  // the on_activate to come sweeps them like any other entity.
+  if (node_->get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    arm_target_pub_->on_activate();
+    hand_target_pub_->on_activate();
+  }
 
   // Phase C: bind parameter + grasp_command clients to the active controller.
   //   Param services live on the LifecycleNode FQN /<ctrl>/<ctrl>; relative
@@ -758,6 +799,10 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
     std::lock_guard lock(controller_topics_mutex_);
     active_param_client_ = std::move(new_param_client);
     grasp_command_client_ = std::move(new_grasp_client);
+    // Commit last: everything this name promises now exists. Until this line a
+    // throw above leaves the previous name in place, so the next delivery of
+    // this one retries the rewire instead of being skipped as a duplicate.
+    rewired_controller_ = ctrl_name;
   }
 
   RCLCPP_INFO(bridge_log(), "rewired controller-owned topics to '%s'", ctrl_name.c_str());

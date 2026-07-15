@@ -125,6 +125,25 @@ class BtRosBridge {
   /// E-STOP status
   bool IsEstopped() const;
 
+  /// True once RewireControllerTopics has bound the controller-owned target
+  /// publishers at least once. Callers use it to hold off work that would
+  /// otherwise publish into unbound topics (#158).
+  ///
+  /// Monotone as far as any reader can tell — but NOT because the pubs survive.
+  /// A controller switch resets and recreates them inside the rewire. What
+  /// makes the latch hold is that the rewire and its readers all run on the
+  /// single-threaded executor's mutually-exclusive callback group, so nothing
+  /// can observe the window between the reset and the recreate. Give the rewire
+  /// its own callback group, move to a multi-threaded executor, or split it
+  /// across callbacks, and this can read false under a running tree — which is
+  /// #158 again, with no test to catch it (the coverage only samples after
+  /// OnActiveController returns). See the THREADING note on
+  /// RewireControllerTopics.
+  ///
+  /// An empty name is ignored by the rewire outright, so a CM going down cannot
+  /// re-close the latch either.
+  [[nodiscard]] bool IsControllerWired() const;
+
   // ── Publishers (send commands) ────────────────────────────────────────────
 
   /// Publish arm task-space target [x,y,z,roll,pitch,yaw]
@@ -316,9 +335,15 @@ class BtRosBridge {
   std::string tf_child_frame_{"tool0_actual"};
 
   // ── Publishers ────────────────────────────────────────────────────────────
-  rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
-  rclcpp::Publisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr shape_trigger_pub_;
+  // LifecyclePublisher, deliberately not the rclcpp::Publisher base: publish()
+  // is virtual only on the derived type, so a base-typed handle calls straight
+  // through to rclcpp::Publisher::publish and silently skips the is_activated()
+  // check — an INACTIVE node would still put commands on the wire. The target
+  // pubs additionally need an explicit on_activate() at creation; see
+  // RewireControllerTopics.
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::String>::SharedPtr shape_trigger_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr shape_clear_client_;
 
   // ── /rtc_cm/* service clients (Phase 4) ─────────────────────────────────

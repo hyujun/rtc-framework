@@ -227,6 +227,18 @@ class RosTestFixture : public ::testing::Test {
         });
   }
 
+  /// Latch the name without waiting for the bridge to act on it — the real
+  /// CM's ordering. CM commits the swap, latches the name, and answers the srv;
+  /// it does not block on any subscriber's rewire. Use this inside a mock
+  /// switch_controller handler: the blocking PublishActiveController below
+  /// would stall the srv thread, and waiting for the rewire is precisely what
+  /// SwitchController's stage 2 is under test to do.
+  void LatchActiveController(const std::string& name) {
+    std_msgs::msg::String msg;
+    msg.data = name;
+    active_ctrl_pub_->publish(msg);
+  }
+
   void PublishActiveController(const std::string& name) {
     // active_ctrl_pub_ is transient_local, so a late-matching bridge sub still
     // latches the last name — but retry anyway for symmetry and to also cover
