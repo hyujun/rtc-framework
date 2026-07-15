@@ -25,7 +25,13 @@ assertion 은 건드리지 않는다.
 
 ## Current state
 
-**분석 완료, 코드 미변경.**
+**구현 완료, 4개 Acceptance 전부 실증 (2026-07-15).** `main` 에 rebase 됨 (#158 merge 후).
+diff 는 `SpinTickToCompletion` 하네스 한 곳 (`test_service_singlethread.cpp`, +50/-7).
+production 무변경, assertion 무변경. 상세는 Evidence E7-E10.
+
+> **#158 이 이 계획을 부분적으로 선점했다.** `216ccbb` 가 production 의 `kSrvTimeoutS` 를
+> discovery(`kReadyTimeoutS = 5.0`) 와 response(`kSrvTimeoutS = 2.0`) 로 쪼갰다. 그 결과
+> 아래 "Next action" 3번(T2 제거용 probe client)이 **불필요해져 드롭**됐다 (D4).
 
 ### #160 이슈 본문의 "Direction 4" 는 이 테스트에 적용되지 않는다 (기각)
 
@@ -55,9 +61,16 @@ guard 시계는 그동안에도 계속 흐른다.
 
 ### 관측 증상이 T1 지배를 확정한다
 
+> **⚠ 이 논증은 pre-#158-commit-4 (`216ccbb`) 기준이다.** 당시엔 stage 전체가 단일
+> `kSrvTimeoutS = 2.0` 을 썼다. `216ccbb` 이후 send **이전** 대기는 `kReadyTimeoutS = 5.0`
+> 이므로, 같은 논증을 현재 코드에 적용하면 함의가 "첫 tick 이 t > 6s" → **"t > 3s"** 로
+> 느슨해진다. 관측 signature(`RUNNING` + `grasp_calls = 0`) 자체와 **결론(T1 지배)은 불변** —
+> `216ccbb` 는 T1 을 건드리지 않는다. 아래 숫자는 원 관측의 재현이므로 그대로 둔다.
+
 실패 로그는 `status` = **`RUNNING`** (`FAILURE` 아님) + `grasp_calls` = 0 이다. 이게 결정적이다:
 
-- `SetGains` 의 자체 stage timeout 은 `kSrvTimeoutS = 2.0` 이다 (`set_gains.cpp:35,208`).
+- `SetGains` 의 자체 stage timeout 은 `kSrvTimeoutS = 2.0` 이었다 (당시 `set_gains.cpp:35,208`;
+  현재는 `:51-52` 의 `kReadyTimeoutS` / `kSrvTimeoutS` 2분할).
 - grasp-only 트리(`<SetGains grasp_command="2"/>`)는 port 가 없어 `onStart` 에서 곧장
   `Stage::kGrasp` 로 진입하고 `stage_start_` 를 찍는다.
 - 따라서 **grasp 단계에 진입만 했다면** T2 > 2s 일 때 노드가 `FAILURE` 를 냈어야 한다.
@@ -70,19 +83,16 @@ guard 시계는 그동안에도 계속 흐른다.
 
 ## Next action
 
-1. 브랜치 `fix/issue-160-e2e-clock-split` 생성 (from `main` @ `b152a49`)
-2. `SpinTickToCompletion` 의 budget 을 둘로 쪼갠다:
-   - **discovery budget** (관대, 예: 30s) — `exec.spin()` ~ `ready()` 최초 성립
-   - **deadlock budget** (8s, 기존 의미 유지) — `ready()` 최초 성립 시점부터
-   timer 콜백이 `ready()` 최초 true 를 관측할 때 `ready_seen_` 을 세우고, guard 스레드가
-   그 시점에 시계를 재시작한다. 두 초과를 **다른 메시지**로 구분 (Acceptance 4).
-3. T2 제거: gains 테스트의 `ready` 술어를 `GetActiveController() == ctrl` **AND
-   grasp 서비스 discovery 완료** 로 확장. bridge 내부 client 는 접근 불가하므로 `ticker` 노드에
-   probe client (`create_client<GraspCommand>(ns + "/grasp_command")`) 를 만들어
-   `service_is_ready()` 로 프록시 관측. `service_is_ready()` 는 graph 기반이라 spin 불필요.
-4. Sensor: 10-run 루프 (`docs/exec-plans/completed/issue-154-test-fixture-split.md` Evidence 절의
-   절차 — ws-root + `setup_env.sh`, CLAUDE.md §9.1)
-5. #160 에 "Direction 4 기각" 근거 코멘트
+1. ~~브랜치 생성~~ ✅ — `main` 에 rebase 완료 (충돌 0, 파일 교집합 0)
+2. ~~`SpinTickToCompletion` budget 2분할~~ ✅ — `discovery_budget = 30s` (`exec.spin()` ~
+   `ready()` 최초 성립) + `deadlock_budget = 8s` (`ready()` 성립 시점부터). timer 콜백이
+   `ready()` 최초 true 에서 `ready_seen` 을 세우고 guard 가 5ms 폴링으로 시계를 갈아탄다.
+   두 초과는 각자의 `ADD_FAILURE()` 메시지 (Evidence E8/E9).
+3. ~~T2 제거 (probe client)~~ ❌ **드롭 — D4 참조.** #158 `216ccbb` 가 production 에
+   discovery 5s grace 를 이미 넣었고, 5s < 8s deadlock budget 이므로 T2 초과 시 guard 보다
+   `SetGains` 자신의 discovery timeout 이 먼저 터져 명확한 메시지를 낸다.
+4. ~~Sensor: 10-run 루프~~ ✅ — full suite 10/10 green (Evidence E7)
+5. **남음** — #160 에 U1/U2 코멘트 (아래 Issue updates 표), 이슈 본문 편집 방침 확정 후 close
 
 ## Issue updates (#160)
 
@@ -111,13 +121,13 @@ guard 시계는 그동안에도 계속 흐른다.
 | **HP-1 — 10-run / 30-run 루프** | 대용량 test 출력. 메인 세션에 넣지 않는다 (user CLAUDE.md: verbose sub-task → subagent 기본값). **이 작업의 유일한 실질 handoff 지점** | subagent 위임, pass/fail 카운트 + 실패 시 해당 테스트 로그만 회수 |
 | **HP-2 — 반복 실패** | 시계 분리 후에도 flake 하면 T1 지배 가설(E4)이 틀린 것 → T2 또는 제3 요인. 3회 시도 후 중단 | 재시도 금지 → artifact `Current state` 갱신 + escalate. probe client 근사(Constraints 3)를 test-only readiness accessor 로 교체할지 재검토 |
 
-**#158 과의 순서:** 무관하다 — 둘 다 `main` @ `b152a49` 에서 분기하고 merge 순서에 의존성이
-없다. 단 #158 이 먼저 merge 되면 그 commit 4 가 `set_gains.cpp:208` stage 시계 의미를 바꾸므로,
-**이 artifact 의 E4 논증은 "pre-#158-commit-4 기준" 으로 단서를 달아야 한다** (진단력 문제이지
-정합성 문제 아님 — commit 4 는 T1 을 건드리지 않아 관측 signature 는 불변).
+**#158 과의 순서 — 해소됨 (2026-07-15).** #158 이 먼저 merge 됐고 이 브랜치를 `main` 에
+rebase 했다 (충돌 0, 예고대로 파일 교집합 0). 예고된 두 결합도 처리됐다:
+E4 에 "pre-#158-commit-4 기준" 단서를 달았고 (진단력 문제이지 정합성 문제 아님 — `216ccbb` 는
+T1 을 안 건드려 관측 signature 불변), **예고되지 않았던 결합**으로 `216ccbb` 의
+`kReadyTimeoutS` 가 원 계획 3번을 불필요하게 만들어 드롭했다 (D4).
 
-**Artifact 갱신 의무:** Evidence 절이 현재 **"정적 인스펙션만 — 빌드·10-run 미실행"** 이라고
-명시돼 있다. 10-run 실행 후 실제 결과로 갱신할 것 (handoff.md §3 — self-eval 신뢰 불가).
+**Artifact 갱신 의무 — 이행됨.** Evidence E7-E10 이 실측 결과로 갱신됐다 (handoff.md §3).
 
 ## Decisions and rationale
 
@@ -135,10 +145,23 @@ guard 시계는 그동안에도 계속 흐른다.
   future 를 blocking wait 할 때 같은 executor 가 응답을 못 dispatch 하는 구조적 문제다.
   ticking **전에** discovery 를 기다리는 건 그 구조를 건드리지 않는다 — 옛 blocking 코드는
   discovery 가 끝난 뒤에도 여전히 매달린다. Acceptance 3 가 이걸 명시적으로 검증한다.
+  **E8 이 이를 실증했다** — blocking 구조에서 하네스가 정확히 deadlock 으로 분류해 실패.
+- **D4 — probe client (원 계획 3번) 드롭.** #158 `216ccbb` 가 production 의 send-이전 대기에
+  `kReadyTimeoutS = 5.0` grace 를 줬다. deadlock budget(8s)이 그보다 크므로 T2 가 늘어지면
+  guard 가 아니라 `SetGains` 자신이 `timeout (5.0s) waiting for service discovery in
+  grasp_command stage` 로 먼저 실패한다 — 이미 명확한 진단이라 Acceptance 4 가 probe 없이
+  충족된다. 드롭으로 Constraints 의 "probe client 가 관측을 바꿀 가능성" 도 함께 해소:
+  probe 자체가 discovery 트래픽이고 bridge 의 client 와 다른 엔티티라 근사 프록시였다.
+  대가: T2 초과가 여전히 테스트 실패로 남는다 (숨기지 않음). 그건 production 의 5s discovery
+  예산을 실제로 초과했다는 뜻이므로 **보고할 가치가 있는 신호**이지 하네스 결함이 아니다.
+- **D5 — Acceptance 3 은 일시적 수동 확인 (a) 으로.** 영구 negative-control 테스트 (b) 는
+  의도적으로 8s+ 를 태우는 테스트를 스위트에 상주시킨다. 증거 휘발은 E8 에 결과·재현 절차를
+  박아 상쇄한다 (#158 이 E8-E12 에서 쓴 방식과 동일).
 
 ## Evidence
 
-모두 2026-07-15, `main` @ `b152a49` 기준. **정적 인스펙션만 — 빌드·10-run 미실행.**
+E1-E6 은 2026-07-15, `main` @ `b152a49` 기준 **정적 인스펙션**. E7-E10 은 구현 후 실측
+(`main` rebase 후, Release, ws-root + `setup_env.sh`).
 
 - **E1** — `test_service_singlethread.cpp` 는 `test_helpers.hpp` 미include:
   `grep -n 'include "' test/test_service_singlethread.cpp` → `set_gains.hpp`,
@@ -151,55 +174,70 @@ guard 시계는 그동안에도 계속 흐른다.
   `const auto start = steady_clock::now()` 가 `exec.spin()` **이전**에 찍힘
 - **E4** — 노드 자체 timeout 이 2.0s: `src/nodes/set_gains.cpp:35` `kSrvTimeoutS = 2.0`,
   `:208` `if (ElapsedSeconds(stage_start_) > kSrvTimeoutS) return FAILURE`
-  → 관측된 `RUNNING`(≠`FAILURE`)이 "첫 tick 이 6초 후" 를 함의
+  → 관측된 `RUNNING`(≠`FAILURE`)이 "첫 tick 이 6초 후" 를 함의.
+  **⚠ pre-#158-commit-4 (`216ccbb`) 기준** — 현재 코드는 send-이전이 `kReadyTimeoutS = 5.0`
+  (`set_gains.cpp:51-52`) 이라 함의가 "t > 3s" 로 느슨해진다. 결론(T1 지배)은 불변
 - **E5** — rewire-before-name 순서: `src/bt_ros_bridge.cpp:171-178` `OnActiveController` 가
   `RewireControllerTopics(msg->data)` 를 먼저 호출 → `ready()` 는 client **존재**만 보장,
   discovery 완료는 미보장 (T2 가 별도로 남는 이유)
 - **E6** — 기존 flake 증거: `docs/exec-plans/completed/issue-154-test-fixture-split.md`
   (30-run 중 1회, 2026-07-15) + #160 본문의 2026-07-14 동일 테스트 실패 이력
+- **E7 — Acceptance 1**: full suite **10/10 green**, `test_service_singlethread` 단독도 10/10
+  (각 0.33s). **이건 fix 를 증명하지 않는다** — 아래 통계적 한계 참조
+- **E8 — Acceptance 3 (deadlock 검출력 보존)**: `set_gains.cpp` kGrasp 의 send 직후에
+  `grasp_future_.wait_for(30s)` 를 **일시 삽입** (= 옛 blocking 구조: 보낸 tick 안에서 대기)
+  → `SetGainsGrasp...` **FAILED (30058 ms)**, 하네스 메시지 = `deadlock budget (8000ms)
+  expired: the tree was being ticked but never reached a terminal status — a service wait
+  that only this executor could fulfil`. **정확히 deadlock 으로 분류** (discovery 아님).
+  패치 되돌림 확인: `git diff -- src/nodes/set_gains.cpp` 비어 있음
+- **E9 — Acceptance 4 (반대쪽 시계)**: gains 테스트의 latched `active_pub->publish()` 를
+  **일시 제거** → `ready()` 영구 false → **FAILED (30018 ms)**, 메시지 = `discovery budget
+  (30000ms) expired: 'ready' never held, so the tree was never ticked — DDS discovery/rewire,
+  not a deadlock`. 같은 `RUNNING` 결과가 원인에 따라 다른 메시지로 갈림을 실증
+- **E10 — Acceptance 2 (E-6)**: `git diff -U0 | grep -E '^[-+].*(EXPECT_|ASSERT_)'` → **0건**.
+  assertion 추가·삭제·수정 전무. 30s discovery budget 이 CTest 기본 60s timeout 에 들어옴도
+  E8/E9 가 실측 (최악 30.3s)
 
 ## Failed approaches
 
-N/A — 구현 미착수. 단 **#160 본문의 Direction 4 는 착수 전에 기각**했다 (D1, Evidence E1/E2) —
-적용 대상이 아니어서 구현해도 no-op 이다. 같은 실패를 재시도하지 말 것.
+- **#160 본문의 Direction 4** — 착수 전에 기각 (D1, Evidence E1/E2). 적용 대상이 아니어서
+  구현해도 no-op. 재시도 금지.
+- **negative control 1차 시도 — 실패한 재현 (E8 의 전 단계)**: `wait_for(0)` → `wait_for(30s)`
+  로만 바꿔 blocking 을 흉내내려 했으나 **테스트가 통과**했다. send 와 wait 사이에 tick 이
+  한 번 끊기므로 그 틈에 executor 가 응답을 이미 dispatch 해 future 가 ready 였다. 옛 blocking
+  구조의 본질은 "**같은 tick 안에서** send 후 대기" 이며, 그렇게 고쳐야 재현된다 (E8).
+  → deadlock 재현을 시도하는 다음 사람은 send 와 wait 사이에 tick 경계를 두지 말 것.
 
 ## Constraints / pending human decisions
 
-- **Acceptance 3 의 검증 방법 미결** — "옛 blocking 구조를 흉내내면 여전히 실패" 를 어떻게
-  확인할지: (a) 로컬에서 일시적으로 blocking 코드를 넣어 수동 확인 후 되돌리기(커밋 안 함),
-  (b) 영구 negative-control 테스트 추가. (a) 가 가볍지만 증거가 휘발된다 — 구현 시 판단.
-- **flake 재현의 통계적 한계** — 원 빈도가 1/30 이므로 10-run green 은 fix 를 증명하지 못한다
-  (fix 없이도 10/30 확률로 통과). Acceptance 1 은 필요조건일 뿐이고, 실질 근거는 시계 의미의
-  구조적 논증(D2)이다. 더 강한 증거가 필요하면 30-run 을 요청할 것.
-- **probe client 가 관측을 바꿀 가능성** — ticker 노드에 client 를 하나 더 만들면 그 자체가
-  discovery 트래픽이다. bridge 의 client 와 다른 엔티티이므로 `service_is_ready()` 시점이
-  정확히 일치하진 않는다 (근사 프록시). 불충분하면 bridge 에 test-only readiness accessor 를
-  두는 대안 — 단 그건 production 헤더 surface 변경이라 #154 의 friend/injector 패턴을 따라야 함.
+- **flake 재현의 통계적 한계 (미해소, 구조적)** — 원 빈도가 1/30 이므로 10-run green(E7)은
+  fix 를 증명하지 못한다 (fix 없이도 10/30 확률로 통과). Acceptance 1 은 필요조건일 뿐이고,
+  실질 근거는 시계 의미의 구조적 논증(D2) + 두 시계가 각자 발화함을 보인 E8/E9 다.
+  더 강한 증거가 필요하면 30-run 을 요청할 것.
+- ~~**Acceptance 3 의 검증 방법 미결**~~ — **해소**: (a) 채택 (D5), E8 에서 실증.
+- ~~**probe client 가 관측을 바꿀 가능성**~~ — **해소**: probe 자체를 드롭 (D4).
 
 ## Workspace
 
-- Branch: **`fix/issue-160-e2e-clock-split`** (분기점 `main` @ `b152a49`)
-- 이 브랜치의 첫 커밋 = **본 artifact 뿐** (docs-only). **코드 변경은 아직 0건.**
-- 미커밋 변경: 없음
+- Branch: **`fix/issue-160-e2e-clock-split`** — 2026-07-15 `main` 에 **rebase 완료**
+  (#158 merge 후. 충돌 0 — 파일 교집합이 실제로 0이었음)
+- 커밋: artifact + 하네스 fix (`test_service_singlethread.cpp`). production 무변경
 - `?? docs/WBC_CONTROLLER_IMPLEMENTATION.md` — **본 작업과 무관, 별도 소유.** 커밋하지 말 것
-- **착수 순서상 이 브랜치는 대기 중이다** — 2026-07-15 사용자 결정으로 `fix/issue-158-rewire-tick-gate`
-  를 먼저 진행한다. 이 브랜치는 `b152a49` 에서 분기해 있으므로 #158 merge 후에도 rebase 불필요
-  (파일 교집합 0). 다만 착수 시 Handoff plan 의 "추론 결합" 단서를 반영할 것
-- **자매 artifact 는 이 브랜치에 없다** — `issue-158-rewire-tick-gate.md` 는
-  `fix/issue-158-rewire-tick-gate` 브랜치 소유
+- **남은 일**: #160 U1/U2 코멘트 + 본문 편집 방침 확정 → close, main merge
+- **자매 artifact 는 `main` 에 있다** — #158 종결로 `docs/exec-plans/completed/issue-158-rewire-tick-gate.md`
 
 ## Pointers
 
 - Issue #160 — e2e 잔존 flake (본문의 Direction 4 는 D1 로 기각됨)
 - Issue #154 / `docs/exec-plans/completed/issue-154-test-fixture-split.md` — 픽스처 분리 완료,
   Evidence 절에 10-run 루프 절차
-- `docs/exec-plans/active/issue-158-rewire-tick-gate.md` — 자매 작업 (production 코드)
+- `docs/exec-plans/completed/issue-158-rewire-tick-gate.md` — 자매 작업 (production, 종결).
+  그 D4 가 `kReadyTimeoutS` 분할의 근거
 - `test/test_service_singlethread.cpp:1-15` — 이 테스트의 목적(deadlock 회귀) 헤더 주석
-- `test/test_service_singlethread.cpp:46-77` — `SpinTickToCompletion` (주 수정 대상)
-- `test/test_service_singlethread.cpp:121-169` — 실패 테스트 `SetGainsGrasp...`
-- `test/test_service_singlethread.cpp:164-165` — `ready` 술어 (3번 항목 대상)
+- `test/test_service_singlethread.cpp:40-120` — `SpinTickToCompletion` (두 시계 + 분기 메시지)
+- `test/test_service_singlethread.cpp:181-186` — 원 flake 테스트 `SetGainsGrasp...` 와 `ready` 술어
 - `test/test_helpers.hpp:156-162` — Direction 4 가 겨냥했던 background `spin_some` 루프 (범위 밖)
-- `src/bt_ros_bridge.cpp:171-178` — `OnActiveController` rewire-before-name
-- `src/bt_ros_bridge.cpp:790-814` — `SendGraspCommandAsync` (`service_is_ready()` 프로브)
-- `src/nodes/set_gains.cpp:35,208,256-266` — `kSrvTimeoutS` + `kGrasp` 재시도
+- `src/bt_ros_bridge.cpp:173-183` — `OnActiveController` rewire-before-name
+- `src/nodes/set_gains.cpp:51-52` — `kReadyTimeoutS`(5.0) / `kSrvTimeoutS`(2.0) 2분할 (#158)
+- `src/nodes/set_gains.cpp:225-227` — `stage_sent_` 기반 budget 선택
 - `CLAUDE.md` §6 E-6 (assertion 약화 금지), §9.1 (colcon CWD)
