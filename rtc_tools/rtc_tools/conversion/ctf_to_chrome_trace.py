@@ -408,9 +408,10 @@ def build_trace(
 
     Returns:
         ``{"traceEvents": [...], "displayTimeUnit": "ms",
-           "_dropped_event_counts": {name: count, ...}}``. The
-        ``_dropped_event_counts`` key is consumed by ``main()`` for the
-        stderr summary and is stripped before JSON serialization.
+           "_dropped_event_counts": {name: count, ...},
+           "_census": {event_name: count, ..., "_with_vpid": count}}``. The
+        underscore keys are consumed by ``main()`` for the stderr summary
+        and are stripped before JSON serialization.
     """
     keep_extra = keep_events or frozenset()
     thread_names: dict[int, str] = {}
@@ -429,6 +430,12 @@ def build_trace(
     span_pids: set[int] = set()  # pids that emitted rtc:span_begin
     thread_slice_tids_by_pid: dict[int, set[int]] = defaultdict(set)
 
+    # Census of the input stream, used by main() to explain an empty or
+    # partial timeline. A trace missing rtc:* spans or sched_switch renders
+    # as "the group is there but has nothing in it", which is impossible to
+    # tell apart from a converter bug without these counts.
+    census: dict[str, int] = defaultdict(int)
+
     # Per-CPU current tid (for sched_switch B/E emission).
     current_tid_on_cpu: dict[int, int] = {}
 
@@ -438,6 +445,7 @@ def build_trace(
     n_events = 0
     for ts_ns, name, payload, cpu_id in events_iter:
         n_events += 1
+        census[name] += 1
         if progress_every and n_events % progress_every == 0:
             print(
                 f"[ctf_to_chrome] parsed {n_events:,} events ({len(out):,} slices so far)...",
@@ -469,6 +477,8 @@ def build_trace(
             vpid = int(payload.get("vpid") or 0)
         except (TypeError, ValueError):
             vpid = 0
+        if vpid:
+            census["_with_vpid"] += 1
         if vpid and vtid:
             tid_to_pid[vtid] = vpid
             if procname:
@@ -793,7 +803,12 @@ def build_trace(
     # Threads seen only via sched_switch get no thread row — they already
     # show on the Cpu lanes, and one empty row per system thread is what
     # drowned the workspace threads in the old flat layout.
-    _process_meta(CPU_PID, "Cpus", SORT_CPU)
+    #
+    # Only advertise the Cpus group when sched_switch actually produced
+    # lanes: an empty "Cpus" group is indistinguishable from a broken
+    # converter, when the real cause is a capture without kernel events.
+    if cpus_seen:
+        _process_meta(CPU_PID, "Cpus", SORT_CPU)
     for pid in sorted(summary_pids):
         label = proc_name_by_pid.get(pid) or f"pid-{pid}"
         _process_meta(pid, f"{label} (summary)", SORT_SUMMARY)
@@ -834,7 +849,60 @@ def build_trace(
         "traceEvents": metadata + out,
         "displayTimeUnit": "ms",
         "_dropped_event_counts": dict(dropped_counts),
+        "_census": dict(census),
     }
+
+
+def _report_capture_gaps(census: dict[str, int]) -> list[str]:
+    """Print what the *capture* is missing, and return the warning lines.
+
+    An absent event class renders in Perfetto as a swimlane group that is
+    simply not there (or is there but empty) — visually identical to a
+    converter bug. Each check below names the capture-side cause so the
+    trace, not the tool, gets fixed. Returns the emitted lines for tests.
+    """
+    lines: list[str] = []
+    spans = census.get("rtc:span_begin", 0)
+    callbacks = census.get("ros2:callback_start", 0)
+    switches = census.get("sched_switch", 0)
+    irqs = census.get("irq_handler_entry", 0)
+    with_vpid = census.get("_with_vpid", 0)
+
+    lines.append(
+        f"[ctf_to_chrome] capture census: rtc:span_begin={spans:,} "
+        f"ros2:callback_start={callbacks:,} sched_switch={switches:,} "
+        f"irq_handler_entry={irqs:,}"
+    )
+    if not spans:
+        lines.append(
+            "[ctf_to_chrome] WARNING: 0 rtc:* spans. RT tick internals "
+            "(rt_control_tick / sim_step / hand_comm_tick and their phases) "
+            "will be ABSENT — the RT loop is a raw clock_nanosleep thread, "
+            "not an rclcpp callback, so nothing else can show it. Rebuild "
+            "with tracing on ('./build.sh sim --tracing', i.e. "
+            "-DRTC_ENABLE_TRACING=ON) and re-capture. See docs/tracing.md."
+        )
+    if not switches:
+        lines.append(
+            "[ctf_to_chrome] WARNING: 0 sched_switch. The Cpus swimlanes "
+            "(which thread ran on which core, and for how long) CANNOT be "
+            "built — that view is reconstructed entirely from sched_switch. "
+            "Kernel events were not captured: check 'groups' contains "
+            "'tracing' IN THE SHELL THAT LAUNCHED (membership needs a "
+            "re-login; 'newgrp tracing'), that lttng-modules is loadable "
+            "('lttng list --kernel'), and that trace_events_kernel was not "
+            "overridden to empty. See docs/tracing.md §Permissions."
+        )
+    if callbacks and not with_vpid:
+        lines.append(
+            "[ctf_to_chrome] WARNING: no vpid context on any event — "
+            "per-process grouping is unavailable, falling back to a flat "
+            "thread group. Capture with the default context_fields "
+            "(procname, vpid, vtid)."
+        )
+    for line in lines:
+        print(line, file=sys.stderr)
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -922,6 +990,8 @@ def main(argv: list[str] | None = None) -> int:
     # spec rejects unknown top-level keys with leading underscore on
     # some viewers; safer to drop).
     dropped_counts = trace.pop("_dropped_event_counts", {})
+    census = trace.pop("_census", {})
+    _report_capture_gaps(census)
 
     if not any(ev["ph"] != "M" for ev in trace["traceEvents"]):
         print(

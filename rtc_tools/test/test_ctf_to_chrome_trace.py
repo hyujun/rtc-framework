@@ -22,6 +22,7 @@ from rtc_tools.conversion.ctf_to_chrome_trace import (
     STRUCTURED_EVENTS,
     THREAD_PID,
     _parse_bt2_cli,
+    _report_capture_gaps,
     build_trace,
 )
 
@@ -343,16 +344,32 @@ def test_cpu_lanes_emitted_for_every_cpu_seen():
     assert cpus == {0, 5, 11}
 
 
-def test_swimlane_groups_labelled():
-    # The two process_name metadata records must label "Threads" and "Cpus".
-    out = build_trace(iter(_callback_pair(0, 1000, vtid=1, callback=0x1, symbol="x")))
-    proc_meta = {
+def _process_names(out):
+    return {
         ev["pid"]: ev["args"]["name"]
         for ev in out["traceEvents"]
         if ev["ph"] == "M" and ev["name"] == "process_name"
     }
-    assert proc_meta[THREAD_PID] == "Threads (by TID)"
-    assert proc_meta[CPU_PID] == "Cpus"
+
+
+def test_swimlane_groups_labelled():
+    # Context-less capture (no vpid) falls back to the flat thread group.
+    out = build_trace(iter(_callback_pair(0, 1000, vtid=1, callback=0x1, symbol="x")))
+    assert _process_names(out)[THREAD_PID] == "Threads (by TID)"
+
+
+def test_cpus_group_only_advertised_when_sched_switch_present():
+    # Spec change: the Cpus group used to be emitted unconditionally, so a
+    # capture without kernel events rendered an empty "Cpus" group — visually
+    # identical to a converter bug, while the real cause is capture-side.
+    # No sched_switch => no group at all; the census warning explains why.
+    out = build_trace(iter(_callback_pair(0, 1000, vtid=1, callback=0x1, symbol="x")))
+    assert CPU_PID not in _process_names(out)
+
+    out = build_trace(
+        iter([_sched_switch(1_000_000, cpu=2, prev_tid=0, next_tid=100, next_comm="rt_control")])
+    )
+    assert _process_names(out)[CPU_PID] == "Cpus"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -684,6 +701,47 @@ def test_all_threads_disables_summarization():
         if ev["ph"] == "M" and ev["name"] == "thread_name" and ev["pid"] == 200
     ]
     assert [(ev["tid"], ev["args"]["name"]) for ev in thread_meta_ext] == [(201, "ur_driver-201")]
+
+
+def test_census_counts_input_events_and_vpid_coverage():
+    events = _rtc_span_pid(
+        1_000_000, 1_400_000, vpid=100, vtid=100, procname="integrated_rt_c", name="tick"
+    )
+    events += [_sched_switch(2_000_000, cpu=2, prev_tid=0, next_tid=100, next_comm="rt")]
+    out = build_trace(iter(events))
+    census = out["_census"]
+    assert census["rtc:span_begin"] == 1
+    assert census["sched_switch"] == 1
+    assert census["_with_vpid"] == 2  # both span events carry vpid
+
+
+def test_capture_gap_warnings_name_the_capture_side_cause():
+    # A trace with callbacks but no spans and no sched_switch is exactly what
+    # a non---tracing build + kernel-events-off capture produces. The tool
+    # must say so, since both render as "the group is empty".
+    lines = "\n".join(_report_capture_gaps({"ros2:callback_start": 5, "_with_vpid": 5}))
+    assert "0 rtc:* spans" in lines
+    assert "--tracing" in lines
+    assert "0 sched_switch" in lines
+    assert "tracing" in lines  # group-membership hint for kernel events
+
+    # Healthy capture: census line only, no warnings.
+    lines = _report_capture_gaps(
+        {
+            "rtc:span_begin": 10,
+            "ros2:callback_start": 5,
+            "sched_switch": 100,
+            "_with_vpid": 15,
+        }
+    )
+    assert len(lines) == 1
+    assert "capture census" in lines[0]
+
+
+def test_missing_vpid_context_warns_only_when_ust_present():
+    assert any("no vpid context" in ln for ln in _report_capture_gaps({"ros2:callback_start": 5}))
+    # Kernel-only capture has no UST events — the vpid note would be noise.
+    assert not any("no vpid context" in ln for ln in _report_capture_gaps({"sched_switch": 10}))
 
 
 def test_cpu_lane_label_gets_process_prefix():
