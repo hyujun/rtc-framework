@@ -8,11 +8,19 @@ paths:
   - "**/rtc_*/**/*.hpp"
   - "**/rtc_*/**/*.h"
   - "**/rtc_*/**/*.cc"
+  - "integrated_bringup/**/*.cpp"
+  - "integrated_bringup/**/*.hpp"
+  - "integrated_bringup/**/*.h"
+  - "integrated_bringup/**/*.cc"
+  - "**/integrated_bringup/**/*.cpp"
+  - "**/integrated_bringup/**/*.hpp"
+  - "**/integrated_bringup/**/*.h"
+  - "**/integrated_bringup/**/*.cc"
 ---
 
 # RT path 절대 금지 (정기 tick — `control_rate` YAML; rate 범위·default 는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants 가 SSoT)
 
-이 rule 은 `rtc_*` C++ 파일을 편집할 때 **reminder 로 로드**된다 (glob 은 파일 단위라 tick hot-path 만 골라낼 수 없다). 실제로 **구속하는 대상은 RT 정기 tick / SCHED_FIFO dedicated-core 경로뿐**이다 — 비-RT 코드 (`on_configure`/`on_activate` 등 lifecycle 콜백, `DrainLog()` aux thread, 1 Hz aux 타이머, 파라미터 콜백, **test / init 코드**) 는 면제. RT path 정의와 false-positive 판정 절차는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants. RT tick 경로에서 다음을 절대 사용 금지 (CLAUDE.md §3 의 상세판; 위반 필요시 §6 Escalation `[CONCERN]` 포맷 보고).
+이 rule 은 `rtc_*` 및 `integrated_bringup` C++ 파일을 편집할 때 **reminder 로 로드**된다 (glob 은 파일 단위라 tick hot-path 만 골라낼 수 없다; `integrated_bringup` 은 device backend 의 rt_callback lane 과 controller `Compute()` 가 RT path 라 포함 — issue #156 유입 경로). 실제로 **구속하는 대상은 RT 정기 tick / SCHED_FIFO dedicated-core 경로뿐**이다 — 비-RT 코드 (`on_configure`/`on_activate` 등 lifecycle 콜백, `DrainLog()` aux thread, 1 Hz aux 타이머, 파라미터 콜백, **test / init 코드**) 는 면제. RT path 정의와 false-positive 판정 절차는 [invariants.md](../../agent_docs/invariants.md) §RT Path Invariants. RT tick 경로에서 다음을 절대 사용 금지 (CLAUDE.md §3 의 상세판; 위반 필요시 §6 Escalation `[CONCERN]` 포맷 보고).
 
 1. `new` / `malloc` / `push_back` / `emplace_back` / `resize` — pre-allocated fixed-size 사용
 2. `throw` / `catch` — error code, `std::optional`, `std::expected`

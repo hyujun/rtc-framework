@@ -35,7 +35,7 @@
 
 ### RT path 절대 금지 (정기 tick — `control_rate` YAML)
 
-RT 핫패스 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`resize`) · `throw`/`catch` · 직접 `RCLCPP_*` 로깅 · `mutex`/`lock_guard` · `auto`+Eigen · quaternion `lerp`/`nlerp` · `shared_ptr` 복사 — 은 **`rtc_*` C++ 편집 시에만 로드되는 path-scoped rule** [.claude/rules/rt-path.md](.claude/rules/rt-path.md) 에 상세(예외·대안 포함). 이 규칙은 RT tick / SCHED_FIFO 경로에만 구속되고 lifecycle·aux·test·init 코드는 면제 (판정 절차는 rule 파일·invariants.md). RT 코드 수정 전 반드시 확인하고, 위반 필요시 §6 `[CONCERN]`.
+RT 핫패스 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`resize`) · `throw`/`catch` · 직접 `RCLCPP_*` 로깅 · `mutex`/`lock_guard` · `auto`+Eigen · quaternion `lerp`/`nlerp` · `shared_ptr` 복사 — 은 **`rtc_*`·`integrated_bringup` C++ 편집 시에만 로드되는 path-scoped rule** [.claude/rules/rt-path.md](.claude/rules/rt-path.md) 에 상세(예외·대안 포함). 이 규칙은 RT tick / SCHED_FIFO 경로에만 구속되고 lifecycle·aux·test·init 코드는 면제 (판정 절차는 rule 파일·invariants.md). RT 코드 수정 전 반드시 확인하고, 위반 필요시 §6 `[CONCERN]`.
 
 ### Architecture / Process / Numerical
 
