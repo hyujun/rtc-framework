@@ -26,8 +26,14 @@ discovery 미완" 뿌리에서 나오는 `SetGains` 의 `kSrvTimeoutS` 여유 �
 
 ## Current state
 
-**commits 1–10 완료 (2026-07-15). Acceptance 1·2·3 충족. 남은 것: Acceptance 4 sim smoke,
-U4 종결 코멘트, 이슈 본문 편집 여부 결정.**
+> **종결 (2026-07-15).** `main` 에 no-ff merge (`e71ff6e`), post-merge 재검증 green
+> (23 바이너리 / 212 tests / 0 failure). 본 artifact 는 `completed/` 로 이동됐다.
+> **미완 1건 — Acceptance 4 (p1b sim smoke) 는 실행하지 않았다.** 사용자 판단으로 merge 를
+> 진행했다: sim smoke 는 음성 증거이고 실증은 E7(결정적 재현)이 담당한다. 실기에서 #158
+> signature (`exit -11`) 가 재발하면 이 artifact 를 먼저 읽을 것 — E7 이 반증된다는 뜻이므로
+> 근본 원인 가설 자체를 재개봉해야 한다 (HP-3).
+
+**commits 1–10 완료 (2026-07-15). Acceptance 1·2·3 충족. Acceptance 4 미실행 (위 참조).**
 
 근본 원인은 **재현으로 확정**했고 (E7), `/code-review` (high) 가 찾은 7건을 commits 5–10 이
 모두 처리했다. 리뷰는 **기존 결정 두 개를 뒤집었다** — D5 의 근거가 사실과 달랐고 (→ D5-정정),
@@ -114,7 +120,7 @@ without a null check, and those publishers are only created inside the rewire". 
 | **U1 — 착수 전 (즉시)** | 가설 기각. E1–E6 근거로 "race 아님" 선언. core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사 **불필요** 명시 | ✅ **done** (2026-07-15) |
 | **U2 — 착수 시** | 범위 확장 고지 (D4 = `SetGains` 예산 분리 + `switch_controller` 주석), 브랜치 링크 | ✅ **done** — U1 과 통합 |
 | **U3 — commit 3 후 (결정적)** | fix 없이 SIGSEGV(-11) 하는 로그 + fix 후 230/230 | ✅ **done** — U1 과 통합 |
-| **U4 — 종결** | Acceptance 1–4 결과, 커밋 목록 (10개), `/code-review` 7건 및 그중 **본문 가설과 무관한 별건 2개**(step 경로, lifecycle publisher), artifact → `completed/` 이동 링크 | ⬜ **남음** — sim smoke 후 |
+| **U4 — 종결** | merge `e71ff6e`, 커밋 10개, `/code-review` 7건 (그중 본문 가설과 무관한 별건 2개 — step 경로, lifecycle publisher), Acceptance 4 미실행 명시, artifact → `completed/` | ✅ **done** (2026-07-15) |
 
 **U1–U3 은 하나의 코멘트로 통합 게시** ([#158 comment-4976488580](https://github.com/hyujun/rtc-framework/issues/158#issuecomment-4976488580),
 2026-07-15). 세 시점이 모두 지난 뒤 한꺼번에 쓰게 되어 3연속 코멘트는 노이즈였다.
@@ -136,16 +142,17 @@ stale 임을 명시하고 편집 의사를 물어둔 상태.
 **D4-정정도 뒤집혔으며** (gap 이 안 닫혀 있었음 — D7), D6 seam 은 문제 없었다.
 `kReadyTimeoutS` 가 판단값이라는 지적은 유효하게 남아 Constraints 로 이동했다.
 
-### 새 세션 재개 진입점 (우선순위 순)
+### 재개 진입점 — **모두 소진됨** (2026-07-15 종결)
 
-1. **push** — `git push origin fix/issue-158-rewire-tick-gate` (10 commit 중 6개가 미push).
-2. **Acceptance 4 — p1b sim smoke** — HP-2 대로 **subagent 위임** (대용량 log, 메인 세션 금지).
-   이슈 본문 `## Repro` 의 명령 그대로: 전체 스택 launch **직후** bt_coordinator 를 동시 launch,
-   반복. exit -11 부재 확인. **음성 증거**임에 유의 (실증은 E7 이 담당) — 실패 시에만 raw log 회수.
-   관측 가치: 실제 CM 기동 시간 (Constraints 의 두 판단값 근거).
-3. **U4 종결 코멘트** + artifact → `completed/` 이동 (§11-2).
-4. **이슈 본문 편집 여부** — 아래 `## Issue updates` 미결 항목. 사용자 컨펌 필요.
-5. PR 준비 시 **`/code-review ultra`** (§5.5 — 다파일/다커밋 PR).
+1. ~~push~~ — done (`96d7e96` 까지 push 후 `e71ff6e` 로 merge)
+2. **Acceptance 4 — p1b sim smoke** — **실행하지 않고 종결**. 사용자 판단 (2026-07-15).
+   재개하려면 HP-2 대로 **subagent 위임** (대용량 log). 이슈 본문 `## Repro` 명령 그대로:
+   전체 스택 launch **직후** bt_coordinator 동시 launch, 반복, exit -11 부재 확인.
+   관측 가치가 남아 있다: 실제 CM 기동 시간 = Constraints 의 두 판단값(`kReadyTimeoutS` 5.0,
+   `controller_wait_timeout_s` 10.0) 근거. 실기 투입 시 이 둘을 재검토할 것.
+3. ~~U4 종결 코멘트 + artifact → `completed/`~~ — done
+4. ~~이슈 본문 편집 여부~~ — 종결 코멘트에서 처리 (아래 `## Issue updates`)
+5. ~~`/code-review ultra`~~ — high-effort `/code-review` 로 갈음, 7건 전건 수정 후 merge
 
 ### 원래 계획된 분기점 (이력)
 
@@ -357,9 +364,11 @@ core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 모�
 - Branch: **`fix/issue-158-rewire-tick-gate`** (분기점 `main` @ `b152a49`) — 새 세션이 재개할 브랜치
 - 커밋: `2175758` (artifact) → `ef09b06` → `e826fe4` → `5c56af0` (artifact) → `e75878c` →
   `9935670` (artifact) → `216ccbb` → `4ae2ded` (artifact) → `7e4235e` (artifact) →
-  **`27e336a` → `8d3bbf8` → `4740d1c` → `94a8989` → `6f8f845` → `bc6cf49`** (리뷰 C1–C6).
-  미커밋 변경 없음. **`7e4235e` 이후 6개는 아직 push 안 됨.**
-  **다음 세션은 push → Acceptance 4 sim smoke → U4 부터 시작한다** (코드·리뷰 완료).
+  **`27e336a` → `8d3bbf8` → `4740d1c` → `94a8989` → `6f8f845` → `bc6cf49`** (리뷰 C1–C6) →
+  `96d7e96` (artifact).
+- **merge: `e71ff6e` (no-ff, `main`, 2026-07-15)** — post-merge 재검증 green.
+  `main` 의 first-parent 에 보인다 (#154 와 같은 관례). 브랜치
+  `fix/issue-158-rewire-tick-gate` 는 merge 후 로컬 삭제 (§11-4).
 - 신규 파일: `ur5e_bt_coordinator/test/test_rewire_gate.cpp` (+ CMake `test_rewire_gate` 타깃 —
   node 가 라이브러리가 아니라 실행파일이라 `src/bt_coordinator_node.cpp` TU 를 함께 컴파일)
 - ~~이 브랜치의 첫 커밋 = 본 artifact 뿐 (docs-only). 코드 변경은 아직 0건.~~
