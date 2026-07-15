@@ -90,29 +90,51 @@ without a null check, and those publishers are only created inside the rewire". 
 > **도구 주의:** `gh issue view` / `gh pr edit` 는 이 repo 에서 Projects-classic GraphQL
 > deprecation 으로 hard-fail 한다. `gh api repos/:owner/:repo/issues/158` 계열로 우회한다.
 
-| 시점 | 내용 | 왜 필요한가 |
+| 시점 | 내용 | 상태 |
 |---|---|---|
-| **U1 — 착수 전 (즉시)** | 가설 기각. Evidence E1–E3(null pub) + E4(단일 스레드 불변식 성립) + E5/E6(crash 경로) 를 근거로 "race 아님, 정적 확정" 선언. 이슈가 제안한 core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사는 **불필요**임을 명시 | #158 본문이 "needs a backtrace to confirm" 이라 **읽는 사람을 sudo core-dump 삽질로 보낸다**. 가장 시급한 업데이트 |
-| **U2 — 착수 시** | 범위 확장 고지: D4 로 `kSrvTimeoutS` + `switch_controller.cpp:64-68` 순서 가정이 이 이슈 범위에 포함됨. 브랜치 `fix/issue-158-rewire-tick-gate` 링크 | 별건으로 보이는 변경이 왜 이 브랜치에 있는지 리뷰어가 알아야 함 |
-| **U3 — commit 3 후 (결정적)** | fix **없이** inject-tier 회귀 테스트가 실제로 SIGSEGV 하는 로그. fix 후 통과 로그 | 유일하게 근본 원인을 **재현으로** 입증하는 증거. Constraints 1 의 해소 지점 |
-| **U4 — 종결** | Acceptance 1–4 결과, 커밋 목록, artifact → `completed/` 이동 링크 | #154 종결 코멘트와 같은 형식 |
+| **U1 — 착수 전 (즉시)** | 가설 기각. E1–E6 근거로 "race 아님" 선언. core dump / sudo `kernel.core_pattern` / gdb-under-churn / mutex 감사 **불필요** 명시 | ✅ **done** (2026-07-15) |
+| **U2 — 착수 시** | 범위 확장 고지 (D4 = `SetGains` 예산 분리 + `switch_controller` 주석), 브랜치 링크 | ✅ **done** — U1 과 통합 |
+| **U3 — commit 3 후 (결정적)** | fix 없이 SIGSEGV(-11) 하는 로그 + fix 후 230/230 | ✅ **done** — U1 과 통합 |
+| **U4 — 종결** | Acceptance 1–4 결과, 커밋 목록, artifact → `completed/` 이동 링크 | ⬜ **남음** — sim smoke 후 |
 
-**미결 — 이슈 본문 편집 여부 (사용자 판단):** #158 본문의 `## Suspected cause` 와
-`## Next steps to get a backtrace` 두 절은 U1 시점에 **전체가 stale** 이 된다. 코멘트만 달면
+**U1–U3 은 하나의 코멘트로 통합 게시** ([#158 comment-4976488580](https://github.com/hyujun/rtc-framework/issues/158#issuecomment-4976488580),
+2026-07-15). 세 시점이 모두 지난 뒤 한꺼번에 쓰게 되어 3연속 코멘트는 노이즈였다.
+본문 언어에 맞춰 **영어**로 작성 (artifact 는 한글, 이슈는 영어 — 혼용이 아니라 각 매체의 관례).
+
+**미결 — 이슈 본문 편집 여부 (사용자 판단, 여전히 열림):** #158 본문의 `## Suspected cause` 와
+`## Next steps to get a backtrace` 두 절은 이제 **전체가 stale** 이다. 코멘트만 달면
 본문을 먼저 읽은 사람이 여전히 오도된다. 선택지 — (a) 본문의 두 절을 편집하고 원문을 U1
 코멘트에 보존, (b) 코멘트만 달고 본문은 이력으로 남김. 단일 라인이 아니라 **절 전체**가
-뒤집히는 경우이므로 컨펌 없이 편집하지 않는다.
+뒤집히는 경우이므로 컨펌 없이 편집하지 않는다. **현재 상태 = (b) 잠정** — U1 코멘트가 두 절이
+stale 임을 명시하고 편집 의사를 물어둔 상태.
 
 ## Handoff plan
 
-이 artifact 는 handoff.md §2 template 을 채운 상태이므로 **지금 이 시점에서 이미 독립 재개
-가능**하다 — 새 세션이 transcript 없이 `Next action` 1번부터 시작할 수 있다. 사용자가 지금
-handoff 를 택하면 추가 준비 작업은 없다.
+**현재 = handoff 완료 상태 (2026-07-15).** 코드 변경 4 commit + artifact 갱신이 모두
+`origin/fix/issue-158-rewire-tick-gate` 에 push 돼 있고 (`4ae2ded` 이후 코드 commit 없음),
+로컬 미커밋 변경 없음. 새 세션은 transcript 없이 아래 **재개 진입점**부터 시작하면 된다.
+
+### 새 세션 재개 진입점 (우선순위 순)
+
+1. **`/code-review`** — 사용자가 새 세션에서 진행하기로 결정 (2026-07-15). §5.5 trigger 해당:
+   production 코드 + lifecycle 콜백 (`TickCallback` gate) + 다파일/PR 준비.
+   리뷰 대상 = `main..fix/issue-158-rewire-tick-gate` 의 code commit 4개
+   (`ef09b06`, `e826fe4`, `e75878c`, `216ccbb`). **리뷰어가 특히 볼 곳**:
+   D5 (bridge 소유 latch 가 정말 monotone 인가 — rewire 가 pub 을 null 로 되돌리는 경로가
+   없는지), D6 (node friend seam 이 프로덕션 계약을 넓히지 않는지),
+   D4-정정 (`kReadyTimeoutS = 5.0` 값의 근거가 실측이 아니라 판단임).
+2. **Acceptance 4 — p1b sim smoke** — HP-2 대로 **subagent 위임** (대용량 log, 메인 세션 금지).
+   이슈 본문 `## Repro` 의 명령 그대로: 전체 스택 launch **직후** bt_coordinator 를 동시 launch,
+   반복. exit -11 부재 확인. **음성 증거**임에 유의 (실증은 E7 이 담당) — 실패 시에만 raw log 회수.
+3. **U4 종결 코멘트** + artifact → `completed/` 이동 (§11-2).
+4. **이슈 본문 편집 여부** — 위 `## Issue updates` 미결 항목. 사용자 컨펌 필요.
+
+### 원래 계획된 분기점 (이력)
 
 | 분기점 | 판단 | 메커니즘 |
 |---|---|---|
-| **HP-0 — 착수 전 (현재)** | #158 과 #160 은 코드 교집합 0 (production vs 테스트 전용, 둘 다 `main` 에서 분기) → **병렬 세션/에이전트 가능**. 단 아래 "추론 결합" 주의 | 두 세션으로 분리, 또는 한 세션에서 #158 → #160 순차 |
-| **HP-1 — commit 3 후 (권장 분기점)** | commits 1–3 은 "null pub → gate → 회귀 테스트" 하나의 추론 사슬이고, commit 4 (`kSrvTimeoutS`) 는 **별개 사슬**(discovery 여유). context 압박 시 여기가 가장 깨끗한 절단면 | `/compact "issue-158 commit 4: kSrvTimeoutS discovery 여유"` 또는 artifact 갱신 후 `/clear` |
+| ~~**HP-0 — 착수 전**~~ (지남) | #158 과 #160 은 코드 교집합 0 (production vs 테스트 전용, 둘 다 `main` 에서 분기) → **병렬 세션/에이전트 가능**. 단 아래 "추론 결합" 주의 | 두 세션으로 분리, 또는 한 세션에서 #158 → #160 순차 |
+| ~~**HP-1 — commit 3 후**~~ (지남 — 사용자가 같은 세션에서 commit 4 속행 결정) | commits 1–3 은 "null pub → gate → 회귀 테스트" 하나의 추론 사슬이고, commit 4 는 **별개 사슬**(discovery 여유) | 실제 절단면은 **commit 4 후 = 현재**가 됐다 (코드 완료 → 리뷰/smoke 만 남음) |
 | **HP-2 — sim smoke 직전** | Acceptance 4 의 p1b 전체 스택 launch 는 대용량 log — 메인 세션에 넣지 않는다 (user CLAUDE.md: verbose sub-task → subagent 기본값) | subagent 위임, 요약만 회수. **실패 시에만** 메인으로 raw log 회수 |
 | **HP-3 — 반복 실패** | 회귀 테스트가 fix 없이도 **안 죽으면** 근본 원인 가설이 틀린 것 (Constraints 1). 3회 시도 후 중단 | 재시도 금지 → artifact `Current state` 를 반증으로 갱신 + §6 escalate. #158 재개봉 |
 
