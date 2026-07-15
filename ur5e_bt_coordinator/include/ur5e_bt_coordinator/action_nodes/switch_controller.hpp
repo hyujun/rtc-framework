@@ -19,12 +19,13 @@ namespace rtc_bt {
 ///
 /// Input ports:
 ///   - controller_name (string): target controller name
-///   - timeout_s (double): switch timeout [s] (default 3.0)
+///   - timeout_s (double): per-stage timeout [s] (default 3.0)
 ///
-/// Returns SUCCESS once the srv responds with ok=true (CM has committed the
-/// swap and published the latched /rtc_cm/active_controller_name). Already-
-/// active target short-circuits to SUCCESS on the first tick. FAILURE on
-/// E-STOP / unknown name (srv ok=false) or timeout.
+/// SUCCESS means "the tree can now talk to `controller_name`", which is
+/// stricter than "CM committed the swap" — see the two stages in the .cpp.
+/// Already-active target short-circuits to SUCCESS on the first tick. FAILURE
+/// on E-STOP / unknown name (srv ok=false), on srv timeout, or when the srv
+/// said ok but the bridge never rewired within the budget.
 class SwitchController : public BT::StatefulActionNode {
  public:
   SwitchController(const std::string& name, const BT::NodeConfig& config,
@@ -43,6 +44,9 @@ class SwitchController : public BT::StatefulActionNode {
   std::chrono::steady_clock::time_point start_time_;
   BtRosBridge::SwitchRequestHandle handle_;  // invalid future until sent
   bool sent_{false};
+  /// Stage 2: srv answered ok, now waiting for the bridge's rewire to land.
+  /// The response future is already consumed once this is set.
+  bool awaiting_rewire_{false};
 };
 
 }  // namespace rtc_bt

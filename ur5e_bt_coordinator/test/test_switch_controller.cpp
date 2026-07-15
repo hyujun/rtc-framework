@@ -55,6 +55,12 @@ TEST_F(SwitchControllerTest, NormalizedNameComparison) {
 // SwitchControllerSrvTest spins a mock /rtc_cm/switch_controller server
 // alongside the bridge. Each test calls SetSwitchHandler() to configure
 // what the server returns, then ticks the BT node.
+//
+// A handler that answers ok MUST also latch the name, because that is the real
+// CM's contract (commit the swap → latch /rtc_cm/active_controller_name →
+// answer ok) and SwitchController now waits for the latched name to reach the
+// bridge before reporting SUCCESS. A handler that answers ok without latching
+// models a broken CM, and SrvOkWithoutRewireTimesOut asserts we reject it.
 
 class SwitchControllerSrvTest : public SwitchControllerTest {
  protected:
@@ -63,7 +69,12 @@ class SwitchControllerSrvTest : public SwitchControllerTest {
   void SetUp() override {
     SwitchControllerTest::SetUp();
     srv_node_ = std::make_shared<rclcpp::Node>("srv_mock_node");
-    handler_ = [](const SwitchSrv::Request::SharedPtr, SwitchSrv::Response::SharedPtr resp) {
+    handler_ = [this](const SwitchSrv::Request::SharedPtr req,
+                      SwitchSrv::Response::SharedPtr resp) {
+      // Default: a well-behaved CM — latch the committed name, then answer ok.
+      if (!req->activate_controllers.empty()) {
+        LatchActiveController(req->activate_controllers.front());
+      }
       resp->ok = true;
       resp->message = "ok";
     };
@@ -110,10 +121,11 @@ TEST_F(SwitchControllerSrvTest, SrvSwitchSucceedsImmediately) {
   Spin();
 
   std::string captured_target;
-  SetSwitchHandler([&captured_target](const SwitchSrv::Request::SharedPtr req,
-                                      SwitchSrv::Response::SharedPtr resp) {
+  SetSwitchHandler([this, &captured_target](const SwitchSrv::Request::SharedPtr req,
+                                            SwitchSrv::Response::SharedPtr resp) {
     if (!req->activate_controllers.empty()) {
       captured_target = req->activate_controllers.front();
+      LatchActiveController(captured_target);
     }
     resp->ok = true;
     resp->message = "switched -> " + captured_target;
@@ -125,6 +137,30 @@ TEST_F(SwitchControllerSrvTest, SrvSwitchSucceedsImmediately) {
 
   EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(captured_target, "demo_joint_controller");
+  // SUCCESS must mean the bridge is reachable at the new controller, not just
+  // that CM answered — this is what a following SetGains relies on (#158).
+  EXPECT_EQ(bridge_->GetActiveController(), "demo_joint_controller");
+}
+
+TEST_F(SwitchControllerSrvTest, SrvOkWithoutRewireTimesOut) {
+  PublishActiveController("old_controller");
+  Spin();
+
+  // A CM that commits the swap and answers ok, but whose latched name never
+  // reaches this node's bridge (dropped delivery / participant churn) — the
+  // #158 gap. Reporting SUCCESS here is what let a following SetGains build
+  // params from the stale name and configure "old_controller" instead.
+  SetSwitchHandler([](const SwitchSrv::Request::SharedPtr, SwitchSrv::Response::SharedPtr resp) {
+    resp->ok = true;
+    resp->message = "ok";
+  });
+
+  auto tree = CreateTree(
+      R"(<SwitchController controller_name="demo_joint_controller"
+                          timeout_s="0.5"/>)");
+
+  EXPECT_EQ(TickUntilComplete(tree), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(bridge_->GetActiveController(), "old_controller");
 }
 
 TEST_F(SwitchControllerSrvTest, SrvRejectionPropagatesAsFailure) {

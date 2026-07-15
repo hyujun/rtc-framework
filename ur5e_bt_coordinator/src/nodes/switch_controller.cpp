@@ -28,6 +28,15 @@ std::string NormalizeName(const std::string& s) {
   }
   return r;
 }
+
+// True once the bridge has adopted `target` as the active controller. This is
+// the observable edge of RewireControllerTopics: OnActiveController runs the
+// rewire *first* and only then writes active_controller_, so a reader that
+// sees the name match is guaranteed the param/grasp clients and the
+// controller-owned target publishers are already bound to it.
+bool BridgeRewiredTo(const BtRosBridge& bridge, const std::string& target) {
+  return NormalizeName(bridge.GetActiveController()) == NormalizeName(target);
+}
 }  // namespace
 
 SwitchController::SwitchController(const std::string& name, const BT::NodeConfig& config,
@@ -37,7 +46,7 @@ SwitchController::SwitchController(const std::string& name, const BT::NodeConfig
 BT::PortsList SwitchController::providedPorts() {
   return {
       BT::InputPort<std::string>("controller_name"),
-      BT::InputPort<double>("timeout_s", 3.0, "Timeout [s]"),
+      BT::InputPort<double>("timeout_s", 3.0, "Per-stage timeout [s]"),
   };
 }
 
@@ -50,29 +59,19 @@ BT::NodeStatus SwitchController::onStart() {
   target_ = name.value();
   timeout_s_ = getInput<double>("timeout_s").value_or(3.0);
 
-  const auto current = bridge_->GetActiveController();
-  if (NormalizeName(current) == NormalizeName(target_)) {
+  if (BridgeRewiredTo(*bridge_, target_)) {
     RCLCPP_DEBUG(logger(), "already active: %s", target_.c_str());
     return BT::NodeStatus::SUCCESS;
   }
 
-  RCLCPP_INFO(logger(), "switching: %s -> %s (timeout=%.1fs)", current.c_str(), target_.c_str(),
-              timeout_s_);
+  RCLCPP_INFO(logger(), "switching: %s -> %s (timeout=%.1fs/stage)",
+              bridge_->GetActiveController().c_str(), target_.c_str(), timeout_s_);
 
   start_time_ = std::chrono::steady_clock::now();
   sent_ = false;
+  awaiting_rewire_ = false;
   // Fire without blocking; if the service is not ready yet, onRunning retries
-  // (poll-based grace) until timeout_s_. The srv returns ok only after CM has
-  // committed the swap (D-A4) and latched /rtc_cm/active_controller_name.
-  //
-  // That ok does NOT mean a following SetGains can reach the new controller.
-  // CM latching the name and this node's bridge acting on it are different
-  // channels, and DDS orders neither against the srv response: the bridge must
-  // still receive the latched name, run RewireControllerTopics to build the
-  // param/grasp clients, and let those clients discover the controller's
-  // services. Issue #158 is what that gap looks like when the tree does not
-  // wait for it. SetGains therefore budgets for discovery on its own
-  // (kReadyTimeoutS) rather than assuming readiness here.
+  // (poll-based grace) until timeout_s_.
   std::string err;
   handle_ = bridge_->RequestSwitchControllerAsync(target_, err);
   sent_ = handle_.future.valid();
@@ -80,7 +79,39 @@ BT::NodeStatus SwitchController::onStart() {
 }
 
 BT::NodeStatus SwitchController::onRunning() {
-  // Not yet sent (service was not ready): retry within the timeout budget.
+  // ── Stage 2: srv said ok — wait for this node's bridge to catch up ───────
+  //
+  // The srv returning ok means CM committed the swap (D-A4) and latched
+  // /rtc_cm/active_controller_name. It does NOT mean the tree can reach the
+  // new controller: CM latching the name and this node's bridge acting on it
+  // are different channels, and DDS orders neither against the srv response.
+  // The bridge must still receive the latched name and run
+  // RewireControllerTopics to rebind the target publishers and the
+  // param/grasp clients. Issue #158 is what that gap looks like when the tree
+  // does not wait for it — a following SetGains reads the stale name and
+  // quietly configures the *previous* controller, reporting SUCCESS.
+  //
+  // So SUCCESS here means "the tree can talk to target_", and every node
+  // sequenced after this one inherits that guarantee rather than re-deriving
+  // it. The wait gets its own budget: stage 1 timed a service round-trip,
+  // this times a latched-topic delivery + rewire, and blaming one on the
+  // other's budget is what made #158 hard to read.
+  if (awaiting_rewire_) {
+    if (BridgeRewiredTo(*bridge_, target_)) {
+      RCLCPP_INFO(logger(), "switched -> %s (bridge rewired)", target_.c_str());
+      return BT::NodeStatus::SUCCESS;
+    }
+    if (ElapsedSeconds(start_time_) > timeout_s_) {
+      RCLCPP_ERROR(logger(),
+                   "switch_controller srv accepted '%s' but the bridge never rewired within "
+                   "%.1fs (still on '%s') — /rtc_cm/active_controller_name not delivered?",
+                   target_.c_str(), timeout_s_, bridge_->GetActiveController().c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::RUNNING;
+  }
+
+  // ── Stage 1a: not yet sent (service was not ready) — retry within budget ─
   if (!sent_) {
     if (ElapsedSeconds(start_time_) > timeout_s_) {
       RCLCPP_ERROR(logger(), "switch_controller service unavailable within %.1fs (target=%s)",
@@ -96,7 +127,7 @@ BT::NodeStatus SwitchController::onRunning() {
     return BT::NodeStatus::RUNNING;
   }
 
-  // Sent: poll the response future without blocking the executor.
+  // ── Stage 1b: sent — poll the response future without blocking ───────────
   if (handle_.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
     auto resp = handle_.future.get();
     if (!resp->ok) {
@@ -104,7 +135,15 @@ BT::NodeStatus SwitchController::onRunning() {
                    resp->message.c_str());
       return BT::NodeStatus::FAILURE;
     }
-    return BT::NodeStatus::SUCCESS;
+    // The latched name may already have overtaken the srv response, in which
+    // case stage 2 has nothing to wait for.
+    if (BridgeRewiredTo(*bridge_, target_)) {
+      RCLCPP_INFO(logger(), "switched -> %s", target_.c_str());
+      return BT::NodeStatus::SUCCESS;
+    }
+    awaiting_rewire_ = true;
+    start_time_ = std::chrono::steady_clock::now();  // rewire clock starts at the ok
+    return BT::NodeStatus::RUNNING;
   }
 
   if (ElapsedSeconds(start_time_) > timeout_s_) {
@@ -117,10 +156,14 @@ BT::NodeStatus SwitchController::onRunning() {
 }
 
 void SwitchController::onHalted() {
-  if (sent_) {
+  // Only stage 1 has an in-flight request to cancel; by stage 2 the response
+  // future is already consumed and the switch itself has been committed by CM
+  // (halting the tree does not roll it back).
+  if (sent_ && !awaiting_rewire_) {
     bridge_->CancelSwitchControllerRequest(handle_.request_id);
   }
-  RCLCPP_INFO(logger(), "halted (target=%s)", target_.c_str());
+  RCLCPP_INFO(logger(), "halted (target=%s, stage=%s)", target_.c_str(),
+              awaiting_rewire_ ? "awaiting_rewire" : "srv");
 }
 
 }  // namespace rtc_bt
