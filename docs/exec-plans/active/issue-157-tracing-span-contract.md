@@ -77,7 +77,25 @@
 - `ruff check` (converter + test) → All checks passed
 - 합성 babeltrace2 텍스트 end-to-end 변환 → tier 그룹핑 / sort order / async id 짝 확인 (focus pid=100 sync B/E, external pid=200 async b/e, Cpu 라벨 `ur_driver/dds_worker-201`)
 - span 인벤토리 grep (위 표) — `grep -rn 'RTC_TRACE_SCOPE("' --include=*.cpp --include=*.hpp`
-- **미검증**: 실 CTF 캡처의 Perfetto 육안 확인 (디스크에 기존 캡처 없음 → 다음 캡처 시 확인 필요)
+
+### 실 캡처 end-to-end 검증 (2026-07-15, 이 워크스테이션)
+
+`./build.sh sim --tracing` → `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true enable_viewer:=false` (30 s, SIGINT) → `timeline.sh`.
+
+- 빌드 산출물에 tracepoint 실재: `nm -D integrated_rt_controller` → `lttng_ust_tracepoint_rtc___span_begin` / `_span_end`, `liblttng-ust.so.1` 링크됨.
+- 캡처: `logging_data/260715_1759/tracing/trace` = 235 MB, kernel + ust 채널 both.
+- census: `rtc:span_begin=972,065  ros2:callback_start=73,947  sched_switch=781,897  irq_handler_entry=15,613` → 캡처 결손 경고 0건.
+- 변환 결과 (`trace.json`, 295 MB / 2,919,585 events, 변환 2 m 6 s):
+  - `integrated_rt_c` (pid 534911): **1,313,452 slices / 6 threads**, `rt_control_tick` **×20,412**, `nrt_publish_drain` ×20,412, WBC sub-step 다수.
+  - `mujoco_simulato` (pid 534910): 778,572 slices / 2 threads.
+  - `Cpus`: **12 lane 전부**, 796,303 slices. 라벨 prefix 정상 — `integrated_rt_c/nrt_callback-534998`, `mujoco_simulato/sim_thread-534967`; main thread 는 bare (`integrated_rt_c-534997`) 로 의도대로.
+  - `Cpu/IRQ`: 31,226 slices.
+- **결론**: viewer 는 정상. "그룹은 있는데 비어 있다" 는 캡처 결손(비-`--tracing` 빌드 / kernel event 부재) 또는 뷰어의 대용량 JSON 처리 실패 쪽 증상이며, 둘 다 이제 stderr 경고로 지목된다 (`fa0cb8a`, `1e2268b`).
+- **미검증 (잔여)**: Perfetto UI 육안 확인 — JSON 은 위 경로에 준비돼 있음. 30 s 캡처가 295 MB 이므로 UI 로딩 부하 자체가 별도 관찰 대상.
+
+### 관찰 (이 task 범위 밖, 별건 확인 필요)
+
+sim 실행에서 RT tick 스레드의 comm 이 `integrated_rt_c-534997` (고유 이름 미설정) 이고 Cpu 001 에서 30 s 간 14,268 switch 를 기록했다. 이 런은 memlock 상향/RT 권한 없이 돌았으므로 ApplyThreadConfig 가 적용되지 않았을 수 있다 — pinning 검증은 권한 있는 실기에서 재확인 필요.
 
 ## Failed approaches
 
