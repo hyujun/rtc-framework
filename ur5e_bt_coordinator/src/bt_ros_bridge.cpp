@@ -706,8 +706,12 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
     std::lock_guard lock(controller_topics_mutex_);
     if (ctrl_name == rewired_controller_)
       return;
-    rewired_controller_ = ctrl_name;
   }
+  // rewired_controller_ is committed at the END, together with the clients it
+  // describes. Committing it here instead would make a throw from any create_*
+  // below unrecoverable: the name is already recorded, so a re-delivery of the
+  // same name early-returns above, and the pubs reset below stay null forever —
+  // IsControllerWired() never latches and the tree never ticks again.
 
   const std::string ns = "/" + ctrl_name;
 
@@ -783,6 +787,10 @@ void BtRosBridge::RewireControllerTopics(const std::string& ctrl_name) {
     std::lock_guard lock(controller_topics_mutex_);
     active_param_client_ = std::move(new_param_client);
     grasp_command_client_ = std::move(new_grasp_client);
+    // Commit last: everything this name promises now exists. Until this line a
+    // throw above leaves the previous name in place, so the next delivery of
+    // this one retries the rewire instead of being skipped as a duplicate.
+    rewired_controller_ = ctrl_name;
   }
 
   RCLCPP_INFO(bridge_log(), "rewired controller-owned topics to '%s'", ctrl_name.c_str());

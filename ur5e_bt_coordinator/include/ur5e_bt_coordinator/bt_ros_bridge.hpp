@@ -126,11 +126,22 @@ class BtRosBridge {
   bool IsEstopped() const;
 
   /// True once RewireControllerTopics has bound the controller-owned target
-  /// publishers at least once. Monotone for the bridge's lifetime: the target
-  /// pubs are created only in the rewire and are never reset (the rewire
-  /// early-returns on an empty controller name), so this latches false→true and
-  /// stays true even across a later controller switch. Callers use it to hold
-  /// off work that would otherwise publish into unbound topics (#158).
+  /// publishers at least once. Callers use it to hold off work that would
+  /// otherwise publish into unbound topics (#158).
+  ///
+  /// Monotone as far as any reader can tell — but NOT because the pubs survive.
+  /// A controller switch resets and recreates them inside the rewire. What
+  /// makes the latch hold is that the rewire and its readers all run on the
+  /// single-threaded executor's mutually-exclusive callback group, so nothing
+  /// can observe the window between the reset and the recreate. Give the rewire
+  /// its own callback group, move to a multi-threaded executor, or split it
+  /// across callbacks, and this can read false under a running tree — which is
+  /// #158 again, with no test to catch it (the coverage only samples after
+  /// OnActiveController returns). See the THREADING note on
+  /// RewireControllerTopics.
+  ///
+  /// An empty name is ignored by the rewire outright, so a CM going down cannot
+  /// re-close the latch either.
   [[nodiscard]] bool IsControllerWired() const;
 
   // ── Publishers (send commands) ────────────────────────────────────────────
