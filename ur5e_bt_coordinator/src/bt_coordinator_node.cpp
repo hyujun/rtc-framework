@@ -351,21 +351,15 @@ void BtCoordinatorNode::InitializeBlackboard() {
   }
 }
 
-void BtCoordinatorNode::TickCallback() {
-  if (!tree_)
-    return;
-
-  // Paused check
-  if (paused_) {
-    RCLCPP_INFO_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleIdleMs,
-                         "Paused (set 'paused' param to false to resume)");
-    return;
+bool BtCoordinatorNode::CanTick(std::string& reason) const {
+  if (!tree_) {
+    reason = "No tree loaded";
+    return false;
   }
 
   if (bridge_->IsEstopped()) {
-    RCLCPP_WARN_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleSlowMs,
-                         "E-STOP active, tree paused");
-    return;
+    reason = "E-STOP active";
+    return false;
   }
 
   // Hold off the first tick until the controller-owned topics are wired (#158).
@@ -375,12 +369,32 @@ void BtCoordinatorNode::TickCallback() {
   // first tick of a tree whose root publishes on onStart (e.g. UR5eHoldPose in
   // hand_motions.xml) would then dereference a null target publisher.
   //
-  // This is deliberately not re-checked per tick: IsControllerWired() latches
-  // once and stays true, so a controller dropping out later cannot freeze a
-  // running tree. Nodes handle a mid-run switch through their own FAILURE paths.
+  // IsControllerWired() latches once and stays true, so this cannot freeze a
+  // running tree if a controller drops out later. Nodes handle a mid-run
+  // switch through their own FAILURE paths.
   if (!bridge_->IsControllerWired()) {
+    reason = "No active controller wired yet";
+    return false;
+  }
+
+  return true;
+}
+
+void BtCoordinatorNode::TickCallback() {
+  // Checked here rather than in CanTick: pausing stops the auto-tick, but a
+  // manual ~/step is still expected to work while paused.
+  if (paused_) {
+    RCLCPP_INFO_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleIdleMs,
+                         "Paused (set 'paused' param to false to resume)");
+    return;
+  }
+
+  std::string reason;
+  if (!CanTick(reason)) {
+    // Throttled: this runs at tick_rate_hz, so an unmet precondition would
+    // otherwise emit one line per tick.
     RCLCPP_WARN_THROTTLE(coord_log(), *get_clock(), ::rtc_bt::logging::kThrottleSlowMs,
-                         "Waiting for active controller before first tick");
+                         "Tick skipped: %s", reason.c_str());
     return;
   }
 
@@ -628,17 +642,14 @@ rcl_interfaces::msg::SetParametersResult BtCoordinatorNode::OnParameterChange(
 void BtCoordinatorNode::StepCallback(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-  if (!tree_) {
-    RCLCPP_ERROR(coord_log(), "step: no tree loaded");
+  // Same preconditions as the timer path — a step must not be able to reach a
+  // tree the auto-tick is (correctly) holding back from (#158). `paused_` is
+  // not among them: stepping while paused is the point of the service.
+  std::string reason;
+  if (!CanTick(reason)) {
+    RCLCPP_WARN(coord_log(), "step: %s", reason.c_str());
     response->success = false;
-    response->message = "No tree loaded";
-    return;
-  }
-
-  if (bridge_->IsEstopped()) {
-    RCLCPP_WARN(coord_log(), "step: E-STOP active, cannot tick");
-    response->success = false;
-    response->message = "E-STOP active";
+    response->message = reason;
     return;
   }
 

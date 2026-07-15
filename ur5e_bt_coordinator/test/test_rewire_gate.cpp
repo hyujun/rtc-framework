@@ -6,21 +6,24 @@
 /// from onStart, which dereferenced a null publisher and SIGSEGV'd.
 ///
 /// These drive the real BtCoordinatorNode lifecycle (configure → activate →
-/// timer-driven TickCallback), unlike test_lifecycle_config which stays at the
-/// mechanism level: the gate lives in TickCallback, so the tick path itself is
-/// the unit under test. The tree is a single-leaf UR5eHoldPose written to a
-/// temp file (LoadTree takes absolute paths), not one of the large composite
-/// trees, so configure stays cheap.
+/// TickCallback / StepCallback), unlike test_lifecycle_config which stays at
+/// the mechanism level: the gate lives on the tick path, so the tick path
+/// itself is the unit under test. The tree is a single-leaf UR5eHoldPose
+/// written to a temp file (LoadTree takes absolute paths), not one of the large
+/// composite trees, so configure stays cheap.
 ///
 /// DDS-free: the active-controller transition is injected through the bridge's
 /// own handler via CoordinatorTickInjector + BridgeStateInjector, and the
 /// arm-target observation rides intra-process comms within one context.
 ///
-/// The two halves matter for different reasons (exec-plan D2): dropping the
-/// gate brings back the SIGSEGV, while a gate that re-checks per tick — or a
-/// bare null guard with no gate — would swallow UR5eHoldPose's one-shot
-/// onStart publish and turn the crash into a silent hang with the arm never
-/// moving. TickPublishesArmTargetOnceWired is what catches that.
+/// The halves matter for different reasons (exec-plan D2):
+///   - dropping the gate brings back the SIGSEGV
+///     (TicksBeforeRewireDoNotCrashOrAdvanceTree)
+///   - a gate that re-checks per tick, or a bare null guard with no gate, would
+///     swallow UR5eHoldPose's one-shot onStart publish and turn the crash into
+///     a silent hang with the arm never moving (TickPublishesArmTargetOnceWired)
+///   - ~/step is a second tick path; a gate on the timer alone leaves the same
+///     gap reachable by service call (StepGateTest)
 
 #include "inject_fixture.hpp"
 #include "ur5e_bt_coordinator/bt_coordinator_node.hpp"
@@ -29,12 +32,14 @@
 #include <rclcpp/executors/single_threaded_executor.hpp>
 
 #include <gtest/gtest.h>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 
 using namespace std::chrono_literals;
 
@@ -66,6 +71,10 @@ constexpr double kTickRateHz = 200.0;  // 5ms/tick — many ticks per Spin below
 
 class RewireGateTest : public ::testing::Test {
  protected:
+  /// Auto-tick fixture by default. StepGateTest flips this so on_activate
+  /// cancels the tick timer and ~/step becomes the only path to the tree.
+  [[nodiscard]] virtual bool StepMode() const { return false; }
+
   void SetUp() override {
     tree_path_ = std::filesystem::temp_directory_path() / "rewire_gate_tree.xml";
     std::ofstream(tree_path_) << R"(<root BTCPP_format="4"><BehaviorTree ID="T">)"
@@ -80,6 +89,7 @@ class RewireGateTest : public ::testing::Test {
         rclcpp::Parameter("tree_file", tree_path_.string()),
         rclcpp::Parameter("hand_group", "p1b"),
         rclcpp::Parameter("tick_rate_hz", kTickRateHz),
+        rclcpp::Parameter("step_mode", StepMode()),
         // The watchdog only logs; keep it out of the way of the tick timer.
         rclcpp::Parameter("watchdog_interval_s", 0.0),
         // A non-default hand_group seeds no compile-time hand poses and
@@ -98,10 +108,19 @@ class RewireGateTest : public ::testing::Test {
     arm_target_sub_ = node_->create_subscription<rtc_msgs::msg::RobotTarget>(
         std::string("/") + kController + "/ur5e/joint_goal", rclcpp::QoS{10},
         [this](rtc_msgs::msg::RobotTarget::SharedPtr) { ++arm_targets_seen_; });
+
+    // ~/step client. Same executor as the server, so CallStep must pump it
+    // instead of blocking on the future.
+    step_client_node_ = std::make_shared<rclcpp::Node>("step_client");
+    step_client_ = step_client_node_->create_client<std_srvs::srv::Trigger>("/bt_coordinator/step");
+    exec_.add_node(step_client_node_);
   }
 
   void TearDown() override {
+    exec_.remove_node(step_client_node_->get_node_base_interface());
     exec_.remove_node(node_->get_node_base_interface());
+    step_client_.reset();
+    step_client_node_.reset();
     injector_.reset();
     node_.reset();
     std::error_code ec;
@@ -118,16 +137,49 @@ class RewireGateTest : public ::testing::Test {
     }
   }
 
+  /// Call ~/step and return the response, or nullptr if it never resolves.
+  /// The service and the client share exec_, so pump it while polling — a
+  /// blocking wait here would deadlock exactly the way SwitchController's
+  /// docs warn about.
+  std_srvs::srv::Trigger::Response::SharedPtr CallStep(std::chrono::milliseconds timeout = 2000ms) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!step_client_->service_is_ready()) {
+      if (std::chrono::steady_clock::now() >= deadline)
+        return nullptr;
+      exec_.spin_some();
+      std::this_thread::sleep_for(1ms);
+    }
+    auto future = step_client_->async_send_request(std::make_shared<Trigger::Request>()).share();
+    while (std::chrono::steady_clock::now() < deadline) {
+      exec_.spin_some();
+      if (future.wait_for(0s) == std::future_status::ready)
+        return future.get();
+      std::this_thread::sleep_for(1ms);
+    }
+    return nullptr;
+  }
+
   void InjectActiveController(const std::string& name) {
     BridgeStateInjector(injector_->Bridge()).ActiveController(name);
   }
+
+  using Trigger = std_srvs::srv::Trigger;
 
   rclcpp::executors::SingleThreadedExecutor exec_;
   std::shared_ptr<BtCoordinatorNode> node_;
   std::unique_ptr<CoordinatorTickInjector> injector_;
   rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_sub_;
+  rclcpp::Node::SharedPtr step_client_node_;
+  rclcpp::Client<Trigger>::SharedPtr step_client_;
   std::filesystem::path tree_path_;
   int arm_targets_seen_ = 0;
+};
+
+/// ~/step is the tick path's twin. step_mode cancels the tick timer in
+/// on_activate, so anything the tree does here came through the service.
+class StepGateTest : public RewireGateTest {
+ protected:
+  [[nodiscard]] bool StepMode() const override { return true; }
 };
 
 // ── Acceptance 1, first half: no crash, no progress before the rewire ───────
@@ -175,6 +227,39 @@ TEST_F(RewireGateTest, WiredLatchSurvivesControllerSwitch) {
   EXPECT_TRUE(injector_->Bridge()->IsControllerWired());
   InjectActiveController("");
   EXPECT_TRUE(injector_->Bridge()->IsControllerWired());
+}
+
+// ── The gate covers the ~/step path too, not just the timer ────────────────
+
+TEST_F(StepGateTest, StepRefusesToTickBeforeRewire) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  ASSERT_FALSE(injector_->Bridge()->IsControllerWired());
+
+  auto response = CallStep();
+  ASSERT_NE(response, nullptr) << "~/step never answered";
+
+  // Pre-fix this stepped the tree with a null target publisher: a SIGSEGV
+  // before PublishArmTarget's null guard, and a silently dropped one-shot
+  // publish after it — the arm never moves and nothing reports why.
+  EXPECT_FALSE(response->success);
+  EXPECT_EQ(response->message, "No active controller wired yet");
+  EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::IDLE);
+  EXPECT_EQ(arm_targets_seen_, 0);
+}
+
+TEST_F(StepGateTest, StepTicksOnceWired) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);
+  ASSERT_TRUE(injector_->Bridge()->IsControllerWired());
+
+  auto response = CallStep();
+  ASSERT_NE(response, nullptr) << "~/step never answered";
+
+  // The timer is cancelled in step_mode, so this tick — and the arm target it
+  // published — can only have come from the service.
+  EXPECT_TRUE(response->success);
+  EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::RUNNING);
+  EXPECT_GT(arm_targets_seen_, 0);
 }
 
 }  // namespace

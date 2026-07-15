@@ -70,6 +70,18 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   void LoadTree();
   void TickCallback();
 
+  /// Preconditions every tick must satisfy, shared by both tick paths: the
+  /// timer (TickCallback) and the ~/step service (StepCallback). Ticking a
+  /// tree that fails any of these is what issue #158 was — a gate on one path
+  /// only leaves the other reachable.
+  ///
+  /// `paused_` is deliberately NOT checked here: it gates *auto*-ticking, so a
+  /// manual ~/step is still expected to work while paused.
+  ///
+  /// On false, `reason` gets a human-readable cause suitable for both a log
+  /// line and a Trigger response message.
+  [[nodiscard]] bool CanTick(std::string& reason) const;
+
   /// Inject bb.* parameters into the tree's root blackboard.
   void InitializeBlackboard();
 
