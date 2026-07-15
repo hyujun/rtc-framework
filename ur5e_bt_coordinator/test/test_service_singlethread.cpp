@@ -40,18 +40,39 @@ namespace {
 /// Drive one executor that owns every node and ticks `tree` from a wall timer
 /// (main.cpp structure). Ticking is gated on `ready` so a test can wait for a
 /// latched active-controller message to land before the first tick. Returns the
-/// terminal status, or RUNNING if the wall-clock budget expires first (the
-/// deadlock signature). No node is spun on any other thread — the lone `guard`
-/// thread only trips the executor's thread-safe cancel() on timeout.
+/// terminal status, or RUNNING if a budget expires first (the deadlock
+/// signature). No node is spun on any other thread — the lone `guard` thread
+/// only trips the executor's thread-safe cancel() on timeout.
+///
+/// TWO clocks, because the wait before the first tick and the wait for the tree
+/// to finish are different phenomena and only the second one is what this file
+/// regression-tests (issue #160):
+///
+///   - `discovery_budget` runs from spin() until `ready` first holds. That span
+///     is pure DDS: the latched /rtc_cm/active_controller_name has to be
+///     discovered and delivered, and the bridge has to rewire on it. It stretches
+///     under participant churn and says nothing about deadlock, so it gets a
+///     budget generous enough to never be the thing that fails.
+///   - `deadlock_budget` runs from that moment on, and keeps the old 8s meaning:
+///     the tree is being ticked and must reach a terminal status. A blocking
+///     service wait shows up here, and only here.
+///
+/// Sharing one 8s wall clock across both is what made this flake: discovery ate
+/// the budget, the guard fired before the tree had ticked its way to an answer,
+/// and the result was indistinguishable from a deadlock. Each overrun now
+/// reports its own message so a failure says which clock ran out.
 BT::NodeStatus SpinTickToCompletion(
     const rclcpp::Node::SharedPtr& ticker, rclcpp::executors::SingleThreadedExecutor& exec,
     BT::Tree& tree, const std::function<bool()>& ready = [] { return true; },
-    std::chrono::milliseconds budget = std::chrono::seconds(8)) {
+    std::chrono::milliseconds deadlock_budget = std::chrono::seconds(8),
+    std::chrono::milliseconds discovery_budget = std::chrono::seconds(30)) {
   std::atomic<int> status{static_cast<int>(BT::NodeStatus::RUNNING)};
   std::atomic<bool> done{false};
+  std::atomic<bool> ready_seen{false};
   auto timer = ticker->create_wall_timer(std::chrono::milliseconds(20), [&]() {
     if (done.load() || !ready())
       return;
+    ready_seen.store(true);
     const auto s = tree.tickOnce();
     if (s != BT::NodeStatus::RUNNING) {
       status.store(static_cast<int>(s));
@@ -59,10 +80,19 @@ BT::NodeStatus SpinTickToCompletion(
       exec.cancel();
     }
   });
+  std::atomic<bool> deadlock_expired{false};
   std::thread guard([&]() {
-    const auto start = std::chrono::steady_clock::now();
+    // Start on the discovery clock; switch to the deadlock clock the moment the
+    // timer reports `ready` held. Polling at 5ms bounds the handover error.
+    auto deadline = std::chrono::steady_clock::now() + discovery_budget;
+    bool ticking = false;
     while (!done.load()) {
-      if (std::chrono::steady_clock::now() - start > budget) {
+      if (!ticking && ready_seen.load()) {
+        ticking = true;
+        deadline = std::chrono::steady_clock::now() + deadlock_budget;
+      }
+      if (std::chrono::steady_clock::now() > deadline) {
+        deadlock_expired.store(ticking);
         exec.cancel();
         break;
       }
@@ -73,7 +103,20 @@ BT::NodeStatus SpinTickToCompletion(
   done.store(true);
   guard.join();
   timer.reset();
-  return static_cast<BT::NodeStatus>(status.load());
+
+  const auto final_status = static_cast<BT::NodeStatus>(status.load());
+  if (final_status == BT::NodeStatus::RUNNING) {
+    if (deadlock_expired.load()) {
+      ADD_FAILURE() << "deadlock budget (" << deadlock_budget.count()
+                    << "ms) expired: the tree was being ticked but never reached a terminal "
+                       "status — a service wait that only this executor could fulfil";
+    } else {
+      ADD_FAILURE() << "discovery budget (" << discovery_budget.count()
+                    << "ms) expired: `ready` never held, so the tree was never ticked — DDS "
+                       "discovery/rewire, not a deadlock";
+    }
+  }
+  return final_status;
 }
 
 void EnsureRos() {
