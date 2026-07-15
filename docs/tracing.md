@@ -272,8 +272,29 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
 ./repo_scripts/scripts/timeline.sh                  # 최신 logging_data/*/tracing/*/ 자동 사용
 ./repo_scripts/scripts/timeline.sh <trace_dir>      # 명시 입력
 ./repo_scripts/scripts/timeline.sh <trace_dir> out.json
+./repo_scripts/scripts/timeline.sh --max-duration-s 5   # 앞 5초만 변환 (대용량 캡처)
 ./repo_scripts/scripts/timeline.sh --all-threads    # 외부 프로세스 요약 해제
 # '-' 로 시작하는 플래그는 ctf_to_chrome_trace 에 그대로 전달된다 (--help 참조)
+```
+
+### JSON 크기 — Perfetto UI 가 안 열리거나 레인이 비어 보일 때
+
+Chrome-Trace JSON 은 이벤트당 ~100 B 로 부피가 크고, Perfetto UI 는 파일 전체를 브라우저 탭에 올린다. **실측: traced sim 30 초 = 2.9 M events / 295 MB** (kernel event 를 켠 실기 캡처는 이보다 더 커진다 — sched_switch 가 지배적).
+
+metadata (프로세스·스레드 이름) 는 파일 **앞**에, 슬라이스는 **뒤**에 있다. 그래서 뷰어가 큰 파일을 끝까지 못 읽으면 **그룹은 보이는데 레인이 비는** 상태가 되고, 이는 변환기 버그나 캡처 결손과 겉보기가 같다. 변환기는 250 MB 초과 시 이 실패 모드를 경고한다.
+
+해결은 **뷰가 아니라 캡처를 좁히는 것**:
+
+```bash
+# 1순위: 창 잘라 보기 — 모든 lane 유지, 크기·변환시간 선형 감소
+#   실측: 295 MB / 2m6s  →  (--max-duration-s 5)  47 MB / 21s, Cpu lane 12개 그대로
+./repo_scripts/scripts/timeline.sh --max-duration-s 5
+
+# 2순위: 필요한 프로세스만
+./repo_scripts/scripts/timeline.sh --focus-proc integrated_rt
+
+# 3순위: 캡처 자체를 좁힌다 (rtc:* span 만 필요하면 kernel event 끄기)
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true trace_events_kernel:=
 ```
 
 `timeline.sh` 가 babeltrace2 (또는 `python3-bt2` binding) 로 CTF 를 읽어 Chrome trace JSON 으로 변환한다. 출력은 `<trace_dir>/trace.json`.

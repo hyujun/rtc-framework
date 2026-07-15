@@ -739,6 +739,36 @@ def test_capture_gap_warnings_name_the_capture_side_cause():
     assert "capture census" in lines[0]
 
 
+def test_max_duration_truncates_at_window_edge():
+    # A multi-minute kernel capture exceeds what the viewer will load; a
+    # window must keep every lane and drop only the tail.
+    events = []
+    for i in range(6):  # one span per second, t = 0..5s
+        events += _rtc_span_pid(
+            i * 1_000_000_000,
+            i * 1_000_000_000 + 1_000_000,
+            vpid=100,
+            vtid=100,
+            procname="rt",
+            name=f"tick{i}",
+        )
+    out = build_trace(iter(events), max_duration_s=2.5)
+    kept = [ev["name"] for ev in out["traceEvents"] if ev.get("ph") == "B"]
+    assert kept == ["tick0", "tick1", "tick2"]
+    # Census covers the converted window only, and excludes the event that
+    # tripped the cutoff (it was not converted).
+    assert out["_census"]["rtc:span_begin"] == 3
+
+
+def test_max_duration_none_converts_everything():
+    events = _rtc_span_pid(0, 1_000_000, vpid=100, vtid=100, procname="rt", name="a")
+    events += _rtc_span_pid(
+        60_000_000_000, 60_001_000_000, vpid=100, vtid=100, procname="rt", name="b"
+    )
+    out = build_trace(iter(events))
+    assert [ev["name"] for ev in out["traceEvents"] if ev.get("ph") == "B"] == ["a", "b"]
+
+
 def test_size_risk_warns_only_above_threshold():
     # A 30s traced sim run measured ~2.9M events / ~295MB — big enough that a
     # viewer giving up mid-file leaves the (metadata-declared) groups empty.

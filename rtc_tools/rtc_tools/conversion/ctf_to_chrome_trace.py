@@ -369,6 +369,7 @@ def build_trace(
     progress_every: int = 0,
     focus_procs: frozenset[str] | None = None,
     all_threads: bool = False,
+    max_duration_s: float | None = None,
 ) -> dict:
     """Walk the event stream once, emit Chrome Trace events.
 
@@ -396,6 +397,12 @@ def build_trace(
             spans, where the automatic focus classification has no signal.
         all_threads: if True, disable the external-process summarization —
             every UST-emitting process keeps per-thread rows.
+        max_duration_s: stop converting this many seconds after the first
+            event. Chrome-Trace JSON is a bulky format and the viewer holds
+            the whole file in a browser tab, so a long kernel-event capture
+            can exceed what it will load; a window keeps every lane intact
+            and shrinks the output linearly. Slices still open at the cutoff
+            are left unclosed, exactly as at a natural end-of-trace.
 
     Focus tiering: processes that emitted at least one ``rtc:span_begin``
     (i.e. carry workspace ``RTC_TRACE_SCOPE`` instrumentation) keep full
@@ -442,6 +449,9 @@ def build_trace(
     # Open callbacks by (tid, callback) so we close the right one.
     callbacks_open: dict[tuple[int, int], int] = {}  # value = start_ts_us
 
+    max_duration_us = None if max_duration_s is None else int(max_duration_s * 1_000_000)
+    truncated_at_us: int | None = None
+
     n_events = 0
     for ts_ns, name, payload, cpu_id in events_iter:
         n_events += 1
@@ -454,6 +464,15 @@ def build_trace(
         if base_ns is None:
             base_ns = ts_ns
         ts_us = (ts_ns - base_ns) // 1_000
+
+        if max_duration_us is not None and ts_us > max_duration_us:
+            # Stop at the window edge. Breaking (rather than skipping) also
+            # cuts conversion time, which is what makes a window usable as a
+            # first look at a multi-minute capture.
+            truncated_at_us = ts_us
+            n_events -= 1  # this event was counted but not converted
+            census[name] -= 1
+            break
 
         # Belt-and-suspenders int coercion: even with the _to_py int-field
         # path, the CLI fallback parser returns strings, so harmonise here
@@ -844,6 +863,13 @@ def build_trace(
             f"into async lanes: {summarized} (per-thread rows: --all-threads)",
             file=sys.stderr,
         )
+    if truncated_at_us is not None:
+        print(
+            f"[ctf_to_chrome] --max-duration-s: stopped at "
+            f"{truncated_at_us / 1_000_000:.3f}s; later events were NOT converted "
+            f"(census below covers the window only).",
+            file=sys.stderr,
+        )
 
     return {
         "traceEvents": metadata + out,
@@ -995,9 +1021,23 @@ def main(argv: list[str] | None = None) -> int:
             "to classify workspace processes automatically."
         ),
     )
+    p.add_argument(
+        "--max-duration-s",
+        type=float,
+        default=None,
+        help=(
+            "Convert only the first N seconds of the trace. Chrome-Trace "
+            "JSON is bulky and the viewer holds the whole file in a browser "
+            "tab; a window keeps every lane intact and shrinks the output "
+            "(and the conversion time) linearly."
+        ),
+    )
     args = p.parse_args(argv)
     keep_events = frozenset(item.strip() for item in args.keep_events.split(",") if item.strip())
     focus_procs = frozenset(item.strip() for item in args.focus_proc.split(",") if item.strip())
+    if args.max_duration_s is not None and args.max_duration_s <= 0:
+        print("[ctf_to_chrome] --max-duration-s must be > 0", file=sys.stderr)
+        return 2
 
     if args.input is not None and not args.input.is_dir():
         print(f"[ctf_to_chrome] input not a directory: {args.input}", file=sys.stderr)
@@ -1016,6 +1056,7 @@ def main(argv: list[str] | None = None) -> int:
         progress_every=100_000,
         focus_procs=focus_procs,
         all_threads=args.all_threads,
+        max_duration_s=args.max_duration_s,
     )
 
     # Strip the in-process sentinel before JSON dump (Chrome Trace

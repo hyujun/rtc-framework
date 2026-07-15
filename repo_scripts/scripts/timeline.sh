@@ -12,9 +12,12 @@
 #   timeline.sh                                # default: latest ~/.ros/tracing/* trace
 #   timeline.sh <trace_dir>                    # explicit CTF trace directory
 #   timeline.sh <trace_dir> [output.json]
-#   timeline.sh [--all-threads] [--focus-proc <substr,...>] [--keep-all] ...
+#   timeline.sh [--max-duration-s N] [--all-threads]
+#               [--focus-proc <substr,...>] [--keep-all] ...
 #     Flags starting with '-' are forwarded verbatim to
 #     rtc_tools.conversion.ctf_to_chrome_trace (see its --help).
+#     Large capture that the Perfetto UI will not load? Convert a window:
+#       timeline.sh --max-duration-s 5
 #
 # After conversion, drag-drop the JSON onto https://ui.perfetto.dev.
 #
@@ -57,8 +60,12 @@ while [[ $# -gt 0 ]]; do
       sed -n '2,23p' "$0"
       exit 0
       ;;
-    --focus-proc|--keep-events)
-      # Value-taking converter flags: forward the flag and its value.
+    --focus-proc|--keep-events|--max-duration-s)
+      # Value-taking converter flags: forward the flag and its value. A flag
+      # missing from this list would have its value parsed as the trace-dir
+      # positional instead, so keep it in sync with ctf_to_chrome_trace's
+      # value-taking arguments (or use the --flag=value form, which needs
+      # no entry here).
       if [[ $# -lt 2 ]]; then
         echo "[timeline] $1 requires a value" >&2
         exit 2
