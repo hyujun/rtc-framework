@@ -125,9 +125,10 @@ code-review trigger 비용 대비 현재 소비자가 한 패키지뿐.
 
 ## Next action
 
-1. 사용자 Sprint Contract 컨펌 대기 (§6.5 — 다파일 task)
-2. §4 static-check 옵션 결정 수령
-3. helper header → 세 backend 교체 → 테스트 → ws-root 빌드/테스트 (§9.1 cwd, §9.2 venv 준수)
+**완료 (2026-07-15).** Sprint Contract 컨펌 + §4 권고안(glob 확장) 승인 후 구현·검증 종결.
+
+- 구현 commit: `b6f770b` (helper + 세 backend + tests + CMake), `8f1faf6` (rt-path glob 확장 + CLAUDE.md §3 동기화)
+- Sprint 기준 3/3 충족: (1) grep 잔존 hit 는 비-RT `Configure` 경로만 (`cmd_msg_` presize, wrench param/sub 생성) (2) 신규 unit test 8 케이스 + mujoco e2e 1 케이스 green (3) `colcon test --packages-select integrated_bringup` 230 tests 0 failures
 
 ## Decisions and rationale
 
@@ -141,26 +142,42 @@ code-review trigger 비용 대비 현재 소비자가 한 패키지뿐.
 
 ## Evidence
 
+착수 전 검증:
+
 - `grep -rn "state_reorder_" integrated_bringup/` — 세 backend 3쌍(헤더 멤버 + cpp 사용) 외 없음
 - `grep -rn "constexpr.*kMaxDeviceChannels"` → `rtc_base/types/types.hpp:44` (= 64)
 - `grep -rn "reorder" rtc_controller_manager/src/` → hit 0 (BuildDeviceReorderMap 부재 확인)
 - `udp_hand_native_backend.cpp` `OnMotorState`/`OnSensorState`, `mujoco_native_backend.cpp`
   `OnWrench` 직접 열람 — fixed-size + SeqLock/throttled-WARN 만, 추가 위반 없음
 
+구현 후 검증 (ws root, setup_env source — §9.1/§9.2 준수):
+
+- `colcon build --packages-select integrated_bringup` — 성공
+- `colcon test --packages-select integrated_bringup` — **230 tests, 0 errors, 0 failures**
+- allocation-guard test: `Build`+`Write` 호출 구간 operator-new delta **0** 실측
+- `num_channels` clamp 확정 근거: `rt_controller_node_rt_loop.cpp:90-94` 가
+  `copy_n(cache.positions.data(), num_channels, ...)` 로 unclamped 사용 — 64 초과
+  wire 값이 cache 를 벗어나면 OOB. clamp 는 방어이자 이슈 완료기준 3 충족.
+
 ## Failed approaches
 
-N/A (착수 전)
+- **allocation-guard test 첫 작성본의 기대값 스왑** — 역순 named msg 에서
+  `positions[0]` 은 j0 값(0.0)이어야 하는데 j5 값(5.0)을 기대. helper 는 정상,
+  테스트 버그. identity copy 와 구분되는 값 배치는 유지한 채 기대값만 정정.
+- **e2e 테스트에서 `auto pub = LifecycleNode::create_publisher(...)`** —
+  `LifecyclePublisher` 가 반환되어 `on_activate()` 전 publish 전량 drop
+  ("state message never delivered"). `pub->on_activate()` 추가로 해결.
+  (기존 fixture 의 wrench pub 는 base-pointer 타입 선언이라 gate 우회로 동작 —
+  auto-memory `feedback_lifecycle_publisher_gate_bypass` 의 두 경로와 일치.)
 
 ## Constraints / pending human decisions
 
-- Sprint Contract 컨펌 (착수 게이트)
-- §4 rt-path.md glob 확장 여부 (Warning)
-- `num_channels` clamp 도입 여부 — 소비자가 이미 자체 가드하면 no-op, 구현 시 grep 후 확정
+없음 — Sprint Contract·§4 glob 확장 모두 사용자 승인 완료 (2026-07-15).
 
 ## Workspace
 
-- branch: `main` @ 740e8f4, 미커밋 변경 없음 (untracked `docs/WBC_CONTROLLER_IMPLEMENTATION.md` 는 본 task 무관)
-- 구현은 feature branch 에서 진행 권장 (repo 관례: plan pin → 구현 → test → docs close-out 커밋 분리)
+- 구현 branch: `fix/issue-156-rt-state-callback-alloc` (`a5916fa` plan pin →
+  `b6f770b` fix → `8f1faf6` harness) → `main` merge 후 branch prune
 
 ## Pointers
 
