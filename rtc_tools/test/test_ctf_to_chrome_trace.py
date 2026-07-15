@@ -21,9 +21,12 @@ from rtc_tools.conversion.ctf_to_chrome_trace import (
     IRQ_PID,
     STRUCTURED_EVENTS,
     THREAD_PID,
+    LossStats,
     _parse_bt2_cli,
     _report_capture_gaps,
+    _report_event_loss,
     _report_size_risk,
+    _stream_label,
     build_trace,
 )
 
@@ -737,6 +740,56 @@ def test_capture_gap_warnings_name_the_capture_side_cause():
     )
     assert len(lines) == 1
     assert "capture census" in lines[0]
+
+
+def test_stream_label_maps_lttng_per_cpu_stream_to_its_cpu():
+    # LTTng writes one stream file per CPU, so the trailing index IS the CPU
+    # — that is what ties a loss report to a Cpu swimlane.
+    assert _stream_label("/x/y/tracing/trace/kernel/kchan_3") == "Cpu 003"
+    assert _stream_label("chan_11") == "Cpu 011"
+    # Anything off-convention keeps its basename rather than guessing a CPU.
+    assert _stream_label("/x/y/ust/uid/1000/64-bit/metadata") == "metadata"
+
+
+def test_event_loss_warning_names_count_share_and_worst_cpus():
+    # Ring-buffer loss is invisible in a census of what arrived: the events
+    # that survive look healthy. This is the only warning that can say the
+    # trace is lying.
+    loss = LossStats()
+    loss.add_events(900, "Cpu 003")
+    loss.add_events(100, "Cpu 009")
+    lines = "\n".join(_report_event_loss(loss, {"sched_switch": 1_000, "_with_vpid": 1_000}))
+    assert "DISCARDED 1,000 events" in lines
+    # Share is of everything that *should* have been there (kept + lost), and
+    # must ignore the census's internal "_"-prefixed bookkeeping keys.
+    assert "50.0% of 2,000" in lines
+    assert "Cpu 003=900" in lines
+    assert "Cpu 009=100" in lines
+    # The effect on the Cpu lanes is the whole point of reporting this.
+    assert "sched_switch" in lines
+    assert "trace_events_kernel" in lines
+
+
+def test_no_event_loss_stays_silent():
+    # A clean trace must produce no loss line at all — a warning that cries
+    # wolf on healthy captures gets ignored on the one that matters.
+    assert _report_event_loss(LossStats(), {"sched_switch": 100}) == []
+
+
+def test_discarded_packets_reported_for_overwrite_mode_channels():
+    loss = LossStats()
+    loss.packets = 7
+    lines = "\n".join(_report_event_loss(loss, {"sched_switch": 100}))
+    assert "7 discarded packets" in lines
+
+
+def test_cli_parser_path_declares_loss_undetectable_rather_than_clean():
+    # The text fallback cannot recover the ring-buffer counters. Silence
+    # there means "not checked", and must not render as a clean bill of
+    # health — so an unsupported LossStats emits nothing even with a count.
+    loss = LossStats(supported=False)
+    loss.add_events(500, "Cpu 001")
+    assert _report_event_loss(loss, {"sched_switch": 100}) == []
 
 
 def test_max_duration_truncates_at_window_edge():

@@ -41,13 +41,34 @@
 - **현재 유력 가설: JSON 크기.** 제어 PC 출력 = **4,445,114 events / 485 MB**. metadata 는 파일 앞, 슬라이스는 뒤 → 뷰어가 끝까지 못 읽으면 정확히 그 증상. (제어 PC 는 sched_switch 가 이 워크스테이션 sim 의 3.8배 — UR 드라이버 스택 때문에 실기 캡처가 훨씬 크다.)
 - **사용자는 구버전 실행 중이었다** — census(`fa0cb8a`)는 찍혔으나 크기 경고(`1e2268b`)는 안 찍힘. **`git pull` 필요.**
 
+## 사용자 보고 증상 2 (2026-07-15): udp_hand_driver thread 가 Cpu lane 에 없다
+
+"udp_hand_driver 의 thread 가 연산 중인데 Cpu 에 color bar 가 없다."
+
+### 확인된 사실 (이 워크스테이션 실측)
+
+- **변환기는 프로세스를 Cpu lane 에서 가릴 수 없다.** Cpu lane 은 `sched_switch` 만으로 만들어지고, focus/summary tiering·async 병합은 전부 `pid != CPU_PID` 조건이라 Cpu lane 을 안 건드린다. 실측: Cpu lane 에 **154개 distinct comm** (`rustdesk`·`Xorg`·`chrome`·`kworker` 포함 — 워크스페이스 밖 프로세스도 예외 없이 올라옴), span 을 emit 하는 8 thread **전원 Cpu bar 보유, 누락 0건**.
+- **sim fixture 로는 재현 불가 — 대상이 애초에 없다.** `sim_ur5e_p1a.launch.py` 는 hand config 를 `integrated_rt_controller` 파라미터로 넘길 뿐 별도 프로세스를 안 띄운다. `udp_hand_node` 가 독립 프로세스인 건 **`robot_ur5e_p1a.launch.py:521` (실기 launch) 뿐** — `_pin_external_driver` 로 taskset 핀되는 external driver. ⚠ 지난 세션의 "sim 재현 실패 = 변환기 정상" 은 근거가 못 된다 (재현 대상이 캡처에 부재).
+- udp_hand_node 는 `RTC_TRACE_SCOPE` 보유 (`hand_joint_command_cb`, `hand_detector_*`) → 빌드가 `--tracing` 이면 focus tier.
+- CommLoop 은 `clock_nanosleep` 500 Hz 주기 → 매 cycle deschedule → **정상이라면 Cpu bar 가 나와야 한다.**
+
+### 남은 가설 (순서)
+
+1. **`--max-duration-s 5` 가 startup transient 를 자른다** — 앞 5초는 lifecycle configure→activate 구간이라 CommLoop thread 가 아직 없을 수 있다 (`Start()` 는 `on_activate`). `--since` 부재와 직결 (아래 3).
+2. **커널 ring buffer event loss** — 제어 PC 는 sched_switch 296만. → **감지 추가됨** (아래 Evidence §유실 감지, Next action 1 로 판정 가능).
+3. **duty cycle 이 작아 안 보임** — 500 Hz × 수십 µs 는 5 s 뷰에서 픽셀 이하. 줌인 필요.
+
 ## Next action
 
-1. **사용자가 제어 PC 에서**: `git pull` → `./repo_scripts/scripts/timeline.sh --max-duration-s 5` → Perfetto 로드. 485 MB → ~55 MB 예상.
-2. **결과 분기**:
-   - 레인이 보이면 → 크기 가설 확정. 이 artifact 를 `completed/` 로 이동하고, `docs/tracing.md` 의 권장 워크플로에 `--max-duration-s` 를 기본 첫 시도로 승격할지 검토.
-   - **여전히 비면 → 크기 가설도 반증.** 그땐 제어 PC 의 `trace.json` 자체를 받아 분석해야 한다 (구조 검사 스크립트는 아래 Evidence 의 python 스니펫 재사용). 이 경우 변환기 버그일 가능성이 처음으로 열린다.
-3. (사용자 요청 시) `--since` / 구간 지정 — 현재 `--max-duration-s` 는 **앞부분만** 자른다. 관심 구간이 뒤쪽(특정 동작 시점)이면 못 집는다. 미구현, 사용자 판단 대기.
+1. **사용자가 제어 PC 에서**: `git pull` → `./repo_scripts/scripts/timeline.sh --max-duration-s 5`. 이제 유실이 있으면 stderr 에 `DISCARDED N events (x%) / worst streams: Cpu 003=...` 가 찍힌다 → **가설 2 즉시 판정**. 485 MB → ~55 MB 도 함께 확인.
+2. **캡처 vs 변환기 분리** (변환기를 건너뛰고 원본 CTF 에 직접 질의):
+   ```bash
+   babeltrace2 <trace_dir> | grep sched_switch \
+     | grep -oP 'next_comm = "\K[^"]+' | sort | uniq -c | sort -rn | grep -iE 'hand|udp'
+   ```
+   - **비면 캡처 문제** (그 창에서 thread 부재 / 이름 상이) → 변환기 무죄 확정.
+   - **나오는데 `trace.json` Cpu lane 에 없으면 → 처음으로 변환기 버그 가능성.** `trace.json` 을 받아야 한다.
+3. (사용자 요청 시) `--since` / 구간 지정 — 현재 `--max-duration-s` 는 **앞부분만** 자른다. 관심 구간이 뒤쪽이면 못 집는다. **가설 1 의 직접 해소책.** 미구현, 사용자 판단 대기 (2026-07-15 시점 "lost-event 감지만 진행" 으로 보류됨).
 
 ## Decisions and rationale
 
@@ -67,10 +88,20 @@
 - 변환 (전체): 295 MB / 2,919,585 events / 2m6s. census `rtc:span_begin=972,065 sched_switch=781,897` — 경고 0건.
   - `integrated_rt_c` (pid 534911): 1,313,452 slices / 6 threads, `rt_control_tick` ×20,412
   - `mujoco_simulato` (534910): 778,572 / 2 threads · `Cpus`: 796,303 / **12 lanes** · `Cpu/IRQ`: 31,226
-  - Cpu 라벨 실측: `integrated_rt_c/nrt_callback-534998`, `mujoco_simulato/sim_thread-534967`; main thread 는 bare (`integrated_rt_c-534997`) — 의도대로
+  - Cpu 라벨 실측: `integrated_rt_c/nrt_callback-534998`, `mujoco_simulato/sim_thread-534967`
+  - ⚠ **정정 (2026-07-15)**: 위 줄은 원래 "main thread 는 bare (`integrated_rt_c-534997`) — 의도대로" 였으나 **오독이다.** 그 프로세스의 pid 는 **534911** 이므로 534997 은 main thread 가 아니라 *comm 이 프로세스명 그대로인 (= 이름이 안 붙은) worker* 다 (span 82,920개 = 최다). post-pass 3 의 `base.startswith(f"{proc}-")` 휴리스틱이 "comm == 프로세스명" 인 thread 를 전부 main 으로 오인한다. 표시상 버그 — 미수정, 사용자가 찾는 이름으로 Cpu bar 가 안 뜨는 원인이 될 수 있음
 - 변환 (`--max-duration-s 5`): **47 MB / 466,212 events / 21s**, Cpu lane **12개 그대로**, 프로세스 그룹 4개 그대로, `rt_control_tick` ×3,071 → 크기·시간 6배 감소, 정보 손실은 시간축뿐.
 - JSON 부피 분해 (sim 트레이스): rtc_span 58.3 % (158 MB) / cpu_lane 28.8 % (78 MB) / callback 11.8 %. **제어 PC 는 sched_switch 지배** (296만 vs 78만).
-- 테스트: `colcon test --packages-select rtc_tools` (ws root, env source 후) → **2535 tests, 0 failures, 24 skipped**. converter 단위 테스트 41개.
+- 테스트: `colcon test --packages-select rtc_tools` (ws root, env source 후) → **369 tests, 0 failures** (9개 test 파일, `build/rtc_tools/pytest.xml` = 369, `pytest --collect-only` = 369 로 교차 확인). converter 단위 테스트 41 → **46개**.
+  - ⚠ **정정 (2026-07-15)**: 원래 "2535 tests, 0 failures, 24 skipped" 으로 적혀 있었으나 **재현 불가 = 틀린 수치**. rtc_tools 실제 전량은 369. (silent skip 아님을 xunit + collect-only 로 확인함.)
+
+### 유실 감지 추가 (2026-07-15, 증상 2 가설 2 대응)
+
+- `LossStats` + bt2 `_DiscardedEventsMessageConst`/`_DiscardedPacketsMessageConst` 소비 → `_report_event_loss()`. 기존 `_gen()` 의 `isinstance(msg, bt2._EventMessageConst)` 필터가 **유실 메시지를 조용히 버리고 있었다** (census 는 "들어온 것"만 세므로 유실은 원리적으로 안 보임).
+- **검증용 lossy fixture 를 실제로 만들어서 확인**: `lttng enable-channel --kernel --subbuf-size=4096 --num-subbuf=2` + `--all` 커널 이벤트 + `ls -R /usr` 부하 → lttng 자체 경고 `3505417 events were discarded` 와 변환기 출력이 **정확히 일치** (3,505,417 / 56.8%), CPU 별 귀속도 동작 (`Cpu 003=962,814`).
+- clean fixture 회귀 없음: 경고 0건, 출력 466,212 events / 233091B/233089E 로 변경 전과 **바이트 동일**.
+- 스트림 이름 → CPU: 실기 `kernel/kchan_3`, 합성 `kernel/chan_3` 둘 다 `_(\d+)$` 로 매칭 (`_stream_label`).
+- **CLI fallback 은 유실 검사 불가** (`LossStats.supported=False`) — 그 경로의 침묵은 "유실 없음"이 아니라 "확인 안 됨". 경고를 안 내보내도록 명시 처리 + 테스트.
 
 **재사용 가능한 fixture**: `logging_data/260715_1759/` (561 MB) 를 남겨뒀다 — 변환기 수정 시 재캡처 없이 실 트레이스로 검증 가능. ⚠ `max_log_sessions=10` 로테이션 대상이므로 sim 을 10회 더 돌리면 사라진다. 보존하려면 옮길 것.
 

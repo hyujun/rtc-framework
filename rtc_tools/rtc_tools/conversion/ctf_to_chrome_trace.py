@@ -140,6 +140,60 @@ METADATA_EVENTS = frozenset({"ros2:rclcpp_callback_register"})
 CPU_LANE_EVENTS = frozenset({"sched_switch", "irq_handler_entry", "irq_handler_exit"})
 
 
+class LossStats:
+    """Tracer-side event loss, counted from the CTF ring-buffer bookkeeping.
+
+    LTTng's per-CPU ring buffers run in discard mode by default: when a
+    buffer fills faster than lttng-consumerd drains it, the tracer throws
+    events away and records how many in the next packet header. babeltrace2
+    turns that counter into discarded-events messages, which is the ONLY
+    signal that a trace is incomplete — the surviving events look perfectly
+    healthy on their own, so a census of what arrived cannot see this.
+
+    Loss is fatal to the Cpu lanes specifically: they are reconstructed by
+    replaying sched_switch, so a dropped switch silently swallows every bar
+    until the next one on that CPU. The thread's own spans (a different
+    channel, and far lower rate) keep rendering — which reads as "the thread
+    is clearly running, but its CPU shows nothing".
+
+    ``supported`` is False on the babeltrace2 CLI fallback path, where the
+    counters are not recoverable from the text output — absence of a warning
+    there means "not checked", not "no loss".
+    """
+
+    __slots__ = ("events", "packets", "by_stream", "supported")
+
+    def __init__(self, *, supported: bool = True) -> None:
+        self.events = 0
+        self.packets = 0
+        self.by_stream: dict[str, int] = defaultdict(int)
+        self.supported = supported
+
+    def add_events(self, count: int | None, stream: str) -> None:
+        # count is None when the stream class carries no counter snapshot;
+        # the message still proves loss happened, so record the occurrence
+        # without inventing a magnitude.
+        self.events += count or 0
+        self.by_stream[stream] += count or 0
+
+    @property
+    def any_loss(self) -> bool:
+        return bool(self.events or self.packets)
+
+
+def _stream_label(name: str) -> str:
+    """Condense a CTF stream path to the CPU it belongs to.
+
+    LTTng writes one stream file per CPU (``.../kernel/kchan_3``), so the
+    trailing index IS the CPU number — which is what maps the loss onto a
+    Cpu swimlane. Fall back to the bare basename for any layout that does
+    not follow the convention rather than guessing a CPU.
+    """
+    base = name.rsplit("/", 1)[-1]
+    m = re.search(r"_(\d+)$", base)
+    return f"Cpu {int(m.group(1)):03d}" if m else base
+
+
 def _truncate(label: str, limit: int = 80) -> str:
     return label if len(label) <= limit else label[: limit - 3] + "..."
 
@@ -149,11 +203,21 @@ def _truncate(label: str, limit: int = 80) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _try_parse_bt2(trace_dir: Path, needed_names: frozenset[str] | None = None):
+def _try_parse_bt2(
+    trace_dir: Path,
+    needed_names: frozenset[str] | None = None,
+    loss: LossStats | None = None,
+):
     """Yield ``(time_ns, event_name, payload_dict, cpu_id_or_None)`` via bt2 binding.
 
     Returns ``None`` when ``bt2`` cannot be imported, signalling the caller
     to fall back to the CLI parser.
+
+    ``loss``, when given, accumulates ring-buffer discards seen during the
+    walk (see :class:`LossStats`). It is filled lazily as the generator is
+    consumed, so callers must read it only *after* the walk — and a caller
+    that stops early (``--max-duration-s``) gets loss for the window it
+    actually converted, matching the census.
 
     ``needed_names`` is an optional whitelist of event names whose payload
     the consumer will actually read. For any event *not* in the set the
@@ -168,6 +232,36 @@ def _try_parse_bt2(trace_dir: Path, needed_names: frozenset[str] | None = None):
         import bt2  # type: ignore[import-not-found]
     except ImportError:
         return None
+
+    # Discarded-events and discarded-packets messages are distinct bt2 types
+    # (neither is an _EventMessageConst), so the event loop's isinstance
+    # filter drops them unless they are matched first. Discarded *packets*
+    # only occur in overwrite/flight-recorder mode; counted for completeness
+    # so an overwrite capture is not reported as loss-free.
+    _DISCARD_MSG_TYPES = tuple(
+        t
+        for t in (
+            getattr(bt2, "_DiscardedEventsMessageConst", None),
+            getattr(bt2, "_DiscardedPacketsMessageConst", None),
+        )
+        if t is not None
+    )
+
+    def _record_discard(stats: LossStats, msg) -> None:
+        # Every accessor here is optional in the bt2 data model: .count is
+        # absent unless the stream class kept a counter snapshot, and .stream
+        # .name is absent for unnamed streams. Loss reporting must never be
+        # the thing that kills a conversion, so each is guarded.
+        count = None
+        with contextlib.suppress(Exception):
+            count = msg.count
+        stream = "?"
+        with contextlib.suppress(Exception):
+            stream = msg.stream.name or "?"
+        if type(msg).__name__ == "_DiscardedPacketsMessageConst":
+            stats.packets += count or 0
+            return
+        stats.add_events(count, _stream_label(stream))
 
     # Recognise bt2 integer field types by class name so we can coerce
     # them to int even on jazzy/8.x where the .value attribute is absent
@@ -213,6 +307,12 @@ def _try_parse_bt2(trace_dir: Path, needed_names: frozenset[str] | None = None):
         # bt2.TraceCollectionMessageIterator() with a path argument resolves
         # to ctf.fs automatically.
         for msg in bt2.TraceCollectionMessageIterator(str(trace_dir)):
+            if isinstance(msg, _DISCARD_MSG_TYPES):
+                # Ring-buffer loss. Counted here rather than inferred later:
+                # this is the last point where the bookkeeping exists at all.
+                if loss is not None:
+                    _record_discard(loss, msg)
+                continue
             if not isinstance(msg, bt2._EventMessageConst):  # pylint: disable=protected-access
                 continue
             ev = msg.event
@@ -321,6 +421,7 @@ def iter_events(
     trace_dir: Path | None,
     stdin: bool,
     needed_names: frozenset[str] | None = None,
+    loss: LossStats | None = None,
 ):
     """Dispatch to bt2 binding if available, else babeltrace2 CLI.
 
@@ -332,14 +433,21 @@ def iter_events(
     materialisation to events the consumer reads; ``None`` parses
     everything. Both parser paths honour it identically.
     """
+    # Only the bt2 binding exposes the ring-buffer discard counters; both
+    # text paths must declare themselves unchecked so a silent report is
+    # never read as a clean trace.
     if stdin:
         print("[ctf_to_chrome] parser: babeltrace2 CLI text (stdin)", file=sys.stderr)
+        if loss is not None:
+            loss.supported = False
         return _parse_bt2_cli(sys.stdin, needed_names)
     assert trace_dir is not None
-    gen = _try_parse_bt2(trace_dir, needed_names)
+    gen = _try_parse_bt2(trace_dir, needed_names, loss)
     if gen is not None:
         print("[ctf_to_chrome] parser: python3-bt2 binding", file=sys.stderr)
         return gen
+    if loss is not None:
+        loss.supported = False
     # CLI fallback.
     print(
         "[ctf_to_chrome] parser: babeltrace2 CLI (slower; "
@@ -879,6 +987,57 @@ def build_trace(
     }
 
 
+def _report_event_loss(loss: LossStats, census: dict[str, int]) -> list[str]:
+    """Print tracer-side ring-buffer loss, and return the warning lines.
+
+    Distinct from :func:`_report_capture_gaps`, which reports event classes
+    that were never enabled: this reports events that WERE enabled, fired,
+    and then got thrown away because the buffer was full. The two look
+    nothing alike to a user — a gap empties a whole swimlane group, loss
+    punches holes in lanes that otherwise look fine.
+    """
+    lines: list[str] = []
+    if not loss.supported or not loss.any_loss:
+        return lines
+
+    kept = sum(v for k, v in census.items() if not k.startswith("_"))
+    total = kept + loss.events
+    pct = (100.0 * loss.events / total) if total else 0.0
+    lines.append(
+        f"[ctf_to_chrome] WARNING: the tracer DISCARDED {loss.events:,} events "
+        f"({pct:.1f}% of {total:,}) — this trace is incomplete. The LTTng "
+        f"ring buffer filled faster than lttng-consumerd drained it."
+    )
+    if loss.packets:
+        lines.append(
+            f"[ctf_to_chrome]   ...plus {loss.packets:,} discarded packets "
+            f"(overwrite-mode channel: oldest data was overwritten)."
+        )
+    # Loss is per-CPU because the buffers are; naming the worst CPUs points
+    # straight at the lanes whose bars cannot be trusted.
+    worst = sorted(loss.by_stream.items(), key=lambda kv: -kv[1])[:4]
+    if worst:
+        detail = ", ".join(f"{s}={n:,}" for s, n in worst if n)
+        if detail:
+            lines.append(f"[ctf_to_chrome]   worst streams: {detail}")
+    lines.append(
+        "[ctf_to_chrome]   EFFECT: the Cpus lanes are replayed from "
+        "sched_switch, so a dropped switch removes every bar until the next "
+        "one on that CPU — a thread can look idle (or vanish from its core "
+        "entirely) while its own rtc:* spans keep rendering normally. Slice "
+        "durations spanning a hole are wrong, not just missing."
+    )
+    lines.append(
+        "[ctf_to_chrome]   FIX: narrow the capture — 'trace_events_kernel:=' "
+        "with fewer events (sched_switch alone still builds the Cpus view), "
+        "or shorten the run. Kernel buffers are Trace(subbuffer_size_kernel=) "
+        "and default to 128 KB/CPU. See docs/tracing.md §Event loss."
+    )
+    for line in lines:
+        print(line, file=sys.stderr)
+    return lines
+
+
 def _report_capture_gaps(census: dict[str, int]) -> list[str]:
     """Print what the *capture* is missing, and return the warning lines.
 
@@ -1047,7 +1206,8 @@ def main(argv: list[str] | None = None) -> int:
     # field materialisation for the rest (large parse-time win on big
     # traces). --keep-all needs every payload, so disable the filter then.
     needed_names = None if args.keep_all else STRUCTURED_EVENTS | METADATA_EVENTS | keep_events
-    events_iter = iter_events(args.input, args.stdin, needed_names)
+    loss = LossStats()
+    events_iter = iter_events(args.input, args.stdin, needed_names, loss)
     print("[ctf_to_chrome] parsing events...", file=sys.stderr)
     trace = build_trace(
         events_iter,
@@ -1065,6 +1225,8 @@ def main(argv: list[str] | None = None) -> int:
     dropped_counts = trace.pop("_dropped_event_counts", {})
     census = trace.pop("_census", {})
     _report_capture_gaps(census)
+    # After the walk: the parser fills `loss` lazily as build_trace drains it.
+    _report_event_loss(loss, census)
 
     if not any(ev["ph"] != "M" for ev in trace["traceEvents"]):
         print(

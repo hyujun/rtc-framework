@@ -329,7 +329,45 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true trace
 * Callback 슬라이스의 symbol 은 `ros2:rclcpp_callback_register` 이벤트 (기본 UST
   캡처에 포함) 로 해석된다 — register 가 없는 캡처는 `callback@0x...` 주소로 표시.
 
+### Event loss — 트레이서가 이벤트를 버린 경우
+
+LTTng 의 per-CPU 링 버퍼는 **discard 모드**가 기본이다. 버퍼가 `lttng-consumerd`
+가 비우는 속도보다 빨리 차면 트레이서는 이벤트를 그냥 **버리고**, 버린 개수만
+다음 packet header 에 기록한다. 살아남은 이벤트는 멀쩡해 보이므로 *census (뭐가
+들어왔나)* 로는 절대 감지되지 않는다 — 유일한 신호가 이 카운터다.
+
+변환기는 이 카운터를 읽어 유실이 있으면 stderr 에 경고한다 (버린 총 개수, 전체
+대비 비율, **CPU 별 최다 유실**). 유실은 per-CPU 버퍼에서 나므로 어느 Cpu 레인을
+믿으면 안 되는지가 그대로 나온다.
+
+```
+[ctf_to_chrome] WARNING: the tracer DISCARDED 3,505,417 events (56.8% of 6,174,930) — ...
+[ctf_to_chrome]   worst streams: Cpu 003=962,814, Cpu 009=519,818, ...
+```
+
+**왜 중요한가** — Cpus 레인은 `sched_switch` 를 재생해서 그리므로, switch 하나가
+유실되면 **그 CPU 의 다음 switch 까지 color bar 가 통째로 사라진다.** 반면 그
+스레드 자신의 `rtc:*` span 은 (다른 채널·훨씬 낮은 rate) 계속 정상으로 그려진다
+→ **"스레드는 분명히 연산 중인데 CPU 에는 아무것도 없다"** 로 보인다. 구멍을
+가로지르는 슬라이스는 *누락*이 아니라 **duration 이 틀린 채로** 그려진다.
+
+**대응 (효과 순)**
+
+1. **캡처를 좁힌다** — `trace_events_kernel:=sched_switch` 처럼 이벤트를 줄인다.
+   Cpus 뷰는 `sched_switch` 만으로도 완전히 재구성된다.
+2. **런을 짧게** — 유실은 부하 구간에 집중된다.
+3. **버퍼 확대** — `Trace(subbuffer_size_kernel=)` (ros2_tracing 기본 128 KB/CPU).
+   현재 `make_trace_action` 은 이 인자를 노출하지 않는다 — 필요해지면 배선할 것.
+
+> `--max-duration-s` 사용 시 유실 집계도 **변환한 창 안**만 센다 (census 와 동일 규칙).
+> babeltrace2 **CLI fallback** 경로 (`python3-bt2` 미설치 / `--stdin`) 는 이 카운터를
+> 복구할 수 없어 **검사 자체를 못 한다** — 그 경로에서 경고가 없다는 건 "유실 없음"이
+> 아니라 "확인 안 됨"이다. `python3-bt2` 설치 권장.
+
 ### Event drop policy (JSON size)
+
+> 위 *Event loss* 와 헷갈리지 말 것: 이쪽은 변환기가 **의도적으로** 안 그리는
+> 것이고, 위는 트레이서가 **사고로** 버린 것이다.
 
 기본 변환은 **구조화 이벤트 (callback B/E + sched_switch + irq_handler_*)** 만
 slice 로 emit 한다. `sched_wakeup` / `ros2:rclcpp_publish` / `ros2:rcl_init`
