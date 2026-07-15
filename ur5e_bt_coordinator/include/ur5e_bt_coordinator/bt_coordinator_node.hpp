@@ -22,6 +22,10 @@
 
 namespace rtc_bt {
 
+namespace test {
+struct CoordinatorTickInjector;  // test-only tick-path seam (test/test_rewire_gate.cpp, issue #158)
+}  // namespace test
+
 /// Main ROS2 node that ticks a BehaviorTree at a configurable rate.
 ///
 /// Features:
@@ -54,6 +58,13 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   CallbackReturn on_error(const rclcpp_lifecycle::State& state) override;
 
  private:
+  // Test-only seam (issue #158). Grants read access to bridge_ / tree_ so a
+  // test can drive the real on_activate → TickCallback path and inject the
+  // active-controller transition through the bridge's handler without DDS.
+  // Mirrors the BridgeStateInjector seam (issue #154): observation only — the
+  // seam never pokes fields or calls private transitions.
+  friend struct test::CoordinatorTickInjector;
+
   void DeclareParameters();
   void RegisterBtNodes();
   void LoadTree();

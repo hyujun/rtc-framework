@@ -181,6 +181,21 @@ if(BUILD_TESTING)
     rclcpp behaviortree_cpp std_msgs std_srvs geometry_msgs rtc_msgs shape_estimation_msgs ament_index_cpp
   )
 
+  # Rewire-gap regression (issue #158) — drives the real BtCoordinatorNode
+  # lifecycle + tick timer, so it compiles the node TU in (bt_coordinator_node
+  # is an executable, not a library) and needs ament_index_cpp for LoadTree.
+  # DDS-free: the active-controller transition is injected via the bridge
+  # handler seam, so this stays out of the e2e tier.
+  ament_add_gtest(test_rewire_gate test/test_rewire_gate.cpp src/bt_coordinator_node.cpp)
+  target_link_libraries(test_rewire_gate bt_nodes)
+  target_include_directories(test_rewire_gate PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test>
+  )
+  ament_target_dependencies(test_rewire_gate
+    rclcpp rclcpp_lifecycle behaviortree_cpp std_msgs std_srvs geometry_msgs sensor_msgs rtc_msgs shape_estimation_msgs tf2 tf2_ros tf2_msgs ament_index_cpp
+  )
+
   # on_configure safety-net coverage — capability gating + finger_map range
   # check, exercised at the RegisterBtNodes / BtRosBridge level (bt_nodes).
   ament_add_gtest(test_lifecycle_config test/test_lifecycle_config.cpp)
