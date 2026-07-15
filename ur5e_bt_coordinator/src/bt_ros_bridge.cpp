@@ -368,6 +368,11 @@ bool BtRosBridge::IsEstopped() const {
 // ── Publishers ────────────────────────────────────────────────────────────
 
 void BtRosBridge::PublishArmTarget(const Pose6D& target) {
+  if (!arm_target_pub_) {
+    RCLCPP_WARN_THROTTLE(bridge_log(), *node_->get_clock(), logging::kThrottleSlowMs,
+                         "arm target dropped: no active controller wired yet");
+    return;
+  }
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
   msg.goal_type = "task";
@@ -376,6 +381,11 @@ void BtRosBridge::PublishArmTarget(const Pose6D& target) {
 }
 
 void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
+  if (!arm_target_pub_) {
+    RCLCPP_WARN_THROTTLE(bridge_log(), *node_->get_clock(), logging::kThrottleSlowMs,
+                         "arm joint target dropped: no active controller wired yet");
+    return;
+  }
   rtc_msgs::msg::RobotTarget msg;
   msg.header.stamp = node_->now();
   msg.goal_type = "joint";
@@ -384,6 +394,13 @@ void BtRosBridge::PublishArmJointTarget(const std::vector<double>& target) {
 }
 
 void BtRosBridge::PublishHandTarget(const std::vector<double>& target) {
+  // Guard before the state write: last_hand_target_ is the incremental base for
+  // grasp commands (bt_utils.hpp), so it must track what actually went out.
+  if (!hand_target_pub_) {
+    RCLCPP_WARN_THROTTLE(bridge_log(), *node_->get_clock(), logging::kThrottleSlowMs,
+                         "hand target dropped: no active controller wired yet");
+    return;
+  }
   {
     std::lock_guard lock(state_mutex_);
     last_hand_target_ = target;
