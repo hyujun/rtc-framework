@@ -19,19 +19,19 @@
 
 ## Out of scope
 
-- Perfetto **viewer / 변환기** 개선 — 선행 작업으로 이미 완료 (아래 Current state). 추가 display 변경은 별도 task.
+- Perfetto **viewer / 변환기** 개선 — 별도 artifact [timeline-perfetto-display.md](timeline-perfetto-display.md) 소유.
 - 새 tracepoint provider · LTTng 채널 설계 변경.
 - Pinocchio FK / ProxSuite QP 등 외부 라이브러리 내부 구간 계측.
 
 ## Current state
 
-### 선행 완료 — viewer 쪽 (커밋 `90f6e0b`, 2026-07-15)
+### 선행 — viewer 쪽 (별도 artifact 로 분리됨)
 
-수용 기준 1(“Perfetto 에서 root-span cadence 판별”)의 **관측 도구** 가 준비됐다. `ctf_to_chrome_trace` 가 workspace 프로세스(= `rtc:span` emit) 중심으로 표시하도록 재편:
-- Cpu lane 라벨 `프로세스명/comm-tid`, thread slice 는 실제 vpid 기준 process 그룹.
-- `rtc:span` 없는 외부 UST 프로세스(ur_driver 등)는 프로세스당 async 요약 lane 1개로 축약, sched_switch 전용 스레드는 thread row 미생성 → row 폭증 해소.
-- Escape hatch `--all-threads` / `--focus-proc`. `docs/tracing.md` View 절 갱신 완료.
-- 검증: `colcon test --packages-select rtc_tools` 357 passed.
+수용 기준 1(“Perfetto 에서 root-span cadence 판별”)의 **관측 도구** 는 준비됐다 (`90f6e0b` → `bdcbb7b`): workspace 프로세스 중심 표시, Cpu lane process 라벨, 캡처 결손 진단, 대용량 캡처용 `--max-duration-s`.
+
+이 작업은 #157 의 Out of scope (계측이 아니라 표시) 이고 자체 열린 루프(사용자 제어 PC 재검증 대기)를 가지므로 **[timeline-perfetto-display.md](timeline-perfetto-display.md) 가 SSoT** 다 — 상세·실측·결정은 그쪽에만 둔다 (AP-DOC-1: 여기 복제 금지).
+
+#157 에 필요한 것만: **실 캡처로 root span 관측이 되는 것을 확인했다** — `rt_control_tick` ×20,412 / 30 s, `sim_step` 등 포함 (아래 Evidence).
 
 ### 이슈 체크박스 7개의 실제 코드 상태 (2026-07-15 grep 검증)
 
@@ -65,33 +65,23 @@
 
 ## Decisions and rationale
 
-- **viewer 선행** — 수용 기준이 “Perfetto 에서 판별 가능” 인데, 기존 flat 표시에서는 외부 스레드 row 폭증으로 workspace root span 을 찾기 어려웠다. 관측 도구를 먼저 고쳐야 계측 검증이 성립.
-- **외부 프로세스는 async 요약 lane (완전 제거 아님)** — 사용자 결정 (2026-07-15). row 는 줄이되 ur_driver callback 타이밍은 남긴다: p1b comm cascade 류 분석에서 그 가시성이 필요했다.
-- **Focus 분류는 `rtc:span` 존재 기반 (data-driven)** — 프로세스명 하드코딩은 ARCH-1 위반이자 robot/driver 교체 시 drift.
+- **viewer 선행** — 수용 기준이 “Perfetto 에서 판별 가능” 인데, 기존 flat 표시에서는 외부 스레드 row 폭증으로 workspace root span 을 찾기 어려웠다. 관측 도구를 먼저 고쳐야 계측 검증이 성립. (viewer 내부 설계 결정은 [timeline-perfetto-display.md](timeline-perfetto-display.md) §Decisions 소유 — 여기 복제하지 않는다.)
 - **이슈 체크박스를 착수 전 전수 grep 검증** — [[feedback_issue_body_diagnosis_unverified]] 패턴. 3번에서 실제 반례(이미 있는 span 이 RT 쪽이 아님)를 발견.
 
 ## Evidence
 
-- `git log --oneline -1` → `90f6e0b feat(rtc_tools): focus workspace threads in Perfetto timeline (refs #157)`
-- `colcon test --packages-select rtc_tools` (ws root, env source 후) → **357 passed in 11.05s**
-- `ruff check` (converter + test) → All checks passed
-- 합성 babeltrace2 텍스트 end-to-end 변환 → tier 그룹핑 / sort order / async id 짝 확인 (focus pid=100 sync B/E, external pid=200 async b/e, Cpu 라벨 `ur_driver/dds_worker-201`)
 - span 인벤토리 grep (위 표) — `grep -rn 'RTC_TRACE_SCOPE("' --include=*.cpp --include=*.hpp`
+- `colcon test --packages-select rtc_tools` (ws root, env source 후) → **2535 tests, 0 failures, 24 skipped** (HEAD `bdcbb7b` 기준)
 
-### 실 캡처 end-to-end 검증 (2026-07-15, 이 워크스테이션)
+### 실 캡처 end-to-end (2026-07-15, 이 워크스테이션) — #157 관련 부분만
 
-`./build.sh sim --tracing` → `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true enable_viewer:=false` (30 s, SIGINT) → `timeline.sh`.
+`./build.sh sim --tracing` → `sim_ur5e_p1a.launch.py enable_tracing:=true` 30 s → `timeline.sh`. 전체 실측·변환기 쪽 수치는 [timeline-perfetto-display.md](timeline-perfetto-display.md) §Evidence.
 
-- 빌드 산출물에 tracepoint 실재: `nm -D integrated_rt_controller` → `lttng_ust_tracepoint_rtc___span_begin` / `_span_end`, `liblttng-ust.so.1` 링크됨.
-- 캡처: `logging_data/260715_1759/tracing/trace` = 235 MB, kernel + ust 채널 both.
-- census: `rtc:span_begin=972,065  ros2:callback_start=73,947  sched_switch=781,897  irq_handler_entry=15,613` → 캡처 결손 경고 0건.
-- 변환 결과 (`trace.json`, 295 MB / 2,919,585 events, 변환 2 m 6 s):
-  - `integrated_rt_c` (pid 534911): **1,313,452 slices / 6 threads**, `rt_control_tick` **×20,412**, `nrt_publish_drain` ×20,412, WBC sub-step 다수.
-  - `mujoco_simulato` (pid 534910): 778,572 slices / 2 threads.
-  - `Cpus`: **12 lane 전부**, 796,303 slices. 라벨 prefix 정상 — `integrated_rt_c/nrt_callback-534998`, `mujoco_simulato/sim_thread-534967`; main thread 는 bare (`integrated_rt_c-534997`) 로 의도대로.
-  - `Cpu/IRQ`: 31,226 slices.
-- **결론**: viewer 는 정상. "그룹은 있는데 비어 있다" 는 캡처 결손(비-`--tracing` 빌드 / kernel event 부재) 또는 뷰어의 대용량 JSON 처리 실패 쪽 증상이며, 둘 다 이제 stderr 경고로 지목된다 (`fa0cb8a`, `1e2268b`).
-- **미검증 (잔여)**: Perfetto UI 육안 확인 — JSON 은 위 경로에 준비돼 있음. 30 s 캡처가 295 MB 이므로 UI 로딩 부하 자체가 별도 관찰 대상.
+- 빌드 산출물에 tracepoint 실재: `nm -D integrated_rt_controller` → `lttng_ust_tracepoint_rtc___span_begin` / `_span_end`.
+- 캡처 census: `rtc:span_begin=972,065  sched_switch=781,897` → 결손 0.
+- **root span 관측됨**: `rt_control_tick` ×20,412 (30 s), `nrt_publish_drain` ×20,412 — 수용 기준 1 의 관측 경로가 실제로 성립함을 확인.
+- **재사용 fixture**: `logging_data/260715_1759/` (561 MB) — 계측 추가 후 before/after 비교에 재캡처 없이 쓸 수 있다. ⚠ `max_log_sessions=10` 로테이션 대상.
+- **미검증 (잔여)**: Perfetto UI 육안 확인, 그리고 §Acceptance criteria 의 cadence 판정 자체 (begin-to-begin 간격 분석) 는 아직 수행 안 함 — 체크박스 1 의 기준을 문서화한 뒤 그 기준으로 판정할 것.
 
 ### 관찰 (이 task 범위 밖, 별건 확인 필요)
 
@@ -99,8 +89,7 @@ sim 실행에서 RT tick 스레드의 comm 이 `integrated_rt_c-534997` (고유 
 
 ## Failed approaches
 
-- (viewer) sync B/E 로 외부 프로세스를 프로세스 lane 에 병합 → 서로 다른 tid 의 callback 이 시간축에서 겹쳐 스택이 깨진다. Chrome async event(`ph: b/e` + id)로 전환해 해결.
-- (viewer) 스트리밍 중 CPU lane 라벨 확정 → tid→pid 매핑이 그 시점에 미완성. 후처리 pass 로 분리.
+- 계측 쪽은 아직 착수 전이라 없음. viewer 쪽 dead-end 는 [timeline-perfetto-display.md](timeline-perfetto-display.md) §Failed approaches.
 
 ## Constraints / pending human decisions
 
@@ -109,8 +98,9 @@ sim 실행에서 RT tick 스레드의 comm 이 `integrated_rt_c-534997` (고유 
 
 ## Workspace
 
-- branch `main`, HEAD `90f6e0b` (clean; viewer 작업 커밋 완료)
-- 미커밋: `docs/WBC_CONTROLLER_IMPLEMENTATION.md` (untracked) — **이 task 소유 아님**, 별건. 건드리지 말 것.
+- branch `main`, HEAD `bdcbb7b`, origin/main 과 동기 (미푸시 커밋 없음). 계측 쪽 코드 변경은 **아직 0** — viewer 커밋만 올라가 있다.
+- 미커밋: `docs/WBC_CONTROLLER_IMPLEMENTATION.md` (untracked) — **이 task 소유 아님**, 세션 시작 시점부터 존재. 건드리지 말 것.
+- 빌드 상태: 이 워크스테이션은 `./build.sh sim --tracing` 으로 빌드돼 있다 (tracing ON). 계측 추가 후 재빌드 시 `--tracing` 유지할 것 — 빼면 span 이 사라져 검증이 불가능해진다.
 
 ## Pointers
 
