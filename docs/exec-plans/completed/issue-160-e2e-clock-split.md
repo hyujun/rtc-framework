@@ -1,5 +1,10 @@
 # issue-160: test_service_singlethread — discovery 시계와 deadlock 시계 분리
 
+> **종결 (2026-07-15)** — 4개 Acceptance 전부 실증, #160 close (U1/U2 코멘트 포함),
+> `main` 에 `--no-ff` 직접 merge (사용자 결정, #158 과 동일 방침). 이 artifact 는 `completed/`.
+> 후속 없음. 자매 #161 (별건 SIGABRT, sim 특정) 은 이 스위트와 무관하다 — E14 의 3/10 은
+> gtest 스위트가 아니라 p1b sim smoke 에서 나왔다.
+
 ## Goal
 
 `ServiceSingleThread.SetGainsGraspCompletesUnderSharedExecutor` 의 잔존 flake (#160,
@@ -104,9 +109,8 @@ guard 시계는 그동안에도 계속 흐른다.
 | **U1 — 착수 전 (즉시)** | Direction 4 기각. Evidence E1(`test_helpers.hpp` 미include) + E2(이미 전용 executor 구조)를 근거로 "적용 대상이 아니어서 구현해도 no-op". 실제 원인(guard 시계가 discovery 를 삼킴, E3/E4)과 D1 의 어긋남 경위 — #154 의 Direction 4 는 `test_helpers.hpp` 기반 3개 바이너리를 겨냥했는데 정작 flake 하는 바이너리는 그 픽스처를 안 씀 | 이슈 **본문의 "방향" 절 전체가 실행 가능한 지시**로 적혀 있다. 착수하는 사람이 그대로 no-op 을 구현하게 됨 |
 | **U2 — 종결** | 10-run 결과 + **통계적 한계 명시** (원 빈도 1/30 → 10-run green 은 fix 를 증명 못 함; 실질 근거는 시계 의미의 구조적 논증 D2). Acceptance 3(deadlock 검출력 보존) 확인 방법과 결과 | 한계를 안 적으면 다음 사람이 10-run green 을 "증명" 으로 오독. #154 가 10/10 을 근거로 종결했으나 이 flake 가 살아남은 전례가 있음 |
 
-**미결 — 이슈 본문 편집 여부 (사용자 판단):** #160 본문 `## 방향` 절이 U1 시점에 뒤집힌다.
-#158 과 동일한 성격의 판단이므로 두 이슈를 같은 방침으로 처리할 것 —
-(a) 본문 편집 + 원문을 U1 코멘트에 보존, (b) 코멘트만.
+**해소 — 이슈 본문 편집 여부:** 2026-07-15 사용자 결정으로 **(b) 코멘트만**. 본문 `## 방향` 은
+그대로 두고 U1 이 기각 근거를 남긴다.
 
 **#154 역참조 불필요:** #154 는 종결됐고 그 Direction 4 는 당시 맥락(3개 e2e 바이너리)에서
 틀리지 않았다. 어긋남은 #160 이 범위를 옮겨 적는 과정에서 생겼으므로 #160 코멘트로 충분하다.
@@ -223,7 +227,7 @@ E1-E6 은 2026-07-15, `main` @ `b152a49` 기준 **정적 인스펙션**. E7-E10 
   (#158 merge 후. 충돌 0 — 파일 교집합이 실제로 0이었음)
 - 커밋: artifact + 하네스 fix (`test_service_singlethread.cpp`). production 무변경
 - `?? docs/WBC_CONTROLLER_IMPLEMENTATION.md` — **본 작업과 무관, 별도 소유.** 커밋하지 말 것
-- **남은 일**: #160 U1/U2 코멘트 + 본문 편집 방침 확정 → close, main merge
+- ~~**남은 일**~~ — 완료: U1 ([comment-4977571059](https://github.com/hyujun/rtc-framework/issues/160#issuecomment-4977571059)) + U2 ([comment-4977574862](https://github.com/hyujun/rtc-framework/issues/160#issuecomment-4977574862)), 이슈 close, main merge
 - **자매 artifact 는 `main` 에 있다** — #158 종결로 `docs/exec-plans/completed/issue-158-rewire-tick-gate.md`
 
 ## Pointers
