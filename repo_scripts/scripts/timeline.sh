@@ -12,6 +12,9 @@
 #   timeline.sh                                # default: latest ~/.ros/tracing/* trace
 #   timeline.sh <trace_dir>                    # explicit CTF trace directory
 #   timeline.sh <trace_dir> [output.json]
+#   timeline.sh [--all-threads] [--focus-proc <substr,...>] [--keep-all] ...
+#     Flags starting with '-' are forwarded verbatim to
+#     rtc_tools.conversion.ctf_to_chrome_trace (see its --help).
 #
 # After conversion, drag-drop the JSON onto https://ui.perfetto.dev.
 #
@@ -47,11 +50,26 @@ fi
 # ── Args ──────────────────────────────────────────────────────────────────────
 INPUT=""
 OUTPUT=""
+EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
-      sed -n '2,20p' "$0"
+      sed -n '2,23p' "$0"
       exit 0
+      ;;
+    --focus-proc|--keep-events)
+      # Value-taking converter flags: forward the flag and its value.
+      if [[ $# -lt 2 ]]; then
+        echo "[timeline] $1 requires a value" >&2
+        exit 2
+      fi
+      EXTRA_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    -*)
+      # Any other flag is forwarded verbatim to ctf_to_chrome_trace.
+      EXTRA_ARGS+=("$1")
+      shift
       ;;
     *)
       if [[ -z "$INPUT" ]]; then
@@ -106,7 +124,8 @@ fi
 
 # ── Convert ──────────────────────────────────────────────────────────────────
 echo "[timeline] ctf_to_chrome_trace $INPUT → $OUTPUT" >&2
-python3 -m rtc_tools.conversion.ctf_to_chrome_trace --input "$INPUT" --output "$OUTPUT"
+python3 -m rtc_tools.conversion.ctf_to_chrome_trace \
+  --input "$INPUT" --output "$OUTPUT" "${EXTRA_ARGS[@]}"
 RC=$?
 
 if [[ $RC -ne 0 ]]; then

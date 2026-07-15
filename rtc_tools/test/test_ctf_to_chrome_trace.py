@@ -251,8 +251,12 @@ def test_thread_name_picked_up_from_callback_payload():
     assert labels[77] == "mpc_main-77"
 
 
-def test_thread_name_picked_up_from_sched_switch_comm():
-    # UST-only thread (no callback) — name must still appear via sched_switch.
+def test_sched_only_threads_get_no_thread_row_but_keep_cpu_label():
+    # Spec change (workspace-focus display): a thread visible only through
+    # sched_switch used to get an (empty) row in the flat Threads group —
+    # one per system thread, drowning the workspace threads. It now gets no
+    # thread row at all; its activity stays visible on the Cpu lane, where
+    # the slice keeps the comm-derived label.
     events = [
         _sched_switch(1_000_000, cpu=3, prev_tid=0, next_tid=200, next_comm="hand_udp_drv"),
         _sched_switch(2_000_000, cpu=3, prev_tid=200, next_tid=0, prev_comm="hand_udp_drv"),
@@ -261,10 +265,11 @@ def test_thread_name_picked_up_from_sched_switch_comm():
     thread_meta = [
         ev
         for ev in out["traceEvents"]
-        if ev["ph"] == "M" and ev["name"] == "thread_name" and ev["pid"] == THREAD_PID
+        if ev["ph"] == "M" and ev["name"] == "thread_name" and ev["pid"] not in (CPU_PID, IRQ_PID)
     ]
-    labels = {ev["tid"]: ev["args"]["name"] for ev in thread_meta}
-    assert labels[200] == "hand_udp_drv-200"
+    assert thread_meta == []
+    run_b = [ev for ev in out["traceEvents"] if ev.get("cat") == "run" and ev["ph"] == "B"]
+    assert run_b[0]["name"] == "hand_udp_drv-200"
 
 
 def test_sched_switch_comm_overrides_stale_ust_procname():
@@ -503,3 +508,200 @@ def test_register_event_emitted_as_marker_under_keep_all():
     # symbol map must still label the callback slice.
     b = [ev for ev in out["traceEvents"] if ev.get("cat") == "callback" and ev["ph"] == "B"]
     assert b[0]["name"] == "x"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Focus tiering — real-pid process groups, external-process summarization
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _callback_pair_pid(ts_start_ns, ts_end_ns, *, vpid, vtid, procname, callback=0x1, symbol="cb"):
+    return [
+        (
+            ts_start_ns,
+            "ros2:callback_start",
+            {
+                "vpid": vpid,
+                "vtid": vtid,
+                "procname": procname,
+                "callback": callback,
+                "symbol": symbol,
+            },
+            None,
+        ),
+        (
+            ts_end_ns,
+            "ros2:callback_end",
+            {"vpid": vpid, "vtid": vtid, "procname": procname, "callback": callback},
+            None,
+        ),
+    ]
+
+
+def _rtc_span_pid(ts_begin_ns, ts_end_ns, *, vpid, vtid, procname, name):
+    return [
+        (
+            ts_begin_ns,
+            "rtc:span_begin",
+            {"vpid": vpid, "vtid": vtid, "procname": procname, "name": name},
+            2,
+        ),
+        (ts_end_ns, "rtc:span_end", {"vpid": vpid, "vtid": vtid, "procname": procname}, 2),
+    ]
+
+
+def test_vpid_context_groups_slices_by_real_pid():
+    events = _callback_pair_pid(1_000_000, 1_500_000, vpid=500, vtid=501, procname="mpc_main")
+    out = build_trace(iter(events))
+    slices = [ev for ev in out["traceEvents"] if ev.get("cat") == "callback"]
+    assert {ev["pid"] for ev in slices} == {500}
+    proc_meta = {
+        ev["pid"]: ev["args"]["name"]
+        for ev in out["traceEvents"]
+        if ev["ph"] == "M" and ev["name"] == "process_name"
+    }
+    assert proc_meta[500] == "mpc_main"
+    thread_meta = [
+        ev
+        for ev in out["traceEvents"]
+        if ev["ph"] == "M" and ev["name"] == "thread_name" and ev["pid"] == 500
+    ]
+    assert [(ev["tid"], ev["args"]["name"]) for ev in thread_meta] == [(501, "mpc_main-501")]
+
+
+def test_external_process_collapses_into_async_summary_lane():
+    # pid 100 emits rtc spans (workspace, focus) — keeps sync B/E per-thread.
+    # pid 200 emits only ros2 callbacks (external driver) — collapses into
+    # async b/e slices on its process lane, no thread rows.
+    events = _rtc_span_pid(
+        1_000_000,
+        1_400_000,
+        vpid=100,
+        vtid=100,
+        procname="integrated_rt_c",
+        name="rt_control_tick",
+    )
+    # Two ur_driver threads with time-overlapping callbacks — the stream is
+    # time-ordered like a real trace, so the b/b/e/e interleaving is what
+    # forces the async (id-matched) representation.
+    pair_a = _callback_pair_pid(1_100_000, 1_600_000, vpid=200, vtid=201, procname="ur_driver")
+    pair_b = _callback_pair_pid(
+        1_200_000, 1_700_000, vpid=200, vtid=202, procname="ur_driver", callback=0x2
+    )
+    events += [pair_a[0], pair_b[0], pair_a[1], pair_b[1]]
+    out = build_trace(iter(events))
+
+    focus_slices = [ev for ev in out["traceEvents"] if ev.get("pid") == 100 and "cat" in ev]
+    assert [ev["ph"] for ev in focus_slices] == ["B", "E"]
+
+    ext = [ev for ev in out["traceEvents"] if ev.get("pid") == 200 and ev.get("cat") == "callback"]
+    assert [ev["ph"] for ev in ext] == ["b", "b", "e", "e"]
+    assert all("id" in ev and ev["name"] for ev in ext)
+    # Each e must reuse its opening b's id (per-tid stacks, LIFO).
+    b_ids = {ev["id"] for ev in ext if ev["ph"] == "b"}
+    e_ids = {ev["id"] for ev in ext if ev["ph"] == "e"}
+    assert b_ids == e_ids and len(b_ids) == 2
+
+    proc_meta = {
+        ev["pid"]: ev["args"]["name"]
+        for ev in out["traceEvents"]
+        if ev["ph"] == "M" and ev["name"] == "process_name"
+    }
+    assert proc_meta[100] == "integrated_rt_c"
+    assert proc_meta[200] == "ur_driver (summary)"
+    thread_meta_ext = [
+        ev
+        for ev in out["traceEvents"]
+        if ev["ph"] == "M" and ev["name"] == "thread_name" and ev["pid"] == 200
+    ]
+    assert thread_meta_ext == []
+
+    sort_index = {
+        ev["pid"]: ev["args"]["sort_index"]
+        for ev in out["traceEvents"]
+        if ev["ph"] == "M" and ev["name"] == "process_sort_index"
+    }
+    # Workspace process above the Cpu lanes, summary group below them.
+    assert sort_index[100] < sort_index[CPU_PID] < sort_index[200]
+
+
+def test_orphan_end_in_summary_process_is_dropped():
+    # Capture started mid-callback: an end with no begin must not survive
+    # as an unmatched async "e".
+    events = [
+        (
+            900_000,
+            "ros2:callback_end",
+            {"vpid": 200, "vtid": 201, "procname": "ur_driver", "callback": 0x9},
+            None,
+        ),
+    ]
+    events += _callback_pair_pid(1_000_000, 1_500_000, vpid=200, vtid=201, procname="ur_driver")
+    events += _rtc_span_pid(
+        1_000_000, 1_400_000, vpid=100, vtid=100, procname="integrated_rt_c", name="tick"
+    )
+    out = build_trace(iter(events))
+    ext = [ev for ev in out["traceEvents"] if ev.get("pid") == 200 and ev.get("cat") == "callback"]
+    assert [ev["ph"] for ev in ext] == ["b", "e"]
+
+
+def test_no_spans_falls_back_to_per_thread_detail():
+    # Capture from a build without RTC_ENABLE_TRACING: no rtc:* spans, so
+    # there is no signal to classify — everything stays per-thread.
+    events = _callback_pair_pid(1_000_000, 1_500_000, vpid=200, vtid=201, procname="ur_driver")
+    out = build_trace(iter(events))
+    ext = [ev for ev in out["traceEvents"] if ev.get("pid") == 200 and ev.get("cat") == "callback"]
+    assert [ev["ph"] for ev in ext] == ["B", "E"]
+    proc_meta = {
+        ev["pid"]: ev["args"]["name"]
+        for ev in out["traceEvents"]
+        if ev["ph"] == "M" and ev["name"] == "process_name"
+    }
+    assert proc_meta[200] == "ur_driver"
+
+
+def test_focus_proc_substring_promotes_process_without_spans():
+    events = _callback_pair_pid(1_000_000, 1_500_000, vpid=200, vtid=201, procname="ur_driver")
+    events += _callback_pair_pid(1_100_000, 1_600_000, vpid=300, vtid=301, procname="foo_node")
+    out = build_trace(iter(events), focus_procs=frozenset({"foo"}))
+    foo = [ev for ev in out["traceEvents"] if ev.get("pid") == 300 and ev.get("cat") == "callback"]
+    assert [ev["ph"] for ev in foo] == ["B", "E"]
+    ur = [ev for ev in out["traceEvents"] if ev.get("pid") == 200 and ev.get("cat") == "callback"]
+    assert [ev["ph"] for ev in ur] == ["b", "e"]
+
+
+def test_all_threads_disables_summarization():
+    events = _rtc_span_pid(
+        1_000_000, 1_400_000, vpid=100, vtid=100, procname="integrated_rt_c", name="tick"
+    )
+    events += _callback_pair_pid(1_100_000, 1_600_000, vpid=200, vtid=201, procname="ur_driver")
+    out = build_trace(iter(events), all_threads=True)
+    ext = [ev for ev in out["traceEvents"] if ev.get("pid") == 200 and ev.get("cat") == "callback"]
+    assert [ev["ph"] for ev in ext] == ["B", "E"]
+    thread_meta_ext = [
+        ev
+        for ev in out["traceEvents"]
+        if ev["ph"] == "M" and ev["name"] == "thread_name" and ev["pid"] == 200
+    ]
+    assert [(ev["tid"], ev["args"]["name"]) for ev in thread_meta_ext] == [(201, "ur_driver-201")]
+
+
+def test_cpu_lane_label_gets_process_prefix():
+    # A worker thread whose pid is known from the UST vpid context gets its
+    # process name prefixed on the Cpu lane; the main thread (tid == pid)
+    # keeps its bare comm — a "proc/proc-tid" prefix would be noise.
+    events = _callback_pair_pid(
+        1_000_000, 1_100_000, vpid=100, vtid=100, procname="integrated_rt_c"
+    )
+    events += _callback_pair_pid(
+        1_200_000, 1_300_000, vpid=100, vtid=101, procname="integrated_rt_c"
+    )
+    events += [
+        _sched_switch(2_000_000, cpu=2, prev_tid=0, next_tid=101, next_comm="dds_worker"),
+        _sched_switch(2_500_000, cpu=2, prev_tid=101, next_tid=100, next_comm="integrated_rt_c"),
+        _sched_switch(3_000_000, cpu=2, prev_tid=100, next_tid=0, prev_comm="integrated_rt_c"),
+    ]
+    out = build_trace(iter(events))
+    run_b = [ev for ev in out["traceEvents"] if ev.get("cat") == "run" and ev["ph"] == "B"]
+    labels = [ev["name"] for ev in run_b]
+    assert labels == ["integrated_rt_c/dds_worker-101", "integrated_rt_c-100"]

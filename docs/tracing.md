@@ -272,6 +272,8 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
 ./repo_scripts/scripts/timeline.sh                  # 최신 logging_data/*/tracing/*/ 자동 사용
 ./repo_scripts/scripts/timeline.sh <trace_dir>      # 명시 입력
 ./repo_scripts/scripts/timeline.sh <trace_dir> out.json
+./repo_scripts/scripts/timeline.sh --all-threads    # 외부 프로세스 요약 해제
+# '-' 로 시작하는 플래그는 ctf_to_chrome_trace 에 그대로 전달된다 (--help 참조)
 ```
 
 `timeline.sh` 가 babeltrace2 (또는 `python3-bt2` binding) 로 CTF 를 읽어 Chrome trace JSON 으로 변환한다. 출력은 `<trace_dir>/trace.json`.
@@ -279,17 +281,28 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true \
 변환 진행상황은 stderr 에 찍힌다 — 선택된 파서 (`parser: python3-bt2 binding` vs 느린 `babeltrace2 CLI`), 대용량 트레이스 순회 중 10 만 이벤트마다 `parsed N events ...`, 그리고 `writing N events → <out>`. 대형 트레이스 변환이 멈춘 게 아니라 진행 중임을 이 로그로 확인한다.
 
 * https://ui.perfetto.dev 에 JSON drag-drop. 설치 0, 브라우저만.
-* 세 가지 swimlane 그룹:
-  - **Threads (by TID)** — `mpc_main-NNNN`, `rt_control-NNNN`, `mujoco_simulato-NNNN`
-    등 각 thread 의 callback B/E 슬라이스. WBC tick 의 주기성, MPC 8 ms
-    주기를 시간축에서 직접 확인. `--tracing` 빌드면 RT 스레드 레인에 `rtc:*` span
-    (rt_control_tick → CM::Compute → …ComputeControl → sub-step) 중첩 스택도 함께
-    (위 §RT trace spans).
-  - **Cpus** — `Cpu 000` ~ `Cpu 011` 코어별 sched_switch 기반 timeline.
-    ApplyThreadConfig pinning 의 의도대로 rt_control 이 Core 2 에 고정됐는지,
-    mpc_main 이 MPC 코어에 머물렀는지 검증.
+* Swimlane 그룹 (위→아래 정렬 순):
+  - **Workspace 프로세스 (focus tier)** — `rtc:span_*` 을 emit 한 프로세스
+    (= `RTC_TRACE_SCOPE` 계측이 있는 workspace 바이너리) 는 실제 vpid 기준
+    process 그룹으로 표시되고, thread 별 row 를 가진다. RT tick 주기성, MPC
+    주기를 시간축에서 직접 확인. `rtc:*` span (rt_control_tick → CM::Compute →
+    …ComputeControl → sub-step) 중첩 스택도 이 레인에 (위 §RT trace spans).
+  - **Cpus** — `Cpu 000` ~ 코어별 sched_switch 기반 timeline. 슬라이스 라벨은
+    `프로세스명/comm-tid` (vpid context 로 소속 프로세스를 prefix; main thread 는
+    comm 자체가 프로세스명이므로 bare `comm-tid`). ApplyThreadConfig pinning 의
+    의도대로 rt_control 이 RT 코어에 고정됐는지, migration 이 없는지 검증.
+  - **외부 프로세스 요약** — `rtc:*` span 이 없는 UST 프로세스 (예: vendor
+    driver 노드) 는 프로세스당 async lane 1 개로 축약된다 (`<proc> (summary)`).
+    callback 슬라이스는 살아있지만 thread 별 row 를 차지하지 않는다.
+    per-thread 로 되돌리려면 `--all-threads`, 특정 프로세스만 focus 로 승격하려면
+    `--focus-proc <substr,...>`.
   - **Cpu/IRQ** — IRQ handler entry/exit 만 분리. RT core 에 IRQ leak 이 있는지
     한눈에.
+* sched_switch 로만 보이는 스레드 (커널 태스크, 비-UST 시스템 프로세스) 는 thread
+  row 를 만들지 않는다 — Cpu lane 에서만 보인다.
+* Focus 분류는 data-driven (`rtc:span` 존재 여부) 이다. tracing OFF 빌드 캡처처럼
+  span 이 하나도 없으면 분류 신호가 없으므로 전 프로세스 per-thread 로 fallback
+  하고 stderr 에 안내를 찍는다 — 이때 `--focus-proc` 으로 수동 지정 가능.
 * Perfetto UI tip: 좌측 swimlane 헤더 클릭 → 그 lane 만 펼침. 마우스 휠로 zoom,
   shift+드래그로 범위 측정. Ctrl+F 으로 callback symbol 검색.
 * Callback 슬라이스의 symbol 은 `ros2:rclcpp_callback_register` 이벤트 (기본 UST
@@ -317,8 +330,8 @@ python3 -m rtc_tools.conversion.ctf_to_chrome_trace \
     --input <trace_dir> --output out.json --keep-all
 ```
 
-`timeline.sh` 는 default drop 모드만 노출한다 — 화이트리스트 / keep-all 은
-위 처럼 직접 호출.
+`timeline.sh` 는 `-` 로 시작하는 인자를 변환기에 그대로 전달하므로
+`./repo_scripts/scripts/timeline.sh --keep-all` 처럼 위 플래그들을 직접 쓸 수 있다.
 
 ## babeltrace2 직접 사용 (raw inspection)
 

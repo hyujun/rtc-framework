@@ -8,13 +8,28 @@ is expected to contain ``metadata`` plus one or more channel binaries —
 babeltrace2 walks any sub-tree automatically.
 
 Output: a Chrome Trace JSON file. Drag-drop it onto
-https://ui.perfetto.dev to see two swimlane groups simultaneously:
+https://ui.perfetto.dev to see the swimlane groups, top to bottom:
 
-* **Threads (by TID)** — each callback / sched_switch slice plotted per
-  task. Use this to inspect *what each thread was doing* over time.
-* **Cpus** — the same data resorted by ``cpu_id``. Use this to verify
-  ApplyThreadConfig pinning (Core 2 = rt_control, MPC core, etc.) and
-  spot migrations or IRQ leaks.
+* **Workspace processes (focus tier)** — one Perfetto process group per
+  real vpid that emitted ``rtc:span_*`` (i.e. carries workspace
+  ``RTC_TRACE_SCOPE`` instrumentation), with one row per thread. Use this
+  to inspect *what each workspace thread was doing* over time.
+* **Cpus** — sched_switch data per ``cpu_id``, each slice labelled
+  ``process/comm-tid`` (process prefix from the vpid context). Use this
+  to verify ApplyThreadConfig pinning and spot migrations or IRQ leaks.
+* **External process summaries** — UST-emitting processes *without*
+  ``rtc:*`` spans (e.g. a vendor driver node) collapse into one async
+  lane per process: callback slices survive, but they no longer occupy
+  one row per tid. ``--all-threads`` restores per-thread rows;
+  ``--focus-proc <substr,...>`` force-promotes processes into the focus
+  tier (needed for captures from a build without RTC_ENABLE_TRACING,
+  where no span exists to classify automatically — that case falls back
+  to per-thread detail everywhere, with a stderr note).
+
+Threads visible only through ``sched_switch`` (kernel tasks, non-UST
+system processes) get no thread row at all — they appear on the Cpu
+lanes only. Captures without the vpid context land in a flat
+``Threads (by TID)`` fallback group, always at per-thread detail.
 
 Unlike the prior perf-sampling converter, ros2_tracing events carry
 *exact* begin/end timestamps — no common-prefix stitching guesswork. The
@@ -75,10 +90,23 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# Two virtual processes so Perfetto draws two swimlane groups.
+# Thread-lane slices are grouped by their *real* process (vpid from the
+# LTTng DEFAULT_CONTEXT) so Perfetto shows a process → thread hierarchy.
+# THREAD_PID is the flat fallback group for captures without the vpid
+# context. CPU / IRQ remain virtual groups; their ids sit far above
+# PID_MAX_LIMIT (2^22) so they can never collide with a real vpid.
 THREAD_PID = 1
-CPU_PID = 2
-IRQ_PID = 3
+CPU_PID = 10_000_000
+IRQ_PID = 10_000_001
+
+# process_sort_index values — Perfetto sorts process groups ascending, so
+# workspace (rtc:span-emitting) processes render on top, then the CPU
+# lanes, then summarized external processes, then IRQ.
+SORT_FOCUS = 10
+SORT_FALLBACK = 20
+SORT_CPU = 30
+SORT_SUMMARY = 40
+SORT_IRQ = 50
 
 # Events that always produce structured slices (B/E pairs) and are never
 # subject to the drop policy — dropping them would empty the timeline.
@@ -339,6 +367,8 @@ def build_trace(
     keep_events: frozenset[str] | None = None,
     keep_all: bool = False,
     progress_every: int = 0,
+    focus_procs: frozenset[str] | None = None,
+    all_threads: bool = False,
 ) -> dict:
     """Walk the event stream once, emit Chrome Trace events.
 
@@ -361,6 +391,20 @@ def build_trace(
             stderr every ``progress_every`` input events. Large CTF traces
             take tens of seconds to walk with no other output; this shows
             the pass is alive. 0 (the default, used by tests) stays silent.
+        focus_procs: process-name substrings forced into the focus tier
+            (per-thread detail). Useful for captures without ``rtc:*``
+            spans, where the automatic focus classification has no signal.
+        all_threads: if True, disable the external-process summarization —
+            every UST-emitting process keeps per-thread rows.
+
+    Focus tiering: processes that emitted at least one ``rtc:span_begin``
+    (i.e. carry workspace ``RTC_TRACE_SCOPE`` instrumentation) keep full
+    per-thread rows. Other UST processes (external ROS nodes such as a
+    vendor driver) are collapsed into one async "summary" lane per process
+    — their callback slices survive but no longer occupy one row per tid.
+    Threads visible only through ``sched_switch`` get no thread row at all
+    (they still appear on the Cpu lanes). If no span was captured and no
+    ``focus_procs`` match, everything stays at per-thread detail.
 
     Returns:
         ``{"traceEvents": [...], "displayTimeUnit": "ms",
@@ -376,6 +420,14 @@ def build_trace(
     out: list[dict] = []
     base_ns: int | None = None
     dropped_counts: dict[str, int] = defaultdict(int)
+
+    # Real-process grouping + focus tiering state. tid→pid comes from the
+    # vpid/vtid context (ros2_tracing DEFAULT_CONTEXT, present on both UST
+    # and kernel channels when enabled at capture).
+    tid_to_pid: dict[int, int] = {}
+    proc_name_by_pid: dict[int, str] = {}
+    span_pids: set[int] = set()  # pids that emitted rtc:span_begin
+    thread_slice_tids_by_pid: dict[int, set[int]] = defaultdict(set)
 
     # Per-CPU current tid (for sched_switch B/E emission).
     current_tid_on_cpu: dict[int, int] = {}
@@ -413,6 +465,26 @@ def build_trace(
         if vtid and procname and vtid not in thread_names:
             thread_names[vtid] = f"{procname}-{vtid}"
 
+        try:
+            vpid = int(payload.get("vpid") or 0)
+        except (TypeError, ValueError):
+            vpid = 0
+        if vpid and vtid:
+            tid_to_pid[vtid] = vpid
+            if procname:
+                if vtid == vpid:
+                    # Main thread: its comm IS the process name — freshest wins.
+                    proc_name_by_pid[vpid] = str(procname)
+                else:
+                    # Worker-thread comm is a weak guess; keep only until the
+                    # main thread is observed (UST context or sched_switch).
+                    proc_name_by_pid.setdefault(vpid, str(procname))
+
+        # Thread-lane events land on their real process group when the trace
+        # carries the vpid context; THREAD_PID is the flat fallback group
+        # for context-less captures (and synthetic test streams).
+        lane_pid = vpid or tid_to_pid.get(vtid, 0) or THREAD_PID
+
         if cpu_id is not None:
             cpus_seen.add(int(cpu_id))
 
@@ -429,13 +501,14 @@ def build_trace(
             if addr and sym:
                 symbol_by_addr[addr] = str(sym)
             if keep_all or name in keep_extra:
+                thread_slice_tids_by_pid[lane_pid].add(vtid)
                 out.append(
                     {
                         "name": _truncate(name),
                         "cat": "ros2",
                         "ph": "i",
                         "ts": ts_us,
-                        "pid": THREAD_PID,
+                        "pid": lane_pid,
                         "tid": vtid,
                         "s": "t",
                         "args": payload,
@@ -447,13 +520,14 @@ def build_trace(
             sym = payload.get("symbol") or symbol_by_addr.get(cb) or f"callback@0x{cb:x}"
             key = (vtid, cb)
             callbacks_open[key] = ts_us
+            thread_slice_tids_by_pid[lane_pid].add(vtid)
             out.append(
                 {
                     "name": _truncate(sym),
                     "cat": "callback",
                     "ph": "B",
                     "ts": ts_us,
-                    "pid": THREAD_PID,
+                    "pid": lane_pid,
                     "tid": vtid,
                     "args": {"callback": f"0x{cb:x}", "symbol": sym},
                 }
@@ -468,7 +542,7 @@ def build_trace(
                 {
                     "ph": "E",
                     "ts": ts_us,
-                    "pid": THREAD_PID,
+                    "pid": lane_pid,
                     "tid": vtid,
                     "cat": "callback",
                 }
@@ -481,13 +555,15 @@ def build_trace(
             # the RAII helper guarantees balanced nesting, so no per-tid stack
             # bookkeeping is needed here.
             label = payload.get("name") or "rtc:span"
+            span_pids.add(lane_pid)
+            thread_slice_tids_by_pid[lane_pid].add(vtid)
             out.append(
                 {
                     "name": _truncate(str(label)),
                     "cat": "rtc",
                     "ph": "B",
                     "ts": ts_us,
-                    "pid": THREAD_PID,
+                    "pid": lane_pid,
                     "tid": vtid,
                 }
             )
@@ -497,7 +573,7 @@ def build_trace(
                 {
                     "ph": "E",
                     "ts": ts_us,
-                    "pid": THREAD_PID,
+                    "pid": lane_pid,
                     "tid": vtid,
                     "cat": "rtc",
                 }
@@ -517,6 +593,12 @@ def build_trace(
                 thread_names[prev_tid] = f"{prev_comm}-{prev_tid}"
             if next_tid and next_comm:
                 thread_names[next_tid] = f"{next_comm}-{next_tid}"
+            # Refresh the process name whenever the *main* thread (tid == pid)
+            # is switched in/out — its comm is the process name, fresher than
+            # any weak worker-thread guess taken from the UST context.
+            for t, comm in ((prev_tid, prev_comm), (next_tid, next_comm)):
+                if t and comm and tid_to_pid.get(t) == t:
+                    proc_name_by_pid[t] = comm
             if cpu_id is None:
                 continue
             cpu = int(cpu_id)
@@ -581,13 +663,14 @@ def build_trace(
             # bloated the JSON without adding aggregatable signal in
             # Perfetto. Opt-in via --keep-events <name> or --keep-all.
             if keep_all or name in keep_extra:
+                thread_slice_tids_by_pid[lane_pid].add(vtid)
                 out.append(
                     {
                         "name": _truncate(name),
                         "cat": name.split(":")[0] if ":" in name else "event",
                         "ph": "i",
                         "ts": ts_us,
-                        "pid": THREAD_PID,
+                        "pid": lane_pid,
                         "tid": vtid,
                         "s": "t",
                         "args": payload,
@@ -596,43 +679,126 @@ def build_trace(
             else:
                 dropped_counts[name] += 1
 
-    # Metadata records so Perfetto labels the swimlanes.
-    metadata: list[dict] = [
-        {
-            "name": "process_name",
-            "ph": "M",
-            "pid": THREAD_PID,
-            "tid": 0,
-            "args": {"name": "Threads (by TID)"},
-        },
-        {
-            "name": "process_name",
-            "ph": "M",
-            "pid": CPU_PID,
-            "tid": 0,
-            "args": {"name": "Cpus"},
-        },
-    ]
-    if irqs_seen:
+    # ── Post-pass 1: focus/summary tier classification ───────────────────────
+    # Focus = processes carrying workspace RTC_TRACE_SCOPE instrumentation
+    # (data-driven — no process-name hardcoding). The THREAD_PID fallback
+    # group (context-less captures) is always kept at per-thread detail.
+    ust_pids = set(thread_slice_tids_by_pid) - {THREAD_PID}
+    if all_threads:
+        focus_pids = set(ust_pids)
+    else:
+        focus_pids = (span_pids - {THREAD_PID}) & ust_pids
+        if focus_procs:
+            for pid in ust_pids:
+                nm = proc_name_by_pid.get(pid, "")
+                if any(s in nm for s in focus_procs):
+                    focus_pids.add(pid)
+        if not focus_pids and ust_pids:
+            print(
+                "[ctf_to_chrome] no rtc:* spans captured and no --focus-proc "
+                "match — keeping all processes at per-thread detail "
+                "(focus tiering needs an RTC_ENABLE_TRACING=ON build, see "
+                "docs/tracing.md).",
+                file=sys.stderr,
+            )
+            focus_pids = set(ust_pids)
+    summary_pids = ust_pids - focus_pids
+
+    # ── Post-pass 2: collapse summary processes into async lanes ────────────
+    # Sync B/E slices from different tids of one process overlap in time, so
+    # merging them onto one lane needs Chrome async events (ph b/e + id):
+    # Perfetto renders them as a single process-level track that only forks
+    # sub-rows while slices actually overlap.
+    if summary_pids:
+        open_stacks: dict[tuple[int, int], list[tuple[str, str, str]]] = defaultdict(list)
+        async_seq = 0
+        orphan_idx: set[int] = set()
+        for idx, ev in enumerate(out):
+            if ev.get("pid") not in summary_pids:
+                continue
+            ph = ev.get("ph")
+            if ph == "B":
+                async_seq += 1
+                aid = f"{ev['pid']}.{async_seq}"
+                ev["ph"] = "b"
+                ev["id"] = aid
+                open_stacks[(ev["pid"], ev["tid"])].append((aid, ev["name"], ev.get("cat", "")))
+            elif ph == "E":
+                stack = open_stacks[(ev["pid"], ev["tid"])]
+                if stack:
+                    aid, nm, cat = stack.pop()
+                    ev["ph"] = "e"
+                    ev["id"] = aid
+                    ev["name"] = nm
+                    ev["cat"] = cat
+                else:
+                    # End with no captured begin (trace started mid-slice) —
+                    # an unmatched async "e" confuses Perfetto; drop it.
+                    orphan_idx.add(idx)
+        if orphan_idx:
+            out = [ev for idx, ev in enumerate(out) if idx not in orphan_idx]
+
+    # ── Post-pass 3: CPU-lane labels get a process prefix ────────────────────
+    # sched_switch only carries comm; prefix the owning process name where
+    # the tid→pid mapping is known (main threads keep their bare comm — a
+    # "rt_control/rt_control-123" prefix would be noise).
+    for ev in out:
+        if ev.get("pid") != CPU_PID or ev.get("ph") != "B":
+            continue
+        t = ev["args"].get("tid")
+        base = thread_names.get(t) or ev["name"]
+        pid = tid_to_pid.get(t)
+        proc = proc_name_by_pid.get(pid) if pid else None
+        if proc and not base.startswith(f"{proc}-"):
+            ev["name"] = _truncate(f"{proc}/{base}")
+        else:
+            ev["name"] = _truncate(base)
+
+    # ── Metadata records so Perfetto labels and orders the swimlanes ─────────
+    metadata: list[dict] = []
+
+    def _process_meta(pid: int, label: str, sort_index: int) -> None:
+        metadata.append(
+            {"name": "process_name", "ph": "M", "pid": pid, "tid": 0, "args": {"name": label}}
+        )
         metadata.append(
             {
-                "name": "process_name",
+                "name": "process_sort_index",
                 "ph": "M",
-                "pid": IRQ_PID,
+                "pid": pid,
                 "tid": 0,
-                "args": {"name": "Cpu/IRQ"},
+                "args": {"sort_index": sort_index},
             }
         )
-    for tid, label in thread_names.items():
+
+    def _thread_meta(pid: int, tid: int) -> None:
         metadata.append(
             {
                 "name": "thread_name",
                 "ph": "M",
-                "pid": THREAD_PID,
+                "pid": pid,
                 "tid": tid,
-                "args": {"name": label},
+                "args": {"name": thread_names.get(tid, f"tid-{tid}")},
             }
         )
+
+    for pid in sorted(focus_pids):
+        _process_meta(pid, proc_name_by_pid.get(pid) or f"pid-{pid}", SORT_FOCUS)
+        for tid in sorted(thread_slice_tids_by_pid.get(pid, ())):
+            _thread_meta(pid, tid)
+    if THREAD_PID in thread_slice_tids_by_pid:
+        _process_meta(THREAD_PID, "Threads (by TID)", SORT_FALLBACK)
+        for tid in sorted(thread_slice_tids_by_pid[THREAD_PID]):
+            _thread_meta(THREAD_PID, tid)
+    # Threads seen only via sched_switch get no thread row — they already
+    # show on the Cpu lanes, and one empty row per system thread is what
+    # drowned the workspace threads in the old flat layout.
+    _process_meta(CPU_PID, "Cpus", SORT_CPU)
+    for pid in sorted(summary_pids):
+        label = proc_name_by_pid.get(pid) or f"pid-{pid}"
+        _process_meta(pid, f"{label} (summary)", SORT_SUMMARY)
+    if irqs_seen:
+        _process_meta(IRQ_PID, "Cpu/IRQ", SORT_IRQ)
     for cpu in sorted(cpus_seen):
         metadata.append(
             {
@@ -653,6 +819,16 @@ def build_trace(
                     "args": {"name": f"Cpu {cpu:03d} IRQ"},
                 }
             )
+
+    if summary_pids:
+        summarized = ", ".join(
+            f"{proc_name_by_pid.get(p) or f'pid-{p}'}({p})" for p in sorted(summary_pids)
+        )
+        print(
+            f"[ctf_to_chrome] summarized {len(summary_pids)} external process(es) "
+            f"into async lanes: {summarized} (per-thread rows: --all-threads)",
+            file=sys.stderr,
+        )
 
     return {
         "traceEvents": metadata + out,
@@ -700,8 +876,28 @@ def main(argv: list[str] | None = None) -> int:
             "fired, but produces large JSON."
         ),
     )
+    p.add_argument(
+        "--all-threads",
+        action="store_true",
+        help=(
+            "Disable the external-process summarization: every UST-emitting "
+            "process keeps per-thread rows (default: processes without "
+            "rtc:* spans collapse into one async summary lane each)."
+        ),
+    )
+    p.add_argument(
+        "--focus-proc",
+        default="",
+        help=(
+            "Comma-separated process-name substrings to force into the "
+            "focus tier (per-thread rows). Useful for captures from a "
+            "build without RTC_ENABLE_TRACING, where no rtc:* span exists "
+            "to classify workspace processes automatically."
+        ),
+    )
     args = p.parse_args(argv)
     keep_events = frozenset(item.strip() for item in args.keep_events.split(",") if item.strip())
+    focus_procs = frozenset(item.strip() for item in args.focus_proc.split(",") if item.strip())
 
     if args.input is not None and not args.input.is_dir():
         print(f"[ctf_to_chrome] input not a directory: {args.input}", file=sys.stderr)
@@ -718,6 +914,8 @@ def main(argv: list[str] | None = None) -> int:
         keep_events=keep_events,
         keep_all=args.keep_all,
         progress_every=100_000,
+        focus_procs=focus_procs,
+        all_threads=args.all_threads,
     )
 
     # Strip the in-process sentinel before JSON dump (Chrome Trace
@@ -725,7 +923,7 @@ def main(argv: list[str] | None = None) -> int:
     # some viewers; safer to drop).
     dropped_counts = trace.pop("_dropped_event_counts", {})
 
-    if len(trace["traceEvents"]) <= 2:  # only the 2 metadata 'M' records
+    if not any(ev["ph"] != "M" for ev in trace["traceEvents"]):
         print(
             "[ctf_to_chrome] no events parsed — empty trace or unrecognised CTF format.\n"
             "  Check: ls <input> (should contain 'metadata' and channel files)\n"
@@ -745,10 +943,9 @@ def main(argv: list[str] | None = None) -> int:
     by_phase: dict[str, int] = defaultdict(int)
     for ev in trace["traceEvents"]:
         by_phase[ev["ph"]] += 1
+    phase_str = "/".join(f"{count}{ph}" for ph, count in sorted(by_phase.items()))
     print(
-        f"[ctf_to_chrome] wrote {args.output} "
-        f"({len(trace['traceEvents'])} events: "
-        f"{by_phase['B']}B/{by_phase['E']}E/{by_phase['i']}I/{by_phase['M']}M)",
+        f"[ctf_to_chrome] wrote {args.output} ({len(trace['traceEvents'])} events: {phase_str})",
         file=sys.stderr,
     )
     if dropped_counts:
