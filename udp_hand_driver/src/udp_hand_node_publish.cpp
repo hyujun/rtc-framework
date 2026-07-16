@@ -75,10 +75,14 @@ void UdpHandNode::PublishFromEventLoop(const udp_hand_driver::UdpHandState& stat
           fs.f[ju] = state.sensor_force[force_base + ju];
           fs.u[ju] = 0.0f;
         }
-        // Firmware-measured force is always published on 1b, but the
-        // inference_enable flag tracks the configured ft_inferencer.enabled so
-        // it never claims "on" when the operator turned FT estimation off.
-        fs.inference_enable = ft_enabled_;
+        // inference_enable is the consumers' "this fingertip's f[] is usable"
+        // flag (CM's sensor lane and every controller's ft.valid gate on it),
+        // NOT a report of whether the ML inferencer runs. On 1b the force is a
+        // firmware measurement that needs no inferencer, so it is always
+        // usable — tying this to ft_enabled_ made CM drop the whole lane,
+        // because 1b intentionally leaves ft_inferencer.enabled=false (no
+        // barometer input to infer from).
+        fs.inference_enable = true;
         fs.contact_flag = 0.0f;  // no contact classifier on the 1b path yet
         continue;
       }

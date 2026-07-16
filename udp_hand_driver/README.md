@@ -125,7 +125,7 @@ MODE byte 를 임의값으로 echo 하므로 그 경로만 검증을 끈다 (`Ve
 | joint/set-mode 응답 MODE 검증 (`VerifiesResponseMode`) | strict | **off** (모든 응답의 MODE byte 가 임의값) |
 | bulk sensor 응답 MODE 검증 (`VerifiesBulkSensorResponseMode`) | strict | **off** (`VerifiesResponseMode` 상속) |
 | motor-space read (0x10 kMotor) | 수행 → `motor_states` 발행 | 스킵 → `motor_states` 미발행 |
-| `sensor_states` 채움 | baro/tof + F-T `f`/`u` | `f`={fx,fy,fz}만 (Lx/Ly/Temp 는 디코드만·발행 보류) · `inference_enable`=`ft_inferencer.enabled` |
+| `sensor_states` 채움 | baro/tof + F-T `f`/`u` | `f`={fx,fy,fz}만 (Lx/Ly/Temp 는 디코드만·발행 보류) · `inference_enable`=`true` 고정 |
 | 지원 통신 모드 | individual / bulk | bulk 전용 |
 
 1b 는 `communication_mode: "bulk"` 를 요구하며, individual 과 조합 시 `on_configure`
