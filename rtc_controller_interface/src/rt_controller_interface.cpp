@@ -3,6 +3,10 @@
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/types.hpp"
 
+#include <rclcpp/logging.hpp>
+
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -12,6 +16,24 @@
 namespace rtc {
 
 namespace {
+
+// Throttle window for the ingress joint-limit warning. Mirrors
+// integrated_bringup's kThrottleSlowMs ("generic recurring warning"), which is
+// not reachable from here — that header is integrated_bringup-private.
+// A stuck publisher (GUI slider held at a bound, an exploration node streaming
+// goals) would otherwise reprint per message.
+constexpr int kTargetLimitWarnThrottleMs = 2000;
+
+// conventions.md §Logger naming: logs emitted from the RTControllerInterface
+// base ride the library-level logger (`<full_package_name>`) and name the
+// concrete controller via a message prefix instead. node_->get_logger() would
+// render as "<config_key>.<config_key>" — CM builds each controller node with
+// name == namespace == config_key — which matches none of the three tiers.
+const rclcpp::Logger& TargetWarnLogger() {
+  static const rclcpp::Logger logger = rclcpp::get_logger("rtc_controller_interface");
+  return logger;
+}
+
 // Phase 4: device-wire roles (state / motor_state / sensor_state / joint_command
 // / ros2_command) live in `devices.<group>.backend:` (sim.yaml/robot.yaml) and
 // are owned by DeviceBackend impls. Controller YAML retains only target /
@@ -198,6 +220,79 @@ TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_nod
   return cfg;
 }
 
+TargetLimitViolation CheckTargetLimits(std::span<const double> ordered,
+                                       const DeviceJointLimits& lim) noexcept {
+  TargetLimitViolation out;
+  // Ragged/short config must never drive an out-of-bounds read: a device may
+  // declare max_velocity but omit position bounds, in which case there is
+  // nothing to screen against and every joint is reported clean.
+  const std::size_t n =
+      std::min({ordered.size(), lim.position_lower.size(), lim.position_upper.size()});
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const double v = ordered[i];
+    const bool bad_finite = !std::isfinite(v);
+    // Ordering matters: a NaN fails both comparisons below, so the finite test
+    // must come first or NaN would be classified clean.
+    const bool out_of_range =
+        !bad_finite && (v < lim.position_lower[i] || v > lim.position_upper[i]);
+    if (!bad_finite && !out_of_range) {
+      continue;
+    }
+    if (out.count == 0) {
+      out.first_idx = static_cast<int>(i);
+      out.value = v;
+      out.lower = lim.position_lower[i];
+      out.upper = lim.position_upper[i];
+      out.non_finite = bad_finite;
+    }
+    ++out.count;
+  }
+  return out;
+}
+
+void RTControllerInterface::WarnIfTargetOutOfLimits(
+    const std::string& group_name, std::span<const double> ordered) const noexcept {
+  if (!node_) {
+    return;
+  }
+  auto cfg_it = device_name_configs_.find(group_name);
+  if (cfg_it == device_name_configs_.end() || !cfg_it->second.joint_limits) {
+    return;
+  }
+  const auto& cfg = cfg_it->second;
+  const TargetLimitViolation v = CheckTargetLimits(ordered, *cfg.joint_limits);
+  if (v.count == 0) {
+    return;
+  }
+
+  const auto idx = static_cast<std::size_t>(v.first_idx);
+  // joint_limits arrays are parser-validated to match joint_state_names in
+  // length (rt_controller_node_device_config.cpp clears the block otherwise),
+  // so this index is sound; the guard covers a hand-built config in tests.
+  const char* jname =
+      (idx < cfg.joint_state_names.size()) ? cfg.joint_state_names[idx].c_str() : "<unnamed>";
+
+  // `%.*s` — Name() is a string_view with no null-termination guarantee.
+  // Scalars otherwise: no std::string assembly, because the caller
+  // (DeliverTargetMessage) is noexcept and a throwing allocation would
+  // terminate the process.
+  const auto name_len = static_cast<int>(Name().size());
+  const char* name_ptr = Name().data();
+  if (v.non_finite) {
+    RCLCPP_WARN_THROTTLE(TargetWarnLogger(), *node_->get_clock(), kTargetLimitWarnThrottleMs,
+                         "[%.*s] device '%s': joint_goal '%s' is non-finite (%f) — %d joint(s) "
+                         "outside limits; note the RT clamp does NOT stop a non-finite command",
+                         name_len, name_ptr, group_name.c_str(), jname, v.value, v.count);
+    return;
+  }
+  RCLCPP_WARN_THROTTLE(TargetWarnLogger(), *node_->get_clock(), kTargetLimitWarnThrottleMs,
+                       "[%.*s] device '%s': %d joint goal(s) outside limits — first: '%s' = "
+                       "%.4f rad, limit [%.4f, %.4f] — command will be clamped",
+                       name_len, name_ptr, group_name.c_str(), v.count, jname, v.value, v.lower,
+                       v.upper);
+}
+
 void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, int device_idx,
                                                  const rtc_msgs::msg::RobotTarget& msg) noexcept {
   const double* data_ptr = nullptr;
@@ -246,6 +341,10 @@ void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, 
   if (msg.goal_type == "task") {
     SetDeviceTaskTarget(device_idx, ordered_span);
   } else {
+    // Warn-only, and only here: `ordered_span` is already in device-channel
+    // order, so it aligns index-for-index with joint_limits/joint_state_names.
+    // A task goal carries Cartesian [x,y,z,r,p,y] — joint limits do not apply.
+    WarnIfTargetOutOfLimits(group_name, ordered_span);
     SetDeviceTarget(device_idx, ordered_span);
   }
 }

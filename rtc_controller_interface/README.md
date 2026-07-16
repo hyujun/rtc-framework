@@ -63,6 +63,16 @@ virtual void SetDeviceTaskTarget(int device_idx, std::span<const double> task6) 
 | `"task"` | `msg.task_target` | 없음 (그대로 전달) | `SetDeviceTaskTarget(device_idx, ordered_span)` |
 | 그 외 (joint) | `msg.joint_target` | `msg.joint_names` → `device_name_configs_[group_name].joint_state_names` 순서로 재정렬 | `SetDeviceTarget(device_idx, ordered_span)` |
 
+#### Joint 목표 limit 스크리닝 (warn-only)
+
+joint 목표는 디스패치 직전에 `device_name_configs_[group_name].joint_limits`의 `position_lower` / `position_upper`와 대조되며, 벗어나면 위반 joint 이름·값·범위를 담은 throttled `RCLCPP_WARN`이 발행됩니다. 리오더링이 끝난 `ordered_span`에서 검사하므로 인덱스가 `joint_state_names`와 1:1로 맞습니다.
+
+- **Warn-only** — 커맨드를 거부하거나 수정하지 않습니다. 실제 강제는 각 컨트롤러 `WriteJointCommand`의 RT-path `ClampRange`가 그대로 담당하며, 이 로그는 "왜 goal 이 요청한 곳에 안 갔는지"를 조용한 clamp 대신 보이게 하는 것이 목적입니다.
+- **`joint_limits` 미설정 device 는 침묵** — `LoadDeviceLimitsFromConfig`의 ±2π fallback 은 실제 안전 범위가 아니라 placeholder 이므로, 이를 기준으로 경고하면 전부 false-positive 가 됩니다.
+- **task 목표는 대상 외** — `task_target`은 Cartesian `(x, y, z, r, p, y)`라 joint limit 이 적용되지 않습니다.
+- **non-finite 도 위반으로 보고** — `std::clamp(NaN, lo, hi)`는 두 비교가 모두 false 라 NaN 을 그대로 반환합니다. 즉 RT clamp 가 막지 못하므로 반드시 표면화해야 합니다 (현재는 경고만 — drop 하지 않음).
+- 판정 로직은 순수 함수 `rtc::CheckTargetLimits(ordered, lim)` → `TargetLimitViolation` 으로 분리돼 있어 ROS 없이 단위 테스트됩니다. 로그는 [conventions.md](../agent_docs/conventions.md) §Logger naming 에 따라 library-level logger (`rtc_controller_interface`) + 메시지 본문 `[<controller_name>]` prefix 를 씁니다.
+
 > **Hold-init 책임 분리 (2026-05-17, RT-4)**: 과거에는 `InitializeHoldPosition(state)` 순수 가상이 CM의 auto-hold 경로에서 RT 스레드로 호출됐다. 이는 `target_mutex_` (RT-4 위반) + writer-multiplicity race (lifecycle/RT/aux 3 thread)의 근원이었고 v1 시도에서 SeqLock 단순 적용으로는 해결되지 않았다. v2 cleanup으로 hold-init은 controller 내부 책임이 되었다 — 각 controller는 `target_initialized_` atomic을 두고 `Compute()` 첫 진입 시 현재 device state로 자체 seed. CM의 auto-hold 코드 / `BuildDeviceSnapshot` / `InitializeHoldPosition` 가상 함수는 모두 삭제됐다.
 
 ### 가상 메서드 (기본 구현 제공)

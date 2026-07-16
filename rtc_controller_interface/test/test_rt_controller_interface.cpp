@@ -25,8 +25,12 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <array>
+#include <limits>
 #include <map>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -717,6 +721,229 @@ TEST(RTControllerInterfaceTest, OnConfigureLegacyDirectCallStillWorks) {
   ASSERT_EQ(ctrl.on_configure(unconfigured, node, yaml),
             rtc::RTControllerInterface::CallbackReturn::SUCCESS);
   EXPECT_FALSE(ctrl.GetTopicConfig().groups.empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CheckTargetLimits — ingress screening of external joint goals
+//
+// Warn-only by contract: these tests lock what the operator gets *told*. The
+// command itself is never altered here — enforcement stays with the RT-path
+// ClampRange in each controller's WriteJointCommand.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+namespace {
+rtc::DeviceJointLimits MakeLimits(std::vector<double> lower, std::vector<double> upper) {
+  rtc::DeviceJointLimits lim;
+  lim.position_lower = std::move(lower);
+  lim.position_upper = std::move(upper);
+  return lim;
+}
+}  // namespace
+
+TEST(CheckTargetLimits, InRangeGoalReportsNoViolation) {
+  const auto lim = MakeLimits({-1.0, -2.0}, {1.0, 2.0});
+  const std::array<double, 2> goal{0.5, -1.9};
+
+  const auto v = rtc::CheckTargetLimits(std::span<const double>(goal), lim);
+
+  EXPECT_EQ(v.count, 0);
+  EXPECT_EQ(v.first_idx, -1);
+}
+
+TEST(CheckTargetLimits, BoundsAreInclusive) {
+  // A goal sitting exactly on a bound is legal — ClampRange would leave it
+  // untouched, so warning here would be a false positive.
+  const auto lim = MakeLimits({-1.0, -2.0}, {1.0, 2.0});
+  const std::array<double, 2> goal{-1.0, 2.0};
+
+  EXPECT_EQ(rtc::CheckTargetLimits(std::span<const double>(goal), lim).count, 0);
+}
+
+TEST(CheckTargetLimits, DetectsLowerAndUpperViolations) {
+  const auto lim = MakeLimits({-1.0}, {1.0});
+  const std::array<double, 1> below{-1.5};
+  const std::array<double, 1> above{1.5};
+
+  const auto v_below = rtc::CheckTargetLimits(std::span<const double>(below), lim);
+  EXPECT_EQ(v_below.count, 1);
+  EXPECT_EQ(v_below.first_idx, 0);
+  EXPECT_DOUBLE_EQ(v_below.value, -1.5);
+  EXPECT_DOUBLE_EQ(v_below.lower, -1.0);
+  EXPECT_DOUBLE_EQ(v_below.upper, 1.0);
+  EXPECT_FALSE(v_below.non_finite);
+
+  const auto v_above = rtc::CheckTargetLimits(std::span<const double>(above), lim);
+  EXPECT_EQ(v_above.count, 1);
+  EXPECT_DOUBLE_EQ(v_above.value, 1.5);
+}
+
+TEST(CheckTargetLimits, CountsAllViolationsButDescribesTheFirst) {
+  // The warning names one joint to keep the message printf-formattable, but the
+  // count must reflect every violation so the operator knows it is not alone.
+  const auto lim = MakeLimits({-1.0, -1.0, -1.0}, {1.0, 1.0, 1.0});
+  const std::array<double, 3> goal{0.0, 5.0, -5.0};
+
+  const auto v = rtc::CheckTargetLimits(std::span<const double>(goal), lim);
+
+  EXPECT_EQ(v.count, 2);
+  EXPECT_EQ(v.first_idx, 1);
+  EXPECT_DOUBLE_EQ(v.value, 5.0);
+}
+
+TEST(CheckTargetLimits, NonFiniteGoalIsAViolation) {
+  // std::clamp(NaN, lo, hi) returns NaN — the RT clamp does not stop this, so
+  // the check must not classify it as clean.
+  const auto lim = MakeLimits({-1.0, -1.0}, {1.0, 1.0});
+  const std::array<double, 2> nan_goal{std::numeric_limits<double>::quiet_NaN(), 0.0};
+  const std::array<double, 2> inf_goal{std::numeric_limits<double>::infinity(), 0.0};
+
+  const auto v_nan = rtc::CheckTargetLimits(std::span<const double>(nan_goal), lim);
+  EXPECT_EQ(v_nan.count, 1);
+  EXPECT_EQ(v_nan.first_idx, 0);
+  EXPECT_TRUE(v_nan.non_finite);
+
+  const auto v_inf = rtc::CheckTargetLimits(std::span<const double>(inf_goal), lim);
+  EXPECT_EQ(v_inf.count, 1);
+  EXPECT_TRUE(v_inf.non_finite);
+}
+
+TEST(CheckTargetLimits, ShorterLimitVectorsBoundTheScan) {
+  // Device declares bounds for 1 joint but the goal carries 3 — the untyped
+  // tail must be ignored rather than read past the config.
+  const auto lim = MakeLimits({-1.0}, {1.0});
+  const std::array<double, 3> goal{0.0, 99.0, 99.0};
+
+  EXPECT_EQ(rtc::CheckTargetLimits(std::span<const double>(goal), lim).count, 0);
+}
+
+TEST(CheckTargetLimits, MissingPositionBoundsScreenNothing) {
+  // joint_limits present but position bounds empty (e.g. velocity-only config):
+  // there is no envelope to screen against, so nothing is reported.
+  rtc::DeviceJointLimits lim;
+  lim.max_velocity = {1.0, 1.0};
+  const std::array<double, 2> goal{1e6, -1e6};
+
+  EXPECT_EQ(rtc::CheckTargetLimits(std::span<const double>(goal), lim).count, 0);
+}
+
+// ── End-to-end: the warning actually reaches the operator ────────────────────
+//
+// The tests above lock the decision; these lock the *delivery* through the real
+// DeliverTargetMessage path (reorder → screen → dispatch), since a correct
+// verdict that never gets logged is worthless. rclcpp writes to stderr, so the
+// assertion captures it.
+
+namespace {
+
+// Configures a StubController with one device group carrying `lim`, so
+// DeliverTargetMessage has both a node_ (for the logger) and device configs.
+void SetUpLimitedController(StubController& ctrl, rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+                            const rtc::DeviceJointLimits& lim,
+                            const std::vector<std::string>& joint_names) {
+  YAML::Node yaml;
+  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/target";
+  yaml["topics"]["arm"]["subscribe"][0]["role"] = "target";
+  const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+  ASSERT_EQ(ctrl.on_configure(unconfigured, std::move(node), yaml),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  configs["arm"].joint_state_names = joint_names;
+  configs["arm"].joint_limits = lim;
+  ctrl.SetDeviceNameConfigs(std::move(configs));
+}
+
+rtc_msgs::msg::RobotTarget MakeJointGoal(std::vector<std::string> names,
+                                         std::vector<double> targets) {
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "joint";
+  msg.joint_names = std::move(names);
+  msg.joint_target = std::move(targets);
+  return msg;
+}
+
+}  // namespace
+
+TEST(DeliverTargetMessageLimitWarning, OutOfLimitJointGoalWarnsNamingTheJoint) {
+  StubController ctrl;
+  auto node = MakeLcNode("target_limit_warn_node");
+  SetUpLimitedController(ctrl, node, MakeLimits({-3.14, -3.14}, {3.14, 3.14}),
+                         {"shoulder_pan_joint", "shoulder_lift_joint"});
+
+  testing::internal::CaptureStderr();
+  ctrl.DeliverTargetMessage(
+      "arm", 0, MakeJointGoal({"shoulder_pan_joint", "shoulder_lift_joint"}, {0.0, 4.712}));
+  const std::string logged = testing::internal::GetCapturedStderr();
+
+  EXPECT_NE(logged.find("shoulder_lift_joint"), std::string::npos)
+      << "warning must name the offending joint; got: " << logged;
+  EXPECT_NE(logged.find("outside limits"), std::string::npos) << "got: " << logged;
+  // conventions.md §Logger naming: base-class logs ride the library-level
+  // logger and identify the controller via a message prefix, so an operator
+  // running three controllers can tell which one rejected the goal.
+  EXPECT_NE(logged.find("[rtc_controller_interface]"), std::string::npos)
+      << "must use the library-level logger; got: " << logged;
+  EXPECT_NE(logged.find("[StubController]"), std::string::npos)
+      << "must name the calling controller; got: " << logged;
+}
+
+TEST(DeliverTargetMessageLimitWarning, InRangeJointGoalIsSilent) {
+  StubController ctrl;
+  auto node = MakeLcNode("target_limit_silent_node");
+  SetUpLimitedController(ctrl, node, MakeLimits({-3.14, -3.14}, {3.14, 3.14}),
+                         {"shoulder_pan_joint", "shoulder_lift_joint"});
+
+  testing::internal::CaptureStderr();
+  ctrl.DeliverTargetMessage(
+      "arm", 0, MakeJointGoal({"shoulder_pan_joint", "shoulder_lift_joint"}, {0.1, -0.2}));
+  const std::string logged = testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(logged.find("outside limits"), std::string::npos)
+      << "a legal goal must not warn; got: " << logged;
+}
+
+TEST(DeliverTargetMessageLimitWarning, DeviceWithoutJointLimitsIsSilent) {
+  // No joint_limits → the ±2π fallback is a placeholder, not a real envelope.
+  // Warning against it would fire on every device that omits the YAML block.
+  StubController ctrl;
+  auto node = MakeLcNode("target_limit_noconfig_node");
+  YAML::Node yaml;
+  yaml["topics"]["arm"]["subscribe"][0]["topic"] = "/arm/target";
+  yaml["topics"]["arm"]["subscribe"][0]["role"] = "target";
+  const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+  ASSERT_EQ(ctrl.on_configure(unconfigured, node, yaml),
+            rtc::RTControllerInterface::CallbackReturn::SUCCESS);
+  std::map<std::string, rtc::DeviceNameConfig> configs;
+  configs["arm"].joint_state_names = {"j0"};  // joint_limits intentionally unset
+  ctrl.SetDeviceNameConfigs(std::move(configs));
+
+  testing::internal::CaptureStderr();
+  ctrl.DeliverTargetMessage("arm", 0, MakeJointGoal({"j0"}, {1e6}));
+  const std::string logged = testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(logged.find("outside limits"), std::string::npos)
+      << "device without configured limits must not warn; got: " << logged;
+}
+
+TEST(DeliverTargetMessageLimitWarning, TaskGoalIsNotScreenedAgainstJointLimits) {
+  // task_target is Cartesian [x,y,z,r,p,y] — joint limits are meaningless here.
+  // A 0.9 m reach must not be reported as an out-of-range "joint".
+  StubController ctrl;
+  auto node = MakeLcNode("target_limit_taskgoal_node");
+  SetUpLimitedController(ctrl, node, MakeLimits({-0.1, -0.1}, {0.1, 0.1}), {"j0", "j1"});
+
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "task";
+  msg.task_target = {0.9, 0.9, 0.9, 0.0, 0.0, 0.0};
+
+  testing::internal::CaptureStderr();
+  ctrl.DeliverTargetMessage("arm", 0, msg);
+  const std::string logged = testing::internal::GetCapturedStderr();
+
+  EXPECT_EQ(logged.find("outside limits"), std::string::npos)
+      << "task goals must bypass the joint-limit screen; got: " << logged;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -28,6 +28,39 @@ class PinocchioModelBuilder;
 
 namespace rtc {
 
+// ── Ingress target limit check ────────────────────────────────────────────
+//
+// Result of screening one external joint-goal message against a device's
+// configured position limits. Purely descriptive: the check never rejects nor
+// modifies a command — the RT-path ClampRange in each controller's
+// WriteJointCommand remains the sole enforcement. This exists so an operator
+// sees *why* a goal did not land where they asked, instead of the command
+// being silently absorbed by that clamp.
+//
+// `count` aggregates every violating joint, but only the first is described
+// (first_idx/value/lower/upper) so the warning can be formatted with plain
+// scalars — DeliverTargetMessage is noexcept, and building a per-joint string
+// there risks a throwing allocation.
+struct TargetLimitViolation {
+  int count = 0;            ///< number of joints outside limits (0 → goal is clean)
+  int first_idx = -1;       ///< index of the first violating joint, -1 when count==0
+  double value = 0.0;       ///< commanded value at first_idx
+  double lower = 0.0;       ///< configured lower bound at first_idx
+  double upper = 0.0;       ///< configured upper bound at first_idx
+  bool non_finite = false;  ///< true when the joint at first_idx is NaN/Inf
+};
+
+// Screens `ordered` (a joint goal already reordered into device-channel order)
+// against `lim`. Pure: no ROS, no allocation, no logging — the logging wrapper
+// is RTControllerInterface::WarnIfTargetOutOfLimits.
+//
+// Compares over min(ordered, position_lower, position_upper) entries so a
+// short/ragged config can never read out of bounds. A non-finite command
+// counts as a violation: std::clamp(NaN, lo, hi) returns NaN (both comparisons
+// are false), so the RT clamp does not stop it — the operator must be told.
+[[nodiscard]] TargetLimitViolation CheckTargetLimits(std::span<const double> ordered,
+                                                     const DeviceJointLimits& lim) noexcept;
+
 // ── Abstract interface (Strategy Pattern)
 // ─────────────────────────────────────
 //
@@ -372,6 +405,20 @@ class RTControllerInterface {
   // future migration to "RTControllerInterface : public LifecycleNode" is a
   // mechanical `node_->` → `this->` replacement.
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+
+ private:
+  // Screens an incoming joint goal against `group_name`'s configured position
+  // limits and emits one throttled WARN describing the violation. Never alters
+  // the command — see TargetLimitViolation. Silent when the device declares no
+  // joint_limits: LoadDeviceLimitsFromConfig's ±2π fallback is a placeholder,
+  // not a real envelope, so warning against it would be pure false-positive.
+  //
+  // Non-RT: the caller (DeliverTargetMessage) runs on the LifecycleNode's
+  // default callback group → nrt_callback_executor, an invariant locked by
+  // integrated_bringup/test/test_controller_target_cb_group_invariant.cpp.
+  // A plain RCLCPP_WARN_THROTTLE is therefore legal here (no RT-3 SPSC defer).
+  void WarnIfTargetOutOfLimits(const std::string& group_name,
+                               std::span<const double> ordered) const noexcept;
 };
 
 }  // namespace rtc
