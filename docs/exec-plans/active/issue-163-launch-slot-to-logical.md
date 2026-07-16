@@ -47,8 +47,8 @@ Issue: #163 — `fix(rtc_tools): 런치 taskset 이 slot 을 logical CPU 로 오
 - [x] Phase 0 — #163 생성, #151 · #152 코멘트, 본 artifact 생성
 - [x] Phase 1 — `rtc_tools/launch/pinning.py` 신설 + 런치 5개 전환 + `_pin_external_driver` 중복 제거 (commit a015ce3)
 - [x] Phase 2 — `test_pinning_slot_to_logical.py` 하이브리드 축 drift 테스트 (commit a14f97f)
+- [x] Phase 3 — DDS pin 루프 이름 필터 (nrt yank 차단) + `RTC_OWNED_THREAD_NAMES` mirror 테스트 (commit f875318)
 - [ ] **handoff 경계** — NUC13 실측 (사용자 소유). #151 코멘트의 명령 세트 실행
-- [ ] Phase 3 — DDS pin 루프 이름 필터 (nrt yank 차단). 실측과 독립, 착수 가능
 - [ ] Phase 4 — `taskset -acp` (실측 gate)
 
 ## Next action
@@ -111,7 +111,7 @@ Phase 1·2 build/test evidence: **미수집** (착수 전).
 ## Constraints / pending human decisions
 
 - **Phase 4 gate — NUC13 실측 필요**: `[CONCERN] Warning` — `taskset -acp` 는 UR 드라이버 전 스레드를 E-core 1개(logical 10)에 몰아넣는다. `ur_ros2_driver` 는 500Hz RTDE 루프를 돌리므로 E-core 1개로 부족할 수 있다. 즉 "계획대로 고치는 것"이 성능을 악화시킬 수 있고, 현재 상태는 버그와 우연한 완화가 겹쳐 있다. E-core 사용률 · RTDE 지터 실측 후 결정.
-- **Phase 3 잔여 race**: `[CONCERN] Warning` — 이름 필터는 nrt yank 는 막지만 t=5s 이후 생성 DDS 스레드는 여전히 미핀. 별도 이슈로 분리 (사용자 결정).
+- **Phase 3 잔여 race**: `[CONCERN] Warning` — 이름 필터는 nrt yank 는 막지만 t=5s 이후 생성 DDS 스레드는 여전히 미핀. 별도 이슈 #164 로 분리.
 - **#151 미검증 가설** — cset shield 활성 시 프로세스가 `system` cpuset 에 갇혀 `pthread_setaffinity_np` 가 EINVAL → `thread_utils.hpp:163` 이 SCHED_FIFO 설정 **전에** `return false` → rt_control 이 pin 과 FIFO 90 을 모두 잃음. **실기 확인 전까지 미검증.** 이것이 참이면 Phase 1 수정도 런타임에서 무력화되므로 Phase 1 검증 자체가 이 데이터를 필요로 한다.
 
 ## Workspace
