@@ -48,8 +48,17 @@ Issue: #163 — `fix(rtc_tools): 런치 taskset 이 slot 을 logical CPU 로 오
 - [x] Phase 1 — `rtc_tools/launch/pinning.py` 신설 + 런치 5개 전환 + `_pin_external_driver` 중복 제거 (commit a015ce3)
 - [x] Phase 2 — `test_pinning_slot_to_logical.py` 하이브리드 축 drift 테스트 (commit a14f97f)
 - [x] Phase 3 — DDS pin 루프 이름 필터 (nrt yank 차단) + `RTC_OWNED_THREAD_NAMES` mirror 테스트 (commit f875318)
-- [ ] **handoff 경계** — NUC13 실측 (사용자 소유). #151 코멘트의 명령 세트 실행
-- [ ] Phase 4 — `taskset -acp` (실측 gate)
+- [x] **PR #165 merge** (no-ff `c5a5ea4`, main), issue #163 CLOSED
+- [x] **NUC13 실측 완료 (2026-07-17)** — Phase 1·3 실기 확정, #151 가설 확정. 아래 결과 참조
+- [ ] Phase 4 — `taskset -acp`. **#151(shield 미배치) blocked** — shield-on 시 E-core 부하 측정이 왜곡되므로 #151 선행 필요
+
+## NUC13 실측 결과 (2026-07-17, 제어 PC)
+
+- **Phase 1 확정**: `ur_ros2_driver → slot 6 -> logical CPU 10`, `udp_hand_node → slot 7 -> logical CPU 11` (두 런). raw slot 6/7(mpc_main P-core+sibling) 아님.
+- **Phase 3 확정**: `ps -eLo` → `nrt_logging 12 TS`, `nrt_callback 13 TS`. rt_callback 코어(4)로 yank 안 됨.
+- **#151 가설 확정**: `sudo cpu_shield.sh on --robot` → `"user" cpuset(2-9) with 0 tasks running`. shield 가 RT 프로세스를 배치하지 않음(저장소에 `cset --exec/--move` 부재) → CM 이 system(0-1,10-15)에 갇혀 rt_control(logical 2)·rt_callback(4) pin 이 EINVAL 조건. `thread_utils.hpp:163` 이 FIFO 설정 전 return false → RT 스레드가 FIFO 까지 상실. → **#151 코멘트 (issue-comment 4997583640)** 로 기록.
+- **부수 발견**: 런치 shield 게이트가 `/sys/.../isolated`(isolcpus 전용)를 읽어 cset 활성을 감지 못함 → 매번 재활성. #151 범위.
+- **#163 무관**: hand UDP 통신 실패(`bulk_sensor cmd_mismatch`, `joint_read timeout`) 지속 — hand 펌웨어 문제, 별도.
 
 ## Next action
 
