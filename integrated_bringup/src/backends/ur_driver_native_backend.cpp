@@ -86,12 +86,17 @@ void UrDriverNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr
 }
 
 bool UrDriverNativeBackend::ReadState(DeviceStateCache& cache) noexcept {
+  // L3 under CM::ReadDeviceState — the RT-tick SeqLock load (not the OnJointState
+  // callback lane above, which is the non-RT write side).
+  RTC_TRACE_SCOPE("UrDriverNativeBackend::ReadState");
   cache = state_cache_.Load();
   return cache.valid;
 }
 
 void UrDriverNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                                          CommandType /*command_type*/) noexcept {
+  // L3 under CM::WriteCommand — the RT-tick actuator publish.
+  RTC_TRACE_SCOPE("UrDriverNativeBackend::WriteCommand");
   // UR's forward_position_controller is position-only — torque commands have
   // no destination on this backend. Caller is expected to not emit torque
   // when bound to this backend (validated at YAML time, not RT).

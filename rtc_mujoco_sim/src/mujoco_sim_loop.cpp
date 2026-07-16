@@ -424,6 +424,10 @@ void MuJoCoSimulator::ClearContactForces() noexcept {
 // ── HandleReset ───────────────────────────────────────────────────────────────
 
 void MuJoCoSimulator::HandleReset() noexcept {
+  // One-shot span fired only on a reset request. Depending on the call site it
+  // is either a sibling before sim_step (pre-publish reset) or a child of
+  // sim_step (post-wait reset) — both short-circuit the iteration with continue.
+  RTC_TRACE_SCOPE("MuJoCoSimulator::HandleReset");
   mj_resetData(model_, data_);
 
   for (auto& g : groups_) {

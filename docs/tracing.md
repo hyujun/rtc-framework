@@ -80,20 +80,57 @@ colcon build --cmake-args -DRTC_ENABLE_TRACING=ON
 UST 채널에 함께 기록되고, `timeline.sh` 변환기가 이를 emit 스레드 레인의 **중첩
 flame 스택**으로 렌더한다:
 
+### 2-layer span 계약과 cadence 판정 (수용 기준)
+
+**계약 (기본 2-layer)**: 모든 주기 스레드는 **L1 root span 1개**(tick 전체, raw
+`clock_nanosleep`/`jthread` 경계)와 그 하위 **L2 span**(주요 phase — read / compute /
+publish / write)으로 계측한다. L3 이상 깊은 분해는 **의도된 예외**이며, 비용·분기가
+큰 경로에만 허용한다:
+
+* **WBC** — `ComputeControl` 아래 CLIK/TSID QP sub-step (`ComputeKinematicWbc` /
+  `ComputeDynamicWbc` / FSM 경로별 mode), `UpdatePhase` grasp FSM.
+* **MPC** — `mpc_solve` 아래 `mpc_handler_solve` (aligator ProxDDP), `mpc_mode_swap`.
+* **MuJoCo** — `sim_step` 아래 `sim_substep` → `mj_step` (external physics solver),
+  one-shot `HandleReset`.
+* **backend RT I/O** — `CM::ReadDeviceState` / `CM::WriteCommand` 아래 per-backend
+  `ReadState`/`Read*State`/`WriteCommand`.
+
+아래 트리의 들여쓰기가 이 L1/L2/L3 계층을 그대로 반영한다. 새 계측점을 넣을 때는
+"이 span 이 L2(주요 phase)인가, 아니면 위 예외 목록에 드는 L3 인가"를 먼저 판정한다 —
+2-layer 밖 깊은 span 을 예외 근거 없이 추가하지 않는다.
+
+**Cadence 판정 (수용 기준 1)**: 주기성은 각 L1 root span (`rt_control_tick`,
+`sim_step`, `hand_comm_tick`, `mpc_tick`) 의 **begin timestamp 간 간격
+(begin-to-begin)** 으로 판정한다 — span *duration* 이 아니라 *시작 시각* 의 주기성이
+기준이다. 목표 주기 (`control_rate` YAML 등) 대비 이 간격의 평균·분산·최댓값(worst
+overrun) 이 판정 지표다. CSV timing/overrun 로그(동일 session_dir 트리)는 **보조
+근거** 로 병기한다 — trace 의 begin-to-begin 과 CSV 의 tick period 가 어긋나면 계측
+경계나 캡처 결손을 의심한다. 특히 `sim_step` 은 duration 에 command wait(`sim_wait_command`)
+와 throttle(`ThrottleIfNeeded`) 이 섞이므로 **cadence 는 begin-to-begin 으로만** 보고,
+physics 비용은 그 두 span 을 뺀 나머지로 해석한다 (physics 실행 시간으로 단독 오해 금지).
+
 RT 제어 스레드 (`integrated_rt_controller` 의 `rt_control`):
 
 ```
 rt_control_tick                          (RT tick 전체; raw clock_nanosleep 경계)
-├─ CM::ReadDeviceState                    (backend ReadState/ReadMotorState/ReadSensorState + state fill)
+├─ CM::ReadDeviceState                    (backend Read* dispatch + state fill)
+│  └─ <Backend>::ReadState / ReadMotorState / ReadSensorState   (per-backend RT SeqLock load, L3)
 ├─ CM::Compute                            (ControllerManager dispatch)
 │  └─ DemoWbcController::Compute           (controller 진입)
 │     └─ DemoWbcController::ComputeControl
+│        ├─ UpdatePhase                    (grasp FSM transition guard + phase-enter, L3)
 │        ├─ ComputeWbcCommon / ComputeTSIDPosition
 │        ├─ ComputeKinematicWbc
 │        └─ ComputeDynamicWbc … (FSM 경로에 따라 PositionMode/ReleaseMode/Fallback)
 ├─ CM::FillPublishSnapshot                (PublishSnapshot group_commands 채우기)
 └─ CM::WriteCommand                       (inline actuator WriteCommand 루프 — actuator lane)
+   └─ <Backend>::WriteCommand              (per-backend RT actuator publish, L3)
 CM::CheckTimeouts                         (50 Hz watchdog; 10 tick 마다, rt_control_tick 밖 sibling)
+
+`<Backend>` = `UrDriverNativeBackend` / `UdpHandNativeBackend` / `MujocoNativeBackend`
+(바인딩된 device backend). 이들 RT-path `Read*`/`WriteCommand` span 은 rt_callback lane
+의 `On*State` L2 (아래 §Executor callback) 와 **다른 쪽** — 전자는 RT tick 의 SeqLock
+read/write, 후자는 non-RT executor callback 의 SeqLock write 다.
 ```
 
 `CM::CheckTimeouts` 는 `ControlLoop()` 반환 **후** `OnTick` 에서 실행되므로
@@ -118,6 +155,9 @@ sim_step                                 (sim_thread 1 iteration; raw std::jthre
 ├─ sim_substep  ×n_substeps
 │  └─ PreparePhysicsStep → mj_step → ClearContactForces
 └─ ReadSolverStats / UpdateRtf / ThrottleIfNeeded
+MuJoCoSimulator::HandleReset             (one-shot; reset 요청 시에만 발생. pre-publish reset 이면
+                                          sim_step sibling, post-wait reset 이면 sim_step child —
+                                          둘 다 continue 로 iteration 을 짧게 끊는다)
 ```
 
 `sim_wait_command` 은 예전에 state-publish span 과 ApplyCommand span 사이의 "빈
@@ -141,6 +181,10 @@ hand_comm_tick                           (CommLoop 1 tick; raw PeriodicRtThread 
 fake 모드(`use_fake_hand`)는 read 대신 `hand_comm_tick └─ hand_fake_cycle └─ hand_fake_step`
 (LPF 모델) 이 찍히고, tail 은 실모드와 공유한다. decimated-skip / E-Stop tick 도
 `hand_comm_tick` 하위 없이 짧은 span 으로 나타난다.
+
+CommLoop 이 abort 로 종료되면 (`CommLoop::OnLoopAborted`) 터미널 E-Stop zero-write 가
+`hand_estop_zero_write` span 으로 한 번 찍힌다. 이는 **`hand_comm_tick` 의 자식이 아니라
+같은 lane 의 형제** 다 — tick 루프가 이미 unwind 된 뒤 loop 스레드에서 호출되기 때문이다.
 
 Hand 실패 감지 스레드 (`udp_hand_node` 의 `failure_detector`, 50 Hz aux jthread):
 
@@ -173,6 +217,11 @@ nrt_publish_drain                        (SPSC Pop 성공 후 work 만; 1 ms pol
 └─ owned_topics_publish                   (controller-owned 토픽 publish — grasp/wbc/tof/tf)
 ```
 
+`owned_topics_publish` 는 WBC/Task/Joint 세 컨트롤러의 `PublishNonRtSnapshot` 이 공유하는
+`PublishOwnedTopicsFromSnapshot` helper 안에 있어 **하나의 span 으로 controller-owned
+non-RT publish 전체를 귀속** 한다. 매 순간 active controller 는 하나뿐이므로(inactive 는
+`PublishNonRtSnapshot` 이 호출되지 않음) 컨트롤러별 wrapper span 을 따로 두지 않는다.
+
 MuJoCo viewer 스레드 (`mujoco_simulator_node` 의 `viewer`, sim + viewer 빌드 한정):
 
 ```
@@ -195,6 +244,7 @@ ros2_tracing 의 `ros2:callback_start/end` 가 이미 각 executor 콜백 바깥
 | `nrt_callback` | `CM::TargetCb` | RobotTarget reorder + SPSC marshal |
 | `nrt_logging` | `CM::DrainLog` | timing-CSV drain + summary print |
 | hand node executor | `hand_joint_command_cb` | JointCommand name-reorder + offset + send |
+| `mpc_timing_cb_group` (1 Hz aux timer) | `DemoWbcController::LogMpcSolveTimingTick` | MPC solve timing-CSV drain + 10 s aggregate INFO |
 
 ### 계측 제외 (의도적)
 

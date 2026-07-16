@@ -37,15 +37,15 @@
 
 이슈 본문 서술은 가설로 취급하고 전부 재확인했다. **체크박스 7개 모두 유효(열림)** 이나, 3번은 이슈 서술과 실제가 다르다.
 
-| # | 항목 | 검증 결과 |
+| # | 항목 | 검증 결과 → **처리 (2026-07-16)** |
 |---|---|---|
-| 1 | cadence acceptance 기준 문서화 | **열림** — `docs/tracing.md` 에 cadence / begin-to-begin 기준 서술 없음 |
-| 2 | 2-layer 계약 + deeper-span 예외 명시 | **열림** — L2 개념은 §“Executor callback 내부 L2 span”(tracing.md:186)에만 존재, 기본 L1/L2 계약과 WBC·MPC·MuJoCo 예외 규정 없음 |
-| 3 | backend RT I/O attribution | **열림 — 단 이슈 서술 부정확** (아래 주석 참조) |
-| 4 | controller non-RT publish attribution | **열림** — `PublishNonRtSnapshot` 3곳 모두 미계측 (wbc/controller.cpp:1879, task/controller.cpp:716, joint/controller.cpp:606) |
-| 5 | WBC rich diagnostics | **열림** — `UpdatePhase`(phase.cpp:27) 미계측(phase.cpp 에 span 0개), `LogMpcSolveTimingTick`(compute.cpp:1028) 미계측 |
-| 6 | MuJoCo `HandleReset` one-shot span | **열림** — mujoco_sim_loop.cpp:426 미계측 (418=`ClearContactForces`, 525=`sim_step` 사이) |
-| 7 | hand `OnCommLoopAborted` sibling span | **열림** — udp_hand_controller.hpp:1223 body 미계측 |
+| 1 | cadence acceptance 기준 문서화 | ~~열림~~ **완료** — `docs/tracing.md` §“2-layer span 계약과 cadence 판정” 에 begin-to-begin cadence 기준 + CSV 보조 근거 서술 |
+| 2 | 2-layer 계약 + deeper-span 예외 명시 | ~~열림~~ **완료** — 같은 §에 L1/L2 계약 + WBC·MPC·MuJoCo·backend RT I/O 예외 목록 명시 |
+| 3 | backend RT I/O attribution | ~~열림~~ **완료** — 3 backend 의 RT-path `ReadState`/`Read*State`/`WriteCommand` 에 span 추가 (8개) |
+| 4 | controller non-RT publish attribution | ~~열림~~ **이미 커버됨 (deviation)** — `owned_topics_publish`(owned_topics.cpp:288, 커밋 `dacabfc`, plan-verify 이전부터 존재)가 세 컨트롤러 공유 helper `PublishOwnedTopicsFromSnapshot` 안에서 전체 귀속. bdcbb7b grep 이 **controller.cpp 메서드만 보고 shared helper 를 놓친 false-open**. 매 순간 active controller 1개뿐이라 컨트롤러별 wrapper span 불필요 → 추가 안 함, `docs/tracing.md` §nrt_publish 에 근거 문서화 |
+| 5 | WBC rich diagnostics | ~~열림~~ **완료** — `UpdatePhase`(RT, L3 under ComputeControl) + `LogMpcSolveTimingTick`(aux, 1 Hz timer L2) span 추가 |
+| 6 | MuJoCo `HandleReset` one-shot span | ~~열림~~ **완료** — `HandleReset` body 에 span (양 call-site 커버: sibling+child) |
+| 7 | hand `OnCommLoopAborted` sibling span | ~~열림~~ **완료** — `hand_estop_zero_write` span (hand_comm_tick 의 sibling) |
 
 **3번 주석 (중요):** 세 backend 파일에 `RTC_TRACE_SCOPE` 가 이미 있어 “계측됨”으로 오독하기 쉽다. 실제로는 전부 **non-RT executor callback** 쪽이며(`OnJointState`/`OnMotorState`/`OnSensorState`/`OnWrench` — `tracing.md:133` 표에 의도적으로 문서화된 L2), 이슈가 지목한 **RT path 쪽 `ReadState` / `ReadMotorState` / `ReadSensorState` / `WriteCommand` 는 전부 미계측**이다. 따라서 3번은 “없는 걸 추가”가 아니라 “있는 것과 다른 쪽(RT tick 하위)에 추가”다.
 
@@ -58,10 +58,10 @@
 
 ## Next action
 
-1. **문서 먼저** (체크박스 1·2) — `docs/tracing.md` 에 (a) root span begin-to-begin cadence acceptance 기준 + CSV timing/overrun 을 보조 근거로 병기, (b) 기본 2-layer 계약과 허용 예외(WBC / MPC / MuJoCo external solver) 명시. 기존 §“Executor callback 내부 L2 span”·§“계측 제외 (의도적)” 와 중복되지 않게 통합 (AP-DOC-1).
-2. **RT-path attribution** (체크박스 3) — 세 backend 의 `ReadState`/`Read*State`/`WriteCommand` 에 span 추가. RT tick 하위이므로 [.claude/rules/rt-path.md](../../../.claude/rules/rt-path.md) 구속 — `RTC_TRACE_SCOPE` 는 tracing OFF 시 no-op 임을 확인하고 넣는다.
-3. 체크박스 4·5·6·7 (non-RT publish / WBC 진단 / MuJoCo reset / hand E-Stop zero-write). 7번은 **tick 자식이 아닌 sibling** 으로 — `OnCommLoopAborted` 는 loop unwind 후 호출되므로 `hand_comm_tick` 바깥이다.
-4. 검증: `./build.sh sim --tracing` → `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true` → `./repo_scripts/scripts/timeline.sh` → Perfetto 에서 root cadence + nested attribution 확인.
+**체크박스 1~7 코드·문서 작업 완료 (2026-07-16).** 남은 것은 **live span-emission 검증 하나** 뿐:
+
+1. `./build.sh sim --tracing` (완료) → `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true enable_viewer:=false` → babeltrace2/`timeline.sh` 로 신규 span 이 실제 emit 되는지 확인. **always-on span** (backend `ReadState`/`WriteCommand`, `UpdatePhase`) 은 임의 sim 캡처에 나와야 하고, **conditional span** (`HandleReset` = reset 요청 시, `hand_estop_zero_write` = abort 시) 은 해당 트리거를 줘야 나온다. 이 단계는 2026-07-16 세션에서 **사용자가 launch 를 승인하지 않아 미수행** — 사용자 실행 또는 제어 PC 캡처로 닫는다.
+   - 참고: build 는 `-p integrated_bringup,rtc_mujoco_sim,udp_hand_driver` 로 changed-package 만 tracing ON 재빌드했고 clean 통과, 3 패키지 test 100% pass (아래 Evidence). tracing OFF no-op 은 매크로 `#else` 분기(`do{}while(false)`)가 정의상 보장 — 별도 OFF 빌드 미수행.
 
 ## Decisions and rationale
 
@@ -70,8 +70,17 @@
 
 ## Evidence
 
-- span 인벤토리 grep (위 표) — `grep -rn 'RTC_TRACE_SCOPE("' --include=*.cpp --include=*.hpp`
-- `colcon test --packages-select rtc_tools` (ws root, env source 후) → **2535 tests, 0 failures, 24 skipped** (HEAD `bdcbb7b` 기준)
+### 계측 구현 (2026-07-16)
+
+- 신규 span 8+4개: backend `Read*`/`WriteCommand` (ur 2 / udp 4 / mujoco 3 — 중 mujoco `ReadSensorState`/`ReadState`/`WriteCommand`), `DemoWbcController::UpdatePhase`, `DemoWbcController::LogMpcSolveTimingTick`, `MuJoCoSimulator::HandleReset`, `hand_estop_zero_write`.
+- 빌드: `./build.sh sim --tracing -p integrated_bringup,rtc_mujoco_sim,udp_hand_driver` → **clean** (유일 stderr = `joint/compute.cpp:56,65` 기존 sign-conversion warning, 이번 변경 무관).
+- 테스트: `colcon test --packages-select integrated_bringup rtc_mujoco_sim udp_hand_driver` (ws root, env source 후) → **3 패키지 100% pass, 0 failures** (integrated_bringup 20/20).
+- 문서-코드 이름 일치(AC5): `docs/tracing.md` 트리의 `<Backend>::ReadState` 등이 실제 scope 문자열과 1:1. 매크로 no-op(AC4)은 compile-time `#else` 분기로 보장.
+
+### (이전) span 인벤토리·rtc_tools
+
+- span 인벤토리 grep — `grep -rn 'RTC_TRACE_SCOPE("' --include=*.cpp --include=*.hpp`
+- rtc_tools 는 이번 task 무변경 (viewer 쪽). 최신 카운트는 [completed/timeline-perfetto-display.md](../completed/timeline-perfetto-display.md) §Evidence (369 tests).
 
 ### 실 캡처 end-to-end (2026-07-15, 이 워크스테이션) — #157 관련 부분만
 
@@ -98,9 +107,10 @@ sim 실행에서 RT tick 스레드의 comm 이 `integrated_rt_c-534997` (고유 
 
 ## Workspace
 
-- branch `main`, HEAD `bdcbb7b`, origin/main 과 동기 (미푸시 커밋 없음). 계측 쪽 코드 변경은 **아직 0** — viewer 커밋만 올라가 있다.
-- 미커밋: `docs/WBC_CONTROLLER_IMPLEMENTATION.md` (untracked) — **이 task 소유 아님**, 세션 시작 시점부터 존재. 건드리지 말 것.
-- 빌드 상태: 이 워크스테이션은 `./build.sh sim --tracing` 으로 빌드돼 있다 (tracing ON). 계측 추가 후 재빌드 시 `--tracing` 유지할 것 — 빼면 span 이 사라져 검증이 불가능해진다.
+- branch `main`. HEAD 는 plan 작성 시점 `bdcbb7b` 이후 `51d1031` 까지 전진(#162 등 별건 merge). 2026-07-16 세션에서 **계측 코드 변경 + `docs/tracing.md` 계약 문서화 완료** — 아직 **미커밋** (working tree).
+- 변경 파일: `integrated_bringup/src/backends/{ur_driver,udp_hand,mujoco}_native_backend.cpp`, `integrated_bringup/src/controllers/wbc/{phase,compute}.cpp` (+ phase.cpp 에 `trace_scope.hpp` include 추가), `rtc_mujoco_sim/src/mujoco_sim_loop.cpp`, `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp`, `docs/tracing.md`.
+- 미커밋(별건): `docs/WBC_CONTROLLER_IMPLEMENTATION.md` (untracked) — **이 task 소유 아님**, 건드리지 말 것.
+- 빌드 상태: changed-package 를 `--tracing` 으로 재빌드해 tracing ON 유지. 재빌드 시 `--tracing` 유지 필수 — 빼면 span no-op 화.
 
 ## Pointers
 

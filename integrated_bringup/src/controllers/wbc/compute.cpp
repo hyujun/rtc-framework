@@ -1026,6 +1026,9 @@ double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept
 // ── Controller-owned topic lifecycle ──────────────────────────────────────
 
 void DemoWbcController::LogMpcSolveTimingTick() noexcept {
+  // L2 under the 1 Hz aux-timer executor callback (mpc_timing_cb_group_) — NOT
+  // an RT-tick span. Attributes the MPC timing-CSV drain + aggregate INFO.
+  RTC_TRACE_SCOPE("DemoWbcController::LogMpcSolveTimingTick");
   if (!mpc_manager_.Enabled()) {
     return;
   }
