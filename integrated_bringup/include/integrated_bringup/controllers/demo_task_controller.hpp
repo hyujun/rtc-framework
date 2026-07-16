@@ -10,6 +10,7 @@
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
@@ -393,6 +394,13 @@ class DemoTaskController final : public RTControllerInterface {
   // an enum instead of comparing a std::string every tick.
   GraspHandMode grasp_hand_mode_{GraspHandMode::kContactStop};
   std::unique_ptr<rtc::grasp::GraspController> grasp_controller_;
+
+  // ── In-plane pull-force estimator (#167) ──────────────────────────────────
+  // Configured in LoadConfig from the demo_shared `pull_estimator` block; tip
+  // links resolve against the tree-model tip_links order (== fingertip_data_ /
+  // fingertip_rotations_ slot order). Disabled (null estimator) without a hand
+  // tree-model or when the block is absent. Output rides grasp_state_.pull.
+  PullEstimatorWiring pull_wiring_;
   /// Finger index → hand joint indices mapping (ragged; fingers may have
   /// different DoF). finger_joint_map_[f][0 .. finger_dof_[f]) valid for
   /// f < num_grasp_fingers_. Cached from `DemoSharedConfig` in LoadConfig.

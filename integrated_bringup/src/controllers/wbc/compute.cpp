@@ -94,6 +94,10 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeControl");
+  // #167: contact-frame geometry is only refreshed on ticks that reach
+  // ComputeWbcCommon (TSID paths); reset here so non-TSID ticks feed the pull
+  // estimator invalid inputs (bounded decay) instead of stale frames.
+  contact_geometry_fresh_ = false;
   UpdatePhase(state);
 
   // MPC WriteState moved into ComputeTSIDPosition (next to its
@@ -125,6 +129,66 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
       ComputeFallback();
       break;
   }
+
+  // #167: after the FSM dispatch so TSID ticks see this tick's contact
+  // frames; non-TSID ticks decay the estimate via invalid inputs.
+  UpdatePullEstimate(dt);
+}
+
+// ── In-plane pull-force estimate (#167) ──────────────────────────────────────
+//
+// Measured per-fingertip forces rotated by the TSID contact-frame geometry —
+// deliberately NOT the QP's λ_opt, which reflects the commanded force
+// distribution rather than the sensed external load. Contact k's slot indexes
+// both tsid.contacts (→ pinocchio_cache_.contact_frames) and the fingertip
+// sensor lanes (documented 1:1 mapping, see ComputeWbcCommon Stage A-3).
+// oMf freshness gates: contact_geometry_fresh_ (ComputeWbcCommon ran this
+// tick) AND the per-contact active flag (PinocchioCache::Update skips
+// inactive contact frames, whose oMf would be stale or uninitialized).
+
+void DemoWbcController::UpdatePullEstimate(double dt) noexcept {
+  if (!pull_wiring_.enabled()) {
+    return;
+  }
+  RTC_TRACE_SCOPE("DemoWbcController::UpdatePullEstimate");
+  for (int k = 0; k < pull_wiring_.num_contacts; ++k) {
+    const auto ki = static_cast<std::size_t>(k);
+    const int ci = pull_wiring_.slot[ki];
+    const auto cs = static_cast<std::size_t>(ci);
+    auto& in = pull_wiring_.inputs[ki];
+    const bool geom_ok = contact_geometry_fresh_ && cs < contact_state_.contacts.size() &&
+                         contact_state_.contacts[cs].active &&
+                         cs < pinocchio_cache_.contact_frames.size();
+    const auto& ft = fingertip_data_[cs];
+    const bool sensor_ok = ci < num_active_fingertips_ && ft.valid && std::isfinite(ft.force[0]) &&
+                           std::isfinite(ft.force[1]) && std::isfinite(ft.force[2]);
+    in.valid = geom_ok && sensor_ok;
+    pull_wiring_.position_valid[ki] = geom_ok;
+    if (geom_ok) {
+      const pinocchio::SE3& oMf = pinocchio_cache_.contact_frames[cs].oMf;
+      pull_wiring_.positions[ki] = oMf.translation();
+      if (in.valid) {
+        in.rotation = oMf.rotation();
+        in.force =
+            Eigen::Vector3d(static_cast<double>(ft.force[0]), static_cast<double>(ft.force[1]),
+                            static_cast<double>(ft.force[2]));
+      }
+    }
+  }
+
+  // Baseline arming edge mirrors ws.grasp_detected (FillLogOutput): active
+  // in_contact count vs the shared grasp_min_fingertips threshold.
+  const auto g = gains_lock_.Load();
+  int active_count = 0;
+  for (int f = 0; f < num_active_fingertips_; ++f) {
+    if (fingertip_data_[static_cast<std::size_t>(f)].in_contact) {
+      ++active_count;
+    }
+  }
+  const bool grasp_detected = active_count >= g.grasp_min_fingertips;
+
+  const rtc::grasp::PullEstimate& pull_est = UpdatePullEstimator(pull_wiring_, grasp_detected, dt);
+  rtc::grasp::FillPullEstimateData(pull_est, wbc_state_.pull);
 }
 
 // ── FSM ──────────────────────────────────────────────────────────────────────
@@ -190,6 +254,9 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
 
   // 2. Update Pinocchio cache (M, h, g, Jacobians)
   pinocchio_cache_.Update(q_curr_full_, v_curr_full_, contact_state_);
+  // #167: contact_frames[i].oMf are fresh this tick for ACTIVE contacts —
+  // UpdatePullEstimate additionally gates per contact on the active flag.
+  contact_geometry_fresh_ = true;
 
   // 2a. Stage B-5: populate the once-per-tick grasp cache shared across the
   // three object-level tasks (ObjectWrenchTask / InternalForceTask /

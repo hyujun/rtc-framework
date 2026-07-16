@@ -614,6 +614,21 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
         }
       }
     }
+
+    // ── In-plane pull-force estimate (#167) ─────────────────────────────
+    // Feeds the 3-axis fingertip forces (before the |F| collapse in
+    // ReadState) plus the per-tip FK rotations/positions cached this tick.
+    // The baseline snapshot arms on the grasp_detected rising edge; the
+    // result rides grasp_state_.pull to the owned GraspState SeqLock (no
+    // new topic).
+    if (pull_wiring_.enabled()) {
+      StageFkPullTickAndPublish(pull_wiring_, std::span<const FingertipSensorData>(fingertip_data_),
+                                std::span<const Eigen::Matrix3d>(fingertip_rotations_),
+                                std::span<const Eigen::Vector3d>(fingertip_positions_),
+                                std::span<const bool>(fingertip_pose_valid_),
+                                num_active_fingertips_, grasp_state_.grasp_detected, dt,
+                                grasp_state_.pull);
+    }
   }
 
   // ── ToF snapshot (3 fingers × 2 sensors: tof[1]=A, tof[2]=B) ───────────

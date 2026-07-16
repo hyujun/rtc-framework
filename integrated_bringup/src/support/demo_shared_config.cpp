@@ -41,6 +41,27 @@ const char* GraspHandModeName(GraspHandMode mode) noexcept {
   return "contact_stop";
 }
 
+PullPlaneNormalSource ParsePullPlaneNormalSource(const std::string& source) {
+  if (source == "fixed")
+    return PullPlaneNormalSource::kFixed;
+  if (source == "pinch_geometry")
+    return PullPlaneNormalSource::kPinchGeometry;
+  throw std::runtime_error(
+      "demo_shared: 'pull_estimator.plane_normal_source' must be one of "
+      "{fixed, pinch_geometry} ('vision' is not implemented yet), got '" +
+      source + "'");
+}
+
+const char* PullPlaneNormalSourceName(PullPlaneNormalSource source) noexcept {
+  switch (source) {
+    case PullPlaneNormalSource::kFixed:
+      return "fixed";
+    case PullPlaneNormalSource::kPinchGeometry:
+      return "pinch_geometry";
+  }
+  return "fixed";
+}
+
 namespace {
 
 constexpr const char* kSharedYamlFile = "/controllers/demo_shared.yaml";
@@ -174,6 +195,125 @@ void ApplyForcePiBlock(const YAML::Node& fp, DemoSharedConfig& cfg) {
   }
 }
 
+// Overlay a [x, y, z] sequence onto `out`; shorter sequences leave the
+// remaining components untouched (virtual_tcp_offset precedent).
+void ApplyVector3(const YAML::Node& n, Eigen::Vector3d& out) {
+  if (!n || !n.IsSequence()) {
+    return;
+  }
+  for (std::size_t i = 0; i < 3 && i < n.size(); ++i) {
+    out[static_cast<Eigen::Index>(i)] = n[i].as<double>();
+  }
+}
+
+void ApplyPullEstimatorBlock(const YAML::Node& pe, DemoSharedConfig& cfg) {
+  cfg.has_pull_estimator_block = true;
+  if (pe["enabled"]) {
+    cfg.pull_estimator_enabled = pe["enabled"].as<bool>();
+  }
+
+  // Estimator parameters — keys mirror rtc::grasp::PullEstimatorParams field
+  // names (force_pi_grasp precedent). sample_rate_hz is intentionally not a
+  // YAML key: BuildPullForceEstimator overwrites it with the control rate.
+  auto& pp = cfg.pull_estimator_params;
+  if (pe["filter_cutoff_hz"])
+    pp.filter_cutoff_hz = pe["filter_cutoff_hz"].as<double>();
+  if (pe["min_valid_contacts"])
+    pp.min_valid_contacts = pe["min_valid_contacts"].as<int>();
+  if (pe["decay_time_constant_s"])
+    pp.decay_time_constant_s = pe["decay_time_constant_s"].as<double>();
+  if (pe["slip_risk_threshold"])
+    pp.slip_risk_threshold = pe["slip_risk_threshold"].as<double>();
+  if (pe["alignment_error_rad"])
+    pp.alignment_error_rad = pe["alignment_error_rad"].as<double>();
+  ApplyVector3(pe["gravity_force"], pp.gravity_force);
+
+  if (pe["plane_normal_source"]) {
+    cfg.pull_plane_normal_source =
+        ParsePullPlaneNormalSource(pe["plane_normal_source"].as<std::string>());
+  }
+  ApplyVector3(pe["plane_normal"], cfg.pull_plane_normal);
+  if (pe["use_baseline_subtraction"]) {
+    cfg.pull_use_baseline_subtraction = pe["use_baseline_subtraction"].as<bool>();
+  }
+  if (pe["pull_direction"]) {
+    ApplyVector3(pe["pull_direction"], cfg.pull_direction);
+    cfg.pull_has_direction = true;
+  }
+
+  if (pe["tips"]) {
+    const auto tips_node = pe["tips"];
+
+    // Tip role order — defines the PullContactInput order P3 wiring must
+    // follow. Defaults to the assm_v1 sensored set; override via
+    // pull_estimator.tips.tip_names for other hands.
+    std::vector<std::string> names = {"thumb", "index", "middle"};
+    if (tips_node["tip_names"] && tips_node["tip_names"].IsSequence()) {
+      names.clear();
+      for (const auto& n : tips_node["tip_names"]) {
+        names.push_back(n.as<std::string>());
+      }
+    }
+
+    const int n_tips = std::min<int>(static_cast<int>(names.size()), rtc::grasp::kMaxPullContacts);
+    cfg.num_pull_contacts = n_tips;
+    for (int i = 0; i < n_tips; ++i) {
+      const auto idx = static_cast<std::size_t>(i);
+      cfg.pull_tip_roles[idx] = names[idx];
+      const auto tn = tips_node[names[idx]];
+      if (!tn) {
+        continue;
+      }
+      auto& pc = cfg.pull_contacts[idx];
+      if (tn["link"]) {
+        cfg.pull_tip_links[idx] = tn["link"].as<std::string>();
+      }
+      ApplyVector3(tn["contact_normal_local"], pc.contact_normal_local);
+      if (tn["friction_coeff"])
+        pc.friction_coeff = tn["friction_coeff"].as<double>();
+      if (tn["contact_on_threshold"])
+        pc.contact_on_threshold = tn["contact_on_threshold"].as<double>();
+      if (tn["contact_off_threshold"])
+        pc.contact_off_threshold = tn["contact_off_threshold"].as<double>();
+      if (tn["force_saturation"])
+        pc.force_saturation = tn["force_saturation"].as<double>();
+      if (tn["force_sign"])
+        pc.force_sign = tn["force_sign"].as<double>();
+      ApplyVector3(tn["force_bias"], pc.force_bias);
+      if (tn["force_calibration"] && tn["force_calibration"].IsSequence() &&
+          tn["force_calibration"].size() == 9) {
+        const auto seq = tn["force_calibration"];
+        for (Eigen::Index r = 0; r < 3; ++r) {
+          for (Eigen::Index c = 0; c < 3; ++c) {
+            pc.force_calibration(r, c) = seq[static_cast<std::size_t>(r * 3 + c)].as<double>();
+          }
+        }
+      }
+    }
+  }
+
+  // Required-role mask (after tips so roles are populated). An unknown role is
+  // a hard config error: a typo like "thmub" would otherwise silently drop the
+  // thumb-mandatory gate and let index+middle count as a valid pinch.
+  if (pe["required_roles"] && pe["required_roles"].IsSequence()) {
+    for (const auto& rn : pe["required_roles"]) {
+      const auto role = rn.as<std::string>();
+      bool found = false;
+      for (int i = 0; i < cfg.num_pull_contacts; ++i) {
+        if (cfg.pull_tip_roles[static_cast<std::size_t>(i)] == role) {
+          cfg.pull_contacts[static_cast<std::size_t>(i)].required = true;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        throw std::runtime_error("demo_shared: pull_estimator.required_roles entry '" + role +
+                                 "' does not match any tips.tip_names role");
+      }
+    }
+  }
+}
+
 }  // namespace
 
 void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
@@ -250,6 +390,10 @@ void ApplyDemoSharedConfig(const YAML::Node& node, DemoSharedConfig& cfg) {
   if (node["force_pi_grasp"]) {
     ApplyForcePiBlock(node["force_pi_grasp"], cfg);
   }
+
+  if (node["pull_estimator"]) {
+    ApplyPullEstimatorBlock(node["pull_estimator"], cfg);
+  }
 }
 
 void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_variant) {
@@ -322,6 +466,26 @@ void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
       static_cast<std::size_t>(std::clamp(cfg.num_grasp_fingers, 0, rtc::grasp::kMaxGraspFingers));
   grasp_controller->Init(std::span<const rtc::grasp::FingerConfig>(cfg.force_pi_fingers.data(), n),
                          gp);
+}
+
+void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz,
+                             std::unique_ptr<rtc::grasp::PullForceEstimator>& estimator) {
+  if (!cfg.has_pull_estimator_block || !cfg.pull_estimator_enabled) {
+    estimator.reset();
+    return;
+  }
+
+  rtc::grasp::PullEstimatorParams params = cfg.pull_estimator_params;
+  params.sample_rate_hz = control_rate_hz;
+
+  estimator = std::make_unique<rtc::grasp::PullForceEstimator>();
+  const auto n =
+      static_cast<std::size_t>(std::clamp(cfg.num_pull_contacts, 0, rtc::grasp::kMaxPullContacts));
+  estimator->Init(std::span<const rtc::grasp::PullContactConfig>(cfg.pull_contacts.data(), n),
+                  params);
+  if (cfg.pull_has_direction) {
+    estimator->SetPullDirection(cfg.pull_direction);
+  }
 }
 
 }  // namespace integrated_bringup

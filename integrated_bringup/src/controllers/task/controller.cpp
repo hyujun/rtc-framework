@@ -707,6 +707,17 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
 
   BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
 
+  // ── #167 P3: pull estimator + tip-link → FK slot resolve ────────────────
+  // Slot order = tree-model tip_links order (the fingertip_data_ /
+  // fingertip_rotations_ indexing every consumer in this controller uses),
+  // capped at kNumFingertips (only those slots receive FK poses). Wiring
+  // errors (unknown link / missing thumb role) throw → configure FAILURE.
+  {
+    const std::vector<std::string> pull_links =
+        ResolvePullTipLinks(GetSystemModelConfig(), GetSecondaryDeviceName(), kNumFingertips);
+    ConfigurePullEstimatorWiring(shared, 1.0 / GetDefaultDt(), pull_links, pull_wiring_);
+  }
+
   // contact_stop hold LPF: Init at config time (may throw) so Apply() on the RT
   // path stays allocation- and throw-free. Reset the latch to a clean state.
   hand_pos_filter_.Init(g.contact_stop_lpf_cutoff_hz, 1.0 / GetDefaultDt());

@@ -9,6 +9,7 @@
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/filters/bessel_filter.hpp"
@@ -363,6 +364,13 @@ class DemoJointController final : public RTControllerInterface {
 
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};
+
+  // ── In-plane pull-force estimator (#167) ──────────────────────────────────
+  // Configured in LoadConfig from the demo_shared `pull_estimator` block; tip
+  // links resolve against the tree-model tip_links order (== fingertip_data_ /
+  // fingertip_rotations_ slot order). Disabled (null estimator) without a hand
+  // tree-model or when the block is absent. Output rides grasp_state_.pull.
+  PullEstimatorWiring pull_wiring_;
 
   // ── Logging (throttled — RT-safe by throttle interval) ───────────────────
   // Sub-logger handle cached at construction; bringup_logging.hpp owns the

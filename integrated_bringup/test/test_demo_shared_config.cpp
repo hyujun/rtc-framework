@@ -358,3 +358,213 @@ TEST(BuildGraspControllerTest, SwitchingBackToContactStopResetsExistingControlle
   BuildGraspController(cfg, 500.0, ctrl);
   EXPECT_EQ(ctrl.get(), nullptr);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// pull_estimator block parsing (#167)
+// ═══════════════════════════════════════════════════════════════════════════
+
+using integrated_bringup::BuildPullForceEstimator;
+using integrated_bringup::PullPlaneNormalSource;
+
+TEST(DemoSharedConfigTest, PullEstimatorDefaults) {
+  DemoSharedConfig cfg;
+  EXPECT_FALSE(cfg.has_pull_estimator_block);
+  EXPECT_TRUE(cfg.pull_estimator_enabled);
+  EXPECT_EQ(cfg.num_pull_contacts, 0);
+  EXPECT_EQ(cfg.pull_plane_normal_source, PullPlaneNormalSource::kFixed);
+  EXPECT_FALSE(cfg.pull_use_baseline_subtraction);
+  EXPECT_FALSE(cfg.pull_has_direction);
+}
+
+TEST(DemoSharedConfigTest, PullEstimatorBlockAbsentLeavesFlagFalse) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load("grasp_controller_type: force_pi\n");
+  ApplyDemoSharedConfig(node, cfg);
+  EXPECT_FALSE(cfg.has_pull_estimator_block);
+}
+
+TEST(DemoSharedConfigTest, PullEstimatorBlockParses) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+pull_estimator:
+  enabled: true
+  filter_cutoff_hz: 8.0
+  min_valid_contacts: 3
+  decay_time_constant_s: 0.2
+  slip_risk_threshold: 0.9
+  alignment_error_rad: 0.05
+  gravity_force: [0.0, 0.0, -1.5]
+  plane_normal_source: "pinch_geometry"
+  plane_normal: [0.0, 1.0, 0.0]
+  use_baseline_subtraction: true
+  pull_direction: [1.0, 0.0, 0.0]
+  required_roles: ["thumb"]
+  tips:
+    tip_names: ["thumb", "index", "middle"]
+    thumb:
+      link: "thumb_tip_link"
+      contact_normal_local: [0.0, 1.0, 0.0]
+      friction_coeff: 0.6
+      force_saturation: 30.0
+      contact_on_threshold: 0.7
+      contact_off_threshold: 0.3
+      force_sign: 1.0
+      force_bias: [0.1, -0.1, 0.2]
+    index:
+      link: "index_tip_link"
+    middle:
+      link: "middle_tip_link"
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+
+  EXPECT_TRUE(cfg.has_pull_estimator_block);
+  EXPECT_TRUE(cfg.pull_estimator_enabled);
+  EXPECT_DOUBLE_EQ(cfg.pull_estimator_params.filter_cutoff_hz, 8.0);
+  EXPECT_EQ(cfg.pull_estimator_params.min_valid_contacts, 3);
+  EXPECT_DOUBLE_EQ(cfg.pull_estimator_params.decay_time_constant_s, 0.2);
+  EXPECT_DOUBLE_EQ(cfg.pull_estimator_params.slip_risk_threshold, 0.9);
+  EXPECT_DOUBLE_EQ(cfg.pull_estimator_params.alignment_error_rad, 0.05);
+  EXPECT_DOUBLE_EQ(cfg.pull_estimator_params.gravity_force.z(), -1.5);
+  EXPECT_EQ(cfg.pull_plane_normal_source, PullPlaneNormalSource::kPinchGeometry);
+  EXPECT_DOUBLE_EQ(cfg.pull_plane_normal.y(), 1.0);
+  EXPECT_TRUE(cfg.pull_use_baseline_subtraction);
+  EXPECT_TRUE(cfg.pull_has_direction);
+  EXPECT_DOUBLE_EQ(cfg.pull_direction.x(), 1.0);
+
+  ASSERT_EQ(cfg.num_pull_contacts, 3);
+  EXPECT_EQ(cfg.pull_tip_roles[0], "thumb");
+  EXPECT_EQ(cfg.pull_tip_roles[1], "index");
+  EXPECT_EQ(cfg.pull_tip_roles[2], "middle");
+  EXPECT_EQ(cfg.pull_tip_links[0], "thumb_tip_link");
+  EXPECT_EQ(cfg.pull_tip_links[1], "index_tip_link");
+  EXPECT_EQ(cfg.pull_tip_links[2], "middle_tip_link");
+
+  const auto& thumb = cfg.pull_contacts[0];
+  EXPECT_DOUBLE_EQ(thumb.contact_normal_local.y(), 1.0);
+  EXPECT_DOUBLE_EQ(thumb.friction_coeff, 0.6);
+  EXPECT_DOUBLE_EQ(thumb.force_saturation, 30.0);
+  EXPECT_DOUBLE_EQ(thumb.contact_on_threshold, 0.7);
+  EXPECT_DOUBLE_EQ(thumb.contact_off_threshold, 0.3);
+  EXPECT_DOUBLE_EQ(thumb.force_sign, 1.0);
+  EXPECT_DOUBLE_EQ(thumb.force_bias.x(), 0.1);
+  EXPECT_TRUE(thumb.required);
+
+  // Tips not named in required_roles keep required=false; unset per-tip keys
+  // keep their PullContactConfig defaults.
+  EXPECT_FALSE(cfg.pull_contacts[1].required);
+  EXPECT_FALSE(cfg.pull_contacts[2].required);
+  EXPECT_DOUBLE_EQ(cfg.pull_contacts[1].force_sign, -1.0);
+  EXPECT_DOUBLE_EQ(cfg.pull_contacts[1].friction_coeff, 0.7);
+}
+
+TEST(DemoSharedConfigTest, PullEstimatorForceCalibrationParsesRowMajor) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+pull_estimator:
+  tips:
+    tip_names: ["thumb"]
+    thumb:
+      force_calibration: [0.0, 1.0, 0.0,
+                          -1.0, 0.0, 0.0,
+                          0.0, 0.0, 1.0]
+)YAML");
+  ApplyDemoSharedConfig(node, cfg);
+  const auto& c = cfg.pull_contacts[0].force_calibration;
+  EXPECT_DOUBLE_EQ(c(0, 1), 1.0);
+  EXPECT_DOUBLE_EQ(c(1, 0), -1.0);
+  EXPECT_DOUBLE_EQ(c(2, 2), 1.0);
+  EXPECT_DOUBLE_EQ(c(0, 0), 0.0);
+}
+
+TEST(DemoSharedConfigTest, PullPlaneNormalSourceWhitelist) {
+  for (const char* s : {"fixed", "pinch_geometry"}) {
+    DemoSharedConfig cfg;
+    YAML::Node node;
+    node["pull_estimator"]["plane_normal_source"] = s;
+    EXPECT_NO_THROW(ApplyDemoSharedConfig(node, cfg)) << "source=" << s;
+  }
+  for (const char* s : {"vision", "bogus"}) {
+    DemoSharedConfig cfg;
+    YAML::Node node;
+    node["pull_estimator"]["plane_normal_source"] = s;
+    EXPECT_THROW(ApplyDemoSharedConfig(node, cfg), std::runtime_error) << "source=" << s;
+  }
+}
+
+// Typo in required_roles must be a hard error: silently dropping the
+// thumb-mandatory gate would let index+middle count as a valid pinch.
+TEST(DemoSharedConfigTest, PullEstimatorUnknownRequiredRoleThrows) {
+  DemoSharedConfig cfg;
+  YAML::Node node = YAML::Load(R"YAML(
+pull_estimator:
+  required_roles: ["thmub"]
+  tips:
+    tip_names: ["thumb", "index", "middle"]
+)YAML");
+  EXPECT_THROW(ApplyDemoSharedConfig(node, cfg), std::runtime_error);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BuildPullForceEstimator gating
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+YAML::Node MinimalPullEstimatorYaml() {
+  return YAML::Load(R"YAML(
+pull_estimator:
+  tips:
+    tip_names: ["thumb", "index", "middle"]
+    thumb:
+      contact_normal_local: [0.0, 0.0, 1.0]
+    index:
+      contact_normal_local: [0.0, 0.0, 1.0]
+    middle:
+      contact_normal_local: [0.0, 0.0, 1.0]
+)YAML");
+}
+
+}  // namespace
+
+TEST(BuildPullForceEstimatorTest, NoBlockResetsEstimator) {
+  DemoSharedConfig cfg;
+  auto est = std::make_unique<rtc::grasp::PullForceEstimator>();
+  BuildPullForceEstimator(cfg, 500.0, est);
+  EXPECT_EQ(est.get(), nullptr);
+}
+
+TEST(BuildPullForceEstimatorTest, DisabledBlockResetsEstimator) {
+  DemoSharedConfig cfg;
+  YAML::Node node = MinimalPullEstimatorYaml();
+  node["pull_estimator"]["enabled"] = false;
+  ApplyDemoSharedConfig(node, cfg);
+  EXPECT_TRUE(cfg.has_pull_estimator_block);
+  EXPECT_FALSE(cfg.pull_estimator_enabled);
+
+  auto est = std::make_unique<rtc::grasp::PullForceEstimator>();
+  BuildPullForceEstimator(cfg, 500.0, est);
+  EXPECT_EQ(est.get(), nullptr);
+}
+
+TEST(BuildPullForceEstimatorTest, EnabledBlockBuildsEstimator) {
+  DemoSharedConfig cfg;
+  ApplyDemoSharedConfig(MinimalPullEstimatorYaml(), cfg);
+
+  std::unique_ptr<rtc::grasp::PullForceEstimator> est;
+  BuildPullForceEstimator(cfg, 500.0, est);
+  ASSERT_NE(est.get(), nullptr);
+  EXPECT_EQ(est->num_contacts(), 3);
+}
+
+// Init() validation must propagate (on_configure → FAILURE), not be swallowed:
+// hysteresis on <= off is invalid.
+TEST(BuildPullForceEstimatorTest, InvalidHysteresisThrows) {
+  DemoSharedConfig cfg;
+  YAML::Node node = MinimalPullEstimatorYaml();
+  node["pull_estimator"]["tips"]["thumb"]["contact_on_threshold"] = 0.1;
+  node["pull_estimator"]["tips"]["thumb"]["contact_off_threshold"] = 0.5;
+  ApplyDemoSharedConfig(node, cfg);
+
+  std::unique_ptr<rtc::grasp::PullForceEstimator> est;
+  EXPECT_THROW(BuildPullForceEstimator(cfg, 500.0, est), std::invalid_argument);
+}

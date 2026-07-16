@@ -66,7 +66,7 @@ integrated_bringup/
 │   ├── ur5e_p1a/robot.yaml                 <- 실제 로봇 delta (backend/토픽 + E-STOP + init 타이밍, _base 위에 overlay)
 │   ├── ur5e_p1a/sim.yaml                   <- 시뮬레이션 delta (MuJoCo backend + sim-sync + 완화된 E-STOP, _base 위에 overlay)
 │   └── controllers/
-│       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi)
+│       ├── demo_shared.yaml            <- DemoJoint/DemoTask 공통 파라미터 (vtcp/grasp/force_pi/pull_estimator)
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
@@ -112,7 +112,7 @@ integrated_bringup/
 | `devices:` (roster/limits) | `ur5e_p1a/_base.yaml` | 디바이스별 joint_names, joint_limits, sensor_names, sensor_layout 카운트 |
 | `devices.<g>.backend` + `has_native_*` | `ur5e_p1a/{robot,sim}.yaml` | mode-specific: backend/wire 토픽, joint_command/motor 로스터, native-signal 플래그 |
 | `demo_*_controller.yaml` | 컨트롤러별 YAML | 제어 게인, 토픽 라우팅 |
-| `demo_shared.yaml` | 공통 YAML | DemoJoint/DemoTask 공통 파라미터 (Virtual TCP, grasp 감지, force_pi_grasp) |
+| `demo_shared.yaml` | 공통 YAML | DemoJoint/DemoTask 공통 파라미터 (Virtual TCP, grasp 감지, force_pi_grasp, pull_estimator) |
 
 > `sub_models`/`tree_models`의 `name`은 `devices` 블록의 디바이스 그룹 이름과 매칭됩니다 (예: sub_model `"ur5e"` = device `"ur5e"`).
 
@@ -207,6 +207,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py enable_viewer:=false   # h
 | `grasp_contact_threshold` / `grasp_force_threshold` / `grasp_min_fingertips` | Grasp 감지 임계값 (capability-aware — 아래 표 참조) |
 | `grasp_controller_type` | `"contact_stop"` · `"force_pi"` · `"none"` (hand 무개입, GraspState 발행은 유지). 화이트리스트 검증 — 그 외 값은 `on_configure` FAILURE |
 | `force_pi_grasp.*` | Force-PI grasp 파라미터 + 핑거별 q_open/q_close |
+| `pull_estimator.*` | In-plane pull-force estimator (#167) — 필터/유효성 파라미터, plane normal source (`fixed` · `pinch_geometry` 화이트리스트), baseline subtraction (grasp 확립 rising edge 에 arm), `required_roles`, per-tip contact model (`tips.<role>.link/contact_normal_local/friction_coeff/…`). 키 이름은 `rtc::grasp::{PullEstimatorParams, PullContactConfig}` 필드와 1:1. 세 컨트롤러 모두 RT tick 에서 소비: `tips.<role>.link` 는 joint/task 에선 tree-model `tip_links`, wbc 에선 `tsid.contacts` frame 과 매칭해 FK slot 을 resolve (`support/pull_estimator_wiring.hpp`; 미매칭 link 는 `on_configure` FAILURE). wbc 는 TSID λ_opt 이 아닌 **measured** R_i·f_i (contact-frame geometry) 사용. 출력은 owned POD (`GraspStateData.pull` / `WbcStateData.pull`) — wire msg 확장은 별도 이슈 |
 
 **Grasp threshold capability matrix.** 컨트롤러는 `devices.<hand>.sensor_layout.has_native_contact` (robot/sim yaml) 를 보고 두 경로로 분기합니다.
 
@@ -225,7 +226,7 @@ demo_task_controller:
   ...
 ```
 
-파싱 로직은 `include/integrated_bringup/support/demo_shared_config.hpp` / `src/support/demo_shared_config.cpp`의 `ApplyDemoSharedConfig()` / `LoadDemoSharedYamlFile()` / `BuildGraspController()`로 통합되어 있습니다.
+파싱 로직은 `include/integrated_bringup/support/demo_shared_config.hpp` / `src/support/demo_shared_config.cpp`의 `ApplyDemoSharedConfig()` / `LoadDemoSharedYamlFile()` / `BuildGraspController()` / `BuildPullForceEstimator()`로 통합되어 있습니다.
 
 ---
 

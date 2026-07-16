@@ -30,6 +30,10 @@ inline constexpr std::size_t kHandSensorValuesPerFingertipCapacity =
 //                  zero from force-only backends (e.g. mujoco fingertip wrench).
 //   slot 1..3 = force vector fx/fy/fz [N]
 //                — populated by all fingertip-bearing backends.
+//                Contract (#167, SSoT: rtc_msgs/msg/FingertipSensor.msg):
+//                fingertip *link* frame (sensor extrinsic baked into the
+//                publisher), env-on-fingertip sign — consumers needing
+//                finger-on-object multiply by -1.
 //   slot 4..6 = native displacement vector ux/uy/uz
 //                — populated by udp_hand_native only (capacitive direction),
 //                  zero from force-only backends.
