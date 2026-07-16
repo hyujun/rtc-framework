@@ -614,6 +614,37 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
         }
       }
     }
+
+    // ── In-plane pull-force estimate (#167) ─────────────────────────────
+    // Feeds the 3-axis fingertip forces (before the |F| collapse in
+    // ReadState) plus the per-tip FK rotations/positions cached this tick.
+    // The baseline snapshot arms on the grasp_detected rising edge; the
+    // result rides grasp_state_.pull to the owned GraspState SeqLock (no
+    // new topic).
+    if (pull_wiring_.enabled()) {
+      for (int k = 0; k < pull_wiring_.num_contacts; ++k) {
+        const auto ki = static_cast<std::size_t>(k);
+        const auto s = static_cast<std::size_t>(pull_wiring_.slot[ki]);
+        const auto& ft = fingertip_data_[s];
+        auto& in = pull_wiring_.inputs[ki];
+        const bool sensor_ok = pull_wiring_.slot[ki] < num_active_fingertips_ && ft.valid &&
+                               std::isfinite(ft.force[0]) && std::isfinite(ft.force[1]) &&
+                               std::isfinite(ft.force[2]);
+        const bool pose_ok = fingertip_pose_valid_[s];
+        in.valid = sensor_ok && pose_ok;
+        if (in.valid) {
+          in.rotation = fingertip_rotations_[s];
+          in.force =
+              Eigen::Vector3d(static_cast<double>(ft.force[0]), static_cast<double>(ft.force[1]),
+                              static_cast<double>(ft.force[2]));
+        }
+        pull_wiring_.positions[ki] = fingertip_positions_[s];
+        pull_wiring_.position_valid[ki] = pose_ok;
+      }
+      const rtc::grasp::PullEstimate& pull_est =
+          UpdatePullEstimator(pull_wiring_, grasp_state_.grasp_detected, dt);
+      rtc::grasp::FillPullEstimateData(pull_est, grasp_state_.pull);
+    }
   }
 
   // ── ToF snapshot (3 fingers × 2 sensors: tof[1]=A, tof[2]=B) ───────────

@@ -68,6 +68,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/grasp_phase_manager.cpp
   src/controllers/wbc/force_reference_updater.cpp
   src/support/demo_shared_config.cpp
+  src/support/pull_estimator_wiring.cpp
   src/support/closed_chain_hand_fk.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
@@ -384,6 +385,20 @@ if(BUILD_TESTING)
     yaml-cpp
   )
   ament_target_dependencies(test_demo_shared_config
+    rclcpp
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── Pull-estimator wiring test (#167 P3) ───────────────────────────────────
+  ament_add_gtest(test_pull_estimator_wiring test/test_pull_estimator_wiring.cpp)
+  target_link_libraries(test_pull_estimator_wiring
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_pull_estimator_wiring
     rclcpp
     rtc_controllers
     rtc_base

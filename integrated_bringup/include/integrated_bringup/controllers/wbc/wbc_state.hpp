@@ -12,6 +12,8 @@
 // specific to the integrated demo controllers, not a primitive of the
 // robot-agnostic framework.
 
+#include <rtc_controllers/grasp/grasp_state.hpp>
+
 #include <array>
 #include <cstdint>
 #include <type_traits>
@@ -29,7 +31,7 @@ struct WbcStateData {
   std::array<float, kMaxWbcFingertips> contact_flag{};
   // displacement: native (sensor A inference slots 4..6) if backend provides
   // it; 0 otherwise — deformation guard is stubbed pending HW upgrade.
-  std::array<float, kMaxWbcFingertips> displacement{};     // [m]
+  std::array<float, kMaxWbcFingertips> displacement{};  // [m]
   int num_fingertips{0};
   int num_active_contacts{0};
   float max_force{0.0f};           // max across fingertips [N]
@@ -40,6 +42,11 @@ struct WbcStateData {
   float tsid_solve_us{0.0f};
   bool tsid_solver_ok{true};
   int qp_fail_count{0};
+
+  // In-plane pull-force estimate (#167) — measured R_i·f_i over the TSID
+  // contact geometry (not λ_opt). POD-only Phase-1 output surface; the
+  // rtc_msgs/WbcState wire message is deliberately untouched.
+  rtc::grasp::PullEstimateData pull{};
 };
 
 static_assert(std::is_trivially_copyable_v<WbcStateData>,

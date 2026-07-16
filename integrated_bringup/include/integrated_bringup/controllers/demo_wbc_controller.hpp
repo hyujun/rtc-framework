@@ -13,6 +13,7 @@
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/wbc_reduced_dynamics_provider.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/seqlock.hpp"
@@ -672,6 +673,22 @@ class DemoWbcController final : public RTControllerInterface {
   std::array<FingertipSensorData, rtc::kMaxSensorGroups> fingertip_data_{};
   int num_active_fingertips_{0};
   bool force_rate_initialized_{false};
+
+  // ── In-plane pull-force estimator (#167) ──────────────────────────────────
+  // Measured R_i·f_i over the TSID contact geometry (NOT λ_opt): slots resolve
+  // against tsid.contacts frame names (1:1 with the fingertip sensor lanes),
+  // and per-tick R_i/p_i come from pinocchio_cache_.contact_frames[i].oMf.
+  // contact_geometry_fresh_ marks ticks where ComputeWbcCommon refreshed that
+  // cache — non-TSID ticks (kFallback / uninitialized) feed invalid inputs so
+  // the estimate decays instead of consuming stale frames. Output rides
+  // wbc_state_.pull.
+  PullEstimatorWiring pull_wiring_;
+  bool contact_geometry_fresh_{false};
+
+  /// Stage the per-contact inputs from fingertip_data_ + contact frames and
+  /// run the shared estimator update (end of ComputeControl). noexcept,
+  /// heap-free (RT tick path); no-op while the estimator is disabled.
+  void UpdatePullEstimate(double dt) noexcept;
 
   // ══════════════════════════════════════════════════════════════════════════
   // Dynamic WBC (ComputeDynamicWbc) — TSID inverse-dynamics QP: solves the

@@ -980,6 +980,25 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     g.grasp_force_threshold = shared.grasp_force_threshold;
     g.grasp_min_fingertips = shared.grasp_min_fingertips;
     gains_lock_.Store(g);
+
+    // ── #167 P3: pull estimator + tip-link → contact slot resolve ─────────
+    // Slot order = tsid.contacts order (frame names), which maps 1:1 onto the
+    // fingertip sensor lanes (Stage A-3 contract) and onto
+    // pinocchio_cache_.contact_frames. Empty contacts (no tsid block, e.g.
+    // unit fixtures) leaves the estimator disabled; a configured tip link
+    // matching no contact frame throws → configure FAILURE.
+    {
+      // Cap at the fingertip sensor-lane capacity: a slot must index both
+      // contact_frames AND fingertip_data_ (1:1 mapping).
+      const std::size_t n_slots =
+          std::min(contact_mgr_config_.contacts.size(), fingertip_data_.size());
+      std::vector<std::string> contact_links;
+      contact_links.reserve(n_slots);
+      for (std::size_t i = 0; i < n_slots; ++i) {
+        contact_links.push_back(contact_mgr_config_.contacts[i].frame_name);
+      }
+      ConfigurePullEstimatorWiring(shared, 1.0 / GetDefaultDt(), contact_links, pull_wiring_);
+    }
   }
 
   // ── 4b. Lift L2: E-STOP arm safe position (required) ─────────────────
