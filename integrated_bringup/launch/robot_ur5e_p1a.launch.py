@@ -16,6 +16,10 @@
 #      so DDS dispatch and the FIFO 70 rt_callback executor share L1/L2 cache.
 #   E) CycloneDDS threads also fall under the launch taskset above (no
 #      separate CYCLONEDDS_URI thread affinity since CycloneDDS 0.11+)
+#
+# The numbers thread_layout returns are *slot indices*, not logical CPU ids;
+# rtc_tools.launch.pinning resolves them through rt_common.sh::slot_to_logical_cpu
+# before calling taskset (issue #163). Never pass a slot to taskset directly.
 
 import os
 
@@ -48,6 +52,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
 from rtc_tools.launch.thread_layout import (
     get_arm_driver_core,
     get_hand_driver_core,
@@ -74,46 +79,6 @@ def _load_hand_params(pkg, *relpath):
         return data.get("/**", {}).get("ros__parameters", {}) or {}
     except (OSError, yaml.YAMLError):
         return {}
-
-
-def _pin_external_driver(label: str, process_grep: str, core: int) -> ExecuteProcess:
-    """Build a taskset ExecuteProcess that pins ``process_grep`` to ``core``.
-
-    ``core < 0`` is the "no pinning" sentinel from ``select_thread_layout`` —
-    in that case the resulting action logs the skip and returns immediately,
-    so launch files do not need their own guard.
-    """
-    # Defense in depth: the f-string below interpolates ``label`` and
-    # ``process_grep`` into a ``bash -c`` command. Current callers pass
-    # hardcoded literals, but reject any embedded double quote outright so a
-    # future caller cannot accidentally inject shell syntax.
-    if '"' in label or '"' in process_grep:
-        raise ValueError(
-            f"_pin_external_driver: embedded double quote disallowed in "
-            f"label={label!r} or process_grep={process_grep!r}"
-        )
-    if core < 0:
-        return ExecuteProcess(
-            cmd=[
-                "bash",
-                "-c",
-                f'echo "[RT] {label}: cpu_core=-1, no taskset pinning"',
-            ],
-            output="screen",
-            condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
-        )
-    return ExecuteProcess(
-        cmd=[
-            "bash",
-            "-c",
-            f'PID=$(pgrep -nf "{process_grep}") && [ -n "$PID" ] && '
-            f'taskset -cp {core} "$PID" && '
-            f'echo "[RT] {label} (PID=$PID) pinned to Core {core}" || '
-            f'echo "[RT] WARNING: {label} not found — CPU pinning skipped"',
-        ],
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
-    )
 
 
 def _launch_setup(context):
@@ -210,8 +175,9 @@ def generate_launch_description():
         "use_cpu_affinity",
         default_value="true",
         description=(
-            "Pin UR driver process to Core 0-1 via taskset (3 s after launch). "
-            "Set false when running with fake hardware or in CI."
+            "Pin the UR/hand driver processes and the controller's DDS threads "
+            "via tier-aware taskset (3-5 s after launch), and enable the CPU "
+            "shield. Set false when running with fake hardware or in CI."
         ),
     )
 
@@ -427,53 +393,31 @@ def generate_launch_description():
     )
 
     # ── External driver CPU pinning (Phase 6) ─────────────────────────────────
-    # Pins via tier-aware core resolution. SystemThreadConfigs.{arm,hand}_driver
+    # Pins via tier-aware slot resolution. SystemThreadConfigs.{arm,hand}_driver
     # is the C++ SSoT; rtc_tools.launch.thread_layout mirrors it for launch.
-    arm_driver_core = get_arm_driver_core()
-    hand_driver_core = get_hand_driver_core()
+    # These are slot indices — pin_process_to_slot resolves them to logical CPU
+    # ids via rt_common.sh::slot_to_logical_cpu (issue #163).
+    arm_driver_slot = get_arm_driver_core()
+    hand_driver_slot = get_hand_driver_core()
     pin_ur_driver = TimerAction(
         period=3.0,
-        actions=[_pin_external_driver("ur_ros2_driver", "ur_ros2_driver", arm_driver_core)],
+        actions=[pin_process_to_slot("ur_ros2_driver", "ur_ros2_driver", arm_driver_slot)],
     )
     pin_hand_driver = TimerAction(
         period=3.0,
-        actions=[_pin_external_driver("udp_hand_node", "udp_hand_node", hand_driver_core)],
+        actions=[pin_process_to_slot("udp_hand_node", "udp_hand_node", hand_driver_slot)],
     )
 
     # ── integrated_rt_controller DDS thread pinning ─────────────────────────────────
     # exec name = ROS node name = "integrated_rt_controller" (Phase 3 정렬).
-    # Layout v4.1: rt_callback core is tier-aware (Core 2 on every tier).
-    rt_callback_core = get_rt_callback_core()
+    # Layout v4.1: rt_callback slot is tier-aware (slot 2 on every tier); the
+    # logical CPU it maps to is topology-dependent (issue #163).
+    rt_callback_slot = get_rt_callback_core()
     pin_rt_controller_dds = TimerAction(
         period=5.0,
         actions=[
-            ExecuteProcess(
-                cmd=[
-                    "bash",
-                    "-c",
-                    'PID=$(pgrep -nf "integrated_rt_controller"); '
-                    'if [ -z "$PID" ]; then '
-                    '  echo "[RT] WARNING: integrated_rt_controller not found — DDS thread pinning skipped"; '
-                    "  exit 0; "
-                    "fi; "
-                    # Layout v4.1: DDS receive thread is co-pinned to the
-                    # rt_callback core so DDS message dispatch and state
-                    # callback execution share L1/L2 cache. SCHED_OTHER is
-                    # preserved — only affinity changes. SCHED_FIFO threads
-                    # (rt_control / rt_callback / mpc_*) are skipped so this
-                    # loop only touches non-RT (DDS / aux) threads.
-                    f'taskset -cp {rt_callback_core} "$PID" 2>/dev/null; '
-                    "PINNED=0; "
-                    "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
-                    '  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null || echo ""); '
-                    '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
-                    '  if [ -n "$POLICY" ]; then continue; fi; '
-                    f'  taskset -cp {rt_callback_core} "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
-                    "done; "
-                    f'echo "[RT] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core {rt_callback_core}"',
-                ],
-                output="screen",
-                condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
+            pin_dds_threads_to_slot(
+                "integrated_rt_controller", "integrated_rt_controller", rt_callback_slot
             )
         ],
     )

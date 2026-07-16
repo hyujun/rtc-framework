@@ -44,6 +44,7 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
 from rtc_tools.launch.thread_layout import get_rt_callback_core, get_sim_core
 from rtc_tools.launch.trace_action import make_trace_action
 from rtc_tools.utils.session_dir import (
@@ -333,27 +334,20 @@ def launch_setup(context, *args, **kwargs):
     # ApplyThreadConfig(...sim_thread) from inside the SimLoop thread — this
     # taskset is a redundant safety net for any auxiliary process-level work
     # that runs before SimLoop starts. cpu_core == -1 → skip (no pinning).
+    #
+    # thread_layout returns *slot indices*; pin_*_to_slot resolves them to
+    # logical CPU ids via rt_common.sh::slot_to_logical_cpu (issue #163).
     if use_affinity.lower() in ("true", "1", "yes"):
-        sim_core = get_sim_core()
-        if sim_core >= 0:
-            pin_mujoco_sim = TimerAction(
-                period=2.0,
-                actions=[
-                    ExecuteProcess(
-                        cmd=[
-                            "bash",
-                            "-c",
-                            "PID=$(pgrep -nf mujoco_simulator_node); "
-                            'if [ -n "$PID" ]; then '
-                            f'  taskset -cp {sim_core} "$PID" && '
-                            f'  echo "[SIM] mujoco_simulator (PID=$PID) pinned to Core {sim_core}"; '
-                            "fi",
-                        ],
-                        output="screen",
-                    )
-                ],
+        sim_slot = get_sim_core()
+        if sim_slot >= 0:
+            actions.append(
+                TimerAction(
+                    period=2.0,
+                    actions=[
+                        pin_process_to_slot("mujoco_simulator", "mujoco_simulator_node", sim_slot)
+                    ],
+                )
             )
-            actions.append(pin_mujoco_sim)
 
         # Layout v4.1: integrated_rt_controller DDS/aux threads co-pinned to
         # the rt_callback core (tier-aware via get_rt_callback_core) for cache
@@ -361,33 +355,17 @@ def launch_setup(context, *args, **kwargs):
         # (rt_control, rt_callback, mpc_*); this timer only catches
         # DDS-internal reader/writer threads that are spawned outside our
         # control. exec name = ROS node name = "integrated_rt_controller".
-        rt_callback_core = get_rt_callback_core()
-        pin_rt_controller_dds = TimerAction(
-            period=5.0,
-            actions=[
-                ExecuteProcess(
-                    cmd=[
-                        "bash",
-                        "-c",
-                        'PID=$(pgrep -nf "integrated_rt_controller"); '
-                        'if [ -z "$PID" ]; then '
-                        '  echo "[SIM] WARNING: integrated_rt_controller not found — DDS thread pinning skipped"; '
-                        "  exit 0; "
-                        "fi; "
-                        f'taskset -cp {rt_callback_core} "$PID" 2>/dev/null; '
-                        "PINNED=0; "
-                        "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
-                        '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
-                        '  if [ -n "$POLICY" ]; then continue; fi; '
-                        f'  taskset -cp {rt_callback_core} "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
-                        "done; "
-                        f'echo "[SIM] integrated_rt_controller (PID=$PID): $PINNED DDS/aux threads pinned to Core {rt_callback_core}"',
-                    ],
-                    output="screen",
-                )
-            ],
+        rt_callback_slot = get_rt_callback_core()
+        actions.append(
+            TimerAction(
+                period=5.0,
+                actions=[
+                    pin_dds_threads_to_slot(
+                        "integrated_rt_controller", "integrated_rt_controller", rt_callback_slot
+                    )
+                ],
+            )
         )
-        actions.append(pin_rt_controller_dds)
 
     # ── ros2_tracing capture (LTTng UST + kernel, opt-in) ────────────────────
     actions.extend(make_trace_action(context, session_dir=session_dir))
