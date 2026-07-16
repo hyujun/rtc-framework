@@ -41,6 +41,7 @@ demo_task_controller:
   fsm:
     pi_rotation_margin: 0.15
     contact_stop_release_eps: 0.005
+    contact_stop_lpf_cutoff_hz: 20.0
 
   # ── Output type ────────────────────────────────────────────────────────────
   command_type: "position"

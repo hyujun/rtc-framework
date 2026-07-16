@@ -536,8 +536,23 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
       // 해당 finger 는 이완 중. 모든 gate finger 가 이완 방향일 때만 "release 의도".
       //   sign > 0: 각도 증가 = loosening (e.g. thumb CMC_FE) → target > actual
       //   sign < 0: 각도 감소 = loosening (e.g. index/middle MCP_FE) → target < actual
+      // E-STOP (arm or hand) drops the latch so a post-clear resume honours
+      // fresh trajectory goals instead of an old hold. The filter keeps tracking.
+      if (estopped_.load(std::memory_order_acquire) ||
+          hand_estopped_.load(std::memory_order_acquire)) {
+        contact_latched_ = false;
+      }
+
       if (state.num_devices > 1 && state.devices[1].valid) {
         const auto& dev1 = state.devices[1];
+
+        // LPF the measured hand position. Run every valid tick (not just while
+        // latched) so the IIR state stays warm and latch entry has no transient.
+        std::array<double, kDemoTaskMaxHandDof> hand_meas{};
+        for (int i = 0; i < hand_dof_; ++i) {
+          hand_meas[static_cast<std::size_t>(i)] = dev1.positions[static_cast<std::size_t>(i)];
+        }
+        const std::array<double, kDemoTaskMaxHandDof> hand_filt = hand_pos_filter_.Apply(hand_meas);
 
         // First 3 gate errors are surfaced in the diagnostic log (padded with 0).
         std::array<double, 3> gate_err{};
@@ -554,23 +569,48 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
           }
         }
 
+        const bool contact_now = (active_count > 0 && max_force > force_thresh);
+
         if (release_phase) {
+          // User is opening the hand: drop the latch and let the trajectory drive.
+          contact_latched_ = false;
           RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
                                "[contact_stop] SKIP (release) dgate=[%+.3f,%+.3f,%+.3f]",
                                gate_err[0], gate_err[1], gate_err[2]);
-        } else if (active_count > 0 && max_force > force_thresh) {
-          for (int i = 0; i < hand_dof_; ++i) {
-            const auto idx = static_cast<std::size_t>(i);
-            hand_computed_.positions[idx] = dev1.positions[idx];
-            hand_computed_.velocities[idx] = 0.0;
+        } else {
+          if (contact_now) {
+            contact_latched_ = true;
           }
-          // gate errors (target - actual) encode both the actual position and
-          // the overshoot beyond target, enough to diagnose contact_stop engage.
-          RCLCPP_INFO_THROTTLE(logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
-                               "[contact_stop] FREEZE active=%d fmax=%.2fN "
-                               "dgate=[%+.3f,%+.3f,%+.3f]",
-                               active_count, static_cast<double>(max_force), gate_err[0],
-                               gate_err[1], gate_err[2]);
+          if (contact_latched_) {
+            // Hybrid hold: while contact is present, track the LPF'd position
+            // (compliant) and snapshot it as the hold target; once contact drops
+            // keep the last hold target fixed (no random-walk drift) until the
+            // release gate fires.
+            for (int i = 0; i < hand_dof_; ++i) {
+              const auto idx = static_cast<std::size_t>(i);
+              if (contact_now) {
+                hand_hold_position_[idx] = hand_filt[idx];
+              }
+              hand_computed_.positions[idx] = hand_hold_position_[idx];
+              hand_computed_.velocities[idx] = 0.0;
+            }
+            // gate errors (target - actual) encode both the actual position and
+            // the overshoot beyond target, enough to diagnose contact_stop engage.
+            RCLCPP_INFO_THROTTLE(
+                logger_, log_clock_, ::integrated_bringup::logging::kThrottleFastMs,
+                "[contact_stop] %s active=%d fmax=%.2fN "
+                "dgate=[%+.3f,%+.3f,%+.3f]",
+                contact_now ? "FREEZE" : "HOLD", active_count, static_cast<double>(max_force),
+                gate_err[0], gate_err[1], gate_err[2]);
+          }
+        }
+      } else if (contact_latched_) {
+        // Hand-state dropout while latched: hold the last commanded position
+        // rather than let the trajectory drive the hand (safety).
+        for (int i = 0; i < hand_dof_; ++i) {
+          const auto idx = static_cast<std::size_t>(i);
+          hand_computed_.positions[idx] = hand_hold_position_[idx];
+          hand_computed_.velocities[idx] = 0.0;
         }
       }
     }

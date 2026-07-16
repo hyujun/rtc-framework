@@ -194,8 +194,65 @@ TEST_F(JointGraspTest, ContactStopFreezesHandAtCurrentPosition) {
   auto out = RunHandTicks(ctrl_, state_, 300);
 
   EXPECT_TRUE(ctrl_.GetGraspStateForTesting().grasp_detected);
-  // Hand frozen at the current actual position (0.3), not the 0.8 goal.
-  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-6);
+  // Hand frozen at the current actual position (0.3), not the 0.8 goal. The
+  // hold runs through the position LPF; with a constant measured 0.3 the filter
+  // settles to 0.3 (DC pass-through), so a tight tolerance still holds.
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-4);
+}
+
+// #162 latch: once contact engages, the hold must persist after contact is lost
+// (object slips) until an explicit release. Previously the freeze was unlatched
+// and re-evaluated per tick, so a single no-contact tick snapped the command
+// back to the (goal-advanced) trajectory.
+TEST_F(JointGraspTest, ContactStopLatchHoldsAfterContactLost) {
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 100);  // engage + latch, held near 0.3
+
+  // Contact disappears with no release command issued.
+  SetFingertipForce(state_, 0, 0.0f);
+  SetFingertipForce(state_, 1, 0.0f);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+
+  EXPECT_FALSE(ctrl_.GetGraspStateForTesting().grasp_detected);
+  // Latched: hand keeps its held position, does NOT snap to the 0.8 goal.
+  EXPECT_NEAR(out.devices[1].commands[0], kHandStart, 1e-3);
+  EXPECT_LT(out.devices[1].commands[0], 0.5);
+}
+
+// #162 release gate still drops the latch even while contact force persists:
+// the gate infers release *intent* from the goal direction, not contact loss.
+TEST_F(JointGraspTest, ContactStopReleaseGateClearsLatch) {
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 100);  // latched at ~0.3, contact still 5 N
+
+  // Command an opening motion that satisfies every release gate
+  // (idx {1,4,7}, signs {+1,-1,-1}); contact is deliberately kept present.
+  std::array<double, 10> open{};
+  open.fill(kHandStart);
+  open[1] = kHandStart + 0.3;  // sign +1 → target > actual ⇒ loosening
+  open[4] = kHandStart - 0.3;  // sign -1 → target < actual ⇒ loosening
+  open[7] = kHandStart - 0.3;  // sign -1 → target < actual ⇒ loosening
+  ctrl_.SetDeviceTarget(1, open);
+  auto out = RunHandTicks(ctrl_, state_, 300);
+
+  // Latch dropped: gated joints track the opening trajectory off the hold.
+  EXPECT_GT(out.devices[1].commands[1], kHandStart + 0.1);
+  EXPECT_LT(out.devices[1].commands[4], kHandStart - 0.1);
+}
+
+// #162 the latched hold is the LPF output, not the raw measured position: a step
+// in the measured position must be tracked with lag, not instantaneously.
+TEST_F(JointGraspTest, ContactStopHoldUsesFilteredPosition) {
+  PrimeHandMotion(ctrl_, state_);
+  (void)RunHandTicks(ctrl_, state_, 200);  // filter settled to 0.3, latched
+
+  // Object pushes finger 0: measured jumps 0.3 → 0.5, contact kept present.
+  state_.devices[1].positions[0] = 0.5;
+  auto out = RunHandTicks(ctrl_, state_, 3);  // a few ticks of the step
+
+  // LPF lag: the hold has moved off 0.3 but has not jumped to the raw 0.5.
+  EXPECT_GT(out.devices[1].commands[0], kHandStart + 1e-4);
+  EXPECT_LT(out.devices[1].commands[0], 0.5 - 1e-3);
 }
 
 // ── Deferred hand hold-seed (device-1 startup race) ─────────────────────────
