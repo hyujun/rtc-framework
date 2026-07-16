@@ -5,14 +5,15 @@
 #   install_vscode_debug_tools         — gdb + ptrace_scope policy (VS Code Attach)
 #   install_tracing_tools              — lttng-tools + lttng-modules-dkms (DKMS
 #                                         build w/ timeout + dpkg retry) +
-#                                         ros-jazzy-ros2trace +
+#                                         ${ROS_PKG_PREFIX}-ros2trace +
 #                                         tracetools-launch/read + python3-bt2
 #                                         + tracing group + modprobe verify
 #                                         (Secure Boot MOK mismatch diagnosis)
 #   verify_lttng_tracer_loadable       — install_tracing_tools L5 helper
 #
 # Caller scope 의존:
-#   WORKSPACE, SET_PTRACE_SCOPE, SET_TRACING_TOOLS, apt_update_if_stale, 로거
+#   WORKSPACE, ROS_PKG_PREFIX, SET_PTRACE_SCOPE, SET_TRACING_TOOLS,
+#   apt_update_if_stale, 로거
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "ERROR: This file should be sourced, not executed." >&2
@@ -135,18 +136,20 @@ install_tracing_tools() {
     warn "python3 -c 'import bt2' failed — converter will fall back to CLI parser"
   fi
 
-  # ── L3: ros2_tracing apt packages (ros-jazzy-tracetools is pulled in
+  # ── L3: ros2_tracing apt packages (${ROS_PKG_PREFIX}-tracetools is pulled in
   #        transitively by rclcpp; the extras below add the launch action,
-  #        CLI verb, and post-processing utilities) ───────────────────────────
+  #        CLI verb, and post-processing utilities). Package names are identical
+  #        across humble/jazzy — only the distro prefix differs, so this tracks
+  #        ROS_PKG_PREFIX like every other apt install in the installer. ───────
   sudo apt-get install -y \
-      ros-jazzy-ros2trace \
-      ros-jazzy-tracetools-launch \
-      ros-jazzy-tracetools-read \
-      ros-jazzy-tracetools-trace \
+      "${ROS_PKG_PREFIX}-ros2trace" \
+      "${ROS_PKG_PREFIX}-tracetools-launch" \
+      "${ROS_PKG_PREFIX}-tracetools-read" \
+      "${ROS_PKG_PREFIX}-tracetools-trace" \
       > /dev/null 2>&1 \
-    || warn "ros-jazzy tracing packages install reported an error"
+    || warn "${ROS_PKG_PREFIX} tracing packages install reported an error"
 
-  if dpkg -s ros-jazzy-tracetools-launch >/dev/null 2>&1; then
+  if dpkg -s "${ROS_PKG_PREFIX}-tracetools-launch" >/dev/null 2>&1; then
     success "tracetools-launch installed (enables tracetools_launch.action.Trace)"
   fi
 

@@ -14,7 +14,7 @@
 #
 # Caller scope 의존:
 #   ROS_PKG_PREFIX, MJ_DIR, MJ_VERSION, FMT_VERSION, MIMALLOC_VERSION,
-#   ALIGATOR_VERSION, SKIP_MPC, INSTALL_SCRIPT_DIR, 로거
+#   ALIGATOR_VERSION, ONNXRT_VERSION, SKIP_MPC, INSTALL_SCRIPT_DIR, 로거
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "ERROR: This file should be sourced, not executed." >&2
@@ -115,10 +115,12 @@ verify_mpc_deps() {
     failed=1
   fi
 
-  if [[ -f "${deps_prefix}/lib/libmimalloc.so.2.1" ]]; then
-    success "mimalloc ${MIMALLOC_VERSION} → ${deps_prefix}/lib/libmimalloc.so.2.1"
+  # mimalloc soname is major.minor (e.g. 2.1.7 → libmimalloc.so.2.1).
+  local mimalloc_soname="libmimalloc.so.${MIMALLOC_VERSION%.*}"
+  if [[ -f "${deps_prefix}/lib/${mimalloc_soname}" ]]; then
+    success "mimalloc ${MIMALLOC_VERSION} → ${deps_prefix}/lib/${mimalloc_soname}"
   else
-    warn "mimalloc ${MIMALLOC_VERSION} MISSING"
+    warn "mimalloc ${MIMALLOC_VERSION} MISSING (expected ${deps_prefix}/lib/${mimalloc_soname})"
     failed=1
   fi
 
@@ -146,7 +148,8 @@ install_behaviortree() {
 
 install_onnxruntime() {
   # ONNX Runtime C++ API (fingertip F/T inference)
-  local ONNXRT_VER="1.17.1"
+  # Version is centralized as ONNXRT_VERSION in install.sh (caller scope).
+  local ONNXRT_VER="${ONNXRT_VERSION}"
   local ONNXRT_DIR="/opt/onnxruntime"
 
   # apt에서 설치되어 있는지 확인 (dpkg -s로 실제 설치 상태 검증)

@@ -56,6 +56,9 @@ ALIGATOR_VERSION="0.19.0"
 # ── MuJoCo version + default path (install_mujoco 에서 소비) ────────────────
 MJ_VERSION="3.7.0"
 
+# ── ONNX Runtime version (install_onnxruntime 에서 소비) ────────────────────
+ONNXRT_VERSION="1.17.1"
+
 # ── Mode & argument parsing ────────────────────────────────────────────────────
 SKIP_DEPS=0
 SKIP_BUILD=0
@@ -107,7 +110,7 @@ show_help() {
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
   echo "  --tracing         Install ros2_tracing stack (lttng-modules-dkms + lttng-tools"
-  echo "                    + ros-jazzy-ros2trace + tracetools-launch/read + python3-bt2)"
+  echo "                    + ros-<distro>-ros2trace + tracetools-launch/read + python3-bt2)"
   echo "                    and add the current user to the 'tracing' group."
   echo "                    Required for 'ros2 launch ... enable_tracing:=true'."
   echo "  --mujoco <path>   Use specific MuJoCo path"
