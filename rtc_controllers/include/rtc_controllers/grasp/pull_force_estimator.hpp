@@ -2,6 +2,7 @@
 #define RTC_CONTROLLERS_GRASP_PULL_FORCE_ESTIMATOR_HPP_
 
 #include "rtc_base/filters/bessel_filter.hpp"
+#include "rtc_controllers/grasp/grasp_state.hpp"
 #include "rtc_controllers/grasp/grasp_types.hpp"
 
 #include <Eigen/Core>
@@ -202,6 +203,11 @@ class PullForceEstimator {
   bool baseline_captured_{false};
   PullEstimate estimate_{};
 };
+
+/// Mirror a PullEstimate into the SeqLock-compatible POD embedded in the
+/// controller-owned state PODs (GraspStateData / WbcStateData). RT-safe:
+/// noexcept, fixed-size copies only.
+void FillPullEstimateData(const PullEstimate& in, PullEstimateData& out) noexcept;
 
 }  // namespace rtc::grasp
 

@@ -223,4 +223,20 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
   return estimate_;
 }
 
+void FillPullEstimateData(const PullEstimate& in, PullEstimateData& out) noexcept {
+  out.force = {static_cast<float>(in.force_filtered.x()), static_cast<float>(in.force_filtered.y()),
+               static_cast<float>(in.force_filtered.z())};
+  out.force_inplane = {static_cast<float>(in.force_inplane.x()),
+                       static_cast<float>(in.force_inplane.y())};
+  out.magnitude = static_cast<float>(in.magnitude);
+  out.directional = static_cast<float>(in.directional);
+  out.friction_utilization = static_cast<float>(in.max_friction_utilization);
+  out.leakage_bound = static_cast<float>(in.leakage_bound);
+  out.valid_contact_count = in.valid_contact_count;
+  out.valid = in.valid;
+  out.slip_risk = in.slip_risk;
+  out.any_saturated = in.any_saturated;
+  out.baseline_applied = in.baseline_applied;
+}
+
 }  // namespace rtc::grasp

@@ -366,4 +366,38 @@ TEST(PullForceEstimator, InitRejectsInvalidConfig) {
   EXPECT_THROW(est.Init(PinchConfigs(), bad_min), std::invalid_argument);
 }
 
+// ── POD mirror for controller-owned SeqLock state (#167 P3) ──────────────────
+TEST(PullForceEstimator, FillPullEstimateDataMirrorsAllFields) {
+  PullEstimate in;
+  in.force_filtered = Eigen::Vector3d(1.5, -2.5, 0.25);
+  in.force_inplane = Eigen::Vector2d(1.5, -2.5);
+  in.magnitude = 3.0;
+  in.directional = 1.25;
+  in.max_friction_utilization = 0.6;
+  in.leakage_bound = 0.35;
+  in.valid_contact_count = 3;
+  in.valid = true;
+  in.slip_risk = true;
+  in.any_saturated = true;
+  in.baseline_applied = true;
+
+  rtc::grasp::PullEstimateData out;
+  rtc::grasp::FillPullEstimateData(in, out);
+
+  EXPECT_FLOAT_EQ(out.force[0], 1.5F);
+  EXPECT_FLOAT_EQ(out.force[1], -2.5F);
+  EXPECT_FLOAT_EQ(out.force[2], 0.25F);
+  EXPECT_FLOAT_EQ(out.force_inplane[0], 1.5F);
+  EXPECT_FLOAT_EQ(out.force_inplane[1], -2.5F);
+  EXPECT_FLOAT_EQ(out.magnitude, 3.0F);
+  EXPECT_FLOAT_EQ(out.directional, 1.25F);
+  EXPECT_FLOAT_EQ(out.friction_utilization, 0.6F);
+  EXPECT_FLOAT_EQ(out.leakage_bound, 0.35F);
+  EXPECT_EQ(out.valid_contact_count, 3);
+  EXPECT_TRUE(out.valid);
+  EXPECT_TRUE(out.slip_risk);
+  EXPECT_TRUE(out.any_saturated);
+  EXPECT_TRUE(out.baseline_applied);
+}
+
 }  // namespace

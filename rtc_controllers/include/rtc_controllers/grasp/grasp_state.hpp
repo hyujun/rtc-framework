@@ -23,6 +23,30 @@ namespace rtc::grasp {
 // if a future hand exceeds 8 fingertips — never branch on it.
 inline constexpr int kMaxGraspFingertips = 8;
 
+// In-plane pull-force estimate mirror (#167) — trivially copyable float/bool
+// mirror of rtc::grasp::PullEstimate (whose Eigen members are not SeqLock-
+// compatible). Embedded in the controller-owned state PODs (GraspStateData /
+// integrated_bringup WbcStateData); filled via FillPullEstimateData()
+// (pull_force_estimator.hpp). Phase-1 output surface is this POD only — the
+// rtc_msgs wire messages are deliberately untouched (#167 decision: message
+// ABI extension is a separate issue).
+struct PullEstimateData {
+  std::array<float, 3> force{};          // filtered F̂, reference frame [N]
+  std::array<float, 2> force_inplane{};  // Bᵀ·F̂ plane coordinates [N]
+  float magnitude{0.0f};                 // |F̂| [N]
+  float directional{0.0f};               // dᵀ·F̂ (0 unless direction set) [N]
+  float friction_utilization{0.0f};      // max_i |f_t,i| / (μ_i f_n,i)
+  float leakage_bound{0.0f};             // grip→in-plane leakage bound [N]
+  int32_t valid_contact_count{0};
+  bool valid{false};
+  bool slip_risk{false};
+  bool any_saturated{false};
+  bool baseline_applied{false};
+};
+
+static_assert(std::is_trivially_copyable_v<PullEstimateData>,
+              "PullEstimateData must be trivially copyable for SeqLock PODs");
+
 // Grasp detection state — trivially copyable, SeqLock-compatible.
 struct GraspStateData {
   std::array<float, kMaxGraspFingertips> force_magnitude{};
@@ -44,6 +68,10 @@ struct GraspStateData {
   std::array<float, kMaxGraspFingertips> finger_filtered_force{};
   std::array<float, kMaxGraspFingertips> finger_force_error{};
   float grasp_target_force{0.0f};
+
+  // In-plane pull-force estimate (#167) — POD-only Phase-1 output surface;
+  // the rtc_msgs/GraspState wire message is deliberately untouched.
+  PullEstimateData pull{};
 };
 
 static_assert(std::is_trivially_copyable_v<GraspStateData>,
