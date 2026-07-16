@@ -13,7 +13,7 @@
 1. Cpu lane slice 라벨에 process 명 포함 (`프로세스명/comm-tid`) — **완료·실측 확인**
 2. `rtc:span` emit 프로세스 = per-thread row, 외부 UST 프로세스 = 프로세스당 요약 lane 1개, sched_switch 전용 thread = row 0개 — **완료·실측 확인**
 3. `rtc_tools` 테스트 통과, 기존 assertion 약화 없음 — **완료** (2535 tests, 0 failures)
-4. **사용자가 제어 PC 에서 실제로 원하는 뷰를 얻는다** — ⚠ **미완 (열린 루프, 아래 Next action)**
+4. **사용자가 제어 PC 에서 실제로 원하는 뷰를 얻는다** — ✅ **완료 (사용자 제어 PC 검증, 2026-07-16)**. 열린 루프 닫힘 — 사용자가 제어 PC 에서 원하는 뷰(process/thread → CPU 할당·점유)를 얻음을 확인. (어느 가설이 최종 원인이었는지 — JSON 크기 vs `--max-duration-s` 창 자르기 vs event loss — 는 이 세션에 기록되지 않음.)
 
 ## Out of scope
 
@@ -31,6 +31,7 @@
 | `fa0cb8a` | 캡처 결손 진단 — census 출력 + 원인별 경고. **"Cpus" 그룹을 sched_switch 0건에도 무조건 emit 하던 버그 수정** (빈 그룹 = 변환기 버그와 구분 불가) |
 | `1e2268b` | JSON 크기 경고 (>250 MB) — metadata 가 앞·슬라이스가 뒤라 뷰어가 중도 포기하면 "그룹은 있고 레인은 빈" 상태가 됨을 명시 |
 | `bdcbb7b` | `--max-duration-s N` — 앞 N 초만 변환. 모든 lane 유지, 크기·시간 선형 감소. `timeline.sh` forward + `docs/tracing.md` §JSON 크기 |
+| `6c00dc5` | tracer-discarded event 감지 (`LossStats` + bt2 discarded 메시지 소비 → `_report_event_loss()`). 아래 Evidence §유실 감지의 landed 커밋 |
 
 ### 사용자 보고 증상과 그 진단 (2026-07-15)
 
@@ -114,13 +115,15 @@
 
 ## Constraints / pending human decisions
 
-- **열린 루프**: Acceptance criteria 4 는 사용자의 제어 PC 재검증에 달려 있다. 이 세션에서 닫지 못했다.
-- `--since`/구간 지정 필요 여부 — 사용자 판단 대기 (Next action 3).
-- 제어 PC 는 별도 호스트라 이쪽에서 직접 재현·검증 불가. `trace.json` 을 받아야 더 팔 수 있다.
+- ~~**열린 루프**: Acceptance criteria 4~~ — **닫힘 (2026-07-16, 사용자 제어 PC 검증 완료).** 4개 acceptance 기준 전부 충족.
+- **잔여 followup (non-blocking, acceptance 무관)**:
+  - post-pass 3 main-thread 오인 표시 버그 (Evidence line "comm==프로세스명 worker 를 main 으로 오인") — AC4 검증을 막지 않았으나 미수정.
+  - `--since`/구간 지정 (Next action 3) — 사용자 판단 대기, 현재 `--max-duration-s` 는 앞부분만 자름.
 
 ## Workspace
 
-- branch `main`, HEAD `bdcbb7b`, **origin/main 과 동기 (push 완료, 미푸시 커밋 없음)**
+- **완료·`completed/` 이관 (2026-07-16)** — 4개 acceptance 기준 전부 충족. viewer 커밋 `90f6e0b`→`bdcbb7b` + loss-detection `6c00dc5` 전부 main 에 landed.
+- branch `main`, viewer 관련 코드는 origin/main 과 동기.
 - 미커밋: `docs/WBC_CONTROLLER_IMPLEMENTATION.md` (untracked) — **이 task 소유 아님**, 세션 시작 시점부터 존재. 건드리지 말 것.
 - 이 세션의 임시 파일은 session-scoped scratchpad 에 있어 새 세션에서 접근 불가. `--max-duration-s 5` 출력은 21초면 재생성되므로 보존 불필요.
 
