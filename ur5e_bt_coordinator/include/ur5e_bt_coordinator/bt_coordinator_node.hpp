@@ -99,6 +99,16 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   /// Trigger response message; it is left untouched when kNone is returned.
   [[nodiscard]] TickBlocker TickBlockedBy(std::string& reason) const;
 
+  /// Tick the tree once, turning any escaped exception into a FAILURE instead
+  /// of letting it unwind through rclcpp::spin into std::terminate. Shared by
+  /// both tick paths (TickCallback, StepCallback) so the boundary cannot diverge
+  /// between them. The readiness gate (#161) removes the known startup race, but
+  /// a malformed tree, a missing node input, or an unknown finger after
+  /// readiness can still throw at tick time — set_gains already argues an
+  /// escaped throw is fatal. On a throw the tree is halted to a defined state
+  /// before FAILURE is reported, so the next tick/step starts clean.
+  [[nodiscard]] BT::NodeStatus TickOnceSafe();
+
   /// Escalate a controller wait that has outlasted controller_wait_timeout_s_.
   /// Logs ERROR exactly once per activation and keeps waiting — a CM that is
   /// merely slow still recovers, while a misconfigured one stops being a

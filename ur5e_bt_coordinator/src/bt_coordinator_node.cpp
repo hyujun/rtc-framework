@@ -437,6 +437,25 @@ void BtCoordinatorNode::ReportControllerWaitTimeout() {
                waited);
 }
 
+BT::NodeStatus BtCoordinatorNode::TickOnceSafe() {
+  try {
+    return tree_->tickOnce();
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(coord_log(), "Tick aborted by exception: %s — halting tree, reporting FAILURE",
+                 e.what());
+    // Reset to a defined state so the next tick/step does not resume from a
+    // half-ticked node. haltTree runs onHalted on the whole tree; guard it too,
+    // as the escaped exception proves a node here can throw and we must not let
+    // the cleanup re-enter the same crash path.
+    try {
+      tree_->haltTree();
+    } catch (const std::exception& halt_e) {
+      RCLCPP_ERROR(coord_log(), "haltTree after a tick exception also threw: %s", halt_e.what());
+    }
+    return BT::NodeStatus::FAILURE;
+  }
+}
+
 void BtCoordinatorNode::TickCallback() {
   // Checked here rather than in TickBlockedBy: pausing stops the auto-tick, but
   // a manual ~/step is still expected to work while paused.
@@ -461,7 +480,7 @@ void BtCoordinatorNode::TickCallback() {
     return;
   }
 
-  auto status = tree_->tickOnce();
+  auto status = TickOnceSafe();
   RCLCPP_DEBUG(coord_log(), "tick -> %s", BT::toStr(status).c_str());
 
   if (status == BT::NodeStatus::SUCCESS) {
@@ -716,7 +735,7 @@ void BtCoordinatorNode::StepCallback(
     return;
   }
 
-  auto status = tree_->tickOnce();
+  auto status = TickOnceSafe();
 
   std::string status_str;
   switch (status) {

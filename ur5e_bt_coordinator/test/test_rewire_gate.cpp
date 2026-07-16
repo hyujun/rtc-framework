@@ -251,6 +251,37 @@ class HandReadinessStepTest : public HandReadinessGateTest {
   [[nodiscard]] bool StepMode() const override { return true; }
 };
 
+/// An arm-only leaf that throws on its first tick (UR5eHoldPose rejects an
+/// unknown pose from onStart). tree_needs_hand_ is false, so no hand gate — this
+/// isolates the tick-path exception boundary (#161 Phase 3): the throw must
+/// become a logged FAILURE, never a std::terminate.
+class ThrowingLeafTest : public RewireGateTest {
+ protected:
+  [[nodiscard]] std::string TreeInnerXml() const override {
+    return R"(<UR5eHoldPose pose="nonexistent_pose"/>)";
+  }
+};
+
+/// Same throwing leaf, driven only through ~/step.
+class ThrowingLeafStepTest : public ThrowingLeafTest {
+ protected:
+  [[nodiscard]] bool StepMode() const override { return true; }
+};
+
+/// A finger tree that asks for a finger no assm_v1 name resolves ("pinky").
+/// After a usable hand state the readiness gate opens, then MoveFinger::onStart
+/// throws on the empty indices — the config-error path that must surface as a
+/// clean FAILURE, not an endless wait (#161 AC3). Step mode so the response
+/// carries the observable status.
+class UnknownFingerStepTest : public RewireGateTest {
+ protected:
+  [[nodiscard]] bool StepMode() const override { return true; }
+
+  [[nodiscard]] std::string TreeInnerXml() const override {
+    return R"(<MoveFinger finger_name="pinky" pose="home"/>)";
+  }
+};
+
 // ── Acceptance 1, first half: no crash, no progress before the rewire ───────
 
 TEST_F(RewireGateTest, TicksBeforeRewireDoNotCrashOrAdvanceTree) {
@@ -457,6 +488,63 @@ TEST_F(RewireGateTest, ArmOnlyTreeRunsWithNoHandState) {
 
   EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::RUNNING);
   EXPECT_GT(arm_targets_seen_, 0);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// #161 tick-path exception boundary (Phase 3)
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── AC4: an escaped throw becomes a FAILURE, never a std::terminate ─────────
+
+TEST_F(ThrowingLeafTest, TimerThrowIsCaughtNotFatal) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);  // open the controller gate so the tick runs
+
+  // Pre-fix: UR5eHoldPose::onStart throws, the exception unwinds out of the
+  // wall-timer callback through rclcpp::spin, and std::terminate aborts the
+  // process. Reaching any assertion after this spin is itself the proof it did
+  // not: TickOnceSafe caught the throw and reported FAILURE.
+  SpinTicks();
+
+  // Halted to a defined state (not left RUNNING/half-ticked), and the FAILURE
+  // path cancelled the timer, so it stays put on a further spin — deterministic.
+  EXPECT_NE(injector_->RootStatus(), BT::NodeStatus::RUNNING);
+  SpinTicks(20ms);  // must not crash or resurrect the tree
+  EXPECT_NE(injector_->RootStatus(), BT::NodeStatus::RUNNING);
+}
+
+TEST_F(ThrowingLeafStepTest, StepThrowReturnsFailureNotFatal) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);
+
+  auto response = CallStep();
+  ASSERT_NE(response, nullptr) << "~/step never answered — a throw took the process down";
+
+  // The throw surfaced as a FAILURE response, not a crash: success is false and
+  // the status is reported rather than the executor aborting mid-service.
+  EXPECT_FALSE(response->success);
+  EXPECT_NE(response->message.find("FAILURE"), std::string::npos) << response->message;
+}
+
+// ── AC3: an unknown finger after readiness is a clean FAILURE, not a wait ────
+
+TEST_F(UnknownFingerStepTest, UnknownFingerAfterReadinessFailsNotWaits) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);
+
+  // A usable hand state arrives, so the readiness gate opens — the block is now
+  // gone. The finger the tree asks for ("pinky") still resolves to no indices,
+  // which is a configuration error, not a not-yet-ready state. It must fail
+  // clearly rather than wait forever (the conflation the readiness split avoids).
+  InjectHandState();
+  ASSERT_TRUE(injector_->Bridge()->IsHandStateReady());
+
+  auto response = CallStep();
+  ASSERT_NE(response, nullptr) << "~/step never answered";
+
+  EXPECT_FALSE(response->success);
+  EXPECT_NE(response->message.find("FAILURE"), std::string::npos) << response->message;
+  EXPECT_EQ(hand_targets_seen_, 0) << "the node threw before publishing any target";
 }
 
 }  // namespace
