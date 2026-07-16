@@ -4,6 +4,7 @@
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/grasp/grasp_types.hpp"
+#include "rtc_controllers/grasp/pull_force_estimator.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -28,6 +29,22 @@ enum class GraspHandMode { kContactStop, kForcePi, kNone };
 
 // Canonical string for a mode (logging). Never allocates.
 [[nodiscard]] const char* GraspHandModeName(GraspHandMode mode) noexcept;
+
+// Where the object-plane normal fed to PullForceEstimator::Update comes from
+// (#167). Resolved once from the whitelisted `pull_estimator.plane_normal_source`
+// string at on_configure so the RT hot path branches on an enum.
+//   kFixed         — constant normal from YAML (robot base frame)
+//   kPinchGeometry — n = (p_IM - p_T)/‖·‖ from per-tick fingertip positions
+enum class PullPlaneNormalSource { kFixed, kPinchGeometry };
+
+// Parse + validate the `plane_normal_source` whitelist. Throws
+// std::runtime_error on any value outside {fixed, pinch_geometry} ("vision" is
+// a planned future source and is rejected until implemented); runs on the
+// non-RT on_configure path and propagates to CallbackReturn::FAILURE.
+[[nodiscard]] PullPlaneNormalSource ParsePullPlaneNormalSource(const std::string& source);
+
+// Canonical string for a source (logging). Never allocates.
+[[nodiscard]] const char* PullPlaneNormalSourceName(PullPlaneNormalSource source) noexcept;
 
 // Parameters that DemoJointController and DemoTaskController share.
 // Defaults live in config/ur5e_p1a/controllers/demo_shared.yaml; per-controller YAMLs
@@ -77,6 +94,32 @@ struct DemoSharedConfig {
   rtc::grasp::GraspParams force_pi_params{};
   std::array<rtc::grasp::FingerConfig, rtc::grasp::kMaxGraspFingers> force_pi_fingers{};
   bool has_force_pi_block{false};
+
+  // ── In-plane pull-force estimator (#167) ──────────────────────────────────
+  // Parsed from the `pull_estimator` YAML block; consumed by
+  // BuildPullForceEstimator. pull_contacts / pull_tip_roles / pull_tip_links
+  // [0 .. num_pull_contacts) are valid, in `tips.tip_names` order — the same
+  // order P3 wiring must use for PullContactInput. pull_tip_links carry the
+  // fingertip link names to resolve FK slots against the tree-model
+  // `tip_links` at on_configure; roles feed the pinch-geometry normal (thumb
+  // vs opposing tips) and the required-role mask.
+  bool has_pull_estimator_block{false};
+  bool pull_estimator_enabled{true};
+  int num_pull_contacts{0};
+  rtc::grasp::PullEstimatorParams pull_estimator_params{};
+  std::array<rtc::grasp::PullContactConfig, rtc::grasp::kMaxPullContacts> pull_contacts{};
+  std::array<std::string, rtc::grasp::kMaxPullContacts> pull_tip_roles{};
+  std::array<std::string, rtc::grasp::kMaxPullContacts> pull_tip_links{};
+  PullPlaneNormalSource pull_plane_normal_source{PullPlaneNormalSource::kFixed};
+  // Fixed-source object-plane normal, robot base frame (fingertip FK rotations
+  // are T_base_fingertip, so all reference-frame vectors here are base-frame).
+  Eigen::Vector3d pull_plane_normal{Eigen::Vector3d::UnitZ()};
+  // Arm the grasp-time baseline snapshot instead of (or on top of) the
+  // gravity_force model — removes in-plane gravity + constant calib residual.
+  bool pull_use_baseline_subtraction{false};
+  // Optional known pull direction (base frame) for the directional scalar F_d.
+  bool pull_has_direction{false};
+  Eigen::Vector3d pull_direction{Eigen::Vector3d::Zero()};
 };
 
 // Overlay any keys present in `node` onto `cfg`. Missing keys are left
@@ -98,6 +141,14 @@ void LoadDemoSharedYamlFile(DemoSharedConfig& cfg, const std::string& config_var
 // grasp_controller_type == "force_pi" and a force-pi block was provided.
 void BuildGraspController(const DemoSharedConfig& cfg, double control_rate_hz,
                           std::unique_ptr<rtc::grasp::GraspController>& grasp_controller);
+
+// Build (or reset) the PullForceEstimator based on `cfg` (#167). Resets to
+// nullptr unless a pull_estimator block was provided and `enabled` is true.
+// Overwrites sample_rate_hz with `control_rate_hz` (YAML never sets it) and
+// applies the optional pull direction. Init() validation failures throw
+// std::invalid_argument (non-RT on_configure path → CallbackReturn::FAILURE).
+void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz,
+                             std::unique_ptr<rtc::grasp::PullForceEstimator>& estimator);
 
 }  // namespace integrated_bringup
 
