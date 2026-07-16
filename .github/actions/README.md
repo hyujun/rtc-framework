@@ -7,12 +7,16 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
 |--------|---------|---------|
 | [`setup-rtc-env`](setup-rtc-env/action.yml) | ROS 2 distro/tooling + apt cache + colcon upgrade + numpy fix | every job (+ codeql) |
 | [`build-isolated-deps`](build-isolated-deps/action.yml) | Build & cache fmt 11 / mimalloc / aligator from `deps.repos` → publish artifact | `build-deps`, `codeql` |
-| [`colcon-build`](colcon-build/action.yml) | `colcon build --packages-up-to <pkgs>` with deps prepend + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test`, `codeql` |
+| [`colcon-build`](colcon-build/action.yml) | `colcon build --packages-up-to <pkgs>` with deps prepend + optional `use-ccache` launcher + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test`, `codeql` |
 | [`colcon-test-report`](colcon-test-report/action.yml) | `colcon test` + `GITHUB_STEP_SUMMARY` table + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test` |
 
 ## Conventions
 
 - Each action declares all knobs as explicit `inputs:` — no implicit env-var coupling.
+  Sole intentional exception: `colcon-build`'s `use-ccache: "true"` reads ccache's
+  native env (`CCACHE_DIR`, `CCACHE_COMPILERCHECK`, `CCACHE_MAXSIZE`), which the caller
+  job sets and caches per build flavor (RelWithDebInfo vs Debug+gcov keep separate
+  `CCACHE_DIR` + cache-key prefixes so instrumented objects never cross-contaminate).
 - `artifact-suffix` input on `colcon-build` / `colcon-test-report` MUST be unique
   per job to avoid `actions/upload-artifact` name collisions.
 - `deps-install-path` is the empty string when a job does not need isolated

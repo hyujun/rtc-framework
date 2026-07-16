@@ -46,6 +46,15 @@ inputs:
     description: Additional `--cmake-args` (appended after defaults)
     required: false
     default: ""
+  use-ccache:
+    description: |
+      Set "true" to route the compiler through ccache
+      (-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache).
+      Caller must install the `ccache` apt package and set CCACHE_DIR (+ cache it).
+      Launcher is set on the CMake configure line (visible in configure cache),
+      not via a PATH wrapper. No-op if ccache is absent (defensively guarded).
+    required: false
+    default: "false"
   artifact-suffix:
     description: Suffix for failure log artifact name (must be unique per job)
     required: false
@@ -54,6 +63,13 @@ inputs:
 runs:
   using: composite
   steps:
+    # ccache warm-cache 판정 근거: 빌드 직전 통계 초기화 → 이후 --show-stats 로
+    # 이번 빌드의 hit/miss 만 측정. ccache 미설치/미사용이면 no-op.
+    - name: Zero ccache stats
+      if: inputs.use-ccache == 'true'
+      shell: bash
+      run: command -v ccache >/dev/null 2>&1 && ccache --zero-stats || true
+
     - name: Run colcon build
       id: build
       shell: bash
@@ -67,6 +83,7 @@ runs:
         EXPORT_CC: ${{ inputs.export-compile-commands }}
         PARALLEL: ${{ inputs.parallel-workers }}
         EXTRA_CMAKE: ${{ inputs.extra-cmake-args }}
+        USE_CCACHE: ${{ inputs.use-ccache }}
       run: |
         set -eo pipefail
         source "/opt/ros/${ROS_DISTRO}/setup.bash"
@@ -91,6 +108,16 @@ runs:
           CMAKE_ARGS="${CMAKE_ARGS} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
         fi
 
+        # ccache launcher: PATH wrapper 대신 CMake configure 에 명시(configure cache
+        # 에 남아 가시적). CCACHE_DIR / CCACHE_COMPILERCHECK 는 caller job env 가 소유.
+        # ccache 바이너리가 없으면 조용히 스킵(방어) — apt 미설치 시 빌드 깨짐 방지.
+        if [ "${USE_CCACHE}" = "true" ] && command -v ccache >/dev/null 2>&1; then
+          CMAKE_ARGS="${CMAKE_ARGS} -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          echo "::notice::ccache enabled ($(ccache --version | head -1); CCACHE_DIR=${CCACHE_DIR:-default})"
+        elif [ "${USE_CCACHE}" = "true" ]; then
+          echo "::warning::use-ccache=true but ccache binary not found — building without launcher"
+        fi
+
         if [ -n "${EXTRA_CMAKE}" ]; then
           CMAKE_ARGS="${CMAKE_ARGS} ${EXTRA_CMAKE}"
         fi
@@ -105,6 +132,13 @@ runs:
           --packages-up-to ${PACKAGES} \
           ${PARALLEL_ARG} \
           --cmake-args ${CMAKE_ARGS}
+
+    # warm/cold 판정 근거 노출: hit rate·caching 결과를 로그에 남긴다. 빌드 실패해도
+    # (always) 통계를 찍어 캐시 오염/미스 원인 진단 가능.
+    - name: Show ccache stats
+      if: always() && inputs.use-ccache == 'true'
+      shell: bash
+      run: command -v ccache >/dev/null 2>&1 && ccache --show-stats || true
 
     - name: Upload build failure logs
       if: failure()
