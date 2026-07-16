@@ -23,9 +23,15 @@
 #include <Eigen/Core>
 
 #include <array>
+#include <cmath>
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
+
+namespace rtc_urdf_bridge {
+struct ModelConfig;
+}  // namespace rtc_urdf_bridge
 
 namespace integrated_bringup {
 
@@ -74,6 +80,51 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
 // in pinch geometry) yields an invalid tick with bounded decay inside Update.
 const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool grasp_detected,
                                                     double dt) noexcept;
+
+// Resolve the hand fingertip tip-link names for ConfigurePullEstimatorWiring
+// from the tree-model whose name == `secondary_device`, capped at `max_slots`
+// (the caller's FK-slot capacity). Returns the tip_links-ordered link list, or
+// empty when `sys_model` is null or no tree-model matches (hand-less / model-
+// less paths → estimator stays disabled). Non-RT (on_configure / LoadConfig).
+[[nodiscard]] std::vector<std::string> ResolvePullTipLinks(
+    const rtc_urdf_bridge::ModelConfig* sys_model, const std::string& secondary_device,
+    std::size_t max_slots);
+
+// Stage one RT tick of the joint/task FK pull path, run the estimator, and
+// mirror the result into `out`. `FtData` is each demo controller's private
+// FingertipSensorData (only `.valid` + `.force[0..2]` are read), so this is a
+// template rather than a concrete-typed free function. `w.slot[k]` indexes
+// `fingertip_data` / `rotations` / `tip_positions` / `pose_valid` alike (tree-
+// model tip_links order == fingertip sensor-lane order, Stage A-3 contract).
+// Caller must gate on `w.enabled()`. noexcept, heap-free (RT tick path).
+template <class FtData>
+void StageFkPullTickAndPublish(PullEstimatorWiring& w, std::span<const FtData> fingertip_data,
+                               std::span<const Eigen::Matrix3d> rotations,
+                               std::span<const Eigen::Vector3d> tip_positions,
+                               std::span<const bool> pose_valid, int num_active_fingertips,
+                               bool grasp_detected, double dt,
+                               rtc::grasp::PullEstimateData& out) noexcept {
+  for (int k = 0; k < w.num_contacts; ++k) {
+    const auto ki = static_cast<std::size_t>(k);
+    const auto s = static_cast<std::size_t>(w.slot[ki]);
+    const auto& ft = fingertip_data[s];
+    auto& in = w.inputs[ki];
+    const bool sensor_ok = w.slot[ki] < num_active_fingertips && ft.valid &&
+                           std::isfinite(ft.force[0]) && std::isfinite(ft.force[1]) &&
+                           std::isfinite(ft.force[2]);
+    const bool pose_ok = pose_valid[s];
+    in.valid = sensor_ok && pose_ok;
+    if (in.valid) {
+      in.rotation = rotations[s];
+      in.force = Eigen::Vector3d(static_cast<double>(ft.force[0]), static_cast<double>(ft.force[1]),
+                                 static_cast<double>(ft.force[2]));
+    }
+    w.positions[ki] = tip_positions[s];
+    w.position_valid[ki] = pose_ok;
+  }
+  const rtc::grasp::PullEstimate& est = UpdatePullEstimator(w, grasp_detected, dt);
+  rtc::grasp::FillPullEstimateData(est, out);
+}
 
 }  // namespace integrated_bringup
 

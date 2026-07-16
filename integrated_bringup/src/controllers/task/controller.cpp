@@ -713,18 +713,8 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   // capped at kNumFingertips (only those slots receive FK poses). Wiring
   // errors (unknown link / missing thumb role) throw → configure FAILURE.
   {
-    std::vector<std::string> pull_links;
-    if (const auto* sys_model = GetSystemModelConfig(); sys_model) {
-      const auto secondary = GetSecondaryDeviceName();
-      for (const auto& tm : sys_model->tree_models) {
-        if (tm.name == secondary) {
-          const std::size_t n_links = std::min(tm.tip_links.size(), kNumFingertips);
-          pull_links.assign(tm.tip_links.begin(),
-                            tm.tip_links.begin() + static_cast<std::ptrdiff_t>(n_links));
-          break;
-        }
-      }
-    }
+    const std::vector<std::string> pull_links =
+        ResolvePullTipLinks(GetSystemModelConfig(), GetSecondaryDeviceName(), kNumFingertips);
     ConfigurePullEstimatorWiring(shared, 1.0 / GetDefaultDt(), pull_links, pull_wiring_);
   }
 

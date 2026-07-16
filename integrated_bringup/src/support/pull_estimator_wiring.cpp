@@ -1,9 +1,30 @@
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 
+#include "rtc_urdf_bridge/types.hpp"
+
+#include <algorithm>
 #include <cstddef>
 #include <stdexcept>
 
 namespace integrated_bringup {
+
+std::vector<std::string> ResolvePullTipLinks(const rtc_urdf_bridge::ModelConfig* sys_model,
+                                             const std::string& secondary_device,
+                                             std::size_t max_slots) {
+  std::vector<std::string> links;
+  if (sys_model == nullptr) {
+    return links;
+  }
+  for (const auto& tm : sys_model->tree_models) {
+    if (tm.name == secondary_device) {
+      const std::size_t n_links = std::min(tm.tip_links.size(), max_slots);
+      links.assign(tm.tip_links.begin(),
+                   tm.tip_links.begin() + static_cast<std::ptrdiff_t>(n_links));
+      break;
+    }
+  }
+  return links;
+}
 
 void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_rate_hz,
                                   std::span<const std::string> link_names, PullEstimatorWiring& w) {
