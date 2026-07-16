@@ -41,6 +41,7 @@ add_library(rtc_controllers STATIC
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
   src/controllers/grasp/grasp_controller.cpp
+  src/controllers/grasp/pull_force_estimator.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -118,6 +119,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_grasp_controller test/test_grasp_controller.cpp)
   target_link_libraries(test_grasp_controller rtc_controllers)
+
+  ament_add_gtest(test_pull_force_estimator test/test_pull_force_estimator.cpp)
+  target_link_libraries(test_pull_force_estimator rtc_controllers)
 
   ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
   target_link_libraries(test_core_controllers rtc_controllers)
