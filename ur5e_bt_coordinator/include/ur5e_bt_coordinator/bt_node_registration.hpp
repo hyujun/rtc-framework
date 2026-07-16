@@ -5,9 +5,27 @@
 
 #include <behaviortree_cpp/bt_factory.h>
 
+#include <array>
 #include <memory>
+#include <string_view>
 
 namespace rtc_bt {
+
+/// Registration names of the action nodes that resolve a finger key into hand
+/// joint indices (see GetFingerJointIndices). A tree containing any of these
+/// cannot tick before hand joint_states arrive without throwing BT::RuntimeError
+/// out of the tick callback (#161) — the coordinator's readiness gate keys on
+/// this list. SetHandPose is deliberately absent: it resolves no finger index
+/// (no-feedback pose node), so it neither needs the gate nor triggers it.
+///
+/// Single source: RegisterBtNodes() below registers these same three names, and
+/// both usages live in bt_node_registration.cpp so a rename cannot drift the two
+/// apart unnoticed.
+inline constexpr std::array<std::string_view, 3> kFingerIndexNodeNames = {
+    "MoveFinger", "FlexExtendFinger", "MoveOpposition"};
+
+/// True when `registration_name` is one of kFingerIndexNodeNames.
+[[nodiscard]] bool IsFingerIndexNode(std::string_view registration_name);
 
 /// Optional-sensor capabilities of a robot (Seam D). Each flag gates a group
 /// of BT node types at *registration* time, so a robot that lacks a sensor

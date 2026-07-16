@@ -299,6 +299,19 @@ void BtCoordinatorNode::LoadTree() {
   RCLCPP_DEBUG(coord_log(), "Loading tree from: %s", tree_path.c_str());
 
   tree_ = std::make_unique<BT::Tree>(factory_->createTreeFromFile(tree_path.string()));
+
+  // Scope the #161 hand-readiness gate to trees that actually resolve finger
+  // indices. applyVisitor walks every node across all subtrees, so a finger
+  // node nested in a subtree still arms the gate; an arm-only tree leaves it
+  // off and stays runnable with no hand joint_states. Recomputed on each load
+  // (configure + runtime switch both route through here), never stale.
+  tree_needs_hand_ = false;
+  tree_->applyVisitor([this](const BT::TreeNode* node) {
+    if (IsFingerIndexNode(node->registrationName())) {
+      tree_needs_hand_ = true;
+    }
+  });
+  RCLCPP_DEBUG(coord_log(), "tree_needs_hand=%s", tree_needs_hand_ ? "true" : "false");
 }
 
 void BtCoordinatorNode::InitializeBlackboard() {
@@ -383,6 +396,22 @@ BtCoordinatorNode::TickBlocker BtCoordinatorNode::TickBlockedBy(std::string& rea
   if (!bridge_->IsControllerWired()) {
     reason = "No active controller wired yet";
     return TickBlocker::kControllerUnwired;
+  }
+
+  // Hold off a finger-index tree until hand joint_states arrive (#161). The
+  // #158 controller-wired gate above cannot cover this: hand joint_states ride
+  // the controller-agnostic /rtc_cm/<hand_group>/joint_states topic and are
+  // never rewired, so the controller can wire while hand_joint_names_ is still
+  // empty. The next tick would call MoveOpposition/MoveFinger/FlexExtendFinger
+  // onStart, which throw BT::RuntimeError on empty finger indices — unwinding
+  // out of the wall-timer callback through rclcpp::spin into std::terminate.
+  // Scoped to trees that resolve finger indices (tree_needs_hand_), so arm-only
+  // trees never wait. IsHandStateReady keys on *readiness*, not on a specific
+  // finger resolving — an unknown finger after readiness stays the node's own
+  // FAILURE/throw path, not an indefinite gate wait.
+  if (tree_needs_hand_ && !bridge_->IsHandStateReady()) {
+    reason = "Hand joint_states not received yet";
+    return TickBlocker::kJointStatesMissing;
   }
 
   return TickBlocker::kNone;

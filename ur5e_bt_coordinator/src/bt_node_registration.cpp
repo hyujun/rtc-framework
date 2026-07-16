@@ -32,7 +32,15 @@
 #include "ur5e_bt_coordinator/condition_nodes/is_object_detected.hpp"
 #include "ur5e_bt_coordinator/condition_nodes/is_vision_target_ready.hpp"
 
+#include <algorithm>
+#include <string_view>
+
 namespace rtc_bt {
+
+bool IsFingerIndexNode(std::string_view registration_name) {
+  return std::find(kFingerIndexNodeNames.begin(), kFingerIndexNodeNames.end(), registration_name) !=
+         kFingerIndexNodeNames.end();
+}
 
 void RegisterBtNodes(BT::BehaviorTreeFactory& factory, const std::shared_ptr<BtRosBridge>& bridge,
                      const RobotCapabilities& capabilities) {
@@ -52,6 +60,9 @@ void RegisterBtNodes(BT::BehaviorTreeFactory& factory, const std::shared_ptr<BtR
   factory.registerNodeType<IsVisionTargetReady>("IsVisionTargetReady", bridge);
 
   // ── Hand demo nodes (pose-driven — no grasp sensing required) ─────────
+  // The three finger-index nodes below are also listed in kFingerIndexNodeNames
+  // (bt_node_registration.hpp) for the #161 readiness gate — keep the names in
+  // sync (a mismatch would leave the gate inert; test_rewire_gate catches it).
   factory.registerNodeType<MoveFinger>("MoveFinger", bridge);
   factory.registerNodeType<FlexExtendFinger>("FlexExtendFinger", bridge);
   factory.registerNodeType<SetHandPose>("SetHandPose", bridge);

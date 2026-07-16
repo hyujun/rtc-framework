@@ -80,6 +80,14 @@ class RewireGateTest : public ::testing::Test {
   /// escalation; ControllerWaitTimeoutTest shortens it to exercise it.
   [[nodiscard]] virtual double ControllerWaitTimeoutS() const { return 10.0; }
 
+  /// Inner tree body (single leaf by default). Arm-only UR5eHoldPose here means
+  /// tree_needs_hand_ stays false, so the #161 hand-readiness gate never arms —
+  /// the controller-wired-gate tests below are unaffected by it. The hand
+  /// fixtures override this with a finger-index node to arm the gate.
+  [[nodiscard]] virtual std::string TreeInnerXml() const {
+    return R"(<UR5eHoldPose pose="demo_pose"/>)";
+  }
+
   void SetUp() override {
     // Per-test, per-process filename. colcon runs test binaries in parallel and
     // a machine can host two workspaces, so a fixed name in the shared /tmp
@@ -91,9 +99,8 @@ class RewireGateTest : public ::testing::Test {
                   std::to_string(::getpid()) + ".xml");
 
     std::ofstream tree_out(tree_path_);
-    tree_out << R"(<root BTCPP_format="4"><BehaviorTree ID="T">)"
-                R"(<UR5eHoldPose pose="demo_pose"/>)"
-                R"(</BehaviorTree></root>)";
+    tree_out << R"(<root BTCPP_format="4"><BehaviorTree ID="T">)" << TreeInnerXml()
+             << R"(</BehaviorTree></root>)";
     tree_out.close();
     // Unchecked, a failed write (leftover file owned by another user, full /tmp)
     // would surface as a confusing configure() failure instead.
@@ -127,6 +134,12 @@ class RewireGateTest : public ::testing::Test {
     arm_target_sub_ = node_->create_subscription<rtc_msgs::msg::RobotTarget>(
         std::string("/") + kController + "/ur5e/joint_goal", rclcpp::QoS{10},
         [this](rtc_msgs::msg::RobotTarget::SharedPtr) { ++arm_targets_seen_; });
+
+    // Observe the hand target too (hand_group=p1b). The finger fixtures assert
+    // a finger node published exactly once after the readiness gate opened.
+    hand_target_sub_ = node_->create_subscription<rtc_msgs::msg::RobotTarget>(
+        std::string("/") + kController + "/p1b/joint_goal", rclcpp::QoS{10},
+        [this](rtc_msgs::msg::RobotTarget::SharedPtr) { ++hand_targets_seen_; });
 
     // ~/step client. Same executor as the server, so CallStep must pump it
     // instead of blocking on the future.
@@ -182,16 +195,29 @@ class RewireGateTest : public ::testing::Test {
     BridgeStateInjector(injector_->Bridge()).ActiveController(name);
   }
 
+  /// Inject a structurally usable hand JointState (full assm_v1 10-DoF, names +
+  /// positions) — enough for IsHandStateReady() to open the #161 gate and for
+  /// the finger resolver to map "index"/"thumb"/… to real indices.
+  void InjectHandState() {
+    const auto& names = AssmV1JointNames();
+    sensor_msgs::msg::JointState js;
+    js.name.assign(names.begin(), names.end());
+    js.position.assign(names.size(), 0.0);
+    BridgeStateInjector(injector_->Bridge()).HandJointState(std::move(js));
+  }
+
   using Trigger = std_srvs::srv::Trigger;
 
   rclcpp::executors::SingleThreadedExecutor exec_;
   std::shared_ptr<BtCoordinatorNode> node_;
   std::unique_ptr<CoordinatorTickInjector> injector_;
   rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr arm_target_sub_;
+  rclcpp::Subscription<rtc_msgs::msg::RobotTarget>::SharedPtr hand_target_sub_;
   rclcpp::Node::SharedPtr step_client_node_;
   rclcpp::Client<Trigger>::SharedPtr step_client_;
   std::filesystem::path tree_path_;
   int arm_targets_seen_ = 0;
+  int hand_targets_seen_ = 0;
 };
 
 /// ~/step is the tick path's twin. step_mode cancels the tick timer in
@@ -205,6 +231,24 @@ class StepGateTest : public RewireGateTest {
 class ControllerWaitTimeoutTest : public RewireGateTest {
  protected:
   [[nodiscard]] double ControllerWaitTimeoutS() const override { return 0.05; }
+};
+
+/// A finger-index tree (MoveFinger) arms the #161 hand-readiness gate. pose
+/// "home" is the one seeded hand pose in the base fixture, and finger "index"
+/// resolves against the assm_v1 names InjectHandState() publishes — so once the
+/// gate opens the node really runs and publishes a hand target.
+class HandReadinessGateTest : public RewireGateTest {
+ protected:
+  [[nodiscard]] std::string TreeInnerXml() const override {
+    return R"(<MoveFinger finger_name="index" pose="home"/>)";
+  }
+};
+
+/// Same finger tree, driven only through ~/step — the gate must cover the
+/// service path too, not just the timer.
+class HandReadinessStepTest : public HandReadinessGateTest {
+ protected:
+  [[nodiscard]] bool StepMode() const override { return true; }
 };
 
 // ── Acceptance 1, first half: no crash, no progress before the rewire ───────
@@ -327,6 +371,88 @@ TEST_F(ControllerWaitTimeoutTest, WaitTimeoutDiagnosesButKeepsWaiting) {
   // could never recover on its own — so a late controller must still open the
   // gate and let the tree run.
   InjectActiveController(kController);
+  SpinTicks();
+
+  EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::RUNNING);
+  EXPECT_GT(arm_targets_seen_, 0);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// #161 hand-readiness gate
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── AC1: a finger tree does not advance/abort before hand joint_states ──────
+
+TEST_F(HandReadinessGateTest, FingerTreeWaitsForHandStateOnTimerPath) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+
+  // Wire the controller so it is NOT the blocker — isolate the hand-readiness
+  // gate. No hand state injected yet, so hand_joint_names_ is empty: exactly the
+  // simultaneous-launch window in which MoveFinger::onStart used to throw
+  // BT::RuntimeError out of the tick callback → std::terminate (#161).
+  InjectActiveController(kController);
+  ASSERT_TRUE(injector_->Bridge()->IsControllerWired());
+  ASSERT_FALSE(injector_->Bridge()->IsHandStateReady());
+
+  SpinTicks();  // pre-fix: SIGABRT here on the first tick that reaches MoveFinger
+
+  // Gate held the tree back: no tick reached the node, nothing published.
+  EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::IDLE);
+  EXPECT_EQ(hand_targets_seen_, 0);
+}
+
+TEST_F(HandReadinessStepTest, StepRefusesFingerTreeBeforeHandState) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);
+  ASSERT_TRUE(injector_->Bridge()->IsControllerWired());
+  ASSERT_FALSE(injector_->Bridge()->IsHandStateReady());
+
+  // The gate covers ~/step, not just the timer: a step must not reach a finger
+  // node the auto-tick is (correctly) holding back.
+  auto response = CallStep();
+  ASSERT_NE(response, nullptr) << "~/step never answered";
+
+  EXPECT_FALSE(response->success);
+  EXPECT_EQ(response->message, "Hand joint_states not received yet");
+  EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::IDLE);
+  EXPECT_EQ(hand_targets_seen_, 0);
+}
+
+// ── AC2: once a usable hand state arrives, the finger tree runs and publishes ─
+
+TEST_F(HandReadinessGateTest, FingerTreeRunsOnceHandStateArrives) {
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);
+  SpinTicks(50ms);
+  ASSERT_EQ(injector_->RootStatus(), BT::NodeStatus::IDLE) << "gate should still hold";
+  ASSERT_EQ(hand_targets_seen_, 0);
+
+  InjectHandState();
+  ASSERT_TRUE(injector_->Bridge()->IsHandStateReady());
+
+  SpinTicks();
+
+  // The gate deferred MoveFinger rather than swallowing it: onStart ran after
+  // readiness and its one-shot hand target reached the wire exactly once. home
+  // is a zero-distance move from the injected all-zero state, so the node may
+  // already have converged to SUCCESS (root back to IDLE) by now — the durable
+  // proof it executed past the gate is the single publish, not the transient
+  // RUNNING status. Exactly 1: onStart publishes once, onRunning never
+  // republishes, and repeat_ is off so a completed tree does not restart.
+  EXPECT_EQ(hand_targets_seen_, 1);
+}
+
+// ── AC5: an arm-only tree is unaffected — the hand gate never arms for it ────
+
+TEST_F(RewireGateTest, ArmOnlyTreeRunsWithNoHandState) {
+  // The base fixture's tree is arm-only (UR5eHoldPose), so tree_needs_hand_ is
+  // false and the hand-readiness gate must stay inert: the tree ticks with no
+  // hand joint_states ever injected. Guards against a future unconditional gate
+  // that would needlessly hold arm-only trees (e.g. vision_approach.xml).
+  ASSERT_EQ(node_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  InjectActiveController(kController);
+  ASSERT_FALSE(injector_->Bridge()->IsHandStateReady());  // no hand state, ever
+
   SpinTicks();
 
   EXPECT_EQ(injector_->RootStatus(), BT::NodeStatus::RUNNING);

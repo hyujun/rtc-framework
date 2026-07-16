@@ -89,10 +89,19 @@ class BtRosBridge {
   /// Current hand joint positions from /rtc_cm/hand/joint_states.
   std::vector<double> GetHandJointPositions() const;
 
+  /// True once a structurally usable hand JointState has arrived: names
+  /// non-empty, positions the same width as names, and that width equal to the
+  /// configured hand DoF. This is a *readiness* query, deliberately distinct
+  /// from GetFingerJointIndices() returning empty — the latter also means
+  /// "unknown finger" (a config error). A gate waits on readiness; an unknown
+  /// finger *after* readiness is a clear failure, not an indefinite wait (#161).
+  [[nodiscard]] bool IsHandStateReady() const;
+
   /// Finger → hand-joint index list, derived at runtime from the hand
   /// joint_states names by prefix-matching `<key>_` (see FingerJointIndices in
   /// hand_pose_config.hpp). Supports variable per-finger DoF without hardcoding.
-  /// Returns empty if no joint_states received yet or no name matches `key`.
+  /// Returns empty if no joint_states received yet or no name matches `key` —
+  /// use IsHandStateReady() to tell those two apart.
   std::vector<int> GetFingerJointIndices(const std::string& key) const;
 
   /// Last published hand target (empty if never published)
