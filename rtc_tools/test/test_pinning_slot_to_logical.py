@@ -22,6 +22,7 @@ This test ties them together at the launch boundary that consumes both.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -171,3 +172,44 @@ def test_sentinel_slot_is_left_unpinned(tmp_path, monkeypatch):
     root = tmp_path / "nuc13"
     _build_nuc13(root)
     assert _resolve_via_launch(-1, root, monkeypatch) == -1
+
+
+# ── DDS-pin RTC-owned thread filter (issue #163 Phase 3) ─────────────────────
+
+_THREAD_CONFIG_HPP = (
+    _REPO_ROOT / "rtc_base" / "include" / "rtc_base" / "threading" / "thread_config.hpp"
+)
+
+
+def _thread_config_names() -> set[str]:
+    """Every ``.name = "..."`` value declared in thread_config.hpp."""
+    text = _THREAD_CONFIG_HPP.read_text()
+    return set(re.findall(r'\.name = "([^"]+)"', text))
+
+
+def test_rtc_owned_names_mirror_thread_config_hpp():
+    """The DDS-pin exclusion set is an exact mirror of the C++ thread names.
+
+    If a thread is renamed (or added) in thread_config.hpp without updating
+    RTC_OWNED_THREAD_NAMES, pin_dds_threads_to_slot could yank it off its
+    dedicated core — the exact class of bug as #163. Lock the two together.
+    """
+    assert _thread_config_names() == pinning.RTC_OWNED_THREAD_NAMES
+
+
+def test_dds_pin_snippet_excludes_every_rtc_thread():
+    """The rendered DDS-pin command carries the full exclusion list and applies it.
+
+    nrt_logging / nrt_callback are SCHED_OTHER; the pre-#163 FIFO-only filter let
+    them through. Assert the name filter is present and complete so they (and the
+    RT threads) are skipped.
+    """
+    action = pinning.pin_dds_threads_to_slot(
+        "integrated_rt_controller", "integrated_rt_controller", 2
+    )
+    snippet = action.cmd[2][0].text
+    # The exclusion is applied via a case-match against $COMM.
+    assert 'case "$RTC_OWNED" in *" $COMM "*) continue' in snippet
+    # Every RTC-owned name — especially the SCHED_OTHER nrt_* pair — is listed.
+    for name in pinning.RTC_OWNED_THREAD_NAMES:
+        assert f" {name} " in snippet, f"{name} missing from RTC_OWNED list"

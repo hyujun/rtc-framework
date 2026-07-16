@@ -46,6 +46,32 @@ from launch.substitutions import LaunchConfiguration
 # ``cpu_core == -1``: "do not pin" sentinel from ``select_thread_layout``.
 NO_PIN_SENTINEL = -1
 
+# Thread names that ``ApplyThreadConfig`` (thread_utils.hpp) already places on a
+# dedicated core via ``pthread_setname_np``. ``pin_dds_threads_to_slot`` must
+# never move these — doing so overrides the RT layout it works to protect. This
+# is a 1:1 mirror of the ``.name`` fields in
+# ``rtc_base/include/rtc_base/threading/thread_config.hpp`` and is drift-tested
+# against that header (test_pinning_slot_to_logical.py). Names are ≤ 15 chars so
+# they survive ``pthread_setname_np`` truncation and match ``/proc/*/comm``
+# verbatim. Process-level names (arm_driver/hand_driver/sim_thread/viewer) live
+# in separate processes and never appear in a co-pinned process's task list, but
+# are included so the set stays an exact mirror of the header.
+RTC_OWNED_THREAD_NAMES = frozenset(
+    {
+        "rt_control",
+        "rt_callback",
+        "mpc_main",
+        "mpc_worker_0",
+        "mpc_worker_1",
+        "nrt_logging",
+        "nrt_callback",
+        "arm_driver",
+        "hand_driver",
+        "sim_thread",
+        "viewer",
+    }
+)
+
 
 def rt_common_path() -> str:
     """Absolute path to the installed ``rt_common.sh``.
@@ -141,18 +167,24 @@ def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProc
 
 
 def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProcess:
-    """Co-pin a node's non-RT (DDS / aux) threads onto ``slot``'s logical CPU.
+    """Co-pin a node's DDS / aux threads onto ``slot``'s logical CPU.
 
     Layout v4.1 co-pins the DDS receive thread with ``rt_callback`` so message
-    dispatch and state-callback execution share L1/L2. SCHED_OTHER is preserved —
-    only affinity changes. SCHED_FIFO threads (rt_control / rt_callback / mpc_*)
-    are skipped so this only touches non-RT threads.
+    dispatch and state-callback execution share L1/L2. Only threads that RTC did
+    NOT place are moved: a thread is left alone if its ``/proc/*/comm`` is in
+    ``RTC_OWNED_THREAD_NAMES`` *or* it runs under SCHED_FIFO. The name check is
+    the load-bearing one — ``nrt_logging`` / ``nrt_callback`` are SCHED_OTHER, so
+    the old FIFO-only filter yanked them off their dedicated cores onto the
+    rt_callback core (issue #163). The FIFO check stays as a belt-and-suspenders
+    guard for any RT thread whose name was not set. The main thread (TID == PID)
+    is covered by the same loop, so it too is protected by the name filter.
     """
     _reject_quotes(label=label, process_grep=process_grep)
 
     if slot < 0:
         return _skip_action(f"[RT] {label}: cpu_core={slot}, no DDS thread pinning")
 
+    owned = " ".join(sorted(RTC_OWNED_THREAD_NAMES))
     return ExecuteProcess(
         cmd=[
             "bash",
@@ -161,9 +193,11 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
             'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — DDS thread pinning skipped"; exit 0; '
             "fi; "
-            'taskset -cp "$CPU" "$PID" 2>/dev/null; '
+            f'RTC_OWNED=" {owned} "; '
             "PINNED=0; "
             "for TID in $(ls /proc/$PID/task/ 2>/dev/null); do "
+            '  COMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null || echo ""); '
+            '  case "$RTC_OWNED" in *" $COMM "*) continue ;; esac; '
             '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
             '  if [ -n "$POLICY" ]; then continue; fi; '
             '  taskset -cp "$CPU" "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
