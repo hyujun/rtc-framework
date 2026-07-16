@@ -42,20 +42,32 @@ Issue: #163 — `fix(rtc_tools): 런치 taskset 이 slot 을 logical CPU 로 오
 
 ## Current state
 
-**2026-07-16**: Phase 0 완료. 코드 변경 없음 (`git status` 는 무관한 untracked `docs/WBC_CONTROLLER_IMPLEMENTATION.md` 만).
+**2026-07-16**: Phase 0·1·2 완료, `fix/163-launch-slot-to-logical` 브랜치에 2 커밋. **handoff 경계 도달** — Phase 3·4 는 NUC13 실측(사용자 소유)에 의존.
 
 - [x] Phase 0 — #163 생성, #151 · #152 코멘트, 본 artifact 생성
-- [ ] Phase 1 — `rtc_tools/launch/pinning.py` 신설 + 런치 5개 전환 + 중복 제거
-- [ ] Phase 2 — `test_thread_layout.py` 하이브리드 축 drift 테스트
-- [ ] **handoff 경계** — NUC13 실측 (사용자 소유)
-- [ ] Phase 3 — DDS pin 루프 이름 필터 (nrt yank 차단)
+- [x] Phase 1 — `rtc_tools/launch/pinning.py` 신설 + 런치 5개 전환 + `_pin_external_driver` 중복 제거 (commit a015ce3)
+- [x] Phase 2 — `test_pinning_slot_to_logical.py` 하이브리드 축 drift 테스트 (commit a14f97f)
+- [ ] **handoff 경계** — NUC13 실측 (사용자 소유). #151 코멘트의 명령 세트 실행
+- [ ] Phase 3 — DDS pin 루프 이름 필터 (nrt yank 차단). 실측과 독립, 착수 가능
 - [ ] Phase 4 — `taskset -acp` (실측 gate)
 
 ## Next action
 
-Phase 1 착수: `rtc_tools/rtc_tools/launch/pinning.py` 신설. 런치가 생성하는 `bash -c` 스니펫이
-`source <repo_scripts>/lib/rt_common.sh` → `detect_hybrid_capability` → `slot_to_logical_cpu $SLOT`
-→ `taskset -cp $CPU` 하도록. (`-a` 는 Phase 4 gate 이므로 이번엔 붙이지 않는다.)
+두 갈래가 병렬 가능:
+1. **NUC13 실측** (사용자) — #151 코멘트의 명령(`cset shield -s`, `Cpus_allowed_list`, `ps -eLo comm,psr,cls,rtprio`)을 NUC13 에서 실행. 목적: (a) Phase 1 이 실제로 slot→logical 을 고쳤는지 런타임 확인, (b) cset/cpuset EINVAL 가설 확정/반증, (c) Phase 4 `-acp` 의 E-core 부하 판단.
+2. **Phase 3** (에이전트) — `robot_ur5e_p1a/p1b` 의 DDS pin 루프(현재 `pin_dds_threads_to_slot` 헬퍼로 이동됨)에서 SCHED_FIFO 필터를 RTC 소유 스레드 이름(`rt_control`/`rt_callback`/`mpc_main`/`mpc_worker_*`/`nrt_logging`/`nrt_callback`) 제외로 교체. 이름 목록은 `thread_config.hpp` `.name` 필드 mirror → Phase 2 테스트에 함께 고정.
+
+## Phase 1·2 검증 결과 (실측 evidence)
+
+- `ruff check` 5 launch + pinning.py + test: **All checks passed**
+- `colcon build --packages-select rtc_tools integrated_bringup`: **2 packages finished**
+- `colcon test rtc_tools -k "thread_layout or pinning"`: **18 passed** (기존 12 + 신규 5 + launch_imports 1), 0 failure
+- 렌더된 스니펫을 NUC13 mock 에서 실행: slot 6→**logical 10**, 7→**11**, 2→**4** (Sprint 기준 1 충족)
+- 이 dev 박스(Ryzen 6C identity)·SMT-off 8core mock: slot==logical (비-하이브리드 무회귀)
+- negative check: prelude 를 raw-slot 으로 되돌리면 slot 6→6 → 테스트가 실제로 fail 판정 (회귀 감지 확인)
+- 설치 환경에서 5개 런치 `generate_launch_description()` 전부 OK
+- end-to-end: `rt_common_path()` → 설치된 `install/repo_scripts/lib/repo_scripts/lib/rt_common.sh`, 실기 slot 2→2 (identity)
+- symlink-install: `build/rtc_tools/rtc_tools` 가 소스 심링크라 pinning.py 자동 노출 (별도 install 불필요)
 
 ## Decisions and rationale
 
@@ -104,9 +116,10 @@ Phase 1·2 build/test evidence: **미수집** (착수 전).
 
 ## Workspace
 
-- branch: `main` @ `002b8c9`
-- `git status`: untracked `docs/WBC_CONTROLLER_IMPLEMENTATION.md` — **본 task 와 무관, 다른 소유자**. 건드리지 않는다.
-- 미커밋 변경: 없음 (Phase 0 은 이슈·artifact 만)
+- branch: `fix/163-launch-slot-to-logical` (from `main` @ `002b8c9`), 아직 push/PR 안 함
+- 커밋: `a015ce3` (Phase 1), `a14f97f` (Phase 2)
+- `git status`: untracked `docs/WBC_CONTROLLER_IMPLEMENTATION.md` — **본 task 와 무관, 다른 소유자**. 스테이징/커밋에서 제외함.
+- 미커밋 변경: 본 artifact 갱신분(Phase 1·2 완료 반영)
 
 ## Pointers
 
