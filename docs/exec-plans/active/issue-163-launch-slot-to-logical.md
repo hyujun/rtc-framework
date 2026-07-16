@@ -116,8 +116,8 @@ Phase 1·2 build/test evidence: **미수집** (착수 전).
 
 ## Workspace
 
-- branch: `fix/163-launch-slot-to-logical` (from `main` @ `002b8c9`), 아직 push/PR 안 함
-- 커밋: `a015ce3` (Phase 1), `a14f97f` (Phase 2)
+- branch: `fix/163-launch-slot-to-logical` (from `main` @ `002b8c9`) → **PR #165** (open, base main)
+- 커밋: `a015ce3` (P1), `a14f97f` (P2), `f875318` (P3), `676f7d5`·`9068437` (artifact)
 - `git status`: untracked `docs/WBC_CONTROLLER_IMPLEMENTATION.md` — **본 task 와 무관, 다른 소유자**. 스테이징/커밋에서 제외함.
 - 미커밋 변경: 본 artifact 갱신분(Phase 1·2 완료 반영)
 
