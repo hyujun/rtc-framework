@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_tsid/tasks/force_task.hpp"
 #include "rtc_tsid/tasks/internal_force_task.hpp"
 #include "rtc_tsid/tasks/object_se3_task.hpp"
@@ -25,6 +26,10 @@ namespace integrated_bringup {
 // the tight epsilon_pregrasp_ threshold (the old separate kPreGrasp fine-
 // positioning phase is folded in — its preset was identical to approach).
 void DemoWbcController::UpdatePhase(const ControllerState& state) noexcept {
+  // L3 under DemoWbcController::ComputeControl — the grasp FSM transition guard
+  // + phase-enter side effects, the WBC-specific diagnostic the issue #157
+  // contract calls out as a sanctioned deeper span.
+  RTC_TRACE_SCOPE("DemoWbcController::UpdatePhase");
   const int cmd = grasp_cmd_.load(std::memory_order_acquire);
   WbcPhase next = phase_;
 

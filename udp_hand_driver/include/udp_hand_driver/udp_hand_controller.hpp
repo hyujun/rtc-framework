@@ -1221,6 +1221,10 @@ class UdpHandController {
   // branch per review #2-A so the hot path stays free of the write + its recv).
   // Fire-and-forget: no echo wait, allocation-free, noexcept.
   void OnCommLoopAborted() noexcept {
+    // Sibling of hand_comm_tick, NOT a child — CommLoop::OnLoopAborted() calls
+    // this after the tick loop has unwound, so it lands on the loop thread's
+    // lane outside any hand_comm_tick span.
+    RTC_TRACE_SCOPE("hand_estop_zero_write");
     std::array<float, kNumHandMotors> zeros{};
     transport_.WritePositionFireAndForget(zeros, joint_io_mode_);
   }

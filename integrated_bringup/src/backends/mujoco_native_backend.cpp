@@ -152,6 +152,9 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
 }
 
 void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
+  // L3 under CM::ReadDeviceState — RT-tick fingertip-wrench mirror load (not the
+  // OnWrench callback lane, which is the non-RT write side).
+  RTC_TRACE_SCOPE("MujocoNativeBackend::ReadSensorState");
   const auto mirror = sensor_mirror_.Load();
   cache.num_inference_groups = mirror.num_tips;
 
@@ -226,12 +229,16 @@ void MujocoNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr m
 }
 
 bool MujocoNativeBackend::ReadState(DeviceStateCache& cache) noexcept {
+  // L3 under CM::ReadDeviceState — RT-tick SeqLock load.
+  RTC_TRACE_SCOPE("MujocoNativeBackend::ReadState");
   cache = state_cache_.Load();
   return cache.valid;
 }
 
 void MujocoNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                                        CommandType command_type) noexcept {
+  // L3 under CM::WriteCommand — RT-tick actuator publish.
+  RTC_TRACE_SCOPE("MujocoNativeBackend::WriteCommand");
   if (!cmd_pub_)
     return;
   const int nc = slot.num_channels;

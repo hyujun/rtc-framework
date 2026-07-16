@@ -174,11 +174,15 @@ void UdpHandNativeBackend::OnSensorState(rtc_msgs::msg::HandSensorState::SharedP
 }
 
 bool UdpHandNativeBackend::ReadState(DeviceStateCache& cache) noexcept {
+  // L3 under CM::ReadDeviceState — RT-tick SeqLock load (not the On*State
+  // callback lanes above, which are the non-RT write side).
+  RTC_TRACE_SCOPE("UdpHandNativeBackend::ReadState");
   cache = joint_cache_.Load();
   return cache.valid;
 }
 
 void UdpHandNativeBackend::ReadMotorState(DeviceStateCache& cache) noexcept {
+  RTC_TRACE_SCOPE("UdpHandNativeBackend::ReadMotorState");
   const auto m = motor_cache_.Load();
   cache.num_motor_channels = m.num_motor_channels;
   cache.motor_positions = m.motor_positions;
@@ -187,6 +191,7 @@ void UdpHandNativeBackend::ReadMotorState(DeviceStateCache& cache) noexcept {
 }
 
 void UdpHandNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
+  RTC_TRACE_SCOPE("UdpHandNativeBackend::ReadSensorState");
   const auto s = sensor_cache_.Load();
   cache.num_sensor_channels = s.num_sensor_channels;
   cache.sensor_data = s.sensor_data;
