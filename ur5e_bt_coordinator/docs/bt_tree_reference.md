@@ -351,6 +351,12 @@ bridge.GetFingerJointIndices("thumb_cmc");  // "thumb_cmc_*" joint 인덱스
 <FlexExtendFinger finger_name="index_mcp" hand_trajectory_speed="1.0"/>
 ```
 
+> **Readiness (#161):** finger index 를 해석하는 노드(`MoveFinger`/`MoveOpposition`/
+> `FlexExtendFinger`)를 포함한 트리는 hand joint_states 가 도착할 때까지 coordinator 가
+> tick 을 보류한다 — `SetHandPose` 는 finger index 를 해석하지 않으므로 이 보류에서 제외.
+> arm-only 트리는 영향 없음. joint_states 도착 후에도 해석되지 않는 finger 키는 무한
+> 대기가 아니라 명확한 FAILURE 로 처리된다.
+
 ### 파일 수정 체크리스트
 
 | 변경 내용 | 수정 파일 | 빌드 필요 |

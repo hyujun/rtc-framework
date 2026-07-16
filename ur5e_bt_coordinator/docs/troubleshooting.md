@@ -17,6 +17,8 @@
 | "Tree completed with FAILURE" 로그 | 시퀀스 중 하나의 노드가 실패 | Groot2로 트리 실행 추적하여 실패 노드 확인 |
 | `Tree file not found` | 경로 오류 | 절대 경로 사용 또는 trees/ 디렉토리 확인 |
 | `E-STOP active, tree paused` | 비상 정지 활성화 | E-STOP 원인 확인 및 해제 후 자동 재개 |
+| `Tick skipped: Hand joint_states not received yet` (throttled WARN) | finger 트리(MoveFinger/MoveOpposition/FlexExtendFinger)인데 hand joint_states 아직 미수신 — 스택과 동시 launch 시 startup race | joint_states 흐르면 자동 재개 (gate가 finger 트리만 대기, arm-only 트리는 무관). 계속되면 hand 드라이버 및 `/rtc_cm/<hand_group>/joint_states` 확인 |
+| `Tick aborted by exception: ... — reporting FAILURE` 로그 후 트리 FAILURE | 노드가 tick 중 throw (트리 오작성, 필수 입력 누락, readiness 후에도 해석 불가한 finger 키) | 프로세스는 죽지 않음. 로그의 예외 메시지로 원인 노드 확인 — `no hand joints for finger '<name>'` 이면 트리의 finger 이름 ↔ hand joint_states name 접두사(또는 `finger_map.*`) 불일치 |
 
 ---
 
