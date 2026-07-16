@@ -227,6 +227,63 @@ TEST_F(HandNodeTest, MoveOpposition_OobResolverIndexIsSkipped) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// IsHandStateReady — hand joint_states readiness (issue #161, Phase 1)
+//
+// The gate that closes #161's SIGABRT race waits on *readiness*, which must be
+// distinct from GetFingerJointIndices() returning empty: the latter also means
+// "unknown finger" (a config error). These pin the split — readiness reflects
+// only whether a structurally usable hand state has arrived, while an unknown
+// finger after readiness stays empty (surfaced as a clear failure, not a wait).
+// ══════════════════════════════════════════════════════════════════════════
+
+TEST_F(HandNodeTest, IsHandStateReady_FalseBeforeAnyHandState) {
+  // No PublishHandState yet: hand_joint_names_ is empty — the exact startup race
+  // window in which MoveOpposition/MoveFinger/FlexExtendFinger used to throw.
+  EXPECT_FALSE(bridge_->IsHandStateReady());
+}
+
+TEST_F(HandNodeTest, IsHandStateReady_TrueAfterFullState) {
+  PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});  // 10 == kDefaultHandDof
+  Spin();
+  EXPECT_TRUE(bridge_->IsHandStateReady());
+}
+
+TEST_F(HandNodeTest, IsHandStateReady_FalseOnPartialDof) {
+  // A partial first publish (fewer joints than the configured hand DoF) is not
+  // yet usable: the finger a tree asks for may not be present. Wait, don't
+  // advance on it.
+  PublishHandState({0, 0, 0});  // 3 < kDefaultHandDof (names truncated to 3)
+  Spin();
+  EXPECT_FALSE(bridge_->IsHandStateReady());
+}
+
+TEST_F(HandNodeTest, IsHandStateReady_TrueWithExtraJoints) {
+  // More joints than configured is safe (resolver/nodes skip out-of-range
+  // indices — see MoveOpposition_OobResolverIndexIsSkipped) and must not hang
+  // the gate: readiness uses hand_dof_ as a floor, not an exact match.
+  const std::vector<std::string> names = {
+      "thumb_cmc_aa",  "thumb_cmc_fe", "thumb_mcp_fe",  "index_mcp_aa",
+      "index_mcp_fe",  "index_dip_fe", "middle_mcp_aa", "middle_mcp_fe",
+      "middle_dip_fe", "ring_mcp_fe",  "thumb_extra_fe"};  // 11 > kDefaultHandDof
+  sensor_msgs::msg::JointState js;
+  js.name = names;
+  js.position.assign(names.size(), 0.0);
+  injector_->HandJointState(std::move(js));
+  EXPECT_TRUE(bridge_->IsHandStateReady());
+}
+
+TEST_F(HandNodeTest, IsHandStateReady_TrueButUnknownFingerStaysEmpty) {
+  // The conflation split: after a valid hand state, readiness is true, yet an
+  // unknown finger still resolves empty. A gate keys on the former; the node's
+  // own empty-index throw remains the config-error path for the latter (AC3).
+  PublishHandState({0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+  Spin();
+  EXPECT_TRUE(bridge_->IsHandStateReady());
+  EXPECT_FALSE(bridge_->GetFingerJointIndices("index").empty());  // known
+  EXPECT_TRUE(bridge_->GetFingerJointIndices("pinky").empty());   // unknown
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // UR5eHoldPose
 // ══════════════════════════════════════════════════════════════════════════
 

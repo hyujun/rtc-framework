@@ -330,6 +330,21 @@ std::vector<double> BtRosBridge::GetHandJointPositions() const {
   return hand_joint_positions_;
 }
 
+bool BtRosBridge::IsHandStateReady() const {
+  std::lock_guard lock(state_mutex_);
+  // names/positions consistency + the configured hand DoF as a floor (issue
+  // #161 comment §3). OnHandJointState assigns names and positions from one
+  // message so the widths agree in practice; asserting it here keeps a
+  // malformed first message (name/position width mismatch, which the BT nodes
+  // would index-mismatch on) out of "ready". The DoF check is `>=`, not `==`:
+  // an empty or partial (< hand_dof_) startup message must not read ready, but
+  // a message carrying *more* joints than configured is safe — the resolver and
+  // the finger nodes already skip out-of-range indices (see the OOB regression
+  // in test_hand_nodes) — so it must not hang the gate forever.
+  return !hand_joint_names_.empty() && hand_joint_positions_.size() == hand_joint_names_.size() &&
+         static_cast<int>(hand_joint_names_.size()) >= hand_dof_;
+}
+
 std::vector<int> BtRosBridge::GetFingerJointIndices(const std::string& key) const {
   std::lock_guard lock(state_mutex_);
   return finger_resolver_->Resolve(hand_joint_names_, key);

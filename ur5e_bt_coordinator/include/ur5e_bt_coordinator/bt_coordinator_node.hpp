@@ -75,10 +75,17 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   ///
   /// Callers that only need "may I tick?" compare against kNone; the specific
   /// value exists because the blockers are not equivalent. kEstopped is a
-  /// healthy, expected state, while kControllerUnwired is only healthy for the
-  /// first moments after activation — TickCallback escalates that one once it
-  /// outlasts controller_wait_timeout_s_.
-  enum class TickBlocker { kNone, kNoTree, kEstopped, kControllerUnwired };
+  /// healthy, expected state, while kControllerUnwired / kJointStatesMissing are
+  /// only healthy for the first moments after activation — TickCallback
+  /// escalates the controller wait once it outlasts controller_wait_timeout_s_.
+  ///
+  /// kJointStatesMissing (issue #161): a tree containing a finger-index node
+  /// (IsFingerIndexNode) must not tick before hand joint_states arrive, or the
+  /// node throws BT::RuntimeError out of the tick callback and std::terminate
+  /// fires. Scoped to such trees only (tree_needs_hand_) so arm-only trees stay
+  /// runnable with no hand state — the controller-wired gate cannot cover this,
+  /// as hand joint_states are controller-agnostic and never rewired.
+  enum class TickBlocker { kNone, kNoTree, kEstopped, kControllerUnwired, kJointStatesMissing };
 
   /// Preconditions every tick must satisfy, shared by both tick paths: the
   /// timer (TickCallback) and the ~/step service (StepCallback). Ticking a
@@ -91,6 +98,16 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   /// `reason` gets a human-readable cause suitable for both a log line and a
   /// Trigger response message; it is left untouched when kNone is returned.
   [[nodiscard]] TickBlocker TickBlockedBy(std::string& reason) const;
+
+  /// Tick the tree once, turning any escaped exception into a FAILURE instead
+  /// of letting it unwind through rclcpp::spin into std::terminate. Shared by
+  /// both tick paths (TickCallback, StepCallback) so the boundary cannot diverge
+  /// between them. The readiness gate (#161) removes the known startup race, but
+  /// a malformed tree, a missing node input, or an unknown finger after
+  /// readiness can still throw at tick time — set_gains already argues an
+  /// escaped throw is fatal. On a throw the tree is halted to a defined state
+  /// before FAILURE is reported, so the next tick/step starts clean.
+  [[nodiscard]] BT::NodeStatus TickOnceSafe();
 
   /// Escalate a controller wait that has outlasted controller_wait_timeout_s_.
   /// Logs ERROR exactly once per activation and keeps waiting — a CM that is
@@ -135,6 +152,11 @@ class BtCoordinatorNode : public rclcpp_lifecycle::LifecycleNode {
   std::optional<BT::BehaviorTreeFactory> factory_;
   std::unique_ptr<BT::Tree> tree_;
   std::shared_ptr<BtRosBridge> bridge_;
+
+  // True when the loaded tree contains a finger-index node (#161). Recomputed by
+  // LoadTree() on every load — initial configure and runtime tree switch alike —
+  // so the readiness gate follows the current tree, never a stale one.
+  bool tree_needs_hand_{false};
 
   rclcpp::TimerBase::SharedPtr tick_timer_;
 
