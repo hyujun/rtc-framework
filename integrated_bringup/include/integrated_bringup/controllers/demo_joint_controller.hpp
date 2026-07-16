@@ -11,6 +11,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
 #include "rtc_base/concurrency/spsc_queue.hpp"
+#include "rtc_base/filters/bessel_filter.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
@@ -89,7 +90,8 @@ class DemoJointController final : public RTControllerInterface {
     int grasp_min_fingertips{2};          ///< grasp_detected = active_count ≥ N
 
     // Trajectory / grasp FSM tuning
-    double contact_stop_release_eps{0.005};  ///< Hand contact-stop release hysteresis [rad]
+    double contact_stop_release_eps{0.005};   ///< Hand contact-stop release hysteresis [rad]
+    double contact_stop_lpf_cutoff_hz{20.0};  ///< Bessel LPF cutoff for latched hold [Hz]
   };
 
   explicit DemoJointController(std::string_view urdf_path);
@@ -346,6 +348,19 @@ class DemoJointController final : public RTControllerInterface {
   int num_release_gates_{3};
   std::array<std::size_t, rtc::grasp::kMaxGraspFingers> release_gate_idx_{{1, 4, 7}};
   std::array<int, rtc::grasp::kMaxGraspFingers> release_gate_sign_{{+1, -1, -1}};
+
+  /// contact_stop hold latch (RT-thread-only). Set when contact first engages,
+  /// cleared only by the release-phase gate or E-STOP — so the hand keeps its
+  /// position after contact drops, rather than snapping back to the trajectory.
+  bool contact_latched_{false};
+  /// Hold target while latched. Refreshed from the LPF output on every tick
+  /// that contact is present; frozen once contact drops (no random-walk drift).
+  std::array<double, kDemoJointMaxHandDof> hand_hold_position_{};
+  /// Bessel LPF over measured hand position; warmed every valid tick, its
+  /// output is used as the desired hold position while latched. Init in
+  /// LoadConfig (throws); Apply/Reset are noexcept + heap-free (RT-safe).
+  rtc::BesselFilterN<kDemoJointMaxHandDof> hand_pos_filter_;
+
   /// Previous grasp phase (for state-transition logging; non-RT critical).
   uint8_t prev_grasp_phase_{0};
 

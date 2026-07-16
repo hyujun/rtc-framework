@@ -33,6 +33,12 @@ DemoTaskController::DemoTaskController(std::string_view urdf_path, Gains gains)
     : gains_lock_(gains), urdf_path_(urdf_path) {
   // Model is built in LoadConfig() (bridge YAML driven) or InitArmModel().
   // Constructor only stores urdf_path for later use.
+  //
+  // Init the contact_stop hold LPF now so the RT path always has valid
+  // coefficients even when the controller is exercised without LoadConfig
+  // (unit tests). LoadConfig re-Inits at the runtime-configured rate/cutoff.
+  hand_pos_filter_.Init(gains.contact_stop_lpf_cutoff_hz, 1.0 / GetDefaultDt());
+  hand_pos_filter_.Reset();
 }
 
 void DemoTaskController::InitArmModel(const rtc_urdf_bridge::ModelConfig& config) {
@@ -651,6 +657,19 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
           "[0, 0.1]");
     }
     g.contact_stop_release_eps = eps;
+
+    // Optional: LPF cutoff for the latched contact_stop hold (default from Gains).
+    // Must stay below Nyquist (control_rate / 2) or BesselFilter::Init throws.
+    if (fsm["contact_stop_lpf_cutoff_hz"]) {
+      const double cutoff = fsm["contact_stop_lpf_cutoff_hz"].as<double>();
+      const double nyquist = 0.5 / GetDefaultDt();
+      if (!(cutoff > 0.0 && cutoff < nyquist)) {
+        throw std::runtime_error(
+            "demo_task_controller: 'fsm.contact_stop_lpf_cutoff_hz' out of range "
+            "(0, control_rate/2)");
+      }
+      g.contact_stop_lpf_cutoff_hz = cutoff;
+    }
   }
 
   // ── Shared params: defaults from demo_shared.yaml, overridden by cfg ──
@@ -687,6 +706,13 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   }
 
   BuildGraspController(shared, 1.0 / GetDefaultDt(), grasp_controller_);
+
+  // contact_stop hold LPF: Init at config time (may throw) so Apply() on the RT
+  // path stays allocation- and throw-free. Reset the latch to a clean state.
+  hand_pos_filter_.Init(g.contact_stop_lpf_cutoff_hz, 1.0 / GetDefaultDt());
+  hand_pos_filter_.Reset();
+  contact_latched_ = false;
+  hand_hold_position_.fill(0.0);
 
   // ── Phase C: parse `logs:` section ──────────────────────────────────────
   parsed_log_entries_.clear();

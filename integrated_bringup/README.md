@@ -279,15 +279,17 @@ position_output = quintic(t, q_start, q_goal, duration)
 **게인 업데이트 레이아웃 (4개 요소):**
 `[robot_trajectory_speed, hand_trajectory_speed, robot_max_traj_velocity, hand_max_traj_velocity]`
 
-**ContactStopHand:** 핑거팁 센서에서 힘 감지 시 핸드 궤적 출력을 현재 위치로 동결하여 과도한 hand closure를 방지합니다.
+**ContactStopHand:** 핑거팁 센서에서 힘 감지 시 핸드 궤적 출력을 현재 위치로 동결하여 과도한 hand closure를 방지합니다. 동결 위치는 측정 위치를 Bessel LPF (`fsm.contact_stop_lpf_cutoff_hz`, 기본 20 Hz) 로 통과시킨 값이라 인코더 노이즈가 desired 로 직접 실리지 않습니다.
 
-**Release-Phase Skip (contact_stop 모드 전용):** 사용자가 토픽(`/p1a/joint_goal`)으로 손을 여는 방향의 goal을 내린 경우에는 접촉 잔존 힘이 있더라도 contact_stop 동결을 자동으로 건너뜁니다. 아래 3개 조건이 모두 성립해야 release 의도로 인정됩니다 (ε = `fsm.contact_stop_release_eps` rad 히스테리시스, 기본 0.005):
+**Hold latch (contact_stop 모드 전용):** 접촉이 한 번 성립하면 동결이 **latch** 되어, 이후 접촉이 사라져도 (물체 미끄러짐 등) 명시적 release 전까지 위치를 유지합니다 — latch 이전에는 접촉이 한 tick만 끊겨도 명령이 (goal 까지 진행된) 궤적으로 스냅백했습니다. Latch 는 아래 release-phase gate 또는 E-STOP 으로만 해제됩니다. 접촉 유지 중에는 LPF 출력을 계속 추종하고 (compliant), 접촉이 사라지면 마지막 LPF 출력을 고정합니다 (drift 방지). 핸드 상태 dropout (`devices[1].valid==false`) 중에도 latch 되어 있으면 마지막 명령을 유지합니다.
+
+**Release-Phase Skip (contact_stop 모드 전용):** 사용자가 토픽(`/p1a/joint_goal`)으로 손을 여는 방향의 goal을 내린 경우에는 접촉 잔존 힘이 있더라도 contact_stop 동결을 자동으로 건너뛰고 latch 를 해제합니다. 아래 3개 조건이 모두 성립해야 release 의도로 인정됩니다 (ε = `fsm.contact_stop_release_eps` rad 히스테리시스, 기본 0.005):
 
 - `thumb_cmc_fe`: `target > actual + ε` (각도 증가 = loosening)
 - `index_mcp_fe`: `target < actual − ε` (각도 감소 = loosening)
 - `middle_mcp_fe`: `target < actual − ε` (각도 감소 = loosening)
 
-발동 시 `/rosout` 에 `[contact_stop] SKIP (release) dthumb_fe=... dindex_fe=... dmid_fe=...` 로그가 1초 간격으로 출력됩니다. freeze 가 실제로 적용될 때에는 `[contact_stop] FREEZE ...` 로그가 출력됩니다.
+발동 시 `/rosout` 에 `[contact_stop] SKIP (release) dthumb_fe=... dindex_fe=... dmid_fe=...` 로그가 1초 간격으로 출력됩니다. 접촉 유지 중 동결은 `[contact_stop] FREEZE ...`, 접촉 없이 latch 로 유지 중일 때는 `[contact_stop] HOLD ...` 로그가 출력됩니다.
 
 **Force-PI Grasp/Release 버튼 (GUI):** `demo_controller_gui` 의 Grasp 탭에 있는 `▶ Grasp` / `■ Release` 버튼은 **`grasp_controller_type: "force_pi"`** YAML 설정에서만 동작합니다. 기본 `"contact_stop"` 모드에서는 컨트롤러가 명령을 조용히 무시하며, `/rosout` 에 throttled WARN 로그가 출력됩니다:
 
@@ -342,6 +344,7 @@ q_cmd  = q_des
 | `virtual_tcp_offset` | `[0, 0, 0]` | Constant 모드 오프셋 [x,y,z] (TCP 프레임, m) |
 | `fsm.pi_rotation_margin` | `0.15` rad | π 근처 quintic 궤적 분할 임계값. 범위 [0, π/2] (필수 키) |
 | `fsm.contact_stop_release_eps` | `0.005` rad | contact_stop release 히스테리시스. 범위 [0, 0.1] (필수 키) |
+| `fsm.contact_stop_lpf_cutoff_hz` | `20.0` Hz | contact_stop latch hold 위치 Bessel LPF cutoff. 범위 (0, control_rate/2) (선택 키, 기본 Gains 값) |
 | `command_type` | `"position"` | 출력 타입 — `"position"` (PD 위치 추종) / `"torque"` (직접 토크) / `"pd_feedforward"` (PD 위치 + τ_ff, mujoco_sim 은 qfrc_applied 주입·중력보상 off) |
 
 **게인 업데이트 레이아웃 (16개 요소):**

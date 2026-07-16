@@ -44,6 +44,7 @@ demo_task_controller:
                                     # |angle| > π - margin (stability near θ=π)
                                     # Range: [0, π/2]
     contact_stop_release_eps: 0.005 # rad, hand contact-stop release hysteresis
+    contact_stop_lpf_cutoff_hz: 20.0 # Hz, Bessel LPF cutoff for latched hold
                                     # (target↔actual delta to reject sensor noise)
                                     # Range: [0, 0.1]
 
