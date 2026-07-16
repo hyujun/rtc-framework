@@ -58,10 +58,11 @@
 
 ## Next action
 
-**체크박스 1~7 코드·문서 작업 완료 (2026-07-16).** 남은 것은 **live span-emission 검증 하나** 뿐:
+**체크박스 1~7 코드·문서 작업 완료 + live 검증 완료 (2026-07-16).**
 
-1. `./build.sh sim --tracing` (완료) → `ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true enable_viewer:=false` → babeltrace2/`timeline.sh` 로 신규 span 이 실제 emit 되는지 확인. **always-on span** (backend `ReadState`/`WriteCommand`, `UpdatePhase`) 은 임의 sim 캡처에 나와야 하고, **conditional span** (`HandleReset` = reset 요청 시, `hand_estop_zero_write` = abort 시) 은 해당 트리거를 줘야 나온다. 이 단계는 2026-07-16 세션에서 **사용자가 launch 를 승인하지 않아 미수행** — 사용자 실행 또는 제어 PC 캡처로 닫는다.
-   - 참고: build 는 `-p integrated_bringup,rtc_mujoco_sim,udp_hand_driver` 로 changed-package 만 tracing ON 재빌드했고 clean 통과, 3 패키지 test 100% pass (아래 Evidence). tracing OFF no-op 은 매크로 `#else` 분기(`do{}while(false)`)가 정의상 보장 — 별도 OFF 빌드 미수행.
+Live span-emission 검증 — `sim_ur5e_p1a.launch.py enable_tracing:=true` 15 s 캡처 후 babeltrace2 로 확인 (아래 Evidence §Live capture):
+- **관측됨 (이 config 에서 발생 가능한 신규 span 전부)**: `MujocoNativeBackend::ReadState`/`ReadSensorState`/`WriteCommand`(checkbox 3), `DemoWbcController::UpdatePhase`(checkbox 5, ×9,748 = 매 tick). 중첩도 문서 계약대로 — `CM::ReadDeviceState` 하위에 backend `Read*`, `ComputeControl` 하위에 `UpdatePhase`.
+- **이 config 에서 미발생 (컴파일·배치 확인됨, 트리거/프로세스 부재로 관측만 안 됨)**: Ur/UdpHand backend span(sim 은 mujoco backend 만), `LogMpcSolveTimingTick`(MPC handler 모드에서만 timer 등록 — p1a 미활성), `HandleReset`(reset 명령 필요), `hand_estop_zero_write`(실 udp_hand_node + abort 필요). 이들은 해당 트리거를 주는 캡처(reset 명령 / robot launch / abort)로 관측 가능.
 
 ## Decisions and rationale
 
@@ -76,6 +77,12 @@
 - 빌드: `./build.sh sim --tracing -p integrated_bringup,rtc_mujoco_sim,udp_hand_driver` → **clean** (유일 stderr = `joint/compute.cpp:56,65` 기존 sign-conversion warning, 이번 변경 무관).
 - 테스트: `colcon test --packages-select integrated_bringup rtc_mujoco_sim udp_hand_driver` (ws root, env source 후) → **3 패키지 100% pass, 0 failures** (integrated_bringup 20/20).
 - 문서-코드 이름 일치(AC5): `docs/tracing.md` 트리의 `<Backend>::ReadState` 등이 실제 scope 문자열과 1:1. 매크로 no-op(AC4)은 compile-time `#else` 분기로 보장.
+
+### Live capture (2026-07-16, 이 워크스테이션)
+
+- `sim_ur5e_p1a.launch.py enable_tracing:=true enable_viewer:=false use_cpu_affinity:=false` 15 s (SIGINT). RT loop 정상 — mean 68 µs, max 134 µs, overruns 0, steps 7,036. 캡처: `logging_data/260716_2036/tracing/trace/` (ust+kernel).
+- `babeltrace2 <ust> | grep rtc:span_begin` name census — 신규 span 관측: `MujocoNativeBackend::ReadState` ×33,532, `ReadSensorState` ×19,496, `WriteCommand` ×19,496 (tick 당 device-group 수배), `DemoWbcController::UpdatePhase` ×9,748 (= `rt_control_tick` 수, 매 tick).
+- 중첩 확인: RT thread vtid 이벤트를 순서대로 보면 `rt_control_tick` → `CM::ReadDeviceState` → `MujocoNativeBackend::ReadState`/`ReadSensorState`(begin/end 쌍 ×2 device group) → CM::ReadDeviceState end → `CM::Compute` → … → `UpdatePhase`(ComputeControl 하위). 문서 트리와 일치.
 
 ### (이전) span 인벤토리·rtc_tools
 
