@@ -320,6 +320,13 @@ jobs:
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    # ccache: RelWithDebInfo flavor 전용 캐시 디렉토리. CCACHE_COMPILERCHECK=content 로
+    # runner image 의 컴파일러가 바뀌면 (ident 가 아니라 내용 기준) 자동 무효화 → stale
+    # object 재사용 방지. maxsize 는 repo 10GB actions-cache 예산 안에서 넉넉히.
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/gated
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: "1G"
     steps:
       - uses: actions/checkout@v5
 
@@ -327,8 +334,9 @@ jobs:
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
-          apt-cache-version: build-v3
+          apt-cache-version: build-v4
           apt-packages: >-
+            ccache
             ros-jazzy-pinocchio
             ros-jazzy-proxsuite
             ros-jazzy-behaviortree-cpp
@@ -356,6 +364,19 @@ jobs:
           restore-keys: |
             colcon-${{ env.ROS_DISTRO }}-build-v6-
 
+      # ccache 는 build/ colcon 캐시와 상보적이다: colcon 키는 소스 한 줄만 바뀌어도
+      # hashFiles 가 달라져 전량 재빌드하지만, ccache 는 per-TU content hash 라 바뀐
+      # translation unit 만 재컴파일한다 (warm-cache 시간 단축의 실제 메커니즘). run_id
+      # 로 매 run 새 엔트리를 저장하고 flavor prefix restore-key 로 직전 캐시를 상속.
+      # coverage-cpp 와 flavor prefix(relwithdebinfo vs debug-gcov)가 달라 namespace 미공유.
+      - name: Cache ccache (RelWithDebInfo)
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.ccache/gated
+          key: ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-relwithdebinfo-v1-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-relwithdebinfo-v1-
+
       - name: Build packages
         uses: ./.github/actions/colcon-build
         with:
@@ -364,6 +385,7 @@ jobs:
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           build-type: RelWithDebInfo
           enable-testing: "true"
+          use-ccache: "true"
           artifact-suffix: cpp-build
 
       # GATE: CI 실측 통과 패키지. --return-code-on-test-failure 가 job 을 그대로
@@ -401,6 +423,14 @@ jobs:
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # ccache: Debug+gcov flavor 전용 디렉토리 — gated(RelWithDebInfo) 와 CCACHE_DIR·
+    # 캐시 키 prefix 를 분리해 계측 산출물이 gated namespace 를 오염시키지 못하게 한다.
+    # ccache 는 컴파일 산출(.o/.gcno)만 재사용하고, .gcda(실행 카운터)는 test 직전
+    # 별도 reset 되므로 커버리지 카운트 오염 경로가 겹치지 않는다.
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/coverage
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: "2G"
     steps:
       - uses: actions/checkout@v5
 
@@ -408,8 +438,9 @@ jobs:
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
-          apt-cache-version: coverage-v1
+          apt-cache-version: coverage-v2
           apt-packages: >-
+            ccache
             lcov
             ros-jazzy-pinocchio
             ros-jazzy-proxsuite
@@ -440,6 +471,17 @@ jobs:
           restore-keys: |
             colcon-${{ env.ROS_DISTRO }}-coverage-v1-
 
+      # gated 와 분리된 flavor prefix(debug-gcov). ccache 는 -ftest-coverage 빌드의
+      # .gcno 를 object 와 함께 캐시하므로 계측이 유지된다. 런타임 .gcda 는 아래
+      # "Reset stale coverage counters" 가 test 직전 지우므로 카운트 오염과 무관.
+      - name: Cache ccache (Debug + gcov)
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.ccache/coverage
+          key: ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-debug-gcov-v1-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-debug-gcov-v1-
+
       - name: Build packages (coverage-instrumented)
         uses: ./.github/actions/colcon-build
         with:
@@ -448,6 +490,7 @@ jobs:
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           build-type: Debug
           enable-coverage: "true"
+          use-ccache: "true"
           artifact-suffix: cpp-coverage-build
 
       - name: Capture baseline (zero-coverage) lcov
