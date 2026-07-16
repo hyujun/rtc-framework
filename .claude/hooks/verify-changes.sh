@@ -248,16 +248,40 @@ fi
 
 if [ -n "$RTC_TOUCHED" ]; then
   # ARCH-1: rtc_* must not hardcode robot identifier or fixed DOF.
-  # Restrict grep to changed files to keep noise low and surface NEW violations.
+  #
+  # Scope is the ADDED LINES of each changed file, not the whole file. Grepping
+  # whole files reported pre-existing hits in regions the change never touched:
+  # any edit to a file that already mentions a robot re-flagged those lines, and
+  # renumbered them, so they read as new. Observed 2026-07-16 on
+  # rtc_controller_interface — a purely additive change re-surfaced four hits
+  # that `git show HEAD:<file>` proved identical at HEAD. A file-scoped grep
+  # cannot distinguish "you added this" from "this was already here", which is
+  # the only question this gate asks. Added-line scope keeps a brand new rtc_*
+  # file screened in full: every one of its lines reads as added.
+  #
   # Negation filter: lines that *forbid* the term (header comments like
   # "must NOT test UR5e", "no ur5e-specific code", "robot-agnostic") are
   # the rule itself, not a violation. Without this filter the hook punished
-  # well-intentioned prohibitive docstrings — see memory
-  # feedback_arch1_grep_false_positive (2026-05-07).
+  # well-intentioned prohibitive docstrings (2026-05-07).
   for f in $RTC_TOUCHED; do
     [ -f "$f" ] || continue
+    # Real file line numbers of added lines, from the `+c,d` side of each hunk
+    # header. Kept as line numbers rather than grepping the raw '+' text so the
+    # report still points at a location the agent can open.
+    ADDED_LINES=$(git diff -U0 HEAD -- "$f" 2>/dev/null | awk '
+      /^@@/ {
+        match($0, /\+[0-9]+(,[0-9]+)?/)
+        spec = substr($0, RSTART + 1, RLENGTH - 1)
+        split(spec, p, ",")
+        count = (p[2] == "" ? 1 : p[2])
+        for (i = 0; i < count; i++) print p[1] + i
+      }' || true)
+    [ -z "$ADDED_LINES" ] && continue
     HITS=$(grep -niE '\b(ur5e|iiwa7|leap|allegro|6.?dof|10.?dof|num_joints[[:space:]]*=[[:space:]]*[0-9])' "$f" 2>/dev/null \
             | grep -viE '(must[[:space:]]*not|forbidden|robot-agnostic|no[[:space:]]+[a-z0-9_.-]+-specific|NOT[[:space:]]+(test|use|hardcode|include|reference))' \
+            | awk -F: -v added="$ADDED_LINES" '
+                BEGIN { n = split(added, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") keep[a[i]] = 1 }
+                ($1 in keep)' \
             || true)
     if [ -n "$HITS" ]; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-1 (robot-specific in rtc_*): ${f}\n${HITS}\n"
