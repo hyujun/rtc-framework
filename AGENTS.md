@@ -148,6 +148,7 @@ gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으
 - 받는 쪽은 진행 전에 `git status` 와 핵심 evidence(build/test)가 artifact 와 일치하는지 검증하고, 불일치 시 **구현 전에 artifact 를 먼저 갱신**한다.
 - 단순 오타·단일 세션 short task 는 artifact 불필요다. 다단계 작업은 [CLAUDE.md](CLAUDE.md) §6.5 Sprint Contract 를 적용한다.
 - credentials · secret · raw 대용량 log · 미검증 주장은 넣지 않는다.
+- **저장**: plan 파일은 repo 에 커밋하지 않는다 — 각 에이전트(Claude · Codex 등)가 자기 private 저장소에서 관리하고, tool 경계를 넘는 cross-tool 인계는 **git issue** 에 artifact 를 적어 공유한다. 완료된 plan 은 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (상세: [agent_docs/handoff.md](agent_docs/handoff.md) §5).
 
 trigger 분류표, artifact template, sender/receiver checklist, storage·retention 규칙의 단일 출처는 [agent_docs/handoff.md](agent_docs/handoff.md) 다. Claude 전용 메커니즘(`/compact`·`/clear`·fork 등)은 [CLAUDE.md](CLAUDE.md) §6.6 을 따른다.
 

@@ -57,6 +57,8 @@ RT 핫패스 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`re
 
 **Type 분기**: "수정" 인가 "추가 (새 기능 / 컨트롤러 / 메시지 / 디바이스 / 스레드)" 인가? 추가 task 는 단계 1 진입 전에 [agent_docs/design-principles.md](agent_docs/design-principles.md) 5원칙 + [agent_docs/modification-guide.md](agent_docs/modification-guide.md) "Adding a New ..." 절을 먼저 읽는다 (rtc_* 추가는 P1·P2 + ARCH-3 결합; integration package 또는 `shape_estimation*` 추가 시 rtc_* 일반화 가능성부터 검토).
 
+**계획 전 분석**: 대응하는 GitHub issue 가 있으면 계획을 세우기 전에 그 issue (본문 + 코멘트) 를 먼저 참고한다 — issue 는 durable 결정 기록이자 cross-tool 인계면이므로 (§6.6, [agent_docs/handoff.md](agent_docs/handoff.md) §5) 이전 세션·다른 tool 의 acceptance criteria·결정·미완료 상태가 거기 남아 있다. 단 issue 본문의 진단·근거는 **미검증 가설**로 취급하고 착수 전 grep/코드로 반증한다 (틀렸으면 issue 를 먼저 갱신).
+
 **4·5·6 자동화**: [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 실행하고 hard failure 시 `exit 2` 로 다음 turn 까지 차단한다 (loop 방지는 `stop_hook_active` 가드; stop cycle 당 1회 발화). 변경 패키지만 빌드·테스트하며 **build/test 의 timeout·launch 실패는 "미검증"으로 차단** (silent pass 아님 — bound 초과 test 는 hook 의 timeout 상향). README co-update 는 public surface (header/launch/config/파일 add·del/dep) 변경 시 **non-blocking checklist** (내부 리팩터·bug fix 는 미요구); CMake/`package.xml` co-update 는 blocking. YAML / Doxygen 은 에이전트가 직접 검증. Pure-format commit (clang-format / ruff round-trip 동치) 은 ARCH grep + doc 단계만 skip, build/test 는 그대로.
 
 단계별 액션·grep 패턴·Completion Checklist: [agent_docs/modification-guide.md](agent_docs/modification-guide.md).
@@ -132,7 +134,7 @@ Alternative: <우회 안 1개 이상>
 - 능동 제안 트리거·메커니즘 선택 (`/rename`+`/clear` / `/compact <focus>` / subagent / `/btw` / fork)·보존 우선순위 (`# Compact instructions`)의 글로벌 기본값은 user-level CLAUDE.md `# Context handoff policy` 가 SSoT. **handoff.md 의 tool-neutral 계약과 충돌하면 repo 계약이 우선**한다.
 - 반복 실패: handoff.md 는 "3회 시도 → 중단·진단·escalate"(tool-neutral), Claude 세션은 "동일 문제 2회 초과 교정 → `/clear`"(context 위생) — 다른 축, 공존.
 
-**RTC storage override** — Claude 전용·transient plan 은 `~/.claude/plans/<task-slug>.md` (§6.5 Sprint Contract spec 과 동일 파일, `## Spec` / `## Progress` / `## Handoff` 섹션). Multi-agent·review 관련·cross-tool 작업의 durable artifact 는 repo 소유 `docs/exec-plans/active/<slug>.md` 가 SSoT (handoff.md §5) — artifact 필수 섹션·template 은 handoff.md §2 를 따른다. private plan 은 링크만, diverge 금지.
+**RTC storage override** — plan 파일은 repo 에 커밋하지 않는다. Claude 전용 plan 은 `~/.claude/plans/<task-slug>.md` (§6.5 Sprint Contract spec 과 동일 파일, `## Spec` / `## Progress` / `## Handoff` 섹션) 에서 스스로 관리하고, 다른 tool(Codex 등)로 넘어가는 cross-tool 인계는 **git issue** 본문/코멘트에 artifact 를 적어 공유한다 (storage·retention 은 handoff.md §5, template 은 §2). 완료된 plan 은 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (§11).
 
 ## 7. Anti-patterns
 
@@ -177,7 +179,7 @@ post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하�
 Commit 완료 또는 사용자가 task 종료를 알린 후:
 
 1. **Memory save / Memory prune / Harness pruning 신호 보고** — user-level CLAUDE.md `# Post-task housekeeping` 가 SSoT. *Harness pruning 신호* 의 RTC 발현 카테고리는 invariant·anti-pattern grep false-positive, [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) 오차단, agent_docs 간 규칙 중복 drift
-2. **Stale artifact 정리** — `~/.claude/plans/*.md` (Claude 전용 완료 task), `docs/exec-plans/active/*.md` 완료분은 결정 기록 보존 가치가 있으면 `completed/` 로 이동·아니면 삭제 ([agent_docs/handoff.md](agent_docs/handoff.md) §5), repo-root / `/tmp` scratch files. 내용이 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`) 에 보존됨을 확인 후 삭제
+2. **Stale artifact 정리** — 완료된 private plan (`~/.claude/plans/*.md`) 은 그 내용이 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (복원 불가한데 보존 가치가 있는 결정 기록이 남아 있으면 issue 코멘트로 옮긴 뒤 삭제 — [agent_docs/handoff.md](agent_docs/handoff.md) §5). repo-root / `/tmp` scratch files 도 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`) 에 보존됨을 확인 후 삭제
 3. **캐시 정리** — repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` (§9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다** (§9.1)
 4. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
 5. **보고** — 실제 수행한 항목만 한 줄씩
