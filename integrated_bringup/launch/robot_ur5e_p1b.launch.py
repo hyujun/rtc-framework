@@ -53,6 +53,7 @@ from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
 from rtc_tools.launch.pinning import (
+    adopt_process_into_shield,
     pin_dds_threads_to_slot,
     pin_process_to_slot,
 )
