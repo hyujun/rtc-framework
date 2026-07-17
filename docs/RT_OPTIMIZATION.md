@@ -150,19 +150,38 @@ viewer    (cpu_core=-1, SCHED_OTHER) — GLFW viewer, 모든 tier 에서 OS 공�
 >
 > **단조성 불변식**: 물리 코어가 증가하면 per-thread 격리는 절대 감소하지 않는다. `rtc_base/test/test_mpc_thread_config.cpp` 의 `TierIsolationMonotonicity` · `LayoutV4RtCallbackPinning` · `LayoutV4ArmHandDriverDisjoint` · `LayoutV3ValidatorCatchesArmHandCollision` · `CpuCoreSentinelValidatesAsRtConfig` 가 tier 쌍 전체 + sentinel 처리를 강제한다. drift gate: Python helper 결과 ≡ C++ `SelectThreadConfigs()` 결과는 `rtc_tools/test/test_thread_layout.py` 가 보장.
 
-### cset shield 범위 (cpu_shield.sh)
+### cset shield 범위 + CM adopt (cpu_shield.sh, issue #151)
 
-`repo_scripts/scripts/cpu_shield.sh` 가 shield 하는 cpuset 범위:
+`repo_scripts/scripts/cpu_shield.sh` 의 `user` cpuset 은 **integrated_rt_controller
+프로세스 전체가 들어갈 크기** 여야 한다. cset 은 *프로세스* 를 cpuset 에 가두므로
+(모든 스레드 포함), cpuset 은 RT 스레드 코어뿐 아니라 같은 프로세스의
+`nrt_logging` / `nrt_callback` 코어까지 덮어야 한다. NUC13 12c 에서 RT 스레드는
+logical `{2,4,6,8,9}`, nrt 는 `{12,13}` 에 pin 되는데 nrt 가 RT-only shield(2-9)
+밖이면 nrt self-pin 이 EINVAL → `thread_utils.hpp` 가 SCHED_FIFO 설정 전 return.
+SSoT: `rt_common.sh::get_cm_shield_cpus` = `get_rt_shield_cpus` ∪ `get_nrt_cores`
+(OS slot 제외).
 
-| 물리 코어 | shield cpuset (RT + MPC 영역) | 격리 해제 영역 |
-|---|---|---|
-| 4 | `1-3` (rt_control + rt_callback + mpc) | Core 0 — OS · driver · nrt |
-| 5–9 | `1-3` (rt_control + rt_callback + mpc_main) | Core 0, 4+ — OS · arm/hand_driver · nrt · sim |
-| 10–11 | `1-4` (+ mpc_worker_0) | Core 0, 5+ |
-| 12–15 | `1-5` (+ mpc_worker_1) | Core 0, 6+ |
-| 16+ | `1-5` (RT cluster 응집) | Core 0, 6+ (driver · nrt · spare / user shield) |
+| 물리 코어 | CM cpuset — slot 표기 (RT ∪ nrt) | logical (NUC13 hybrid) | 격리 해제 영역 |
+|---|---|---|---|
+| 4 (degraded) | `1-3` (nrt slot 0 = OS, 제외) | — | Core 0 — OS · driver |
+| 6–7 | `1-3,5` (nrt Core 5 공유) | — | Core 0, 4 |
+| 8–9 | `1-3,6-7` | — | Core 0, 4-5 |
+| 10–11 | `1-4,7-8` | — | Core 0, 5-6 |
+| 12–15 | `1-5,8-9` | `2-9,12-13` | Core 0, 6-7 · 10-11 (driver) |
+| 16+ | `1-5,8-9` | `2-9,12-13` | Core 0, 6+ |
 
-driver core (`arm_driver` / `hand_driver`) 는 SCHED_OTHER 이므로 cset 보호 불요 — process-level taskset 만으로 충분.
+driver core (`arm_driver` / `hand_driver`) 는 **별도 프로세스** 이며 SCHED_OTHER +
+launch taskset 으로 logical 10,11 (= system cpuset) 에 pin 된다 — CM 스레드가 아니라
+cset 보호 대상이 아니다.
+
+**핵심: shield 는 cpuset 을 *만들기만* 한다 — CM 을 그 안으로 넣어야 pin 이 산다.**
+`cset shield --cpu` 는 기존 태스크를 `system` 으로 쓸어내고, 이후 런치되는 CM 은
+`system` 을 상속해 RT 코어에 접근 불가(EINVAL) 다. 그래서 런치는 CM 의
+configure 완료 후 · activate(=RT 스레드 생성) *전* 에 `cpu_shield.sh adopt <pid>`
+(= `cset shield --shield --pid <pid> --threads`) 로 CM 을 `user` cpuset 으로 옮기고,
+ACTIVATE 를 그 adopt 프로세스의 종료에 게이트한다 (async sudo vs 스레드 생성 race
+제거). shield-off / no-sudo / cset-미설치 런은 adopt 가 no-op 이고 CM 은 full
+affinity 로 기존 self-pin 경로를 그대로 탄다.
 
 ### 우선순위 계층
 
@@ -226,7 +245,9 @@ v4.1 기준 권장 흐름은 **`isolcpus` 직접 편집 없이** 두 도구로 �
   cache invalidation 을 방지합니다. nrt / arm_driver / hand_driver (CFS) 는 RT 코어가
   아니므로 nohz_full 에서 제외 — 정기 tick 이 정상 작동.
 - **`sudo ./repo_scripts/scripts/cpu_shield.sh on --robot`** — 런타임에 cset shield 로
-  RT + MPC 코어를 격리 (`compute_shield_cores()` → `get_rt_cores()` SSoT). 기존
+  CM 스레드 코어(RT ∪ nrt)를 격리 (`compute_shield_cores()` → `get_cm_shield_cpus()`
+  SSoT). shield 는 cpuset 을 만들 뿐이며 CM 은 런치가 `cpu_shield.sh adopt <pid>` 로
+  그 안에 넣는다 (issue #151, 위 "cset shield 범위 + CM adopt" 참조). 기존
   `isolcpus` GRUB 파라미터를 대체하므로 빌드 시 `cpu_shield.sh off` 로 전체 코어를
   되돌려 사용할 수 있습니다.
 

@@ -843,6 +843,68 @@ test_get_rt_shield_cpus_low_core_no_phantom() {
   expect_eq "shield.2core.no_phantom" "1" "$got"
 }
 
+# ── cpu_shield.sh cpuset span → get_cm_shield_cpus (RT ∪ nrt, OS slot dropped) ─
+# The cset "user" cpuset must fit the WHOLE CM process (RT + nrt threads), not
+# just the RT cores get_rt_shield_cpus returns — cset moves a process, and the
+# CM's nrt threads pin outside the RT-only span. Issue #151.
+
+test_get_cm_shield_cpus_nuc13_hybrid() {
+  # NUC13 Pro (Raptor Lake-P 4P+8E, HT on): P-cores 0-3 → logical 0-7,
+  # E-cores 4-11 → logical 8-15. RT slots 1-5 → logical {2,4,6,8,9}; nrt slots
+  # 8,9 → logical {12,13}. CM cpuset = union + P-core HT siblings = "2-9,12-13".
+  local root="$TMP/cm_nuc13"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" $((i*2))   "$i" 5000000
+    mock_add_cpu "$root" $((i*2+1)) "$i" 5000000
+  done
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" $((8+i)) $((4+i)) 3800000
+  done
+  mock_set_types "$root" "0,1,2,3,4,5,6,7" "8,9,10,11,12,13,14,15"
+  mock_write_cpuinfo "$TMP/cm_nuc13_cpuinfo" "true" "6" "186"  # 0xBA
+  _force_physical_cores 12
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/cm_nuc13_cpuinfo" \
+        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus)
+  expect_eq "cm_shield.nuc13_hybrid.12c" "2-9,12-13" "$got"
+}
+
+test_get_cm_shield_cpus_non_smt() {
+  # Non-SMT: RT slots 1-5 (identity) + nrt slots per tier, no siblings.
+  #   6-7c:  RT 1-3 + nrt 5              → "1-3,5"
+  #   8-9c:  RT 1-3 + nrt 6,7            → "1-3,6-7"
+  #   10-11c:RT 1-4 + nrt 7,8            → "1-4,7-8"
+  #   12c+:  RT 1-5 + nrt 8,9            → "1-5,8-9"
+  local root="$TMP/cm_nonsmt"
+  declare -A expected=( [6]="1-3,5" [8]="1-3,6-7" [10]="1-4,7-8" [12]="1-5,8-9" [16]="1-5,8-9" )
+  local n
+  for n in 6 8 10 12 16; do
+    _mock_sysfs_non_smt "$root" "$n"
+    mock_write_cpuinfo "$TMP/cm_nonsmt_cpuinfo" "false"
+    _force_physical_cores "$n"
+    local got
+    got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/cm_nonsmt_cpuinfo" \
+          RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus)
+    expect_eq "cm_shield.nonsmt.${n}c" "${expected[$n]}" "$got"
+  done
+}
+
+test_get_cm_shield_cpus_degraded_drops_os_slot() {
+  # Degraded (<6-core): nrt shares OS Core 0 (slot 0). The OS slot must be
+  # dropped so the shield never claims Core 0 — result collapses to RT-only.
+  # 4-core: RT slots 1,2,3 → "1-3" (identical to get_rt_shield_cpus).
+  local root="$TMP/cm_degraded"
+  _mock_sysfs_non_smt "$root" 4
+  mock_write_cpuinfo "$TMP/cm_degraded_cpuinfo" "false"
+  _force_physical_cores 4
+  local got
+  got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/cm_degraded_cpuinfo" \
+        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus)
+  expect_eq "cm_shield.degraded.4c.no_os_slot" "1-3" "$got"
+}
+
 # ── Run all ─────────────────────────────────────────────────────────────────
 test_cpulist_parser
 test_nuc13_i7_1360p
@@ -876,6 +938,9 @@ test_get_rt_shield_cpus_non_smt
 test_get_rt_shield_cpus_smt_primaries_first
 test_get_rt_shield_cpus_smt_interleaved
 test_get_rt_shield_cpus_low_core_no_phantom
+test_get_cm_shield_cpus_nuc13_hybrid
+test_get_cm_shield_cpus_non_smt
+test_get_cm_shield_cpus_degraded_drops_os_slot
 
 # ── Phase 1 safety primitives: write_file_if_changed / with_temporary_disable ──
 

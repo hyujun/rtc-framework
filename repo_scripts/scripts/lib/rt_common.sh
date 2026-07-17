@@ -657,6 +657,29 @@ get_os_cores() {
   echo "0"
 }
 
+# Print the nrt_* thread *slot indices* (nrt_logging + nrt_callback) for the
+# current physical-core tier. Mirrors thread_config.hpp per-tier kNrt*Config
+# .cpu_core fields (SSoT); order is not guaranteed. Slots, NOT logical cpu ids.
+# On the degraded (<6-core) tier nrt shares Core 0 with the OS — callers that
+# shield must drop the OS slot (get_cm_shield_cpus does), never widening the
+# shield onto Core 0.
+#   ≤5   → 0     (degraded: nrt shares OS Core 0)
+#   6-7  → 5     (shared dedicated core)
+#   8-9  → 6,7
+#   10-11→ 7,8
+#   12+  → 8,9
+get_nrt_cores() {
+  local ncpu
+  ncpu=$(get_physical_cores)
+  case "$ncpu" in
+    1|2|3|4|5)  echo "0" ;;
+    6|7)        echo "5" ;;
+    8|9)        echo "6,7" ;;
+    10|11)      echo "7,8" ;;
+    *)          echo "8,9" ;;
+  esac
+}
+
 # Expand a CSV / range list of physical core ids into a CSV of logical CPU ids
 # that includes each core's HT sibling (when SMT is enabled).
 #
@@ -833,6 +856,46 @@ get_rt_shield_cpus() {
   # token, e.g. "1 2 3" → "123").
   local slot logicals="" lg
   for slot in $(_rt_parse_cpulist "$(get_rt_cores)"); do
+    lg=$(slot_to_logical_cpu "$slot")
+    logicals="${logicals:+$logicals,}$lg"
+  done
+  _rt_expand_logical_siblings "$logicals"
+}
+
+# The LOGICAL CPU set that a cset "user" cpuset must allow so the WHOLE
+# integrated_rt_controller process fits inside it. Distinct from
+# get_rt_shield_cpus(), which returns only the RT threads' cores: the CM
+# process also hosts nrt_logging / nrt_callback, and cset moves a *process*
+# (all its threads) into one cpuset. On the NUC13 12-core hybrid the RT threads
+# pin to logical {2,4,6,8,9} but nrt pins to {12,13} — outside the RT-only
+# shield 2-9. If the cpuset omitted 12,13 the nrt threads' self-pin would hit
+# the same EINVAL that RT threads hit when the CM is trapped in "system"
+# (thread_utils.hpp returns before SCHED_FIFO on affinity failure). So the
+# cpuset that the CM is moved into (cpu_shield.sh) must be the union of RT +
+# nrt cores. Issue #151.
+#
+# Union = get_rt_cores() ∪ get_nrt_cores(), minus OS slots (get_os_cores):
+# on the degraded (<6-core) tier nrt shares Core 0 with the OS, and Core 0 must
+# never be shielded — dropping the OS slot collapses this to the RT-only span
+# there. Each surviving slot → logical cpu (slot_to_logical_cpu) + HT siblings.
+# Range-collapsed CSV (e.g. "2-9,12-13" NUC13, "1-5,8-9" non-SMT 12c).
+#
+# NOTE: arm_driver / hand_driver are *separate processes* pinned by launch
+# taskset (logical 10,11 in "system"); they are not CM threads and are
+# deliberately excluded from this cpuset.
+get_cm_shield_cpus() {
+  detect_hybrid_capability >/dev/null 2>&1 || true
+  local os_slots
+  os_slots=" $(_rt_parse_cpulist "$(get_os_cores)") "
+  # Comma-join RT + nrt so _rt_parse_cpulist (splits on commas) sees one flat
+  # slot list — a space-join would fuse the boundary tokens ("5" + "8" → "5 8"
+  # → "58" after whitespace strip).
+  local combined
+  combined="$(get_rt_cores),$(get_nrt_cores)"
+  local slot logicals="" lg
+  for slot in $(_rt_parse_cpulist "$combined"); do
+    # Never shield the OS core, even if a degraded-tier nrt slot lands on it.
+    case "$os_slots" in *" $slot "*) continue ;; esac
     lg=$(slot_to_logical_cpu "$slot")
     logicals="${logicals:+$logicals,}$lg"
   done

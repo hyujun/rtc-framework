@@ -213,3 +213,42 @@ def test_dds_pin_snippet_excludes_every_rtc_thread():
     # Every RTC-owned name — especially the SCHED_OTHER nrt_* pair — is listed.
     for name in pinning.RTC_OWNED_THREAD_NAMES:
         assert f" {name} " in snippet, f"{name} missing from RTC_OWNED list"
+
+
+# ── Shield adopt action (issue #151) ─────────────────────────────────────────
+
+
+def test_adopt_snippet_resolves_pid_and_calls_cpu_shield():
+    """The adopt action pgreps the PID and delegates the cset move to cpu_shield.sh.
+
+    The cset knowledge lives in cpu_shield.sh (SSoT); the launch helper only
+    resolves the newest matching PID and hands it to ``adopt``. Assert both.
+    """
+    action = pinning.adopt_process_into_shield(
+        "integrated_rt_controller", "integrated_rt_controller"
+    )
+    snippet = action.cmd[2][0].text
+    assert 'PID=$(pgrep -nf "integrated_rt_controller")' in snippet
+    assert '"$SHIELD" adopt "$PID"' in snippet
+    # Guards: missing PID / missing script / password-required sudo all exit 0.
+    assert "shield adopt skipped" in snippet
+    assert action.cmd[2][0].text.count("exit 0") >= 2
+
+
+def test_adopt_gated_toggles_use_cpu_affinity_condition():
+    """gated=True carries the use_cpu_affinity IfCondition; gated=False drops it.
+
+    A caller gating ACTIVATE on the adopt action's OnProcessExit needs it to fire
+    (and exit) even when use_cpu_affinity:=false, so gated=False must leave the
+    action unconditional.
+    """
+    assert pinning.adopt_process_into_shield("x", "x", gated=True).condition is not None
+    assert pinning.adopt_process_into_shield("x", "x", gated=False).condition is None
+
+
+def test_adopt_rejects_shell_injection_via_label():
+    """Embedded double quotes in interpolated fields are rejected (defense in depth)."""
+    with pytest.raises(ValueError):
+        pinning.adopt_process_into_shield('bad"name', "grep")
+    with pytest.raises(ValueError):
+        pinning.adopt_process_into_shield("label", 'gr"ep')
