@@ -225,7 +225,7 @@ class PinocchioCacheTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.Init(model_, contact_cfg);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
   }
 
   std::shared_ptr<const pinocchio::Model> model_;
@@ -245,7 +245,7 @@ TEST_F(PinocchioCacheTest, UpdateAtNeutralConfig) {
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v_vec = Eigen::VectorXd::Zero(model_->nv);
   ContactState cs;
-  cache_.Update(q, v_vec, cs);
+  cache_.Update(q, v_vec);
 
   // M 대칭
   EXPECT_TRUE(cache_.M.isApprox(cache_.M.transpose(), 1e-10));
@@ -277,7 +277,7 @@ TEST_F(PinocchioCacheTest, RegisterFrame) {
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v_vec = Eigen::VectorXd::Zero(model_->nv);
   ContactState cs;
-  cache_.Update(q, v_vec, cs);
+  cache_.Update(q, v_vec);
 
   EXPECT_EQ(cache_.registered_frames[0].J.rows(), 6);
   EXPECT_EQ(cache_.registered_frames[0].J.cols(), model_->nv);
@@ -291,7 +291,7 @@ TEST_F(PinocchioCacheTest, MassMatrixSymmetryRandom) {
   Eigen::VectorXd q = pinocchio::randomConfiguration(*model_);
   Eigen::VectorXd v_vec = Eigen::VectorXd::Random(model_->nv) * 0.1;
   ContactState cs;
-  cache_.Update(q, v_vec, cs);
+  cache_.Update(q, v_vec);
 
   Eigen::MatrixXd diff = cache_.M - cache_.M.transpose();
   EXPECT_LT(diff.norm(), 1e-10);

@@ -30,7 +30,7 @@ class SE3TaskTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.Init(model_, contact_cfg);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
 
     contacts_.Init(0);
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
@@ -111,7 +111,7 @@ TEST_F(SE3TaskTest, ZeroErrorAtCurrentPose) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // 현재 pose를 목표로 설정 → error = 0
   const auto& rf = cache_.registered_frames[0];
@@ -145,7 +145,7 @@ TEST_F(SE3TaskTest, PositionErrorResponse) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // 현재 pose에서 z축으로 0.1m offset 추가
   auto des = cache_.registered_frames[0].oMf;
@@ -180,7 +180,7 @@ TEST_F(SE3TaskTest, OrientationErrorSmallAngle) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // 현재 pose에서 z축 0.1rad 회전 추가
   auto des = cache_.registered_frames[0].oMf;
@@ -213,7 +213,7 @@ TEST_F(SE3TaskTest, OrientationErrorNearPi) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // 현재 pose에서 x축 π-0.001 rad 회전 (거의 π)
   auto des = cache_.registered_frames[0].oMf;
@@ -247,7 +247,7 @@ TEST_F(SE3TaskTest, GainsUpdate) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   auto des = cache_.registered_frames[0].oMf;
   des.translation()(0) += 0.1;
@@ -288,7 +288,7 @@ TEST_F(SE3TaskTest, JBlockDimensionWithMask) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   auto des = cache_.registered_frames[0].oMf;
   task.SetSe3Reference(des);
@@ -349,7 +349,7 @@ TEST_F(SE3TaskTest, ComputeIsAllocationFree) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Constant(robot_info_.nv, 0.1);  // nonzero → velocity path
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   pinocchio::SE3 des = cache_.registered_frames[0].oMf;
   des.translation()(2) += 0.2;

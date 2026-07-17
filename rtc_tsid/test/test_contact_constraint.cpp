@@ -45,7 +45,7 @@ class ContactConstraintTest : public ::testing::Test {
     contact_cfg_.max_contacts = 1;
     contact_cfg_.max_contact_vars = 3;
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
 
     contacts_.Init(1);
     contacts_.contacts[0].active = true;
@@ -80,7 +80,7 @@ TEST_F(ContactConstraintTest, Dimensions) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
   const int n_vars = robot_info_.nv + contact_cfg_.max_contact_vars;
   Eigen::MatrixXd A(3, n_vars);
   Eigen::VectorXd b(3);
@@ -99,7 +99,7 @@ TEST_F(ContactConstraintTest, MatrixShape) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // Stage A-5a: n_vars uses max_contact_vars (fixed) rather than
   // active_contact_vars — the QP variable dimension is constant.

@@ -735,7 +735,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     }
 
     // PinocchioCache
-    pinocchio_cache_.Init(full_model_ptr_, contact_mgr_config_);
+    pinocchio_cache_.Init(full_model_ptr_, rtc::tsid::ContactFrameIds(contact_mgr_config_));
 
     // #120: closed-chain 축약 동역학 provider 배선 (extended 로봇에서 M/h/g 대체). 비-extended
     // 는 게이트 미충족 → open-chain byte-for-byte. cache.Init 직후 (model_ptr 확정) 배선.

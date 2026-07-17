@@ -54,7 +54,7 @@ class FixedDimQpTest : public ::testing::Test {
     mgr_.max_contacts = 2;
     mgr_.max_contact_vars = 6;
 
-    cache_.Init(model_, mgr_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(mgr_));
     cs_.Init(2);
     cs_.SeedNormals(mgr_);
   }
@@ -99,7 +99,7 @@ TEST_F(FixedDimQpTest, NVarsConstantAcrossContactToggles) {
   cs_.contacts[0].active = false;
   cs_.contacts[1].active = false;
   cs_.RecomputeActive(mgr_);
-  cache_.Update(q, v, cs_);
+  cache_.Update(q, v);
   const auto& r0 = formulation->Solve(cache_, ref, cs_, robot_info_);
   ASSERT_TRUE(r0.converged);
   const Eigen::Index x_size_0 = r0.x_opt.size();
@@ -108,7 +108,7 @@ TEST_F(FixedDimQpTest, NVarsConstantAcrossContactToggles) {
   cs_.contacts[0].active = true;
   cs_.contacts[1].active = false;
   cs_.RecomputeActive(mgr_);
-  cache_.Update(q, v, cs_);
+  cache_.Update(q, v);
   const auto& r1 = formulation->Solve(cache_, ref, cs_, robot_info_);
   ASSERT_TRUE(r1.converged);
 
@@ -116,7 +116,7 @@ TEST_F(FixedDimQpTest, NVarsConstantAcrossContactToggles) {
   cs_.contacts[0].active = true;
   cs_.contacts[1].active = true;
   cs_.RecomputeActive(mgr_);
-  cache_.Update(q, v, cs_);
+  cache_.Update(q, v);
   const auto& r2 = formulation->Solve(cache_, ref, cs_, robot_info_);
   ASSERT_TRUE(r2.converged);
 
@@ -175,7 +175,7 @@ TEST_F(FixedDimQpTest, InactiveLambdaSlotIsZero) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, cs_);
+  cache_.Update(q, v);
 
   ControlReference ref;
   ref.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, mgr_.max_contact_vars);

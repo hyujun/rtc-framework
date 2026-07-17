@@ -43,7 +43,7 @@ class Phase3WQPTest : public ::testing::Test {
 
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
     contacts_.Init(0);
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
   }
@@ -86,7 +86,7 @@ TEST_F(Phase3WQPTest, PostureAndSE3Solve) {
   // 현재 pose를 목표로 설정 (joint limit 중앙 사용)
   Eigen::VectorXd q = 0.5 * (robot_info_.q_lower + robot_info_.q_upper);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   auto* se3_ptr = se3.get();
   se3_ptr->SetSe3Reference(cache_.registered_frames[0].oMf);
@@ -113,7 +113,7 @@ TEST_F(Phase3WQPTest, PostureAndSE3Solve) {
   ref_.a_des.setZero(robot_info_.nv);
 
   // Solve
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
   const auto& result = formulation.Solve(cache_, ref_, contacts_, robot_info_);
 
   EXPECT_TRUE(result.converged) << "WQP should converge";
@@ -151,7 +151,7 @@ TEST_F(Phase3WQPTest, SE3WithPositionOffset) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // 목표: 현재에서 z축 0.1m offset
   auto target = cache_.registered_frames[0].oMf;
@@ -210,7 +210,7 @@ TEST_F(Phase3WQPTest, HQPWithSE3Priority) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   auto* se3_ptr = se3.get();
   se3_ptr->SetSe3Reference(cache_.registered_frames[0].oMf);
@@ -257,7 +257,7 @@ TEST_F(Phase3WQPTest, PhasePresetSwitch) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   auto* se3_ptr = se3.get();
   auto target = cache_.registered_frames[0].oMf;
@@ -282,7 +282,7 @@ TEST_F(Phase3WQPTest, PhasePresetSwitch) {
   ref_.a_des.setZero(robot_info_.nv);
 
   // Phase 1: approach — se3 active, com inactive
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
   const auto& result1 = formulation.Solve(cache_, ref_, contacts_, robot_info_);
   EXPECT_TRUE(result1.converged);
 
@@ -320,7 +320,7 @@ TEST_F(Phase3WQPTest, PhasePresetSwitch) {
   ASSERT_NE(se3_task, nullptr);
   EXPECT_DOUBLE_EQ(se3_task->Weight(), 50.0);
 
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
   const auto& result2 = formulation.Solve(cache_, ref_, contacts_, robot_info_);
   EXPECT_TRUE(result2.converged);
 }
@@ -353,7 +353,7 @@ TEST_F(Phase3WQPTest, CoMAndMomentumTogether) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   auto* com_ptr = com.get();
   com_ptr->SetComReference(cache_.com_position);
@@ -374,7 +374,7 @@ TEST_F(Phase3WQPTest, CoMAndMomentumTogether) {
   ref_.v_des.setZero(robot_info_.nv);
   ref_.a_des.setZero(robot_info_.nv);
 
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
   const auto& result = formulation.Solve(cache_, ref_, contacts_, robot_info_);
 
   EXPECT_TRUE(result.converged);

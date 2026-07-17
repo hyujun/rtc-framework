@@ -49,7 +49,7 @@ TEST_F(FrictionConeTest, Dimensions) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -83,7 +83,7 @@ TEST_F(FrictionConeTest, ConeMatrixStructure) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -146,7 +146,7 @@ TEST_F(FrictionConeTest, SurfaceContactDimensions) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -182,7 +182,7 @@ TEST_F(FrictionConeTest, SurfaceCopRectangleMatrix) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -254,7 +254,7 @@ TEST_F(FrictionConeTest, SurfaceYawMoment) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -304,7 +304,7 @@ TEST_F(FrictionConeTest, SurfaceZeroPatchForcesZeroMoment) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -367,7 +367,7 @@ TEST_F(FrictionConeTest, MixedPointSurfaceLambdaOffsets) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -429,7 +429,7 @@ TEST_F(FrictionConeTest, NormalDefaultsToWorldZ) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);
@@ -477,7 +477,7 @@ TEST_F(FrictionConeTest, NormalAwareTiltedZ) {
 
   FrictionConeConstraint fc;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   YAML::Node cfg;
   fc.Init(*model, info, cache, cfg);
   fc.SetContactManager(&mgr);

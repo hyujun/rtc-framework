@@ -34,7 +34,7 @@ class WQPFormulationTest : public ::testing::Test {
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
     contacts_.Init(0);
 
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
@@ -71,7 +71,7 @@ TEST_F(WQPFormulationTest, PostureOnlyConverges) {
   // q_des = q_current, v_des = 0 → 가속도 ≈ 0
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ref_.q_des = q;
   ref_.v_des = v;
@@ -103,7 +103,7 @@ TEST_F(WQPFormulationTest, PostureTrackingNonZeroAccel) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // q_des != q → non-zero acceleration
   ref_.q_des = q;
@@ -138,7 +138,7 @@ TEST_F(WQPFormulationTest, GravityCompensationTorque) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ref_.q_des = q;
   ref_.v_des = v;
@@ -218,7 +218,7 @@ TEST_F(WQPFormulationTest, ConsecutiveSolvesWarmStart) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ref_.q_des = q;
   ref_.v_des = v;
@@ -255,7 +255,7 @@ TEST_F(WQPFormulationTest, WQPSolveWithSurfaceContact) {
   mgr.max_contact_vars = 6;
 
   PinocchioCache cache;
-  cache.Init(model_, mgr);
+  cache.Init(model_, rtc::tsid::ContactFrameIds(mgr));
 
   ContactState cs;
   cs.Init(1);
@@ -285,7 +285,7 @@ TEST_F(WQPFormulationTest, WQPSolveWithSurfaceContact) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   ControlReference ref;
   ref.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, mgr.max_contact_vars);
@@ -359,7 +359,7 @@ TEST_F(WQPFormulationTest, TSIDComputeSurfaceContactTauResidual) {
   local_mgr.contacts[0].frame_id = static_cast<int>(model_->getFrameId("panda_link8"));
   local_mgr.max_contacts = 1;
   local_mgr.max_contact_vars = 6;
-  local_cache.Init(model_, local_mgr);
+  local_cache.Init(model_, rtc::tsid::ContactFrameIds(local_mgr));
   posture->Init(*model_, robot_info_, local_cache, tcfg);
   f.AddTask(std::move(posture));
 
@@ -384,7 +384,7 @@ TEST_F(WQPFormulationTest, TSIDComputeSurfaceContactTauResidual) {
   cs.contacts[0].active = true;
   cs.RecomputeActive(local_mgr);
 
-  local_cache.Update(q, v, cs);
+  local_cache.Update(q, v);
 
   ControlState state;
   state.q = q;

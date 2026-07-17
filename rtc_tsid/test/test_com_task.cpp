@@ -27,7 +27,7 @@ class CoMTaskTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.Init(model_, contact_cfg);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
 
     contacts_.Init(0);
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
@@ -70,7 +70,7 @@ TEST_F(CoMTaskTest, ZeroErrorAtCurrentCoM) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // 현재 CoM을 목표로 설정
   task.SetComReference(cache_.com_position);
@@ -102,7 +102,7 @@ TEST_F(CoMTaskTest, PositionErrorResponse) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // CoM에서 z축으로 0.1m offset 추가
   Eigen::Vector3d target = cache_.com_position;
@@ -130,7 +130,7 @@ TEST_F(CoMTaskTest, JcomStructure) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   task.SetComReference(cache_.com_position);
 
@@ -156,7 +156,7 @@ TEST_F(CoMTaskTest, GainsUpdate) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   Eigen::Vector3d target = cache_.com_position;
   target(0) += 0.1;
@@ -192,7 +192,7 @@ TEST_F(CoMTaskTest, ComDriftWithVelocity) {
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
   v(0) = 1.0;  // joint 0에 속도 부여
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   task.SetComReference(cache_.com_position);
 

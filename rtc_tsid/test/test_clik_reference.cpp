@@ -118,7 +118,7 @@ class ClikReferenceTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.Init(model_, contact_cfg);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
     contacts_.Init(0);
 
     tcp_idx_ = cache_.RegisterFrame("panda_hand", model_->getFrameId("panda_hand"));
@@ -194,7 +194,7 @@ TEST_F(ClikReferenceTest, InitRejectsInvalidConfig) {
 
 TEST_F(ClikReferenceTest, ComputePreconditionsReturnFalse) {
   auto gen = MakeGenerator(1e-6, 0.0);
-  cache_.Update(q_home_, v_zero_, contacts_);
+  cache_.Update(q_home_, v_zero_);
   const pinocchio::SE3 des = TipInBase();
 
   // dt ≤ 0
@@ -222,7 +222,7 @@ TEST_F(ClikReferenceTest, TcpConvergesToOffsetTarget) {
   gen.SetPostureGains(0.1, 1.0);
 
   Eigen::VectorXd q = q_home_;
-  cache_.Update(q, v_zero_, contacts_);
+  cache_.Update(q, v_zero_);
 
   pinocchio::SE3 des = TipInBase();
   des.translation()(2) += 0.05;
@@ -231,12 +231,12 @@ TEST_F(ClikReferenceTest, TcpConvergesToOffsetTarget) {
 
   const double dt = 0.01;
   for (int k = 0; k < 2000; ++k) {
-    cache_.Update(q, v_zero_, contacts_);
+    cache_.Update(q, v_zero_);
     ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, des, q_home_, dt));
     q = gen.QRef();
   }
 
-  cache_.Update(q, v_zero_, contacts_);
+  cache_.Update(q, v_zero_);
   const Vec6 err = ComputeTaskPoseError(TipInBase(), des);
   EXPECT_LT(err.head<3>().norm(), 1e-3);
   EXPECT_LT(err.tail<3>().norm(), 1e-3);
@@ -254,7 +254,7 @@ TEST_F(ClikReferenceTest, ArmPostureStaysInNullspace) {
   auto gen = MakeGenerator(1e-12, 0.0);
   gen.SetTaskGain(Vec6::Constant(1.0));
 
-  cache_.Update(q_home_, v_zero_, contacts_);
+  cache_.Update(q_home_, v_zero_);
   pinocchio::SE3 des = TipInBase();
   des.translation()(0) += 0.1;
 
@@ -290,7 +290,7 @@ TEST_F(ClikReferenceTest, HandAndArmCommandsDecoupled) {
   gen.SetTaskGain(Vec6::Constant(2.0));
   gen.SetPostureGains(0.5, 3.0);
 
-  cache_.Update(q_home_, v_zero_, contacts_);
+  cache_.Update(q_home_, v_zero_);
   pinocchio::SE3 des_a = TipInBase();
   des_a.translation()(2) += 0.1;
   pinocchio::SE3 des_b = TipInBase();
@@ -329,7 +329,7 @@ TEST_F(ClikReferenceTest, SingularConfigVelocityBounded) {
   gen.SetPostureGains(0.0, 0.0);
 
   const Eigen::VectorXd q_singular = Eigen::VectorXd::Zero(9);
-  cache_.Update(q_singular, v_zero_, contacts_);
+  cache_.Update(q_singular, v_zero_);
   pinocchio::SE3 des = TipInBase();
   des.translation()(2) += 0.5;  // unreachable: already fully stretched
 
@@ -347,7 +347,7 @@ TEST_F(ClikReferenceTest, SingularConfigVelocityBounded) {
   EXPECT_TRUE(std::isfinite(manip_singular));
 
   // Manipulability must be lower at the singular config than at home.
-  cache_.Update(q_home_, v_zero_, contacts_);
+  cache_.Update(q_home_, v_zero_);
   ASSERT_TRUE(gen.Compute(cache_, tcp_idx_, base_idx_, TipInBase(), q_home_, 0.01));
   EXPECT_LT(manip_singular, gen.Manipulability());
 }
@@ -363,7 +363,7 @@ TEST_F(ClikReferenceTest, VelocityLimitClampsPerJoint) {
   gen.SetTaskGain(Vec6::Constant(50.0));  // deliberately aggressive
   gen.SetPostureGains(0.0, 50.0);
 
-  cache_.Update(q_home_, v_zero_, contacts_);
+  cache_.Update(q_home_, v_zero_);
   pinocchio::SE3 des = TipInBase();
   des.translation()(2) += 0.3;
   Eigen::VectorXd q_posture = q_home_;
@@ -379,7 +379,7 @@ TEST_F(ClikReferenceTest, ComputeIsAllocationFree) {
   gen.SetTaskGain(Vec6::Constant(2.0));
   gen.SetPostureGains(0.5, 1.0);
 
-  cache_.Update(q_home_, v_zero_, contacts_);
+  cache_.Update(q_home_, v_zero_);
   pinocchio::SE3 des = TipInBase();
   des.translation()(2) += 0.05;
 
@@ -410,7 +410,7 @@ TEST_F(ClikReferenceTest, CarryForwardAnchorAccumulatesFromPreviousDesired) {
   gen.SetTaskGain(Vec6::Constant(1.0));
   gen.SetPostureGains(0.0, 0.0);
 
-  cache_.Update(q_home_, v_zero_, contacts_);  // measured held fixed throughout
+  cache_.Update(q_home_, v_zero_);  // measured held fixed throughout
   pinocchio::SE3 des = TipInBase();
   des.translation()(2) += 0.05;
 
@@ -462,7 +462,7 @@ TEST_F(ClikReferenceTest, AnchorDriftClampBoundsCarryForward) {
   gen.SetTaskGain(Vec6::Constant(1.0));
   gen.SetPostureGains(0.0, 0.0);
 
-  cache_.Update(q_home_, v_zero_, contacts_);  // measured held fixed
+  cache_.Update(q_home_, v_zero_);  // measured held fixed
   pinocchio::SE3 des = TipInBase();
   des.translation()(2) += 0.2;  // large target → would drift far without the clamp
 

@@ -27,7 +27,7 @@ class JointLimitConstraintTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.Init(model_, contact_cfg);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
 
     contacts_.Init(0);
   }
@@ -63,7 +63,7 @@ TEST_F(JointLimitConstraintTest, BoundsAtMidConfig) {
   // Joint limit 중앙 설정 (neutral()은 일부 joint에서 범위 밖)
   Eigen::VectorXd q = 0.5 * (robot_info_.q_lower + robot_info_.q_upper);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd C(robot_info_.nv, n_vars);
@@ -98,7 +98,7 @@ TEST_F(JointLimitConstraintTest, TighterBoundsNearLimit) {
   // 중앙 config에서의 bounds
   Eigen::VectorXd q_mid = 0.5 * (robot_info_.q_lower + robot_info_.q_upper);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q_mid, v, contacts_);
+  cache_.Update(q_mid, v);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd C(robot_info_.nv, n_vars);
@@ -113,7 +113,7 @@ TEST_F(JointLimitConstraintTest, TighterBoundsNearLimit) {
   // upper limit 아주 가까이로 이동 (joint 0)
   Eigen::VectorXd q_near_limit = q_mid;
   q_near_limit(0) = robot_info_.q_upper(0) - 0.001;  // margin 안쪽 아슬아슬
-  cache_.Update(q_near_limit, v, contacts_);
+  cache_.Update(q_near_limit, v);
 
   Eigen::VectorXd l_near(robot_info_.nv);
   Eigen::VectorXd u_near(robot_info_.nv);
@@ -140,7 +140,7 @@ TEST_F(JointLimitConstraintTest, VelocityBoundsActive) {
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
   v(0) = robot_info_.v_max(0) * 0.95;  // v_max 근처
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd C(robot_info_.nv, n_vars);

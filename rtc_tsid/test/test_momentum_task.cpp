@@ -27,7 +27,7 @@ class MomentumTaskTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.Init(model_, contact_cfg);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
 
     contacts_.Init(0);
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
@@ -84,7 +84,7 @@ TEST_F(MomentumTaskTest, AngularRegularizeJBlock) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -107,7 +107,7 @@ TEST_F(MomentumTaskTest, FullTrackJBlock) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(6, n_vars);
@@ -130,7 +130,7 @@ TEST_F(MomentumTaskTest, AngularRegularizeResidualAtZeroVelocity) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -155,7 +155,7 @@ TEST_F(MomentumTaskTest, DriftWithVelocity) {
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
   v(0) = 1.0;
   v(2) = -0.5;
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_vars = robot_info_.nv;
   Eigen::MatrixXd J(3, n_vars);
@@ -178,7 +178,7 @@ TEST_F(MomentumTaskTest, FullTrackWithReference) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   Eigen::Matrix<double, 6, 1> hg_dot_des;
   hg_dot_des << 1.0, 2.0, 3.0, 4.0, 5.0, 6.0;

@@ -27,7 +27,7 @@ class EomConstraintTest : public ::testing::Test {
 
     ContactManagerConfig contact_cfg;
     contact_cfg.max_contacts = 0;
-    cache_.Init(model_, contact_cfg);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg));
 
     contacts_.Init(0);
   }
@@ -94,7 +94,7 @@ TEST_F(EomConstraintTest, MixedPointSurfaceContactOffsets) {
   mgr.max_contact_vars = 9;
 
   PinocchioCache cache;
-  cache.Init(model_, mgr);
+  cache.Init(model_, rtc::tsid::ContactFrameIds(mgr));
 
   ContactState cs;
   cs.Init(2);
@@ -109,7 +109,7 @@ TEST_F(EomConstraintTest, MixedPointSurfaceContactOffsets) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(fb_info.nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   const int n_eq = eom.EqDim(cs);    // 6
   const int n_vars = fb_info.nv + 9;  // 6 + n_actuated + 3 + 6
@@ -161,7 +161,7 @@ TEST_F(EomConstraintTest, ManagerNullGuardPointFallback) {
   mgr.max_contact_vars = 3;
 
   PinocchioCache cache;
-  cache.Init(model_, mgr);
+  cache.Init(model_, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(1);
   cs.contacts[0].active = true;
@@ -174,7 +174,7 @@ TEST_F(EomConstraintTest, ManagerNullGuardPointFallback) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(fb_info.nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   const int n_eq = eom.EqDim(cs);
   const int n_vars = fb_info.nv + 3;
@@ -202,7 +202,7 @@ TEST_F(EomConstraintTest, FloatingBaseMatrixDimensions) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_eq = eom.EqDim(contacts_);
   const int n_vars = robot_info_.nv;  // no contacts

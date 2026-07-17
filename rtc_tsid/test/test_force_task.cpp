@@ -35,7 +35,7 @@ class ForceTaskTest : public ::testing::Test {
     contact_yaml["contacts"].push_back(c1);
 
     contact_cfg_.Load(contact_yaml, *model_);
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
 
     contacts_.Init(contact_cfg_.max_contacts);
 
@@ -105,7 +105,7 @@ TEST_F(ForceTaskTest, ComputeResidualIdentityOnLambda) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // reference: [10, 0, 5]
   ref_.lambda_des.head(3) << 10.0, 0.0, 5.0;
@@ -148,7 +148,7 @@ TEST_F(ForceTaskTest, LocalForceReference) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   // global reference (should be ignored)
   ref_.lambda_des.head(3) << 1.0, 2.0, 3.0;
@@ -184,7 +184,7 @@ TEST_F(ForceTaskTest, InactiveContactSkipped) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   const int n_vars = robot_info_.nv;  // no active contacts → n_vars = nv
   // residual dim = 0 → J/r 크기도 0이므로 compute 호출만 확인

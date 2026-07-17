@@ -197,7 +197,7 @@ void RunBench(const BenchConfig& bc) {
   // ── PinocchioCache on the combined model (empty contacts, 1 arm-tip frame) ──
   rtc::tsid::PinocchioCache cache;
   rtc::tsid::ContactManagerConfig contact_cfg;  // max_contacts = 0 (default)
-  cache.Init(combined, contact_cfg);
+  cache.Init(combined, rtc::tsid::ContactFrameIds(contact_cfg));
   rtc::tsid::ContactState contacts;
   contacts.Init(0);
 
@@ -242,7 +242,7 @@ void RunBench(const BenchConfig& bc) {
 
   // ── Unified: PinocchioCache::Update on the combined model ────────────────────
   Stats s_unified = Bench([&](int i) { q_comb(0) += 1e-6 * static_cast<double>(1 + (i % 7)); },
-                          [&]() { cache.Update(q_comb, v_comb, contacts); });
+                          [&]() { cache.Update(q_comb, v_comb); });
   sink += cache.M(0, 0);
   (void)sink;
 

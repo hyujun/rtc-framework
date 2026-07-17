@@ -30,7 +30,7 @@ class HQPFormulationTest : public ::testing::Test {
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
     contacts_.Init(0);
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
   }
@@ -68,7 +68,7 @@ TEST_F(HQPFormulationTest, SingleLevelConverges) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model_);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ref_.q_des = q;
   ref_.v_des = v;
@@ -120,7 +120,7 @@ TEST_F(HQPFormulationTest, MultiLevelStrictHierarchy) {
 
   Eigen::VectorXd q = q_neutral;
   Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ref_.q_des = q;
   ref_.v_des = v;

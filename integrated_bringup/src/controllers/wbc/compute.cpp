@@ -252,9 +252,12 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   contact_state_.UpdateActivation(dt);
   contact_state_.RecomputeActive(contact_mgr_config_);
 
-  // 2. Update Pinocchio cache (M, h, g, Jacobians)
-  pinocchio_cache_.Update(q_curr_full_, v_curr_full_, contact_state_);
-  // #167: contact_frames[i].oMf are fresh this tick for ACTIVE contacts —
+  // 2. Update Pinocchio cache (M, h, g, Jacobians).
+  // #unified-kindyn Phase 1: cache 는 이제 ContactState 무의존 — 모든 등록 contact_frames 를
+  // 무조건 계산한다 (always-compute; Phase 0 예산 확인). contact_state_ 갱신은 위에서 소비자용
+  // (active_contact_vars / grasp / QP)으로만 유지.
+  pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
+  // #167: contact_frames[i].oMf are fresh this tick for ALL contacts (always-compute) —
   // UpdatePullEstimate additionally gates per contact on the active flag.
   contact_geometry_fresh_ = true;
 
