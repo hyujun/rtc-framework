@@ -86,6 +86,17 @@ def rt_common_path() -> str:
     return os.path.join(prefix, "lib", "repo_scripts", "lib", "rt_common.sh")
 
 
+def cpu_shield_path() -> str:
+    """Absolute path to the installed ``cpu_shield.sh`` (``lib/repo_scripts/``).
+
+    Same prefix derivation as :func:`rt_common_path`; the scripts install one
+    directory shallower than the sourceable helpers.
+    """
+    share = get_package_share_directory("repo_scripts")
+    prefix = os.path.dirname(os.path.dirname(share))
+    return os.path.join(prefix, "lib", "repo_scripts", "cpu_shield.sh")
+
+
 def _reject_quotes(**fields: str) -> None:
     """Reject embedded double quotes in values interpolated into ``bash -c``.
 
@@ -95,6 +106,36 @@ def _reject_quotes(**fields: str) -> None:
     for key, value in fields.items():
         if '"' in value:
             raise ValueError(f"embedded double quote disallowed in {key}={value!r}")
+
+
+def _comm_pattern(process_grep: str) -> str:
+    """The process *comm* (kernel thread name) for ``process_grep``.
+
+    ``comm`` is the executable basename truncated to ``TASK_COMM_LEN - 1`` = 15
+    chars (``integrated_rt_controller`` -> ``integrated_rt_c``). Callers pass the
+    executable name, so the comm is its 15-char prefix.
+    """
+    return process_grep[:15]
+
+
+def _resolve_pid_snippet(process_grep: str) -> str:
+    """Bash that leaves the target *node's* PID in ``$PID`` (empty if absent).
+
+    Match on ``comm`` (``pgrep -nx``), NOT the command line (``pgrep -f``). Every
+    cmdline-based approach self-matched on NUC13 (issue #151): the launch helper
+    runs as ``bash -c '… <name> …'`` and carries the raw process name in its
+    ``pgrep`` arg AND its label / warning strings, so ``pgrep -f`` matched the
+    wrapper bash (and its transient ``$(…)`` sub-shell forks, which then exited
+    before the move) instead of the node. Bracketing the pattern fixed the pgrep
+    arg but not the label; a comm filter still raced the sub-shell forks.
+
+    ``comm`` sidesteps all of it: the node's comm is the truncated exec name
+    (``integrated_rt_c``); every wrapper / fork is ``bash`` / ``sh`` / ``pgrep`` /
+    ``cat``, none of which equals the target comm. ``-x`` demands an exact comm
+    match and ``-n`` takes the newest, so only the real node is ever returned.
+    """
+    comm = _comm_pattern(process_grep)
+    return f'PID=$(pgrep -nx "{comm}" 2>/dev/null); '
 
 
 def _skip_action(message: str) -> ExecuteProcess:
@@ -153,8 +194,9 @@ def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProc
         cmd=[
             "bash",
             "-c",
-            _resolve_slot_prelude(label, slot) + f'PID=$(pgrep -nf "{process_grep}"); '
-            'if [ -z "$PID" ]; then '
+            _resolve_slot_prelude(label, slot)
+            + _resolve_pid_snippet(process_grep)
+            + 'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — CPU pinning skipped"; exit 0; '
             "fi; "
             'taskset -cp "$CPU" "$PID" >/dev/null 2>&1 && '
@@ -163,6 +205,62 @@ def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProc
         ],
         output="screen",
         condition=IfCondition(LaunchConfiguration("use_cpu_affinity")),
+    )
+
+
+def adopt_process_into_shield(
+    label: str, process_grep: str, *, gated: bool = True
+) -> ExecuteProcess:
+    """Move the newest process matching ``process_grep`` into the cset shield.
+
+    ``cset shield --cpu`` (cpu_shield.sh ``on``) *creates* the isolated "user"
+    cpuset but sweeps existing tasks into "system"; a process launched afterwards
+    inherits "system" and is barred from the RT logical CPUs. Its
+    ``pthread_setaffinity_np`` then returns EINVAL and ``thread_utils.hpp`` aborts
+    the whole thread config — the RT thread loses its pin *and* SCHED_FIFO. This
+    action hands the PID to ``cpu_shield.sh adopt``, which moves it (and all its
+    threads) into "user" so RT/nrt self-pins land in-set. Issue #151.
+
+    Must complete *before* the controller activates and spawns its RT threads
+    (which then inherit the "user" cpuset). Callers gate ACTIVATE on this action's
+    ``OnProcessExit`` for a deterministic order rather than racing the async sudo
+    call against thread creation. Defensive by design: skips (warns, never fails
+    the launch) when the process is gone, the script is missing, sudo needs a
+    password, or no shield is active (the ``adopt`` subcommand itself no-ops in
+    the last case, so shield-off runs keep the CM at full affinity and its
+    existing self-pin path is unchanged).
+
+    ``gated=False`` drops the ``use_cpu_affinity`` :class:`IfCondition` so the
+    action always runs (and always exits): a caller gating ACTIVATE on its exit
+    needs it to fire even when ``use_cpu_affinity:=false``, where the bash body
+    finds no shield and exits 0 immediately.
+    """
+    _reject_quotes(label=label, process_grep=process_grep)
+
+    shield = cpu_shield_path()
+    kwargs = {}
+    if gated:
+        kwargs["condition"] = IfCondition(LaunchConfiguration("use_cpu_affinity"))
+    return ExecuteProcess(
+        cmd=[
+            "bash",
+            "-c",
+            f'SHIELD="{shield}"; ' + _resolve_pid_snippet(process_grep) + 'if [ -z "$PID" ]; then '
+            f'  echo "[RT] WARNING: {label} not found — shield adopt skipped"; exit 0; '
+            "fi; "
+            'if [ ! -f "$SHIELD" ]; then '
+            f'  echo "[RT] WARNING: cpu_shield.sh not found at $SHIELD — '
+            f'{label} shield adopt skipped"; exit 0; '
+            "fi; "
+            "if sudo -n true 2>/dev/null; then "
+            '  sudo "$SHIELD" adopt "$PID"; '
+            "else "
+            f'  echo "[RT] WARNING: sudo requires a password — {label} shield adopt '
+            'skipped (RT pin relies on shield being off)"; '
+            "fi",
+        ],
+        output="screen",
+        **kwargs,
     )
 
 
@@ -189,8 +287,9 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
         cmd=[
             "bash",
             "-c",
-            _resolve_slot_prelude(label, slot) + f'PID=$(pgrep -nf "{process_grep}"); '
-            'if [ -z "$PID" ]; then '
+            _resolve_slot_prelude(label, slot)
+            + _resolve_pid_snippet(process_grep)
+            + 'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — DDS thread pinning skipped"; exit 0; '
             "fi; "
             f'RTC_OWNED=" {owned} "; '

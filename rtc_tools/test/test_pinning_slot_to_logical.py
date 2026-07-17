@@ -42,6 +42,21 @@ _skip_no_deps = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def _stub_script_paths(monkeypatch):
+    """Render snippet-shape assertions without an installed ``repo_scripts``.
+
+    ``rt_common_path`` / ``cpu_shield_path`` resolve the installed scripts through
+    ``ament_index`` (``get_package_share_directory("repo_scripts")``). The CI
+    Python-test job installs only ``rtc_tools`` / ``rtc_msgs`` / ``rtc_digital_twin``,
+    so that lookup raises ``PackageNotFoundError``. Tests that only assert on the
+    rendered bash *structure* (not the resolved path) stub both helpers; the
+    production launch always runs with ``repo_scripts`` installed.
+    """
+    monkeypatch.setattr(pinning, "rt_common_path", lambda: "/opt/rtc/rt_common.sh")
+    monkeypatch.setattr(pinning, "cpu_shield_path", lambda: "/opt/rtc/cpu_shield.sh")
+
+
 def _add_cpu(root: Path, cpu: int, core_id: int, max_khz: int) -> None:
     d = root / "devices" / "system" / "cpu" / f"cpu{cpu}"
     (d / "topology").mkdir(parents=True, exist_ok=True)
@@ -197,7 +212,7 @@ def test_rtc_owned_names_mirror_thread_config_hpp():
     assert _thread_config_names() == pinning.RTC_OWNED_THREAD_NAMES
 
 
-def test_dds_pin_snippet_excludes_every_rtc_thread():
+def test_dds_pin_snippet_excludes_every_rtc_thread(_stub_script_paths):
     """The rendered DDS-pin command carries the full exclusion list and applies it.
 
     nrt_logging / nrt_callback are SCHED_OTHER; the pre-#163 FIFO-only filter let
@@ -213,3 +228,82 @@ def test_dds_pin_snippet_excludes_every_rtc_thread():
     # Every RTC-owned name — especially the SCHED_OTHER nrt_* pair — is listed.
     for name in pinning.RTC_OWNED_THREAD_NAMES:
         assert f" {name} " in snippet, f"{name} missing from RTC_OWNED list"
+
+
+# ── Shield adopt action (issue #151) ─────────────────────────────────────────
+
+
+def test_adopt_snippet_resolves_pid_and_calls_cpu_shield(_stub_script_paths):
+    """The adopt action pgreps the PID and delegates the cset move to cpu_shield.sh.
+
+    The cset knowledge lives in cpu_shield.sh (SSoT); the launch helper only
+    resolves the newest matching PID and hands it to ``adopt``. Assert both.
+    """
+    action = pinning.adopt_process_into_shield(
+        "integrated_rt_controller", "integrated_rt_controller"
+    )
+    snippet = action.cmd[2][0].text
+    # comm-exact match (pgrep -nx) on the 15-char comm — never the command line,
+    # so it cannot resolve to the launch's own wrapper bash / forks (#151).
+    assert 'pgrep -nx "integrated_rt_c"' in snippet
+    assert '"$SHIELD" adopt "$PID"' in snippet
+    # Guards: missing PID / missing script / password-required sudo all exit 0.
+    assert "shield adopt skipped" in snippet
+    assert action.cmd[2][0].text.count("exit 0") >= 2
+
+
+def test_adopt_gated_toggles_use_cpu_affinity_condition(_stub_script_paths):
+    """gated=True carries the use_cpu_affinity IfCondition; gated=False drops it.
+
+    A caller gating ACTIVATE on the adopt action's OnProcessExit needs it to fire
+    (and exit) even when use_cpu_affinity:=false, so gated=False must leave the
+    action unconditional.
+    """
+    assert pinning.adopt_process_into_shield("x", "x", gated=True).condition is not None
+    assert pinning.adopt_process_into_shield("x", "x", gated=False).condition is None
+
+
+def test_adopt_rejects_shell_injection_via_label():
+    """Embedded double quotes in interpolated fields are rejected (defense in depth)."""
+    with pytest.raises(ValueError):
+        pinning.adopt_process_into_shield('bad"name', "grep")
+    with pytest.raises(ValueError):
+        pinning.adopt_process_into_shield("label", 'gr"ep')
+
+
+# ── pgrep self-match guard (issue #151) ──────────────────────────────────────
+
+
+def test_comm_pattern_truncates_to_15_chars():
+    # comm is TASK_COMM_LEN-1 = 15 chars: the node's /proc/<pid>/comm.
+    assert pinning._comm_pattern("integrated_rt_controller") == "integrated_rt_c"
+    assert pinning._comm_pattern("ur_ros2_driver") == "ur_ros2_driver"
+    assert pinning._comm_pattern("udp_hand_node") == "udp_hand_node"
+
+
+def test_all_pgrep_helpers_match_comm_not_cmdline(_stub_script_paths):
+    """Every pgrep-based action resolves the PID by comm (pgrep -nx), never -f.
+
+    Command-line matching self-matched the launch's own wrapper bash and its
+    transient sub-shell forks on NUC13 (#151). comm matching cannot: a wrapper's
+    comm is bash/sh/pgrep/cat, never the node's exec name.
+    """
+    cases = [
+        (pinning.pin_process_to_slot("ur_ros2_driver", "ur_ros2_driver", 6), "ur_ros2_driver"),
+        (
+            pinning.pin_dds_threads_to_slot(
+                "integrated_rt_controller", "integrated_rt_controller", 2
+            ),
+            "integrated_rt_c",
+        ),
+        (
+            pinning.adopt_process_into_shield(
+                "integrated_rt_controller", "integrated_rt_controller"
+            ),
+            "integrated_rt_c",
+        ),
+    ]
+    for action, comm in cases:
+        snippet = action.cmd[2][0].text
+        assert f'pgrep -nx "{comm}"' in snippet, f"expected comm match: {snippet}"
+        assert "pgrep -f" not in snippet, f"cmdline pgrep leaked: {snippet}"

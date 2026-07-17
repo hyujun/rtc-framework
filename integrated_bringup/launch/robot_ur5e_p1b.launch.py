@@ -52,7 +52,11 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
-from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
+from rtc_tools.launch.pinning import (
+    adopt_process_into_shield,
+    pin_dds_threads_to_slot,
+    pin_process_to_slot,
+)
 from rtc_tools.launch.thread_layout import (
     get_arm_driver_core,
     get_hand_driver_core,
@@ -359,26 +363,33 @@ def generate_launch_description():
         os.path.dirname(os.path.dirname(_pkg_prefix)), "lib", "repo_scripts", "cpu_shield.sh"
     )
 
+    # Active-shield detection must be cset-aware: cset shield writes NO entry to
+    # /sys/devices/system/cpu/isolated (that file is isolcpus-only), so gating on
+    # it read every cset run as "not active" and re-invoked `on --robot` each
+    # launch (issue #151). Treat the shield as active when either a cset "user"
+    # cpuset exists OR isolcpus reserved cores (both are valid isolation methods).
     enable_cpu_shield = ExecuteProcess(
         cmd=[
             "bash",
             "-c",
-            f'if [ -f "{_shield_script}" ]; then '
-            "  ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
-            '  if [ -z "$ISOLATED" ]; then '
-            '    echo "[RT] CPU shield not active — enabling robot mode..."; '
-            "    if sudo -n true 2>/dev/null; then "
-            f'      sudo "{_shield_script}" on --robot; '
-            "    else "
-            '      echo "[RT] WARNING: sudo requires a password — skipping CPU shield. '
+            f'if [ ! -f "{_shield_script}" ]; then '
+            f'  echo "[RT] WARNING: cpu_shield.sh not found: {_shield_script}"; exit 0; '
+            "fi; "
+            "ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null); "
+            "if command -v cset >/dev/null 2>&1 && "
+            '   cset shield -s 2>/dev/null | grep -q "user"; then '
+            '  echo "[RT] CPU shield already active (cset user cpuset present)"; '
+            'elif [ -n "$ISOLATED" ]; then '
+            '  echo "[RT] CPU shield already active: Core $ISOLATED isolated (isolcpus)"; '
+            "else "
+            '  echo "[RT] CPU shield not active — enabling robot mode..."; '
+            "  if sudo -n true 2>/dev/null; then "
+            f'    sudo "{_shield_script}" on --robot; '
+            "  else "
+            '    echo "[RT] WARNING: sudo requires a password — skipping CPU shield. '
             "Configure passwordless sudo for cpu_shield.sh or run: "
             f'sudo {_shield_script} on --robot"; '
-            "    fi; "
-            "  else "
-            '    echo "[RT] CPU shield already active: Core $ISOLATED isolated"; '
             "  fi; "
-            "else "
-            f'  echo "[RT] WARNING: cpu_shield.sh not found: {_shield_script}"; '
             "fi",
         ],
         output="screen",
@@ -518,13 +529,34 @@ def generate_launch_description():
         )
     )
 
-    # ── Lifecycle auto-configure/activate for integrated_rt_controller ──────────────
-    rt_auto_activate = RegisterEventHandler(
+    # ── Lifecycle auto-configure → shield-adopt → activate ──────────────────────────
+    # RT + nrt threads spawn in on_activate (rt_controller_node.cpp), and they
+    # self-pin to logical CPUs inside the shield's "user" cpuset. If the CM is
+    # still in "system" when that happens the pins EINVAL and thread_utils.hpp
+    # drops SCHED_FIFO too (issue #151). So, once configure completes (inactive),
+    # move the CM into "user" and gate ACTIVATE on that move *finishing* — a
+    # deterministic order, not a race between the async sudo call and thread
+    # creation. adopt runs ungated (it must fire, and exit, even when
+    # use_cpu_affinity:=false — where it finds no shield and no-ops) so the
+    # controller still activates in fake-hardware / CI runs.
+    adopt_rt_controller = adopt_process_into_shield(
+        "integrated_rt_controller", "integrated_rt_controller", gated=False
+    )
+    rt_adopt_after_configure = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=rt_controller_node,
             start_state="configuring",
             goal_state="inactive",
             entities=[
+                LogInfo(msg="[RT] configured — adopting CM into CPU shield before activate"),
+                adopt_rt_controller,
+            ],
+        )
+    )
+    rt_activate_after_adopt = RegisterEventHandler(
+        OnProcessExit(
+            target_action=adopt_rt_controller,
+            on_exit=[
                 EmitEvent(
                     event=ChangeState(
                         lifecycle_node_matcher=lambda n: n == rt_controller_node,
@@ -595,7 +627,8 @@ def generate_launch_description():
             on_exit=[
                 LogInfo(msg="[RT] Readiness gate passed — launching integrated_rt_controller"),
                 rt_controller_node,
-                rt_auto_activate,
+                rt_adopt_after_configure,
+                rt_activate_after_adopt,
                 rt_trigger_configure,
             ],
         )

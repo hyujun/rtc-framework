@@ -51,17 +51,24 @@ make_logger "SHIELD"
 # for forward compatibility and so callers (`on --sim`, `on --robot`) need
 # no further changes.
 #
-# SSoT: get_rt_shield_cpus() in rt_common.sh. get_rt_cores() alone returns slot
+# SSoT: get_cm_shield_cpus() in rt_common.sh. get_rt_cores() alone returns slot
 # indices, NOT logical CPU ids — on SMT/hybrid the RT threads pin to logical
 # cpus that differ from the slot numbers (slot→logical via PHYSICAL_CORE_SLOTS,
 # same map C++ ApplyThreadConfig uses), and their HT siblings must be shielded
-# too. get_rt_shield_cpus() performs both steps and returns compact range
-# notation (e.g. "1-3" non-SMT, "2-7"/"1-3,7-9" SMT).
+# too.
+#
+# The cpuset must fit the WHOLE integrated_rt_controller process, because
+# do_on moves that process into the "user" cpuset (issue #151) and cset moves a
+# *process* — all its threads. The CM hosts nrt_logging / nrt_callback too, and
+# on the NUC13 hybrid those pin to logical {12,13}, outside the RT-only span
+# 2-9. get_cm_shield_cpus() = get_rt_shield_cpus() ∪ nrt cores (OS slot dropped)
+# so nrt self-pin does not EINVAL against a too-narrow cpuset. Compact range
+# notation (e.g. "1-3,5" non-SMT 6c, "2-9,12-13" NUC13 hybrid 12c).
 compute_shield_cores() {
   # Args $1 (mode) and $2 (phys_cores) are accepted for forward compat with
-  # legacy callers; both modes share the same shield range, and get_rt_shield_cpus
+  # legacy callers; both modes share the same shield range, and get_cm_shield_cpus
   # auto-detects core count + topology via rt_common.sh.
-  get_rt_shield_cpus
+  get_cm_shield_cpus
 }
 
 # ── Status mode marker file ──────────────────────────────────────────────────
@@ -133,6 +140,63 @@ do_on() {
   # (올바른 cgroup 격리 = 전 태스크 housekeeping cpuset 이주 + cpu_exclusive; 실기
   # 검증이 필요한 별도 작업. do_off 는 legacy rt_shield 정리를 위해 유지.)
   fatal "cset 미설치 — CPU shield 를 적용할 수 없다. cgroup fallback 은 실질 격리를 제공하지 못해 비활성화됨. 설치: sudo apt-get install -y cpuset (RT 코어 격리 없이 제어 루프 실행 시 RT-HOST-3 격리 보장이 깨진다)"
+}
+
+# ── Command: adopt <pid> ─────────────────────────────────────────────────────
+# Move an already-running process (+ all its threads) INTO the shield's "user"
+# cpuset. `cset shield --cpu` only *creates* the isolated set and sweeps
+# existing tasks into "system"; a process launched afterwards (the RT
+# controller) inherits "system" and is barred from the RT logical CPUs, so its
+# pthread_setaffinity_np(logical 2/4/…) returns EINVAL — and thread_utils.hpp
+# aborts the whole thread config (losing SCHED_FIFO too) on that failure.
+# The launch calls this on the RT controller's OnProcessStart, *before* the
+# controller activates and spawns its RT threads, so those threads inherit the
+# "user" cpuset and pin successfully. Idempotent, and a no-op-with-warning when
+# no shield is active (fake-hw / no-sudo / cset-absent runs). Issue #151.
+do_adopt() {
+  local pid="${1:-}"
+
+  if [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]]; then
+    fatal "adopt requires a numeric PID. Usage: sudo $0 adopt <pid>"
+  fi
+  if [[ "$EUID" -ne 0 ]]; then
+    fatal "Root privileges required. Run: sudo $0 adopt ${pid}"
+  fi
+  if ! command -v cset &>/dev/null; then
+    warn "cset 미설치 — PID ${pid} 를 user cpuset 으로 이동할 수 없음 (adopt skip)"
+    return 0
+  fi
+  if [[ ! -d "/proc/${pid}" ]]; then
+    warn "PID ${pid} 없음 — adopt skip (프로세스가 이미 종료?)"
+    return 0
+  fi
+  # Shield must be active (a "user" cpuset must exist) to adopt into it.
+  if ! cset shield -s 2>/dev/null | grep -q "user"; then
+    warn "활성 shield 없음 — PID ${pid} adopt skip (shield off 상태에서는 CM 이 full affinity 로 self-pin)"
+    return 0
+  fi
+
+  # Diagnostic + guard: report what we are about to move. The caller resolves
+  # the PID via `pgrep -f`, which historically matched the launch's own wrapper
+  # bash instead of the RT node (issue #151). If comm is a shell, the wrong PID
+  # was handed in — moving it is a no-op that leaves the node in "system", so
+  # warn loudly rather than silently reporting success.
+  local pcomm
+  pcomm=$(cat "/proc/${pid}/comm" 2>/dev/null || echo "?")
+  info "adopt target PID ${pid}: comm='${pcomm}'"
+  if [[ "$pcomm" == "bash" || "$pcomm" == "sh" || "$pcomm" == "cpu_shield.sh" ]]; then
+    warn "adopt target comm='${pcomm}' 는 launch wrapper 로 보인다 — RT 노드가 아님. PID 해석 오류(pgrep self-match?) 로 실제 노드는 system 에 남아 EINVAL 가능. 이동은 진행하되 검증 필요."
+  fi
+
+  # --threads moves every thread of the process; future threads inherit the
+  # cpuset cgroup. `--shield --pid` moves INTO the "user" set (opposite of the
+  # default sweep to "system").
+  if cset shield --shield --pid "$pid" --threads >/dev/null 2>&1; then
+    success "PID ${pid} (comm='${pcomm}', +threads) moved into user cpuset — RT self-pin will land in-set"
+    return 0
+  fi
+  warn "PID ${pid} adopt 실패 (cset shield --shield) — shield-on 런에서 RT pin 이 EINVAL 날 수 있음"
+  return 0
 }
 
 # ── Command: off ─────────────────────────────────────────────────────────────
@@ -251,12 +315,14 @@ usage() {
   echo "  on [--robot|--sim]  Activate CPU isolation (default: --robot)"
   echo "    --robot           Shield RT + MPC cores (driver cores released)"
   echo "    --sim             Same shield as --robot; sim_thread runs outside"
+  echo "  adopt <pid>         Move a running process (+threads) into the user cpuset"
   echo "  off                 Deactivate CPU isolation"
   echo "  status              Show current isolation status"
   echo ""
   echo "Examples:"
   echo "  sudo cpu_shield.sh on --robot    # Full RT isolation"
   echo "  sudo cpu_shield.sh on --sim      # Lightweight simulation isolation"
+  echo "  sudo cpu_shield.sh adopt 12345   # Put RT controller PID under the shield"
   echo "  sudo cpu_shield.sh off           # Release all isolation"
   echo "  cpu_shield.sh status             # Check current state"
   echo ""
@@ -278,6 +344,9 @@ case "$COMMAND" in
       esac
     done
     do_on "$MODE"
+    ;;
+  adopt)
+    do_adopt "${1:-}"
     ;;
   off)
     do_off

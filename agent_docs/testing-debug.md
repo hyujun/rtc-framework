@@ -140,6 +140,28 @@ echo "@realtime - memlock unlimited" | sudo tee -a /etc/security/limits.conf
 # Re-login required. Optional: isolcpus, nohz_full, or cpu_shield.sh
 ```
 
+## CPU Shield (cset) 검증 — issue #151
+
+`cpu_shield.sh` 는 cpuset 을 *만들기만* 하고, 런치가 CM 을 그 안으로 `adopt` 한다.
+격리가 실제로 서는지는 **실기(SMT/hybrid, 예: NUC13 4P+8E)** 에서만 검증된다 —
+sim 단일 실행으로 대체 불가 ([design-principles.md](design-principles.md) sim-noise 원칙).
+
+```bash
+# 1) shield cpuset 이 CM 전체 span 을 덮는가 (NUC13 12c → user=2-9,12-13)
+sudo ./repo_scripts/scripts/cpu_shield.sh on --robot
+cset shield -s          # "user" == get_cm_shield_cpus 출력과 일치해야
+# 2) 런치(shield-on) 후 CM 이 user cpuset 에 들어갔는가
+CM=$(pgrep -nf integrated_rt_controller)
+grep Cpus_allowed_list /proc/$CM/status      # ⊆ {2-9,12-13}
+# 3) activate 후 RT/nrt 스레드가 제대로 pin·FIFO 되었는가
+ps -eLo comm,psr,cls,rtprio -p $CM | grep -E "rt_control|rt_callback|nrt_"
+#   기대: rt_control psr=2/FF/90, rt_callback psr=4, nrt psr=12·13
+# 4) EINVAL 회귀 없음 (shield 가 pin 을 깨뜨리지 않음)
+grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/  # 결과 없어야
+# 5) 게이트가 활성 shield 를 재활성 안 함 (cset-aware)
+#   두 번째 런치 로그에 "CPU shield already active (cset user cpuset present)"
+```
+
 ## Tracing
 
 CSV timing logs (`cm_timing_log.csv` / `mpc_timing_log.csv` / `hand_udp_timing_log.csv`) 은 **per-tick 총 시간** 만 기록한다. 어느 thread 가 어느 core 에서 언제 run 했는지 / 어떤 callback 이 시간을 쓰는지 알아내려면 LTTng 트레이스를 캡처해 분석한다.

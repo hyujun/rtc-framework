@@ -167,7 +167,7 @@ repo_scripts/
 
 쉘 스크립트와 `rtc_base/threading/thread_config.hpp` 사이에 **단일 소스 진실**을 유지하기 위한 헬퍼입니다. v4.1 Layout SSoT 통합 후:
 
-- `cpu_shield.sh::compute_shield_cores()` 는 `get_rt_cores()` 를 호출하며 자체 tier 분기를 제거 (RT+MPC 만 shield).
+- `cpu_shield.sh::compute_shield_cores()` 는 `get_cm_shield_cpus()` 를 호출 (자체 tier 분기 없음). CM 프로세스 전체가 cpuset 에 들어가야 하므로 shield 는 RT ∪ nrt span 을 덮는다 (issue #151). shield 는 cpuset 만 만들고, 런치가 `cpu_shield.sh adopt <pid>` 로 CM 을 그 안에 넣는다.
 - `setup_grub_rt.sh` 는 `get_rt_cores_with_siblings()` 를 호출하여 `nohz_full` / `rcu_nocbs` 값으로 RT thread 가 실행되는 코어만 (SMT 시 sibling 포함) 한정.
 - `setup_irq_affinity.sh` / `check_rt_setup.sh` / `verify_rt_runtime.sh` 는 `compute_cpu_layout()` 기반으로 동작하여 tier 분기가 없습니다 (OS/RT 코어 범위가 layout v4.1 에서 모든 tier 공통: OS=0, RT=1..N-1).
 
@@ -175,9 +175,12 @@ repo_scripts/
 |------|------|------|--------------------------------------------|
 | `get_mpc_cores()` | active | 현재 물리 코어 수에 맞는 MPC 코어 (main + workers) CSV 반환. 첫 항목이 항상 MPC main 코어. | `3` / `3` / `3,4` / `3,4,5` / `3,4,5` / `3,4,5` |
 | `get_mpc_main_core()` | dormant | MPC main 코어만 (get_mpc_cores의 첫 항목). | `3` / `3` / `3` / `3` / `3` / `3` |
-| `get_rt_cores()` | active | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `cpu_shield.sh` 와 `get_rt_cores_with_siblings()` 의 base. | `1,2,3` / `1,2,3` / `1,2,3,4` / `1,2,3,4,5` / `1,2,3,4,5` / `1,2,3,4,5` |
+| `get_rt_cores()` | active | RT 그룹 전체 집합 (rt_control + rt_callback + MPC). `get_rt_cores_with_siblings()` / `get_rt_shield_cpus()` 의 base. | `1,2,3` / `1,2,3` / `1,2,3,4` / `1,2,3,4,5` / `1,2,3,4,5` / `1,2,3,4,5` |
+| `get_nrt_cores()` | active | nrt_logging + nrt_callback 슬롯 (thread_config.hpp SSoT). `get_cm_shield_cpus()` 가 RT 와 union. degraded 는 Core 0 공유. | `5` / `6,7` / `7,8` / `8,9` / `8,9` / `8,9` |
 | `get_rt_cores_with_siblings()` | active | `get_rt_cores()` 출력에 SMT HT 시블링까지 포함, range-collapse. `setup_grub_rt.sh` 의 `nohz_full` / `rcu_nocbs` 값. non-SMT 시 입력과 동일 cpu 집합 (range 표기). | non-SMT: `1-3` / `1-3` / `1-4` / `1-5` / `1-5` / `1-5` |
-| `get_os_cores()` | active (informational) | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). 현재 직접 consumer 없음 — 보고/검증용. | `0` / `0` / `0` / `0` / `0` / `0` |
+| `get_rt_shield_cpus()` | active | RT 슬롯 → **logical cpu** (slot→logical) + HT 시블링. RT-only 격리/검증 (verify_rt_runtime). | non-SMT: `1-3` / `1-3` / `1-4` / `1-5` / `1-5` / `1-5` |
+| `get_cm_shield_cpus()` | active | CM 프로세스 전체 span = `get_rt_shield_cpus()` ∪ nrt (logical + 시블링, OS slot 제외). `cpu_shield.sh` 의 cset "user" cpuset 범위 (issue #151). | non-SMT: `1-3,5` / `1-3,6-7` / `1-4,7-8` / `1-5,8-9` / `1-5,8-9` / `1-5,8-9` · NUC13 12c hybrid: `2-9,12-13` |
+| `get_os_cores()` | active (informational) | OS/DDS/IRQ 코어 (Core 0 단일, layout v4.1). `get_cm_shield_cpus()` 가 shield 에서 제외할 slot 판정에 사용. | `0` / `0` / `0` / `0` / `0` / `0` |
 
 Tier별 매핑 (layout v4.1 — SSoT: `rtc_base/threading/thread_config.hpp::SelectThreadConfigs()`):
 - **≤4코어 (degraded)**: rt_control Core 1, rt_callback Core 2 (FIFO 70 + DDS recv co-pin, degraded), mpc Core 3 (CFS). RT 결정성 보장 X.

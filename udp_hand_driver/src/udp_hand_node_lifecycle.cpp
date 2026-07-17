@@ -539,9 +539,18 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     fd_cfg.startup_grace_ms = get_parameter("startup_grace_ms").as_double();
     fd_cfg.link_startup_grace_ms = get_parameter("link_startup_grace_ms").as_double();
 
-    const auto cfgs = rtc::SelectThreadConfigs();
+    // The failure detector is an aux thread of the *hand driver* process, which
+    // the launch taskset-pins to its own core (logical 11 on NUC13, in the cset
+    // "system" cpuset). Reuse nrt_logging's SCHED_OTHER policy / nice, but drop
+    // the CPU pin (cpu_core = -1): the dedicated nrt core (slot 8 -> logical 12)
+    // is owned by the CM's cset "user" cpuset (issue #151), so pinning this
+    // separate process's thread there EINVALs under an active shield. Inheriting
+    // the hand process affinity keeps the detector beside the driver it monitors.
+    auto cfgs = rtc::SelectThreadConfigs();
+    auto fd_thread_cfg = cfgs.nrt_logging;
+    fd_thread_cfg.cpu_core = -1;
     failure_detector_ = std::make_unique<udp_hand_driver::UdpHandFailureDetector>(
-        *controller_, fd_cfg, cfgs.nrt_logging);
+        *controller_, fd_cfg, fd_thread_cfg);
     failure_detector_->SetFailureCallback([this](const std::string& reason) {
       RCLCPP_ERROR(::udp_hand_driver::logging::NodeLogger(), "Hand failure detected: %s",
                    reason.c_str());
