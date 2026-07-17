@@ -268,7 +268,6 @@ void ApplyPullEstimatorBlock(const YAML::Node& pe, DemoSharedConfig& cfg) {
       if (tn["link"]) {
         cfg.pull_tip_links[idx] = tn["link"].as<std::string>();
       }
-      ApplyVector3(tn["contact_normal_local"], pc.contact_normal_local);
       if (tn["friction_coeff"])
         pc.friction_coeff = tn["friction_coeff"].as<double>();
       if (tn["contact_on_threshold"])

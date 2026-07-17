@@ -100,15 +100,21 @@
           type: "mujoco_native"            # sim mode: MuJoCo bridge
           state_topic:   "/leap/joint_states"
           command_topic: "/leap/joint_command"
-          # Fingertip wrench lane — list order = inference_enable[f] index.
-          # Mujoco backend subscribes to each WrenchStamped topic and packs
-          # fx/fy/fz into inference_data slots 1..3 (stride 7, dead slots 0
-          # + 4..6 zero-filled). Empty list disables the lane.
+          # Fingertip wrench lane — list order = inference_enable[f] index =
+          # sensor-lane slot f. This MUST match the controller-facing finger
+          # order (thumb → index → middle → ring), which is what the tree-model
+          # tip_links, WBC contacts, MPC contact_frames, and phase_config all
+          # use: sensor-lane slot f is paired positionally with FK/contact
+          # frame f by every consumer (fingertip_data_[f] ↔ fingertip_rotations_
+          # [f], the #167 Stage A-3 contract). Mujoco backend subscribes to each
+          # WrenchStamped topic and packs fx/fy/fz into inference_data slots
+          # 1..3 (stride 7, dead slots 0 + 4..6 zero-filled). Empty list
+          # disables the lane.
           fingertip_wrench_topics:
+            - "/leap/thumb_tip_contact/contact_wrench"
             - "/leap/index_tip_contact/contact_wrench"
             - "/leap/middle_tip_contact/contact_wrench"
             - "/leap/ring_tip_contact/contact_wrench"
-            - "/leap/thumb_tip_contact/contact_wrench"
           # Consecutive missed RT ticks before inference_enable[f] flips to
           # false. 500 Hz × 5 = 10 ms freshness budget; force values are
           # preserved across stale ticks (controller gates on the bool).

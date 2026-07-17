@@ -4,10 +4,13 @@
 // frame = world, object plane = xy (normal +z), two-contact opposing pinch:
 //   contact 0 "thumb" below the object → contact normal (object→finger) = -z,
 //   contact 1 "index" above the object → contact normal = +z.
-// Tests feed finger-on-object forces directly with force_sign = +1 and
-// R = I so expected sums are exact; dedicated tests cover sign inversion and
-// FK rotation. Exact math asserts use force_raw (pre-filter); filter-path
-// tests settle the Bessel LPF first.
+// The per-contact normal is a per-tick input (reference frame) — the caller
+// supplies it from pinch geometry, so tests attach it to each PullContactInput
+// (kThumbNormal / kOpposingNormal) rather than to the config. Tests feed
+// finger-on-object forces directly with force_sign = +1 and R = I so expected
+// sums are exact; dedicated tests cover sign inversion and FK rotation. Exact
+// math asserts use force_raw (pre-filter); filter-path tests settle the Bessel
+// LPF first.
 
 #include "rtc_controllers/grasp/pull_force_estimator.hpp"
 
@@ -31,20 +34,24 @@ using rtc::grasp::PullForceEstimator;
 
 constexpr double kDt = 1.0 / 500.0;
 const Eigen::Vector3d kPlaneNormal = Eigen::Vector3d::UnitZ();
+// Reference-frame contact normals for the opposing xy-plane pinch: thumb below
+// the object (normal points down, from object into the thumb), the opposing
+// index/middle above it (up). These are what the wiring derives from FK.
+const Eigen::Vector3d kThumbNormal = -Eigen::Vector3d::UnitZ();
+const Eigen::Vector3d kOpposingNormal = Eigen::Vector3d::UnitZ();
 
-PullContactConfig MakeConfig(const Eigen::Vector3d& normal_local, bool required = false,
-                             double force_sign = 1.0) {
+PullContactConfig MakeConfig(bool required = false, double force_sign = 1.0) {
   PullContactConfig cfg;
-  cfg.contact_normal_local = normal_local;
   cfg.required = required;
   cfg.force_sign = force_sign;
   return cfg;
 }
 
-PullContactInput MakeInput(const Eigen::Vector3d& force,
+PullContactInput MakeInput(const Eigen::Vector3d& force, const Eigen::Vector3d& contact_normal,
                            const Eigen::Matrix3d& rotation = Eigen::Matrix3d::Identity()) {
   PullContactInput in;
   in.force = force;
+  in.contact_normal = contact_normal;
   in.rotation = rotation;
   in.valid = true;
   return in;
@@ -52,8 +59,8 @@ PullContactInput MakeInput(const Eigen::Vector3d& force,
 
 /// Two-contact opposing pinch on the xy plane, finger-on-object convention.
 std::vector<PullContactConfig> PinchConfigs() {
-  return {MakeConfig(-Eigen::Vector3d::UnitZ()),  // thumb (below, pushes +z)
-          MakeConfig(Eigen::Vector3d::UnitZ())};  // index (above, pushes -z)
+  return {MakeConfig(),   // thumb (below, pushes +z)
+          MakeConfig()};  // index (above, pushes -z)
 }
 
 PullEstimatorParams DefaultParams() {
@@ -77,14 +84,15 @@ TEST(PullForceEstimator, AxisRotationMapsForceToReference) {
   PullForceEstimator est;
   PullEstimatorParams params = DefaultParams();
   params.min_valid_contacts = 1;
-  const std::vector<PullContactConfig> configs = {MakeConfig(-Eigen::Vector3d::UnitZ())};
+  const std::vector<PullContactConfig> configs = {MakeConfig()};
   est.Init(configs, params);
 
-  // Rz(90°): link +x → reference +y; the contact normal (-z) is unchanged.
+  // Rz(90°): link +x → reference +y; the reference-frame contact normal is -z.
   const Eigen::Matrix3d rot =
       Eigen::AngleAxisd(M_PI / 2.0, Eigen::Vector3d::UnitZ()).toRotationMatrix();
   // Link frame: grip +5 z (pushing up), shear -1 x.
-  const std::vector<PullContactInput> inputs = {MakeInput(Eigen::Vector3d(-1.0, 0.0, 5.0), rot)};
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(-1.0, 0.0, 5.0), kThumbNormal, rot)};
 
   const PullEstimate& out = RunTicks(est, inputs, 1);
   ASSERT_TRUE(out.valid);
@@ -98,15 +106,14 @@ TEST(PullForceEstimator, AxisRotationMapsForceToReference) {
 TEST(PullForceEstimator, SignInversionConvention) {
   PullForceEstimator est;
   // Default force_sign = -1: inputs follow the wire contract.
-  const std::vector<PullContactConfig> configs = {
-      MakeConfig(-Eigen::Vector3d::UnitZ(), false, -1.0),
-      MakeConfig(Eigen::Vector3d::UnitZ(), false, -1.0)};
+  const std::vector<PullContactConfig> configs = {MakeConfig(false, -1.0), MakeConfig(false, -1.0)};
   est.Init(configs, DefaultParams());
 
   // Finger-on-object: thumb (-0.75, 0, 5), index (-0.75, 0, -5) — the object
   // is pulled +x, fingers resist with -x friction. Wire values are negated.
-  const std::vector<PullContactInput> inputs = {MakeInput(Eigen::Vector3d(0.75, 0.0, -5.0)),
-                                                MakeInput(Eigen::Vector3d(0.75, 0.0, 5.0))};
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.75, 0.0, -5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(0.75, 0.0, 5.0), kOpposingNormal)};
 
   const PullEstimate& out = RunTicks(est, inputs, 1);
   ASSERT_TRUE(out.valid);
@@ -121,8 +128,8 @@ TEST(PullForceEstimator, OpposingSqueezeCancellation) {
   est.Init(PinchConfigs(), DefaultParams());
 
   const std::vector<PullContactInput> inputs = {
-      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0)),    // thumb pushes up
-      MakeInput(Eigen::Vector3d(0.0, 0.0, -5.0))};  // index pushes down
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),       // thumb pushes up
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -5.0), kOpposingNormal)};  // index pushes down
 
   const PullEstimate& out = RunTicks(est, inputs, 1);
   ASSERT_TRUE(out.valid);
@@ -136,8 +143,9 @@ TEST(PullForceEstimator, SameDirectionShearPull) {
   est.Init(PinchConfigs(), DefaultParams());
 
   // Object pulled +x with 1.5 N: fingers resist with Σ shear = -1.5 x.
-  const std::vector<PullContactInput> inputs = {MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0)),
-                                                MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0))};
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0), kOpposingNormal)};
 
   const PullEstimate& out = RunTicks(est, inputs, 1);
   ASSERT_TRUE(out.valid);
@@ -152,12 +160,12 @@ TEST(PullForceEstimator, ArbitraryPlaneBasis) {
   PullEstimatorParams params = DefaultParams();
   params.min_valid_contacts = 1;
   const Eigen::Vector3d n = Eigen::Vector3d(1.0, 1.0, 1.0).normalized();
-  const std::vector<PullContactConfig> configs = {MakeConfig(-n)};
+  const std::vector<PullContactConfig> configs = {MakeConfig()};
   est.Init(configs, params);
 
   // In-plane pull v ⊥ n; finger applies grip along +n plus resisting -v.
   const Eigen::Vector3d v = 2.0 * Eigen::Vector3d(1.0, -1.0, 0.0).normalized();
-  const std::vector<PullContactInput> inputs = {MakeInput(5.0 * n - v)};
+  const std::vector<PullContactInput> inputs = {MakeInput(5.0 * n - v, -n)};
 
   const PullEstimate& out = RunTicks(est, inputs, 1000, n);
   ASSERT_TRUE(out.valid);
@@ -174,13 +182,13 @@ TEST(PullForceEstimator, ContactHysteresis) {
   PullForceEstimator est;
   PullEstimatorParams params = DefaultParams();
   params.min_valid_contacts = 1;
-  PullContactConfig cfg = MakeConfig(-Eigen::Vector3d::UnitZ());
+  PullContactConfig cfg = MakeConfig();
   cfg.contact_on_threshold = 1.0;
   cfg.contact_off_threshold = 0.4;
   est.Init(std::vector<PullContactConfig>{cfg}, params);
 
   auto grip = [](double f_n) {
-    return std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(0.0, 0.0, f_n))};
+    return std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(0.0, 0.0, f_n), kThumbNormal)};
   };
 
   est.Update(grip(0.7), kPlaneNormal, kDt);  // between off/on, never engaged
@@ -200,8 +208,9 @@ TEST(PullForceEstimator, StaleAndSaturationGate) {
   est.Init(PinchConfigs(), DefaultParams());
 
   // Stale: valid=false on the index → only one active contact → invalid.
-  std::vector<PullContactInput> inputs = {MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0)),
-                                          MakeInput(Eigen::Vector3d(0.0, 0.0, -5.0))};
+  std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -5.0), kOpposingNormal)};
   inputs[1].valid = false;
   const PullEstimate& stale = est.Update(inputs, kPlaneNormal, kDt);
   EXPECT_EQ(stale.valid_contact_count, 1);
@@ -222,19 +231,21 @@ TEST(PullForceEstimator, SlipRatio) {
   PullForceEstimator est;
   PullEstimatorParams params = DefaultParams();
   params.min_valid_contacts = 1;
-  PullContactConfig cfg = MakeConfig(-Eigen::Vector3d::UnitZ());
+  PullContactConfig cfg = MakeConfig();
   cfg.friction_coeff = 0.7;
   est.Init(std::vector<PullContactConfig>{cfg}, params);
 
   // f_n = 5, |f_t| = 1.75 → ρ = 1.75 / (0.7·5) = 0.5.
   const PullEstimate& low = est.Update(
-      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(1.75, 0.0, 5.0))}, kPlaneNormal, kDt);
+      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(1.75, 0.0, 5.0), kThumbNormal)},
+      kPlaneNormal, kDt);
   EXPECT_NEAR(low.max_friction_utilization, 0.5, 1e-6);
   EXPECT_FALSE(low.slip_risk);
 
   // |f_t| = 3.85 → ρ = 1.1 ≥ threshold (1.0).
   const PullEstimate& high = est.Update(
-      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(3.85, 0.0, 5.0))}, kPlaneNormal, kDt);
+      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(3.85, 0.0, 5.0), kThumbNormal)},
+      kPlaneNormal, kDt);
   EXPECT_NEAR(high.max_friction_utilization, 1.1, 1e-6);
   EXPECT_TRUE(high.slip_risk);
 }
@@ -243,14 +254,14 @@ TEST(PullForceEstimator, SlipRatio) {
 TEST(PullForceEstimator, RequiredRoleGating) {
   PullForceEstimator est;
   // thumb required; index + middle above the object.
-  const std::vector<PullContactConfig> configs = {
-      MakeConfig(-Eigen::Vector3d::UnitZ(), /*required=*/true),
-      MakeConfig(Eigen::Vector3d::UnitZ()), MakeConfig(Eigen::Vector3d::UnitZ())};
+  const std::vector<PullContactConfig> configs = {MakeConfig(/*required=*/true), MakeConfig(),
+                                                  MakeConfig()};
   est.Init(configs, DefaultParams());
 
-  std::vector<PullContactInput> inputs = {MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0)),
-                                          MakeInput(Eigen::Vector3d(0.0, 0.0, -2.5)),
-                                          MakeInput(Eigen::Vector3d(0.0, 0.0, -2.5))};
+  std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -2.5), kOpposingNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -2.5), kOpposingNormal)};
 
   // Thumb sensor lost: 2 active contacts ≥ min(2) but the required role is
   // missing → must be invalid (index+middle-only false-valid guard).
@@ -271,8 +282,9 @@ TEST(PullForceEstimator, BaselineSubtraction) {
   est.Init(PinchConfigs(), DefaultParams());
 
   // Constant residual: both fingers biased -0.4 x (e.g. in-plane gravity).
-  const std::vector<PullContactInput> rest = {MakeInput(Eigen::Vector3d(-0.4, 0.0, 5.0)),
-                                              MakeInput(Eigen::Vector3d(-0.4, 0.0, -5.0))};
+  const std::vector<PullContactInput> rest = {
+      MakeInput(Eigen::Vector3d(-0.4, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.4, 0.0, -5.0), kOpposingNormal)};
   const PullEstimate& before = est.Update(rest, kPlaneNormal, kDt);
   EXPECT_NEAR(before.force_raw.x(), 0.8, 1e-12);
   EXPECT_FALSE(before.baseline_applied);
@@ -283,8 +295,9 @@ TEST(PullForceEstimator, BaselineSubtraction) {
   EXPECT_NEAR(zeroed.force_raw.norm(), 0.0, 1e-12);
 
   // Additional external pull appears on top of the residual → only the pull.
-  const std::vector<PullContactInput> pulled = {MakeInput(Eigen::Vector3d(-0.4 - 0.75, 0.0, 5.0)),
-                                                MakeInput(Eigen::Vector3d(-0.4 - 0.75, 0.0, -5.0))};
+  const std::vector<PullContactInput> pulled = {
+      MakeInput(Eigen::Vector3d(-0.4 - 0.75, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.4 - 0.75, 0.0, -5.0), kOpposingNormal)};
   const PullEstimate& out = est.Update(pulled, kPlaneNormal, kDt);
   EXPECT_NEAR(out.force_raw.x(), 1.5, 1e-12);
 
@@ -301,8 +314,9 @@ TEST(PullForceEstimator, DecayOnContactLoss) {
   params.decay_time_constant_s = 0.1;
   est.Init(PinchConfigs(), params);
 
-  const std::vector<PullContactInput> pulling = {MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0)),
-                                                 MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0))};
+  const std::vector<PullContactInput> pulling = {
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0), kOpposingNormal)};
   const PullEstimate& settled = RunTicks(est, pulling, 1000);
   ASSERT_TRUE(settled.valid);
   const double settled_mag = settled.magnitude;
@@ -329,8 +343,9 @@ TEST(PullForceEstimator, DirectionalProjection) {
   est.Init(PinchConfigs(), DefaultParams());
   est.SetPullDirection(Eigen::Vector3d(2.0, 0.0, 0.0));  // normalized internally
 
-  const std::vector<PullContactInput> pulling = {MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0)),
-                                                 MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0))};
+  const std::vector<PullContactInput> pulling = {
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0), kOpposingNormal)};
   const PullEstimate& out = RunTicks(est, pulling, 1000);
   ASSERT_TRUE(out.valid);
   EXPECT_NEAR(out.directional, 1.5, 1e-6);
@@ -344,6 +359,45 @@ TEST(PullForceEstimator, DirectionalProjection) {
   EXPECT_EQ(disabled.directional, 0.0);
 }
 
+// ── 13. Per-tick contact normal drives the gate (not a body-fixed axis) ─────
+TEST(PullForceEstimator, PerTickNormalDrivesGate) {
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  PullContactConfig cfg = MakeConfig();
+  cfg.contact_on_threshold = 1.0;
+  cfg.contact_off_threshold = 0.4;
+  est.Init(std::vector<PullContactConfig>{cfg}, params);
+
+  // Same +5 z force. With normal -z the compression f_n = 5 → contact engages.
+  est.Update(std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal)},
+             kPlaneNormal, kDt);
+  EXPECT_TRUE(est.contact_active(0));
+
+  // Rotate the per-tick normal to +x (⊥ the force): f_n = 0 → disengages. The
+  // gate follows the supplied normal, proving it is not a body-fixed axis.
+  est.Update(std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0),
+                                                     Eigen::Vector3d::UnitX())},
+             kPlaneNormal, kDt);
+  EXPECT_FALSE(est.contact_active(0));
+}
+
+// ── 14. Degenerate per-tick contact normal skips the contact ────────────────
+TEST(PullForceEstimator, DegenerateContactNormalSkipsContact) {
+  PullForceEstimator est;
+  est.Init(PinchConfigs(), DefaultParams());
+
+  std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -5.0), kOpposingNormal)};
+  // Zero normal on the index (e.g. missing FK positions) → that contact is
+  // unusable this tick → only one active contact → invalid.
+  inputs[1].contact_normal = Eigen::Vector3d::Zero();
+  const PullEstimate& out = est.Update(inputs, kPlaneNormal, kDt);
+  EXPECT_EQ(out.valid_contact_count, 1);
+  EXPECT_FALSE(out.valid);
+}
+
 // ── Bonus: Init validation rejects ill-formed configs ────────────────────────
 TEST(PullForceEstimator, InitRejectsInvalidConfig) {
   PullForceEstimator est;
@@ -351,14 +405,15 @@ TEST(PullForceEstimator, InitRejectsInvalidConfig) {
 
   EXPECT_THROW(est.Init({}, params), std::invalid_argument);
 
-  PullContactConfig degenerate_normal = MakeConfig(Eigen::Vector3d::Zero());
-  EXPECT_THROW(est.Init(std::vector<PullContactConfig>{degenerate_normal}, params),
-               std::invalid_argument);
-
-  PullContactConfig bad_hysteresis = MakeConfig(Eigen::Vector3d::UnitZ());
+  PullContactConfig bad_hysteresis = MakeConfig();
   bad_hysteresis.contact_on_threshold = 0.2;
   bad_hysteresis.contact_off_threshold = 0.5;  // on <= off
   EXPECT_THROW(est.Init(std::vector<PullContactConfig>{bad_hysteresis}, params),
+               std::invalid_argument);
+
+  PullContactConfig bad_saturation = MakeConfig();
+  bad_saturation.force_saturation = 0.0;  // must be > 0
+  EXPECT_THROW(est.Init(std::vector<PullContactConfig>{bad_saturation}, params),
                std::invalid_argument);
 
   PullEstimatorParams bad_min = params;

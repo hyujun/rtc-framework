@@ -89,3 +89,72 @@ demo_shared:
       ring:
         q_open:  [0.0]
         q_close: [45.0]
+
+  # ── In-plane pull-force estimator (#167) ────────────────────────────────────
+  # Quasi-static external pull on a pinched flat object, from per-fingertip
+  # 3-axis forces:  F̂ = -P∥(Σ R_i·C_i(f_i - b_i)·sign + m·g),  P∥ = I - n·nᵀ.
+  # Reference frame = robot base (fingertip FK rotations are T_base_fingertip).
+  # Key names mirror rtc::grasp::{PullEstimatorParams, PullContactConfig};
+  # sample_rate_hz is set from the controller's control_rate at build time.
+  # p1b hand = force-only inference lane (stride 7); sensor-lane order
+  # [thumb,index,middle,ring] matches the tree-model tip_links order, so
+  # fingertip_data_[f] ↔ fingertip_rotations_[f] pair correctly (Stage A-3).
+  pull_estimator:
+    enabled: true
+
+    # Filtering / validity
+    filter_cutoff_hz: 5.0        # [Hz] Bessel LPF on the in-plane estimate
+    min_valid_contacts: 2        # 2 suffice for [Fx,Fy]; 3rd adds averaging
+    decay_time_constant_s: 0.1   # [s] bounded decay on invalid ticks (no hard zero)
+
+    # Diagnostics
+    slip_risk_threshold: 1.0     # friction utilization ≥ this ⇒ slip_risk
+    alignment_error_rad: 0.035   # [rad] δθ for grip→in-plane leakage bound (~2°)
+
+    # Gravity model: m·g in base frame [N]. Keep zero while
+    # use_baseline_subtraction is on — the grasp-time baseline snapshot removes
+    # in-plane gravity AND constant calibration residual in one shot.
+    gravity_force: [0.0, 0.0, 0.0]
+    use_baseline_subtraction: true
+
+    # Plane normal source: "fixed" (plane_normal below, base frame) or
+    # "pinch_geometry" (n = (p_index/middle midpoint − p_thumb)/‖·‖ per tick).
+    plane_normal_source: "pinch_geometry"
+    plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
+
+    # Optional known pull direction (base frame) → directional scalar F_d
+    # output; more noise-robust than |F̂| for force-gauge experiments.
+    # pull_direction: [1.0, 0.0, 0.0]
+
+    # Grasp-mode required roles: these tips must be in contact (post-hysteresis)
+    # for a valid estimate — index+middle without thumb is NOT a pinch.
+    required_roles: ["thumb"]
+
+    # Per-tip contact model. Order = PullContactInput order in the controllers.
+    # link resolves the FK slot against the tree-model tip_links (_base.yaml:
+    # l_<finger>_tip_bracket). The per-contact gate/diagnostic normal is derived
+    # per tick from pinch geometry (±plane normal, thumb opposing) — no per-tip
+    # normal here, so it tracks the grasp axis rather than a body-fixed fingertip
+    # axis (correct for hemispherical tips). force_sign / force_bias /
+    # force_calibration keep their defaults (-1 / 0 / I): the wire contract is
+    # env-on-fingertip, link frame, sensor extrinsic baked into the publisher.
+    tips:
+      tip_names: ["thumb", "index", "middle"]
+      thumb:
+        link: "l_thumb_tip_bracket"
+        friction_coeff: 0.7
+        force_saturation: 25.0     # [N] per-axis |raw| ≥ this ⇒ contact gated out
+        contact_on_threshold: 0.5  # [N] normal-force hysteresis ON
+        contact_off_threshold: 0.2 # [N] normal-force hysteresis OFF
+      index:
+        link: "l_index_tip_bracket"
+        friction_coeff: 0.7
+        force_saturation: 25.0
+        contact_on_threshold: 0.5
+        contact_off_threshold: 0.2
+      middle:
+        link: "l_middle_tip_bracket"
+        friction_coeff: 0.7
+        force_saturation: 25.0
+        contact_on_threshold: 0.5
+        contact_off_threshold: 0.2
