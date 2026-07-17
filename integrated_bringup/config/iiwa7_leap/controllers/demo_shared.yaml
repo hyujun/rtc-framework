@@ -24,3 +24,80 @@ demo_shared:
   # demo_shared_config.cpp:234-239 → grasp_controller_ = nullptr when
   # type != "force_pi". demo_joint/task hot paths gate on nullptr.
   grasp_controller_type: "none"
+
+  # ── In-plane pull-force estimator (#167) ────────────────────────────────────
+  # Quasi-static external pull on a pinched flat object, from per-fingertip
+  # 3-axis forces:  F̂ = -P∥(Σ R_i·C_i(f_i - b_i)·sign + m·g),  P∥ = I - n·nᵀ.
+  # Reference frame = robot base (fingertip FK rotations are T_base_fingertip).
+  # Key names mirror rtc::grasp::{PullEstimatorParams, PullContactConfig};
+  # sample_rate_hz is set from the controller's control_rate at build time.
+  #
+  # SIM-ONLY: the real LEAP hand has no fingertip force/tactile stack; the
+  # 3-axis force here comes from MuJoCo contact wrench (sim.yaml
+  # fingertip_wrench_topics). On real hardware the force lane is invalid, so
+  # the estimate stays invalid and bounded-decays — safe, just inert.
+  # The wrench-lane order was reordered to thumb→index→middle→ring (sim.yaml)
+  # so sensor-lane slot f pairs with tip_links[f] FK (Stage A-3 contract);
+  # a naive lane order would attribute one finger's force to another's pose.
+  pull_estimator:
+    enabled: true
+
+    # Filtering / validity
+    filter_cutoff_hz: 5.0        # [Hz] Bessel LPF on the in-plane estimate
+    min_valid_contacts: 2        # 2 suffice for [Fx,Fy]; 3rd adds averaging
+    decay_time_constant_s: 0.1   # [s] bounded decay on invalid ticks (no hard zero)
+
+    # Diagnostics
+    slip_risk_threshold: 1.0     # friction utilization ≥ this ⇒ slip_risk
+    alignment_error_rad: 0.035   # [rad] δθ for grip→in-plane leakage bound (~2°)
+
+    # Gravity model: m·g in base frame [N]. Keep zero while
+    # use_baseline_subtraction is on — the grasp-time baseline snapshot removes
+    # in-plane gravity AND constant calibration residual in one shot.
+    gravity_force: [0.0, 0.0, 0.0]
+    use_baseline_subtraction: true
+
+    # Plane normal source: "fixed" (plane_normal below, base frame) or
+    # "pinch_geometry" (n = (p_index/middle midpoint − p_thumb)/‖·‖ per tick).
+    # LEAP is a 4-finger hand; this treats thumb-vs-index/middle as a flat
+    # pinch (ring ignored). Switch to "fixed" if a full-grasp normal is known.
+    plane_normal_source: "pinch_geometry"
+    plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
+
+    # Optional known pull direction (base frame) → directional scalar F_d
+    # output; more noise-robust than |F̂| for force-gauge experiments.
+    # pull_direction: [1.0, 0.0, 0.0]
+
+    # Grasp-mode required roles: these tips must be in contact (post-hysteresis)
+    # for a valid estimate — index+middle without thumb is NOT a pinch.
+    required_roles: ["thumb"]
+
+    # Per-tip contact model. Order = PullContactInput order in the controllers.
+    # link resolves the FK slot against the tree-model tip_links (sim.yaml:
+    # <finger>_tip_head). contact_normal_local = outward object normal at the
+    # contact, fingertip link frame — initial estimate pending MuJoCo known-
+    # wrench validation. force_sign / force_bias / force_calibration keep their
+    # defaults (-1 / 0 / I): the wire contract is env-on-fingertip, link frame.
+    tips:
+      tip_names: ["thumb", "index", "middle"]
+      thumb:
+        link: "thumb_tip_head"
+        contact_normal_local: [0.0, 0.0, 1.0]
+        friction_coeff: 0.7
+        force_saturation: 25.0     # [N] per-axis |raw| ≥ this ⇒ contact gated out
+        contact_on_threshold: 0.5  # [N] normal-force hysteresis ON
+        contact_off_threshold: 0.2 # [N] normal-force hysteresis OFF
+      index:
+        link: "index_tip_head"
+        contact_normal_local: [0.0, 0.0, 1.0]
+        friction_coeff: 0.7
+        force_saturation: 25.0
+        contact_on_threshold: 0.5
+        contact_off_threshold: 0.2
+      middle:
+        link: "middle_tip_head"
+        contact_normal_local: [0.0, 0.0, 1.0]
+        friction_coeff: 0.7
+        force_saturation: 25.0
+        contact_on_threshold: 0.5
+        contact_off_threshold: 0.2
