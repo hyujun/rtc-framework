@@ -108,55 +108,34 @@ def _reject_quotes(**fields: str) -> None:
             raise ValueError(f"embedded double quote disallowed in {key}={value!r}")
 
 
-def _pgrep_pattern(process_grep: str) -> str:
-    """Bracket the first character so ``pgrep -f`` never matches the launch's
-    own helper.
+def _comm_pattern(process_grep: str) -> str:
+    """The process *comm* (kernel thread name) for ``process_grep``.
 
-    These actions run as ``bash -c '… pgrep -nf "<process_grep>" …'``, so the
-    helper's *own* command line contains ``<process_grep>`` verbatim. ``pgrep
-    -f`` matches full command lines, and ``-n`` returns the newest — the
-    just-spawned helper — so a bare pattern resolves to the wrapper bash (which
-    then exits) instead of the target node. On NUC13 this made ``adopt`` move a
-    transient bash into the shield while the real controller stayed in "system"
-    and its RT pins EINVAL'd (issue #151); the DDS co-pin hit the same wall.
-
-    Wrapping the first char as a regex class — ``integrated_rt_controller`` ->
-    ``[i]ntegrated_rt_controller`` — is the classic ``ps | grep '[p]attern'``
-    trick: the regex still matches the real process's literal command line, but
-    the helper's command line now contains the *bracketed* text, which the
-    regex does not match. So every pgrep-based helper excludes itself and its
-    siblings, leaving only the true target.
+    ``comm`` is the executable basename truncated to ``TASK_COMM_LEN - 1`` = 15
+    chars (``integrated_rt_controller`` -> ``integrated_rt_c``). Callers pass the
+    executable name, so the comm is its 15-char prefix.
     """
-    if not process_grep:
-        return process_grep
-    return f"[{process_grep[0]}]{process_grep[1:]}"
+    return process_grep[:15]
 
 
 def _resolve_pid_snippet(process_grep: str) -> str:
     """Bash that leaves the target *node's* PID in ``$PID`` (empty if absent).
 
-    ``pgrep -nf`` alone is not enough. The bracket trick (:func:`_pgrep_pattern`)
-    stops the pattern from matching itself, but the launch helper's command line
-    *also* carries the raw process name in its human-readable ``label`` / warning
-    strings (e.g. ``"integrated_rt_controller not found …"``), so ``pgrep -f``
-    still matches the wrapper bash through that occurrence and ``-n`` returns it —
-    a shell, not the node (issue #151: adopt moved ``comm='bash'``).
+    Match on ``comm`` (``pgrep -nx``), NOT the command line (``pgrep -f``). Every
+    cmdline-based approach self-matched on NUC13 (issue #151): the launch helper
+    runs as ``bash -c '… <name> …'`` and carries the raw process name in its
+    ``pgrep`` arg AND its label / warning strings, so ``pgrep -f`` matched the
+    wrapper bash (and its transient ``$(…)`` sub-shell forks, which then exited
+    before the move) instead of the node. Bracketing the pattern fixed the pgrep
+    arg but not the label; a comm filter still raced the sub-shell forks.
 
-    So: enumerate every match, then keep the newest whose ``/proc/<pid>/comm`` is
-    not a shell or the shield script. The real node's comm is the (truncated)
-    executable name (``integrated_rt_c``); every self-/sibling-match is ``bash``.
-    The comm filter is the load-bearing guard; the bracketed pattern just trims
-    the candidate set.
+    ``comm`` sidesteps all of it: the node's comm is the truncated exec name
+    (``integrated_rt_c``); every wrapper / fork is ``bash`` / ``sh`` / ``pgrep`` /
+    ``cat``, none of which equals the target comm. ``-x`` demands an exact comm
+    match and ``-n`` takes the newest, so only the real node is ever returned.
     """
-    pat = _pgrep_pattern(process_grep)
-    return (
-        'PID=""; '
-        f'for _p in $(pgrep -f "{pat}" 2>/dev/null); do '
-        '  _c=$(cat "/proc/$_p/comm" 2>/dev/null || echo ""); '
-        '  case "$_c" in bash|sh|dash|cpu_shield.sh) continue ;; esac; '
-        '  PID="$_p"; '
-        "done; "
-    )
+    comm = _comm_pattern(process_grep)
+    return f'PID=$(pgrep -nx "{comm}" 2>/dev/null); '
 
 
 def _skip_action(message: str) -> ExecuteProcess:
