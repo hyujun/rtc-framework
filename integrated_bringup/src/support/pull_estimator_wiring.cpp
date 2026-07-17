@@ -69,11 +69,13 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
     }
   }
 
-  if (cfg.pull_plane_normal_source == PullPlaneNormalSource::kPinchGeometry &&
-      w.thumb_contact < 0) {
+  if (w.thumb_contact < 0) {
+    // The per-contact gate normal is derived from pinch topology (thumb is the
+    // opposing finger, ±plane normal), so a 'thumb' role is mandatory for any
+    // plane_normal_source — not just pinch_geometry.
     throw std::runtime_error(
-        "pull_estimator: plane_normal_source 'pinch_geometry' requires a 'thumb' role in "
-        "tips.tip_names");
+        "pull_estimator: a 'thumb' role in tips.tip_names is required (per-contact normal is "
+        "derived from the thumb-opposition axis)");
   }
 
   w.num_contacts = n;
@@ -106,6 +108,19 @@ const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool
       normal = opposing / static_cast<double>(n_opposing) -
                w.positions[static_cast<std::size_t>(w.thumb_contact)];
     }
+  }
+
+  // Per-contact gate/diagnostic normal = signed pinch-plane normal: the thumb's
+  // outward object normal points opposite the opposing fingers'. This tracks the
+  // grasp axis (FK), not a body-fixed fingertip axis — correct for hemispherical
+  // tips whose contact point migrates. Degenerate normal (missing thumb/opposing
+  // positions) ⇒ zero, and Update skips those contacts.
+  const double gate_norm = normal.norm();
+  const Eigen::Vector3d n_hat =
+      (gate_norm >= 1e-9) ? Eigen::Vector3d(normal / gate_norm) : Eigen::Vector3d::Zero();
+  for (int k = 0; k < w.num_contacts; ++k) {
+    const auto idx = static_cast<std::size_t>(k);
+    w.inputs[idx].contact_normal = (k == w.thumb_contact) ? Eigen::Vector3d(-n_hat) : n_hat;
   }
 
   // Baseline snapshot arms on grasp establishment (rising edge) — captures on

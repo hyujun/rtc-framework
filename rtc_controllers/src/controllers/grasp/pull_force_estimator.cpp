@@ -41,9 +41,6 @@ void PullForceEstimator::Init(std::span<const PullContactConfig> configs,
   }
 
   for (const PullContactConfig& cfg : configs) {
-    if (cfg.contact_normal_local.norm() < kDegenerateNorm) {
-      throw std::invalid_argument("PullForceEstimator: contact_normal_local is degenerate");
-    }
     if (!(cfg.contact_on_threshold > cfg.contact_off_threshold) ||
         !(cfg.contact_off_threshold > 0.0)) {
       throw std::invalid_argument("PullForceEstimator: hysteresis requires on > off > 0 [N]");
@@ -61,9 +58,7 @@ void PullForceEstimator::Init(std::span<const PullContactConfig> configs,
 
   num_contacts_ = static_cast<int>(configs.size());
   for (int i = 0; i < num_contacts_; ++i) {
-    auto& cfg = configs_[static_cast<std::size_t>(i)];
-    cfg = configs[static_cast<std::size_t>(i)];
-    cfg.contact_normal_local.normalize();
+    configs_[static_cast<std::size_t>(i)] = configs[static_cast<std::size_t>(i)];
   }
   params_ = params;
   sin_alignment_error_ = std::sin(params.alignment_error_rad);
@@ -150,7 +145,19 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
       // Wire contract → finger-on-object, common reference frame.
       const Eigen::Vector3d f_obj =
           cfg.force_sign * (in.rotation * (cfg.force_calibration * (in.force - cfg.force_bias)));
-      const Eigen::Vector3d n_contact = in.rotation * cfg.contact_normal_local;
+
+      // Per-tick contact normal, already in the reference frame (FK-resolved by
+      // the caller from pinch geometry — not a body-fixed axis). Degenerate or
+      // non-finite ⇒ this contact is unusable this tick: reset hysteresis, skip.
+      const double cn_norm = in.contact_normal.norm();
+      if (!(std::isfinite(cn_norm) && cn_norm >= kDegenerateNorm)) {
+        contact_active_[idx] = false;
+        if (cfg.required) {
+          required_missing = true;
+        }
+        continue;
+      }
+      const Eigen::Vector3d n_contact = in.contact_normal / cn_norm;
 
       // Compression positive: n_contact points from object into the finger.
       const double f_n = -n_contact.dot(f_obj);

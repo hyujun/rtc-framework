@@ -36,11 +36,6 @@ struct PullContactConfig {
   /// Multiplied after calibration. -1 converts the wire contract
   /// (env-on-fingertip) to finger-on-object.
   double force_sign{-1.0};
-  /// n_i — contact normal in the fingertip *link* frame, pointing from the
-  /// object surface into the finger (outward object normal at the contact).
-  /// Compression (finger pushing the object) then has f_n = -n·f_obj > 0.
-  /// Normalized at Init; must not be near-zero.
-  Eigen::Vector3d contact_normal_local{Eigen::Vector3d::UnitZ()};
   /// mu_i — Coulomb friction coefficient for slip-ratio diagnostics.
   double friction_coeff{0.7};
   /// Contact hysteresis on normal force f_n [N]: ON above on-threshold,
@@ -85,6 +80,15 @@ struct PullContactInput {
   Eigen::Matrix3d rotation{Eigen::Matrix3d::Identity()};
   /// Raw force, link frame, env-on-fingertip sign (wire contract) [N].
   Eigen::Vector3d force{Eigen::Vector3d::Zero()};
+  /// n_i — outward object normal at the contact, in the *common reference*
+  /// frame (already FK-resolved by the caller), pointing from the object
+  /// surface into the finger. Compression then has f_n = -n·f_obj > 0. Drives
+  /// the contact hysteresis and slip/leakage diagnostics only — NOT the pull
+  /// estimate, which projects on the plane normal. For a pinch the caller sets
+  /// it from FK geometry (±plane normal), so it tracks the grasp axis rather
+  /// than a body-fixed fingertip axis — correct for hemispherical tips whose
+  /// contact point migrates. Degenerate/non-finite ⇒ this contact is skipped.
+  Eigen::Vector3d contact_normal{Eigen::Vector3d::Zero()};
   /// Controller-side gate: finite + fresh sensor. false ⇒ this contact is
   /// skipped and its hysteresis state resets (invalid sensor policy).
   bool valid{false};
@@ -142,9 +146,9 @@ class PullForceEstimator {
   PullForceEstimator() = default;
 
   /// Validate configs/params and precompute filter coefficients (non-RT).
-  /// Throws std::invalid_argument on: empty/oversized configs, non-unit-able
-  /// contact normal, on <= off or off <= 0 hysteresis, non-positive
-  /// saturation/friction/decay/min-contacts, or bad filter rates.
+  /// Throws std::invalid_argument on: empty/oversized configs, on <= off or
+  /// off <= 0 hysteresis, non-positive saturation/friction/decay/min-contacts,
+  /// or bad filter rates.
   void Init(std::span<const PullContactConfig> configs, const PullEstimatorParams& params);
 
   /// Per-tick update on the RT thread. `inputs` follows Init() config order

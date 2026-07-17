@@ -74,29 +74,27 @@ demo_shared:
 
     # Per-tip contact model. Order = PullContactInput order in the controllers.
     # link resolves the FK slot against the tree-model tip_links (sim.yaml:
-    # <finger>_tip_head). contact_normal_local = outward object normal at the
-    # contact, fingertip link frame — initial estimate pending MuJoCo known-
-    # wrench validation. force_sign / force_bias / force_calibration keep their
-    # defaults (-1 / 0 / I): the wire contract is env-on-fingertip, link frame.
+    # <finger>_tip_head). The per-contact gate/diagnostic normal is derived per
+    # tick from pinch geometry (±plane normal, thumb opposing) — no per-tip
+    # normal here, so it tracks the grasp axis rather than a body-fixed fingertip
+    # axis. force_sign / force_bias / force_calibration keep their defaults
+    # (-1 / 0 / I): the wire contract is env-on-fingertip, link frame.
     tips:
       tip_names: ["thumb", "index", "middle"]
       thumb:
         link: "thumb_tip_head"
-        contact_normal_local: [0.0, 0.0, 1.0]
         friction_coeff: 0.7
         force_saturation: 25.0     # [N] per-axis |raw| ≥ this ⇒ contact gated out
         contact_on_threshold: 0.5  # [N] normal-force hysteresis ON
         contact_off_threshold: 0.2 # [N] normal-force hysteresis OFF
       index:
         link: "index_tip_head"
-        contact_normal_local: [0.0, 0.0, 1.0]
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5
         contact_off_threshold: 0.2
       middle:
         link: "middle_tip_head"
-        contact_normal_local: [0.0, 0.0, 1.0]
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5

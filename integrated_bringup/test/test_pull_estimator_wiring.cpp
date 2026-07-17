@@ -30,9 +30,11 @@ constexpr double kDt = 1.0 / kRateHz;
 const std::vector<std::string> kTipLinks = {"thumb_tip_link", "index_tip_link", "middle_tip_link",
                                             "ring_tip_link"};
 
-// Minimal production-shaped pull_estimator block. contact normals point from
-// the object into each finger: thumb below (-z), index/middle above (+z), so
-// an opposing squeeze cancels and f_n is positive for both signs.
+// Minimal production-shaped pull_estimator block. The per-contact gate normal
+// is derived per tick from the (signed) plane normal: thumb gets -n, the
+// opposing fingers +n, so an opposing squeeze cancels and f_n is positive for
+// both. With plane_normal [0,0,1] this reproduces the old thumb-below (-z),
+// index/middle-above (+z) convention.
 DemoSharedConfig MakeSharedConfig(const std::string& extra_yaml = "") {
   const std::string yaml = R"(
 demo_shared:
@@ -46,15 +48,12 @@ demo_shared:
       tip_names: ["thumb", "index", "middle"]
       thumb:
         link: "thumb_tip_link"
-        contact_normal_local: [0.0, 0.0, -1.0]
         force_sign: 1.0
       index:
         link: "index_tip_link"
-        contact_normal_local: [0.0, 0.0, 1.0]
         force_sign: 1.0
       middle:
         link: "middle_tip_link"
-        contact_normal_local: [0.0, 0.0, 1.0]
         force_sign: 1.0
 )" + extra_yaml;
   DemoSharedConfig cfg;
@@ -137,12 +136,34 @@ TEST(PullEstimatorWiring, ConfigureStaysDisabledWithoutLinksOrBlock) {
   EXPECT_FALSE(w.enabled());
 }
 
-TEST(PullEstimatorWiring, ConfigureThrowsOnPinchGeometryWithoutThumb) {
-  DemoSharedConfig cfg = MakeSharedConfig();
-  cfg.pull_plane_normal_source = integrated_bringup::PullPlaneNormalSource::kPinchGeometry;
-  cfg.pull_tip_roles[0] = "palm";  // no "thumb" role anywhere
+TEST(PullEstimatorWiring, ConfigureThrowsWithoutThumbRole) {
+  // The per-contact gate normal is derived from the thumb-opposition axis, so a
+  // 'thumb' role is mandatory for BOTH plane_normal sources.
+  for (const auto source : {integrated_bringup::PullPlaneNormalSource::kPinchGeometry,
+                            integrated_bringup::PullPlaneNormalSource::kFixed}) {
+    DemoSharedConfig cfg = MakeSharedConfig();
+    cfg.pull_plane_normal_source = source;
+    cfg.pull_tip_roles[0] = "palm";  // no "thumb" role anywhere
+    PullEstimatorWiring w;
+    EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w), std::runtime_error);
+  }
+}
+
+TEST(PullEstimatorWiring, DerivesSignedPinchNormalPerContact) {
+  const DemoSharedConfig cfg = MakeSharedConfig();  // fixed plane_normal [0,0,1]
   PullEstimatorWiring w;
-  EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w), std::runtime_error);
+  ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  StagePinchInputs(w, Eigen::Vector3d(1.0, 0.0, 0.0));
+  (void)UpdatePullEstimator(w, /*grasp_detected=*/true, kDt);
+
+  // Thumb normal = -plane_normal; opposing fingers = +plane_normal. This is the
+  // FK-derived gate normal, independent of the (identity here) fingertip
+  // rotation — the fix that lets it track the grasp axis on hemispherical tips.
+  EXPECT_NEAR((w.inputs[0].contact_normal - Eigen::Vector3d(0.0, 0.0, -1.0)).norm(), 0.0, 1e-9);
+  EXPECT_NEAR((w.inputs[1].contact_normal - Eigen::Vector3d(0.0, 0.0, 1.0)).norm(), 0.0, 1e-9);
+  EXPECT_NEAR((w.inputs[2].contact_normal - Eigen::Vector3d(0.0, 0.0, 1.0)).norm(), 0.0, 1e-9);
 }
 
 TEST(PullEstimatorWiring, FixedNormalInPlanePull) {

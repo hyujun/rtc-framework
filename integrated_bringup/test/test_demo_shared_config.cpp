@@ -403,7 +403,6 @@ pull_estimator:
     tip_names: ["thumb", "index", "middle"]
     thumb:
       link: "thumb_tip_link"
-      contact_normal_local: [0.0, 1.0, 0.0]
       friction_coeff: 0.6
       force_saturation: 30.0
       contact_on_threshold: 0.7
@@ -440,7 +439,6 @@ pull_estimator:
   EXPECT_EQ(cfg.pull_tip_links[2], "middle_tip_link");
 
   const auto& thumb = cfg.pull_contacts[0];
-  EXPECT_DOUBLE_EQ(thumb.contact_normal_local.y(), 1.0);
   EXPECT_DOUBLE_EQ(thumb.friction_coeff, 0.6);
   EXPECT_DOUBLE_EQ(thumb.force_saturation, 30.0);
   EXPECT_DOUBLE_EQ(thumb.contact_on_threshold, 0.7);
@@ -516,11 +514,11 @@ pull_estimator:
   tips:
     tip_names: ["thumb", "index", "middle"]
     thumb:
-      contact_normal_local: [0.0, 0.0, 1.0]
+      link: "thumb_tip_link"
     index:
-      contact_normal_local: [0.0, 0.0, 1.0]
+      link: "index_tip_link"
     middle:
-      contact_normal_local: [0.0, 0.0, 1.0]
+      link: "middle_tip_link"
 )YAML");
 }
 
