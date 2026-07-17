@@ -458,6 +458,24 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── Phase 2 (unified kin&dyn): arm TCP cache-vs-arm_handle equivalence ───────
+  # Proves the WBC controller's clik_tcp/clik_base cache oMf equals the arm-only
+  # arm_handle_ FK it replaces in FillLog/FillPublish/ComputeTcpError, on both
+  # the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
+  ament_add_gtest(test_wbc_arm_tcp_cache_equivalence
+    test/test_wbc_arm_tcp_cache_equivalence.cpp)
+  target_link_libraries(test_wbc_arm_tcp_cache_equivalence
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_arm_tcp_cache_equivalence
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── Device backend registration smoke test ─────────────────────────────────
   # Confirms the 3 backend TUs (mujoco_native / ur_driver_native /
   # udp_hand_native) static-init through --whole-archive and reach the

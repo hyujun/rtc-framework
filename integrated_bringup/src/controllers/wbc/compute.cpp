@@ -743,14 +743,21 @@ void DemoWbcController::FillDeviceTrajectoryPods(rtc::DeviceOutput& out, int num
   }
 }
 
-// Shared TCP FK → task-space pods: fills actual_task_positions + task_goal_positions
-// from the current arm FK (caller ensures FK fresh; arm_handle_ non-null). Returns
-// the TCP SE3 so the publish path can reuse it for arm_tip_pose.
+// Shared TCP → task-space pods: fills actual_task_positions + task_goal_positions
+// from the shared PinocchioCache's clik_tcp/clik_base registered-frame oMf
+// (#unified-kindyn Phase 2). Replaces the arm-only arm_handle_ FK recompute —
+// value-identical on serial arms and on the closed-chain arm TCP (upstream of
+// the hand loop), proven by test_wbc_arm_tcp_cache_equivalence. Precondition:
+// clik_tcp_frame_idx_ >= 0 (guaranteed on the activated path via InitClik +
+// on_configure gate) and cache.Update ran this TSID tick. Returns the TCP SE3
+// so the publish path can reuse it for arm_tip_pose.
 pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::FillTaskPosePods");
-  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+  pinocchio::SE3 tcp =
+      pinocchio_cache_.registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
+  if (clik_base_frame_idx_ >= 0) {
+    tcp = pinocchio_cache_.registered_frames[static_cast<std::size_t>(clik_base_frame_idx_)]
+              .oMf.actInv(tcp);
   }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
@@ -811,10 +818,10 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
   const int nc0 = dev0.num_channels;
   FillDeviceTrajectoryPods(output.devices[0], nc0, robot_computed_, 0);
 
-  // FK + actual_task_positions + task_goal_positions (log POD reads both).
-  if (arm_handle_) {
-    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-    arm_handle_->ComputeForwardKinematics(q_span);
+  // actual_task_positions + task_goal_positions from the shared cache oMf (log
+  // POD reads both). #unified-kindyn Phase 2: no arm_handle_ FK recompute here —
+  // cache.Update already produced clik_tcp/clik_base oMf this TSID tick.
+  if (clik_tcp_frame_idx_ >= 0) {
     FillTaskPosePods(output);
   }
 
@@ -885,7 +892,9 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
   }
   FillDeviceTrajectoryPods(out0, nc0, robot_computed_, 0);
 
-  if (arm_handle_) {
+  // #unified-kindyn Phase 2: arm TCP from the shared cache oMf (clik_tcp/base),
+  // not an arm_handle_ FK recompute. clik_tcp_frame_idx_ >= 0 ⇒ arm model present.
+  if (clik_tcp_frame_idx_ >= 0) {
     const pinocchio::SE3 tcp = FillTaskPosePods(output);
 
     // TF source: arm tip.
@@ -1086,10 +1095,17 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
 }
 
 double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept {
-  if (!arm_handle_) {
+  // #unified-kindyn Phase 2: world tip from the shared cache clik_tcp oMf — the
+  // exact value arm_handle_->GetFramePlacement(tip_frame_id_) produced. UpdatePhase
+  // (this caller) runs before the same-tick cache.Update, so it reads the previous
+  // tick's oMf — the SAME one-tick lag the old path had (it read arm_handle_ FK
+  // last refreshed by the previous tick's FillLogOutput). target (tcp_goal_) is
+  // compared in the same world frame as before (no base actInv here).
+  if (clik_tcp_frame_idx_ < 0) {
     return 1e10;
   }
-  const pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3& tcp =
+      pinocchio_cache_.registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
   return (tcp.translation() - target.translation()).norm();
 }
 
