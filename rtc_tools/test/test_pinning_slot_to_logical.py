@@ -228,8 +228,10 @@ def test_adopt_snippet_resolves_pid_and_calls_cpu_shield():
         "integrated_rt_controller", "integrated_rt_controller"
     )
     snippet = action.cmd[2][0].text
-    # Bracketed first char so pgrep never matches the launch's own helper (#151).
-    assert 'PID=$(pgrep -nf "[i]ntegrated_rt_controller")' in snippet
+    # Bracketed first char + comm filter so pgrep never resolves to the launch's
+    # own wrapper bash (#151).
+    assert 'pgrep -f "[i]ntegrated_rt_controller"' in snippet
+    assert 'case "$_c" in bash|sh|dash|cpu_shield.sh) continue' in snippet
     assert '"$SHIELD" adopt "$PID"' in snippet
     # Guards: missing PID / missing script / password-required sudo all exit 0.
     assert "shield adopt skipped" in snippet
@@ -282,8 +284,14 @@ def test_pgrep_pattern_matches_target_not_wrapper():
     assert re.search(pat, helper_cmdline) is None
 
 
-def test_all_pgrep_helpers_use_bracketed_pattern():
-    """Every pgrep-based action emits the self-safe bracketed pattern, never bare."""
+def test_all_pgrep_helpers_use_bracketed_pattern_and_comm_filter():
+    """Every pgrep-based action brackets the pattern AND filters shells by comm.
+
+    The bracket alone is not enough: the helper's command line also carries the
+    raw process name in its label/warning strings, so pgrep still matches the
+    wrapper through that occurrence. The comm filter (reject bash/sh/…) is the
+    load-bearing guard — assert both are present in every emitted snippet.
+    """
     actions = [
         pinning.pin_process_to_slot("ur_ros2_driver", "ur_ros2_driver", 6),
         pinning.pin_dds_threads_to_slot("integrated_rt_controller", "integrated_rt_controller", 2),
@@ -291,4 +299,19 @@ def test_all_pgrep_helpers_use_bracketed_pattern():
     ]
     for action in actions:
         snippet = action.cmd[2][0].text
-        assert 'pgrep -nf "[' in snippet, f"bare pgrep pattern leaked: {snippet}"
+        assert 'pgrep -f "[' in snippet, f"bare pgrep pattern leaked: {snippet}"
+        assert 'case "$_c" in bash|sh|dash|cpu_shield.sh) continue' in snippet
+
+
+def test_bracket_alone_insufficient_label_still_matches():
+    """The wrapper's own command line carries the raw name in its label, so the
+    bracketed pattern DOES match it — proving the comm filter is required (#151).
+    """
+    pat = pinning._pgrep_pattern("integrated_rt_controller")
+    # Real adopt helper command line: bracketed in the pgrep arg, but the label
+    # appears unbracketed in the "not found" warning.
+    wrapper_cmdline = (
+        f'bash -c PID=$(pgrep -f "{pat}"); '
+        'echo "[RT] WARNING: integrated_rt_controller not found — shield adopt skipped"'
+    )
+    assert re.search(pat, wrapper_cmdline) is not None  # bracket alone fails here

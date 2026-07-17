@@ -132,6 +132,33 @@ def _pgrep_pattern(process_grep: str) -> str:
     return f"[{process_grep[0]}]{process_grep[1:]}"
 
 
+def _resolve_pid_snippet(process_grep: str) -> str:
+    """Bash that leaves the target *node's* PID in ``$PID`` (empty if absent).
+
+    ``pgrep -nf`` alone is not enough. The bracket trick (:func:`_pgrep_pattern`)
+    stops the pattern from matching itself, but the launch helper's command line
+    *also* carries the raw process name in its human-readable ``label`` / warning
+    strings (e.g. ``"integrated_rt_controller not found …"``), so ``pgrep -f``
+    still matches the wrapper bash through that occurrence and ``-n`` returns it —
+    a shell, not the node (issue #151: adopt moved ``comm='bash'``).
+
+    So: enumerate every match, then keep the newest whose ``/proc/<pid>/comm`` is
+    not a shell or the shield script. The real node's comm is the (truncated)
+    executable name (``integrated_rt_c``); every self-/sibling-match is ``bash``.
+    The comm filter is the load-bearing guard; the bracketed pattern just trims
+    the candidate set.
+    """
+    pat = _pgrep_pattern(process_grep)
+    return (
+        'PID=""; '
+        f'for _p in $(pgrep -f "{pat}" 2>/dev/null); do '
+        '  _c=$(cat "/proc/$_p/comm" 2>/dev/null || echo ""); '
+        '  case "$_c" in bash|sh|dash|cpu_shield.sh) continue ;; esac; '
+        '  PID="$_p"; '
+        "done; "
+    )
+
+
 def _skip_action(message: str) -> ExecuteProcess:
     """An action that only logs ``message`` — used for the no-pin sentinel."""
     return ExecuteProcess(
@@ -189,8 +216,8 @@ def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProc
             "bash",
             "-c",
             _resolve_slot_prelude(label, slot)
-            + f'PID=$(pgrep -nf "{_pgrep_pattern(process_grep)}"); '
-            'if [ -z "$PID" ]; then '
+            + _resolve_pid_snippet(process_grep)
+            + 'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — CPU pinning skipped"; exit 0; '
             "fi; "
             'taskset -cp "$CPU" "$PID" >/dev/null 2>&1 && '
@@ -239,9 +266,7 @@ def adopt_process_into_shield(
         cmd=[
             "bash",
             "-c",
-            f'SHIELD="{shield}"; '
-            f'PID=$(pgrep -nf "{_pgrep_pattern(process_grep)}"); '
-            'if [ -z "$PID" ]; then '
+            f'SHIELD="{shield}"; ' + _resolve_pid_snippet(process_grep) + 'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — shield adopt skipped"; exit 0; '
             "fi; "
             'if [ ! -f "$SHIELD" ]; then '
@@ -284,8 +309,8 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
             "bash",
             "-c",
             _resolve_slot_prelude(label, slot)
-            + f'PID=$(pgrep -nf "{_pgrep_pattern(process_grep)}"); '
-            'if [ -z "$PID" ]; then '
+            + _resolve_pid_snippet(process_grep)
+            + 'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — DDS thread pinning skipped"; exit 0; '
             "fi; "
             f'RTC_OWNED=" {owned} "; '
