@@ -52,6 +52,8 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 
 robot 모델이 필요한 gtest fixture 는 URDF 를 **`robot_descriptions/robots/<name>/`** (repo 체크인) 에서 해석한다. **`deps/src/...` 나 `/usr/local/...` 경로를 박지 말 것** — `build-isolated-deps` 가 CI 아티팩트에서 `deps/src` 를 삭제하고 (`deps/install` 만 업로드), `/usr/local` 은 deps 격리 정책상 부재라, 두 경로 모두 CI 에서 fixture `buildModel` throw 또는 `GTEST_SKIP` → 0 coverage 를 유발한다 (rtc_tsid/rtc_mpc/integrated_bringup 에서 실제 발현, panda.urdf vendor 로 해소). 해석 방식: compile macro (`RTC_PANDA_URDF_PATH`, CMake 가 repo-상대 `robot_descriptions` 경로 주입, env/`-D` override) 또는 `ament_index_cpp::get_package_share_directory("robot_descriptions")`.
 
+> **CI install set ≠ local — cross-package ament lookup 은 stub/mock 필수.** CI **Python Test** 잡은 `rtc_tools` / `rtc_msgs` / `rtc_digital_twin` 만 install/source 한다. `rtc_tools` 테스트가 **다른 패키지**를 `ament_index` 로 resolve 하면 (예: `get_package_share_directory("repo_scripts")` — 런치 pinning 의 `rt_common_path()` / `cpu_shield_path()`) CI 에서만 `PackageNotFoundError` 로 실패한다. **로컬은 전 패키지가 install 돼 있어 통과하므로 이 회귀는 로컬 sensor 로 안 잡힌다** (#151 에서 실제 발현). 해석 경로 자체가 아니라 렌더된 산출물(bash snippet 등)만 검증하는 테스트는 경로 헬퍼를 monkeypatch 로 stub 한다 — production 런치는 전 패키지 install 상태라 무해. (동일 축의 C++ 판이 바로 위 URDF fixture 함정.)
+
 ## Test 측정
 
 테스트 카운트·suite 목록은 박제하지 않는다 ([anti-patterns.md](anti-patterns.md) AP-DOC-1). 최신 카운트·suite 명은 직접 측정:
