@@ -42,6 +42,21 @@ _skip_no_deps = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def _stub_script_paths(monkeypatch):
+    """Render snippet-shape assertions without an installed ``repo_scripts``.
+
+    ``rt_common_path`` / ``cpu_shield_path`` resolve the installed scripts through
+    ``ament_index`` (``get_package_share_directory("repo_scripts")``). The CI
+    Python-test job installs only ``rtc_tools`` / ``rtc_msgs`` / ``rtc_digital_twin``,
+    so that lookup raises ``PackageNotFoundError``. Tests that only assert on the
+    rendered bash *structure* (not the resolved path) stub both helpers; the
+    production launch always runs with ``repo_scripts`` installed.
+    """
+    monkeypatch.setattr(pinning, "rt_common_path", lambda: "/opt/rtc/rt_common.sh")
+    monkeypatch.setattr(pinning, "cpu_shield_path", lambda: "/opt/rtc/cpu_shield.sh")
+
+
 def _add_cpu(root: Path, cpu: int, core_id: int, max_khz: int) -> None:
     d = root / "devices" / "system" / "cpu" / f"cpu{cpu}"
     (d / "topology").mkdir(parents=True, exist_ok=True)
@@ -197,7 +212,7 @@ def test_rtc_owned_names_mirror_thread_config_hpp():
     assert _thread_config_names() == pinning.RTC_OWNED_THREAD_NAMES
 
 
-def test_dds_pin_snippet_excludes_every_rtc_thread():
+def test_dds_pin_snippet_excludes_every_rtc_thread(_stub_script_paths):
     """The rendered DDS-pin command carries the full exclusion list and applies it.
 
     nrt_logging / nrt_callback are SCHED_OTHER; the pre-#163 FIFO-only filter let
@@ -218,7 +233,7 @@ def test_dds_pin_snippet_excludes_every_rtc_thread():
 # ── Shield adopt action (issue #151) ─────────────────────────────────────────
 
 
-def test_adopt_snippet_resolves_pid_and_calls_cpu_shield():
+def test_adopt_snippet_resolves_pid_and_calls_cpu_shield(_stub_script_paths):
     """The adopt action pgreps the PID and delegates the cset move to cpu_shield.sh.
 
     The cset knowledge lives in cpu_shield.sh (SSoT); the launch helper only
@@ -237,7 +252,7 @@ def test_adopt_snippet_resolves_pid_and_calls_cpu_shield():
     assert action.cmd[2][0].text.count("exit 0") >= 2
 
 
-def test_adopt_gated_toggles_use_cpu_affinity_condition():
+def test_adopt_gated_toggles_use_cpu_affinity_condition(_stub_script_paths):
     """gated=True carries the use_cpu_affinity IfCondition; gated=False drops it.
 
     A caller gating ACTIVATE on the adopt action's OnProcessExit needs it to fire
@@ -266,7 +281,7 @@ def test_comm_pattern_truncates_to_15_chars():
     assert pinning._comm_pattern("udp_hand_node") == "udp_hand_node"
 
 
-def test_all_pgrep_helpers_match_comm_not_cmdline():
+def test_all_pgrep_helpers_match_comm_not_cmdline(_stub_script_paths):
     """Every pgrep-based action resolves the PID by comm (pgrep -nx), never -f.
 
     Command-line matching self-matched the launch's own wrapper bash and its
