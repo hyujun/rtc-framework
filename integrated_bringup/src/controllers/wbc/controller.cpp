@@ -250,6 +250,10 @@ void DemoWbcController::ConfigureReducedDynamicsProvider() {
                                       builder_->GetClosureActuatedJointIds(),
                                       builder_->GetClosureReferenceConfig(), *full_model_ptr_);
   if (ok) {
+    // Phase ③: loop-하류 contact frame 을 loop-consistent J·oMf override 대상으로 판정 (non-RT).
+    // cache.Init 이 확정한 contact frame id(control 모델)를 이름→full 모델 fid 로 매핑한다.
+    wbc_reduced_dynamics_.ConfigureContactFrames(*full_model_ptr_,
+                                                 rtc::tsid::ContactFrameIds(contact_mgr_config_));
     pinocchio_cache_.reduced_provider = &wbc_reduced_dynamics_;
     RCLCPP_INFO(logger_, "[wbc] closed-chain 축약 동역학 활성 (n_a=%d) — TSID EOM M/h/g 대체",
                 wbc_reduced_dynamics_.n_a());

@@ -441,6 +441,27 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── Phase 3 (unified kin&dyn): loop-consistent contact frame J·oMf ──────────
+  # Proves WbcReducedDynamicsProvider::FillReducedFrameKinematics raises loop-
+  # downstream contact frame J/oMf to loop-consistent values (matching the
+  # non-RT converged handle, differing from frozen-loop), with L1 last-good hold
+  # / L2-zero dJv / serial byte-for-byte. Reuses rtc_urdf_bridge/test fixtures.
+  ament_add_gtest(test_wbc_contact_kinematics_loop_consistent
+    test/test_wbc_contact_kinematics_loop_consistent.cpp)
+  target_include_directories(test_wbc_contact_kinematics_loop_consistent PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_wbc_contact_kinematics_loop_consistent
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_contact_kinematics_loop_consistent
+    rclcpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── Phase 0 unified kin/dyn RT-cost benchmark (controller-unification) ──────
   # Measures per-call latency of baseline arm-only FK/Jacobian (joint/task
   # controllers today) vs unified PinocchioCache::Update on the combined

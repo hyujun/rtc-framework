@@ -138,4 +138,97 @@ bool WbcReducedDynamicsProvider::FillReducedDynamics(const Eigen::VectorXd& q,
   return true;
 }
 
+// ── Phase ③: loop-consistent contact frame kinematics ────────────────────────
+void WbcReducedDynamicsProvider::ConfigureContactFrames(
+    const pinocchio::Model& control_model,
+    const std::vector<pinocchio::FrameIndex>& contact_frame_ids) {
+  contact_frames_configured_ = false;
+  n_contacts_ = 0;
+  contact_full_fid_.clear();
+  contact_downstream_.clear();
+  contact_J_last_.clear();
+  contact_oMf_last_.clear();
+  contact_have_last_.clear();
+
+  // provider 비활성(구속 없음/좌표 미매칭)이면 override 대상 없음 → open-chain 유지.
+  if (!active_ || !handle_) {
+    return;
+  }
+
+  const std::size_t n = contact_frame_ids.size();
+  n_contacts_ = static_cast<int>(n);
+  contact_full_fid_.assign(n, 0);
+  contact_downstream_.assign(n, 0);
+  contact_oMf_last_.assign(n, pinocchio::SE3::Identity());
+  contact_have_last_.assign(n, 0);
+  contact_J_last_.resize(n);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    contact_J_last_[i] = Eigen::MatrixXd::Zero(6, n_a_);  // last-good 버퍼 사전 할당
+
+    // cache(control) 모델 frame id → 이름 → full 모델 fid. 실패 시 미매핑(open-chain).
+    const pinocchio::FrameIndex cfid = contact_frame_ids[i];
+    if (cfid >= control_model.frames.size()) {
+      continue;  // OOB frame id
+    }
+    const std::string& name = control_model.frames[cfid].name;
+    const pinocchio::FrameIndex full_fid = handle_->GetFrameId(name);
+    if (full_fid == 0) {
+      continue;  // full 모델에 없음(universe 반환) → 매핑 불가
+    }
+    contact_full_fid_[i] = full_fid;
+    // 비하류(serial 등가) frame 은 open-chain 이 정확값 → override 안 함 (byte-for-byte).
+    contact_downstream_[i] = handle_->IsFrameDownstreamOfLoop(full_fid) ? 1 : 0;
+  }
+
+  J_a_scratch_ = Eigen::MatrixXd::Zero(6, n_a_);
+  contact_frames_configured_ = true;
+}
+
+void WbcReducedDynamicsProvider::ScatterFrameJacobian(Eigen::MatrixXd& J_dst,
+                                                      const Eigen::MatrixXd& J_a) const noexcept {
+  // 핸들 독립좌표 k(J_a 열) → cache v-idx(J_dst 열). cache_v_idx_ 는 0..nv-1 의 순열이므로
+  // J_dst(6×nv) 전열이 덮인다 (nv == n_a). RT-safe: 열 대입, 재할당 없음.
+  for (int k = 0; k < n_a_; ++k) {
+    J_dst.col(cache_v_idx_[static_cast<std::size_t>(k)]) = J_a.col(k);
+  }
+}
+
+bool WbcReducedDynamicsProvider::FillReducedFrameKinematics(
+    const Eigen::VectorXd& q, const Eigen::VectorXd& v,
+    std::vector<rub::PinocchioCache::FrameCache>& contact_frames) noexcept {
+  (void)q;  // 핸들은 같은 tick 의 FillReducedDynamics 에서 이미 Update(q_a) 됨 — 재사영 없음.
+  (void)v;
+  if (!active_ || !contact_frames_configured_ || !handle_) {
+    return false;
+  }
+
+  // 같은 tick 의 핸들 사영 상태. held/singular 면 이번 tick 은 loop-untrustworthy → last-good hold
+  // (L1: open-chain frozen-loop 미주입). fresh 면 override + last-good 갱신.
+  const rub::RtClosedChainHandle::Status& st = handle_->GetStatus();
+  const bool fresh = !st.held && !st.singular;
+
+  bool any = false;
+  const std::size_t n = std::min(contact_frames.size(), static_cast<std::size_t>(n_contacts_));
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!contact_downstream_[i]) {
+      continue;  // 비하류/미매핑 → open-chain 정확값 유지 (byte-for-byte)
+    }
+    if (fresh) {
+      handle_->GetFrameJacobian(contact_full_fid_[i], pinocchio::LOCAL_WORLD_ALIGNED, J_a_scratch_);
+      contact_J_last_[i] = J_a_scratch_;
+      contact_oMf_last_[i] = handle_->GetFramePlacement(contact_full_fid_[i]);
+      contact_have_last_[i] = 1;
+    } else if (!contact_have_last_[i]) {
+      continue;  // 최초 유효 tick 이전 held/singular → open-chain (불가피)
+    }
+    // last-good(=이번 fresh 또는 직전 유효) loop-consistent J/oMf 주입. dJv=0 (L2-zero).
+    ScatterFrameJacobian(contact_frames[i].J, contact_J_last_[i]);
+    contact_frames[i].oMf = contact_oMf_last_[i];
+    contact_frames[i].dJv.setZero();
+    any = true;
+  }
+  return any;
+}
+
 }  // namespace integrated_bringup
