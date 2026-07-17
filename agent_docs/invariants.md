@@ -144,7 +144,7 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 
 | # | 규칙 | 이유 | 위반 탐지 |
 |---|------|------|-----------|
-| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Generality) | `grep -rniE '(ur5e\|6.?dof\|10.?dof\|num.?joints = [0-9])' rtc_*/` |
+| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Generality) | `grep -rniE '(ur5e\|iiwa7\|leap\|allegro\|num.?joints = [0-9])' rtc_*/` (`6.?dof`/`10.?dof` 는 SE(3) 차원 오탐이라 제외) |
 | ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | Cyclic dep / abstraction leak | `rtc_base/`가 `rtc_controllers/` include, `rtc_*/`가 `ur5e_*/` include 등 |
 | ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 새 `.cpp`에 대응하는 pure-virtual base 부재 |
 | ARCH-4 | `ur5e_*` 헤더가 `rtc_*` private 헤더 include 금지 | 경계 훼손, robot-specific leak | `grep -rn '#include "rtc_.*/src/' ur5e_*/` |
