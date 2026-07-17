@@ -174,6 +174,13 @@ driver core (`arm_driver` / `hand_driver`) 는 **별도 프로세스** 이며 SC
 launch taskset 으로 logical 10,11 (= system cpuset) 에 pin 된다 — CM 스레드가 아니라
 cset 보호 대상이 아니다.
 
+> **nrt 코어(slot 8,9)는 CM 전용이다 (issue #151).** cset exclusive cpuset 은 코어를
+> 한 cpuset 에만 넣으므로, nrt 코어가 shield 에 들어가면 그 코어에 pin 하려는 *다른
+> 프로세스* 스레드는 EINVAL 이 난다. 따라서 CM 밖 프로세스(예: `udp_hand_driver` 의
+> `UdpHandFailureDetector`)의 aux 스레드는 nrt 코어에 pin 하지 말고 `cpu_core = -1`
+> 로 자기 프로세스 affinity(=system, 자기 driver 코어)를 상속해야 한다 —
+> nrt_logging 의 SCHED_OTHER/nice 정책만 재사용하고 코어는 물려받지 않는다.
+
 **핵심: shield 는 cpuset 을 *만들기만* 한다 — CM 을 그 안으로 넣어야 pin 이 산다.**
 `cset shield --cpu` 는 기존 태스크를 `system` 으로 쓸어내고, 이후 런치되는 CM 은
 `system` 을 상속해 RT 코어에 접근 불가(EINVAL) 다. 그래서 런치는 CM 의
