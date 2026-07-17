@@ -2,7 +2,7 @@
 //   Controller-unification go/no-go input. The plan replaces the three
 //   per-controller kin/dyn paths (joint = arm-only FK, task = arm-only Jacobian,
 //   wbc = full PinocchioCache) with ONE call:
-//     rtc::tsid::PinocchioCache::Update(q, v, contacts)  on the COMBINED
+//     rtc::tsid::PinocchioCache::Update(q, v)  on the COMBINED
 //     arm+hand control model (computeAllTerms + gravity + per-frame Jacobian).
 //   "Always compute full dynamics" is only viable if the extra cost fits the RT
 //   tick budget. This harness measures, on two real robot models, the per-call
@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -113,9 +114,11 @@ struct BenchConfig {
   const char* urdf_pkg;
   const char* urdf_rel;
   bool extended;
-  const char* closure_rel;    // pkg-relative; only used when extended
-  const char* arm_submodel;   // GetReducedModel(name) — baseline arm-only model
-  const char* arm_tip_frame;  // ee / flange frame for the frame Jacobian
+  const char* closure_rel;                    // pkg-relative; only used when extended
+  const char* arm_submodel;                   // GetReducedModel(name) — baseline arm-only model
+  const char* arm_tip_frame;                  // ee / flange frame for the frame Jacobian
+  const char* root_link;                      // arm sub_model + wbc tree root link (shipped config)
+  std::array<const char*, 4> wbc_fingertips;  // wbc control-tree tip frames
   int expected_nq;
   int expected_nv;
 };
@@ -128,10 +131,10 @@ rub::ModelConfig MakeModelConfig(const BenchConfig& bc) {
     cfg.closure_yaml_path =
         ament_index_cpp::get_package_share_directory(bc.urdf_pkg) + "/" + bc.closure_rel;
   }
-  // Mirror integrated_bringup config: arm sub_model + wbc control tree.
-  // (Only the names/roots the benchmark actually consumes are populated;
-  //  PinocchioModelBuilder derives passive/mimic/loop topology from the URDF +
-  //  closure sidecar exactly as at bring-up.)
+  // Only URDF/closure paths + the fixed root joint are set here; the arm
+  // sub_model and wbc control tree (the names/roots the benchmark consumes) are
+  // wired by the caller in RunBench. PinocchioModelBuilder derives passive/mimic/
+  // loop topology from the URDF + closure sidecar exactly as at bring-up.
   return cfg;
 }
 
@@ -142,27 +145,15 @@ void RunBench(const BenchConfig& bc) {
 
   rub::ModelConfig cfg = MakeModelConfig(bc);
   // sub_models / tree_models the builder needs for GetReducedModel / GetTreeModel.
-  cfg.sub_models.push_back({bc.arm_submodel, "", ""});  // root/tip filled below per-robot
-  // Note: the reduced arm model and wbc tree require their root/tip links. We set
-  // them from the shipped config values passed via BenchConfig-adjacent literals.
-
-  // Root/tip links come straight from the shipped integrated_bringup config.
-  // iiwa7: link_0 → ee_link ; ur5e: base → tool0.
-  cfg.sub_models.back().root_link = bc.expected_nq == 23 ? "link_0" : "base";
-  cfg.sub_models.back().tip_link = bc.arm_tip_frame;
+  // Root/tip links come straight from the shipped integrated_bringup config,
+  // carried explicitly on BenchConfig (root_link / arm_tip_frame / wbc_fingertips).
+  cfg.sub_models.push_back({bc.arm_submodel, bc.root_link, bc.arm_tip_frame});
 
   // wbc control tree (arm root → 4 fingertips), mirrors the shipped config.
-  if (bc.expected_nq == 23) {
-    cfg.tree_models.push_back(
-        {"wbc",
-         "link_0",
-         {"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}});
-  } else {
-    cfg.tree_models.push_back({"wbc",
-                               "base",
-                               {"l_thumb_tip_bracket", "l_index_tip_bracket",
-                                "l_middle_tip_bracket", "l_ring_tip_bracket"}});
-  }
+  cfg.tree_models.push_back(
+      {"wbc",
+       bc.root_link,
+       {bc.wbc_fingertips[0], bc.wbc_fingertips[1], bc.wbc_fingertips[2], bc.wbc_fingertips[3]}});
 
   auto builder = std::make_shared<rub::PinocchioModelBuilder>(cfg);
 
@@ -190,7 +181,13 @@ void RunBench(const BenchConfig& bc) {
       bc.arm_submodel, arm_nq, arm_nv, combined->nq, combined->nv,
       actuated_null ? "null → GetTreeModel(\"wbc\")" : "non-null (closed-chain)");
 
-  // Model-path confirmation (the only hard assert — nq/nv is deterministic).
+  // Model-path guard: closed-chain (extended) robots must expose a non-null
+  // actuated model; serial/mimic robots must fall through to the wbc tree.
+  // Without this the benchmark could silently time the wrong combined model.
+  ASSERT_EQ(actuated_null, !bc.extended)
+      << bc.label << ": GetActuatedModel() path mismatch (extended=" << bc.extended << ")";
+
+  // Model-path confirmation (the other hard assert — nq/nv is deterministic).
   EXPECT_EQ(combined->nq, bc.expected_nq) << bc.label << ": combined model nq";
   EXPECT_EQ(combined->nv, bc.expected_nv) << bc.label << ": combined model nv";
 
@@ -198,8 +195,6 @@ void RunBench(const BenchConfig& bc) {
   rtc::tsid::PinocchioCache cache;
   rtc::tsid::ContactManagerConfig contact_cfg;  // max_contacts = 0 (default)
   cache.Init(combined, rtc::tsid::ContactFrameIds(contact_cfg));
-  rtc::tsid::ContactState contacts;
-  contacts.Init(0);
 
   // Register the arm tip frame on the COMBINED model so a frame Jacobian is part
   // of the unified Update (spec: ~1-2 registered frames). Fall back to the first
@@ -277,6 +272,9 @@ TEST(UnifiedKinDynBench, Iiwa7Leap) {
             /*closure_rel=*/"",
             /*arm_submodel=*/"iiwa7",
             /*arm_tip_frame=*/"ee_link",
+            /*root_link=*/"link_0",
+            /*wbc_fingertips=*/
+            {{"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}},
             /*expected_nq=*/23,
             /*expected_nv=*/23});
   SUCCEED();
@@ -292,6 +290,10 @@ TEST(UnifiedKinDynBench, Ur5eP1b) {
             /*closure_rel=*/"robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml",
             /*arm_submodel=*/"ur5e",
             /*arm_tip_frame=*/"tool0",
+            /*root_link=*/"base",
+            /*wbc_fingertips=*/
+            {{"l_thumb_tip_bracket", "l_index_tip_bracket", "l_middle_tip_bracket",
+              "l_ring_tip_bracket"}},
             /*expected_nq=*/16,
             /*expected_nv=*/16});
   SUCCEED();
