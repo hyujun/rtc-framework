@@ -9,10 +9,12 @@
 #
 # Phases :
 #   0. ARCH grep (architecture-fitness sensor)
-#        - ARCH-1 : grep robot-name / hand-coded DOF in rtc_*/include|src,
+#        - ARCH-1 : grep robot-name / `num_joints=<literal>` in rtc_*/include|src,
 #                   with negation-aware filter (lines containing "must NOT",
 #                   "forbidden", "robot-agnostic", "no <X>-specific" are
-#                   dropped — they encode the rule, not a violation).
+#                   dropped — they encode the rule, not a violation). "N-DOF"
+#                   string alternatives were dropped: "6-DOF" is SE(3) math,
+#                   not a joint count (see the Phase 0 inline note).
 #        - ARCH-4 : grep rtc_*/src/ private header includes inside the
 #                   integration package set (auto-derived from package.xml
 #                   files that <depend> on any rtc_*).
@@ -259,6 +261,18 @@ if [ -n "$RTC_TOUCHED" ]; then
   # the only question this gate asks. Added-line scope keeps a brand new rtc_*
   # file screened in full: every one of its lines reads as added.
   #
+  # Pattern targets: robot identifiers (ur5e/iiwa7/leap/allegro) and a
+  # `num_joints = <literal>` assignment — the forms a real hardcode takes. The
+  # old `6.?dof`/`10.?dof` string alternatives were removed: "6-DOF" is
+  # SE(3)/task-space dimensionality (6 = 3 translation + 3 rotation), not a
+  # robot joint count, so they fired only on legitimate math/prose ("6-DoF
+  # task-space", floating-base "first 6 DoF", the `control_6dof` flag, an
+  # "all valid" robot-agnostic enumeration) and never on an actual hardcode —
+  # real DOF hardcoding is a numeric literal in array/matrix sizing, which
+  # carries no "dof" substring. The one true signal that used `10-DoF`
+  # (rtc_mpc capacity constants "for UR5e + 10-DoF hand") still matches via its
+  # robot name (memory feedback_arch1_grep_whole_file_scope, 2026-07-17).
+  #
   # Negation filter: lines that *forbid* the term (header comments like
   # "must NOT test UR5e", "no ur5e-specific code", "robot-agnostic") are
   # the rule itself, not a violation. Without this filter the hook punished
@@ -277,7 +291,7 @@ if [ -n "$RTC_TOUCHED" ]; then
         for (i = 0; i < count; i++) print p[1] + i
       }' || true)
     [ -z "$ADDED_LINES" ] && continue
-    HITS=$(grep -niE '\b(ur5e|iiwa7|leap|allegro|6.?dof|10.?dof|num_joints[[:space:]]*=[[:space:]]*[0-9])' "$f" 2>/dev/null \
+    HITS=$(grep -niE '\b(ur5e|iiwa7|leap|allegro|num_joints[[:space:]]*=[[:space:]]*[0-9])' "$f" 2>/dev/null \
             | grep -viE '(must[[:space:]]*not|forbidden|robot-agnostic|no[[:space:]]+[a-z0-9_.-]+-specific|NOT[[:space:]]+(test|use|hardcode|include|reference))' \
             | awk -F: -v added="$ADDED_LINES" '
                 BEGIN { n = split(added, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") keep[a[i]] = 1 }

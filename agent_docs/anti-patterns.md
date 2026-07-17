@@ -102,7 +102,7 @@
 ### AP-ARCH-1: `rtc_*` 패키지에 robot-specific 상수 하드코딩 ([invariants.md](invariants.md) ARCH-1 위반)
 
 - **증상**: 다른 로봇에서 재사용 불가 → 패키지 fork 압력
-- **탐지**: `grep -rniE '(\bur5e\b|6.?dof|10.?dof|num.?joints = [0-9])' rtc_*/include rtc_*/src`
+- **탐지**: `grep -rniE '(\b(ur5e|iiwa7|leap|allegro)\b|num.?joints = [0-9])' rtc_*/include rtc_*/src` (`6.?dof`/`10.?dof` 는 SE(3) task-space 차원 오탐이라 제외 — [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0 참조)
 - **복구**: YAML 주입 또는 template parameter
 
 ### AP-ARCH-2: Interface 없이 두 번째 구현 추가 ([invariants.md](invariants.md) ARCH-3 위반)
