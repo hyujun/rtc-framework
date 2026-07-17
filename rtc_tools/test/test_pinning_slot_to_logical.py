@@ -228,7 +228,8 @@ def test_adopt_snippet_resolves_pid_and_calls_cpu_shield():
         "integrated_rt_controller", "integrated_rt_controller"
     )
     snippet = action.cmd[2][0].text
-    assert 'PID=$(pgrep -nf "integrated_rt_controller")' in snippet
+    # Bracketed first char so pgrep never matches the launch's own helper (#151).
+    assert 'PID=$(pgrep -nf "[i]ntegrated_rt_controller")' in snippet
     assert '"$SHIELD" adopt "$PID"' in snippet
     # Guards: missing PID / missing script / password-required sudo all exit 0.
     assert "shield adopt skipped" in snippet
@@ -252,3 +253,42 @@ def test_adopt_rejects_shell_injection_via_label():
         pinning.adopt_process_into_shield('bad"name', "grep")
     with pytest.raises(ValueError):
         pinning.adopt_process_into_shield("label", 'gr"ep')
+
+
+# ── pgrep self-match guard (issue #151) ──────────────────────────────────────
+
+
+def test_pgrep_pattern_brackets_first_char():
+    assert pinning._pgrep_pattern("integrated_rt_controller") == "[i]ntegrated_rt_controller"
+    assert pinning._pgrep_pattern("ur_ros2_driver") == "[u]r_ros2_driver"
+    assert pinning._pgrep_pattern("") == ""
+
+
+def test_pgrep_pattern_matches_target_not_wrapper():
+    """The bracketed regex hits the real command line but not the helper's own.
+
+    Mirrors ``pgrep -f`` (regex search over the whole command line). The launch
+    helper's command line embeds the bracketed pattern verbatim, so the pattern
+    must NOT match it — otherwise ``pgrep -nf`` returns the wrapper bash instead
+    of the node (the #151 failure: adopt moved a transient bash, node stayed in
+    "system", RT pins EINVAL'd).
+    """
+    pat = pinning._pgrep_pattern("integrated_rt_controller")
+    node_cmdline = (
+        "/opt/ws/lib/integrated_bringup/integrated_rt_controller --ros-args -r __node:=x"
+    )
+    helper_cmdline = f'bash -c SHIELD=/x; PID=$(pgrep -nf "{pat}"); sudo /x adopt "$PID"'
+    assert re.search(pat, node_cmdline) is not None
+    assert re.search(pat, helper_cmdline) is None
+
+
+def test_all_pgrep_helpers_use_bracketed_pattern():
+    """Every pgrep-based action emits the self-safe bracketed pattern, never bare."""
+    actions = [
+        pinning.pin_process_to_slot("ur_ros2_driver", "ur_ros2_driver", 6),
+        pinning.pin_dds_threads_to_slot("integrated_rt_controller", "integrated_rt_controller", 2),
+        pinning.adopt_process_into_shield("integrated_rt_controller", "integrated_rt_controller"),
+    ]
+    for action in actions:
+        snippet = action.cmd[2][0].text
+        assert 'pgrep -nf "[' in snippet, f"bare pgrep pattern leaked: {snippet}"

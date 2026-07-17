@@ -108,6 +108,30 @@ def _reject_quotes(**fields: str) -> None:
             raise ValueError(f"embedded double quote disallowed in {key}={value!r}")
 
 
+def _pgrep_pattern(process_grep: str) -> str:
+    """Bracket the first character so ``pgrep -f`` never matches the launch's
+    own helper.
+
+    These actions run as ``bash -c '… pgrep -nf "<process_grep>" …'``, so the
+    helper's *own* command line contains ``<process_grep>`` verbatim. ``pgrep
+    -f`` matches full command lines, and ``-n`` returns the newest — the
+    just-spawned helper — so a bare pattern resolves to the wrapper bash (which
+    then exits) instead of the target node. On NUC13 this made ``adopt`` move a
+    transient bash into the shield while the real controller stayed in "system"
+    and its RT pins EINVAL'd (issue #151); the DDS co-pin hit the same wall.
+
+    Wrapping the first char as a regex class — ``integrated_rt_controller`` ->
+    ``[i]ntegrated_rt_controller`` — is the classic ``ps | grep '[p]attern'``
+    trick: the regex still matches the real process's literal command line, but
+    the helper's command line now contains the *bracketed* text, which the
+    regex does not match. So every pgrep-based helper excludes itself and its
+    siblings, leaving only the true target.
+    """
+    if not process_grep:
+        return process_grep
+    return f"[{process_grep[0]}]{process_grep[1:]}"
+
+
 def _skip_action(message: str) -> ExecuteProcess:
     """An action that only logs ``message`` — used for the no-pin sentinel."""
     return ExecuteProcess(
@@ -164,7 +188,8 @@ def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProc
         cmd=[
             "bash",
             "-c",
-            _resolve_slot_prelude(label, slot) + f'PID=$(pgrep -nf "{process_grep}"); '
+            _resolve_slot_prelude(label, slot)
+            + f'PID=$(pgrep -nf "{_pgrep_pattern(process_grep)}"); '
             'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — CPU pinning skipped"; exit 0; '
             "fi; "
@@ -215,7 +240,7 @@ def adopt_process_into_shield(
             "bash",
             "-c",
             f'SHIELD="{shield}"; '
-            f'PID=$(pgrep -nf "{process_grep}"); '
+            f'PID=$(pgrep -nf "{_pgrep_pattern(process_grep)}"); '
             'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — shield adopt skipped"; exit 0; '
             "fi; "
@@ -258,7 +283,8 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
         cmd=[
             "bash",
             "-c",
-            _resolve_slot_prelude(label, slot) + f'PID=$(pgrep -nf "{process_grep}"); '
+            _resolve_slot_prelude(label, slot)
+            + f'PID=$(pgrep -nf "{_pgrep_pattern(process_grep)}"); '
             'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — DDS thread pinning skipped"; exit 0; '
             "fi; "
