@@ -176,11 +176,23 @@ do_adopt() {
     return 0
   fi
 
+  # Diagnostic + guard: report what we are about to move. The caller resolves
+  # the PID via `pgrep -f`, which historically matched the launch's own wrapper
+  # bash instead of the RT node (issue #151). If comm is a shell, the wrong PID
+  # was handed in — moving it is a no-op that leaves the node in "system", so
+  # warn loudly rather than silently reporting success.
+  local pcomm
+  pcomm=$(cat "/proc/${pid}/comm" 2>/dev/null || echo "?")
+  info "adopt target PID ${pid}: comm='${pcomm}'"
+  if [[ "$pcomm" == "bash" || "$pcomm" == "sh" || "$pcomm" == "cpu_shield.sh" ]]; then
+    warn "adopt target comm='${pcomm}' 는 launch wrapper 로 보인다 — RT 노드가 아님. PID 해석 오류(pgrep self-match?) 로 실제 노드는 system 에 남아 EINVAL 가능. 이동은 진행하되 검증 필요."
+  fi
+
   # --threads moves every thread of the process; future threads inherit the
   # cpuset cgroup. `--shield --pid` moves INTO the "user" set (opposite of the
   # default sweep to "system").
   if cset shield --shield --pid "$pid" --threads >/dev/null 2>&1; then
-    success "PID ${pid} (+threads) moved into user cpuset — RT self-pin will land in-set"
+    success "PID ${pid} (comm='${pcomm}', +threads) moved into user cpuset — RT self-pin will land in-set"
     return 0
   fi
   warn "PID ${pid} adopt 실패 (cset shield --shield) — shield-on 런에서 RT pin 이 EINVAL 날 수 있음"
