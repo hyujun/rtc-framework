@@ -420,15 +420,14 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
   RTC_TRACE_SCOPE("DemoJointController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
 
-  // ── Unified kin&dyn (Phase 5): refresh the combined-model cache once per
-  // non-E-STOP tick, BEFORE ComputeControl reads the arm TCP frame. E-STOP ticks
-  // skip the cache and keep arm_handle_ FK (ComputeEstop). estop_active_ is loaded
-  // once here (was below DrainTargetSlot) so all readers see one consistent value.
+  // estop_active_ is loaded once here (before ReadState) so all downstream
+  // readers — including ReadState's ExtractFullState gate — see one consistent
+  // value for this tick. The combined-model cache refresh is split across the RT
+  // function roles: ExtractFullState (raw read + reindex) lives in ReadState;
+  // pinocchio_cache_.Update (compute model) is ComputeControl Stage 1, before the
+  // trajectory control law and the arm-TCP FK it consumes. E-STOP ticks skip both
+  // and keep arm_handle_ FK (ComputeEstop).
   estop_active_ = estopped_.load(std::memory_order_acquire);
-  if (!estop_active_ && joint_reorder_valid_ && arm_tcp_frame_idx_ >= 0) {
-    ExtractFullState(state);
-    pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
-  }
 
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.

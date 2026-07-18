@@ -22,6 +22,15 @@ namespace integrated_bringup {
 
 void DemoJointController::ReadState(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoJointController::ReadState");
+  // ── Unified kin&dyn: scatter measured joint pos/vel into Pinocchio order
+  // (q_curr_full_/v_curr_full_). A raw read + reindex, so it belongs to ReadState;
+  // ComputeControl Stage 1 consumes it via pinocchio_cache_.Update. Same gate as
+  // the prior Compute-top block (non-E-STOP, reorder map ready, arm TCP frame
+  // registered) so it runs on exactly the same ticks — byte-for-byte.
+  if (!estop_active_ && joint_reorder_valid_ && arm_tcp_frame_idx_ >= 0) {
+    ExtractFullState(state);
+  }
+
   // Robot arm joint positions (used for FK logging in WriteOutput)
   const auto& dev0 = state.devices[0];
   (void)dev0;  // positions accessed directly via span in WriteOutput
@@ -126,6 +135,16 @@ void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 
 void DemoJointController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoJointController::ComputeControl");
+  // ── Stage 1 (compute model): refresh the combined-model cache from the state
+  // ReadState scattered into q_curr_full_/v_curr_full_ this tick. Reached only on
+  // non-E-STOP ticks (Compute() E-STOP-early-returns before here), so the prior
+  // !estop_active_ guard is implied; gate on cache readiness only. Stage 2 (the
+  // trajectory control law below + the arm_tcp_pose_ FK) consumes it. Same gate
+  // and same q_curr_full_ as the prior Compute-top Update — byte-for-byte.
+  if (joint_reorder_valid_ && arm_tcp_frame_idx_ >= 0) {
+    pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
+  }
+
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
   const auto& dev0 = state.devices[0];
