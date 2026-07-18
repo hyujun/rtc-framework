@@ -1512,6 +1512,21 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     }
   }
 
+  // #167: the pull estimator only trusts contact geometry produced on a
+  // TSID-routing tick. Reset here; ComputeWbcCommon sets it true. NOTE (Task B):
+  // this flag no longer means "oMf is fresh" — ComputeControl's Stage-1
+  // cache.Update runs every tick, so oMf/contact_frames are fresh on kFallback and
+  // every non-TSID tick too. The flag PURELY gates the pull estimate to TSID ticks.
+  contact_geometry_fresh_ = false;
+
+  // ── FSM phase transition (option C): hoisted OUT of ComputeControl to Compute
+  // scope so ComputeControl is a clean compute-model → control-law body. UpdatePhase
+  // is FSM-transition logic (DrainTargetSlot-natured), and its ComputeTcpError reads
+  // the PREVIOUS tick's oMf (one-tick lag contract). Running it here — before
+  // ComputeControl's Stage-1 cache.Update refreshes oMf this tick — preserves that
+  // lag exactly → kApproach/kClosure transition timing byte-for-byte.
+  UpdatePhase(state);
+
   ComputeControl(state, dt);
   // Output composition split by consumer (wire / log / publish). See
   // demo_joint_controller.hpp for the bucket assignment rationale.

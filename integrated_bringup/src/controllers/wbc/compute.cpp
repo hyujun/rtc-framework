@@ -24,6 +24,19 @@ namespace integrated_bringup {
 // ── Phase 1: Read state ─────────────────────────────────────────────────────
 void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ReadState");
+  // ── Unified kin&dyn (option C): scatter measured joint pos/vel into Pinocchio
+  // order (q_curr_full_/v_curr_full_). A raw read + reindex, so it belongs to
+  // ReadState; ComputeControl Stage 1 consumes it via pinocchio_cache_.Update.
+  // Gated on cache-readiness (tsid_initialized_ && joint_reorder_valid_), matching
+  // the prior ComputeControl gate. ReadState runs before the E-STOP /
+  // !target_initialized early-returns, so this may scatter on those ticks too, but
+  // every RT reader of q_curr_full_/v_curr_full_ lives in ComputeControl's FSM
+  // subtree (never reached on those paths) — controller output stays byte-for-byte,
+  // and the next FSM tick re-scatters fresh values.
+  if (tsid_initialized_ && joint_reorder_valid_) {
+    ExtractFullState(state);
+  }
+
   // Read fingertip data from inference_data: slots 1..3 (fx/fy/fz) always,
   // slot 0 (native contact probability) only when has_native_contact_=true
   // (sensor A path; otherwise backend zero-fills the slot). Slots 4..6
@@ -94,27 +107,17 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeControl");
-  // #167: the pull estimator only trusts contact geometry produced on a
-  // TSID-routing tick. Reset here; ComputeWbcCommon sets it true.
-  // NOTE (Task B): this flag no longer means "oMf is fresh" — cache.Update now
-  // runs every tick just below, so oMf/contact_frames are fresh in kFallback and
-  // every non-TSID tick too. The flag PURELY gates the pull estimate to TSID
-  // ticks (bounded decay on non-TSID ticks). See UpdatePullEstimate.
-  contact_geometry_fresh_ = false;
-  UpdatePhase(state);
-
-  // #unified-kindyn Task B (옵션 B): per-tick 무조건 cache refresh. ExtractFullState +
-  // pinocchio_cache_.Update 를 ComputeWbcCommon(TSID phase 한정) → 여기로 격상해 kFallback·
-  // 비-TSID tick 에서도 arm/contact oMf 가 measured 를 추종하게 한다 (pose fresh; command 는
-  // 각 phase 가 hold). estop·!target_initialized seed 는 Compute() 의 early-return 이 이미
-  // 처리 → 여기서는 cache-readiness(tsid_initialized_ && joint_reorder_valid_)만 게이트한다
-  // (task/joint 형제 Compute-top 패턴과 동치, WBC 는 위에서 estop·seed 를 이미 걸러냄).
-  // ⚠ 위치 = UpdatePhase 뒤. ComputeTcpError(phase.cpp, kApproach 판정)는 previous-tick
-  // oMf 를 읽도록 계약돼 있고(compute.cpp ComputeTcpError 주석), UpdatePhase 가 이 Update 보다
-  // 앞서므로 그 one-tick lag 가 보존된다 → TSID 라우팅 phase byte-for-byte 불변. Update 는
-  // ContactState 무의존(Phase 1 always-compute)이라 아래 contact_state_ 갱신보다 앞서도 무방.
+  // ── Stage 1 (compute model): per-tick unconditional cache refresh. ExtractFullState
+  // (raw read + reindex → q_curr_full_/v_curr_full_) ran in ReadState; here we consume
+  // it to refresh FK/J/M/h/g/oMf so arm/contact oMf follow measured on kFallback and
+  // every non-TSID tick too (pose fresh; command is held by each phase). estop and
+  // !target_initialized seed are handled by Compute()'s early-returns, so gate on
+  // cache-readiness (tsid_initialized_ && joint_reorder_valid_) only. UpdatePhase (FSM;
+  // its ComputeTcpError reads the PREVIOUS tick's oMf — one-tick lag contract) ran in
+  // Compute() BEFORE this Stage-1 Update, so the lag is preserved → TSID-routing phase
+  // byte-for-byte. cache.Update is ContactState-independent (Phase 1 always-compute) so
+  // it may precede the contact_state_ update below (option C, hoisted UpdatePhase).
   if (tsid_initialized_ && joint_reorder_valid_) {
-    ExtractFullState(state);
     pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
   }
 
