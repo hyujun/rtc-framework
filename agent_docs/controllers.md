@@ -19,9 +19,21 @@
 모델 위의 `rtc_urdf_bridge::PinocchioCache`** 에서 획득한다 — non-E-STOP tick당 `Update(q,v)` 1회
 (`GetActuatedModel` → reduced tree `"wbc"` → full model 순으로 선택). arm-only `RtModelHandle`(`arm_handle_`)은
 E-STOP TF 경로(`ComputeEstop`)와 메타데이터(`nv()`/`GetFrameId`)로만 잔존. closed-chain 손에서는 접촉
-프레임 J·oMf가 loop-consistent로 격상된다(dJv는 L2-zero, issue #173). 세 컨트롤러의 cache 배선
-(`InitControlModelCache`/`BuildJointReorderMap`/`ExtractFullState`/`ArmTcpPoseFromCache`)은 현재 삼중
-복제이며 공유 헬퍼로 통합 예정(issue #174). WBC 상세 구현: [docs/WBC_CONTROLLER_IMPLEMENTATION.md](../docs/WBC_CONTROLLER_IMPLEMENTATION.md).
+프레임 J·oMf가 loop-consistent로 격상된다(dJv는 L2-zero, issue #173).
+
+이 cache 배선(모델 선택 + `PinocchioCache.Init`, ext(device joint-state)→Pinocchio q/v reorder map, 매 tick
+state scatter, arm-TCP FK)은 **공유 타입 `integrated_bringup::CombinedModelCache`(support/) 한 곳으로 통합**됐다
+(issue #174, 이전 삼중 복제 해소). 세 컨트롤러는 멤버 `combined_cache_` 를 소유·위임한다(`InitModel`/`BuildReorderMap`/
+`ExtractFullState`/`Update`/`ArmTcpPoseFromCache` + `cache()`/`model()`/`reorder_valid()`/`q()`/`v()` accessor).
+WBC 는 superset 소비자로, TSID contact 프레임과 reduced-dynamics provider 는 WBC-local 로 유지하고, 모델선택은
+`SelectModel`(contact frame id 파싱이 선택된 모델을 요구해 cache Init 을 뒤로 미룸) + 이후 `cache().Init` 로 분리
+호출한다.
+
+RT 진입점 `Compute(state)` 는 세 컨트롤러 공통으로 **`ReadState`(순수 raw read + `ExtractFullState`) → compute
+model(`combined_cache_.Update`) → compute control law → `WriteJointCommand`(순수 command write)** 순서를 지킨다
+(로그/발행용 oMf 소비는 `FillLogOutput`/`FillPublishOutput` 로 분리). cache.Update 텍스트 위치는 joint·wbc = `ComputeControl`
+Stage 1, task = Compute-scope Stage 1(DrainTargetSlot self-init 이 fresh cache 의존). WBC 상세 구현:
+[docs/WBC_CONTROLLER_IMPLEMENTATION.md](../docs/WBC_CONTROLLER_IMPLEMENTATION.md).
 
 ## Gains (per-controller ROS 2 parameters)
 

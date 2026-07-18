@@ -68,7 +68,7 @@ device state + fingertip inference + target
 
 ### 관절 순서
 
-device가 내보내는 arm/hand channel 순서와 Pinocchio model 순서는 다를 수 있다. `ExtractFullState()`는 `ext_to_pin_q_`, `ext_to_pin_v_` map으로 measured state를 full model의 `q_curr_full_`, `v_curr_full_`에 넣는다. CLIK가 낸 `q_ref`, `v_ref`는 같은 map의 역방향으로 `robot_computed_`, `hand_computed_`에 기록된다.
+device가 내보내는 arm/hand channel 순서와 Pinocchio model 순서는 다를 수 있다. 이 cache 배선은 공유 타입 `integrated_bringup::CombinedModelCache`(멤버 `combined_cache_`, issue #174 — joint/task 와 공유)가 소유한다. `combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_)`는 내부 ext→Pinocchio reorder map으로 measured state를 결합 모델의 `combined_cache_.q()`/`combined_cache_.v()`에 넣는다. CLIK가 낸 `q_ref`, `v_ref`는 같은 map의 역방향(`combined_cache_.ext_to_pin_q(i)`)으로 `robot_computed_`, `hand_computed_`에 기록된다. WBC 는 reorder map 전체 배열이 필요한 static·URDF-free-unittest 헬퍼(`BuildClikJointIndexSets`/`AssemblePostureGains`)에 `combined_cache_.ext_to_pin_v_map()` 로 배열을 넘긴다.
 
 SE3 target도 root/base frame contract를 따라야 한다. YAML의 `se3_tcp.base_frame`은 arm device의 URDF root frame과 일치해야 한다. mismatch는 TCP target이 조용히 다른 좌표계에서 해석되는 위험이 있으므로 lifecycle 초기화 시 검증 대상이다.
 
@@ -115,7 +115,7 @@ FSM은 사실상 두 벌이다. 위 WBC FSM이 authoritative이며, MPC가 켜�
 
 ## 공통 단계: reference와 접촉 모델
 
-**상태 추출과 Pinocchio cache 갱신은 매 tick 무조건 실행된다**(옵션 B, unified kin&dyn Task B). E-STOP·초기 seed early-return 뒤 `ComputeControl()` 최상단에서 `ExtractFullState()`로 measured state를 Pinocchio order(`q_curr_full_`/`v_curr_full_`)로 추출하고 `pinocchio_cache_.Update()`로 질량행렬 `M`, bias `h`, gravity `g`, Jacobian `J`, `dJv`, 등록 frame/contact frame `oMf`를 갱신한다. 따라서 `kFallback`·비-TSID tick에서도 arm/contact **pose(`oMf`)는 measured를 추종**하고 **command만 각 phase가 hold**한다(`kFallback`은 마지막 position을 hold + velocity 0). cache는 `tsid_initialized_ && joint_reorder_valid_`일 때만 갱신한다(모델 미구성 unit test는 skip; `ComputePositionMode` 경로는 애초에 cache 미초기화라 대상 아님). `kApproach` pregrasp 판정 `ComputeTcpError()`는 `UpdatePhase()`(이 Update 앞) 안에서 호출되므로 이전 tick `oMf`를 읽는 one-tick lag 계약이 그대로 유지된다.
+**상태 추출과 Pinocchio cache 갱신은 매 tick 무조건 실행된다**(옵션 B, unified kin&dyn Task B). RT 함수 역할 순수화(구조 통일 Phase A, 옵션 C) 이후 두 단계로 나뉜다: **(1) `ReadState()`** 가 `combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_)`로 measured state를 Pinocchio order(`combined_cache_.q()`/`combined_cache_.v()`)로 추출한다(순수 raw read + reindex). **(2) `ComputeControl()` Stage 1** 이 E-STOP·초기 seed early-return 뒤 `combined_cache_.Update()`로 질량행렬 `M`, bias `h`, gravity `g`, Jacobian `J`, `dJv`, 등록 frame/contact frame `oMf`를 갱신한다(compute model → 이어서 control law). 따라서 `kFallback`·비-TSID tick에서도 arm/contact **pose(`oMf`)는 measured를 추종**하고 **command만 각 phase가 hold**한다(`kFallback`은 마지막 position을 hold + velocity 0). 둘 다 `tsid_initialized_ && combined_cache_.reorder_valid()`일 때만 실행한다(모델 미구성 unit test는 skip; `ComputePositionMode` 경로는 애초에 cache 미초기화라 대상 아님). `UpdatePhase()`(FSM)는 옵션 C 로 `Compute()`(ReadState·DrainTargetSlot 뒤, ComputeControl 앞)로 끌어올려졌고, 그 안의 `kApproach` pregrasp 판정 `ComputeTcpError()`는 Stage 1 `Update` **앞**에서 실행되므로 이전 tick `oMf`를 읽는 one-tick lag 계약이 그대로 유지된다.
 
 정상 TSID-routing phase에서 `ComputeWbcCommon()`은 위에서 갱신된 cache를 읽어 두 QP가 함께 쓸 나머지 입력을 딱 한 번 준비한다.
 
@@ -341,7 +341,7 @@ C = [ S·M | −S·J_cᵀ ],   l = τ_min − S·h,   u = τ_max − S·h
 | 입력 | 현재 source | G에서의 역할 |
 |---|---|---|
 | arm-hand 전체 관절 위치 `q`와 통합 URDF/kinematic model | device state → Pinocchio | fingertip/contact frame의 forward kinematics를 계산한다. |
-| 접촉 frame의 world 위치 `p_ci` | `pinocchio_cache_.contact_frames[i].oMf.translation()` | 물체 원점까지의 lever arm `d_i = p_ci - p_o`를 만든다. |
+| 접촉 frame의 world 위치 `p_ci` | `combined_cache_.cache().contact_frames[i].oMf.translation()` | 물체 원점까지의 lever arm `d_i = p_ci - p_o`를 만든다. |
 | 물체 기준점 `p_o` | `tsid.object_frame.p_w` | 합산 wrench의 모멘트 기준점을 정한다. |
 | contact type/dimension | `tsid.contacts[i].contact_dim` | point(3 force DoF) 또는 surface(6 wrench DoF) block을 선택한다. |
 | activation/active state | `ContactState` | 현재 packed G에 포함할 contact와 column order를 정한다. |
