@@ -253,6 +253,38 @@ TEST_F(WbcFSMTest, HandTauffActiveClearedEachTick) {
   }
 }
 
+// Task B (옵션 B): cache.Update now runs every non-E-STOP tick (relocated to
+// ComputeControl), so the arm POSE (oMf) tracks measured in kFallback too — but the
+// arm COMMAND must stay HELD (ComputeFallback holds robot_computed_, zeros velocity;
+// it never reads measured/oMf). Two kFallback ticks with DIFFERENT measured arm
+// positions must therefore emit an IDENTICAL arm command. Guards against a future
+// regression that wires fresh measured/oMf into the fallback command. (The oMf
+// freshness half is proven in test_wbc_fallback_omf_freshness with a real model.)
+TEST_F(WbcFSMTest, FallbackHoldsArmCommandAcrossMeasuredChange) {
+  ctrl_.ForcePhaseForTesting(WbcPhase::kFallback);
+
+  state_.devices[0].positions[0] = 0.10;
+  state_.devices[0].positions[1] = -1.20;
+  auto out_a = ctrl_.Compute(state_);
+  ASSERT_TRUE(out_a.valid);
+  ASSERT_GE(out_a.num_devices, 1);
+
+  // Different measured arm config on the next kFallback tick.
+  ctrl_.ForcePhaseForTesting(WbcPhase::kFallback);
+  state_.devices[0].positions[0] = 0.90;
+  state_.devices[0].positions[1] = -0.30;
+  auto out_b = ctrl_.Compute(state_);
+  ASSERT_TRUE(out_b.valid);
+  ASSERT_EQ(out_b.devices[0].num_channels, out_a.devices[0].num_channels);
+
+  // Command is held: byte-for-byte equal despite the measured change.
+  for (int i = 0; i < out_a.devices[0].num_channels; ++i) {
+    const auto idx = static_cast<std::size_t>(i);
+    EXPECT_EQ(out_b.devices[0].commands[idx], out_a.devices[0].commands[idx])
+        << "arm command[" << i << "] tracked measured in kFallback (should be held)";
+  }
+}
+
 // #9: when the hand device reports more channels than hand_dof_, the feedforward
 // copy must stop at hand_dof_ — the tail of out.devices[1].feedforward stays
 // fresh-zero (no read past the hand_dof_ model torques). With the empty fixture

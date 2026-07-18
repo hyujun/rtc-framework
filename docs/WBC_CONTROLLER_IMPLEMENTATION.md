@@ -115,15 +115,15 @@ FSM은 사실상 두 벌이다. 위 WBC FSM이 authoritative이며, MPC가 켜�
 
 ## 공통 단계: reference와 접촉 모델
 
-정상 TSID-routing phase에서 `ComputeWbcCommon()`은 두 QP가 함께 쓸 입력을 딱 한 번 준비한다.
+**상태 추출과 Pinocchio cache 갱신은 매 tick 무조건 실행된다**(옵션 B, unified kin&dyn Task B). E-STOP·초기 seed early-return 뒤 `ComputeControl()` 최상단에서 `ExtractFullState()`로 measured state를 Pinocchio order(`q_curr_full_`/`v_curr_full_`)로 추출하고 `pinocchio_cache_.Update()`로 질량행렬 `M`, bias `h`, gravity `g`, Jacobian `J`, `dJv`, 등록 frame/contact frame `oMf`를 갱신한다. 따라서 `kFallback`·비-TSID tick에서도 arm/contact **pose(`oMf`)는 measured를 추종**하고 **command만 각 phase가 hold**한다(`kFallback`은 마지막 position을 hold + velocity 0). cache는 `tsid_initialized_ && joint_reorder_valid_`일 때만 갱신한다(모델 미구성 unit test는 skip; `ComputePositionMode` 경로는 애초에 cache 미초기화라 대상 아님). `kApproach` pregrasp 판정 `ComputeTcpError()`는 `UpdatePhase()`(이 Update 앞) 안에서 호출되므로 이전 tick `oMf`를 읽는 one-tick lag 계약이 그대로 유지된다.
 
-1. measured state를 Pinocchio order로 추출한다.
-2. 각 contact activation `s_i in [0,1]`를 `contact_ramp_sec` 동안 변화시키고 active contact를 재계산한다.
-3. Pinocchio cache에 질량행렬 `M`, bias `h`, gravity `g`, Jacobian `J`, `dJv`를 갱신한다.
-4. active contact column으로 grasp matrix `G`를 만들고 `G+`, `(G^T)+`, null-space projector, rank를 `GraspCache`에 계산한다.
-5. MPC reference가 유효하면 `q_des`, `v_des`, `a_des`에 주입한다. 그렇지 않으면 phase별 hold/target posture를 쓴다.
-6. Closure/Hold에서 force PI가 ForceTask reference `lambda_des`를 만든다.
-7. MPC가 꺼져 있고 SE3 task가 active이면 quintic trajectory의 pose/velocity/acceleration을 SE3Task에 매 tick 전달한다.
+정상 TSID-routing phase에서 `ComputeWbcCommon()`은 위에서 갱신된 cache를 읽어 두 QP가 함께 쓸 나머지 입력을 딱 한 번 준비한다.
+
+1. 각 contact activation `s_i in [0,1]`를 `contact_ramp_sec` 동안 변화시키고 active contact를 재계산한다.
+2. active contact column으로 grasp matrix `G`를 만들고 `G+`, `(G^T)+`, null-space projector, rank를 `GraspCache`에 계산한다.
+3. MPC reference가 유효하면 `q_des`, `v_des`, `a_des`에 주입한다. 그렇지 않으면 phase별 hold/target posture를 쓴다.
+4. Closure/Hold에서 force PI가 ForceTask reference `lambda_des`를 만든다.
+5. MPC가 꺼져 있고 SE3 task가 active이면 quintic trajectory의 pose/velocity/acceleration을 SE3Task에 매 tick 전달한다.
 
 ### 축약(closed-chain) 동역학
 

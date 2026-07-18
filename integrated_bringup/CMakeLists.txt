@@ -497,6 +497,25 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # Unified kin&dyn Task B (옵션 B): WBC cache.Update relocated to ComputeControl
+  # so arm/contact oMf refresh every non-E-STOP tick (kFallback/non-TSID included).
+  # Proves the registered clik_tcp/clik_base oMf TRACK measured across consecutive
+  # per-tick Updates (not frozen) and equal arm_handle_ FK each tick (1e-12), on
+  # both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
+  ament_add_gtest(test_wbc_fallback_omf_freshness
+    test/test_wbc_fallback_omf_freshness.cpp)
+  target_link_libraries(test_wbc_fallback_omf_freshness
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_fallback_omf_freshness
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # Unified kin&dyn Phase 4: task arm TCP FK + tip Jacobian cache equivalence.
   # Proves DemoTaskController's move off arm_handle_ onto the combined-model
   # PinocchioCache is value-preserving — FK oMf AND the arm-column extraction of

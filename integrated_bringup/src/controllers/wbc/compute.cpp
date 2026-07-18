@@ -94,21 +94,35 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeControl");
-  // #167: contact-frame geometry is only refreshed on ticks that reach
-  // ComputeWbcCommon (TSID paths); reset here so non-TSID ticks feed the pull
-  // estimator invalid inputs (bounded decay) instead of stale frames.
+  // #167: the pull estimator only trusts contact geometry produced on a
+  // TSID-routing tick. Reset here; ComputeWbcCommon sets it true.
+  // NOTE (Task B): this flag no longer means "oMf is fresh" — cache.Update now
+  // runs every tick just below, so oMf/contact_frames are fresh in kFallback and
+  // every non-TSID tick too. The flag PURELY gates the pull estimate to TSID
+  // ticks (bounded decay on non-TSID ticks). See UpdatePullEstimate.
   contact_geometry_fresh_ = false;
   UpdatePhase(state);
 
-  // MPC WriteState moved into ComputeTSIDPosition (next to its
-  // ExtractFullState), which is reached every tick by all TSID-routing
-  // phases (kIdle/kApproach/kClosure/kHold and kRelease via
-  // ComputeReleaseMode → ComputeTSIDPosition). kFallback no longer pushes
-  // state; the MPC retains its last snapshot until recovery to kIdle, which
-  // is safe because MPC output is not driving control during fallback and
-  // the dim-mismatch gate (state.nq == model_->nq()) keys on nq, not
-  // staleness. Eliminates the per-tick ExtractFullState double-call (this
-  // top-level + ComputeTSIDPosition's own call).
+  // #unified-kindyn Task B (옵션 B): per-tick 무조건 cache refresh. ExtractFullState +
+  // pinocchio_cache_.Update 를 ComputeWbcCommon(TSID phase 한정) → 여기로 격상해 kFallback·
+  // 비-TSID tick 에서도 arm/contact oMf 가 measured 를 추종하게 한다 (pose fresh; command 는
+  // 각 phase 가 hold). estop·!target_initialized seed 는 Compute() 의 early-return 이 이미
+  // 처리 → 여기서는 cache-readiness(tsid_initialized_ && joint_reorder_valid_)만 게이트한다
+  // (task/joint 형제 Compute-top 패턴과 동치, WBC 는 위에서 estop·seed 를 이미 걸러냄).
+  // ⚠ 위치 = UpdatePhase 뒤. ComputeTcpError(phase.cpp, kApproach 판정)는 previous-tick
+  // oMf 를 읽도록 계약돼 있고(compute.cpp ComputeTcpError 주석), UpdatePhase 가 이 Update 보다
+  // 앞서므로 그 one-tick lag 가 보존된다 → TSID 라우팅 phase byte-for-byte 불변. Update 는
+  // ContactState 무의존(Phase 1 always-compute)이라 아래 contact_state_ 갱신보다 앞서도 무방.
+  if (tsid_initialized_ && joint_reorder_valid_) {
+    ExtractFullState(state);
+    pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
+  }
+
+  // MPC WriteState stays in ComputeWbcCommon (TSID paths only): kFallback still
+  // does not push MPC state; the MPC retains its last snapshot until recovery to
+  // kIdle, which is safe because MPC output is not driving control during
+  // fallback and the dim-mismatch gate (state.nq == model_->nq()) keys on nq,
+  // not staleness.
   switch (phase_) {
     case WbcPhase::kIdle:
     case WbcPhase::kApproach:
@@ -142,9 +156,11 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
 // distribution rather than the sensed external load. Contact k's slot indexes
 // both tsid.contacts (→ pinocchio_cache_.contact_frames) and the fingertip
 // sensor lanes (documented 1:1 mapping, see ComputeWbcCommon Stage A-3).
-// oMf freshness gates: contact_geometry_fresh_ (ComputeWbcCommon ran this
-// tick) AND the per-contact active flag (PinocchioCache::Update skips
-// inactive contact frames, whose oMf would be stale or uninitialized).
+// Gating: contact_geometry_fresh_ (a TSID-routing tick ran ComputeWbcCommon —
+// the trust signal for the pull estimate, NOT oMf freshness: Task B refreshes
+// contact_frames[].oMf every tick incl. kFallback) AND the per-contact active
+// flag. cache.Update always-computes ALL registered contact frames (Phase 1), so
+// inactive frames are geometrically fresh too; the active gate is a policy choice.
 
 void DemoWbcController::UpdatePullEstimate(double dt) noexcept {
   if (!pull_wiring_.enabled()) {
@@ -242,8 +258,13 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
 void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt,
                                          const Gains& gains_now) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeWbcCommon");
-  // 1. Extract full state (sensor values, every tick)
-  ExtractFullState(state);
+  // 1. State extraction + Pinocchio cache refresh moved to ComputeControl (Task B,
+  //    옵션 B): ExtractFullState + pinocchio_cache_.Update(q,v) now run once per tick
+  //    for ALL phases just before this stage, so q_curr_full_/v_curr_full_ and the
+  //    cache (M/h/g/Jacobians/contact & registered frame oMf) are already fresh here.
+  //    This stage only CONSUMES them (grasp/MPC/references). #unified-kindyn Phase 1:
+  //    cache is ContactState-independent (always-compute), so running Update before the
+  //    contact_state_ update below is safe.
 
   // Stage A-5b: progress per-contact activation ramp by dt. ContactState
   // auto-flips the legacy `active : bool` once s_i crosses kActivationDeadband
@@ -252,13 +273,10 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   contact_state_.UpdateActivation(dt);
   contact_state_.RecomputeActive(contact_mgr_config_);
 
-  // 2. Update Pinocchio cache (M, h, g, Jacobians).
-  // #unified-kindyn Phase 1: cache 는 이제 ContactState 무의존 — 모든 등록 contact_frames 를
-  // 무조건 계산한다 (always-compute; Phase 0 예산 확인). contact_state_ 갱신은 위에서 소비자용
-  // (active_contact_vars / grasp / QP)으로만 유지.
-  pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
-  // #167: contact_frames[i].oMf are fresh this tick for ALL contacts (always-compute) —
-  // UpdatePullEstimate additionally gates per contact on the active flag.
+  // 2. #167: mark contact geometry trusted for THIS (TSID-routing) tick so the
+  // pull estimator consumes it. cache.Update already refreshed contact_frames[].oMf
+  // for ALL contacts in ComputeControl; non-TSID ticks leave this false (bounded
+  // decay). UpdatePullEstimate additionally gates per contact on the active flag.
   contact_geometry_fresh_ = true;
 
   // 2a. Stage B-5: populate the once-per-tick grasp cache shared across the
