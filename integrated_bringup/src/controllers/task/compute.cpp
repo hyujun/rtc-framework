@@ -24,41 +24,15 @@ namespace integrated_bringup {
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 void DemoTaskController::ReadState(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ReadState");
-  // Robot arm TCP FK + tip Jacobian from the unified combined-model cache
-  // (Update ran at the top of Compute this non-E-STOP tick). The cache holds the
-  // 6×nv_combined LWA Jacobian of the arm tip; extract the arm-joint columns into
-  // the 6×nv_arm CLIK buffer via the ext→Pinocchio velocity map. arm_handle_ is
-  // no longer read here (retained only for the E-STOP TF path). Guarded on the
-  // registered frame AND joint_reorder_valid_ (i.e. Update() actually ran this
-  // tick — same condition as the Compute()-level Update) so a misconfigured
-  // cache leaves the prior J/pose untouched instead of reading an un-refreshed
-  // frame.
-  if (joint_reorder_valid_ && task_tcp_frame_idx_ >= 0) {
-    const auto& tip_J =
-        pinocchio_cache_.registered_frames[static_cast<std::size_t>(task_tcp_frame_idx_)].J;
-    const int narm = std::min(arm_dof_, static_cast<int>(J_full_.cols()));
-    J_full_.setZero();
-    for (int i = 0; i < narm; ++i) {
-      const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[static_cast<std::size_t>(i)]);
-      J_full_.col(i) = tip_J.col(pv);
-    }
-    if (task_base_frame_idx_ >= 0) {
-      // Rotate the world-aligned Jacobian into the base frame's orientation
-      // (rotation-only, matching the base-relative pose convention below).
-      const Eigen::Matrix3d R_root_T =
-          pinocchio_cache_.registered_frames[static_cast<std::size_t>(task_base_frame_idx_)]
-              .oMf.rotation()
-              .transpose();
-      J_full_.topRows(3) = R_root_T * J_full_.topRows(3);
-      J_full_.bottomRows(3) = R_root_T * J_full_.bottomRows(3);
-    }
-    J_pos_.noalias() = J_full_.topRows(3);
-
-    // Self-init is owned by DrainTargetSlot() (called before ReadState in
-    // Compute); ReadState no longer touches target_seqlock_ / tcp_target_pose_.
-    const pinocchio::SE3 tcp_pose = ArmTcpPoseFromCache();
-    const Eigen::Vector3d& tcp = tcp_pose.translation();
-    tcp_position_ = {tcp[0], tcp[1], tcp[2]};
+  // ── Unified kin&dyn: scatter measured joint pos/vel into Pinocchio order
+  // (q_curr_full_/v_curr_full_). A raw read + reindex, so it belongs to ReadState;
+  // the Compute-scope Stage-1 pinocchio_cache_.Update (just after this call)
+  // consumes it. Same gate as the prior Compute-top block so it runs on exactly
+  // the same ticks — byte-for-byte. The tip-Jacobian extraction + control pose
+  // that used to live here consume the cache and moved to ComputeControl Stage 2
+  // (after the Update).
+  if (!estop_active_ && joint_reorder_valid_ && task_tcp_frame_idx_ >= 0) {
+    ExtractFullState(state);
   }
 
   // Hand motor data: dev1.motor_positions[], motor_velocities[],
@@ -150,6 +124,34 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
   // seeded from measured in that case so WriteJointCommand holds position.
   if (estop_active_ || !joint_reorder_valid_ || task_tcp_frame_idx_ < 0) {
     return;
+  }
+
+  // ── Stage 2 (compute control law): consume the model. Extract the arm-joint
+  // columns of the tip Jacobian from the Stage-1 cache into the 6×nv_arm CLIK
+  // buffer via the ext→Pinocchio velocity map (moved here from ReadState — it
+  // consumes the cache, so it belongs after the Update). The gate above already
+  // guarantees joint_reorder_valid_ && task_tcp_frame_idx_ >= 0, so no extra guard
+  // is needed. arm_handle_ is not read here (retained only for the E-STOP TF path).
+  {
+    const auto& tip_J =
+        pinocchio_cache_.registered_frames[static_cast<std::size_t>(task_tcp_frame_idx_)].J;
+    const int narm = std::min(arm_dof_, static_cast<int>(J_full_.cols()));
+    J_full_.setZero();
+    for (int i = 0; i < narm; ++i) {
+      const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[static_cast<std::size_t>(i)]);
+      J_full_.col(i) = tip_J.col(pv);
+    }
+    if (task_base_frame_idx_ >= 0) {
+      // Rotate the world-aligned Jacobian into the base frame's orientation
+      // (rotation-only, matching the base-relative pose convention below).
+      const Eigen::Matrix3d R_root_T =
+          pinocchio_cache_.registered_frames[static_cast<std::size_t>(task_base_frame_idx_)]
+              .oMf.rotation()
+              .transpose();
+      J_full_.topRows(3) = R_root_T * J_full_.topRows(3);
+      J_full_.bottomRows(3) = R_root_T * J_full_.bottomRows(3);
+    }
+    J_pos_.noalias() = J_full_.topRows(3);
   }
 
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).

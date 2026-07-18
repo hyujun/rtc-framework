@@ -447,18 +447,24 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   RTC_TRACE_SCOPE("DemoTaskController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
 
-  // ── Unified kin&dyn (Phase 4): refresh the combined-model cache once per
-  // non-E-STOP tick, BEFORE ReadState/DrainTargetSlot/ComputeControl consume the
-  // arm TCP frames. E-STOP ticks skip the cache and keep arm_handle_ FK
-  // (ComputeEstop) per §주의/제약. estop_active_ is loaded once here (was in
-  // ComputeControl) so every downstream reader sees one consistent value.
+  // estop_active_ is loaded once here (before ReadState) so every downstream
+  // reader — including ReadState's ExtractFullState gate and the Stage-1 cache
+  // refresh below — sees one consistent value for this tick.
   estop_active_ = estopped_.load(std::memory_order_acquire);
+
+  ReadState(state);
+
+  // ── Stage 1 (compute model): refresh the combined-model cache from the state
+  // ReadState scattered into q_curr_full_/v_curr_full_ this tick — AFTER the raw
+  // read, BEFORE DrainTargetSlot and the control law. Kept at Compute scope (not
+  // inside ComputeControl) on purpose: DrainTargetSlot's one-time arm self-init
+  // reads ArmTcpPoseFromCache() and must see this tick's fresh FK. Same gate and
+  // q_curr_full_ as the prior Compute-top Update — byte-for-byte. E-STOP ticks
+  // skip it and keep arm_handle_ FK (ComputeEstop).
   if (!estop_active_ && joint_reorder_valid_ && task_tcp_frame_idx_ >= 0) {
-    ExtractFullState(state);
     pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
   }
 
-  ReadState(state);
   DrainTargetSlot(state);
   ComputeControl(state, dt);
   // Output composition split by consumer (wire / log / publish). See
@@ -527,8 +533,10 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
     }
 
     const auto& dev0 = state.devices[0];
-    // Arm TCP from the combined-model cache (refreshed at the top of Compute for
-    // this non-E-STOP tick). DrainTargetSlot runs after that Update.
+    // Arm TCP from the combined-model cache (refreshed by the Compute-scope
+    // Stage-1 pinocchio_cache_.Update for this non-E-STOP tick, just after
+    // ReadState). DrainTargetSlot runs after that Update — this self-init is the
+    // reason the Update stays at Compute scope rather than inside ComputeControl.
     pinocchio::SE3 tcp_pose = ArmTcpPoseFromCache();
 
     pinocchio::SE3 hold_pose = tcp_pose;
