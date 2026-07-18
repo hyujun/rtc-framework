@@ -216,21 +216,15 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     }
   }
 
-  // ── Arm FK: base → tip (computed once per tick; cached for Fill*) ──────
-  // WriteJointCommand / FillLogOutput do not touch arm_handle_, so the cached
-  // pose stays valid for the whole output-composition phase.
-  // arm_handle_ is always non-null after LoadConfig in production; the guard
-  // mirrors the wbc controller so unit tests (empty urdf_path, grasp/sensor
-  // logic only) can drive Compute() without building an arm model.
-  if (arm_handle_) {
-    const int nc0 = dev0.num_channels;
-    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-    arm_handle_->ComputeForwardKinematics(q_span);
-    arm_tcp_pose_ = arm_handle_->GetFramePlacement(tip_frame_id_);
-    if (use_root_frame_) {
-      arm_tcp_pose_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(arm_tcp_pose_);
-    }
-  }
+  // ── Arm FK: base → tip (from the unified combined-model cache) ────────
+  // The cache was Updated at the top of Compute for this non-E-STOP tick; read
+  // its registered arm TCP frame (world tip, base-relative when a root frame is
+  // registered). arm_handle_ is no longer read here (retained only for the
+  // E-STOP TF path). Unconfigured cache → Identity, matching the prior
+  // null-arm_handle_ default so grasp/sensor-only unit fixtures stay unchanged.
+  // Cached for the Fill* output-composition phase (WriteJointCommand /
+  // FillLogOutput do not recompute it).
+  arm_tcp_pose_ = ArmTcpPoseFromCache();
 
   // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
   // #121: closed-chain projection when the hand has loop closure with downstream
