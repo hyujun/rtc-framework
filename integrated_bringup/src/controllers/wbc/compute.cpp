@@ -108,15 +108,15 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeControl");
   // ── Stage 1 (compute model): per-tick unconditional cache refresh. ExtractFullState
-  // (raw read + reindex → combined_cache_.q()/combined_cache_.v()) ran in ReadState; here we consume
-  // it to refresh FK/J/M/h/g/oMf so arm/contact oMf follow measured on kFallback and
-  // every non-TSID tick too (pose fresh; command is held by each phase). estop and
-  // !target_initialized seed are handled by Compute()'s early-returns, so gate on
-  // cache-readiness (tsid_initialized_ && combined_cache_.reorder_valid()) only. UpdatePhase (FSM;
-  // its ComputeTcpError reads the PREVIOUS tick's oMf — one-tick lag contract) ran in
-  // Compute() BEFORE this Stage-1 Update, so the lag is preserved → TSID-routing phase
-  // byte-for-byte. cache.Update is ContactState-independent (Phase 1 always-compute) so
-  // it may precede the contact_state_ update below (option C, hoisted UpdatePhase).
+  // (raw read + reindex → combined_cache_.q()/combined_cache_.v()) ran in ReadState; here we
+  // consume it to refresh FK/J/M/h/g/oMf so arm/contact oMf follow measured on kFallback and every
+  // non-TSID tick too (pose fresh; command is held by each phase). estop and !target_initialized
+  // seed are handled by Compute()'s early-returns, so gate on cache-readiness (tsid_initialized_ &&
+  // combined_cache_.reorder_valid()) only. UpdatePhase (FSM; its ComputeTcpError reads the PREVIOUS
+  // tick's oMf — one-tick lag contract) ran in Compute() BEFORE this Stage-1 Update, so the lag is
+  // preserved → TSID-routing phase byte-for-byte. cache.Update is ContactState-independent (Phase 1
+  // always-compute) so it may precede the contact_state_ update below (option C, hoisted
+  // UpdatePhase).
   if (tsid_initialized_ && combined_cache_.reorder_valid()) {
     combined_cache_.Update();
   }
@@ -150,6 +150,26 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
   // #167: after the FSM dispatch so TSID ticks see this tick's contact
   // frames; non-TSID ticks decay the estimate via invalid inputs.
   UpdatePullEstimate(dt);
+
+  // ── Hand fingertip FK (publish-surface TF) ───────────────────────────────
+  // Computed here (not in FillPublishOutput) so the publish path only READS
+  // cached poses, never solves kinematics — matching joint/task. Uses the arm
+  // TCP oMf refreshed by the Stage-1 Update above (clik_tcp / clik_base
+  // registered frames). fingertip_pose_valid_ is reset each tick so a failed
+  // hand-FK tick withholds every fingertip TF (FillPublishOutput now gates on
+  // these flags, not on ComputeHandFingertipFk's return).
+  fingertip_pose_valid_.fill(false);
+  if (clik_tcp_frame_idx_ >= 0) {
+    pinocchio::SE3 tcp = combined_cache_.cache()
+                             .registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)]
+                             .oMf;
+    if (clik_base_frame_idx_ >= 0) {
+      tcp = combined_cache_.cache()
+                .registered_frames[static_cast<std::size_t>(clik_base_frame_idx_)]
+                .oMf.actInv(tcp);
+    }
+    (void)ComputeHandFingertipFk(state, tcp);
+  }
 }
 
 // ── In-plane pull-force estimate (#167) ──────────────────────────────────────
@@ -317,8 +337,8 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
     rtc::mpc::InterpMeta meta;
     mpc_manager_.WriteState(combined_cache_.q(), combined_cache_.v(), now_ns);
     mpc_ref_valid =
-        mpc_manager_.ComputeReference(combined_cache_.q(), combined_cache_.v(), now_ns, mpc_q_ref_, mpc_v_ref_,
-                                      mpc_a_ff_, mpc_lambda_ref_, mpc_u_fb_, meta);
+        mpc_manager_.ComputeReference(combined_cache_.q(), combined_cache_.v(), now_ns, mpc_q_ref_,
+                                      mpc_v_ref_, mpc_a_ff_, mpc_lambda_ref_, mpc_u_fb_, meta);
   }
 
   // 3. Set posture reference (regularization toward MPC q_ref if valid,
@@ -345,7 +365,8 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
     if (phase_ == WbcPhase::kRelease) {
       control_ref_.q_des = combined_cache_.q();
     } else if (phase_ == WbcPhase::kIdle) {
-      control_ref_.q_des = combined_cache_.reorder_valid() ? q_des_target_full_ : combined_cache_.q();
+      control_ref_.q_des =
+          combined_cache_.reorder_valid() ? q_des_target_full_ : combined_cache_.q();
     } else {
       control_ref_.q_des = q_des_target_full_;
     }
@@ -460,8 +481,9 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
     // only when CLIK actually solves so a skipped tick keeps the pending reseed.
     const bool reseed_anchor = clik_reseed_pending_;
     clik_reseed_pending_ = false;
-    clik_compute_ok_ = clik_.Compute(combined_cache_.cache(), clik_tcp_frame_idx_, clik_base_frame_idx_,
-                                     clik_target, control_ref_.q_des, dt, reseed_anchor);
+    clik_compute_ok_ =
+        clik_.Compute(combined_cache_.cache(), clik_tcp_frame_idx_, clik_base_frame_idx_,
+                      clik_target, control_ref_.q_des, dt, reseed_anchor);
     clik_tcp_err_ = clik_.TcpErrorNorm();
     clik_manip_ = clik_.Manipulability();
 
@@ -779,7 +801,8 @@ pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noe
   pinocchio::SE3 tcp =
       combined_cache_.cache().registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
   if (clik_base_frame_idx_ >= 0) {
-    tcp = combined_cache_.cache().registered_frames[static_cast<std::size_t>(clik_base_frame_idx_)]
+    tcp = combined_cache_.cache()
+              .registered_frames[static_cast<std::size_t>(clik_base_frame_idx_)]
               .oMf.actInv(tcp);
   }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
@@ -804,13 +827,15 @@ pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noe
   return tcp;
 }
 
-// ── #123 Phase 2: per-tick hand fingertip FK (RT-safe, publish-surface only) ──
+// ── #123 Phase 2: per-tick hand fingertip FK (RT-safe, publish-surface data) ──
 // Runs the closed-chain projection (extended hands) or serial hand FK, then
 // composes each fingertip's hand-root-relative pose to the base frame via the
 // arm TCP placement (@p tcp = base→tool0; base_adapter ≡ tool0 identity mount).
-// Caches into fingertip_positions_/rotations_ for FillPublishOutput. Mirrors
-// DemoTaskController's compute.cpp fingertip loop. noexcept, no allocation:
-// the SE3 temporaries are stack locals and the dispatch helpers are RT-safe.
+// Caches into fingertip_positions_/rotations_/pose_valid_; FillPublishOutput
+// only reads them. Called from ComputeControl (after the Stage-1 cache Update)
+// so the publish path never solves kinematics — mirrors DemoTaskController's
+// compute.cpp fingertip loop. noexcept, no allocation: the SE3 temporaries are
+// stack locals and the dispatch helpers are RT-safe.
 bool DemoWbcController::ComputeHandFingertipFk(const ControllerState& state,
                                                const pinocchio::SE3& tcp) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeHandFingertipFk");
@@ -927,26 +952,22 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
     output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
     output.arm_tip_pose_valid = true;
 
-    // #123 Phase 2: fingertip TF source — loop-consistent (extended) or serial
-    // hand FK, composed to the base frame. task_link_poses[f] feeds the kHandTip
-    // slots registered in on_configure. Downstream (loop) tips respond to DIP
-    // actuation; non-downstream tips match the serial tree-model FK.
-    if (ComputeHandFingertipFk(state, tcp)) {
-      for (std::size_t f = 0; f < kNumFingertips; ++f) {
-        // Gate on both a resolved serial frame id AND a pose actually produced
-        // this tick: a downstream (loop) tip holds no pose until the closed
-        // chain first converges, so publishing its zero-init cache would snap
-        // the fingertip TF to the base origin.
-        if (fingertip_frame_ids_[f] != 0 && fingertip_pose_valid_[f]) {
-          const Eigen::Vector3d& ft_trans = fingertip_positions_[f];
-          const Eigen::Quaterniond ft_quat(fingertip_rotations_[f]);
-          output.task_link_poses[f].position = {ft_trans.x(), ft_trans.y(), ft_trans.z()};
-          output.task_link_poses[f].quaternion = {ft_quat.w(), ft_quat.x(), ft_quat.y(),
-                                                  ft_quat.z()};
-          output.task_link_pose_valid[f] = true;
-        } else {
-          output.task_link_pose_valid[f] = false;
-        }
+    // #123 Phase 2: fingertip TF source — poses were computed + cached in
+    // ComputeControl (fingertip_positions_/rotations_/pose_valid_) this tick; the
+    // publish path only READS them, never re-solves hand FK (matches joint/task).
+    for (std::size_t f = 0; f < kNumFingertips; ++f) {
+      // Gate on both a resolved serial frame id AND a pose actually produced
+      // this tick: a downstream (loop) tip holds no pose until the closed
+      // chain first converges, so publishing its zero-init cache would snap
+      // the fingertip TF to the base origin.
+      if (fingertip_frame_ids_[f] != 0 && fingertip_pose_valid_[f]) {
+        const Eigen::Vector3d& ft_trans = fingertip_positions_[f];
+        const Eigen::Quaterniond ft_quat(fingertip_rotations_[f]);
+        output.task_link_poses[f].position = {ft_trans.x(), ft_trans.y(), ft_trans.z()};
+        output.task_link_poses[f].quaternion = {ft_quat.w(), ft_quat.x(), ft_quat.y(), ft_quat.z()};
+        output.task_link_pose_valid[f] = true;
+      } else {
+        output.task_link_pose_valid[f] = false;
       }
     }
   }
