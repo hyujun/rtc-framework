@@ -302,8 +302,10 @@ planar `contact_3d` 처럼 구속이 redundant(rank<m) 여도 damped pseudo-inve
 > 금지 — init / 저주기 query / off-RT 컨트롤러 준비용입니다. RT 핫패스용 축약 동역학은
 > `RtClosedChainHandle::UpdateDynamics(v_a)` + `GetMassMatrix/GetGeneralizedGravity/
 > GetNonLinearEffects` 가 동일 수학을 warm-start + 고정 K 사영 + damped 정규방정식 LDLT 로
-> **힙 할당 없이** 제공합니다 (non-RT SVD damped-pinv 와 수치 등가; #120). 개방 체인 RT 는
-> `RtModelHandle`.
+> **힙 할당 없이** 제공합니다 (non-RT SVD damped-pinv 와 수치 등가; #120). loop-consistent
+> frame drift `J̇_a·v_a` 는 `GetFrameClassicalAccelerationDrift(fid, ref, out)` — 같은 tick 의
+> `UpdateDynamics()` 가 구한 구속-정합 drift 가속으로 2차 FK 한 상태를 읽습니다 (#173).
+> 개방 체인 RT 는 `RtModelHandle`.
 
 ```cpp
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"

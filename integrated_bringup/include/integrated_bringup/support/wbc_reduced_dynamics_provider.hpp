@@ -159,9 +159,12 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
   /// FillReducedFrameKinematics 앞에 돌았는지 검증하는 per-tick 토큰. 전자에서 set, 후자에서
   /// (핸들 사용 직전) assert 후 소비(reset). Release(NDEBUG)에서는 assert 컴파일 아웃 → RT no-op.
   bool dynamics_projected_{false};
-  // L1: 하류 frame 별 직전 유효(last-good) loop-consistent J_a(6×n_a, 핸들 순서)·oMf.
+  // L1: 하류 frame 별 직전 유효(last-good) loop-consistent J_a(6×n_a, 핸들 순서)·oMf·dJv.
+  // 세 값은 **한 kinematic snapshot 단위**로 저장/주입한다 (#173 F3) — held tick 에 last-good
+  // J/oMf 와 현재/0 dJv 가 섞이면 contact 가속 구속(J q̈ + J̇v = 0)의 snapshot 이 불일치.
   std::vector<Eigen::MatrixXd> contact_J_last_;
   std::vector<pinocchio::SE3> contact_oMf_last_;
+  std::vector<Eigen::Matrix<double, 6, 1>> contact_dJv_last_;  ///< frame-space 6×1 (순열 불필요)
   std::vector<char> contact_have_last_;
   Eigen::MatrixXd J_a_scratch_;  ///< 6 × n_a, GetFrameJacobian 출력 (preallocated)
 };

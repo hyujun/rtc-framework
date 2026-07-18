@@ -154,6 +154,7 @@ void WbcReducedDynamicsProvider::ConfigureContactFrames(
   contact_downstream_.clear();
   contact_J_last_.clear();
   contact_oMf_last_.clear();
+  contact_dJv_last_.clear();
   contact_have_last_.clear();
   unmapped_contact_frames_.clear();
 
@@ -167,6 +168,7 @@ void WbcReducedDynamicsProvider::ConfigureContactFrames(
   contact_full_fid_.assign(n, 0);
   contact_downstream_.assign(n, 0);
   contact_oMf_last_.assign(n, pinocchio::SE3::Identity());
+  contact_dJv_last_.assign(n, Eigen::Matrix<double, 6, 1>::Zero());
   contact_have_last_.assign(n, 0);
   contact_J_last_.resize(n);
 
@@ -237,17 +239,22 @@ bool WbcReducedDynamicsProvider::FillReducedFrameKinematics(
       continue;  // 비하류/미매핑 → open-chain 정확값 유지 (byte-for-byte)
     }
     if (fresh) {
+      // fresh → J/oMf/dJv 를 **한 snapshot 단위**로 저장 (#173 F3). drift 는 같은 tick 의
+      // FillReducedDynamics 가 돌린 UpdateDynamics 의 2차 FK 상태에서 읽는다 (L2-exact).
       handle_->GetFrameJacobian(contact_full_fid_[i], pinocchio::LOCAL_WORLD_ALIGNED, J_a_scratch_);
       contact_J_last_[i] = J_a_scratch_;
       contact_oMf_last_[i] = handle_->GetFramePlacement(contact_full_fid_[i]);
+      handle_->GetFrameClassicalAccelerationDrift(
+          contact_full_fid_[i], pinocchio::LOCAL_WORLD_ALIGNED, contact_dJv_last_[i]);
       contact_have_last_[i] = 1;
     } else if (!contact_have_last_[i]) {
       continue;  // 최초 유효 tick 이전 held/singular → open-chain (불가피)
     }
-    // last-good(=이번 fresh 또는 직전 유효) loop-consistent J/oMf 주입. dJv=0 (L2-zero).
+    // last-good(=이번 fresh 또는 직전 유효) loop-consistent J/oMf/dJv 3값 동시 주입
+    // (#173 L2-exact). dJv 는 frame-space 6×1 이라 열 순열 불필요 — 직접 복사.
     ScatterFrameJacobian(contact_frames[i].J, contact_J_last_[i]);
     contact_frames[i].oMf = contact_oMf_last_[i];
-    contact_frames[i].dJv.setZero();
+    contact_frames[i].dJv = contact_dJv_last_[i];
     any = true;
   }
   return any;

@@ -130,12 +130,15 @@ class RtClosedChainHandle {
   /// non-RT 핸들의 SVD damped-pinv 대신 직전 Update 가 factor 한 damped 정규방정식 LDLT
   /// (`ldlt_G_`) 와 Jc_D (`Jc_free_`) 를 재사용해 동일 결과를 힙 할당 없이 얻는다.
   ///
-  /// @param v_a 독립 관절 속도 (n_a). 비우거나 크기≠n_a 면 v_full=0 → h_a=g_a.
-  /// @return 직전 `Update` 상태를 그대로 반환. `held==true` 면 동역학 미갱신 (직전값 hold).
-  ///   `singular==true` 면 M_a/g_a/h_a 는 damped — 소비자 hold 정책.
+  /// @param v_a 독립 관절 속도 (n_a). 비우거나 크기≠n_a 면 v_full=0 → h_a=g_a. 비유한
+  ///   (NaN/Inf) 성분이 있으면 `held=true` 로 직전 동역학·drift 를 유지한다 (`Update` 의
+  ///   q allFinite guard 와 대칭 — NaN 이 M/h/g·dJv 로 누출되지 않는다).
+  /// @return 직전 `Update` 상태를 그대로 반환 (비유한 v_a 는 held 로 격상). `held==true` 면
+  ///   동역학 미갱신 (직전값 hold). `singular==true` 면 M_a/g_a/h_a 는 damped — 소비자 hold 정책.
   /// @note **RT-safe.** noexcept, 힙 할당 없음. **반드시 같은 tick 의 `Update(q_a)` 직후 호출** —
   ///   G/Jc_D/ldlt_G_ (q_full 형상) 를 재사용한다. drift 유한차분이 `data_` 를 오염시키므로
-  ///   내부에서 FK 상태(q_full)로 복원 → 이후 `GetFrame*` getter 는 계속 유효.
+  ///   내부에서 2차 FK 상태(q_full, v_full, a_drift)로 복원 → 이후 `GetFrame*` getter 와
+  ///   @ref GetFrameClassicalAccelerationDrift 는 계속 유효.
   [[nodiscard]] Status UpdateDynamics(std::span<const double> v_a = {}) noexcept;
 
   // ── 축약 동역학 결과 (UpdateDynamics 이후 유효, 독립 좌표 n_a 기준) ────────────
@@ -165,6 +168,24 @@ class RtClosedChainHandle {
   /// @param J_out 6 × n_a pre-allocated. **RT-safe.**
   void GetFrameJacobian(pinocchio::FrameIndex frame_id, pinocchio::ReferenceFrame ref_frame,
                         Eigen::Ref<Eigen::MatrixXd> J_out) noexcept;
+
+  /// loop-consistent frame classical acceleration **drift** J̇_a·v_a (6×1) 를 @p a_out 에 기록.
+  ///
+  /// 직전 `UpdateDynamics(v_a)` 가 구한 구속-정합 drift 가속 a_drift(축약 좌표에서 a_indep=0
+  /// 일 때의 full 가속 = Ġ·v_a)로 2차 FK 를 수행한 `data_` 에서 pinocchio classical
+  /// acceleration 을 읽는다 — 반환값은 축약 Jacobian 의 drift `J̇_a·v_a` 다. open-chain
+  /// `PinocchioCache` 의 dJv 와 동일 규약 (classical accel, 호출측이 ref_frame 선택).
+  ///
+  /// @param frame_id 프레임 인덱스 (full 모델 기준; GetFrameId 로 조회). 범위 밖 → 0 기록.
+  /// @param ref_frame LOCAL / WORLD / LOCAL_WORLD_ALIGNED
+  /// @param a_out 6×1 pre-allocated 출력. **RT-safe.**
+  /// @note **같은 tick 의 `UpdateDynamics()` 이후에만 유효** (그 2차 FK 상태를 읽는다).
+  ///   `Update()` 만 호출한 tick / held tick 은 직전 유효 tick 의 drift 가 반환된다 — 소비자는
+  ///   `GetStatus()` 로 fresh 여부를 판정해 held/singular 시 last-good 정책을 적용한다.
+  ///   v_a 미제공(`UpdateDynamics({})`) 이면 0 이 기록된다 (v=0 → drift 0).
+  void GetFrameClassicalAccelerationDrift(
+      pinocchio::FrameIndex frame_id, pinocchio::ReferenceFrame ref_frame,
+      Eigen::Ref<Eigen::Matrix<double, 6, 1>> a_out) const noexcept;
 
   /// 속도 축약 map G (nv × n_a): v_full = G v_a. 고급 소비자용.
   [[nodiscard]] Eigen::Ref<const Eigen::MatrixXd> GetReductionMap() const noexcept;
