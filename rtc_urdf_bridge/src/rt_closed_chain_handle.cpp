@@ -391,8 +391,10 @@ void RtClosedChainHandle::RebuildReducedDynamics(bool have_velocity) noexcept {
   g_a_.noalias() = G_.transpose() * data_.g;
 
   // (3) 축약 비선형효과 h_a = Gᵀ rnea(q, v_full, a_drift). v=0 이면 h_a = g_a.
+  // a_drift_ 는 분기 밖에서 무조건 0 초기화 — no-velocity 경로에서 직전 tick 값이 잔존하면
+  // 아래 (4) 의 2차 FK 가 stale drift 를 frame classical accel getter 로 누출한다 (#173 F2).
+  a_drift_.setZero();
   if (have_velocity) {
-    a_drift_.setZero();
     if (dep_ > 0) {
       // a_drift 종속 성분 = −Jc_D⁺ γ (γ = J̇c v_full 중앙차분). Jc_D⁺ = damped 정규방정식
       // left-pinv = (Jc_Dᵀ Jc_D + λ²I)⁻¹ Jc_Dᵀ — 직전 RebuildReductionMap 이 factor 한
@@ -418,9 +420,14 @@ void RtClosedChainHandle::RebuildReducedDynamics(bool have_velocity) noexcept {
     h_a_ = g_a_;
   }
 
-  // (4) FK/Jacobian getter 를 위해 data_ 를 q_full_ 상태로 복원 (drift 유한차분이
-  //     data_.J/oMi 를 q_plus/minus 로 오염시켰을 수 있음). closed_chain_handle.cpp:350-353 동일.
+  // (4) getter 를 위해 data_ 를 q_full_ 상태로 복원 (drift 유한차분이 data_.J/oMi 를
+  //     q_plus/minus 로 오염시켰을 수 있음). 3단 순서 고정 (#173 F1): computeJointJacobians 가
+  //     data_.J(Jacobian getter)를, forwardKinematics(q,v,a) 가 data_.v/a(classical-accel
+  //     getter; data_.J 는 불변)를, updateFramePlacements 가 oMf 를 — 세 getter 가 한 data_
+  //     상태에서 동시에 유효해진다. 순서를 바꾸면 J getter 가 깨지거나 drift 가 zero-accel 로
+  //     떨어진다. no-velocity 시 v_full_/a_drift_ = 0 → drift getter 는 자연히 0 을 반환.
   pinocchio::computeJointJacobians(model, data_, q_full_);
+  pinocchio::forwardKinematics(model, data_, q_full_, v_full_, a_drift_);
   pinocchio::updateFramePlacements(model, data_);
 }
 
@@ -460,6 +467,19 @@ void RtClosedChainHandle::GetFrameJacobian(pinocchio::FrameIndex frame_id,
   J_full_.setZero();
   pinocchio::getFrameJacobian(*model_, data_, frame_id, ref_frame, J_full_);
   J_out.noalias() = J_full_ * G_;  // 6 × n_a
+}
+
+void RtClosedChainHandle::GetFrameClassicalAccelerationDrift(
+    pinocchio::FrameIndex frame_id, pinocchio::ReferenceFrame ref_frame,
+    Eigen::Ref<Eigen::Matrix<double, 6, 1>> a_out) const noexcept {
+  if (frame_id >= data_.oMf.size()) {
+    a_out.setZero();  // 범위 밖(stale/foreign id) → OOB 대신 0 반환 (placement getter 대칭)
+    return;
+  }
+  // RebuildReducedDynamics (4) 의 2차 FK(q_full, v_full, a_drift) 상태를 읽는다. a_drift 는
+  // a_indep=0 의 구속-정합 가속(= Ġ v_a)이므로 classical accel = J_full·Ġv_a + J̇_full·Gv_a
+  // = d/dt(J_full G)·v_a = J̇_a·v_a — 축약 좌표의 loop-consistent drift.
+  a_out = pinocchio::getFrameClassicalAcceleration(*model_, data_, frame_id, ref_frame).toVector();
 }
 
 Eigen::Ref<const Eigen::MatrixXd> RtClosedChainHandle::GetReductionMap() const noexcept {
