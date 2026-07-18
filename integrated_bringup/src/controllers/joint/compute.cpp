@@ -27,8 +27,8 @@ void DemoJointController::ReadState(const ControllerState& state) noexcept {
   // ComputeControl Stage 1 consumes it via pinocchio_cache_.Update. Same gate as
   // the prior Compute-top block (non-E-STOP, reorder map ready, arm TCP frame
   // registered) so it runs on exactly the same ticks — byte-for-byte.
-  if (!estop_active_ && joint_reorder_valid_ && arm_tcp_frame_idx_ >= 0) {
-    ExtractFullState(state);
+  if (!estop_active_ && combined_cache_.reorder_valid() && arm_tcp_frame_idx_ >= 0) {
+    combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
   }
 
   // Robot arm joint positions (used for FK logging in WriteOutput)
@@ -141,8 +141,8 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // !estop_active_ guard is implied; gate on cache readiness only. Stage 2 (the
   // trajectory control law below + the arm_tcp_pose_ FK) consumes it. Same gate
   // and same q_curr_full_ as the prior Compute-top Update — byte-for-byte.
-  if (joint_reorder_valid_ && arm_tcp_frame_idx_ >= 0) {
-    pinocchio_cache_.Update(q_curr_full_, v_curr_full_);
+  if (combined_cache_.reorder_valid() && arm_tcp_frame_idx_ >= 0) {
+    combined_cache_.Update();
   }
 
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
@@ -243,7 +243,7 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
   // null-arm_handle_ default so grasp/sensor-only unit fixtures stay unchanged.
   // Cached for the Fill* output-composition phase (WriteJointCommand /
   // FillLogOutput do not recompute it).
-  arm_tcp_pose_ = ArmTcpPoseFromCache();
+  arm_tcp_pose_ = combined_cache_.ArmTcpPoseFromCache(arm_tcp_frame_idx_, arm_base_frame_idx_);
 
   // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
   // #121: closed-chain projection when the hand has loop closure with downstream

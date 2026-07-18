@@ -7,6 +7,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
+#include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -282,20 +283,14 @@ class DemoJointController final : public RTControllerInterface {
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
 
-  // ── Unified kin&dyn cache (Phase 5) ──────────────────────────────────────
-  // Arm TCP FK now comes from a WBC/task-style combined (arm+hand) PinocchioCache
-  // updated once per non-E-STOP tick, replacing the arm-only arm_handle_ FK.
-  // arm_handle_ is retained only for the E-STOP TF path (ComputeEstop). Joint is
-  // FK-only (no Jacobian consumer), so no arm-column extraction is needed. Combined
-  // model selection mirrors DemoTaskController::InitControlModelCache.
-  std::shared_ptr<const pinocchio::Model> full_model_ptr_;
-  rtc_urdf_bridge::PinocchioCache pinocchio_cache_;
-  std::array<int, kDemoJointMaxFullDof> ext_to_pin_q_{};
-  std::array<int, kDemoJointMaxFullDof> ext_to_pin_v_{};
-  bool joint_reorder_valid_{false};
+  // ── Unified kin&dyn combined-model cache (#174) ──────────────────────────
+  // Arm TCP FK comes from the shared combined (arm+hand) model cache, updated
+  // once per non-E-STOP tick (replacing the arm-only arm_handle_ FK; arm_handle_
+  // retained only for the E-STOP TF path). Joint is FK-only (no Jacobian
+  // consumer). The cache wiring — model select, ext→Pinocchio reorder map, per-
+  // tick state scatter, arm-TCP FK — is shared with task/wbc via CombinedModelCache.
+  CombinedModelCache combined_cache_;
   int full_dof_{0};
-  Eigen::VectorXd q_curr_full_;  ///< [nq] current q in Pinocchio order (per tick)
-  Eigen::VectorXd v_curr_full_;  ///< [nv] current v in Pinocchio order (per tick)
   // registered_frames indices for the arm TCP tip / base (< 0 = universe/world).
   // Registered on the combined cache with the ARM sub-model frame ids (frame-id
   // consistency proven by test_wbc_arm_tcp_cache_equivalence).
@@ -335,19 +330,6 @@ class DemoJointController final : public RTControllerInterface {
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig& config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
-  // Select the combined arm+hand control model (mirrors DemoTaskController::
-  // InitControlModelCache) and Init the shared PinocchioCache on it. Called from
-  // LoadConfig after InitArmModel/InitHandModel. No-op if no builder.
-  void InitControlModelCache();
-  // Build ext (device) → Pinocchio q/v reorder map over full_model_ptr_. Needs
-  // device configs → called from OnDeviceConfigsSet after arm_dof_/hand_dof_.
-  void BuildJointReorderMap();
-  // Scatter per-tick device positions/velocities into q_curr_full_ / v_curr_full_
-  // in Pinocchio order. No-op until joint_reorder_valid_. RT-safe.
-  void ExtractFullState(const ControllerState& state) noexcept;
-  // Arm TCP pose from the cache registered frames (world tip; base-relative when
-  // arm_base_frame_idx_ >= 0). Unconfigured cache → Identity. RT-safe, no alloc.
-  [[nodiscard]] pinocchio::SE3 ArmTcpPoseFromCache() const noexcept;
 
   CommandType command_type_{CommandType::kPosition};
 

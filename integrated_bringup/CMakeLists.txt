@@ -67,6 +67,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/phase.cpp
   src/controllers/wbc/grasp_phase_manager.cpp
   src/controllers/wbc/force_reference_updater.cpp
+  src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
   src/support/closed_chain_hand_fk.cpp

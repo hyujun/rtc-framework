@@ -59,139 +59,6 @@ void DemoJointController::InitArmModel(const rtc_urdf_bridge::ModelConfig& confi
   arm_handle_ = std::make_unique<rub::RtModelHandle>(builder_->GetReducedModel(model_name));
 }
 
-// ── Unified kin&dyn (Phase 5): combined-model cache init ─────────────────────
-// Select the combined arm+hand control model exactly like DemoTaskController::
-// InitControlModelCache (actuated closed-chain → reduced tree 'wbc' → raw full),
-// then Init the shared PinocchioCache on it. Arm TCP tip/base frames are
-// registered in OnDeviceConfigsSet once their frame ids resolve.
-void DemoJointController::InitControlModelCache() {
-  if (!builder_) {
-    return;
-  }
-  namespace rub = rtc_urdf_bridge;
-  if (auto actuated = builder_->GetActuatedModel()) {
-    full_model_ptr_ = std::move(actuated);
-    RCLCPP_INFO(logger_, "[joint] control model: actuated closed-chain (nq=%d nv=%d)",
-                full_model_ptr_->nq, full_model_ptr_->nv);
-  } else {
-    try {
-      full_model_ptr_ = builder_->GetTreeModel("wbc");
-      RCLCPP_INFO(logger_, "[joint] control model: reduced tree 'wbc' (nq=%d nv=%d)",
-                  full_model_ptr_->nq, full_model_ptr_->nv);
-    } catch (const std::exception& e) {
-      full_model_ptr_ = builder_->GetFullModel();
-      RCLCPP_INFO(logger_,
-                  "[joint] control model: URDF full model (nq=%d nv=%d) — tree 'wbc' missing (%s)",
-                  full_model_ptr_->nq, full_model_ptr_->nv, e.what());
-    }
-  }
-  // Joint has no TSID contact frames — empty contact-frame list. Arm TCP frames
-  // are added via RegisterFrame in OnDeviceConfigsSet.
-  pinocchio_cache_.Init(full_model_ptr_, {});
-  q_curr_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nq);
-  v_curr_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
-}
-
-// Build ext (device joint-state order) → Pinocchio q/v index map over the
-// combined control model (mirrors DemoTaskController::BuildJointReorderMap).
-void DemoJointController::BuildJointReorderMap() {
-  if (!full_model_ptr_) {
-    return;
-  }
-  const auto& model = *full_model_ptr_;
-
-  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
-  const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
-  if (!arm_cfg) {
-    RCLCPP_WARN(logger_, "[joint] primary device config unavailable — identity reorder map");
-    for (int i = 0; i < full_dof_; ++i) {
-      ext_to_pin_q_[static_cast<std::size_t>(i)] = i;
-      ext_to_pin_v_[static_cast<std::size_t>(i)] = i;
-    }
-    joint_reorder_valid_ = (full_dof_ > 0);
-    return;
-  }
-
-  int ext_idx = 0;
-  const auto map_joint = [&](const std::string& jname) {
-    if (!model.existJointName(jname)) {
-      RCLCPP_ERROR(logger_, "[joint] joint '%s' not found in control model", jname.c_str());
-      return;
-    }
-    const auto jid = model.getJointId(jname);
-    const auto eidx = static_cast<std::size_t>(ext_idx);
-    ext_to_pin_q_[eidx] = model.idx_qs[jid];
-    ext_to_pin_v_[eidx] = model.idx_vs[jid];
-    ++ext_idx;
-  };
-
-  for (const auto& jname : arm_cfg->joint_state_names) {
-    map_joint(jname);
-  }
-  if (hand_cfg) {
-    for (const auto& jname : hand_cfg->joint_state_names) {
-      map_joint(jname);
-    }
-  }
-
-  joint_reorder_valid_ = (ext_idx == full_dof_);
-  if (!joint_reorder_valid_) {
-    RCLCPP_ERROR(logger_, "[joint] joint reorder incomplete: mapped %d/%d joints", ext_idx,
-                 full_dof_);
-  }
-}
-
-// Scatter per-tick device positions/velocities into q_curr_full_ / v_curr_full_
-// in Pinocchio order (mirrors DemoTaskController::ExtractFullState). RT-safe.
-void DemoJointController::ExtractFullState(const ControllerState& state) noexcept {
-  RTC_TRACE_SCOPE("DemoJointController::ExtractFullState");
-  if (!joint_reorder_valid_) {
-    return;
-  }
-  const auto& dev0 = state.devices[0];
-  // Clamp to the device channel count: arm_dof_ == num_channels by config
-  // construction, but a mismatched config must not scatter stale slots past the
-  // valid measured range into q/v.
-  const int narm = std::min(arm_dof_, dev0.num_channels);
-  for (int i = 0; i < narm; ++i) {
-    const auto eidx = static_cast<std::size_t>(i);
-    const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
-    const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
-    q_curr_full_[pq] = dev0.positions[eidx];
-    v_curr_full_[pv] = dev0.velocities[eidx];
-  }
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    const int nhand = std::min(hand_dof_, dev1.num_channels);
-    for (int i = 0; i < nhand; ++i) {
-      const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
-      const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
-      const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
-      q_curr_full_[pq] = dev1.positions[static_cast<std::size_t>(i)];
-      v_curr_full_[pv] = dev1.velocities[static_cast<std::size_t>(i)];
-    }
-  }
-}
-
-// Arm TCP pose from the cache registered frames (world tip; base-relative when a
-// root frame is registered). Unconfigured cache → Identity (matches the prior
-// null-arm_handle_ default so grasp/sensor-only unit fixtures stay unchanged).
-pinocchio::SE3 DemoJointController::ArmTcpPoseFromCache() const noexcept {
-  // Identity unless the cache is both configured (frame registered) AND fresh
-  // (reorder valid → Update() ran this run). Reading a registered-but-never-
-  // Updated frame would return a stale/Identity oMf; gating here keeps every
-  // consumer (FK log, vTCP) consistent with the Compute()-level Update guard.
-  if (arm_tcp_frame_idx_ < 0 || !joint_reorder_valid_) {
-    return pinocchio::SE3::Identity();
-  }
-  const auto& frames = pinocchio_cache_.registered_frames;
-  const pinocchio::SE3& tip = frames[static_cast<std::size_t>(arm_tcp_frame_idx_)].oMf;
-  if (arm_base_frame_idx_ >= 0) {
-    return frames[static_cast<std::size_t>(arm_base_frame_idx_)].oMf.actInv(tip);
-  }
-  return tip;
-}
-
 // ── Hand tree-model initialization ──────────────────────────────────────────
 void DemoJointController::InitHandModel(const rtc_urdf_bridge::ModelConfig& /*config*/) {
   namespace rub = rtc_urdf_bridge;
@@ -359,13 +226,19 @@ void DemoJointController::OnDeviceConfigsSet() {
   // registration. The arm-model frame ids address the same physical frames in
   // the combined model (proven by test_wbc_arm_tcp_cache_equivalence).
   full_dof_ = arm_dof_ + hand_dof_;
-  BuildJointReorderMap();
-  if (full_model_ptr_ && tip_frame_id_ != 0) {
-    arm_tcp_frame_idx_ = pinocchio_cache_.RegisterFrame("arm_tcp", tip_frame_id_);
+  {
+    const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+    const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
+    combined_cache_.BuildReorderMap(arm_cfg ? &arm_cfg->joint_state_names : nullptr,
+                                    hand_cfg ? &hand_cfg->joint_state_names : nullptr, full_dof_,
+                                    "[joint]", logger_);
+  }
+  if (combined_cache_.model() && tip_frame_id_ != 0) {
+    arm_tcp_frame_idx_ = combined_cache_.cache().RegisterFrame("arm_tcp", tip_frame_id_);
     if (arm_tcp_frame_idx_ < 0) {
       RCLCPP_ERROR(logger_, "[joint] arm TCP frame registration failed (cache locked)");
     } else if (use_root_frame_ && root_frame_id_ != 0) {
-      arm_base_frame_idx_ = pinocchio_cache_.RegisterFrame("arm_base", root_frame_id_);
+      arm_base_frame_idx_ = combined_cache_.cache().RegisterFrame("arm_base", root_frame_id_);
       if (arm_base_frame_idx_ < 0) {
         RCLCPP_ERROR(logger_, "[joint] arm base frame registration failed (cache locked)");
         arm_tcp_frame_idx_ = -1;
@@ -637,10 +510,15 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
     InitHandModel(*sys_cfg);
   }
 
-  // ── Unified kin&dyn (Phase 5): combined-model cache on the same builder ──
+  // ── Unified kin&dyn (#174): combined-model cache on the same builder ──
   // Arm TCP FK is sourced from this cache on the RT path (arm_handle_ retained
-  // only for the E-STOP TF path). Frames registered in OnDeviceConfigsSet.
-  InitControlModelCache();
+  // only for the E-STOP TF path). Frames registered in OnDeviceConfigsSet. Joint
+  // has no TSID contact frames → empty contact-frame list.
+  if (builder_) {
+    // Return ignored: downstream reorder / RegisterFrame gate on combined_cache_.
+    // model() being non-null, matching the prior void InitControlModelCache path.
+    (void)combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[joint]", logger_);
+  }
 
   // ── L2: E-STOP arm safe position (required) ──────────────────────────
   //
