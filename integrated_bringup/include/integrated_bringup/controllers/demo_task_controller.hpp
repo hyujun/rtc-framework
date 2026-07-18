@@ -312,6 +312,13 @@ class DemoTaskController final : public RTControllerInterface {
   // otherwise inactive and the serial hand_handle_ path runs byte-for-byte.
   ClosedChainHandFk closed_hand_fk_;
 
+  // Arm TCP pose (base-relative when a root frame is registered), cached once
+  // per tick at the top of ComputeControl from the unified combined-model cache
+  // (ArmTcpPoseFromCache). Reused by the CLIK law, the fingertip composition,
+  // and FillLog/FillPublishOutput so the publish/log path never re-reads the
+  // cache (mirrors DemoJointController::arm_tcp_pose_).
+  pinocchio::SE3 arm_tcp_pose_{pinocchio::SE3::Identity()};
+
   // ── Virtual TCP (fingertip-based control point) ───────────────────────
   pinocchio::SE3 T_tcp_vtcp_{pinocchio::SE3::Identity()};  ///< TCP → virtual TCP transform
   pinocchio::SE3 vtcp_pose_{pinocchio::SE3::Identity()};  ///< World-frame virtual TCP pose (cached)
