@@ -497,6 +497,24 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # Unified kin&dyn Phase 4: task arm TCP FK + tip Jacobian cache equivalence.
+  # Proves DemoTaskController's move off arm_handle_ onto the combined-model
+  # PinocchioCache is value-preserving — FK oMf AND the arm-column extraction of
+  # the combined Jacobian — on both the serial (iiwa7_leap) and closed-chain
+  # (ur5e_p1b) profiles.
+  ament_add_gtest(test_task_arm_cache_equivalence
+    test/test_task_arm_cache_equivalence.cpp)
+  target_link_libraries(test_task_arm_cache_equivalence
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_task_arm_cache_equivalence
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # Phase ③ scatter permutation on the REAL ur5e_p1b closure (non-identity
   # cache_v_idx_ column map, which the CrankRocker nv==1 cases cannot exercise).
   ament_add_gtest(test_wbc_contact_permutation_real

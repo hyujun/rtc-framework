@@ -20,6 +20,7 @@
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
+#include "rtc_urdf_bridge/pinocchio_cache.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
@@ -59,6 +60,9 @@ namespace trajectory = rtc::trajectory;
 // LoadConfig (arm) and OnDeviceConfigsSet (hand).
 inline constexpr int kDemoTaskMaxArmDof = 32;
 inline constexpr int kDemoTaskMaxHandDof = 32;
+// Combined arm+hand actuated model capacity — sizes the ext↔Pinocchio reorder
+// maps (unified kin&dyn Phase 4). Actual full_dof_ resolved at runtime.
+inline constexpr int kDemoTaskMaxFullDof = kDemoTaskMaxArmDof + kDemoTaskMaxHandDof;
 
 /// Demo Task-Space Controller: CLIK (arm) + P control (hand).
 ///
@@ -268,6 +272,31 @@ class DemoTaskController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
+
+  // ── Unified kin&dyn cache (Phase 4) ──────────────────────────────────────
+  // Arm TCP FK / Jacobian now come from a WBC-style combined (arm+hand)
+  // PinocchioCache updated once per non-E-STOP tick, replacing the arm-only
+  // arm_handle_ direct calls. arm_handle_ is retained solely for the E-STOP
+  // TF-alive path (ComputeEstop), which stays on the arm sub-model by design
+  // (§주의/제약). The combined control model is selected exactly like
+  // DemoWbcController::InitModels (GetActuatedModel → tree 'wbc' → full).
+  std::shared_ptr<const pinocchio::Model> full_model_ptr_;
+  rtc_urdf_bridge::PinocchioCache pinocchio_cache_;
+  // ext (device joint-state) order → Pinocchio q/v index in full_model_ptr_.
+  // Only the first full_dof_ slots are populated; F1 review found this map is
+  // identity on real robots (buildReducedModel preserves order), but it is
+  // built name-based to stay correct if that ever changes.
+  std::array<int, kDemoTaskMaxFullDof> ext_to_pin_q_{};
+  std::array<int, kDemoTaskMaxFullDof> ext_to_pin_v_{};
+  bool joint_reorder_valid_{false};
+  int full_dof_{0};
+  Eigen::VectorXd q_curr_full_;  ///< [nq] current q in Pinocchio order (per tick)
+  Eigen::VectorXd v_curr_full_;  ///< [nv] current v in Pinocchio order (per tick)
+  // registered_frames indices for the arm TCP tip / base (< 0 = universe/base
+  // uses world). Registered on the combined cache with the ARM sub-model frame
+  // ids (frame-id consistency proven by test_wbc_arm_tcp_cache_equivalence).
+  int task_tcp_frame_idx_{-1};
+  int task_base_frame_idx_{-1};
   // ── Hand tree-model for fingertip FK ──────────────────────────────────
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
   static constexpr std::size_t kNumFingertips = 4;
@@ -299,6 +328,21 @@ class DemoTaskController final : public RTControllerInterface {
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig& config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
+  // Select the combined arm+hand control model (mirrors DemoWbcController::
+  // InitModels) and Init the shared PinocchioCache on it. Called from LoadConfig
+  // after InitArmModel/InitHandModel. No-op if no builder.
+  void InitControlModelCache();
+  // Build ext (device) → Pinocchio q/v reorder map over full_model_ptr_
+  // (mirrors DemoWbcController). Needs device configs → called from
+  // OnDeviceConfigsSet after arm_dof_/hand_dof_ resolve.
+  void BuildJointReorderMap();
+  // Scatter per-tick device positions/velocities into q_curr_full_ / v_curr_full_
+  // in Pinocchio order. No-op until joint_reorder_valid_. RT-safe.
+  void ExtractFullState(const ControllerState& state) noexcept;
+  // Arm TCP pose from the cache registered frames (world tip, base-relative when
+  // task_base_frame_idx_ >= 0). Precondition: task_tcp_frame_idx_ >= 0 and the
+  // cache was Updated this tick. RT-safe, no alloc.
+  [[nodiscard]] pinocchio::SE3 ArmTcpPoseFromCache() const noexcept;
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
   Eigen::VectorXd q_;
