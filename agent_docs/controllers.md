@@ -13,6 +13,16 @@
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
+### Unified arm kin&dyn (joint / task / wbc)
+
+세 데모 컨트롤러(DemoJoint/DemoTask/DemoWbc)는 arm kinematics(FK·Jacobian)를 **결합(arm+hand) actuated
+모델 위의 `rtc_urdf_bridge::PinocchioCache`** 에서 획득한다 — non-E-STOP tick당 `Update(q,v)` 1회
+(`GetActuatedModel` → reduced tree `"wbc"` → full model 순으로 선택). arm-only `RtModelHandle`(`arm_handle_`)은
+E-STOP TF 경로(`ComputeEstop`)와 메타데이터(`nv()`/`GetFrameId`)로만 잔존. closed-chain 손에서는 접촉
+프레임 J·oMf가 loop-consistent로 격상된다(dJv는 L2-zero, issue #173). 세 컨트롤러의 cache 배선
+(`InitControlModelCache`/`BuildJointReorderMap`/`ExtractFullState`/`ArmTcpPoseFromCache`)은 현재 삼중
+복제이며 공유 헬퍼로 통합 예정(issue #174). WBC 상세 구현: [docs/WBC_CONTROLLER_IMPLEMENTATION.md](../docs/WBC_CONTROLLER_IMPLEMENTATION.md).
+
 ## Gains (per-controller ROS 2 parameters)
 
 게인 채널은 ROS 2 parameter API로 노출된다 ([rtc_msgs/srv/GraspCommand.srv](../rtc_msgs/srv/GraspCommand.srv)). Legacy `~/controller_gains` / `~/request_gains` / `~/current_gains` 토픽 + `UpdateGainsFromMsg`/`GetCurrentGains` 가상 메서드는 모두 제거.
