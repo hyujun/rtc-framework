@@ -19,7 +19,7 @@
 모델 위의 `rtc_urdf_bridge::PinocchioCache`** 에서 획득한다 — non-E-STOP tick당 `Update(q,v)` 1회
 (`GetActuatedModel` → reduced tree `"wbc"` → full model 순으로 선택). arm-only `RtModelHandle`(`arm_handle_`)은
 E-STOP TF 경로(`ComputeEstop`)와 메타데이터(`nv()`/`GetFrameId`)로만 잔존. closed-chain 손에서는 접촉
-프레임 J·oMf가 loop-consistent로 격상된다(dJv는 L2-zero, issue #173).
+프레임 J·oMf·dJv가 loop-consistent로 격상된다(dJv는 `RtClosedChainHandle` drift API 로 L2-exact, issue #173 종결).
 
 이 cache 배선(모델 선택 + `PinocchioCache.Init`, ext(device joint-state)→Pinocchio q/v reorder map, 매 tick
 state scatter, arm-TCP FK)은 **공유 타입 `integrated_bringup::CombinedModelCache`(support/) 한 곳으로 통합**됐다
