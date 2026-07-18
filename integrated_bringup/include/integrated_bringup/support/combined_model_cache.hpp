@@ -99,6 +99,16 @@ class CombinedModelCache {
 
   [[nodiscard]] bool reorder_valid() const noexcept { return joint_reorder_valid_; }
 
+  /// ext(device joint-state) 인덱스 → Pinocchio q/v 인덱스. arm-column Jacobian 추출 등
+  /// reorder map 을 직접 소비하는 컨트롤러(task)용. 호출자는 ext_idx ∈ [0, full_dof) 보장.
+  [[nodiscard]] int ext_to_pin_q(int ext_idx) const noexcept {
+    return ext_to_pin_q_[static_cast<std::size_t>(ext_idx)];
+  }
+
+  [[nodiscard]] int ext_to_pin_v(int ext_idx) const noexcept {
+    return ext_to_pin_v_[static_cast<std::size_t>(ext_idx)];
+  }
+
   [[nodiscard]] const Eigen::VectorXd& q() const noexcept { return q_curr_full_; }
 
   [[nodiscard]] const Eigen::VectorXd& v() const noexcept { return v_curr_full_; }
