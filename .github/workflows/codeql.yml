@@ -68,7 +68,19 @@ jobs:
     name: Analyze (cpp)
     needs: build-deps
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # 120: CodeQL 트레이싱 하 rtc_* 빌드는 컴파일러를 -j2 로 묶어(아래 env) 메모리를
+    # 지키는 대신 직렬성이 커져 느리다. 계측 결과 60분으론 integrated_bringup 등
+    # 헤비 패키지까지 못 끝내 timeout(143) 났으므로 상향 (#179).
+    timeout-minutes: 120
+    # 컴파일러 병렬도 bound (#179 핵심): colcon --parallel-workers 는 패키지-레벨만
+    # 제한하고, 패키지 내부 make 는 -j(nproc=4) 로 돌아 rtc_urdf_bridge/rtc_mpc 같은
+    # 단일 pinocchio-헤비 패키지에서 4개 헤비 TU 동시 컴파일 → 16GB 러너 OOM(SIGTERM
+    # 143) 이었다. 계측상 -j1 peak 5.5GB(extractor 포함), TU 당 ~3-4GB → -j2 는 ~9GB
+    # 로 안전 마진. MAKEFLAGS(make) + CMAKE_BUILD_PARALLEL_LEVEL(cmake --build) 양쪽에
+    # 걸어 확실히 캡. 트레이싱 없는 메인 CI 는 무관하므로 CodeQL 경로 전용.
+    env:
+      MAKEFLAGS: "-j2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
     permissions:
       security-events: write
       actions: read
@@ -118,46 +130,20 @@ jobs:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
 
-      # ── DIAGNOSTIC (#179): 인라인 계측 빌드 ──────────────────────────────
-      # parallel-workers=1(패키지 직렬) 로도 단일 pinocchio-헤비 패키지(rtc_urdf_bridge)
-      # 가 CodeQL 트레이싱 하에 SIGTERM(143) 으로 죽었다 → 패키지-레벨 parallelism 은
-      # 원인이 아니다. 남은 변수: (a) 패키지 내부 컴파일러 parallelism(-j, Ninja 면
-      # nproc), (b) 실제 병목이 memory 인지 disk 인지 tracer hang 인지 미측정.
-      # 이 스텝은 (1) monitor 를 Build 와 같은 스텝에서 stdout 으로 스트림(VM 이 죽어도
-      # live 로그에 남음), (2) CMAKE_BUILD_PARALLEL_LEVEL=1 + MAKEFLAGS=-j1 로 컴파일러
-      # 를 완전 직렬화 — 실패 모드를 확정하기 위한 임시 진단(composite action 대체).
-      # 진단 후 원인이 확정되면 정식 수정으로 되돌린다.
-      - name: Build packages (instrumented, serial)
-        shell: bash
-        env:
-          BUILD_PKGS: ${{ steps.pkgs.outputs.build }}
-          DEPS_INSTALL: ${{ github.workspace }}/_rtc_ws/deps/install
-        run: |
-          set -eo pipefail
-          source "/opt/ros/${ROS_DISTRO}/setup.bash"
-          export CMAKE_PREFIX_PATH="${DEPS_INSTALL}:${CMAKE_PREFIX_PATH:-}"
-          export LD_LIBRARY_PATH="${DEPS_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
-          # 컴파일러 전역 직렬화 (패키지 내부 make/ninja 병렬 차단)
-          export CMAKE_BUILD_PARALLEL_LEVEL=1
-          export MAKEFLAGS="-j1"
-
-          echo "=== baseline ==="; nproc; free -h; df -h /
-          # monitor 를 이 스텝 stdout 으로 스트림 → VM 종료돼도 마지막 샘플이 로그에 남음
-          ( while true; do
-              printf "[MON %s] " "$(date +%T)"
-              free -m | awk '/Mem:/{printf "mem_used=%sM avail=%sM ", $3, $7}'
-              df -m / | awk 'NR==2{printf "disk_avail=%sM\n", $4}'
-              sleep 6
-            done ) &
-          MON=$!
-          trap 'kill "$MON" 2>/dev/null || true' EXIT
-
-          # shellcheck disable=SC2086
-          colcon build \
-            --packages-up-to ${BUILD_PKGS} \
-            --parallel-workers 1 \
-            --event-handlers console_direct+ \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+      # 패키지-레벨은 1개씩(--parallel-workers 1), 컴파일러 병렬은 job env 의
+      # MAKEFLAGS=-j2 / CMAKE_BUILD_PARALLEL_LEVEL=2 가 캡한다 → 동시 헤비 TU 2개로
+      # peak ~9GB, 16GB 러너 안전. (#179: 패키지-레벨만 1로 줄이면 내부 make -j4 가
+      # 여전히 OOM 냈다 — 컴파일러 -j 를 직접 묶는 게 핵심.)
+      - name: Build packages
+        uses: ./.github/actions/colcon-build
+        with:
+          packages: ${{ steps.pkgs.outputs.build }}
+          ros-distro: ${{ env.ROS_DISTRO }}
+          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
+          build-type: Release
+          enable-testing: "false"
+          parallel-workers: "1"
+          artifact-suffix: codeql-build
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
