@@ -35,7 +35,7 @@ class ContactConsistencyTaskTest : public ::testing::Test {
     contact_yaml["contacts"].push_back(c1);
 
     contact_cfg_.Load(contact_yaml, *model_);
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
 
     contacts_.Init(contact_cfg_.max_contacts);
 
@@ -61,7 +61,7 @@ TEST_F(ContactConsistencyTaskTest, ResidualMatchesFormula) {
 
   contacts_.contacts[0].active = true;
   contacts_.RecomputeActive(contact_cfg_);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ContactConsistencyTask task;
   YAML::Node cfg;
@@ -114,7 +114,7 @@ TEST_F(ContactConsistencyTaskTest, InactiveContactZeroResidualDim) {
   // Contact inactive (default).
   contacts_.RecomputeActive(contact_cfg_);
   EXPECT_EQ(contacts_.active_contact_vars, 0);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ContactConsistencyTask task;
   YAML::Node cfg;
@@ -139,7 +139,7 @@ TEST_F(ContactConsistencyTaskTest, ManagerNotSet_NoOp) {
 
   contacts_.contacts[0].active = true;
   contacts_.RecomputeActive(contact_cfg_);
-  cache_.Update(q, v, contacts_);
+  cache_.Update(q, v);
 
   ContactConsistencyTask task;
   YAML::Node cfg;

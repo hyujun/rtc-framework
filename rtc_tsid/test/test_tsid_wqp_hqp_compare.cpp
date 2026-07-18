@@ -30,7 +30,7 @@ class WQPvsHQPTest : public ::testing::Test {
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
     contacts_.Init(0);
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
 
@@ -69,7 +69,7 @@ TEST_F(WQPvsHQPTest, SingleLevelEquivalence) {
   auto wqp = make_formulation("wqp");
   auto hqp = make_formulation("hqp");
 
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
   ref_.q_des = q_;
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
@@ -92,7 +92,7 @@ TEST_F(WQPvsHQPTest, SingleLevelWithError) {
   auto wqp = make_formulation("wqp");
   auto hqp = make_formulation("hqp");
 
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
 
   ref_.q_des = q_;
   ref_.q_des.head(robot_info_.nv) += Eigen::VectorXd::Constant(robot_info_.nv, 0.1);
@@ -127,7 +127,7 @@ TEST_F(WQPvsHQPTest, TSIDControllerGravityComp) {
   posture->Init(*model_, robot_info_, cache_, task_cfg);
   ctrl.Formulation().AddTask(std::move(posture));
 
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
 
   ref_.q_des = q_;
   ref_.v_des = v_;

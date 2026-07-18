@@ -41,7 +41,7 @@ class WeightScalingTest : public ::testing::Test {
     contact_yaml["contacts"].push_back(c1);
     contact_cfg_.Load(contact_yaml, *model_);
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
     contacts_.Init(contact_cfg_.max_contacts);
     contacts_.contacts[0].active = true;
     contacts_.contacts[0].activation = 1.0;
@@ -51,7 +51,7 @@ class WeightScalingTest : public ::testing::Test {
               contact_cfg_.max_contact_vars);
     Eigen::VectorXd q = pinocchio::neutral(*model_);
     Eigen::VectorXd v = Eigen::VectorXd::Zero(robot_info_.nv);
-    cache_.Update(q, v, contacts_);
+    cache_.Update(q, v);
   }
 
   std::shared_ptr<const pinocchio::Model> model_;

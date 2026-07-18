@@ -22,6 +22,15 @@ namespace integrated_bringup {
 
 void DemoJointController::ReadState(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoJointController::ReadState");
+  // ── Unified kin&dyn: scatter measured joint pos/vel into Pinocchio order
+  // (q_curr_full_/v_curr_full_). A raw read + reindex, so it belongs to ReadState;
+  // ComputeControl Stage 1 consumes it via pinocchio_cache_.Update. Same gate as
+  // the prior Compute-top block (non-E-STOP, reorder map ready, arm TCP frame
+  // registered) so it runs on exactly the same ticks — byte-for-byte.
+  if (!estop_active_ && combined_cache_.reorder_valid() && arm_tcp_frame_idx_ >= 0) {
+    combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
+  }
+
   // Robot arm joint positions (used for FK logging in WriteOutput)
   const auto& dev0 = state.devices[0];
   (void)dev0;  // positions accessed directly via span in WriteOutput
@@ -126,6 +135,16 @@ void DemoJointController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 
 void DemoJointController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoJointController::ComputeControl");
+  // ── Stage 1 (compute model): refresh the combined-model cache from the state
+  // ReadState scattered into q_curr_full_/v_curr_full_ this tick. Reached only on
+  // non-E-STOP ticks (Compute() E-STOP-early-returns before here), so the prior
+  // !estop_active_ guard is implied; gate on cache readiness only. Stage 2 (the
+  // trajectory control law below + the arm_tcp_pose_ FK) consumes it. Same gate
+  // and same q_curr_full_ as the prior Compute-top Update — byte-for-byte.
+  if (combined_cache_.reorder_valid() && arm_tcp_frame_idx_ >= 0) {
+    combined_cache_.Update();
+  }
+
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
   const auto& dev0 = state.devices[0];
@@ -216,21 +235,15 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     }
   }
 
-  // ── Arm FK: base → tip (computed once per tick; cached for Fill*) ──────
-  // WriteJointCommand / FillLogOutput do not touch arm_handle_, so the cached
-  // pose stays valid for the whole output-composition phase.
-  // arm_handle_ is always non-null after LoadConfig in production; the guard
-  // mirrors the wbc controller so unit tests (empty urdf_path, grasp/sensor
-  // logic only) can drive Compute() without building an arm model.
-  if (arm_handle_) {
-    const int nc0 = dev0.num_channels;
-    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-    arm_handle_->ComputeForwardKinematics(q_span);
-    arm_tcp_pose_ = arm_handle_->GetFramePlacement(tip_frame_id_);
-    if (use_root_frame_) {
-      arm_tcp_pose_ = arm_handle_->GetFramePlacement(root_frame_id_).actInv(arm_tcp_pose_);
-    }
-  }
+  // ── Arm FK: base → tip (from the unified combined-model cache) ────────
+  // The cache was Updated at the top of Compute for this non-E-STOP tick; read
+  // its registered arm TCP frame (world tip, base-relative when a root frame is
+  // registered). arm_handle_ is no longer read here (retained only for the
+  // E-STOP TF path). Unconfigured cache → Identity, matching the prior
+  // null-arm_handle_ default so grasp/sensor-only unit fixtures stay unchanged.
+  // Cached for the Fill* output-composition phase (WriteJointCommand /
+  // FillLogOutput do not recompute it).
+  arm_tcp_pose_ = combined_cache_.ArmTcpPoseFromCache(arm_tcp_frame_idx_, arm_base_frame_idx_);
 
   // ── Hand fingertip FK (tree model) — base-to-fingertip ──────────────
   // #121: closed-chain projection when the hand has loop closure with downstream

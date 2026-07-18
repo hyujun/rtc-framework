@@ -129,7 +129,7 @@ rtc_msgs, rtc_base (independent)
   +-- rtc_controller_interface <-- rtc_base, rtc_msgs, rtc_urdf_bridge
   |     +-- rtc_controllers <-- rtc_controller_interface, rtc_urdf_bridge
   |           +-- rtc_controller_manager <-- rtc_controllers, rtc_communication
-  +-- rtc_tsid <-- Pinocchio, ProxSuite, Eigen3, yaml-cpp
+  +-- rtc_tsid <-- rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
   +-- rtc_mpc  <-- rtc_base, Eigen3, yaml-cpp, Pinocchio, fmt ≥ 10
   +-- rtc_mujoco_sim <-- MuJoCo 3.x (optional)
 rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional)

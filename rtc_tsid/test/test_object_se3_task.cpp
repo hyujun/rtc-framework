@@ -60,14 +60,14 @@ class ObjectSE3TaskTest : public ::testing::Test {
     contact_cfg_.max_contacts = static_cast<int>(contacts.size());
     contact_cfg_.max_contact_vars = total;
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
 
     contacts_.Init(static_cast<int>(contacts.size()));
     for (auto& e : contacts_.contacts) {
       e.active = true;
     }
     contacts_.RecomputeActive(contact_cfg_);
-    cache_.Update(q_, v_, contacts_);
+    cache_.Update(q_, v_);
 
     mgr_.Init(contact_cfg_, robot_info_.nv);
 
@@ -154,7 +154,7 @@ TEST_F(ObjectSE3TaskTest, ReferenceFormula) {
 
   // Inject a non-zero velocity so dJv is non-trivial.
   v_.setRandom();
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
   // Re-run grasp pieces because contact frames moved (oMf is the same since
   // q didn't change, but dJv changed).
   const int n_active = mgr_.ActiveLambdaDim(contacts_);
@@ -199,7 +199,7 @@ TEST_F(ObjectSE3TaskTest, ActiveCountGate) {
   // Deactivate the only contact.
   contacts_.contacts[0].active = false;
   contacts_.RecomputeActive(contact_cfg_);
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
 
   ASSERT_EQ(mgr_.ActiveLambdaDim(contacts_), 0);
 
@@ -260,7 +260,7 @@ TEST_F(ObjectSE3TaskTest, ProviderWatchdog) {
 TEST_F(ObjectSE3TaskTest, ComputeIsAllocationFree) {
   Configure({{"panda_link3", 3}, {"panda_link5", 3}, {"panda_link7", 3}});
   v_.setConstant(0.1);  // nonzero velocity → dJv + velocity-error path
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
   const int n_active = mgr_.ActiveLambdaDim(contacts_);
   G_.setZero(6, n_active);
   mgr_.ComputeGraspMatrix(cache_, contacts_, object_frame_, G_);

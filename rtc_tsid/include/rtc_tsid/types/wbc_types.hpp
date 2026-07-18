@@ -22,6 +22,12 @@
 
 #include <yaml-cpp/yaml.h>
 
+// #unified-kindyn Phase 1: PinocchioCache / ReducedDynamicsProvider 는 rtc_urdf_bridge 로 이관됨.
+// 아래 alias 재export 로 `rtc::tsid::PinocchioCache` / `rtc::tsid::ReducedDynamicsProvider` 심볼
+// 을 유지한다 (rtc_tsid 는 이제 소비자 — ARCH-2 순방향).
+#include "rtc_urdf_bridge/pinocchio_cache.hpp"
+#include "rtc_urdf_bridge/reduced_dynamics_provider.hpp"
+
 namespace rtc::tsid {
 
 // ────────────────────────────────────────────────
@@ -164,73 +170,18 @@ struct ContactState {
 // ────────────────────────────────────────────────
 // Pinocchio 계산 캐시 (매 tick 1회 갱신, task/constraint 공유)
 // ────────────────────────────────────────────────
-// #120: closed-chain 축약 동역학 주입 인터페이스 (전방 선언 — rtc_urdf_bridge 미의존).
-class ReducedDynamicsProvider;
+// #unified-kindyn Phase 1: PinocchioCache / ReducedDynamicsProvider 는 rtc_urdf_bridge 로 이관.
+// 여기서는 심볼 호환을 위해 재export 한다 — 기존 `rtc::tsid::PinocchioCache` 사용처 무변경.
+// 결합 해소: 이관된 PinocchioCache::Update(q,v) 는 ContactState 무의존(always-compute), Init 은
+// contact frame id 리스트를 받는다. TSID 소비자는 ContactManagerConfig → id 리스트 변환에
+// 아래 ContactFrameIds() 헬퍼를 쓴다.
+using rtc_urdf_bridge::PinocchioCache;
+using rtc_urdf_bridge::ReducedDynamicsProvider;
 
-struct PinocchioCache {
-  // Pinocchio model/data (model은 공유, data는 소유)
-  std::shared_ptr<const pinocchio::Model> model_ptr;
-  pinocchio::Data data;
-
-  // #120: optional closed-chain 축약 동역학 provider (non-owning; nullptr=open-chain, byte-동일).
-  // set 시 Update() 의 open-chain M/h/g 계산 직후 호출돼 M/h/g 를 constraint-consistent 축약값으로
-  // 덮는다. 소유·수명은 주입 측(integrated_bringup WBC)이 보장. RT tick 매번 호출 → RT-safe 계약.
-  ReducedDynamicsProvider* reduced_provider{nullptr};
-
-  // 질량 행렬, 비선형 항
-  Eigen::MatrixXd M;  // [nv × nv]
-  Eigen::VectorXd h;  // [nv] nonlinear effects (Coriolis + gravity)
-  Eigen::VectorXd g;  // [nv] gravity only
-
-  // 현재 q, v 복사본
-  Eigen::VectorXd q;  // [nq]
-  Eigen::VectorXd v;  // [nv]
-
-  // Contact frame Jacobian 캐시
-  struct FrameCache {
-    pinocchio::FrameIndex frame_id{0};
-    pinocchio::SE3 oMf;               // world-frame placement
-    Eigen::MatrixXd J;                // [6 × nv] LOCAL_WORLD_ALIGNED
-    Eigen::Matrix<double, 6, 1> dJv;  // J̇·v (classical acceleration)
-  };
-
-  std::vector<FrameCache> contact_frames;  // [max_contacts]
-
-  // Task용 등록 frame 캐시
-  struct RegisteredFrame {
-    std::string name;
-    pinocchio::FrameIndex frame_id{0};
-    pinocchio::SE3 oMf;
-    Eigen::MatrixXd J;
-    Eigen::Matrix<double, 6, 1> dJv;
-  };
-
-  std::vector<RegisteredFrame> registered_frames;
-  bool registration_locked{false};  // Update() 호출 후 true → 추가 등록 금지
-
-  // CoM (optional — CoMTask 등록 시 활성화)
-  bool compute_com{false};
-  Eigen::Vector3d com_position;
-  Eigen::MatrixXd Jcom;       // [3 × nv]
-  Eigen::Vector3d com_drift;  // dJ_com·v (zero acceleration에서의 CoM 가속도) [3]
-
-  // Centroidal momentum (optional — MomentumTask 등록 시 활성화)
-  bool compute_centroidal{false};
-  Eigen::Matrix<double, 6, 1> h_centroidal;
-  Eigen::MatrixXd Ag;                    // [6 × nv]
-  Eigen::Matrix<double, 6, 1> hg_drift;  // dAg·v (centroidal momentum rate drift) [6]
-
-  // 초기화: buffer pre-allocate (init 시 1회)
-  void Init(std::shared_ptr<const pinocchio::Model> model, const ContactManagerConfig& contact_cfg);
-
-  // Task가 init 시 필요한 frame 등록 → Update()에서 자동 계산
-  // 반환: registered_frames 내 인덱스
-  int RegisterFrame(const std::string& name, pinocchio::FrameIndex frame_id);
-
-  // 매 tick 갱신 (RT-safe: 사전 할당된 버퍼만 사용)
-  void Update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& v_in,
-              const ContactState& contacts) noexcept;
-};
+// ContactManagerConfig 의 contact frame id 를 PinocchioCache::Init 이 받는 리스트로 추출한다
+// (소비자 인덱싱과 동일 순서 — cache.contact_frames[i] ↔ manager.contacts[i]).
+[[nodiscard]] std::vector<pinocchio::FrameIndex> ContactFrameIds(
+    const ContactManagerConfig& manager);
 
 // ────────────────────────────────────────────────
 // 제어 입출력

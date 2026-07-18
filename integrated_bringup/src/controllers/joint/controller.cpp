@@ -219,6 +219,36 @@ void DemoJointController::OnDeviceConfigsSet() {
       }
     }
   }
+
+  // ── Unified kin&dyn (Phase 5): reorder map + arm TCP frame registration ──
+  // full_dof_ / reorder need the device configs resolved above; RegisterFrame
+  // must run here (configure) — before the first RT cache.Update() locks
+  // registration. The arm-model frame ids address the same physical frames in
+  // the combined model (proven by test_wbc_arm_tcp_cache_equivalence).
+  full_dof_ = arm_dof_ + hand_dof_;
+  {
+    const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+    const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
+    combined_cache_.BuildReorderMap(arm_cfg ? &arm_cfg->joint_state_names : nullptr,
+                                    hand_cfg ? &hand_cfg->joint_state_names : nullptr, full_dof_,
+                                    "[joint]", logger_);
+  }
+  if (combined_cache_.model() && tip_frame_id_ != 0) {
+    arm_tcp_frame_idx_ = combined_cache_.cache().RegisterFrame("arm_tcp", tip_frame_id_);
+    if (arm_tcp_frame_idx_ < 0) {
+      RCLCPP_ERROR(logger_, "[joint] arm TCP frame registration failed (cache locked)");
+    } else if (use_root_frame_ && root_frame_id_ != 0) {
+      arm_base_frame_idx_ = combined_cache_.cache().RegisterFrame("arm_base", root_frame_id_);
+      if (arm_base_frame_idx_ < 0) {
+        RCLCPP_ERROR(logger_, "[joint] arm base frame registration failed (cache locked)");
+        arm_tcp_frame_idx_ = -1;
+      }
+    } else {
+      arm_base_frame_idx_ = -1;  // world/base frame — ArmTcpPoseFromCache returns world tip
+    }
+  } else {
+    RCLCPP_WARN(logger_, "[joint] arm TCP cache disabled: tip frame unresolved");
+  }
   // Lift L1: per-device joint limits (position + velocity) loaded from
   // device_name_configs_ in topic_config_ group order; missing slots get
   // ±2π / 2 rad/s fallbacks so RT clamping always has valid bounds.
@@ -262,13 +292,22 @@ void DemoJointController::OnDeviceConfigsSet() {
 ControllerOutput DemoJointController::Compute(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoJointController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+
+  // estop_active_ is loaded once here (before ReadState) so all downstream
+  // readers — including ReadState's ExtractFullState gate — see one consistent
+  // value for this tick. The combined-model cache refresh is split across the RT
+  // function roles: ExtractFullState (raw read + reindex) lives in ReadState;
+  // pinocchio_cache_.Update (compute model) is ComputeControl Stage 1, before the
+  // trajectory control law and the arm-TCP FK it consumes. E-STOP ticks skip both
+  // and keep arm_handle_ FK (ComputeEstop).
+  estop_active_ = estopped_.load(std::memory_order_acquire);
+
   ReadState(state);
   // RT-thread-only: refresh current_target_slot_ + run self-init if needed.
   // After this call ComputeControl / WriteJointCommand / FillLogOutput /
   // FillPublishOutput must read from
   // current_target_slot_, never from any old device_targets_ member.
   DrainTargetSlot(state);
-  estop_active_ = estopped_.load(std::memory_order_acquire);
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
@@ -469,6 +508,16 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   // ── Build hand tree-model if configured ─────────────────────────────
   if (sys_cfg && !sys_cfg->tree_models.empty()) {
     InitHandModel(*sys_cfg);
+  }
+
+  // ── Unified kin&dyn (#174): combined-model cache on the same builder ──
+  // Arm TCP FK is sourced from this cache on the RT path (arm_handle_ retained
+  // only for the E-STOP TF path). Frames registered in OnDeviceConfigsSet. Joint
+  // has no TSID contact frames → empty contact-frame list.
+  if (builder_) {
+    // Return ignored: downstream reorder / RegisterFrame gate on combined_cache_.
+    // model() being non-null, matching the prior void InitControlModelCache path.
+    (void)combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[joint]", logger_);
   }
 
   // ── L2: E-STOP arm safe position (required) ──────────────────────────

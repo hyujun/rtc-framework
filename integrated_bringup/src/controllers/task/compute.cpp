@@ -24,29 +24,16 @@ namespace integrated_bringup {
 // ── Phase 1: Read joint states + sensor data ────────────────────────────────
 void DemoTaskController::ReadState(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ReadState");
-  // Robot arm joint positions → FK + Jacobians via arm_handle_
-  const auto& dev0 = state.devices[0];
-  const int nc0 = dev0.num_channels;
-  std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-  arm_handle_->ComputeJacobians(q_span);
-  arm_handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
-  if (use_root_frame_) {
-    const Eigen::Matrix3d R_root_T = arm_handle_->GetFrameRotation(root_frame_id_).transpose();
-    J_full_.topRows(3) = R_root_T * J_full_.topRows(3);
-    J_full_.bottomRows(3) = R_root_T * J_full_.bottomRows(3);
+  // ── Unified kin&dyn: scatter measured joint pos/vel into Pinocchio order
+  // (q_curr_full_/v_curr_full_). A raw read + reindex, so it belongs to ReadState;
+  // the Compute-scope Stage-1 pinocchio_cache_.Update (just after this call)
+  // consumes it. Same gate as the prior Compute-top block so it runs on exactly
+  // the same ticks — byte-for-byte. The tip-Jacobian extraction + control pose
+  // that used to live here consume the cache and moved to ComputeControl Stage 2
+  // (after the Update).
+  if (!estop_active_ && combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+    combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
   }
-  J_pos_.noalias() = J_full_.topRows(3);
-
-  // Initialize target on first call
-  pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
-  }
-  const Eigen::Vector3d tcp = tcp_pose.translation();
-  // Self-init is owned by DrainTargetSlot() (called before ReadState in
-  // Compute); ReadState no longer touches target_seqlock_ / tcp_target_pose_.
-
-  tcp_position_ = {tcp[0], tcp[1], tcp[2]};
 
   // Hand motor data: dev1.motor_positions[], motor_velocities[],
   // motor_efforts[] available via state.devices[1].motor_* (populated from
@@ -127,10 +114,42 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 
 void DemoTaskController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ComputeControl");
-  // ── E-stop check ───────────────────────────────────────────────────────
-  estop_active_ = estopped_.load(std::memory_order_acquire);
-  if (estop_active_) {
+  // ── E-stop / cache-readiness check (estop_active_ loaded at top of Compute) ─
+  // CLIK sources the arm TCP pose + Jacobian from the unified cache; hold (skip
+  // CLIK) unless the cache is configured (task_tcp_frame_idx_ >= 0) AND was
+  // refreshed this tick (joint_reorder_valid_ → Update() ran — same condition as
+  // the Compute()-level Update). Without the reorder guard a config where the tip
+  // frame registers but the reorder map fails would run CLIK on an un-refreshed
+  // (zero-J / stale-pose) cache. DrainTargetSlot's hold fallback keeps desired_q_
+  // seeded from measured in that case so WriteJointCommand holds position.
+  if (estop_active_ || !combined_cache_.reorder_valid() || task_tcp_frame_idx_ < 0) {
     return;
+  }
+
+  // ── Stage 2 (compute control law): consume the model. Extract the arm-joint
+  // columns of the tip Jacobian from the Stage-1 cache into the 6×nv_arm CLIK
+  // buffer via the ext→Pinocchio velocity map (moved here from ReadState — it
+  // consumes the cache, so it belongs after the Update). The gate above already
+  // guarantees joint_reorder_valid_ && task_tcp_frame_idx_ >= 0, so no extra guard
+  // is needed. arm_handle_ is not read here (retained only for the E-STOP TF path).
+  {
+    const auto& frames = combined_cache_.cache().registered_frames;
+    const auto& tip_J = frames[static_cast<std::size_t>(task_tcp_frame_idx_)].J;
+    const int narm = std::min(arm_dof_, static_cast<int>(J_full_.cols()));
+    J_full_.setZero();
+    for (int i = 0; i < narm; ++i) {
+      const auto pv = static_cast<Eigen::Index>(combined_cache_.ext_to_pin_v(i));
+      J_full_.col(i) = tip_J.col(pv);
+    }
+    if (task_base_frame_idx_ >= 0) {
+      // Rotate the world-aligned Jacobian into the base frame's orientation
+      // (rotation-only, matching the base-relative pose convention below).
+      const Eigen::Matrix3d R_root_T =
+          frames[static_cast<std::size_t>(task_base_frame_idx_)].oMf.rotation().transpose();
+      J_full_.topRows(3) = R_root_T * J_full_.topRows(3);
+      J_full_.bottomRows(3) = R_root_T * J_full_.bottomRows(3);
+    }
+    J_pos_.noalias() = J_full_.topRows(3);
   }
 
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
@@ -139,11 +158,9 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
 
   const auto& dev0 = state.devices[0];
 
-  // ── Arm TCP pose ──────────────────────────────────────────────────────
-  pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
-  }
+  // ── Arm TCP pose (from the unified combined-model cache) ──────────────
+  const pinocchio::SE3 tcp_pose =
+      combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
 
   // ── Hand FK + Virtual TCP (must run before CLIK) ──────────────────────
   // #121: ComputeHandForwardKinematics runs the closed-chain projection when the
@@ -753,10 +770,9 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
-  pinocchio::SE3 tcp_current = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp_current = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_current);
-  }
+  // Arm TCP from the unified cache (Updated at the top of Compute this tick).
+  const pinocchio::SE3 tcp_current =
+      combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
   pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
   output.actual_task_positions[0] = log_pose.translation().x();
@@ -835,11 +851,9 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
     out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
-  // FK re-read (O(1), cached in arm_handle_->Data).
-  pinocchio::SE3 tcp_current = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp_current = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_current);
-  }
+  // Arm TCP from the unified cache (Updated at the top of Compute this tick).
+  const pinocchio::SE3 tcp_current =
+      combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
   pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
   output.actual_task_positions[0] = log_pose.translation().x();

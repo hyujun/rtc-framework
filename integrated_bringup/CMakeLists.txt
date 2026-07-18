@@ -67,6 +67,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/phase.cpp
   src/controllers/wbc/grasp_phase_manager.cpp
   src/controllers/wbc/force_reference_updater.cpp
+  src/support/combined_model_cache.cpp
   src/support/demo_shared_config.cpp
   src/support/pull_estimator_wiring.cpp
   src/support/closed_chain_hand_fk.cpp
@@ -434,6 +435,132 @@ if(BUILD_TESTING)
   )
   ament_target_dependencies(test_wbc_reduced_dynamics_provider
     rclcpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── Phase 3 (unified kin&dyn): loop-consistent contact frame J·oMf ──────────
+  # Proves WbcReducedDynamicsProvider::FillReducedFrameKinematics raises loop-
+  # downstream contact frame J/oMf to loop-consistent values (matching the
+  # non-RT converged handle, differing from frozen-loop), with L1 last-good hold
+  # / L2-zero dJv / serial byte-for-byte. Reuses rtc_urdf_bridge/test fixtures.
+  ament_add_gtest(test_wbc_contact_kinematics_loop_consistent
+    test/test_wbc_contact_kinematics_loop_consistent.cpp)
+  target_include_directories(test_wbc_contact_kinematics_loop_consistent PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
+  target_link_libraries(test_wbc_contact_kinematics_loop_consistent
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_contact_kinematics_loop_consistent
+    rclcpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── Phase 0 unified kin/dyn RT-cost benchmark (controller-unification) ──────
+  # Measures per-call latency of baseline arm-only FK/Jacobian (joint/task
+  # controllers today) vs unified PinocchioCache::Update on the combined
+  # arm+hand model, for iiwa7_leap + ur5e_p1b. Report-only (no timing asserts).
+  ament_add_gtest(test_unified_kindyn_bench test/test_unified_kindyn_bench.cpp)
+  target_link_libraries(test_unified_kindyn_bench
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_unified_kindyn_bench
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # ── Phase 2 (unified kin&dyn): arm TCP cache-vs-arm_handle equivalence ───────
+  # Proves the WBC controller's clik_tcp/clik_base cache oMf equals the arm-only
+  # arm_handle_ FK it replaces in FillLog/FillPublish/ComputeTcpError, on both
+  # the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
+  ament_add_gtest(test_wbc_arm_tcp_cache_equivalence
+    test/test_wbc_arm_tcp_cache_equivalence.cpp)
+  target_link_libraries(test_wbc_arm_tcp_cache_equivalence
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_arm_tcp_cache_equivalence
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # Unified kin&dyn Task B (옵션 B): WBC cache.Update relocated to ComputeControl
+  # so arm/contact oMf refresh every non-E-STOP tick (kFallback/non-TSID included).
+  # Proves the registered clik_tcp/clik_base oMf TRACK measured across consecutive
+  # per-tick Updates (not frozen) and equal arm_handle_ FK each tick (1e-12), on
+  # both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
+  ament_add_gtest(test_wbc_fallback_omf_freshness
+    test/test_wbc_fallback_omf_freshness.cpp)
+  target_link_libraries(test_wbc_fallback_omf_freshness
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_fallback_omf_freshness
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # Unified kin&dyn Phase 4: task arm TCP FK + tip Jacobian cache equivalence.
+  # Proves DemoTaskController's move off arm_handle_ onto the combined-model
+  # PinocchioCache is value-preserving — FK oMf AND the arm-column extraction of
+  # the combined Jacobian — on both the serial (iiwa7_leap) and closed-chain
+  # (ur5e_p1b) profiles.
+  ament_add_gtest(test_task_arm_cache_equivalence
+    test/test_task_arm_cache_equivalence.cpp)
+  target_link_libraries(test_task_arm_cache_equivalence
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_task_arm_cache_equivalence
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # Unified kin&dyn Phase 5: joint arm TCP FK cache equivalence (FK-only — the
+  # joint controller has no Jacobian consumer). Proves DemoJointController's move
+  # off arm_handle_ onto the combined-model PinocchioCache preserves the arm TCP
+  # oMf on both the serial (iiwa7_leap) and closed-chain (ur5e_p1b) profiles.
+  ament_add_gtest(test_joint_arm_cache_equivalence
+    test/test_joint_arm_cache_equivalence.cpp)
+  target_link_libraries(test_joint_arm_cache_equivalence
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_joint_arm_cache_equivalence
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # Phase ③ scatter permutation on the REAL ur5e_p1b closure (non-identity
+  # cache_v_idx_ column map, which the CrankRocker nv==1 cases cannot exercise).
+  ament_add_gtest(test_wbc_contact_permutation_real
+    test/test_wbc_contact_permutation_real.cpp)
+  target_link_libraries(test_wbc_contact_permutation_real
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_contact_permutation_real
+    ament_index_cpp
     rtc_urdf_bridge
     rtc_tsid
     rtc_base

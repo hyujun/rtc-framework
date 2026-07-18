@@ -40,7 +40,7 @@ TEST_F(TorqueLimitTest, Dimensions) {
   mgr.max_contact_vars = 0;
 
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(0);
 
@@ -59,7 +59,7 @@ TEST_F(TorqueLimitTest, BoundsConsistency) {
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(0);
 
@@ -69,7 +69,7 @@ TEST_F(TorqueLimitTest, BoundsConsistency) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(model->nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   const int n_vars = info.nv;
   const int n_ineq = tl.IneqDim(cs);
@@ -98,7 +98,7 @@ TEST_F(TorqueLimitTest, TauScaleAppliesMargin) {
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(0);
 
@@ -109,7 +109,7 @@ TEST_F(TorqueLimitTest, TauScaleAppliesMargin) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(model->nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   const int n_vars = info.nv;
   const int n_ineq = tl1.IneqDim(cs);
@@ -155,7 +155,7 @@ TEST_F(TorqueLimitTest, NoContact_MatchesDirectComputation) {
   mgr.max_contacts = 0;
   mgr.max_contact_vars = 0;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(0);
 
@@ -165,7 +165,7 @@ TEST_F(TorqueLimitTest, NoContact_MatchesDirectComputation) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(model->nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   const int n_vars = info.nv;  // no contact → n_vars = nv
   const int n_ineq = tl.IneqDim(cs);
@@ -221,7 +221,7 @@ TEST_F(TorqueLimitTest, WithContact_MatchesDirectComputation) {
   mgr.max_contact_vars = 3;
 
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(1);
   cs.contacts[0].active = true;
@@ -234,7 +234,7 @@ TEST_F(TorqueLimitTest, WithContact_MatchesDirectComputation) {
 
   Eigen::VectorXd q = pinocchio::neutral(*model);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(model->nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   const int cdim = mgr.contacts[0].contact_dim;
   const int n_vars = info.nv + cs.active_contact_vars;
@@ -281,13 +281,13 @@ TEST_F(TorqueLimitTest, TightBoundsReduceFeasibleRegion) {
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(0);
 
   Eigen::VectorXd q = pinocchio::neutral(*model);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(model->nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   // tau_scale=1.0 baseline.
   TorqueLimitConstraint tl_baseline;
@@ -335,13 +335,13 @@ TEST_F(TorqueLimitTest, LooseBoundsMatchRawEffortLimits) {
   ContactManagerConfig mgr;
   mgr.max_contacts = 0;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
   ContactState cs;
   cs.Init(0);
 
   Eigen::VectorXd q = pinocchio::neutral(*model);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(model->nv);
-  cache.Update(q, v, cs);
+  cache.Update(q, v);
 
   TorqueLimitConstraint tl;
   YAML::Node cfg;  // tau_scale 미설정 → 1.0 default.
@@ -387,7 +387,7 @@ TEST_F(TorqueLimitTest, TauScaleOutOfRangeThrows) {
   RobotModelInfo& info = info_;
   ContactManagerConfig mgr;
   PinocchioCache cache;
-  cache.Init(model, mgr);
+  cache.Init(model, rtc::tsid::ContactFrameIds(mgr));
 
   // > 1: reject
   {

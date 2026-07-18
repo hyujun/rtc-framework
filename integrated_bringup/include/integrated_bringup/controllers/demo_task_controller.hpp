@@ -8,6 +8,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
+#include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -20,6 +21,7 @@
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
+#include "rtc_urdf_bridge/pinocchio_cache.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
@@ -59,6 +61,9 @@ namespace trajectory = rtc::trajectory;
 // LoadConfig (arm) and OnDeviceConfigsSet (hand).
 inline constexpr int kDemoTaskMaxArmDof = 32;
 inline constexpr int kDemoTaskMaxHandDof = 32;
+// Combined arm+hand actuated model capacity — sizes the ext↔Pinocchio reorder
+// maps (unified kin&dyn Phase 4). Actual full_dof_ resolved at runtime.
+inline constexpr int kDemoTaskMaxFullDof = kDemoTaskMaxArmDof + kDemoTaskMaxHandDof;
 
 /// Demo Task-Space Controller: CLIK (arm) + P control (hand).
 ///
@@ -268,6 +273,25 @@ class DemoTaskController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
+
+  // ── Unified kin&dyn cache (Phase 4) ──────────────────────────────────────
+  // Arm TCP FK / Jacobian now come from a WBC-style combined (arm+hand)
+  // PinocchioCache updated once per non-E-STOP tick, replacing the arm-only
+  // arm_handle_ direct calls. arm_handle_ is retained solely for the E-STOP
+  // TF-alive path (ComputeEstop), which stays on the arm sub-model by design
+  // (§주의/제약). The combined control model is selected exactly like
+  // DemoWbcController::InitModels (GetActuatedModel → tree 'wbc' → full).
+  // Shared combined arm+hand model cache wiring (model select, ext→Pinocchio
+  // reorder map, per-tick state scatter, arm-TCP FK / Jacobian source) — see
+  // CombinedModelCache (#174). Task consumes both the arm TCP pose and the tip
+  // Jacobian columns (via ext_to_pin_v) from it.
+  CombinedModelCache combined_cache_;
+  int full_dof_{0};
+  // registered_frames indices for the arm TCP tip / base (< 0 = universe/base
+  // uses world). Registered on the combined cache with the ARM sub-model frame
+  // ids (frame-id consistency proven by test_wbc_arm_tcp_cache_equivalence).
+  int task_tcp_frame_idx_{-1};
+  int task_base_frame_idx_{-1};
   // ── Hand tree-model for fingertip FK ──────────────────────────────────
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> hand_handle_;
   static constexpr std::size_t kNumFingertips = 4;

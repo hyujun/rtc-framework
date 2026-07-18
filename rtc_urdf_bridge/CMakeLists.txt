@@ -44,6 +44,8 @@ add_library(${PROJECT_NAME} SHARED
   src/pinocchio_model_builder.cpp
   src/rt_model_handle.cpp
   src/xacro_processor.cpp
+  # Unified kin&dyn 솔버 캐시 (rtc_tsid 에서 이관 — #unified-kindyn Phase 1)
+  src/pinocchio_cache.cpp
   # Extended-URDF closed-chain (sidecar) — 로드 타임 계층
   src/closure_yaml_loader.cpp
   src/constraint_builder.cpp

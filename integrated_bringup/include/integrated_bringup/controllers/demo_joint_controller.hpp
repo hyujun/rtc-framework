@@ -7,6 +7,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
+#include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
@@ -18,6 +19,7 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/grasp/grasp_controller.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
+#include "rtc_urdf_bridge/pinocchio_cache.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_model_handle.hpp"
 #include <rtc_msgs/srv/grasp_command.hpp>
@@ -55,6 +57,9 @@ namespace trajectory = rtc::trajectory;
 // LoadConfig (arm) and OnDeviceConfigsSet (hand).
 inline constexpr int kDemoJointMaxArmDof = 32;
 inline constexpr int kDemoJointMaxHandDof = 32;
+// Combined arm+hand actuated model capacity — sizes the ext↔Pinocchio reorder
+// maps (unified kin&dyn Phase 5). Actual full_dof_ resolved at runtime.
+inline constexpr int kDemoJointMaxFullDof = kDemoJointMaxArmDof + kDemoJointMaxHandDof;
 
 // Unified trajectory-based position controller for UR5e arm + hand.
 //
@@ -277,6 +282,21 @@ class DemoJointController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
   pinocchio::FrameIndex root_frame_id_{0};
   bool use_root_frame_{false};
+
+  // ── Unified kin&dyn combined-model cache (#174) ──────────────────────────
+  // Arm TCP FK comes from the shared combined (arm+hand) model cache, updated
+  // once per non-E-STOP tick (replacing the arm-only arm_handle_ FK; arm_handle_
+  // retained only for the E-STOP TF path). Joint is FK-only (no Jacobian
+  // consumer). The cache wiring — model select, ext→Pinocchio reorder map, per-
+  // tick state scatter, arm-TCP FK — is shared with task/wbc via CombinedModelCache.
+  CombinedModelCache combined_cache_;
+  int full_dof_{0};
+  // registered_frames indices for the arm TCP tip / base (< 0 = universe/world).
+  // Registered on the combined cache with the ARM sub-model frame ids (frame-id
+  // consistency proven by test_wbc_arm_tcp_cache_equivalence).
+  int arm_tcp_frame_idx_{-1};
+  int arm_base_frame_idx_{-1};
+
   // Arm base→tip FK computed once per tick in ComputeControl; FillLogOutput /
   // FillPublishOutput reuse this instead of recomputing the full FK pass.
   // Valid only on non-E-STOP ticks — ComputeEstop bypasses ComputeControl and

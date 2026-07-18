@@ -24,6 +24,19 @@ namespace integrated_bringup {
 // ── Phase 1: Read state ─────────────────────────────────────────────────────
 void DemoWbcController::ReadState(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ReadState");
+  // ── Unified kin&dyn (option C): scatter measured joint pos/vel into Pinocchio
+  // order (combined_cache_.q()/combined_cache_.v()). A raw read + reindex, so it belongs to
+  // ReadState; ComputeControl Stage 1 consumes it via combined_cache_.Update().
+  // Gated on cache-readiness (tsid_initialized_ && combined_cache_.reorder_valid()), matching
+  // the prior ComputeControl gate. ReadState runs before the E-STOP /
+  // !target_initialized early-returns, so this may scatter on those ticks too, but
+  // every RT reader of combined_cache_.q()/combined_cache_.v() lives in ComputeControl's FSM
+  // subtree (never reached on those paths) — controller output stays byte-for-byte,
+  // and the next FSM tick re-scatters fresh values.
+  if (tsid_initialized_ && combined_cache_.reorder_valid()) {
+    combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
+  }
+
   // Read fingertip data from inference_data: slots 1..3 (fx/fy/fz) always,
   // slot 0 (native contact probability) only when has_native_contact_=true
   // (sensor A path; otherwise backend zero-fills the slot). Slots 4..6
@@ -94,21 +107,25 @@ void DemoWbcController::ReadState(const ControllerState& state) noexcept {
 
 void DemoWbcController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeControl");
-  // #167: contact-frame geometry is only refreshed on ticks that reach
-  // ComputeWbcCommon (TSID paths); reset here so non-TSID ticks feed the pull
-  // estimator invalid inputs (bounded decay) instead of stale frames.
-  contact_geometry_fresh_ = false;
-  UpdatePhase(state);
+  // ── Stage 1 (compute model): per-tick unconditional cache refresh. ExtractFullState
+  // (raw read + reindex → combined_cache_.q()/combined_cache_.v()) ran in ReadState; here we consume
+  // it to refresh FK/J/M/h/g/oMf so arm/contact oMf follow measured on kFallback and
+  // every non-TSID tick too (pose fresh; command is held by each phase). estop and
+  // !target_initialized seed are handled by Compute()'s early-returns, so gate on
+  // cache-readiness (tsid_initialized_ && combined_cache_.reorder_valid()) only. UpdatePhase (FSM;
+  // its ComputeTcpError reads the PREVIOUS tick's oMf — one-tick lag contract) ran in
+  // Compute() BEFORE this Stage-1 Update, so the lag is preserved → TSID-routing phase
+  // byte-for-byte. cache.Update is ContactState-independent (Phase 1 always-compute) so
+  // it may precede the contact_state_ update below (option C, hoisted UpdatePhase).
+  if (tsid_initialized_ && combined_cache_.reorder_valid()) {
+    combined_cache_.Update();
+  }
 
-  // MPC WriteState moved into ComputeTSIDPosition (next to its
-  // ExtractFullState), which is reached every tick by all TSID-routing
-  // phases (kIdle/kApproach/kClosure/kHold and kRelease via
-  // ComputeReleaseMode → ComputeTSIDPosition). kFallback no longer pushes
-  // state; the MPC retains its last snapshot until recovery to kIdle, which
-  // is safe because MPC output is not driving control during fallback and
-  // the dim-mismatch gate (state.nq == model_->nq()) keys on nq, not
-  // staleness. Eliminates the per-tick ExtractFullState double-call (this
-  // top-level + ComputeTSIDPosition's own call).
+  // MPC WriteState stays in ComputeWbcCommon (TSID paths only): kFallback still
+  // does not push MPC state; the MPC retains its last snapshot until recovery to
+  // kIdle, which is safe because MPC output is not driving control during
+  // fallback and the dim-mismatch gate (state.nq == model_->nq()) keys on nq,
+  // not staleness.
   switch (phase_) {
     case WbcPhase::kIdle:
     case WbcPhase::kApproach:
@@ -140,11 +157,13 @@ void DemoWbcController::ComputeControl(const ControllerState& state, double dt) 
 // Measured per-fingertip forces rotated by the TSID contact-frame geometry —
 // deliberately NOT the QP's λ_opt, which reflects the commanded force
 // distribution rather than the sensed external load. Contact k's slot indexes
-// both tsid.contacts (→ pinocchio_cache_.contact_frames) and the fingertip
+// both tsid.contacts (→ combined_cache_.cache().contact_frames) and the fingertip
 // sensor lanes (documented 1:1 mapping, see ComputeWbcCommon Stage A-3).
-// oMf freshness gates: contact_geometry_fresh_ (ComputeWbcCommon ran this
-// tick) AND the per-contact active flag (PinocchioCache::Update skips
-// inactive contact frames, whose oMf would be stale or uninitialized).
+// Gating: contact_geometry_fresh_ (a TSID-routing tick ran ComputeWbcCommon —
+// the trust signal for the pull estimate, NOT oMf freshness: Task B refreshes
+// contact_frames[].oMf every tick incl. kFallback) AND the per-contact active
+// flag. cache.Update always-computes ALL registered contact frames (Phase 1), so
+// inactive frames are geometrically fresh too; the active gate is a policy choice.
 
 void DemoWbcController::UpdatePullEstimate(double dt) noexcept {
   if (!pull_wiring_.enabled()) {
@@ -158,14 +177,14 @@ void DemoWbcController::UpdatePullEstimate(double dt) noexcept {
     auto& in = pull_wiring_.inputs[ki];
     const bool geom_ok = contact_geometry_fresh_ && cs < contact_state_.contacts.size() &&
                          contact_state_.contacts[cs].active &&
-                         cs < pinocchio_cache_.contact_frames.size();
+                         cs < combined_cache_.cache().contact_frames.size();
     const auto& ft = fingertip_data_[cs];
     const bool sensor_ok = ci < num_active_fingertips_ && ft.valid && std::isfinite(ft.force[0]) &&
                            std::isfinite(ft.force[1]) && std::isfinite(ft.force[2]);
     in.valid = geom_ok && sensor_ok;
     pull_wiring_.position_valid[ki] = geom_ok;
     if (geom_ok) {
-      const pinocchio::SE3& oMf = pinocchio_cache_.contact_frames[cs].oMf;
+      const pinocchio::SE3& oMf = combined_cache_.cache().contact_frames[cs].oMf;
       pull_wiring_.positions[ki] = oMf.translation();
       if (in.valid) {
         in.rotation = oMf.rotation();
@@ -242,8 +261,13 @@ void DemoWbcController::ComputeTSIDPosition(const ControllerState& state, double
 void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt,
                                          const Gains& gains_now) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::ComputeWbcCommon");
-  // 1. Extract full state (sensor values, every tick)
-  ExtractFullState(state);
+  // 1. State extraction + Pinocchio cache refresh moved to ComputeControl (Task B,
+  //    옵션 B): ExtractFullState + combined_cache_.Update() now run once per tick
+  //    for ALL phases just before this stage, so combined_cache_.q()/combined_cache_.v() and the
+  //    cache (M/h/g/Jacobians/contact & registered frame oMf) are already fresh here.
+  //    This stage only CONSUMES them (grasp/MPC/references). #unified-kindyn Phase 1:
+  //    cache is ContactState-independent (always-compute), so running Update before the
+  //    contact_state_ update below is safe.
 
   // Stage A-5b: progress per-contact activation ramp by dt. ContactState
   // auto-flips the legacy `active : bool` once s_i crosses kActivationDeadband
@@ -252,10 +276,10 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   contact_state_.UpdateActivation(dt);
   contact_state_.RecomputeActive(contact_mgr_config_);
 
-  // 2. Update Pinocchio cache (M, h, g, Jacobians)
-  pinocchio_cache_.Update(q_curr_full_, v_curr_full_, contact_state_);
-  // #167: contact_frames[i].oMf are fresh this tick for ACTIVE contacts —
-  // UpdatePullEstimate additionally gates per contact on the active flag.
+  // 2. #167: mark contact geometry trusted for THIS (TSID-routing) tick so the
+  // pull estimator consumes it. cache.Update already refreshed contact_frames[].oMf
+  // for ALL contacts in ComputeControl; non-TSID ticks leave this false (bounded
+  // decay). UpdatePullEstimate additionally gates per contact on the active flag.
   contact_geometry_fresh_ = true;
 
   // 2a. Stage B-5: populate the once-per-tick grasp cache shared across the
@@ -269,7 +293,7 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   n_lambda_active_ = contact_mgr_.ActiveLambdaDim(contact_state_);
   if (n_lambda_active_ > 0) {
     auto G_view = grasp_G_workspace_.leftCols(n_lambda_active_);
-    contact_mgr_.ComputeGraspMatrix(pinocchio_cache_, contact_state_, object_frame_, G_view);
+    contact_mgr_.ComputeGraspMatrix(combined_cache_.cache(), contact_state_, object_frame_, G_view);
     grasp_cache_.Compute(G_view, n_lambda_active_);
   } else {
     grasp_cache_.Compute(grasp_G_workspace_.leftCols(0), 0);
@@ -291,9 +315,9 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
     const uint64_t now_ns =
         static_cast<uint64_t>(state.iteration) * static_cast<uint64_t>(dt * 1e9);
     rtc::mpc::InterpMeta meta;
-    mpc_manager_.WriteState(q_curr_full_, v_curr_full_, now_ns);
+    mpc_manager_.WriteState(combined_cache_.q(), combined_cache_.v(), now_ns);
     mpc_ref_valid =
-        mpc_manager_.ComputeReference(q_curr_full_, v_curr_full_, now_ns, mpc_q_ref_, mpc_v_ref_,
+        mpc_manager_.ComputeReference(combined_cache_.q(), combined_cache_.v(), now_ns, mpc_q_ref_, mpc_v_ref_,
                                       mpc_a_ff_, mpc_lambda_ref_, mpc_u_fb_, meta);
   }
 
@@ -319,9 +343,9 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
     // Falls back to measured self-hold when the reorder map is unavailable
     // (unit-test bypass) so q_des is never the zero vector.
     if (phase_ == WbcPhase::kRelease) {
-      control_ref_.q_des = q_curr_full_;
+      control_ref_.q_des = combined_cache_.q();
     } else if (phase_ == WbcPhase::kIdle) {
-      control_ref_.q_des = joint_reorder_valid_ ? q_des_target_full_ : q_curr_full_;
+      control_ref_.q_des = combined_cache_.reorder_valid() ? q_des_target_full_ : combined_cache_.q();
     } else {
       control_ref_.q_des = q_des_target_full_;
     }
@@ -397,8 +421,8 @@ void DemoWbcController::ComputeWbcCommon(const ControllerState& state, double dt
   }
 
   // 4. Build ControlState (consumed by the Dynamic-WBC solve next).
-  ctrl_state_.q = q_curr_full_;
-  ctrl_state_.v = v_curr_full_;
+  ctrl_state_.q = combined_cache_.q();
+  ctrl_state_.v = combined_cache_.v();
   ctrl_state_.timestamp_ns = state.iteration;
 }
 
@@ -436,7 +460,7 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
     // only when CLIK actually solves so a skipped tick keeps the pending reseed.
     const bool reseed_anchor = clik_reseed_pending_;
     clik_reseed_pending_ = false;
-    clik_compute_ok_ = clik_.Compute(pinocchio_cache_, clik_tcp_frame_idx_, clik_base_frame_idx_,
+    clik_compute_ok_ = clik_.Compute(combined_cache_.cache(), clik_tcp_frame_idx_, clik_base_frame_idx_,
                                      clik_target, control_ref_.q_des, dt, reseed_anchor);
     clik_tcp_err_ = clik_.TcpErrorNorm();
     clik_manip_ = clik_.Manipulability();
@@ -467,7 +491,7 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
   const auto& q_ref = clik_.QRef();
   const auto& v_ref = clik_.VRef();
   for (int i = 0; i < arm_dof_; ++i) {
-    const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[static_cast<std::size_t>(i)]);
+    const auto pin_idx = static_cast<std::size_t>(combined_cache_.ext_to_pin_q(i));
     robot_computed_.positions[static_cast<std::size_t>(i)] =
         q_ref[static_cast<Eigen::Index>(pin_idx)];
     robot_computed_.velocities[static_cast<std::size_t>(i)] =
@@ -475,7 +499,8 @@ void DemoWbcController::ComputeKinematicWbc(double dt, const Gains& gains_now) n
   }
   for (int i = 0; i < hand_dof_; ++i) {
     const auto ext_i = static_cast<std::size_t>(arm_dof_ + i);
-    const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[ext_i]);
+    const auto pin_idx =
+        static_cast<std::size_t>(combined_cache_.ext_to_pin_q(static_cast<int>(ext_i)));
     hand_computed_.positions[static_cast<std::size_t>(i)] =
         q_ref[static_cast<Eigen::Index>(pin_idx)];
     hand_computed_.velocities[static_cast<std::size_t>(i)] =
@@ -497,7 +522,7 @@ void DemoWbcController::ComputeDynamicWbc(const Gains& gains_now) noexcept {
   // ── Dynamic WBC QP solve (was the SolveWbcQp tail) ────────────────────────
   // 5. TSID solve — consumes the common-stage ctrl_state_/control_ref_/cache.
   tsid_output_ =
-      tsid_controller_.Compute(ctrl_state_, control_ref_, pinocchio_cache_, contact_state_);
+      tsid_controller_.Compute(ctrl_state_, control_ref_, combined_cache_.cache(), contact_state_);
 
   // 6. Dynamic QP failure handling — non-critical (τ_ff drop only).
   if (!tsid_output_.qp_converged) {
@@ -532,7 +557,7 @@ void DemoWbcController::ComputeDynamicWbc(const Gains& gains_now) noexcept {
   // only in closure/hold, clamped to ±tauff_max. Any non-finite → zero the whole
   // hand and fall back to a plain position hold this tick (conservative,
   // throttled WARN). Opt-in: hand_tauff_enable. The gravity vector g[nv] was
-  // filled by pinocchio_cache_.Update() and tsid_output_.tau by the solve above,
+  // filled by combined_cache_.Update() and tsid_output_.tau by the solve above,
   // both earlier this tick.
   // hand_tauff_active_ is reset to false once per tick at Compute() entry (#1,
   // single owner) — not here. This loop only clears stale feedforward indices
@@ -554,11 +579,12 @@ void DemoWbcController::ComputeDynamicWbc(const Gains& gains_now) noexcept {
     // bounds guard below keeps either source safe if that assumption breaks.
     const Eigen::VectorXd& src_vec = (gains_now.hand_tauff_source == HandTauffSource::kTsidTau)
                                          ? tsid_output_.tau
-                                         : pinocchio_cache_.g;
+                                         : combined_cache_.cache().g;
     bool finite_ok = true;
     for (int i = 0; i < hand_dof_ && finite_ok; ++i) {
       const auto ext_i = static_cast<std::size_t>(arm_dof_ + i);
-      const auto vidx = static_cast<Eigen::Index>(ext_to_pin_v_[ext_i]);
+      const auto vidx =
+          static_cast<Eigen::Index>(combined_cache_.ext_to_pin_v(static_cast<int>(ext_i)));
       double tau = 0.0;
       if (vidx >= 0 && vidx < src_vec.size())
         tau = gain * src_vec[vidx] + bias;
@@ -740,14 +766,21 @@ void DemoWbcController::FillDeviceTrajectoryPods(rtc::DeviceOutput& out, int num
   }
 }
 
-// Shared TCP FK → task-space pods: fills actual_task_positions + task_goal_positions
-// from the current arm FK (caller ensures FK fresh; arm_handle_ non-null). Returns
-// the TCP SE3 so the publish path can reuse it for arm_tip_pose.
+// Shared TCP → task-space pods: fills actual_task_positions + task_goal_positions
+// from the shared PinocchioCache's clik_tcp/clik_base registered-frame oMf
+// (#unified-kindyn Phase 2). Replaces the arm-only arm_handle_ FK recompute —
+// value-identical on serial arms and on the closed-chain arm TCP (upstream of
+// the hand loop), proven by test_wbc_arm_tcp_cache_equivalence. Precondition:
+// clik_tcp_frame_idx_ >= 0 (guaranteed on the activated path via InitClik +
+// on_configure gate) and cache.Update ran this TSID tick. Returns the TCP SE3
+// so the publish path can reuse it for arm_tip_pose.
 pinocchio::SE3 DemoWbcController::FillTaskPosePods(ControllerOutput& output) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::FillTaskPosePods");
-  pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
-  if (use_root_frame_) {
-    tcp = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp);
+  pinocchio::SE3 tcp =
+      combined_cache_.cache().registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
+  if (clik_base_frame_idx_ >= 0) {
+    tcp = combined_cache_.cache().registered_frames[static_cast<std::size_t>(clik_base_frame_idx_)]
+              .oMf.actInv(tcp);
   }
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
@@ -808,10 +841,10 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
   const int nc0 = dev0.num_channels;
   FillDeviceTrajectoryPods(output.devices[0], nc0, robot_computed_, 0);
 
-  // FK + actual_task_positions + task_goal_positions (log POD reads both).
-  if (arm_handle_) {
-    std::span<const double> q_span(dev0.positions.data(), static_cast<std::size_t>(nc0));
-    arm_handle_->ComputeForwardKinematics(q_span);
+  // actual_task_positions + task_goal_positions from the shared cache oMf (log
+  // POD reads both). #unified-kindyn Phase 2: no arm_handle_ FK recompute here —
+  // cache.Update already produced clik_tcp/clik_base oMf this TSID tick.
+  if (clik_tcp_frame_idx_ >= 0) {
     FillTaskPosePods(output);
   }
 
@@ -882,7 +915,9 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
   }
   FillDeviceTrajectoryPods(out0, nc0, robot_computed_, 0);
 
-  if (arm_handle_) {
+  // #unified-kindyn Phase 2: arm TCP from the shared cache oMf (clik_tcp/base),
+  // not an arm_handle_ FK recompute. clik_tcp_frame_idx_ >= 0 ⇒ arm model present.
+  if (clik_tcp_frame_idx_ >= 0) {
     const pinocchio::SE3 tcp = FillTaskPosePods(output);
 
     // TF source: arm tip.
@@ -976,46 +1011,20 @@ ControllerOutput DemoWbcController::ComputeEstop(const ControllerState& state) n
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
-// ── Helpers (full state extraction, TCP error, MPC timing log) ──────────────
-
-void DemoWbcController::ExtractFullState(const ControllerState& state) noexcept {
-  RTC_TRACE_SCOPE("DemoWbcController::ExtractFullState");
-  if (!joint_reorder_valid_) {
-    return;
-  }
-
-  const auto& dev0 = state.devices[0];
-  // Arm joints: external [0..arm_dof_-1] → Pinocchio order
-  for (int i = 0; i < arm_dof_; ++i) {
-    const auto eidx = static_cast<std::size_t>(i);
-    const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
-    const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
-    q_curr_full_[pq] = dev0.positions[eidx];
-    v_curr_full_[pv] = dev0.velocities[eidx];
-  }
-
-  // Hand joints: external [arm_dof_..full_dof_-1] → Pinocchio order
-  if (state.num_devices > 1 && state.devices[1].valid) {
-    const auto& dev1 = state.devices[1];
-    for (int i = 0; i < hand_dof_; ++i) {
-      const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
-      const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
-      const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
-      q_curr_full_[pq] = dev1.positions[static_cast<std::size_t>(i)];
-      v_curr_full_[pv] = dev1.velocities[static_cast<std::size_t>(i)];
-    }
-  }
-}
+// ── Helpers (TCP error, MPC timing log) ─────────────────────────────────────
+// (ExtractFullState — per-tick measured state scatter → Pinocchio order — now
+//  lives in CombinedModelCache; ReadState/OnPhaseEnter call combined_cache_.
+//  ExtractFullState(state, arm_dof_, hand_dof_).)
 
 void DemoWbcController::BuildTargetPosture(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoWbcController::BuildTargetPosture");
-  if (!joint_reorder_valid_) {
+  if (!combined_cache_.reorder_valid()) {
     return;
   }
   // Arm target: external [0..arm_dof_-1] → Pinocchio order (mirrors ExtractFullState).
   for (int i = 0; i < arm_dof_; ++i) {
     const auto eidx = static_cast<std::size_t>(i);
-    const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
+    const auto pq = static_cast<Eigen::Index>(combined_cache_.ext_to_pin_q(static_cast<int>(eidx)));
     q_des_target_full_[pq] = current_target_slot_.targets[0][eidx];
   }
   // Hand target — shared with the always-live mid-phase hand jog (Compute()).
@@ -1031,13 +1040,14 @@ bool DemoWbcController::BuildHandTargetPosture(const ControllerState& state) noe
   // live command in every driving phase — not consumed only on a closure edge.
   // Returns true iff the fold applied (reorder map ready + hand device valid) so
   // the caller can keep a target pending across a transient hand-device dropout.
-  if (!joint_reorder_valid_) {
+  if (!combined_cache_.reorder_valid()) {
     return false;
   }
   if (state.num_devices > 1 && state.devices[1].valid) {
     for (int i = 0; i < hand_dof_; ++i) {
       const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
-      const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
+      const auto pq =
+          static_cast<Eigen::Index>(combined_cache_.ext_to_pin_q(static_cast<int>(eidx)));
       q_des_target_full_[pq] = current_target_slot_.targets[1][static_cast<std::size_t>(i)];
     }
     return true;
@@ -1062,7 +1072,7 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
     }
   }
   // Posture reference snapshot (external order → Pinocchio order). No-op until
-  // joint_reorder_valid_; the kIdle posture-ref fallback covers that window.
+  // combined_cache_.reorder_valid(); the kIdle posture-ref fallback covers that window.
   BuildTargetPosture(state);
   // SE3 hold pose at the current measured FK (base_frame → tip), persisted to
   // the SeqLock POD so the next-tick DrainTargetSlot restore keeps it valid.
@@ -1083,10 +1093,17 @@ void DemoWbcController::SeedHoldFromMeasured(const ControllerState& state) noexc
 }
 
 double DemoWbcController::ComputeTcpError(const pinocchio::SE3& target) noexcept {
-  if (!arm_handle_) {
+  // #unified-kindyn Phase 2: world tip from the shared cache clik_tcp oMf — the
+  // exact value arm_handle_->GetFramePlacement(tip_frame_id_) produced. UpdatePhase
+  // (this caller) runs before the same-tick cache.Update, so it reads the previous
+  // tick's oMf — the SAME one-tick lag the old path had (it read arm_handle_ FK
+  // last refreshed by the previous tick's FillLogOutput). target (tcp_goal_) is
+  // compared in the same world frame as before (no base actInv here).
+  if (clik_tcp_frame_idx_ < 0) {
     return 1e10;
   }
-  const pinocchio::SE3 tcp = arm_handle_->GetFramePlacement(tip_frame_id_);
+  const pinocchio::SE3& tcp =
+      combined_cache_.cache().registered_frames[static_cast<std::size_t>(clik_tcp_frame_idx_)].oMf;
   return (tcp.translation() - target.translation()).norm();
 }
 
@@ -1155,7 +1172,7 @@ void DemoWbcController::FillDeviceWbcLogPod(
   }
 
   // accelerations: TSID solution a_opt sliced to this device. External order
-  // [arm0.., hand0..] → Pinocchio index via ext_to_pin_q_, the same mapping
+  // [arm0.., hand0..] → Pinocchio index via combined_cache_.ext_to_pin_q, the same mapping
   // ComputeKinematicWbc applies to the CLIK reference. For these fixed-base
   // demos q-index == v-index per joint, so the q-order map indexes the
   // nv-sized a_opt correctly. (a_opt is now log-only — Dynamic WBC produces it
@@ -1167,7 +1184,8 @@ void DemoWbcController::FillDeviceWbcLogPod(
     const auto count = std::min(static_cast<std::size_t>(std::max(dof, 0)), n);
     for (std::size_t i = 0; i < count; ++i) {
       const auto ext_i = static_cast<std::size_t>(ext_base + static_cast<int>(i));
-      const auto pin_idx = static_cast<std::size_t>(ext_to_pin_q_[ext_i]);
+      const auto pin_idx =
+          static_cast<std::size_t>(combined_cache_.ext_to_pin_q(static_cast<int>(ext_i)));
       if (static_cast<Eigen::Index>(pin_idx) < a.size()) {
         pod.accelerations[i] = a[static_cast<Eigen::Index>(pin_idx)];
       }

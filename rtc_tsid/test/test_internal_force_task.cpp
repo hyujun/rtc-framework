@@ -51,14 +51,14 @@ class InternalForceTaskTest : public ::testing::Test {
     contact_cfg_.max_contacts = static_cast<int>(contacts.size());
     contact_cfg_.max_contact_vars = total;
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
 
     contacts_.Init(static_cast<int>(contacts.size()));
     for (auto& e : contacts_.contacts) {
       e.active = true;
     }
     contacts_.RecomputeActive(contact_cfg_);
-    cache_.Update(q_, v_, contacts_);
+    cache_.Update(q_, v_);
 
     mgr_.Init(contact_cfg_, robot_info_.nv);
 

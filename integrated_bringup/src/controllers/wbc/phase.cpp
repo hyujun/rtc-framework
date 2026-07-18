@@ -177,7 +177,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // overwritten by the CLIK mapping the same tick. kIdle entry (incl. the
       // kFallback→kIdle recovery edge) is a goal edge: re-anchor the CLIK desired
       // to the measured state so it does not carry forward a stale pose.
-      ExtractFullState(state);
+      combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
       clik_reseed_pending_ = true;
 
       const auto idx = static_cast<std::size_t>(WbcPhase::kIdle);
@@ -227,7 +227,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
         tsid_controller_.ApplyPhasePreset(phase_presets_[idx]);
       }
 
-      ExtractFullState(state);
+      combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
       robot_new_target_pending_ = false;
       hand_new_target_pending_ = false;
 
@@ -282,7 +282,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // No phase-entry integrator seed (carry-forward is event-driven). Refresh
       // the posture target snapshot for this phase (idempotent if targets[]
       // unchanged since approach).
-      ExtractFullState(state);
+      combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
       BuildTargetPosture(state);
 
       // Set SE3Task reference (TCP goal). MPC-enabled mode pushes the step
@@ -400,7 +400,7 @@ void DemoWbcController::OnPhaseEnter(WbcPhase new_phase, const ControllerState& 
       // ComputeReleaseMode, so posture must not pull the hand toward targets[1].
       // kRelease is a fresh safe-hold episode: re-anchor the CLIK desired to
       // measured so it does not carry forward a drifted pose.
-      ExtractFullState(state);
+      combined_cache_.ExtractFullState(state, arm_dof_, hand_dof_);
       clik_reseed_pending_ = true;
 
       // SE3 hold at current TCP (zero-displacement quintic).

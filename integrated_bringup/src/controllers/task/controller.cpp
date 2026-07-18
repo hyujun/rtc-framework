@@ -241,6 +241,37 @@ void DemoTaskController::OnDeviceConfigsSet() {
       }
     }
   }
+
+  // ── Unified kin&dyn (Phase 4): reorder map + arm TCP frame registration ──
+  // full_dof_ / reorder need the device configs resolved above; RegisterFrame
+  // must run here (configure) — before the first RT cache.Update() locks
+  // registration. The arm-model frame ids (tip_frame_id_/root_frame_id_) address
+  // the same physical frames in the combined model (proven by
+  // test_wbc_arm_tcp_cache_equivalence), so they register directly on the cache.
+  full_dof_ = arm_dof_ + hand_dof_;
+  {
+    const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+    const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
+    combined_cache_.BuildReorderMap(arm_cfg ? &arm_cfg->joint_state_names : nullptr,
+                                    hand_cfg ? &hand_cfg->joint_state_names : nullptr, full_dof_,
+                                    "[task]", logger_);
+  }
+  if (combined_cache_.model() && tip_frame_id_ != 0) {
+    task_tcp_frame_idx_ = combined_cache_.cache().RegisterFrame("task_tcp", tip_frame_id_);
+    if (task_tcp_frame_idx_ < 0) {
+      RCLCPP_ERROR(logger_, "[task] arm TCP frame registration failed (cache locked)");
+    } else if (use_root_frame_ && root_frame_id_ != 0) {
+      task_base_frame_idx_ = combined_cache_.cache().RegisterFrame("task_base", root_frame_id_);
+      if (task_base_frame_idx_ < 0) {
+        RCLCPP_ERROR(logger_, "[task] arm base frame registration failed (cache locked)");
+        task_tcp_frame_idx_ = -1;
+      }
+    } else {
+      task_base_frame_idx_ = -1;  // world/base frame — ArmTcpPoseFromCache returns world tip
+    }
+  } else {
+    RCLCPP_WARN(logger_, "[task] arm TCP cache disabled: tip frame unresolved");
+  }
   // Lift L1: per-device joint limits (position + velocity) loaded from
   // device_name_configs_ in topic_config_ group order; missing slots get
   // ±2π / 2 rad/s fallbacks so RT clamping always has valid bounds.
@@ -285,7 +316,25 @@ void DemoTaskController::OnDeviceConfigsSet() {
 ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::Compute");
   const double dt = (state.dt > 0.0) ? state.dt : (1.0 / 500.0);
+
+  // estop_active_ is loaded once here (before ReadState) so every downstream
+  // reader — including ReadState's ExtractFullState gate and the Stage-1 cache
+  // refresh below — sees one consistent value for this tick.
+  estop_active_ = estopped_.load(std::memory_order_acquire);
+
   ReadState(state);
+
+  // ── Stage 1 (compute model): refresh the combined-model cache from the state
+  // ReadState scattered into q_curr_full_/v_curr_full_ this tick — AFTER the raw
+  // read, BEFORE DrainTargetSlot and the control law. Kept at Compute scope (not
+  // inside ComputeControl) on purpose: DrainTargetSlot's one-time arm self-init
+  // reads ArmTcpPoseFromCache() and must see this tick's fresh FK. Same gate and
+  // q_curr_full_ as the prior Compute-top Update — byte-for-byte. E-STOP ticks
+  // skip it and keep arm_handle_ FK (ComputeEstop).
+  if (!estop_active_ && combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
+    combined_cache_.Update();
+  }
+
   DrainTargetSlot(state);
   ComputeControl(state, dt);
   // Output composition split by consumer (wire / log / publish). See
@@ -342,20 +391,24 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
   current_target_slot_ = target_seqlock_.Load();
   bool slot_dirty = false;
 
-  // ── Arm / TCP self-init — runs on the first tick, unconditionally ───────────
-  if (!arm_target_initialized_.load(std::memory_order_acquire)) {
+  // ── Arm / TCP self-init — deferred until the combined-model cache is fresh ──
+  // (a non-E-STOP tick with the TCP frame registered). The hold pose must seed
+  // from a real cache Update, never a zero/stale frame — so if E-STOP is active
+  // at activation this latches on the first clear tick instead, mirroring the
+  // hand self-init's deferral until device 1 is valid.
+  if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ &&
+      combined_cache_.reorder_valid() && task_tcp_frame_idx_ >= 0) {
     if (arm_dof_ == 0 && state.num_devices > 0) {
       arm_dof_ = std::min(state.devices[0].num_channels, kDemoTaskMaxArmDof);
     }
 
     const auto& dev0 = state.devices[0];
-    std::span<const double> q_span(dev0.positions.data(),
-                                   static_cast<std::size_t>(dev0.num_channels));
-    arm_handle_->ComputeForwardKinematics(q_span);
-    pinocchio::SE3 tcp_pose = arm_handle_->GetFramePlacement(tip_frame_id_);
-    if (use_root_frame_) {
-      tcp_pose = arm_handle_->GetFramePlacement(root_frame_id_).actInv(tcp_pose);
-    }
+    // Arm TCP from the combined-model cache (refreshed by the Compute-scope
+    // Stage-1 pinocchio_cache_.Update for this non-E-STOP tick, just after
+    // ReadState). DrainTargetSlot runs after that Update — this self-init is the
+    // reason the Update stays at Compute scope rather than inside ComputeControl.
+    pinocchio::SE3 tcp_pose =
+        combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
 
     pinocchio::SE3 hold_pose = tcp_pose;
     if (ComputeHandForwardKinematics(state)) {
@@ -399,6 +452,23 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
                 sizeof(current_target_slot_.tcp_target_rot));
     std::memcpy(tcp_target_pose_.translation().data(), current_target_slot_.tcp_target_t.data(),
                 sizeof(current_target_slot_.tcp_target_t));
+
+    // ── Joint-space hold fallback (arm not yet TCP-initialized) ──────────────
+    // The TCP self-init above is deferred until the cache is fresh. If the cache
+    // is misconfigured (frame unregistered or reorder invalid) it never becomes
+    // fresh, ComputeControl early-returns forever, and desired_q_ would stay at
+    // its zero init — driving the arm to its zero configuration. Seed desired_q_
+    // from the measured positions so WriteJointCommand holds the current pose
+    // instead. Left un-latched (arm_target_initialized_ stays false) so the full
+    // TCP self-init still runs the moment the cache does become fresh. Skipped
+    // under E-STOP (ComputeEstop owns the wire command there).
+    if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ && arm_handle_) {
+      const auto& dev0 = state.devices[0];
+      const int nseed = std::min(arm_handle_->nv(), static_cast<int>(desired_q_.size()));
+      for (int i = 0; i < nseed && i < dev0.num_channels; ++i) {
+        desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+      }
+    }
   }
 
   // ── Hand (device 1) self-init — DEFERRED until device 1 is first valid ──────
@@ -552,6 +622,14 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   // ── Build hand tree-model if configured ─────────────────────────────
   if (sys_cfg && !sys_cfg->tree_models.empty()) {
     InitHandModel(*sys_cfg);
+  }
+
+  // ── Unified kin&dyn (#174): combined-model cache on the same builder ──
+  // Arm TCP FK/Jacobian are sourced from this cache on the RT path (arm_handle_
+  // retained only for the E-STOP TF path). Frames registered in OnDeviceConfigsSet.
+  // Task has no TSID contact frames → empty contact-frame list.
+  if (builder_) {
+    (void)combined_cache_.InitModel(*builder_, /*contact_frame_ids=*/{}, "[task]", logger_);
   }
 
   // ── E-STOP arm safe position (required) ─────────────────────────────

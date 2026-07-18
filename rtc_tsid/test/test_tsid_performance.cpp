@@ -53,7 +53,7 @@ class TSIDPerformanceTest : public ::testing::Test {
     contact_cfg_.max_contacts = 0;
     contact_cfg_.max_contact_vars = 0;
 
-    cache_.Init(model_, contact_cfg_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(contact_cfg_));
     contacts_.Init(0);
     ref_.Init(robot_info_.nq, robot_info_.nv, robot_info_.n_actuated, 0);
 
@@ -83,7 +83,7 @@ TEST_F(TSIDPerformanceTest, PandaWQPSolveTime) {
   posture->Init(*model_, robot_info_, cache_, task_cfg);
   formulation->AddTask(std::move(posture));
 
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
   ref_.q_des = q_;
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
@@ -99,7 +99,7 @@ TEST_F(TSIDPerformanceTest, PandaWQPSolveTime) {
   for (int i = 0; i < n_iters; ++i) {
     // Slightly vary q to prevent caching artifacts
     q_(0) += 1e-6;
-    cache_.Update(q_, v_, contacts_);
+    cache_.Update(q_, v_);
 
     const auto t0 = std::chrono::steady_clock::now();
     const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
@@ -144,7 +144,7 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
   posture1->Init(*model_, robot_info_, cache_, cfg1);
   formulation->AddTask(std::move(posture1));
 
-  cache_.Update(q_, v_, contacts_);
+  cache_.Update(q_, v_);
   ref_.q_des = q_;
   ref_.v_des = v_;
   ref_.a_des.setZero(robot_info_.nv);
@@ -159,7 +159,7 @@ TEST_F(TSIDPerformanceTest, PandaHQP2LevelsSolveTime) {
 
   for (int i = 0; i < n_iters; ++i) {
     q_(0) += 1e-6;
-    cache_.Update(q_, v_, contacts_);
+    cache_.Update(q_, v_);
 
     const auto t0 = std::chrono::steady_clock::now();
     const auto& result = formulation->Solve(cache_, ref_, contacts_, robot_info_);
@@ -207,7 +207,7 @@ TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
 
   // Warm-up
   for (int i = 0; i < 5; ++i) {
-    cache_.Update(q_, v_, contacts_);
+    cache_.Update(q_, v_);
     (void)ctrl.Compute(state, ref_, cache_, contacts_);
   }
 
@@ -216,7 +216,7 @@ TEST_F(TSIDPerformanceTest, FullPipelineWithCacheUpdate) {
     state.q = q_;
 
     const auto t0 = std::chrono::steady_clock::now();
-    cache_.Update(q_, v_, contacts_);
+    cache_.Update(q_, v_);
     auto output = ctrl.Compute(state, ref_, cache_, contacts_);
     const auto t1 = std::chrono::steady_clock::now();
 
