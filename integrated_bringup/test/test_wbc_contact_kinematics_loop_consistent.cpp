@@ -1,9 +1,10 @@
 // ── test_wbc_contact_kinematics_loop_consistent — Phase ③ contact frame J·oMf 격상 ──
 //   WbcReducedDynamicsProvider::FillReducedFrameKinematics 검증: closed-chain 활성 시 loop-하류
-//   contact frame 의 J·oMf 를 loop-consistent 값으로 덮되 frozen-loop(open-chain) 은 안 쓴다.
+//   contact frame 의 J·oMf·dJv 를 loop-consistent 값으로 덮되 frozen-loop(open-chain) 은 안 쓴다.
 //   (1) 하류 frame override 가 non-RT 수렴 RtClosedChainHandle 과 일치 + frozen-loop 대비 유의미
-//   차이, (2) dJv=0 (L2-zero), (3) held tick → last-good hold (L1, open-chain 미주입), (4) 구속
-//   없음(serial) → override 없음 (byte-for-byte). 통합 경로는 PinocchioCache::Update 로 재현한다.
+//   차이, (2) dJv 가 loop-consistent drift 와 일치 (L2-exact, #173), (3) held tick → J/oMf/dJv
+//   3값 last-good hold (L1, open-chain 미주입), (4) 구속 없음(serial) → override 없음
+//   (byte-for-byte). 통합 경로는 PinocchioCache::Update 로 재현한다.
 #include "closure_test_fixtures.hpp"  // rtc_urdf_bridge/test (include dir via CMake)
 #include "integrated_bringup/support/wbc_reduced_dynamics_provider.hpp"
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"
@@ -84,6 +85,10 @@ TEST(WbcContactKinematicsLoopConsistent, DownstreamOverrideMatchesConvergedNotFr
   Eigen::MatrixXd J_ref(6, 1);
   ref.GetFrameJacobian(c1_full, pinocchio::LOCAL_WORLD_ALIGNED, J_ref);
   const pinocchio::SE3 oMf_ref = ref.GetFramePlacement(c1_full);
+  // 같은 tick 의 UpdateDynamics 로 loop-consistent drift (provider 경로와 동일 순서).
+  ASSERT_FALSE(ref.UpdateDynamics(std::vector<double>{crank_vel}).held);
+  Eigen::Matrix<double, 6, 1> dJv_ref;
+  ref.GetFrameClassicalAccelerationDrift(c1_full, pinocchio::LOCAL_WORLD_ALIGNED, dJv_ref);
 
   // provider 구성 (M/h/g + contact frame 매핑).
   ib::WbcReducedDynamicsProvider provider;
@@ -126,11 +131,14 @@ TEST(WbcContactKinematicsLoopConsistent, DownstreamOverrideMatchesConvergedNotFr
   EXPECT_GT(dJ, 1e-4) << "loop-consistent J 가 frozen-loop 과 유의미하게 다름 (Δ‖J‖=" << dJ << ")";
   EXPECT_GT(dp, 1e-4) << "loop-consistent oMf 가 frozen-loop 과 유의미하게 다름 (Δp=" << dp << ")";
 
-  // (2) L2-zero: 하류 frame dJv 는 0 으로 (frozen-loop drift 미주입).
-  EXPECT_EQ(cache.contact_frames[0].dJv.norm(), 0.0) << "하류 dJv=0 (L2-zero)";
+  // (2) L2-exact (#173): 하류 frame dJv 는 loop-consistent drift J̇_a·v_a 로 주입.
+  //   (L2-zero 잠정안의 dJv=0 assertion 교체 — spec 변경, issue #173 본문.)
+  EXPECT_GT(dJv_ref.norm(), 1e-9) << "v≠0 → loop-consistent drift 비영 (공허 통과 방지)";
+  EXPECT_LT((cache.contact_frames[0].dJv - dJv_ref).norm(), 1e-9)
+      << "하류 dJv 가 수렴 핸들 drift 와 일치 (L2-exact)";
 }
 
-// ── (3) held tick(비유한 q) → 직전 유효 loop-consistent J/oMf 유지 (L1, open-chain 미주입) ──
+// ── (3) held tick(비유한 q) → 직전 유효 loop-consistent J/oMf/dJv 3값 유지 (L1+F3) ──────
 TEST(WbcContactKinematicsLoopConsistent, HeldHoldsLastGoodNotFrozen) {
   const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
   auto full = std::make_shared<pinocchio::Model>(ccm.model);
@@ -152,11 +160,14 @@ TEST(WbcContactKinematicsLoopConsistent, HeldHoldsLastGoodNotFrozen) {
   Eigen::VectorXd q = pinocchio::neutral(control);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(control.nv);
   q[qi] = 0.3;
+  v[static_cast<Eigen::Index>(control.idx_vs[jid])] = 0.37;  // 비영 → dJv last-good 이 비자명
 
-  // fresh tick → last-good 갱신.
+  // fresh tick → last-good 갱신 (J/oMf/dJv 3값 snapshot).
   cache.Update(q, v);
   const Eigen::MatrixXd J_good = cache.contact_frames[0].J;
   const pinocchio::SE3 oMf_good = cache.contact_frames[0].oMf;
+  const Eigen::Matrix<double, 6, 1> dJv_good = cache.contact_frames[0].dJv;
+  ASSERT_GT(dJv_good.norm(), 1e-9) << "비영 v → fresh dJv 비영 (hold 검증이 비자명하도록)";
 
   // 비유한 q → 핸들 held → last-good 유지 (open-chain frozen-loop 로 안 떨어짐).
   q[qi] = std::numeric_limits<double>::quiet_NaN();
@@ -166,6 +177,9 @@ TEST(WbcContactKinematicsLoopConsistent, HeldHoldsLastGoodNotFrozen) {
   EXPECT_LT((cache.contact_frames[0].J - J_good).norm(), 1e-12) << "held → 직전 유효 J 유지";
   EXPECT_LT((cache.contact_frames[0].oMf.translation() - oMf_good.translation()).norm(), 1e-12)
       << "held → 직전 유효 oMf 유지";
+  EXPECT_TRUE(cache.contact_frames[0].dJv.allFinite()) << "held tick dJv 유한 (NaN 누출 없음)";
+  EXPECT_LT((cache.contact_frames[0].dJv - dJv_good).norm(), 1e-12)
+      << "held → 직전 유효 dJv 유지 (J/oMf/dJv 3값 snapshot 단위, #173 F3)";
 }
 
 // ── (4) 구속 없음(serial) → override 없음, contact frame byte-for-byte 미변경 ───────────

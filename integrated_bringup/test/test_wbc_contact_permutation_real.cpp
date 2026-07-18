@@ -104,6 +104,7 @@ TEST(WbcContactPermutationReal, Ur5eP1bMultiColumnOverrideMatchesHandle) {
   Eigen::VectorXd q = pinocchio::neutral(*control);
   Eigen::VectorXd v = Eigen::VectorXd::Zero(control->nv);
   Eigen::VectorXd q_a(n_a);
+  std::vector<double> v_a(static_cast<std::size_t>(n_a));
   int non_identity = 0;
   for (int k = 0; k < n_a; ++k) {
     const std::string& name = indep[static_cast<std::size_t>(k)];
@@ -118,7 +119,8 @@ TEST(WbcContactPermutationReal, Ur5eP1bMultiColumnOverrideMatchesHandle) {
     }
     // 참조 핸들 입력 q_a (스칼라 각; continuous 는 atan2 로 복원 — provider 와 동일 규약).
     q_a[k] = (control->nqs[cj] == 2) ? std::atan2(q[cqs + 1], q[cqs]) : q[cqs];
-    v[cvs] = 0.05 * static_cast<double>(k + 1);  // 비영 속도 (dJv=0 확인용)
+    v[cvs] = 0.05 * static_cast<double>(k + 1);  // 비영 속도 (dJv 검증이 비자명하도록)
+    v_a[static_cast<std::size_t>(k)] = v[cvs];  // 참조 핸들 입력 (핸들 독립좌표 순서)
     if (cvs != k) {
       ++non_identity;
     }
@@ -137,6 +139,10 @@ TEST(WbcContactPermutationReal, Ur5eP1bMultiColumnOverrideMatchesHandle) {
   Eigen::MatrixXd J_ref(6, n_a);
   ref.GetFrameJacobian(full_fid, pinocchio::LOCAL_WORLD_ALIGNED, J_ref);
   const pinocchio::SE3 oMf_ref = ref.GetFramePlacement(full_fid);
+  // 같은 tick 의 UpdateDynamics 로 loop-consistent drift (provider 경로와 동일 순서).
+  ASSERT_FALSE(ref.UpdateDynamics(v_a).held);
+  Eigen::Matrix<double, 6, 1> dJv_ref;
+  ref.GetFrameClassicalAccelerationDrift(full_fid, pinocchio::LOCAL_WORLD_ALIGNED, dJv_ref);
 
   // 기대 cache J: 계약대로 핸들 열 k → cache v-index(control.idx_vs[name]).
   Eigen::MatrixXd J_expected = Eigen::MatrixXd::Zero(6, control->nv);
@@ -152,5 +158,9 @@ TEST(WbcContactPermutationReal, Ur5eP1bMultiColumnOverrideMatchesHandle) {
       << "override oMf 위치 일치";
   EXPECT_LT((cache.contact_frames[0].oMf.rotation() - oMf_ref.rotation()).norm(), 1e-9)
       << "override oMf 회전 일치";
-  EXPECT_EQ(cache.contact_frames[0].dJv.norm(), 0.0) << "하류 dJv=0 (L2-zero)";
+  // L2-exact (#173): dJv 는 frame-space 6×1 (열 순열 무관) — 참조 핸들 drift 와 직접 비교.
+  //   (L2-zero 잠정안의 dJv=0 assertion 교체 — spec 변경, issue #173 본문.)
+  EXPECT_GT(dJv_ref.norm(), 1e-10) << "비영 v → loop-consistent drift 비영 (공허 통과 방지)";
+  EXPECT_LT((cache.contact_frames[0].dJv - dJv_ref).norm(), 1e-9)
+      << "override dJv 가 참조 핸들 drift 와 일치 (L2-exact)";
 }
