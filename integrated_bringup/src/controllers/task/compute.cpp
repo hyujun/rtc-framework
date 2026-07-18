@@ -114,6 +114,14 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 
 void DemoTaskController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ComputeControl");
+  // ── Arm TCP pose: cache once for this tick (Update() ran in Compute() before
+  // ComputeControl). ArmTcpPoseFromCache is internally gated (Identity when the
+  // cache is unconfigured/non-fresh), so this unconditional read reproduces what
+  // the CLIK law and FillLog/FillPublishOutput used to read per-consumer — now a
+  // single source. Set before the early-return gate below so the non-CLIK path
+  // (frame unregistered / reorder invalid) still leaves a defined value.
+  arm_tcp_pose_ = combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
+
   // ── E-stop / cache-readiness check (estop_active_ loaded at top of Compute) ─
   // CLIK sources the arm TCP pose + Jacobian from the unified cache; hold (skip
   // CLIK) unless the cache is configured (task_tcp_frame_idx_ >= 0) AND was
@@ -158,9 +166,8 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
 
   const auto& dev0 = state.devices[0];
 
-  // ── Arm TCP pose (from the unified combined-model cache) ──────────────
-  const pinocchio::SE3 tcp_pose =
-      combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
+  // ── Arm TCP pose: cached at the top of ComputeControl (arm_tcp_pose_) ─────
+  const pinocchio::SE3& tcp_pose = arm_tcp_pose_;
 
   // ── Hand FK + Virtual TCP (must run before CLIK) ──────────────────────
   // #121: ComputeHandForwardKinematics runs the closed-chain projection when the
@@ -770,9 +777,8 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
     out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
-  // Arm TCP from the unified cache (Updated at the top of Compute this tick).
-  const pinocchio::SE3 tcp_current =
-      combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
+  // Arm TCP cached in ComputeControl (arm_tcp_pose_); reused here — no re-read.
+  const pinocchio::SE3& tcp_current = arm_tcp_pose_;
   pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
   output.actual_task_positions[0] = log_pose.translation().x();
@@ -851,9 +857,8 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
     out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
-  // Arm TCP from the unified cache (Updated at the top of Compute this tick).
-  const pinocchio::SE3 tcp_current =
-      combined_cache_.ArmTcpPoseFromCache(task_tcp_frame_idx_, task_base_frame_idx_);
+  // Arm TCP cached in ComputeControl (arm_tcp_pose_); reused here — no re-read.
+  const pinocchio::SE3& tcp_current = arm_tcp_pose_;
   pinocchio::SE3 log_pose = vtcp_valid_ ? vtcp_pose_ : tcp_current;
   Eigen::Vector3d rpy = pinocchio::rpy::matrixToRpy(log_pose.rotation());
   output.actual_task_positions[0] = log_pose.translation().x();
