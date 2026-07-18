@@ -118,6 +118,12 @@ jobs:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
 
+      # parallel-workers=2 로 bound: rtc_mpc / rtc_tsid / rtc_controllers 는 pinocchio·
+      # aligator 헤비 템플릿 TU 라, CodeQL 트레이싱(추출기 + 컴파일러 + in-memory DB)
+      # 오버헤드까지 얹히면 nproc(=4) 동시 패키지 빌드가 16GB 러너 메모리를 소진해
+      # SIGTERM(143) 으로 죽는다 (#179 — deps OOM 제거 후 드러난 2차 OOM). 동시 헤비
+      # 패키지를 2개로 제한해 peak RSS 를 러너 한도 안에 묶는다 (트레이싱 없는 메인 CI
+      # 는 nproc 로도 통과하므로 이 bound 는 CodeQL 경로 전용).
       - name: Build packages
         uses: ./.github/actions/colcon-build
         with:
@@ -126,6 +132,7 @@ jobs:
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           build-type: Release
           enable-testing: "false"
+          parallel-workers: "2"
           artifact-suffix: codeql-build
 
       - name: Perform CodeQL Analysis
