@@ -125,6 +125,11 @@ void PinocchioCache::Update(const Eigen::VectorXd& q_in, const Eigen::VectorXd& 
 
   // Phase ③ 대비: closed-chain 활성 시 contact frame J·oMf 를 loop-consistent 값으로 격상.
   // Phase 1 은 default no-op(false) → open-chain(frozen-loop) 값 유지 (byte-for-byte).
+  //
+  // INVARIANT: FillReducedFrameKinematics 는 반드시 위 FillReducedDynamics 호출(:109-111) **뒤에**,
+  // 같은 Update() 안에서 호출된다. 구현체(WbcReducedDynamicsProvider)는 전자가 사영한 핸들
+  // kinematics 를 재사용하므로 이 순서를 재배치하면 stale kinematics 를 주입하게 된다 (구현체가
+  // debug 빌드 assert 로 잡음). 두 훅은 항상 이 파일의 이 순서로만 배선한다.
   if (reduced_provider != nullptr) {
     (void)reduced_provider->FillReducedFrameKinematics(q, v, contact_frames);
   }

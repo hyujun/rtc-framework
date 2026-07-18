@@ -254,6 +254,14 @@ void DemoWbcController::ConfigureReducedDynamicsProvider() {
     // cache.Init 이 확정한 contact frame id(control 모델)를 이름→full 모델 fid 로 매핑한다.
     wbc_reduced_dynamics_.ConfigureContactFrames(*full_model_ptr_,
                                                  rtc::tsid::ContactFrameIds(contact_mgr_config_));
+    // 매핑 실패 contact frame 은 loop-하류 판정 불가 → override 에서 빠지고 open-chain(frozen-loop)
+    // 값이 조용히 유지된다. config/모델 naming drift 를 잡도록 노출 (silent degradation 방지).
+    for (const std::string& fname : wbc_reduced_dynamics_.unmapped_contact_frames()) {
+      RCLCPP_WARN(logger_,
+                  "[wbc] contact frame '%s' full 모델 매핑 실패 — loop-consistent override 불가, "
+                  "open-chain(frozen-loop) 값 유지",
+                  fname.c_str());
+    }
     pinocchio_cache_.reduced_provider = &wbc_reduced_dynamics_;
     RCLCPP_INFO(logger_, "[wbc] closed-chain 축약 동역학 활성 (n_a=%d) — TSID EOM M/h/g 대체",
                 wbc_reduced_dynamics_.n_a());

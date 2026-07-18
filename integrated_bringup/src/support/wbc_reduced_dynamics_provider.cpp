@@ -1,10 +1,12 @@
 // ── WbcReducedDynamicsProvider 구현 (#120) ───────────────────────────────────
 #include "integrated_bringup/support/wbc_reduced_dynamics_provider.hpp"
 
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace integrated_bringup {
@@ -113,6 +115,10 @@ bool WbcReducedDynamicsProvider::FillReducedDynamics(const Eigen::VectorXd& q,
 
   const rub::RtClosedChainHandle::Status st =
       handle_->Update(std::span<const double>(q_a_.data(), static_cast<std::size_t>(n_a_)));
+  // F3 handshake: 핸들 kinematics(data_)가 이번 tick q 로 갱신됨 → FillReducedFrameKinematics 가
+  // 같은 Update() 안에서 이 사영을 재사용해도 안전. held tick 도 data_ 는 직전 유효 q_full_ 로
+  // 복원돼 유효하므로 여기서 set (frame kin 은 자체 held 판정으로 last-good hold).
+  dynamics_projected_ = true;
   bool ok = !st.held && !st.singular;
   if (ok) {
     const rub::RtClosedChainHandle::Status dst = handle_->UpdateDynamics(
@@ -149,6 +155,7 @@ void WbcReducedDynamicsProvider::ConfigureContactFrames(
   contact_J_last_.clear();
   contact_oMf_last_.clear();
   contact_have_last_.clear();
+  unmapped_contact_frames_.clear();
 
   // provider 비활성(구속 없음/좌표 미매칭)이면 override 대상 없음 → open-chain 유지.
   if (!active_ || !handle_) {
@@ -167,13 +174,17 @@ void WbcReducedDynamicsProvider::ConfigureContactFrames(
     contact_J_last_[i] = Eigen::MatrixXd::Zero(6, n_a_);  // last-good 버퍼 사전 할당
 
     // cache(control) 모델 frame id → 이름 → full 모델 fid. 실패 시 미매핑(open-chain).
+    // 매핑 실패 frame 은 loop-하류 여부를 판정할 수 없어 override 에서 빠지고 open-chain
+    // (frozen-loop) 값이 조용히 유지되므로, 이름을 기록해 호출측이 WARN 하도록 한다 (non-RT).
     const pinocchio::FrameIndex cfid = contact_frame_ids[i];
     if (cfid >= control_model.frames.size()) {
+      unmapped_contact_frames_.push_back("<oob frame id " + std::to_string(cfid) + ">");
       continue;  // OOB frame id
     }
     const std::string& name = control_model.frames[cfid].name;
     const pinocchio::FrameIndex full_fid = handle_->GetFrameId(name);
     if (full_fid == 0) {
+      unmapped_contact_frames_.push_back(name);
       continue;  // full 모델에 없음(universe 반환) → 매핑 불가
     }
     contact_full_fid_[i] = full_fid;
@@ -202,6 +213,17 @@ bool WbcReducedDynamicsProvider::FillReducedFrameKinematics(
   if (!active_ || !contact_frames_configured_ || !handle_) {
     return false;
   }
+
+  // F3: 이 메서드는 **같은 PinocchioCache::Update() 안에서 FillReducedDynamics 가 먼저 돌아**
+  // 핸들 kinematics 를 이번 tick q 로 사영했다는 것을 전제로 q/v 를 무시하고 핸들 상태를 재사용한다
+  // (pinocchio_cache.cpp 의 호출 순서가 유일한 보증). 그 순서가 깨지면(예: 호출 재배치, provider
+  // 를 dynamics 주입 없이 배선) 여기서 직전 tick 의 stale kinematics 를 주입하게 된다. per-tick
+  // 핸드셰이크 토큰으로 이 오배치를 debug 빌드에서 잡는다 (Release/NDEBUG 는 컴파일 아웃 → RT
+  // no-op).
+  assert(dynamics_projected_ &&
+         "FillReducedFrameKinematics requires a same-Update() preceding FillReducedDynamics "
+         "(handle kinematics stale otherwise)");
+  dynamics_projected_ = false;  // 토큰 소비 (다음 tick 은 FillReducedDynamics 가 다시 set)
 
   // 같은 tick 의 핸들 사영 상태. held/singular 면 이번 tick 은 loop-untrustworthy → last-good hold
   // (L1: open-chain frozen-loop 미주입). fresh 면 override + last-good 갱신.

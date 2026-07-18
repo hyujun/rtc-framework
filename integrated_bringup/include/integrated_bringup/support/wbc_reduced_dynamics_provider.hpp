@@ -97,6 +97,13 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
   /// 정렬 미매칭 시(비활성) 매핑 실패한 관절 이름 (로깅용).
   [[nodiscard]] const std::string& missing_joint() const noexcept { return missing_joint_; }
 
+  /// (Phase ③) `ConfigureContactFrames` 에서 full 모델에 매핑 실패한 contact frame 이름들
+  /// (로깅용, non-RT). 매핑 실패 frame 은 loop-하류 여부를 판정할 수 없어 override 대상에서
+  /// 빠지고 open-chain(frozen-loop) 값이 조용히 유지되므로, 호출측이 이를 WARN 으로 노출한다.
+  [[nodiscard]] const std::vector<std::string>& unmapped_contact_frames() const noexcept {
+    return unmapped_contact_frames_;
+  }
+
   // ── ReducedDynamicsProvider ────────────────────────────────────────────────
   [[nodiscard]] bool FillReducedDynamics(const Eigen::VectorXd& q, const Eigen::VectorXd& v,
                                          Eigen::MatrixXd& M, Eigen::VectorXd& h,
@@ -106,6 +113,10 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
   ///   provider 가 `FillReducedDynamics` 에서 이미 사영한 핸들을 재사용 (재사영 없음). frozen-loop
   ///   미주입 정책 (L1 last-good hold / L2-zero dJv / 비하류 미변경) 은 클래스 주석 참조.
   /// @return 하나 이상 frame 을 덮었으면 true. **RT-safe.**
+  /// @warning **순서 계약**: 반드시 같은 `PinocchioCache::Update()` 안에서 `FillReducedDynamics`
+  ///   (핸들 Update)가 먼저 돈 뒤 호출해야 한다 — q/v 를 무시하고 핸들의 사영 kinematics 를
+  ///   재사용하기 때문. 이 순서는 `pinocchio_cache.cpp` 배선이 보증하며, 어기면 stale kinematics
+  ///   주입이 되고 debug 빌드에서 assert 로 잡힌다.
   [[nodiscard]] bool FillReducedFrameKinematics(
       const Eigen::VectorXd& q, const Eigen::VectorXd& v,
       std::vector<rtc_urdf_bridge::PinocchioCache::FrameCache>& contact_frames) noexcept override;
@@ -142,6 +153,12 @@ class WbcReducedDynamicsProvider final : public rtc::tsid::ReducedDynamicsProvid
   int n_contacts_{0};
   std::vector<pinocchio::FrameIndex> contact_full_fid_;  ///< contact i → full-model fid (0=미매핑)
   std::vector<char> contact_downstream_;  ///< contact i loop-하류 & 매핑됨 → override
+  std::vector<std::string>
+      unmapped_contact_frames_;  ///< full 모델 매핑 실패 이름 (WARN 용, non-RT)
+  /// F3 handshake: 같은 PinocchioCache::Update() 안에서 FillReducedDynamics(핸들 Update)가
+  /// FillReducedFrameKinematics 앞에 돌았는지 검증하는 per-tick 토큰. 전자에서 set, 후자에서
+  /// (핸들 사용 직전) assert 후 소비(reset). Release(NDEBUG)에서는 assert 컴파일 아웃 → RT no-op.
+  bool dynamics_projected_{false};
   // L1: 하류 frame 별 직전 유효(last-good) loop-consistent J_a(6×n_a, 핸들 순서)·oMf.
   std::vector<Eigen::MatrixXd> contact_J_last_;
   std::vector<pinocchio::SE3> contact_oMf_last_;

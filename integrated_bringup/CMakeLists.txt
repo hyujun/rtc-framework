@@ -497,6 +497,22 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # Phase ③ scatter permutation on the REAL ur5e_p1b closure (non-identity
+  # cache_v_idx_ column map, which the CrankRocker nv==1 cases cannot exercise).
+  ament_add_gtest(test_wbc_contact_permutation_real
+    test/test_wbc_contact_permutation_real.cpp)
+  target_link_libraries(test_wbc_contact_permutation_real
+    ${PROJECT_NAME}_demo_controllers
+  )
+  ament_target_dependencies(test_wbc_contact_permutation_real
+    ament_index_cpp
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # ── Device backend registration smoke test ─────────────────────────────────
   # Confirms the 3 backend TUs (mujoco_native / ur_driver_native /
   # udp_hand_native) static-init through --whole-archive and reach the
