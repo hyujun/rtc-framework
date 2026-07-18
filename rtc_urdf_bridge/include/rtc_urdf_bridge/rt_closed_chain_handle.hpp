@@ -130,9 +130,11 @@ class RtClosedChainHandle {
   /// non-RT 핸들의 SVD damped-pinv 대신 직전 Update 가 factor 한 damped 정규방정식 LDLT
   /// (`ldlt_G_`) 와 Jc_D (`Jc_free_`) 를 재사용해 동일 결과를 힙 할당 없이 얻는다.
   ///
-  /// @param v_a 독립 관절 속도 (n_a). 비우거나 크기≠n_a 면 v_full=0 → h_a=g_a.
-  /// @return 직전 `Update` 상태를 그대로 반환. `held==true` 면 동역학 미갱신 (직전값 hold).
-  ///   `singular==true` 면 M_a/g_a/h_a 는 damped — 소비자 hold 정책.
+  /// @param v_a 독립 관절 속도 (n_a). 비우거나 크기≠n_a 면 v_full=0 → h_a=g_a. 비유한
+  ///   (NaN/Inf) 성분이 있으면 `held=true` 로 직전 동역학·drift 를 유지한다 (`Update` 의
+  ///   q allFinite guard 와 대칭 — NaN 이 M/h/g·dJv 로 누출되지 않는다).
+  /// @return 직전 `Update` 상태를 그대로 반환 (비유한 v_a 는 held 로 격상). `held==true` 면
+  ///   동역학 미갱신 (직전값 hold). `singular==true` 면 M_a/g_a/h_a 는 damped — 소비자 hold 정책.
   /// @note **RT-safe.** noexcept, 힙 할당 없음. **반드시 같은 tick 의 `Update(q_a)` 직후 호출** —
   ///   G/Jc_D/ldlt_G_ (q_full 형상) 를 재사용한다. drift 유한차분이 `data_` 를 오염시키므로
   ///   내부에서 2차 FK 상태(q_full, v_full, a_drift)로 복원 → 이후 `GetFrame*` getter 와

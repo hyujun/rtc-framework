@@ -362,6 +362,15 @@ RtClosedChainHandle::Status RtClosedChainHandle::UpdateDynamics(
     for (int i = 0; i < n_a_; ++i) {
       v_indep_[i] = v_a[static_cast<std::size_t>(i)];
     }
+    // 비유한 v_a(측정 NaN/Inf) → 직전 동역학·2차 FK 상태 hold. Update 의 q allFinite guard 와
+    // 대칭 (#173 감사). 진행하면 NaN 이 h_a_/a_drift_ → data_.v/a 로 스며드는데 held=false 라
+    // 소비자가 fresh 로 오인해 last-good snapshot(M/h/g·dJv)을 NaN 으로 영구 오염시킨다.
+    if (!v_indep_.allFinite()) {
+      status_.held = true;
+      status_.closure_error =
+          std::numeric_limits<double>::infinity();  // held → 임계 비교가 안전히 실패
+      return status_;
+    }
     v_full_.noalias() = G_ * v_indep_;
   } else {
     v_full_.setZero();

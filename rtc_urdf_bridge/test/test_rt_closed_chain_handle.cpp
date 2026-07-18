@@ -717,3 +717,41 @@ TEST(RtClosedChainHandle, DriftGetterKeepsKinematicsGettersValid) {
   EXPECT_TRUE(dJv_held.allFinite());
   EXPECT_LT((dJv_held - dJv1).norm(), 1e-15) << "held → 직전 유효 drift 반환";
 }
+
+// ── (19) 비유한 v_a → UpdateDynamics held (직전 동역학·drift byte-불변, NaN 미누출) ──────
+//   Update 의 q allFinite guard 와 대칭 (#173 감사). guard 없으면 NaN v_full 이 h_a/a_drift →
+//   data_.v/a 로 스며드는데 held=false 라 소비자가 fresh 로 오인해 last-good snapshot 을 오염.
+TEST(RtClosedChainHandle, DynamicsHeldOnNonFiniteVelocity) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+  rub::ClosedChainHandle ref(model, ccm.constraints, ccm.actuated_joint_ids, {});
+  ref.Update(std::vector<double>{0.2});
+  rub::RtClosedChainHandle rt(model, ccm.constraints, ccm.actuated_joint_ids,
+                              ref.GetFullConfiguration(), 2);
+  const int n_a = rt.nv_independent();
+  const std::vector<double> q_a(static_cast<std::size_t>(n_a), 0.2);
+  const std::vector<double> v_a(static_cast<std::size_t>(n_a), 0.37);
+  const pinocchio::FrameIndex fid = rt.GetFrameId("c1");
+
+  // 유효 tick 으로 last-good 동역학·drift 를 채운다.
+  ASSERT_FALSE(rt.Update(q_a).held);
+  ASSERT_FALSE(rt.UpdateDynamics(v_a).held);
+  const Eigen::MatrixXd M_good = rt.GetMassMatrix();
+  const Eigen::VectorXd h_good = rt.GetNonLinearEffects();
+  Eigen::Matrix<double, 6, 1> dJv_good;
+  rt.GetFrameClassicalAccelerationDrift(fid, pinocchio::LOCAL_WORLD_ALIGNED, dJv_good);
+  ASSERT_GT(dJv_good.norm(), 1e-8);
+
+  // 유효 q + 비유한 v → held 격상, 동역학·drift 미갱신 (NaN 누출 없음).
+  ASSERT_FALSE(rt.Update(q_a).held) << "q 는 유효 — kinematics 는 fresh";
+  std::vector<double> v_bad(v_a);
+  v_bad[0] = std::numeric_limits<double>::quiet_NaN();
+  const rub::RtClosedChainHandle::Status dyn = rt.UpdateDynamics(v_bad);
+  EXPECT_TRUE(dyn.held) << "비유한 v_a → held (Update 의 q guard 와 대칭)";
+  EXPECT_LT((rt.GetMassMatrix() - M_good).norm(), 1e-15) << "M_a byte-불변";
+  EXPECT_LT((rt.GetNonLinearEffects() - h_good).norm(), 1e-15) << "h_a byte-불변";
+  Eigen::Matrix<double, 6, 1> dJv_after;
+  rt.GetFrameClassicalAccelerationDrift(fid, pinocchio::LOCAL_WORLD_ALIGNED, dJv_after);
+  EXPECT_TRUE(dJv_after.allFinite()) << "drift 에 NaN 미누출";
+  EXPECT_LT((dJv_after - dJv_good).norm(), 1e-15) << "drift 직전 유효값 유지";
+}
