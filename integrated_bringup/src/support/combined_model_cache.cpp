@@ -13,9 +13,8 @@
 
 namespace integrated_bringup {
 
-bool CombinedModelCache::InitModel(rtc_urdf_bridge::PinocchioModelBuilder& builder,
-                                   const std::vector<pinocchio::FrameIndex>& contact_frame_ids,
-                                   std::string_view log_prefix, const rclcpp::Logger& logger) {
+bool CombinedModelCache::SelectModel(rtc_urdf_bridge::PinocchioModelBuilder& builder,
+                                     std::string_view log_prefix, const rclcpp::Logger& logger) {
   // Model selection mirrors the former per-controller InitControlModelCache:
   // actuated closed-chain → reduced tree "wbc" → raw full URDF model.
   if (auto actuated = builder.GetActuatedModel()) {
@@ -40,10 +39,21 @@ bool CombinedModelCache::InitModel(rtc_urdf_bridge::PinocchioModelBuilder& build
   if (!full_model_ptr_) {
     return false;
   }
-  // contact_frame_ids: empty for joint/task; WBC passes its TSID contact frames.
-  cache_.Init(full_model_ptr_, contact_frame_ids);
   q_curr_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nq);
   v_curr_full_ = Eigen::VectorXd::Zero(full_model_ptr_->nv);
+  return true;
+}
+
+bool CombinedModelCache::InitModel(rtc_urdf_bridge::PinocchioModelBuilder& builder,
+                                   const std::vector<pinocchio::FrameIndex>& contact_frame_ids,
+                                   std::string_view log_prefix, const rclcpp::Logger& logger) {
+  if (!SelectModel(builder, log_prefix, logger)) {
+    return false;
+  }
+  // contact_frame_ids: empty for joint/task; WBC passes its TSID contact frames.
+  // (WBC defers this cache Init to a direct cache().Init once its contact frame
+  // ids are parsed — see DemoWbcController::LoadConfig.)
+  cache_.Init(full_model_ptr_, contact_frame_ids);
   return true;
 }
 

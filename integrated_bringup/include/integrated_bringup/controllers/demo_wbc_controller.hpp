@@ -12,6 +12,7 @@
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
+#include "integrated_bringup/support/combined_model_cache.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "integrated_bringup/support/pull_estimator_wiring.hpp"
 #include "integrated_bringup/support/wbc_reduced_dynamics_provider.hpp"
@@ -361,7 +362,6 @@ class DemoWbcController final : public RTControllerInterface {
   // so they run in OnDeviceConfigsSet). No-op when there is no secondary device
   // or no matching tree_model. (#123 Phase 2)
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
-  void BuildJointReorderMap();
 
   // ── Hand fingertip FK dispatch (#123 Phase 2 — mirrors task/joint) ────────
   // ConfigureClosedChainHandFk: non-RT wiring of closed_hand_fk_ + serial
@@ -374,14 +374,14 @@ class DemoWbcController final : public RTControllerInterface {
   void ConfigureClosedChainHandFk();
   bool ComputeHandFingertipFk(const ControllerState& state, const pinocchio::SE3& tcp) noexcept;
 
-  // #120: closed-chain 축약 동역학 provider 배선 (non-RT; LoadConfig 의 pinocchio_cache_.Init
+  // #120: closed-chain 축약 동역학 provider 배선 (non-RT; LoadConfig 의 combined_cache_.cache().Init
   //   직후 호출). control model 이 actuated(closed-chain) 모델일 때만 provider 를 Configure 해
-  //   pinocchio_cache_.reduced_provider 로 주입 → TSID EOM 의 M/h/g 를 축약값으로 대체. 비-extended
+  //   combined_cache_.cache().reduced_provider 로 주입 → TSID EOM 의 M/h/g 를 축약값으로 대체. 비-extended
   //   (GetActuatedModel()==null) 이거나 정렬 미매칭이면 미주입 → open-chain 경로 byte-for-byte.
   void ConfigureReducedDynamicsProvider();
 
   // Stage C-2: initialise the CLIK reference generator (registers the
-  // se3_tcp tip/base frames on pinocchio_cache_ — by frame_id, so it reuses
+  // se3_tcp tip/base frames on combined_cache_.cache() — by frame_id, so it reuses
   // the SE3Task registration — and Init's clik_ with the arm/hand v-index
   // sets). Leaves clik_enabled_ false unless TSID is built, the reorder map is
   // valid, and the control model is nq == nv (CLIK contract). Called from
@@ -407,7 +407,7 @@ class DemoWbcController final : public RTControllerInterface {
   void ParsePostureSplitGains(const YAML::Node& posture_cfg);
   // Assemble per-DoF posture kp/kd from the arm/hand split and push to the
   // PostureTask via SetGains. No-op unless posture_split_gains_ &&
-  // tsid_initialized_ && joint_reorder_valid_. Called at the end of
+  // tsid_initialized_ && combined_cache_.reorder_valid(). Called at the end of
   // on_configure, after the reorder map (OnDeviceConfigsSet) and the final
   // task build (LoadConfig) are both in place.
   void ApplyPostureGains() noexcept;
@@ -533,24 +533,22 @@ class DemoWbcController final : public RTControllerInterface {
   ClosedChainHandFk closed_hand_fk_;
 
   // #120: closed-chain 축약 동역학 provider (extended 로봇의 TSID EOM M/h/g 대체). 활성 시
-  // pinocchio_cache_.reduced_provider 가 이것을 가리킨다 → 수명은 controller 가 보장. 비활성이면
+  // combined_cache_.cache().reduced_provider 가 이것을 가리킨다 → 수명은 controller 가 보장. 비활성이면
   // cache.reduced_provider==nullptr (open-chain, byte-for-byte).
   WbcReducedDynamicsProvider wbc_reduced_dynamics_;
 
-  // Control model — shared_ptr lifetime for PinocchioCache.
-  // InitModels prefers the builder's actuated closed-chain model (extended
-  // hands: locks only the loop-passives, keeping every actuated joint movable
-  // → nq == nv == 16 for UR5e + 10-DoF hand), else the reduced tree `wbc`,
-  // else the raw URDF full model (nq=26, nv=21 with first-class mimic). Plain/
-  // mimic URDFs get a null actuated model and take the tree/full path
-  // byte-for-byte. TSID + MPC share this model.
-  std::shared_ptr<const pinocchio::Model> full_model_ptr_;
-
-  // Joint reorder: external [arm0..arm_dof_-1, hand0..hand_dof_-1] →
-  // Pinocchio q/v index. Only the first `full_dof_` slots are populated.
-  std::array<int, kMaxFullDof> ext_to_pin_q_{};
-  std::array<int, kMaxFullDof> ext_to_pin_v_{};
-  bool joint_reorder_valid_{false};
+  // Shared combined arm+hand control-model cache wiring (model select, ext→
+  // Pinocchio reorder map, per-tick state scatter, arm-TCP FK / Jacobian source,
+  // and the PinocchioCache the whole TSID/MPC stack consumes) — see
+  // CombinedModelCache (#174). WBC is the superset consumer: it selects the model
+  // early (InitModels) via SelectModel, defers the cache Init until its TSID
+  // contact frame ids parse (LoadConfig), and injects the reduced-dynamics
+  // provider through cache(). InitModels prefers the builder's actuated closed-
+  // chain model (extended hands: locks only the loop-passives, keeping every
+  // actuated joint movable → nq == nv == 16 for UR5e + 10-DoF hand), else the
+  // reduced tree `wbc`, else the raw URDF full model (nq=26, nv=21 with first-
+  // class mimic). TSID + MPC share this model.
+  CombinedModelCache combined_cache_;
 
   // Runtime DoF (resolved by LoadConfig/OnDeviceConfigsSet from YAML +
   // device configs). arm_dof_ from `estop.arm_safe_position` length;
@@ -586,7 +584,8 @@ class DemoWbcController final : public RTControllerInterface {
   // ComputeDynamicWbc and ComputeKinematicWbc. (SE3-trajectory members live in
   // the Trajectory section below, next to their init helpers.)
   // ══════════════════════════════════════════════════════════════════════════
-  rtc::tsid::PinocchioCache pinocchio_cache_;
+  // (The PinocchioCache lives in combined_cache_ above; the whole TSID/MPC stack
+  // consumes it via combined_cache_.cache().)
   rtc::tsid::ContactState contact_state_;
   rtc::tsid::ControlReference control_ref_;
   rtc::tsid::RobotModelInfo robot_info_;
@@ -595,11 +594,12 @@ class DemoWbcController final : public RTControllerInterface {
   // solve. Declared in Common (it is a Common-stage output, not a Dynamic member).
   rtc::tsid::ControlState ctrl_state_;
 
-  // Measured state + posture reference (Pinocchio joint order, full model).
-  Eigen::VectorXd q_curr_full_;        ///< [nv] current q (sensor, per tick)
-  Eigen::VectorXd v_curr_full_;        ///< [nv] current v (sensor, per tick)
-  Eigen::VectorXd q_des_target_full_;  ///< [nv] posture reference = external joint target
-                                       ///< (active driving phases). Same layout as q_curr_full_.
+  // Posture reference (Pinocchio joint order, full model). The measured per-tick
+  // q/v live in combined_cache_ (combined_cache_.q()/.v()); this posture target
+  // shares their layout so it is a drop-in q_des for the RT path.
+  Eigen::VectorXd
+      q_des_target_full_;  ///< [nv] posture reference = external joint target
+                           ///< (active driving phases). Same layout as combined_cache_.q().
 
   // Active contact-force dimension of this tick, computed once in
   // ComputeWbcCommon (grasp cache) and reused by ComputeDynamicWbc's
@@ -677,7 +677,7 @@ class DemoWbcController final : public RTControllerInterface {
   // ── In-plane pull-force estimator (#167) ──────────────────────────────────
   // Measured R_i·f_i over the TSID contact geometry (NOT λ_opt): slots resolve
   // against tsid.contacts frame names (1:1 with the fingertip sensor lanes),
-  // and per-tick R_i/p_i come from pinocchio_cache_.contact_frames[i].oMf.
+  // and per-tick R_i/p_i come from combined_cache_.cache().contact_frames[i].oMf.
   // contact_geometry_fresh_ marks ticks where ComputeWbcCommon refreshed that
   // cache — non-TSID ticks (kFallback / uninitialized) feed invalid inputs so
   // the estimate decays instead of consuming stale frames. Output rides
@@ -738,7 +738,7 @@ class DemoWbcController final : public RTControllerInterface {
   double clik_w_hand_{1e-2};           ///< L3 hand posture weight (YAML clik.w_hand)
   double clik_anchor_drift_max_{0.0};  ///< carry-forward anti-windup clamp [rad] (YAML
                                        ///< clik.anchor_drift_max; ≤0 → off)
-  int clik_tcp_frame_idx_{-1};         ///< pinocchio_cache_.registered_frames index (tip)
+  int clik_tcp_frame_idx_{-1};         ///< combined_cache_.cache().registered_frames index (tip)
   int clik_base_frame_idx_{-1};        ///< registered_frames index (base; < 0 = universe)
   bool clik_compute_ok_{false};        ///< clik_.Compute() succeeded this tick
   double clik_tcp_err_{0.0};           ///< ‖e_x‖ [m+rad] (CLIK diagnostic)
@@ -833,9 +833,9 @@ class DemoWbcController final : public RTControllerInterface {
   void DrainTargetSlot(const ControllerState& state) noexcept;
 
   // RT-thread-only: rebuild q_des_target_full_ from current_target_slot_.targets
-  // (external order → Pinocchio order via ext_to_pin_q_, mirroring ExtractFullState).
+  // (external order → Pinocchio order via combined_cache_.ext_to_pin_q, mirroring combined_cache_.ExtractFullState).
   // Called at phase entry alongside the SE3 goal so posture + SE3 reference share
-  // one consistent target snapshot. No-op until joint_reorder_valid_.
+  // one consistent target snapshot. No-op until combined_cache_.reorder_valid().
   void BuildTargetPosture(const ControllerState& state) noexcept;
 
   // RT-thread-only: fold the hand joint target (current_target_slot_.targets[1])
@@ -966,7 +966,7 @@ class DemoWbcController final : public RTControllerInterface {
   YAML::Node mpc_rich_cfg_;
   YAML::Node phase_cfg_;
 
-  // Reference buffers sized to full_model_ptr_->nq/nv (= reduced tree when
+  // Reference buffers sized to combined_cache_.model()->nq/nv (= reduced tree when
   // available). Populated each tick by ComputeReference, consumed by TSID
   // via control_ref_.{q_des,v_des,a_des}.
   Eigen::VectorXd mpc_q_ref_;
@@ -1020,7 +1020,6 @@ class DemoWbcController final : public RTControllerInterface {
   bool release_done_{false};
 
   // ── Utility ─────────────────────────────────────────────────────────────
-  void ExtractFullState(const ControllerState& state) noexcept;
   [[nodiscard]] double ComputeTcpError(const pinocchio::SE3& target) noexcept;
 
   // ── Logging ─────────────────────────────────────────────────────────────

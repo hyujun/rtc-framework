@@ -68,6 +68,15 @@ class CombinedModelCache {
                                const std::vector<pinocchio::FrameIndex>& contact_frame_ids,
                                std::string_view log_prefix, const rclcpp::Logger& logger);
 
+  /// @ref InitModel 의 앞 절반: 모델 선택(actuated → tree "wbc" → full) + q/v 버퍼 alloc만
+  /// 수행하고 cache Init 은 하지 않는다. WBC 처럼 contact frame id 파싱이 선택된 모델을
+  /// 요구해 cache Init 을 뒤로 미뤄야 하는(select → contact 파싱 → cache Init) 컨트롤러용.
+  /// 이후 호출자는 @ref cache() 의 `Init(model(), contact_frame_ids)` 로 cache 를 초기화한다.
+  /// joint/task 는 대신 묶음 @ref InitModel 을 쓴다.
+  /// @return 모델을 얻으면 true (@ref model() 유효), 그 외 false.
+  [[nodiscard]] bool SelectModel(rtc_urdf_bridge::PinocchioModelBuilder& builder,
+                                 std::string_view log_prefix, const rclcpp::Logger& logger);
+
   /// ext(device joint-state 순서) → Pinocchio q/v reorder map 구성. @p arm_joint_names 가
   /// nullptr(primary device config 부재)이면 identity fallback. @p hand_joint_names 가 nullptr
   /// 이면 hand 관절 없음. @p full_dof = arm_dof + hand_dof. 완료 후 @ref reorder_valid() 갱신.
@@ -107,6 +116,13 @@ class CombinedModelCache {
 
   [[nodiscard]] int ext_to_pin_v(int ext_idx) const noexcept {
     return ext_to_pin_v_[static_cast<std::size_t>(ext_idx)];
+  }
+
+  /// ext→Pinocchio v-index reorder map 전체 (첫 full_dof_ 슬롯만 유효, 나머지 0-init).
+  /// 배열 전체를 받는 정적 헬퍼(WBC 의 @c BuildClikJointIndexSets /
+  /// @c AssemblePostureGains — URDF 없이 unit-test 가능하도록 배열 인자로 고정)용.
+  [[nodiscard]] const std::array<int, kMaxFullDof>& ext_to_pin_v_map() const noexcept {
+    return ext_to_pin_v_;
   }
 
   [[nodiscard]] const Eigen::VectorXd& q() const noexcept { return q_curr_full_; }

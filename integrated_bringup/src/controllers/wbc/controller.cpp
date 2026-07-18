@@ -94,26 +94,14 @@ void DemoWbcController::InitModels(const rtc_urdf_bridge::ModelConfig& config) {
   // movable, so nq==nv and the device's full actuated set maps 1:1 (16/16).
   // Non-extended (plain/mimic) URDFs get a null actuated model and fall through
   // to the existing tree/full path unchanged (byte-for-byte).
-  if (auto actuated = builder_->GetActuatedModel()) {
-    full_model_ptr_ = std::move(actuated);
-    RCLCPP_INFO(logger_, "[wbc] control model: actuated closed-chain (nq=%d nv=%d)",
-                full_model_ptr_->nq, full_model_ptr_->nv);
-  } else {
-    try {
-      full_model_ptr_ = builder_->GetTreeModel("wbc");
-      RCLCPP_INFO(logger_, "[wbc] control model: reduced tree 'wbc' (nq=%d nv=%d)",
-                  full_model_ptr_->nq, full_model_ptr_->nv);
-    } catch (const std::exception& e) {
-      full_model_ptr_ = builder_->GetFullModel();
-      RCLCPP_INFO(logger_,
-                  "[wbc] control model: URDF full model (nq=%d nv=%d) — tree 'wbc' "
-                  "missing (%s); MPC handler-mode + TSID will see mimic joints",
-                  full_model_ptr_->nq, full_model_ptr_->nv, e.what());
-    }
-  }
+  // Model selection + q/v buffer alloc delegate to the shared cache (#174).
+  // WBC uses SelectModel (not the bundled InitModel) because its cache Init must
+  // wait until the TSID contact frame ids are parsed in LoadConfig — which itself
+  // needs this selected model — so the cache().Init runs there, not here.
+  (void)combined_cache_.SelectModel(*builder_, "[wbc]", logger_);
 
   RCLCPP_INFO(logger_, "Models initialized: arm nv=%d, control nq=%d nv=%d", arm_handle_->nv(),
-              full_model_ptr_->nq, full_model_ptr_->nv);
+              combined_cache_.model()->nq, combined_cache_.model()->nv);
 
   // #123 Phase 2: serial hand tree-model + fingertip/hand-root frame ids for
   // the loop-consistent fingertip FK publish surface (SetJointOrder + closed-
@@ -230,29 +218,29 @@ void DemoWbcController::ConfigureClosedChainHandFk() {
 
 // ── #120: closed-chain 축약 동역학 provider 배선 (non-RT) ─────────────────────
 // control model 이 actuated(closed-chain) 모델일 때만 provider 를 Configure 해
-// pinocchio_cache_.reduced_provider 로 주입한다. 이후 매 RT tick 의 cache.Update 가 open-chain
+// combined_cache_.cache().reduced_provider 로 주입한다. 이후 매 RT tick 의 cache.Update 가 open-chain
 // M/h/g 계산 직후 provider 를 호출해 constraint-consistent 축약값으로 덮는다. 비-extended
 // (GetActuatedModel()==null → control model 이 tree/full) 이거나 좌표 정렬 미매칭이면 미주입 →
 // cache.reduced_provider==nullptr → open-chain 경로 byte-for-byte 유지.
 void DemoWbcController::ConfigureReducedDynamicsProvider() {
-  pinocchio_cache_.reduced_provider = nullptr;
-  if (!builder_ || !full_model_ptr_) {
+  combined_cache_.cache().reduced_provider = nullptr;
+  if (!builder_ || !combined_cache_.model()) {
     return;
   }
   // 게이트: control model 이 정확히 actuated 모델이어야 한다 (InitModels 의 선택과 동일 인스턴스).
   const auto actuated = builder_->GetActuatedModel();
-  if (!actuated || actuated.get() != full_model_ptr_.get()) {
+  if (!actuated || actuated.get() != combined_cache_.model().get()) {
     return;  // tree/full fallback control model → 축약 동역학 비대상
   }
 
   const bool ok =
       wbc_reduced_dynamics_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
                                       builder_->GetClosureActuatedJointIds(),
-                                      builder_->GetClosureReferenceConfig(), *full_model_ptr_);
+                                      builder_->GetClosureReferenceConfig(), *combined_cache_.model());
   if (ok) {
     // Phase ③: loop-하류 contact frame 을 loop-consistent J·oMf override 대상으로 판정 (non-RT).
     // cache.Init 이 확정한 contact frame id(control 모델)를 이름→full 모델 fid 로 매핑한다.
-    wbc_reduced_dynamics_.ConfigureContactFrames(*full_model_ptr_,
+    wbc_reduced_dynamics_.ConfigureContactFrames(*combined_cache_.model(),
                                                  rtc::tsid::ContactFrameIds(contact_mgr_config_));
     // 매핑 실패 contact frame 은 loop-하류 판정 불가 → override 에서 빠지고 open-chain(frozen-loop)
     // 값이 조용히 유지된다. config/모델 naming drift 를 잡도록 노출 (silent degradation 방지).
@@ -262,7 +250,7 @@ void DemoWbcController::ConfigureReducedDynamicsProvider() {
                   "open-chain(frozen-loop) 값 유지",
                   fname.c_str());
     }
-    pinocchio_cache_.reduced_provider = &wbc_reduced_dynamics_;
+    combined_cache_.cache().reduced_provider = &wbc_reduced_dynamics_;
     RCLCPP_INFO(logger_, "[wbc] closed-chain 축약 동역학 활성 (n_a=%d) — TSID EOM M/h/g 대체",
                 wbc_reduced_dynamics_.n_a());
   } else if (!wbc_reduced_dynamics_.missing_joint().empty()) {
@@ -276,60 +264,6 @@ void DemoWbcController::ConfigureReducedDynamicsProvider() {
   }
 }
 
-void DemoWbcController::BuildJointReorderMap() {
-  if (!full_model_ptr_) {
-    return;
-  }
-  const auto& model = *full_model_ptr_;
-
-  const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
-  const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
-  if (!arm_cfg) {
-    RCLCPP_WARN(logger_, "Primary device config not available, using identity mapping");
-    for (int i = 0; i < full_dof_; ++i) {
-      ext_to_pin_q_[static_cast<std::size_t>(i)] = i;
-      ext_to_pin_v_[static_cast<std::size_t>(i)] = i;
-    }
-    joint_reorder_valid_ = true;
-    return;
-  }
-
-  int ext_idx = 0;
-
-  // Arm joints
-  for (const auto& jname : arm_cfg->joint_state_names) {
-    if (!model.existJointName(jname)) {
-      RCLCPP_ERROR(logger_, "Joint '%s' not found in full model", jname.c_str());
-      continue;
-    }
-    const auto jid = model.getJointId(jname);
-    const auto eidx = static_cast<std::size_t>(ext_idx);
-    ext_to_pin_q_[eidx] = model.idx_qs[jid];
-    ext_to_pin_v_[eidx] = model.idx_vs[jid];
-    ++ext_idx;
-  }
-
-  // Hand joints (optional — single-device controllers leave hand_dof_ == 0)
-  if (hand_cfg) {
-    for (const auto& jname : hand_cfg->joint_state_names) {
-      if (!model.existJointName(jname)) {
-        RCLCPP_ERROR(logger_, "Joint '%s' not found in full model", jname.c_str());
-        continue;
-      }
-      const auto jid = model.getJointId(jname);
-      const auto eidx = static_cast<std::size_t>(ext_idx);
-      ext_to_pin_q_[eidx] = model.idx_qs[jid];
-      ext_to_pin_v_[eidx] = model.idx_vs[jid];
-      ++ext_idx;
-    }
-  }
-
-  joint_reorder_valid_ = (ext_idx == full_dof_);
-  if (!joint_reorder_valid_) {
-    RCLCPP_ERROR(logger_, "Joint reorder incomplete: mapped %d/%d joints", ext_idx, full_dof_);
-  }
-}
-
 // ── TSID task/constraint factories ───────────────────────────────────────────
 //
 // Dispatch by YAML `type` string. Tasks/constraints are created with
@@ -337,10 +271,10 @@ void DemoWbcController::BuildJointReorderMap() {
 // After construction each is Init()'d with its own sub-node.
 
 void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
-  if (!full_model_ptr_ || !tsid_node || !tsid_node["tasks"]) {
+  if (!combined_cache_.model() || !tsid_node || !tsid_node["tasks"]) {
     return;
   }
-  const auto& model = *full_model_ptr_;
+  const auto& model = *combined_cache_.model();
   auto& formulation = tsid_controller_.Formulation();
 
   for (auto it = tsid_node["tasks"].begin(); it != tsid_node["tasks"].end(); ++it) {
@@ -353,7 +287,7 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
 
     if (type == "posture") {
       auto task = std::make_unique<rtc::tsid::PostureTask>();
-      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
       formulation.AddTask(std::move(task));
       // Optional arm/hand gain split. The scalar/vector kp/kd in task_cfg are
       // consumed by PostureTask::Init above; when `arm`/`hand` sub-maps are
@@ -361,7 +295,7 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       ParsePostureSplitGains(task_cfg);
     } else if (type == "se3") {
       auto task = std::make_unique<rtc::tsid::SE3Task>();
-      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
       // SE3Task's identity comes from its inner `name:` field (default "se3"),
       // NOT the YAML map key. The phase presets, the per-tick reference push
       // (GetTask(key)), and se3_task_active_in_phase all look the task up by
@@ -387,14 +321,14 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       }
     } else if (type == "force") {
       auto task = std::make_unique<rtc::tsid::ForceTask>();
-      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
       task->SetContactManager(&contact_mgr_config_);
       formulation.AddTask(std::move(task));
     } else if (type == "contact_consistency") {
       // Stage A-2: soft task — residual J_c·a + dotJ_c·v. Activated in
       // closure/hold per phase preset; deactivated in idle/approach.
       auto task = std::make_unique<rtc::tsid::ContactConsistencyTask>();
-      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
       task->SetContactManager(&contact_mgr_config_);
       formulation.AddTask(std::move(task));
     } else if (type == "object_wrench") {
@@ -403,7 +337,7 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       // instances so the per-tick cache populated in ComputeTSIDPosition
       // is reused across all three object-level tasks.
       auto task = std::make_unique<rtc::tsid::ObjectWrenchTask>();
-      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
       task->SetContactManager(&contact_mgr_config_);
       task->SetContactManagerRuntime(&contact_mgr_);
       task->SetGraspCache(&grasp_cache_);
@@ -415,7 +349,7 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       // reference at zero — a future dynamic squeeze planner will write
       // into squeeze_lambda_des_ on phase entry.
       auto task = std::make_unique<rtc::tsid::InternalForceTask>();
-      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
       task->SetContactManager(&contact_mgr_config_);
       task->SetContactManagerRuntime(&contact_mgr_);
       task->SetGraspCache(&grasp_cache_);
@@ -428,7 +362,7 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
       // plumbed in — IsValid() stays true so ResidualDim() = 6 whenever
       // ≥ 1 contact is active.
       auto task = std::make_unique<rtc::tsid::ObjectSE3Task>();
-      task->Init(model, robot_info_, pinocchio_cache_, task_cfg);
+      task->Init(model, robot_info_, combined_cache_.cache(), task_cfg);
       task->SetContactManager(&contact_mgr_config_);
       task->SetContactManagerRuntime(&contact_mgr_);
       task->SetGraspCache(&grasp_cache_);
@@ -442,10 +376,10 @@ void DemoWbcController::BuildTsidTasks(const YAML::Node& tsid_node) {
 }
 
 void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
-  if (!full_model_ptr_ || !tsid_node || !tsid_node["constraints"]) {
+  if (!combined_cache_.model() || !tsid_node || !tsid_node["constraints"]) {
     return;
   }
-  const auto& model = *full_model_ptr_;
+  const auto& model = *combined_cache_.model();
   auto& formulation = tsid_controller_.Formulation();
 
   for (auto it = tsid_node["constraints"].begin(); it != tsid_node["constraints"].end(); ++it) {
@@ -457,7 +391,7 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
 
     if (type == "eom") {
       auto c = std::make_unique<rtc::tsid::EomConstraint>();
-      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
       // Floating-base + surface contact 시 cdim != 3 인 column offset 을 정확히
       // 잡기 위해 필수. point-only 회로에서는 fallback(cdim=3) 으로도 동작하지만,
       // mixed point/surface 가 들어오면 무성 alignment 깨짐.
@@ -471,12 +405,12 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
       // entry under tsid.constraints. SetContactManager mirrors the eom
       // branch so the active-contact column offsets (cdim 3/6) align.
       auto c = std::make_unique<rtc::tsid::ContactConstraint>();
-      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
     } else if (type == "joint_limit") {
       auto c = std::make_unique<rtc::tsid::JointLimitConstraint>();
-      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
       formulation.AddConstraint(std::move(c));
     } else if (type == "friction_cone") {
       // Stage C-0.1: FrictionConeConstraint takes its face count from each
@@ -489,12 +423,12 @@ void DemoWbcController::BuildTsidConstraints(const YAML::Node& tsid_node) {
                     "contact via contacts[*].n_faces (or friction_faces)");
       }
       auto c = std::make_unique<rtc::tsid::FrictionConeConstraint>();
-      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
     } else if (type == "torque_limit") {
       auto c = std::make_unique<rtc::tsid::TorqueLimitConstraint>();
-      c->Init(model, robot_info_, pinocchio_cache_, c_cfg);
+      c->Init(model, robot_info_, combined_cache_.cache(), c_cfg);
       // τ = S·(M·a + h − Jcᵀ·λ) 역산 시 surface(cdim=6) λ 의 column offset 정확.
       c->SetContactManager(&contact_mgr_config_);
       formulation.AddConstraint(std::move(c));
@@ -572,11 +506,11 @@ void DemoWbcController::InitClik() noexcept {
   clik_enabled_ = false;
   clik_tcp_frame_idx_ = -1;
   clik_base_frame_idx_ = -1;
-  if (!tsid_initialized_ || !joint_reorder_valid_ || !full_model_ptr_ || arm_dof_ <= 0) {
+  if (!tsid_initialized_ || !combined_cache_.reorder_valid() || !combined_cache_.model() || arm_dof_ <= 0) {
     return;
   }
-  const int nq = full_model_ptr_->nq;
-  const int nv = full_model_ptr_->nv;
+  const int nq = combined_cache_.model()->nq;
+  const int nv = combined_cache_.model()->nv;
   // CLIK contract: nq == nv (reduced revolute/prismatic tree) so velocity
   // indices address q directly and q_ref = q + v·dt is valid. The full URDF
   // model (nq=26, nv=21 with first-class mimic) violates this. CLIK is now the
@@ -599,7 +533,7 @@ void DemoWbcController::InitClik() noexcept {
     RCLCPP_WARN(logger_, "[wbc] CLIK disabled: tip frame unresolved (OnDeviceConfigsSet).");
     return;
   }
-  clik_tcp_frame_idx_ = pinocchio_cache_.RegisterFrame("clik_tcp", tip_frame_id_);
+  clik_tcp_frame_idx_ = combined_cache_.cache().RegisterFrame("clik_tcp", tip_frame_id_);
   if (clik_tcp_frame_idx_ < 0) {
     RCLCPP_WARN(logger_, "[wbc] CLIK disabled: tip frame registration failed (cache locked).");
     return;
@@ -607,7 +541,7 @@ void DemoWbcController::InitClik() noexcept {
   // Base frame: mirror SE3Task's universe fast-path (base_frame_idx < 0) when
   // the controller uses the world frame; otherwise register the root link.
   if (use_root_frame_ && root_frame_id_ != 0) {
-    clik_base_frame_idx_ = pinocchio_cache_.RegisterFrame("clik_base", root_frame_id_);
+    clik_base_frame_idx_ = combined_cache_.cache().RegisterFrame("clik_base", root_frame_id_);
     if (clik_base_frame_idx_ < 0) {
       RCLCPP_WARN(logger_, "[wbc] CLIK disabled: base frame registration failed (cache locked).");
       clik_tcp_frame_idx_ = -1;
@@ -619,7 +553,8 @@ void DemoWbcController::InitClik() noexcept {
 
   std::vector<int> arm_v_idx;
   std::vector<int> hand_v_idx;
-  BuildClikJointIndexSets(arm_dof_, full_dof_, nv, ext_to_pin_v_, arm_v_idx, hand_v_idx);
+  BuildClikJointIndexSets(arm_dof_, full_dof_, nv, combined_cache_.ext_to_pin_v_map(), arm_v_idx,
+                          hand_v_idx);
 
   rtc::tsid::ClikReferenceGenerator::Config cfg;
   cfg.arm_v_idx = std::move(arm_v_idx);
@@ -655,7 +590,7 @@ void DemoWbcController::InitClik() noexcept {
 }
 
 void DemoWbcController::ApplyPostureGains() noexcept {
-  if (!posture_split_gains_ || !tsid_initialized_ || !joint_reorder_valid_) {
+  if (!posture_split_gains_ || !tsid_initialized_ || !combined_cache_.reorder_valid()) {
     return;
   }
   auto* task = tsid_controller_.Formulation().GetTask("posture");
@@ -670,8 +605,8 @@ void DemoWbcController::ApplyPostureGains() noexcept {
   // (and re-affirms arm slots) at their permuted Pinocchio velocity indices.
   Eigen::VectorXd kp = Eigen::VectorXd::Constant(nv, posture_kp_arm_);
   Eigen::VectorXd kd = Eigen::VectorXd::Constant(nv, posture_kd_arm_);
-  AssemblePostureGains(arm_dof_, full_dof_, nv, ext_to_pin_v_, posture_kp_arm_, posture_kd_arm_,
-                       posture_kp_hand_, posture_kd_hand_, kp, kd);
+  AssemblePostureGains(arm_dof_, full_dof_, nv, combined_cache_.ext_to_pin_v_map(), posture_kp_arm_,
+                       posture_kd_arm_, posture_kp_hand_, posture_kd_hand_, kp, kd);
   static_cast<rtc::tsid::PostureTask*>(task)->SetGains(kp, kd);
   RCLCPP_INFO(logger_,
               "[wbc] posture split gains applied: arm kp=%.1f kd=%.1f, hand kp=%.1f kd=%.1f",
@@ -705,7 +640,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     InitModels(model_cfg);
   }
 
-  if (!full_model_ptr_) {
+  if (!combined_cache_.model()) {
     RCLCPP_ERROR(logger_, "Full model not available — TSID disabled");
     return;
   }
@@ -713,7 +648,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   // ── 2. TSID initialization ────────────────────────────────────────────
   const auto tsid_node = cfg["tsid"];
   if (tsid_node) {
-    const auto& model = *full_model_ptr_;
+    const auto& model = *combined_cache_.model();
 
     // RobotModelInfo
     robot_info_.Build(model, tsid_node);
@@ -747,7 +682,10 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     }
 
     // PinocchioCache
-    pinocchio_cache_.Init(full_model_ptr_, rtc::tsid::ContactFrameIds(contact_mgr_config_));
+    // Deferred cache Init (see InitModels): the model was selected early, but
+    // the contact frame ids are only now parsed, so Init the shared cache here.
+    combined_cache_.cache().Init(combined_cache_.model(),
+                                 rtc::tsid::ContactFrameIds(contact_mgr_config_));
 
     // #120: closed-chain 축약 동역학 provider 배선 (extended 로봇에서 M/h/g 대체). 비-extended
     // 는 게이트 미충족 → open-chain byte-for-byte. cache.Init 직후 (model_ptr 확정) 배선.
@@ -899,12 +837,11 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
                 robot_info_.nv, robot_info_.n_actuated, contact_mgr_config_.max_contacts);
   }
 
-  // ── 3. State + reference buffers ───────────────────────────────────────
-  const int nv = full_model_ptr_->nv;
-  q_curr_full_ = Eigen::VectorXd::Zero(nv);
-  v_curr_full_ = Eigen::VectorXd::Zero(nv);
-  // Same layout as q_curr_full_ so it is a drop-in replacement for the
-  // posture reference (control_ref_.q_des = q_curr_full_) on the RT path.
+  // ── 3. Reference buffers ───────────────────────────────────────────────
+  // (Measured q/v buffers are owned + sized by combined_cache_.SelectModel.)
+  const int nv = combined_cache_.model()->nv;
+  // Same layout as combined_cache_.q() so it is a drop-in replacement for the
+  // posture reference (control_ref_.q_des = combined_cache_.q()) on the RT path.
   q_des_target_full_ = Eigen::VectorXd::Zero(nv);
 
   // Joint limits with safety margins + force-rate filter (required)
@@ -929,9 +866,9 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     }
     force_rate_alpha_ = static_cast<float>(alpha);
   }
-  q_min_clamped_ = full_model_ptr_->lowerPositionLimit.array() + position_margin_;
-  q_max_clamped_ = full_model_ptr_->upperPositionLimit.array() - position_margin_;
-  v_limit_ = full_model_ptr_->upperVelocityLimit * velocity_scale_;
+  q_min_clamped_ = combined_cache_.model()->lowerPositionLimit.array() + position_margin_;
+  q_max_clamped_ = combined_cache_.model()->upperPositionLimit.array() - position_margin_;
+  v_limit_ = combined_cache_.model()->upperVelocityLimit * velocity_scale_;
 
   // ── 3b. Stage C-2: CLIK (Kinematic WBC) configuration ─────────────────
   // CLIK is the sole position backbone. clik.{damping_sq,v_limit,w_*} are
@@ -996,7 +933,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // ── #167 P3: pull estimator + tip-link → contact slot resolve ─────────
     // Slot order = tsid.contacts order (frame names), which maps 1:1 onto the
     // fingertip sensor lanes (Stage A-3 contract) and onto
-    // pinocchio_cache_.contact_frames. Empty contacts (no tsid block, e.g.
+    // combined_cache_.cache().contact_frames. Empty contacts (no tsid block, e.g.
     // unit fixtures) leaves the estimator disabled; a configured tip link
     // matching no contact frame throws → configure FAILURE.
     {
@@ -1127,7 +1064,7 @@ void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
   // Handler mode additionally loads mpc/phase_config.yaml + mpc/contact_light.yaml
   // + mpc/contact_rich.yaml from the package share and pre-builds the
   // RobotModelHandler + GraspPhaseManager for startup.
-  if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && full_model_ptr_) {
+  if (const auto mpc_cfg = cfg["mpc"]; mpc_cfg && combined_cache_.model()) {
     mpc_enabled_ = mpc_cfg["enabled"] && mpc_cfg["enabled"].as<bool>();
 
     const auto engine_str = mpc_cfg["engine"] ? mpc_cfg["engine"].as<std::string>("mock") : "mock";
@@ -1153,11 +1090,11 @@ void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
       }
     }
 
-    // TSID and MPC share full_model_ptr_ (the reduced tree when available).
+    // TSID and MPC share combined_cache_.model() (the reduced tree when available).
     // No projection layer needed — ComputeReference writes directly into the
     // reference buffers that TSID consumes via control_ref_.
-    const int mpc_nq = full_model_ptr_->nq;
-    const int mpc_nv = full_model_ptr_->nv;
+    const int mpc_nq = combined_cache_.model()->nq;
+    const int mpc_nv = combined_cache_.model()->nv;
     const int mpc_n_contact = contact_mgr_config_.max_contact_vars;
 
     mpc_q_ref_ = Eigen::VectorXd::Zero(mpc_nq);
@@ -1236,7 +1173,7 @@ void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
               mpc_rich_cfg_["mpc"]["model"]["base_frame"].as<std::string>());
         }
         mpc_model_handler_ = std::make_unique<rtc::mpc::RobotModelHandler>();
-        const auto model_err = mpc_model_handler_->Init(*full_model_ptr_, model_node);
+        const auto model_err = mpc_model_handler_->Init(*combined_cache_.model(), model_node);
         if (model_err != rtc::mpc::RobotModelInitError::kNoError) {
           RCLCPP_ERROR(logger_,
                        "[wbc] RobotModelHandler::Init failed (code %d) — "
@@ -1355,8 +1292,14 @@ void DemoWbcController::OnDeviceConfigsSet() {
   LoadDeviceLimitsFromConfig(device_position_lower_, device_position_upper_, device_max_velocity_,
                              -kJointLimitFallbackRad, kJointLimitFallbackRad, 2.0);
 
-  // ── Joint reorder map ─────────────────────────────────────────────────
-  BuildJointReorderMap();
+  // ── Joint reorder map (delegated to the shared cache, #174) ────────────
+  {
+    const auto* arm_cfg = GetDeviceNameConfig(GetPrimaryDeviceName());
+    const auto* hand_cfg = GetDeviceNameConfig(GetSecondaryDeviceName());
+    combined_cache_.BuildReorderMap(arm_cfg ? &arm_cfg->joint_state_names : nullptr,
+                                    hand_cfg ? &hand_cfg->joint_state_names : nullptr, full_dof_,
+                                    "[wbc]", logger_);
+  }
 
   // Phase C: capture joint/sensor names for CSV header expansion.
   if (auto* cfg = GetDeviceNameConfig(GetPrimaryDeviceName()); cfg) {
@@ -1828,8 +1771,8 @@ bool DemoWbcController::ApplyCommandedSe3IfPresent() noexcept {
 void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
   if (mpc_enabled_ && !mpc_thread_) {
     const auto thread_configs = rtc::SelectThreadConfigs();
-    const int nq = static_cast<int>(q_curr_full_.size());
-    const int nv = static_cast<int>(v_curr_full_.size());
+    const int nq = static_cast<int>(combined_cache_.q().size());
+    const int nv = static_cast<int>(combined_cache_.v().size());
 
     rtc::mpc::MpcThreadLaunchConfig launch{};
     launch.main = thread_configs.mpc.main;
@@ -1847,8 +1790,8 @@ void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
       // can size its OCP + solver workspace. GraspPhaseManager and all
       // downstream solvers live in the reduced (mimic-locked) MPC model's
       // index space, so seed zeros at those dims — not the full_model's.
-      Eigen::VectorXd q_zero = Eigen::VectorXd::Zero(full_model_ptr_->nq);
-      Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(full_model_ptr_->nv);
+      Eigen::VectorXd q_zero = Eigen::VectorXd::Zero(combined_cache_.model()->nq);
+      Eigen::VectorXd v_zero = Eigen::VectorXd::Zero(combined_cache_.model()->nv);
       Eigen::VectorXd sensor_zero = Eigen::VectorXd::Zero(0);
       const pinocchio::SE3 tcp_identity = pinocchio::SE3::Identity();
       const auto initial_ctx =
@@ -1885,7 +1828,7 @@ void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
       // Mock fallback — linear interpolation placeholder.
       auto mock = std::make_unique<rtc::mpc::MockMPCThread>();
       mock->Configure(nq, nv, /*horizon=*/10, /*dt_node=*/0.01);
-      mock->SetTarget(q_curr_full_);
+      mock->SetTarget(combined_cache_.q());
       mock->Init(mpc_manager_, launch);
       mock->Start();
       mpc_thread_ = std::move(mock);
