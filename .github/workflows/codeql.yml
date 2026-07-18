@@ -118,55 +118,46 @@ jobs:
           name: rtc-deps-${{ env.ROS_DISTRO }}
           path: _rtc_ws/deps/install
 
-      # 리소스 계측 (#179 진단): rtc_* 패키지를 CodeQL 트레이싱 하에 빌드할 때 러너가
-      # SIGTERM(143) 으로 죽는데 컴파일러 alloc 에러가 안 남아 VM-레벨 kill 로 보인다.
-      # 실측이 없어 한계를 모르므로, 빌드 내내 free/df 를 백그라운드로 샘플해 peak 메모리
-      # /디스크를 남긴다. setsid 로 step 종료 후에도 살려 Build 스텝과 겹쳐 돌게 하고,
-      # 종료 스텝에서 로그를 덤프한다 (VM 이 통째로 죽으면 유실될 수 있으나 best-effort).
-      - name: Start resource monitor
+      # ── DIAGNOSTIC (#179): 인라인 계측 빌드 ──────────────────────────────
+      # parallel-workers=1(패키지 직렬) 로도 단일 pinocchio-헤비 패키지(rtc_urdf_bridge)
+      # 가 CodeQL 트레이싱 하에 SIGTERM(143) 으로 죽었다 → 패키지-레벨 parallelism 은
+      # 원인이 아니다. 남은 변수: (a) 패키지 내부 컴파일러 parallelism(-j, Ninja 면
+      # nproc), (b) 실제 병목이 memory 인지 disk 인지 tracer hang 인지 미측정.
+      # 이 스텝은 (1) monitor 를 Build 와 같은 스텝에서 stdout 으로 스트림(VM 이 죽어도
+      # live 로그에 남음), (2) CMAKE_BUILD_PARALLEL_LEVEL=1 + MAKEFLAGS=-j1 로 컴파일러
+      # 를 완전 직렬화 — 실패 모드를 확정하기 위한 임시 진단(composite action 대체).
+      # 진단 후 원인이 확정되면 정식 수정으로 되돌린다.
+      - name: Build packages (instrumented, serial)
         shell: bash
+        env:
+          BUILD_PKGS: ${{ steps.pkgs.outputs.build }}
+          DEPS_INSTALL: ${{ github.workspace }}/_rtc_ws/deps/install
         run: |
+          set -eo pipefail
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          export CMAKE_PREFIX_PATH="${DEPS_INSTALL}:${CMAKE_PREFIX_PATH:-}"
+          export LD_LIBRARY_PATH="${DEPS_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
+          # 컴파일러 전역 직렬화 (패키지 내부 make/ninja 병렬 차단)
+          export CMAKE_BUILD_PARALLEL_LEVEL=1
+          export MAKEFLAGS="-j1"
+
           echo "=== baseline ==="; nproc; free -h; df -h /
-          setsid bash -c '
-            while true; do
+          # monitor 를 이 스텝 stdout 으로 스트림 → VM 종료돼도 마지막 샘플이 로그에 남음
+          ( while true; do
               printf "[MON %s] " "$(date +%T)"
-              free -m | awk "/Mem:/{printf \"mem_used=%sM avail=%sM \", \$3, \$7}"
-              df -m / | awk "NR==2{printf \"disk_avail=%sM\n\", \$4}"
-              sleep 8
-            done' > "${GITHUB_WORKSPACE}/mem-monitor.log" 2>&1 &
-          echo "$!" > "${GITHUB_WORKSPACE}/mem-monitor.pid"
+              free -m | awk '/Mem:/{printf "mem_used=%sM avail=%sM ", $3, $7}'
+              df -m / | awk 'NR==2{printf "disk_avail=%sM\n", $4}'
+              sleep 6
+            done ) &
+          MON=$!
+          trap 'kill "$MON" 2>/dev/null || true' EXIT
 
-      # parallel-workers=1 로 완전 직렬화: rtc_mpc / rtc_tsid / rtc_controllers 는
-      # pinocchio·aligator 헤비 템플릿 TU 라, CodeQL 트레이싱(추출기 + 컴파일러 +
-      # in-memory DB) 오버헤드가 얹히면 nproc(11분)·2-worker(7분) 모두 16GB 러너를
-      # 소진해 SIGTERM(143) 으로 죽는다 (#179 — deps OOM 제거 후 드러난 2차 OOM).
-      # 동시 헤비 TU 를 1개로 묶어 peak RSS 를 러너 한도 안에 확실히 수렴시킨다
-      # (트레이싱 없는 메인 CI 는 nproc 로 통과하므로 이 직렬화는 CodeQL 경로 전용).
-      - name: Build packages
-        uses: ./.github/actions/colcon-build
-        with:
-          packages: ${{ steps.pkgs.outputs.build }}
-          ros-distro: ${{ env.ROS_DISTRO }}
-          deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
-          build-type: Release
-          enable-testing: "false"
-          parallel-workers: "1"
-          artifact-suffix: codeql-build
-
-      - name: Dump resource monitor (peak)
-        if: always()
-        shell: bash
-        run: |
-          [ -f "${GITHUB_WORKSPACE}/mem-monitor.pid" ] && kill "$(cat "${GITHUB_WORKSPACE}/mem-monitor.pid")" 2>/dev/null || true
-          if [ -f "${GITHUB_WORKSPACE}/mem-monitor.log" ]; then
-            echo "=== resource timeline (tail 40) ==="; tail -40 "${GITHUB_WORKSPACE}/mem-monitor.log"
-            echo "=== min available memory (M) ==="
-            awk 'match($0,/avail=([0-9]+)M /,m){print m[1]}' "${GITHUB_WORKSPACE}/mem-monitor.log" | sort -n | head -1
-            echo "=== min available disk (M) ==="
-            awk 'match($0,/disk_avail=([0-9]+)M/,m){print m[1]}' "${GITHUB_WORKSPACE}/mem-monitor.log" | sort -n | head -1
-          else
-            echo "no monitor log (runner may have been terminated before flush)"
-          fi
+          # shellcheck disable=SC2086
+          colcon build \
+            --packages-up-to ${BUILD_PKGS} \
+            --parallel-workers 1 \
+            --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
