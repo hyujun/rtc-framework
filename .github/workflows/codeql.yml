@@ -8,7 +8,16 @@ name: CodeQL Security Scan
 #   - trigger: weekly + workflow_dispatch (push/PR 미참여)
 #   - queries: default (security only) — 기존 security-and-quality 의 quality 제거
 #   - parallel-workers / ccache / swap / 별도 colcon cache 제거 — 기본값 사용
-#   - build-deps 는 이 워크플로우 내부에서 직접 호출 (메인 CI artifact 비의존)
+#
+# Two-job 구조 (2026-07-18, #179):
+#   이전엔 단일 analyze job 이 `Initialize CodeQL`(트레이싱 ON) 이후에 aligator
+#   0.19.0 콜드 빌드를 수행 → 헤비 pinocchio TU 가 트레이싱 오버헤드 하에서 메모리
+#   고갈, SIGTERM(143) 으로 매 weekly run 이 죽고 codeql 캐시가 영영 안 채워지는
+#   무한 루프였다. 메인 CI 처럼 deps 빌드를 트레이싱 밖 별도 job 으로 분리한다:
+#     - build-deps job: CodeQL init 없음 → aligator 비추적 빌드 (메인 CI 와 동일 구조).
+#       cache-version=v1 을 메인 CI 와 공유 → 대개 cache hit 으로 콜드 빌드 자체를 skip.
+#     - analyze job: needs build-deps → deps artifact download → CodeQL init → rtc
+#       패키지만 빌드/분석. 트레이싱 경로에서 aligator 콜드 빌드를 완전히 제거.
 
 on:
   schedule:
@@ -25,8 +34,39 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ============================================================
+  #  Build isolated deps — fmt 11 / mimalloc / aligator
+  #  CodeQL init 이 없는 별도 job → aligator 콜드 빌드가 트레이싱되지 않는다 (#179).
+  #  cache-version=v1 은 메인 CI (ros2-advanced-ci.yml) 와 공유 → 대개 cache hit.
+  # ============================================================
+  build-deps:
+    name: Build Isolated Deps
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: deps-v1
+          apt-packages: >-
+            ros-jazzy-pinocchio
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            ros-jazzy-proxsuite
+            libeigen3-dev
+
+      - name: Build & cache deps
+        uses: ./.github/actions/build-isolated-deps
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          cache-version: v1
+
   analyze:
     name: Analyze (cpp)
+    needs: build-deps
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -69,11 +109,14 @@ jobs:
             libtinyxml2-dev
             libeigen3-dev
 
-      - name: Build isolated deps
-        uses: ./.github/actions/build-isolated-deps
+      # deps 는 build-deps job 이 비추적으로 빌드해 올린 artifact 를 그대로 받는다.
+      # (메인 CI gated-test / coverage-cpp 와 동일 패턴 — aligator 를 CodeQL 트레이싱
+      # 경로에서 완전히 제거하는 것이 #179 correctness 조건.)
+      - name: Download deps artifact
+        uses: actions/download-artifact@v8
         with:
-          ros-distro: ${{ env.ROS_DISTRO }}
-          cache-version: codeql-v1
+          name: rtc-deps-${{ env.ROS_DISTRO }}
+          path: _rtc_ws/deps/install
 
       - name: Build packages
         uses: ./.github/actions/colcon-build
