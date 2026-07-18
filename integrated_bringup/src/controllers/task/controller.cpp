@@ -235,7 +235,11 @@ void DemoTaskController::ExtractFullState(const ControllerState& state) noexcept
     return;
   }
   const auto& dev0 = state.devices[0];
-  for (int i = 0; i < arm_dof_; ++i) {
+  // Clamp to the device channel count: arm_dof_ == num_channels by config
+  // construction, but a mismatched config must not scatter stale slots past the
+  // valid measured range into q/v.
+  const int narm = std::min(arm_dof_, dev0.num_channels);
+  for (int i = 0; i < narm; ++i) {
     const auto eidx = static_cast<std::size_t>(i);
     const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
     const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
@@ -244,7 +248,8 @@ void DemoTaskController::ExtractFullState(const ControllerState& state) noexcept
   }
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    for (int i = 0; i < hand_dof_; ++i) {
+    const int nhand = std::min(hand_dof_, dev1.num_channels);
+    for (int i = 0; i < nhand; ++i) {
       const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
       const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
@@ -258,9 +263,12 @@ void DemoTaskController::ExtractFullState(const ControllerState& state) noexcept
 // root frame is registered). Precondition: task_tcp_frame_idx_ >= 0 and the
 // cache was Updated this tick.
 pinocchio::SE3 DemoTaskController::ArmTcpPoseFromCache() const noexcept {
-  // Defensive: unconfigured cache (misconfig) → Identity rather than indexing an
-  // unregistered frame. Real runs always have task_tcp_frame_idx_ >= 0.
-  if (task_tcp_frame_idx_ < 0) {
+  // Defensive: Identity unless the cache is both configured (frame registered)
+  // AND fresh (reorder valid → Update() ran this run). Indexing a registered-
+  // but-never-Updated frame would return a stale oMf; gating on
+  // joint_reorder_valid_ keeps this consistent with the Compute()-level Update
+  // guard. Real runs always have task_tcp_frame_idx_ >= 0 && joint_reorder_valid_.
+  if (task_tcp_frame_idx_ < 0 || !joint_reorder_valid_) {
     return pinocchio::SE3::Identity();
   }
   const auto& frames = pinocchio_cache_.registered_frames;
@@ -565,6 +573,23 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
                 sizeof(current_target_slot_.tcp_target_rot));
     std::memcpy(tcp_target_pose_.translation().data(), current_target_slot_.tcp_target_t.data(),
                 sizeof(current_target_slot_.tcp_target_t));
+
+    // ── Joint-space hold fallback (arm not yet TCP-initialized) ──────────────
+    // The TCP self-init above is deferred until the cache is fresh. If the cache
+    // is misconfigured (frame unregistered or reorder invalid) it never becomes
+    // fresh, ComputeControl early-returns forever, and desired_q_ would stay at
+    // its zero init — driving the arm to its zero configuration. Seed desired_q_
+    // from the measured positions so WriteJointCommand holds the current pose
+    // instead. Left un-latched (arm_target_initialized_ stays false) so the full
+    // TCP self-init still runs the moment the cache does become fresh. Skipped
+    // under E-STOP (ComputeEstop owns the wire command there).
+    if (!arm_target_initialized_.load(std::memory_order_acquire) && !estop_active_ && arm_handle_) {
+      const auto& dev0 = state.devices[0];
+      const int nseed = std::min(arm_handle_->nv(), static_cast<int>(desired_q_.size()));
+      for (int i = 0; i < nseed && i < dev0.num_channels; ++i) {
+        desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+      }
+    }
   }
 
   // ── Hand (device 1) self-init — DEFERRED until device 1 is first valid ──────

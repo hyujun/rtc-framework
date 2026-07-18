@@ -57,9 +57,13 @@ struct PinocchioCache {
   // Contact frame Jacobian 캐시
   struct FrameCache {
     pinocchio::FrameIndex frame_id{0};
-    pinocchio::SE3 oMf;               // world-frame placement
-    Eigen::MatrixXd J;                // [6 × nv] LOCAL_WORLD_ALIGNED
-    Eigen::Matrix<double, 6, 1> dJv;  // J̇·v (classical acceleration)
+    // Identity-init: pinocchio::SE3's default ctor leaves the rotation
+    // uninitialized (garbage), and a consumer may read oMf before the first
+    // Update() (e.g. a registered frame on a tick where Update was skipped).
+    // A garbage rotation trips pinocchio::rpy::matrixToRpy's NDEBUG assert.
+    pinocchio::SE3 oMf{pinocchio::SE3::Identity()};  // world-frame placement
+    Eigen::MatrixXd J;                               // [6 × nv] LOCAL_WORLD_ALIGNED
+    Eigen::Matrix<double, 6, 1> dJv;                 // J̇·v (classical acceleration)
   };
 
   std::vector<FrameCache> contact_frames;  // [max_contacts]
@@ -68,7 +72,9 @@ struct PinocchioCache {
   struct RegisteredFrame {
     std::string name;
     pinocchio::FrameIndex frame_id{0};
-    pinocchio::SE3 oMf;
+    // Identity-init (see FrameCache::oMf) — RegisterFrame leaves oMf unset until
+    // the first Update(), so a pre-Update reader must see a valid rotation.
+    pinocchio::SE3 oMf{pinocchio::SE3::Identity()};
     Eigen::MatrixXd J;
     Eigen::Matrix<double, 6, 1> dJv;
   };

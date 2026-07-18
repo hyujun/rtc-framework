@@ -149,7 +149,11 @@ void DemoJointController::ExtractFullState(const ControllerState& state) noexcep
     return;
   }
   const auto& dev0 = state.devices[0];
-  for (int i = 0; i < arm_dof_; ++i) {
+  // Clamp to the device channel count: arm_dof_ == num_channels by config
+  // construction, but a mismatched config must not scatter stale slots past the
+  // valid measured range into q/v.
+  const int narm = std::min(arm_dof_, dev0.num_channels);
+  for (int i = 0; i < narm; ++i) {
     const auto eidx = static_cast<std::size_t>(i);
     const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
     const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
@@ -158,7 +162,8 @@ void DemoJointController::ExtractFullState(const ControllerState& state) noexcep
   }
   if (state.num_devices > 1 && state.devices[1].valid) {
     const auto& dev1 = state.devices[1];
-    for (int i = 0; i < hand_dof_; ++i) {
+    const int nhand = std::min(hand_dof_, dev1.num_channels);
+    for (int i = 0; i < nhand; ++i) {
       const auto eidx = static_cast<std::size_t>(arm_dof_ + i);
       const auto pq = static_cast<Eigen::Index>(ext_to_pin_q_[eidx]);
       const auto pv = static_cast<Eigen::Index>(ext_to_pin_v_[eidx]);
@@ -172,7 +177,11 @@ void DemoJointController::ExtractFullState(const ControllerState& state) noexcep
 // root frame is registered). Unconfigured cache → Identity (matches the prior
 // null-arm_handle_ default so grasp/sensor-only unit fixtures stay unchanged).
 pinocchio::SE3 DemoJointController::ArmTcpPoseFromCache() const noexcept {
-  if (arm_tcp_frame_idx_ < 0) {
+  // Identity unless the cache is both configured (frame registered) AND fresh
+  // (reorder valid → Update() ran this run). Reading a registered-but-never-
+  // Updated frame would return a stale/Identity oMf; gating here keeps every
+  // consumer (FK log, vTCP) consistent with the Compute()-level Update guard.
+  if (arm_tcp_frame_idx_ < 0 || !joint_reorder_valid_) {
     return pinocchio::SE3::Identity();
   }
   const auto& frames = pinocchio_cache_.registered_frames;

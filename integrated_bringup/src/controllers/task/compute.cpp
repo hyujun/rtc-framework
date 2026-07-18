@@ -29,8 +29,11 @@ void DemoTaskController::ReadState(const ControllerState& state) noexcept {
   // 6×nv_combined LWA Jacobian of the arm tip; extract the arm-joint columns into
   // the 6×nv_arm CLIK buffer via the ext→Pinocchio velocity map. arm_handle_ is
   // no longer read here (retained only for the E-STOP TF path). Guarded on the
-  // registered frame so a misconfigured cache leaves the prior J/pose untouched.
-  if (task_tcp_frame_idx_ >= 0) {
+  // registered frame AND joint_reorder_valid_ (i.e. Update() actually ran this
+  // tick — same condition as the Compute()-level Update) so a misconfigured
+  // cache leaves the prior J/pose untouched instead of reading an un-refreshed
+  // frame.
+  if (joint_reorder_valid_ && task_tcp_frame_idx_ >= 0) {
     const auto& tip_J =
         pinocchio_cache_.registered_frames[static_cast<std::size_t>(task_tcp_frame_idx_)].J;
     const int narm = std::min(arm_dof_, static_cast<int>(J_full_.cols()));
@@ -138,10 +141,14 @@ void DemoTaskController::UpdateVirtualTcp(const pinocchio::SE3& T_base_tcp,
 void DemoTaskController::ComputeControl(const ControllerState& state, double dt) noexcept {
   RTC_TRACE_SCOPE("DemoTaskController::ComputeControl");
   // ── E-stop / cache-readiness check (estop_active_ loaded at top of Compute) ─
-  // CLIK sources the arm TCP pose + Jacobian from the unified cache; if the cache
-  // is unconfigured (task_tcp_frame_idx_ < 0, misconfig) hold rather than read an
-  // unregistered frame. On this branch the cache was Updated at the top of Compute.
-  if (estop_active_ || task_tcp_frame_idx_ < 0) {
+  // CLIK sources the arm TCP pose + Jacobian from the unified cache; hold (skip
+  // CLIK) unless the cache is configured (task_tcp_frame_idx_ >= 0) AND was
+  // refreshed this tick (joint_reorder_valid_ → Update() ran — same condition as
+  // the Compute()-level Update). Without the reorder guard a config where the tip
+  // frame registers but the reorder map fails would run CLIK on an un-refreshed
+  // (zero-J / stale-pose) cache. DrainTargetSlot's hold fallback keeps desired_q_
+  // seeded from measured in that case so WriteJointCommand holds position.
+  if (estop_active_ || !joint_reorder_valid_ || task_tcp_frame_idx_ < 0) {
     return;
   }
 
