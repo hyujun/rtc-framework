@@ -218,10 +218,10 @@ void DemoWbcController::ConfigureClosedChainHandFk() {
 
 // ── #120: closed-chain 축약 동역학 provider 배선 (non-RT) ─────────────────────
 // control model 이 actuated(closed-chain) 모델일 때만 provider 를 Configure 해
-// combined_cache_.cache().reduced_provider 로 주입한다. 이후 매 RT tick 의 cache.Update 가 open-chain
-// M/h/g 계산 직후 provider 를 호출해 constraint-consistent 축약값으로 덮는다. 비-extended
-// (GetActuatedModel()==null → control model 이 tree/full) 이거나 좌표 정렬 미매칭이면 미주입 →
-// cache.reduced_provider==nullptr → open-chain 경로 byte-for-byte 유지.
+// combined_cache_.cache().reduced_provider 로 주입한다. 이후 매 RT tick 의 cache.Update 가
+// open-chain M/h/g 계산 직후 provider 를 호출해 constraint-consistent 축약값으로 덮는다.
+// 비-extended (GetActuatedModel()==null → control model 이 tree/full) 이거나 좌표 정렬 미매칭이면
+// 미주입 → cache.reduced_provider==nullptr → open-chain 경로 byte-for-byte 유지.
 void DemoWbcController::ConfigureReducedDynamicsProvider() {
   combined_cache_.cache().reduced_provider = nullptr;
   if (!builder_ || !combined_cache_.model()) {
@@ -233,10 +233,10 @@ void DemoWbcController::ConfigureReducedDynamicsProvider() {
     return;  // tree/full fallback control model → 축약 동역학 비대상
   }
 
-  const bool ok =
-      wbc_reduced_dynamics_.Configure(builder_->GetFullModel(), builder_->GetConstraintModels(),
-                                      builder_->GetClosureActuatedJointIds(),
-                                      builder_->GetClosureReferenceConfig(), *combined_cache_.model());
+  const bool ok = wbc_reduced_dynamics_.Configure(
+      builder_->GetFullModel(), builder_->GetConstraintModels(),
+      builder_->GetClosureActuatedJointIds(), builder_->GetClosureReferenceConfig(),
+      *combined_cache_.model());
   if (ok) {
     // Phase ③: loop-하류 contact frame 을 loop-consistent J·oMf override 대상으로 판정 (non-RT).
     // cache.Init 이 확정한 contact frame id(control 모델)를 이름→full 모델 fid 로 매핑한다.
@@ -506,7 +506,8 @@ void DemoWbcController::InitClik() noexcept {
   clik_enabled_ = false;
   clik_tcp_frame_idx_ = -1;
   clik_base_frame_idx_ = -1;
-  if (!tsid_initialized_ || !combined_cache_.reorder_valid() || !combined_cache_.model() || arm_dof_ <= 0) {
+  if (!tsid_initialized_ || !combined_cache_.reorder_valid() || !combined_cache_.model() ||
+      arm_dof_ <= 0) {
     return;
   }
   const int nq = combined_cache_.model()->nq;
@@ -684,8 +685,9 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
     // PinocchioCache
     // Deferred cache Init (see InitModels): the model was selected early, but
     // the contact frame ids are only now parsed, so Init the shared cache here.
-    combined_cache_.cache().Init(combined_cache_.model(),
-                                 rtc::tsid::ContactFrameIds(contact_mgr_config_));
+    // InitCacheDeferred (not raw cache().Init) so the helper's cache-ready gate
+    // on Update()/ArmTcpPoseFromCache() stays self-enforcing.
+    combined_cache_.InitCacheDeferred(rtc::tsid::ContactFrameIds(contact_mgr_config_));
 
     // #120: closed-chain 축약 동역학 provider 배선 (extended 로봇에서 M/h/g 대체). 비-extended
     // 는 게이트 미충족 → open-chain byte-for-byte. cache.Init 직후 (model_ptr 확정) 배선.

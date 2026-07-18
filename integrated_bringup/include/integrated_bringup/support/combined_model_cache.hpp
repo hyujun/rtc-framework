@@ -71,11 +71,17 @@ class CombinedModelCache {
   /// @ref InitModel 의 앞 절반: 모델 선택(actuated → tree "wbc" → full) + q/v 버퍼 alloc만
   /// 수행하고 cache Init 은 하지 않는다. WBC 처럼 contact frame id 파싱이 선택된 모델을
   /// 요구해 cache Init 을 뒤로 미뤄야 하는(select → contact 파싱 → cache Init) 컨트롤러용.
-  /// 이후 호출자는 @ref cache() 의 `Init(model(), contact_frame_ids)` 로 cache 를 초기화한다.
-  /// joint/task 는 대신 묶음 @ref InitModel 을 쓴다.
+  /// 이후 호출자는 @ref InitCacheDeferred 로 cache 를 초기화한다(@ref cache() 의 raw `Init`
+  /// 직접 호출 대신 — 그래야 @ref Update / @ref ArmTcpPoseFromCache 의 cache-ready 게이트가
+  /// self-enforcing 하게 유지된다). joint/task 는 대신 묶음 @ref InitModel 을 쓴다.
   /// @return 모델을 얻으면 true (@ref model() 유효), 그 외 false.
   [[nodiscard]] bool SelectModel(rtc_urdf_bridge::PinocchioModelBuilder& builder,
                                  std::string_view log_prefix, const rclcpp::Logger& logger);
+
+  /// @ref SelectModel 뒤 지연 cache Init: 선택된 모델(@ref model())과 @p contact_frame_ids 로
+  /// @ref rtc_urdf_bridge::PinocchioCache::Init 을 수행하고 cache-ready 플래그를 세운다. WBC 의
+  /// select → contact 파싱 → cache Init 순서용. @ref SelectModel 선행 필수(@ref model() 유효).
+  void InitCacheDeferred(const std::vector<pinocchio::FrameIndex>& contact_frame_ids);
 
   /// ext(device joint-state 순서) → Pinocchio q/v reorder map 구성. @p arm_joint_names 가
   /// nullptr(primary device config 부재)이면 identity fallback. @p hand_joint_names 가 nullptr
@@ -89,12 +95,13 @@ class CombinedModelCache {
   /// device channel 수로 clamp. RT-safe, no alloc.
   void ExtractFullState(const rtc::ControllerState& state, int arm_dof, int hand_dof) noexcept;
 
-  /// scatter 된 q/v 로 cache 의 FK/J/M/h/g/oMf 갱신. RT-safe 래퍼.
+  /// scatter 된 q/v 로 cache 의 FK/J/M/h/g/oMf 갱신. RT-safe 래퍼. cache 미초기화
+  /// (@ref InitModel / @ref InitCacheDeferred 미수행) 시 no-op — un-init cache_ 소비 방지.
   void Update() noexcept;
 
-  /// arm TCP pose (world tip; @p base_idx>=0 이면 base frame-relative). 미구성(@p tcp_idx<0)
-  /// 또는 non-fresh(@ref reorder_valid() 무효) 시 Identity — 등록됐지만 한 번도 Update 안 된
-  /// frame 의 stale oMf 를 읽지 않게 게이트. RT-safe, no alloc.
+  /// arm TCP pose (world tip; @p base_idx>=0 이면 base frame-relative). 미구성(@p tcp_idx<0),
+  /// non-fresh(@ref reorder_valid() 무효), 또는 cache 미초기화 시 Identity — 등록됐지만 한 번도
+  /// Update 안 된(또는 Init 안 된) frame 의 stale oMf 를 읽지 않게 게이트. RT-safe, no alloc.
   [[nodiscard]] pinocchio::SE3 ArmTcpPoseFromCache(int tcp_idx, int base_idx) const noexcept;
 
   // ── accessors ────────────────────────────────────────────────────────────
@@ -129,17 +136,15 @@ class CombinedModelCache {
 
   [[nodiscard]] const Eigen::VectorXd& v() const noexcept { return v_curr_full_; }
 
-  /// mutable q/v — 컨트롤러가 posture reference 조립 등으로 in-place 갱신하는 드문 경로용.
-  [[nodiscard]] Eigen::VectorXd& q_mutable() noexcept { return q_curr_full_; }
-
-  [[nodiscard]] Eigen::VectorXd& v_mutable() noexcept { return v_curr_full_; }
-
  private:
   std::shared_ptr<const pinocchio::Model> full_model_ptr_;
   rtc_urdf_bridge::PinocchioCache cache_;
   std::array<int, kMaxFullDof> ext_to_pin_q_{};
   std::array<int, kMaxFullDof> ext_to_pin_v_{};
   bool joint_reorder_valid_{false};
+  /// cache_ 가 Init 됐는지(@ref InitModel / @ref InitCacheDeferred). @ref Update /
+  /// @ref ArmTcpPoseFromCache 의 self-enforcing 게이트 — un-init cache_ 소비를 막는다.
+  bool cache_initialized_{false};
   int full_dof_{0};
   Eigen::VectorXd q_curr_full_;  ///< [nq] current q in Pinocchio order (per tick)
   Eigen::VectorXd v_curr_full_;  ///< [nv] current v in Pinocchio order (per tick)

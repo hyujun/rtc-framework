@@ -51,10 +51,20 @@ bool CombinedModelCache::InitModel(rtc_urdf_bridge::PinocchioModelBuilder& build
     return false;
   }
   // contact_frame_ids: empty for joint/task; WBC passes its TSID contact frames.
-  // (WBC defers this cache Init to a direct cache().Init once its contact frame
-  // ids are parsed — see DemoWbcController::LoadConfig.)
+  // (WBC defers this cache Init to InitCacheDeferred once its contact frame ids
+  // are parsed — see DemoWbcController::LoadConfig.)
   cache_.Init(full_model_ptr_, contact_frame_ids);
+  cache_initialized_ = true;
   return true;
+}
+
+void CombinedModelCache::InitCacheDeferred(
+    const std::vector<pinocchio::FrameIndex>& contact_frame_ids) {
+  // Deferred counterpart to SelectModel: SelectModel must have run (full_model_ptr_
+  // set). Sets cache_initialized_ so Update()/ArmTcpPoseFromCache() gate correctly
+  // without the caller reaching into cache().Init() raw.
+  cache_.Init(full_model_ptr_, contact_frame_ids);
+  cache_initialized_ = true;
 }
 
 void CombinedModelCache::BuildReorderMap(const std::vector<std::string>* arm_joint_names,
@@ -141,6 +151,9 @@ void CombinedModelCache::ExtractFullState(const rtc::ControllerState& state, int
 }
 
 void CombinedModelCache::Update() noexcept {
+  if (!cache_initialized_) {
+    return;
+  }
   cache_.Update(q_curr_full_, v_curr_full_);
 }
 
@@ -149,7 +162,7 @@ pinocchio::SE3 CombinedModelCache::ArmTcpPoseFromCache(int tcp_idx, int base_idx
   // (reorder valid → Update() ran this run). Reading a registered-but-never-
   // Updated frame would return a stale/Identity oMf; gating here keeps every
   // consumer (FK log, vTCP, CLIK) consistent with the Update guard.
-  if (tcp_idx < 0 || !joint_reorder_valid_) {
+  if (tcp_idx < 0 || !joint_reorder_valid_ || !cache_initialized_) {
     return pinocchio::SE3::Identity();
   }
   const auto& frames = cache_.registered_frames;
