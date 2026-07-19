@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -548,6 +550,15 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   if (!cfg) {
     return;
+  }
+
+  // Fail-fast capacity check: null_target / null_target_init_ are kMaxRobotDOF
+  // wide; a larger model would overrun them in Compute (issue #172).
+  const int nv = handle_->nv();
+  if (nv > kMaxRobotDOF) {
+    throw std::runtime_error(
+        "ClikController: model DOF nv=" + std::to_string(nv) +
+        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
   }
 
   auto g = gains_lock_.Load();

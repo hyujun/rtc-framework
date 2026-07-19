@@ -88,8 +88,10 @@ command[i] = current_pos[i] + kp[i] * (target[i] - current[i]) * dt
 
 | 파라미터 | 타입 | 기본값 | 설명 |
 |---------|------|--------|------|
-| `kp` | `double[6]` | `[120, 120, 100, 80, 80, 80]` | 관절별 비례 게인 |
+| `kp` | `double[nv]` | `[120, 120, 100, 80, 80, 80, …]` | 관절별 비례 게인 |
 | `command_type` | `string` | `"position"` | 출력 명령 타입 |
+
+> **DOF 일반화 (#172):** `kp` 저장은 고정 용량 `kMaxRobotDOF`(=12) 이며, YAML `kp` 길이는 **모델 DOF `nv` 와 정확히 일치해야** 합니다 (불일치 시 LoadConfig throw — 이전의 6개 상수 가정·silent drop 제거). 모델 nv 가 `kMaxRobotDOF` 를 초과하면 configure 실패.
 
 **특징:**
 - 최소 계산량 (동역학 미사용)
@@ -109,9 +111,11 @@ p_controller:
 
 ---
 
-### 2. JointPDController (관절 공간 PD + 동역학 보상)
+### 2. JointPDController (관절 공간 PD + 중력/코리올리 피드포워드)
 
-5차 다항식 궤적 생성과 선택적 중력/코리올리 보상을 포함하는 관절 공간 PD 토크 제어기입니다.
+5차 다항식 궤적 생성과 선택적 중력/코리올리 **피드포워드**를 포함하는 관절 공간 PD 토크 제어기입니다.
+
+> **명명 주의 (#172):** 이 제어기는 표준 computed-torque 가 **아닙니다** — 질량행렬 `M(q)` 나 desired acceleration `ddq_d` 를 사용하지 않고, PD 항에 `g(q)`·`C(q,v)·v` 를 피드포워드로 더할 뿐입니다 (즉 `M·ddq_ref + h` 형태가 아님). 정식 computed-torque 가 필요하면 별도 제어기로 추가해야 합니다.
 
 **제어 법칙:**
 
@@ -120,10 +124,14 @@ e[i]  = trajectory_position[i] - current_position[i]
 de[i] = (e[i] - e_prev[i]) / dt
 
 command[i] = kp[i] * e[i] + kd[i] * de[i]
-           + ff_vel[i]                     (command_type != torque 일 때만)
+  ── command_type == torque (N·m):
            + g(q)[i]                       (enable_gravity_compensation = true)
            + C(q,v)*v[i]                   (enable_coriolis_compensation = true)
+  ── command_type != torque (position/velocity):
+           + ff_vel[i]                     (궤적 속도 피드포워드만; N·m 항 금지)
 ```
+
+> **단위 안전 (#172):** `g(q)`·`C(q,v)·v` (N·m) 는 `command_type: torque` 에서만 더해집니다. 비-torque 모드에서 `enable_gravity_compensation`/`enable_coriolis_compensation` 을 켜면 LoadConfig 에서 거부됩니다 (velocity/position command 에 N·m 를 섞지 않기 위함).
 
 **파라미터:**
 
@@ -232,71 +240,70 @@ clik_controller:
 
 ---
 
-### 4. OperationalSpaceController (태스크 공간 6-DOF OSC)
+### 4. OperationalSpaceController (태스크 공간 6-DOF 토크 OSC)
 
-전체 6-DOF 태스크 공간 PD 제어 + 피드포워드 궤적 속도 + 선택적 중력 보상을 포함하는 제어기입니다.
+전체 6-DOF 태스크 공간 **토크** 제어기입니다 (operational-space / Khatib 정식화). 태스크 공간 PD 가속도를 task inertia Λ 와 Jacobian transpose 로 관절 토크에 사상하고, joint-space Coriolis + 중력을 완전 보상합니다. **출력은 N·m** 이며 command_type 은 `torque` 로 고정됩니다 (다른 값은 LoadConfig 에서 거부 — position/velocity task 제어는 ClikController 사용). 이 전환은 #172 에서 진행되었으며, 이전 velocity-IK→position 계약을 대체합니다.
 
 **제어 법칙:**
 
 ```
-pos_error  = traj_pos - FK(q)
-rot_error  = log3(R_traj * R_FK(q)^T)          (SO(3) 로그)
-tcp_vel    = J * q_dot                          (현재 TCP 속도)
+pos_error = p_des - FK(q)                       (3D world, m)
+rot_error = log3(R_des * R_FK(q)^T)             (3D world axis-angle)
+tcp_vel   = J * q_dot                           (6D 현재 태스크 속도)
 
-task_vel[0:3] = kp_pos * pos_error + traj_vel_lin - kd_pos * tcp_vel[0:3]
-task_vel[3:6] = kp_rot * rot_error + traj_vel_ang - kd_rot * tcp_vel[3:6]
+a_task[0:3] = kp_pos * pos_error + kd_pos * (vel_d_lin - tcp_vel_lin) + acc_ff_lin
+a_task[3:6] = kp_rot * rot_error + kd_rot * (vel_d_ang - tcp_vel_ang) + acc_ff_ang
 
-JJt    = J * J^T + lambda^2 I_6
-J^#    = J^T * JJt^{-1}                        (PartialPivLU 분해)
-
-dq     = J^# * task_vel  [+ g(q)]              (중력 보상, 선택)
-
-q_cmd  = q + clamp(dq, +/-v_max) * dt
+M         = symmetrise(M(q))                    (nv x nv joint-space inertia)
+h         = C(q,v)*v + g(q)                     (nv nonlinear effects)
+Lambda^-1 = J M^-1 J^T + lambda^2 I_6           (6x6 damped task inertia inverse)
+F         = Lambda * a_task                     (6D task-space force)
+tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
+  with  Jbar^T = Lambda J M^-1,  N^T = I - J^T Jbar^T   (dynamically-consistent null space)
+        tau0   = null_kp*(q_safe - q) - null_kd*v       (posture secondary task)
 ```
 
 **파라미터:**
 
 | 파라미터 | 타입 | 기본값 | 설명 |
 |---------|------|--------|------|
-| `kp_pos` | `double[3]` | `[1.0, 1.0, 1.0]` | 위치 비례 게인 |
-| `kd_pos` | `double[3]` | `[0.1, 0.1, 0.1]` | 위치 미분 게인 |
-| `kp_rot` | `double[3]` | `[0.5, 0.5, 0.5]` | 자세 비례 게인 |
-| `kd_rot` | `double[3]` | `[0.05, 0.05, 0.05]` | 자세 미분 게인 |
-| `damping` | `double` | `0.01` | 의사역행렬 감쇠 계수 (lambda) |
-| `enable_gravity_compensation` | `bool` | `false` | 중력 보상 활성화 |
+| `kp_pos` | `double[3]` | `[100, 100, 100]` | 위치 비례 게인 [1/s²] |
+| `kd_pos` | `double[3]` | `[20, 20, 20]` | 위치 미분 게인 [1/s] |
+| `kp_rot` | `double[3]` | `[50, 50, 50]` | 자세 비례 게인 [1/s²] |
+| `kd_rot` | `double[3]` | `[10, 10, 10]` | 자세 미분 게인 [1/s] |
+| `damping` | `double` | `0.01` | Λ⁻¹ 감쇠 계수 λ (특이점 강건성, `max(1e-4, ·)` floor) |
+| `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) |
+| `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] |
 | `trajectory_speed` | `double` | `0.1` | 위치 궤적 최대 병진 속도 (m/s) |
 | `trajectory_angular_speed` | `double` | `0.5` | 자세 궤적 최대 회전 속도 (rad/s) |
-| `command_type` | `string` | `"torque"` | 출력 명령 타입 |
+| `command_type` | `string` | `"torque"` | **torque 고정** (다른 값 거부) |
+
+> `enable_gravity_compensation` 은 YAML 하위 호환을 위해 파싱만 되고 **무시**됩니다 — 토크 OSC 는 g(q)+C·v 를 항상 보상합니다 (제어 법칙상 필수). 게인 단위·의미가 바뀌었으므로 (velocity-IK → 토크 가속도형) 로봇별 재튜닝이 필요합니다.
 
 **타겟 해석 방식:**
 - `target[0:3]` = TCP 위치 (x, y, z) (m)
 - `target[3:6]` = TCP 자세 (roll, pitch, yaw) (rad, ZYX 오일러)
 
-**궤적 Duration 계산:**
-```
-duration = max(0.01, max(trans_dist / trajectory_speed, angular_dist / trajectory_angular_speed))
-```
-
 **핵심 기법:**
-- PartialPivLU -- 고정 크기 6x6 LU 분해 (동적 할당 없음)
-- SO(3) 로그 맵 -- 자세 오차를 축-각도(axis-angle)로 변환
-- SE(3) 궤적 보간 -- 위치/자세 독립 속도 기반 궤적
-- RPY -> 회전행렬 변환: ZYX 오일러 규약
+- In-place Cholesky (LLT) — M(q) (nv×nv) 및 Λ⁻¹ (6×6) 분해, `solveInPlace` 로 RT 동적 할당 없음
+- `.info()` 검사 — M/Λ⁻¹ 이 비-PD 이면 안전 fallback (τ = h, gravity+Coriolis hold) 으로 NaN 차단
+- 동적 일관 널공간 사영 — 여유자유도(nv>6) posture 이차 태스크
+- SO(3) 로그 맵 / SE(3) 궤적 보간 / ZYX 오일러 규약
 
-**E-STOP:** `safe_position`으로 관절 속도 제한 범위 내에서 위치 명령 이동
+**E-STOP:** `safe_position`으로 관절 속도 제한 범위 내에서 위치 명령 이동 (E-STOP 경로는 #172 controller 작업 범위 밖 — 별도 concern)
 
 ```yaml
 # examples/controllers/direct/operational_space_controller.yaml
 operational_space_controller:
-  kp_pos: [1.0, 1.0, 1.0]
-  kd_pos: [0.1, 0.1, 0.1]
-  kp_rot: [0.5, 0.5, 0.5]
-  kd_rot: [0.05, 0.05, 0.05]
+  kp_pos: [100.0, 100.0, 100.0]
+  kd_pos: [20.0, 20.0, 20.0]
+  kp_rot: [50.0, 50.0, 50.0]
+  kd_rot: [10.0, 10.0, 10.0]
   damping: 0.01
-  enable_gravity_compensation: false
+  null_kd: 1.0            # nv>6 여유자유도 널공간 damping
   trajectory_speed: 0.1
   trajectory_angular_speed: 0.5
-  command_type: "torque"
+  command_type: "torque"  # 고정
 ```
 
 ---
@@ -594,13 +601,13 @@ RTC_REGISTER_CONTROLLER(
 | | PController | JointPDController | ClikController | OperationalSpaceController |
 |---|---|---|---|---|
 | **제어 공간** | 관절 | 관절 | 태스크 (3/6-DOF) | 태스크 (6-DOF) |
-| **출력** | Position | Torque | Position | Torque |
+| **출력** | Position | Torque | Position | **Torque (N·m)** |
 | **궤적** | 없음 | JointSpace 5차 | TaskSpace SE(3) 5차 | TaskSpace SE(3) 5차 |
-| **동역학** | FK만 | FK + G + C + J | FK + J | FK + J + G |
-| **영공간** | N/A | N/A | 관절 센터링 (3-DOF만) | N/A (전체 6-DOF 사용) |
+| **동역학** | FK만 | FK + G + C + J | FK + J | FK + J + **M + h(=C·v+g)** |
+| **영공간** | N/A | N/A | 관절 센터링 (3-DOF만) | **동적 일관 posture (nv>6)** |
 | **E-STOP** | 현재 위치 유지 (hold) | PD 기반 safe_position 이동 | safe_position 위치 명령 | safe_position 위치 명령 |
-| **역행렬** | N/A | N/A | LDLT (3x3/6x6) | PartialPivLU (6x6) |
-| **명령 제한** | velocity (기본 2.0 rad/s) | torque (기본 150 Nm) / velocity (기본 2.0 rad/s) | velocity (기본 2.0 rad/s) | velocity (기본 2.0 rad/s) |
+| **역행렬** | N/A | N/A | LDLT (3x3/6x6) | **LLT (M nv×nv, Λ⁻¹ 6×6)** |
+| **명령 제한** | velocity (기본 2.0 rad/s) | torque (기본 150 Nm) / velocity (기본 2.0 rad/s) | velocity (기본 2.0 rad/s) | **torque (기본 150 Nm)** |
 | **계산량** | 최소 | 중간 | 중간 | 높음 |
 | **스레드 안전** | 없음 | try_lock + atomic | try_lock + atomic | try_lock + atomic |
 

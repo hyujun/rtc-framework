@@ -34,30 +34,35 @@
 
 namespace rtc {
 
-/// Operational Space Controller (OSC) — full 6-DOF Cartesian PD control.
+/// Operational Space Controller (OSC) — full 6-DOF Cartesian **torque** control.
 ///
-/// Controls both end-effector **position** and **orientation** simultaneously,
-/// with optional gravity compensation from the Pinocchio dynamics model.
-/// All six Cartesian DOF are controlled, leaving no null-space for UR5e.
+/// Controls end-effector position and orientation via the operational-space
+/// (Khatib) torque formulation: a task-space PD acceleration is mapped through
+/// the task inertia Λ and Jacobian transpose into joint torque, with full
+/// joint-space Coriolis + gravity compensation. Output command is **N·m**.
+/// The command type is fixed to `kTorque`; a redundancy (nv > 6) posture task
+/// is projected through the dynamically-consistent null space.
 ///
 /// ### Control law
 /// @code
-///   pos_error   = p_des − p_FK(q)              [3D, metres]
-///   rot_error   = log₃(R_des * R_FK(q)^T)      [3D axis-angle,
-///   LOCAL_WORLD_ALIGNED]
+///   pos_error = p_des − p_FK(q)               [3D world, metres]
+///   rot_error = log₃(R_des · R_FK(q)^T)       [3D world axis-angle]
+///   ẋ         = J · v                          [6D current task velocity]
 ///
-///   tcp_vel     = J * dq                        [6D, current task-space
-///   velocity]
+///   a_task[0:3] = kp_pos·pos_error + kd_pos·(ẋ_d,lin − ẋ_lin) + a_ff,lin
+///   a_task[3:6] = kp_rot·rot_error + kd_rot·(ẋ_d,ang − ẋ_ang) + a_ff,ang
 ///
-///   task_vel[0:3] = kp_pos * pos_error  −  kd_pos * tcp_vel[0:3]
-///   task_vel[3:6] = kp_rot * rot_error  −  kd_rot * tcp_vel[3:6]
-///
-///   JJt         = J * J^T + λ²I₆               [6×6, damped]
-///   J^#         = J^T * JJt^{−1}               [nv×6, damped pseudoinverse]
-///
-///   dq          = J^# * task_vel               [joint velocity]
-///   q_cmd       = q + clamp(dq, ±v_max) * dt
+///   M       = symmetrise(M(q))                 [nv×nv joint-space inertia]
+///   h       = C(q,v)·v + g(q)                  [nv nonlinear effects]
+///   Λ⁻¹     = J·M⁻¹·Jᵀ + λ²I₆                  [6×6 damped task inertia inverse]
+///   F       = Λ · a_task                        [6D task-space force]
+///   τ       = Jᵀ·F + h + Nᵀ·τ₀                  [nv joint torque, N·m]
+///     with  J̄ᵀ = Λ·J·M⁻¹,  Nᵀ = I − Jᵀ·J̄ᵀ   [dynamically-consistent null space]
+///           τ₀ = null_kp·(q_safe − q) − null_kd·v   [posture secondary task]
 /// @endcode
+///
+/// Λ carries λ² damping on its inverse for singularity robustness. All linear
+/// solves use pre-sized in-place Cholesky factorisations (RT alloc-free).
 ///
 /// ### Target convention (`SetRobotTarget` / `/target_joint_positions` topic)
 /// The 6 values are **NOT** joint angles; they represent a full TCP pose:
@@ -67,12 +72,25 @@ class OperationalSpaceController final : public RTControllerInterface {
  public:
   // ── Gain / feature configuration ─────────────────────────────────────────
   struct Gains {
-    std::array<double, 3> kp_pos{{1.0, 1.0, 1.0}};     ///< Cartesian position gain      [1/s]
-    std::array<double, 3> kd_pos{{0.1, 0.1, 0.1}};     ///< Cartesian position damping   [—]
-    std::array<double, 3> kp_rot{{0.5, 0.5, 0.5}};     ///< Cartesian orientation gain   [1/s]
-    std::array<double, 3> kd_rot{{0.05, 0.05, 0.05}};  ///< Cartesian orientation damping[—]
-    double damping{0.01};  ///< Damping factor λ for J^#  (singularity robustness)
-    bool enable_gravity_compensation{false};  ///< Add g(q) feedforward term
+    // Task-space PD (acceleration form): a = kp·e_pose + kd·(ẋ_d − ẋ) + a_ff.
+    // kp is a stiffness-like gain [1/s²], kd a derivative gain [1/s]. Defaults
+    // are sane torque-OSC starting points — retune per robot (examples only).
+    std::array<double, 3> kp_pos{{100.0, 100.0, 100.0}};  ///< Cartesian position gain     [1/s²]
+    std::array<double, 3> kd_pos{{20.0, 20.0, 20.0}};     ///< Cartesian position damping  [1/s]
+    std::array<double, 3> kp_rot{{50.0, 50.0, 50.0}};     ///< Cartesian orientation gain  [1/s²]
+    std::array<double, 3> kd_rot{{10.0, 10.0, 10.0}};     ///< Cartesian orientation damp  [1/s]
+    double damping{0.01};  ///< Damping factor λ on Λ⁻¹  (singularity robustness)
+
+    // Dynamically-consistent null-space posture task (only meaningful when
+    // nv > 6; for a non-redundant 6-DOF arm Nᵀ ≈ 0 so these are inert).
+    // τ₀ is summed directly into joint torque (not through M), so these are
+    // stiffness/damping in TORQUE units, NOT the acceleration-form gains above.
+    double null_kp{0.0};  ///< Posture centering stiffness toward safe_position [N·m/rad]
+    double null_kd{1.0};  ///< Null-space joint damping                         [N·m·s/rad]
+
+    // Retained for YAML back-compat; torque OSC always compensates g(q)+C·v
+    // (required for the control law). This flag is parsed but ignored.
+    bool enable_gravity_compensation{true};  ///< [deprecated] no-op in torque mode
 
     // Trajectory speed
     double trajectory_speed{0.1};          ///< Max translational speed for trajectory [m/s]
@@ -127,24 +145,32 @@ class OperationalSpaceController final : public RTControllerInterface {
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
 
-  // ── Pre-allocated Eigen work buffers ─────────────────────────────────────
-  Eigen::VectorXd q_;  ///< nv: joint positions (for gravity only)
-  Eigen::VectorXd v_;  ///< nv: joint velocities (for gravity only)
-
+  // ── Pre-allocated Eigen work buffers (all sized in the ctor; RT alloc-free) ─
   Eigen::MatrixXd J_full_;  ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
+  Eigen::MatrixXd Jt_;      ///< nv×6: Jᵀ (materialised for products / RHS)
 
-  Eigen::Matrix<double, 6, 6> JJt_;  ///< J * J^T + λ²I
-  Eigen::MatrixXd Jpinv_;            ///< nv×6: damped pseudoinverse J^#
-  Eigen::VectorXd dq_;               ///< nv: joint velocity command
-  Eigen::VectorXd traj_dq_;          ///< nv: feedforward-only trajectory velocity (for logging)
+  // Joint-space dynamics
+  Eigen::MatrixXd M_;        ///< nv×nv: symmetrised joint-space inertia M(q)
+  Eigen::MatrixXd MinvJt_;   ///< nv×6: M⁻¹ Jᵀ (via in-place Cholesky solve)
+  Eigen::VectorXd h_;        ///< nv: nonlinear effects h = C·v + g
+  Eigen::VectorXd tau_out_;  ///< nv: joint torque command [N·m]
 
-  // Task-space vectors — fixed 6×1, stack-allocated
-  Eigen::Matrix<double, 6, 1> task_err_;  ///< [pos_error(3); rot_error(3)]
-  Eigen::Matrix<double, 6, 1> task_vel_;  ///< desired task-space velocity
-  Eigen::Matrix<double, 6, 1> tcp_vel_;   ///< current TCP velocity = J * v_
+  // Task-space quantities — fixed 6×1 / 6×6, stack-allocated
+  Eigen::Matrix<double, 6, 6> LambdaInv_;  ///< J M⁻¹ Jᵀ + λ²I  (task inertia inverse)
+  Eigen::Matrix<double, 6, 1> task_err_;   ///< [pos_error(3); rot_error(3)]
+  Eigen::Matrix<double, 6, 1> a_task_;     ///< desired task-space acceleration
+  Eigen::Matrix<double, 6, 1> F_;          ///< task-space force  F = Λ a_task
+  Eigen::Matrix<double, 6, 1> tcp_vel_;    ///< current TCP velocity = J · v
 
-  // PartialPivLU on a fixed-size 6×6 matrix — zero dynamic allocation.
-  Eigen::PartialPivLU<Eigen::Matrix<double, 6, 6>> lu_;
+  // Dynamically-consistent null-space posture task
+  Eigen::MatrixXd JbarT_;     ///< 6×nv: dynamically-consistent inverse transpose Λ J M⁻¹
+  Eigen::MatrixXd NT_;        ///< nv×nv: null-space projector transpose I − Jᵀ J̄ᵀ
+  Eigen::VectorXd tau0_;      ///< nv: raw posture torque (pre-projection)
+  Eigen::VectorXd null_tmp_;  ///< nv: projected null-space torque
+
+  // In-place Cholesky factorisations — pre-sized, RT alloc-free.
+  Eigen::LLT<Eigen::MatrixXd> llt_M_;             ///< M(q) factor (nv×nv, SPD)
+  Eigen::LLT<Eigen::Matrix<double, 6, 6>> llt6_;  ///< Λ⁻¹ factor (6×6, SPD)
 
   // RT-thread-only working copies materialised from the SeqLock POD at the
   // start of each Compute(). Not shared across threads.
@@ -204,14 +230,14 @@ class OperationalSpaceController final : public RTControllerInterface {
   std::atomic<bool> hand_estopped_{false};
 
   std::vector<double> safe_position_;
-  std::vector<double> max_joint_velocity_;
+  std::vector<double> max_joint_velocity_;  ///< E-STOP position slew limit [rad/s]
+  std::vector<double> max_joint_torque_;    ///< torque command clamp [N·m]
 
+  // Torque-only: fixed to kTorque. LoadConfig rejects any other command_type.
   CommandType command_type_{CommandType::kTorque};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
-
-  void ClampVelocity(std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept;
 
   static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
 };

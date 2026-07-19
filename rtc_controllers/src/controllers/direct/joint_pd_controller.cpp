@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -175,15 +177,19 @@ ControllerOutput JointPDController::Compute(const ControllerState& state) noexce
     const double de = (e - prev_error_[i]) / dt;
 
     out0.commands[i] = gains.kp[i] * e + gains.kd[i] * de;
-    if (command_type_ != CommandType::kTorque) {
+    if (command_type_ == CommandType::kTorque) {
+      // Torque mode (N·m): PD torque + optional gravity/Coriolis feedforward.
+      if (use_gravity) {
+        out0.commands[i] += gravity_torques_[i];
+      }
+      if (use_coriolis) {
+        out0.commands[i] += coriolis_forces_[static_cast<Eigen::Index>(i)];
+      }
+    } else {
+      // Position/velocity mode: trajectory velocity feedforward only. N·m
+      // dynamics terms (g, C·v) must NOT be mixed into a non-torque command
+      // (issue #172): they are gated out here and rejected in LoadConfig.
       out0.commands[i] += traj_state.velocities[i];
-    }
-
-    if (use_gravity) {
-      out0.commands[i] += gravity_torques_[i];
-    }
-    if (use_coriolis) {
-      out0.commands[i] += coriolis_forces_[static_cast<Eigen::Index>(i)];
     }
 
     prev_error_[i] = e;
@@ -272,16 +278,31 @@ void JointPDController::LoadConfig(const YAML::Node& cfg) {
     return;
   }
 
+  // Fail-fast capacity check: fixed-size buffers (kp/kd/prev_error_/trajectory_)
+  // are kMaxRobotDOF-wide; a larger model would overrun them (issue #172).
+  const int nv = handle_->nv();
+  if (nv > kMaxRobotDOF) {
+    throw std::runtime_error(
+        "JointPDController: model DOF nv=" + std::to_string(nv) +
+        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
+  }
   auto g = gains_lock_.Load();
-  if (cfg["kp"] && cfg["kp"].IsSequence()) {
-    const auto n = std::min(cfg["kp"].size(), static_cast<std::size_t>(kMaxRobotDOF));
-    for (std::size_t i = 0; i < n; ++i) {
+  // `kp`/`kd` length must equal the model DOF — no silent truncation (#172).
+  if (cfg["kp"]) {
+    if (!cfg["kp"].IsSequence() || cfg["kp"].size() != static_cast<std::size_t>(nv)) {
+      throw std::runtime_error("JointPDController: 'kp' must be a sequence of length nv=" +
+                               std::to_string(nv));
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nv); ++i) {
       g.kp[i] = cfg["kp"][i].as<double>();
     }
   }
-  if (cfg["kd"] && cfg["kd"].IsSequence()) {
-    const auto n = std::min(cfg["kd"].size(), static_cast<std::size_t>(kMaxRobotDOF));
-    for (std::size_t i = 0; i < n; ++i) {
+  if (cfg["kd"]) {
+    if (!cfg["kd"].IsSequence() || cfg["kd"].size() != static_cast<std::size_t>(nv)) {
+      throw std::runtime_error("JointPDController: 'kd' must be a sequence of length nv=" +
+                               std::to_string(nv));
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nv); ++i) {
       g.kd[i] = cfg["kd"][i].as<double>();
     }
   }
@@ -294,11 +315,21 @@ void JointPDController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["trajectory_speed"]) {
     g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
   }
-  gains_lock_.Store(g);
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
   }
+  // Dynamics compensation (g, C·v) produces N·m and is only valid on a torque
+  // command. Reject the mixed-unit configuration fail-fast rather than silently
+  // dropping the terms at runtime (issue #172).
+  if (command_type_ != CommandType::kTorque &&
+      (g.enable_gravity_compensation || g.enable_coriolis_compensation)) {
+    throw std::runtime_error(
+        "JointPDController: enable_gravity_compensation / enable_coriolis_compensation require "
+        "command_type: torque (dynamics compensation is N·m and cannot be added to a "
+        "position/velocity command)");
+  }
+  gains_lock_.Store(g);
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
