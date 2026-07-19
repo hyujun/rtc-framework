@@ -301,6 +301,25 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_joint_controller URDF-backed tests (#149) ─────────────────────────
+  # Model-dependent joint paths the empty-URDF sister cannot reach: arm quintic
+  # trajectory, fingertip FK/TF, virtual TCP, ToF populate, E-STOP FK.
+  ament_add_gtest(test_demo_joint_controller_urdf
+    test/test_demo_joint_controller_urdf.cpp)
+  target_link_libraries(test_demo_joint_controller_urdf
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_joint_controller_urdf
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── demo_wbc_controller base_frame consistency (F-2) ───────────────────────
   ament_add_gtest(test_demo_wbc_base_frame_consistency
     test/test_demo_wbc_base_frame_consistency.cpp)

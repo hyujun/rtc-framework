@@ -19,11 +19,10 @@
 // commanded each tick); the hand is optionally pinned (external object) for
 // the contact_stop scenarios, mirroring test_demo_joint_controller.
 
+#include "iiwa7_leap_test_fixture.hpp"
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/hand_sensor_layout.hpp"
 #include "integrated_bringup/support/virtual_tcp.hpp"
-
-#include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -32,7 +31,6 @@
 
 #include <array>
 #include <cmath>
-#include <map>
 #include <memory>
 #include <string>
 
@@ -48,23 +46,20 @@
 namespace {
 
 using integrated_bringup::DemoTaskController;
-using integrated_bringup::kHandInferenceValuesPerFingertipCapacity;
 using integrated_bringup::kHandSensorValuesPerFingertipCapacity;
 using integrated_bringup::VirtualTcpMode;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
-using rtc::DeviceNameConfig;
-using rtc::DeviceSensorLayout;
-using rtc::DeviceUrdfConfig;
 
-namespace rub = rtc_urdf_bridge;
-
-constexpr int kArmDof = 7;
-constexpr int kHandDof = 16;
-constexpr double kDt = 0.002;
-
-// iiwa7 rest pose used as the simulated measured state (non-trivial FK).
-constexpr std::array<double, kArmDof> kArmHome = {0.0, 0.7, 0.0, -1.4, 0.0, 0.7, 0.0};
+using integrated_bringup::testfx::kArmDof;
+using integrated_bringup::testfx::kArmHome;
+using integrated_bringup::testfx::kDt;
+using integrated_bringup::testfx::kHandDof;
+using integrated_bringup::testfx::MakeIiwa7LeapDeviceConfigs;
+using integrated_bringup::testfx::MakeIiwa7LeapState;
+using integrated_bringup::testfx::SetFingertipForce;
+using integrated_bringup::testfx::SharedIiwa7LeapBuilder;
+using integrated_bringup::testfx::SharedIiwa7LeapModelConfig;
 
 // ── Controller YAML (inline — required keys + test-friendly speeds) ──────────
 // estop.arm_safe_position is all-zero so the E-STOP test observes motion away
@@ -104,104 +99,6 @@ logs:
     instance: iiwa7_state
 )";
 
-// ── Model topology (mirrors config/iiwa7_leap sim.yaml `urdf:` section) ──────
-rub::ModelConfig MakeModelConfig() {
-  rub::ModelConfig cfg;
-  cfg.urdf_path = ament_index_cpp::get_package_share_directory("robot_descriptions") +
-                  "/robots/iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro";
-  cfg.root_joint_type = "fixed";
-  cfg.sub_models.push_back({"iiwa7", "link_0", "ee_link"});
-  cfg.tree_models.push_back(
-      {"leap", "base", {"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}});
-  cfg.tree_models.push_back(
-      {"wbc", "link_0", {"thumb_tip_head", "index_tip_head", "middle_tip_head", "ring_tip_head"}});
-  return cfg;
-}
-
-// Shared across every URDF-backed test — the xacro→Pinocchio build is the
-// expensive part (production shares one builder across controllers the same
-// way via SetSharedModelBuilder).
-const rub::ModelConfig& SharedModelConfig() {
-  static const rub::ModelConfig cfg = MakeModelConfig();
-  return cfg;
-}
-
-std::shared_ptr<rub::PinocchioModelBuilder> SharedBuilder() {
-  static auto builder = std::make_shared<rub::PinocchioModelBuilder>(SharedModelConfig());
-  return builder;
-}
-
-// Device configs as CM would resolve them (urdf root/tip auto-resolved from
-// sub_models/tree_models; leap sensor capability flags = mujoco wrench lane).
-std::map<std::string, DeviceNameConfig> MakeDeviceConfigs() {
-  std::map<std::string, DeviceNameConfig> configs;
-
-  DeviceNameConfig arm;
-  arm.device_name = "iiwa7";
-  arm.joint_state_names = {"A1", "A2", "A3", "A4", "A5", "A6", "A7"};
-  DeviceUrdfConfig arm_urdf;
-  arm_urdf.package = "robot_descriptions";
-  arm_urdf.path = "robots/iiwa7_leap/urdf/iiwa7_with_leap_right.urdf.xacro";
-  arm_urdf.root_link = "link_0";
-  arm_urdf.tip_link = "ee_link";
-  arm.urdf = arm_urdf;
-  rtc::DeviceJointLimits arm_limits;
-  arm_limits.max_velocity = {1.71, 1.71, 1.74, 2.27, 2.44, 3.14, 3.14};
-  arm_limits.position_lower = {-2.9671, -2.0944, -2.9671, -2.0944, -2.9671, -2.0944, -3.0543};
-  arm_limits.position_upper = {2.9671, 2.0944, 2.9671, 2.0944, 2.9671, 2.0944, 3.0543};
-  arm.joint_limits = arm_limits;
-  configs["iiwa7"] = std::move(arm);
-
-  DeviceNameConfig hand;
-  hand.device_name = "leap";
-  // Controller-facing order (thumb first) — same as the shipped config.
-  hand.joint_state_names = {"12", "13", "14", "15", "0", "1", "2",  "3",
-                            "4",  "5",  "6",  "7",  "8", "9", "10", "11"};
-  DeviceUrdfConfig hand_urdf;
-  hand_urdf.root_link = "base";
-  hand.urdf = hand_urdf;
-  DeviceSensorLayout layout;
-  layout.inference_values_per_group = 7;
-  layout.has_native_contact = false;
-  layout.has_native_displacement = false;
-  hand.sensor_layout = layout;
-  configs["leap"] = std::move(hand);
-
-  return configs;
-}
-
-ControllerState MakeState() {
-  ControllerState state{};
-  state.num_devices = 2;
-  state.dt = kDt;
-  state.iteration = 1;
-
-  auto& dev0 = state.devices[0];
-  dev0.num_channels = kArmDof;
-  dev0.valid = true;
-  for (int i = 0; i < kArmDof; ++i) {
-    dev0.positions[static_cast<std::size_t>(i)] = kArmHome[static_cast<std::size_t>(i)];
-  }
-
-  auto& dev1 = state.devices[1];
-  dev1.num_channels = kHandDof;
-  dev1.valid = true;
-
-  return state;
-}
-
-// Write a fingertip force (Fz) into the inference lane (mujoco wrench shape:
-// slot 0 = native contact (zero-fill), slots 1..3 = F).
-void SetFingertipForce(ControllerState& s, int f, float fz, float contact = 0.0f) {
-  auto& dev1 = s.devices[1];
-  dev1.inference_enable[static_cast<std::size_t>(f)] = true;
-  const int base = f * static_cast<int>(kHandInferenceValuesPerFingertipCapacity);
-  dev1.inference_data[static_cast<std::size_t>(base)] = contact;
-  dev1.inference_data[static_cast<std::size_t>(base + 1)] = 0.0f;
-  dev1.inference_data[static_cast<std::size_t>(base + 2)] = 0.0f;
-  dev1.inference_data[static_cast<std::size_t>(base + 3)] = fz;
-}
-
 // ZYX (yaw·pitch·roll) rotation — matches DrainTargetSlot's 6-DOF target
 // composition and pinocchio::rpy::matrixToRpy.
 Eigen::Matrix3d RpyToMatrix(double r, double p, double y) {
@@ -225,13 +122,13 @@ class TaskControllerUrdfTest : public ::testing::Test {
     // model + shared builder → PreConfigure(LoadConfig) → control rate →
     // device configs (triggers OnDeviceConfigsSet: reorder map + TCP frame
     // registration on the combined cache).
-    ctrl_->SetSystemModelConfig(SharedModelConfig());
-    ctrl_->SetSharedModelBuilder(SharedBuilder());
+    ctrl_->SetSystemModelConfig(SharedIiwa7LeapModelConfig());
+    ctrl_->SetSharedModelBuilder(SharedIiwa7LeapBuilder());
     ctrl_->SetControlRate(1.0 / kDt);
     ctrl_->LoadConfig(YAML::Load(kTaskYaml));
-    ctrl_->SetDeviceNameConfigs(MakeDeviceConfigs());
+    ctrl_->SetDeviceNameConfigs(MakeIiwa7LeapDeviceConfigs());
 
-    state_ = MakeState();
+    state_ = MakeIiwa7LeapState();
     // First tick: cache Update + arm/hand hold self-init.
     last_out_ = ctrl_->Compute(state_);
   }
@@ -646,7 +543,7 @@ TEST(TaskControllerNoModelTest, EstopComputeWithoutModelIsSafe) {
   DemoTaskController ctrl{"", DemoTaskController::Gains{}};
   ctrl.TriggerEstop();
 
-  ControllerState state = MakeState();
+  ControllerState state = MakeIiwa7LeapState();
   const auto out = ctrl.Compute(state);
 
   EXPECT_FALSE(out.arm_tip_pose_valid);  // no arm_handle_ → TF withheld
