@@ -1,0 +1,50 @@
+---
+name: verify
+description: Runtime verification recipe for this repo — launch the headless MuJoCo sim, switch controllers, observe topics/GUI/CSV/plots. Use when a change needs end-to-end runtime evidence beyond colcon test.
+---
+
+# RTC runtime verification recipe
+
+검증 대상 surface 는 보통 넷 중 하나: ROS 토픽, demo GUI, 세션 CSV, `plot_rtc_log` figure.
+
+## Launch (headless sim)
+
+```bash
+cd ~/ros2_ws/rtc_ws && source src/rtc-framework/repo_scripts/scripts/setup_env.sh
+ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_viewer:=false
+```
+
+- 백그라운드 실행 시 로그를 파일로 tee. 기동 완료 신호: `DemoWbcController timing:` 주기 로그 (기본 활성 = demo_wbc_controller).
+- 종료: `pkill -INT -f "sim_ur5e_p1a.launch"` (SIGINT — 세션 CSV flush 보장).
+
+## Controller switch
+
+```bash
+ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
+  "{activate_controllers: [demo_task_controller], deactivate_controllers: [demo_wbc_controller], strictness: 1, timeout: {sec: 1}}"
+```
+
+- 이름: `demo_joint_controller` / `demo_task_controller` / `demo_wbc_controller`.
+- **Pure deactivate 불가** (single-active D-A1) — 항상 교체 대상을 activate 에 지정.
+- 토픽: joint/task → `/<ctrl>/p1a/grasp_state`, wbc → `/<ctrl>/p1a/wbc_state`. 활성 컨트롤러는 `/rtc_cm/active_controller_name` (latched).
+
+## GUI (Tkinter, 실제 DISPLAY 사용)
+
+```bash
+DISPLAY=:1 ros2 run integrated_bringup demo_controller_gui   # 창 제목 "Demo Controller GUI"
+```
+
+- 스크린샷: `xdotool`/`scrot` 미설치 — `xwininfo -root -tree` 로 window id 찾고 `xwd -id <id> -silent -out x.xwd` 후 XWD 헤더 수동 파싱으로 PNG 변환 (PIL 은 xwd 직접 못 읽음; 100-byte big-endian 헤더 + ncolors×12 skip, 32bpp BGRX).
+- GUI 는 latched `active_controller_name` 기준으로 owned 토픽에 rewire — 활성 컨트롤러가 50 Hz 로 계속 발행하므로 fake 데이터 주입 시엔 (1) 실제 컨트롤러를 다른 것으로 전환해 대상 publisher 를 lifecycle-gate 시키고 (2) `active_controller_name` 에 그 이름을 fake 발행(transient_local) 후 (3) 침묵 토픽에 `ros2 topic pub`. 복원은 실제 switch 2회 (CM 이 latched name 재발행).
+
+## Session CSV / plots
+
+- 세션 루트: `~/ros2_ws/rtc_ws/logging_data/<YYMMDD_HHMM>/` (`rtc_tools.utils.session_dir.resolve_logging_root`).
+- 컨트롤러 CSV: `controllers/<ctrl>/<instance>.csv` — Compute() 활성 중에만 append (activity-gated).
+- Plot: `ros2 run rtc_tools plot_rtc_log <csv> --save-dir <dir> --no-show` (Agg 강제).
+
+## Gotchas
+
+- `pkill -f "ros2 topic pub"` 은 자기 쉘 커맨드라인도 매칭해 self-kill (exit 144) — PID 지정 kill 사용.
+- idle sim (무접촉) 은 grasp/pull 값 전부 0, `ft_*` inference 컬럼 NaN — 데이터 없는 figure 는 정상.
+- 백그라운드 빌드/테스트와 Stop hook 의 colcon 동시 실행 금지 — foreground `tail --pid=<pid> -f /dev/null` 로 대기.
