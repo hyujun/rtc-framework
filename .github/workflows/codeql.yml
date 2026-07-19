@@ -8,7 +8,16 @@ name: CodeQL Security Scan
 #   - trigger: weekly + workflow_dispatch (push/PR 미참여)
 #   - queries: default (security only) — 기존 security-and-quality 의 quality 제거
 #   - parallel-workers / ccache / swap / 별도 colcon cache 제거 — 기본값 사용
-#   - build-deps 는 이 워크플로우 내부에서 직접 호출 (메인 CI artifact 비의존)
+#
+# Two-job 구조 (2026-07-18, #179):
+#   이전엔 단일 analyze job 이 `Initialize CodeQL`(트레이싱 ON) 이후에 aligator
+#   0.19.0 콜드 빌드를 수행 → 헤비 pinocchio TU 가 트레이싱 오버헤드 하에서 메모리
+#   고갈, SIGTERM(143) 으로 매 weekly run 이 죽고 codeql 캐시가 영영 안 채워지는
+#   무한 루프였다. 메인 CI 처럼 deps 빌드를 트레이싱 밖 별도 job 으로 분리한다:
+#     - build-deps job: CodeQL init 없음 → aligator 비추적 빌드 (메인 CI 와 동일 구조).
+#       cache-version=v1 을 메인 CI 와 공유 → 대개 cache hit 으로 콜드 빌드 자체를 skip.
+#     - analyze job: needs build-deps → deps artifact download → CodeQL init → rtc
+#       패키지만 빌드/분석. 트레이싱 경로에서 aligator 콜드 빌드를 완전히 제거.
 
 on:
   schedule:
@@ -25,10 +34,53 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ============================================================
+  #  Build isolated deps — fmt 11 / mimalloc / aligator
+  #  CodeQL init 이 없는 별도 job → aligator 콜드 빌드가 트레이싱되지 않는다 (#179).
+  #  cache-version=v1 은 메인 CI (ros2-advanced-ci.yml) 와 공유 → 대개 cache hit.
+  # ============================================================
+  build-deps:
+    name: Build Isolated Deps
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-rtc-env
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          apt-cache-version: deps-v1
+          apt-packages: >-
+            ros-jazzy-pinocchio
+            ros-jazzy-hpp-fcl
+            ros-jazzy-eigenpy
+            ros-jazzy-proxsuite
+            libeigen3-dev
+
+      - name: Build & cache deps
+        uses: ./.github/actions/build-isolated-deps
+        with:
+          ros-distro: ${{ env.ROS_DISTRO }}
+          cache-version: v1
+
   analyze:
     name: Analyze (cpp)
+    needs: build-deps
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # 120: CodeQL 트레이싱 하 rtc_* 빌드는 컴파일러를 -j2 로 묶어(아래 env) 메모리를
+    # 지키는 대신 직렬성이 커져 느리다. 계측 결과 60분으론 integrated_bringup 등
+    # 헤비 패키지까지 못 끝내 timeout(143) 났으므로 상향 (#179).
+    timeout-minutes: 120
+    # 컴파일러 병렬도 bound (#179 핵심): colcon --parallel-workers 는 패키지-레벨만
+    # 제한하고, 패키지 내부 make 는 -j(nproc=4) 로 돌아 rtc_urdf_bridge/rtc_mpc 같은
+    # 단일 pinocchio-헤비 패키지에서 4개 헤비 TU 동시 컴파일 → 16GB 러너 OOM(SIGTERM
+    # 143) 이었다. 계측상 -j1 peak 5.5GB(extractor 포함), TU 당 ~3-4GB → -j2 는 ~9GB
+    # 로 안전 마진. MAKEFLAGS(make) + CMAKE_BUILD_PARALLEL_LEVEL(cmake --build) 양쪽에
+    # 걸어 확실히 캡. 트레이싱 없는 메인 CI 는 무관하므로 CodeQL 경로 전용.
+    env:
+      MAKEFLAGS: "-j2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
     permissions:
       security-events: write
       actions: read
@@ -69,12 +121,19 @@ jobs:
             libtinyxml2-dev
             libeigen3-dev
 
-      - name: Build isolated deps
-        uses: ./.github/actions/build-isolated-deps
+      # deps 는 build-deps job 이 비추적으로 빌드해 올린 artifact 를 그대로 받는다.
+      # (메인 CI gated-test / coverage-cpp 와 동일 패턴 — aligator 를 CodeQL 트레이싱
+      # 경로에서 완전히 제거하는 것이 #179 correctness 조건.)
+      - name: Download deps artifact
+        uses: actions/download-artifact@v8
         with:
-          ros-distro: ${{ env.ROS_DISTRO }}
-          cache-version: codeql-v1
+          name: rtc-deps-${{ env.ROS_DISTRO }}
+          path: _rtc_ws/deps/install
 
+      # 패키지-레벨은 1개씩(--parallel-workers 1), 컴파일러 병렬은 job env 의
+      # MAKEFLAGS=-j2 / CMAKE_BUILD_PARALLEL_LEVEL=2 가 캡한다 → 동시 헤비 TU 2개로
+      # peak ~9GB, 16GB 러너 안전. (#179: 패키지-레벨만 1로 줄이면 내부 make -j4 가
+      # 여전히 OOM 냈다 — 컴파일러 -j 를 직접 묶는 게 핵심.)
       - name: Build packages
         uses: ./.github/actions/colcon-build
         with:
@@ -83,6 +142,7 @@ jobs:
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           build-type: Release
           enable-testing: "false"
+          parallel-workers: "1"
           artifact-suffix: codeql-build
 
       - name: Perform CodeQL Analysis
