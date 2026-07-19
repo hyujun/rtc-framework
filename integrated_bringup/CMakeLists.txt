@@ -235,6 +235,11 @@ if(BUILD_TESTING)
   target_include_directories(test_device_log_pods PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
+  # pull_estimator_log_pod.hpp mirrors rtc::grasp::PullEstimate (#167).
+  ament_target_dependencies(test_device_log_pods
+    rtc_controllers
+    Eigen3
+  )
 
   # ── virtual_tcp header-only tests ──────────────────────────────────────────
   ament_add_gtest(test_virtual_tcp test/test_virtual_tcp.cpp)

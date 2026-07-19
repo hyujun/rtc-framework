@@ -68,6 +68,8 @@ demo_wbc_controller:
       instance: wbc_diag
     - msg_type: rtc_msgs/DeviceSensorLog
       instance: p1b_sensor
+    - msg_type: integrated_bringup/PullEstimatorLog
+      instance: pull_estimator
 
   # ── TSID QP configuration ────────────────────────────────────────────
   tsid:

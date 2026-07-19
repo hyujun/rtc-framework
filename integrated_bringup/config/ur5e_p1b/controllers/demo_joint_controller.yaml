@@ -75,3 +75,5 @@ demo_joint_controller:
       instance: p1b_state
     - msg_type: rtc_msgs/DeviceSensorLog
       instance: p1b_sensor
+    - msg_type: integrated_bringup/PullEstimatorLog
+      instance: pull_estimator

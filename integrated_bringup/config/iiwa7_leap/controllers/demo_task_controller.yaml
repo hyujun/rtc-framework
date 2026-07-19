@@ -67,3 +67,5 @@ demo_task_controller:
       instance: iiwa7_state
     - msg_type: rtc_msgs/DeviceStateLog
       instance: leap_state
+    - msg_type: integrated_bringup/PullEstimatorLog
+      instance: pull_estimator

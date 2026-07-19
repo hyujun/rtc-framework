@@ -5,6 +5,7 @@
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
+#include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
 #include "integrated_bringup/support/combined_model_cache.hpp"
@@ -481,6 +482,7 @@ class DemoJointController final : public RTControllerInterface {
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> primary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
+  rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator_log_handle_;
 
   // Captured at on_configure for header expansion (not RT).
   std::vector<std::string> primary_joint_names_;

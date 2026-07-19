@@ -48,6 +48,7 @@ integrated_bringup/
 │       ├── device_sensor_log_pod.hpp
 │       ├── device_wbc_log_pod.hpp      <- WBC state superset: a_opt 가속도 + SE3 traj(arm)/fingertip force(hand), role-aware writer
 │       ├── wbc_diag_log_pod.hpp        <- per-tick TSID/QP 진단 (solve time / λ / 수렴 / grasp), 단일 wbc_diag.csv
+│       ├── pull_estimator_log_pod.hpp  <- in-plane pull-force estimate (#167) — raw+filtered force, 단일 pull_estimator.csv (3 데모 컨트롤러 공용)
 │       └── pod_fill.hpp                <- FillDeviceStateLogPod / FillDeviceSensorLogPod (device_idx 인자, robot-agnostic). WBC POD fill 은 controller-private (compute.cpp)
 ├── src/
 │   ├── integrated_rt_controller_main.cpp     <- UR5e용 진입점
@@ -247,6 +248,7 @@ demo_task_controller:
 | device-wire command lane (`joint_command`, `ros2_command`) | **DeviceBackend** (`b9a2587`) | `devices.<group>.backend:` SSoT — backend 구현체가 직접 publish/serialize. CM/controller YAML 에서 device-wire role 라인 사라짐 |
 | `device_state_log` / `device_sensor_log` (CSV) | 컨트롤러 (`ControllerLogSet`) | `<session>/controllers/<config_key>/<device>_{state,sensor}.csv` — instance 키는 `GetPrimaryDeviceName()`/`GetSecondaryDeviceName()` 에서 동적 파생 (ur5e_p1a → `ur5e_state.csv`/`p1a_state.csv`/`p1a_sensor.csv`, iiwa7_leap → `iiwa7_state.csv`/`leap_state.csv`) |
 | `device_wbc_log` / `wbc_diag_log` (CSV, WBC 전용) | `DemoWbcController` (`ControllerLogSet`) | WBC 는 arm/hand `<device>_state.csv` 를 generic DeviceStateLog 대신 superset `DeviceWbcLog` (`msg_type: integrated_bringup/DeviceWbcLog`) 로 쓴다 — TSID `a_opt` 가속도 + SE3 trajectory(arm role)/fingertip force(hand role — |F| `fingertip_force_*` + 벡터 `fingertip_fx_/fy_/fz_*`). 추가로 per-tick `wbc_diag.csv` (`msg_type: integrated_bringup/WbcDiagLog`) 에 solve time / λ / 수렴 / grasp 진단을 1행씩. Path A — POD-only, rtc_msgs `.msg` 무변경. fill 은 controller-private (`compute.cpp`); E-STOP 경로는 push 안 함 |
+| `pull_estimator_log` (CSV, 3 데모 컨트롤러 공용) | 컨트롤러 (`ControllerLogSet`) | per-tick `pull_estimator.csv` (`msg_type: integrated_bringup/PullEstimatorLog`, instance 고정 `pull_estimator`) — in-plane pull-force estimate (#167). `PullEstimate` (Eigen) 에서 직접 fill 하므로 wire msg 에 없는 **`force_raw_*` (pre-filter)** 를 추가로 기록 (필터 과도응답 분석용). 등록은 `pull_estimator` YAML 블록이 활성일 때만 (wiring disabled → YAML entry silently skip) |
 
 **외부 도구는 `/active_controller_name` (TRANSIENT_LOCAL) 구독해서 런타임에 rewire**하십시오 (BT bridge / GUI / digital_twin / shape_estimation 포함). 컨트롤러 전환 시 각 소유 토픽은 이전 네임스페이스에서 silent 되고 새 네임스페이스에서 라이브됩니다.
 

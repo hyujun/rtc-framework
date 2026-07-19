@@ -102,7 +102,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
         std::min(static_cast<std::size_t>(std::max(contact_mgr_config_.max_contact_vars, 0)),
                  integrated_bringup::WbcDiagLogPod::kMaxContactVars);
 
-    LogRegistrationContext ctx{logger_, log_set_, {}, {}, {}, {}};
+    LogRegistrationContext ctx{logger_, log_set_, {}, {}, {}, {}, {}};
     ctx.sensor_logs = {{secondary_sensor_key, secondary_sensor_names_}};
     ctx.wbc_state_logs = {
         {primary_state_key, {/*role=*/0, primary_joint_names_, {}, {}}},
@@ -110,6 +110,9 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
          {/*role=*/1, secondary_joint_names_, secondary_motor_names_, secondary_sensor_names_}},
     };
     ctx.wbc_diag_logs = {{wbc_diag_key, num_contact_vars}};
+    if (pull_wiring_.enabled()) {
+      ctx.pull_estimator_logs.insert("pull_estimator");
+    }
 
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -133,6 +136,10 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     }
     if (auto it = reg.handles.wbc_diag.find(wbc_diag_key); it != reg.handles.wbc_diag.end()) {
       wbc_diag_log_handle_ = it->second;
+    }
+    if (auto it = reg.handles.pull_estimator.find("pull_estimator");
+        it != reg.handles.pull_estimator.end()) {
+      pull_estimator_log_handle_ = it->second;
     }
     if (!log_set_.empty() && node) {
       log_drain_cb_group_ =

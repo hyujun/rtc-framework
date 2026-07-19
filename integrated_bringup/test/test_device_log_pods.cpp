@@ -6,8 +6,10 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 
+#include <Eigen/Core>
 #include <gtest/gtest.h>
 
 #include <sstream>
@@ -301,4 +303,71 @@ TEST(WbcDiagLogPod, FirstColumnIsTRelativeS) {
   std::ostringstream os;
   integrated_bringup::WriteWbcDiagLogRow(os, pod);
   EXPECT_EQ(os.str().find("0.456"), 0u);
+}
+
+// ── PullEstimatorLogPod (#167) ─────────────────────────────────────────────
+
+TEST(PullEstimatorLogPod, IsTriviallyCopyable) {
+  EXPECT_TRUE(std::is_trivially_copyable_v<integrated_bringup::PullEstimatorLogPod>);
+}
+
+TEST(PullEstimatorLogPod, HeaderColumnsMatchRow) {
+  std::ostringstream hdr_os;
+  integrated_bringup::WritePullEstimatorLogHeader(hdr_os);
+  const std::string hdr = hdr_os.str();
+
+  integrated_bringup::PullEstimatorLogPod pod{};
+  pod.valid = true;
+  pod.valid_contact_count = 3;
+  std::ostringstream row_os;
+  integrated_bringup::WritePullEstimatorLogRow(row_os, pod);
+  const std::string row = row_os.str();
+
+  EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
+  // The CSV is the only surface carrying the pre-filter force (#167 decision:
+  // wire msg / SeqLock POD are filtered-only).
+  EXPECT_NE(hdr.find("force_raw_x"), std::string::npos);
+  EXPECT_NE(hdr.find("friction_utilization"), std::string::npos);
+}
+
+TEST(PullEstimatorLogPod, FirstColumnIsTRelativeS) {
+  integrated_bringup::PullEstimatorLogPod pod{};
+  pod.t_relative_s = 0.789;
+  std::ostringstream os;
+  integrated_bringup::WritePullEstimatorLogRow(os, pod);
+  EXPECT_EQ(os.str().find("0.789"), 0u);
+}
+
+TEST(PullEstimatorLogPod, FillMirrorsPullEstimate) {
+  rtc::grasp::PullEstimate est{};
+  est.force_raw = Eigen::Vector3d(1.0, 2.0, 3.0);
+  est.force_filtered = Eigen::Vector3d(0.5, 1.5, 2.5);
+  est.force_inplane = Eigen::Vector2d(0.25, 0.75);
+  est.magnitude = 2.9;
+  est.directional = -1.25;
+  est.max_friction_utilization = 0.6;
+  est.leakage_bound = 0.1;
+  est.valid_contact_count = 2;
+  est.valid = true;
+  est.slip_risk = true;
+  est.any_saturated = false;
+  est.baseline_applied = true;
+
+  integrated_bringup::PullEstimatorLogPod pod{};
+  integrated_bringup::FillPullEstimatorLogPod(est, 1.5, pod);
+
+  EXPECT_DOUBLE_EQ(pod.t_relative_s, 1.5);
+  EXPECT_FLOAT_EQ(pod.force_raw[0], 1.0F);
+  EXPECT_FLOAT_EQ(pod.force_raw[2], 3.0F);
+  EXPECT_FLOAT_EQ(pod.force_filtered[1], 1.5F);
+  EXPECT_FLOAT_EQ(pod.force_inplane[1], 0.75F);
+  EXPECT_FLOAT_EQ(pod.magnitude, 2.9F);
+  EXPECT_FLOAT_EQ(pod.directional, -1.25F);
+  EXPECT_FLOAT_EQ(pod.friction_utilization, 0.6F);
+  EXPECT_FLOAT_EQ(pod.leakage_bound, 0.1F);
+  EXPECT_EQ(pod.valid_contact_count, 2);
+  EXPECT_TRUE(pod.valid);
+  EXPECT_TRUE(pod.slip_risk);
+  EXPECT_FALSE(pod.any_saturated);
+  EXPECT_TRUE(pod.baseline_applied);
 }
