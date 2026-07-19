@@ -27,3 +27,18 @@ float32[] finger_s              # grasp parameter per finger [0,1]
 float32[] finger_filtered_force # filtered force per finger [N]
 float32[] finger_force_error    # force error per finger [N]
 float32   grasp_target_force    # active target force [N]
+
+# In-plane pull-force estimate (#167) — rtc::grasp::PullForceEstimator 출력
+# (PullEstimateData POD mirror). 필드명은 WbcState.msg 와 동일하게 유지 —
+# GUI 등 소비자가 두 msg 의 저장 코드를 공유한다.
+float32[3] pull_force                 # filtered F̂, reference frame [N]
+float32[2] pull_force_inplane         # Bᵀ·F̂ plane coordinates [N]
+float32    pull_magnitude             # |F̂| [N]
+float32    pull_directional           # dᵀ·F̂ (0 unless direction set) [N]
+float32    pull_friction_utilization  # max_i |f_t,i| / (μ_i·f_n,i)
+float32    pull_leakage_bound         # grip→in-plane leakage bound [N]
+int32      pull_valid_contact_count
+bool       pull_valid
+bool       pull_slip_risk
+bool       pull_any_saturated
+bool       pull_baseline_applied

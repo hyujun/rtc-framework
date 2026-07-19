@@ -57,3 +57,19 @@ int32   min_fingertips       # threshold for grasp_detected
 float32 tsid_solve_us        # last solver wall time per tick [us]
 bool    tsid_solver_ok       # true if last QP converged
 int32   qp_fail_count        # cumulative QP failures since activation
+
+# In-plane pull-force estimate (#167) — rtc::grasp::PullForceEstimator output
+# (PullEstimateData POD mirror), fed with measured R_i·f_i over the TSID
+# contact geometry (not λ_opt). Field names are kept identical to
+# GraspState.msg so consumers (GUI) can share the storage code.
+float32[3] pull_force                 # filtered F̂, reference frame [N]
+float32[2] pull_force_inplane         # Bᵀ·F̂ plane coordinates [N]
+float32    pull_magnitude             # |F̂| [N]
+float32    pull_directional           # dᵀ·F̂ (0 unless direction set) [N]
+float32    pull_friction_utilization  # max_i |f_t,i| / (μ_i·f_n,i)
+float32    pull_leakage_bound         # grip→in-plane leakage bound [N]
+int32      pull_valid_contact_count
+bool       pull_valid
+bool       pull_slip_risk
+bool       pull_any_saturated
+bool       pull_baseline_applied

@@ -44,8 +44,8 @@ struct WbcStateData {
   int qp_fail_count{0};
 
   // In-plane pull-force estimate (#167) — measured R_i·f_i over the TSID
-  // contact geometry (not λ_opt). POD-only Phase-1 output surface; the
-  // rtc_msgs/WbcState wire message is deliberately untouched.
+  // contact geometry (not λ_opt). Mirrored onto the pull_* block of
+  // rtc_msgs/WbcState by the owned-topics publish path.
   rtc::grasp::PullEstimateData pull{};
 };
 
