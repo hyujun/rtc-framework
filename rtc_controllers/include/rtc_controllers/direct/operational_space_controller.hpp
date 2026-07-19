@@ -242,6 +242,16 @@ class OperationalSpaceController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
   static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
+
+  // (Re)build handle_ + all nv-sized Eigen/Cholesky buffers from a Pinocchio
+  // model. Called by the ctor (full model) and by MaybeSelectSubModel (reduced
+  // submodel) — off-RT only (#172 Phase 3 A1). OSC has no fixed-capacity cap.
+  void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
+
+  // Switch handle_ to the primary device's reduced submodel when the injected
+  // system model config declares it. No system config / no match → keep the full
+  // model from the ctor (no regression).
+  void MaybeSelectSubModel();
 };
 
 }  // namespace rtc

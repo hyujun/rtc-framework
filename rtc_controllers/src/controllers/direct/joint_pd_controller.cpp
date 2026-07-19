@@ -7,8 +7,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -31,7 +33,13 @@ JointPDController::JointPDController(std::string_view urdf_path, Gains gains) : 
   config.root_joint_type = "fixed";
 
   rtc_urdf_bridge::PinocchioModelBuilder builder(config);
-  model_ptr_ = builder.GetFullModel();
+  InitFromModel(builder.GetFullModel());
+
+  trajectory_.initialize({}, {}, 0.0);
+}
+
+void JointPDController::InitFromModel(std::shared_ptr<const pinocchio::Model> model) {
+  model_ptr_ = std::move(model);
   handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_ptr_);
 
   // Default: use the last frame in the model as tip
@@ -52,8 +60,35 @@ JointPDController::JointPDController(std::string_view urdf_path, Gains gains) : 
   coriolis_pinocchio_ = Eigen::VectorXd::Zero(nv);
   v_pinocchio_ = Eigen::VectorXd::Zero(nv);
   jacobian_ = Eigen::MatrixXd::Zero(6, nv);
+}
 
-  trajectory_.initialize({}, {}, 0.0);
+void JointPDController::MaybeSelectSubModel() {
+  const auto* sys = GetSystemModelConfig();
+  if (sys == nullptr || sys->urdf_path.empty() || sys->sub_models.empty()) {
+    return;  // no system topology → keep the full model built in the ctor
+  }
+  const auto primary = GetPrimaryDeviceName();
+  if (primary.empty()) {
+    return;
+  }
+  const bool matches =
+      std::any_of(sys->sub_models.begin(), sys->sub_models.end(),
+                  [&](const rtc_urdf_bridge::SubModelConfig& sm) { return sm.name == primary; });
+  if (!matches) {
+    return;  // primary device is not a declared sub_model → keep full model
+  }
+  auto builder = GetSharedModelBuilder();
+  if (!builder) {
+    // No shared builder injected (e.g. unit test) — build our own from the config.
+    builder = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys);
+  }
+  try {
+    InitFromModel(builder->GetReducedModel(primary));
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(rclcpp::get_logger("JointPDController"),
+                 "[JointPDController] reduced submodel '%s' unavailable (%s) — keeping full model",
+                 primary.c_str(), e.what());
+  }
 }
 
 void JointPDController::OnDeviceConfigsSet() {
@@ -327,6 +362,10 @@ std::array<double, 3> JointPDController::tcp_position() const noexcept {
 
 void JointPDController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
+  // A1 (#172): now that topic_config_ (device group names) + system model config
+  // are both available, switch to the primary device's reduced submodel if one
+  // is declared. All subsequent gain-length validation uses the submodel nv.
+  MaybeSelectSubModel();
   if (!cfg) {
     return;
   }

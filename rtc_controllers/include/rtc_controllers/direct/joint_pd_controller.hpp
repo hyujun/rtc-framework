@@ -147,6 +147,17 @@ class JointPDController final : public RTControllerInterface {
   // ── Internal helpers ───────────────────────────────────────────────────────
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
+  // (Re)build handle_ + all nv-sized buffers from a Pinocchio model, enforcing
+  // the fixed-capacity check. Called by the ctor (full model) and by
+  // MaybeSelectSubModel (reduced submodel) — off-RT only (#172 Phase 3 A1).
+  void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
+
+  // If the injected system model config declares a sub_model whose name matches
+  // the primary device group, switch handle_ to that reduced submodel so the
+  // controller DOF equals the primary device's channel count. No system config /
+  // no matching sub_model → keep the full model from the ctor (no regression).
+  void MaybeSelectSubModel();
+
   void UpdateDynamics(const DeviceState& dev, const Gains& gains) noexcept;
 
   void ClampCommands(std::array<double, kMaxDeviceChannels>& cmds, int n,

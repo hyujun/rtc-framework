@@ -224,6 +224,16 @@ class ClikController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
   void ClampVelocity(std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept;
+
+  // (Re)build handle_ + all nv-sized Eigen buffers from a Pinocchio model,
+  // enforcing the fixed-capacity check. Called by the ctor (full model) and by
+  // MaybeSelectSubModel (reduced submodel) — off-RT only (#172 Phase 3 A1).
+  void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
+
+  // Switch handle_ to the primary device's reduced submodel when the injected
+  // system model config declares it. No system config / no match → keep the full
+  // model from the ctor (no regression).
+  void MaybeSelectSubModel();
 };
 
 }  // namespace rtc

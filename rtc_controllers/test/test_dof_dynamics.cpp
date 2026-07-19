@@ -564,3 +564,115 @@ TEST(JointOrder, OscTorqueReorderedToDeviceOrder) {
   EXPECT_GT(std::abs(out.devices[0].commands[0] - g_pin[0]), 1e-2)
       << "channel 0 must receive joint_3's gravity, not joint_1's (positional)";
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// (4) Phase 3 (A1) submodel selection — controller DOF == primary device group
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// arm_with_mimic.urdf is an arm (base_link → link_1..link_5, 5 revolute) plus a
+// gripper (finger_left prismatic + finger_right prismatic, a mimic of finger_left).
+// Pinocchio's full model counts the mimic joint as an independent DOF, so the full
+// model DOF is nv = 7 (5 arm + finger_left + finger_right). Sub_model "arm" (root
+// base_link → tip link_5) locks BOTH gripper joints out → nv = 5. When the
+// controller's primary device group is "arm", MaybeSelectSubModel (in LoadConfig)
+// must switch handle_ to that reduced model so the controller DOF equals the arm's
+// channel count. No system config → the full model is kept (regression guard).
+
+namespace {
+
+rub::ModelConfig ArmHandSystemConfig() {
+  rub::ModelConfig sys;
+  sys.urdf_path = UrdfPath("arm_with_mimic.urdf");
+  sys.root_joint_type = "fixed";
+  sys.sub_models.push_back({"arm", "base_link", "link_5"});  // name == primary device group
+  return sys;
+}
+
+// Controller YAML with a single device group "arm" so GetPrimaryDeviceName()=="arm",
+// plus optional trailing gains lines.
+YAML::Node ArmControllerYaml(const std::string& gains_yaml) {
+  return YAML::Load(std::string(R"(
+topics:
+  arm:
+    subscribe:
+      - topic: "arm/joint_goal"
+        role: "target"
+)") + gains_yaml);
+}
+
+}  // namespace
+
+TEST(SubModelSelection, JointPdSelectsArmSubmodelNv5) {
+  // With the system config injected, LoadConfig validates kp/kd against the
+  // SELECTED submodel nv (5), not the full model (6).
+  const auto sys = ArmHandSystemConfig();
+
+  rtc::JointPDController ctrl(sys.urdf_path);  // ctor builds the full model (nv=6)
+  ctrl.SetSystemModelConfig(sys);
+  EXPECT_NO_THROW(ctrl.LoadConfig(ArmControllerYaml("kp: [1, 2, 3, 4, 5]\nkd: [1, 2, 3, 4, 5]\n")))
+      << "5-length gains must match the selected arm submodel (nv=5)";
+
+  // A full-model-length (7) gain vector must now be REJECTED — proof the active nv
+  // is the submodel's 5, not the full model's 7.
+  rtc::JointPDController ctrl_full(sys.urdf_path);
+  ctrl_full.SetSystemModelConfig(sys);
+  EXPECT_THROW(ctrl_full.LoadConfig(ArmControllerYaml("kp: [1, 2, 3, 4, 5, 6, 7]\n")),
+               std::runtime_error);
+}
+
+TEST(SubModelSelection, PSelectsArmSubmodelNv5) {
+  const auto sys = ArmHandSystemConfig();
+
+  rtc::PController ctrl(sys.urdf_path);
+  ctrl.SetSystemModelConfig(sys);
+  EXPECT_NO_THROW(ctrl.LoadConfig(ArmControllerYaml("kp: [1, 2, 3, 4, 5]\n")));
+
+  rtc::PController ctrl_full(sys.urdf_path);
+  ctrl_full.SetSystemModelConfig(sys);
+  EXPECT_THROW(ctrl_full.LoadConfig(ArmControllerYaml("kp: [1, 2, 3, 4, 5, 6, 7]\n")),
+               std::runtime_error);
+}
+
+TEST(SubModelSelection, NoSystemConfigKeepsFullModelNv7) {
+  // No system config → no submodel selection → full model nv = 7 retained
+  // (regression guard: single-URDF robots are unaffected). Now 7-length gains are
+  // accepted and 5-length rejected — the inverse of the selected case.
+  const std::string urdf = UrdfPath("arm_with_mimic.urdf");
+
+  rtc::JointPDController ctrl(urdf);
+  EXPECT_NO_THROW(
+      ctrl.LoadConfig(ArmControllerYaml("kp: [1, 2, 3, 4, 5, 6, 7]\nkd: [1, 2, 3, 4, 5, 6, 7]\n")));
+
+  rtc::JointPDController ctrl5(urdf);
+  EXPECT_THROW(ctrl5.LoadConfig(ArmControllerYaml("kp: [1, 2, 3, 4, 5]\n")), std::runtime_error);
+}
+
+TEST(SubModelSelection, ClikAndOscRunOnArmSubmodel) {
+  // CLIK/OSC share the identical MaybeSelectSubModel + InitFromModel buffer-rebuild
+  // logic but expose no kp-length proxy. Assert instead that after submodel
+  // selection they Compute FINITE output for a 5-channel arm device — which
+  // exercises every nv=5-sized buffer (J, M, Λ, τ, dq) and so validates that the
+  // rebuild resized them from the full-model 6. (nv-exactness itself is pinned by
+  // the JointPD/P kp-length tests above; this covers the CLIK/OSC rebuild path.)
+  const auto sys = ArmHandSystemConfig();
+
+  auto st5 = MakeState(5);
+  for (std::size_t i = 0; i < 5; ++i)
+    st5.devices[0].positions[i] = 0.1 * static_cast<double>(i + 1);
+
+  rtc::ClikController clik(sys.urdf_path, rtc::ClikController::Gains{});
+  clik.SetSystemModelConfig(sys);
+  clik.LoadConfig(ArmControllerYaml(""));
+  (void)clik.Compute(st5);
+  const auto co = clik.Compute(st5);
+  for (std::size_t i = 0; i < 5; ++i)
+    EXPECT_TRUE(std::isfinite(co.devices[0].commands[i])) << "clik cmd[" << i << "]";
+
+  rtc::OperationalSpaceController osc(sys.urdf_path, rtc::OperationalSpaceController::Gains{});
+  osc.SetSystemModelConfig(sys);
+  osc.LoadConfig(ArmControllerYaml(""));
+  (void)osc.Compute(st5);
+  const auto oo = osc.Compute(st5);
+  for (std::size_t i = 0; i < 5; ++i)
+    EXPECT_TRUE(std::isfinite(oo.devices[0].commands[i])) << "osc cmd[" << i << "]";
+}

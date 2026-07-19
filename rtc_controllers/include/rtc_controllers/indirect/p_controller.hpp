@@ -116,6 +116,16 @@ class PController final : public RTControllerInterface {
 
   std::vector<double> max_joint_velocity_;
   void ClampCommands(std::array<double, kMaxDeviceChannels>& commands, int n) const noexcept;
+
+  // (Re)build handle_ from a Pinocchio model + enforce the fixed-capacity check.
+  // Called by the ctor (full model) and MaybeSelectSubModel (reduced submodel);
+  // off-RT only (#172 Phase 3 A1). P has no nv-sized Eigen buffers.
+  void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
+
+  // Switch handle_ to the primary device's reduced submodel when the injected
+  // system model config declares it. No system config / no match → keep the full
+  // model from the ctor (no regression).
+  void MaybeSelectSubModel();
 };
 
 }  // namespace rtc

@@ -11,8 +11,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -34,7 +36,11 @@ OperationalSpaceController::OperationalSpaceController(std::string_view urdf_pat
   config.root_joint_type = "fixed";
 
   rtc_urdf_bridge::PinocchioModelBuilder builder(config);
-  model_ptr_ = builder.GetFullModel();
+  InitFromModel(builder.GetFullModel());
+}
+
+void OperationalSpaceController::InitFromModel(std::shared_ptr<const pinocchio::Model> model) {
+  model_ptr_ = std::move(model);
   handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_ptr_);
 
   // Default: use the last frame in the model as tip
@@ -43,7 +49,9 @@ OperationalSpaceController::OperationalSpaceController(std::string_view urdf_pat
   const int nv = handle_->nv();
 
   // Pre-allocate all Eigen buffers + Cholesky factors to their final sizes so
-  // the RT path never allocates. nv is fixed once the model is built.
+  // the RT path never allocates. nv-dependent buffers must be re-sized whenever
+  // the model changes (e.g. submodel selection — #172 A1). OSC has no fixed
+  // kMaxRobotDOF cap (all buffers are dynamic), so no capacity check here.
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
   Jt_ = Eigen::MatrixXd::Zero(nv, 6);
   M_ = Eigen::MatrixXd::Zero(nv, nv);
@@ -63,6 +71,35 @@ OperationalSpaceController::OperationalSpaceController(std::string_view urdf_pat
 
   // Pre-size the Cholesky factorisations (allocates storage once, here).
   llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv);
+}
+
+void OperationalSpaceController::MaybeSelectSubModel() {
+  const auto* sys = GetSystemModelConfig();
+  if (sys == nullptr || sys->urdf_path.empty() || sys->sub_models.empty()) {
+    return;  // no system topology → keep the full model built in the ctor
+  }
+  const auto primary = GetPrimaryDeviceName();
+  if (primary.empty()) {
+    return;
+  }
+  const bool matches =
+      std::any_of(sys->sub_models.begin(), sys->sub_models.end(),
+                  [&](const rtc_urdf_bridge::SubModelConfig& sm) { return sm.name == primary; });
+  if (!matches) {
+    return;  // primary device is not a declared sub_model → keep full model
+  }
+  auto builder = GetSharedModelBuilder();
+  if (!builder) {
+    builder = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys);
+  }
+  try {
+    InitFromModel(builder->GetReducedModel(primary));
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(
+        rclcpp::get_logger("OperationalSpaceController"),
+        "[OperationalSpaceController] reduced submodel '%s' unavailable (%s) — keeping full model",
+        primary.c_str(), e.what());
+  }
 }
 
 void OperationalSpaceController::OnDeviceConfigsSet() {
@@ -557,6 +594,10 @@ Eigen::Matrix3d OperationalSpaceController::RpyToMatrix(double roll, double pitc
 
 void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
+  // A1 (#172): switch to the primary device's reduced submodel if one is declared
+  // in the injected system model config (topic_config_ is populated by the base
+  // LoadConfig above). All later Compute() dynamics use the submodel.
+  MaybeSelectSubModel();
   if (!cfg) {
     return;
   }
