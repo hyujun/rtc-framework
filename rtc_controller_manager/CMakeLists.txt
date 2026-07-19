@@ -220,6 +220,37 @@ if(BUILD_TESTING)
     target_link_libraries(test_create_device_backends
       rtc_controller_manager_lib)
   endif()
+
+  # Full-pipeline 테스트 2종은 실제 bring-up (다수 LifecycleNode + pub 생성/소멸
+  # 반복, RT 루프 tick) 을 돌리므로 전용 ROS_DOMAIN_ID 로 격리한다 — CI 의
+  # colcon test 는 패키지를 병렬 실행하고, 기본 도메인 공유 시 DDS discovery
+  # churn 이 동시 실행 중인 타 패키지의 pub/sub 매칭 테스트 (ur5e_bt_coordinator
+  # test_rewire_gate 가 PR #187 에서 실측 피해) 를 깨뜨린다.
+  ament_add_gtest(test_cm_config_pipeline
+    test/test_cm_config_pipeline.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_cm_config_pipeline)
+    target_include_directories(test_cm_config_pipeline PRIVATE include test)
+    ament_target_dependencies(test_cm_config_pipeline
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_cm_config_pipeline
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
+  ament_add_gtest(test_rt_loop_pipeline
+    test/test_rt_loop_pipeline.cpp
+    ENV ROS_DOMAIN_ID=45)
+  if(TARGET test_rt_loop_pipeline)
+    target_include_directories(test_rt_loop_pipeline PRIVATE include test)
+    ament_target_dependencies(test_rt_loop_pipeline
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_rt_loop_pipeline
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
 endif()
 
 ament_package()

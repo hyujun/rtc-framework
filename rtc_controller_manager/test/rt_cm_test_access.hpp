@@ -224,6 +224,30 @@ class ControllerLifecycleTestAccess {
                : nullptr;
   }
 
+  // ── Read-only views for the full-pipeline tests (on_configure-driven) ──────
+  static const std::map<std::string, DeviceNameConfig>& GetDeviceNameConfigs(
+      const RtControllerNode& node) {
+    return node.device_name_configs_;
+  }
+
+  static const rtc_urdf_bridge::ModelConfig& GetSystemModelConfig(const RtControllerNode& node) {
+    return node.system_model_config_;
+  }
+
+  static std::optional<DeviceSensorLayout> GetSlotSensorLayout(const RtControllerNode& node,
+                                                               std::size_t slot) {
+    return slot < node.slot_to_sensor_layout_.size() ? node.slot_to_sensor_layout_[slot]
+                                                     : std::nullopt;
+  }
+
+  static int GetActiveIdx(const RtControllerNode& node) {
+    return node.active_controller_idx_.load(std::memory_order_acquire);
+  }
+
+  static std::size_t GetDeviceTimeoutCount(const RtControllerNode& node) {
+    return node.device_timeouts_.size();
+  }
+
   static int MaxDevices() { return RtControllerNode::kMaxDevices; }
 
   static bool GetStateReceived(const RtControllerNode& node) {
