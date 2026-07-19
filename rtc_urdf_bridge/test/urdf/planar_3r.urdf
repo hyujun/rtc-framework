@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<!-- planar_3r.urdf — 3-DoF planar arm, all revolute joints about the Y axis.
+     base_link → link_1 → link_2 → link_3 → tool_link, links extended along +X.
+
+     Unlike serial_6dof.urdf (all-Z axes → gravity torque ≡ 0, Coriolis ≈ 0),
+     the Y-axis joints put every link's mass at a gravity-loaded lever arm, so
+     under the default -Z gravity the generalized gravity torque g(q) and the
+     configuration-dependent Coriolis term C(q,v)·v are both substantially
+     non-zero. This fixture is what makes torque OSC / JointPD dynamics
+     compensation checkable in *magnitude* against the RNEA identity, not just
+     for finiteness. -->
+<robot name="planar_3r">
+
+  <!-- ── Links ─────────────────────────────────────────────────── -->
+  <link name="base_link">
+    <inertial>
+      <mass value="5.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+  </link>
+
+  <!-- link COM offset along +X (mid-link); iyy is the dominant (bending) inertia -->
+  <link name="link_1">
+    <inertial>
+      <mass value="2.0"/>
+      <origin xyz="0.2 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.027" iyz="0" izz="0.027"/>
+    </inertial>
+  </link>
+
+  <link name="link_2">
+    <inertial>
+      <mass value="1.5"/>
+      <origin xyz="0.2 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0015" ixy="0" ixz="0" iyy="0.020" iyz="0" izz="0.020"/>
+    </inertial>
+  </link>
+
+  <link name="link_3">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.15 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.0075" iyz="0" izz="0.0075"/>
+    </inertial>
+  </link>
+
+  <link name="tool_link">
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <!-- ── Joints (all revolute about Y → gravity-loaded) ──────────── -->
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="200" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0.4 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="150" velocity="2.5"/>
+  </joint>
+
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <origin xyz="0.4 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="100" velocity="3.0"/>
+  </joint>
+
+  <joint name="tool_joint" type="fixed">
+    <parent link="link_3"/>
+    <child link="tool_link"/>
+    <origin xyz="0.3 0 0" rpy="0 0 0"/>
+  </joint>
+
+</robot>
