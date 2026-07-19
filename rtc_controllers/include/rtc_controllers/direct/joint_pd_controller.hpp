@@ -2,8 +2,8 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
-#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_base/concurrency/spsc_queue.hpp>
+#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -85,8 +85,14 @@ class JointPDController final : public RTControllerInterface {
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_frame_id_{0};
 
-  Eigen::VectorXd coriolis_forces_;
+  Eigen::VectorXd coriolis_forces_;  // C(q,v)·v mapped to DEVICE channel order
   Eigen::MatrixXd jacobian_;
+  // Pinocchio-order scratch for the joint-reorder path (#172 A2): the model
+  // returns g/C in Pinocchio order, so v is gathered to Pinocchio order for the
+  // C·v product and the result is scattered back to device order. Identity order
+  // (no SetJointOrder) makes both a plain memcpy — zero behavioural change.
+  Eigen::VectorXd v_pinocchio_;
+  Eigen::VectorXd coriolis_pinocchio_;
 
   // ── Controller state ───────────────────────────────────────────────────────
   SeqLock<Gains> gains_lock_;

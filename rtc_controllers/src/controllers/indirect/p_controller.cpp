@@ -53,12 +53,20 @@ void PController::OnDeviceConfigsSet() {
         tip_frame_id_ = fid;
       }
     }
-    // Cross-check: the primary device channel count must match the model DOF,
-    // else FK reads q from the wrong channels (issue #172). Surfaced as an
-    // error here (this hook is not exception-wrapped by the CM); the hard
-    // capacity check that CAN abort configure lives in the constructor.
+    // Register device→model joint reorder (#172 A2) so FK reads q in the correct
+    // model order when the device channel order differs from URDF order. P emits
+    // a device-order joint command (no model-derived joint vector) and a
+    // task-space TCP pose (order-invariant), so no output reorder is needed —
+    // only the FK input mapping. Identity order → zero-overhead passthrough.
     const auto js = static_cast<int>(cfg->joint_state_names.size());
-    if (js > 0 && js != nv) {
+    if (js == nv) {
+      if (!handle_->SetJointOrder(cfg->joint_state_names)) {
+        RCLCPP_ERROR(rclcpp::get_logger("PController"),
+                     "[PController] primary device '%s' joint_state_names not all in model — "
+                     "reorder disabled, falling back to positional (URDF-order) FK",
+                     primary.c_str());
+      }
+    } else if (js > 0) {
       RCLCPP_ERROR(rclcpp::get_logger("PController"),
                    "[PController] primary device '%s' joint_state_names size=%d != model DOF "
                    "nv=%d — FK/state mapping will be inconsistent",

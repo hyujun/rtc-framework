@@ -377,11 +377,13 @@ TEST(JointOrder, GravityIsChannelOrderSensitive) {
   // Together these mean that IF a device delivered joints in a different order
   // than the URDF, the dynamics would be wrong — i.e. joint order matters.
   //
-  // LIMITATION (Phase 3): this does NOT feed the controller a device-name order
-  // that disagrees with URDF order — that requires the joint_state_names →
-  // RtModelHandle::SetJointOrder wiring Phase 3 adds. The hard-correctness test
-  // (permuted device order → output reordered back to device order) is deferred
-  // to that unit; assertion (2) only establishes the fixture precondition for it.
+  // This test injects NO device joint_state_names, so no reorder map is built
+  // (HasJointReorder()==false) and the controller keeps consuming channels
+  // positionally — the no-regression path. The Phase 3 hard-correctness case
+  // (permuted device order → output reordered back to device order) is exercised
+  // separately in GravityReorderedToDeviceOrder / OscTorqueReorderedToDeviceOrder
+  // below; assertion (2) here establishes the order-asymmetry precondition they
+  // rely on (a symmetric fixture could pass reorder tests trivially).
   const std::string urdf = UrdfPath("planar_3r.urdf");
 
   const std::array<double, 3> qa{0.4, -0.3, 0.6};
@@ -412,4 +414,153 @@ TEST(JointOrder, GravityIsChannelOrderSensitive) {
   // (a name-based reorder would be required to make the two agree).
   const double delta = std::abs(ga[0] - gb[0]) + std::abs(ga[2] - gb[2]);
   EXPECT_GT(delta, 1e-2) << "permuting joint order must change g → mismatch observable";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// (3b) Phase 3 (A2) hard-correctness — permuted device order → device-order output
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The device declares joint_state_names in an order that is a genuine permutation
+// of the URDF/Pinocchio order [joint_1, joint_2, joint_3]. RtModelHandle::
+// SetJointOrder (wired into every controller's OnDeviceConfigsSet) must then
+// (a) make the model consume device-order q/v correctly and (b) scatter each
+// model-derived torque term back to the device channel order, so channel i always
+// drives its own physical joint. Without the reorder these outputs would be the
+// Pinocchio-order value at index i (the characterization test above) — which
+// differs here because the fixture's dynamics are order-asymmetric.
+//
+// COVERAGE NOTE: these exercise the direct-torque reorder paths (JointPD gravity
+// + Coriolis via Reorder{Input,Output}; OSC main τ via ReorderOutput). The OSC/
+// CLIK *null-space* input-gather (ReorderInput on tau0_/null_err_) is gated on
+// nv > 6 (OSC) / enable_null_space (CLIK); the 3-DOF planar fixture does not
+// activate the OSC gate, so that specific path is covered by the ReorderInput
+// round-trip unit test in rtc_urdf_bridge, not end-to-end here.
+
+namespace {
+
+// Device order = the 3-cycle [joint_3, joint_1, joint_2] of the URDF order.
+// device channel → Pinocchio index:  0→2 (joint_3), 1→0 (joint_1), 2→1 (joint_2).
+const std::array<const char*, 3> kPermutedNames{"joint_3", "joint_1", "joint_2"};
+constexpr std::array<int, 3> kDeviceToPin{2, 0, 1};
+
+std::map<std::string, rtc::DeviceNameConfig> PermutedDeviceConfig() {
+  rtc::DeviceNameConfig cfg;
+  cfg.device_name = "arm";
+  cfg.joint_state_names = {kPermutedNames[0], kPermutedNames[1], kPermutedNames[2]};
+  rtc::DeviceJointLimits lim;
+  lim.max_torque.assign(3, 1.0e6);
+  lim.max_velocity.assign(3, 1.0e6);
+  cfg.joint_limits = lim;
+  std::map<std::string, rtc::DeviceNameConfig> m;
+  m.emplace("arm", std::move(cfg));
+  return m;
+}
+
+// Independent Coriolis reference: C(q,v)·v = RNEA(q,v,0) − RNEA(q,0,0) (Pinocchio
+// order). A different path from the controller's ComputeCoriolisMatrix so a shared
+// convention bug cannot hide behind a circular comparison.
+Eigen::VectorXd RefCoriolis(const std::string& urdf, const std::vector<double>& q,
+                            const std::vector<double>& v) {
+  auto h = MakeHandle(urdf);
+  const std::vector<double> zero(q.size(), 0.0);
+  h->ComputeInverseDynamics(q, v, zero);
+  const Eigen::VectorXd nle = h->GetTau();  // C·v + g
+  h->ComputeInverseDynamics(q, zero, zero);
+  const Eigen::VectorXd g = h->GetTau();  // g
+  return nle - g;
+}
+
+}  // namespace
+
+TEST(JointOrder, GravityReorderedToDeviceOrder) {
+  // JointPD gravity under a permuted device order: gravity_torques() must come
+  // back in DEVICE channel order — the hard-correctness upgrade of the
+  // characterization test above (which pins the no-reorder path).
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::array<double, 3> q_pin{0.4, -0.3, 0.6};  // Pinocchio order [j1,j2,j3]
+  const Eigen::VectorXd g_pin = RefGravity(urdf, {q_pin[0], q_pin[1], q_pin[2]});
+
+  rtc::JointPDController::Gains g;
+  g.enable_gravity_compensation = true;
+  rtc::JointPDController ctrl(urdf, g);
+  ctrl.SetDeviceNameConfigs(PermutedDeviceConfig());
+
+  auto st = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i)
+    st.devices[0].positions[i] = q_pin[static_cast<std::size_t>(kDeviceToPin[i])];
+  (void)ctrl.Compute(st);
+  (void)ctrl.Compute(st);
+  const auto gtorq = ctrl.gravity_torques();
+
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(gtorq[i], g_pin[kDeviceToPin[i]], 1e-6)
+        << "device channel " << i << " (" << kPermutedNames[i] << ")";
+  }
+  // Guard against a vacuous pass: reorder actually changed channel 0 away from
+  // the positional (Pinocchio-order) value. Needs an order-asymmetric fixture.
+  EXPECT_GT(std::abs(gtorq[0] - g_pin[0]), 1e-2)
+      << "channel 0 must receive joint_3's gravity, not joint_1's (positional)";
+}
+
+TEST(JointOrder, CoriolisReorderedToDeviceOrder) {
+  // JointPD Coriolis under a permuted device order exercises the in-controller
+  // ReorderInput (gather v to Pinocchio for C·v) + ReorderOutput (scatter result
+  // to device order). Zero PD gains so the torque command equals C·v alone.
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::array<double, 3> q_pin{0.4, -0.3, 0.6};
+  const std::array<double, 3> v_pin{0.5, -0.7, 0.2};
+  const Eigen::VectorXd cor_pin =
+      RefCoriolis(urdf, {q_pin[0], q_pin[1], q_pin[2]}, {v_pin[0], v_pin[1], v_pin[2]});
+
+  rtc::JointPDController::Gains g;
+  g.enable_gravity_compensation = false;
+  g.enable_coriolis_compensation = true;
+  for (auto& k : g.kp)
+    k = 0.0;
+  for (auto& k : g.kd)
+    k = 0.0;
+  rtc::JointPDController ctrl(urdf, g);  // command_type defaults to kTorque
+  ctrl.SetDeviceNameConfigs(PermutedDeviceConfig());
+
+  auto st = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i) {
+    st.devices[0].positions[i] = q_pin[static_cast<std::size_t>(kDeviceToPin[i])];
+    st.devices[0].velocities[i] = v_pin[static_cast<std::size_t>(kDeviceToPin[i])];
+  }
+  (void)ctrl.Compute(st);
+  auto out = ctrl.Compute(st);
+
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], cor_pin[kDeviceToPin[i]], 1e-6)
+        << "device channel " << i << " (" << kPermutedNames[i] << ")";
+  }
+  EXPECT_GT(std::abs(out.devices[0].commands[0] - cor_pin[0]), 1e-2)
+      << "channel 0 must receive joint_3's Coriolis term, not joint_1's (positional)";
+}
+
+TEST(JointOrder, OscTorqueReorderedToDeviceOrder) {
+  // OSC hold torque (task error ≈ 0 → τ = h = g at rest) under a permuted device
+  // order: the emitted torque command must be g mapped to DEVICE channel order,
+  // proving the main τ = JᵀF + h path is scattered by ReorderOutput.
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::array<double, 3> q_pin{0.3, -0.6, 0.4};
+  const Eigen::VectorXd g_pin = RefGravity(urdf, {q_pin[0], q_pin[1], q_pin[2]});
+  ASSERT_GT(g_pin.norm(), 0.1);
+
+  rtc::OperationalSpaceController::Gains gains;
+  rtc::OperationalSpaceController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(PermutedDeviceConfig());
+
+  auto st = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i)
+    st.devices[0].positions[i] = q_pin[static_cast<std::size_t>(kDeviceToPin[i])];
+  (void)ctrl.Compute(st);  // seeds task target from current FK pose
+  auto out = ctrl.Compute(st);
+
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], g_pin[kDeviceToPin[i]], 1e-3)
+        << "device channel " << i << " (" << kPermutedNames[i] << ")";
+  }
+  EXPECT_GT(std::abs(out.devices[0].commands[0] - g_pin[0]), 1e-2)
+      << "channel 0 must receive joint_3's gravity, not joint_1's (positional)";
 }

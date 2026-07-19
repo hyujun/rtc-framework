@@ -6,6 +6,8 @@
 #include "rtc_base/utils/device_passthrough.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
+#include <rclcpp/logging.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -51,6 +53,7 @@ OperationalSpaceController::OperationalSpaceController(std::string_view urdf_pat
   JbarT_ = Eigen::MatrixXd::Zero(6, nv);
   NT_ = Eigen::MatrixXd::Zero(nv, nv);
   tau0_ = Eigen::VectorXd::Zero(nv);
+  tau0_dev_ = Eigen::VectorXd::Zero(nv);
   null_tmp_ = Eigen::VectorXd::Zero(nv);
   LambdaInv_.setZero();
   task_err_.setZero();
@@ -77,6 +80,26 @@ void OperationalSpaceController::OnDeviceConfigsSet() {
     }
     if (!cfg->safe_position.empty()) {
       safe_position_ = cfg->safe_position;
+    }
+    // Register device→model joint reorder (#172 A2): the model consumes
+    // device-order q/v and τ is scattered back to device channel order.
+    // Identity order → HasJointReorder()==false → zero-overhead passthrough.
+    const auto js = static_cast<int>(cfg->joint_state_names.size());
+    const int nv = handle_->nv();
+    if (js == nv) {
+      if (!handle_->SetJointOrder(cfg->joint_state_names)) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("OperationalSpaceController"),
+            "[OperationalSpaceController] primary device '%s' joint_state_names not all in model — "
+            "reorder disabled, falling back to positional (URDF-order) consumption",
+            primary.c_str());
+      }
+    } else if (js > 0) {
+      RCLCPP_ERROR(
+          rclcpp::get_logger("OperationalSpaceController"),
+          "[OperationalSpaceController] primary device '%s' joint_state_names size=%d != model DOF "
+          "nv=%d — FK/dynamics state mapping will be inconsistent",
+          primary.c_str(), js, nv);
     }
   }
   if (max_joint_velocity_.empty()) {
@@ -369,8 +392,14 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
       for (int i = 0; i < nv; ++i) {
         const auto ui = static_cast<std::size_t>(i);
         const double q_ref = (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
-        tau0_[i] = gains.null_kp * (q_ref - q_buf[ui]) - gains.null_kd * v_buf[ui];
+        tau0_dev_[i] = gains.null_kp * (q_ref - q_buf[ui]) - gains.null_kd * v_buf[ui];
       }
+      // safe_position_/q_buf/v_buf are device-order; gather the posture torque to
+      // Pinocchio order before the null-space projection Nᵀ (Pinocchio) (#172 A2).
+      // Identity order → memcpy (tau0_dev_ ≡ tau0_), so non-reordered arms are
+      // byte-for-byte unchanged.
+      handle_->ReorderInput(std::span<const double>(tau0_dev_.data(), static_cast<std::size_t>(nv)),
+                            tau0_);
       null_tmp_.noalias() = NT_ * tau0_;
       tau_out_ += null_tmp_;
     }
@@ -388,9 +417,10 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   out0.goal_type = GoalType::kTask;
 
   const int ncmd = std::min(nc0, nv);
-  for (std::size_t i = 0; i < static_cast<std::size_t>(ncmd); ++i) {
-    out0.commands[i] = tau_out_[static_cast<Eigen::Index>(i)];
-  }
+  // tau_out_ is Pinocchio-order; scatter to device channel order so channel i
+  // drives its own joint (#172 A2). Identity order → memcpy (unchanged).
+  handle_->ReorderOutput(tau_out_,
+                         std::span<double>(out0.commands.data(), static_cast<std::size_t>(ncmd)));
   rtc::utils::ClampSymmetric(out0.commands, nc0, std::span<const double>(max_joint_torque_),
                              kDefaultMaxJointTorque);
 

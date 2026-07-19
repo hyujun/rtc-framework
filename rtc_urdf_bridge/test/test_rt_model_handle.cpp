@@ -398,6 +398,54 @@ TEST_F(RtModelHandleReorderTest, ReorderedJacobianMatchesDirect) {
   }
 }
 
+TEST_F(RtModelHandleReorderTest, ReorderInputIsInverseOfReorderOutput) {
+  // ReorderInput (device→Pinocchio scatter) must be the exact inverse of
+  // ReorderOutput (Pinocchio→device gather): a v-space vector formed in device
+  // order, scattered to Pinocchio order, then gathered back, returns unchanged.
+  // This is the contract the torque/null-space controllers rely on to form a
+  // term in device order and multiply it by a Pinocchio-order projection.
+  std::vector<std::string> external_order = {
+      "thumb_joint_1", "thumb_joint_2",  "thumb_joint_3",  "index_joint_1", "index_joint_2",
+      "index_joint_3", "middle_joint_1", "middle_joint_2", "ring_joint_1",  "ring_joint_2"};
+  rub::RtModelHandle handle(builder_->GetFullModel());
+  ASSERT_TRUE(handle.SetJointOrder(external_order));
+  ASSERT_TRUE(handle.HasJointReorder());
+
+  const std::vector<double> device_vec = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0};
+  Eigen::VectorXd pin_vec = Eigen::VectorXd::Zero(handle.nv());
+  handle.ReorderInput(device_vec, pin_vec);
+
+  // Scatter is a genuine permutation here (external order ≠ Pinocchio DFS order).
+  bool permuted = false;
+  for (Eigen::Index i = 0; i < pin_vec.size(); ++i) {
+    if (pin_vec[i] != device_vec[static_cast<std::size_t>(i)]) {
+      permuted = true;
+    }
+  }
+  EXPECT_TRUE(permuted) << "external order differs from Pinocchio order → scatter must permute";
+
+  std::vector<double> round_trip(device_vec.size(), 0.0);
+  handle.ReorderOutput(pin_vec, round_trip);
+  for (std::size_t i = 0; i < device_vec.size(); ++i) {
+    EXPECT_DOUBLE_EQ(round_trip[i], device_vec[i]) << "round-trip[" << i << "]";
+  }
+}
+
+TEST_F(RtModelHandleReorderTest, ReorderInputIdentityIsPassthrough) {
+  // No SetJointOrder → identity map → ReorderInput is a plain copy (zero-overhead
+  // fallback, exercised on every non-reordered controller so existing behaviour
+  // is byte-for-byte unchanged).
+  rub::RtModelHandle handle(builder_->GetFullModel());
+  ASSERT_FALSE(handle.HasJointReorder());
+  const std::vector<double> device_vec = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0};
+  Eigen::VectorXd pin_vec = Eigen::VectorXd::Zero(handle.nv());
+  handle.ReorderInput(device_vec, pin_vec);
+  for (Eigen::Index i = 0; i < pin_vec.size(); ++i) {
+    EXPECT_DOUBLE_EQ(pin_vec[i], device_vec[static_cast<std::size_t>(i)])
+        << "passthrough[" << i << "]";
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Mimic 헬퍼 테스트
 // ═══════════════════════════════════════════════════════════════════════════════
