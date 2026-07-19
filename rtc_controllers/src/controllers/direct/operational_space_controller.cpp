@@ -338,7 +338,11 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     llt_M_.solveInPlace(MinvJt_);  // MinvJt_ = M⁻¹ Jᵀ   (nv×6)
 
     LambdaInv_.noalias() = J_full_ * MinvJt_;
-    LambdaInv_.diagonal().array() += gains.damping * gains.damping;
+    // Floor λ at the point of use so the singularity guard holds regardless of
+    // how the gains were set (LoadConfig floors too, but set_gains()/the ctor
+    // default bypass it) — NUM-1.
+    const double lambda = std::max(1e-4, gains.damping);
+    LambdaInv_.diagonal().array() += lambda * lambda;
     llt6_.compute(LambdaInv_);
     dyn_ok = (llt6_.info() == Eigen::Success);
   }
@@ -352,9 +356,12 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
 
     // ── Step 9: dynamically-consistent null-space posture task ──────────────
     // Redundancy resolution: project τ₀ through Nᵀ = I − Jᵀ J̄ᵀ (J̄ᵀ = Λ J M⁻¹).
-    // For a non-redundant 6-DOF arm Nᵀ ≈ 0, so this contributes nothing. Skipped
-    // entirely when both null gains are zero.
-    if (gains.null_kp != 0.0 || gains.null_kd != 0.0) {
+    // Only meaningful for a genuinely redundant arm (nv > 6 task DOF): for nv==6
+    // Nᵀ ≈ 0 (contributes nothing), and for nv < 6 the task is over-determined so
+    // J M⁻¹ Jᵀ is rank-deficient and Nᵀ is NOT small — running the posture task
+    // there would inject τ₀ into the primary Cartesian task (issue #172). Gate on
+    // redundancy so a reduced-DOF arm on default null_kd is not coupled.
+    if ((gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6) {
       JbarT_ = MinvJt_.transpose();  // (M⁻¹ Jᵀ)ᵀ = J M⁻¹   (6×nv)
       llt6_.solveInPlace(JbarT_);    // J̄ᵀ = Λ J M⁻¹
       NT_.setIdentity();
@@ -479,6 +486,14 @@ void OperationalSpaceController::SetHandEstop(bool active) noexcept {
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 ControllerOutput OperationalSpaceController::ComputeEstop(const ControllerState& state) noexcept {
+  // KNOWN DEFECT (deferred — issue #172 leaves the E-STOP/torque contract as an
+  // explicit follow-up concern): this path still emits a *position*-scale slew
+  // toward safe_position, but Compute() now tags every OSC output as kTorque
+  // (the controller is torque-only). A downstream torque backend therefore
+  // applies a joint-angle-magnitude value as N·m during E-STOP. The proper fix
+  // is a gravity+Coriolis-compensated damped torque hold; until then the value
+  // is at least bounded to the configured torque envelope below so it cannot be
+  // arbitrarily large. Do NOT rely on this as a safe torque E-STOP.
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto& dev0 = state.devices[0];
   ControllerOutput output;
@@ -492,6 +507,10 @@ ControllerOutput OperationalSpaceController::ComputeEstop(const ControllerState&
     const double sp = (i < safe_position_.size()) ? safe_position_[i] : 0.0;
     out0.commands[i] = dev0.positions[i] + std::clamp(sp - dev0.positions[i], -lim, lim) * dt;
   }
+  // Bound the (unit-mismatched) output to the torque limits like the main path,
+  // so it is never emitted unclamped on the torque command.
+  rtc::utils::ClampSymmetric(out0.commands, nc0, std::span<const double>(max_joint_torque_),
+                             kDefaultMaxJointTorque);
   return output;
 }
 
@@ -552,10 +571,11 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["max_traj_angular_velocity"]) {
     g.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
   }
-  gains_lock_.Store(g);
   // OSC is a torque controller (operational-space law outputs N·m). Reject any
   // other command_type fail-fast instead of silently mislabelling the output.
-  // Position/velocity task control belongs to ClikController.
+  // Position/velocity task control belongs to ClikController. Validate BEFORE
+  // committing the parsed gains, so a rejected reconfigure does not mutate the
+  // live RT gains (issue #172 — non-atomic config application).
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
     if (s != "torque") {
@@ -563,6 +583,7 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
                                s + "'); use ClikController for position/velocity task control");
     }
   }
+  gains_lock_.Store(g);
   command_type_ = CommandType::kTorque;
 }
 

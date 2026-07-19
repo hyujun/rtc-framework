@@ -32,6 +32,15 @@ PController::PController(std::string_view urdf_path, Gains gains) : gains_lock_(
 
   // Default: use the last frame in the model as tip
   tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
+
+  // Fail-fast capacity check at model-load time (off-RT): the fixed gain array
+  // is kMaxRobotDOF-wide. Enforcing it here guarantees the invariant even when
+  // LoadConfig is never called or is handed a null node (issue #172).
+  if (const int nv = handle_->nv(); nv > kMaxRobotDOF) {
+    throw std::runtime_error(
+        "PController: model DOF nv=" + std::to_string(nv) +
+        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
+  }
 }
 
 void PController::OnDeviceConfigsSet() {
@@ -47,7 +56,7 @@ void PController::OnDeviceConfigsSet() {
     // Cross-check: the primary device channel count must match the model DOF,
     // else FK reads q from the wrong channels (issue #172). Surfaced as an
     // error here (this hook is not exception-wrapped by the CM); the hard
-    // capacity check that CAN abort configure lives in LoadConfig.
+    // capacity check that CAN abort configure lives in the constructor.
     const auto js = static_cast<int>(cfg->joint_state_names.size());
     if (js > 0 && js != nv) {
       RCLCPP_ERROR(rclcpp::get_logger("PController"),
@@ -202,13 +211,9 @@ void PController::LoadConfig(const YAML::Node& cfg) {
   if (!cfg) {
     return;
   }
-  // Fail-fast capacity check: the model DOF must fit the fixed gain array.
+  // nv <= kMaxRobotDOF is already guaranteed by the constructor's fail-fast
+  // capacity check.
   const int nv = handle_->nv();
-  if (nv > kMaxRobotDOF) {
-    throw std::runtime_error(
-        "PController: model DOF nv=" + std::to_string(nv) +
-        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
-  }
   auto g = gains_lock_.Load();
   // `kp` length must equal the model DOF — no 6-DOF assumption, no silent
   // truncation/padding (issue #172).

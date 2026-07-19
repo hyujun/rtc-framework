@@ -5,6 +5,8 @@
 #include "rtc_base/utils/device_passthrough.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
+#include <rclcpp/logging.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -37,6 +39,15 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_
   tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
 
   const int nv = handle_->nv();
+  // Fail-fast capacity check at model-load time (off-RT): TargetSlot::null_target
+  // is kMaxRobotDOF-wide, so a larger model would overrun it in Compute.
+  // Enforcing it here guarantees the invariant even when LoadConfig is never
+  // called or is handed a null node (issue #172).
+  if (nv > kMaxRobotDOF) {
+    throw std::runtime_error(
+        "ClikController: model DOF nv=" + std::to_string(nv) +
+        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
+  }
 
   // Pre-allocate all Eigen buffers to their final sizes.
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
@@ -78,6 +89,16 @@ void ClikController::OnDeviceConfigsSet() {
            ++i) {
         null_target_init_[i] = cfg->safe_position[i];
       }
+    }
+    // Cross-check: the primary device channel count must match the model DOF,
+    // else Compute reads q from the wrong channels (issue #172). The RT path is
+    // additionally bounded by nq=min(nc0,nv) against OOB.
+    const auto js = static_cast<int>(cfg->joint_state_names.size());
+    if (const int nv = handle_->nv(); js > 0 && js != nv) {
+      RCLCPP_ERROR(rclcpp::get_logger("ClikController"),
+                   "[ClikController] primary device '%s' joint_state_names size=%d != model DOF "
+                   "nv=%d — FK/Jacobian state mapping will be inconsistent",
+                   primary.c_str(), js, nv);
     }
   }
   if (max_joint_velocity_.empty()) {
@@ -404,13 +425,20 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
+  // Model-dimension bound (issue #172 OOB): dq_/desired_q_/traj_dq_ are nv-sized
+  // and null_target is kMaxRobotDOF-wide, but nc0 (device channel count) is
+  // bounded only by kMaxDeviceChannels. Indexing them past nv/kMaxRobotDOF is a
+  // heap/stack overrun. Channels in [nq, nc0) have no CLIK joint solution and
+  // hold their current position.
+  const std::size_t nq =
+      std::min(static_cast<std::size_t>(nc0), static_cast<std::size_t>(handle_->nv()));
 
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+  for (std::size_t i = 0; i < nq; ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
   }
   ClampVelocity(out0.target_velocities, nc0);
 
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+  for (std::size_t i = 0; i < nq; ++i) {
     desired_q_[static_cast<Eigen::Index>(i)] += out0.target_velocities[i] * dt;
     out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
     // Pure trajectory feedforward velocity (without Kp error / null-space)
@@ -419,16 +447,21 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
-  }
-  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_positions[i] = slot.null_target[i];
-  }
-  // goal_positions: task-space goal in [0..2], null-space goal in [3..5]
-  for (std::size_t i = 0; i < 3; ++i) {
+    // goal_positions: task-space goal in [0..2], null-space goal in [3..nq)
     out0.goal_positions[i] = slot.tcp_target[i];
   }
-  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
+  for (std::size_t i = 3; i < nq; ++i) {
+    out0.target_positions[i] = slot.null_target[i];
     out0.goal_positions[i] = slot.null_target[i];
+  }
+  // Channels past the model DOF (nc0 > nv) hold current position.
+  for (std::size_t i = nq; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.commands[i] = dev0.positions[i];
+    out0.trajectory_positions[i] = dev0.positions[i];
+  }
+  for (std::size_t i = std::max<std::size_t>(nq, 3); i < static_cast<std::size_t>(nc0); ++i) {
+    out0.target_positions[i] = dev0.positions[i];
+    out0.goal_positions[i] = dev0.positions[i];
   }
 
   rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
@@ -552,15 +585,8 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
     return;
   }
 
-  // Fail-fast capacity check: null_target / null_target_init_ are kMaxRobotDOF
-  // wide; a larger model would overrun them in Compute (issue #172).
-  const int nv = handle_->nv();
-  if (nv > kMaxRobotDOF) {
-    throw std::runtime_error(
-        "ClikController: model DOF nv=" + std::to_string(nv) +
-        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
-  }
-
+  // nv <= kMaxRobotDOF is already guaranteed by the constructor's fail-fast
+  // capacity check.
   auto g = gains_lock_.Load();
 
   // CLIK gains — translation / rotation separated
@@ -575,7 +601,10 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   load3(cfg["kp_rotation"], g.kp_rotation);
 
   if (cfg["damping"]) {
-    g.damping = cfg["damping"].as<double>();
+    // Floor the damped-least-squares λ so a zero/negative value cannot remove
+    // the singularity guard (NUM-1); a singular JJt_ would otherwise yield a
+    // NaN joint-velocity command. Mirrors the OperationalSpaceController floor.
+    g.damping = std::max(1e-4, cfg["damping"].as<double>());
   }
   if (cfg["null_kp"]) {
     g.null_kp = cfg["null_kp"].as<double>();
