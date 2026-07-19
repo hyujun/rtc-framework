@@ -91,6 +91,8 @@ rm -rf build/<pkg> install/<pkg> && colcon build --packages-select <pkg>
 
 **LifecycleNode 노드(예: `rtc_controller_manager`) 유닛 커버리지 패턴**: `on_configure` 파이프라인 (params 로딩·device backend·publisher 생성) 과 private RT 헬퍼(`CheckTimeouts`/`CreateDeviceBackends`)는 friend accessor (`rtc::ControllerLifecycleTestAccess`, 헤더의 `friend` 선언으로 이름 고정) 로 private 멤버를 주입·호출해 **실 robot/RT 권한 없이** 구동한다 — `CreateDeviceBackends` 등은 `group_slot_map_`/`device_name_configs_` 주입 + registry fake backend 만으로 동작하고, `on_activate` 의 RT 루프는 `ApplyThreadConfig` 반환값을 버리므로 (SCHED_OTHER fallback) 테스트 샌드박스에서도 안전하다.
 
+> **Full-pipeline 테스트는 전용 `ROS_DOMAIN_ID` 로 격리** (`ament_add_gtest(... ENV ROS_DOMAIN_ID=<n>)`): CI 의 `colcon test` 는 패키지를 병렬 실행하므로, 실 bring-up (다수 LifecycleNode/pub 생성·소멸 반복) 을 돌리는 테스트가 기본 도메인을 공유하면 DDS discovery churn 으로 **동시 실행 중인 타 패키지의 pub/sub 매칭 테스트가 깨진다** (PR #187 에서 `ur5e_bt_coordinator` `test_rewire_gate` 가 실측 피해 — 실패 시각이 가해 테스트 실행 창과 정확히 겹침). 도메인 번호는 기존 사용처 (`grep -rn 'ROS_DOMAIN_ID=' --include=CMakeLists.txt`) 와 충돌하지 않게 배정.
+
 **`.venv` 격리 원칙 (Hard rule)**: `.venv`는 runtime PC가 본 workspace 외에 다른 control project들과 공존하는 환경에서 workspace dependency를 격리하기 위한 **의도된 설계**다. `colcon test` / `colcon build` / `ros2 run` / `ros2 launch`가 venv 활성 상태에서 실패하면 **반드시 근본 원인을 해결**한다 (sys.path / shebang / wrapper / dep resolution 디버그). gtest 바이너리 직접 실행, venv deactivate 후 colcon 호출, `PYTHONPATH` 강제 우회 등은 **금지** — 격리를 무력화해 runtime PC에서 다른 project의 site-packages가 끼어들면 silent breakage. 신호 (`Testing/Temporary/LastTest.log` Start/End 동일 초)가 재발하면 `env -i` 깨끗한 셸에서 `setup_env.sh` source 후 `sys.path` 순서 점검부터.
 
 ## Live Debug Topics
