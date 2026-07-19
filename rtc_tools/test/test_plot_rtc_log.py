@@ -1190,3 +1190,96 @@ class TestWbcDiagRoundTrip:
         out = capsys.readouterr().out
         assert "WBC TSID/QP Diagnostics" in out
         assert "closure" in out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PullEstimatorLog (#167) — detection / predicate / plot / stats round-trip
+# ═══════════════════════════════════════════════════════════════════════════
+
+from rtc_tools.plotting.columns.views import has_pull_estimate as _has_pull_estimate  # noqa: E402
+from rtc_tools.plotting.plotters.pull import (  # noqa: E402
+    plot_pull_estimator as _plot_pull_estimator,
+    print_pull_estimator_statistics as _print_pull_estimator_statistics,
+)
+from rtc_tools.plotting.plotters.sensors import (  # noqa: E402
+    plot_device_fingertip_force_auto as _plot_device_fingertip_force_auto,
+)
+
+
+def _pull_estimator_header():
+    """Column order emitted by WritePullEstimatorLogHeader (pull_estimator_log_pod.hpp)."""
+    return [
+        "t_relative_s",
+        "force_raw_x",
+        "force_raw_y",
+        "force_raw_z",
+        "force_x",
+        "force_y",
+        "force_z",
+        "inplane_x",
+        "inplane_y",
+        "magnitude",
+        "directional",
+        "friction_utilization",
+        "leakage_bound",
+        "valid_contact_count",
+        "valid",
+        "slip_risk",
+        "any_saturated",
+        "baseline_applied",
+    ]
+
+
+class TestPullEstimatorRoundTrip:
+    def _df(self, tmp_path):
+        return _build_wbc_log(tmp_path, "pull_estimator.csv", _pull_estimator_header(), {}, "pull_estimator")
+
+    def test_filename_detection(self):
+        assert detect_log_type("/s/controllers/demo_task_controller/pull_estimator.csv") == "pull_estimator"
+
+    def test_column_detection(self):
+        assert detect_log_type_by_columns(_pull_estimator_header()) == "pull_estimator"
+
+    def test_column_detection_beats_sensor_log_raw_token(self):
+        """force_raw_* contains the generic `_raw_` sensor token — the pull
+        branch must win over the sensor_log fallback."""
+        cols = ["t_relative_s", "force_raw_x", "friction_utilization"]
+        assert detect_log_type_by_columns(cols) == "pull_estimator"
+
+    def test_pull_predicate(self, tmp_path):
+        assert _has_pull_estimate(self._df(tmp_path)) is True
+
+    def test_plot_renders(self, tmp_path):
+        _plot_pull_estimator(self._df(tmp_path), save_dir=str(tmp_path))
+        assert (tmp_path / "pull_estimator.png").exists()
+
+    def test_plot_renders_with_desired_overlay(self, tmp_path):
+        """Future desired-force columns overlay dashed without breaking."""
+        header = _pull_estimator_header() + ["force_desired_x", "force_desired_y", "force_desired_z"]
+        df = _build_wbc_log(tmp_path, "pull_estimator.csv", header, {}, "pull_estimator")
+        _plot_pull_estimator(df, save_dir=str(tmp_path))
+        assert (tmp_path / "pull_estimator.png").exists()
+
+    def test_statistics(self, tmp_path, capsys):
+        _print_pull_estimator_statistics(self._df(tmp_path))
+        out = capsys.readouterr().out
+        assert "Pull Force Estimator" in out
+        assert "Friction utilization" in out
+
+
+class TestSensorFingertipForceFigure:
+    """Per-finger measured force figure on the sensor_log pipeline (#167)."""
+
+    FINGERTIPS = ["thumb", "index"]
+
+    def test_renders_from_ft_inference_columns(self, tmp_path):
+        header = _sensor_log_header(self.FINGERTIPS)
+        df = _build_log(tmp_path, "p1a_sensor.csv", header, {})
+        _plot_device_fingertip_force_auto(df, save_dir=str(tmp_path))
+        assert (tmp_path / "fingertip_force.png").exists()
+
+    def test_skips_without_ft_columns(self, tmp_path, capsys):
+        header = ["t_relative_s"] + [f"{n}_raw_{v}" for n in self.FINGERTIPS for v in range(11)]
+        df = _build_log(tmp_path, "bare_sensor.csv", header, {})
+        _plot_device_fingertip_force_auto(df, save_dir=str(tmp_path))
+        assert not (tmp_path / "fingertip_force.png").exists()

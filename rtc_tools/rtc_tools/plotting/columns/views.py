@@ -93,3 +93,11 @@ def has_wbc_fingertip_force(df):
 def has_wbc_lambda(df):
     """WbcDiagLog has QP contact-wrench solution columns (`lambda_*`)."""
     return any(c.startswith("lambda_") for c in df.columns)
+
+
+# ── Pull-force estimator (PullEstimatorLog, #167) predicates ───────────────
+
+
+def has_pull_estimate(df):
+    """PullEstimatorLog has the filtered force block (`force_x/y/z` + `magnitude`)."""
+    return all(c in df.columns for c in ("force_x", "force_y", "force_z", "magnitude"))

@@ -487,12 +487,58 @@ def plot_sensor_tof_combined(df, save_dir=None):
     plt.close()
 
 
+def plot_device_fingertip_force(df, fingertip_labels, save_dir=None):
+    """Per-fingertip measured force vector (`ft_<label>_fx/fy/fz`) — N×1, sharex.
+
+    Same one-column layout as `plot_wbc_fingertip_force` (#167) so joint/task
+    sessions (which log measured force through the sensor CSV, not
+    DeviceWbcLog) get a comparable per-finger force figure with a shared,
+    zoom-synchronized time axis.
+    """
+    labels = [label for label in fingertip_labels if f"ft_{label}_fx" in df.columns]
+    if not labels:
+        print("  Skipping fingertip force plot (ft_*_fx columns not found)")
+        return
+
+    n_ft = len(labels)
+    fig, axes = plt.subplots(n_ft, 1, figsize=(14, 3.5 * n_ft), sharex=True, squeeze=False)
+    fig.suptitle("Fingertip Contact Force (Fx / Fy / Fz)", fontsize=16, fontweight="bold")
+    flat = axes.flatten()
+    t = df["timestamp"]
+
+    for i, label in enumerate(labels):
+        ax = flat[i]
+        for ci, comp in enumerate(("fx", "fy", "fz")):
+            col = f"ft_{label}_{comp}"
+            if col in df.columns:
+                ax.plot(t, df[col], label=comp.capitalize(), linewidth=1.3, color=f"C{ci}")
+        ax.set_title(label, fontsize=10)
+        ax.set_ylabel("Force (N)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    flat[-1].set_xlabel("Time (s)")
+
+    plt.tight_layout()
+    if save_dir:
+        path = Path(save_dir) / "fingertip_force.png"
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {path}")
+    else:
+        plt.show()
+    plt.close()
+
+
 # ── Pipeline adapters ──────────────────────────────────────────────────────
 
 
 def plot_device_ft_output_auto(df, save_dir=None):
     """Pipeline adapter: detect FT labels from df, then plot."""
     plot_device_ft_output(df, _detect_ft_labels(df), save_dir)
+
+
+def plot_device_fingertip_force_auto(df, save_dir=None):
+    """Pipeline adapter: detect FT labels from df, then plot."""
+    plot_device_fingertip_force(df, _detect_ft_labels(df), save_dir)
 
 
 def plot_device_sensor_comparison_auto(df, save_dir=None):

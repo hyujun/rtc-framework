@@ -172,9 +172,10 @@ def plot_wbc_fingertip_force(df, save_dir=None):
         plt.close()
         return
 
+    # One column with a shared time axis (#167): zooming any fingertip panel
+    # stays synchronized with the others (auto-grid panels had independent x).
     n_ft = len(display_names)
-    nrows, ncols = _auto_subplot_grid(n_ft)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4 * nrows), squeeze=False)
+    fig, axes = plt.subplots(n_ft, 1, figsize=(14, 3.5 * n_ft), sharex=True, squeeze=False)
     fig.suptitle("WBC Fingertip Contact Force (Fx / Fy / Fz)", fontsize=16, fontweight="bold")
     flat = axes.flatten()
 
@@ -194,11 +195,9 @@ def plot_wbc_fingertip_force(df, save_dir=None):
         )
         ax.set_title(name, fontsize=10)
         ax.set_ylabel("Force (N)")
-        ax.set_xlabel("Time (s)")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
-    for j in range(n_ft, len(flat)):
-        flat[j].axis("off")
+    flat[-1].set_xlabel("Time (s)")
 
     plt.tight_layout()
     if save_dir:

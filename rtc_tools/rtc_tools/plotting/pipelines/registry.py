@@ -20,7 +20,9 @@ from dataclasses import dataclass
 
 from rtc_tools.plotting import plotters
 from rtc_tools.plotting.columns import (
+    has_ft_inference,
     has_motor,
+    has_pull_estimate,
     has_task_goal,
     has_wbc_accel,
     has_wbc_fingertip_force,
@@ -76,6 +78,9 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "wbc_diag": [
         PlotEntry("print_wbc_diag_stats", plotters.print_wbc_diag_statistics),
     ],
+    "pull_estimator": [
+        PlotEntry("print_pull_stats", plotters.print_pull_estimator_statistics),
+    ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
 }
@@ -112,6 +117,13 @@ PIPELINES: dict[str, list[PlotEntry]] = {
         PlotEntry("sensor_barometer", plotters.plot_sensor_barometer_combined),
         PlotEntry("sensor_tof", plotters.plot_sensor_tof_combined),
         PlotEntry("device_ft_output", plotters.plot_device_ft_output_auto),
+        # Per-finger measured force (N×1, sharex) — joint/task counterpart of
+        # the WBC fingertip-force figure (#167). Gated on FT inference columns.
+        PlotEntry(
+            "device_fingertip_force",
+            plotters.plot_device_fingertip_force_auto,
+            available=has_ft_inference,
+        ),
         PlotEntry(
             "device_sensor_comparison",
             plotters.plot_device_sensor_comparison_auto,
@@ -158,6 +170,9 @@ PIPELINES: dict[str, list[PlotEntry]] = {
     "wbc_diag": [
         PlotEntry("wbc_diag_solver", plotters.plot_wbc_diag_solver),
         PlotEntry("wbc_diag_contacts", plotters.plot_wbc_diag_contacts),
+    ],
+    "pull_estimator": [
+        PlotEntry("pull_estimator", plotters.plot_pull_estimator, available=has_pull_estimate),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

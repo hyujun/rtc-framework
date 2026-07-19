@@ -110,6 +110,7 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 | `mpc_timing_log*.csv` | mpc_timing (MPC main loop) |
 | `<dev>_state.csv` (WBC, `accel_*` 컬럼) | wbc_log (DeviceWbcLog — state_log superset: TSID a_opt 가속도 + SE3 trajectory(arm) / fingertip force(hand)) |
 | `wbc_diag.csv` | wbc_diag (WbcDiagLog — per-tick TSID/QP 진단: solve time / λ / 수렴 / grasp) |
+| `pull_estimator.csv` | pull_estimator (PullEstimatorLog #167 — in-plane pull-force estimate: raw+filtered force / in-plane·magnitude·directional / friction util·leakage / validity 플래그. 4×1 sharex 단일 figure + 통계) |
 
 > WBC `<dev>_state.csv` 는 파일명만으로 generic state_log 와 구분 불가 (둘 다 `_state`)
 > → `accel_*` 컬럼 fingerprint 로 컬럼 fallback 단계에서 wbc_log 로 분류된다. wbc_log
@@ -135,7 +136,8 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 | Figure 3 | (기본) | 센서 (기압 + ToF per fingertip) |
 | Figure 4 | `--raw` | Raw 센서 (pre-LPF, 기압 + ToF) |
 | Figure 5 | `--ft` | F/T 추론 출력 (Force + Torque per fingertip) |
-| Figure 6 | `--sensor-compare` | Raw vs Filtered 센서 오버레이 비교 |
+| Figure 6 | (자동, `ft_*` 존재 시) | Per-finger 실측 force Fx/Fy/Fz (N×1, sharex — WBC fingertip force figure 와 동일 레이아웃, #167) |
+| Figure 7 | `--sensor-compare` | Raw vs Filtered 센서 오버레이 비교 |
 
 **Timing 모드 플롯:**
 

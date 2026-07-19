@@ -32,6 +32,10 @@ def detect_log_type(filepath):
     # column fallback (which keys on the WBC-only `accel_*` columns).
     if stem == "wbc_diag" or stem.endswith("wbc_diag"):
         return "wbc_diag"
+    elif stem == "pull_estimator" or stem.endswith("pull_estimator"):
+        # In-plane pull-force estimator (#167) — fixed instance stem shared by
+        # the three demo controllers.
+        return "pull_estimator"
     elif stem.endswith("state_log"):
         return "state_log"
     elif stem.endswith("sensor_log"):
@@ -63,6 +67,11 @@ def detect_log_type_by_columns(columns):
         "qp_converged" in cols or any(c.startswith("lambda_") for c in cols)
     ):
         return "wbc_diag"
+    # Pull-force estimator (#167): per-tick pull_estimator.csv. Must be
+    # checked before the sensor_log branch — its force_raw_* columns would
+    # otherwise match the generic `_raw_` sensor token.
+    if "friction_utilization" in cols and "force_raw_x" in cols:
+        return "pull_estimator"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the
     # WBC arm/hand state CSVs from the generic state_log before that branch.
