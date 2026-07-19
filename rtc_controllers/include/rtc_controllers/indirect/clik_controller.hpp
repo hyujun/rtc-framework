@@ -130,19 +130,20 @@ class ClikController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
-  Eigen::MatrixXd J_full_;              ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
-  Eigen::MatrixXd J_pos_;               ///< 3×nv: translational part of J_full_
-  Eigen::Matrix3d JJt_;                 ///< 3×3: J_pos * J_pos^T + λ²I
-  Eigen::Matrix3d JJt_inv_;             ///< 3×3: (J_pos * J_pos^T + λ²I)^{-1}
-  Eigen::MatrixXd Jpinv_;               ///< nv×3: damped pseudoinverse J_pos^#
-  Eigen::MatrixXd N_;                   ///< nv×nv: null-space projector I − J_pos^# J_pos
-  Eigen::VectorXd dq_;                  ///< nv: joint velocity command
-  Eigen::VectorXd desired_q_;           ///< nv: integrated desired joint position
-  Eigen::VectorXd traj_dq_;             ///< nv: feedforward-only trajectory velocity (for logging)
-  Eigen::VectorXd null_err_;            ///< nv: (q_null − q_current)
-  Eigen::VectorXd null_dq_;             ///< nv: null-space contribution to dq
-  Eigen::Vector3d pos_error_;           ///< 3: Cartesian position error
-  Eigen::Matrix<double, 6, 6> JJt_6d_;  ///< 6x6: J_full * J_full^T + λ²I
+  Eigen::MatrixXd J_full_;        ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
+  Eigen::MatrixXd J_pos_;         ///< 3×nv: translational part of J_full_
+  Eigen::Matrix3d JJt_;           ///< 3×3: J_pos * J_pos^T + λ²I
+  Eigen::Matrix3d JJt_inv_;       ///< 3×3: (J_pos * J_pos^T + λ²I)^{-1}
+  Eigen::MatrixXd Jpinv_;         ///< nv×3: damped pseudoinverse J_pos^#
+  Eigen::MatrixXd N_;             ///< nv×nv: null-space projector I − J_pos^# J_pos
+  Eigen::VectorXd dq_;            ///< nv: joint velocity command
+  Eigen::VectorXd desired_q_;     ///< nv: integrated desired joint position
+  Eigen::VectorXd traj_dq_;       ///< nv: feedforward-only trajectory velocity (for logging)
+  Eigen::VectorXd null_err_;      ///< nv: (q_null − q_current), Pinocchio order for N_ product
+  Eigen::VectorXd null_err_dev_;  ///< nv: (q_null − q_current) formed in DEVICE order (#172 A2)
+  Eigen::VectorXd null_dq_;       ///< nv: null-space contribution to dq
+  Eigen::Vector3d pos_error_;     ///< 3: Cartesian position error
+  Eigen::Matrix<double, 6, 6> JJt_6d_;        ///< 6x6: J_full * J_full^T + λ²I
   Eigen::Matrix<double, 6, 6> JJt_inv_6d_;    ///< 6x6: (J_full * J_full^T + λ²I)^{-1}
   Eigen::MatrixXd Jpinv_6d_;                  ///< nv×6: damped pseudoinverse J_full^#
   Eigen::Matrix<double, 6, 1> pos_error_6d_;  ///< 6: Cartesian position+orientation error
@@ -223,6 +224,16 @@ class ClikController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
   void ClampVelocity(std::array<double, kMaxDeviceChannels>& dq, int n) const noexcept;
+
+  // (Re)build handle_ + all nv-sized Eigen buffers from a Pinocchio model,
+  // enforcing the fixed-capacity check. Called by the ctor (full model) and by
+  // MaybeSelectSubModel (reduced submodel) — off-RT only (#172 Phase 3 A1).
+  void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
+
+  // Switch handle_ to the primary device's reduced submodel when the injected
+  // system model config declares it. No system config / no match → keep the full
+  // model from the ctor (no regression).
+  void MaybeSelectSubModel();
 };
 
 }  // namespace rtc

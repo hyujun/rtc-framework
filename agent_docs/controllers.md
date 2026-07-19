@@ -13,6 +13,24 @@
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
+### Base controller joint order & submodel selection (#172 Phase 3)
+
+Base `rtc_controllers`(P/JointPD/CLIK/OSC)는 데모 컨트롤러의 `CombinedModelCache` 와 별개로, 자체
+`RtModelHandle` 위에서 **device joint order** 와 **primary-device submodel** 를 처리한다.
+
+- **Joint reorder (A2)**: `OnDeviceConfigsSet` 에서 `js==nv` 이면 `handle_->SetJointOrder(joint_state_names)`.
+  device 순서 == URDF 순서면 `HasJointReorder()==false` → memcpy fallback(zero-overhead, 기존 로봇 불변).
+  다르면 모델은 device 순서 입력을 correct 하게 소비하고, model 파생 항을 device channel 순서로 되돌린다:
+  JointPD `g`/`C·v`, OSC `τ`(주경로)+null-space `tau0`, CLIK `dq`/`traj_dq`+null-space `null_err`.
+  device 순서로 형성한 항(null-space·Coriolis)을 Pinocchio 순서 행렬과 곱하기 직전 `RtModelHandle::ReorderInput`
+  (device→Pinocchio scatter, `ReorderOutput` 의 역방향)으로 1회 gather 한다. P 는 FK 입력만 reorder(joint
+  command 은 device-order native, task 출력은 order-invariant → 출력 reorder 불요).
+- **Submodel selection (A1)**: `LoadConfig`(base LoadConfig 가 `topic_config_` 채운 직후)에서
+  `MaybeSelectSubModel` — `GetSystemModelConfig().sub_models` 중 `GetPrimaryDeviceName()` 과 이름이 일치하는
+  sub_model 이 있으면 `GetReducedModel(primary)` 로 handle_ 교체(`InitFromModel` 이 nv-크기 버퍼 재할당). system
+  config 없음/매칭 없음 → ctor 의 full model 유지(무회귀). hook 순서상 `OnSystemModelConfigSet` 시점엔
+  `topic_config_` 미준비라 선택 불가 → `LoadConfig` 배치(DemoJointController 레퍼런스와 동일).
+
 ### Unified arm kin&dyn (joint / task / wbc)
 
 세 데모 컨트롤러(DemoJoint/DemoTask/DemoWbc)는 arm kinematics(FK·Jacobian)를 **결합(arm+hand) actuated

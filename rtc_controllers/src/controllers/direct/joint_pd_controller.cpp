@@ -7,8 +7,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -31,7 +33,13 @@ JointPDController::JointPDController(std::string_view urdf_path, Gains gains) : 
   config.root_joint_type = "fixed";
 
   rtc_urdf_bridge::PinocchioModelBuilder builder(config);
-  model_ptr_ = builder.GetFullModel();
+  InitFromModel(builder.GetFullModel());
+
+  trajectory_.initialize({}, {}, 0.0);
+}
+
+void JointPDController::InitFromModel(std::shared_ptr<const pinocchio::Model> model) {
+  model_ptr_ = std::move(model);
   handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_ptr_);
 
   // Default: use the last frame in the model as tip
@@ -49,9 +57,38 @@ JointPDController::JointPDController(std::string_view urdf_path, Gains gains) : 
         " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
   }
   coriolis_forces_ = Eigen::VectorXd::Zero(nv);
+  coriolis_pinocchio_ = Eigen::VectorXd::Zero(nv);
+  v_pinocchio_ = Eigen::VectorXd::Zero(nv);
   jacobian_ = Eigen::MatrixXd::Zero(6, nv);
+}
 
-  trajectory_.initialize({}, {}, 0.0);
+void JointPDController::MaybeSelectSubModel() {
+  const auto* sys = GetSystemModelConfig();
+  if (sys == nullptr || sys->urdf_path.empty() || sys->sub_models.empty()) {
+    return;  // no system topology → keep the full model built in the ctor
+  }
+  const auto primary = GetPrimaryDeviceName();
+  if (primary.empty()) {
+    return;
+  }
+  const bool matches =
+      std::any_of(sys->sub_models.begin(), sys->sub_models.end(),
+                  [&](const rtc_urdf_bridge::SubModelConfig& sm) { return sm.name == primary; });
+  if (!matches) {
+    return;  // primary device is not a declared sub_model → keep full model
+  }
+  auto builder = GetSharedModelBuilder();
+  if (!builder) {
+    // No shared builder injected (e.g. unit test) — build our own from the config.
+    builder = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys);
+  }
+  try {
+    InitFromModel(builder->GetReducedModel(primary));
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(rclcpp::get_logger("JointPDController"),
+                 "[JointPDController] reduced submodel '%s' unavailable (%s) — keeping full model",
+                 primary.c_str(), e.what());
+  }
 }
 
 void JointPDController::OnDeviceConfigsSet() {
@@ -64,12 +101,23 @@ void JointPDController::OnDeviceConfigsSet() {
     if (!cfg->safe_position.empty()) {
       safe_position_ = cfg->safe_position;
     }
-    // Cross-check: the primary device channel count must match the model DOF,
-    // else Compute reads q from the wrong channels (issue #172). This hook is
-    // not exception-wrapped by the CM, so it is surfaced as an error; the RT
-    // path is additionally bounded by nq=min(nc0,nv) against OOB.
+    // Register device→model joint reorder (#172 A2): when the device declares
+    // joint_state_names, the model consumes device-order q/v and maps g/C·v back
+    // to device channel order. Identity order → HasJointReorder()==false →
+    // zero-overhead passthrough (existing single-order robots unchanged).
+    // A size/name mismatch means Compute would read q from the wrong channels;
+    // surface it as an error (this hook is not exception-wrapped by the CM; the
+    // RT path is additionally bounded by nq=min(nc0,nv) against OOB).
     const auto js = static_cast<int>(cfg->joint_state_names.size());
-    if (const int nv = handle_->nv(); js > 0 && js != nv) {
+    const int nv = handle_->nv();
+    if (js == nv) {
+      if (!handle_->SetJointOrder(cfg->joint_state_names)) {
+        RCLCPP_ERROR(rclcpp::get_logger("JointPDController"),
+                     "[JointPDController] primary device '%s' joint_state_names not all in model — "
+                     "reorder disabled, falling back to positional (URDF-order) consumption",
+                     primary.c_str());
+      }
+    } else if (js > 0) {
       RCLCPP_ERROR(rclcpp::get_logger("JointPDController"),
                    "[JointPDController] primary device '%s' joint_state_names size=%d != model DOF "
                    "nv=%d — FK/dynamics state mapping will be inconsistent",
@@ -314,6 +362,10 @@ std::array<double, 3> JointPDController::tcp_position() const noexcept {
 
 void JointPDController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
+  // A1 (#172): now that topic_config_ (device group names) + system model config
+  // are both available, switch to the primary device's reduced submodel if one
+  // is declared. All subsequent gain-length validation uses the submodel nv.
+  MaybeSelectSubModel();
   if (!cfg) {
     return;
   }
@@ -427,10 +479,12 @@ void JointPDController::UpdateDynamics(const DeviceState& dev, const Gains& gain
   // ── Gravity torque g(q) ─────────────────────────────────────────────────
   if (gains.enable_gravity_compensation) {
     handle_->ComputeGeneralizedGravity(q_span);
-    const auto& g = handle_->GetGeneralizedGravity();
-    for (std::size_t i = 0; i < n; ++i) {
-      gravity_torques_[i] = g[static_cast<Eigen::Index>(i)];
-    }
+    // g(q) is in Pinocchio order; scatter it back to device channel order so
+    // out0.commands[i] (device i) receives its own joint's gravity (#172 A2).
+    // Identity order → memcpy, so gravity_torques_ is unchanged for single-order
+    // robots (and the gravity_torques() diagnostic stays device-indexed).
+    handle_->ReorderOutput(handle_->GetGeneralizedGravity(),
+                           std::span<double>(gravity_torques_.data(), n));
   }
 
   // ── Forward kinematics (FK) ──────────────────────────────────────────────
@@ -450,9 +504,13 @@ void JointPDController::UpdateDynamics(const DeviceState& dev, const Gains& gain
   if (gains.enable_coriolis_compensation) {
     handle_->ComputeCoriolisMatrix(q_span, v_span);
     const auto& C = handle_->GetCoriolisMatrix();
-    // Reconstruct v as Eigen vector to compute C * v
-    Eigen::Map<const Eigen::VectorXd> v_eigen(v_buf.data(), nv);
-    coriolis_forces_.noalias() = C * v_eigen;
+    // C is Pinocchio-order (nv×nv). Gather v to Pinocchio order for the product,
+    // then scatter C·v back to device channel order so out0.commands[i] gets its
+    // own joint's Coriolis term (#172 A2). Identity order → both are memcpy.
+    handle_->ReorderInput(v_span, v_pinocchio_);
+    coriolis_pinocchio_.noalias() = C * v_pinocchio_;
+    handle_->ReorderOutput(coriolis_pinocchio_, std::span<double>(coriolis_forces_.data(),
+                                                                  static_cast<std::size_t>(nv)));
   }
 }
 

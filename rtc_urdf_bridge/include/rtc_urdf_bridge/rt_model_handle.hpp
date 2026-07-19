@@ -171,6 +171,17 @@ class RtModelHandle {
   void ReorderOutput(Eigen::Ref<const Eigen::VectorXd> pinocchio_vec,
                      std::span<double> external_out) const noexcept;
 
+  /// 외부(device) 순서 v-공간 벡터 → Pinocchio 순서 Eigen 벡터로 재배열 (입력용).
+  /// ReorderOutput 의 역방향(scatter). reorder 매핑이 없으면 memcpy fallback 이라
+  /// identity 순서에서 zero-overhead. Coriolis·null-space 처럼 device 순서로 형성한
+  /// 항(safe_position, null_target, q, v 의 선형결합)을 모델(Pinocchio) 순서 투영/
+  /// 행렬과 곱하기 직전에 1회 gather 하는 데 쓴다.
+  /// @param external_in 외부(device) 순서 입력 (길이 >= v_reorder_map_ 크기)
+  /// @param pinocchio_out Pinocchio v-공간 출력 버퍼 (크기 nv, 연속 메모리)
+  /// @note nq==nv 고정베이스 매니퓰레이터 전제 (컨트롤러 전역 가정과 동일).
+  void ReorderInput(std::span<const double> external_in,
+                    Eigen::VectorXd& pinocchio_out) const noexcept;
+
  private:
   /// std::span → Eigen::VectorXd 직접 복사 (noexcept, memcpy)
   void CopyToEigen(std::span<const double> src, Eigen::VectorXd& dst) noexcept;

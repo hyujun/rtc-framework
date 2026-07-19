@@ -311,4 +311,18 @@ void RtModelHandle::ReorderOutput(Eigen::Ref<const Eigen::VectorXd> pinocchio_ve
   }
 }
 
+void RtModelHandle::ReorderInput(std::span<const double> external_in,
+                                 Eigen::VectorXd& pinocchio_out) const noexcept {
+  if (v_reorder_map_.empty()) {
+    auto n = std::min(static_cast<Eigen::Index>(external_in.size()), pinocchio_out.size());
+    std::memcpy(pinocchio_out.data(), external_in.data(),
+                static_cast<std::size_t>(n) * sizeof(double));
+    return;
+  }
+  auto n = std::min(external_in.size(), v_reorder_map_.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    pinocchio_out[v_reorder_map_[i]] = external_in[i];
+  }
+}
+
 }  // namespace rtc_urdf_bridge

@@ -10,8 +10,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -32,7 +34,11 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_
   config.root_joint_type = "fixed";
 
   rtc_urdf_bridge::PinocchioModelBuilder builder(config);
-  model_ptr_ = builder.GetFullModel();
+  InitFromModel(builder.GetFullModel());
+}
+
+void ClikController::InitFromModel(std::shared_ptr<const pinocchio::Model> model) {
+  model_ptr_ = std::move(model);
   handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_ptr_);
 
   // Default: use the last frame in the model as tip
@@ -49,7 +55,8 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_
         " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
   }
 
-  // Pre-allocate all Eigen buffers to their final sizes.
+  // Pre-allocate all Eigen buffers to their final sizes (nv-dependent → must be
+  // re-sized whenever the model changes, e.g. submodel selection — #172 A1).
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
   J_pos_ = Eigen::MatrixXd::Zero(3, nv);
   JJt_ = Eigen::Matrix3d::Zero();
@@ -60,6 +67,7 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_
   desired_q_ = Eigen::VectorXd::Zero(nv);
   traj_dq_ = Eigen::VectorXd::Zero(nv);
   null_err_ = Eigen::VectorXd::Zero(nv);
+  null_err_dev_ = Eigen::VectorXd::Zero(nv);
   null_dq_ = Eigen::VectorXd::Zero(nv);
   pos_error_ = Eigen::Vector3d::Zero();
 
@@ -67,6 +75,34 @@ ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_
   JJt_inv_6d_ = Eigen::Matrix<double, 6, 6>::Zero();
   Jpinv_6d_ = Eigen::MatrixXd::Zero(nv, 6);
   pos_error_6d_ = Eigen::Matrix<double, 6, 1>::Zero();
+}
+
+void ClikController::MaybeSelectSubModel() {
+  const auto* sys = GetSystemModelConfig();
+  if (sys == nullptr || sys->urdf_path.empty() || sys->sub_models.empty()) {
+    return;  // no system topology → keep the full model built in the ctor
+  }
+  const auto primary = GetPrimaryDeviceName();
+  if (primary.empty()) {
+    return;
+  }
+  const bool matches =
+      std::any_of(sys->sub_models.begin(), sys->sub_models.end(),
+                  [&](const rtc_urdf_bridge::SubModelConfig& sm) { return sm.name == primary; });
+  if (!matches) {
+    return;  // primary device is not a declared sub_model → keep full model
+  }
+  auto builder = GetSharedModelBuilder();
+  if (!builder) {
+    builder = std::make_shared<rtc_urdf_bridge::PinocchioModelBuilder>(*sys);
+  }
+  try {
+    InitFromModel(builder->GetReducedModel(primary));
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(rclcpp::get_logger("ClikController"),
+                 "[ClikController] reduced submodel '%s' unavailable (%s) — keeping full model",
+                 primary.c_str(), e.what());
+  }
 }
 
 void ClikController::OnDeviceConfigsSet() {
@@ -90,11 +126,19 @@ void ClikController::OnDeviceConfigsSet() {
         null_target_init_[i] = cfg->safe_position[i];
       }
     }
-    // Cross-check: the primary device channel count must match the model DOF,
-    // else Compute reads q from the wrong channels (issue #172). The RT path is
-    // additionally bounded by nq=min(nc0,nv) against OOB.
+    // Register device→model joint reorder (#172 A2): the model consumes
+    // device-order q and dq/traj_dq are scattered back to device channel order.
+    // Identity order → HasJointReorder()==false → zero-overhead passthrough.
     const auto js = static_cast<int>(cfg->joint_state_names.size());
-    if (const int nv = handle_->nv(); js > 0 && js != nv) {
+    const int nv = handle_->nv();
+    if (js == nv) {
+      if (!handle_->SetJointOrder(cfg->joint_state_names)) {
+        RCLCPP_ERROR(rclcpp::get_logger("ClikController"),
+                     "[ClikController] primary device '%s' joint_state_names not all in model — "
+                     "reorder disabled, falling back to positional (URDF-order) consumption",
+                     primary.c_str());
+      }
+    } else if (js > 0) {
       RCLCPP_ERROR(rclcpp::get_logger("ClikController"),
                    "[ClikController] primary device '%s' joint_state_names size=%d != model DOF "
                    "nv=%d — FK/Jacobian state mapping will be inconsistent",
@@ -409,10 +453,16 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     N_.setIdentity();
     N_.noalias() -= Jpinv_ * J_pos_;
 
+    // null_target/dev positions are device-order; N_ is Pinocchio-order (Jpinv_/
+    // J_pos_ have Pinocchio columns). Form the posture error in device order, then
+    // gather to Pinocchio order before the N_ product so the projection is
+    // consistent (#172 A2). Identity order → memcpy (unchanged).
     for (int i = 0; i < nv; ++i) {
-      null_err_[static_cast<Eigen::Index>(i)] = slot.null_target[static_cast<std::size_t>(i)] -
-                                                dev0.positions[static_cast<std::size_t>(i)];
+      null_err_dev_[static_cast<Eigen::Index>(i)] = slot.null_target[static_cast<std::size_t>(i)] -
+                                                    dev0.positions[static_cast<std::size_t>(i)];
     }
+    handle_->ReorderInput(
+        std::span<const double>(null_err_dev_.data(), static_cast<std::size_t>(nv)), null_err_);
     null_dq_.noalias() = N_ * null_err_;
     null_dq_ *= gains.null_kp;
     dq_ += null_dq_;
@@ -433,16 +483,18 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   const std::size_t nq =
       std::min(static_cast<std::size_t>(nc0), static_cast<std::size_t>(handle_->nv()));
 
-  for (std::size_t i = 0; i < nq; ++i) {
-    out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
-  }
+  // dq_/traj_dq_ are Pinocchio-order (Jpinv_ has Pinocchio columns); scatter to
+  // device channel order before clamping (limits are device-order) and integrating
+  // (#172 A2). desired_q_ stays device-order throughout (seeded from device
+  // positions, never fed back into the model), so no reorder on the integrator.
+  // Identity order → memcpy (unchanged).
+  handle_->ReorderOutput(dq_, std::span<double>(out0.target_velocities.data(), nq));
   ClampVelocity(out0.target_velocities, nc0);
+  handle_->ReorderOutput(traj_dq_, std::span<double>(out0.trajectory_velocities.data(), nq));
 
   for (std::size_t i = 0; i < nq; ++i) {
     desired_q_[static_cast<Eigen::Index>(i)] += out0.target_velocities[i] * dt;
     out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
-    // Pure trajectory feedforward velocity (without Kp error / null-space)
-    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
     out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 0; i < 3; ++i) {
@@ -581,6 +633,10 @@ void ClikController::ClampVelocity(std::array<double, kMaxDeviceChannels>& dq,
 
 void ClikController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
+  // A1 (#172): switch to the primary device's reduced submodel if one is declared
+  // in the injected system model config (topic_config_ is populated by the base
+  // LoadConfig above). All later Compute() FK/Jacobian use the submodel.
+  MaybeSelectSubModel();
   if (!cfg) {
     return;
   }

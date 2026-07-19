@@ -163,9 +163,11 @@ class OperationalSpaceController final : public RTControllerInterface {
   Eigen::Matrix<double, 6, 1> tcp_vel_;    ///< current TCP velocity = J · v
 
   // Dynamically-consistent null-space posture task
-  Eigen::MatrixXd JbarT_;     ///< 6×nv: dynamically-consistent inverse transpose Λ J M⁻¹
-  Eigen::MatrixXd NT_;        ///< nv×nv: null-space projector transpose I − Jᵀ J̄ᵀ
-  Eigen::VectorXd tau0_;      ///< nv: raw posture torque (pre-projection)
+  Eigen::MatrixXd JbarT_;  ///< 6×nv: dynamically-consistent inverse transpose Λ J M⁻¹
+  Eigen::MatrixXd NT_;     ///< nv×nv: null-space projector transpose I − Jᵀ J̄ᵀ
+  Eigen::VectorXd tau0_;   ///< nv: raw posture torque (Pinocchio order, pre-projection)
+  Eigen::VectorXd
+      tau0_dev_;  ///< nv: posture torque formed in DEVICE order (#172 A2), gathered → tau0_
   Eigen::VectorXd null_tmp_;  ///< nv: projected null-space torque
 
   // In-place Cholesky factorisations — pre-sized, RT alloc-free.
@@ -240,6 +242,16 @@ class OperationalSpaceController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
 
   static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
+
+  // (Re)build handle_ + all nv-sized Eigen/Cholesky buffers from a Pinocchio
+  // model. Called by the ctor (full model) and by MaybeSelectSubModel (reduced
+  // submodel) — off-RT only (#172 Phase 3 A1). OSC has no fixed-capacity cap.
+  void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
+
+  // Switch handle_ to the primary device's reduced submodel when the injected
+  // system model config declares it. No system config / no match → keep the full
+  // model from the ctor (no regression).
+  void MaybeSelectSubModel();
 };
 
 }  // namespace rtc
