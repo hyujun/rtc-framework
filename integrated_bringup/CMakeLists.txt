@@ -280,6 +280,27 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # ── demo_task_controller unit tests (#149) ─────────────────────────────────
+  # URDF-backed (iiwa7_leap via ament_index, no ROS node/DDS): CLIK 3/6-DOF +
+  # π-split trajectory, hand trajectory, force-only grasp detection,
+  # contact_stop freeze/latch/release, ToF snapshot, virtual TCP, E-STOP —
+  # DemoTaskController gates ComputeControl behind the combined-model cache,
+  # so unlike the joint/wbc sisters these paths need a real model.
+  ament_add_gtest(test_demo_task_controller test/test_demo_task_controller.cpp)
+  target_link_libraries(test_demo_task_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_demo_task_controller
+    ament_index_cpp
+    rclcpp
+    rtc_controllers
+    rtc_base
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+
   # ── demo_wbc_controller base_frame consistency (F-2) ───────────────────────
   ament_add_gtest(test_demo_wbc_base_frame_consistency
     test/test_demo_wbc_base_frame_consistency.cpp)
