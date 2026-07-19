@@ -66,10 +66,15 @@ std::unique_ptr<rub::RtModelHandle> MakeHandle(const std::string& urdf) {
   return std::make_unique<rub::RtModelHandle>(builder.GetFullModel());
 }
 
+// Independent gravity reference via the RNEA identity g(q) == RNEA(q, 0, 0).
+// Deliberately a DIFFERENT code path from the controller's
+// ComputeGeneralizedGravity so a shared sign/convention bug cannot hide behind
+// a circular comparison.
 Eigen::VectorXd RefGravity(const std::string& urdf, const std::vector<double>& q) {
   auto h = MakeHandle(urdf);
-  h->ComputeGeneralizedGravity(q);
-  return h->GetGeneralizedGravity();
+  const std::vector<double> zero(q.size(), 0.0);
+  h->ComputeInverseDynamics(q, zero, zero);
+  return h->GetTau();
 }
 
 // A device config that lifts the torque clamp so the end-to-end command equals
@@ -126,39 +131,64 @@ TEST(SevenDof, PControllerLoadConfigRequiresSevenGains) {
   EXPECT_DOUBLE_EQ(g.kp[6], 7.0);
 }
 
-TEST(SevenDof, JointPdComputesSevenChannels) {
-  rtc::JointPDController ctrl(UrdfPath("serial_7dof.urdf"));
-  auto state = MakeState(7);
-  state.devices[0].positions = {0.1, 0.2, -0.3, 0.4, -0.2, 0.3, -0.1};
-  (void)ctrl.Compute(state);
+TEST(SevenDof, JointPdSeventhChannelGainsAndGravity) {
+  // Concrete OOB guards on the 7th channel (index 6), stronger than finiteness:
+  //   (a) LoadConfig writes and get_gains() reads kp[6]/kd[6];
+  //   (b) gravity compensation reproduces the model's g(q) at every index
+  //       including 6. serial_7dof has mixed Z/Y axes so g(q) is non-zero.
+  const std::string urdf = UrdfPath("serial_7dof.urdf");
 
-  std::array<double, 7> target{0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.4};
-  ctrl.SetDeviceTarget(0, target);
+  rtc::JointPDController cfgctrl(urdf);
+  cfgctrl.LoadConfig(
+      YAML::Load("kp: [1, 2, 3, 4, 5, 6, 7]\nkd: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]\n"
+                 "enable_gravity_compensation: true"));
+  EXPECT_DOUBLE_EQ(cfgctrl.get_gains().kp[6], 7.0);
+  EXPECT_DOUBLE_EQ(cfgctrl.get_gains().kd[6], 0.7);
+
+  const std::vector<double> q{0.1, 0.5, -0.3, 0.4, -0.2, 0.3, -0.1};
+  const Eigen::VectorXd g_ref = RefGravity(urdf, q);
+  ASSERT_GT(g_ref.norm(), 0.1) << "mixed-axis 7-DOF must load gravity";
+
+  rtc::JointPDController::Gains gains;
+  gains.enable_gravity_compensation = true;
+  rtc::JointPDController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(UnclampedTorqueConfig(7));
+  auto state = MakeState(7);
+  for (std::size_t i = 0; i < 7; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seed hold target (zero PD error next tick)
   auto out = ctrl.Compute(state);
 
-  EXPECT_TRUE(out.valid);
   EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
   EXPECT_EQ(out.devices[0].num_channels, 7);
+  const auto grav = ctrl.gravity_torques();
   for (std::size_t i = 0; i < 7; ++i) {
-    EXPECT_TRUE(std::isfinite(out.devices[0].commands[i])) << "ch " << i;
+    EXPECT_NEAR(grav[i], g_ref[static_cast<Eigen::Index>(i)], 1e-6) << "grav[" << i << "]";
+    EXPECT_NEAR(out.devices[0].commands[i], g_ref[static_cast<Eigen::Index>(i)], 1e-6)
+        << "cmd[" << i << "]";
   }
 }
 
-TEST(SevenDof, ClikComputesSevenChannels) {
-  // 7-DOF redundant arm: CLIK's null-space projection spans nv = 7. Output must
-  // stay finite across the whole redundant joint vector.
+TEST(SevenDof, ClikSevenChannelsHoldAtCurrent) {
+  // 7-DOF redundant arm: CLIK's null-space projection spans nv = 7. Stronger
+  // than finiteness — at the self-seeded hold (task target = current FK pose)
+  // the IK command must stay near the CURRENT joint angles across all 7
+  // channels, so a wrong value at the 7th channel (index 6) would be caught.
   rtc::ClikController::Gains gains;
   gains.enable_null_space = true;
   rtc::ClikController ctrl(UrdfPath("serial_7dof.urdf"), gains);
   auto state = MakeState(7);
-  state.devices[0].positions = {0.1, 0.4, -0.2, 0.6, 0.1, -0.3, 0.2};
-  (void)ctrl.Compute(state);
+  const std::array<double, 7> q{0.1, 0.4, -0.2, 0.6, 0.1, -0.3, 0.2};
+  for (std::size_t i = 0; i < 7; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seed hold target from current pose
   auto out = ctrl.Compute(state);
 
   EXPECT_TRUE(out.valid);
   EXPECT_EQ(out.command_type, rtc::CommandType::kPosition);
+  EXPECT_EQ(out.devices[0].num_channels, 7);
   for (std::size_t i = 0; i < 7; ++i) {
-    EXPECT_TRUE(std::isfinite(out.devices[0].commands[i])) << "ch " << i;
+    EXPECT_NEAR(out.devices[0].commands[i], q[i], 0.05) << "ch " << i;
   }
 }
 
@@ -266,6 +296,9 @@ TEST(PlanarDynamics, JointPdCoriolisMatchesModelMagnitude) {
 TEST(PlanarDynamics, OscHoldTorqueEqualsGravity) {
   // Torque OSC at the self-seeded hold pose (zero task error, zero velocity,
   // zero posture torque with default null_kp = 0): τ = Jᵀ·0 + h + Nᵀ·0 = g(q).
+  // NOTE: at hold F = Λ·a_task = 0, so this checks the gravity term only; the
+  // operational-space mapping (Λ, M⁻¹Jᵀ, JᵀF) is exercised by the companion
+  // OscTaskForceMovesBeyondGravity test below (non-zero task error → F ≠ 0).
   const std::string urdf = UrdfPath("planar_3r.urdf");
   const std::vector<double> q{0.3, -0.6, 0.4};
   const Eigen::VectorXd g_ref = RefGravity(urdf, q);
@@ -288,17 +321,67 @@ TEST(PlanarDynamics, OscHoldTorqueEqualsGravity) {
   }
 }
 
+TEST(PlanarDynamics, OscTaskForceMovesBeyondGravity) {
+  // Drives the operational-space law itself (not just gravity-at-rest): with a
+  // persistent task-space position error the task force F = Λ·a_task ≠ 0, so
+  // τ = Jᵀ·F + g must differ from pure gravity g(q) by the Jᵀ·F term. This
+  // exercises Λ⁻¹, the M⁻¹Jᵀ Cholesky solve and the JᵀF mapping — all of which
+  // are exactly zero at the hold pose and would be masked by the degenerate-M
+  // τ = h fallback. null_kd is inert here (nv = 3 ≤ 6 → null-space gated off).
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::vector<double> q{0.3, -0.6, 0.4};  // bent → well-conditioned J
+  const Eigen::VectorXd g_ref = RefGravity(urdf, q);
+
+  rtc::OperationalSpaceController::Gains gains;
+  gains.trajectory_speed = 1.0;
+  rtc::OperationalSpaceController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(UnclampedTorqueConfig(3));
+
+  auto state = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seed task target from current FK pose
+  auto out0 = ctrl.Compute(state);
+
+  // Offset the task target in x; the state stays fixed so a persistent task
+  // error builds up as the trajectory advances toward the (unreachable) goal.
+  std::array<double, 6> target{};
+  for (std::size_t i = 0; i < 6; ++i)
+    target[i] = out0.actual_task_positions[i];
+  target[0] += 0.15;
+  ctrl.SetDeviceTarget(0, target);
+
+  rtc::ControllerOutput out{};
+  for (int k = 0; k < 40; ++k)
+    out = ctrl.Compute(state);
+
+  double dnorm = 0.0;
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[i])) << "cmd[" << i << "]";
+    dnorm += std::abs(out.devices[0].commands[i] - g_ref[static_cast<Eigen::Index>(i)]);
+  }
+  EXPECT_GT(dnorm, 1e-2)
+      << "with a task error τ = JᵀF + g must exceed pure gravity (operational-space law is live)";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // (3) Device order vs URDF order — identity contract is observable (Phase 3 anchor)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST(JointOrder, GravityIsChannelOrderSensitive) {
-  // The controllers read device channel i as URDF joint i — there is no
-  // name-based reorder yet (Phase 3). On a per-joint-asymmetric-gravity fixture
-  // this makes a device/URDF order mismatch observable: a permuted joint config
-  // yields the model gravity AT THE PERMUTED CONFIG, not the original gravity
-  // permuted. So feeding channels in the wrong order would produce detectably
-  // wrong torque — which is exactly what Phase 3's reorder must fix.
+  // Pins the CURRENT contract: the controllers consume device channel i as URDF
+  // joint i, positionally, with no name-based reorder. Two facts are asserted:
+  //   (1) gravity for a config equals the model's g at that config (positional
+  //       consumption), and
+  //   (2) the fixture's gravity is order-asymmetric (permuting joints changes g).
+  // Together these mean that IF a device delivered joints in a different order
+  // than the URDF, the dynamics would be wrong — i.e. joint order matters.
+  //
+  // LIMITATION (Phase 3): this does NOT feed the controller a device-name order
+  // that disagrees with URDF order — that requires the joint_state_names →
+  // RtModelHandle::SetJointOrder wiring Phase 3 adds. The hard-correctness test
+  // (permuted device order → output reordered back to device order) is deferred
+  // to that unit; assertion (2) only establishes the fixture precondition for it.
   const std::string urdf = UrdfPath("planar_3r.urdf");
 
   const std::array<double, 3> qa{0.4, -0.3, 0.6};
