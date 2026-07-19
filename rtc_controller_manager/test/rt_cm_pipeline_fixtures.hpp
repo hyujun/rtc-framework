@@ -1,0 +1,214 @@
+// Shared fixtures for the full-pipeline RtControllerNode tests
+// (test_cm_config_pipeline.cpp / test_rt_loop_pipeline.cpp).
+//
+// Unlike rt_cm_test_access.hpp (private-member injection, Tier 1), these
+// fixtures drive the REAL bring-up: a registry-registered controller whose
+// YAML (config/test_fixtures/controllers/rtc_cm_cfg_test.yaml, selected via
+// config_variant=test_fixtures) declares an "arm" device group, plus a
+// registry-registered DeviceBackend stub. Each test .cpp registers them with
+// RTC_REGISTER_CONTROLLER / RTC_REGISTER_DEVICE_BACKEND in its own TU (the
+// macros open an anonymous namespace, so they cannot live in this header) —
+// one registration per test binary; separate gtest executables never collide.
+#pragma once
+
+#include "rtc_controller_interface/controller_registry.hpp"
+#include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controller_manager/device_backend.hpp"
+#include "rtc_controller_manager/device_backend_registry.hpp"
+
+#include <rclcpp/rclcpp.hpp>
+
+#include <yaml-cpp/yaml.h>
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <span>
+#include <string>
+#include <thread>
+
+namespace rtc {
+
+// ── Registry-loadable controller with an "arm" device group ──────────────────
+//
+// LoadConfig captures the (override-merged) YAML values so tests can assert
+// the ApplyControllerParamOverrides result end to end; the base LoadConfig
+// call parses the topics: section into topic_config_ ("arm" group → CM builds
+// active_groups_ / group_slot_map_ from it).
+//
+// Compute returns a fixed, recognisable command vector so the RT-loop test
+// can assert the tick pipeline (state read → Compute → WriteCommand) verbatim.
+// The optional compute_sleep_us knob (static — the CM owns the instance, tests
+// have no handle before on_configure) forces deterministic deadline overruns.
+class PipelineTestController : public RTControllerInterface {
+ public:
+  static constexpr double kCmd0 = 1.5;
+  static constexpr double kCmd1 = -2.5;
+
+  // Captured YAML values (post-override). Static: the registry factory creates
+  // the instance CM-side, so tests read these after on_configure.
+  static inline double captured_kp{-1.0};
+  static inline std::string captured_label{};
+  static inline bool captured_enabled{false};
+  static inline int64_t captured_count{-1};
+  static inline double captured_deep_b{-1.0};
+  static inline std::vector<double> captured_vals{};
+  static inline std::vector<std::string> captured_tags{};
+  static inline std::vector<int64_t> captured_ids{};
+  static inline std::vector<bool> captured_flags{};
+
+  static inline std::atomic<int> compute_sleep_us{0};
+
+  static void ResetCaptured() {
+    captured_kp = -1.0;
+    captured_label.clear();
+    captured_enabled = false;
+    captured_count = -1;
+    captured_deep_b = -1.0;
+    captured_vals.clear();
+    captured_tags.clear();
+    captured_ids.clear();
+    captured_flags.clear();
+    compute_sleep_us.store(0, std::memory_order_relaxed);
+  }
+
+  void LoadConfig(const YAML::Node& cfg) override {
+    RTControllerInterface::LoadConfig(cfg);  // topics: → topic_config_
+    if (!cfg) {
+      return;
+    }
+    if (const auto gains = cfg["gains"]) {
+      captured_kp = gains["kp"] ? gains["kp"].as<double>() : -1.0;
+      captured_label = gains["label"] ? gains["label"].as<std::string>() : "";
+      captured_enabled = gains["enabled"] && gains["enabled"].as<bool>();
+      captured_count = gains["count"] ? gains["count"].as<int64_t>() : -1;
+      if (gains["vals"]) {
+        captured_vals = gains["vals"].as<std::vector<double>>();
+      }
+      if (gains["tags"]) {
+        captured_tags = gains["tags"].as<std::vector<std::string>>();
+      }
+      if (gains["ids"]) {
+        captured_ids = gains["ids"].as<std::vector<int64_t>>();
+      }
+      if (gains["flags"]) {
+        captured_flags = gains["flags"].as<std::vector<bool>>();
+      }
+    }
+    if (cfg["deep"] && cfg["deep"]["a"] && cfg["deep"]["a"]["b"]) {
+      captured_deep_b = cfg["deep"]["a"]["b"].as<double>();
+    }
+  }
+
+  ControllerOutput Compute(const ControllerState& /*state*/) noexcept override {
+    const int sleep_us = compute_sleep_us.load(std::memory_order_relaxed);
+    if (sleep_us > 0) {
+      std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+    }
+    ControllerOutput out{};
+    out.num_devices = 1;
+    out.devices[0].num_channels = 2;
+    out.devices[0].commands[0] = kCmd0;
+    out.devices[0].commands[1] = kCmd1;
+    return out;
+  }
+
+  void SetDeviceTarget(int /*device_idx*/, std::span<const double> /*target*/) noexcept override {}
+
+  std::string_view Name() const noexcept override { return "rtc_cm_cfg_test"; }
+};
+
+// ── Registry-loadable DeviceBackend stub with all three state lanes ──────────
+//
+// ReadState/ReadMotorState/ReadSensorState fill fixed, recognisable values so
+// the RT-loop test can assert the per-capability copy blocks in ControlLoop.
+// WriteCommand records the last slot (write → count.release; test reads
+// count.acquire → values — commands are constant per tick, so the benign
+// overwrite race cannot produce torn observations).
+class PipelineStubBackend : public DeviceBackend {
+ public:
+  static constexpr double kPos0 = 0.11;
+  static constexpr double kPos1 = 0.22;
+  static constexpr double kMotorPos0 = 7.5;
+  static constexpr int32_t kSensor0 = 42;
+  static constexpr float kInfer0 = 3.5F;
+
+  void Configure(rclcpp_lifecycle::LifecycleNode* /*node*/, const DeviceBackendConfig& config,
+                 rclcpp::CallbackGroup::SharedPtr /*state_cb_group*/) override {
+    group_name_ = config.group_name;
+  }
+
+  void Activate() override {}
+
+  void Deactivate() override {}
+
+  bool ReadState(DeviceStateCache& cache) noexcept override {
+    cache.num_channels = 2;
+    cache.positions[0] = kPos0;
+    cache.positions[1] = kPos1;
+    cache.velocities[0] = 1.0;
+    cache.velocities[1] = 2.0;
+    cache.efforts[0] = 0.5;
+    cache.efforts[1] = 0.6;
+    cache.valid = true;
+    return true;
+  }
+
+  bool HasMotorState() const noexcept override { return true; }
+
+  bool HasSensorState() const noexcept override { return true; }
+
+  void ReadMotorState(DeviceStateCache& cache) noexcept override {
+    cache.num_motor_channels = 1;
+    cache.motor_positions[0] = kMotorPos0;
+    cache.motor_velocities[0] = 0.1;
+    cache.motor_efforts[0] = 0.2;
+  }
+
+  void ReadSensorState(DeviceStateCache& cache) noexcept override {
+    cache.num_sensor_channels = 2;
+    cache.sensor_data[0] = kSensor0;
+    cache.sensor_data[1] = kSensor0 + 1;
+    cache.sensor_data_raw[0] = kSensor0 + 2;
+    cache.sensor_data_raw[1] = kSensor0 + 3;
+    cache.num_inference_groups = 1;
+    cache.inference_data[0] = kInfer0;
+    cache.inference_enable[0] = true;
+  }
+
+  void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
+                    CommandType /*command_type*/) noexcept override {
+    last_num_channels_ = slot.num_channels;
+    last_commands_[0] = slot.commands[0];
+    last_commands_[1] = slot.commands[1];
+    last_actual_positions_[0] = slot.actual_positions[0];
+    last_actual_positions_[1] = slot.actual_positions[1];
+    write_count_.fetch_add(1, std::memory_order_release);
+  }
+
+  std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
+    return std::chrono::steady_clock::now();
+  }
+
+  void FireStateReady() { NotifyStateReady(); }
+
+  int WriteCount() const { return write_count_.load(std::memory_order_acquire); }
+
+  int LastNumChannels() const { return last_num_channels_; }
+
+  const std::array<double, 2>& LastCommands() const { return last_commands_; }
+
+  const std::array<double, 2>& LastActualPositions() const { return last_actual_positions_; }
+
+  const std::string& GroupName() const { return group_name_; }
+
+ private:
+  std::string group_name_;
+  std::atomic<int> write_count_{0};
+  int last_num_channels_{0};
+  std::array<double, 2> last_commands_{};
+  std::array<double, 2> last_actual_positions_{};
+};
+
+}  // namespace rtc

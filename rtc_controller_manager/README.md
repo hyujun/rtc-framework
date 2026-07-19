@@ -47,7 +47,8 @@ rtc_controller_manager/
 │   ├── rt_controller_main_impl.cpp          <- RtControllerMain() 구현 (라이브러리)
 │   └── device_backend_registry.cpp          <- 레지스트리 싱글톤 + duplicate-tag warn
 └── config/
-    └── cyclone_dds.xml                      <- CycloneDDS RT 성능 최적화 설정 (실제 control_rate / devices / urdf 는 `<robot>_bringup/config/<robot>/{sim,robot}.yaml` 의 `devices.<group>.backend:` 등으로 선언)
+    ├── cyclone_dds.xml                      <- CycloneDDS RT 성능 최적화 설정 (실제 control_rate / devices / urdf 는 `<robot>_bringup/config/<robot>/{sim,robot}.yaml` 의 `devices.<group>.backend:` 등으로 선언)
+    └── test_fixtures/controllers/           <- unit test 전용 controller YAML (config_variant=test_fixtures 로만 로드 — production bring-up 은 참조하지 않음)
 ```
 
 ---

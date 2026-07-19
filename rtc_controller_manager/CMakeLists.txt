@@ -220,6 +220,30 @@ if(BUILD_TESTING)
     target_link_libraries(test_create_device_backends
       rtc_controller_manager_lib)
   endif()
+
+  ament_add_gtest(test_cm_config_pipeline
+    test/test_cm_config_pipeline.cpp)
+  if(TARGET test_cm_config_pipeline)
+    target_include_directories(test_cm_config_pipeline PRIVATE include test)
+    ament_target_dependencies(test_cm_config_pipeline
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_cm_config_pipeline
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
+  ament_add_gtest(test_rt_loop_pipeline
+    test/test_rt_loop_pipeline.cpp)
+  if(TARGET test_rt_loop_pipeline)
+    target_include_directories(test_rt_loop_pipeline PRIVATE include test)
+    ament_target_dependencies(test_rt_loop_pipeline
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_rt_loop_pipeline
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
 endif()
 
 ament_package()

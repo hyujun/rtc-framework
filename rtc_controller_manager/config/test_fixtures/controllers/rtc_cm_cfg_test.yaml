@@ -1,0 +1,20 @@
+# Test fixture — loaded ONLY by rtc_controller_manager unit tests via
+# config_variant=test_fixtures (production bring-ups use their own robot
+# package config trees; nothing in this repo references this variant outside
+# test/). Exercises the DeclareAndLoadParameters YAML-load + param-override
+# pipeline (config_variant branch + ApplyControllerParamOverrides).
+rtc_cm_cfg_test:
+  gains:
+    kp: 1.0
+    label: "yaml_default"
+    enabled: false
+    count: 1
+  deep:
+    a:
+      b: 0.0
+  topics:
+    arm:
+      subscribe:
+        - {topic: "target", role: "target"}
+      publish:
+        - {topic: "transforms", role: "robot_transforms"}
