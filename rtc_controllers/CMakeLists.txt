@@ -134,6 +134,14 @@ if(BUILD_TESTING)
   target_link_libraries(test_controller_config rtc_controllers)
   target_include_directories(test_controller_config PRIVATE ${rtc_urdf_bridge_test_include})
 
+  # #172 deeper AC: 7-DOF generalization (serial_7dof.urdf, no OOB gain/target
+  # read), non-Z gravity/Coriolis magnitude vs the RNEA identity
+  # (planar_3r.urdf, reference from an independent RtModelHandle), and the
+  # device-order vs URDF-order identity contract.
+  ament_add_gtest(test_dof_dynamics test/test_dof_dynamics.cpp)
+  target_link_libraries(test_dof_dynamics rtc_controllers)
+  target_include_directories(test_dof_dynamics PRIVATE ${rtc_urdf_bridge_test_include})
+
   # QuinticPolynomial boundary math + T<=0 short-circuit (trajectory_utils.hpp).
   ament_add_gtest(test_trajectory_utils test/test_trajectory_utils.cpp)
   target_link_libraries(test_trajectory_utils rtc_controllers)

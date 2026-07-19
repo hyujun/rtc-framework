@@ -3,7 +3,11 @@
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
 
+#include <rclcpp/logging.hpp>
+
 #include <algorithm>  // std::copy, std::clamp
+#include <stdexcept>
+#include <string>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -28,16 +32,37 @@ PController::PController(std::string_view urdf_path, Gains gains) : gains_lock_(
 
   // Default: use the last frame in the model as tip
   tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
+
+  // Fail-fast capacity check at model-load time (off-RT): the fixed gain array
+  // is kMaxRobotDOF-wide. Enforcing it here guarantees the invariant even when
+  // LoadConfig is never called or is handed a null node (issue #172).
+  if (const int nv = handle_->nv(); nv > kMaxRobotDOF) {
+    throw std::runtime_error(
+        "PController: model DOF nv=" + std::to_string(nv) +
+        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
+  }
 }
 
 void PController::OnDeviceConfigsSet() {
   const auto primary = GetPrimaryDeviceName();
+  const int nv = handle_->nv();
   if (auto* cfg = GetDeviceNameConfig(primary); cfg) {
     if (cfg->urdf && !cfg->urdf->tip_link.empty()) {
       auto fid = handle_->GetFrameId(cfg->urdf->tip_link);
       if (fid != 0) {
         tip_frame_id_ = fid;
       }
+    }
+    // Cross-check: the primary device channel count must match the model DOF,
+    // else FK reads q from the wrong channels (issue #172). Surfaced as an
+    // error here (this hook is not exception-wrapped by the CM); the hard
+    // capacity check that CAN abort configure lives in the constructor.
+    const auto js = static_cast<int>(cfg->joint_state_names.size());
+    if (js > 0 && js != nv) {
+      RCLCPP_ERROR(rclcpp::get_logger("PController"),
+                   "[PController] primary device '%s' joint_state_names size=%d != model DOF "
+                   "nv=%d — FK/state mapping will be inconsistent",
+                   primary.c_str(), js, nv);
     }
     if (cfg->joint_limits) {
       max_joint_velocity_ = cfg->joint_limits->max_velocity;
@@ -116,12 +141,20 @@ ControllerOutput PController::Compute(const ControllerState& state) noexcept {
   // Consistent gains snapshot for this tick
   const auto gains = gains_lock_.Load();
 
-  // Build q span for FK
+  // Build q span for FK. kp holds kMaxRobotDOF gains; bound the indexed access
+  // so a device reporting more channels than the gain capacity can never read
+  // past the array (issue #172 OOB). Channels beyond the gain capacity hold.
   std::array<double, kMaxDeviceChannels> q_buf{};
+  const std::size_t nkp =
+      std::min(static_cast<std::size_t>(nc0), static_cast<std::size_t>(kMaxRobotDOF));
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double error = slot.targets[0][i] - dev0.positions[i];
-    out0.commands[i] = dev0.positions[i] + gains.kp[i] * error * state.dt;
     q_buf[i] = dev0.positions[i];
+    if (i < nkp) {
+      const double error = slot.targets[0][i] - dev0.positions[i];
+      out0.commands[i] = dev0.positions[i] + gains.kp[i] * error * state.dt;
+    } else {
+      out0.commands[i] = dev0.positions[i];  // no gain slot → hold
+    }
   }
 
   const auto nv = handle_->nv();
@@ -139,7 +172,8 @@ ControllerOutput PController::Compute(const ControllerState& state) noexcept {
 
   for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
     out0.target_positions[i] = slot.targets[0][i];
-    out0.target_velocities[i] = gains.kp[i] * (slot.targets[0][i] - dev0.positions[i]);
+    out0.target_velocities[i] =
+        (i < nkp) ? gains.kp[i] * (slot.targets[0][i] - dev0.positions[i]) : 0.0;
     out0.goal_positions[i] = slot.targets[0][i];
   }
 
@@ -177,9 +211,18 @@ void PController::LoadConfig(const YAML::Node& cfg) {
   if (!cfg) {
     return;
   }
+  // nv <= kMaxRobotDOF is already guaranteed by the constructor's fail-fast
+  // capacity check.
+  const int nv = handle_->nv();
   auto g = gains_lock_.Load();
-  if (cfg["kp"] && cfg["kp"].IsSequence() && cfg["kp"].size() == 6) {
-    for (std::size_t i = 0; i < 6; ++i) {
+  // `kp` length must equal the model DOF — no 6-DOF assumption, no silent
+  // truncation/padding (issue #172).
+  if (cfg["kp"]) {
+    if (!cfg["kp"].IsSequence() || cfg["kp"].size() != static_cast<std::size_t>(nv)) {
+      throw std::runtime_error("PController: 'kp' must be a sequence of length nv=" +
+                               std::to_string(nv) + " (model DOF)");
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nv); ++i) {
       g.kp[i] = cfg["kp"][i].as<double>();
     }
   }

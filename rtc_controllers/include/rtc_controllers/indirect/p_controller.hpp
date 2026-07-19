@@ -2,8 +2,8 @@
 #define RTC_CONTROLLERS_P_CONTROLLER_H_
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
-#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_base/concurrency/spsc_queue.hpp>
+#include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
@@ -27,7 +27,11 @@ namespace rtc {
 class PController final : public RTControllerInterface {
  public:
   struct Gains {
-    std::array<double, 6> kp{{120.0, 120.0, 100.0, 80.0, 80.0, 80.0}};
+    // Per-joint proportional gain, sized to the fixed capacity kMaxRobotDOF so
+    // 7-DOF+ arms are indexable without overrunning the array (issue #172).
+    // LoadConfig requires the YAML `kp` length to equal the model DOF (nv).
+    std::array<double, kMaxRobotDOF> kp{
+        {120.0, 120.0, 100.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0}};
   };
 
   explicit PController(std::string_view urdf_path);

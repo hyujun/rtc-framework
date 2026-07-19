@@ -121,13 +121,24 @@ TEST(PControllerConfig, LoadConfigNullNodeKeepsDefaults) {
   EXPECT_EQ(ctrl.GetCommandType(), rtc::CommandType::kPosition);
 }
 
-TEST(PControllerConfig, LoadConfigWrongSizeKpIgnored) {
-  // PController requires exactly 6 kp entries; a 3-entry list is rejected.
+TEST(PControllerConfig, LoadConfigWrongSizeKpThrows) {
+  // #172: a `kp` length that does not match the model DOF (nv=6 for the test
+  // model) is a fail-fast configuration error, not a silently-ignored value.
+  // (Previously the mismatch was dropped, hiding a DOF-generalization bug.)
   rtc::PController ctrl(GetTestUrdfPath());
-  const auto before = ctrl.get_gains();
   YAML::Node cfg = YAML::Load("kp: [1.0, 2.0, 3.0]");
+  EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
+}
+
+TEST(PControllerConfig, LoadConfigMatchingSizeKpApplied) {
+  // A `kp` of exactly nv entries is accepted and applied.
+  rtc::PController ctrl(GetTestUrdfPath());
+  YAML::Node cfg = YAML::Load("kp: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]");
   ctrl.LoadConfig(cfg);
-  EXPECT_DOUBLE_EQ(ctrl.get_gains().kp[0], before.kp[0]);
+  const auto g = ctrl.get_gains();
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_DOUBLE_EQ(g.kp[i], static_cast<double>(i + 1));
+  }
 }
 
 TEST(PControllerConfig, OnDeviceConfigsSetTipLinkChangesTcpFrame) {
@@ -198,7 +209,7 @@ TEST(PControllerConfig, SetDeviceTargetIgnoresOutOfRangeIndex) {
   (void)ctrl.Compute(state);
 
   std::array<double, 6> target{0.5, 0.0, 0.0, 0.0, 0.0, 0.0};
-  ctrl.SetDeviceTarget(-1, target);                            // negative → ignored
+  ctrl.SetDeviceTarget(-1, target);                                 // negative → ignored
   ctrl.SetDeviceTarget(rtc::ControllerState::kMaxDevices, target);  // OOB → ignored
   auto out = ctrl.Compute(state);
 
@@ -244,7 +255,7 @@ kd: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
 enable_gravity_compensation: true
 enable_coriolis_compensation: true
 trajectory_speed: 2.5
-command_type: position
+command_type: torque
 )");
   ctrl.LoadConfig(cfg);
 
@@ -256,7 +267,19 @@ command_type: position
   EXPECT_TRUE(g.enable_gravity_compensation);
   EXPECT_TRUE(g.enable_coriolis_compensation);
   EXPECT_DOUBLE_EQ(g.trajectory_speed, 2.5);
-  EXPECT_EQ(ctrl.GetCommandType(), rtc::CommandType::kPosition);
+  // #172: dynamics compensation (N·m) is only valid on a torque command.
+  EXPECT_EQ(ctrl.GetCommandType(), rtc::CommandType::kTorque);
+}
+
+TEST(JointPDConfig, DynamicsCompensationInPositionModeThrows) {
+  // #172: enabling gravity/Coriolis compensation (N·m) while the command type
+  // is position/velocity mixes units — reject it fail-fast at config time.
+  rtc::JointPDController ctrl(GetTestUrdfPath());
+  YAML::Node cfg = YAML::Load(R"(
+enable_gravity_compensation: true
+command_type: position
+)");
+  EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
 }
 
 TEST(JointPDConfig, LoadConfigClampsTrajectorySpeedFloor) {
@@ -526,9 +549,9 @@ TEST(ClikConfig, SixDofTargetUpdatesOrientationGoal) {
   target[0] = out0.actual_task_positions[0] + 0.05;
   target[1] = out0.actual_task_positions[1];
   target[2] = out0.actual_task_positions[2];
-  target[3] = 0.3;  // roll
+  target[3] = 0.3;   // roll
   target[4] = -0.2;  // pitch
-  target[5] = 0.5;  // yaw
+  target[5] = 0.5;   // yaw
   ctrl.SetDeviceTarget(0, target);
   auto out1 = ctrl.Compute(state);
 

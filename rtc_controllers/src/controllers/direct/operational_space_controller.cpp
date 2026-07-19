@@ -2,12 +2,15 @@
 // ────────────────────────────
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 
+#include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -37,17 +40,26 @@ OperationalSpaceController::OperationalSpaceController(std::string_view urdf_pat
 
   const int nv = handle_->nv();
 
-  // Pre-allocate all Eigen buffers to their final sizes.
-  q_ = Eigen::VectorXd::Zero(nv);
-  v_ = Eigen::VectorXd::Zero(nv);
+  // Pre-allocate all Eigen buffers + Cholesky factors to their final sizes so
+  // the RT path never allocates. nv is fixed once the model is built.
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
-  Jpinv_ = Eigen::MatrixXd::Zero(nv, 6);
-  dq_ = Eigen::VectorXd::Zero(nv);
-  traj_dq_ = Eigen::VectorXd::Zero(nv);
-  JJt_.setZero();
+  Jt_ = Eigen::MatrixXd::Zero(nv, 6);
+  M_ = Eigen::MatrixXd::Zero(nv, nv);
+  MinvJt_ = Eigen::MatrixXd::Zero(nv, 6);
+  h_ = Eigen::VectorXd::Zero(nv);
+  tau_out_ = Eigen::VectorXd::Zero(nv);
+  JbarT_ = Eigen::MatrixXd::Zero(6, nv);
+  NT_ = Eigen::MatrixXd::Zero(nv, nv);
+  tau0_ = Eigen::VectorXd::Zero(nv);
+  null_tmp_ = Eigen::VectorXd::Zero(nv);
+  LambdaInv_.setZero();
   task_err_.setZero();
-  task_vel_.setZero();
+  a_task_.setZero();
+  F_.setZero();
   tcp_vel_.setZero();
+
+  // Pre-size the Cholesky factorisations (allocates storage once, here).
+  llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv);
 }
 
 void OperationalSpaceController::OnDeviceConfigsSet() {
@@ -61,6 +73,7 @@ void OperationalSpaceController::OnDeviceConfigsSet() {
     }
     if (cfg->joint_limits) {
       max_joint_velocity_ = cfg->joint_limits->max_velocity;
+      max_joint_torque_ = cfg->joint_limits->max_torque;
     }
     if (!cfg->safe_position.empty()) {
       safe_position_ = cfg->safe_position;
@@ -68,6 +81,9 @@ void OperationalSpaceController::OnDeviceConfigsSet() {
   }
   if (max_joint_velocity_.empty()) {
     max_joint_velocity_.assign(kMaxDeviceChannels, kDefaultMaxJointVelocity);
+  }
+  if (max_joint_torque_.empty()) {
+    max_joint_torque_.assign(kMaxDeviceChannels, kDefaultMaxJointTorque);
   }
   if (safe_position_.empty()) {
     safe_position_.assign(kMaxDeviceChannels, 0.0);
@@ -87,7 +103,6 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
 
   // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
   const auto gains = gains_lock_.Load();
-  const bool use_gravity = gains.enable_gravity_compensation;
 
   // ── Step 1: copy joint state into buffers ───────────────────────────────
   const auto& dev0 = state.devices[0];
@@ -282,41 +297,89 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     pose_error_cache_[static_cast<std::size_t>(i)] = task_err_[i];
   }
 
-  // ── Step 5: desired task-space velocity with feedforward ──────────────────
-  Eigen::Vector3d kp_p(gains.kp_pos[0], gains.kp_pos[1], gains.kp_pos[2]);
-  Eigen::Vector3d kd_p(gains.kd_pos[0], gains.kd_pos[1], gains.kd_pos[2]);
-  Eigen::Vector3d kp_r(gains.kp_rot[0], gains.kp_rot[1], gains.kp_rot[2]);
-  Eigen::Vector3d kd_r(gains.kd_rot[0], gains.kd_rot[1], gains.kd_rot[2]);
+  // ── Step 5: desired task-space acceleration (task PD + feedforward) ────────
+  //   a_task = kp·e_pose + kd·(ẋ_d − ẋ) + a_ff
+  const Eigen::Vector3d kp_p(gains.kp_pos[0], gains.kp_pos[1], gains.kp_pos[2]);
+  const Eigen::Vector3d kd_p(gains.kd_pos[0], gains.kd_pos[1], gains.kd_pos[2]);
+  const Eigen::Vector3d kp_r(gains.kp_rot[0], gains.kp_rot[1], gains.kp_rot[2]);
+  const Eigen::Vector3d kd_r(gains.kd_rot[0], gains.kd_rot[1], gains.kd_rot[2]);
 
-  task_vel_.head<3>() = kp_p.cwiseProduct(pos_err) + traj_state_.velocity.linear() -
-                        kd_p.cwiseProduct(tcp_vel_.head<3>());
-  task_vel_.tail<3>() = kp_r.cwiseProduct(rot_err) + traj_state_.velocity.angular() -
-                        kd_r.cwiseProduct(tcp_vel_.tail<3>());
+  a_task_.head<3>() = kp_p.cwiseProduct(pos_err) +
+                      kd_p.cwiseProduct(traj_state_.velocity.linear() - tcp_vel_.head<3>()) +
+                      traj_state_.acceleration.linear();
+  a_task_.tail<3>() = kp_r.cwiseProduct(rot_err) +
+                      kd_r.cwiseProduct(traj_state_.velocity.angular() - tcp_vel_.tail<3>()) +
+                      traj_state_.acceleration.angular();
 
-  // ── Step 6: Damped pseudoinverse  J^# = J^T (J J^T + λ²I₆)^{−1} ─────────
-  JJt_.noalias() = J_full_ * J_full_.transpose();
-  JJt_.diagonal().array() += gains.damping * gains.damping;
-  lu_.compute(JJt_);
-  Jpinv_.noalias() = J_full_.transpose() * lu_.solve(Eigen::Matrix<double, 6, 6>::Identity());
+  // ── Step 6: joint-space dynamics  M(q),  h = C(q,v)·v + g(q) ──────────────
+  // GetMassMatrix() already returns a full symmetric M (the handle symmetrises
+  // CRBA's upper triangle internally); the mirror below is a cheap defensive
+  // no-op that keeps this correct even if that handle contract ever changes.
+  handle_->ComputeMassMatrix(q_span);
+  M_ = handle_->GetMassMatrix();
+  M_.triangularView<Eigen::StrictlyLower>() = M_.triangularView<Eigen::StrictlyUpper>().transpose();
+  handle_->ComputeNonLinearEffects(q_span, v_span);
+  h_ = handle_->GetNonLinearEffects();
 
-  // ── Step 7: joint velocity from task-space velocity ───────────────────────
-  dq_.noalias() = Jpinv_ * task_vel_;
+  // ── Step 7: task inertia inverse  Λ⁻¹ = J M⁻¹ Jᵀ + λ²I ────────────────────
+  // In-place Cholesky solves keep the RT path allocation-free. M is provably SPD
+  // for a physical fixed-base manipulator — that assumption is load-bearing: the
+  // λ² floor regularises Λ⁻¹ (kinematic/Jacobian singularities) but NOT M itself
+  // (an ill-conditioned URDF inertia would need M-side regularisation). Both
+  // factorisations are checked via .info(); on failure we fall back to a safe
+  // gravity/Coriolis-hold torque (τ = h) rather than emit NaN (issue #172 review).
+  bool dyn_ok = true;
+  llt_M_.compute(M_);
+  dyn_ok = dyn_ok && (llt_M_.info() == Eigen::Success);
 
-  // ── Feedforward-only trajectory velocity (for logging) ────────────────
-  {
-    Eigen::Matrix<double, 6, 1> ff_vel_6d;
-    ff_vel_6d.head<3>() = traj_state_.velocity.linear();
-    ff_vel_6d.tail<3>() = traj_state_.velocity.angular();
-    traj_dq_.noalias() = Jpinv_ * ff_vel_6d;
+  if (dyn_ok) {
+    Jt_.noalias() = J_full_.transpose();
+    MinvJt_ = Jt_;
+    llt_M_.solveInPlace(MinvJt_);  // MinvJt_ = M⁻¹ Jᵀ   (nv×6)
+
+    LambdaInv_.noalias() = J_full_ * MinvJt_;
+    // Floor λ at the point of use so the singularity guard holds regardless of
+    // how the gains were set (LoadConfig floors too, but set_gains()/the ctor
+    // default bypass it) — NUM-1.
+    const double lambda = std::max(1e-4, gains.damping);
+    LambdaInv_.diagonal().array() += lambda * lambda;
+    llt6_.compute(LambdaInv_);
+    dyn_ok = (llt6_.info() == Eigen::Success);
   }
 
-  // ── Step 8: optional gravity compensation ────────────────────────────────
-  if (use_gravity) {
-    handle_->ComputeGeneralizedGravity(q_span);
-    dq_ += handle_->GetGeneralizedGravity();
+  if (dyn_ok) {
+    // ── Step 8: task force  F = Λ a_task,  joint torque  τ = Jᵀ F + h ───────
+    F_ = a_task_;
+    llt6_.solveInPlace(F_);  // solve Λ⁻¹ F = a_task  ⇒  F = Λ a_task
+    tau_out_.noalias() = Jt_ * F_;
+    tau_out_ += h_;
+
+    // ── Step 9: dynamically-consistent null-space posture task ──────────────
+    // Redundancy resolution: project τ₀ through Nᵀ = I − Jᵀ J̄ᵀ (J̄ᵀ = Λ J M⁻¹).
+    // Only meaningful for a genuinely redundant arm (nv > 6 task DOF): for nv==6
+    // Nᵀ ≈ 0 (contributes nothing), and for nv < 6 the task is over-determined so
+    // J M⁻¹ Jᵀ is rank-deficient and Nᵀ is NOT small — running the posture task
+    // there would inject τ₀ into the primary Cartesian task (issue #172). Gate on
+    // redundancy so a reduced-DOF arm on default null_kd is not coupled.
+    if ((gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6) {
+      JbarT_ = MinvJt_.transpose();  // (M⁻¹ Jᵀ)ᵀ = J M⁻¹   (6×nv)
+      llt6_.solveInPlace(JbarT_);    // J̄ᵀ = Λ J M⁻¹
+      NT_.setIdentity();
+      NT_.noalias() -= Jt_ * JbarT_;  // Nᵀ = I − Jᵀ J̄ᵀ
+      for (int i = 0; i < nv; ++i) {
+        const auto ui = static_cast<std::size_t>(i);
+        const double q_ref = (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
+        tau0_[i] = gains.null_kp * (q_ref - q_buf[ui]) - gains.null_kd * v_buf[ui];
+      }
+      null_tmp_.noalias() = NT_ * tau0_;
+      tau_out_ += null_tmp_;
+    }
+  } else {
+    // Degenerate M / Λ⁻¹: hold against gravity + Coriolis only (finite, safe).
+    tau_out_ = h_;
   }
 
-  // ── Step 9: clamp joint velocity and integrate ────────────────────────────
+  // ── Step 10: emit torque command (N·m), clamp to per-joint torque limits ──
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto& out0 = output.devices[0];
@@ -324,18 +387,13 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
 
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
+  const int ncmd = std::min(nc0, nv);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(ncmd); ++i) {
+    out0.commands[i] = tau_out_[static_cast<Eigen::Index>(i)];
   }
-  ClampVelocity(out0.target_velocities, nc0);
+  rtc::utils::ClampSymmetric(out0.commands, nc0, std::span<const double>(max_joint_torque_),
+                             kDefaultMaxJointTorque);
 
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.commands[i] = dev0.positions[i] + out0.target_velocities[i] * dt;
-    // Pure trajectory feedforward velocity (without PD error)
-    out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
-    // Trajectory-implied joint position = current + feedforward * dt
-    out0.trajectory_positions[i] = dev0.positions[i] + out0.trajectory_velocities[i] * dt;
-  }
   for (std::size_t i = 0; i < 6; ++i) {
     out0.target_positions[i] = slot.pose_target[i];
     out0.goal_positions[i] = slot.pose_target[i];
@@ -428,6 +486,14 @@ void OperationalSpaceController::SetHandEstop(bool active) noexcept {
 // ── Private helpers ──────────────────────────────────────────────────────────
 
 ControllerOutput OperationalSpaceController::ComputeEstop(const ControllerState& state) noexcept {
+  // KNOWN DEFECT (deferred — issue #172 leaves the E-STOP/torque contract as an
+  // explicit follow-up concern): this path still emits a *position*-scale slew
+  // toward safe_position, but Compute() now tags every OSC output as kTorque
+  // (the controller is torque-only). A downstream torque backend therefore
+  // applies a joint-angle-magnitude value as N·m during E-STOP. The proper fix
+  // is a gravity+Coriolis-compensated damped torque hold; until then the value
+  // is at least bounded to the configured torque envelope below so it cannot be
+  // arbitrarily large. Do NOT rely on this as a safe torque E-STOP.
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto& dev0 = state.devices[0];
   ControllerOutput output;
@@ -441,16 +507,11 @@ ControllerOutput OperationalSpaceController::ComputeEstop(const ControllerState&
     const double sp = (i < safe_position_.size()) ? safe_position_[i] : 0.0;
     out0.commands[i] = dev0.positions[i] + std::clamp(sp - dev0.positions[i], -lim, lim) * dt;
   }
+  // Bound the (unit-mismatched) output to the torque limits like the main path,
+  // so it is never emitted unclamped on the torque command.
+  rtc::utils::ClampSymmetric(out0.commands, nc0, std::span<const double>(max_joint_torque_),
+                             kDefaultMaxJointTorque);
   return output;
-}
-
-void OperationalSpaceController::ClampVelocity(std::array<double, kMaxDeviceChannels>& dq,
-                                               int n) const noexcept {
-  for (std::size_t i = 0; i < static_cast<std::size_t>(n); ++i) {
-    const double lim =
-        (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
-    dq[i] = std::clamp(dq[i], -lim, lim);
-  }
 }
 
 Eigen::Matrix3d OperationalSpaceController::RpyToMatrix(double roll, double pitch,
@@ -482,9 +543,20 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   load3(cfg["kp_rot"], g.kp_rot);
   load3(cfg["kd_rot"], g.kd_rot);
   if (cfg["damping"]) {
-    g.damping = cfg["damping"].as<double>();
+    // Floor λ > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic singularities.
+    // A zero/negative damping would remove that guard and admit NaN torque.
+    g.damping = std::max(1e-4, cfg["damping"].as<double>());
+  }
+  // Dynamically-consistent null-space posture gains (only bite when nv > 6).
+  if (cfg["null_kp"]) {
+    g.null_kp = cfg["null_kp"].as<double>();
+  }
+  if (cfg["null_kd"]) {
+    g.null_kd = cfg["null_kd"].as<double>();
   }
   if (cfg["enable_gravity_compensation"]) {
+    // Deprecated: torque OSC always compensates g(q)+C·v. Parsed for YAML
+    // back-compat but has no effect on the control law.
     g.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
   }
   if (cfg["trajectory_speed"]) {
@@ -499,11 +571,20 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["max_traj_angular_velocity"]) {
     g.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
   }
-  gains_lock_.Store(g);
+  // OSC is a torque controller (operational-space law outputs N·m). Reject any
+  // other command_type fail-fast instead of silently mislabelling the output.
+  // Position/velocity task control belongs to ClikController. Validate BEFORE
+  // committing the parsed gains, so a rejected reconfigure does not mutate the
+  // live RT gains (issue #172 — non-atomic config application).
   if (cfg["command_type"]) {
     const auto s = cfg["command_type"].as<std::string>();
-    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
+    if (s != "torque") {
+      throw std::runtime_error("OperationalSpaceController: command_type must be 'torque' (got '" +
+                               s + "'); use ClikController for position/velocity task control");
+    }
   }
+  gains_lock_.Store(g);
+  command_type_ = CommandType::kTorque;
 }
 
 }  // namespace rtc

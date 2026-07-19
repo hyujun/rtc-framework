@@ -1,0 +1,415 @@
+// test_dof_dynamics.cpp — #172 Phase 1-2 "deeper AC" coverage that the all-Z
+// serial_6dof.urdf fixture structurally cannot provide:
+//
+//   (1) 7-DOF generalization — P / JointPD / CLIK must index nv = 7 gain,
+//       target and dynamics buffers without the out-of-bounds read that the
+//       former hard-coded 6-DOF storage caused (serial_7dof.urdf, kMaxRobotDOF
+//       capacity = 12).
+//
+//   (2) Non-Z dynamics magnitude — on serial_6dof every joint axis is Z, so
+//       g(q) ≡ 0 and C(q,v) ≈ 0 and the existing tests can only assert
+//       finiteness. planar_3r.urdf (Y-axis joints) has substantial g and C, so
+//       torque OSC / JointPD gravity + Coriolis compensation is checked in
+//       *magnitude* against the RNEA identity computed by an independent
+//       RtModelHandle (the same identity asserted in rtc_urdf_bridge).
+//
+//   (3) Device order vs URDF order — the core controllers currently map device
+//       channel i → URDF joint i with no name-based reorder (that is Phase 3).
+//       This pins that identity contract and proves a device/URDF order
+//       mismatch is *observable* (not silently absorbed), anchoring Phase 3.
+//
+// Reference dynamics come from a freshly-built RtModelHandle (bridge = model
+// provider, controller = consumer), never from the controller under test.
+
+#include "rtc_controllers/direct/joint_pd_controller.hpp"
+#include "rtc_controllers/direct/operational_space_controller.hpp"
+#include "rtc_controllers/indirect/clik_controller.hpp"
+#include "rtc_controllers/indirect/p_controller.hpp"
+#include "test_urdf_path.hpp"
+#include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
+#include <rtc_urdf_bridge/rt_model_handle.hpp>
+
+#include <Eigen/Dense>
+#include <gtest/gtest.h>
+
+#include <array>
+#include <cmath>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace {
+
+namespace rub = rtc_urdf_bridge;
+
+std::string UrdfPath(const std::string& name) {
+  return rtc::test::TestUrdfPath(name);
+}
+
+rtc::ControllerState MakeState(int nj, double dt = 0.002) {
+  rtc::ControllerState state{};
+  state.num_devices = 1;
+  state.dt = dt;
+  state.devices[0].num_channels = nj;
+  state.devices[0].valid = true;
+  return state;
+}
+
+// Independent model handle for the same fixture — the ground-truth dynamics
+// provider the controllers are validated against.
+std::unique_ptr<rub::RtModelHandle> MakeHandle(const std::string& urdf) {
+  rub::ModelConfig cfg;
+  cfg.urdf_path = urdf;
+  cfg.root_joint_type = "fixed";
+  rub::PinocchioModelBuilder builder(cfg);
+  return std::make_unique<rub::RtModelHandle>(builder.GetFullModel());
+}
+
+// Independent gravity reference via the RNEA identity g(q) == RNEA(q, 0, 0).
+// Deliberately a DIFFERENT code path from the controller's
+// ComputeGeneralizedGravity so a shared sign/convention bug cannot hide behind
+// a circular comparison.
+Eigen::VectorXd RefGravity(const std::string& urdf, const std::vector<double>& q) {
+  auto h = MakeHandle(urdf);
+  const std::vector<double> zero(q.size(), 0.0);
+  h->ComputeInverseDynamics(q, zero, zero);
+  return h->GetTau();
+}
+
+// A device config that lifts the torque clamp so the end-to-end command equals
+// the analytic dynamics term (default fallback would clip ~N·m torques).
+std::map<std::string, rtc::DeviceNameConfig> UnclampedTorqueConfig(int nj) {
+  rtc::DeviceNameConfig cfg;
+  cfg.device_name = "arm";
+  rtc::DeviceJointLimits lim;
+  lim.max_torque.assign(static_cast<std::size_t>(nj), 1.0e6);
+  lim.max_velocity.assign(static_cast<std::size_t>(nj), 1.0e6);
+  cfg.joint_limits = lim;
+  std::map<std::string, rtc::DeviceNameConfig> m;
+  m.emplace("arm", std::move(cfg));
+  return m;
+}
+
+}  // namespace
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// (1) 7-DOF generalization — no out-of-bounds gain/target/dynamics access
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(SevenDof, PControllerUsesSeventhGain) {
+  // Regression for the former array<double,6> kp: the 7th joint's gain (kp[6])
+  // must be a real value, not an out-of-bounds read. Default kp[6] = 80.0.
+  rtc::PController ctrl(UrdfPath("serial_7dof.urdf"));
+  auto state = MakeState(7);
+  (void)ctrl.Compute(state);
+
+  std::array<double, 7> target{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5};
+  ctrl.SetDeviceTarget(0, target);
+  auto out = ctrl.Compute(state);
+
+  EXPECT_TRUE(out.valid);
+  EXPECT_EQ(out.devices[0].num_channels, 7);
+  // command[6] = pos + kp[6]·error·dt = 0 + 80·0.5·0.002 = 0.08.
+  EXPECT_NEAR(out.devices[0].commands[6], 80.0 * 0.5 * 0.002, 1e-9);
+  for (std::size_t i = 0; i < 7; ++i) {
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[i])) << "ch " << i;
+  }
+}
+
+TEST(SevenDof, PControllerLoadConfigRequiresSevenGains) {
+  // The YAML kp length must equal the model DOF (nv = 7); a 6-length kp that
+  // silently passed before is now a fail-fast configuration error.
+  rtc::PController ctrl(UrdfPath("serial_7dof.urdf"));
+  YAML::Node six = YAML::Load("kp: [1, 2, 3, 4, 5, 6]");
+  EXPECT_THROW(ctrl.LoadConfig(six), std::runtime_error);
+
+  rtc::PController ok(UrdfPath("serial_7dof.urdf"));
+  YAML::Node seven = YAML::Load("kp: [1, 2, 3, 4, 5, 6, 7]");
+  EXPECT_NO_THROW(ok.LoadConfig(seven));
+  const auto g = ok.get_gains();
+  EXPECT_DOUBLE_EQ(g.kp[6], 7.0);
+}
+
+TEST(SevenDof, JointPdSeventhChannelGainsAndGravity) {
+  // Concrete OOB guards on the 7th channel (index 6), stronger than finiteness:
+  //   (a) LoadConfig writes and get_gains() reads kp[6]/kd[6];
+  //   (b) gravity compensation reproduces the model's g(q) at every index
+  //       including 6. serial_7dof has mixed Z/Y axes so g(q) is non-zero.
+  const std::string urdf = UrdfPath("serial_7dof.urdf");
+
+  rtc::JointPDController cfgctrl(urdf);
+  cfgctrl.LoadConfig(
+      YAML::Load("kp: [1, 2, 3, 4, 5, 6, 7]\nkd: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]\n"
+                 "enable_gravity_compensation: true"));
+  EXPECT_DOUBLE_EQ(cfgctrl.get_gains().kp[6], 7.0);
+  EXPECT_DOUBLE_EQ(cfgctrl.get_gains().kd[6], 0.7);
+
+  const std::vector<double> q{0.1, 0.5, -0.3, 0.4, -0.2, 0.3, -0.1};
+  const Eigen::VectorXd g_ref = RefGravity(urdf, q);
+  ASSERT_GT(g_ref.norm(), 0.1) << "mixed-axis 7-DOF must load gravity";
+
+  rtc::JointPDController::Gains gains;
+  gains.enable_gravity_compensation = true;
+  rtc::JointPDController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(UnclampedTorqueConfig(7));
+  auto state = MakeState(7);
+  for (std::size_t i = 0; i < 7; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seed hold target (zero PD error next tick)
+  auto out = ctrl.Compute(state);
+
+  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+  EXPECT_EQ(out.devices[0].num_channels, 7);
+  const auto grav = ctrl.gravity_torques();
+  for (std::size_t i = 0; i < 7; ++i) {
+    EXPECT_NEAR(grav[i], g_ref[static_cast<Eigen::Index>(i)], 1e-6) << "grav[" << i << "]";
+    EXPECT_NEAR(out.devices[0].commands[i], g_ref[static_cast<Eigen::Index>(i)], 1e-6)
+        << "cmd[" << i << "]";
+  }
+}
+
+TEST(SevenDof, ClikSevenChannelsHoldAtCurrent) {
+  // 7-DOF redundant arm: CLIK's null-space projection spans nv = 7. Stronger
+  // than finiteness — at the self-seeded hold (task target = current FK pose)
+  // the IK command must stay near the CURRENT joint angles across all 7
+  // channels, so a wrong value at the 7th channel (index 6) would be caught.
+  rtc::ClikController::Gains gains;
+  gains.enable_null_space = true;
+  rtc::ClikController ctrl(UrdfPath("serial_7dof.urdf"), gains);
+  auto state = MakeState(7);
+  const std::array<double, 7> q{0.1, 0.4, -0.2, 0.6, 0.1, -0.3, 0.2};
+  for (std::size_t i = 0; i < 7; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seed hold target from current pose
+  auto out = ctrl.Compute(state);
+
+  EXPECT_TRUE(out.valid);
+  EXPECT_EQ(out.command_type, rtc::CommandType::kPosition);
+  EXPECT_EQ(out.devices[0].num_channels, 7);
+  for (std::size_t i = 0; i < 7; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], q[i], 0.05) << "ch " << i;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// (2) Non-Z dynamics — RNEA identity anchor + controller magnitude checks
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(PlanarDynamics, RneaIdentityGivesNonTrivialGravityAndCoriolis) {
+  // Anchor: on the Y-axis planar arm the model's g(q) and C(q,v)·v are both
+  // substantial, and g(q) == RNEA(q,0,0), nle(q,v) == RNEA(q,v,0). This is what
+  // makes the controller magnitude assertions below meaningful (serial_6dof's
+  // all-Z axes make both terms ~0, so they can only be finiteness-checked).
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  auto h = MakeHandle(urdf);
+  ASSERT_EQ(h->nv(), 3);
+
+  const std::vector<double> q_flat{0.0, 0.0, 0.0};  // horizontal → peak gravity
+  const std::vector<double> zero{0.0, 0.0, 0.0};
+
+  h->ComputeGeneralizedGravity(q_flat);
+  const Eigen::VectorXd g = h->GetGeneralizedGravity();
+  h->ComputeInverseDynamics(q_flat, zero, zero);
+  const Eigen::VectorXd tau_grav = h->GetTau();
+  EXPECT_LT((g - tau_grav).norm(), 1e-9) << "RNEA(q,0,0) must equal g(q)";
+  EXPECT_GT(g.norm(), 1.0) << "planar arm gravity must be substantial (non-Z axes)";
+
+  const std::vector<double> q_bent{0.3, -0.6, 0.4};
+  const std::vector<double> v{0.5, -0.4, 0.6};
+  h->ComputeGeneralizedGravity(q_bent);
+  const Eigen::VectorXd g_bent = h->GetGeneralizedGravity();
+  h->ComputeNonLinearEffects(q_bent, v);
+  const Eigen::VectorXd nle = h->GetNonLinearEffects();
+  h->ComputeInverseDynamics(q_bent, v, zero);
+  const Eigen::VectorXd tau_nle = h->GetTau();
+  EXPECT_LT((nle - tau_nle).norm(), 1e-9) << "RNEA(q,v,0) must equal nle(q,v)";
+  const Eigen::VectorXd cv = nle - g_bent;  // Coriolis/centrifugal C(q,v)·v
+  EXPECT_GT(cv.norm(), 1e-3) << "Coriolis term must be non-trivial at a bent config";
+}
+
+TEST(PlanarDynamics, JointPdGravityMatchesModelMagnitude) {
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::vector<double> q{0.2, -0.5, 0.3};
+  const Eigen::VectorXd g_ref = RefGravity(urdf, q);
+  ASSERT_GT(g_ref.norm(), 0.1) << "fixture must produce real gravity";
+
+  rtc::JointPDController::Gains gains;
+  gains.enable_gravity_compensation = true;
+  gains.enable_coriolis_compensation = false;
+  rtc::JointPDController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(UnclampedTorqueConfig(3));  // lift torque clamp
+
+  auto state = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seed hold target (zero PD error next tick)
+  auto out = ctrl.Compute(state);
+
+  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+  // Accessor mirrors g(q) exactly (pre-clamp).
+  const auto grav = ctrl.gravity_torques();
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(grav[i], g_ref[static_cast<Eigen::Index>(i)], 1e-6) << "grav[" << i << "]";
+  }
+  // At the seeded hold pose the whole torque command IS the gravity term.
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], g_ref[static_cast<Eigen::Index>(i)], 1e-6)
+        << "cmd[" << i << "]";
+  }
+}
+
+TEST(PlanarDynamics, JointPdCoriolisMatchesModelMagnitude) {
+  // Gravity OFF, Coriolis ON, at the seeded hold pose with a non-zero velocity:
+  // PD error is zero, so the entire torque command equals C(q,v)·v.
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::vector<double> q{0.3, -0.6, 0.4};
+  const std::vector<double> v{0.5, -0.4, 0.6};
+
+  auto h = MakeHandle(urdf);
+  h->ComputeGeneralizedGravity(q);
+  const Eigen::VectorXd g_ref = h->GetGeneralizedGravity();
+  h->ComputeNonLinearEffects(q, v);
+  const Eigen::VectorXd cv_ref = h->GetNonLinearEffects() - g_ref;
+  ASSERT_GT(cv_ref.norm(), 1e-3) << "fixture must produce real Coriolis";
+
+  rtc::JointPDController::Gains gains;
+  gains.enable_gravity_compensation = false;
+  gains.enable_coriolis_compensation = true;
+  rtc::JointPDController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(UnclampedTorqueConfig(3));
+
+  auto state = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i) {
+    state.devices[0].positions[i] = q[i];
+    state.devices[0].velocities[i] = v[i];
+  }
+  (void)ctrl.Compute(state);  // seed hold target
+  auto out = ctrl.Compute(state);
+
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], cv_ref[static_cast<Eigen::Index>(i)], 1e-6)
+        << "cmd[" << i << "]";
+  }
+}
+
+TEST(PlanarDynamics, OscHoldTorqueEqualsGravity) {
+  // Torque OSC at the self-seeded hold pose (zero task error, zero velocity,
+  // zero posture torque with default null_kp = 0): τ = Jᵀ·0 + h + Nᵀ·0 = g(q).
+  // NOTE: at hold F = Λ·a_task = 0, so this checks the gravity term only; the
+  // operational-space mapping (Λ, M⁻¹Jᵀ, JᵀF) is exercised by the companion
+  // OscTaskForceMovesBeyondGravity test below (non-zero task error → F ≠ 0).
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::vector<double> q{0.3, -0.6, 0.4};
+  const Eigen::VectorXd g_ref = RefGravity(urdf, q);
+  ASSERT_GT(g_ref.norm(), 0.1);
+
+  rtc::OperationalSpaceController::Gains gains;
+  rtc::OperationalSpaceController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(UnclampedTorqueConfig(3));
+
+  auto state = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seeds task target from current FK pose
+  auto out = ctrl.Compute(state);
+
+  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], g_ref[static_cast<Eigen::Index>(i)], 1e-3)
+        << "cmd[" << i << "] should be the gravity compensation";
+  }
+}
+
+TEST(PlanarDynamics, OscTaskForceMovesBeyondGravity) {
+  // Drives the operational-space law itself (not just gravity-at-rest): with a
+  // persistent task-space position error the task force F = Λ·a_task ≠ 0, so
+  // τ = Jᵀ·F + g must differ from pure gravity g(q) by the Jᵀ·F term. This
+  // exercises Λ⁻¹, the M⁻¹Jᵀ Cholesky solve and the JᵀF mapping — all of which
+  // are exactly zero at the hold pose and would be masked by the degenerate-M
+  // τ = h fallback. null_kd is inert here (nv = 3 ≤ 6 → null-space gated off).
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const std::vector<double> q{0.3, -0.6, 0.4};  // bent → well-conditioned J
+  const Eigen::VectorXd g_ref = RefGravity(urdf, q);
+
+  rtc::OperationalSpaceController::Gains gains;
+  gains.trajectory_speed = 1.0;
+  rtc::OperationalSpaceController ctrl(urdf, gains);
+  ctrl.SetDeviceNameConfigs(UnclampedTorqueConfig(3));
+
+  auto state = MakeState(3);
+  for (std::size_t i = 0; i < 3; ++i)
+    state.devices[0].positions[i] = q[i];
+  (void)ctrl.Compute(state);  // seed task target from current FK pose
+  auto out0 = ctrl.Compute(state);
+
+  // Offset the task target in x; the state stays fixed so a persistent task
+  // error builds up as the trajectory advances toward the (unreachable) goal.
+  std::array<double, 6> target{};
+  for (std::size_t i = 0; i < 6; ++i)
+    target[i] = out0.actual_task_positions[i];
+  target[0] += 0.15;
+  ctrl.SetDeviceTarget(0, target);
+
+  rtc::ControllerOutput out{};
+  for (int k = 0; k < 40; ++k)
+    out = ctrl.Compute(state);
+
+  double dnorm = 0.0;
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[i])) << "cmd[" << i << "]";
+    dnorm += std::abs(out.devices[0].commands[i] - g_ref[static_cast<Eigen::Index>(i)]);
+  }
+  EXPECT_GT(dnorm, 1e-2)
+      << "with a task error τ = JᵀF + g must exceed pure gravity (operational-space law is live)";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// (3) Device order vs URDF order — identity contract is observable (Phase 3 anchor)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(JointOrder, GravityIsChannelOrderSensitive) {
+  // Pins the CURRENT contract: the controllers consume device channel i as URDF
+  // joint i, positionally, with no name-based reorder. Two facts are asserted:
+  //   (1) gravity for a config equals the model's g at that config (positional
+  //       consumption), and
+  //   (2) the fixture's gravity is order-asymmetric (permuting joints changes g).
+  // Together these mean that IF a device delivered joints in a different order
+  // than the URDF, the dynamics would be wrong — i.e. joint order matters.
+  //
+  // LIMITATION (Phase 3): this does NOT feed the controller a device-name order
+  // that disagrees with URDF order — that requires the joint_state_names →
+  // RtModelHandle::SetJointOrder wiring Phase 3 adds. The hard-correctness test
+  // (permuted device order → output reordered back to device order) is deferred
+  // to that unit; assertion (2) only establishes the fixture precondition for it.
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+
+  const std::array<double, 3> qa{0.4, -0.3, 0.6};
+  const std::array<double, 3> qb{0.6, -0.3, 0.4};  // swap channels 0 and 2
+
+  auto gravity_of = [&](const std::array<double, 3>& cfg) {
+    rtc::JointPDController::Gains g;
+    g.enable_gravity_compensation = true;
+    rtc::JointPDController ctrl(urdf, g);
+    auto st = MakeState(3);
+    for (std::size_t i = 0; i < 3; ++i)
+      st.devices[0].positions[i] = cfg[i];
+    (void)ctrl.Compute(st);
+    (void)ctrl.Compute(st);
+    return ctrl.gravity_torques();
+  };
+
+  const auto ga = gravity_of(qa);
+  const auto gb = gravity_of(qb);
+
+  // Identity contract: gravity for the permuted config equals the model's g at
+  // that permuted config (channels consumed positionally, in URDF order).
+  const Eigen::VectorXd ref_b = RefGravity(urdf, {qb[0], qb[1], qb[2]});
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(gb[i], ref_b[static_cast<Eigen::Index>(i)], 1e-6) << "gb[" << i << "]";
+  }
+  // The permutation is NOT gravity-symmetric → the mismatch is detectable
+  // (a name-based reorder would be required to make the two agree).
+  const double delta = std::abs(ga[0] - gb[0]) + std::abs(ga[2] - gb[2]);
+  EXPECT_GT(delta, 1e-2) << "permuting joint order must change g → mismatch observable";
+}

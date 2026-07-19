@@ -11,10 +11,12 @@
 #include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
 
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -541,7 +543,10 @@ TEST(OSC, ComputeWithPosError) {
   EXPECT_TRUE(goal_updated) << "OSC task_goal_positions should update after SetDeviceTarget";
 }
 
-TEST(OSC, InitializeHoldPosition) {
+TEST(OSC, InitializeHoldTorque) {
+  // #172: OSC is now a torque controller. At the self-initialised hold pose
+  // (zero task error, zero velocity) on the all-Z test model (g ≈ 0, C ≈ 0),
+  // the operational-space torque is ≈ 0 N·m and always finite.
   rtc::OperationalSpaceController::Gains gains;
   rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
 
@@ -549,15 +554,24 @@ TEST(OSC, InitializeHoldPosition) {
   state.devices[0].positions[0] = 0.3;
   state.devices[0].positions[1] = -0.2;
 
-  (void)ctrl.Compute(state);
+  (void)ctrl.Compute(state);  // seeds the target from the current TCP pose
   auto out = ctrl.Compute(state);
 
-  // After InitializeHoldPosition, commands should stay near current joints
+  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
   for (int i = 0; i < 6; ++i) {
-    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
-                state.devices[0].positions[static_cast<std::size_t>(i)], 0.05)
-        << "Joint " << i;
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[ui])) << "Joint " << i;
+    EXPECT_NEAR(out.devices[0].commands[ui], 0.0, 1e-3) << "Joint " << i;
   }
+}
+
+TEST(OSC, NonTorqueCommandTypeThrows) {
+  // #172: OSC outputs N·m; configuring a non-torque command type is rejected
+  // fail-fast rather than silently mislabelling the output.
+  rtc::OperationalSpaceController::Gains gains;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
+  YAML::Node cfg = YAML::Load("command_type: position");
+  EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
 }
 
 TEST(OSC, Estop) {
