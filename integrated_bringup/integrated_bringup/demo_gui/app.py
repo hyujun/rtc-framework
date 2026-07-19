@@ -2782,6 +2782,15 @@ class DemoControllerGUI(Node):
         # Also update the hand target entries on the Control tab
         self._set_hand_target_entries(positions_rad)
 
+    def _confirm_preset_overwrite(self, name: str) -> bool:
+        """True if saving under ``name`` may proceed — either the name is new,
+        or the user confirmed overwriting the existing preset."""
+        if name not in self._presets:
+            return True
+        return messagebox.askyesno(
+            "Confirm Overwrite", f"Preset '{name}' already exists. Overwrite it?"
+        )
+
     def _save_current_as_preset(self):
         name = self._preset_name_entry.get().strip()
         if not name:
@@ -2813,6 +2822,8 @@ class DemoControllerGUI(Node):
                     round(v, 4) if i < 3 else round(math.degrees(v), 4)
                     for i, v in enumerate(self.current_task_positions)
                 ]
+        if not self._confirm_preset_overwrite(name):
+            return
         self._presets[name] = preset_data
         self._save_presets_to_file()
         self._refresh_preset_tree()
@@ -2864,6 +2875,8 @@ class DemoControllerGUI(Node):
                         "Invalid Input", "Task target entries contain invalid values."
                     )
                     return
+        if not self._confirm_preset_overwrite(name):
+            return
         self._presets[name] = preset_data
         self._save_presets_to_file()
         self._refresh_preset_tree()
