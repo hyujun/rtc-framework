@@ -60,7 +60,7 @@ jobs:
       cpp: ${{ steps.filter.outputs.cpp }}
       python: ${{ steps.filter.outputs.python }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
         with:
@@ -111,7 +111,7 @@ jobs:
       lint_cpp: ${{ steps.load.outputs.lint_cpp }}
       coverage_paths: ${{ steps.load.outputs.coverage_paths }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Parse ci-packages.yml
         id: load
         run: |
@@ -153,7 +153,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-rtc-env
@@ -182,7 +182,7 @@ jobs:
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-rtc-env
@@ -234,7 +234,7 @@ jobs:
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-rtc-env
@@ -328,7 +328,7 @@ jobs:
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: "1G"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-rtc-env
@@ -432,7 +432,7 @@ jobs:
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: "2G"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-rtc-env
