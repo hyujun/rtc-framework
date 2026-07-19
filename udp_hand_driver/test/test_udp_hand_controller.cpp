@@ -330,6 +330,13 @@ TEST_F(FakeHandControllerTest, Callback_Invoked) {
   cmd[0] = 42.0f;
   SendAndSettle(*controller_, cmd);
 
+  // CommLoop publishes state (state_seqlock_.Store) BEFORE invoking callback_,
+  // so a settled GetLatestState() does not imply the callback already ran this
+  // tick — nor that the latest callback carried the settled position. Poll for
+  // both instead of asserting instantly (race observed as a CI failure under
+  // parallel package tests, PR #187).
+  EXPECT_TRUE(
+      PollUntil([&] { return callback_count.load() > 0 && last_pos0.load() == 42.0f; }, 1s));
   EXPECT_GT(callback_count.load(), 0);
   EXPECT_FLOAT_EQ(last_pos0.load(), 42.0f);
 }
