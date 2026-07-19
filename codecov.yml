@@ -45,8 +45,10 @@ coverage:
           - "rtc_controller_manager/"
     patch:
       default:
-        target: 60%
-        threshold: 5%
+        # #148 Phase 2: 측정 실측화(#144, #146) 후 신규/변경 라인 기준 상향.
+        # threshold 3% → 실질 하한 67%.
+        target: 70%
+        threshold: 3%
         if_ci_failed: success
 
 # 활성 flag (ci-packages.yml 의 test_cpp / test_python 과 정합).
