@@ -26,8 +26,22 @@
 ### 필수 패키지 설치
 
 ```bash
-sudo apt install gdb
+sudo apt install gdb clangd libomp-dev
 ```
+
+`install.sh` 는 `--skip-debug` 를 주지 않는 한 위 셋을 자동 설치합니다 (GDB/ptrace 정책 = `install_vscode_debug_tools`, clangd/OpenMP 헤더 = `install_code_intelligence_tools` — 둘 다 같은 `--skip-debug` 게이트).
+
+> [!IMPORTANT]
+> `libomp-dev` 는 선택 사항이 아닙니다. pinocchio/proxsuite 헤더가 `<omp.h>` 를 include 하는데 clangd 자체 resource-dir 에는 `omp.h` 가 없어, 없으면 preamble 이 실패하고 `omp.h file not found` → `no member` → `Eigen::MatrixXd (aka int)` 연쇄 진단이 발생합니다 (issue #193).
+> `libomp-dev` 는 `clangd` 메타 패키지와 같은 LLVM major 로 해석되어 (Noble: 18) `omp.h` 를 clangd resource-dir 에 정확히 설치하므로, `.clangd` 에 추가 플래그가 필요 없습니다.
+> VS Code 는 PATH 의 system `clangd` 를 사용합니다. 비표준 clangd 바이너리를 쓴다면 그 resource-dir 에 `omp.h` 가 있는지 직접 확인하세요.
+>
+> ```bash
+> # 실행 중인 clangd major 기준 resource-dir 확인
+> ls /usr/lib/llvm-"$(clangd --version | grep -oP 'version \K[0-9]+')"/lib/clang/*/include/omp.h
+> ```
+>
+> GCC 의 compiler-internal include 디렉토리 (`/usr/lib/gcc/x86_64-linux-gnu/13/include`) 를 `.clangd` 에 추가해 `omp.h` 를 해결하려 하지 마세요 — GCC 의 `xmmintrin.h`/`mmintrin.h` 가 clang 것보다 앞에 놓여 `conflicting types for '_mm_prefetch'` 가 발생합니다. 같은 이유로 `BuiltinHeaders: QueryDriver` 도 채택하지 않습니다.
 
 ### VS Code 확장 설치
 
@@ -299,6 +313,40 @@ ros2 node list
 1. **Logpoint** 사용 (멈추지 않고 로그 출력)
 2. 코드에 `RCLCPP_DEBUG` 로그 추가 후 `ros2 run rqt_console rqt_console`로 관찰
 3. `data_logger`를 활용해 파일로 기록 후 오프라인 분석
+
+---
+
+### ❌ clangd가 존재하는 member에 `no member named ...` / Eigen 타입이 `aka int`
+
+거의 항상 **실제 API 문제가 아니라 preamble 실패에서 파생된 recovery 진단**입니다. 로그의 **첫 번째** `file not found` / preamble 오류부터 해결하세요 — 그 하나가 뒤따르는 수십 개를 만듭니다.
+
+**리팩터 후 refresh 순서** (CMake target/include 변경, 새 파일, header 추가·이동 시):
+
+```text
+ws 루트에서 build  →  repo 루트 compile_commands.json merge  →  clangd restart  →  대표 파일 clangd --check
+```
+
+`build.sh` 는 빌드 성공 후 `merge_compile_commands.py` 를 자동 실행하므로 이것이 기본 경로입니다. VS Code 에서는 그 다음 `Ctrl+Shift+P` → **`clangd: Restart language server`** 를 실행해야 실행 중인 clangd 가 새 command/preamble 을 집습니다.
+
+증상이 남으면 다음 순서로 좁힙니다.
+
+1. 첫 `file not found` / preamble 오류 해결 (대부분 `omp.h` — §1 필수 패키지)
+2. clangd restart
+3. semantic diagnostic 은 사라졌는데 **references/completion 만** stale 할 때만 `.cache/clangd/index` 재생성
+
+> [!WARNING]
+> `.cache/clangd/index` 삭제를 `no member` 진단의 기본 해결책으로 쓰지 마세요. 열린 translation unit 의 semantic diagnostic 은 background symbol index 가 아니라 현재 AST/preamble 이 결정합니다.
+
+**CLI 로 직접 확인** (VS Code 없이 재현·검증):
+
+```bash
+clangd --check=rtc_controller_manager/src/rt_controller_node.cpp
+clangd --check=rtc_urdf_bridge/src/closure_state_publisher.cpp
+clangd --check=integrated_bringup/src/controllers/wbc/compute.cpp
+```
+
+> [!NOTE]
+> 판정 기준은 **전체 error count 0 이 아닙니다.** `clangd --check` 는 기능 self-test 결과 (`tweak: ExtractFunction ==> FAIL` 등) 도 error 로 세므로 정상 코드에서도 0 이 되지 않습니다. `pp_file_not_found` · `conflicting_types` (`_mm_prefetch`) · `no_member` · `aka int` · `fatal_too_many_errors` 가 **없으면** 정상입니다.
 
 ---
 

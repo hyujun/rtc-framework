@@ -106,7 +106,7 @@ show_help() {
   echo "  --skip-build      Skip compiling the packages (only download/setup)"
   echo "  --skip-rt         Skip RT system setup (overrides --all)"
   echo "  --skip-mpc        Skip MPC source-built deps (fmt/mimalloc/aligator)"
-  echo "  --skip-debug      Skip GDB/debugger tools installation"
+  echo "  --skip-debug      Skip developer tooling (GDB/debugger + clangd/libomp-dev)"
   echo "  --ptrace-scope    Set ptrace_scope=0 for VS Code Attach debugger"
   echo "                    (Required for 'Attach to Node' launch configuration)"
   echo "  --tracing         Install ros2_tracing stack (lttng-modules-dkms + lttng-tools"
@@ -468,8 +468,9 @@ if [[ "$SKIP_DEPS" -eq 0 ]]; then
 
   if [[ "$SKIP_DEBUG_SETUP" -eq 0 ]]; then
     install_vscode_debug_tools
+    install_code_intelligence_tools
   else
-    info "Skipping GDB/debugger tools installation (--skip-debug)"
+    info "Skipping developer tooling (GDB/debugger + clangd) installation (--skip-debug)"
   fi
 
   if [[ "$SET_TRACING_TOOLS" -eq 1 ]]; then
