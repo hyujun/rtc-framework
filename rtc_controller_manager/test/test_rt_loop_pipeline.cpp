@@ -143,10 +143,25 @@ TEST_F(RtLoopPipelineTest, TickCopiesStateAndWritesCommandInline) {
 // by out-of-tree implementations. Before the fix both were cast straight to
 // size_t and handed to copy_n, so a negative count wrapped to a huge length and
 // an over-capacity count walked past the fixed array — an out-of-bounds copy on
-// the RT thread. The count the backend observes must be the bounded one, since
-// that is what reaches the wire.
+// the RT thread.
+//
+// Two layers now cover that, and the split matters for reading these tests:
+//
+//   - BoundedCount (this issue's memory-safety hotfix) still clamps every
+//     count used as a copy length. It is unconditional and remains the
+//     guarantee that no length can ever run off an array.
+//   - ValidateControllerOutput (Phase 4) sits in front of it and *rejects* an
+//     output whose counts are out of contract, so it never reaches the wire
+//     at all.
+//
+// The two output-side cases below therefore assert the reject contract, not
+// the clamp: an out-of-contract count means the tick is held, not truncated
+// and forwarded. That is a deliberate contract change — forwarding a
+// silently-shortened command vector to an actuator was never safe, it was
+// only memory-safe. The state-side case keeps asserting the clamp, because a
+// faulty *backend* count is not grounds for rejecting the controller.
 
-TEST_F(RtLoopPipelineTest, OverlargeOutputChannelCountIsClampedToCapacity) {
+TEST_F(RtLoopPipelineTest, OverlargeOutputChannelCountIsRejectedAndHeld) {
   PipelineTestController::output_num_channels.store(kOverCapacityChannels,
                                                     std::memory_order_relaxed);
 
@@ -159,16 +174,18 @@ TEST_F(RtLoopPipelineTest, OverlargeOutputChannelCountIsClampedToCapacity) {
   backend->FireStateReady();
   ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
 
-  EXPECT_EQ(kMaxDeviceChannels, backend->LastNumChannels());
-  // The in-contract commands still arrive — clamping bounds the length only.
-  EXPECT_DOUBLE_EQ(PipelineTestController::kCmd0, backend->LastCommands()[0]);
-  EXPECT_DOUBLE_EQ(PipelineTestController::kCmd1, backend->LastCommands()[1]);
+  // The count on the wire comes from the device state, not from the rejected
+  // output — and the controller's commands never arrive.
+  EXPECT_EQ(2, backend->LastNumChannels());
+  EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos0, backend->LastCommands()[0]);
+  EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos1, backend->LastCommands()[1]);
+  EXPECT_GT(ControllerLifecycleTestAccess::GetRejectedOutputCount(*node), 0U);
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
-TEST_F(RtLoopPipelineTest, NegativeOutputChannelCountIsClampedToZero) {
+TEST_F(RtLoopPipelineTest, NegativeOutputChannelCountIsRejectedAndHeld) {
   PipelineTestController::output_num_channels.store(-1, std::memory_order_relaxed);
 
   auto node = MakeNode(/*control_rate=*/250.0);
@@ -180,7 +197,13 @@ TEST_F(RtLoopPipelineTest, NegativeOutputChannelCountIsClampedToZero) {
   backend->FireStateReady();
   ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
 
-  EXPECT_EQ(0, backend->LastNumChannels());
+  // Previously this asserted a zero-length command reached the backend. A
+  // zero-length write is a well-formed message that commands nothing, which
+  // some backends read as "hold" and others as "no update" — the hold makes
+  // the intent explicit instead of leaving it to the backend.
+  EXPECT_EQ(2, backend->LastNumChannels());
+  EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos0, backend->LastCommands()[0]);
+  EXPECT_GT(ControllerLifecycleTestAccess::GetRejectedOutputCount(*node), 0U);
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
@@ -337,7 +360,8 @@ TEST_F(OutputValidationTest, RejectCounterMatchesInjectedFaultTicks) {
 
   // Ground truth (what the controller emitted) against the node's own tally —
   // neither over- nor under-counts.
-  EXPECT_EQ(static_cast<uint64_t>(kFaultTicks), ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+  EXPECT_EQ(static_cast<uint64_t>(kFaultTicks),
+            ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
@@ -350,7 +374,8 @@ TEST_F(OutputValidationTest, EstopThresholdIsDerivedFromControlRate) {
   // floor takes over at the low end of the supported rate range.
   auto slow = MakeNode(/*control_rate=*/100.0);
   ASSERT_EQ(CallbackReturn::SUCCESS, slow->on_configure(StateUnconfigured()));
-  EXPECT_EQ(10U, ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*slow));  // 0.1 * 100 = 10, at the floor
+  EXPECT_EQ(10U, ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(
+                     *slow));  // 0.1 * 100 = 10, at the floor
   EXPECT_EQ(CallbackReturn::SUCCESS, slow->on_cleanup(StateInactive()));
 
   auto mid = MakeNode(/*control_rate=*/250.0);
@@ -429,7 +454,9 @@ TEST_F(OutputValidationTest, ValidationKeepsHoldingAfterEstop) {
   ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::IsEstopped(*node); }, 3000ms));
 
   const uint64_t after_estop = ControllerLifecycleTestAccess::GetRejectedOutputCount(*node);
-  ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::GetRejectedOutputCount(*node) > after_estop; }, 2000ms));
+  ASSERT_TRUE(WaitFor(
+      [&] { return ControllerLifecycleTestAccess::GetRejectedOutputCount(*node) > after_estop; },
+      2000ms));
   ExpectHeldAtMeasuredPosition(backend);
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
