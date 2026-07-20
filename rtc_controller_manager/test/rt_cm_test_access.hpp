@@ -218,6 +218,13 @@ class ControllerLifecycleTestAccess {
     return node.controller_slot_mappings_[ctrl_idx].capabilities[group_idx];
   }
 
+  // Number of controllers the bring-up registered. Zero after a refused
+  // configure (issue #196 fail-closed): nothing is left as an active or
+  // switch candidate.
+  static std::size_t GetControllerCount(const RtControllerNode& node) {
+    return node.controllers_.size();
+  }
+
   static DeviceBackend* GetBackend(RtControllerNode& node, std::size_t slot) {
     return slot < static_cast<std::size_t>(RtControllerNode::kMaxDevices)
                ? node.backends_[slot].get()

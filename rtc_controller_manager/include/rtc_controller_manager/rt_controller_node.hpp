@@ -123,7 +123,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   // ── Initialisation helpers ────────────────────────────────────────────────
   void CreateCallbackGroups();
-  void DeclareAndLoadParameters();
+  // Returns false when controller bring-up failed and the whole configure
+  // must be refused (issue #196 §1 — fail-closed). A controller whose config
+  // is invalid, or whose PreConfigure/on_configure reported non-SUCCESS, is
+  // never left registered as an active/switch candidate.
+  [[nodiscard]] bool DeclareAndLoadParameters();
+
+  // Drops everything controller bring-up accumulates. Called before Pass 1 so
+  // a retry cannot register a controller twice, and on every refusal so a
+  // failed configure leaves no controller behind as an active/switch
+  // candidate.
+  void ResetControllerBringUpState();
   // Issue #138: controller-YAML target subscriptions are controller-owned
   // (per-controller LifecycleNode, created in integrated_bringup owned_topics).
   // Device-wire state/motor/sensor lanes are owned by DeviceBackend impls

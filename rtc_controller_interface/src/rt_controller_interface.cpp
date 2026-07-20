@@ -100,9 +100,24 @@ RTControllerInterface::~RTControllerInterface() = default;
 // noexcept contract: transitions that touch YAML/allocators must catch all
 // exceptions and report FAILURE via CallbackReturn.
 
+// Roll back the base-owned state a failed configure attempt may have left
+// behind, then latch kFailed.
+//
+// Only base-owned state can be undone here: a derived LoadConfig() that threw
+// halfway through its own members is not unwound, and there is no general way
+// to do so. The safety property does not depend on it — kFailed is terminal
+// until on_cleanup(), so a controller carrying half-parsed derived state can
+// never be configured, activated, or reach RT Compute().
+void RTControllerInterface::FailConfigure() noexcept {
+  node_.reset();
+  topic_config_ = TopicConfig{};
+  config_state_ = ConfigState::kFailed;
+}
+
 RTControllerInterface::CallbackReturn RTControllerInterface::PreConfigure(
     rclcpp_lifecycle::LifecycleNode::SharedPtr node, const YAML::Node& yaml_cfg) noexcept {
   if (!node) {
+    FailConfigure();
     return CallbackReturn::FAILURE;
   }
   node_ = std::move(node);
@@ -111,24 +126,42 @@ RTControllerInterface::CallbackReturn RTControllerInterface::PreConfigure(
   } catch (const std::exception& e) {
     RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"), "[%s] LoadConfig failed: %s",
                  std::string(Name()).c_str(), e.what());
+    FailConfigure();
     return CallbackReturn::FAILURE;
   } catch (...) {
     RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
                  "[%s] LoadConfig failed: unknown exception", std::string(Name()).c_str());
+    FailConfigure();
     return CallbackReturn::FAILURE;
   }
+  config_state_ = ConfigState::kPreConfigured;
   return CallbackReturn::SUCCESS;
 }
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/,
     rclcpp_lifecycle::LifecycleNode::SharedPtr node, const YAML::Node& yaml_cfg) noexcept {
+  // Fail-closed re-entry (issue #196 §1): a controller whose PreConfigure
+  // failed must not be resurrected here. The old guard keyed off `node_ !=
+  // nullptr` alone, which is exactly the state a failed PreConfigure used to
+  // leave behind — so the failure silently turned into SUCCESS. FailConfigure
+  // now clears node_, but the explicit state check is what makes the
+  // guarantee: no configure path flips kFailed back without on_cleanup().
+  if (config_state_ == ConfigState::kFailed) {
+    RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
+                 "[%s] on_configure refused: controller is in the failed "
+                 "configure state (cleanup required before retry)",
+                 std::string(Name()).c_str());
+    return CallbackReturn::FAILURE;
+  }
+
   // Idempotent re-entry: when CM drives the 3-pass bring-up, PreConfigure has
   // already stored node_ and parsed yaml_cfg. Direct callers (unit tests,
   // legacy paths) skip PreConfigure, so we still accept the node + reparse
   // here.
   if (!node_) {
     if (!node) {
+      FailConfigure();
       return CallbackReturn::FAILURE;
     }
     node_ = std::move(node);
@@ -137,13 +170,16 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
     } catch (const std::exception& e) {
       RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"), "[%s] LoadConfig failed: %s",
                    std::string(Name()).c_str(), e.what());
+      FailConfigure();
       return CallbackReturn::FAILURE;
     } catch (...) {
       RCLCPP_ERROR(rclcpp::get_logger("rtc_controller_interface"),
                    "[%s] LoadConfig failed: unknown exception", std::string(Name()).c_str());
+      FailConfigure();
       return CallbackReturn::FAILURE;
     }
   }
+  config_state_ = ConfigState::kConfigured;
   return CallbackReturn::SUCCESS;
 }
 
@@ -164,6 +200,10 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_deactivate(
 RTControllerInterface::CallbackReturn RTControllerInterface::on_cleanup(
     const rclcpp_lifecycle::State& /*previous_state*/) noexcept {
   node_.reset();
+  // The one path out of kFailed. Cleanup is the explicit lifecycle transition
+  // back to Unconfigured, so a caller that has torn the controller down may
+  // configure it again from scratch; nothing else clears the failed latch.
+  config_state_ = ConfigState::kUnconfigured;
   return CallbackReturn::SUCCESS;
 }
 

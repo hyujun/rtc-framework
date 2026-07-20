@@ -156,7 +156,19 @@ void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode& node, YAML::
 
 // ── Initialisation helpers
 // ────────────────────────────────────────────────────
-void RtControllerNode::DeclareAndLoadParameters() {
+void RtControllerNode::ResetControllerBringUpState() {
+  controllers_.clear();
+  controller_nodes_.clear();
+  controller_types_.clear();
+  controller_topic_configs_.clear();
+  controller_name_to_idx_.clear();
+  controller_slot_mappings_.clear();
+  active_groups_.clear();
+  group_slot_map_.clear();
+  active_controller_idx_.store(0);
+}
+
+bool RtControllerNode::DeclareAndLoadParameters() {
   // Helper: declare only if not already auto-declared from YAML overrides.
   // (NodeOptions::automatically_declare_parameters_from_overrides is enabled.)
   auto safe_declare = [this](const std::string& name, const rclcpp::ParameterValue& val) {
@@ -384,6 +396,16 @@ void RtControllerNode::DeclareAndLoadParameters() {
   std::vector<YAML::Node> controller_yamls;
   controller_yamls.reserve(entries.size());
 
+  // Any bring-up error latches here and refuses the whole configure at the
+  // next checkpoint (D1). Errors are collected rather than short-circuited so
+  // one run reports every broken controller instead of only the first.
+  bool bring_up_failed = false;
+
+  // A previous configure attempt that failed leaves these populated; clearing
+  // makes the bring-up idempotent so a retry cannot register a controller
+  // twice. No-op on the first call.
+  ResetControllerBringUpState();
+
   // ── Pass 1: instantiate, build LifecycleNode, PreConfigure ───────────────
   for (std::size_t i = 0; i < entries.size(); ++i) {
     const auto& entry = entries[i];
@@ -396,9 +418,16 @@ void RtControllerNode::DeclareAndLoadParameters() {
       ctrl->SetSharedModelBuilder(shared_builder);
     }
 
-    // Load YAML for this controller; empty node on failure so PreConfigure /
-    // on_configure fall through to built-in defaults (matches previous
-    // behavior).
+    // Load YAML for this controller.
+    //
+    // Fail-closed with one deliberate exception (issue #196, decision D2): a
+    // *missing* config file keeps the historical behaviour — empty node, so
+    // PreConfigure / on_configure fall through to built-in defaults, which is
+    // how controllers without a per-variant YAML are meant to run. A file that
+    // exists but cannot be read (parse error, bad override, unknown package)
+    // is a real config error and refuses the whole configure instead of
+    // silently running a controller with defaults the operator never asked
+    // for.
     //
     // config_variant gates the whole config tree (system YAML + controllers +
     // mujoco + shared).  When non-empty, path becomes
@@ -423,9 +452,17 @@ void RtControllerNode::DeclareAndLoadParameters() {
       YAML::Node file_node = YAML::LoadFile(yaml_path);
       ctrl_node = file_node[entry.config_key];
       ApplyControllerParamOverrides(*this, ctrl_node, entry.config_key);
+    } catch (const YAML::BadFile& e) {
+      // No config file for this controller/variant — run on defaults.
+      // BadFile must be caught before std::exception: YAML::Exception derives
+      // from std::runtime_error, so the order below is what separates
+      // "absent" from "present but broken".
+      RCLCPP_INFO(get_logger(), "No config file for '%s' (pkg=%s) — using built-in defaults",
+                  ctrl->Name().data(), entry.config_package.c_str());
     } catch (const std::exception& e) {
-      RCLCPP_WARN(get_logger(), "Config load failed for '%s' (pkg=%s, %s) — using defaults",
-                  ctrl->Name().data(), entry.config_package.c_str(), e.what());
+      RCLCPP_ERROR(get_logger(), "Config load failed for '%s' (pkg=%s): %s", ctrl->Name().data(),
+                   entry.config_package.c_str(), e.what());
+      bring_up_failed = true;
     }
 
     // Create a dedicated LifecycleNode per controller.  Namespace is
@@ -453,10 +490,11 @@ void RtControllerNode::DeclareAndLoadParameters() {
     // allocation here.
     const auto pre_ret = ctrl->PreConfigure(ctrl_lc_node, ctrl_node);
     if (pre_ret != urtc::RTControllerInterface::CallbackReturn::SUCCESS) {
-      RCLCPP_WARN(get_logger(),
-                  "Controller '%s' PreConfigure returned non-SUCCESS — "
-                  "continuing with defaults",
-                  ctrl->Name().data());
+      // Was a warning that continued with defaults, which is how a controller
+      // whose config never parsed still reached the active/switch candidate
+      // set and RT Compute() (issue #196 §1).
+      RCLCPP_ERROR(get_logger(), "Controller '%s' PreConfigure failed", ctrl->Name().data());
+      bring_up_failed = true;
     }
 
     name_to_idx[std::string(ctrl->Name())] = static_cast<int>(i);
@@ -468,6 +506,18 @@ void RtControllerNode::DeclareAndLoadParameters() {
     controller_nodes_.push_back(std::move(ctrl_lc_node));
     controller_types_.push_back(entry.config_key);
     controller_yamls.push_back(ctrl_node);
+  }
+
+  // Checkpoint before Pass 2/3 (D1): refuse here rather than after
+  // on_configure, so a doomed bring-up never creates publishers,
+  // subscriptions, or log channels. CM's on_configure turns this into a
+  // lifecycle FAILURE, so the RT thread and device backends never start.
+  if (bring_up_failed) {
+    RCLCPP_FATAL(get_logger(),
+                 "Controller bring-up failed — refusing to configure. Fix the "
+                 "controller config(s) reported above; no controller is registered.");
+    ResetControllerBringUpState();
+    return false;
   }
 
   // Cache per-controller topic configs and build active_groups_ +
@@ -503,7 +553,11 @@ void RtControllerNode::DeclareAndLoadParameters() {
       RCLCPP_FATAL(get_logger(), "Too many device groups (%d > %d)", slot_idx,
                    urtc::PublishSnapshot::kMaxGroups);
       rclcpp::shutdown();
-      return;
+      // Previously this returned from a void function and the caller carried
+      // on building publishers/backends while the shutdown was still pending.
+      // Reporting the failure stops configure at the caller too.
+      ResetControllerBringUpState();
+      return false;
     }
   }
 
@@ -545,11 +599,17 @@ void RtControllerNode::DeclareAndLoadParameters() {
       const auto cfg_ret = controllers_[ci]->on_configure(unconfigured_state, controller_nodes_[ci],
                                                           controller_yamls[ci]);
       if (cfg_ret != urtc::RTControllerInterface::CallbackReturn::SUCCESS) {
-        RCLCPP_WARN(get_logger(),
-                    "Controller '%s' on_configure returned non-SUCCESS — "
-                    "continuing with defaults",
-                    controllers_[ci]->Name().data());
+        RCLCPP_ERROR(get_logger(), "Controller '%s' on_configure failed",
+                     controllers_[ci]->Name().data());
+        bring_up_failed = true;
       }
+    }
+    if (bring_up_failed) {
+      RCLCPP_FATAL(get_logger(),
+                   "Controller on_configure failed — refusing to configure. "
+                   "No controller is registered as an active/switch candidate.");
+      ResetControllerBringUpState();
+      return false;
     }
   }
 
@@ -649,4 +709,15 @@ void RtControllerNode::DeclareAndLoadParameters() {
                 initial_ctrl.c_str(), fallback_name.c_str());
     active_controller_idx_.store(0);
   }
+
+  // No controller registered means there is no valid active candidate, and
+  // active_controller_idx_ = 0 would index empty vectors — CM's on_configure
+  // publishes controller_types_[active] before it returns. Refuse instead of
+  // reporting a configured node with nothing to run.
+  if (controllers_.empty()) {
+    RCLCPP_FATAL(get_logger(), "No controller registered — refusing to configure.");
+    return false;
+  }
+
+  return true;
 }

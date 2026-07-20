@@ -41,6 +41,12 @@ using namespace std::chrono_literals;
 // device-backend pipeline takes its empty-group path. Ignores the URDF.
 class OnConfigureTestController : public RTControllerInterface {
  public:
+  // When set, LoadConfig throws — the CM instantiates this controller itself,
+  // so a static knob is the only handle a test has before on_configure. Used
+  // to prove CM refuses the whole configure when a controller fails to
+  // configure (issue #196 §1, decision D1).
+  static inline std::atomic<bool> fail_load_config{false};
+
   ControllerOutput Compute(const ControllerState& /*state*/) noexcept override {
     return ControllerOutput{};
   }
@@ -48,6 +54,13 @@ class OnConfigureTestController : public RTControllerInterface {
   void SetDeviceTarget(int /*device_idx*/, std::span<const double> /*target*/) noexcept override {}
 
   std::string_view Name() const noexcept override { return "OnConfigureTestController"; }
+
+  void LoadConfig(const YAML::Node& cfg) override {
+    if (fail_load_config.load(std::memory_order_relaxed)) {
+      throw std::runtime_error("synthetic LoadConfig failure");
+    }
+    RTControllerInterface::LoadConfig(cfg);
+  }
 };
 
 // File-scope registration. config_package = rtc_controller_manager (its share
@@ -81,6 +94,14 @@ class OnConfigureTest : public ::testing::Test {
     if (rclcpp::ok()) {
       rclcpp::shutdown();
     }
+  }
+
+  void SetUp() override {
+    OnConfigureTestController::fail_load_config.store(false, std::memory_order_relaxed);
+  }
+
+  void TearDown() override {
+    OnConfigureTestController::fail_load_config.store(false, std::memory_order_relaxed);
   }
 
   // Builds a node and pre-declares low-side-effect parameters so the bring-up
@@ -194,6 +215,61 @@ TEST_F(OnConfigureTest, ErrorAndShutdownCallbacks) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_error(StateInactive()));
   // on_shutdown from a non-active state.
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_shutdown(StateInactive()));
+}
+
+// ── T6: fail-closed bring-up (issue #196 §1) ────────────────────────────────
+//
+// Before this, CM logged a warning and kept a controller whose PreConfigure or
+// on_configure had failed, so a partially configured controller stayed in the
+// active/switch candidate set and could be dispatched by the RT loop. CM now
+// refuses the whole configure (decision D1).
+
+TEST_F(OnConfigureTest, ControllerConfigureFailureRefusesWholeConfigure) {
+  OnConfigureTestController::fail_load_config.store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode();
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+
+  // Nothing was brought up: no controller registered means no active/switch
+  // candidate, and the refusal happens before backends/RT thread exist.
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_EQ(nullptr, ControllerLifecycleTestAccess::GetBackend(*node, 0));
+}
+
+TEST_F(OnConfigureTest, ConfigureRecoversAfterAFailedAttempt) {
+  // A refused configure must not poison the next one — the bring-up clears the
+  // state it accumulated, so a retry registers each controller exactly once.
+  OnConfigureTestController::fail_load_config.store(true, std::memory_order_relaxed);
+  auto node = MakeNode();
+  ASSERT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+
+  OnConfigureTestController::fail_load_config.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── T7: config file absent vs. present-but-broken (decision D2) ─────────────
+
+TEST_F(OnConfigureTest, MissingControllerConfigFileFallsBackToDefaults) {
+  // The default variant has no rtc_cm_test_ctrl.yaml anywhere, so LoadFile
+  // raises YAML::BadFile. That is the supported "controller runs on built-in
+  // defaults" path and must stay permissive.
+  auto node = MakeNode();
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, ControllerLifecycleTestAccess::GetControllerCount(*node));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OnConfigureTest, MalformedControllerConfigFileRefusesConfigure) {
+  // config/test_bad_yaml/controllers/rtc_cm_test_ctrl.yaml exists but does not
+  // parse. Falling back to defaults here would run the controller with values
+  // the operator never authored — refuse instead.
+  auto node = MakeNode();
+  node->declare_parameter("config_variant", std::string("test_bad_yaml"));
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
 }
 
 }  // namespace
