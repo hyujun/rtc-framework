@@ -7,8 +7,10 @@
 #include <time.h>         // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
 
 #include <algorithm>  // std::min
+#include <array>
 #include <cmath>      // std::abs
 #include <cstddef>
+#include <cstdio>     // std::snprintf
 
 namespace urtc = rtc;
 
@@ -32,6 +34,61 @@ namespace {
 }
 
 }  // namespace
+
+// ── Hold command for a rejected ControllerOutput ─────────────────────────────
+void RtControllerNode::BuildHoldOutput(const urtc::ControllerState& state,
+                                       urtc::CommandType cmd_type) noexcept {
+  hold_output_.valid = true;
+  // The resolved type is stamped once at the top level and every device is
+  // left inheriting it (command_type == nullopt). Per-device overrides exist
+  // for mixed-mode controllers, but reconstructing that mix would require
+  // trusting the rejected output — a hold is uniform by design.
+  hold_output_.command_type = cmd_type;
+
+  const auto nd = BoundedCount(state.num_devices, urtc::ControllerOutput::kMaxDevices);
+  hold_output_.num_devices = static_cast<int>(nd);
+  for (std::size_t i = 0; i < nd; ++i) {
+    const auto& dstate = state.devices[i];
+    auto& dout = hold_output_.devices[i];
+    const auto nc = BoundedCount(dstate.num_channels, urtc::kMaxDeviceChannels);
+    dout.num_channels = static_cast<int>(nc);
+    dout.command_type.reset();
+    dout.goal_type = urtc::GoalType::kJoint;
+    // Only [0, nc) is written each tick — the snapshot fill copies exactly
+    // that many entries, so entries past nc are never read and re-zeroing the
+    // whole 64-wide array on every rejected tick would be wasted RT budget.
+    for (std::size_t c = 0; c < nc; ++c) {
+      const double measured = dstate.positions[c];
+      // kPosition / kPdFeedforward servo to where the joint already is, which
+      // is a true stop. kTorque has no such command: the CM carries no dynamic
+      // model, so it cannot synthesise a gravity-compensating torque and 0 N·m
+      // is the only value it can honestly emit. That means a torque-mode arm
+      // sags under gravity for up to kOutputRejectEstopSeconds before the
+      // E-STOP escalation lands — configurations with torque-mode devices
+      // should tune that window down.
+      dout.commands[c] = (cmd_type == urtc::CommandType::kTorque) ? 0.0 : measured;
+      // Position-semantics telemetry stays position-valued in every mode so
+      // the GUI/log lanes show where the hold is parked, not a 0 that would
+      // read as "commanded to origin".
+      dout.goal_positions[c] = measured;
+      dout.target_positions[c] = measured;
+      dout.trajectory_positions[c] = measured;
+      dout.target_velocities[c] = 0.0;
+      dout.trajectory_velocities[c] = 0.0;
+      dout.feedforward[c] = 0.0;
+    }
+  }
+
+  // Shared lanes are cleared rather than carried over: a pose left from an
+  // earlier tick would be republished as if it were current.
+  hold_output_.actual_task_positions.fill(0.0);
+  hold_output_.task_goal_positions.fill(0.0);
+  hold_output_.trajectory_task_positions.fill(0.0);
+  hold_output_.trajectory_task_velocities.fill(0.0);
+  hold_output_.arm_tip_pose_valid = false;
+  hold_output_.virtual_tcp_pose_valid = false;
+  hold_output_.task_link_pose_valid.fill(false);
+}
 
 // ── 50 Hz watchdog (E-STOP)
 // ───────────────────────────────────────────────────
@@ -173,10 +230,48 @@ void RtControllerNode::ControlLoop() {
 
   // ── Phase 2: compute control law ───────────────────────────────────────
   // Measure Compute() wall-clock time via ControllerTimingProfiler.
-  const urtc::ControllerOutput output =
-      timing_profiler_.MeasuredCompute(*controllers_[static_cast<std::size_t>(active_idx)], state);
+  auto& active_controller = *controllers_[static_cast<std::size_t>(active_idx)];
+  const urtc::ControllerOutput raw_output =
+      timing_profiler_.MeasuredCompute(active_controller, state);
 
   rt_loop_.StampComputeDone();
+
+  // ── Phase 2b: actuator-boundary validation (issue #196 Phase 4) ────────
+  //
+  // Last gate before the output reaches DeviceBackend::WriteCommand. A
+  // rejected tick is replaced wholesale by a hold command — see
+  // BuildHoldOutput for why holding beats dropping the write, and why the
+  // hold is rebuilt from `state` rather than salvaged from the output.
+  //
+  // Both consumers below (the publish snapshot and the WriteCommand loop)
+  // read the same `output` reference, so this single substitution covers the
+  // actuator lane and the telemetry lane together.
+  const urtc::ControllerOutputValidation validation =
+      urtc::ValidateControllerOutput(raw_output, state);
+  if (!validation.Ok()) {
+    BuildHoldOutput(state, active_controller.GetCommandType());
+    rejected_output_count_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t consecutive =
+        consecutive_rejected_outputs_.fetch_add(1, std::memory_order_relaxed) + 1;
+    // A hold masks a bad tick; it cannot fix a controller that keeps
+    // producing them. Escalate on the same principle as the overrun watchdog:
+    // sustained failure of the control law is a safety event, not a glitch.
+    if (consecutive >= invalid_output_estop_ticks_ && !IsGlobalEstopped()) {
+      // Fixed-size buffer, scalar-only format — no allocation on the RT path
+      // (same pattern TriggerGlobalEstop uses for the reason string).
+      std::array<char, 64> reason{};
+      static_cast<void>(std::snprintf(reason.data(), reason.size(),
+                                      "invalid_controller_output_%s",
+                                      urtc::OutputRejectReasonToString(validation.reason)));
+      TriggerGlobalEstop(reason.data());
+    }
+  } else {
+    consecutive_rejected_outputs_.store(0, std::memory_order_relaxed);
+  }
+  // Validation keeps running after an E-STOP: the controller's ComputeEstop
+  // path can produce a bad output too, and fail-closed must hold in the
+  // terminal state as well.
+  const urtc::ControllerOutput& output = validation.Ok() ? raw_output : hold_output_;
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.

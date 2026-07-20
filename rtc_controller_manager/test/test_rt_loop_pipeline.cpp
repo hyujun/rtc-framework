@@ -147,7 +147,8 @@ TEST_F(RtLoopPipelineTest, TickCopiesStateAndWritesCommandInline) {
 // that is what reaches the wire.
 
 TEST_F(RtLoopPipelineTest, OverlargeOutputChannelCountIsClampedToCapacity) {
-  PipelineTestController::output_num_channels.store(kOverCapacityChannels, std::memory_order_relaxed);
+  PipelineTestController::output_num_channels.store(kOverCapacityChannels,
+                                                    std::memory_order_relaxed);
 
   auto node = MakeNode(/*control_rate=*/250.0);
   ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
@@ -201,6 +202,235 @@ TEST_F(RtLoopPipelineTest, OverlargeBackendStateChannelCountIsClampedToCapacity)
   // (and the DeviceState the controller sees) never exceeds capacity.
   EXPECT_EQ(kMaxDeviceChannels, backend->LastActualNumChannels());
   EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos0, backend->LastActualPositions()[0]);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── Invalid ControllerOutput → hold + reject counter + E-STOP (issue #196) ───
+//
+// Nothing an in-tree controller emits reaches the validator's reject branches
+// (the pre-audit for this phase found zero call sites that set valid=false or
+// disagree with state.num_devices), so every case below is driven by the
+// fixture's fault-injection knobs. Without them these tests would be green
+// against an empty implementation.
+//
+// The hold value is what makes the assertions load-bearing: the stub backend
+// reports positions kPos0/kPos1 (0.11/0.22) while the controller commands
+// kCmd0/kCmd1 (1.5/-2.5). The two never coincide, so "hold was written"
+// cannot be satisfied by the un-validated output slipping through.
+
+using OutputFault = PipelineTestController::OutputFault;
+
+// Brings a node up to the first backend write with `fault` active on every
+// tick, and returns it with the backend already holding an observation.
+class OutputValidationTest : public RtLoopPipelineTest {
+ protected:
+  static_assert(PipelineStubBackend::kPos0 != PipelineTestController::kCmd0,
+                "hold and normal command must differ or the assertions prove nothing");
+  static_assert(PipelineStubBackend::kPos1 != PipelineTestController::kCmd1,
+                "hold and normal command must differ or the assertions prove nothing");
+};
+
+void ExpectHeldAtMeasuredPosition(PipelineStubBackend* backend) {
+  // Channel count comes from the device state, not the rejected output.
+  EXPECT_EQ(2, backend->LastNumChannels());
+  // kPosition hold → servo to the measured position.
+  EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos0, backend->LastCommands()[0]);
+  EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos1, backend->LastCommands()[1]);
+  // Explicitly: the controller's own command never reached the wire.
+  EXPECT_NE(PipelineTestController::kCmd0, backend->LastCommands()[0]);
+  EXPECT_NE(PipelineTestController::kCmd1, backend->LastCommands()[1]);
+}
+
+class OutputFaultParamTest : public OutputValidationTest,
+                             public ::testing::WithParamInterface<OutputFault> {};
+
+TEST_P(OutputFaultParamTest, RejectedOutputIsReplacedByHoldAtTheBackend) {
+  PipelineTestController::output_fault.store(GetParam(), std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  ExpectHeldAtMeasuredPosition(backend);
+  EXPECT_GT(ControllerLifecycleTestAccess::GetRejectedOutputCount(*node), 0U);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+INSTANTIATE_TEST_SUITE_P(AllRejectShapes, OutputFaultParamTest,
+                         ::testing::Values(OutputFault::kInvalidFlag, OutputFault::kDeviceCount,
+                                           OutputFault::kChannelCount,
+                                           OutputFault::kNonFiniteCommand),
+                         [](const ::testing::TestParamInfo<OutputFault>& info) {
+                           switch (info.param) {
+                             case OutputFault::kInvalidFlag:
+                               return "InvalidFlag";
+                             case OutputFault::kDeviceCount:
+                               return "DeviceCountMismatch";
+                             case OutputFault::kChannelCount:
+                               return "ChannelCountPastDeviceReport";
+                             case OutputFault::kNonFiniteCommand:
+                               return "NonFiniteCommand";
+                             case OutputFault::kNone:
+                               return "None";
+                           }
+                           return "Unknown";
+                         });
+
+TEST_F(OutputValidationTest, ValidOutputIsForwardedUnchangedAfterAFaultClears) {
+  // The hold must not latch: once the controller recovers, its own command
+  // reaches the backend again on the very next tick.
+  PipelineTestController::output_fault.store(OutputFault::kNonFiniteCommand,
+                                             std::memory_order_relaxed);
+  PipelineTestController::output_fault_ticks.store(3, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(
+      WaitFor([&] { return backend->LastCommands()[0] == PipelineTestController::kCmd0; }, 2000ms));
+
+  EXPECT_DOUBLE_EQ(PipelineTestController::kCmd1, backend->LastCommands()[1]);
+  // Exactly the injected ticks were rejected, and the consecutive counter
+  // cleared when the good output landed.
+  EXPECT_EQ(3U, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetConsecutiveRejectedOutputCount(*node));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, RejectCounterMatchesInjectedFaultTicks) {
+  constexpr int kFaultTicks = 7;
+  PipelineTestController::output_fault.store(OutputFault::kInvalidFlag, std::memory_order_relaxed);
+  PipelineTestController::output_fault_ticks.store(kFaultTicks, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(WaitFor(
+      [&] {
+        return PipelineTestController::injected_fault_ticks.load(std::memory_order_relaxed) ==
+                   kFaultTicks &&
+               ControllerLifecycleTestAccess::GetConsecutiveRejectedOutputCount(*node) == 0U;
+      },
+      2000ms));
+
+  // Ground truth (what the controller emitted) against the node's own tally —
+  // neither over- nor under-counts.
+  EXPECT_EQ(static_cast<uint64_t>(kFaultTicks), ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── E-STOP escalation threshold (N = max(10, lround(0.1 * control_rate))) ────
+
+TEST_F(OutputValidationTest, EstopThresholdIsDerivedFromControlRate) {
+  // A fixed tick count would mean 100 ms at 100 Hz and 2 ms at 5 kHz. The
+  // floor takes over at the low end of the supported rate range.
+  auto slow = MakeNode(/*control_rate=*/100.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, slow->on_configure(StateUnconfigured()));
+  EXPECT_EQ(10U, ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*slow));  // 0.1 * 100 = 10, at the floor
+  EXPECT_EQ(CallbackReturn::SUCCESS, slow->on_cleanup(StateInactive()));
+
+  auto mid = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, mid->on_configure(StateUnconfigured()));
+  EXPECT_EQ(25U, ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*mid));
+  EXPECT_EQ(CallbackReturn::SUCCESS, mid->on_cleanup(StateInactive()));
+
+  auto fast = MakeNode(/*control_rate=*/1000.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, fast->on_configure(StateUnconfigured()));
+  EXPECT_EQ(100U, ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*fast));
+  EXPECT_EQ(CallbackReturn::SUCCESS, fast->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, OneTickBelowThresholdDoesNotEstop) {
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  const uint64_t threshold = ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*node);
+  ASSERT_EQ(25U, threshold);
+
+  // The fault budget is what pins "exactly N-1": the RT loop free-runs, so the
+  // bad-tick count has to be bounded by the producer, not by trying to catch
+  // the consumer at the right moment.
+  PipelineTestController::output_fault.store(OutputFault::kInvalidFlag, std::memory_order_relaxed);
+  PipelineTestController::output_fault_ticks.store(static_cast<int>(threshold) - 1,
+                                                   std::memory_order_relaxed);
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(
+      WaitFor([&] { return backend->LastCommands()[0] == PipelineTestController::kCmd0; }, 2000ms));
+
+  EXPECT_EQ(threshold - 1, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, ThresholdConsecutiveRejectsTriggerEstop) {
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  const uint64_t threshold = ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*node);
+
+  PipelineTestController::output_fault.store(OutputFault::kInvalidFlag, std::memory_order_relaxed);
+  PipelineTestController::output_fault_ticks.store(static_cast<int>(threshold),
+                                                   std::memory_order_relaxed);
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::IsEstopped(*node); }, 2000ms));
+  EXPECT_EQ(threshold, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, ValidationKeepsHoldingAfterEstop) {
+  // Fail-closed must survive into the terminal state: a controller whose
+  // E-STOP path also emits bad output still gets held, not forwarded.
+  PipelineTestController::output_fault.store(OutputFault::kNonFiniteCommand,
+                                             std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::IsEstopped(*node); }, 3000ms));
+
+  const uint64_t after_estop = ControllerLifecycleTestAccess::GetRejectedOutputCount(*node);
+  ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::GetRejectedOutputCount(*node) > after_estop; }, 2000ms));
+  ExpectHeldAtMeasuredPosition(backend);
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));

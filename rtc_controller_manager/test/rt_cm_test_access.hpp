@@ -154,6 +154,22 @@ class ControllerLifecycleTestAccess {
     return node.estop_log_pending_.load(std::memory_order_acquire);
   }
 
+  // ── ControllerOutput validation counters (issue #196 Phase 4) ─────────────
+  // Test-only observability. Kept behind the friend rather than on the public
+  // API: these are internal fault tallies, not part of the node's contract
+  // with any runtime caller.
+  static uint64_t GetRejectedOutputCount(const RtControllerNode& node) {
+    return node.RejectedOutputCount();
+  }
+
+  static uint64_t GetConsecutiveRejectedOutputCount(const RtControllerNode& node) {
+    return node.ConsecutiveRejectedOutputCount();
+  }
+
+  static uint64_t GetOutputRejectEstopTicks(const RtControllerNode& node) {
+    return node.OutputRejectEstopTicks();
+  }
+
   static void ClearEstopLogPending(RtControllerNode& node) {
     node.estop_log_pending_.store(false, std::memory_order_release);
   }

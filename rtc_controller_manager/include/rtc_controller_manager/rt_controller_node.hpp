@@ -246,6 +246,24 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     return global_estop_.load(std::memory_order_acquire);
   }
 
+  /// Total ticks whose ControllerOutput failed actuator-boundary validation
+  /// and was replaced by a hold command (issue #196 Phase 4). Monotonic for
+  /// the node's lifetime — never reset, including across E-STOP clear.
+  [[nodiscard]] uint64_t RejectedOutputCount() const noexcept {
+    return rejected_output_count_.load(std::memory_order_relaxed);
+  }
+
+  /// Consecutive rejected ticks up to now (0 once a valid output lands).
+  [[nodiscard]] uint64_t ConsecutiveRejectedOutputCount() const noexcept {
+    return consecutive_rejected_outputs_.load(std::memory_order_relaxed);
+  }
+
+  /// Consecutive-reject count at which the hold escalates to a global E-STOP.
+  /// Rate-derived — see invalid_output_estop_ticks_.
+  [[nodiscard]] uint64_t OutputRejectEstopTicks() const noexcept {
+    return invalid_output_estop_ticks_;
+  }
+
   // ── ROS2 handles ──────────────────────────────────────────────────────────
   rclcpp::CallbackGroup::SharedPtr cb_group_rt_callback_;
   rclcpp::CallbackGroup::SharedPtr cb_group_nrt_logging_;
@@ -482,4 +500,38 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // is recoverable from cm_timing_log.csv.
   double budget_us_{2000.0};
   static constexpr uint64_t kMaxConsecutiveOverruns = 10;
+
+  // ── ControllerOutput actuator-boundary validation (issue #196 Phase 4) ────
+  //
+  // A rejected output is replaced by a hold command rather than dropped: the
+  // backend keeps receiving a well-formed command every tick, so a device that
+  // interprets a gap in the command stream as "fault" or "free-run" never sees
+  // one. Persistent rejection is a controller fault the hold cannot fix, hence
+  // the escalation to E-STOP below.
+  //
+  // Pre-allocated so the RT path never constructs a ~28 kB ControllerOutput on
+  // the tick stack. Written and read only by the rt_control thread.
+  rtc::ControllerOutput hold_output_{};
+
+  // Consecutive-reject threshold for E-STOP escalation. Derived from the
+  // configured rate in DeclareAndLoadParameters(): a fixed tick count would
+  // mean 100 ms at 100 Hz and 2 ms at 5 kHz — a 50× swing in how long bad
+  // commands keep flowing. The 10-tick floor matches kMaxConsecutiveOverruns
+  // so the two RT escalation paths stay comparable at low rates.
+  static constexpr double kOutputRejectEstopSeconds = 0.1;
+  uint64_t invalid_output_estop_ticks_{
+      static_cast<uint64_t>(kOutputRejectEstopSeconds * rtc::kDefaultControlRateHz)};
+
+  // Atomics for cross-thread test/telemetry reads only — the RT thread is the
+  // sole writer, so relaxed ordering is sufficient.
+  std::atomic<uint64_t> rejected_output_count_{0};
+  std::atomic<uint64_t> consecutive_rejected_outputs_{0};
+
+  // Fills hold_output_ from `state` (trusted — bounded on the device read
+  // path) and `cmd_type` (the active controller's configured type, YAML-
+  // derived). Deliberately ignores every field of the rejected output,
+  // including its per-device command_type override: reading a mode selector
+  // out of the data that just failed validation would make the check
+  // meaningless. RT-safe — fixed-size writes, no allocation, no logging.
+  void BuildHoldOutput(const rtc::ControllerState& state, rtc::CommandType cmd_type) noexcept;
 };

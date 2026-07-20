@@ -63,6 +63,57 @@ struct TargetLimitViolation {
 [[nodiscard]] TargetLimitViolation CheckTargetLimits(std::span<const double> ordered,
                                                      const DeviceJointLimits& lim) noexcept;
 
+// ── Actuator-boundary output validation ───────────────────────────────────
+//
+// Why a controller's own output needs screening: ControllerOutput is an
+// out-of-tree contract (any registry-loaded controller fills it), and the
+// controller manager hands it straight to DeviceBackend::WriteCommand — the
+// last software stage before a physical actuator. Nothing between Compute()
+// and the wire vets it, so a NaN command or a channel count past what the
+// device actually reported leaves the process as motion. This is the ingress
+// check of CheckTargetLimits mirrored onto the egress side (issue #196
+// Phase 4).
+//
+// Scope is deliberately narrow: only the fields that reach an actuator —
+// `commands` and `feedforward`, bounded by `num_channels`. Everything else in
+// ControllerOutput (task poses, trajectory references, goal positions) feeds
+// log/GUI lanes where a bad value is visible but not dangerous, and screening
+// them would cost RT budget for no safety gain.
+enum class OutputRejectReason : uint8_t {
+  kNone = 0,                ///< output is usable
+  kInvalidFlag,             ///< ControllerOutput::valid == false
+  kDeviceCountMismatch,     ///< num_devices disagrees with the state, or is out of range
+  kChannelCountOutOfRange,  ///< a device's num_channels is negative, past capacity, or
+                            ///< past what the device reported this tick
+  kNonFiniteCommand,        ///< a command / feedforward value is NaN or Inf
+};
+
+// First rejection found, or kNone. Descriptive only — the caller decides the
+// policy (the CM holds position and counts consecutive rejects). Plain
+// scalars so the RT caller can format a deferred log line without allocating.
+struct ControllerOutputValidation {
+  OutputRejectReason reason{OutputRejectReason::kNone};
+  int device_idx{-1};   ///< offending device, -1 when not device-specific
+  int channel_idx{-1};  ///< offending channel, -1 when not channel-specific
+
+  [[nodiscard]] constexpr bool Ok() const noexcept { return reason == OutputRejectReason::kNone; }
+};
+
+// Screens `out` against the `state` that produced it. Pure: no ROS, no
+// allocation, no logging, no throw — safe to call on the RT tick path.
+//
+// `state` is the trust anchor. It was already bounded on the device read path,
+// so every count comparison here is against a value the framework itself
+// clamped; the output side supplies nothing that is taken on faith. Returns on
+// the first violation because the caller's reaction (discard the whole output)
+// is the same regardless of how many more there are.
+[[nodiscard]] ControllerOutputValidation ValidateControllerOutput(
+    const ControllerOutput& out, const ControllerState& state) noexcept;
+
+// Human-readable form of `reason`, for deferred (non-RT) log lines. Returns a
+// static string literal — no allocation, safe to capture from the RT path.
+[[nodiscard]] const char* OutputRejectReasonToString(OutputRejectReason reason) noexcept;
+
 // ── Abstract interface (Strategy Pattern)
 // ─────────────────────────────────────
 //
