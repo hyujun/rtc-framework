@@ -110,13 +110,10 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         {
             {secondary_sensor_key, secondary_sensor_names_},
         },
-        {},  // wbc_state_logs — WBC controller only
-        {},  // wbc_diag_logs  — WBC controller only
-        {},  // pull_estimator_logs — gated on pull_wiring_ below
+        {},                      // wbc_state_logs — WBC controller only
+        {},                      // wbc_diag_logs  — WBC controller only
+        pull_wiring_.enabled(),  // pull_estimator_enabled
     };
-    if (pull_wiring_.enabled()) {
-      ctx.pull_estimator_logs.insert("pull_estimator");
-    }
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       return CallbackReturn::FAILURE;
@@ -134,10 +131,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         secondary_sensor_log_handle_ = std::move(it->second);
       }
     }
-    if (auto it = reg.handles.pull_estimator.find("pull_estimator");
-        it != reg.handles.pull_estimator.end()) {
-      pull_estimator_log_handle_ = std::move(it->second);
-    }
+    pull_estimator_log_handle_ = std::move(reg.handles.pull_estimator);
 
     // Drain timer on a non-RT callback group (10 Hz). Single-threaded —
     // executor's MutuallyExclusive group is sufficient.

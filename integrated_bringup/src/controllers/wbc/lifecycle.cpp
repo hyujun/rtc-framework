@@ -110,9 +110,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
          {/*role=*/1, secondary_joint_names_, secondary_motor_names_, secondary_sensor_names_}},
     };
     ctx.wbc_diag_logs = {{wbc_diag_key, num_contact_vars}};
-    if (pull_wiring_.enabled()) {
-      ctx.pull_estimator_logs.insert("pull_estimator");
-    }
+    ctx.pull_estimator_enabled = pull_wiring_.enabled();
 
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -137,10 +135,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     if (auto it = reg.handles.wbc_diag.find(wbc_diag_key); it != reg.handles.wbc_diag.end()) {
       wbc_diag_log_handle_ = it->second;
     }
-    if (auto it = reg.handles.pull_estimator.find("pull_estimator");
-        it != reg.handles.pull_estimator.end()) {
-      pull_estimator_log_handle_ = it->second;
-    }
+    pull_estimator_log_handle_ = reg.handles.pull_estimator;
     if (!log_set_.empty() && node) {
       log_drain_cb_group_ =
           node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

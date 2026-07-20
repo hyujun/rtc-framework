@@ -34,8 +34,6 @@ from .robot import (
     print_robot_statistics,
 )
 from .sensors import (
-    plot_device_fingertip_force,
-    plot_device_fingertip_force_auto,
     plot_device_ft_output,
     plot_device_ft_output_auto,
     plot_device_sensor_comparison,
@@ -83,8 +81,6 @@ __all__ = [
     "plot_pull_estimator",
     "print_pull_estimator_statistics",
     # sensors
-    "plot_device_fingertip_force",
-    "plot_device_fingertip_force_auto",
     "plot_device_ft_output",
     "plot_device_ft_output_auto",
     "plot_device_sensor_comparison",

@@ -6,40 +6,42 @@
 // (joint / task / wbc) — the estimator is a single shared component
 // (PullEstimatorWiring), so the channel shape is controller-independent.
 //
-// Filled from rtc::grasp::PullEstimate (the Eigen-typed estimator output),
-// NOT the SeqLock mirror PullEstimateData: the CSV additionally carries
-// force_raw (pre-filter) for filter transient analysis, which the wire/POD
-// surface deliberately omits. Path A: no rtc_msgs/.msg. YAML `msg_type` id
-// is "integrated_bringup/PullEstimatorLog".
+// Filled from rtc::grasp::PullEstimate (the Eigen-typed estimator output).
+// The shared filtered-block + diagnostics + gates are stored in an embedded
+// rtc::grasp::PullEstimateData (filled via the single FillPullEstimateData);
+// the CSV additionally carries force_raw (pre-filter) for filter transient
+// analysis, which the wire/SeqLock surface deliberately omits. Path A: no
+// rtc_msgs/.msg for this channel. YAML `msg_type` id is kPullEstimatorLogMsgType.
 
-#include "rtc_controllers/grasp/pull_force_estimator.hpp"
+#include "rtc_controllers/grasp/grasp_state.hpp"           // PullEstimateData
+#include "rtc_controllers/grasp/pull_force_estimator.hpp"  // PullEstimate, FillPullEstimateData
 
 #include <array>
-#include <cstdint>
 #include <ostream>
+#include <string_view>
 #include <type_traits>
 
 namespace integrated_bringup {
+
+// Closed-set YAML `msg_type` id and the fixed instance key for this channel —
+// referenced by the LoadConfig validators, the log registration dispatch, and
+// the lifecycle wiring so the string lives in exactly one place (#167).
+inline constexpr std::string_view kPullEstimatorLogMsgType = "integrated_bringup/PullEstimatorLog";
+inline constexpr std::string_view kPullEstimatorLogInstance = "pull_estimator";
 
 struct PullEstimatorLogPod {
   // ── Timestamp (CM-provided, session-relative) ─────────────────────────────
   double t_relative_s{0.0};
 
-  // ── Estimate (reference frame, [N]) ───────────────────────────────────────
-  std::array<float, 3> force_raw{};       // pre-filter -P∥(Σ f_obj + m·g)
-  std::array<float, 3> force_filtered{};  // low-passed; matches msg pull_force
-  std::array<float, 2> force_inplane{};   // Bᵀ·F̂ plane coordinates
-  float magnitude{0.0f};                  // |F̂|
-  float directional{0.0f};                // dᵀ·F̂ (0 unless direction set)
+  // Pre-filter -P∥(Σ f_obj + m·g) [N] — CSV-only surface (the wire/SeqLock
+  // mirror deliberately omits the raw series; it exists here for filter
+  // transient analysis).
+  std::array<float, 3> force_raw{};
 
-  // ── Diagnostics ───────────────────────────────────────────────────────────
-  float friction_utilization{0.0f};  // max_i |f_t,i| / (μ_i f_n,i + ε)
-  float leakage_bound{0.0f};         // grip→in-plane leakage bound [N]
-  std::int32_t valid_contact_count{0};
-  bool valid{false};
-  bool slip_risk{false};
-  bool any_saturated{false};
-  bool baseline_applied{false};
+  // Filtered estimate + slip diagnostics + validity gates — byte-identical to
+  // the SeqLock/wire mirror, filled via rtc::grasp::FillPullEstimateData so the
+  // double→float casts live in exactly one place.
+  rtc::grasp::PullEstimateData estimate{};
 };
 
 static_assert(std::is_trivially_copyable_v<PullEstimatorLogPod>,
@@ -59,17 +61,18 @@ inline void WritePullEstimatorLogHeader(std::ostream& os) {
 
 /// Emit one row. The logger appends '\n' + flush.
 inline void WritePullEstimatorLogRow(std::ostream& os, const PullEstimatorLogPod& p) {
+  const auto& e = p.estimate;
   os << p.t_relative_s;
   os << ',' << p.force_raw[0] << ',' << p.force_raw[1] << ',' << p.force_raw[2];
-  os << ',' << p.force_filtered[0] << ',' << p.force_filtered[1] << ',' << p.force_filtered[2];
-  os << ',' << p.force_inplane[0] << ',' << p.force_inplane[1];
-  os << ',' << p.magnitude << ',' << p.directional;
-  os << ',' << p.friction_utilization << ',' << p.leakage_bound;
-  os << ',' << p.valid_contact_count;
-  os << ',' << (p.valid ? 1 : 0);
-  os << ',' << (p.slip_risk ? 1 : 0);
-  os << ',' << (p.any_saturated ? 1 : 0);
-  os << ',' << (p.baseline_applied ? 1 : 0);
+  os << ',' << e.force[0] << ',' << e.force[1] << ',' << e.force[2];
+  os << ',' << e.force_inplane[0] << ',' << e.force_inplane[1];
+  os << ',' << e.magnitude << ',' << e.directional;
+  os << ',' << e.friction_utilization << ',' << e.leakage_bound;
+  os << ',' << e.valid_contact_count;
+  os << ',' << (e.valid ? 1 : 0);
+  os << ',' << (e.slip_risk ? 1 : 0);
+  os << ',' << (e.any_saturated ? 1 : 0);
+  os << ',' << (e.baseline_applied ? 1 : 0);
 }
 
 /// Mirror one PullEstimate tick into the log POD (RT tick path — noexcept,
@@ -79,21 +82,11 @@ inline void WritePullEstimatorLogRow(std::ostream& os, const PullEstimatorLogPod
 inline void FillPullEstimatorLogPod(const rtc::grasp::PullEstimate& est, double t_relative_s,
                                     PullEstimatorLogPod& pod) noexcept {
   pod.t_relative_s = t_relative_s;
-  for (int i = 0; i < 3; ++i) {
-    pod.force_raw[static_cast<std::size_t>(i)] = static_cast<float>(est.force_raw[i]);
-    pod.force_filtered[static_cast<std::size_t>(i)] = static_cast<float>(est.force_filtered[i]);
-  }
-  pod.force_inplane[0] = static_cast<float>(est.force_inplane[0]);
-  pod.force_inplane[1] = static_cast<float>(est.force_inplane[1]);
-  pod.magnitude = static_cast<float>(est.magnitude);
-  pod.directional = static_cast<float>(est.directional);
-  pod.friction_utilization = static_cast<float>(est.max_friction_utilization);
-  pod.leakage_bound = static_cast<float>(est.leakage_bound);
-  pod.valid_contact_count = est.valid_contact_count;
-  pod.valid = est.valid;
-  pod.slip_risk = est.slip_risk;
-  pod.any_saturated = est.any_saturated;
-  pod.baseline_applied = est.baseline_applied;
+  pod.force_raw = {static_cast<float>(est.force_raw.x()), static_cast<float>(est.force_raw.y()),
+                   static_cast<float>(est.force_raw.z())};
+  // Shared filtered-block + diagnostics + gates — same casts as the wire/SeqLock
+  // mirror, so reuse the single source of truth (force_raw stays CSV-only).
+  rtc::grasp::FillPullEstimateData(est, pod.estimate);
 }
 
 }  // namespace integrated_bringup

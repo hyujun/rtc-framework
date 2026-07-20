@@ -136,8 +136,7 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all
 | Figure 3 | (기본) | 센서 (기압 + ToF per fingertip) |
 | Figure 4 | `--raw` | Raw 센서 (pre-LPF, 기압 + ToF) |
 | Figure 5 | `--ft` | F/T 추론 출력 (Force + Torque per fingertip) |
-| Figure 6 | (자동, `ft_*` 존재 시) | Per-finger 실측 force Fx/Fy/Fz (N×1, sharex — WBC fingertip force figure 와 동일 레이아웃, #167) |
-| Figure 7 | `--sensor-compare` | Raw vs Filtered 센서 오버레이 비교 |
+| Figure 6 | `--sensor-compare` | Raw vs Filtered 센서 오버레이 비교 |
 
 **Timing 모드 플롯:**
 

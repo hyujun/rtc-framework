@@ -317,8 +317,8 @@ TEST(PullEstimatorLogPod, HeaderColumnsMatchRow) {
   const std::string hdr = hdr_os.str();
 
   integrated_bringup::PullEstimatorLogPod pod{};
-  pod.valid = true;
-  pod.valid_contact_count = 3;
+  pod.estimate.valid = true;
+  pod.estimate.valid_contact_count = 3;
   std::ostringstream row_os;
   integrated_bringup::WritePullEstimatorLogRow(row_os, pod);
   const std::string row = row_os.str();
@@ -359,15 +359,15 @@ TEST(PullEstimatorLogPod, FillMirrorsPullEstimate) {
   EXPECT_DOUBLE_EQ(pod.t_relative_s, 1.5);
   EXPECT_FLOAT_EQ(pod.force_raw[0], 1.0F);
   EXPECT_FLOAT_EQ(pod.force_raw[2], 3.0F);
-  EXPECT_FLOAT_EQ(pod.force_filtered[1], 1.5F);
-  EXPECT_FLOAT_EQ(pod.force_inplane[1], 0.75F);
-  EXPECT_FLOAT_EQ(pod.magnitude, 2.9F);
-  EXPECT_FLOAT_EQ(pod.directional, -1.25F);
-  EXPECT_FLOAT_EQ(pod.friction_utilization, 0.6F);
-  EXPECT_FLOAT_EQ(pod.leakage_bound, 0.1F);
-  EXPECT_EQ(pod.valid_contact_count, 2);
-  EXPECT_TRUE(pod.valid);
-  EXPECT_TRUE(pod.slip_risk);
-  EXPECT_FALSE(pod.any_saturated);
-  EXPECT_TRUE(pod.baseline_applied);
+  EXPECT_FLOAT_EQ(pod.estimate.force[1], 1.5F);
+  EXPECT_FLOAT_EQ(pod.estimate.force_inplane[1], 0.75F);
+  EXPECT_FLOAT_EQ(pod.estimate.magnitude, 2.9F);
+  EXPECT_FLOAT_EQ(pod.estimate.directional, -1.25F);
+  EXPECT_FLOAT_EQ(pod.estimate.friction_utilization, 0.6F);
+  EXPECT_FLOAT_EQ(pod.estimate.leakage_bound, 0.1F);
+  EXPECT_EQ(pod.estimate.valid_contact_count, 2);
+  EXPECT_TRUE(pod.estimate.valid);
+  EXPECT_TRUE(pod.estimate.slip_risk);
+  EXPECT_FALSE(pod.estimate.any_saturated);
+  EXPECT_TRUE(pod.estimate.baseline_applied);
 }

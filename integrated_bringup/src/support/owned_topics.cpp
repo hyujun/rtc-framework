@@ -21,6 +21,23 @@ namespace {
   return link + "_actual";
 }
 
+// Copy the estimator POD into the wire PullEstimate sub-message (#167).
+// GraspState and WbcState embed the same PullEstimate, so both publish paths
+// share this single copy.
+void FillPullEstimateMsg(rtc_msgs::msg::PullEstimate& out, const rtc::grasp::PullEstimateData& in) {
+  out.force = in.force;
+  out.force_inplane = in.force_inplane;
+  out.magnitude = in.magnitude;
+  out.directional = in.directional;
+  out.friction_utilization = in.friction_utilization;
+  out.leakage_bound = in.leakage_bound;
+  out.valid_contact_count = in.valid_contact_count;
+  out.valid = in.valid;
+  out.slip_risk = in.slip_risk;
+  out.any_saturated = in.any_saturated;
+  out.baseline_applied = in.baseline_applied;
+}
+
 // Pre-populate GraspState per-finger arrays to kMaxSensorGroups so publish()
 // never resizes on the hot path.
 void PrefillGraspMessage(const rtc::DeviceNameConfig* cfg, rtc_msgs::msg::GraspState& msg) {
@@ -312,17 +329,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
     msg.min_fingertips = gs.min_fingertips_for_grasp;
     msg.grasp_phase = gs.grasp_phase;
     msg.grasp_target_force = gs.grasp_target_force;
-    msg.pull_force = gs.pull.force;
-    msg.pull_force_inplane = gs.pull.force_inplane;
-    msg.pull_magnitude = gs.pull.magnitude;
-    msg.pull_directional = gs.pull.directional;
-    msg.pull_friction_utilization = gs.pull.friction_utilization;
-    msg.pull_leakage_bound = gs.pull.leakage_bound;
-    msg.pull_valid_contact_count = gs.pull.valid_contact_count;
-    msg.pull_valid = gs.pull.valid;
-    msg.pull_slip_risk = gs.pull.slip_risk;
-    msg.pull_any_saturated = gs.pull.any_saturated;
-    msg.pull_baseline_applied = gs.pull.baseline_applied;
+    FillPullEstimateMsg(msg.pull, gs.pull);
     handles.grasp_pub->publish(msg);
   }
 
@@ -348,17 +355,7 @@ void PublishOwnedTopicsFromSnapshot(const rtc::PublishSnapshot& snap,
     msg.tsid_solve_us = ws.tsid_solve_us;
     msg.tsid_solver_ok = ws.tsid_solver_ok;
     msg.qp_fail_count = ws.qp_fail_count;
-    msg.pull_force = ws.pull.force;
-    msg.pull_force_inplane = ws.pull.force_inplane;
-    msg.pull_magnitude = ws.pull.magnitude;
-    msg.pull_directional = ws.pull.directional;
-    msg.pull_friction_utilization = ws.pull.friction_utilization;
-    msg.pull_leakage_bound = ws.pull.leakage_bound;
-    msg.pull_valid_contact_count = ws.pull.valid_contact_count;
-    msg.pull_valid = ws.pull.valid;
-    msg.pull_slip_risk = ws.pull.slip_risk;
-    msg.pull_any_saturated = ws.pull.any_saturated;
-    msg.pull_baseline_applied = ws.pull.baseline_applied;
+    FillPullEstimateMsg(msg.pull, ws.pull);
     handles.wbc_pub->publish(msg);
   }
 

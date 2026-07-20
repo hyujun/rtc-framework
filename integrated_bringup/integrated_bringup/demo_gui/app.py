@@ -501,14 +501,15 @@ class DemoControllerGUI(Node):
         self._store_pull_fields(msg)
 
     def _store_pull_fields(self, msg):
-        """GraspState/WbcState 공용 pull_* 저장 (#167) — 두 msg 는 pull 블록
-        필드명이 동일하게 유지되므로 (rtc_msgs README) 하나의 헬퍼로 커버."""
-        self._pull_magnitude = msg.pull_magnitude
-        self._pull_friction_utilization = msg.pull_friction_utilization
-        self._pull_valid = msg.pull_valid
-        self._pull_valid_contact_count = msg.pull_valid_contact_count
-        self._pull_slip_risk = msg.pull_slip_risk
-        self._pull_baseline_applied = msg.pull_baseline_applied
+        """GraspState/WbcState 공용 pull 저장 (#167) — 두 msg 는 동일한
+        PullEstimate 하위 메시지를 embed 하므로 하나의 헬퍼로 커버."""
+        pull = msg.pull
+        self._pull_magnitude = pull.magnitude
+        self._pull_friction_utilization = pull.friction_utilization
+        self._pull_valid = pull.valid
+        self._pull_valid_contact_count = pull.valid_contact_count
+        self._pull_slip_risk = pull.slip_risk
+        self._pull_baseline_applied = pull.baseline_applied
 
     def _wbc_state_cb(self, msg: WbcState):
         """WbcState handler — published by demo_wbc_controller at ~50 Hz.

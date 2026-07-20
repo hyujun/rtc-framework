@@ -39,7 +39,6 @@
 #include <cstdint>
 #include <map>
 #include <ostream>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,11 +74,11 @@ struct LogRegistrationContext {
   // fixed QP contact dim, contact_mgr_config_.max_contact_vars).
   std::map<std::string, std::size_t> wbc_diag_logs;
 
-  // PullEstimatorLog instances (#167) — the header is fixed-shape, so presence
-  // alone gates registration. Caller adds the instance only when its
-  // PullEstimatorWiring is enabled, so a YAML entry on a pull-less variant is
-  // silently skipped like any unregistered instance.
-  std::set<std::string> pull_estimator_logs;
+  // PullEstimatorLog (#167) — fixed-shape header and a single fixed instance
+  // (kPullEstimatorLogInstance), so one bool gates registration. Caller sets it
+  // only when its PullEstimatorWiring is enabled; a YAML entry on a pull-less
+  // variant is silently skipped like any unregistered instance.
+  bool pull_estimator_enabled{false};
 };
 
 // ── Returned handles (caller assigns to its own typed members) ─────────────
@@ -88,7 +87,9 @@ struct RegisteredLogHandles {
   std::map<std::string, rtc::LogHandle<integrated_bringup::DeviceSensorLogPod>> sensor;
   std::map<std::string, rtc::LogHandle<integrated_bringup::DeviceWbcLogPod>> wbc_state;
   std::map<std::string, rtc::LogHandle<integrated_bringup::WbcDiagLogPod>> wbc_diag;
-  std::map<std::string, rtc::LogHandle<integrated_bringup::PullEstimatorLogPod>> pull_estimator;
+  // Single fixed instance (kPullEstimatorLogInstance) — no map keyed on a name
+  // the caller already knows.
+  rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -217,9 +218,9 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.wbc_diag[entry.instance] = std::move(handle);
-    } else if (entry.msg_type == "integrated_bringup/PullEstimatorLog") {
-      if (ctx.pull_estimator_logs.find(entry.instance) == ctx.pull_estimator_logs.end()) {
-        // Pull estimator disabled (or unknown instance) for this controller —
+    } else if (entry.msg_type == kPullEstimatorLogMsgType) {
+      if (!ctx.pull_estimator_enabled || entry.instance != kPullEstimatorLogInstance) {
+        // Pull estimator disabled (or unexpected instance) for this controller —
         // silently skip like any unregistered instance.
         continue;
       }
@@ -234,7 +235,7 @@ template <typename ParsedLogEntryT>
                     entry.instance.c_str());
         continue;
       }
-      result.handles.pull_estimator[entry.instance] = std::move(handle);
+      result.handles.pull_estimator = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,

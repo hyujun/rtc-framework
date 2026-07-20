@@ -11,10 +11,7 @@ controllers (joint / task / wbc):
     `any_saturated`, `baseline_applied`)
 
 `plot_pull_estimator` renders one N×1 sharex figure so zooming any panel
-stays synchronized (same convention as `plot_wbc_diag_solver`). Desired-force
-columns (`force_desired_*`) are overlaid dashed when present — no writer logs
-them today (wbc desired is the per-finger normal-force scalar λ_n, not a
-vector), so the overlay is predicate-gated for a future writer.
+stays synchronized (same convention as `plot_wbc_diag_solver`).
 """
 
 from pathlib import Path
@@ -27,7 +24,7 @@ _FORCE_COMPONENTS = ("x", "y", "z")
 def plot_pull_estimator(df, save_dir=None):
     """Pull-force estimate overview (4×1, sharex).
 
-    ① filtered Fx/Fy/Fz (+ raw overlays at low alpha, desired dashed if logged)
+    ① filtered Fx/Fy/Fz (+ raw overlays at low alpha)
     ② in-plane components, |F|, directional scalar
     ③ friction utilization (slip ratio) + grip→in-plane leakage bound
     ④ validity/risk flags (step) + valid contact count
@@ -41,7 +38,7 @@ def plot_pull_estimator(df, save_dir=None):
     fig.suptitle("Pull Force Estimate", fontsize=16, fontweight="bold")
     t = df["timestamp"]
 
-    # ── ① Reference-frame force: filtered solid, raw faint, desired dashed ──
+    # ── ① Reference-frame force: filtered solid, raw faint ──
     ax = axes[0]
     for i, comp in enumerate(_FORCE_COMPONENTS):
         color = f"C{i}"
@@ -49,17 +46,6 @@ def plot_pull_estimator(df, save_dir=None):
         raw_col = f"force_raw_{comp}"
         if raw_col in df.columns:
             ax.plot(t, df[raw_col], linewidth=0.9, color=color, alpha=0.3)
-        desired_col = f"force_desired_{comp}"
-        if desired_col in df.columns:
-            ax.plot(
-                t,
-                df[desired_col],
-                label=f"F{comp} desired",
-                linestyle="--",
-                linewidth=1.2,
-                color=color,
-                alpha=0.8,
-            )
     ax.set_ylabel("Force (N)")
     ax.legend(fontsize=8, ncol=3)
     ax.grid(True, alpha=0.3)
@@ -144,5 +130,7 @@ def print_pull_estimator_statistics(df):
             pct = df[flag].astype(float).mean() * 100
             print(f"{flag}: {pct:.1f}% of ticks")
     if "valid_contact_count" in df.columns and n > 0:
-        vcc = df["valid_contact_count"]
-        print(f"Valid contacts: mean={vcc.mean():.2f} max={int(vcc.max())}")
+        # dropna() guards int(NaN) on a truncated/partial CSV (all-NaN column).
+        vcc = df["valid_contact_count"].dropna()
+        if not vcc.empty:
+            print(f"Valid contacts: mean={vcc.mean():.2f} max={int(vcc.max())}")
