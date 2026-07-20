@@ -60,6 +60,11 @@ class PipelineTestController : public RTControllerInterface {
 
   static inline std::atomic<int> compute_sleep_us{0};
 
+  // Channel count Compute() reports. Tests set an out-of-contract value
+  // (negative, or past kMaxDeviceChannels) to exercise the RT loop's bound
+  // on a faulty controller — see issue #196 §4.
+  static inline std::atomic<int> output_num_channels{2};
+
   static void ResetCaptured() {
     captured_kp = -1.0;
     captured_label.clear();
@@ -71,6 +76,7 @@ class PipelineTestController : public RTControllerInterface {
     captured_ids.clear();
     captured_flags.clear();
     compute_sleep_us.store(0, std::memory_order_relaxed);
+    output_num_channels.store(2, std::memory_order_relaxed);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {
@@ -108,7 +114,7 @@ class PipelineTestController : public RTControllerInterface {
     }
     ControllerOutput out{};
     out.num_devices = 1;
-    out.devices[0].num_channels = 2;
+    out.devices[0].num_channels = output_num_channels.load(std::memory_order_relaxed);
     out.devices[0].commands[0] = kCmd0;
     out.devices[0].commands[1] = kCmd1;
     return out;
@@ -143,8 +149,14 @@ class PipelineStubBackend : public DeviceBackend {
 
   void Deactivate() override {}
 
+  // Channel count ReadState() reports. Tests set an out-of-contract value to
+  // exercise the RT loop's bound on a faulty backend — see issue #196 §4.
+  static inline std::atomic<int> state_num_channels{2};
+
+  static void ResetStateChannels() { state_num_channels.store(2, std::memory_order_relaxed); }
+
   bool ReadState(DeviceStateCache& cache) noexcept override {
-    cache.num_channels = 2;
+    cache.num_channels = state_num_channels.load(std::memory_order_relaxed);
     cache.positions[0] = kPos0;
     cache.positions[1] = kPos1;
     cache.velocities[0] = 1.0;
@@ -180,6 +192,7 @@ class PipelineStubBackend : public DeviceBackend {
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                     CommandType /*command_type*/) noexcept override {
     last_num_channels_ = slot.num_channels;
+    last_actual_num_channels_ = slot.actual_num_channels;
     last_commands_[0] = slot.commands[0];
     last_commands_[1] = slot.commands[1];
     last_actual_positions_[0] = slot.actual_positions[0];
@@ -197,6 +210,8 @@ class PipelineStubBackend : public DeviceBackend {
 
   int LastNumChannels() const { return last_num_channels_; }
 
+  int LastActualNumChannels() const { return last_actual_num_channels_; }
+
   const std::array<double, 2>& LastCommands() const { return last_commands_; }
 
   const std::array<double, 2>& LastActualPositions() const { return last_actual_positions_; }
@@ -207,6 +222,7 @@ class PipelineStubBackend : public DeviceBackend {
   std::string group_name_;
   std::atomic<int> write_count_{0};
   int last_num_channels_{0};
+  int last_actual_num_channels_{0};
   std::array<double, 2> last_commands_{};
   std::array<double, 2> last_actual_positions_{};
 };
