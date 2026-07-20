@@ -17,7 +17,9 @@
 // rtc::grasp::FillPullEstimateData — no new topic / PublishRole (#167
 // confirmed decision, E-11 avoided).
 
+#include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
+#include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controllers/grasp/pull_force_estimator.hpp"
 
 #include <Eigen/Core>
@@ -59,6 +61,20 @@ struct PullEstimatorWiring {
 
   [[nodiscard]] bool enabled() const noexcept { return estimator != nullptr; }
 };
+
+// Push one pull-estimator log row from the wiring's latest estimate (#167).
+// RT tick tail — noexcept, heap-free; a no-op when the CSV channel is
+// unregistered or the estimator is disabled, so the three demo controllers
+// carry one call instead of the copy-pasted guard + fill + Push block.
+inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
+                                 const PullEstimatorWiring& wiring, double t_relative_s) noexcept {
+  if (!handle || !wiring.enabled()) {
+    return;
+  }
+  PullEstimatorLogPod pod{};
+  FillPullEstimatorLogPod(wiring.estimator->estimate(), t_relative_s, pod);
+  handle.Push(pod);
+}
 
 // Build the estimator via BuildPullForceEstimator and resolve tip links.
 // `link_names[j]` names the fingertip link the caller services at slot j —

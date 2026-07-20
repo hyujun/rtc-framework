@@ -9,6 +9,7 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
 #include "integrated_bringup/support/closed_chain_hand_fk.hpp"
@@ -374,10 +375,12 @@ class DemoWbcController final : public RTControllerInterface {
   void ConfigureClosedChainHandFk();
   bool ComputeHandFingertipFk(const ControllerState& state, const pinocchio::SE3& tcp) noexcept;
 
-  // #120: closed-chain 축약 동역학 provider 배선 (non-RT; LoadConfig 의 combined_cache_.cache().Init
+  // #120: closed-chain 축약 동역학 provider 배선 (non-RT; LoadConfig 의
+  // combined_cache_.cache().Init
   //   직후 호출). control model 이 actuated(closed-chain) 모델일 때만 provider 를 Configure 해
-  //   combined_cache_.cache().reduced_provider 로 주입 → TSID EOM 의 M/h/g 를 축약값으로 대체. 비-extended
-  //   (GetActuatedModel()==null) 이거나 정렬 미매칭이면 미주입 → open-chain 경로 byte-for-byte.
+  //   combined_cache_.cache().reduced_provider 로 주입 → TSID EOM 의 M/h/g 를 축약값으로 대체.
+  //   비-extended (GetActuatedModel()==null) 이거나 정렬 미매칭이면 미주입 → open-chain 경로
+  //   byte-for-byte.
   void ConfigureReducedDynamicsProvider();
 
   // Stage C-2: initialise the CLIK reference generator (registers the
@@ -533,8 +536,8 @@ class DemoWbcController final : public RTControllerInterface {
   ClosedChainHandFk closed_hand_fk_;
 
   // #120: closed-chain 축약 동역학 provider (extended 로봇의 TSID EOM M/h/g 대체). 활성 시
-  // combined_cache_.cache().reduced_provider 가 이것을 가리킨다 → 수명은 controller 가 보장. 비활성이면
-  // cache.reduced_provider==nullptr (open-chain, byte-for-byte).
+  // combined_cache_.cache().reduced_provider 가 이것을 가리킨다 → 수명은 controller 가 보장.
+  // 비활성이면 cache.reduced_provider==nullptr (open-chain, byte-for-byte).
   WbcReducedDynamicsProvider wbc_reduced_dynamics_;
 
   // Shared combined arm+hand control-model cache wiring (model select, ext→
@@ -833,9 +836,10 @@ class DemoWbcController final : public RTControllerInterface {
   void DrainTargetSlot(const ControllerState& state) noexcept;
 
   // RT-thread-only: rebuild q_des_target_full_ from current_target_slot_.targets
-  // (external order → Pinocchio order via combined_cache_.ext_to_pin_q, mirroring combined_cache_.ExtractFullState).
-  // Called at phase entry alongside the SE3 goal so posture + SE3 reference share
-  // one consistent target snapshot. No-op until combined_cache_.reorder_valid().
+  // (external order → Pinocchio order via combined_cache_.ext_to_pin_q, mirroring
+  // combined_cache_.ExtractFullState). Called at phase entry alongside the SE3 goal so posture +
+  // SE3 reference share one consistent target snapshot. No-op until
+  // combined_cache_.reorder_valid().
   void BuildTargetPosture(const ControllerState& state) noexcept;
 
   // RT-thread-only: fold the hand joint target (current_target_slot_.targets[1])
@@ -1071,6 +1075,7 @@ class DemoWbcController final : public RTControllerInterface {
   rtc::LogHandle<integrated_bringup::DeviceWbcLogPod> secondary_wbc_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;
   rtc::LogHandle<integrated_bringup::WbcDiagLogPod> wbc_diag_log_handle_;
+  rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator_log_handle_;
 
   std::vector<std::string> primary_joint_names_;
   std::vector<std::string> secondary_joint_names_;

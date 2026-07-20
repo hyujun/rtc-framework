@@ -76,6 +76,9 @@ STATS_PRINTERS: dict[str, list[PlotEntry]] = {
     "wbc_diag": [
         PlotEntry("print_wbc_diag_stats", plotters.print_wbc_diag_statistics),
     ],
+    "pull_estimator": [
+        PlotEntry("print_pull_stats", plotters.print_pull_estimator_statistics),
+    ],
     "cm_timing": list(_TIMING_STATS),
     "mpc_timing": list(_TIMING_STATS),
 }
@@ -158,6 +161,9 @@ PIPELINES: dict[str, list[PlotEntry]] = {
     "wbc_diag": [
         PlotEntry("wbc_diag_solver", plotters.plot_wbc_diag_solver),
         PlotEntry("wbc_diag_contacts", plotters.plot_wbc_diag_contacts),
+    ],
+    "pull_estimator": [
+        PlotEntry("pull_estimator", plotters.plot_pull_estimator),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

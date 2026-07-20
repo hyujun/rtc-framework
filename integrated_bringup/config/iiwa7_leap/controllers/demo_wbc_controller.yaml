@@ -57,6 +57,8 @@ demo_wbc_controller:
       instance: leap_state
     - msg_type: integrated_bringup/WbcDiagLog
       instance: wbc_diag
+    - msg_type: integrated_bringup/PullEstimatorLog
+      instance: pull_estimator
 
   # ── TSID QP configuration ─────────────────────────────────────────────────
   tsid:

@@ -28,6 +28,7 @@
 #include "integrated_bringup/logging/device_sensor_log_pod.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/device_wbc_log_pod.hpp"
+#include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/wbc_diag_log_pod.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 
@@ -66,11 +67,18 @@ struct LogRegistrationContext {
     std::vector<std::string> motor_names;
     std::vector<std::string> fingertip_names;
   };
+
   std::map<std::string, WbcStateLogInfo> wbc_state_logs;
 
   // Map: WbcDiagLog instance string → num_contact_vars (λ column count =
   // fixed QP contact dim, contact_mgr_config_.max_contact_vars).
   std::map<std::string, std::size_t> wbc_diag_logs;
+
+  // PullEstimatorLog (#167) — fixed-shape header and a single fixed instance
+  // (kPullEstimatorLogInstance), so one bool gates registration. Caller sets it
+  // only when its PullEstimatorWiring is enabled; a YAML entry on a pull-less
+  // variant is silently skipped like any unregistered instance.
+  bool pull_estimator_enabled{false};
 };
 
 // ── Returned handles (caller assigns to its own typed members) ─────────────
@@ -79,6 +87,9 @@ struct RegisteredLogHandles {
   std::map<std::string, rtc::LogHandle<integrated_bringup::DeviceSensorLogPod>> sensor;
   std::map<std::string, rtc::LogHandle<integrated_bringup::DeviceWbcLogPod>> wbc_state;
   std::map<std::string, rtc::LogHandle<integrated_bringup::WbcDiagLogPod>> wbc_diag;
+  // Single fixed instance (kPullEstimatorLogInstance) — no map keyed on a name
+  // the caller already knows.
+  rtc::LogHandle<integrated_bringup::PullEstimatorLogPod> pull_estimator;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -207,10 +218,28 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.wbc_diag[entry.instance] = std::move(handle);
+    } else if (entry.msg_type == kPullEstimatorLogMsgType) {
+      if (!ctx.pull_estimator_enabled || entry.instance != kPullEstimatorLogInstance) {
+        // Pull estimator disabled (or unexpected instance) for this controller —
+        // silently skip like any unregistered instance.
+        continue;
+      }
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::PullEstimatorLogPod>(
+          entry.instance,
+          [](std::ostream& os) { integrated_bringup::WritePullEstimatorLogHeader(os); },
+          [](std::ostream& os, const integrated_bringup::PullEstimatorLogPod& pod) {
+            integrated_bringup::WritePullEstimatorLogRow(os, pod);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open pull_estimator CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.pull_estimator = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
-    // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog};
-    // reaching here is a YAML parser bug. Silently ignore.
+    // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
+    // PullEstimatorLog}; reaching here is a YAML parser bug. Silently ignore.
   }
 
   return result;

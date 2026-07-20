@@ -222,6 +222,14 @@ class DemoControllerGUI(Node):
         self._fp_finger_s = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_filtered_force = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_force_error = [0.0] * len(FORCE_PI_FINGER_NAMES)
+        # Pull-force estimate (#167) — GraspState/WbcState 의 pull_* 블록은
+        # 필드명이 동일하므로 _store_pull_fields 하나로 양쪽 콜백을 커버.
+        self._pull_magnitude = 0.0
+        self._pull_friction_utilization = 0.0
+        self._pull_valid = False
+        self._pull_valid_contact_count = 0
+        self._pull_slip_risk = False
+        self._pull_baseline_applied = False
 
         # Phase 4: subscribe to the active controller name and rebind
         # controller-owned topics on each change.
@@ -251,6 +259,7 @@ class DemoControllerGUI(Node):
         self._prev_fp_phase = ""
         self._prev_fp_target = ""
         self._prev_fp_fingers = [["", "", "", ""] for _ in range(len(FORCE_PI_FINGER_NAMES))]
+        self._prev_pull = [""] * 5  # slip badge / magnitude / util / valid / baseline
 
         # Phase 2: dynamic controller catalog. Built before the Tk thread
         # starts so the rclpy executor sees the timer/service-client
@@ -489,6 +498,18 @@ class DemoControllerGUI(Node):
             self._fp_finger_s[i] = msg.finger_s[i]
             self._fp_filtered_force[i] = msg.finger_filtered_force[i]
             self._fp_force_error[i] = msg.finger_force_error[i]
+        self._store_pull_fields(msg)
+
+    def _store_pull_fields(self, msg):
+        """GraspState/WbcState 공용 pull 저장 (#167) — 두 msg 는 동일한
+        PullEstimate 하위 메시지를 embed 하므로 하나의 헬퍼로 커버."""
+        pull = msg.pull
+        self._pull_magnitude = pull.magnitude
+        self._pull_friction_utilization = pull.friction_utilization
+        self._pull_valid = pull.valid
+        self._pull_valid_contact_count = pull.valid_contact_count
+        self._pull_slip_risk = pull.slip_risk
+        self._pull_baseline_applied = pull.baseline_applied
 
     def _wbc_state_cb(self, msg: WbcState):
         """WbcState handler — published by demo_wbc_controller at ~50 Hz.
@@ -518,6 +539,7 @@ class DemoControllerGUI(Node):
             # valid so the OK/-- indicator stays useful.
             self._grasp_inference_valid[i] = True
         self._grasp_phase = msg.phase
+        self._store_pull_fields(msg)
 
     def _on_catalog_update(self, _catalog: ControllerCatalog) -> None:
         """ControllerCatalog response handler — runs on the rclpy executor.
@@ -695,6 +717,39 @@ class DemoControllerGUI(Node):
             if self._prev_ft[i][2] != valid_text:
                 self._prev_ft[i][2] = valid_text
                 self._ft_valid_labels[i].config(text=valid_text, fg="#a6e3a1" if iv else "#f38ba8")
+
+        # ── Pull force estimate (#167) ──
+        slip_key = "1" if self._pull_slip_risk else "0"
+        if self._prev_pull[0] != slip_key:
+            self._prev_pull[0] = slip_key
+            if self._pull_slip_risk:
+                self._pull_slip_label.config(text="  SLIP RISK  ", bg="#f38ba8", fg="#1e1e2e")
+            else:
+                self._pull_slip_label.config(text="  NO SLIP RISK  ", bg="#585b70", fg="#cdd6f4")
+
+        pull_mag_text = f"{self._pull_magnitude:.2f} N"
+        if self._prev_pull[1] != pull_mag_text:
+            self._prev_pull[1] = pull_mag_text
+            self._pull_magnitude_label.config(text=pull_mag_text)
+
+        pull_util_text = f"{self._pull_friction_utilization:.2f}"
+        if self._prev_pull[2] != pull_util_text:
+            self._prev_pull[2] = pull_util_text
+            self._pull_util_label.config(text=pull_util_text)
+
+        pull_valid_text = (
+            f"{'OK' if self._pull_valid else '--'} ({self._pull_valid_contact_count})"
+        )
+        if self._prev_pull[3] != pull_valid_text:
+            self._prev_pull[3] = pull_valid_text
+            self._pull_valid_label.config(
+                text=pull_valid_text, fg="#a6e3a1" if self._pull_valid else "#f38ba8"
+            )
+
+        pull_base_text = "ON" if self._pull_baseline_applied else "--"
+        if self._prev_pull[4] != pull_base_text:
+            self._prev_pull[4] = pull_base_text
+            self._pull_baseline_label.config(text=pull_base_text)
 
         # ── Phase indicator ──
         # WBC and Force-PI use different FSM enums. Cache key includes the
@@ -1460,6 +1515,51 @@ class DemoControllerGUI(Node):
             )
             vl.grid(row=i + 1, column=3, padx=2, pady=1)
             self._ft_valid_labels.append(vl)
+
+        # ── Pull Force Estimate (#167) ─────────────────────────────────
+        # Fed by the pull_* block of GraspState/WbcState (field names are
+        # identical across the two messages; see _store_pull_fields).
+        pull_frame = ttk.LabelFrame(parent, text="Pull Force Estimate", padding=4)
+        pull_frame.pack(fill="x", padx=8, pady=(2, 2))
+
+        pull_row = tk.Frame(pull_frame, bg="#1e1e2e")
+        pull_row.pack(fill="x")
+
+        self._pull_slip_label = tk.Label(
+            pull_row,
+            text="  NO SLIP RISK  ",
+            bg="#585b70",
+            fg="#cdd6f4",
+            font=("Segoe UI", 11, "bold"),
+            padx=8,
+            pady=4,
+        )
+        self._pull_slip_label.pack(side="left", padx=(4, 12))
+
+        pull_grid = tk.Frame(pull_row, bg="#1e1e2e")
+        pull_grid.pack(side="left", fill="x")
+
+        pull_items = [
+            ("Magnitude:", "_pull_magnitude_label", "0.00 N"),
+            ("Friction Util:", "_pull_util_label", "0.00"),
+            ("Valid:", "_pull_valid_label", "-- (0)"),
+            ("Baseline:", "_pull_baseline_label", "--"),
+        ]
+        for i, (text, attr, default) in enumerate(pull_items):
+            tk.Label(
+                pull_grid, text=text, bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8), anchor="e"
+            ).grid(row=i // 2, column=(i % 2) * 2, padx=(8, 2), pady=1, sticky="e")
+            lbl = tk.Label(
+                pull_grid,
+                text=default,
+                bg="#313244",
+                fg="#f9e2af",
+                font=mono_font,
+                width=10,
+                anchor="center",
+            )
+            lbl.grid(row=i // 2, column=(i % 2) * 2 + 1, padx=(0, 8), pady=1)
+            setattr(self, attr, lbl)
 
         # ── Grasp Detection Params ──────────────────────────────────────
         # Swapped per active controller by `_show_gains_panel`. The

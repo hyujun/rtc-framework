@@ -57,3 +57,9 @@ int32   min_fingertips       # threshold for grasp_detected
 float32 tsid_solve_us        # last solver wall time per tick [us]
 bool    tsid_solver_ok       # true if last QP converged
 int32   qp_fail_count        # cumulative QP failures since activation
+
+# In-plane pull-force estimate (#167) — rtc::grasp::PullForceEstimator output,
+# fed with measured R_i·f_i over the TSID contact geometry (not λ_opt). Same
+# PullEstimate sub-message as GraspState.msg so consumers (GUI) share the
+# storage code.
+PullEstimate pull

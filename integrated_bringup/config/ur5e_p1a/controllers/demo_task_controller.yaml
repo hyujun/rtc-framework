@@ -86,3 +86,5 @@ demo_task_controller:
       instance: p1a_state
     - msg_type: rtc_msgs/DeviceSensorLog
       instance: p1a_sensor
+    - msg_type: integrated_bringup/PullEstimatorLog
+      instance: pull_estimator

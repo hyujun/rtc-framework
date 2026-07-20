@@ -146,6 +146,28 @@ rtc_msgs/
 | `finger_force_error` | `float32[]` | 핑거별 힘 오차 [N] |
 | `grasp_target_force` | `float32` | 현재 목표 힘 [N] |
 
+**In-plane pull-force estimate** (#167) — `pull` 필드는 `PullEstimate.msg` 하위 메시지이며 `WbcState.msg` 도 같은 타입을 embed 한다 (소비자 저장 코드 공유 목적). `rtc::grasp::PullForceEstimator` 출력.
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `pull` | `PullEstimate` | In-plane pull-force estimate — 하위 필드는 아래 `PullEstimate.msg` 표 참조 |
+
+#### `PullEstimate.msg`
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `force` | `float32[3]` | 필터링된 추정 힘 F̂, reference frame [N] |
+| `force_inplane` | `float32[2]` | Bᵀ·F̂ 평면 좌표 [N] |
+| `magnitude` | `float32` | \|F̂\| [N] |
+| `directional` | `float32` | dᵀ·F̂ (direction 미설정 시 0) [N] |
+| `friction_utilization` | `float32` | max_i \|f_t,i\| / (μ_i·f_n,i) |
+| `leakage_bound` | `float32` | grip→in-plane leakage bound [N] |
+| `valid_contact_count` | `int32` | 유효 접촉 수 |
+| `valid` | `bool` | 추정 유효 여부 (required-role gate 통과) |
+| `slip_risk` | `bool` | slip ratio 임계 초과 여부 |
+| `any_saturated` | `bool` | 접촉 중 saturation 발생 여부 |
+| `baseline_applied` | `bool` | baseline subtraction 적용 여부 |
+
 ---
 
 ### `WbcState.msg`
@@ -168,6 +190,7 @@ TSID 기반 whole-body controller (예: `DemoWbcController`)가 publish하는 �
 | **TSID 진단** | `tsid_solve_us` | `float32` | 마지막 solver 계산 시간 [us] (informational) |
 | | `tsid_solver_ok` | `bool` | 마지막 QP 수렴 여부 |
 | | `qp_fail_count` | `int32` | 활성화 이후 누적 QP 실패 횟수 |
+| **Pull estimate** | `pull` | `PullEstimate` | In-plane pull-force estimate (#167) — 하위 필드는 위 `GraspState.msg` 의 `PullEstimate.msg` 표와 동일 (measured R_i·f_i 기반, TSID λ_opt 아님) |
 
 - Per-controller 토픽: `/<config_key>/hand/wbc_state` (500 Hz 컨트롤러, ~50 Hz publish thread).
 

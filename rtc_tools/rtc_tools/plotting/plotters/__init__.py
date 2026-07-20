@@ -19,6 +19,10 @@ from .motor import (
     plot_motor_velocities,
     print_motor_statistics,
 )
+from .pull import (
+    plot_pull_estimator,
+    print_pull_estimator_statistics,
+)
 from .robot import (
     plot_robot_commands,
     plot_robot_positions,
@@ -73,6 +77,9 @@ __all__ = [
     "plot_device_positions",
     "plot_device_velocities",
     "print_device_statistics",
+    # pull estimator
+    "plot_pull_estimator",
+    "print_pull_estimator_statistics",
     # sensors
     "plot_device_ft_output",
     "plot_device_ft_output_auto",

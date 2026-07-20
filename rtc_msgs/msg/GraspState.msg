@@ -27,3 +27,8 @@ float32[] finger_s              # grasp parameter per finger [0,1]
 float32[] finger_filtered_force # filtered force per finger [N]
 float32[] finger_force_error    # force error per finger [N]
 float32   grasp_target_force    # active target force [N]
+
+# In-plane pull-force estimate (#167) — rtc::grasp::PullForceEstimator 출력.
+# GraspState/WbcState 가 동일한 PullEstimate 하위 메시지를 embed 하므로 GUI 등
+# 소비자는 두 msg 의 저장 코드를 그대로 공유한다.
+PullEstimate pull

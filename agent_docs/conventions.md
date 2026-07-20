@@ -77,8 +77,8 @@ RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](invariant
 
 규칙:
 
-- `msg_type` (필수): `rtc_msgs/<*Log>` 형식. 메시지 카탈로그 enum 으로 매핑되어 오타는 on_configure 시 hard fail
-- `instance` (필수): 컨트롤러 코드의 `RegisterLog<MsgT>("<instance>", ...)` 호출과 1:1 매칭. 불일치는 hard fail. CSV 파일 stem 으로도 사용됨 → `<session>/controllers/<config_key>/<instance>.csv`. **instance 는 `(msg_type, instance)` 가 unique 하도록 작성하지 말고, *경로 단위로 unique* 하도록 작성한다** — 같은 device 의 state/sensor 가 있을 때는 `hand_state` / `hand_sensor` 로 분리. 같은 LogSet 안에서 동일 instance 를 두 번 등록하면 `RegisterLog` 가 unbound handle 을 반환한다 (코드 enforcement)
+- `msg_type` (필수): `rtc_msgs/<*Log>` 형식 (integrated_bringup-private POD 로그 — `DeviceWbcLog`/`WbcDiagLog`/`PullEstimatorLog` — 은 `integrated_bringup/<*Log>`). 컨트롤러 `LoadConfig` 의 closed-set 검증에 매핑되어 오타는 parse 시 hard fail
+- `instance` (필수): 컨트롤러 코드의 `RegisterLog<MsgT>("<instance>", ...)` 호출과 1:1 매칭. 빈 `instance` 또는 같은 LogSet 내 중복 등록은 hard fail (`RegisterLog` unbound handle); 코드가 등록하지 않은 instance (optional·gated 채널이 비활성일 때, 예: `pull_estimator` wiring disabled) 는 silently skip. CSV 파일 stem 으로도 사용됨 → `<session>/controllers/<config_key>/<instance>.csv`. **instance 는 `(msg_type, instance)` 가 unique 하도록 작성하지 말고, *경로 단위로 unique* 하도록 작성한다** — 같은 device 의 state/sensor 가 있을 때는 `hand_state` / `hand_sensor` 로 분리. 같은 LogSet 안에서 동일 instance 를 두 번 등록하면 `RegisterLog` 가 unbound handle 을 반환한다 (코드 enforcement)
 - `topic` (옵션, 현재는 unused): 향후 `rtc_msgs/*Log` 를 DDS 로 publish 하는 옵션을 위해 예약. Q-MSG-1(a) lock 으로 현재는 schema-only POD→SPSC→CSV
 - POD 미러 정의 위치 (Q-MSG-2(d)): `<robot>_bringup/include/<robot>_bringup/logging/<msg>_pod.hpp`. `kMaxJoints` 등 capacity 는 *그 robot 의 hardware* 에 맞게 선정 — `rtc_base` 에 robot constant 금지 (ARCH-1)
 - Push site 제약 (Q-ACTIVITY-GATING): controller 는 **`Compute()` 에서만** push 한다. parameter callback / BT bridge / 비-RT thread 에서 push 금지 — inactive controller 의 CSV 에 row 가 쌓이는 것을 방지

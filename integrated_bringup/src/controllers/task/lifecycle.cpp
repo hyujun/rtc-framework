@@ -93,8 +93,9 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
         {
             {secondary_sensor_key, secondary_sensor_names_},
         },
-        {},  // wbc_state_logs — WBC controller only
-        {},  // wbc_diag_logs  — WBC controller only
+        {},                      // wbc_state_logs — WBC controller only
+        {},                      // wbc_diag_logs  — WBC controller only
+        pull_wiring_.enabled(),  // pull_estimator_enabled
     };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -113,6 +114,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
         secondary_sensor_log_handle_ = std::move(it->second);
       }
     }
+    pull_estimator_log_handle_ = std::move(reg.handles.pull_estimator);
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

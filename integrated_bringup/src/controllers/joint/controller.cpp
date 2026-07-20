@@ -355,6 +355,7 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
     FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
     secondary_sensor_log_handle_.Push(pod);
   }
+  PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s);
   return output;
 }
 
@@ -663,7 +664,8 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
         e.instance = entry["instance"].as<std::string>();
       }
       // Closed-set msg_type validation (typo = hard fail at parse time).
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog") {
+      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
+          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType) {
         throw std::runtime_error("DemoJointController: unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));
