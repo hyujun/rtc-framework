@@ -562,7 +562,12 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   }
 
   // ── Load device name configs (needs active_groups_) ─────────────────────
-  LoadDeviceNameConfigs();
+  if (!LoadDeviceNameConfigs()) {
+    RCLCPP_FATAL(get_logger(),
+                 "Device config exceeds the RT path's fixed capacity — refusing to configure.");
+    ResetControllerBringUpState();
+    return false;
+  }
 
   // ── Build per-controller flat slot mappings (RT-safe, no map lookup) ────
   // Phase 4: capability per slot is unknown here (depends on backend impl,

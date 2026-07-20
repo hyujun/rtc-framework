@@ -166,7 +166,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void ParseTreeModels(rtc_urdf_bridge::ModelConfig& config);
 
   // ── Device name configuration ────────────────────────────────────────────
-  void LoadDeviceNameConfigs();
+  // Returns false when a device config cannot be represented by the RT path's
+  // fixed-size arrays (e.g. more joint_state_names than kMaxDeviceChannels),
+  // which refuses the whole configure — see DeclareAndLoadParameters.
+  [[nodiscard]] bool LoadDeviceNameConfigs();
 
   // ── RT loop (rtc::PeriodicRtThread) ───────────────────────────────────────
   // The RT loop itself is owned by a nested PeriodicRtThread subclass that
