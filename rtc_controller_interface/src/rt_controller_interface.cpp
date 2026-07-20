@@ -206,10 +206,18 @@ RTControllerInterface::CallbackReturn RTControllerInterface::on_configure(
 
 RTControllerInterface::CallbackReturn RTControllerInterface::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) noexcept {
+  // Invalidate every pending target stamped before this activation (issue #196
+  // §3). Targets queued while the controller was Inactive carry the previous
+  // generation and the RT-side drain now drops them, so they can no longer
+  // overwrite the current-state hold on the first tick after re-activation.
+  activation_generation_.fetch_add(1, std::memory_order_acq_rel);
+
   // Controller-internal init policy: each derived controller seeds its
   // target slot from the current device state on the first Compute() tick
-  // after activation. The base has no hold-init responsibility — see the
-  // header comment for the rationale (single-writer SeqLock invariant).
+  // after activation. The base owns only the *latch reset* that forces that
+  // re-seed — the seeding itself stays on the RT thread, preserving the
+  // single-writer SeqLock invariant (see the header comment).
+  ResetTargetInitialization();
   return CallbackReturn::SUCCESS;
 }
 

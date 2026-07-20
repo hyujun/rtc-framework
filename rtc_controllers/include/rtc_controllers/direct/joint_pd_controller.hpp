@@ -11,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -113,6 +114,10 @@ class JointPDController final : public RTControllerInterface {
     int device_idx{0};
     int num_values{0};
     std::array<double, kMaxDeviceChannels> values{};
+    // Activation generation observed by the off-RT pusher. The RT drain drops
+    // entries a later activation has invalidated — see
+    // RTControllerInterface::ActivationGeneration (#196 §3).
+    std::uint32_t generation{0};
   };
 
   static_assert(std::is_trivially_copyable_v<PendingTarget>,
@@ -127,6 +132,14 @@ class JointPDController final : public RTControllerInterface {
   // the current state and rebuilding the trajectory. RT thread is still the
   // sole writer of target_seqlock_ itself; this atomic is just the signal.
   std::atomic<bool> target_initialized_{false};
+
+  // Activation uses the same signal as ClearEstop: re-seed the slot and the
+  // trajectory from the current state on the next tick. Without this a
+  // re-activated controller resumed the trajectory it held when deactivated.
+  void ResetTargetInitialization() noexcept override {
+    target_initialized_.store(false, std::memory_order_release);
+  }
+
   bool new_target_pending_{false};  // RT-thread-only; gates trajectory re-init
 
   std::array<double, kMaxRobotDOF> prev_error_{};

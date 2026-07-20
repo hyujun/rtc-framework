@@ -272,6 +272,23 @@ if(BUILD_TESTING)
   # ── demo_joint_controller grasp-detection tests ────────────────────────────
   # Empty-URDF unit test: grasp detection / fingertip derivation / ToF gate /
   # none no-op. No rtc_tsid (joint controller is joint-space only).
+  # Activation generation gate (#196 §3): stale targets queued while Inactive
+  # must not reach the target slot after re-activation.
+  ament_add_gtest(test_activation_generation_gate
+    test/test_activation_generation_gate.cpp)
+  target_link_libraries(test_activation_generation_gate
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_activation_generation_gate
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controllers
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   ament_add_gtest(test_demo_joint_controller test/test_demo_joint_controller.cpp)
   target_link_libraries(test_demo_joint_controller
     ${PROJECT_NAME}_demo_controllers

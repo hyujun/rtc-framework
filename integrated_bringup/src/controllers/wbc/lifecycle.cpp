@@ -250,8 +250,8 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   // Trajectory / FSM / target-slot init happens lazily in Compute() via
   // DrainTargetSlot's first-tick path (needs the current device state).
   SpawnMpcThreadIfNeeded();
-  target_initialized_.store(false, std::memory_order_release);
 
+  // Base bumps the activation generation + calls ResetTargetInitialization().
   const auto rc = RTControllerInterface::on_activate(prev);
 
   // Resume the MPC solve loop if the thread has already been spawned.

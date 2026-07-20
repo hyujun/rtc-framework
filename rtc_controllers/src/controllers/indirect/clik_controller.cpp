@@ -239,6 +239,11 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   // Drain SPSC entries from off-RT SetDeviceTarget.
   PendingTarget pending{};
   while (pending_targets_.Pop(pending)) {
+    // Drop targets queued before the current activation (#196 §3) — they were
+    // addressed to a controller that is no longer the one running.
+    if (!IsCurrentGeneration(pending.generation)) {
+      continue;
+    }
     const auto didx = static_cast<std::size_t>(pending.device_idx);
     if (didx >= ControllerState::kMaxDevices) {
       continue;
@@ -571,6 +576,7 @@ void ClikController::SetDeviceTarget(int device_idx, std::span<const double> tar
   }
   PendingTarget pending{};
   pending.device_idx = device_idx;
+  pending.generation = ActivationGeneration();
   const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
   pending.num_values = static_cast<int>(nch);
   for (std::size_t i = 0; i < nch; ++i) {

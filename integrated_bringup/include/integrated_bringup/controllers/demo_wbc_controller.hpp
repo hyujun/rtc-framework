@@ -816,6 +816,10 @@ class DemoWbcController final : public RTControllerInterface {
     int num_values{0};
     std::array<double, kMaxDeviceChannels> values{};
     bool is_task{false};  // true = task-space (SE3) goal via SetDeviceTaskTarget
+    // Activation generation observed by the off-RT pusher. The RT drain drops
+    // entries a later activation has invalidated — see
+    // rtc::RTControllerInterface::ActivationGeneration (#196 §3).
+    std::uint32_t generation{0};
   };
 
   static_assert(std::is_trivially_copyable_v<PendingTarget>,
@@ -826,6 +830,13 @@ class DemoWbcController final : public RTControllerInterface {
   rtc::SeqLock<TargetSlot> target_seqlock_;
   rtc::SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
   std::atomic<bool> target_initialized_{false};
+
+  // Base hook — see demo_joint_controller.hpp. Previously duplicated inside
+  // on_activate (#196 §3). ClearEstop keeps its own reset: E-STOP recovery is a
+  // separate trigger that does not go through a lifecycle transition.
+  void ResetTargetInitialization() noexcept override {
+    target_initialized_.store(false, std::memory_order_release);
+  }
   TargetSlot current_target_slot_{};
   bool robot_new_target_pending_{false};     // RT-thread-only
   bool hand_new_target_pending_{false};      // RT-thread-only

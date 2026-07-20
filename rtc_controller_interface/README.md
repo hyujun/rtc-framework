@@ -73,6 +73,22 @@ joint 목표는 디스패치 직전에 `device_name_configs_[group_name].joint_l
 - **non-finite 도 위반으로 보고** — `std::clamp(NaN, lo, hi)`는 두 비교가 모두 false 라 NaN 을 그대로 반환합니다. 즉 RT clamp 가 막지 못하므로 반드시 표면화해야 합니다 (현재는 경고만 — drop 하지 않음).
 - 판정 로직은 순수 함수 `rtc::CheckTargetLimits(ordered, lim)` → `TargetLimitViolation` 으로 분리돼 있어 ROS 없이 단위 테스트됩니다. 로그는 [conventions.md](../agent_docs/conventions.md) §Logger naming 에 따라 library-level logger (`rtc_controller_interface`) + 메시지 본문 `[<controller_name>]` prefix 를 씁니다.
 
+### Activation generation gate (#196 §3)
+
+`rclcpp_lifecycle` 은 **publisher 만** gating 하므로 controller 의 target subscription 은 Inactive 구간에도 살아 있다. 그래서 비활성 controller 앞으로 보낸 goal 이 계속 pending-target 큐에 쌓이고, 재활성화 첫 RT tick 에서 current-state hold 를 덮어쓸 수 있었다.
+
+큐를 activation 시점에 비우는 것은 불가능하다 — `SpscQueue` 의 consumer 는 RT thread 하나뿐이라 lifecycle thread 에서 `Pop()` 하면 SPSC 계약이 깨진다. 대신 **generation 스탬프**를 쓴다.
+
+| 요소 | 위치 | 역할 |
+|---|---|---|
+| `ActivationGeneration()` | base public | 현재 activation 세대. `on_activate` 마다 +1 (deactivate 는 증분하지 않음 — 비활성 중 push 된 entry 는 직전 세대를 달고 있다가 다음 activation 이 무효화한다) |
+| `IsCurrentGeneration(gen)` | base public | RT drain 측 판정 술어 |
+| `ResetTargetInitialization()` | base protected virtual | `on_activate` 가 매 활성화마다 호출. 파생 controller 는 여기서 `target_initialized_` 계열 latch 만 내려 첫 tick 재-seed 를 강제한다 |
+
+각 controller 의 `PendingTarget` 은 `generation` 필드를 갖고, off-RT `SetDeviceTarget`/`SetDeviceTaskTarget` 이 push 시점의 세대를 찍으며, RT `Compute()` drain 이 `IsCurrentGeneration` 이 아닌 entry 를 버린다. 활성화 latch reset 은 **base 가 소유**하므로 controller 는 `on_activate` override 없이도 재-seed 를 얻는다 (이전에는 `PController`/`ClikController`/`OperationalSpaceController`/`JointPDController` 4종이 override 자체가 없어 재활성화 시 이전 hold 를 그대로 유지했다).
+
+CM 이 아닌 단위 테스트가 직접 `Compute()` 를 도는 경로는 양쪽 모두 세대 0 이라 아무것도 드롭되지 않는다.
+
 > **Hold-init 책임 분리 (2026-05-17, RT-4)**: 과거에는 `InitializeHoldPosition(state)` 순수 가상이 CM의 auto-hold 경로에서 RT 스레드로 호출됐다. 이는 `target_mutex_` (RT-4 위반) + writer-multiplicity race (lifecycle/RT/aux 3 thread)의 근원이었고 v1 시도에서 SeqLock 단순 적용으로는 해결되지 않았다. v2 cleanup으로 hold-init은 controller 내부 책임이 되었다 — 각 controller는 `target_initialized_` atomic을 두고 `Compute()` 첫 진입 시 현재 device state로 자체 seed. CM의 auto-hold 코드 / `BuildDeviceSnapshot` / `InitializeHoldPosition` 가상 함수는 모두 삭제됐다.
 
 ### 가상 메서드 (기본 구현 제공)
@@ -102,7 +118,7 @@ joint 목표는 디스패치 직전에 `device_name_configs_[group_name].joint_l
 |---|---|---|
 | `PreConfigure` | `(LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | CM 3-pass bring-up의 1단계. `node_` 저장 + `LoadConfig(yaml_cfg)` try/catch → `topic_config_` 채움. **RegisterLog / 리소스 할당 금지** — CM이 이 결과로 `active_groups_` 와 `device_name_configs_` 를 빌드한 뒤 `SetDeviceNameConfigs()` 를 호출하고, 이어서 `on_configure()` 에서 본격 작업이 일어남 |
 | `on_configure` | `(State, LifecycleNode::SharedPtr, YAML::Node) → CallbackReturn` | `PreConfigure` 경유 시 멱등 (이미 set된 `node_`/`topic_config_` 보존, LoadConfig 재호출 안 함). 직접 호출 (legacy 단위 테스트) 시 `node_` 저장 + LoadConfig. 서브클래스가 `RegisterLog<>(...)` / 파라미터 / 퍼블리셔를 만드는 시점이며, 이때 `GetDeviceNameConfig(...)` 결과는 이미 채워져 있어 헤더 writer 에 안전히 전달 가능. 실패 경로 로그는 `rclcpp::get_logger("rtc_controller_interface")` 정적 logger 사용 + 메시지 본문에 `[<controller_name>]` prefix — 네이밍 규약은 [agent_docs/conventions.md](../agent_docs/conventions.md) "Logging" 섹션 참조 |
-| `on_activate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
+| `on_activate` | `(State) → CallbackReturn` | activation generation 증분 (비활성 구간에 큐잉된 target 무효화) + `ResetTargetInitialization()` 호출 → `SUCCESS`. 아래 "Activation generation gate" 참조 |
 | `on_deactivate` | `(State) → CallbackReturn` | no-op `SUCCESS` |
 | `on_cleanup` | `(State) → CallbackReturn` | `node_.reset()` → `SUCCESS` |
 | `on_shutdown` | `(State) → CallbackReturn` | `on_cleanup(state)` 위임 |
