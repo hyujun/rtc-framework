@@ -29,10 +29,65 @@ inputs:
       Set "false" to skip.
     required: false
     default: "true"
+  ros-apt-source-fallback:
+    description: |
+      ros-apt-source release tag used when the GitHub "latest release" lookup fails.
+      Bump when the pinned deb stops being published for the runner's Ubuntu codename.
+    required: false
+    default: "1.2.0"
 
 runs:
   using: composite
   steps:
+    # setup-ros 의 ros2-apt-source 설치 경로는 익명 `curl -s api.github.com/.../releases/latest`
+    # 로 태그를 조회한다 (setup-ros-ubuntu.ts::installRosAptSourcePackage, 0.7.19 기준 미수정).
+    # Actions 공유 IP 가 rate-limit 에 걸리면 태그가 빈 문자열이 되어 다운로드 URL 이
+    # ".../download//ros2-apt-source_.noble_all.deb" 로 조립되고 curl 이 404 → exit 22 로
+    # 잡 전체가 죽는다 (2026-07-19 CodeQL, 2026-07-20 lint+coverage 동시 발현).
+    #
+    # setup-ros 0.7.19 의 installRosAptSourcePackageIfNeeded 는 `apt-cache policy` 에
+    # packages.ros.org/ros2/ubuntu 가 이미 보이면 그 경로를 통째로 skip 하므로, 여기서
+    # 먼저 인증 API(rate-limit 여유 1000/h) + 핀 fallback + 재시도로 설치해 두면
+    # fragile 경로 자체가 실행되지 않는다. 이 스텝은 실패해도 job 을 죽이지 않는다 —
+    # 실패 시 setup-ros 가 종전 경로로 재시도하므로 순수 개선(no-regression)이다.
+    - name: Pre-install ROS 2 apt source (rate-limit resilient)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        FALLBACK_VERSION: ${{ inputs.ros-apt-source-fallback }}
+      run: |
+        set -uo pipefail
+        base="https://github.com/ros-infrastructure/ros-apt-source/releases/download"
+        codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME}}")"
+
+        resolved="$(curl -sS --retry 3 --retry-delay 2 \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest \
+          | grep -F '"tag_name"' | awk -F'"' '{print $4}')"
+        if [ -z "${resolved}" ]; then
+          echo "::warning title=ros-apt-source lookup failed::latest-release API returned no tag; using pinned ${FALLBACK_VERSION}"
+        fi
+
+        # 조회 성공분 → 핀 fallback 순으로 시도. 둘 다 실패하면 조용히 물러나
+        # setup-ros 에 맡긴다 (exit 0).
+        for version in "${resolved}" "${FALLBACK_VERSION}"; do
+          [ -n "${version}" ] || continue
+          url="${base}/${version}/ros2-apt-source_${version}.${codename}_all.deb"
+          if curl --fail --location --retry 5 --retry-delay 3 --retry-all-errors \
+               -o /tmp/ros2-apt-source.deb "${url}" \
+             && sudo dpkg -i /tmp/ros2-apt-source.deb \
+             && sudo apt-get update; then
+            rm -f /tmp/ros2-apt-source.deb
+            echo "ros2-apt-source ${version} (${codename}) installed — setup-ros will skip its own lookup"
+            exit 0
+          fi
+          rm -f /tmp/ros2-apt-source.deb
+          echo "::warning title=ros-apt-source install failed::${url}"
+        done
+        echo "::warning title=ros-apt-source pre-install skipped::falling back to setup-ros built-in path"
+        exit 0
+
     - name: Setup ROS 2 (full distribution)
       if: inputs.install-ros == 'true'
       uses: ros-tooling/setup-ros@649ef6bcd696da05bc27ceb3fab69d810c0daeab # v0.7

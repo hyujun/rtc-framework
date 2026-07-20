@@ -45,7 +45,7 @@ permissions:
 
 env:
   ROS_DISTRO: jazzy
-  # ros-tooling/setup-ros@v0.7 (latest 0.7.15) 는 아직 Node 20 사용 — 강제 Node 24
+  # ros-tooling/setup-ros@v0.7 (핀 649ef6b = 0.7.19, 현재 latest) 는 아직 Node 20 사용 — 강제 Node 24
   # 으로 호환성 유지. 2026-06-02 부터 GitHub Actions 가 Node 24 강제 전환.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -423,6 +423,11 @@ jobs:
     if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # NOTE: job-level continue-on-error 는 의도적으로 두지 않는다. "non-blocking" 은
+    # branch protection 에서 이 job 을 required 로 두지 않음으로 달성하고, coverage
+    # 파이프라인 자체의 고장(계측 빌드 실패 / lcov 단계 오류 / 인프라 flake)은 run
+    # status 로 계속 드러나야 한다 — continue-on-error 를 붙이면 그게 초록에 묻힌다.
+    # 개별 test 실패만 non-blocking (아래 step-level continue-on-error).
     # ccache: Debug+gcov flavor 전용 디렉토리 — gated(RelWithDebInfo) 와 CCACHE_DIR·
     # 캐시 키 prefix 를 분리해 계측 산출물이 gated namespace 를 오염시키지 못하게 한다.
     # ccache 는 컴파일 산출(.o/.gcno)만 재사용하고, .gcda(실행 카운터)는 test 직전
@@ -434,7 +439,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # id: setup — 아래 always() step 들이 이 outcome 을 보고 갈린다. setup 이 죽으면
+      # lcov/colcon 자체가 없으므로 always() 가 "lcov: command not found"(exit 127) 와
+      # 빈 coverage.info 업로드를 연쇄 생성한다 (2026-07-20 run 29717918811).
+      # always() 의 의도는 "테스트가 실패해도 .gcda 는 수집" 이지 "환경이 없어도 강행" 이 아니다.
       - name: Setup environment
+        id: setup
         uses: ./.github/actions/setup-rtc-env
         with:
           ros-distro: ${{ env.ROS_DISTRO }}
@@ -516,7 +526,7 @@ jobs:
       # gated 패키지를 계측 빌드로 다시 돌려 coverage .gcda 를 얻되, continue-on-error
       # 로 job 은 실패시키지 않는다(non-blocking). 실 결함 차단은 gated-test 담당.
       - name: Run gated C++ tests (coverage only)
-        if: always()
+        if: always() && steps.setup.outcome == 'success'
         continue-on-error: true
         uses: ./.github/actions/colcon-test-report
         with:
@@ -531,7 +541,7 @@ jobs:
       # GITHUB_STEP_SUMMARY annotation 으로 계속 노출(가시성 유지). always() 로 gated
       # 실패 여부와 무관하게 실행해 coverage 를 최대한 수집한다.
       - name: Run best-effort C++ tests (coverage only)
-        if: always()
+        if: always() && steps.setup.outcome == 'success'
         continue-on-error: true
         uses: ./.github/actions/colcon-test-report
         with:
@@ -542,7 +552,7 @@ jobs:
           artifact-suffix: cpp-coverage-test-besteffort
 
       - name: Capture & filter lcov coverage
-        if: always()
+        if: always() && steps.setup.outcome == 'success'
         shell: bash
         env:
           COVERAGE_PATHS: ${{ needs.packages.outputs.coverage_paths }}
@@ -583,8 +593,10 @@ jobs:
             echo "::warning title=C++ coverage empty::coverage.info missing or has 0 source records — upload will be empty/partial"
           fi
 
+      # 환경 부재로 coverage.info 가 아예 없을 때 빈 리포트를 올려 Codecov 추세를
+      # 0% 로 오염시키지 않도록 setup 성공 시에만 업로드한다.
       - name: Upload C++ coverage to Codecov
-        if: always()
+        if: always() && steps.setup.outcome == 'success'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
