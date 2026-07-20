@@ -6,9 +6,32 @@
 #include <sys/eventfd.h>  // eventfd_write
 #include <time.h>         // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
 
-#include <cmath>  // std::abs
+#include <algorithm>  // std::min
+#include <cmath>      // std::abs
+#include <cstddef>
 
 namespace urtc = rtc;
+
+namespace {
+
+// Bound a runtime channel/group count against the fixed array capacity that
+// backs it before the count is used as a copy length.
+//
+// Both producers of these counts are out-of-tree contracts: DeviceBackend
+// implementations fill DeviceStateCache, and controller Compute() fills
+// ControllerOutput. A faulty producer reporting a negative count turns into a
+// huge length on the size_t cast, and one past the capacity walks off the end
+// of the fixed std::array — either way copy_n runs out of bounds on the RT
+// thread (same defect class as issue #172). Clamping is branch-only: no
+// allocation, no logging, no throw, so it is safe on the tick path.
+[[nodiscard]] constexpr std::size_t BoundedCount(int count, int capacity) noexcept {
+  if (count <= 0) {
+    return 0;
+  }
+  return static_cast<std::size_t>(count < capacity ? count : capacity);
+}
+
+}  // namespace
 
 // ── 50 Hz watchdog (E-STOP)
 // ───────────────────────────────────────────────────
@@ -87,23 +110,26 @@ void RtControllerNode::ControlLoop() {
         if (backends_[slot]->HasSensorState())
           backends_[slot]->ReadSensorState(cache);
       }
-      const auto nc = static_cast<std::size_t>(cache.num_channels);
-      dev.num_channels = cache.num_channels;
+      // The bounded count is written back into DeviceState, not just used as
+      // the copy length: controllers read state.devices[i].num_channels and
+      // would otherwise index past the array we just filled.
+      const auto nc = BoundedCount(cache.num_channels, urtc::kMaxDeviceChannels);
+      dev.num_channels = static_cast<int>(nc);
       std::copy_n(cache.positions.data(), nc, dev.positions.data());
       std::copy_n(cache.velocities.data(), nc, dev.velocities.data());
       std::copy_n(cache.efforts.data(), nc, dev.efforts.data());
       if (urtc::HasCapability(cap, urtc::DeviceCapability::kMotorState) &&
           cache.num_motor_channels > 0) {
-        const auto nmc = static_cast<std::size_t>(cache.num_motor_channels);
-        dev.num_motor_channels = cache.num_motor_channels;
+        const auto nmc = BoundedCount(cache.num_motor_channels, urtc::kMaxDeviceChannels);
+        dev.num_motor_channels = static_cast<int>(nmc);
         std::copy_n(cache.motor_positions.data(), nmc, dev.motor_positions.data());
         std::copy_n(cache.motor_velocities.data(), nmc, dev.motor_velocities.data());
         std::copy_n(cache.motor_efforts.data(), nmc, dev.motor_efforts.data());
       }
       if (urtc::HasCapability(cap, urtc::DeviceCapability::kSensorData) &&
           cache.num_sensor_channels > 0) {
-        const auto nsc = static_cast<std::size_t>(cache.num_sensor_channels);
-        dev.num_sensor_channels = cache.num_sensor_channels;
+        const auto nsc = BoundedCount(cache.num_sensor_channels, urtc::kMaxSensorChannels);
+        dev.num_sensor_channels = static_cast<int>(nsc);
         std::copy_n(cache.sensor_data.data(), nsc, dev.sensor_data.data());
         std::copy_n(cache.sensor_data_raw.data(), nsc, dev.sensor_data_raw.data());
       }
@@ -111,12 +137,16 @@ void RtControllerNode::ControlLoop() {
           cache.num_inference_groups > 0 && slot < slot_to_sensor_layout_.size() &&
           slot_to_sensor_layout_[slot].has_value()) {
         const int infer_per_group = slot_to_sensor_layout_[slot]->inference_values_per_group;
-        const auto nif = static_cast<std::size_t>(cache.num_inference_groups * infer_per_group);
-        dev.num_inference_groups = cache.num_inference_groups;
+        // Both factors are bounded before the multiply: the product is what
+        // indexes inference_data, and a YAML-supplied per-group width times a
+        // backend-supplied group count can otherwise overflow int outright.
+        const auto ngrp = BoundedCount(cache.num_inference_groups, urtc::kMaxSensorGroups);
+        const auto per_group = BoundedCount(infer_per_group, urtc::kMaxInferenceValues);
+        const auto nif =
+            std::min(ngrp * per_group, static_cast<std::size_t>(urtc::kMaxInferenceValues));
+        dev.num_inference_groups = static_cast<int>(ngrp);
         std::copy_n(cache.inference_data.data(), nif, dev.inference_data.data());
-        std::copy_n(cache.inference_enable.data(),
-                    static_cast<std::size_t>(cache.num_inference_groups),
-                    dev.inference_enable.data());
+        std::copy_n(cache.inference_enable.data(), ngrp, dev.inference_enable.data());
       }
       dev.valid = cache.valid;
       ++di;
@@ -172,10 +202,16 @@ void RtControllerNode::ControlLoop() {
         auto& gc = snap.group_commands[gi];
         const auto& dout = output.devices[gi];
         const auto& dstate = state.devices[gi];
-        const auto onc = static_cast<std::size_t>(dout.num_channels);
-        const auto snc = static_cast<std::size_t>(dstate.num_channels);
-        gc.num_channels = dout.num_channels;
-        gc.actual_num_channels = dstate.num_channels;
+        // dout comes straight from the active controller's Compute(); nothing
+        // has vetted its counts yet (central ControllerOutput validation is
+        // issue #196 Phase 4). Bound them here so a faulty controller cannot
+        // drive an out-of-bounds copy or hand the backend a bogus channel
+        // count over the wire. dstate was already bounded on the read path;
+        // re-bounding keeps the invariant local to this block.
+        const auto onc = BoundedCount(dout.num_channels, urtc::kMaxDeviceChannels);
+        const auto snc = BoundedCount(dstate.num_channels, urtc::kMaxDeviceChannels);
+        gc.num_channels = static_cast<int>(onc);
+        gc.actual_num_channels = static_cast<int>(snc);
         gc.stamp_ns = snap.stamp_ns;  // wall-clock ns for JointCommand header
         std::copy_n(dout.commands.data(), onc, gc.commands.data());
         std::copy_n(dout.goal_positions.data(), onc, gc.goal_positions.data());
@@ -193,15 +229,15 @@ void RtControllerNode::ControlLoop() {
         std::copy_n(dstate.velocities.data(), snc, gc.actual_velocities.data());
         std::copy_n(dstate.efforts.data(), snc, gc.efforts.data());
         if (dstate.num_motor_channels > 0) {
-          const auto nmc = static_cast<std::size_t>(dstate.num_motor_channels);
-          gc.num_motor_channels = dstate.num_motor_channels;
+          const auto nmc = BoundedCount(dstate.num_motor_channels, urtc::kMaxDeviceChannels);
+          gc.num_motor_channels = static_cast<int>(nmc);
           std::copy_n(dstate.motor_positions.data(), nmc, gc.motor_positions.data());
           std::copy_n(dstate.motor_velocities.data(), nmc, gc.motor_velocities.data());
           std::copy_n(dstate.motor_efforts.data(), nmc, gc.motor_efforts.data());
         }
         if (dstate.num_sensor_channels > 0) {
-          const auto nsc = static_cast<std::size_t>(dstate.num_sensor_channels);
-          gc.num_sensor_channels = dstate.num_sensor_channels;
+          const auto nsc = BoundedCount(dstate.num_sensor_channels, urtc::kMaxSensorChannels);
+          gc.num_sensor_channels = static_cast<int>(nsc);
           std::copy_n(dstate.sensor_data.data(), nsc, gc.sensor_data.data());
           std::copy_n(dstate.sensor_data_raw.data(), nsc, gc.sensor_data_raw.data());
         }
@@ -214,8 +250,14 @@ void RtControllerNode::ControlLoop() {
             const int infer_per_group =
                 slot_to_sensor_layout_[group_slot]->inference_values_per_group;
             gc.inference_valid = true;
-            gc.num_inference_values = dstate.num_inference_groups * infer_per_group;
-            const auto niv = static_cast<std::size_t>(gc.num_inference_values);
+            // The copy loop below is already bounded by inference_output.size();
+            // bounding the count itself keeps the value published downstream
+            // (DeviceSensorLog) consistent with what was actually copied.
+            const auto niv =
+                std::min(BoundedCount(dstate.num_inference_groups, urtc::kMaxSensorGroups) *
+                             BoundedCount(infer_per_group, urtc::kMaxInferenceValues),
+                         static_cast<std::size_t>(urtc::kMaxInferenceValues));
+            gc.num_inference_values = static_cast<int>(niv);
             for (std::size_t i = 0; i < niv && i < gc.inference_output.size(); ++i) {
               gc.inference_output[i] = dstate.inference_data[i];
             }

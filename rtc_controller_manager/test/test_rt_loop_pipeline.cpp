@@ -37,6 +37,9 @@ RTC_REGISTER_CONTROLLER(rtc_cm_cfg_test, "", "rtc_controller_manager",
                         std::make_unique<PipelineTestController>())
 RTC_REGISTER_DEVICE_BACKEND(cm_pipe_backend, std::make_unique<PipelineStubBackend>())
 
+// A channel count comfortably past every fixed array capacity in the tick path.
+constexpr int kOverCapacityChannels = 999;
+
 rclcpp_lifecycle::State StateUnconfigured() {
   return rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
                                  "unconfigured");
@@ -73,6 +76,7 @@ class RtLoopPipelineTest : public ::testing::Test {
       rclcpp::init(0, nullptr);
     }
     PipelineTestController::ResetCaptured();
+    PipelineStubBackend::ResetStateChannels();
   }
 
   static std::shared_ptr<RtControllerNode> MakeNode(double control_rate) {
@@ -128,6 +132,75 @@ TEST_F(RtLoopPipelineTest, TickCopiesStateAndWritesCommandInline) {
   EXPECT_DOUBLE_EQ(PipelineTestController::kCmd1, backend->LastCommands()[1]);
   EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos0, backend->LastActualPositions()[0]);
   EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos1, backend->LastActualPositions()[1]);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── Out-of-contract channel counts are bounded before any copy (issue #196) ──
+//
+// ControllerOutput::num_channels and DeviceStateCache::num_channels are filled
+// by out-of-tree implementations. Before the fix both were cast straight to
+// size_t and handed to copy_n, so a negative count wrapped to a huge length and
+// an over-capacity count walked past the fixed array — an out-of-bounds copy on
+// the RT thread. The count the backend observes must be the bounded one, since
+// that is what reaches the wire.
+
+TEST_F(RtLoopPipelineTest, OverlargeOutputChannelCountIsClampedToCapacity) {
+  PipelineTestController::output_num_channels.store(kOverCapacityChannels, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(kMaxDeviceChannels, backend->LastNumChannels());
+  // The in-contract commands still arrive — clamping bounds the length only.
+  EXPECT_DOUBLE_EQ(PipelineTestController::kCmd0, backend->LastCommands()[0]);
+  EXPECT_DOUBLE_EQ(PipelineTestController::kCmd1, backend->LastCommands()[1]);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(RtLoopPipelineTest, NegativeOutputChannelCountIsClampedToZero) {
+  PipelineTestController::output_num_channels.store(-1, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(0, backend->LastNumChannels());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(RtLoopPipelineTest, OverlargeBackendStateChannelCountIsClampedToCapacity) {
+  PipelineStubBackend::state_num_channels.store(kOverCapacityChannels, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  // Bounded on the read path, so the state count mirrored into the snapshot
+  // (and the DeviceState the controller sees) never exceeds capacity.
+  EXPECT_EQ(kMaxDeviceChannels, backend->LastActualNumChannels());
+  EXPECT_DOUBLE_EQ(PipelineStubBackend::kPos0, backend->LastActualPositions()[0]);
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
