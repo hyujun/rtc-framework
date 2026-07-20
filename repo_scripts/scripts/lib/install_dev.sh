@@ -3,6 +3,8 @@
 #
 # 제공 함수:
 #   install_vscode_debug_tools         — gdb + ptrace_scope policy (VS Code Attach)
+#   install_code_intelligence_tools    — clangd + LLVM OpenMP headers (libomp-dev)
+#                                         + resource-dir omp.h verification
 #   install_tracing_tools              — lttng-tools + lttng-modules-dkms (DKMS
 #                                         build w/ timeout + dpkg retry) +
 #                                         ${ROS_PKG_PREFIX}-ros2trace +
@@ -60,6 +62,51 @@ install_vscode_debug_tools() {
     else
       success "ptrace_scope=0 already set (VS Code Attach ready)"
     fi
+  fi
+}
+
+# ── clangd code intelligence (clangd + LLVM OpenMP headers) ───────────────
+# pinocchio/proxsuite include <omp.h>. clangd's own resource-dir ships the
+# Clang intrinsic headers but *not* omp.h, so the preamble fails and Eigen
+# typedefs cascade into 'aka int' / 'no member' noise (issue #193).
+#
+# The fix is to install LLVM's omp.h *into the clangd resource-dir* via
+# `libomp-dev` — never to add GCC's compiler-internal include dir to .clangd:
+# that also exposes GCC's xmmintrin.h/mmintrin.h ahead of clang's and breaks
+# _mm_prefetch. `libomp-dev` is used instead of a version-pinned
+# `libomp-N-dev` because Ubuntu's `clangd` and `libomp-dev` meta packages
+# resolve to the same LLVM major (Noble: 18), so they stay coupled on upgrade.
+#
+# Idempotent: apt-get install is a no-op when the packages are present.
+install_code_intelligence_tools() {
+  info "Installing clangd code intelligence tools (clangd + LLVM OpenMP headers)..."
+  apt_update_if_stale
+  sudo apt-get install -y \
+      clangd \
+      libomp-dev \
+      > /dev/null
+  success "clangd + libomp-dev installed"
+
+  # ── Verify omp.h landed in the resource-dir of the clangd actually on PATH.
+  #    A non-apt clangd (e.g. a VS Code-bundled binary) has its own
+  #    resource-dir, so the meta package may not cover it. ─────────────────
+  local CLANGD_MAJOR OMP_HEADER
+  CLANGD_MAJOR=$(clangd --version 2>/dev/null | grep -oP 'version \K[0-9]+' || echo "")
+  if [[ -z "$CLANGD_MAJOR" ]]; then
+    warn "clangd not found on PATH — skipping omp.h resource-dir verification."
+    return 0
+  fi
+
+  OMP_HEADER=$(ls /usr/lib/llvm-"${CLANGD_MAJOR}"/lib/clang/*/include/omp.h 2>/dev/null | head -1)
+  if [[ -n "$OMP_HEADER" ]]; then
+    success "omp.h present in clangd-${CLANGD_MAJOR} resource-dir (${OMP_HEADER})"
+  else
+    warn "clangd ${CLANGD_MAJOR} is on PATH but no omp.h in its resource-dir"
+    warn "  (/usr/lib/llvm-${CLANGD_MAJOR}/lib/clang/*/include/omp.h)."
+    warn "IntelliSense will report 'omp.h file not found' plus a cascade of"
+    warn "'no member' / 'aka int' errors in pinocchio/proxsuite headers."
+    warn "Install the matching package manually:"
+    warn "  sudo apt-get install -y libomp-${CLANGD_MAJOR}-dev"
   fi
 }
 

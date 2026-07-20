@@ -35,7 +35,7 @@ repo_scripts/
     │   ├── install_python.sh             <- .venv 생성 + requirements.lock 동기화 (uv pip sync)
     │   ├── install_uv.sh                 <- uv 부트스트랩 (Astral installer)
     │   ├── install_deps.sh               <- C++ 외부 의존성 (ur_driver/pinocchio/proxsuite/behaviortree/ONNX Runtime 1.17.1/MuJoCo 3.7.0 tarball installer)
-    │   ├── install_dev.sh                <- VS Code GDB 디버그 툴 + LTTng 트레이싱 툴체인 설치
+    │   ├── install_dev.sh                <- VS Code GDB 디버그 툴 + clangd code intelligence (clangd/libomp-dev) + LTTng 트레이싱 툴체인 설치
     │   └── install_rt.sh                 <- 7개 setup_*.sh RT 스크립트 sudo wrapper + RT 권한/sudoers/cset
     │
     │   # ── RT 시스템 구성/검증 ─────────────────────────────────────
