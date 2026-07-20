@@ -126,9 +126,11 @@ class RTControllerInterface {
   //   on_configure:  store node_ (idempotent), LoadConfig (idempotent if
   //                  PreConfigure ran), then subclass work (RegisterLog,
   //                  publishers, parameter declares, …)
-  //   on_activate:   no-op SUCCESS (controller-internal init policy — each
-  //                    derived controller self-initialises its target slot on
-  //                    the first Compute() tick using the current device state)
+  //   on_activate:   bump the activation generation (invalidating targets
+  //                    queued while Inactive) and call
+  //                    ResetTargetInitialization() so the derived controller
+  //                    self-initialises its target slot on the first Compute()
+  //                    tick using the current device state
   //   on_deactivate: no-op SUCCESS
   //   on_cleanup:    release node_
   //   on_shutdown:   delegate to on_cleanup
@@ -298,6 +300,39 @@ class RTControllerInterface {
     return target_reject_count_.load(std::memory_order_relaxed);
   }
 
+  // ── Activation generation gate (fail-closed, issue #196 §3) ──────────────
+  //
+  // rclcpp_lifecycle gates publishers only — a controller's target
+  // subscriptions stay alive while it is Inactive, so goals addressed to a
+  // deactivated controller keep landing on its pending-target queue. Those
+  // entries used to survive the Inactive→Active cycle and overwrite the
+  // current-state hold on the first RT tick after re-activation.
+  //
+  // The queue cannot simply be flushed at activation: it is an SpscQueue whose
+  // single consumer is the RT thread, so a lifecycle-thread Pop() would break
+  // the SPSC contract. Instead every activation bumps this counter; the off-RT
+  // SetDeviceTarget stamps the entry it pushes with the generation it observes,
+  // and the RT-side drain discards any entry whose stamp is no longer current.
+  //
+  // Only on_activate bumps. An entry pushed while Inactive carries the stamp of
+  // the activation that preceded it, which the next activation invalidates —
+  // deactivation needs no bump of its own. Entries pushed concurrently with
+  // on_activate may carry either generation; that ambiguity is inherent at the
+  // boundary and harmless, since both readings correspond to a goal an operator
+  // issued at activation time.
+  //
+  // Controllers constructed outside CM (unit tests calling Compute() directly)
+  // never activate, so both sides observe generation 0 and nothing is dropped.
+  [[nodiscard]] std::uint32_t ActivationGeneration() const noexcept {
+    return activation_generation_.load(std::memory_order_acquire);
+  }
+
+  // True when `generation` (a stamp taken by an earlier ActivationGeneration()
+  // call) still refers to the current activation. RT-side drain predicate.
+  [[nodiscard]] bool IsCurrentGeneration(std::uint32_t generation) const noexcept {
+    return generation == ActivationGeneration();
+  }
+
   // ── Device name configuration ──────────────────────────────────────────
   //   SetDeviceNameConfigs() is called by RtControllerNode after all
   //   controllers are constructed and device configs are loaded from YAML.
@@ -389,6 +424,23 @@ class RTControllerInterface {
 
  protected:
   RTControllerInterface();
+
+  // Called by the base on_activate() on every activation, after the generation
+  // bump. Override to clear whatever "target slot already seeded" latch the
+  // controller keeps (target_initialized_, arm_/hand_target_initialized_, …)
+  // so the first Compute() tick after activation re-seeds the hold target from
+  // the current device state.
+  //
+  // Centralised here because four controllers (P, CLIK, OperationalSpace,
+  // JointPD) had no on_activate override at all and therefore kept the slot of
+  // whatever state the robot was in when they were last deactivated. Derived
+  // classes should reset the latch here rather than inside their own
+  // on_activate, so a controller that adds no other activation work needs no
+  // override of the lifecycle hook.
+  //
+  // noexcept — invoked from the noexcept lifecycle hook. Must not allocate or
+  // block; a flag store is the intended body.
+  virtual void ResetTargetInitialization() noexcept {}
 
   // Called after SetDeviceNameConfigs(). Override to resolve URDF-based
   // kinematics (e.g. tip_link → end_id_).
@@ -484,6 +536,12 @@ class RTControllerInterface {
   // validation. Atomic because diagnostics may read it from another thread
   // while the controller's non-RT callback group writes it.
   std::atomic<std::uint64_t> target_reject_count_{0};
+
+  // Bumped by on_activate; read off-RT (SetDeviceTarget stamp) and on the RT
+  // thread (drain predicate), hence atomic. Wrap-around is harmless: a stamp
+  // would have to survive 2^32 activations to alias the current generation,
+  // and the queue is four entries deep.
+  std::atomic<std::uint32_t> activation_generation_{0};
 
   // Private, not protected: the fail-closed guarantee only holds if the base
   // is the sole writer. Derived classes read it through GetConfigState().

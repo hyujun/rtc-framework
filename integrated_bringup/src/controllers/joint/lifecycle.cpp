@@ -204,12 +204,10 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
 RTControllerInterface::CallbackReturn DemoJointController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
-  // Force a fresh self-init on first Compute() tick after every activation
-  // so a previously-active controller's stale slot does not persist across
-  // an Inactive↔Active cycle. Single-writer invariant preserved — the RT
-  // thread is still the only one that stores into target_seqlock_.
-  arm_target_initialized_.store(false, std::memory_order_release);
-  hand_target_initialized_.store(false, std::memory_order_release);
+  // The base bumps the activation generation (invalidating targets queued while
+  // Inactive) and calls ResetTargetInitialization(), which forces a fresh
+  // self-init on the first Compute() tick. Single-writer invariant preserved —
+  // the RT thread is still the only one that stores into target_seqlock_.
   return RTControllerInterface::on_activate(prev);
 }
 

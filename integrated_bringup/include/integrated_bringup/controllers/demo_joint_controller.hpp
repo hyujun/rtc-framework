@@ -249,6 +249,10 @@ class DemoJointController final : public RTControllerInterface {
     int device_idx{0};
     int num_values{0};
     std::array<double, rtc::kMaxDeviceChannels> values{};
+    // Activation generation observed by the off-RT pusher. The RT drain drops
+    // entries a later activation has invalidated — see
+    // rtc::RTControllerInterface::ActivationGeneration (#196 §3).
+    std::uint32_t generation{0};
   };
 
   static_assert(std::is_trivially_copyable_v<PendingTarget>,
@@ -266,6 +270,15 @@ class DemoJointController final : public RTControllerInterface {
   // the hand seed retries each tick until device 1 is valid.
   std::atomic<bool> arm_target_initialized_{false};
   std::atomic<bool> hand_target_initialized_{false};
+
+  // Base hook — every activation re-arms both self-init paths so a re-activated
+  // controller holds where the robot actually is, not where it was commanded
+  // before the switch. Previously duplicated inside on_activate; centralising it
+  // here keeps every controller's reset on one contract (#196 §3).
+  void ResetTargetInitialization() noexcept override {
+    arm_target_initialized_.store(false, std::memory_order_release);
+    hand_target_initialized_.store(false, std::memory_order_release);
+  }
 
   // RT-thread-only working copy of the current TargetSlot; ComputeControl /
   // WriteOutput read from this instead of touching target_seqlock_ multiple

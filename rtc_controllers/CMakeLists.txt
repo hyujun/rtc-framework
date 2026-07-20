@@ -152,6 +152,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_target_seqlock_race test/test_target_seqlock_race.cpp)
   target_link_libraries(test_target_seqlock_race rtc_controllers)
   target_include_directories(test_target_seqlock_race PRIVATE ${rtc_urdf_bridge_test_include})
+
+  # Activation generation gate (#196 §3): stale targets queued while Inactive
+  # must not reach the target slot after re-activation.
+  ament_add_gtest(test_activation_generation_gate
+    test/test_activation_generation_gate.cpp)
+  target_link_libraries(test_activation_generation_gate rtc_controllers)
+  target_include_directories(test_activation_generation_gate
+    PRIVATE ${rtc_urdf_bridge_test_include})
 endif()
 
 ament_package()

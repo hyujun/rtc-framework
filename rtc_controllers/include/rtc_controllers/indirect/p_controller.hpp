@@ -11,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -95,6 +96,10 @@ class PController final : public RTControllerInterface {
     int device_idx{0};
     int num_values{0};
     std::array<double, kMaxDeviceChannels> values{};
+    // Activation generation observed by the off-RT pusher. The RT drain drops
+    // entries a later activation has invalidated — see
+    // RTControllerInterface::ActivationGeneration (#196 §3).
+    std::uint32_t generation{0};
   };
 
   static_assert(std::is_trivially_copyable_v<PendingTarget>,
@@ -105,6 +110,13 @@ class PController final : public RTControllerInterface {
   SeqLock<TargetSlot> target_seqlock_;
   SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
   std::atomic<bool> target_initialized_{false};
+
+  // Every activation re-seeds the hold target from the current device state.
+  // P previously had no on_activate override at all, so a re-activated
+  // controller kept the slot it held when it was deactivated.
+  void ResetTargetInitialization() noexcept override {
+    target_initialized_.store(false, std::memory_order_release);
+  }
 
   // ── Pinocchio via rtc_urdf_bridge ────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;

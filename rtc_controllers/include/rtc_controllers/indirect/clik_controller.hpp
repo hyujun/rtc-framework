@@ -24,6 +24,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -182,6 +183,10 @@ class ClikController final : public RTControllerInterface {
     int device_idx{0};
     int num_values{0};
     std::array<double, kMaxDeviceChannels> values{};
+    // Activation generation observed by the off-RT pusher. The RT drain drops
+    // entries a later activation has invalidated — see
+    // RTControllerInterface::ActivationGeneration (#196 §3).
+    std::uint32_t generation{0};
   };
 
   static_assert(std::is_trivially_copyable_v<PendingTarget>,
@@ -201,6 +206,14 @@ class ClikController final : public RTControllerInterface {
   std::array<double, 3> tcp_position_{};      ///< diagnostic cache
 
   std::atomic<bool> target_initialized_{false};
+
+  // Every activation re-seeds the pose target + trajectory from the current
+  // state. CLIK previously had no on_activate override and no ClearEstop reset,
+  // so a re-activated controller replayed its pre-deactivation pose target.
+  void ResetTargetInitialization() noexcept override {
+    target_initialized_.store(false, std::memory_order_release);
+  }
+
   bool new_target_pending_{false};  // RT-thread-only; gates trajectory re-init
   trajectory::TaskSpaceTrajectory trajectory_;
   trajectory::TaskSpaceTrajectory::State traj_state_{};

@@ -382,6 +382,10 @@ class DemoTaskController final : public RTControllerInterface {
     int device_idx{0};
     int num_values{0};
     std::array<double, kMaxDeviceChannels> values{};
+    // Activation generation observed by the off-RT pusher. The RT drain drops
+    // entries a later activation has invalidated — see
+    // rtc::RTControllerInterface::ActivationGeneration (#196 §3).
+    std::uint32_t generation{0};
   };
 
   static_assert(std::is_trivially_copyable_v<PendingTarget>,
@@ -397,6 +401,13 @@ class DemoTaskController final : public RTControllerInterface {
   // the zero-initialized targets[1] (ur5e fine / p1b finger collapse).
   std::atomic<bool> arm_target_initialized_{false};
   std::atomic<bool> hand_target_initialized_{false};
+
+  // Base hook — see demo_joint_controller.hpp. Previously duplicated inside
+  // on_activate (#196 §3).
+  void ResetTargetInitialization() noexcept override {
+    arm_target_initialized_.store(false, std::memory_order_release);
+    hand_target_initialized_.store(false, std::memory_order_release);
+  }
   TargetSlot current_target_slot_{};
 
   // RT-thread-only: refresh current_target_slot_ from the SeqLock, drain any

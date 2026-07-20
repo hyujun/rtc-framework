@@ -101,6 +101,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_rt_controller_interface rtc_controller_interface)
   ament_target_dependencies(test_rt_controller_interface rtc_urdf_bridge)
 
+  ament_add_gtest(test_activation_generation test/test_activation_generation.cpp)
+  target_link_libraries(test_activation_generation rtc_controller_interface)
+
   ament_add_gtest(test_controller_log_set test/test_controller_log_set.cpp)
   target_link_libraries(test_controller_log_set rtc_controller_interface)
 
