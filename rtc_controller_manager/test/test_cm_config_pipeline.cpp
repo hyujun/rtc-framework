@@ -374,5 +374,42 @@ TEST_F(CmConfigPipelineTest, LoggingSetupCreatesTimingCsvInLogDir) {
   std::filesystem::remove_all(log_dir.parent_path());
 }
 
+// ── Device config beyond the RT path's fixed capacity (issue #196 §2) ────────
+
+TEST_F(CmConfigPipelineTest, DeviceDeclaringMoreJointsThanCapacityRefusesConfigure) {
+  // Target ingress reorders into a kMaxDeviceChannels-wide buffer indexed by
+  // position in joint_state_names, so a longer list cannot be represented.
+  // This used to be accepted, leaving the reorder to write past the buffer.
+  auto node = MakeNode();
+  std::vector<std::string> too_many;
+  too_many.reserve(static_cast<std::size_t>(kMaxDeviceChannels) + 1);
+  for (int i = 0; i <= kMaxDeviceChannels; ++i) {
+    too_many.push_back("j" + std::to_string(i));
+  }
+  node->declare_parameter("devices.arm.joint_state_names", too_many);
+  node->declare_parameter("devices.arm.backend.type", std::string("cm_pipe_backend"));
+  node->declare_parameter("devices.arm.backend.state_topic", std::string("/arm/state"));
+  node->declare_parameter("devices.arm.backend.command_topic", std::string("/arm/cmd"));
+
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+}
+
+TEST_F(CmConfigPipelineTest, DeviceAtExactlyCapacityConfigures) {
+  // The bound is inclusive — exactly kMaxDeviceChannels joints still fit.
+  auto node = MakeNode();
+  std::vector<std::string> exact;
+  exact.reserve(static_cast<std::size_t>(kMaxDeviceChannels));
+  for (int i = 0; i < kMaxDeviceChannels; ++i) {
+    exact.push_back("j" + std::to_string(i));
+  }
+  node->declare_parameter("devices.arm.joint_state_names", exact);
+  node->declare_parameter("devices.arm.backend.type", std::string("cm_pipe_backend"));
+  node->declare_parameter("devices.arm.backend.state_topic", std::string("/arm/state"));
+  node->declare_parameter("devices.arm.backend.command_topic", std::string("/arm/cmd"));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 }  // namespace
 }  // namespace rtc

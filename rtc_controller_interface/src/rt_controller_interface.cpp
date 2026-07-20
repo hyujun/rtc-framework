@@ -24,6 +24,27 @@ namespace {
 // goals) would otherwise reprint per message.
 constexpr int kTargetLimitWarnThrottleMs = 2000;
 
+// Rejected-target warnings share the limit warning's window: a misbehaving
+// publisher streams at the topic rate, and one line every 2 s is enough to
+// diagnose it without drowning the log.
+constexpr int kTargetRejectWarnThrottleMs = 2000;
+
+// The only two goal_type values the contract accepts (see RobotTarget.msg).
+constexpr const char* kGoalTypeJoint = "joint";
+constexpr const char* kGoalTypeTask = "task";
+
+// std::clamp propagates NaN, and the RT-side velocity clamp cannot remove one
+// either, so a non-finite scalar that gets past ingress reaches the actuator
+// command. Screen the whole payload before it is handed on.
+[[nodiscard]] bool AllFinite(std::span<const double> values) noexcept {
+  for (const double v : values) {
+    if (!std::isfinite(v)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // conventions.md §Logger naming: logs emitted from the RTControllerInterface
 // base ride the library-level logger (`<full_package_name>`) and name the
 // concrete controller via a message prefix instead. node_->get_logger() would
@@ -333,60 +354,142 @@ void RTControllerInterface::WarnIfTargetOutOfLimits(
                        v.upper);
 }
 
+void RTControllerInterface::RejectTarget(const std::string& group_name,
+                                         const char* reason) noexcept {
+  const auto total = target_reject_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (!node_) {
+    return;  // unit-test path: count only, no clock to throttle against
+  }
+  // Scalars and string literals only — this runs under a noexcept caller, so a
+  // throwing allocation would terminate the process. `%.*s` because Name() is a
+  // string_view with no null-termination guarantee.
+  RCLCPP_WARN_THROTTLE(TargetWarnLogger(), *node_->get_clock(), kTargetRejectWarnThrottleMs,
+                       "[%.*s] device '%s': target REJECTED — %s (%lu rejected so far)",
+                       static_cast<int>(Name().size()), Name().data(), group_name.c_str(), reason,
+                       static_cast<unsigned long>(total));
+}
+
 void RTControllerInterface::DeliverTargetMessage(const std::string& group_name, int device_idx,
                                                  const rtc_msgs::msg::RobotTarget& msg) noexcept {
-  const double* data_ptr = nullptr;
-  int data_size = 0;
+  // Fail-closed ingress (issue #196 §2). Every reject path returns without
+  // touching SetDeviceTarget/SetDeviceTaskTarget. Allocation-free throughout:
+  // the only buffer is the fixed `reordered` array below.
 
-  if (msg.goal_type == "task") {
-    data_ptr = msg.task_target.data();
-    data_size = static_cast<int>(msg.task_target.size());
-  } else {
-    if (msg.joint_target.empty()) {
+  // ── goal_type ────────────────────────────────────────────────────────────
+  const bool is_task = (msg.goal_type == kGoalTypeTask);
+  if (!is_task && msg.goal_type != kGoalTypeJoint) {
+    // Used to fall through to the joint path, so a typo'd or empty goal_type
+    // silently drove the joints with whatever joint_target held.
+    RejectTarget(group_name, "unknown goal_type (expected \"joint\" or \"task\")");
+    return;
+  }
+
+  // ── task goal ────────────────────────────────────────────────────────────
+  if (is_task) {
+    const std::span<const double> task_span(msg.task_target.data(), msg.task_target.size());
+    if (task_span.size() != static_cast<std::size_t>(kTaskSpaceDim)) {
+      RejectTarget(group_name, "task_target must hold exactly kTaskSpaceDim values");
       return;
     }
-    data_ptr = msg.joint_target.data();
-    data_size = static_cast<int>(msg.joint_target.size());
+    if (!AllFinite(task_span)) {
+      RejectTarget(group_name, "task_target contains a non-finite value");
+      return;
+    }
+    // Routes to the SE3 slot; the default override forwards to
+    // SetDeviceTarget, so task controllers are unchanged.
+    SetDeviceTaskTarget(device_idx, task_span);
+    return;
+  }
+
+  // ── joint goal ───────────────────────────────────────────────────────────
+  if (msg.joint_target.empty()) {
+    RejectTarget(group_name, "joint_target is empty");
+    return;
+  }
+  const std::span<const double> raw_span(msg.joint_target.data(), msg.joint_target.size());
+  if (!AllFinite(raw_span)) {
+    // Previously warned and delivered anyway — the warning even said the RT
+    // clamp would not stop it.
+    RejectTarget(group_name, "joint_target contains a non-finite value");
+    return;
+  }
+
+  // The device's channel names, when this group has a registered config. Absent
+  // for groups the controller was never configured with (unit tests, unknown
+  // group names): there is no reference to validate against, so those keep the
+  // historical positional behaviour.
+  const std::vector<std::string>* ref_names = nullptr;
+  if (const auto cfg_it = device_name_configs_.find(group_name);
+      cfg_it != device_name_configs_.end() && !cfg_it->second.joint_state_names.empty()) {
+    ref_names = &cfg_it->second.joint_state_names;
   }
 
   std::array<double, kMaxDeviceChannels> reordered{};
-  const double* ordered_ptr = data_ptr;
-  int ordered_size = data_size;
+  const double* ordered_ptr = msg.joint_target.data();
+  std::size_t ordered_size = msg.joint_target.size();
 
-  if (msg.goal_type != "task" && !msg.joint_names.empty()) {
-    auto cfg_it = device_name_configs_.find(group_name);
-    if (cfg_it != device_name_configs_.end()) {
-      const auto& ref_names = cfg_it->second.joint_state_names;
-      if (!ref_names.empty()) {
-        for (std::size_t mi = 0; mi < msg.joint_names.size() && mi < msg.joint_target.size();
-             ++mi) {
-          for (std::size_t ri = 0; ri < ref_names.size(); ++ri) {
-            if (msg.joint_names[mi] == ref_names[ri]) {
-              reordered[ri] = msg.joint_target[mi];
-              break;
-            }
+  if (!msg.joint_names.empty()) {
+    // ── named goal: must be an exact permutation of the device's joints ────
+    if (msg.joint_names.size() != msg.joint_target.size()) {
+      RejectTarget(group_name, "joint_names and joint_target have different lengths");
+      return;
+    }
+    if (ref_names != nullptr) {
+      const std::size_t n_ref = ref_names->size();
+      if (n_ref > static_cast<std::size_t>(kMaxDeviceChannels)) {
+        // Guards the reorder writes below. CM also refuses such a device config
+        // at configure time; this is the last line of defence.
+        RejectTarget(group_name, "device declares more joints than kMaxDeviceChannels");
+        return;
+      }
+      if (msg.joint_names.size() != n_ref) {
+        // The zero-fill bug: unnamed joints kept their zero-initialised slot and
+        // were commanded to 0 rad. A partial update needs an explicit mask
+        // contract, not a silent default.
+        RejectTarget(group_name,
+                     "named goal is not a full permutation of the device joints "
+                     "(partial goals are not supported)");
+        return;
+      }
+      std::array<bool, kMaxDeviceChannels> filled{};
+      for (std::size_t mi = 0; mi < msg.joint_names.size(); ++mi) {
+        std::size_t ri = 0;
+        bool found = false;
+        for (; ri < n_ref; ++ri) {
+          if (msg.joint_names[mi] == (*ref_names)[ri]) {
+            found = true;
+            break;
           }
         }
-        ordered_ptr = reordered.data();
-        ordered_size = std::min(static_cast<int>(ref_names.size()), kMaxDeviceChannels);
+        if (!found) {
+          RejectTarget(group_name, "joint_names contains a name the device does not declare");
+          return;
+        }
+        if (filled[ri]) {
+          RejectTarget(group_name, "joint_names contains a duplicate name");
+          return;
+        }
+        reordered[ri] = msg.joint_target[mi];
+        filled[ri] = true;
       }
+      // Equal lengths + every name known + no duplicates ⇒ every slot filled.
+      ordered_ptr = reordered.data();
+      ordered_size = n_ref;
     }
+  } else if (ref_names != nullptr && msg.joint_target.size() > ref_names->size()) {
+    // Unnamed goals stay positional, but an over-long one used to be truncated
+    // in silence — the sender lost values it believed were commanded.
+    RejectTarget(group_name, "joint_target is longer than the device's channel count");
+    return;
   }
 
-  const int n = std::min(ordered_size, kMaxDeviceChannels);
-  const std::span<const double> ordered_span(ordered_ptr, static_cast<std::size_t>(n));
-  // A task goal routes to the SE3 slot (SetDeviceTaskTarget); the default
-  // override forwards to SetDeviceTarget, so task controllers are unchanged.
-  // Joint goals keep the legacy SetDeviceTarget path verbatim.
-  if (msg.goal_type == "task") {
-    SetDeviceTaskTarget(device_idx, ordered_span);
-  } else {
-    // Warn-only, and only here: `ordered_span` is already in device-channel
-    // order, so it aligns index-for-index with joint_limits/joint_state_names.
-    // A task goal carries Cartesian [x,y,z,r,p,y] — joint limits do not apply.
-    WarnIfTargetOutOfLimits(group_name, ordered_span);
-    SetDeviceTarget(device_idx, ordered_span);
-  }
+  const std::size_t n = std::min(ordered_size, static_cast<std::size_t>(kMaxDeviceChannels));
+  const std::span<const double> ordered_span(ordered_ptr, n);
+  // Warn-only, and only here: `ordered_span` is already in device-channel
+  // order, so it aligns index-for-index with joint_limits/joint_state_names.
+  // A task goal carries Cartesian [x,y,z,r,p,y] — joint limits do not apply.
+  WarnIfTargetOutOfLimits(group_name, ordered_span);
+  SetDeviceTarget(device_idx, ordered_span);
 }
 
 void RTControllerInterface::LoadDeviceLimitsFromConfig(

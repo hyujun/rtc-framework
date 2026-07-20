@@ -13,6 +13,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -254,19 +256,47 @@ class RTControllerInterface {
   virtual void PublishNonRtSnapshot(const PublishSnapshot& snap) noexcept { (void)snap; }
 
   // DeliverTargetMessage()
-  //   Owns the target reorder/route/clip logic for controller-owned target
-  //   subscriptions (formerly CM's manager-owned callback, removed in #138).
-  //   Use from controller-owned target-topic subscription callbacks:
-  //     - joint_target goal: reorders by msg.joint_names against
-  //       device_name_configs_[group_name].joint_state_names;
-  //     - task_target goal: forwarded as-is.
-  //   Dispatches via SetDeviceTarget(device_idx, ordered_span). `device_idx`
-  //   is the controller-local group index (position in topic_config_.groups).
-  //   Controller's SetDeviceTarget marshals onto an SPSC queue drained by
-  //   the RT thread in Compute(), so no off-RT writer touches the target
+  //   Validating ingress for controller-owned target subscriptions (formerly
+  //   CM's manager-owned callback, removed in #138). Use from controller-owned
+  //   target-topic subscription callbacks; `device_idx` is the controller-local
+  //   group index (position in topic_config_.groups).
+  //
+  //   Fail-closed contract (issue #196 §2). A message is delivered only if it
+  //   satisfies ALL of:
+  //     - goal_type is exactly "joint" or "task";
+  //     - every scalar is finite (std::clamp does not remove NaN, so a
+  //       non-finite command would otherwise survive to the actuator);
+  //     - task goal: task_target holds exactly kTaskSpaceDim values;
+  //     - joint goal: joint_target is non-empty;
+  //     - named joint goal: joint_names and joint_target are the same length,
+  //       and — when the device's joint_state_names are known — the names form
+  //       an exact permutation of them (no unknown, duplicate, or missing
+  //       name). Partial named goals are rejected rather than zero-filling the
+  //       joints the sender omitted, which used to command them to 0 rad;
+  //     - unnamed joint goal: positional, and no longer than the device's
+  //       channel count (it used to be silently truncated).
+  //
+  //   Anything else is dropped without calling SetDeviceTarget /
+  //   SetDeviceTaskTarget, bumps GetTargetRejectCount(), and emits one
+  //   throttled warning naming the reason. Validation is allocation-free and
+  //   runs on the controller's non-RT callback group, never the RT thread.
+  //
+  //   A group with no registered DeviceNameConfig cannot be checked against a
+  //   reference joint list; such messages keep the historical positional
+  //   behaviour (the goal_type/finite checks still apply).
+  //
+  //   Accepted goals dispatch via SetDeviceTarget(device_idx, ordered_span) or
+  //   SetDeviceTaskTarget. The controller marshals onto an SPSC queue drained
+  //   by the RT thread in Compute(), so no off-RT writer touches the target
   //   slot directly.
   void DeliverTargetMessage(const std::string& group_name, int device_idx,
                             const rtc_msgs::msg::RobotTarget& msg) noexcept;
+
+  // Number of target messages rejected by the validation above, since
+  // construction. Monotonic; intended for diagnostics and tests.
+  [[nodiscard]] std::uint64_t GetTargetRejectCount() const noexcept {
+    return target_reject_count_.load(std::memory_order_relaxed);
+  }
 
   // ── Device name configuration ──────────────────────────────────────────
   //   SetDeviceNameConfigs() is called by RtControllerNode after all
@@ -443,6 +473,17 @@ class RTControllerInterface {
   // Rolls back base-owned configure state (node_, topic_config_) and latches
   // kFailed. Called from every configure failure path.
   void FailConfigure() noexcept;
+
+  // Counts one rejected target and emits a throttled warning naming `reason`.
+  // `reason` must be a string literal — the caller is noexcept and must not
+  // assemble a message. Silent (counter only) when no node has been injected,
+  // so unit tests can assert the counter without a LifecycleNode.
+  void RejectTarget(const std::string& group_name, const char* reason) noexcept;
+
+  // Monotonic count of target messages dropped by DeliverTargetMessage's
+  // validation. Atomic because diagnostics may read it from another thread
+  // while the controller's non-RT callback group writes it.
+  std::atomic<std::uint64_t> target_reject_count_{0};
 
   // Private, not protected: the fail-closed guarantee only holds if the base
   // is the sole writer. Derived classes read it through GetConfigState().

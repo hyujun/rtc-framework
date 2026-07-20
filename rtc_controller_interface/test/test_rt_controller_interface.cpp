@@ -1217,6 +1217,166 @@ TEST(DeliverTargetMessage, OverlongJointTargetClippedToMaxChannels) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Target ingress validation (issue #196 §2)
+//
+// DeliverTargetMessage used to forward almost anything: an unknown goal_type
+// was treated as a joint goal, a partial named goal zero-filled the joints the
+// sender omitted (commanding them to 0 rad), and NaN was warned about and then
+// delivered. Every case below must now drop the message without reaching
+// SetDeviceTarget, and must be counted.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+rtc_msgs::msg::RobotTarget MakeTaskTarget(const std::array<double, 6>& pose) {
+  rtc_msgs::msg::RobotTarget msg;
+  msg.goal_type = "task";
+  msg.task_target = pose;
+  return msg;
+}
+
+// Gives `ctrl` an "arm" device declaring j1..j3 — the reference the named
+// permutation rules validate against. Takes a reference because
+// RTControllerInterface is neither copyable nor movable.
+void ConfigureArmDevice(TargetRecordingController& ctrl) {
+  std::map<std::string, rtc::DeviceNameConfig> cfgs;
+  rtc::DeviceNameConfig arm;
+  arm.device_name = "arm";
+  arm.joint_state_names = {"j1", "j2", "j3"};
+  cfgs.emplace("arm", std::move(arm));
+  ctrl.SetDeviceNameConfigs(std::move(cfgs));
+}
+
+// Every rejection shares the same observable contract, so assert it in one
+// place: nothing delivered, exactly one more reject counted.
+void ExpectRejected(TargetRecordingController& ctrl, const rtc_msgs::msg::RobotTarget& msg) {
+  const auto before = ctrl.GetTargetRejectCount();
+  const int delivered_before = ctrl.set_target_count;
+  ctrl.DeliverTargetMessage("arm", /*device_idx=*/0, msg);
+  EXPECT_EQ(delivered_before, ctrl.set_target_count) << "target was delivered but should not be";
+  EXPECT_EQ(before + 1, ctrl.GetTargetRejectCount());
+}
+
+TEST(TargetIngressValidation, UnknownGoalTypeIsRejected) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  auto msg = MakeJointTarget({1.0, 2.0, 3.0});
+  msg.goal_type = "cartesian";  // not in the contract
+  ExpectRejected(ctrl, msg);
+}
+
+TEST(TargetIngressValidation, EmptyGoalTypeIsRejected) {
+  // A default-constructed RobotTarget used to be dispatched as a joint goal.
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  auto msg = MakeJointTarget({1.0, 2.0, 3.0});
+  msg.goal_type.clear();
+  ExpectRejected(ctrl, msg);
+}
+
+TEST(TargetIngressValidation, NonFiniteJointTargetIsRejected) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()}) {
+    ExpectRejected(ctrl, MakeJointTarget({1.0, bad, 3.0}));
+  }
+}
+
+TEST(TargetIngressValidation, NonFiniteTaskTargetIsRejected) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ExpectRejected(
+      ctrl, MakeTaskTarget({0.1, 0.2, 0.3, 0.0, std::numeric_limits<double>::quiet_NaN(), 0.0}));
+}
+
+TEST(TargetIngressValidation, EmptyJointTargetIsRejected) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ExpectRejected(ctrl, MakeJointTarget({}));
+}
+
+TEST(TargetIngressValidation, NameAndValueLengthMismatchIsRejected) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ExpectRejected(ctrl, MakeJointTarget({1.0, 2.0}, {"j1", "j2", "j3"}));
+}
+
+TEST(TargetIngressValidation, PartialNamedGoalIsRejectedNotZeroFilled) {
+  // The core defect: {"j1"} used to deliver [1.0, 0.0, 0.0] — j2/j3 commanded
+  // to 0 rad from the zero-initialised reorder buffer.
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ExpectRejected(ctrl, MakeJointTarget({1.0}, {"j1"}));
+}
+
+TEST(TargetIngressValidation, UnknownJointNameIsRejected) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ExpectRejected(ctrl, MakeJointTarget({1.0, 2.0, 3.0}, {"j1", "j2", "typo"}));
+}
+
+TEST(TargetIngressValidation, DuplicateJointNameIsRejected) {
+  // Same length as the device, every name known — but j3 never gets a value.
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ExpectRejected(ctrl, MakeJointTarget({1.0, 2.0, 3.0}, {"j1", "j2", "j2"}));
+}
+
+TEST(TargetIngressValidation, UnnamedGoalLongerThanDeviceIsRejected) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ExpectRejected(ctrl, MakeJointTarget({1.0, 2.0, 3.0, 4.0}));
+}
+
+TEST(TargetIngressValidation, FullPermutationIsAcceptedAndReordered) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ctrl.DeliverTargetMessage("arm", 0, MakeJointTarget({30.0, 10.0, 20.0}, {"j3", "j1", "j2"}));
+
+  ASSERT_EQ(1, ctrl.set_target_count);
+  ASSERT_EQ(3u, ctrl.last_target.size());
+  EXPECT_DOUBLE_EQ(10.0, ctrl.last_target[0]);
+  EXPECT_DOUBLE_EQ(20.0, ctrl.last_target[1]);
+  EXPECT_DOUBLE_EQ(30.0, ctrl.last_target[2]);
+  EXPECT_EQ(0U, ctrl.GetTargetRejectCount());
+}
+
+TEST(TargetIngressValidation, UnnamedGoalWithinDeviceWidthIsAccepted) {
+  // Positional goals stay supported — bt_ros_bridge publishes them.
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ctrl.DeliverTargetMessage("arm", 0, MakeJointTarget({1.0, 2.0, 3.0}));
+
+  ASSERT_EQ(1, ctrl.set_target_count);
+  EXPECT_EQ(3u, ctrl.last_target.size());
+  EXPECT_EQ(0U, ctrl.GetTargetRejectCount());
+}
+
+TEST(TargetIngressValidation, ValidTaskGoalIsAccepted) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  ctrl.DeliverTargetMessage("arm", 0, MakeTaskTarget({0.1, 0.2, 0.3, 0.4, 0.5, 0.6}));
+
+  ASSERT_EQ(1, ctrl.set_target_count);
+  EXPECT_EQ(6u, ctrl.last_target.size());
+  EXPECT_EQ(0U, ctrl.GetTargetRejectCount());
+}
+
+TEST(TargetIngressValidation, RejectCounterAccumulatesAcrossMessages) {
+  TargetRecordingController ctrl;
+  ConfigureArmDevice(ctrl);
+  auto bad_type = MakeJointTarget({1.0, 2.0, 3.0});
+  bad_type.goal_type = "nope";
+
+  ctrl.DeliverTargetMessage("arm", 0, bad_type);
+  ctrl.DeliverTargetMessage("arm", 0, MakeJointTarget({1.0}, {"j1"}));
+  ctrl.DeliverTargetMessage("arm", 0, MakeJointTarget({}));
+
+  EXPECT_EQ(3U, ctrl.GetTargetRejectCount());
+  EXPECT_EQ(0, ctrl.set_target_count);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Fail-closed configure (issue #196 §1)
 //
 // PreConfigure() used to store node_ before LoadConfig(), so a throwing
