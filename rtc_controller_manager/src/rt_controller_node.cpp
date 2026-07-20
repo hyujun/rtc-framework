@@ -81,7 +81,15 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   RCLCPP_INFO(get_logger(), "Configuring RtControllerNode...");
 
   CreateCallbackGroups();
-  DeclareAndLoadParameters();
+  // Fail-closed (issue #196 §1): controller bring-up decides whether this node
+  // may configure at all. Returning FAILURE here means no publisher, no device
+  // backend, no service, no timer, and no RT thread is ever created — the
+  // lifecycle leaves CM Unconfigured instead of running a partially
+  // configured controller set.
+  if (!DeclareAndLoadParameters()) {
+    RCLCPP_ERROR(get_logger(), "RtControllerNode configure refused — controller bring-up failed");
+    return CallbackReturn::FAILURE;
+  }
   CreatePublishers();      // digital twin + fixed safety; HW publishers live in backends.
   CreateDeviceBackends();  // state/motor/sensor subs + joint/ros2 command publishers.
   PropagateCapabilitiesIntoMappings();  // patch ControllerSlotMapping after backends decide caps.

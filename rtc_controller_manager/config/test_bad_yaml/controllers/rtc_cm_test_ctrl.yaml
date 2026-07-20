@@ -1,0 +1,13 @@
+# Test fixture — loaded ONLY by rtc_controller_manager unit tests via
+# config_variant=test_bad_yaml. Deliberately malformed so YAML::LoadFile
+# raises a parser error rather than YAML::BadFile.
+#
+# Issue #196 decision D2: a config file that is ABSENT is fine (the controller
+# runs on built-in defaults), but one that EXISTS and cannot be parsed must
+# refuse the whole CM configure instead of silently falling back to defaults.
+# test_on_configure.cpp asserts exactly that split.
+rtc_cm_test_ctrl:
+  gains:
+    kp: 1.0
+   label: "bad indentation below — parser error"
+      enabled: [unclosed

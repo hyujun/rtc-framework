@@ -1216,4 +1216,131 @@ TEST(DeliverTargetMessage, OverlongJointTargetClippedToMaxChannels) {
   EXPECT_EQ(static_cast<std::size_t>(rtc::kMaxDeviceChannels), ctrl.last_target.size());
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Fail-closed configure (issue #196 §1)
+//
+// PreConfigure() used to store node_ before LoadConfig(), so a throwing
+// LoadConfig left node_ set. on_configure() keyed its "already configured"
+// guard off node_ != nullptr alone, skipped re-parsing, and returned SUCCESS —
+// a controller whose config never loaded became an active RT Compute()
+// candidate. The state machine makes the failure terminal until on_cleanup().
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// LoadConfig throws for any yaml carrying the poison key, so one controller can
+// fail and then be asked to configure again.
+class ThrowingLoadConfigController : public rtc::RTControllerInterface {
+ public:
+  [[nodiscard]] rtc::ControllerOutput Compute(const rtc::ControllerState&) noexcept override {
+    return rtc::ControllerOutput{};
+  }
+
+  void SetDeviceTarget(int, std::span<const double>) noexcept override {}
+
+  [[nodiscard]] std::string_view Name() const noexcept override { return "ThrowingLoadConfig"; }
+
+  void LoadConfig(const YAML::Node& cfg) override {
+    ++load_config_count;
+    if (cfg && cfg["poison"]) {
+      throw std::runtime_error("synthetic LoadConfig failure");
+    }
+    rtc::RTControllerInterface::LoadConfig(cfg);
+  }
+
+  int load_config_count{0};
+};
+
+YAML::Node PoisonYaml() {
+  YAML::Node yaml;
+  yaml["poison"] = true;
+  return yaml;
+}
+
+YAML::Node CleanYaml() {
+  YAML::Node yaml;
+  yaml["topics"]["robot"]["subscribe"]["target"] = "/robot/target";
+  return yaml;
+}
+
+using CbReturn = rtc::RTControllerInterface::CallbackReturn;
+using CfgState = rtc::RTControllerInterface::ConfigState;
+
+TEST(FailClosedConfigure, PreConfigureFailureRollsBackNodeAndTopicConfig) {
+  ThrowingLoadConfigController ctrl;
+  ASSERT_EQ(CfgState::kUnconfigured, ctrl.GetConfigState());
+
+  EXPECT_EQ(CbReturn::FAILURE, ctrl.PreConfigure(MakeLcNode("fc_rollback"), PoisonYaml()));
+
+  // Rolled back: no node retained, no partially-parsed topic config.
+  EXPECT_EQ(nullptr, ctrl.get_lifecycle_node());
+  EXPECT_TRUE(ctrl.GetTopicConfig().groups.empty());
+  EXPECT_EQ(CfgState::kFailed, ctrl.GetConfigState());
+}
+
+TEST(FailClosedConfigure, OnConfigureRefusesAfterPreConfigureFailure) {
+  // The regression the issue reported: same controller, failed PreConfigure,
+  // then CM's Pass 3 on_configure. It must not report SUCCESS.
+  ThrowingLoadConfigController ctrl;
+  ASSERT_EQ(CbReturn::FAILURE, ctrl.PreConfigure(MakeLcNode("fc_refuse"), PoisonYaml()));
+
+  const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+  EXPECT_EQ(CbReturn::FAILURE,
+            ctrl.on_configure(unconfigured, MakeLcNode("fc_refuse2"), PoisonYaml()));
+  EXPECT_EQ(CfgState::kFailed, ctrl.GetConfigState());
+
+  // Even a *valid* config does not resurrect it — only cleanup does.
+  EXPECT_EQ(CbReturn::FAILURE,
+            ctrl.on_configure(unconfigured, MakeLcNode("fc_refuse3"), CleanYaml()));
+  EXPECT_EQ(nullptr, ctrl.get_lifecycle_node());
+}
+
+TEST(FailClosedConfigure, OnConfigureFailureIsTerminalWithoutPreConfigure) {
+  // Direct-call path (unit tests / legacy): PreConfigure skipped, LoadConfig
+  // throws inside on_configure. Same latch.
+  ThrowingLoadConfigController ctrl;
+  const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+
+  EXPECT_EQ(CbReturn::FAILURE,
+            ctrl.on_configure(unconfigured, MakeLcNode("fc_direct"), PoisonYaml()));
+  EXPECT_EQ(CfgState::kFailed, ctrl.GetConfigState());
+  EXPECT_EQ(nullptr, ctrl.get_lifecycle_node());
+}
+
+TEST(FailClosedConfigure, CleanupClearsFailedLatchSoConfigureCanBeRetried) {
+  ThrowingLoadConfigController ctrl;
+  ASSERT_EQ(CbReturn::FAILURE, ctrl.PreConfigure(MakeLcNode("fc_retry"), PoisonYaml()));
+  ASSERT_EQ(CfgState::kFailed, ctrl.GetConfigState());
+
+  const rclcpp_lifecycle::State failed_state(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+  ASSERT_EQ(CbReturn::SUCCESS, ctrl.on_cleanup(failed_state));
+  EXPECT_EQ(CfgState::kUnconfigured, ctrl.GetConfigState());
+
+  // A clean retry now succeeds and parses the config.
+  EXPECT_EQ(CbReturn::SUCCESS, ctrl.PreConfigure(MakeLcNode("fc_retry2"), CleanYaml()));
+  EXPECT_EQ(CfgState::kPreConfigured, ctrl.GetConfigState());
+  EXPECT_FALSE(ctrl.GetTopicConfig().groups.empty());
+}
+
+TEST(FailClosedConfigure, SuccessfulBringUpReachesConfiguredState) {
+  // The normal path must be untouched: PreConfigure → on_configure → Configured.
+  ThrowingLoadConfigController ctrl;
+  ASSERT_EQ(CbReturn::SUCCESS, ctrl.PreConfigure(MakeLcNode("fc_ok"), CleanYaml()));
+  EXPECT_EQ(CfgState::kPreConfigured, ctrl.GetConfigState());
+
+  const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                             "unconfigured");
+  EXPECT_EQ(CbReturn::SUCCESS, ctrl.on_configure(unconfigured, nullptr, CleanYaml()));
+  EXPECT_EQ(CfgState::kConfigured, ctrl.GetConfigState());
+  // Pass 3 must not re-parse what PreConfigure already loaded.
+  EXPECT_EQ(1, ctrl.load_config_count);
+}
+
+TEST(FailClosedConfigure, NullNodeIsAFailedConfigure) {
+  ThrowingLoadConfigController ctrl;
+  EXPECT_EQ(CbReturn::FAILURE, ctrl.PreConfigure(nullptr, CleanYaml()));
+  EXPECT_EQ(CfgState::kFailed, ctrl.GetConfigState());
+}
+
 }  // namespace

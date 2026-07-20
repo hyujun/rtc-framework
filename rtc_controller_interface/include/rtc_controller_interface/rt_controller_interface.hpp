@@ -87,6 +87,26 @@ class RTControllerInterface {
   // near-mechanical change — see agent_docs/modification-guide.md.
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
+  // ── Configuration state (fail-closed, issue #196 §1) ─────────────────────
+  //
+  // Before this existed, PreConfigure() stored node_ *before* LoadConfig() and
+  // returned FAILURE on a parse error, but on_configure() then saw a non-null
+  // node_, skipped re-parsing, and reported SUCCESS — so a controller whose
+  // config never loaded still became an active RT Compute() candidate.
+  //
+  // The state is one-way into kFailed: once any configure step fails the
+  // controller stays failed and every later on_configure() reports FAILURE.
+  // Only on_cleanup() clears it back to kUnconfigured, which is the explicit
+  // lifecycle path for a retry.
+  enum class ConfigState {
+    kUnconfigured,   // nothing stored yet, or cleaned up
+    kPreConfigured,  // PreConfigure() succeeded; awaiting on_configure()
+    kConfigured,     // on_configure() succeeded
+    kFailed,         // a configure step failed — terminal until on_cleanup()
+  };
+
+  [[nodiscard]] ConfigState GetConfigState() const noexcept { return config_state_; }
+
   // ── Lifecycle hooks (ros2_control-aligned signatures) ────────────────────
   //
   // These are driven by RtControllerNode (CM) as direct C++ method calls;
@@ -419,6 +439,16 @@ class RTControllerInterface {
   // A plain RCLCPP_WARN_THROTTLE is therefore legal here (no RT-3 SPSC defer).
   void WarnIfTargetOutOfLimits(const std::string& group_name,
                                std::span<const double> ordered) const noexcept;
+
+  // Rolls back base-owned configure state (node_, topic_config_) and latches
+  // kFailed. Called from every configure failure path.
+  void FailConfigure() noexcept;
+
+  // Private, not protected: the fail-closed guarantee only holds if the base
+  // is the sole writer. Derived classes read it through GetConfigState().
+  // Written on the configure/cleanup path only (single-threaded bring-up),
+  // never from the RT thread — no synchronisation needed.
+  ConfigState config_state_{ConfigState::kUnconfigured};
 };
 
 }  // namespace rtc
