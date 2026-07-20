@@ -220,11 +220,22 @@ class PipelineStubBackend : public DeviceBackend {
   // exercise the RT loop's bound on a faulty backend — see issue #196 §4.
   static inline std::atomic<int> state_num_channels{2};
 
-  static void ResetStateChannels() { state_num_channels.store(2, std::memory_order_relaxed); }
+  // Makes ReadState report a non-finite measured position. The device read
+  // path bounds counts but copies position doubles verbatim, so this is the
+  // one input that can make the CM's hold command itself non-finite — the
+  // condition the validator exists to keep off the wire.
+  static inline std::atomic<bool> state_position_nan{false};
+
+  static void ResetStateChannels() {
+    state_num_channels.store(2, std::memory_order_relaxed);
+    state_position_nan.store(false, std::memory_order_relaxed);
+  }
 
   bool ReadState(DeviceStateCache& cache) noexcept override {
     cache.num_channels = state_num_channels.load(std::memory_order_relaxed);
-    cache.positions[0] = kPos0;
+    cache.positions[0] = state_position_nan.load(std::memory_order_relaxed)
+                             ? std::numeric_limits<double>::quiet_NaN()
+                             : kPos0;
     cache.positions[1] = kPos1;
     cache.velocities[0] = 1.0;
     cache.velocities[1] = 2.0;

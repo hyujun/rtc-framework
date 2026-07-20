@@ -112,6 +112,7 @@ CM 측 정책(호출부는 `rt_controller_node_rt_loop.cpp` 의 `Compute()` 반�
 - **write 를 건너뛰지 않는다**. 커맨드 스트림의 공백을 fault 로 볼지 free-run 으로 볼지는 backend 마다 달라 거동이 비결정적이 된다.
 - **연속 N tick reject → global E-STOP 승격**. `N = max(10, lround(0.1 × control_rate))` — 고정 상수는 100 Hz~5 kHz 사이에서 의미가 50배 달라진다. 하한 10 은 `kMaxConsecutiveOverruns` 선례와 정합.
 - **승격 후에도 검증은 계속 돈다** — controller 의 E-STOP 경로 출력마저 invalid 면 hold 가 계속 적용된다 (terminal state 에서도 fail-closed).
+- **hold 를 만들 수 없으면 즉시 승격**. state 의 *count* 는 read path 에서 bound 되지만 *값* 은 backend 에서 verbatim 복사되므로 측정 위치가 non-finite 일 수 있다. 그 경우 hold 는 rejected output 이 담고 있던 바로 그 NaN 을 그대로 내보내게 된다. 0.0 은 대체재가 아니다 — position command 에서 0.0 은 "원점으로 가라"다. 따라서 해당 device 는 **zero-length command** 로 떨어뜨리고 (backend 는 no-update 로 처리), 연속 window 를 기다리지 않고 첫 tick 에 E-STOP 한다 (reason `unholdable_controller_output_*`). window 가 정당한 이유는 hold 가 그 사이를 안전하게 만들어주기 때문인데, 바로 그 전제가 깨진 상황이기 때문이다.
 
 > **`kTorque` hold 의 수용된 리스크**: CM 은 동역학 모델이 없어 중력보상 토크를 만들 수 없고, 0 N·m 는 중력 sag 를 뜻한다. 최대 노출은 `0.1 s` + E-STOP 전파 지연이다. 토크 모드 디바이스가 있는 구성은 이 window 를 낮추는 튜닝 여지가 있다.
 

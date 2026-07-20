@@ -527,11 +527,24 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::atomic<uint64_t> rejected_output_count_{0};
   std::atomic<uint64_t> consecutive_rejected_outputs_{0};
 
-  // Fills hold_output_ from `state` (trusted — bounded on the device read
-  // path) and `cmd_type` (the active controller's configured type, YAML-
-  // derived). Deliberately ignores every field of the rejected output,
-  // including its per-device command_type override: reading a mode selector
-  // out of the data that just failed validation would make the check
-  // meaningless. RT-safe — fixed-size writes, no allocation, no logging.
-  void BuildHoldOutput(const rtc::ControllerState& state, rtc::CommandType cmd_type) noexcept;
+  // Size of the fixed E-STOP reason buffer built on the RT path. Sized to fit
+  // the longest reason this file formats, with room to spare; std::snprintf
+  // truncates and NUL-terminates regardless, and TriggerGlobalEstop copies
+  // into its own fixed buffer.
+  static constexpr std::size_t kEstopReasonBufferSize = 64;
+
+  // Fills hold_output_ from `state` and `cmd_type` (the active controller's
+  // configured type, YAML-derived). Deliberately ignores every field of the
+  // rejected output, including its per-device command_type override: reading
+  // a mode selector out of the data that just failed validation would make
+  // the check meaningless. RT-safe — fixed-size writes, no allocation, no
+  // logging.
+  //
+  // Returns false when a device's measured positions are not all finite, in
+  // which case that device is given a zero-length command instead of a
+  // position built from garbage. The state's *counts* are trustworthy (the
+  // read path bounds them), but its *values* are copied verbatim from the
+  // backend, so the hold cannot assume them finite.
+  [[nodiscard]] bool BuildHoldOutput(const rtc::ControllerState& state,
+                                     rtc::CommandType cmd_type) noexcept;
 };

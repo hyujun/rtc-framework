@@ -463,6 +463,38 @@ TEST_F(OutputValidationTest, ValidationKeepsHoldingAfterEstop) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+TEST_F(OutputValidationTest, NonFiniteStateMakesTheHoldUnbuildableAndEstopsImmediately) {
+  // The hold is only as good as the state it is rebuilt from. A backend
+  // reporting NaN would otherwise make the replacement command carry the very
+  // value the validator just rejected — and 0.0 is no substitute, since for a
+  // position command it means "go to the origin". The device is dropped to a
+  // zero-length command and the escalation fires on the first tick instead of
+  // riding out the window, because the window only makes sense while the hold
+  // is actually holding.
+  PipelineTestController::output_fault.store(OutputFault::kInvalidFlag, std::memory_order_relaxed);
+  PipelineStubBackend::state_position_nan.store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  const uint64_t threshold = ControllerLifecycleTestAccess::GetOutputRejectEstopTicks(*node);
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::IsEstopped(*node); }, 2000ms));
+  // Escalated well before the consecutive-reject window would have expired.
+  EXPECT_LT(ControllerLifecycleTestAccess::GetRejectedOutputCount(*node), threshold);
+  EXPECT_EQ("unholdable_controller_output_valid_flag_false",
+            ControllerLifecycleTestAccess::GetEstopReason(*node));
+  // Nothing commanded: a zero-length write, not a NaN and not a zero command.
+  EXPECT_EQ(0, backend->LastNumChannels());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── Consecutive deadline overruns → E-STOP ───────────────────────────────────
 
 TEST_F(RtLoopPipelineTest, ConsecutiveOverrunsTriggerEstop) {
