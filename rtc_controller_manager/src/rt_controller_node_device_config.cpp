@@ -83,7 +83,8 @@ void RtControllerNode::ParseTreeModels(rtc_urdf_bridge::ModelConfig& config) {
 
 // ── Device name configuration loading ────────────────────────────────────────
 
-void RtControllerNode::LoadDeviceNameConfigs() {
+bool RtControllerNode::LoadDeviceNameConfigs() {
+  bool config_invalid = false;
   // Build reverse lookup: slot index → group name
   slot_to_group_name_.resize(static_cast<std::size_t>(group_slot_map_.size()));
   slot_to_sensor_layout_.assign(static_cast<std::size_t>(group_slot_map_.size()), std::nullopt);
@@ -102,6 +103,18 @@ void RtControllerNode::LoadDeviceNameConfigs() {
     const std::string jsn_key = prefix + ".joint_state_names";
     if (has_parameter(jsn_key)) {
       cfg.joint_state_names = get_parameter(jsn_key).as_string_array();
+    }
+    // Every fixed-size per-channel array in the RT path (DeviceState,
+    // DeviceOutput, the ingress reorder buffer) is kMaxDeviceChannels wide, and
+    // the ingress reorder indexes them by position in this list. A device that
+    // declares more joints than that cannot be represented, so refuse the
+    // config instead of writing past the buffers at runtime (issue #196 §2).
+    if (cfg.joint_state_names.size() > static_cast<std::size_t>(urtc::kMaxDeviceChannels)) {
+      RCLCPP_ERROR(get_logger(),
+                   "[%s] joint_state_names declares %zu joints, exceeding the "
+                   "kMaxDeviceChannels capacity of %d",
+                   group_name.c_str(), cfg.joint_state_names.size(), urtc::kMaxDeviceChannels);
+      config_invalid = true;
     }
 
     // joint_command_names (optional — defaults to joint_state_names)
@@ -532,6 +545,8 @@ void RtControllerNode::LoadDeviceNameConfigs() {
 
     device_name_configs_[group_name] = std::move(cfg);
   }
+
+  return !config_invalid;
 }
 
 // ── Device backend wiring ───────────────────────────────────────────────────
