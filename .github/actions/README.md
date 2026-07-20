@@ -25,6 +25,12 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
   and dep artifact use 1-day retention (cross-job same-run only).
 - ROS distro defaults to `jazzy` (single distro per
   [`agent_docs/ci-rewrite-plan.md`](../../agent_docs/ci-rewrite-plan.md) D-3).
+- `setup-rtc-env` pre-installs `ros2-apt-source` before `setup-ros` so that
+  `setup-ros` skips its own unauthenticated `api.github.com` release lookup — that
+  lookup silently yields an empty version under Actions IP rate limits and then
+  404s the deb download (`exit 22`), killing the job. The pre-install step is
+  best-effort (always `exit 0`); bump `ros-apt-source-fallback` when the pinned
+  release stops publishing a deb for the runner's Ubuntu codename.
 
 ## When to add a new action
 
