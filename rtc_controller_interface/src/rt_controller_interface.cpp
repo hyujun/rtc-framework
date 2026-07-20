@@ -320,6 +320,60 @@ TargetLimitViolation CheckTargetLimits(std::span<const double> ordered,
   return out;
 }
 
+ControllerOutputValidation ValidateControllerOutput(const ControllerOutput& out,
+                                                    const ControllerState& state) noexcept {
+  if (!out.valid) {
+    return {OutputRejectReason::kInvalidFlag, -1, -1};
+  }
+  // The range test rides along with the equality test so the loop below can
+  // index both arrays without a second bound: once the counts agree AND sit
+  // inside kMaxDevices, `i` is valid on either side.
+  if (out.num_devices != state.num_devices || out.num_devices < 0 ||
+      out.num_devices > ControllerOutput::kMaxDevices) {
+    return {OutputRejectReason::kDeviceCountMismatch, -1, -1};
+  }
+
+  for (int i = 0; i < out.num_devices; ++i) {
+    const auto& dout = out.devices[static_cast<std::size_t>(i)];
+    const auto& dstate = state.devices[static_cast<std::size_t>(i)];
+    // Two separate ceilings: kMaxDeviceChannels is the array capacity, while
+    // dstate.num_channels is what the hardware actually reported this tick.
+    // A controller writing past the latter is commanding channels the device
+    // does not have, which the array bound alone would let through.
+    if (dout.num_channels < 0 || dout.num_channels > kMaxDeviceChannels ||
+        dout.num_channels > dstate.num_channels) {
+      return {OutputRejectReason::kChannelCountOutOfRange, i, -1};
+    }
+    for (int c = 0; c < dout.num_channels; ++c) {
+      const auto ci = static_cast<std::size_t>(c);
+      // feedforward is screened unconditionally, not only for kPdFeedforward:
+      // the command type resolved downstream comes from the same untrusted
+      // output, so gating the check on it would let a NaN through whenever the
+      // type field itself is the corrupted one.
+      if (!std::isfinite(dout.commands[ci]) || !std::isfinite(dout.feedforward[ci])) {
+        return {OutputRejectReason::kNonFiniteCommand, i, c};
+      }
+    }
+  }
+  return {};
+}
+
+const char* OutputRejectReasonToString(OutputRejectReason reason) noexcept {
+  switch (reason) {
+    case OutputRejectReason::kNone:
+      return "none";
+    case OutputRejectReason::kInvalidFlag:
+      return "valid_flag_false";
+    case OutputRejectReason::kDeviceCountMismatch:
+      return "device_count_mismatch";
+    case OutputRejectReason::kChannelCountOutOfRange:
+      return "channel_count_out_of_range";
+    case OutputRejectReason::kNonFiniteCommand:
+      return "non_finite_command";
+  }
+  return "unknown";
+}
+
 void RTControllerInterface::WarnIfTargetOutOfLimits(
     const std::string& group_name, std::span<const double> ordered) const noexcept {
   if (!node_) {

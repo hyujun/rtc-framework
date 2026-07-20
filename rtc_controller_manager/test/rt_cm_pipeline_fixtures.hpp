@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -65,6 +66,30 @@ class PipelineTestController : public RTControllerInterface {
   // on a faulty controller — see issue #196 §4.
   static inline std::atomic<int> output_num_channels{2};
 
+  // ── ControllerOutput fault injection (issue #196 Phase 4) ─────────────────
+  //
+  // The validator's whole purpose is to stop output that no in-tree
+  // controller produces, so nothing in the normal fixture path exercises it.
+  // These knobs make Compute() emit each rejectable shape on demand.
+  enum class OutputFault {
+    kNone,
+    kInvalidFlag,       ///< valid = false
+    kDeviceCount,       ///< num_devices disagrees with the state
+    kChannelCount,      ///< num_channels past what the device reported
+    kNonFiniteCommand,  ///< NaN in commands[]
+  };
+  static inline std::atomic<OutputFault> output_fault{OutputFault::kNone};
+
+  // How many ticks the fault lasts. Negative → until reset. A finite budget
+  // is what makes the E-STOP threshold testable: the loop free-runs, so
+  // "exactly N-1 bad ticks" has to be enforced by the producer, not by
+  // trying to stop the consumer at the right moment.
+  static inline std::atomic<int> output_fault_ticks{-1};
+
+  // Ticks on which a fault was actually injected — the ground truth the
+  // node's reject counter is compared against.
+  static inline std::atomic<int> injected_fault_ticks{0};
+
   static void ResetCaptured() {
     captured_kp = -1.0;
     captured_label.clear();
@@ -77,6 +102,9 @@ class PipelineTestController : public RTControllerInterface {
     captured_flags.clear();
     compute_sleep_us.store(0, std::memory_order_relaxed);
     output_num_channels.store(2, std::memory_order_relaxed);
+    output_fault.store(OutputFault::kNone, std::memory_order_relaxed);
+    output_fault_ticks.store(-1, std::memory_order_relaxed);
+    injected_fault_ticks.store(0, std::memory_order_relaxed);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {
@@ -117,12 +145,51 @@ class PipelineTestController : public RTControllerInterface {
     out.devices[0].num_channels = output_num_channels.load(std::memory_order_relaxed);
     out.devices[0].commands[0] = kCmd0;
     out.devices[0].commands[1] = kCmd1;
+    InjectOutputFault(out);
     return out;
   }
 
   void SetDeviceTarget(int /*device_idx*/, std::span<const double> /*target*/) noexcept override {}
 
   std::string_view Name() const noexcept override { return "rtc_cm_cfg_test"; }
+
+ private:
+  // Applies the configured fault to `out`, honouring the tick budget. Called
+  // from Compute() on the RT thread — relaxed atomics only, no allocation.
+  static void InjectOutputFault(ControllerOutput& out) noexcept {
+    const OutputFault fault = output_fault.load(std::memory_order_relaxed);
+    if (fault == OutputFault::kNone) {
+      return;
+    }
+    const int budget = output_fault_ticks.load(std::memory_order_relaxed);
+    if (budget == 0) {
+      return;  // budget spent — emit a clean output so the counter can reset
+    }
+    if (budget > 0) {
+      output_fault_ticks.fetch_sub(1, std::memory_order_relaxed);
+    }
+    injected_fault_ticks.fetch_add(1, std::memory_order_relaxed);
+
+    switch (fault) {
+      case OutputFault::kInvalidFlag:
+        out.valid = false;
+        break;
+      case OutputFault::kDeviceCount:
+        // The fixture group declares exactly one device, so 2 is a mismatch.
+        out.num_devices = 2;
+        break;
+      case OutputFault::kChannelCount:
+        // Inside kMaxDeviceChannels but past the 2 channels the stub backend
+        // reports — the case the array-capacity clamp alone cannot catch.
+        out.devices[0].num_channels = 3;
+        break;
+      case OutputFault::kNonFiniteCommand:
+        out.devices[0].commands[1] = std::numeric_limits<double>::quiet_NaN();
+        break;
+      case OutputFault::kNone:
+        break;
+    }
+  }
 };
 
 // ── Registry-loadable DeviceBackend stub with all three state lanes ──────────
@@ -153,11 +220,22 @@ class PipelineStubBackend : public DeviceBackend {
   // exercise the RT loop's bound on a faulty backend — see issue #196 §4.
   static inline std::atomic<int> state_num_channels{2};
 
-  static void ResetStateChannels() { state_num_channels.store(2, std::memory_order_relaxed); }
+  // Makes ReadState report a non-finite measured position. The device read
+  // path bounds counts but copies position doubles verbatim, so this is the
+  // one input that can make the CM's hold command itself non-finite — the
+  // condition the validator exists to keep off the wire.
+  static inline std::atomic<bool> state_position_nan{false};
+
+  static void ResetStateChannels() {
+    state_num_channels.store(2, std::memory_order_relaxed);
+    state_position_nan.store(false, std::memory_order_relaxed);
+  }
 
   bool ReadState(DeviceStateCache& cache) noexcept override {
     cache.num_channels = state_num_channels.load(std::memory_order_relaxed);
-    cache.positions[0] = kPos0;
+    cache.positions[0] = state_position_nan.load(std::memory_order_relaxed)
+                             ? std::numeric_limits<double>::quiet_NaN()
+                             : kPos0;
     cache.positions[1] = kPos1;
     cache.velocities[0] = 1.0;
     cache.velocities[1] = 2.0;

@@ -7,8 +7,10 @@
 #include <time.h>         // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
 
 #include <algorithm>  // std::min
-#include <cmath>      // std::abs
+#include <array>
+#include <cmath>  // std::abs
 #include <cstddef>
+#include <cstdio>  // std::snprintf
 
 namespace urtc = rtc;
 
@@ -32,6 +34,86 @@ namespace {
 }
 
 }  // namespace
+
+// ── Hold command for a rejected ControllerOutput ─────────────────────────────
+bool RtControllerNode::BuildHoldOutput(const urtc::ControllerState& state,
+                                       urtc::CommandType cmd_type) noexcept {
+  bool complete = true;
+  hold_output_.valid = true;
+  // The resolved type is stamped once at the top level and every device is
+  // left inheriting it (command_type == nullopt). Per-device overrides exist
+  // for mixed-mode controllers, but reconstructing that mix would require
+  // trusting the rejected output — a hold is uniform by design.
+  hold_output_.command_type = cmd_type;
+
+  const auto nd = BoundedCount(state.num_devices, urtc::ControllerOutput::kMaxDevices);
+  hold_output_.num_devices = static_cast<int>(nd);
+  for (std::size_t i = 0; i < nd; ++i) {
+    const auto& dstate = state.devices[i];
+    auto& dout = hold_output_.devices[i];
+    const auto nc = BoundedCount(dstate.num_channels, urtc::kMaxDeviceChannels);
+    dout.num_channels = static_cast<int>(nc);
+    dout.command_type.reset();
+    dout.goal_type = urtc::GoalType::kJoint;
+
+    // The hold is only as trustworthy as the state it is built from, and the
+    // device read path bounds counts but copies the position doubles verbatim
+    // — a backend publishing a non-finite position would otherwise make this
+    // function emit the very thing the validator just rejected
+    // (kNonFiniteCommand). There is no honest substitute for an unknown joint
+    // position: 0.0 would command the joint to its origin. So the device is
+    // dropped to a zero-length command (every backend treats that as "no
+    // update") and the caller is told the hold is incomplete, which escalates
+    // immediately rather than waiting out the consecutive-reject window.
+    bool device_finite = true;
+    for (std::size_t c = 0; c < nc; ++c) {
+      if (!std::isfinite(dstate.positions[c])) {
+        device_finite = false;
+        break;
+      }
+    }
+    if (!device_finite) {
+      dout.num_channels = 0;
+      complete = false;
+      continue;
+    }
+
+    // Only [0, nc) is written each tick — the snapshot fill copies exactly
+    // that many entries, so entries past nc are never read and re-zeroing the
+    // whole 64-wide array on every rejected tick would be wasted RT budget.
+    for (std::size_t c = 0; c < nc; ++c) {
+      const double measured = dstate.positions[c];
+      // kPosition / kPdFeedforward servo to where the joint already is, which
+      // is a true stop. kTorque has no such command: the CM carries no dynamic
+      // model, so it cannot synthesise a gravity-compensating torque and 0 N·m
+      // is the only value it can honestly emit. That means a torque-mode arm
+      // sags under gravity for up to kOutputRejectEstopSeconds before the
+      // E-STOP escalation lands — configurations with torque-mode devices
+      // should tune that window down.
+      dout.commands[c] = (cmd_type == urtc::CommandType::kTorque) ? 0.0 : measured;
+      // Position-semantics telemetry stays position-valued in every mode so
+      // the GUI/log lanes show where the hold is parked, not a 0 that would
+      // read as "commanded to origin".
+      dout.goal_positions[c] = measured;
+      dout.target_positions[c] = measured;
+      dout.trajectory_positions[c] = measured;
+      dout.target_velocities[c] = 0.0;
+      dout.trajectory_velocities[c] = 0.0;
+      dout.feedforward[c] = 0.0;
+    }
+  }
+
+  // Shared lanes are cleared rather than carried over: a pose left from an
+  // earlier tick would be republished as if it were current.
+  hold_output_.actual_task_positions.fill(0.0);
+  hold_output_.task_goal_positions.fill(0.0);
+  hold_output_.trajectory_task_positions.fill(0.0);
+  hold_output_.trajectory_task_velocities.fill(0.0);
+  hold_output_.arm_tip_pose_valid = false;
+  hold_output_.virtual_tcp_pose_valid = false;
+  hold_output_.task_link_pose_valid.fill(false);
+  return complete;
+}
 
 // ── 50 Hz watchdog (E-STOP)
 // ───────────────────────────────────────────────────
@@ -173,10 +255,53 @@ void RtControllerNode::ControlLoop() {
 
   // ── Phase 2: compute control law ───────────────────────────────────────
   // Measure Compute() wall-clock time via ControllerTimingProfiler.
-  const urtc::ControllerOutput output =
-      timing_profiler_.MeasuredCompute(*controllers_[static_cast<std::size_t>(active_idx)], state);
+  auto& active_controller = *controllers_[static_cast<std::size_t>(active_idx)];
+  const urtc::ControllerOutput raw_output =
+      timing_profiler_.MeasuredCompute(active_controller, state);
 
   rt_loop_.StampComputeDone();
+
+  // ── Phase 2b: actuator-boundary validation (issue #196 Phase 4) ────────
+  //
+  // Last gate before the output reaches DeviceBackend::WriteCommand. A
+  // rejected tick is replaced wholesale by a hold command — see
+  // BuildHoldOutput for why holding beats dropping the write, and why the
+  // hold is rebuilt from `state` rather than salvaged from the output.
+  //
+  // Both consumers below (the publish snapshot and the WriteCommand loop)
+  // read the same `output` reference, so this single substitution covers the
+  // actuator lane and the telemetry lane together.
+  const urtc::ControllerOutputValidation validation =
+      urtc::ValidateControllerOutput(raw_output, state);
+  if (!validation.Ok()) {
+    const bool hold_complete = BuildHoldOutput(state, active_controller.GetCommandType());
+    rejected_output_count_.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t consecutive =
+        consecutive_rejected_outputs_.fetch_add(1, std::memory_order_relaxed) + 1;
+    // A hold masks a bad tick; it cannot fix a controller that keeps
+    // producing them. Escalate on the same principle as the overrun watchdog:
+    // sustained failure of the control law is a safety event, not a glitch.
+    // An incomplete hold escalates on the very first tick instead of riding
+    // out the window. The window is only defensible because the hold makes
+    // the interim safe, and that premise is exactly what fails when no hold
+    // can be built from the state.
+    if ((consecutive >= invalid_output_estop_ticks_ || !hold_complete) && !IsGlobalEstopped()) {
+      // Fixed-size buffer, scalar-only format — no allocation on the RT path
+      // (same pattern TriggerGlobalEstop uses for the reason string).
+      std::array<char, kEstopReasonBufferSize> reason{};
+      static_cast<void>(std::snprintf(
+          reason.data(), reason.size(), "%s_%s",
+          hold_complete ? "invalid_controller_output" : "unholdable_controller_output",
+          urtc::OutputRejectReasonToString(validation.reason)));
+      TriggerGlobalEstop(reason.data());
+    }
+  } else {
+    consecutive_rejected_outputs_.store(0, std::memory_order_relaxed);
+  }
+  // Validation keeps running after an E-STOP: the controller's ComputeEstop
+  // path can produce a bad output too, and fail-closed must hold in the
+  // terminal state as well.
+  const urtc::ControllerOutput& output = validation.Ok() ? raw_output : hold_output_;
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
@@ -202,12 +327,13 @@ void RtControllerNode::ControlLoop() {
         auto& gc = snap.group_commands[gi];
         const auto& dout = output.devices[gi];
         const auto& dstate = state.devices[gi];
-        // dout comes straight from the active controller's Compute(); nothing
-        // has vetted its counts yet (central ControllerOutput validation is
-        // issue #196 Phase 4). Bound them here so a faulty controller cannot
-        // drive an out-of-bounds copy or hand the backend a bogus channel
-        // count over the wire. dstate was already bounded on the read path;
-        // re-bounding keeps the invariant local to this block.
+        // `output` has already passed ValidateControllerOutput above (or is
+        // the hold that replaced it), so these counts are in contract. The
+        // bound stays as defence in depth: it is what makes the copy length
+        // safe by construction rather than by an argument about an upstream
+        // check, and it is the only guard on the day someone adds a second
+        // path into this block. dstate was already bounded on the read path;
+        // re-bounding keeps the invariant local.
         const auto onc = BoundedCount(dout.num_channels, urtc::kMaxDeviceChannels);
         const auto snc = BoundedCount(dstate.num_channels, urtc::kMaxDeviceChannels);
         gc.num_channels = static_cast<int>(onc);

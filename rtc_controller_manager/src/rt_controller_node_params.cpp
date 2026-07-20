@@ -17,6 +17,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cmath>  // std::lround
 #include <filesystem>
 #include <string>
 #include <unordered_map>
@@ -217,6 +218,13 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                 control_rate_, rtc::kMinControlRateHz, rtc::kMaxControlRateHz);
   }
   budget_us_ = 1.0e6 / control_rate_;
+
+  // Rate-derived E-STOP threshold for rejected controller output. The floor
+  // keeps the window meaningful at the low end of the supported rate range,
+  // where kOutputRejectEstopSeconds alone would fire after a couple of ticks.
+  invalid_output_estop_ticks_ = std::max<uint64_t>(
+      kMaxConsecutiveOverruns,
+      static_cast<uint64_t>(std::lround(kOutputRejectEstopSeconds * control_rate_)));
 
   // init_timeout_ticks_ is rate-dependent — recomputed here so that the
   // wall-clock window stays at `init_timeout_sec` regardless of the

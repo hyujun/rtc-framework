@@ -23,7 +23,7 @@ RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 �
 
 | 파일 | 설명 |
 |------|------|
-| `src/rt_controller_interface.cpp` | 기본 생성자, `LoadConfig()`, `ParseTopicConfig()` 구현 |
+| `src/rt_controller_interface.cpp` | 기본 생성자, `LoadConfig()`, `ParseTopicConfig()`, 순수 검증 함수 `CheckTargetLimits()` / `ValidateControllerOutput()` 구현 |
 | `src/controller_registry.cpp` | Meyer's 싱글톤 `Instance()` 및 `Register()` 구현 |
 
 ---
@@ -90,6 +90,33 @@ joint 목표는 디스패치 직전에 `device_name_configs_[group_name].joint_l
 CM 이 아닌 단위 테스트가 직접 `Compute()` 를 도는 경로는 양쪽 모두 세대 0 이라 아무것도 드롭되지 않는다.
 
 > **Hold-init 책임 분리 (2026-05-17, RT-4)**: 과거에는 `InitializeHoldPosition(state)` 순수 가상이 CM의 auto-hold 경로에서 RT 스레드로 호출됐다. 이는 `target_mutex_` (RT-4 위반) + writer-multiplicity race (lifecycle/RT/aux 3 thread)의 근원이었고 v1 시도에서 SeqLock 단순 적용으로는 해결되지 않았다. v2 cleanup으로 hold-init은 controller 내부 책임이 되었다 — 각 controller는 `target_initialized_` atomic을 두고 `Compute()` 첫 진입 시 현재 device state로 자체 seed. CM의 auto-hold 코드 / `BuildDeviceSnapshot` / `InitializeHoldPosition` 가상 함수는 모두 삭제됐다.
+
+### Actuator-boundary output validation (#196 §4)
+
+`ControllerOutput` 은 out-of-tree 계약(레지스트리로 로드되는 어떤 controller 든 채운다)인데, CM 은 그것을 그대로 `DeviceBackend::WriteCommand` 로 넘긴다 — 물리 액추에이터 직전 마지막 소프트웨어 단계다. 그 사이에 검증하는 곳이 없어서 NaN 커맨드나 디바이스가 보고하지 않은 채널 수가 그대로 모션이 되어 나갔다. `CheckTargetLimits` 의 ingress 검사를 egress 쪽에 대칭으로 둔 것이 이 검증이다.
+
+순수 함수 `rtc::ValidateControllerOutput(out, state)` → `ControllerOutputValidation` 로 분리돼 ROS 없이 단위 테스트된다 (`test/test_output_validation.cpp`). RT-safe: 할당·로깅·throw 없음.
+
+| 검사 | 규칙 | `OutputRejectReason` |
+|---|---|---|
+| `valid` 플래그 | `false` → reject | `kInvalidFlag` |
+| 디바이스 수 | `out.num_devices == state.num_devices` 이고 `[0, kMaxDevices]` | `kDeviceCountMismatch` |
+| 채널 수 | `[0, kMaxDeviceChannels]` **그리고** `<= state.devices[i].num_channels` | `kChannelCountOutOfRange` |
+| finiteness | `commands[0..nc)` 및 `feedforward[0..nc)` 전부 finite | `kNonFiniteCommand` |
+
+검사 범위는 **액추에이터에 도달하는 필드로 한정**한다 — `commands` / `feedforward` 뿐. task pose, trajectory reference, goal position 은 log/GUI lane 이라 값이 나빠도 눈에 보일 뿐 위험하지 않고, 검사하면 RT 예산만 쓴다. `feedforward` 는 `command_type` 과 무관하게 항상 검사한다: 어떤 타입인지 결정하는 필드 자체가 같은 미검증 출력에서 오기 때문에, 타입으로 게이팅하면 오염된 타입 필드가 NaN 을 통과시키는 경로가 된다.
+
+CM 측 정책(호출부는 `rt_controller_node_rt_loop.cpp` 의 `Compute()` 반환 직후 1곳):
+
+- **reject → hold 대체**. `command_type` 별로 hold 를 *새로 만든다* — 디바이스/채널 수는 `state`(read path 에서 이미 bounded), command type 은 활성 controller 의 `GetCommandType()`(YAML 유래). 거부된 출력 안의 per-device `command_type` override 는 **무시**한다: 방금 검증에 실패한 데이터에서 모드 선택자를 읽으면 검사가 무의미해진다. `kPosition`/`kPdFeedforward` → 측정 위치, `kTorque` → 0 N·m (+ ff 0).
+- **write 를 건너뛰지 않는다**. 커맨드 스트림의 공백을 fault 로 볼지 free-run 으로 볼지는 backend 마다 달라 거동이 비결정적이 된다.
+- **연속 N tick reject → global E-STOP 승격**. `N = max(10, lround(0.1 × control_rate))` — 고정 상수는 100 Hz~5 kHz 사이에서 의미가 50배 달라진다. 하한 10 은 `kMaxConsecutiveOverruns` 선례와 정합.
+- **승격 후에도 검증은 계속 돈다** — controller 의 E-STOP 경로 출력마저 invalid 면 hold 가 계속 적용된다 (terminal state 에서도 fail-closed).
+- **hold 를 만들 수 없으면 즉시 승격**. state 의 *count* 는 read path 에서 bound 되지만 *값* 은 backend 에서 verbatim 복사되므로 측정 위치가 non-finite 일 수 있다. 그 경우 hold 는 rejected output 이 담고 있던 바로 그 NaN 을 그대로 내보내게 된다. 0.0 은 대체재가 아니다 — position command 에서 0.0 은 "원점으로 가라"다. 따라서 해당 device 는 **zero-length command** 로 떨어뜨리고 (backend 는 no-update 로 처리), 연속 window 를 기다리지 않고 첫 tick 에 E-STOP 한다 (reason `unholdable_controller_output_*`). window 가 정당한 이유는 hold 가 그 사이를 안전하게 만들어주기 때문인데, 바로 그 전제가 깨진 상황이기 때문이다.
+
+> **`kTorque` hold 의 수용된 리스크**: CM 은 동역학 모델이 없어 중력보상 토크를 만들 수 없고, 0 N·m 는 중력 sag 를 뜻한다. 최대 노출은 `0.1 s` + E-STOP 전파 지연이다. 토크 모드 디바이스가 있는 구성은 이 window 를 낮추는 튜닝 여지가 있다.
+
+`rt_controller_node_rt_loop.cpp` 의 `BoundedCount` clamp 는 삭제되지 않고 defense-in-depth 로 남는다 — validator 를 통과한 출력과 hold 경로, 그리고 backend 가 보고한 state 쪽 count 에 계속 적용된다.
 
 ### 가상 메서드 (기본 구현 제공)
 
