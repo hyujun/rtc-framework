@@ -44,3 +44,11 @@ jobs:
 
       - name: Validate documentation corpus
         run: python3 repo_scripts/scripts/validate_docs.py
+
+      # The Stop hook is a stack of filters, and its failure mode is one layer
+      # silently cancelling a fix made in another. These assert the observable
+      # behaviour -- given this input, does the warning actually come out --
+      # rather than each layer in isolation, which is how the last regression
+      # got through.
+      - name: verify-changes.sh routing
+        run: bash repo_scripts/test/test_verify_changes.sh
