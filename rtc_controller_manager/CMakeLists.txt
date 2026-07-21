@@ -266,6 +266,21 @@ if(BUILD_TESTING)
     target_link_libraries(test_cm_duplicate_controller_key
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
+
+  # 위와 같은 이유로 또 하나의 전용 실행파일 — Name() 충돌을 등록하는 순간
+  # registry 는 바이너리 수명 내내 오염되므로 duplicate-key 테스트와 섞을 수 없다.
+  ament_add_gtest(test_cm_controller_name_collision
+    test/test_cm_controller_name_collision.cpp
+    ENV ROS_DOMAIN_ID=47)
+  if(TARGET test_cm_controller_name_collision)
+    target_include_directories(test_cm_controller_name_collision PRIVATE include test)
+    ament_target_dependencies(test_cm_controller_name_collision
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_cm_controller_name_collision
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
 endif()
 
 ament_package()
