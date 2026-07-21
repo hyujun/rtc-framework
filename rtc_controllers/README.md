@@ -68,7 +68,7 @@ rtc_controllers/
         └── operational_space_controller.yaml -- example
 ```
 
-> 위 4개 YAML 은 *복제용 reference* 입니다 (설치 위치: `share/rtc_controllers/examples/`). 실제 production 설정은 `<robot>_bringup/config/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요. `<robot>` placeholder 는 자신의 CM `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 일괄 치환합니다. 자세한 사용법은 각 YAML 상단 주석 참고.
+> 위 4개 YAML 은 *복제용 reference* 입니다 (설치 위치: `share/rtc_controllers/examples/`). 실제 production 설정은 `integrated_bringup/config/<robot>/controllers/` 에 두고, `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 `config_package` 를 자기 패키지로 등록하세요 (config_package 인자의 `<robot>_bringup` 은 다운스트림 패키지 이름 placeholder — 이 저장소의 concrete 패키지는 `integrated_bringup`). `<robot>` placeholder 는 자신의 CM `devices.<group>` 키 (e.g. "ur5e", "iiwa7") 로 일괄 치환합니다. 자세한 사용법은 각 YAML 상단 주석 참고.
 
 ---
 
@@ -624,7 +624,7 @@ RTC_REGISTER_CONTROLLER(
 모든 컨트롤러의 RT 경로 메서드 (`Compute`, `SetDeviceTarget`)는:
 - `noexcept` 보장
 - 생성자에서 모든 Pinocchio/Eigen 버퍼 사전 할당 (RT 경로에서 동적 할당 없음)
-- **SeqLock + SPSC marshal (2026-05-17 RT-4 cleanup):** target 슬롯은 `rtc::SeqLock<TargetSlot>`이 publish하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>`에 lock-free push (newest-drop) 만 하고 SeqLock을 직접 만지지 않는다. RT 스레드는 매 tick에서 (1) queue drain → slot 갱신, (2) 첫 tick일 경우 현재 device state로 self-init (controller-internal hold init policy), (3) 단일 `target_seqlock_.Store(slot)` 호출. SE3 타입은 `is_trivially_copyable=false` (Eigen false-negative)이므로 `std::array<double, 9>` (rotation) + `std::array<double, 3>` (translation) POD wrapper로 마샬링한다. 자세한 패턴은 [`feedback_eigen_seqlock_pod_wrapper`](memory).
+- **SeqLock + SPSC marshal (2026-05-17 RT-4 cleanup):** target 슬롯은 `rtc::SeqLock<TargetSlot>`이 publish하고 **RT 스레드 (Compute)** 가 유일한 writer다. Off-RT `SetDeviceTarget` 콜백은 `rtc::SpscQueue<PendingTarget, 4>`에 lock-free push (newest-drop) 만 하고 SeqLock을 직접 만지지 않는다. RT 스레드는 매 tick에서 (1) queue drain → slot 갱신, (2) 첫 tick일 경우 현재 device state로 self-init (controller-internal hold init policy), (3) 단일 `target_seqlock_.Store(slot)` 호출. SE3 타입은 `is_trivially_copyable=false` (Eigen false-negative)이므로 `std::array<double, 9>` (rotation) + `std::array<double, 3>` (translation) POD wrapper로 마샬링한다. 자세한 패턴은 에이전트 memory `feedback_eigen_seqlock_pod_wrapper`.
 - Eigen: `noalias()` 사용, 고정 크기 행렬(3x3, 6x6) 스택 할당
 - **Gains SeqLock 스냅샷:** 모든 컨트롤러의 `gains_` 필드를 `rtc::SeqLock<Gains> gains_lock_`로 교체. RT 경로(`Compute()`)는 진입 시 `const auto gains = gains_lock_.Load()`로 전체 구조체를 단일 스냅샷으로 읽어, parameter callback이 non-RT (nrt_callback) 스레드에서 동시 실행되어도 한 틱 내 모든 필드(bool/배열/스칼라) 일관성 보장. nrt_callback writer(`LoadConfig`, parameter callback, `set_gains`)는 Load→mutate→Store 패턴으로 torn-write 방지.
 - **trajectory_speed 검증:** `LoadConfig()` 및 데모 컨트롤러의 parameter callback에서 `trajectory_speed`/`trajectory_angular_speed`에 `std::max(1e-6, val)` 적용하여 0 또는 음수 값으로 인한 무한 궤적 duration 방지
@@ -633,7 +633,7 @@ RTC_REGISTER_CONTROLLER(
 
 ## 예시 설정 파일 (`examples/`)
 
-각 컨트롤러에 대응하는 YAML reference example. `LoadConfig()` 메서드에서 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `<robot>_bringup/config/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
+각 컨트롤러에 대응하는 YAML reference example. `LoadConfig()` 메서드에서 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `integrated_bringup/config/<robot>/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
 
 | 파일 | 설명 |
 |------|------|

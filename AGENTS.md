@@ -19,17 +19,9 @@
 
 ### RT path
 
-정기 tick 또는 `SCHED_FIFO` RT 경로에서는 다음을 사용하지 않는다.
+정기 tick 또는 `SCHED_FIFO` RT 경로에서 금지되는 항목은 **RT-1 ~ RT-10** (RT-7 은 은퇴하여 PROC-6 으로 이동) 이다. 개별 규칙·탐지 패턴·대안은 `agent_docs/invariants.md` §RT Path Invariants 가 단일 출처이며, 목록을 여기에 복제하지 않는다 — 이전에 복제본이 7개에서 멈춰 RT-9(RT 경로의 `get_lifecycle_state()`)와 RT-10(`condition_variable`)이 이 문서를 읽는 도구에게 보이지 않았다.
 
-- 동적 할당: `new`, `malloc`, `push_back`, `resize`
-- 예외: `throw`, `catch`
-- 직접 `RCLCPP_*` 로깅
-- `mutex`, `lock_guard`
-- `auto`와 Eigen 조합
-- quaternion `lerp` 또는 `nlerp`
-- `shared_ptr` 복사
-
-이 규칙은 RT tick 경로에만 적용한다. lifecycle, auxiliary, test, initialization 코드는 해당하지 않을 수 있으나, 경로 판정과 대안은 `agent_docs/invariants.md`를 따른다.
+이 규칙은 RT tick 경로에만 적용한다. lifecycle, auxiliary, test, initialization 코드는 해당하지 않는다. **어떤 콜백이 RT 인지는 함수 이름이 아니라 그 콜백이 붙은 executor 의 스케줄러가 결정하며**, 판정표는 `agent_docs/architecture.md` §Execution Contexts 에 있다.
 
 ### Architecture, process, and numerical rules
 
@@ -75,17 +67,19 @@
 
 다음 상황에서는 코드를 작성하기 전에 `[CONCERN]`을 보고하고 사용자 결정을 기다린다.
 
-- invariant를 위반하거나 예외가 필요할 가능성
-- `rtc_*` 패키지에 robot-specific 값 추가
-- `rtc_msgs` 또는 `shape_estimation_msgs` public ABI 변경
-- abstract interface 없이 두 번째 구현 추가
-- optional dependency(MuJoCo, aligator 등)의 fallback 제거
-- 기존 test assertion 변경 또는 약화
-- thread model(core affinity, priority) 변경
-- E-STOP 경로 변경
-- 문서와 코드 중 어느 쪽을 기준으로 맞출지 판단이 필요한 불일치
-- `robot_descriptions`에 build-time 의존성(`find_package`, `<depend>`, `ament_target_dependencies`) 추가
-- `PublishRole` enum에 controller-owned non-RT topic 추가
+severity 는 각 항목에 붙은 라벨을 따른다 — **Critical 은 사용자 승인 전 커밋·PR 을 금지**하므로, 라벨 없이 읽으면 무엇이 커밋을 막는지 알 수 없다. 아래 E-번호는 [CLAUDE.md](CLAUDE.md) §6 과 1:1 이며 그쪽이 SSoT 다.
+
+- **E-1 (Critical)** — invariant를 위반하거나 예외가 필요할 가능성
+- **E-2 (Critical)** — `rtc_*` 패키지에 robot-specific 값 추가
+- **E-3 (Critical)** — `rtc_msgs` 또는 `shape_estimation_msgs` public ABI 변경
+- **E-4 (Warning)** — abstract interface 없이 두 번째 구현 추가
+- **E-5 (Warning)** — optional dependency(MuJoCo, aligator 등)의 fallback 제거
+- **E-6 (Critical)** — 기존 test assertion 변경 또는 약화
+- **E-7 (Critical)** — thread model(core affinity, priority) 변경
+- **E-8 (Critical)** — E-STOP 경로 변경
+- **E-9 (Warning)** — 문서와 코드 중 어느 쪽을 기준으로 맞출지 판단이 필요한 불일치
+- **E-10 (Warning)** — `robot_descriptions`에 build-time 의존성(`find_package`, `<depend>`, `ament_target_dependencies`) 추가
+- **E-11 (Warning)** — `PublishRole` enum에 controller-owned non-RT topic 추가. 새 controller-owned 토픽은 `SeqLock<T>` + `Setup*Publisher` helper 패턴을 쓴다
 
 ```text
 [CONCERN] <한 줄 요약>
@@ -108,13 +102,15 @@ Alternative: <우회안 한 가지 이상>
 
 `colcon build`와 `colcon test`는 반드시 colcon workspace root(`<rtc_ws>`, 일반적으로 `~/ros2_ws/rtc_ws`)에서 실행한다. repository root(`src/rtc-framework`)에서 실행하지 않는다. 직접 `colcon`을 실행할 때는 환경 설정 스크립트도 올바른 절대 경로 또는 workspace 기준 경로로 source한다.
 
-repository 안에 잘못 생성된 `build/`, `install/`, `log/`는 잘못된 CWD의 신호다. workspace root의 정상 incremental cache와 혼동하거나 제거하지 않는다.
+repository 안에 잘못 생성된 `build/`, `install/`, `log/`는 잘못된 CWD의 신호다. **이 repo-local 트리는 재생성 가능하므로 확인 없이 삭제한다.** 절대 건드리지 않아야 하는 것은 workspace root(`<rtc_ws>/{build,install,log}`)의 정상 incremental cache 이며, 둘을 혼동하지 않는다.
 
 ### Virtual environment isolation
 
 `.venv` 격리는 다른 control project와 공존하는 runtime PC의 의도된 설계다. venv 활성 상태에서 `colcon build`, `colcon test`, `ros2 run`, `ros2 launch`가 실패하면 `sys.path`, shebang, wrapper, dependency resolution의 근본 원인을 수정한다.
 
 gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으로 격리를 우회해 검증을 통과시키지 않는다.
+
+예외는 하나다: `colcon build` 의 configure 단계에서 CMake `FindPython` 이 venv python 을 잡아 eigenpy/pinocchio 가 깨지는 경우, `deactivate` 또는 `-DPython3_EXECUTABLE=/usr/bin/python3` 를 쓸 수 있다(후자를 우선한다). 이는 빌드 시스템의 Python 탐색 문제이며 테스트 우회가 아니다. `colcon test` / `ros2 run` / `ros2 launch` 실패에 대한 비활성화는 금지가 유지된다.
 
 ## 7. Style and Conventions
 

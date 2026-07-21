@@ -1,6 +1,6 @@
 # Design Principles for `rtc_*` Packages
 
-`rtc_*` packages are the **robot-agnostic** backbone of this framework. Any modification must preserve this property. Robot-specific logic, hardware assumptions, and fixed-shape constants belong in `ur5e_*` packages. When in doubt: *"Would this code still make sense on a 7-DOF arm with a 2-finger gripper?"*
+`rtc_*` packages are the **robot-agnostic** backbone of this framework. Any modification must preserve this property. Robot-specific logic, hardware assumptions, and fixed-shape constants belong in the **integration packages** — today `integrated_bringup`, `udp_hand_driver`, `shape_estimation`, `ur5e_bt_coordinator` (i.e. every non-`rtc_*` package that `<depend>`s on an `rtc_*` one; the hook derives this set from `package.xml` rather than a name glob). When in doubt: *"Would this code still make sense on a 7-DOF arm with a 2-finger gripper?"*
 
 > **이 파일의 규칙 위반은 [invariants.md](invariants.md) ARCH-1~4의 escalation 대상이다.** 위반이 불가피하다고 판단될 때는 코드를 쓰기 **전에** [CLAUDE.md](../CLAUDE.md) §6 포맷으로 `[CONCERN] Severity: Warning` 이상을 보고한다.
 
@@ -22,9 +22,9 @@
    - QP tasks, constraints -> `rtc_tsid`
    If existing doesn't quite fit, **generalize it** -- don't fork.
 
-## Boundary Rules (`rtc_*` vs `ur5e_*`)
+## Boundary Rules (`rtc_*` vs integration packages)
 
-| Belongs in `rtc_*` | Belongs in `ur5e_*` |
+| Belongs in `rtc_*` | Belongs in an integration package |
 |--------------------|---------------------|
 | Abstract interfaces, concepts, base classes | Concrete implementations via `RTC_REGISTER_CONTROLLER` |
 | DOF-generic algorithms (variable `n_joints`) | Fixed-DOF launch files, URDF, MJCF, meshes |
@@ -32,8 +32,15 @@
 | YAML-driven parameter schemas | YAML files with actual robot values |
 | Controller registry, TSID solver core | Demo controllers, BT coordinator, bringup |
 | RT threading, SPSC, SeqLock, E-STOP logic | Hardware drivers (UR5e RTDE, hand UDP, ToF UART) |
-| **Library only** — `rtc_*` 패키지는 자체 `add_executable` / `main()` 보유 금지. `RtControllerMain()` 등 진입 함수만 export | **Runtime identity 소유** — robot-specific 패키지가 `add_executable`로 exec 생성, `RtControllerMain(argc, argv, "<exec_name>")` 호출. ROS 노드 이름 = exec 이름 (예: `integrated_rt_controller`) |
+| **Control-framework runtime identity 금지** (ARCH-7) — `rtc_*` 는 RT 제어 루프를 구동하는 exec 를 소유하지 않는다. `RtControllerMain()` 같은 진입 *함수* 만 export | **Runtime identity 소유** — integration 패키지가 `add_executable`로 exec 생성, `RtControllerMain(argc, argv, "<exec_name>")` 호출. ROS 노드 이름 = exec 이름 (예: `integrated_rt_controller`) |
 | Agnostic launch는 자기 노드 단독만 띄움 (예: `rtc_mujoco_sim/launch/mujoco_sim.launch.py` → `mujoco_simulator_node`만). robot-specific 패키지 의존 / robot-specific exec 호출 금지 | 통합 launch (RT 컨트롤러 + 시뮬레이터 + 드라이버 chain)는 robot bringup이 소유 (예: `integrated_bringup/launch/sim_ur5e_p1a.launch.py`) |
+
+**ARCH-7 의 범위 — 무엇이 예외인가**: 이 규칙이 막으려는 것은 *제어 프레임워크의 런타임 정체성* 이 agnostic 패키지로 새는 것이지, `add_executable` 자체가 아니다. 따라서 다음은 명시적 예외다.
+
+- **Robot-agnostic standalone 노드** — `rtc_mujoco_sim` 의 `mujoco_simulator_node`, `rtc_urdf_bridge` 의 `closure_state_publisher`. 둘 다 로봇 이름을 모르고 URDF/MJCF 를 파라미터로 받으며, RT 제어 루프를 소유하지 않는다. 이들의 launch 는 자기 노드만 띄운다.
+- **Example 실행 파일** — `rtc_urdf_bridge` 의 `example_*` 4종, `rtc_math` 의 `se3_error_compare`. API 사용법 데모이며 bringup chain 에 등장하지 않는다.
+
+예외에 해당하지 않는 신규 `add_executable` 을 `rtc_*` 에 추가하려면 §Escalation `[CONCERN]` (E-1 / Critical — §6 에 ARCH-7 전용 E-번호는 없다) 으로 보고한다. 이 규칙은 오랫동안 예외 서술 없이 "금지" 로만 적혀 있었고, 그 사이 7개 타깃이 축적되는 동안 아무 신호도 없었다 (#213) — 지금은 hook 이 `rtc_*/CMakeLists.txt` 의 신규 `add_executable` **타깃 이름** 을 검사한다. 면제 경로는 셋이다 — (1) 기존 7개 타깃은 HEAD 에 이미 있으므로 재발화하지 않고(**grandfathered** — `mujoco_simulator_node`·`closure_state_publisher`·`se3_error_compare` 는 이 경로로만 통과한다), (2) `example_*` 는 이름으로 면제되며, (3) **그 밖의 신규 agnostic 노드** 는 `add_executable` 라인 위 또는 옆에 `ARCH-7-exempt` 주석을 달아 면제한다. 즉 hook 이 지금 마커를 강제하는 대상은 (3) 뿐이고 (1)의 세 노드에는 아직 마커가 없다 — 이들을 rename·재추가하면 name diff 가 신규 타깃으로 보므로, 그때 `ARCH-7-exempt` 주석을 함께 붙여 (3) 경로로 옮긴다.
 
 **Runtime identity rule** (위 마지막 두 행의 근거): exec ↔ ROS 노드 ↔ pgrep ↔ logger 식별자가 모두 같은 이름으로 정렬되어야 디버깅·검증·로그 추적 비용이 일정하게 유지됨. agnostic 패키지가 자체 exec를 가지면 robot-specific identity와 혼선이 생김(어느 launch에서 띄운 어느 instance인지 구분 불가). 따라서 agnostic은 library만 export.
 

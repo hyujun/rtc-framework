@@ -593,7 +593,7 @@ ros2 launch integrated_bringup robot_ur5e_p1a.launch.py use_mock_hardware:=true 
 **Lifecycle:** udp_hand_node, integrated_rt_controller 모두 LifecycleNode 기반. 런치 시 자동 configure → activate.
 
 **CycloneDDS 최적화** (`cyclone_dds.xml`):
-멀티캐스트 비활성화, 소켓 버퍼 확대(recv 8MB/send 2MB), write batching(8us), NACK 지연 최소화(10ms), 동기 전달 활성화. 상세: [`rtc_controller_manager` README](../rtc_controller_manager/README.md#설정-파일-상세)
+멀티캐스트 비활성화, 소켓 버퍼 확대(recv 8MB/send 2MB), write batching(8us), NACK 지연 최소화(10ms), 동기 전달 활성화. 상세: [`rtc_controller_manager` README](../rtc_controller_manager/README.md#설정-파일)
 
 #### UR 캘리브레이션 (`kinematics_params_file`)
 

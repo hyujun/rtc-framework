@@ -60,9 +60,12 @@
 //                          v4.1). DDS recv thread co-pinned to the same core
 //                          via launch taskset for cache locality.
 //   - cb_group_nrt_logging_:   drain_timer_  (non-RT core)
-//   - cb_group_nrt_callback_:  estop_pub_ + CM-owned target_sub_ (RobotTarget
-//                          — external intent input, spec §0d keeps it off the
-//                          RT path) + lifecycle services (aux core)
+//   - cb_group_nrt_callback_:  estop_pub_ + lifecycle services (aux core).
+//                          RobotTarget (external intent input) is NOT here —
+//                          issue #138 moved it to controller-owned subs on each
+//                          controller LifecycleNode's default group, which
+//                          main() attaches to the same nrt_callback_executor.
+//                          Spec §0d's "off the RT path" intent is preserved.
 // Forward declaration for friend access — defined in
 // test/test_controller_lifecycle.cpp.
 namespace rtc {
@@ -299,11 +302,10 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::CallbackGroup::SharedPtr cb_group_nrt_logging_;
   rclcpp::CallbackGroup::SharedPtr cb_group_nrt_callback_;
 
-  // ── Configurable topic subscriptions (created from controller YAML) ──────
-  // Key = topic name, value = subscription handle (kept alive for node
-  // lifetime). Only kTarget remains here — kState/kMotorState/kSensorState
-  // moved into DeviceBackend implementations.
-  std::vector<rclcpp::SubscriptionBase::SharedPtr> topic_subscriptions_;
+  // No CM-owned subscription container lives here. Controller-YAML target subs
+  // are controller-owned (integrated_bringup CreateOwnedTopics) and device-wire
+  // state/motor/sensor subs are owned by DeviceBackend impls — see
+  // CreatePublishers' comment for the issue #138 split.
 
   // Fixed publishers (always present)
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr estop_pub_;

@@ -21,7 +21,7 @@
 
 | 패키지 | 설명 | 빌드 |
 |--------|------|------|
-| [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 14종 (JointCommand, FingertipSensor, HandSensorState, RobotTarget, DeviceStateLog, DeviceSensorLog, GraspState, WbcState, ToFSnapshot, ControllerState, CalibrationCommand, CalibrationStatus, SimSensor, SimSensorState) | ament_cmake |
+| [`rtc_msgs`](rtc_msgs/) | 커스텀 ROS 2 메시지 (`rtc_msgs/msg/` 가 SSoT — 개수·목록은 여기 박제하지 않는다) | ament_cmake |
 | [`rtc_base`](rtc_base/) | 헤더-전용 RT 인프라: 타입, SeqLock, SPSC 버퍼, 스레딩(4/6/8/10/12/16코어 + MPC tier `MpcThreadConfig`), Bessel/Kalman 필터, CSV 로깅 | ament_cmake |
 | [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`). Pinocchio 어댑터는 optional | ament_cmake |
 | [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket/CanSocket/SerialPort RAII, UDP·CAN·CAN FD·RS485 transport (length-prefixed 프레이머), PacketCodec concept, Transceiver 템플릿 | ament_cmake |
@@ -56,7 +56,7 @@
 | [`robot_descriptions`](robot_descriptions/) | Robot-agnostic data hub — `robots/<name>/` 당 URDF/MJCF/mesh (현재: ur5e, ur5e_assm_v1, assm_v1, iiwa7, iiwa7_leap, leap_hand, schunk_hand, panda). data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 사용 (ARCH-5) | ament_cmake |
 | [`udp_hand_driver`](udp_hand_driver/) | 가변-DOF 핸드 UDP 드라이버: SeqLock 상태, ppoll sub-ms 타임아웃, 촉각 센서, ONNX F/T 추론 | ament_cmake |
 | [`ur5e_bt_coordinator`](ur5e_bt_coordinator/) | BehaviorTree.CPP v4 기반 비-RT 태스크 코디네이터 (20 Hz, UR5e + 핸드 통합 모션) | ament_cmake |
-| [`integrated_bringup`](integrated_bringup/) | per-robot launch/config (`config/<robot>/`: ur5e_p1a, iiwa7_leap, ...) + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 7-phase WBC + MPC 통합 경로, `enable_mpc` launch arg) + CPU 격리/DDS 핀닝 | ament_cmake |
+| [`integrated_bringup`](integrated_bringup/) | per-robot launch/config (`config/<robot>/`: ur5e_p1a, iiwa7_leap, ...) + 데모 컨트롤러 (DemoJoint, DemoTask, DemoWbc — TSID QP 기반 WBC + MPC 통합 경로, `enable_mpc` launch arg) + CPU 격리/DDS 핀닝 | ament_cmake |
 
 ### 의존성 그래프
 
@@ -104,7 +104,7 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 - **JointPDController**: PD + Pinocchio RNEA 중력/코리올리 보상, JointSpaceTrajectory 퀸틱 보간
 - **ClikController**: Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
 - **OperationalSpaceController**: 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
-- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 7-phase FSM (Idle→Approach→PreGrasp→Closure→Hold→Release→Fallback; slot 5 reserved — 과거 kRetreat), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kPreGrasp`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제), **Phase 5에서 MPC reference 주입 경로 지원 — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, MPC 비활성 시 Phase 4 고정-reference 동작 bit-identical 유지**
+- **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 6-state FSM (Idle→Approach→Closure→Hold→Release, 그리고 Fallback; enum slot 2·5 는 예약 — 과거 kPreGrasp 는 kApproach 에 병합, kRetreat 는 제거), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제), **Phase 5에서 MPC reference 주입 경로 지원 — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, MPC 비활성 시 Phase 4 고정-reference 동작 bit-identical 유지**
 
 ### 안전 시스템
 - **글로벌 E-STOP**: `atomic<bool>` + `compare_exchange_strong` 기반 통합 비상 정지 — 동적 디바이스 그룹 기반 트리거:
@@ -185,12 +185,12 @@ chmod +x build.sh
 
 # 수동 빌드 (워크스페이스에 외부 패키지가 섞여 있을 때 권장)
 source ~/ros2_ws/rtc_ws/src/rtc-framework/repo_scripts/scripts/setup_env.sh
-deactivate 2>/dev/null   # venv 활성 시 CMake FindPython 충돌 방지
+deactivate 2>/dev/null   # venv 활성 시 CMake FindPython 충돌 방지 (CLAUDE.md §9.2 의 configure 한정 carve-out)
 cd ~/ros2_ws/rtc_ws && colcon build --symlink-install
 source install/setup.bash
 ```
 
-> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 venv 활성 상태면 `deactivate` 또는 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 가 필요합니다 (eigenpy/pinocchio configure 보호). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
+> `setup_env.sh` 가 `RTC_DEPS_PREFIX` · ONNX Runtime · `mujoco_ROOT` · `COLCON_DEFAULTS_FILE` (`--symlink-install` / Release / `compile_commands` 자동 적용) 를 모두 export 하므로, 이후 plain `colcon build` 만으로도 의존성이 전부 발견됩니다. 단 venv 활성 상태면 `--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` (권장) 또는 `deactivate` 가 필요합니다 (eigenpy/pinocchio configure 보호). 이 완화는 **configure 단계에만** 해당합니다 — `colcon test` / `ros2 run` 실패를 deactivate 로 우회하는 것은 금지입니다 (CLAUDE.md §9.2). 모드별 패키지 셀렉션 · `compile_commands.json` 머지 · RT 환경 점검은 `build.sh` 만 수행합니다 — 두 워크플로는 같은 `build/`·`install/` 트리를 공유하며 incremental 로 안전하게 병행할 수 있습니다 (단, `build.sh -c` 는 트리 전체를 삭제하므로 외부 패키지가 있으면 사용 금지).
 
 ### Python 의존성 sync (dev PC ↔ runtime PC 재현성)
 

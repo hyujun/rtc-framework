@@ -295,8 +295,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
 
-  // 3. subscribers (kTarget only — state/motor/sensor live in backends)
-  topic_subscriptions_.clear();
+  // 3. subscribers — nothing CM-owned to release: controller-YAML target subs
+  //    belong to each controller LifecycleNode (torn down with the controller
+  //    below) and state/motor/sensor subs die with their DeviceBackend above.
 
   // 2. parameters / controllers
   // (Controller-owned CSV loggers are released inside each controller's
@@ -381,7 +382,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   }
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
-  topic_subscriptions_.clear();
   controllers_.clear();
   controller_states_.clear();
   controller_topic_configs_.clear();

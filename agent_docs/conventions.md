@@ -7,7 +7,7 @@
 
 ## Domain Conventions
 
-`rtc_*` 패키지 전체에 적용. `ur5e_*` 는 이를 상속하고 하드웨어 제약을 추가할 수 있다.
+`rtc_*` 패키지 전체에 적용. integration 패키지 (`integrated_bringup`, `udp_hand_driver`, `shape_estimation`, `ur5e_bt_coordinator` 등) 는 이를 상속하고 하드웨어 제약을 추가할 수 있다.
 
 - **Coordinate frame**: Right-hand rule, ZYX Euler (roll-pitch-yaw)
 - **Rotation**: Internal = quaternion (`Eigen::Quaterniond`, Hamilton). Euler only at API boundaries
@@ -32,7 +32,7 @@
 - **ROS 2 API**: 명시 `rclcpp::QoS` (모든 topic 은 `KEEP_LAST` depth **1** — [invariants.md](invariants.md) ARCH-6; reliability/durability 는 lane별 유지), `MutuallyExclusiveCallbackGroup`, 범위 지정 `ParameterDescriptor`
 - **Formatting SSoT**: C++ 는 [`.clang-format`](../.clang-format) (Google base, ColumnLimit 100, PointerAlignment Left), Python 은 [`pyproject.toml`](../pyproject.toml) (ruff, line 99). PostToolUse hook ([.claude/hooks/format-code.sh](../.claude/hooks/format-code.sh)) 이 모든 Edit 마다 자동 적용. **`ament_uncrustify` / `ament_lint_common` 사용 금지** — uncrustify 의 ROS 2 / Eclipse-CDT 표준 스타일 (Allman braces, `T *p`, `T &r`) 이 clang-format Google base 와 영구 충돌. `set(ament_cmake_uncrustify_FOUND TRUE)` 스킵 트릭은 작동하지 않는다 (extras hook `ament_cmake_uncrustify_lint_hook.cmake` 가 무조건 등록됨) — `ament_lint_common` meta 자체를 쓰지 말 것. 새 패키지는 개별 lint depend 만: `<test_depend>ament_cmake_{cppcheck,lint_cmake,xmllint}</test_depend>` + CMakeLists 에 `find_package(...)` + `ament_cppcheck()` / `ament_lint_cmake()` / `ament_xmllint()` 개별 호출. 기존 패키지에서 uncrustify 를 떼낸 직후엔 `build/<pkg>/test_results/<pkg>/uncrustify.xunit.xml` 이 남아있을 수 있으므로 `rm -rf build/<pkg>/test_results` 후 colcon test 로 검증.
 - **Include grouping**: `.clang-format` `IncludeBlocks: Regroup` + `IncludeCategories` 가 4 Priority 로 분류 (SSoT 는 `.clang-format`):
-    - **P1** 본 저장소 프로젝트 헤더 — `"rtc_*"`/`"ur5e_*"`/`"shape_estimation*"`/`"integrated_bringup*"`/`"udp_hand_driver*"`/`"robot_descriptions*"` (quote/angle 둘 다)
+    - **P1** 본 저장소 프로젝트 헤더 — `"rtc_*"`/`"shape_estimation*"`/`"integrated_bringup*"`/`"ur5e_bt_coordinator*"`/`"udp_hand_driver*"`/`"robot_descriptions*"` (quote/angle 둘 다)
     - **P2** ROS 2 — `<rclcpp/*>`, `<std_msgs/*>` 등
     - **P3** third-party — Eigen, pinocchio, fmt, MuJoCo, BehaviorTree 등
     - **P4** stdlib — `<algorithm>` 등

@@ -6,7 +6,7 @@
 - **탐지**: grep/test 명령 (가능한 경우)
 - **복구**: 올바른 방법
 
-근거는 git log 의 historical fix-commit + [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md). 절대 카운트·commit SHA·시점 의존 status (`현 baseline 0건`, `Phase X ✅`) 는 박제하지 않는다 (AP-DOC-1) — 패턴 자체가 핵심이고 측정값은 측정 시점에 의존한다.
+근거는 git log 의 historical fix-commit 이다. 절대 카운트·commit SHA·시점 의존 status (`현 baseline 0건`, `Phase X ✅`) 는 박제하지 않는다 (AP-DOC-1) — 패턴 자체가 핵심이고 측정값은 측정 시점에 의존한다.
 
 ## RT Safety
 
@@ -14,7 +14,7 @@
 
 - **증상**: 정기 tick (`control_rate`) 루프에서 지터 스파이크, rosout queue 포화 시 RT overrun → E-STOP. Rate 가 높을수록 폭주가 빠름 (rate-proportional)
 - **원인**: `RCLCPP_*` 매크로가 내부적으로 string format + rosout IPC publish → heap + blocking
-- **탐지**: `grep -nE 'RCLCPP_(INFO|WARN|ERROR|DEBUG|FATAL)\(' <RT file>` — 단 one-shot init / THROTTLE 변종은 제외
+- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-3` 블록 — 단 one-shot init / THROTTLE 변종은 제외
 - **복구**:
   - one-shot init: 현상 유지 (lifecycle 콜백 / 한 번만 실행되는 fatal 경로)
   - 정기 tick: SPSC → `DrainLog()` aux thread 패턴 (참조: `rtc_controller_manager/src/rt_controller_node_estop.cpp`)
@@ -24,14 +24,14 @@
 
 - **증상**: Non-unit quaternion → 회전축 축소/왜곡, 누적 drift
 - **원인**: `Eigen::Quaterniond::slerp`가 아닌 선형 보간 오용
-- **탐지**: `grep -rnE '(nlerp|\.lerp\()' --include='*.cpp' --include='*.hpp' .`
+- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-6` 블록
 - **복구**: `q_a.slerp(t, q_b)` 명시
 
 ### AP-RT-3: Eigen expression에 `auto` ([invariants.md](invariants.md) RT-5 위반)
 
 - **증상**: Expression template lazy-eval + aliasing → 같은 메모리 읽고 쓰기 → 결과 쓰레기
 - **원인**: `auto M = A * B;` 는 `Eigen::Product` 를 담고 나중 평가 시 aliasing 가능
-- **탐지**: `grep -nE 'auto [^=]*=.*\.(matrix|transpose|inverse|adjoint|block)\(' <file>`
+- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-5` 블록
 - **복구**: 명시 타입 `Eigen::MatrixXd M = A * B;` 또는 `A.noalias()` 명시
 
 ### AP-RT-4: RT 경로 `std::lock_guard` ([invariants.md](invariants.md) RT-4 위반)
@@ -56,9 +56,9 @@
 - **증상**: RT producer 가 `cv.notify_one` 시 내부 mutex 보유 → 우선순위 역전 + 비결정 wake latency. wait side 는 명시 mutex lock 보유 (RT-4 결합)
 - **원인**: producer-consumer 통지를 cv 로 구현. 직관적이나 RT 우선순위 보장 안 됨
 - **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (`6405c76` 이전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
-- **탐지**: `grep -nE '(std::condition_variable|\.notify_(one|all)\(|\.wait(|_for|_until)\()' <RT file>`
+- **탐지**: [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect id=RT-10` 블록
 - **복구**:
-  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM publish_thread (`rtc_controller_manager/src/rt_controller_node.cpp:92-95`) + `UdpHandController` (post-`6405c76`) 가 표준 패턴
+  - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM 의 nrt-publish lane (`RtControllerNode` 의 `nrt_publish_eventfd_` 생성부) + `UdpHandController` (post-`6405c76`) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
   - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
 
@@ -73,7 +73,7 @@
 
 - **증상**: RT path 에서 `RealtimeBuffer` ctor 또는 `reset()` 가 `new T()` 2회 호출 → RT-1 위반 경로
 - **원인**: `RealtimeBuffer` ctor 가 internal double buffer 를 heap allocate. `reset()` 도 동일하게 `delete` + `new`
-- **탐지**: `grep -nE 'RealtimeBuffer<.*>\(' <RT file>` 매칭이 lifecycle 콜백 (`on_configure` / `on_cleanup`) 외에 있는가
+- **탐지**: `RealtimeBuffer<T>` / `RealtimeThreadSafeBox<T>` 의 생성·`reset` 이 lifecycle 콜백 (`on_configure` / `on_cleanup`) 밖에 있는가. (본 저장소는 아직 `realtime_tools` 를 쓰지 않으므로 grep 은 언제나 0건이다 — 도입 시 적용할 규칙)
 - **복구**: ctor / `reset` 은 lifecycle 콜백에서만. RT path 에서 buffer 재구성이 필요하면 `SeqLock<T>` + writer `Store` 패턴
 
 ### AP-RTT-3: `RealtimePublisher::try_publish` 의 drop 을 추적하지 않음
@@ -94,7 +94,13 @@
 
 - **증상**: SMT-on hybrid (NUC13 / NUC14 / i9-13900K) 또는 AMD SMT 시스템에서 RT thread 가 의도와 달리 P-core 의 SMT sibling 에 핀됨. `rt_callback` (slot 2 = cpu 2 = P-core 1 physical) 와 `mpc_main` (slot 3 = cpu 3 = P-core 1 sibling) 이 동일 hardware execution unit 의 두 hyperthread 에 들어가 cache/port contention 발생 — RT 우선순위 우위가 무력화됨
 - **원인**: `ThreadConfig::cpu_core` 는 *slot index* (physical core 번호), `CPU_SET(n, ...)` 의 `n` 은 *logical CPU id*. SMT-off 환경에서만 두 값이 일치하므로 4-core CI mock 만으로는 회귀를 잡을 수 없음
-- **탐지**: `ApplyThreadConfig` / `ApplyThreadConfigWithFallback` / `CheckThreadHealth*` 가 `SlotToLogicalCpu()` 없이 `cfg.cpu_core` 를 `CPU_SET` / `CPU_ISSET` 에 직접 전달 — `grep -nE 'CPU_(SET|ISSET).*cpu_core' rtc_base/include/rtc_base/threading/*.hpp` 로 회귀 검출
+- **탐지**: `ApplyThreadConfig` / `ApplyThreadConfigWithFallback` / `CheckThreadHealth*` 가 `SlotToLogicalCpu()` 없이 `cfg.cpu_core` 를 `CPU_SET` / `CPU_ISSET` 에 직접 전달하는지:
+
+```detect id=AP-THREAD-slot-mapping
+grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threading/
+# probe:     CPU_SET(cfg.cpu_core, &cpuset);
+# antiprobe:     CPU_SET(SlotToLogicalCpu(cfg.cpu_core), &cpuset);
+```
 - **복구**: 새 affinity 호출 site 가 추가되면 반드시 `SlotToLogicalCpu(slot)` 또는 `SlotToLogicalCpu(slot, topology)` 를 거쳐 변환. unit test 는 `CpuTopology` mock 으로 직접 주입 (overload 사용)
 
 ## Design / Architecture
@@ -102,7 +108,7 @@
 ### AP-ARCH-1: `rtc_*` 패키지에 robot-specific 상수 하드코딩 ([invariants.md](invariants.md) ARCH-1 위반)
 
 - **증상**: 다른 로봇에서 재사용 불가 → 패키지 fork 압력
-- **탐지**: `grep -rniE '(\b(ur5e|iiwa7|leap|allegro)\b|num.?joints = [0-9])' rtc_*/include rtc_*/src` (`6.?dof`/`10.?dof` 는 SE(3) task-space 차원 오탐이라 제외 — [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0 참조)
+- **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-1 검사 (탐지 SSoT — `6.?dof`/`10.?dof` 가 SE(3) task-space 차원 오탐이라 제외된 이유도 거기 주석에 있다)
 - **복구**: YAML 주입 또는 template parameter
 
 ### AP-ARCH-2: Interface 없이 두 번째 구현 추가 ([invariants.md](invariants.md) ARCH-3 위반)
@@ -113,7 +119,7 @@
 ### AP-ARCH-3: 역방향 include ([invariants.md](invariants.md) ARCH-4 위반)
 
 - **증상**: `rtc_*` robot-agnostic 훼손
-- **탐지**: `grep -rn '#include "ur5e' rtc_*/include` / `grep -rn '#include "rtc_.*/src/' ur5e_*/`
+- **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0 의 ARCH-4 검사 (대상 integration 패키지 집합을 `package.xml` 에서 자동 도출하므로 패키지 rename 에 따라가지 못하는 하드코딩 glob 이 없다)
 - **복구**: 공개 API만 사용, interface injection
 
 ### AP-ARCH-4: Device boundary 누설
@@ -126,7 +132,7 @@
 ### AP-ARCH-5: Topic QoS depth ≠ 1 ([invariants.md](invariants.md) ARCH-6 위반)
 
 - **증상**: `create_publisher`/`create_subscription` 에 depth 10 (rclcpp 기본값) 또는 `SensorDataQoS()` (기본 depth 5) 를 무심코 사용 → stale 샘플 큐잉
-- **탐지**: `grep -rnE 'rclcpp::QoS[({][2-9]\|keep_last\([2-9]\|depth *= *[2-9]'` + 인자 없는 `SensorDataQoS()`
+- **탐지**: [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Phase 0b 의 ARCH-6 검사 (non-blocking). 인자 없는 `SensorDataQoS()` 도 대상
 - **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 §Escalation E-1 로 예외 기록
 
 ## Process / Drift

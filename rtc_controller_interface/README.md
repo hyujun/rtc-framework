@@ -297,7 +297,9 @@ namespace {
 <config_package>/config/<config_subdir><config_key>.yaml
 ```
 
-예: `<robot>_bringup/config/controllers/indirect/p_controller.yaml`
+예: `integrated_bringup/config/<robot>/controllers/demo_joint_controller.yaml`
+(`<config_subdir>` 는 `rtc_controllers` 의 example 레이아웃처럼 `indirect/` 를 낄 수 있으나,
+production 배치는 controller 당 한 파일의 flat 형태다 — [agent_docs/controllers.md](../agent_docs/controllers.md))
 (production YAML 은 robot-specific bringup 패키지가 소유합니다 — ARCH-1.
 `rtc_controllers/examples/controllers/` 의 동일 이름 파일은 reference
 example 이며 직접 로드되지 않습니다 — `<robot>` placeholder 를 자신의
@@ -363,7 +365,7 @@ my_controller:
 
 ### 토픽 소유권 (issue #138)
 
-컨트롤러 YAML `topics:` 의 모든 subscribe/publish entry 는 **controller-owned** 입니다 — `ownership` 필드는 없습니다. 컨트롤러별 `LifecycleNode` 가 `on_configure` (via `integrated_bringup/support/owned_topics.cpp`) 에서 `node_->create_subscription(...)` / `node_->create_publisher(...)` 로 직접 생성하며, 상대 경로는 노드 namespace `/<config_key>/...` 로 자동 해석됩니다. CM 의 publish thread 는 SPSC snapshot 을 드레인한 뒤 `controllers_[active]->PublishNonRtSnapshot(snap)` 을 호출해 controller-owned 발행을 위임합니다.
+컨트롤러 YAML `topics:` 의 모든 subscribe/publish entry 는 **controller-owned** 입니다 — `ownership` 필드는 없습니다. 컨트롤러별 `LifecycleNode` 가 `on_configure` (via `integrated_bringup/src/support/owned_topics.cpp`) 에서 `node_->create_subscription(...)` / `node_->create_publisher(...)` 로 직접 생성하며, 상대 경로는 노드 namespace `/<config_key>/...` 로 자동 해석됩니다. CM 의 publish thread 는 SPSC snapshot 을 드레인한 뒤 `controllers_[active]->PublishNonRtSnapshot(snap)` 을 호출해 controller-owned 발행을 위임합니다.
 
 컨트롤러 YAML 밖의 두 lane 은 별도 소유입니다: device-wire state/command 는 `devices.<group>.backend:` (DeviceBackend-owned), CM 고정 퍼블리셔 (`/rtc_cm/<group>/joint_states`, `/system/estop_status`, `/rtc_cm/active_controller_name`) 는 `RtControllerNode` 가 hardcode 로 소유 (YAML 무관). Phase 4 이전의 manager/controller 2-tier 선택자 (`TopicOwnership` enum) 는 issue #138 에서 제거되었습니다.
 

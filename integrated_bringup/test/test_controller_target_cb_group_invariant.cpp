@@ -1,9 +1,9 @@
 // Invariant test for controller-owned RobotTarget subscription callback-group
 // binding (spec §0d, thread-layout-v3, follow-up to Issue #100).
 //
-// Spec §0d (ground truth):
-//   - CM-owned `target_sub_` lives on cb_group_nrt_callback_ (locked by
-//     rtc_controller_manager/test/test_robot_target_cb_group_invariant.cpp).
+// Spec §0d, as amended by issue #138 (ground truth):
+//   - The CM owns no RobotTarget subscription. The manager-target lane was
+//     retired; RtControllerNode::CreatePublishers documents the split.
 //   - Controller-owned RobotTarget subs live on the LifecycleNode's default
 //     callback group — which the CM later attaches to nrt_callback_executor
 //     (see agent_docs/architecture.md cb_group→executor matrix).

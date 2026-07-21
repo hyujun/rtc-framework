@@ -1,0 +1,61 @@
+# Documentation-corpus gate (issue #213).
+#
+# Deliberately a separate workflow rather than a job inside ros2-advanced-ci:
+# that workflow's `paths-ignore` drops `docs/**`, `agent_docs/**` and root
+# `*.md`, so a docs-only pull request never starts it. A validation job living
+# there could not run on the changes it exists to validate.
+#
+# Scope here is the whole corpus. The Stop hook runs the same script over the
+# *changed* files only -- an agent must not be blocked by a defect in a file it
+# never touched, least of all one it cannot see.
+name: Docs Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The routing suite's YAML-parse case needs PyYAML importable. The hook
+      # itself fails OPEN without it (a missing tool must not wedge a turn), so
+      # a job without PyYAML would silently skip that gate and leave it untested
+      # here -- the one place it is supposed to be exercised.
+      - name: Install PyYAML
+        run: python3 -m pip install --disable-pip-version-check pyyaml
+
+      # The checker's own fixtures run first and gate the corpus scan. A
+      # detector for silent failures that is merely green on this repository
+      # has proven nothing; it has to be green on inputs whose answer is known
+      # -- including the malformed-grep forms that a previous version of this
+      # script graded as healthy.
+      - name: Validator self-test
+        run: python3 repo_scripts/scripts/validate_docs.py --self-test
+
+      - name: Validate documentation corpus
+        run: python3 repo_scripts/scripts/validate_docs.py
+
+      # The Stop hook is a stack of filters, and its failure mode is one layer
+      # silently cancelling a fix made in another. These assert the observable
+      # behaviour -- given this input, does the warning actually come out --
+      # rather than each layer in isolation, which is how the last regression
+      # got through.
+      - name: verify-changes.sh routing
+        run: bash repo_scripts/test/test_verify_changes.sh
