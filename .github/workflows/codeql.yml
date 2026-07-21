@@ -88,6 +88,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # issue #210: 여기는 빌드 산출물에 CodeQL DB 가 얹히므로 헤드룸이 가장 얇다.
+      # keep-tool-cache: 아래 init 이 CodeQL 번들을 /opt/hostedtoolcache 에 푸므로
+      # 그 트리는 건드리지 않는다 (다른 미사용 툴체인만 회수).
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          keep-tool-cache: "true"
+
+      - name: Disk report (after cleanup)
+        uses: ./.github/actions/disk-report
+        with:
+          label: after-cleanup
+
       - name: Load build package list
         id: pkgs
         run: |
@@ -134,6 +147,11 @@ jobs:
       # MAKEFLAGS=-j2 / CMAKE_BUILD_PARALLEL_LEVEL=2 가 캡한다 → 동시 헤비 TU 2개로
       # peak ~9GB, 16GB 러너 안전. (#179: 패키지-레벨만 1로 줄이면 내부 make -j4 가
       # 여전히 OOM 냈다 — 컴파일러 -j 를 직접 묶는 게 핵심.)
+      - name: Disk report (pre-build)
+        uses: ./.github/actions/disk-report
+        with:
+          label: pre-build
+
       - name: Build packages
         uses: ./.github/actions/colcon-build
         with:
@@ -144,6 +162,12 @@ jobs:
           enable-testing: "false"
           parallel-workers: "1"
           artifact-suffix: codeql-build
+
+      - name: Disk report (post-build)
+        if: always()
+        uses: ./.github/actions/disk-report
+        with:
+          label: post-build
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
