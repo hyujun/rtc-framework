@@ -471,6 +471,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   bool enable_logging_{true};
   bool enable_estop_{true};
 
+  // Device-timeout watchdog cadence. CheckTimeouts() runs every Nth RT tick,
+  // and the contract is a rate-independent kWatchdogCheckHz — a fixed divisor
+  // would mean 10 Hz at the bottom of the supported range and 500 Hz at the
+  // top, i.e. up to ~100 ms of extra detection latency where the loop is
+  // slowest and a needless hot-path cost where it is fastest. Derived in
+  // DeclareAndLoadParameters(); the floor of 1 keeps the watchdog running
+  // every tick if the rate is ever configured at or below the check rate.
+  static constexpr double kWatchdogCheckHz = 50.0;
+  std::uint32_t watchdog_check_divisor_{
+      static_cast<std::uint32_t>(rtc::kDefaultControlRateHz / kWatchdogCheckHz)};
+
   std::size_t loop_count_{0};
 
   // ── Initialization timeout

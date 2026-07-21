@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <span>
@@ -195,6 +196,12 @@ class ControllerLifecycleTestAccess {
     e.last_update = last_update;
     e.received.store(received, std::memory_order_relaxed);
   }
+
+  static std::uint32_t GetWatchdogCheckDivisor(const RtControllerNode& node) {
+    return node.watchdog_check_divisor_;
+  }
+
+  static double WatchdogCheckHz() { return RtControllerNode::kWatchdogCheckHz; }
 
   static void CallCheckTimeouts(RtControllerNode& node) { node.CheckTimeouts(); }
 

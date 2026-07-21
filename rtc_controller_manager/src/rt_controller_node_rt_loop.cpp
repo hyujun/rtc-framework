@@ -127,7 +127,14 @@ void RtControllerNode::CheckTimeouts() {
     if (!dt.received.load(std::memory_order_relaxed))
       continue;
     if ((now - dt.last_update) > dt.timeout && !IsGlobalEstopped()) {
-      TriggerGlobalEstop(dt.group_name + "_timeout");
+      // Fixed-size buffer — concatenating the group name would have been the
+      // only heap allocation left on the RT path (same pattern as the
+      // actuator-boundary escalation below). group_name is const for the node
+      // lifetime, so reading it here is a plain load, not a copy.
+      std::array<char, kEstopReasonBufferSize> reason{};
+      static_cast<void>(
+          std::snprintf(reason.data(), reason.size(), "%s_timeout", dt.group_name.c_str()));
+      TriggerGlobalEstop(reason.data());
       return;
     }
   }
@@ -537,11 +544,11 @@ void RtControllerNode::DrainLog() {
 
 void RtControllerNode::ControlLoopThread::OnTick() noexcept {
   owner_->ControlLoop();
-  // 50 Hz watchdog — every 10th tick at the default 500 Hz (the divisor is
-  // control_rate / 50; tuned for the typical default).
+  // kWatchdogCheckHz watchdog — the divisor is control_rate / kWatchdogCheckHz,
+  // resolved at parameter load so the check cadence is the same wall-clock rate
+  // at every supported control_rate (see watchdog_check_divisor_).
   static thread_local std::uint32_t timeout_tick = 0;
-  static constexpr int kWatchdogCheckDivisor = 10;
-  if (owner_->enable_estop_ && ++timeout_tick % kWatchdogCheckDivisor == 0) {
+  if (owner_->enable_estop_ && ++timeout_tick % owner_->watchdog_check_divisor_ == 0) {
     RTC_TRACE_SCOPE("CM::CheckTimeouts");
     owner_->CheckTimeouts();
   }
