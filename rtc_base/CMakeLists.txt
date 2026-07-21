@@ -16,6 +16,7 @@ endif()
 # ── Strict compiler warnings ─────────────────────────────────────────────────
 add_compile_options(
   -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+  -Werror=switch  # enum switch 누락은 dead topic 을 낳는다 (#211)
 )
 
 find_package(ament_cmake REQUIRED)
