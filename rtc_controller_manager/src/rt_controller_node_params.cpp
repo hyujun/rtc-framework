@@ -414,6 +414,43 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // twice. No-op on the first call.
   ResetControllerBringUpState();
 
+  // ── Duplicate config_key scan (issue #196 Phase 5) ───────────────────────
+  //
+  // Two RTC_REGISTER_CONTROLLER macros claiming the same key is a packaging
+  // mistake: CM looks controllers up by key, so the second registration
+  // shadows the first and the operator silently runs code they did not
+  // select. ControllerRegistry::Register() only warns — it cannot throw,
+  // because static-init ordering across TUs makes a throwing registrar
+  // fragile (see controller_registry.cpp).
+  //
+  // This runs *before* the Pass 1 loop rather than inside it: refusing after
+  // the first factory() call would already have constructed a controller and
+  // its LifecycleNode for a bring-up that can never be correct. Every
+  // duplicate is reported in one run, then the whole configure is refused.
+  {
+    std::unordered_map<std::string, std::size_t> first_seen;
+    first_seen.reserve(entries.size());
+    bool duplicate_found = false;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+      const auto [it, inserted] = first_seen.emplace(entries[i].config_key, i);
+      if (!inserted) {
+        duplicate_found = true;
+        RCLCPP_FATAL(get_logger(),
+                     "Duplicate controller config_key '%s': registration #%zu "
+                     "(package='%s') collides with #%zu (package='%s').",
+                     entries[i].config_key.c_str(), i, entries[i].config_package.c_str(),
+                     it->second, entries[it->second].config_package.c_str());
+      }
+    }
+    if (duplicate_found) {
+      RCLCPP_FATAL(get_logger(),
+                   "Controller registry contains duplicate config_key(s) — refusing to "
+                   "configure. Make each RTC_REGISTER_CONTROLLER key unique across all "
+                   "linked TUs; no controller was instantiated.");
+      return false;
+    }
+  }
+
   // ── Pass 1: instantiate, build LifecycleNode, PreConfigure ───────────────
   for (std::size_t i = 0; i < entries.size(); ++i) {
     const auto& entry = entries[i];

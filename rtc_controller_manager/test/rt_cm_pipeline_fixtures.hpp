@@ -90,6 +90,14 @@ class PipelineTestController : public RTControllerInterface {
   // node's reject counter is compared against.
   static inline std::atomic<int> injected_fault_ticks{0};
 
+  // Instances the registry factory has built (issue #196 Phase 5). The
+  // duplicate-config_key scan runs before Pass 1, so a refused bring-up must
+  // leave this at zero — that is what separates "rejected before creating
+  // controllers and LifecycleNodes" from "rejected after".
+  static inline std::atomic<int> instances_created{0};
+
+  PipelineTestController() noexcept { instances_created.fetch_add(1, std::memory_order_relaxed); }
+
   static void ResetCaptured() {
     captured_kp = -1.0;
     captured_label.clear();
@@ -105,6 +113,7 @@ class PipelineTestController : public RTControllerInterface {
     output_fault.store(OutputFault::kNone, std::memory_order_relaxed);
     output_fault_ticks.store(-1, std::memory_order_relaxed);
     injected_fault_ticks.store(0, std::memory_order_relaxed);
+    instances_created.store(0, std::memory_order_relaxed);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {
