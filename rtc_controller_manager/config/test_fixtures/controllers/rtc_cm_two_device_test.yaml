@@ -1,0 +1,13 @@
+# Test fixture — loaded ONLY by rtc_controller_manager unit tests via
+# config_variant=test_fixtures. Two device groups, which is the shape the
+# startup readiness gate exists for (issue #198 §1): with a single group,
+# "some device reported" and "every device reported" are the same statement,
+# so a one-group fixture cannot tell the fixed behaviour from the broken one.
+rtc_cm_two_device_test:
+  topics:
+    arm:
+      subscribe:
+        - {topic: "target", role: "target"}
+    hand:
+      subscribe:
+        - {topic: "hand_target", role: "target"}

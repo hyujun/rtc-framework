@@ -117,6 +117,34 @@ bool RtControllerNode::BuildHoldOutput(const urtc::ControllerState& state,
 
 // ── 50 Hz watchdog (E-STOP)
 // ───────────────────────────────────────────────────
+bool RtControllerNode::DeviceLive(const DeviceTimeoutEntry& entry,
+                                  std::chrono::steady_clock::time_point now) const noexcept {
+  if (entry.slot < 0 || entry.slot >= kMaxDevices) {
+    return false;
+  }
+  const auto& backend = backends_[static_cast<std::size_t>(entry.slot)];
+  if (!backend) {
+    // Configured group whose backend failed to come up. Not live, and not
+    // skippable: silently running the control law for a device that has no
+    // driver at all is the failure mode this gate exists to prevent.
+    return false;
+  }
+  const auto stamp = backend->LastStateStamp();
+  if (stamp == std::chrono::steady_clock::time_point{}) {
+    return false;  // never reported — see LastStateStamp's contract
+  }
+  return (now - stamp) <= entry.timeout;
+}
+
+int RtControllerNode::FirstUnreadyDevice(std::chrono::steady_clock::time_point now) const noexcept {
+  for (std::size_t i = 0; i < device_timeouts_.size(); ++i) {
+    if (!DeviceLive(device_timeouts_[i], now)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 void RtControllerNode::CheckTimeouts() {
   if (device_timeouts_.empty()) {
     return;
@@ -124,9 +152,17 @@ void RtControllerNode::CheckTimeouts() {
 
   const auto now = std::chrono::steady_clock::now();
   for (auto& dt : device_timeouts_) {
-    if (!dt.received.load(std::memory_order_relaxed))
+    // A device that has never reported is the startup gate's business, not the
+    // watchdog's: before init it is expected, and after init it cannot happen,
+    // because the gate refuses to complete until every device has reported.
+    // (It used to be skipped here with nothing else covering it — the fail-open
+    // in §1.)
+    if (dt.slot >= 0 && dt.slot < kMaxDevices && backends_[static_cast<std::size_t>(dt.slot)] &&
+        backends_[static_cast<std::size_t>(dt.slot)]->LastStateStamp() ==
+            std::chrono::steady_clock::time_point{}) {
       continue;
-    if ((now - dt.last_update) > dt.timeout && !IsGlobalEstopped()) {
+    }
+    if (!DeviceLive(dt, now) && !IsGlobalEstopped()) {
       // Fixed-size buffer — concatenating the group name would have been the
       // only heap allocation left on the RT path (same pattern as the
       // actuator-boundary escalation below). group_name is const for the node
@@ -140,14 +176,6 @@ void RtControllerNode::CheckTimeouts() {
   }
 }
 
-bool RtControllerNode::AllTimeoutDevicesReceived() const noexcept {
-  for (const auto& dt : device_timeouts_) {
-    if (!dt.received.load(std::memory_order_relaxed))
-      return false;
-  }
-  return true;
-}
-
 // ── RT control loop (period = 1 / control_rate)
 // ───────────────────────────────────────────────────────
 void RtControllerNode::ControlLoop() {
@@ -159,17 +187,34 @@ void RtControllerNode::ControlLoop() {
   // ── Phase 0: tick start + readiness check ──────────────────────────────
   const auto t0 = std::chrono::steady_clock::now();
 
-  if (!state_received_.load(std::memory_order_acquire)) {
-    if (!init_complete_ && init_timeout_ticks_ > 0 && ++init_wait_ticks_ > init_timeout_ticks_) {
-      RCLCPP_FATAL(get_logger(), "Initialization timeout (%.1f s): robot=%d",
-                   static_cast<double>(init_timeout_ticks_) / control_rate_,
-                   state_received_.load(std::memory_order_relaxed) ? 1 : 0);
-      TriggerGlobalEstop("init_timeout");
-      rclcpp::shutdown();
+  // Startup gate. EVERY configured device must have reported a state within
+  // its timeout before the control law runs — one device's first packet used
+  // to release the gate for all of them, so a device that was silent from the
+  // start never blocked Compute()/WriteCommand() and was skipped by the
+  // watchdog forever (issue #198 §1). Once the gate has opened it stays open;
+  // staleness from then on is the watchdog's job.
+  if (!init_complete_) {
+    const int unready = FirstUnreadyDevice(t0);
+    if (unready >= 0) {
+      if (init_timeout_ticks_ > 0 && ++init_wait_ticks_ > init_timeout_ticks_) {
+        // Terminal one-shot: names the device that held the gate shut, which
+        // is the whole point of tracking readiness per device rather than
+        // globally. Followed immediately by shutdown, so the log call is not
+        // on a recurring tick path.
+        RCLCPP_FATAL(get_logger(), "Initialization timeout (%.1f s): device '%s' has not reported",
+                     static_cast<double>(init_timeout_ticks_) / control_rate_,
+                     device_timeouts_[static_cast<std::size_t>(unready)].group_name.c_str());
+        std::array<char, kEstopReasonBufferSize> reason{};
+        static_cast<void>(
+            std::snprintf(reason.data(), reason.size(), "%s_init_timeout",
+                          device_timeouts_[static_cast<std::size_t>(unready)].group_name.c_str()));
+        TriggerGlobalEstop(reason.data());
+        rclcpp::shutdown();
+      }
+      return;
     }
-    return;
+    init_complete_ = true;
   }
-  init_complete_ = true;
 
   // Global E-Stop: controller Compute() handles safe-position internally.
   // We still run the full loop to keep logging and timing active.

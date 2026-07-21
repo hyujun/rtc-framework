@@ -108,8 +108,8 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 
 ### 안전 시스템
 - **글로벌 E-STOP**: `atomic<bool>` + `compare_exchange_strong` 기반 통합 비상 정지 — 동적 디바이스 그룹 기반 트리거:
-  - `init_timeout`: 초기화 시간 내 state 미수신 → 노드 종료
-  - `{group}_timeout`: 디바이스 그룹별 state 토픽 갱신 타임아웃 (CheckTimeouts 50Hz, YAML 설정)
+  - `{group}_init_timeout`: 초기화 시간 내 해당 그룹이 state 미보고 → 노드 종료. 설정된 **모든** 디바이스 그룹이 보고하기 전에는 제어가 시작되지 않는다
+  - `{group}_timeout`: 디바이스 그룹별 state 토픽 갱신 타임아웃 (CheckTimeouts — `control_rate` 무관 50 Hz)
   - `sim_sync_timeout`: 시뮬레이션 동기화 타임아웃 (`use_sim_time_sync` 모드)
   - `consecutive_overrun`: ≥10회 연속 RT 루프 오버런
 - **자동 복구**: protective_stop, 프로그램 연결 끊김에 대해 선택적 자동 복구 지원

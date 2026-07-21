@@ -126,18 +126,58 @@ TEST_F(EstopTest, ClearWithoutTriggerIsNoOp) {
   EXPECT_EQ(0, ctrl_b_->ClearEstopCount());
 }
 
-// ── CheckTimeouts / AllTimeoutDevicesReceived (watchdog) ─────────────────────
+// ── Device liveness: startup gate + watchdog (issue #198 §1/§2) ──────────────
+//
+// Liveness now comes from the backend's own LastStateStamp(), so these tests
+// stage a stub backend per slot instead of poking a CM-side timestamp. That is
+// the point of the change: there is no second copy of the stamp to poke.
+
+// Minimal backend whose only interesting behaviour is the liveness stamp.
+class StampOnlyBackend : public DeviceBackend {
+ public:
+  void Configure(rclcpp_lifecycle::LifecycleNode* /*node*/, const DeviceBackendConfig& /*config*/,
+                 rclcpp::CallbackGroup::SharedPtr /*cb*/) override {}
+
+  void Activate() override {}
+
+  void Deactivate() override {}
+
+  bool ReadState(DeviceStateCache& /*cache*/) noexcept override { return false; }
+
+  void WriteCommand(const PublishSnapshot::GroupCommandSlot& /*slot*/,
+                    CommandType /*type*/) noexcept override {}
+
+  std::chrono::steady_clock::time_point LastStateStamp() const noexcept override { return stamp_; }
+
+  void SetStamp(std::chrono::steady_clock::time_point stamp) { stamp_ = stamp; }
+
+ private:
+  std::chrono::steady_clock::time_point stamp_{};  // never reported
+};
+
+// Registers group `name` at `slot` with a stub backend already stamped at
+// `stamp` (default-constructed = never reported).
+StampOnlyBackend* StageDevice(RtControllerNode& node, const std::string& name, int slot,
+                              std::chrono::milliseconds timeout,
+                              std::chrono::steady_clock::time_point stamp) {
+  auto backend = std::make_unique<StampOnlyBackend>();
+  auto* raw = backend.get();
+  raw->SetStamp(stamp);
+  ControllerLifecycleTestAccess::InjectBackend(node, static_cast<std::size_t>(slot),
+                                               std::move(backend));
+  ControllerLifecycleTestAccess::AddDeviceTimeout(node, name, timeout, slot);
+  return raw;
+}
 
 TEST_F(EstopTest, CheckTimeoutsEmptyIsNoOp) {
-  // No device timeouts registered → early return, no E-STOP.
+  // No device groups registered → early return, no E-STOP.
   ControllerLifecycleTestAccess::CallCheckTimeouts(*node_);
   EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node_));
 }
 
 TEST_F(EstopTest, CheckTimeoutsExpiredTriggersEstop) {
-  // received=true and last_update far in the past → exceeds the 10 ms budget.
-  const auto stale = std::chrono::steady_clock::now() - 1s;
-  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "arm", 10ms, /*received=*/true, stale);
+  // Reported once, a second ago → past the 10 ms budget.
+  StageDevice(*node_, "arm", 0, 10ms, std::chrono::steady_clock::now() - 1s);
 
   ControllerLifecycleTestAccess::CallCheckTimeouts(*node_);
 
@@ -151,9 +191,7 @@ TEST_F(EstopTest, CheckTimeoutsTruncatesOverlongGroupNameWithoutAllocating) {
   // buffer, so an arbitrarily long group name must truncate rather than
   // allocate or overflow. The prefix still identifies the device.
   const std::string long_name(200, 'g');
-  const auto stale = std::chrono::steady_clock::now() - 1s;
-  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, long_name, 10ms, /*received=*/true,
-                                                  stale);
+  StageDevice(*node_, long_name, 0, 10ms, std::chrono::steady_clock::now() - 1s);
 
   ControllerLifecycleTestAccess::CallCheckTimeouts(*node_);
 
@@ -163,34 +201,63 @@ TEST_F(EstopTest, CheckTimeoutsTruncatesOverlongGroupNameWithoutAllocating) {
   EXPECT_EQ(std::string::npos, reason.find_first_not_of('g'));
 }
 
-TEST_F(EstopTest, CheckTimeoutsIgnoresDeviceThatNeverReported) {
-  // received=false → device is skipped even though last_update is stale.
-  const auto stale = std::chrono::steady_clock::now() - 1s;
-  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "arm", 10ms, /*received=*/false, stale);
+TEST_F(EstopTest, CheckTimeoutsDefersNeverReportedDeviceToTheStartupGate) {
+  // A device that has never reported is NOT a watchdog trip: pre-init it is
+  // expected, and post-init it cannot happen, because FirstUnreadyDevice()
+  // refuses to open the gate until every device has reported. What changed in
+  // #198 is that skipping it here is no longer the end of the story — the
+  // assertion below pins the other half.
+  StageDevice(*node_, "arm", 0, 10ms, {});
 
   ControllerLifecycleTestAccess::CallCheckTimeouts(*node_);
   EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node_));
+
+  // ...and the device is not ready, so the control law never starts.
+  EXPECT_EQ(0, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(
+                   *node_, std::chrono::steady_clock::now()));
 }
 
 TEST_F(EstopTest, CheckTimeoutsFreshDeviceDoesNotTrip) {
-  // received=true but last_update is recent → still within budget.
-  const auto fresh = std::chrono::steady_clock::now();
-  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "arm", 500ms, /*received=*/true, fresh);
+  StageDevice(*node_, "arm", 0, 500ms, std::chrono::steady_clock::now());
 
   ControllerLifecycleTestAccess::CallCheckTimeouts(*node_);
   EXPECT_FALSE(ControllerLifecycleTestAccess::IsEstopped(*node_));
 }
 
-TEST_F(EstopTest, AllTimeoutDevicesReceivedReflectsReceivedFlags) {
+TEST_F(EstopTest, ReadinessRequiresEveryDeviceNotJustOne) {
+  // The defect this closes: one device's first packet used to release the
+  // startup gate for all of them (a single global state_received_ flag), so a
+  // device that was silent from the start never blocked the control law and
+  // was skipped by the watchdog forever.
   const auto now = std::chrono::steady_clock::now();
-  EXPECT_TRUE(
-      ControllerLifecycleTestAccess::CallAllTimeoutDevicesReceived(*node_));  // empty → true
+  EXPECT_EQ(-1, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(*node_, now));  // empty
 
-  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "arm", 100ms, /*received=*/true, now);
-  EXPECT_TRUE(ControllerLifecycleTestAccess::CallAllTimeoutDevicesReceived(*node_));
+  StageDevice(*node_, "arm", 0, 100ms, now);
+  EXPECT_EQ(-1, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(*node_, now));
 
-  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "hand", 100ms, /*received=*/false, now);
-  EXPECT_FALSE(ControllerLifecycleTestAccess::CallAllTimeoutDevicesReceived(*node_));
+  StageDevice(*node_, "hand", 1, 100ms, {});  // never reported
+  EXPECT_EQ(1, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(*node_, now));
+}
+
+TEST_F(EstopTest, ReadinessAlsoRefusesADeviceThatWentQuiet) {
+  // Readiness and staleness are one predicate, so a re-activate after the
+  // device stopped reporting is refused for the same reason a running loop
+  // E-STOPs — a stale stamp is not "ready", it is just old.
+  const auto now = std::chrono::steady_clock::now();
+  StageDevice(*node_, "arm", 0, 100ms, now - 1s);
+
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallDeviceLive(*node_, 0, now));
+  EXPECT_EQ(0, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(*node_, now));
+}
+
+TEST_F(EstopTest, ReadinessRefusesAGroupWhoseBackendNeverCameUp) {
+  // A configured group with no backend at its slot is not live. It used to be
+  // absent from device_timeouts_ entirely — invisible to both the gate and the
+  // watchdog (#198 §1, the third fail-open).
+  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "arm", 100ms, /*slot=*/0);
+
+  EXPECT_EQ(0, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(
+                   *node_, std::chrono::steady_clock::now()));
 }
 
 // ── DrainLog (deferred E-STOP log + timing summary) ──────────────────────────

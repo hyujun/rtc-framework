@@ -98,7 +98,7 @@ class RtLoopPipelineTest : public ::testing::Test {
     node->declare_parameter("devices.arm.sensor_layout.primary_count_per_group", 1);
     node->declare_parameter("devices.arm.sensor_layout.secondary_count_per_group", 1);
     node->declare_parameter("devices.arm.sensor_layout.inference_values_per_group", 1);
-    // Watchdog entry so state_received_ starts false (init gate armed).
+    // Device group entry so the startup readiness gate is armed.
     node->declare_parameter("device_timeout_names", std::vector<std::string>{"arm"});
     node->declare_parameter("device_timeout_values", std::vector<double>{60000.0});
     return node;
@@ -107,6 +107,7 @@ class RtLoopPipelineTest : public ::testing::Test {
   static PipelineStubBackend* Backend(RtControllerNode& node) {
     return dynamic_cast<PipelineStubBackend*>(ControllerLifecycleTestAccess::GetBackend(node, 0));
   }
+
 };
 
 // ── Happy path: full tick pipeline over a live device group ──────────────────
@@ -554,11 +555,17 @@ TEST_F(RtLoopPipelineTest, InitTimeoutTriggersEstopAndShutdown) {
   ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
 
   ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
-  // Never fire the backend's state-ready hook: state_received_ stays false,
-  // ticks idle in the init gate until init_timeout_ticks_ elapse.
+  // Never fire the backend's state-ready hook: the device never reports, so
+  // ticks idle in the startup gate until init_timeout_ticks_ elapse.
 
   ASSERT_TRUE(WaitFor([&] { return ControllerLifecycleTestAccess::IsEstopped(*node); }, 5000ms));
-  EXPECT_EQ("init_timeout", ControllerLifecycleTestAccess::GetEstopReason(*node));
+  // The reason names the device that held the gate shut. It was the bare
+  // "init_timeout" while readiness was a single global flag — there was no
+  // device to name. Per-device readiness (issue #198 §1) makes the offender
+  // identifiable, and an E-STOP that says which device is silent is the point
+  // of tracking them separately; a fleet operator reading only "init_timeout"
+  // has to guess. Deliberate contract change, not a weakened assertion.
+  EXPECT_EQ("arm_init_timeout", ControllerLifecycleTestAccess::GetEstopReason(*node));
   EXPECT_TRUE(WaitFor([] { return !rclcpp::ok(); }, 2000ms));
 }
 

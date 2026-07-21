@@ -181,11 +181,11 @@ void RtControllerNode::ResetControllerBringUpState() {
   slot_to_group_name_.clear();
   slot_to_sensor_layout_.clear();
 
-  // Deliberately NOT reset here: device_timeouts_ and state_received_. Both are
-  // written only after the last ResetControllerBringUpState() call site in
-  // DeclareAndLoadParameters(), so no refused attempt can leave them dirty, and
+  // Deliberately NOT reset here: device_timeouts_. It is written only after
+  // the last ResetControllerBringUpState() call site in
+  // DeclareAndLoadParameters(), so no refused attempt can leave it dirty, and
   // a retry after a SUCCESSFUL configure must pass through on_cleanup (which
-  // does clear them). Adding them would defend a state that cannot occur.
+  // does clear it). Adding it would defend a state that cannot occur.
 }
 
 bool RtControllerNode::DeclareAndLoadParameters() {
@@ -228,6 +228,13 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // ── Device timeouts (per-device, indexed by group name) ──────────────────
   safe_declare("device_timeout_names", rclcpp::ParameterValue(std::vector<std::string>{}));
   safe_declare("device_timeout_values", rclcpp::ParameterValue(std::vector<double>{}));
+  // Timeout applied to a configured device group that device_timeout_names
+  // does not mention. Every device group is watched (issue #198 §1), so this
+  // is what an unlisted group gets — deliberately generous, because a value
+  // nobody chose should not be the reason a robot E-STOPs. Matches the
+  // tightest value the shipped robot configs use, so an omission is caught by
+  // the WARN it emits rather than by a surprise trip.
+  safe_declare("device_timeout_default_ms", rclcpp::ParameterValue(1000.0));
 
   control_rate_ = get_parameter("control_rate").as_double();
   if (!(control_rate_ >= rtc::kMinControlRateHz && control_rate_ <= rtc::kMaxControlRateHz)) {
@@ -763,44 +770,76 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                 max_sessions);
   }
 
-  // ── Parse device_timeouts & match to active topic groups ─────────────────
+  // ── Device liveness entries: one per configured device group ─────────────
+  //
+  // The set is driven by group_slot_map_ (the groups that get a backend), not
+  // by device_timeout_names. That list used to decide *which devices are
+  // watched at all*, so omitting a name silently exempted that device from
+  // both the watchdog and the startup gate (issue #198 §1). It now supplies
+  // the timeout *value* for a group; a group it does not mention falls back to
+  // device_timeout_default_ms and is still watched.
   {
     const auto timeout_names = get_parameter("device_timeout_names").as_string_array();
     const auto timeout_values = get_parameter("device_timeout_values").as_double_array();
-    for (std::size_t i = 0; i < timeout_names.size() && i < timeout_values.size(); ++i) {
-      const auto& name = timeout_names[i];
-      if (!active_groups_.contains(name)) {
-        RCLCPP_WARN(get_logger(), "Device timeout '%s' has no matching topic group — ignored",
-                    name.c_str());
+    const double default_timeout_ms = get_parameter("device_timeout_default_ms").as_double();
+
+    std::unordered_map<std::string, double> timeout_by_group;
+    for (std::size_t i = 0; i < timeout_names.size(); ++i) {
+      if (i >= timeout_values.size()) {
+        RCLCPP_WARN(get_logger(),
+                    "device_timeout_names['%s'] has no matching value — using %.0f ms",
+                    timeout_names[i].c_str(), default_timeout_ms);
         continue;
       }
+      if (!group_slot_map_.contains(timeout_names[i])) {
+        RCLCPP_WARN(get_logger(), "Device timeout '%s' has no matching device group — ignored",
+                    timeout_names[i].c_str());
+        continue;
+      }
+      timeout_by_group[timeout_names[i]] = timeout_values[i];
+    }
+
+    for (const auto& [group_name, slot] : group_slot_map_) {
       // Phase 4: state lane is owned by DeviceBackend — resolved from
-      // devices.<group>.backend.state_topic (DeviceNameConfig::backend).
+      // devices.<group>.backend.state_topic (DeviceNameConfig::backend). A
+      // group with no backend block still gets an entry: its backend will fail
+      // to come up, and the startup gate must refuse rather than quietly drive
+      // a device that has no driver.
       std::string state_topic;
-      if (auto it = device_name_configs_.find(name);
+      if (auto it = device_name_configs_.find(group_name);
           it != device_name_configs_.end() && it->second.backend.has_value()) {
         state_topic = it->second.backend->state_topic;
       }
-      if (state_topic.empty()) {
+
+      const auto it = timeout_by_group.find(group_name);
+      const double timeout_ms = it != timeout_by_group.end() ? it->second : default_timeout_ms;
+      if (it == timeout_by_group.end()) {
         RCLCPP_WARN(get_logger(),
-                    "Device timeout '%s' has no devices.%s.backend.state_topic — ignored",
-                    name.c_str(), name.c_str());
-        continue;
+                    "Device group '%s' is not listed in device_timeout_names — watching it at the "
+                    "default %.0f ms",
+                    group_name.c_str(), default_timeout_ms);
       }
+
       DeviceTimeoutEntry entry;
-      entry.group_name = name;
+      entry.group_name = group_name;
       entry.state_topic = state_topic;
-      entry.timeout = std::chrono::milliseconds(static_cast<int>(timeout_values[i]));
+      entry.slot = slot;
+      entry.timeout = std::chrono::milliseconds(static_cast<int>(timeout_ms));
       device_timeouts_.push_back(std::move(entry));
-      RCLCPP_INFO(get_logger(), "Device timeout: '%s' → watching '%s' (%dms)", name.c_str(),
-                  state_topic.c_str(), static_cast<int>(timeout_values[i]));
+      RCLCPP_INFO(get_logger(), "Device liveness: '%s' (slot %d) → watching '%s' (%dms)",
+                  group_name.c_str(), slot,
+                  state_topic.empty() ? "<no backend state topic>" : state_topic.c_str(),
+                  static_cast<int>(timeout_ms));
     }
   }
 
-  // Skip init wait if no device timeouts configured
+  // No device groups at all (e.g. a controller that owns no devices) — there
+  // is nothing to wait for, and FirstUnreadyDevice() opens the gate on the
+  // first tick. This is the ONLY remaining path that skips the init wait; it
+  // used to also fire whenever device_timeout_names was empty, which turned a
+  // missing YAML line into "start immediately, watch nothing".
   if (device_timeouts_.empty()) {
-    state_received_.store(true, std::memory_order_release);
-    RCLCPP_INFO(get_logger(), "No device timeouts configured — skipping init wait");
+    RCLCPP_INFO(get_logger(), "No device groups configured — no startup readiness gate");
   }
 
   // Resolve initial_controller parameter → controller index.
