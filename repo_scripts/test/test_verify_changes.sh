@@ -30,6 +30,7 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HOOK="$REPO_ROOT/.claude/hooks/verify-changes.sh"
 PASS=0
 FAIL=0
+SKIP=0
 
 fail() {
   printf '  FAIL: %s\n' "$1" >&2
@@ -39,6 +40,16 @@ pass() {
   printf '  ok: %s\n' "$1"
   PASS=$((PASS + 1))
 }
+skip() {
+  printf '  skip: %s\n' "$1"
+  SKIP=$((SKIP + 1))
+}
+
+# The pure-format fast path needs a clang-format the hook can resolve (a system
+# binary or uvx). Without one the hook fails closed (PURE_FORMAT=0), so the cases
+# that exercise the fast path would assert the wrong thing; declare the
+# dependency and skip them loudly rather than emitting a spurious failure.
+have_formatter() { command -v clang-format >/dev/null 2>&1 || command -v uvx >/dev/null 2>&1; }
 
 # Build a minimal repo that looks enough like this one for the hook's package
 # discovery (package.xml at a directory root) to work.
@@ -99,6 +110,20 @@ $(sed 's/^/      /' <<<"$haystack")"
   fi
 }
 
+# The stderr-substring assertions above cannot tell a blocked turn (exit 2) from
+# a clean one (exit 0): a hook that wrongly exit-2s on an unrelated path while
+# not emitting the checked needle would slip past every expect_not_contains. So
+# the block/no-block decision -- the hook's actual contract -- is asserted here.
+# Capture `rc=$?` immediately after `out=$(run_hook ...)`.
+expect_exit() {
+  local name="$1" got="$2" want="$3"
+  if [ "$got" -eq "$want" ]; then
+    pass "$name"
+  else
+    fail "$name -- expected exit $want, got $got"
+  fi
+}
+
 echo "verify-changes.sh end-to-end routing"
 
 # 1. A CMakeLists-only change must reach the package.xml co-update gate.
@@ -106,20 +131,25 @@ echo "verify-changes.sh end-to-end routing"
 #    triggers the gate was also the change that never got there.
 dir=$(make_fixture)
 sed -i 's/^project(rtc_demo)/project(rtc_demo)\nfind_package(fmt REQUIRED)/' "$dir/rtc_demo/CMakeLists.txt"
-out=$(run_hook "$dir")
+out=$(run_hook "$dir"); rc=$?
 expect_contains "CMake-only change reaches the find_package co-update gate" "$out" "find_package(fmt)"
+expect_exit "missing package.xml dep blocks the turn" "$rc" 2
 rm -rf "$dir"
 
 # 2. Formatting churn alongside a CMake change must not be graded "pure
 #    format". is_pure_format() only inspects source files, so a commit whose
 #    source edits are cosmetic used to skip Phase 1 wholesale, taking the
 #    unrelated CMake gate down with it.
-dir=$(make_fixture)
-printf 'int existing()  {  return 0;  }\n' >"$dir/rtc_demo/src/existing.cpp"
-sed -i 's/^project(rtc_demo)/project(rtc_demo)\nfind_package(fmt REQUIRED)/' "$dir/rtc_demo/CMakeLists.txt"
-out=$(run_hook "$dir")
-expect_contains "reformat + CMake change still runs the co-update gate" "$out" "find_package(fmt)"
-rm -rf "$dir"
+if have_formatter; then
+  dir=$(make_fixture)
+  printf 'int existing()  {  return 0;  }\n' >"$dir/rtc_demo/src/existing.cpp"
+  sed -i 's/^project(rtc_demo)/project(rtc_demo)\nfind_package(fmt REQUIRED)/' "$dir/rtc_demo/CMakeLists.txt"
+  out=$(run_hook "$dir")
+  expect_contains "reformat + CMake change still runs the co-update gate" "$out" "find_package(fmt)"
+  rm -rf "$dir"
+else
+  skip "reformat + CMake change still runs the co-update gate (no clang-format/uvx)"
+fi
 
 # 3. An untracked new .cpp must be seen. `git diff HEAD` cannot see it, and an
 #    agent that writes a file without staging it is the normal case, so the
@@ -165,13 +195,17 @@ rm -rf "$dir"
 #    forcing PURE_FORMAT=0 with clang-format off PATH: identical output.)
 #    Phase 0 IS gated on it, so use ARCH-1: reflowing a line that mentions a
 #    robot must not be reported as newly introducing it.
-dir=$(make_fixture)
-printf 'int ur5e_thing()  {  return 0;  }\n' >"$dir/rtc_demo/src/existing.cpp"
-git -C "$dir" commit -qam "robot mention at HEAD"
-printf 'int ur5e_thing() {   return 0;   }\n' >"$dir/rtc_demo/src/existing.cpp"
-out=$(run_hook "$dir")
-expect_not_contains "pure formatting skips the ARCH grep" "$out" "ARCH-1"
-rm -rf "$dir"
+if have_formatter; then
+  dir=$(make_fixture)
+  printf 'int ur5e_thing()  {  return 0;  }\n' >"$dir/rtc_demo/src/existing.cpp"
+  git -C "$dir" commit -qam "robot mention at HEAD"
+  printf 'int ur5e_thing() {   return 0;   }\n' >"$dir/rtc_demo/src/existing.cpp"
+  out=$(run_hook "$dir")
+  expect_not_contains "pure formatting skips the ARCH grep" "$out" "ARCH-1"
+  rm -rf "$dir"
+else
+  skip "pure formatting skips the ARCH grep (no clang-format/uvx)"
+fi
 
 # 7b. ...and the control: the same file, changed for real, must still be
 #     screened. Without this pair, 7 could pass by the grep being broken.
@@ -185,16 +219,20 @@ rm -rf "$dir"
 # 8. ARCH-7: a new executable in an rtc_* package is reported.
 dir=$(make_fixture)
 printf 'add_executable(rtc_demo_node src/existing.cpp)\n' >>"$dir/rtc_demo/CMakeLists.txt"
-out=$(run_hook "$dir")
+out=$(run_hook "$dir"); rc=$?
 expect_contains "ARCH-7 catches a new rtc_* executable" "$out" "ARCH-7"
+expect_exit "an ARCH-7 violation blocks the turn" "$rc" 2
 rm -rf "$dir"
 
-# 9. ...but an explicitly exempt target (agnostic node / example) is not, or
-#    the documented exceptions would be unusable.
+# 9. ...but a target carrying the same-line ARCH-7-exempt marker is not. The
+#    name deliberately is NOT example_-prefixed: otherwise the name rule would
+#    exempt it first and this would silently stop testing the marker at all
+#    (case 18 covers the name form; case 17 the preceding-line form).
 dir=$(make_fixture)
-printf 'add_executable(example_demo src/existing.cpp)  # ARCH-7-exempt: example\n' >>"$dir/rtc_demo/CMakeLists.txt"
-out=$(run_hook "$dir")
-expect_not_contains "ARCH-7 respects the exempt marker" "$out" "ARCH-7"
+printf 'add_executable(agnostic_demo src/existing.cpp)  # ARCH-7-exempt: standalone tool\n' >>"$dir/rtc_demo/CMakeLists.txt"
+out=$(run_hook "$dir"); rc=$?
+expect_not_contains "ARCH-7 respects the same-line exempt marker" "$out" "ARCH-7"
+expect_exit "same-line exempt marker does not block" "$rc" 0
 rm -rf "$dir"
 
 # 10. ARCH-5 over a multi-line ament_target_dependencies(). The single-line
@@ -323,13 +361,21 @@ expect_not_contains "multi-document YAML is accepted" "$out" "YAML parse failure
 rm -rf "$dir"
 
 # 22. Interpreter noise on stderr is not a parse failure. The gate used to key
-#     on "stderr is non-empty", so a ResourceWarning blocked the turn.
+#     on "stderr is non-empty", so any startup warning blocked the turn; it now
+#     keys on the interpreter EXIT STATUS. A valid YAML under PYTHONDEVMODE emits
+#     nothing, so that fixture pinned nothing (the old buggy gate passed it too).
+#     Inject *real* stderr into every python3 the hook spawns via a
+#     usercustomize.py on PYTHONPATH, while the YAML stays valid: the old
+#     stderr-keyed gate reports a parse failure here, the exit-status gate does not.
 dir=$(make_fixture)
+noise=$(mktemp -d)
+printf 'import sys; sys.stderr.write("simulated startup ResourceWarning\\n")\n' >"$noise/usercustomize.py"
 printf 'a: 1\n' >"$dir/rtc_demo/config/ok.yaml"
-out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_SKIP_BUILD=1 PYTHONDEVMODE=1 \
-        bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_SKIP_BUILD=1 PYTHONPATH="$noise" \
+        bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
 expect_not_contains "an interpreter warning is not a parse failure" "$out" "YAML parse failures"
-rm -rf "$dir"
+expect_exit "interpreter stderr noise does not block a valid YAML" "$rc" 0
+rm -rf "$dir" "$noise"
 
 # 23. Missing PyYAML must fail OPEN, like clang-format and shellcheck. Failing
 #     closed wedged every turn touching a YAML with no in-band recovery.
@@ -351,8 +397,9 @@ dir=$(make_fixture)
 printf '# docs\n\nSee [missing](./nope.md).\n' >"$dir/agent_docs/notes.md"
 git -C "$dir" commit -qam "pre-existing broken link"
 printf '\nAn unrelated new sentence.\n' >>"$dir/agent_docs/notes.md"
-out=$(run_hook "$dir")
+out=$(run_hook "$dir"); rc=$?
 expect_not_contains "a pre-existing doc defect on an untouched line does not block" "$out" "nope.md"
+expect_exit "a pre-existing untouched-line doc defect does not block the turn" "$rc" 0
 rm -rf "$dir"
 
 # 25. ...but a link the change itself adds still does.
@@ -360,15 +407,26 @@ dir=$(make_fixture)
 printf '# docs\n\nSee [missing](./nope.md).\n' >"$dir/agent_docs/notes.md"
 git -C "$dir" commit -qam "pre-existing broken link"
 printf '\nSee [also-missing](./gone.md).\n' >>"$dir/agent_docs/notes.md"
-out=$(run_hook "$dir")
+out=$(run_hook "$dir"); rc=$?
 expect_contains "a newly added broken link still blocks" "$out" "gone.md"
+expect_exit "a newly added broken link blocks the turn" "$rc" 2
 rm -rf "$dir"
 
-# 26. A deleted doc must not crash the validator or block on its absence.
+# 26. A deleted doc must not crash the validator or block on its absence. The
+#     hook drops it via `[ -f ]` before the validator runs, so that half only
+#     proves the hook exits clean. The validator's own skip-a-missing-target
+#     path (which the hook relies on) is asserted directly below -- otherwise
+#     removing that guard would regress silently, the fixture staying green.
 dir=$(make_fixture)
 git -C "$dir" rm -q "agent_docs/notes.md"
-out=$(run_hook "$dir")
+out=$(run_hook "$dir"); rc=$?
 expect_not_contains "a deleted doc is not an error" "$out" "Traceback"
+expect_exit "a deleted doc does not block the turn" "$rc" 0
+vrc=0
+vout=$( cd "$dir" && python3 "$REPO_ROOT/repo_scripts/scripts/validate_docs.py" \
+          --files agent_docs/notes.md 2>&1 ) || vrc=$?
+expect_exit "validate_docs skips a missing --files target instead of crashing" "$vrc" 0
+expect_not_contains "validate_docs does not traceback on a missing target" "$vout" "Traceback"
 rm -rf "$dir"
 
 # --- Filenames ---------------------------------------------------------------
@@ -382,5 +440,44 @@ out=$(run_hook "$dir")
 expect_contains "a spaced filename is reported intact" "$out" "my file.cpp"
 rm -rf "$dir"
 
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+# --- Fail-closed / routing regressions -------------------------------------
+
+# 28. A formatter that emits no output (uvx cold/offline cache, transient error)
+#     must NOT let a change be graded pure-format. A stub clang-format that exits
+#     non-zero with empty stdout is put first on PATH; the old code diffed two
+#     empty process substitutions, got exit 0, and skipped Phase 0. Empty output
+#     is "unverifiable", not "clean" -- so a robot-name reformat must still fire
+#     ARCH-1 (fail closed).
+dir=$(make_fixture)
+stub=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' >"$stub/clang-format"
+chmod +x "$stub/clang-format"
+printf 'int ur5e_thing()  {  return 0;  }\n' >"$dir/rtc_demo/src/existing.cpp"
+git -C "$dir" commit -qam "robot mention at HEAD"
+printf 'int ur5e_thing() {   return 0;   }\n' >"$dir/rtc_demo/src/existing.cpp"
+out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_SKIP_BUILD=1 PATH="$stub:$PATH" \
+        bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null )
+expect_contains "a failing formatter is not treated as pure-format (fails closed)" "$out" "ARCH-1"
+rm -rf "$dir" "$stub"
+
+# 29. An untracked module in the ament_python layout (<pkg>/<pkg>/) must be
+#     BUILT. The src|include-only routing missed it, so a brand-new Python
+#     module was ARCH-grepped and then never compiled or tested.
+dir=$(make_fixture)
+mkdir -p "$dir/rtc_demo/rtc_demo"
+printf 'def foo():\n    return 1\n' >"$dir/rtc_demo/rtc_demo/foo.py"
+out=$(run_hook "$dir")
+expect_contains "untracked ament_python module is routed to a build" "$out" "BUILD_PKGS=[rtc_demo]"
+rm -rf "$dir"
+
+# 30. The new-file CMakeLists check matches whole filenames, not substrings: an
+#     unlisted new .cpp whose basename is a suffix of a listed one (isting.cpp
+#     inside existing.cpp) must still be flagged, or the omission slips through.
+dir=$(make_fixture)
+printf 'int isting() { return 7; }\n' >"$dir/rtc_demo/src/isting.cpp"
+out=$(run_hook "$dir")
+expect_contains "an unlisted new .cpp is flagged even when its name is a substring of a listed one" "$out" "isting.cpp not found"
+rm -rf "$dir"
+
+printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

@@ -174,8 +174,15 @@ fi
 # HEAD blob; an untracked note, probe script, or log anywhere else is not.
 CHANGED_SRC_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '\.(cpp|hpp|h|cc|py)$' || true)
 CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
-CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" \
-  | grep -E '^[A-Za-z0-9_.-]+/(src|include)/.*\.(cpp|hpp|h|cc|py)$' || true)
+# Untracked source that belongs to a package, so it is built rather than treated
+# as scratch. Real source lives under <pkg>/src/ or <pkg>/include/ (ament_cmake)
+# OR under <pkg>/<pkg>/ (ament_python packages -- rtc_tools, rtc_digital_twin --
+# keep their modules in a same-named subdir, which the src|include-only regex
+# missed, so a brand-new untracked module was ARCH-grepped but never built).
+# A backreference is not portable across grep flavours, so match with awk.
+CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" | awk -F/ '
+  NF >= 3 && $NF ~ /\.(cpp|hpp|h|cc|py)$/ && ($2 == "src" || $2 == "include" || $2 == $1)' \
+  || true)
 CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRACKED" \
   | grep -v '^[[:space:]]*$' | sort -u || true)
 
@@ -246,27 +253,35 @@ is_pure_format() {
     return 1
   fi
 
-  local f
+  # Capture both formatted sides rather than diffing process substitutions.
+  # A formatter that fails (uvx cannot provision the pinned clang-format on a
+  # cold/offline cache, a transient error) emits NOTHING to stdout under
+  # 2>/dev/null; `diff <(empty) <(empty)` then exits 0 and every modified file
+  # reads as "cosmetic", silently skipping Phase 0/1 -- the exact fail-OPEN this
+  # gate must not have. A real source file never formats to empty, so an empty
+  # working-tree result means "cannot prove pure-format" -> fail CLOSED.
+  local f head_fmt work_fmt
   for f in $CHANGED_SRC; do
     [ -f "$f" ] || return 1
     case "$f" in
       *.cpp|*.hpp|*.h|*.cc)
         # Round-trip both versions through clang-format with $f as the
         # filename hint so .clang-format / file-type rules apply.
-        diff <(git show "HEAD:$f" 2>/dev/null \
-                 | "${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" 2>/dev/null) \
-             <("${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" < "$f" 2>/dev/null) \
-             >/dev/null 2>&1 || return 1
+        head_fmt=$(git show "HEAD:$f" 2>/dev/null \
+                     | "${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" 2>/dev/null)
+        work_fmt=$("${CLANG_FORMAT_CMD[@]}" --assume-filename="$f" < "$f" 2>/dev/null)
         ;;
       *.py)
         [ -n "$RUFF_BIN" ] || return 1
-        diff <(git show "HEAD:$f" 2>/dev/null \
-                 | "$RUFF_BIN" format --stdin-filename="$f" - 2>/dev/null) \
-             <("$RUFF_BIN" format --stdin-filename="$f" - < "$f" 2>/dev/null) \
-             >/dev/null 2>&1 || return 1
+        head_fmt=$(git show "HEAD:$f" 2>/dev/null \
+                     | "$RUFF_BIN" format --stdin-filename="$f" - 2>/dev/null)
+        work_fmt=$("$RUFF_BIN" format --stdin-filename="$f" - < "$f" 2>/dev/null)
         ;;
       *) return 1 ;;
     esac
+    # Empty output == formatter failure == not provably pure-format.
+    [ -n "$work_fmt" ] || return 1
+    [ "$head_fmt" = "$work_fmt" ] || return 1
   done
   return 0
 }
@@ -562,6 +577,11 @@ fi
 # READMEs, and CMake/package.xml co-update triggers (new .cpp file, new
 # find_package) cannot fire because pure-format excludes file adds.
 if [ "$PURE_FORMAT" -eq 0 ]; then
+# Hoisted out of the per-package loop: these two git queries are repo-wide and
+# identical on every iteration, so computing them once and re-filtering by
+# package below saves one `git diff` spawn per changed package each turn.
+STRUCT_AD=$(git diff --diff-filter=AD --name-only HEAD 2>/dev/null || true)
+ADDED_A=$(git diff --diff-filter=A --name-only HEAD 2>/dev/null || true)
 for pkg_dir in $CHANGED_PKGS; do
   # README.md co-update -- NON-BLOCKING checklist, and only for public-surface
   # changes. A src/-only edit (internal refactor, bug fix, private-impl change)
@@ -570,7 +590,7 @@ for pkg_dir in $CHANGED_PKGS; do
   # behavior/usage: a public header (include/), launch/ or config/, a source
   # file add/delete (structural), or package.xml (deps/exec surface).
   PKG_PUBLIC=$(echo "$CHANGED" | grep -E "^${pkg_dir}/(include|launch|config)/" || true)
-  PKG_STRUCT=$(git diff --diff-filter=AD --name-only HEAD 2>/dev/null \
+  PKG_STRUCT=$(echo "$STRUCT_AD" \
                  | grep -E "^${pkg_dir}/(src|include)/.*\.(cpp|hpp|h|cc|py)$" || true)
   PKG_PKGXML=$(echo "$CHANGED" | grep -E "^${pkg_dir}/package.xml$" || true)
   if [ -n "$PKG_PUBLIC" ] || [ -n "$PKG_STRUCT" ] || [ -n "$PKG_PKGXML" ]; then
@@ -582,14 +602,18 @@ for pkg_dir in $CHANGED_PKGS; do
   # New .cpp files possibly missing from CMakeLists.txt. Staged adds AND
   # untracked files: an agent that writes a source file without `git add`
   # is the common case, and that is exactly when this gate needs to fire.
-  NEW_SRC=$(printf '%s\n%s\n' \
-              "$(git diff --diff-filter=A --name-only HEAD 2>/dev/null || true)" \
-              "$CHANGED_UNTRACKED" \
+  NEW_SRC=$(printf '%s\n%s\n' "$ADDED_A" "$CHANGED_UNTRACKED" \
               | grep "^${pkg_dir}/src/.*\.cpp$" | grep -v test | sort -u || true)
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     bname=$(basename "$f")
-    if ! grep -qF "$bname" "${pkg_dir}/CMakeLists.txt" 2>/dev/null; then
+    # Match the basename as a whole path token, not a bare substring: an
+    # unanchored `grep -qF hand.cpp` matches inside `left_hand.cpp`, so a
+    # genuinely unlisted new file reads as registered whenever its name is a
+    # suffix of an existing entry. Require a non-filename char (or line edge) on
+    # both sides; escape regex metacharacters in the basename first.
+    bname_re=$(printf '%s' "$bname" | sed 's/[^A-Za-z0-9_]/\\&/g')
+    if ! grep -qE "(^|[^A-Za-z0-9_])${bname_re}([^A-Za-z0-9_]|$)" "${pkg_dir}/CMakeLists.txt" 2>/dev/null; then
       WARNINGS="${WARNINGS}  - ${pkg_dir}: new file ${bname} not found in CMakeLists.txt\n"
     fi
   done <<< "$NEW_SRC"

@@ -140,13 +140,16 @@ GREP_LONG_WITH_VALUE = {
     "--after-context",
     "--before-context",
     "--context",
-    "--color",
-    "--colour",
     "--binary-files",
     "--devices",
     "--directories",
     "--label",
 }
+# NOT here: `--color` / `--colour` take an *optional* argument in GNU grep, which
+# it only accepts when attached with `=`. Listing them as value-consuming made
+# `grep --color -E '<pat>'` swallow the following `-E` as the colour value, so the
+# flavor was misread as BRE and a dead ERE pattern (a literal `\|`) graded healthy
+# -- a silent false pass in the checker whose whole job is catching those.
 
 # GitHub heading slugs drop punctuation *except* `-` and `_`, and do not
 # collapse the whitespace that removal leaves behind.  ASCII ranges: C0/C1
@@ -257,21 +260,52 @@ def slugify(text: str) -> str:
     return slug.replace(" ", "-")
 
 
+SETEXT_UNDERLINE_RE = re.compile(r"^(=+|-+)\s*$")
+
+
+def _is_setext_heading(lines: list[tuple[str, bool]], idx: int) -> bool:
+    """Is line ``idx`` a setext heading (text underlined by ``===`` / ``---``)?
+
+    Deliberately conservative. The text must be a single non-blank line whose
+    predecessor is blank or the file start, and the underline a homogeneous run
+    of one character. That rejects the only ``-``/``=`` runs this corpus actually
+    contains -- YAML front-matter delimiters (whose text line follows another
+    non-blank key line) and table separators / thematic breaks -- rather than
+    inventing anchors for them, which is the same false-positive class this
+    validator exists to avoid.
+    """
+    raw, in_fence = lines[idx]
+    if in_fence or not raw.strip() or idx + 1 >= len(lines):
+        return False
+    if HEADING_RE.match(raw) or FENCE_RE.match(raw):
+        return False
+    nxt, nxt_fence = lines[idx + 1]
+    if nxt_fence or not SETEXT_UNDERLINE_RE.match(nxt.strip()):
+        return False
+    return idx == 0 or not lines[idx - 1][0].strip()
+
+
 def anchors_of(text: str) -> set[str]:
     """Every anchor a rendered markdown document exposes."""
     anchors: set[str] = set()
     counts: dict[str, int] = {}
-    for raw, in_fence in iter_lines_with_fence_state(text):
+
+    def add(base: str) -> None:
+        if not base:
+            return
+        n = counts.get(base, 0)
+        counts[base] = n + 1
+        anchors.add(base if n == 0 else f"{base}-{n}")
+
+    lines = list(iter_lines_with_fence_state(text))
+    for idx, (raw, in_fence) in enumerate(lines):
         if in_fence:
             continue
         m = HEADING_RE.match(raw)
         if m:
-            base = slugify(m.group(2))
-            if not base:
-                continue
-            n = counts.get(base, 0)
-            counts[base] = n + 1
-            anchors.add(base if n == 0 else f"{base}-{n}")
+            add(slugify(m.group(2)))
+        elif _is_setext_heading(lines, idx):
+            add(slugify(raw))
         for a in HTML_ANCHOR_RE.findall(raw):
             anchors.add(a)
     return anchors
@@ -440,6 +474,39 @@ POSIX_CLASSES = {
 POSIX_CLASS_RE = re.compile(r"\[:(" + "|".join(POSIX_CLASSES) + r"):\]")
 
 
+def _translate_bre(src: str) -> str:
+    """Rewrite a BRE into Python's (ERE-like) dialect, one token at a time.
+
+    In BRE the grouping/alternation metacharacters are the *escaped* forms
+    (``\\(`` ``\\)`` ``\\{`` ``\\}`` ``\\|``); the bare forms are literals -- the
+    exact inversion of Python's engine.  A char-by-char pass is the only correct
+    way to do this: the earlier blanket ``str.replace`` mis-handled an escaped
+    backslash directly before a paren/pipe (``\\\\(``), eating the second
+    backslash of the pair and silently dropping the literal backslash the
+    pattern was meant to match.
+    """
+    out: list[str] = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == "\\" and i + 1 < n:
+            nxt = src[i + 1]
+            if nxt in "(){}|":
+                out.append(nxt)  # BRE metachar -> Python metachar
+            elif nxt == "\\":
+                out.append("\\\\")  # literal backslash, kept intact
+            else:
+                out.append("\\" + nxt)  # other escape passes through (\. \b ...)
+            i += 2
+            continue
+        if c in "(){}|":
+            out.append("\\" + c)  # bare form is a literal in BRE
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def compile_pattern(flavor: str, pattern: str) -> tuple[re.Pattern | None, str | None]:
     """Translate an ERE/BRE pattern into Python's regex dialect and compile it.
 
@@ -455,12 +522,7 @@ def compile_pattern(flavor: str, pattern: str) -> tuple[re.Pattern | None, str |
         return re.compile(re.escape(pattern)), None
     src = POSIX_CLASS_RE.sub(lambda m: POSIX_CLASSES[m.group(1)], pattern)
     if flavor == "bre":
-        # BRE: `\(`/`\|` are metacharacters, bare `(`/`|` are literals.
-        placeholder = "\x00"
-        src = src.replace("(", placeholder + "(").replace(")", placeholder + ")")
-        src = src.replace("|", placeholder + "|")
-        src = re.sub(r"\\\x00([(|)])", r"\1", src)
-        src = src.replace(placeholder, "\\")
+        src = _translate_bre(src)
     try:
         return re.compile(src), None
     except re.error as exc:
@@ -792,6 +854,11 @@ def check_workflow(repo: Repo, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     for lineno, raw in enumerate(text.splitlines(), 1):
         for m in HOME_PATH_RE.finditer(raw):
+            # A workflow legitimately names the runner's home (/home/runner/work,
+            # caches, tool paths); that is someone else's fixed CI machine, not a
+            # leak of this user's home. Same carve-out check_markdown applies.
+            if m.group(0).startswith(CI_HOME_PREFIXES):
+                continue
             findings.append(
                 Finding(rel, lineno, "D3", f"machine-local absolute path '{m.group(0)}...'")
             )
@@ -1020,6 +1087,16 @@ SLUG_CASES: list[tuple[str, str]] = [
 
 DUP_HEADINGS = ("# A\n\n# A\n\n# A\n", ["a", "a-1", "a-2"])
 
+# Setext headings expose anchors too; the `---`/`===` runs that are NOT headings
+# (front-matter delimiters, table separators, thematic breaks) must stay silent.
+SETEXT_CASES: list[tuple[str, set[str]]] = [
+    ("Overview\n========\n", {"overview"}),
+    ("Sub Heading\n-----------\n", {"sub-heading"}),
+    ("---\ntitle: X\n---\n\n# Real\n", {"real"}),  # YAML front-matter is not a heading
+    ("| a | b |\n| --- | --- |\n", set()),  # table separator row
+    ("Some text.\n\n---\n", set()),  # thematic break after a blank line
+]
+
 BRE_EXEC_CASES: list[tuple[str, str, str, bool]] = [
     # (flavor, pattern, subject, should match)
     # The escaping is inverted between the two flavours, which is the whole
@@ -1030,6 +1107,13 @@ BRE_EXEC_CASES: list[tuple[str, str, str, bool]] = [
     ("ere", r"a\|b", "a|b", True),  # ERE: `\|` is a literal pipe
     ("ere", r"a\|b", "a", False),  # ...so it can never match "a" alone
     ("ere", "(a|b)c", "bc", True),
+    # An escaped backslash right before a paren/pipe is a LITERAL backslash
+    # followed by a literal paren/pipe, not a group. The old placeholder-swap
+    # translation dropped the backslash and matched a bare paren.
+    ("bre", r"\\(", r"\(", True),  # matches backslash-then-paren
+    ("bre", r"\\(", "(", False),  # must NOT match a bare paren
+    ("bre", r"\\|", r"\|", True),  # backslash-then-pipe, literal
+    ("bre", r"\\|", "x", False),  # not alternation, so "x" alone never matches
 ]
 
 
@@ -1195,6 +1279,11 @@ def self_test() -> int:
     if got_anchors != set(want_anchors):
         failures.append(f"duplicate headings -> {sorted(got_anchors)}, want {want_anchors}")
 
+    for stext, swant in SETEXT_CASES:
+        sgot = anchors_of(stext)
+        if sgot != swant:
+            failures.append(f"anchors_of({stext!r}) = {sorted(sgot)}, want {sorted(swant)}")
+
     for flavor, pattern, subject, should_match in BRE_EXEC_CASES:
         compiled, err = compile_pattern(flavor, pattern)
         if compiled is None:
@@ -1229,6 +1318,7 @@ def self_test() -> int:
         + len(SLUG_CASES)
         + len(BRE_EXEC_CASES)
         + len(PARKED_PATTERN_CASES)
+        + len(SETEXT_CASES)
         + 4
     )
     print(f"self-test: {total} fixtures passed")
@@ -1242,7 +1332,11 @@ def repo_root() -> Path:
         text=True,
         check=True,
     ).stdout.strip()
-    return Path(out)
+    # resolve() so that `Path(f).resolve().relative_to(repo.root)` in main() holds
+    # when a component of the workspace path is a symlink: git may report the
+    # symlink path while Path.resolve() canonicalises it, and the mismatch would
+    # reject a file that is genuinely inside the repo (ValueError -> exit 2).
+    return Path(out).resolve()
 
 
 def main(argv: list[str] | None = None) -> int:
