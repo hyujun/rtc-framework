@@ -34,6 +34,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The routing suite's YAML-parse case needs PyYAML importable. The hook
+      # itself fails OPEN without it (a missing tool must not wedge a turn), so
+      # a job without PyYAML would silently skip that gate and leave it untested
+      # here -- the one place it is supposed to be exercised.
+      - name: Install PyYAML
+        run: python3 -m pip install --disable-pip-version-check pyyaml
+
       # The checker's own fixtures run first and gate the corpus scan. A
       # detector for silent failures that is merely green on this repository
       # has proven nothing; it has to be green on inputs whose answer is known

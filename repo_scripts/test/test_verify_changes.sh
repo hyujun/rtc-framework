@@ -51,6 +51,14 @@ skip() {
 # dependency and skip them loudly rather than emitting a spurious failure.
 have_formatter() { command -v clang-format >/dev/null 2>&1 || command -v uvx >/dev/null 2>&1; }
 
+# The YAML parse gate fails OPEN when PyYAML is not importable (a missing tool
+# must not wedge every turn). That is correct hook behaviour, but it means the
+# one case needing a REAL parse failure cannot be exercised without PyYAML --
+# so declare the dependency and skip loudly rather than emit a spurious red on
+# a box (or a CI job) that never installed it. CI installs PyYAML precisely so
+# this gate is actually tested; see .github/workflows/docs-validate.yml.
+have_pyyaml() { python3 -c 'import yaml' >/dev/null 2>&1; }
+
 # Build a minimal repo that looks enough like this one for the hook's package
 # discovery (package.xml at a directory root) to work.
 make_fixture() {
@@ -168,12 +176,16 @@ expect_contains "docs-only change runs validate_docs" "$out" "nope.md"
 rm -rf "$dir"
 
 # 5. A malformed YAML config must be caught; config/ has no other gate at all.
-dir=$(make_fixture)
-printf 'a: [1, 2\nb: {\n' >"$dir/rtc_demo/config/broken.yaml"
-git -C "$dir" add -A
-out=$(run_hook "$dir")
-expect_contains "broken YAML is reported" "$out" "broken.yaml"
-rm -rf "$dir"
+if have_pyyaml; then
+  dir=$(make_fixture)
+  printf 'a: [1, 2\nb: {\n' >"$dir/rtc_demo/config/broken.yaml"
+  git -C "$dir" add -A
+  out=$(run_hook "$dir")
+  expect_contains "broken YAML is reported" "$out" "broken.yaml"
+  rm -rf "$dir"
+else
+  skip "broken YAML is reported (PyYAML not importable)"
+fi
 
 # 6. A non-ASCII filename must not vanish. git C-quotes such paths by default,
 #    which breaks every extension regex -- and a file that matches no filter is
@@ -354,11 +366,16 @@ rm -rf "$dir"
 # --- YAML gate ---------------------------------------------------------------
 
 # 21. A multi-document file is legal YAML; safe_load alone rejected it.
-dir=$(make_fixture)
-printf 'a: 1\n---\nb: 2\n' >"$dir/rtc_demo/config/multi.yaml"
-out=$(run_hook "$dir")
-expect_not_contains "multi-document YAML is accepted" "$out" "YAML parse failures"
-rm -rf "$dir"
+#     Vacuous when the gate is skipping (no PyYAML), so it needs PyYAML present.
+if have_pyyaml; then
+  dir=$(make_fixture)
+  printf 'a: 1\n---\nb: 2\n' >"$dir/rtc_demo/config/multi.yaml"
+  out=$(run_hook "$dir")
+  expect_not_contains "multi-document YAML is accepted" "$out" "YAML parse failures"
+  rm -rf "$dir"
+else
+  skip "multi-document YAML is accepted (PyYAML not importable)"
+fi
 
 # 22. Interpreter noise on stderr is not a parse failure. The gate used to key
 #     on "stderr is non-empty", so any startup warning blocked the turn; it now
@@ -367,15 +384,20 @@ rm -rf "$dir"
 #     Inject *real* stderr into every python3 the hook spawns via a
 #     usercustomize.py on PYTHONPATH, while the YAML stays valid: the old
 #     stderr-keyed gate reports a parse failure here, the exit-status gate does not.
-dir=$(make_fixture)
-noise=$(mktemp -d)
-printf 'import sys; sys.stderr.write("simulated startup ResourceWarning\\n")\n' >"$noise/usercustomize.py"
-printf 'a: 1\n' >"$dir/rtc_demo/config/ok.yaml"
-out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_SKIP_BUILD=1 PYTHONPATH="$noise" \
-        bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
-expect_not_contains "an interpreter warning is not a parse failure" "$out" "YAML parse failures"
-expect_exit "interpreter stderr noise does not block a valid YAML" "$rc" 0
-rm -rf "$dir" "$noise"
+#     Needs PyYAML present, or the gate skips before the exit-status path runs.
+if have_pyyaml; then
+  dir=$(make_fixture)
+  noise=$(mktemp -d)
+  printf 'import sys; sys.stderr.write("simulated startup ResourceWarning\\n")\n' >"$noise/usercustomize.py"
+  printf 'a: 1\n' >"$dir/rtc_demo/config/ok.yaml"
+  out=$( cd "$dir" && CLAUDE_PROJECT_DIR="$dir" RTC_VERIFY_SKIP_BUILD=1 PYTHONPATH="$noise" \
+          bash "$HOOK" <<<'{"stop_hook_active": false}' 2>&1 >/dev/null ); rc=$?
+  expect_not_contains "an interpreter warning is not a parse failure" "$out" "YAML parse failures"
+  expect_exit "interpreter stderr noise does not block a valid YAML" "$rc" 0
+  rm -rf "$dir" "$noise"
+else
+  skip "an interpreter warning is not a parse failure (PyYAML not importable)"
+fi
 
 # 23. Missing PyYAML must fail OPEN, like clang-format and shellcheck. Failing
 #     closed wedged every turn touching a YAML with no in-band recovery.
