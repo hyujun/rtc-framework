@@ -17,7 +17,7 @@
   - `q(s) = (1 − s) · q_open + s · q_close` 선형 보간
   - PI 출력은 관절 토크가 아니라 closing 진행도의 미분 `ds` → 위치 제어 하드웨어에서도 힘 제어 가능
 - **피드백**: fingertip force sensor 의 norm `f_raw[3]` → Bessel 4차 LPF → `f_measured`
-- **호스팅**: 500 Hz RT 루프에서 `Update(f_raw, dt)` 호출 ([demo_joint_controller.cpp:421](../../integrated_bringup/src/controllers/joint/controller.cpp#L421), [demo_task_controller.cpp:664](../../integrated_bringup/src/controllers/task/controller.cpp#L664))
+- **호스팅**: 500 Hz RT 루프에서 `Update(f_raw, dt)` 호출 ([joint/controller.cpp](../../integrated_bringup/src/controllers/joint/controller.cpp), [task/controller.cpp](../../integrated_bringup/src/controllers/task/controller.cpp) 의 `Compute()`)
 - **활성 범위**: `phase() != kIdle` 일 때만 hand trajectory 출력의 finger 관절을 덮어씀
 - **명령 인터페이스**: `CommandGrasp(target_force)` / `CommandRelease()` (cross-thread atomic flag)
 

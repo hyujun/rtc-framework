@@ -91,7 +91,7 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
 ### 방법 B — 터미널 직접 실행
 
 ```bash
-cd /home/junho/ros2_ws/rtc_ws
+cd ~/ros2_ws/rtc_ws
 source /opt/ros/${ROS_DISTRO}/setup.bash   # Humble 또는 Jazzy
 colcon build --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Debug \
@@ -176,7 +176,7 @@ ${workspaceFolder}/../../build/rtc_tsid/test_tsid_wqp
 먼저 터미널에서 노드를 정상적으로 실행합니다:
 
 ```bash
-cd /home/junho/ros2_ws/rtc_ws
+cd ~/ros2_ws/rtc_ws
 source /opt/ros/${ROS_DISTRO}/setup.bash && source install/setup.bash  # Humble 또는 Jazzy
 ros2 launch integrated_bringup robot_ur5e_p1a.launch.py
 ```

@@ -6,7 +6,7 @@
 - **탐지**: grep/test 명령 (가능한 경우)
 - **복구**: 올바른 방법
 
-근거는 git log 의 historical fix-commit + [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md). 절대 카운트·commit SHA·시점 의존 status (`현 baseline 0건`, `Phase X ✅`) 는 박제하지 않는다 (AP-DOC-1) — 패턴 자체가 핵심이고 측정값은 측정 시점에 의존한다.
+근거는 git log 의 historical fix-commit. 절대 카운트·commit SHA·시점 의존 status (`현 baseline 0건`, `Phase X ✅`) 는 박제하지 않는다 (AP-DOC-1) — 패턴 자체가 핵심이고 측정값은 측정 시점에 의존한다.
 
 ## RT Safety
 
@@ -56,7 +56,7 @@
 - **증상**: RT producer 가 `cv.notify_one` 시 내부 mutex 보유 → 우선순위 역전 + 비결정 wake latency. wait side 는 명시 mutex lock 보유 (RT-4 결합)
 - **원인**: producer-consumer 통지를 cv 로 구현. 직관적이나 RT 우선순위 보장 안 됨
 - **본 repo 사례**: `udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp` (`6405c76` 이전) 의 `event_mutex_ + event_cv_ + event_pending_ + staged_cmd_` 패턴. `SendCommandAndRequestStates` 의 RT producer 가 `lock_guard + notify_one`, `EventLoop` 가 `unique_lock + cv.wait_for`
-- **탐지**: `grep -nE '(std::condition_variable|\.notify_(one|all)\(|\.wait(|_for|_until)\()' <RT file>`
+- **탐지**: `grep -nE '(std::condition_variable|\.notify_(one|all)\(|\.wait(_for|_until)?\()' <RT file>`
 - **복구**:
   - **eventfd + non-blocking write** (`::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`, producer `::eventfd_write(fd, 1)`, consumer `::poll(&pfd, 1, timeout_ms)` + `::eventfd_read(fd, &drained)`) — CM publish_thread (`rtc_controller_manager/src/rt_controller_node.cpp:92-95`) + `UdpHandController` (post-`6405c76`) 가 표준 패턴
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
@@ -126,7 +126,7 @@
 ### AP-ARCH-5: Topic QoS depth ≠ 1 ([invariants.md](invariants.md) ARCH-6 위반)
 
 - **증상**: `create_publisher`/`create_subscription` 에 depth 10 (rclcpp 기본값) 또는 `SensorDataQoS()` (기본 depth 5) 를 무심코 사용 → stale 샘플 큐잉
-- **탐지**: `grep -rnE 'rclcpp::QoS[({][2-9]\|keep_last\([2-9]\|depth *= *[2-9]'` + 인자 없는 `SensorDataQoS()`
+- **탐지**: `grep -rnE 'rclcpp::QoS[({][2-9]|keep_last\([2-9]|depth *= *[2-9]'` + 인자 없는 `SensorDataQoS()`
 - **복구**: depth 를 1 로. reliability/durability 는 유지하고 depth 필드만 이동 (`SensorDataQoS().keep_last(1)`). 다중 샘플 누적이 정당하면 §Escalation E-1 로 예외 기록
 
 ## Process / Drift

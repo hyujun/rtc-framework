@@ -23,8 +23,7 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
   deps (e.g., python-only test, cppcheck lint).
 - `if: failure()` artifacts have 7-day retention (debug only). The deps cache
   and dep artifact use 1-day retention (cross-job same-run only).
-- ROS distro defaults to `jazzy` (single distro per
-  [`agent_docs/ci-rewrite-plan.md`](../../agent_docs/ci-rewrite-plan.md) D-3).
+- ROS distro defaults to `jazzy` (single distro).
 - `setup-rtc-env` pre-installs `ros2-apt-source` before `setup-ros` so that
   `setup-ros` skips its own unauthenticated `api.github.com` release lookup — that
   lookup silently yields an empty version under Actions IP rate limits and then

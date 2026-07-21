@@ -209,33 +209,41 @@ def check_file(path: Path, root: Path, heading_cache: dict[Path, set[str]]) -> l
             for m in LINK_RE.finditer(mask_code_spans(raw)):
                 findings.extend(_check_link(m, path, root, rel, lineno, heading_cache))
 
-            # --- D004: 문서에 박힌 raw 탐지 정규식 -------------------------
+            # --- D004: 표 셀에 박힌 탐지 정규식 ----------------------------
             # 근본 원인은 구조적이다 — 마크다운 표 셀은 이스케이프 없이 `|` 를
-            # 담을 수 없어 ERE 가 반드시 깨진다. 그러나 표 밖(`- **탐지**:` 불릿)
-            # 에서도 divergent copy 가 자란다: 같은 규칙의 패턴이 invariants.md 와
-            # anti-patterns.md 에 서로 다르게 존재한다. 그래서 위치를 가리지 않고
-            # 탐지 패턴 자체를 문서에서 추방한다 (issue #213 결정 3).
+            # 담을 수 없다. 표 안에 정규식을 두는 한 저자는 `\|` 를 쓸 수밖에 없고,
+            # ERE 에서 그건 리터럴 파이프라 alternation 이 통째로 죽는다. 위치를
+            # 옮기는 것 말고 고치는 방법이 없으므로 표 셀은 무조건 거부한다.
+            # 패턴은 fenced code block 으로 내려가고 거기서 D007 이 실행 검증한다.
             if rel.startswith(DETECTION_PATTERN_SCOPE):
+                in_table_cell = raw.lstrip().startswith("|")
                 for span in code_spans(raw):
                     if not re.search(r"\bgrep\b|\brg\b", span):
                         continue
                     # 인용부호로 감싼 패턴 인자가 있어야 '탐지 패턴' 이다. 이 게이트가
                     # 정당한 산문을 살려 준다 — `ps -eLf | grep <process> | wc -l`
                     # (셸 파이프라인), `grep -c <new_pattern>` (플레이스홀더),
-                    # `grep -l registerNodeType <dir>` (리터럴 검색) 은 자가검사
-                    # 게이트가 아니므로 hook 으로 옮길 대상이 아니다.
-                    if not re.search(r"""(['"]).*\1""", span):
+                    # `grep -l registerNodeType <dir>` (리터럴 검색).
+                    m_pat = QUOTED_ARG_RE.search(span)
+                    if not m_pat:
                         continue
-                    findings.append(
-                        Finding(
-                            "D004",
-                            rel,
-                            lineno,
-                            f"문서에 박힌 탐지 패턴 ({_broken_ere_reason(span)}): `{span}` — "
-                            "정규식 SSoT 는 .claude/hooks/verify-changes.sh 다. "
-                            "문서는 hook 의 검사명으로 인용만 할 것",
+                    if in_table_cell:
+                        findings.append(
+                            Finding(
+                                "D004",
+                                rel,
+                                lineno,
+                                f"표 셀의 탐지 패턴 `{span}` — 표 셀은 `|` 를 담을 수 없어 ERE 가 "
+                                "반드시 깨진다. fenced code block 으로 옮길 것 "
+                                "(ARCH 계열은 hook 검사명 인용으로 대체)",
+                            )
                         )
-                    )
+                        continue
+                    # 표 밖의 패턴(`- **탐지**:` 불릿 등)도 그냥 두면 조용히 깨진다 —
+                    # anti-patterns.md 의 사본들이 실제로 그랬다. 위치와 무관하게 린트한다.
+                    problem = lint_pattern(m_pat.group("pat"), _is_extended(span))
+                    if problem:
+                        findings.append(Finding("D007", rel, lineno, problem))
 
             # --- D006: 산문/코드스팬의 저장소 경로가 실재하는가 --------------
             # architecture.md 의 `integrated_bringup/support/owned_topics.cpp`
@@ -417,6 +425,95 @@ def _check_link(
     return findings
 
 
+DETECT_FENCE_RE = re.compile(r"^\s*```detect\s*$")
+QUOTED_ARG_RE = re.compile(r"""(['"])(?P<pat>.+?)\1""")
+
+
+def check_detect_blocks(path: Path, root: Path) -> list[Finding]:
+    """D007 — ```detect 블록의 패턴을 정적 린트 + 실제 실행으로 검증한다.
+
+    RT-1~10 은 hook 이 소유할 수 없다. RT 금지는 **정기 tick 경로에만** 구속되는데
+    (`on_configure` 의 `push_back`, test/init 코드는 면제) hook 은 파일 단위로만 볼 수
+    있어 blocking gate 로 만들면 정당한 코드를 막는다. 그래서 이 패턴들은 에이전트가
+    판단해 돌리는 보조 도구로 문서에 남는다 — 대신 두 번 다시 조용히 깨지지 않도록
+    여기서 강제한다 (issue #213 결정: 하이브리드).
+
+    두 가지 실패 유형을 모두 잡아야 한다:
+      * **exit 2 류** — 이중 백슬래시나 빈 alternation. 실행하면 드러난다.
+      * **exit 1 류** — ERE 안의 `\\|`. 문법은 성했으나 리터럴 파이프로 읽혀 영원히
+        미매치한다. 실행으로는 "위반 없음" 과 구분되지 않으므로 정적 린트가 필요하다.
+    """
+    rel = path.relative_to(root).as_posix()
+    findings: list[Finding] = []
+    in_block = False
+
+    for lineno, raw in enumerate(
+        path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+    ):
+        if DETECT_FENCE_RE.match(raw):
+            in_block = True
+            continue
+        if in_block and raw.strip().startswith("```"):
+            in_block = False
+            continue
+        if not in_block:
+            continue
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        m = QUOTED_ARG_RE.search(line)
+        if not m:
+            findings.append(
+                Finding(
+                    "D007",
+                    rel,
+                    lineno,
+                    f"detect 블록의 줄에 인용된 패턴 인자가 없다: `{line}`",
+                )
+            )
+            continue
+        problem = lint_pattern(m.group("pat"), _is_extended(line))
+        if problem:
+            findings.append(Finding("D007", rel, lineno, problem))
+
+    return findings
+
+
+def _is_extended(invocation: str) -> bool:
+    return bool(re.search(r"grep\s+-[a-zA-Z]*E|rg\b", invocation))
+
+
+def lint_pattern(pattern: str, extended: bool) -> str | None:
+    """탐지 정규식의 결함 사유. 성한 패턴은 None.
+
+    두 실패 유형을 모두 잡아야 한다 — 실행만으로는 절반을 놓친다:
+      * **exit 2 류** — 이중 백슬래시, 빈 alternation. 실행하면 드러난다.
+      * **exit 1 류** — ERE 안의 `\\|`. 문법은 성했으나 리터럴 파이프로 읽혀 영원히
+        미매치한다. 실행 결과가 "위반 없음" 과 똑같아서 정적 린트로만 잡힌다. 이게
+        이 저장소의 자가검사가 오랫동안 조용히 통과한 이유다.
+    """
+    if extended and r"\|" in pattern:
+        return (
+            f"ERE 패턴에 `\\|` 가 있다 — 리터럴 파이프로 읽혀 영원히 미매치한다 "
+            f"(`|` 로 쓸 것): `{pattern}`"
+        )
+    # 빈 alternation 판정 전에 이스케이프 시퀀스를 지운다. `malloc\(|\.push_back\(`
+    # 의 `\(` 는 리터럴 괄호지 그룹 여는 괄호가 아니다 — 그대로 보면 `(` 뒤에 `|`
+    # 가 온 것처럼 읽혀 성한 패턴을 빈 분기로 오보한다.
+    if re.search(r"\(\||\|\||\|\)", re.sub(r"\\.", "x", pattern)):
+        return f"빈 alternation 분기가 있다 — ugrep 은 hard error 다: `{pattern}`"
+
+    # 실행 검증: /dev/null 상대로 돌리면 유효한 패턴은 exit 1, 문법 오류는 exit 2.
+    rc = subprocess.run(
+        ["grep", "-E" if extended else "-e", pattern, "/dev/null"],
+        capture_output=True,
+    ).returncode
+    if rc >= 2:
+        return f"패턴이 실행되지 않는다 (grep exit {rc}): `{pattern}`"
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -432,6 +529,8 @@ def main() -> int:
     findings: list[Finding] = []
     for path in iter_files(root):
         findings.extend(check_file(path, root, heading_cache))
+        if path.suffix == ".md":
+            findings.extend(check_detect_blocks(path, root))
 
     if not findings:
         print("validate_docs: 결함 없음")

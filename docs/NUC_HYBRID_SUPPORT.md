@@ -1,6 +1,6 @@
 # NUC Hybrid CPU Support
 
-> **Status**: hybrid 식별 + slot 매핑 landed. Layout v4.1 이 `CpuTopology::physical_core_slots` 추상화 (P/E/LP-E asc) 를 통해 hybrid 분기를 우회 — 별도 `Make_NucHybrid_*` config 없이 모든 tier 가 P-core primary logical 에 자동 핀 ([RT_OPTIMIZATION.md:117](RT_OPTIMIZATION.md#L117)).
+> **Status**: hybrid 식별 + slot 매핑 landed. Layout v4.1 이 `CpuTopology::physical_core_slots` 추상화 (P/E/LP-E asc) 를 통해 hybrid 분기를 우회 — 별도 `Make_NucHybrid_*` config 없이 모든 tier 가 P-core primary logical 에 자동 핀 ([RT_OPTIMIZATION.md](RT_OPTIMIZATION.md)).
 >
 > **Entry points**:
 > - C++: [`rtc_base/include/rtc_base/threading/thread_utils.hpp`](../rtc_base/include/rtc_base/threading/thread_utils.hpp) (`SlotToLogicalCpu` — 슬롯→logical 변환) · [`rtc_base/include/rtc_base/threading/cpu_topology.hpp`](../rtc_base/include/rtc_base/threading/cpu_topology.hpp) (`DetectCpuTopology`, `ReadCpuVendorFamilyModel` — CPUID family/model fallback, `physical_core_slots`)

@@ -84,7 +84,7 @@ RT path logging 금지 규칙과 SPSC 우회 패턴은 [invariants.md](invariant
 - Push site 제약 (Q-ACTIVITY-GATING): controller 는 **`Compute()` 에서만** push 한다. parameter callback / BT bridge / 비-RT thread 에서 push 금지 — inactive controller 의 CSV 에 row 가 쌓이는 것을 방지
 - Timestamp (Q-TIME): 첫 numeric column 은 `state.t_relative_s` (CM RT loop 가 `t0 - log_start_time_` 으로 채움). controller 는 `chrono::*::now()` 호출 금지
 
-세부 결정 / 구현 phase 는 `~/.claude/plans/csv-logging-cleanup.md` (Phase C handoff) 참조.
+세부 결정 / 구현 phase 는 git log 의 csv-logging 정리 시리즈 참조 (private plan 은 완료 시 삭제되므로 영속 참조 대상이 아니다 — [handoff.md](handoff.md) §5).
 
 ## Documentation Requirements
 
