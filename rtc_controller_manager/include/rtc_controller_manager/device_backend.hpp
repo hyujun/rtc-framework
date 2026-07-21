@@ -166,10 +166,17 @@ class DeviceBackend {
   virtual void SetSensorLayout(const DeviceSensorLayout& /*layout*/) noexcept {}
 
   /// Callback fired by the backend on every fresh state arrival (joint /
-  /// motor / sensor lanes — all routed through the same hook). CM uses this
-  /// to refresh the E-STOP watchdog timestamp, set `state_received_`,
-  /// republish digital-twin joint states, and notify the sim-sync condvar.
-  /// Slot identity is supplied via lambda capture by the caller.
+  /// motor / sensor lanes — all routed through the same hook). Slot identity
+  /// is supplied via lambda capture by the caller.
+  ///
+  /// It runs on the callback group handed to Configure() — CM passes its
+  /// `cb_group_rt_callback_` (SCHED_FIFO 70), so this is the RT boundary and
+  /// CM's handler is mailbox-only: it raises a bit and writes an eventfd,
+  /// nothing more (issue #198 Phase 2). Backends must not assume the handler
+  /// does any work of its own; in particular liveness comes from
+  /// LastStateStamp() above, not from anything this callback records, so a
+  /// backend that fires the callback without first publishing its stamp
+  /// leaves CM's gate shut.
   ///
   /// Must be set before Configure(); default no-op for tests / fixtures that
   /// don't wire the hook.
