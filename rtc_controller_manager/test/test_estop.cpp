@@ -145,6 +145,24 @@ TEST_F(EstopTest, CheckTimeoutsExpiredTriggersEstop) {
   EXPECT_EQ("arm_timeout", ControllerLifecycleTestAccess::GetEstopReason(*node_));
 }
 
+TEST_F(EstopTest, CheckTimeoutsTruncatesOverlongGroupNameWithoutAllocating) {
+  // The reason used to be `group_name + "_timeout"` — the only heap allocation
+  // left on the RT path (issue #198 §4). It is now formatted into a fixed
+  // buffer, so an arbitrarily long group name must truncate rather than
+  // allocate or overflow. The prefix still identifies the device.
+  const std::string long_name(200, 'g');
+  const auto stale = std::chrono::steady_clock::now() - 1s;
+  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, long_name, 10ms, /*received=*/true,
+                                                  stale);
+
+  ControllerLifecycleTestAccess::CallCheckTimeouts(*node_);
+
+  ASSERT_TRUE(ControllerLifecycleTestAccess::IsEstopped(*node_));
+  const std::string reason = ControllerLifecycleTestAccess::GetEstopReason(*node_);
+  EXPECT_LT(reason.size(), long_name.size());
+  EXPECT_EQ(std::string::npos, reason.find_first_not_of('g'));
+}
+
 TEST_F(EstopTest, CheckTimeoutsIgnoresDeviceThatNeverReported) {
   // received=false → device is skipped even though last_update is stale.
   const auto stale = std::chrono::steady_clock::now() - 1s;
@@ -165,7 +183,8 @@ TEST_F(EstopTest, CheckTimeoutsFreshDeviceDoesNotTrip) {
 
 TEST_F(EstopTest, AllTimeoutDevicesReceivedReflectsReceivedFlags) {
   const auto now = std::chrono::steady_clock::now();
-  EXPECT_TRUE(ControllerLifecycleTestAccess::CallAllTimeoutDevicesReceived(*node_));  // empty → true
+  EXPECT_TRUE(
+      ControllerLifecycleTestAccess::CallAllTimeoutDevicesReceived(*node_));  // empty → true
 
   ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "arm", 100ms, /*received=*/true, now);
   EXPECT_TRUE(ControllerLifecycleTestAccess::CallAllTimeoutDevicesReceived(*node_));

@@ -245,6 +245,11 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       kMaxConsecutiveOverruns,
       static_cast<uint64_t>(std::lround(kOutputRejectEstopSeconds * control_rate_)));
 
+  // Rate-derived watchdog cadence, same reasoning as the threshold above:
+  // CheckTimeouts() owes a fixed kWatchdogCheckHz, not a fixed tick count.
+  watchdog_check_divisor_ = std::max<std::uint32_t>(
+      1, static_cast<std::uint32_t>(std::lround(control_rate_ / kWatchdogCheckHz)));
+
   // init_timeout_ticks_ is rate-dependent — recomputed here so that the
   // wall-clock window stays at `init_timeout_sec` regardless of the
   // configured loop rate.

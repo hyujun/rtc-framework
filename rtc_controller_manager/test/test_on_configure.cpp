@@ -171,6 +171,50 @@ TEST_F(OnConfigureTest, ConfigureOutOfRangeControlRateStillSucceeds) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// ── T4d: watchdog cadence is derived from control_rate, not a fixed divisor ──
+//
+// The device-timeout watchdog owes a rate-independent check frequency (issue
+// #198 §6). It used to run every 10th tick unconditionally, which is 50 Hz only
+// at the 500 Hz default: 10 Hz at the bottom of the supported range (up to
+// ~100 ms of extra detection latency) and 500 Hz at the top (needless hot-path
+// cost). The parameters below span the full supported range plus the
+// out-of-range floor case.
+
+class WatchdogCadenceTest : public OnConfigureTest, public ::testing::WithParamInterface<double> {};
+
+TEST_P(WatchdogCadenceTest, DivisorHoldsTheCheckRateAcrossTheSupportedRange) {
+  const double rate = GetParam();
+  auto node = MakeNode(rate);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  const auto divisor = ControllerLifecycleTestAccess::GetWatchdogCheckDivisor(*node);
+  const double check_hz = ControllerLifecycleTestAccess::WatchdogCheckHz();
+
+  // Floor: never zero, or the modulo in OnTick would divide by zero.
+  ASSERT_GE(divisor, 1U);
+
+  // Realised check rate stays at the contract, within one tick of rounding.
+  // The floor case (rate below the check rate) can only run every tick, so it
+  // is allowed to check *more* often than the contract — never less.
+  const double realised_hz = rate / static_cast<double>(divisor);
+  if (rate >= check_hz) {
+    EXPECT_NEAR(check_hz, realised_hz, check_hz * 0.05)
+        << "control_rate=" << rate << " divisor=" << divisor;
+  } else {
+    EXPECT_EQ(1U, divisor) << "control_rate=" << rate;
+  }
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+INSTANTIATE_TEST_SUITE_P(SupportedControlRates, WatchdogCadenceTest,
+                         ::testing::Values(10.0,    // below kMinControlRateHz → floor
+                                           100.0,   // kMinControlRateHz
+                                           500.0,   // kDefaultControlRateHz
+                                           2000.0,  //
+                                           5000.0   // kMaxControlRateHz
+                                           ));
+
 // ── T4b/T4c: Extended-URDF closure resolution reaches BOTH URDF branches ─────
 //    #14 — the closure-sidecar resolution used to be nested inside the top-level
 //    urdf.package/urdf.path branch, so a devices-fallback URDF with
