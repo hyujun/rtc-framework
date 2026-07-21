@@ -544,14 +544,101 @@ ur5e:
 }
 
 TEST(RTControllerInterfaceTest, GroupWithNeitherLaneThrows) {
-  // `subscibe:` — a misspelled lane key leaves a group map that parses clean
-  // and routes nothing. Same silent outcome, so it is refused too.
+  // A group map with no lane at all — every entry commented out, or a
+  // placeholder left behind. It routes nothing, so it is refused.
+  //
+  // This used to be pinned with a misspelled `subscibe:`, which now trips the
+  // group-key whitelist one check earlier (MisspelledLaneKeyNamesTheKey). An
+  // empty map is what still reaches this branch.
   const auto node = YAML::Load(R"(
+ur5e: {}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, MisspelledLaneKeyNamesTheKey) {
+  // The `!subscribe && !publish` guard only fires when *every* lane is
+  // misspelled, so the likely case — one typo next to one valid lane — parsed
+  // clean and dropped the whole target lane in silence. The whitelist refuses
+  // any non-lane key in the group map and names it, so the operator does not
+  // have to diff their file against the schema to find the typo.
+  const auto typo_beside_valid_lane = YAML::Load(R"(
+ur5e:
+  subscibe:
+    - {topic: /ur5e/target, role: target}
+  publish:
+    - {topic: transforms, role: robot_transforms}
+)");
+  try {
+    StubController::ParseTopicConfig(typo_beside_valid_lane);
+    FAIL() << "a misspelled lane key must throw even when another lane is valid";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("subscibe"), std::string::npos)
+        << "diagnostic must name the offending key: " << msg;
+  }
+
+  // The all-misspelled shape this test file pinned before the whitelist.
+  const auto typo_alone = YAML::Load(R"(
 ur5e:
   subscibe:
     - {topic: /ur5e/target, role: target}
 )");
+  EXPECT_THROW(StubController::ParseTopicConfig(typo_alone), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, EmptyLaneSequenceThrows) {
+  // `subscribe: []` satisfied every shape check — it is a sequence, and the
+  // group declares a lane, so the lane-less guard does not fire either — yet
+  // it produced a group that routes nothing. Worse than deaf: the empty group
+  // is filtered out of active_groups_/group_slot_map_ but NOT out of the slot
+  // mapping loop, where std::map::operator[] default-inserts slot 0, so the
+  // controller's device reads another device's backend.
+  const auto empty_lane = YAML::Load(R"(
+ur5e:
+  subscribe: []
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(empty_lane), std::runtime_error);
+
+  // Per-lane, not per-group: a declared lane must route something even when a
+  // sibling lane is populated.
+  const auto empty_lane_beside_valid = YAML::Load(R"(
+ur5e:
+  subscribe: []
+  publish:
+    - {topic: transforms, role: robot_transforms}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(empty_lane_beside_valid), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, NullValuedGroupThrows) {
+  // `ur5e:` with nothing under it — the shape a migration leaves behind when
+  // the lanes are commented out. It is neither a sequence (SequenceValuedGroup
+  // Throws) nor a map, so it fell through the `!IsMap()` skip that exists for
+  // scalar settings and vanished without a diagnostic. Scalars still skip;
+  // nothing else does.
+  const auto node = YAML::Load(R"(
+ur5e:
+hand:
+  subscribe:
+    - {topic: /hand/target, role: target}
+)");
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, NonMapTopicsSectionThrows) {
+  // One level above the group guards: LoadConfig gates on `cfg["topics"]`,
+  // which is true for a defined-but-null node, so a `topics:` whose body was
+  // commented out iterated zero keys and returned an empty config with every
+  // group-shape guard below bypassed and nothing logged.
+  const auto null_section = YAML::Load("topics:")["topics"];
+  EXPECT_THROW(StubController::ParseTopicConfig(null_section), std::runtime_error);
+
+  const auto scalar_section = YAML::Load("topics: ur5e")["topics"];
+  EXPECT_THROW(StubController::ParseTopicConfig(scalar_section), std::runtime_error);
+
+  const auto sequence_section = YAML::Load("topics: [ur5e, hand]")["topics"];
+  EXPECT_THROW(StubController::ParseTopicConfig(sequence_section), std::runtime_error);
 }
 
 TEST(RTControllerInterfaceTest, PublishOnlyFlatFormatGetsMigrationDiagnostic) {

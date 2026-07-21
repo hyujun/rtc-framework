@@ -83,15 +83,25 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
 // map). Skipping it silently brings the controller up with no target
 // subscription and no diagnostic, so issue #196 Phase 5 made it fail closed —
 // the throw propagates through LoadConfig into a configure failure (Phase 1).
-// Returns the lane node so the caller validates and uses the same handle —
-// keeping the guard adjacent to its use, so a future third lane cannot be
-// parsed without being checked.
-YAML::Node RequireSequenceIfPresent(const YAML::Node& group_node, const std::string& group_name,
-                                    const char* key) {
+// An empty sequence is refused for the same reason: `subscribe: []` satisfied
+// every shape check yet produced a lane that routes nothing, which is the
+// silence the shape checks exist to break. Returns the lane node so the caller
+// validates and uses the same handle — keeping the guard adjacent to its use,
+// so a future third lane cannot be parsed without being checked.
+YAML::Node RequireNonEmptySequenceIfPresent(const YAML::Node& group_node,
+                                            const std::string& group_name, const char* key) {
   const YAML::Node lane = group_node[key];
-  if (lane && !lane.IsSequence()) {
+  if (!lane) {
+    return lane;
+  }
+  if (!lane.IsSequence()) {
     throw std::runtime_error("Topic group '" + group_name + "': '" + std::string(key) +
                              "' must be a sequence of {topic, role} entries");
+  }
+  if (lane.size() == 0) {
+    throw std::runtime_error("Topic group '" + group_name + "': '" + std::string(key) +
+                             "' is an empty sequence — a declared lane must route at least one "
+                             "topic");
   }
   return lane;
 }
@@ -99,16 +109,31 @@ YAML::Node RequireSequenceIfPresent(const YAML::Node& group_node, const std::str
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
 void ParseDeviceTopicGroup(const YAML::Node& group_node, const std::string& group_name,
                            DeviceTopicGroup& out) {
-  const YAML::Node subscribe = RequireSequenceIfPresent(group_node, group_name, "subscribe");
-  const YAML::Node publish = RequireSequenceIfPresent(group_node, group_name, "publish");
+  // Only `subscribe` / `publish` are read below, so any other key in the group
+  // map is config that does nothing. The common case is a misspelling, and the
+  // `!subscribe && !publish` guard further down catches it only when *every*
+  // lane is misspelled — `{subscibe: [...], publish: [...]}` parsed clean and
+  // dropped the whole target lane in silence. Scoped to the group map on
+  // purpose: unknown keys inside a list *entry* stay ignored, which is a
+  // separate documented contract (ParseTopicConfigIgnoresUnknownEntryKeys).
+  for (const auto& kv : group_node) {
+    const auto key = kv.first.as<std::string>();
+    if (key != "subscribe" && key != "publish") {
+      throw std::runtime_error("Topic group '" + group_name + "': unknown key '" + key +
+                               "' — expected 'subscribe' or 'publish' (check the spelling)");
+    }
+  }
 
-  // A group map carrying neither lane is a misspelled key (`subscibe:`), not a
-  // configuration — it yields a group that exists but routes nothing, which is
-  // the same silently-deaf controller the sequence check above closes.
+  const YAML::Node subscribe =
+      RequireNonEmptySequenceIfPresent(group_node, group_name, "subscribe");
+  const YAML::Node publish = RequireNonEmptySequenceIfPresent(group_node, group_name, "publish");
+
+  // A group map carrying neither lane (`ur5e: {}`, or every lane commented
+  // out) is a group that exists but routes nothing — the same silently-deaf
+  // controller the shape checks above close.
   if (!subscribe && !publish) {
     throw std::runtime_error("Topic group '" + group_name +
-                             "' declares neither 'subscribe' nor 'publish' — check the key "
-                             "spelling");
+                             "' declares neither 'subscribe' nor 'publish'");
   }
 
   if (subscribe) {
@@ -291,6 +316,18 @@ RTControllerInterface::GetSharedModelBuilder() const noexcept {
 }
 
 TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_node) {
+  // The section itself must be a map of device groups. LoadConfig gates on
+  // `cfg["topics"]`, which is true for a defined-but-null node, so a `topics:`
+  // whose body was commented out (or written as a scalar / bare list) used to
+  // iterate zero keys and return an empty config — every group-shape guard
+  // below bypassed, no diagnostic. Omitting `topics:` entirely stays legal:
+  // that is a controller declaring no topics, not one declaring topics badly.
+  if (!topics_node.IsMap()) {
+    throw std::runtime_error(
+        "'topics:' must be a map of device groups (e.g. topics.ur5e / topics.hand) — "
+        "omit the section entirely if the controller declares no topics");
+  }
+
   // ── Detect deprecated flat format (topics.subscribe / topics.publish) ──
   // Group names are arbitrary strings, so a top-level key literally named
   // `subscribe` or `publish` is the flat format whatever its node type — the
@@ -321,8 +358,17 @@ TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_nod
                                "' must be a map with 'subscribe' / 'publish' keys, not a "
                                "sequence — is the 'subscribe:' line missing?");
     }
-    if (!it->second.IsMap()) {
+    if (it->second.IsScalar()) {
       continue;
+    }
+    // Anything left that is not a map is a null-valued key (`ur5e:` with an
+    // empty body, typically a lane commented out during a migration). The skip
+    // above is scoped to scalars on purpose — it exists so plain settings can
+    // share the section, and a null value is not a setting.
+    if (!it->second.IsMap()) {
+      throw std::runtime_error("Topic group '" + group_name +
+                               "' is empty — declare 'subscribe' / 'publish' under it, or "
+                               "remove the group");
     }
     ParseDeviceTopicGroup(it->second, group_name, cfg[group_name]);
   }

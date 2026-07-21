@@ -342,18 +342,24 @@ my_controller:
 
 > 폐기된 flat format (`topics.subscribe` / `topics.publish` 를 직접 사용)은 마이그레이션 에러를 발생시킵니다.
 
-**형식 검증은 fail-closed 입니다 (issue #196 Phase 5).** 원칙은 하나 — *"group 은 존재하는데 아무것도 라우팅하지 않는 상태"* 로는 기동할 수 없다. Phase 5 이전에는 아래 네 가지가 전부 조용히 건너뛰어져 컨트롤러가 target 구독 0개로, 아무 진단 없이 올라왔습니다. 이제 `ParseTopicConfig` 가 throw 하고 Phase 1 의 fail-closed lifecycle 이 이를 configure 실패로 잇습니다.
+**형식 검증은 fail-closed 입니다 (issue #196 Phase 5).** 원칙은 하나 — *"선언은 돼 있는데 아무것도 라우팅하지 않는 상태"* 로는 기동할 수 없다. 아래 형태들은 전부 조용히 건너뛰어져 컨트롤러가 target 구독 0개로, 아무 진단 없이 올라오던 것들입니다. 이제 `ParseTopicConfig` 가 throw 하고 Phase 1 의 fail-closed lifecycle 이 이를 configure 실패로 잇습니다.
 
 | 잘못된 형태 | 전형적 원인 |
 |---|---|
 | `subscribe:` / `publish:` 값이 `{topic, role}` **sequence 가 아님** | 들여쓰기 실수로 `- ` 가 빠져 map 이 됨 |
+| `subscribe:` / `publish:` 가 **빈 sequence** (`[]`) | 엔트리를 지우고 lane 키만 남김 |
 | group 값이 **sequence** | `subscribe:` 줄 자체를 빠뜨리고 엔트리를 group 밑에 직접 씀 |
-| group map 에 `subscribe` / `publish` 가 **둘 다 없음** | 키 오타 (`subscibe:`) |
+| group 값이 **null** (`ur5e:` 밑이 비어 있음) | 마이그레이션 중 lane 을 통째로 주석 처리 |
+| group map 에 `subscribe` / `publish` 가 **둘 다 없음** | 빈 map (`ur5e: {}`), 자리표시자 |
+| group map 에 **lane 이 아닌 키** | 키 오타 (`subscibe:`) — 진단이 그 키 이름을 지목 |
+| 최상위 `topics:` 가 **map 이 아님** (null / 스칼라 / sequence) | 섹션 본문을 통째로 주석 처리 |
 | 최상위에 `subscribe:` 또는 `publish:` | 폐기된 flat format |
 
 진단 메시지는 **group 이름과 lane 이름을 모두** 포함하므로 (`Topic group 'hand': 'subscribe' must be ...`) 다중 group config 에서 어느 블록이 깨졌는지 바로 찾을 수 있습니다.
 
-단 `topics:` 아래에서 값이 **스칼라** 인 키는 계속 group 이 아닌 것으로 보고 건너뜁니다 (스칼라 설정값을 같은 섹션에 둘 수 있도록). 엔트리 수준의 미지 키(`data_size:` 등)도 무시됩니다 — 동작을 바꾸지 않으므로 거부해도 안전 이득이 없습니다. 엄격히 검증되는 것은 무엇이 생성될지 결정하는 `role:` 문자열입니다.
+키 오타가 lane 둘 다를 망가뜨렸을 때만 잡히면 부족합니다 — 흔한 쪽은 **오타 하나 + 멀쩡한 lane 하나** 이고, 이 경우 group 은 "lane 이 있으므로" 통과하면서 target lane 만 조용히 사라집니다. 그래서 group map 은 화이트리스트로 검증합니다 (lane 이 아닌 키는 이름을 지목하며 거부).
+
+단 `topics:` 아래에서 값이 **스칼라** 인 키는 계속 group 이 아닌 것으로 보고 건너뜁니다 (스칼라 설정값을 같은 섹션에 둘 수 있도록). **엔트리** 수준의 미지 키(`data_size:` 등)도 무시됩니다 — group map 화이트리스트는 group 단위에만 적용되며, 엔트리는 동작을 바꾸지 않으므로 거부해도 안전 이득이 없습니다. 엄격히 검증되는 것은 무엇이 생성될지 결정하는 `role:` 문자열입니다. `topics:` 섹션을 **아예 생략**하는 것은 정상입니다 (토픽을 선언하지 않는 컨트롤러) — 잘못 선언하는 것만 거부됩니다.
 
 ### 토픽 소유권 (issue #138)
 
