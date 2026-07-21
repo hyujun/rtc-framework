@@ -672,6 +672,45 @@ void RtControllerNode::CreateDeviceBackends() {
   }
 }
 
+// ── Controller command type vs backend capability ───────────────────────────
+//
+// WriteCommand's `command_type` argument was advisory: a backend is free to
+// ignore it, and ur_driver_native does, publishing every value it is handed
+// into a forward_position_controller Float64MultiArray. So a torque-mode
+// controller bound to it would have put newton-metres on the wire as joint
+// angles — and CM's own hold command, which emits 0.0 for kTorque because it
+// has no dynamic model, would have commanded the arm to its zero
+// configuration rather than releasing it. That backend's source asserted the
+// pairing was "validated at YAML time"; no such validation existed anywhere.
+// Every shipped controller config says command_type: "position", so this is
+// one YAML word away rather than live — which is exactly when to close it.
+bool RtControllerNode::ValidateCommandTypeSupport() {
+  bool ok = true;
+  for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
+    const auto ct = controllers_[ci]->GetCommandType();
+    const auto& mapping = controller_slot_mappings_[ci];
+    for (int gi = 0; gi < mapping.num_groups && gi < ControllerSlotMapping::kMaxSlots; ++gi) {
+      const int slot = mapping.slots[static_cast<std::size_t>(gi)];
+      if (slot < 0 || slot >= kMaxDevices || !backends_[static_cast<std::size_t>(slot)]) {
+        continue;  // backend bring-up already failed or was refused elsewhere
+      }
+      const auto& backend = backends_[static_cast<std::size_t>(slot)];
+      if (!backend->AcceptsCommandType(ct)) {
+        RCLCPP_ERROR(get_logger(),
+                     "Controller '%s' emits command_type '%s', which the backend on slot %d "
+                     "(group '%s') cannot honour — it would be reinterpreted on the wire. "
+                     "Refusing to configure.",
+                     controllers_[ci]->Name().data(), urtc::CommandTypeToString(ct), slot,
+                     slot < static_cast<int>(slot_to_group_name_.size())
+                         ? slot_to_group_name_[static_cast<std::size_t>(slot)].c_str()
+                         : "?");
+        ok = false;
+      }
+    }
+  }
+  return ok;
+}
+
 void RtControllerNode::PropagateCapabilitiesIntoMappings() {
   // Patch each controller's slot mapping with the capability bitmask freshly
   // derived from the backend impls. Must run after CreateDeviceBackends.

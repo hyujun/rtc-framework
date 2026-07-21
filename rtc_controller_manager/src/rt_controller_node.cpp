@@ -97,6 +97,14 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   CreatePublishers();      // digital twin + fixed safety; HW publishers live in backends.
   CreateDeviceBackends();  // state/motor/sensor subs + joint/ros2 command publishers.
   PropagateCapabilitiesIntoMappings();  // patch ControllerSlotMapping after backends decide caps.
+  // Backends exist now, and controller on_configure (Pass 3, inside
+  // DeclareAndLoadParameters) has already fixed each GetCommandType() — the
+  // first point where the pairing can be checked at all.
+  if (!ValidateCommandTypeSupport()) {
+    RCLCPP_ERROR(get_logger(),
+                 "RtControllerNode configure refused — controller/backend command-type mismatch");
+    return CallbackReturn::FAILURE;
+  }
   CreateServices();
   ExposeTopicParameters();
   CreateTimers();

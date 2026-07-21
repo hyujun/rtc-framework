@@ -123,6 +123,28 @@ class DeviceBackend {
   virtual void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                             CommandType command_type) noexcept = 0;
 
+  /// True when this backend can actually honour `ct` on the wire.
+  ///
+  /// The default is position-only, which is the honest floor: a backend that
+  /// says nothing is assumed to do the one thing every actuator lane in this
+  /// tree does. Declaring more is opt-in and means the wire format carries the
+  /// distinction — not merely that WriteCommand accepts the enum.
+  ///
+  /// This exists because `WriteCommand`'s `command_type` argument was
+  /// advisory. `ur_driver_native` ignores it outright and publishes every
+  /// value into a `forward_position_controller` Float64MultiArray, so a
+  /// torque-mode controller bound to it would have sent newton-metres as
+  /// joint angles — and CM's own hold command, which uses 0.0 for torque,
+  /// would have commanded the arm to its zero configuration instead of
+  /// releasing it. The backend's source claimed the pairing was "validated at
+  /// YAML time"; nothing validated it anywhere. CM now checks this at
+  /// configure and refuses the mismatch (ValidateCommandTypeSupport).
+  ///
+  /// Not RT — called once during configure.
+  [[nodiscard]] virtual bool AcceptsCommandType(CommandType ct) const noexcept {
+    return ct == CommandType::kPosition;
+  }
+
   // ── Optional capabilities (defaults: not provided) ────────────────────────
 
   /// True when this backend exposes a motor-space lane separate from joint

@@ -269,6 +269,22 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
 
+  # Separate binary: CM instantiates every registered controller, so a
+  # torque-mode controller here would be command-type-checked against the
+  # position-only stub backend in every node of the pipeline TU.
+  ament_add_gtest(test_command_type_gate
+    test/test_command_type_gate.cpp
+    ENV ROS_DOMAIN_ID=51)
+  if(TARGET test_command_type_gate)
+    target_include_directories(test_command_type_gate PRIVATE include test)
+    ament_target_dependencies(test_command_type_gate
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_command_type_gate
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
   # 자체 실행파일이 필수다 — ControllerRegistry 는 제거 API 가 없는 프로세스
   # 싱글턴이라, 이 테스트가 등록하는 중복 key 는 바이너리 수명 내내 남는다.
   ament_add_gtest(test_cm_duplicate_controller_key
