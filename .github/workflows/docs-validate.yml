@@ -1,0 +1,48 @@
+name: Docs Validate
+
+# 왜 별도 workflow 인가 (issue #213 코멘트 2, ③)
+#
+#   ros2-advanced-ci.yml 은 push/PR 양쪽에서 `docs/**`, `agent_docs/**`, 루트 `*.md`
+#   를 paths-ignore 한다. 거기에 문서 검사 job 을 붙이면 정작 문서만 바뀐 PR 에서
+#   workflow 자체가 기동하지 않아 또 silent false-negative 가 된다.
+#
+#   덤으로 그 필터는 비대칭이다 — GitHub glob 에서 `*` 는 `/` 를 넘지 않으므로
+#   `*.md` 는 **루트 md 만** 무시한다. `rtc_*/README.md` 나 `.claude/rules/*.md`
+#   변경은 메인 CI 를 깨우면서도 정작 문서 검사는 하나도 돌지 않았다.
+#
+#   그래서 paths-ignore 가 걸리지 않는 독립 workflow 로 두고, 문서·워크플로 정의가
+#   바뀔 때만 기동한다. 러너 비용은 checkout + python 한 번(<10s)이다.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - 'repo_scripts/scripts/validate_docs.py'
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - 'repo_scripts/scripts/validate_docs.py'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate agent doc corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # 의존성 없음 — validate_docs.py 는 stdlib 만 쓴다. 러너 기본 python3 로 충분.
+      - name: Run validator
+        run: python3 repo_scripts/scripts/validate_docs.py --format github
