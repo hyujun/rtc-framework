@@ -35,8 +35,8 @@
 //   nrt_publish      nrt_callback core, CFS  nrt_publish_buffer_ drain (cap 16) →
 //                                            controller.PublishNonRtSnapshot
 //                                            (controller-owned non-RT topics:
-//                                            RobotTarget / Transforms / DigitalTwin /
-//                                            grasp_state / wbc_state / tof_snapshot).
+//                                            Transforms / grasp_state /
+//                                            wbc_state / tof_snapshot).
 //   nrt_logging      tier-aware (4c: Core 0; nrt_logging_executor — cm_timing_log.csv
 //                    ≥ 6c: dedicated core)   drain + deferred E-STOP log.
 //                                            SCHED_OTHER -5.

@@ -181,7 +181,7 @@ using ControlPublishBuffer = SpscPublishBuffer<kPublishBufferCapacity>;
 
 // Snapshot lane consumed by the nrt_callback core
 // (controller.PublishNonRtSnapshot — controller-owned non-RT topics:
-// kRobotTarget / kRobotTransforms / kDigitalTwinState).  Sized for a small
+// kRobotTransforms, plus the SeqLock-owned ones).  Sized for a small
 // burst margin only (16 slots ≈ 32 ms at 500 Hz, 3 ms at 5 kHz); the consumer
 // drains every tick so deep queueing is wasted memory and adds publish
 // latency.

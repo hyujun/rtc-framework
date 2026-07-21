@@ -256,17 +256,17 @@ TEST(RTControllerInterfaceTest, SetSystemModelConfigOverwrites) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigValidMultiDevice) {
-  // Phase 4: controller YAML carries only controller-owned roles
-  // (target / robot_target / robot_transforms / digital_twin_state).
+  // Phase 4: controller YAML carries only controller-owned roles.
   // Device-wire roles moved to devices.<group>.backend; grasp_state /
   // wbc_state / tof_snapshot are now controller-created (no YAML role).
+  // Phase 5 (#196): the role set narrowed to target / robot_transforms —
+  // robot_target had no publisher behind it and is now rejected.
   const auto node = YAML::Load(
       R"(
 ur5e:
   subscribe:
     - {topic: /ur5e/target, role: target}
   publish:
-    - {topic: /ur5e/robot_target, role: robot_target}
     - {topic: transforms, role: robot_transforms}
 hand:
   subscribe:
@@ -346,29 +346,34 @@ robot:
   EXPECT_TRUE(cfg.HasSubscribeTopic("robot"));
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigBackwardCompatPublishJointGoal) {
-  // joint_goal still maps to kRobotTarget; position_command/torque_command/
-  // hand_command aliases were dropped (they mapped to kRos2Command/
-  // kJointCommand, both deleted).
-  const auto node = YAML::Load(
-      R"(
+TEST(RTControllerInterfaceTest, PublishRoleRobotTargetAndAliasesRejected) {
+  // Contract change (#196 Phase 5, E-6): this test used to assert that
+  // `joint_goal` maps to PublishRole::kRobotTarget. That mapping existed but
+  // nothing ever created a publisher for it, so a controller declaring the
+  // role came up with a silently dead topic — the exact failure mode Phase 5
+  // closes. The role and its alias are now rejected like any other unknown
+  // string, mirroring ParseTopicConfigJointCommandRoleRejected above (which
+  // Phase 4 wrote for the same reason when the device-wire roles moved out).
+  const auto pub_alias = YAML::Load(R"(
 robot:
   publish:
     - {topic: /jgoal, role: joint_goal}
 )");
-  const auto cfg = StubController::ParseTopicConfig(node);
-  bool has_robot_target = false;
-  for (const auto& [name, group] : cfg.groups) {
-    if (name != "robot") {
-      continue;
-    }
-    for (const auto& pub : group.publish) {
-      if (pub.role == rtc::PublishRole::kRobotTarget) {
-        has_robot_target = true;
-      }
-    }
-  }
-  EXPECT_TRUE(has_robot_target);
+  EXPECT_THROW(StubController::ParseTopicConfig(pub_alias), std::runtime_error);
+
+  const auto pub_canonical = YAML::Load(R"(
+robot:
+  publish:
+    - {topic: /target, role: robot_target}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(pub_canonical), std::runtime_error);
+
+  const auto pub_twin = YAML::Load(R"(
+robot:
+  publish:
+    - {topic: /twin, role: digital_twin_state}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(pub_twin), std::runtime_error);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -404,7 +409,11 @@ robot:
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigNonMapGroupSkipped) {
+// Renamed from ParseTopicConfigNonMapGroupSkipped (#196 Phase 5 review): the
+// assertions are unchanged, but "non-map" is no longer the contract. A
+// sequence-valued group now throws (SequenceValuedGroupThrows below); only
+// scalars are skipped, so the section can carry plain settings beside groups.
+TEST(RTControllerInterfaceTest, ParseTopicConfigScalarGroupSkipped) {
   const auto node = YAML::Load(R"(
 ur5e:
   subscribe:
@@ -416,24 +425,12 @@ scalar_value: 42
   EXPECT_FALSE(cfg.HasGroup("scalar_value"));
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigDataSizePreserved) {
-  // Phase 4: data_size still flows through for controller-owned roles.
-  const auto node = YAML::Load(R"(
-robot:
-  publish:
-    - {topic: /target, role: robot_target, data_size: 30}
-)");
-  const auto cfg = StubController::ParseTopicConfig(node);
-
-  for (const auto& [name, group] : cfg.groups) {
-    if (name == "robot") {
-      ASSERT_EQ(group.publish.size(), std::size_t{1});
-      EXPECT_EQ(group.publish[0].data_size, 30);
-      return;
-    }
-  }
-  FAIL() << "robot group not found";
-}
+// Contract change (#196 Phase 5, E-6): ParseTopicConfigDataSizePreserved was
+// deleted here. It asserted that `data_size:` round-trips into
+// PublishTopicEntry, but no publisher ever pre-allocated from the stored
+// value, so the field documented a capability the framework did not have. The
+// field is gone; a stray `data_size:` key in YAML is now simply ignored, which
+// ParseTopicConfigIgnoresUnknownEntryKeys below pins.
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigPreservesInsertionOrder) {
   const auto node = YAML::Load(
@@ -460,19 +457,271 @@ TEST(RTControllerInterfaceTest, ParseTopicConfigAllPublishRoles) {
   // owned by DeviceBackend; controller YAML keeps only controller-owned pubs.
   // Controller-owned isolation sprint: grasp_state / wbc_state / tof_snapshot
   // are now controller-created (no YAML role mapping).
+  // Phase 5 (#196): robot_target / digital_twin_state removed — they mapped to
+  // enum values no consumer implemented. robot_transforms is the whole set,
+  // and PublishRoleRobotTargetAndAliasesRejected pins the other side.
   const auto node = YAML::Load(
       R"(
 robot:
   publish:
-    - {topic: /d, role: robot_target}
-    - {topic: /i, role: digital_twin_state}
     - {topic: /j, role: robot_transforms}
 )");
   const auto cfg = StubController::ParseTopicConfig(node);
 
   for (const auto& [name, group] : cfg.groups) {
     if (name == "robot") {
-      EXPECT_EQ(group.publish.size(), std::size_t{3});
+      ASSERT_EQ(group.publish.size(), std::size_t{1});
+      EXPECT_EQ(group.publish[0].role, rtc::PublishRole::kRobotTransforms);
+      return;
+    }
+  }
+  FAIL() << "robot group not found";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ParseTopicConfig — malformed topic YAML is fail-closed (#196 Phase 5)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(RTControllerInterfaceTest, SubscribeBlockThatIsNotASequenceThrows) {
+  // The indentation slip that motivates this: dropping the `- ` turns the
+  // entry list into a map. Before Phase 5 the IsSequence() guard skipped the
+  // whole block, so the controller came up with zero target subscriptions and
+  // no diagnostic — a silently deaf controller.
+  const auto as_map = YAML::Load(R"(
+ur5e:
+  subscribe:
+    topic: /ur5e/target
+    role: target
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(as_map), std::runtime_error);
+
+  const auto as_scalar = YAML::Load(R"(
+ur5e:
+  subscribe: /ur5e/target
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(as_scalar), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, PublishBlockThatIsNotASequenceThrows) {
+  const auto as_map = YAML::Load(R"(
+ur5e:
+  publish:
+    topic: transforms
+    role: robot_transforms
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(as_map), std::runtime_error);
+
+  const auto as_scalar = YAML::Load(R"(
+ur5e:
+  publish: transforms
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(as_scalar), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, MalformedFlatFormatGetsMigrationDiagnostic) {
+  // A flat-format config whose `subscribe:` is itself malformed used to slip
+  // past the deprecation check (which required IsSequence()) and get parsed as
+  // a device group named "subscribe".
+  //
+  // Asserting only that this throws was a false green — measured: reverting the
+  // subscribe half of the flat-format check left all 9 test binaries passing,
+  // because the group-shape guards reject the same config for an unrelated
+  // reason. Only the diagnostic distinguishes them, exactly as the publish-side
+  // sibling below already pins.
+  const auto node = YAML::Load(R"(
+subscribe:
+  topic: /target
+  role: target
+)");
+  try {
+    StubController::ParseTopicConfig(node);
+    FAIL() << "malformed flat format must throw";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("deprecated"), std::string::npos)
+        << "operator must be told this is the deprecated flat format, not that a "
+           "group named 'subscribe' is malformed: "
+        << msg;
+  }
+}
+
+TEST(RTControllerInterfaceTest, SequenceValuedGroupThrows) {
+  // The slip one level above SubscribeBlockThatIsNotASequenceThrows: the entry
+  // list is written directly under the group name with no `subscribe:` key.
+  // Before the Phase 5 review this hit the `!IsMap()` skip that exists for
+  // scalar settings, so the controller came up routing nothing, in silence.
+  const auto node = YAML::Load(R"(
+ur5e:
+  - {topic: /ur5e/target, role: target}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, GroupWithNeitherLaneThrows) {
+  // A group map with no lane at all — every entry commented out, or a
+  // placeholder left behind. It routes nothing, so it is refused.
+  //
+  // This used to be pinned with a misspelled `subscibe:`, which now trips the
+  // group-key whitelist one check earlier (MisspelledLaneKeyNamesTheKey). An
+  // empty map is what still reaches this branch.
+  const auto node = YAML::Load(R"(
+ur5e: {}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, MisspelledLaneKeyNamesTheKey) {
+  // The `!subscribe && !publish` guard only fires when *every* lane is
+  // misspelled, so the likely case — one typo next to one valid lane — parsed
+  // clean and dropped the whole target lane in silence. The whitelist refuses
+  // any non-lane key in the group map and names it, so the operator does not
+  // have to diff their file against the schema to find the typo.
+  const auto typo_beside_valid_lane = YAML::Load(R"(
+ur5e:
+  subscibe:
+    - {topic: /ur5e/target, role: target}
+  publish:
+    - {topic: transforms, role: robot_transforms}
+)");
+  try {
+    StubController::ParseTopicConfig(typo_beside_valid_lane);
+    FAIL() << "a misspelled lane key must throw even when another lane is valid";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("subscibe"), std::string::npos)
+        << "diagnostic must name the offending key: " << msg;
+  }
+
+  // The all-misspelled shape this test file pinned before the whitelist.
+  const auto typo_alone = YAML::Load(R"(
+ur5e:
+  subscibe:
+    - {topic: /ur5e/target, role: target}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(typo_alone), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, EmptyLaneSequenceThrows) {
+  // `subscribe: []` satisfied every shape check — it is a sequence, and the
+  // group declares a lane, so the lane-less guard does not fire either — yet
+  // it produced a group that routes nothing. Worse than deaf: the empty group
+  // is filtered out of active_groups_/group_slot_map_ but NOT out of the slot
+  // mapping loop, where std::map::operator[] default-inserts slot 0, so the
+  // controller's device reads another device's backend.
+  const auto empty_lane = YAML::Load(R"(
+ur5e:
+  subscribe: []
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(empty_lane), std::runtime_error);
+
+  // Per-lane, not per-group: a declared lane must route something even when a
+  // sibling lane is populated.
+  const auto empty_lane_beside_valid = YAML::Load(R"(
+ur5e:
+  subscribe: []
+  publish:
+    - {topic: transforms, role: robot_transforms}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(empty_lane_beside_valid), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, NullValuedGroupThrows) {
+  // `ur5e:` with nothing under it — the shape a migration leaves behind when
+  // the lanes are commented out. It is neither a sequence (SequenceValuedGroup
+  // Throws) nor a map, so it fell through the `!IsMap()` skip that exists for
+  // scalar settings and vanished without a diagnostic. Scalars still skip;
+  // nothing else does.
+  const auto node = YAML::Load(R"(
+ur5e:
+hand:
+  subscribe:
+    - {topic: /hand/target, role: target}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, NonMapTopicsSectionThrows) {
+  // One level above the group guards: LoadConfig gates on `cfg["topics"]`,
+  // which is true for a defined-but-null node, so a `topics:` whose body was
+  // commented out iterated zero keys and returned an empty config with every
+  // group-shape guard below bypassed and nothing logged.
+  const auto null_section = YAML::Load("topics:")["topics"];
+  EXPECT_THROW(StubController::ParseTopicConfig(null_section), std::runtime_error);
+
+  const auto scalar_section = YAML::Load("topics: ur5e")["topics"];
+  EXPECT_THROW(StubController::ParseTopicConfig(scalar_section), std::runtime_error);
+
+  const auto sequence_section = YAML::Load("topics: [ur5e, hand]")["topics"];
+  EXPECT_THROW(StubController::ParseTopicConfig(sequence_section), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, PublishOnlyFlatFormatGetsMigrationDiagnostic) {
+  // The flat-format check used to test `subscribe` alone, so a publish-only
+  // flat config fell through and parsed as a device group named "publish".
+  //
+  // Asserting only that this throws would be a false green: the group-shape
+  // guards above already reject every flat publish config (as a sequence-valued
+  // or lane-less group), so the test still passes with the flat check reverted
+  // — measured, not assumed. What the flat check is actually worth is the
+  // diagnostic: the operator gets migration instructions instead of being told
+  // that their device group named "publish" is malformed. That is what this
+  // pins.
+  const auto node = YAML::Load(R"(
+publish:
+  - {topic: transforms, role: robot_transforms}
+)");
+  try {
+    StubController::ParseTopicConfig(node);
+    FAIL() << "flat publish-only format must throw";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("deprecated"), std::string::npos)
+        << "operator must be told this is the deprecated flat format, not that a "
+           "group is malformed: "
+        << msg;
+  }
+}
+
+TEST(RTControllerInterfaceTest, MalformedGroupNamesItselfInTheDiagnostic) {
+  // A fail-closed parser is only useful if the operator can find the offending
+  // block. The pre-review message labelled the lane key as the group name
+  // ("Topic group 'subscribe'"), which names nothing that exists in the file.
+  const auto node = YAML::Load(R"(
+ur5e:
+  subscribe:
+    - {topic: /ur5e/target, role: target}
+hand:
+  subscribe:
+    topic: /hand/target
+    role: target
+)");
+  try {
+    StubController::ParseTopicConfig(node);
+    FAIL() << "malformed 'hand' group must throw";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("hand"), std::string::npos) << "diagnostic must name the group: " << msg;
+    EXPECT_NE(msg.find("subscribe"), std::string::npos) << "and the lane: " << msg;
+  }
+}
+
+TEST(RTControllerInterfaceTest, ParseTopicConfigIgnoresUnknownEntryKeys) {
+  // Entry-level keys the parser does not know (including the removed
+  // `data_size`) are ignored rather than rejected: they carry no behaviour, so
+  // failing on them would break configs mid-migration for no safety gain. The
+  // `role:` string is the field that decides what gets created, and that one
+  // is validated strictly.
+  const auto node = YAML::Load(R"(
+robot:
+  publish:
+    - {topic: transforms, role: robot_transforms, data_size: 30}
+)");
+  const auto cfg = StubController::ParseTopicConfig(node);
+
+  for (const auto& [name, group] : cfg.groups) {
+    if (name == "robot") {
+      ASSERT_EQ(group.publish.size(), std::size_t{1});
+      EXPECT_EQ(group.publish[0].topic_name, "transforms");
       return;
     }
   }
@@ -501,7 +750,7 @@ topics:
     subscribe:
       - {topic: /custom/target, role: target}
     publish:
-      - {topic: /custom/robot_target, role: robot_target}
+      - {topic: /custom/transforms, role: robot_transforms}
 )");
   ctrl.LoadConfig(node);
 
@@ -643,9 +892,15 @@ TEST(RTControllerInterfaceTest, PreConfigurePopulatesTopicConfigBeforeOnDeviceCo
   StubController ctrl;
   auto node = MakeLcNode("ctrl_pre_topics");
 
+  // Fixture correction (#196 Phase 5): this and the sibling PreConfigure /
+  // FailClosedConfigure tests wrote `subscribe:` as a map of role → topic,
+  // which is not the config format. The parser silently skipped the block, so
+  // the group existed but carried no subscription and the assertion below
+  // passed for the wrong reason — the very failure mode Phase 5 closes. Now
+  // that a non-sequence block throws, the fixtures use the real format.
   YAML::Node yaml;
-  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
-  yaml["topics"]["robot"]["subscribe"]["target"] = "/robot/target_joint_positions";
+  yaml["topics"]["robot"]["subscribe"][0]["topic"] = "/robot/target_joint_positions";
+  yaml["topics"]["robot"]["subscribe"][0]["role"] = "target";
 
   // Pass 1: PreConfigure. Must succeed and populate topic_config_, but must
   // NOT trigger OnDeviceConfigsSet (CM has not called SetDeviceNameConfigs
@@ -660,7 +915,8 @@ TEST(RTControllerInterfaceTest, SetDeviceNameConfigsBetweenPassesRunsHookOnce) {
   auto node = MakeLcNode("ctrl_pre_then_set");
 
   YAML::Node yaml;
-  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
+  yaml["topics"]["robot"]["subscribe"][0]["topic"] = "/robot/target";
+  yaml["topics"]["robot"]["subscribe"][0]["role"] = "target";
   ASSERT_EQ(ctrl.PreConfigure(node, yaml), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
 
   // Pass 2: CM resolves device-name configs and pushes them down. The hook
@@ -685,7 +941,8 @@ TEST(RTControllerInterfaceTest, OnConfigureAfterPreConfigureIsIdempotent) {
   auto node = MakeLcNode("ctrl_idempotent");
 
   YAML::Node yaml;
-  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
+  yaml["topics"]["robot"]["subscribe"][0]["topic"] = "/robot/target";
+  yaml["topics"]["robot"]["subscribe"][0]["role"] = "target";
 
   ASSERT_EQ(ctrl.PreConfigure(node, yaml), rtc::RTControllerInterface::CallbackReturn::SUCCESS);
   std::map<std::string, rtc::DeviceNameConfig> configs;
@@ -714,7 +971,8 @@ TEST(RTControllerInterfaceTest, OnConfigureLegacyDirectCallStillWorks) {
   auto node = MakeLcNode("ctrl_legacy");
 
   YAML::Node yaml;
-  yaml["topics"]["robot"]["subscribe"]["state"] = "/joint_states";
+  yaml["topics"]["robot"]["subscribe"][0]["topic"] = "/robot/target";
+  yaml["topics"]["robot"]["subscribe"][0]["role"] = "target";
 
   const rclcpp_lifecycle::State unconfigured(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
                                              "unconfigured");
@@ -1417,7 +1675,8 @@ YAML::Node PoisonYaml() {
 
 YAML::Node CleanYaml() {
   YAML::Node yaml;
-  yaml["topics"]["robot"]["subscribe"]["target"] = "/robot/target";
+  yaml["topics"]["robot"]["subscribe"][0]["topic"] = "/robot/target";
+  yaml["topics"]["robot"]["subscribe"][0]["role"] = "target";
   return yaml;
 }
 

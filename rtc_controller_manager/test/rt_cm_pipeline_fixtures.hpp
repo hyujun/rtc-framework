@@ -90,6 +90,17 @@ class PipelineTestController : public RTControllerInterface {
   // node's reject counter is compared against.
   static inline std::atomic<int> injected_fault_ticks{0};
 
+  // Instances the registry factory has built (issue #196 Phase 5). The
+  // duplicate-config_key scan runs before Pass 1, so a refused bring-up must
+  // leave this at zero — that is what separates "rejected before creating
+  // controllers and LifecycleNodes" from "rejected after".
+  static inline std::atomic<int> instances_created{0};
+
+  // Not noexcept: the base RTControllerInterface ctor is not, and marking this
+  // one noexcept would turn a throwing base subobject into std::terminate
+  // inside the registry factory instead of a catchable bring-up failure.
+  PipelineTestController() { instances_created.fetch_add(1, std::memory_order_relaxed); }
+
   static void ResetCaptured() {
     captured_kp = -1.0;
     captured_label.clear();
@@ -105,6 +116,7 @@ class PipelineTestController : public RTControllerInterface {
     output_fault.store(OutputFault::kNone, std::memory_order_relaxed);
     output_fault_ticks.store(-1, std::memory_order_relaxed);
     injected_fault_ticks.store(0, std::memory_order_relaxed);
+    instances_created.store(0, std::memory_order_relaxed);
   }
 
   void LoadConfig(const YAML::Node& cfg) override {
@@ -207,8 +219,17 @@ class PipelineStubBackend : public DeviceBackend {
   static constexpr int32_t kSensor0 = 42;
   static constexpr float kInfer0 = 3.5F;
 
+  // Configure() calls the CM has made. CreateDeviceBackends() runs only after
+  // DeclareAndLoadParameters() returns true, so a bring-up refused at the D1
+  // checkpoint must leave this at zero — that is what proves the refusal
+  // happened before any device wiring, even when controllers were already
+  // instantiated (issue #196 Phase 5, Tier 2). Tests that read it reset it
+  // themselves; nothing else depends on its value.
+  static inline std::atomic<int> configure_calls{0};
+
   void Configure(rclcpp_lifecycle::LifecycleNode* /*node*/, const DeviceBackendConfig& config,
                  rclcpp::CallbackGroup::SharedPtr /*state_cb_group*/) override {
+    configure_calls.fetch_add(1, std::memory_order_relaxed);
     group_name_ = config.group_name;
   }
 

@@ -362,20 +362,21 @@ enum class DeviceCapability : uint16_t {
 // parser still validates the `role:` string ("target" / "goal") as readable
 // documentation + drift detection.
 
+// Every value here must have a working publisher behind it. Issue #196 Phase 5
+// removed kRobotTarget / kDigitalTwinState: the YAML parser mapped them, but no
+// consumer ever created a publisher, so a controller declaring one came up with
+// a silently dead topic. New controller-owned non-RT outputs use the
+// SeqLock<T> + Setup*Publisher pattern instead of extending this enum
+// (CLAUDE.md §6 E-11), so the set is expected to stay at one.
+//
+// Previously removed for the same or adjacent reasons: joint_command /
+// ros2_command (Phase 4 — device-wire publication is owned by DeviceBackend
+// impls via devices.<group>.backend), kGuiPosition (Phase 4 — consumers use
+// /rtc_cm/<group>/joint_states and <config_key>/transforms), kDeviceStateLog /
+// kDeviceSensorLog (Phase C — controller data CSVs flow through
+// ControllerLogSet), kGraspState / kWbcState / kToFSnapshot (controller-owned
+// isolation sprint — per-output SeqLock<T>).
 enum class PublishRole {
-  // Phase 4: joint_command / ros2_command roles deleted — device-wire command
-  // publication is owned by DeviceBackend impls via devices.<group>.backend.
-  // (Phase 4: kGuiPosition removed — consumers use /rtc_cm/<group>/joint_states
-  // for joint state and <config_key>/transforms (tf2_msgs/TFMessage) for TCP pose.)
-  // (Phase C: kDeviceStateLog / kDeviceSensorLog removed — controller
-  // data CSVs flow through ControllerLogSet, not CM publish.)
-  // (Controller-owned isolation sprint: kGraspState / kWbcState / kToFSnapshot
-  // removed — each controller owns a per-output SeqLock<T> and publishes
-  // directly without going through PublishSnapshot.)
-  kRobotTarget,  // rtc_msgs/RobotTarget (joint/task 목표)
-  // Digital Twin
-  kDigitalTwinState,  // sensor_msgs/JointState (RELIABLE republish for digital
-                      // twin)
   // Per-controller TF array — controller가 사용하는 frame들을 한 토픽에
   // tf2_msgs/TFMessage 로 묶어 발행. frame_id는 system YAML urdf.{sub,tree}_models
   // 의 root_link/tip_link 에서 자동 추출, child_frame_id는 "<link>_actual" suffix.
@@ -395,10 +396,12 @@ struct SubscribeTopicEntry {
   std::string topic_name;
 };
 
+// Issue #196 Phase 5: the `data_size` field was dropped. The parser read it
+// from YAML and stored it, but no publisher ever pre-allocated from it, so it
+// documented a capability the framework did not have.
 struct PublishTopicEntry {
   std::string topic_name;
   PublishRole role;
-  int data_size{0};  // pre-allocate message size (0 = use default for role)
 };
 
 // ── Device topic grouping ────────────────────────────────────────────────────
@@ -470,10 +473,6 @@ struct TopicConfig {
 
 [[nodiscard]] inline constexpr const char* PublishRoleToString(PublishRole role) noexcept {
   switch (role) {
-    case PublishRole::kRobotTarget:
-      return "robot_target";
-    case PublishRole::kDigitalTwinState:
-      return "digital_twin_state";
     case PublishRole::kRobotTransforms:
       return "robot_transforms";
   }

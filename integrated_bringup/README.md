@@ -239,7 +239,7 @@ demo_task_controller:
 
 | 토픽 역할 | 소유자 | 메커니즘 / 경로 (active = demo_wbc_controller 예시) |
 |-----------|--------|------------------------------------------|
-| `target` (per-group joint_goal) | 컨트롤러 | YAML `topics:` `role: robot_target` (`PublishRole::kRobotTarget`) — `/demo_wbc_controller/<group>/joint_goal` |
+| `target` (per-group joint_goal) | 컨트롤러 | YAML `topics:` `subscribe:` `role: target` — `/demo_wbc_controller/<group>/joint_goal` (구독 lane. 이전 표기 `role: robot_target` / `PublishRole::kRobotTarget` 은 config 와 어긋난 오기였고, 해당 role 은 issue #196 Phase 5 에서 제거됐다) |
 | `grasp_state` (joint/task 데모만) | 컨트롤러 | **SeqLock 직접 소유** (`104796f`) — controller 가 `SeqLock<GraspStateData>` + `SetupGraspStatePublisher()` 헬퍼 (`support/owned_topics.hpp`) 로 발행. `PublishRole` 미사용 |
 | `wbc_state` (wbc 데모만) | 컨트롤러 | **SeqLock 직접 소유** — `SeqLock<WbcStateData>` + `SetupWbcStatePublisher()` |
 | `tof_snapshot` (joint/task 데모만) | 컨트롤러 | **SeqLock 직접 소유** — `SeqLock<ToFSnapshotData>` + `SetupToFSnapshotPublisher()` |

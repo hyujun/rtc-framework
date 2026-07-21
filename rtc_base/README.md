@@ -101,7 +101,7 @@ rtc_base/
 |--------|---|------|
 | `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` | 커맨드 모드. `kPdFeedforward`는 PD 위치 서보(`values`) + per-joint feedforward 토크(`DeviceOutput::feedforward`) 오버레이 — arm=kPosition, hand=kPdFeedforward 같은 mixed-command 출력에 사용 |
 | `GoalType` | `kJoint`, `kTask` | 목표 공간 타입 (uint8_t 기반) |
-| `PublishRole` | `kRobotTarget`, `kDigitalTwinState`, `kRobotTransforms` | CM이 소유하는 퍼블리시 역할. `kRobotTarget`=`rtc_msgs/RobotTarget`, `kDigitalTwinState`=`sensor_msgs/JointState` (RELIABLE republish), `kRobotTransforms`=`tf2_msgs/TFMessage` (controller가 사용하는 frame들을 묶어 발행). Device-wire 명령 발행은 `devices.<group>.backend`가, grasp/wbc/tof 상태는 각 controller가 소유하는 `SeqLock<T>` + `Setup*Publisher` 헬퍼가 담당하며 `PublishRole`을 거치지 않는다 |
+| `PublishRole` | `kRobotTransforms` | YAML 로 선언하는 controller-owned 퍼블리시 역할. `kRobotTransforms`=`tf2_msgs/TFMessage` (controller가 사용하는 frame들을 묶어 발행). issue #196 Phase 5 에서 `kRobotTarget` / `kDigitalTwinState` 제거 — 파서는 매핑했으나 publisher 를 만드는 소비자가 없어 선언하면 조용히 죽은 토픽이 됐다. Device-wire 명령 발행은 `devices.<group>.backend`가, grasp/wbc/tof 상태는 각 controller가 소유하는 `SeqLock<T>` + `Setup*Publisher` 헬퍼가 담당하며 `PublishRole`을 거치지 않는다 |
 | `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference` | 디바이스 기능 비트마스크 (RT 루프 선택적 데이터 복사) |
 
 `GoalTypeToString()`, `CommandTypeToString()`, `PublishRoleToString()` -- `constexpr` 문자열 변환 함수. `CommandTypeToString()`은 `JointCommand.command_type`와 동일한 와이어 문자열(`"position"`/`"torque"`/`"pd_feedforward"`)을 반환한다.
@@ -138,7 +138,7 @@ rtc_base/
 | 구조체 | 설명 |
 |--------|------|
 | `SubscribeTopicEntry` | `topic_name` (구독 role은 singleton이라 enum 없음; issue #138: `ownership` field 제거 — controller-owned only) |
-| `PublishTopicEntry` | `topic_name` + `PublishRole` + `data_size` (issue #138: `ownership` field 제거) |
+| `PublishTopicEntry` | `topic_name` + `PublishRole` (issue #138: `ownership` field 제거, issue #196 Phase 5: 아무도 읽지 않던 `data_size` 제거) |
 | `DeviceTopicGroup` | `subscribe` + `publish` 토픽 엔트리 벡터 |
 
 `TopicConfig` 주요 메서드:

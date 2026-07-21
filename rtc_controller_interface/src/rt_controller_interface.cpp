@@ -57,10 +57,10 @@ const rclcpp::Logger& TargetWarnLogger() {
 
 // Phase 4: device-wire roles (state / motor_state / sensor_state / joint_command
 // / ros2_command) live in `devices.<group>.backend:` (sim.yaml/robot.yaml) and
-// are owned by DeviceBackend impls. Controller YAML retains only target /
-// robot_target / robot_transforms / digital_twin_state — grasp_state /
-// wbc_state / tof_snapshot are now controller-owned via per-controller
-// SeqLock and are not declared in YAML.
+// are owned by DeviceBackend impls. Controller YAML retains only target and
+// robot_transforms (issue #196 Phase 5 removed the publish roles that had no
+// publisher behind them) — grasp_state / wbc_state / tof_snapshot are
+// controller-owned via per-controller SeqLock and are not declared in YAML.
 //
 // Phase 4 trailing cleanup: SubscribeRole enum dropped — the only remaining
 // value (kTarget) carries no discrimination. The parser still validates the
@@ -70,20 +70,74 @@ const std::unordered_set<std::string> kSubscribeRoleStrings = {
     "goal",  // backward compat
 };
 
+// Issue #196 Phase 5: robot_target / joint_goal / digital_twin_state removed.
+// They mapped to PublishRole values that no consumer implemented, so declaring
+// one produced a silently dead topic instead of a publisher. robot_transforms
+// is the only role with a publisher behind it (owned_topics.cpp).
 const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
-    // Topic-based State/Command/Goal
-    {"robot_target", PublishRole::kRobotTarget},
-    // backward compat
-    {"joint_goal", PublishRole::kRobotTarget},
     {"robot_transforms", PublishRole::kRobotTransforms},
-    // Digital twin
-    {"digital_twin_state", PublishRole::kDigitalTwinState},
 };
 
+// A `subscribe:` / `publish:` key that exists but is not a sequence is a YAML
+// authoring error (most often an indentation slip that turns the list into a
+// map). Skipping it silently brings the controller up with no target
+// subscription and no diagnostic, so issue #196 Phase 5 made it fail closed —
+// the throw propagates through LoadConfig into a configure failure (Phase 1).
+// An empty sequence is refused for the same reason: `subscribe: []` satisfied
+// every shape check yet produced a lane that routes nothing, which is the
+// silence the shape checks exist to break. Returns the lane node so the caller
+// validates and uses the same handle — keeping the guard adjacent to its use,
+// so a future third lane cannot be parsed without being checked.
+YAML::Node RequireNonEmptySequenceIfPresent(const YAML::Node& group_node,
+                                            const std::string& group_name, const char* key) {
+  const YAML::Node lane = group_node[key];
+  if (!lane) {
+    return lane;
+  }
+  if (!lane.IsSequence()) {
+    throw std::runtime_error("Topic group '" + group_name + "': '" + std::string(key) +
+                             "' must be a sequence of {topic, role} entries");
+  }
+  if (lane.size() == 0) {
+    throw std::runtime_error("Topic group '" + group_name + "': '" + std::string(key) +
+                             "' is an empty sequence — a declared lane must route at least one "
+                             "topic");
+  }
+  return lane;
+}
+
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
-void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) {
-  if (group_node["subscribe"] && group_node["subscribe"].IsSequence()) {
-    for (const auto& entry : group_node["subscribe"]) {
+void ParseDeviceTopicGroup(const YAML::Node& group_node, const std::string& group_name,
+                           DeviceTopicGroup& out) {
+  // Only `subscribe` / `publish` are read below, so any other key in the group
+  // map is config that does nothing. The common case is a misspelling, and the
+  // `!subscribe && !publish` guard further down catches it only when *every*
+  // lane is misspelled — `{subscibe: [...], publish: [...]}` parsed clean and
+  // dropped the whole target lane in silence. Scoped to the group map on
+  // purpose: unknown keys inside a list *entry* stay ignored, which is a
+  // separate documented contract (ParseTopicConfigIgnoresUnknownEntryKeys).
+  for (const auto& kv : group_node) {
+    const auto key = kv.first.as<std::string>();
+    if (key != "subscribe" && key != "publish") {
+      throw std::runtime_error("Topic group '" + group_name + "': unknown key '" + key +
+                               "' — expected 'subscribe' or 'publish' (check the spelling)");
+    }
+  }
+
+  const YAML::Node subscribe =
+      RequireNonEmptySequenceIfPresent(group_node, group_name, "subscribe");
+  const YAML::Node publish = RequireNonEmptySequenceIfPresent(group_node, group_name, "publish");
+
+  // A group map carrying neither lane (`ur5e: {}`, or every lane commented
+  // out) is a group that exists but routes nothing — the same silently-deaf
+  // controller the shape checks above close.
+  if (!subscribe && !publish) {
+    throw std::runtime_error("Topic group '" + group_name +
+                             "' declares neither 'subscribe' nor 'publish'");
+  }
+
+  if (subscribe) {
+    for (const auto& entry : subscribe) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
       if (kSubscribeRoleStrings.find(role_str) == kSubscribeRoleStrings.end()) {
@@ -93,19 +147,15 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
     }
   }
 
-  if (group_node["publish"] && group_node["publish"].IsSequence()) {
-    for (const auto& entry : group_node["publish"]) {
+  if (publish) {
+    for (const auto& entry : publish) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
       auto it = kPublishRoleMap.find(role_str);
       if (it == kPublishRoleMap.end()) {
         throw std::runtime_error("Unknown publish role: " + role_str);
       }
-      int data_size = 0;
-      if (entry["data_size"]) {
-        data_size = entry["data_size"].as<int>();
-      }
-      out.publish.push_back({topic, it->second, data_size});
+      out.publish.push_back({topic, it->second});
     }
   }
 }
@@ -266,8 +316,26 @@ RTControllerInterface::GetSharedModelBuilder() const noexcept {
 }
 
 TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_node) {
-  // ── Detect deprecated flat format (topics.subscribe exists directly) ──
-  if (topics_node["subscribe"] && topics_node["subscribe"].IsSequence()) {
+  // The section itself must be a map of device groups. LoadConfig gates on
+  // `cfg["topics"]`, which is true for a defined-but-null node, so a `topics:`
+  // whose body was commented out (or written as a scalar / bare list) used to
+  // iterate zero keys and return an empty config — every group-shape guard
+  // below bypassed, no diagnostic. Omitting `topics:` entirely stays legal:
+  // that is a controller declaring no topics, not one declaring topics badly.
+  if (!topics_node.IsMap()) {
+    throw std::runtime_error(
+        "'topics:' must be a map of device groups (e.g. topics.ur5e / topics.hand) — "
+        "omit the section entirely if the controller declares no topics");
+  }
+
+  // ── Detect deprecated flat format (topics.subscribe / topics.publish) ──
+  // Group names are arbitrary strings, so a top-level key literally named
+  // `subscribe` or `publish` is the flat format whatever its node type — the
+  // pre-Phase-5 IsSequence() guard let a malformed flat config fall through
+  // and be parsed as a device group named "subscribe". `publish` is checked
+  // for the same reason: a publish-only flat config used to parse as a group
+  // named "publish" that routed nothing.
+  if (topics_node["subscribe"] || topics_node["publish"]) {
     throw std::runtime_error(
         "Flat topics: format is deprecated. "
         "Migrate to device-group keyed format (e.g. topics.ur5e / "
@@ -280,10 +348,29 @@ TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_nod
   // ── Dynamic device group parsing: iterate all keys ──
   for (auto it = topics_node.begin(); it != topics_node.end(); ++it) {
     const std::string group_name = it->first.as<std::string>();
-    if (!it->second.IsMap()) {
+    // A sequence here means the author wrote the entry list directly under the
+    // group name and dropped the `subscribe:` line — the same indentation slip
+    // RequireSequenceIfPresent catches one level down, and equally silent
+    // before Phase 5. Scalars stay skipped so the section can still carry
+    // plain settings alongside groups (ParseTopicConfigScalarGroupSkipped).
+    if (it->second.IsSequence()) {
+      throw std::runtime_error("Topic group '" + group_name +
+                               "' must be a map with 'subscribe' / 'publish' keys, not a "
+                               "sequence — is the 'subscribe:' line missing?");
+    }
+    if (it->second.IsScalar()) {
       continue;
     }
-    ParseDeviceTopicGroup(it->second, cfg[group_name]);
+    // Anything left that is not a map is a null-valued key (`ur5e:` with an
+    // empty body, typically a lane commented out during a migration). The skip
+    // above is scoped to scalars on purpose — it exists so plain settings can
+    // share the section, and a null value is not a setting.
+    if (!it->second.IsMap()) {
+      throw std::runtime_error("Topic group '" + group_name +
+                               "' is empty — declare 'subscribe' / 'publish' under it, or "
+                               "remove the group");
+    }
+    ParseDeviceTopicGroup(it->second, group_name, cfg[group_name]);
   }
 
   return cfg;

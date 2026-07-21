@@ -397,7 +397,6 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   //           (triggers OnDeviceConfigsSet → joint_names captured)
   //   Pass 3: on_configure() per controller — RegisterLog now sees populated
   //           name spans, so CSV headers match data row widths.
-  std::unordered_map<std::string, int> name_to_idx;
   const auto& entries = urtc::ControllerRegistry::Instance().GetEntries();
 
   // Per-controller yaml node retained until Pass 3.
@@ -413,6 +412,43 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // makes the bring-up idempotent so a retry cannot register a controller
   // twice. No-op on the first call.
   ResetControllerBringUpState();
+
+  // ── Duplicate config_key scan (issue #196 Phase 5) ───────────────────────
+  //
+  // Two RTC_REGISTER_CONTROLLER macros claiming the same key is a packaging
+  // mistake: CM looks controllers up by key, so the second registration
+  // shadows the first and the operator silently runs code they did not
+  // select. ControllerRegistry::Register() only warns — it cannot throw,
+  // because static-init ordering across TUs makes a throwing registrar
+  // fragile (see controller_registry.cpp).
+  //
+  // This runs *before* the Pass 1 loop rather than inside it: refusing after
+  // the first factory() call would already have constructed a controller and
+  // its LifecycleNode for a bring-up that can never be correct. Every
+  // duplicate is reported in one run, then the whole configure is refused.
+  {
+    std::unordered_map<std::string, std::size_t> first_seen;
+    first_seen.reserve(entries.size());
+    bool duplicate_found = false;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+      const auto [it, inserted] = first_seen.emplace(entries[i].config_key, i);
+      if (!inserted) {
+        duplicate_found = true;
+        RCLCPP_FATAL(get_logger(),
+                     "Duplicate controller config_key '%s': registration #%zu "
+                     "(package='%s') collides with #%zu (package='%s').",
+                     entries[i].config_key.c_str(), i, entries[i].config_package.c_str(),
+                     it->second, entries[it->second].config_package.c_str());
+      }
+    }
+    if (duplicate_found) {
+      RCLCPP_FATAL(get_logger(),
+                   "Controller registry contains duplicate config_key(s) — refusing to "
+                   "configure. Make each RTC_REGISTER_CONTROLLER key unique across all "
+                   "linked TUs; no controller was instantiated.");
+      return false;
+    }
+  }
 
   // ── Pass 1: instantiate, build LifecycleNode, PreConfigure ───────────────
   for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -505,9 +541,37 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       bring_up_failed = true;
     }
 
-    name_to_idx[std::string(ctrl->Name())] = static_cast<int>(i);
-    name_to_idx[entry.config_key] = static_cast<int>(i);
-    controller_name_to_idx_[std::string(ctrl->Name())] = static_cast<int>(i);
+    // ── Tier 2 of the identifier-collision guard (issue #196 Phase 5) ──────
+    //
+    // controller_name_to_idx_ is a SINGLE namespace holding both Name() and
+    // config_key, so switch_controller / initial_controller resolve through
+    // either. A collision in Name(), or across Name() and some other
+    // controller's config_key, shadows exactly like a duplicate config_key
+    // does — the operator silently runs a controller they did not select.
+    //
+    // Why this cannot join the Tier 1 scan above: ControllerEntry carries no
+    // name, and Name() is a virtual on the instance, so it is unknowable
+    // until factory() has run. Tier 2 therefore latches bring_up_failed and
+    // lets the D1 checkpoint refuse. Controllers and their LifecycleNodes do
+    // exist by then, but no publisher, device backend, log channel, service,
+    // timer or RT thread has been created — those all live past D1.
+    const std::string ctrl_name(ctrl->Name());
+    for (const std::string& id : {ctrl_name, entry.config_key}) {
+      const auto prev = controller_name_to_idx_.find(id);
+      if (prev == controller_name_to_idx_.end()) {
+        continue;
+      }
+      bring_up_failed = true;
+      RCLCPP_FATAL(get_logger(),
+                   "Controller identifier '%s' is already claimed by registration #%d "
+                   "(config_key='%s'); #%zu (config_key='%s', Name()='%s') would shadow "
+                   "it in the switch_controller / initial_controller namespace.",
+                   id.c_str(), prev->second,
+                   entries[static_cast<std::size_t>(prev->second)].config_key.c_str(), i,
+                   entry.config_key.c_str(), ctrl_name.c_str());
+    }
+
+    controller_name_to_idx_[ctrl_name] = static_cast<int>(i);
     controller_name_to_idx_[entry.config_key] = static_cast<int>(i);
 
     controllers_.push_back(std::move(ctrl));
@@ -710,8 +774,8 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // (idx 0). rtc_* stays robot-agnostic — it does not assume any specific
   // controller name is registered (ARCH-1).
   const std::string initial_ctrl = get_parameter("initial_controller").as_string();
-  const auto it = name_to_idx.find(initial_ctrl);
-  if (it != name_to_idx.end()) {
+  const auto it = controller_name_to_idx_.find(initial_ctrl);
+  if (it != controller_name_to_idx_.end()) {
     active_controller_idx_.store(it->second);
   } else {
     const std::string fallback_name =
