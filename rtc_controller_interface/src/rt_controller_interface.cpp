@@ -83,20 +83,36 @@ const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
 // map). Skipping it silently brings the controller up with no target
 // subscription and no diagnostic, so issue #196 Phase 5 made it fail closed —
 // the throw propagates through LoadConfig into a configure failure (Phase 1).
-void RequireSequenceIfPresent(const YAML::Node& group_node, const char* key) {
-  if (group_node[key] && !group_node[key].IsSequence()) {
-    throw std::runtime_error(std::string("Topic group '") + key +
+// Returns the lane node so the caller validates and uses the same handle —
+// keeping the guard adjacent to its use, so a future third lane cannot be
+// parsed without being checked.
+YAML::Node RequireSequenceIfPresent(const YAML::Node& group_node, const std::string& group_name,
+                                    const char* key) {
+  const YAML::Node lane = group_node[key];
+  if (lane && !lane.IsSequence()) {
+    throw std::runtime_error("Topic group '" + group_name + "': '" + std::string(key) +
                              "' must be a sequence of {topic, role} entries");
   }
+  return lane;
 }
 
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
-void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) {
-  RequireSequenceIfPresent(group_node, "subscribe");
-  RequireSequenceIfPresent(group_node, "publish");
+void ParseDeviceTopicGroup(const YAML::Node& group_node, const std::string& group_name,
+                           DeviceTopicGroup& out) {
+  const YAML::Node subscribe = RequireSequenceIfPresent(group_node, group_name, "subscribe");
+  const YAML::Node publish = RequireSequenceIfPresent(group_node, group_name, "publish");
 
-  if (group_node["subscribe"]) {
-    for (const auto& entry : group_node["subscribe"]) {
+  // A group map carrying neither lane is a misspelled key (`subscibe:`), not a
+  // configuration — it yields a group that exists but routes nothing, which is
+  // the same silently-deaf controller the sequence check above closes.
+  if (!subscribe && !publish) {
+    throw std::runtime_error("Topic group '" + group_name +
+                             "' declares neither 'subscribe' nor 'publish' — check the key "
+                             "spelling");
+  }
+
+  if (subscribe) {
+    for (const auto& entry : subscribe) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
       if (kSubscribeRoleStrings.find(role_str) == kSubscribeRoleStrings.end()) {
@@ -106,8 +122,8 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
     }
   }
 
-  if (group_node["publish"]) {
-    for (const auto& entry : group_node["publish"]) {
+  if (publish) {
+    for (const auto& entry : publish) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
       auto it = kPublishRoleMap.find(role_str);
@@ -275,12 +291,14 @@ RTControllerInterface::GetSharedModelBuilder() const noexcept {
 }
 
 TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_node) {
-  // ── Detect deprecated flat format (topics.subscribe exists directly) ──
+  // ── Detect deprecated flat format (topics.subscribe / topics.publish) ──
   // Group names are arbitrary strings, so a top-level key literally named
-  // `subscribe` is the flat format whatever its node type — the pre-Phase-5
-  // IsSequence() guard let a malformed flat config fall through and be parsed
-  // as a device group named "subscribe".
-  if (topics_node["subscribe"]) {
+  // `subscribe` or `publish` is the flat format whatever its node type — the
+  // pre-Phase-5 IsSequence() guard let a malformed flat config fall through
+  // and be parsed as a device group named "subscribe". `publish` is checked
+  // for the same reason: a publish-only flat config used to parse as a group
+  // named "publish" that routed nothing.
+  if (topics_node["subscribe"] || topics_node["publish"]) {
     throw std::runtime_error(
         "Flat topics: format is deprecated. "
         "Migrate to device-group keyed format (e.g. topics.ur5e / "
@@ -293,10 +311,20 @@ TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_nod
   // ── Dynamic device group parsing: iterate all keys ──
   for (auto it = topics_node.begin(); it != topics_node.end(); ++it) {
     const std::string group_name = it->first.as<std::string>();
+    // A sequence here means the author wrote the entry list directly under the
+    // group name and dropped the `subscribe:` line — the same indentation slip
+    // RequireSequenceIfPresent catches one level down, and equally silent
+    // before Phase 5. Scalars stay skipped so the section can still carry
+    // plain settings alongside groups (ParseTopicConfigScalarGroupSkipped).
+    if (it->second.IsSequence()) {
+      throw std::runtime_error("Topic group '" + group_name +
+                               "' must be a map with 'subscribe' / 'publish' keys, not a "
+                               "sequence — is the 'subscribe:' line missing?");
+    }
     if (!it->second.IsMap()) {
       continue;
     }
-    ParseDeviceTopicGroup(it->second, cfg[group_name]);
+    ParseDeviceTopicGroup(it->second, group_name, cfg[group_name]);
   }
 
   return cfg;

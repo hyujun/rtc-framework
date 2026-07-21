@@ -340,9 +340,20 @@ my_controller:
           role: "target"
 ```
 
-> 폐기된 flat format (`topics.subscribe`를 직접 사용)은 마이그레이션 에러를 발생시킵니다.
+> 폐기된 flat format (`topics.subscribe` / `topics.publish` 를 직접 사용)은 마이그레이션 에러를 발생시킵니다.
 
-**형식 검증은 fail-closed 입니다 (issue #196 Phase 5).** `subscribe:` / `publish:` 키가 존재하는데 `{topic, role}` 엔트리의 **sequence 가 아니면** (들여쓰기 실수로 map 이 되는 경우가 대부분) `ParseTopicConfig` 가 throw 하고, Phase 1 의 fail-closed lifecycle 이 이를 configure 실패로 잇습니다. Phase 5 이전에는 이 블록을 조용히 건너뛰어 컨트롤러가 target 구독 0개로, 아무 진단 없이 기동했습니다. 단 `topics:` 아래에서 값이 map 이 아닌 키는 계속 group 이 아닌 것으로 보고 건너뜁니다 (스칼라 설정값을 같은 섹션에 둘 수 있도록).
+**형식 검증은 fail-closed 입니다 (issue #196 Phase 5).** 원칙은 하나 — *"group 은 존재하는데 아무것도 라우팅하지 않는 상태"* 로는 기동할 수 없다. Phase 5 이전에는 아래 네 가지가 전부 조용히 건너뛰어져 컨트롤러가 target 구독 0개로, 아무 진단 없이 올라왔습니다. 이제 `ParseTopicConfig` 가 throw 하고 Phase 1 의 fail-closed lifecycle 이 이를 configure 실패로 잇습니다.
+
+| 잘못된 형태 | 전형적 원인 |
+|---|---|
+| `subscribe:` / `publish:` 값이 `{topic, role}` **sequence 가 아님** | 들여쓰기 실수로 `- ` 가 빠져 map 이 됨 |
+| group 값이 **sequence** | `subscribe:` 줄 자체를 빠뜨리고 엔트리를 group 밑에 직접 씀 |
+| group map 에 `subscribe` / `publish` 가 **둘 다 없음** | 키 오타 (`subscibe:`) |
+| 최상위에 `subscribe:` 또는 `publish:` | 폐기된 flat format |
+
+진단 메시지는 **group 이름과 lane 이름을 모두** 포함하므로 (`Topic group 'hand': 'subscribe' must be ...`) 다중 group config 에서 어느 블록이 깨졌는지 바로 찾을 수 있습니다.
+
+단 `topics:` 아래에서 값이 **스칼라** 인 키는 계속 group 이 아닌 것으로 보고 건너뜁니다 (스칼라 설정값을 같은 섹션에 둘 수 있도록). 엔트리 수준의 미지 키(`data_size:` 등)도 무시됩니다 — 동작을 바꾸지 않으므로 거부해도 안전 이득이 없습니다. 엄격히 검증되는 것은 무엇이 생성될지 결정하는 `role:` 문자열입니다.
 
 ### 토픽 소유권 (issue #138)
 

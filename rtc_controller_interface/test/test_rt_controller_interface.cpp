@@ -409,7 +409,11 @@ robot:
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
 }
 
-TEST(RTControllerInterfaceTest, ParseTopicConfigNonMapGroupSkipped) {
+// Renamed from ParseTopicConfigNonMapGroupSkipped (#196 Phase 5 review): the
+// assertions are unchanged, but "non-map" is no longer the contract. A
+// sequence-valued group now throws (SequenceValuedGroupThrows below); only
+// scalars are skipped, so the section can carry plain settings beside groups.
+TEST(RTControllerInterfaceTest, ParseTopicConfigScalarGroupSkipped) {
   const auto node = YAML::Load(R"(
 ur5e:
   subscribe:
@@ -525,6 +529,63 @@ subscribe:
   role: target
 )");
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, SequenceValuedGroupThrows) {
+  // The slip one level above SubscribeBlockThatIsNotASequenceThrows: the entry
+  // list is written directly under the group name with no `subscribe:` key.
+  // Before the Phase 5 review this hit the `!IsMap()` skip that exists for
+  // scalar settings, so the controller came up routing nothing, in silence.
+  const auto node = YAML::Load(R"(
+ur5e:
+  - {topic: /ur5e/target, role: target}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, GroupWithNeitherLaneThrows) {
+  // `subscibe:` — a misspelled lane key leaves a group map that parses clean
+  // and routes nothing. Same silent outcome, so it is refused too.
+  const auto node = YAML::Load(R"(
+ur5e:
+  subscibe:
+    - {topic: /ur5e/target, role: target}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, PublishOnlyFlatFormatThrows) {
+  // The flat-format check used to test `subscribe` alone, so a publish-only
+  // flat config fell through and parsed as a device group named "publish"
+  // whose value is a sequence — no publisher, no error.
+  const auto node = YAML::Load(R"(
+publish:
+  - {topic: transforms, role: robot_transforms}
+)");
+  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+}
+
+TEST(RTControllerInterfaceTest, MalformedGroupNamesItselfInTheDiagnostic) {
+  // A fail-closed parser is only useful if the operator can find the offending
+  // block. The pre-review message labelled the lane key as the group name
+  // ("Topic group 'subscribe'"), which names nothing that exists in the file.
+  const auto node = YAML::Load(R"(
+ur5e:
+  subscribe:
+    - {topic: /ur5e/target, role: target}
+hand:
+  subscribe:
+    topic: /hand/target
+    role: target
+)");
+  try {
+    StubController::ParseTopicConfig(node);
+    FAIL() << "malformed 'hand' group must throw";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("hand"), std::string::npos) << "diagnostic must name the group: " << msg;
+    EXPECT_NE(msg.find("subscribe"), std::string::npos) << "and the lane: " << msg;
+  }
 }
 
 TEST(RTControllerInterfaceTest, ParseTopicConfigIgnoresUnknownEntryKeys) {
