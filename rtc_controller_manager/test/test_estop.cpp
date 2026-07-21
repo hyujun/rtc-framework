@@ -287,5 +287,71 @@ TEST_F(EstopTest, DrainLogPrintsTimingSummaryWhenSignalled) {
   SUCCEED();
 }
 
+// ── Slot-mapping build guards (issue #198 comment 16) ────────────────────────
+//
+// BuildControllerSlotMappings translates each controller's declared device
+// groups into the fixed slot array the RT loop indexes. Both refusals below
+// defend inputs the controller-interface parser makes impossible today — it
+// rejects a group that declares neither `subscribe:` nor `publish:`, which is
+// what would otherwise leave a group out of group_slot_map_ or let a
+// controller's group count outrun the upstream ceiling. That invariant lives
+// in a different package with nothing binding the two together, so the guards
+// are driven directly here; through YAML they are unreachable and would be
+// decorative.
+
+class SlotMappingTest : public EstopTest {
+ protected:
+  // Builds a TopicConfig with `n` groups named g0..g{n-1}, each carrying one
+  // subscribe entry so it looks exactly like a parser-accepted group.
+  static TopicConfig MakeGroups(int n) {
+    TopicConfig tc;
+    for (int i = 0; i < n; ++i) {
+      tc["g" + std::to_string(i)].subscribe.push_back({"topic" + std::to_string(i)});
+    }
+    return tc;
+  }
+};
+
+TEST_F(SlotMappingTest, MapsEveryDeclaredGroupToItsConfiguredSlot) {
+  ControllerLifecycleTestAccess::ClearGroupSlots(*node_);
+  ControllerLifecycleTestAccess::SetGroupSlot(*node_, "g0", 3);
+  ControllerLifecycleTestAccess::SetGroupSlot(*node_, "g1", 1);
+  ControllerLifecycleTestAccess::SetTopicConfigForController(*node_, 0, MakeGroups(2));
+  ControllerLifecycleTestAccess::SetTopicConfigForController(*node_, 1, MakeGroups(2));
+
+  ASSERT_TRUE(ControllerLifecycleTestAccess::CallBuildControllerSlotMappings(*node_));
+  EXPECT_EQ(2, ControllerLifecycleTestAccess::GetMappedGroupCount(*node_, 0));
+  EXPECT_EQ(3, ControllerLifecycleTestAccess::GetMappedSlot(*node_, 0, 0));
+  EXPECT_EQ(1, ControllerLifecycleTestAccess::GetMappedSlot(*node_, 0, 1));
+}
+
+TEST_F(SlotMappingTest, RefusesAGroupThatHasNoDeviceSlot) {
+  // g1 is deliberately absent from group_slot_map_. operator[] would have
+  // default-inserted 0, silently routing g1's commands to whichever device
+  // owns slot 0 — and, since the map is re-read afterwards, minting a
+  // duplicate watchdog entry and digital twin for that slot too.
+  ControllerLifecycleTestAccess::ClearGroupSlots(*node_);
+  ControllerLifecycleTestAccess::SetGroupSlot(*node_, "g0", 0);
+  ControllerLifecycleTestAccess::SetTopicConfigForController(*node_, 0, MakeGroups(2));
+  ControllerLifecycleTestAccess::SetTopicConfigForController(*node_, 1, MakeGroups(1));
+
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallBuildControllerSlotMappings(*node_));
+}
+
+TEST_F(SlotMappingTest, RefusesAControllerDeclaringMoreGroupsThanTheRtArraysHold) {
+  // The upstream ceiling counts groups that survived the topics filter; the
+  // RT read loop iterates the declared groups. This guard closes that gap on
+  // the count the loop actually uses.
+  const int over = ControllerLifecycleTestAccess::MaxSlots() + 1;
+  ControllerLifecycleTestAccess::ClearGroupSlots(*node_);
+  for (int i = 0; i < over; ++i) {
+    ControllerLifecycleTestAccess::SetGroupSlot(*node_, "g" + std::to_string(i), 0);
+  }
+  ControllerLifecycleTestAccess::SetTopicConfigForController(*node_, 0, MakeGroups(over));
+  ControllerLifecycleTestAccess::SetTopicConfigForController(*node_, 1, MakeGroups(1));
+
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallBuildControllerSlotMappings(*node_));
+}
+
 }  // namespace
 }  // namespace rtc

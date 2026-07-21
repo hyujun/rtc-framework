@@ -188,6 +188,63 @@ void RtControllerNode::ResetControllerBringUpState() {
   // does clear it). Adding it would defend a state that cannot occur.
 }
 
+// ── Per-controller flat slot mappings (RT-safe, no map lookup) ──────────────
+//
+// Phase 4: capability per slot is unknown here (it depends on the backend
+// impl, and is patched in by PropagateCapabilitiesIntoMappings after
+// CreateDeviceBackends). Slots / num_groups are filled now; capabilities[]
+// stays zero.
+//
+// Both guards below defend against a group that reaches here without a slot
+// or past the fixed slot capacity. Neither is reachable through YAML today —
+// the controller-interface parser refuses a group that declares neither
+// `subscribe:` nor `publish:` (rt_controller_interface.cpp), so the
+// topics-filter that builds group_slot_map_ never actually drops a group, and
+// the group-count ceiling upstream therefore sees every group. But that is an
+// invariant enforced in a *different package*, with nothing binding the two
+// together: the moment the parser contract relaxes, a phantom group would
+// alias device slot 0 (wrong actuator, wrong digital twin, duplicate watchdog
+// entry) and the RT read loop would index past its fixed arrays. Same
+// judgement `1ab99b8` applied to controller_name_to_idx_ — the container has
+// to be safe on its own rather than rely on who reads it next.
+bool RtControllerNode::BuildControllerSlotMappings() {
+  controller_slot_mappings_.assign(controllers_.size(), ControllerSlotMapping{});
+  for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
+    auto& mapping = controller_slot_mappings_[ci];
+    const auto& groups = controller_topic_configs_[ci].groups;
+
+    // Counted before the loop: the RT read loop iterates `groups` directly,
+    // so its bound is the group count as declared, not the count that
+    // survived any filtering.
+    if (groups.size() > static_cast<std::size_t>(ControllerSlotMapping::kMaxSlots)) {
+      RCLCPP_FATAL(get_logger(),
+                   "Controller '%s' declares %zu device groups, past the RT path's fixed capacity "
+                   "of %d — refusing to configure",
+                   controllers_[ci]->Name().data(), groups.size(),
+                   ControllerSlotMapping::kMaxSlots);
+      return false;
+    }
+
+    int gi = 0;
+    for (const auto& [gname, ggroup] : groups) {
+      const auto it = group_slot_map_.find(gname);
+      if (it == group_slot_map_.end()) {
+        // operator[] would have default-inserted 0 here, silently routing this
+        // group's commands to whichever device owns slot 0.
+        RCLCPP_FATAL(get_logger(),
+                     "Controller '%s' group '%s' has no device slot — refusing to configure "
+                     "rather than defaulting it to slot 0",
+                     controllers_[ci]->Name().data(), gname.c_str());
+        return false;
+      }
+      mapping.slots[static_cast<std::size_t>(gi)] = it->second;
+      ++gi;
+    }
+    mapping.num_groups = gi;
+  }
+  return true;
+}
+
 bool RtControllerNode::DeclareAndLoadParameters() {
   // Helper: declare only if not already auto-declared from YAML overrides.
   // (NodeOptions::automatically_declare_parameters_from_overrides is enabled.)
@@ -682,22 +739,9 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     return false;
   }
 
-  // ── Build per-controller flat slot mappings (RT-safe, no map lookup) ────
-  // Phase 4: capability per slot is unknown here (depends on backend impl,
-  // built later by CreateDeviceBackends). Slots/num_groups are filled now;
-  // capabilities[] stays zero and is patched after backends create.
-  controller_slot_mappings_.resize(controllers_.size());
-  for (std::size_t ci = 0; ci < controllers_.size(); ++ci) {
-    auto& mapping = controller_slot_mappings_[ci];
-    int gi = 0;
-    for (const auto& [gname, ggroup] : controller_topic_configs_[ci].groups) {
-      if (gi < ControllerSlotMapping::kMaxSlots) {
-        const auto gidx = static_cast<std::size_t>(gi);
-        mapping.slots[gidx] = group_slot_map_[gname];
-      }
-      ++gi;
-    }
-    mapping.num_groups = gi;
+  if (!BuildControllerSlotMappings()) {
+    ResetControllerBringUpState();
+    return false;
   }
 
   // Pass control rate and device configs to all controllers

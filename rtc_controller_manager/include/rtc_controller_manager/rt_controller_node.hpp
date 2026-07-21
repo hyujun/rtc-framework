@@ -132,6 +132,13 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // failed configure leaves no controller behind as an active/switch
   // candidate.
   void ResetControllerBringUpState();
+  // Fills controller_slot_mappings_ from controller_topic_configs_ +
+  // group_slot_map_. Returns false when a controller declares more device
+  // groups than the RT path's fixed arrays hold, or names a group that has no
+  // device slot — either way configure is refused rather than routed to a
+  // default slot. See the definition for why both are unreachable via YAML
+  // today and defended anyway.
+  [[nodiscard]] bool BuildControllerSlotMappings();
   // Issue #138: controller-YAML target subscriptions are controller-owned
   // (per-controller LifecycleNode, created in integrated_bringup owned_topics).
   // Device-wire state/motor/sensor lanes are owned by DeviceBackend impls

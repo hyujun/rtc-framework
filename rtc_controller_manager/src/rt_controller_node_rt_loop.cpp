@@ -234,11 +234,22 @@ void RtControllerNode::ControlLoop() {
     RTC_TRACE_SCOPE("CM::ReadDeviceState");
     std::size_t di = 0;
     for ([[maybe_unused]] const auto& [gname, ggroup] : active_tc.groups) {
-      const auto slot = static_cast<std::size_t>(slot_mapping.slots[di]);
+      // Bound the iteration the same way the WriteCommand and snapshot-fill
+      // loops below already do. Configure refuses a controller with more
+      // groups than kMaxSlots (BuildControllerSlotMappings), so reaching this
+      // break means that guard was bypassed — but the three loops walk the
+      // same map with the same fixed arrays behind them, and this was the one
+      // without a stop.
+      if (di >= static_cast<std::size_t>(ControllerSlotMapping::kMaxSlots)) {
+        break;
+      }
+      const int raw_slot = slot_mapping.slots[di];
       const auto cap = slot_mapping.capabilities[di];
       auto& dev = state.devices[di];
       urtc::DeviceStateCache cache{};
-      if (backends_[slot]) {
+      const bool slot_in_range = raw_slot >= 0 && raw_slot < kMaxDevices;
+      const auto slot = static_cast<std::size_t>(slot_in_range ? raw_slot : 0);
+      if (slot_in_range && backends_[slot]) {
         (void)backends_[slot]->ReadState(cache);
         if (backends_[slot]->HasMotorState())
           backends_[slot]->ReadMotorState(cache);

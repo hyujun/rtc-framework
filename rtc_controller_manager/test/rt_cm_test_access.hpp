@@ -320,6 +320,37 @@ class ControllerLifecycleTestAccess {
     node.CreateDigitalTwinPublishers();
   }
 
+  // ── Slot-mapping build guards (issue #198 comment 16) ─────────────────────
+  // Both refusals defend inputs the controller-interface parser currently
+  // makes impossible, so they cannot be reached through YAML. Driving the
+  // build directly with a hand-built TopicConfig is the only way to prove the
+  // guards actually fire rather than being decorative.
+  static void SetTopicConfigForController(RtControllerNode& node, std::size_t ctrl_idx,
+                                          rtc::TopicConfig tc) {
+    node.controller_topic_configs_[ctrl_idx] = std::move(tc);
+  }
+
+  static void SetGroupSlot(RtControllerNode& node, const std::string& group, int slot) {
+    node.group_slot_map_[group] = slot;
+  }
+
+  static void ClearGroupSlots(RtControllerNode& node) { node.group_slot_map_.clear(); }
+
+  static bool CallBuildControllerSlotMappings(RtControllerNode& node) {
+    return node.BuildControllerSlotMappings();
+  }
+
+  static int GetMappedSlot(const RtControllerNode& node, std::size_t ctrl_idx,
+                           std::size_t group_idx) {
+    return node.controller_slot_mappings_[ctrl_idx].slots[group_idx];
+  }
+
+  static int GetMappedGroupCount(const RtControllerNode& node, std::size_t ctrl_idx) {
+    return node.controller_slot_mappings_[ctrl_idx].num_groups;
+  }
+
+  static int MaxSlots() { return RtControllerNode::ControllerSlotMapping::kMaxSlots; }
+
   // ── Digital-twin lane (issue #198 Phase 2) ──────────────────────────────────
   // The state-lane callback only raises the dirty bit; DrainDigitalTwin runs
   // on the nrt_publish thread. Tests drive the drain by hand so the split is
