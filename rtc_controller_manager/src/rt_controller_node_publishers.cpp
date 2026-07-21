@@ -17,10 +17,10 @@ namespace urtc = rtc;
 
 void RtControllerNode::CreatePublishers() {
   // Phase 4 + issue #138: device-wire command publication is owned by
-  // DeviceBackend impls; controller-output roles (kRobotTarget /
-  // kRobotTransforms / kDigitalTwinState) are always controller-owned and are
-  // created on each controller's LifecycleNode (integrated_bringup
-  // owned_topics). CM only owns its fixed publishers below.
+  // DeviceBackend impls; the controller-output role (kRobotTransforms — the
+  // only one left after issue #196 Phase 5) is controller-owned and created on
+  // each controller's LifecycleNode (integrated_bringup owned_topics). CM only
+  // owns its fixed publishers below.
   CreateDigitalTwinPublishers();
   CreateFixedSafetyPublishers();
 }
