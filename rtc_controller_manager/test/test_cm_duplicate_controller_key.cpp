@@ -11,7 +11,11 @@
 // singleton with no removal API — the duplicate registered below is permanent
 // for the binary, so it must not be able to reach any other test's bring-up.
 // Test order within the file is load-bearing for the same reason: the clean
-// case runs first and the polluting case last.
+// case runs first and the polluting case last. That ordering is a gtest
+// declaration-order guarantee, which --gtest_shuffle / --gtest_repeat / a new
+// TEST_F appended below would break — so the clean case asserts the registry
+// is still pristine first, and fails naming the real cause instead of looking
+// like a scan bug.
 
 #include "rt_cm_pipeline_fixtures.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
@@ -21,6 +25,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -80,6 +85,11 @@ class CmDuplicateKeyTest : public ::testing::Test {
 // Without this the duplicate case below would pass just as well against a scan
 // that refuses every bring-up.
 TEST_F(CmDuplicateKeyTest, UniqueKeysConfigureAndInstantiate) {
+  ASSERT_EQ(std::size_t{1}, ControllerRegistry::Instance().GetEntries().size())
+      << "registry is already polluted — this test must run BEFORE the "
+         "duplicate-registering case in this file. Check for --gtest_shuffle, "
+         "--gtest_repeat, or a TEST_F added after it.";
+
   auto node = MakeNode("test_cm_duplicate_key_clean_node");
 
   ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
