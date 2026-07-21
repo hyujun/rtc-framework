@@ -360,6 +360,16 @@ class PipelineStubBackend : public DeviceBackend {
     last_state_ns_.store(stamp.time_since_epoch().count(), std::memory_order_release);
   }
 
+  // Safe output (issue #198 Phase 4). Records the call so a test can tell
+  // "CM handed the decision to the backend" from "CM wrote a zero-length slot
+  // and the backend silently dropped it" — at the wire those looked the same,
+  // which is what made the old behaviour so easy to mistake for fail-closed.
+  void WriteSafeCommand() noexcept override {
+    safe_write_count_.fetch_add(1, std::memory_order_release);
+  }
+
+  int SafeWriteCount() const { return safe_write_count_.load(std::memory_order_acquire); }
+
   int WriteCount() const { return write_count_.load(std::memory_order_acquire); }
 
   int LastNumChannels() const { return last_num_channels_; }
@@ -375,6 +385,7 @@ class PipelineStubBackend : public DeviceBackend {
  private:
   std::string group_name_;
   std::atomic<int> write_count_{0};
+  std::atomic<int> safe_write_count_{0};
   std::atomic<std::int64_t> last_state_ns_{0};
   int last_num_channels_{0};
   int last_actual_num_channels_{0};

@@ -147,6 +147,8 @@ class StampOnlyBackend : public DeviceBackend {
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& /*slot*/,
                     CommandType /*type*/) noexcept override {}
 
+  void WriteSafeCommand() noexcept override {}
+
   std::chrono::steady_clock::time_point LastStateStamp() const noexcept override { return stamp_; }
 
   void SetStamp(std::chrono::steady_clock::time_point stamp) { stamp_ = stamp; }

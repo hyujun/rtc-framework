@@ -398,7 +398,8 @@ void RtControllerNode::ControlLoop() {
       static_cast<void>(BuildHoldOutput(state, active_controller.GetCommandType()));
     }
   }
-  const urtc::ControllerOutput& output = (estopped || !validation.Ok()) ? hold_output_ : raw_output;
+  const bool substituted = estopped || !validation.Ok();
+  const urtc::ControllerOutput& output = substituted ? hold_output_ : raw_output;
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
@@ -526,8 +527,22 @@ void RtControllerNode::ControlLoop() {
           break;
         const int slot = slot_mapping.slots[out_idx];
         if (slot >= 0 && slot < kMaxDevices && backends_[static_cast<std::size_t>(slot)]) {
-          backends_[static_cast<std::size_t>(slot)]->WriteCommand(
-              snap.group_commands[out_idx], snap.group_commands[out_idx].command_type);
+          auto& backend = *backends_[static_cast<std::size_t>(slot)];
+          // A substituted output that came out zero-length for this device is
+          // BuildHoldOutput reporting it had nothing honest to command — the
+          // device's measured position was non-finite, so "servo to where you
+          // are" has no value to servo to. CM used to write that zero-length
+          // slot and call it fail-closed. Every backend early-returns on it,
+          // so what actually reached the hardware was silence, which it reads
+          // as "carry on" (issue #198 Phase 4). Hand the decision to the
+          // backend, which is the only party still holding a value it knows
+          // to be good.
+          if (substituted && snap.group_commands[out_idx].num_channels == 0) {
+            backend.WriteSafeCommand();
+          } else {
+            backend.WriteCommand(snap.group_commands[out_idx],
+                                 snap.group_commands[out_idx].command_type);
+          }
         }
         ++out_idx;
       }

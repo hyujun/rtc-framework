@@ -34,6 +34,8 @@ class StubBackend : public rtc::DeviceBackend {
   void WriteCommand(const rtc::PublishSnapshot::GroupCommandSlot& /*slot*/,
                     rtc::CommandType /*command_type*/) noexcept override {}
 
+  void WriteSafeCommand() noexcept override {}
+
   [[nodiscard]] std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
     return {};
   }

@@ -112,6 +112,24 @@ void UrDriverNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot
   for (std::size_t i = 0; i < n; ++i)
     cmd_msg_.data[i] = slot.commands[i];
   cmd_pub_->publish(cmd_msg_);
+  cmd_published_ = true;
+}
+
+void UrDriverNativeBackend::WriteSafeCommand() noexcept {
+  // L3 under CM::WriteCommand — same RT tick, same publisher.
+  RTC_TRACE_SCOPE("UrDriverNativeBackend::WriteSafeCommand");
+  // Nothing published yet means there is no known-good command to fall back
+  // on, and this backend has no disable to reach for instead. Inventing a
+  // value here would be worse than the silence: 0.0 on a position lane is
+  // "go to the origin", which is the failure #196 spent a whole phase
+  // keeping off the wire.
+  if (!cmd_pub_ || !cmd_published_) {
+    return;
+  }
+  // Re-publish the last command known to have gone out. Physically this
+  // leaves the device where the silent path left it — the difference is that
+  // the intent is now explicit on the wire and the lane stays live.
+  cmd_pub_->publish(cmd_msg_);
 }
 
 }  // namespace rtc

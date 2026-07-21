@@ -45,6 +45,8 @@ class CdbStubBackend : public DeviceBackend {
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& /*slot*/,
                     CommandType /*command_type*/) noexcept override {}
 
+  void WriteSafeCommand() noexcept override {}
+
   // Honours the LastStateStamp contract (issue #198): epoch until the first
   // state arrives, stamped before the ready callback fires.
   std::chrono::steady_clock::time_point LastStateStamp() const noexcept override { return stamp_; }

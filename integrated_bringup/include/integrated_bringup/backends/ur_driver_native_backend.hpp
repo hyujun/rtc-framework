@@ -42,6 +42,14 @@ class UrDriverNativeBackend : public DeviceBackend {
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
                     CommandType command_type) noexcept override;
 
+  // Safe output (issue #198 Phase 4). This lane is position-only on the wire,
+  // so the safest thing it can emit without a controller output is the last
+  // command it is known to have published — an explicit "stay put" rather
+  // than the silence CM used to send, which the receiver cannot distinguish
+  // from a stalled publisher. There is no disable or torque-off to reach for
+  // here; if the hardware ever gains one, it belongs in this function.
+  void WriteSafeCommand() noexcept override;
+
   [[nodiscard]] std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
     const auto ns = last_state_ns_.load(std::memory_order_acquire);
     return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(ns));
@@ -65,6 +73,12 @@ class UrDriverNativeBackend : public DeviceBackend {
   rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr cmd_pub_;
 
   std_msgs::msg::Float64MultiArray cmd_msg_{};
+
+  // Set once cmd_msg_ has been published at least once — before that there
+
+  // is no known-good command to fall back on.
+
+  bool cmd_published_{false};
 };
 
 }  // namespace rtc

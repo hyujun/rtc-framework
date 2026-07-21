@@ -145,6 +145,39 @@ class DeviceBackend {
     return ct == CommandType::kPosition;
   }
 
+  /// Emit the safest command this backend can produce **from its own state**,
+  /// with no controller output to work from. RT-safe: never blocks, never
+  /// allocates.
+  ///
+  /// CM calls this when it has decided the actuator must not receive a normal
+  /// command AND it cannot build a hold either — the device reported a
+  /// non-finite position, so "servo to where you are" has no value to servo
+  /// to. Previously CM emitted a zero-length command there and treated that
+  /// as fail-closed. It is not: every backend in this tree early-returns on a
+  /// zero-length slot, so "CM sent nothing" reaches the hardware as "keep
+  /// doing what you were doing, motors still driven". Silence is not a safe
+  /// state; it is the absence of a decision.
+  ///
+  /// Deliberately takes no arguments. The whole point is that CM's view of
+  /// the device is untrustworthy at this moment — the backend is the only
+  /// party left holding a value it knows to be good (typically the last
+  /// command it successfully published). It is also why there is no
+  /// SafetyMode enum: the safest action is backend-specific and the backend
+  /// owns it. A backend that gains a real drive-disable implements it here;
+  /// nothing above needs to learn a new mode for that.
+  ///
+  /// Pure virtual on purpose. A default that did nothing would reproduce
+  /// exactly the silence this exists to replace, and a new backend author
+  /// would never be asked the question.
+  ///
+  /// Honest scope note: on all three backends shipped today the only
+  /// available answer is "re-publish the last good command", which leaves the
+  /// device physically where the silent path left it. What changes is that
+  /// the intent is explicit on the wire and in a rosbag, the actuator lane
+  /// stays live for any receiver that watches it, and the contract exists
+  /// before a backend that can do better arrives (ARCH-3).
+  virtual void WriteSafeCommand() noexcept = 0;
+
   // ── Optional capabilities (defaults: not provided) ────────────────────────
 
   /// True when this backend exposes a motor-space lane separate from joint
