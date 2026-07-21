@@ -288,6 +288,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   controller_slot_mappings_.clear();
   device_name_configs_.clear();
   slot_to_group_name_.clear();
+  slot_to_sensor_layout_.clear();
   active_groups_.clear();
   group_slot_map_.clear();
   device_timeouts_.clear();
@@ -347,6 +348,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   controller_slot_mappings_.clear();
   device_name_configs_.clear();
   slot_to_group_name_.clear();
+  slot_to_sensor_layout_.clear();
   active_groups_.clear();
   group_slot_map_.clear();
   list_controllers_srv_.reset();
