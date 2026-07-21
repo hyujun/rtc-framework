@@ -35,13 +35,14 @@
 
 ### RT path 절대 금지 (정기 tick — `control_rate` YAML)
 
-RT 핫패스 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`resize`) · `throw`/`catch` · 직접 `RCLCPP_*` 로깅 · `mutex`/`lock_guard` · `auto`+Eigen · quaternion `lerp`/`nlerp` · `shared_ptr` 복사 — 은 **path-scoped rule** [.claude/rules/rt-path.md](.claude/rules/rt-path.md) 에 상세(예외·대안 포함) — 어떤 파일 편집 시 로드되는지는 그 rule 의 frontmatter glob 이 SSoT (AP-DOC-1: 여기 박제 금지). 이 규칙은 RT tick / SCHED_FIFO 경로에만 구속되고 lifecycle·aux·test·init 코드는 면제 (판정 절차는 rule 파일·invariants.md). RT 코드 수정 전 반드시 확인하고, 위반 필요시 §6 `[CONCERN]`.
+RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6) 이며, 전문은 [agent_docs/invariants.md](agent_docs/invariants.md) §RT Path Invariants, 편집 시 자동 로드되는 요약은 **path-scoped rule** [.claude/rules/rt-path.md](.claude/rules/rt-path.md) 에 있다 (예외·대안 포함). 목록 자체를 여기 박제하지 않는 이유는 AP-DOC-1 이며, 실제로 과거에 여기 박힌 7개 목록이 invariants.md 의 9개와 갈라져 RT-9·RT-10 이 헌법에서 사라진 적이 있다 — 어떤 파일 편집 시 로드되는지는 그 rule 의 frontmatter glob 이 SSoT (AP-DOC-1: 여기 박제 금지). 이 규칙은 RT tick / SCHED_FIFO 경로에만 구속되고 lifecycle·aux·test·init 코드는 면제 (판정 절차는 rule 파일·invariants.md). RT 코드 수정 전 반드시 확인하고, 위반 필요시 §6 `[CONCERN]`.
 
 ### Architecture / Process / Numerical
 
 - `rtc_*` 패키지에 robot name / joint count / HW ID 하드코딩 금지 (ARCH-1)
 - 의존성 그래프 상향 의존 금지 (ARCH-2)
 - 두 번째 구체 구현은 abstract interface / concept 정의 후에만 추가 (ARCH-3) — `#ifdef` / hardcoded switch 금지
+- `rtc_*` 는 RT 제어 루프를 구동하는 exec 를 소유하지 않는다 (ARCH-7) — 진입 *함수* 만 export. robot-agnostic standalone 노드·example 은 예외 ([agent_docs/design-principles.md](agent_docs/design-principles.md))
 - `robot_descriptions` 는 data-only 패키지 — 소비자는 `<exec_depend>` + ament_index 런타임 lookup만 (ARCH-5)
 - 새 utility 작성 전 기존 `rtc_*` 패키지에 유사 기능 검색 — 맞지 않으면 fork 대신 일반화 ([agent_docs/design-principles.md](agent_docs/design-principles.md) P5)
 - 코드 변경 → 대응 문서·YAML·CMakeLists·package.xml 동기화 필수 (PROC-1)
@@ -159,6 +160,8 @@ post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하�
 > **`.venv` 는 runtime PC 가 본 workspace 외에 다른 control project 들과 공존하는 환경에서 dependency 를 격리하기 위한 의도된 설계다.** venv 활성 상태에서 `colcon test` / `colcon build` / `ros2 run` / `ros2 launch` 가 실패하면 **반드시 근본 원인을 해결** (sys.path / shebang / wrapper / dep resolution 디버그). gtest binary 직접 실행, venv deactivate 후 colcon 호출, `PYTHONPATH` 강제 우회 등 **격리 무력화 우회 금지** — runtime PC 에서 silent breakage 경로.
 
 위 규칙은 self-contained 하다 — 실패 시 격리를 무력화(gtest 직접 실행 / venv deactivate / `PYTHONPATH` 우회)하지 말고 sys.path / shebang / wrapper / dep resolution 을 디버그한다. 근거·과거 위반 사례는 git log + auto-memory 참조 (머신 종속 절대경로는 박제하지 않는다).
+
+**단 하나의 carve-out — `colcon build` 의 configure 단계**: venv 가 활성이면 CMake `FindPython` 이 venv 의 python 을 잡아 eigenpy/pinocchio configure 가 깨진다. 이건 *검증 우회* 가 아니라 빌드 시스템의 Python 탐색 문제이므로, 이 경우에 한해 `deactivate` 가 허용된다. 다만 **`--cmake-args -DPython3_EXECUTABLE=/usr/bin/python3` 를 우선**하고 (격리를 유지한 채 해결), `build.sh` 를 쓰면 둘 다 불필요하다. `colcon test` / `ros2 run` / `ros2 launch` 실패를 덮기 위한 deactivate 는 **여전히 금지** — 그건 runtime PC 에서 재현될 결함을 숨기는 것이다. README 빠른 시작의 `deactivate 2>/dev/null` 스니펫이 가리키는 것이 바로 이 carve-out 이다.
 
 ## 10. Style Cheatsheet
 

@@ -11,7 +11,7 @@
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
-| DemoWbcController | Position | TSID QP + Hand | **Default `initial_controller`** (sim+robot). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
+| DemoWbcController | Position | TSID QP + Hand | `initial_controller` default — **`ur5e_p1a`·`iiwa7_leap` 만**. `ur5e_p1b` 는 sim·robot 둘 다 `demo_joint_controller` 다 (robot profile 별 `{sim,robot}.yaml` 이 SSoT). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
 ### Base controller joint order & submodel selection (#172 Phase 3)
 
@@ -67,7 +67,7 @@ ros2 param list /demo_wbc_controller
 ros2 param describe /demo_wbc_controller <param>
 ```
 
-또는 컨트롤러 source 의 `DeclareGainParameters()` 멤버 + bringup config (`<robot>_bringup/config/<robot>/controllers/{direct,indirect}/<config_key>.yaml`).
+또는 컨트롤러 source 의 `DeclareGainParameters()` 멤버 + bringup config (`integrated_bringup/config/<robot>/controllers/<config_key>.yaml`).
 
 읽기 전용 cap parameter (`*_max_traj_velocity` 등) 는 `ParameterDescriptor::read_only=true` 로 선언. One-shot 이벤트 (Force-PI grasp) 는 `~/grasp_command` srv (`rtc_msgs/srv/GraspCommand`) — active controller 만 server 를 띄움.
 
@@ -128,11 +128,10 @@ PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/incl
 
 ## ROS2 Topics
 
-**Controller Manager**: switch via `/rtc_cm/switch_controller` (srv, sync, single-active), query via `/rtc_cm/list_controllers` (srv); `/{ns}/active_controller_name` (Pub, latched — rewire trigger for downstream nodes), `/system/estop_status` (Pub). Gain 채널은 더 이상 manager가 소유하지 않으며 컨트롤러별 LifecycleNode parameter로 이관 (위 §Gains 참조).
+**Controller Manager**: switch via `/rtc_cm/switch_controller` (srv, sync, single-active), query via `/rtc_cm/list_controllers` (srv); `/rtc_cm/active_controller_name` (Pub, latched — rewire trigger for downstream nodes; namespace 템플릿이 아니라 `RtControllerNode` 가 박아 쓰는 절대 토픽명이다), `/system/estop_status` (Pub). Gain 채널은 더 이상 manager가 소유하지 않으며 컨트롤러별 LifecycleNode parameter로 이관 (위 §Gains 참조).
 
 **Dynamic** (per controller TopicConfig):
 - **DeviceBackend-owned (HW/sim ↔ controller boundary, Phase 4 SSoT)** — `state_topic` / `motor_topic` / `sensor_topic` (HW→controller) and `command_topic` (controller→HW/sim) are declared in `devices.<group>.backend:` (sim.yaml/robot.yaml) and owned by `DeviceBackend` impls (`mujoco_native` / `ur_driver_native` / `udp_hand_native`). CM no longer reads device-wire roles from controller YAML.
-- **CM-owned (controller YAML)** — Subscribe: `kTarget` (외부 RobotTarget→controller).
 - **Controller-owned (`<config_key>/` namespace, `PublishNonRtSnapshot`)** — YAML role-mapped: `kRobotTransforms` 하나 (issue #196 Phase 5: publisher 가 없던 `kRobotTarget` / `kDigitalTwinState` 제거 — 선언하면 조용히 죽은 토픽이 됐다). CM은 SPSC snapshot 운반만 담당하며 controller YAML 토픽 퍼블리셔를 만들지 않는다 (issue #138: controller YAML entry 는 전부 controller-owned, `ownership:` field 없음). Phase 4: `kGuiPosition` 폐기 — `/rtc_cm/<group>/joint_states` + `<config_key>/transforms` 로 대체.
 - **Controller-owned (no YAML role)** — `GraspState` / `WbcState` / `ToFSnapshot` 은 각 컨트롤러가 `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼로 직접 생성하고 자체 `SeqLock<T>` 로 RT compute → publish thread 전달. `PublishSnapshot` 에서 완전히 분리되어 CM 은 의미를 모름.
 - **상호 배타**: `GraspState` 와 `WbcState` — Force-PI 데모(DemoJoint/Task)만 grasp_state, TSID 데모(DemoWbc)만 wbc_state. DemoWbcController는 `<config_key>/<secondary>/wbc_state` (RELIABLE/1) 로 발행 (secondary = `p1a` for ur5e_p1a, `leap` for iiwa7_leap).
@@ -147,8 +146,11 @@ PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/incl
 
 YAML config 트리:
 
-- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level: `control_rate`, `initial_controller`, `devices.<group>.backend`, `urdf`, `device_timeout_*`), `mujoco_simulator.yaml` (per-robot overlay), `digital_twin.yaml` (per-robot overlay), `controllers/{direct,indirect}/<config_key>.yaml` (production controller params)
+- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level: `control_rate`, `initial_controller`, `devices.<group>.backend`, `urdf`, `device_timeout_*`), `mujoco_simulator.yaml` (per-robot overlay), `digital_twin.yaml` (per-robot overlay), `controllers/<config_key>.yaml` (production controller params — **flat**; `direct/`·`indirect/` 하위 디렉토리는 `rtc_controllers` 예제 레이아웃이지 여기가 아니다)
 - **Agnostic defaults** — `rtc_mujoco_sim/config/solver_param.yaml` (MuJoCo solver SSoT), `rtc_digital_twin/config/digital_twin.yaml` (robot-agnostic display defaults), `udp_hand_driver/config/udp_hand_node.yaml` (UDP transport)
+
+**컨트롤러 YAML 이 어디서 로드되는가**: `RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, ...)` 의 2번째 인자가 lookup 경로의 하위 디렉토리를 정한다. `integrated_bringup` 의 데모 컨트롤러 3종은 `config_subdir` 로 빈 문자열을 넘기므로 `config/<robot>/controllers/<config_key>.yaml` 이 되고, `rtc_controllers` 예제만 `"direct"` / `"indirect"` 를 넘겨 하위 디렉토리를 갖는다. 문서가 예제 레이아웃을 production 레이아웃으로 서술하는 오류가 반복됐으므로 (#213) 새 컨트롤러 추가 시 등록 매크로의 인자를 먼저 확인한다.
+
 - **Reference only** — `rtc_controllers/examples/controllers/{direct,indirect}/*.yaml` (`<robot>` placeholder, production 은 위 robot-specific path 가 owner)
 
 각 YAML 의 정확한 key list 는 파일 자체 + 해당 노드의 `declare_parameter` 호출이 SSoT — 코드에서 grep.

@@ -1,6 +1,8 @@
 # Invariants
 
-이 파일의 규칙은 **위반 시 아키텍처가 깨진다**. 작업 중 이 중 하나를 건드려야 할 것 같으면, 코드를 수정하기 **전에** `[CONCERN] Severity: Critical` 을 보고하고 사용자 컨펌을 받아야 한다.
+이 파일의 규칙은 **위반 시 아키텍처가 깨진다**. 작업 중 이 중 하나를 건드려야 할 것 같으면, 코드를 수정하기 **전에** `[CONCERN]` 을 보고하고 사용자 컨펌을 받아야 한다.
+
+**Severity 는 파일 단위가 아니라 규칙 단위다.** 각 표의 Severity 열이 [CLAUDE.md](../CLAUDE.md) §6 의 E-번호와 1:1 로 대응하며, 그 §6 이 severity 의 SSoT 다 (Critical = 컨펌 전 커밋·PR 금지, Warning = 판단에 따라 진행하되 결정 로그). 이전에 이 문단이 전 파일을 Critical 로 선언해 §6 에서 Warning 인 ARCH-3·ARCH-5 와 충돌했다 (#213).
 
 규칙을 보완하는 문서:
 - [design-principles.md](design-principles.md) — ARCH 섹션의 근거 (robot-agnostic, 5 principles)
@@ -8,7 +10,13 @@
 
 ## RT Path Invariants
 
-**RT path 정의**: `control_rate` YAML 파라미터로 설정된 정기 tick **또는 SCHED_FIFO dedicated-core 로 실행되는 모든 thread** 에서 실행되는 모든 경로. 프레임워크는 rate-agnostic (설계 범위 100 Hz–5 kHz, default 500 Hz; 상수: `rtc::kMin/kMax/kDefaultControlRateHz`)으로, **"500 Hz"는 default 일 뿐 가정으로 박지 말 것** — RT 안전성은 *모든* 지원 rate에서 성립해야 한다. 구체적으로 `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `SetDeviceTarget()` / `InitializeHoldPosition()` / `PublishNonRtSnapshot()` 내부 기본 tick, UDP receive 콜백, sensor/target 구독 콜백, `CheckTimeouts` 50 Hz 분기, **MPC thread (`HandlerMPCThread::Tick` 등 — [architecture.md](architecture.md) §Threading Model 의 dedicated SCHED_FIFO core)**, **`UdpHandController::RunCommCycle`** (self-clocked UDP send/recv cycle — `rtc::PeriodicRtThread` 기반 CommLoop, 별도 SCHED_FIFO thread). **비-RT path**: `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` lifecycle 콜백, `DrainLog()` aux thread, controller LifecycleNode의 1 Hz aux 타이머 (timing CSV drain 등), ROS 파라미터 콜백, ROS subscription / service handler (ROS executor — aux thread).
+**RT path 정의**: `control_rate` YAML 파라미터로 설정된 정기 tick **또는 SCHED_FIFO dedicated-core 로 실행되는 모든 thread** 에서 실행되는 모든 경로. 프레임워크는 rate-agnostic (설계 범위 100 Hz–5 kHz, default 500 Hz; 상수: `rtc::kMin/kMax/kDefaultControlRateHz`)으로, **"500 Hz"는 default 일 뿐 가정으로 박지 말 것** — RT 안전성은 *모든* 지원 rate에서 성립해야 한다.
+
+**어떤 콜백이 RT 인지는 함수 이름이 아니라 그 콜백이 붙은 executor 의 스케줄러가 결정한다.** 판정의 SSoT 는 [architecture.md](architecture.md) §Execution Contexts 표이고, 개별 판정 절차는 [.claude/rules/rt-path.md](../.claude/rules/rt-path.md) 에 있다. 이 구분은 실제로 갈린다 — backend 의 sensor/state 구독 콜백은 `cb_group_rt_callback_` → SCHED_FIFO 라 **RT** 지만, controller 의 RobotTarget 구독 콜백은 controller LifecycleNode 의 default group → `nrt_callback_executor` → SCHED_OTHER 라 **비-RT** 다. 둘 다 "구독 콜백" 이지만 구속 여부가 반대다.
+
+RT path 의 대표 진입점: `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `SetDeviceTarget()` / `InitializeHoldPosition()` 의 tick 경로, DeviceBackend 의 state/motor/sensor 구독 콜백, UDP receive 콜백, `CheckTimeouts` 50 Hz 분기, **MPC thread** (`HandlerMPCThread::Tick` 등 — dedicated SCHED_FIFO core), **`UdpHandController::RunCommCycle`** (self-clocked UDP send/recv cycle — `rtc::PeriodicRtThread` 기반 CommLoop, 별도 SCHED_FIFO thread).
+
+**비-RT path**: `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` lifecycle 콜백, `DrainLog()` aux thread, controller LifecycleNode 의 1 Hz aux 타이머 (timing CSV drain 등), ROS 파라미터 콜백, controller-owned RobotTarget 구독과 grasp_command 서비스 핸들러, 그리고 **`PublishNonRtSnapshot()`** — 이름과 달리 executor 콜백이 아니라 `NrtPublishLoopEntry` 의 전용 `std::jthread` (SCHED_OTHER) 에서 SPSC drain 으로 호출된다.
 
 ### RT callback rule
 
@@ -209,14 +217,15 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 
 ## Architecture Invariants
 
-| # | 규칙 | 이유 | 위반 탐지 |
-|---|------|------|-----------|
-| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Generality) | **자동** — hook Phase 0 의 ARCH-1 검사 |
-| ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | Cyclic dep / abstraction leak | 수동 리뷰 — `rtc_base/`가 `rtc_controllers/` include, `rtc_*/`가 integration 패키지 include 등 |
-| ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 수동 리뷰 — 새 `.cpp`에 대응하는 pure-virtual base 부재 |
-| ARCH-4 | integration 패키지가 `rtc_*` private 헤더 (`rtc_*/src/`) include 금지 | 경계 훼손, robot-specific leak | **자동** — hook Phase 0 의 ARCH-4 검사 |
-| ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | 수동 리뷰 — `find_package` / `ament_target_dependencies` / `<depend>` 에 `robot_descriptions` |
-| ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | **자동 (non-blocking)** — hook Phase 0b 의 ARCH-6 검사. 인자 없는 `SensorDataQoS()` (기본 depth 5) 도 `.keep_last(1)` 필요. test fixture 는 면제 |
+| # | 규칙 | Severity ([CLAUDE.md](../CLAUDE.md) §6) | 이유 | 위반 탐지 |
+|---|------|---|------|-----------|
+| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | **Critical** (E-2) | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Generality) | **자동** — hook Phase 0 의 ARCH-1 검사 |
+| ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | **Critical** (E-1) | Cyclic dep / abstraction leak | 수동 리뷰 — `rtc_base/`가 `rtc_controllers/` include, `rtc_*/`가 integration 패키지 include 등 |
+| ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | Warning (E-4) | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 수동 리뷰 — 새 `.cpp`에 대응하는 pure-virtual base 부재 |
+| ARCH-4 | integration 패키지가 `rtc_*` private 헤더 (`rtc_*/src/`) include 금지 | **Critical** (E-1) | 경계 훼손, robot-specific leak | **자동** — hook Phase 0 의 ARCH-4 검사 |
+| ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | Warning (E-10) | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | 수동 리뷰 — `find_package` / `ament_target_dependencies` / `<depend>` 에 `robot_descriptions` |
+| ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | Warning (E-1) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | **자동 (non-blocking)** — hook Phase 0b 의 ARCH-6 검사. 인자 없는 `SensorDataQoS()` (기본 depth 5) 도 `.keep_last(1)` 필요. test fixture 는 면제 |
+| ARCH-7 | `rtc_*` 는 control-framework runtime identity (RT 제어 루프를 구동하는 exec) 를 소유하지 않는다 | Warning (E-4) | agnostic 패키지가 exec 를 가지면 exec ↔ 노드 ↔ pgrep ↔ logger 정렬이 깨지고 robot-specific 의존이 새어든다 | **자동** — hook Phase 0 의 ARCH-7 검사 (`rtc_*/CMakeLists.txt` 의 `add_executable`). 예외는 [design-principles.md](design-principles.md) §ARCH-7 의 범위 — robot-agnostic standalone 노드 (`mujoco_simulator_node`, `closure_state_publisher`) 와 example 타깃 |
 
 **탐지의 SSoT 는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) 다** — ARCH 계열 패턴을 여기에 복제하지 않는다. 이전에는 문서가 divergent copy 를 들고 있었고, 그 사본이 hook 보다 낡은 스코프 (`ur5e_*/`, whole-file) 를 담은 채 조용히 썩었다 (#213). 정확한 정규식·스코프·면제 규칙이 필요하면 hook 을 읽는다.
 
@@ -276,7 +285,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 
-1. 수정 **전** `[CONCERN] Severity: Critical` 보고 — 포맷 SSoT 는 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN] 포맷`. `Detail` 에 어떤 invariant 에 저촉되는지·영향 범위, `Alternative` 에 우회 안 1개 이상 (interface 추가 / SPSC defer / aux thread 이동 등).
+1. 수정 **전** `[CONCERN]` 보고 (Severity 는 위 표의 해당 규칙 열을 그대로 인용) — 포맷 SSoT 는 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN] 포맷`. `Detail` 에 어떤 invariant 에 저촉되는지·영향 범위, `Alternative` 에 우회 안 1개 이상 (interface 추가 / SPSC defer / aux thread 이동 등).
 2. 사용자 컨펌 후 진행
 3. "임시로 위반 → 나중에 정리"는 허용되지 않음. Warning 이상은 별도 리팩터 task로 분리
 

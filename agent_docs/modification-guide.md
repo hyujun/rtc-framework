@@ -10,7 +10,7 @@
               "Adding a New ..." 절을 먼저 읽는다.
               · rtc_*에 추가 → P1·P2 (zero source edit, robot 상수 금지) +
                 ARCH-3 (interface-first; 같은 종류 두 번째 구현이면 base부터)
-              · ur5e_* / shape_estimation에 추가 → 재사용 가능한 부분이
+              · integration 패키지에 추가 → 재사용 가능한 부분이
                 rtc_*에 존재하는지 / 일반화해 끌어올릴 수 있는지 먼저 검토
 1. Locate   → grep / Glob (known symbol) OR Explore agent (broad search)
               파일의 RT / aux / robot-specific 역할 판단
@@ -76,7 +76,8 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 1. Add device entry in `<robot>_bringup/config/<robot>/{sim,robot}.yaml` under `devices:`. **`devices.<group>.backend:` is the SSoT** — declare `backend.type:` (e.g. `ros2_topic`, `udp_hand`, `mujoco_sim`) + backend-specific config (topics, transport endpoints). CM 은 더 이상 controller YAML 에서 device-wire role 을 읽지 않으며 backend 구현체가 read/write lane 소유.
 2. Optionally add a timeout entry in `device_timeout_names`/`values`. 설정된 모든 device group 은 자동으로 준비 게이트 + 워치독 대상이 되며, 목록에 없으면 `device_timeout_default_ms` 가 적용된다 (#198) — 목록 누락이 감시 누락을 뜻하지는 않는다.
-3. If a new backend type is needed: implement the `DeviceBackend` interface (`rtc_controller_manager/include/rtc_controller_manager/device_backend.hpp`) + register via `RTC_REGISTER_DEVICE_BACKEND(my_backend)` macro. Override `ReadState()` / `WriteCommand()` (RT-safe) and the `OnConfigure*` / `OnActivate*` lifecycle hooks as needed (base provides default no-op impls). **Layering rule** ([design-principles.md](design-principles.md) §Backend / Controller Layering): backend packs all raw HW values into `DeviceStateCache` (zero-fill unused stride slots — do not skip), never derived quantities. Derived values (`force_magnitude`, `in_contact`, slip rate, ...) belong in the controller.
+3. 현재 등록된 backend type 은 3종이다 — `mujoco_native` (sim), `ur_driver_native` (UR RTDE), `udp_hand_native` (hand UDP). 전부 `integrated_bringup/src/backends/` 에 있고 `RTC_REGISTER_DEVICE_BACKEND` 로 등록되며, `devices.<group>.backend.type` (sim.yaml / robot.yaml) 이 이 tag 로 dispatch 한다. 기존 backend 에 새 설정 키만 필요하면 backend 를 추가하지 말고 그 키를 먼저 검토한다.
+4. If a new backend type is needed: implement the `DeviceBackend` interface (`rtc_controller_manager/include/rtc_controller_manager/device_backend.hpp`) + register via `RTC_REGISTER_DEVICE_BACKEND(my_backend)` macro. Override `ReadState()` / `WriteCommand()` (RT-safe) and the `OnConfigure*` / `OnActivate*` lifecycle hooks as needed (base provides default no-op impls). **Layering rule** ([design-principles.md](design-principles.md) §Backend / Controller Layering): backend packs all raw HW values into `DeviceStateCache` (zero-fill unused stride slots — do not skip), never derived quantities. Derived values (`force_magnitude`, `in_contact`, slip rate, ...) belong in the controller.
 4. If the controller needs to consume the new group: add subscribe topic routing in the controller's YAML `topics:` section (`role: target` typical), and handle the new device index in controller `Compute()` / `SetDeviceTarget()`.
 5. If kinematics needed: add `sub_models` or `tree_models` entry under `urdf:`.
 
@@ -91,7 +92,7 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 새 `<pkg>/package.xml` 디렉토리를 추가하면 **두 build SSoT를 모두** 갱신해야 한다 — 서로 다른 colcon 셀렉터를 쓰므로 누락 시 실패 양상이 다르다:
 
 1. **[repo_scripts/scripts/lib/rt_common.sh](../repo_scripts/scripts/lib/rt_common.sh) `get_base_packages()` (또는 `get_robot_packages()`)** — `build.sh` / `install.sh` 가 `--packages-select`(**비전이**)로 소비. 누락 시 그 패키지를 의존하는 downstream 의 클린 `./build.sh` 가 `find_package(<pkg>)` 에서 실패. rtc_* 빌드 의존이 없으면 `rtc_base` 직후처럼 앞쪽에 둔다.
-2. **[.github/ci-packages.yml](../.github/ci-packages.yml)** — CI 는 `build` 를 `--packages-up-to`(**전이**)로 빌드하므로 빌드 자체는 안 깨지지만, gtest / cppcheck / coverage 는 `test_cpp_*` · `lint_cpp` · `coverage_paths` 에 명시해야 **실행**된다. 의도적으로 제외하면 파일 상단 "의도적 누락" 목록에 사유와 함께 기록 — 안 그러면 silent gap (테스트가 CI 에서 한 번도 안 돌아도 green). Header-only 패키지는 `rtc_base` 선례(test + lint + include-only coverage)를 따른다.
+2. **[.github/ci-packages.yml](../.github/ci-packages.yml)** — CI 는 `build` 를 `--packages-up-to`(**전이**)로 빌드하므로 빌드 자체는 안 깨지지만, gtest / cppcheck / coverage 는 `test_cpp_*` · `lint_cpp` · `coverage_paths` 에 명시해야 **실행**된다. `test_cpp_*` 는 두 갈래이며 의미가 다르다 — **`test_cpp_gated`** 는 실패 시 PR 을 빨갛게 만들고, **`test_cpp_besteffort`** 는 CI 환경에서 불안정한 패키지(TSID solve-time, mimalloc grasp timing 의존)라 coverage 수집만 하고 PR 을 막지 않는다. 즉 "CI 에 있으나 게이트하지 않는" 패키지가 존재하므로, besteffort 목록의 테스트가 로컬에서 깨졌다면 CI green 을 근거로 넘기면 안 된다. 커버리지 리포트 설정은 [codecov.yml](../codecov.yml) 이 소유한다. 의도적으로 제외하면 파일 상단 "의도적 누락" 목록에 사유와 함께 기록 — 안 그러면 silent gap (테스트가 CI 에서 한 번도 안 돌아도 green). Header-only 패키지는 `rtc_base` 선례(test + lint + include-only coverage)를 따른다.
 
 README 패키지 표·count, [architecture.md](architecture.md) dependency graph 는 아래 §Updating an Existing Package 의 Doc 동기화 규칙(PROC-1)을 따른다.
 
@@ -124,4 +125,4 @@ colcon test-result --verbose
 - [ ] `package.xml` deps · version (CMake `find_package` 와 일치)
 - [ ] YAML default · 범위·unit 주석
 - [ ] Doxygen public header 갱신
-- [ ] RT path 변경 시 `[invariants.md](invariants.md)` RT-1~8 grep 자가검사
+- [ ] RT path 변경 시 [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect` 블록으로 자가검사 (RT-1~RT-10, RT-7 은 은퇴)
