@@ -84,10 +84,6 @@ class ControllerLifecycleTestAccess {
     }
   }
 
-  static void SetStateReceived(RtControllerNode& node, bool v) {
-    node.state_received_.store(v, std::memory_order_release);
-  }
-
   static void EnsureActivePublisher(RtControllerNode& node) {
     if (!node.active_ctrl_name_pub_) {
       // Mirror production topic name (rt_controller_node_topics.cpp:430-431):

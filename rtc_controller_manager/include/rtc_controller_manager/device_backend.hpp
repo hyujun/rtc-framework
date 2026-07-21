@@ -143,6 +143,21 @@ class DeviceBackend {
 
   /// Last time a state message arrived on this backend (steady clock). Used
   /// by CM's E-STOP watchdog. RT-safe.
+  ///
+  /// This is the single source of truth for per-device liveness, on both the
+  /// startup gate and the steady-state watchdog (issue #198 §1/§2). Two
+  /// properties are load-bearing for that:
+  ///
+  ///   - A default-constructed time_point means "no state has ever arrived".
+  ///     CM refuses to run the control law until every configured device has
+  ///     reported at least once, so a backend that returns a synthetic
+  ///     non-epoch stamp before its first message would re-open exactly the
+  ///     fail-open this contract exists to close.
+  ///   - The stamp must be published (release) BEFORE the state-ready callback
+  ///     fires, so a CM reader that observes the notification also observes the
+  ///     stamp. It is read from the RT thread while the state lane writes it,
+  ///     so the backing store must be atomic — the plain `time_point` CM used
+  ///     to keep alongside this was a data race, which is why it is gone.
   [[nodiscard]] virtual std::chrono::steady_clock::time_point LastStateStamp() const noexcept = 0;
 
   /// Forward the per-group sensor packing layout resolved by CM. Default

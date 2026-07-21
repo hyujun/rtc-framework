@@ -618,26 +618,11 @@ void RtControllerNode::CreateDeviceBackends() {
       backend->SetSensorLayout(slot_to_sensor_layout_[uslot].value());
     }
 
-    // Find DeviceTimeoutEntry for this group (built earlier in
-    // DeclareAndLoadParameters/CreateTimers; index stable for node
-    // lifetime). Used by the state-ready callback below to refresh
-    // last_update for the E-STOP watchdog.
-    int dt_idx = -1;
-    for (std::size_t i = 0; i < device_timeouts_.size(); ++i) {
-      if (device_timeouts_[i].group_name == group_name) {
-        dt_idx = static_cast<int>(i);
-        break;
-      }
-    }
-
-    backend->SetStateReadyCallback([this, slot, dt_idx]() {
-      // Watchdog timestamp refresh (replaces sub-lambda accounting).
-      if (dt_idx >= 0) {
-        const auto dti = static_cast<std::size_t>(dt_idx);
-        device_timeouts_[dti].last_update = std::chrono::steady_clock::now();
-        device_timeouts_[dti].received.store(true, std::memory_order_relaxed);
-      }
-      state_received_.store(true, std::memory_order_release);
+    backend->SetStateReadyCallback([this, slot]() {
+      // No watchdog bookkeeping here any more: liveness is read straight from
+      // the backend's own LastStateStamp(), which it publishes before invoking
+      // this callback. The copy CM used to keep was both redundant and a data
+      // race against the RT thread (issue #198 §1/§2).
 
       // Digital-twin republish (RELIABLE/10) — single hop into the joint
       // cache via ReadState; trivially copyable POD.

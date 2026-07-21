@@ -10,7 +10,6 @@
 // branches (slot overflow, missing binding, unknown type).
 
 #include "rt_cm_test_access.hpp"
-
 #include "rtc_controller_manager/device_backend.hpp"
 #include "rtc_controller_manager/device_backend_registry.hpp"
 
@@ -36,22 +35,37 @@ class CdbStubBackend : public DeviceBackend {
     configured_ = true;
     last_group_ = config.group_name;
   }
+
   void Activate() override {}
+
   void Deactivate() override {}
+
   bool ReadState(DeviceStateCache& /*cache*/) noexcept override { return false; }
+
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& /*slot*/,
                     CommandType /*command_type*/) noexcept override {}
-  std::chrono::steady_clock::time_point LastStateStamp() const noexcept override { return {}; }
+
+  // Honours the LastStateStamp contract (issue #198): epoch until the first
+  // state arrives, stamped before the ready callback fires.
+  std::chrono::steady_clock::time_point LastStateStamp() const noexcept override { return stamp_; }
+
   bool HasMotorState() const noexcept override { return true; }
+
   bool HasSensorState() const noexcept override { return true; }
 
-  void FireStateReady() { NotifyStateReady(); }
+  void FireStateReady() {
+    stamp_ = std::chrono::steady_clock::now();
+    NotifyStateReady();
+  }
+
   bool configured() const { return configured_; }
+
   const std::string& last_group() const { return last_group_; }
 
  private:
   bool configured_{false};
   std::string last_group_;
+  std::chrono::steady_clock::time_point stamp_{};
 };
 
 RTC_REGISTER_DEVICE_BACKEND(cdb_test_backend, std::make_unique<CdbStubBackend>())
@@ -78,6 +92,7 @@ class CreateDeviceBackendsTest : public ::testing::Test {
       rclcpp::init(0, nullptr);
     }
   }
+
   static void TearDownTestSuite() {
     if (rclcpp::ok()) {
       rclcpp::shutdown();
@@ -116,17 +131,24 @@ TEST_F(CreateDeviceBackendsTest, HappyPathCreatesBackendAndDerivesCapabilities) 
   EXPECT_TRUE(HasCapability(cap, DeviceCapability::kSensorData));
 }
 
-TEST_F(CreateDeviceBackendsTest, StateReadyCallbackMarksStateReceived) {
+TEST_F(CreateDeviceBackendsTest, DeviceBecomesReadyOnItsOwnFirstState) {
+  // The state-ready callback no longer marks anything on the CM side: liveness
+  // is read from the backend's LastStateStamp (issue #198 §1/§2). What this
+  // pins is that the transition still happens, and that it is per device.
   InjectArm("cdb_test_backend");
   ControllerLifecycleTestAccess::CallCreateDeviceBackends(*node_);
+  ControllerLifecycleTestAccess::AddDeviceTimeout(*node_, "arm", std::chrono::seconds(60),
+                                                  /*slot=*/0);
 
   auto* backend =
       dynamic_cast<CdbStubBackend*>(ControllerLifecycleTestAccess::GetBackend(*node_, 0));
   ASSERT_NE(nullptr, backend);
-  EXPECT_FALSE(ControllerLifecycleTestAccess::GetStateReceived(*node_));
+  EXPECT_EQ(0, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(
+                   *node_, std::chrono::steady_clock::now()));
 
   backend->FireStateReady();  // invokes the lambda CreateDeviceBackends installed
-  EXPECT_TRUE(ControllerLifecycleTestAccess::GetStateReceived(*node_));
+  EXPECT_EQ(-1, ControllerLifecycleTestAccess::CallFirstUnreadyDevice(
+                    *node_, std::chrono::steady_clock::now()));
 }
 
 TEST_F(CreateDeviceBackendsTest, PropagateCopiesCapabilityIntoControllerMapping) {
@@ -198,8 +220,9 @@ TEST_F(CreateDeviceBackendsTest, StateReadyRepublishesDigitalTwin) {
   auto* backend =
       dynamic_cast<CdbStubBackend*>(ControllerLifecycleTestAccess::GetBackend(*node_, 0));
   ASSERT_NE(nullptr, backend);
-  backend->FireStateReady();  // exercises the digital-twin republish branch
-  EXPECT_TRUE(ControllerLifecycleTestAccess::GetStateReceived(*node_));
+  // Exercises the digital-twin republish branch. The callback's only remaining
+  // job is that republish, so reaching it without crashing IS the assertion.
+  backend->FireStateReady();
 }
 
 }  // namespace

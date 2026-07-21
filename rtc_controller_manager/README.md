@@ -105,7 +105,7 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 ## 제어 루프 흐름 (정기 tick @ `control_rate`; 예: 500 Hz → 2 ms/tick, 1 kHz → 1 ms, 2 kHz → 0.5 ms)
 
 ### Phase 0: 준비 검사
-- `state_received_` 플래그 확인 -> 타임아웃 시 E-STOP + 노드 종료
+- **디바이스 준비 게이트** — 설정된 **모든** 디바이스 그룹이 timeout 안에 state 를 한 번 이상 보고했는지 확인. 하나라도 미보고면 tick 은 그대로 반환하고 `Compute()` / `WriteCommand()` 는 실행되지 않는다. `init_timeout_sec` 경과 시 `{group}_init_timeout` E-STOP + 노드 종료 (미보고 그룹 이름 포함). 준비 여부는 `backends_[slot]->LastStateStamp()` 가 단일 출처 — CM 은 별도 플래그/타임스탬프를 두지 않는다 (#198 §1/§2)
 - Auto-hold 모드: 외부 타겟 없으면 모든 디바이스가 valid 상태일 때 현재 위치를 타겟으로 초기화
 - `init_complete_` 이후 정상 루프 진입
 
@@ -131,8 +131,10 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 - `LogEntry` -> `log_buffer_.Push()` (SPSC)
 - 1000 이터레이션마다 타이밍 서머리 출력 신호 (실제 출력은 nrt_logging_executor에서)
 
-### 워치독 (50 Hz, 매 10번째 tick)
-- `device_timeouts`에 등록된 각 디바이스 그룹의 state 토픽 수신 간격이 timeout 초과 시 E-STOP
+### 워치독 (50 Hz — divisor = `control_rate` / 50, rate 무관 고정)
+- **설정된 모든 디바이스 그룹**이 감시 대상이다. `device_timeout_names` 는 그룹별 timeout **값**만 공급하며, 목록에 없는 그룹은 `device_timeout_default_ms` 로 감시된다 (#198 §1 — 예전에는 목록에 없는 그룹이 워치독·준비 게이트 양쪽에서 아예 보이지 않았다)
+- 각 그룹의 state 수신 간격이 timeout 초과 시 E-STOP
+- 한 번도 보고하지 않은 그룹은 워치독이 아니라 **준비 게이트**가 담당한다 (Phase 0)
 - Phase 4 이후 워치독은 `devices.<group>.backend.state_topic` 만 추적 (motor/sensor lane은 backend 내부의 `NotifyStateReady` 콜백 한 곳에서 합쳐서 트리거)
 
 ---
@@ -232,7 +234,7 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 
 | 트리거 | 조건 | 결과 |
 |--------|------|------|
-| `init_timeout` | `init_timeout_sec` 내 state 미수신 | `TriggerGlobalEstop("init_timeout")` + 노드 종료 |
+| `{group}_init_timeout` | `init_timeout_sec` 내 해당 그룹이 state 미보고 | `TriggerGlobalEstop("{group}_init_timeout")` + 노드 종료 |
 | `{group}_timeout` | 디바이스 그룹의 state 토픽이 설정된 ms 초과 미갱신 (50Hz 워치독) | `TriggerGlobalEstop("{group}_timeout")` |
 | `consecutive_overrun` | >= 10회 연속 RT 루프 오버런 | `TriggerGlobalEstop("consecutive_overrun")` |
 | `sim_sync_timeout` | 시뮬레이션 모드에서 CV 타임아웃 (state 미수신) | `TriggerGlobalEstop("sim_sync_timeout")` + 노드 종료 |
@@ -394,8 +396,9 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 | `initial_controller` | string | `""` | 시작 컨트롤러 (이름 또는 config_key). 빈 값 = robot bringup yaml이 반드시 지정 |
 | `init_timeout_sec` | double | `5.0` | 초기화 타임아웃 (초). state 미수신 시 E-STOP |
 | `enable_estop` | bool | `true` | E-STOP 워치독 활성화 |
-| `device_timeout_names` | string[] | `[]` | E-STOP 감시 대상 디바이스 그룹 이름 |
+| `device_timeout_names` | string[] | `[]` | 그룹별 timeout 값을 지정할 대상 이름 (감시 대상 자체는 설정된 모든 디바이스 그룹) |
 | `device_timeout_values` | double[] | `[]` | 각 그룹의 state 토픽 타임아웃 (ms) |
+| `device_timeout_default_ms` | double | `1000.0` | `device_timeout_names` 에 없는 그룹에 적용되는 timeout (ms) |
 | `enable_logging` | bool | `true` | CSV 로깅 활성화 |
 | `enable_timing_log` | bool | `true` | 타이밍 CSV 로깅 활성화 |
 | `enable_device_log` | bool | `true` | 디바이스별 CSV 로깅 활성화 |

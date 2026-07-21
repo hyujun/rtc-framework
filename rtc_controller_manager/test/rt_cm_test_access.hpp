@@ -186,15 +186,31 @@ class ControllerLifecycleTestAccess {
   }
 
   // ── Device-timeout watchdog ────────────────────────────────────────────────
+  // Registers a watched device group bound to `slot`. Liveness comes from the
+  // backend installed at that slot (see InjectBackend) — there is no CM-side
+  // timestamp to stage any more.
   static void AddDeviceTimeout(RtControllerNode& node, const std::string& group,
-                               std::chrono::milliseconds timeout, bool received,
-                               std::chrono::steady_clock::time_point last_update) {
+                               std::chrono::milliseconds timeout, int slot) {
     node.device_timeouts_.emplace_back();
     auto& e = node.device_timeouts_.back();
     e.group_name = group;
     e.timeout = timeout;
-    e.last_update = last_update;
-    e.received.store(received, std::memory_order_relaxed);
+    e.slot = slot;
+  }
+
+  static void InjectBackend(RtControllerNode& node, std::size_t slot,
+                            std::unique_ptr<DeviceBackend> backend) {
+    node.backends_[slot] = std::move(backend);
+  }
+
+  static bool CallDeviceLive(const RtControllerNode& node, std::size_t idx,
+                             std::chrono::steady_clock::time_point now) {
+    return node.DeviceLive(node.device_timeouts_[idx], now);
+  }
+
+  static int CallFirstUnreadyDevice(const RtControllerNode& node,
+                                    std::chrono::steady_clock::time_point now) {
+    return node.FirstUnreadyDevice(now);
   }
 
   static std::uint32_t GetWatchdogCheckDivisor(const RtControllerNode& node) {
@@ -204,10 +220,6 @@ class ControllerLifecycleTestAccess {
   static double WatchdogCheckHz() { return RtControllerNode::kWatchdogCheckHz; }
 
   static void CallCheckTimeouts(RtControllerNode& node) { node.CheckTimeouts(); }
-
-  static bool CallAllTimeoutDevicesReceived(const RtControllerNode& node) {
-    return node.AllTimeoutDevicesReceived();
-  }
 
   static void InjectDeviceNameConfigs(RtControllerNode& node,
                                       std::map<std::string, DeviceNameConfig> configs) {
@@ -289,10 +301,6 @@ class ControllerLifecycleTestAccess {
   }
 
   static int MaxDevices() { return RtControllerNode::kMaxDevices; }
-
-  static bool GetStateReceived(const RtControllerNode& node) {
-    return node.state_received_.load(std::memory_order_acquire);
-  }
 
   static void CallCreateDigitalTwinPublishers(RtControllerNode& node) {
     node.CreateDigitalTwinPublishers();

@@ -336,30 +336,41 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   std::vector<ControllerSlotMapping> controller_slot_mappings_;
 
-  // ── Device timeout entries (E-STOP watchdog) ──────────────────────────────
+  // ── Device liveness entries (startup gate + E-STOP watchdog) ──────────────
+  //
+  // One entry per CONFIGURED DEVICE GROUP, not per `device_timeout_names`
+  // entry (issue #198 §1). Deriving the set from the groups that actually got
+  // a backend is what makes "every required device" mean something: a group
+  // left out of the timeout list used to be invisible to both the watchdog and
+  // the startup gate, so forgetting one line of YAML silently disabled the
+  // check for that device. The timeout list now supplies the *value* only.
+  //
+  // The entry carries no timestamp of its own. Liveness is read from
+  // `backends_[slot]->LastStateStamp()`, which is atomic by contract — the
+  // plain `steady_clock::time_point` that used to live here was written by the
+  // state-lane callback and read by the RT thread with no synchronisation at
+  // all (§2), and it duplicated a stamp every backend already maintained.
   struct DeviceTimeoutEntry {
     std::string group_name;
     std::string state_topic;
     std::chrono::milliseconds timeout{100};
-    std::chrono::steady_clock::time_point last_update{};
-    std::atomic<bool> received{false};
-
-    DeviceTimeoutEntry() = default;
-
-    DeviceTimeoutEntry(DeviceTimeoutEntry&& o) noexcept
-        : group_name(std::move(o.group_name)),
-          state_topic(std::move(o.state_topic)),
-          timeout(o.timeout),
-          last_update(o.last_update),
-          received(o.received.load(std::memory_order_relaxed)) {}
-
-    DeviceTimeoutEntry& operator=(DeviceTimeoutEntry&&) = delete;
-    DeviceTimeoutEntry(const DeviceTimeoutEntry&) = delete;
-    DeviceTimeoutEntry& operator=(const DeviceTimeoutEntry&) = delete;
+    int slot{-1};  ///< index into backends_ — the liveness source for this group
   };
 
   std::vector<DeviceTimeoutEntry> device_timeouts_;
-  [[nodiscard]] bool AllTimeoutDevicesReceived() const noexcept;
+
+  /// Liveness of one entry: a state message has arrived AND it is within the
+  /// group's timeout. Both the startup gate and the watchdog use this single
+  /// predicate, so "ready to start" and "still alive" cannot drift apart — a
+  /// re-activate after the device went quiet is refused for the same reason a
+  /// running loop E-STOPs. RT-safe: atomic load plus comparisons.
+  [[nodiscard]] bool DeviceLive(const DeviceTimeoutEntry& entry,
+                                std::chrono::steady_clock::time_point now) const noexcept;
+
+  /// Index of the first configured device that is not live, or -1 when all
+  /// are. Returning the index (rather than a bool) is what lets the startup
+  /// deadline name the device that never reported. RT-safe.
+  [[nodiscard]] int FirstUnreadyDevice(std::chrono::steady_clock::time_point now) const noexcept;
 
   // ── Per-device backends (HW/sim adapters, indexed by group_slot_map_) ────
   // Each backend owns its own SeqLock<DeviceStateCache>; CM reads via
@@ -426,7 +437,6 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // target subscription or mirror (issue #138).
 
   std::atomic<bool> print_timing_summary_{false};
-  std::atomic<bool> state_received_{false};
 
   // Wall-clock timestamp of the previous timing-summary print, used by
   // DrainLog() (log thread, single accessor) to compute the robot-mode

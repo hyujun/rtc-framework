@@ -339,11 +339,26 @@ class PipelineStubBackend : public DeviceBackend {
     write_count_.fetch_add(1, std::memory_order_release);
   }
 
+  // Honours the LastStateStamp contract: default-constructed until the first
+  // state arrives. It used to return now() unconditionally, which claimed the
+  // device had reported before it ever did — harmless while CM kept its own
+  // `received` flag, but the startup gate now reads this and a fixture that
+  // lies here would pass the very test it exists to fail (issue #198 §1).
   std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
-    return std::chrono::steady_clock::now();
+    return std::chrono::steady_clock::time_point(
+        std::chrono::nanoseconds(last_state_ns_.load(std::memory_order_acquire)));
   }
 
-  void FireStateReady() { NotifyStateReady(); }
+  void FireStateReady() {
+    SetStateStamp(std::chrono::steady_clock::now());
+    NotifyStateReady();
+  }
+
+  /// Backdate (or clear) the liveness stamp without notifying — lets a test
+  /// stage a device that reported once and then went quiet.
+  void SetStateStamp(std::chrono::steady_clock::time_point stamp) {
+    last_state_ns_.store(stamp.time_since_epoch().count(), std::memory_order_release);
+  }
 
   int WriteCount() const { return write_count_.load(std::memory_order_acquire); }
 
@@ -360,6 +375,7 @@ class PipelineStubBackend : public DeviceBackend {
  private:
   std::string group_name_;
   std::atomic<int> write_count_{0};
+  std::atomic<std::int64_t> last_state_ns_{0};
   int last_num_channels_{0};
   int last_actual_num_channels_{0};
   std::array<double, 2> last_commands_{};
