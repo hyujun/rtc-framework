@@ -38,7 +38,7 @@
 ### 핵심 설계 원칙
 
 1. **clock_nanosleep RT 루프**: `create_wall_timer()` 대신 `clock_nanosleep(TIMER_ABSTIME)` 절대시간 루프 — executor dispatch 지터 제거
-2. **Inline actuator publish + 1 non-RT lane**: `rt_control` thread (Core 1 FIFO 90) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). controller-owned non-RT 토픽 (RobotTarget · Transforms · DigitalTwin · grasp_state · wbc_state · tof_snapshot) 만 `nrt_publish_buffer_` (cap 16) → `nrt_publish_thread` (CFS) → `controller.PublishNonRtSnapshot` 로 비동기 송출. (v3 의 actuator SPSC lane `publish_buffer_` 제거 — §개요 "v4 아키텍처 변경" 노트)
+2. **Inline actuator publish + 1 non-RT lane**: `rt_control` thread (Core 1 FIFO 90) 가 rt_loop tick 종료 시점에 `DeviceBackend.WriteCommand` 를 직접 호출 (RT-safe contract). controller-owned non-RT 토픽 (Transforms · grasp_state · wbc_state · tof_snapshot) 만 `nrt_publish_buffer_` (cap 16) → `nrt_publish_thread` (CFS) → `controller.PublishNonRtSnapshot` 로 비동기 송출. (v3 의 actuator SPSC lane `publish_buffer_` 제거 — §개요 "v4 아키텍처 변경" 노트)
 3. **DeviceBackend cb_group injection**: 모든 backend (UR / udp_hand / mujoco) 의 state/motor/sensor subscription 이 `Configure(node, cfg, state_cb_group)` 로 받은 `cb_group_rt_callback_` 에 attach — `SubscriptionOptions.callback_group` 으로 RT 경계 subs 가 `rt_callback_executor` (FIFO 70) 에서 dispatch. MutuallyExclusive 그룹 강제 (SeqLock single-writer 보호)
 4. **3 executor 모델**: `rt_callback_executor` (RT 경계 subs) · `nrt_callback_executor` (controller-owned subs · services · nrt_publish drain) · `nrt_logging_executor` (CSV drain · 지연 E-STOP log). RT loop · nrt_publish 는 `std::jthread` + eventfd
 5. **Overrun recovery**: 놓친 tick skip + 다음 경계 재정렬, 연속 10회 시 E-STOP
@@ -91,7 +91,7 @@ nrt_callback_executor (Core 5 on 6c shared / Core 7+ dedicated on ≥ 8c,
 
 nrt_publish_thread (std::jthread, eventfd wakeup, nrt_callback core 공유 — 별도 executor 아님)
   └─ drain nrt_publish_buffer_ → controller.PublishNonRtSnapshot
-       — RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot
+       — Transforms / grasp_state / wbc_state / tof_snapshot
 
 nrt_logging_executor (Core 5 on 6c shared / Core 6+ dedicated on ≥ 8c,
                       SCHED_OTHER nice -5) ← rclcpp::Executor + jthread

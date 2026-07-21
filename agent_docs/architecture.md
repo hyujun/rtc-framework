@@ -94,7 +94,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
     +--inline--> backend.WriteCommand (actuator command, RT-safe)
     |        +-> /rtc_cm/{group}/joint_states
     +--SPSC (cap 16)--> [nrt_publish_thread (CFS)] --> controller.PublishNonRtSnapshot
-    |                                                  (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot)
+    |                                                  (Transforms / grasp_state / wbc_state / tof_snapshot)
     +--SPSC--> [nrt_logging_executor (CFS -5)] --> CSV (timing + per-device state + sensor)
     +--E-STOP--> /system/estop_status
 
@@ -107,7 +107,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 토픽 소유는 3개 lane 으로 나뉜다 (issue #138: controller YAML 에는 `ownership:` field 가 없다 — controller-YAML entry 는 전부 controller-owned):
 
-- **Controller-owned** (controller YAML `topics:` entry 전부) — Per-controller `LifecycleNode` (namespace `/<config_key>/`, `nrt_callback_executor` 에 add_node) 가 외부 facing snapshot 소유. Subscribe (target/joint_goal/ee_pose), publish (transforms via PublishRole; grasp_state/wbc_state/tof_snapshot 는 controller-owned SeqLock + Setup*Publisher 헬퍼 — PublishRole 없음)
+- **Controller-owned** (controller YAML `topics:` entry 전부) — Per-controller `LifecycleNode` (namespace `/<config_key>/`, `nrt_callback_executor` 에 add_node) 가 외부 facing snapshot 소유. Subscribe (role `target`, alias `goal` — `joint_goal`/`ee_pose` 는 role 이 아니라 토픽 이름이다), publish (transforms via PublishRole; grasp_state/wbc_state/tof_snapshot 는 controller-owned SeqLock + Setup*Publisher 헬퍼 — PublishRole 없음)
 - **DeviceBackend-owned** — device-wire state/motor/sensor sub + joint/ros2 command pub, `devices.<group>.backend:` (sim.yaml/robot.yaml) 에서 선언
 - **CM fixed publishers** — `RtControllerNode` 가 hardcode 로 소유 (YAML 무관): per-group digital-twin `/rtc_cm/<group>/joint_states`, safety pub (`/system/estop_status`, `/rtc_cm/active_controller_name` latched rewire trigger). 모두 lifecycle 무관 standalone publisher 로 active
 
