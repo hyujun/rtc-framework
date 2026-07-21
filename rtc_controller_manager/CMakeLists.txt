@@ -281,6 +281,38 @@ if(BUILD_TESTING)
     target_link_libraries(test_cm_controller_name_collision
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
+
+  # 또 하나의 전용 실행파일 — config_key 가 앞선 등록의 Name() 을 가리는 형태
+  # (issue #205 B-1). 위 name_collision 테스트의 fixture 는 Name() 과 config_key
+  # 가 같은 문자열이라 Tier 2 의 config_key 쪽 arm 을 건드리지 못한다.
+  ament_add_gtest(test_cm_config_key_collision
+    test/test_cm_config_key_collision.cpp
+    ENV ROS_DOMAIN_ID=48)
+  if(TARGET test_cm_config_key_collision)
+    target_include_directories(test_cm_config_key_collision PRIVATE include test)
+    ament_target_dependencies(test_cm_config_key_collision
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_cm_config_key_collision
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
+  # initial_controller 가 config_key / Name() 양쪽으로 해석되는지 (issue #205 B-2).
+  # 등록을 런타임에 추가하지 않으므로 registry 오염은 없지만, 두 컨트롤러를
+  # static 등록하므로 다른 테스트와 섞으면 그쪽 registry 크기 단언이 깨진다.
+  ament_add_gtest(test_cm_identifier_resolution
+    test/test_cm_identifier_resolution.cpp
+    ENV ROS_DOMAIN_ID=49)
+  if(TARGET test_cm_identifier_resolution)
+    target_include_directories(test_cm_identifier_resolution PRIVATE include test)
+    ament_target_dependencies(test_cm_identifier_resolution
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_cm_identifier_resolution
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
 endif()
 
 ament_package()

@@ -76,7 +76,7 @@ class RtLoopPipelineTest : public ::testing::Test {
       rclcpp::init(0, nullptr);
     }
     PipelineTestController::ResetCaptured();
-    PipelineStubBackend::ResetStateChannels();
+    PipelineStubBackend::ResetCaptured();
   }
 
   static std::shared_ptr<RtControllerNode> MakeNode(double control_rate) {

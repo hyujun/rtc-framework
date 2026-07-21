@@ -111,8 +111,18 @@ class ControllerLifecycleTestAccess {
     node.controller_name_to_idx_.clear();
     node.controller_types_.clear();
     for (std::size_t i = 0; i < node.controllers_.size(); ++i) {
+      const std::string type = i < types.size() ? types[i] : "";
+      // Mirror production (rt_controller_node_params.cpp): controller_name_to_idx_
+      // is ONE namespace holding both Name() and config_key, and
+      // switch_controller / initial_controller resolve through either. Injecting
+      // only Name() left every fixture-driven test blind to the config_key half
+      // — deleting the production config_key insert kept the whole suite green
+      // (issue #205 B-2). `types` is the injected stand-in for config_key.
       node.controller_name_to_idx_[std::string(node.controllers_[i]->Name())] = static_cast<int>(i);
-      node.controller_types_.push_back(i < types.size() ? types[i] : "");
+      if (!type.empty()) {
+        node.controller_name_to_idx_[type] = static_cast<int>(i);
+      }
+      node.controller_types_.push_back(type);
     }
   }
 
