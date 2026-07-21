@@ -62,7 +62,7 @@ class CmNameCollisionTest : public ::testing::Test {
 
   void SetUp() override {
     PipelineTestController::ResetCaptured();
-    PipelineStubBackend::configure_calls.store(0, std::memory_order_relaxed);
+    PipelineStubBackend::ResetCaptured();
   }
 
   static std::shared_ptr<RtControllerNode> MakeNode(const std::string& name) {

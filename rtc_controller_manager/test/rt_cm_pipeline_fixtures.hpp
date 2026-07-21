@@ -204,6 +204,32 @@ class PipelineTestController : public RTControllerInterface {
   }
 };
 
+// ── Controllers whose Name() differs from their registration config_key ──────
+//
+// PipelineTestController::Name() returns "rtc_cm_cfg_test", the same string it
+// is registered under everywhere in this directory. That collapses the two
+// halves of the controller_name_to_idx_ namespace into one key, so no test
+// built on it alone can tell a guard that checks {Name(), config_key} from one
+// that checks {Name()} only (issue #205 B-1/B-2). These two subclasses keep the
+// strings distinct so the config_key half is reachable on its own.
+//
+// Subclassing rather than duplicating: only Name() differs, and the config
+// capture / Compute / fault-injection behaviour must stay identical or a
+// failure here would not mean what it says.
+class AliasNameTestControllerA : public PipelineTestController {
+ public:
+  static constexpr const char* kName = "rtc_cm_alias_name_a";
+
+  std::string_view Name() const noexcept override { return kName; }
+};
+
+class AliasNameTestControllerB : public PipelineTestController {
+ public:
+  static constexpr const char* kName = "rtc_cm_alias_name_b";
+
+  std::string_view Name() const noexcept override { return kName; }
+};
+
 // ── Registry-loadable DeviceBackend stub with all three state lanes ──────────
 //
 // ReadState/ReadMotorState/ReadSensorState fill fixed, recognisable values so
@@ -223,8 +249,14 @@ class PipelineStubBackend : public DeviceBackend {
   // DeclareAndLoadParameters() returns true, so a bring-up refused at the D1
   // checkpoint must leave this at zero — that is what proves the refusal
   // happened before any device wiring, even when controllers were already
-  // instantiated (issue #196 Phase 5, Tier 2). Tests that read it reset it
-  // themselves; nothing else depends on its value.
+  // instantiated (issue #196 Phase 5, Tier 2).
+  //
+  // Reset by ResetCaptured() below. It used to be reset only by the one test
+  // that read it, which made `EXPECT_EQ(0, configure_calls)` — the natural way
+  // to assert "refused before device wiring" — silently depend on whether an
+  // earlier test in the same binary had already incremented it (issue #205
+  // B-3). Counters that only read as zero are exactly the ones that must not
+  // inherit state.
   static inline std::atomic<int> configure_calls{0};
 
   void Configure(rclcpp_lifecycle::LifecycleNode* /*node*/, const DeviceBackendConfig& config,
@@ -250,6 +282,14 @@ class PipelineStubBackend : public DeviceBackend {
   static void ResetStateChannels() {
     state_num_channels.store(2, std::memory_order_relaxed);
     state_position_nan.store(false, std::memory_order_relaxed);
+  }
+
+  // Full per-test reset for this backend — the counterpart to
+  // PipelineTestController::ResetCaptured(). Call BOTH in SetUp(): the
+  // controller helper cannot reach this class's statics.
+  static void ResetCaptured() {
+    ResetStateChannels();
+    configure_calls.store(0, std::memory_order_relaxed);
   }
 
   bool ReadState(DeviceStateCache& cache) noexcept override {
