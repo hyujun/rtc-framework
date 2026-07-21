@@ -554,15 +554,31 @@ ur5e:
   EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
 }
 
-TEST(RTControllerInterfaceTest, PublishOnlyFlatFormatThrows) {
+TEST(RTControllerInterfaceTest, PublishOnlyFlatFormatGetsMigrationDiagnostic) {
   // The flat-format check used to test `subscribe` alone, so a publish-only
-  // flat config fell through and parsed as a device group named "publish"
-  // whose value is a sequence — no publisher, no error.
+  // flat config fell through and parsed as a device group named "publish".
+  //
+  // Asserting only that this throws would be a false green: the group-shape
+  // guards above already reject every flat publish config (as a sequence-valued
+  // or lane-less group), so the test still passes with the flat check reverted
+  // — measured, not assumed. What the flat check is actually worth is the
+  // diagnostic: the operator gets migration instructions instead of being told
+  // that their device group named "publish" is malformed. That is what this
+  // pins.
   const auto node = YAML::Load(R"(
 publish:
   - {topic: transforms, role: robot_transforms}
 )");
-  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+  try {
+    StubController::ParseTopicConfig(node);
+    FAIL() << "flat publish-only format must throw";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("deprecated"), std::string::npos)
+        << "operator must be told this is the deprecated flat format, not that a "
+           "group is malformed: "
+        << msg;
+  }
 }
 
 TEST(RTControllerInterfaceTest, MalformedGroupNamesItselfInTheDiagnostic) {
