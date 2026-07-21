@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_compile_options(
   -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+  -Werror=switch  # enum switch 누락은 dead topic 을 낳는다 (#211)
 )
 
 # ── Coverage (gcov/lcov) ─────────────────────────────────────────────────────
