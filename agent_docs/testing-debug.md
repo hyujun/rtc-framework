@@ -55,15 +55,26 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 **가장 흔한 false green — 층이 겹치는 가드.** 새 가드 A·B 가 같은 잘못된 입력을 모두 거부하면 B 의 테스트는 A 에 흡수되어, B 를 통째로 지워도 통과한다. B 는 커버리지가 있는 것처럼 보이면서 실제로는 자유롭게 삭제 가능한 상태다. 이때는 테스트를 "throw 하는가" 가 아니라 **그 가드만이 만드는 관측 가능한 차이** (진단 메시지 내용, 거부 시점, 부작용 유무) 로 옮겨야 pin 이 성립한다.
 
 > 실측 (#204): 신규 가드 4개 중 flat `publish:` 탐지가 false green 이었다 — 원복해도 전 테스트 통과. group-shape 가드가 같은 config 을 이미 거부하고 있었다. 테스트를 "마이그레이션 진단을 주는가" 로 옮겨 pin 을 성립시켰다. 나머지 3개는 각각 자기 테스트만 정확히 실패. 거부 시점을 pin 한 예도 같은 PR 에 있다 — backend `Configure()` 카운터로 "controller 는 생성됐지만 device wiring 전" 경계를 고정.
+>
+> **같은 false green 이 형제 절반에서 재발했다 (#204 post-review).** 위 수정은 flat 탐지의 `publish` 쪽만 pin 했고, `subscribe` 쪽은 `EXPECT_THROW` 로 남아 똑같이 원복해도 통과했다. 층이 겹치는 가드를 하나 고쳤으면 **대칭 위치의 나머지 절반도 같은 기준으로 다시 측정**한다 — 한쪽을 진단 pin 으로 옮겼다는 사실 자체가 다른 쪽도 흡수되고 있다는 신호다.
 
 원복은 **파일 단위 restore** 로 되돌린다 — `git checkout -- .` 은 아직 커밋하지 않은 작업까지 함께 날린다 (#204 에서 실제 발생).
 
+단 **검증 대상 파일 자체가 미커밋일 때** (가드를 방금 썼고 아직 커밋 전 — revert-verification 의 표준 상황) 는 `git checkout -- <file>` 도 그 작업을 날린다. 명시적 백업 사본에서 복구해야 하는데, 여기에 함정이 하나 더 있다:
+
+> **mtime 을 보존하는 복사로 복구하면 (`cp -p`, `shutil.copy2`) make 가 재컴파일을 건너뛴다.** 복구된 소스는 최신인데 빌드 트리에는 **원복된 바이너리**가 남아, 그 상태로 테스트하면 결과를 반대로 읽는다 (#204 post-review 에서 실제 발생 — 복구 후 "2 failures" 를 보고 회귀로 오독). 초록으로 오독되는 방향도 똑같이 가능하다. 백업 복구 후에는 반드시 `touch <파일>` 하고 재빌드한다.
+
 ```bash
+# 사전: 미커밋 작업이 있으면 명시적 백업
+cp <파일> /tmp/<파일>.orig          # -p 금지 (mtime 보존 → 아래 touch 를 잊으면 stale 바이너리)
+
 # 가드 1개 원복 → 빌드 → 해당 실행파일만 → 복구
 colcon build --packages-select <pkg> --cmake-args -DCMAKE_BUILD_TYPE=Release
 colcon test --packages-select <pkg> --ctest-args -R <test_exe>
-git checkout -- <원복한 파일>
+cp /tmp/<파일>.orig <파일> && touch <파일>   # 미커밋 작업이 없으면 git checkout -- <파일>
 ```
+
+빌드가 실제로 돌았는지는 `colcon build` 의 소요 시간으로 확인된다 — 0.x 초로 끝났으면 재컴파일이 안 된 것이다.
 
 ## Test fixtures — robot URDF 해석
 
