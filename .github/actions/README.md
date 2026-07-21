@@ -9,6 +9,8 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
 | [`build-isolated-deps`](build-isolated-deps/action.yml) | Build & cache fmt 11 / mimalloc / aligator from `deps.repos` → publish artifact | `build-deps`, `codeql` |
 | [`colcon-build`](colcon-build/action.yml) | `colcon build --packages-up-to <pkgs>` with deps prepend + optional `use-ccache` launcher + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test`, `codeql` |
 | [`colcon-test-report`](colcon-test-report/action.yml) | `colcon test` + `GITHUB_STEP_SUMMARY` table + failure-log artifact | `gated-test`, `coverage-cpp`, `python-test` |
+| [`free-disk-space`](free-disk-space/action.yml) | Delete unused pre-installed toolchains (dotnet / Android / GHC / …) before a C++ build | `gated-test`, `coverage-cpp`, `codeql` |
+| [`disk-report`](disk-report/action.yml) | `df -h` + `df -i` + per-directory `du -sh` at a labelled checkpoint | `gated-test`, `coverage-cpp`, `codeql` |
 
 ## Conventions
 
@@ -31,6 +33,18 @@ Each action is self-contained and documented in its own `action.yml` (top-level 
   404s the deb download (`exit 22`), killing the job. The pre-install step is
   best-effort (always `exit 0`); bump `ros-apt-source-fallback` when the pinned
   release stops publishing a deb for the runner's Ubuntu codename.
+
+- Disk headroom (issue #210): every C++ build job calls `free-disk-space` right after
+  checkout, then `disk-report` at three checkpoints — `after-cleanup`, `pre-build`
+  (after *all* cache/artifact restores, so cold and warm runs are comparable) and
+  `post-build` under `if: always()`, which is the one a `No space left on device`
+  failure actually needs. Both actions are best-effort and always `exit 0`; the
+  `min-free-gb` tripwire on `disk-report` only emits a `::warning`, it never fails a
+  job. `codeql` passes `keep-tool-cache: "true"` because `codeql-action/init`
+  unpacks its bundle into `/opt/hostedtoolcache`.
+- No third-party `free-disk-space` action: the delete list is short enough to own,
+  and the repo pins every external action by commit SHA — not adding one is cheaper
+  than reviewing one.
 
 ## When to add a new action
 

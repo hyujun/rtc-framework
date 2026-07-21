@@ -1,0 +1,72 @@
+name: Free Disk Space
+description: |
+  Remove pre-installed toolchains the RTC build never uses (dotnet / Android SDK /
+  GHC / PowerShell / Swift / Boost) to buy headroom on the 14 GB standard runner.
+
+  Motivation (issue #210): `gated-test` died at the final `integrated_bringup` link
+  with `ld: final link failed: No space left on device` after 32 min, on a PR whose
+  own contribution was 3.8 MB. RelWithDebInfo/Debug+gcov artifacts for 18 packages
+  plus two ccache dirs sit close enough to the limit that failures went intermittent.
+
+  Deliberately hand-rolled instead of a third-party `free-disk-space` action: the
+  delete list stays reviewable here and no new supply-chain surface is pinned.
+
+  Best-effort by design — every removal is `|| true` and the step always exits 0.
+  A cleanup failure must never turn a green build red.
+
+inputs:
+  keep-tool-cache:
+    description: |
+      "true"  → leave /opt/hostedtoolcache alone (CodeQL bundle, setup-python runtimes).
+      "false" → drop the CodeQL / Ruby / Go entries, which the ROS build never reads.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Remove unused pre-installed toolchains
+      shell: bash
+      env:
+        KEEP_TOOL_CACHE: ${{ inputs.keep-tool-cache }}
+      run: |
+        set -uo pipefail
+
+        avail_kb() { df -Pk / | awk 'NR==2 {print $4}'; }
+        before=$(avail_kb)
+
+        targets=(
+          /usr/share/dotnet
+          /usr/local/lib/android
+          /opt/ghc
+          /usr/local/.ghcup
+          /usr/local/share/powershell
+          /usr/local/share/boost
+          /usr/share/swift
+        )
+        if [[ "${KEEP_TOOL_CACHE}" != "true" ]]; then
+          targets+=(
+            /opt/hostedtoolcache/CodeQL
+            /opt/hostedtoolcache/Ruby
+            /opt/hostedtoolcache/go
+          )
+        fi
+
+        for t in "${targets[@]}"; do
+          [[ -e "$t" ]] || continue
+          size=$(du -sh "$t" 2>/dev/null | cut -f1)
+          sudo rm -rf "$t" 2>/dev/null || true
+          echo "removed ${t} (${size:-?})"
+        done
+
+        after=$(avail_kb)
+        freed_gb=$(awk -v a="$after" -v b="$before" 'BEGIN {printf "%.1f", (a-b)/1024/1024}')
+        after_gb=$(awk -v a="$after" 'BEGIN {printf "%.1f", a/1024/1024}')
+        echo "freed ${freed_gb} GiB → ${after_gb} GiB available on /"
+        {
+          echo "### Disk cleanup"
+          echo ""
+          echo "Freed **${freed_gb} GiB** — **${after_gb} GiB** now available on \`/\`."
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        exit 0

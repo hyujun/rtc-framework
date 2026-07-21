@@ -1,0 +1,81 @@
+name: Disk Usage Report
+description: |
+  Record free blocks (`df -h /`), free inodes (`df -i /`) and per-directory usage
+  (`du -sh`) at a labelled checkpoint, into the job log and `GITHUB_STEP_SUMMARY`.
+
+  Exists because issue #210's `No space left on device` was undiagnosable after the
+  fact: nothing in the workflow recorded headroom, so there was no way to tell how
+  close a passing run had come. Call it at least at cleanup / pre-build (after every
+  cache + artifact restore) / post-build `if: always()`, so a future failure shows
+  both the trend and whether blocks or inodes ran out.
+
+  Warning-only: `min-free-gb` never fails the job. The threshold is a tripwire for
+  the summary, not a gate — a build that would have finished must not be killed by
+  our own instrumentation.
+
+inputs:
+  label:
+    description: Checkpoint name shown in the log and summary (e.g. pre-build)
+    required: true
+  paths:
+    description: |
+      Space-separated paths to size with `du -sh`. Missing paths are skipped
+      silently — checkpoints run before the workspace exists.
+    required: false
+    default: build install _rtc_ws/deps/install .ccache
+  min-free-gb:
+    description: |
+      Emit a ⚠️ line when free space on `/` drops below this many GiB.
+      Empty string disables the check.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Report disk usage
+      shell: bash
+      env:
+        LABEL: ${{ inputs.label }}
+        DU_PATHS: ${{ inputs.paths }}
+        MIN_FREE_GB: ${{ inputs.min-free-gb }}
+      run: |
+        set -uo pipefail
+
+        echo "=== disk [${LABEL}] ==="
+        df -h /
+        df -i /
+
+        free_gb=$(df -Pk / | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
+        free_inodes=$(df -Pi / | awk 'NR==2 {print $4}')
+
+        du_rows=()
+        for p in ${DU_PATHS}; do
+          [[ -e "$p" ]] || continue
+          size=$(du -sh "$p" 2>/dev/null | cut -f1)
+          echo "  ${size}	${p}"
+          du_rows+=("| \`${p}\` | ${size} |")
+        done
+
+        {
+          echo "### Disk @ ${LABEL}"
+          echo ""
+          echo "Free: **${free_gb} GiB** · free inodes: **${free_inodes}**"
+          if [[ ${#du_rows[@]} -gt 0 ]]; then
+            echo ""
+            echo "| Path | Size |"
+            echo "|------|------|"
+            printf '%s\n' "${du_rows[@]}"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [[ -n "${MIN_FREE_GB}" ]]; then
+          low=$(awk -v f="${free_gb}" -v m="${MIN_FREE_GB}" 'BEGIN {print (f < m) ? 1 : 0}')
+          if [[ "$low" == "1" ]]; then
+            echo "::warning title=Low disk (${LABEL})::${free_gb} GiB free on / (threshold ${MIN_FREE_GB} GiB)"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "⚠️ below the ${MIN_FREE_GB} GiB headroom threshold." >> "$GITHUB_STEP_SUMMARY"
+          fi
+        fi
+
+        exit 0

@@ -330,6 +330,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # issue #210: 18 패키지 RelWithDebInfo 산출물 + ccache 2벌이 14GB 표준 러너의
+      # 임계에 붙어 최종 링크에서 간헐적 ENOSPC. 빌드 전에 미사용 툴체인을 걷어내고,
+      # cleanup / pre-build / post-build 3지점에서 free block·inode·구성별 크기를 남긴다.
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+
+      - name: Disk report (after cleanup)
+        uses: ./.github/actions/disk-report
+        with:
+          label: after-cleanup
+
       - name: Setup environment
         uses: ./.github/actions/setup-rtc-env
         with:
@@ -377,6 +388,14 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-relwithdebinfo-v1-
 
+      # 두 cache + deps artifact 복원이 모두 끝난 뒤 = 빌드가 실제로 출발하는 headroom.
+      # cold-cache 실행과 warm-cache 실행의 차이가 여기서 드러난다.
+      - name: Disk report (pre-build)
+        uses: ./.github/actions/disk-report
+        with:
+          # min-free-gb 는 첫 cold/warm 실측 뒤에 채운다 (issue #210 성공 기준 2).
+          label: pre-build
+
       - name: Build packages
         uses: ./.github/actions/colcon-build
         with:
@@ -399,6 +418,13 @@ jobs:
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           summary-title: C++ Gated Test Results
           artifact-suffix: cpp-gated-test
+
+      # always(): ENOSPC 로 죽은 run 이야말로 이 수치가 필요하다.
+      - name: Disk report (post-build)
+        if: always()
+        uses: ./.github/actions/disk-report
+        with:
+          label: post-build
 
   # ============================================================
   #  C++ Coverage — gcov/lcov instrumented build + colcon test → Codecov
@@ -438,6 +464,16 @@ jobs:
       CCACHE_MAXSIZE: "2G"
     steps:
       - uses: actions/checkout@v7
+
+      # issue #210: Debug+gcov 오브젝트는 gated 의 RelWithDebInfo 보다 크므로 이 job 은
+      # 아직 안 터졌더라도 헤드룸이 더 얇다. gated 와 동일하게 확보 + 계측한다.
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+
+      - name: Disk report (after cleanup)
+        uses: ./.github/actions/disk-report
+        with:
+          label: after-cleanup
 
       # id: setup — 아래 always() step 들이 이 outcome 을 보고 갈린다. setup 이 죽으면
       # lcov/colcon 자체가 없으므로 always() 가 "lcov: command not found"(exit 127) 와
@@ -491,6 +527,11 @@ jobs:
           key: ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-debug-gcov-v1-${{ github.run_id }}
           restore-keys: |
             ccache-${{ runner.os }}-${{ env.ROS_DISTRO }}-debug-gcov-v1-
+
+      - name: Disk report (pre-build)
+        uses: ./.github/actions/disk-report
+        with:
+          label: pre-build
 
       - name: Build packages (coverage-instrumented)
         uses: ./.github/actions/colcon-build
@@ -550,6 +591,13 @@ jobs:
           deps-install-path: ${{ github.workspace }}/_rtc_ws/deps/install
           summary-title: C++ Best-Effort Test Results
           artifact-suffix: cpp-coverage-test-besteffort
+
+      # lcov 이전에 찍는다: .gcda 까지 얹힌 build/ 가 이 job 의 disk peak 다.
+      - name: Disk report (post-build)
+        if: always()
+        uses: ./.github/actions/disk-report
+        with:
+          label: post-build
 
       - name: Capture & filter lcov coverage
         if: always() && steps.setup.outcome == 'success'
