@@ -12,9 +12,11 @@
 #        - ARCH-5 : robot_descriptions must stay an <exec_depend> (added lines of
 #                   CMakeLists / package.xml; multi-line ament_target_dependencies
 #                   and <build_export_depend> included).
-#        - ARCH-7 : rtc_* must not own a control-framework executable. Agnostic
-#                   standalone nodes and examples opt out with an inline
-#                   `ARCH-7-exempt` comment.
+#        - ARCH-7 : rtc_* must not own a control-framework executable. Compares
+#                   add_executable target NAMES against HEAD (not added lines --
+#                   CMake lines get rewritten in place). `example_*` targets are
+#                   out of scope by name; anything else opts out with an
+#                   `ARCH-7-exempt` comment on or directly above the call.
 #        - ARCH-1 : grep robot-name / `num_joints=<literal>` in rtc_*/include|src,
 #                   with negation-aware filter (lines containing "must NOT",
 #                   "forbidden", "robot-agnostic", "no <X>-specific" are
@@ -35,8 +37,12 @@
 #   1b. Docs + YAML sensors
 #        - changed *.md -> validate_docs.py --files (CHANGED scope only; CI does
 #          the full-corpus scan. A whole-repo scan here would let a defect in an
-#          untouched -- or gitignored, hence invisible -- file block every turn)
-#        - changed *.yaml -> parse check (config/** had no gate at all)
+#          untouched -- or gitignored, hence invisible -- file block every turn).
+#          Within a tracked doc, findings are further narrowed to ADDED lines:
+#          whole-file scope made every pre-existing defect in a file blocking as
+#          soon as the agent touched it for an unrelated reason.
+#        - changed *.yaml -> parse check (config/** had no gate at all). Verdict
+#          is the interpreter exit status, and a missing PyYAML fails OPEN.
 #   2. Build + test on changed packages
 #        - rtc_base / rtc_msgs change -> ./build.sh full + colcon test all
 #          (PROC-3: broad downstream impact)
@@ -81,10 +87,13 @@
 #          Doxygen / cross-package doc consistency NOT checked
 #          (modification-guide.md "Updating an Existing Package" 6 steps cover
 #          these manually). Changed set = tracked-vs-HEAD UNION untracked;
-#          build/test uses the tracked subset only (an untracked scratch file
-#          under rtc_base/ must not trigger a full-workspace rebuild).
-#          Routing behaviour is asserted end-to-end by
+#          build/test additionally requires an untracked file to live under
+#          <pkg>/src/ or <pkg>/include/, so a new header is compiled while a
+#          scratch file under rtc_base/ still cannot trigger a full-workspace
+#          rebuild. Routing behaviour is asserted end-to-end by
 #          repo_scripts/test/test_verify_changes.sh.
+#          A path containing a newline is C-quoted by git regardless of
+#          core.quotePath and is NOT handled; paths with spaces are.
 set -euo pipefail
 
 INPUT=$(cat)
@@ -150,14 +159,25 @@ if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_DOCS" ] \
   exit 0
 fi
 
-# Build/test scope deliberately excludes untracked files. Including them makes
-# a scratch .py under rtc_base/ trigger the PROC-3 full-workspace rebuild on
-# every turn -- the blast radius is not worth it, and an untracked file is not
-# yet part of the tree being verified. Untracked files still participate in
-# the ARCH greps and the CMake co-update gate, where their absence was the
-# actual hole.
+# Build/test scope excludes untracked *scratch*, not untracked source.
+#
+# The first cut of this split keyed on tracked-ness, which is the wrong axis: it
+# kept a scratch .py under rtc_base/ from triggering the PROC-3 full-workspace
+# rebuild (the intent, and correct) but it also meant a brand-new
+# rtc_base/include/**/foo.hpp was ARCH-grepped and CMake-gated and then never
+# compiled. rtc_base is header-heavy and PROC-3's broad rebuild exists for
+# exactly that file, so the hole sat on the highest-impact path.
+#
+# The axis that actually separates the two cases is *location*: real package
+# source lives under <pkg>/src/ or <pkg>/include/, scratch does not. An
+# untracked file there is part of the tree being verified even though it has no
+# HEAD blob; an untracked note, probe script, or log anywhere else is not.
 CHANGED_SRC_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '\.(cpp|hpp|h|cc|py)$' || true)
 CHANGED_META_TRACKED=$(echo "$CHANGED_TRACKED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
+CHANGED_SRC_UNTRACKED=$(echo "$CHANGED_UNTRACKED" \
+  | grep -E '^[A-Za-z0-9_.-]+/(src|include)/.*\.(cpp|hpp|h|cc|py)$' || true)
+CHANGED_SRC_BUILD=$(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_SRC_UNTRACKED" \
+  | grep -v '^[[:space:]]*$' | sort -u || true)
 
 # --- Pure-format fast path detection ---
 # Returns 0 if every changed source file is identical to HEAD after
@@ -272,21 +292,61 @@ CHANGED_PKGS=""
 # still a changed package, and deriving this from $CHANGED_SRC was the third
 # layer (after the early exit and the pure-format check) that kept CMake-only
 # edits away from their own gate.
-for pkg_dir in $(echo "$CHANGED" | cut -d'/' -f1 | sort -u); do
+#
+# Iterated with `while read` rather than `for x in $(...)`: a path containing a
+# space is two words to the shell, and the resulting fragments matched no
+# package while still reaching the per-file gates below as invented filenames.
+while IFS= read -r pkg_dir; do
+  [ -n "$pkg_dir" ] || continue
   [ -f "$pkg_dir/package.xml" ] || continue
   CHANGED_PKGS="${CHANGED_PKGS} ${pkg_dir}"
-done
+done <<< "$(echo "$CHANGED" | cut -d'/' -f1 | sort -u)"
 
-# Build/test operates on the tracked subset only (see CHANGED_SRC_TRACKED).
+# Build/test operates on tracked source plus untracked source that lives in a
+# real package source dir (see CHANGED_SRC_BUILD).
 BUILD_PKGS=""
-for pkg_dir in $(printf '%s\n%s\n' "$CHANGED_SRC_TRACKED" "$CHANGED_META_TRACKED" \
-                   | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u); do
+while IFS= read -r pkg_dir; do
+  [ -n "$pkg_dir" ] || continue
   [ -f "$pkg_dir/package.xml" ] || continue
   BUILD_PKGS="${BUILD_PKGS} ${pkg_dir}"
-done
+done <<< "$(printf '%s\n%s\n' "$CHANGED_SRC_BUILD" "$CHANGED_META_TRACKED" \
+             | grep -v '^[[:space:]]*$' | cut -d'/' -f1 | sort -u)"
+
+# Emit `name<TAB>exempt<TAB>lineno` for every add_executable() in the CMake
+# source arriving on stdin. Used by ARCH-7 to diff target NAMES between HEAD and
+# the working tree instead of diffing lines.
+#
+# `exempt` is 1 when the target opts out, which it may do two ways:
+#   - the name matches example_*  — design-principles.md puts examples outside
+#     the runtime-identity scope by name, so they need no per-target marker and
+#     cannot drift out of one;
+#   - an `ARCH-7-exempt` comment sits on the add_executable line OR the line
+#     directly above it. Same-line-only matching (the first cut) rejected the
+#     idiomatic CMake form, where the justification is a comment above the call,
+#     while accepting a bare marker appended to the call itself.
+exe_targets() {
+  awk '
+    { line[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (line[i] !~ /^[[:space:]]*add_executable[[:space:]]*\(/) continue
+        name = line[i]
+        sub(/^[[:space:]]*add_executable[[:space:]]*\([[:space:]]*/, "", name)
+        sub(/[^A-Za-z0-9_${}].*$/, "", name)
+        if (name == "") continue
+        exempt = 0
+        if (name ~ /^example_/) exempt = 1
+        if (line[i] ~ /ARCH-7-exempt/) exempt = 1
+        if (i > 1 && line[i - 1] ~ /ARCH-7-exempt/) exempt = 1
+        printf "%s\t%d\t%d\n", name, exempt, i
+      }
+    }'
+}
 
 # --- Phase 0: Architecture-fitness grep (ARCH-1, ARCH-4) ---
-# Only run if a CHANGED rtc_* or ur5e_* file matched, to bound cost.
+# Only run if a CHANGED rtc_* file or a changed file in the integration package
+# set matched, to bound cost. (The scope was once a hardcoded `ur5e_*` prefix;
+# INTEGRATION_PKGS below derives it from package.xml instead.)
 # Skipped on pure-format commits — no semantic change can introduce a new
 # ARCH violation, and the grep would re-flag pre-existing references on
 # any line clang-format happened to reflow.
@@ -354,7 +414,8 @@ if [ -n "$RTC_TOUCHED" ]; then
   # "must NOT test UR5e", "no ur5e-specific code", "robot-agnostic") are
   # the rule itself, not a violation. Without this filter the hook punished
   # well-intentioned prohibitive docstrings (2026-05-07).
-  for f in $RTC_TOUCHED; do
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     [ -f "$f" ] || continue
     # Real file line numbers of added lines, from the `+c,d` side of each hunk
     # header. Kept as line numbers rather than grepping the raw '+' text so the
@@ -382,18 +443,19 @@ if [ -n "$RTC_TOUCHED" ]; then
     if [ -n "$HITS" ]; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-1 (robot-specific in rtc_*): ${f}\n${HITS}\n"
     fi
-  done
+  done <<< "$RTC_TOUCHED"
 fi
 
 if [ -n "$INTEGRATION_TOUCHED" ]; then
   # ARCH-4: integration packages must not include rtc_*/src/ private headers
-  for f in $INTEGRATION_TOUCHED; do
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     [ -f "$f" ] || continue
     HITS=$(grep -nE '#include[[:space:]]+"rtc_[a-z_]+/src/' "$f" 2>/dev/null || true)
     if [ -n "$HITS" ]; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-4 (integration pkg includes rtc_*/src/ private header): ${f}\n${HITS}\n"
     fi
-  done
+  done <<< "$INTEGRATION_TOUCHED"
 fi
 
 # --- Phase 0a: ARCH-5 / ARCH-7 build-metadata sensors ---
@@ -401,14 +463,24 @@ fi
 #   runtime via ament_index, never as a build dependency.
 # ARCH-7: rtc_* packages do not own the control-framework runtime identity.
 #   Robot-agnostic standalone nodes and examples are exempt (see
-#   design-principles.md); mark such a target with an `ARCH-7-exempt` comment
-#   on the add_executable line.
+#   design-principles.md).
 #
-# Both are scoped to ADDED lines, matching ARCH-1. Whole-file scope re-reports
+# ARCH-5 is scoped to ADDED lines, matching ARCH-1: whole-file scope re-reports
 # pre-existing hits every time an unrelated edit touches the file, which is how
 # a gate turns into noise and then gets ignored.
+#
+# ARCH-7 is NOT line-scoped, because for this question added-line scope is not
+# an approximation of "new" -- it is a different question with a different
+# answer. CMake target lines get rewritten in place: reindenting, renaming a
+# source file, or wrapping a block in `if()` re-presents an existing
+# add_executable as an added line. All seven add_executable targets in this
+# repo's rtc_* packages predate the rule, so the line-scoped form hard-blocked
+# any turn that so much as reformatted rtc_urdf_bridge/CMakeLists.txt. What the
+# rule actually asks is whether a target NAME is new, so compare the set of
+# target names at HEAD against the set in the working tree.
 if [ "$PURE_FORMAT" -eq 0 ] && [ -n "$CHANGED_META" ]; then
-  for f in $CHANGED_META; do
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     [ -f "$f" ] || continue
     if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
       ADDED=$(git diff -U0 HEAD -- "$f" 2>/dev/null | grep '^+' | grep -v '^+++' || true)
@@ -417,32 +489,46 @@ if [ "$PURE_FORMAT" -eq 0 ] && [ -n "$CHANGED_META" ]; then
     fi
     [ -z "$ADDED" ] && continue
 
+    # Comments are not code. Writing the rule down next to the call --
+    # `# NOTE: robot_descriptions stays exec_depend only, never linked here` --
+    # is the behaviour this gate wants to encourage, and the multi-line join
+    # below happily matched it. Strip `#` (CMake) and `<!-- -->` (package.xml)
+    # comments before the ARCH-5 patterns run.
+    ADDED_CODE=$(echo "$ADDED" | sed -E 's/<!--.*-->//; s/#.*$//')
+
     # ARCH-5. `ament_target_dependencies(... )` is routinely spread over
     # several lines in this repo, so a line-scoped regex misses the common
     # form; check the added block as a whole for the package name in any
     # build-time position.
-    if echo "$ADDED" | grep -qE 'find_package[[:space:]]*\([[:space:]]*robot_descriptions'; then
+    if echo "$ADDED_CODE" | grep -qE 'find_package[[:space:]]*\([[:space:]]*robot_descriptions'; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-5 (robot_descriptions is data-only — find_package is a build-time dep): ${f}\n"
     fi
-    if echo "$ADDED" | grep -qE '<(build_depend|depend|build_export_depend)>robot_descriptions</'; then
+    if echo "$ADDED_CODE" | grep -qE '<(build_depend|depend|build_export_depend)>robot_descriptions</'; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-5 (robot_descriptions must be <exec_depend> only): ${f}\n"
     fi
-    if echo "$ADDED" | tr '\n' ' ' \
+    if echo "$ADDED_CODE" | tr '\n' ' ' \
          | grep -qE 'ament_target_dependencies[^)]*robot_descriptions'; then
       ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-5 (robot_descriptions linked as a build dep): ${f}\n"
     fi
 
-    # ARCH-7: a new executable inside an rtc_* package.
+    # ARCH-7: an executable target NAME that does not exist at HEAD.
     case "$f" in
       rtc_*/CMakeLists.txt)
-        NEW_EXE=$(echo "$ADDED" | grep -E '^\+?[[:space:]]*add_executable[[:space:]]*\(' \
-                    | grep -v 'ARCH-7-exempt' || true)
+        HEAD_EXE=$(git show "HEAD:$f" 2>/dev/null | exe_targets | cut -f1 || true)
+        NEW_EXE=$(exe_targets < "$f" \
+                    | awk -F'\t' -v head="$HEAD_EXE" '
+                        BEGIN {
+                          n = split(head, h, "\n")
+                          for (i = 1; i <= n; i++) if (h[i] != "") seen[h[i]] = 1
+                        }
+                        !($1 in seen) && $2 == "0" { print "      " $1 " (line " $3 ")" }
+                      ' || true)
         if [ -n "$NEW_EXE" ]; then
-          ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-7 (rtc_* must not own a control-framework executable; mark agnostic nodes/examples with ARCH-7-exempt): ${f}\n${NEW_EXE}\n"
+          ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-7 (rtc_* must not own a control-framework executable; agnostic nodes/examples opt out with an ARCH-7-exempt comment on or above the add_executable line): ${f}\n${NEW_EXE}\n"
         fi
         ;;
     esac
-  done
+  done <<< "$CHANGED_META"
 fi
 
 # --- Phase 0b: ARCH-6 topic QoS depth sensor (NON-BLOCKING) ---
@@ -456,7 +542,8 @@ fi
 QOS_VIOLATIONS=""
 if [ "$PURE_FORMAT" -eq 0 ]; then
   QOS_SRC=$(echo "$CHANGED_SRC" | grep -vE '(^|/)tests?/|(^|/)test_[^/]*\.py$|_test\.(cpp|cc|hpp|h)$' || true)
-  for f in $QOS_SRC; do
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     [ -f "$f" ] || continue
     # A line carrying the `ARCH-6-exempt` marker is a recorded exception
     # (invariants.md ARCH-6 세부 스펙 — e.g. accumulating sensor streams) and
@@ -467,7 +554,7 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
     if [ -n "$ALL" ]; then
       QOS_VIOLATIONS="${QOS_VIOLATIONS}  - ARCH-6 (topic QoS depth != 1): ${f}\n${ALL}\n"
     fi
-  done
+  done <<< "$QOS_SRC"
 fi
 
 # --- Phase 1: Doc/metadata co-update check ---
@@ -499,12 +586,13 @@ for pkg_dir in $CHANGED_PKGS; do
               "$(git diff --diff-filter=A --name-only HEAD 2>/dev/null || true)" \
               "$CHANGED_UNTRACKED" \
               | grep "^${pkg_dir}/src/.*\.cpp$" | grep -v test | sort -u || true)
-  for f in $NEW_SRC; do
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     bname=$(basename "$f")
-    if ! grep -q "$bname" "${pkg_dir}/CMakeLists.txt" 2>/dev/null; then
+    if ! grep -qF "$bname" "${pkg_dir}/CMakeLists.txt" 2>/dev/null; then
       WARNINGS="${WARNINGS}  - ${pkg_dir}: new file ${bname} not found in CMakeLists.txt\n"
     fi
-  done
+  done <<< "$NEW_SRC"
 
   # package.xml co-update for new find_package() in CMakeLists.txt
   if echo "$CHANGED" | grep -q "^${pkg_dir}/CMakeLists.txt$"; then
@@ -533,7 +621,11 @@ fi  # PURE_FORMAT guard for Phase 1
 # or a gitignored scratch note invisible to `git status` -- block every turn
 # with no way out.
 DOC_FAILURES=""
-if [ -n "$CHANGED_DOCS" ]; then
+DOC_FILES=()
+while IFS= read -r d; do
+  [ -n "$d" ] && [ -f "$d" ] && DOC_FILES+=("$d")
+done <<< "$CHANGED_DOCS"
+if [ "${#DOC_FILES[@]}" -gt 0 ]; then
   # Resolved relative to this hook, not to PROJECT_DIR: the script ships in the
   # same repository as the hook, so this keeps working when the two are pointed
   # at different trees (as the routing tests do).
@@ -541,10 +633,55 @@ if [ -n "$CHANGED_DOCS" ]; then
   VALIDATE_DOCS="$HOOK_DIR/../../repo_scripts/scripts/validate_docs.py"
   [ -f "$VALIDATE_DOCS" ] || VALIDATE_DOCS="$PROJECT_DIR/repo_scripts/scripts/validate_docs.py"
   if [ -f "$VALIDATE_DOCS" ]; then
-    DOC_OUT=$(echo "$CHANGED_DOCS" | tr '\n' '\0' \
-                | xargs -0 --no-run-if-empty python3 "$VALIDATE_DOCS" --files 2>&1 || true)
-    if [ -n "$DOC_OUT" ] && ! echo "$DOC_OUT" | grep -q '^docs validation clean'; then
-      DOC_FAILURES=$(echo "$DOC_OUT" | sed 's/^/  - /')
+    # One invocation, and the verdict comes from the exit status. The previous
+    # form piped through `xargs -0`, which re-invokes the validator once per
+    # ARG_MAX batch, and then decided by grepping the concatenated output for
+    # "docs validation clean" -- so if any batch was clean, every other batch's
+    # findings were discarded.
+    DOC_RC=0
+    DOC_OUT=$(python3 "$VALIDATE_DOCS" --files "${DOC_FILES[@]}" 2>&1) || DOC_RC=$?
+    if [ "$DOC_RC" -ne 0 ]; then
+      # Scope findings in a TRACKED doc to its added lines, mirroring ARCH-1.
+      # Whole-file scope meant that touching any .md made every pre-existing
+      # defect in it blocking: the agent had to repair damage it did not cause,
+      # in a file it edited incidentally, before it could end the turn. An
+      # untracked doc is new in its entirety, so all of its lines are in scope.
+      DOC_ALLOW=$(mktemp)
+      for d in "${DOC_FILES[@]}"; do
+        if git ls-files --error-unmatch "$d" >/dev/null 2>&1; then
+          git diff -U0 HEAD -- "$d" 2>/dev/null | awk -v F="$d" '
+            /^@@/ {
+              match($0, /\+[0-9]+(,[0-9]+)?/)
+              spec = substr($0, RSTART + 1, RLENGTH - 1)
+              split(spec, p, ",")
+              count = (p[2] == "" ? 1 : p[2])
+              for (i = 0; i < count; i++) print F ":" p[1] + i
+            }' >> "$DOC_ALLOW" || true
+        else
+          printf '%s:*\n' "$d" >> "$DOC_ALLOW"
+        fi
+      done
+      DOC_FAILURES=$(echo "$DOC_OUT" | awk -v allow="$DOC_ALLOW" '
+        BEGIN {
+          while ((getline l < allow) > 0) {
+            if (l ~ /:\*$/) { sub(/:\*$/, "", l); wholefile[l] = 1 } else keep[l] = 1
+          }
+        }
+        # Validator findings are "path:line: [Dn] message"; anything else is a
+        # summary or a traceback and must survive so real breakage stays loud.
+        {
+          if (match($0, /^[^:]+:[0-9]+: \[D[0-9]+\] /)) {
+            head = substr($0, 1, RLENGTH)
+            sub(/: \[D[0-9]+\] $/, "", head)
+            split(head, hp, ":")
+            if (head in keep || hp[1] in wholefile) print "  - " $0
+          } else if ($0 !~ /^$/ && $0 !~ /finding\(s\) across/) {
+            print "  - " $0
+          }
+        }' || true)
+      rm -f "$DOC_ALLOW"
+      # Everything filtered out means the touched lines are clean.
+      [ -n "$(echo "$DOC_FAILURES" | grep -v '^[[:space:]]*$' || true)" ] || DOC_FAILURES=""
     fi
   fi
 fi
@@ -555,13 +692,29 @@ if [ -n "$CHANGED_YAML" ]; then
   # gains, robot profiles) and had no gate at all. This one only proves the
   # file parses -- schema is out of scope -- but a YAML that does not load is
   # a launch-time failure that no test would have caught either.
-  while IFS= read -r yf; do
-    [ -n "$yf" ] && [ -f "$yf" ] || continue
-    YERR=$(python3 -c 'import sys,yaml;yaml.safe_load(open(sys.argv[1],encoding="utf-8"))' "$yf" 2>&1 || true)
-    if [ -n "$YERR" ]; then
-      YAML_FAILURES="${YAML_FAILURES}  - ${yf}: $(echo "$YERR" | tail -1)\n"
-    fi
-  done <<< "$CHANGED_YAML"
+  #
+  # Fail OPEN when PyYAML is missing, matching clang-format and shellcheck. The
+  # first cut treated the ImportError as a parse failure, so a hook invocation
+  # without the venv wedged every turn that touched a YAML, with no in-band
+  # recovery.
+  if python3 -c 'import yaml' >/dev/null 2>&1; then
+    while IFS= read -r yf; do
+      [ -n "$yf" ] && [ -f "$yf" ] || continue
+      # safe_load_all, not safe_load: a multi-document file is legal YAML and
+      # rejecting it is a false block. The verdict is the exit STATUS -- keying
+      # on "stderr is non-empty" turned any interpreter warning (a venv
+      # DeprecationWarning, PYTHONDEVMODE ResourceWarning) into a hard failure.
+      YRC=0
+      YERR=$(python3 -c 'import sys,yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    list(yaml.safe_load_all(fh))' "$yf" 2>&1) || YRC=$?
+      if [ "$YRC" -ne 0 ]; then
+        YAML_FAILURES="${YAML_FAILURES}  - ${yf}: $(echo "$YERR" | tail -1)\n"
+      fi
+    done <<< "$CHANGED_YAML"
+  else
+    echo "verify-changes: PyYAML not importable; YAML parse gate skipped." >&2
+  fi
 fi
 
 # --- Phase 2: Build + test, with PROC-3 fallback for rtc_base / rtc_msgs ---
@@ -570,6 +723,12 @@ fi
 TEST_FAILURES=""
 PROC3=$(echo "$BUILD_PKGS" | tr ' ' '\n' | grep -E '^(rtc_base|rtc_msgs)$' || true)
 if [ -n "${RTC_VERIFY_SKIP_BUILD:-}" ]; then
+  # Emit the routing decision before discarding it. Blanking BUILD_PKGS is what
+  # lets the suite run without a colcon workspace, but it also made the build
+  # routing structurally unobservable -- so the central claim of the untracked
+  # scoping ("a new header under <pkg>/include/ IS built, a scratch file is
+  # not") had no assertion behind it. This probe is the seam the tests read.
+  echo "verify-changes[probe]: BUILD_PKGS=[${BUILD_PKGS# }] PROC3=[$(echo "$PROC3" | tr '\n' ' ' | sed 's/ *$//')]" >&2
   PROC3=""
   BUILD_PKGS=""
 fi
@@ -648,7 +807,8 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
     DELETED=$(git diff --diff-filter=D --name-only HEAD 2>/dev/null \
                 | grep -E '(^|/)(launch/[^/]+\.(py|xml|yaml)$|config/.*\.(yaml|yml)$)' \
                 || true)
-    for path in $DELETED; do
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
       bname=$(basename "$path")
       for root in $INSTALL_ROOTS; do
         FOUND=$(find "$root" -name "$bname" -type f 2>/dev/null | head -3 || true)
@@ -657,7 +817,7 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
           break
         fi
       done
-    done
+    done <<< "$DELETED"
   fi
 fi
 
@@ -671,11 +831,12 @@ fi
 SHELLCHECK_FAILURES=""
 if [ -n "$CHANGED_SH" ]; then
   if command -v shellcheck >/dev/null 2>&1; then
-    for f in $CHANGED_SH; do
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
       [ -f "$f" ] || continue
       SC_OUT=$(shellcheck --severity=warning -f gcc "$f" 2>/dev/null || true)
       [ -n "$SC_OUT" ] && SHELLCHECK_FAILURES="${SHELLCHECK_FAILURES}${SC_OUT}\n"
-    done
+    done <<< "$CHANGED_SH"
   else
     echo "verify-changes: shellcheck not found; shell-script lint gate skipped." >&2
   fi
