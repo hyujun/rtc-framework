@@ -7,6 +7,7 @@
 
 #include <pinocchio/multibody.hpp>
 #include <pinocchio/parsers/urdf.hpp>
+#include <sys/eventfd.h>  // eventfd_write (state-lane mailbox signal)
 
 #include <algorithm>
 
@@ -624,34 +625,20 @@ void RtControllerNode::CreateDeviceBackends() {
       // this callback. The copy CM used to keep was both redundant and a data
       // race against the RT thread (issue #198 §1/§2).
 
-      // Digital-twin republish (RELIABLE/10) — single hop into the joint
-      // cache via ReadState; trivially copyable POD.
-      auto dt_it = slot_to_dt_topic_.find(slot);
-      if (dt_it != slot_to_dt_topic_.end()) {
-        auto pub_it = digital_twin_publishers_.find(dt_it->second);
-        // is_activated() is an atomic bool load (RT-safe on this rt_callback
-        // executor). The backend state-lane sub can fire during on_configure —
-        // mock/UR driver already streams /joint_states before on_activate flips
-        // the LifecyclePublisher — so guard the republish to avoid a "publisher
-        // is not activated" warning on every startup.
-        if (pub_it != digital_twin_publishers_.end() && pub_it->second.publisher->is_activated()) {
-          auto& dte = pub_it->second;
-          urtc::DeviceStateCache cache{};
-          (void)backends_[static_cast<std::size_t>(slot)]->ReadState(cache);
-          const auto n = dte.msg.position.size();
-          for (std::size_t i = 0; i < n; ++i) {
-            dte.msg.position[i] = cache.positions[i];
-            dte.msg.velocity[i] = cache.velocities[i];
-            dte.msg.effort[i] = cache.efforts[i];
-          }
-          dte.publisher->publish(dte.msg);
-        }
+      // Mailbox only (issue #198 Phase 2). This runs on cb_group_rt_callback_
+      // (SCHED_FIFO 70) — the controller↔hardware RT boundary — so it may do
+      // nothing but publish a bit and poke a file descriptor. The state
+      // payload itself needs no hand-off: it already sits in the backend's
+      // own SeqLock, written just before this callback fires.
+      dt_dirty_[static_cast<std::size_t>(slot)].store(true, std::memory_order_release);
+      if (nrt_publish_eventfd_ >= 0) {
+        static_cast<void>(eventfd_write(nrt_publish_eventfd_, 1));
       }
 
-      // Sim-sync wake-up
-      if (use_sim_time_sync_) {
-        state_fresh_.store(true, std::memory_order_release);
-        state_cv_.notify_one();
+      // Sim-sync wake-up. Counter accumulates, so a message that lands while
+      // the RT thread is mid-tick still wakes the following wait.
+      if (use_sim_time_sync_ && sim_wake_eventfd_ >= 0) {
+        static_cast<void>(eventfd_write(sim_wake_eventfd_, 1));
       }
     });
 

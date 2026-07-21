@@ -31,24 +31,69 @@ void RtControllerNode::NrtPublishLoopEntry(const urtc::ThreadConfig& cfg) {
   urtc::PublishSnapshot snap{};
 
   while (nrt_publish_running_.load(std::memory_order_acquire) && rclcpp::ok()) {
-    if (!nrt_publish_buffer_.Pop(snap)) {
+    bool did_work = false;
+
+    if (nrt_publish_buffer_.Pop(snap)) {
+      // L1 span covers only the drained-work section — the 1 ms poll wait
+      // below stays outside so idle polling does not pollute the slice
+      // statistics.
+      RTC_TRACE_SCOPE("nrt_publish_drain");
+
+      // Forward the snapshot to the active controller so it can publish its
+      // own (controller-owned) topics. Index is captured by the RT loop this
+      // tick so the controller pulled out of controllers_ matches the topic
+      // config that produced the snapshot.
+      const auto aidx = static_cast<std::size_t>(snap.active_controller_idx);
+      if (aidx < controllers_.size() && controllers_[aidx]) {
+        controllers_[aidx]->PublishNonRtSnapshot(snap);
+      }
+      did_work = true;
+    }
+
+    // The twin lane is signalled by the device state callbacks, not by the RT
+    // tick, so it is drained unconditionally rather than as an else-branch —
+    // a tick-less arrival must not wait for the next snapshot to be noticed.
+    did_work = DrainDigitalTwin() || did_work;
+
+    if (!did_work) {
       WaitForNrtPublishWakeup();
+    }
+  }
+}
+
+bool RtControllerNode::DrainDigitalTwin() {
+  bool published = false;
+
+  for (std::size_t slot = 0; slot < dt_dirty_.size(); ++slot) {
+    if (!dt_dirty_[slot].exchange(false, std::memory_order_acquire)) {
+      continue;
+    }
+    auto& dte = digital_twin_by_slot_[slot];
+    // A state message can arrive during on_configure — the mock/UR driver
+    // already streams /joint_states before on_activate flips the
+    // LifecyclePublisher — so a not-yet-activated publisher drops the sample
+    // instead of warning on every startup. The bit is already cleared; the
+    // next message re-raises it.
+    if (!dte.publisher || !dte.publisher->is_activated() || !backends_[slot]) {
       continue;
     }
 
-    // L1 span covers only the drained-work section — the 1 ms poll wait above
-    // stays outside so idle polling does not pollute the slice statistics.
-    RTC_TRACE_SCOPE("nrt_publish_drain");
-
-    // Forward the snapshot to the active controller so it can publish its
-    // own (controller-owned) topics. Index is captured by the RT loop this
-    // tick so the controller pulled out of controllers_ matches the topic
-    // config that produced the snapshot.
-    const auto aidx = static_cast<std::size_t>(snap.active_controller_idx);
-    if (aidx < controllers_.size() && controllers_[aidx]) {
-      controllers_[aidx]->PublishNonRtSnapshot(snap);
+    // Read straight from the backend's SeqLock (lock-free single-writer /
+    // multi-reader), so the twin always carries the newest state rather than
+    // whatever a queue happened to hold. Coalesced bursts lose samples, never
+    // ordering or freshness.
+    urtc::DeviceStateCache cache{};
+    static_cast<void>(backends_[slot]->ReadState(cache));
+    const auto n = dte.msg.position.size();
+    for (std::size_t i = 0; i < n; ++i) {
+      dte.msg.position[i] = cache.positions[i];
+      dte.msg.velocity[i] = cache.velocities[i];
+      dte.msg.effort[i] = cache.efforts[i];
     }
+    dte.publisher->publish(dte.msg);
+    published = true;
   }
+  return published;
 }
 
 void RtControllerNode::WaitForNrtPublishWakeup() {

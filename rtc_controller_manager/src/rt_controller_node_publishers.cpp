@@ -29,6 +29,15 @@ void RtControllerNode::CreateDigitalTwinPublishers() {
   rclcpp::QoS dt_qos{1};
   dt_qos.reliable();
   for (const auto& [group_name, slot] : group_slot_map_) {
+    // Slot is the array index the state-lane callback will raise its dirty
+    // bit at, so a group outside the fixed slot range gets no twin rather
+    // than an out-of-bounds write later (issue #198 Phase 2).
+    if (slot < 0 || slot >= kMaxDevices) {
+      RCLCPP_WARN(get_logger(),
+                  "  CM JointState publish skipped for group '%s': slot %d outside [0, %d)",
+                  group_name.c_str(), slot, kMaxDevices);
+      continue;
+    }
     std::string dt_topic = "/rtc_cm/" + group_name + "/joint_states";
     DigitalTwinEntry dte;
     dte.publisher = create_publisher<sensor_msgs::msg::JointState>(dt_topic, dt_qos);
@@ -40,9 +49,9 @@ void RtControllerNode::CreateDigitalTwinPublishers() {
       dte.msg.velocity.resize(names.size(), 0.0);
       dte.msg.effort.resize(names.size(), 0.0);
     }
-    digital_twin_publishers_[dt_topic] = std::move(dte);
-    slot_to_dt_topic_[slot] = dt_topic;
-    RCLCPP_INFO(get_logger(), "  CM JointState publish: %s (RELIABLE/1)", dt_topic.c_str());
+    digital_twin_by_slot_[static_cast<std::size_t>(slot)] = std::move(dte);
+    RCLCPP_INFO(get_logger(), "  CM JointState publish: %s (RELIABLE/1, slot %d)", dt_topic.c_str(),
+                slot);
   }
 }
 
