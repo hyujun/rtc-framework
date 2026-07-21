@@ -556,6 +556,54 @@ TEST_F(OutputValidationTest, EstopStatusPublishIsDeferredOffTheRtThread) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+TEST_F(OutputValidationTest, UnbuildableHoldHandsTheDecisionToTheBackend) {
+  // The zero-length command CM emits when the hold cannot be built was treated
+  // as fail-closed, but every backend early-returns on it — so what reached
+  // the hardware was silence, which reads as "carry on, motors still driven"
+  // (issue #198 Phase 4). The device now gets an explicit safe-output call
+  // instead. At the wire on today's backends this leaves the actuator where
+  // the silent path left it; what changes is that the intent is stated rather
+  // than inferred, and that a backend which can do better has somewhere to
+  // put it.
+  PipelineTestController::output_fault.store(OutputFault::kInvalidFlag, std::memory_order_relaxed);
+  PipelineStubBackend::state_position_nan.store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(WaitFor([&] { return backend->SafeWriteCount() > 0; }, 2000ms));
+  // And it is the safe path, not the normal one: a zero-length WriteCommand
+  // would have been indistinguishable at the backend, which is exactly why
+  // the counter is separate.
+  EXPECT_EQ(0, backend->LastNumChannels());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, HealthyTicksNeverReachTheSafeOutputPath) {
+  // Guards the inverse: the safe path must stay reserved for the unbuildable
+  // case, or the test above would pass on a backend that got a safe write
+  // every tick.
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 5; }, 2000ms));
+  EXPECT_EQ(0, backend->SafeWriteCount());
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 TEST_F(OutputValidationTest, NonFiniteStateMakesTheHoldUnbuildableAndEstopsImmediately) {
   // The hold is only as good as the state it is rebuilt from. A backend
   // reporting NaN would otherwise make the replacement command carry the very

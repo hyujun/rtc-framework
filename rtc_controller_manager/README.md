@@ -260,6 +260,18 @@ CM 은 `on_configure` 에서 (backend 생성 후 + controller `on_configure` 후
 
 > **한계**: 이 검사는 controller-level `GetCommandType()` 만 본다. `ControllerOutput::devices[i].command_type` 의 per-device override 는 RT tick 마다 결정되므로 configure 시점에 알 수 없다. mixed-mode controller 를 도입할 때 이 구멍을 함께 닫아야 한다.
 
+### Backend safe-output 계약 (#198 Phase 4)
+
+`DeviceBackend::WriteSafeCommand()` — **pure virtual, 인자 없음.**
+
+CM 이 호출하는 조건: actuator 에 normal command 를 보내면 안 된다고 판단했고 **hold 도 만들 수 없을 때** (device 가 non-finite 위치를 보고 → "네가 있는 곳으로 servo" 할 대상 값이 없음). 이전에는 그 경우 zero-length command 를 내보내고 fail-closed 로 간주했다. **아니다** — 세 backend 모두 zero-length 를 early-return 하므로, 하드웨어에 도달하는 것은 침묵이고 그 의미는 "하던 것을 계속하라, 모터는 물린 채" 다. 침묵은 안전 상태가 아니라 **결정의 부재**다.
+
+인자가 없는 이유: 그 순간 CM 의 device 관점이 신뢰 불가라는 것이 요점이다. 여전히 known-good 값을 들고 있는 유일한 당사자가 backend 다 (보통 마지막으로 성공 발행한 command). `SafetyMode` enum 을 두지 않은 이유도 같다 — 가장 안전한 동작은 backend 별로 다르고 backend 가 그것을 소유한다. 진짜 drive-disable 을 갖게 된 backend 는 여기 구현하면 되고, 상위가 새 mode 를 배울 필요가 없다.
+
+pure virtual 인 이유: 아무것도 안 하는 default 는 이것이 대체하려는 그 침묵을 그대로 재생산하고, 새 backend 작성자는 질문 자체를 받지 않게 된다.
+
+> **정직한 범위 고지**: 현재 shipped backend 3종이 낼 수 있는 답은 "마지막 good command 재발행" 뿐이며, 물리적으로는 침묵 경로가 남긴 자리에 그대로 있다. 달라지는 것은 (a) 의도가 wire 와 rosbag 에 **명시**된다, (b) actuator lane 이 살아 있어 이를 감시하는 receiver 가 구분할 수 있다, (c) 더 나은 동작이 가능한 backend 가 도착하기 전에 **계약이 먼저 존재한다** (ARCH-3). hand 는 UDP write opcode 가 `kWritePosition` 하나뿐이라 bounded position hold 외의 선택지가 없다.
+
 ### E-STOP 시 actuator command 차단 (#198 Phase 3)
 
 latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildHoldOutput()` (측정 위치 hold; torque 모드는 0 N·m) 로 치환된다.

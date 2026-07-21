@@ -77,6 +77,8 @@ class CbGroupStubBackend : public rtc::DeviceBackend {
   void WriteCommand(const rtc::PublishSnapshot::GroupCommandSlot&,
                     rtc::CommandType) noexcept override {}
 
+  void WriteSafeCommand() noexcept override {}
+
   [[nodiscard]] std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
     return {};
   }
