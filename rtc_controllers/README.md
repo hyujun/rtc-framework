@@ -633,7 +633,7 @@ RTC_REGISTER_CONTROLLER(
 
 ## 예시 설정 파일 (`examples/`)
 
-각 컨트롤러에 대응하는 YAML reference example. `LoadConfig()` 메서드에서 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `<robot>_bringup/config/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
+각 컨트롤러에 대응하는 YAML reference example. `LoadConfig()` 메서드에서 파싱하는 스키마를 보여주며, 모든 설정 파일은 컨트롤러명을 최상위 키로 사용합니다. **production 설정은 `integrated_bringup/config/<robot>/controllers/`** 에 두고, 아래 example 의 `<robot>` placeholder 를 robot 식별자 (`devices.<group>` 키) 로 치환해 복제합니다.
 
 | 파일 | 설명 |
 |------|------|

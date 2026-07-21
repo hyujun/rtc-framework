@@ -297,7 +297,9 @@ namespace {
 <config_package>/config/<config_subdir><config_key>.yaml
 ```
 
-예: `<robot>_bringup/config/controllers/indirect/p_controller.yaml`
+예: `integrated_bringup/config/<robot>/controllers/demo_joint_controller.yaml`
+(`<config_subdir>` 는 `rtc_controllers` 의 example 레이아웃처럼 `indirect/` 를 낄 수 있으나,
+production 배치는 controller 당 한 파일의 flat 형태다 — [agent_docs/controllers.md](../agent_docs/controllers.md))
 (production YAML 은 robot-specific bringup 패키지가 소유합니다 — ARCH-1.
 `rtc_controllers/examples/controllers/` 의 동일 이름 파일은 reference
 example 이며 직접 로드되지 않습니다 — `<robot>` placeholder 를 자신의

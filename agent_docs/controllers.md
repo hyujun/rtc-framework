@@ -146,7 +146,7 @@ PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/incl
 
 YAML config 트리:
 
-- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level: `control_rate`, `initial_controller`, `devices.<group>.backend`, `urdf`, `device_timeout_*`), `mujoco_simulator.yaml` (per-robot overlay), `digital_twin.yaml` (per-robot overlay), `controllers/<config_key>.yaml` (production controller params — **flat**; `direct/`·`indirect/` 하위 디렉토리는 `rtc_controllers` 예제 레이아웃이지 여기가 아니다)
+- **Robot-specific bringup** (`integrated_bringup/config/<robot>/`) — `{sim,robot}.yaml` (CM-level: `control_rate`, `initial_controller`, `devices.<group>.backend`, `urdf`, `device_timeout_*`), `mujoco_simulator.yaml` (per-robot overlay), `digital_twin.yaml` (per-robot overlay), `controllers/<config_key>.yaml` (production controller params — controller 당 한 파일의 **flat** 배치. 유일한 하위 디렉토리는 `controllers/mpc/` (`phase_config`·`contact_light`·`contact_rich`) 이며 `demo_wbc_controller.yaml` 이 참조한다. `direct/`·`indirect/` 하위 디렉토리는 `rtc_controllers` 예제 레이아웃이지 여기가 아니다)
 - **Agnostic defaults** — `rtc_mujoco_sim/config/solver_param.yaml` (MuJoCo solver SSoT), `rtc_digital_twin/config/digital_twin.yaml` (robot-agnostic display defaults), `udp_hand_driver/config/udp_hand_node.yaml` (UDP transport)
 
 **컨트롤러 YAML 이 어디서 로드되는가**: `RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, ...)` 의 2번째 인자가 lookup 경로의 하위 디렉토리를 정한다. `integrated_bringup` 의 데모 컨트롤러 3종은 `config_subdir` 로 빈 문자열을 넘기므로 `config/<robot>/controllers/<config_key>.yaml` 이 되고, `rtc_controllers` 예제만 `"direct"` / `"indirect"` 를 넘겨 하위 디렉토리를 갖는다. 문서가 예제 레이아웃을 production 레이아웃으로 서술하는 오류가 반복됐으므로 (#213) 새 컨트롤러 추가 시 등록 매크로의 인자를 먼저 확인한다.

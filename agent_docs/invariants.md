@@ -2,7 +2,9 @@
 
 이 파일의 규칙은 **위반 시 아키텍처가 깨진다**. 작업 중 이 중 하나를 건드려야 할 것 같으면, 코드를 수정하기 **전에** `[CONCERN]` 을 보고하고 사용자 컨펌을 받아야 한다.
 
-**Severity 는 파일 단위가 아니라 규칙 단위다.** 각 표의 Severity 열이 [CLAUDE.md](../CLAUDE.md) §6 의 E-번호와 1:1 로 대응하며, 그 §6 이 severity 의 SSoT 다 (Critical = 컨펌 전 커밋·PR 금지, Warning = 판단에 따라 진행하되 결정 로그). 이전에 이 문단이 전 파일을 Critical 로 선언해 §6 에서 Warning 인 ARCH-3·ARCH-5 와 충돌했다 (#213).
+**Severity 는 파일 단위가 아니라 규칙 단위다.** [CLAUDE.md](../CLAUDE.md) §6 이 severity 의 SSoT 이며 (Critical = 컨펌 전 커밋·PR 금지, Warning = 판단에 따라 진행하되 결정 로그), 아래 Architecture 표가 Severity 열을 갖는다. 이전에 이 문단이 전 파일을 Critical 로 선언해 §6 에서 Warning 인 ARCH-3·ARCH-5 와 충돌했다 (#213).
+
+대응은 **1:1 이 아니다** — 그렇게 적었던 문장이 스스로 반증됐으므로 실제 관계를 적는다. §6 이 이름으로 지목하는 invariant 만 전용 E-번호를 갖고 (ARCH-1→E-2, ARCH-3→E-4, ARCH-5→E-10), 나머지는 "invariants.md 규칙을 건드림" 인 **E-1 (Critical)** 로 수렴한다. 반대로 E-3·E-6~E-9·E-11 은 ARCH 표가 아니라 msgs ABI·test·thread·E-STOP 등 다른 축을 가리키므로 대응하는 행이 없다. 그리고 **탐지 sensor 의 blocking 여부와 escalation severity 는 다른 축이다**: ARCH-6 은 non-blocking sensor 로 경고만 내지만, 규칙 자체를 바꾸려면 E-1 로 컨펌을 받아야 한다.
 
 규칙을 보완하는 문서:
 - [design-principles.md](design-principles.md) — ARCH 섹션의 근거 (robot-agnostic, 5 principles)
@@ -14,7 +16,7 @@
 
 **어떤 콜백이 RT 인지는 함수 이름이 아니라 그 콜백이 붙은 executor 의 스케줄러가 결정한다.** 판정의 SSoT 는 [architecture.md](architecture.md) §Execution Contexts 표이고, 개별 판정 절차는 [.claude/rules/rt-path.md](../.claude/rules/rt-path.md) 에 있다. 이 구분은 실제로 갈린다 — backend 의 sensor/state 구독 콜백은 `cb_group_rt_callback_` → SCHED_FIFO 라 **RT** 지만, controller 의 RobotTarget 구독 콜백은 controller LifecycleNode 의 default group → `nrt_callback_executor` → SCHED_OTHER 라 **비-RT** 다. 둘 다 "구독 콜백" 이지만 구속 여부가 반대다.
 
-RT path 의 대표 진입점: `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `SetDeviceTarget()` / `InitializeHoldPosition()` 의 tick 경로, DeviceBackend 의 state/motor/sensor 구독 콜백, UDP receive 콜백, `CheckTimeouts` 50 Hz 분기, **MPC thread** (`HandlerMPCThread::Tick` 등 — dedicated SCHED_FIFO core), **`UdpHandController::RunCommCycle`** (self-clocked UDP send/recv cycle — `rtc::PeriodicRtThread` 기반 CommLoop, 별도 SCHED_FIFO thread).
+RT path 의 대표 진입점: `RtControllerNode::ControlLoop()`, `RTControllerInterface::Compute()` / `SetDeviceTarget()` / `InitializeHoldPosition()` 의 tick 경로, DeviceBackend 의 state/motor/sensor 구독 콜백, UDP receive 콜백, `CheckTimeouts` 50 Hz 분기, **MPC thread** (`MPCThread::OnTick` → 파생 `Solve()` — dedicated SCHED_FIFO core), **`UdpHandController::RunCommCycle`** (self-clocked UDP send/recv cycle — `rtc::PeriodicRtThread` 기반 CommLoop, 별도 SCHED_FIFO thread).
 
 **비-RT path**: `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` lifecycle 콜백, `DrainLog()` aux thread, controller LifecycleNode 의 1 Hz aux 타이머 (timing CSV drain 등), ROS 파라미터 콜백, controller-owned RobotTarget 구독과 grasp_command 서비스 핸들러, 그리고 **`PublishNonRtSnapshot()`** — 이름과 달리 executor 콜백이 아니라 `NrtPublishLoopEntry` 의 전용 `std::jthread` (SCHED_OTHER) 에서 SPSC drain 으로 호출된다.
 
@@ -189,7 +191,7 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 
 ## RT Host / Runtime Preconditions
 
-이 조건은 RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜야 한다. RT path invariants (RT-1~9) 가 모두 지켜져도 host 가 잘못 설정되면 RT 안정성이 무너진다. 실패 시 코드를 수정하기 전에 host/runtime 문제인지 controller code 문제인지 분리한다.
+이 조건은 RT controller 가 운영·배포 모드로 실행될 때 host 가 만족시켜야 한다. RT path invariants (RT-1~10, RT-7 은 은퇴) 가 모두 지켜져도 host 가 잘못 설정되면 RT 안정성이 무너진다. 실패 시 코드를 수정하기 전에 host/runtime 문제인지 controller code 문제인지 분리한다.
 
 | # | 규칙 | 이유 | 검증/구현 |
 |---|------|------|----------|
@@ -224,8 +226,8 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 | ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | Warning (E-4) | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 수동 리뷰 — 새 `.cpp`에 대응하는 pure-virtual base 부재 |
 | ARCH-4 | integration 패키지가 `rtc_*` private 헤더 (`rtc_*/src/`) include 금지 | **Critical** (E-1) | 경계 훼손, robot-specific leak | **자동** — hook Phase 0 의 ARCH-4 검사 |
 | ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | Warning (E-10) | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | 수동 리뷰 — `find_package` / `ament_target_dependencies` / `<depend>` 에 `robot_descriptions` |
-| ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | Warning (E-1) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | **자동 (non-blocking)** — hook Phase 0b 의 ARCH-6 검사. 인자 없는 `SensorDataQoS()` (기본 depth 5) 도 `.keep_last(1)` 필요. test fixture 는 면제 |
-| ARCH-7 | `rtc_*` 는 control-framework runtime identity (RT 제어 루프를 구동하는 exec) 를 소유하지 않는다 | Warning (E-4) | agnostic 패키지가 exec 를 가지면 exec ↔ 노드 ↔ pgrep ↔ logger 정렬이 깨지고 robot-specific 의존이 새어든다 | **자동** — hook Phase 0 의 ARCH-7 검사 (`rtc_*/CMakeLists.txt` 의 `add_executable`). 예외는 [design-principles.md](design-principles.md) §ARCH-7 의 범위 — robot-agnostic standalone 노드 (`mujoco_simulator_node`, `closure_state_publisher`) 와 example 타깃 |
+| ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | Warning (sensor) / E-1 (규칙 변경) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | **자동 (non-blocking)** — hook Phase 0b 의 ARCH-6 검사. 인자 없는 `SensorDataQoS()` (기본 depth 5) 도 `.keep_last(1)` 필요. test fixture 는 면제 |
+| ARCH-7 | `rtc_*` 는 control-framework runtime identity (RT 제어 루프를 구동하는 exec) 를 소유하지 않는다 | Warning (sensor) / E-1 (규칙 변경) | agnostic 패키지가 exec 를 가지면 exec ↔ 노드 ↔ pgrep ↔ logger 정렬이 깨지고 robot-specific 의존이 새어든다 | **자동** — hook Phase 0 의 ARCH-7 검사. 검사 대상은 `rtc_*/CMakeLists.txt` 에서 **HEAD 에 없던 타깃 이름** 이다 (줄 단위가 아니라 — CMake 는 줄을 제자리에서 고쳐 쓰므로 재들여쓰기가 신규 exec 로 읽혔다). `example_*` 는 이름으로 면제되고, 그 외 예외는 `add_executable` 줄 또는 바로 윗줄의 `ARCH-7-exempt` 주석으로 표시한다. 예외 범위는 [design-principles.md](design-principles.md) §ARCH-7 — robot-agnostic standalone 노드 (`mujoco_simulator_node`, `closure_state_publisher`) 와 example 타깃 |
 
 **탐지의 SSoT 는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) 다** — ARCH 계열 패턴을 여기에 복제하지 않는다. 이전에는 문서가 divergent copy 를 들고 있었고, 그 사본이 hook 보다 낡은 스코프 (`ur5e_*/`, whole-file) 를 담은 채 조용히 썩었다 (#213). 정확한 정규식·스코프·면제 규칙이 필요하면 hook 을 읽는다.
 

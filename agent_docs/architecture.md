@@ -78,7 +78,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 |---|---|---|
 | `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 2 in v4.1) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to the same core via launch taskset. **state-ready 콜백은 mailbox 전용** (issue #198 Phase 2) — slot 별 dirty bit + eventfd write 만 하고, digital-twin republish 는 `nrt_publish_thread` 의 `DrainDigitalTwin()` 이 수행 |
 | `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, tier-aware core) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log **and `/system/estop_status` publish** (both raised as atomic flags by `TriggerGlobalEstop`/`ClearGlobalEstop`, which are reachable from the RT loop — #198 Phase 3) |
-| `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, tier-aware core — Core 0 만 4-core fallback, 그 외 tier 는 dedicated core) | `cb_group_nrt_callback_` (lifecycle services + E-STOP status pub) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). CM 은 RobotTarget sub 을 만들지 않는다 (issue #138). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
+| `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, tier-aware core — Core 0 만 4-core fallback, 그 외 tier 는 dedicated core) | `cb_group_nrt_callback_` (lifecycle services; E-STOP status 는 lifecycle 콜백의 `FlushEstopStatus()` 를 통해 간접적으로만 — 실제 publish 는 위 logging 행의 `DrainLog()`) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). CM 은 RobotTarget sub 을 만들지 않는다 (issue #138). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
 
 
 ### Execution Contexts (RT 판정 SSoT)
@@ -88,7 +88,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 | Execution context | Scheduler | RT? | 허용 연산 |
 |---|---|---|---|
 | `rt_control` loop (`ControlLoop`, `Compute`, `SetDeviceTarget`, inline `WriteCommand`) | SCHED_FIFO 90, Core 1 | **RT** | RT-1~10 전면 구속. alloc/throw/log/lock 금지 |
-| MPC thread (`HandlerMPCThread::Tick`), `UdpHandController::RunCommCycle` | SCHED_FIFO, dedicated core | **RT** | 동일 |
+| MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), `UdpHandController::RunCommCycle` | SCHED_FIFO, dedicated core | **RT** | 동일 |
 | DeviceBackend state/motor/sensor 구독 콜백 (`cb_group_rt_callback_`) | SCHED_FIFO 70, Core 2 | **RT** | **mailbox-only** — SeqLock/atomic store, memcpy, steady_clock 캡처까지 |
 | `nrt_publish_thread` (`NrtPublishLoopEntry` → `PublishNonRtSnapshot`) | SCHED_OTHER 0 | 비-RT | ROS publish 포함 자유. executor 콜백이 **아님** (std::jthread + eventfd) |
 | Controller-owned RobotTarget 구독, `grasp_command` 서비스 (controller LifecycleNode default group) | SCHED_OTHER 0 | 비-RT | 자유. 단 RT loop 와 공유하는 상태는 SeqLock/SPSC 경유 |
