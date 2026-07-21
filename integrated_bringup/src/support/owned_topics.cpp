@@ -112,11 +112,13 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
           break;
         }
         default:
-          // Controller-owned role we don't handle yet — ignore rather than
-          // throw so that future additions are opt-in. Grasp / WBC / ToF
-          // publishers are controller-created (SetupGraspStatePublisher /
-          // SetupWbcStatePublisher / SetupToFSnapshotPublisher), no longer
-          // wired through YAML role mappings.
+          // Unreachable: issue #196 Phase 5 removed the PublishRole values
+          // that had no publisher here (kRobotTarget / kDigitalTwinState), so
+          // the parser can only produce kRobotTransforms. Kept as a guard for
+          // a future enum value whose handler is not wired up yet. Grasp /
+          // WBC / ToF publishers are controller-created
+          // (SetupGraspStatePublisher / SetupWbcStatePublisher /
+          // SetupToFSnapshotPublisher), not YAML role mappings.
           break;
       }
     }

@@ -57,10 +57,10 @@ const rclcpp::Logger& TargetWarnLogger() {
 
 // Phase 4: device-wire roles (state / motor_state / sensor_state / joint_command
 // / ros2_command) live in `devices.<group>.backend:` (sim.yaml/robot.yaml) and
-// are owned by DeviceBackend impls. Controller YAML retains only target /
-// robot_target / robot_transforms / digital_twin_state — grasp_state /
-// wbc_state / tof_snapshot are now controller-owned via per-controller
-// SeqLock and are not declared in YAML.
+// are owned by DeviceBackend impls. Controller YAML retains only target and
+// robot_transforms (issue #196 Phase 5 removed the publish roles that had no
+// publisher behind them) — grasp_state / wbc_state / tof_snapshot are
+// controller-owned via per-controller SeqLock and are not declared in YAML.
 //
 // Phase 4 trailing cleanup: SubscribeRole enum dropped — the only remaining
 // value (kTarget) carries no discrimination. The parser still validates the
@@ -70,19 +70,32 @@ const std::unordered_set<std::string> kSubscribeRoleStrings = {
     "goal",  // backward compat
 };
 
+// Issue #196 Phase 5: robot_target / joint_goal / digital_twin_state removed.
+// They mapped to PublishRole values that no consumer implemented, so declaring
+// one produced a silently dead topic instead of a publisher. robot_transforms
+// is the only role with a publisher behind it (owned_topics.cpp).
 const std::unordered_map<std::string, PublishRole> kPublishRoleMap = {
-    // Topic-based State/Command/Goal
-    {"robot_target", PublishRole::kRobotTarget},
-    // backward compat
-    {"joint_goal", PublishRole::kRobotTarget},
     {"robot_transforms", PublishRole::kRobotTransforms},
-    // Digital twin
-    {"digital_twin_state", PublishRole::kDigitalTwinState},
 };
+
+// A `subscribe:` / `publish:` key that exists but is not a sequence is a YAML
+// authoring error (most often an indentation slip that turns the list into a
+// map). Skipping it silently brings the controller up with no target
+// subscription and no diagnostic, so issue #196 Phase 5 made it fail closed —
+// the throw propagates through LoadConfig into a configure failure (Phase 1).
+void RequireSequenceIfPresent(const YAML::Node& group_node, const char* key) {
+  if (group_node[key] && !group_node[key].IsSequence()) {
+    throw std::runtime_error(std::string("Topic group '") + key +
+                             "' must be a sequence of {topic, role} entries");
+  }
+}
 
 // Parse subscribe/publish arrays from a YAML device group node (ur5e or hand).
 void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) {
-  if (group_node["subscribe"] && group_node["subscribe"].IsSequence()) {
+  RequireSequenceIfPresent(group_node, "subscribe");
+  RequireSequenceIfPresent(group_node, "publish");
+
+  if (group_node["subscribe"]) {
     for (const auto& entry : group_node["subscribe"]) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
@@ -93,7 +106,7 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
     }
   }
 
-  if (group_node["publish"] && group_node["publish"].IsSequence()) {
+  if (group_node["publish"]) {
     for (const auto& entry : group_node["publish"]) {
       const auto topic = entry["topic"].as<std::string>();
       const auto role_str = entry["role"].as<std::string>();
@@ -101,11 +114,7 @@ void ParseDeviceTopicGroup(const YAML::Node& group_node, DeviceTopicGroup& out) 
       if (it == kPublishRoleMap.end()) {
         throw std::runtime_error("Unknown publish role: " + role_str);
       }
-      int data_size = 0;
-      if (entry["data_size"]) {
-        data_size = entry["data_size"].as<int>();
-      }
-      out.publish.push_back({topic, it->second, data_size});
+      out.publish.push_back({topic, it->second});
     }
   }
 }
@@ -267,7 +276,11 @@ RTControllerInterface::GetSharedModelBuilder() const noexcept {
 
 TopicConfig RTControllerInterface::ParseTopicConfig(const YAML::Node& topics_node) {
   // ── Detect deprecated flat format (topics.subscribe exists directly) ──
-  if (topics_node["subscribe"] && topics_node["subscribe"].IsSequence()) {
+  // Group names are arbitrary strings, so a top-level key literally named
+  // `subscribe` is the flat format whatever its node type — the pre-Phase-5
+  // IsSequence() guard let a malformed flat config fall through and be parsed
+  // as a device group named "subscribe".
+  if (topics_node["subscribe"]) {
     throw std::runtime_error(
         "Flat topics: format is deprecated. "
         "Migrate to device-group keyed format (e.g. topics.ur5e / "

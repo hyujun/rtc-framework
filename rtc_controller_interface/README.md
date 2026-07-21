@@ -342,6 +342,8 @@ my_controller:
 
 > 폐기된 flat format (`topics.subscribe`를 직접 사용)은 마이그레이션 에러를 발생시킵니다.
 
+**형식 검증은 fail-closed 입니다 (issue #196 Phase 5).** `subscribe:` / `publish:` 키가 존재하는데 `{topic, role}` 엔트리의 **sequence 가 아니면** (들여쓰기 실수로 map 이 되는 경우가 대부분) `ParseTopicConfig` 가 throw 하고, Phase 1 의 fail-closed lifecycle 이 이를 configure 실패로 잇습니다. Phase 5 이전에는 이 블록을 조용히 건너뛰어 컨트롤러가 target 구독 0개로, 아무 진단 없이 기동했습니다. 단 `topics:` 아래에서 값이 map 이 아닌 키는 계속 group 이 아닌 것으로 보고 건너뜁니다 (스칼라 설정값을 같은 섹션에 둘 수 있도록).
+
 ### 토픽 소유권 (issue #138)
 
 컨트롤러 YAML `topics:` 의 모든 subscribe/publish entry 는 **controller-owned** 입니다 — `ownership` 필드는 없습니다. 컨트롤러별 `LifecycleNode` 가 `on_configure` (via `integrated_bringup/support/owned_topics.cpp`) 에서 `node_->create_subscription(...)` / `node_->create_publisher(...)` 로 직접 생성하며, 상대 경로는 노드 namespace `/<config_key>/...` 로 자동 해석됩니다. CM 의 publish thread 는 SPSC snapshot 을 드레인한 뒤 `controllers_[active]->PublishNonRtSnapshot(snap)` 을 호출해 controller-owned 발행을 위임합니다.
@@ -364,12 +366,11 @@ Phase 4 trailing cleanup: 남은 값이 singleton 이라 `SubscribeRole` enum �
 Phase 4 (`b9a2587`): 디바이스 와이어 command lane (`joint_command` / `ros2_command`) 은 `devices.<group>.backend:` 로 이관되어 `DeviceBackend` 가 소유합니다.
 Phase 4 trailing cleanup (`104796f`): 컨트롤러 소유 non-RT 토픽 (`grasp_state` / `wbc_state` / `tof_snapshot`) 은 enum/parser/snapshot 슬롯에서 모두 제거되고 각 컨트롤러가 직접 `SeqLock<{Grasp,Wbc,ToF}StateData>` + `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼 (`integrated_bringup/include/integrated_bringup/support/owned_topics.hpp`) 로 소유합니다 — 새 controller-owned 토픽을 추가할 때 이 패턴을 따르고 `PublishRole` 은 *건드리지 마십시오*. 컨트롤러 YAML `topics:` 섹션에는 아래 역할만 남습니다.
 
+Phase 5 (issue #196): `robot_target` / `digital_twin_state` / 하위 호환 별칭 `joint_goal` 이 제거됐습니다. 파서는 이 문자열들을 `kRobotTarget` / `kDigitalTwinState` 로 매핑했지만 그 enum 값으로 publisher 를 만드는 소비자가 없어, 선언한 컨트롤러는 에러 없이 죽은 토픽을 얻었습니다. 이제 이 문자열들은 다른 오타와 동일하게 `Unknown publish role` 로 configure 를 실패시킵니다.
+
 | YAML 역할 문자열 | enum 값 | 설명 |
 |-----------------|---------|------|
-| `robot_target` | `kRobotTarget` | 관절/태스크 목표 (RobotTarget) |
 | `robot_transforms` | `kRobotTransforms` | Per-controller TFMessage — controller당 1 토픽 (`<config_key>/transforms`)에 arm tip / hand fingertips / virtual TCP frame을 묶어 발행 (`tf2_msgs/TFMessage`) |
-| `digital_twin_state` | `kDigitalTwinState` | 디지털 트윈용 관절 상태 (JointState, RELIABLE QoS) |
-| `joint_goal` | `kRobotTarget` | 하위 호환 별칭 |
 
 ### 기본 토픽 설정
 

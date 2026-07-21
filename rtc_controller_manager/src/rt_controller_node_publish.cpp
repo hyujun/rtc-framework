@@ -18,8 +18,9 @@ namespace urtc = rtc;
 // ── nrt_callback thread (controller-owned non-RT publish lane) ──────────────
 //
 // Drains nrt_publish_buffer_ and forwards controller.PublishNonRtSnapshot —
-// the controller owns LifecyclePublishers for kRobotTarget / kRobotTransforms
-// / kDigitalTwinState (plus any owned topics behind owned_topics.cpp). These
+// the controller owns the LifecyclePublisher for kRobotTransforms (the only
+// PublishRole after issue #196 Phase 5) plus any topics it creates directly
+// via the SeqLock<T> + Setup*Publisher pattern (owned_topics.cpp). These
 // publishes are outside the controller↔hardware RT boundary, so they ride a
 // non-RT consumer on the nrt_callback core (SCHED_OTHER nice 0).
 
