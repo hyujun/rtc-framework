@@ -518,17 +518,31 @@ ur5e:
   EXPECT_THROW(StubController::ParseTopicConfig(as_scalar), std::runtime_error);
 }
 
-TEST(RTControllerInterfaceTest, MalformedFlatFormatStillThrows) {
+TEST(RTControllerInterfaceTest, MalformedFlatFormatGetsMigrationDiagnostic) {
   // A flat-format config whose `subscribe:` is itself malformed used to slip
   // past the deprecation check (which required IsSequence()) and get parsed as
-  // a device group named "subscribe". Both diagnoses are better than silence;
-  // what matters is that it does not configure.
+  // a device group named "subscribe".
+  //
+  // Asserting only that this throws was a false green — measured: reverting the
+  // subscribe half of the flat-format check left all 9 test binaries passing,
+  // because the group-shape guards reject the same config for an unrelated
+  // reason. Only the diagnostic distinguishes them, exactly as the publish-side
+  // sibling below already pins.
   const auto node = YAML::Load(R"(
 subscribe:
   topic: /target
   role: target
 )");
-  EXPECT_THROW(StubController::ParseTopicConfig(node), std::runtime_error);
+  try {
+    StubController::ParseTopicConfig(node);
+    FAIL() << "malformed flat format must throw";
+  } catch (const std::runtime_error& e) {
+    const std::string msg = e.what();
+    EXPECT_NE(msg.find("deprecated"), std::string::npos)
+        << "operator must be told this is the deprecated flat format, not that a "
+           "group named 'subscribe' is malformed: "
+        << msg;
+  }
 }
 
 TEST(RTControllerInterfaceTest, SequenceValuedGroupThrows) {
