@@ -111,15 +111,17 @@ void CreateOwnedTopics(rtc::RTControllerInterface& ctrl, ControllerTopicHandles&
           handles.tf_msg.transforms.reserve(kMaxControllerTransforms);
           break;
         }
-        default:
-          // Unreachable: issue #196 Phase 5 removed the PublishRole values
-          // that had no publisher here (kRobotTarget / kDigitalTwinState), so
-          // the parser can only produce kRobotTransforms. Kept as a guard for
-          // a future enum value whose handler is not wired up yet. Grasp /
-          // WBC / ToF publishers are controller-created
+          // No `default:` on purpose. A default label is what SWITCHES OFF
+          // -Wswitch, which is the only thing that flags a new PublishRole
+          // whose publisher is not wired up here — and an unwired role parses
+          // fine, publishes nothing, and reproduces the dead topic that issue
+          // #196 Phase 5 deleted two enum values to remove. PublishRoleToString
+          // (rtc_base types.hpp) is written the same way. Note the repo builds
+          // with -Wall but not -Werror, so this is a warning, not a hard stop.
+          //
+          // Grasp / WBC / ToF publishers are controller-created
           // (SetupGraspStatePublisher / SetupWbcStatePublisher /
           // SetupToFSnapshotPublisher), not YAML role mappings.
-          break;
       }
     }
     ++group_idx;

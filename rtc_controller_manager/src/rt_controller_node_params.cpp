@@ -167,6 +167,25 @@ void RtControllerNode::ResetControllerBringUpState() {
   active_groups_.clear();
   group_slot_map_.clear();
   active_controller_idx_.store(0);
+
+  // Device-config state built by LoadDeviceNameConfigs(). A configure that
+  // fails returns FAILURE, which parks the node in UNCONFIGURED — on_cleanup
+  // (the only other place these are cleared) is reachable from INACTIVE only,
+  // so without this a retry inherits the refused attempt's device state. It
+  // matters when the retry's group set SHRINKS: LoadDeviceNameConfigs()
+  // re-assigns the two slot vectors wholesale but only inserts-or-overwrites
+  // per group, so a group that is no longer claimed keeps its stale
+  // DeviceNameConfig and still reaches every controller via
+  // SetDeviceNameConfigs().
+  device_name_configs_.clear();
+  slot_to_group_name_.clear();
+  slot_to_sensor_layout_.clear();
+
+  // Deliberately NOT reset here: device_timeouts_ and state_received_. Both are
+  // written only after the last ResetControllerBringUpState() call site in
+  // DeclareAndLoadParameters(), so no refused attempt can leave them dirty, and
+  // a retry after a SUCCESSFUL configure must pass through on_cleanup (which
+  // does clear them). Adding them would defend a state that cannot occur.
 }
 
 bool RtControllerNode::DeclareAndLoadParameters() {
@@ -555,11 +574,18 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     // lets the D1 checkpoint refuse. Controllers and their LifecycleNodes do
     // exist by then, but no publisher, device backend, log channel, service,
     // timer or RT thread has been created — those all live past D1.
+    // emplace, not operator[]: on collision the FIRST claimant keeps the slot,
+    // so the map is fail-safe on its own rather than relying on D1 being the
+    // next reader. (An unconditional write here left the map holding exactly
+    // the shadowing the FATAL below warns about — harmless only while no read
+    // sits between here and D1, which nothing enforces. Tier 1 above is
+    // structured the same way.) The loop still runs to completion so one run
+    // reports every collision.
     const std::string ctrl_name(ctrl->Name());
-    for (const std::string& id : {ctrl_name, entry.config_key}) {
-      const auto prev = controller_name_to_idx_.find(id);
-      if (prev == controller_name_to_idx_.end()) {
-        continue;
+    auto claim = [&](const std::string& id) {
+      const auto [prev, inserted] = controller_name_to_idx_.emplace(id, static_cast<int>(i));
+      if (inserted) {
+        return;
       }
       bring_up_failed = true;
       RCLCPP_FATAL(get_logger(),
@@ -569,10 +595,13 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                    id.c_str(), prev->second,
                    entries[static_cast<std::size_t>(prev->second)].config_key.c_str(), i,
                    entry.config_key.c_str(), ctrl_name.c_str());
+    };
+    claim(ctrl_name);
+    // Name() == config_key is legal (and common in tests). Claiming it twice
+    // would make the entry collide with itself.
+    if (entry.config_key != ctrl_name) {
+      claim(entry.config_key);
     }
-
-    controller_name_to_idx_[ctrl_name] = static_cast<int>(i);
-    controller_name_to_idx_[entry.config_key] = static_cast<int>(i);
 
     controllers_.push_back(std::move(ctrl));
     controller_nodes_.push_back(std::move(ctrl_lc_node));
