@@ -248,6 +248,18 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 - RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
 - **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다 (#198 Phase 3). 드레인은 *드레인 시점의* `global_estop_` 값을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
 
+### Backend command-type 선언 (#198)
+
+`DeviceBackend::AcceptsCommandType(CommandType)` — **기본값은 position-only** 다. 아무 선언도 하지 않은 backend 는 이 트리의 모든 actuator lane 이 하는 그 하나를 한다고 간주한다. 더 넓게 선언하는 것은 opt-in 이며, "`WriteCommand` 가 enum 을 받는다" 가 아니라 **wire format 이 그 구분을 실어 나른다** 는 뜻이다.
+
+CM 은 `on_configure` 에서 (backend 생성 후 + controller `on_configure` 후 — 양쪽이 다 확정된 최초 시점) 등록된 **모든** controller 의 `GetCommandType()` 을 그 controller 가 구동하는 group 의 backend 와 대조하고, 불일치면 configure 를 거부한다 (`ValidateCommandTypeSupport`).
+
+왜 필요했나: `WriteCommand` 의 `command_type` 인자는 **권고**였다. `ur_driver_native` 는 그것을 무시하고 받은 값을 전부 `forward_position_controller` 의 `Float64MultiArray` 로 발행한다. 따라서 torque 모드 controller 가 거기 묶이면 **N·m 가 관절 각도로 wire 에 나가고**, CM 자신의 hold command 는 (동역학 모델이 없어 kTorque 를 0.0 으로 낸다) 팔을 **놓아주는 대신 zero configuration 으로 이동시킨다.** 그 backend 소스는 이 페어링이 "validated at YAML time" 이라고 적어 두었으나 실제로 검증하는 곳은 어디에도 없었다.
+
+현재 shipped controller config 9개는 전부 `command_type: "position"` 이라 도달 상태는 아니었다 — YAML 한 단어 거리였고, 그래서 지금 닫는다.
+
+> **한계**: 이 검사는 controller-level `GetCommandType()` 만 본다. `ControllerOutput::devices[i].command_type` 의 per-device override 는 RT tick 마다 결정되므로 configure 시점에 알 수 없다. mixed-mode controller 를 도입할 때 이 구멍을 함께 닫아야 한다.
+
 ### E-STOP 시 actuator command 차단 (#198 Phase 3)
 
 latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildHoldOutput()` (측정 위치 hold; torque 모드는 0 N·m) 로 치환된다.

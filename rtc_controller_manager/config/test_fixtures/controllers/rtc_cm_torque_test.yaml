@@ -1,0 +1,16 @@
+# Test fixture — loaded ONLY by rtc_controller_manager unit tests via
+# config_variant=test_fixtures. One device group is enough here: the variable
+# under test is the controller's command type against the backend bound to
+# that group, not the number of groups.
+#
+# The `topics:` block is load-bearing, not decoration. Without it the
+# controller declares no device group, so no backend is created and
+# ValidateCommandTypeSupport has nothing to check — the refusal test passes or
+# fails on an empty loop rather than on the guard. (Observed: the first cut of
+# this fixture had no YAML at all and both tests were vacuous.)
+rtc_cm_torque_test:
+  command_type: "torque"
+  topics:
+    arm:
+      subscribe:
+        - {topic: "target", role: "target"}

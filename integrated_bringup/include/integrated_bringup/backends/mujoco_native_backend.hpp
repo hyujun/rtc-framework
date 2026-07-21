@@ -61,6 +61,13 @@ class MujocoNativeBackend : public DeviceBackend {
   // num_inference_groups=0 and inference_enable all false.
   [[nodiscard]] bool HasSensorState() const noexcept override { return true; }
 
+  // The only backend in this tree that carries the mode through: WriteCommand
+  // stamps JointCommand.command_type from the enum and forwards the
+  // feedforward channel for kPdFeedforward, and mujoco_sim reads both. The
+  // hardware backends silently reinterpret whatever they are handed, so they
+  // keep the position-only default.
+  [[nodiscard]] bool AcceptsCommandType(CommandType /*ct*/) const noexcept override { return true; }
+
   void ReadSensorState(DeviceStateCache& cache) noexcept override;
 
   [[nodiscard]] std::chrono::steady_clock::time_point LastStateStamp() const noexcept override {
