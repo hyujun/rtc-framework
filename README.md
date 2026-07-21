@@ -271,7 +271,7 @@ PID=$(pgrep -f integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 |--------|------|------|----------|----------|------|
 | `rt_control` | jthread (clock_nanosleep) | 1 | SCHED_FIFO | 90 | ControlLoop @ `control_rate` (default 500Hz, design 100Hz–5kHz) + CheckTimeouts 50Hz + inline `DeviceBackend.WriteCommand` (actuator publish, RT-safe contract) |
 | `rt_callback` | ROS2 Executor | 2 | SCHED_FIFO | 70 | DeviceBackend state subs (/joint_states, hand state/motor/sensor) via `Configure(node, cfg, state_cb_group)` 주입. DDS receive thread 가 launch-time taskset 으로 같은 Core 2 에 co-pin (CFS) |
-| `nrt_publish_thread` | jthread (SPSC drain, cap 16) | nrt_callback core | SCHED_OTHER | 0 | controller-owned non-RT 토픽 (`RobotTarget` / `Transforms` / `DigitalTwin` / `grasp_state` / `wbc_state` / `tof_snapshot`) — `controller.PublishNonRtSnapshot` 호출 |
+| `nrt_publish_thread` | jthread (SPSC drain, cap 16) | nrt_callback core | SCHED_OTHER | 0 | controller-owned non-RT 토픽 (`Transforms` / `grasp_state` / `wbc_state` / `tof_snapshot`) — `controller.PublishNonRtSnapshot` 호출 |
 | `nrt_logging_executor` | ROS2 Executor | tier-aware (4c: 0 / ≥ 6c: dedicated) | SCHED_OTHER | nice -5 | `cm_timing_log.csv` 드레인 + deferred E-STOP 로그 |
 | `nrt_callback_executor` | ROS2 Executor | tier-aware (4c: 0 / ≥ 6c: dedicated) | SCHED_OTHER | 0 | E-STOP 상태 + lifecycle services + CM/controller default group (RobotTarget subs, grasp_command services) |
 | `mpc_main` | jthread | 3 | SCHED_FIFO | 60 | 20 Hz MPC solve, TripleBuffer publish (모든 ≥ 6c tier 에서 Core 3 dedicated; 4c 는 CFS degraded) |
