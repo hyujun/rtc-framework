@@ -570,7 +570,7 @@ void RtControllerNode::RtLoopEntry(const ThreadConfig& cfg) {
   - `udp_hand_driver` 내부 private 상수 [`kHandUdpRecvConfig`](../udp_hand_driver/include/udp_hand_driver/udp_hand_controller.hpp) (FIFO 65, `cpu_core=-1` sentinel — `hand_driver` 프로세스의 taskset affinity 상속).
   - 일반 `rtc_communication::Transceiver` default 는 [`kRtUdpRecvConfig`](../rtc_communication/include/rtc_communication/transceiver.hpp) (FIFO 65, `cpu_core=-1`) — caller 가 명시 핀 필요시 override.
   - `SystemThreadConfigs` 에는 UDP receive 가 보이지 않는다 — hand UDP receive 는 별도 프로세스 (`udp_hand_node`) 의 *내부* thread 이므로 single-process 의 SSoT 표현 대상이 아님.
-- **`cpu_core = -1` sentinel**: `ValidateThreadConfig` 가 통과시키고 `ApplyThreadConfig` 가 affinity step 만 skip (scheduler/priority/nice/name 은 정상 적용). 처리 함정은 [feedback_sentinel_introduction_validator_audit](../../.claude/projects/-home-junho-ros2-ws-rtc-ws-src-rtc-framework/memory/feedback_sentinel_introduction_validator_audit.md) 참조.
+- **`cpu_core = -1` sentinel**: `ValidateThreadConfig` 가 통과시키고 `ApplyThreadConfig` 가 affinity step 만 skip (scheduler/priority/nice/name 은 정상 적용). 처리 함정은 에이전트 memory `feedback_sentinel_introduction_validator_audit` 참조.
 
 ### 스레드 적용 ([thread_utils.hpp](../rtc_base/include/rtc_base/threading/thread_utils.hpp))
 

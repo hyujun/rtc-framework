@@ -24,9 +24,13 @@ D3  no link escapes the repository, and no ``/home/<user>/`` absolute path
 D4  no ``file.cpp:123`` / ``#L123`` line-anchor citations in the agent corpus.
     Line numbers drift on every edit; cite a symbol instead.
 D7  ``detect`` fenced blocks: the pattern is linted for the escaping mistakes
-    that make a grep silently match nothing, then actually executed against a
-    recorded exemplar so a pattern that compiles but matches nothing still
-    fails.
+    that make a grep silently match nothing, then executed against a required
+    ``# probe:`` line it must match (and any ``# antiprobe:`` it must not), so
+    a pattern that compiles but can no longer fire still fails.  An optional
+    ``# exemplar:`` additionally asserts the state of the tree today.
+D8  no detection pattern outside a detect block.  A markdown table cell cannot
+    hold an unescaped ``|``, so a regex parked in one gets escaped into
+    something inert; the table is the root cause, not the individual typos.
 
 Both a static lint *and* an execution check are required, and neither subsumes
 the other.  A doubled backslash (``\\\\b``) makes grep exit 2 -- loud.  But
@@ -343,7 +347,11 @@ def lint_pattern(flavor: str, pattern: str) -> list[str]:
     problems: list[str] = []
     if flavor in ("fixed", "pcre"):
         return problems
-    if re.search(r"\(\||\|\)|\|\|", pattern):
+    # Blank out escaped characters before looking for structural mistakes:
+    # `malloc\(|` contains the byte pair "(|" but that paren is a literal, not
+    # an empty group -- flagging it would condemn a correct pattern.
+    bare = re.sub(r"\\.", "\x00", pattern)
+    if re.search(r"\(\||\|\)|\|\|", bare):
         problems.append(
             "empty alternation branch -- GNU grep tolerates it, the sandbox's "
             "ugrep rejects it outright ('empty (sub)expression'); write "
@@ -502,7 +510,10 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
         if in_fence:
             continue
 
-        for m in MD_LINK_RE.finditer(raw):
+        # Link syntax is only link syntax outside a code span.  `operator[](name)`
+        # is C++ being quoted, not a link to a file called "name"; masking the
+        # spans first is what keeps this check from inventing work.
+        for m in MD_LINK_RE.finditer(mask_code_spans(raw)):
             findings.extend(check_link(repo, rel, base, lineno, m.group(1)))
 
         for m in CODE_SPAN_RE.finditer(raw):
@@ -544,6 +555,11 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
 
     findings.extend(check_detect_blocks(repo, rel, text))
     return findings
+
+
+def mask_code_spans(raw: str) -> str:
+    """Blank out inline code spans, preserving offsets."""
+    return CODE_SPAN_RE.sub(lambda m: " " * len(m.group(0)), raw)
 
 
 def is_parked_detection_pattern(span: str) -> bool:
@@ -679,6 +695,22 @@ def parse_attrs(spec: str) -> dict[str, str]:
     return dict(re.findall(r"(\w+)=([^\s]+)", spec))
 
 
+DIRECTIVE_RE = re.compile(r"^#\s*(probe|antiprobe|exemplar|expect)\s*:\s*(.*)$")
+
+
+def split_directives(body: str) -> tuple[str, dict[str, list[str]]]:
+    """Separate ``# probe:``-style directive lines from the grep command."""
+    command: list[str] = []
+    directives: dict[str, list[str]] = {}
+    for line in body.splitlines():
+        m = DIRECTIVE_RE.match(line.strip())
+        if m:
+            directives.setdefault(m.group(1), []).append(m.group(2))
+        elif line.strip():
+            command.append(line)
+    return "\n".join(command).strip(), directives
+
+
 def check_detect_blocks(repo: Repo, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     lines = text.splitlines()
@@ -707,6 +739,7 @@ def check_detect_block(
     rule = attrs.get("id", "?")
     if "id" not in attrs:
         findings.append(Finding(rel, lineno, "D7", "detect block has no id= attribute"))
+    body, directives = split_directives(body)
     flavor, pattern, error = parse_grep(body)
     if error or pattern is None:
         findings.append(Finding(rel, lineno, "D7", f"{rule}: {error}"))
@@ -720,48 +753,71 @@ def check_detect_block(
         findings.append(Finding(rel, lineno, "D7", f"{rule}: pattern does not compile ({cerror})"))
         return findings
 
-    exemplar = attrs.get("exemplar")
-    if not exemplar:
+    # A probe is a line the pattern MUST match: proof that the regex can still
+    # fire at all.  It is required, and deliberately not sourced from the
+    # repository -- a rule with zero current violations (RT-5, RT-6) would
+    # otherwise be unverifiable, which is the exact state this whole issue is
+    # about.  Exemplars are the weaker, optional check: they say something
+    # about the tree today, and go stale when the tree changes for good reasons.
+    probes = directives.get("probe", [])
+    if not probes:
         findings.append(
             Finding(
                 rel,
                 lineno,
                 "D7",
-                f"{rule}: no exemplar= -- a pattern that is never executed "
-                "cannot be shown to still match anything",
+                f"{rule}: no '# probe:' line -- a pattern nobody ever ran "
+                "against a known-matching input cannot be shown to fire",
             )
         )
-        return findings
+    for probe in probes:
+        if not compiled.search(probe):
+            findings.append(
+                Finding(
+                    rel,
+                    lineno,
+                    "D7",
+                    f"{rule}: pattern does not match its own probe {probe!r} -- "
+                    "it would report 'no violations' on a genuine violation",
+                )
+            )
+    for anti in directives.get("antiprobe", []):
+        if compiled.search(anti):
+            findings.append(
+                Finding(
+                    rel,
+                    lineno,
+                    "D7",
+                    f"{rule}: pattern matches antiprobe {anti!r} -- too broad, "
+                    "it will flag legitimate code and get ignored",
+                )
+            )
 
-    expect = attrs.get("expect", "match")
-    target = repo.root / exemplar
-    if not target.exists():
-        findings.append(
-            Finding(rel, lineno, "D7", f"{rule}: exemplar '{exemplar}' does not exist")
-        )
-        return findings
-
-    hits = count_hits(target, compiled)
-    if expect == "match" and hits == 0:
-        findings.append(
-            Finding(
-                rel,
-                lineno,
-                "D7",
-                f"{rule}: pattern executes but matches nothing in exemplar "
-                f"'{exemplar}' -- a silent false-negative, which is exactly "
-                "what this check exists to catch",
+    for exemplar in directives.get("exemplar", []):
+        expect = (directives.get("expect") or ["match"])[0]
+        target = repo.root / exemplar
+        if not target.exists():
+            findings.append(
+                Finding(rel, lineno, "D7", f"{rule}: exemplar '{exemplar}' does not exist")
             )
-        )
-    elif expect == "none" and hits > 0:
-        findings.append(
-            Finding(
-                rel,
-                lineno,
-                "D7",
-                f"{rule}: expected no match in '{exemplar}' but found {hits}",
+            continue
+        hits = count_hits(target, compiled)
+        if expect == "match" and hits == 0:
+            findings.append(
+                Finding(
+                    rel,
+                    lineno,
+                    "D7",
+                    f"{rule}: no match in exemplar '{exemplar}' -- either the "
+                    "pattern rotted or the citation is stale",
+                )
             )
-        )
+        elif expect == "none" and hits > 0:
+            findings.append(
+                Finding(
+                    rel, lineno, "D7", f"{rule}: expected no match in '{exemplar}', found {hits}"
+                )
+            )
     return findings
 
 
@@ -793,6 +849,20 @@ GREP_CASES: list[tuple[str, str, str, bool]] = [
     ("grep -niE '(\\\\bnew |x)' f.cpp", "ere", "(\\\\bnew |x)", True),
     ("grep -nE '\\.wait(|_for|_until)\\(' f.cpp", "ere", "\\.wait(|_for|_until)\\(", True),
     ("grep -nE '\\.wait(_for|_until)?\\(' f.cpp", "ere", "\\.wait(_for|_until)?\\(", False),
+    # An escaped paren directly before an alternation is not an empty group.
+    # Flagging it would reject the corrected RT-1 and RT-10 patterns.
+    (
+        "grep -nE '(\\bnew [A-Za-z_]|malloc\\(|\\.resize\\()' f.cpp",
+        "ere",
+        "(\\bnew [A-Za-z_]|malloc\\(|\\.resize\\()",
+        False,
+    ),
+    (
+        "grep -nE '(std::condition_variable|\\.notify_(one|all)\\(|\\.wait(_for|_until)?\\()' f.cpp",
+        "ere",
+        "(std::condition_variable|\\.notify_(one|all)\\(|\\.wait(_for|_until)?\\()",
+        False,
+    ),
     ("grep -n 'a\\|b' f.cpp", "bre", "a\\|b", False),
     ("grep -rnE '(ur5e|iiwa7)' rtc_base/", "ere", "(ur5e|iiwa7)", False),
     ("grep -c -m 3 -E 'foo|bar' f.cpp", "ere", "foo|bar", False),
@@ -863,6 +933,11 @@ def self_test() -> int:
         flagged = bool(lint_pattern(flavor, pattern or ""))
         if flagged != want_flagged:
             failures.append(f"lint_pattern({cmd!r}) flagged={flagged} want {want_flagged}")
+
+    if MD_LINK_RE.search(mask_code_spans("| `operator[](name)` | insertion order |")):
+        failures.append("code-span masking failed: `operator[](name)` read as a link")
+    if not MD_LINK_RE.search(mask_code_spans("see [architecture](agent_docs/architecture.md)")):
+        failures.append("code-span masking destroyed a real link")
 
     for text, want in SLUG_CASES:
         got = slugify(text)

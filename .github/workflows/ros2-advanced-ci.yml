@@ -1,6 +1,7 @@
 name: ROS2 Advanced CI
 
-# 전면 재작성: 2026-04-27 (agent_docs/ci-rewrite-plan.md)
+# 전면 재작성: 2026-04-27 — 설계 근거는 그 시점의 커밋 메시지와 PR 논의에 있다
+#            (당시 참조하던 계획 문서는 머지 후 삭제됐다).
 # 핵심 변경:
 #   - build-deps job: fmt 11 / mimalloc / aligator 사전 빌드 → cache + artifact
 #     (이전 실패의 root cause 해결: rtc_mpc 의 find_package(fmt 10) 실패)

@@ -59,20 +59,87 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 - 기존 SPSC + publish_thread 멀티플렉싱 인프라 → **교체 금지** (회귀 위험, drain 분리 / offload / session log 통합 이점 상실)
 - MPSC / MPMC 필요 → ARCH-3 검토 우선 (single-writer 로 재설계 가능한가?). 정말 필요하면 `LockFreeQueue<T, queue>` (Out of scope, 별도 sprint)
 
-| # | 금지 패턴 | 이유 | 위반 탐지 | 복구 |
-|---|----------|------|-----------|------|
-| RT-1 | `new` / `malloc` / `push_back` / `emplace_back` / `resize` | Heap alloc은 100 µs+ jitter + priority inversion | `grep -nE '(\\bnew [A-Za-z_]\|malloc\\(\|\\.push_back\\(\|\\.emplace_back\\(\|\\.resize\\()' <RT file>` | `std::array`, 사전 할당된 fixed-size `Eigen::Matrix<fixed>` |
-| RT-2 | `throw` / `catch` | `noexcept` 위반 = unwinding latency 비결정, process kill 리스크 | `grep -nE '(\\bthrow \|\\bcatch ?\\()' <RT file>` | Error code, `std::optional`, `std::expected` |
-| RT-3 | 정기 tick에서 `RCLCPP_INFO/WARN/ERROR/DEBUG/FATAL` 직접 호출 | Blocking I/O (rosout queue / network) | `grep -nE 'RCLCPP_(INFO\|WARN\|ERROR\|DEBUG\|FATAL)\\(' <RT file>` | SPSC log buffer → `DrainLog()` aux thread ([rt_controller_node_estop.cpp](../rtc_controller_manager/src/rt_controller_node_estop.cpp) 참조) |
-| RT-4 | `std::mutex::lock()` / `std::lock_guard` / `std::scoped_lock` | 우선순위 역전, blocking | `grep -nE '(lock_guard\|scoped_lock\|::lock\\(\\))' <RT file>` | 1순위: `SeqLock<T>` (latest-only state, default) / `SpscQueue<T,N>` (producer→consumer) / `std::atomic<T>` (POD); last resort `std::try_to_lock`. **전체 7-등급 분류·결정 가이드는 위 §RT pub/sub primitive catalog** (중복 박제 회피) |
-| RT-5 | `auto` with Eigen expression | Expression template lazy-eval → aliasing 버그 (같은 메모리 r/w) | `grep -nE 'auto [^=]*=.*\\.(matrix\|transpose\|inverse\|adjoint\|block)\\(' <file>` | 명시 타입: `Eigen::MatrixXd M = ...` |
-| RT-6 | Quaternion `lerp` / `nlerp` | Non-unit 결과 → 회전축 변형, drift | `grep -nE '(nlerp\|\\.lerp\\()' <file>` | `Eigen::Quaterniond::slerp(t, q_b)` only |
-| RT-7 | *(은퇴 — [PROC-6](#process-invariants) 으로 이동)* | assertion 무결성은 timing-safety 가 아닌 process 규칙 | ↓ PROC-6 참조 | ↓ PROC-6 참조 |
-| RT-8 | `std::shared_ptr` 복사 | Atomic ref-count contention | `grep -nE 'std::shared_ptr<' <RT file>` (값 인자/반환 검사) | Raw ref 또는 `const std::shared_ptr<T>&` |
-| RT-9 | RT tick 또는 RT callback 내부에서 `get_lifecycle_state()` / `get_current_state()` 호출 | 내부 state machine 동기화 (mutex 또는 atomic load + 분기). ros2_control 공식 RT-unsafe 명시 | `grep -nE '(get_lifecycle_state\|get_current_state)\(' <RT file>` | `on_activate` 종료 직전 `std::atomic<uint8_t> lifecycle_id_cache_.store(PRIMARY_STATE_ACTIVE, std::memory_order_release)`, RT loop 는 `lifecycle_id_cache_.load(std::memory_order_acquire)` |
-| RT-10 | `std::condition_variable` / `std::condition_variable_any` 의 `notify_*` / `wait*` (RT path 의 producer 또는 consumer) | `notify_one/all` 자체가 내부 mutex 잡고 thread wake — 우선순위 역전 + 비결정 latency. `wait` 은 명시 mutex lock 보유 (RT-4 결합) | `grep -nE '(std::condition_variable\|\.notify_(one\|all)\(\|\.wait(\|_for\|_until)\()' <RT file>` | (a) **eventfd + non-blocking write/poll** — CM publish_thread ([rt_controller_node.cpp:92-95](../rtc_controller_manager/src/rt_controller_node.cpp#L92-L95)); (b) `SpscQueue<T,N>` + consumer polling (wake latency = polling 주기); (c) `std::atomic<bool>` release/acquire flag + **self-clocked consumer** — `UdpHandController` 의 `event_pending_` 를 `rtc::PeriodicRtThread` 기반 CommLoop 이 매 tick latch (별도 wake 없음; 명령 없으면 read-only) — busy-spin 아님, loop 가 이미 고정주기 tick. **RT 핫패스에서의 self-termination** (예: E-Stop) 도 `RequestStop()`(pause-mutex + `pause_cv_.notify_all()` 보유) 대신 `PeriodicRtThread::RequestLoopExit()` (순수 `atomic<bool>` store) 로 예약하고, 종료 시 부수 작업은 loop unwind 후 base 가 1회 호출하는 `OnLoopAborted()` (loop 스레드, 핫패스 밖) 에서 수행 — `UdpHandController::OnCommLoopAborted()` 의 zero-write 참조 |
+| # | 금지 패턴 | 이유 | 복구 |
+|---|----------|------|------|
+| RT-1 | `new` / `malloc` / `push_back` / `emplace_back` / `resize` | Heap alloc은 100 µs+ jitter + priority inversion | `std::array`, 사전 할당된 fixed-size `Eigen::Matrix<fixed>` |
+| RT-2 | `throw` / `catch` | `noexcept` 위반 = unwinding latency 비결정, process kill 리스크 | Error code, `std::optional`, `std::expected` |
+| RT-3 | 정기 tick에서 `RCLCPP_INFO/WARN/ERROR/DEBUG/FATAL` 직접 호출 | Blocking I/O (rosout queue / network) | SPSC log buffer → `DrainLog()` aux thread ([rt_controller_node_estop.cpp](../rtc_controller_manager/src/rt_controller_node_estop.cpp) 참조) |
+| RT-4 | `std::mutex::lock()` / `std::lock_guard` / `std::scoped_lock` | 우선순위 역전, blocking | 1순위: `SeqLock<T>` (latest-only state, default) / `SpscQueue<T,N>` (producer→consumer) / `std::atomic<T>` (POD); last resort `std::try_to_lock`. **전체 7-등급 분류·결정 가이드는 위 §RT pub/sub primitive catalog** (중복 박제 회피) |
+| RT-5 | `auto` with Eigen expression | Expression template lazy-eval → aliasing 버그 (같은 메모리 r/w) | 명시 타입: `Eigen::MatrixXd M = ...` |
+| RT-6 | Quaternion `lerp` / `nlerp` | Non-unit 결과 → 회전축 변형, drift | `Eigen::Quaterniond::slerp(t, q_b)` only |
+| RT-7 | *(은퇴 — [PROC-6](#process-invariants) 으로 이동)* | assertion 무결성은 timing-safety 가 아닌 process 규칙 | ↓ PROC-6 참조 |
+| RT-8 | `std::shared_ptr` 복사 | Atomic ref-count contention | Raw ref 또는 `const std::shared_ptr<T>&` |
+| RT-9 | RT tick 또는 RT callback 내부에서 `get_lifecycle_state()` / `get_current_state()` 호출 | 내부 state machine 동기화 (mutex 또는 atomic load + 분기). ros2_control 공식 RT-unsafe 명시 | `on_activate` 종료 직전 `std::atomic<uint8_t> lifecycle_id_cache_.store(PRIMARY_STATE_ACTIVE, std::memory_order_release)`, RT loop 는 `lifecycle_id_cache_.load(std::memory_order_acquire)` |
+| RT-10 | `std::condition_variable` / `std::condition_variable_any` 의 `notify_*` / `wait*` (RT path 의 producer 또는 consumer) | `notify_one/all` 자체가 내부 mutex 잡고 thread wake — 우선순위 역전 + 비결정 latency. `wait` 은 명시 mutex lock 보유 (RT-4 결합) | (a) **eventfd + non-blocking write/poll** — CM 의 `nrt_publish_eventfd_` (`RtControllerNode::StartNrtPublishLoop` / `NrtPublishLoopEntry`); (b) `SpscQueue<T,N>` + consumer polling (wake latency = polling 주기); (c) `std::atomic<bool>` release/acquire flag + **self-clocked consumer** — `UdpHandController` 의 `event_pending_` 를 `rtc::PeriodicRtThread` 기반 CommLoop 이 매 tick latch (별도 wake 없음; 명령 없으면 read-only) — busy-spin 아님, loop 가 이미 고정주기 tick. **RT 핫패스에서의 self-termination** (예: E-Stop) 도 `RequestStop()`(pause-mutex + `pause_cv_.notify_all()` 보유) 대신 `PeriodicRtThread::RequestLoopExit()` (순수 `atomic<bool>` store) 로 예약하고, 종료 시 부수 작업은 loop unwind 후 base 가 1회 호출하는 `OnLoopAborted()` (loop 스레드, 핫패스 밖) 에서 수행 — `UdpHandController::OnCommLoopAborted()` 의 zero-write 참조 |
 
-ros2_control jazzy 공식 wording: "Avoid using the `get_lifecycle_state()` method in the real-time control loop of the controllers and the hardware components as it is not real-time safe." 현 코드 위반 0건 (`rt_controller_main_impl.cpp:91` 와 `udp_hand_node_lifecycle.cpp:439` 모두 비-RT path). 본 invariant 는 선제적 차단 — 향후 위반 발현 시 위 복구 패턴 적용.
+#### 위반 탐지 패턴
+
+아래 패턴을 편집 중인 RT 파일에 대해 실행한다 (`<RT file>` 자리에 대상 경로). **표 셀이 아니라 fenced 블록에 두는 이유**: 마크다운 표는 이스케이프 없이 `|` 를 담을 수 없고, ERE 에서 `\|` 는 alternation 이 아니라 *리터럴 파이프* 다 — 문법은 성해서 exit 1 + 무출력, 즉 "위반 없음" 과 구분되지 않는다. 2026-07 감사에서 이 표의 패턴 10개가 전부 그 상태였다 (#213).
+
+각 블록의 `# probe:` 는 그 패턴이 **반드시 매치해야 하는** 라인이고 `# antiprobe:` 는 **매치하면 안 되는** 라인이다. [validate_docs.py](../repo_scripts/scripts/validate_docs.py) 가 CI 에서 정적 lint + 실행으로 검증하므로, 여기서 패턴이 다시 썩으면 빌드가 빨개진다.
+
+```detect id=RT-1
+grep -nE '(\bnew [A-Za-z_]|malloc\(|\.push_back\(|\.emplace_back\(|\.resize\()' <RT file>
+# probe: buffer.push_back(sample);
+# antiprobe: const int renew_count = 0;
+```
+
+```detect id=RT-2
+grep -nE '(\bthrow |\bcatch ?\()' <RT file>
+# probe:     throw std::runtime_error("boom");
+# antiprobe: // rethrows are documented in the header
+```
+
+```detect id=RT-3
+grep -nE 'RCLCPP_(INFO|WARN|ERROR|DEBUG|FATAL)\(' <RT file>
+# probe:   RCLCPP_WARN(get_logger(), "late tick");
+# antiprobe:   RCLCPP_INFO_THROTTLE(get_logger(), clock, 1000, "ok");
+# exemplar: rtc_controller_manager/src/rt_controller_node_services.cpp
+```
+
+```detect id=RT-4
+grep -nE '(lock_guard|scoped_lock|::lock\(\))' <RT file>
+# probe:   std::lock_guard<std::mutex> guard(mutex_);
+# antiprobe:   if (mutex_.try_lock()) {
+# exemplar: rtc_base/include/rtc_base/threading/periodic_rt_thread.hpp
+```
+
+```detect id=RT-5
+grep -nE 'auto [^=]*=.*\.(matrix|transpose|inverse|adjoint|block)\(' <file>
+# probe:   auto Jt = J.transpose();
+# antiprobe:   Eigen::MatrixXd Jt = J.transpose();
+```
+
+```detect id=RT-6
+grep -nE '(nlerp|\.lerp\()' <file>
+# probe:   q = q_a.slerp(t, q_b).nlerp(t, q_c);
+# antiprobe:   q = q_a.slerp(t, q_b);
+```
+
+```detect id=RT-8
+grep -nE 'std::shared_ptr<' <RT file>
+# probe:   void Publish(std::shared_ptr<Msg> msg);
+# antiprobe:   void Publish(const SharedMsg& msg);
+```
+
+```detect id=RT-9
+grep -nE '(get_lifecycle_state|get_current_state)\(' <RT file>
+# probe:   if (get_current_state().id() == kActive) {
+# antiprobe:   if (lifecycle_id_cache_.load(std::memory_order_acquire) == kActive) {
+# exemplar: rtc_controller_manager/src/rt_controller_main_impl.cpp
+```
+
+```detect id=RT-10
+grep -nE '(std::condition_variable|\.notify_(one|all)\(|\.wait(_for|_until)?\()' <RT file>
+# probe:   pause_cv_.notify_all();
+# antiprobe:   eventfd_write(event_fd_, 1);
+# exemplar: rtc_base/include/rtc_base/threading/periodic_rt_thread.hpp
+```
+
+`.wait(|_for|_until)\(` 처럼 **빈 alternation 분기** 를 쓰지 말 것 — GNU grep 은 관대하지만 에이전트 샌드박스의 `grep` 은 ugrep 으로 resolve 되고 거기서는 `empty (sub)expression` hard error 다. `(_for|_until)?` 로 쓴다.
+
+
+ros2_control jazzy 공식 wording: "Avoid using the `get_lifecycle_state()` method in the real-time control loop of the controllers and the hardware components as it is not real-time safe." 현 호출부는 `RtControllerMain` 의 활성화 폴링과 `UdpHandNode::on_shutdown` 등 **lifecycle 경로** 뿐이라 면제 대상이다 — RT-9 는 선제적 차단이며, 위 detect 블록으로 현황을 직접 확인한다 (건수를 여기 박제하면 AP-DOC-1).
 
 ### RT-3 세부 스펙
 
@@ -144,12 +211,16 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 
 | # | 규칙 | 이유 | 위반 탐지 |
 |---|------|------|-----------|
-| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Generality) | `grep -rniE '(ur5e\|iiwa7\|leap\|allegro\|num.?joints = [0-9])' rtc_*/` (`6.?dof`/`10.?dof` 는 SE(3) 차원 오탐이라 제외) |
-| ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | Cyclic dep / abstraction leak | `rtc_base/`가 `rtc_controllers/` include, `rtc_*/`가 `ur5e_*/` include 등 |
-| ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 새 `.cpp`에 대응하는 pure-virtual base 부재 |
-| ARCH-4 | `ur5e_*` 헤더가 `rtc_*` private 헤더 include 금지 | 경계 훼손, robot-specific leak | `grep -rn '#include "rtc_.*/src/' ur5e_*/` |
-| ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | `grep -rn 'find_package(robot_descriptions\|ament_target_dependencies.*robot_descriptions' --include=CMakeLists.txt .` 그리고 `grep -rn '<depend>robot_descriptions</depend>\|<build_depend>robot_descriptions' --include=package.xml .` |
-| ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | `grep -rnE 'rclcpp::QoS[({][2-9]\|keep_last\([2-9]\|depth *= *[2-9]' --include=*.cpp --include=*.hpp --include=*.py .` + 인자 없는 `SensorDataQoS()` (기본 depth 5) 는 `.keep_last(1)` 필요. 검증은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) grep sensor. test fixture 는 면제. |
+| ARCH-1 | `rtc_*` 패키지에 로봇 이름·joint 수·HW ID 하드코딩 금지 | robot-agnostic 훼손 ([design-principles.md](design-principles.md) §Generality) | **자동** — hook Phase 0 의 ARCH-1 검사 |
+| ARCH-2 | 의존성 그래프 상향 의존 금지 ([architecture.md](architecture.md) §Dependency Graph) | Cyclic dep / abstraction leak | 수동 리뷰 — `rtc_base/`가 `rtc_controllers/` include, `rtc_*/`가 integration 패키지 include 등 |
+| ARCH-3 | Abstract interface 없이 두 번째 구체 구현 추가 금지 | 확장성 훼손 → 세 번째 impl에서 `#ifdef` 지옥 | 수동 리뷰 — 새 `.cpp`에 대응하는 pure-virtual base 부재 |
+| ARCH-4 | integration 패키지가 `rtc_*` private 헤더 (`rtc_*/src/`) include 금지 | 경계 훼손, robot-specific leak | **자동** — hook Phase 0 의 ARCH-4 검사 |
+| ARCH-5 | `robot_descriptions`는 data-only — build-time 의존 금지 | 빌드 토폴로지 부담 + "share만 있으면 OK" 모델 훼손 | 수동 리뷰 — `find_package` / `ament_target_dependencies` / `<depend>` 에 `robot_descriptions` |
+| ARCH-6 | 모든 ROS 2 topic 은 QoS history `KEEP_LAST`, depth **1** (reliability/durability 는 lane별 유지 — depth 필드만 강제) | 항상 최신 샘플 소비 — stale 큐잉 방지, RT freshness. depth 는 pub/sub 매칭 호환성과 무관하므로 안전. | **자동 (non-blocking)** — hook Phase 0b 의 ARCH-6 검사. 인자 없는 `SensorDataQoS()` (기본 depth 5) 도 `.keep_last(1)` 필요. test fixture 는 면제 |
+
+**탐지의 SSoT 는 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) 다** — ARCH 계열 패턴을 여기에 복제하지 않는다. 이전에는 문서가 divergent copy 를 들고 있었고, 그 사본이 hook 보다 낡은 스코프 (`ur5e_*/`, whole-file) 를 담은 채 조용히 썩었다 (#213). 정확한 정규식·스코프·면제 규칙이 필요하면 hook 을 읽는다.
+
+RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 금지는 정기 tick 경로에만 구속되는데 hook 은 파일 단위로만 보므로, blocking gate 로 만들면 `on_configure` 의 정당한 `push_back` 을 막는다. 그래서 RT 패턴은 위 §위반 탐지 패턴 의 detect 블록에 남기고 CI 가 그 유효성을 검증한다.
 
 ### ARCH-6 세부 스펙
 
@@ -201,7 +272,7 @@ RT loop 내부 통계는 **O(1) / fixed-size / allocation-free** 만 허용한�
 | NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`damping` YAML 주입) | Unbounded magnification | ClikController, OSC |
 | NUM-2 | `dt` near-zero guard | `1/dt` 발산 | 모든 trajectory generator |
 | NUM-3 | Quaternion 정규화 매 곱 후 | Drift → non-unit | SE3 trajectory, orientation PD |
-| NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | [archive/controller-safety-improvements.md](archive/controller-safety-improvements.md) Phase 2 R-4 |
+| NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | `ClikController` 의 gains 로더 (`clik_controller.cpp`, `cfg["trajectory_speed"]` 파싱부) |
 
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 
