@@ -24,7 +24,7 @@
 | **Sensors** (feedback, inferential) | 의미 검증 (LLM-as-judge, on-demand) | §5.5 |
 | **Orchestration** | Workflow | §4, [agent_docs/modification-guide.md](agent_docs/modification-guide.md) |
 | **Escalation** | Human gate | §6, §6.5 Sprint Contract |
-| **Enforcement** (자동) | 무인 실행/차단 | [.claude/hooks/format-code.sh](.claude/hooks/format-code.sh) (PostToolUse: clang-format / ruff), [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) (Stop: doc·CMake·build·test gate, exit 2 차단) |
+| **Enforcement** (자동) | 무인 실행/차단 | [.claude/hooks/format-code.sh](.claude/hooks/format-code.sh) (PostToolUse: clang-format / ruff), [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) (Stop: doc corpus·CMake·build·test gate, exit 2 차단) |
 
 **첫 방문 에이전트**: §3 → §4 → §6 순으로 읽고 작업 시작.
 **수정 작업 중**: §5 검증 + §6 escalation 확인. Invariant 위반 의심 시 즉시 §6.
@@ -59,7 +59,7 @@ RT 핫패스 절대금지 규칙 — **no** alloc(`new`/`malloc`/`push_back`/`re
 
 **계획 전 분석**: 대응하는 GitHub issue 가 있으면 계획을 세우기 전에 그 issue (본문 + 코멘트) 를 먼저 참고한다 — issue 는 durable 결정 기록이자 cross-tool 인계면이므로 (§6.6, [agent_docs/handoff.md](agent_docs/handoff.md) §5) 이전 세션·다른 tool 의 acceptance criteria·결정·미완료 상태가 거기 남아 있다. 단 issue 본문의 진단·근거는 **미검증 가설**로 취급하고 착수 전 grep/코드로 반증한다 (틀렸으면 issue 를 먼저 갱신).
 
-**4·5·6 자동화**: [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 실행하고 hard failure 시 `exit 2` 로 다음 turn 까지 차단한다 (loop 방지는 `stop_hook_active` 가드; stop cycle 당 1회 발화). 변경 패키지만 빌드·테스트하며 **build/test 의 timeout·launch 실패는 "미검증"으로 차단** (silent pass 아님 — bound 초과 test 는 hook 의 timeout 상향). README co-update 는 public surface (header/launch/config/파일 add·del/dep) 변경 시 **non-blocking checklist** (내부 리팩터·bug fix 는 미요구); CMake/`package.xml` co-update 는 blocking. YAML / Doxygen 은 에이전트가 직접 검증. Pure-format commit (clang-format / ruff round-trip 동치) 은 ARCH grep + doc 단계만 skip, build/test 는 그대로.
+**4·5·6 자동화**: [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 실행하고 hard failure 시 `exit 2` 로 다음 turn 까지 차단한다 (loop 방지는 `stop_hook_active` 가드; stop cycle 당 1회 발화). 변경 패키지만 빌드·테스트하며 **build/test 의 timeout·launch 실패는 "미검증"으로 차단** (silent pass 아님 — bound 초과 test 는 hook 의 timeout 상향). README co-update 는 public surface (header/launch/config/파일 add·del/dep) 변경 시 **non-blocking checklist** (내부 리팩터·bug fix 는 미요구); CMake/`package.xml` co-update 는 blocking. **변경 파일 집합은 tracked(staged+unstaged) ∪ untracked** — `git add` 하지 않은 신규 소스도 게이트에 걸린다. **문서(`*.md`) / workflow 변경은 `repo_scripts/scripts/validate_docs.py` 로 blocking 검증** (깨진 링크·라인 앵커·machine-local 경로·깨진 탐지 패턴). YAML / Doxygen 은 에이전트가 직접 검증. Pure-format commit (clang-format / ruff round-trip 동치) 은 ARCH grep + doc 단계만 skip, build/test 는 그대로.
 
 단계별 액션·grep 패턴·Completion Checklist: [agent_docs/modification-guide.md](agent_docs/modification-guide.md).
 

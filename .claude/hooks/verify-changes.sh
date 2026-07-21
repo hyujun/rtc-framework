@@ -101,14 +101,40 @@ if [ -z "${RTC_DEPS_PREFIX:-}" ] && [ -f "$SETUP_ENV" ]; then
   set -u
 fi
 
-# Get changed files (staged + unstaged vs HEAD)
-CHANGED=$(git diff --name-only HEAD 2>/dev/null || true)
+# Get changed files: tracked (staged + unstaged vs HEAD) UNION untracked.
+#
+# `git diff --name-only HEAD` cannot see untracked files by definition, and an
+# agent that writes a new .cpp without `git add` is the normal case, not the
+# exception. That blind spot skipped the ENTIRE gate -- not just the "new .cpp
+# missing from CMakeLists" check, but build and test as well.
+#
+# The union is required; `git ls-files -mo --exclude-standard` alone is NOT a
+# drop-in replacement. `-m` means "modified relative to the index", so a file
+# that was `git add`-ed and then left alone is absent from its output. Swapping
+# to it would trade the untracked blind spot for a staged one. Measured:
+#   staged file, worktree == index
+#     git diff --name-only HEAD           -> listed
+#     git ls-files -mo --exclude-standard -> MISSING
+CHANGED=$( { git diff --name-only HEAD 2>/dev/null || true; \
+             git ls-files -o --exclude-standard 2>/dev/null || true; } \
+           | sort -u | grep -v '^$' || true)
 [ -z "$CHANGED" ] && exit 0
 
-# Filter to source files only
+# Route by file class. Previously this filtered to source/shell and bailed if
+# both were empty, which meant docs-only, YAML-only and CMake/package.xml-only
+# changes bypassed every check below. The CMake case was the sharpest: the
+# blocking co-update checks (new .cpp absent from CMakeLists, find_package
+# without a matching <depend>) live AFTER that early exit, so the very change
+# class that triggers them could never reach them.
 CHANGED_SRC=$(echo "$CHANGED" | grep -E '\.(cpp|hpp|h|cc|py)$' || true)
 CHANGED_SH=$(echo "$CHANGED" | grep -E '\.sh$' || true)
-[ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && exit 0
+CHANGED_BUILD=$(echo "$CHANGED" | grep -E '(^|/)(CMakeLists\.txt|package\.xml)$' || true)
+CHANGED_DOC=$(echo "$CHANGED" | grep -E '\.md$|^\.github/(workflows|actions)/' || true)
+CHANGED_YAML=$(echo "$CHANGED" | grep -E '\.ya?ml$' | grep -vE '^\.github/' || true)
+if [ -z "$CHANGED_SRC" ] && [ -z "$CHANGED_SH" ] && [ -z "$CHANGED_BUILD" ] \
+   && [ -z "$CHANGED_DOC" ] && [ -z "$CHANGED_YAML" ]; then
+  exit 0
+fi
 
 # --- Pure-format fast path detection ---
 # Returns 0 if every changed source file is identical to HEAD after
@@ -202,8 +228,12 @@ CHECKLIST=""      # non-blocking reminders (README co-update) -- never exit 2 al
 ARCH_VIOLATIONS=""
 CHANGED_PKGS=""
 
-# Identify changed packages (those with package.xml at root)
-for pkg_dir in $(echo "$CHANGED_SRC" | cut -d'/' -f1 | sort -u); do
+# Identify changed packages (those with package.xml at root).
+# Build metadata counts as a package touch: a CMakeLists.txt / package.xml edit
+# must reach the Phase 1 co-update checks and get rebuilt, even when no source
+# file changed alongside it.
+for pkg_dir in $(printf '%s\n%s\n' "$CHANGED_SRC" "$CHANGED_BUILD" \
+                   | grep -v '^$' | cut -d'/' -f1 | sort -u); do
   [ -f "$pkg_dir/package.xml" ] || continue
   CHANGED_PKGS="${CHANGED_PKGS} ${pkg_dir}"
 done
@@ -314,6 +344,38 @@ if [ -n "$INTEGRATION_TOUCHED" ]; then
   done
 fi
 
+# ARCH-5: robot_descriptions is a data-only package -- consumers may declare an
+# <exec_depend> and look it up through ament_index at runtime, but must never
+# take a build-time dependency on it. Runs on changed build metadata only, which
+# is why the routing above had to stop discarding CMakeLists/package.xml-only
+# changes: this check is unreachable otherwise.
+if [ -n "$CHANGED_BUILD" ]; then
+  for f in $CHANGED_BUILD; do
+    [ -f "$f" ] || continue
+    # The data-only package itself is exempt: it cannot build-depend on itself,
+    # and its CMakeLists carries a "DO NOT add find_package(robot_descriptions)"
+    # comment that would otherwise make the rule flag its own documentation.
+    case "$f" in robot_descriptions/*) continue ;; esac
+    case "$f" in
+      */CMakeLists.txt|CMakeLists.txt)
+        # Strip comments before matching -- prose that names the forbidden call
+        # (guidance, changelog notes) is not the forbidden call.
+        HITS=$(sed 's/#.*//' "$f" 2>/dev/null \
+                 | grep -nE 'find_package[[:space:]]*\([[:space:]]*robot_descriptions|ament_target_dependencies[^)]*robot_descriptions' \
+                 || true)
+        ;;
+      */package.xml|package.xml)
+        # <exec_depend> is the sanctioned form; <depend> and <build_depend> are not.
+        HITS=$(grep -nE '<(depend|build_depend|buildtool_depend)>robot_descriptions<' "$f" 2>/dev/null || true)
+        ;;
+      *) HITS="" ;;
+    esac
+    if [ -n "$HITS" ]; then
+      ARCH_VIOLATIONS="${ARCH_VIOLATIONS}  - ARCH-5 (build-time dep on data-only robot_descriptions; use <exec_depend> + ament_index): ${f}\n${HITS}\n"
+    fi
+  done
+fi
+
 # --- Phase 0b: ARCH-6 topic QoS depth sensor (NON-BLOCKING) ---
 # All ROS 2 topics must use KEEP_LAST depth 1 (invariants.md ARCH-6). Flag any
 # changed production source (test fixtures exempt) that sets depth != 1:
@@ -339,6 +401,21 @@ if [ "$PURE_FORMAT" -eq 0 ]; then
   done
 fi
 
+# --- Phase 0b: Agent doc corpus validation ---
+# Docs previously had no verification path at all: this hook bailed before
+# reaching anything, and ros2-advanced-ci.yml paths-ignores docs/, agent_docs/
+# and root *.md. Broken links, banned line anchors and dead detection regexes
+# accumulated unnoticed for exactly that reason (issue #213).
+#
+# Blocking, because the failure mode it guards is silence -- a detection pattern
+# that no longer matches reads identically to a clean tree.
+DOC_VIOLATIONS=""
+if [ -n "$CHANGED_DOC" ] && [ -f repo_scripts/scripts/validate_docs.py ]; then
+  if ! DOC_OUT=$(python3 repo_scripts/scripts/validate_docs.py 2>&1); then
+    DOC_VIOLATIONS="${DOC_OUT}"
+  fi
+fi
+
 # --- Phase 1: Doc/metadata co-update check ---
 # Skipped on pure-format commits — there is no semantic delta to mirror in
 # READMEs, and CMake/package.xml co-update triggers (new .cpp file, new
@@ -361,8 +438,13 @@ for pkg_dir in $CHANGED_PKGS; do
     fi
   fi
 
-  # New .cpp files possibly missing from CMakeLists.txt
-  NEW_SRC=$(git diff --diff-filter=A --name-only HEAD 2>/dev/null | grep "^${pkg_dir}/src/.*\.cpp$" | grep -v test || true)
+  # New .cpp files possibly missing from CMakeLists.txt.
+  # `--diff-filter=A` only reports STAGED adds, so an agent's brand-new,
+  # never-added .cpp was invisible here -- the exact case this check exists for.
+  # Union in untracked files for the same reason as $CHANGED above.
+  NEW_SRC=$( { git diff --diff-filter=A --name-only HEAD 2>/dev/null || true; \
+               git ls-files -o --exclude-standard 2>/dev/null || true; } \
+             | sort -u | grep "^${pkg_dir}/src/.*\.cpp$" | grep -v test || true)
   for f in $NEW_SRC; do
     bname=$(basename "$f")
     if ! grep -q "$bname" "${pkg_dir}/CMakeLists.txt" 2>/dev/null; then
@@ -506,6 +588,9 @@ fi
 REPORT=""
 if [ -n "$ARCH_VIOLATIONS" ]; then
   REPORT="Architecture-fitness violations (agent_docs/invariants.md):\n${ARCH_VIOLATIONS}\n"
+fi
+if [ -n "$DOC_VIOLATIONS" ]; then
+  REPORT="${REPORT}Agent doc corpus validation failed (repo_scripts/scripts/validate_docs.py):\n${DOC_VIOLATIONS}\n"
 fi
 if [ -n "$WARNINGS" ]; then
   REPORT="${REPORT}Doc/metadata co-update issues:\n${WARNINGS}\n"

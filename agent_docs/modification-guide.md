@@ -23,7 +23,7 @@
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드, 60s timeout per package, README/CMake만 검사 (package.xml/YAML은 미검). 또한 **무한 차단이 아니다** — 8회 연속 `exit 2` 후 Claude Code 가 hook 을 override 하고 turn 을 종료하므로 (code.claude.com/docs best-practices), 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다. Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format`/`ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
+**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드 (단일 패키지 180s build / 60s test, PROC-3 경로 300s / 180s). 검사 범위는 README·CMake·`package.xml` co-update + 문서 코퍼스 validator (`*.md` / workflow) 이고, **config YAML 과 Doxygen 은 여전히 미검** — 에이전트가 직접 확인한다. 또한 **무한 차단이 아니다** — 8회 연속 `exit 2` 후 Claude Code 가 hook 을 override 하고 turn 을 종료하므로 (code.claude.com/docs best-practices), 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다. Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format`/`ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
 
 ### Workflow Fail-Safe
 
@@ -117,7 +117,7 @@ colcon test-result --verbose
 
 ## Completion Checklist
 
-[.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 수행: build (변경 패키지) · test · README/CMake co-update · ARCH grep. Hook 차단 ≠ "build 실패" — `package.xml` / YAML / Doxygen 은 hook 가 검증하지 않으므로 에이전트가 직접 확인해야 한다.
+[.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 수행: build (변경 패키지) · test · README/CMake/`package.xml` co-update · ARCH grep (ARCH-1/4/5/6) · 문서 코퍼스 validator. 변경 파일 집합은 tracked ∪ untracked 이므로 `git add` 전의 신규 파일도 걸린다. Hook 차단 ≠ "build 실패" — config YAML / Doxygen 은 hook 가 검증하지 않으므로 에이전트가 직접 확인해야 한다.
 
 수동 self-check (hook 미커버 항목):
 
