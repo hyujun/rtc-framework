@@ -306,6 +306,30 @@ class ControllerLifecycleTestAccess {
     node.CreateDigitalTwinPublishers();
   }
 
+  // ── Digital-twin lane (issue #198 Phase 2) ──────────────────────────────────
+  // The state-lane callback only raises the dirty bit; DrainDigitalTwin runs
+  // on the nrt_publish thread. Tests drive the drain by hand so the split is
+  // observable without racing a live thread.
+  static bool IsDigitalTwinDirty(const RtControllerNode& node, int slot) {
+    return node.dt_dirty_[static_cast<std::size_t>(slot)].load(std::memory_order_acquire);
+  }
+
+  static bool CallDrainDigitalTwin(RtControllerNode& node) { return node.DrainDigitalTwin(); }
+
+  static bool HasDigitalTwinPublisher(const RtControllerNode& node, int slot) {
+    return node.digital_twin_by_slot_[static_cast<std::size_t>(slot)].publisher != nullptr;
+  }
+
+  // The drain skips non-activated publishers (a state message can land before
+  // on_activate). Fixtures that never reach the Active state flip them here.
+  static void ActivateDigitalTwinPublishers(RtControllerNode& node) {
+    for (auto& entry : node.digital_twin_by_slot_) {
+      if (entry.publisher) {
+        entry.publisher->on_activate();
+      }
+    }
+  }
+
   // ── Log drain (DrainLog) ────────────────────────────────────────────────────
   static void CallDrainLog(RtControllerNode& node) { node.DrainLog(); }
 

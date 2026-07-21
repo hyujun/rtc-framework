@@ -210,19 +210,70 @@ TEST_F(CreateDeviceBackendsTest, DigitalTwinPublishersCreatedPerGroup) {
   SUCCEED();  // no crash; publisher map populated for slot 0
 }
 
-TEST_F(CreateDeviceBackendsTest, StateReadyRepublishesDigitalTwin) {
+// The republish used to happen inside the state-ready callback itself, which
+// runs on cb_group_rt_callback_ (SCHED_FIFO 70, the controller↔hardware RT
+// boundary). Issue #198 Phase 2 cut the callback down to a mailbox: it raises
+// a dirty bit and the nrt_publish thread does the ReadState + RELIABLE
+// publish. These tests pin the split — that the callback publishes *nothing*
+// is the point, so "no crash" is no longer an adequate assertion.
+
+TEST_F(CreateDeviceBackendsTest, StateReadyMarksTwinDirtyWithoutPublishing) {
   InjectArm("cdb_test_backend");
-  // Order matters: DT publishers must exist before the backend's state-ready
-  // callback fires so the callback's republish branch (device_config.cpp) runs.
   ControllerLifecycleTestAccess::CallCreateDigitalTwinPublishers(*node_);
   ControllerLifecycleTestAccess::CallCreateDeviceBackends(*node_);
+  ASSERT_TRUE(ControllerLifecycleTestAccess::HasDigitalTwinPublisher(*node_, 0));
+  ControllerLifecycleTestAccess::ActivateDigitalTwinPublishers(*node_);
 
   auto* backend =
       dynamic_cast<CdbStubBackend*>(ControllerLifecycleTestAccess::GetBackend(*node_, 0));
   ASSERT_NE(nullptr, backend);
-  // Exercises the digital-twin republish branch. The callback's only remaining
-  // job is that republish, so reaching it without crashing IS the assertion.
+
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsDigitalTwinDirty(*node_, 0));
   backend->FireStateReady();
+  // Still pending: the callback handed the work off rather than doing it.
+  EXPECT_TRUE(ControllerLifecycleTestAccess::IsDigitalTwinDirty(*node_, 0));
+
+  // Only the drain publishes, and it consumes the bit.
+  EXPECT_TRUE(ControllerLifecycleTestAccess::CallDrainDigitalTwin(*node_));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsDigitalTwinDirty(*node_, 0));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallDrainDigitalTwin(*node_));
+}
+
+TEST_F(CreateDeviceBackendsTest, StateReadyBurstCoalescesIntoOneTwinPublish) {
+  InjectArm("cdb_test_backend");
+  ControllerLifecycleTestAccess::CallCreateDigitalTwinPublishers(*node_);
+  ControllerLifecycleTestAccess::CallCreateDeviceBackends(*node_);
+  ControllerLifecycleTestAccess::ActivateDigitalTwinPublishers(*node_);
+
+  auto* backend =
+      dynamic_cast<CdbStubBackend*>(ControllerLifecycleTestAccess::GetBackend(*node_, 0));
+  ASSERT_NE(nullptr, backend);
+
+  // A bit, not a queue: messages arriving faster than the drain collapse into
+  // one publish of the newest state. Nothing is buffered, so nothing is stale
+  // and nothing needs a capacity bound.
+  for (int i = 0; i < 5; ++i) {
+    backend->FireStateReady();
+  }
+  EXPECT_TRUE(ControllerLifecycleTestAccess::CallDrainDigitalTwin(*node_));
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallDrainDigitalTwin(*node_));
+}
+
+TEST_F(CreateDeviceBackendsTest, DrainDropsSampleWhileTwinPublisherInactive) {
+  InjectArm("cdb_test_backend");
+  ControllerLifecycleTestAccess::CallCreateDigitalTwinPublishers(*node_);
+  ControllerLifecycleTestAccess::CallCreateDeviceBackends(*node_);
+  // Deliberately NOT activated — mock/UR drivers stream joint states before
+  // on_activate flips the LifecyclePublisher.
+
+  auto* backend =
+      dynamic_cast<CdbStubBackend*>(ControllerLifecycleTestAccess::GetBackend(*node_, 0));
+  ASSERT_NE(nullptr, backend);
+
+  backend->FireStateReady();
+  EXPECT_FALSE(ControllerLifecycleTestAccess::CallDrainDigitalTwin(*node_));
+  // Bit consumed anyway, so the drain does not spin on an un-publishable slot.
+  EXPECT_FALSE(ControllerLifecycleTestAccess::IsDigitalTwinDirty(*node_, 0));
 }
 
 }  // namespace

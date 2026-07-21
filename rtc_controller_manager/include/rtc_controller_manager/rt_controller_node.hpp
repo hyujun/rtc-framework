@@ -28,11 +28,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -212,6 +210,13 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void WaitForNrtPublishWakeup();
   void DrainLog();  // Log drain (non-RT core)
 
+  // Digital-twin republish, drained on the nrt_publish thread. The device
+  // state-lane callback (rt_callback, FIFO 70) only raises dt_dirty_[slot];
+  // the actual ReadState + RELIABLE publish happens here, off the RT
+  // boundary (issue #198 Phase 2). Returns true when at least one slot was
+  // published, so the caller knows the drain did work this pass.
+  bool DrainDigitalTwin();
+
   void PublishEstopStatus(bool estopped);
 
   // ── Controller-level lifecycle (aux thread only) ─────────────────────────
@@ -293,19 +298,30 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // GraspState / WbcState / ToFSnapshot bypass YAML role mapping and ride
   // per-controller SeqLock<T> handoffs.
 
-  // ── Per-group JointState republishers (RELIABLE, depth 10) ──────────────
-  // key = "/rtc_cm/{group}/joint_states" — single source of truth for the
-  // measured joint state per device group, regardless of which controller is
-  // active. rtc_digital_twin (or any external tool) merges these into a
-  // single /joint_states for robot_state_publisher / RViz.
+  // ── Per-group JointState republishers (RELIABLE, depth 1) ───────────────
+  // "/rtc_cm/{group}/joint_states" — single source of truth for the measured
+  // joint state per device group, regardless of which controller is active.
+  // rtc_digital_twin (or any external tool) merges these into a single
+  // /joint_states for robot_state_publisher / RViz.
+  //
+  // Indexed by device slot, not keyed by topic name: the producer side is a
+  // state-lane callback on the rt_callback executor, which must not do map
+  // lookups (issue #198 Phase 2). The slot→entry resolution that used to
+  // cost two unordered_map probes per state message is now the array index
+  // itself, fixed at CreateDigitalTwinPublishers() time.
   struct DigitalTwinEntry {
     rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::JointState>::SharedPtr publisher;
     sensor_msgs::msg::JointState msg;  // pre-allocated with config joint_state_names
   };
 
-  std::unordered_map<std::string, DigitalTwinEntry> digital_twin_publishers_;
-  // group_slot → JointState topic name mapping
-  std::unordered_map<int, std::string> slot_to_dt_topic_;
+  std::array<DigitalTwinEntry, rtc::kMaxDevices> digital_twin_by_slot_;
+
+  // Raised by the state-lane callback, cleared by DrainDigitalTwin() on the
+  // nrt_publish thread. A bit, not a queue: the payload is already in the
+  // backend's SeqLock, so the drain always republishes the newest state.
+  // Bursts that outrun the drain therefore coalesce rather than queue — a
+  // twin that lags never shows a stale sample, only fewer of them.
+  std::array<std::atomic<bool>, rtc::kMaxDevices> dt_dirty_{};
 
   // Per-controller topic config cache (index = controller index)
   std::vector<rtc::TopicConfig> controller_topic_configs_;
@@ -462,12 +478,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // same time so the RT loop can skip whole copy blocks per slot.
   std::vector<uint16_t> slot_to_capability_;
 
-  // ── Simulation sync (CV-based wakeup) ──────────────────────────────────
+  // ── Simulation sync (eventfd wakeup) ────────────────────────────────────
+  // Producer: device state-lane callback (rt_callback, FIFO 70) — one
+  // non-blocking eventfd_write per state message. Consumer: WaitForNextTick()
+  // on the rt_control thread (FIFO 90). It was a condition_variable, which
+  // made the two RT-priority threads share a mutex (issue #198 §3 —
+  // RT-4 + RT-10). An eventfd removes the mutex entirely, and because a
+  // non-semaphore eventfd read drains the whole counter, a burst of state
+  // messages still yields exactly one wake-up with no notification lost.
   bool use_sim_time_sync_{false};
   double sim_sync_timeout_sec_{5.0};
-  std::mutex state_cv_mutex_;
-  std::condition_variable state_cv_;
-  std::atomic<bool> state_fresh_{false};
+  int sim_wake_eventfd_{-1};
 
   // ── Parameters ────────────────────────────────────────────────────────────
   // RT loop rate [Hz]. Loaded from the YAML `control_rate` parameter in

@@ -256,8 +256,8 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 ### RT 루프 종료 (sim/robot 공통)
 
 - Robot 모드: `clock_nanosleep` 다음 tick에 `rclcpp::ok()` 검사 → 2 ms 내 종료
-- Sim 모드 (`use_sim_time_sync=true`): `state_cv_` wait predicate가 `state_fresh_ || !rt_loop_running_ || !rclcpp::ok()` 셋 중 하나로 깨어남. `StopRtLoop()`은 `rt_loop_running_=false` 후 `state_cv_.notify_all()`을 호출하여 destructor / on_deactivate / on_shutdown 경로에서 `sim_sync_timeout_sec` (기본 5 s) 만큼 기다리지 않고 즉시 join
-- `notify_all()`은 종료 호출자(non-RT)에서만 실행 — RT-1/RT-4 invariant 준수
+- Sim 모드 (`use_sim_time_sync=true`): `WaitForNextTick()` 이 `sim_wake_eventfd_` 를 `sim_sync_timeout_sec` (기본 5 s) 만큼 `poll()` 한다. `OnRequestStop()` 이 그 fd 에 한 번 write 하므로 destructor / on_deactivate / on_shutdown 경로는 타임아웃을 기다리지 않고 즉시 join
+- 이 lane 은 issue #198 Phase 2 에서 `condition_variable` 을 대체했다. producer 는 device state 콜백(rt_callback, FIFO 70), consumer 는 rt_control (FIFO 90) — 두 SCHED_FIFO 스레드가 mutex 를 공유하면 RT-4 위반이므로 wait-free write + fd wait 로 바꿨다. eventfd 는 counter 라 wake edge 유실이 없고, non-semaphore read 가 counter 를 0 으로 비우므로 state 버스트는 tick 을 여분으로 만들지 않고 하나로 합쳐진다
 
 ### SeqLock 기반 디바이스 상태 공유 (backend 내부)
 
@@ -325,7 +325,7 @@ CM RT loop와 MPC thread 모두 두 가지 base 인프라를 공유한다: (1) [
 
 CM은 `StartRtLoop`에서 `rt_loop_.SetTimingProducer<>` 한 줄로 base에 ring을 위임 — base가 매 tick payload를 push한다. `ControlLoop()` 내부의 t1/t2 마킹은 `rt_loop_.StampStateAcquired()` / `StampComputeDone()` 두 줄. `DrainLog()`가 `cm_timing_producer_.Drain(...)`로 CSV에 기록. 윈도우 INFO summary에 `timing_drops` (producer overflow 카운터)가 `pub_drops`와 함께 출력된다.
 
-Sim 모드 (`use_sim_time_sync=true`) 에서는 `ControlLoopThread::JitterMeaningful()` 가 `false` 를 반환하여 base 가 `jitter_us` 를 0.0 으로 둔다 — wakeup 이 `state_cv_` (= MuJoCo step 완료) 이라 `|actual_period − 2 ms|` 는 sim cadence 잡음일 뿐 RT 지표가 아니다. 다른 6개 컬럼 (`t_state_us` / `t_compute_us` / `t_publish_us` / `t_total_us` / `t_wall_ns` / `tick_count`) 은 robot/sim 동일 의미 — body code path 가 wakeup 매커니즘과 무관하게 동일하기 때문. MPC / hand_udp producer 는 default `JitterMeaningful()=true` 유지.
+Sim 모드 (`use_sim_time_sync=true`) 에서는 `ControlLoopThread::JitterMeaningful()` 가 `false` 를 반환하여 base 가 `jitter_us` 를 0.0 으로 둔다 — wakeup 이 `sim_wake_eventfd_` (= MuJoCo step 완료) 이라 `|actual_period − 2 ms|` 는 sim cadence 잡음일 뿐 RT 지표가 아니다. 다른 6개 컬럼 (`t_state_us` / `t_compute_us` / `t_publish_us` / `t_total_us` / `t_wall_ns` / `tick_count`) 은 robot/sim 동일 의미 — body code path 가 wakeup 매커니즘과 무관하게 동일하기 때문. MPC / hand_udp producer 는 default `JitterMeaningful()=true` 유지.
 
 MPC 측은 컨트롤러가 자체 1 Hz aux 타이머에서 `mpc_thread_->TimingProducer().Drain(...)`을 호출. 컨트롤러별 `<config_key>` 서브디렉토리에 쓰므로 전환이 발생해도 stream이 섞이지 않는다. 같은 콜백이 `MPCSolutionManager::GetSolveStats()` (handler self-report `solve_duration_ns`의 256-sample sliding 윈도우)로 10초마다 aggregate INFO 라인을 출력 — 디스크에는 기록하지 않으며 percentile은 raw CSV에서 post-process로 계산.
 
@@ -382,7 +382,11 @@ Publish 역할은 모두 **controller-owned** 입니다. (Phase 4: `kJointComman
 
 ### Per-group JointState 자동 퍼블리셔
 
-각 디바이스 그룹에 대해 `/rtc_cm/{group}/joint_states` (RELIABLE/10) JointState를 자동 생성합니다. 설정 순서(joint_state_names)로 재정렬된 관절 데이터를 republish합니다. 이 토픽은 active controller와 무관하게 항상 발행되는 측정 상태의 단일 소스이며, `rtc_digital_twin` 같은 외부 노드가 이를 merge해 `robot_state_publisher` / RViz로 공급합니다. Republish 는 backend state-ready 콜백에서 이뤄지므로 `on_configure` 중(백엔드 sub 은 이미 활성, 그러나 노드는 아직 Inactive)에 상류가 상태를 흘리면 콜백이 조기 발화할 수 있다 — 이때는 LifecyclePublisher `is_activated()` 로 가드해 노드 `on_activate` 이전 발행을 건너뛴다("publisher is not activated" 경고 방지).
+각 디바이스 그룹에 대해 `/rtc_cm/{group}/joint_states` (RELIABLE/1) JointState를 자동 생성합니다. 설정 순서(joint_state_names)로 재정렬된 관절 데이터를 republish합니다. 이 토픽은 active controller와 무관하게 항상 발행되는 측정 상태의 단일 소스이며, `rtc_digital_twin` 같은 외부 노드가 이를 merge해 `robot_state_publisher` / RViz로 공급합니다.
+
+**어느 스레드가 발행하는가 (issue #198 Phase 2).** backend state-ready 콜백은 `cb_group_rt_callback_` (SCHED_FIFO 70, controller↔hardware RT 경계) 에서 돌므로 **mailbox 만** 수행한다 — slot 별 dirty bit 하나를 세우고 `nrt_publish_eventfd_` 에 write 한다. 실제 `ReadState` + RELIABLE publish 는 `nrt_publish_thread` 의 `DrainDigitalTwin()` 이 한다 (SCHED_OTHER nice 0). 상태 payload 는 backend 자신의 `SeqLock` 에 이미 들어 있으므로 큐가 필요 없다 — dirty bit 는 큐가 아니라 비트이며, 드레인보다 빨리 도착한 메시지는 **합쳐진다**. 즉 twin 이 밀리면 샘플 수가 줄 뿐 stale 한 값을 보이지는 않는다.
+
+`on_configure` 중(백엔드 sub 은 이미 활성, 그러나 노드는 아직 Inactive)에 상류가 상태를 흘리면 콜백이 조기 발화할 수 있다 — 이때는 드레인이 LifecyclePublisher `is_activated()` 로 가드해 노드 `on_activate` 이전 발행을 건너뛴다("publisher is not activated" 경고 방지). 비트는 그 경우에도 소비되므로 드레인이 발행 불가 slot 에서 spin 하지 않는다.
 
 ---
 

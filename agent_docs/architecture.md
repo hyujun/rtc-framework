@@ -76,7 +76,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 | Executor | Thread config | Callback groups |
 |---|---|---|
-| `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 2 in v4.1) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to the same core via launch taskset |
+| `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 2 in v4.1) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to the same core via launch taskset. **state-ready 콜백은 mailbox 전용** (issue #198 Phase 2) — slot 별 dirty bit + eventfd write 만 하고, digital-twin republish 는 `nrt_publish_thread` 의 `DrainDigitalTwin()` 이 수행 |
 | `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, tier-aware core) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log |
 | `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, tier-aware core — Core 0 만 4-core fallback, 그 외 tier 는 dedicated core) | `cb_group_nrt_callback_` (lifecycle services + CM-owned `target_sub_` — RobotTarget 은 외부 의도 입력, spec §0d 에 따라 RT 경계 밖) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
 
@@ -91,10 +91,11 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 
 ```
 [Robot HW / MuJoCo Sim] --JointState--> [rt_callback (FIFO 70)] --SeqLock--> [rt_control: RT loop @ control_rate]
+    |                                          +--dirty bit + eventfd--> [nrt_publish_thread]
     +--inline--> backend.WriteCommand (actuator command, RT-safe)
-    |        +-> /rtc_cm/{group}/joint_states
     +--SPSC (cap 16)--> [nrt_publish_thread (CFS)] --> controller.PublishNonRtSnapshot
     |                                                  (Transforms / grasp_state / wbc_state / tof_snapshot)
+    |                                              +-> /rtc_cm/{group}/joint_states (digital twin)
     +--SPSC--> [nrt_logging_executor (CFS -5)] --> CSV (timing + per-device state + sensor)
     +--E-STOP--> /system/estop_status
 
@@ -117,7 +118,7 @@ RT loop 가 per-tick 으로 controller 의 SeqLock writer 에 push → non-RT nr
 
 **TF `_actual` 프레임 — `/tf` publisher 없음 (framework invariant).** 컨트롤러는 arm-tip / fingertip `_actual` 프레임 (`base → tool0_actual`, `<link>_actual`) 을 `/tf` 로 발행하지 **않는다** — 오직 controller-owned `/<config_key>/transforms` (`tf2_msgs/TFMessage`, PublishRole) 로만 노출한다. 따라서 bare `tf2_ros::TransformListener` (`/tf`·`/tf_static` 만 청취) 는 이 프레임을 **절대 받지 못한다**. tf 소비자는 반드시 둘 중 하나: **(a) self-feed** — `/<config_key>/transforms` 를 직접 구독해 buffer 에 `setTransform` (ur5e_bt_coordinator `transforms_sub_`, demo_gui `_transforms_cb`; active controller 전환 시 rewire); **(b) `/tf` 재발행 의존** — `rtc_digital_twin` 의 `controller_tf` 재발행 (`<active>/transforms` → restamp → `/tf`, RViz TF 디스플레이·bare-listener 소비자용, default on). 이 함정은 digital_twin tcp_viz·bt_coordinator 두 곳에서 각각 silent-fail 버그로 발현했다 — **새 tf 소비자 추가 시 (a)/(b) 중 하나를 반드시 적용**하고, bare listener 만 두지 말 것.
 
-구현: controller YAML `topics:` entry (`SubscribeTopicEntry` / `PublishTopicEntry`, `rtc_base/types/types.hpp`) 는 모두 controller-owned 이며 `integrated_bringup/support/owned_topics.cpp` 가 controller LifecycleNode 에 sub/pub 을 생성한다. CM 은 controller-YAML target sub 을 만들지 않는다 (manager-target 경로 폐기, issue #138); `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
+구현: controller YAML `topics:` entry (`SubscribeTopicEntry` / `PublishTopicEntry`, `rtc_base/types/types.hpp`) 는 모두 controller-owned 이며 `integrated_bringup/support/owned_topics.cpp` 가 controller LifecycleNode 에 sub/pub 을 생성한다. CM 은 controller-YAML target sub 을 만들지 않는다 (manager-target 경로 폐기, issue #138); `nrt_publish_thread` (cap 16 SPSC drain, `nrt_callback` 와 동일 core, CFS) 가 `RTControllerInterface::PublishNonRtSnapshot(snap)` 로 controller-owned publisher 에 위임하고, 같은 루프에서 CM 소유 digital-twin republish (`DrainDigitalTwin()`) 도 드레인한다 — 후자는 RT tick 이 아니라 device state 콜백이 신호하므로 매 pass 무조건 확인한다. RT path 의 actuator 송출은 `rt_control` thread 가 rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 inline 호출 — long non-RT publish 가 actuator latency 를 막지 못하도록 두 lane 분리 유지.
 
 Session logs: `logging_data/YYMMDD_HHMM/{timing,monitor,device,sim,plots,motions,tracing}/`. Per-controller logs 는 `controllers/<config_key>/` (controller LifecycleNode 가 owner, 예: `demo_wbc_controller/mpc_solve_timing.csv`), per-tick 스레드 타이밍 CSV 는 `timing/` (`cm_timing_log` / `mpc_timing_log` / `hand_udp_timing_log`). 레거시 singular `controller/` (CM RT-loop DataLogger) 는 Phase C 에서 제거됨 — 더 이상 생성하지 않는다. 새 logger 추가 시 producer thread 의 소유자 기준으로 위치 선택. Session subdir 목록은 `rtc_base/logging/session_dir.hpp` (`kSubdirs`) + `rtc_tools.utils.session_dir` (`_SESSION_SUBDIRS`) 가 mirror SSoT — 한쪽 변경 시 반드시 동기화.
 

@@ -45,6 +45,10 @@ RtControllerNode::~RtControllerNode() {
     close(nrt_publish_eventfd_);
     nrt_publish_eventfd_ = -1;
   }
+  if (sim_wake_eventfd_ >= 0) {
+    close(sim_wake_eventfd_);
+    sim_wake_eventfd_ = -1;
+  }
 }
 
 // ── Session directory helpers
@@ -103,6 +107,19 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   nrt_publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
   if (nrt_publish_eventfd_ < 0) {
     RCLCPP_WARN(get_logger(), "eventfd() failed: nrt publish thread will use polling fallback");
+  }
+
+  // Sim-sync wake lane (issue #198 Phase 2). Blocking on the consumer side —
+  // the RT loop polls it with the sim timeout — but the producer (device
+  // state callback) only ever writes, which never blocks on an eventfd whose
+  // counter is below UINT64_MAX.
+  if (use_sim_time_sync_) {
+    sim_wake_eventfd_ = eventfd(0, EFD_NONBLOCK);
+    if (sim_wake_eventfd_ < 0) {
+      RCLCPP_ERROR(get_logger(),
+                   "eventfd() failed: simulation sync has no wake lane — refusing to configure");
+      return CallbackReturn::FAILURE;
+    }
   }
 
   // Per-controller lifecycle state, parallel to controllers_. All start
@@ -242,6 +259,10 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
     close(nrt_publish_eventfd_);
     nrt_publish_eventfd_ = -1;
   }
+  if (sim_wake_eventfd_ >= 0) {
+    close(sim_wake_eventfd_);
+    sim_wake_eventfd_ = -1;
+  }
 
   // 6. timers
   drain_timer_.reset();
@@ -254,8 +275,10 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   for (auto& backend : backends_) {
     backend.reset();
   }
-  digital_twin_publishers_.clear();
-  slot_to_dt_topic_.clear();
+  for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
+    digital_twin_by_slot_[slot] = DigitalTwinEntry{};
+    dt_dirty_[slot].store(false, std::memory_order_relaxed);
+  }
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
 
@@ -329,13 +352,19 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
     close(nrt_publish_eventfd_);
     nrt_publish_eventfd_ = -1;
   }
+  if (sim_wake_eventfd_ >= 0) {
+    close(sim_wake_eventfd_);
+    sim_wake_eventfd_ = -1;
+  }
   drain_timer_.reset();
   param_callback_handle_.reset();
   for (auto& backend : backends_) {
     backend.reset();
   }
-  digital_twin_publishers_.clear();
-  slot_to_dt_topic_.clear();
+  for (std::size_t slot = 0; slot < digital_twin_by_slot_.size(); ++slot) {
+    digital_twin_by_slot_[slot] = DigitalTwinEntry{};
+    dt_dirty_[slot].store(false, std::memory_order_relaxed);
+  }
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
   topic_subscriptions_.clear();

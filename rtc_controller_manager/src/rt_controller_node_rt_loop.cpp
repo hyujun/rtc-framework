@@ -3,7 +3,8 @@
 #include <rtc_base/threading/thread_utils.hpp>
 #include <rtc_base/tracing/trace_scope.hpp>
 
-#include <sys/eventfd.h>  // eventfd_write
+#include <poll.h>         // poll (sim-sync wake wait)
+#include <sys/eventfd.h>  // eventfd_write / eventfd_read
 #include <time.h>         // clock_nanosleep, clock_gettime, CLOCK_MONOTONIC, TIMER_ABSTIME
 
 #include <algorithm>  // std::min
@@ -609,18 +610,39 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
   // Simulation mode: block on /joint_states arrival. The base's deadline
   // overrun detection is intentionally bypassed here (sim cadence is
   // dictated by the simulator, not a fixed period).
-  const auto sim_timeout = std::chrono::duration<double>(owner_->sim_sync_timeout_sec_);
-  bool woken = false;
-  {
-    std::unique_lock<std::mutex> lock(owner_->state_cv_mutex_);
-    woken = owner_->state_cv_.wait_for(lock, sim_timeout, [this] {
-      return owner_->state_fresh_.load(std::memory_order_acquire) || !rclcpp::ok();
-    });
-    owner_->state_fresh_.store(false, std::memory_order_release);
-  }
-  if (!woken) {
+  //
+  // poll() on the wake eventfd rather than a condition_variable: the producer
+  // is the device state callback on the rt_callback executor (FIFO 70) and
+  // the consumer is this rt_control thread (FIFO 90). A shared mutex between
+  // two SCHED_FIFO threads is exactly the inversion RT-4 forbids, and the
+  // eventfd counter makes the wake edge impossible to miss without one
+  // (issue #198 §3).
+  if (!rclcpp::ok()) {
     return WaitResult::kAbort;
   }
+  if (owner_->sim_wake_eventfd_ < 0) {
+    return WaitResult::kAbort;
+  }
+
+  const int timeout_ms = static_cast<int>(owner_->sim_sync_timeout_sec_ * 1000.0);
+
+  struct pollfd pfd {};
+
+  pfd.fd = owner_->sim_wake_eventfd_;
+  pfd.events = POLLIN;
+  const int rc = poll(&pfd, 1, timeout_ms);
+  if (rc <= 0) {
+    // 0 = the simulator went quiet for the whole timeout; <0 = poll error
+    // (EINTR included — shutdown takes the same abort path as before).
+    return WaitResult::kAbort;
+  }
+
+  // Non-semaphore read drains the counter to zero, so a burst that arrived
+  // while the previous tick was computing collapses into this single wake
+  // instead of queueing up spare ticks.
+  eventfd_t val{};
+  static_cast<void>(eventfd_read(owner_->sim_wake_eventfd_, &val));
+
   if (!rclcpp::ok()) {
     return WaitResult::kAbort;
   }
@@ -646,14 +668,16 @@ void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
 }
 
 void RtControllerNode::ControlLoopThread::OnRequestStop() noexcept {
-  // Sim mode wait blocks on state_cv_; nudge it so RequestStop / Join
+  // Sim mode wait blocks on sim_wake_eventfd_; nudge it so RequestStop / Join
   // observe the stop_token without waiting out sim_sync_timeout_sec_.
-  owner_->state_cv_.notify_all();
+  if (owner_->sim_wake_eventfd_ >= 0) {
+    static_cast<void>(eventfd_write(owner_->sim_wake_eventfd_, 1));
+  }
 }
 
 bool RtControllerNode::ControlLoopThread::JitterMeaningful() const noexcept {
   // Real-robot mode uses the deadline-driven default wait → |actual_period
-  // − budget| is true RT jitter. Sim mode blocks on state_cv_ until the
+  // − budget| is true RT jitter. Sim mode blocks on sim_wake_eventfd_ until the
   // simulator publishes /joint_states, so the cadence is dictated by
   // MuJoCo step completion (max_rtf, viewer load, OS schedule) rather than
   // a fixed period — comparing against a 2 ms budget would just report
