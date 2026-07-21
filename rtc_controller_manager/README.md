@@ -62,7 +62,7 @@ rtc_controller_manager/
 | **rt_loop** (rt_control) | 1 | SCHED_FIFO 90 | `control_rate` Hz (default 500) + 50 Hz | `clock_nanosleep` 제어 루프 + 워치독. tick 종료 시점에 `DeviceBackend.WriteCommand` 를 inline 호출 (actuator publish) + `nrt_publish_buffer_` push |
 | **rt_callback_executor** | 2 | SCHED_FIFO 70 | 이벤트 | 디바이스별 JointState, MotorState, SensorState 구독 (`cb_group_rt_callback_`, MutuallyExclusive). DDS receive thread 가 launch-time taskset 으로 같은 Core 2 에 co-pin (CFS 유지) |
 | **nrt_logging_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER -5 | 100 Hz | `cm_timing_log.csv` 드레인 + 1초 타이밍 서머리 + deferred E-STOP 메시지 |
-| **nrt_publish_thread** | tier-aware (4c: 0 / ≥6c: dedicated, nrt_callback core 공유) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup |
+| **nrt_publish_thread** | tier-aware (4c: 0 / ≥6c: dedicated, nrt_callback core 공유) | SCHED_OTHER 0 | 이벤트 | `nrt_publish_buffer_` (cap 16) SPSC 드레인 → `controller.PublishNonRtSnapshot` (Transforms / grasp_state / wbc_state / tof_snapshot). std::jthread + eventfd wakeup |
 | **nrt_callback_executor** | tier-aware (4c: 0 / ≥6c: dedicated) | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환, E-STOP 상태 퍼블리시, RobotTarget 외부 입력, lifecycle services, 컨트롤러 LifecycleNode default group (owned subs) |
 
 > **v4.1 변경**: RT cluster 가 Core 1 부터 시작 (Core 0 = OS / DDS / IRQ 전용). DDS receive thread 는 새 rt_callback core (Core 2) 에 co-pin. nrt_logging / nrt_callback 이 모든 ≥ 6c tier 에서 Core 0 와 분리. 정확한 tier 별 cpu_core 는 [rtc_base/include/rtc_base/threading/thread_config.hpp](../rtc_base/include/rtc_base/threading/thread_config.hpp) 또는 [docs/RT_OPTIMIZATION.md](../docs/RT_OPTIMIZATION.md) 표 참조.
@@ -122,7 +122,7 @@ ros2 lifecycle set /rtc_controller_manager activate     # RT 루프 재시작
 ### Phase 3: 퍼블리시 (inline actuator + non-RT 오프로드)
 - `PublishSnapshot` 생성
 - **Actuator publish (inline, RT-safe)**: rt_loop tick 안에서 `DeviceBackend.WriteCommand` 를 그룹별로 직접 호출 (RT-safe contract)
-- **Controller-owned non-RT publish (오프로드)**: `nrt_publish_buffer_.Push()` (SPSC cap 16) → `nrt_publish_thread` 가 드레인하여 `controller.PublishNonRtSnapshot` 호출 (RobotTarget / Transforms / DigitalTwin / grasp_state / wbc_state / tof_snapshot)
+- **Controller-owned non-RT publish (오프로드)**: `nrt_publish_buffer_.Push()` (SPSC cap 16) → `nrt_publish_thread` 가 드레인하여 `controller.PublishNonRtSnapshot` 호출 (Transforms / grasp_state / wbc_state / tof_snapshot)
 - 그룹별 commands, actual, motor, sensor, inference 데이터 포함
 - **Per-group command type 해석 (`CommandType::kPdFeedforward`, C-3 S1)**: `DeviceOutput::command_type` (per-device `std::optional<CommandType>`, nullopt = 상속) 이 설정돼 있으면 `ControllerOutput::command_type` (글로벌 기본값) 을 override 한다 — `gc.command_type = dout.command_type.value_or(output.command_type)`. `DeviceOutput::feedforward[]` (per-joint Nm) 도 `GroupCommandSlot::feedforward[]` 로 그대로 복사된다. RT loop 는 그룹별로 resolve 된 `gc.command_type` 을 `WriteCommand(slot, gc.command_type)` 에 전달 — snapshot-global `command_type` 이 아니다. Mixed-command 컨트롤러(예: WBC — arm=`kPosition`, hand=`kPdFeedforward`)가 그룹마다 다른 command type 을 낼 수 있는 이유. `kPdFeedforward` = PD position-servo backbone(`values`=position target) + per-joint feedforward torque overlay; wire 상 `JointCommand.command_type = "pd_feedforward"` 문자열로 인코딩되며, feedforward 채널을 모르는 backend 는 position tracking 으로 폴백한다.
 
@@ -168,12 +168,23 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
    * **Pass 2 — device-name 해석**: 모든 컨트롤러의 `GetTopicConfig()` 로 `controller_topic_configs_` / `active_groups_` / `group_slot_map_` 빌드 → `LoadDeviceNameConfigs()` (yaml `devices.<group>.{joint_state_names, motor_state_names, sensor_names, joint_limits, ...}` 파싱) → 각 컨트롤러에 `SetControlRate(...)` + `SetDeviceNameConfigs(map)` (후자가 `OnDeviceConfigsSet()` 훅을 트리거 → 컨트롤러가 `joint_names`/`motor_names` 등을 자기 멤버에 캐시)
    * **Pass 3 — on_configure**: 보관해 둔 `(node, yaml)` 로 `on_configure(unconfigured, node, yaml)` 호출. 멱등 가드 덕분에 base는 yaml 재파싱 안 함. 이 시점에 컨트롤러가 `RegisterLog<>(...)` 람다에 `joint_names_copy = joint_state_names` 를 capture 하므로 CSV header writer 가 정확한 폭으로 출력 (회귀: 이 단계 분리 전에는 capture 시점에 빈 vector였음)
    * **세부 사항**: `use_global_arguments(false)` 는 필수 — 부모 프로세스의 CLI remap (`--ros-args -r __node:=...`) 이 글로벌 컨텍스트에 살아 있어, default `NodeOptions` 으로 만들면 자식 노드 이름·네임스페이스가 부모로 덮어씌워지고 launch_ros 가 부모에 spurious lifecycle ACTIVATE 를 또 보내는 부작용까지 발생. `SetSharedModelBuilder` 는 `GetSharedModelBuilder()` 로 컨트롤러가 가져가는 공유 핸들 — 데모 컨트롤러는 `InitArmModel` / `InitModels` 진입 시 이 핸들을 우선 사용하므로 동일한 ModelConfig로 `xacro → tinyxml2 → Pinocchio` 파이프라인을 컨트롤러 수만큼 반복하는 비용을 제거 (데모 빌업 기준 4회 → 1회)
-4. 컨트롤러 이름과 config_key 양쪽을 `controller_name_to_idx_` 맵에 등록
+4. 컨트롤러 `Name()` 과 `config_key` 양쪽을 `controller_name_to_idx_` 맵에 등록 — 이 맵은 **하나의 네임스페이스**이고 `switch_controller` / `initial_controller` 가 둘 중 어느 문자열로도 해석된다. 따라서 **두 식별자 모두 전역 유일해야 한다** (아래 가드 참조)
 5. `initial_controller` 파라미터로 초기 활성 컨트롤러 선택
 6. `main()`에서 모든 `controller_nodes_`를 `nrt_callback_executor`에 attach — 컨트롤러가 자체 소유한 sub/pub 콜백이 non-RT 스레드에서 처리됨
 7. CM `on_activate` -> 각 컨트롤러 `on_activate(active)` 호출(LifecyclePublisher 활성화 후) -> RT 루프 + publish 스레드 시작
 8. CM `on_deactivate` -> RT/publish 스레드 정지 후 각 컨트롤러 `on_deactivate(inactive)` 호출
 9. CM `on_cleanup` 진입 시 각 컨트롤러에 `on_cleanup(inactive)` 호출 후 `controller_nodes_`/`controllers_` 해제
+
+#### 식별자 충돌 가드 (2-tier, issue #196 Phase 5)
+
+`controller_name_to_idx_` 가 단일 네임스페이스이므로, 식별자가 겹치면 오퍼레이터가 선택하지 않은 컨트롤러가 조용히 도는 결과가 된다. CM 은 이를 두 단계로 거부한다 — 둘 다 **경고가 아니라 configure 실패**다.
+
+| Tier | 시점 | 검사 대상 | 왜 거기인가 |
+|---|---|---|---|
+| 1 | Pass 1 **이전** | `config_key` vs `config_key` | 팩토리 호출 전이라 컨트롤러·LifecycleNode 가 하나도 안 만들어진 채 거부 |
+| 2 | Pass 1 안 | `Name()` 과 `config_key` 를 이미 등록된 모든 식별자와 대조 | `Name()` 은 인스턴스의 virtual 이라 `factory()` 전에는 알 수 없다. 대신 latch 후 D1 체크포인트에서 거부 — publisher / device backend / log channel / service / timer / RT thread 는 전부 D1 이후라 아직 없다 |
+
+**대가 — 한 컨트롤러 클래스를 두 config_key 로 등록할 수 없다.** `Name()` 은 모든 구현에서 클래스 상수이므로 같은 클래스의 두 번째 등록은 항상 첫 번째의 `Name()` 과 충돌해 bring-up 전체가 거부된다. "같은 클래스, 두 YAML 설정" 이 필요하면 인스턴스별로 `Name()` 을 다르게 돌려주는 서브클래스를 만들어야 한다. 컨트롤러 클래스를 복사한 뒤 `Name()` 문자열을 안 고치는 실수가 바로 이 경로로 잡힌다.
 
 > Lifecycle 훅 규약은 [`rtc_controller_interface/README.md`](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공) 참조. 컨트롤러는 per-node topic 소유권을 가지며(`/<config_key>/<topic>`), RT 경로에서 `node_` 접근은 금지입니다.
 

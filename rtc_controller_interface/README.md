@@ -244,7 +244,7 @@ Meyer's 싱글톤 패턴 기반의 컨트롤러 레지스트리입니다. 정적
 | 메서드 | 설명 |
 |--------|------|
 | `Instance()` | 싱글톤 인스턴스 반환 (`noexcept`, static) |
-| `Register(ControllerEntry)` | 컨트롤러 엔트리를 `entries_` 벡터에 추가. 동일 `config_key` 중복 등록 시 `RCLCPP_WARN` (shadowing 발생; throw 하지 않음 — static-init 순서 fragile) |
+| `Register(ControllerEntry)` | 컨트롤러 엔트리를 `entries_` 벡터에 추가. 동일 `config_key` 중복 등록 시 `RCLCPP_WARN` 만 하고 throw 하지 않는다 (static-init 순서가 fragile). **단 shadowing 이 실제로 일어나지는 않는다** — CM 이 bring-up 진입 시 registry 를 스캔해 중복 `config_key` 를 발견하면 configure 자체를 거부한다 (issue #196 Phase 5, `rt_controller_node_params.cpp`). 즉 warn 은 registry 계층의 한계이고, 강제는 CM 계층에서 한다 |
 | `GetEntries()` | 등록된 컨트롤러 목록 반환 (`noexcept`, const 참조) |
 
 ---

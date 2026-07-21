@@ -33,7 +33,9 @@ joint_pd_controller:
   # motor_state / sensor_state) are owned by DeviceBackend impls — declare
   # them in `<robot>_bringup` sim.yaml/robot.yaml under
   # `devices.<robot>.backend: {type, state_topic, command_topic, ...}`.
-  # Controller YAML keeps only target / robot_target / robot_transforms.
+  # Controller YAML keeps only subscribe role `target` (alias `goal`) and
+  # publish role `robot_transforms`. `robot_target` was removed in issue #196
+  # Phase 5 and is now a hard parse failure, not a silently ignored entry.
   # All topic entries are controller-owned (issue #138); these `<robot>`
   # configs are templates — replace placeholders before use, they are not
   # loaded at runtime as-is.
