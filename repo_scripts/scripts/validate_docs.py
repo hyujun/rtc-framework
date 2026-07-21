@@ -21,31 +21,55 @@ D2  in-repo anchor exists, using GitHub's heading-slug algorithm (see
     :func:`slugify` -- ``## Build & Test`` really is ``#build--test``).
 D3  no link escapes the repository, and no ``/home/<user>/`` absolute path
     appears anywhere in the corpus (including shell snippets, which get copied).
-D4  no ``file.cpp:123`` / ``#L123`` line-anchor citations in the agent corpus.
-    Line numbers drift on every edit; cite a symbol instead.
+D4  no ``file.cpp:123`` / ``#L123`` line-anchor citations into *code* in the
+    agent corpus.  Line numbers drift on every edit; cite a symbol instead.
+    Doc-to-doc references and URLs carrying a port are not that failure.
 D7  ``detect`` fenced blocks: the pattern is linted for the escaping mistakes
-    that make a grep silently match nothing, then executed against a required
+    that make a grep silently match nothing, then run against a required
     ``# probe:`` line it must match (and any ``# antiprobe:`` it must not), so
     a pattern that compiles but can no longer fire still fails.  An optional
     ``# exemplar:`` additionally asserts the state of the tree today.
-D8  no detection pattern outside a detect block.  A markdown table cell cannot
-    hold an unescaped ``|``, so a regex parked in one gets escaped into
-    something inert; the table is the root cause, not the individual typos.
+D8  no detection pattern parked in a markdown table cell.  A cell cannot hold
+    an unescaped ``|``, so a regex put in one gets escaped into something
+    inert; the table is the root cause, not the individual typos.
 
-Both a static lint *and* an execution check are required, and neither subsumes
-the other.  A doubled backslash (``\\\\b``) makes grep exit 2 -- loud.  But
-``\\|`` inside an ERE is *valid syntax* for a literal pipe: exit 1, no output,
-indistinguishable from a clean tree.  Execution alone would have graded this
-corpus healthy.
+Both a static lint *and* a probe are required, and neither subsumes the other.
+A doubled backslash (``\\\\b``) makes grep exit 2 -- loud.  But ``\\|`` inside
+an ERE is *valid syntax* for a literal pipe: exit 1, no output,
+indistinguishable from a clean tree.  Running the pattern alone would have
+graded this corpus healthy.
+
+Note what the probe is and is not.  The pattern is translated into Python's
+regex dialect and run by :mod:`re`; grep is never invoked.  That catches a
+pattern which has stopped matching what it is meant to match.  It cannot
+observe grep-specific behaviour -- GNU grep tolerating an empty alternation
+that the sandbox's ugrep rejects outright -- which is precisely why the static
+lint carries that class of defect and is not optional.
+
+Scope boundaries are deliberate, and narrower than "any grep anywhere".  D8
+covers table cells plus already-mangled escaping; a grep quoted in a sentence
+or shown inside a ``bash`` fence is documentation, not a rotting invariant, and
+firing on those makes the gate a nuisance that gets switched off.  D3, D4 and
+D8 all honour an inline ``<!-- validate-docs: allow D4 -->`` marker, covering
+the line it sits on and the next, so a doc can discuss the anti-pattern it
+documents without the only remedy being to delete the sentence.
 
 Self-verification
 -----------------
-``--self-test`` runs the checker against fixtures that encode the silent-pass
-inputs a previous attempt at this validator got wrong (option clusters such as
+``--self-test`` runs two layers.  Helper fixtures encode the silent-pass inputs
+a previous attempt at this validator got wrong (option clusters such as
 ``grep -rn --include='*.cpp' -E 'a\\|b'`` misgraded as BRE, the pattern
-argument shadowed by ``--include``), plus GitHub slug conformance cases.  A
-checker for silent failures cannot be trusted because it is green on the
-repository; it has to be green on inputs whose answer is known.
+argument shadowed by ``--include``), plus GitHub slug conformance cases.
+Document fixtures then drive :func:`check_markdown` over whole markdown inputs
+and assert the exact finding codes -- both that each check fires on a known-bad
+document and that it stays quiet on the near-miss beside it.
+
+That second layer is not decoration.  With only the helper fixtures, severing
+:func:`check_detect_blocks` or disabling the D4 loop left ``--self-test`` and
+the corpus scan both reporting success: the checker could lose whole checks
+silently, which is the same class of defect it exists to catch.  A checker for
+silent failures cannot be trusted because it is green on the repository; it has
+to be green on inputs whose answer is known, and red when it is broken.
 
 Usage
 -----
@@ -155,10 +179,31 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 HTML_ANCHOR_RE = re.compile(r"<a\s+(?:name|id)=[\"']([^\"']+)[\"']")
 FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})(.*)$")
 HOME_PATH_RE = re.compile(r"/home/[A-Za-z0-9_.-]+/")
-LINE_ANCHOR_RE = re.compile(r"[\w./-]+\.(?:cpp|hpp|h|cc|py|sh|md|yaml|yml|xml|txt):\d+")
+
+# D3 exemption: GitHub Actions runners really do live at /home/runner, so a doc
+# quoting a CI log path is describing someone else's machine, not leaking its
+# own.  This is a fixed, well-known location rather than a user's home.
+CI_HOME_PREFIXES = ("/home/runner/",)
+
+# D4: only *code* citations must be symbol-based.  The rule exists because line
+# numbers drift on every edit and a citation into a source file silently starts
+# pointing at the wrong statement; a doc-to-doc reference such as
+# `handoff.md:1-9` and a quoted `path.yaml:3` in captured tool output are not
+# that failure.  The leading lookbehind keeps a URL with a port
+# (`http://host/a.py:8080`) out: those matched as line anchors before, and no
+# rewording could satisfy the gate.
+LINE_ANCHOR_RE = re.compile(r"(?<![\w:/-])[\w./-]+\.(?:cpp|hpp|h|cc|py|sh):\d+")
 L_ANCHOR_RE = re.compile(r"#L\d+")
 INLINE_GREP_RE = re.compile(r"(?:^|\|\s*)r?g?grep\s+-{1,2}\w")
 BARE_PATH_RE = re.compile(r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]+)")
+
+# An explicit, greppable opt-out for the three checks that scan prose and so
+# can collide with a doc that discusses the very thing they forbid -- quoting a
+# diagnostic, showing the anti-pattern by example.  A gate with no override
+# gets satisfied by deleting the sentence, which is worse than the finding.
+# The marker covers the line it sits on and the line after it, so it can lead a
+# block without interrupting the prose.
+SUPPRESS_RE = re.compile(r"validate-docs:\s*allow\s+(D\d+(?:\s*,\s*D\d+)*)")
 
 # Corpus whose code citations must be symbol-based (D4).
 SYMBOL_CITATION_DIRS = ("agent_docs/", ".claude/")
@@ -350,7 +395,10 @@ def lint_pattern(flavor: str, pattern: str) -> list[str]:
     # Blank out escaped characters before looking for structural mistakes:
     # `malloc\(|` contains the byte pair "(|" but that paren is a literal, not
     # an empty group -- flagging it would condemn a correct pattern.
+    # ... and blank out bracket expressions too: inside `[...]` a '|' or ')' is
+    # an ordinary member of the set, so `x[|)]y` is not an empty group.
     bare = re.sub(r"\\.", "\x00", pattern)
+    bare = re.sub(r"\[\^?\]?[^]]*\]", lambda m: "\x00" * len(m.group(0)), bare)
     if re.search(r"\(\||\|\)|\|\|", bare):
         problems.append(
             "empty alternation branch -- GNU grep tolerates it, the sandbox's "
@@ -372,11 +420,40 @@ def lint_pattern(flavor: str, pattern: str) -> list[str]:
     return problems
 
 
+# POSIX character classes are ordinary in a grep pattern and meaningless to
+# Python's `re`, which reads `[[:space:]]` as "the set { [ : s p a c e }" and
+# warns about a nested set.  Left untranslated, a perfectly good detect pattern
+# was reported as no longer matching its own probe -- the validator accusing the
+# author of the exact rot it exists to find.
+POSIX_CLASSES = {
+    "alpha": "a-zA-Z",
+    "digit": "0-9",
+    "alnum": "a-zA-Z0-9",
+    "space": r" \t\n\r\f\v",
+    "blank": r" \t",
+    "upper": "A-Z",
+    "lower": "a-z",
+    "punct": r"!-/:-@\[-`{-~",
+    "word": r"\w",
+    "xdigit": "0-9A-Fa-f",
+}
+POSIX_CLASS_RE = re.compile(r"\[:(" + "|".join(POSIX_CLASSES) + r"):\]")
+
+
 def compile_pattern(flavor: str, pattern: str) -> tuple[re.Pattern | None, str | None]:
-    """Compile an ERE/BRE pattern with Python's engine for execution."""
+    """Translate an ERE/BRE pattern into Python's regex dialect and compile it.
+
+    Note what this is and is not: the probe check runs the pattern through
+    Python's engine, not through grep.  It catches a pattern that has stopped
+    matching what it is supposed to match.  It cannot observe grep-specific
+    behaviour -- GNU grep tolerating an empty alternation where the sandbox's
+    ugrep rejects it, say -- which is why :func:`lint_pattern` is a separate,
+    non-negotiable static pass and not a fallback for when execution is
+    inconvenient.
+    """
     if flavor == "fixed":
         return re.compile(re.escape(pattern)), None
-    src = pattern
+    src = POSIX_CLASS_RE.sub(lambda m: POSIX_CLASSES[m.group(1)], pattern)
     if flavor == "bre":
         # BRE: `\(`/`\|` are metacharacters, bare `(`/`|` are literals.
         placeholder = "\x00"
@@ -489,24 +566,42 @@ def check_file(repo: Repo, rel: str) -> list[Finding]:
     return check_workflow(repo, rel, text)
 
 
+def suppressions(text: str) -> dict[int, set[str]]:
+    """Map line number -> codes suppressed there by an inline marker."""
+    out: dict[int, set[str]] = {}
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        m = SUPPRESS_RE.search(raw)
+        if not m:
+            continue
+        codes = {c.strip() for c in m.group(1).split(",")}
+        out.setdefault(lineno, set()).update(codes)
+        out.setdefault(lineno + 1, set()).update(codes)
+    return out
+
+
 def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     base = Path(rel).parent
     in_symbol_corpus = rel.startswith(SYMBOL_CITATION_DIRS)
+    allowed = suppressions(text)
 
     for lineno, (raw, in_fence) in enumerate(iter_lines_with_fence_state(text), 1):
+        ok = allowed.get(lineno, frozenset())
         # D3 absolute private paths: checked inside fences too -- a shell
         # snippet is the copy-paste surface that actually breaks for others.
-        for m in HOME_PATH_RE.finditer(raw):
-            findings.append(
-                Finding(
-                    rel,
-                    lineno,
-                    "D3",
-                    f"machine-local absolute path '{m.group(0)}...' -- use a "
-                    "repo-relative path or ${HOME}",
+        if "D3" not in ok:
+            for m in HOME_PATH_RE.finditer(raw):
+                if m.group(0).startswith(CI_HOME_PREFIXES):
+                    continue
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D3",
+                        f"machine-local absolute path '{m.group(0)}...' -- use a "
+                        "repo-relative path or ${HOME}",
+                    )
                 )
-            )
         if in_fence:
             continue
 
@@ -516,23 +611,31 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
         for m in MD_LINK_RE.finditer(mask_code_spans(raw)):
             findings.extend(check_link(repo, rel, base, lineno, m.group(1)))
 
+        # A table row is the root cause D8 exists for: the cell cannot hold an
+        # unescaped '|', so a pattern parked in one gets mangled into something
+        # inert.  Prose is not that hazard.
+        in_table = raw.lstrip().startswith("|")
         for m in CODE_SPAN_RE.finditer(raw):
             findings.extend(check_path_token(repo, rel, lineno, m.group(1), "D1"))
-            if in_symbol_corpus and is_parked_detection_pattern(m.group(1)):
+            if (
+                in_symbol_corpus
+                and "D8" not in ok
+                and is_parked_detection_pattern(m.group(1), in_table=in_table)
+            ):
                 findings.append(
                     Finding(
                         rel,
                         lineno,
                         "D8",
-                        "detection pattern outside a ```detect block -- a "
+                        "detection pattern parked outside a ```detect block -- a "
                         "markdown table cell cannot hold an unescaped '|', so "
-                        "a pattern parked in one gets escaped into something "
+                        "a pattern in one gets escaped into something "
                         "that silently matches nothing.  Move it to a fenced "
-                        "detect block, where it is linted and executed.",
+                        "detect block, where it is linted and probed.",
                     )
                 )
 
-        if in_symbol_corpus:
+        if in_symbol_corpus and "D4" not in ok:
             for m in LINE_ANCHOR_RE.finditer(raw):
                 findings.append(
                     Finding(
@@ -562,21 +665,38 @@ def mask_code_spans(raw: str) -> str:
     return CODE_SPAN_RE.sub(lambda m: " " * len(m.group(0)), raw)
 
 
-def is_parked_detection_pattern(span: str) -> bool:
-    """Is this inline code span an invariant *detection* grep?
+def is_parked_detection_pattern(span: str, in_table: bool) -> bool:
+    """Is this inline code span an invariant *detection* grep at risk of rot?
 
-    Only extended/Perl regexes qualify.  Those are the ones that carry
-    alternation, and alternation is what a markdown table cell cannot hold --
-    the `|` has to be escaped, and `\\|` in an ERE is a literal pipe that
-    matches nothing.  A plain lookup helper (`grep -rl ENABLE_COVERAGE ...`)
-    has no such failure mode and must not be dragged into the detect-block
-    regime; over-firing here would make the gate a nuisance that gets disabled.
+    Two conditions, and both matter.  The pattern has to actually carry
+    alternation -- that is the construct a markdown table cell cannot hold, and
+    the reason a parked pattern degrades into `\\|`, a literal pipe that matches
+    nothing.  And it has to be *in* a table cell, or already be carrying the
+    damage.
+
+    The earlier form asked only "is this an ERE or PCRE grep", which the
+    docstring justified by saying those are the ones that carry alternation --
+    but it never checked, so every `grep -P '\\tTAB'` quoted in prose was
+    reported as a rotting invariant detector, complete with a message about
+    table cells that had nothing to do with the line.  A gate that fires on a
+    debugging tip in a sentence is one that gets switched off.
+
+    Prose greps in a plain paragraph are therefore out of scope, deliberately.
+    So are patterns inside a non-``detect`` fenced block: docs legitimately show
+    shell sessions, and reading those as parked invariants would re-create the
+    same nuisance one layer down.  D8 covers table cells and already-mangled
+    escaping; it does not claim more.
     """
     span = span.strip()
     if not INLINE_GREP_RE.match(span):
         return False
     flavor, pattern, error = parse_grep(span)
-    return error is None and pattern is not None and flavor in ("ere", "pcre")
+    if error is not None or pattern is None or flavor not in ("ere", "pcre"):
+        return False
+    # Already mangled: report wherever it sits, table or not.
+    if r"\|" in pattern or re.search(r"\\\\[A-Za-z(){}.[\]]", pattern):
+        return True
+    return in_table and "|" in pattern
 
 
 def check_link(repo: Repo, rel: str, base: Path, lineno: int, target: str) -> list[Finding]:
@@ -604,7 +724,12 @@ def check_link(repo: Repo, rel: str, base: Path, lineno: int, target: str) -> li
                 f"link '{target}' escapes the repository -- unresolvable in a fresh clone",
             )
         ]
-    if not repo.exists(normalised) and not (repo.root / normalised).exists():
+    # A *link* must resolve to a real path on disk.  The suffix index exists so
+    # that a bare include-shorthand token in a code span
+    # (`rtc_base/types/types.hpp`) resolves to the header it names; letting a
+    # link ride it meant a nonexistent target could pass D1 and then be reported
+    # by D2 as an anchor missing from a file that is not there at all.
+    if not (repo.root / normalised).exists():
         return [Finding(rel, lineno, "D1", f"link target does not exist: '{path_part}'")]
 
     if anchor and normalised.endswith(".md") and anchor not in repo.anchors(normalised):
@@ -793,8 +918,13 @@ def check_detect_block(
                 )
             )
 
-    for exemplar in directives.get("exemplar", []):
-        expect = (directives.get("expect") or ["match"])[0]
+    # `expect` pairs with `exemplar` by position, falling back to the first (or
+    # "match") when fewer are given. Reading only expects[0] for every exemplar
+    # made "matches in A, none in B" impossible to express, and silently
+    # mis-graded one of the two.
+    expects = directives.get("expect") or []
+    for idx, exemplar in enumerate(directives.get("exemplar", [])):
+        expect = expects[idx] if idx < len(expects) else (expects[0] if expects else "match")
         target = repo.root / exemplar
         if not target.exists():
             findings.append(
@@ -903,23 +1033,139 @@ BRE_EXEC_CASES: list[tuple[str, str, str, bool]] = [
 ]
 
 
-PARKED_PATTERN_CASES: list[tuple[str, bool]] = [
-    ("grep -nE 'RCLCPP_(INFO|WARN)\\(' <RT file>", True),
-    ("grep -rniE '(ur5e|iiwa7)' rtc_*/", True),
-    ("grep -rl ENABLE_COVERAGE */CMakeLists.txt", False),
-    ("grep -n 'struct.*Data' <header>", False),
-    ("colcon test --packages-select rtc_base", False),
-    ("ament_add_gtest(... ENV ROS_DOMAIN_ID=<n>)", False),
+# (span, in_table, parked?)
+PARKED_PATTERN_CASES: list[tuple[str, bool, bool]] = [
+    ("grep -nE 'RCLCPP_(INFO|WARN)\\(' <RT file>", True, True),
+    ("grep -rniE '(ur5e|iiwa7)' rtc_*/", True, True),
+    ("grep -rl ENABLE_COVERAGE */CMakeLists.txt", True, False),
+    ("grep -n 'struct.*Data' <header>", True, False),
+    ("colcon test --packages-select rtc_base", True, False),
+    ("ament_add_gtest(... ENV ROS_DOMAIN_ID=<n>)", True, False),
+    # The same alternating pattern in a *sentence* is a debugging tip, not an
+    # invariant parked in a cell that will mangle it.
+    ("grep -rniE '(ur5e|iiwa7)' rtc_*/", False, False),
+    # No alternation at all: nothing a table cell can damage.
+    ("grep -P '\\tTAB' src/", True, False),
+    ("grep -nE 'RCLCPP_INFO' <RT file>", True, False),
+    # Already carrying the damage -- report it wherever it sits.
+    ("grep -rnE 'a\\|b' src/", False, True),
+]
+
+
+# Whole-document fixtures: (name, rel, markdown, sorted codes expected).
+#
+# Everything above tests a pure helper.  That left the part of this validator
+# that actually decides things -- check_markdown, and the checks it dispatches
+# to -- with no fixture at all, so a check could be deleted outright and both
+# `--self-test` and the corpus scan would still report success.  That was
+# verified, not theorised: severing check_detect_blocks and disabling the D4
+# loop left every count green.  A checker for silent failures that is itself
+# able to fail silently proves nothing, so each check now has to demonstrate it
+# fires on a document whose answer is known, and stays quiet on the
+# near-miss beside it.
+DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
+    ("clean", "agent_docs/f.md", "# Title\n\nSee `RtControllerNode::Tick`.\n", []),
+    ("D1 broken link", "agent_docs/f.md", "[gone](./nope.md)\n", ["D1"]),
+    ("D1 live link", "agent_docs/f.md", "[arch](architecture.md)\n", []),
+    (
+        "D2 bogus anchor",
+        "agent_docs/f.md",
+        "[arch](architecture.md#no-such-heading-here)\n",
+        ["D2"],
+    ),
+    ("D3 home path", "agent_docs/f.md", "cd /home/someone/ws\n", ["D3"]),
+    ("D3 CI runner path is not a leak", "agent_docs/f.md", "at /home/runner/work/x\n", []),
+    (
+        "D3 suppressed",
+        "agent_docs/f.md",
+        "<!-- validate-docs: allow D3 -->\nNever write /home/junho/ws in a launch file.\n",
+        [],
+    ),
+    ("D4 code line anchor", "agent_docs/f.md", "see rt_controller_node.cpp:120\n", ["D4"]),
+    ("D4 #L anchor", "agent_docs/f.md", "cited as architecture.md#L12 upstream\n", ["D4"]),
+    ("D4 doc range is not a code citation", "agent_docs/f.md", "see handoff.md:1-9\n", []),
+    ("D4 URL port is not a line anchor", "agent_docs/f.md", "at http://host/a.py:8080\n", []),
+    (
+        "D4 suppressed",
+        "agent_docs/f.md",
+        "<!-- validate-docs: allow D4 -->\nThe hook printed `verify-changes.sh:42: error`.\n",
+        [],
+    ),
+    ("D4 is scoped to the agent corpus", "docs/f.md", "see rt_controller_node.cpp:120\n", []),
+    (
+        "D8 pattern parked in a table cell",
+        "agent_docs/f.md",
+        "| RT-1 | `grep -rnE 'RCLCPP_(INFO|WARN)' src/` |\n",
+        ["D8"],
+    ),
+    (
+        "D8 ignores the same grep in prose",
+        "agent_docs/f.md",
+        "Run `grep -rnE 'RCLCPP_(INFO|WARN)' src/` to find them.\n",
+        [],
+    ),
+    (
+        "D8 reports already-mangled escaping anywhere",
+        "agent_docs/f.md",
+        "Run `grep -rnE 'a\\|b' src/` to find them.\n",
+        ["D8"],
+    ),
+    (
+        "D7 pattern that no longer matches its probe",
+        "agent_docs/f.md",
+        "```detect id=RT-X\ngrep -rnE 'RCLCPP_' src/\n# probe:   printf(\"hi\");\n```\n",
+        ["D7"],
+    ),
+    (
+        "D7 missing probe",
+        "agent_docs/f.md",
+        "```detect id=RT-X\ngrep -rnE 'RCLCPP_' src/\n```\n",
+        ["D7"],
+    ),
+    (
+        "D7 escaped pipe in an ERE is caught statically",
+        "agent_docs/f.md",
+        "```detect id=RT-X\ngrep -rnE 'a\\|b' src/\n# probe:   a|b\n```\n",
+        ["D7"],
+    ),
+    (
+        "D7 POSIX class is a valid grep pattern",
+        "agent_docs/f.md",
+        "```detect id=RT-X\ngrep -rnE '^[[:space:]]*RCLCPP_' src/\n"
+        "# probe:      RCLCPP_INFO(x);\n# antiprobe: int x = 1;\n```\n",
+        [],
+    ),
+    (
+        "D7 antiprobe catches an over-broad pattern",
+        "agent_docs/f.md",
+        "```detect id=RT-X\ngrep -rnE 'RCLCPP_' src/\n# probe: RCLCPP_INFO(x);\n"
+        "# antiprobe: RCLCPP_INFO(y);\n```\n",
+        ["D7"],
+    ),
+    (
+        "code span holding C++ is not a link",
+        "agent_docs/f.md",
+        "| `operator[](name)` | insertion order |\n",
+        [],
+    ),
 ]
 
 
 def self_test() -> int:
     failures: list[str] = []
 
-    for span, want in PARKED_PATTERN_CASES:
-        got = is_parked_detection_pattern(span)
+    repo_for_docs = Repo(repo_root())
+    for name, rel, body, want_codes in DOC_FIXTURES:
+        got_codes = sorted(f.code for f in check_markdown(repo_for_docs, rel, body))
+        if got_codes != sorted(want_codes):
+            failures.append(f"doc fixture {name!r}: codes={got_codes}, want {sorted(want_codes)}")
+
+    for span, in_table, want in PARKED_PATTERN_CASES:
+        got = is_parked_detection_pattern(span, in_table=in_table)
         if got != want:
-            failures.append(f"is_parked_detection_pattern({span!r}) = {got}, want {want}")
+            failures.append(
+                f"is_parked_detection_pattern({span!r}, in_table={in_table}) = {got}, want {want}"
+            )
 
     for cmd, want_flavor, want_pattern, want_flagged in GREP_CASES:
         flavor, pattern, error = parse_grep(cmd)
@@ -977,7 +1223,14 @@ def self_test() -> int:
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    total = len(GREP_CASES) + len(SLUG_CASES) + len(BRE_EXEC_CASES) + len(PARKED_PATTERN_CASES) + 4
+    total = (
+        len(DOC_FIXTURES)
+        + len(GREP_CASES)
+        + len(SLUG_CASES)
+        + len(BRE_EXEC_CASES)
+        + len(PARKED_PATTERN_CASES)
+        + 4
+    )
     print(f"self-test: {total} fixtures passed")
     return 0
 
@@ -1004,12 +1257,27 @@ def main(argv: list[str] | None = None) -> int:
         return self_test()
 
     repo = Repo(repo_root())
-    if args.files:
+    if args.files is not None:
+        # `is not None`, not truthiness: `--files` with no operands means "no
+        # files to check", and falling through to the full corpus scan there
+        # would let a defect in an untouched file block a turn that never went
+        # near it -- the one thing the hook scope exists to prevent.
         targets = []
         for f in args.files:
-            p = Path(f)
-            rel = p.resolve().relative_to(repo.root).as_posix() if p.is_absolute() else f
-            if rel.endswith((".md", ".yml", ".yaml")) and (repo.root / rel).exists():
+            # Relative entries resolve against the caller's cwd, not blindly
+            # against the repo root: interpreting them as root-relative meant an
+            # invocation from a subdirectory silently checked nothing and
+            # reported success.
+            try:
+                rel = Path(f).resolve().relative_to(repo.root).as_posix()
+            except ValueError:
+                print(f"--files: '{f}' is outside the repository", file=sys.stderr)
+                return 2
+            if not rel.endswith((".md", ".yml", ".yaml")):
+                continue
+            # A path that is gone was deleted in this change set; that is not an
+            # error, and the hook passes deleted docs through routinely.
+            if (repo.root / rel).exists():
                 targets.append(rel)
     else:
         targets = repo.corpus()
