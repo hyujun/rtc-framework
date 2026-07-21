@@ -27,9 +27,10 @@
 //                                            hand state/motor/sensor) via
 //                                            DeviceBackend::Configure(node, cfg,
 //                                            state_cb_group) injection. RobotTarget
-//                                            subs (CM-owned and controller-owned)
-//                                            stay on default group (nrt_callback)
-//                                            per RT-boundary decision. DDS recv
+//                                            subs are controller-owned only and stay
+//                                            on the controller LifecycleNode default
+//                                            group (nrt_callback) per RT-boundary
+//                                            decision (issue #138). DDS recv
 //                                            thread co-pinned to this core via
 //                                            launch-time taskset for cache locality.
 //   nrt_publish      nrt_callback core, CFS  nrt_publish_buffer_ drain (cap 16) →
@@ -43,7 +44,8 @@
 //   nrt_callback     tier-aware (4c: Core 0; nrt_callback_executor —
 //                    ≥ 6c: dedicated core)   cb_group_nrt_callback_ + CM node default
 //                                            SCHED_OTHER 0                group
-//                                            (CM-owned RobotTarget sub) + every
+//                                            (lifecycle services; CM owns no
+//                                            RobotTarget sub — issue #138) + every
 //                                            controller LifecycleNode default group
 //                                            (owned RobotTarget subs, grasp_command
 //                                            services). E-STOP status + lifecycle
