@@ -218,6 +218,11 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   bool DrainDigitalTwin();
 
   void PublishEstopStatus(bool estopped);
+  // Publishes a pending /system/estop_status transition right away instead of
+  // waiting for DrainLog(). Lifecycle teardown destroys drain_timer_, so the
+  // last transition before teardown (notably on_error's "lifecycle_error"
+  // trigger) would otherwise never reach the topic. Non-RT callers only.
+  void FlushEstopStatus();
 
   // ── Controller-level lifecycle (aux thread only) ─────────────────────────
   // Activate / deactivate a single controller. Updates controller_states_
@@ -261,6 +266,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   /// Consecutive rejected ticks up to now (0 once a valid output lands).
   [[nodiscard]] uint64_t ConsecutiveRejectedOutputCount() const noexcept {
     return consecutive_rejected_outputs_.load(std::memory_order_relaxed);
+  }
+
+  /// Total ticks whose ControllerOutput was replaced by a hold *because the
+  /// global E-STOP latch was set* (issue #198 Phase 3), counted separately
+  /// from RejectedOutputCount so a test can tell which guard blocked the
+  /// write — the two produce the same command and would otherwise be
+  /// indistinguishable at the backend. Monotonic for the node's lifetime.
+  [[nodiscard]] uint64_t EstopSubstitutedOutputCount() const noexcept {
+    return estop_substituted_outputs_.load(std::memory_order_relaxed);
   }
 
   /// Consecutive-reject count at which the hold escalates to a global E-STOP.
@@ -534,6 +548,14 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::atomic<bool> global_estop_{false};
   std::array<char, 128> estop_reason_{};        // fixed-size — no heap alloc on RT path
   std::atomic<bool> estop_log_pending_{false};  // deferred logging flag
+  // Deferred /system/estop_status publish. TriggerGlobalEstop /
+  // ClearGlobalEstop are reachable from the RT loop, where a plain
+  // rclcpp::Publisher::publish is a RT-10 violation, so they raise this flag
+  // and DrainLog() (nrt_logging, 100 Hz) publishes the current global_estop_
+  // value. Eventual consistency by construction: the drain always publishes
+  // the latch's value at drain time, so a trigger/clear pair that lands
+  // between two drains collapses to the final state rather than a stale one.
+  std::atomic<bool> estop_status_pending_{false};
 
   // ── Per-tick timing & overrun ────────────────────────────────────────────
   // Period budget kept here (us) for the timing summary log line (window
@@ -568,6 +590,7 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // sole writer, so relaxed ordering is sufficient.
   std::atomic<uint64_t> rejected_output_count_{0};
   std::atomic<uint64_t> consecutive_rejected_outputs_{0};
+  std::atomic<uint64_t> estop_substituted_outputs_{0};
 
   // Size of the fixed E-STOP reason buffer built on the RT path. Sized to fit
   // the longest reason this file formats, with room to spare; std::snprintf

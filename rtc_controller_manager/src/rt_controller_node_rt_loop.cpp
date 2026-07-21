@@ -354,7 +354,40 @@ void RtControllerNode::ControlLoop() {
   // Validation keeps running after an E-STOP: the controller's ComputeEstop
   // path can produce a bad output too, and fail-closed must hold in the
   // terminal state as well.
-  const urtc::ControllerOutput& output = validation.Ok() ? raw_output : hold_output_;
+  //
+  // ── Phase 2c: E-STOP command substitution (issue #198 Phase 3) ─────────
+  //
+  // Composed *after* Phase 2b, never in place of it — the block above owns
+  // the "terminal state is still validated" contract and this must not
+  // become a path around it. Once the latch is set, nothing the controller
+  // computed reaches DeviceBackend::WriteCommand: actuator safety cannot
+  // depend on each controller implementing its E-STOP hook correctly, and
+  // in-tree it demonstrably does not (OperationalSpaceController's E-STOP
+  // path emits a position-scale value on a kTorque command by its own
+  // admission; PController never overrides SetHandEstop at all).
+  //
+  // The substitution is the same BuildHoldOutput the invalid-output path
+  // uses, so when both fire the command is identical — but the two keep
+  // separate counters, because "which guard stopped the write" is exactly
+  // what a test of either guard has to be able to see.
+  //
+  // What this deliberately drops: every in-tree ComputeEstop slews toward a
+  // configured `safe_position_` rather than holding. That retreat is a
+  // controller-level policy expressed in a controller-level unit, and the
+  // manager has no model with which to check it. Restoring it belongs in
+  // the backend safe-output contract (Phase 4), where position / torque /
+  // hand each get their own semantics — not in a manager that would have to
+  // trust the output it just decided not to trust.
+  const bool estopped = IsGlobalEstopped();
+  if (estopped) {
+    estop_substituted_outputs_.fetch_add(1, std::memory_order_relaxed);
+    if (validation.Ok()) {
+      // Phase 2b already rebuilt hold_output_ from this tick's state when the
+      // validation failed; rebuilding it would be redundant, not different.
+      static_cast<void>(BuildHoldOutput(state, active_controller.GetCommandType()));
+    }
+  }
+  const urtc::ControllerOutput& output = (estopped || !validation.Ok()) ? hold_output_ : raw_output;
 
   // ── Phase 3: push publish snapshot to SPSC buffer (lock-free, O(1)) ────
   // All ROS2 publish() calls are offloaded to the non-RT publish thread.
@@ -520,6 +553,16 @@ void RtControllerNode::DrainLog() {
   // own ControllerLogSet timer (Phase C) — not from here.
   cm_timing_producer_.Drain(
       [this](const urtc::RtTickTimingSample& s) { cm_timing_logger_.Log(s); });
+
+  // Drain the deferred /system/estop_status publish (issue #198 Phase 3).
+  // The latch is what stops the actuators; this topic reports it, so it rides
+  // the aux lane rather than a plain publish on the RT thread. Publishing the
+  // latch's value at drain time (not a value captured at trigger time) is
+  // what makes a trigger/clear pair landing between two drains converge on
+  // the final state instead of a stale one.
+  if (estop_status_pending_.exchange(false, std::memory_order_acquire)) {
+    PublishEstopStatus(global_estop_.load(std::memory_order_acquire));
+  }
 
   // Drain deferred E-STOP log messages (set by TriggerGlobalEstop /
   // ClearGlobalEstop).

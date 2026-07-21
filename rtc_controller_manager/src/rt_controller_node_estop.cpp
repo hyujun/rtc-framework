@@ -25,9 +25,14 @@ void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
     ctrl->TriggerEstop();
     ctrl->SetHandEstop(true);
   }
-  PublishEstopStatus(true);
 
-  // Defer the RCLCPP_ERROR to the non-RT log thread (DrainLog).
+  // Defer both the RCLCPP_ERROR and the /system/estop_status publish to the
+  // non-RT log thread (DrainLog). This function is called from the RT loop
+  // (watchdog timeout, consecutive overrun, invalid output), where a plain
+  // rclcpp::Publisher::publish is a RT-10 violation — the latch above is what
+  // actually stops the actuators, and the topic is a report of it.
+  // `global_estop_` carries the value, so the drain never needs a payload.
+  estop_status_pending_.store(true, std::memory_order_release);
   estop_log_pending_.store(true, std::memory_order_release);
 }
 
@@ -41,8 +46,7 @@ void RtControllerNode::ClearGlobalEstop() noexcept {
     ctrl->ClearEstop();
     ctrl->SetHandEstop(false);
   }
-  PublishEstopStatus(false);
-
+  estop_status_pending_.store(true, std::memory_order_release);
   // Defer the RCLCPP_INFO to the non-RT log thread (DrainLog).
   estop_log_pending_.store(true, std::memory_order_release);
 }

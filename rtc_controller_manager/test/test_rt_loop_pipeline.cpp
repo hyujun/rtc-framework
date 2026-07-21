@@ -107,7 +107,6 @@ class RtLoopPipelineTest : public ::testing::Test {
   static PipelineStubBackend* Backend(RtControllerNode& node) {
     return dynamic_cast<PipelineStubBackend*>(ControllerLifecycleTestAccess::GetBackend(node, 0));
   }
-
 };
 
 // ── Happy path: full tick pipeline over a live device group ──────────────────
@@ -461,6 +460,99 @@ TEST_F(OutputValidationTest, ValidationKeepsHoldingAfterEstop) {
   ExpectHeldAtMeasuredPosition(backend);
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── E-STOP command substitution (issue #198 Phase 3) ─────────────────────────
+//
+// PipelineTestController never overrides TriggerEstop / ClearEstop, so the
+// base no-op runs and Compute() keeps emitting its normal command under
+// E-STOP. That is the fixture the acceptance criterion asks for: a controller
+// whose E-STOP hook does nothing must still not reach the actuator.
+
+TEST_F(OutputValidationTest, EstopSubstitutesHoldEvenWhenTheControllerOutputIsValid) {
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+
+  // Baseline: with no fault and no E-STOP, the controller's own command is
+  // what reaches the wire — so the substitution below is the only thing that
+  // can change it.
+  ASSERT_TRUE(
+      WaitFor([&] { return backend->LastCommands()[0] == PipelineTestController::kCmd0; }, 2000ms));
+  ASSERT_EQ(0U, ControllerLifecycleTestAccess::GetEstopSubstitutedOutputCount(*node));
+
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node, "test_estop");
+
+  ASSERT_TRUE(
+      WaitFor([&] { return backend->LastCommands()[0] == PipelineStubBackend::kPos0; }, 2000ms));
+  ExpectHeldAtMeasuredPosition(backend);
+  EXPECT_GT(ControllerLifecycleTestAccess::GetEstopSubstitutedOutputCount(*node), 0U);
+  // The output was never invalid — this is the E-STOP guard acting, not the
+  // validator. Without a separate counter the two are indistinguishable at
+  // the backend, since both emit the same hold.
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, EstopSubstitutionComposesAfterValidationRatherThanReplacingIt) {
+  // The Phase 2b block owns "terminal state is still validated" (#196). The
+  // E-STOP substitution is layered behind it, so the reject counter must keep
+  // climbing while estopped — an implementation that short-circuits the
+  // validator once the latch is set would leave it frozen.
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node, "test_estop");
+  ASSERT_TRUE(WaitFor(
+      [&] { return ControllerLifecycleTestAccess::GetEstopSubstitutedOutputCount(*node) > 0U; },
+      2000ms));
+
+  // Now make the controller's E-STOP-time output invalid too.
+  const uint64_t rejects_before = ControllerLifecycleTestAccess::GetRejectedOutputCount(*node);
+  PipelineTestController::output_fault.store(OutputFault::kNonFiniteCommand,
+                                             std::memory_order_relaxed);
+  EXPECT_TRUE(WaitFor(
+      [&] { return ControllerLifecycleTestAccess::GetRejectedOutputCount(*node) > rejects_before; },
+      2000ms));
+  // Both guards agree on the command, which is why the counters have to
+  // disagree for either to be testable.
+  ExpectHeldAtMeasuredPosition(backend);
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OutputValidationTest, EstopStatusPublishIsDeferredOffTheRtThread) {
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  ASSERT_FALSE(ControllerLifecycleTestAccess::GetEstopStatusPending(*node));
+  ControllerLifecycleTestAccess::CallTriggerEstop(*node, "test_estop");
+  // TriggerGlobalEstop is reachable from the RT loop, so it must hand the
+  // /system/estop_status publish to the aux lane instead of doing it inline.
+  EXPECT_TRUE(ControllerLifecycleTestAccess::GetEstopStatusPending(*node));
+
+  ControllerLifecycleTestAccess::CallDrainLog(*node);
+  EXPECT_FALSE(ControllerLifecycleTestAccess::GetEstopStatusPending(*node));
+
+  // The clear takes the same lane, and the lifecycle teardown flush is what
+  // keeps the final transition from dying with the drain timer.
+  ControllerLifecycleTestAccess::CallClearEstop(*node);
+  EXPECT_TRUE(ControllerLifecycleTestAccess::GetEstopStatusPending(*node));
+  ControllerLifecycleTestAccess::CallFlushEstopStatus(*node);
+  EXPECT_FALSE(ControllerLifecycleTestAccess::GetEstopStatusPending(*node));
+
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
