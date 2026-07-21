@@ -77,12 +77,12 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 | Executor | Thread config | Callback groups |
 |---|---|---|
 | `rt_callback_executor` | `cfgs.rt_callback` (SCHED_FIFO 70, Core 2 in v4.1) | `cb_group_rt_callback_` — DeviceBackend state subs (`/joint_states`, hand state/motor/sensor); injected via `DeviceBackend::Configure(node, cfg, state_cb_group)` (MutuallyExclusive contract — SeqLock single-writer 보호). DDS receive thread co-pinned to the same core via launch taskset. **state-ready 콜백은 mailbox 전용** (issue #198 Phase 2) — slot 별 dirty bit + eventfd write 만 하고, digital-twin republish 는 `nrt_publish_thread` 의 `DrainDigitalTwin()` 이 수행 |
-| `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, tier-aware core) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log |
+| `nrt_logging_executor` | `cfgs.nrt_logging` (SCHED_OTHER nice -5, tier-aware core) | `cb_group_nrt_logging_` — `cm_timing_log.csv` drain + deferred E-STOP log **and `/system/estop_status` publish** (both raised as atomic flags by `TriggerGlobalEstop`/`ClearGlobalEstop`, which are reachable from the RT loop — #198 Phase 3) |
 | `nrt_callback_executor` | `cfgs.nrt_callback` (SCHED_OTHER nice 0, tier-aware core — Core 0 만 4-core fallback, 그 외 tier 는 dedicated core) | `cb_group_nrt_callback_` (lifecycle services + CM-owned `target_sub_` — RobotTarget 은 외부 의도 입력, spec §0d 에 따라 RT 경계 밖) + every controller LifecycleNode default group (controller-owned RobotTarget subs, `grasp_command` services). `nrt_publish_thread` 는 별도 std::jthread + eventfd 로 같은 코어를 공유하지만 executor callback 이 아니다 |
 
 **DeviceBackend cb_group injection 의무**: 모든 backend 구현은 `Configure(node, cfg, state_cb_group)` 가 받은 `state_cb_group` 을 자신이 만드는 모든 state/motor/sensor subscription 의 `SubscriptionOptions.callback_group` 에 적용해야 한다. ARCH-3 두 번째 구현 이후 silent default-group fallback 회귀를 막기 위해 backend integration test 가 `get_actual_callback_group() != nullptr` 을 assert 한다. Reentrant cb_group 금지 — SeqLock writer 가 단일 thread 임을 보장해야 함.
 
-- **ControlLoop** (configurable rate, default 500 Hz): E-STOP check -> assemble ControllerState -> `Compute()` -> inline `DeviceBackend.WriteCommand` (actuator publish) + SPSC push (nrt-publish lane) + log
+- **ControlLoop** (configurable rate, default 500 Hz): device-readiness gate -> assemble ControllerState -> `Compute()` -> output validation (#196 Phase 2b) -> E-STOP substitution (#198 Phase 3) -> inline `DeviceBackend.WriteCommand` (actuator publish) + SPSC push (nrt-publish lane) + log. **E-STOP latch 가 서면 controller output 은 `BuildHoldOutput()` 으로 치환돼 backend 에 도달하지 않는다** — actuator 안전이 controller 의 E-STOP hook 구현에 의존하지 않게 하는 manager 측 방어선 (치환은 validation 을 우회하지 않고 그 뒤에 합성된다; 두 가드는 카운터를 따로 둔다)
 - **CheckTimeouts** (50Hz): per-group device timeout -> `TriggerGlobalEstop("{group}_timeout")`
 - **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout
 - **TriggerGlobalEstop**: idempotent (`compare_exchange_strong`), propagates to all controllers
@@ -97,7 +97,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
     |                                                  (Transforms / grasp_state / wbc_state / tof_snapshot)
     |                                              +-> /rtc_cm/{group}/joint_states (digital twin)
     +--SPSC--> [nrt_logging_executor (CFS -5)] --> CSV (timing + per-device state + sensor)
-    +--E-STOP--> /system/estop_status
+    +--E-STOP latch--> [nrt_logging (CFS -5)] --> /system/estop_status + RCLCPP log (deferred, RT-10)
 
 [Hand HW] <--UDP--> [udp_hand_driver] <--SeqLock--> [ControlLoop]
 [rtc_digital_twin]: merge /rtc_cm/{group}/joint_states --> RViz2

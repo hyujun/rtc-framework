@@ -232,6 +232,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
   }
 
   ClearGlobalEstop();
+  // drain_timer_ survives on_deactivate, but the clear must be observable
+  // even if the node is cleaned up before the next 10 ms drain fires.
+  FlushEstopStatus();
 
   // Reset initialization state for clean re-activate
   init_complete_ = false;
@@ -264,7 +267,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
     sim_wake_eventfd_ = -1;
   }
 
-  // 6. timers
+  // 6. timers — flush the deferred E-STOP status first; once the drain timer
+  //    is gone nothing else will publish it.
+  FlushEstopStatus();
   drain_timer_.reset();
 
   // 5. parameter callback
@@ -356,6 +361,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
     close(sim_wake_eventfd_);
     sim_wake_eventfd_ = -1;
   }
+  FlushEstopStatus();
   drain_timer_.reset();
   param_callback_handle_.reset();
   for (auto& backend : backends_) {

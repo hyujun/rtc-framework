@@ -237,15 +237,24 @@ Force-PI grasp 같은 one-shot 이벤트(상태가 아닌 transition)는 컨트�
 | `{group}_init_timeout` | `init_timeout_sec` 내 해당 그룹이 state 미보고 | `TriggerGlobalEstop("{group}_init_timeout")` + 노드 종료 |
 | `{group}_timeout` | 디바이스 그룹의 state 토픽이 설정된 ms 초과 미갱신 (50Hz 워치독) | `TriggerGlobalEstop("{group}_timeout")` |
 | `consecutive_overrun` | >= 10회 연속 RT 루프 오버런 | `TriggerGlobalEstop("consecutive_overrun")` |
-| `sim_sync_timeout` | 시뮬레이션 모드에서 CV 타임아웃 (state 미수신) | `TriggerGlobalEstop("sim_sync_timeout")` + 노드 종료 |
+| `sim_sync_timeout` | 시뮬레이션 모드에서 `sim_wake_eventfd_` 타임아웃 (state 미수신) | `TriggerGlobalEstop("sim_sync_timeout")` + 노드 종료 |
 
 ### 글로벌 E-STOP 동작
 
 - `TriggerGlobalEstop()`: 멱등(idempotent), `compare_exchange_strong`으로 1회만 실행
 - 모든 컨트롤러에 `TriggerEstop()` + `SetHandEstop(true)` 전파
-- `/system/estop_status`에 `true` 퍼블리시
+- **actuator 로 나가는 command 를 CM 이 차단** — 아래 절 참조
+- `/system/estop_status`에 `true` 퍼블리시 (지연, 아래 참조)
 - RT 루프는 E-STOP 후에도 계속 실행 (타이밍/로깅 유지)
-- **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음), RCLCPP 로깅은 `estop_log_pending_` atomic 플래그를 통해 non-RT `DrainLog()` 스레드에서 지연 출력
+- **RT 안전:** `estop_reason_`은 `std::array<char, 128>` 고정 크기 버퍼 (힙 할당 없음). RCLCPP 로깅은 `estop_log_pending_`, `/system/estop_status` publish 는 `estop_status_pending_` atomic 플래그를 통해 non-RT `DrainLog()` (100 Hz) 에서 지연 수행 — `TriggerGlobalEstop` / `ClearGlobalEstop` 은 RT 루프에서 도달 가능하므로 plain publisher 를 그 자리에서 호출하면 RT-10 위반이다 (#198 Phase 3). 드레인은 *드레인 시점의* `global_estop_` 값을 발행하므로 두 드레인 사이의 trigger/clear 쌍은 stale 값이 아니라 최종 상태로 수렴한다. lifecycle teardown 은 `drain_timer_` 를 없애므로 `FlushEstopStatus()` 가 마지막 전이를 직접 흘린다
+
+### E-STOP 시 actuator command 차단 (#198 Phase 3)
+
+latch 가 서면 controller 가 계산한 output 은 **`DeviceBackend::WriteCommand` 에 도달하지 않는다.** `BuildHoldOutput()` (측정 위치 hold; torque 모드는 0 N·m) 로 치환된다.
+
+- **왜 CM 이 하는가**: actuator 안전이 각 controller 의 E-STOP hook 구현 정확성에 의존해서는 안 된다. in-tree 반례가 이미 있다 — `OperationalSpaceController` 의 E-STOP 경로는 자기 주석으로 "position-scale 값을 kTorque command 로 낸다 (Do NOT rely on this as a safe torque E-STOP)" 고 명시하고, `PController` 는 `SetHandEstop` 을 override 하지 않아 base no-op 으로 빠진다
+- **의도적으로 버리는 것**: in-tree `ComputeEstop` 은 전부 hold 가 아니라 설정된 `safe_position_` 으로의 slew 다. 그 후퇴는 controller 단위 정책이고 CM 은 검증할 모델이 없다. 복원은 Phase 4 의 backend safe-output 계약 (position / torque / hand 각각의 semantics) 소관이다
+- **합성 순서**: #196 Phase 2b 의 output validation **뒤에** 얹힌다 — 우회가 아니다. validator 는 terminal state 에서도 계속 돌고 (`rejected_output_count_`), E-STOP 치환은 `estop_substituted_outputs_` 로 따로 센다. 둘 다 같은 hold 를 내므로 **카운터가 갈라지지 않으면 어느 가드가 막았는지 테스트가 구분할 수 없다**
 
 ### 오버런 복구
 

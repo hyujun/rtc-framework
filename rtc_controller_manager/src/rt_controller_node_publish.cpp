@@ -123,6 +123,15 @@ void RtControllerNode::StopNrtPublishLoop() {
   }
 }
 
+void RtControllerNode::FlushEstopStatus() {
+  if (!estop_status_pending_.exchange(false, std::memory_order_acquire)) {
+    return;
+  }
+  if (estop_pub_) {
+    PublishEstopStatus(global_estop_.load(std::memory_order_acquire));
+  }
+}
+
 void RtControllerNode::PublishEstopStatus(bool estopped) {
   std_msgs::msg::Bool msg;
   msg.data = estopped;

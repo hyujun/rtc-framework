@@ -165,6 +165,20 @@ class ControllerLifecycleTestAccess {
     return node.estop_log_pending_.load(std::memory_order_acquire);
   }
 
+  // ── E-STOP status publish deferral (issue #198 Phase 3) ────────────────────
+  // TriggerGlobalEstop / ClearGlobalEstop are reachable from the RT loop, so
+  // they raise this instead of publishing; DrainLog (or FlushEstopStatus on
+  // the lifecycle teardown paths) does the publish.
+  static bool GetEstopStatusPending(const RtControllerNode& node) {
+    return node.estop_status_pending_.load(std::memory_order_acquire);
+  }
+
+  static void CallFlushEstopStatus(RtControllerNode& node) { node.FlushEstopStatus(); }
+
+  static uint64_t GetEstopSubstitutedOutputCount(const RtControllerNode& node) {
+    return node.EstopSubstitutedOutputCount();
+  }
+
   // ── ControllerOutput validation counters (issue #196 Phase 4) ─────────────
   // Test-only observability. Kept behind the friend rather than on the public
   // API: these are internal fault tallies, not part of the node's contract
