@@ -13,14 +13,25 @@
 //   UpdatePullEstimator (RT): derive the plane normal (fixed YAML vector or
 //     pinch geometry), arm the baseline snapshot on a grasp_detected rising
 //     edge, run Update.
+//   ResetPullEstimatorRtState (non-RT, on_activate): drop every latch so a
+//     resumed loop cannot inherit state from before the gap.
 //
 // Pinch geometry is *observed*, not declared: the opposing set is the non-thumb
-// tips whose contact is currently established (PullForceEstimator::
-// contact_active, previous tick), so thumb+index / thumb+middle / tripod /
-// four-finger all yield their own axis without a config switch. `tip_names`
-// therefore lists every tip that can physically participate, not the tips a
-// particular grasp is expected to use. See UpdatePullEstimator for the
-// bootstrap fallback that keeps the first contact latchable.
+// tips that are pressing on something (PullForceEstimator::touch_active, a
+// hysteresis on |f_obj|), so thumb+index / thumb+middle / tripod / four-finger
+// all yield their own axis without a config switch. `tip_names` therefore lists
+// every tip that can physically participate, not the tips a particular grasp is
+// expected to use.
+//
+// The selector is touch_active and deliberately NOT contact_active: contact is
+// gated by f_n = -n.f_obj, so selecting on it would make the axis depend on a
+// quantity that depends on the axis. That loop cannot be damped by the force
+// hysteresis (its ON and OFF tests would see different axes) and it has no
+// cold-start state, which is what forced the earlier bootstrap-fallback and
+// deferred-arming machinery. touch_active is axis-independent, so the axis is
+// an open-loop function of measured force: no fallback regime, no deadlock, and
+// the only cost is a one-tick lag (2 ms at 500 Hz, far inside the 5 Hz output
+// filter) plus one invalid tick at grasp onset.
 //
 // Output lands in the controllers' existing owned SeqLock PODs via
 // rtc::grasp::FillPullEstimateData — no new topic / PublishRole (#167
@@ -68,18 +79,11 @@ struct PullEstimatorWiring {
 
   // ── RT state ──
   bool prev_grasp_detected{false};
-  /// Baseline arm deferred to the first tick with a contact-derived axis: the
-  /// grasp_detected edge (force-threshold, controller side) can land a tick or
-  /// two before the estimator's hysteresis latches, and capturing the snapshot
-  /// against the provisional bootstrap axis would bias every later sample.
-  bool baseline_arm_pending{false};
-  /// Bit k set = contact k joined the opposing set this tick (observed grasp
-  /// shape; diagnostic + CSV). Zero while `opposing_fallback` is true.
+  /// Bit k set = contact k opposed the thumb this tick (observed grasp shape;
+  /// diagnostic + CSV). Zero means no tip was touching, which is also the
+  /// degenerate-normal case — the tick is then invalid, so the two are
+  /// distinguishable from the estimate rather than needing a second flag.
   std::uint8_t opposing_mask{0};
-  /// No contact was established yet, so the bootstrap fallback (all FK-valid
-  /// non-thumb tips) supplied the axis. The estimate is still gated by the
-  /// estimator's own validity rules; this only flags a provisional axis.
-  bool opposing_fallback{false};
 
   [[nodiscard]] bool enabled() const noexcept { return estimator != nullptr; }
 };
@@ -101,7 +105,6 @@ inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
   // Observed grasp shape lives in the wiring (the estimator core is told the
   // axis, not how it was chosen), so it is stamped here rather than in Fill.
   pod.opposing_mask = wiring.opposing_mask;
-  pod.opposing_fallback = wiring.opposing_fallback;
   handle.Push(pod);
 }
 
@@ -111,18 +114,27 @@ inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
 // kNumFingertips). Resets `w` first; stays disabled (estimator == nullptr,
 // no throw) when the YAML block is absent/disabled OR `link_names` is empty
 // (no FK available — unit-test and hand-less paths). Throws
-// std::runtime_error when a configured tip link resolves to no slot, when no
-// "thumb" role is present, or when no non-thumb tip is configured (config
-// wiring errors — non-RT path, propagates to CallbackReturn::FAILURE like
-// BuildPullForceEstimator's std::invalid_argument).
+// std::runtime_error when a configured tip link resolves to no slot, when a
+// role name repeats, when no "thumb" role is present, or when pinch geometry is
+// selected without a non-thumb tip to oppose it (config wiring errors — non-RT
+// path, propagates to CallbackReturn::FAILURE like BuildPullForceEstimator's
+// std::invalid_argument). Leaves `w` disabled on every throw path.
 void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_rate_hz,
                                   std::span<const std::string> link_names, PullEstimatorWiring& w);
+
+// Drop the wiring's and the estimator's per-tick latches. Call from on_activate
+// (non-RT): the RT state is otherwise only reset at configure, so an E-STOP,
+// a deactivate/activate cycle or any stretch where the controller early-returns
+// before the tick would let the next tick inherit a grasp edge, a contact set
+// and a filter tail from before the gap. Safe on a disabled wiring.
+void ResetPullEstimatorRtState(PullEstimatorWiring& w) noexcept;
 
 // Per-tick RT update. Caller must have staged w.inputs / w.positions /
 // w.position_valid for [0, w.num_contacts) and checked w.enabled().
 // `grasp_detected` supplies the baseline arming edge (grasp establishment).
-// noexcept, heap-free; a degenerate normal (thumb FK dropout, or no FK-valid
-// opposing tip at all) yields an invalid tick with bounded decay inside Update.
+// noexcept, heap-free; a degenerate normal (thumb position invalid, or no tip
+// touching) yields an invalid tick with bounded decay inside Update — including
+// the first tick of a grasp, before the touch hysteresis has latched.
 const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool grasp_detected,
                                                     double dt) noexcept;
 

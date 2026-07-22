@@ -49,10 +49,10 @@ struct PullEstimatorLogPod {
   // Bit k = contact k opposed the thumb this tick, so thumb+index vs
   // thumb+middle vs tripod is recoverable post-hoc; a normal that jumps
   // between grasp shapes is otherwise indistinguishable from a force step.
+  // Zero means no tip was touching: the pinch axis is then degenerate and the
+  // row is already marked invalid, so no separate "provisional axis" flag is
+  // needed — the estimator never publishes against a guessed plane.
   std::uint8_t opposing_mask{0};
-  // The opposing set was empty (no contact latched yet) and the provisional
-  // all-tips bootstrap axis was used — samples here are not axis-trustworthy.
-  bool opposing_fallback{false};
 };
 
 static_assert(std::is_trivially_copyable_v<PullEstimatorLogPod>,
@@ -68,7 +68,7 @@ inline void WritePullEstimatorLogHeader(std::ostream& os) {
   os << ",magnitude,directional";
   os << ",friction_utilization,leakage_bound";
   os << ",valid_contact_count,valid,slip_risk,any_saturated,baseline_applied";
-  os << ",opposing_mask,opposing_fallback";
+  os << ",opposing_mask";
 }
 
 /// Emit one row. The logger appends '\n' + flush.
@@ -86,7 +86,6 @@ inline void WritePullEstimatorLogRow(std::ostream& os, const PullEstimatorLogPod
   os << ',' << (e.any_saturated ? 1 : 0);
   os << ',' << (e.baseline_applied ? 1 : 0);
   os << ',' << static_cast<unsigned>(p.opposing_mask);
-  os << ',' << (p.opposing_fallback ? 1 : 0);
 }
 
 /// Mirror one PullEstimate tick into the log POD (RT tick path — noexcept,

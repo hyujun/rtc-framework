@@ -189,6 +189,10 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
 RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
+  // Pull-estimator latches (grasp edge, contact/touch hysteresis, filter tail,
+  // baseline) are otherwise only cleared at configure, so a deactivate/activate
+  // cycle would resume mid-grasp state against a possibly different object.
+  ResetPullEstimatorRtState(pull_wiring_);
   // Base bumps the activation generation + calls ResetTargetInitialization().
   return RTControllerInterface::on_activate(prev);
 }
