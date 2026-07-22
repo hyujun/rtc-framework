@@ -15,6 +15,8 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <sys/eventfd.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -282,6 +284,30 @@ class ControllerLifecycleTestAccess {
   // switch candidate.
   static std::size_t GetControllerCount(const RtControllerNode& node) {
     return node.controllers_.size();
+  }
+
+  // ── Teardown eventfd ordering (issue #224) ────────────────────────────────
+  // The state-ready callback writes these two fds, so they must outlive the
+  // backends that own the subscriptions dispatching it. Exposed read-only (and
+  // as a standalone opener) so a test can observe the fd from inside a
+  // backend's destructor without driving a full on_configure.
+  static int GetNrtPublishEventfd(const RtControllerNode& node) {
+    return node.nrt_publish_eventfd_.load(std::memory_order_acquire);
+  }
+
+  static int GetSimWakeEventfd(const RtControllerNode& node) {
+    return node.sim_wake_eventfd_.load(std::memory_order_acquire);
+  }
+
+  // Opens both fds exactly as on_configure does. Returns false if either
+  // eventfd() call failed, so a test can report that rather than assert on a
+  // sentinel it never actually installed.
+  [[nodiscard]] static bool OpenTeardownEventfds(RtControllerNode& node) {
+    const int nrt_fd = ::eventfd(0, EFD_NONBLOCK);
+    const int sim_fd = ::eventfd(0, EFD_NONBLOCK);
+    node.nrt_publish_eventfd_.store(nrt_fd, std::memory_order_release);
+    node.sim_wake_eventfd_.store(sim_fd, std::memory_order_release);
+    return nrt_fd >= 0 && sim_fd >= 0;
   }
 
   static DeviceBackend* GetBackend(RtControllerNode& node, std::size_t slot) {

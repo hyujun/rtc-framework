@@ -199,6 +199,17 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib)
   endif()
 
+  ament_add_gtest(test_eventfd_teardown_order
+    test/test_eventfd_teardown_order.cpp)
+  if(TARGET test_eventfd_teardown_order)
+    target_include_directories(test_eventfd_teardown_order PRIVATE include test)
+    ament_target_dependencies(test_eventfd_teardown_order
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_eventfd_teardown_order
+      rtc_controller_manager_lib)
+  endif()
+
   ament_add_gtest(test_on_configure
     test/test_on_configure.cpp)
   if(TARGET test_on_configure)

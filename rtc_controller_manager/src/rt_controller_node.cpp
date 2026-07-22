@@ -41,13 +41,32 @@ RtControllerNode::~RtControllerNode() {
   StopRtLoop();
   StopNrtPublishLoop();
 
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
+  // Drop the backends before closing the eventfds — same ordering rule as
+  // on_cleanup (issue #224), and here it also removes a reliance on member
+  // destruction order: `backends_` is a member, so it would otherwise be
+  // destroyed *after* this body, leaving the state-ready callback alive
+  // across the close() below.
+  for (auto& backend : backends_) {
+    backend.reset();
   }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
+
+  CloseTeardownEventfds();
+}
+
+// ── Teardown helpers ────────────────────────────────────────────────────────
+void RtControllerNode::CloseTeardownEventfds() noexcept {
+  // exchange, not load-then-store: the producers (rt_control loop,
+  // state-ready callback on cb_group_rt_callback_) guard their
+  // eventfd_write on these members, so clearing and reading the old value
+  // must be one step. Producers that already loaded a live fd are still a
+  // residual — see the ordering note in on_cleanup.
+  const int nrt_fd = nrt_publish_eventfd_.exchange(-1, std::memory_order_acq_rel);
+  if (nrt_fd >= 0) {
+    close(nrt_fd);
+  }
+  const int sim_fd = sim_wake_eventfd_.exchange(-1, std::memory_order_acq_rel);
+  if (sim_fd >= 0) {
+    close(sim_fd);
   }
 }
 
@@ -112,8 +131,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // eventfd for RT→nrt-publish thread wakeup (non-blocking to avoid RT
   // stalls). Layout v4: actuator command lane is inline in the rt_loop, so
   // only the controller-owned non-RT publish lane needs an SPSC + eventfd.
-  nrt_publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
-  if (nrt_publish_eventfd_ < 0) {
+  const int nrt_fd = eventfd(0, EFD_NONBLOCK);
+  nrt_publish_eventfd_.store(nrt_fd, std::memory_order_release);
+  if (nrt_fd < 0) {
     RCLCPP_WARN(get_logger(), "eventfd() failed: nrt publish thread will use polling fallback");
   }
 
@@ -122,8 +142,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // state callback) only ever writes, which never blocks on an eventfd whose
   // counter is below UINT64_MAX.
   if (use_sim_time_sync_) {
-    sim_wake_eventfd_ = eventfd(0, EFD_NONBLOCK);
-    if (sim_wake_eventfd_ < 0) {
+    const int sim_fd = eventfd(0, EFD_NONBLOCK);
+    sim_wake_eventfd_.store(sim_fd, std::memory_order_release);
+    if (sim_fd < 0) {
       RCLCPP_ERROR(get_logger(),
                    "eventfd() failed: simulation sync has no wake lane — refusing to configure");
       return CallbackReturn::FAILURE;
@@ -263,17 +284,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_INFO(get_logger(), "Cleaning up RtControllerNode...");
 
-  // Reverse order of on_configure:
-
-  // 7. eventfd (nrt publish lane only — actuator lane is inline)
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
-  }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
-  }
+  // Reverse order of on_configure, with ONE deliberate exception: the eventfds
+  // (step 7 in configure order) are closed after the device backends (step 4),
+  // not before them. See the note at the close() below — issue #224.
 
   // 6. timers — flush the deferred E-STOP status first; once the drain timer
   //    is gone nothing else will publish it.
@@ -294,6 +307,26 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   }
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
+
+  // 7. eventfd (nrt publish lane only — actuator lane is inline).
+  //
+  // Out of reverse order ON PURPOSE (issue #224): the writer must die before
+  // the fd does. The backends' state-lane subscriptions survive on_deactivate
+  // — DeviceBackend::Deactivate() only gates LifecyclePublishers — so the
+  // state-ready callback keeps running on the rt_callback executor while this
+  // (lifecycle) thread tears the node down, and all it does is set a dirty bit
+  // and eventfd_write() these two fds. Closing them first left a window
+  // spanning FlushEstopStatus + two resets in which that callback would write
+  // to a closed descriptor, corrupting whatever stream had since taken the
+  // number.
+  //
+  // Residual, knowingly accepted: destroying a backend does not join a
+  // callback that is already executing — the executor holds the subscription
+  // alive for the duration of the call — so a write can still land just after
+  // the reset above returns. The window is now two instructions wide instead
+  // of a whole teardown sequence. Closing it completely would need the
+  // rt_callback executor quiesced, which CM cannot request from here.
+  CloseTeardownEventfds();
 
   // 3. subscribers — nothing CM-owned to release: controller-YAML target subs
   //    belong to each controller LifecycleNode (torn down with the controller
@@ -362,14 +395,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   StopNrtPublishLoop();
 
   // Full cleanup for recovery to Unconfigured state
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
-  }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
-  }
   FlushEstopStatus();
   drain_timer_.reset();
   param_callback_handle_.reset();
@@ -382,6 +407,11 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   }
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
+
+  // Backends first, then their fds — see the ordering note in on_cleanup
+  // (issue #224). Same two-thread hazard applies here: on_error also runs on
+  // the lifecycle executor while the state-ready callback runs on rt_callback.
+  CloseTeardownEventfds();
   controllers_.clear();
   controller_states_.clear();
   controller_topic_configs_.clear();
