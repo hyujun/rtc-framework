@@ -2,6 +2,8 @@
 
 #include "rtc_urdf_bridge/types.hpp"
 
+#include <rclcpp/logging.hpp>
+
 #include <algorithm>
 #include <cstddef>
 #include <stdexcept>
@@ -115,6 +117,39 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
   w.normal_source = cfg.pull_plane_normal_source;
   w.fixed_normal = cfg.pull_plane_normal;
   w.use_baseline = cfg.pull_use_baseline_subtraction;
+}
+
+void LogPullEstimatorWiring(const rclcpp::Logger& logger, const PullEstimatorWiring& w,
+                            const DemoSharedConfig& cfg) {
+  if (!w.enabled()) {
+    // Not an error: a hand-less variant, a disabled YAML block, or a model with
+    // no tree-model match all land here deliberately. Say so out loud anyway —
+    // the silent version is indistinguishable from "running but never valid".
+    RCLCPP_INFO(logger,
+                "[pull_estimator] disabled — block %s, %s. No pull estimate will be published.",
+                cfg.has_pull_estimator_block ? "present" : "absent",
+                cfg.pull_estimator_enabled ? "no FK-backed tip links resolved" : "enabled=false");
+    return;
+  }
+
+  std::string tips;
+  for (int k = 0; k < w.num_contacts; ++k) {
+    const auto idx = static_cast<std::size_t>(k);
+    if (!tips.empty()) {
+      tips += ", ";
+    }
+    tips += cfg.pull_tip_roles[idx];
+    tips += "->";
+    tips += cfg.pull_tip_links[idx];
+    tips += "(slot ";
+    tips += std::to_string(w.slot[idx]);
+    tips += ")";
+  }
+  RCLCPP_INFO(logger,
+              "[pull_estimator] enabled — %d contacts [%s], thumb=contact %d, normal_source=%s, "
+              "baseline_subtraction=%s",
+              w.num_contacts, tips.c_str(), w.thumb_contact,
+              PullPlaneNormalSourceName(w.normal_source), w.use_baseline ? "on" : "off");
 }
 
 void ResetPullEstimatorRtState(PullEstimatorWiring& w) noexcept {

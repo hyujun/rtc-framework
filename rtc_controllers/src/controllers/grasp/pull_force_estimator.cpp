@@ -43,6 +43,9 @@ void PullForceEstimator::Init(std::span<const PullContactConfig> configs,
   if (!params.gravity_force.allFinite()) {
     throw std::invalid_argument("PullForceEstimator: gravity_force must be finite");
   }
+  if (!params.inplane_x_reference.allFinite()) {
+    throw std::invalid_argument("PullForceEstimator: inplane_x_reference must be finite");
+  }
 
   for (const PullContactConfig& cfg : configs) {
     if (!(cfg.contact_on_threshold > cfg.contact_off_threshold) ||
@@ -106,7 +109,25 @@ void PullForceEstimator::MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3
   // force stays smooth, reading as a spurious lateral pull.
   Eigen::Vector3d candidate = Eigen::Vector3d::Zero();
   double norm = 0.0;
-  if (prev_e_x_valid_) {
+
+  // Preferred: the configured reference direction (anti-gravity by default)
+  // projected into the plane. This *names* the axes — force_inplane[0] is the
+  // vertical pull component — and is a pure function of n, so it is also
+  // path-independent, unlike the carry below. It collapses only when the plane
+  // turns edge-on to the reference (pinch axis parallel to gravity).
+  if (params_.inplane_x_reference.squaredNorm() > 0.0) {
+    candidate = params_.inplane_x_reference - (params_.inplane_x_reference.dot(n)) * n;
+    norm = candidate.norm();
+    // Guard the ill-conditioned band, not just the exact singularity: near
+    // edge-on, the projection is dominated by numerical noise in n and the
+    // axis would jitter. kBasisCarryMin is the same collapse threshold the
+    // carry path uses.
+    if (!(std::isfinite(norm) && norm >= kBasisCarryMin)) {
+      norm = 0.0;
+    }
+  }
+
+  if (norm == 0.0 && prev_e_x_valid_) {
     candidate = prev_e_x_ - (prev_e_x_.dot(n)) * n;
     norm = candidate.norm();
   }

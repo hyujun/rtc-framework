@@ -455,4 +455,59 @@ TEST(PullForceEstimator, FillPullEstimateDataMirrorsAllFields) {
   EXPECT_TRUE(out.baseline_applied);
 }
 
+// ── In-plane basis is named by inplane_x_reference ───────────────────────────
+// Without a reference the 2-D pair is only norm-meaningful (see
+// ArbitraryPlaneBasis); with one, [0] is the anti-gravity component and [1] the
+// horizontal one, which is what makes a pull-gauge trace readable directly.
+TEST(PullForceEstimator, InPlaneAxesFollowTheConfiguredReference) {
+  // Pinch axis horizontal (+x) so the plane contains the vertical: e_x = +z
+  // exactly, e_y = n x e_x = -y.
+  const Eigen::Vector3d n = Eigen::Vector3d::UnitX();
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  params.inplane_x_reference = Eigen::Vector3d::UnitZ();
+  const std::vector<PullContactConfig> configs = {MakeConfig()};
+
+  {  // Purely vertical pull → all of it on axis [0].
+    PullForceEstimator est;
+    est.Init(configs, params);
+    // grip +5 along the pinch axis, resisting -2 z ⇒ F̂ = +2 z.
+    const std::vector<PullContactInput> inputs = {
+        MakeInput(Eigen::Vector3d(5.0, 0.0, -2.0), -Eigen::Vector3d::UnitX())};
+    const PullEstimate& out = RunTicks(est, inputs, 1000, n);
+    ASSERT_TRUE(out.valid);
+    EXPECT_NEAR(out.force_inplane[0], 2.0, 1e-6);
+    EXPECT_NEAR(out.force_inplane[1], 0.0, 1e-6);
+  }
+  {  // Purely horizontal pull → all of it on axis [1] (e_y = -y).
+    PullForceEstimator est;
+    est.Init(configs, params);
+    const std::vector<PullContactInput> inputs = {
+        MakeInput(Eigen::Vector3d(5.0, -2.0, 0.0), -Eigen::Vector3d::UnitX())};
+    const PullEstimate& out = RunTicks(est, inputs, 1000, n);
+    ASSERT_TRUE(out.valid);
+    EXPECT_NEAR(out.force_inplane[0], 0.0, 1e-6);
+    EXPECT_NEAR(out.force_inplane[1], -2.0, 1e-6);
+  }
+}
+
+TEST(PullForceEstimator, InPlaneAxesStayFiniteWhenPlaneIsEdgeOnToTheReference) {
+  // Pinch axis parallel to the reference: the projection collapses, so the
+  // basis must fall back rather than emit NaN or a zero axis.
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  params.inplane_x_reference = Eigen::Vector3d::UnitZ();
+  const std::vector<PullContactConfig> configs = {MakeConfig()};
+  est.Init(configs, params);
+
+  const Eigen::Vector3d v(1.5, 0.0, 0.0);
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0) - v, kThumbNormal)};
+  const PullEstimate& out = RunTicks(est, inputs, 1000, kPlaneNormal);
+  ASSERT_TRUE(out.valid);
+  EXPECT_TRUE(out.force_inplane.allFinite());
+  EXPECT_NEAR(out.force_inplane.norm(), v.norm(), 1e-6);
+}
+
 }  // namespace

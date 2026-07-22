@@ -76,6 +76,14 @@ struct PullEstimatorParams {
   /// m·g of the object expressed in the common reference frame [N]. Zero
   /// (default) when using baseline subtraction or a gravity-orthogonal plane.
   Eigen::Vector3d gravity_force{Eigen::Vector3d::Zero()};
+  /// Reference direction for the in-plane x axis, common reference frame.
+  /// force_inplane[0] is then the component along this direction projected into
+  /// the plane, and [1] the remaining one (e_y = n x e_x) — so with the default
+  /// (+Z base = anti-gravity for an upright base) the pair reads as
+  /// (vertical, horizontal) instead of two axes that only a plot can interpret.
+  /// Set to the actual anti-gravity direction if the robot base is not upright.
+  /// Zero disables the reference and falls back to basis continuity carry.
+  Eigen::Vector3d inplane_x_reference{Eigen::Vector3d::UnitZ()};
 };
 
 // ── Per-tick input (RT) ──────────────────────────────────────────────────────
@@ -224,10 +232,12 @@ class PullForceEstimator {
   }
 
  private:
-  /// In-plane basis B = [e_x e_y] for a unit normal, continuous in n: the
-  /// previous e_x is re-projected onto the new plane so a rotating normal does
-  /// not flip the reported 2-D coordinates. Reseeds from a world axis only when
-  /// no carry exists or the carry has collapsed (plane rotated ~90°).
+  /// In-plane basis B = [e_x e_y] for a unit normal. e_x is the configured
+  /// inplane_x_reference projected into the plane, which makes the reported 2-D
+  /// coordinates physically named (anti-gravity, then n x e_x) and a pure
+  /// function of n — no path dependence. When the plane turns edge-on to that
+  /// reference the projection collapses, so the basis falls back to continuity
+  /// carry (previous e_x re-projected) and then to a world-axis seed.
   void MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3d& e_x,
                       Eigen::Vector3d& e_y) noexcept;
 

@@ -55,6 +55,14 @@ demo_shared:
     # use_baseline_subtraction is on — the grasp-time baseline snapshot removes
     # in-plane gravity AND constant calibration residual in one shot.
     gravity_force: [0.0, 0.0, 0.0]
+
+    # In-plane x axis reference (base frame) — names the force_inplane pair.
+    # e_x = this direction projected into the pinch plane, e_y = n x e_x, so
+    # [0] reads as the anti-gravity (vertical) pull component and [1] as the
+    # horizontal one. Default +Z assumes an upright base; set the true
+    # anti-gravity direction otherwise. Falls back to basis continuity when the
+    # pinch axis turns parallel to it.
+    inplane_x_reference: [0.0, 0.0, 1.0]
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or

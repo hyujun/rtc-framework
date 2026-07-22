@@ -801,6 +801,7 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
     const std::vector<std::string> pull_links =
         ResolvePullTipLinks(GetSystemModelConfig(), GetSecondaryDeviceName(), kNumFingertips);
     ConfigurePullEstimatorWiring(shared, 1.0 / GetDefaultDt(), pull_links, pull_wiring_);
+    LogPullEstimatorWiring(logger_, pull_wiring_, shared);
   }
 
   // contact_stop hold LPF: Init at config time (may throw) so Apply() on the RT

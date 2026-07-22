@@ -42,6 +42,8 @@
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controllers/grasp/pull_force_estimator.hpp"
 
+#include <rclcpp/logger.hpp>
+
 #include <Eigen/Core>
 
 #include <array>
@@ -121,6 +123,15 @@ inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
 // std::invalid_argument). Leaves `w` disabled on every throw path.
 void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_rate_hz,
                                   std::span<const std::string> link_names, PullEstimatorWiring& w);
+
+// One-shot INFO describing what the wiring resolved to — enabled/disabled, the
+// contact roles and the FK slots they bound to, the normal source, baseline.
+// Call once from on_configure after ConfigurePullEstimatorWiring (non-RT: it
+// formats a string). The estimator path is otherwise completely silent, so a
+// wiring that stayed disabled (empty tip links → no throw, by design) is
+// indistinguishable at runtime from one that is running but never validating.
+void LogPullEstimatorWiring(const rclcpp::Logger& logger, const PullEstimatorWiring& w,
+                            const DemoSharedConfig& cfg);
 
 // Drop the wiring's and the estimator's per-tick latches. Call from on_activate
 // (non-RT): the RT state is otherwise only reset at configure, so an E-STOP,
