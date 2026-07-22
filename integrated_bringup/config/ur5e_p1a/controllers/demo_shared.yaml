@@ -108,10 +108,11 @@ demo_shared:
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
-    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently in
-    # contact* − p_thumb)/‖·‖, recomputed per tick. The grasp shape is observed,
-    # not declared: thumb+index, thumb+middle and tripod each yield their own
-    # axis, so a finger that is not touching cannot skew the plane.
+    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently
+    # touching* − p_thumb)/‖·‖, recomputed per tick. "Touching" is a hysteresis
+    # on |f| alone, deliberately independent of n, so the shape is observed
+    # rather than declared: thumb+index, thumb+middle and tripod each yield
+    # their own axis, and a finger that is not touching cannot skew the plane.
     plane_normal_source: "pinch_geometry"
     plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
 
@@ -134,7 +135,9 @@ demo_shared:
     #
     # tip_names lists every tip that can *physically* participate, not the tips
     # one grasp is expected to use — a tip that is not touching is excluded by
-    # its own force hysteresis, both from the sum and from the axis. The hand's
+    # its own force hysteresis, both from the sum and from the axis. Role names
+    # must be unique: the role keys the block below and picks the thumb, so a
+    # repeat is an on_configure FAILURE, not a silent double-count. The hand's
     # 4th tip (ring) is deliberately absent: these links are also resolved
     # against tsid.contacts by the WBC controller (demo_shared.yaml is shared by
     # joint/task/wbc), and ring is not a tsid contact here — adding it would

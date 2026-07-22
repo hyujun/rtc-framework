@@ -1223,6 +1223,7 @@ def _pull_estimator_header():
         "slip_risk",
         "any_saturated",
         "baseline_applied",
+        "opposing_mask",
     ]
 
 

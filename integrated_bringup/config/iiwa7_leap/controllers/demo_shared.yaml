@@ -58,10 +58,12 @@ demo_shared:
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
-    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently in
-    # contact* − p_thumb)/‖·‖, recomputed per tick. The grasp shape is observed,
-    # not declared: thumb+index, thumb+middle, tripod and four-finger each yield
-    # their own axis. Switch to "fixed" if a full-grasp normal is known.
+    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently
+    # touching* − p_thumb)/‖·‖, recomputed per tick. "Touching" is a hysteresis
+    # on |f| alone, deliberately independent of n, so the shape is observed
+    # rather than declared: thumb+index, thumb+middle, tripod and four-finger
+    # each yield their own axis. Switch to "fixed" if a full-grasp normal is
+    # known.
     plane_normal_source: "pinch_geometry"
     plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
 
@@ -86,6 +88,13 @@ demo_shared:
     # its own force hysteresis, both from the sum and from the axis. LEAP's ring
     # is included here because it is a tsid contact as well (the WBC controller
     # resolves these links against tsid.contacts, not just tip_links).
+    # Role names must be unique: the role keys the block below and picks the
+    # thumb, so a repeat is an on_configure FAILURE rather than a silent
+    # double-count. Under the WBC controller a tip additionally needs its tsid
+    # contact *active* in the current phase preset to supply a fingertip pose
+    # (that is the only pose source there) — so on a phase that deactivates the
+    # ring, the ring is excluded from the axis under wbc but not under
+    # joint/task, which read hand FK directly.
     tips:
       tip_names: ["thumb", "index", "middle", "ring"]
       thumb:

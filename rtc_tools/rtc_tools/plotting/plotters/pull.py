@@ -9,6 +9,9 @@ controllers (joint / task / wbc):
   - slip diagnostics (`friction_utilization`, `leakage_bound`)
   - validity gates (`valid`, `valid_contact_count`, `slip_risk`,
     `any_saturated`, `baseline_applied`)
+  - observed grasp shape (`opposing_mask` — bit k set means contact k opposed
+    the thumb on that tick, so a normal that jumps because the grasp was
+    regripped is distinguishable from one that jumps because of a force step)
 
 `plot_pull_estimator` renders one N×1 sharex figure so zooming any panel
 stays synchronized (same convention as `plot_wbc_diag_solver`).
@@ -97,6 +100,19 @@ def plot_pull_estimator(df, save_dir=None):
             color="C0",
             alpha=0.7,
         )
+    if "opposing_mask" in df.columns:
+        # The mask is a bitmask, not a magnitude — step it so a shape change
+        # reads as one discrete transition rather than a slope, and keep it on
+        # this panel so it lines up with the validity gates it explains.
+        ax.step(
+            t,
+            df["opposing_mask"],
+            label="opposing_mask",
+            where="post",
+            linewidth=1.0,
+            color="C5",
+            alpha=0.8,
+        )
     ax.set_ylabel("flags / count")
     ax.set_xlabel("Time (s)")
     ax.legend(fontsize=8, ncol=3)
@@ -129,6 +145,20 @@ def print_pull_estimator_statistics(df):
         if flag in df.columns and n > 0:
             pct = df[flag].astype(float).mean() * 100
             print(f"{flag}: {pct:.1f}% of ticks")
+    if "opposing_mask" in df.columns and n > 0:
+        # How many distinct grasp shapes the run went through, and which one it
+        # spent most of its time in — a run that never settles on one mask is
+        # the signature of a marginal tip flapping in and out of the pinch.
+        masks = df["opposing_mask"].dropna().astype(int)
+        if not masks.empty:
+            counts = masks.value_counts()
+            top = counts.index[0]
+            pct = counts.iloc[0] / len(masks) * 100
+            print(
+                f"Opposing set: {counts.size} distinct shape(s), "
+                f"dominant mask=0b{top:04b} ({pct:.1f}% of ticks), "
+                f"changes={int((masks.diff().fillna(0) != 0).sum())}"
+            )
     if "valid_contact_count" in df.columns and n > 0:
         # dropna() guards int(NaN) on a truncated/partial CSV (all-NaN column).
         vcc = df["valid_contact_count"].dropna()
