@@ -81,6 +81,17 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 5. If the controller needs to consume the new group: add subscribe topic routing in the controller's YAML `topics:` section (`role: target` typical), and handle the new device index in controller `Compute()` / `SetDeviceTarget()`.
 6. If kinematics needed: add `sub_models` or `tree_models` entry under `urdf:`.
 
+### Renaming a Device Group
+
+Group 이름은 config YAML 밖에도 박혀 있어서, `devices:` 블록만 고치면 **조용히 dead topic** 이 남는다 (실제 재발 2회). 다음을 전부 grep 한다:
+
+- **Python 스크립트 / GUI** — `integrated_bringup/scripts/`, demo GUI 등이 group 이름으로 토픽을 조립하는 경로
+- **C++ 기본값 (멤버 in-class initializer / struct default / `declare_parameter`)** — 노드가 `"hand"` 같은 group 명을 *기본값*으로 들고 있으면 YAML 을 고쳐도 미지정 실행 경로에서 old 이름이 되살아난다 (예: `ur5e_bt_coordinator` 의 `TopicNamer::hand_group`, `BTCoordinatorNode::hand_group_`)
+- **Group 파생 helper** — `GetSecondaryDeviceName()` 류 이름 조립 로직
+- **CSV / 로그 컬럼명**, **[architecture.md](architecture.md) · [controllers.md](controllers.md) 의 토픽 표**
+
+검증 신호: rename 후 `ros2 topic list` 에 old 이름 토픽이 남아 있거나, 구독자 0인 신규 토픽이 보이면 위 중 하나가 갱신 안 된 것이다.
+
 ## Adding a New Thread
 
 1. Define `ThreadConfig` for all core tiers in `rtc_base/threading/thread_config.hpp`

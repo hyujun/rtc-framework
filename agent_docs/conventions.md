@@ -27,6 +27,7 @@
 - **`noexcept`** on all RT paths
 - **`[[nodiscard]]`** on status-returning functions; **`static_assert`** on template params
 - **Include order**: project → ROS 2 / third-party → C++ stdlib (alphabetical)
+- **Method split 은 consumer 이름으로**: 한 method 가 여러 downstream (RT wire / CSV log / ROS publish ...) 을 동시에 채우고 있어 쪼갤 때는, 각 조각을 그것이 섬기는 **consumer** 이름으로 짓는다 — `WriteJointCommand()` / `FillLogOutput()` / `FillPublishOutput()`. Stage·순서 이름 (`Phase3a`, `Step2`) 이나 데이터 source 이름 금지: stage 명은 body 의 목적을 감춰 "이 method 가 왜 존재하나" 를 다른 문서에서 찾게 만들지만, consumer-named method 아래의 모든 라인은 그 consumer 를 위한 것임이 자명하다. 두 consumer 가 같은 필드를 읽으면 공유 helper 로 빼지 말고 **양쪽에서 독립적으로 write** 한다 (공유 추출은 ordering drift 를 부르며, 그 비용이 중복 write 비용보다 크다). RT / wire-bound method 를 가장 앞에 가장 짧게 두고, header 에 각 출력 필드의 consumer 를 밝히는 한 줄 주석을 단다.
 - **Eigen**: pre-allocated buffers, `noalias()`, zero heap on the RT path (any configured `control_rate`). `auto`로 Eigen expression 받지 말 것 ([invariants.md](invariants.md) RT-5)
 - **Lifecycle**: 핵심 C++ 노드는 `rclcpp_lifecycle::LifecycleNode`. Empty constructor; `on_configure` (Tier 1) / `on_activate` (Tier 2). Safety publishers은 standalone `rclcpp::create_publisher` 사용. 어떤 노드가 LifecycleNode 인지는 [architecture.md](architecture.md) 참조 — 개수 박제 금지 ([anti-patterns.md](anti-patterns.md) AP-DOC-1)
 - **ROS 2 API**: 명시 `rclcpp::QoS` (모든 topic 은 `KEEP_LAST` depth **1** — [invariants.md](invariants.md) ARCH-6; reliability/durability 는 lane별 유지), `MutuallyExclusiveCallbackGroup`, 범위 지정 `ParameterDescriptor`

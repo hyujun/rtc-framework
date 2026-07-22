@@ -324,6 +324,15 @@ robot-specific 오버라이드(예: UR5e 설정 — `model_path`, `robot_respons
 
 MuJoCo 기본 `contactwidth=0.3` / `contactheight=0.1`는 manipulator scale에서 과도하게 큽니다. `ApplySolverConfig()`에서 모델 로드 직후 1/10로 축소 (`contactwidth=0.03` / `contactheight=0.01`) — 모든 robot scene에 일괄 적용되며 physics 영향 없는 순수 시각화 처리입니다.
 
+### 지오메트리 그룹 가시성 (group 3+ 는 기본 숨김)
+
+MJCF `<geom group="N">` 은 분류만 할 뿐 뷰어 노출 여부는 `mjvOption.geomgroup[0..5]` 가 결정하는데, MuJoCo `mjv_defaultOption()` 은 이를 `[1, 1, 1, 0, 0, 0]` 으로 초기화한다 (3.7.0 실측). 즉 **group 3 / 4 / 5 는 launch 직후 화면에서 숨겨진 상태**이고, 키보드 `0`–`5` 로 토글해야 보인다 (§뷰어 단축키).
+
+collision geom 을 group 3 에 모으면 자동으로 가려져 편리하지만, 여기에 함정이 하나 있다 — robot-only MJCF 의 main `<default>` 가 group 3 이면, 그 파일을 `<include>` 하는 scene 의 floor / table 같은 **visual** geom 이 group 을 명시하지 않을 때 그 default 를 상속받아 함께 사라진다.
+
+- "뷰어에 X 가 안 보인다" 디버깅은 `m->geom_group[i]` 가 `0..2` 인지 확인하는 것부터 시작한다 (모델 정보 오버레이 `F10`).
+- robot-only MJCF 를 include 하는 scene 파일은 보여야 할 geom 에 group 을 **명시**한다.
+
 ### `config/mujoco_simulator.yaml` (예시 — UR5e bringup 형식)
 
 robot-specific bringup 패키지의 YAML 형태. `solver_param.yaml` 위에 오버레이됩니다. 아래 예시는 UR5e 6-DOF arm + 10-DOF hand 구성:
