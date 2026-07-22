@@ -41,6 +41,15 @@ RtControllerNode::~RtControllerNode() {
   StopRtLoop();
   StopNrtPublishLoop();
 
+  // Drop the backends before closing the eventfds — same ordering rule as
+  // on_cleanup (issue #224), and here it also removes a reliance on member
+  // destruction order: `backends_` is a member, so it would otherwise be
+  // destroyed *after* this body, leaving the state-ready callback alive
+  // across the close() below.
+  for (auto& backend : backends_) {
+    backend.reset();
+  }
+
   if (nrt_publish_eventfd_ >= 0) {
     close(nrt_publish_eventfd_);
     nrt_publish_eventfd_ = -1;
@@ -263,17 +272,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
     const rclcpp_lifecycle::State& /*state*/) {
   RCLCPP_INFO(get_logger(), "Cleaning up RtControllerNode...");
 
-  // Reverse order of on_configure:
-
-  // 7. eventfd (nrt publish lane only — actuator lane is inline)
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
-  }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
-  }
+  // Reverse order of on_configure, with ONE deliberate exception: the eventfds
+  // (step 7 in configure order) are closed after the device backends (step 4),
+  // not before them. See the note at the close() below — issue #224.
 
   // 6. timers — flush the deferred E-STOP status first; once the drain timer
   //    is gone nothing else will publish it.
@@ -294,6 +295,33 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   }
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
+
+  // 7. eventfd (nrt publish lane only — actuator lane is inline).
+  //
+  // Out of reverse order ON PURPOSE (issue #224): the writer must die before
+  // the fd does. The backends' state-lane subscriptions survive on_deactivate
+  // — DeviceBackend::Deactivate() only gates LifecyclePublishers — so the
+  // state-ready callback keeps running on the rt_callback executor while this
+  // (lifecycle) thread tears the node down, and all it does is set a dirty bit
+  // and eventfd_write() these two fds. Closing them first left a window
+  // spanning FlushEstopStatus + two resets in which that callback would write
+  // to a closed descriptor, corrupting whatever stream had since taken the
+  // number.
+  //
+  // Residual, knowingly accepted: destroying a backend does not join a
+  // callback that is already executing — the executor holds the subscription
+  // alive for the duration of the call — so a write can still land just after
+  // the reset above returns. The window is now two instructions wide instead
+  // of a whole teardown sequence. Closing it completely would need the
+  // rt_callback executor quiesced, which CM cannot request from here.
+  if (nrt_publish_eventfd_ >= 0) {
+    close(nrt_publish_eventfd_);
+    nrt_publish_eventfd_ = -1;
+  }
+  if (sim_wake_eventfd_ >= 0) {
+    close(sim_wake_eventfd_);
+    sim_wake_eventfd_ = -1;
+  }
 
   // 3. subscribers — nothing CM-owned to release: controller-YAML target subs
   //    belong to each controller LifecycleNode (torn down with the controller
@@ -362,14 +390,6 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   StopNrtPublishLoop();
 
   // Full cleanup for recovery to Unconfigured state
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
-  }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
-  }
   FlushEstopStatus();
   drain_timer_.reset();
   param_callback_handle_.reset();
@@ -382,6 +402,18 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   }
   estop_pub_.reset();
   active_ctrl_name_pub_.reset();
+
+  // Backends first, then their fds — see the ordering note in on_cleanup
+  // (issue #224). Same two-thread hazard applies here: on_error also runs on
+  // the lifecycle executor while the state-ready callback runs on rt_callback.
+  if (nrt_publish_eventfd_ >= 0) {
+    close(nrt_publish_eventfd_);
+    nrt_publish_eventfd_ = -1;
+  }
+  if (sim_wake_eventfd_ >= 0) {
+    close(sim_wake_eventfd_);
+    sim_wake_eventfd_ = -1;
+  }
   controllers_.clear();
   controller_states_.clear();
   controller_topic_configs_.clear();

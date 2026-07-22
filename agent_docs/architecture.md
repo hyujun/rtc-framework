@@ -65,7 +65,7 @@ CSV consumer / drop counter / 출력 경로는 channel 별로 다르고 (`cm_tim
 | `on_configure` | 1 | Callback groups, parameters, controllers, publishers/subscribers, timers, eventfd |
 | `on_activate` | 2 | `SelectThreadConfigs()` -> `StartRtLoop()` + `StartNrtPublishLoop()` |
 | `on_deactivate` | -- | Stop RT / nrt_publish threads, clear E-STOP, reset init state |
-| `on_cleanup` | -- | Reverse of `on_configure` (all `.reset()` / `.clear()`) |
+| `on_cleanup` | -- | Reverse of `on_configure` (all `.reset()` / `.clear()`), with one deliberate exception: the eventfds are closed **after** the device backends, not before — the backends' state-lane subs survive `on_deactivate` and their state-ready callback writes those fds (issue #224) |
 | `on_error` | -- | `TriggerGlobalEstop("lifecycle_error")`, stop threads, full cleanup -> SUCCESS |
 
 **Safety publishers** (`estop_pub_`, `active_ctrl_name_pub_`) use standalone `rclcpp::create_publisher` -- active regardless of lifecycle state.

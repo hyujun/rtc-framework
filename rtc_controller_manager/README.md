@@ -80,7 +80,7 @@ rtc_controller_manager/
 | `on_configure` | Tier 1 | 콜백 그룹, 파라미터, 컨트롤러, 퍼블리셔/구독, 타이머, eventfd |
 | `on_activate` | Tier 2 | RT 루프 + 퍼블리시 오프로드 스레드 시작 |
 | `on_deactivate` | — | RT 루프/퍼블리시 스레드 중지, E-STOP 클리어, 상태 초기화 |
-| `on_cleanup` | — | `on_configure` 역순 리소스 해제 |
+| `on_cleanup` | — | `on_configure` 역순 리소스 해제. 단 eventfd 는 예외로 device backend **해제 후** close — backend 의 state-lane sub 은 `on_deactivate` 로 죽지 않고 그 state-ready 콜백이 이 fd 를 쓰기 때문 (issue #224) |
 | `on_error` | — | E-STOP 트리거, 스레드 중지, 전체 정리 → SUCCESS (Unconfigured 복구) |
 
 **안전 퍼블리셔:** `estop_pub_`, `active_ctrl_name_pub_`는 `rclcpp::create_publisher` standalone으로 생성되어 lifecycle 상태와 무관하게 동작합니다.
