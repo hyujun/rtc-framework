@@ -227,6 +227,12 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
   ActivateOwnedTopics(prev, owned_topics_);
 
+  // Pull-estimator latches (grasp edge, contact/touch hysteresis, filter tail,
+  // baseline) are otherwise only cleared at configure, so a deactivate/activate
+  // cycle — or the E-STOP path, which early-returns before the estimator tick —
+  // would resume mid-grasp state against a possibly different object.
+  ResetPullEstimatorRtState(pull_wiring_);
+
   // MPC tick-timing CSV + 1 Hz aux timer: one-shot setup per controller
   // lifetime (gated on mpc_timing_initialized_). Re-activation after a
   // deactivate must NOT re-Open the CSV (truncates accumulated rows) or

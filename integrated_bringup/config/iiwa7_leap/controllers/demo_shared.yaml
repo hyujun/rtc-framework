@@ -55,12 +55,23 @@ demo_shared:
     # use_baseline_subtraction is on — the grasp-time baseline snapshot removes
     # in-plane gravity AND constant calibration residual in one shot.
     gravity_force: [0.0, 0.0, 0.0]
+
+    # In-plane x axis reference (base frame) — names the force_inplane pair.
+    # e_x = this direction projected into the pinch plane, e_y = n x e_x, so
+    # [0] reads as the anti-gravity (vertical) pull component and [1] as the
+    # horizontal one. Default +Z assumes an upright base; set the true
+    # anti-gravity direction otherwise. Falls back to basis continuity when the
+    # pinch axis turns parallel to it.
+    inplane_x_reference: [0.0, 0.0, 1.0]
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
-    # "pinch_geometry" (n = (p_index/middle midpoint − p_thumb)/‖·‖ per tick).
-    # LEAP is a 4-finger hand; this treats thumb-vs-index/middle as a flat
-    # pinch (ring ignored). Switch to "fixed" if a full-grasp normal is known.
+    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently
+    # touching* − p_thumb)/‖·‖, recomputed per tick. "Touching" is a hysteresis
+    # on |f| alone, deliberately independent of n, so the shape is observed
+    # rather than declared: thumb+index, thumb+middle, tripod and four-finger
+    # each yield their own axis. Switch to "fixed" if a full-grasp normal is
+    # known.
     plane_normal_source: "pinch_geometry"
     plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
 
@@ -77,25 +88,59 @@ demo_shared:
     # <finger>_tip_head). The per-contact gate/diagnostic normal is derived per
     # tick from pinch geometry (±plane normal, thumb opposing) — no per-tip
     # normal here, so it tracks the grasp axis rather than a body-fixed fingertip
-    # axis. force_sign / force_bias / force_calibration keep their defaults
-    # (-1 / 0 / I): the wire contract is env-on-fingertip, link frame.
+    # axis. force_bias / force_calibration keep their defaults (0 / I).
+    #
+    # force_sign: -1.0 per tip — LEAP is the one robot that needs it. The
+    # estimator sums *finger-on-object* forces (PullContactConfig::force_sign
+    # default +1), which is what the real fingertip sensors report
+    # (FingertipSensor.msg: proto-1b firmware, 1a ONNX). LEAP has no such
+    # sensor: mujoco_native packs the sim's contact-wrench WrenchStamped into
+    # inference slots 1..3 (sim.yaml), and that lane is deliberately
+    # **env-on-link** — rtc_mujoco_sim negates MuJoCo's geom1-on-environment
+    # netforce to the ROS wrench convention (mujoco_sim_loop.cpp ReadContactWrenches,
+    # asserted by ContactWrench.HangingArmContactProducesPositiveZForce). So the
+    # inversion belongs here, per contact, not in the sim: flipping the sim would
+    # break the ROS wrench convention for every other consumer of /leap/*.
+    #
+    # tip_names lists every tip that can *physically* participate, not the tips
+    # one grasp is expected to use — a tip that is not touching is excluded by
+    # its own force hysteresis, both from the sum and from the axis. LEAP's ring
+    # is included here because it is a tsid contact as well (the WBC controller
+    # resolves these links against tsid.contacts, not just tip_links).
+    # Role names must be unique: the role keys the block below and picks the
+    # thumb, so a repeat is an on_configure FAILURE rather than a silent
+    # double-count. Under the WBC controller a tip additionally needs its tsid
+    # contact *active* in the current phase preset to supply a fingertip pose
+    # (that is the only pose source there) — so on a phase that deactivates the
+    # ring, the ring is excluded from the axis under wbc but not under
+    # joint/task, which read hand FK directly.
     tips:
-      tip_names: ["thumb", "index", "middle"]
+      tip_names: ["thumb", "index", "middle", "ring"]
       thumb:
         link: "thumb_tip_head"
         friction_coeff: 0.7
         force_saturation: 25.0     # [N] per-axis |raw| ≥ this ⇒ contact gated out
         contact_on_threshold: 0.5  # [N] normal-force hysteresis ON
         contact_off_threshold: 0.2 # [N] normal-force hysteresis OFF
+        force_sign: -1.0           # sim contact-wrench lane is env-on-link
       index:
         link: "index_tip_head"
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5
         contact_off_threshold: 0.2
+        force_sign: -1.0           # sim contact-wrench lane is env-on-link
       middle:
         link: "middle_tip_head"
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5
         contact_off_threshold: 0.2
+        force_sign: -1.0           # sim contact-wrench lane is env-on-link
+      ring:
+        link: "ring_tip_head"
+        friction_coeff: 0.7
+        force_saturation: 25.0
+        contact_on_threshold: 0.5
+        contact_off_threshold: 0.2
+        force_sign: -1.0           # sim contact-wrench lane is env-on-link

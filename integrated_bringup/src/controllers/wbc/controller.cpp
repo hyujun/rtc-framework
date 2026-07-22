@@ -949,6 +949,7 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
         contact_links.push_back(contact_mgr_config_.contacts[i].frame_name);
       }
       ConfigurePullEstimatorWiring(shared, 1.0 / GetDefaultDt(), contact_links, pull_wiring_);
+      LogPullEstimatorWiring(logger_, pull_wiring_, shared);
     }
   }
 

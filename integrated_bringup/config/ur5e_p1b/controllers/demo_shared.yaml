@@ -115,10 +115,22 @@ demo_shared:
     # use_baseline_subtraction is on — the grasp-time baseline snapshot removes
     # in-plane gravity AND constant calibration residual in one shot.
     gravity_force: [0.0, 0.0, 0.0]
+
+    # In-plane x axis reference (base frame) — names the force_inplane pair.
+    # e_x = this direction projected into the pinch plane, e_y = n x e_x, so
+    # [0] reads as the anti-gravity (vertical) pull component and [1] as the
+    # horizontal one. Default +Z assumes an upright base; set the true
+    # anti-gravity direction otherwise. Falls back to basis continuity when the
+    # pinch axis turns parallel to it.
+    inplane_x_reference: [0.0, 0.0, 1.0]
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
-    # "pinch_geometry" (n = (p_index/middle midpoint − p_thumb)/‖·‖ per tick).
+    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently
+    # touching* − p_thumb)/‖·‖, recomputed per tick. "Touching" is a hysteresis
+    # on |f| alone, deliberately independent of n, so the shape is observed
+    # rather than declared: thumb+index, thumb+middle and tripod each yield
+    # their own axis, and a finger that is not touching cannot skew the plane.
     plane_normal_source: "pinch_geometry"
     plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
 
@@ -136,8 +148,28 @@ demo_shared:
     # per tick from pinch geometry (±plane normal, thumb opposing) — no per-tip
     # normal here, so it tracks the grasp axis rather than a body-fixed fingertip
     # axis (correct for hemispherical tips). force_sign / force_bias /
-    # force_calibration keep their defaults (-1 / 0 / I): the wire contract is
-    # env-on-fingertip, link frame, sensor extrinsic baked into the publisher.
+    # force_calibration keep their defaults (+1 / 0 / I): the 1b firmware
+    # measures *finger-on-object* force in the fingertip link frame, which is
+    # exactly what the estimator sums — no conversion needed.
+    #
+    # This matches rtc_msgs/FingertipSensor.msg, whose sign contract is
+    # finger-on-object. (iiwa7_leap is the exception in this repo: it has no
+    # fingertip sensor and feeds the sim contact-wrench lane, which is
+    # env-on-link, so it pins force_sign: -1.0.) Verified 2026-07-22 on a thumb+middle plate pinch: with force_sign -1 the
+    # per-contact f_n = -n·f_obj came out -2.42 N (thumb) / -1.65 N (middle),
+    # gating every contact out (valid_contact_count 0, all-zero estimate); with
+    # +1 the same sample gives +2.42 / +1.65 and a valid 2-contact estimate.
+    #
+    # tip_names lists every tip that can *physically* participate, not the tips
+    # one grasp is expected to use — a tip that is not touching is excluded by
+    # its own force hysteresis, both from the sum and from the axis. Role names
+    # must be unique: the role keys the block below and picks the thumb, so a
+    # repeat is an on_configure FAILURE, not a silent double-count. The hand's
+    # 4th tip (l_ring_tip_bracket) is deliberately absent: these links are also
+    # resolved against tsid.contacts by the WBC controller (demo_shared.yaml is
+    # shared by joint/task/wbc), and ring is not a tsid contact here — adding it
+    # would fail WBC on_configure. Add the tsid contact first if ring should
+    # count.
     tips:
       tip_names: ["thumb", "index", "middle"]
       thumb:

@@ -102,10 +102,12 @@ TEST(PullForceEstimator, AxisRotationMapsForceToReference) {
   EXPECT_NEAR(out.force_raw.z(), 0.0, 1e-12);
 }
 
-// ── 2. Wire-contract sign inversion (env-on-fingertip → finger-on-object) ───
+// ── 2. env-on-fingertip publisher → finger-on-object (force_sign = -1) ──────
 TEST(PullForceEstimator, SignInversionConvention) {
   PullForceEstimator est;
-  // Default force_sign = -1: inputs follow the wire contract.
+  // The estimator assumes finger-on-object input (force_sign default +1);
+  // force_sign = -1 is how a publisher following the FingertipSensor.msg wire
+  // sign (env-on-fingertip) is wired in.
   const std::vector<PullContactConfig> configs = {MakeConfig(false, -1.0), MakeConfig(false, -1.0)};
   est.Init(configs, DefaultParams());
 
@@ -120,6 +122,28 @@ TEST(PullForceEstimator, SignInversionConvention) {
   EXPECT_NEAR(out.force_raw.x(), 1.5, 1e-12);
   EXPECT_NEAR(out.force_raw.y(), 0.0, 1e-12);
   EXPECT_NEAR(out.force_raw.z(), 0.0, 1e-12);
+}
+
+// The default is the *input* convention, not a free parameter: the estimator
+// sums finger-on-object forces, so an unset force_sign must pass the input
+// through untouched. Flipping this default silently inverts every f_n gate
+// (-n.f_obj), which reads as "grasped but no contact" — the #167 p1b failure.
+TEST(PullForceEstimator, DefaultForceSignAssumesFingerOnObject) {
+  EXPECT_DOUBLE_EQ(PullContactConfig{}.force_sign, 1.0);
+
+  PullForceEstimator est;
+  const std::vector<PullContactConfig> configs = {PullContactConfig{}, PullContactConfig{}};
+  est.Init(configs, DefaultParams());
+
+  // Same finger-on-object pinch as test 1, fed through the default config.
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0), kOpposingNormal)};
+
+  const PullEstimate& out = RunTicks(est, inputs, 1);
+  ASSERT_TRUE(out.valid);
+  EXPECT_EQ(out.valid_contact_count, 2);
+  EXPECT_NEAR(out.force_raw.x(), 1.5, 1e-12);
 }
 
 // ── 3. Opposing normal squeeze cancels (internal force ∈ null space) ────────
@@ -453,6 +477,61 @@ TEST(PullForceEstimator, FillPullEstimateDataMirrorsAllFields) {
   EXPECT_TRUE(out.slip_risk);
   EXPECT_TRUE(out.any_saturated);
   EXPECT_TRUE(out.baseline_applied);
+}
+
+// ── In-plane basis is named by inplane_x_reference ───────────────────────────
+// Without a reference the 2-D pair is only norm-meaningful (see
+// ArbitraryPlaneBasis); with one, [0] is the anti-gravity component and [1] the
+// horizontal one, which is what makes a pull-gauge trace readable directly.
+TEST(PullForceEstimator, InPlaneAxesFollowTheConfiguredReference) {
+  // Pinch axis horizontal (+x) so the plane contains the vertical: e_x = +z
+  // exactly, e_y = n x e_x = -y.
+  const Eigen::Vector3d n = Eigen::Vector3d::UnitX();
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  params.inplane_x_reference = Eigen::Vector3d::UnitZ();
+  const std::vector<PullContactConfig> configs = {MakeConfig()};
+
+  {  // Purely vertical pull → all of it on axis [0].
+    PullForceEstimator est;
+    est.Init(configs, params);
+    // grip +5 along the pinch axis, resisting -2 z ⇒ F̂ = +2 z.
+    const std::vector<PullContactInput> inputs = {
+        MakeInput(Eigen::Vector3d(5.0, 0.0, -2.0), -Eigen::Vector3d::UnitX())};
+    const PullEstimate& out = RunTicks(est, inputs, 1000, n);
+    ASSERT_TRUE(out.valid);
+    EXPECT_NEAR(out.force_inplane[0], 2.0, 1e-6);
+    EXPECT_NEAR(out.force_inplane[1], 0.0, 1e-6);
+  }
+  {  // Purely horizontal pull → all of it on axis [1] (e_y = -y).
+    PullForceEstimator est;
+    est.Init(configs, params);
+    const std::vector<PullContactInput> inputs = {
+        MakeInput(Eigen::Vector3d(5.0, -2.0, 0.0), -Eigen::Vector3d::UnitX())};
+    const PullEstimate& out = RunTicks(est, inputs, 1000, n);
+    ASSERT_TRUE(out.valid);
+    EXPECT_NEAR(out.force_inplane[0], 0.0, 1e-6);
+    EXPECT_NEAR(out.force_inplane[1], -2.0, 1e-6);
+  }
+}
+
+TEST(PullForceEstimator, InPlaneAxesStayFiniteWhenPlaneIsEdgeOnToTheReference) {
+  // Pinch axis parallel to the reference: the projection collapses, so the
+  // basis must fall back rather than emit NaN or a zero axis.
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  params.inplane_x_reference = Eigen::Vector3d::UnitZ();
+  const std::vector<PullContactConfig> configs = {MakeConfig()};
+  est.Init(configs, params);
+
+  const Eigen::Vector3d v(1.5, 0.0, 0.0);
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0) - v, kThumbNormal)};
+  const PullEstimate& out = RunTicks(est, inputs, 1000, kPlaneNormal);
+  ASSERT_TRUE(out.valid);
+  EXPECT_TRUE(out.force_inplane.allFinite());
+  EXPECT_NEAR(out.force_inplane.norm(), v.norm(), 1e-6);
 }
 
 }  // namespace

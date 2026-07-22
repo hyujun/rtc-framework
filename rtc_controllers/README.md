@@ -47,6 +47,7 @@ rtc_controllers/
 │   └── grasp/
 │       ├── grasp_types.hpp                   -- 그래스프 상태 머신 타입/파라미터
 │       ├── grasp_controller.hpp              -- 적응형 PI 힘 제어 그래스프 컨트롤러
+│       ├── pull_force_estimator.hpp          -- in-plane 외력(pull) 추정 (#167). 입력은 finger-on-object 힘 (PullContactConfig::force_sign 기본 +1; 반대 관례 소스는 -1 로 wiring)
 │       └── grasp_state.hpp                   -- GraspStateData POD (SeqLock-호환). contact_flag 는 capability-aware: sensor A → native sigmoid prob, sensor B → derived binary (rtc_msgs/GraspState.msg 참조)
 ├── src/
 │   ├── controller_registration.cpp           -- no-op (registration은 robot bringup 책임)
@@ -58,7 +59,8 @@ rtc_controllers/
 │       │   ├── joint_pd_controller.cpp
 │       │   └── operational_space_controller.cpp
 │       └── grasp/
-│           └── grasp_controller.cpp
+│           ├── grasp_controller.cpp
+│           └── pull_force_estimator.cpp
 └── examples/controllers/                     -- ★ 모두 reference example (ARCH-1)
     ├── indirect/
     │   ├── p_controller.yaml             -- example (placeholder `<robot>` 그룹)

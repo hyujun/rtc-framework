@@ -451,7 +451,7 @@ pull_estimator:
   // keep their PullContactConfig defaults.
   EXPECT_FALSE(cfg.pull_contacts[1].required);
   EXPECT_FALSE(cfg.pull_contacts[2].required);
-  EXPECT_DOUBLE_EQ(cfg.pull_contacts[1].force_sign, -1.0);
+  EXPECT_DOUBLE_EQ(cfg.pull_contacts[1].force_sign, 1.0);  // finger-on-object default
   EXPECT_DOUBLE_EQ(cfg.pull_contacts[1].friction_coeff, 0.7);
 }
 

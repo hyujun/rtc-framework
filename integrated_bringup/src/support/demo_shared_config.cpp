@@ -227,6 +227,7 @@ void ApplyPullEstimatorBlock(const YAML::Node& pe, DemoSharedConfig& cfg) {
   if (pe["alignment_error_rad"])
     pp.alignment_error_rad = pe["alignment_error_rad"].as<double>();
   ApplyVector3(pe["gravity_force"], pp.gravity_force);
+  ApplyVector3(pe["inplane_x_reference"], pp.inplane_x_reference);
 
   if (pe["plane_normal_source"]) {
     cfg.pull_plane_normal_source =
