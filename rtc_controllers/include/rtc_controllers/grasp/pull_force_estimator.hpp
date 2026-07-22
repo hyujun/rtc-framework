@@ -21,9 +21,23 @@ inline constexpr int kMaxPullContacts = kMaxGraspFingers;
 
 /// Per-fingertip calibration + contact model for in-plane pull estimation.
 ///
-/// Force input contract (#167, SSoT: rtc_msgs/msg/FingertipSensor.msg):
-/// fingertip *link* frame, [N], env-on-fingertip sign. `force_sign = -1`
-/// (default) converts to the finger-on-object forces the estimator sums.
+/// Force input contract (#167): fingertip *link* frame, [N], **finger-on-object**
+/// sign — the force the fingertip exerts on the grasped object, which is what
+/// the estimator sums. Every fingertip *sensor* publisher reports that sign
+/// (rtc_msgs/msg/FingertipSensor.msg: proto-1b firmware, the 1a ONNX path), so
+/// `force_sign = +1` (default) passes the input through unchanged.
+///
+/// Verified on hardware 2026-07-22 (thumb+middle plate pinch, p1b): with
+/// R_link(q) applied, the thumb's force pointed along the thumb→middle pinch
+/// axis and the middle's back along it (145.8 deg apart) — each tip pushing
+/// into the object. Under the previous `-1` default this inverted every gate
+/// (f_n = -n.f_obj < 0), so a solid two-finger grasp published an all-zero
+/// estimate. `force_sign = -1.0` inverts an env-on-fingertip source instead —
+/// which is why it is per contact rather than global: a robot without fingertip
+/// sensors may be fed from a lane with the opposite convention (e.g. a
+/// simulator's contact wrench, which follows the ROS wrench convention of
+/// reporting the load *on* the link), and pins -1.0 in its own config.
+///
 /// For the current UDP-hand/MuJoCo backends the sensor extrinsic is baked
 /// into the publisher, so `force_calibration = I`, `force_bias = 0` defaults
 /// hold; the fields exist for future sensors whose payload is not yet
@@ -33,9 +47,10 @@ struct PullContactConfig {
   Eigen::Matrix3d force_calibration{Eigen::Matrix3d::Identity()};
   /// b_i — additive bias removed before calibration [N].
   Eigen::Vector3d force_bias{Eigen::Vector3d::Zero()};
-  /// Multiplied after calibration. -1 converts the wire contract
-  /// (env-on-fingertip) to finger-on-object.
-  double force_sign{-1.0};
+  /// Multiplied after calibration. +1 (default) = the input is already
+  /// finger-on-object; -1 converts an env-on-fingertip publisher
+  /// (rtc_msgs/FingertipSensor.msg wire sign) into it.
+  double force_sign{1.0};
   /// mu_i — Coulomb friction coefficient for slip-ratio diagnostics.
   double friction_coeff{0.7};
   /// Contact hysteresis on normal force f_n [N]: ON above on-threshold,
@@ -92,7 +107,8 @@ struct PullEstimatorParams {
 struct PullContactInput {
   /// R_i(q) — fingertip link frame → common reference frame (FK rotation).
   Eigen::Matrix3d rotation{Eigen::Matrix3d::Identity()};
-  /// Raw force, link frame, env-on-fingertip sign (wire contract) [N].
+  /// Raw force, link frame, finger-on-object sign [N] (see
+  /// PullContactConfig::force_sign for env-on-fingertip publishers).
   Eigen::Vector3d force{Eigen::Vector3d::Zero()};
   /// n_i — outward object normal at the contact, in the *common reference*
   /// frame (already FK-resolved by the caller), pointing from the object

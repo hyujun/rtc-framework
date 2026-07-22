@@ -102,10 +102,12 @@ TEST(PullForceEstimator, AxisRotationMapsForceToReference) {
   EXPECT_NEAR(out.force_raw.z(), 0.0, 1e-12);
 }
 
-// ── 2. Wire-contract sign inversion (env-on-fingertip → finger-on-object) ───
+// ── 2. env-on-fingertip publisher → finger-on-object (force_sign = -1) ──────
 TEST(PullForceEstimator, SignInversionConvention) {
   PullForceEstimator est;
-  // Default force_sign = -1: inputs follow the wire contract.
+  // The estimator assumes finger-on-object input (force_sign default +1);
+  // force_sign = -1 is how a publisher following the FingertipSensor.msg wire
+  // sign (env-on-fingertip) is wired in.
   const std::vector<PullContactConfig> configs = {MakeConfig(false, -1.0), MakeConfig(false, -1.0)};
   est.Init(configs, DefaultParams());
 
@@ -120,6 +122,28 @@ TEST(PullForceEstimator, SignInversionConvention) {
   EXPECT_NEAR(out.force_raw.x(), 1.5, 1e-12);
   EXPECT_NEAR(out.force_raw.y(), 0.0, 1e-12);
   EXPECT_NEAR(out.force_raw.z(), 0.0, 1e-12);
+}
+
+// The default is the *input* convention, not a free parameter: the estimator
+// sums finger-on-object forces, so an unset force_sign must pass the input
+// through untouched. Flipping this default silently inverts every f_n gate
+// (-n.f_obj), which reads as "grasped but no contact" — the #167 p1b failure.
+TEST(PullForceEstimator, DefaultForceSignAssumesFingerOnObject) {
+  EXPECT_DOUBLE_EQ(PullContactConfig{}.force_sign, 1.0);
+
+  PullForceEstimator est;
+  const std::vector<PullContactConfig> configs = {PullContactConfig{}, PullContactConfig{}};
+  est.Init(configs, DefaultParams());
+
+  // Same finger-on-object pinch as test 1, fed through the default config.
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0), kOpposingNormal)};
+
+  const PullEstimate& out = RunTicks(est, inputs, 1);
+  ASSERT_TRUE(out.valid);
+  EXPECT_EQ(out.valid_contact_count, 2);
+  EXPECT_NEAR(out.force_raw.x(), 1.5, 1e-12);
 }
 
 // ── 3. Opposing normal squeeze cancels (internal force ∈ null space) ────────

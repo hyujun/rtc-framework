@@ -137,9 +137,10 @@ demo_shared:
     # The per-contact gate/diagnostic normal is derived per tick from pinch
     # geometry (±plane normal, thumb opposing) — no per-tip normal here, so it
     # tracks the grasp axis rather than a body-fixed fingertip axis. force_sign /
-    # force_bias / force_calibration keep their defaults (-1 / 0 / I): the wire
-    # contract is env-on-fingertip, link frame, with the sensor extrinsic baked
-    # into the publisher (FingertipSensor.msg).
+    # force_bias / force_calibration keep their defaults (+1 / 0 / I): every
+    # fingertip force publisher in this repo reports *finger-on-object* in the
+    # link frame, which is what the estimator sums, and the sensor extrinsic is
+    # baked into the publisher.
     #
     # tip_names lists every tip that can *physically* participate, not the tips
     # one grasp is expected to use — a tip that is not touching is excluded by

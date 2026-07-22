@@ -148,8 +148,17 @@ demo_shared:
     # per tick from pinch geometry (±plane normal, thumb opposing) — no per-tip
     # normal here, so it tracks the grasp axis rather than a body-fixed fingertip
     # axis (correct for hemispherical tips). force_sign / force_bias /
-    # force_calibration keep their defaults (-1 / 0 / I): the wire contract is
-    # env-on-fingertip, link frame, sensor extrinsic baked into the publisher.
+    # force_calibration keep their defaults (+1 / 0 / I): the 1b firmware
+    # measures *finger-on-object* force in the fingertip link frame, which is
+    # exactly what the estimator sums — no conversion needed.
+    #
+    # This matches rtc_msgs/FingertipSensor.msg, whose sign contract is
+    # finger-on-object. (iiwa7_leap is the exception in this repo: it has no
+    # fingertip sensor and feeds the sim contact-wrench lane, which is
+    # env-on-link, so it pins force_sign: -1.0.) Verified 2026-07-22 on a thumb+middle plate pinch: with force_sign -1 the
+    # per-contact f_n = -n·f_obj came out -2.42 N (thumb) / -1.65 N (middle),
+    # gating every contact out (valid_contact_count 0, all-zero estimate); with
+    # +1 the same sample gives +2.42 / +1.65 and a valid 2-contact estimate.
     #
     # tip_names lists every tip that can *physically* participate, not the tips
     # one grasp is expected to use — a tip that is not touching is excluded by
