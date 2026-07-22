@@ -58,7 +58,7 @@ RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6
 
 **Type 분기**: "수정" 인가 "추가 (새 기능 / 컨트롤러 / 메시지 / 디바이스 / 스레드)" 인가? 추가 task 는 단계 1 진입 전에 [agent_docs/design-principles.md](agent_docs/design-principles.md) 5원칙 + [agent_docs/modification-guide.md](agent_docs/modification-guide.md) "Adding a New ..." 절을 먼저 읽는다 (rtc_* 추가는 P1·P2 + ARCH-3 결합; integration package 또는 `shape_estimation*` 추가 시 rtc_* 일반화 가능성부터 검토).
 
-**계획 전 분석**: 대응하는 GitHub issue 가 있으면 계획을 세우기 전에 그 issue (본문 + 코멘트) 를 먼저 참고한다 — issue 는 durable 결정 기록이자 cross-tool 인계면이므로 (§6.6, [agent_docs/handoff.md](agent_docs/handoff.md) §5) 이전 세션·다른 tool 의 acceptance criteria·결정·미완료 상태가 거기 남아 있다. 단 issue 본문의 진단·근거는 **미검증 가설**로 취급하고 착수 전 grep/코드로 반증한다 (틀렸으면 issue 를 먼저 갱신).
+**계획 전 분석**: 대응하는 GitHub issue 가 있으면 계획을 세우기 전에 그 issue (본문 + 코멘트) 를 먼저 참고한다 — issue 는 durable 결정 기록이자 cross-tool 인계면이므로 (§6.6, [agent_docs/handoff.md](agent_docs/handoff.md) §5) 이전 세션·다른 tool 의 acceptance criteria·결정·미완료 상태가 거기 남아 있다. 단 issue 본문의 진단·근거는 **미검증 가설**로 취급하고 착수 전 grep/코드로 반증한다 (틀렸으면 issue 를 먼저 갱신). 구현 완료 후 그 issue 를 갱신하는 규칙은 §11.
 
 **4·5·6 자동화**: [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 실행하고 hard failure 시 `exit 2` 로 다음 turn 까지 차단한다 (loop 방지는 `stop_hook_active` 가드; stop cycle 당 1회 발화). 변경 패키지만 빌드·테스트하며 **build/test 의 timeout·launch 실패는 "미검증"으로 차단** (silent pass 아님 — bound 초과 test 는 hook 의 timeout 상향). 변경 집합은 `git diff HEAD` **∪ untracked** 이며, build/test 만 tracked 부분집합을 쓴다 (untracked scratch 파일이 전체 재빌드를 유발하지 않도록). README co-update 는 public surface (header/launch/config/파일 add·del/dep) 변경 시 **non-blocking checklist** (내부 리팩터·bug fix 는 미요구); CMake/`package.xml` co-update 는 blocking. 변경된 `.md` 는 `validate_docs.py --files` (변경 파일 한정), 변경된 YAML 은 parse 검사를 받는다 — 전체 코퍼스 스캔은 CI 몫이다. Doxygen 은 에이전트가 직접 검증. Pure-format commit (clang-format / ruff round-trip 동치) 은 ARCH grep + doc 단계만 skip, build/test 는 그대로.
 
@@ -182,10 +182,11 @@ post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하�
 Commit 완료 또는 사용자가 task 종료를 알린 후:
 
 1. **Memory save / Memory prune / Harness pruning 신호 보고** — user-level CLAUDE.md `# Post-task housekeeping` 가 SSoT. *Harness pruning 신호* 의 RTC 발현 카테고리는 invariant·anti-pattern grep false-positive, [.claude/hooks/verify-changes.sh](.claude/hooks/verify-changes.sh) 오차단, agent_docs 간 규칙 중복 drift
-2. **Stale artifact 정리** — 완료된 private plan (`~/.claude/plans/*.md`) 은 그 내용이 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (복원 불가한데 보존 가치가 있는 결정 기록이 남아 있으면 issue 코멘트로 옮긴 뒤 삭제 — [agent_docs/handoff.md](agent_docs/handoff.md) §5). repo-root / `/tmp` scratch files 도 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`) 에 보존됨을 확인 후 삭제
-3. **캐시 정리** — repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` (§9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다** (§9.1)
-4. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
-5. **보고** — 실제 수행한 항목만 한 줄씩
+2. **Issue 동기화** — 대응 GitHub issue 가 있으면 구현 완료 시 갱신한다: 무엇이 구현됐는지, acceptance criteria 중 미충족 항목, 후속 작업. issue 는 durable 결정 기록이자 cross-tool 인계면이므로 (§4, [agent_docs/handoff.md](agent_docs/handoff.md) §5) 갱신 없이 닫지 않는다. criteria 를 전부 충족했으면 close, 아니면 남은 범위를 코멘트로 남기고 open 유지
+3. **Stale artifact 정리** — 완료된 private plan (`~/.claude/plans/*.md`) 은 그 내용이 git log / issue / memory 로 복원 가능하거나 보존할 가치가 없으면 삭제 (복원 불가한데 보존 가치가 있는 결정 기록이 남아 있으면 issue 코멘트로 옮긴 뒤 삭제 — [agent_docs/handoff.md](agent_docs/handoff.md) §5). 작업 중 만든 임시 파일 (분석 스크립트, 중간 산출물, 로그 덤프) 은 scratchpad 에 만들고 task 종료 시 삭제하며, repo-root / `/tmp` scratch files 도 다른 곳 (git log, `agent_docs/*.md`, `docs/*.md`, issue) 에 보존됨을 확인 후 삭제
+4. **캐시 정리** — repo (`src/rtc-framework`) 안에 잘못된 cwd 로 생긴 `build/` · `install/` · `log/` (§9.1) 및 python 캐시 (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`) 가 있으면 삭제 — 모두 재생성 가능하므로 확인 없이 제거 가능. **단 colcon 정규 트리 `<rtc_ws>/{build,install,log}` 는 incremental cache 이므로 절대 건드리지 않는다** (§9.1)
+5. **Branch prune (main merge 후에만)** — feature branch 가 `main` 에 merge 됐으면: 로컬 merged branch 삭제 (`git branch -d <branch>`), stale remote-tracking ref 정리 (`git fetch --prune`). 원격 branch 삭제는 merge 확인 후에만 (GitHub auto-delete 미설정 시). 현재 checkout 된 branch·미merge branch·`main` 은 건드리지 않는다
+6. **보고** — 실제 수행한 항목만 한 줄씩
 
 ## 12. Reference Docs (read when relevant)
 

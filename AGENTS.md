@@ -134,8 +134,11 @@ gtest binary 직접 실행, venv 비활성화, 강제 `PYTHONPATH` 설정 등으
 - 실행한 build/test/format/검토와 결과
 - 생략한 검증과 이유
 - 남은 위험, 후속 작업, 또는 사용자 판단이 필요한 사항
+- 대응 GitHub issue 갱신(구현 범위, 미충족 acceptance criteria, 후속 작업) 또는 close
 
-작업 후에는 repository root에 잘못 생성된 `build/`, `install/`, `log/`와 재생성 가능한 Python cache(`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`)가 있는지 확인한다. 삭제는 사용자 변경물이나 workspace root의 정상 cache를 건드리지 않는 범위에서만 수행한다.
+대응하는 GitHub issue 가 있으면 구현 완료 시 갱신한다. issue 는 durable 결정 기록이자 cross-tool 인계면이므로 갱신 없이 닫지 않는다. criteria 를 전부 충족했으면 close 하고, 아니면 남은 범위를 코멘트로 남기고 open 으로 둔다.
+
+작업 후에는 repository root에 잘못 생성된 `build/`, `install/`, `log/`와 재생성 가능한 Python cache(`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`)가 있는지 확인한다. 작업 중 만든 임시 파일(분석 스크립트, 중간 산출물, 로그 덤프)도 종료 시 삭제한다. 보존 가치가 있으면 git log, 문서, issue 로 옮긴 뒤 삭제한다. 삭제는 사용자 변경물이나 workspace root의 정상 cache를 건드리지 않는 범위에서만 수행한다.
 
 ## 9. Context Handoff
 
