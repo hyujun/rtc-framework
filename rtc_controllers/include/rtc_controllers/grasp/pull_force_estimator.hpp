@@ -40,6 +40,12 @@ struct PullContactConfig {
   double friction_coeff{0.7};
   /// Contact hysteresis on normal force f_n [N]: ON above on-threshold,
   /// OFF below off-threshold (on > off > 0 enforced at Init).
+  ///
+  /// The same two thresholds also drive the *touch* hysteresis, which runs on
+  /// |f_obj| instead of f_n (see PullForceEstimator::touch_active). Since
+  /// |f_obj| >= |f_n| the touch set is always a superset of the contact set:
+  /// "this tip is pressing on something" (axis-independent) vs "this tip is
+  /// pressing along the plane normal" (the stricter gate on the sum).
   double contact_on_threshold{0.5};
   double contact_off_threshold{0.2};
   /// Per-axis |raw force| at/above this is treated as saturated: the contact
@@ -159,16 +165,30 @@ class PullForceEstimator {
   const PullEstimate& Update(std::span<const PullContactInput> inputs,
                              const Eigen::Vector3d& plane_normal, double dt) noexcept;
 
-  /// Capture the in-plane sum as baseline on the next *valid* tick and
+  /// Capture the reference wrench as baseline on the next *valid* tick and
   /// subtract it thereafter — removes in-plane gravity and constant
   /// calibration residual. Re-arm after large object re-orientation.
+  ///
+  /// What is stored is the *unprojected* total (Σ f_obj + m·g), not its
+  /// in-plane projection, so the subtraction is re-projected onto whatever
+  /// plane the current tick uses. A grasp-shape change that rotates the plane
+  /// therefore carries the baseline with it instead of leaving a constant
+  /// residual in the old plane (the snapshot models a fixed 3-D force —
+  /// gravity plus calibration offset — whose in-plane part is plane-dependent).
   void ArmBaseline() noexcept { baseline_armed_ = true; }
 
   void ClearBaseline() noexcept {
     baseline_armed_ = false;
     baseline_captured_ = false;
-    baseline_.setZero();
+    baseline_ref_.setZero();
   }
+
+  /// Drop every per-tick latch so a resumed control loop cannot inherit state
+  /// from before the gap: contact/touch hysteresis, the output filter, the
+  /// plane-basis continuity carry and the baseline. Init-time state (configs,
+  /// params, filter coefficients) is kept — call this from on_activate, not
+  /// ClearBaseline alone. noexcept, heap-free.
+  void ResetRtState() noexcept;
 
   /// Optional known pull direction (reference frame) for the directional
   /// scalar output — more noise-robust than |F̂| in gauge experiments.
@@ -179,15 +199,37 @@ class PullForceEstimator {
 
   [[nodiscard]] int num_contacts() const noexcept { return num_contacts_; }
 
-  /// Post-hysteresis contact state (logging / tests). OOB ⇒ false.
+  /// Post-hysteresis contact state — f_n above this contact's hysteresis with
+  /// the plane normal *this tick* supplied. OOB ⇒ false.
+  ///
+  /// Diagnostic only. Callers deriving the plane normal from contact topology
+  /// must use touch_active() instead: contact_active depends on the normal, so
+  /// feeding it back into the normal closes a loop the hysteresis cannot damp
+  /// (the ON and OFF tests would be evaluated against different axes).
   [[nodiscard]] bool contact_active(int i) const noexcept {
     return i >= 0 && i < num_contacts_ && contact_active_[static_cast<std::size_t>(i)];
   }
 
+  /// Post-hysteresis *touch* state: |f_obj| above this contact's hysteresis,
+  /// evaluated on the last Update(). OOB ⇒ false.
+  ///
+  /// Independent of the plane normal by construction, so a caller may use it to
+  /// choose the normal (which tips define the pinch geometry) without creating
+  /// a feedback loop. False whenever the sensor was invalid or saturated, so it
+  /// already subsumes the caller's own force-validity gate. Reflects the tick
+  /// that just ran — a caller staging the next tick sees a one-tick lag, which
+  /// costs one invalid tick at grasp onset and cannot deadlock.
+  [[nodiscard]] bool touch_active(int i) const noexcept {
+    return i >= 0 && i < num_contacts_ && touch_active_[static_cast<std::size_t>(i)];
+  }
+
  private:
-  /// Deterministic in-plane basis B = [e_x e_y] for a unit normal.
-  static void MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3d& e_x,
-                             Eigen::Vector3d& e_y) noexcept;
+  /// In-plane basis B = [e_x e_y] for a unit normal, continuous in n: the
+  /// previous e_x is re-projected onto the new plane so a rotating normal does
+  /// not flip the reported 2-D coordinates. Reseeds from a world axis only when
+  /// no carry exists or the carry has collapsed (plane rotated ~90°).
+  void MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3d& e_x,
+                      Eigen::Vector3d& e_y) noexcept;
 
   // ── Fixed at Init ──
   std::array<PullContactConfig, kMaxPullContacts> configs_{};
@@ -199,9 +241,15 @@ class PullForceEstimator {
   // ── RT state ──
   BesselFilterN<3> filter_;
   std::array<bool, kMaxPullContacts> contact_active_{};
+  std::array<bool, kMaxPullContacts> touch_active_{};
   Eigen::Vector3d filtered_{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d baseline_{Eigen::Vector3d::Zero()};
+  /// Unprojected (Σ f_obj + m·g) captured when the baseline armed; re-projected
+  /// onto the current plane every tick rather than stored pre-projected.
+  Eigen::Vector3d baseline_ref_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d pull_direction_{Eigen::Vector3d::Zero()};
+  /// Previous in-plane e_x, carried forward to keep the basis continuous.
+  Eigen::Vector3d prev_e_x_{Eigen::Vector3d::Zero()};
+  bool prev_e_x_valid_{false};
   bool pull_direction_set_{false};
   bool baseline_armed_{false};
   bool baseline_captured_{false};
