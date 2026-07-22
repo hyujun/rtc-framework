@@ -85,6 +85,7 @@ RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6
 - E-STOP 경로 / safety publisher / lifecycle 콜백 수정 → `/security-review` (E-8)
 - PR 준비 (다파일 / 다패키지 commit) → `/code-review ultra` (현재 branch) 또는 `/code-review ultra <PR#>` (GitHub PR). `/ultrareview` 는 deprecated alias
 - 100+ 줄 변경 또는 신규 패키지 디렉토리 → `/code-review`
+- 다파일 리팩터 / 유사 기능 중복 의심 ([agent_docs/design-principles.md](agent_docs/design-principles.md) P5) / 변경 후 정리 → `/simplify` (재사용·단순화 전용 — 버그 탐지는 `/code-review`)
 
 수동 trigger 인 이유: inferential 은 GPU/cost/지연이 크고 non-deterministic 이므로 모든 변경에 자동 적용하면 ROI 음성. 위 trigger 는 "false-negative 비용 > inferential 비용" 인 경우만 추렸다.
 
