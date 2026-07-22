@@ -548,8 +548,10 @@ void RtControllerNode::ControlLoop() {
       }
     }
     static_cast<void>(nrt_publish_buffer_.Push(snap));
-    if (nrt_publish_eventfd_ >= 0) {
-      static_cast<void>(eventfd_write(nrt_publish_eventfd_, 1));
+    // Single load — see the note on nrt_publish_eventfd_ (issue #224).
+    const int nrt_fd = nrt_publish_eventfd_.load(std::memory_order_acquire);
+    if (nrt_fd >= 0) {
+      static_cast<void>(eventfd_write(nrt_fd, 1));
     }
   }
 
@@ -689,7 +691,8 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
   if (!rclcpp::ok()) {
     return WaitResult::kAbort;
   }
-  if (owner_->sim_wake_eventfd_ < 0) {
+  const int sim_fd = owner_->sim_wake_eventfd_.load(std::memory_order_acquire);
+  if (sim_fd < 0) {
     return WaitResult::kAbort;
   }
 
@@ -697,7 +700,7 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
 
   struct pollfd pfd {};
 
-  pfd.fd = owner_->sim_wake_eventfd_;
+  pfd.fd = sim_fd;
   pfd.events = POLLIN;
   const int rc = poll(&pfd, 1, timeout_ms);
   if (rc <= 0) {
@@ -710,7 +713,7 @@ rtc::PeriodicRtThread::WaitResult RtControllerNode::ControlLoopThread::WaitForNe
   // while the previous tick was computing collapses into this single wake
   // instead of queueing up spare ticks.
   eventfd_t val{};
-  static_cast<void>(eventfd_read(owner_->sim_wake_eventfd_, &val));
+  static_cast<void>(eventfd_read(sim_fd, &val));
 
   if (!rclcpp::ok()) {
     return WaitResult::kAbort;
@@ -739,8 +742,9 @@ void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
 void RtControllerNode::ControlLoopThread::OnRequestStop() noexcept {
   // Sim mode wait blocks on sim_wake_eventfd_; nudge it so RequestStop / Join
   // observe the stop_token without waiting out sim_sync_timeout_sec_.
-  if (owner_->sim_wake_eventfd_ >= 0) {
-    static_cast<void>(eventfd_write(owner_->sim_wake_eventfd_, 1));
+  const int sim_fd = owner_->sim_wake_eventfd_.load(std::memory_order_acquire);
+  if (sim_fd >= 0) {
+    static_cast<void>(eventfd_write(sim_fd, 1));
   }
 }
 

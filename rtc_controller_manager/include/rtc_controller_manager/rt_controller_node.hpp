@@ -118,6 +118,13 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   void StopNrtPublishLoop();
 
  private:
+  // ── Teardown helpers ──────────────────────────────────────────────────────
+  // Closes both wake-lane eventfds and leaves them at -1. Call ONLY after the
+  // device backends have been released: their state-ready callback writes
+  // these fds and outlives on_deactivate (issue #224). Shared by on_cleanup /
+  // on_error / the destructor so the three paths cannot drift apart again.
+  void CloseTeardownEventfds() noexcept;
+
   // ── Session directory helpers ─────────────────────────────────────────────
   // Resolves session directory via rtc::ResolveSessionDir() 3-tier chain.
   std::filesystem::path ResolveAndSetupSessionDir();
@@ -444,7 +451,13 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rtc::NrtPublishBuffer nrt_publish_buffer_{};
   std::jthread nrt_publish_thread_;
   std::atomic<bool> nrt_publish_running_{false};
-  int nrt_publish_eventfd_{-1};
+  // Atomic because the teardown paths (on_cleanup / on_error / destructor, on
+  // the lifecycle executor) reset it to -1 while producers on other threads —
+  // the rt_control loop and the backends' state-ready callback on
+  // cb_group_rt_callback_ — still read it as their write guard (issue #224).
+  // Producers must load once into a local: re-reading the member between the
+  // guard and the eventfd_write reintroduces the check-then-use gap.
+  std::atomic<int> nrt_publish_eventfd_{-1};
 
   // ── Domain objects ────────────────────────────────────────────────────────
   std::vector<std::unique_ptr<rtc::RTControllerInterface>> controllers_;
@@ -515,7 +528,8 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   // messages still yields exactly one wake-up with no notification lost.
   bool use_sim_time_sync_{false};
   double sim_sync_timeout_sec_{5.0};
-  int sim_wake_eventfd_{-1};
+  // Atomic for the same reason as nrt_publish_eventfd_ — see there.
+  std::atomic<int> sim_wake_eventfd_{-1};
 
   // ── Parameters ────────────────────────────────────────────────────────────
   // RT loop rate [Hz]. Loaded from the YAML `control_rate` parameter in

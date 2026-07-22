@@ -50,13 +50,23 @@ RtControllerNode::~RtControllerNode() {
     backend.reset();
   }
 
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
+  CloseTeardownEventfds();
+}
+
+// ── Teardown helpers ────────────────────────────────────────────────────────
+void RtControllerNode::CloseTeardownEventfds() noexcept {
+  // exchange, not load-then-store: the producers (rt_control loop,
+  // state-ready callback on cb_group_rt_callback_) guard their
+  // eventfd_write on these members, so clearing and reading the old value
+  // must be one step. Producers that already loaded a live fd are still a
+  // residual — see the ordering note in on_cleanup.
+  const int nrt_fd = nrt_publish_eventfd_.exchange(-1, std::memory_order_acq_rel);
+  if (nrt_fd >= 0) {
+    close(nrt_fd);
   }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
+  const int sim_fd = sim_wake_eventfd_.exchange(-1, std::memory_order_acq_rel);
+  if (sim_fd >= 0) {
+    close(sim_fd);
   }
 }
 
@@ -121,8 +131,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // eventfd for RT→nrt-publish thread wakeup (non-blocking to avoid RT
   // stalls). Layout v4: actuator command lane is inline in the rt_loop, so
   // only the controller-owned non-RT publish lane needs an SPSC + eventfd.
-  nrt_publish_eventfd_ = eventfd(0, EFD_NONBLOCK);
-  if (nrt_publish_eventfd_ < 0) {
+  const int nrt_fd = eventfd(0, EFD_NONBLOCK);
+  nrt_publish_eventfd_.store(nrt_fd, std::memory_order_release);
+  if (nrt_fd < 0) {
     RCLCPP_WARN(get_logger(), "eventfd() failed: nrt publish thread will use polling fallback");
   }
 
@@ -131,8 +142,9 @@ RtControllerNode::CallbackReturn RtControllerNode::on_configure(
   // state callback) only ever writes, which never blocks on an eventfd whose
   // counter is below UINT64_MAX.
   if (use_sim_time_sync_) {
-    sim_wake_eventfd_ = eventfd(0, EFD_NONBLOCK);
-    if (sim_wake_eventfd_ < 0) {
+    const int sim_fd = eventfd(0, EFD_NONBLOCK);
+    sim_wake_eventfd_.store(sim_fd, std::memory_order_release);
+    if (sim_fd < 0) {
       RCLCPP_ERROR(get_logger(),
                    "eventfd() failed: simulation sync has no wake lane — refusing to configure");
       return CallbackReturn::FAILURE;
@@ -314,14 +326,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_cleanup(
   // the reset above returns. The window is now two instructions wide instead
   // of a whole teardown sequence. Closing it completely would need the
   // rt_callback executor quiesced, which CM cannot request from here.
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
-  }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
-  }
+  CloseTeardownEventfds();
 
   // 3. subscribers — nothing CM-owned to release: controller-YAML target subs
   //    belong to each controller LifecycleNode (torn down with the controller
@@ -406,14 +411,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
   // Backends first, then their fds — see the ordering note in on_cleanup
   // (issue #224). Same two-thread hazard applies here: on_error also runs on
   // the lifecycle executor while the state-ready callback runs on rt_callback.
-  if (nrt_publish_eventfd_ >= 0) {
-    close(nrt_publish_eventfd_);
-    nrt_publish_eventfd_ = -1;
-  }
-  if (sim_wake_eventfd_ >= 0) {
-    close(sim_wake_eventfd_);
-    sim_wake_eventfd_ = -1;
-  }
+  CloseTeardownEventfds();
   controllers_.clear();
   controller_states_.clear();
   controller_topic_configs_.clear();

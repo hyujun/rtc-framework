@@ -97,15 +97,16 @@ bool RtControllerNode::DrainDigitalTwin() {
 }
 
 void RtControllerNode::WaitForNrtPublishWakeup() {
-  if (nrt_publish_eventfd_ >= 0) {
+  const int nrt_fd = nrt_publish_eventfd_.load(std::memory_order_acquire);
+  if (nrt_fd >= 0) {
     struct pollfd pfd {};
 
-    pfd.fd = nrt_publish_eventfd_;
+    pfd.fd = nrt_fd;
     pfd.events = POLLIN;
     poll(&pfd, 1, 1);  // 1ms timeout
     if (pfd.revents & POLLIN) {
       eventfd_t val{};
-      static_cast<void>(eventfd_read(nrt_publish_eventfd_, &val));
+      static_cast<void>(eventfd_read(nrt_fd, &val));
     }
   } else {
     sched_yield();

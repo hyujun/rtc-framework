@@ -631,14 +631,19 @@ void RtControllerNode::CreateDeviceBackends() {
       // payload itself needs no hand-off: it already sits in the backend's
       // own SeqLock, written just before this callback fires.
       dt_dirty_[static_cast<std::size_t>(slot)].store(true, std::memory_order_release);
-      if (nrt_publish_eventfd_ >= 0) {
-        static_cast<void>(eventfd_write(nrt_publish_eventfd_, 1));
+      // Load once: the fd is cleared to -1 by the lifecycle teardown paths
+      // (issue #224), so re-reading it between the guard and the write would
+      // widen the check-then-use gap rather than narrow it.
+      const int nrt_fd = nrt_publish_eventfd_.load(std::memory_order_acquire);
+      if (nrt_fd >= 0) {
+        static_cast<void>(eventfd_write(nrt_fd, 1));
       }
 
       // Sim-sync wake-up. Counter accumulates, so a message that lands while
       // the RT thread is mid-tick still wakes the following wait.
-      if (use_sim_time_sync_ && sim_wake_eventfd_ >= 0) {
-        static_cast<void>(eventfd_write(sim_wake_eventfd_, 1));
+      const int sim_fd = sim_wake_eventfd_.load(std::memory_order_acquire);
+      if (use_sim_time_sync_ && sim_fd >= 0) {
+        static_cast<void>(eventfd_write(sim_fd, 1));
       }
     });
 
