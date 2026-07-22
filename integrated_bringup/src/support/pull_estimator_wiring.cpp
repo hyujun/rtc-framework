@@ -34,6 +34,9 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
   w.thumb_contact = -1;
   w.position_valid.fill(false);
   w.prev_grasp_detected = false;
+  w.baseline_arm_pending = false;
+  w.opposing_mask = 0;
+  w.opposing_fallback = false;
 
   if (link_names.empty()) {
     // No FK-backed slots to wire against (hand-less / unit-test paths):
@@ -77,6 +80,13 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
         "pull_estimator: a 'thumb' role in tips.tip_names is required (per-contact normal is "
         "derived from the thumb-opposition axis)");
   }
+  if (n < 2) {
+    // Thumb alone can never form an opposing pair: the opposing set stays empty
+    // forever, the pinch axis is degenerate and every tick decays to invalid.
+    // Fail loudly instead of publishing a permanently dead estimator.
+    throw std::runtime_error(
+        "pull_estimator: tips.tip_names needs at least one non-thumb tip to oppose the thumb");
+  }
 
   w.num_contacts = n;
   w.normal_source = cfg.pull_plane_normal_source;
@@ -86,28 +96,53 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
 
 const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool grasp_detected,
                                                     double dt) noexcept {
-  // Plane normal for this tick. Zero vector ⇒ Update flags the tick invalid
-  // and applies bounded decay — the deliberate degenerate-geometry path.
-  Eigen::Vector3d normal = Eigen::Vector3d::Zero();
-  if (w.normal_source == PullPlaneNormalSource::kFixed) {
-    normal = w.fixed_normal;
-  } else if (w.thumb_contact >= 0 && w.position_valid[static_cast<std::size_t>(w.thumb_contact)]) {
-    // Pinch geometry: n = (midpoint of non-thumb tips − p_thumb); Update
-    // normalizes. A single opposing tip degrades to that tip's position.
-    Eigen::Vector3d opposing = Eigen::Vector3d::Zero();
-    int n_opposing = 0;
+  // ── Which tips actually oppose the thumb this tick ────────────────────────
+  // The grasp shape is an observation, not a config constant: thumb+index,
+  // thumb+middle, tripod and four-finger all fall out of the same rule. The
+  // selector is the estimator's own post-hysteresis contact state from the
+  // previous tick, so contact has exactly one source of truth (the 1-tick lag
+  // is 2 ms at 500 Hz — far inside the 5 Hz output filter).
+  w.opposing_mask = 0;
+  w.opposing_fallback = false;
+  Eigen::Vector3d opposing_sum = Eigen::Vector3d::Zero();
+  int n_opposing = 0;
+  for (int k = 0; k < w.num_contacts; ++k) {
+    const auto idx = static_cast<std::size_t>(k);
+    if (k == w.thumb_contact || !w.position_valid[idx] || !w.estimator->contact_active(k)) {
+      continue;
+    }
+    opposing_sum += w.positions[idx];
+    ++n_opposing;
+    w.opposing_mask = static_cast<std::uint8_t>(w.opposing_mask | (1U << idx));
+  }
+  if (n_opposing == 0) {
+    // Bootstrap. Before the first contact latches, every contact_active() is
+    // false; a zero normal makes Update gate *every* contact out, so contact
+    // could never latch and the estimator would deadlock at invalid forever.
+    // Fall back to all FK-valid non-thumb tips — a provisional axis that is
+    // replaced by the true one on the tick after the hysteresis latches.
+    w.opposing_fallback = true;
     for (int k = 0; k < w.num_contacts; ++k) {
       const auto idx = static_cast<std::size_t>(k);
       if (k == w.thumb_contact || !w.position_valid[idx]) {
         continue;
       }
-      opposing += w.positions[idx];
+      opposing_sum += w.positions[idx];
       ++n_opposing;
     }
-    if (n_opposing > 0) {
-      normal = opposing / static_cast<double>(n_opposing) -
-               w.positions[static_cast<std::size_t>(w.thumb_contact)];
-    }
+  }
+
+  // Plane normal for this tick. Zero vector ⇒ Update flags the tick invalid
+  // and applies bounded decay — the deliberate degenerate-geometry path.
+  Eigen::Vector3d normal = Eigen::Vector3d::Zero();
+  if (w.normal_source == PullPlaneNormalSource::kFixed) {
+    normal = w.fixed_normal;
+  } else if (n_opposing > 0 && w.thumb_contact >= 0 &&
+             w.position_valid[static_cast<std::size_t>(w.thumb_contact)]) {
+    // Pinch geometry: n = (centroid of the opposing tips − p_thumb); Update
+    // normalizes. A single opposing tip degrades to that tip's position.
+    normal = opposing_sum / static_cast<double>(n_opposing) -
+             w.positions[static_cast<std::size_t>(w.thumb_contact)];
   }
 
   // Per-contact gate/diagnostic normal = signed pinch-plane normal: the thumb's
@@ -126,10 +161,25 @@ const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool
   // Baseline snapshot arms on grasp establishment (rising edge) — captures on
   // the next valid tick inside the estimator, removing in-plane gravity and
   // constant calibration residual. Re-grasping re-arms automatically.
+  //
+  // The edge is deferred until the axis is contact-derived: a fixed normal never
+  // depends on the opposing set, but a pinch axis still on the bootstrap
+  // fallback would bake a provisional plane into the snapshot.
   if (w.use_baseline && grasp_detected && !w.prev_grasp_detected) {
-    w.estimator->ArmBaseline();
+    w.baseline_arm_pending = true;
   }
   w.prev_grasp_detected = grasp_detected;
+  if (!grasp_detected) {
+    // Grasp lost before the axis settled — drop the pending arm so it cannot
+    // fire against the *next* grasp's first ticks.
+    w.baseline_arm_pending = false;
+  }
+  const bool axis_settled =
+      (w.normal_source == PullPlaneNormalSource::kFixed) || !w.opposing_fallback;
+  if (w.baseline_arm_pending && axis_settled) {
+    w.estimator->ArmBaseline();
+    w.baseline_arm_pending = false;
+  }
 
   return w.estimator->Update(std::span<const rtc::grasp::PullContactInput>(
                                  w.inputs.data(), static_cast<std::size_t>(w.num_contacts)),

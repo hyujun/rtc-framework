@@ -11,8 +11,17 @@
 //   Controller RT tick: stage inputs[k] / positions[k] / position_valid[k]
 //     for [0, num_contacts) from its own force + FK (or contact-frame) caches.
 //   UpdatePullEstimator (RT): derive the plane normal (fixed YAML vector or
-//     pinch geometry n = (midpoint of non-thumb tips − p_thumb)), arm the
-//     baseline snapshot on a grasp_detected rising edge, run Update.
+//     pinch geometry), arm the baseline snapshot on a grasp_detected rising
+//     edge, run Update.
+//
+// Pinch geometry is *observed*, not declared: the opposing set is the non-thumb
+// tips whose contact is currently established (PullForceEstimator::
+// contact_active, previous tick), so thumb+index / thumb+middle / tripod /
+// four-finger all yield their own axis without a config switch. `tip_names`
+// therefore lists every tip that can physically participate, not the tips a
+// particular grasp is expected to use. See UpdatePullEstimator for the
+// bootstrap fallback that keeps the first contact latchable.
+//
 // Output lands in the controllers' existing owned SeqLock PODs via
 // rtc::grasp::FillPullEstimateData — no new topic / PublishRole (#167
 // confirmed decision, E-11 avoided).
@@ -26,6 +35,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -58,9 +68,24 @@ struct PullEstimatorWiring {
 
   // ── RT state ──
   bool prev_grasp_detected{false};
+  /// Baseline arm deferred to the first tick with a contact-derived axis: the
+  /// grasp_detected edge (force-threshold, controller side) can land a tick or
+  /// two before the estimator's hysteresis latches, and capturing the snapshot
+  /// against the provisional bootstrap axis would bias every later sample.
+  bool baseline_arm_pending{false};
+  /// Bit k set = contact k joined the opposing set this tick (observed grasp
+  /// shape; diagnostic + CSV). Zero while `opposing_fallback` is true.
+  std::uint8_t opposing_mask{0};
+  /// No contact was established yet, so the bootstrap fallback (all FK-valid
+  /// non-thumb tips) supplied the axis. The estimate is still gated by the
+  /// estimator's own validity rules; this only flags a provisional axis.
+  bool opposing_fallback{false};
 
   [[nodiscard]] bool enabled() const noexcept { return estimator != nullptr; }
 };
+
+static_assert(rtc::grasp::kMaxPullContacts <= 8,
+              "PullEstimatorWiring::opposing_mask is a uint8 bitmask over contacts");
 
 // Push one pull-estimator log row from the wiring's latest estimate (#167).
 // RT tick tail — noexcept, heap-free; a no-op when the CSV channel is
@@ -73,6 +98,10 @@ inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
   }
   PullEstimatorLogPod pod{};
   FillPullEstimatorLogPod(wiring.estimator->estimate(), t_relative_s, pod);
+  // Observed grasp shape lives in the wiring (the estimator core is told the
+  // axis, not how it was chosen), so it is stamped here rather than in Fill.
+  pod.opposing_mask = wiring.opposing_mask;
+  pod.opposing_fallback = wiring.opposing_fallback;
   handle.Push(pod);
 }
 
@@ -82,9 +111,9 @@ inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
 // kNumFingertips). Resets `w` first; stays disabled (estimator == nullptr,
 // no throw) when the YAML block is absent/disabled OR `link_names` is empty
 // (no FK available — unit-test and hand-less paths). Throws
-// std::runtime_error when a configured tip link resolves to no slot or when
-// pinch_geometry is selected without a "thumb" role (config wiring errors —
-// non-RT path, propagates to CallbackReturn::FAILURE like
+// std::runtime_error when a configured tip link resolves to no slot, when no
+// "thumb" role is present, or when no non-thumb tip is configured (config
+// wiring errors — non-RT path, propagates to CallbackReturn::FAILURE like
 // BuildPullForceEstimator's std::invalid_argument).
 void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_rate_hz,
                                   std::span<const std::string> link_names, PullEstimatorWiring& w);
@@ -92,8 +121,8 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
 // Per-tick RT update. Caller must have staged w.inputs / w.positions /
 // w.position_valid for [0, w.num_contacts) and checked w.enabled().
 // `grasp_detected` supplies the baseline arming edge (grasp establishment).
-// noexcept, heap-free; a degenerate normal (missing thumb/opposing positions
-// in pinch geometry) yields an invalid tick with bounded decay inside Update.
+// noexcept, heap-free; a degenerate normal (thumb FK dropout, or no FK-valid
+// opposing tip at all) yields an invalid tick with bounded decay inside Update.
 const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool grasp_detected,
                                                     double dt) noexcept;
 

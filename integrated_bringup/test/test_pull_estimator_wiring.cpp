@@ -11,7 +11,10 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <cmath>
+#include <cstdint>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -232,6 +235,224 @@ TEST(PullEstimatorWiring, BaselineArmsOnGraspRisingEdge) {
   const rtc::grasp::PullEstimate& extra = SettleTicks(w, true, 1000);
   ASSERT_TRUE(extra.valid);
   EXPECT_NEAR(extra.force_filtered.x(), 1.0, 1e-3);
+}
+
+// ── Observed grasp shape ────────────────────────────────────────────────────
+// The fixture above places index/middle symmetrically about the thumb, so the
+// contact-selected axis and an all-tips centroid coincide — it cannot tell the
+// two apart. These use four *asymmetric* tips so each contact set has its own
+// axis, which is what makes "thumb+index vs thumb+middle" observable at all.
+
+// thumb at the origin, three opposing tips spread along +/-y at the same height.
+// Enough ticks for the contact hysteresis to latch and the axis to converge;
+// the estimate itself is not settled to its filtered steady state here.
+constexpr int kShapeSettleTicks = 50;
+
+const Eigen::Vector3d kThumbPos(0.0, 0.0, 0.0);
+const Eigen::Vector3d kIndexPos(0.0, 0.03, 0.02);
+const Eigen::Vector3d kMiddlePos(0.0, -0.01, 0.02);
+const Eigen::Vector3d kRingPos(0.0, -0.05, 0.02);
+
+DemoSharedConfig MakeFourTipPinchConfig() {
+  const std::string yaml = R"(
+demo_shared:
+  pull_estimator:
+    enabled: true
+    min_valid_contacts: 2
+    plane_normal_source: "pinch_geometry"
+    required_roles: ["thumb"]
+    tips:
+      tip_names: ["thumb", "index", "middle", "ring"]
+      thumb:
+        link: "thumb_tip_link"
+        force_sign: 1.0
+      index:
+        link: "index_tip_link"
+        force_sign: 1.0
+      middle:
+        link: "middle_tip_link"
+        force_sign: 1.0
+      ring:
+        link: "ring_tip_link"
+        force_sign: 1.0
+)";
+  DemoSharedConfig cfg;
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], cfg);
+  return cfg;
+}
+
+// Stage the four tips with FK always valid, but a squeeze force only on the
+// contacts named in `touching` (contact index order: 0=thumb, 1=index,
+// 2=middle, 3=ring). A non-touching tip keeps a valid *sensor* reading of zero
+// — exactly the case that used to drag the axis: FK-valid but not gripping.
+void StageFourTipInputs(PullEstimatorWiring& w, std::initializer_list<int> touching,
+                        const Eigen::Vector3d& pull = Eigen::Vector3d::Zero()) {
+  const std::array<Eigen::Vector3d, 4> pos = {kThumbPos, kIndexPos, kMiddlePos, kRingPos};
+  int n_touching = 0;
+  for (const int k : touching) {
+    n_touching += (k == w.thumb_contact) ? 0 : 1;
+  }
+  for (int k = 0; k < w.num_contacts; ++k) {
+    const auto ki = static_cast<std::size_t>(k);
+    bool touches = false;
+    for (const int t : touching) {
+      touches = touches || (t == k);
+    }
+    auto& in = w.inputs[ki];
+    in.valid = true;  // sensor is healthy either way; only the force differs
+    in.rotation = Eigen::Matrix3d::Identity();
+    const double fz = (k == w.thumb_contact) ? 3.0 : -1.5;
+    const Eigen::Vector3d share =
+        (n_touching > 0) ? Eigen::Vector3d(-pull / static_cast<double>(n_touching + 1)) : pull;
+    in.force = touches ? Eigen::Vector3d(share.x(), share.y(), fz) : Eigen::Vector3d::Zero();
+    w.positions[ki] = pos[ki];
+    w.position_valid[ki] = true;
+  }
+}
+
+TEST(PullEstimatorWiring, PinchAxisFollowsTheContactingTipsOnly) {
+  struct Case {
+    const char* name;
+    std::initializer_list<int> touching;
+    Eigen::Vector3d expected_axis;  // un-normalized (opposing centroid - thumb)
+    std::uint8_t expected_mask;
+  };
+
+  const std::array<Case, 4> cases = {
+      Case{"thumb+index", {0, 1}, kIndexPos - kThumbPos, 0b0010},
+      Case{"thumb+middle", {0, 2}, kMiddlePos - kThumbPos, 0b0100},
+      Case{"thumb+index+middle", {0, 1, 2}, 0.5 * (kIndexPos + kMiddlePos) - kThumbPos, 0b0110},
+      Case{"thumb+index+middle+ring",
+           {0, 1, 2, 3},
+           (kIndexPos + kMiddlePos + kRingPos) / 3.0 - kThumbPos,
+           0b1110},
+  };
+
+  for (const Case& c : cases) {
+    SCOPED_TRACE(c.name);
+    PullEstimatorWiring w;
+    ConfigurePullEstimatorWiring(MakeFourTipPinchConfig(), kRateHz, kTipLinks, w);
+    ASSERT_TRUE(w.enabled());
+
+    StageFourTipInputs(w, c.touching);
+    const rtc::grasp::PullEstimate& est =
+        SettleTicks(w, /*grasp_detected=*/true, kShapeSettleTicks);
+    ASSERT_TRUE(est.valid);
+
+    // The axis is observable through the per-contact gate normal: opposing tips
+    // get +n̂, the thumb -n̂.
+    const Eigen::Vector3d expected = c.expected_axis.normalized();
+    EXPECT_FALSE(w.opposing_fallback);
+    EXPECT_EQ(w.opposing_mask, c.expected_mask);
+    EXPECT_NEAR((w.inputs[1].contact_normal - expected).norm(), 0.0, 1e-9);
+    EXPECT_NEAR(
+        (w.inputs[static_cast<std::size_t>(w.thumb_contact)].contact_normal + expected).norm(), 0.0,
+        1e-9);
+    // Only the touching tips are summed, so the count matches the shape.
+    EXPECT_EQ(est.valid_contact_count, static_cast<int>(c.touching.size()));
+  }
+}
+
+TEST(PullEstimatorWiring, IdleTipDoesNotSkewTheAxis) {
+  // Regression: the axis used to be the centroid of every FK-valid non-thumb
+  // tip, so a middle/ring finger merely hovering nearby tilted the pinch plane
+  // and leaked grip force into the in-plane estimate.
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(MakeFourTipPinchConfig(), kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  StageFourTipInputs(w, {0, 1});
+  (void)SettleTicks(w, true, kShapeSettleTicks);
+
+  const Eigen::Vector3d all_tips_axis =
+      ((kIndexPos + kMiddlePos + kRingPos) / 3.0 - kThumbPos).normalized();
+  const Eigen::Vector3d pinch_axis = (kIndexPos - kThumbPos).normalized();
+  ASSERT_GT((all_tips_axis - pinch_axis).norm(), 0.1);  // the fixture can tell them apart
+  EXPECT_NEAR((w.inputs[1].contact_normal - pinch_axis).norm(), 0.0, 1e-9);
+}
+
+TEST(PullEstimatorWiring, BootstrapsFromNoEstablishedContact) {
+  // Selecting the opposing set by contact is circular: contact is decided from
+  // the axis. Before the first latch the fallback axis must keep the contacts
+  // gate-able, or the estimator deadlocks at invalid forever.
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(MakeFourTipPinchConfig(), kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  StageFourTipInputs(w, {0, 1});
+  const rtc::grasp::PullEstimate& first = UpdatePullEstimator(w, true, kDt);
+  EXPECT_TRUE(w.opposing_fallback);  // nothing latched going in ...
+  EXPECT_EQ(w.opposing_mask, 0);
+  // ... yet the tick is already usable: the fallback axis is close enough to
+  // gate the real contacts in, which is the whole point — a zero axis here
+  // would gate every contact out and the hysteresis could never latch.
+  EXPECT_TRUE(first.valid);
+  // The axis is provisional though (all-tips centroid, not thumb→index), which
+  // is exactly why baseline arming waits one more tick.
+  EXPECT_GT((w.inputs[1].contact_normal - (kIndexPos - kThumbPos).normalized()).norm(), 0.1);
+
+  const rtc::grasp::PullEstimate& second = UpdatePullEstimator(w, true, kDt);
+  EXPECT_FALSE(w.opposing_fallback);  // selection is contact-derived from here
+  EXPECT_TRUE(second.valid);
+  EXPECT_NEAR((w.inputs[1].contact_normal - (kIndexPos - kThumbPos).normalized()).norm(), 0.0,
+              1e-9);
+}
+
+TEST(PullEstimatorWiring, ShapeChangeRetargetsTheAxis) {
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(MakeFourTipPinchConfig(), kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  StageFourTipInputs(w, {0, 1});
+  (void)SettleTicks(w, true, kShapeSettleTicks);
+  EXPECT_EQ(w.opposing_mask, 0b0010);
+
+  // Regrip onto the middle finger: the index lets go, middle takes over.
+  StageFourTipInputs(w, {0, 2});
+  const rtc::grasp::PullEstimate& est = SettleTicks(w, true, kShapeSettleTicks);
+  ASSERT_TRUE(est.valid);
+  EXPECT_EQ(w.opposing_mask, 0b0100);
+  EXPECT_NEAR((w.inputs[2].contact_normal - (kMiddlePos - kThumbPos).normalized()).norm(), 0.0,
+              1e-9);
+}
+
+TEST(PullEstimatorWiring, BaselineArmingWaitsForAContactDerivedAxis) {
+  // Capturing the snapshot against the provisional bootstrap axis would bias
+  // every later sample, so the grasp_detected edge is held until the opposing
+  // set is real.
+  DemoSharedConfig cfg = MakeFourTipPinchConfig();
+  cfg.pull_use_baseline_subtraction = true;
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  StageFourTipInputs(w, {0, 1});
+  const rtc::grasp::PullEstimate& first = UpdatePullEstimator(w, /*grasp_detected=*/true, kDt);
+  EXPECT_TRUE(w.baseline_arm_pending);  // edge seen, arming deferred
+  EXPECT_FALSE(first.baseline_applied);
+
+  const rtc::grasp::PullEstimate& second = UpdatePullEstimator(w, true, kDt);
+  EXPECT_FALSE(w.baseline_arm_pending);
+  EXPECT_TRUE(second.baseline_applied);
+}
+
+TEST(PullEstimatorWiring, ConfigureThrowsWithoutAnOpposingTip) {
+  // A thumb-only config can never form a pair: the opposing set is empty
+  // forever and every tick decays to invalid. Fail at configure instead.
+  const std::string yaml = R"(
+demo_shared:
+  pull_estimator:
+    enabled: true
+    plane_normal_source: "pinch_geometry"
+    tips:
+      tip_names: ["thumb"]
+      thumb:
+        link: "thumb_tip_link"
+)";
+  DemoSharedConfig cfg;
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], cfg);
+  PullEstimatorWiring w;
+  EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w), std::runtime_error);
 }
 
 }  // namespace

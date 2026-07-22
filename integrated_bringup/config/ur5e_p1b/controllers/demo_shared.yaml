@@ -118,7 +118,10 @@ demo_shared:
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
-    # "pinch_geometry" (n = (p_index/middle midpoint − p_thumb)/‖·‖ per tick).
+    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently in
+    # contact* − p_thumb)/‖·‖, recomputed per tick. The grasp shape is observed,
+    # not declared: thumb+index, thumb+middle and tripod each yield their own
+    # axis, so a finger that is not touching cannot skew the plane.
     plane_normal_source: "pinch_geometry"
     plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
 
@@ -138,6 +141,15 @@ demo_shared:
     # axis (correct for hemispherical tips). force_sign / force_bias /
     # force_calibration keep their defaults (-1 / 0 / I): the wire contract is
     # env-on-fingertip, link frame, sensor extrinsic baked into the publisher.
+    #
+    # tip_names lists every tip that can *physically* participate, not the tips
+    # one grasp is expected to use — a tip that is not touching is excluded by
+    # its own force hysteresis, both from the sum and from the axis. The hand's
+    # 4th tip (l_ring_tip_bracket) is deliberately absent: these links are also
+    # resolved against tsid.contacts by the WBC controller (demo_shared.yaml is
+    # shared by joint/task/wbc), and ring is not a tsid contact here — adding it
+    # would fail WBC on_configure. Add the tsid contact first if ring should
+    # count.
     tips:
       tip_names: ["thumb", "index", "middle"]
       thumb:

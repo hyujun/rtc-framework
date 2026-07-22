@@ -58,9 +58,10 @@ demo_shared:
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
-    # "pinch_geometry" (n = (p_index/middle midpoint − p_thumb)/‖·‖ per tick).
-    # LEAP is a 4-finger hand; this treats thumb-vs-index/middle as a flat
-    # pinch (ring ignored). Switch to "fixed" if a full-grasp normal is known.
+    # "pinch_geometry" — n = (centroid of the non-thumb tips *currently in
+    # contact* − p_thumb)/‖·‖, recomputed per tick. The grasp shape is observed,
+    # not declared: thumb+index, thumb+middle, tripod and four-finger each yield
+    # their own axis. Switch to "fixed" if a full-grasp normal is known.
     plane_normal_source: "pinch_geometry"
     plane_normal: [0.0, 0.0, 1.0]   # consumed only when source is "fixed"
 
@@ -79,8 +80,14 @@ demo_shared:
     # normal here, so it tracks the grasp axis rather than a body-fixed fingertip
     # axis. force_sign / force_bias / force_calibration keep their defaults
     # (-1 / 0 / I): the wire contract is env-on-fingertip, link frame.
+    #
+    # tip_names lists every tip that can *physically* participate, not the tips
+    # one grasp is expected to use — a tip that is not touching is excluded by
+    # its own force hysteresis, both from the sum and from the axis. LEAP's ring
+    # is included here because it is a tsid contact as well (the WBC controller
+    # resolves these links against tsid.contacts, not just tip_links).
     tips:
-      tip_names: ["thumb", "index", "middle"]
+      tip_names: ["thumb", "index", "middle", "ring"]
       thumb:
         link: "thumb_tip_head"
         friction_coeff: 0.7
@@ -95,6 +102,12 @@ demo_shared:
         contact_off_threshold: 0.2
       middle:
         link: "middle_tip_head"
+        friction_coeff: 0.7
+        force_saturation: 25.0
+        contact_on_threshold: 0.5
+        contact_off_threshold: 0.2
+      ring:
+        link: "ring_tip_head"
         friction_coeff: 0.7
         force_saturation: 25.0
         contact_on_threshold: 0.5
