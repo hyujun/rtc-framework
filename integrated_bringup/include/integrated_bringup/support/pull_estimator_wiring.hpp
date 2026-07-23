@@ -149,6 +149,22 @@ void ResetPullEstimatorRtState(PullEstimatorWiring& w) noexcept;
 const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool grasp_detected,
                                                     double dt) noexcept;
 
+// E-STOP (or any tick the controller skips its control law): run one estimator
+// tick with every contact input invalidated, so the published/logged estimate
+// is this tick's — `valid=false` plus the bounded decay — instead of the frozen
+// pre-E-STOP one. Staged inputs are cleared rather than consumed: the sensors
+// may still be live, but nothing has decided that this tick's geometry is
+// trustworthy, and a `valid=1` sample published under an E-STOP stamp is the
+// exact failure this exists to prevent.
+//
+// Pairs with the controller storing its owned SeqLock on the same tick: the CM
+// stamps every publish snapshot with the current wall clock and the publish
+// thread re-loads whatever the SeqLock holds, so a tick that stores nothing is
+// republished as fresh-stamp/stale-body. noexcept, heap-free (RT tick path).
+// No-op (leaves `out` untouched) on a disabled wiring.
+void StageEstopPullTick(PullEstimatorWiring& w, double dt,
+                        rtc::grasp::PullEstimateData& out) noexcept;
+
 // Resolve the hand fingertip tip-link names for ConfigurePullEstimatorWiring
 // from the tree-model whose name == `secondary_device`, capped at `max_slots`
 // (the caller's FK-slot capacity). Returns the tip_links-ordered link list, or

@@ -327,6 +327,13 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
       FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
       secondary_sensor_log_handle_.Push(pod);
     }
+    // Controller-owned publish state + pull CSV row for THIS tick (#234 P-1):
+    // the CM publishes every tick regardless, so a stored-nothing tick would
+    // ship the pre-E-STOP body under the current stamp. The CSV keeps a row
+    // (valid=0) rather than a gap so it stays aligned with the sibling
+    // *_state.csv channels above.
+    FillEstopPublishState(dt);
+    PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s);
     return out;
   }
   ComputeControl(state, dt);

@@ -195,6 +195,18 @@ class ControllerLogSet {
     return out;
   }
 
+  /// Lifetime drops summed across every channel — allocation-free counterpart
+  /// of DropCounts() for the drain timer's "did we lose rows?" check. A CSV
+  /// with a gap is otherwise indistinguishable from one whose producer simply
+  /// had nothing to say that tick.
+  [[nodiscard]] std::uint64_t TotalDropCount() const noexcept {
+    std::uint64_t total = 0;
+    for (const auto& c : channels_) {
+      total += c->DropCount();
+    }
+    return total;
+  }
+
   [[nodiscard]] std::size_t size() const noexcept { return channels_.size(); }
 
   [[nodiscard]] bool empty() const noexcept { return channels_.empty(); }

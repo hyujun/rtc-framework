@@ -478,14 +478,18 @@ void BuildPullForceEstimator(const DemoSharedConfig& cfg, double control_rate_hz
   rtc::grasp::PullEstimatorParams params = cfg.pull_estimator_params;
   params.sample_rate_hz = control_rate_hz;
 
-  estimator = std::make_unique<rtc::grasp::PullForceEstimator>();
+  // Init() before publication: ConfigurePullEstimatorWiring's contract is that
+  // every throw path leaves the wiring disabled, and `estimator != nullptr`
+  // with num_contacts == 0 would read as enabled(). Build into a local, hand
+  // it over only once Init (which throws on bad config) has returned.
+  auto built = std::make_unique<rtc::grasp::PullForceEstimator>();
   const auto n =
       static_cast<std::size_t>(std::clamp(cfg.num_pull_contacts, 0, rtc::grasp::kMaxPullContacts));
-  estimator->Init(std::span<const rtc::grasp::PullContactConfig>(cfg.pull_contacts.data(), n),
-                  params);
+  built->Init(std::span<const rtc::grasp::PullContactConfig>(cfg.pull_contacts.data(), n), params);
   if (cfg.pull_has_direction) {
-    estimator->SetPullDirection(cfg.pull_direction);
+    built->SetPullDirection(cfg.pull_direction);
   }
+  estimator = std::move(built);
 }
 
 }  // namespace integrated_bringup

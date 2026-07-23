@@ -1395,14 +1395,21 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
   if (estop_active_) {
     auto out = ComputeEstop(state);
     out.command_type = command_type_;
-    // E-8 (resolved): do NOT push the WBC state / diag channels on the E-STOP
-    // path — tsid_output_ is stale there. Sensor logging continues (raw HW
-    // telemetry is meaningful during E-STOP).
+    // E-8 (resolved): do NOT push the WBC state / diag CSV channels on the
+    // E-STOP path — tsid_output_ is stale there. Sensor logging continues (raw
+    // HW telemetry is meaningful during E-STOP).
     if (secondary_sensor_log_handle_) {
       integrated_bringup::DeviceSensorLogPod pod{};
       FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
       secondary_sensor_log_handle_.Push(pod);
     }
+    // #234 P-1: the same rule applied to the *wire* required a store, not a
+    // skip — the publish thread re-loads the SeqLock under a fresh stamp every
+    // tick, so "don't store" published the pre-E-STOP body as if it were
+    // current. FillEstopPublishState stores a body with the TSID-derived
+    // fields reported as not-solved and the pull estimate marked invalid.
+    FillEstopPublishState(dt);
+    PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s);
     return out;
   }
 
