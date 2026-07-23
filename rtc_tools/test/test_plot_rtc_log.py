@@ -1202,8 +1202,49 @@ from rtc_tools.plotting.plotters.pull import (  # noqa: E402
 )
 
 
-def _pull_estimator_header():
-    """Column order emitted by WritePullEstimatorLogHeader (pull_estimator_log_pod.hpp)."""
+def _pull_estimator_header(mask_roles=("thumb", "index", "middle")):
+    """Column order emitted by WritePullEstimatorLogHeader (pull_estimator_log_pod.hpp).
+
+    `mask_roles` reproduces the bit-order stamp the C++ header writer appends to
+    the mask column names (#234 P-14); pass () for the unstamped form.
+    """
+    suffix = "[" + "|".join(mask_roles) + "]" if mask_roles else ""
+    return [
+        "t_relative_s",
+        "tick",
+        "force_prefilter_x",
+        "force_prefilter_y",
+        "force_prefilter_z",
+        "force_x",
+        "force_y",
+        "force_z",
+        "inplane_x",
+        "inplane_y",
+        "plane_normal_x",
+        "plane_normal_y",
+        "plane_normal_z",
+        "basis_x_x",
+        "basis_x_y",
+        "basis_x_z",
+        "basis_source",
+        "invalid_reason",
+        "magnitude",
+        "directional",
+        "friction_utilization",
+        "leakage_bound",
+        "valid_contact_count",
+        "valid",
+        "slip_risk",
+        "any_saturated",
+        "baseline_applied",
+        f"contact_mask{suffix}",
+        f"touch_mask{suffix}",
+        f"opposing_mask{suffix}",
+    ]
+
+
+def _legacy_pull_estimator_header():
+    """The pre-#234 schema, still readable so archived sessions keep plotting."""
     return [
         "t_relative_s",
         "force_raw_x",
@@ -1228,9 +1269,13 @@ def _pull_estimator_header():
 
 
 class TestPullEstimatorRoundTrip:
-    def _df(self, tmp_path):
+    def _df(self, tmp_path, header=None):
         return _build_wbc_log(
-            tmp_path, "pull_estimator.csv", _pull_estimator_header(), {}, "pull_estimator"
+            tmp_path,
+            "pull_estimator.csv",
+            header or _pull_estimator_header(),
+            {},
+            "pull_estimator",
         )
 
     def test_filename_detection(self):
@@ -1242,14 +1287,41 @@ class TestPullEstimatorRoundTrip:
     def test_column_detection(self):
         assert detect_log_type_by_columns(_pull_estimator_header()) == "pull_estimator"
 
+    def test_legacy_column_detection(self):
+        assert detect_log_type_by_columns(_legacy_pull_estimator_header()) == "pull_estimator"
+
     def test_column_detection_beats_sensor_log_raw_token(self):
         """force_raw_* contains the generic `_raw_` sensor token — the pull
         branch must win over the sensor_log fallback."""
         cols = ["t_relative_s", "force_raw_x", "friction_utilization"]
         assert detect_log_type_by_columns(cols) == "pull_estimator"
 
+    def test_mask_role_stamp_is_stripped_into_attrs(self, tmp_path):
+        """Plotters key on a bare `contact_mask`; the bit order lands in attrs."""
+        df = self._df(tmp_path)
+        assert "contact_mask" in df.columns
+        assert not any("[" in c for c in df.columns)
+        assert df.attrs["mask_roles"]["contact_mask"] == ["thumb", "index", "middle"]
+        assert df.attrs["mask_roles"]["touch_mask"] == ["thumb", "index", "middle"]
+
+    def test_eight_contact_role_stamp(self, tmp_path):
+        roles = tuple(f"c{i}" for i in range(8))
+        df = self._df(tmp_path, header=_pull_estimator_header(roles))
+        assert df.attrs["mask_roles"]["opposing_mask"] == list(roles)
+
+    def test_unstamped_masks_still_load(self, tmp_path):
+        df = self._df(tmp_path, header=_pull_estimator_header(()))
+        assert "contact_mask" in df.columns
+        assert df.attrs["mask_roles"] == {}
+
     def test_plot_renders(self, tmp_path):
         _plot_pull_estimator(self._df(tmp_path), save_dir=str(tmp_path))
+        assert (tmp_path / "pull_estimator.png").exists()
+
+    def test_plot_renders_legacy_schema(self, tmp_path):
+        """A pre-#234 CSV must still plot — the new panels just stay empty."""
+        df = self._df(tmp_path, header=_legacy_pull_estimator_header())
+        _plot_pull_estimator(df, save_dir=str(tmp_path))
         assert (tmp_path / "pull_estimator.png").exists()
 
     def test_statistics(self, tmp_path, capsys):
@@ -1257,3 +1329,22 @@ class TestPullEstimatorRoundTrip:
         out = capsys.readouterr().out
         assert "Pull Force Estimator" in out
         assert "Friction utilization" in out
+        assert "Contact set" in out
+
+    def test_statistics_legacy_schema(self, tmp_path, capsys):
+        _print_pull_estimator_statistics(self._df(tmp_path, _legacy_pull_estimator_header()))
+        out = capsys.readouterr().out
+        assert "Pull Force Estimator" in out
+
+    def test_statistics_names_mask_bits_by_role(self, tmp_path, capsys):
+        """With the role stamp present the dominant mask reads as finger names,
+        not as a bare integer nobody can decode (#234 P-14)."""
+        import pandas as pd
+
+        df = self._df(tmp_path)
+        df["opposing_mask"] = 0b110  # index + middle
+        df.attrs["mask_roles"] = {"opposing_mask": ["thumb", "index", "middle"]}
+        assert isinstance(df, pd.DataFrame)
+        _print_pull_estimator_statistics(df)
+        out = capsys.readouterr().out
+        assert "index+middle" in out

@@ -123,6 +123,60 @@ TEST(ThreadCsvLogger, ReopenAppendDoesNotDuplicateHeader) {
   EXPECT_EQ(lines[2], "2,2");
 }
 
+// ── Timestamp precision (#234 P-15, all ThreadCsv controller-data channels) ──
+//
+// The iostream default of 6 significant digits quantized t_relative_s to 10 ms
+// past 1000 s — five control ticks at 500 Hz collapsing onto one x value, with
+// duplicate timestamps in consecutive rows.
+TEST(ThreadCsvLogger, LateSessionTimestampsStayDistinctAndOrdered) {
+  ScopedTempDir td;
+  const auto path = td.dir() / "precision.csv";
+
+  // Two consecutive 500 Hz ticks well into a long session.
+  constexpr double kT0 = 1000.002;
+  constexpr double kT1 = 1000.004;
+  {
+    rtc::ThreadCsvLogger<TestRow> logger;
+    ASSERT_TRUE(logger.Open(path, &WriteHeader, &WriteRow));
+    logger.Log(TestRow{kT0, 1});
+    logger.Log(TestRow{kT1, 2});
+  }
+
+  const auto lines = ReadAllLines(path);
+  ASSERT_EQ(lines.size(), 3u);
+  EXPECT_EQ(lines[1], "1000.002,1");
+  EXPECT_EQ(lines[2], "1000.004,2");
+
+  // Round-trip: distinct, ordered, and equal to the values that went in.
+  const double back0 = std::stod(lines[1].substr(0, lines[1].find(',')));
+  const double back1 = std::stod(lines[2].substr(0, lines[2].find(',')));
+  EXPECT_NE(back0, back1);
+  EXPECT_LT(back0, back1);
+  EXPECT_DOUBLE_EQ(back0, kT0);
+  EXPECT_DOUBLE_EQ(back1, kT1);
+}
+
+TEST(ThreadCsvLogger, FloatColumnsRoundTripExactly) {
+  // The widened precision is float::max_digits10, chosen so every float column
+  // in the ThreadCsv family survives the write/read round trip. 0.1F is the
+  // canonical value that fails at the old 6-digit default.
+  ScopedTempDir td;
+  const auto path = td.dir() / "float_round_trip.csv";
+  const float value = 0.1F;
+  {
+    rtc::ThreadCsvLogger<TestRow> logger;
+    ASSERT_TRUE(logger.Open(
+        path, [](std::ostream& os) { os << "t_relative_s,tag"; },
+        [value](std::ostream& os, const TestRow& r) { os << r.t_relative_s << ',' << value; }));
+    logger.Log(TestRow{0.0, 0});
+  }
+  const auto lines = ReadAllLines(path);
+  ASSERT_EQ(lines.size(), 2u);
+  const float back = std::stof(lines[1].substr(lines[1].find(',') + 1));
+  EXPECT_FLOAT_EQ(back, value);
+  EXPECT_EQ(back, value);
+}
+
 TEST(ThreadCsvLogger, LogIsNoopWhenNotOpen) {
   rtc::ThreadCsvLogger<TestRow> logger;
   EXPECT_FALSE(logger.IsOpen());

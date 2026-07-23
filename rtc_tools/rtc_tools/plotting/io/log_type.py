@@ -68,9 +68,11 @@ def detect_log_type_by_columns(columns):
     ):
         return "wbc_diag"
     # Pull-force estimator (#167): per-tick pull_estimator.csv. Must be
-    # checked before the sensor_log branch — its force_raw_* columns would
-    # otherwise match the generic `_raw_` sensor token.
-    if "friction_utilization" in cols and "force_raw_x" in cols:
+    # checked before the sensor_log branch — the legacy force_raw_* columns
+    # would otherwise match the generic `_raw_` sensor token.
+    # `force_prefilter_*` is the current name; `force_raw_*` is the pre-#234
+    # spelling and is still accepted so archived sessions keep plotting.
+    if "friction_utilization" in cols and ("force_prefilter_x" in cols or "force_raw_x" in cols):
         return "pull_estimator"
     # WBC device state: superset of state_log with TSID a_opt acceleration.
     # The `accel_*` prefix is unique to DeviceWbcLog, so it disambiguates the

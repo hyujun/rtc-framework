@@ -92,6 +92,15 @@ demo_shared:
   pull_estimator:
     enabled: true
 
+    # Operating envelope (#234 P-19): the estimate is quasi-static — it assumes
+    # the grasped object is in equilibrium, so any in-plane m·a of the object
+    # is reported as external pull. The baseline snapshot only cancels a
+    # constant offset captured at one instant, and arming it mid-lift bakes
+    # that instant's inertia in. Trust the magnitude during slow/steady motion;
+    # during arm acceleration treat it as an upper bound. There is no
+    # acceleration validity gate yet — the physically correct correction needs
+    # the object COM acceleration in the common frame, not the TCP's.
+
     # Filtering / validity
     filter_cutoff_hz: 5.0        # [Hz] Bessel LPF on the in-plane estimate
     min_valid_contacts: 2        # 2 suffice for [Fx,Fy]; 3rd adds averaging
@@ -99,6 +108,11 @@ demo_shared:
 
     # Diagnostics
     slip_risk_threshold: 1.0     # friction utilization ≥ this ⇒ slip_risk
+    # NOTE (#234 P-18): friction_utilization is |f_t| / (μ·f_n) with the μ
+    # *assumed* per tip below — not a measured one. Read it as a relative trend
+    # indicator ("this tip is closer to sliding than it was"), not an absolute
+    # safety margin; the true μ is object- and condition-dependent and none of
+    # the values pinned here have been identified experimentally.
     alignment_error_rad: 0.035   # [rad] δθ for grip→in-plane leakage bound (~2°)
 
     # Gravity model: m·g in base frame [N]. Keep zero while
@@ -113,6 +127,11 @@ demo_shared:
     # anti-gravity direction otherwise. Falls back to basis continuity when the
     # pinch axis turns parallel to it.
     inplane_x_reference: [0.0, 0.0, 1.0]
+    # Do NOT leave this parallel to plane_normal when plane_normal_source is
+    # "fixed" (#234 P-17): the projection collapses, the basis silently falls
+    # back to a world-axis seed and force_inplane[0] stops being the
+    # reference-direction component. on_configure warns, and the published
+    # basis_source reports SEED instead of REFERENCE when it happens.
     use_baseline_subtraction: true
 
     # Plane normal source: "fixed" (plane_normal below, base frame) or
@@ -151,6 +170,13 @@ demo_shared:
     # against tsid.contacts by the WBC controller (demo_shared.yaml is shared by
     # joint/task/wbc), and ring is not a tsid contact here — adding it would
     # fail WBC on_configure. Add the tsid contact first if ring should count.
+    # Optional per-tip touch hysteresis (#234 P-16): touch_on_threshold /
+    # touch_off_threshold split the axis-selection gate (on |f_obj|) from the
+    # force-sum gate (on f_n). Omit both — as every tip below does — and the
+    # contact pair drives both, which keeps the historical `touch ⊇ contact`
+    # containment. Set both (a half-set pair is an on_configure FAILURE) when a
+    # tip with large shear reads as "touching" and drags the pinch axis around
+    # without contributing to the sum.
     tips:
       tip_names: ["thumb", "index", "middle"]
       thumb:

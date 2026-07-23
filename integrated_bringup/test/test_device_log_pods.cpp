@@ -325,9 +325,67 @@ TEST(PullEstimatorLogPod, HeaderColumnsMatchRow) {
 
   EXPECT_EQ(CountCommas(hdr), CountCommas(row)) << "header: " << hdr << "\nrow: " << row;
   // The CSV is the only surface carrying the pre-filter force (#167 decision:
-  // wire msg / SeqLock POD are filtered-only).
-  EXPECT_NE(hdr.find("force_raw_x"), std::string::npos);
+  // wire msg / SeqLock POD are filtered-only). Renamed from force_raw_* in
+  // #234 P-13 — it is post-projection/gravity/baseline, so the old name read
+  // as a raw sensor sum.
+  EXPECT_NE(hdr.find("force_prefilter_x"), std::string::npos);
+  EXPECT_EQ(hdr.find("force_raw_x"), std::string::npos);
   EXPECT_NE(hdr.find("friction_utilization"), std::string::npos);
+  // Self-description columns (#234 P-5/P-12): without these the in-plane pair
+  // and the contact set cannot be recovered from a stored run.
+  for (const char* col : {"tick", "plane_normal_x", "basis_x_x", "basis_source", "invalid_reason",
+                          "contact_mask", "touch_mask"}) {
+    EXPECT_NE(hdr.find(col), std::string::npos) << "missing column: " << col;
+  }
+}
+
+TEST(PullEstimatorLogPod, MaskColumnsCarryTheRoleBitOrder) {
+  // The masks are indexed by contact index; the contact→role mapping used to
+  // exist only in a one-shot startup INFO line, so a stored CSV could not be
+  // decoded without that run's ROS log (#234 P-14).
+  const std::vector<std::string> roles = {"thumb", "index", "middle"};
+  std::ostringstream os;
+  integrated_bringup::WritePullEstimatorLogHeader(os, roles);
+  const std::string hdr = os.str();
+
+  EXPECT_NE(hdr.find("contact_mask[thumb|index|middle]"), std::string::npos) << hdr;
+  EXPECT_NE(hdr.find("touch_mask[thumb|index|middle]"), std::string::npos) << hdr;
+  EXPECT_NE(hdr.find("opposing_mask[thumb|index|middle]"), std::string::npos) << hdr;
+
+  // Reordering tip_names must change the header, not silently re-mean the bits.
+  const std::vector<std::string> reordered = {"index", "thumb", "middle"};
+  std::ostringstream os2;
+  integrated_bringup::WritePullEstimatorLogHeader(os2, reordered);
+  EXPECT_NE(os2.str(), hdr);
+  EXPECT_NE(os2.str().find("contact_mask[index|thumb|middle]"), std::string::npos);
+
+  // Eight contacts is the mask capacity (kMaxPullContacts <= 8) — the stamp
+  // must not truncate at the four bits the plotter used to assume.
+  const std::vector<std::string> eight = {"c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"};
+  std::ostringstream os8;
+  integrated_bringup::WritePullEstimatorLogHeader(os8, eight);
+  EXPECT_NE(os8.str().find("contact_mask[c0|c1|c2|c3|c4|c5|c6|c7]"), std::string::npos);
+
+  // No roles (unit-test / unconfigured path) → plain column names, still one
+  // header token per row token.
+  std::ostringstream os0;
+  integrated_bringup::WritePullEstimatorLogHeader(os0);
+  EXPECT_NE(os0.str().find(",contact_mask,"), std::string::npos) << os0.str();
+}
+
+TEST(PullEstimatorLogPod, RowCarriesTheContactAndTouchMasks) {
+  integrated_bringup::PullEstimatorLogPod pod{};
+  pod.tick = 4242;
+  pod.estimate.contact_mask = 0b0000'0101;
+  pod.estimate.touch_mask = 0b0000'0111;
+  pod.opposing_mask = 0b0000'0110;
+  std::ostringstream os;
+  integrated_bringup::WritePullEstimatorLogRow(os, pod);
+  const std::string row = os.str();
+
+  // Emitted as unsigned decimals, not as raw chars.
+  EXPECT_NE(row.find("4242"), std::string::npos) << row;
+  EXPECT_NE(row.find(",5,7,6"), std::string::npos) << row;
 }
 
 TEST(PullEstimatorLogPod, FirstColumnIsTRelativeS) {
@@ -353,12 +411,27 @@ TEST(PullEstimatorLogPod, FillMirrorsPullEstimate) {
   est.any_saturated = false;
   est.baseline_applied = true;
 
+  est.plane_normal = Eigen::Vector3d(0.0, 0.0, 1.0);
+  est.basis_x = Eigen::Vector3d(1.0, 0.0, 0.0);
+  est.basis_source = rtc::grasp::PullBasisSource::kCarry;
+  est.invalid_reason = rtc::grasp::PullInvalidReason::kNone;
+  est.contact_mask = 0b0000'0011;
+  est.touch_mask = 0b0000'0111;
+
   integrated_bringup::PullEstimatorLogPod pod{};
-  integrated_bringup::FillPullEstimatorLogPod(est, 1.5, pod);
+  integrated_bringup::FillPullEstimatorLogPod(est, 1.5, /*tick=*/77, pod);
 
   EXPECT_DOUBLE_EQ(pod.t_relative_s, 1.5);
-  EXPECT_FLOAT_EQ(pod.force_raw[0], 1.0F);
-  EXPECT_FLOAT_EQ(pod.force_raw[2], 3.0F);
+  EXPECT_EQ(pod.tick, 77U);
+  EXPECT_FLOAT_EQ(pod.force_prefilter[0], 1.0F);
+  EXPECT_FLOAT_EQ(pod.force_prefilter[2], 3.0F);
+  EXPECT_FLOAT_EQ(pod.estimate.plane_normal[2], 1.0F);
+  EXPECT_FLOAT_EQ(pod.estimate.basis_x[0], 1.0F);
+  EXPECT_EQ(pod.estimate.basis_source,
+            static_cast<std::uint8_t>(rtc::grasp::PullBasisSource::kCarry));
+  EXPECT_EQ(pod.estimate.invalid_reason, 0U);
+  EXPECT_EQ(pod.estimate.contact_mask, 0b0000'0011U);
+  EXPECT_EQ(pod.estimate.touch_mask, 0b0000'0111U);
   EXPECT_FLOAT_EQ(pod.estimate.force[1], 1.5F);
   EXPECT_FLOAT_EQ(pod.estimate.force_inplane[1], 0.75F);
   EXPECT_FLOAT_EQ(pod.estimate.magnitude, 2.9F);

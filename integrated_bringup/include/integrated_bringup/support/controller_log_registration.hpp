@@ -110,11 +110,15 @@ struct LogRegistrationContext {
   // fixed QP contact dim, contact_mgr_config_.max_contact_vars).
   std::map<std::string, std::size_t> wbc_diag_logs;
 
-  // PullEstimatorLog (#167) — fixed-shape header and a single fixed instance
+  // PullEstimatorLog (#167) — a single fixed instance
   // (kPullEstimatorLogInstance), so one bool gates registration. Caller sets it
   // only when its PullEstimatorWiring is enabled; a YAML entry on a pull-less
   // variant is silently skipped like any unregistered instance.
   bool pull_estimator_enabled{false};
+  // Configured tip roles in contact-index order. Stamps the bit order into the
+  // mask column names so a stored CSV decodes without that run's ROS log
+  // (#234 P-14). Empty is tolerated — the columns then carry no suffix.
+  std::vector<std::string> pull_estimator_roles;
 };
 
 // ── Returned handles (caller assigns to its own typed members) ─────────────
@@ -260,9 +264,12 @@ template <typename ParsedLogEntryT>
         // silently skip like any unregistered instance.
         continue;
       }
+      const auto pull_roles = ctx.pull_estimator_roles;
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::PullEstimatorLogPod>(
           entry.instance,
-          [](std::ostream& os) { integrated_bringup::WritePullEstimatorLogHeader(os); },
+          [pull_roles](std::ostream& os) {
+            integrated_bringup::WritePullEstimatorLogHeader(os, pull_roles);
+          },
           [](std::ostream& os, const integrated_bringup::PullEstimatorLogPod& pod) {
             integrated_bringup::WritePullEstimatorLogRow(os, pod);
           });

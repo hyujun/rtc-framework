@@ -93,6 +93,32 @@ class BesselFilterN {
     }
   }
 
+  // Seed every delay element with the DC steady state for `value`, so the next
+  // Apply(value) returns `value` exactly and the filter carries no history from
+  // before the seed.  noexcept, heap-free — safe on the RT path.
+  //
+  // Why this exists (#234 P-4): a consumer that stops feeding the filter for a
+  // stretch (contact loss, E-STOP) and drives its published output some other
+  // way in the meantime would otherwise resume from a delay line that still
+  // holds the pre-gap signal — one Apply() and the output snaps back to a value
+  // the world left behind.  Seeding is a state assignment, not a filtered
+  // sample: no feedback path, so it cannot ring.
+  //
+  // Both sections have unity DC gain (b0+b1+b2 == 1+a1+a2 by construction), so
+  // the steady state that reproduces a constant x is
+  //   d2 = (b2 - a2)·x,  d1 = (b1 - a1)·x + d2
+  // for each section, and section 2 sees the same x as section 1.
+  // No-op before Init() — the coefficients are not defined yet.
+  void Seed(const std::array<double, N>& value) noexcept {
+    if (!initialized_) {
+      return;
+    }
+    for (std::size_t i = 0; i < N; ++i) {
+      SeedBiquad(section1_, state1_[i], value[i]);
+      SeedBiquad(section2_, state2_[i], value[i]);
+    }
+  }
+
   // Filter an N-channel input sample.  Returns the filtered output array.
   // noexcept — safe to call on the RT path.
   [[nodiscard]] std::array<double, N> Apply(const std::array<double, N>& input) noexcept {
@@ -195,6 +221,17 @@ class BesselFilterN {
     s.d1 = c.b1 * x - c.a1 * y + s.d2;
     s.d2 = c.b2 * x - c.a2 * y;
     return y;
+  }
+
+  // ── Steady-state seeding — inverse of ApplyBiquad at DC ──────────────────
+  //
+  // Solve the TDF-II recurrence for a constant input x with y == x (unity DC
+  // gain), which is the fixed point the section converges to:
+  //   d2 = b2·x − a2·y = (b2 − a2)·x
+  //   d1 = b1·x − a1·y + d2 = (b1 − a1)·x + d2
+  static void SeedBiquad(const BiquadCoeffs& c, BiquadState& s, double x) noexcept {
+    s.d2 = (c.b2 - c.a2) * x;
+    s.d1 = (c.b1 - c.a1) * x + s.d2;
   }
 
   // ── Member data ───────────────────────────────────────────────────────────

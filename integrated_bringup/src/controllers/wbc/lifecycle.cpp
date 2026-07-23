@@ -46,6 +46,17 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     mpc_timing_cb_group_ =
         node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
+    // Reference frame for the vector payloads (pull estimate force / plane
+    // normal / basis). Same arm root the TSID contact geometry is expressed
+    // in, read from the system URDF YAML so no robot name appears here
+    // (#234 P-5).
+    {
+      const auto* sys_cfg = GetSystemModelConfig();
+      if (sys_cfg != nullptr && !sys_cfg->sub_models.empty()) {
+        SetOwnedStateFrameId(owned_topics_, sys_cfg->sub_models.front().root_link);
+      }
+    }
+
     // ── kRobotTransforms: register frame slots ─────────────────────────────
     // DemoWbc broadcasts arm tip + 4 fingertip frames + an alpha placeholder.
     // (#123 Phase 2) The fingertip poses are produced by ComputeHandFingertipFk
@@ -111,6 +122,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     };
     ctx.wbc_diag_logs = {{wbc_diag_key, num_contact_vars}};
     ctx.pull_estimator_enabled = pull_wiring_.enabled();
+    ctx.pull_estimator_roles = pull_wiring_.roles;
 
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -140,7 +152,9 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
       log_drain_cb_group_ =
           node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
       log_drain_timer_ = node->create_wall_timer(
-          std::chrono::milliseconds(100), [this]() { DrainControllerLogs(log_set_, logger_, log_drops_reported_); }, log_drain_cb_group_);
+          std::chrono::milliseconds(100),
+          [this]() { DrainControllerLogs(log_set_, logger_, log_drops_reported_); },
+          log_drain_cb_group_);
     }
 
     // Phase D: declare tunable gains as ROS 2 parameters seeded from

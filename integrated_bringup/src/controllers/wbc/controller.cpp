@@ -1409,7 +1409,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     // current. FillEstopPublishState stores a body with the TSID-derived
     // fields reported as not-solved and the pull estimate marked invalid.
     FillEstopPublishState(dt);
-    PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s);
+    PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
+                         state.iteration);
     return out;
   }
 
@@ -1511,7 +1512,8 @@ ControllerOutput DemoWbcController::Compute(const ControllerState& state) noexce
     FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
     secondary_sensor_log_handle_.Push(pod);
   }
-  PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s);
+  PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
+                       state.iteration);
   return output;
 }
 

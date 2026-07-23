@@ -45,6 +45,16 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
       }
     }
 
+    // Reference frame for the vector payloads (pull estimate force / plane
+    // normal / basis). Same arm root the fingertip FK is composed into below,
+    // read from the system URDF YAML so no robot name appears here (#234 P-5).
+    {
+      const auto* sys_cfg = GetSystemModelConfig();
+      if (sys_cfg != nullptr && !sys_cfg->sub_models.empty()) {
+        SetOwnedStateFrameId(owned_topics_, sys_cfg->sub_models.front().root_link);
+      }
+    }
+
     // ── kRobotTransforms: register frame slots from system URDF YAML ──────
     // DemoJoint frame layout (D-3 _actual suffix convention), robot-agnostic:
     //   sub_models[0] (primary device):     base → <tip>_actual        (group 0)
@@ -113,6 +123,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         {},                      // wbc_state_logs — WBC controller only
         {},                      // wbc_diag_logs  — WBC controller only
         pull_wiring_.enabled(),  // pull_estimator_enabled
+        pull_wiring_.roles,      // pull_estimator_roles (mask bit order)
     };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
@@ -139,7 +150,9 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
       log_drain_timer_ = node_->create_wall_timer(
-          std::chrono::milliseconds(100), [this]() { DrainControllerLogs(log_set_, logger_, log_drops_reported_); }, log_drain_cb_group_);
+          std::chrono::milliseconds(100),
+          [this]() { DrainControllerLogs(log_set_, logger_, log_drops_reported_); },
+          log_drain_cb_group_);
     }
 
     // Phase D: declare tunable gains as ROS 2 parameters seeded from
