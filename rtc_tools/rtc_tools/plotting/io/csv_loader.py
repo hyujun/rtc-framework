@@ -7,6 +7,7 @@ regressions. Re-record sessions with the current code.
 """
 
 import csv
+import re
 
 
 class LegacyCsvError(ValueError):
@@ -39,6 +40,45 @@ def _check_header_matches_data(filepath: str) -> None:
 # Columns whose values are intentionally string/categorical — never coerce.
 # `phase` is the WbcDiagLog FSM-phase name (idle/approach/.../fallback).
 _STR_COLS = {"goal_type", "command_type", "phase", "timestamp"}
+
+# Bitmask columns stamp their bit order into the column name, e.g.
+# `contact_mask[thumb|index|middle]` (#234 P-14 — the contact→role mapping used
+# to live only in that run's ROS log). Plotters want a stable `contact_mask`
+# key, so the suffix is stripped here and the decoded order is published on
+# `df.attrs["mask_roles"]` instead. This is the same normalization boundary
+# `_ensure_timestamp_column` uses, for the same reason: plotters stay
+# schema-agnostic.
+_MASK_SUFFIX_RE = re.compile(r"^(?P<name>[A-Za-z0-9_]+)\[(?P<roles>[^\]]*)\]$")
+
+
+def _normalize_mask_columns(df):
+    """Strip `[role|role|...]` stamps from column names into ``df.attrs``.
+
+    Adds ``df.attrs["mask_roles"]`` mapping the bare column name to the list of
+    role names, bit k = ``roles[k]``. Columns without a stamp are untouched and
+    contribute no entry, so a legacy CSV simply yields an empty mapping.
+
+    Mutates df in place; returns df for chaining.
+    """
+    renames = {}
+    mask_roles = {}
+    for col in df.columns:
+        m = _MASK_SUFFIX_RE.match(col)
+        if m is None:
+            continue
+        name = m.group("name")
+        # A stamped and an unstamped column of the same name in one file would
+        # collide on rename; keep the original rather than silently dropping a
+        # column, since that means the producer emitted something unexpected.
+        if name in df.columns:
+            continue
+        renames[col] = name
+        roles = m.group("roles")
+        mask_roles[name] = roles.split("|") if roles else []
+    if renames:
+        df.rename(columns=renames, inplace=True)
+    df.attrs["mask_roles"] = mask_roles
+    return df
 
 
 def _coerce_numeric_columns(df):
@@ -91,6 +131,9 @@ def load_log_csv(filepath, log_type):
 
     _check_header_matches_data(filepath)
     df = pd.read_csv(filepath)
+    # Before coercion: the stamped names must be normalized while the frame
+    # still has them, and the bare names are what _STR_COLS is keyed on.
+    _normalize_mask_columns(df)
     _coerce_numeric_columns(df)
     _ensure_timestamp_column(df)
     return df

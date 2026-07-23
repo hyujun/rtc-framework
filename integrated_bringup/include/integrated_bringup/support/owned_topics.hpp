@@ -173,6 +173,21 @@ void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHan
 void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,
                                const std::string& topic_name);
 
+// Stamp the reference frame the GraspState / WbcState *vector* payloads are
+// expressed in — the FK reference the controller resolves fingertip rotations
+// and positions into, i.e. the arm root link (#234 P-5). Call once from
+// on_configure after the Setup*Publisher calls; the string is stored in the
+// pre-filled message so the publish thread never touches it.
+//
+// Without it the pull estimate's force / plane_normal / basis_x go out with an
+// empty frame_id and are uninterpretable off-line: the numbers are a 3-D
+// vector in *some* frame, and which one differs per robot.
+//
+// Note this is the payload frame, not a transform frame — header.stamp remains
+// the publish wall clock and must not be used for staleness (see
+// rtc_base/threading/publish_buffer.hpp).
+void SetOwnedStateFrameId(ControllerTopicHandles& handles, const std::string& frame_id);
+
 }  // namespace integrated_bringup
 
 #endif  // UR5E_BRINGUP_SUPPORT_OWNED_TOPICS_HPP_

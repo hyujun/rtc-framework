@@ -651,10 +651,16 @@ TEST(PullEstimatorWiring, ResetRtStateDropsTheGraspEdgeAndTheContactSet) {
 TEST(PullEstimatorWiring, ConfigureThrowsWithoutAnOpposingTipUnderPinchGeometry) {
   // A thumb-only pinch_geometry config can never form a pair: the opposing set
   // is empty forever and every tick decays to invalid. Fail at configure.
+  //
+  // min_valid_contacts is pinned to 1 so this isolates the opposing-tip rule:
+  // leaving it at the default 2 with one tip now trips the earlier
+  // contact-count check in PullForceEstimator::Init instead (#234 P-6), and
+  // the test would pass without exercising the rule it names.
   const std::string yaml = R"(
 demo_shared:
   pull_estimator:
     enabled: true
+    min_valid_contacts: 1
     plane_normal_source: "pinch_geometry"
     tips:
       tip_names: ["thumb"]
@@ -713,6 +719,160 @@ demo_shared:
   PullEstimatorWiring w;
   EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w), std::runtime_error);
   EXPECT_FALSE(w.enabled());
+}
+
+// ── #234: configure-time gates and the mask bit-order record ────────────────
+
+TEST(PullEstimatorWiring, ConfigureThrowsOnADegenerateFixedNormal) {
+  // The fixed normal is divided by its own norm every tick, so a zero vector
+  // makes every estimate permanently invalid with no configure-time signal —
+  // the same silent-misconfiguration class as an unresolvable tip link.
+  for (const char* normal : {"[0.0, 0.0, 0.0]", "[.nan, 0.0, 1.0]"}) {
+    const std::string yaml = std::string(R"(
+    plane_normal: )") + normal +
+                             "\n";
+    DemoSharedConfig cfg = MakeSharedConfig();
+    // MakeSharedConfig already pins a valid fixed normal; overwrite it.
+    integrated_bringup::ApplyDemoSharedConfig(
+        YAML::Load(std::string("demo_shared:\n  pull_estimator:") + yaml)["demo_shared"], cfg);
+    PullEstimatorWiring w;
+    EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w), std::runtime_error)
+        << "plane_normal=" << normal;
+    EXPECT_FALSE(w.enabled());
+  }
+}
+
+TEST(PullEstimatorWiring, ADegenerateFixedNormalIsIgnoredUnderPinchGeometry) {
+  // Pinch geometry derives its own normal, so the fixed one is unused there and
+  // must not fail a config that never reads it.
+  const std::string yaml = R"(
+demo_shared:
+  pull_estimator:
+    enabled: true
+    min_valid_contacts: 2
+    plane_normal_source: "pinch_geometry"
+    plane_normal: [0.0, 0.0, 0.0]
+    tips:
+      tip_names: ["thumb", "index"]
+      thumb:
+        link: "thumb_tip_link"
+      index:
+        link: "index_tip_link"
+)";
+  DemoSharedConfig cfg;
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], cfg);
+  PullEstimatorWiring w;
+  EXPECT_NO_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w));
+  EXPECT_TRUE(w.enabled());
+}
+
+TEST(PullEstimatorWiring, PinchDerivedBasisIsReconstructableFromThePublishedFields) {
+  // Same wire contract as the core tests, but through the normal the wiring
+  // actually derives from FK: a consumer holding only plane_normal + basis_x +
+  // force_inplane must recover the in-plane force without knowing that the
+  // axis came from pinch geometry at all (#234 AC-1).
+  const DemoSharedConfig cfg = MakeSharedConfig(R"(
+    plane_normal_source: "pinch_geometry"
+)");
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  StagePinchInputs(w, Eigen::Vector3d(1.2, -0.4, 0.0));
+  const rtc::grasp::PullEstimate& est = SettleTicks(w, /*grasp_detected=*/true, 1000);
+  ASSERT_TRUE(est.valid);
+  ASSERT_NE(est.basis_source, rtc::grasp::PullBasisSource::kNone);
+
+  const Eigen::Vector3d e_y = est.plane_normal.cross(est.basis_x);
+  const Eigen::Vector3d rebuilt = est.basis_x * est.force_inplane.x() + e_y * est.force_inplane.y();
+  const Eigen::Vector3d in_plane =
+      est.force_filtered - est.plane_normal * (est.plane_normal.dot(est.force_filtered));
+  EXPECT_NEAR((rebuilt - in_plane).norm(), 0.0, 1e-9)
+      << "rebuilt=" << rebuilt.transpose() << " in_plane=" << in_plane.transpose();
+  // The normal really is the observed pinch axis, not the YAML fixed vector.
+  EXPECT_NEAR(est.plane_normal.norm(), 1.0, 1e-12);
+}
+
+TEST(PullEstimatorWiring, ConfigureRecordsTheRoleOrderForTheMaskBits) {
+  // The contact/touch/opposing masks are indexed by contact index; this is the
+  // record that lets the CSV header name those bits (#234 P-14).
+  const DemoSharedConfig cfg = MakeSharedConfig();
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+  EXPECT_EQ(w.roles, (std::vector<std::string>{"thumb", "index", "middle"}));
+  EXPECT_EQ(static_cast<int>(w.roles.size()), w.num_contacts);
+}
+
+TEST(PullEstimatorWiring, AFailedConfigureLeavesNoStaleRoleOrder) {
+  // A throw must not leave the previous run's bit order behind — the CSV header
+  // would then name bits that no longer exist.
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(MakeSharedConfig(), kRateHz, kTipLinks, w);
+  ASSERT_FALSE(w.roles.empty());
+
+  const std::string yaml = R"(
+demo_shared:
+  pull_estimator:
+    enabled: true
+    min_valid_contacts: 1
+    plane_normal_source: "fixed"
+    plane_normal: [0.0, 0.0, 1.0]
+    tips:
+      tip_names: ["thumb"]
+      thumb:
+        link: "no_such_link"
+)";
+  DemoSharedConfig bad;
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], bad);
+  EXPECT_THROW(ConfigurePullEstimatorWiring(bad, kRateHz, kTipLinks, w), std::runtime_error);
+  EXPECT_FALSE(w.enabled());
+  EXPECT_TRUE(w.roles.empty());
+}
+
+TEST(PullEstimatorWiring, StagedInputsAreClearedWhenTheSensorIsInvalid) {
+  // StageFkPullTickAndPublish must not leave last tick's force/rotation behind
+  // on an invalid slot (#234 P-20). Update() checks `valid` first today, so
+  // this pins the contract rather than a live bug.
+  struct FtData {
+    bool valid{false};
+    std::array<float, 3> force{};
+  };
+
+  const DemoSharedConfig cfg = MakeSharedConfig();
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  std::array<FtData, 4> ft{};
+  std::array<Eigen::Matrix3d, 4> rot{};
+  std::array<Eigen::Vector3d, 4> pos{};
+  std::array<bool, 4> pose_ok{};
+  for (std::size_t i = 0; i < 4; ++i) {
+    ft[i] = FtData{true, {1.0F, 2.0F, 3.0F}};
+    rot[i] = Eigen::AngleAxisd(0.3, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    pos[i] = Eigen::Vector3d(0.0, 0.0, 0.01 * static_cast<double>(i));
+    pose_ok[i] = true;
+  }
+
+  rtc::grasp::PullEstimateData out{};
+  integrated_bringup::StageFkPullTickAndPublish<FtData>(
+      w, ft, rot, pos, pose_ok, /*num_active_fingertips=*/4, /*grasp_detected=*/true, kDt, out);
+  ASSERT_TRUE(w.inputs[0].valid);
+  ASSERT_GT(w.inputs[0].force.norm(), 0.0);
+
+  // Now drop every sensor and re-stage.
+  for (auto& f : ft) {
+    f.valid = false;
+  }
+  integrated_bringup::StageFkPullTickAndPublish<FtData>(
+      w, ft, rot, pos, pose_ok, /*num_active_fingertips=*/4, /*grasp_detected=*/true, kDt, out);
+  for (int k = 0; k < w.num_contacts; ++k) {
+    const auto ki = static_cast<std::size_t>(k);
+    EXPECT_FALSE(w.inputs[ki].valid);
+    EXPECT_EQ(w.inputs[ki].force.norm(), 0.0) << "contact " << k << " kept a stale force";
+    EXPECT_TRUE(w.inputs[ki].rotation.isIdentity(1e-12)) << "contact " << k << " kept a stale R";
+  }
 }
 
 }  // namespace

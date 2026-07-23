@@ -68,6 +68,10 @@ struct PullEstimatorWiring {
   std::array<int, rtc::grasp::kMaxPullContacts> slot{};
   /// contact index (not slot) whose role is "thumb"; -1 when absent.
   int thumb_contact{-1};
+  /// Configured tip roles in contact-index order, i.e. the bit order of every
+  /// contact/touch/opposing mask. Fixed at configure and read only off the RT
+  /// path (CSV header stamp, startup INFO) — the RT tick never touches it.
+  std::vector<std::string> roles;
   PullPlaneNormalSource normal_source{PullPlaneNormalSource::kFixed};
   Eigen::Vector3d fixed_normal{Eigen::Vector3d::UnitZ()};
   bool use_baseline{false};
@@ -98,12 +102,13 @@ static_assert(rtc::grasp::kMaxPullContacts <= 8,
 // unregistered or the estimator is disabled, so the three demo controllers
 // carry one call instead of the copy-pasted guard + fill + Push block.
 inline void PushPullEstimatorLog(rtc::LogHandle<PullEstimatorLogPod>& handle,
-                                 const PullEstimatorWiring& wiring, double t_relative_s) noexcept {
+                                 const PullEstimatorWiring& wiring, double t_relative_s,
+                                 std::uint64_t tick) noexcept {
   if (!handle || !wiring.enabled()) {
     return;
   }
   PullEstimatorLogPod pod{};
-  FillPullEstimatorLogPod(wiring.estimator->estimate(), t_relative_s, pod);
+  FillPullEstimatorLogPod(wiring.estimator->estimate(), t_relative_s, tick, pod);
   // Observed grasp shape lives in the wiring (the estimator core is told the
   // axis, not how it was chosen), so it is stamped here rather than in Fill.
   pod.opposing_mask = wiring.opposing_mask;
@@ -202,6 +207,15 @@ void StageFkPullTickAndPublish(PullEstimatorWiring& w, std::span<const FtData> f
       in.rotation = rotations[s];
       in.force = Eigen::Vector3d(static_cast<double>(ft.force[0]), static_cast<double>(ft.force[1]),
                                  static_cast<double>(ft.force[2]));
+    } else {
+      // Clear rather than leave last tick's values behind (#234 P-20). Update()
+      // checks `valid` before reading either field today, so this is not a live
+      // bug — but the staged struct is the estimator's whole input contract,
+      // and "invalid but still holding a plausible force" is a trap for any
+      // future reordering of those gates, or for anyone reading w.inputs in a
+      // debugger. Identity/zero is also what the estimator would compute from.
+      in.rotation.setIdentity();
+      in.force.setZero();
     }
     w.positions[ki] = tip_positions[s];
     w.position_valid[ki] = pose_ok;

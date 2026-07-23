@@ -359,7 +359,8 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
     FillDeviceSensorLogPod(state, /*device_idx=*/1, num_active_fingertips_, pod);
     secondary_sensor_log_handle_.Push(pod);
   }
-  PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s);
+  PushPullEstimatorLog(pull_estimator_log_handle_, pull_wiring_, state.t_relative_s,
+                       state.iteration);
   return output;
 }
 

@@ -426,6 +426,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
     // snapshot arms on the grasp_detected rising edge; the result rides
     // grasp_state_.pull to the owned GraspState SeqLock (no new topic).
     if (pull_wiring_.enabled()) {
+      // Own span so the estimator's latency is separable from the rest of
+      // ComputeControl in Perfetto — WBC has had one since #167, joint/task
+      // were only covered by the enclosing controller span (#234 P-20).
+      RTC_TRACE_SCOPE("DemoJointController::UpdatePullEstimate");
       StageFkPullTickAndPublish(pull_wiring_, std::span<const FingertipSensorData>(fingertip_data_),
                                 std::span<const Eigen::Matrix3d>(fingertip_rotations_),
                                 std::span<const Eigen::Vector3d>(fingertip_positions_),

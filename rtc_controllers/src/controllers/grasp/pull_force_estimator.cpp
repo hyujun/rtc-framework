@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
 
 namespace rtc::grasp {
 
@@ -18,6 +20,17 @@ constexpr double kDegenerateNorm = 1e-9;
 /// norm the carry has collapsed (plane rotated ~90 deg from it) and amplifying
 /// it would be noise, so the basis reseeds from a world axis instead.
 constexpr double kBasisCarryMin = 1e-3;
+
+/// Throw unless `v` is finite. NaN/Inf silently pass most of the ordered
+/// comparisons below (`NaN <= 0.0` is false), so a config that came from a
+/// mis-typed YAML scalar would configure cleanly and then poison every tick
+/// (#234, cross-review §3). Checked before the range tests so the message
+/// names the real problem.
+void RequireFinite(double v, const char* what) {
+  if (!std::isfinite(v)) {
+    throw std::invalid_argument(std::string("PullForceEstimator: ") + what + " must be finite");
+  }
+}
 }  // namespace
 
 void PullForceEstimator::Init(std::span<const PullContactConfig> configs,
@@ -31,6 +44,19 @@ void PullForceEstimator::Init(std::span<const PullContactConfig> configs,
   if (params.min_valid_contacts < 1) {
     throw std::invalid_argument("PullForceEstimator: min_valid_contacts must be >= 1");
   }
+  if (params.min_valid_contacts > static_cast<int>(configs.size())) {
+    // Every other Init check hard-fails on nonsense; this one used to pass and
+    // leave a permanently invalid estimator running silently (#234 P-6). The
+    // required-role count is deliberately *not* cross-checked: validity is
+    // `!required_missing && count >= min`, so a required set larger than `min`
+    // is already enforced by the AND and constraining it would reject sound
+    // configs (cross-review §3).
+    throw std::invalid_argument(
+        "PullForceEstimator: min_valid_contacts exceeds the configured contact count");
+  }
+  RequireFinite(params.decay_time_constant_s, "decay_time_constant_s");
+  RequireFinite(params.slip_risk_threshold, "slip_risk_threshold");
+  RequireFinite(params.alignment_error_rad, "alignment_error_rad");
   if (params.decay_time_constant_s <= 0.0) {
     throw std::invalid_argument("PullForceEstimator: decay_time_constant_s must be > 0");
   }
@@ -48,15 +74,44 @@ void PullForceEstimator::Init(std::span<const PullContactConfig> configs,
   }
 
   for (const PullContactConfig& cfg : configs) {
+    RequireFinite(cfg.contact_on_threshold, "contact_on_threshold");
+    RequireFinite(cfg.contact_off_threshold, "contact_off_threshold");
+    RequireFinite(cfg.touch_on_threshold, "touch_on_threshold");
+    RequireFinite(cfg.touch_off_threshold, "touch_off_threshold");
+    RequireFinite(cfg.force_saturation, "force_saturation");
+    RequireFinite(cfg.friction_coeff, "friction_coeff");
+    RequireFinite(cfg.force_sign, "force_sign");
+
     if (!(cfg.contact_on_threshold > cfg.contact_off_threshold) ||
         !(cfg.contact_off_threshold > 0.0)) {
       throw std::invalid_argument("PullForceEstimator: hysteresis requires on > off > 0 [N]");
+    }
+    // Touch pair is optional (zero = unset ⇒ reuse the contact pair), but a
+    // half-set pair is a typo, not a policy: silently pairing a configured
+    // on-threshold with an implicit zero off-threshold would latch the touch
+    // gate on forever (#234 P-16).
+    const bool touch_on_set = cfg.touch_on_threshold != 0.0;
+    const bool touch_off_set = cfg.touch_off_threshold != 0.0;
+    if (touch_on_set != touch_off_set) {
+      throw std::invalid_argument(
+          "PullForceEstimator: touch_on_threshold and touch_off_threshold must both be set or "
+          "both omitted");
+    }
+    if (touch_on_set &&
+        (!(cfg.touch_on_threshold > cfg.touch_off_threshold) || !(cfg.touch_off_threshold > 0.0))) {
+      throw std::invalid_argument("PullForceEstimator: touch hysteresis requires on > off > 0 [N]");
     }
     if (cfg.force_saturation <= 0.0) {
       throw std::invalid_argument("PullForceEstimator: force_saturation must be > 0");
     }
     if (cfg.friction_coeff <= 0.0) {
       throw std::invalid_argument("PullForceEstimator: friction_coeff must be > 0");
+    }
+    // The header documents force_sign as a convention selector, not a gain:
+    // anything else silently rescales the whole estimate (and a 0 would zero
+    // it) while every downstream unit still reads as newtons.
+    if (cfg.force_sign != 1.0 && cfg.force_sign != -1.0) {
+      throw std::invalid_argument("PullForceEstimator: force_sign must be +1 or -1");
     }
     if (!cfg.force_calibration.allFinite() || !cfg.force_bias.allFinite()) {
       throw std::invalid_argument("PullForceEstimator: calibration must be finite");
@@ -84,6 +139,10 @@ void PullForceEstimator::ResetRtState() noexcept {
   filtered_.setZero();
   prev_e_x_.setZero();
   prev_e_x_valid_ = false;
+  // Nothing to reseed: the filter and the published output are both zero here,
+  // so the two already agree and a cold start keeps its documented ramp from
+  // rest rather than snapping to the first raw sample.
+  filter_reseed_pending_ = false;
   ClearBaseline();
   filter_.Reset();
   estimate_ = PullEstimate{};
@@ -100,8 +159,8 @@ void PullForceEstimator::SetPullDirection(const Eigen::Vector3d& direction) noex
   }
 }
 
-void PullForceEstimator::MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3d& e_x,
-                                        Eigen::Vector3d& e_y) noexcept {
+PullBasisSource PullForceEstimator::MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3d& e_x,
+                                                   Eigen::Vector3d& e_y) noexcept {
   // Continuity first: re-project the previous e_x onto this tick's plane. A
   // seed-only basis is discontinuous in n (the |n.x()| branch flips e_x by 180
   // deg at the boundary), and the plane normal now moves discretely whenever
@@ -109,6 +168,7 @@ void PullForceEstimator::MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3
   // force stays smooth, reading as a spurious lateral pull.
   Eigen::Vector3d candidate = Eigen::Vector3d::Zero();
   double norm = 0.0;
+  PullBasisSource source = PullBasisSource::kNone;
 
   // Preferred: the configured reference direction (anti-gravity by default)
   // projected into the plane. This *names* the axes — force_inplane[0] is the
@@ -124,12 +184,15 @@ void PullForceEstimator::MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3
     // carry path uses.
     if (!(std::isfinite(norm) && norm >= kBasisCarryMin)) {
       norm = 0.0;
+    } else {
+      source = PullBasisSource::kReference;
     }
   }
 
   if (norm == 0.0 && prev_e_x_valid_) {
     candidate = prev_e_x_ - (prev_e_x_.dot(n)) * n;
     norm = candidate.norm();
+    source = PullBasisSource::kCarry;
   }
   if (!(std::isfinite(norm) && norm >= kBasisCarryMin)) {
     // No usable carry: pick the world axis least aligned with n. Path-
@@ -138,18 +201,20 @@ void PullForceEstimator::MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3
         (std::abs(n.x()) < 0.9) ? Eigen::Vector3d::UnitX() : Eigen::Vector3d::UnitY();
     candidate = seed - (seed.dot(n)) * n;
     norm = candidate.norm();
+    source = PullBasisSource::kSeed;
   }
   if (!(std::isfinite(norm) && norm >= kDegenerateNorm)) {
     // n is not a unit vector (caller contract broken) — leave the basis zero
     // rather than emitting NaN into the published in-plane coordinates.
     e_x.setZero();
     e_y.setZero();
-    return;
+    return PullBasisSource::kNone;
   }
   e_x = candidate / norm;
   e_y = n.cross(e_x);
   prev_e_x_ = e_x;
   prev_e_x_valid_ = true;
+  return source;
 }
 
 const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput> inputs,
@@ -163,6 +228,11 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
   estimate_.slip_risk = false;
   estimate_.valid = false;
   estimate_.baseline_applied = baseline_captured_;
+  estimate_.contact_mask = 0;
+  estimate_.touch_mask = 0;
+  estimate_.plane_normal.setZero();
+  estimate_.basis_x.setZero();
+  estimate_.basis_source = PullBasisSource::kNone;
 
   const double n_norm = plane_normal.norm();
   const bool normal_ok = initialized_ && std::isfinite(n_norm) && n_norm >= kDegenerateNorm;
@@ -211,12 +281,18 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
         cfg.force_sign * (in.rotation * (cfg.force_calibration * (in.force - cfg.force_bias)));
 
     // Touch hysteresis on |f_obj| — "this tip is pressing on something",
-    // independent of any plane normal. Same thresholds as the contact
-    // hysteresis, and since |f_obj| >= |f_n| the touch set is a superset of
-    // the contact set.
+    // independent of any plane normal. Defaults to the contact thresholds, in
+    // which case |f_obj| >= |f_n| makes the touch set a superset of the contact
+    // set; a config that sets the touch pair explicitly (#234 P-16) buys
+    // independent axis-selection sensitivity and gives that containment up.
+    const bool touch_split = cfg.touch_on_threshold != 0.0;
+    const double touch_on = touch_split ? cfg.touch_on_threshold : cfg.contact_on_threshold;
+    const double touch_off = touch_split ? cfg.touch_off_threshold : cfg.contact_off_threshold;
     const double f_mag = f_obj.norm();
-    touch_active_[idx] = touch_active_[idx] ? (f_mag > cfg.contact_off_threshold)
-                                            : (f_mag > cfg.contact_on_threshold);
+    touch_active_[idx] = touch_active_[idx] ? (f_mag > touch_off) : (f_mag > touch_on);
+    if (touch_active_[idx]) {
+      estimate_.touch_mask = static_cast<std::uint8_t>(estimate_.touch_mask | (1U << idx));
+    }
 
     if (!normal_ok) {
       contact_active_[idx] = false;
@@ -254,6 +330,7 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
 
     force_sum += f_obj;
     ++estimate_.valid_contact_count;
+    estimate_.contact_mask = static_cast<std::uint8_t>(estimate_.contact_mask | (1U << idx));
 
     const Eigen::Vector3d f_t = f_obj - (n_contact.dot(f_obj)) * n_contact;
     const double utilization = f_t.norm() / (cfg.friction_coeff * f_n + kSlipEpsilon);
@@ -261,9 +338,34 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
     estimate_.leakage_bound += std::abs(f_n) * sin_alignment_error_;
   }
 
+  // Why the tick failed, in gate order — the three causes are indistinguishable
+  // from `valid` alone, which is what makes a joint-vs-WBC trace unreadable
+  // (#234 P-11: WBC additionally requires a TSID-routing tick, so its release /
+  // fallback ticks land on kInsufficientContacts while joint's land nowhere).
+  if (!initialized_) {
+    estimate_.invalid_reason = PullInvalidReason::kNotInitialized;
+  } else if (!normal_ok) {
+    estimate_.invalid_reason = PullInvalidReason::kDegenerateNormal;
+  } else if (required_missing) {
+    estimate_.invalid_reason = PullInvalidReason::kRequiredContactMissing;
+  } else if (estimate_.valid_contact_count < params_.min_valid_contacts) {
+    estimate_.invalid_reason = PullInvalidReason::kInsufficientContacts;
+  } else {
+    estimate_.invalid_reason = PullInvalidReason::kNone;
+  }
+
+  // Friction utilization is a per-contact quantity: it needs an active contact,
+  // not an in-plane vector. Evaluating it inside the `valid` gate reported
+  // slip_risk=false exactly when a required role dropped out — including when
+  // it dropped out *because* that tip was sliding (#234 P-7). The remaining
+  // active contacts still have a well-defined ratio, so publish it; with no
+  // active contact the max is vacuously zero and the flag stays false.
+  estimate_.slip_risk = estimate_.valid_contact_count > 0 &&
+                        estimate_.max_friction_utilization >= params_.slip_risk_threshold;
+
   if (normal_ok) {
-    estimate_.valid =
-        !required_missing && estimate_.valid_contact_count >= params_.min_valid_contacts;
+    estimate_.valid = estimate_.invalid_reason == PullInvalidReason::kNone;
+    estimate_.plane_normal = n;
 
     if (estimate_.valid) {
       // F̂ = -P∥ (Σ f_obj + m·g); P∥ x = x - n(nᵀx).
@@ -282,14 +384,24 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
       const Eigen::Vector3d raw = -(effective - n * (n.dot(effective)));
       estimate_.force_raw = raw;
 
+      if (filter_reseed_pending_) {
+        // First valid sample after a gap. The delay line still describes the
+        // pre-gap force while `filtered_` has been decaying independently of
+        // it, so continuing would snap the output back in one sample and undo
+        // every decayed tick already published (#234 P-4 / D3). Seeding makes
+        // this tick's output exactly `raw` and the filter resumes from there.
+        filter_.Reset();
+        filter_.Seed({raw.x(), raw.y(), raw.z()});
+        filter_reseed_pending_ = false;
+      }
       const std::array<double, 3> filtered_arr = filter_.Apply({raw.x(), raw.y(), raw.z()});
       filtered_ = Eigen::Vector3d(filtered_arr[0], filtered_arr[1], filtered_arr[2]);
 
       Eigen::Vector3d e_x;
       Eigen::Vector3d e_y;
-      MakePlaneBasis(n, e_x, e_y);
+      estimate_.basis_source = MakePlaneBasis(n, e_x, e_y);
+      estimate_.basis_x = e_x;
       estimate_.force_inplane = Eigen::Vector2d(e_x.dot(filtered_), e_y.dot(filtered_));
-      estimate_.slip_risk = estimate_.max_friction_utilization >= params_.slip_risk_threshold;
     }
   }
   // No else: on a degenerate normal the loop above already cleared every
@@ -299,10 +411,17 @@ const PullEstimate& PullForceEstimator::Update(std::span<const PullContactInput>
   if (!estimate_.valid) {
     // Bounded decay instead of a hard zero — avoids output discontinuities
     // on transient contact loss; valid=false tells consumers not to act on it.
+    //
+    // dt <= 0 collapses to a hard zero rather than holding: a clock that did
+    // not advance says nothing about how far the estimate should have decayed,
+    // and holding would let a stalled caller keep republishing a stale force.
     const double decay = (dt > 0.0) ? std::exp(-dt / params_.decay_time_constant_s) : 0.0;
     filtered_ *= decay;
     estimate_.force_raw.setZero();
     estimate_.force_inplane *= decay;
+    // The filter is no longer the thing producing `filtered_`; whatever its
+    // delay line holds is now stale by construction. Reseed on return.
+    filter_reseed_pending_ = true;
   }
 
   estimate_.force_filtered = filtered_;
@@ -316,6 +435,15 @@ void FillPullEstimateData(const PullEstimate& in, PullEstimateData& out) noexcep
                static_cast<float>(in.force_filtered.z())};
   out.force_inplane = {static_cast<float>(in.force_inplane.x()),
                        static_cast<float>(in.force_inplane.y())};
+  out.plane_normal = {static_cast<float>(in.plane_normal.x()),
+                      static_cast<float>(in.plane_normal.y()),
+                      static_cast<float>(in.plane_normal.z())};
+  out.basis_x = {static_cast<float>(in.basis_x.x()), static_cast<float>(in.basis_x.y()),
+                 static_cast<float>(in.basis_x.z())};
+  out.basis_source = static_cast<std::uint8_t>(in.basis_source);
+  out.invalid_reason = static_cast<std::uint8_t>(in.invalid_reason);
+  out.contact_mask = in.contact_mask;
+  out.touch_mask = in.touch_mask;
   out.magnitude = static_cast<float>(in.magnitude);
   out.directional = static_cast<float>(in.directional);
   out.friction_utilization = static_cast<float>(in.max_friction_utilization);

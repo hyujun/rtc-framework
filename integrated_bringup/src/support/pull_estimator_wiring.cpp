@@ -10,6 +10,16 @@
 
 namespace integrated_bringup {
 
+namespace {
+/// Below this norm a direction vector is degenerate — normalizing it would
+/// amplify noise or divide by zero. Mirrors the estimator core's own guard.
+constexpr double kDegenerateNorm = 1e-9;
+/// |cos| above this counts as "parallel" for the P-17 configure-time warning —
+/// the residual perpendicular component is then below the estimator's own
+/// basis-collapse threshold (1e-3), so the reference axis is unusable.
+constexpr double kParallelCosMin = 1.0 - 1e-6;
+}  // namespace
+
 std::vector<std::string> ResolvePullTipLinks(const rtc_urdf_bridge::ModelConfig* sys_model,
                                              const std::string& secondary_device,
                                              std::size_t max_slots) {
@@ -34,6 +44,7 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
   w.num_contacts = 0;
   w.slot.fill(-1);
   w.thumb_contact = -1;
+  w.roles.clear();
   w.position_valid.fill(false);
   w.prev_grasp_detected = false;
   w.opposing_mask = 0;
@@ -113,7 +124,21 @@ void ConfigurePullEstimatorWiring(const DemoSharedConfig& cfg, double control_ra
         "in tips.tip_names to oppose the thumb");
   }
 
+  // The fixed normal is copied straight from YAML and then divided by its own
+  // norm every tick, so a non-finite or zero vector would turn every estimate
+  // into a permanently invalid (or NaN) one at runtime with no configure-time
+  // signal — the same silent-misconfiguration class as the link resolve above
+  // (#234, cross-review §3). Only meaningful for the fixed source; pinch
+  // geometry derives its own normal and ignores this field.
+  if (cfg.pull_plane_normal_source == PullPlaneNormalSource::kFixed) {
+    if (!cfg.pull_plane_normal.allFinite() || cfg.pull_plane_normal.norm() < kDegenerateNorm) {
+      fail("pull_estimator: plane_normal_source 'fixed' requires a finite, non-zero plane_normal");
+    }
+  }
+
   w.num_contacts = n;
+  w.roles.assign(cfg.pull_tip_roles.begin(),
+                 cfg.pull_tip_roles.begin() + static_cast<std::ptrdiff_t>(n));
   w.normal_source = cfg.pull_plane_normal_source;
   w.fixed_normal = cfg.pull_plane_normal;
   w.use_baseline = cfg.pull_use_baseline_subtraction;
@@ -125,8 +150,13 @@ void LogPullEstimatorWiring(const rclcpp::Logger& logger, const PullEstimatorWir
     // Not an error: a hand-less variant, a disabled YAML block, or a model with
     // no tree-model match all land here deliberately. Say so out loud anyway —
     // the silent version is indistinguishable from "running but never valid".
+    // Name the CSV explicitly: a missing pull_estimator.csv has three causes
+    // (enabled=false / no tip links / the log-registration skip) and the INFO
+    // used to mention none of them, so an empty session directory read as a
+    // logging bug (#234 P-20).
     RCLCPP_INFO(logger,
-                "[pull_estimator] disabled — block %s, %s. No pull estimate will be published.",
+                "[pull_estimator] disabled — block %s, %s. No pull estimate will be published and "
+                "no pull_estimator.csv will be written.",
                 cfg.has_pull_estimator_block ? "present" : "absent",
                 cfg.pull_estimator_enabled ? "no FK-backed tip links resolved" : "enabled=false");
     return;
@@ -150,6 +180,29 @@ void LogPullEstimatorWiring(const rclcpp::Logger& logger, const PullEstimatorWir
               "baseline_subtraction=%s",
               w.num_contacts, tips.c_str(), w.thumb_contact,
               PullPlaneNormalSourceName(w.normal_source), w.use_baseline ? "on" : "off");
+
+  // A fixed normal parallel to the in-plane reference is a silently degenerate
+  // pair (#234 P-17): the reference projects to nothing, MakePlaneBasis falls
+  // back to a world-axis seed, and force_inplane[0] stops meaning "along the
+  // reference" without anything saying so. It is not an error — the estimate
+  // stays correct and basis_source now reports SEED — but the shipped configs
+  // all default both to +Z, so flipping plane_normal_source to "fixed" walks
+  // straight into it.
+  if (w.normal_source == PullPlaneNormalSource::kFixed) {
+    const double n_norm = w.fixed_normal.norm();
+    const double r_norm = cfg.pull_estimator_params.inplane_x_reference.norm();
+    if (n_norm >= kDegenerateNorm && r_norm >= kDegenerateNorm) {
+      const double cos_angle = std::abs(
+          w.fixed_normal.dot(cfg.pull_estimator_params.inplane_x_reference) / (n_norm * r_norm));
+      if (cos_angle > kParallelCosMin) {
+        RCLCPP_WARN(logger,
+                    "[pull_estimator] plane_normal is parallel to inplane_x_reference — the "
+                    "in-plane x axis collapses and falls back to a world-axis seed, so "
+                    "force_inplane[0] is no longer the reference-direction component. Set "
+                    "inplane_x_reference to a direction lying in the plane.");
+      }
+    }
+  }
 }
 
 void ResetPullEstimatorRtState(PullEstimatorWiring& w) noexcept {
@@ -243,8 +296,8 @@ const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool
   // tips whose contact point migrates. Degenerate normal (missing thumb/opposing
   // positions) ⇒ zero, and Update skips those contacts.
   const double gate_norm = normal.norm();
-  const Eigen::Vector3d n_hat =
-      (gate_norm >= 1e-9) ? Eigen::Vector3d(normal / gate_norm) : Eigen::Vector3d::Zero();
+  const Eigen::Vector3d n_hat = (gate_norm >= kDegenerateNorm) ? Eigen::Vector3d(normal / gate_norm)
+                                                               : Eigen::Vector3d::Zero();
   for (int k = 0; k < w.num_contacts; ++k) {
     const auto idx = static_cast<std::size_t>(k);
     w.inputs[idx].contact_normal = (k == w.thumb_contact) ? Eigen::Vector3d(-n_hat) : n_hat;

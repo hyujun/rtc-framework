@@ -20,8 +20,10 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -532,6 +534,527 @@ TEST(PullForceEstimator, InPlaneAxesStayFiniteWhenPlaneIsEdgeOnToTheReference) {
   ASSERT_TRUE(out.valid);
   EXPECT_TRUE(out.force_inplane.allFinite());
   EXPECT_NEAR(out.force_inplane.norm(), v.norm(), 1e-6);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #234 — self-description, recovery, validation, slip gate, touch thresholds
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── AC-1: the wire alone must reconstruct the in-plane pair ─────────────────
+//
+// force_inplane is expressed in a basis rebuilt from the observed pinch axis
+// every tick, so two numbers on their own are not comparable across ticks and
+// not invertible at all. With plane_normal + basis_x published, e_y = n x e_x
+// and the 2-D pair maps back onto the 3-D in-plane force exactly.
+Eigen::Vector3d ReconstructInPlane(const PullEstimate& est) {
+  const Eigen::Vector3d e_y = est.plane_normal.cross(est.basis_x);
+  return est.basis_x * est.force_inplane.x() + e_y * est.force_inplane.y();
+}
+
+TEST(PullForceEstimator, PublishedBasisReconstructsTheInPlaneForce) {
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  params.inplane_x_reference = Eigen::Vector3d::UnitZ();
+  est.Init(std::vector<PullContactConfig>{MakeConfig()}, params);
+
+  // Pinch axis horizontal, so the reference (+z) lies in the plane.
+  const Eigen::Vector3d n = Eigen::Vector3d::UnitX();
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(5.0, -1.25, -2.0), -Eigen::Vector3d::UnitX())};
+  const PullEstimate& out = RunTicks(est, inputs, 1000, n);
+  ASSERT_TRUE(out.valid);
+  EXPECT_EQ(out.basis_source, rtc::grasp::PullBasisSource::kReference);
+  EXPECT_EQ(out.invalid_reason, rtc::grasp::PullInvalidReason::kNone);
+
+  // The published normal is the unit normal actually used.
+  EXPECT_NEAR(out.plane_normal.norm(), 1.0, 1e-12);
+  EXPECT_NEAR(out.basis_x.norm(), 1.0, 1e-12);
+  EXPECT_NEAR(out.basis_x.dot(out.plane_normal), 0.0, 1e-12);
+
+  const Eigen::Vector3d rebuilt = ReconstructInPlane(out);
+  EXPECT_NEAR((rebuilt - out.force_filtered).norm(), 0.0, 1e-9)
+      << "rebuilt=" << rebuilt.transpose() << " filtered=" << out.force_filtered.transpose();
+}
+
+TEST(PullForceEstimator, BasisIsReconstructableThroughTheCarryFallback) {
+  // The reference-projection branch collapses when the plane turns edge-on to
+  // the reference; the tick then falls back to re-projecting the previous e_x,
+  // which is *path-dependent* — the exact case a consumer cannot reproduce
+  // from config alone, so basis_x must be on the wire for it.
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  params.inplane_x_reference = Eigen::Vector3d::UnitZ();
+  est.Init(std::vector<PullContactConfig>{MakeConfig()}, params);
+
+  // Contact gating is driven by contact_normal, which we hold fixed, so only
+  // the plane normal moves between the two ticks.
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(1.0, -0.5, 5.0), kThumbNormal)};
+
+  // Tick A: plane tilted 45 deg — e_x is neither the reference nor a world axis.
+  const Eigen::Vector3d tilted = Eigen::Vector3d(0.0, 1.0, 1.0).normalized();
+  const PullEstimate& first = est.Update(inputs, tilted, kDt);
+  ASSERT_TRUE(first.valid);
+  ASSERT_EQ(first.basis_source, rtc::grasp::PullBasisSource::kReference);
+
+  // Tick B: plane normal now parallel to the reference → reference collapses,
+  // but the carried e_x still has an in-plane component.
+  const PullEstimate& second = est.Update(inputs, Eigen::Vector3d::UnitZ(), kDt);
+  ASSERT_TRUE(second.valid);
+  EXPECT_EQ(second.basis_source, rtc::grasp::PullBasisSource::kCarry);
+
+  // The plane moved between the two ticks, so the filter output — a low-pass
+  // over samples taken in *different* planes — carries a small component along
+  // the current normal. The 2-D pair spans the plane only, so the reconstruction
+  // recovers P∥(force_filtered), which is the whole of what force_inplane
+  // claims to describe.
+  const Eigen::Vector3d n = second.plane_normal;
+  const Eigen::Vector3d in_plane = second.force_filtered - n * (n.dot(second.force_filtered));
+  const Eigen::Vector3d rebuilt = ReconstructInPlane(second);
+  EXPECT_NEAR((rebuilt - in_plane).norm(), 0.0, 1e-9)
+      << "rebuilt=" << rebuilt.transpose() << " in_plane=" << in_plane.transpose();
+}
+
+TEST(PullForceEstimator, BasisSourceReportsTheWorldAxisSeed) {
+  // No reference configured and no carry yet → world-axis seed. Reported so a
+  // consumer does not read force_inplane[0] as "the vertical component".
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  params.inplane_x_reference = Eigen::Vector3d::Zero();
+  est.Init(std::vector<PullContactConfig>{MakeConfig()}, params);
+
+  const PullEstimate& out = est.Update(
+      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(1.0, 0.0, 5.0), kThumbNormal)},
+      kPlaneNormal, kDt);
+  ASSERT_TRUE(out.valid);
+  EXPECT_EQ(out.basis_source, rtc::grasp::PullBasisSource::kSeed);
+  EXPECT_NEAR((ReconstructInPlane(out) - out.force_filtered).norm(), 0.0, 1e-9);
+}
+
+TEST(PullForceEstimator, InvalidTickPublishesNoPlaneOrBasis) {
+  PullForceEstimator est;
+  est.Init(PinchConfigs(), DefaultParams());
+  const std::vector<PullContactInput> lost = {MakeInput(Eigen::Vector3d::Zero(), kThumbNormal),
+                                              MakeInput(Eigen::Vector3d::Zero(), kOpposingNormal)};
+  const PullEstimate& out = est.Update(lost, Eigen::Vector3d::Zero(), kDt);
+  ASSERT_FALSE(out.valid);
+  EXPECT_EQ(out.plane_normal.norm(), 0.0);
+  EXPECT_EQ(out.basis_x.norm(), 0.0);
+  EXPECT_EQ(out.basis_source, rtc::grasp::PullBasisSource::kNone);
+}
+
+TEST(PullForceEstimator, InvalidTickWithAUsablePlaneStillReportsTheNormal) {
+  // plane_normal and basis_x are not the same gate: the normal describes what
+  // the tick gated against and survives a contact-side failure, while the basis
+  // only exists for ticks that produced an in-plane vector. Collapsing them
+  // would make "the plane was fine, the thumb dropped" indistinguishable from
+  // "there was no plane".
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 2;
+  const std::vector<PullContactConfig> configs = {MakeConfig(/*required=*/true), MakeConfig()};
+  est.Init(configs, params);
+
+  std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -5.0), kOpposingNormal)};
+  inputs[0].valid = false;  // required role gone, plane normal untouched
+
+  const PullEstimate& out = est.Update(inputs, kPlaneNormal, kDt);
+  ASSERT_FALSE(out.valid);
+  EXPECT_EQ(out.invalid_reason, rtc::grasp::PullInvalidReason::kRequiredContactMissing);
+  EXPECT_NEAR(out.plane_normal.norm(), 1.0, 1e-12);
+  EXPECT_EQ(out.basis_x.norm(), 0.0);
+  EXPECT_EQ(out.basis_source, rtc::grasp::PullBasisSource::kNone);
+}
+
+// ── AC-1 / P-11: invalid_reason distinguishes the gates ─────────────────────
+TEST(PullForceEstimator, InvalidReasonNamesTheFailedGate) {
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 2;
+  const std::vector<PullContactConfig> configs = {MakeConfig(/*required=*/true), MakeConfig(),
+                                                  MakeConfig()};
+  est.Init(configs, params);
+
+  std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -2.5), kOpposingNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, -2.5), kOpposingNormal)};
+
+  EXPECT_EQ(est.Update(inputs, kPlaneNormal, kDt).invalid_reason,
+            rtc::grasp::PullInvalidReason::kNone);
+
+  // Degenerate normal outranks everything: no plane, nothing else evaluated.
+  EXPECT_EQ(est.Update(inputs, Eigen::Vector3d::Zero(), kDt).invalid_reason,
+            rtc::grasp::PullInvalidReason::kDegenerateNormal);
+
+  // Thumb (required) drops but two contacts remain — this is the case that
+  // `valid=false` alone could not distinguish from "too few tips".
+  inputs[0].valid = false;
+  const PullEstimate& missing = est.Update(inputs, kPlaneNormal, kDt);
+  EXPECT_EQ(missing.valid_contact_count, 2);
+  EXPECT_EQ(missing.invalid_reason, rtc::grasp::PullInvalidReason::kRequiredContactMissing);
+
+  // Thumb back, the other two gone → count below min, required role fine.
+  inputs[0].valid = true;
+  inputs[1].valid = false;
+  inputs[2].valid = false;
+  EXPECT_EQ(est.Update(inputs, kPlaneNormal, kDt).invalid_reason,
+            rtc::grasp::PullInvalidReason::kInsufficientContacts);
+
+  PullForceEstimator fresh;
+  EXPECT_EQ(fresh.Update(inputs, kPlaneNormal, kDt).invalid_reason,
+            rtc::grasp::PullInvalidReason::kNotInitialized);
+}
+
+// ── AC-1 / P-12 / P-14: the two contact sets are distinct and published ─────
+TEST(PullForceEstimator, ContactAndTouchMasksMirrorThePerContactGates) {
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  est.Init(std::vector<PullContactConfig>{MakeConfig(), MakeConfig(), MakeConfig()}, params);
+
+  // Contact 0 presses along the plane normal (in the sum), contact 1 presses
+  // purely sideways (touching but f_n = 0, so not in the sum), contact 2 is
+  // silent. The masks must therefore differ — which is precisely why
+  // opposing_mask (touch-derived) is not the set that formed the estimate.
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(5.0, 0.0, 0.0), kOpposingNormal),
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 0.0), kOpposingNormal)};
+  const PullEstimate& out = est.Update(inputs, kPlaneNormal, kDt);
+
+  EXPECT_EQ(out.contact_mask, 0b0000'0001U);
+  EXPECT_EQ(out.touch_mask, 0b0000'0011U);
+  EXPECT_EQ(out.valid_contact_count, 1);
+  EXPECT_TRUE(est.contact_active(0));
+  EXPECT_FALSE(est.contact_active(1));
+  EXPECT_TRUE(est.touch_active(1));
+}
+
+// ── AC-2: no snapback on return from an invalid gap (P-4 / D3) ──────────────
+//
+// Four combinations: short/long gap x same/changed raw. Before the reseed the
+// filter resumed from its pre-gap delay line and the first valid sample jumped
+// straight back to the pre-gap force, undoing every decayed tick already
+// published — the decay applied on the way down but not on the way up.
+class PullRecovery : public ::testing::TestWithParam<std::tuple<int, double>> {};
+
+TEST_P(PullRecovery, ReturnFromInvalidGapTracksTheCurrentForceNotThePreGapOne) {
+  const auto [gap_ticks, return_pull] = GetParam();
+
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.decay_time_constant_s = 0.1;
+  est.Init(PinchConfigs(), params);
+
+  auto pinch = [](double pull) {
+    return std::vector<PullContactInput>{
+        MakeInput(Eigen::Vector3d(-pull / 2.0, 0.0, 5.0), kThumbNormal),
+        MakeInput(Eigen::Vector3d(-pull / 2.0, 0.0, -5.0), kOpposingNormal)};
+  };
+
+  const PullEstimate& settled = RunTicks(est, pinch(1.5), 1000);
+  ASSERT_TRUE(settled.valid);
+  ASSERT_NEAR(settled.magnitude, 1.5, 1e-6);
+
+  std::vector<PullContactInput> lost = pinch(1.5);
+  lost[0].valid = false;
+  lost[1].valid = false;
+  double decayed = 0.0;
+  for (int i = 0; i < gap_ticks; ++i) {
+    decayed = est.Update(lost, kPlaneNormal, kDt).magnitude;
+  }
+  ASSERT_LT(decayed, 1.5);
+
+  // First valid tick back. It must report the force that is actually there.
+  const PullEstimate& back = est.Update(pinch(return_pull), kPlaneNormal, kDt);
+  ASSERT_TRUE(back.valid);
+  EXPECT_NEAR(back.force_raw.x(), return_pull, 1e-9);
+  EXPECT_NEAR(back.magnitude, return_pull, 1e-6) << "gap=" << gap_ticks << " decayed=" << decayed;
+
+  // And specifically: it is not the pre-gap value resurrected. (For the
+  // same-raw case the two coincide by construction, so the check only bites
+  // when the world moved — which is the failure that mattered.)
+  if (return_pull != 1.5) {
+    EXPECT_GT(std::abs(back.magnitude - 1.5), 1e-3);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(ShortAndLongGaps, PullRecovery,
+                         ::testing::Combine(::testing::Values(2, 500),
+                                            ::testing::Values(1.5, 0.25)));
+
+TEST(PullForceEstimator, NonPositiveDtCollapsesTheEstimate) {
+  // Policy pin (#234 AC-2): a clock that did not advance carries no
+  // information about how far the estimate should have decayed, so an invalid
+  // tick with dt <= 0 hard-zeroes instead of holding the last value — holding
+  // would let a stalled caller republish a stale force forever.
+  PullForceEstimator est;
+  est.Init(PinchConfigs(), DefaultParams());
+  const std::vector<PullContactInput> pulling = {
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(-0.75, 0.0, -5.0), kOpposingNormal)};
+  ASSERT_TRUE(RunTicks(est, pulling, 1000).valid);
+
+  std::vector<PullContactInput> lost = pulling;
+  lost[0].valid = false;
+  lost[1].valid = false;
+  const PullEstimate& zero_dt = est.Update(lost, kPlaneNormal, 0.0);
+  EXPECT_FALSE(zero_dt.valid);
+  EXPECT_EQ(zero_dt.magnitude, 0.0);
+  EXPECT_EQ(zero_dt.force_inplane.norm(), 0.0);
+}
+
+// ── AC-4: slip_risk lives outside the valid gate (P-7) ──────────────────────
+TEST(PullForceEstimator, SlipRiskSurvivesARequiredRoleDropout) {
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 2;
+  // Thumb required; the opposing tip is the one sliding.
+  const std::vector<PullContactConfig> configs = {MakeConfig(/*required=*/true), MakeConfig()};
+  est.Init(configs, params);
+
+  std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      // f_n = 5, |f_t| = 3.85 → rho = 1.1 >= threshold.
+      MakeInput(Eigen::Vector3d(3.85, 0.0, -5.0), kOpposingNormal)};
+  const PullEstimate& both = est.Update(inputs, kPlaneNormal, kDt);
+  ASSERT_TRUE(both.valid);
+  EXPECT_TRUE(both.slip_risk);
+
+  // Thumb sensor drops. The pull vector is now invalid — but the other tip is
+  // still measurably sliding, and reporting "no slip risk" there was the bug.
+  inputs[0].valid = false;
+  const PullEstimate& dropped = est.Update(inputs, kPlaneNormal, kDt);
+  EXPECT_FALSE(dropped.valid);
+  EXPECT_EQ(dropped.invalid_reason, rtc::grasp::PullInvalidReason::kRequiredContactMissing);
+  EXPECT_EQ(dropped.valid_contact_count, 1);
+  EXPECT_NEAR(dropped.max_friction_utilization, 1.1, 1e-6);
+  EXPECT_TRUE(dropped.slip_risk);
+}
+
+TEST(PullForceEstimator, SlipRiskIsFalseWithNoActiveContact) {
+  // The utilization max is vacuously zero with nothing active, so the flag
+  // must stay false rather than inheriting the previous tick.
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  est.Init(std::vector<PullContactConfig>{MakeConfig()}, params);
+
+  ASSERT_TRUE(est.Update(std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(3.85, 0.0, 5.0),
+                                                                 kThumbNormal)},
+                         kPlaneNormal, kDt)
+                  .slip_risk);
+
+  std::vector<PullContactInput> gone = {MakeInput(Eigen::Vector3d(3.85, 0.0, 5.0), kThumbNormal)};
+  gone[0].valid = false;
+  const PullEstimate& out = est.Update(gone, kPlaneNormal, kDt);
+  EXPECT_EQ(out.valid_contact_count, 0);
+  EXPECT_FALSE(out.slip_risk);
+  EXPECT_EQ(out.max_friction_utilization, 0.0);
+}
+
+TEST(PullForceEstimator, SaturatedContactIsGatedOutOfTheSlipDiagnostic) {
+  // A saturated sensor is gated out of the sum, so it contributes no
+  // utilization either — its reading is a clipped lower bound, not a ratio.
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  PullContactConfig cfg = MakeConfig();
+  cfg.force_saturation = 10.0;
+  est.Init(std::vector<PullContactConfig>{cfg, cfg}, params);
+
+  const std::vector<PullContactInput> inputs = {
+      MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal),
+      MakeInput(Eigen::Vector3d(10.0, 0.0, -5.0), kOpposingNormal)};  // clipped
+  const PullEstimate& out = est.Update(inputs, kPlaneNormal, kDt);
+  EXPECT_TRUE(out.any_saturated);
+  EXPECT_EQ(out.contact_mask, 0b0000'0001U);
+  EXPECT_FALSE(out.slip_risk);
+  EXPECT_NEAR(out.max_friction_utilization, 0.0, 1e-9);
+}
+
+// ── AC-3: configure-time validation (P-6 + cross-review §3) ─────────────────
+TEST(PullForceEstimator, InitRejectsMinValidContactsAboveTheContactCount) {
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 5;  // 3-tip hand
+  EXPECT_THROW(
+      est.Init(std::vector<PullContactConfig>{MakeConfig(), MakeConfig(), MakeConfig()}, params),
+      std::invalid_argument);
+
+  params.min_valid_contacts = 3;  // exactly the count is fine
+  EXPECT_NO_THROW(
+      est.Init(std::vector<PullContactConfig>{MakeConfig(), MakeConfig(), MakeConfig()}, params));
+}
+
+TEST(PullForceEstimator, InitRejectsNonFiniteScalars) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  // Single-contact cases must lower min_valid_contacts, or the new count check
+  // (#234 P-6) throws first and the test would pass without exercising the
+  // finite check at all.
+  PullEstimatorParams single = DefaultParams();
+  single.min_valid_contacts = 1;
+
+  {  // NaN passes `<= 0.0` silently — that is why these need explicit checks.
+    PullForceEstimator est;
+    PullEstimatorParams p = DefaultParams();
+    p.decay_time_constant_s = nan;
+    EXPECT_THROW(est.Init(PinchConfigs(), p), std::invalid_argument);
+  }
+  {
+    PullForceEstimator est;
+    PullEstimatorParams p = DefaultParams();
+    p.slip_risk_threshold = inf;
+    EXPECT_THROW(est.Init(PinchConfigs(), p), std::invalid_argument);
+  }
+  {
+    PullForceEstimator est;
+    PullEstimatorParams p = DefaultParams();
+    p.alignment_error_rad = nan;
+    EXPECT_THROW(est.Init(PinchConfigs(), p), std::invalid_argument);
+  }
+  {
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.friction_coeff = nan;
+    EXPECT_THROW(est.Init(std::vector<PullContactConfig>{cfg}, single), std::invalid_argument);
+  }
+  {
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.force_saturation = nan;
+    EXPECT_THROW(est.Init(std::vector<PullContactConfig>{cfg}, single), std::invalid_argument);
+  }
+  {
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.contact_on_threshold = nan;
+    EXPECT_THROW(est.Init(std::vector<PullContactConfig>{cfg}, single), std::invalid_argument);
+  }
+}
+
+TEST(PullForceEstimator, InitRejectsForceSignThatIsNotAConventionFlip) {
+  // The header documents force_sign as a convention selector, not a gain: any
+  // other value silently rescales the estimate while the units still read N.
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;  // single-contact configs below
+  for (const double bad : {0.0, 2.0, -0.5, std::numeric_limits<double>::quiet_NaN()}) {
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.force_sign = bad;
+    EXPECT_THROW(est.Init(std::vector<PullContactConfig>{cfg}, params), std::invalid_argument)
+        << "force_sign=" << bad;
+  }
+  for (const double good : {1.0, -1.0}) {
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.force_sign = good;
+    EXPECT_NO_THROW(est.Init(std::vector<PullContactConfig>{cfg}, params));
+  }
+}
+
+// ── AC-7: optional touch thresholds (P-16) ──────────────────────────────────
+TEST(PullForceEstimator, UnsetTouchThresholdsReproduceTheContactPairExactly) {
+  // The containment contract `touch ⊇ contact` and the pinch-axis cold start
+  // both depend on the touch gate reusing the contact thresholds when the
+  // optional pair is omitted — so the default path must be bit-identical.
+  PullContactConfig shared = MakeConfig();
+  shared.contact_on_threshold = 1.0;
+  shared.contact_off_threshold = 0.4;
+
+  PullContactConfig explicit_same = shared;
+  explicit_same.touch_on_threshold = 1.0;
+  explicit_same.touch_off_threshold = 0.4;
+
+  PullForceEstimator a;
+  PullForceEstimator b;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  a.Init(std::vector<PullContactConfig>{shared}, params);
+  b.Init(std::vector<PullContactConfig>{explicit_same}, params);
+
+  // Sweep up through the band and back down so both edges of both gates fire.
+  for (const double f : {0.0, 0.5, 0.9, 1.2, 3.0, 0.9, 0.5, 0.3, 0.0}) {
+    const std::vector<PullContactInput> in = {
+        MakeInput(Eigen::Vector3d(0.0, 0.0, f), kThumbNormal)};
+    const PullEstimate& ra = a.Update(in, kPlaneNormal, kDt);
+    const PullEstimate& rb = b.Update(in, kPlaneNormal, kDt);
+    EXPECT_EQ(ra.contact_mask, rb.contact_mask) << "f=" << f;
+    EXPECT_EQ(ra.touch_mask, rb.touch_mask) << "f=" << f;
+    EXPECT_EQ(ra.valid, rb.valid) << "f=" << f;
+    EXPECT_EQ(a.touch_active(0), b.touch_active(0)) << "f=" << f;
+    EXPECT_DOUBLE_EQ(ra.magnitude, rb.magnitude) << "f=" << f;
+  }
+}
+
+TEST(PullForceEstimator, SplitTouchThresholdDecouplesTheAxisGateFromTheSum) {
+  // A tip with large shear reads as "touching" under the shared thresholds and
+  // drags the pinch axis around while contributing nothing to the sum. Raising
+  // only the touch pair keeps it out of the axis selection.
+  PullContactConfig cfg = MakeConfig();
+  cfg.contact_on_threshold = 1.0;
+  cfg.contact_off_threshold = 0.4;
+  cfg.touch_on_threshold = 4.0;
+  cfg.touch_off_threshold = 2.0;
+
+  PullForceEstimator est;
+  PullEstimatorParams params = DefaultParams();
+  params.min_valid_contacts = 1;
+  est.Init(std::vector<PullContactConfig>{cfg}, params);
+
+  // |f_obj| = 2 — above the contact gate (f_n = 2) but below touch ON (4).
+  const PullEstimate& below = est.Update(
+      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(0.0, 0.0, 2.0), kThumbNormal)},
+      kPlaneNormal, kDt);
+  EXPECT_EQ(below.contact_mask, 0b0000'0001U);
+  EXPECT_EQ(below.touch_mask, 0U) << "touch gate must use its own threshold";
+
+  // |f_obj| = 5 — above touch ON.
+  const PullEstimate& above = est.Update(
+      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(0.0, 0.0, 5.0), kThumbNormal)},
+      kPlaneNormal, kDt);
+  EXPECT_EQ(above.touch_mask, 0b0000'0001U);
+
+  // Hysteresis: 3 is below ON (4) but above OFF (2) → stays latched.
+  const PullEstimate& band = est.Update(
+      std::vector<PullContactInput>{MakeInput(Eigen::Vector3d(0.0, 0.0, 3.0), kThumbNormal)},
+      kPlaneNormal, kDt);
+  EXPECT_EQ(band.touch_mask, 0b0000'0001U);
+}
+
+TEST(PullForceEstimator, InitRejectsAHalfSetTouchPair) {
+  // min_valid_contacts lowered so the single-contact configs below fail on
+  // the touch pair rather than on the contact-count check (#234 P-6).
+  PullEstimatorParams single = DefaultParams();
+  single.min_valid_contacts = 1;
+  // Pairing a configured ON with an implicit zero OFF would latch the touch
+  // gate on forever — a typo, not a policy.
+  {
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.touch_on_threshold = 2.0;
+    EXPECT_THROW(est.Init(std::vector<PullContactConfig>{cfg}, single), std::invalid_argument);
+  }
+  {
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.touch_off_threshold = 1.0;
+    EXPECT_THROW(est.Init(std::vector<PullContactConfig>{cfg}, single), std::invalid_argument);
+  }
+  {  // on <= off is rejected the same way the contact pair is.
+    PullForceEstimator est;
+    PullContactConfig cfg = MakeConfig();
+    cfg.touch_on_threshold = 1.0;
+    cfg.touch_off_threshold = 2.0;
+    EXPECT_THROW(est.Init(std::vector<PullContactConfig>{cfg}, single), std::invalid_argument);
+  }
 }
 
 }  // namespace

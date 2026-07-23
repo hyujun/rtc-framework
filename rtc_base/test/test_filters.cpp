@@ -20,6 +20,56 @@ namespace {
 
 // ── BesselFilterN tests ─────────────────────────────────────────────────────
 
+// Seed() (#234 P-4): a consumer that stopped feeding the filter and drove its
+// output some other way must be able to resume without the delay line snapping
+// the output back to the pre-gap signal.
+TEST(BesselFilter, SeedMakesTheNextSampleAFixedPoint) {
+  rtc::BesselFilterN<2> filter;
+  filter.Init(5.0, 500.0);
+
+  // Drive it well away from the value we then seed to, so a leftover delay
+  // line would be obvious.
+  for (int i = 0; i < 2000; ++i) {
+    (void)filter.Apply({100.0, -100.0});
+  }
+
+  filter.Seed({1.5, -2.5});
+  const auto out = filter.Apply({1.5, -2.5});
+  EXPECT_NEAR(out[0], 1.5, 1e-9);
+  EXPECT_NEAR(out[1], -2.5, 1e-9);
+
+  // And it is a genuine steady state, not a one-sample coincidence.
+  for (int i = 0; i < 10; ++i) {
+    const auto again = filter.Apply({1.5, -2.5});
+    EXPECT_NEAR(again[0], 1.5, 1e-9);
+    EXPECT_NEAR(again[1], -2.5, 1e-9);
+  }
+}
+
+TEST(BesselFilter, SeedZeroEqualsReset) {
+  rtc::BesselFilterN<1> seeded;
+  rtc::BesselFilterN<1> reset;
+  seeded.Init(5.0, 500.0);
+  reset.Init(5.0, 500.0);
+  for (int i = 0; i < 500; ++i) {
+    (void)seeded.Apply({7.0});
+    (void)reset.Apply({7.0});
+  }
+  seeded.Seed({0.0});
+  reset.Reset();
+  for (int i = 0; i < 50; ++i) {
+    EXPECT_DOUBLE_EQ(seeded.Apply({3.0})[0], reset.Apply({3.0})[0]);
+  }
+}
+
+TEST(BesselFilter, SeedBeforeInitIsANoop) {
+  rtc::BesselFilterN<1> filter;
+  filter.Seed({5.0});  // coefficients undefined — must not write garbage state
+  filter.Init(5.0, 500.0);
+  // Init resets, so the filter still starts from rest.
+  EXPECT_NEAR(filter.Apply({0.0})[0], 0.0, 1e-12);
+}
+
 TEST(BesselFilter, InitDoesNotThrow) {
   rtc::BesselFilterN<4> filter;
   EXPECT_NO_THROW(filter.Init(50.0, 500.0));

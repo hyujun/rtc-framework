@@ -27,6 +27,12 @@ namespace {
 void FillPullEstimateMsg(rtc_msgs::msg::PullEstimate& out, const rtc::grasp::PullEstimateData& in) {
   out.force = in.force;
   out.force_inplane = in.force_inplane;
+  out.plane_normal = in.plane_normal;
+  out.basis_x = in.basis_x;
+  out.basis_source = in.basis_source;
+  out.invalid_reason = in.invalid_reason;
+  out.contact_mask = in.contact_mask;
+  out.touch_mask = in.touch_mask;
   out.magnitude = in.magnitude;
   out.directional = in.directional;
   out.friction_utilization = in.friction_utilization;
@@ -160,6 +166,15 @@ void SetupWbcStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHan
   rclcpp::QoS wbc_qos{1};
   handles.wbc_pub = node->create_publisher<rtc_msgs::msg::WbcState>(topic_name, wbc_qos);
   PrefillWbcMessage(ctrl.GetDeviceNameConfig(device_group), handles.wbc_msg);
+}
+
+void SetOwnedStateFrameId(ControllerTopicHandles& handles, const std::string& frame_id) {
+  // Assigned into the pre-filled messages, so the publish thread only ever
+  // copies the stamp — no string allocation on that path. Both publishers are
+  // stamped unconditionally; a controller that owns neither simply writes into
+  // messages that are never published.
+  handles.grasp_msg.header.frame_id = frame_id;
+  handles.wbc_msg.header.frame_id = frame_id;
 }
 
 void SetupToFSnapshotPublisher(rtc::RTControllerInterface& ctrl, ControllerTopicHandles& handles,

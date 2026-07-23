@@ -275,6 +275,13 @@ void ApplyPullEstimatorBlock(const YAML::Node& pe, DemoSharedConfig& cfg) {
         pc.contact_on_threshold = tn["contact_on_threshold"].as<double>();
       if (tn["contact_off_threshold"])
         pc.contact_off_threshold = tn["contact_off_threshold"].as<double>();
+      // Optional independent touch hysteresis (#234 P-16). Omitting both keys
+      // keeps the historical behaviour of reusing the contact pair; Init
+      // rejects a half-set pair.
+      if (tn["touch_on_threshold"])
+        pc.touch_on_threshold = tn["touch_on_threshold"].as<double>();
+      if (tn["touch_off_threshold"])
+        pc.touch_off_threshold = tn["touch_off_threshold"].as<double>();
       if (tn["force_saturation"])
         pc.force_saturation = tn["force_saturation"].as<double>();
       if (tn["force_sign"])

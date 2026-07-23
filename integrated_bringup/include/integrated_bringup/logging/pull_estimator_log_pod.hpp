@@ -19,6 +19,8 @@
 #include <array>
 #include <cstdint>
 #include <ostream>
+#include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -34,10 +36,20 @@ struct PullEstimatorLogPod {
   // ── Timestamp (CM-provided, session-relative) ─────────────────────────────
   double t_relative_s{0.0};
 
-  // Pre-filter -P∥(Σ f_obj + m·g) [N] — CSV-only surface (the wire/SeqLock
-  // mirror deliberately omits the raw series; it exists here for filter
-  // transient analysis).
-  std::array<float, 3> force_raw{};
+  // CM RT-loop tick index (ControllerState::iteration). Rows are pushed one
+  // per tick, so a jump here is a *dropped* row (SPSC ring overflow) rather
+  // than a skipped tick — the only remaining way a pull row can go missing now
+  // that E-STOP ticks log valid=0 (#234 P-20, carried over from #235). The
+  // third cause, a disabled wiring, produces no file at all.
+  std::uint64_t tick{0};
+
+  // Pre-filter estimate [N] — CSV-only surface (the wire/SeqLock mirror
+  // deliberately omits this series; it exists here for filter transient
+  // analysis). Named `force_prefilter_*` in the CSV rather than `force_raw_*`
+  // (#234 P-13): this is -P∥(Σ f_obj + m·g) *after* projection, gravity and
+  // baseline subtraction, so the old name read as a raw sensor sum and made
+  // the baseline-capture step look like a filter artefact.
+  std::array<float, 3> force_prefilter{};
 
   // Filtered estimate + slip diagnostics + validity gates — byte-identical to
   // the SeqLock/wire mirror, filled via rtc::grasp::FillPullEstimateData so the
@@ -58,26 +70,61 @@ struct PullEstimatorLogPod {
 static_assert(std::is_trivially_copyable_v<PullEstimatorLogPod>,
               "PullEstimatorLogPod must be trivially copyable for SPSC ring");
 
-/// Emit the CSV header (fixed shape — no per-instance context). The logger
-/// appends '\n'.
-inline void WritePullEstimatorLogHeader(std::ostream& os) {
-  os << "t_relative_s";
-  os << ",force_raw_x,force_raw_y,force_raw_z";
+/// Bit-order stamp appended to every mask column name, e.g.
+/// "[thumb|index|middle]" — bit k of that column is `roles[k]`.
+///
+/// The masks are indexed by *contact* index, and the contact→role mapping is a
+/// YAML ordering that used to live only in a one-shot startup INFO line: a
+/// stored CSV could not be decoded without that run's ROS log (#234 P-14).
+/// Stamping the order into the header keeps the file self-describing without a
+/// second sidecar artefact to keep in sync, and reordering `tip_names` changes
+/// the header rather than silently re-meaning the bits. Empty when the caller
+/// has no role list (the loader then falls back to bit indices).
+inline std::string PullMaskRoleSuffix(std::span<const std::string> roles) {
+  if (roles.empty()) {
+    return {};
+  }
+  std::string out = "[";
+  for (std::size_t i = 0; i < roles.size(); ++i) {
+    if (i != 0) {
+      out += '|';
+    }
+    out += roles[i];
+  }
+  out += ']';
+  return out;
+}
+
+/// Emit the CSV header. `roles` is the estimator's configured tip order and
+/// only stamps the mask column names (see PullMaskRoleSuffix); the column set
+/// itself is fixed. The logger appends '\n'.
+inline void WritePullEstimatorLogHeader(std::ostream& os, std::span<const std::string> roles = {}) {
+  const std::string m = PullMaskRoleSuffix(roles);
+  os << "t_relative_s,tick";
+  os << ",force_prefilter_x,force_prefilter_y,force_prefilter_z";
   os << ",force_x,force_y,force_z";
   os << ",inplane_x,inplane_y";
+  os << ",plane_normal_x,plane_normal_y,plane_normal_z";
+  os << ",basis_x_x,basis_x_y,basis_x_z";
+  os << ",basis_source,invalid_reason";
   os << ",magnitude,directional";
   os << ",friction_utilization,leakage_bound";
   os << ",valid_contact_count,valid,slip_risk,any_saturated,baseline_applied";
-  os << ",opposing_mask";
+  os << ",contact_mask" << m << ",touch_mask" << m << ",opposing_mask" << m;
 }
 
 /// Emit one row. The logger appends '\n' + flush.
 inline void WritePullEstimatorLogRow(std::ostream& os, const PullEstimatorLogPod& p) {
   const auto& e = p.estimate;
   os << p.t_relative_s;
-  os << ',' << p.force_raw[0] << ',' << p.force_raw[1] << ',' << p.force_raw[2];
+  os << ',' << p.tick;
+  os << ',' << p.force_prefilter[0] << ',' << p.force_prefilter[1] << ',' << p.force_prefilter[2];
   os << ',' << e.force[0] << ',' << e.force[1] << ',' << e.force[2];
   os << ',' << e.force_inplane[0] << ',' << e.force_inplane[1];
+  os << ',' << e.plane_normal[0] << ',' << e.plane_normal[1] << ',' << e.plane_normal[2];
+  os << ',' << e.basis_x[0] << ',' << e.basis_x[1] << ',' << e.basis_x[2];
+  os << ',' << static_cast<unsigned>(e.basis_source);
+  os << ',' << static_cast<unsigned>(e.invalid_reason);
   os << ',' << e.magnitude << ',' << e.directional;
   os << ',' << e.friction_utilization << ',' << e.leakage_bound;
   os << ',' << e.valid_contact_count;
@@ -85,6 +132,8 @@ inline void WritePullEstimatorLogRow(std::ostream& os, const PullEstimatorLogPod
   os << ',' << (e.slip_risk ? 1 : 0);
   os << ',' << (e.any_saturated ? 1 : 0);
   os << ',' << (e.baseline_applied ? 1 : 0);
+  os << ',' << static_cast<unsigned>(e.contact_mask);
+  os << ',' << static_cast<unsigned>(e.touch_mask);
   os << ',' << static_cast<unsigned>(p.opposing_mask);
 }
 
@@ -93,10 +142,12 @@ inline void WritePullEstimatorLogRow(std::ostream& os, const PullEstimatorLogPod
 /// (ControllerState::t_relative_s), per the ThreadCsvProducer-family
 /// first-column convention.
 inline void FillPullEstimatorLogPod(const rtc::grasp::PullEstimate& est, double t_relative_s,
-                                    PullEstimatorLogPod& pod) noexcept {
+                                    std::uint64_t tick, PullEstimatorLogPod& pod) noexcept {
   pod.t_relative_s = t_relative_s;
-  pod.force_raw = {static_cast<float>(est.force_raw.x()), static_cast<float>(est.force_raw.y()),
-                   static_cast<float>(est.force_raw.z())};
+  pod.tick = tick;
+  pod.force_prefilter = {static_cast<float>(est.force_raw.x()),
+                         static_cast<float>(est.force_raw.y()),
+                         static_cast<float>(est.force_raw.z())};
   // Shared filtered-block + diagnostics + gates — same casts as the wire/SeqLock
   // mirror, so reuse the single source of truth (force_raw stays CSV-only).
   rtc::grasp::FillPullEstimateData(est, pod.estimate);

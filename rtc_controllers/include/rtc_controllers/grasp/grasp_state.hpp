@@ -32,11 +32,21 @@ inline constexpr int kMaxGraspFingertips = 8;
 struct PullEstimateData {
   std::array<float, 3> force{};          // filtered F̂, reference frame [N]
   std::array<float, 2> force_inplane{};  // Bᵀ·F̂ plane coordinates [N]
-  float magnitude{0.0f};                 // |F̂| [N]
-  float directional{0.0f};               // dᵀ·F̂ (0 unless direction set) [N]
-  float friction_utilization{0.0f};      // max_i |f_t,i| / (μ_i f_n,i)
-  float leakage_bound{0.0f};             // grip→in-plane leakage bound [N]
+  // Self-description of the plane and its basis (#234 P-5) — force_inplane is
+  // meaningless without them, since the basis is recomputed from the observed
+  // pinch axis every tick. e_y = plane_normal × basis_x, so the two vectors
+  // pin B exactly. Zero ⇒ no plane/basis this tick.
+  std::array<float, 3> plane_normal{};  // n̂, reference frame
+  std::array<float, 3> basis_x{};       // ê_x, reference frame
+  float magnitude{0.0f};                // |F̂| [N]
+  float directional{0.0f};              // dᵀ·F̂ (0 unless direction set) [N]
+  float friction_utilization{0.0f};     // max_i |f_t,i| / (μ_i f_n,i)
+  float leakage_bound{0.0f};            // grip→in-plane leakage bound [N]
   int32_t valid_contact_count{0};
+  uint8_t basis_source{0};    // rtc::grasp::PullBasisSource
+  uint8_t invalid_reason{0};  // rtc::grasp::PullInvalidReason (0 iff valid)
+  uint8_t contact_mask{0};    // bit k = contact k in the force sum
+  uint8_t touch_mask{0};      // bit k = contact k pressing (|f_obj| gate)
   bool valid{false};
   bool slip_risk{false};
   bool any_saturated{false};

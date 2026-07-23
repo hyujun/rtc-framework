@@ -16,10 +16,17 @@
 // already exists (restartable session) the header is preserved and
 // subsequent rows append. Header-only; one writer per file. Not
 // thread-safe.
+//
+// Numeric formatting: Open() raises the stream precision to
+// numeric_limits<float>::max_digits10 so RowWriters do not each have to
+// remember to (#234 P-15). A RowWriter may still override per value.
 
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
+#include <ios>
+#include <limits>
 #include <ostream>
 #include <system_error>
 
@@ -59,6 +66,18 @@ class ThreadCsvLogger {
       if (!out_) {
         return false;
       }
+      // Widen from the iostream default of 6 significant digits (#234 P-15).
+      // At the default, a session-relative timestamp past 1000 s quantizes to
+      // 10 ms — five control ticks at 500 Hz collapse onto one x value, so the
+      // offline plots step and consecutive rows carry duplicate timestamps.
+      //
+      // max_digits10 for float is the smallest precision that round-trips every
+      // float exactly, and every non-timestamp column in the ThreadCsv family is
+      // a float. It also leaves the double timestamp with sub-0.1 ms resolution
+      // out to 1e5 s (~28 h), well past any session length, while keeping the
+      // rows narrow — double's own max_digits10 (17) would pad every force
+      // sample with eight digits of binary-representation noise.
+      out_ << std::defaultfloat << std::setprecision(std::numeric_limits<float>::max_digits10);
       if (is_new && header_writer) {
         header_writer(out_);
         out_ << '\n';

@@ -8,6 +8,7 @@
 #include <Eigen/Core>
 
 #include <array>
+#include <cstdint>
 #include <span>
 
 namespace rtc::grasp {
@@ -16,6 +17,36 @@ namespace rtc::grasp {
 /// per-contact storage stays fixed-size (RT no-alloc). Actual contact count is
 /// a runtime value supplied to Init().
 inline constexpr int kMaxPullContacts = kMaxGraspFingers;
+
+static_assert(kMaxPullContacts <= 8,
+              "PullEstimate::contact_mask / touch_mask are uint8 bitmasks over contacts");
+
+// ── Self-description enums (#234 P-5 / P-11) ────────────────────────────────
+
+/// Which rule produced the in-plane basis on a given tick. Published so a
+/// consumer can tell a physically named axis pair from a fallback one:
+/// force_inplane means "(along the configured reference, then n x that)" only
+/// under kReference. Values are wire constants — never renumber.
+enum class PullBasisSource : std::uint8_t {
+  kNone = 0,       ///< No basis this tick (invalid / degenerate normal).
+  kReference = 1,  ///< inplane_x_reference projected into the plane.
+  kCarry = 2,      ///< Previous e_x re-projected (reference collapsed).
+  kSeed = 3,       ///< World-axis seed (no usable carry either).
+};
+
+/// Why a tick was not valid. `kNone` iff PullEstimate::valid. Reported in
+/// priority order (the first gate that failed), so a consumer distinguishes
+/// "the geometry is degenerate" from "the thumb dropped out" from "not enough
+/// tips" — the three collapse to the same valid=false today, which is what
+/// makes a joint-vs-WBC trace comparison unreadable (#234 P-11).
+/// Values are wire constants — never renumber.
+enum class PullInvalidReason : std::uint8_t {
+  kNone = 0,                    ///< Valid tick.
+  kNotInitialized = 1,          ///< Update() before a successful Init().
+  kDegenerateNormal = 2,        ///< plane_normal zero / non-finite this tick.
+  kRequiredContactMissing = 3,  ///< A `required` contact was not active.
+  kInsufficientContacts = 4,    ///< Active count below min_valid_contacts.
+};
 
 // ── Per-contact configuration (Init 시 고정, non-RT) ─────────────────────────
 
@@ -56,13 +87,30 @@ struct PullContactConfig {
   /// Contact hysteresis on normal force f_n [N]: ON above on-threshold,
   /// OFF below off-threshold (on > off > 0 enforced at Init).
   ///
-  /// The same two thresholds also drive the *touch* hysteresis, which runs on
-  /// |f_obj| instead of f_n (see PullForceEstimator::touch_active). Since
-  /// |f_obj| >= |f_n| the touch set is always a superset of the contact set:
-  /// "this tip is pressing on something" (axis-independent) vs "this tip is
-  /// pressing along the plane normal" (the stricter gate on the sum).
+  /// These also drive the *touch* hysteresis (on |f_obj| instead of f_n — see
+  /// PullForceEstimator::touch_active) unless the touch pair below is set.
+  /// Sharing them makes the touch set a superset of the contact set, since
+  /// |f_obj| >= |f_n|: "this tip is pressing on something" (axis-independent)
+  /// vs "this tip is pressing along the plane normal" (the stricter gate on
+  /// the sum).
   double contact_on_threshold{0.5};
   double contact_off_threshold{0.2};
+  /// Optional independent hysteresis for the *touch* gate on |f_obj| [N].
+  /// Zero (default) = unset ⇒ the contact pair above is reused, which is the
+  /// historical behaviour and preserves `touch ⊇ contact` exactly.
+  ///
+  /// Set them when the two gates need different sensitivity (#234 P-16): touch
+  /// selects the pinch axis, contact admits a tip into the force sum, and on a
+  /// hand with large shear a tip can read as "touching" — dragging the axis
+  /// around — while contributing nothing to the sum. Raising only the touch
+  /// pair keeps such a tip out of the axis.
+  ///
+  /// Init enforces on > off > 0 on the pair, and that both or neither are set.
+  /// Note that raising touch above contact can invert `touch ⊇ contact`; the
+  /// wiring only uses touch to *select* the axis, so this costs axis
+  /// sensitivity, not correctness of the sum.
+  double touch_on_threshold{0.0};
+  double touch_off_threshold{0.0};
   /// Per-axis |raw force| at/above this is treated as saturated: the contact
   /// is gated out of the sum and PullEstimate::any_saturated is set [N].
   double force_saturation{50.0};
@@ -134,8 +182,35 @@ struct PullEstimate {
   Eigen::Vector3d force_raw{Eigen::Vector3d::Zero()};
   /// Low-passed force_raw; decayed on invalid ticks [N].
   Eigen::Vector3d force_filtered{Eigen::Vector3d::Zero()};
-  /// B^T * force_filtered — 2D coordinates in the plane basis [N].
+  /// B^T * force_filtered — 2D coordinates in the plane basis [N]. Only
+  /// interpretable together with `plane_normal` + `basis_x` + `basis_source`
+  /// below, which name the basis this tick actually used (#234 P-5).
   Eigen::Vector2d force_inplane{Eigen::Vector2d::Zero()};
+  /// n̂ used this tick, common reference frame. Zero only when there was no
+  /// usable normal at all (invalid_reason == kDegenerateNormal /
+  /// kNotInitialized); an otherwise-invalid tick still reports the plane it
+  /// gated against.
+  Eigen::Vector3d plane_normal{Eigen::Vector3d::Zero()};
+  /// e_x of the in-plane basis, common reference frame; e_y = n̂ x e_x, so the
+  /// pair (plane_normal, basis_x) determines B completely. Zero when no basis
+  /// was produced. Together with force_inplane this makes the 2-D pair
+  /// invertible back to the 3-D in-plane force without knowing the estimator's
+  /// config or its per-tick fallback branch.
+  Eigen::Vector3d basis_x{Eigen::Vector3d::Zero()};
+  /// Which MakePlaneBasis branch produced `basis_x`.
+  PullBasisSource basis_source{PullBasisSource::kNone};
+  /// First gate that failed; kNone iff `valid`.
+  PullInvalidReason invalid_reason{PullInvalidReason::kNone};
+  /// Bit k = contact k passed the *contact* hysteresis this tick, i.e. it is
+  /// in the force sum. This is the set `valid_contact_count` counts — the
+  /// wiring's opposing_mask is built from touch_mask instead and is a
+  /// different set (#234 P-12).
+  std::uint8_t contact_mask{0};
+  /// Bit k = contact k passed the *touch* hysteresis this tick (|f_obj|,
+  /// axis-independent). Includes the thumb, unlike the wiring's opposing_mask,
+  /// so "no tip touching" and "thumb geometry invalid" are distinguishable
+  /// (#234 P-14).
+  std::uint8_t touch_mask{0};
   /// |force_filtered| [N].
   double magnitude{0.0};
   /// d^T * force_filtered when a pull direction is set, else 0 [N].
@@ -145,9 +220,17 @@ struct PullEstimate {
   /// sum_i |f_n,i| * sin(alignment_error_rad) — grip→in-plane leakage bound [N].
   double leakage_bound{0.0};
   int valid_contact_count{0};
-  /// All gates passed: >= min_valid_contacts, all required roles active,
-  /// finite plane normal.
+  /// **Pull-vector validity only** (#234 P-7): >= min_valid_contacts, all
+  /// required roles active, finite plane normal. It gates force_raw /
+  /// force_filtered / force_inplane / magnitude / directional — the quantities
+  /// that need the plane. It does NOT gate the per-contact friction
+  /// diagnostics below, which are physically well defined on any active
+  /// contact whether or not an in-plane vector could be formed.
   bool valid{false};
+  /// max_friction_utilization >= slip_risk_threshold on some active contact.
+  /// Evaluated outside the `valid` gate — a required-role dropout must not
+  /// silence a tip that is visibly sliding. False whenever no contact is
+  /// active, since the utilization is then vacuously zero.
   bool slip_risk{false};
   /// Some contact was gated out for per-axis raw saturation this tick.
   bool any_saturated{false};
@@ -177,8 +260,12 @@ class PullForceEstimator {
 
   /// Validate configs/params and precompute filter coefficients (non-RT).
   /// Throws std::invalid_argument on: empty/oversized configs, on <= off or
-  /// off <= 0 hysteresis, non-positive saturation/friction/decay/min-contacts,
-  /// or bad filter rates.
+  /// off <= 0 hysteresis (contact pair, and the touch pair when set), a
+  /// half-set touch pair, non-positive saturation/friction/decay/min-contacts,
+  /// `min_valid_contacts` above the configured contact count (#234 P-6 — it
+  /// would otherwise configure cleanly and run permanently invalid),
+  /// `force_sign` outside {+1, -1}, any non-finite scalar or vector, or bad
+  /// filter rates.
   void Init(std::span<const PullContactConfig> configs, const PullEstimatorParams& params);
 
   /// Per-tick update on the RT thread. `inputs` follows Init() config order
@@ -186,6 +273,20 @@ class PullForceEstimator {
   /// object-plane normal in the common reference frame (normalized here;
   /// degenerate ⇒ invalid tick with bounded decay). Returns the stored
   /// estimate (also via estimate()).
+  ///
+  /// Invalid ticks decay the published force by exp(-dt / decay_time_constant)
+  /// rather than zeroing it. `dt <= 0` is treated as a full collapse (factor 0,
+  /// hard zero) — a non-advancing clock carries no information about how much
+  /// the estimate should have decayed, and holding the last value instead would
+  /// let a stalled caller publish a stale force indefinitely.
+  ///
+  /// The first valid tick after any invalid stretch reseeds the output filter
+  /// with that tick's raw estimate (#234 P-4). Without it the filter would
+  /// resume from the delay line it held before the gap and snap the output back
+  /// to the pre-gap force in one sample, undoing the decay the invalid ticks
+  /// published — the decay would apply on the way down but not on the way up.
+  /// The cost is that the first sample after a gap is unfiltered; the filter
+  /// resumes smoothing from there.
   const PullEstimate& Update(std::span<const PullContactInput> inputs,
                              const Eigen::Vector3d& plane_normal, double dt) noexcept;
 
@@ -254,8 +355,12 @@ class PullForceEstimator {
   /// function of n — no path dependence. When the plane turns edge-on to that
   /// reference the projection collapses, so the basis falls back to continuity
   /// carry (previous e_x re-projected) and then to a world-axis seed.
-  void MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3d& e_x,
-                      Eigen::Vector3d& e_y) noexcept;
+  ///
+  /// Returns which of those three branches produced e_x, so the tick can say
+  /// on the wire whether force_inplane[0] really is the named axis
+  /// (kReference) or a path-dependent fallback. kNone ⇒ e_x/e_y are zero.
+  [[nodiscard]] PullBasisSource MakePlaneBasis(const Eigen::Vector3d& n, Eigen::Vector3d& e_x,
+                                               Eigen::Vector3d& e_y) noexcept;
 
   // ── Fixed at Init ──
   std::array<PullContactConfig, kMaxPullContacts> configs_{};
@@ -276,6 +381,12 @@ class PullForceEstimator {
   /// Previous in-plane e_x, carried forward to keep the basis continuous.
   Eigen::Vector3d prev_e_x_{Eigen::Vector3d::Zero()};
   bool prev_e_x_valid_{false};
+  /// Set by every invalid tick, cleared by the valid tick that reseeds the
+  /// output filter (#234 P-4). While it is set, `filtered_` is being driven by
+  /// the bounded decay and the filter's delay line no longer describes it — so
+  /// the next valid sample must seed the filter rather than continue from a
+  /// tail the world has moved on from.
+  bool filter_reseed_pending_{false};
   bool pull_direction_set_{false};
   bool baseline_armed_{false};
   bool baseline_captured_{false};
