@@ -17,10 +17,12 @@ importing the module is enough (it does not build widgets at import time).
 """
 
 import dataclasses
+import threading
 
 import pytest
 
 from integrated_bringup.demo_gui.pull import (
+    BADGE_DETAIL_NO_ESTIMATOR,
     BADGE_NO_SLIP,
     BADGE_SLIP,
     BADGE_STALE,
@@ -194,10 +196,30 @@ _FRESH = 100.0
     [
         # fresh + slip_risk wins over everything else on a fresh tick, including
         # an invalid vector — slip is evaluated outside the `valid` gate (P-7).
+        #
+        # The `valid: False` rows carry an invalid_reason because that is what
+        # the wire contract says an invalid tick looks like ("INVALID_NONE iff
+        # valid", PullEstimate.msg). Leaving it at INVALID_NONE would exercise a
+        # state no estimator can emit — and one that now means something else
+        # entirely (no estimator ran at all; see the presence tests below).
         ({"slip_risk": True, "valid": True}, BADGE_SLIP),
-        ({"slip_risk": True, "valid": False}, BADGE_SLIP),
+        (
+            {
+                "slip_risk": True,
+                "valid": False,
+                "invalid_reason": PullEstimate.INVALID_REQUIRED_CONTACT,
+            },
+            BADGE_SLIP,
+        ),
         ({"slip_risk": False, "valid": True}, BADGE_NO_SLIP),
-        ({"slip_risk": False, "valid": False}, BADGE_UNKNOWN),
+        (
+            {
+                "slip_risk": False,
+                "valid": False,
+                "invalid_reason": PullEstimate.INVALID_REQUIRED_CONTACT,
+            },
+            BADGE_UNKNOWN,
+        ),
     ],
 )
 def test_badge_priority_on_fresh_ticks(kwargs, expected):
@@ -252,6 +274,51 @@ def test_badge_unknown_carries_the_wire_cause():
         assert badge.text == BADGE_UNKNOWN
         assert badge.detail == invalid_reason_label(reason)
         assert not badge.detail.startswith("?"), "unlabelled invalid_reason"
+
+
+def test_badge_reports_a_message_with_no_estimator_behind_it():
+    """A controller whose pull estimator is not wired never writes
+    ``grasp_state_.pull``, but SetupGraspStatePublisher copies the block onto
+    the wire every tick regardless — so a *fresh* GraspState arrives carrying
+    the default-constructed POD (all zeros, valid=False, INVALID_NONE).
+
+    Labelling that with _INVALID_LABELS[INVALID_NONE] read "UNKNOWN: valid":
+    a self-contradicting badge that named an estimate failure which never
+    happened. It is a distinct state and has to read as one.
+    """
+    snap = PullSnapshot.from_message(GraspState(), SOURCE_GRASP, _FRESH)
+    assert snap.estimated is False
+
+    badge = badge_state(snap, _FRESH)
+    assert badge.text == BADGE_UNAVAILABLE
+    assert badge.detail == BADGE_DETAIL_NO_ESTIMATOR
+
+
+def test_no_estimator_blanks_the_all_zero_block():
+    """The other half of the same bug: the never-written block is all zeros, so
+    rendering it as trusted showed "0.00 N" / "0.00" — the exact "a zero and a
+    non-estimate must not look alike" failure the placeholder exists for
+    (#234 P-3). Provenance still renders: the controller *is* alive."""
+    render = build_render(PullSnapshot.from_message(GraspState(), SOURCE_GRASP, _FRESH), _FRESH)
+    assert render.trusted is False
+    for key in set(VECTOR_FIELDS) | set(DIAGNOSTIC_FIELDS):
+        assert render.values[key] == PLACEHOLDER, key
+    # And in particular the field that used to read the nonsense label.
+    assert render.values["valid"] != invalid_reason_label(PullEstimate.INVALID_NONE)
+    assert "GraspState" in render.values["source"]
+
+
+def test_estimated_accepts_every_contract_valid_tick():
+    """`estimated` must reject exactly one state — the off-contract
+    (valid=False, INVALID_NONE) pair — and nothing an estimator can emit."""
+    assert _snap(now=_FRESH, valid=True, invalid_reason=PullEstimate.INVALID_NONE).estimated
+    for reason in (
+        PullEstimate.INVALID_NOT_INITIALIZED,
+        PullEstimate.INVALID_DEGENERATE_NORMAL,
+        PullEstimate.INVALID_REQUIRED_CONTACT,
+        PullEstimate.INVALID_INSUFFICIENT_CONTACTS,
+    ):
+        assert _snap(now=_FRESH, valid=False, invalid_reason=reason).estimated, reason
 
 
 def test_badge_key_covers_detail():
@@ -437,12 +504,30 @@ def test_mask_label_is_lsb_first():
     assert mask_label(0b11111111, 8) == "########"
 
 
+def test_mask_label_flags_contacts_past_the_panel_slots():
+    """The slot count is the GUI's fingertip roster; the masks are uint8 and
+    sized by the estimator's tip list. They agree for every robot shipped
+    today, but a wider estimator must not have contacts silently vanish."""
+    assert mask_label(0b10000, 4) == "....+"
+    assert mask_label(0b10001, 4) == "#...+"
+    assert mask_label(0b1111, 4) == "####"
+
+
 def test_contact_and_touch_masks_render_independently():
     """The two masks are different sets (touch is axis-independent and includes
     the thumb), so 'nothing is touching' stays distinguishable from a
     thumb-only grasp."""
     render = build_render(
-        _snap(now=_FRESH, contact_mask=0b0010, touch_mask=0b1011, valid_contact_count=1), _FRESH
+        _snap(
+            now=_FRESH,
+            contact_mask=0b0010,
+            touch_mask=0b1011,
+            valid_contact_count=1,
+            # An invalid tick per the wire contract, not a never-written block:
+            # the diagnostics are only rendered when something estimated them.
+            invalid_reason=PullEstimate.INVALID_INSUFFICIENT_CONTACTS,
+        ),
+        _FRESH,
     )
     assert render.values["contact_set"] == ".#.. (1)"
     assert render.values["touch_set"] == "##.#"
@@ -511,6 +596,36 @@ def test_peak_hold_never_downgrades_the_snapshot():
     merged = hold.merge_into(latest)
     assert merged.friction_utilization == pytest.approx(0.7)
     assert merged.slip_risk is True
+
+
+def test_peak_hold_serialises_observe_against_the_drain():
+    """`observe` runs on the rclpy executor thread and `consume` on the Tk
+    thread, and every update is a read-modify-write (`max`, `or`, `+= 1`) that
+    the GIL does not make atomic. An `observe` landing between `consume`'s read
+    and its clear writes the just-drained peak back — carrying a spike into a
+    frame it does not belong to — and a lost `samples` increment makes
+    `merge_into` see an empty frame and drop that spike from the panel
+    entirely.
+
+    Asserted structurally (does `observe` block while the accumulator is being
+    drained?) rather than by hammering it from N threads: a throughput race
+    does not reliably reproduce under CPython's specialising interpreter — the
+    unlocked version passes 8000-sample runs — so such a test would pass with
+    the lock removed and guard nothing.
+    """
+    hold = PullPeakHold()
+    spike = _snap(now=_FRESH, friction_utilization=0.9, slip_risk=True)
+    observed = threading.Event()
+    worker = threading.Thread(target=lambda: (hold.observe(spike), observed.set()))
+
+    with hold._lock:  # stands in for a drain in flight on the Tk thread
+        worker.start()
+        assert not observed.wait(0.2), "observe mutated the accumulator mid-drain"
+
+    worker.join(timeout=5.0)
+    assert observed.is_set(), "observe never completed after the drain released"
+    assert hold.samples == 1
+    assert hold.friction_utilization == pytest.approx(0.9)
 
 
 def test_peak_hold_reset_drops_the_previous_source():

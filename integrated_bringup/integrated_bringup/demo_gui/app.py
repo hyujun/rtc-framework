@@ -560,7 +560,13 @@ class DemoControllerGUI(Node):
         self._pull = snap
 
     def _wbc_state_cb(self, msg: WbcState):
-        """WbcState handler — published by demo_wbc_controller at ~50 Hz.
+        """WbcState handler — published by demo_wbc_controller.
+
+        The rate is not a GUI-side constant: the CM's non-RT publish lane is
+        woken per RT tick (eventfd, coalescing) and applies no decimation, so
+        the wire rate tracks ``control_rate``. That is what the pull panel's
+        peak-hold and 0.5 s staleness threshold are sized against — see
+        ``demo_gui.pull``.
 
         Reuses the grasp-state display widgets (force_magnitude /
         contact_flag are per-fingertip, num_active_contacts / max_force /

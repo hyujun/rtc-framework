@@ -27,7 +27,8 @@ Public surface (imported by app.py):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import threading
+from dataclasses import dataclass, field, replace
 
 from rtc_msgs.msg import PullEstimate
 
@@ -125,10 +126,17 @@ def mask_label(mask: int, num_bits: int = 4) -> str:
     """Render a contact/touch bitmask as fixed-width contact slots, bit k =
     contact k in the estimator's configured tip order. Bit 0 is drawn leftmost
     so the string reads in the same order as the configured tips (the opposite
-    of a plain binary literal)."""
+    of a plain binary literal).
+
+    ``num_bits`` is the panel's slot count (the GUI's fingertip roster), while
+    the masks are ``uint8`` and sized by the *estimator's* tip list. Those two
+    agree for every robot shipped today, but a wider estimator would otherwise
+    lose contacts here silently, so surplus bits are flagged with a trailing
+    ``+`` rather than dropped."""
     if num_bits <= 0:
         return "--"
-    return "".join("#" if mask & (1 << k) else "." for k in range(num_bits))
+    slots = "".join("#" if mask & (1 << k) else "." for k in range(num_bits))
+    return (slots + "+") if (mask >> num_bits) else slots
 
 
 # ── Snapshot ─────────────────────────────────────────────────────────────────
@@ -228,6 +236,28 @@ class PullSnapshot:
     def received(self) -> bool:
         return self.recv_monotonic is not None
 
+    @property
+    def estimated(self) -> bool:
+        """False when the parent message carried a pull block nobody wrote.
+
+        A controller whose estimator is not wired — ``enabled: false``, or no
+        FK-backed tip link resolved (``pull_estimator_wiring.cpp``: "[pull_
+        estimator] disabled ... No pull estimate will be published") — never
+        touches ``grasp_state_.pull``, yet ``SetupGraspStatePublisher`` copies
+        the block onto the wire every tick regardless. What arrives is the
+        default-constructed POD: all zeros, ``valid == False`` and
+        ``invalid_reason == INVALID_NONE``.
+
+        That pair is off-contract — PullEstimate.msg specifies INVALID_NONE
+        *iff* ``valid`` — which is exactly what makes it a reliable marker for
+        "no estimator behind this message". Without it the panel labels the
+        failure with ``_INVALID_LABELS[INVALID_NONE]`` and reads "UNKNOWN:
+        valid", naming an estimate failure that never happened and rendering
+        the all-zero block as live 0.00 values (the #234 P-3 confusion between
+        "zero" and "not estimated").
+        """
+        return self.valid or self.invalid_reason != PullEstimate.INVALID_NONE
+
     def age_s(self, now: float) -> float | None:
         """Seconds since arrival, or ``None`` if nothing has arrived. Clamped at
         zero so a non-monotonic caller (a test passing an earlier ``now``) can
@@ -266,31 +296,56 @@ class PullPeakHold:
     quiet frame reads quiet. ``reset`` drops the accumulator entirely, which is
     what a stale/unavailable stream needs — otherwise a peak from before a
     controller switch or a publish gap would outlive its source.
+
+    Unlike ``PullSnapshot`` — published by an atomic attribute rebind — this is
+    a *mutable* accumulator written by the rclpy executor thread (``observe``)
+    and drained by the Tk thread (``consume``), and every one of its updates is
+    a read-modify-write (``max``, ``or``, ``+= 1``) that the GIL does not make
+    atomic. A lock is therefore load-bearing rather than defensive: an
+    ``observe`` interleaved between ``consume``'s read and its clear would
+    write the just-consumed peak back, carrying a spike into a frame it does
+    not belong to, and a lost ``samples`` increment would make ``merge_into``
+    see an empty frame and drop that spike from the panel entirely. Contention
+    is a handful of uncontended acquisitions per RT tick against one Tk drain
+    every 200 ms.
     """
 
     friction_utilization: float = 0.0
     slip_risk: bool = False
     samples: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
 
     def observe(self, snap: PullSnapshot) -> None:
         """Fold one stored snapshot into the frame's extremes. Called from the
         rclpy executor thread on every message."""
-        self.friction_utilization = max(self.friction_utilization, snap.friction_utilization)
-        self.slip_risk = self.slip_risk or snap.slip_risk
-        self.samples += 1
+        with self._lock:
+            self.friction_utilization = max(self.friction_utilization, snap.friction_utilization)
+            self.slip_risk = self.slip_risk or snap.slip_risk
+            self.samples += 1
 
-    def reset(self) -> None:
+    def _clear_locked(self) -> None:
+        """Clear the accumulator. The caller must hold ``_lock`` — ``consume``
+        has to read and clear as one critical section, and a plain non-reentrant
+        lock cannot be re-acquired from inside it."""
         self.friction_utilization = 0.0
         self.slip_risk = False
         self.samples = 0
+
+    def reset(self) -> None:
+        with self._lock:
+            self._clear_locked()
 
     def consume(self) -> tuple[float, bool, int]:
         """Return ``(peak_friction_utilization, any_slip_risk, samples)`` for the
         frame and clear. ``samples == 0`` means no message arrived during the
         frame — the caller falls back to the snapshot's own values rather than
-        reporting a zero peak that never happened."""
-        out = (self.friction_utilization, self.slip_risk, self.samples)
-        self.reset()
+        reporting a zero peak that never happened.
+
+        Read and clear are one critical section: a sample landing between the
+        two would otherwise be counted in neither frame."""
+        with self._lock:
+            out = (self.friction_utilization, self.slip_risk, self.samples)
+            self._clear_locked()
         return out
 
     def merge_into(self, snap: PullSnapshot) -> PullSnapshot:
@@ -319,6 +374,11 @@ BADGE_NO_SLIP = "NO SLIP RISK"
 BADGE_UNKNOWN = "UNKNOWN"
 BADGE_STALE = "STALE"
 BADGE_UNAVAILABLE = "UNAVAILABLE"
+
+# Badge detail for a fresh message whose pull block was never written. Worded to
+# match the controller-side log line ("[pull_estimator] disabled — ...") so the
+# operator can grep for the reason rather than guess at one.
+BADGE_DETAIL_NO_ESTIMATOR = "estimator disabled"
 
 _COLOR_RED = ("#f38ba8", "#1e1e2e")
 _COLOR_GREY = ("#585b70", "#cdd6f4")
@@ -359,18 +419,25 @@ def badge_state(
 
     Priority, highest first:
 
-    1. fresh + ``slip_risk``  → SLIP RISK
-    2. fresh + ``valid``      → NO SLIP RISK
-    3. fresh + ``!valid``     → UNKNOWN (+ ``invalid_reason`` as the cause)
-    4. stale / never received / E-STOP → STALE / UNAVAILABLE
+    1. E-STOP                       → UNAVAILABLE
+    2. stale / never received       → STALE / UNAVAILABLE
+    3. fresh + no estimator behind the block → UNAVAILABLE
+    4. fresh + ``slip_risk``  → SLIP RISK
+    5. fresh + ``valid``      → NO SLIP RISK
+    6. fresh + ``!valid``     → UNKNOWN (+ ``invalid_reason`` as the cause)
 
-    The three positive states share ``fresh`` as a precondition, so freshness is
-    resolved first; within a fresh tick, slip risk outranks validity because
+    Freshness and presence are both preconditions of the three content states,
+    so they are resolved first — "is anyone talking" then "is anyone
+    estimating" then "what does it say". ``estimated`` cannot mask a real slip:
+    the block it rejects is the default-constructed one, whose ``slip_risk`` is
+    false by construction.
+
+    Within a fresh, estimated tick, slip risk outranks validity because
     ``slip_risk`` and ``friction_utilization`` are evaluated outside the
     ``valid`` gate by the estimator itself (#234 P-7) — tips that are still
     holding must be able to report slip while the pull *vector* is invalid.
 
-    E-STOP is resolved with the bottom bucket rather than as a fresh tick even
+    E-STOP is resolved as UNAVAILABLE rather than as a fresh tick even
     though the controller keeps publishing through it (#234 P-1 guarantees a
     row every tick). ``StageEstopPullTick`` drives the estimator with an
     all-invalid input span and a zero normal, so an E-STOP tick reports
@@ -387,6 +454,9 @@ def badge_state(
             return _badge(BADGE_UNAVAILABLE, _COLOR_DARK, "no estimate received")
         age = snap.age_s(now) or 0.0
         return _badge(BADGE_STALE, _COLOR_AMBER, f"last update {age:.1f} s ago")
+
+    if not snap.estimated:
+        return _badge(BADGE_UNAVAILABLE, _COLOR_DARK, BADGE_DETAIL_NO_ESTIMATOR)
 
     if snap.slip_risk:
         return _badge(BADGE_SLIP, _COLOR_RED)
@@ -450,8 +520,10 @@ def build_render(
     Two gates, deliberately different (#234 P-3/P-7):
 
     - ``trusted`` — the badge does not read STALE/UNAVAILABLE. When it fails,
-      every value blanks: numbers from a publisher that stopped, or from before
-      a controller switch, are worse than no numbers.
+      every value blanks: numbers from a publisher that stopped, from before a
+      controller switch, or from a message whose estimator never ran (see
+      ``PullSnapshot.estimated`` — an all-zero block would otherwise render as
+      a live "0.00 N") are worse than no numbers.
     - ``vector_ok`` — additionally ``valid``, which is *pull-vector* validity
       only. It gates magnitude / force / in-plane / directional / leakage / the
       basis. It does **not** gate the contact diagnostics, because the estimator

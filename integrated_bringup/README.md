@@ -761,11 +761,14 @@ phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC pub
 
 | 순위 | 조건 | 배지 | 부가 설명 |
 |---|---|---|---|
-| 1 | fresh + `slip_risk` | `SLIP RISK` | — |
-| 2 | fresh + `valid` | `NO SLIP RISK` | — |
-| 3 | fresh + `!valid` | `UNKNOWN` | `invalid_reason` 라벨 (not initialized / degenerate normal / required contact lost / too few contacts) |
-| 4 | stale · 미수신 · rewire 직후 | `STALE` / `UNAVAILABLE` | 마지막 갱신 경과 시간 |
-| 4 | E-STOP | `UNAVAILABLE` | `E-STOP active` |
+| 1 | E-STOP | `UNAVAILABLE` | `E-STOP active` |
+| 2 | stale · 미수신 · rewire 직후 | `STALE` / `UNAVAILABLE` | 마지막 갱신 경과 시간 |
+| 3 | fresh + estimator 미wiring | `UNAVAILABLE` | `estimator disabled` |
+| 4 | fresh + `slip_risk` | `SLIP RISK` | — |
+| 5 | fresh + `valid` | `NO SLIP RISK` | — |
+| 6 | fresh + `!valid` | `UNKNOWN` | `invalid_reason` 라벨 (not initialized / degenerate normal / required contact lost / too few contacts) |
+
+3순위가 별도 상태인 이유: `pull_estimator.enabled: false` 이거나 FK-backed tip link 가 하나도 안 풀리면 컨트롤러는 `grasp_state_.pull` 을 **한 번도 쓰지 않는데**, `SetupGraspStatePublisher` 는 그 블록을 매 tick 그대로 wire 에 복사합니다. 즉 default-constructed POD (전부 0, `valid=false`, `invalid_reason=INVALID_NONE`) 가 fresh 메시지로 도착합니다. 이 조합은 `PullEstimate.msg` 계약 ("INVALID_NONE **iff** `valid`") 밖이라 "이 메시지 뒤에 estimator 가 없다" 의 신뢰할 수 있는 표지이며, 이를 처리하지 않으면 배지가 `_INVALID_LABELS[INVALID_NONE]` 을 집어 **"UNKNOWN: valid"** 라는 자기모순 문구를 띄우고 전부-0 블록이 살아있는 `0.00 N` 으로 렌더됩니다 (P-3 의 "0 과 미추정이 같아 보이면 안 된다" 위반). 문구는 컨트롤러 로그 `[pull_estimator] disabled — ...` 와 맞춰 두었으므로 조작자가 원인을 grep 할 수 있습니다.
 
 fresh tick 안에서 slip 이 validity 를 앞서는 것은 estimator 가 `slip_risk`/`friction_utilization` 을 `valid` 게이트 **밖에서** 평가하기 때문입니다 (#234 P-7) — required role 이 빠져 pull 벡터가 무효여도 아직 잡고 있는 tip 은 미끄러질 수 있습니다. E-STOP 은 PR-A 이후에도 매 tick 행을 발행하지만 `StageEstopPullTick` 이 all-invalid 입력 + zero normal 로 돌리므로 `INVALID_DEGENERATE_NORMAL` 이 실려 옵니다 — 이를 "UNKNOWN: degenerate normal" 로 읽으면 일어나지도 않은 기하 실패를 지목하게 되므로 배지를 `UNAVAILABLE` 로 덮습니다 (같은 경로가 contact 을 전부 지우므로 `slip_risk` 도 false 라 숨겨지는 정보는 없습니다).
 
@@ -777,11 +780,11 @@ fresh tick 안에서 slip 이 validity 를 앞서는 것은 estimator 가 `slip_
 | Contacts (partial-contact 진단) | `trusted` | `friction_utilization` · `contact_mask` · `touch_mask` · `any_saturated` · `baseline_applied` · `plane_normal[3]` |
 | Source | 무조건 | publisher 라벨 · age · `header.frame_id` |
 
-`plane_normal` 만 진단 그룹에 있는 것은 `PullEstimate.msg` 계약 때문입니다 — tick 이 normal 은 가졌는데 basis 는 없을 수 있으므로 (평면은 멀쩡한데 required tip 이 빠진 경우) `valid` 로 게이팅하면 wire 가 유효하다고 말하는 값을 숨기게 됩니다. 반대로 `basis_x` 는 무효 tick 에서 항상 0 이라 `valid` 게이트가 맞습니다. `basis` 는 축 이름이 아니라 **규칙**(`reference`/`carry`/`seed`)을 표시합니다 — `force_inplane[0]` 이 설정된 reference 방향 성분인 것은 `BASIS_REFERENCE` 일 때뿐이기 때문입니다 (#234 P-11). mask 는 LSB-first (`#.#.` = contact 0·2) 로 estimator 의 tip role 순서를 따릅니다.
+`plane_normal` 만 진단 그룹에 있는 것은 `PullEstimate.msg` 계약 때문입니다 — tick 이 normal 은 가졌는데 basis 는 없을 수 있으므로 (평면은 멀쩡한데 required tip 이 빠진 경우) `valid` 로 게이팅하면 wire 가 유효하다고 말하는 값을 숨기게 됩니다. 반대로 `basis_x` 는 무효 tick 에서 항상 0 이라 `valid` 게이트가 맞습니다. `basis` 는 축 이름이 아니라 **규칙**(`reference`/`carry`/`seed`)을 표시합니다 — `force_inplane[0]` 이 설정된 reference 방향 성분인 것은 `BASIS_REFERENCE` 일 때뿐이기 때문입니다 (#234 P-11). mask 는 LSB-first (`#.#.` = contact 0·2) 로 estimator 의 tip role 순서를 따릅니다. 슬롯 수는 GUI 의 fingertip roster (`FINGERTIP_NAMES`, 4) 이고 mask 는 uint8 · estimator 의 tip 목록 크기이므로 — 현재 모든 로봇 config 에서 둘 다 4 로 일치 — 그 밖의 비트는 조용히 버리지 않고 말미 `+` 로 표시합니다 (`#...+`).
 
-**Peak-hold.** wire 는 `control_rate` (수백 Hz), 패널은 5 Hz 이므로 렌더 시점의 최신 스냅샷만 보면 대략 100 tick 중 1개 — 하필 순간적인 slip spike 가 안 보이는 표본 — 만 보게 됩니다. 저장되는 모든 스냅샷을 `PullPeakHold` 에 접어 넣고 렌더가 프레임마다 소비·클리어하므로, `friction_utilization` 은 그 프레임의 최댓값, `slip_risk` 는 OR 로 표시됩니다. 감쇠 hold 가 아니라 **직전 프레임 소유**이므로 spike 는 한 프레임 보였다 사라지고 조용한 프레임은 조용하게 읽힙니다. 프레임 중 메시지가 하나도 안 왔으면 (`samples == 0`) 스냅샷을 그대로 두어, 있지도 않은 0 peak 로 마지막 값을 지우지 않습니다.
+**Peak-hold.** wire 는 `control_rate` (수백 Hz), 패널은 5 Hz 이므로 렌더 시점의 최신 스냅샷만 보면 대략 100 tick 중 1개 — 하필 순간적인 slip spike 가 안 보이는 표본 — 만 보게 됩니다. 저장되는 모든 스냅샷을 `PullPeakHold` 에 접어 넣고 렌더가 프레임마다 소비·클리어하므로, `friction_utilization` 은 그 프레임의 최댓값, `slip_risk` 는 OR 로 표시됩니다. 감쇠 hold 가 아니라 **직전 프레임 소유**이므로 spike 는 한 프레임 보였다 사라지고 조용한 프레임은 조용하게 읽힙니다. 프레임 중 메시지가 하나도 안 왔으면 (`samples == 0`) 스냅샷을 그대로 두어, 있지도 않은 0 peak 로 마지막 값을 지우지 않습니다. `PullSnapshot` 과 달리 이 accumulator 는 **mutable** 이고 executor 스레드(`observe`)와 Tk 스레드(`consume`)가 함께 쓰며 모든 갱신이 read-modify-write (`max`/`or`/`+= 1`) 라 GIL 이 원자성을 주지 않으므로 `threading.Lock` 으로 감쌉니다 — 없으면 drain 중간에 낀 `observe` 가 방금 소비한 peak 를 되써서 spike 가 남의 프레임으로 넘어가고, `samples` 증가가 유실되면 `merge_into` 가 빈 프레임으로 보아 그 spike 를 아예 버립니다.
 
-**Rewire 리셋.** `_rewire_owned_topics` 는 핸들을 재생성하기 전에 `_reset_controller_sourced_state()` 로 컨트롤러 소유 상태를 버립니다 (#234 P-10). estimator 가 비활성인 컨트롤러는 pull 블록을 아예 발행하지 않으므로, 남겨두면 이전 컨트롤러의 값이 새 컨트롤러의 라이브 데이터처럼 화면에 남습니다. peak-hold 도 함께 리셋되며 (spike 는 그것을 만든 source 소유), phase 라벨 표를 고르는 `_wbc_active` 도 초기화됩니다 (stale `True` 는 다음 컨트롤러의 phase 를 잘못된 enum 으로 디코딩).
+**Rewire 리셋.** `_rewire_owned_topics` 는 핸들을 재생성하기 전에 `_reset_controller_sourced_state()` 로 컨트롤러 소유 상태를 버립니다 (#234 P-10). 남겨두면 이전 컨트롤러의 값이 새 컨트롤러의 라이브 데이터처럼 화면에 남습니다 (새 컨트롤러가 estimator 를 안 쓰면 그 자리를 덮어쓸 값 자체가 오지 않습니다). peak-hold 도 함께 리셋되며 (spike 는 그것을 만든 source 소유), phase 라벨 표를 고르는 `_wbc_active` 도 초기화됩니다 (stale `True` 는 다음 컨트롤러의 phase 를 잘못된 enum 으로 디코딩).
 
 #### 기타 기능
 
