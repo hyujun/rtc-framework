@@ -706,6 +706,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_robot_profiles test/test_robot_profiles.py)
   ament_add_pytest_test(test_demo_gui_catalog test/test_demo_gui_catalog.py)
   ament_add_pytest_test(test_demo_gui_presets test/test_demo_gui_presets.py)
+  ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)
 endif()
 
 ament_package()
