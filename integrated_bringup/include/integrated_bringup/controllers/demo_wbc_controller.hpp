@@ -262,6 +262,13 @@ class DemoWbcController final : public RTControllerInterface {
     return wbc_state_;
   }
 
+  /// Test-only: the body the publish thread would Load right now (#234 P-1) —
+  /// i.e. through the SeqLock rather than the staging buffer above, so a tick
+  /// that fills wbc_state_ without storing it is detectable.
+  [[nodiscard]] ::integrated_bringup::WbcStateData GetPublishedWbcStateForTesting() const noexcept {
+    return wbc_state_lock_.Load();
+  }
+
   void ForcePhaseForTesting(WbcPhase p) noexcept {
     phase_ = p;
     // Force-injection tests rely on the first post-ForcePhase tick treating
@@ -429,6 +436,24 @@ class DemoWbcController final : public RTControllerInterface {
   // arm_handle_ must be non-null) and returns the computed TCP SE3 so the publish
   // path can reuse it for arm_tip_pose.
   pinocchio::SE3 FillTaskPosePods(ControllerOutput& output) noexcept;
+
+  // Sensor-derived WbcState aggregates (per-fingertip |F| / contact flags /
+  // grasp detection). Sourced from fingertip_data_, which ReadState refreshes
+  // every tick including E-STOP — hence shared by FillLogOutput and
+  // FillEstopPublishState. Does NOT touch the TSID-derived fields.
+  void FillWbcSensorAggregates() noexcept;
+
+  // E-STOP counterpart of FillLogOutput's SeqLock store (#234 P-1). The E-8
+  // rule this path used to enforce ("do not push the WBC state on the E-STOP
+  // path — tsid_output_ is stale there") stopped the store but not the
+  // publish: the CM stamps a snapshot every tick and the publish thread
+  // re-loads the SeqLock, so skipping the store shipped the pre-E-STOP body
+  // under the current stamp. Storing an explicitly E-STOP-shaped body keeps
+  // the rule's intent — sensor aggregates are refreshed, TSID health is
+  // reported as not-solved (tsid_solver_ok=false, tsid_solve_us=0) instead of
+  // replaying the last solve, and the pull estimate runs its E-STOP tick.
+  // RT tick path — noexcept, heap-free.
+  void FillEstopPublishState(double dt) noexcept;
 
   // ── WBC CSV fill (controller-private data: a_opt / SE3 ramp / fingertip
   //    force / TSID-QP diagnostics — see ~/.claude/plans/wbc-csv-logging.md) ─
@@ -837,6 +862,7 @@ class DemoWbcController final : public RTControllerInterface {
   void ResetTargetInitialization() noexcept override {
     target_initialized_.store(false, std::memory_order_release);
   }
+
   TargetSlot current_target_slot_{};
   bool robot_new_target_pending_{false};     // RT-thread-only
   bool hand_new_target_pending_{false};      // RT-thread-only
@@ -1077,6 +1103,10 @@ class DemoWbcController final : public RTControllerInterface {
   std::vector<ParsedLogEntry> parsed_log_entries_;
 
   rtc::ControllerLogSet log_set_{"demo_wbc_controller"};
+
+  // Lifetime CSV drop count already reported by the drain timer (#234 P-20) —
+  // DrainControllerLogs warns once per new burst rather than once per drain.
+  std::uint64_t log_drops_reported_{0};
   // WBC arm/hand state channels use the WBC-specific superset POD
   // (DeviceWbcLog) instead of the generic DeviceStateLog — adds a_opt
   // acceleration, SE3 trajectory (arm), and fingertip force (hand). The hand

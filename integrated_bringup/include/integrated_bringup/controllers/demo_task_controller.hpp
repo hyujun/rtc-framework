@@ -199,6 +199,15 @@ class DemoTaskController final : public RTControllerInterface {
     return grasp_state_;
   }
 
+  /// Test-only: the body the publish thread would Load right now (#234 P-1).
+  /// Distinct from GetGraspStateForTesting(), which returns the RT staging
+  /// buffer: a tick that fills the staging buffer but never stores it gets
+  /// republished as the *previous* body under the current stamp, and only this
+  /// accessor can tell those two apart.
+  [[nodiscard]] ::rtc::grasp::GraspStateData GetPublishedGraspStateForTesting() const noexcept {
+    return grasp_state_lock_.Load();
+  }
+
   [[nodiscard]] const ::integrated_bringup::ToFSnapshotData& GetToFSnapshotForTesting()
       const noexcept {
     return tof_snapshot_;
@@ -262,6 +271,19 @@ class DemoTaskController final : public RTControllerInterface {
   void FillLogOutput(const ControllerState& state, ControllerOutput& output, double dt) noexcept;
   void FillPublishOutput(const ControllerState& state, ControllerOutput& output,
                          double dt) noexcept;
+
+  // Sensor-derived grasp aggregates (per-fingertip |F| / contact flags /
+  // grasp detection). Sourced from fingertip_data_, which ReadState refreshes
+  // every tick including E-STOP — hence shared by ComputeControl and
+  // FillEstopPublishState. Contains no control-law output.
+  void FillGraspSensorAggregates(const Gains& gains) noexcept;
+
+  // E-STOP counterpart of FillLogOutput's SeqLock store (#234 P-1) — see
+  // demo_joint_controller.hpp for the fresh-stamp/stale-body rationale. Called
+  // from FillLogOutput's E-STOP branch, i.e. before the tail
+  // PushPullEstimatorLog, so the CSV row and the wire carry the same tick.
+  // RT tick path — noexcept, heap-free.
+  void FillEstopPublishState(double dt) noexcept;
 
   // ── Controller state (gains before urdf_path to match constructor init
   // order) ─
@@ -408,6 +430,7 @@ class DemoTaskController final : public RTControllerInterface {
     arm_target_initialized_.store(false, std::memory_order_release);
     hand_target_initialized_.store(false, std::memory_order_release);
   }
+
   TargetSlot current_target_slot_{};
 
   // RT-thread-only: refresh current_target_slot_ from the SeqLock, drain any
@@ -551,6 +574,10 @@ class DemoTaskController final : public RTControllerInterface {
   std::vector<ParsedLogEntry> parsed_log_entries_;
 
   rtc::ControllerLogSet log_set_{"demo_task_controller"};
+
+  // Lifetime CSV drop count already reported by the drain timer (#234 P-20) —
+  // DrainControllerLogs warns once per new burst rather than once per drain.
+  std::uint64_t log_drops_reported_{0};
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> primary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;

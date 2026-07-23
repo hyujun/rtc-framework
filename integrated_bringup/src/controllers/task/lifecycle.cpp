@@ -119,7 +119,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
       log_drain_timer_ = node_->create_wall_timer(
-          std::chrono::milliseconds(100), [this]() { log_set_.DrainAll(); }, log_drain_cb_group_);
+          std::chrono::milliseconds(100), [this]() { DrainControllerLogs(log_set_, logger_, log_drops_reported_); }, log_drain_cb_group_);
     }
 
     // Phase B: declare tunable gains as ROS 2 parameters on the controller's

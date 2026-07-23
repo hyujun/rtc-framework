@@ -273,41 +273,10 @@ void DemoJointController::ComputeControl(const ControllerState& state, double dt
 
   // ── Grasp detection + ContactStopHand (500Hz) ────────────────────────
   {
-    // Capability-aware: ReadState has already encoded the sensor path in
-    // ft.in_contact (sensor A → native_prob+force AND, sensor B → force only).
-    // grasp_contact_threshold is consulted only on sensor A paths there.
-    const float force_thresh = gains.grasp_force_threshold;
-    const int min_fingers = gains.grasp_min_fingertips;
-
-    float max_force = 0.0f;
-    int active_count = 0;
-
-    for (int f = 0; f < num_active_fingertips_; ++f) {
-      const auto idx = static_cast<std::size_t>(f);
-      const auto& ft = fingertip_data_[idx];
-      const float mag = ft.force_mag;  // cached in ReadState
-
-      grasp_state_.force_magnitude[idx] = mag;
-      // contact_flag publish policy: sensor A path → native probability so
-      // downstream consumers see the smooth sigmoid value; sensor B path →
-      // derived binary (1/0 from in_contact). Both work with the BT
-      // convention `contact_flag > 0.5f`.
-      grasp_state_.contact_flag[idx] =
-          has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
-      grasp_state_.inference_valid[idx] = ft.valid;
-
-      if (mag > max_force)
-        max_force = mag;
-      if (ft.in_contact) {
-        ++active_count;
-      }
-    }
-    grasp_state_.num_fingertips = num_active_fingertips_;
-    grasp_state_.num_active_contacts = active_count;
-    grasp_state_.max_force = max_force;
-    grasp_state_.force_threshold = force_thresh;
-    grasp_state_.min_fingertips_for_grasp = min_fingers;
-    grasp_state_.grasp_detected = (active_count >= min_fingers);
+    FillGraspSensorAggregates(gains);
+    const float force_thresh = grasp_state_.force_threshold;
+    const float max_force = grasp_state_.max_force;
+    const int active_count = grasp_state_.num_active_contacts;
 
     // Periodic grasp status snapshot (2s throttle, debug only).
     // NOTE: throttled logging on the 500Hz path — the rare allocation
@@ -607,6 +576,64 @@ void DemoJointController::FillLogOutput(const ControllerState& state, Controller
     }
   }
   // Per-controller SeqLock handoff to the publish thread (Phase 4c).
+  grasp_state_lock_.Store(grasp_state_);
+  tof_snapshot_lock_.Store(tof_snapshot_);
+}
+
+// ── E-STOP publish state (#234 P-1) ─────────────────────────────────────────
+//
+// Rationale in the header. Mirrors FillLogOutput's store, minus everything the
+// control law did not run this tick.
+
+// Sensor-derived grasp aggregates. Sourced from fingertip_data_, which
+// ReadState refreshes every tick including E-STOP — hence shared by
+// ComputeControl and FillEstopPublishState. Contains no control-law output.
+void DemoJointController::FillGraspSensorAggregates(const Gains& gains) noexcept {
+  // Capability-aware: ReadState has already encoded the sensor path in
+  // ft.in_contact (sensor A → native_prob+force AND, sensor B → force only).
+  // grasp_contact_threshold is consulted only on sensor A paths there.
+  float max_force = 0.0F;
+  int active_count = 0;
+  for (int f = 0; f < num_active_fingertips_; ++f) {
+    const auto idx = static_cast<std::size_t>(f);
+    const auto& ft = fingertip_data_[idx];
+    const float mag = ft.force_mag;  // cached in ReadState
+
+    grasp_state_.force_magnitude[idx] = mag;
+    // contact_flag publish policy: sensor A path → native probability so
+    // downstream consumers see the smooth sigmoid value; sensor B path →
+    // derived binary (1/0 from in_contact). Both work with the BT
+    // convention `contact_flag > 0.5f`.
+    grasp_state_.contact_flag[idx] =
+        has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
+    grasp_state_.inference_valid[idx] = ft.valid;
+
+    if (mag > max_force) {
+      max_force = mag;
+    }
+    if (ft.in_contact) {
+      ++active_count;
+    }
+  }
+  grasp_state_.num_fingertips = num_active_fingertips_;
+  grasp_state_.num_active_contacts = active_count;
+  grasp_state_.max_force = max_force;
+  grasp_state_.force_threshold = gains.grasp_force_threshold;
+  grasp_state_.min_fingertips_for_grasp = gains.grasp_min_fingertips;
+  grasp_state_.grasp_detected = (active_count >= gains.grasp_min_fingertips);
+}
+
+void DemoJointController::FillEstopPublishState(double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoJointController::FillEstopPublishState");
+  // Sensors keep streaming under E-STOP and ReadState keeps decoding them, so
+  // the aggregates are real data for this tick — publish them.
+  FillGraspSensorAggregates(gains_lock_.Load());
+  // Force-PI per-finger diagnostics: the grasp controller was not stepped, so
+  // last tick's servo error is not this tick's. Zero rather than freeze.
+  grasp_state_.finger_s.fill(0.0F);
+  grasp_state_.finger_filtered_force.fill(0.0F);
+  grasp_state_.finger_force_error.fill(0.0F);
+  StageEstopPullTick(pull_wiring_, dt, grasp_state_.pull);
   grasp_state_lock_.Store(grasp_state_);
   tof_snapshot_lock_.Store(tof_snapshot_);
 }

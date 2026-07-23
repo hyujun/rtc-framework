@@ -164,6 +164,33 @@ void ResetPullEstimatorRtState(PullEstimatorWiring& w) noexcept {
   }
 }
 
+void StageEstopPullTick(PullEstimatorWiring& w, double dt,
+                        rtc::grasp::PullEstimateData& out) noexcept {
+  if (!w.enabled()) {
+    return;
+  }
+  // Invalidate rather than re-stage: Update() with an all-invalid input span and
+  // a zero normal is the estimator's own degenerate-geometry path, so the tick
+  // decays through the same code the transient-contact-loss path uses. The
+  // contact/touch latches clear with it, which is what a resumed loop should
+  // find — ResetPullEstimatorRtState does the same on activate.
+  for (int k = 0; k < w.num_contacts; ++k) {
+    const auto idx = static_cast<std::size_t>(k);
+    w.inputs[idx].valid = false;
+    w.inputs[idx].contact_normal.setZero();
+    w.position_valid[idx] = false;
+  }
+  w.opposing_mask = 0;
+  // The baseline edge detector is fed `false` so an E-STOP that spans a grasp
+  // release/re-grasp cannot arm against a snapshot taken while stopped.
+  w.prev_grasp_detected = false;
+  const rtc::grasp::PullEstimate& est =
+      w.estimator->Update(std::span<const rtc::grasp::PullContactInput>(
+                              w.inputs.data(), static_cast<std::size_t>(w.num_contacts)),
+                          Eigen::Vector3d::Zero(), dt);
+  rtc::grasp::FillPullEstimateData(est, out);
+}
+
 const rtc::grasp::PullEstimate& UpdatePullEstimator(PullEstimatorWiring& w, bool grasp_detected,
                                                     double dt) noexcept {
   // ── Which tips actually oppose the thumb this tick ────────────────────────

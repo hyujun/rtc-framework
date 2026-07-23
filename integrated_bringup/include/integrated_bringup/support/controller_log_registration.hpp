@@ -45,6 +45,42 @@
 
 namespace integrated_bringup {
 
+// Drain every registered CSV channel and report ring overflow (#234 P-20).
+// Call from the controller's 100 ms drain timer instead of DrainAll() — non-RT
+// (executor callback), so the string build + RCLCPP_WARN are allowed here.
+//
+// A dropped sample is a row that silently never reaches the file, which reads
+// downstream exactly like a tick the controller chose not to log. `reported`
+// is the caller's monotonic bookkeeping (one member per controller): the warn
+// fires once per new burst, not once per drain.
+inline void DrainControllerLogs(rtc::ControllerLogSet& log_set, const rclcpp::Logger& logger,
+                                std::uint64_t& reported) {
+  log_set.DrainAll();
+  const std::uint64_t total = log_set.TotalDropCount();
+  if (total <= reported) {
+    return;
+  }
+  const std::uint64_t added = total - reported;
+  reported = total;
+  std::string offenders;
+  const auto per_channel = log_set.DropCounts();
+  const auto channels = log_set.Channels();
+  for (std::size_t i = 0; i < channels.size() && i < per_channel.size(); ++i) {
+    if (per_channel[i] == 0) {
+      continue;
+    }
+    if (!offenders.empty()) {
+      offenders += ", ";
+    }
+    offenders += std::string(channels[i].first) + "=" + std::to_string(per_channel[i]);
+  }
+  RCLCPP_WARN(logger,
+              "Controller CSV logging dropped %llu new sample(s) (lifetime %llu) — SPSC ring "
+              "overflow, rows are missing from the file(s): %s",
+              static_cast<unsigned long long>(added), static_cast<unsigned long long>(total),
+              offenders.c_str());
+}
+
 // ── Per-instance header buffers (caller-supplied) ──────────────────────────
 struct LogRegistrationContext {
   rclcpp::Logger logger;

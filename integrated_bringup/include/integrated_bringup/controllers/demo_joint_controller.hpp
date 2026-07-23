@@ -146,6 +146,15 @@ class DemoJointController final : public RTControllerInterface {
     return grasp_state_;
   }
 
+  /// Test-only: the body the publish thread would Load right now (#234 P-1).
+  /// Distinct from GetGraspStateForTesting(), which returns the RT staging
+  /// buffer: a tick that fills the staging buffer but never stores it gets
+  /// republished as the *previous* body under the current stamp, and only this
+  /// accessor can tell those two apart.
+  [[nodiscard]] ::rtc::grasp::GraspStateData GetPublishedGraspStateForTesting() const noexcept {
+    return grasp_state_lock_.Load();
+  }
+
   [[nodiscard]] const ::integrated_bringup::ToFSnapshotData& GetToFSnapshotForTesting()
       const noexcept {
     return tof_snapshot_;
@@ -230,6 +239,24 @@ class DemoJointController final : public RTControllerInterface {
   void FillLogOutput(const ControllerState& state, ControllerOutput& output, double dt) noexcept;
   void FillPublishOutput(const ControllerState& state, ControllerOutput& output,
                          double dt) noexcept;
+
+  // Sensor-derived grasp aggregates (per-fingertip |F| / contact flags /
+  // grasp detection). Sourced from fingertip_data_, which ReadState refreshes
+  // every tick including E-STOP — hence shared by ComputeControl and
+  // FillEstopPublishState. Contains no control-law output.
+  void FillGraspSensorAggregates(const Gains& gains) noexcept;
+
+  // E-STOP counterpart of FillLogOutput's SeqLock store (#234 P-1). The CM
+  // stamps every publish snapshot with the current wall clock and the publish
+  // thread re-loads whatever the owned SeqLock holds, so an E-STOP tick that
+  // stores nothing is republished as fresh-stamp/stale-body — a `valid=1` pull
+  // estimate that outlives the loop that produced it. Sensor-derived fields
+  // (ReadState refreshed them this tick) stay; every field the control law
+  // would have produced is neutralized: the pull estimate runs its E-STOP tick
+  // (valid=false + decay) and the Force-PI per-finger diagnostics are cleared.
+  // grasp_phase / grasp_target_force are FSM latches, not per-tick derivations,
+  // so they are left alone. RT tick path — noexcept, heap-free.
+  void FillEstopPublishState(double dt) noexcept;
 
   // ── Internal state ──────────────────────────────────────────────────────
   rtc::SeqLock<Gains> gains_lock_;
@@ -492,6 +519,10 @@ class DemoJointController final : public RTControllerInterface {
   std::vector<ParsedLogEntry> parsed_log_entries_;
 
   rtc::ControllerLogSet log_set_{"demo_joint_controller"};
+
+  // Lifetime CSV drop count already reported by the drain timer (#234 P-20) —
+  // DrainControllerLogs warns once per new burst rather than once per drain.
+  std::uint64_t log_drops_reported_{0};
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> primary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceStateLogPod> secondary_state_log_handle_;
   rtc::LogHandle<integrated_bringup::DeviceSensorLogPod> secondary_sensor_log_handle_;

@@ -286,4 +286,58 @@ TEST(JointHandSeedTest, DeferredHandSeedHoldsMeasuredWhenDeviceValidLate) {
   }
 }
 
+// ── E-STOP telemetry freshness (#234 P-1) ──────────────────────────────────
+//
+// The CM stamps a publish snapshot every tick and the publish thread re-Loads
+// the controller-owned SeqLock, so an E-STOP tick that stores nothing ships
+// the pre-E-STOP body under the current stamp. These tests read through the
+// SeqLock (GetPublishedGraspStateForTesting), not the staging buffer, because
+// that is the only way to tell "filled but never stored" from "published".
+
+TEST_F(JointGraspTest, EstopTickPublishesThisTicksBody) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 5.0f);
+  SetFingertipForce(state_, 1, 5.0f);
+  (void)ctrl_.Compute(state_);
+  ASSERT_TRUE(ctrl_.GetPublishedGraspStateForTesting().grasp_detected);
+
+  // The object is released *during* the E-STOP: the published body must follow
+  // the sensors, which it can only do if this tick stored anything at all.
+  ctrl_.TriggerEstop();
+  SetFingertipForce(state_, 0, 0.0f);
+  SetFingertipForce(state_, 1, 0.0f);
+  state_.iteration = 2;
+  (void)ctrl_.Compute(state_);
+
+  const auto published = ctrl_.GetPublishedGraspStateForTesting();
+  EXPECT_EQ(published.num_active_contacts, 0);
+  EXPECT_FALSE(published.grasp_detected);
+  EXPECT_NEAR(published.force_magnitude[0], 0.0f, 1e-4f);
+  // Never a live-looking pull estimate under an E-STOP stamp.
+  EXPECT_FALSE(published.pull.valid);
+  EXPECT_FALSE(published.pull.slip_risk);
+}
+
+TEST_F(JointGraspTest, EstopTickClearsControlLawDerivedDiagnostics) {
+  state_.devices[1].num_inference_groups = 2;
+  state_.devices[1].num_sensor_channels = 0;
+  SetFingertipForce(state_, 0, 5.0f);
+  SetFingertipForce(state_, 1, 5.0f);
+  (void)ctrl_.Compute(state_);
+
+  ctrl_.TriggerEstop();
+  state_.iteration = 2;
+  (void)ctrl_.Compute(state_);
+
+  // The Force-PI servo was not stepped this tick, so its per-finger telemetry
+  // is neutralized rather than frozen at the last pre-E-STOP sample.
+  const auto published = ctrl_.GetPublishedGraspStateForTesting();
+  for (std::size_t i = 0; i < published.finger_s.size(); ++i) {
+    EXPECT_FLOAT_EQ(published.finger_s[i], 0.0f) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_filtered_force[i], 0.0f) << "finger " << i;
+    EXPECT_FLOAT_EQ(published.finger_force_error[i], 0.0f) << "finger " << i;
+  }
+}
+
 }  // namespace

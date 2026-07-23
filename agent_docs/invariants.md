@@ -276,6 +276,8 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 | PROC-5 | C++ ↔ Python 미러 쌍은 한쪽만 고치지 말 것 — session subdir 목록 (`rtc_base/logging/session_dir.hpp` `kSubdirs` ↔ `rtc_tools.utils.session_dir` `_SESSION_SUBDIRS`) 등 "동일 로직" 표방 미러는 동시 수정 + 동등성 테스트 통과 | 부분 수정 drift — launch (Python) 가 노드 (C++) 보다 먼저 세션 디렉토리를 만들어 한쪽 누락이 런타임에 표면화 (`test_session_dir.py::test_subdir_list_matches_cpp_mirror`) |
 | PROC-6 | 기존 test assertion 을 통과시키려 **약화·수정 금지** (회귀 은폐). **예외**: assertion 이 진짜 틀렸거나 spec 이 바뀐 경우는 정당한 변경 — 새 코드 fix 와 **별도 commit** 으로 근거 제시 + 대응 regression test 갱신, 착수 전 §6 E-6 로 escalate. 탐지: `git diff test/` 의 `EXPECT_*`/`ASSERT_*` 상수 변경 (AP-PROC-4) | 회귀 은폐 방지 — 단, "test 를 절대 못 고친다" 가 아니라 "몰래 약화 금지, 정당한 변경은 근거와 함께". RT timing 과 무관한 process 규칙 (구 RT-7) |
 
+| PROC-7 | Controller-owned SeqLock (`GraspState` / `WbcState` / `ToFSnapshot`) 은 `Compute()` 가 도는 **모든** tick 에서 Store — E-STOP·early-return tick 포함. 이번 tick 에 계산하지 않은 필드는 값을 얼리지 말고 명시적으로 무효화 (`FillEstopPublishState`). 탐지: `Compute()` 의 early-return 경로에 `*_state_lock_.Store` 가 없는 분기 | CM 은 tick 마다 새 `stamp_ns` 를 만들고 publish thread 는 SeqLock 을 다시 Load 하므로, Store 생략은 "미발행" 이 아니라 **stale body + fresh stamp 재발행** 이다 — E-STOP 중에 살아있어 보이는 `valid=1` telemetry 가 그 발현 (issue #234 P-1). 계약·경로는 [controllers.md](controllers.md#ros2-topics) |
+
 ## Numerical Invariants
 
 | # | 규칙 | 이유 | 구현 위치 |

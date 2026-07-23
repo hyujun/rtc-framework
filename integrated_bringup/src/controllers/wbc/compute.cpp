@@ -880,44 +880,71 @@ void DemoWbcController::FillLogOutput(const ControllerState& state,
 
   // WBC state aggregates (per-fingertip + FSM phase). Staging buffer feeds
   // both the SeqLock publish path and GetWbcStateForTesting().
+  FillWbcSensorAggregates();
   {
     auto& ws = wbc_state_;
-    ws.phase = static_cast<uint8_t>(phase_);
-    ws.num_fingertips = num_active_fingertips_;
-    int active_count = 0;
-    float max_force = 0.0F;
-    const auto g = gains_lock_.Load();
-    for (int f = 0; f < num_active_fingertips_; ++f) {
-      const auto idx = static_cast<std::size_t>(f);
-      const auto& ft = fingertip_data_[idx];
-      const float mag = ft.force_magnitude;
-      ws.force_magnitude[idx] = mag;
-      // contact_flag: native sigmoid probability if backend provides it
-      // (sensor A path), else derived binary 1/0 from ft.in_contact.
-      // displacement: native (slots 4..6) if backend provides it (sensor A);
-      // else 0 — controller-side deformation derive is stubbed.
-      ws.contact_flag[idx] = has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
-      ws.displacement[idx] = 0.0F;
-      if (ft.in_contact) {
-        ++active_count;
-      }
-      if (mag > max_force) {
-        max_force = mag;
-      }
-    }
-    ws.num_active_contacts = active_count;
-    ws.max_force = max_force;
-    ws.grasp_target_force = static_cast<float>(g.grasp_target_force);
-    ws.min_fingertips_for_grasp = g.grasp_min_fingertips;
-    ws.grasp_detected = (active_count >= ws.min_fingertips_for_grasp);
     // tsid_solver_ok / qp_fail_count are the Dynamic (TSID) QP health — the
-    // rtc_msgs/WbcState fields always referred to the TSID solve.
+    // rtc_msgs/WbcState fields always referred to the TSID solve. Filled only
+    // on the path that actually ran a solve; FillEstopPublishState reports
+    // "not solved this tick" instead of replaying these.
     ws.tsid_solver_ok = tsid_initialized_ && (dyn_qp_fail_count_ == 0);
     ws.qp_fail_count = dyn_qp_fail_count_;
     ws.tsid_solve_us = static_cast<float>(tsid_output_.solve_time_us);
   }
   // SeqLock store = two atomic stores + memcpy (wait-free, RT-safe).
   // Read by PublishNonRtSnapshot.
+  wbc_state_lock_.Store(wbc_state_);
+}
+
+// Sensor-derived aggregates only — see the header for why these are shared
+// with the E-STOP path (fingertip_data_ is refreshed by ReadState every tick).
+void DemoWbcController::FillWbcSensorAggregates() noexcept {
+  auto& ws = wbc_state_;
+  ws.phase = static_cast<uint8_t>(phase_);
+  ws.num_fingertips = num_active_fingertips_;
+  int active_count = 0;
+  float max_force = 0.0F;
+  const auto g = gains_lock_.Load();
+  for (int f = 0; f < num_active_fingertips_; ++f) {
+    const auto idx = static_cast<std::size_t>(f);
+    const auto& ft = fingertip_data_[idx];
+    const float mag = ft.force_magnitude;
+    ws.force_magnitude[idx] = mag;
+    // contact_flag: native sigmoid probability if backend provides it
+    // (sensor A path), else derived binary 1/0 from ft.in_contact.
+    // displacement: native (slots 4..6) if backend provides it (sensor A);
+    // else 0 — controller-side deformation derive is stubbed.
+    ws.contact_flag[idx] = has_native_contact_ ? ft.contact_flag : (ft.in_contact ? 1.0F : 0.0F);
+    ws.displacement[idx] = 0.0F;
+    if (ft.in_contact) {
+      ++active_count;
+    }
+    if (mag > max_force) {
+      max_force = mag;
+    }
+  }
+  ws.num_active_contacts = active_count;
+  ws.max_force = max_force;
+  ws.grasp_target_force = static_cast<float>(g.grasp_target_force);
+  ws.min_fingertips_for_grasp = g.grasp_min_fingertips;
+  ws.grasp_detected = (active_count >= ws.min_fingertips_for_grasp);
+}
+
+// ── E-STOP publish state (#234 P-1) ─────────────────────────────────────────
+//
+// Rationale in the header.
+
+void DemoWbcController::FillEstopPublishState(double dt) noexcept {
+  RTC_TRACE_SCOPE("DemoWbcController::FillEstopPublishState");
+  FillWbcSensorAggregates();
+  auto& ws = wbc_state_;
+  // No TSID solve ran this tick. Reporting the previous solve's health here is
+  // exactly the stale-payload republish this path exists to stop; qp_fail_count
+  // is a lifetime counter, not a per-tick derivation, so it stays.
+  ws.tsid_solver_ok = false;
+  ws.tsid_solve_us = 0.0F;
+  ws.qp_fail_count = dyn_qp_fail_count_;
+  StageEstopPullTick(pull_wiring_, dt, ws.pull);
   wbc_state_lock_.Store(wbc_state_);
 }
 

@@ -99,6 +99,76 @@ const rtc::grasp::PullEstimate& SettleTicks(PullEstimatorWiring& w, bool grasp_d
   return *est;
 }
 
+// ── E-STOP tick (#234 P-1) ─────────────────────────────────────────────────
+
+TEST(PullEstimatorWiring, EstopTickInvalidatesAndDecaysTheEstimate) {
+  const DemoSharedConfig cfg = MakeSharedConfig();
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+
+  StagePinchInputs(w, Eigen::Vector3d(3.0, 0.0, 0.0));
+  const rtc::grasp::PullEstimate& live = SettleTicks(w, /*grasp_detected=*/true, 200);
+  ASSERT_TRUE(live.valid);
+  const double live_magnitude = live.magnitude;
+  ASSERT_GT(live_magnitude, 0.1);
+
+  // Inputs stay staged from the last live tick: the E-STOP tick must ignore
+  // them, not re-use them. This is the failure mode the fix exists for — a
+  // frozen valid=1 estimate published under the E-STOP tick's stamp.
+  rtc::grasp::PullEstimateData out{};
+  integrated_bringup::StageEstopPullTick(w, kDt, out);
+
+  EXPECT_FALSE(out.valid);
+  EXPECT_FALSE(out.slip_risk);
+  EXPECT_EQ(out.valid_contact_count, 0);
+  EXPECT_EQ(w.opposing_mask, 0);
+  // Bounded decay, not a hard zero: same policy as transient contact loss.
+  EXPECT_LT(static_cast<double>(out.magnitude), live_magnitude);
+  EXPECT_GT(static_cast<double>(out.magnitude), 0.0);
+
+  // Held E-STOP keeps decaying toward zero.
+  for (int i = 0; i < 500; ++i) {
+    integrated_bringup::StageEstopPullTick(w, kDt, out);
+  }
+  EXPECT_FALSE(out.valid);
+  EXPECT_LT(static_cast<double>(out.magnitude), 1e-3);
+}
+
+TEST(PullEstimatorWiring, EstopTickIsANoOpOnADisabledWiring) {
+  PullEstimatorWiring w;  // never configured → disabled
+  ASSERT_FALSE(w.enabled());
+  rtc::grasp::PullEstimateData out{};
+  out.magnitude = 7.0F;
+  out.valid = true;
+  integrated_bringup::StageEstopPullTick(w, kDt, out);
+  // A disabled wiring publishes nothing of its own; the caller's field is left
+  // exactly as it found it rather than being zeroed by a channel that is off.
+  EXPECT_TRUE(out.valid);
+  EXPECT_FLOAT_EQ(out.magnitude, 7.0F);
+}
+
+TEST(PullEstimatorWiring, EstopTickClearsTheBaselineArmingEdge) {
+  // A grasp that was detected before the E-STOP must not arm a baseline
+  // against the stopped tick's forces: the edge detector is reset, so the
+  // rising edge is re-required after release.
+  const DemoSharedConfig cfg = MakeSharedConfig(R"(
+    use_baseline_subtraction: true
+)");
+  PullEstimatorWiring w;
+  ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w);
+  ASSERT_TRUE(w.enabled());
+  ASSERT_TRUE(w.use_baseline);
+
+  StagePinchInputs(w, Eigen::Vector3d(2.0, 0.0, 0.0));
+  SettleTicks(w, /*grasp_detected=*/true, 10);
+  ASSERT_TRUE(w.prev_grasp_detected);
+
+  rtc::grasp::PullEstimateData out{};
+  integrated_bringup::StageEstopPullTick(w, kDt, out);
+  EXPECT_FALSE(w.prev_grasp_detected);
+}
+
 TEST(PullEstimatorWiring, ConfigureResolvesSlotsAndThumbRole) {
   const DemoSharedConfig cfg = MakeSharedConfig();
   PullEstimatorWiring w;
@@ -286,15 +356,13 @@ demo_shared:
         force_sign: 1.0
 )";
   DemoSharedConfig cfg;
-  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"],
-                                            cfg);
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], cfg);
   return cfg;
 }
 
 // Un-normalized pinch axis (opposing centroid − thumb) for a touching set.
 Eigen::Vector3d ExpectedAxis(std::uint8_t touching) {
-  const std::array<Eigen::Vector3d, 4> pos = {kThumbPos, kIndexPos, kMiddlePos,
-                                              kRingPos};
+  const std::array<Eigen::Vector3d, 4> pos = {kThumbPos, kIndexPos, kMiddlePos, kRingPos};
   Eigen::Vector3d sum = Eigen::Vector3d::Zero();
   int n = 0;
   for (int k = 1; k < 4; ++k) {
@@ -307,8 +375,7 @@ Eigen::Vector3d ExpectedAxis(std::uint8_t touching) {
 }
 
 // -P∥(total) — what the estimator must report pre-filter for a given plane.
-Eigen::Vector3d ExpectedRaw(const Eigen::Vector3d &total,
-                            const Eigen::Vector3d &axis) {
+Eigen::Vector3d ExpectedRaw(const Eigen::Vector3d& total, const Eigen::Vector3d& axis) {
   const Eigen::Vector3d n = axis.normalized();
   return -(total - n * n.dot(total));
 }
@@ -320,10 +387,9 @@ Eigen::Vector3d ExpectedRaw(const Eigen::Vector3d &total,
 // opposing tip -1.5), so the residual is observable and the tests can tell
 // which plane it was projected onto. `pull` is shared over the touching tips so
 // their sum reproduces the external load exactly.
-void StageFourTipInputs(PullEstimatorWiring &w, std::uint8_t touching,
-                        const Eigen::Vector3d &pull = Eigen::Vector3d::Zero()) {
-  const std::array<Eigen::Vector3d, 4> pos = {kThumbPos, kIndexPos, kMiddlePos,
-                                              kRingPos};
+void StageFourTipInputs(PullEstimatorWiring& w, std::uint8_t touching,
+                        const Eigen::Vector3d& pull = Eigen::Vector3d::Zero()) {
+  const std::array<Eigen::Vector3d, 4> pos = {kThumbPos, kIndexPos, kMiddlePos, kRingPos};
   int n_touching = 0;
   for (int k = 0; k < 4; ++k) {
     if ((touching & (1U << static_cast<unsigned>(k))) != 0U) {
@@ -333,16 +399,13 @@ void StageFourTipInputs(PullEstimatorWiring &w, std::uint8_t touching,
   for (int k = 0; k < w.num_contacts; ++k) {
     const auto ki = static_cast<std::size_t>(k);
     const bool touches = (touching & (1U << static_cast<unsigned>(k))) != 0U;
-    auto &in = w.inputs[ki];
-    in.valid = true; // sensor is healthy either way; only the force differs
+    auto& in = w.inputs[ki];
+    in.valid = true;  // sensor is healthy either way; only the force differs
     in.rotation = Eigen::Matrix3d::Identity();
     const double fz = (k == w.thumb_contact) ? 3.0 : -1.5;
     const Eigen::Vector3d share =
-        (n_touching > 0)
-            ? Eigen::Vector3d(-pull / static_cast<double>(n_touching))
-            : pull;
-    in.force = touches ? Eigen::Vector3d(share.x(), share.y(), fz)
-                       : Eigen::Vector3d::Zero();
+        (n_touching > 0) ? Eigen::Vector3d(-pull / static_cast<double>(n_touching)) : pull;
+    in.force = touches ? Eigen::Vector3d(share.x(), share.y(), fz) : Eigen::Vector3d::Zero();
     w.positions[ki] = pos[ki];
     w.position_valid[ki] = true;
   }
@@ -350,7 +413,7 @@ void StageFourTipInputs(PullEstimatorWiring &w, std::uint8_t touching,
 
 TEST(PullEstimatorWiring, PinchAxisFollowsTheTouchingTipsOnly) {
   struct Case {
-    const char *name;
+    const char* name;
     std::uint8_t touching;
     std::uint8_t expected_mask;
     int expected_contacts;
@@ -359,10 +422,9 @@ TEST(PullEstimatorWiring, PinchAxisFollowsTheTouchingTipsOnly) {
   const std::array<Case, 4> cases = {
       Case{"thumb+index", kThumb | kIndex, kIndex, 2},
       Case{"thumb+middle", kThumb | kMiddle, kMiddle, 2},
-      Case{"thumb+index+middle", kThumb | kIndex | kMiddle, kIndex | kMiddle,
-           3},
-      Case{"thumb+index+middle+ring", kThumb | kIndex | kMiddle | kRing,
-           kIndex | kMiddle | kRing, 4},
+      Case{"thumb+index+middle", kThumb | kIndex | kMiddle, kIndex | kMiddle, 3},
+      Case{"thumb+index+middle+ring", kThumb | kIndex | kMiddle | kRing, kIndex | kMiddle | kRing,
+           4},
   };
 
   // The fixture must be able to tell the four axes apart, or these assertions
@@ -377,15 +439,14 @@ TEST(PullEstimatorWiring, PinchAxisFollowsTheTouchingTipsOnly) {
     }
   }
 
-  for (const Case &c : cases) {
+  for (const Case& c : cases) {
     SCOPED_TRACE(c.name);
     PullEstimatorWiring w;
-    ConfigurePullEstimatorWiring(MakeFourTipPinchConfig(), kRateHz, kTipLinks,
-                                 w);
+    ConfigurePullEstimatorWiring(MakeFourTipPinchConfig(), kRateHz, kTipLinks, w);
     ASSERT_TRUE(w.enabled());
 
     StageFourTipInputs(w, c.touching);
-    const rtc::grasp::PullEstimate &est =
+    const rtc::grasp::PullEstimate& est =
         SettleTicks(w, /*grasp_detected=*/true, kShapeSettleTicks);
     ASSERT_TRUE(est.valid);
 
@@ -394,16 +455,12 @@ TEST(PullEstimatorWiring, PinchAxisFollowsTheTouchingTipsOnly) {
     const Eigen::Vector3d expected = ExpectedAxis(c.touching).normalized();
     EXPECT_EQ(w.opposing_mask, c.expected_mask);
     EXPECT_NEAR(
-        (w.inputs[static_cast<std::size_t>(w.thumb_contact)].contact_normal +
-         expected)
-            .norm(),
-        0.0, 1e-9);
+        (w.inputs[static_cast<std::size_t>(w.thumb_contact)].contact_normal + expected).norm(), 0.0,
+        1e-9);
     for (int k = 1; k < 4; ++k) {
       if ((c.expected_mask & (1U << static_cast<unsigned>(k))) != 0U) {
-        EXPECT_NEAR(
-            (w.inputs[static_cast<std::size_t>(k)].contact_normal - expected)
-                .norm(),
-            0.0, 1e-9)
+        EXPECT_NEAR((w.inputs[static_cast<std::size_t>(k)].contact_normal - expected).norm(), 0.0,
+                    1e-9)
             << "contact " << k;
       }
     }
@@ -421,21 +478,20 @@ TEST(PullEstimatorWiring, IdleTipDoesNotSkewTheAxisOrTheEstimate) {
   ASSERT_TRUE(w.enabled());
 
   StageFourTipInputs(w, kThumb | kIndex);
-  const rtc::grasp::PullEstimate &est = SettleTicks(w, true, kShapeSettleTicks);
+  const rtc::grasp::PullEstimate& est = SettleTicks(w, true, kShapeSettleTicks);
   ASSERT_TRUE(est.valid);
 
   const Eigen::Vector3d pinch_axis = ExpectedAxis(kIndex);
   const Eigen::Vector3d all_tips_axis = ExpectedAxis(kIndex | kMiddle | kRing);
   ASSERT_GT((all_tips_axis.normalized() - pinch_axis.normalized()).norm(), 0.1);
-  EXPECT_NEAR((w.inputs[1].contact_normal - pinch_axis.normalized()).norm(),
-              0.0, 1e-9);
+  EXPECT_NEAR((w.inputs[1].contact_normal - pinch_axis.normalized()).norm(), 0.0, 1e-9);
 
   // thumb +3 z, index -1.5 z (the idle tips contribute nothing).
   const Eigen::Vector3d total(0.0, 0.0, 1.5);
   const Eigen::Vector3d want = ExpectedRaw(total, pinch_axis);
   const Eigen::Vector3d skewed = ExpectedRaw(total, all_tips_axis);
   ASSERT_GT((want - skewed).norm(),
-            0.1); // the estimate can tell them apart too
+            0.1);  // the estimate can tell them apart too
   EXPECT_NEAR((est.force_raw - want).norm(), 0.0, 1e-9);
 }
 
@@ -449,17 +505,14 @@ TEST(PullEstimatorWiring, NoAxisIsInventedBeforeTheFirstTouch) {
   ASSERT_TRUE(w.enabled());
 
   StageFourTipInputs(w, kThumb | kIndex);
-  const rtc::grasp::PullEstimate &first = UpdatePullEstimator(w, true, kDt);
+  const rtc::grasp::PullEstimate& first = UpdatePullEstimator(w, true, kDt);
   EXPECT_EQ(w.opposing_mask, 0);
-  EXPECT_FALSE(
-      first.valid); // no axis ⇒ no estimate, rather than a provisional one
+  EXPECT_FALSE(first.valid);  // no axis ⇒ no estimate, rather than a provisional one
 
-  const rtc::grasp::PullEstimate &second = UpdatePullEstimator(w, true, kDt);
+  const rtc::grasp::PullEstimate& second = UpdatePullEstimator(w, true, kDt);
   EXPECT_EQ(w.opposing_mask, kIndex);
   EXPECT_TRUE(second.valid);
-  EXPECT_NEAR(
-      (w.inputs[1].contact_normal - ExpectedAxis(kIndex).normalized()).norm(),
-      0.0, 1e-9);
+  EXPECT_NEAR((w.inputs[1].contact_normal - ExpectedAxis(kIndex).normalized()).norm(), 0.0, 1e-9);
 }
 
 TEST(PullEstimatorWiring, ShapeChangeRetargetsTheAxis) {
@@ -473,12 +526,10 @@ TEST(PullEstimatorWiring, ShapeChangeRetargetsTheAxis) {
 
   // Regrip onto the middle finger: the index lets go, middle takes over.
   StageFourTipInputs(w, kThumb | kMiddle);
-  const rtc::grasp::PullEstimate &est = SettleTicks(w, true, kShapeSettleTicks);
+  const rtc::grasp::PullEstimate& est = SettleTicks(w, true, kShapeSettleTicks);
   ASSERT_TRUE(est.valid);
   EXPECT_EQ(w.opposing_mask, kMiddle);
-  EXPECT_NEAR(
-      (w.inputs[2].contact_normal - ExpectedAxis(kMiddle).normalized()).norm(),
-      0.0, 1e-9);
+  EXPECT_NEAR((w.inputs[2].contact_normal - ExpectedAxis(kMiddle).normalized()).norm(), 0.0, 1e-9);
 }
 
 TEST(PullEstimatorWiring, TipParkedInTheHysteresisBandDoesNotChatter) {
@@ -497,8 +548,7 @@ TEST(PullEstimatorWiring, TipParkedInTheHysteresisBandDoesNotChatter) {
   StageFourTipInputs(w, kThumb | kIndex | kMiddle);
   w.inputs[2].force = Eigen::Vector3d(0.0, 0.0, -0.3);
   (void)SettleTicks(w, true, kShapeSettleTicks);
-  EXPECT_EQ(w.opposing_mask, kIndex)
-      << "a tip below the ON threshold must not join";
+  EXPECT_EQ(w.opposing_mask, kIndex) << "a tip below the ON threshold must not join";
 
   const std::uint8_t settled_mask = w.opposing_mask;
   for (int i = 0; i < 200; ++i) {
@@ -522,8 +572,7 @@ TEST(PullEstimatorWiring, BaselineArmsOnTheEdgeAndFollowsTheAxis) {
   // Tick 1 has no axis yet (nothing latched) so nothing is captured; tick 2 is
   // the first valid one and takes the snapshot.
   StageFourTipInputs(w, kThumb | kIndex);
-  const rtc::grasp::PullEstimate &armed =
-      SettleTicks(w, /*grasp_detected=*/true, 2);
+  const rtc::grasp::PullEstimate& armed = SettleTicks(w, /*grasp_detected=*/true, 2);
   ASSERT_TRUE(armed.valid);
   EXPECT_TRUE(armed.baseline_applied);
   EXPECT_NEAR(armed.force_raw.norm(), 0.0, 1e-12);
@@ -531,8 +580,7 @@ TEST(PullEstimatorWiring, BaselineArmsOnTheEdgeAndFollowsTheAxis) {
   // Regrip to a plane ~34 deg away. The staged wrench sum is identical, so any
   // residual here is purely the baseline failing to follow the plane.
   StageFourTipInputs(w, kThumb | kMiddle);
-  const rtc::grasp::PullEstimate &after =
-      SettleTicks(w, true, kShapeSettleTicks);
+  const rtc::grasp::PullEstimate& after = SettleTicks(w, true, kShapeSettleTicks);
   ASSERT_TRUE(after.valid);
   EXPECT_EQ(w.opposing_mask, kMiddle);
   EXPECT_NEAR(after.force_raw.norm(), 0.0, 1e-12);
@@ -541,8 +589,7 @@ TEST(PullEstimatorWiring, BaselineArmsOnTheEdgeAndFollowsTheAxis) {
   // plane would leave this much residual on the new one.
   const Eigen::Vector3d total(0.0, 0.0, 1.5);
   const Eigen::Vector3d stale_residual =
-      ExpectedRaw(total, ExpectedAxis(kMiddle)) -
-      ExpectedRaw(total, ExpectedAxis(kIndex));
+      ExpectedRaw(total, ExpectedAxis(kMiddle)) - ExpectedRaw(total, ExpectedAxis(kIndex));
   ASSERT_GT(stale_residual.norm(), 0.1);
 }
 
@@ -558,15 +605,13 @@ TEST(PullEstimatorWiring, PullIsRecoveredUnderAChangingContactSet) {
   const Eigen::Vector3d pull(1.0, 0.0, 0.0);
 
   StageFourTipInputs(w, kThumb | kIndex, pull);
-  const rtc::grasp::PullEstimate &pinch =
-      SettleTicks(w, true, kFilterSettleTicks);
+  const rtc::grasp::PullEstimate& pinch = SettleTicks(w, true, kFilterSettleTicks);
   ASSERT_TRUE(pinch.valid);
   EXPECT_EQ(w.opposing_mask, kIndex);
   EXPECT_NEAR(pinch.force_filtered.x(), pull.x(), 1e-3);
 
   StageFourTipInputs(w, kThumb | kIndex | kMiddle | kRing, pull);
-  const rtc::grasp::PullEstimate &four =
-      SettleTicks(w, true, kFilterSettleTicks);
+  const rtc::grasp::PullEstimate& four = SettleTicks(w, true, kFilterSettleTicks);
   ASSERT_TRUE(four.valid);
   EXPECT_EQ(w.opposing_mask, kIndex | kMiddle | kRing);
   EXPECT_NEAR(four.force_filtered.x(), pull.x(), 1e-3);
@@ -580,8 +625,7 @@ TEST(PullEstimatorWiring, ResetRtStateDropsTheGraspEdgeAndTheContactSet) {
   ASSERT_TRUE(w.enabled());
 
   StageFourTipInputs(w, kThumb | kIndex);
-  const rtc::grasp::PullEstimate &settled =
-      SettleTicks(w, true, kShapeSettleTicks);
+  const rtc::grasp::PullEstimate& settled = SettleTicks(w, true, kShapeSettleTicks);
   ASSERT_TRUE(settled.valid);
   ASSERT_EQ(w.opposing_mask, kIndex);
   ASSERT_TRUE(w.prev_grasp_detected);
@@ -596,16 +640,15 @@ TEST(PullEstimatorWiring, ResetRtStateDropsTheGraspEdgeAndTheContactSet) {
   // must read as a fresh rising edge rather than being swallowed by the state
   // left over from before the gap.
   StageFourTipInputs(w, kThumb | kIndex);
-  const rtc::grasp::PullEstimate &first = UpdatePullEstimator(w, true, kDt);
+  const rtc::grasp::PullEstimate& first = UpdatePullEstimator(w, true, kDt);
   EXPECT_EQ(w.opposing_mask, 0) << "touch hysteresis must start from cold";
   EXPECT_FALSE(first.valid);
-  const rtc::grasp::PullEstimate &second = UpdatePullEstimator(w, true, kDt);
+  const rtc::grasp::PullEstimate& second = UpdatePullEstimator(w, true, kDt);
   EXPECT_TRUE(second.valid);
   EXPECT_TRUE(second.baseline_applied) << "the edge re-armed after the reset";
 }
 
-TEST(PullEstimatorWiring,
-     ConfigureThrowsWithoutAnOpposingTipUnderPinchGeometry) {
+TEST(PullEstimatorWiring, ConfigureThrowsWithoutAnOpposingTipUnderPinchGeometry) {
   // A thumb-only pinch_geometry config can never form a pair: the opposing set
   // is empty forever and every tick decays to invalid. Fail at configure.
   const std::string yaml = R"(
@@ -619,11 +662,9 @@ demo_shared:
         link: "thumb_tip_link"
 )";
   DemoSharedConfig cfg;
-  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"],
-                                            cfg);
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], cfg);
   PullEstimatorWiring w;
-  EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w),
-               std::runtime_error);
+  EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w), std::runtime_error);
   // A throw must leave the wiring disabled — "enabled with zero contacts" would
   // drive Update() with an empty input span on every tick.
   EXPECT_FALSE(w.enabled());
@@ -645,8 +686,7 @@ demo_shared:
         link: "thumb_tip_link"
 )";
   DemoSharedConfig cfg;
-  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"],
-                                            cfg);
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], cfg);
   PullEstimatorWiring w;
   ASSERT_NO_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w));
   EXPECT_TRUE(w.enabled());
@@ -669,12 +709,10 @@ demo_shared:
         link: "thumb_tip_link"
 )";
   DemoSharedConfig cfg;
-  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"],
-                                            cfg);
+  integrated_bringup::ApplyDemoSharedConfig(YAML::Load(yaml)["demo_shared"], cfg);
   PullEstimatorWiring w;
-  EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w),
-               std::runtime_error);
+  EXPECT_THROW(ConfigurePullEstimatorWiring(cfg, kRateHz, kTipLinks, w), std::runtime_error);
   EXPECT_FALSE(w.enabled());
 }
 
-} // namespace
+}  // namespace

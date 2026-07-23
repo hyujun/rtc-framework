@@ -1048,4 +1048,45 @@ TEST(WbcClikIndexSets, SkipsOutOfRangeIndices) {
   EXPECT_EQ(hand_v_idx, (std::vector<int>{2}));
 }
 
+
+// ── E-STOP telemetry freshness (#234 P-1) ──────────────────────────────────
+//
+// The old rule ("do not push the WBC state on the E-STOP path — tsid_output_
+// is stale there") stopped the SeqLock store but not the publish: the CM
+// stamps a snapshot every tick and the publish thread re-Loads the SeqLock, so
+// skipping the store shipped the pre-E-STOP body under the current stamp.
+TEST_F(WbcFSMTest, EstopTickPublishesThisTicksBodyWithTsidHealthCleared) {
+  auto& dev1 = state_.devices[1];
+  dev1.valid = true;
+  dev1.num_sensor_channels = 2 * kHandSensorValuesPerFingertipCapacity;
+  for (int f = 0; f < 2; ++f) {
+    dev1.inference_enable[static_cast<std::size_t>(f)] = true;
+    const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
+    dev1.inference_data[static_cast<std::size_t>(ft_base)] = 1.0f;      // contact
+    dev1.inference_data[static_cast<std::size_t>(ft_base + 3)] = 5.0f;  // Fz
+  }
+  (void)ctrl_.Compute(state_);
+  ASSERT_TRUE(ctrl_.GetPublishedWbcStateForTesting().grasp_detected);
+
+  // Contact is lost during the E-STOP: the published body must follow the
+  // sensors, which requires this tick to have stored anything at all.
+  ctrl_.TriggerEstop();
+  for (int f = 0; f < 2; ++f) {
+    const int ft_base = f * kHandInferenceValuesPerFingertipCapacity;
+    dev1.inference_data[static_cast<std::size_t>(ft_base)] = 0.0f;
+    dev1.inference_data[static_cast<std::size_t>(ft_base + 3)] = 0.0f;
+  }
+  state_.iteration = 2;
+  (void)ctrl_.Compute(state_);
+
+  const auto published = ctrl_.GetPublishedWbcStateForTesting();
+  EXPECT_EQ(published.num_active_contacts, 0);
+  EXPECT_FALSE(published.grasp_detected);
+  EXPECT_NEAR(published.max_force, 0.0f, 1e-4f);
+  // No solve ran → TSID health must not replay the previous solve.
+  EXPECT_FALSE(published.tsid_solver_ok);
+  EXPECT_FLOAT_EQ(published.tsid_solve_us, 0.0f);
+  EXPECT_FALSE(published.pull.valid);
+}
+
 }  // namespace
