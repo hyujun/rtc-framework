@@ -225,10 +225,19 @@ def adopt_process_into_shield(
     (which then inherit the "user" cpuset). Callers gate ACTIVATE on this action's
     ``OnProcessExit`` for a deterministic order rather than racing the async sudo
     call against thread creation. Defensive by design: skips (warns, never fails
-    the launch) when the process is gone, the script is missing, sudo needs a
-    password, or no shield is active (the ``adopt`` subcommand itself no-ops in
-    the last case, so shield-off runs keep the CM at full affinity and its
-    existing self-pin path is unchanged).
+    the launch) when the process is gone, the script is missing, or no shield is
+    active (the ``adopt`` subcommand itself no-ops in the last case, so shield-off
+    runs keep the CM at full affinity and its existing self-pin path is unchanged).
+
+    The one case that is *not* benign: passwordless sudo is unavailable **while a
+    cset shield is already active** (e.g. relaunching after a manual ``sudo
+    cpu_shield.sh on``). The new CM inherited the "system" cpuset, cannot be
+    adopted into "user", and its self-pin to the shielded RT cores then EINVALs
+    (issue #151) — losing affinity *and* SCHED_FIFO. The action still exits 0 (it
+    does not hard-fail the launch, since ACTIVATE is gated on its exit), but it
+    logs a loud ERROR distinguishing this from the harmless shield-off skip.
+    isolcpus isolation is *not* this trap: explicit ``sched_setaffinity`` to an
+    isolcpus core succeeds, so that path falls through to the benign warning.
 
     ``gated=False`` drops the ``use_cpu_affinity`` :class:`IfCondition` so the
     action always runs (and always exits): a caller gating ACTIVATE on its exit
@@ -254,9 +263,14 @@ def adopt_process_into_shield(
             "fi; "
             "if sudo -n true 2>/dev/null; then "
             '  sudo "$SHIELD" adopt "$PID"; '
+            'elif command -v cset >/dev/null 2>&1 && cset shield -s 2>/dev/null | grep -q "user"; then '
+            f'  echo "[RT] ERROR: cset CPU shield is ACTIVE but passwordless sudo is unavailable — '
+            f"{label} stays in the system cpuset and its RT thread pinning WILL fail "
+            "(setaffinity EINVAL, issue #151). Configure passwordless sudo (install.sh "
+            'setup_rt_sudoers + realtime group), or release the shield: sudo $SHIELD off"; '
             "else "
             f'  echo "[RT] WARNING: sudo requires a password — {label} shield adopt '
-            'skipped (RT pin relies on shield being off)"; '
+            'skipped (no active cset shield — CM keeps full affinity)"; '
             "fi",
         ],
         output="screen",

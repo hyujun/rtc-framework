@@ -252,6 +252,29 @@ def test_adopt_snippet_resolves_pid_and_calls_cpu_shield(_stub_script_paths):
     assert action.cmd[2][0].text.count("exit 0") >= 2
 
 
+def test_adopt_no_sudo_distinguishes_active_shield_from_shield_off(_stub_script_paths):
+    """No passwordless sudo splits into a loud ERROR vs a benign WARNING (#151).
+
+    When adopt cannot run and a cset shield is ACTIVE, the CM is stuck in the
+    "system" cpuset and its RT self-pin EINVALs — that is a hard failure the log
+    must surface, not the harmless "shield off, full affinity" skip. Assert the
+    branch detects an active cset "user" cpuset and escalates to ERROR, while the
+    fall-through stays a WARNING.
+    """
+    snippet = (
+        pinning.adopt_process_into_shield("integrated_rt_controller", "integrated_rt_controller")
+        .cmd[2][0]
+        .text
+    )
+    # Active-shield detection reuses the status-safe (no-sudo) cset probe.
+    assert 'cset shield -s 2>/dev/null | grep -q "user"' in snippet
+    # Active shield + no sudo → loud ERROR naming the EINVAL failure mode.
+    assert "[RT] ERROR:" in snippet
+    assert "setaffinity EINVAL" in snippet
+    # No active shield → benign WARNING, CM keeps full affinity.
+    assert "CM keeps full affinity" in snippet
+
+
 def test_adopt_gated_toggles_use_cpu_affinity_condition(_stub_script_paths):
     """gated=True carries the use_cpu_affinity IfCondition; gated=False drops it.
 
