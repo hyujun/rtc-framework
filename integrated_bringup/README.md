@@ -709,6 +709,7 @@ publish 하는 joint span 과 프로파일이 어긋나면 `/rosout` 에 one-sho
 | `demo_gui/config.py` | gain 스키마 (`GAIN_DEFS`, `GAIN_PARAM_DISPATCH`), 위젯 레이아웃, FSM phase 라벨 표, 캘리브레이션 항목 — robot-agnostic GUI 표 |
 | `demo_gui/discovery.py` | `RobotShape` (arm/hand DoF·finger group) + `RobotProfile` / `ROBOT_PROFILES` — `--robot` 가 선택하는 정적 로봇 프로파일 (joint 스키마 + TCP frame) |
 | `demo_gui/catalog.py` | `ControllerCatalog` — `/rtc_cm/list_controllers` 비동기 폴러 (5 s 주기). 라디오 버튼 / preset combo / 라벨이 모두 이 catalog 결과에서 옴. |
+| `demo_gui/pull.py` | Pull Force Estimate 패널의 상태기계 — `PullSnapshot` (immutable) / `PullPeakHold` / `badge_state` / `build_render`. Tk·rclpy 비의존이라 `test/test_demo_gui_pull.py` 가 디스플레이 없이 검증. |
 
 #### 동적 controller 발견 (`/rtc_cm/list_controllers`)
 
@@ -749,6 +750,41 @@ WBC 패널의 `mpc_enable` 토글은 controller 측에서 YAML 의 구조적 `mp
 - **`demo_wbc_controller`**: `grasp_controller_type` 무관 — WBC 는 자체 6-state FSM (slots 2 & 5 reserved) 으로 GraspCommand 를 직접 처리 (lifecycle.cpp 의 `grasp_command_srv_`). GRASP 명령은 `kApproach` 진입, RELEASE 는 어떤 비-terminal phase 에서도 `kRelease` 로 즉시 preempt (Approach/Closure/Hold 중 GUI 로 RELEASE 누르면 즉시 반응). phase 표시기가 WbcPhase enum 라벨로 갱신됩니다.
 
 phase 표시기는 active controller 가 force_pi grasp publisher 인지 WBC publisher 인지에 따라 `GRASP_PHASE_NAMES` (6 상태) 또는 `WBC_PHASE_NAMES` (8 슬롯, 6 reachable — slot 2 PRE-GRASP / slot 5 RETREAT 는 deprecated reserved) 라벨 표를 자동 선택합니다 — 두 publisher 가 GUI 에 동시에 구독되지만 active 한 쪽만 발행하므로 자동 분기.
+
+#### Pull Force Estimate 패널 (#167 · #234 PR-C)
+
+`GraspState`/`WbcState` 의 `pull` (`PullEstimate`) 서브메시지를 표시합니다. 두 부모 메시지가 같은 서브메시지를 embed 하므로 콜백 하나가 양쪽을 커버하며, joint/task 는 `grasp_state` 만·WBC 는 `wbc_state` 만 발행하고 두 구독 모두 *active* 컨트롤러 네임스페이스에 바인딩되므로 동시에 살아있는 source 는 항상 하나입니다.
+
+**Freshness — 도착 시각이 데이터에 실린다.** 콜백은 필드를 하나씩 쓰지 않고 immutable `PullSnapshot` 을 통째로 만들어 한 번에 재바인딩하며, 렌더는 그것을 지역변수로 1회만 읽습니다. 따라서 서로 다른 tick 의 필드가 섞인 화면은 구조적으로 불가능합니다. 스냅샷은 `time.monotonic()` 수신 시각을 함께 싣고 — publisher stamp 가 아니라 **수신측** 시각입니다 ("이 프로세스가 저 컨트롤러 소식을 아직 듣고 있는가" 가 질문이므로) — `PULL_STALE_AFTER_S = 0.5 s` 를 넘으면 stale 로 판정합니다. 임계값은 `control_rate` 가 아니라 **GUI 의 5 Hz 재도색 주기 기준**입니다: wire 는 CM 의 non-RT publish lane (eventfd, coalescing) 이 RT tick 마다 깨우므로 항상 5 Hz 보다 훨씬 빠르고, 0.5 s = 2.5 프레임이라 coalescing burst 나 스케줄링 지터로 배지가 깜빡이지 않으면서 발행이 끊긴 컨트롤러는 3 프레임 안에 드러납니다.
+
+**배지 우선순위** (`badge_state`):
+
+| 순위 | 조건 | 배지 | 부가 설명 |
+|---|---|---|---|
+| 1 | E-STOP | `UNAVAILABLE` | `E-STOP active` |
+| 2 | stale · 미수신 · rewire 직후 | `STALE` / `UNAVAILABLE` | 마지막 갱신 경과 시간 |
+| 3 | fresh + estimator 미wiring | `UNAVAILABLE` | `estimator disabled` |
+| 4 | fresh + `slip_risk` | `SLIP RISK` | — |
+| 5 | fresh + `valid` | `NO SLIP RISK` | — |
+| 6 | fresh + `!valid` | `UNKNOWN` | `invalid_reason` 라벨 (not initialized / degenerate normal / required contact lost / too few contacts) |
+
+3순위가 별도 상태인 이유: `pull_estimator.enabled: false` 이거나 FK-backed tip link 가 하나도 안 풀리면 컨트롤러는 `grasp_state_.pull` 을 **한 번도 쓰지 않는데**, `SetupGraspStatePublisher` 는 그 블록을 매 tick 그대로 wire 에 복사합니다. 즉 default-constructed POD (전부 0, `valid=false`, `invalid_reason=INVALID_NONE`) 가 fresh 메시지로 도착합니다. 이 조합은 `PullEstimate.msg` 계약 ("INVALID_NONE **iff** `valid`") 밖이라 "이 메시지 뒤에 estimator 가 없다" 의 신뢰할 수 있는 표지이며, 이를 처리하지 않으면 배지가 `_INVALID_LABELS[INVALID_NONE]` 을 집어 **"UNKNOWN: valid"** 라는 자기모순 문구를 띄우고 전부-0 블록이 살아있는 `0.00 N` 으로 렌더됩니다 (P-3 의 "0 과 미추정이 같아 보이면 안 된다" 위반). 문구는 컨트롤러 로그 `[pull_estimator] disabled — ...` 와 맞춰 두었으므로 조작자가 원인을 grep 할 수 있습니다.
+
+fresh tick 안에서 slip 이 validity 를 앞서는 것은 estimator 가 `slip_risk`/`friction_utilization` 을 `valid` 게이트 **밖에서** 평가하기 때문입니다 (#234 P-7) — required role 이 빠져 pull 벡터가 무효여도 아직 잡고 있는 tip 은 미끄러질 수 있습니다. E-STOP 은 PR-A 이후에도 매 tick 행을 발행하지만 `StageEstopPullTick` 이 all-invalid 입력 + zero normal 로 돌리므로 `INVALID_DEGENERATE_NORMAL` 이 실려 옵니다 — 이를 "UNKNOWN: degenerate normal" 로 읽으면 일어나지도 않은 기하 실패를 지목하게 되므로 배지를 `UNAVAILABLE` 로 덮습니다 (같은 경로가 contact 을 전부 지우므로 `slip_risk` 도 false 라 숨겨지는 정보는 없습니다).
+
+**두 개의 게이트 — 값 렌더 (`build_render`).** `trusted` (배지가 STALE/UNAVAILABLE 이 아님) 가 실패하면 모든 값이 `--` 로 비워집니다. 발행이 끊긴 source 나 컨트롤러 전환 이전의 숫자는 빈 칸보다 나쁘기 때문입니다. `trusted` 는 배지 옆에서 따로 계산하지 않고 **배지에서 유도**하므로 STALE 헤더 아래에 살아있어 보이는 숫자가 뜰 수 없습니다.
+
+| 그룹 | 게이트 | 필드 |
+|---|---|---|
+| Pull vector | `trusted && valid` | `magnitude` · `directional` · `leakage` · `force[3]` · `force_inplane[2]` · `basis` · `basis_x[3]` (단 `valid` 자신은 `trusted` 만 — 실패 원인을 표시해야 하므로) |
+| Contacts (partial-contact 진단) | `trusted` | `friction_utilization` · `contact_mask` · `touch_mask` · `any_saturated` · `baseline_applied` · `plane_normal[3]` |
+| Source | 무조건 | publisher 라벨 · age · `header.frame_id` |
+
+`plane_normal` 만 진단 그룹에 있는 것은 `PullEstimate.msg` 계약 때문입니다 — tick 이 normal 은 가졌는데 basis 는 없을 수 있으므로 (평면은 멀쩡한데 required tip 이 빠진 경우) `valid` 로 게이팅하면 wire 가 유효하다고 말하는 값을 숨기게 됩니다. 반대로 `basis_x` 는 무효 tick 에서 항상 0 이라 `valid` 게이트가 맞습니다. `basis` 는 축 이름이 아니라 **규칙**(`reference`/`carry`/`seed`)을 표시합니다 — `force_inplane[0]` 이 설정된 reference 방향 성분인 것은 `BASIS_REFERENCE` 일 때뿐이기 때문입니다 (#234 P-11). mask 는 LSB-first (`#.#.` = contact 0·2) 로 estimator 의 tip role 순서를 따릅니다. 슬롯 수는 GUI 의 fingertip roster (`FINGERTIP_NAMES`, 4) 이고 mask 는 uint8 · estimator 의 tip 목록 크기이므로 — 현재 모든 로봇 config 에서 둘 다 4 로 일치 — 그 밖의 비트는 조용히 버리지 않고 말미 `+` 로 표시합니다 (`#...+`).
+
+**Peak-hold.** wire 는 `control_rate` (수백 Hz), 패널은 5 Hz 이므로 렌더 시점의 최신 스냅샷만 보면 대략 100 tick 중 1개 — 하필 순간적인 slip spike 가 안 보이는 표본 — 만 보게 됩니다. 저장되는 모든 스냅샷을 `PullPeakHold` 에 접어 넣고 렌더가 프레임마다 소비·클리어하므로, `friction_utilization` 은 그 프레임의 최댓값, `slip_risk` 는 OR 로 표시됩니다. 감쇠 hold 가 아니라 **직전 프레임 소유**이므로 spike 는 한 프레임 보였다 사라지고 조용한 프레임은 조용하게 읽힙니다. 프레임 중 메시지가 하나도 안 왔으면 (`samples == 0`) 스냅샷을 그대로 두어, 있지도 않은 0 peak 로 마지막 값을 지우지 않습니다. `PullSnapshot` 과 달리 이 accumulator 는 **mutable** 이고 executor 스레드(`observe`)와 Tk 스레드(`consume`)가 함께 쓰며 모든 갱신이 read-modify-write (`max`/`or`/`+= 1`) 라 GIL 이 원자성을 주지 않으므로 `threading.Lock` 으로 감쌉니다 — 없으면 drain 중간에 낀 `observe` 가 방금 소비한 peak 를 되써서 spike 가 남의 프레임으로 넘어가고, `samples` 증가가 유실되면 `merge_into` 가 빈 프레임으로 보아 그 spike 를 아예 버립니다.
+
+**Rewire 리셋.** `_rewire_owned_topics` 는 핸들을 재생성하기 전에 `_reset_controller_sourced_state()` 로 컨트롤러 소유 상태를 버립니다 (#234 P-10). 남겨두면 이전 컨트롤러의 값이 새 컨트롤러의 라이브 데이터처럼 화면에 남습니다 (새 컨트롤러가 estimator 를 안 쓰면 그 자리를 덮어쓸 값 자체가 오지 않습니다). peak-hold 도 함께 리셋되며 (spike 는 그것을 만든 source 소유), phase 라벨 표를 고르는 `_wbc_active` 도 초기화됩니다 (stale `True` 는 다음 컨트롤러의 phase 를 잘못된 enum 으로 디코딩).
 
 #### 기타 기능
 

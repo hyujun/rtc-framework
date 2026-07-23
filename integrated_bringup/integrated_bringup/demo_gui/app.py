@@ -30,6 +30,7 @@ import math
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import font as tkfont, messagebox, ttk
 
@@ -84,6 +85,15 @@ from .config import (
     target_panel_states,
 )
 from .discovery import RobotProfile, RobotShape
+from .pull import (
+    PLACEHOLDER,
+    SOURCE_GRASP,
+    SOURCE_WBC,
+    VALUE_FG,
+    PullPeakHold,
+    PullSnapshot,
+    build_render,
+)
 
 
 def _quat_to_rpy(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
@@ -222,14 +232,19 @@ class DemoControllerGUI(Node):
         self._fp_finger_s = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_filtered_force = [0.0] * len(FORCE_PI_FINGER_NAMES)
         self._fp_force_error = [0.0] * len(FORCE_PI_FINGER_NAMES)
-        # Pull-force estimate (#167) — GraspState/WbcState 의 pull_* 블록은
-        # 필드명이 동일하므로 _store_pull_fields 하나로 양쪽 콜백을 커버.
-        self._pull_magnitude = 0.0
-        self._pull_friction_utilization = 0.0
-        self._pull_valid = False
-        self._pull_valid_contact_count = 0
-        self._pull_slip_risk = False
-        self._pull_baseline_applied = False
+        # Pull-force estimate (#167) — GraspState/WbcState 의 pull 블록은 동일한
+        # PullEstimate 이므로 _store_pull_fields 하나로 양쪽 콜백을 커버.
+        #
+        # 개별 필드 6개가 아니라 immutable snapshot 하나를 통째로 재바인딩한다
+        # (#234 P-2/P-8/P-10): 콜백(rclpy executor)과 렌더(Tk)가 서로 다른 tick
+        # 의 필드를 섞어 볼 수 없고, 도착 시각·source·frame 이 데이터와 함께
+        # 실려 freshness 판정이 렌더 시점의 추측이 아니라 데이터의 성질이 된다.
+        self._pull: PullSnapshot = PullSnapshot.unavailable()
+        # Pull-panel value widgets, keyed by the field names build_render emits
+        # (populated by the panel builder on the Tk thread).
+        self._pull_labels: dict[str, tk.Label] = {}
+        # 5 Hz 렌더 사이를 지나가는 수백 tick 의 slip 진단 극값 (#234 P-20).
+        self._pull_peak = PullPeakHold()
 
         # Phase 4: subscribe to the active controller name and rebind
         # controller-owned topics on each change.
@@ -259,7 +274,11 @@ class DemoControllerGUI(Node):
         self._prev_fp_phase = ""
         self._prev_fp_target = ""
         self._prev_fp_fingers = [["", "", "", ""] for _ in range(len(FORCE_PI_FINGER_NAMES))]
-        self._prev_pull = [""] * 5  # slip badge / magnitude / util / valid / baseline
+        # Pull panel dirty-check cache, keyed by the same field names as
+        # _pull_labels — the panel grew past the positional-list pattern the
+        # other caches use, and a key-addressed cache keeps adding a row from
+        # silently reindexing the rest.
+        self._prev_pull: dict[str, str] = {}
 
         # Phase 2: dynamic controller catalog. Built before the Tk thread
         # starts so the rclpy executor sees the timer/service-client
@@ -332,9 +351,35 @@ class DemoControllerGUI(Node):
         self._wired_groups = groups
         self._rewire_owned_topics("/" + self._active_ctrl, groups[0], groups[1])
 
+    def _reset_controller_sourced_state(self) -> None:
+        """Drop state that belongs to the controller being rewired away from
+        (#234 P-10).
+
+        Anything sourced from a controller-owned topic has to die with the
+        subscription that fed it, because the *next* controller may never
+        republish it. The pull estimate is the sharp case: a controller with the
+        estimator disabled publishes no pull block at all, so values left here
+        would sit on screen indistinguishable from live data belonging to the
+        new controller. The peak-hold goes with it — a spike belongs to the
+        source that produced it.
+
+        ``_wbc_active`` is the same problem in a different shape: it selects the
+        WBC (8-state) versus Force-PI (6-state) phase-label table, so a stale
+        ``True`` decodes the next controller's phase against the wrong enum
+        until its first message lands.
+
+        Called on the rclpy executor thread (from ``_rewire_owned_topics``); the
+        Tk side re-reads all of it on its next frame.
+        """
+        self._pull = PullSnapshot.unavailable()
+        self._pull_peak.reset()
+        self._wbc_active = False
+
     def _rewire_owned_topics(self, ns: str, arm_group: str, hand_group: str) -> None:
         """(Re)create the controller-owned + per-group pubs/subs against ``ns``
         and the given group names, destroying any prior handles first."""
+        self._reset_controller_sourced_state()
+
         # Reset old sub handles by dropping references; rclpy will unsubscribe.
         for sub_attr in (
             "_arm_gui_sub",
@@ -498,21 +543,30 @@ class DemoControllerGUI(Node):
             self._fp_finger_s[i] = msg.finger_s[i]
             self._fp_filtered_force[i] = msg.finger_filtered_force[i]
             self._fp_force_error[i] = msg.finger_force_error[i]
-        self._store_pull_fields(msg)
+        self._store_pull_fields(msg, SOURCE_GRASP)
 
-    def _store_pull_fields(self, msg):
-        """GraspState/WbcState 공용 pull 저장 (#167) — 두 msg 는 동일한
-        PullEstimate 하위 메시지를 embed 하므로 하나의 헬퍼로 커버."""
-        pull = msg.pull
-        self._pull_magnitude = pull.magnitude
-        self._pull_friction_utilization = pull.friction_utilization
-        self._pull_valid = pull.valid
-        self._pull_valid_contact_count = pull.valid_contact_count
-        self._pull_slip_risk = pull.slip_risk
-        self._pull_baseline_applied = pull.baseline_applied
+    def _store_pull_fields(self, msg, source: str) -> None:
+        """GraspState/WbcState 공용 pull 저장 (#167, #234 P-8) — 두 msg 는 동일한
+        PullEstimate 를 embed 하므로 하나의 헬퍼로 커버한다.
+
+        rclpy executor 스레드에서 호출된다. 스냅샷을 통째로 만들어 ``self._pull``
+        을 한 번에 재바인딩하므로 (GIL 하 원자적 rebind) Tk 렌더 스레드는 반쯤
+        갱신된 tick 을 관측할 수 없다. peak-hold 는 재바인딩 *전에* 접어 넣어,
+        렌더가 이 스냅샷을 보게 되는 프레임에는 그 tick 이 반드시 포함되도록
+        한다 (반대 순서면 두 연산 사이에 낀 렌더가 tick 을 통째로 놓친다).
+        """
+        snap = PullSnapshot.from_message(msg, source, time.monotonic())
+        self._pull_peak.observe(snap)
+        self._pull = snap
 
     def _wbc_state_cb(self, msg: WbcState):
-        """WbcState handler — published by demo_wbc_controller at ~50 Hz.
+        """WbcState handler — published by demo_wbc_controller.
+
+        The rate is not a GUI-side constant: the CM's non-RT publish lane is
+        woken per RT tick (eventfd, coalescing) and applies no decimation, so
+        the wire rate tracks ``control_rate``. That is what the pull panel's
+        peak-hold and 0.5 s staleness threshold are sized against — see
+        ``demo_gui.pull``.
 
         Reuses the grasp-state display widgets (force_magnitude /
         contact_flag are per-fingertip, num_active_contacts / max_force /
@@ -539,7 +593,7 @@ class DemoControllerGUI(Node):
             # valid so the OK/-- indicator stays useful.
             self._grasp_inference_valid[i] = True
         self._grasp_phase = msg.phase
-        self._store_pull_fields(msg)
+        self._store_pull_fields(msg, SOURCE_WBC)
 
     def _on_catalog_update(self, _catalog: ControllerCatalog) -> None:
         """ControllerCatalog response handler — runs on the rclpy executor.
@@ -634,6 +688,46 @@ class DemoControllerGUI(Node):
         self._refresh_current_display()
         self.root.after(200, self._schedule_refresh)
 
+    def _set_pull_field(self, key: str, text: str, fg: str = VALUE_FG) -> None:
+        """Dirty-checked write to one pull-panel value label. The cache key
+        includes the colour so a value that stays textually identical while
+        changing meaning (e.g. `valid` flipping) still repaints."""
+        cache_key = f"{text}\x00{fg}"
+        if self._prev_pull.get(key) == cache_key:
+            return
+        self._prev_pull[key] = cache_key
+        self._pull_labels[key].config(text=text, fg=fg)
+
+    def _refresh_pull_panel(self) -> None:
+        """Render the pull-estimate panel from a single snapshot (#234 PR-C).
+
+        Runs on the Tk thread at the 5 Hz refresh cadence. The snapshot is read
+        **once** for the whole panel — reading ``self._pull`` per field would
+        reintroduce exactly the cross-tick mixing the snapshot exists to
+        prevent — and the peak-hold is consumed exactly once per frame here,
+        which is what makes it a per-frame extreme rather than an ever-growing
+        high-water mark.
+
+        The gate logic and every field's text live in ``demo_gui.pull``
+        (``build_render``) so they are unit-testable without a display; this
+        method is only the blit onto Tk widgets.
+        """
+        render = build_render(
+            self._pull_peak.merge_into(self._pull),
+            time.monotonic(),
+            estop_active=self.estop_active,
+            num_contacts=len(FINGERTIP_NAMES),
+        )
+
+        badge = render.badge
+        if self._prev_pull.get("_badge") != badge.key:
+            self._prev_pull["_badge"] = badge.key
+            self._pull_slip_label.config(text=f"  {badge.text}  ", bg=badge.bg, fg=badge.fg)
+            self._pull_badge_detail.config(text=badge.detail)
+
+        for key, text in render.values.items():
+            self._set_pull_field(key, text, render.colors.get(key, VALUE_FG))
+
     def _refresh_current_display(self):
         """Update display labels with dirty checking. Only redraws changed values."""
         # ── Arm Joint Positions ──
@@ -718,38 +812,8 @@ class DemoControllerGUI(Node):
                 self._prev_ft[i][2] = valid_text
                 self._ft_valid_labels[i].config(text=valid_text, fg="#a6e3a1" if iv else "#f38ba8")
 
-        # ── Pull force estimate (#167) ──
-        slip_key = "1" if self._pull_slip_risk else "0"
-        if self._prev_pull[0] != slip_key:
-            self._prev_pull[0] = slip_key
-            if self._pull_slip_risk:
-                self._pull_slip_label.config(text="  SLIP RISK  ", bg="#f38ba8", fg="#1e1e2e")
-            else:
-                self._pull_slip_label.config(text="  NO SLIP RISK  ", bg="#585b70", fg="#cdd6f4")
-
-        pull_mag_text = f"{self._pull_magnitude:.2f} N"
-        if self._prev_pull[1] != pull_mag_text:
-            self._prev_pull[1] = pull_mag_text
-            self._pull_magnitude_label.config(text=pull_mag_text)
-
-        pull_util_text = f"{self._pull_friction_utilization:.2f}"
-        if self._prev_pull[2] != pull_util_text:
-            self._prev_pull[2] = pull_util_text
-            self._pull_util_label.config(text=pull_util_text)
-
-        pull_valid_text = (
-            f"{'OK' if self._pull_valid else '--'} ({self._pull_valid_contact_count})"
-        )
-        if self._prev_pull[3] != pull_valid_text:
-            self._prev_pull[3] = pull_valid_text
-            self._pull_valid_label.config(
-                text=pull_valid_text, fg="#a6e3a1" if self._pull_valid else "#f38ba8"
-            )
-
-        pull_base_text = "ON" if self._pull_baseline_applied else "--"
-        if self._prev_pull[4] != pull_base_text:
-            self._prev_pull[4] = pull_base_text
-            self._pull_baseline_label.config(text=pull_base_text)
+        # ── Pull force estimate (#167 · #234 P-2/P-3/P-8/P-9/P-11) ──
+        self._refresh_pull_panel()
 
         # ── Phase indicator ──
         # WBC and Force-PI use different FSM enums. Cache key includes the
@@ -1399,6 +1463,122 @@ class DemoControllerGUI(Node):
 
     # ---- Grasp tab builder -----------------------------------------------------
 
+    def _build_pull_panel(self, parent: tk.Frame, mono_font) -> None:
+        """Build the Pull Force Estimate panel.
+
+        Split out of ``_build_grasp_tab`` so the panel can be built and driven
+        in isolation: the widget keys have to match the ones ``build_render``
+        emits, and that contract is only exercised at render time.
+        """
+        # ── Pull Force Estimate (#167 · #234 PR-C) ─────────────────────
+        # Fed by the `pull` block of GraspState/WbcState (the same embedded
+        # PullEstimate in both; see _store_pull_fields) and rendered from one
+        # immutable snapshot by _refresh_pull_panel.
+        #
+        # The two value groups below are not cosmetic. "Pull vector" is gated on
+        # `valid` (pull-vector validity); "Contacts" is gated on freshness only,
+        # because the estimator evaluates the slip diagnostics outside that gate
+        # — a required-role dropout still has tips that can slip (#234 P-3/P-7).
+        pull_frame = ttk.LabelFrame(parent, text="Pull Force Estimate", padding=4)
+        pull_frame.pack(fill="x", padx=8, pady=(2, 2))
+
+        pull_row = tk.Frame(pull_frame, bg="#1e1e2e")
+        pull_row.pack(fill="x")
+
+        self._pull_slip_label = tk.Label(
+            pull_row,
+            text="  UNAVAILABLE  ",
+            bg="#45475a",
+            fg="#a6adc8",
+            font=("Segoe UI", 11, "bold"),
+            padx=8,
+            pady=4,
+        )
+        self._pull_slip_label.pack(side="left", padx=(4, 8))
+
+        # Why the badge reads what it reads (invalid_reason / age / E-STOP).
+        self._pull_badge_detail = tk.Label(
+            pull_row,
+            text="no estimate received",
+            bg="#1e1e2e",
+            fg="#a6adc8",
+            font=("Segoe UI", 8, "italic"),
+            anchor="w",
+        )
+        self._pull_badge_detail.pack(side="left", padx=(0, 8))
+
+        pull_body = tk.Frame(pull_frame, bg="#1e1e2e")
+        pull_body.pack(fill="x")
+
+        # (group heading, [(caption, field key), ...]) — two caption/value
+        # pairs per grid row. The keys are the ones `build_render` emits; the
+        # panel and the render agree on that vocabulary and nothing else, so a
+        # new field is one entry here plus one in pull.py.
+        pull_groups = [
+            (
+                "Pull vector (valid-gated)",
+                [
+                    ("Valid:", "valid"),
+                    ("Magnitude:", "magnitude"),
+                    ("Directional:", "directional"),
+                    ("Leakage:", "leakage"),
+                    ("Force:", "force"),
+                    ("In-plane:", "inplane"),
+                    ("Basis:", "basis"),
+                    ("Basis x̂:", "basis_x"),
+                ],
+            ),
+            (
+                "Contacts (partial-contact diagnostics)",
+                [
+                    ("Friction Util:", "friction_util"),
+                    ("Contact set:", "contact_set"),
+                    ("Touch set:", "touch_set"),
+                    ("Saturated:", "saturated"),
+                    ("Baseline:", "baseline"),
+                    ("Plane n̂:", "plane_normal"),
+                ],
+            ),
+            (
+                "Source",
+                [
+                    ("Publisher · age:", "source"),
+                    ("Frame:", "frame"),
+                ],
+            ),
+        ]
+        for heading, items in pull_groups:
+            tk.Label(
+                pull_body,
+                text=heading,
+                bg="#1e1e2e",
+                fg="#7f849c",
+                font=("Segoe UI", 8, "bold"),
+                anchor="w",
+            ).pack(fill="x", padx=(6, 0), pady=(3, 0))
+            grid = tk.Frame(pull_body, bg="#1e1e2e")
+            grid.pack(fill="x")
+            for i, (caption, key) in enumerate(items):
+                tk.Label(
+                    grid,
+                    text=caption,
+                    bg="#1e1e2e",
+                    fg="#cdd6f4",
+                    font=("Segoe UI", 8),
+                    anchor="e",
+                ).grid(row=i // 2, column=(i % 2) * 2, padx=(8, 2), pady=1, sticky="e")
+                lbl = tk.Label(
+                    grid,
+                    text=PLACEHOLDER,
+                    bg="#313244",
+                    fg=VALUE_FG,
+                    font=mono_font,
+                    width=18,
+                    anchor="center",
+                )
+                lbl.grid(row=i // 2, column=(i % 2) * 2 + 1, padx=(0, 8), pady=1)
+                self._pull_labels[key] = lbl
+
     def _build_grasp_tab(self, parent: tk.Frame):
         hdr_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
         mono_font = ("Courier New", 9, "bold")
@@ -1516,50 +1696,8 @@ class DemoControllerGUI(Node):
             vl.grid(row=i + 1, column=3, padx=2, pady=1)
             self._ft_valid_labels.append(vl)
 
-        # ── Pull Force Estimate (#167) ─────────────────────────────────
-        # Fed by the pull_* block of GraspState/WbcState (field names are
-        # identical across the two messages; see _store_pull_fields).
-        pull_frame = ttk.LabelFrame(parent, text="Pull Force Estimate", padding=4)
-        pull_frame.pack(fill="x", padx=8, pady=(2, 2))
-
-        pull_row = tk.Frame(pull_frame, bg="#1e1e2e")
-        pull_row.pack(fill="x")
-
-        self._pull_slip_label = tk.Label(
-            pull_row,
-            text="  NO SLIP RISK  ",
-            bg="#585b70",
-            fg="#cdd6f4",
-            font=("Segoe UI", 11, "bold"),
-            padx=8,
-            pady=4,
-        )
-        self._pull_slip_label.pack(side="left", padx=(4, 12))
-
-        pull_grid = tk.Frame(pull_row, bg="#1e1e2e")
-        pull_grid.pack(side="left", fill="x")
-
-        pull_items = [
-            ("Magnitude:", "_pull_magnitude_label", "0.00 N"),
-            ("Friction Util:", "_pull_util_label", "0.00"),
-            ("Valid:", "_pull_valid_label", "-- (0)"),
-            ("Baseline:", "_pull_baseline_label", "--"),
-        ]
-        for i, (text, attr, default) in enumerate(pull_items):
-            tk.Label(
-                pull_grid, text=text, bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 8), anchor="e"
-            ).grid(row=i // 2, column=(i % 2) * 2, padx=(8, 2), pady=1, sticky="e")
-            lbl = tk.Label(
-                pull_grid,
-                text=default,
-                bg="#313244",
-                fg="#f9e2af",
-                font=mono_font,
-                width=10,
-                anchor="center",
-            )
-            lbl.grid(row=i // 2, column=(i % 2) * 2 + 1, padx=(0, 8), pady=1)
-            setattr(self, attr, lbl)
+        # ── Pull Force Estimate (#167 · #234 PR-C) ─────────────────────
+        self._build_pull_panel(parent, mono_font)
 
         # ── Grasp Detection Params ──────────────────────────────────────
         # Swapped per active controller by `_show_gains_panel`. The
