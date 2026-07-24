@@ -58,6 +58,8 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 >
 > **같은 false green 이 형제 절반에서 재발했다 (#204 post-review).** 위 수정은 flat 탐지의 `publish` 쪽만 pin 했고, `subscribe` 쪽은 `EXPECT_THROW` 로 남아 똑같이 원복해도 통과했다. 층이 겹치는 가드를 하나 고쳤으면 **대칭 위치의 나머지 절반도 같은 기준으로 다시 측정**한다 — 한쪽을 진단 pin 으로 옮겼다는 사실 자체가 다른 쪽도 흡수되고 있다는 신호다.
 
+**두 번째 false green — 관측 채널이 fallback 에 가려질 때.** 가드를 원복(mutation-check)해도, 테스트가 assert 하는 값이 다른 경로로도 같은 값을 내면 vacuous 다 — 이때는 가드가 아니라 *관측 지점*이 잘못된 것이다. E-STOP recovery drain(#242)이 그 예: OSC/TaskImpedance 는 gravity-comp 컨트롤러라 정지(q̇=0) 시 hold torque ≈ ĝ(q) 인데, E-STOP 중 큐잉돼 leak 된 target 이 충분히 멀면 recovery tick 에서 SAFE_STOP 을 latch 시키고 그 hold 역시 ĝ(q) 를 내므로 **joint torque 로 assert 하면 leak 유무와 무관하게 통과**한다. 관측을 fallback 이 건드리지 않는 채널로 옮겨야 pin 이 성립한다 — OSC 는 goal echo(`task_goal_positions`, drain 이 쓰는 slot 을 직접 반영), TaskImpedance 는 `diag.pose_error`(SAFE_STOP step *이전에* 기록되고 `ComputeEstop` handoff 로 보존). 실측(#242): torque assertion 으로 두 번 vacuous 를 거친 뒤 채널을 옮겨 pin.
+
 원복은 **파일 단위 restore** 로 되돌린다 — `git checkout -- .` 은 아직 커밋하지 않은 작업까지 함께 날린다 (#204 에서 실제 발생).
 
 단 **검증 대상 파일 자체가 미커밋일 때** (가드를 방금 썼고 아직 커밋 전 — revert-verification 의 표준 상황) 는 `git checkout -- <file>` 도 그 작업을 날린다. 명시적 백업 사본에서 복구해야 하는데, 여기에 함정이 하나 더 있다:
