@@ -107,7 +107,7 @@
 
         <SubTree ID="ApproachFromAbove"
                  target_pose="{object_pose}"
-                 offset_z="0.04"
+                 offset_z="0.15"
                  pos_tol="0.003"
                  ori_tol="0.05"
                  timeout_s="10.0"

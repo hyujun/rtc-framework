@@ -99,10 +99,10 @@
 
         <SubTree ID="ApproachFromAbove"
                  target_pose="{object_pose}"
-                 offset_z="0.04"
+                 offset_z="0.18"
                  pos_tol="0.003"
                  ori_tol="0.05"
-                 timeout_s="10.0"
+                 timeout_s="20.0"
                  approach_pose="{approach_pose}"/>
 
         <!-- ======================================================== -->
@@ -110,7 +110,7 @@
         <!-- ======================================================== -->
         <SubTree ID="SlowDescend"
                  target_pose="{object_pose}"
-                 traj_speed="0.05"
+                 traj_speed="0.1"
                  pos_tol="0.002"
                  ori_tol="0.05"
                  timeout_s="8.0"

@@ -116,6 +116,9 @@
   <!-- ================================================================== -->
   <BehaviorTree ID="ForcePIGrasp">
     <Sequence>
+      <GraspControl mode="open"
+              target_positions="-0.8727, -0.1745, -0.0873, 0.0, 0.3491, 0.3491, 0.0, 0.3491, 0.6981, 0.0"
+              timeout_s="3.0"/>
       <!-- Send grasp command via gains -->
       <SetGains
                 grasp_command="1"
@@ -163,7 +166,7 @@
   <BehaviorTree ID="ReleaseAndRetreat">
     <Sequence>
       <GraspControl mode="open"
-                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
+                    target_positions="-0.8727, -0.1745, -0.0873, 0.0, 0.3491, 0.3491, 0.0, 0.3491, 0.6981, 0.0"
                     timeout_s="3.0"/>
       <WaitDuration duration_s="0.3"/>
       <ComputeOffsetPose input_pose="{base_pose}"
@@ -187,7 +190,7 @@
   <BehaviorTree ID="ContactStopOpen">
     <Sequence>
       <GraspControl mode="open"
-                    target_positions="0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0;0.0"
+                    target_positions="-0.8727, -0.1745, -0.0873, 0.0, 0.3491, 0.3491, 0.0, 0.3491, 0.6981, 0.0"
                     timeout_s="{open_timeout_s}"/>
       <WaitDuration duration_s="0.2"/>
     </Sequence>
