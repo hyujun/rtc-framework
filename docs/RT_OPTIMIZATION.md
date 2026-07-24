@@ -631,7 +631,7 @@ int RtControllerMain(int argc, char** argv, const std::string& node_name) {
 
 ### 0. 자동 런타임 검증 (verify_rt_runtime.sh — 권장 시작점)
 
-컨트롤러가 구동 중일 때, 각 live thread 의 RT 설정 (scheduling policy · priority · CPU affinity · memory lock · context switch · CPU migration · RT throttling) 을 `thread_config.hpp` 의 tier 기대값과 자동 대조한다. 정적 시스템 설정을 보는 `check_rt_setup.sh` 와 달리 *실행 중 프로세스의 런타임 상태* 를 검증하므로, 아래 수동 `ps -T` / `taskset` 절차 (§1–§2) 를 돌리기 전에 먼저 실행한다.
+컨트롤러가 구동 중일 때, 각 live thread 의 RT 설정 (scheduling policy · priority · CPU affinity · memory lock · context switch · CPU migration · RT throttling) 을 `thread_config.hpp` 의 tier 기대값과 자동 대조한다. `arm_driver` / `hand_driver` 는 컨트롤러 내부 스레드가 아니라 별도 프로세스(`ros2_control_node` / `udp_hand_node`)이므로 process comm 으로 발견해 프로세스-레벨 affinity 를 검증한다 (sim 은 driver 프로세스가 없어 SKIP; comm override 는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM`). 정적 시스템 설정을 보는 `check_rt_setup.sh` 와 달리 *실행 중 프로세스의 런타임 상태* 를 검증하므로, 아래 수동 `ps -T` / `taskset` 절차 (§1–§2) 를 돌리기 전에 먼저 실행한다.
 
 ```bash
 ./repo_scripts/scripts/verify_rt_runtime.sh              # 상세 출력

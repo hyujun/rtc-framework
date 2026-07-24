@@ -91,6 +91,8 @@ repo_scripts/
 | `check_rt_setup.sh` | 정적 환경 검증 -- 커널, CPU, IRQ, 네트워크 등 (9개 카테고리) | 선택 |
 | `verify_rt_runtime.sh` | 실행 중 스레드 스케줄링/어피니티/메모리 검증 (7개 카테고리) | 선택 |
 
+> **External driver 프로세스 검증 (`arm_driver` / `hand_driver`).** 이 둘은 컨트롤러 내부 스레드가 아니라 launch 가 taskset 으로 pin 하는 **별도 프로세스**다 (`arm_driver`=`ros2_control_node`, `hand_driver`=`udp_hand_node`; thread_config.hpp §process-level threads). `verify_rt_runtime.sh` 는 이들을 process comm 으로 발견해 프로세스-레벨 affinity 를 검증한다 (hand 는 `taskset -a` 전-스레드 pin, issue #245). sim launch 는 mujoco 만 pin 하고 driver 프로세스가 없으므로 **SKIP** 처리된다. 다른 로봇/드라이버는 `RTC_ARM_DRIVER_COMM` / `RTC_HAND_DRIVER_COMM` env (공백 구분 comm 후보 리스트) 로 override.
+
 > **Intel hybrid 감지 (`[2.5/9]`) 전제조건 — `cpuid` 패키지 (`sudo apt install -y cpuid`).**
 > Raptor/Meteor/Arrow Lake 등 P+E 하이브리드는 3-path 캐스케이드로 감지한다: ① primary = `/sys/.../cpu/types/` sysfs (**커널 >= 6.9 + `nuc` 프로파일 재빌드** 필요 — `build_rt_kernel.sh` 참조), ② fallback = CPUID leaf 0x1A (**`cpuid` 툴 필요**), ③ fallback = cpuinfo_max_freq 클러스터링. 세 경로가 모두 실패하면 hybrid CPU가 "homogeneous" 로 **오검출**된다. `cpuid` 는 재이미징 시 누락되기 쉬운 필수 도구이므로 신규/재설치 머신 프로비저닝에 반드시 포함한다 (미설치 시 `check_rt_setup.sh` 가 Intel CPU 에 한해 오검출 경고를 출력한다).
 

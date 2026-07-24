@@ -16,8 +16,10 @@
 #
 # 검증 카테고리 (7개):
 #   1. Process Discovery    — robot bringup exec(integrated_rt_controller 등) 감지
+#                             + external driver 프로세스(arm_driver=ros2_control_node,
+#                               hand_driver=udp_hand_node) 별도 PID 발견
 #   2. Scheduling Policy    — SCHED_FIFO/OTHER 정책 및 우선순위 검증
-#   3. CPU Affinity         — 스레드별 코어 할당 일치 여부
+#   3. CPU Affinity         — in-process 스레드 + external driver 프로세스의 코어 할당 일치 여부
 #   4. Memory Locking       — mlockall 적용 및 page fault 추적
 #   5. Context Switches     — 비자발적 컨텍스트 스위치 비율 감시
 #   6. CPU Migration        — RT 스레드의 코어 이동 감지
@@ -48,6 +50,18 @@ init_report_state
 CONTROLLER_PID=""
 declare -A THREAD_TIDS    # name → tid
 declare -A THREAD_NAMES   # tid → name
+
+# ── External driver processes (arm_driver / hand_driver) ──────────────────────
+# arm_driver / hand_driver are SEPARATE processes pinned by the launch file via
+# taskset — NOT pthread_setname_np'd threads inside the controller
+# (thread_config.hpp:72-74; SystemThreadConfigs.{arm,hand}_driver in
+# thread_utils.hpp). They can never appear in /proc/<controller>/task, so they
+# are discovered as their own PIDs by process comm. See build_external_drivers().
+declare -a EXTERNAL_DRIVER_NAMES=("arm_driver" "hand_driver")
+declare -A EXTERNAL_DRIVER_SLOTS       # name → expected slot index
+declare -A EXTERNAL_DRIVER_ALLTHREADS  # name → 1 if taskset -a (all threads) pin
+declare -A EXTERNAL_DRIVER_COMMS       # name → space-separated comm candidates
+declare -A EXTERNAL_DRIVER_PIDS        # name → discovered PID (empty if absent)
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 show_help() {
@@ -127,15 +141,16 @@ build_expected_threads() {
   # 환경 모두에서 올바르게 동작.
   #
   # Layout v4.1: rt_control=1, rt_callback=2, mpc_main=3, workers=4-5.
-  # nrt_logging / nrt_callback: 4c=0, 6c=5 (shared), 8c=6/7, 10c=7/8,
-  #   12c+=8/9. arm < hand alphabetical.
-  # Mirrors thread_config.hpp::kMpcConfig*Core + per-tier driver/nrt configs.
-  # Every RT thread (rt_control, rt_callback, mpc_main, mpc_worker_*) AND
-  # process-level pins (arm_driver, hand_driver, nrt_logging, nrt_callback)
-  # are enumerated so check_process_discovery / check_cpu_affinity /
-  # check_cpu_migration cover the full system layout — previously mpc_main,
-  # mpc_worker_*, arm_driver, hand_driver were missing and verify silently
-  # skipped them.
+  # nrt_logging / nrt_callback: 4c=0, 6c=5 (shared), 8c=6/7, 10c=7/8, 12c+=8/9.
+  # Mirrors thread_config.hpp::kMpcConfig*Core + per-tier nrt configs.
+  # This table holds ONLY the controller's in-process threads (rt_control,
+  # rt_callback, mpc_main, mpc_worker_*, nrt_logging, nrt_callback) — all
+  # pthread_setname_np'd and therefore visible in /proc/<controller>/task.
+  # arm_driver / hand_driver were REMOVED from this table: they are external
+  # processes (ros2_control_node / udp_hand_node) pinned by launch-time taskset,
+  # never threads in the controller, so matching them here always false-WARNed.
+  # They are now discovered as separate PIDs by build_external_drivers() +
+  # discover_external_drivers().
   # NOTE: mpc_worker_* 는 ":optional" 로 표시 — MPCThread::Start (rtc_mpc/src/
   # thread/mpc_thread.cpp) 의 worker 생성 lambda 가 ApplyThreadConfig 호출 후
   # 즉시 종료하는 구조 (parallel solver 가 별도로 thread 를 spawn 하는 패턴).
@@ -144,69 +159,98 @@ build_expected_threads() {
   # negative 방지. 실제 worker 활용 여부는 별도 진단 task.
   EXPECTED_THREADS=()
   if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
-    # 12-16+: rt_control/callback 1-2, mpc_main 3, workers 4-5, arm 6, hand 7,
-    # nrt_logging 8, nrt_callback 9.
+    # 12-16+: rt_control/callback 1-2, mpc_main 3, workers 4-5,
+    # nrt_logging 8, nrt_callback 9. (arm 6 / hand 7 are external — see below.)
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
       "mpc_main:3:1:60"
       "mpc_worker_0:4:1:55:optional"
       "mpc_worker_1:5:1:55:optional"
-      "arm_driver:6:0:0"
-      "hand_driver:7:0:0"
       "nrt_logging:8:0:0"
       "nrt_callback:9:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
-    # 10-11: rt 1-2, mpc_main 3, single worker 4, arm 5, hand 6, nrt_log 7, nrt_cb 8.
+    # 10-11: rt 1-2, mpc_main 3, single worker 4, nrt_log 7, nrt_cb 8.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
       "mpc_main:3:1:60"
       "mpc_worker_0:4:1:55:optional"
-      "arm_driver:5:0:0"
-      "hand_driver:6:0:0"
       "nrt_logging:7:0:0"
       "nrt_callback:8:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
-    # 8-9: rt 1-2, mpc_main 3, arm 4, hand 5, nrt_log 6, nrt_cb 7. No workers.
+    # 8-9: rt 1-2, mpc_main 3, nrt_log 6, nrt_cb 7. No workers.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
       "mpc_main:3:1:60"
-      "arm_driver:4:0:0"
-      "hand_driver:5:0:0"
       "nrt_logging:6:0:0"
       "nrt_callback:7:0:0"
     )
   elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
-    # 6-7 (degraded): rt 1-2, mpc_main 3, arm+hand share 4, nrt_log+nrt_cb share 5.
+    # 6-7 (degraded): rt 1-2, mpc_main 3, nrt_log+nrt_cb share 5.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
       "mpc_main:3:1:60"
-      "arm_driver:4:0:0"
-      "hand_driver:4:0:0"
       "nrt_logging:5:0:0"
       "nrt_callback:5:0:0"
     )
   else
-    # 4-core fallback (degraded): rt 1-2, mpc_main CFS slot 3, arm/hand/nrt
+    # 4-core fallback (degraded): rt 1-2, mpc_main CFS slot 3, nrt
     # all share OS Core 0 — no RT determinism.
     EXPECTED_THREADS=(
       "rt_control:1:1:90"
       "rt_callback:2:1:70"
       "mpc_main:3:0:0"
-      "arm_driver:0:0:0"
-      "hand_driver:0:0:0"
       "nrt_logging:0:0:0"
       "nrt_callback:0:0:0"
     )
   fi
 }
 
+# ── External driver process 기대값 (arm_driver / hand_driver) ─────────────────
+# 이들은 컨트롤러 내부 스레드가 아니라 launch 가 taskset 으로 pin 하는 별도
+# 프로세스다 (thread_config.hpp:72-74, thread_utils.hpp SystemThreadConfigs).
+# slot 은 build_expected_threads 에서 제거된 arm/hand 행과 동일하게 layout v4.1
+# 을 미러링한다: 12c+ arm6/hand7, 10c arm5/hand6, 8c arm4/hand5, 6c arm4/hand4
+# (공유), 4c arm0/hand0.
+build_external_drivers() {
+  # comm 후보 (15-char /proc/*/comm, TASK_COMM_LEN-1):
+  #   arm_driver  → ros2_control_node → "ros2_control_no" (UR ros2_control_node)
+  #   hand_driver → udp_hand_node (15자 이내라 그대로)
+  # sim launch 는 mujoco_simulator_node 만 (sim slot 으로) pin 하고 arm/hand
+  # driver 프로세스는 존재하지 않는다 → discovery 가 SKIP (정상). 다른 로봇은
+  # RTC_ARM_DRIVER_COMM / RTC_HAND_DRIVER_COMM (공백 구분 후보 리스트) 로 override.
+  EXTERNAL_DRIVER_COMMS[arm_driver]="${RTC_ARM_DRIVER_COMM:-ros2_control_no}"
+  EXTERNAL_DRIVER_COMMS[hand_driver]="${RTC_HAND_DRIVER_COMM:-udp_hand_node}"
+
+  # hand_driver 는 `taskset -a` (전 스레드) pin — CommLoop RT thread + failure
+  # detector 가 on_activate 에서 cpu_core=-1 로 생성돼 프로세스 pin 을 상속하기
+  # 때문 (issue #245). arm_driver 는 main-thread-only pin.
+  EXTERNAL_DRIVER_ALLTHREADS[arm_driver]=0
+  EXTERNAL_DRIVER_ALLTHREADS[hand_driver]=1
+
+  local arm_slot hand_slot
+  if [[ "$PHYSICAL_CORES" -ge 12 ]]; then
+    arm_slot=6; hand_slot=7
+  elif [[ "$PHYSICAL_CORES" -ge 10 ]]; then
+    arm_slot=5; hand_slot=6
+  elif [[ "$PHYSICAL_CORES" -ge 8 ]]; then
+    arm_slot=4; hand_slot=5
+  elif [[ "$PHYSICAL_CORES" -ge 6 ]]; then
+    arm_slot=4; hand_slot=4
+  else
+    arm_slot=0; hand_slot=0
+  fi
+  EXTERNAL_DRIVER_SLOTS[arm_driver]=$arm_slot
+  EXTERNAL_DRIVER_SLOTS[hand_driver]=$hand_slot
+}
+
 build_expected_threads
+build_external_drivers
 
 # ── 스레드의 스케줄링 정책 읽기 ──────────────────────────────────────────────
 # /proc/<pid>/task/<tid>/sched 또는 chrt -p <tid>로 확인
@@ -274,6 +318,29 @@ mask_to_cpus() {
     ((i++))
   done
   echo "${cpus:-none}"
+}
+
+# ── External driver 프로세스 발견 ─────────────────────────────────────────────
+# 각 driver 를 process comm 으로 매칭 (pgrep -nx, 정확 comm — rtc_tools.launch.
+# pinning 과 동일 matcher). 미발견 = SKIP (sim / arm-only / hand-only 정당).
+# EXTERNAL_DRIVER_PIDS[name] 를 채운다 (미발견 시 빈 값).
+discover_external_drivers() {
+  local name comm pid
+  for name in "${EXTERNAL_DRIVER_NAMES[@]}"; do
+    pid=""
+    for comm in ${EXTERNAL_DRIVER_COMMS[$name]}; do
+      pid=$(pgrep -nx "$comm" 2>/dev/null | head -1 || true)
+      if [[ -n "$pid" ]]; then
+        EXTERNAL_DRIVER_PIDS["$name"]="$pid"
+        _pass "external driver 발견: ${name} (PID ${pid}, comm '${comm}')"
+        break
+      fi
+    done
+    if [[ -z "$pid" ]]; then
+      EXTERNAL_DRIVER_PIDS["$name"]=""
+      _skip "external driver 미발견: ${name} (sim / 미구성 — comm 후보: ${EXTERNAL_DRIVER_COMMS[$name]})"
+    fi
+  done
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -480,7 +547,17 @@ check_process_discovery() {
     _category_update "process_discovery" "FAIL"
   fi
 
-  _category_set_detail "process_discovery" "PID ${CONTROLLER_PID}, ${known_count}/${expected_count} threads"
+  # External driver 프로세스(arm_driver / hand_driver)는 컨트롤러 밖의 별도 PID다.
+  discover_external_drivers
+
+  local ext_found=0 _n
+  for _n in "${EXTERNAL_DRIVER_NAMES[@]}"; do
+    if [[ -n "${EXTERNAL_DRIVER_PIDS[$_n]:-}" ]]; then
+      ((ext_found++)) || true
+    fi
+  done
+  _category_set_detail "process_discovery" \
+    "PID ${CONTROLLER_PID}, ${known_count}/${expected_count} threads, ${ext_found}/${#EXTERNAL_DRIVER_NAMES[@]} ext drivers"
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -633,6 +710,76 @@ check_cpu_affinity() {
     else
       _fail "${ename} (TID ${tid}): CPU {${actual_cpus}} (기대값: ${pin_label})"
       _category_update "cpu_affinity" "FAIL"
+    fi
+  done
+
+  # ── External driver 프로세스 (arm_driver / hand_driver) ──────────────────────
+  # 이들은 컨트롤러 밖 별도 PID이며 launch taskset 으로 프로세스-레벨 pin 된다.
+  # 미발견은 discovery 에서 이미 SKIP 보고했으므로 여기서는 건너뛴다.
+  for ename in "${EXTERNAL_DRIVER_NAMES[@]}"; do
+    local pid="${EXTERNAL_DRIVER_PIDS[$ename]:-}"
+    [[ -z "$pid" ]] && continue
+
+    local eslot elogical expected_mask_dec pin_label
+    eslot="${EXTERNAL_DRIVER_SLOTS[$ename]}"
+    elogical=$(slot_to_logical_cpu "$eslot")
+    expected_mask_dec=$((1 << elogical))
+    if [[ "$eslot" == "$elogical" ]]; then
+      pin_label="Core ${elogical}"
+    else
+      pin_label="slot ${eslot} → logical cpu ${elogical}"
+    fi
+
+    ((total++)) || true
+
+    if [[ "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" -eq 1 ]]; then
+      # taskset -a pin (issue #245): 프로세스의 모든 스레드가 driver core 에
+      # 있어야 한다. 하나라도 벗어나면 FAIL.
+      local total_t=0 on_core=0 off_list=""
+      local tdir ttid m md
+      for tdir in "/proc/${pid}/task"/*/; do
+        ttid=$(basename "$tdir")
+        [[ "$ttid" =~ ^[0-9]+$ ]] || continue
+        m=$(get_thread_cpu_affinity "$ttid" 2>/dev/null || echo "")
+        [[ -z "$m" ]] && continue
+        ((total_t++)) || true
+        md=$((16#${m}))
+        if [[ "$md" -eq "$expected_mask_dec" ]]; then
+          ((on_core++)) || true
+        else
+          off_list="${off_list} ${ttid}:{$(mask_to_cpus "$m")}"
+        fi
+      done
+      if [[ "$total_t" -eq 0 ]]; then
+        _skip "${ename} (PID ${pid}): affinity 읽기 실패"
+      elif [[ "$on_core" -eq "$total_t" ]]; then
+        _pass "${ename} (PID ${pid}): 전 스레드 ${on_core}/${total_t} on ${pin_label}"
+        ((ok++)) || true
+      else
+        _fail "${ename} (PID ${pid}): ${on_core}/${total_t} 스레드만 ${pin_label} — off:${off_list}"
+        _category_update "cpu_affinity" "FAIL"
+      fi
+    else
+      # main-thread-only pin: taskset -p <pid> 가 main thread mask 를 준다.
+      local mask_hex
+      mask_hex=$(get_thread_cpu_affinity "$pid" 2>/dev/null || echo "")
+      if [[ -z "$mask_hex" ]]; then
+        _skip "${ename} (PID ${pid}): affinity 읽기 실패"
+        continue
+      fi
+      local actual_mask_dec=$((16#${mask_hex}))
+      local actual_cpus
+      actual_cpus=$(mask_to_cpus "$mask_hex")
+      if [[ "$actual_mask_dec" -eq "$expected_mask_dec" ]]; then
+        _pass "${ename} (PID ${pid}): ${pin_label} (mask 0x${mask_hex})"
+        ((ok++)) || true
+      elif (( actual_mask_dec & expected_mask_dec )); then
+        _warn "${ename} (PID ${pid}): CPU {${actual_cpus}} (기대값: ${pin_label} only)"
+        _category_update "cpu_affinity" "WARN"
+      else
+        _fail "${ename} (PID ${pid}): CPU {${actual_cpus}} (기대값: ${pin_label})"
+        _category_update "cpu_affinity" "FAIL"
+      fi
     fi
   done
 
@@ -1011,6 +1158,28 @@ print_json() {
 
   echo ""
   echo "  },"
+
+  # External driver 프로세스 상세 (verify_rt_runtime 고유)
+  echo "  \"external_drivers\": {"
+  local efirst=1
+  for ename in "${EXTERNAL_DRIVER_NAMES[@]}"; do
+    local eslot pid
+    eslot="${EXTERNAL_DRIVER_SLOTS[$ename]}"
+    pid="${EXTERNAL_DRIVER_PIDS[$ename]:-}"
+    [[ "$efirst" -eq 0 ]] && echo ","
+    if [[ -n "$pid" ]]; then
+      local amask
+      amask=$(get_thread_cpu_affinity "$pid" 2>/dev/null || echo "0")
+      printf "    \"%s\": {\"pid\": %s, \"expected_slot\": %s, \"all_threads_pin\": %s, \"actual_affinity\": \"0x%s\"}" \
+        "$ename" "$pid" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}" "${amask:-0}"
+    else
+      printf "    \"%s\": {\"pid\": null, \"expected_slot\": %s, \"all_threads_pin\": %s}" \
+        "$ename" "$eslot" "${EXTERNAL_DRIVER_ALLTHREADS[$ename]}"
+    fi
+    efirst=0
+  done
+  echo ""
+  echo "  },"
   emit_json_summary
   echo "}"
 }
@@ -1027,6 +1196,7 @@ run_checks() {
   CONTROLLER_PID=""
   THREAD_TIDS=()
   THREAD_NAMES=()
+  EXTERNAL_DRIVER_PIDS=()   # watch 모드 재실행마다 PID 재발견 (slot/comm 은 불변)
 
   if [[ "$OUTPUT_MODE" == "verbose" ]]; then
     echo ""
