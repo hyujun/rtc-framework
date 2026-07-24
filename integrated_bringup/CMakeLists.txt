@@ -652,25 +652,6 @@ if(BUILD_TESTING)
     std_msgs
   )
 
-  # ── Controller registration smoke test ─────────────────────────────────────
-  # Confirms task_impedance_controller reaches the ControllerRegistry via
-  # --whole-archive (same static-init path as the backend smoke test above).
-  ament_add_gtest(test_task_impedance_registered
-    test/test_task_impedance_registered.cpp)
-  target_link_libraries(test_task_impedance_registered
-    -Wl,--whole-archive
-    ${PROJECT_NAME}_demo_controllers
-    -Wl,--no-whole-archive
-  )
-  ament_target_dependencies(test_task_impedance_registered
-    rclcpp
-    rclcpp_lifecycle
-    rtc_controller_interface
-    rtc_controllers
-    rtc_base
-    rtc_msgs
-  )
-
   # ── JointStateReorder fixed-capacity helper test (issue #156) ──────────────
   # Header-only helper shared by the three device backends: behavior parity
   # with the former lazy std::vector reorder (named/un-named/unknown/over-

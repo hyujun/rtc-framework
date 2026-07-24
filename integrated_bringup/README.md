@@ -53,7 +53,7 @@ integrated_bringup/
 ├── src/
 │   ├── integrated_rt_controller_main.cpp     <- UR5e용 진입점
 │   ├── controllers/
-│   │   ├── controller_registration.cpp <- 컨트롤러 등록 (RTC_REGISTER_CONTROLLER): 데모 3종 + task_impedance
+│   │   ├── controller_registration.cpp <- 데모 컨트롤러 등록 (RTC_REGISTER_CONTROLLER)
 │   │   ├── joint/                      <- DemoJointController (controller/compute/lifecycle/parameters)
 │   │   ├── task/                       <- DemoTaskController (controller/compute/lifecycle/parameters)
 │   │   └── wbc/                        <- DemoWbcController (controller/compute/lifecycle/parameters/phase) + grasp_phase_manager.cpp + force_reference_updater.cpp
@@ -71,7 +71,6 @@ integrated_bringup/
 │       ├── demo_joint_controller.yaml  <- DemoJoint 게인/토픽
 │       ├── demo_task_controller.yaml   <- DemoTask 게인/토픽
 │       ├── demo_wbc_controller.yaml    <- DemoWbc 게인/토픽/TSID/MPC
-│       ├── task_impedance_controller.yaml <- TaskImpedance 게인/토픽 (torque, MuJoCo 전용; ur5e_p1b)
 │       └── mpc/                        <- DemoWbc handler-mode sub-configs
 │           ├── phase_config.yaml       <- GraspPhaseManager 5-phase 설정
 │           ├── contact_light.yaml      <- rtc_mpc ContactLightOCP factory config
