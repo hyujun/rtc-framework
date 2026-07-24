@@ -663,6 +663,53 @@ TEST(OSC, EstopNonFiniteVelocityYieldsZero) {
   }
 }
 
+TEST(OSC, EstopDrainsPendingTargetsBeforeRecovery) {
+  // #184 recovery-path regression: a task goal queued via SetDeviceTarget while
+  // the controller is E-STOPped must NOT survive ClearEstop. Compute() short-
+  // circuits into the E-STOP hold BEFORE the normal pending_targets_ drain, and
+  // ClearEstop() does not bump the activation generation — so without an explicit
+  // drain in the E-STOP branch the stale command passes IsCurrentGeneration on
+  // the first recovery tick and overwrites the measured-pose re-seed, ramping the
+  // arm out of the intended hold. The sibling TaskImpedanceController carries the
+  // same guard.
+  rtc::OperationalSpaceController::Gains gains;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
+  ctrl.OnDeviceConfigsSet();
+
+  auto state = MakeState();
+  state.devices[0].positions[0] = 0.3;
+  state.devices[0].positions[1] = -0.2;
+
+  (void)ctrl.Compute(state);            // seed target from the measured TCP
+  auto measured = ctrl.Compute(state);  // actual_task_positions = measured TCP
+
+  // Queue a far task goal *during* E-STOP.
+  ctrl.TriggerEstop();
+  std::array<double, 6> far{};
+  for (int i = 0; i < 3; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    far[ui] = measured.actual_task_positions[ui] + 0.5;
+  }
+  for (int i = 3; i < 6; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    far[ui] = measured.actual_task_positions[ui];
+  }
+  ctrl.SetDeviceTarget(0, far);
+
+  (void)ctrl.Compute(state);  // E-STOP hold tick: must drain the queued target
+
+  // Recover: the first active tick must re-seed the goal from the measured pose,
+  // not adopt the stale far goal that was queued under E-STOP.
+  ctrl.ClearEstop();
+  auto out = ctrl.Compute(state);
+
+  for (int i = 0; i < 3; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_NEAR(out.task_goal_positions[ui], measured.actual_task_positions[ui], 1e-3)
+        << "axis " << i << ": stale E-STOP target leaked into the recovery re-seed";
+  }
+}
+
 TEST(OSC, SetGetGainsRoundTrip) {
   rtc::OperationalSpaceController::Gains init;
   rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), init);

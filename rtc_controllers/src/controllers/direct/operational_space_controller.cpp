@@ -170,6 +170,17 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   const auto gains = gains_lock_.Load();
 
   if (estopped_.load(std::memory_order_acquire)) {
+    // Drain & discard any targets queued during the global E-STOP. Compute()
+    // short-circuits here BEFORE the normal drain (below), so without this the
+    // SPSC queue backs up; and since ClearEstop() does not bump the activation
+    // generation, those stale pre-E-STOP commands would pass IsCurrentGeneration
+    // on the first recovery tick and overwrite the measured-pose re-seed. The RT
+    // thread is the sole SPSC consumer, so draining here keeps the single-
+    // consumer invariant.
+    PendingTarget discarded{};
+    while (pending_targets_.Pop(discarded)) {
+      // discard: a command issued during E-STOP must not survive recovery
+    }
     return ComputeEstop(state, gains);
   }
 
