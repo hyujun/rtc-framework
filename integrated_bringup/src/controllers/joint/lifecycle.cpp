@@ -223,6 +223,10 @@ void DemoJointController::ResetLogState() noexcept {
   // channels still present, so the Q-MSG-3 duplicate guard hands back unbound
   // handles and CSV logging silently dies (#238).
   log_set_.Reset();
+  // Reset() destroys every channel's drop counter, so TotalDropCount() restarts
+  // at 0; drop the stale high-water mark in lockstep or DrainControllerLogs
+  // silently swallows the fresh session's first drop burst (#238).
+  log_drops_reported_ = 0;
   primary_state_log_handle_ = {};
   secondary_state_log_handle_ = {};
   secondary_sensor_log_handle_ = {};
