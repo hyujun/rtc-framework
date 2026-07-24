@@ -74,6 +74,15 @@ endif()
 # ── Tests ────────────────────────────────────────────────────────────────────
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  # Eigen is a TEST-only dependency: the zero-allocation gate (testing/) is the
+  # sole Eigen user in rtc_base. The runtime library stays Eigen-free.
+  find_package(Eigen3 REQUIRED)
+
+  ament_add_gtest(test_no_malloc_scope test/test_no_malloc_scope.cpp)
+  if(TARGET test_no_malloc_scope)
+    target_include_directories(test_no_malloc_scope PRIVATE include)
+    target_link_libraries(test_no_malloc_scope Eigen3::Eigen)
+  endif()
 
   ament_add_gtest(test_session_dir test/test_session_dir.cpp)
   if(TARGET test_session_dir)
