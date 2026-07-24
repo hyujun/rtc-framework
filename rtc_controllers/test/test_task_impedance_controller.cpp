@@ -321,4 +321,105 @@ TEST(TaskImpedance, TranslationOnlyRotationDriftDoesNotLatch) {
   EXPECT_TRUE(diag.control_valid) << "controller fell back to the E-STOP hold on rotation drift";
 }
 
+// ── §10.6 fault → SAFE_STOP latch → ResetFault recovery ─────────────────────
+// A critical fault (pose error past its bound) must latch SAFE_STOP: the latch
+// persists even after the fault itself clears, and only ResetFault() returns the
+// controller to control (re-seeding from the measured state). Covers deferred F4
+// and exercises the F2-guarded non-redundant path (Urdf6, nv == m ⇒ no M).
+TEST(TaskImpedance, SafeStopLatchesAndResetFaultRecovers) {
+  using rtc::compliance::ComplianceState;
+  const std::vector<double> q(6, 0.25);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;  // reach RUNNING on the first tick
+  gains.pose_error_limit = 0.05;     // a 0.5 m commanded step blows past this
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));  // q̇ = 0
+  const auto seed = ctrl.Compute(state);                      // seeds X_d = X_meas ⇒ e = 0
+  ASSERT_NE(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+
+  // Command a large translation step ⇒ ‖e‖ ≫ pose_error_limit ⇒ critical fault.
+  const std::array<double, 6> far{seed.actual_task_positions[0] + 0.5,
+                                  seed.actual_task_positions[1],
+                                  seed.actual_task_positions[2],
+                                  0.0,
+                                  0.0,
+                                  0.0};
+  ctrl.SetDeviceTarget(0, std::span<const double>(far.data(), far.size()));
+  (void)ctrl.Compute(state);
+  const auto d_latched = ctrl.GetDiagnosticsForTesting();
+  EXPECT_EQ(d_latched.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+  EXPECT_FALSE(d_latched.control_valid) << "SAFE_STOP must hand off to the E-STOP hold";
+
+  // Further ticks re-seed X_d to the measured pose (the fault clears), yet the
+  // latch must hold — only ResetFault() may leave SAFE_STOP.
+  for (int k = 0; k < 3; ++k)
+    (void)ctrl.Compute(state);
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+      << "SAFE_STOP unlatched without ResetFault()";
+
+  // Recover: ResetFault() → HOLDING → re-seed measured (e = 0) → RUNNING, and the
+  // command returns to the gravity hold.
+  ctrl.ResetFault();
+  const auto out = ctrl.Compute(state);
+  const auto d_recovered = ctrl.GetDiagnosticsForTesting();
+  EXPECT_NE(d_recovered.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+  EXPECT_TRUE(d_recovered.control_valid) << "controller did not resume after ResetFault()";
+  const auto grav = GravityAt(Urdf6(), q);
+  for (int i = 0; i < 6; ++i)
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                grav[static_cast<std::size_t>(i)], 1e-6)
+        << "joint " << i << " did not return to the gravity hold after recovery";
+}
+
+// ── F1: a global E-STOP over a latched SAFE_STOP must report the real state ──
+// The global-E-STOP early return once published a zero-constructed Diagnostics
+// (state = HOLDING), masking a latched controller-local SAFE_STOP/DEGRADED.
+TEST(TaskImpedance, GlobalEstopSurfacesLatchedSafeStop) {
+  using rtc::compliance::ComplianceState;
+  const std::vector<double> q(6, 0.25);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.pose_error_limit = 0.05;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  const auto seed = ctrl.Compute(state);
+  const std::array<double, 6> far{seed.actual_task_positions[0] + 0.5,
+                                  seed.actual_task_positions[1],
+                                  seed.actual_task_positions[2],
+                                  0.0,
+                                  0.0,
+                                  0.0};
+  ctrl.SetDeviceTarget(0, std::span<const double>(far.data(), far.size()));
+  (void)ctrl.Compute(state);  // latch SAFE_STOP
+  ASSERT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+
+  ctrl.TriggerEstop();
+  (void)ctrl.Compute(state);  // global-E-STOP early-return path
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  EXPECT_TRUE(diag.estopped);
+  EXPECT_EQ(diag.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+      << "global E-STOP masked the latched SAFE_STOP as HOLDING (F1)";
+}
+
+// ── F2: the non-redundant path (nv == m ⇒ no nullspace, no M) stays valid and
+// heap-free — M(q)/its Cholesky are now skipped entirely there. ──────────────
+TEST(TaskImpedance, NonRedundantPathValidAndAllocationFree) {
+  const std::vector<double> q(6, 0.15);
+  TaskImpedanceController::Gains gains;  // default nullspace gains ⇒ inactive at nv == m
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.02));
+  g_alloc_count = 0;
+  g_alloc_active = true;
+  const auto out = ctrl.Compute(state);  // first call, from the very first tick
+  g_alloc_active = false;
+  EXPECT_EQ(g_alloc_count, 0u) << "non-redundant Compute() touched the heap";
+  EXPECT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid)
+      << "non-redundant path must stay valid without the M factorization";
+  for (int i = 0; i < 6; ++i)
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]));
+}
+
 }  // namespace

@@ -154,6 +154,16 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   if (reset_fault_requested_.exchange(false, std::memory_order_acq_rel))
     sm_.ResetFault();
 
+  // Surface the latched controller-local FSM state (a SAFE_STOP/DEGRADED latch
+  // persists across a global E-STOP) so the estop early-return below publishes
+  // the real state instead of a spurious HOLDING. The normal control path
+  // recomputes diag.state after Step().
+  diag.state = static_cast<std::uint8_t>(sm_.state());
+
+  // One SeqLock read per RT tick, shared by every path: the global-E-STOP hold
+  // and the SAFE_STOP hold both consume it through ComputeEstop below.
+  const auto gains = gains_lock_.Load();
+
   if (diag.estopped) {
     // Drain & discard any targets queued during the global E-STOP. Compute()
     // short-circuits here BEFORE the normal drain (below), so without this the
@@ -166,11 +176,10 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     while (pending_targets_.Pop(discarded)) {
       // discard: a command issued during E-STOP must not survive recovery
     }
-    return ComputeEstop(state, /*control_valid=*/false, diag);
+    return ComputeEstop(state, /*control_valid=*/false, diag, gains);
   }
 
   const int nv = handle_->nv();
-  const auto gains = gains_lock_.Load();
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
 
   // ── Copy joint state (device order) ─────────────────────────────────────
@@ -279,10 +288,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     f_task(i) = alpha * (kp * e(i) + kd * edot(i));  // +K_p·e (sign per §6.2)
   }
 
-  // ── Joint-space dynamics: M(q), ĝ(q) ────────────────────────────────────
-  handle_->ComputeMassMatrix(q_span);
-  M_ = handle_->GetMassMatrix();
-  M_.triangularView<Eigen::StrictlyLower>() = M_.triangularView<Eigen::StrictlyUpper>().transpose();
+  // ── Joint-space gravity ĝ(q) (always needed: comp + E-STOP hold) ─────────
   handle_->ComputeGeneralizedGravity(q_span);
   gravity_ = handle_->GetGeneralizedGravity();
 
@@ -290,30 +296,41 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   tau_.noalias() = J_S_.transpose() * f_task.head(m_);
 
   // ── Nullspace posture task (only when redundant: nv > m) ─────────────────
+  // M(q) and its Cholesky feed ONLY the dynamically-consistent nullspace
+  // projector — the Jacobian-transpose task law never touches M. Compute and
+  // fault-check them ONLY when the nullspace task is live; otherwise a benign
+  // M-factorization hiccup would spuriously latch SAFE_STOP on a robot that
+  // never uses M at all (e.g. UR5e, nv == m ⇒ nullspace always inactive).
   bool dyn_ok = true;
   double sigma_min = std::numeric_limits<double>::infinity();
   double lambda_sq = 0.0;
   const bool nullspace_active =
       (nv > m_) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
-  llt_M_.compute(M_);
-  if (llt_M_.info() != Eigen::Success) {
-    dyn_ok = false;
-  } else if (nullspace_active) {
-    const auto r = dyn_.Compute(J_S_, llt_M_, gains.singularity_threshold, gains.max_damping);
-    dyn_ok = r.ok;
-    sigma_min = r.sigma_min;
-    lambda_sq = r.lambda_sq;
-    if (dyn_ok) {
-      for (int i = 0; i < nv; ++i)
-        tau_posture_dev_(i) =
-            gains.nullspace_kp * (q_null_(i) - q_dev_(i)) - gains.nullspace_kd * qdot_dev_(i);
-      // Posture is device-order; gather to Pinocchio order before the (Pinocchio)
-      // projector Nᵀ. Identity order → memcpy (unchanged).
-      handle_->ReorderInput(
-          std::span<const double>(tau_posture_dev_.data(), static_cast<std::size_t>(nv)),
-          tau_posture_);
-      dyn_.ProjectNullspace(tau_posture_, tau_null_);
-      tau_.noalias() += alpha * tau_null_;
+  if (nullspace_active) {
+    handle_->ComputeMassMatrix(q_span);
+    M_ = handle_->GetMassMatrix();
+    M_.triangularView<Eigen::StrictlyLower>() =
+        M_.triangularView<Eigen::StrictlyUpper>().transpose();
+    llt_M_.compute(M_);
+    if (llt_M_.info() != Eigen::Success) {
+      dyn_ok = false;
+    } else {
+      const auto r = dyn_.Compute(J_S_, llt_M_, gains.singularity_threshold, gains.max_damping);
+      dyn_ok = r.ok;
+      sigma_min = r.sigma_min;
+      lambda_sq = r.lambda_sq;
+      if (dyn_ok) {
+        for (int i = 0; i < nv; ++i)
+          tau_posture_dev_(i) =
+              gains.nullspace_kp * (q_null_(i) - q_dev_(i)) - gains.nullspace_kd * qdot_dev_(i);
+        // Posture is device-order; gather to Pinocchio order before the (Pinocchio)
+        // projector Nᵀ. Identity order → memcpy (unchanged).
+        handle_->ReorderInput(
+            std::span<const double>(tau_posture_dev_.data(), static_cast<std::size_t>(nv)),
+            tau_posture_);
+        dyn_.ProjectNullspace(tau_posture_, tau_null_);
+        tau_.noalias() += alpha * tau_null_;
+      }
     }
   }
 
@@ -365,7 +382,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   // A latched SAFE_STOP (or a non-finite/degenerate tick) hands off to the torque
   // E-STOP hold instead of emitting the raw command.
   if (sm_.in_safe_stop() || !safety.finite || !dyn_ok)
-    return ComputeEstop(state, /*control_valid=*/false, diag);
+    return ComputeEstop(state, /*control_valid=*/false, diag, gains);
 
   activation_elapsed_ += dt;  // advance the ramp only on a clean control tick
   diag.control_valid = true;
@@ -394,12 +411,13 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
 }
 
 ControllerOutput TaskImpedanceController::ComputeEstop(const ControllerState& state,
-                                                       bool control_valid,
-                                                       const Diagnostics& diag) noexcept {
+                                                       bool control_valid, const Diagnostics& diag,
+                                                       const Gains& gains) noexcept {
   // Torque E-STOP hold (E-8): τ = ĝ(q) − D·q̇, clamped to ±τ_max. Replaces the
   // #184 position-slew pattern; the same helper #184 should migrate onto.
+  // Gains are read once by the caller (Compute) and threaded in — no second
+  // SeqLock load on the hold path.
   const int nv = handle_->nv();
-  const auto gains = gains_lock_.Load();
   const auto& dev0 = state.devices[0];
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
