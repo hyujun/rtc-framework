@@ -50,13 +50,12 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // raw cycle count. Default 100 ms sits an order below the CM device_timeout
   // (1000 ms) so the hand link-down latches first.
   declare_parameter("link_fail_timeout_ms", 100.0);
-  // Two independent startup-grace windows (#2). startup_grace_ms warms the RATE
-  // check (the polling loop needs time to reach steady cadence). link grace is
-  // SEPARATE and much shorter — it only needs to outlast the ARP / firmware-boot
-  // first-packet transient — so a genuinely dead link latches well below the CM
-  // device_timeout (1000 ms) instead of being masked for the full rate warmup.
+  // Independent startup-grace windows. startup_grace_ms warms the RATE check,
+  // link_startup_grace_ms spans the ARP / first-packet transient, and
+  // sensor_startup_grace_ms optionally spans a firmware ADC stabilization period.
   declare_parameter("startup_grace_ms", 1000.0);
   declare_parameter("link_startup_grace_ms", 100.0);
+  declare_parameter("sensor_startup_grace_ms", 0.0);
 
   // SIL entry point. Device-side firmware-process spawn is the launch layer's
   // job (a node cannot spawn a peer process); this param drives the node-side
@@ -538,6 +537,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
     // waiting out the full rate warmup.
     fd_cfg.startup_grace_ms = get_parameter("startup_grace_ms").as_double();
     fd_cfg.link_startup_grace_ms = get_parameter("link_startup_grace_ms").as_double();
+    fd_cfg.sensor_startup_grace_ms = get_parameter("sensor_startup_grace_ms").as_double();
 
     // The failure detector is an aux thread of the *hand driver* process, which
     // the launch taskset-pins to its own core (logical 11 on NUC13, in the cset

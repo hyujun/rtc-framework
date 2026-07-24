@@ -51,6 +51,7 @@ struct UdpHandFailureDetectorConfig {
   int link_fail_threshold_sensor{10};  ///< sensor 연속 실패 임계 (sensor-rate cycles)
   double startup_grace_ms{0.0};       ///< 기동 후 이 시간까지 RATE 판정 유예 (0=즉시)
   double link_startup_grace_ms{0.0};  ///< 기동 후 이 시간까지 LINK 판정 유예 (0=즉시, #2)
+  double sensor_startup_grace_ms{0.0};  ///< 기동 후 sensor 값 판정 유예 (0=즉시)
 };
 
 // Convert a time-based link-fail timeout (ms) into the consecutive-failure cycle
@@ -148,7 +149,7 @@ class UdpHandFailureDetector {
         // stays outside so slices read as check cost, not the 50 Hz cadence.
         RTC_TRACE_SCOPE("hand_detector_tick");
         const UdpHandState state = controller_.GetLatestState();
-        if (state.valid) {
+        if (state.valid && !InGrace(cfg_.sensor_startup_grace_ms)) {
           RTC_TRACE_SCOPE("hand_detector_check");
           Check(state);
         }
@@ -158,8 +159,8 @@ class UdpHandFailureDetector {
         // clean interval. The LINK grace (independent, much shorter) only spans the
         // ARP/firmware-boot first-packet transient, so a genuinely dead link latches
         // well below the CM device_timeout instead of waiting out the rate warmup.
-        // Motor/sensor data-validity checks above are unaffected (they run once a
-        // state read has arrived).
+        // Sensor data validity has its own grace because some firmware returns
+        // valid but frozen force frames while its ADC pipeline stabilizes.
         if (InGrace(cfg_.startup_grace_ms)) {
           prev_rate_check_ = std::chrono::steady_clock::now();
           prev_cycle_count_ = controller_.cycle_count();
@@ -503,7 +504,7 @@ class UdpHandFailureDetector {
   std::size_t prev_cycle_count_{0};
   std::chrono::steady_clock::time_point prev_rate_check_{};
 
-  // DetectLoop start time — baseline for the startup grace window.
+  // DetectLoop start time — shared baseline for the independent startup grace windows.
   std::chrono::steady_clock::time_point loop_start_{};
 
   // Link-down forensic dump one-shot latch (detector thread only)

@@ -302,6 +302,40 @@ TEST_F(HandFailureDetectorTest, SensorFrozenSeq_NoFalseDuplicate) {
   EXPECT_FALSE(detector.failed());
 }
 
+TEST_F(HandFailureDetectorTest, SensorStartupGraceDefersButDoesNotMaskDuplicate) {
+  UdpHandFailureDetectorConfig cfg{};
+  cfg.failure_threshold = 2;
+  cfg.check_motor = false;
+  cfg.check_sensor = true;
+  cfg.sensor_force_layout = true;
+  cfg.check_link = false;
+  cfg.min_rate_hz = 0.0;
+  cfg.sensor_startup_grace_ms = 150.0;
+
+  UdpHandFailureDetector detector(*controller_, cfg);
+
+  std::string failure_reason;
+  detector.SetFailureCallback([&](const std::string& reason) { failure_reason = reason; });
+
+  std::array<float, kNumHandMotors> same_cmd{};
+  same_cmd[0] = 3.0f;
+  detector.Start();
+  for (int i = 0; i < 10; ++i) {
+    controller_->StepFakeCycleForTest(same_cmd);
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_FALSE(detector.failed());
+
+  for (int i = 0; i < 20 && !detector.failed(); ++i) {
+    controller_->StepFakeCycleForTest(same_cmd);
+    std::this_thread::sleep_for(10ms);
+  }
+  detector.Stop();
+
+  EXPECT_TRUE(detector.failed());
+  EXPECT_NE(failure_reason.find("hand_sensor_duplicate"), std::string::npos);
+}
+
 // ── Config: disable checks ──────────────────────────────────────────────────
 
 TEST_F(HandFailureDetectorTest, DisableMotorCheck_NoFailureOnZero) {

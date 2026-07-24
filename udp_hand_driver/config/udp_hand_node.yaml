@@ -157,13 +157,16 @@
     # hand link-down 이 먼저 latch 된다.
     link_fail_timeout_ms: 100.0        # link_down 판정 시간 budget (채널별 공통)
 
-    # -- Startup grace (#2, 독립 2-window) --
+    # -- Startup grace (독립 3-window) --
     # 기동 직후 boot transient (ARP resolution, 펌웨어 부팅, 첫 패킷 왕복) 동안
-    # 오탐 억제. RATE 와 LINK 를 분리:
+    # 오탐 억제. RATE, LINK, SENSOR 를 분리:
     #   startup_grace_ms      : polling-rate 검사 warmup (루프가 정상 cadence 도달까지).
     #   link_startup_grace_ms : link-down 검사 유예 — ARP/부팅 transient 만 넘기면
     #                           되므로 훨씬 짧게. CM device_timeout(1000 ms) 보다
     #                           한참 아래로 두어야 죽은 링크가 rate warmup 에 가려지지
     #                           않고 먼저 latch 된다. 0 = 즉시 검사.
+    #   sensor_startup_grace_ms: 센서 all-zero/duplicate 검사 유예. ADC 안정화가
+    #                            필요한 펌웨어에서만 설정하며 0 = 즉시 검사.
     startup_grace_ms: 1000.0
     link_startup_grace_ms: 100.0
+    sensor_startup_grace_ms: 0.0
