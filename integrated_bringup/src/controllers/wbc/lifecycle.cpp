@@ -126,6 +126,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
 
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
+      ResetLogState();  // roll back channels registered before the missing one (#238)
       return CallbackReturn::FAILURE;
     }
     // LogHandle is a trivially-copyable pointer wrapper — plain assignment.
@@ -222,19 +223,35 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     // specific reason) has no position backbone — fail the transition rather
     // than activate a controller that would hold-last forever.
     if (tsid_initialized_ && !clik_enabled_) {
+      ResetLogState();  // roll back channels registered above before failing (#238)
       RCLCPP_ERROR(logger_,
                    "DemoWbcController on_configure: CLIK could not be enabled but is the "
                    "required position backbone (see prior error) — refusing to configure.");
       return CallbackReturn::FAILURE;
     }
   } catch (const std::exception& e) {
+    ResetLogState();  // don't leave channels registered on a failed configure (#238)
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
+    ResetLogState();
     RCLCPP_ERROR(logger_, "DemoWbcController on_configure failed: unknown");
     return CallbackReturn::FAILURE;
   }
   return CallbackReturn::SUCCESS;
+}
+
+void DemoWbcController::ResetLogState() noexcept {
+  // Close open channels and return every typed handle to unbound. Without
+  // this, a cleanup→configure cycle re-enters RegisterLog() with the old
+  // channels still present, so the Q-MSG-3 duplicate guard hands back unbound
+  // handles and CSV logging silently dies (#238).
+  log_set_.Reset();
+  primary_wbc_log_handle_ = {};
+  secondary_wbc_log_handle_ = {};
+  secondary_sensor_log_handle_ = {};
+  wbc_diag_log_handle_ = {};
+  pull_estimator_log_handle_ = {};
 }
 
 RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
@@ -305,6 +322,10 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_cleanup(
   mpc_timing_tick_ = 0;
   log_drain_timer_.reset();
   log_drain_cb_group_.reset();
+  // Close log channels + unbind handles so a re-configure re-registers cleanly
+  // instead of hitting the Q-MSG-3 duplicate guard (#238). Order: after the
+  // drain timer is torn down, so no drain runs concurrently with Reset().
+  ResetLogState();
   ResetOwnedTopics(owned_topics_);
   grasp_command_srv_.reset();
   param_callback_handle_.reset();

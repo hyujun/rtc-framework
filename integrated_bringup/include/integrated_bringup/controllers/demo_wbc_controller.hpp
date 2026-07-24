@@ -1088,6 +1088,11 @@ class DemoWbcController final : public RTControllerInterface {
   // srv handler sets both atomically. NONE is rejected (use lifecycle
   // deactivate to abort).
   void DeclareGainParameters() noexcept;
+
+  // Close open log channels and unbind every typed LogHandle (#238). Called
+  // from on_cleanup and from on_configure's failure-rollback paths so a leaked
+  // channel never makes the next RegisterLog() return an unbound handle.
+  void ResetLogState() noexcept;
   rcl_interfaces::msg::SetParametersResult OnGainParametersSet(
       const std::vector<rclcpp::Parameter>& params) noexcept;
 

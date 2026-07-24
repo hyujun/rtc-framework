@@ -211,6 +211,23 @@ class ControllerLogSet {
 
   [[nodiscard]] bool empty() const noexcept { return channels_.empty(); }
 
+  /// Close every registered channel and empty the set, returning it to the
+  /// just-constructed state. A subsequent RegisterLog() with a
+  /// previously-used `instance` then rebinds instead of tripping the Q-MSG-3
+  /// duplicate guard and handing back an unbound handle — the defect that made
+  /// a controller's cleanup→configure cycle silently kill CSV logging (#238).
+  ///
+  /// Non-RT lifecycle path ONLY (controller `on_cleanup`, or `on_configure`
+  /// rollback). Precondition: no drain and no Push() in flight — by cleanup the
+  /// controller is Inactive, so the RT producer is quiescent. A final
+  /// DrainAll() flushes any residual samples first; destroying each LogChannel
+  /// then closes its ofstream. The CSV file persists on disk and a re-register
+  /// reopens it in append mode (no duplicate header, no data loss).
+  void Reset() noexcept {
+    DrainAll();
+    channels_.clear();
+  }
+
   /// Diagnostic: list of (instance, path) for each channel.
   [[nodiscard]] std::vector<std::pair<std::string_view, std::filesystem::path>> Channels() const {
     std::vector<std::pair<std::string_view, std::filesystem::path>> out;

@@ -7,6 +7,9 @@
 //   - File path = <session>/controllers/<config_key>/<instance>.csv.
 //   - Multiple PodT types coexist via type erasure.
 //   - Drop accounting per channel.
+//   - Reset() closes channels + empties the set so a reused set (controller
+//     cleanup→configure) re-registers cleanly instead of tripping the
+//     duplicate guard and going unbound (#238).
 //
 // RTC_SESSION_DIR is redirected to a per-test tempdir.
 
@@ -229,6 +232,75 @@ TEST(ControllerLogSet, DuplicateInstanceRegistrationReturnsUnbound) {
   EXPECT_EQ(set.size(), 1u);
   EXPECT_TRUE(first.Push(PodA{1.0, 1}));
   set.DrainAll();
+}
+
+TEST(ControllerLogSet, ResetClosesChannelsAndAllowsReRegistration) {
+  // #238: one ControllerLogSet reused across a controller cleanup→configure
+  // cycle. Without Reset(), the second RegisterLog of the same instance hits
+  // the Q-MSG-3 duplicate guard (see DuplicateInstanceRegistrationReturnsUnbound)
+  // and hands back an unbound handle, so CSV logging silently dies. Reset()
+  // closes the channels and empties the set so re-registration rebinds; because
+  // Open() appends, the same file continues without a duplicate header.
+  ScopedSessionDir scope;
+  rtc::ControllerLogSet set{"c"};
+
+  // ── first "configure": register + log two rows ──
+  {
+    auto h = set.RegisterLog<PodA>("inst", &HeaderA, &RowA);
+    ASSERT_TRUE(static_cast<bool>(h));
+    EXPECT_TRUE(h.Push(PodA{1.0, 1}));
+    EXPECT_TRUE(h.Push(PodA{2.0, 2}));
+    EXPECT_EQ(set.DrainAll(), 2u);
+  }
+  const auto log_path = set.Channels()[0].second;
+
+  // The bug precondition: re-registering the same instance WITHOUT Reset()
+  // returns unbound (this is exactly what a reconfigure did before the fix).
+  {
+    auto stale = set.RegisterLog<PodA>("inst", &HeaderA, &RowA);
+    EXPECT_FALSE(static_cast<bool>(stale));
+  }
+
+  // ── "cleanup": Reset() closes channels and empties the set ──
+  set.Reset();
+  EXPECT_TRUE(set.empty());
+  EXPECT_EQ(set.size(), 0u);
+
+  // ── "reconfigure": same instance now rebinds and logging continues ──
+  auto h2 = set.RegisterLog<PodA>("inst", &HeaderA, &RowA);
+  ASSERT_TRUE(static_cast<bool>(h2));
+  ASSERT_EQ(set.size(), 1u);
+  EXPECT_EQ(set.Channels()[0].second, log_path);  // same CSV file
+  EXPECT_TRUE(h2.Push(PodA{3.0, 3}));
+  EXPECT_EQ(set.DrainAll(), 1u);
+
+  // Append continuity: single header, all three rows across the cycle. A
+  // silent-pass fixture would check only that h2 is bound; this asserts the
+  // file actually grew.
+  const auto lines = ReadAllLines(log_path);
+  ASSERT_EQ(lines.size(), 4u);  // header + 3 rows
+  EXPECT_EQ(lines[0], "t_relative_s,a");
+  EXPECT_EQ(lines[1], "1,1");
+  EXPECT_EQ(lines[2], "2,2");
+  EXPECT_EQ(lines[3], "3,3");
+}
+
+TEST(ControllerLogSet, ResetFlushesPendingSamplesBeforeClosing) {
+  // Reset() drains residual SPSC samples before closing, so a cleanup that
+  // runs with un-drained rows (drain timer already torn down) does not lose
+  // them. Precondition per the API contract: no concurrent drain/Push.
+  ScopedSessionDir scope;
+  rtc::ControllerLogSet set{"c"};
+  auto h = set.RegisterLog<PodA>("inst", &HeaderA, &RowA);
+  ASSERT_TRUE(static_cast<bool>(h));
+  EXPECT_TRUE(h.Push(PodA{1.0, 1}));  // pushed but NOT drained
+  const auto log_path = set.Channels()[0].second;
+
+  set.Reset();  // must flush the pending row before clearing the channel
+
+  const auto lines = ReadAllLines(log_path);
+  ASSERT_EQ(lines.size(), 2u);  // header + the flushed row
+  EXPECT_EQ(lines[1], "1,1");
 }
 
 TEST(ControllerLogSet, DropCountsTrackPerChannelOverflow) {

@@ -110,6 +110,7 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
     };
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
+      ResetLogState();  // roll back channels registered before the missing one (#238)
       return CallbackReturn::FAILURE;
     }
     if (auto it = reg.handles.state.find(primary_state_key); it != reg.handles.state.end()) {
@@ -190,13 +191,27 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_configure(
           }
         });
   } catch (const std::exception& e) {
+    ResetLogState();  // don't leave channels registered on a failed configure (#238)
     RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: %s", e.what());
     return CallbackReturn::FAILURE;
   } catch (...) {
+    ResetLogState();
     RCLCPP_ERROR(logger_, "DemoTaskController on_configure failed: unknown");
     return CallbackReturn::FAILURE;
   }
   return CallbackReturn::SUCCESS;
+}
+
+void DemoTaskController::ResetLogState() noexcept {
+  // Close open channels and return every typed handle to unbound. Without
+  // this, a cleanup→configure cycle re-enters RegisterLog() with the old
+  // channels still present, so the Q-MSG-3 duplicate guard hands back unbound
+  // handles and CSV logging silently dies (#238).
+  log_set_.Reset();
+  primary_state_log_handle_ = {};
+  secondary_state_log_handle_ = {};
+  secondary_sensor_log_handle_ = {};
+  pull_estimator_log_handle_ = {};
 }
 
 RTControllerInterface::CallbackReturn DemoTaskController::on_activate(
@@ -222,6 +237,10 @@ RTControllerInterface::CallbackReturn DemoTaskController::on_cleanup(
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();
   log_drain_cb_group_.reset();
+  // Close log channels + unbind handles so a re-configure re-registers cleanly
+  // instead of hitting the Q-MSG-3 duplicate guard (#238). Order: after the
+  // drain timer is torn down, so no drain runs concurrently with Reset().
+  ResetLogState();
   grasp_command_srv_.reset();
   param_callback_handle_.reset();
   return RTControllerInterface::on_cleanup(prev);

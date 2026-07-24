@@ -559,6 +559,11 @@ class DemoTaskController final : public RTControllerInterface {
   // Force-PI grasp command rides on a separate srv (grasp_command_srv_)
   // because it is a one-shot event, not state.
   void DeclareGainParameters() noexcept;
+
+  // Close open log channels and unbind every typed LogHandle (#238). Called
+  // from on_cleanup and from on_configure's failure-rollback paths so a leaked
+  // channel never makes the next RegisterLog() return an unbound handle.
+  void ResetLogState() noexcept;
   rcl_interfaces::msg::SetParametersResult OnGainParametersSet(
       const std::vector<rclcpp::Parameter>& params) noexcept;
 
