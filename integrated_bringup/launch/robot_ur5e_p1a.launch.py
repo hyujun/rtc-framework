@@ -405,9 +405,17 @@ def generate_launch_description():
             pin_process_to_slot("UR ros2_control_node", "ros2_control_node", arm_driver_slot)
         ],
     )
+    # all_threads=True: the hand driver's CommLoop RT thread (hand_udp_recv) and
+    # failure detector are created in on_activate with cpu_core=-1 and inherit the
+    # process pin, so a main-thread-only taskset would leave them behind. `-a`
+    # sweeps every existing thread onto the hand_driver core (issue #245).
     pin_hand_driver = TimerAction(
         period=3.0,
-        actions=[pin_process_to_slot("udp_hand_node", "udp_hand_node", hand_driver_slot)],
+        actions=[
+            pin_process_to_slot(
+                "udp_hand_node", "udp_hand_node", hand_driver_slot, all_threads=True
+            )
+        ],
     )
 
     # ── integrated_rt_controller DDS thread pinning ─────────────────────────────────

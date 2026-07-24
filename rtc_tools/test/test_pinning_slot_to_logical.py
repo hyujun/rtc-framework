@@ -230,6 +230,40 @@ def test_dds_pin_snippet_excludes_every_rtc_thread(_stub_script_paths):
         assert f" {name} " in snippet, f"{name} missing from RTC_OWNED list"
 
 
+# ── Process-pin thread scope: all_threads flag (issue #245) ──────────────────
+
+
+def test_process_pin_defaults_to_main_thread_only(_stub_script_paths):
+    """Default (arm driver) pins the main thread only — taskset -cp, never -a.
+
+    Widening the UR arm driver to every thread would sweep its RTDE workers onto
+    one E-core; that trade-off stays gated on NUC13 measurements (#163 Phase 4),
+    so the default must remain main-thread-only.
+    """
+    snippet = (
+        pinning.pin_process_to_slot("UR ros2_control_node", "ros2_control_node", 6).cmd[2][0].text
+    )
+    assert 'taskset -cp "$CPU" "$PID"' in snippet
+    assert "-acp" not in snippet
+    assert "main thread" in snippet
+
+
+def test_process_pin_all_threads_uses_taskset_dash_a(_stub_script_paths):
+    """all_threads=True (hand driver) sweeps every TID — taskset -acp.
+
+    The hand CommLoop RT thread + failure detector self-set cpu_core=-1 and are
+    created in on_activate before the pin timer fires, so only -a reaches them
+    (#245). Assert the flag flips the taskset scope.
+    """
+    snippet = (
+        pinning.pin_process_to_slot("udp_hand_node", "udp_hand_node", 7, all_threads=True)
+        .cmd[2][0]
+        .text
+    )
+    assert 'taskset -acp "$CPU" "$PID"' in snippet
+    assert "all threads" in snippet
+
+
 # ── Shield adopt action (issue #151) ─────────────────────────────────────────
 
 

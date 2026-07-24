@@ -173,23 +173,39 @@ def _resolve_slot_prelude(label: str, slot: int) -> str:
     )
 
 
-def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProcess:
+def pin_process_to_slot(
+    label: str, process_grep: str, slot: int, *, all_threads: bool = False
+) -> ExecuteProcess:
     """Pin the newest process matching ``process_grep`` to ``slot``'s logical CPU.
 
     ``slot < 0`` is the "no pinning" sentinel from ``select_thread_layout``; the
     returned action then only logs the skip, so launch files need no own guard.
 
-    NOTE: ``taskset -p`` (no ``-a``) sets the affinity of the *main thread only*
-    — ``sched_setaffinity`` takes a TID, not a process. Existing worker threads
-    keep their inherited mask. Whether to widen this to ``-a`` is gated on NUC13
-    E-core measurements (issue #163 Phase 4), because pinning the whole UR driver
-    onto one E-core may regress its 500 Hz RTDE loop.
+    ``all_threads`` selects the ``taskset`` scope:
+
+    * ``False`` (default) → ``taskset -p`` pins the *main thread only*
+      (``sched_setaffinity`` takes a TID, not a process). Existing worker threads
+      keep their inherited mask. Correct for the **UR arm driver**: widening it to
+      the whole process would sweep every RTDE worker onto one E-core and may
+      regress its 500 Hz loop — that trade-off is gated on NUC13 E-core
+      measurements (issue #163 Phase 4).
+    * ``True`` → ``taskset -ap`` pins *every existing thread* of the process. This
+      is required for the **hand driver**: its CommLoop RT thread (``hand_udp_recv``,
+      SCHED_FIFO 65) and failure detector self-set ``cpu_core=-1`` and rely on
+      inheriting the process-level pin (thread_config.hpp), but they are created in
+      ``on_activate`` *before* this timer fires, so a main-thread-only pin never
+      reaches them and they stay stuck on whatever mask the main thread held at
+      their creation. ``-a`` moves them onto the planned hand_driver core.
     """
     _reject_quotes(label=label, process_grep=process_grep)
 
     if slot < 0:
         return _skip_action(f"[RT] {label}: cpu_core={slot}, no taskset pinning")
 
+    # ``-a`` widens the affinity set to every thread (TID) of the process, not
+    # just the main thread. See the ``all_threads`` docstring above.
+    taskset_flags = "-acp" if all_threads else "-cp"
+    scope = "all threads" if all_threads else "main thread"
     return ExecuteProcess(
         cmd=[
             "bash",
@@ -199,8 +215,8 @@ def pin_process_to_slot(label: str, process_grep: str, slot: int) -> ExecuteProc
             + 'if [ -z "$PID" ]; then '
             f'  echo "[RT] WARNING: {label} not found — CPU pinning skipped"; exit 0; '
             "fi; "
-            'taskset -cp "$CPU" "$PID" >/dev/null 2>&1 && '
-            f'  echo "[RT] {label} (PID=$PID) pinned to slot {slot} -> logical CPU $CPU" || '
+            f'taskset {taskset_flags} "$CPU" "$PID" >/dev/null 2>&1 && '
+            f'  echo "[RT] {label} (PID=$PID, {scope}) pinned to slot {slot} -> logical CPU $CPU" || '
             f'  echo "[RT] WARNING: {label} (PID=$PID) taskset to logical CPU $CPU failed"',
         ],
         output="screen",

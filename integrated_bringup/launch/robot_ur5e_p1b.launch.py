@@ -10,7 +10,10 @@
 # Core allocation optimizations applied:
 #   C) UR driver + udp_hand_node processes pinned via tier-aware taskset
 #      (rtc_tools.launch.thread_layout.get_{arm,hand}_driver_core; SSoT in
-#      rtc::SystemThreadConfigs.{arm,hand}_driver) when use_cpu_affinity:=true
+#      rtc::SystemThreadConfigs.{arm,hand}_driver) when use_cpu_affinity:=true.
+#      The hand pin uses taskset -a (all threads) so the CommLoop RT thread and
+#      failure detector — spawned in on_activate with cpu_core=-1 — land on the
+#      hand core too; the arm pin stays main-thread-only (issue #163/#245).
 #   D) integrated_rt_controller DDS threads co-pinned to the rt_callback core
 #      (tier-aware via rtc_tools.launch.thread_layout.get_rt_callback_core)
 #      so DDS dispatch and the FIFO 70 rt_callback executor share L1/L2 cache.
@@ -409,9 +412,17 @@ def generate_launch_description():
             pin_process_to_slot("UR ros2_control_node", "ros2_control_node", arm_driver_slot)
         ],
     )
+    # all_threads=True: the hand driver's CommLoop RT thread (hand_udp_recv) and
+    # failure detector are created in on_activate with cpu_core=-1 and inherit the
+    # process pin, so a main-thread-only taskset would leave them behind. `-a`
+    # sweeps every existing thread onto the hand_driver core (issue #245).
     pin_hand_driver = TimerAction(
         period=3.0,
-        actions=[pin_process_to_slot("udp_hand_node", "udp_hand_node", hand_driver_slot)],
+        actions=[
+            pin_process_to_slot(
+                "udp_hand_node", "udp_hand_node", hand_driver_slot, all_threads=True
+            )
+        ],
     )
 
     # ── integrated_rt_controller DDS thread pinning ─────────────────────────────────
