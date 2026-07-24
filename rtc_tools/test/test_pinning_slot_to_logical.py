@@ -300,7 +300,7 @@ def test_adopt_rejects_shell_injection_via_label():
 def test_comm_pattern_truncates_to_15_chars():
     # comm is TASK_COMM_LEN-1 = 15 chars: the node's /proc/<pid>/comm.
     assert pinning._comm_pattern("integrated_rt_controller") == "integrated_rt_c"
-    assert pinning._comm_pattern("ur_ros2_driver") == "ur_ros2_driver"
+    assert pinning._comm_pattern("ros2_control_node") == "ros2_control_no"
     assert pinning._comm_pattern("udp_hand_node") == "udp_hand_node"
 
 
@@ -312,7 +312,10 @@ def test_all_pgrep_helpers_match_comm_not_cmdline(_stub_script_paths):
     comm is bash/sh/pgrep/cat, never the node's exec name.
     """
     cases = [
-        (pinning.pin_process_to_slot("ur_ros2_driver", "ur_ros2_driver", 6), "ur_ros2_driver"),
+        (
+            pinning.pin_process_to_slot("UR ros2_control_node", "ros2_control_node", 6),
+            "ros2_control_no",
+        ),
         (
             pinning.pin_dds_threads_to_slot(
                 "integrated_rt_controller", "integrated_rt_controller", 2

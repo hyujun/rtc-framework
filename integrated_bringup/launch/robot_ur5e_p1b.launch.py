@@ -405,7 +405,9 @@ def generate_launch_description():
     hand_driver_slot = get_hand_driver_core()
     pin_ur_driver = TimerAction(
         period=3.0,
-        actions=[pin_process_to_slot("ur_ros2_driver", "ur_ros2_driver", arm_driver_slot)],
+        actions=[
+            pin_process_to_slot("UR ros2_control_node", "ros2_control_node", arm_driver_slot)
+        ],
     )
     pin_hand_driver = TimerAction(
         period=3.0,
