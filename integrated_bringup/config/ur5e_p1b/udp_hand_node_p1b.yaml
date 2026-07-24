@@ -30,7 +30,7 @@
     # -- UDP 통신 (p1b 핸드 하드웨어) --
     target_ip: "192.168.0.100"        # p1b 핸드 컨트롤러 IP
     target_port: 55151                # TODO(confirm): p1b 포트 — 현재 p1a 와 동일값 유지
-    recv_timeout_ms: 0.4              # ppoll 수신 타임아웃 (ms), 0.4 -> 400us
+    recv_timeout_ms: 1.5              # ppoll 수신 타임아웃 (ms), 0.4 -> 400us
 
     # -- 통신/프로토콜 --
     communication_mode: "bulk"        # 1b force layout 전용 (individual 조합 시 configure 실패)
@@ -54,11 +54,11 @@
     # CM RT loop 가 active controller 있을 때만 publish 하므로 write 는 control_rate
     # 로, deactivate 시 정지 (read/publish 는 계속). control_rate SSoT=500 과 일치
     # 시켜 CM 이 매 tick fresh state 를 소비 (clock 드리프트 최소).
-    loop_rate_hz: 500.0
+    loop_rate_hz: 250.0
 
     # -- Publish rate (link_status decimation) --
     # loop_rate_hz / publish_rate 비율 (500/100=5 -> ~100Hz link_status).
-    publish_rate: 100.0
+    publish_rate: 50.0
 
     # -- 조인트 이름 (firmware wire-slot order) --
     # 이 순서는 펌웨어 wire-slot 순서다 — URDF/_base.yaml 의 joint 순서와
@@ -83,16 +83,16 @@
     #   송신(joint_command→UDP): controller_cmd − offset → 펌웨어
     # 두 경계가 대칭이라 명령↔상태 왕복이 항등. 전부 0 이면 offset 없음(기본).
     joint_position_offsets_deg:
-      - 0.0   # thumb_cmc_fe_joint
-      - 0.0   # thumb_cmc_aa_joint
-      - 0.0   # thumb_mcp_joint
-      - 0.0   # thumb_dip_fe_joint
-      - 0.0   # index_mcp_aa_joint
-      - 0.0   # index_mcp_fe_joint
-      - 0.0   # index_dip_fe_joint
-      - 0.0   # middle_mcp_fe_joint
-      - 0.0   # middle_dip_fe_joint
-      - 0.0   # ring_mcp_fe_joint
+      - 80.0   # thumb_cmc_fe_joint
+      - 145.0   # thumb_cmc_aa_joint
+      - 100.0    # thumb_mcp_joint
+      - 0.0     # thumb_dip_fe_joint
+      - 23.0    # index_mcp_aa_joint
+      - 0.0     # index_mcp_fe_joint
+      - 0.0     # index_dip_fe_joint
+      - 0.0     # middle_mcp_fe_joint
+      - 0.0     # middle_dip_fe_joint
+      - 0.0     # ring_mcp_fe_joint
 
     # -- 핑거팁 이름 (1b: 핑거당 force 발행에 사용) --
     hand_fingertip_names:
@@ -127,7 +127,10 @@
     # sensor_decimation. CM device_timeout 1000 ms 보다 한참 아래라 hand
     # link-down 이 먼저 latch 된다.
     link_fail_timeout_ms: 100.0
-    # Startup grace 2-window (#2): rate warmup 은 길게, link 유예는 짧게 — 죽은
-    # 링크가 rate warmup 에 가려지지 않고 CM device_timeout 전에 latch.
+    # Startup grace 3-window: rate warmup 은 길게, link 유예는 짧게 — 죽은
+    # 링크가 rate warmup 에 가려지지 않고 CM device_timeout 전에 latch. P1B
+    # force ADC 는 기동 직후 약 1초간 valid-but-frozen frame 을 반환하므로 센서
+    # 값 검사만 별도로 유예한다. 런타임 UDP link 검사는 이 유예와 무관하다.
     startup_grace_ms: 1000.0
     link_startup_grace_ms: 100.0
+    sensor_startup_grace_ms: 1200.0
