@@ -103,6 +103,13 @@ if(BUILD_TESTING)
   set(rtc_urdf_bridge_test_include
       "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
 
+  # Compliance core helpers (task dynamics / safety layer / state machine /
+  # torque E-STOP) — pure-Eigen algebraic tests, no URDF fixture needed. Links
+  # rtc_controllers for the include path + Eigen; the zero-allocation gate rides
+  # rtc_base/testing/no_malloc_scope.hpp (rtc_base is an exported dependency).
+  ament_add_gtest(test_compliance_core test/test_compliance_core.cpp)
+  target_link_libraries(test_compliance_core rtc_controllers)
+
   ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
   target_link_libraries(test_quintic_blend_trajectory rtc_controllers)
 
