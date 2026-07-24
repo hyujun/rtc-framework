@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -575,13 +576,17 @@ TEST(OSC, NonTorqueCommandTypeThrows) {
 }
 
 TEST(OSC, Estop) {
+  // #184 (E-6 spec change): OSC E-STOP is now a gravity-compensated damped torque
+  // hold τ = ĝ(q) − D·q̇ (compliance::GravityCompDampedHold), NOT the pre-#184
+  // position-scale slew toward safe_position that was mislabelled kTorque. On the
+  // all-Z test model ĝ(q) ≈ 0, so at rest (q̇ = 0) the hold torque is ≈ 0 N·m —
+  // the old defect would have emitted ≈ 0.499 (position 0.5 slewed toward 0).
   rtc::OperationalSpaceController::Gains gains;
   rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
-  // Populate safe_position_ and max_joint_velocity_ via OnDeviceConfigsSet
-  ctrl.OnDeviceConfigsSet();
+  ctrl.OnDeviceConfigsSet();  // sizes max_joint_torque_ (≥ nv)
 
   auto state = MakeState();
-  state.devices[0].positions[0] = 0.5;
+  state.devices[0].positions[0] = 0.5;  // at rest: velocities default to 0
 
   (void)ctrl.Compute(state);
 
@@ -591,10 +596,118 @@ TEST(OSC, Estop) {
   auto out = ctrl.Compute(state);
   EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
 
-  // In E-STOP, OSC drives toward safe_position_ (zeros by default).
-  // safe_position_[0]=0 and current=0.5, so command[0] should be < 0.5
-  EXPECT_LT(out.devices[0].commands[0], 0.5)
-      << "E-STOP should move joint 0 toward safe position (0.0)";
+  // Torque-hold contract: finite, bounded by ±τ_max, and ≈ 0 at rest on the
+  // gravity-free test model. The ≈ 0 assertion is the regression guard — the
+  // pre-#184 position slew would emit ≈ 0.499 on joint 0 here.
+  for (int i = 0; i < 6; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[ui])) << "Joint " << i;
+    EXPECT_NEAR(out.devices[0].commands[ui], 0.0, 1e-3)
+        << "Joint " << i << " E-STOP hold should be ≈0 at rest (ĝ≈0, q̇=0)";
+  }
+}
+
+TEST(OSC, EstopTorqueHoldOpposesMotion) {
+  // #184: the damping term −D·q̇ must oppose measured motion and stay within the
+  // torque envelope. ĝ(q) ≈ 0 on the all-Z test model, so the sign of the hold
+  // torque is set by −D·q̇ (D = estop_damping default 5.0).
+  rtc::OperationalSpaceController::Gains gains;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
+  ctrl.OnDeviceConfigsSet();
+
+  auto state = MakeState();
+  // Alternating-sign velocities so each joint's opposition is checked independently.
+  const std::array<double, 6> qdot{1.0, -1.5, 0.8, -0.5, 1.2, -0.9};
+  for (int i = 0; i < 6; ++i) {
+    state.devices[0].velocities[static_cast<std::size_t>(i)] = qdot[static_cast<std::size_t>(i)];
+  }
+
+  (void)ctrl.Compute(state);
+  ctrl.TriggerEstop();
+  auto out = ctrl.Compute(state);
+
+  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+  for (int i = 0; i < 6; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double cmd = out.devices[0].commands[ui];
+    EXPECT_TRUE(std::isfinite(cmd)) << "Joint " << i;
+    // Opposes motion: τ_i and q̇_i have opposite sign (τ_i·q̇_i < 0).
+    EXPECT_LT(cmd * qdot[ui], 0.0) << "Joint " << i << " E-STOP torque must oppose q̇";
+    // Bounded to the default per-joint torque envelope (kDefaultMaxJointTorque).
+    EXPECT_LE(std::abs(cmd), 150.0) << "Joint " << i << " E-STOP torque exceeds ±τ_max";
+  }
+}
+
+TEST(OSC, EstopNonFiniteVelocityYieldsZero) {
+  // #184 finite-guard: a non-finite sensor channel (frozen/NaN encoder) must not
+  // propagate through the hold. GravityCompDampedHold forces any non-finite τ to
+  // 0 N·m (no energy injection) rather than reaching the backend.
+  rtc::OperationalSpaceController::Gains gains;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
+  ctrl.OnDeviceConfigsSet();
+
+  auto state = MakeState();
+  state.devices[0].velocities[2] = std::numeric_limits<double>::quiet_NaN();
+
+  (void)ctrl.Compute(state);
+  ctrl.TriggerEstop();
+  auto out = ctrl.Compute(state);
+
+  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+  // The NaN-velocity joint is zeroed; every emitted command stays finite.
+  EXPECT_EQ(out.devices[0].commands[2], 0.0)
+      << "NaN velocity must yield a 0 N·m hold on that joint";
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]))
+        << "Joint " << i;
+  }
+}
+
+TEST(OSC, EstopDrainsPendingTargetsBeforeRecovery) {
+  // #184 recovery-path regression: a task goal queued via SetDeviceTarget while
+  // the controller is E-STOPped must NOT survive ClearEstop. Compute() short-
+  // circuits into the E-STOP hold BEFORE the normal pending_targets_ drain, and
+  // ClearEstop() does not bump the activation generation — so without an explicit
+  // drain in the E-STOP branch the stale command passes IsCurrentGeneration on
+  // the first recovery tick and overwrites the measured-pose re-seed, ramping the
+  // arm out of the intended hold. The sibling TaskImpedanceController carries the
+  // same guard.
+  rtc::OperationalSpaceController::Gains gains;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), gains);
+  ctrl.OnDeviceConfigsSet();
+
+  auto state = MakeState();
+  state.devices[0].positions[0] = 0.3;
+  state.devices[0].positions[1] = -0.2;
+
+  (void)ctrl.Compute(state);            // seed target from the measured TCP
+  auto measured = ctrl.Compute(state);  // actual_task_positions = measured TCP
+
+  // Queue a far task goal *during* E-STOP.
+  ctrl.TriggerEstop();
+  std::array<double, 6> far{};
+  for (int i = 0; i < 3; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    far[ui] = measured.actual_task_positions[ui] + 0.5;
+  }
+  for (int i = 3; i < 6; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    far[ui] = measured.actual_task_positions[ui];
+  }
+  ctrl.SetDeviceTarget(0, far);
+
+  (void)ctrl.Compute(state);  // E-STOP hold tick: must drain the queued target
+
+  // Recover: the first active tick must re-seed the goal from the measured pose,
+  // not adopt the stale far goal that was queued under E-STOP.
+  ctrl.ClearEstop();
+  auto out = ctrl.Compute(state);
+
+  for (int i = 0; i < 3; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_NEAR(out.task_goal_positions[ui], measured.actual_task_positions[ui], 1e-3)
+        << "axis " << i << ": stale E-STOP target leaked into the recovery re-seed";
+  }
 }
 
 TEST(OSC, SetGetGainsRoundTrip) {

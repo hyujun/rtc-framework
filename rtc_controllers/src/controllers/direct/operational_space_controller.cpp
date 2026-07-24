@@ -58,6 +58,10 @@ void OperationalSpaceController::InitFromModel(std::shared_ptr<const pinocchio::
   MinvJt_ = Eigen::MatrixXd::Zero(nv, 6);
   h_ = Eigen::VectorXd::Zero(nv);
   tau_out_ = Eigen::VectorXd::Zero(nv);
+  gravity_estop_ = Eigen::VectorXd::Zero(nv);
+  grav_dev_ = Eigen::VectorXd::Zero(nv);
+  qdot_dev_ = Eigen::VectorXd::Zero(nv);
+  tau_dev_ = Eigen::VectorXd::Zero(nv);
   JbarT_ = Eigen::MatrixXd::Zero(6, nv);
   NT_ = Eigen::MatrixXd::Zero(nv, nv);
   tau0_ = Eigen::VectorXd::Zero(nv);
@@ -148,21 +152,39 @@ void OperationalSpaceController::OnDeviceConfigsSet() {
   if (safe_position_.empty()) {
     safe_position_.assign(kMaxDeviceChannels, 0.0);
   }
+  // The torque E-STOP hold (#184) maps max_joint_torque_ as an exactly nv-sized
+  // Eigen vector; a config supplying fewer than nv entries would read OOB. Grow
+  // (never shrink) so ClampSymmetric's existing per-index default fallback on the
+  // main path is unaffected.
+  if (const auto nvz = static_cast<std::size_t>(handle_->nv()); max_joint_torque_.size() < nvz) {
+    max_joint_torque_.resize(nvz, kDefaultMaxJointTorque);
+  }
 }
 
 // ── RTControllerInterface implementation ────────────────────────────────────
 
 ControllerOutput OperationalSpaceController::Compute(const ControllerState& state) noexcept {
+  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free). Read once
+  // and threaded into ComputeEstop too (the hold path needs estop_damping) — no
+  // second SeqLock load on the E-STOP branch.
+  const auto gains = gains_lock_.Load();
+
   if (estopped_.load(std::memory_order_acquire)) {
-    auto out = ComputeEstop(state);
-    out.command_type = command_type_;
-    return out;
+    // Drain & discard any targets queued during the global E-STOP. Compute()
+    // short-circuits here BEFORE the normal drain (below), so without this the
+    // SPSC queue backs up; and since ClearEstop() does not bump the activation
+    // generation, those stale pre-E-STOP commands would pass IsCurrentGeneration
+    // on the first recovery tick and overwrite the measured-pose re-seed. The RT
+    // thread is the sole SPSC consumer, so draining here keeps the single-
+    // consumer invariant.
+    PendingTarget discarded{};
+    while (pending_targets_.Pop(discarded)) {
+      // discard: a command issued during E-STOP must not survive recovery
+    }
+    return ComputeEstop(state, gains);
   }
 
   const int nv = handle_->nv();
-
-  // Atomic gains snapshot for the whole tick (SeqLock: torn-read-free).
-  const auto gains = gains_lock_.Load();
 
   // ── Step 1: copy joint state into buffers ───────────────────────────────
   const auto& dev0 = state.devices[0];
@@ -558,32 +580,56 @@ void OperationalSpaceController::SetHandEstop(bool active) noexcept {
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
-ControllerOutput OperationalSpaceController::ComputeEstop(const ControllerState& state) noexcept {
-  // KNOWN DEFECT (deferred — issue #172 leaves the E-STOP/torque contract as an
-  // explicit follow-up concern): this path still emits a *position*-scale slew
-  // toward safe_position, but Compute() now tags every OSC output as kTorque
-  // (the controller is torque-only). A downstream torque backend therefore
-  // applies a joint-angle-magnitude value as N·m during E-STOP. The proper fix
-  // is a gravity+Coriolis-compensated damped torque hold; until then the value
-  // is at least bounded to the configured torque envelope below so it cannot be
-  // arbitrarily large. Do NOT rely on this as a safe torque E-STOP.
-  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
+ControllerOutput OperationalSpaceController::ComputeEstop(const ControllerState& state,
+                                                          const Gains& gains) noexcept {
+  // Torque E-STOP hold (E-8, #184): τ = ĝ(q) − D·q̇, clamped per joint to ±τ_max.
+  // ĝ(q) holds the arm against gravity; −D·q̇ bleeds residual kinetic energy to
+  // rest. Replaces the pre-#184 position-scale slew, which emitted a joint-angle
+  // magnitude on the kTorque command (a torque backend applied radians as N·m).
+  // Coriolis is deliberately omitted (matches TaskImpedanceController::ComputeEstop
+  // and the shared compliance::GravityCompDampedHold helper): at the low speeds a
+  // safety stop targets, C(q,v)·v is small and the damping term dominates. This is
+  // NOT merged with any global-E-STOP latch — estopped_ is the controller-local
+  // flag, cleared only by ClearEstop() (no auto-recovery).
+  const int nv = handle_->nv();
   const auto& dev0 = state.devices[0];
+
+  // q (device order) for ĝ(q); q̇ read straight into device-order buffer.
+  std::array<double, kMaxDeviceChannels> q_buf{};
+  for (int i = 0; i < nv; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    q_buf[ui] = dev0.positions[ui];
+    qdot_dev_(i) = dev0.velocities[ui];
+  }
+  handle_->ComputeGeneralizedGravity(
+      std::span<const double>(q_buf.data(), static_cast<std::size_t>(nv)));
+  gravity_estop_ = handle_->GetGeneralizedGravity();  // Pinocchio order
+  handle_->ReorderOutput(gravity_estop_,
+                         std::span<double>(grav_dev_.data(), static_cast<std::size_t>(nv)));
+
+  // max_joint_torque_ is grown to ≥ nv in OnDeviceConfigsSet, so this map is valid.
+  Eigen::Map<Eigen::VectorXd> t_max(max_joint_torque_.data(), nv);
+  compliance::GravityCompDampedHold(tau_dev_.head(nv), grav_dev_.head(nv), qdot_dev_.head(nv),
+                                    gains.estop_damping, t_max);
+
+  // A held tick is a discontinuity — force the next active tick to re-seed the
+  // pose target + trajectory from the measured state (as ClearEstop also does).
+  target_initialized_.store(false, std::memory_order_release);
+
   ControllerOutput output;
   output.num_devices = state.num_devices;
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
   out0.num_channels = nc0;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    const double lim =
-        (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
-    const double sp = (i < safe_position_.size()) ? safe_position_[i] : 0.0;
-    out0.commands[i] = dev0.positions[i] + std::clamp(sp - dev0.positions[i], -lim, lim) * dt;
+  const int ncmd = std::min(nc0, nv);
+  for (int i = 0; i < ncmd; ++i) {
+    out0.commands[static_cast<std::size_t>(i)] = tau_dev_(i);
   }
-  // Bound the (unit-mismatched) output to the torque limits like the main path,
-  // so it is never emitted unclamped on the torque command.
+  // Belt-and-braces bound on the torque command (the helper already clamps to the
+  // same envelope; this also covers channels beyond nv on multi-device states).
   rtc::utils::ClampSymmetric(out0.commands, nc0, std::span<const double>(max_joint_torque_),
                              kDefaultMaxJointTorque);
+  output.command_type = command_type_;
   return output;
 }
 
@@ -630,6 +676,11 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   }
   if (cfg["null_kd"]) {
     g.null_kd = cfg["null_kd"].as<double>();
+  }
+  if (cfg["estop_damping"]) {
+    // D ≥ 0: the torque E-STOP hold (#184) subtracts D·q̇ to bleed kinetic energy;
+    // a negative D would inject energy (destabilising a safety stop).
+    g.estop_damping = std::max(0.0, cfg["estop_damping"].as<double>());
   }
   if (cfg["enable_gravity_compensation"]) {
     // Deprecated: torque OSC always compensates g(q)+C·v. Parsed for YAML

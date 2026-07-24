@@ -299,7 +299,7 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 - 동적 일관 널공간 사영 — 여유자유도(nv>6) posture 이차 태스크
 - SO(3) 로그 맵 / SE(3) 궤적 보간 / ZYX 오일러 규약
 
-**E-STOP:** `safe_position`으로 관절 속도 제한 범위 내에서 위치 명령 이동 (E-STOP 경로는 #172 controller 작업 범위 밖 — 별도 concern)
+**E-STOP:** 중력 보상 감쇠 토크 홀드 `τ = ĝ(q) − D·q̇` (관절별 ±τ_max clamp, non-finite→0). D 는 `estop_damping` YAML (기본 5.0). 잔여 운동 에너지를 −D·q̇ 로 흡수하고 ĝ(q) 로 중력에 버틴다. `TaskImpedanceController` 와 동일한 `compliance::GravityCompDampedHold` helper 사용 (#184; #172 가 남긴 position-slew 결함을 대체). `estopped_` 는 controller-local latch 로 `ClearEstop()` 없이는 자동 복귀하지 않는다.
 
 ```yaml
 # examples/controllers/direct/operational_space_controller.yaml
@@ -310,6 +310,7 @@ operational_space_controller:
   kd_rot: [10.0, 10.0, 10.0]
   damping: 0.01
   null_kd: 1.0            # nv>6 여유자유도 널공간 damping
+  estop_damping: 5.0     # 토크 E-STOP 홀드 감쇠 D [N·m·s/rad] (τ=ĝ(q)−D·q̇)
   trajectory_speed: 0.1
   trajectory_angular_speed: 0.5
   command_type: "torque"  # 고정

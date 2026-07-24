@@ -208,6 +208,47 @@ TEST(TaskImpedance, EstopGravityCompHold) {
                 grav[static_cast<std::size_t>(i)], 1e-6);
 }
 
+// ── E-STOP recovery: a target queued during the hold must NOT survive ClearEstop
+// (#184). Compute() short-circuits into ComputeEstop() before the normal drain,
+// and ClearEstop() does not bump the activation generation — so without the drain
+// in the E-STOP branch a stale pre-hold command passes IsCurrentGeneration on the
+// first recovery tick and overwrites the measured-pose re-seed. Mirror of the OSC
+// regression (OSC.EstopDrainsPendingTargetsBeforeRecovery).
+//
+// Detection is on diag.pose_error (‖e‖ of the re-seeded setpoint vs the measured
+// pose), NOT on the joint torque: the recovery re-seed sets X_d = X_meas ⇒ e = 0,
+// so a leaked target makes e ≠ 0 directly. A torque assertion would be masked —
+// a leaked target far enough to matter latches SAFE_STOP, whose gravity-comp hold
+// at rest also reads as ĝ(q). diag.pose_error is recorded before the SAFE_STOP
+// step and preserved through the ComputeEstop handoff, so it survives that mask.
+TEST(TaskImpedance, EstopDrainsPendingTargetsBeforeRecovery) {
+  const std::vector<double> q(6, 0.25);
+  TaskImpedanceController::Gains gains;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));  // q̇ = 0
+  const auto seed = ctrl.Compute(state);                      // seeds X_d = X_meas ⇒ e = 0
+
+  // Queue a task goal 0.1 m off in +x *while E-STOPped*.
+  ctrl.TriggerEstop();
+  const std::array<double, 6> far{seed.actual_task_positions[0] + 0.1,
+                                  seed.actual_task_positions[1],
+                                  seed.actual_task_positions[2],
+                                  0.0,
+                                  0.0,
+                                  0.0};
+  ctrl.SetDeviceTarget(0, std::span<const double>(far.data(), far.size()));
+  (void)ctrl.Compute(state);  // E-STOP hold tick: must drain the queued target
+  ctrl.ClearEstop();
+
+  // Recovery tick: X_d re-seeds to the measured pose ⇒ ‖e‖ ≈ 0. A leaked stale
+  // target overwrites the re-seed, so ‖e‖ would jump to the queued offset.
+  (void)ctrl.Compute(state);
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  for (int i = 0; i < 6; ++i)
+    EXPECT_NEAR(diag.pose_error[static_cast<std::size_t>(i)], 0.0, 1e-6)
+        << "axis " << i << ": stale E-STOP target leaked into the recovery re-seed";
+}
+
 // ── T5.1 flavor: commands stay finite across random configurations ──────────
 TEST(TaskImpedance, OutputAlwaysFinite) {
   TaskImpedanceController::Gains gains;
