@@ -41,6 +41,7 @@ add_library(rtc_controllers STATIC
   src/controllers/indirect/clik_controller.cpp
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
+  src/controllers/direct/task_impedance_controller.cpp
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
   src/controller_registration.cpp
@@ -134,6 +135,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
   target_link_libraries(test_core_controllers rtc_controllers)
   target_include_directories(test_core_controllers PRIVATE ${rtc_urdf_bridge_test_include})
+
+  ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
+  target_link_libraries(test_task_impedance_controller rtc_controllers)
+  target_include_directories(test_task_impedance_controller PRIVATE ${rtc_urdf_bridge_test_include})
+  # The zero-allocation gate replaces global operator new/delete (new→malloc,
+  # delete→free). GCC's -Wmismatched-new-delete then false-positives on every
+  # delete site program-wide; suppress it for this target only.
+  target_compile_options(test_task_impedance_controller PRIVATE -Wno-mismatched-new-delete)
 
   # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
   # (tip_link / joint_limits / safe_position), bounds guards, multi-device
