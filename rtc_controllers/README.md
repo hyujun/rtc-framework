@@ -7,7 +7,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 4개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
+RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 5개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
 
 > **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
@@ -19,7 +19,14 @@ RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니�
 | JointPDController | 관절 공간 | Torque (direct) | `direct/` |
 | ClikController | 태스크 공간 | Position (indirect) | `indirect/` |
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` |
+| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` |
 | GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` |
+
+> `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러 (§6.2 A=NONE,
+> `τ = Jᵀ Sᵀ[K_p·S·e + K_d·S·ė] + τ_null + ĝ(q)`). OSC 와 달리 task inertia Λ 를 쓰지
+> 않아 **task-space 특이점에서 자유**롭다 (Λ 는 nullspace 에만). MuJoCo backend 전용
+> (torque). A=NONE 은 열등한 fallback 이 아니며, `TRANSLATION_ONLY` 의 회전은 nullspace
+> posture 가 담당한다 — 규범·근거는 [docs/compliance-conventions.md](docs/compliance-conventions.md).
 
 ---
 

@@ -8,6 +8,7 @@
 | JointPDController | Torque | Joint | PD + Pinocchio RNEA + quintic trajectory |
 | ClikController | Position | Cartesian 3/6-DOF | Damped Jacobian pseudoinverse + null-space |
 | OSC | Torque | Cartesian 6-DOF | Full pose PD + SE3 quintic trajectory |
+| TaskImpedanceController | Torque | Cartesian 3/6-DOF | §6.2 A=NONE Jacobian-transpose compliance `Jᵀ Sᵀ[Kp·Se+Kd·Sė]+τ_null+ĝ`; Λ 미사용(특이점 자유), σ_min-adaptive DLS nullspace (`nv>task_dim`), gravity-comp torque E-STOP, MuJoCo-only. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) |
 | GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |

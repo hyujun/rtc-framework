@@ -1,0 +1,46 @@
+task_impedance_controller:
+  # ── Cartesian impedance (§6.2 A=NONE, torque) — MuJoCo backend ONLY ─────────
+  # Stiffness/damping are N/m, N·s/m (translation) and N·m/rad, N·m·s/rad
+  # (rotation) — NOT the OSC acceleration-form gains. This controller does not
+  # use the task inertia Λ, so it is free of task-space singularities (Λ enters
+  # only the dynamically-consistent nullspace). Selection defaults to FULL_SE3;
+  # rationale + the full normative matrix live in
+  # rtc_controllers/docs/compliance-conventions.md.
+  kp_pos: [400.0, 400.0, 400.0]   # translation stiffness [N/m]
+  kd_pos: [40.0, 40.0, 40.0]      # translation damping ≈ 2√kp [N·s/m]
+  kp_rot: [30.0, 30.0, 30.0]      # rotation stiffness [N·m/rad] (FULL_SE3)
+  kd_rot: [11.0, 11.0, 11.0]      # rotation damping [N·m·s/rad]
+
+  # ── Nullspace posture (bites only when nv > task DoF; UR5e nv=6, FULL_SE3
+  #    m=6 ⇒ inert here — kept for redundant arms / TRANSLATION_ONLY) ──────────
+  nullspace_stiffness: 0.0        # K_pⁿ [N·m/rad]; MUST be > 0 for TRANSLATION_ONLY (§6.1)
+  nullspace_damping: 2.0          # K_dⁿ [N·m·s/rad]; floored to ≥ 2√K_pⁿ (§6.4)
+
+  # ── σ_min-adaptive DLS for the nullspace Λ_S (§6.5) ─────────────────────────
+  singularity_threshold: 0.02     # σ₀: DLS engages below this (also → DEGRADED)
+  singularity_critical: 0.005     # σ_min below this → SAFE_STOP
+  max_damping: 0.05               # λ_max for the DLS ramp
+
+  # ── Safety layer (§5.3, §10.5) ──────────────────────────────────────────────
+  joint_limit_margin: 0.1         # δ [rad] repulsive band
+  joint_limit_stiffness: 0.0      # k_lim [N·m/rad]; 0 disables the spring term only (damping still applies)
+  joint_limit_damping: 2.0        # d_lim [N·m·s/rad]; independent of k_lim ⇒ pure-damping soft limit here
+  max_torque_rate: 2000.0         # [N·m/s] slew limit (dt-scaled, never 500 Hz)
+  pose_error_limit: 1.5           # ‖e‖ bound → SAFE_STOP
+
+  # ── Activation / E-STOP ─────────────────────────────────────────────────────
+  activation_ramp_time: 0.5       # [s] gain 0→1 ramp (§10.7)
+  estop_damping: 5.0              # D in the torque E-STOP hold ĝ(q) − D·q̇ (E-8)
+
+  # ── Output type — torque only (MuJoCo backend); LoadConfig rejects others ───
+  command_type: "torque"
+
+  # ── Topic configuration (arm-only; controller-owned per issue #138) ─────────
+  topics:
+    ur5e:
+      subscribe:
+        - topic: "ur5e/task_goal"
+          role: "target"
+      publish:
+        - topic: "transforms"
+          role: "robot_transforms"

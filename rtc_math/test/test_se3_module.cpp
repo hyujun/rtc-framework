@@ -25,6 +25,7 @@
 #include "rtc_math/se3/se3.hpp"
 #include "rtc_math/se3/so3.hpp"
 #include "rtc_math/se3/velocity_error.hpp"
+#include "rtc_math/se3/wrench.hpp"
 
 namespace se3 = rtc::math::se3;
 using se3::ErrorType;
@@ -305,5 +306,90 @@ TEST(PoseError, SmallErrorFirstOrderAgreement) {
     // Lee/Quat agree with SplitWorld to first order (scales differ at O(θ³)).
     EXPECT_LT((e_lee - e_sw).norm() / s, 1e-4) << "lee sample " << i;
     EXPECT_LT((e_quat - e_sw).norm() / s, 1e-4) << "quat sample " << i;
+  }
+}
+
+// ── Wrench transform (Ad^{-T}) ───────────────────────────────────────────────
+// A wrench transforms by the inverse-transpose adjoint, not the adjoint. These
+// tests pin transformWrench's direction — the T2.4 power-duality check is the
+// authoritative one (Ad^{-T} vs Ad^{T} produce different, both-plausible maps).
+
+// Expanded-form match: transformWrench(T,·) equals the hand-written block form
+// [[R, 0], [[p]×R, R]] with R = ᴬR_B, p = ᴬp_B. Pins the adjoint(T⁻¹)ᵀ
+// implementation to the closed form in the spec (MUST).
+TEST(WrenchTransform, ExpandedFormMatch) {
+  auto rng = MakeRng();
+  for (int i = 0; i < kNumSamples; ++i) {
+    const Iso3 T = RandomPose(rng);
+    const Mat3 R = T.linear();
+    const Vec3 p = T.translation();
+    Mat6 W;
+    W.setZero();
+    W.block<3, 3>(0, 0) = R;
+    W.block<3, 3>(3, 0) = se3::hat(p) * R;
+    W.block<3, 3>(3, 3) = R;
+    const Vec6 f = RandomTwist(rng);  // reuse as a random 6-vector [force; torque]
+    EXPECT_LT((se3::transformWrench(T, f) - W * f).norm(), kTight) << "sample " << i;
+  }
+}
+
+// T2.1: pure translation offset (R = I, p = r), pure force f → moment = r × f.
+TEST(WrenchTransform, PureTranslationLeverArm) {
+  auto rng = MakeRng();
+  std::uniform_real_distribution<double> u(-2.0, 2.0);
+  for (int i = 0; i < kNumSamples; ++i) {
+    Iso3 T = Iso3::Identity();
+    const Vec3 r(u(rng), u(rng), u(rng));
+    T.translation() = r;
+    const Vec3 force(u(rng), u(rng), u(rng));
+    Vec6 f;
+    f.head<3>() = force;
+    f.tail<3>().setZero();
+    const Vec6 out = se3::transformWrench(T, f);
+    EXPECT_LT((out.head<3>() - force).norm(), kTight) << "force unchanged sample " << i;
+    EXPECT_LT((out.tail<3>() - r.cross(force)).norm(), kTight) << "moment = r×f sample " << i;
+  }
+}
+
+// T2.2: pure rotation offset (p = 0) → both force and moment rotate by R = ᴬR_B
+// (per the boxed formula ᴬf = Ad_{ᴬT_B}^{-T}·ᴮf; T2.4 fixes the direction).
+TEST(WrenchTransform, PureRotation) {
+  auto rng = MakeRng();
+  for (int i = 0; i < kNumSamples; ++i) {
+    Iso3 T = Iso3::Identity();
+    const Mat3 R = RandomRotation(rng);
+    T.linear() = R;
+    const Vec6 f = RandomTwist(rng);
+    const Vec6 out = se3::transformWrench(T, f);
+    EXPECT_LT((out.head<3>() - R * f.head<3>()).norm(), kTight) << "force sample " << i;
+    EXPECT_LT((out.tail<3>() - R * f.tail<3>()).norm(), kTight) << "moment sample " << i;
+  }
+}
+
+// T2.3: round trip A→B→A is identity. Ad_{T⁻¹}^{-T} = Ad_T^{T} is the exact
+// inverse of Ad_T^{-T}, so transforming back through T⁻¹ recovers f.
+TEST(WrenchTransform, RoundTripIdentity) {
+  auto rng = MakeRng();
+  for (int i = 0; i < kNumSamples; ++i) {
+    const Iso3 T = RandomPose(rng);
+    const Vec6 f = RandomTwist(rng);
+    const Vec6 back = se3::transformWrench(T.inverse(), se3::transformWrench(T, f));
+    EXPECT_LT((back - f).norm(), 1e-12) << "round-trip sample " << i;
+  }
+}
+
+// T2.4: power duality. Twist rides Ad_T, wrench rides Ad_T^{-T}; the mechanical
+// power ⟨ν, f⟩ must be frame-invariant. This is the test that catches an
+// adjoint-transpose direction error (Ad^{T} in place of Ad^{-T}).
+TEST(WrenchTransform, PowerDuality) {
+  auto rng = MakeRng();
+  for (int i = 0; i < kNumSamples; ++i) {
+    const Iso3 T = RandomPose(rng);
+    const Vec6 nu_b = RandomTwist(rng);  // twist in frame B
+    const Vec6 f_b = RandomTwist(rng);   // wrench in frame B
+    const Vec6 nu_a = se3::adjoint(T) * nu_b;
+    const Vec6 f_a = se3::transformWrench(T, f_b);
+    EXPECT_NEAR(nu_a.dot(f_a), nu_b.dot(f_b), 1e-9 * (1.0 + std::abs(nu_b.dot(f_b))))
+        << "power invariance sample " << i;
   }
 }

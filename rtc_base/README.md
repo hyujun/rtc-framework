@@ -50,10 +50,18 @@ rtc_base/
     │   ├── periodic_rt_thread.hpp <- 고정 주파수 RT 루프 base (CM/MPC 공유)
     │   ├── publish_buffer.hpp     <- 락-프리 SPSC 퍼블리시 버퍼
     │   └── seqlock.hpp            <- 락-프리 단일 쓰기/다중 읽기 동기화
-    └── utils/
-        ├── clamp_commands.hpp     <- ClampSymmetric/ClampRange: RT-safe 커맨드 클램프
-        └── device_passthrough.hpp <- PassthroughSecondaryDevices: secondary device joint passthrough
+    ├── utils/
+    │   ├── clamp_commands.hpp     <- ClampSymmetric/ClampRange: RT-safe 커맨드 클램프
+    │   └── device_passthrough.hpp <- PassthroughSecondaryDevices: secondary device joint passthrough
+    └── testing/
+        └── no_malloc_scope.hpp    <- ScopedNoMalloc: RT 경로 zero-allocation 게이트 (test-only, Eigen)
 ```
+
+> `testing/no_malloc_scope.hpp` 는 **test 전용** 헤더다. Eigen 의
+> `set_is_malloc_allowed` 로 RT tick 의 heap 할당(RT-1)을 위반으로 기록한다. Eigen 은
+> rtc_base 의 **test_depend** 일 뿐 런타임 라이브러리는 Eigen-free 로 유지된다.
+> 사용 계약(모든 Eigen include 보다 먼저 include, Release/-DNDEBUG 에서도 fail-closed,
+> 동일 TU 한정)은 헤더 상단 주석이 SSoT.
 
 ---
 

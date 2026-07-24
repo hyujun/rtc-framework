@@ -41,6 +41,7 @@ add_library(rtc_controllers STATIC
   src/controllers/indirect/clik_controller.cpp
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
+  src/controllers/direct/task_impedance_controller.cpp
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
   src/controller_registration.cpp
@@ -103,6 +104,13 @@ if(BUILD_TESTING)
   set(rtc_urdf_bridge_test_include
       "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_urdf_bridge/test")
 
+  # Compliance core helpers (task dynamics / safety layer / state machine /
+  # torque E-STOP) — pure-Eigen algebraic tests, no URDF fixture needed. Links
+  # rtc_controllers for the include path + Eigen; the zero-allocation gate rides
+  # rtc_base/testing/no_malloc_scope.hpp (rtc_base is an exported dependency).
+  ament_add_gtest(test_compliance_core test/test_compliance_core.cpp)
+  target_link_libraries(test_compliance_core rtc_controllers)
+
   ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
   target_link_libraries(test_quintic_blend_trajectory rtc_controllers)
 
@@ -127,6 +135,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
   target_link_libraries(test_core_controllers rtc_controllers)
   target_include_directories(test_core_controllers PRIVATE ${rtc_urdf_bridge_test_include})
+
+  ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
+  target_link_libraries(test_task_impedance_controller rtc_controllers)
+  target_include_directories(test_task_impedance_controller PRIVATE ${rtc_urdf_bridge_test_include})
+  # The zero-allocation gate replaces global operator new/delete (new→malloc,
+  # delete→free). GCC's -Wmismatched-new-delete then false-positives on every
+  # delete site program-wide; suppress it for this target only.
+  target_compile_options(test_task_impedance_controller PRIVATE -Wno-mismatched-new-delete)
 
   # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
   # (tip_link / joint_limits / safe_position), bounds guards, multi-device

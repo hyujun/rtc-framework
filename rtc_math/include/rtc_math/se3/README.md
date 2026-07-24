@@ -70,6 +70,21 @@ So a **scalar** gain `k` with correct Ad transport already gives `ė = −k·e`
 corrections matter **only for anisotropic gain matrices**:
 `e_ν^des channel ← (Jlog6)⁻¹·K·e`.
 
+## Wrench transform (`wrench.hpp`)
+
+A wrench is the **dual** of a twist and does **not** transform by the adjoint.
+For `T = ᴬT_B` and a wrench `ᴮf` in frame B, `transformWrench(T, f)` returns
+
+`ᴬf = Ad_{ᴬT_B}^{-T}·ᴮf = adjoint(T.inverse()).transpose()·ᴮf`
+
+(computed via `Ad_T^{-1} = Ad_{T^{-1}}`, so **no** numeric 6×6 inverse). Ordering
+is `[force(3); torque(3)]` to match the `[linear; angular]` twist order. The
+inverse-transpose is what makes mechanical power `⟨ν, f⟩` frame-invariant — using
+`Ad_T^{T}` instead is the classic wrench bug. The expanded block form is
+`[[R, 0], [[p]×R, R]]` (moment picks up the lever arm `p×f`); direction is pinned
+by the `WrenchTransform.PowerDuality` test, never by assuming a library's
+`act`/`actInv` orientation.
+
 ## Choosing a definition
 
 - **WBC / QP residual / impedance** with separately-tuned translation vs rotation
@@ -90,8 +105,8 @@ corrections matter **only for anisotropic gain matrices**:
 
 - `test/test_se3_module.cpp` — the Eigen-only core tests (exp/log identities,
   θ→0/π robustness, error scales, finite-difference `exactPoseErrorRate` for all
-  6 types, `J(ξ)ξ=ξ`, scalar-gain exact exponential decay) run with **no**
-  external dependency. When Pinocchio is found, two extra cross-checks compile in
+  6 types, `J(ξ)ξ=ξ`, scalar-gain exact exponential decay, wrench transform
+  `Ad^{-T}` power duality) run with **no** external dependency. When Pinocchio is found, two extra cross-checks compile in
   (`log3`/`log6` and `Jlog3`/`Jlog6` < 1e-10), gated by `RTC_MATH_HAVE_PINOCCHIO`.
 - `examples/se3_error_compare` (+ `scripts/plot_se3_compare.py`) — S1 straight-line
   vs screw, S2 Lee stall, S3 θ=179.999° robustness, S4 anisotropic-gain Jlog
