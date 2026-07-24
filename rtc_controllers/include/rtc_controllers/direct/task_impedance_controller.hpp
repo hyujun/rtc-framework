@@ -82,8 +82,9 @@ class TaskImpedanceController final : public RTControllerInterface {
 
     // Safety layer (§5.3, §10.5).
     double joint_limit_margin{0.1};  ///< δ [rad]: repulsive band width
-    double joint_limit_kp{0.0};      ///< k_lim [N·m/rad]; 0 disables the repulsive term
-    double joint_limit_kd{2.0};      ///< d_lim [N·m·s/rad] (mandatory when k_lim > 0)
+    double joint_limit_kp{0.0};      ///< k_lim [N·m/rad]; 0 disables the SPRING term only
+    double joint_limit_kd{
+        2.0};  ///< d_lim [N·m·s/rad]; independent of k_lim (pure damping if k_lim=0)
     double max_torque_rate{2000.0};  ///< [N·m/s] slew limit (dt-scaled, never 500 Hz)
     double pose_error_limit{1.5};    ///< ‖e‖ bound → SAFE_STOP when exceeded
 

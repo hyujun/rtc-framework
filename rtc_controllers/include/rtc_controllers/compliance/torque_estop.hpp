@@ -20,6 +20,14 @@ namespace rtc::compliance {
 // Write the gravity-compensated damped-hold torque into `tau_out` (nv). `gravity`
 // is ĝ(q) (nv), `qdot` the measured joint velocity (nv), `damping` the scalar D
 // (≥ 0), `tau_max` the per-joint torque limit (nv, used as ±|tau_max(i)|).
+//
+// Finite-guard: this is the LAST-RESORT safety fallback (it runs precisely when
+// the main path already produced non-finite output), so a non-finite input must
+// not propagate to the actuator. A NaN in ĝ(q) or q̇ (e.g. a frozen/NaN encoder
+// channel) would survive the per-joint clamp untouched — NaN fails every
+// comparison, and ±∞ would clamp to ±lim and silently mask the fault — so any
+// non-finite result is forced to 0 N·m (no energy injection) rather than reaching
+// the backend. (The same helper is what #184's OSC E-STOP migrates onto.)
 inline void GravityCompDampedHold(Eigen::Ref<Eigen::VectorXd> tau_out,
                                   const Eigen::Ref<const Eigen::VectorXd>& gravity,
                                   const Eigen::Ref<const Eigen::VectorXd>& qdot, double damping,
@@ -27,7 +35,10 @@ inline void GravityCompDampedHold(Eigen::Ref<Eigen::VectorXd> tau_out,
   for (Eigen::Index i = 0; i < tau_out.size(); ++i) {
     const double lim = std::abs(tau_max(i));
     const double t = gravity(i) - damping * qdot(i);
-    tau_out(i) = (t > lim) ? lim : (t < -lim ? -lim : t);
+    if (!std::isfinite(t))
+      tau_out(i) = 0.0;  // sensor fault ⇒ cannot form a valid hold; command zero
+    else
+      tau_out(i) = (t > lim) ? lim : (t < -lim ? -lim : t);
   }
 }
 

@@ -28,10 +28,13 @@ struct SafetyStatus {
   bool finite{true};         ///< false ⇒ NaN/Inf in the command ⇒ caller must fault
 };
 
-// Stage 2 — §5.3 joint-limit repulsive potential: a spring pushing away from the
-// soft bound (q_min+δ, q_max−δ) PLUS velocity damping inside the margin band.
-// Added into `tau` (does not overwrite the control law). The damping term is
-// mandatory — a spring alone chatters at the boundary. Per joint, RT-safe.
+// Stage 2 — §5.3 joint-limit repulsive potential: a spring (k_lim) pushing away
+// from the soft bound (q_min+δ, q_max−δ) PLUS velocity damping (d_lim) inside the
+// margin band. The two gains are INDEPENDENT: k_lim scales only the spring, d_lim
+// only the damping, and each is applied whenever the joint is within the band. So
+// k_lim=0 with d_lim>0 is a valid pure-damping soft limit (a spring alone chatters
+// at the boundary; the shipped UR5e config uses exactly this — k_lim=0, d_lim=2).
+// Added into `tau` (does not overwrite the control law). Per joint, RT-safe.
 inline void AddJointLimitRepulsive(Eigen::Ref<Eigen::VectorXd> tau,
                                    const Eigen::Ref<const Eigen::VectorXd>& q,
                                    const Eigen::Ref<const Eigen::VectorXd>& qdot,

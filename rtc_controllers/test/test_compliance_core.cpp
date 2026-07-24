@@ -309,4 +309,24 @@ TEST(TorqueEstop, GravityMinusDampingClamped) {
   EXPECT_DOUBLE_EQ(tau(2), 10.0);              // 20 clamped to +10
 }
 
+// Finite-guard: the E-STOP hold is the last-resort fallback, so a non-finite
+// input (NaN/∞ from a frozen encoder feeding ĝ(q) or q̇) must NOT reach the
+// actuator — the per-joint clamp cannot catch it (NaN fails every comparison,
+// ∞ would clamp to ±lim and mask the fault), so it is forced to 0 N·m. Finite
+// joints in the same vector are unaffected.
+TEST(TorqueEstop, NonFiniteInputForcedToZero) {
+  const double nan_v = std::numeric_limits<double>::quiet_NaN();
+  const double inf_v = std::numeric_limits<double>::infinity();
+  Eigen::VectorXd tau(4), g(4), qdot(4), tau_max(4);
+  g << 5.0, nan_v, 2.0, inf_v;   // joint 1: NaN gravity, joint 3: ∞ gravity
+  qdot << 0.0, 0.0, nan_v, 0.0;  // joint 2: NaN velocity
+  tau_max << 100.0, 100.0, 100.0, 100.0;
+  GravityCompDampedHold(tau, g, qdot, /*damping=*/2.0, tau_max);
+  EXPECT_TRUE(tau.allFinite()) << "non-finite input leaked to the actuator";
+  EXPECT_DOUBLE_EQ(tau(0), 5.0);  // finite joint unaffected
+  EXPECT_DOUBLE_EQ(tau(1), 0.0);  // NaN gravity → 0
+  EXPECT_DOUBLE_EQ(tau(2), 0.0);  // NaN velocity → 0
+  EXPECT_DOUBLE_EQ(tau(3), 0.0);  // ∞ gravity → 0 (not clamped to +100)
+}
+
 }  // namespace

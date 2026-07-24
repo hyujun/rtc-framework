@@ -23,8 +23,8 @@ task_impedance_controller:
 
   # ── Safety layer (§5.3, §10.5) ──────────────────────────────────────────────
   joint_limit_margin: 0.1         # δ [rad] repulsive band
-  joint_limit_stiffness: 0.0      # k_lim [N·m/rad]; 0 disables the repulsive term
-  joint_limit_damping: 2.0        # d_lim [N·m·s/rad] (mandatory when k_lim > 0)
+  joint_limit_stiffness: 0.0      # k_lim [N·m/rad]; 0 disables the spring term only (damping still applies)
+  joint_limit_damping: 2.0        # d_lim [N·m·s/rad]; independent of k_lim ⇒ pure-damping soft limit here
   max_torque_rate: 2000.0         # [N·m/s] slew limit (dt-scaled, never 500 Hz)
   pose_error_limit: 1.5           # ‖e‖ bound → SAFE_STOP
 

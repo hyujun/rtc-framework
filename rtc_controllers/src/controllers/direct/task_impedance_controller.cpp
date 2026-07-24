@@ -154,8 +154,20 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   if (reset_fault_requested_.exchange(false, std::memory_order_acq_rel))
     sm_.ResetFault();
 
-  if (diag.estopped)
+  if (diag.estopped) {
+    // Drain & discard any targets queued during the global E-STOP. Compute()
+    // short-circuits here BEFORE the normal drain (below), so without this the
+    // SPSC queue backs up; and since ClearEstop() does not bump the activation
+    // generation, those stale pre-E-STOP commands would pass IsCurrentGeneration
+    // on the first recovery tick and overwrite the measured-pose re-seed. The RT
+    // thread is the sole SPSC consumer, so draining here keeps the single-
+    // consumer invariant.
+    PendingTarget discarded{};
+    while (pending_targets_.Pop(discarded)) {
+      // discard: a command issued during E-STOP must not survive recovery
+    }
     return ComputeEstop(state, /*control_valid=*/false, diag);
+  }
 
   const int nv = handle_->nv();
   const auto gains = gains_lock_.Load();
@@ -331,7 +343,12 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   saturation_elapsed_ = safety.saturated ? (saturation_elapsed_ + dt) : 0.0;
   compliance::ComplianceFaults faults;
   faults.nan_inf = !safety.finite || !dyn_ok;
-  faults.pose_error_exceeded = e.norm() > gains.pose_error_limit;
+  // Bound only the REGULATED task DoF: under TRANSLATION_ONLY (m_=3) the rotation
+  // rows of `e` are left to the soft nullspace posture task and may drift by
+  // design, so folding them into the norm would spuriously latch SAFE_STOP even
+  // while translation tracking is perfect. e.head(m_) == the full 6D norm for
+  // FULL_SE3 (m_=6), so this is a no-op there.
+  faults.pose_error_exceeded = e.head(m_).norm() > gains.pose_error_limit;
   faults.sigma_below_critical = nullspace_active && (sigma_min < gains.singularity_critical);
   faults.saturation_persist = saturation_elapsed_ > gains.saturation_persist_time;
   faults.sigma_below_threshold = nullspace_active && (sigma_min < gains.singularity_threshold);
