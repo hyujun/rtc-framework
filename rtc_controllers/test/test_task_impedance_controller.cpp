@@ -14,11 +14,14 @@
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
+#include <Eigen/Dense>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <cstdlib>
 #include <new>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -233,6 +236,89 @@ TEST(TaskImpedance, ComputeIsAllocationFree) {
   g_alloc_active = false;
   EXPECT_EQ(g_alloc_count, 0u) << "Compute() touched the heap on the RT path";
   EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+}
+
+// ── Sign of the stiffness law: +K_p·e restores TOWARD the goal (§6.2) ────────
+// The rest of the suite pins only e=0 cases and equality/magnitude, so a sign
+// flip to −K_p·e (an unstable, repelling law) would pass all of them. Command a
+// pure +x translation offset (TRANSLATION_ONLY so no rotation task force can
+// saturate the joints and corrupt the reconstruction) and recover the 3D task
+// force from the gravity-free joint torque via J_transᵀ (rebuilt independently
+// from the URDF): a restoring law puts f_trans along +x (toward the goal); a
+// flipped one puts it along −x.
+TEST(TaskImpedance, StiffnessSignRestoresTowardGoal) {
+  const std::vector<double> q(7, 0.2);
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 30.0;  // required for TRANSLATION_ONLY (§6.1); posture error=0 ⇒ inert
+  gains.activation_ramp_time = 0.0;  // full gain on the offset tick
+  gains.max_torque_rate = 1e12;      // disable slew limiting so τ_task = J_transᵀ f exactly
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kTranslationOnly);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));  // q̇ = 0 ⇒ ė = 0
+  const auto seed = ctrl.Compute(state);                      // seeds X_d = X_meas ⇒ e = 0
+  const double px = seed.actual_task_positions[0];
+  const double py = seed.actual_task_positions[1];
+  const double pz = seed.actual_task_positions[2];
+
+  // Goal +δ along world x; orientation is not in the task under TRANSLATION_ONLY.
+  const double dx = 0.03;
+  const std::array<double, 6> t{px + dx, py, pz, 0.0, 0.0, 0.0};
+  ctrl.SetDeviceTarget(0, std::span<const double>(t.data(), t.size()));
+  const auto out = ctrl.Compute(state);
+
+  // Independent J_trans (top 3 rows, LWA) at q, same tip frame the controller uses.
+  rtc_urdf_bridge::ModelConfig cfg;
+  cfg.urdf_path = Urdf7();
+  cfg.root_joint_type = "fixed";
+  rtc_urdf_bridge::PinocchioModelBuilder builder(cfg);
+  rtc_urdf_bridge::RtModelHandle handle(builder.GetFullModel());
+  handle.ComputeJacobians(std::span<const double>(q.data(), q.size()));
+  const auto tip = static_cast<pinocchio::FrameIndex>(builder.GetFullModel()->nframes - 1);
+  Eigen::MatrixXd jac(6, 7);
+  handle.GetFrameJacobian(tip, pinocchio::LOCAL_WORLD_ALIGNED, jac);
+  const Eigen::MatrixXd j_trans = jac.topRows(3);  // 3×nv
+
+  // τ_task = τ − ĝ(q) = J_transᵀ f_trans (ė = 0, posture error = 0 ⇒ no nullspace).
+  // Recover the 3D task force: f_trans = (J_trans J_transᵀ)⁻¹ J_trans τ_task.
+  const auto grav = GravityAt(Urdf7(), q);
+  Eigen::VectorXd tau_task(7);
+  for (int i = 0; i < 7; ++i)
+    tau_task(i) =
+        out.devices[0].commands[static_cast<std::size_t>(i)] - grav[static_cast<std::size_t>(i)];
+  const Eigen::Vector3d f_trans = (j_trans * j_trans.transpose()).ldlt().solve(j_trans * tau_task);
+
+  EXPECT_GT(f_trans(0), 0.0)
+      << "stiffness law repels instead of restoring — sign of +K_p·e is flipped";
+  EXPECT_GT(f_trans(0), std::abs(f_trans(1)));  // force is dominantly along the offset axis
+  EXPECT_GT(f_trans(0), std::abs(f_trans(2)));
+}
+
+// ── §6.1/§10.6: under TRANSLATION_ONLY a large ORIENTATION error (left to the
+// soft nullspace by design) must NOT latch SAFE_STOP — the pose-error fault is
+// bounded to the regulated translation DoF only. Folding the full 6D norm (the
+// bug) latches SAFE_STOP here while translation tracking is perfect. ──────────
+TEST(TaskImpedance, TranslationOnlyRotationDriftDoesNotLatch) {
+  const std::vector<double> q(7, 0.2);
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 50.0;         // required for TRANSLATION_ONLY (§6.1)
+  gains.activation_ramp_time = 0.0;  // reach RUNNING immediately
+  gains.pose_error_limit = 0.3;      // low bound: rotation error alone would exceed it
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kTranslationOnly);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  const auto seed = ctrl.Compute(state);  // seeds X_d = X_meas
+  const double px = seed.actual_task_positions[0];
+  const double py = seed.actual_task_positions[1];
+  const double pz = seed.actual_task_positions[2];
+
+  // Same translation (‖e_trans‖ ≈ 0), orientation rotated ~π about Z (‖e_rot‖ ≫ 0.3).
+  const std::array<double, 6> t{px, py, pz, 0.0, 0.0, 3.0};
+  ctrl.SetDeviceTarget(0, std::span<const double>(t.data(), t.size()));
+  for (int k = 0; k < 5; ++k)
+    (void)ctrl.Compute(state);  // several ticks — a spurious latch would stick
+
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  EXPECT_NE(diag.state, static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kSafeStop))
+      << "orientation drift spuriously latched SAFE_STOP under TRANSLATION_ONLY";
+  EXPECT_TRUE(diag.control_valid) << "controller fell back to the E-STOP hold on rotation drift";
 }
 
 }  // namespace
