@@ -161,7 +161,7 @@ class TaskImpedanceController final : public RTControllerInterface {
   void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
   void MaybeSelectSubModel();
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state, bool control_valid,
-                                              const Diagnostics& diag) noexcept;
+                                              const Diagnostics& diag, const Gains& gains) noexcept;
 
   // ── Model ──────────────────────────────────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;
