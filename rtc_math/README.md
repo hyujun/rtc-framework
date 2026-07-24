@@ -23,6 +23,7 @@ error 정의를 제공합니다. 어떤 robot/URDF/joint 도 모르는 순수 �
 include/rtc_math/se3/
 ├── so3.hpp              # hat/vee, log3/exp3, leftJacobian(±inv), Jlog3
 ├── se3.hpp              # log6/exp6, adjoint, Jlog6 (analytic + numerical)
+├── wrench.hpp           # transformWrench (Ad^{-T} — wrench ≠ twist transform)
 ├── pose_error.hpp       # ErrorType(5 정의 + legacy) + computePoseError
 ├── velocity_error.hpp   # computeVelocityError / exactPoseErrorRate / transport
 ├── pinocchio_adapter.hpp# (optional) pinocchio::SE3/Motion 오버로드
