@@ -313,7 +313,7 @@ def pin_dds_threads_to_slot(label: str, process_grep: str, slot: int) -> Execute
             '  case "$RTC_OWNED" in *" $COMM "*) continue ;; esac; '
             '  POLICY=$(chrt -p $TID 2>/dev/null | grep -o "SCHED_FIFO" || echo ""); '
             '  if [ -n "$POLICY" ]; then continue; fi; '
-            '  taskset -cp "$CPU" "$TID" 2>/dev/null && PINNED=$((PINNED+1)); '
+            '  taskset -cp "$CPU" "$TID" >/dev/null 2>&1 && PINNED=$((PINNED+1)); '
             "done; "
             f'echo "[RT] {label} (PID=$PID): $PINNED DDS/aux threads pinned to '
             f'slot {slot} -> logical CPU $CPU"',
