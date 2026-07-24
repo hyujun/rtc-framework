@@ -17,6 +17,7 @@
 #include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
 #include <Eigen/Core>
@@ -89,6 +90,11 @@ class OperationalSpaceController final : public RTControllerInterface {
     double null_kp{0.0};  ///< Posture centering stiffness toward safe_position [N·m/rad]
     double null_kd{1.0};  ///< Null-space joint damping                         [N·m·s/rad]
 
+    // Torque E-STOP hold (E-8, #184): τ = ĝ(q) − D·q̇ clamped to ±τ_max. D bleeds
+    // residual kinetic energy while ĝ(q) holds the arm against gravity. Same helper
+    // (compliance::GravityCompDampedHold) TaskImpedanceController::ComputeEstop uses.
+    double estop_damping{5.0};  ///< D for the torque E-STOP hold ĝ(q) − D·q̇ [N·m·s/rad]
+
     // Retained for YAML back-compat; torque OSC always compensates g(q)+C·v
     // (required for the control law). This flag is parsed but ignored.
     bool enable_gravity_compensation{true};  ///< [deprecated] no-op in torque mode
@@ -155,6 +161,12 @@ class OperationalSpaceController final : public RTControllerInterface {
   Eigen::MatrixXd MinvJt_;   ///< nv×6: M⁻¹ Jᵀ (via in-place Cholesky solve)
   Eigen::VectorXd h_;        ///< nv: nonlinear effects h = C·v + g
   Eigen::VectorXd tau_out_;  ///< nv: joint torque command [N·m]
+
+  // Torque E-STOP hold buffers (#184): gravity-comp damped hold τ = ĝ(q) − D·q̇.
+  Eigen::VectorXd gravity_estop_;  ///< nv: ĝ(q) in Pinocchio order (E-STOP hold)
+  Eigen::VectorXd grav_dev_;       ///< nv: ĝ(q) scattered to device order
+  Eigen::VectorXd qdot_dev_;       ///< nv: measured velocity in device order
+  Eigen::VectorXd tau_dev_;        ///< nv: E-STOP hold torque in device order
 
   // Task-space quantities — fixed 6×1 / 6×6, stack-allocated
   Eigen::Matrix<double, 6, 6> LambdaInv_;  ///< J M⁻¹ Jᵀ + λ²I  (task inertia inverse)
@@ -245,14 +257,16 @@ class OperationalSpaceController final : public RTControllerInterface {
   std::atomic<bool> hand_estopped_{false};
 
   std::vector<double> safe_position_;
-  std::vector<double> max_joint_velocity_;  ///< E-STOP position slew limit [rad/s]
-  std::vector<double> max_joint_torque_;    ///< torque command clamp [N·m]
+  std::vector<double> max_joint_velocity_;  ///< from joint_limits [rad/s]; not read by the
+                                            ///< torque E-STOP hold (#184) — retained for config
+  std::vector<double> max_joint_torque_;    ///< torque command clamp [N·m] (grown to ≥nv)
 
   // Torque-only: fixed to kTorque. LoadConfig rejects any other command_type.
   CommandType command_type_{CommandType::kTorque};
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state) noexcept;
+  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state,
+                                              const Gains& gains) noexcept;
 
   static Eigen::Matrix3d RpyToMatrix(double roll, double pitch, double yaw) noexcept;
 

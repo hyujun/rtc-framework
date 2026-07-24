@@ -29,6 +29,11 @@ operational_space_controller:
   null_kp: 0.0                            # safe_position 향한 posture 강성 [N·m/rad]
   null_kd: 1.0                            # 널공간 관절 damping [N·m·s/rad]
 
+  # ── 토크 E-STOP 홀드 (#184) ───────────────────────────────────────────────
+  # E-STOP 시 τ = ĝ(q) − D·q̇ (관절별 ±τ_max clamp, non-finite→0). ĝ(q) 로 중력에
+  # 버티고 −D·q̇ 로 잔여 운동 에너지를 흡수한다. D<0 는 max(0,·) 로 floor.
+  estop_damping: 5.0                      # E-STOP 홀드 감쇠 D [N·m·s/rad]
+
   # 참고: torque OSC 는 g(q)+C·v 를 항상 보상합니다. enable_gravity_compensation
   # 는 하위 호환용으로 파싱만 되고 무시됩니다.
 
