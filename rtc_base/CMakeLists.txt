@@ -21,6 +21,12 @@ add_compile_options(
 
 find_package(ament_cmake REQUIRED)
 
+# Only include/ ships. The zero-allocation gate (rtc_base/testing/) lives under
+# test/include, NOT here: it pulls in Eigen, which rtc_base deliberately does not
+# export (the runtime library stays Eigen-free, see the BUILD_TESTING block), so
+# it must never reach rtc_base's public include surface. Sibling packages consume
+# it via a source-tree include path (../rtc_base/test/include), the same layout
+# the rtc_urdf_bridge/test headers use (see rtc_controllers/CMakeLists.txt).
 install(DIRECTORY include/ DESTINATION include)
 ament_export_include_directories(include)
 
@@ -80,7 +86,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_no_malloc_scope test/test_no_malloc_scope.cpp)
   if(TARGET test_no_malloc_scope)
-    target_include_directories(test_no_malloc_scope PRIVATE include)
+    # test/include holds the never-installed testing/ gate header (Eigen-coupled,
+    # kept off the public include surface — see the install() note above).
+    target_include_directories(test_no_malloc_scope PRIVATE include test/include)
     target_link_libraries(test_no_malloc_scope Eigen3::Eigen)
   endif()
 
