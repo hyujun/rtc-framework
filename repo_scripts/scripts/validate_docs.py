@@ -32,6 +32,13 @@ D7  ``detect`` fenced blocks: the pattern is linted for the escaping mistakes
 D8  no detection pattern parked in a markdown table cell.  A cell cannot hold
     an unescaped ``|``, so a regex put in one gets escaped into something
     inert; the table is the root cause, not the individual typos.
+D9  no hardcoded package count in the constitution / README that disagrees with
+    the tree (AP-DOC-1).  ``21개 ROS 2 패키지`` in ``README.md`` is accurate
+    today but rots silently when a package is added or removed; the check
+    compares the claimed number against the tracked ``package.xml`` count and
+    fails on drift.  Scoped to root ``README.md`` / ``CLAUDE.md`` (per-package
+    READMEs legitimately describe their own contents) and honours the inline
+    ``allow D9`` marker for a genuine sub-total.
 
 Both a static lint *and* a probe are required, and neither subsumes the other.
 A doubled backslash (``\\\\b``) makes grep exit 2 -- loud.  But ``\\|`` inside
@@ -210,6 +217,18 @@ SUPPRESS_RE = re.compile(r"validate-docs:\s*allow\s+(D\d+(?:\s*,\s*D\d+)*)")
 
 # Corpus whose code citations must be symbol-based (D4).
 SYMBOL_CITATION_DIRS = ("agent_docs/", ".claude/")
+
+# D9 scope: the constitution and the root README are the two documents whose
+# stated package count is a whole-repo total that AP-DOC-1 warns will drift.
+# A per-package README saying "이 패키지는 2개의 ..." is describing itself, not
+# the repo, so scoping to these two avoids firing on legitimate sub-counts.
+COUNT_SCOPED_DOCS = ("README.md", "CLAUDE.md")
+
+# D9: "N개 [ROS 2] 패키지" -- a claim about how many packages the repo has.
+# The counted noun must be 패키지; this deliberately does not match the prose
+# "7개 목록" / "1개 이상" that appears in the constitution for unrelated reasons.
+# `(\d+)` is greedy, so "210개" captures 210 (never a partial "21").
+PACKAGE_COUNT_RE = re.compile(r"(\d+)\s*개\s*(?:의\s*)?(?:ROS[\s-]*2\s*)?패키지")
 
 
 @dataclass(frozen=True)
@@ -612,6 +631,10 @@ class Repo:
                 keep.append(f)
         return keep
 
+    def package_count(self) -> int:
+        """Tracked ROS 2 packages == tracked ``package.xml`` files (D9 ground truth)."""
+        return sum(1 for f in self.files if f == "package.xml" or f.endswith("/package.xml"))
+
 
 # --------------------------------------------------------------------------
 # Checks
@@ -719,6 +742,38 @@ def check_markdown(repo: Repo, rel: str, text: str) -> list[Finding]:
                 )
 
     findings.extend(check_detect_blocks(repo, rel, text))
+    if rel in COUNT_SCOPED_DOCS:
+        findings.extend(check_package_count(rel, text, repo.package_count(), allowed))
+    return findings
+
+
+def check_package_count(
+    rel: str, text: str, actual: int, allowed: dict[int, set[str]]
+) -> list[Finding]:
+    """D9: a hardcoded "N개 패키지" claim must equal the tracked package.xml count.
+
+    ``actual`` is passed in rather than measured here so the check is hermetic
+    under ``--self-test`` -- a fixture states a known count and a known claim,
+    and the answer does not move when the real tree gains a package.
+    """
+    if rel not in COUNT_SCOPED_DOCS:
+        return []
+    findings: list[Finding] = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        if "D9" in allowed.get(lineno, frozenset()):
+            continue
+        for m in PACKAGE_COUNT_RE.finditer(raw):
+            if int(m.group(1)) != actual:
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        "D9",
+                        f"hardcoded package count '{m.group(0)}' != {actual} tracked "
+                        "package.xml files -- AP-DOC-1: cite how to measure "
+                        "(find -name package.xml) or fix the number",
+                    )
+                )
     return findings
 
 
@@ -1232,6 +1287,43 @@ DOC_FIXTURES: list[tuple[str, str, str, list[str]]] = [
         "| `operator[](name)` | insertion order |\n",
         [],
     ),
+    # D9 end-to-end severance guard: 999 is never the real package count, so
+    # this stays red as long as check_package_count is wired into
+    # check_markdown -- severing it turns the fixture (and the suite) green.
+    (
+        "D9 package count drift",
+        "README.md",
+        "본 저장소는 999개 ROS 2 패키지로 구성됩니다.\n",
+        ["D9"],
+    ),
+    # ...and it must not fire on a count of a *different* noun, count-independent.
+    (
+        "D9 ignores a non-package count",
+        "README.md",
+        "빌드 후 999개 파일이 생성됩니다.\n",
+        [],
+    ),
+]
+
+
+# Hermetic count fixtures: (rel, markdown, actual_count, sorted codes expected).
+# The count is stated per-fixture so the known answer does not drift with the
+# real tree -- the layer that turns "silent silent-pass" red for D9.
+COUNT_CASES: list[tuple[str, str, int, list[str]]] = [
+    ("README.md", "21개 ROS 2 패키지로 구성됩니다.\n", 21, []),  # match -> silent
+    ("README.md", "20개 ROS 2 패키지로 구성됩니다.\n", 21, ["D9"]),  # drift -> red
+    ("README.md", "21개 패키지\n", 21, []),  # bare form, match
+    ("README.md", "22개 패키지\n", 21, ["D9"]),  # bare form, drift
+    ("README.md", "210개 ROS 2 패키지\n", 21, ["D9"]),  # greedy: 210, not a partial 21
+    ("README.md", "빌드 후 21개 파일\n", 21, []),  # 파일, not 패키지 -> silent
+    ("CLAUDE.md", "현재 45개 패키지 상수가 있다\n", 21, ["D9"]),  # re-introduced in constitution
+    ("agent_docs/x.md", "20개 ROS 2 패키지\n", 21, []),  # out of D9 scope -> silent
+    (
+        "README.md",
+        "<!-- validate-docs: allow D9 -->\n형상 추정 2개 패키지\n",
+        21,
+        [],
+    ),  # legitimate sub-count, suppressed
 ]
 
 
@@ -1243,6 +1335,15 @@ def self_test() -> int:
         got_codes = sorted(f.code for f in check_markdown(repo_for_docs, rel, body))
         if got_codes != sorted(want_codes):
             failures.append(f"doc fixture {name!r}: codes={got_codes}, want {sorted(want_codes)}")
+
+    for rel, body, actual, want in COUNT_CASES:
+        got_codes = sorted(
+            f.code for f in check_package_count(rel, body, actual, suppressions(body))
+        )
+        if got_codes != sorted(want):
+            failures.append(
+                f"count case {rel} {body!r} actual={actual}: codes={got_codes}, want {sorted(want)}"
+            )
 
     for span, in_table, want in PARKED_PATTERN_CASES:
         got = is_parked_detection_pattern(span, in_table=in_table)
@@ -1314,6 +1415,7 @@ def self_test() -> int:
         return 1
     total = (
         len(DOC_FIXTURES)
+        + len(COUNT_CASES)
         + len(GREP_CASES)
         + len(SLUG_CASES)
         + len(BRE_EXEC_CASES)
