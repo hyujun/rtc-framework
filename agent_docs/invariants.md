@@ -55,7 +55,7 @@ RT path 의 publisher / state buffer / queue 선택 기준. 1순위 (wait-free +
 | 1 | `std::atomic<T>` | C++ stdlib | lock-free (POD only) | 모두 | `T` 는 `is_always_lock_free` 확인 (보통 ≤ 8 bytes POD) |
 | 2 | `realtime_tools::LockFreeQueue<T, spsc_queue>` | `realtime_tools` (Boost.Lockfree wrapper) | wait-free SPSC | RT loop → aux thread | `SpscQueue` 와 등가. 외부 라이브러리 호환성 필요 시 |
 | 2 | `realtime_tools::RealtimePublisher::try_publish` | `realtime_tools` | `try_lock` + msg copy + cv notify → dedicated non-RT thread | RT loop (best-effort) | 신규 단일-토픽 publisher 에 가치. dedicated thread 생성 — thread_config.hpp 정합 (RT-HOST-2/3) + AP-RTT-1 회피 필수 |
-| 2 | `realtime_tools::RealtimeBuffer<T>` / `RealtimeThreadSafeBox<T>` | `realtime_tools` | `try_lock` + double buffer (또는 swap pointer) | RT loop (best-effort) | ctor 에서 `new T()` 2회 — lifecycle 콜백 시점만 ctor/reset 가능 (AP-RTT-2) |
+| 2 | `realtime_tools::RealtimeBuffer<T>` / `RealtimeThreadSafeBox<T>` | `realtime_tools` | `try_lock` + double buffer (또는 swap pointer) | RT loop (best-effort) | ctor 에서 `new T()` 2회 — lifecycle 콜백 시점만 ctor/reset 가능 (AP-RTT-1) |
 | 금지 | `std::atomic<std::shared_ptr<T>>` | C++20 stdlib | libstdc++/libc++ internal spinlock — wait-free 아님 | (RT 외만) | `SeqLock<std::shared_ptr<T>>` 도 X — RT-8 위반 |
 | 금지 | `std::mutex::lock` / `lock_guard` / `scoped_lock` | C++ stdlib | blocking | (RT 외만) | RT-4 위반. `try_to_lock` 은 best-effort 로 RT-4 와 별개 |
 | 금지 | `std::shared_ptr` 복사 | C++ stdlib | atomic ref-count contention | (RT 외만) | RT-8 위반. `const std::shared_ptr<T>&` 또는 raw ref 사용 |

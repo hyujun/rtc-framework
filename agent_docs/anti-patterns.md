@@ -62,35 +62,22 @@
   - SPSC + consumer polling (kEventTimeout 짧은 sleep) — wake latency = polling 주기
   - atomic_flag + busy-spin (very-low-latency consumer 만; CPU 낭비)
 
-### AP-RTT-1: `realtime_tools::RealtimePublisher` 의 dedicated thread 가 thread_config.hpp layout 을 깨뜨림
+### AP-RTT-1: `realtime_tools` primitive 도입 시 예방 규칙 (dedicated thread / ctor heap / drop 추적)
 
-- **증상**: RT process 의 thread 수가 `thread_config.hpp` 의 `cpu_affinity` layout 을 초과, RT thread 와 동일 core 공유 시 cache pollution / 선점
-- **원인**: `RealtimePublisher` 는 instance 당 `publishingLoop` 전용 thread 1개 생성. controller 가 N개 토픽 publish 시 thread N개
-- **탐지**: `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 정의보다 큼
-- **복구**: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) `RealtimePublisher` 채택 시 `get_thread()` 로 명시적 priority/affinity 설정 ([CLAUDE.md](../CLAUDE.md) §6 E-7 escalation 대상)
+> **도입 시 적용** — 본 저장소는 아직 `realtime_tools` 를 쓰지 않으므로 아래 grep 은 언제나 0건이다. primitive 선택·금지 기준의 SSoT 는 [invariants.md](invariants.md) §RT pub/sub primitive catalog (`RealtimePublisher::try_publish` / `RealtimeBuffer` 행) 이며, 이 블록은 도입 시 검토할 세 함정만 요약한다.
 
-### AP-RTT-2: `realtime_tools::RealtimeBuffer` 를 lifecycle 콜백 외 시점에 ctor / reset 호출
+- **`RealtimePublisher` dedicated thread → layout 파괴**: instance 당 `publishingLoop` 전용 thread 1개 생성 → `thread_config.hpp` `cpu_affinity` layout 초과, RT core 공유 시 cache pollution/선점. 탐지 `ps -eLf | grep <process> | wc -l` 이 `SystemThreadConfigs` 초과. 복구: (a) 토픽 N개를 SPSC + 단일 publish_thread 멀티플렉싱 (본 repo 기존 패턴), (b) 채택 시 `get_thread()` 로 priority/affinity 명시 ([CLAUDE.md](../CLAUDE.md) §6 E-7)
+- **`RealtimeBuffer` ctor/reset 을 lifecycle 밖에서 호출**: ctor·`reset()` 가 double buffer 를 `new T()` 2회 → RT-1 위반. ctor/`reset` 은 `on_configure`/`on_cleanup` 에서만. RT path 재구성은 `SeqLock<T>` + writer `Store`
+- **`try_publish` drop 미추적**: `try_publish` 가 false (lock 실패) 반환 시 silent drop. 호출 site 마다 `std::atomic<uint64_t> drop_count_` 증가 + aux thread 주기 publish/log (본 repo SPSC drain 은 logger 가 이미 drop counter 추적)
 
-- **증상**: RT path 에서 `RealtimeBuffer` ctor 또는 `reset()` 가 `new T()` 2회 호출 → RT-1 위반 경로
-- **원인**: `RealtimeBuffer` ctor 가 internal double buffer 를 heap allocate. `reset()` 도 동일하게 `delete` + `new`
-- **탐지**: `RealtimeBuffer<T>` / `RealtimeThreadSafeBox<T>` 의 생성·`reset` 이 lifecycle 콜백 (`on_configure` / `on_cleanup`) 밖에 있는가. (본 저장소는 아직 `realtime_tools` 를 쓰지 않으므로 grep 은 언제나 0건이다 — 도입 시 적용할 규칙)
-- **복구**: ctor / `reset` 은 lifecycle 콜백에서만. RT path 에서 buffer 재구성이 필요하면 `SeqLock<T>` + writer `Store` 패턴
-
-### AP-RTT-3: `RealtimePublisher::try_publish` 의 drop 을 추적하지 않음
-
-- **증상**: `try_publish` 가 false 반환 (lock 실패) 시 메시지 silent drop, 호출자가 인지 못함
-- **원인**: 본 repo 의 SPSC drain 은 logger 가 drop counter 추적 — `RealtimePublisher` 는 false 반환만 하고 카운트 없음
-- **탐지**: `try_publish` 호출자 코드에서 return 값을 무시하거나 `if(!try_publish) ...;` 가 카운터 없이 빈 블록
-- **복구**: `try_publish` 호출 site 마다 `std::atomic<uint64_t> drop_count_` 증가 + aux thread 가 주기적 publish/log
-
-### AP-RTT-4: 외부 라이브러리 (`realtime_tools` 등) thread 의 priority / affinity 가 thread_config.hpp 와 불일치
+### AP-RTT-2: 외부 라이브러리 thread 의 priority / affinity 가 thread_config.hpp 와 불일치
 
 - **증상**: 외부 thread 가 default policy (`SCHED_OTHER`) 로 생성되어 RT thread 와 동일 core 에 묶이면 RT thread 가 선점 받음
-- **원인**: `RealtimePublisher` 등 외부 라이브러리는 thread 생성 시 priority/affinity 설정 없음. 호출자 책임
+- **원인**: 외부 라이브러리는 thread 생성 시 priority/affinity 설정 없음 — 호출자 책임. 실제 소비자는 DDS 스레드 (#163/#164); `realtime_tools::RealtimePublisher` 는 도입 시 동일 클래스의 예시
 - **탐지**: `verify_rt_runtime.sh` 의 thread 별 sched policy / affinity 검사에서 `SCHED_OTHER` thread 가 RT core 에 매핑
-- **복구**: 외부 라이브러리 thread 의 native handle (예: `RealtimePublisher::get_thread()`) 로 `pthread_setschedparam` + `pthread_setaffinity_np` 명시 호출. RT-HOST-2/3 정합 보장
+- **복구**: 외부 thread 의 native handle 로 `pthread_setschedparam` + `pthread_setaffinity_np` 명시 호출. RT-HOST-2/3 정합 보장
 
-### AP-RTT-5: `ThreadConfig::cpu_core` 를 kernel logical CPU id 로 가정
+### AP-THREAD-1: `ThreadConfig::cpu_core` 를 kernel logical CPU id 로 가정
 
 - **증상**: SMT-on hybrid (NUC13 / NUC14 / i9-13900K) 또는 AMD SMT 시스템에서 RT thread 가 의도와 달리 P-core 의 SMT sibling 에 핀됨. `rt_callback` (slot 2 = cpu 2 = P-core 1 physical) 와 `mpc_main` (slot 3 = cpu 3 = P-core 1 sibling) 이 동일 hardware execution unit 의 두 hyperthread 에 들어가 cache/port contention 발생 — RT 우선순위 우위가 무력화됨
 - **원인**: `ThreadConfig::cpu_core` 는 *slot index* (physical core 번호), `CPU_SET(n, ...)` 의 `n` 은 *logical CPU id*. SMT-off 환경에서만 두 값이 일치하므로 4-core CI mock 만으로는 회귀를 잡을 수 없음
@@ -102,6 +89,7 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
 # antiprobe:     CPU_SET(SlotToLogicalCpu(cfg.cpu_core), &cpuset);
 ```
 - **복구**: 새 affinity 호출 site 가 추가되면 반드시 `SlotToLogicalCpu(slot)` 또는 `SlotToLogicalCpu(slot, topology)` 를 거쳐 변환. unit test 는 `CpuTopology` mock 으로 직접 주입 (overload 사용)
+- **비고**: 구 AP-RTT-5 (`realtime_tools` 미사용 예방 항목이 아니라 in-tree thread affinity 라이브 결함이라 재분류). detect id `AP-THREAD-slot-mapping` 는 CI (validate_docs.py D7) 가 검증하는 load-bearing 문자열이라 개명해도 유지. 같은 slot→logical 축의 GRUB 설정 통일은 #152
 
 ## Design / Architecture
 
