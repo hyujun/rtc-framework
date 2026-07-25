@@ -149,6 +149,17 @@ if(BUILD_TESTING)
   # delete site program-wide; suppress it for this target only.
   target_compile_options(test_task_impedance_controller PRIVATE -Wno-mismatched-new-delete)
 
+  # Slice-2 external wrench surface (#236): SetExternalWrench input contract,
+  # conditioning + Ad^{-T} frame transform, staleness fade / DEGRADED, §6.3
+  # inertia shaping incl. the T4.1 continuity boundary, zero-alloc with the
+  # wrench path live. Same global operator-new interposition as
+  # test_task_impedance_controller, hence the same -Wmismatched-new-delete
+  # suppression.
+  ament_add_gtest(test_task_impedance_wrench test/test_task_impedance_wrench.cpp)
+  target_link_libraries(test_task_impedance_wrench rtc_controllers)
+  target_include_directories(test_task_impedance_wrench PRIVATE ${rtc_urdf_bridge_test_include})
+  target_compile_options(test_task_impedance_wrench PRIVATE -Wno-mismatched-new-delete)
+
   # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
   # (tip_link / joint_limits / safe_position), bounds guards, multi-device
   # passthrough, 6-DOF + gravity/Coriolis compensation branches.

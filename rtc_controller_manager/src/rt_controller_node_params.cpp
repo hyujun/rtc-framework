@@ -549,6 +549,15 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     if (shared_builder) {
       ctrl->SetSharedModelBuilder(shared_builder);
     }
+    // Control rate is a property of THIS NODE, not of a bring-up pass, and it is
+    // already parsed by the time we get here — so hand it over before anything
+    // reads it. PreConfigure below calls the controller's LoadConfig, and several
+    // controllers validate rate-dependent YAML there (filter cutoffs against
+    // Nyquist). Setting the rate only in Pass 2 left those checks running against
+    // GetDefaultDt()'s fallback, which rejects cutoffs that are perfectly legal at
+    // the configured rate (kMaxControlRateHz is 5000) and fails the whole
+    // configure. Pass 2 still re-sends it, harmlessly, next to the device configs.
+    ctrl->SetControlRate(control_rate_);
 
     // Load YAML for this controller.
     //
@@ -744,7 +753,9 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     return false;
   }
 
-  // Pass control rate and device configs to all controllers
+  // Pass device configs to all controllers. The control rate went out in Pass 1
+  // (PreConfigure's LoadConfig already needs it); re-sending it is idempotent and
+  // keeps this loop correct for any controller added to controllers_ later.
   for (auto& ctrl : controllers_) {
     ctrl->SetControlRate(control_rate_);
     ctrl->SetDeviceNameConfigs(device_name_configs_);

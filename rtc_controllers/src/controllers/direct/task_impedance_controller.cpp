@@ -4,6 +4,7 @@
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
+#include "rtc_math/se3/wrench.hpp"
 
 #include <rclcpp/logging.hpp>
 
@@ -43,6 +44,11 @@ TaskImpedanceController::TaskImpedanceController(std::string_view urdf_path, Gai
   config.root_joint_type = "fixed";
   rtc_urdf_bridge::PinocchioModelBuilder builder(config);
   InitFromModel(builder.GetFullModel());
+  // Configure the conditioner here as well as in LoadConfig: BesselFilterN
+  // returns 0 for EVERY sample before Init() (all coefficients are zero) and
+  // says nothing about it, so a controller constructed directly — as the unit
+  // tests do — would otherwise silently zero the whole wrench path.
+  conditioner_.Configure(compliance::WrenchConditioningConfig{}, 1.0 / GetDefaultDt());
 }
 
 void TaskImpedanceController::InitFromModel(std::shared_ptr<const pinocchio::Model> model) {
@@ -67,7 +73,17 @@ void TaskImpedanceController::InitFromModel(std::shared_ptr<const pinocchio::Mod
   qdot_dev_ = Eigen::VectorXd::Zero(nv);
   grav_dev_ = Eigen::VectorXd::Zero(nv);
   llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv);
+  lambda_d_ = Eigen::MatrixXd::Identity(m_, m_);
+  b_transp_ = Eigen::MatrixXd::Identity(m_, m_);
+  llt_lambda_d_ = Eigen::LLT<Eigen::MatrixXd>(m_);
   dyn_.Resize(nv, m_);
+
+  // Gravity comes from the model, never a hard-coded 9.81 down −Z: this package
+  // already tests a non-Z-gravity URDF, and the payload compensation term would
+  // silently point the wrong way there.
+  gravity_world_ = model_ptr_->gravity.linear();
+  // The model just changed, so any previously resolved frame index is stale.
+  ResolveSensorFrame();
 
   // Size the per-joint limit vectors to nv up front with inert defaults so the
   // safety layer has valid bounds even if OnDeviceConfigsSet is never called
@@ -77,6 +93,29 @@ void TaskImpedanceController::InitFromModel(std::shared_ptr<const pinocchio::Mod
   max_joint_velocity_.assign(nvz, kDefaultMaxJointVelocity);
   position_lower_.assign(nvz, -1e9);
   position_upper_.assign(nvz, 1e9);
+}
+
+pinocchio::FrameIndex TaskImpedanceController::LookupSensorFrame(const std::string& name) const {
+  // Empty name ⇒ the wrench is expressed in the TIP body frame. Note that this
+  // is NOT an identity transform into LWA: the Ad^{-T} still rotates by R_tip.
+  if (name.empty())
+    return tip_frame_id_;
+  const auto fid = handle_->GetFrameId(name);
+  if (fid == 0)  // 0 == universe == "not found" (RtModelHandle contract)
+    throw std::runtime_error("TaskImpedanceController: sensor_frame '" + name +
+                             "' is not a frame of the loaded model");
+  return fid;
+}
+
+void TaskImpedanceController::ResolveSensorFrame() {
+  sensor_frame_id_ = LookupSensorFrame(sensor_frame_name_);
+}
+
+void TaskImpedanceController::SetExternalWrench(
+    std::span<const double, compliance::kWrenchDim> wrench) noexcept {
+  if (!wrench_enabled_)
+    return;
+  wrench_input_.Set(wrench);
 }
 
 void TaskImpedanceController::MaybeSelectSubModel() {
@@ -141,6 +180,205 @@ void TaskImpedanceController::OnDeviceConfigsSet() {
   pad(max_joint_torque_, kDefaultMaxJointTorque);
   pad(position_lower_, -1e9);
   pad(position_upper_, 1e9);
+  // tip_frame_id_ may have just moved to the configured tip_link, and the
+  // default sensor frame IS the tip — re-resolve so the wrench transform does
+  // not keep pointing at the model's last frame.
+  ResolveSensorFrame();
+}
+
+// ── External wrench: read → condition → Ad^{-T} → fade (§3.2.1, §10.6) ───────
+
+Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
+    const pinocchio::SE3& tcp, double dt, const Gains& gains, Diagnostics& diag) noexcept {
+  Eigen::Matrix<double, 6, 1> f_lwa = Eigen::Matrix<double, 6, 1>::Zero();
+  diag.wrench_fade = 1.0;
+  if (!wrench_enabled_) {
+    bias_done_ = true;  // nothing to calibrate ⇒ never gate the FSM on it
+    bias_pending_ = false;
+    diag.bias_calibrated = true;
+    return f_lwa;
+  }
+
+  const auto sample = wrench_input_.Read(dt, gains.wrench_timeout, gains.wrench_fadeout_time);
+  diag.wrench_valid = sample.valid;
+  diag.wrench_age = sample.age;
+  diag.wrench_fade = sample.fade;
+  // Only a sample that ever arrived can be stale — "no producer yet" is the
+  // activation transient, not a timeout, and must not fault the first ticks.
+  diag.wrench_stale = sample.valid && sample.stale;
+  diag.bias_calibrated = !bias_pending_;
+  if (!sample.valid) {
+    // No producer has ever published. Release the FSM gate so the controller does
+    // not sit in BIAS_CALIBRATING forever, but KEEP bias_pending_: the §3.2.1
+    // calibration is still owed and runs as soon as data appears. Collapsing the
+    // two into one flag here is what used to skip the calibration outright
+    // whenever the F/T driver started publishing after activation — the normal
+    // cold-start ordering — leaving a zero bias in the law with no diagnostic.
+    bias_done_ = true;
+    return f_lwa;
+  }
+
+  // Static payload gravity, in the SENSOR frame (§3.2.1 minimal implementation).
+  const pinocchio::SE3& sensor = handle_->GetFramePlacement(sensor_frame_id_);
+  const compliance::Wrench6 grav = compliance::StaticGravityWrench(
+      sensor.rotation(), gravity_world_, conditioner_.config().payload_mass,
+      conditioner_.config().payload_com);
+
+  if (bias_pending_ && bias_done_) {
+    // Data arrived after the gate was released above: re-enter BIAS_CALIBRATING
+    // and do the owed work now. The state machine refuses this while a SAFE_STOP
+    // is latched, so it cannot launder a fault (E-8).
+    bias_done_ = false;
+    sm_.BeginBiasCalibration();
+  }
+
+  if (!bias_done_) {
+    // BIAS_CALIBRATING: feed the average, emit nothing. Returning zero here is
+    // what keeps an uncalibrated offset out of the control law.
+    //
+    // Only NEW samples are folded in: §3.2.1 asks for an N-SAMPLE average, and at
+    // 500–5000 Hz RT against a 100–1000 Hz F/T source a per-tick count would fold
+    // each reading in rate-ratio times over — averaging 20 distinct readings while
+    // reporting 100, with the arrival jitter leaking in as a weight.
+    if (sample.is_new && conditioner_.AccumulateBias(sample.value, grav)) {
+      bias_done_ = true;
+      bias_pending_ = false;
+      diag.bias_calibrated = true;
+      conditioner_.SeedFromSample(sample.value, grav);  // §3.3: seed at the signal, not at 0
+    } else if (sample.stale) {
+      // The producer died part-way through the average. Release the gate so
+      // wrench_timeout reaches the FSM as DEGRADED instead of being masked by
+      // BIAS_CALIBRATING, but keep the debt: the partial sum is retained and the
+      // average resumes where it stopped once fresh samples return. (Restarting
+      // it instead would let a flaky producer prevent the bias forever.)
+      bias_done_ = true;
+    }
+    return f_lwa;
+  }
+
+  const compliance::Wrench6 w_sensor = conditioner_.Apply(sample.value, grav);
+
+  // Sensor body frame → LOCAL_WORLD_ALIGNED at the tip. The LWA frame is
+  // (identity rotation, p_tip), so ᴬT_S = (R_sensor, p_sensor − p_tip) and the
+  // wrench rides Ad^{-T} — NOT Ad^T (compliance-conventions.md §2; the direction
+  // is pinned by rtc_math's power-duality test, never assumed).
+  rtc::math::se3::Iso3 t_lwa_sensor = rtc::math::se3::Iso3::Identity();
+  t_lwa_sensor.linear() = sensor.rotation();
+  t_lwa_sensor.translation() = sensor.translation() - tcp.translation();
+  rtc::math::se3::Vec6 w_vec;
+  for (int i = 0; i < 6; ++i)
+    w_vec(i) = w_sensor[static_cast<std::size_t>(i)];
+  f_lwa = rtc::math::se3::transformWrench(t_lwa_sensor, w_vec);
+
+  // §10.6 MUST: an expired wrench fades linearly to ZERO — never held. Applied
+  // AFTER conditioning so bias/gravity removal cannot re-inject a constant on
+  // the way down (fading the raw sample would leave −f_grav behind).
+  f_lwa *= sample.fade;
+
+  for (int i = 0; i < 6; ++i)
+    diag.wrench_lwa[static_cast<std::size_t>(i)] = f_lwa(i);
+  if (gains.contact_threshold > 0.0) {
+    // Release ratio clamped strictly below 1 (the same bound LoadConfig applies,
+    // repeated here because set_gains bypasses LoadConfig) so the ⇄ transition
+    // always keeps a hysteresis band: equal enter/exit thresholds chatter at the
+    // boundary, which §10.6 forbids.
+    diag.in_contact = contact_.Update(
+        f_lwa.head<3>().norm(), gains.contact_threshold,
+        std::clamp(gains.contact_release_ratio, 0.0, 0.99) * gains.contact_threshold);
+  } else {
+    // A non-positive threshold makes enter == exit == 0, which is exactly the
+    // bare comparator the ratio clamp above exists to prevent — and it latches
+    // contact on any nonzero noise, since every real reading exceeds 0 N. The
+    // ratio cannot rescue it (it SCALES the threshold), so treat a zero threshold
+    // as "contact detection off" rather than as a hysteresis with no band.
+    contact_.Reset();
+    diag.in_contact = false;
+  }
+  return f_lwa;
+}
+
+// ── §6.3 inertia shaping ─────────────────────────────────────────────────────
+
+void TaskImpedanceController::ApplyInertiaShaping(const Gains& gains,
+                                                  const Eigen::Matrix<double, 6, 1>& f_task,
+                                                  const Eigen::Matrix<double, 6, 1>& f_ext,
+                                                  Eigen::Matrix<double, 6, 1>& f_cmd,
+                                                  Diagnostics& diag) noexcept {
+  const Eigen::MatrixXd& lambda_s = dyn_.LambdaS();
+
+  // Λ_d. "natural" means Λ_d := Λ_S, which drives B to the identity through the
+  // real solve rather than by short-circuiting it — that is what makes T4.1 a
+  // test of this code path and not of an `if`.
+  if (gains.desired_inertia_natural) {
+    lambda_d_ = lambda_s;
+  } else {
+    lambda_d_.setZero();
+    for (int i = 0; i < m_; ++i)
+      lambda_d_(i, i) = gains.desired_inertia[static_cast<std::size_t>(i)];  // >0 (LoadConfig)
+  }
+
+  llt_lambda_d_.compute(lambda_d_);
+  if (llt_lambda_d_.info() != Eigen::Success) {
+    // Λ_d not factorable — Λ_S can lose definiteness at a singular pose even
+    // with the DLS. Degrade to B = I (i.e. the §6.2 law, which needs no Λ at
+    // all) instead of emitting a garbage shaping matrix; f_cmd already holds
+    // f_task. The σ_min faults below still fire on the underlying condition.
+    // Reported on its OWN flag: a numerical breakdown and the max_inertia_ratio
+    // clamp call for different operator responses.
+    diag.inertia_solve_failed = true;
+    return;
+  }
+
+  // Bᵀ = Λ_d⁻¹ Λ_S. Both operands are symmetric, so B = Λ_S Λ_d⁻¹ = (Bᵀ)ᵀ and
+  // B(i,j) reads as b_transp_(j,i) — no explicit transpose, no temporary.
+  b_transp_ = lambda_s;
+  llt_lambda_d_.solveInPlace(b_transp_);
+
+  // §5.2 MUST — bound ‖Λ_S Λ_d⁻¹‖. Enforced on the DEVIATION from identity:
+  // with s = (r_max − 1)/‖B − I‖∞ the clamped B_c = I + s(B − I) satisfies
+  // ‖B_c‖∞ ≤ ‖I‖∞ + s‖B − I‖∞ = r_max exactly. Clamping the deviation rather
+  // than scaling B keeps the map continuous AND leaves B = I untouched, so a
+  // neutral Λ_d = Λ_S can never be perturbed by the safety clamp (T4.1).
+  double dev_inf = 0.0;
+  for (int i = 0; i < m_; ++i) {
+    double row = 0.0;
+    for (int j = 0; j < m_; ++j)
+      row += std::abs(b_transp_(j, i) - (i == j ? 1.0 : 0.0));
+    dev_inf = std::max(dev_inf, row);
+  }
+  const double ratio_max = std::max(1.0, gains.max_inertia_ratio);
+  double s = 1.0;
+  if (dev_inf > ratio_max - 1.0) {
+    s = (ratio_max - 1.0) / dev_inf;  // dev_inf > ratio_max−1 ≥ 0 ⇒ dev_inf > 0
+    diag.inertia_clamped = true;
+  }
+
+  // f_cmd = B·f_task + (B − I)·f_ext, component-wise over the m_ task rows.
+  //
+  // SIGN BRIDGE — the design spec writes this term as (B − I)(−S·f_ext) because
+  // its f_ext is the wrench the ROBOT applies on the ENVIRONMENT. This package's
+  // input contract is the opposite convention (external_wrench.hpp: positive =
+  // the wrench the environment applies ON the robot, which is what an F/T sensor
+  // reads and what the whole conditioning chain is built on), so substituting our
+  // f_ext into the spec's expression flips it once. The physics fixes the answer
+  // without appealing to either convention: at Λ_d → ∞ (B → 0) the arm must be
+  // immovable under an external push, which needs f_cmd → −f_ext so that
+  // f_cmd + f_ext = 0 in Λν̇ = f_cmd + f_ext. Only the form below has that limit;
+  // the negated one yields +f_ext, i.e. twice the unshaped compliance exactly
+  // where the operator asked for none. Pinned by
+  // HeavyDesiredInertiaCancelsTheExternalWrench.
+  //
+  // Explicit loops (m_ ≤ 6) rather than an Eigen expression: fixed-size,
+  // provably heap-free, and no `auto`-aliasing trap (RT-1 / RT-5).
+  for (int i = 0; i < m_; ++i) {
+    double acc = 0.0;
+    for (int j = 0; j < m_; ++j) {
+      const double eye = (i == j) ? 1.0 : 0.0;
+      const double b_ij = eye + s * (b_transp_(j, i) - eye);
+      acc += b_ij * f_task(j) + (b_ij - eye) * f_ext(j);
+    }
+    f_cmd(i) = acc;
+  }
 }
 
 // ── RTControllerInterface ────────────────────────────────────────────────────
@@ -214,6 +452,23 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
       q_null_(i) = q_dev_(i);   // posture target = measured (device order)
     activation_elapsed_ = 0.0;  // restart the gain ramp
     saturation_elapsed_ = 0.0;
+    // The wrench path restarts with everything else: an activation must not
+    // inherit an age accrued while the controller was not running, nor a bias /
+    // filter history from a previous grasp. With a source configured this enters
+    // BIAS_CALIBRATING (§3.2.1 "on_activate 시 자동 1회"); the state machine
+    // refuses the transition while a SAFE_STOP is latched, so re-seeding cannot
+    // launder a fault (E-8).
+    wrench_input_.ResetTiming();
+    contact_.Reset();
+    if (wrench_enabled_) {
+      conditioner_.Reset();
+      bias_done_ = false;
+      // Owed only when there is work: bias_calibration_samples == 0 means the
+      // operator declined the average, so the zero bias IS the calibration and
+      // the first sample must not be spent re-entering BIAS_CALIBRATING for it.
+      bias_pending_ = conditioner_.config().bias_samples > 0;
+      sm_.BeginBiasCalibration();
+    }
     just_seeded = true;  // seed the rate-limit history to this tick's own
                          // command below, so activation is not slew-limited
     for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
@@ -292,21 +547,30 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   handle_->ComputeGeneralizedGravity(q_span);
   gravity_ = handle_->GetGeneralizedGravity();
 
-  // ── Task torque τ = Jᵀ Sᵀ f_task  (Λ NOT used ⇒ singularity-free) ────────
-  tau_.noalias() = J_S_.transpose() * f_task.head(m_);
+  // ── External wrench f_ext in LWA (zero when no source — §6.2 path intact) ─
+  // Ramped by α like the rest of the task torque so activation stays continuous
+  // (gravity comp is the only never-ramped term — the arm must not sag).
+  const Eigen::Matrix<double, 6, 1> f_ext = alpha * UpdateExternalWrench(tcp, dt, gains, diag);
 
-  // ── Nullspace posture task (only when redundant: nv > m) ─────────────────
-  // M(q) and its Cholesky feed ONLY the dynamically-consistent nullspace
-  // projector — the Jacobian-transpose task law never touches M. Compute and
-  // fault-check them ONLY when the nullspace task is live; otherwise a benign
-  // M-factorization hiccup would spuriously latch SAFE_STOP on a robot that
-  // never uses M at all (e.g. UR5e, nv == m ⇒ nullspace always inactive).
+  // ── Task dynamics Λ_S / Nᵀ ───────────────────────────────────────────────
+  // M(q) and its Cholesky were previously gated on the nullspace task alone
+  // (PR #241 F2): the Jacobian-transpose law never touches M, so a benign
+  // M-factorization hiccup must not latch SAFE_STOP on a non-redundant arm that
+  // never uses M at all (nv == m ⇒ nullspace always inactive). §6.3 needs Λ_S
+  // regardless of redundancy, so the gate is WIDENED here — not reverted: when
+  // neither the nullspace nor inertia shaping is live, F2's narrowing still
+  // holds exactly.
   bool dyn_ok = true;
   double sigma_min = std::numeric_limits<double>::infinity();
   double lambda_sq = 0.0;
   const bool nullspace_active =
       (nv > m_) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
-  if (nullspace_active) {
+  const bool inertia_shaping = (formulation_ == Formulation::kInertiaShaping);
+  const bool need_task_dynamics = nullspace_active || inertia_shaping;
+  // f_cmd is the bracketed task force of §6.2 / §6.3; only head(m_) is used and
+  // it is fixed-size (stack) so Compute stays heap-free.
+  Eigen::Matrix<double, 6, 1> f_cmd = f_task;
+  if (need_task_dynamics) {
     handle_->ComputeMassMatrix(q_span);
     M_ = handle_->GetMassMatrix();
     M_.triangularView<Eigen::StrictlyLower>() =
@@ -315,11 +579,14 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     if (llt_M_.info() != Eigen::Success) {
       dyn_ok = false;
     } else {
-      const auto r = dyn_.Compute(J_S_, llt_M_, gains.singularity_threshold, gains.max_damping);
+      const compliance::TaskDynamics::Result r =
+          dyn_.Compute(J_S_, llt_M_, gains.singularity_threshold, gains.max_damping);
       dyn_ok = r.ok;
       sigma_min = r.sigma_min;
       lambda_sq = r.lambda_sq;
-      if (dyn_ok) {
+      if (dyn_ok && inertia_shaping)
+        ApplyInertiaShaping(gains, f_task, f_ext, f_cmd, diag);
+      if (dyn_ok && nullspace_active) {
         for (int i = 0; i < nv; ++i)
           tau_posture_dev_(i) =
               gains.nullspace_kp * (q_null_(i) - q_dev_(i)) - gains.nullspace_kd * qdot_dev_(i);
@@ -329,10 +596,18 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
             std::span<const double>(tau_posture_dev_.data(), static_cast<std::size_t>(nv)),
             tau_posture_);
         dyn_.ProjectNullspace(tau_posture_, tau_null_);
-        tau_.noalias() += alpha * tau_null_;
       }
     }
   }
+
+  // ── Task torque τ = Jᵀ Sᵀ f_cmd ──────────────────────────────────────────
+  // Under kJacobianTranspose f_cmd == f_task and Λ is never formed, so the law
+  // stays free of task-space singularities (§6.5). Under kInertiaShaping f_cmd
+  // carries the Λ_S Λ_d⁻¹ factor and that immunity is gone — which is exactly why
+  // the σ_min faults below are re-armed for it.
+  tau_.noalias() = J_S_.transpose() * f_cmd.head(m_);
+  if (dyn_ok && nullspace_active)
+    tau_.noalias() += alpha * tau_null_;
 
   // Gravity compensation is NEVER ramped (the arm must not sag on activation).
   if (dyn_ok) {
@@ -366,11 +641,20 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   // while translation tracking is perfect. e.head(m_) == the full 6D norm for
   // FULL_SE3 (m_=6), so this is a no-op there.
   faults.pose_error_exceeded = e.head(m_).norm() > gains.pose_error_limit;
-  faults.sigma_below_critical = nullspace_active && (sigma_min < gains.singularity_critical);
+  // The σ_min faults follow the SAME widened gate as Λ_S itself: §6.5's
+  // singularity exposure is a property of USING Λ_S, and §6.3 uses it whether or
+  // not the robot is redundant. Under kJacobianTranspose the F2 narrowing is
+  // untouched — Λ is never formed there, so there is nothing to blow up.
+  faults.sigma_below_critical = need_task_dynamics && (sigma_min < gains.singularity_critical);
   faults.saturation_persist = saturation_elapsed_ > gains.saturation_persist_time;
-  faults.sigma_below_threshold = nullspace_active && (sigma_min < gains.singularity_threshold);
+  faults.sigma_below_threshold = need_task_dynamics && (sigma_min < gains.singularity_threshold);
+  // Wrench loss degrades, never latches (§10.6: the middle state between normal
+  // and fatal). The fade above has already ramped f_ext to zero, so DEGRADED
+  // here means "running the A=NONE law with reduced trust", not "stopped".
+  faults.wrench_timeout = diag.wrench_stale;
   const bool ramp_done = (alpha >= 1.0);
-  const auto cstate = sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime);
+  const auto cstate =
+      sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_done_, diag.in_contact);
 
   diag.state = static_cast<std::uint8_t>(cstate);
   diag.sigma_min = sigma_min;
@@ -550,6 +834,89 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
     throw std::runtime_error(
         "TaskImpedanceController: TRANSLATION_ONLY requires nullspace_stiffness > 0 (§6.1)");
 
+  // ── Axis A: formulation (§6.2 vs §6.3) ─────────────────────────────────────
+  Formulation formulation = Formulation::kJacobianTranspose;
+  if (cfg["formulation"]) {
+    const auto s = cfg["formulation"].as<std::string>();
+    if (s == "jacobian_transpose")
+      formulation = Formulation::kJacobianTranspose;
+    else if (s == "inertia_shaping")
+      formulation = Formulation::kInertiaShaping;
+    else
+      throw std::runtime_error(
+          "TaskImpedanceController: formulation must be 'jacobian_transpose' or 'inertia_shaping' "
+          "(got '" +
+          s + "')");
+  }
+
+  // §5.2 MUST — inertia shaping stays OFF unless asked for, and Λ_d defaults to
+  // Λ_S (neutral) unless a desired inertia is actually supplied.
+  if (const YAML::Node& di = cfg["desired_inertia"]; di && di.IsSequence()) {
+    if (di.size() != 6)
+      throw std::runtime_error("TaskImpedanceController: desired_inertia must have 6 entries");
+    for (std::size_t i = 0; i < 6; ++i) {
+      const double v = di[i].as<double>();
+      // NUM-2: Λ_d⁻¹ is formed every tick — a zero or negative desired inertia
+      // is not a soft-clamped tuning mistake, it is a non-SPD Λ_d.
+      if (!(v > 0.0))
+        throw std::runtime_error(
+            "TaskImpedanceController: desired_inertia entries must be > 0 (Λ_d must be SPD)");
+      g.desired_inertia[i] = v;
+    }
+    g.desired_inertia_natural = false;
+  }
+  if (cfg["max_inertia_ratio"])
+    g.max_inertia_ratio = std::max(1.0, cfg["max_inertia_ratio"].as<double>());
+
+  // ── External wrench source (§3.2.1). Disabled ⇒ A=NONE, slice-1 behaviour ──
+  bool wrench_enabled = false;
+  std::string sensor_frame;
+  compliance::WrenchConditioningConfig wc;
+  if (const YAML::Node& ew = cfg["external_wrench"]; ew && ew.IsMap()) {
+    if (ew["enabled"])
+      wrench_enabled = ew["enabled"].as<bool>();
+    if (ew["sensor_frame"])
+      sensor_frame = ew["sensor_frame"].as<std::string>();
+    auto load6 = [](const YAML::Node& n, compliance::Wrench6& arr, const char* what) {
+      if (!n)
+        return;
+      if (!n.IsSequence() || n.size() != 6)
+        throw std::runtime_error(std::string("TaskImpedanceController: ") + what +
+                                 " must be a 6-entry sequence [fx,fy,fz,tx,ty,tz]");
+      for (std::size_t i = 0; i < 6; ++i)
+        arr[i] = n[i].as<double>();
+    };
+    load6(ew["deadband"], wc.deadband, "external_wrench.deadband");
+    load6(ew["max"], wc.max_abs, "external_wrench.max");
+    if (ew["payload_mass"])
+      wc.payload_mass = ew["payload_mass"].as<double>();
+    if (const YAML::Node& com = ew["payload_com"]; com && com.IsSequence()) {
+      if (com.size() != 3)
+        throw std::runtime_error(
+            "TaskImpedanceController: external_wrench.payload_com must have 3 entries");
+      for (std::size_t i = 0; i < 3; ++i)
+        wc.payload_com(static_cast<Eigen::Index>(i)) = com[i].as<double>();
+    }
+    if (ew["filter_enabled"])
+      wc.filter_enabled = ew["filter_enabled"].as<bool>();
+    if (ew["filter_cutoff_force"])
+      wc.filter_cutoff_force_hz = ew["filter_cutoff_force"].as<double>();
+    if (ew["filter_cutoff_torque"])
+      wc.filter_cutoff_torque_hz = ew["filter_cutoff_torque"].as<double>();
+    if (ew["bias_calibration_samples"])
+      wc.bias_samples = ew["bias_calibration_samples"].as<int>();
+    if (ew["timeout"])
+      g.wrench_timeout = std::max(0.0, ew["timeout"].as<double>());
+    if (ew["fadeout_time"])
+      g.wrench_fadeout_time = std::max(0.0, ew["fadeout_time"].as<double>());
+    if (ew["contact_threshold"])
+      g.contact_threshold = std::max(0.0, ew["contact_threshold"].as<double>());
+    if (ew["contact_release_ratio"])
+      // Clamped strictly below 1 so the ⇄ transition always has hysteresis
+      // (§10.6 MUST): equal thresholds chatter at the boundary.
+      g.contact_release_ratio = std::clamp(ew["contact_release_ratio"].as<double>(), 0.0, 0.99);
+  }
+
   // Torque-only (MuJoCo backend scope). Reject other command types fail-fast,
   // BEFORE committing gains, so a rejected reconfigure never mutates live gains.
   if (cfg["command_type"]) {
@@ -558,6 +925,20 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
       throw std::runtime_error("TaskImpedanceController: command_type must be 'torque' (got '" + s +
                                "')");
   }
+
+  // Last two things that can fail. Resolve the frame into a LOCAL first: a bad
+  // sensor_frame must not leave the controller half-reconfigured. (The model may
+  // have been swapped for a reduced one by MaybeSelectSubModel at the top of
+  // this function, so the lookup has to run against the model actually in use.)
+  const pinocchio::FrameIndex sensor_id = LookupSensorFrame(sensor_frame);
+  conditioner_.Configure(wc, 1.0 / GetDefaultDt());  // validates, then commits
+
+  // Commit. Nothing below throws, so a rejected reconfigure leaves the live
+  // gains and the live wrench path exactly as they were.
+  sensor_frame_name_ = sensor_frame;
+  sensor_frame_id_ = sensor_id;
+  wrench_enabled_ = wrench_enabled;
+  formulation_ = formulation;
   gains_lock_.Store(g);
   command_type_ = CommandType::kTorque;
 }

@@ -59,6 +59,13 @@ class PipelineTestController : public RTControllerInterface {
   static inline std::vector<int64_t> captured_ids{};
   static inline std::vector<bool> captured_flags{};
 
+  // GetDefaultDt() as observed INSIDE LoadConfig, i.e. at PreConfigure time.
+  // Controllers validate rate-dependent YAML there (filter cutoffs against
+  // Nyquist), so a bring-up that hands the control rate over only after
+  // PreConfigure makes those checks run against the fallback dt and reject
+  // configs that are legal at the configured rate. -1 = LoadConfig never ran.
+  static inline double captured_dt_at_load_config{-1.0};
+
   static inline std::atomic<int> compute_sleep_us{0};
 
   // Channel count Compute() reports. Tests set an out-of-contract value
@@ -107,6 +114,7 @@ class PipelineTestController : public RTControllerInterface {
     captured_enabled = false;
     captured_count = -1;
     captured_deep_b = -1.0;
+    captured_dt_at_load_config = -1.0;
     captured_vals.clear();
     captured_tags.clear();
     captured_ids.clear();
@@ -121,6 +129,13 @@ class PipelineTestController : public RTControllerInterface {
 
   void LoadConfig(const YAML::Node& cfg) override {
     RTControllerInterface::LoadConfig(cfg);  // topics: → topic_config_
+    // FIRST LoadConfig only — that is the PreConfigure one, and the only call
+    // whose rate visibility is in question. The Pass-3 on_configure LoadConfig
+    // always runs after SetControlRate, so recording every call would overwrite
+    // the observation with a value that cannot distinguish the two orderings.
+    if (captured_dt_at_load_config < 0.0) {
+      captured_dt_at_load_config = GetDefaultDt();
+    }
     if (!cfg) {
       return;
     }

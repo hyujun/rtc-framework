@@ -3,9 +3,11 @@
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/compliance/compliance_state_machine.hpp"
+#include "rtc_controllers/compliance/external_wrench.hpp"
 #include "rtc_controllers/compliance/safety_limiter.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
+#include "rtc_controllers/compliance/wrench_conditioning.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
@@ -34,9 +36,10 @@
 namespace rtc {
 
 /// Task-space impedance controller — Cartesian compliance via the
-/// Jacobian-transpose stiffness law (spec §6.2, A=NONE, no external wrench).
+/// Jacobian-transpose stiffness law (spec §6.2), optionally inertia-shaped with
+/// a measured external wrench (§6.3).
 ///
-/// ### Control law (`kJacobianTranspose`, A=NONE)
+/// ### Control law (`kJacobianTranspose`, A=NONE — the default)
 /// @code
 ///   e  = computePoseError(X, X_d, SplitWorld)     [6D, LOCAL_WORLD_ALIGNED]
 ///   ė  = ν_d − ν = −J·q̇                            [ν_d = 0 for a static setpoint]
@@ -52,6 +55,34 @@ namespace rtc {
 /// command type is fixed to `kTorque` and the scope is the **MuJoCo backend**
 /// (no torque-capable real backend is bound — see docs/compliance-conventions).
 ///
+/// ### Control law (`kInertiaShaping`, A≠NONE — spec §6.3)
+/// @code
+///   B  = Λ_S Λ_d⁻¹                                 [m×m, clamped by max_inertia_ratio]
+///   τ  = Jᵀ Sᵀ[B(K_p·S·e + K_d·S·ė) + (B − I)·S·f_ext] + τ_null + ĝ(q)
+/// @endcode
+/// which enforces the closed loop `Λ_d ë + K_d ė + K_p e = −f_ext`, the same
+/// relation §6.2 gives with `Λ_d = Λ_S` — as it must, since `B = I` collapses the
+/// two laws. The wrench term carries `+(B − I)` and not the spec's `(B − I)(−·)`
+/// because `f_ext` here is the ENVIRONMENT-ON-ROBOT wrench of this package's input
+/// contract, the opposite sign to the one that expression is written in; the
+/// bridge is derived at the substitution site in ApplyInertiaShaping(). With
+/// `Λ_d = Λ_S` (the `desired_inertia: natural` configuration) `B = I` and the
+/// second term vanishes, so the law collapses **exactly** onto §6.2 — that
+/// identity is the A=NONE ↔ A≠NONE boundary check (§11.4 T4.1) and is asserted
+/// to 1e-9 by the test suite.
+///
+/// Inertia shaping is **off by default** (§5.2 MUST): `Λ_d ≠ Λ_S` amplifies both
+/// wrench-measurement noise and model error, the more so the lighter `Λ_d` gets.
+///
+/// ### External wrench (§3.2.1)
+/// The controller owns **no node, no subscription and no message type** — it is a
+/// pure control algorithm. `SetExternalWrench()` is a non-RT setter (the
+/// `SetDeviceTarget` idiom) taking the RAW wrench in the configured
+/// `sensor_frame`; conditioning (bias → static gravity → deadband → saturation →
+/// filter) and the `Ad^{-T}` transform to LOCAL_WORLD_ALIGNED are done here,
+/// because both need the robot model the caller would otherwise have to carry.
+/// Sign convention: **positive = the wrench the environment applies ON the robot**.
+///
 /// `TRANSLATION_ONLY` regulates position only; orientation is left to the
 /// nullspace posture task, so `nullspace_stiffness == 0` with `TRANSLATION_ONLY`
 /// is a **configure error** (§6.1 — rotation would drift uncontrolled).
@@ -59,6 +90,15 @@ class TaskImpedanceController final : public RTControllerInterface {
  public:
   /// Task selection (axis B): which Cartesian DoF the impedance law regulates.
   enum class TaskSelection : std::uint8_t { kFullSe3, kTranslationOnly };
+
+  /// Control-law family (axis A). Explicit rather than inferred from "is a
+  /// wrench configured?": the two laws have different failure modes and
+  /// different singularity exposure, so which one runs must be a declared
+  /// choice, not a side effect of wiring a sensor.
+  enum class Formulation : std::uint8_t {
+    kJacobianTranspose,  ///< §6.2 — Λ-free, task-singularity-free (default)
+    kInertiaShaping,     ///< §6.3 — Λ_S Λ_d⁻¹ shaping; needs Λ_S ⇒ §6.5 applies
+  };
 
   // ── Gain / feature configuration (trivially copyable POD for SeqLock) ──────
   struct Gains {
@@ -92,6 +132,21 @@ class TaskImpedanceController final : public RTControllerInterface {
     double activation_ramp_time{0.5};     ///< [s] gain 0→1 linear ramp (§10.7); ≤0 = no ramp
     double estop_damping{5.0};            ///< D for the torque E-STOP hold ĝ(q) − D·q̇ (E-8)
     double saturation_persist_time{0.1};  ///< [s] saturation held longer → DEGRADED
+
+    // ── §6.3 inertia shaping (only read when formulation == kInertiaShaping) ─
+    /// Λ_d diagonal [kg | kg·m²], task-axis order [x,y,z, rx,ry,rz]. Ignored when
+    /// `desired_inertia_natural` is set, where Λ_d := Λ_S ⇒ B = I exactly.
+    std::array<double, 6> desired_inertia{{1.0, 1.0, 1.0, 0.1, 0.1, 0.1}};
+    bool desired_inertia_natural{true};  ///< Λ_d := Λ_S (neutral shaping, §11.4 T4.1)
+    /// §5.2 MUST: bound on ‖Λ_S Λ_d⁻¹‖. Enforced as ‖B − I‖∞ ≤ ratio − 1, which
+    /// blends B toward I continuously and is exactly inert at B = I.
+    double max_inertia_ratio{3.0};
+
+    // ── External wrench staleness / contact (§10.6) ──────────────────────────
+    double wrench_timeout{0.05};        ///< [s] older than this → fade + DEGRADED
+    double wrench_fadeout_time{0.1};    ///< [s] linear ramp to ZERO (never hold the last value)
+    double contact_threshold{5.0};      ///< [N] ‖f_LWA‖ above this → RUNNING_CONTACT
+    double contact_release_ratio{0.6};  ///< release at ratio·threshold (hysteresis, §10.6 MUST)
   };
 
   /// @param urdf_path  Absolute path to the robot URDF.
@@ -105,6 +160,21 @@ class TaskImpedanceController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput Compute(const ControllerState& state) noexcept override;
   void SetDeviceTarget(int device_idx, std::span<const double> target) noexcept override;
   [[nodiscard]] std::string_view Name() const noexcept override;
+
+  /// Publish a measured external wrench (§3.2.1). NON-RT entry point, same
+  /// contract as SetDeviceTarget: call it off the RT thread, from a SINGLE
+  /// producer (the SeqLock underneath is single-writer). noexcept, wait-free.
+  ///
+  /// @param wrench  RAW `[f;τ]` in the configured `sensor_frame`'s BODY frame,
+  ///                SI units (N, N·m), sign = wrench applied BY the environment
+  ///                ON the robot. No bias removal, gravity compensation, frame
+  ///                transform or filtering by the caller — all of it happens
+  ///                here, since all of it needs the robot model.
+  ///
+  /// Dropped silently when no wrench source is configured
+  /// (`external_wrench.enabled: false`, the default), so a stray producer cannot
+  /// perturb a controller that is running the A=NONE law.
+  void SetExternalWrench(std::span<const double, compliance::kWrenchDim> wrench) noexcept;
 
   void TriggerEstop() noexcept override;
   void ClearEstop() noexcept override;
@@ -130,6 +200,10 @@ class TaskImpedanceController final : public RTControllerInterface {
 
   [[nodiscard]] int task_dim() const noexcept { return m_; }
 
+  [[nodiscard]] Formulation formulation() const noexcept { return formulation_; }
+
+  [[nodiscard]] bool external_wrench_enabled() const noexcept { return wrench_enabled_; }
+
   // Diagnostic snapshot published every tick (incl. E-STOP / early return) with
   // per-field validity, so a stale body never rides out under a fresh stamp.
   struct Diagnostics {
@@ -137,9 +211,30 @@ class TaskImpedanceController final : public RTControllerInterface {
     double sigma_min{0.0};
     double lambda_sq{0.0};
     std::array<double, 6> pose_error{};
+    /// Conditioned external wrench in LOCAL_WORLD_ALIGNED at the tip, after the
+    /// staleness fade but BEFORE the activation ramp α — i.e. the physical
+    /// estimate of the environment load, not the ramped control-law input.
+    std::array<double, 6> wrench_lwa{};
+    double wrench_age{0.0};   ///< s since the last NEW sample (§10.6, D9)
+    double wrench_fade{1.0};  ///< 1 fresh → 0 fully faded out
     bool saturated{false};
     bool rate_limited{false};
     bool nullspace_active{false};
+    bool wrench_valid{false};  ///< a sample has arrived and a source is configured
+    bool wrench_stale{false};  ///< age > wrench_timeout (→ DEGRADED, never SAFE_STOP)
+    /// The bias in use is a committed §3.2.1 calibration — or none is needed
+    /// (no wrench source). FALSE means the wrench is running on a zero bias, or
+    /// is being suppressed while the average accumulates; without this field a
+    /// calibration that never happened is indistinguishable from one that did.
+    bool bias_calibrated{true};
+    bool in_contact{false};       ///< contact hysteresis latch (RUNNING_CONTACT)
+    bool inertia_clamped{false};  ///< §5.2 max_inertia_ratio clamp engaged this tick
+    /// Λ_d could not be factored, so this tick silently ran §6.2 (B = I) instead
+    /// of §6.3. Kept SEPARATE from inertia_clamped: one is a tuning bound doing
+    /// its job, the other is a numerical breakdown, and an operator that cannot
+    /// tell them apart has no way to act on either. (Sharing one flag also let a
+    /// clamp test pass on a factorisation failure.)
+    bool inertia_solve_failed{false};
     bool estopped{false};
     bool control_valid{false};  ///< false on E-STOP / degenerate-dynamics ticks
   };
@@ -147,6 +242,12 @@ class TaskImpedanceController final : public RTControllerInterface {
   static_assert(std::is_trivially_copyable_v<Diagnostics>, "Diagnostics must be SeqLock-safe");
 
   [[nodiscard]] Diagnostics GetDiagnosticsForTesting() const noexcept { return diag_lock_.Load(); }
+
+  // Bias estimate committed by BIAS_CALIBRATING. Test-only: the RT thread owns
+  // the conditioner, so this is safe to read only between Compute() calls.
+  [[nodiscard]] const compliance::Wrench6& GetWrenchBiasForTesting() const noexcept {
+    return conditioner_.bias();
+  }
 
   // Force the next Compute() to re-seed the desired pose / posture from the
   // measured state — the effect on_activate has in the CM (which also bumps the
@@ -163,6 +264,31 @@ class TaskImpedanceController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state, bool control_valid,
                                               const Diagnostics& diag, const Gains& gains) noexcept;
 
+  // Frame name → index against the CURRENT model; empty name ⇒ the tip frame.
+  // Off-RT. Throws when a configured frame name is absent (fail-fast at
+  // configure) — LoadConfig calls it into a local so a bad name cannot leave the
+  // controller half-reconfigured.
+  [[nodiscard]] pinocchio::FrameIndex LookupSensorFrame(const std::string& name) const;
+
+  // Re-resolve sensor_frame_id_ in place. Called after every InitFromModel and
+  // from OnDeviceConfigsSet, since both can move the frame the index refers to.
+  void ResolveSensorFrame();
+
+  // RT: read → condition → Ad^{-T} to LWA → fade. Writes the wrench diagnostics
+  // fields and returns the wrench that enters the control law (zero when no
+  // source is configured, so the §6.2 path is untouched).
+  Eigen::Matrix<double, 6, 1> UpdateExternalWrench(const pinocchio::SE3& tcp, double dt,
+                                                   const Gains& gains, Diagnostics& diag) noexcept;
+
+  // RT: overwrite f_cmd.head(m_) with the §6.3 bracket
+  //   B(K_p·S·e + K_d·S·ė) + (B − I)·S·f_ext,   B = Λ_S Λ_d⁻¹,
+  // with f_ext in this package's environment-on-robot sign (see the sign bridge
+  // derived at the implementation).
+  // Requires a successful dyn_.Compute() this tick (Λ_S must be valid).
+  void ApplyInertiaShaping(const Gains& gains, const Eigen::Matrix<double, 6, 1>& f_task,
+                           const Eigen::Matrix<double, 6, 1>& f_ext,
+                           Eigen::Matrix<double, 6, 1>& f_cmd, Diagnostics& diag) noexcept;
+
   // ── Model ──────────────────────────────────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
@@ -171,8 +297,30 @@ class TaskImpedanceController final : public RTControllerInterface {
   const TaskSelection selection_;
   int m_{6};  ///< task dimension (6 = FULL_SE3, 3 = TRANSLATION_ONLY)
 
+  // Axis A / wrench wiring. Written off-RT (LoadConfig, before activation) and
+  // read on the RT tick — the same lifetime contract command_type_ already has,
+  // so no atomic is needed: the CM configures, then activates.
+  Formulation formulation_{Formulation::kJacobianTranspose};
+  bool wrench_enabled_{false};
+  std::string sensor_frame_name_;  ///< empty ⇒ the tip frame
+  pinocchio::FrameIndex sensor_frame_id_{0};
+  Eigen::Vector3d gravity_world_{Eigen::Vector3d::Zero()};  ///< from the model, not 9.81
+
   compliance::TaskDynamics dyn_;
   compliance::ComplianceStateMachine sm_;
+  compliance::WrenchInput wrench_input_;
+  compliance::WrenchConditioner conditioner_;
+  compliance::ContactHysteresis contact_;
+  // RT-only. `bias_done_` is the FSM GATE ("stop holding BIAS_CALIBRATING"),
+  // `bias_pending_` is the WORK ("a calibration is still owed for this
+  // activation"). They differ exactly in the cases the gate must be released
+  // without the work being finished: no producer has published yet, or the
+  // samples went stale mid-average. Keeping them separate is what stops a
+  // cold-start ordering (controller activates before the F/T driver publishes)
+  // from silently skipping §3.2.1's mandated calibration for the whole
+  // activation — with one flag, releasing the gate discarded the work.
+  bool bias_done_{true};
+  bool bias_pending_{false};
 
   // ── Pre-allocated Eigen work buffers (sized in InitFromModel; RT alloc-free) ─
   Eigen::MatrixXd J_full_;           ///< 6×nv full spatial Jacobian (LOCAL_WORLD_ALIGNED)
@@ -186,6 +334,11 @@ class TaskImpedanceController final : public RTControllerInterface {
   Eigen::VectorXd tcp_vel_;          ///< 6 current task twist J·q̇ (LWA)
   Eigen::VectorXd q_null_;           ///< nv posture setpoint (Pinocchio order), seeded on activate
   Eigen::LLT<Eigen::MatrixXd> llt_M_;
+
+  // §6.3 inertia shaping (all m×m, sized in InitFromModel ⇒ RT alloc-free).
+  Eigen::MatrixXd lambda_d_;  ///< Λ_d — diag(desired_inertia) or Λ_S ("natural")
+  Eigen::MatrixXd b_transp_;  ///< Bᵀ = Λ_d⁻¹Λ_S (both SPD ⇒ B = Λ_SΛ_d⁻¹ = Bᵀᵀ)
+  Eigen::LLT<Eigen::MatrixXd> llt_lambda_d_;
 
   // Device-order safety buffers.
   Eigen::VectorXd tau_dev_;       ///< nv command in device order
