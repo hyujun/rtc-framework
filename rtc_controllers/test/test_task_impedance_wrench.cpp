@@ -1,0 +1,647 @@
+// ── TaskImpedanceController × external wrench (spec §3.2.1, §6.3, §10.6) ─────
+// Slice-2 surface: the SetExternalWrench input contract, the conditioning chain
+// as the controller drives it (frame transform, bias calibration, staleness
+// fade), the §6.3 inertia-shaping law including the T4.1 continuity boundary,
+// and the zero-allocation gate with the wrench path live.
+//
+// The model-free halves of these mechanisms (staleness arithmetic, the four
+// conditioning stages, the state-machine lattice) are pinned in
+// test_compliance_core.cpp; what needs a robot here is everything that touches
+// the Jacobian, Λ_S or a frame placement.
+//
+// Zero-allocation is checked by GLOBAL operator-new interposition (same reason
+// as test_task_impedance_controller.cpp: Compute() lives in another TU, so a
+// same-TU Eigen guard would observe nothing).
+#include "rtc_controllers/direct/task_impedance_controller.hpp"
+#include "test_urdf_path.hpp"
+#include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
+#include <rtc_urdf_bridge/rt_model_handle.hpp>
+
+#include <Eigen/Dense>
+#include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
+
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <new>
+#include <span>
+#include <string>
+#include <vector>
+
+// ── Allocation counter (global new/delete interposition) ────────────────────
+namespace {
+thread_local bool g_alloc_active = false;
+thread_local std::size_t g_alloc_count = 0;
+}  // namespace
+
+void* operator new(std::size_t n) {
+  if (g_alloc_active)
+    ++g_alloc_count;
+  void* p = std::malloc(n != 0 ? n : 1);
+  if (p == nullptr)
+    throw std::bad_alloc();
+  return p;
+}
+
+void* operator new[](std::size_t n) {
+  return ::operator new(n);
+}
+
+void operator delete(void* p) noexcept {
+  std::free(p);
+}
+
+void operator delete[](void* p) noexcept {
+  std::free(p);
+}
+
+void operator delete(void* p, std::size_t) noexcept {
+  std::free(p);
+}
+
+void operator delete[](void* p, std::size_t) noexcept {
+  std::free(p);
+}
+
+namespace {
+
+using rtc::TaskImpedanceController;
+using rtc::compliance::ComplianceState;
+using rtc::compliance::kWrenchDim;
+using rtc::compliance::Wrench6;
+using Sel = rtc::TaskImpedanceController::TaskSelection;
+
+constexpr double kDt = 0.002;
+constexpr double kRateHz = 1.0 / kDt;
+
+std::string Urdf6() {
+  return rtc::test::TestUrdfPath("serial_6dof.urdf");
+}
+
+std::string Urdf7() {
+  return rtc::test::TestUrdfPath("serial_7dof.urdf");
+}
+
+rtc::ControllerState MakeState(int nj, const std::vector<double>& q,
+                               const std::vector<double>& qd) {
+  rtc::ControllerState state{};
+  state.num_devices = 1;
+  state.dt = kDt;
+  state.devices[0].num_channels = nj;
+  state.devices[0].valid = true;
+  for (int i = 0; i < nj; ++i) {
+    state.devices[0].positions[static_cast<std::size_t>(i)] =
+        (i < static_cast<int>(q.size())) ? q[static_cast<std::size_t>(i)] : 0.0;
+    state.devices[0].velocities[static_cast<std::size_t>(i)] =
+        (i < static_cast<int>(qd.size())) ? qd[static_cast<std::size_t>(i)] : 0.0;
+  }
+  return state;
+}
+
+void Send(TaskImpedanceController& c, const Wrench6& w) {
+  c.SetExternalWrench(std::span<const double, kWrenchDim>(w.data(), kWrenchDim));
+}
+
+// A wrench source with no deadband, no filter and no bias calibration, so tests
+// that are about something ELSE (frames, §6.3, staleness) see the raw value
+// unchanged. Each stage has its own test; mixing them in here would only make
+// failures ambiguous.
+std::string TransparentWrenchYaml(const std::string& extra = {}) {
+  return R"(
+external_wrench:
+  enabled: true
+  filter_enabled: false
+  bias_calibration_samples: 0
+  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  max: [1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6]
+)" + extra;
+}
+
+// ── Input contract ──────────────────────────────────────────────────────────
+
+// A wrench arriving at a controller with no source configured must be dropped:
+// the default is A=NONE, and a stray producer must not be able to inject force
+// into a controller that was never told to listen.
+TEST(TaskImpedanceWrench, DisabledByDefaultAndDropsInput) {
+  TaskImpedanceController::Gains gains;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  EXPECT_FALSE(ctrl.external_wrench_enabled());
+  EXPECT_EQ(ctrl.formulation(), TaskImpedanceController::Formulation::kJacobianTranspose);
+
+  auto state = MakeState(6, std::vector<double>(6, 0.3), std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+  Send(ctrl, Wrench6{100.0, 0, 0, 0, 0, 0});
+  (void)ctrl.Compute(state);
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  EXPECT_FALSE(diag.wrench_valid);
+  for (double v : diag.wrench_lwa)
+    EXPECT_EQ(v, 0.0);
+}
+
+// ── Frame + sign (§3.2.1, compliance-conventions §2) ────────────────────────
+
+// End-to-end Ad^{-T}: a pure FORCE applied at a sensor that sits away from the
+// tip must show up in the LWA wrench with a moment (p_sensor − p_tip) × f. This
+// is the transform that Ad^T instead of Ad^{-T} gets wrong, and it is wrong in a
+// way no rotation-only test can see.
+TEST(TaskImpedanceWrench, LeverArmProducesExpectedLwaMoment) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  // link_5 is proximal to the tip, so p_sensor − p_tip is genuinely nonzero.
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml("  sensor_frame: link_5\n")));
+  ASSERT_TRUE(ctrl.external_wrench_enabled());
+
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);  // seed
+
+  const Wrench6 w{3.0, -2.0, 5.0, 0.0, 0.0, 0.0};  // pure force, sensor frame
+  Send(ctrl, w);
+  (void)ctrl.Compute(state);
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  ASSERT_TRUE(diag.wrench_valid);
+  ASSERT_DOUBLE_EQ(diag.wrench_fade, 1.0);
+
+  // Independent reference: same model, same frames, expanded block form
+  //   f_A = R·f_S,   τ_A = (p_S − p_tip) × (R·f_S)
+  rtc_urdf_bridge::ModelConfig cfg;
+  cfg.urdf_path = Urdf6();
+  cfg.root_joint_type = "fixed";
+  rtc_urdf_bridge::PinocchioModelBuilder builder(cfg);
+  rtc_urdf_bridge::RtModelHandle handle(builder.GetFullModel());
+  handle.ComputeJacobians(std::span<const double>(q.data(), q.size()));
+  const auto tip = static_cast<pinocchio::FrameIndex>(builder.GetFullModel()->nframes - 1);
+  const auto sid = handle.GetFrameId("link_5");
+  ASSERT_NE(sid, 0u);
+  const pinocchio::SE3& s_pl = handle.GetFramePlacement(sid);
+  const pinocchio::SE3& t_pl = handle.GetFramePlacement(tip);
+  const Eigen::Vector3d lever = s_pl.translation() - t_pl.translation();
+  ASSERT_GT(lever.norm(), 1e-3) << "fixture gives no lever arm — test would be vacuous";
+  const Eigen::Vector3d f_s(w[0], w[1], w[2]);
+  const Eigen::Vector3d f_a = s_pl.rotation() * f_s;
+  const Eigen::Vector3d t_a = lever.cross(f_a);
+
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(diag.wrench_lwa[static_cast<std::size_t>(i)], f_a(i), 1e-9) << "force axis " << i;
+    EXPECT_NEAR(diag.wrench_lwa[static_cast<std::size_t>(i) + 3], t_a(i), 1e-9)
+        << "moment axis " << i << " — Ad^T instead of Ad^{-T}?";
+  }
+  // Non-vacuity: the moment really is nonzero, so a dropped p×f term would fail.
+  EXPECT_GT(t_a.norm(), 1e-3);
+}
+
+// A world-aligned sensor at the tip is the identity case: what the caller sends
+// is what the law sees, with the documented sign ("+ = environment on robot").
+TEST(TaskImpedanceWrench, DefaultSensorFrameIsTheTipBodyFrame) {
+  const std::vector<double> q(6, 0.0);  // zero pose: tip rotation is identity here
+  TaskImpedanceController::Gains gains;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));  // no sensor_frame ⇒ tip
+
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+  Send(ctrl, Wrench6{7.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  (void)ctrl.Compute(state);
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  ASSERT_TRUE(diag.wrench_valid);
+
+  rtc_urdf_bridge::ModelConfig cfg;
+  cfg.urdf_path = Urdf6();
+  cfg.root_joint_type = "fixed";
+  rtc_urdf_bridge::PinocchioModelBuilder builder(cfg);
+  rtc_urdf_bridge::RtModelHandle handle(builder.GetFullModel());
+  handle.ComputeJacobians(std::span<const double>(q.data(), q.size()));
+  const auto tip = static_cast<pinocchio::FrameIndex>(builder.GetFullModel()->nframes - 1);
+  const Eigen::Vector3d expect =
+      handle.GetFramePlacement(tip).rotation() * Eigen::Vector3d(7, 0, 0);
+  for (int i = 0; i < 3; ++i)
+    EXPECT_NEAR(diag.wrench_lwa[static_cast<std::size_t>(i)], expect(i), 1e-9);
+  // Sensor AT the tip ⇒ zero lever arm ⇒ a pure force carries no moment.
+  for (int i = 3; i < 6; ++i)
+    EXPECT_NEAR(diag.wrench_lwa[static_cast<std::size_t>(i)], 0.0, 1e-9);
+}
+
+TEST(TaskImpedanceWrench, ConfigureRejectsUnknownSensorFrame) {
+  TaskImpedanceController::Gains gains;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  EXPECT_THROW(ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml("  sensor_frame: no_such_link\n"))),
+               std::runtime_error);
+  // The rejected configure left the wrench path off, not half-enabled.
+  EXPECT_FALSE(ctrl.external_wrench_enabled());
+}
+
+// ── Bias calibration (§3.2.1) ───────────────────────────────────────────────
+
+// Activation runs BIAS_CALIBRATING for N samples, emits NOTHING while it does
+// (an uncalibrated offset must not reach the control law), then commits the
+// average and lets the ramp start.
+TEST(TaskImpedanceWrench, BiasCalibrationSuppressesWrenchThenCommits) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(R"(
+external_wrench:
+  enabled: true
+  filter_enabled: false
+  bias_calibration_samples: 5
+  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+)"));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+
+  const Wrench6 offset{2.0, -1.0, 0.5, 0.0, 0.0, 0.0};
+  // Tick 1 both seeds the pose AND enters BIAS_CALIBRATING, and it consumes the
+  // first sample on the same tick (a wrench was queued before it ran).
+  Send(ctrl, offset);
+  (void)ctrl.Compute(state);
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kBiasCalibrating));
+
+  // Four more samples reach the required five; the fifth commits the bias. Every
+  // one of these ticks must still emit zero.
+  for (int k = 0; k < 5; ++k) {
+    Send(ctrl, offset);
+    (void)ctrl.Compute(state);
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    for (double v : d.wrench_lwa)
+      EXPECT_EQ(v, 0.0) << "uncalibrated wrench leaked into the law at sample " << k;
+  }
+
+  // Bias committed == the constant offset it saw at rest.
+  const auto& bias = ctrl.GetWrenchBiasForTesting();
+  for (std::size_t i = 0; i < kWrenchDim; ++i)
+    EXPECT_NEAR(bias[i], offset[i], 1e-12) << "component " << i;
+  EXPECT_NE(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kBiasCalibrating));
+
+  // Post-calibration, the SAME raw value now reads as zero external load.
+  Send(ctrl, offset);
+  (void)ctrl.Compute(state);
+  for (double v : ctrl.GetDiagnosticsForTesting().wrench_lwa)
+    EXPECT_NEAR(v, 0.0, 1e-9);
+
+  // ...and a real change above the bias survives.
+  Wrench6 pushed = offset;
+  pushed[0] += 10.0;
+  Send(ctrl, pushed);
+  (void)ctrl.Compute(state);
+  double norm = 0.0;
+  for (double v : ctrl.GetDiagnosticsForTesting().wrench_lwa)
+    norm += v * v;
+  EXPECT_GT(std::sqrt(norm), 9.0);
+}
+
+// ── Staleness (§10.6) ───────────────────────────────────────────────────────
+
+// The MUST of §10.6: a dead source fades the wrench to ZERO and degrades — it
+// does NOT hold the last value, and it does NOT stop the robot. Both halves are
+// asserted, because each failure mode is a different real bug (a held value
+// pushes the arm forever; a SAFE_STOP stops it on every estimator hiccup).
+TEST(TaskImpedanceWrench, StaleWrenchFadesToZeroAndDegradesWithoutSafeStop) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.wrench_timeout = 0.01;       // 5 ticks
+  gains.wrench_fadeout_time = 0.02;  // 10 further ticks
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);  // seed (bias_calibration_samples: 0 ⇒ committed)
+
+  const Wrench6 push{20.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  Send(ctrl, push);
+  (void)ctrl.Compute(state);
+  const auto fresh = ctrl.GetDiagnosticsForTesting();
+  ASSERT_TRUE(fresh.wrench_valid);
+  ASSERT_FALSE(fresh.wrench_stale);
+  const double live =
+      std::abs(fresh.wrench_lwa[0]) + std::abs(fresh.wrench_lwa[1]) + std::abs(fresh.wrench_lwa[2]);
+  ASSERT_GT(live, 1.0) << "wrench never reached the law — the fade assertion would be vacuous";
+
+  // Producer dies. Walk past the timeout and the fade-out ramp.
+  double prev = live;
+  bool saw_partial_fade = false;
+  for (int k = 0; k < 40; ++k) {
+    (void)ctrl.Compute(state);
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    const double mag =
+        std::abs(d.wrench_lwa[0]) + std::abs(d.wrench_lwa[1]) + std::abs(d.wrench_lwa[2]);
+    EXPECT_LE(mag, prev + 1e-12) << "wrench grew while stale, tick " << k;
+    if (mag > 1e-9 && mag < live - 1e-9)
+      saw_partial_fade = true;
+    prev = mag;
+    EXPECT_NE(d.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+        << "a dead wrench source stopped the robot (tick " << k << ")";
+  }
+  EXPECT_TRUE(saw_partial_fade) << "wrench stepped to zero instead of ramping (torque jump)";
+
+  const auto end = ctrl.GetDiagnosticsForTesting();
+  EXPECT_TRUE(end.wrench_stale);
+  for (double v : end.wrench_lwa)
+    EXPECT_EQ(v, 0.0) << "expired wrench held instead of faded to zero (§10.6 MUST)";
+  EXPECT_EQ(end.state, static_cast<std::uint8_t>(ComplianceState::kDegraded));
+  EXPECT_TRUE(end.control_valid) << "DEGRADED must keep controlling, not hand off to the hold";
+
+  // Source returns → recovers on its own, no ResetFault().
+  for (int k = 0; k < 400; ++k) {
+    Send(ctrl, push);
+    (void)ctrl.Compute(state);
+  }
+  const auto recovered = ctrl.GetDiagnosticsForTesting();
+  EXPECT_FALSE(recovered.wrench_stale);
+  EXPECT_TRUE(rtc::compliance::IsRunning(static_cast<ComplianceState>(recovered.state)));
+}
+
+// Contact detection rides the conditioned LWA force with hysteresis, and drives
+// the RUNNING_FREE_SPACE ⇄ RUNNING_CONTACT split.
+TEST(TaskImpedanceWrench, ContactStateFollowsForceWithHysteresis) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.contact_threshold = 10.0;
+  gains.contact_release_ratio = 0.5;  // release below 5 N
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+
+  auto tick = [&](double fx) {
+    Send(ctrl, Wrench6{fx, 0, 0, 0, 0, 0});
+    (void)ctrl.Compute(state);
+    return ctrl.GetDiagnosticsForTesting();
+  };
+
+  EXPECT_FALSE(tick(2.0).in_contact);
+  EXPECT_FALSE(tick(9.0).in_contact);
+  EXPECT_TRUE(tick(15.0).in_contact);
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kRunningContact));
+  // Between release and enter the latch holds — no chatter.
+  EXPECT_TRUE(tick(7.0).in_contact);
+  EXPECT_FALSE(tick(2.0).in_contact);
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kRunning));
+}
+
+// ── §6.3 inertia shaping ────────────────────────────────────────────────────
+
+// Two controllers, identical in everything but the formulation, driven with the
+// identical state and target. `desired_inertia` omitted ⇒ Λ_d := Λ_S ⇒ B = I,
+// which is not short-circuited: the identity comes out of the real Λ_d
+// factorisation and solve, so this exercises the §6.3 path rather than an `if`.
+void ExpectT41Equivalence(const std::string& urdf, int nj, Sel sel,
+                          const TaskImpedanceController::Gains& gains) {
+  const std::vector<double> q(static_cast<std::size_t>(nj), 0.3);
+  TaskImpedanceController a(urdf, gains, sel);
+  TaskImpedanceController b(urdf, gains, sel);
+  a.SetControlRate(kRateHz);
+  b.SetControlRate(kRateHz);
+  a.LoadConfig(YAML::Load("formulation: jacobian_transpose"));
+  b.LoadConfig(YAML::Load("formulation: inertia_shaping"));
+  ASSERT_EQ(b.formulation(), TaskImpedanceController::Formulation::kInertiaShaping);
+
+  auto state = MakeState(nj, q, std::vector<double>(static_cast<std::size_t>(nj), 0.05));
+  const auto seed_a = a.Compute(state);
+  const auto seed_b = b.Compute(state);
+
+  // A nonzero task error, or f_task == 0 makes the comparison vacuous.
+  const std::array<double, 6> target{seed_a.actual_task_positions[0] + 0.03,
+                                     seed_a.actual_task_positions[1] - 0.02,
+                                     seed_a.actual_task_positions[2] + 0.01,
+                                     0.05,
+                                     -0.03,
+                                     0.02};
+  a.SetDeviceTarget(0, std::span<const double>(target.data(), target.size()));
+  b.SetDeviceTarget(0, std::span<const double>(target.data(), target.size()));
+  const auto out_a = a.Compute(state);
+  const auto out_b = b.Compute(state);
+  (void)seed_b;
+
+  const auto diag_b = b.GetDiagnosticsForTesting();
+  ASSERT_TRUE(diag_b.control_valid) << "inertia-shaping path degenerated at this pose";
+  ASSERT_FALSE(diag_b.inertia_clamped) << "the max_inertia_ratio clamp fired at Λ_d = Λ_S";
+  ASSERT_GT(diag_b.sigma_min, gains.singularity_threshold)
+      << "pose too close to singular for a meaningful comparison";
+
+  double spread = 0.0;
+  for (int i = 0; i < nj; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_NEAR(out_b.devices[0].commands[ui], out_a.devices[0].commands[ui], 1e-9)
+        << "§6.3 with Λ_d = Λ_S diverged from §6.2 at joint " << i;
+    spread += std::abs(out_a.devices[0].commands[ui]);
+  }
+  EXPECT_GT(spread, 1e-3) << "both outputs were ~zero — T4.1 would pass vacuously";
+}
+
+// Nullspace INACTIVE (both posture gains zero): §6.2 forms no M at all, while
+// §6.3 must form Λ_S regardless. This is the widened-gate case — the branch
+// PR #241's F2 narrowed and slice 2 re-opens for inertia shaping only — and it
+// carries T4.1 at the same time.
+//
+// serial_6dof is unusable for this: all six of its joints turn about +Z with
+// origins on the Z axis, so its Jacobian is rank-1 and Λ_S is singular at EVERY
+// pose. §6.5 says that must latch SAFE_STOP, and it does (asserted separately
+// below) — so the equivalence has to be measured on a full-rank arm.
+TEST(TaskImpedanceWrench, T41NaturalInertiaMatchesJacobianTransposeWithoutNullspace) {
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.nullspace_kp = 0.0;
+  gains.nullspace_kd = 0.0;  // ⇒ nullspace_active == false even though nv > m
+  ExpectT41Equivalence(Urdf7(), 7, Sel::kFullSe3, gains);
+}
+
+// Redundant (nv > m): both sides run the nullspace projector, so this pins that
+// shaping does not perturb τ_null either.
+TEST(TaskImpedanceWrench, T41NaturalInertiaMatchesJacobianTransposeRedundant) {
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.nullspace_kp = 30.0;
+  gains.nullspace_kd = 12.0;
+  ExpectT41Equivalence(Urdf7(), 7, Sel::kFullSe3, gains);
+}
+
+// With Λ_d ≠ Λ_S the external wrench term (B − I)(−f_ext) becomes live, so the
+// SAME wrench that is inert under §6.2 now changes the torque. That difference
+// is the whole point of A≠NONE — if it were zero the formulation would be
+// decorative.
+TEST(TaskImpedanceWrench, ShapedInertiaMakesTheWrenchTermBite) {
+  const std::vector<double> q(7, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController shaped(Urdf7(), gains, Sel::kFullSe3);
+  TaskImpedanceController neutral(Urdf7(), gains, Sel::kFullSe3);
+  shaped.SetControlRate(kRateHz);
+  neutral.SetControlRate(kRateHz);
+  shaped.LoadConfig(YAML::Load(TransparentWrenchYaml(
+      "formulation: inertia_shaping\ndesired_inertia: [0.5, 0.5, 0.5, 0.05, 0.05, 0.05]\n"
+      "max_inertia_ratio: 100.0\n")));
+  neutral.LoadConfig(YAML::Load(TransparentWrenchYaml("formulation: inertia_shaping\n")));
+
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  (void)shaped.Compute(state);
+  (void)neutral.Compute(state);
+
+  const Wrench6 push{25.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  Send(shaped, push);
+  Send(neutral, push);
+  const auto out_shaped = shaped.Compute(state);
+  const auto out_neutral = neutral.Compute(state);
+
+  ASSERT_TRUE(shaped.GetDiagnosticsForTesting().control_valid);
+  ASSERT_TRUE(neutral.GetDiagnosticsForTesting().control_valid);
+  double diff = 0.0;
+  for (int i = 0; i < 7; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    diff += std::abs(out_shaped.devices[0].commands[ui] - out_neutral.devices[0].commands[ui]);
+  }
+  EXPECT_GT(diff, 1e-3) << "f_ext had no effect under Λ_d ≠ Λ_S — the §6.3 term is dead";
+
+  // Λ_d = Λ_S (neutral) is the case where f_ext CANNOT matter: (B − I) == 0.
+  TaskImpedanceController quiet(Urdf7(), gains, Sel::kFullSe3);
+  quiet.SetControlRate(kRateHz);
+  quiet.LoadConfig(YAML::Load(TransparentWrenchYaml("formulation: inertia_shaping\n")));
+  (void)quiet.Compute(state);
+  const auto no_wrench = quiet.Compute(state);
+  for (int i = 0; i < 7; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_NEAR(out_neutral.devices[0].commands[ui], no_wrench.devices[0].commands[ui], 1e-9)
+        << "a wrench moved the neutral (B = I) law, where (B − I)(−f_ext) must be 0";
+  }
+}
+
+// §5.2 MUST: an aggressively light Λ_d must be clamped, and the clamp must be
+// reported rather than applied silently.
+TEST(TaskImpedanceWrench, MaxInertiaRatioClampsAndReports) {
+  const std::vector<double> q(7, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml(
+      "formulation: inertia_shaping\ndesired_inertia: [1.0e-4, 1.0e-4, 1.0e-4, 1.0e-5, 1.0e-5, "
+      "1.0e-5]\nmax_inertia_ratio: 2.0\n")));
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  const auto seed = ctrl.Compute(state);
+  const std::array<double, 6> target{seed.actual_task_positions[0] + 0.02,
+                                     seed.actual_task_positions[1],
+                                     seed.actual_task_positions[2],
+                                     0.0,
+                                     0.0,
+                                     0.0};
+  ctrl.SetDeviceTarget(0, std::span<const double>(target.data(), target.size()));
+  Send(ctrl, Wrench6{30.0, 0, 0, 0, 0, 0});
+  const auto out = ctrl.Compute(state);
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  EXPECT_TRUE(diag.inertia_clamped) << "Λ_d ≈ 0 sailed past max_inertia_ratio";
+  EXPECT_TRUE(diag.control_valid) << "the clamp must keep the law running, not degrade it";
+  for (int i = 0; i < 7; ++i)
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]));
+
+  // Non-vacuity: at the SAME configuration a ratio wide enough for this Λ_d does
+  // not clamp, so the assertion above is about the bound and not about the pose.
+  TaskImpedanceController wide(Urdf7(), gains, Sel::kFullSe3);
+  wide.SetControlRate(kRateHz);
+  wide.LoadConfig(YAML::Load(TransparentWrenchYaml("formulation: inertia_shaping\n")));
+  (void)wide.Compute(state);
+  (void)wide.Compute(state);
+  EXPECT_FALSE(wide.GetDiagnosticsForTesting().inertia_clamped);
+}
+
+// The widened gate, stated as behaviour: using Λ_S re-exposes §6.5 singularity
+// risk, so on a rank-deficient arm §6.3 MUST latch SAFE_STOP while §6.2 — which
+// never forms Λ at all — keeps controlling. serial_6dof is exactly that arm (six
+// coaxial +Z joints ⇒ σ_min ≡ 0), which makes this the sharpest available
+// statement that the F2 narrowing was WIDENED rather than reverted: the same
+// controller, same fixture, differs only by formulation.
+TEST(TaskImpedanceWrench, InertiaShapingReArmsSingularityFaultThatJacobianTransposeIsImmuneTo) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.nullspace_kp = 0.0;
+  gains.nullspace_kd = 0.0;
+
+  TaskImpedanceController jt(Urdf6(), gains, Sel::kFullSe3);
+  jt.SetControlRate(kRateHz);
+  jt.LoadConfig(YAML::Load("formulation: jacobian_transpose"));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  for (int k = 0; k < 3; ++k)
+    (void)jt.Compute(state);
+  const auto d_jt = jt.GetDiagnosticsForTesting();
+  EXPECT_TRUE(d_jt.control_valid) << "§6.2 must stay immune to task singularities (F2)";
+  EXPECT_NE(d_jt.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+
+  TaskImpedanceController shaped(Urdf6(), gains, Sel::kFullSe3);
+  shaped.SetControlRate(kRateHz);
+  shaped.LoadConfig(YAML::Load("formulation: inertia_shaping"));
+  for (int k = 0; k < 3; ++k)
+    (void)shaped.Compute(state);
+  const auto d_sh = shaped.GetDiagnosticsForTesting();
+  EXPECT_EQ(d_sh.sigma_min, 0.0) << "fixture is not singular — test would be vacuous";
+  EXPECT_EQ(d_sh.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+      << "§6.3 used Λ_S at a singular pose without re-arming the σ_min fault (§6.5)";
+}
+
+TEST(TaskImpedanceWrench, ConfigureRejectsNonPositiveDesiredInertia) {
+  TaskImpedanceController::Gains gains;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  EXPECT_THROW(
+      ctrl.LoadConfig(YAML::Load(
+          "formulation: inertia_shaping\ndesired_inertia: [1.0, 0.0, 1.0, 1.0, 1.0, 1.0]")),
+      std::runtime_error);
+  EXPECT_THROW(ctrl.LoadConfig(YAML::Load("formulation: inertia_shaping\ndesired_inertia: [1.0]")),
+               std::runtime_error);
+  EXPECT_THROW(ctrl.LoadConfig(YAML::Load("formulation: nonsense")), std::runtime_error);
+}
+
+// ── Zero allocation with the wrench path live (T7.1) ────────────────────────
+
+TEST(TaskImpedanceWrench, ComputeIsAllocationFreeWithWrenchAndShaping) {
+  const std::vector<double> q(7, 0.15);
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 40.0;  // nullspace + DLS + Λ_S + wrench, all at once
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(R"(
+formulation: inertia_shaping
+desired_inertia: [2.0, 2.0, 2.0, 0.2, 0.2, 0.2]
+external_wrench:
+  enabled: true
+  filter_enabled: true
+  bias_calibration_samples: 3
+  sensor_frame: link_5
+)"));
+  auto state = MakeState(7, q, std::vector<double>(7, 0.02));
+  Send(ctrl, Wrench6{1.0, 2.0, 3.0, 0.1, 0.2, 0.3});
+
+  // The FIRST Compute (spec T7.1) — which is also the seed + BIAS_CALIBRATING
+  // entry tick, the heaviest one.
+  g_alloc_count = 0;
+  g_alloc_active = true;
+  (void)ctrl.Compute(state);
+  g_alloc_active = false;
+  EXPECT_EQ(g_alloc_count, 0u) << "first Compute() with the wrench path allocated";
+
+  // Then a steady-state tick that runs conditioning, the filter and §6.3.
+  for (int k = 0; k < 5; ++k) {
+    Send(ctrl, Wrench6{1.0, 2.0, 3.0, 0.1, 0.2, 0.3});
+    (void)ctrl.Compute(state);
+  }
+  Send(ctrl, Wrench6{4.0, 5.0, 6.0, 0.4, 0.5, 0.6});
+  g_alloc_count = 0;
+  g_alloc_active = true;
+  (void)ctrl.Compute(state);
+  g_alloc_active = false;
+  EXPECT_EQ(g_alloc_count, 0u) << "steady-state Compute() with conditioning + §6.3 allocated";
+  EXPECT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
+}
+
+}  // namespace

@@ -22,11 +22,19 @@ RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니�
 | TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` |
 | GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` |
 
-> `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러 (§6.2 A=NONE,
-> `τ = Jᵀ Sᵀ[K_p·S·e + K_d·S·ė] + τ_null + ĝ(q)`). OSC 와 달리 task inertia Λ 를 쓰지
+> `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러다. 기본 법칙은
+> `formulation: jacobian_transpose` (§6.2 A=NONE,
+> `τ = Jᵀ Sᵀ[K_p·S·e + K_d·S·ė] + τ_null + ĝ(q)`) — OSC 와 달리 task inertia Λ 를 쓰지
 > 않아 **task-space 특이점에서 자유**롭다 (Λ 는 nullspace 에만). MuJoCo backend 전용
 > (torque). A=NONE 은 열등한 fallback 이 아니며, `TRANSLATION_ONLY` 의 회전은 nullspace
-> posture 가 담당한다 — 규범·근거는 [docs/compliance-conventions.md](docs/compliance-conventions.md).
+> posture 가 담당한다.
+>
+> 외부 F/T 를 쓰면 `formulation: inertia_shaping` (§6.3) 으로 목표 관성 `Λ_d` 를 성형할 수
+> 있다 (기본 비활성 — §5.2 MUST). wrench 는 **비-RT setter `SetExternalWrench()`** 로 받는다:
+> 컨트롤러는 순수 제어 알고리즘이라 노드·구독·메시지 타입을 만들지 않으며, 호출자는
+> `sensor_frame` 기준 raw `[f;τ]` 를 그대로 넘기면 된다 (bias·중력보상·`Ad^{-T}` 변환·필터는
+> 모두 컨트롤러가 수행). 입력 계약·조건화 순서·staleness 정책·`Λ_d` clamp·하드웨어 부호
+> 검증 절차(P1–P4) 등 규범·근거는 [docs/compliance-conventions.md](docs/compliance-conventions.md).
 
 ---
 
@@ -42,7 +50,15 @@ rtc_controllers/
 │   │   └── clik_controller.hpp           -- 태스크 공간 CLIK 제어기
 │   ├── direct/
 │   │   ├── joint_pd_controller.hpp       -- 관절 공간 PD + 동역학 보상
-│   │   └── operational_space_controller.hpp -- 태스크 공간 OSC
+│   │   ├── operational_space_controller.hpp -- 태스크 공간 OSC
+│   │   └── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
+│   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
+│   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS
+│   │   ├── safety_limiter.hpp                -- §10.5 4단계 (관절한계 반발 → saturation → rate → non-finite)
+│   │   ├── torque_estop.hpp                  -- E-8 토크 홀드 τ = ĝ(q) − D·q̇
+│   │   ├── compliance_state_machine.hpp      -- §10.6 상태기계 (BIAS_CALIBRATING…SAFE_STOP latch)
+│   │   ├── external_wrench.hpp               -- 외부 wrench 입력 계약 (SeqLock, generation 기반 staleness, contact 히스테리시스)
+│   │   └── wrench_conditioning.hpp           -- bias → 정적 중력보상 → deadband → saturation → filter
 │   ├── trajectory/
 │   │   ├── trajectory_utils.hpp              -- 5차 다항식 궤적 (QuinticPolynomial)
 │   │   ├── joint_space_trajectory.hpp        -- N-DOF 관절 공간 궤적 생성기
@@ -64,7 +80,8 @@ rtc_controllers/
 │       │   └── clik_controller.cpp
 │       ├── direct/
 │       │   ├── joint_pd_controller.cpp
-│       │   └── operational_space_controller.cpp
+│       │   ├── operational_space_controller.cpp
+│       │   └── task_impedance_controller.cpp
 │       └── grasp/
 │           ├── grasp_controller.cpp
 │           └── pull_force_estimator.cpp

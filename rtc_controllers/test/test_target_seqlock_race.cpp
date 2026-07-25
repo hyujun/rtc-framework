@@ -16,10 +16,13 @@
 #include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <thread>
 
@@ -195,4 +198,99 @@ TEST(TargetSeqlockRace, TaskImpedanceSetDeviceTargetStress) {
   const double gz = final_out.actual_task_positions[2] + diag.pose_error[2];
   EXPECT_NEAR(gx, gy, 1e-9) << "torn task-target read (goal_t x vs y)";
   EXPECT_NEAR(gx, gz, 1e-9) << "torn task-target read (goal_t x vs z)";
+}
+
+// RT-4 on the OTHER off-RT entry point added in slice 2: SetExternalWrench
+// writes a SeqLock<WrenchSample> directly (no SPSC hop), so a torn read would
+// mix components from two different samples. The producer only ever emits
+// wrenches whose six components are all equal, so ANY component disagreement in
+// a snapshot the RT side consumed is a tear — and the generation stamp travels
+// inside the same payload, so a torn read could also strand the staleness
+// counter. Both are checked.
+TEST(TargetSeqlockRace, TaskImpedanceSetExternalWrenchStress) {
+  rtc::TaskImpedanceController::Gains gains;
+  gains.pose_error_limit = 1e9;
+  gains.max_torque_rate = 1e12;
+  // Long enough that the tail ticks below cannot fade the last sample away.
+  gains.wrench_timeout = 10.0;
+  rtc::TaskImpedanceController ctrl(GetTestUrdfPath(), gains,
+                                    rtc::TaskImpedanceController::TaskSelection::kFullSe3);
+  ctrl.SetControlRate(500.0);
+  // Transparent chain (no deadband / filter / bias) so the value the RT side
+  // consumed is recoverable from the diagnostics without inverting a filter.
+  ctrl.LoadConfig(YAML::Load(R"(
+external_wrench:
+  enabled: true
+  filter_enabled: false
+  bias_calibration_samples: 0
+  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  max: [1.0e9, 1.0e9, 1.0e9, 1.0e9, 1.0e9, 1.0e9]
+  contact_threshold: 1.0e9
+)"));
+  auto state = MakeState();  // q ≡ 0 for every tick ⇒ the Ad^{-T} map is CONSTANT
+  (void)ctrl.Compute(state);
+
+  // Reference direction: the LWA image of the all-ones wrench. Since q never
+  // changes, every uniform input (v,…,v) must map to exactly v·ref. A torn read
+  // produces a non-uniform input, whose image leaves that one-dimensional line.
+  std::array<double, 6> ones{};
+  ones.fill(1.0);
+  ctrl.SetExternalWrench(std::span<const double, 6>(ones.data(), 6));
+  (void)ctrl.Compute(state);
+  const auto ref_diag = ctrl.GetDiagnosticsForTesting();
+  ASSERT_TRUE(ref_diag.wrench_valid);
+  const std::array<double, 6> ref = ref_diag.wrench_lwa;
+  double ref_norm = 0.0;
+  for (double c : ref)
+    ref_norm += c * c;
+  ASSERT_GT(std::sqrt(ref_norm), 1e-6) << "degenerate reference — the check would be vacuous";
+
+  constexpr int kIters = 100'000;
+  std::atomic<bool> producer_done{false};
+  std::atomic<int> compute_iters{0};
+  std::atomic<int> torn{0};
+  std::atomic<int> checked{0};
+
+  std::thread producer([&]() {
+    std::array<double, 6> w{};
+    for (int i = 0; i < kIters; ++i) {
+      const double v = 1.0 + 0.001 * static_cast<double>(i % 1024);  // never 0
+      w.fill(v);  // all six components identical, by construction
+      ctrl.SetExternalWrench(std::span<const double, 6>(w.data(), 6));
+    }
+    producer_done.store(true, std::memory_order_release);
+  });
+
+  std::thread consumer([&]() {
+    while (!producer_done.load(std::memory_order_acquire) ||
+           compute_iters.load(std::memory_order_relaxed) < kIters / 8) {
+      (void)ctrl.Compute(state);
+      compute_iters.fetch_add(1, std::memory_order_relaxed);
+      const auto diag = ctrl.GetDiagnosticsForTesting();
+      if (!diag.wrench_valid || diag.wrench_fade != 1.0)
+        continue;
+      // Recover the implied scalar from the largest reference component, then
+      // require every other component to agree with it.
+      std::size_t pivot = 0;
+      for (std::size_t i = 1; i < 6; ++i)
+        if (std::abs(ref[i]) > std::abs(ref[pivot]))
+          pivot = i;
+      const double v = diag.wrench_lwa[pivot] / ref[pivot];
+      for (std::size_t i = 0; i < 6; ++i) {
+        if (std::abs(diag.wrench_lwa[i] - v * ref[i]) > 1e-9 * (1.0 + std::abs(v))) {
+          torn.fetch_add(1, std::memory_order_relaxed);
+          break;
+        }
+      }
+      checked.fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+
+  producer.join();
+  consumer.join();
+
+  EXPECT_GT(checked.load(std::memory_order_relaxed), 0)
+      << "no snapshot was ever inspected — the race window was never opened";
+  EXPECT_EQ(torn.load(std::memory_order_relaxed), 0)
+      << "wrench snapshot mixed components from two samples — torn SeqLock read";
 }
