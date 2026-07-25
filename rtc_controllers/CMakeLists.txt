@@ -39,6 +39,7 @@ find_package(yaml-cpp REQUIRED)
 add_library(rtc_controllers STATIC
   src/controllers/indirect/p_controller.cpp
   src/controllers/indirect/clik_controller.cpp
+  src/controllers/indirect/task_admittance_controller.cpp
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
   src/controllers/direct/task_impedance_controller.cpp
@@ -116,6 +117,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_compliance_core rtc_controllers)
   target_include_directories(test_compliance_core PRIVATE ${rtc_base_test_include})
 
+  # Slice-3 numerical core (#236): §7.2 semi-implicit integration + exp3 retract,
+  # §7.5 workspace/velocity guards, §7.3 DLS + nullspace algebra. Model-free —
+  # the URDF-bound half lives in test_task_admittance_controller.
+  ament_add_gtest(test_admittance_core test/test_admittance_core.cpp)
+  target_link_libraries(test_admittance_core rtc_controllers)
+
   ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
   target_link_libraries(test_quintic_blend_trajectory rtc_controllers)
 
@@ -163,6 +170,17 @@ if(BUILD_TESTING)
   # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
   # (tip_link / joint_limits / safe_position), bounds guards, multi-device
   # passthrough, 6-DOF + gravity/Coriolis compensation branches.
+  # Slice-3 controller surface (#236): the §11.4.1 P2/P3 sign contrast against
+  # the impedance law, wrench→motion end to end, §10.6 staleness, the
+  # position-domain E-STOP hold, configure contracts, and the RT allocation
+  # gate. Same global operator-new interposition as the impedance wrench suite,
+  # hence the same -Wmismatched-new-delete suppression.
+  ament_add_gtest(test_task_admittance_controller test/test_task_admittance_controller.cpp)
+  target_link_libraries(test_task_admittance_controller rtc_controllers)
+  target_include_directories(test_task_admittance_controller
+    PRIVATE ${rtc_urdf_bridge_test_include})
+  target_compile_options(test_task_admittance_controller PRIVATE -Wno-mismatched-new-delete)
+
   ament_add_gtest(test_controller_config test/test_controller_config.cpp)
   target_link_libraries(test_controller_config rtc_controllers)
   target_include_directories(test_controller_config PRIVATE ${rtc_urdf_bridge_test_include})

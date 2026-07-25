@@ -69,6 +69,12 @@ struct ComplianceFaults {
   bool nan_inf{false};               ///< non-finite command detected (§10.5 step 5)
   bool pose_error_exceeded{false};   ///< task pose error past its safety bound
   bool sigma_below_critical{false};  ///< σ_min(J_S) < singularity_critical
+  /// ‖q_cmd − q_meas‖ past its bound — only reachable on the position-output
+  /// path with `integrate_from_measured: false` (§7.3 MUST: "‖q_cmd−q_meas‖
+  /// 상한 감시 필수"). CRITICAL rather than degrading: the command has already
+  /// wound away from the arm, so continuing widens the gap, and there is no
+  /// reduced-authority mode to fall back to the way a lost wrench has one.
+  bool command_divergence{false};
 
   // → DEGRADED (recoverable)
   bool saturation_persist{false};     ///< torque saturation held > saturation_persist_time
@@ -77,7 +83,7 @@ struct ComplianceFaults {
   bool quality_low{false};            ///< wrench source quality below its bound (§3.2.4)
 
   [[nodiscard]] bool AnyCritical() const noexcept {
-    return nan_inf || pose_error_exceeded || sigma_below_critical;
+    return nan_inf || pose_error_exceeded || sigma_below_critical || command_divergence;
   }
 
   [[nodiscard]] bool AnyDegrade() const noexcept {

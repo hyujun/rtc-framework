@@ -3,8 +3,9 @@
 이 문서는 `rtc_controllers` 의 **compliance (impedance / admittance) 컨트롤러 계열**이
 따르는 **규범 매트릭스 (normative matrix)** 다. 코드·YAML·리뷰가 참조하는 SSoT 이며,
 값이 바뀌면 여기부터 갱신한다. 현재 범위는 **슬라이스 1 — `TaskImpedanceController`
-(A=NONE, Jacobian-transpose)** 과 **슬라이스 2 — external wrench 입력 계약 + 조건화 체인 +
-§6.3 inertia shaping** 이고, 나머지 행은 후속 슬라이스에서 채운다.
+(A=NONE, Jacobian-transpose)**, **슬라이스 2 — external wrench 입력 계약 + 조건화 체인 +
+§6.3 inertia shaping**, **슬라이스 3 — `TaskAdmittanceController` (§7, 힘 입력 → 위치 출력,
+§3.5)** 이고, 나머지 행은 후속 슬라이스에서 채운다.
 
 ## 1. 입력 명세 provenance
 
@@ -169,6 +170,30 @@ P4 의 시뮬레이션 대응은 `test_task_impedance_wrench.cpp`
 `LeverArmProducesExpectedLwaMoment` 가 이미 고정한다 (`Ad^{-T}` vs `Ad^{T}` 검출). P1–P3 은
 실기 전용이며 수치 테스트로 대체 불가.
 
+## 3.5 §7 Task admittance (슬라이스 3)
+
+$$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{ext}_{LWA},\qquad
+\dot q = J^{+}\left(\nu_c + K^{ik} e(X, X_c)\right) + (I - J^{+}J)\,\dot q_{null}$$
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| **출력** | `CommandType::kPosition` — 내부 적분 `q_cmd = q_meas + q̇·Δt`. `kVelocity` **신설 안 함** | D14. §7.3 방식 1 의 출력 자체가 position 이다. `kVelocity` 는 `rtc_base` enum + `-Wswitch` 강제 `CommandTypeToString` + backend `AcceptsCommandType` + sim 의 **별도** actuator enum 까지 3–4 패키지에 번지고 PROC-3 를 유발한다. position 출력이라 **현재 유일하게 position-only 실기 backend 가 받을 수 있는 compliance 경로** (D15) |
+| **`x̃_c` 방향** | `x̃_c = e(X_d, X_c)` = **desired → compliant**. §1.3 pose error (`current → desired`) 와 **반대** | §7.2 명시. 슬라이스 2 에서 §6.3 부호 반전 결함(`da057c4`)이 실제로 난 지점이라 표현을 코드 주석·이 표 양쪽에 박는다. IK 의 `e(X, X_c)` 는 §1.3 방향(현재→compliant)이며 두 방향이 한 함수 안에 공존한다 |
+| **회전 표현** | 편차의 회전 성분을 **`R̃ = R_c R_dᵀ` 행렬로 저장**하고 매 스텝 `R̃ ← exp3(ω·dt)·R̃` 로 retract. `x̃_rot = log3(R̃)` 는 매 tick 파생 | §7.2 MUST. 접공간 누적(`x_rot += ω dt`)은 비동축 회전에서 합성의 rotation vector 가 아니므로 드리프트한다 — 테스트가 naive 합과의 차이 + `‖R̃ᵀR̃−I‖<1e-10` 를 동시에 고정 |
+| **`exp3` 곱하는 쪽** | **왼쪽**(`exp3(ω dt)·R̃`). 명세 스니펫의 `R_c = R_c·exp3(ω dt)` 는 오른쪽 | 스니펫은 ω 가 **body** frame 임을 가정한다. 이 패키지의 Jacobian·wrench·`K_p` 축은 전부 LWA 이므로 ω 는 **world** 각속도이고 `Ṙ_c = [ω]×R_c ⇒ Ṙ̃ = [ω]×R̃` 다 |
+| **적분** | **semi-implicit(symplectic) Euler — 속도 먼저** | §7.2 MUST. explicit Euler 는 진동계에 에너지를 주입한다. 테스트는 무감쇠 자유진동에서 `E` 비증가를 걸고, **같은 파일에 explicit Euler 참조 구현을 두어 그것이 발산함을 함께 고정**한다 (안 그러면 "에너지가 안 늘었다" 가 공허하다, §11.5 T5.2) |
+| **§7.5 변위 제한** | clamp 아님 — **saturating spring + 바깥 방향 반경 속도 제거**. 반경 속도는 `‖x̃ + ẋ̃·dt‖ = d_max` 가 되도록 **풀어서** 넣는다 | 단순 clamp 는 속도 불연속(§7.5 MUST). 바깥 반경 속도를 0 으로만 만들면 접선 이동이 매 tick `(v·dt)²/2d` 씩 새어 4000 step 에 `1e-5 m` 를 넘어간다 — 반경 성분만 풀어 넣으면 접선 성분은 그대로 남아 "벽을 따라 미끄러짐" 이 보존되면서 경계는 정확해진다 |
+| **§7.5 속도 제한** | 선/각속도 **별도**, **norm 기준**(방향 보존) | 변위 제한만으로는 큰 임펄스의 순간 속도를 못 막는다. 성분별 clamp 는 대각 방향 밀림을 축 정렬로 **조용히 회전**시킨다 |
+| **§7.4 `min_desired_inertia`** | 하한을 **사용 시점**(`Step`/`Energy`)에서 강제. 기본 translation 2.0 kg / rotation 0.05 kg·m² | 접촉 안정성은 `Λ_d` 가 작을수록 나빠진다(Colgate/Hogan 계열). `set_gains` 는 `LoadConfig` 를 우회하므로 configure 에서만 clamp 하면 구멍이 남는다. `Λ_d` 는 매 tick 역수를 취하므로 NUM-2 가드이기도 하다 |
+| **IK** | 신규 공용 helper `compliance/differential_ik.hpp` (DLS + **속도공간** `N = I − J⁺J`). §6.5 σ_min-adaptive λ 규칙은 `task_dynamics.hpp` 것을 **호출**(복제 아님) | D16. CLIK 의 DLS 는 인라인 상수-λ 라 재사용 불가하고 복제하면 세 번째 변형(P5 저촉). `task_dynamics` 는 `M` 이 필요한 **동역학 일관** 역행렬이라 position 출력 컨트롤러에는 부적합. 토크는 `Nᵀ`, 속도는 `N` (§6.4) |
+| **폐루프 IK 항 (명세 갭)** | §7.3 공식은 순수 feedforward(`ν = ν_c`)지만 구현은 `ν = ν_c + K^ik·e(X, X_c)` 를 쓴다 (`ik_kp_*`, 0 으로 두면 명세와 동일) | feedforward 만으로는 하위 제어기 추종 오차가 **영구히 보정되지 않아** 실제 TCP 가 `X_c` 에서 멀어진다. §12 "구현 시 발견하면 보고" 대상 갭으로 기록 |
+| **`integrate_from_measured`** | 양방향 구현, 기본 `true`. `false` 일 때만 `‖q_cmd−q_meas‖ > command_divergence_limit` → **critical** (`ComplianceFaults::command_divergence` → SAFE_STOP) | §7.3 MUST. `true` 는 매 tick 재anchor 되므로 windup 자체가 불가능하다. critical 인 이유: 명령이 이미 팔에서 벗어났으므로 계속 돌수록 간격이 벌어지고, wrench 소실과 달리 **후퇴할 축소 권한 모드가 없다** |
+| **관절 한계** | `q_cmd` 를 `[q_min+δ, q_max−δ]` 로 clamp | `safety_limiter.hpp` 는 **torque-domain** 이라 전이되지 않는다. 한계 밖 position 명령은 "부드러운 밀어냄" 이 아니라 backend 가 거부하거나 하드스톱으로 몰고 가는 요청이다. §7.3 방식 3(QP viability)은 범위 밖 |
+| **E-STOP** | **position-hold**: 첫 held tick 의 측정 위치를 **latch** 하고 반복 출력 | `torque_estop.hpp` 의 `ĝ(q) − D·q̇` 는 토크 출력 전제라 부적용. 매 tick `q_meas` 를 재출력하면 hold 처럼 보이지만 backdrivable arm 이 밀릴 때 명령이 따라가 **저항이 사라진다**. CLIK 의 `ComputeEstop`(safe_position 슬루)도 쓰지 않는다 — compliance 컨트롤러가 E-STOP 순간에 조작자가 요청하지 않은 **이동을 시작**하면 안 된다 |
+| **wrench 필수** | `external_wrench.enabled: false` 는 **configure 에러** | §7.1 축 A≠NONE. impedance 와 대칭이 아니다: 거기서는 A=NONE 이 1급 법칙이지만, 여기서는 힘이 곧 입력이라 없으면 비싼 위치 홀드로 퇴화한다 |
+| **축 B (selection)** | **FULL_SE3 전용** — `TaskSelection` enum 없음 | `TRANSLATION_ONLY` 이면 어떤 task 도 규제하지 않는 회전을 토크로 적분하게 된다. §6.1 이 요구하는 nullspace posture 계약과 함께 후속 슬라이스에서 도입 |
+| **wrench 파이프라인** | 신규 `compliance/wrench_pipeline.hpp` 로 추출 (read → bias 이중 래치 → 조건화 → `Ad^{-T}` → fade → contact) | 조각들은 이미 분리돼 있었지만 **순서와 bias 이중 래치**는 공유되지 않았고 거기가 바로 미묘한 결함이 사는 자리다(§3.1). `TaskImpedanceController` 마이그레이션은 **유예** — helper 추출과 shipped 컨트롤러 이전은 회귀 표면이 다르다 (`task_dynamics.hpp` 가 OSC 를 안 건드린 D16 선례) |
+
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 
 - **A=NONE 은 열등한 fallback 이 아니다** (§6.2). 폐루프는 `Λ(q)ë + [μ+K_d]ė + K_p e = f_ext`
@@ -184,10 +209,21 @@ P4 의 시뮬레이션 대응은 `test_task_impedance_wrench.cpp`
 
 ## 5. 슬라이스 경계 (여기서 하지 않는 것)
 
-admittance (`TaskAdmittance`) · virtual TCP · forward-dynamics emulation ·
-cascaded outer-admittance/inner-impedance (§7.6) · 실기 backend · `PublishRole` enum 추가 ·
-진단 토픽의 ROS publisher wiring (컨트롤러는 controller-private `SeqLock<POD>` 에 매 tick
-store 하나 LifecyclePublisher 연결은 후속).
+virtual TCP · forward-dynamics emulation · cascaded outer-admittance/inner-impedance (§7.6) ·
+실기 backend · `PublishRole` enum 추가 · 진단 토픽의 ROS publisher wiring (컨트롤러는
+controller-private `SeqLock<POD>` 에 매 tick store 하나 LifecyclePublisher 연결은 후속).
+
+슬라이스 3 (`TaskAdmittanceController`) 이 명시적으로 **하지 않은** 것:
+
+- **`integrated_bringup` 배선 일체** (`RTC_REGISTER_CONTROLLER` / YAML / launch smoke) —
+  슬라이스 2 와 같은 범위 계약 (issue #236 범위 계약 (1)).
+- **`CommandType::kVelocity` 신설** (D14 로 기각 — 별도 이슈 후보).
+- **축 B `TRANSLATION_ONLY`** — §3.5 참조. `TaskSelection` enum 자체를 만들지 않았다.
+- **S4 cascaded** (§7.6) · **JointAdmittance** (§5.4) · 동적 payload 보상 ·
+  `CompositeWrenchSource`/fusion (§3.2.4).
+- **CLIK 을 `differential_ik.hpp` 로 마이그레이션** · **`TaskImpedanceController` 를
+  `wrench_pipeline.hpp` 로 마이그레이션** — 둘 다 helper 추출과는 회귀 표면이 다른 별건
+  (D16 선례). 후자를 할 때 두 경로가 **byte-identical** wrench 를 내는지가 수용 조건이다.
 
 슬라이스 2 가 명시적으로 **하지 않은** 것:
 
