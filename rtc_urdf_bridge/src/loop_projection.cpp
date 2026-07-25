@@ -12,6 +12,9 @@
 
 #include <Eigen/Dense>
 
+#include <algorithm>
+#include <cmath>
+
 namespace rtc_urdf_bridge {
 
 namespace {
@@ -118,6 +121,71 @@ ProjectionResult ProjectPassiveToConstraint(
     }
   }
   return ProjectOverColumns(model, data, constraints, q_init, passive_cols, opts);
+}
+
+ProjectionResult ProjectPassiveWithContinuation(
+    const pinocchio::Model& model, pinocchio::Data& data,
+    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_prev,
+    const Eigen::VectorXd& q_target, const std::vector<pinocchio::JointIndex>& actuated_joint_ids,
+    const ProjectionOptions& opts, double max_actuated_increment) {
+  // 크기 계약 위반 / continuation 비활성 → 단일 사영으로 위임 (기존 동작).
+  const bool sizes_ok = (q_prev.size() == model.nq) && (q_target.size() == model.nq);
+  if (!sizes_ok || max_actuated_increment <= 0.0) {
+    return ProjectPassiveToConstraint(model, data, constraints, q_target, actuated_joint_ids, opts);
+  }
+
+  // actuated 열에서의 seed 증분 크기. difference() 는 continuous(cos,sin)·multi-DoF 관절도
+  // tangent 로 올바르게 다룬다 (스칼라 뺄셈은 wrap 을 놓친다).
+  const Eigen::VectorXd dv = pinocchio::difference(model, q_prev, q_target);
+  double max_delta = 0.0;
+  for (const auto jid : actuated_joint_ids) {
+    if (jid == 0 || jid >= static_cast<pinocchio::JointIndex>(model.njoints)) {
+      continue;  // universe(0)/invalid — skip
+    }
+    const int vs = model.idx_vs[jid];
+    const int nvj = model.nvs[jid];
+    for (int k = 0; k < nvj; ++k) {
+      max_delta = std::max(max_delta, std::abs(dv[vs + k]));
+    }
+  }
+  if (!std::isfinite(max_delta)) {
+    // 비유한 측정 — 쪼개도 의미가 없다. 단일 사영에 맡기고 소비자의 finite guard 가 처리.
+    return ProjectPassiveToConstraint(model, data, constraints, q_target, actuated_joint_ids, opts);
+  }
+
+  const int n_sub = (max_delta <= max_actuated_increment)
+                        ? 1
+                        : std::min(kMaxContinuationSubsteps,
+                                   static_cast<int>(std::ceil(max_delta / max_actuated_increment)));
+
+  ProjectionResult result;
+  result.q = q_prev;  // passive warm-start 원천 (actuated 는 아래에서 매 sub-step 덮어쓴다)
+  Eigen::VectorXd q_interp(model.nq);
+  Eigen::VectorXd q_seed(model.nq);
+  for (int s = 1; s <= n_sub; ++s) {
+    const double u = static_cast<double>(s) / static_cast<double>(n_sub);
+    pinocchio::interpolate(model, q_prev, q_target, u, q_interp);
+    // passive = 직전 sub-step 해, actuated = 보간값. q_target 의 passive 슬롯은 쓰지 않는다.
+    q_seed = result.q;
+    for (const auto jid : actuated_joint_ids) {
+      if (jid == 0 || jid >= static_cast<pinocchio::JointIndex>(model.njoints)) {
+        continue;
+      }
+      const int qs = model.idx_qs[jid];
+      const int nqj = model.nqs[jid];
+      q_seed.segment(qs, nqj) = q_interp.segment(qs, nqj);
+    }
+    result = ProjectPassiveToConstraint(model, data, constraints, q_seed, actuated_joint_ids, opts);
+    // 중간 sub-step 이 미수렴이면 **즉시 중단**한다. 그 해는 이미 loop-consistent 가 아니므로
+    // 이어서 warm-start 로 쓰면 homotopy 보장이 깨진 경로를 따라가고, 그럼에도 마지막
+    // sub-step 만 수렴하면 converged=true 로 돌아가 소비자가 그 형상을 커밋한다 — 단일 사영
+    // 시절에는 없던 실패 은폐 경로다. 실패 지점의 결과(부분 진행 q + converged=false)를 그대로
+    // 돌려 소비자의 기존 hold 정책이 작동하게 한다.
+    if (!result.converged) {
+      return result;
+    }
+  }
+  return result;
 }
 
 Eigen::VectorXd ProjectVelocity(const pinocchio::Model& model, pinocchio::Data& data,

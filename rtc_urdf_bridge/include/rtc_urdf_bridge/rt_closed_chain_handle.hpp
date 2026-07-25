@@ -1,6 +1,10 @@
 // ── RtClosedChainHandle: RT-safe closed-chain FK (fixed-step loop projection) ─
 #pragma once
 
+// loop_projection.hpp 는 선언 전용 — 사영 임계 상수(kDefaultActuatedIncrement /
+// kDefaultMaxPassiveDeviation)를 non-RT 사영과 **한 곳에서** 공유하기 위해 포함한다. RT 경로가
+// 그 함수들을 호출하지는 않는다 (여기 fixed-K 재구현이 대응).
+#include "rtc_urdf_bridge/loop_projection.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 
 // Pinocchio 헤더 (경고 억제)
@@ -69,8 +73,32 @@ class RtClosedChainHandle {
  public:
   /// @brief `Update()` 결과 상태 (loop-consistency / 특이성).
   struct Status {
-    /// 사영 결과가 비유한 → 이번 tick 버리고 직전 해 유지. FK/J_a 는 직전 값.
+    /// 이번 tick 의 FK/J_a 를 신뢰하지 말라는 신호 (소비자는 직전 유효값 hold). 세 경우에 선다:
+    ///   (a) 사영 결과가 비유한(측정 NaN/Inf) 또는 q_a 크기 불일치,
+    ///   (b) actuated seed 증분이 `max_seed_increment` 를 넘어 **클램프**된 tick — 이 tick 의
+    ///       actuated 슬롯은 측정값과 다르므로 FK 를 신뢰할 수 없다. 나머지 증분은 다음
+    ///       tick 들에서 이어 가므로 `⌈Δ/증분⌉` tick 뒤 자연히 해제된다 (#248),
+    ///   (c) 사영 후 passive 가 `max_passive_deviation` 을 넘게 이탈 (분기 이탈 의심).
+    ///
+    /// ⚠ **내부 상태 갱신 여부가 케이스마다 다르다** — (a)·(c) 는 `q_full_`/G_ 를 커밋하지 않아
+    /// getter 가 직전 유효 해를 그대로 돌려주지만, (b) 는 클램프된 **중간 형상을 커밋**하고
+    /// G_/J_a 도 그 형상으로 갱신한다 (그래야 다음 tick 이 이어서 진행된다). 즉 (b) tick 의
+    /// getter 값은 "직전 값"이 아니라 목표로 가는 도중의 형상이다 — 어느 쪽이든 측정 q_a 에
+    /// 대응하는 형상은 아니므로 소비자 정책(hold)은 동일하다.
+    ///
+    /// 해제 전망도 케이스마다 다르다 — 아래 @ref held_ticks 참조.
     bool held{false};
+    /// 연속으로 `held` 인 tick 수 (이번 tick 포함, held 아니면 0). **관측용** — 제어 분기에 쓰지
+    /// 말 것. `Update()` 와 `UpdateDynamics()` 의 hold 를 통합해 센다 (한 tick 에 중복 계수되지
+    /// 않는다 — Update 가 held 면 UpdateDynamics 는 즉시 그 status 를 되돌린다).
+    ///
+    /// (b) 는 `⌈Δ/증분⌉` tick 뒤 자연히 해제되므로 짧게 끝난다. 반면 (a) 는 측정이 정상으로
+    /// 돌아올 때까지, (c) 는 **입력이 변하지 않는 한 무기한** 지속될 수 있다 — (c) 는 q_full_ 을
+    /// 커밋하지 않아 다음 tick 이 같은 seed·같은 입력에서 같은 결과를 내기 때문이다. 따라서
+    /// held 를 fault 로 승격하는 것은 여전히 금지지만(정상 walk-in 을 죽인다), 이 카운터가
+    /// 예상 walk-in(`⌈Δ/max_seed_increment⌉`)을 크게 넘으면 **off-RT 진단 대상**이다 — 그대로
+    /// 두면 소비자가 조용히 무기한 degraded(open-chain fallback / last-good hold)로 남는다.
+    int held_ticks{0};
     /// Jc_D near-singular (LDLT pivot 대리). J_a 는 damped 라 신뢰 저하.
     bool singular{false};
     /// 고정 K 스텝 후 최종 closure residual ‖φ‖. 소비자가 임계로 hold 정책을 정할 수 있다.
@@ -95,6 +123,17 @@ class RtClosedChainHandle {
   ///   하드코딩(`kReductionDamping = kSingularSvThreshold`)하므로, 여기에 1e-6 이 아닌 값을 넘기면
   ///   축약 M_a/g_a/h_a·J_a 가 non-RT ground truth 와 조용히 갈라지고 singular flag 는 여전히
   ///   임계값에 고정돼 λ 와 decouple 된다. 기본값을 유지하는 한 non-RT 와 수치 등가다.
+  /// @param max_seed_increment tick 당 actuated seed 증분 상한 (기본
+  ///   @ref kDefaultActuatedIncrement, ≤0 → 비활성). 초과분은 **증분 벡터 전체를 균일 스케일**해
+  ///   잘라내고 그 tick 은 `held=true` 로 보고한다 (per-joint 클램프는 homotopy 경로를 꺾으므로
+  ///   쓰지 않는다). 나머지는 다음 tick 들에서 이어 간다 — 즉 **tick loop 자체가 continuation
+  ///   경로**가 되어, 고정 K 를 유지한 채(추가 연산 0·결정적) 조립 분기 이탈을 막는다.
+  ///   비활성화하면 activate 직후 q_seed→측정 q 의 큰 점프가 반대편 분기로 착지할 수 있고,
+  ///   뒤집힌 분기도 ‖φ‖≈0 이라 `closure_error` 임계로는 검출되지 않는다 (#248).
+  /// @param max_passive_deviation K 스텝 후 passive q 가 이번 tick seed 대비 이만큼 넘게
+  ///   움직이면 분기 이탈로 보고 `held=true` + q_full_ 미커밋 (기본
+  ///   @ref kDefaultMaxPassiveDeviation, ≤0 → 비활성). seed clamp 를 통과했더라도 near-singular
+  ///   조립형상에서 DLS 스텝이 폭주할 수 있어 남겨 두는 2차 가드다.
   /// @throws std::invalid_argument model 이 null, 또는 q_seed 가 비어있지 않은데 크기≠nq
   /// @throws std::runtime_error 독립 관절 non-single-DoF, 구속 有인데 독립 관절 無,
   ///   종속 DoF > 구속 rows m (reduction underdetermined)
@@ -102,7 +141,9 @@ class RtClosedChainHandle {
                       std::vector<pinocchio::RigidConstraintModel> constraints,
                       std::vector<pinocchio::JointIndex> actuated_joint_ids,
                       Eigen::VectorXd q_seed = {}, int num_iterations = 2,
-                      double projection_damping = 1e-6, double reduction_damping = 1e-6);
+                      double projection_damping = 1e-6, double reduction_damping = 1e-6,
+                      double max_seed_increment = kDefaultActuatedIncrement,
+                      double max_passive_deviation = kDefaultMaxPassiveDeviation);
 
   // 복사 금지, 이동 허용
   RtClosedChainHandle(const RtClosedChainHandle&) = delete;
@@ -237,6 +278,11 @@ class RtClosedChainHandle {
   /// @param have_velocity v_full_ 가 채워졌는가 (false → h_a = g_a).
   void RebuildReducedDynamics(bool have_velocity) noexcept;
 
+  /// held 연속 tick 카운터를 갱신해 `status_.held_ticks` 에 반영하고 status_ 를 돌려준다.
+  /// **`Update()` 의 모든 반환 직전에** 호출한다 (반환 경로가 여럿이라 한 곳에 모을 수 없다).
+  /// 포화 증가 — 오버플로 UB 없이 무기한 held 를 관측할 수 있다.
+  const Status& FinalizeStatus() noexcept;
+
   std::shared_ptr<const pinocchio::Model> model_;
   pinocchio::Data data_;
   std::vector<pinocchio::RigidConstraintModel> constraints_;
@@ -247,9 +293,12 @@ class RtClosedChainHandle {
   int n_a_{0};  ///< 독립 좌표 수
   int dep_{0};  ///< 종속(=passive) DoF 수 = nv − n_a
   int num_iterations_{2};
-  double proj_lambda2_{0.0};      ///< 사영 λ²
-  double reduction_lambda_{0.0};  ///< G left-pinv λ
-  bool identity_{false};          ///< 구속 없음 → 항등 (serial 등가)
+  double proj_lambda2_{0.0};        ///< 사영 λ²
+  double reduction_lambda_{0.0};    ///< G left-pinv λ
+  double max_seed_increment_{0.0};  ///< tick 당 actuated seed 증분 상한 (≤0 → 비활성)
+  double max_passive_deviation_{0.0};  ///< 사영 후 passive 이탈 상한 (≤0 → 비활성)
+  int consecutive_held_ticks_{0};  ///< 연속 held Update() tick 수 (Status::held_ticks 원천)
+  bool identity_{false};           ///< 구속 없음 → 항등 (serial 등가)
 
   std::vector<IndependentSlot> independent_;  ///< 독립 관절 슬롯 (v_idx 오름차순)
   std::vector<int> dep_v_idx_;  ///< 종속(=passive) velocity 인덱스 (오름차순)
@@ -259,6 +308,8 @@ class RtClosedChainHandle {
   Eigen::VectorXd q_work_;  ///< 사영 중간 configuration (커밋 전)
   Eigen::VectorXd q_next_;  ///< integrate 출력
   Eigen::VectorXd dq_;      ///< nv tangent 증분
+  Eigen::VectorXd q_seed_;  ///< 이번 tick 사영 **직전** seed 스냅샷 (passive 이탈 판정 기준)
+  Eigen::VectorXd dq_a_;  ///< (n_a) actuated seed 증분 (클램프 전) — 균일 스케일용
 
   // 구속 kinematics 버퍼
   Eigen::VectorXd phi_;           ///< (m)

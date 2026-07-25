@@ -59,6 +59,12 @@ Eigen::VectorXd LoopConsistentSeed(const std::shared_ptr<pinocchio::Model>& full
   return seedh.GetFullConfiguration();
 }
 
+// [#248] seed(0.2)→eval(0.3) 은 Δ=0.1 rad 로 RtClosedChainHandle 의 tick 당 seed 증분 상한
+// (0.05)을 넘는다 → 첫 tick 은 클램프되어 held 다. 프로덕션 RT loop 과 동일하게 held 가 풀릴
+// 때까지 tick 을 돌려 평가점에 도달시킨다. `ref` 와 provider 내부 핸들은 seed·K·입력열이
+// 같으므로 **같은 tick 수**를 돌려야 두 사영이 동일 형상에서 비교된다 (고정 K 잔차까지 일치).
+constexpr int kWalkInTicks = 8;  // ⌈0.1/0.05⌉=2 + settle
+
 }  // namespace
 
 // ── (1) 하류 contact frame override 가 수렴 핸들과 일치 + frozen-loop 대비 유의미 차이 ─────
@@ -78,7 +84,12 @@ TEST(WbcContactKinematicsLoopConsistent, DownstreamOverrideMatchesConvergedNotFr
 
   // 참조: 동일 파라미터 RtClosedChainHandle 로 loop-consistent J·oMf (full 모델).
   rub::RtClosedChainHandle ref(full, ccm.constraints, ccm.actuated_joint_ids, seed, 2);
-  ASSERT_FALSE(ref.Update(std::vector<double>{eval_crank}).singular);
+  rub::RtClosedChainHandle::Status st_ref{};
+  for (int t = 0; t < kWalkInTicks; ++t) {  // seed 증분 클램프 walk-in (#248)
+    st_ref = ref.Update(std::vector<double>{eval_crank});
+  }
+  ASSERT_FALSE(st_ref.held) << kWalkInTicks << " tick 뒤에도 held — walk-in 미완료";
+  ASSERT_FALSE(st_ref.singular);
   const pinocchio::FrameIndex c1_full = ref.GetFrameId("c1");
   ASSERT_NE(c1_full, static_cast<pinocchio::FrameIndex>(0));
   ASSERT_TRUE(ref.IsFrameDownstreamOfLoop(c1_full)) << "c1 은 loop-하류";
@@ -112,9 +123,12 @@ TEST(WbcContactKinematicsLoopConsistent, DownstreamOverrideMatchesConvergedNotFr
   const pinocchio::SE3 oMf_open = cache.contact_frames[0].oMf;
   ASSERT_GT(cache.contact_frames[0].dJv.norm(), 1e-9) << "open-chain dJv 는 v≠0 에서 비영";
 
-  // provider 배선 → 하류 frame override.
+  // provider 배선 → 하류 frame override. provider 내부 핸들도 `ref` 와 같은 이유로 walk-in 이
+  // 필요하며, 동일 tick 수를 돌려야 두 사영이 같은 형상에서 비교된다 (#248).
   cache.reduced_provider = &provider;
-  cache.Update(q, v);
+  for (int t = 0; t < kWalkInTicks; ++t) {
+    cache.Update(q, v);
+  }
   const Eigen::MatrixXd J_after = cache.contact_frames[0].J;
   const pinocchio::SE3 oMf_after = cache.contact_frames[0].oMf;
 
@@ -163,7 +177,10 @@ TEST(WbcContactKinematicsLoopConsistent, HeldHoldsLastGoodNotFrozen) {
   v[static_cast<Eigen::Index>(control.idx_vs[jid])] = 0.37;  // 비영 → dJv last-good 이 비자명
 
   // fresh tick → last-good 갱신 (J/oMf/dJv 3값 snapshot).
-  cache.Update(q, v);
+  // seed(0.2)→0.3 은 tick 당 seed 증분 상한을 넘으므로 walk-in 이 끝나야 fresh 가 된다 (#248).
+  for (int t = 0; t < kWalkInTicks; ++t) {
+    cache.Update(q, v);
+  }
   const Eigen::MatrixXd J_good = cache.contact_frames[0].J;
   const pinocchio::SE3 oMf_good = cache.contact_frames[0].oMf;
   const Eigen::Matrix<double, 6, 1> dJv_good = cache.contact_frames[0].dJv;

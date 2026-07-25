@@ -85,7 +85,8 @@ rtc_urdf_bridge/
     ├── test_loop_projection_passive.cpp # actuated 고정 passive 사영 (crank_rocker/four_bar)
     ├── test_closed_chain_handle.cpp    # 축약 M/g/h/J/FK: serial 등가·round-trip·특이 flag
     ├── test_closed_chain_fk_measurement.cpp # frozen-loop FK vs closed-chain FK 실측 오차
-    ├── test_rt_closed_chain_handle.cpp # RT-safe FK: converged 등가·J_a·serial 항등·hold·singular·seed-guard·identity-NaN-hold·OOB-getter
+    ├── test_rt_closed_chain_handle.cpp # RT-safe FK: converged 등가·J_a·serial 항등·hold·singular·seed-guard·identity-NaN-hold·OOB-getter·조립분기 clamp
+    ├── test_rt_closed_chain_alloc.cpp  # RT-1 센서: Update() 힙 할당 0 (전역 new 카운터, 단독 TU)
     ├── test_closure_state_publisher.cpp # 노드 end-to-end (actuated 주입→full q, loop 닫힘)
     ├── test_mjcf_comparison.cpp        # MJCF 규약 교차검증
     ├── test_xacro_processor.cpp        # xacro 전처리
@@ -423,7 +424,22 @@ auto ccm = rtc_urdf_bridge::BuildClosedChainModelFromExtendedUrdf(urdf_path, clo
 //   loop_projection.hpp   — ProjectToConstraint (q_ref, 전체 q 사영) / ProjectVelocity
 //                           ProjectPassiveToConstraint (actuated 고정·passive 만 사영;
 //                           actuated 스트림 → loop-consistent full q 재구성, 시각화용)
+//                           ProjectPassiveWithContinuation (**스트리밍 소비자의 표준 진입점**)
 ```
+
+**조립 분기(assembly branch) 주의 — 반드시 continuation 을 쓸 것.** 점(`CONTACT_3D`) 구속으로
+닫은 loop 은 4-bar 처럼 조립 분기가 둘 이상이고 **모든 분기가 φ=0 을 정확히 만족**한다. 따라서
+`converged` / `‖φ‖` 로는 물리적으로 틀린 분기를 검출할 수 없다 — 분기를 결정하는 것은 residual 이
+아니라 seed 에서 해까지의 **homotopy 경로**다. 직전 해에서 크게 떨어진 actuated seed 를 한 번의
+사영에 통째로 넘기면 반대편 분기로 착지하고, warm-start 구조상 영구 고정된다 (issue #248).
+
+- 스트리밍 소비자(직전 해가 있는 경우)는 `ProjectPassiveWithContinuation(q_prev, q_target, …)` 을
+  쓴다 — actuated 증분을 `kDefaultActuatedIncrement`(0.05) 단위 sub-step 으로 나눠 warm-start 를
+  이어간다. `max_actuated_increment ≤ 0` 으로 끄면 단일 사영과 동일하다 (escape hatch).
+- `ProjectPassiveToConstraint` 직접 호출은 증분이 작다고 보장될 때만.
+- RT 경로(`RtClosedChainHandle`)는 sub-step loop 가 비결정적이라 쓸 수 없다 — 대신 **tick 당 seed
+  증분을 균일 스케일로 클램프**하고 그 tick 을 `held` 로 보고해 tick loop 자체를 continuation
+  경로로 쓴다 (고정 K 유지, 추가 연산 0). 세부는 [invariants.md](../agent_docs/invariants.md) NUM-5.
 
 **PinocchioModelBuilder 경로 (bring-up SSoT).** raw URDF 뿐 아니라 xacro 도 소비하는
 `PinocchioModelBuilder` 는 `ModelConfig::closure_yaml_path` 가 설정되면 (`buildModel` 대신)
@@ -571,7 +587,7 @@ ros2 run rtc_urdf_bridge example_rt_integration config/serial_arm_config.yaml
 
 Extended-URDF(spanning-tree URDF + `<stem>.closure.yaml`) 폐쇄 체인을 RViz 에 시각화하는
 off-RT 노드. actuated `JointState` 스트림을 입력받아 **측정된 actuated q 를 고정**하고 passive q 를
-closure 구속으로 풀어(`ProjectPassiveToConstraint`, warm-start) **loop-consistent full q** 를
+closure 구속으로 풀어(`ProjectPassiveWithContinuation`, warm-start) **loop-consistent full q** 를
 만들어 전체 model 관절을 publish 한다 → `robot_state_publisher` 가 TF 로 전개해 loop 가 닫힌 채
 렌더링된다. 모델 구축은 `PinocchioModelBuilder`(xacro 전처리 + closure 파이프라인) 재사용.
 
@@ -585,6 +601,7 @@ closure 구속으로 풀어(`ProjectPassiveToConstraint`, warm-start) **loop-con
 | `output_topic` | `/digital_twin/joint_states` | loop-consistent full `JointState` 출력 |
 | `warn_on_singular` | `true` | 기준 형상 특이 시 기동 경고 |
 | `max_iterations` / `tolerance` | `100` / `1e-10` | passive 사영 수렴 옵션 |
+| `max_actuated_increment` | `0.05` | continuation sub-step 당 actuated 증분 상한 (rad). 조립 분기 이탈 방지 — 위 "조립 분기 주의" 참조. `≤0` 이면 비활성 |
 
 미수렴/특이 프레임은 **직전 loop-consistent 해를 hold**(NaN 미발행)하고 THROTTLE WARN 을 낸다.
 closure 비활성(param 미설정) 로봇은 이 노드를 기동하지 않고 digital_twin 이 직접 publish 한다

@@ -33,8 +33,9 @@ namespace rtc_urdf_bridge {
 ///
 /// configure(생성자): PinocchioModelBuilder(urdf + closure.yaml)로 full model + constraints +
 ///   actuated_joint_ids + q_ref(초기 passive seed) 일괄 획득. xacro 전처리 포함.
-/// 입력 콜백: 이름→q-index 매핑으로 actuated 슬롯 갱신 → ProjectPassiveToConstraint(warm-start
-///   = 직전 프레임 해) → 수렴 시 q_full_ 갱신, 전체 model 관절을 JointState 로 publish.
+/// 입력 콜백: 이름→q-index 매핑으로 actuated 슬롯 갱신 → ProjectPassiveWithContinuation
+///   (warm-start = 직전 프레임 해, actuated 증분은 sub-step 으로 분할) → 수렴 시 q_full_ 갱신,
+///   전체 model 관절을 JointState 로 publish.
 /// 미수렴/특이: 직전 해 hold + THROTTLE WARN (NaN publish 금지 — viz 는 loud 우선).
 ///
 /// 로봇 비종속: 모든 robot identity 는 param(urdf/closure)에서 결정.
@@ -74,6 +75,9 @@ class ClosureStatePublisher : public rclcpp::Node {
   std::vector<JointSlot> output_slots_;
 
   ProjectionOptions projection_opts_;
+  // sub-step 당 actuated seed 증분 상한 (continuation). 큰 점프(cold start, 빠른 동작, 메시지
+  // 유실)에서 조립 분기 이탈을 막는다 — residual 로는 판별 불가하기 때문 (#248).
+  double max_actuated_increment_{kDefaultActuatedIncrement};
 
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr subscription_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr publisher_;

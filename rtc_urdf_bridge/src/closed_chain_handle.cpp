@@ -227,8 +227,12 @@ ClosedChainHandle::Status ClosedChainHandle::Update(std::span<const double> q_a,
     q_full_ = std::move(q_seed);
     status_.converged = true;
   } else {
-    const ProjectionResult res = ProjectPassiveToConstraint(model, data_, constraints_, q_seed,
-                                                            actuated_joint_ids_, projection_opts_);
+    // continuation: actuated 증분이 크면 sub-step 으로 나눠 warm-start 를 이어간다. 한 번에 큰
+    // 점프를 사영하면 반대편 조립 분기로 착지하고, 뒤집힌 분기도 ‖φ‖≈0 이라 converged 검사로는
+    // 검출되지 않는다 (#248). RT 형제(RtClosedChainHandle)는 tick 당 seed clamp 로 같은 역할을
+    // 결정적으로 수행한다.
+    const ProjectionResult res = ProjectPassiveWithContinuation(
+        model, data_, constraints_, q_full_, q_seed, actuated_joint_ids_, projection_opts_);
     status_.iterations = res.iterations;
     status_.closure_error = res.final_error;
     if (res.converged && res.q.allFinite()) {

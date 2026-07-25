@@ -39,9 +39,19 @@ namespace integrated_bringup {
 /// buildReducedModel 의 관절 순서를 **가정하지 않는다**.
 ///
 /// ### held / singular 정책
-/// 사영이 held(비유한) 또는 singular(특이 조립) 인 tick 은 **직전 유효(last-good) 축약 M/h/g 를
+/// 사영이 held 또는 singular(특이 조립) 인 tick 은 **직전 유효(last-good) 축약 M/h/g 를
 /// 유지**한다 — degraded 동역학을 실기 QP 에 주입하지 않기 위함. 최초 유효 tick 이전이면
 /// `FillReducedDynamics` 가 false 를 돌려 open-chain 값이 유지된다.
+/// `held` 는 비유한 tick 외에 **actuated seed 증분 클램프** tick 에도 선다 (#248) — activate
+/// 직후 seed(q_ref)→측정 q 점프를 여러 tick 에 나눠 따라가는 구간이며, 그동안 위 규칙대로
+/// open-chain 값이 유지된다 (최초 유효 tick 이전이므로). fault 로 승격하지 말 것 — 정상
+/// walk-in 을 죽인다.
+///
+/// ⚠ **"일시적"이 보장되는 것은 그 클램프 구간뿐이다.** 분기 이탈 가드
+/// (`max_passive_deviation`) 로 인한 held 는 핸들이 해를 커밋하지 않아 같은 입력이 계속 들어오면
+/// **무기한** 이어질 수 있고, 그 구간 내내 QP 는 조용히 open-chain(또는 last-good) 동역학으로
+/// 돈다. 예상 walk-in(`⌈Δ/max_seed_increment⌉` tick)을 크게 넘는 held 는 열화가 아니라 결함
+/// 신호이므로 `status().held_ticks` 로 관측해 off-RT 진단으로 넘긴다.
 ///
 /// ### Phase ③ — loop-consistent contact frame kinematics (unified kin&dyn)
 /// closed-chain 활성 시 WBC contact frame 의 J·oMf 를 frozen-loop(open-chain) 근사 대신
