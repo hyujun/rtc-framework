@@ -194,6 +194,8 @@ Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
   diag.wrench_fade = 1.0;
   if (!wrench_enabled_) {
     bias_done_ = true;  // nothing to calibrate ⇒ never gate the FSM on it
+    bias_pending_ = false;
+    diag.bias_calibrated = true;
     return f_lwa;
   }
 
@@ -204,8 +206,15 @@ Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
   // Only a sample that ever arrived can be stale — "no producer yet" is the
   // activation transient, not a timeout, and must not fault the first ticks.
   diag.wrench_stale = sample.valid && sample.stale;
+  diag.bias_calibrated = !bias_pending_;
   if (!sample.valid) {
-    bias_done_ = true;  // no samples ⇒ do not strand the FSM in BIAS_CALIBRATING
+    // No producer has ever published. Release the FSM gate so the controller does
+    // not sit in BIAS_CALIBRATING forever, but KEEP bias_pending_: the §3.2.1
+    // calibration is still owed and runs as soon as data appears. Collapsing the
+    // two into one flag here is what used to skip the calibration outright
+    // whenever the F/T driver started publishing after activation — the normal
+    // cold-start ordering — leaving a zero bias in the law with no diagnostic.
+    bias_done_ = true;
     return f_lwa;
   }
 
@@ -215,12 +224,23 @@ Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
       sensor.rotation(), gravity_world_, conditioner_.config().payload_mass,
       conditioner_.config().payload_com);
 
+  if (bias_pending_ && bias_done_) {
+    // Data arrived after the gate was released above: re-enter BIAS_CALIBRATING
+    // and do the owed work now. The state machine refuses this while a SAFE_STOP
+    // is latched, so it cannot launder a fault (E-8).
+    bias_done_ = false;
+    sm_.BeginBiasCalibration();
+  }
+
   if (!bias_done_) {
     // BIAS_CALIBRATING: feed the average, emit nothing. Returning zero here is
     // what keeps an uncalibrated offset out of the control law.
     bias_done_ = conditioner_.AccumulateBias(sample.value, grav);
-    if (bias_done_)
+    if (bias_done_) {
+      bias_pending_ = false;
+      diag.bias_calibrated = true;
       conditioner_.SeedFromSample(sample.value, grav);  // §3.3: seed at the signal, not at 0
+    }
     return f_lwa;
   }
 
@@ -419,6 +439,10 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     if (wrench_enabled_) {
       conditioner_.Reset();
       bias_done_ = false;
+      // Owed only when there is work: bias_calibration_samples == 0 means the
+      // operator declined the average, so the zero bias IS the calibration and
+      // the first sample must not be spent re-entering BIAS_CALIBRATING for it.
+      bias_pending_ = conditioner_.config().bias_samples > 0;
       sm_.BeginBiasCalibration();
     }
     just_seeded = true;  // seed the rate-limit history to this tick's own

@@ -220,8 +220,13 @@ class TaskImpedanceController final : public RTControllerInterface {
     bool saturated{false};
     bool rate_limited{false};
     bool nullspace_active{false};
-    bool wrench_valid{false};     ///< a sample has arrived and a source is configured
-    bool wrench_stale{false};     ///< age > wrench_timeout (→ DEGRADED, never SAFE_STOP)
+    bool wrench_valid{false};  ///< a sample has arrived and a source is configured
+    bool wrench_stale{false};  ///< age > wrench_timeout (→ DEGRADED, never SAFE_STOP)
+    /// The bias in use is a committed §3.2.1 calibration — or none is needed
+    /// (no wrench source). FALSE means the wrench is running on a zero bias, or
+    /// is being suppressed while the average accumulates; without this field a
+    /// calibration that never happened is indistinguishable from one that did.
+    bool bias_calibrated{true};
     bool in_contact{false};       ///< contact hysteresis latch (RUNNING_CONTACT)
     bool inertia_clamped{false};  ///< §5.2 max_inertia_ratio clamp engaged this tick
     bool estopped{false};
@@ -300,7 +305,16 @@ class TaskImpedanceController final : public RTControllerInterface {
   compliance::WrenchInput wrench_input_;
   compliance::WrenchConditioner conditioner_;
   compliance::ContactHysteresis contact_;
-  bool bias_done_{true};  ///< RT-only: BIAS_CALIBRATING has committed a bias
+  // RT-only. `bias_done_` is the FSM GATE ("stop holding BIAS_CALIBRATING"),
+  // `bias_pending_` is the WORK ("a calibration is still owed for this
+  // activation"). They differ exactly in the cases the gate must be released
+  // without the work being finished: no producer has published yet, or the
+  // samples went stale mid-average. Keeping them separate is what stops a
+  // cold-start ordering (controller activates before the F/T driver publishes)
+  // from silently skipping §3.2.1's mandated calibration for the whole
+  // activation — with one flag, releasing the gate discarded the work.
+  bool bias_done_{true};
+  bool bias_pending_{false};
 
   // ── Pre-allocated Eigen work buffers (sized in InitFromModel; RT alloc-free) ─
   Eigen::MatrixXd J_full_;           ///< 6×nv full spatial Jacobian (LOCAL_WORLD_ALIGNED)

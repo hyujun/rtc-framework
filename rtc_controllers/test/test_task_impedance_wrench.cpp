@@ -297,6 +297,63 @@ external_wrench:
   EXPECT_GT(std::sqrt(norm), 9.0);
 }
 
+// Cold start: the controller activates BEFORE the F/T driver publishes anything.
+// The FSM gate has to be released (otherwise the controller sits in
+// BIAS_CALIBRATING forever, masking every later wrench fault), but the §3.2.1
+// calibration is still owed and must run when data finally appears — releasing
+// the gate must not discard the work. `bias_calibrated` is what makes the
+// difference observable at all: without it, "never calibrated" and "calibrated"
+// look identical from outside.
+TEST(TaskImpedanceWrench, BiasCalibrationRunsWhenTheProducerStartsLate) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(R"(
+external_wrench:
+  enabled: true
+  filter_enabled: false
+  bias_calibration_samples: 4
+  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+)"));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+
+  // Ten ticks with no producer at all. The FSM must not be stuck, and the bias
+  // must not be declared done.
+  for (int k = 0; k < 10; ++k) {
+    (void)ctrl.Compute(state);
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    EXPECT_FALSE(d.wrench_valid) << "tick " << k;
+    EXPECT_FALSE(d.bias_calibrated) << "a calibration that never ran reported itself done";
+    EXPECT_NE(d.state, static_cast<std::uint8_t>(ComplianceState::kBiasCalibrating))
+        << "stranded in BIAS_CALIBRATING with no producer (tick " << k << ")";
+  }
+
+  // The driver comes up. The owed calibration runs now: the wrench stays
+  // suppressed while the four samples average, and the offset must NOT leak.
+  const Wrench6 offset{2.0, -1.0, 0.5, 0.0, 0.0, 0.0};
+  for (int k = 0; k < 4; ++k) {
+    Send(ctrl, offset);
+    (void)ctrl.Compute(state);
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    for (double v : d.wrench_lwa)
+      EXPECT_EQ(v, 0.0) << "uncalibrated wrench leaked into the law at sample " << k;
+  }
+
+  const auto committed = ctrl.GetDiagnosticsForTesting();
+  EXPECT_TRUE(committed.bias_calibrated) << "four samples arrived but no bias was committed";
+  const auto& bias = ctrl.GetWrenchBiasForTesting();
+  for (std::size_t i = 0; i < kWrenchDim; ++i)
+    EXPECT_NEAR(bias[i], offset[i], 1e-12) << "component " << i;
+
+  // Post-calibration the same raw value reads as zero external load.
+  Send(ctrl, offset);
+  (void)ctrl.Compute(state);
+  for (double v : ctrl.GetDiagnosticsForTesting().wrench_lwa)
+    EXPECT_NEAR(v, 0.0, 1e-9);
+}
+
 // ── Staleness (§10.6) ───────────────────────────────────────────────────────
 
 // The MUST of §10.6: a dead source fades the wrench to ZERO and degrades — it
