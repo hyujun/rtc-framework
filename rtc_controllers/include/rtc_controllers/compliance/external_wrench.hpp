@@ -62,6 +62,14 @@ struct WrenchRead {
   double fade{0.0};   ///< §10.6 fade-out factor: 1 fresh → 0 fully expired
   bool valid{false};  ///< false until the first sample ever arrives
   bool stale{false};  ///< age > timeout (→ ComplianceFaults::wrench_timeout)
+  /// This tick observed a generation the RT side had not seen before — i.e. the
+  /// producer really did deliver, as opposed to the RT loop re-reading a value it
+  /// already has. Anything that must count SENSOR READINGS rather than CONTROL
+  /// TICKS needs this: at 500–5000 Hz RT against a 100–1000 Hz F/T source the two
+  /// differ by the rate ratio, so a per-tick count silently averages the same
+  /// reading several times over (§3.2.1's N-sample bias average). A ResetTiming()
+  /// makes whatever sample is present count as new, matching its contract.
+  bool is_new{false};
 };
 
 /// Non-RT writer ⇄ RT reader exchange for a 6D external wrench.
@@ -97,6 +105,7 @@ class WrenchInput {
     if (s.generation != last_generation_) {
       last_generation_ = s.generation;
       ticks_since_change_ = 0;
+      r.is_new = true;
     } else if (ticks_since_change_ < kTickCounterMax) {
       ++ticks_since_change_;  // saturating: a long-dead producer must not wrap
     }

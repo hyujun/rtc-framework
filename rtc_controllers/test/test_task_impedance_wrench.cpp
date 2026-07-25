@@ -297,6 +297,44 @@ external_wrench:
   EXPECT_GT(std::sqrt(norm), 9.0);
 }
 
+// §3.2.1 asks for an N-SAMPLE average. The RT loop runs faster than any F/T
+// source, so "N ticks" and "N samples" are different quantities: here the producer
+// publishes once every three ticks, exactly the 3:1 ratio a 500 Hz loop has
+// against a ~166 Hz sensor. A per-tick count would commit after four TICKS —
+// having folded the first reading in three times — and the committed average
+// makes the two hypotheses numerically distinct, so this cannot pass either way.
+TEST(TaskImpedanceWrench, BiasAveragesNewSamplesNotTicks) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(R"(
+external_wrench:
+  enabled: true
+  filter_enabled: false
+  bias_calibration_samples: 4
+  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+)"));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);  // seed; no sample yet
+
+  // Four readings, each held for three ticks. 3 × 0.002 s = 6 ms stays well inside
+  // the 50 ms default timeout, so none of these is stale.
+  constexpr int kTicksPerSample = 3;
+  for (int s = 1; s <= 4; ++s) {
+    Send(ctrl, Wrench6{static_cast<double>(s), 0.0, 0.0, 0.0, 0.0, 0.0});
+    for (int t = 0; t < kTicksPerSample; ++t)
+      (void)ctrl.Compute(state);
+  }
+
+  EXPECT_TRUE(ctrl.GetDiagnosticsForTesting().bias_calibrated);
+  // Per SAMPLE: (1+2+3+4)/4 = 2.5. Per TICK it would have committed at tick 4 on
+  // (1+1+1+2)/4 = 1.25 — the value this assertion rules out.
+  EXPECT_NEAR(ctrl.GetWrenchBiasForTesting()[0], 2.5, 1e-12)
+      << "bias averaged control ticks instead of sensor readings";
+}
+
 // Cold start: the controller activates BEFORE the F/T driver publishes anything.
 // The FSM gate has to be released (otherwise the controller sits in
 // BIAS_CALIBRATING forever, masking every later wrench fault), but the §3.2.1

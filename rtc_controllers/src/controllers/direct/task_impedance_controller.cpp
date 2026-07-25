@@ -235,11 +235,23 @@ Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
   if (!bias_done_) {
     // BIAS_CALIBRATING: feed the average, emit nothing. Returning zero here is
     // what keeps an uncalibrated offset out of the control law.
-    bias_done_ = conditioner_.AccumulateBias(sample.value, grav);
-    if (bias_done_) {
+    //
+    // Only NEW samples are folded in: §3.2.1 asks for an N-SAMPLE average, and at
+    // 500–5000 Hz RT against a 100–1000 Hz F/T source a per-tick count would fold
+    // each reading in rate-ratio times over — averaging 20 distinct readings while
+    // reporting 100, with the arrival jitter leaking in as a weight.
+    if (sample.is_new && conditioner_.AccumulateBias(sample.value, grav)) {
+      bias_done_ = true;
       bias_pending_ = false;
       diag.bias_calibrated = true;
       conditioner_.SeedFromSample(sample.value, grav);  // §3.3: seed at the signal, not at 0
+    } else if (sample.stale) {
+      // The producer died part-way through the average. Release the gate so
+      // wrench_timeout reaches the FSM as DEGRADED instead of being masked by
+      // BIAS_CALIBRATING, but keep the debt: the partial sum is retained and the
+      // average resumes where it stopped once fresh samples return. (Restarting
+      // it instead would let a flaky producer prevent the bias forever.)
+      bias_done_ = true;
     }
     return f_lwa;
   }

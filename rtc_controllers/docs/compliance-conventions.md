@@ -108,6 +108,15 @@ Ad^{-T} 로 LOCAL_WORLD_ALIGNED(tip) 변환  →  staleness fade 곱
   순간 작업이 폐기돼 **그 활성화 동안 bias 가 영구히 0** 으로 남았다 (진단에도 흔적 없음).
 - **`bias_calibration_samples: 0`**: 작업 자체가 없다 (0 bias 가 곧 캘리브레이션 결과).
   `bias_pending_` 을 세우지 않으므로 첫 샘플이 재진입에 소모되지 않는다.
+- **평균 중 producer 사망** (`stale`): 게이트를 풀어 `wrench_timeout` 이
+  BIAS_CALIBRATING 에 가려지지 않고 DEGRADED 로 올라가게 하되, 부분 합은 유지하고 신선한
+  샘플이 돌아오면 이어서 평균한다 (재시작하면 불안정한 producer 가 bias 를 영구히 막는다).
+
+**`bias_calibration_samples` 의 N 은 tick 이 아니라 신규 샘플 수다.** RT 루프(500–5000 Hz)
+는 어떤 F/T 소스(100–1000 Hz)보다 빠르므로 tick 으로 세면 같은 측정치를 rate 비만큼
+중복 누산한다 — `N: 100` 이 실제로는 20개의 서로 다른 측정치를 평균하면서 (노이즈 감소가
+`√100` 이 아니라 `√20`) 도착 jitter 가 가중치로 새어 들어온다. `WrenchRead::is_new`
+(generation 변화 tick) 로 게이트한다.
 
 `diag.bias_calibrated` 가 이 구분을 외부에 노출한다 — 이 필드가 없으면 "커밋된 캘리브레이션"
 과 "한 번도 안 돈 캘리브레이션" 이 밖에서 완전히 동일하게 보인다.
