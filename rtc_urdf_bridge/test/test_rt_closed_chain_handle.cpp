@@ -158,10 +158,12 @@ TEST(RtClosedChainHandle, SerialModelIdentity) {
   ASSERT_FALSE(st.held);
   ASSERT_FALSE(st.singular);
 
-  // 주입한 q_a 가 그대로 full configuration (사영 없음).
+  // 주입한 q_a 가 그대로 full configuration (사영 없음). **비트 단위로** 같아야 한다 —
+  // seed clamp(#248)가 클램프 미발동 tick 까지 `prev + (q_a − prev)` 재구성으로 우회하면
+  // 부동소수 왕복 오차로 1 ulp 어긋나고, serial 등가가 "근사"로 조용히 격하된다 (리뷰 ②).
   const Eigen::VectorXd& q_full = rt.GetFullConfiguration();
   for (int i = 0; i < model->nv; ++i) {
-    EXPECT_NEAR(q_full[i], q_a[static_cast<std::size_t>(i)], 1e-12);
+    EXPECT_EQ(q_full[i], q_a[static_cast<std::size_t>(i)]) << "슬롯 " << i << " 정확 대입 아님";
   }
 
   // FK / Jacobian 이 개방 체인 핸들과 동일.
@@ -178,6 +180,20 @@ TEST(RtClosedChainHandle, SerialModelIdentity) {
 
   // 항등이면 loop 하류 프레임이 없다.
   EXPECT_FALSE(rt.IsFrameDownstreamOfLoop(fid));
+
+  // ── 클램프 미발동 tick 의 **정확 대입** (리뷰 ②) ────────────────────────────
+  //   seed clamp(#248)는 클램프된 tick 만 `prev + scale·Δ` 로 재구성해야 한다. 미발동
+  //   tick 까지 그 경로를 타면 `prev + (q_a − prev)` 왕복에서 1 ulp 가 새고 serial 등가가
+  //   "근사"로 조용히 격하된다. 0.2 → 0.05 는 그 왕복이 **비트 단위로 깨지는** 값 쌍이다
+  //   (0.2 + (0.05−0.2) = 0.04999999999999999). 클램프 경로가 새면 여기서 잡힌다.
+  const std::vector<double> q_prev_step(static_cast<std::size_t>(model->nv), 0.2);
+  const std::vector<double> q_exact_step(static_cast<std::size_t>(model->nv), 0.05);
+  static_cast<void>(rt.Update(q_prev_step));
+  ASSERT_FALSE(rt.Update(q_exact_step).held);
+  for (int i = 0; i < model->nv; ++i) {
+    EXPECT_EQ(rt.GetFullConfiguration()[i], 0.05)
+        << "슬롯 " << i << ": 클램프 미발동 tick 이 재구성 경로를 탔다 (1 ulp 손실)";
+  }
 }
 
 // ── (4) q_a size 불일치 → RT 에서 throw 대신 hold (직전 해 유지) ────────────────
@@ -792,21 +808,30 @@ TEST(RtClosedChainHandle, SeedClampPreservesAssemblyBranchOnLargeJump) {
   // (a) 첫 tick 은 클램프되어 held — 이 tick 의 actuated 는 측정값과 다르므로 FK 신뢰 불가.
   const rub::RtClosedChainHandle::Status first = rt.Update(std::vector<double>{kTarget});
   EXPECT_TRUE(first.held) << "Δ=1.15 rad 점프가 클램프되지 않았다";
+  EXPECT_EQ(first.held_ticks, 1) << "첫 held tick 은 카운터 1";
 
   // (b) 나머지 증분은 다음 tick 들에서 이어 간다 → ⌈Δ/증분⌉ tick 뒤 held 해제 + 기준 분기 도달.
   rub::RtClosedChainHandle::Status st = first;
   const int kMaxTicks = 200;  // ⌈1.15/0.05⌉=23 tick + 여유
   int ticks = 1;
   for (; ticks < kMaxTicks && st.held; ++ticks) {
+    // held_ticks 는 연속 held tick 을 그대로 센다 — 소비자가 walk-in(정상)과 무기한
+    // held(결함)를 구분하는 유일한 관측 수단이므로 진행과 어긋나면 안 된다 (리뷰 ③).
+    EXPECT_EQ(st.held_ticks, ticks) << "held 연속 카운터가 walk-in 진행과 어긋난다";
     st = rt.Update(std::vector<double>{kTarget});
   }
   EXPECT_FALSE(st.held) << ticks << " tick 뒤에도 held — walk-in 이 수렴하지 않는다";
+  EXPECT_EQ(st.held_ticks, 0) << "held 해제 tick 은 카운터가 0 으로 리셋돼야 한다";
   EXPECT_LE(ticks, 30) << "⌈1.15/0.05⌉=23 tick 안에 따라잡아야 한다 (실제 " << ticks << ")";
   // 고정 K=2 사영의 tick 당 잔차 수준. ClosedChainHandFk 의 신뢰 임계(1e-3 m)보다 훨씬 작다.
   EXPECT_LT(st.closure_error, 1e-6);
   // 분기 판정: 뒤집힌 분기는 ‖φ‖ 로는 구분되지 않으므로 **형상 자체**를 기준해와 대조한다.
   EXPECT_LT((rt.GetFramePlacement(fid).translation() - p_truth).norm(), 1e-6)
       << "clamp 를 통과했는데 기준 분기와 다른 형상 (분기 이탈)";
+  // walk-in 을 끝낸 tick 은 클램프가 풀렸으므로 측정값이 **그대로** 들어가야 한다 (리뷰 ②).
+  const auto crank_q = model->idx_qs[model->getJointId("j_crank")];
+  EXPECT_EQ(rt.GetFullConfiguration()[crank_q], kTarget)
+      << "클램프 해제 tick 이 측정값을 정확히 대입하지 않았다";
 
   // (c) **회귀 감지 (mutation guard)**: clamp 를 끄면 같은 점프에서 분기를 벗어난다.
   //     이 EXPECT 가 깨지면 픽스처가 더는 #248 을 재현하지 못한다는 뜻이므로 (b) 가 vacuous

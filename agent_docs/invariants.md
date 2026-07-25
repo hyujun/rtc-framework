@@ -297,7 +297,15 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 - **RT**: sub-step loop 은 입력 의존 → 비결정적이라 쓸 수 없다. 대신 **tick 당 seed 증분을 균일 스케일로 클램프**하고 그 tick 을 `held` 로 보고한다 — tick loop 자체가 continuation 경로가 되어 고정 K 를 유지한다. per-joint 클램프는 homotopy 경로를 꺾으므로 금지.
 - **회귀 테스트 필수 요건**: "고친 경로가 옳다"만 검증하면 vacuous 하다. **끈 경로(continuation/clamp 비활성)가 실제로 분기를 이탈하는지**를 같은 테스트가 확인해야 픽스처가 결함을 계속 재현함이 보장된다.
 
-근거·실측: issue #248.
+세 가지 파생 규칙 — 완화 장치가 스스로 결함을 만들지 않도록 (PR #249 리뷰):
+
+- **미수렴 sub-step 을 warm-start 로 이어가지 말 것.** 그 해는 이미 loop-consistent 가 아니라 homotopy 보장이 깨졌는데, 마지막 sub-step 만 수렴하면 `converged=true` 로 보고돼 소비자가 커밋한다 — 단일 사영에는 없던 **실패 은폐** 경로다. 중간 실패는 즉시 반환해 기존 hold 정책에 맡긴다.
+- **완화는 발동한 tick 에만 적용할 것.** 클램프 미발동 tick 까지 `prev + (q_a − prev)` 재구성 경로를 태우면 부동소수 왕복에서 1 ulp 가 새어 serial 등가(구속 없는 모델 = 개방 체인 FK)가 조용히 "근사"로 격하된다. 미발동 경로는 측정값을 그대로 대입한다.
+- **sub-step 수 cap 은 증분 상한 보장을 깬다.** cap 에 걸리면 sub-step 증분이 `max_actuated_increment` 를 넘으므로, cap 은 "무한 루프 방지"용 여유값이어야지 정상 동작 범위를 자르면 안 된다.
+
+**hold 는 열화 신호이지 자기 치유 보장이 아니다.** RT clamp 의 `held` 는 walk-in(`⌈Δ/증분⌉` tick 뒤 자연 해제)뿐 아니라 해를 커밋하지 않는 가드(분기 이탈·비유한)에도 서며, 후자는 **입력이 그대로면 무기한 지속**된다. 그동안 소비자는 조용히 last-good / open-chain fallback 으로 돈다. 따라서 held 를 fault 로 승격하는 것은 금지(정상 walk-in 을 죽인다)하되, **연속 held tick 수를 관측 가능하게 노출**하고 예상 walk-in 을 크게 넘으면 off-RT 진단으로 넘긴다.
+
+근거·실측: issue #248, PR #249 리뷰.
 
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 

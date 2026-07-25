@@ -32,7 +32,12 @@ namespace rtc_urdf_bridge {
 inline constexpr double kDefaultActuatedIncrement = 0.05;
 
 /// continuation sub-step 수 상한 (비정상적으로 큰 점프에서 무한정 반복하지 않도록).
-inline constexpr int kMaxContinuationSubsteps = 64;
+///
+/// ⚠ **cap 에 도달하면 sub-step 증분이 `max_actuated_increment` 를 초과한다** — 즉 분기 유지
+/// 보장이 조용히 사라진다. 256 은 기본 증분 0.05 rad 기준 Δ≈12.8 rad 까지 보장을 유지하므로
+/// ±2π 범위 관절의 cold start(최악 ≈4π)도 덮는다. 그보다 큰 점프는 측정 이상에 가까우며,
+/// 그 경우 결과는 여전히 φ=0 을 만족하되 **어느 분기인지는 보장되지 않는다**.
+inline constexpr int kMaxContinuationSubsteps = 256;
 
 /// 사영 1회에서 passive q 가 seed 대비 움직일 수 있는 상한 (분기 이탈 2차 가드).
 ///
@@ -91,8 +96,13 @@ struct ProjectionResult {
 ///   @param q_target actuated 슬롯만 유효 (새 측정값). **passive 슬롯은 무시된다.**
 ///   @param max_actuated_increment sub-step 당 actuated 증분 상한. ≤0 이면 continuation 비활성
 ///     (단일 사영 — 기존 동작). 기본 @ref kDefaultActuatedIncrement.
-///   @return **마지막 sub-step** 의 결과 (`q` 는 전체 loop-consistent configuration).
-///     `converged`/`final_error`/`iterations` 도 마지막 sub-step 기준이다.
+///   @return **마지막으로 실행된 sub-step** 의 결과 (`q` 는 전체 loop-consistent configuration).
+///     `converged`/`final_error`/`iterations` 도 그 sub-step 기준이다.
+///     ⚠ 중간 sub-step 이 미수렴하면 **그 지점에서 중단하고** 그 결과를 돌린다
+///     (`converged=false`, `q` 는 도중까지만 진행된 형상). 미수렴 해를 warm-start 로 이어가면
+///     homotopy 보장이 깨진 채 진행되고, 마지막 sub-step 만 수렴해도 `converged=true` 가 돼
+///     소비자가 그 형상을 커밋하기 때문이다. 소비자는 기존대로 `converged` 로 hold 를 판정하면
+///     된다 — 실패 시 actuated 슬롯이 `q_target` 에 도달하지 않았음에 유의.
 ///   크기가 model.nq 와 다른 입력은 continuation 없이 @ref ProjectPassiveToConstraint 로 위임한다.
 ///   **RT 밖에서만 호출** (sub-step 수가 입력 의존 → 비결정적. RT 경로는
 ///   @ref RtClosedChainHandle 의 tick 당 seed clamp 가 같은 역할을 결정적으로 수행한다).

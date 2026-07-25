@@ -8,6 +8,12 @@
 // included in exactly ONE translation unit per test executable. Every
 // ament_add_gtest target here is a single .cpp, so that invariant holds
 // naturally — each test binary gets its own private copy of the overrides.
+//
+// The replacements are deliberately NOT `inline`: [replacement.functions] says a
+// program providing a replacement allocation function shall not declare it
+// inline (ill-formed, no diagnostic required). Without inline, including this
+// header in two TUs of one executable is a hard ODR link error — which is
+// exactly the enforcement we want for the one-TU rule above.
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -43,7 +49,7 @@ struct AllocCounter {
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
 #endif
 
-inline void* operator new(std::size_t sz) {
+void* operator new(std::size_t sz) {
   void* p = std::malloc(sz);
   if (p == nullptr) {
     throw std::bad_alloc{};
@@ -52,7 +58,7 @@ inline void* operator new(std::size_t sz) {
   return p;
 }
 
-inline void* operator new[](std::size_t sz) {
+void* operator new[](std::size_t sz) {
   void* p = std::malloc(sz);
   if (p == nullptr) {
     throw std::bad_alloc{};
@@ -61,19 +67,19 @@ inline void* operator new[](std::size_t sz) {
   return p;
 }
 
-inline void operator delete(void* p) noexcept {
+void operator delete(void* p) noexcept {
   std::free(p);
 }
 
-inline void operator delete[](void* p) noexcept {
+void operator delete[](void* p) noexcept {
   std::free(p);
 }
 
-inline void operator delete(void* p, std::size_t) noexcept {
+void operator delete(void* p, std::size_t) noexcept {
   std::free(p);
 }
 
-inline void operator delete[](void* p, std::size_t) noexcept {
+void operator delete[](void* p, std::size_t) noexcept {
   std::free(p);
 }
 

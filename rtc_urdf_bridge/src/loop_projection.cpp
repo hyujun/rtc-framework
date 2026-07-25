@@ -176,6 +176,14 @@ ProjectionResult ProjectPassiveWithContinuation(
       q_seed.segment(qs, nqj) = q_interp.segment(qs, nqj);
     }
     result = ProjectPassiveToConstraint(model, data, constraints, q_seed, actuated_joint_ids, opts);
+    // 중간 sub-step 이 미수렴이면 **즉시 중단**한다. 그 해는 이미 loop-consistent 가 아니므로
+    // 이어서 warm-start 로 쓰면 homotopy 보장이 깨진 경로를 따라가고, 그럼에도 마지막
+    // sub-step 만 수렴하면 converged=true 로 돌아가 소비자가 그 형상을 커밋한다 — 단일 사영
+    // 시절에는 없던 실패 은폐 경로다. 실패 지점의 결과(부분 진행 q + converged=false)를 그대로
+    // 돌려 소비자의 기존 hold 정책이 작동하게 한다.
+    if (!result.converged) {
+      return result;
+    }
   }
   return result;
 }

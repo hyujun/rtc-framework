@@ -64,7 +64,13 @@ enum class HandFkWiringResult {
 /// 증분 클램프 tick** 에도 선다 (@ref rtc_urdf_bridge::RtClosedChainHandle::Status::held) —
 /// activate 직후 seed(q_ref)→측정 q 점프를 여러 tick 에 나눠 따라가는 동안 fingertip pose 캐시가
 /// 채워지지 않아 `GetFingertipHandRootPose` 가 false 를 돌린다. 이는 tick 0 과 동일한 기존
-/// 경로이며 **일시적**이다 (#248). fault 로 승격하지 말 것.
+/// 경로다 (#248). fault 로 승격하지 말 것 — 정상 walk-in 을 죽인다.
+///
+/// ⚠ 다만 **"일시적"이 보장되는 것은 클램프(walk-in) tick 뿐**이다. 비유한 측정과 분기 이탈
+/// 가드(`max_passive_deviation`)로 인한 held 는 입력이 정상으로 돌아올 때까지 지속되며, 후자는
+/// 핸들이 해를 커밋하지 않아 **같은 입력이 계속 들어오면 무기한** 이어질 수 있다. 그 구간 내내
+/// fingertip pose 는 조용히 stale 이므로, 오래가는 held 는 `status().held_ticks` 로 관측해
+/// off-RT 진단으로 넘긴다 (예상 walk-in ≈ `⌈Δ/max_seed_increment⌉` tick).
 class ClosedChainHandFk {
  public:
   static constexpr std::size_t kMaxFingertips = 4;

@@ -171,6 +171,38 @@ TEST(LoopProjectionPassive, ContinuationDisabledMatchesSingleProjection) {
   EXPECT_LT((off.q - single.q).cwiseAbs().maxCoeff(), 1e-12);
 }
 
+// ── 성공기준 6: 중간 sub-step 이 미수렴이면 **즉시 중단**하고 그 결과를 돌린다 (리뷰 ①). ──
+//   미수렴 해를 warm-start 로 이어가면 homotopy 보장이 깨진 경로를 따라가는데, 마지막
+//   sub-step 만 수렴하면 converged=true 로 보고돼 소비자가 그 형상을 커밋한다 — 단일 사영
+//   시절에는 없던 실패 은폐 경로다.
+TEST(LoopProjectionPassive, ContinuationStopsAtFirstNonConvergedSubstep) {
+  const rub::ClosedChainModel cc = CrankRocker();
+  pinocchio::Data data(cc.model);
+  const auto q_idx = cc.model.idx_qs[cc.model.getJointId("j_crank")];
+
+  constexpr double kStart = 0.05;
+  constexpr double kTarget = 1.2;  // Δ=1.15 rad → sub-step 여러 개
+
+  const Eigen::VectorXd q_start = AssembledAt(cc, data, kStart);
+  Eigen::VectorXd q_target = q_start;
+  q_target[q_idx] = kTarget;
+
+  // 도달 불가 tolerance → **모든** sub-step 이 미수렴. (residual 바닥은 ~1e-16.)
+  rub::ProjectionOptions opts;
+  opts.tolerance = 1e-300;
+  opts.max_iterations = 10;
+
+  const rub::ProjectionResult res = rub::ProjectPassiveWithContinuation(
+      cc.model, data, cc.constraints, q_start, q_target, cc.actuated_joint_ids, opts);
+
+  ASSERT_FALSE(res.converged) << "도달 불가 tolerance 인데 수렴 보고 — 픽스처가 무력하다";
+  // 첫 sub-step 에서 멈췄어야 한다. 계속 진행했다면 actuated 가 q_target(1.2)까지 갔을 것이다.
+  EXPECT_GT(res.q[q_idx], kStart) << "첫 sub-step 은 진행했어야 한다";
+  EXPECT_LE(res.q[q_idx], kStart + rub::kDefaultActuatedIncrement + 1e-12)
+      << "미수렴인데도 다음 sub-step 으로 진행했다 (actuated=" << res.q[q_idx]
+      << ") — 실패가 마지막 sub-step 결과에 가려진다";
+}
+
 // ── 성공기준 3: 특이 조립형상(four_bar 대칭)에서 미수렴이라도 NaN 을 내지 않는다. ───
 //    소비자(P2 노드)는 미수렴 시 직전 해 hold — 그 전제로 결과가 항상 finite 여야 한다.
 TEST(LoopProjectionPassive, SingularAssemblyStaysFinite) {
