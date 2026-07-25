@@ -40,6 +40,13 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
   projection_opts_.max_iterations =
       static_cast<int>(declare_parameter<int>("max_iterations", projection_opts_.max_iterations));
   projection_opts_.tolerance = declare_parameter<double>("tolerance", projection_opts_.tolerance);
+  // 결과 수용 임계 (병진 m, #250). solver 는 tolerance(strict) 를 향해 반복하고, 이 값은
+  // 종료 후 "사용 가능한 해인가" 만 판정한다 — URDF 좌표 불일치의 residual floor 대응.
+  // ⚠ solver 정지 임계를 완화하고 싶더라도 tolerance 를 이 값으로 올리지 말 것 (초기
+  // residual 이 임계 미만이면 refinement 를 통째로 건너뛴다 — #124 closure_tolerance 우회의
+  // 부작용이자 이 파라미터가 도입된 이유).
+  projection_opts_.acceptance_tolerance =
+      declare_parameter<double>("acceptance_tolerance", projection_opts_.acceptance_tolerance);
   // continuation sub-step 당 actuated 증분 상한 (≤0 → 비활성). 점 구속 loop 은 조립 분기가
   // 여러 개이고 모두 φ=0 을 만족하므로, 큰 seed 점프는 residual 검사를 통과한 채 반대편 분기로
   // 착지한다 (#248). 기본값 근거는 kDefaultActuatedIncrement 주석 참조.
@@ -162,13 +169,17 @@ void ClosureStatePublisher::OnJointState(const sensor_msgs::msg::JointState& msg
       model_, *data_, constraints_, q_full_, q_seed, actuated_joint_ids_, projection_opts_,
       max_actuated_increment_);
 
-  if (res.converged && res.q.allFinite()) {
+  // 커밋 게이트는 strict 가 아니라 acceptance (#250) — residual floor (strict 미달·
+  // acceptance 이내) 는 사용 가능한 해다. strict 게이트면 floor 로봇에서 영구 hold 로
+  // 손이 동결된다 (#124 에서 solver tolerance 완화로 우회했던 바로 그 증상).
+  if (res.acceptable && res.q.allFinite()) {
     q_full_ = res.q;
   } else {
     // 직전 해 hold (q_full_ 유지) — actuated 갱신도 버려 loop 를 닫힌 상태로 유지.
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), kSingularWarnPeriodMs,
-                         "passive 사영 미수렴 (‖φ‖=%.3e, iters=%d) — 직전 해 hold.",
-                         res.final_error, res.iterations);
+                         "passive 사영 수용 실패 (‖φ‖=%.3e > acceptance %.1e, iters=%d) — "
+                         "직전 해 hold.",
+                         res.final_error, projection_opts_.acceptance_tolerance, res.iterations);
   }
 
   // 입력 stamp 를 그대로 전달해 MuJoCo/actuated 스트림과 위상 정렬 (Q3: 콜백 추종).

@@ -279,3 +279,26 @@ TEST(ClosedChainHandle, FrameDownstreamOfLoopIdentityAlwaysFalse) {
         << "serial 등가 모델은 loop-passive 가 없어야 한다 (frame " << fid << ")";
   }
 }
+
+// ── #250: residual floor (strict 미달·acceptance 이내) 해는 hold 하지 않고 커밋한다. ──
+//   커밋 게이트가 strict(converged) 면 floor 로봇 (P1B ring closure ~20 nm 불일치 →
+//   ‖φ‖ 바닥 2.8e-8 > 1e-10) 에서 모든 tick 이 hold 로 떨어져 q_full 이 영구 동결된다.
+//   stall 조기 종료 (#250 D3) 로 max_iterations(100) 도 소진하지 않아야 한다.
+TEST(ClosedChainHandle, CommitsAcceptableResidualFloorSolution) {
+  const rub::ClosedChainModel cc = rtc::test::FlooredCrankRocker(3e-8);
+  auto model = std::make_shared<pinocchio::Model>(cc.model);
+  rub::ClosedChainHandle handle(model, cc.constraints, cc.actuated_joint_ids, {});
+
+  constexpr double kCrank = 0.15;  // 비특이 유효 구간
+  const rub::ClosedChainHandle::Status st = handle.Update(std::vector<double>{kCrank});
+
+  EXPECT_FALSE(st.converged) << "floor 인데 strict 수렴 — 픽스처가 무력하다";
+  EXPECT_TRUE(st.acceptable);
+  EXPECT_NEAR(st.closure_error, 3e-8, 3e-9);  // floor == 주입 z-offset
+  EXPECT_LT(st.iterations, 30) << "stall 미감지 — floor 에서 max_iterations 소진";
+
+  // 해가 커밋됐다 (직전 해 hold 아님): actuated 슬롯이 입력을 반영하고 전체 q 유한.
+  const auto q_idx = model->idx_qs[model->getJointId("j_crank")];
+  EXPECT_NEAR(handle.GetFullConfiguration()[q_idx], kCrank, 1e-12);
+  EXPECT_TRUE(handle.GetFullConfiguration().allFinite());
+}
