@@ -191,6 +191,13 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   if (reset_fault_requested_.exchange(false, std::memory_order_acq_rel))
     sm_.ResetFault();
 
+  // Retire a hold latched before an activation / E-STOP-clear / fault-reset
+  // boundary. Consumed HERE, ahead of every ComputeEstop() call site below, so
+  // the first held tick after the boundary re-latches at the measured pose
+  // instead of commanding wherever the arm was last time (E-8).
+  if (estop_hold_invalidate_.exchange(false, std::memory_order_acq_rel))
+    estop_hold_valid_ = false;
+
   // Surface the latched FSM state so an early return publishes the real state
   // instead of a spurious HOLDING.
   diag.state = static_cast<std::uint8_t>(sm_.state());
@@ -206,7 +213,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
     while (pending_targets_.Pop(discarded)) {
       // discard: a command issued during E-STOP must not survive recovery
     }
-    return ComputeEstop(state, /*control_valid=*/false, diag);
+    return ComputeEstop(state, gains, /*control_valid=*/false, diag);
   }
 
   const int nv = handle_->nv();
@@ -450,7 +457,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   diag.state = static_cast<std::uint8_t>(cstate);
 
   if (sm_.in_safe_stop() || !finite || !ik.ok)
-    return ComputeEstop(state, /*control_valid=*/false, diag);
+    return ComputeEstop(state, gains, /*control_valid=*/false, diag);
 
   activation_elapsed_ += dt;  // advance the ramp only on a clean control tick
   diag.control_valid = true;
@@ -458,7 +465,9 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   // re-seed block above: a latched SAFE_STOP forces a re-seed every tick, so
   // clearing it there would re-latch the hold at the freshly measured position
   // on every one of them — a "hold" that follows a backdriven arm, which is
-  // exactly the failure the latch exists to prevent.
+  // exactly the failure the latch exists to prevent. The boundaries that DO
+  // retire the latch go through InvalidateEstopHold() and are consumed at the
+  // top of this function.
   estop_hold_valid_ = false;
 
   // ── Emit ──────────────────────────────────────────────────────────────────
@@ -498,15 +507,20 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
 }
 
 ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& state,
-                                                        bool control_valid,
+                                                        const Gains& gains, bool control_valid,
                                                         const Diagnostics& diag) noexcept {
   const auto& dev0 = state.devices[0];
   const int nc0 = dev0.num_channels;
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto nch =
       std::min(static_cast<std::size_t>(nc0), static_cast<std::size_t>(kMaxDeviceChannels));
   if (!estop_hold_valid_) {
-    for (std::size_t i = 0; i < nch; ++i)
+    for (std::size_t i = 0; i < nch; ++i) {
       estop_hold_[i] = dev0.positions[i];
+      // Seed the rate base at the same pose: the FIRST held tick after a
+      // (re)latch must be able to emit the latch itself, not slew up to it.
+      estop_last_command_[i] = dev0.positions[i];
+    }
     estop_hold_valid_ = true;
   }
 
@@ -515,8 +529,27 @@ ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& s
   auto& out0 = output.devices[0];
   out0.num_channels = nc0;
   for (std::size_t i = 0; i < nch; ++i) {
-    out0.commands[i] = estop_hold_[i];
-    out0.trajectory_positions[i] = estop_hold_[i];
+    double cmd = estop_hold_[i];
+    // The same joint-limit clamp the live path applies (§ q_cmd clamp): an arm
+    // that was already outside its mechanical range when the stop fired must not
+    // have that pose LATCHED and re-commanded forever.
+    if (i < position_lower_.size() && i < position_upper_.size()) {
+      const double lo = position_lower_[i] + gains.joint_limit_margin;
+      const double hi = position_upper_[i] - gains.joint_limit_margin;
+      if (lo < hi)
+        cmd = std::clamp(cmd, lo, hi);
+    }
+    // ...and the correction that clamp asks for is a MOTION, so it is rate-bound
+    // like every other motion this controller emits. Against the last emitted
+    // command, not q_meas — see estop_last_command_. A steady hold is unaffected
+    // (the command does not change, so the bound never binds).
+    const double lim =
+        (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
+    const double step = std::abs(lim) * dt;
+    cmd = std::clamp(cmd, estop_last_command_[i] - step, estop_last_command_[i] + step);
+    estop_last_command_[i] = cmd;
+    out0.commands[i] = cmd;
+    out0.trajectory_positions[i] = cmd;
   }
   output.command_type = command_type_;
 
@@ -557,6 +590,11 @@ void TaskAdmittanceController::TriggerEstop() noexcept {
 void TaskAdmittanceController::ClearEstop() noexcept {
   estopped_.store(false, std::memory_order_release);
   target_initialized_.store(false, std::memory_order_release);
+  // The arm may have been jogged while the stop was asserted, so the hold latch
+  // is retired here too — otherwise a re-trigger before the next clean tick
+  // (E-STOP cleared, arm moved, E-STOP hit again) would command the pre-clear
+  // pose in one step. Note this clears the HOLD, not the fault.
+  InvalidateEstopHold();
   // NOTE: does NOT clear a controller-local SAFE_STOP — that needs ResetFault().
 }
 

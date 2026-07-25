@@ -153,7 +153,10 @@ class TaskAdmittanceController final : public RTControllerInterface {
 
   /// Clear a LATCHED controller-local SAFE_STOP (the ~/reset_fault service;
   /// wiring deferred). Deliberately SEPARATE from ClearEstop (E-8).
-  void ResetFault() noexcept { reset_fault_requested_.store(true, std::memory_order_release); }
+  void ResetFault() noexcept {
+    reset_fault_requested_.store(true, std::memory_order_release);
+    InvalidateEstopHold();
+  }
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
   void set_gains(const Gains& g) noexcept { gains_lock_.Store(g); }
@@ -222,8 +225,23 @@ class TaskAdmittanceController final : public RTControllerInterface {
   /// this does not reuse CLIK's ComputeEstop, which SLEWS toward safe_position:
   /// a compliance controller must not start a motion the operator did not ask
   /// for at the moment the E-STOP fires.
-  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state, bool control_valid,
-                                              const Diagnostics& diag) noexcept;
+  ///
+  /// The latch describes a pose the arm was at. Any boundary that can move the
+  /// arm while this controller is not driving it — a deactivate/reactivate, an
+  /// E-STOP clear, a fault reset — therefore has to retire it, or the first held
+  /// tick after the boundary commands the OLD pose in one unbounded step
+  /// (`InvalidateEstopHold`, E-8). What the latch must survive is the per-tick
+  /// re-seed a latched SAFE_STOP forces; those are different events, which is
+  /// why the request below is separate from `target_initialized_`.
+  [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state, const Gains& gains,
+                                              bool control_valid, const Diagnostics& diag) noexcept;
+
+  /// Ask the RT thread to retire the hold latch on its next tick. Callable from
+  /// any thread; `estop_hold_*` itself stays RT-owned (RT-4 — no lock, and no
+  /// off-RT writer to race with).
+  void InvalidateEstopHold() noexcept {
+    estop_hold_invalidate_.store(true, std::memory_order_release);
+  }
 
   [[nodiscard]] pinocchio::FrameIndex LookupSensorFrame(const std::string& name) const;
   void ResolveSensorFrame();
@@ -293,10 +311,19 @@ class TaskAdmittanceController final : public RTControllerInterface {
   double activation_elapsed_{0.0};                             // RT-only: wrench-ramp accumulator
   double saturation_elapsed_{0.0};  // RT-only: velocity-clamp persist accumulator
   std::array<double, kMaxDeviceChannels> estop_hold_{};  // RT-only: latched hold command
+  // RT-only: the hold command actually EMITTED last tick. The rate bound below
+  // is taken against this and not against q_meas — bounding against the measured
+  // position would make the hold follow a backdriven arm, which is the failure
+  // the latch exists to prevent.
+  std::array<double, kMaxDeviceChannels> estop_last_command_{};
   bool estop_hold_valid_{false};
+  std::atomic<bool> estop_hold_invalidate_{false};
 
   void ResetTargetInitialization() noexcept override {
     target_initialized_.store(false, std::memory_order_release);
+    // on_activate: the arm may have been moved by another controller since this
+    // one last ran, so a hold latched before now describes nothing (E-8).
+    InvalidateEstopHold();
   }
 
   // Per-device limits (device channel order).

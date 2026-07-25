@@ -20,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <map>
 #include <new>
 #include <span>
 #include <string>
@@ -488,6 +489,107 @@ TEST(TaskAdmittanceController, ALatchedSafeStopHoldsInsteadOfFollowingTheArm) {
                   latched[static_cast<std::size_t>(i)], 1e-9)
           << "the SAFE_STOP hold followed the backdriven arm at tick " << k;
   }
+}
+
+// ── E-STOP hold across the boundaries that move the arm (F1, E-8) ───────────
+// The complement of the two tests above. They pin what the latch must SURVIVE
+// (a per-tick re-seed); these pin what must RETIRE it. A latch that outlives a
+// deactivate or an E-STOP clear describes a pose the arm has since left, and the
+// first held tick after the boundary commands it in one unbounded step —
+// ComputeEstop has no slew and no divergence bound to catch that.
+
+TEST(TaskAdmittanceController, AReactivationRetiresAHoldLatchedBeforeIt) {
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(
+      TransparentYaml("integrate_from_measured: false\ncommand_divergence_limit: 0.05\n")));
+  auto state = MakeState(Posture());
+  for (int k = 0; k < 3000; ++k) {
+    Send(c, Wrench6{{40.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    (void)c.Compute(state);
+    if (c.GetDiagnosticsForTesting().state == static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+      break;
+  }
+  ASSERT_EQ(c.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+  const auto held = c.Compute(state);
+  ASSERT_NEAR(held.devices[0].commands[0], Posture()[0], 1e-9);
+
+  // Deactivate, another controller drives the arm elsewhere, reactivate. The
+  // SAFE_STOP is still latched (only ResetFault clears it), so the very first
+  // tick back is a HELD one — the exact path the stale latch reaches.
+  auto moved = Posture();
+  for (auto& v : moved)
+    v += 0.2;
+  c.ResetTargetInitializationForTesting();  // == the CM's on_activate hook
+
+  auto after = MakeState(moved);
+  const auto out = c.Compute(after);
+  for (int i = 0; i < kNj; ++i)
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                moved[static_cast<std::size_t>(i)], 1e-9)
+        << "joint " << i << ": the reactivation re-commanded the pre-deactivate hold";
+}
+
+TEST(TaskAdmittanceController, AnEstopHoldDoesNotSurviveAClearAndRetrigger) {
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+  auto state = MakeState(Posture());
+  for (int k = 0; k < 20; ++k) {
+    Send(c, Wrench6{{5.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    (void)c.Compute(state);
+  }
+
+  c.TriggerEstop();
+  const auto held = c.Compute(state);
+  ASSERT_NEAR(held.devices[0].commands[0], Posture()[0], 1e-9);
+
+  // Stop cleared, arm jogged on the pendant, stop hit again — all before this
+  // controller ran a single clean tick, which is the only other thing that
+  // retires the latch.
+  c.ClearEstop();
+  auto jogged = Posture();
+  for (auto& v : jogged)
+    v += 0.25;
+  c.TriggerEstop();
+
+  auto after = MakeState(jogged);
+  const auto out = c.Compute(after);
+  for (int i = 0; i < kNj; ++i)
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                jogged[static_cast<std::size_t>(i)], 1e-9)
+        << "joint " << i << ": the hold latched before the E-STOP clear came back";
+}
+
+TEST(TaskAdmittanceController, TheHoldIsClampedIntoTheJointLimitsAtABoundedRate) {
+  // An arm already outside its mechanical range when the stop fires must not have
+  // that pose latched and re-commanded forever — but the correction is a MOTION,
+  // so it is rate-bound like every other motion this controller emits.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+
+  rtc::DeviceJointLimits limits;
+  limits.max_velocity.assign(kNj, 1.0);
+  limits.position_lower.assign(kNj, -2.0);
+  limits.position_upper.assign(kNj, 0.05);  // Posture()[0] = 0.1 sits 0.05 rad past it
+  rtc::DeviceNameConfig cfg;
+  cfg.device_name = "arm";
+  cfg.joint_limits = limits;
+  c.SetDeviceNameConfigs(std::map<std::string, rtc::DeviceNameConfig>{{"arm", cfg}});
+
+  auto state = MakeState(Posture());
+  c.TriggerEstop();
+  const auto first = c.Compute(state);
+  EXPECT_NEAR(first.devices[0].commands[0], Posture()[0] - 1.0 * kDt, 1e-12)
+      << "the joint-limit correction left as an unbounded step, or never happened";
+  EXPECT_NEAR(first.devices[0].commands[3], Posture()[3], 1e-12)
+      << "joint 3 is inside the band — the hold must not move it at all";
+
+  for (int k = 0; k < 200; ++k)
+    (void)c.Compute(state);
+  const auto settled = c.Compute(state);
+  EXPECT_NEAR(settled.devices[0].commands[0], 0.05, 1e-9)
+      << "the hold never slewed all the way into the joint limit";
+  EXPECT_NEAR(settled.devices[0].commands[3], Posture()[3], 1e-12);
 }
 
 // ── RT-1: no heap allocation on the tick ────────────────────────────────────
