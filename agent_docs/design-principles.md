@@ -52,6 +52,20 @@ The other two lanes are **not** controller-YAML topics and are owned elsewhere: 
 
 CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->PublishNonRtSnapshot(snap)` to delegate controller-owned publishing. External consumers (BT bridge, GUIs, digital_twin, shape_estimation) subscribe to `/rtc_cm/active_controller_name` (TRANSIENT_LOCAL, single-CM scope per locked decision D-A2) and rewire their sub/pubs on each transition. The CM never decides which namespace is authoritative — it exposes the current choice; everything else is pull-based.
 
+## `rtc_controllers` Controllers Are Pure Control Algorithms
+
+바로 위 규칙이 controller-owned 토픽이 **어디에 사는가**를 정한다면, 이 규칙은 **누가 그것을 만드는가**를 정한다: `rtc_controllers` 의 컨트롤러는 **자기 노드도, publisher 도, subscription 도 만들지 않는다.** 컨트롤러는 `ControllerState` 를 받아 `ControllerOutput` 을 내는 순수 함수에 가깝게 남고, ROS 배선은 전적으로 integration 패키지(`integrated_bringup/src/support/owned_topics.cpp` 의 `CreateOwnedTopics()`)가 소유한다. 현재 `rtc_controllers` 의 `create_publisher` / `create_subscription` / `get_lifecycle_node()` 사용은 **0건이며, 이는 우회할 제약이 아니라 지켜야 할 성질이다.**
+
+- **금지되는 것**: 컨트롤러가 `RTControllerInterface::get_lifecycle_node()` 로 노드를 받아 자기 pub/sub 을 만드는 것. 인터페이스가 노드 접근을 *제공한다*는 사실은 컨트롤러가 그것을 *써도 된다*는 뜻이 아니다 — 그 접근자는 integration 계층(`CreateOwnedTopics`)을 위한 것이다.
+- **금지되지 않는 것**: `rclcpp/logging.hpp` (컨트롤러 5종이 `RCLCPP_*` 로그에 이미 사용). 로깅은 노드를 만들지 않는다.
+- **부가 입력은 인자로 받는다.** 외부 F/T wrench 처럼 device lane 에 없는 입력은 컨트롤러가 구독하는 것이 아니라 **비-RT setter** 로 주입한다 (`SetDeviceTarget` 과 동일 idiom, RT 와의 교환은 `SeqLock`/SPSC 로만 — RT-4). 전송 계층(누가 센서를 읽어 넣어주는가)은 컨트롤러 밖의 관심사다. 값에 딸린 freshness 는 ROS 타임스탬프가 아니라 **generation 카운터 + tick 카운팅**으로 표현한다 (RT 에서 clock 을 읽지 않기 위함; `ControllerState::dt` 사용).
+
+**ARCH-7 과의 구별**: ARCH-7 은 *exec / 런타임 정체성* 소유를 금지한다 (위 Boundary Rules). 이 규칙은 그보다 안쪽으로, **exec 를 안 만들더라도 컨트롤러가 노드·구독을 만드는 것**을 금지한다. 두 규칙은 별개이며 ARCH-7 의 standalone-node 예외(`mujoco_simulator_node` 등)는 여기에 적용되지 않는다 — 그 예외는 robot-agnostic *노드* 패키지에 대한 것이지 컨트롤러에 대한 것이 아니다.
+
+**근거**: 컨트롤러를 순수 알고리즘으로 유지하면 (a) 단위 테스트가 ROS 컨텍스트 없이 성립하고, (b) 같은 컨트롤러가 sim / 실기 / 오프라인 재생에서 배선만 갈아끼워 재사용되며, (c) 배선 결정(QoS, 네임스페이스, 메시지 타입)이 robot bringup 한 곳에 모인다. 컨트롤러에 구독을 넣으려는 충동은 대개 "이 입력을 어떻게 넣지?" 에서 나오는데, 답은 setter 이지 구독이 아니다.
+
+위반이 필요해 보이면 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN]` (E-1 / Critical) 로 보고한다. *(결정 2026-07-25, issue #236 — impedance/admittance 슬라이스 2의 wrench 입력 경로를 정하며 명문화. 그 전까지 이 규칙은 코드에만 존재했고 문서에 없어 "컨트롤러가 자기 구독을 만든다"가 유효한 선택지로 검토된 적이 있다.)*
+
 ## Backend / Controller Layering
 
 Within a robot bringup package and its `DeviceBackend` implementations (`mujoco_native`, `udp_hand_native`, `ur_driver_native`, future drivers), the backend ↔ controller boundary is governed by **responsibility**, not by data shape. The topic-ownership rule above governs *who owns a ROS topic*; this rule governs *who computes a value*.
