@@ -14,10 +14,63 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <string>
 
 namespace rtc_urdf_bridge {
 
 namespace {
+
+// Stall(residual floor) 감지: 연속 kStallIterations 회 상대 개선이 kStallRelImprovement
+// 미만이면 더 진행해도 residual 이 내려가지 않는다고 보고 조기 종료한다. URDF 좌표
+// 불일치로 floor 가 있으면 strict tolerance 에 원리적으로 도달 불가라, 이 감지가 없으면
+// 매 호출 max_iterations 를 전부 소진한다 (#250 D3). Newton 은 해 근방에서 초선형
+// (iteration 당 수십 % 이상 개선) 이므로 1% 임계는 정상 수렴을 자르지 않고, floor 는
+// 개선율 ≈ 0 이라 2회 연속으로 확실히 걸린다. 정밀도는 보존된다 — 개선이 계속되는 한
+// strict tolerance 까지 반복한다. (acceptance_tolerance 는 여기 관여하지 않는다 —
+// stopping 기준이 아니라 종료 후 분류다.)
+constexpr double kStallRelImprovement = 1e-2;
+constexpr int kStallIterations = 2;
+
+// ProjectionOptions 검증 (position-level 진입점 공통). 로드 타임/비-RT 전용이라 예외 허용.
+// tolerance == 0 은 "early-stop 금지 (정확히 max_iterations 스텝)" 의 기존 관용구라 허용
+// (test_closed_chain_fk_measurement fixed-K 스파이크) — 음수·비유한만 거부.
+void ValidateOptions(const ProjectionOptions& opts) {
+  if (!std::isfinite(opts.tolerance) || opts.tolerance < 0.0) {
+    throw std::invalid_argument(
+        "loop_projection: tolerance 는 유한 음이 아닌 값이어야 합니다 (given " +
+        std::to_string(opts.tolerance) + ")");
+  }
+  if (!std::isfinite(opts.acceptance_tolerance) || opts.acceptance_tolerance <= 0.0) {
+    throw std::invalid_argument(
+        "loop_projection: acceptance_tolerance 는 유한 양수여야 합니다 (given " +
+        std::to_string(opts.acceptance_tolerance) + ")");
+  }
+  if (opts.acceptance_tolerance < opts.tolerance) {
+    throw std::invalid_argument("loop_projection: acceptance_tolerance (" +
+                                std::to_string(opts.acceptance_tolerance) +
+                                ") 가 strict tolerance (" + std::to_string(opts.tolerance) +
+                                ") 보다 작습니다 — acceptance 는 strict 의 완화 임계여야 합니다");
+  }
+}
+
+// 종료 후 수용 분류 (#250 D4). φ 유한 ∧ 모든 CONTACT_6D segment 가 strict 충족 ∧
+// ‖φ‖ ≤ acceptance. 6D residual 은 병진(m)·회전(rad) 혼합 norm 이라 m 단위 acceptance 를
+// 적용하지 않는다 — 6D constraint 는 strict 로만 수용된다 (segment 가 strict 미만이면
+// 전체 norm 기여도 무시 가능 수준이라 3D rows 판정을 오염시키지 않는다).
+bool IsResidualAcceptable(const ConstraintKinematics& kin, const ProjectionOptions& opts) {
+  if (!kin.phi.allFinite()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < kin.row_sizes.size(); ++i) {
+    if (kin.row_sizes[i] == 6 &&
+        kin.phi.segment(kin.row_offsets[i], kin.row_sizes[i]).norm() >= opts.tolerance) {
+      return false;
+    }
+  }
+  return kin.phi.norm() <= opts.acceptance_tolerance;
+}
 
 // Damped least-squares Newton projection over a chosen set of velocity columns.
 // Only the tangent columns in `free_cols` may move; every other column keeps a
@@ -30,12 +83,15 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
                                     const Eigen::VectorXd& q_init,
                                     const std::vector<int>& free_cols,
                                     const ProjectionOptions& opts) {
+  ValidateOptions(opts);
+
   ProjectionResult result;
   result.q = q_init;
 
   const int m = TotalConstraintDim(constraints);
   if (m == 0) {
     result.converged = true;
+    result.acceptable = true;
     return result;
   }
 
@@ -43,6 +99,8 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
   const double lambda2 = opts.damping * opts.damping;  // λ²
   const Eigen::MatrixXd I = Eigen::MatrixXd::Identity(m, m);
 
+  double prev_err = std::numeric_limits<double>::infinity();
+  int stall_count = 0;
   for (int iter = 0; iter < opts.max_iterations; ++iter) {
     const ConstraintKinematics kin =
         ComputeConstraintKinematics(model, data, constraints, result.q);
@@ -51,8 +109,22 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
     result.final_error = err;
     if (err < opts.tolerance) {
       result.converged = true;
+      result.acceptable = true;
       return result;
     }
+
+    // Stall(residual floor): 개선이 멈추면 반복해도 내려가지 않는다 — 조기 종료 후
+    // 종료-후 분류만 수행. (NaN err 는 모든 비교가 false 라 여기 걸리지 않고
+    // max_iterations 까지 돈 뒤 acceptable=false 로 분류된다.)
+    if (err >= prev_err * (1.0 - kStallRelImprovement)) {
+      if (++stall_count >= kStallIterations) {
+        result.acceptable = IsResidualAcceptable(kin, opts);
+        return result;
+      }
+    } else {
+      stall_count = 0;
+    }
+    prev_err = err;
 
     // free 열만 추출: Jc_free (m × n_free)
     Eigen::MatrixXd Jc_free(m, n_free);
@@ -76,10 +148,11 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
     result.q = q_next;
   }
 
-  // 마지막 상태로 최종 error 재평가
+  // 마지막 상태로 최종 error 재평가 + 종료 후 수용 분류
   const ConstraintKinematics kin = ComputeConstraintKinematics(model, data, constraints, result.q);
   result.final_error = kin.phi.norm();
   result.converged = result.final_error < opts.tolerance;
+  result.acceptable = result.converged || IsResidualAcceptable(kin, opts);
   return result;
 }
 
@@ -176,12 +249,15 @@ ProjectionResult ProjectPassiveWithContinuation(
       q_seed.segment(qs, nqj) = q_interp.segment(qs, nqj);
     }
     result = ProjectPassiveToConstraint(model, data, constraints, q_seed, actuated_joint_ids, opts);
-    // 중간 sub-step 이 미수렴이면 **즉시 중단**한다. 그 해는 이미 loop-consistent 가 아니므로
-    // 이어서 warm-start 로 쓰면 homotopy 보장이 깨진 경로를 따라가고, 그럼에도 마지막
-    // sub-step 만 수렴하면 converged=true 로 돌아가 소비자가 그 형상을 커밋한다 — 단일 사영
-    // 시절에는 없던 실패 은폐 경로다. 실패 지점의 결과(부분 진행 q + converged=false)를 그대로
-    // 돌려 소비자의 기존 hold 정책이 작동하게 한다.
-    if (!result.converged) {
+    // 중간 sub-step 이 **비수용(!acceptable)** 이면 즉시 중단한다. 그 해는 loop-consistent 가
+    // 아니므로 이어서 warm-start 로 쓰면 homotopy 보장이 깨진 경로를 따라가고, 그럼에도 마지막
+    // sub-step 만 통과하면 성공으로 돌아가 소비자가 그 형상을 커밋한다 — 단일 사영 시절에는
+    // 없던 실패 은폐 경로다. 실패 지점의 결과(부분 진행 q + acceptable=false)를 그대로 돌려
+    // 소비자의 기존 hold 정책이 작동하게 한다. strict 미달이어도 acceptable 인 sub-step
+    // (residual floor ≤1 µm — URDF 좌표 불일치는 형상 무관 상수라 모든 sub-step 이 겪는다) 은
+    // 실질 loop-consistent 라 계속 진행한다 — 분기 간 거리는 rad 단위라 µm floor 로 homotopy 는
+    // 훼손되지 않는다 (#250 D2, invariants.md NUM-5).
+    if (!result.acceptable) {
       return result;
     }
   }

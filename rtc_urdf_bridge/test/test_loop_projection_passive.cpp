@@ -171,11 +171,14 @@ TEST(LoopProjectionPassive, ContinuationDisabledMatchesSingleProjection) {
   EXPECT_LT((off.q - single.q).cwiseAbs().maxCoeff(), 1e-12);
 }
 
-// ── 성공기준 6: 중간 sub-step 이 미수렴이면 **즉시 중단**하고 그 결과를 돌린다 (리뷰 ①). ──
-//   미수렴 해를 warm-start 로 이어가면 homotopy 보장이 깨진 경로를 따라가는데, 마지막
-//   sub-step 만 수렴하면 converged=true 로 보고돼 소비자가 그 형상을 커밋한다 — 단일 사영
-//   시절에는 없던 실패 은폐 경로다.
-TEST(LoopProjectionPassive, ContinuationStopsAtFirstNonConvergedSubstep) {
+// ── 성공기준 6: 중간 sub-step 이 **비수용**이면 즉시 중단하고 그 결과를 돌린다 (리뷰 ①). ──
+//   비수용 해를 warm-start 로 이어가면 homotopy 보장이 깨진 경로를 따라가는데, 마지막
+//   sub-step 만 통과하면 성공으로 보고돼 소비자가 그 형상을 커밋한다 — 단일 사영 시절에는
+//   없던 실패 은폐 경로다.
+//   [#250 의미 이관] 중단 술어가 !converged → !acceptable 로 바뀌었다 (residual floor 는
+//   실질 loop-consistent 라 진행 허용 — NUM-5). 이 테스트의 의도(실패 은폐 방지)는 그대로
+//   유지하되, "실패" 를 만들려면 이제 strict 와 acceptance 둘 다 도달 불가로 잡아야 한다.
+TEST(LoopProjectionPassive, ContinuationStopsAtFirstNonAcceptableSubstep) {
   const rub::ClosedChainModel cc = CrankRocker();
   pinocchio::Data data(cc.model);
   const auto q_idx = cc.model.idx_qs[cc.model.getJointId("j_crank")];
@@ -187,20 +190,64 @@ TEST(LoopProjectionPassive, ContinuationStopsAtFirstNonConvergedSubstep) {
   Eigen::VectorXd q_target = q_start;
   q_target[q_idx] = kTarget;
 
-  // 도달 불가 tolerance → **모든** sub-step 이 미수렴. (residual 바닥은 ~1e-16.)
+  // 도달 불가 strict + acceptance → **모든** sub-step 이 비수용. (residual 바닥은 ~1e-16.)
   rub::ProjectionOptions opts;
   opts.tolerance = 1e-300;
+  opts.acceptance_tolerance = 1e-300;  // == tolerance (validation 하한)
   opts.max_iterations = 10;
 
   const rub::ProjectionResult res = rub::ProjectPassiveWithContinuation(
       cc.model, data, cc.constraints, q_start, q_target, cc.actuated_joint_ids, opts);
 
   ASSERT_FALSE(res.converged) << "도달 불가 tolerance 인데 수렴 보고 — 픽스처가 무력하다";
+  ASSERT_FALSE(res.acceptable) << "도달 불가 acceptance 인데 수용 보고 — 픽스처가 무력하다";
   // 첫 sub-step 에서 멈췄어야 한다. 계속 진행했다면 actuated 가 q_target(1.2)까지 갔을 것이다.
   EXPECT_GT(res.q[q_idx], kStart) << "첫 sub-step 은 진행했어야 한다";
   EXPECT_LE(res.q[q_idx], kStart + rub::kDefaultActuatedIncrement + 1e-12)
-      << "미수렴인데도 다음 sub-step 으로 진행했다 (actuated=" << res.q[q_idx]
+      << "비수용인데도 다음 sub-step 으로 진행했다 (actuated=" << res.q[q_idx]
       << ") — 실패가 마지막 sub-step 결과에 가려진다";
+}
+
+// ── #250 D2: residual floor sub-step 은 acceptable 이므로 continuation 이 관통한다. ──
+//   strict 로 판정하면 floor 로봇(예: P1B ring closure 20 nm 불일치)에서 continuation 이
+//   항상 첫 sub-step 에서 끊겨 cold start 가 한 호출에서 풀리지 않는다. floor(µm)는
+//   분기 간 거리(rad)보다 6자릿수 작아 homotopy 보장을 훼손하지 않는다 — 분기 유지를
+//   floor 없는 동일 기하의 기준해와 대조해 확인한다.
+TEST(LoopProjectionPassive, ContinuationTraversesResidualFloor) {
+  const rub::ClosedChainModel cc = rtc::test::FlooredCrankRocker(3e-8);
+  const rub::ClosedChainModel cc_clean = CrankRocker();
+  pinocchio::Data data(cc.model);
+  pinocchio::Data data_clean(cc_clean.model);
+  const auto q_idx = cc.model.idx_qs[cc.model.getJointId("j_crank")];
+
+  constexpr double kStart = 0.05;
+  constexpr double kTarget = 1.2;  // Δ=1.15 rad — sub-step 23개
+
+  // floor 모델에서 시작 형상 조립 (strict 수렴은 불가능, acceptable 이어야 한다).
+  Eigen::VectorXd q_start = pinocchio::neutral(cc.model);
+  q_start[q_idx] = kStart;
+  const rub::ProjectionResult assembled = rub::ProjectPassiveToConstraint(
+      cc.model, data, cc.constraints, q_start, cc.actuated_joint_ids);
+  ASSERT_FALSE(assembled.converged) << "floor 인데 strict 수렴 — 픽스처가 무력하다";
+  ASSERT_TRUE(assembled.acceptable);
+  q_start = assembled.q;
+
+  Eigen::VectorXd q_target = q_start;
+  q_target[q_idx] = kTarget;
+
+  const rub::ProjectionResult res = rub::ProjectPassiveWithContinuation(
+      cc.model, data, cc.constraints, q_start, q_target, cc.actuated_joint_ids);
+
+  EXPECT_FALSE(res.converged);
+  EXPECT_TRUE(res.acceptable) << "floor sub-step 에서 중단됨 — continuation 이 관통하지 못했다";
+  EXPECT_NEAR(res.q[q_idx], kTarget, 1e-12) << "actuated 가 target 에 도달하지 못했다";
+  EXPECT_LE(res.final_error, 1e-6);
+
+  // 분기 유지: floor 없는 동일 기하의 미세-continuation 기준해와 대조 (z 3e-8 오프셋이
+  // 만드는 passive 차이는 ~1e-7 rad — 분기 이탈(≥1 rad)과 명확히 구분된다).
+  const Eigen::VectorXd q_truth =
+      FineContinuation(cc_clean, data_clean, AssembledAt(cc_clean, data_clean, kStart), kTarget);
+  EXPECT_LT((res.q - q_truth).cwiseAbs().maxCoeff(), 1e-3) << "분기 이탈";
 }
 
 // ── 성공기준 3: 특이 조립형상(four_bar 대칭)에서 미수렴이라도 NaN 을 내지 않는다. ───

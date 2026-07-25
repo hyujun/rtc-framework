@@ -299,7 +299,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 세 가지 파생 규칙 — 완화 장치가 스스로 결함을 만들지 않도록 (PR #249 리뷰):
 
-- **미수렴 sub-step 을 warm-start 로 이어가지 말 것.** 그 해는 이미 loop-consistent 가 아니라 homotopy 보장이 깨졌는데, 마지막 sub-step 만 수렴하면 `converged=true` 로 보고돼 소비자가 커밋한다 — 단일 사영에는 없던 **실패 은폐** 경로다. 중간 실패는 즉시 반환해 기존 hold 정책에 맡긴다.
+- **비수용(!acceptable) sub-step 을 warm-start 로 이어가지 말 것.** 그 해는 loop-consistent 가 아니라 homotopy 보장이 깨졌는데, 마지막 sub-step 만 통과하면 성공으로 보고돼 소비자가 커밋한다 — 단일 사영에는 없던 **실패 은폐** 경로다. 중간 실패는 즉시 반환해 기존 hold 정책에 맡긴다. 판정 술어는 `converged`(strict) 가 아니라 `acceptable` 이다 (#250) — URDF 좌표 불일치의 residual floor (≤1 µm, 형상 무관 상수) 는 strict 를 원리적으로 통과할 수 없지만 실질 loop-consistent 라 warm-start 로 안전하고, 분기 간 거리는 rad 단위라 µm floor 로는 homotopy 가 훼손되지 않는다. strict 로 판정하면 floor 로봇에서 continuation 이 항상 첫 sub-step 에서 끊긴다. 단 acceptance 임계(병진 1e-6 m 기본)를 분기 판정에 쓰는 것은 여전히 금지 — 위 원칙 그대로, 분기는 residual 크기가 아니라 경로가 결정한다.
 - **완화는 발동한 tick 에만 적용할 것.** 클램프 미발동 tick 까지 `prev + (q_a − prev)` 재구성 경로를 태우면 부동소수 왕복에서 1 ulp 가 새어 serial 등가(구속 없는 모델 = 개방 체인 FK)가 조용히 "근사"로 격하된다. 미발동 경로는 측정값을 그대로 대입한다.
 - **sub-step 수 cap 은 증분 상한 보장을 깬다.** cap 에 걸리면 sub-step 증분이 `max_actuated_increment` 를 넘으므로, cap 은 "무한 루프 방지"용 여유값이어야지 정상 동작 범위를 자르면 안 된다.
 

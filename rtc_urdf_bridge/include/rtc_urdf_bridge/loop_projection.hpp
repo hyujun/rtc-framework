@@ -47,16 +47,32 @@ inline constexpr int kMaxContinuationSubsteps = 256;
 inline constexpr double kDefaultMaxPassiveDeviation = 0.5;
 
 /// @brief position-level projection 옵션 (damped least-squares Newton).
+///
+/// `tolerance` (strict, solver 가 향해 반복하는 목표) 와 `acceptance_tolerance` (결과를
+/// 소비해도 되는 실용 임계) 는 **다른 개념**이다. URDF 좌표 불일치 등으로 ‖φ‖ 에 도달 불가
+/// residual floor 가 있으면 strict 미달이어도 floor ≤ acceptance 면 결과는 사용 가능하다
+/// (#250). acceptance 는 **종료 후 분류에만** 쓰이고 반복 중단 조건이 아니다 — stopping
+/// 기준으로 쓰면 초기 residual 이 임계 미만일 때 refinement 를 통째로 건너뛴다
+/// (digital_twin `closure_tolerance: 1e-6` 우회가 앓던 문제).
 struct ProjectionOptions {
-  double tolerance{1e-10};  // 수렴 판정 ‖φ‖ 임계
+  double tolerance{1e-10};  // strict 수렴 판정 ‖φ‖ 임계 (solver 반복 목표)
   int max_iterations{100};
   double damping{1e-8};  // λ (DLS regularization coefficient; λ² 로 사용)
+  /// 수용 임계 (병진, m). CONTACT_3D residual norm 에만 적용 — CONTACT_6D 는 병진(m)·
+  /// 회전(rad) 혼합 norm 이라 m 단위 임계를 적용하지 않고 strict 판정을 유지한다 (#250 D4).
+  /// 비유한·≤0·`< tolerance` 는 std::invalid_argument.
+  double acceptance_tolerance{1e-6};
 };
 
-/// @brief projection 결과.
+/// @brief projection 결과. 세 상태: strictly converged (converged=acceptable=true) /
+///   accepted with residual floor (converged=false, acceptable=true — q 사용 가능) /
+///   rejected (둘 다 false — q 를 정상 결과로 소비 금지, hold 권장).
 struct ProjectionResult {
-  Eigen::VectorXd q;        // 사영된 configuration
-  bool converged{false};    // ‖φ‖ < tolerance 도달 여부
+  Eigen::VectorXd q;      // 사영된 configuration
+  bool converged{false};  // ‖φ‖ < tolerance (strict) 도달 여부
+  /// 결과 수용 가능 여부: φ 유한 ∧ 모든 CONTACT_6D segment 가 strict 충족 ∧
+  /// ‖φ‖ ≤ acceptance_tolerance. converged=true 면 항상 true.
+  bool acceptable{false};
   int iterations{0};        // 소요 반복
   double final_error{0.0};  // 최종 ‖φ‖
 };
@@ -97,12 +113,15 @@ struct ProjectionResult {
 ///   @param max_actuated_increment sub-step 당 actuated 증분 상한. ≤0 이면 continuation 비활성
 ///     (단일 사영 — 기존 동작). 기본 @ref kDefaultActuatedIncrement.
 ///   @return **마지막으로 실행된 sub-step** 의 결과 (`q` 는 전체 loop-consistent configuration).
-///     `converged`/`final_error`/`iterations` 도 그 sub-step 기준이다.
-///     ⚠ 중간 sub-step 이 미수렴하면 **그 지점에서 중단하고** 그 결과를 돌린다
-///     (`converged=false`, `q` 는 도중까지만 진행된 형상). 미수렴 해를 warm-start 로 이어가면
-///     homotopy 보장이 깨진 채 진행되고, 마지막 sub-step 만 수렴해도 `converged=true` 가 돼
-///     소비자가 그 형상을 커밋하기 때문이다. 소비자는 기존대로 `converged` 로 hold 를 판정하면
-///     된다 — 실패 시 actuated 슬롯이 `q_target` 에 도달하지 않았음에 유의.
+///     `converged`/`acceptable`/`final_error`/`iterations` 도 그 sub-step 기준이다.
+///     ⚠ 중간 sub-step 이 **비수용(!acceptable)** 이면 그 지점에서 중단하고 그 결과를 돌린다
+///     (`acceptable=false`, `q` 는 도중까지만 진행된 형상). 비수용 해를 warm-start 로 이어가면
+///     homotopy 보장이 깨진 채 진행되고, 마지막 sub-step 만 통과해도 성공으로 보고돼
+///     소비자가 그 형상을 커밋하기 때문이다. strict 미달이어도 acceptable 인 sub-step
+///     (residual floor, ≤1 µm) 은 실질 loop-consistent 라 warm-start 로 안전하며 — 분기 간
+///     거리는 rad 단위라 µm floor 로는 homotopy 가 훼손되지 않는다 — 계속 진행한다 (#250 D2;
+///     invariants.md NUM-5). 소비자는 `acceptable` 로 hold 를 판정한다 — 실패 시 actuated
+///     슬롯이 `q_target` 에 도달하지 않았음에 유의.
 ///   크기가 model.nq 와 다른 입력은 continuation 없이 @ref ProjectPassiveToConstraint 로 위임한다.
 ///   **RT 밖에서만 호출** (sub-step 수가 입력 의존 → 비결정적. RT 경로는
 ///   @ref RtClosedChainHandle 의 tick 당 seed clamp 가 같은 역할을 결정적으로 수행한다).
