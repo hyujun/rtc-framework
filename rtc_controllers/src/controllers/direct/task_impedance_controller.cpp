@@ -277,13 +277,23 @@ Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
 
   for (int i = 0; i < 6; ++i)
     diag.wrench_lwa[static_cast<std::size_t>(i)] = f_lwa(i);
-  diag.in_contact =
-      // Release ratio clamped strictly below 1 (the same bound LoadConfig
-      // applies, repeated here because set_gains bypasses LoadConfig) so the ⇄
-      // transition always keeps a hysteresis band: equal enter/exit thresholds
-      // chatter at the boundary, which §10.6 forbids.
-      contact_.Update(f_lwa.head<3>().norm(), gains.contact_threshold,
-                      std::clamp(gains.contact_release_ratio, 0.0, 0.99) * gains.contact_threshold);
+  if (gains.contact_threshold > 0.0) {
+    // Release ratio clamped strictly below 1 (the same bound LoadConfig applies,
+    // repeated here because set_gains bypasses LoadConfig) so the ⇄ transition
+    // always keeps a hysteresis band: equal enter/exit thresholds chatter at the
+    // boundary, which §10.6 forbids.
+    diag.in_contact = contact_.Update(
+        f_lwa.head<3>().norm(), gains.contact_threshold,
+        std::clamp(gains.contact_release_ratio, 0.0, 0.99) * gains.contact_threshold);
+  } else {
+    // A non-positive threshold makes enter == exit == 0, which is exactly the
+    // bare comparator the ratio clamp above exists to prevent — and it latches
+    // contact on any nonzero noise, since every real reading exceeds 0 N. The
+    // ratio cannot rescue it (it SCALES the threshold), so treat a zero threshold
+    // as "contact detection off" rather than as a hysteresis with no band.
+    contact_.Reset();
+    diag.in_contact = false;
+  }
   return f_lwa;
 }
 
@@ -313,7 +323,9 @@ void TaskImpedanceController::ApplyInertiaShaping(const Gains& gains,
     // with the DLS. Degrade to B = I (i.e. the §6.2 law, which needs no Λ at
     // all) instead of emitting a garbage shaping matrix; f_cmd already holds
     // f_task. The σ_min faults below still fire on the underlying condition.
-    diag.inertia_clamped = true;
+    // Reported on its OWN flag: a numerical breakdown and the max_inertia_ratio
+    // clamp call for different operator responses.
+    diag.inertia_solve_failed = true;
     return;
   }
 

@@ -229,6 +229,12 @@ class TaskImpedanceController final : public RTControllerInterface {
     bool bias_calibrated{true};
     bool in_contact{false};       ///< contact hysteresis latch (RUNNING_CONTACT)
     bool inertia_clamped{false};  ///< §5.2 max_inertia_ratio clamp engaged this tick
+    /// Λ_d could not be factored, so this tick silently ran §6.2 (B = I) instead
+    /// of §6.3. Kept SEPARATE from inertia_clamped: one is a tuning bound doing
+    /// its job, the other is a numerical breakdown, and an operator that cannot
+    /// tell them apart has no way to act on either. (Sharing one flag also let a
+    /// clamp test pass on a factorisation failure.)
+    bool inertia_solve_failed{false};
     bool estopped{false};
     bool control_valid{false};  ///< false on E-STOP / degenerate-dynamics ticks
   };

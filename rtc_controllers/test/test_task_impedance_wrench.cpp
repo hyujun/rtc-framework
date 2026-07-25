@@ -486,6 +486,32 @@ TEST(TaskImpedanceWrench, ContactStateFollowsForceWithHysteresis) {
             static_cast<std::uint8_t>(ComplianceState::kRunning));
 }
 
+// A zero contact_threshold is not "a hysteresis with a very small band" — it is
+// enter == exit == 0, the bare comparator §10.6 forbids, and every real reading
+// exceeds 0 N so it would latch contact on sensor noise and never release. The
+// release-ratio clamp cannot rescue it because the ratio SCALES the threshold.
+// Contact detection is therefore off at a non-positive threshold.
+TEST(TaskImpedanceWrench, NonPositiveContactThresholdDisablesContactDetection) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml("  contact_threshold: 0.0\n")));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+
+  // A tiny reading (noise-scale) and a large one must BOTH read as no contact,
+  // and the FSM must stay on the free-space side of the split.
+  for (const double fx : {1e-9, 50.0}) {
+    Send(ctrl, Wrench6{fx, 0, 0, 0, 0, 0});
+    (void)ctrl.Compute(state);
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    EXPECT_FALSE(d.in_contact) << "contact latched at a zero threshold, fx = " << fx;
+    EXPECT_NE(d.state, static_cast<std::uint8_t>(ComplianceState::kRunningContact));
+  }
+}
+
 // ── §6.3 inertia shaping ────────────────────────────────────────────────────
 
 // Two controllers, identical in everything but the formulation, driven with the
@@ -523,6 +549,9 @@ void ExpectT41Equivalence(const std::string& urdf, int nj, Sel sel,
   const auto diag_b = b.GetDiagnosticsForTesting();
   ASSERT_TRUE(diag_b.control_valid) << "inertia-shaping path degenerated at this pose";
   ASSERT_FALSE(diag_b.inertia_clamped) << "the max_inertia_ratio clamp fired at Λ_d = Λ_S";
+  ASSERT_FALSE(diag_b.inertia_solve_failed)
+      << "Λ_d = Λ_S failed to factor — the equivalence would hold trivially via the "
+         "B = I degrade path instead of through the §6.3 solve";
   ASSERT_GT(diag_b.sigma_min, gains.singularity_threshold)
       << "pose too close to singular for a meaningful comparison";
 
@@ -733,6 +762,9 @@ TEST(TaskImpedanceWrench, MaxInertiaRatioClampsAndReports) {
   const auto out = ctrl.Compute(state);
   const auto diag = ctrl.GetDiagnosticsForTesting();
   EXPECT_TRUE(diag.inertia_clamped) << "Λ_d ≈ 0 sailed past max_inertia_ratio";
+  EXPECT_FALSE(diag.inertia_solve_failed)
+      << "this must be the RATIO clamp, not a Λ_d factorisation failure — the two "
+         "shared one flag once, which let this assertion pass for the wrong reason";
   EXPECT_TRUE(diag.control_valid) << "the clamp must keep the law running, not degrade it";
   for (int i = 0; i < 7; ++i)
     EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]));
