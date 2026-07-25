@@ -240,6 +240,14 @@ class TaskAdmittanceController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state, const Gains& gains,
                                               bool control_valid, const Diagnostics& diag) noexcept;
 
+  /// The primary device's joint state is unusable this tick. Emits a zero-length
+  /// command for device 0 (the "no update" idiom the CM's own BuildHoldOutput
+  /// uses) while secondary devices keep their passthrough, steps the FSM into
+  /// DEGRADED, and forces the next controllable tick to re-seed.
+  [[nodiscard]] ControllerOutput ComputeNoJointState(const ControllerState& state,
+                                                     const Gains& gains,
+                                                     Diagnostics& diag) noexcept;
+
   /// Ask the RT thread to retire the hold latch on its next tick. Callable from
   /// any thread; `estop_hold_*` itself stays RT-owned (RT-4 — no lock, and no
   /// off-RT writer to race with).
@@ -277,6 +285,11 @@ class TaskAdmittanceController final : public RTControllerInterface {
   Eigen::VectorXd q_null_;         ///< nv posture setpoint (device order), seeded on activate
   Eigen::VectorXd q_dev_;          ///< nv measured position (device order)
   Eigen::VectorXd desired_q_;      ///< nv integrated joint command (device order)
+  /// nv integration base of the CURRENT tick (device order) — q_meas or the
+  /// previous command per `integrate_from_measured`. Held because the post-clamp
+  /// rate bound has to measure the step against it after desired_q_ has been
+  /// overwritten.
+  Eigen::VectorXd q_base_;
 
   // ── Target (desired pose X_d) — flat-double SE3 mirror (SeqLock needs POD) ──
   static constexpr std::size_t kSE3RotDoubles = 9;

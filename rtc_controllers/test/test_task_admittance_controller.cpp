@@ -469,6 +469,101 @@ TEST(TaskAdmittanceController, SelfIntegratingCommandFaultsWhenItWindsAwayFromTh
             static_cast<std::uint8_t>(ComplianceState::kSafeStop));
 }
 
+// ── Command rate (F4) and device-state validity (F5) ────────────────────────
+
+// Device limits narrow enough that the joint-limit clamp actually bites, with a
+// slow max_velocity so a clamp correction and a rate-bound step are far apart.
+rtc::DeviceNameConfig ArmLimits(double lower, double upper, double max_velocity) {
+  rtc::DeviceJointLimits limits;
+  limits.max_velocity.assign(kNj, max_velocity);
+  limits.position_lower.assign(kNj, lower);
+  limits.position_upper.assign(kNj, upper);
+  rtc::DeviceNameConfig cfg;
+  cfg.device_name = "arm";
+  cfg.joint_limits = limits;
+  return cfg;
+}
+
+TEST(TaskAdmittanceController, TheJointLimitClampCannotOutrunTheVelocityBound) {
+  // The clamp runs AFTER the velocity clamp and its result was never re-checked,
+  // so with the arm parked inside the joint_limit_margin band the clamp moved
+  // q_cmd to the band edge in one tick no matter how small the IK step was. The
+  // only monitor that could have seen it (faults.command_divergence) is gated on
+  // !integrate_from_measured, and that flag defaults to true.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("joint_limit_margin: 0.30\n")));
+  // Posture()[3] = -1.2 sits 0.25 rad inside the lower margin band (lo = -1.45 +
+  // 0.30 = -1.15), so the clamp wants a 0.05 rad correction on the very first
+  // tick — 25× the 1.0 rad/s × 2 ms the rate bound allows.
+  c.SetDeviceNameConfigs(
+      std::map<std::string, rtc::DeviceNameConfig>{{"arm", ArmLimits(-1.45, 2.0, 1.0)}});
+
+  auto state = MakeState(Posture());
+  Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  const auto first = c.Compute(state);
+  const double step = first.devices[0].commands[3] - Posture()[3];
+  EXPECT_GT(step, 0.0) << "the joint-limit clamp did not engage — the test proves nothing";
+  EXPECT_LE(step, 1.0 * kDt + 1e-12) << "the clamp emitted a " << step << " rad step in one tick";
+  // The reported velocity must agree with the position actually emitted.
+  EXPECT_NEAR(first.devices[0].target_velocities[3], step / kDt, 1e-9);
+  EXPECT_TRUE(c.GetDiagnosticsForTesting().joint_velocity_limited);
+
+  // ...and with the arm actually following, it still gets into the band — every
+  // tick of the way inside the bound. (A static arm cannot creep here by design:
+  // integrate_from_measured re-anchors q_cmd to q_meas every tick.)
+  for (int k = 0; k < 300; ++k) {
+    Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    const auto out = c.Compute(state);
+    ASSERT_NE(c.GetDiagnosticsForTesting().state,
+              static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+        << "tick " << k;
+    for (int i = 0; i < kNj; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      ASSERT_LE(std::abs(out.devices[0].commands[ui] - state.devices[0].positions[ui]),
+                1.0 * kDt + 1e-12)
+          << "tick " << k << " joint " << i << ": the emitted step outran max_velocity·dt";
+    }
+    ApplyCommand(state, out);
+  }
+  EXPECT_NEAR(state.devices[0].positions[3], -1.15, 1e-6)
+      << "the arm never slewed into the joint-limit band";
+}
+
+TEST(TaskAdmittanceController, AnUnusableJointStateEmitsNoCommandAndDegrades) {
+  // `valid == false` (backend has not reported yet) or a device narrower than the
+  // model leaves the unread channels at a default-constructed 0. FK and J then
+  // evaluate at the ZERO configuration and every joint gets commanded to ~0 —
+  // with no fault raised, because every number involved is finite.
+  for (const bool narrow : {false, true}) {
+    TaskAdmittanceController c(Urdf7());
+    c.LoadConfig(YAML::Load(TransparentYaml()));
+    auto state = MakeState(Posture());
+    if (narrow)
+      state.devices[0].num_channels = kNj - 1;  // one channel short of the model
+    else
+      state.devices[0].valid = false;
+
+    const auto out = c.Compute(state);
+    EXPECT_EQ(out.devices[0].num_channels, 0)
+        << (narrow ? "narrow" : "invalid")
+        << ": a command was emitted from an unusable joint state";
+    const auto d = c.GetDiagnosticsForTesting();
+    EXPECT_FALSE(d.control_valid) << (narrow ? "narrow" : "invalid");
+    EXPECT_EQ(d.state, static_cast<std::uint8_t>(ComplianceState::kDegraded))
+        << (narrow ? "narrow" : "invalid") << ": an unusable joint state must DEGRADE";
+
+    // Recoverable: once the backend reports, control resumes and re-seeds from
+    // the measured pose rather than from anything read during the gap.
+    auto good = MakeState(Posture());
+    const auto resumed = c.Compute(good);
+    EXPECT_EQ(resumed.devices[0].num_channels, kNj);
+    for (int i = 0; i < kNj; ++i)
+      EXPECT_NEAR(resumed.devices[0].commands[static_cast<std::size_t>(i)],
+                  Posture()[static_cast<std::size_t>(i)], 1e-9)
+          << (narrow ? "narrow" : "invalid") << " joint " << i;
+  }
+}
+
 // ── E-STOP: a position HOLD, not a slew and not a follow ────────────────────
 
 TEST(TaskAdmittanceController, EstopLatchesThePositionMeasuredOnTheFirstHeldTick) {

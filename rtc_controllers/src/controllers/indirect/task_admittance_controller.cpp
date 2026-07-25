@@ -76,6 +76,7 @@ void TaskAdmittanceController::InitFromModel(std::shared_ptr<const pinocchio::Mo
   q_null_ = Eigen::VectorXd::Zero(nv);
   q_dev_ = Eigen::VectorXd::Zero(nv);
   desired_q_ = Eigen::VectorXd::Zero(nv);
+  q_base_ = Eigen::VectorXd::Zero(nv);
   ik_.Resize(nv, kTaskDim);
 
   // Gravity comes from the model, never a hard-coded 9.81 down −Z: the URDF
@@ -221,6 +222,17 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
 
   // ── Copy joint state (device order) ───────────────────────────────────────
   const auto& dev0 = state.devices[0];
+  // Everything below is evaluated at q read from this device. Before the
+  // backend's first state arrives (`valid == false`), or on a device narrower
+  // than the model, the unread channels read as a default-constructed 0 — FK and
+  // the Jacobian are then evaluated at the ZERO configuration and out0.commands
+  // comes out as a full-arm move to the origin, with no fault raised because
+  // every number involved is perfectly finite. There is no honest substitute for
+  // an unknown joint position, so the tick emits NO command (the CM's own
+  // BuildHoldOutput uses the same zero-length-command idiom for exactly this)
+  // and reports DEGRADED.
+  if (!dev0.valid || dev0.num_channels < nv)
+    return ComputeNoJointState(state, gains, diag);
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
@@ -406,24 +418,52 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
       vel_clamped = true;
     }
   }
-  diag.joint_velocity_limited = vel_clamped;
 
   // §7.3 MUST — both integration bases implemented and selectable.
   for (int i = 0; i < nv; ++i) {
-    const double base = gains.integrate_from_measured ? q_dev_(i) : desired_q_(i);
-    desired_q_(i) = base + dq_dev_(i) * dt;
+    q_base_(i) = gains.integrate_from_measured ? q_dev_(i) : desired_q_(i);
+    desired_q_(i) = q_base_(i) + dq_dev_(i) * dt;
   }
   // Joint-limit clamp on the POSITION command. The torque-domain repulsive
   // potential of compliance/safety_limiter.hpp does not transfer: a position
   // command outside the mechanical range is not a soft push, it is a request the
   // backend will either reject or drive into a hard stop.
+  //
+  // ...and then the RATE is re-imposed, because the clamp above can WIDEN the
+  // step it was handed. This controller replaced compliance::ApplySafetyLayer's
+  // bounded repulsion + max_torque_rate with a hard clamp and kept no rate bound
+  // to go with it: with the arm sitting inside the joint_limit_margin band, the
+  // clamp moves q_cmd to the band edge in a single tick regardless of how small
+  // the IK step was — a `joint_limit_margin` of 0.08 rad is an 0.08 rad jump. The
+  // one monitor that could have caught it, faults.command_divergence, is gated on
+  // `!integrate_from_measured` and that flag defaults to true.
+  //
+  // Order matters: clamp first, then re-bound the rate. Bounding first and
+  // clamping second is what leaves the clamp's own correction unbounded, which
+  // is the defect. The consequence is that q_cmd may stay transiently inside the
+  // margin band while it slews out of it — the band is a soft margin, and
+  // arriving at its edge at a bounded rate is the behaviour it is asking for.
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
     const double lo = position_lower_[ui] + gains.joint_limit_margin;
     const double hi = position_upper_[ui] - gains.joint_limit_margin;
     if (lo < hi)
       desired_q_(i) = std::clamp(desired_q_(i), lo, hi);
+
+    const double lim =
+        (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
+    const double step = std::abs(lim) * dt;
+    const double bounded = std::clamp(desired_q_(i), q_base_(i) - step, q_base_(i) + step);
+    if (bounded != desired_q_(i)) {
+      desired_q_(i) = bounded;
+      vel_clamped = true;
+    }
+    // Keep the reported joint velocity the one actually commanded: emitting a
+    // target_velocity the emitted position contradicts is how a rate breach
+    // stays invisible to whoever is watching the lane for exactly that.
+    dq_dev_(i) = (desired_q_(i) - q_base_(i)) / dt;
   }
+  diag.joint_velocity_limited = vel_clamped;
 
   double divergence = 0.0;
   for (int i = 0; i < nv; ++i) {
@@ -561,6 +601,44 @@ ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& s
   Diagnostics d = diag;
   d.control_valid = control_valid;  // false: the pose-error / σ fields are stale
   diag_lock_.Store(d);
+  return output;
+}
+
+ControllerOutput TaskAdmittanceController::ComputeNoJointState(const ControllerState& state,
+                                                               const Gains& gains,
+                                                               Diagnostics& diag) noexcept {
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
+  compliance::ComplianceFaults faults;
+  faults.device_state_invalid = true;
+  // The same ramp predicate the clean path derives from alpha. Not fabricated as
+  // `true`: a controller that has never had a readable joint state has not
+  // finished activating, and §10.6's lattice honours a degrade cause at the
+  // HOLDING→RUNNING edge. A device that fails mid-run is already RUNNING, so it
+  // degrades on this tick regardless.
+  const double ramp = gains.activation_ramp_time;
+  const bool ramp_done = (ramp <= 0.0) || (activation_elapsed_ >= ramp);
+  diag.state = static_cast<std::uint8_t>(
+      sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_gate_, false));
+
+  ControllerOutput output;
+  output.num_devices = state.num_devices;
+  // Zero-length = "no update" to every backend. Secondary devices keep their
+  // own passthrough: a hand does not stop being commandable because the arm's
+  // state went missing.
+  output.devices[0].num_channels = 0;
+  rtc::utils::PassthroughSecondaryDevices(state, output, target_seqlock_.Load().targets);
+  output.command_type = command_type_;
+
+  // Same discontinuity contract a held tick has: whatever X_d / q_null / command
+  // integrator state exists was seeded from a joint state this tick could not
+  // read, so the next controllable tick re-seeds from measurement. The hold latch
+  // goes with it — it would otherwise describe a pose read while the device was
+  // untrustworthy.
+  target_initialized_.store(false, std::memory_order_release);
+  estop_hold_valid_ = false;
+
+  diag.control_valid = false;
+  diag_lock_.Store(diag);
   return output;
 }
 
