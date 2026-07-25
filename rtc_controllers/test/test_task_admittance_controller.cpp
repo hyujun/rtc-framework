@@ -592,6 +592,29 @@ TEST(TaskAdmittanceController, MinDesiredInertiaFloorsAConfiguredValue) {
   EXPECT_NEAR(tiny, floored, 1e-12);
 }
 
+TEST(TaskAdmittanceController, MaxDampingFloorSurvivesSetGains) {
+  // NUM-1: the λ_max floor has to sit where the DLS solve USES it, not only in
+  // LoadConfig. set_gains() writes the struct straight into the SeqLock, so a
+  // configure-time-only floor is bypassable by every caller holding the handle —
+  // the same hole 0a61aaf closed for the operational-space controller.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+
+  auto g = c.get_gains();
+  g.singularity_threshold = 10.0;  // σ₀ above this arm's σ_min → the DLS ramp is always armed
+  g.max_damping = 0.0;             // exactly what LoadConfig would have floored away
+  c.set_gains(g);
+
+  auto state = MakeState(Posture());
+  Send(c, Wrench6{{20.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  (void)c.Compute(state);
+
+  const auto d = c.GetDiagnosticsForTesting();
+  ASSERT_LT(d.sigma_min, g.singularity_threshold) << "σ₀ must be armed for λ² to be observable";
+  ASSERT_GT(d.sigma_min, g.singularity_critical) << "posture must stay out of SAFE_STOP";
+  EXPECT_GT(d.lambda_sq, 0.0) << "λ_max = 0 reached the DLS solve — J Jᵀ is left unregularised";
+}
+
 TEST(TaskAdmittanceController, BiasCalibrationSuppressesTheWrenchUntilItCommits) {
   TaskAdmittanceController c(Urdf7());
   c.LoadConfig(YAML::Load(R"(

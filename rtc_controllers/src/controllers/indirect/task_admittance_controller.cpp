@@ -368,8 +368,11 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
     qdot_null_.setZero();
   }
 
+  // Floor λ_max at the point of use so the singularity guard holds regardless of
+  // how the gains were set (LoadConfig floors too, but set_gains() bypasses it) — NUM-1.
+  const double max_damping = std::max(kMinMaxDamping, gains.max_damping);
   const compliance::DifferentialIk::Result ik =
-      ik_.Compute(J_full_, gains.singularity_threshold, gains.max_damping);
+      ik_.Compute(J_full_, gains.singularity_threshold, max_damping);
   if (ik.ok) {
     ik_.Solve(nu, qdot_null_, dq_);
   } else {
