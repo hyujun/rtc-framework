@@ -41,6 +41,23 @@ namespace rtc::compliance {
   return lambda_max * lambda_max * (1.0 - ratio * ratio);
 }
 
+// σ_min(J) = sqrt(λ_min(J Jᵀ)) — the kinematic distance to a singularity, and
+// the input AdaptiveDampingSquared is parameterised on. The clamp at 0 is not
+// cosmetic: J Jᵀ is SPSD, so round-off routinely puts λ_min a few ulp BELOW
+// zero at a genuinely singular pose and the sqrt would return NaN — which then
+// compares false against every fault threshold and silently disarms §6.5.
+//
+// Free function (not a TaskDynamics method) so the kinematic differential-IK
+// path can share the exact definition instead of re-deriving it; the caller
+// supplies the two work buffers, keeping this allocation-free on the RT tick.
+[[nodiscard]] inline double SmallestSingularValue(
+    const Eigen::Ref<const Eigen::MatrixXd>& J, Eigen::MatrixXd& jjt_buf,
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>& saes) noexcept {
+  jjt_buf.noalias() = J * J.transpose();
+  saes.compute(jjt_buf, Eigen::EigenvaluesOnly);
+  return std::sqrt(std::max(0.0, saes.eigenvalues()(0)));  // ascending order
+}
+
 // Holds pre-sized work buffers so Compute() is heap-free on the RT path. Resize()
 // is off-RT (lifecycle) and allocates; Compute() must be called only after it.
 class TaskDynamics {
@@ -76,12 +93,7 @@ class TaskDynamics {
     Result r;
     J_S_ = J_S;
 
-    // σ_min(J_S) = sqrt(λ_min(J_S J_Sᵀ)). J_S J_Sᵀ is m×m SPSD; the smallest
-    // eigenvalue is clamped at 0 (round-off can make it slightly negative).
-    JJt_.noalias() = J_S_ * J_S_.transpose();
-    saes_.compute(JJt_, Eigen::EigenvaluesOnly);
-    const double lam_min = saes_.eigenvalues()(0);  // ascending order
-    r.sigma_min = std::sqrt(std::max(0.0, lam_min));
+    r.sigma_min = SmallestSingularValue(J_S_, JJt_, saes_);
     r.lambda_sq = AdaptiveDampingSquared(r.sigma_min, sigma0, lambda_max);
 
     // M⁻¹ J_Sᵀ via the joint-inertia Cholesky (in place, no alloc).

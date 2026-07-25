@@ -282,7 +282,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 | # | 규칙 | 이유 | 구현 위치 |
 |---|------|------|-----------|
-| NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`damping` YAML 주입) | Unbounded magnification | ClikController, OSC |
+| NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`damping` YAML 주입). 하한(λ 바닥)은 **값을 쓰는 지점**에 건다 — `LoadConfig` 에만 두면 `set_gains()` / ctor default 가 우회한다 | Unbounded magnification | ClikController, OSC (`0a61aaf`), TaskAdmittanceController (`Compute()` 의 `std::max(kMinMaxDamping, …)`) |
 | NUM-2 | `dt` near-zero guard | `1/dt` 발산 | 모든 trajectory generator |
 | NUM-3 | Quaternion 정규화 매 곱 후 | Drift → non-unit | SE3 trajectory, orientation PD |
 | NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | `ClikController` 의 gains 로더 (`clik_controller.cpp`, `cfg["trajectory_speed"]` 파싱부) |

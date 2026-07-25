@@ -89,9 +89,17 @@ robot 모델이 필요한 gtest fixture 는 URDF 를 **`robot_descriptions/robot
 테스트 카운트·suite 목록은 박제하지 않는다 ([anti-patterns.md](anti-patterns.md) AP-DOC-1). 최신 카운트·suite 명은 직접 측정:
 
 ```bash
+rm -rf build/<pkg>/test_results                 # ← 누적 XML 제거 (아래 함정)
 colcon test --packages-select <pkg> --event-handlers console_direct+
 colcon test-result --verbose
 ```
+
+**두 가지 계측 함정 — 비교 가능한 수치를 낼 때 필수:**
+
+- **`colcon test-result` 는 디렉토리에 남아 있는 XML 을 전부 합산한다.** CMakeLists 에서 타깃을 빼거나 브랜치를 되돌린 뒤 재측정하면 **사라진 타깃의 옛 결과가 그대로 더해진다** — 숫자가 그럴듯해서 자체 검산 없이는 안 걸린다 (#236 슬라이스 3 에서 baseline 을 298 대신 300 으로 오측하고 존재하지 않는 drift 원인까지 보고했다).
+- **gtest case 수와 ctest entry 수를 함께 센다.** `rtc_controllers 333` = gtest 315 + ctest 18. 옛 수치와 비교할 땐 **단위가 같은지** 먼저 확인한다.
+
+신규 테스트 개수를 주장할 땐 총계 차이가 아니라 `grep -c '^TEST(' <파일>` 또는 per-target XML 의 `tests="N"` 으로 교차검증한다.
 
 대표 suite 명은 `<pkg>/CMakeLists.txt` 에서 `ament_add_gtest()` / `ament_add_pytest_test()` grep — 코드 자체가 SSoT 이므로 문서 박제 불필요.
 

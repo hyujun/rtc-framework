@@ -7,7 +7,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 5개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
+RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 6개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
 
 > **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
@@ -20,6 +20,7 @@ RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니�
 | ClikController | 태스크 공간 | Position (indirect) | `indirect/` |
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` |
 | TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` |
+| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` |
 | GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` |
 
 > `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러다. 기본 법칙은
@@ -35,6 +36,19 @@ RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니�
 > `sensor_frame` 기준 raw `[f;τ]` 를 그대로 넘기면 된다 (bias·중력보상·`Ad^{-T}` 변환·필터는
 > 모두 컨트롤러가 수행). 입력 계약·조건화 순서·staleness 정책·`Λ_d` clamp·하드웨어 부호
 > 검증 절차(P1–P4) 등 규범·근거는 [docs/compliance-conventions.md](docs/compliance-conventions.md).
+>
+> `TaskAdmittanceController` 는 같은 계열의 **반대 방향** 제어기다 (§7 Rule 3): 힘을
+> **입력**으로 받아 가상 compliant frame `X_c` 를 적분하고 (`Λ_d ẍ̃ + K_d ẋ̃ + K_p x̃ = f_ext`),
+> 미분 IK 로 관절 **위치** 명령을 만든다. 같은 `+x` 밀림에 impedance 는 `−x` 로 저항하고
+> admittance 는 `+x` 로 따라간다 (§11.4.1 P2 vs P3 — 두 컨트롤러를 같은 픽스처에서 대조하는
+> 테스트가 이 부호를 고정한다). 출력이 position 이라 **현재 유일하게 position-only 실기
+> backend 가 받을 수 있는 compliance 경로**이며, 외부 wrench 는 **필수**다
+> (`external_wrench.enabled: false` 는 configure 에러 — impedance 와 달리 A=NONE 이 없다).
+> 접촉 안정성은 impedance 보다 근본적으로 취약하므로 (§7.4) `min_desired_inertia` 하한이
+> 강제되고, 딱딱한 환경에서는 **`Λ_d` 를 키우고 `K_p` 를 낮춘다**. `K_p = 0` 은 hand-guiding
+> 모드이며 이때 `X_c` 의 표류는 `max_compliant_displacement` (saturating spring) 와
+> `max_compliant_{linear,angular}_velocity` 가 막는다 (§7.5). 규범·근거는 위와 같은
+> [docs/compliance-conventions.md](docs/compliance-conventions.md) §3.5.
 
 ---
 
@@ -47,18 +61,22 @@ rtc_controllers/
 ├── include/rtc_controllers/
 │   ├── indirect/
 │   │   ├── p_controller.hpp              -- 관절 공간 P 제어기
-│   │   └── clik_controller.hpp           -- 태스크 공간 CLIK 제어기
+│   │   ├── clik_controller.hpp           -- 태스크 공간 CLIK 제어기
+│   │   └── task_admittance_controller.hpp -- 태스크 공간 admittance (§7, 힘 입력 → 위치 출력)
 │   ├── direct/
 │   │   ├── joint_pd_controller.hpp       -- 관절 공간 PD + 동역학 보상
 │   │   ├── operational_space_controller.hpp -- 태스크 공간 OSC
 │   │   └── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
-│   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS
+│   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
+│   │   ├── differential_ik.hpp               -- §7.3 운동학 DLS J⁺ + 속도공간 nullspace N (task_dynamics 의 §6.5 λ 규칙 재사용)
+│   │   ├── admittance_integrator.hpp         -- §7.2 semi-implicit Euler + exp3 retract, §7.5 변위/속도 가드
 │   │   ├── safety_limiter.hpp                -- §10.5 4단계 (관절한계 반발 → saturation → rate → non-finite)
 │   │   ├── torque_estop.hpp                  -- E-8 토크 홀드 τ = ĝ(q) − D·q̇
 │   │   ├── compliance_state_machine.hpp      -- §10.6 상태기계 (BIAS_CALIBRATING…SAFE_STOP latch)
 │   │   ├── external_wrench.hpp               -- 외부 wrench 입력 계약 (SeqLock, generation 기반 staleness, contact 히스테리시스)
-│   │   └── wrench_conditioning.hpp           -- bias → 정적 중력보상 → deadband → saturation → filter
+│   │   ├── wrench_conditioning.hpp           -- bias → 정적 중력보상 → deadband → saturation → filter
+│   │   └── wrench_pipeline.hpp               -- 위 두 개 + bias 이중 래치 + Ad^{-T} + fade 를 한 tick 순서로 묶은 것
 │   ├── trajectory/
 │   │   ├── trajectory_utils.hpp              -- 5차 다항식 궤적 (QuinticPolynomial)
 │   │   ├── joint_space_trajectory.hpp        -- N-DOF 관절 공간 궤적 생성기
@@ -77,7 +95,8 @@ rtc_controllers/
 │   └── controllers/
 │       ├── indirect/
 │       │   ├── p_controller.cpp
-│       │   └── clik_controller.cpp
+│       │   ├── clik_controller.cpp
+│       │   └── task_admittance_controller.cpp
 │       ├── direct/
 │       │   ├── joint_pd_controller.cpp
 │       │   ├── operational_space_controller.cpp
