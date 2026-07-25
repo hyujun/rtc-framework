@@ -20,6 +20,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/math.hpp>
 #include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
@@ -537,15 +538,29 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   }
   rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
 
+  // Both lanes are 6-wide (x,y,z,r,p,y) and every consumer reads all six —
+  // device_state_log_pod / pod_fill emit them straight to CSV. Filling only the
+  // translation on a FULL_SE3 controller means every orientation experiment logs
+  // "no rotation" rather than "not measured", which is the one reading an
+  // operator cannot tell apart from a real result. ZYX Euler at the boundary, as
+  // p_controller and the OSC already do.
+  const Eigen::Vector3d rpy_actual = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
   output.actual_task_positions[1] = tcp.translation().y();
   output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy_actual.x();
+  output.actual_task_positions[4] = rpy_actual.y();
+  output.actual_task_positions[5] = rpy_actual.z();
   // The compliant frame is the thing this controller actually commands, so it is
   // what the task-goal lane must show — X_d alone would look motionless under a
   // sustained push, which is the one situation an operator is watching for.
+  const Eigen::Vector3d rpy_goal = pinocchio::rpy::matrixToRpy(compliant_pose_.rotation());
   output.task_goal_positions[0] = compliant_pose_.translation().x();
   output.task_goal_positions[1] = compliant_pose_.translation().y();
   output.task_goal_positions[2] = compliant_pose_.translation().z();
+  output.task_goal_positions[3] = rpy_goal.x();
+  output.task_goal_positions[4] = rpy_goal.y();
+  output.task_goal_positions[5] = rpy_goal.z();
   output.command_type = command_type_;
 
   diag_lock_.Store(diag);

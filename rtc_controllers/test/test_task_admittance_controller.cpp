@@ -756,6 +756,55 @@ TEST(TaskAdmittanceController, TheHoldIsClampedIntoTheJointLimitsAtABoundedRate)
   EXPECT_NEAR(settled.devices[0].commands[3], Posture()[3], 1e-12);
 }
 
+// ── Task-space telemetry (F10) ──────────────────────────────────────────────
+
+TEST(TaskAdmittanceController, TaskSpaceTelemetryCarriesOrientationNotJustPosition) {
+  // Both lanes are 6-wide and every consumer reads all six (pod_fill emits them
+  // to CSV). Leaving 3..5 at zero on a FULL_SE3 controller logs "no rotation"
+  // where the honest reading is "not measured" — indistinguishable, in a lane an
+  // orientation experiment is read from.
+  Reference ref;
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+  auto state = MakeState(Posture());
+
+  // A pure torque so the compliant frame's ORIENTATION is what moves; the arm
+  // follows, so the actual lane has to move with it.
+  for (int k = 0; k < 800; ++k) {
+    Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 6.0}});
+    ApplyCommand(state, c.Compute(state));
+  }
+  Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 6.0}});
+  const auto out = c.Compute(state);
+  ASSERT_TRUE(c.GetDiagnosticsForTesting().control_valid);
+
+  // The actual lane must be the measured TCP orientation — checked against an
+  // independent model handle, not against the controller's own numbers.
+  ref.handle.ComputeJacobians(std::span<const double>(JointsOf(state).data(), kNj));
+  const Eigen::Matrix3d R_ref = ref.handle.GetFramePlacement(ref.tip).rotation();
+  const Eigen::Vector3d rpy_ref = pinocchio::rpy::matrixToRpy(R_ref);
+  for (int i = 0; i < 3; ++i)
+    EXPECT_NEAR(out.actual_task_positions[static_cast<std::size_t>(3 + i)], rpy_ref(i), 1e-9)
+        << "actual_task_positions RPY component " << i;
+
+  // ...and it is not the all-zero default that the defect produced.
+  EXPECT_GT(Eigen::Vector3d(out.actual_task_positions[3], out.actual_task_positions[4],
+                            out.actual_task_positions[5])
+                .norm(),
+            1e-3)
+      << "the fixture posture has no orientation to report — the test proves nothing";
+
+  // The goal lane carries the COMPLIANT frame (the thing actually commanded), so
+  // the torque must have rotated it away from the actual pose.
+  const Eigen::Vector3d rpy_goal(out.task_goal_positions[3], out.task_goal_positions[4],
+                                 out.task_goal_positions[5]);
+  EXPECT_GT((rpy_goal - rpy_ref).norm(), 1e-4)
+      << "task_goal RPY equals the actual RPY — the compliant rotation is not being reported";
+  // Both lanes agree on translation, which is what pins the two as the same pair.
+  for (int i = 0; i < 3; ++i)
+    EXPECT_TRUE(std::isfinite(out.task_goal_positions[static_cast<std::size_t>(i)]));
+}
+
 // ── RT-1: no heap allocation on the tick ────────────────────────────────────
 
 TEST(TaskAdmittanceController, ComputeIsAllocationFree) {
