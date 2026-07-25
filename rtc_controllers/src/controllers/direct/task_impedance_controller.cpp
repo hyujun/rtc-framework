@@ -521,8 +521,9 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
       rtc::math::se3::computePoseError(tcp, goal_pose_, rtc::math::se3::ErrorType::SplitWorld);
   // SplitWorld velocity error is ν_d − ν (LWA); the desired task velocity ν_d is
   // 0 for a static compliance setpoint, so ė = −ν = −J·q̇. (computeVelocityError
-  // returns exactly this for Split types and takes no SE3 overload — inline it.)
-  const Eigen::Matrix<double, 6, 1> edot = -tcp_vel_;
+  // returns exactly this for Split types and takes no SE3 overload.) The §7.6
+  // cascade is the caller that passes a MOVING ν_d — see impedance_law.hpp.
+  const Eigen::Matrix<double, 6, 1> nu_d = Eigen::Matrix<double, 6, 1>::Zero();
 
   for (int i = 0; i < 6; ++i)
     diag.pose_error[static_cast<std::size_t>(i)] = e(i);
@@ -533,15 +534,12 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
 
   // ── Selection: J_S = S·J (linear rows first in [linear;angular]) ─────────
   // f_task is fixed-size (stack) so Compute stays heap-free; only head(m_) used.
+  // The §6.2 law itself lives in compliance/impedance_law.hpp — shared with the
+  // §7.6 cascade rather than copied into it (#236 D18, P5).
   J_S_ = J_full_.topRows(m_);
-  Eigen::Matrix<double, 6, 1> f_task = Eigen::Matrix<double, 6, 1>::Zero();
-  for (int i = 0; i < m_; ++i) {
-    const double kp = (i < 3) ? gains.kp_pos[static_cast<std::size_t>(i)]
-                              : gains.kp_rot[static_cast<std::size_t>(i - 3)];
-    const double kd = (i < 3) ? gains.kd_pos[static_cast<std::size_t>(i)]
-                              : gains.kd_rot[static_cast<std::size_t>(i - 3)];
-    f_task(i) = alpha * (kp * e(i) + kd * edot(i));  // +K_p·e (sign per §6.2)
-  }
+  const Eigen::Matrix<double, 6, 1> f_task = compliance::ComputeImpedanceForce(
+      compliance::ImpedanceParams{gains.kp_pos, gains.kd_pos, gains.kp_rot, gains.kd_rot}, e,
+      tcp_vel_, nu_d, alpha, m_);
 
   // ── Joint-space gravity ĝ(q) (always needed: comp + E-STOP hold) ─────────
   handle_->ComputeGeneralizedGravity(q_span);

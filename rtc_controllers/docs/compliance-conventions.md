@@ -50,6 +50,7 @@ frame mismatch** 이므로 (부호는 즉시 발산, frame 불일치는 특정 �
 | **Formulation** | `formulation:` YAML 로 명시 선택. `jacobian_transpose` (§6.2, **기본값**) \| `inertia_shaping` (§6.3). "wrench 가 설정됐으니 §6.3" 같은 암묵 추론 없음 | 두 법칙은 실패 모드와 특이점 노출이 다르다 — 센서 배선의 부작용으로 제어 법칙이 바뀌면 안 된다 |
 | **Pose error frame** | `SplitWorld` = `LOCAL_WORLD_ALIGNED`, `[p_d−p ; log3(R_d Rᵀ)]` | §1.3, `rtc_math/se3/pose_error.hpp` |
 | **Velocity error** | `ν_d − ν`; 정적 setpoint 는 `ν_d=0` ⇒ `ė = −J·q̇` | §1.4, SplitWorld = LWA |
+| **§6.2 법칙 위치** | `Compute()` 인라인 아님 — 공용 helper `compliance/impedance_law.hpp` (`α·[K_p·e + K_d·(ν_d−ν)]`), `ν_d` 는 **명시 인자** | D18. §7.6 cascade 의 inner loop 가 같은 법칙을 `ν_d = ν_c` 로 쓴다 (복제하면 §6.2 사본이 셋). 추출은 **bitwise 무변경** — `ImpedanceLaw.MatchesThePreExtractionInlineFormBitwise` 가 추출 전 인라인 형태의 사본과 비트 단위로 대조하고, 재결합(`α·kp·e + α·kd·ė`)이 그 비교를 실제로 깨뜨림을 같은 파일이 함께 고정한다 |
 | **Sign** | `+K_p·e` (desired−current) | §6.2 부호 규약 MUST |
 | **Selection (axis B)** | `FULL_SE3` (m=6) \| `TRANSLATION_ONLY` (m=3). `J_S = S·J`, linear rows first | §6.1 |
 | **Nullspace** | dynamically-consistent `Nᵀ = I − J_Sᵀ J̄_Sᵀ`, gate **`nv > task_dim`** (NOT `nv > 6`), 토크는 `Nᵀ` 투영 (가속도는 `N`) | §6.4 — 6-DoF+`TRANSLATION_ONLY` 는 dim-3 nullspace 가 **필수** |

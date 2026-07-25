@@ -4,6 +4,7 @@
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/compliance/compliance_state_machine.hpp"
 #include "rtc_controllers/compliance/external_wrench.hpp"
+#include "rtc_controllers/compliance/impedance_law.hpp"
 #include "rtc_controllers/compliance/safety_limiter.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"

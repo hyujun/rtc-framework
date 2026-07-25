@@ -71,6 +71,7 @@ rtc_controllers/
 │   │   └── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
+│   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
 │   │   ├── differential_ik.hpp               -- §7.3 운동학 DLS J⁺ + 속도공간 nullspace N (task_dynamics 의 §6.5 λ 규칙 재사용)
 │   │   ├── admittance_integrator.hpp         -- §7.2 semi-implicit Euler + exp3 retract, §7.5 변위/속도 가드
 │   │   ├── safety_limiter.hpp                -- §10.5 4단계 (관절한계 반발 → saturation → rate → non-finite)
