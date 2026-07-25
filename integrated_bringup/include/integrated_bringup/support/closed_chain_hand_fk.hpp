@@ -59,8 +59,12 @@ enum class HandFkWiringResult {
 ///
 /// ### RT 계약
 /// `Update` / `GetFingertipHandRootPose` 는 noexcept·힙 할당 없음 (내부 핸들이 preallocated).
-/// 소비자는 `status().held` (비유한→직전 해) / `status().singular` (J 신뢰 저하) /
-/// `status().closure_error` (미수렴 임계) 를 확인해 hold 정책을 건다.
+/// 소비자는 `status().held` / `status().singular` (J 신뢰 저하) / `status().closure_error`
+/// (미수렴 임계) 를 확인해 hold 정책을 건다. `held` 는 비유한 tick 뿐 아니라 **actuated seed
+/// 증분 클램프 tick** 에도 선다 (@ref rtc_urdf_bridge::RtClosedChainHandle::Status::held) —
+/// activate 직후 seed(q_ref)→측정 q 점프를 여러 tick 에 나눠 따라가는 동안 fingertip pose 캐시가
+/// 채워지지 않아 `GetFingertipHandRootPose` 가 false 를 돌린다. 이는 tick 0 과 동일한 기존
+/// 경로이며 **일시적**이다 (#248). fault 로 승격하지 말 것.
 class ClosedChainHandFk {
  public:
   static constexpr std::size_t kMaxFingertips = 4;

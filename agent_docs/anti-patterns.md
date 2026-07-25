@@ -187,6 +187,15 @@ grep -rnE 'CPU_(SET|ISSET)\((cfg\.)?cpu_core' rtc_base/include/rtc_base/threadin
   - reorder map은 config 로드 시 1회 계산, identity fallback 금지
   - Position limit은 lower/upper bound, velocity limit은 별도 적용
 
+### AP-NUM-1: residual 로 폐쇄 체인 조립 분기를 판정 ([invariants.md](invariants.md) NUM-5 위반)
+
+- **증상**: closed-chain FK 가 엉뚱한 형상으로 렌더링/제어된다. passive joint 가 ~180° 뒤집히거나 여러 바퀴 감긴 값이다. 그런데 `converged=true`, `‖φ‖≈1e-8` 로 **모든 건전성 검사가 통과**한다
+- **원인**: 점(`CONTACT_3D`) 구속 loop 은 조립 분기가 여럿이고 **모두 φ=0 을 만족**한다. 무감쇠 Gauss-Newton 사영에 큰 seed 점프를 한 번에 넘기면 반대편 분기로 착지하고, warm-start 구조상 영구 고정된다 (#248)
+- **발동 경로** (전부 "한 호출에서 seed 가 크게 움직임"): cold start (초기 seed=`q_ref`≈neutral → 첫 실측 포즈), 빠른 동작 (관절 속도 한계 × 발행 주기 > 이탈 임계), 메시지 유실 (`QoS(1)` 드롭 → 실효 스텝 배가)
+- **탐지**: `‖φ‖` 는 무력하다. **미세 continuation 기준해와 형상을 직접 대조**하거나, 사영 전후 passive 이동량을 본다. `grep -rn "ProjectPassiveToConstraint" --include=*.cpp` 로 continuation 을 거치지 않는 직접 호출을 찾는다
+- **복구**: 비-RT 는 `ProjectPassiveWithContinuation`, RT 는 tick 당 seed clamp (NUM-5 세부 스펙). λ 상향은 band-aid 다 — 실측상 λ=1e-2 는 막지만 λ=0.1 은 과감쇠로 오답을 내 마진이 좁다
+- **테스트 함정**: 고친 경로만 검증하면 vacuous 하다. 끈 경로가 **실제로 이탈하는지**를 같은 테스트가 확인해야 한다
+
 ## CLAUDE.md / 문서 drift
 
 ### AP-DOC-1: 패키지 수·테스트 수·상수값·commit SHA·시점 의존 status 박제

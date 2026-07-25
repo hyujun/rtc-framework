@@ -39,9 +39,12 @@ namespace integrated_bringup {
 /// buildReducedModel 의 관절 순서를 **가정하지 않는다**.
 ///
 /// ### held / singular 정책
-/// 사영이 held(비유한) 또는 singular(특이 조립) 인 tick 은 **직전 유효(last-good) 축약 M/h/g 를
+/// 사영이 held 또는 singular(특이 조립) 인 tick 은 **직전 유효(last-good) 축약 M/h/g 를
 /// 유지**한다 — degraded 동역학을 실기 QP 에 주입하지 않기 위함. 최초 유효 tick 이전이면
 /// `FillReducedDynamics` 가 false 를 돌려 open-chain 값이 유지된다.
+/// `held` 는 비유한 tick 외에 **actuated seed 증분 클램프** tick 에도 선다 (#248) — activate
+/// 직후 seed(q_ref)→측정 q 점프를 여러 tick 에 나눠 따라가는 구간이며, 그동안 위 규칙대로
+/// open-chain 값이 유지된다 (최초 유효 tick 이전이므로). 일시적이므로 fault 로 승격하지 말 것.
 ///
 /// ### Phase ③ — loop-consistent contact frame kinematics (unified kin&dyn)
 /// closed-chain 활성 시 WBC contact frame 의 J·oMf 를 frozen-loop(open-chain) 근사 대신

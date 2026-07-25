@@ -18,6 +18,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace rub = rtc_urdf_bridge;
 using rtc::test::CrankRocker;
 using rtc::test::FourBar;
@@ -77,6 +80,95 @@ TEST(LoopProjectionPassive, WarmStartContinuity) {
     ++steps;
   }
   EXPECT_GE(steps, 11);  // 0.10..0.60 전 구간 통과
+}
+
+namespace {
+
+// 조립된 시작 형상 (crank=start 에서 cold 수렴 가능한 비특이 구간).
+Eigen::VectorXd AssembledAt(const rub::ClosedChainModel& cc, pinocchio::Data& data, double crank) {
+  const auto q_idx = cc.model.idx_qs[cc.model.getJointId("j_crank")];
+  Eigen::VectorXd q = pinocchio::neutral(cc.model);
+  q[q_idx] = crank;
+  const rub::ProjectionResult res =
+      rub::ProjectPassiveToConstraint(cc.model, data, cc.constraints, q, cc.actuated_joint_ids);
+  EXPECT_TRUE(res.converged) << "시작 형상 조립 실패 (crank=" << crank << ")";
+  return res.q;
+}
+
+// 물리적으로 옳은 분기의 기준해: q_from 에서 crank=to 까지 **미세** continuation.
+// (분기는 residual 이 아니라 homotopy 경로가 결정하므로, 충분히 잘게 쪼갠 경로가 ground truth.)
+Eigen::VectorXd FineContinuation(const rub::ClosedChainModel& cc, pinocchio::Data& data,
+                                 const Eigen::VectorXd& q_from, double to) {
+  constexpr double kFineStep = 0.01;
+  const auto q_idx = cc.model.idx_qs[cc.model.getJointId("j_crank")];
+  const double from = q_from[q_idx];
+  const int n = std::max(1, static_cast<int>(std::ceil(std::abs(to - from) / kFineStep)));
+  Eigen::VectorXd q = q_from;
+  for (int k = 1; k <= n; ++k) {
+    q[q_idx] = from + (to - from) * static_cast<double>(k) / static_cast<double>(n);
+    const rub::ProjectionResult res =
+        rub::ProjectPassiveToConstraint(cc.model, data, cc.constraints, q, cc.actuated_joint_ids);
+    EXPECT_TRUE(res.converged) << "기준해 continuation 실패 (k=" << k << ")";
+    q = res.q;
+  }
+  return q;
+}
+
+}  // namespace
+
+// ── 성공기준 4: 큰 actuated 점프에서 조립 분기 이탈 — continuation 이 막는다 (#248). ──
+//   점 구속 loop 은 조립 분기가 여러 개이고 **모두 φ=0 을 만족**하므로 residual 로는 옳은
+//   분기를 고를 수 없다. 분기를 결정하는 것은 homotopy 경로다.
+TEST(LoopProjectionPassive, ContinuationSurvivesLargeActuatedJump) {
+  const rub::ClosedChainModel cc = CrankRocker();
+  pinocchio::Data data(cc.model);
+  const auto q_idx = cc.model.idx_qs[cc.model.getJointId("j_crank")];
+
+  constexpr double kStart = 0.05;
+  constexpr double kTarget = 1.2;  // Δ=1.15 rad — 기본 증분(0.05)의 23배 점프
+
+  const Eigen::VectorXd q_start = AssembledAt(cc, data, kStart);
+  const Eigen::VectorXd q_truth = FineContinuation(cc, data, q_start, kTarget);
+
+  Eigen::VectorXd q_target = q_start;
+  q_target[q_idx] = kTarget;
+
+  // (a) **회귀 감지 (mutation guard)**: continuation 없는 단일 사영은 기준 분기를 벗어난다.
+  //     이 EXPECT 가 깨지면 픽스처가 더는 결함을 재현하지 못한다는 뜻이므로 (b) 는 vacuous 가
+  //     된다 — 그 경우 픽스처를 고쳐야지 (b) 를 약화하면 안 된다.
+  const rub::ProjectionResult naive = rub::ProjectPassiveToConstraint(
+      cc.model, data, cc.constraints, q_target, cc.actuated_joint_ids);
+  EXPECT_GT((naive.q - q_truth).cwiseAbs().maxCoeff(), 1.0)
+      << "단일 사영이 분기를 유지했다 — 이 픽스처는 더 이상 #248 을 재현하지 못한다";
+
+  // (b) continuation 은 기준 분기를 유지한다.
+  const rub::ProjectionResult fixed = rub::ProjectPassiveWithContinuation(
+      cc.model, data, cc.constraints, q_start, q_target, cc.actuated_joint_ids);
+  EXPECT_TRUE(fixed.converged);
+  EXPECT_LT(fixed.final_error, 1e-8);
+  EXPECT_LT((fixed.q - q_truth).cwiseAbs().maxCoeff(), 1e-6) << "분기 이탈";
+  EXPECT_NEAR(fixed.q[q_idx], kTarget, 1e-12) << "actuated 는 정확히 고정";
+}
+
+// ── 성공기준 5: max_actuated_increment ≤ 0 은 continuation 을 끄고 단일 사영과 동일. ──
+//   escape hatch 계약 고정 — 끄면 (a) 와 같은 이탈 동작으로 돌아간다.
+TEST(LoopProjectionPassive, ContinuationDisabledMatchesSingleProjection) {
+  const rub::ClosedChainModel cc = CrankRocker();
+  pinocchio::Data data(cc.model);
+  const auto q_idx = cc.model.idx_qs[cc.model.getJointId("j_crank")];
+
+  const Eigen::VectorXd q_start = AssembledAt(cc, data, 0.05);
+  Eigen::VectorXd q_target = q_start;
+  q_target[q_idx] = 1.2;
+
+  const rub::ProjectionResult single = rub::ProjectPassiveToConstraint(
+      cc.model, data, cc.constraints, q_target, cc.actuated_joint_ids);
+  const rub::ProjectionResult off = rub::ProjectPassiveWithContinuation(
+      cc.model, data, cc.constraints, q_start, q_target, cc.actuated_joint_ids, {},
+      /*max_actuated_increment=*/0.0);
+
+  EXPECT_EQ(off.converged, single.converged);
+  EXPECT_LT((off.q - single.q).cwiseAbs().maxCoeff(), 1e-12);
 }
 
 // ── 성공기준 3: 특이 조립형상(four_bar 대칭)에서 미수렴이라도 NaN 을 내지 않는다. ───

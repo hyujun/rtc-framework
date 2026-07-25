@@ -755,3 +755,69 @@ TEST(RtClosedChainHandle, DynamicsHeldOnNonFiniteVelocity) {
   EXPECT_TRUE(dJv_after.allFinite()) << "drift 에 NaN 미누출";
   EXPECT_LT((dJv_after - dJv_good).norm(), 1e-15) << "drift 직전 유효값 유지";
 }
+
+// ── (6) 큰 seed 점프에서 조립 분기 이탈 — tick 당 seed clamp 가 막는다 (#248). ────────
+//   activate 직후 q_seed → 측정 q 의 점프가 대표 사례다. 점 구속 loop 은 조립 분기가 여러
+//   개이고 **모두 ‖φ‖≈0 을 만족**하므로 closure_error 임계로는 뒤집힌 분기를 검출할 수 없다.
+//   RT 는 sub-step loop 를 돌릴 수 없으므로(고정 K 유지) 증분 자체를 tick 당 상한으로 잘라
+//   **tick loop 을 continuation 경로로** 쓴다.
+TEST(RtClosedChainHandle, SeedClampPreservesAssemblyBranchOnLargeJump) {
+  const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
+  auto model = std::make_shared<pinocchio::Model>(ccm.model);
+
+  constexpr double kStart = 0.05;
+  constexpr double kTarget = 1.2;  // Δ=1.15 rad — 기본 증분(0.05)의 23배 점프
+
+  // 조립된 seed + 물리적으로 옳은 분기의 기준해 (non-RT 핸들을 미세 스텝으로 진행).
+  rub::ClosedChainHandle ref(model, ccm.constraints, ccm.actuated_joint_ids, {});
+  ASSERT_EQ(ref.nv_independent(), 1);
+  ASSERT_TRUE(ref.Update(std::vector<double>{kStart}).converged);
+  const Eigen::VectorXd seed = ref.GetFullConfiguration();
+
+  constexpr int kFineSteps = 115;  // 0.01 rad 씩
+  for (int k = 1; k <= kFineSteps; ++k) {
+    const double q = kStart + (kTarget - kStart) * static_cast<double>(k) / kFineSteps;
+    ASSERT_TRUE(ref.Update(std::vector<double>{q}).converged) << "기준해 continuation 실패 k=" << k;
+  }
+  pinocchio::Data ref_data(*model);
+  pinocchio::forwardKinematics(*model, ref_data, ref.GetFullConfiguration());
+  pinocchio::updateFramePlacements(*model, ref_data);
+
+  rub::RtClosedChainHandle rt(model, ccm.constraints, ccm.actuated_joint_ids, seed,
+                              /*num_iterations=*/2);
+  const auto fid = rt.GetFrameId("c1");
+  ASSERT_NE(fid, 0u);
+  const Eigen::Vector3d p_truth = ref_data.oMf[fid].translation();
+
+  // (a) 첫 tick 은 클램프되어 held — 이 tick 의 actuated 는 측정값과 다르므로 FK 신뢰 불가.
+  const rub::RtClosedChainHandle::Status first = rt.Update(std::vector<double>{kTarget});
+  EXPECT_TRUE(first.held) << "Δ=1.15 rad 점프가 클램프되지 않았다";
+
+  // (b) 나머지 증분은 다음 tick 들에서 이어 간다 → ⌈Δ/증분⌉ tick 뒤 held 해제 + 기준 분기 도달.
+  rub::RtClosedChainHandle::Status st = first;
+  const int kMaxTicks = 200;  // ⌈1.15/0.05⌉=23 tick + 여유
+  int ticks = 1;
+  for (; ticks < kMaxTicks && st.held; ++ticks) {
+    st = rt.Update(std::vector<double>{kTarget});
+  }
+  EXPECT_FALSE(st.held) << ticks << " tick 뒤에도 held — walk-in 이 수렴하지 않는다";
+  EXPECT_LE(ticks, 30) << "⌈1.15/0.05⌉=23 tick 안에 따라잡아야 한다 (실제 " << ticks << ")";
+  // 고정 K=2 사영의 tick 당 잔차 수준. ClosedChainHandFk 의 신뢰 임계(1e-3 m)보다 훨씬 작다.
+  EXPECT_LT(st.closure_error, 1e-6);
+  // 분기 판정: 뒤집힌 분기는 ‖φ‖ 로는 구분되지 않으므로 **형상 자체**를 기준해와 대조한다.
+  EXPECT_LT((rt.GetFramePlacement(fid).translation() - p_truth).norm(), 1e-6)
+      << "clamp 를 통과했는데 기준 분기와 다른 형상 (분기 이탈)";
+
+  // (c) **회귀 감지 (mutation guard)**: clamp 를 끄면 같은 점프에서 분기를 벗어난다.
+  //     이 EXPECT 가 깨지면 픽스처가 더는 #248 을 재현하지 못한다는 뜻이므로 (b) 가 vacuous
+  //     해진다 — 그 경우 픽스처를 고쳐야지 (b) 를 약화하면 안 된다.
+  rub::RtClosedChainHandle rt_off(model, ccm.constraints, ccm.actuated_joint_ids, seed,
+                                  /*num_iterations=*/2, /*projection_damping=*/1e-6,
+                                  /*reduction_damping=*/1e-6, /*max_seed_increment=*/0.0,
+                                  /*max_passive_deviation=*/0.0);
+  for (int t = 0; t < kMaxTicks; ++t) {
+    static_cast<void>(rt_off.Update(std::vector<double>{kTarget}));
+  }
+  EXPECT_GT((rt_off.GetFramePlacement(fid).translation() - p_truth).norm(), 1e-3)
+      << "clamp 없이도 기준 분기를 유지했다 — 이 픽스처는 더 이상 #248 을 재현하지 못한다";
+}

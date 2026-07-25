@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -45,6 +46,9 @@ const pinocchio::SE3 kIdentitySE3 = pinocchio::SE3::Identity();
 // 바꾸면 drift(h_a) 가 desync 되므로 동일 상수를 유지한다.
 constexpr double kDriftEps = 1e-6;
 
+// continuous(revolute-unbounded) 관절 seed 증분을 ±π 로 wrap 할 때 쓰는 주기.
+constexpr double kTwoPi = 2.0 * std::numbers::pi;
+
 }  // namespace
 
 // ── 생성자 ──────────────────────────────────────────────────────────────────
@@ -53,14 +57,17 @@ RtClosedChainHandle::RtClosedChainHandle(std::shared_ptr<const pinocchio::Model>
                                          std::vector<pinocchio::RigidConstraintModel> constraints,
                                          std::vector<pinocchio::JointIndex> actuated_joint_ids,
                                          Eigen::VectorXd q_seed, int num_iterations,
-                                         double projection_damping, double reduction_damping)
+                                         double projection_damping, double reduction_damping,
+                                         double max_seed_increment, double max_passive_deviation)
     : model_(std::move(model)),
       data_(RequireModel(model_)),
       constraints_(std::move(constraints)),
       actuated_joint_ids_(std::move(actuated_joint_ids)),
       num_iterations_(std::max(0, num_iterations)),
       proj_lambda2_(projection_damping * projection_damping),
-      reduction_lambda_(reduction_damping) {
+      reduction_lambda_(reduction_damping),
+      max_seed_increment_(max_seed_increment),
+      max_passive_deviation_(max_passive_deviation) {
   nv_ = model_->nv;
   m_ = TotalConstraintDim(constraints_);
   identity_ = constraints_.empty();
@@ -147,7 +154,9 @@ void RtClosedChainHandle::Initialize() {
   // 사전 할당.
   q_work_ = q_full_;
   q_next_ = q_full_;
+  q_seed_ = q_full_;
   dq_ = Eigen::VectorXd::Zero(nv_);
+  dq_a_ = Eigen::VectorXd::Zero(std::max(n_a_, 1));
   phi_ = Eigen::VectorXd::Zero(m_);
   Jc_ = Eigen::MatrixXd::Zero(m_, nv_);
   scratch_.Resize(nv_);
@@ -276,15 +285,52 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
   }
 
   // warm-start: 직전 loop-consistent 해를 seed, 독립 슬롯만 측정값으로 덮어쓴다.
+  //
+  // 단 **증분은 tick 당 max_seed_increment_ 로 제한**한다 (#248). 점 구속 loop 은 조립 분기가
+  // 여러 개이고 모두 ‖φ‖≈0 을 만족하므로 closure_error 로는 뒤집힌 분기를 검출할 수 없다.
+  // 분기를 결정하는 것은 residual 이 아니라 homotopy 경로이므로, 큰 점프(activate 직후 seed→
+  // 측정 q, 측정 glitch)를 여러 tick 에 걸쳐 나눠 따라간다 — tick loop 자체가 continuation
+  // 경로가 되어 고정 K 를 유지한 채(추가 연산 0) 이탈을 막는다.
+  //
+  // 클램프는 **증분 벡터 전체의 균일 스케일**이다. per-joint 클램프는 관절마다 다른 비율로
+  // 잘라 homotopy 경로를 꺾으므로 쓰지 않는다 (경로가 바뀌면 도달 분기도 바뀔 수 있다).
+  double max_delta = 0.0;
+  for (std::size_t i = 0; i < independent_.size(); ++i) {
+    const IndependentSlot& s = independent_[i];
+    const double prev =
+        s.is_continuous ? std::atan2(q_full_[s.q_idx + 1], q_full_[s.q_idx]) : q_full_[s.q_idx];
+    double delta = q_a[i] - prev;
+    if (s.is_continuous) {
+      // continuous 관절은 ±π 로 wrap 해 최단 경로를 쓴다 (스칼라 뺄셈은 2π 점프를 만든다).
+      delta = std::remainder(delta, kTwoPi);
+    }
+    dq_a_[static_cast<Eigen::Index>(i)] = delta;
+    max_delta = std::max(max_delta, std::abs(delta));
+  }
+  // 비유한 q_a → max_delta 가 NaN → 스케일 1.0 (원본 그대로 seed) → 아래 allFinite guard 가 hold.
+  // identity_(구속 없음)는 사영 자체가 없어 이탈할 분기가 없다 — 클램프하면 serial 경로와의
+  // byte-for-byte 등가만 깨지므로 제외한다.
+  const bool clamped = !identity_ && (max_seed_increment_ > 0.0) && std::isfinite(max_delta) &&
+                       (max_delta > max_seed_increment_);
+  const double scale = clamped ? (max_seed_increment_ / max_delta) : 1.0;
+
   q_work_ = q_full_;
   for (std::size_t i = 0; i < independent_.size(); ++i) {
     const IndependentSlot& s = independent_[i];
     if (s.is_continuous) {
-      q_work_[s.q_idx] = std::cos(q_a[i]);
-      q_work_[s.q_idx + 1] = std::sin(q_a[i]);
+      const double prev = std::atan2(q_full_[s.q_idx + 1], q_full_[s.q_idx]);
+      const double target = prev + scale * dq_a_[static_cast<Eigen::Index>(i)];
+      q_work_[s.q_idx] = std::cos(target);
+      q_work_[s.q_idx + 1] = std::sin(target);
     } else {
-      q_work_[s.q_idx] = q_a[i];
+      q_work_[s.q_idx] = q_full_[s.q_idx] + scale * dq_a_[static_cast<Eigen::Index>(i)];
     }
+  }
+  // 클램프된 tick 은 actuated 슬롯이 측정값과 다르다 → FK 를 신뢰할 수 없다. 기존 held 의미
+  // ("이번 결과 버리고 직전 해 사용") 그대로 보고한다. 소비자 정책은 이미 held 를 소비하므로
+  // 추가 배선이 없다. 나머지 증분은 다음 tick 들에서 이어 간다.
+  if (clamped) {
+    status_.held = true;
   }
 
   if (identity_) {
@@ -304,6 +350,9 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
     pinocchio::updateFramePlacements(model, data_);
     return status_;  // G = I 고정, singular=false
   }
+
+  // 사영 직전 seed 스냅샷 — 아래 passive 이탈 판정 기준 (q_work_ 는 in-place 로 갱신된다).
+  q_seed_ = q_work_;
 
   // 고정 K Newton 스텝 (passive=종속 열만 자유; actuated 열 증분 0 → q 불변).
   for (int iter = 0; iter < num_iterations_; ++iter) {
@@ -338,6 +387,25 @@ RtClosedChainHandle::Status RtClosedChainHandle::Update(std::span<const double> 
     pinocchio::computeJointJacobians(model, data_, q_full_);
     pinocchio::updateFramePlacements(model, data_);
     return status_;
+  }
+
+  // 분기 이탈 2차 가드 (#248): seed 증분을 제한해도 near-singular 조립형상에서는 DLS 스텝이
+  // 폭주해 passive 가 반대편 분기로 튈 수 있다. 뒤집힌 분기도 ‖φ‖≈0 이라 closure_error 로는
+  // 검출되지 않으므로, **이번 tick seed 대비 passive 이동량**을 별도로 본다. difference() 는
+  // continuous(cos,sin) 관절도 tangent 로 올바르게 다룬다 (스칼라 뺄셈은 wrap 을 놓친다).
+  if (max_passive_deviation_ > 0.0) {
+    pinocchio::difference(model, q_seed_, q_work_, dq_);  // dq_ 는 Newton loop 종료 후 free
+    double max_dev = 0.0;
+    for (int r = 0; r < dep_; ++r) {
+      max_dev = std::max(max_dev, std::abs(dq_[dep_v_idx_[static_cast<std::size_t>(r)]]));
+    }
+    if (!(max_dev <= max_passive_deviation_)) {  // NaN 도 여기서 걸린다
+      status_.held = true;
+      status_.closure_error = std::numeric_limits<double>::infinity();
+      pinocchio::computeJointJacobians(model, data_, q_full_);
+      pinocchio::updateFramePlacements(model, data_);
+      return status_;  // q_full_ 미커밋 — 직전 유효 해 유지 (G_ 도 직전 값)
+    }
   }
 
   q_full_ = q_work_;

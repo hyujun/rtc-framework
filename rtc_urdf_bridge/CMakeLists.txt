@@ -175,6 +175,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_rt_closed_chain_handle test/test_rt_closed_chain_handle.cpp)
   target_link_libraries(test_rt_closed_chain_handle ${PROJECT_NAME})
 
+  # RT-1 센서: Update() 힙 할당 0. alloc_counter.hpp 가 전역 new/delete 를 정의하므로 별도 TU.
+  ament_add_gtest(test_rt_closed_chain_alloc test/test_rt_closed_chain_alloc.cpp)
+  target_link_libraries(test_rt_closed_chain_alloc ${PROJECT_NAME})
+
   # #121 Phase 1: frozen-loop FK vs closed-chain FK 실측 하네스.
   ament_add_gtest(test_closed_chain_fk_measurement test/test_closed_chain_fk_measurement.cpp)
   target_link_libraries(test_closed_chain_fk_measurement ${PROJECT_NAME})

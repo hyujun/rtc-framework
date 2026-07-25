@@ -40,6 +40,11 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
   projection_opts_.max_iterations =
       static_cast<int>(declare_parameter<int>("max_iterations", projection_opts_.max_iterations));
   projection_opts_.tolerance = declare_parameter<double>("tolerance", projection_opts_.tolerance);
+  // continuation sub-step 당 actuated 증분 상한 (≤0 → 비활성). 점 구속 loop 은 조립 분기가
+  // 여러 개이고 모두 φ=0 을 만족하므로, 큰 seed 점프는 residual 검사를 통과한 채 반대편 분기로
+  // 착지한다 (#248). 기본값 근거는 kDefaultActuatedIncrement 주석 참조.
+  max_actuated_increment_ =
+      declare_parameter<double>("max_actuated_increment", max_actuated_increment_);
 
   if (closure_path.empty()) {
     throw std::runtime_error(
@@ -125,9 +130,9 @@ ClosureStatePublisher::ClosureStatePublisher(const rclcpp::NodeOptions& options)
 
   RCLCPP_INFO(get_logger(),
               "closure_state_publisher 준비 완료: nq=%d, constraints=%zu, actuated=%zu, "
-              "in='%s' out='%s'",
-              model_.nq, constraints_.size(), actuated_joint_ids_.size(), input_topic.c_str(),
-              output_topic.c_str());
+              "max_actuated_increment=%.3g, in='%s' out='%s'",
+              model_.nq, constraints_.size(), actuated_joint_ids_.size(), max_actuated_increment_,
+              input_topic.c_str(), output_topic.c_str());
 }
 
 void ClosureStatePublisher::OnJointState(const sensor_msgs::msg::JointState& msg) {
@@ -150,8 +155,12 @@ void ClosureStatePublisher::OnJointState(const sensor_msgs::msg::JointState& msg
     }
   }
 
-  const ProjectionResult res = ProjectPassiveToConstraint(model_, *data_, constraints_, q_seed,
-                                                          actuated_joint_ids_, projection_opts_);
+  // continuation: actuated 증분이 크면 sub-step 으로 나눠 warm-start 를 이어간다. 분기는
+  // residual 이 아니라 homotopy 경로가 결정하므로, 한 번에 큰 점프를 사영하면 반대편 조립
+  // 분기로 착지하고 warm-start 구조상 영구 고정된다 (#248). passive seed 는 q_full_ 에서만 온다.
+  const ProjectionResult res = ProjectPassiveWithContinuation(
+      model_, *data_, constraints_, q_full_, q_seed, actuated_joint_ids_, projection_opts_,
+      max_actuated_increment_);
 
   if (res.converged && res.q.allFinite()) {
     q_full_ = res.q;

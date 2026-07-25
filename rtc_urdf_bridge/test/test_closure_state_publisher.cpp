@@ -4,6 +4,7 @@
 #include "closure_test_fixtures.hpp"
 #include "rtc_urdf_bridge/closed_chain_model.hpp"
 #include "rtc_urdf_bridge/closure_state_publisher.hpp"
+#include "rtc_urdf_bridge/loop_projection.hpp"
 #include "rtc_urdf_bridge/loop_verification.hpp"
 #include "test_urdf_path.hpp"
 
@@ -127,4 +128,80 @@ TEST_F(ClosureStatePublisherTest, ReconstructsLoopConsistentFullState) {
 
   // (c) actuated(j_crank) 는 입력값 그대로 고정.
   EXPECT_NEAR(crank_out, kCrank, 1e-9);
+}
+
+// ── 성공기준 5: 큰 actuated 점프를 한 메시지로 받아도 조립 분기를 유지한다 (#248). ────
+//   cold start(초기 seed=q_ref) 나 빠른 동작·메시지 유실에서 실제로 발생하는 경로다.
+//   뒤집힌 분기도 ‖φ‖≈0 이라 closure error 검사만으로는 잡히지 않으므로, 미세 continuation
+//   기준해와 직접 대조한다.
+TEST_F(ClosureStatePublisherTest, LargeActuatedJumpKeepsAssemblyBranch) {
+  const rub::ClosedChainModel cc = CrankRocker();
+  pinocchio::Data data(cc.model);
+  const auto crank_q = cc.model.idx_qs[cc.model.getJointId("j_crank")];
+
+  constexpr double kStart = 0.05;
+  constexpr double kTarget = 1.2;  // Δ=1.15 rad — 기본 증분(0.05)의 23배 점프
+
+  // 물리적으로 옳은 분기의 기준해: 0.01 rad 미세 continuation.
+  Eigen::VectorXd q_truth = pinocchio::neutral(cc.model);
+  q_truth[crank_q] = kStart;
+  {
+    const auto seed_res = rub::ProjectPassiveToConstraint(cc.model, data, cc.constraints, q_truth,
+                                                          cc.actuated_joint_ids);
+    ASSERT_TRUE(seed_res.converged);
+    q_truth = seed_res.q;
+    constexpr int kFineSteps = 115;
+    for (int k = 1; k <= kFineSteps; ++k) {
+      q_truth[crank_q] = kStart + (kTarget - kStart) * static_cast<double>(k) / kFineSteps;
+      const auto res = rub::ProjectPassiveToConstraint(cc.model, data, cc.constraints, q_truth,
+                                                       cc.actuated_joint_ids);
+      ASSERT_TRUE(res.converged) << "기준해 continuation 실패 k=" << k;
+      q_truth = res.q;
+    }
+  }
+
+  auto node = std::make_shared<rub::ClosureStatePublisher>(NodeParams());
+  auto helper = std::make_shared<rclcpp::Node>("test_helper_jump");
+
+  std::optional<sensor_msgs::msg::JointState> last_out;
+  auto sub = helper->create_subscription<sensor_msgs::msg::JointState>(
+      "/test/full", rclcpp::QoS(10),
+      [&last_out](const sensor_msgs::msg::JointState& msg) { last_out = msg; });
+  auto pub =
+      helper->create_publisher<sensor_msgs::msg::JointState>("/test/actuated", rclcpp::QoS(10));
+
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node);
+  exec.add_node(helper);
+
+  const auto deadline0 = std::chrono::steady_clock::now() + 1s;
+  while (pub->get_subscription_count() == 0 && std::chrono::steady_clock::now() < deadline0) {
+    exec.spin_some();
+    std::this_thread::sleep_for(5ms);
+  }
+
+  // (1) 조립된 시작 형상으로 seed 확립 → (2) 한 메시지로 큰 점프.
+  for (const double crank : {kStart, kTarget}) {
+    last_out.reset();
+    sensor_msgs::msg::JointState in;
+    in.name = {"j_crank"};
+    in.position = {crank};
+    pub->publish(in);
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!last_out.has_value() && std::chrono::steady_clock::now() < deadline) {
+      exec.spin_some();
+      std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_TRUE(last_out.has_value()) << "출력 JointState 미수신 (crank=" << crank << ")";
+  }
+
+  Eigen::VectorXd q_out = pinocchio::neutral(cc.model);
+  for (std::size_t i = 0; i < last_out->name.size(); ++i) {
+    const auto jid = cc.model.getJointId(last_out->name[i]);
+    q_out[cc.model.idx_qs[jid]] = last_out->position[i];
+  }
+  EXPECT_NEAR(q_out[crank_q], kTarget, 1e-9) << "actuated 는 입력값 그대로";
+  EXPECT_LT((q_out - q_truth).cwiseAbs().maxCoeff(), 1e-6)
+      << "단일 대점프 메시지에서 조립 분기를 벗어났다 (#248)";
 }

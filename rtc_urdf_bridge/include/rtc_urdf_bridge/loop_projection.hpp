@@ -20,6 +20,27 @@
 
 namespace rtc_urdf_bridge {
 
+/// 기본 actuated seed 증분 상한 (rad 또는 m — 관절 종류에 따른 tangent 단위).
+///
+/// 점 구속(CONTACT_3D) loop 은 조립 분기(assembly mode)가 둘 이상이고 **모든 분기가 φ=0 을
+/// 정확히 만족**하므로, residual 만으로는 물리적으로 옳은 분기를 판정할 수 없다. 한 번의
+/// Newton 사영에서 actuated seed 가 크게 움직이면 Gauss-Newton 스텝이 반대편 분기로
+/// 착지하고, warm-start 구조상 그 분기에 영구히 고정된다 (#248). 분기는 residual 이 아니라
+/// **homotopy 경로**가 결정하므로 seed 증분을 이 값으로 제한한다.
+///
+/// 0.05 rad 는 proto_1b(5-loop hand) 실측 이탈 임계 0.087~0.12 rad 대비 약 2배 마진이다.
+inline constexpr double kDefaultActuatedIncrement = 0.05;
+
+/// continuation sub-step 수 상한 (비정상적으로 큰 점프에서 무한정 반복하지 않도록).
+inline constexpr int kMaxContinuationSubsteps = 64;
+
+/// 사영 1회에서 passive q 가 seed 대비 움직일 수 있는 상한 (분기 이탈 2차 가드).
+///
+/// seed 증분을 @ref kDefaultActuatedIncrement 로 제한해도, near-singular 조립형상에서는 DLS
+/// 스텝이 폭주해 passive 가 크게 튈 수 있다. 정상 tick 의 passive 이동량(≈ actuated 증분 규모)
+/// 보다 한 자릿수 크고, 분기 이탈(≳π)보다는 확실히 작은 값으로 잡는다.
+inline constexpr double kDefaultMaxPassiveDeviation = 0.5;
+
 /// @brief position-level projection 옵션 (damped least-squares Newton).
 struct ProjectionOptions {
   double tolerance{1e-10};  // 수렴 판정 ‖φ‖ 임계
@@ -57,6 +78,29 @@ struct ProjectionResult {
     const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_init,
     const std::vector<pinocchio::JointIndex>& actuated_joint_ids,
     const ProjectionOptions& opts = {});
+
+/// @brief actuated seed 를 **여러 sub-step 으로 나눠** @ref ProjectPassiveToConstraint 를 연쇄
+///   호출한다 (continuation). 큰 actuated 점프에서 조립 분기 이탈을 막는 표준 진입점.
+///
+///   `‖difference(q_prev, q_target)‖∞` (actuated 열만) 이 @p max_actuated_increment 를 넘으면
+///   sub-step 수 `n = ⌈Δ/증분⌉` (상한 @ref kMaxContinuationSubsteps) 로 나누고, 각 sub-step 에서
+///   actuated 슬롯만 `interpolate(q_prev, q_target, s/n)` 값으로 갱신한 뒤 직전 sub-step 의
+///   passive 해를 warm-start 로 사영한다. 넘지 않으면 단일 호출과 동일하다.
+///
+///   @param q_prev 직전 loop-consistent 해. **passive warm-start 는 항상 여기서 온다.**
+///   @param q_target actuated 슬롯만 유효 (새 측정값). **passive 슬롯은 무시된다.**
+///   @param max_actuated_increment sub-step 당 actuated 증분 상한. ≤0 이면 continuation 비활성
+///     (단일 사영 — 기존 동작). 기본 @ref kDefaultActuatedIncrement.
+///   @return **마지막 sub-step** 의 결과 (`q` 는 전체 loop-consistent configuration).
+///     `converged`/`final_error`/`iterations` 도 마지막 sub-step 기준이다.
+///   크기가 model.nq 와 다른 입력은 continuation 없이 @ref ProjectPassiveToConstraint 로 위임한다.
+///   **RT 밖에서만 호출** (sub-step 수가 입력 의존 → 비결정적. RT 경로는
+///   @ref RtClosedChainHandle 의 tick 당 seed clamp 가 같은 역할을 결정적으로 수행한다).
+[[nodiscard]] ProjectionResult ProjectPassiveWithContinuation(
+    const pinocchio::Model& model, pinocchio::Data& data,
+    const std::vector<pinocchio::RigidConstraintModel>& constraints, const Eigen::VectorXd& q_prev,
+    const Eigen::VectorXd& q_target, const std::vector<pinocchio::JointIndex>& actuated_joint_ids,
+    const ProjectionOptions& opts = {}, double max_actuated_increment = kDefaultActuatedIncrement);
 
 /// @brief velocity-level projection: v 를 Jc v = 0 을 만족하는 가장 가까운 벡터로 사영.
 ///   v_proj = v − Jcᵀ (Jc Jcᵀ + λ²I)⁻¹ Jc v. **RT 밖에서만 호출.**

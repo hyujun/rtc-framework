@@ -286,6 +286,18 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 | NUM-2 | `dt` near-zero guard | `1/dt` 발산 | 모든 trajectory generator |
 | NUM-3 | Quaternion 정규화 매 곱 후 | Drift → non-unit | SE3 trajectory, orientation PD |
 | NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | `ClikController` 의 gains 로더 (`clik_controller.cpp`, `cfg["trajectory_speed"]` 파싱부) |
+| NUM-5 | 폐쇄 체인 사영: seed 증분 제한 필수. residual 로 조립 분기를 판정하지 말 것 | 점 구속 loop 은 조립 분기가 여럿이고 **모두 φ=0 을 만족** → ‖φ‖ 검사를 통과한 채 반대편 분기 착지, warm-start 로 영구 고정 | `loop_projection` (`ProjectPassiveWithContinuation`), `RtClosedChainHandle` (tick 당 seed clamp) |
+
+### NUM-5 세부 스펙
+
+`CONTACT_3D`(점) 구속으로 닫은 loop 은 4-bar 처럼 **조립 분기(assembly mode)가 둘 이상**이고, 각 분기가 φ=0 을 정확히 만족한다. 따라서 `converged` / `acceptable` / `closure_error` 를 아무리 엄격하게 잡아도 **물리적으로 틀린 분기를 검출할 수 없다** — 분기를 결정하는 것은 residual 이 아니라 **seed 에서 해까지의 homotopy 경로**다.
+
+- **금지**: 직전 loop-consistent 해에서 크게 떨어진 actuated seed 를 한 번의 Newton 사영에 통째로 넘기는 것. proto_1b(5-loop hand) 실측 이탈 임계는 seed 증분 **0.087~0.12 rad**이며, 그 위에서는 passive 가 180° 뒤집히거나 여러 바퀴 감긴 해로 착지한다.
+- **비-RT**: `ProjectPassiveWithContinuation` 을 쓴다 (증분을 `kDefaultActuatedIncrement` 단위 sub-step 으로 분할, warm-start 연쇄). `ProjectPassiveToConstraint` 직접 호출은 증분이 작다고 보장될 때만.
+- **RT**: sub-step loop 은 입력 의존 → 비결정적이라 쓸 수 없다. 대신 **tick 당 seed 증분을 균일 스케일로 클램프**하고 그 tick 을 `held` 로 보고한다 — tick loop 자체가 continuation 경로가 되어 고정 K 를 유지한다. per-joint 클램프는 homotopy 경로를 꺾으므로 금지.
+- **회귀 테스트 필수 요건**: "고친 경로가 옳다"만 검증하면 vacuous 하다. **끈 경로(continuation/clamp 비활성)가 실제로 분기를 이탈하는지**를 같은 테스트가 확인해야 픽스처가 결함을 계속 재현함이 보장된다.
+
+근거·실측: issue #248.
 
 ## 이 파일의 규칙을 건드려야 할 것 같을 때
 
