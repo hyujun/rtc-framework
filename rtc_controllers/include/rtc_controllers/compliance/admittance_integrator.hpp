@@ -61,6 +61,16 @@
 
 namespace rtc::compliance {
 
+/// NUM-1 floors for the §7.5 return-speed cap, applied where the cap is USED.
+/// A non-positive cap does NOT mean "guard off" here: it would pin the inward
+/// radial speed at zero and strand the compliant frame outside the displacement
+/// bound for good, which is the opposite of what the guard is for. So it is
+/// floored rather than honoured. The values are a last-resort floor for a
+/// pathological configuration, not a design point — at 1 mm/s a 10 cm overshoot
+/// still recovers, just slowly enough to be obvious.
+inline constexpr double kMinReturnVelocityLin = 1e-3;  ///< [m/s]
+inline constexpr double kMinReturnVelocityAng = 1e-2;  ///< [rad/s]
+
 /// Λ_d / K_d / K_p diagonals plus the §7.5 bounds. Trivially copyable so a
 /// controller can carry it inside a SeqLock'd Gains POD.
 struct AdmittanceParams {
@@ -82,6 +92,18 @@ struct AdmittanceParams {
   double max_displacement_ang{0.5};   ///< [rad]
   double max_velocity_lin{0.25};      ///< [m/s]
   double max_velocity_ang{0.8};       ///< [rad/s]
+
+  /// Cap on the INWARD radial speed the displacement guard may command when the
+  /// state is already outside the bound. Deliberately its OWN parameter and not
+  /// the velocity guard above: that one is disable-able by the documented
+  /// `<= 0` idiom, and the configuration that needs this cap most — the guard
+  /// off, or `max_displacement` lowered at runtime — is exactly the one where
+  /// sharing it made the cap disappear and let a `−δ/dt` impulse straight
+  /// through into the IK feedforward. Always in force (floored at the point of
+  /// use by kMinReturnVelocity*); defaults deliberately match the velocity
+  /// guard's so a deployment that never touches them sees no change.
+  double max_return_velocity_lin{0.25};  ///< [m/s]
+  double max_return_velocity_ang{0.8};   ///< [rad/s]
 
   /// Saturating-spring stiffness applied BEYOND the displacement bound. Sized so
   /// that with the minimum admissible Λ_d the barrier frequency is √(k/Λ) ≈ 32
@@ -164,10 +186,15 @@ class AdmittanceIntegrator {
     //
     // With θ̇ = ωᵀn (n = the rotation axis of R̃) the angular case is the same
     // radial projection as the linear one, not an approximation.
+    //
+    // The return cap is floored HERE, at the point of use (NUM-1): a controller
+    // holds these params in a SeqLock and set_gains() writes the POD straight
+    // in, so a configure-time floor alone is bypassable by every caller.
     if (ProjectOutward(v_.head<3>(), x_lin_, params.max_displacement_lin, dt,
-                       params.max_velocity_lin))
+                       std::max(kMinReturnVelocityLin, params.max_return_velocity_lin)))
       st.displacement_limited = true;
-    if (ProjectOutward(v_.tail<3>(), phi, params.max_displacement_ang, dt, params.max_velocity_ang))
+    if (ProjectOutward(v_.tail<3>(), phi, params.max_displacement_ang, dt,
+                       std::max(kMinReturnVelocityAng, params.max_return_velocity_ang)))
       st.displacement_limited = true;
 
     // ── Retract (§7.2 MUST) ─────────────────────────────────────────────────
@@ -255,12 +282,18 @@ class AdmittanceIntegrator {
   // than as a separate "already outside" branch matters: that branch could only
   // strip the outward component, which re-opens the tangential creep for good
   // the first time round-off puts the state a nanometre outside.
+  //
+  // `v_return_max` is AdmittanceParams::max_return_velocity_*, already floored
+  // by the caller, and is applied unconditionally. It used to be the §7.5
+  // velocity guard, whose documented `<= 0 = off` idiom removed the cap in the
+  // one setup that needs it (see that field's comment).
   [[nodiscard]] static bool ProjectOutward(Eigen::Ref<Eigen::Vector3d> u, const Eigen::Vector3d& x,
                                            double d_max, double dt, double v_return_max) noexcept {
     if (!(d_max > 0.0) || !(dt > 0.0))
       return false;
     if ((x + u * dt).norm() <= d_max)
       return false;
+    const double u_norm_in = u.norm();
     const double n = x.norm();
     // At x = 0 there is no radial direction yet; the whole step is "outward", so
     // the velocity's own direction is the one to strip. Reachable only when a
@@ -277,11 +310,23 @@ class AdmittanceIntegrator {
     double r_target = (tangential_step_sq < d_max * d_max)
                           ? (std::sqrt(d_max * d_max - tangential_step_sq) - n) / dt
                           : 0.0;
-    if (v_return_max > 0.0)
-      r_target = std::max(r_target, -v_return_max);
+    r_target = std::max(r_target, -v_return_max);
     if (r_target >= radial)
       return false;  // the step already lands inside, or is heading back in
     u = tangential + r_target * dir;
+
+    // The two halves are bounded independently, so composing them can hand back
+    // MORE than either bound: a tangential slide at v_max plus a return at
+    // v_return_max is √2·v_max, and that vector is ν_c — it leaves here as the
+    // IK feedforward twist. Cap the composition by norm (direction-preserving,
+    // so the exact-landing retune above is scaled rather than undone). The cap
+    // is `max(v_return_max, ‖u_in‖)`: the guard may DRIVE a return up to
+    // v_return_max — it is the only thing that recovers a state left outside —
+    // and it may pass through whatever it was handed, but it must not compound
+    // the two into something larger than both.
+    const double limit = std::max(v_return_max, u_norm_in);
+    if (const double n_out = u.norm(); n_out > limit && n_out > 0.0)
+      u *= limit / n_out;
     return true;
   }
 

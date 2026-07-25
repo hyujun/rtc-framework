@@ -32,6 +32,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -80,15 +82,37 @@ struct WrenchRead {
 class WrenchInput {
  public:
   /// Publish a new sample. Non-RT, wait-free, noexcept.
+  ///
+  /// A sample with ANY non-finite component is DROPPED here, at the entry point,
+  /// and counted. Nothing downstream can filter it: the conditioner's deadband
+  /// and saturation are comparisons, and every comparison against NaN is false,
+  /// so a single garbage reading propagates to the compliant frame, raises
+  /// `ComplianceFaults::nan_inf` and LATCHES SAFE_STOP — which `ClearEstop()`
+  /// deliberately does not clear, so one bad packet costs a process restart.
+  /// Dropping instead leaves the previous sample to age out through the normal
+  /// §10.6 staleness path (fade → ZERO → DEGRADED), which is what a sensor
+  /// producing garbage should look like.
   void Set(std::span<const double, kWrenchDim> w) noexcept {
     WrenchSample s;
-    for (std::size_t i = 0; i < kWrenchDim; ++i)
+    for (std::size_t i = 0; i < kWrenchDim; ++i) {
+      if (!std::isfinite(w[i])) {
+        rejected_.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       s.value[i] = w[i];
+    }
     // Skip 0 on wrap-around: it is the reserved "never written" stamp.
     if (++next_generation_ == 0)
       next_generation_ = 1;
     s.generation = next_generation_;
     lock_.Store(s);
+  }
+
+  /// Number of samples rejected by the finiteness gate above. Saturating-free
+  /// wrap is fine — it is a diagnostic counter, read for "is the sensor sending
+  /// garbage", not for exact accounting.
+  [[nodiscard]] std::uint32_t rejected_samples() const noexcept {
+    return rejected_.load(std::memory_order_relaxed);
   }
 
   /// RT: snapshot the sample and age it. `timeout` (s) is §10.6's
@@ -98,10 +122,13 @@ class WrenchInput {
   [[nodiscard]] WrenchRead Read(double dt, double timeout, double fadeout) noexcept {
     const WrenchSample s = lock_.Load();
     WrenchRead r;
-    if (s.generation == 0) {
+    // `disowned_generation_` is the sample Invalidate() saw in the slot; until
+    // the producer replaces it, this reads exactly like "nothing has arrived".
+    if (s.generation == 0 || (disowned_ && s.generation == disowned_generation_)) {
       ticks_since_change_ = 0;  // nothing has ever arrived — nothing to age
       return r;
     }
+    disowned_ = false;
     if (s.generation != last_generation_) {
       last_generation_ = s.generation;
       ticks_since_change_ = 0;
@@ -132,13 +159,35 @@ class WrenchInput {
     ticks_since_change_ = 0;
   }
 
+  /// RT: ResetTiming(), and additionally DISOWN whatever sample is sitting in
+  /// the slot right now — Read() reports "nothing has arrived" until the
+  /// producer publishes a different generation.
+  ///
+  /// ResetTiming() alone re-dates the sample present at reset to age 0, which
+  /// is right when the producer is alive (an activation must not inherit an age
+  /// accrued while the controller was not running) and wrong when it is not: a
+  /// producer that died during the stop leaves its last reading in the slot, and
+  /// re-dating it revives that reading as fresh at the exact moment control
+  /// resumes. §10.6's rule is that an expired wrench goes to ZERO and is never
+  /// held; a reset that resurrects it is that rule inverted.
+  ///
+  /// RT-private state only — the SeqLock keeps its single (non-RT) writer.
+  void Invalidate() noexcept {
+    disowned_generation_ = lock_.Load().generation;
+    disowned_ = true;
+    ResetTiming();
+  }
+
  private:
   static constexpr std::uint32_t kTickCounterMax = 0xFFFFFFFFu;
 
   SeqLock<WrenchSample> lock_;
-  std::uint32_t next_generation_{0};     ///< writer-private (single writer)
-  std::uint32_t last_generation_{0};     ///< RT-private
-  std::uint32_t ticks_since_change_{0};  ///< RT-private
+  std::atomic<std::uint32_t> rejected_{0};  ///< writer-incremented, any-thread read
+  std::uint32_t next_generation_{0};        ///< writer-private (single writer)
+  std::uint32_t last_generation_{0};        ///< RT-private
+  std::uint32_t ticks_since_change_{0};     ///< RT-private
+  std::uint32_t disowned_generation_{0};    ///< RT-private
+  bool disowned_{false};                    ///< RT-private
 };
 
 /// RUNNING_FREE_SPACE ⇄ RUNNING_CONTACT detector (§10.6: "히스테리시스 필수").

@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 namespace rtc::compliance {
@@ -66,6 +67,11 @@ struct WrenchPipelineStatus {
   /// tick. Routed out instead of done here so the E-8 SAFE_STOP latch (which
   /// refuses that transition) stays the state machine's business alone.
   bool begin_bias_calibration{false};
+  /// Running count of samples the input's finiteness gate dropped. A rising
+  /// count with a healthy `valid` means the producer is intermittently sending
+  /// garbage — invisible otherwise, since a dropped sample simply does not
+  /// arrive.
+  std::uint32_t rejected_samples{0};
 };
 
 class WrenchPipeline {
@@ -81,15 +87,23 @@ class WrenchPipeline {
   /// conditioning happens on the RT side because all of it needs the model.
   void Publish(std::span<const double, kWrenchDim> wrench) noexcept { input_.Set(wrench); }
 
-  /// RT: (re)activation reset. Drops the accrued age, the bias, the filter
-  /// history and the contact latch — an activation must inherit none of them.
-  /// Returns true when the caller should enter BIAS_CALIBRATING.
+  /// RT: (re)activation reset. Drops the accrued age, the SAMPLE ITSELF, the
+  /// bias, the filter history and the contact latch — an activation must
+  /// inherit none of them. Returns true when the caller should enter
+  /// BIAS_CALIBRATING.
+  ///
+  /// `Invalidate()` rather than `ResetTiming()`: re-dating the sample present at
+  /// reset revives a dead producer's last reading as fresh (§10.6 says an
+  /// expired wrench goes to ZERO, never held). With a live producer the
+  /// difference is the handful of ticks until its next publish, and the two-latch
+  /// bias design below already handles "data arrives after the gate was
+  /// released" as a first-class path.
   ///
   /// `bias_pending_` is armed only when there is work: bias_calibration_samples
   /// == 0 means the operator declined the average, so the zero bias IS the
   /// calibration and the first sample must not be spent re-entering the state.
   [[nodiscard]] bool ResetForActivation() noexcept {
-    input_.ResetTiming();
+    input_.Invalidate();
     conditioner_.Reset();
     contact_.Reset();
     bias_done_ = false;
@@ -115,6 +129,7 @@ class WrenchPipeline {
     out = WrenchPipelineStatus{};
 
     const WrenchRead sample = input_.Read(dt, params.timeout, params.fadeout_time);
+    out.rejected_samples = input_.rejected_samples();
     out.valid = sample.valid;
     out.age = sample.age;
     out.fade = sample.fade;

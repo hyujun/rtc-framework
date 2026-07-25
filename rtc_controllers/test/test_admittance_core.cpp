@@ -230,6 +230,66 @@ TEST(AdmittanceIntegrator, AtTheBoundTheFrameStillSlidesTangentially) {
       << "the frame is stuck at the wall — a clamp, not a saturating spring";
 }
 
+// ── §7.5 return cap: independent of the velocity guard, and not √2 of it ────
+
+// Park the frame ON a d_max bound, then lower d_max under it — the runtime
+// reconfigure the return cap exists for. `max_velocity_lin = 0` is the §7.5
+// guard's documented "off", which is precisely the setting that used to take
+// the return cap down with it.
+AdmittanceIntegrator PushedToTheBound(AdmittanceParams& p, double d_max) {
+  p.stiffness = {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};  // hand-guiding: nothing pulls back
+  p.damping = {{40.0, 40.0, 40.0, 1.0, 1.0, 1.0}};
+  p.max_displacement_lin = d_max;
+  AdmittanceIntegrator integ;
+  integ.Reset();
+  for (int k = 0; k < 4000; ++k)
+    integ.Step(p, Force(60.0), kDt);
+  return integ;
+}
+
+TEST(AdmittanceIntegrator, TheReturnCapHoldsWithTheVelocityGuardDisabled) {
+  AdmittanceParams p = BaseParams();
+  p.max_velocity_lin = 0.0;  // §7.5 velocity guard OFF (its documented idiom)
+  ASSERT_GT(p.max_return_velocity_lin, 0.0) << "the return cap is a separate parameter";
+  AdmittanceIntegrator integ = PushedToTheBound(p, 0.20);
+  ASSERT_NEAR(integ.translation().norm(), 0.20, 1e-3);
+
+  // 0.20 → 0.10 in one tick. The exact-landing solve now asks for
+  // (0.10 − 0.20)/dt = −50 m/s; only the cap stands between that and ν_c.
+  p.max_displacement_lin = 0.10;
+  ASSERT_TRUE(integ.Step(p, Force(60.0), kDt).finite);
+  const double v = integ.velocity().head<3>().norm();
+  EXPECT_LE(v, p.max_return_velocity_lin + 1e-9)
+      << "a −δ/dt return impulse reached ν_c — the cap followed the velocity guard off";
+  EXPECT_GT(v, 0.9 * p.max_return_velocity_lin)
+      << "the return is not being driven at the cap, so the assertion above proves nothing";
+}
+
+TEST(AdmittanceIntegrator, ATangentialSlideAndAReturnDoNotCompoundPastTheBound) {
+  // Both halves are bounded independently, so composing a tangential slide at
+  // max_velocity with a return at max_return_velocity would hand ν_c √2 × the
+  // configured bound — and ν_c is the IK feedforward twist.
+  AdmittanceParams p = BaseParams();
+  p.max_velocity_lin = 0.25;
+  p.max_return_velocity_lin = 0.25;
+  AdmittanceIntegrator integ = PushedToTheBound(p, 0.15);
+  ASSERT_NEAR(integ.translation().norm(), 0.15, 2e-3);
+
+  // Saturate the TANGENTIAL half at the wall (push +y while parked on +x).
+  // Caught MID-slide: run it to completion and the frame ends up parked on +y
+  // with the push purely radial again, i.e. no tangential half left to compound.
+  for (int k = 0; k < 150; ++k)
+    integ.Step(p, Force(0.0, 60.0), kDt);
+  ASSERT_GT(integ.velocity().head<3>().norm(), 0.20)
+      << "the tangential half is not near its bound — nothing left to compound";
+
+  // ...then demand a return at the same time.
+  p.max_displacement_lin = 0.10;
+  ASSERT_TRUE(integ.Step(p, Force(0.0, 60.0), kDt).finite);
+  EXPECT_LE(integ.velocity().head<3>().norm(), 0.25 + 1e-9)
+      << "‖ν_c‖ = √(v_t² + v_return²) escaped both configured bounds";
+}
+
 TEST(AdmittanceIntegrator, VelocityBoundSurvivesALargeImpulse) {
   AdmittanceParams p = BaseParams();
   p.max_velocity_lin = 0.25;

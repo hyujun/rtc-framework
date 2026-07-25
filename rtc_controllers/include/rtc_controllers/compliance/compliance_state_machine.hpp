@@ -81,13 +81,20 @@ struct ComplianceFaults {
   bool sigma_below_threshold{false};  ///< σ_min(J_S) < singularity_threshold
   bool wrench_timeout{false};         ///< external wrench older than wrench_timeout (§10.6)
   bool quality_low{false};            ///< wrench source quality below its bound (§3.2.4)
+  /// The primary device's joint state is unusable this tick — `valid == false`
+  /// (the backend has not reported yet, or stopped) or fewer channels than the
+  /// model has DOF. DEGRADED and not critical: the backend recovering is the
+  /// normal case, and there is a reduced-authority answer (emit no command)
+  /// that a lost joint state does not rule out the way a diverged command does.
+  bool device_state_invalid{false};
 
   [[nodiscard]] bool AnyCritical() const noexcept {
     return nan_inf || pose_error_exceeded || sigma_below_critical || command_divergence;
   }
 
   [[nodiscard]] bool AnyDegrade() const noexcept {
-    return saturation_persist || sigma_below_threshold || wrench_timeout || quality_low;
+    return saturation_persist || sigma_below_threshold || wrench_timeout || quality_low ||
+           device_state_invalid;
   }
 };
 

@@ -1,0 +1,241 @@
+<?xml version="1.0"?>
+<!-- serial_14dof.urdf — 14-DoF serial chain (test fixture).
+     base_link -> link_1 -> ... -> link_14 -> tool_link, joint axes cycling
+     [Z Y X] with staggered link offsets so the chain is kinematically
+     non-degenerate (well-conditioned Jacobian).
+
+     Purpose: nv = 14 is PAST kMaxRobotDOF (12). The fixed-capacity constant
+     bounds kMaxRobotDOF-wide storage, and a controller that has none of it
+     (every work buffer dynamic, every channel index bounded by
+     kMaxDeviceChannels = 64) must load and run at this nv rather than
+     throwing at construction. That is what a dual-arm system's FULL model
+     looks like before MaybeSelectSubModel() reduces it to one arm, so a
+     constructor-time nv > kMaxRobotDOF check fails the factory for a model
+     the controller never actually indexes with. See
+     rtc_controllers/docs/compliance-conventions.md and the OSC's
+     "no capacity check here" note for the same reasoning. -->
+<robot name="serial_14dof">
+
+  <!-- Links -->
+  <link name="base_link">
+    <inertial>
+      <mass value="6.0"/>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <inertia ixx="0.012" ixy="0" ixz="0" iyy="0.012" iyz="0" izz="0.012"/>
+    </inertial>
+  </link>
+
+  <link name="link_1">
+    <inertial>
+      <mass value="3.0"/>
+      <origin xyz="0 0 0.09" rpy="0 0 0"/>
+      <inertia ixx="0.0061" ixy="0" ixz="0" iyy="0.0061" iyz="0" izz="0.00427"/>
+    </inertial>
+  </link>
+  <link name="link_2">
+    <inertial>
+      <mass value="2.8"/>
+      <origin xyz="0.05 0 0.07" rpy="0 0 0"/>
+      <inertia ixx="0.0057" ixy="0" ixz="0" iyy="0.0057" iyz="0" izz="0.00399"/>
+    </inertial>
+  </link>
+  <link name="link_3">
+    <inertial>
+      <mass value="2.6"/>
+      <origin xyz="0.06 0 0.06" rpy="0 0 0"/>
+      <inertia ixx="0.0053" ixy="0" ixz="0" iyy="0.0053" iyz="0" izz="0.00371"/>
+    </inertial>
+  </link>
+  <link name="link_4">
+    <inertial>
+      <mass value="2.4"/>
+      <origin xyz="0 0 0.09" rpy="0 0 0"/>
+      <inertia ixx="0.0049" ixy="0" ixz="0" iyy="0.0049" iyz="0" izz="0.00343"/>
+    </inertial>
+  </link>
+  <link name="link_5">
+    <inertial>
+      <mass value="2.2"/>
+      <origin xyz="0.05 0 0.07" rpy="0 0 0"/>
+      <inertia ixx="0.0045" ixy="0" ixz="0" iyy="0.0045" iyz="0" izz="0.00315"/>
+    </inertial>
+  </link>
+  <link name="link_6">
+    <inertial>
+      <mass value="2.0"/>
+      <origin xyz="0.06 0 0.06" rpy="0 0 0"/>
+      <inertia ixx="0.0041" ixy="0" ixz="0" iyy="0.0041" iyz="0" izz="0.00287"/>
+    </inertial>
+  </link>
+  <link name="link_7">
+    <inertial>
+      <mass value="1.8"/>
+      <origin xyz="0 0 0.09" rpy="0 0 0"/>
+      <inertia ixx="0.0037" ixy="0" ixz="0" iyy="0.0037" iyz="0" izz="0.00259"/>
+    </inertial>
+  </link>
+  <link name="link_8">
+    <inertial>
+      <mass value="1.6"/>
+      <origin xyz="0.05 0 0.07" rpy="0 0 0"/>
+      <inertia ixx="0.0033" ixy="0" ixz="0" iyy="0.0033" iyz="0" izz="0.00231"/>
+    </inertial>
+  </link>
+  <link name="link_9">
+    <inertial>
+      <mass value="1.4"/>
+      <origin xyz="0.06 0 0.06" rpy="0 0 0"/>
+      <inertia ixx="0.0029" ixy="0" ixz="0" iyy="0.0029" iyz="0" izz="0.00203"/>
+    </inertial>
+  </link>
+  <link name="link_10">
+    <inertial>
+      <mass value="1.2"/>
+      <origin xyz="0 0 0.09" rpy="0 0 0"/>
+      <inertia ixx="0.0025" ixy="0" ixz="0" iyy="0.0025" iyz="0" izz="0.00175"/>
+    </inertial>
+  </link>
+  <link name="link_11">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.05 0 0.07" rpy="0 0 0"/>
+      <inertia ixx="0.0021" ixy="0" ixz="0" iyy="0.0021" iyz="0" izz="0.00147"/>
+    </inertial>
+  </link>
+  <link name="link_12">
+    <inertial>
+      <mass value="0.8"/>
+      <origin xyz="0.06 0 0.06" rpy="0 0 0"/>
+      <inertia ixx="0.0017" ixy="0" ixz="0" iyy="0.0017" iyz="0" izz="0.00119"/>
+    </inertial>
+  </link>
+  <link name="link_13">
+    <inertial>
+      <mass value="0.6"/>
+      <origin xyz="0 0 0.09" rpy="0 0 0"/>
+      <inertia ixx="0.0013" ixy="0" ixz="0" iyy="0.0013" iyz="0" izz="0.00091"/>
+    </inertial>
+  </link>
+  <link name="link_14">
+    <inertial>
+      <mass value="0.4"/>
+      <origin xyz="0.05 0 0.07" rpy="0 0 0"/>
+      <inertia ixx="0.0009" ixy="0" ixz="0" iyy="0.0009" iyz="0" izz="0.00063"/>
+    </inertial>
+  </link>
+
+  <link name="tool_link">
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <!-- Joints (axes cycling Z / Y / X) -->
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0.14" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0.05 0 0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <origin xyz="0 0.04 0.13" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_4" type="revolute">
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <origin xyz="0 0 0.14" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_5" type="revolute">
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <origin xyz="0.05 0 0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_6" type="revolute">
+    <parent link="link_5"/>
+    <child link="link_6"/>
+    <origin xyz="0 0.04 0.13" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_7" type="revolute">
+    <parent link="link_6"/>
+    <child link="link_7"/>
+    <origin xyz="0 0 0.14" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_8" type="revolute">
+    <parent link="link_7"/>
+    <child link="link_8"/>
+    <origin xyz="0.05 0 0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_9" type="revolute">
+    <parent link="link_8"/>
+    <child link="link_9"/>
+    <origin xyz="0 0.04 0.13" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_10" type="revolute">
+    <parent link="link_9"/>
+    <child link="link_10"/>
+    <origin xyz="0 0 0.14" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_11" type="revolute">
+    <parent link="link_10"/>
+    <child link="link_11"/>
+    <origin xyz="0.05 0 0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_12" type="revolute">
+    <parent link="link_11"/>
+    <child link="link_12"/>
+    <origin xyz="0 0.04 0.13" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_13" type="revolute">
+    <parent link="link_12"/>
+    <child link="link_13"/>
+    <origin xyz="0 0 0.14" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+  <joint name="joint_14" type="revolute">
+    <parent link="link_13"/>
+    <child link="link_14"/>
+    <origin xyz="0.05 0 0.12" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.9" upper="2.9" effort="80" velocity="2.0"/>
+  </joint>
+
+  <joint name="tool_joint" type="fixed">
+    <parent link="link_14"/>
+    <child link="tool_link"/>
+    <origin xyz="0 0 0.06" rpy="0 0 0"/>
+  </joint>
+
+</robot>

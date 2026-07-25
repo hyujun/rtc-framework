@@ -20,6 +20,8 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
+#include <map>
 #include <new>
 #include <span>
 #include <string>
@@ -135,6 +137,16 @@ external_wrench:
 // arm (the §7.3 windup bound) do not call this.
 void ApplyCommand(rtc::ControllerState& state, const rtc::ControllerOutput& out) {
   for (int i = 0; i < kNj; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double q_next = out.devices[0].commands[ui];
+    state.devices[0].velocities[ui] = (q_next - state.devices[0].positions[ui]) / kDt;
+    state.devices[0].positions[ui] = q_next;
+  }
+}
+
+// ApplyCommand for a chain that is not the 7-DoF fixture (the kMaxRobotDOF test).
+void ApplyWideCommand(rtc::ControllerState& state, const rtc::ControllerOutput& out, int nj) {
+  for (int i = 0; i < nj; ++i) {
     const auto ui = static_cast<std::size_t>(i);
     const double q_next = out.devices[0].commands[ui];
     state.devices[0].velocities[ui] = (q_next - state.devices[0].positions[ui]) / kDt;
@@ -364,6 +376,64 @@ TEST(TaskAdmittanceController, StiffnessReturnsTheFrameAfterWrenchLossButZeroSti
   EXPECT_NEAR(soft.second, soft.first, 1e-3);
 }
 
+// ── Wrench-path robustness (F3 / F6) ────────────────────────────────────────
+
+TEST(TaskAdmittanceController, ANonFiniteWrenchSampleCannotLatchSafeStop) {
+  // One garbage packet used to be fatal-for-the-process: NaN survives the
+  // conditioner (every comparison against it is false), reaches the compliant
+  // frame, raises ComplianceFaults::nan_inf and LATCHES SAFE_STOP — which
+  // ClearEstop() explicitly does not clear and ~/reset_fault does not yet wire.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+  auto state = MakeState(Posture());
+
+  const Wrench6 good{{10.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  Wrench6 poisoned = good;
+  poisoned[2] = std::numeric_limits<double>::quiet_NaN();
+
+  for (int k = 0; k < 50; ++k) {
+    Send(c, (k == 10) ? poisoned : good);
+    (void)c.Compute(state);
+    ASSERT_NE(c.GetDiagnosticsForTesting().state,
+              static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+        << "a non-finite wrench sample latched SAFE_STOP at tick " << k;
+  }
+  const auto d = c.GetDiagnosticsForTesting();
+  EXPECT_EQ(d.wrench_rejected, 1u) << "the drop must be counted, not silent";
+  EXPECT_TRUE(d.wrench_valid) << "the good samples around it must still get through";
+  EXPECT_TRUE(std::isfinite(d.wrench_lwa[2]));
+}
+
+TEST(TaskAdmittanceController, AReactivationDoesNotReviveTheWrenchFromBeforeIt) {
+  // The F/T driver dies while the controller is stopped. Its last reading is
+  // still sitting in the input slot; a reset that only re-dates the sample
+  // resurrects that force as FRESH on the first tick back — the inverse of
+  // §10.6's "an expired wrench goes to ZERO, never held".
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("stiffness: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n")));
+  auto state = MakeState(Posture());
+  for (int k = 0; k < 100; ++k) {
+    Send(c, Wrench6{{60.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    (void)c.Compute(state);
+  }
+  ASSERT_TRUE(c.GetDiagnosticsForTesting().wrench_valid);
+
+  c.ResetTargetInitializationForTesting();  // == on_activate; producer stays dead
+  for (int k = 0; k < 10; ++k)
+    (void)c.Compute(state);
+
+  const auto d = c.GetDiagnosticsForTesting();
+  EXPECT_FALSE(d.wrench_valid) << "the pre-activation sample was revived at age 0";
+  EXPECT_FALSE(d.wrench_stale) << "'no producer yet' is the activation transient, not a timeout";
+  EXPECT_LT(Eigen::Vector3d(d.wrench_lwa[0], d.wrench_lwa[1], d.wrench_lwa[2]).norm(), 1e-12);
+  // K_p = 0, so any force that got through would still be visible as drift.
+  EXPECT_LT(
+      Eigen::Vector3d(d.compliant_deviation[0], d.compliant_deviation[1], d.compliant_deviation[2])
+          .norm(),
+      1e-12)
+      << "a revived wrench moved the compliant frame after the reactivation";
+}
+
 // ── §7.3 integration basis ──────────────────────────────────────────────────
 
 TEST(TaskAdmittanceController, IntegrateFromMeasuredReanchorsEveryTick) {
@@ -407,6 +477,101 @@ TEST(TaskAdmittanceController, SelfIntegratingCommandFaultsWhenItWindsAwayFromTh
   (void)c.Compute(state);
   EXPECT_NE(c.GetDiagnosticsForTesting().state,
             static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+}
+
+// ── Command rate (F4) and device-state validity (F5) ────────────────────────
+
+// Device limits narrow enough that the joint-limit clamp actually bites, with a
+// slow max_velocity so a clamp correction and a rate-bound step are far apart.
+rtc::DeviceNameConfig ArmLimits(double lower, double upper, double max_velocity) {
+  rtc::DeviceJointLimits limits;
+  limits.max_velocity.assign(kNj, max_velocity);
+  limits.position_lower.assign(kNj, lower);
+  limits.position_upper.assign(kNj, upper);
+  rtc::DeviceNameConfig cfg;
+  cfg.device_name = "arm";
+  cfg.joint_limits = limits;
+  return cfg;
+}
+
+TEST(TaskAdmittanceController, TheJointLimitClampCannotOutrunTheVelocityBound) {
+  // The clamp runs AFTER the velocity clamp and its result was never re-checked,
+  // so with the arm parked inside the joint_limit_margin band the clamp moved
+  // q_cmd to the band edge in one tick no matter how small the IK step was. The
+  // only monitor that could have seen it (faults.command_divergence) is gated on
+  // !integrate_from_measured, and that flag defaults to true.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("joint_limit_margin: 0.30\n")));
+  // Posture()[3] = -1.2 sits 0.25 rad inside the lower margin band (lo = -1.45 +
+  // 0.30 = -1.15), so the clamp wants a 0.05 rad correction on the very first
+  // tick — 25× the 1.0 rad/s × 2 ms the rate bound allows.
+  c.SetDeviceNameConfigs(
+      std::map<std::string, rtc::DeviceNameConfig>{{"arm", ArmLimits(-1.45, 2.0, 1.0)}});
+
+  auto state = MakeState(Posture());
+  Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  const auto first = c.Compute(state);
+  const double step = first.devices[0].commands[3] - Posture()[3];
+  EXPECT_GT(step, 0.0) << "the joint-limit clamp did not engage — the test proves nothing";
+  EXPECT_LE(step, 1.0 * kDt + 1e-12) << "the clamp emitted a " << step << " rad step in one tick";
+  // The reported velocity must agree with the position actually emitted.
+  EXPECT_NEAR(first.devices[0].target_velocities[3], step / kDt, 1e-9);
+  EXPECT_TRUE(c.GetDiagnosticsForTesting().joint_velocity_limited);
+
+  // ...and with the arm actually following, it still gets into the band — every
+  // tick of the way inside the bound. (A static arm cannot creep here by design:
+  // integrate_from_measured re-anchors q_cmd to q_meas every tick.)
+  for (int k = 0; k < 300; ++k) {
+    Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    const auto out = c.Compute(state);
+    ASSERT_NE(c.GetDiagnosticsForTesting().state,
+              static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+        << "tick " << k;
+    for (int i = 0; i < kNj; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      ASSERT_LE(std::abs(out.devices[0].commands[ui] - state.devices[0].positions[ui]),
+                1.0 * kDt + 1e-12)
+          << "tick " << k << " joint " << i << ": the emitted step outran max_velocity·dt";
+    }
+    ApplyCommand(state, out);
+  }
+  EXPECT_NEAR(state.devices[0].positions[3], -1.15, 1e-6)
+      << "the arm never slewed into the joint-limit band";
+}
+
+TEST(TaskAdmittanceController, AnUnusableJointStateEmitsNoCommandAndDegrades) {
+  // `valid == false` (backend has not reported yet) or a device narrower than the
+  // model leaves the unread channels at a default-constructed 0. FK and J then
+  // evaluate at the ZERO configuration and every joint gets commanded to ~0 —
+  // with no fault raised, because every number involved is finite.
+  for (const bool narrow : {false, true}) {
+    TaskAdmittanceController c(Urdf7());
+    c.LoadConfig(YAML::Load(TransparentYaml()));
+    auto state = MakeState(Posture());
+    if (narrow)
+      state.devices[0].num_channels = kNj - 1;  // one channel short of the model
+    else
+      state.devices[0].valid = false;
+
+    const auto out = c.Compute(state);
+    EXPECT_EQ(out.devices[0].num_channels, 0)
+        << (narrow ? "narrow" : "invalid")
+        << ": a command was emitted from an unusable joint state";
+    const auto d = c.GetDiagnosticsForTesting();
+    EXPECT_FALSE(d.control_valid) << (narrow ? "narrow" : "invalid");
+    EXPECT_EQ(d.state, static_cast<std::uint8_t>(ComplianceState::kDegraded))
+        << (narrow ? "narrow" : "invalid") << ": an unusable joint state must DEGRADE";
+
+    // Recoverable: once the backend reports, control resumes and re-seeds from
+    // the measured pose rather than from anything read during the gap.
+    auto good = MakeState(Posture());
+    const auto resumed = c.Compute(good);
+    EXPECT_EQ(resumed.devices[0].num_channels, kNj);
+    for (int i = 0; i < kNj; ++i)
+      EXPECT_NEAR(resumed.devices[0].commands[static_cast<std::size_t>(i)],
+                  Posture()[static_cast<std::size_t>(i)], 1e-9)
+          << (narrow ? "narrow" : "invalid") << " joint " << i;
+  }
 }
 
 // ── E-STOP: a position HOLD, not a slew and not a follow ────────────────────
@@ -490,6 +655,156 @@ TEST(TaskAdmittanceController, ALatchedSafeStopHoldsInsteadOfFollowingTheArm) {
   }
 }
 
+// ── E-STOP hold across the boundaries that move the arm (F1, E-8) ───────────
+// The complement of the two tests above. They pin what the latch must SURVIVE
+// (a per-tick re-seed); these pin what must RETIRE it. A latch that outlives a
+// deactivate or an E-STOP clear describes a pose the arm has since left, and the
+// first held tick after the boundary commands it in one unbounded step —
+// ComputeEstop has no slew and no divergence bound to catch that.
+
+TEST(TaskAdmittanceController, AReactivationRetiresAHoldLatchedBeforeIt) {
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(
+      TransparentYaml("integrate_from_measured: false\ncommand_divergence_limit: 0.05\n")));
+  auto state = MakeState(Posture());
+  for (int k = 0; k < 3000; ++k) {
+    Send(c, Wrench6{{40.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    (void)c.Compute(state);
+    if (c.GetDiagnosticsForTesting().state == static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+      break;
+  }
+  ASSERT_EQ(c.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+  const auto held = c.Compute(state);
+  ASSERT_NEAR(held.devices[0].commands[0], Posture()[0], 1e-9);
+
+  // Deactivate, another controller drives the arm elsewhere, reactivate. The
+  // SAFE_STOP is still latched (only ResetFault clears it), so the very first
+  // tick back is a HELD one — the exact path the stale latch reaches.
+  auto moved = Posture();
+  for (auto& v : moved)
+    v += 0.2;
+  c.ResetTargetInitializationForTesting();  // == the CM's on_activate hook
+
+  auto after = MakeState(moved);
+  const auto out = c.Compute(after);
+  for (int i = 0; i < kNj; ++i)
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                moved[static_cast<std::size_t>(i)], 1e-9)
+        << "joint " << i << ": the reactivation re-commanded the pre-deactivate hold";
+}
+
+TEST(TaskAdmittanceController, AnEstopHoldDoesNotSurviveAClearAndRetrigger) {
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+  auto state = MakeState(Posture());
+  for (int k = 0; k < 20; ++k) {
+    Send(c, Wrench6{{5.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    (void)c.Compute(state);
+  }
+
+  c.TriggerEstop();
+  const auto held = c.Compute(state);
+  ASSERT_NEAR(held.devices[0].commands[0], Posture()[0], 1e-9);
+
+  // Stop cleared, arm jogged on the pendant, stop hit again — all before this
+  // controller ran a single clean tick, which is the only other thing that
+  // retires the latch.
+  c.ClearEstop();
+  auto jogged = Posture();
+  for (auto& v : jogged)
+    v += 0.25;
+  c.TriggerEstop();
+
+  auto after = MakeState(jogged);
+  const auto out = c.Compute(after);
+  for (int i = 0; i < kNj; ++i)
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                jogged[static_cast<std::size_t>(i)], 1e-9)
+        << "joint " << i << ": the hold latched before the E-STOP clear came back";
+}
+
+TEST(TaskAdmittanceController, TheHoldIsClampedIntoTheJointLimitsAtABoundedRate) {
+  // An arm already outside its mechanical range when the stop fires must not have
+  // that pose latched and re-commanded forever — but the correction is a MOTION,
+  // so it is rate-bound like every other motion this controller emits.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+
+  rtc::DeviceJointLimits limits;
+  limits.max_velocity.assign(kNj, 1.0);
+  limits.position_lower.assign(kNj, -2.0);
+  limits.position_upper.assign(kNj, 0.05);  // Posture()[0] = 0.1 sits 0.05 rad past it
+  rtc::DeviceNameConfig cfg;
+  cfg.device_name = "arm";
+  cfg.joint_limits = limits;
+  c.SetDeviceNameConfigs(std::map<std::string, rtc::DeviceNameConfig>{{"arm", cfg}});
+
+  auto state = MakeState(Posture());
+  c.TriggerEstop();
+  const auto first = c.Compute(state);
+  EXPECT_NEAR(first.devices[0].commands[0], Posture()[0] - 1.0 * kDt, 1e-12)
+      << "the joint-limit correction left as an unbounded step, or never happened";
+  EXPECT_NEAR(first.devices[0].commands[3], Posture()[3], 1e-12)
+      << "joint 3 is inside the band — the hold must not move it at all";
+
+  for (int k = 0; k < 200; ++k)
+    (void)c.Compute(state);
+  const auto settled = c.Compute(state);
+  EXPECT_NEAR(settled.devices[0].commands[0], 0.05, 1e-9)
+      << "the hold never slewed all the way into the joint limit";
+  EXPECT_NEAR(settled.devices[0].commands[3], Posture()[3], 1e-12);
+}
+
+// ── Task-space telemetry (F10) ──────────────────────────────────────────────
+
+TEST(TaskAdmittanceController, TaskSpaceTelemetryCarriesOrientationNotJustPosition) {
+  // Both lanes are 6-wide and every consumer reads all six (pod_fill emits them
+  // to CSV). Leaving 3..5 at zero on a FULL_SE3 controller logs "no rotation"
+  // where the honest reading is "not measured" — indistinguishable, in a lane an
+  // orientation experiment is read from.
+  Reference ref;
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+  auto state = MakeState(Posture());
+
+  // A pure torque so the compliant frame's ORIENTATION is what moves; the arm
+  // follows, so the actual lane has to move with it.
+  for (int k = 0; k < 800; ++k) {
+    Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 6.0}});
+    ApplyCommand(state, c.Compute(state));
+  }
+  Send(c, Wrench6{{0.0, 0.0, 0.0, 0.0, 0.0, 6.0}});
+  const auto out = c.Compute(state);
+  ASSERT_TRUE(c.GetDiagnosticsForTesting().control_valid);
+
+  // The actual lane must be the measured TCP orientation — checked against an
+  // independent model handle, not against the controller's own numbers.
+  ref.handle.ComputeJacobians(std::span<const double>(JointsOf(state).data(), kNj));
+  const Eigen::Matrix3d R_ref = ref.handle.GetFramePlacement(ref.tip).rotation();
+  const Eigen::Vector3d rpy_ref = pinocchio::rpy::matrixToRpy(R_ref);
+  for (int i = 0; i < 3; ++i)
+    EXPECT_NEAR(out.actual_task_positions[static_cast<std::size_t>(3 + i)], rpy_ref(i), 1e-9)
+        << "actual_task_positions RPY component " << i;
+
+  // ...and it is not the all-zero default that the defect produced.
+  EXPECT_GT(Eigen::Vector3d(out.actual_task_positions[3], out.actual_task_positions[4],
+                            out.actual_task_positions[5])
+                .norm(),
+            1e-3)
+      << "the fixture posture has no orientation to report — the test proves nothing";
+
+  // The goal lane carries the COMPLIANT frame (the thing actually commanded), so
+  // the torque must have rotated it away from the actual pose.
+  const Eigen::Vector3d rpy_goal(out.task_goal_positions[3], out.task_goal_positions[4],
+                                 out.task_goal_positions[5]);
+  EXPECT_GT((rpy_goal - rpy_ref).norm(), 1e-4)
+      << "task_goal RPY equals the actual RPY — the compliant rotation is not being reported";
+  // Both lanes agree on translation, which is what pins the two as the same pair.
+  for (int i = 0; i < 3; ++i)
+    EXPECT_TRUE(std::isfinite(out.task_goal_positions[static_cast<std::size_t>(i)]));
+}
+
 // ── RT-1: no heap allocation on the tick ────────────────────────────────────
 
 TEST(TaskAdmittanceController, ComputeIsAllocationFree) {
@@ -523,6 +838,17 @@ TEST(TaskAdmittanceController, ComputeIsAllocationFree) {
   (void)c.Compute(state);
   g_alloc_active = false;
   EXPECT_EQ(g_alloc_count, 0u) << "the E-STOP hold allocated";
+
+  // ...and so is the unusable-joint-state path: a backend that drops out does it
+  // on the tick, not at configure time.
+  c.ClearEstop();
+  auto unusable = MakeState(Posture());
+  unusable.devices[0].valid = false;
+  g_alloc_count = 0;
+  g_alloc_active = true;
+  (void)c.Compute(unusable);
+  g_alloc_active = false;
+  EXPECT_EQ(g_alloc_count, 0u) << "the unusable-joint-state tick allocated";
 }
 
 // ── Configure-time contracts ────────────────────────────────────────────────
@@ -551,6 +877,81 @@ TEST(TaskAdmittanceController, ConfigureRejectsAWrenchlessOrTorqueConfiguration)
     EXPECT_THROW(c.LoadConfig(YAML::Load(TransparentYaml({}, "  sensor_frame: not_a_frame\n"))),
                  std::runtime_error);
   }
+}
+
+TEST(TaskAdmittanceController, ConfigureRejectsAMisshapedIkGainInsteadOfIgnoringIt) {
+  // load3 dropped anything that was not a 3-entry sequence while its sibling
+  // load6 threw. The header documents `ik_kp_*: 0` as the way to reproduce §7.3's
+  // pure-feedforward law, so `ik_kp_pos: 0.0` — the obvious way to write that —
+  // was discarded and the default 2.0 kept: the one experiment the knob exists
+  // for silently ran as a CLIK variant, with nothing in the diagnostics saying so.
+  for (const char* bad : {"ik_kp_pos: 0.0\n", "ik_kp_pos: [1.0, 1.0]\n",
+                          "ik_kp_rot: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]\n", "ik_kp_rot: {x: 1.0}\n"}) {
+    TaskAdmittanceController c(Urdf7());
+    EXPECT_THROW(c.LoadConfig(YAML::Load(TransparentYaml(bad))), std::runtime_error) << bad;
+  }
+  // ...and a well-formed zero still lands, so the §7.3 experiment is reachable.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("ik_kp_pos: [0.0, 0.0, 0.0]\n")));
+  EXPECT_DOUBLE_EQ(c.get_gains().ik_kp_pos[0], 0.0);
+  EXPECT_DOUBLE_EQ(c.get_gains().ik_kp_rot[0], 2.0) << "the sibling key must be untouched";
+}
+
+TEST(TaskAdmittanceController, ConfigureRejectsANonPositivePoseErrorLimit) {
+  // `e.norm() > limit` runs every tick against a CRITICAL fault, so 0 or negative
+  // makes it true forever: SAFE_STOP latches on the first tick and
+  // pose_error_exceeded carries no cause field pointing back at the config. Every
+  // neighbouring safety scalar was already guarded — this one alone was not.
+  for (const char* bad : {"pose_error_limit: 0.0\n", "pose_error_limit: -1.0\n"}) {
+    TaskAdmittanceController c(Urdf7());
+    EXPECT_THROW(c.LoadConfig(YAML::Load(TransparentYaml(bad))), std::runtime_error) << bad;
+  }
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("pose_error_limit: 0.25\n")));
+  EXPECT_DOUBLE_EQ(c.get_gains().pose_error_limit, 0.25);
+}
+
+TEST(TaskAdmittanceController, AModelPastKMaxRobotDofLoadsAndRuns) {
+  // The constructor's `nv > kMaxRobotDOF` check guarded nothing: this controller
+  // owns no kMaxRobotDOF-wide storage (every work buffer is dynamic, and the two
+  // fixed arrays are indexed by device CHANNEL, bounded by kMaxDeviceChannels).
+  // It ran against the SYSTEM model too — MaybeSelectSubModel() reduces to the
+  // primary device only later, in LoadConfig — so a dual-arm URDF failed the
+  // factory before it could ever be reduced. TaskImpedanceController has no such
+  // check, and operational_space_controller.cpp documents the same call.
+  constexpr int kWideNj = 14;
+  ASSERT_GT(kWideNj, rtc::kMaxRobotDOF) << "the fixture must actually exceed the old cap";
+
+  TaskAdmittanceController c(rtc::test::TestUrdfPath("serial_14dof.urdf"));
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+
+  rtc::ControllerState state{};
+  state.num_devices = 1;
+  state.dt = kDt;
+  state.devices[0].num_channels = kWideNj;
+  state.devices[0].valid = true;
+  for (int i = 0; i < kWideNj; ++i)
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.1 * (i % 5) - 0.2;
+
+  Send(c, Wrench6{{20.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  const auto out = c.Compute(state);
+  EXPECT_EQ(out.devices[0].num_channels, kWideNj);
+  for (int i = 0; i < kWideNj; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[ui])) << "joint " << i;
+    EXPECT_NEAR(out.devices[0].commands[ui], state.devices[0].positions[ui], 1e-9)
+        << "joint " << i << ": the seeding tick must command the measured pose";
+  }
+  // ...and it keeps running: the nullspace projector, the DLS solve and the
+  // device-order scatter all have to be nv-correct past the old cap.
+  for (int k = 0; k < 100; ++k) {
+    Send(c, Wrench6{{20.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    ApplyWideCommand(state, c.Compute(state), kWideNj);
+  }
+  const auto d = c.GetDiagnosticsForTesting();
+  EXPECT_TRUE(d.control_valid);
+  EXPECT_NE(d.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+  EXPECT_TRUE(d.nullspace_active) << "nv=14 > 6 — the nullspace term must be live";
 }
 
 TEST(TaskAdmittanceController, ARejectedConfigureLeavesTheLiveGainsUntouched) {

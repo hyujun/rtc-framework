@@ -20,6 +20,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/math.hpp>
 #include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
@@ -60,13 +61,18 @@ void TaskAdmittanceController::InitFromModel(std::shared_ptr<const pinocchio::Mo
   tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
 
   const int nv = handle_->nv();
-  // Fail-fast capacity check at model-load time (off-RT): the device-order
-  // buffers below are indexed by channel, bounded by kMaxDeviceChannels.
-  if (nv > kMaxRobotDOF) {
-    throw std::runtime_error(
-        "TaskAdmittanceController: model DOF nv=" + std::to_string(nv) +
-        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
-  }
+  // No kMaxRobotDOF capacity check here, deliberately (the same call the OSC
+  // makes). This controller owns no kMaxRobotDOF-wide storage: every work buffer
+  // below is a dynamic Eigen type sized to nv, and the only fixed arrays it has
+  // — estop_hold_, TargetSlot::targets — are indexed by device CHANNEL and
+  // bounded by kMaxDeviceChannels, which is a different and much larger
+  // constant. A check here would therefore guard nothing while doing real harm:
+  // it runs against the SYSTEM model (the constructor is handed
+  // builder.GetFullModel()), and MaybeSelectSubModel() reduces to the primary
+  // device only later in LoadConfig — so an nv=14 dual-arm URDF threw at
+  // construction, failing the factory and on_configure, for a model this
+  // controller never indexes with. TaskImpedanceController has no such check on
+  // the same URDF.
 
   J_full_ = Eigen::MatrixXd::Zero(kTaskDim, nv);
   dq_ = Eigen::VectorXd::Zero(nv);
@@ -76,6 +82,7 @@ void TaskAdmittanceController::InitFromModel(std::shared_ptr<const pinocchio::Mo
   q_null_ = Eigen::VectorXd::Zero(nv);
   q_dev_ = Eigen::VectorXd::Zero(nv);
   desired_q_ = Eigen::VectorXd::Zero(nv);
+  q_base_ = Eigen::VectorXd::Zero(nv);
   ik_.Resize(nv, kTaskDim);
 
   // Gravity comes from the model, never a hard-coded 9.81 down −Z: the URDF
@@ -191,6 +198,13 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   if (reset_fault_requested_.exchange(false, std::memory_order_acq_rel))
     sm_.ResetFault();
 
+  // Retire a hold latched before an activation / E-STOP-clear / fault-reset
+  // boundary. Consumed HERE, ahead of every ComputeEstop() call site below, so
+  // the first held tick after the boundary re-latches at the measured pose
+  // instead of commanding wherever the arm was last time (E-8).
+  if (estop_hold_invalidate_.exchange(false, std::memory_order_acq_rel))
+    estop_hold_valid_ = false;
+
   // Surface the latched FSM state so an early return publishes the real state
   // instead of a spurious HOLDING.
   diag.state = static_cast<std::uint8_t>(sm_.state());
@@ -206,7 +220,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
     while (pending_targets_.Pop(discarded)) {
       // discard: a command issued during E-STOP must not survive recovery
     }
-    return ComputeEstop(state, /*control_valid=*/false, diag);
+    return ComputeEstop(state, gains, /*control_valid=*/false, diag);
   }
 
   const int nv = handle_->nv();
@@ -214,6 +228,17 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
 
   // ── Copy joint state (device order) ───────────────────────────────────────
   const auto& dev0 = state.devices[0];
+  // Everything below is evaluated at q read from this device. Before the
+  // backend's first state arrives (`valid == false`), or on a device narrower
+  // than the model, the unread channels read as a default-constructed 0 — FK and
+  // the Jacobian are then evaluated at the ZERO configuration and out0.commands
+  // comes out as a full-arm move to the origin, with no fault raised because
+  // every number involved is perfectly finite. There is no honest substitute for
+  // an unknown joint position, so the tick emits NO command (the CM's own
+  // BuildHoldOutput uses the same zero-length-command idiom for exactly this)
+  // and reports DEGRADED.
+  if (!dev0.valid || dev0.num_channels < nv)
+    return ComputeNoJointState(state, gains, diag);
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
@@ -317,6 +342,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
     diag.wrench_valid = ws.valid;
     diag.wrench_age = ws.age;
     diag.wrench_fade = ws.fade;
+    diag.wrench_rejected = ws.rejected_samples;
     diag.wrench_stale = ws.stale;
     diag.bias_calibrated = ws.bias_calibrated;
     diag.in_contact = ws.in_contact;
@@ -398,24 +424,52 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
       vel_clamped = true;
     }
   }
-  diag.joint_velocity_limited = vel_clamped;
 
   // §7.3 MUST — both integration bases implemented and selectable.
   for (int i = 0; i < nv; ++i) {
-    const double base = gains.integrate_from_measured ? q_dev_(i) : desired_q_(i);
-    desired_q_(i) = base + dq_dev_(i) * dt;
+    q_base_(i) = gains.integrate_from_measured ? q_dev_(i) : desired_q_(i);
+    desired_q_(i) = q_base_(i) + dq_dev_(i) * dt;
   }
   // Joint-limit clamp on the POSITION command. The torque-domain repulsive
   // potential of compliance/safety_limiter.hpp does not transfer: a position
   // command outside the mechanical range is not a soft push, it is a request the
   // backend will either reject or drive into a hard stop.
+  //
+  // ...and then the RATE is re-imposed, because the clamp above can WIDEN the
+  // step it was handed. This controller replaced compliance::ApplySafetyLayer's
+  // bounded repulsion + max_torque_rate with a hard clamp and kept no rate bound
+  // to go with it: with the arm sitting inside the joint_limit_margin band, the
+  // clamp moves q_cmd to the band edge in a single tick regardless of how small
+  // the IK step was — a `joint_limit_margin` of 0.08 rad is an 0.08 rad jump. The
+  // one monitor that could have caught it, faults.command_divergence, is gated on
+  // `!integrate_from_measured` and that flag defaults to true.
+  //
+  // Order matters: clamp first, then re-bound the rate. Bounding first and
+  // clamping second is what leaves the clamp's own correction unbounded, which
+  // is the defect. The consequence is that q_cmd may stay transiently inside the
+  // margin band while it slews out of it — the band is a soft margin, and
+  // arriving at its edge at a bounded rate is the behaviour it is asking for.
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
     const double lo = position_lower_[ui] + gains.joint_limit_margin;
     const double hi = position_upper_[ui] - gains.joint_limit_margin;
     if (lo < hi)
       desired_q_(i) = std::clamp(desired_q_(i), lo, hi);
+
+    const double lim =
+        (ui < max_joint_velocity_.size()) ? max_joint_velocity_[ui] : kDefaultMaxJointVelocity;
+    const double step = std::abs(lim) * dt;
+    const double bounded = std::clamp(desired_q_(i), q_base_(i) - step, q_base_(i) + step);
+    if (bounded != desired_q_(i)) {
+      desired_q_(i) = bounded;
+      vel_clamped = true;
+    }
+    // Keep the reported joint velocity the one actually commanded: emitting a
+    // target_velocity the emitted position contradicts is how a rate breach
+    // stays invisible to whoever is watching the lane for exactly that.
+    dq_dev_(i) = (desired_q_(i) - q_base_(i)) / dt;
   }
+  diag.joint_velocity_limited = vel_clamped;
 
   double divergence = 0.0;
   for (int i = 0; i < nv; ++i) {
@@ -450,7 +504,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   diag.state = static_cast<std::uint8_t>(cstate);
 
   if (sm_.in_safe_stop() || !finite || !ik.ok)
-    return ComputeEstop(state, /*control_valid=*/false, diag);
+    return ComputeEstop(state, gains, /*control_valid=*/false, diag);
 
   activation_elapsed_ += dt;  // advance the ramp only on a clean control tick
   diag.control_valid = true;
@@ -458,7 +512,9 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   // re-seed block above: a latched SAFE_STOP forces a re-seed every tick, so
   // clearing it there would re-latch the hold at the freshly measured position
   // on every one of them — a "hold" that follows a backdriven arm, which is
-  // exactly the failure the latch exists to prevent.
+  // exactly the failure the latch exists to prevent. The boundaries that DO
+  // retire the latch go through InvalidateEstopHold() and are consumed at the
+  // top of this function.
   estop_hold_valid_ = false;
 
   // ── Emit ──────────────────────────────────────────────────────────────────
@@ -482,15 +538,29 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   }
   rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
 
+  // Both lanes are 6-wide (x,y,z,r,p,y) and every consumer reads all six —
+  // device_state_log_pod / pod_fill emit them straight to CSV. Filling only the
+  // translation on a FULL_SE3 controller means every orientation experiment logs
+  // "no rotation" rather than "not measured", which is the one reading an
+  // operator cannot tell apart from a real result. ZYX Euler at the boundary, as
+  // p_controller and the OSC already do.
+  const Eigen::Vector3d rpy_actual = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
   output.actual_task_positions[1] = tcp.translation().y();
   output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy_actual.x();
+  output.actual_task_positions[4] = rpy_actual.y();
+  output.actual_task_positions[5] = rpy_actual.z();
   // The compliant frame is the thing this controller actually commands, so it is
   // what the task-goal lane must show — X_d alone would look motionless under a
   // sustained push, which is the one situation an operator is watching for.
+  const Eigen::Vector3d rpy_goal = pinocchio::rpy::matrixToRpy(compliant_pose_.rotation());
   output.task_goal_positions[0] = compliant_pose_.translation().x();
   output.task_goal_positions[1] = compliant_pose_.translation().y();
   output.task_goal_positions[2] = compliant_pose_.translation().z();
+  output.task_goal_positions[3] = rpy_goal.x();
+  output.task_goal_positions[4] = rpy_goal.y();
+  output.task_goal_positions[5] = rpy_goal.z();
   output.command_type = command_type_;
 
   diag_lock_.Store(diag);
@@ -498,15 +568,20 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
 }
 
 ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& state,
-                                                        bool control_valid,
+                                                        const Gains& gains, bool control_valid,
                                                         const Diagnostics& diag) noexcept {
   const auto& dev0 = state.devices[0];
   const int nc0 = dev0.num_channels;
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   const auto nch =
       std::min(static_cast<std::size_t>(nc0), static_cast<std::size_t>(kMaxDeviceChannels));
   if (!estop_hold_valid_) {
-    for (std::size_t i = 0; i < nch; ++i)
+    for (std::size_t i = 0; i < nch; ++i) {
       estop_hold_[i] = dev0.positions[i];
+      // Seed the rate base at the same pose: the FIRST held tick after a
+      // (re)latch must be able to emit the latch itself, not slew up to it.
+      estop_last_command_[i] = dev0.positions[i];
+    }
     estop_hold_valid_ = true;
   }
 
@@ -515,8 +590,27 @@ ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& s
   auto& out0 = output.devices[0];
   out0.num_channels = nc0;
   for (std::size_t i = 0; i < nch; ++i) {
-    out0.commands[i] = estop_hold_[i];
-    out0.trajectory_positions[i] = estop_hold_[i];
+    double cmd = estop_hold_[i];
+    // The same joint-limit clamp the live path applies (§ q_cmd clamp): an arm
+    // that was already outside its mechanical range when the stop fired must not
+    // have that pose LATCHED and re-commanded forever.
+    if (i < position_lower_.size() && i < position_upper_.size()) {
+      const double lo = position_lower_[i] + gains.joint_limit_margin;
+      const double hi = position_upper_[i] - gains.joint_limit_margin;
+      if (lo < hi)
+        cmd = std::clamp(cmd, lo, hi);
+    }
+    // ...and the correction that clamp asks for is a MOTION, so it is rate-bound
+    // like every other motion this controller emits. Against the last emitted
+    // command, not q_meas — see estop_last_command_. A steady hold is unaffected
+    // (the command does not change, so the bound never binds).
+    const double lim =
+        (i < max_joint_velocity_.size()) ? max_joint_velocity_[i] : kDefaultMaxJointVelocity;
+    const double step = std::abs(lim) * dt;
+    cmd = std::clamp(cmd, estop_last_command_[i] - step, estop_last_command_[i] + step);
+    estop_last_command_[i] = cmd;
+    out0.commands[i] = cmd;
+    out0.trajectory_positions[i] = cmd;
   }
   output.command_type = command_type_;
 
@@ -527,6 +621,44 @@ ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& s
   Diagnostics d = diag;
   d.control_valid = control_valid;  // false: the pose-error / σ fields are stale
   diag_lock_.Store(d);
+  return output;
+}
+
+ControllerOutput TaskAdmittanceController::ComputeNoJointState(const ControllerState& state,
+                                                               const Gains& gains,
+                                                               Diagnostics& diag) noexcept {
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
+  compliance::ComplianceFaults faults;
+  faults.device_state_invalid = true;
+  // The same ramp predicate the clean path derives from alpha. Not fabricated as
+  // `true`: a controller that has never had a readable joint state has not
+  // finished activating, and §10.6's lattice honours a degrade cause at the
+  // HOLDING→RUNNING edge. A device that fails mid-run is already RUNNING, so it
+  // degrades on this tick regardless.
+  const double ramp = gains.activation_ramp_time;
+  const bool ramp_done = (ramp <= 0.0) || (activation_elapsed_ >= ramp);
+  diag.state = static_cast<std::uint8_t>(
+      sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_gate_, false));
+
+  ControllerOutput output;
+  output.num_devices = state.num_devices;
+  // Zero-length = "no update" to every backend. Secondary devices keep their
+  // own passthrough: a hand does not stop being commandable because the arm's
+  // state went missing.
+  output.devices[0].num_channels = 0;
+  rtc::utils::PassthroughSecondaryDevices(state, output, target_seqlock_.Load().targets);
+  output.command_type = command_type_;
+
+  // Same discontinuity contract a held tick has: whatever X_d / q_null / command
+  // integrator state exists was seeded from a joint state this tick could not
+  // read, so the next controllable tick re-seeds from measurement. The hold latch
+  // goes with it — it would otherwise describe a pose read while the device was
+  // untrustworthy.
+  target_initialized_.store(false, std::memory_order_release);
+  estop_hold_valid_ = false;
+
+  diag.control_valid = false;
+  diag_lock_.Store(diag);
   return output;
 }
 
@@ -557,6 +689,11 @@ void TaskAdmittanceController::TriggerEstop() noexcept {
 void TaskAdmittanceController::ClearEstop() noexcept {
   estopped_.store(false, std::memory_order_release);
   target_initialized_.store(false, std::memory_order_release);
+  // The arm may have been jogged while the stop was asserted, so the hold latch
+  // is retired here too — otherwise a re-trigger before the next clean tick
+  // (E-STOP cleared, arm moved, E-STOP hit again) would command the pre-clear
+  // pose in one step. Note this clears the HOLD, not the fault.
+  InvalidateEstopHold();
   // NOTE: does NOT clear a controller-local SAFE_STOP — that needs ResetFault().
 }
 
@@ -578,10 +715,22 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
 
   auto g = gains_lock_.Load();
 
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
-    if (n && n.IsSequence() && n.size() == 3)
-      for (std::size_t i = 0; i < 3; ++i)
-        arr[i] = n[i].as<double>();
+  // Shape-checked exactly like load6 below. Silently ignoring a mis-shaped node
+  // is worse here than anywhere else in this function: the header documents
+  // `ik_kp_*: 0` as the way to reproduce §7.3's pure-feedforward law literally,
+  // so a scalar `ik_kp_pos: 0.0` — the obvious way to write that — was dropped
+  // and the default 2.0 kept, which means the one experiment the knob exists for
+  // silently ran as a CLIK variant, with nothing in the diagnostics to say so.
+  // No scalar broadcast (D5): a convenience shorthand would re-introduce the
+  // same "quietly a different value" failure in a new shape.
+  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr, const char* what) {
+    if (!n)
+      return;
+    if (!n.IsSequence() || n.size() != 3)
+      throw std::runtime_error(std::string("TaskAdmittanceController: ") + what +
+                               " must be a 3-entry sequence [x,y,z]");
+    for (std::size_t i = 0; i < 3; ++i)
+      arr[i] = n[i].as<double>();
   };
   auto load6 = [](const YAML::Node& n, std::array<double, 6>& arr, const char* what,
                   bool require_positive) {
@@ -630,6 +779,14 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
     g.admittance.max_velocity_lin = cfg["max_compliant_linear_velocity"].as<double>();
   if (cfg["max_compliant_angular_velocity"])
     g.admittance.max_velocity_ang = cfg["max_compliant_angular_velocity"].as<double>();
+  // Separate from the two above on purpose — see AdmittanceParams. Not floored
+  // here: the floor lives at the point of use so set_gains() cannot bypass it
+  // (NUM-1), and clamping here as well would only hide a bad YAML value from
+  // whoever reads the gains back.
+  if (cfg["max_return_linear_velocity"])
+    g.admittance.max_return_velocity_lin = cfg["max_return_linear_velocity"].as<double>();
+  if (cfg["max_return_angular_velocity"])
+    g.admittance.max_return_velocity_ang = cfg["max_return_angular_velocity"].as<double>();
   if (const YAML::Node& n = cfg["barrier_stiffness"]; n) {
     if (!n.IsSequence() || n.size() != 2)
       throw std::runtime_error(
@@ -639,8 +796,8 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── §7.3 IK ──────────────────────────────────────────────────────────────
-  load3(cfg["ik_kp_pos"], g.ik_kp_pos);
-  load3(cfg["ik_kp_rot"], g.ik_kp_rot);
+  load3(cfg["ik_kp_pos"], g.ik_kp_pos, "ik_kp_pos");
+  load3(cfg["ik_kp_rot"], g.ik_kp_rot, "ik_kp_rot");
   if (cfg["nullspace_kp"])
     g.nullspace_kp = cfg["nullspace_kp"].as<double>();
   if (cfg["integrate_from_measured"])
@@ -653,8 +810,19 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
     g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
 
   // ── Safety / activation ──────────────────────────────────────────────────
-  if (cfg["pose_error_limit"])
-    g.pose_error_limit = cfg["pose_error_limit"].as<double>();
+  // Strictly positive, and rejected rather than clamped (D6). `e.norm() > limit`
+  // is evaluated every tick against a CRITICAL fault, so a 0 or negative bound
+  // makes that comparison true forever: SAFE_STOP latches on the first tick, and
+  // `ComplianceFaults::pose_error_exceeded` carries no cause field to point at
+  // the config. The `<= 0 disables` idiom the §7.5 bounds use is deliberately
+  // NOT offered — this is the guard, and a way to switch it off would make a
+  // mis-configuration look like a legitimate setting.
+  if (const YAML::Node& n = cfg["pose_error_limit"]; n) {
+    const double v = n.as<double>();
+    if (!(v > 0.0))
+      throw std::runtime_error("TaskAdmittanceController: pose_error_limit must be > 0");
+    g.pose_error_limit = v;
+  }
   if (cfg["command_divergence_limit"])
     g.command_divergence_limit = std::max(0.0, cfg["command_divergence_limit"].as<double>());
   if (cfg["joint_limit_margin"])
