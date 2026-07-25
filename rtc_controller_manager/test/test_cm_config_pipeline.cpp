@@ -136,6 +136,26 @@ TEST_F(CmConfigPipelineTest, YamlDefaultsSurviveWithoutOverrides) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// The control rate must be visible to the controller's FIRST LoadConfig, i.e. the
+// one PreConfigure drives. Controllers validate rate-dependent YAML there — filter
+// cutoffs against Nyquist, for instance — and handing the rate over only in Pass 2
+// made those checks run against GetDefaultDt()'s fallback, rejecting cutoffs that
+// are perfectly legal at the configured rate (kMaxControlRateHz is 5000). The
+// fixture rate (200 Hz ⇒ 5 ms) differs from the fallback (kDefaultControlRateHz,
+// 2 ms), which is what makes the two orderings distinguishable at all.
+TEST_F(CmConfigPipelineTest, ControlRateIsVisibleToPreConfigureLoadConfig) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  ASSERT_GT(PipelineTestController::captured_dt_at_load_config, 0.0)
+      << "LoadConfig never ran — the observation is vacuous";
+  EXPECT_DOUBLE_EQ(1.0 / 200.0, PipelineTestController::captured_dt_at_load_config)
+      << "PreConfigure's LoadConfig saw the fallback dt, not the configured rate";
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // ── Device-name config parsing (names / backend / layout / limits) ──────────
 
 TEST_F(CmConfigPipelineTest, DeviceConfigFullParse) {
