@@ -517,6 +517,103 @@ TEST(TaskImpedanceWrench, ShapedInertiaMakesTheWrenchTermBite) {
   }
 }
 
+// The DIRECTION of the §6.3 wrench term, which ShapedInertiaMakesTheWrenchTermBite
+// above deliberately does not constrain (it only asks that the term be alive).
+//
+// Λ_d → ∞ is the limit where the answer is fixed by physics alone and needs no
+// convention argument: an infinitely heavy desired inertia must make the arm
+// IMMOBILE under an external push, so the commanded task force has to cancel the
+// wrench exactly — f_cmd → −f_ext as B = Λ_S Λ_d⁻¹ → 0. (Getting the sign wrong
+// gives f_cmd → +f_ext, i.e. an arm that yields TWICE as fast as the unshaped one
+// precisely when it was configured to be immovable.) The pose error is held at
+// zero so f_task drops out and the bracket reduces to the wrench term alone.
+//
+// The oracle for Jᵀf_ext avoids re-deriving the Jacobian in the test: a
+// jacobian_transpose controller with K_p = I on translation, all other gains 0
+// and a target displaced by exactly f_ext_LWA produces f_task ≡ f_ext_LWA, so its
+// own torque delta IS Jᵀf_ext. Both controllers share the model, the pose and the
+// gravity term, which therefore cancels out of both deltas.
+TEST(TaskImpedanceWrench, HeavyDesiredInertiaCancelsTheExternalWrench) {
+  const std::vector<double> q(7, 0.3);
+  const std::vector<double> qd(7, 0.0);
+
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.nullspace_kp = 0.0;
+  gains.nullspace_kd = 0.0;        // no τ_null on either side
+  gains.kp_pos = {1.0, 1.0, 1.0};  // unit stiffness ⇒ f_task == e_trans exactly
+  gains.kd_pos = {0.0, 0.0, 0.0};
+  gains.kp_rot = {0.0, 0.0, 0.0};  // the oracle's target rotation must not bite
+  gains.kd_rot = {0.0, 0.0, 0.0};
+  gains.pose_error_limit = 1e9;  // the oracle's target is metres away by design
+  gains.max_torque_rate = 1e12;  // measure the law, not the slew limiter
+
+  auto state = MakeState(7, q, qd);
+
+  // ── Shaped side: B → 0, pose error 0 ⇒ τ − ĝ == Jᵀ(B − I)f_ext ≈ −Jᵀf_ext ──
+  TaskImpedanceController shaped(Urdf7(), gains, Sel::kFullSe3);
+  shaped.SetControlRate(kRateHz);
+  shaped.LoadConfig(YAML::Load(
+      TransparentWrenchYaml("formulation: inertia_shaping\n"
+                            "desired_inertia: [1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6]\n")));
+  // Seed tick: X_d = X_meas (⇒ e ≡ 0 from here on) and no sample has arrived yet,
+  // so this tick's torque is exactly ĝ — the wrench-free baseline.
+  const auto base_shaped = shaped.Compute(state);
+
+  const Wrench6 push{2.0, -1.5, 1.0, 0.0, 0.0, 0.0};  // pure force, sensor = tip
+  Send(shaped, push);
+  (void)shaped.Compute(state);  // the tick that consumes the FIRST sample
+  Send(shaped, push);
+  const auto out_shaped = shaped.Compute(state);  // wrench live
+
+  const auto diag_shaped = shaped.GetDiagnosticsForTesting();
+  ASSERT_TRUE(diag_shaped.control_valid);
+  ASSERT_TRUE(diag_shaped.wrench_valid);
+  ASSERT_DOUBLE_EQ(diag_shaped.wrench_fade, 1.0);
+  ASSERT_FALSE(diag_shaped.inertia_clamped)
+      << "‖B − I‖∞ ≈ 1 at B ≈ 0, so the default ratio 3.0 must not clamp";
+  // Sensor frame == tip ⇒ the Ad^{-T} lever arm is zero, so a pure force stays a
+  // pure force and the unit-K_p oracle below can reproduce it exactly.
+  for (std::size_t i = 3; i < 6; ++i)
+    ASSERT_NEAR(diag_shaped.wrench_lwa[i], 0.0, 1e-12);
+
+  // ── Oracle side: f_task := f_ext_LWA ⇒ τ − ĝ == Jᵀf_ext ────────────────────
+  TaskImpedanceController oracle(Urdf7(), gains, Sel::kFullSe3);
+  oracle.SetControlRate(kRateHz);
+  oracle.LoadConfig(YAML::Load("formulation: jacobian_transpose"));
+  const auto base_oracle = oracle.Compute(state);  // seed; e ≡ 0 ⇒ τ == ĝ
+
+  const std::array<double, 6> target{
+      base_oracle.actual_task_positions[0] + diag_shaped.wrench_lwa[0],
+      base_oracle.actual_task_positions[1] + diag_shaped.wrench_lwa[1],
+      base_oracle.actual_task_positions[2] + diag_shaped.wrench_lwa[2],
+      0.0,
+      0.0,
+      0.0};
+  oracle.SetDeviceTarget(0, std::span<const double>(target.data(), target.size()));
+  const auto out_oracle = oracle.Compute(state);
+  ASSERT_TRUE(oracle.GetDiagnosticsForTesting().control_valid);
+
+  double scale = 0.0;
+  for (int i = 0; i < 7; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    scale = std::max(
+        scale, std::abs(out_oracle.devices[0].commands[ui] - base_oracle.devices[0].commands[ui]));
+  }
+  ASSERT_GT(scale, 1e-3) << "Jᵀf_ext is ~zero at this pose — the comparison is vacuous";
+
+  for (int i = 0; i < 7; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double shaped_delta =
+        out_shaped.devices[0].commands[ui] - base_shaped.devices[0].commands[ui];
+    const double oracle_delta =
+        out_oracle.devices[0].commands[ui] - base_oracle.devices[0].commands[ui];
+    EXPECT_NEAR(shaped_delta, -oracle_delta, 1e-3 * scale)
+        << "joint " << i << ": Λ_d → ∞ must CANCEL the external wrench (f_cmd → −f_ext), "
+        << "but the commanded torque moved with it — the (B − I)f_ext sign is inverted";
+  }
+}
+
 // §5.2 MUST: an aggressively light Λ_d must be clamped, and the clamp must be
 // reported rather than applied silently.
 TEST(TaskImpedanceWrench, MaxInertiaRatioClampsAndReports) {

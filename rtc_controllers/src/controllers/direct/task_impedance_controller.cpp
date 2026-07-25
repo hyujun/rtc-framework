@@ -309,7 +309,21 @@ void TaskImpedanceController::ApplyInertiaShaping(const Gains& gains,
     diag.inertia_clamped = true;
   }
 
-  // f_cmd = B·f_task + (B − I)(−f_ext), component-wise over the m_ task rows.
+  // f_cmd = B·f_task + (B − I)·f_ext, component-wise over the m_ task rows.
+  //
+  // SIGN BRIDGE — the design spec writes this term as (B − I)(−S·f_ext) because
+  // its f_ext is the wrench the ROBOT applies on the ENVIRONMENT. This package's
+  // input contract is the opposite convention (external_wrench.hpp: positive =
+  // the wrench the environment applies ON the robot, which is what an F/T sensor
+  // reads and what the whole conditioning chain is built on), so substituting our
+  // f_ext into the spec's expression flips it once. The physics fixes the answer
+  // without appealing to either convention: at Λ_d → ∞ (B → 0) the arm must be
+  // immovable under an external push, which needs f_cmd → −f_ext so that
+  // f_cmd + f_ext = 0 in Λν̇ = f_cmd + f_ext. Only the form below has that limit;
+  // the negated one yields +f_ext, i.e. twice the unshaped compliance exactly
+  // where the operator asked for none. Pinned by
+  // HeavyDesiredInertiaCancelsTheExternalWrench.
+  //
   // Explicit loops (m_ ≤ 6) rather than an Eigen expression: fixed-size,
   // provably heap-free, and no `auto`-aliasing trap (RT-1 / RT-5).
   for (int i = 0; i < m_; ++i) {
@@ -317,7 +331,7 @@ void TaskImpedanceController::ApplyInertiaShaping(const Gains& gains,
     for (int j = 0; j < m_; ++j) {
       const double eye = (i == j) ? 1.0 : 0.0;
       const double b_ij = eye + s * (b_transp_(j, i) - eye);
-      acc += b_ij * f_task(j) - (b_ij - eye) * f_ext(j);
+      acc += b_ij * f_task(j) + (b_ij - eye) * f_ext(j);
     }
     f_cmd(i) = acc;
   }

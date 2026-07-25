@@ -113,10 +113,12 @@ Ad^{-T} 로 LOCAL_WORLD_ALIGNED(tip) 변환  →  staleness fade 곱
 
 ## 3.3 §6.3 Inertia shaping (슬라이스 2)
 
-$$\tau = J^\top S^\top\left[B\left(K_p S e + K_d S\dot e\right) + (B - I)(-S f^{ext}_{LWA})\right] + \tau_{null} + \hat g,\quad B = \Lambda_S\Lambda_d^{-1}$$
+$$\tau = J^\top S^\top\left[B\left(K_p S e + K_d S\dot e\right) + (B - I)\,S f^{ext}_{LWA}\right] + \tau_{null} + \hat g,\quad B = \Lambda_S\Lambda_d^{-1}$$
 
 | 항목 | 결정 | 근거 |
 |---|---|---|
+| **wrench 항의 부호** | 설계 명세는 이 항을 `(B − I)(−S f_ext)` 로 쓰지만 구현은 **`+(B − I) S f_ext`** 다 | 명세의 `f_ext` 는 *로봇이 환경에 가하는* 힘이고, 본 패키지의 입력 계약(§2 · §3.1)은 그 반대인 **환경→로봇** (F/T 센서가 실제로 읽는 부호, 조건화 체인 전체가 그 위에 서 있다) 이므로 대입 시 한 번 뒤집힌다. 규약 논쟁 없이 판정되는 기준은 `Λ_d → ∞` (`B → 0`) 극한이다 — 무한히 무거운 desired inertia 는 외력에 **부동(不動)** 이어야 하므로 `Λ ν̇ = f_cmd + f_ext` 에서 `f_cmd → −f_ext` 여야 한다. 부호를 뒤집으면 `+f_ext` 가 되어 **미보정 대비 2배로 밀린다**. `HeavyDesiredInertiaCancelsTheExternalWrench` 가 이 극한을 고정 |
+| **폐루프** | `Λ_d ë + K_d ė + K_p e = −f_ext` (`e = x_d − x`) | `B = I` 에서 §6.2 (`Λ_S ë + K_d ė + K_p e = −f_ext`) 와 **정확히 일치**해야 하며, 이 일관성이 위 부호를 독립적으로 재확인한다. §4 가 §6.2 폐루프를 `= f_ext` 로 적은 것은 명세의 반대 부호 규약을 따른 표기다 |
 | **기본 비활성** | `formulation: jacobian_transpose` 가 기본. §6.3 은 명시 선택 | §5.2 MUST — `Λ_d ≠ Λ_S` 는 wrench 측정 오차·모델 오차에 근본적으로 민감하고 `Λ_d ≪ Λ_S` 일수록 노이즈가 증폭된다 |
 | **`Λ_d`** | `desired_inertia` (6항 대각, 전부 > 0) 또는 **미지정 시 `Λ_d := Λ_S`** ("natural", `B = I`) | natural 이 A=NONE ↔ A≠NONE 경계 그 자체다. **단락(short-circuit)하지 않고** 실제 `Λ_d` Cholesky + solve 를 태워 `B` 를 항등에 수렴시키므로 T4.1 이 `if` 가 아니라 코드 경로를 검증한다 |
 | **`max_inertia_ratio` clamp** | `‖B − I‖∞ > r−1` 이면 `B ← I + s(B−I)`, `s = (r−1)/‖B−I‖∞` ⇒ `‖B‖∞ ≤ r` 정확 보장. 기본 3.0 | 편차를 clamp 하면 연속이고 **`B = I` 를 절대 건드리지 않는다** — `B` 자체를 스케일하면 중립 설정을 안전 clamp 가 흔들어 T4.1 이 깨진다. 발동 시 `diag.inertia_clamped` 로 보고 (RT 로깅 금지, RT-3) |

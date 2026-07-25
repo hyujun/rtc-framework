@@ -58,9 +58,14 @@ namespace rtc {
 /// ### Control law (`kInertiaShaping`, A≠NONE — spec §6.3)
 /// @code
 ///   B  = Λ_S Λ_d⁻¹                                 [m×m, clamped by max_inertia_ratio]
-///   τ  = Jᵀ Sᵀ[B(K_p·S·e + K_d·S·ė) + (B − I)(−S·f_ext)] + τ_null + ĝ(q)
+///   τ  = Jᵀ Sᵀ[B(K_p·S·e + K_d·S·ė) + (B − I)·S·f_ext] + τ_null + ĝ(q)
 /// @endcode
-/// which enforces the closed loop `Λ_d ë + K_d ė + K_p e = f_ext`. With
+/// which enforces the closed loop `Λ_d ë + K_d ė + K_p e = −f_ext`, the same
+/// relation §6.2 gives with `Λ_d = Λ_S` — as it must, since `B = I` collapses the
+/// two laws. The wrench term carries `+(B − I)` and not the spec's `(B − I)(−·)`
+/// because `f_ext` here is the ENVIRONMENT-ON-ROBOT wrench of this package's input
+/// contract, the opposite sign to the one that expression is written in; the
+/// bridge is derived at the substitution site in ApplyInertiaShaping(). With
 /// `Λ_d = Λ_S` (the `desired_inertia: natural` configuration) `B = I` and the
 /// second term vanishes, so the law collapses **exactly** onto §6.2 — that
 /// identity is the A=NONE ↔ A≠NONE boundary check (§11.4 T4.1) and is asserted
@@ -265,7 +270,9 @@ class TaskImpedanceController final : public RTControllerInterface {
                                                    const Gains& gains, Diagnostics& diag) noexcept;
 
   // RT: overwrite f_cmd.head(m_) with the §6.3 bracket
-  //   B(K_p·S·e + K_d·S·ė) + (B − I)(−S·f_ext),   B = Λ_S Λ_d⁻¹.
+  //   B(K_p·S·e + K_d·S·ė) + (B − I)·S·f_ext,   B = Λ_S Λ_d⁻¹,
+  // with f_ext in this package's environment-on-robot sign (see the sign bridge
+  // derived at the implementation).
   // Requires a successful dyn_.Compute() this tick (Λ_S must be valid).
   void ApplyInertiaShaping(const Gains& gains, const Eigen::Matrix<double, 6, 1>& f_task,
                            const Eigen::Matrix<double, 6, 1>& f_ext,
