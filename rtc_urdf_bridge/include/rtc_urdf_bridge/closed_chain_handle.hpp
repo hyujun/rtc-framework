@@ -65,10 +65,15 @@ class ClosedChainHandle {
   ///   **유한하지만 신뢰 불가** (특이 조립형상에서 증폭 — damping λ 로 상계는 두지만 물리적
   ///   부정확). getter 는 이 값을 그대로 돌려주므로 **소비자는 쓰기 전 `GetStatus().singular`
   ///   를 반드시 확인**하고 true 면 해당 tick 을 버리거나 직전 유효 해를 hold 해야 한다
-  ///   (inverse-dynamics 로 직결 금지). `converged==false` (사영 미수렴) 도 동일 취급 —
-  ///   이 경우 q_full 은 직전 해를 hold 한다.
+  ///   (inverse-dynamics 로 직결 금지). `acceptable==false` (사영 비수용) 도 동일 취급 —
+  ///   이 경우 q_full 은 직전 해를 hold 한다. hold 판정은 `acceptable` 이 담당한다 —
+  ///   `converged` 는 strict 수렴 여부의 관측 신호일 뿐, URDF 좌표 불일치의 residual floor
+  ///   (strict 미달·acceptance 이내) 에서는 false 인 채 해가 정상 커밋된다 (#250).
   struct Status {
-    bool converged{false};  ///< passive 사영 ‖φ‖ < tol 도달
+    bool converged{false};  ///< passive 사영 strict 수렴 (‖φ‖ < tolerance)
+    /// 이번 tick 해를 커밋했는가 (‖φ‖ ≤ acceptance_tolerance ∧ 유한). false 면 q_full 은
+    /// 직전 해 hold — 소비자의 hold/신뢰 판정은 converged 가 아니라 이 필드를 쓴다.
+    bool acceptable{false};
     bool singular{false};  ///< Jc rank 결손 (특이 조립형상) — 축약값 damped, 신뢰도 저하
     double closure_error{0.0};  ///< 사영 후 최종 ‖φ‖
     int iterations{0};          ///< 사영 반복 수
@@ -103,7 +108,8 @@ class ClosedChainHandle {
   /// @brief actuated(독립) 좌표로 passive DoF 사영 후 축약 M/g/h/J/FK 를 갱신한다.
   /// @param q_a 독립 관절 위치 (GetIndependentJointNames() 순서, 크기 n_a)
   /// @param v_a 독립 관절 속도 (선택; 비우면 0 → h_a = g_a, Jacobian/FK 만 유효)
-  /// @return 사영 수렴/특이성 상태. 미수렴 시 직전 해를 hold 한다 (NaN 누출 방지).
+  /// @return 사영 수용/특이성 상태. 비수용(acceptable=false) 시 직전 해를 hold 한다 (NaN
+  ///   누출 방지). residual floor (strict 미달·acceptance 이내) 는 커밋된다 (#250).
   /// @note **non-RT.** 반복·할당 포함.
   Status Update(std::span<const double> q_a, std::span<const double> v_a = {});
 

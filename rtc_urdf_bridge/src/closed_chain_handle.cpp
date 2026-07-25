@@ -221,25 +221,30 @@ ClosedChainHandle::Status ClosedChainHandle::Update(std::span<const double> q_a,
     }
   }
 
-  // passive DoF 사영 (구속 있을 때만). 미수렴/비유한 시 직전 해 hold.
+  // passive DoF 사영 (구속 있을 때만). 비수용/비유한 시 직전 해 hold.
   status_ = Status{};
   if (identity_) {
     q_full_ = std::move(q_seed);
     status_.converged = true;
+    status_.acceptable = true;
   } else {
     // continuation: actuated 증분이 크면 sub-step 으로 나눠 warm-start 를 이어간다. 한 번에 큰
-    // 점프를 사영하면 반대편 조립 분기로 착지하고, 뒤집힌 분기도 ‖φ‖≈0 이라 converged 검사로는
+    // 점프를 사영하면 반대편 조립 분기로 착지하고, 뒤집힌 분기도 ‖φ‖≈0 이라 residual 검사로는
     // 검출되지 않는다 (#248). RT 형제(RtClosedChainHandle)는 tick 당 seed clamp 로 같은 역할을
     // 결정적으로 수행한다.
     const ProjectionResult res = ProjectPassiveWithContinuation(
         model, data_, constraints_, q_full_, q_seed, actuated_joint_ids_, projection_opts_);
     status_.iterations = res.iterations;
     status_.closure_error = res.final_error;
-    if (res.converged && res.q.allFinite()) {
+    status_.converged = res.converged;
+    // 커밋 게이트는 strict 가 아니라 acceptance (#250) — URDF 좌표 불일치의 residual floor
+    // (strict 미달·1e-6 m 이내) 는 사용 가능한 해다. strict 게이트면 floor 로봇에서 영구
+    // hold (P1B: ‖φ‖ 바닥 2.8e-8 > 1e-10).
+    if (res.acceptable && res.q.allFinite()) {
       q_full_ = res.q;
-      status_.converged = true;
+      status_.acceptable = true;
     } else {
-      status_.converged = false;  // q_full_ (직전 해) 유지
+      status_.acceptable = false;  // q_full_ (직전 해) 유지
     }
   }
 

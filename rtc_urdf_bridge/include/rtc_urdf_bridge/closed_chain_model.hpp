@@ -31,7 +31,11 @@ struct ClosedChainModel {
   std::vector<pinocchio::JointIndex>
       actuated_joint_ids;       // actuation metadata (RigidConstraint 와 분리)
   Eigen::VectorXd q_ref;        // loop-consistent (projection 통과)
-  bool q_ref_converged{false};  // projection 수렴 여부
+  bool q_ref_converged{false};  // projection strict 수렴 (‖φ‖ < strict tolerance) 여부
+  // q_ref 를 소비해도 되는가 (‖φ‖ ≤ acceptance tolerance, 유한). converged=true 면 항상
+  // true. converged=false && acceptable=true 는 URDF 좌표 불일치 등의 residual floor —
+  // q_ref 는 사용 가능하다 (#250). 둘 다 false 면 q_ref 를 정상 결과로 소비 금지.
+  bool q_ref_acceptable{false};
   // q_ref 가 rank 결손(특이 조립형상) 인지. true 면 constraintDynamics 의 KKT 가 특이해져
   // NaN 을 낼 수 있으므로 q_ref 를 operating configuration 으로 바로 쓰면 안 된다.
   // (converged=true 여도 대칭 조립형상은 특이할 수 있다 — neutral 근방 4-bar 등.)
@@ -45,8 +49,9 @@ struct ClosedChainData {
   std::vector<pinocchio::RigidConstraintModel> constraints;
   std::vector<pinocchio::JointIndex> actuated_joint_ids;
   Eigen::VectorXd q_ref;        // loop-consistent (projection 통과)
-  bool q_ref_converged{false};  // projection 수렴 여부
-  bool q_ref_singular{false};   // rank 결손 조립형상 (KKT 특이 → NaN 위험)
+  bool q_ref_converged{false};  // projection strict 수렴 여부
+  bool q_ref_acceptable{false};  // q_ref 소비 가능 (residual floor 포함 — ClosedChainModel 참조)
+  bool q_ref_singular{false};  // rank 결손 조립형상 (KKT 특이 → NaN 위험)
 };
 
 /// @brief 이미 빌드된 model + ClosureSpec → closure 파이프라인 (§4b 이후 단계).

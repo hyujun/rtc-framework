@@ -22,4 +22,16 @@ inline rtc_urdf_bridge::ClosedChainModel FourBar() {
       TestUrdfPath("four_bar_tree.urdf"), TestUrdfPath("four_bar.closure.yaml"));
 }
 
+// 도달 가능한 residual floor 를 가진 crank_rocker (#250). 평면(전 관절 z축 회전) 기구의
+// closure anchor 를 z 방향으로 z_offset 만큼 어긋내면 어떤 관절 운동으로도 보상할 수 없어
+// ‖φ‖ floor 가 정확히 z_offset 이 된다 — hand-description ring closure 의 ~20 nm URDF 좌표
+// 불일치를 synthetic 으로 재현한다 (외부 패키지 경로 하드코딩 없이).
+// ⚠ q_ref/q_ref_converged 필드는 offset **미반영** (loader 가 원본 constraint 로 계산) —
+// 직접 projection 호출 테스트 용도로만 쓴다.
+inline rtc_urdf_bridge::ClosedChainModel FlooredCrankRocker(double z_offset) {
+  rtc_urdf_bridge::ClosedChainModel cc = CrankRocker();
+  cc.constraints.front().joint2_placement.translation().z() += z_offset;
+  return cc;
+}
+
 }  // namespace rtc::test

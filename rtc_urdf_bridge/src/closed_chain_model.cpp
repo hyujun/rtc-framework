@@ -45,16 +45,31 @@ ClosedChainData BuildClosedChainData(const pinocchio::Model& model, const Closur
     out.actuated_joint_ids.push_back(model.getJointId(jname));
   }
 
-  // (3) q_ref: neutral → loop-consistent 사영
+  // (3) q_ref: neutral → loop-consistent 사영. strict 수렴 실패여도 residual 이 acceptance
+  //     (기본 1e-6 m) 이내면 q_ref 는 사용 가능 (#250) — URDF 좌표 불일치의 residual floor
+  //     (예: P1B ring closure ~20 nm → ‖φ‖ 2.8e-8) 는 strict tolerance 에 원리적으로 도달
+  //     불가하므로 WARN 대상이 아니다.
   pinocchio::Data data(model);
   const Eigen::VectorXd q0 = pinocchio::neutral(model);
-  const ProjectionResult proj = ProjectToConstraint(model, data, out.constraints, q0);
+  const ProjectionOptions proj_opts;
+  const ProjectionResult proj = ProjectToConstraint(model, data, out.constraints, q0, proj_opts);
   out.q_ref = proj.q;
   out.q_ref_converged = proj.converged;
-  if (!proj.converged) {
+  out.q_ref_acceptable = proj.acceptable;
+  if (!proj.acceptable) {
     RCLCPP_WARN(logger(),
-                "q_ref projection 미수렴 (iter=%d, ‖φ‖=%.3e) — neutral 근방 조립 상태 확인 필요",
-                proj.iterations, proj.final_error);
+                "q_ref projection 실패 (iter=%d, ‖φ‖=%.3e > acceptance %.1e; strict %.1e) — "
+                "q_ref 를 정상 결과로 사용하지 마세요. neutral 근방 조립 상태 확인 필요",
+                proj.iterations, proj.final_error, proj_opts.acceptance_tolerance,
+                proj_opts.tolerance);
+  } else if (!proj.converged) {
+    // 수용된 residual floor — 시작 로그를 시끄럽게 하지 않도록 DEBUG (builder 경유 로드는
+    // pinocchio_model_builder 의 INFO 요약 라인에 acceptable 플래그가 함께 찍힌다).
+    RCLCPP_DEBUG(logger(),
+                 "q_ref projection 은 strict tolerance %.1e 미도달이나 수용됨 (iter=%d, "
+                 "‖φ‖=%.3e ≤ acceptance %.1e) — residual floor 로 판단",
+                 proj_opts.tolerance, proj.iterations, proj.final_error,
+                 proj_opts.acceptance_tolerance);
   }
 
   // (4) q_ref 특이성 검사: converged 여도 대칭 조립형상(예: neutral 근방 평면 4-bar)은
@@ -97,6 +112,7 @@ ClosedChainModel BuildClosedChainModelFromExtendedUrdf(std::string_view urdf_pat
   out.actuated_joint_ids = std::move(data.actuated_joint_ids);
   out.q_ref = std::move(data.q_ref);
   out.q_ref_converged = data.q_ref_converged;
+  out.q_ref_acceptable = data.q_ref_acceptable;
   out.q_ref_singular = data.q_ref_singular;
 
   return out;

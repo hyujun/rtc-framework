@@ -455,7 +455,8 @@ builder.GetConstraintModels();          // RigidConstraintModel 목록
 builder.GetClosureReferenceConfig();    // loop-consistent q_ref (full model)
 builder.GetClosureActuatedJointIds();   // actuation.actuated_joints → JointIndex
 builder.GetClosurePassiveLockNames();   // loop-passive 관절 이름 (movable − actuated); topology 판정용
-builder.IsClosureReferenceConverged();  // false 면 q_ref projection 미수렴 (부정확)
+builder.IsClosureReferenceConverged();  // strict 수렴 (‖φ‖ < 1e-10) 여부 — 관측 신호
+builder.IsClosureReferenceAcceptable(); // false 면 q_ref 사용 금지 (‖φ‖ > 1e-6 또는 비유한, #250)
 builder.IsClosureReferenceSingular();   // true 면 q_ref 를 operating config 로 쓰지 말 것
 ```
 
@@ -600,10 +601,12 @@ closure 구속으로 풀어(`ProjectPassiveWithContinuation`, warm-start) **loop
 | `input_topic` | `/digital_twin/actuated_joint_states` | actuated `JointState` 입력 |
 | `output_topic` | `/digital_twin/joint_states` | loop-consistent full `JointState` 출력 |
 | `warn_on_singular` | `true` | 기준 형상 특이 시 기동 경고 |
-| `max_iterations` / `tolerance` | `100` / `1e-10` | passive 사영 수렴 옵션 |
+| `max_iterations` / `tolerance` | `100` / `1e-10` | passive 사영 반복 상한 / strict 수렴 임계 (solver 반복 목표) |
+| `acceptance_tolerance` | `1e-6` | 결과 수용 임계 (병진 m, #250). strict 미달이어도 이 이내면 해를 커밋 — URDF 좌표 불일치의 residual floor 대응. **solver 정지 완화 목적으로 `tolerance` 를 올리지 말 것** (초기 residual 이 임계 미만이면 refinement 를 건너뜀) |
 | `max_actuated_increment` | `0.05` | continuation sub-step 당 actuated 증분 상한 (rad). 조립 분기 이탈 방지 — 위 "조립 분기 주의" 참조. `≤0` 이면 비활성 |
 
-미수렴/특이 프레임은 **직전 loop-consistent 해를 hold**(NaN 미발행)하고 THROTTLE WARN 을 낸다.
+비수용(acceptance 초과)/특이 프레임은 **직전 loop-consistent 해를 hold**(NaN 미발행)하고 THROTTLE
+WARN 을 낸다. strict 미달·acceptance 이내의 residual floor 는 정상 커밋된다 (#250).
 closure 비활성(param 미설정) 로봇은 이 노드를 기동하지 않고 digital_twin 이 직접 publish 한다
 (opt-in). launch 배선은 [rtc_digital_twin](../rtc_digital_twin/README.md) 참조.
 

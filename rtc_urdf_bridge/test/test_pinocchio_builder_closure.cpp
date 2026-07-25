@@ -45,7 +45,9 @@ TEST(PinocchioBuilderClosure, ExtendedUrdfPopulatesClosure) {
 
   // four_bar 는 nominal 조립 상태로 설계 → projection 수렴하지만, neutral 근방 평면
   // 4-bar 는 대칭 특이형상이라 singular 로 표시된다 (converged 와 singular 는 별개 신호).
+  // converged=true ⇒ acceptable=true (#250 — strict 충족은 항상 수용).
   EXPECT_TRUE(builder.IsClosureReferenceConverged());
+  EXPECT_TRUE(builder.IsClosureReferenceAcceptable());
   EXPECT_TRUE(builder.IsClosureReferenceSingular());
 }
 
@@ -157,6 +159,7 @@ TEST(PinocchioBuilderClosure, PlainUrdfLeavesClosureEmpty) {
   EXPECT_TRUE(builder.GetClosureActuatedJointIds().empty());
   EXPECT_EQ(builder.GetClosureReferenceConfig().size(), 0);
   EXPECT_FALSE(builder.IsClosureReferenceConverged());
+  EXPECT_FALSE(builder.IsClosureReferenceAcceptable());
   EXPECT_FALSE(builder.IsClosureReferenceSingular());
 
   const auto full = builder.GetFullModel();
@@ -198,5 +201,6 @@ TEST(PinocchioBuilderClosure, CombinedXacroResolvesHandClosure) {
   //     성질은 standalone four_bar 와 동일해야 한다 (병합 불변): converged + singular.
   EXPECT_EQ(builder.GetClosureReferenceConfig().size(), full->nq);
   EXPECT_TRUE(builder.IsClosureReferenceConverged());
+  EXPECT_TRUE(builder.IsClosureReferenceAcceptable());
   EXPECT_TRUE(builder.IsClosureReferenceSingular());
 }

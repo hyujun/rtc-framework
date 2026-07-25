@@ -36,7 +36,8 @@ namespace rtc_urdf_bridge {
 /// 입력 콜백: 이름→q-index 매핑으로 actuated 슬롯 갱신 → ProjectPassiveWithContinuation
 ///   (warm-start = 직전 프레임 해, actuated 증분은 sub-step 으로 분할) → 수렴 시 q_full_ 갱신,
 ///   전체 model 관절을 JointState 로 publish.
-/// 미수렴/특이: 직전 해 hold + THROTTLE WARN (NaN publish 금지 — viz 는 loud 우선).
+/// 비수용(acceptance 초과)/비유한: 직전 해 hold + THROTTLE WARN (NaN publish 금지 — viz 는
+/// loud 우선). strict 미달·acceptance 이내의 residual floor 는 정상 커밋된다 (#250).
 ///
 /// 로봇 비종속: 모든 robot identity 는 param(urdf/closure)에서 결정.
 class ClosureStatePublisher : public rclcpp::Node {

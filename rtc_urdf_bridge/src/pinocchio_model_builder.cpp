@@ -306,12 +306,14 @@ void PinocchioModelBuilder::RegisterClosedChainConstraints() {
     closure_actuated_joint_ids_ = std::move(data.actuated_joint_ids);
     closure_q_ref_ = std::move(data.q_ref);
     closure_q_ref_converged_ = data.q_ref_converged;
+    closure_q_ref_acceptable_ = data.q_ref_acceptable;
     closure_q_ref_singular_ = data.q_ref_singular;
     RCLCPP_INFO(logger(),
                 "Extended-URDF closure 로드: '%s' (%zu constraint, %zu actuated joint, "
-                "q_ref converged=%d singular=%d)",
+                "q_ref converged=%d acceptable=%d singular=%d)",
                 config_.closure_yaml_path.c_str(), constraint_models_.size(),
                 closure_actuated_joint_ids_.size(), static_cast<int>(closure_q_ref_converged_),
+                static_cast<int>(closure_q_ref_acceptable_),
                 static_cast<int>(closure_q_ref_singular_));
     return;
   }
@@ -412,6 +414,10 @@ const std::vector<std::string>& PinocchioModelBuilder::GetClosurePassiveLockName
 
 bool PinocchioModelBuilder::IsClosureReferenceConverged() const noexcept {
   return closure_q_ref_converged_;
+}
+
+bool PinocchioModelBuilder::IsClosureReferenceAcceptable() const noexcept {
+  return closure_q_ref_acceptable_;
 }
 
 bool PinocchioModelBuilder::IsClosureReferenceSingular() const noexcept {
