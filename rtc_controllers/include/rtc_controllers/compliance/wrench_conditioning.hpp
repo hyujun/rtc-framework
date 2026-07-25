@@ -135,6 +135,15 @@ class WrenchConditioner {
   /// @param sample_rate_hz  control loop rate — the filter is designed for the
   ///        tick it will actually run at; a mismatch shifts the real cutoff.
   /// @throws std::runtime_error on a cutoff at/above Nyquist or a negative bound.
+  ///
+  /// ALL-OR-NOTHING: every check runs against the ARGUMENT, before a single byte
+  /// of member state moves. A rejected call therefore leaves the live conditioner
+  /// — config, bias, filter coefficients and filter history — exactly as it was.
+  /// The controller's LoadConfig is built on that: it resolves the sensor frame
+  /// and calls this last, precisely so a bad YAML cannot leave a running
+  /// controller half-reconfigured. (Validating some fields and committing others
+  /// first would silently swap deadband/saturation/payload under an unchanged
+  /// filter — the exact half-state that ordering exists to prevent.)
   void Configure(const WrenchConditioningConfig& cfg, double sample_rate_hz) {
     for (std::size_t i = 0; i < kWrenchDim; ++i) {
       if (cfg.deadband[i] < 0.0)
@@ -148,19 +157,25 @@ class WrenchConditioner {
       throw std::runtime_error("WrenchConditioner: bias_calibration_samples must be >= 0");
     if (sample_rate_hz <= 0.0)
       throw std::runtime_error("WrenchConditioner: control rate must be > 0");
-    cfg_ = cfg;
-    if (cfg_.filter_enabled) {
+    if (cfg.filter_enabled) {
       // BesselFilterN::Init throws below/above its own bounds; translate the
-      // message so a YAML author sees which knob is wrong.
-      if (cfg_.filter_cutoff_force_hz <= 0.0 || cfg_.filter_cutoff_torque_hz <= 0.0)
+      // message so a YAML author sees which knob is wrong. These two checks are
+      // exactly Init's own preconditions, so the Init calls below cannot throw —
+      // which is what makes the commit sequence that follows unconditional.
+      if (cfg.filter_cutoff_force_hz <= 0.0 || cfg.filter_cutoff_torque_hz <= 0.0)
         throw std::runtime_error("WrenchConditioner: wrench filter cutoffs must be > 0");
-      if (cfg_.filter_cutoff_force_hz >= 0.5 * sample_rate_hz ||
-          cfg_.filter_cutoff_torque_hz >= 0.5 * sample_rate_hz)
+      if (cfg.filter_cutoff_force_hz >= 0.5 * sample_rate_hz ||
+          cfg.filter_cutoff_torque_hz >= 0.5 * sample_rate_hz)
         throw std::runtime_error(
             "WrenchConditioner: wrench filter cutoff must be below Nyquist (control_rate/2), got " +
-            std::to_string(cfg_.filter_cutoff_force_hz) + "/" +
-            std::to_string(cfg_.filter_cutoff_torque_hz) + " Hz at " +
+            std::to_string(cfg.filter_cutoff_force_hz) + "/" +
+            std::to_string(cfg.filter_cutoff_torque_hz) + " Hz at " +
             std::to_string(sample_rate_hz) + " Hz");
+    }
+
+    // ── Commit (nothing below throws) ─────────────────────────────────────────
+    cfg_ = cfg;
+    if (cfg_.filter_enabled) {
       filter_force_.Init(cfg_.filter_cutoff_force_hz, sample_rate_hz);
       filter_torque_.Init(cfg_.filter_cutoff_torque_hz, sample_rate_hz);
     }

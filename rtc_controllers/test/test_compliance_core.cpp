@@ -632,6 +632,63 @@ TEST(WrenchConditioning, ConfigureRejectsCutoffAtOrAboveNyquist) {
   EXPECT_THROW(c.Configure(cfg, 500.0), std::runtime_error);
 }
 
+// A rejected Configure() must be a NO-OP, not a partial commit. The controller's
+// LoadConfig resolves the sensor frame and calls Configure() last precisely so a
+// bad YAML leaves a running controller untouched; that only holds if every check
+// runs before any member state moves. Committing the config struct first and
+// validating the cutoffs afterwards would swap deadband / saturation / payload
+// under an unchanged filter — a live conditioner in a state no YAML describes.
+//
+// Checked through BEHAVIOUR (the chain output for a fixed input) as well as the
+// config accessor, so a future field that Configure() forgets to roll back is
+// still caught.
+TEST(WrenchConditioning, RejectedConfigureLeavesTheLiveChainUntouched) {
+  WrenchConditioningConfig good;
+  good.deadband = Wrench6{0.5, 0.5, 0.5, 0.05, 0.05, 0.05};
+  good.max_abs = Wrench6{10.0, 10.0, 10.0, 1.0, 1.0, 1.0};
+  good.payload_mass = 0.25;
+  good.bias_samples = 7;
+  good.filter_enabled = false;  // isolate the algebraic stages from filter state
+
+  WrenchConditioner c;
+  c.Configure(good, 500.0);
+
+  const Wrench6 probe{4.0, -20.0, 2.0, 0.3, -0.02, 0.9};
+  const Wrench6 grav{0.0, 0.0, -1.0, 0.0, 0.0, 0.0};
+  const Wrench6 before = c.Apply(probe, grav);
+
+  // Every rejection reason, each with a DIFFERENT set of otherwise-valid fields
+  // that a partial commit would have leaked in.
+  WrenchConditioningConfig bad = good;
+  bad.deadband = Wrench6{9.0, 9.0, 9.0, 9.0, 9.0, 9.0};
+  bad.max_abs = Wrench6{1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  bad.payload_mass = 5.0;
+  bad.bias_samples = 99;
+  bad.filter_enabled = true;
+  bad.filter_cutoff_force_hz = 400.0;  // above Nyquist at 500 Hz
+  EXPECT_THROW(c.Configure(bad, 500.0), std::runtime_error);
+
+  bad.filter_cutoff_force_hz = 20.0;
+  bad.filter_cutoff_torque_hz = -1.0;  // non-positive cutoff
+  EXPECT_THROW(c.Configure(bad, 500.0), std::runtime_error);
+
+  bad.filter_cutoff_torque_hz = 15.0;
+  bad.deadband[2] = -1.0;  // negative deadband
+  EXPECT_THROW(c.Configure(bad, 500.0), std::runtime_error);
+
+  const auto& live = c.config();
+  EXPECT_EQ(live.payload_mass, good.payload_mass);
+  EXPECT_EQ(live.bias_samples, good.bias_samples);
+  EXPECT_EQ(live.filter_enabled, good.filter_enabled);
+  for (std::size_t i = 0; i < kWrenchDim; ++i) {
+    EXPECT_EQ(live.deadband[i], good.deadband[i]) << "deadband " << i;
+    EXPECT_EQ(live.max_abs[i], good.max_abs[i]) << "max_abs " << i;
+  }
+  const Wrench6 after = c.Apply(probe, grav);
+  for (std::size_t i = 0; i < kWrenchDim; ++i)
+    EXPECT_EQ(after[i], before[i]) << "chain output moved after a REJECTED Configure at " << i;
+}
+
 // Zero-allocation gate for the whole RT-side wrench path (§11.7 T7.1): the
 // conditioning chain, the bias accumulator and the staleness read must not
 // touch the heap, from the very first call.
