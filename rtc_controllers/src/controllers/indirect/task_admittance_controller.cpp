@@ -60,13 +60,18 @@ void TaskAdmittanceController::InitFromModel(std::shared_ptr<const pinocchio::Mo
   tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
 
   const int nv = handle_->nv();
-  // Fail-fast capacity check at model-load time (off-RT): the device-order
-  // buffers below are indexed by channel, bounded by kMaxDeviceChannels.
-  if (nv > kMaxRobotDOF) {
-    throw std::runtime_error(
-        "TaskAdmittanceController: model DOF nv=" + std::to_string(nv) +
-        " exceeds fixed capacity kMaxRobotDOF=" + std::to_string(kMaxRobotDOF));
-  }
+  // No kMaxRobotDOF capacity check here, deliberately (the same call the OSC
+  // makes). This controller owns no kMaxRobotDOF-wide storage: every work buffer
+  // below is a dynamic Eigen type sized to nv, and the only fixed arrays it has
+  // — estop_hold_, TargetSlot::targets — are indexed by device CHANNEL and
+  // bounded by kMaxDeviceChannels, which is a different and much larger
+  // constant. A check here would therefore guard nothing while doing real harm:
+  // it runs against the SYSTEM model (the constructor is handed
+  // builder.GetFullModel()), and MaybeSelectSubModel() reduces to the primary
+  // device only later in LoadConfig — so an nv=14 dual-arm URDF threw at
+  // construction, failing the factory and on_configure, for a model this
+  // controller never indexes with. TaskImpedanceController has no such check on
+  // the same URDF.
 
   J_full_ = Eigen::MatrixXd::Zero(kTaskDim, nv);
   dq_ = Eigen::VectorXd::Zero(nv);
@@ -695,10 +700,22 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
 
   auto g = gains_lock_.Load();
 
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
-    if (n && n.IsSequence() && n.size() == 3)
-      for (std::size_t i = 0; i < 3; ++i)
-        arr[i] = n[i].as<double>();
+  // Shape-checked exactly like load6 below. Silently ignoring a mis-shaped node
+  // is worse here than anywhere else in this function: the header documents
+  // `ik_kp_*: 0` as the way to reproduce §7.3's pure-feedforward law literally,
+  // so a scalar `ik_kp_pos: 0.0` — the obvious way to write that — was dropped
+  // and the default 2.0 kept, which means the one experiment the knob exists for
+  // silently ran as a CLIK variant, with nothing in the diagnostics to say so.
+  // No scalar broadcast (D5): a convenience shorthand would re-introduce the
+  // same "quietly a different value" failure in a new shape.
+  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr, const char* what) {
+    if (!n)
+      return;
+    if (!n.IsSequence() || n.size() != 3)
+      throw std::runtime_error(std::string("TaskAdmittanceController: ") + what +
+                               " must be a 3-entry sequence [x,y,z]");
+    for (std::size_t i = 0; i < 3; ++i)
+      arr[i] = n[i].as<double>();
   };
   auto load6 = [](const YAML::Node& n, std::array<double, 6>& arr, const char* what,
                   bool require_positive) {
@@ -764,8 +781,8 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── §7.3 IK ──────────────────────────────────────────────────────────────
-  load3(cfg["ik_kp_pos"], g.ik_kp_pos);
-  load3(cfg["ik_kp_rot"], g.ik_kp_rot);
+  load3(cfg["ik_kp_pos"], g.ik_kp_pos, "ik_kp_pos");
+  load3(cfg["ik_kp_rot"], g.ik_kp_rot, "ik_kp_rot");
   if (cfg["nullspace_kp"])
     g.nullspace_kp = cfg["nullspace_kp"].as<double>();
   if (cfg["integrate_from_measured"])
@@ -778,8 +795,19 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
     g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
 
   // ── Safety / activation ──────────────────────────────────────────────────
-  if (cfg["pose_error_limit"])
-    g.pose_error_limit = cfg["pose_error_limit"].as<double>();
+  // Strictly positive, and rejected rather than clamped (D6). `e.norm() > limit`
+  // is evaluated every tick against a CRITICAL fault, so a 0 or negative bound
+  // makes that comparison true forever: SAFE_STOP latches on the first tick, and
+  // `ComplianceFaults::pose_error_exceeded` carries no cause field to point at
+  // the config. The `<= 0 disables` idiom the §7.5 bounds use is deliberately
+  // NOT offered — this is the guard, and a way to switch it off would make a
+  // mis-configuration look like a legitimate setting.
+  if (const YAML::Node& n = cfg["pose_error_limit"]; n) {
+    const double v = n.as<double>();
+    if (!(v > 0.0))
+      throw std::runtime_error("TaskAdmittanceController: pose_error_limit must be > 0");
+    g.pose_error_limit = v;
+  }
   if (cfg["command_divergence_limit"])
     g.command_divergence_limit = std::max(0.0, cfg["command_divergence_limit"].as<double>());
   if (cfg["joint_limit_margin"])

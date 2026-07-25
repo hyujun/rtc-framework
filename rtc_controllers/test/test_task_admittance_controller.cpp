@@ -144,6 +144,16 @@ void ApplyCommand(rtc::ControllerState& state, const rtc::ControllerOutput& out)
   }
 }
 
+// ApplyCommand for a chain that is not the 7-DoF fixture (the kMaxRobotDOF test).
+void ApplyWideCommand(rtc::ControllerState& state, const rtc::ControllerOutput& out, int nj) {
+  for (int i = 0; i < nj; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double q_next = out.devices[0].commands[ui];
+    state.devices[0].velocities[ui] = (q_next - state.devices[0].positions[ui]) / kDt;
+    state.devices[0].positions[ui] = q_next;
+  }
+}
+
 // Independent model handle for the reference kinematics a test needs (J, ĝ).
 // Deliberately NOT the controller's own — a reference that shares the object
 // under test cannot contradict it.
@@ -807,6 +817,81 @@ TEST(TaskAdmittanceController, ConfigureRejectsAWrenchlessOrTorqueConfiguration)
     EXPECT_THROW(c.LoadConfig(YAML::Load(TransparentYaml({}, "  sensor_frame: not_a_frame\n"))),
                  std::runtime_error);
   }
+}
+
+TEST(TaskAdmittanceController, ConfigureRejectsAMisshapedIkGainInsteadOfIgnoringIt) {
+  // load3 dropped anything that was not a 3-entry sequence while its sibling
+  // load6 threw. The header documents `ik_kp_*: 0` as the way to reproduce §7.3's
+  // pure-feedforward law, so `ik_kp_pos: 0.0` — the obvious way to write that —
+  // was discarded and the default 2.0 kept: the one experiment the knob exists
+  // for silently ran as a CLIK variant, with nothing in the diagnostics saying so.
+  for (const char* bad : {"ik_kp_pos: 0.0\n", "ik_kp_pos: [1.0, 1.0]\n",
+                          "ik_kp_rot: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]\n", "ik_kp_rot: {x: 1.0}\n"}) {
+    TaskAdmittanceController c(Urdf7());
+    EXPECT_THROW(c.LoadConfig(YAML::Load(TransparentYaml(bad))), std::runtime_error) << bad;
+  }
+  // ...and a well-formed zero still lands, so the §7.3 experiment is reachable.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("ik_kp_pos: [0.0, 0.0, 0.0]\n")));
+  EXPECT_DOUBLE_EQ(c.get_gains().ik_kp_pos[0], 0.0);
+  EXPECT_DOUBLE_EQ(c.get_gains().ik_kp_rot[0], 2.0) << "the sibling key must be untouched";
+}
+
+TEST(TaskAdmittanceController, ConfigureRejectsANonPositivePoseErrorLimit) {
+  // `e.norm() > limit` runs every tick against a CRITICAL fault, so 0 or negative
+  // makes it true forever: SAFE_STOP latches on the first tick and
+  // pose_error_exceeded carries no cause field pointing back at the config. Every
+  // neighbouring safety scalar was already guarded — this one alone was not.
+  for (const char* bad : {"pose_error_limit: 0.0\n", "pose_error_limit: -1.0\n"}) {
+    TaskAdmittanceController c(Urdf7());
+    EXPECT_THROW(c.LoadConfig(YAML::Load(TransparentYaml(bad))), std::runtime_error) << bad;
+  }
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("pose_error_limit: 0.25\n")));
+  EXPECT_DOUBLE_EQ(c.get_gains().pose_error_limit, 0.25);
+}
+
+TEST(TaskAdmittanceController, AModelPastKMaxRobotDofLoadsAndRuns) {
+  // The constructor's `nv > kMaxRobotDOF` check guarded nothing: this controller
+  // owns no kMaxRobotDOF-wide storage (every work buffer is dynamic, and the two
+  // fixed arrays are indexed by device CHANNEL, bounded by kMaxDeviceChannels).
+  // It ran against the SYSTEM model too — MaybeSelectSubModel() reduces to the
+  // primary device only later, in LoadConfig — so a dual-arm URDF failed the
+  // factory before it could ever be reduced. TaskImpedanceController has no such
+  // check, and operational_space_controller.cpp documents the same call.
+  constexpr int kWideNj = 14;
+  ASSERT_GT(kWideNj, rtc::kMaxRobotDOF) << "the fixture must actually exceed the old cap";
+
+  TaskAdmittanceController c(rtc::test::TestUrdfPath("serial_14dof.urdf"));
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+
+  rtc::ControllerState state{};
+  state.num_devices = 1;
+  state.dt = kDt;
+  state.devices[0].num_channels = kWideNj;
+  state.devices[0].valid = true;
+  for (int i = 0; i < kWideNj; ++i)
+    state.devices[0].positions[static_cast<std::size_t>(i)] = 0.1 * (i % 5) - 0.2;
+
+  Send(c, Wrench6{{20.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  const auto out = c.Compute(state);
+  EXPECT_EQ(out.devices[0].num_channels, kWideNj);
+  for (int i = 0; i < kWideNj; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    EXPECT_TRUE(std::isfinite(out.devices[0].commands[ui])) << "joint " << i;
+    EXPECT_NEAR(out.devices[0].commands[ui], state.devices[0].positions[ui], 1e-9)
+        << "joint " << i << ": the seeding tick must command the measured pose";
+  }
+  // ...and it keeps running: the nullspace projector, the DLS solve and the
+  // device-order scatter all have to be nv-correct past the old cap.
+  for (int k = 0; k < 100; ++k) {
+    Send(c, Wrench6{{20.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    ApplyWideCommand(state, c.Compute(state), kWideNj);
+  }
+  const auto d = c.GetDiagnosticsForTesting();
+  EXPECT_TRUE(d.control_valid);
+  EXPECT_NE(d.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop));
+  EXPECT_TRUE(d.nullspace_active) << "nv=14 > 6 — the nullspace term must be live";
 }
 
 TEST(TaskAdmittanceController, ARejectedConfigureLeavesTheLiveGainsUntouched) {
