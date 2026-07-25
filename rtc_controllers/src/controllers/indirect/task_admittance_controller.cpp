@@ -668,6 +668,14 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
     g.admittance.max_velocity_lin = cfg["max_compliant_linear_velocity"].as<double>();
   if (cfg["max_compliant_angular_velocity"])
     g.admittance.max_velocity_ang = cfg["max_compliant_angular_velocity"].as<double>();
+  // Separate from the two above on purpose — see AdmittanceParams. Not floored
+  // here: the floor lives at the point of use so set_gains() cannot bypass it
+  // (NUM-1), and clamping here as well would only hide a bad YAML value from
+  // whoever reads the gains back.
+  if (cfg["max_return_linear_velocity"])
+    g.admittance.max_return_velocity_lin = cfg["max_return_linear_velocity"].as<double>();
+  if (cfg["max_return_angular_velocity"])
+    g.admittance.max_return_velocity_ang = cfg["max_return_angular_velocity"].as<double>();
   if (const YAML::Node& n = cfg["barrier_stiffness"]; n) {
     if (!n.IsSequence() || n.size() != 2)
       throw std::runtime_error(

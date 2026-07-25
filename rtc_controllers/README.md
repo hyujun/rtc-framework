@@ -47,7 +47,9 @@ RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니�
 > 접촉 안정성은 impedance 보다 근본적으로 취약하므로 (§7.4) `min_desired_inertia` 하한이
 > 강제되고, 딱딱한 환경에서는 **`Λ_d` 를 키우고 `K_p` 를 낮춘다**. `K_p = 0` 은 hand-guiding
 > 모드이며 이때 `X_c` 의 표류는 `max_compliant_displacement` (saturating spring) 와
-> `max_compliant_{linear,angular}_velocity` 가 막는다 (§7.5). 규범·근거는 위와 같은
+> `max_compliant_{linear,angular}_velocity` 가 막는다 (§7.5). 뒤의 두 velocity 키는
+> `≤ 0` 로 **끌 수 있는** 가드이므로, 이미 경계 밖에 있는 상태를 되돌리는 속도 상한은
+> 별도 키 `max_return_{linear,angular}_velocity` 가 **상시** 담당한다. 규범·근거는 위와 같은
 > [docs/compliance-conventions.md](docs/compliance-conventions.md) §3.5.
 
 ---
