@@ -35,7 +35,8 @@ constexpr int kStallIterations = 2;
 
 // ProjectionOptions 검증 (position-level 진입점 공통). 로드 타임/비-RT 전용이라 예외 허용.
 // tolerance == 0 은 "early-stop 금지 (정확히 max_iterations 스텝)" 의 기존 관용구라 허용
-// (test_closed_chain_fk_measurement fixed-K 스파이크) — 음수·비유한만 거부.
+// (test_closed_chain_fk_measurement fixed-K 스파이크) — 음수·비유한만 거부. 이 관용구를
+// 지키기 위해 stall 감지도 tolerance == 0 이면 비활성이다 (ProjectOverColumns 참조).
 void ValidateOptions(const ProjectionOptions& opts) {
   if (!std::isfinite(opts.tolerance) || opts.tolerance < 0.0) {
     throw std::invalid_argument(
@@ -59,6 +60,9 @@ void ValidateOptions(const ProjectionOptions& opts) {
 // ‖φ‖ ≤ acceptance. 6D residual 은 병진(m)·회전(rad) 혼합 norm 이라 m 단위 acceptance 를
 // 적용하지 않는다 — 6D constraint 는 strict 로만 수용된다 (segment 가 strict 미만이면
 // 전체 norm 기여도 무시 가능 수준이라 3D rows 판정을 오염시키지 않는다).
+// 함의: tolerance == 0 (fixed-K 관용구) 에서는 6D segment 가 strict 를 충족할 수 없어
+// (norm ≥ 0 항상 참) 6D loop 모델의 acceptable 은 항상 false 다 — converged 가 정의상
+// 항상 false 인 것과 일관된 의미이며, fixed-K 소비자는 acceptable 을 소비하지 않는다.
 bool IsResidualAcceptable(const ConstraintKinematics& kin, const ProjectionOptions& opts) {
   if (!kin.phi.allFinite()) {
     return false;
@@ -115,8 +119,11 @@ ProjectionResult ProjectOverColumns(const pinocchio::Model& model, pinocchio::Da
 
     // Stall(residual floor): 개선이 멈추면 반복해도 내려가지 않는다 — 조기 종료 후
     // 종료-후 분류만 수행. (NaN err 는 모든 비교가 false 라 여기 걸리지 않고
-    // max_iterations 까지 돈 뒤 acceptable=false 로 분류된다.)
-    if (err >= prev_err * (1.0 - kStallRelImprovement)) {
+    // max_iterations 까지 돈 뒤 acceptable=false 로 분류된다.) tolerance == 0 은
+    // "early-stop 금지 (정확히 max_iterations 스텝)" 의 fixed-K 관용구이므로 stall 도
+    // early-stop 의 일종인 이상 비활성 — 아니면 machine floor 에서 K 미만 스텝으로 조기
+    // 반환해 fixed-K 결정성이 조용히 깨진다 (PR #251 리뷰).
+    if (opts.tolerance > 0.0 && err >= prev_err * (1.0 - kStallRelImprovement)) {
       if (++stall_count >= kStallIterations) {
         result.acceptable = IsResidualAcceptable(kin, opts);
         return result;

@@ -308,6 +308,27 @@ TEST(LoopClosedChain, AcceptanceContact6DStaysStrict) {
   }
 }
 
+// ── fixed-K 관용구 보존: tolerance==0 이면 stall 감지도 비활성 — 정확히 K 스텝. ──
+//    tolerance==0 은 "early-stop 금지" 계약 (test_closed_chain_fk_measurement 의 RT-parity
+//    측정이 의존). stall 감지(#250 D3)가 이를 선점하면 machine/residual floor 에서 K 미만
+//    스텝으로 조기 반환해 fixed-K 결정성이 조용히 깨진다 (PR #251 리뷰) — floor 픽스처로
+//    전 반복 소진을 고정한다 (iterations 는 0-based 마지막 loop 진입 인덱스).
+TEST(LoopClosedChain, FixedKIdiomDisablesStallDetection) {
+  const rub::ClosedChainModel cc = rtc::test::FlooredCrankRocker(3e-8);
+  pinocchio::Data data(cc.model);
+
+  rub::ProjectionOptions opts;
+  opts.tolerance = 0.0;  // fixed-K: early-stop 금지
+  opts.max_iterations = 10;
+  const rub::ProjectionResult res = ProjectFrom(cc, data, 0.2, opts);
+
+  EXPECT_EQ(res.iterations, opts.max_iterations - 1)
+      << "tolerance==0 인데 조기 반환 — stall 감지가 fixed-K 관용구를 선점했다";
+  EXPECT_FALSE(res.converged);  // tolerance==0 에선 정의상 불가
+  EXPECT_TRUE(res.acceptable);  // 종료 후 분류는 그대로 동작 (floor 3e-8 ≤ acceptance)
+  EXPECT_NEAR(res.final_error, 3e-8, 3e-9);
+}
+
 // ── 옵션 validation: 비유한·비양수·acceptance<strict 는 invalid_argument. ─────────
 TEST(LoopClosedChain, AcceptanceInvalidOptionsThrow) {
   const rub::ClosedChainModel cc = rtc::test::CrankRocker();
