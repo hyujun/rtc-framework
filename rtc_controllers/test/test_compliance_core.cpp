@@ -20,6 +20,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <span>
 
@@ -410,6 +411,73 @@ TEST(WrenchInput, ResetTimingClearsAccruedAge) {
   EXPECT_EQ(r.age, 0.0);
   EXPECT_FALSE(r.stale);
   EXPECT_DOUBLE_EQ(r.fade, 1.0);
+}
+
+// A non-finite component must never enter the slot. Nothing downstream can
+// filter it: the conditioner's deadband and saturation are comparisons, and
+// every comparison against NaN is false, so one bad packet reaches the compliant
+// frame, raises ComplianceFaults::nan_inf and LATCHES SAFE_STOP — which
+// ClearEstop() deliberately does not clear.
+TEST(WrenchInput, ANonFiniteSampleIsDroppedAndCounted) {
+  constexpr double kDt = 0.002;
+  WrenchInput in;
+  const Wrench6 good{1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+  in.Set(Span6(good));
+  ASSERT_TRUE(in.Read(kDt, 0.05, 0.1).valid);
+  EXPECT_EQ(in.rejected_samples(), 0u);
+
+  for (const double bad_value :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()}) {
+    Wrench6 bad = good;
+    bad[4] = bad_value;
+    in.Set(Span6(bad));
+    const auto r = in.Read(kDt, 0.05, 0.1);
+    EXPECT_TRUE(r.valid) << "the previous good sample must survive the drop";
+    EXPECT_DOUBLE_EQ(r.value[4], 5.0) << "a non-finite component reached the slot";
+    EXPECT_FALSE(r.is_new) << "a dropped sample must not count as a receipt";
+  }
+  EXPECT_EQ(in.rejected_samples(), 3u);
+
+  // ...and the gate is per-SAMPLE, not per-component: the finite components of a
+  // rejected sample must not land either.
+  Wrench6 mixed = good;
+  mixed[0] = 99.0;
+  mixed[5] = std::numeric_limits<double>::quiet_NaN();
+  in.Set(Span6(mixed));
+  EXPECT_DOUBLE_EQ(in.Read(kDt, 0.05, 0.1).value[0], 1.0);
+  EXPECT_EQ(in.rejected_samples(), 4u);
+}
+
+// Invalidate() is ResetTiming() plus disowning the sample in the slot. The
+// difference only shows when the producer is DEAD across the reset: ResetTiming
+// re-dates its last reading to age 0, resurrecting it as fresh at the moment
+// control resumes — the inverse of §10.6's "expired ⇒ ZERO, never held".
+TEST(WrenchInput, InvalidateDisownsTheSampleInTheSlot) {
+  constexpr double kDt = 0.002;
+  WrenchInput in;
+  const Wrench6 w{60.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  in.Set(Span6(w));
+  ASSERT_TRUE(in.Read(kDt, 0.01, 0.02).valid);
+
+  in.Invalidate();
+  // Producer stays dead: this must read exactly like "nothing has ever arrived"
+  // — not valid, and NOT stale (a timeout on a sample nobody claims would fault
+  // every activation that follows a dead sensor).
+  for (int k = 0; k < 100; ++k) {
+    const auto r = in.Read(kDt, 0.01, 0.02);
+    EXPECT_FALSE(r.valid) << "tick " << k << ": the disowned sample came back";
+    EXPECT_FALSE(r.stale) << "tick " << k;
+    EXPECT_EQ(r.fade, 0.0) << "tick " << k;
+  }
+
+  // The producer returning ends the disown — and its sample is genuinely new.
+  in.Set(Span6(Wrench6{1.0, 0.0, 0.0, 0.0, 0.0, 0.0}));
+  const auto r = in.Read(kDt, 0.01, 0.02);
+  EXPECT_TRUE(r.valid);
+  EXPECT_TRUE(r.is_new);
+  EXPECT_EQ(r.age, 0.0);
+  EXPECT_DOUBLE_EQ(r.value[0], 1.0);
 }
 
 // fadeout ≤ 0 is legal (an immediate drop) but must still reach ZERO — the one

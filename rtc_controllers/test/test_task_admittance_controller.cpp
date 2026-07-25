@@ -20,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <new>
 #include <span>
@@ -363,6 +364,64 @@ TEST(TaskAdmittanceController, StiffnessReturnsTheFrameAfterWrenchLossButZeroSti
   const auto soft = run("[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]");
   ASSERT_GT(soft.first, 1e-3);
   EXPECT_NEAR(soft.second, soft.first, 1e-3);
+}
+
+// ── Wrench-path robustness (F3 / F6) ────────────────────────────────────────
+
+TEST(TaskAdmittanceController, ANonFiniteWrenchSampleCannotLatchSafeStop) {
+  // One garbage packet used to be fatal-for-the-process: NaN survives the
+  // conditioner (every comparison against it is false), reaches the compliant
+  // frame, raises ComplianceFaults::nan_inf and LATCHES SAFE_STOP — which
+  // ClearEstop() explicitly does not clear and ~/reset_fault does not yet wire.
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml()));
+  auto state = MakeState(Posture());
+
+  const Wrench6 good{{10.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  Wrench6 poisoned = good;
+  poisoned[2] = std::numeric_limits<double>::quiet_NaN();
+
+  for (int k = 0; k < 50; ++k) {
+    Send(c, (k == 10) ? poisoned : good);
+    (void)c.Compute(state);
+    ASSERT_NE(c.GetDiagnosticsForTesting().state,
+              static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+        << "a non-finite wrench sample latched SAFE_STOP at tick " << k;
+  }
+  const auto d = c.GetDiagnosticsForTesting();
+  EXPECT_EQ(d.wrench_rejected, 1u) << "the drop must be counted, not silent";
+  EXPECT_TRUE(d.wrench_valid) << "the good samples around it must still get through";
+  EXPECT_TRUE(std::isfinite(d.wrench_lwa[2]));
+}
+
+TEST(TaskAdmittanceController, AReactivationDoesNotReviveTheWrenchFromBeforeIt) {
+  // The F/T driver dies while the controller is stopped. Its last reading is
+  // still sitting in the input slot; a reset that only re-dates the sample
+  // resurrects that force as FRESH on the first tick back — the inverse of
+  // §10.6's "an expired wrench goes to ZERO, never held".
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("stiffness: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n")));
+  auto state = MakeState(Posture());
+  for (int k = 0; k < 100; ++k) {
+    Send(c, Wrench6{{60.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+    (void)c.Compute(state);
+  }
+  ASSERT_TRUE(c.GetDiagnosticsForTesting().wrench_valid);
+
+  c.ResetTargetInitializationForTesting();  // == on_activate; producer stays dead
+  for (int k = 0; k < 10; ++k)
+    (void)c.Compute(state);
+
+  const auto d = c.GetDiagnosticsForTesting();
+  EXPECT_FALSE(d.wrench_valid) << "the pre-activation sample was revived at age 0";
+  EXPECT_FALSE(d.wrench_stale) << "'no producer yet' is the activation transient, not a timeout";
+  EXPECT_LT(Eigen::Vector3d(d.wrench_lwa[0], d.wrench_lwa[1], d.wrench_lwa[2]).norm(), 1e-12);
+  // K_p = 0, so any force that got through would still be visible as drift.
+  EXPECT_LT(
+      Eigen::Vector3d(d.compliant_deviation[0], d.compliant_deviation[1], d.compliant_deviation[2])
+          .norm(),
+      1e-12)
+      << "a revived wrench moved the compliant frame after the reactivation";
 }
 
 // ── §7.3 integration basis ──────────────────────────────────────────────────

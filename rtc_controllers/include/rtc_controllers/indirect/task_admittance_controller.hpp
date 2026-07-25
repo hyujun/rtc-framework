@@ -182,6 +182,10 @@ class TaskAdmittanceController final : public RTControllerInterface {
     std::array<double, 6> wrench_lwa{};
     double wrench_age{0.0};
     double wrench_fade{1.0};
+    /// Samples the input's finiteness gate dropped since construction. Rising
+    /// while `wrench_valid` stays true = an intermittently garbage producer,
+    /// which is otherwise invisible (a dropped sample simply never arrives).
+    std::uint32_t wrench_rejected{0};
     double command_divergence{0.0};      ///< ‖q_cmd − q_meas‖ [rad]
     bool displacement_limited{false};    ///< §7.5 saturating spring engaged
     bool velocity_limited{false};        ///< §7.5 ‖ẋ̃_c‖ scaled back

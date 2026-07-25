@@ -324,6 +324,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
     diag.wrench_valid = ws.valid;
     diag.wrench_age = ws.age;
     diag.wrench_fade = ws.fade;
+    diag.wrench_rejected = ws.rejected_samples;
     diag.wrench_stale = ws.stale;
     diag.bias_calibrated = ws.bias_calibrated;
     diag.in_contact = ws.in_contact;
