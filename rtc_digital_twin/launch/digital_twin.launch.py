@@ -167,15 +167,18 @@ def launch_setup(context, *args, **kwargs):
         dt_overrides["output_topic"] = actuated_topic
         dt_overrides["closure_path"] = closure_path
 
-    # Optional projection-tolerance override for the closure solver. Rank-deficient
-    # closures (e.g. proto_1b's redundant contact_3d finger loops, rank 11<15) have
-    # an achievable ‖φ‖ floor (~1e-8 m) above the solver's default tolerance (1e-10),
-    # so the converged-gated closure_state_publisher would hold q_ref forever and
-    # render a frozen hand. A robot bringup relaxes it via `closure_tolerance` in the
-    # digital_twin config (agnostic mechanism; unset = solver default). See #124.
-    closure_tolerance = _load_node_params(config_file, "digital_twin_node").get(
-        "closure_tolerance", None
-    )
+    # Optional projection-tolerance overrides for the closure solver (agnostic
+    # mechanism; unset = solver defaults). Since #250 the solver separates the
+    # strict stopping tolerance (`closure_tolerance` → "tolerance", default 1e-10)
+    # from the acceptance tolerance (`closure_acceptance_tolerance` →
+    # "acceptance_tolerance", default 1e-6 m): rank-deficient closures with an
+    # achievable ‖φ‖ floor (e.g. proto_1b, ~3e-8 m) are accepted after refinement
+    # instead of being held forever, so the #124-era trick of relaxing the
+    # *stopping* tolerance above the floor is no longer needed (it skipped
+    # refinement whenever the seed was already within tolerance).
+    _dt_params = _load_node_params(config_file, "digital_twin_node")
+    closure_tolerance = _dt_params.get("closure_tolerance", None)
+    closure_acceptance_tolerance = _dt_params.get("closure_acceptance_tolerance", None)
 
     # ── robot_state_publisher ─────────────────────────────────────────────
     robot_state_publisher_node = Node(
@@ -221,6 +224,8 @@ def launch_setup(context, *args, **kwargs):
         }
         if closure_tolerance is not None:
             closure_params["tolerance"] = float(closure_tolerance)
+        if closure_acceptance_tolerance is not None:
+            closure_params["acceptance_tolerance"] = float(closure_acceptance_tolerance)
         closure_node = Node(
             package="rtc_urdf_bridge",
             executable="closure_state_publisher",

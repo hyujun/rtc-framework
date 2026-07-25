@@ -27,15 +27,15 @@
     # pkg-relative to robot_description_package (hand_description share).
     closure_path: "robots/ur5e_p1b/urdf/ur5e_with_proto_1b.closure.yaml"
 
-    # ── Closure solver tolerance (rank-deficient proto_1b loops) ──────
-    # proto_1b's 5 contact_3d finger loops are rank-deficient (rank 11<15),
-    # so the DLS projection's achievable ‖φ‖ floor (~3e-8 m) sits above the
-    # solver's default tolerance (1e-10). The converged-gated closure_state_
-    # publisher would then never accept a solution and hold q_ref forever,
-    # rendering a frozen hand in RViz. Relax the tolerance above the floor so
-    # the twin tracks the actuated stream. (#124 P3 finding — RT control path
-    # via RtClosedChainHandle is fixed-K and unaffected.)
-    closure_tolerance: 1.0e-6
+    # ── Closure solver tolerance ──────────────────────────────────────
+    # No override needed since #250: proto_1b's residual floor (~3e-8 m,
+    # rank-deficient contact_3d loops + ring-closure coordinate mismatch)
+    # is handled by the solver's acceptance tolerance (default 1e-6 m) —
+    # the publisher commits floor solutions without relaxing the *stopping*
+    # tolerance (the old `closure_tolerance: 1.0e-6` workaround from #124,
+    # which skipped refinement whenever the seed was already within 1e-6).
+    # `closure_tolerance` (strict) / `closure_acceptance_tolerance` remain
+    # available as agnostic overrides for exotic linkages.
 
     # ── Joint state sources (UR5e arm + proto_1b hand) ────────────────
     # CM publishes per-device joint_states on /rtc_cm/<group>/joint_states
