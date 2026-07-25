@@ -204,6 +204,26 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | **축 B (selection)** | **FULL_SE3 전용** — `TaskSelection` enum 없음 | `TRANSLATION_ONLY` 이면 어떤 task 도 규제하지 않는 회전을 토크로 적분하게 된다. §6.1 이 요구하는 nullspace posture 계약과 함께 후속 슬라이스에서 도입 |
 | **wrench 파이프라인** | 신규 `compliance/wrench_pipeline.hpp` 로 추출 (read → bias 이중 래치 → 조건화 → `Ad^{-T}` → fade → contact). **슬라이스 4 에서 `TaskImpedanceController` 도 이전 완료** (D22) | 조각들은 이미 분리돼 있었지만 **순서와 bias 이중 래치**는 공유되지 않았고 거기가 바로 미묘한 결함이 사는 자리다(§3.1). 슬라이스 3 은 이전을 유예했고(D16 선례) 그 사이 파이프라인만 F6(`Invalidate`)을 받아 §3.2 결함이 impedance 쪽에만 남았다 — 유예 비용이 실측된 셈이라 슬라이스 4 가 즉시 이전했다. 정상 경로(살아있는 producer)는 **byte-identical** 이 수용 조건이었고 τ·조건화 wrench·age·fade·상태 684 레코드로 확인했다 |
 
+## 3.6 §7.6 Cascaded compliance (슬라이스 4)
+
+명세가 "외력 추종의 **올바른** 구조" 로 지목한 형태. outer admittance 가 순응 거동을 정의하고
+(`X_c`, `ν_c`), inner §6.2 impedance 가 그 프레임을 추종한다. §6.3(측정 외력을 impedance 법칙에
+직접 가산)보다 안정적이라고 명세가 명시한 대안이다.
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| **wrench 소비 횟수** | **정확히 1회** — inner 는 `f_ext` 를 보지 않는다. `formulation` 축도 `inertia_shaping` 노브도 **만들지 않았다** | D19. §7.6 MUST-4 를 런타임 검사가 아니라 **타입 레벨**로 보장한다: outer 가 이미 `Ŵ_ext` 를 소비했으므로 inner 가 다시 쓰면 같은 힘을 두 번 세고 응답이 약 2배가 되는데, 모든 수가 유한하므로 fault 도 안 뜬다. 테스트는 단일가산·이중가산 두 후보 법칙을 **둘 다** 계산해 실제 출력이 전자와 일치하고 후자와 다름을 고정한다 (차이가 작으면 테스트 자체가 실패한다 — 공허한 단언 방지) |
+| **inner 의 `ν_d`** | `ν_d = ν_c` (0 아님). 공용 helper `compliance/impedance_law.hpp` 가 `ν_d` 를 명시 인자로 받는 이유 | inner 는 compliant frame 의 **운동까지** 추종해야 한다. `ν_d=0` 이면 outer 가 만든 운동을 `K_d^i·ν_c` 만큼 거꾸로 감쇠한다 — cascade 의 존재 이유와 정반대 |
+| **대역폭 분리 (MUST-1)** | `ω_i/ω_a` 를 **seeding tick 1회** `Λ_S(q₀)` 로 축별 계산 → 최악 축을 진단 `bandwidth_ratio` + 플래그 `bandwidth_ratio_low`. **fault 아님** | D20. 명세는 "on_configure 에서 경고" 라 하지만 configure 시점엔 `q` 가 없어 `Λ_S` 를 모른다. seeding tick 은 이미 `M(q)`·Cholesky 경로가 있고 사전할당이라 heap-free. RT 에서 `RCLCPP_*` 는 RT-3 위반이므로 로그가 아니라 플래그다. 낮은 비율은 두 게인 세트에 대한 **튜닝 진술**이지 런타임 실패가 아니므로 SAFE_STOP 으로 승격하지 않는다 (승격하면 "느린" 로봇을 세운다). `K_p^a = 0`(hand-guiding) 축은 분리할 대역 자체가 없으므로 비율에서 제외 — MUST-3 이 명시적으로 허용하는 설정을 플래그하면 플래그를 무시하도록 훈련시킨다 |
+| **복귀 vs hand-guiding (MUST-3)** | `K_p^a > 0` → 외력 제거 후 `X_c → X_d`. `K_p^a = 0` → 그 자리 유지 | `AdmittanceIntegrator` 의 성질이지만 cascade 수준에서 각각 테스트한다. hand-guiding 쪽은 "되돌아오지 않음" 을 고정하되 감쇠로 인한 잔여 coast 는 허용 (스프링백만 금지) |
+| **활성화 램프 α** | outer 로 들어가는 wrench 와 inner 에서 나오는 task force **양쪽**에 적용 | 각각 다른 불연속을 덮는다: 토크만 램프하면 팔이 부드러운 동안 `X_c` 가 정하중에서 멀어져 α=1 에 도달할 때 튀고, wrench 만 램프하면 inner 감쇠항 `−K_d^i·ν` 가 활성화 순간 토크 계단이 된다. 램프 구간에서 힘 구동 응답이 `α²` 인 것은 의도된 대가이며 `activation_ramp_time` 안에서만 단조 증가한다. 중력보상은 **절대 램프하지 않는다** |
+| **YAML 구조** | `outer:` / `inner:` **중첩 맵** (다른 컨트롤러의 flat 스타일과 다름) | 두 루프가 **각각** stiffness 와 damping 을 가진다. flat `stiffness:` 는 이 파일에서 가장 결과가 큰 모호성이 된다 — outer 는 로봇이 힘에 얼마나 양보하는지를, inner 는 얼마나 단단히 추종하는지를 정한다 |
+| **σ 특이점 fault** | `nullspace_active` 게이트에만 연동 | inner 는 Jacobian-transpose 라 `Λ` 를 형성하지 않아 task-space 특이점 노출이 없다(§6.5). seeding tick 의 `Λ_S` 계산은 **진단 목적**이므로 실패해도 대역폭 리포트만 잃고 활성화를 막지 않는다 |
+| **E-STOP** | torque hold `ĝ(q) − D·q̇` (`torque_estop.hpp` 재사용) | 토크 출력이므로 `TaskAdmittanceController` 의 position-hold latch 는 부적용. latch 가 없으므로 무효화 규칙(F1)도 대응물이 없다 — held tick 이 강제하는 **재-seed** 가 compliant frame·램프·rate 이력을 함께 되돌린다 |
+| **wrench 필수** | `external_wrench.enabled: false` 는 configure 에러 | outer 의 입력이 없으면 `X_c` 가 `X_d` 를 떠나지 않아 §6.2 impedance 컨트롤러와 동작이 같아진다 — 그건 이미 있고 더 잘 검증돼 있다 |
+| **`x̃_nom`(nominal offset)** | **0 고정, 미구현** | `AdmittanceIntegrator` 가 `K_p x̃` 형태이고 offset 소비자가 없다. 명세 대비 의도적 미구현으로 기록 |
+| **범위 밖** | arm-hand object-pull (virtual TCP = object/grasp frame) | §9 Virtual TCP 선행. `integrated_bringup` 배선(`RTC_REGISTER_CONTROLLER` / YAML / launch smoke)도 범위 계약 (1) 유지 — **따라서 S4 도 sim 에서 돌려볼 수 없고 단위 검증만 존재한다** |
+
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 
 - **A=NONE 은 열등한 fallback 이 아니다** (§6.2). 폐루프는 `Λ(q)ë + [μ+K_d]ė + K_p e = f_ext`

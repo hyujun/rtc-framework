@@ -7,7 +7,7 @@
 
 ## 개요
 
-RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 6개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
+RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 7개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
 
 > **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
@@ -21,6 +21,7 @@ RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니�
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` |
 | TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` |
 | TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` |
+| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` |
 | GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` |
 
 > `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러다. 기본 법칙은
@@ -51,6 +52,17 @@ RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니�
 > `≤ 0` 로 **끌 수 있는** 가드이므로, 이미 경계 밖에 있는 상태를 되돌리는 속도 상한은
 > 별도 키 `max_return_{linear,angular}_velocity` 가 **상시** 담당한다. 규범·근거는 위와 같은
 > [docs/compliance-conventions.md](docs/compliance-conventions.md) §3.5.
+>
+> `CascadedComplianceController` 는 그 둘을 **직렬로** 잇는다 (§7.6): outer admittance 가
+> compliant frame `(X_c, ν_c)` 를 만들고, inner §6.2 impedance 가 그것을 추종하는 **토크**를
+> 낸다. 명세가 "외력 추종의 올바른 구조" 로 지목한 형태이며 §6.3(측정 외력을 impedance
+> 법칙에 직접 가산)보다 안정적이라고 명시한 대안이다. 순응 거동은 **outer 게인만** 정의하고
+> inner 는 그 프레임을 얼마나 단단히 따라가느냐만 정한다 — 그래서 YAML 이 `outer:` / `inner:`
+> 로 나뉜다 (양쪽 다 stiffness·damping 을 가지므로 flat 키는 위험한 모호성이다). wrench 는
+> **정확히 한 번만** 소비된다: outer 가 이미 썼으므로 inner 에는 `f_ext` 항 자체가 없다
+> (§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로). 대역폭 분리 `ω_i/ω_a ≥ 3` (MUST-1) 은
+> `Λ_S(q₀)` 가 필요해 configure 시점에 계산할 수 없으므로 **첫 seeding tick 에 1회** 평가해
+> 진단 플래그로만 보고한다 (fault 아님). 규범은 같은 문서 §3.6.
 
 ---
 
@@ -68,7 +80,8 @@ rtc_controllers/
 │   ├── direct/
 │   │   ├── joint_pd_controller.hpp       -- 관절 공간 PD + 동역학 보상
 │   │   ├── operational_space_controller.hpp -- 태스크 공간 OSC
-│   │   └── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
+│   │   ├── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
+│   │   └── cascaded_compliance_controller.hpp -- §7.6 outer admittance + inner impedance (토크 출력)
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
@@ -103,7 +116,8 @@ rtc_controllers/
 │       ├── direct/
 │       │   ├── joint_pd_controller.cpp
 │       │   ├── operational_space_controller.cpp
-│       │   └── task_impedance_controller.cpp
+│       │   ├── task_impedance_controller.cpp
+│       │   └── cascaded_compliance_controller.cpp
 │       └── grasp/
 │           ├── grasp_controller.cpp
 │           └── pull_force_estimator.cpp
