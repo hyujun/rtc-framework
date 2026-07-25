@@ -154,9 +154,29 @@ TEST(LoopClosedChain, IntegratedLoaderExposesActuationAndConsistentQref) {
   EXPECT_EQ(ccm.actuated_joint_ids.front(), ccm.model.getJointId("joint_a"));
 
   EXPECT_TRUE(ccm.q_ref_converged);
+  EXPECT_TRUE(ccm.q_ref_acceptable);  // strict 충족 ⇒ 수용 (#250)
   pinocchio::Data data(ccm.model);
   const auto errors = rub::ComputeClosureErrors(ccm.model, data, ccm.constraints, ccm.q_ref);
   EXPECT_LT(errors.front().norm, 1e-7);
+}
+
+// ── #250: 로드 타임 q_ref 파이프라인의 rejected 경로 wiring — 기하적으로 닫을 수 없는
+//    closure (c2 anchor 를 링크 길이 합 밖으로 이동) 는 q_ref_converged / q_ref_acceptable
+//    둘 다 false 로 보고돼 소비자가 q_ref 를 정상 결과로 오인하지 않는다.
+//    (floor(acceptable-but-not-converged) 분류 자체는 solver 레벨 테스트가 고정한다 —
+//    four_bar 는 joint_ab 가 y축이라 z-불일치가 전역 보상 가능하고, crank_rocker 는
+//    neutral 이 사영 정체점이라 loader 진입점(neutral 시작)으로는 floor 를 만들 수 없다.)
+TEST(LoopClosedChain, BuildClosedChainDataReportsRejectionWhenLoopCannotClose) {
+  const rub::ClosureSpec spec = rub::LoadClosureYaml(TestUrdfPath("four_bar.closure.yaml"));
+
+  pinocchio::Model model = LoadCcm().model;
+  // 링크 길이 합(≈0.6 m)을 초과하는 anchor 이동 → 어떤 형상에서도 닫히지 않는다.
+  model.frames[model.getFrameId("c2")].placement.translation().z() += 10.0;
+
+  const rub::ClosedChainData data = rub::BuildClosedChainData(model, spec);
+  EXPECT_FALSE(data.q_ref_converged);
+  EXPECT_FALSE(data.q_ref_acceptable);
+  EXPECT_TRUE(data.q_ref.allFinite());
 }
 
 // ═══ #250: strict convergence vs acceptance 분리 ═════════════════════════════

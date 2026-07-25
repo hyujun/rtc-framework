@@ -90,10 +90,15 @@ class PinocchioModelBuilder {
   /// (프레임이 loop-passive 하류인가) 에 쓴다. closure sidecar 미사용 시 빈 목록.
   [[nodiscard]] const std::vector<std::string>& GetClosurePassiveLockNames() const noexcept;
 
-  /// q_ref projection 수렴 여부. false 면 neutral 근방 조립이 loop-consistent 하지 않아
-  /// q_ref 가 부정확하다 (singular 여부와 별개 — full-rank 여도 미수렴일 수 있다).
-  /// closure sidecar 미사용 시 false.
+  /// q_ref projection strict 수렴 (‖φ‖ < strict tolerance) 여부 (singular 여부와 별개 —
+  /// full-rank 여도 미수렴일 수 있다). closure sidecar 미사용 시 false.
+  /// ⚠ 소비 가능 판정은 @ref IsClosureReferenceAcceptable 이 담당한다 — URDF 좌표 불일치의
+  /// residual floor 는 strict 미달이어도 q_ref 로 사용 가능하다 (#250).
   [[nodiscard]] bool IsClosureReferenceConverged() const noexcept;
+
+  /// q_ref 를 소비해도 되는가 (‖φ‖ ≤ acceptance tolerance 1e-6 m, 유한). converged=true 면
+  /// 항상 true. false 면 q_ref 를 정상 결과로 쓰지 말 것. closure sidecar 미사용 시 false.
+  [[nodiscard]] bool IsClosureReferenceAcceptable() const noexcept;
 
   /// q_ref 가 rank 결손(특이 조립형상) 인지. true 면 이 형상에서 constraintDynamics 의
   /// KKT 가 특이해져 NaN 을 낼 수 있으므로 operating configuration 으로 바로 쓰면 안 된다.
@@ -191,6 +196,7 @@ class PinocchioModelBuilder {
   Eigen::VectorXd closure_q_ref_;
   std::vector<pinocchio::JointIndex> closure_actuated_joint_ids_;
   bool closure_q_ref_converged_{false};
+  bool closure_q_ref_acceptable_{false};
   bool closure_q_ref_singular_{false};
 };
 
