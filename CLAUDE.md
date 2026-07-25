@@ -49,6 +49,7 @@ RT 핫패스 절대금지 규칙은 **RT-1 ~ RT-10** (RT-7 은 은퇴 → PROC-6
 - 기존 test assertion 을 통과시키려 **약화 금지** — 새 코드를 고치되, test 가 진짜 틀렸거나 spec 이 바뀌면 별도 commit + 근거 (PROC-6, §6 E-6)
 - `rtc_base` / `rtc_msgs` 변경 시 전체 빌드·테스트 (PROC-3)
 - 수치 특이점: damped pseudoinverse (NUM-1), zero guard (NUM-2, NUM-4)
+- 폐쇄 체인 사영은 **residual 로 조립 분기를 판정할 수 없다** — 점 구속 loop 은 분기가 여럿이고 모두 φ=0 을 만족하므로 seed 증분 제한이 필수 (NUM-5). 완화 장치를 넣을 때는 발동한 경우에만 적용하고, 그로 인한 `held` 를 자기 치유로 가정하지 않는다
 
 세부 규칙·grep 패턴·복구 절차: [agent_docs/invariants.md](agent_docs/invariants.md). 위반 필요시 §6 Escalation 의 `[CONCERN]` 포맷 보고.
 
@@ -155,6 +156,8 @@ Alternative: <우회 안 1개 이상>
 > **`colcon build` / `colcon test` 는 반드시 colcon workspace root (`<rtc_ws>` = `~/ros2_ws/rtc_ws`) 에서 실행한다.** repo (`src/rtc-framework`) 안에서 호출하면 `build/` · `install/` · `log/` 트리가 그 위치에 생기고 — `.clangd` 의 CompilationDatabase 가 잘못된 트리를 가리키며 ws-root incremental cache 와 분리되어 추적 불가한 stale state 가 누적된다. `build.sh` / `install.sh` 는 내부에서 `cd "$WORKSPACE"` 하므로 안전. 직접 `colcon` 을 칠 때는 **항상 `cd <rtc_ws>` 또는 절대경로 `--build-base` / `--install-base` 지정**, 그리고 `source ${repo_ws}/repo_scripts/scripts/setup_env.sh` (`${repo_ws}` = `<rtc_ws>/src/rtc-framework` = `~/ros2_ws/rtc_ws/src/rtc-framework`; `repo_scripts` 는 repo 안에 있으므로 ws-root cwd 기준 상대경로 `repo_scripts/...` 는 안 풀린다 — 절대경로 또는 이 prefix 필수). env 미source 상태로 `colcon`/`cmake` 호출 시 컴파일러·ROS·deps·venv PATH 누락으로 `colcon test` 가 silent fail 하거나 build 가 즉시 비정상 종료한다.
 
 실제 위반은 룰을 몰라서가 아니라 **cwd drift** 로 재발한다 — 편집하러 패키지 dir 로 `cd` 한 shell 에서 그대로 colcon 을 치거나, `cd src/rtc-framework && source src/rtc-framework/...` 처럼 한 줄에 체이닝해 상대경로 source 가 silent fail 한 채 빌드가 repo 안에서 도는 경로다. 따라서 **colcon 호출은 편집·`cd` 뒤에 이어 붙이지 말고 `cd <rtc_ws>` 로 시작하는 독립 Bash call 로 낸다** (source 의 stderr 도 삼키지 않는다).
+
+**`source` 를 파이프라인에 넣지 말 것** — 출력을 줄이려 `source setup_env.sh 2>&1 | tail -2 && colcon build …` 처럼 쓰면 source 가 **subshell 에서 실행돼 env 가 부모 셸에 반영되지 않는다**. 조용히 성공한 것처럼 보이는 게 함정이다: `colcon` 자체는 profile PATH 에 있어 빌드가 정상 시작하고, 한참 뒤 CMake 안에서 `ModuleNotFoundError: No module named 'ament_package'` 같은 **원인을 가리키지 않는 에러**로 죽는다 (`ament_package` 는 dpkg 가 아니라 `/opt/ros/jazzy/lib/python3.12/site-packages` 에 있고 `PYTHONPATH` 로만 노출되므로). 출력을 줄이려면 리다이렉션(`source … >/dev/null 2>&1`)을 쓰고 파이프는 뒤따르는 명령에만 건다. 이 실패를 `-DPython3_EXECUTABLE` 탓으로 오진하기 쉬운데 (§9.2 carve-out 은 정상이다), 감별은 `echo $VIRTUAL_ENV` 또는 `/usr/bin/python3 -c "import ament_package"` 한 줄이면 된다.
 
 post-incident 검증: `ls src/rtc-framework/{build,install,log}` — 존재하면 잘못된 cwd 에서 실행된 것이므로 삭제.
 
