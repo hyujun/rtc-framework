@@ -170,9 +170,15 @@ TEST(ClosedChainFkMeasurement, FrozenVsClosedChainCrankRocker) {
 }
 
 // ── 대조: closed-chain FK == closure_state_publisher 재구성 (동일 사영) ────────
-//   ClosedChainHandle::Update 와 ClosureStatePublisher 는 같은 ProjectPassiveToConstraint 를
-//   쓴다. 동일 seed(passive=warm-start, actuated=측정값)로 두 재구성이 <1e-6 로 일치함을
-//   확인해, handle FK 가 publisher 의 loop-consistent 재구성과 같은 값임을 보증한다.
+//   ClosedChainHandle::Update 와 ClosureStatePublisher 는 **같은 사영 진입점**을 쓴다. 동일
+//   seed(passive=warm-start, actuated=측정값)로 두 재구성이 <1e-6 로 일치함을 확인해, handle
+//   FK 가 publisher 의 loop-consistent 재구성과 같은 값임을 보증한다.
+//
+//   [#248] 그 진입점이 ProjectPassiveToConstraint → ProjectPassiveWithContinuation 으로 바뀌어
+//   아래 "publisher 흐름 재현"도 함께 갱신했다. 단일 사영으로 남겨두면 이 테스트는 handle 과
+//   publisher 를 비교하는 게 아니라 **서로 다른 두 알고리즘**을 비교하게 된다 (이 픽스처는
+//   neutral 이 사영의 정체점이라 두 경로가 여러 바퀴 감긴 다른 해로 갈라진다). 비교 임계
+//   1e-6 은 그대로다 — 약화가 아니라 대조 대상의 정의를 spec 변경에 맞춘 것.
 TEST(ClosedChainFkMeasurement, ClosedChainMatchesPublisherReconstruction) {
   const rub::ClosedChainModel ccm = rtc::test::CrankRocker();
   auto model = std::make_shared<pinocchio::Model>(ccm.model);
@@ -190,10 +196,12 @@ TEST(ClosedChainFkMeasurement, ClosedChainMatchesPublisherReconstruction) {
     if (!st.converged || st.singular) {
       continue;
     }
-    // publisher 흐름 재현: 직전 해(pub_seed)의 actuated 슬롯만 측정값으로 덮고 passive 사영.
-    pub_seed[model->idx_qs[model->getJointId(actuated)]] = q_a;
-    const rub::ProjectionResult res = rub::ProjectPassiveToConstraint(
-        *model, pub_data, ccm.constraints, pub_seed, ccm.actuated_joint_ids, opts);
+    // publisher 흐름 재현: 직전 해(pub_seed)를 q_prev 로, actuated 슬롯만 측정값으로 덮은
+    // 벡터를 q_target 으로 넘겨 continuation 사영 (closure_state_publisher::OnJointState 와 동일).
+    Eigen::VectorXd pub_target = pub_seed;
+    pub_target[model->idx_qs[model->getJointId(actuated)]] = q_a;
+    const rub::ProjectionResult res = rub::ProjectPassiveWithContinuation(
+        *model, pub_data, ccm.constraints, pub_seed, pub_target, ccm.actuated_joint_ids, opts);
     ASSERT_TRUE(res.converged) << "q_a=" << q_a << " publisher 사영 미수렴";
     pub_seed = res.q;  // warm-start 유지
 
