@@ -838,6 +838,17 @@ TEST(TaskAdmittanceController, ComputeIsAllocationFree) {
   (void)c.Compute(state);
   g_alloc_active = false;
   EXPECT_EQ(g_alloc_count, 0u) << "the E-STOP hold allocated";
+
+  // ...and so is the unusable-joint-state path: a backend that drops out does it
+  // on the tick, not at configure time.
+  c.ClearEstop();
+  auto unusable = MakeState(Posture());
+  unusable.devices[0].valid = false;
+  g_alloc_count = 0;
+  g_alloc_active = true;
+  (void)c.Compute(unusable);
+  g_alloc_active = false;
+  EXPECT_EQ(g_alloc_count, 0u) << "the unusable-joint-state tick allocated";
 }
 
 // ── Configure-time contracts ────────────────────────────────────────────────
