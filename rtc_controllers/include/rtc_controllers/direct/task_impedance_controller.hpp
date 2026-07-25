@@ -9,6 +9,7 @@
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/compliance/wrench_conditioning.hpp"
+#include "rtc_controllers/compliance/wrench_pipeline.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
@@ -218,6 +219,11 @@ class TaskImpedanceController final : public RTControllerInterface {
     std::array<double, 6> wrench_lwa{};
     double wrench_age{0.0};   ///< s since the last NEW sample (§10.6, D9)
     double wrench_fade{1.0};  ///< 1 fresh → 0 fully faded out
+    /// Samples the input's finiteness gate dropped since construction. A count
+    /// rising while `wrench_valid` stays true = an intermittently garbage
+    /// producer, which is otherwise invisible: a dropped sample simply does not
+    /// arrive, and the last good one keeps ageing normally.
+    std::uint32_t wrench_rejected{0};
     bool saturated{false};
     bool rate_limited{false};
     bool nullspace_active{false};
@@ -245,9 +251,9 @@ class TaskImpedanceController final : public RTControllerInterface {
   [[nodiscard]] Diagnostics GetDiagnosticsForTesting() const noexcept { return diag_lock_.Load(); }
 
   // Bias estimate committed by BIAS_CALIBRATING. Test-only: the RT thread owns
-  // the conditioner, so this is safe to read only between Compute() calls.
+  // the pipeline, so this is safe to read only between Compute() calls.
   [[nodiscard]] const compliance::Wrench6& GetWrenchBiasForTesting() const noexcept {
-    return conditioner_.bias();
+    return wrench_.bias();
   }
 
   // Force the next Compute() to re-seed the desired pose / posture from the
@@ -309,19 +315,16 @@ class TaskImpedanceController final : public RTControllerInterface {
 
   compliance::TaskDynamics dyn_;
   compliance::ComplianceStateMachine sm_;
-  compliance::WrenchInput wrench_input_;
-  compliance::WrenchConditioner conditioner_;
-  compliance::ContactHysteresis contact_;
-  // RT-only. `bias_done_` is the FSM GATE ("stop holding BIAS_CALIBRATING"),
-  // `bias_pending_` is the WORK ("a calibration is still owed for this
-  // activation"). They differ exactly in the cases the gate must be released
-  // without the work being finished: no producer has published yet, or the
-  // samples went stale mid-average. Keeping them separate is what stops a
-  // cold-start ordering (controller activates before the F/T driver publishes)
-  // from silently skipping §3.2.1's mandated calibration for the whole
-  // activation — with one flag, releasing the gate discarded the work.
-  bool bias_done_{true};
-  bool bias_pending_{false};
+  // Read → bias two-latch → condition → Ad^{-T} → fade → contact, in that order
+  // (§3.2.1, §3.3, §10.6). Shared with TaskAdmittanceController; the two-latch
+  // bias design and the ORDER are what live inside it.
+  compliance::WrenchPipeline wrench_;
+  // RT-only mirror of the pipeline's FSM gate ("stop holding BIAS_CALIBRATING").
+  // Deliberately NOT the same thing as "a calibration is still owed" — that debt
+  // is the pipeline's `bias_pending_`, and collapsing the two is what would let
+  // a cold-start ordering (controller activates before the F/T driver publishes)
+  // skip §3.2.1's mandated calibration for a whole activation.
+  bool bias_gate_{true};
 
   // ── Pre-allocated Eigen work buffers (sized in InitFromModel; RT alloc-free) ─
   Eigen::MatrixXd J_full_;           ///< 6×nv full spatial Jacobian (LOCAL_WORLD_ALIGNED)

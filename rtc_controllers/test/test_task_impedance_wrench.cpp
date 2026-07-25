@@ -24,6 +24,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <span>
 #include <string>
@@ -256,8 +257,22 @@ external_wrench:
   auto state = MakeState(6, q, std::vector<double>(6, 0.0));
 
   const Wrench6 offset{2.0, -1.0, 0.5, 0.0, 0.0, 0.0};
-  // Tick 1 both seeds the pose AND enters BIAS_CALIBRATING, and it consumes the
-  // first sample on the same tick (a wrench was queued before it ran).
+  // A sample already sitting in the slot when the controller activates is
+  // DISOWNED, not consumed (#236 D22 / §10.6): from inside there is no way to
+  // tell a reading published a microsecond ago from the last one a producer
+  // emitted before it died, so neither is trusted. Nothing is lost — the
+  // calibration DEBT survives (`bias_calibrated` stays false) and the next
+  // sample re-enters BIAS_CALIBRATING one tick later.
+  Send(ctrl, offset);
+  (void)ctrl.Compute(state);
+  {
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    EXPECT_FALSE(d.wrench_valid) << "the pre-activation sample was consumed, not disowned";
+    EXPECT_FALSE(d.bias_calibrated) << "disowning the sample also dropped the owed calibration";
+  }
+
+  // The first sample published AFTER activation re-enters BIAS_CALIBRATING and
+  // counts as the first of the five.
   Send(ctrl, offset);
   (void)ctrl.Compute(state);
   EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
@@ -452,6 +467,100 @@ TEST(TaskImpedanceWrench, StaleWrenchFadesToZeroAndDegradesWithoutSafeStop) {
   const auto recovered = ctrl.GetDiagnosticsForTesting();
   EXPECT_FALSE(recovered.wrench_stale);
   EXPECT_TRUE(rtc::compliance::IsRunning(static_cast<ComplianceState>(recovered.state)));
+}
+
+// #236 D22 — the defect the WrenchPipeline migration fixes. The controller's own
+// copy of the wrench path RE-DATED the sample in the slot on (re)activation
+// (`ResetTiming`), so the last reading of a producer that died BEFORE the
+// controller was deactivated came back as a FRESH full-magnitude wrench on the
+// tick after re-activation: §10.6 says an expired wrench goes to zero and is
+// never held, and re-activation was the one path that resurrected it. The shared
+// pipeline DISOWNS the sample instead (`Invalidate`).
+//
+// The fade above cannot catch this: it only walks the age forward, and the bug
+// lives in the reset that puts the age back.
+TEST(TaskImpedanceWrench, ReactivationDoesNotReviveADeadProducersLastReading) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  gains.wrench_timeout = 0.01;       // 5 ticks
+  gains.wrench_fadeout_time = 0.02;  // 10 further ticks
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);  // seed (bias_calibration_samples: 0 ⇒ committed)
+
+  const Wrench6 push{20.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  Send(ctrl, push);
+  (void)ctrl.Compute(state);
+  ASSERT_GT(std::abs(ctrl.GetDiagnosticsForTesting().wrench_lwa[0]), 1.0)
+      << "wrench never reached the law — the revival assertion would be vacuous";
+
+  // Producer dies; walk past timeout + fade-out so the wrench is fully expired.
+  for (int k = 0; k < 40; ++k)
+    (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().wrench_stale);
+
+  // Re-activation (what on_activate does in the CM). NOTHING is published after
+  // this point — the producer is still dead.
+  ctrl.ResetTargetInitializationForTesting();
+  for (int k = 0; k < 5; ++k) {
+    (void)ctrl.Compute(state);
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    EXPECT_FALSE(d.wrench_valid) << "a dead producer's last reading was re-dated as fresh at tick "
+                                 << k;
+    for (double v : d.wrench_lwa)
+      EXPECT_EQ(v, 0.0) << "resurrected wrench entered the law at tick " << k;
+  }
+
+  // Not a dead end: a genuinely new sample is accepted again (the disown covers
+  // the generation present at reset, not the input for good).
+  Send(ctrl, push);
+  (void)ctrl.Compute(state);  // bias_samples == 0 ⇒ commits, emits zero
+  Send(ctrl, push);
+  (void)ctrl.Compute(state);
+  const auto back = ctrl.GetDiagnosticsForTesting();
+  EXPECT_TRUE(back.wrench_valid);
+  EXPECT_GT(std::abs(back.wrench_lwa[0]), 1.0) << "the input never recovered after the disown";
+}
+
+// F3 (PR #256) reaches the impedance controller with the pipeline: a producer
+// sending garbage is otherwise INVISIBLE — the finiteness gate drops the sample,
+// so nothing arrives and the last good reading just keeps ageing, which reads
+// exactly like a producer that stopped. The count is what separates the two.
+TEST(TaskImpedanceWrench, RejectedSampleCountSurfacesInDiagnostics) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController::Gains gains;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+
+  Send(ctrl, Wrench6{5.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  (void)ctrl.Compute(state);
+  const auto good = ctrl.GetDiagnosticsForTesting();
+  ASSERT_EQ(good.wrench_rejected, 0u);
+  ASSERT_GT(
+      std::abs(good.wrench_lwa[0]) + std::abs(good.wrench_lwa[1]) + std::abs(good.wrench_lwa[2]),
+      1.0)
+      << "no wrench in the law — the retention assertion below would be vacuous";
+
+  const double nan_v = std::numeric_limits<double>::quiet_NaN();
+  Send(ctrl, Wrench6{nan_v, 0.0, 0.0, 0.0, 0.0, 0.0});
+  Send(ctrl, Wrench6{0.0, std::numeric_limits<double>::infinity(), 0.0, 0.0, 0.0, 0.0});
+  (void)ctrl.Compute(state);
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  EXPECT_EQ(d.wrench_rejected, 2u) << "non-finite samples were counted wrong (or let through)";
+  // Still inside wrench_timeout, so the retained reading is unfaded: the garbage
+  // was dropped at the input, not conditioned into the law.
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_TRUE(std::isfinite(d.wrench_lwa[i])) << "non-finite wrench reached the control law";
+    EXPECT_NEAR(d.wrench_lwa[i], good.wrench_lwa[i], 1e-12)
+        << "a rejected sample disturbed the last good reading, component " << i;
+  }
 }
 
 // Contact detection rides the conditioned LWA force with hysteresis, and drives

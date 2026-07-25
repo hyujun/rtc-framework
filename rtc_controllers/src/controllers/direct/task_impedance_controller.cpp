@@ -48,7 +48,7 @@ TaskImpedanceController::TaskImpedanceController(std::string_view urdf_path, Gai
   // returns 0 for EVERY sample before Init() (all coefficients are zero) and
   // says nothing about it, so a controller constructed directly — as the unit
   // tests do — would otherwise silently zero the whole wrench path.
-  conditioner_.Configure(compliance::WrenchConditioningConfig{}, 1.0 / GetDefaultDt());
+  wrench_.Configure(compliance::WrenchConditioningConfig{}, 1.0 / GetDefaultDt());
 }
 
 void TaskImpedanceController::InitFromModel(std::shared_ptr<const pinocchio::Model> model) {
@@ -115,7 +115,7 @@ void TaskImpedanceController::SetExternalWrench(
     std::span<const double, compliance::kWrenchDim> wrench) noexcept {
   if (!wrench_enabled_)
     return;
-  wrench_input_.Set(wrench);
+  wrench_.Publish(wrench);
 }
 
 void TaskImpedanceController::MaybeSelectSubModel() {
@@ -193,107 +193,44 @@ Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
   Eigen::Matrix<double, 6, 1> f_lwa = Eigen::Matrix<double, 6, 1>::Zero();
   diag.wrench_fade = 1.0;
   if (!wrench_enabled_) {
-    bias_done_ = true;  // nothing to calibrate ⇒ never gate the FSM on it
-    bias_pending_ = false;
+    bias_gate_ = true;  // nothing to calibrate ⇒ never gate the FSM on it
     diag.bias_calibrated = true;
     return f_lwa;
   }
 
-  const auto sample = wrench_input_.Read(dt, gains.wrench_timeout, gains.wrench_fadeout_time);
-  diag.wrench_valid = sample.valid;
-  diag.wrench_age = sample.age;
-  diag.wrench_fade = sample.fade;
-  // Only a sample that ever arrived can be stale — "no producer yet" is the
-  // activation transient, not a timeout, and must not fault the first ticks.
-  diag.wrench_stale = sample.valid && sample.stale;
-  diag.bias_calibrated = !bias_pending_;
-  if (!sample.valid) {
-    // No producer has ever published. Release the FSM gate so the controller does
-    // not sit in BIAS_CALIBRATING forever, but KEEP bias_pending_: the §3.2.1
-    // calibration is still owed and runs as soon as data appears. Collapsing the
-    // two into one flag here is what used to skip the calibration outright
-    // whenever the F/T driver started publishing after activation — the normal
-    // cold-start ordering — leaving a zero bias in the law with no diagnostic.
-    bias_done_ = true;
-    return f_lwa;
-  }
-
-  // Static payload gravity, in the SENSOR frame (§3.2.1 minimal implementation).
+  // The whole per-tick sequence — read → bias two-latch → condition → Ad^{-T}
+  // into LWA at the tip → staleness fade → contact hysteresis — lives in
+  // compliance/wrench_pipeline.hpp, shared with TaskAdmittanceController rather
+  // than kept as a second copy here (#236 D22). The copy this replaced predated
+  // the helper and had already drifted: its (re)activation reset re-dated the
+  // sample in the slot instead of disowning it, so a dead producer's last
+  // reading came back as FRESH on the first tick after re-activation — the exact
+  // opposite of §10.6's "an expired wrench goes to zero, never held".
   const pinocchio::SE3& sensor = handle_->GetFramePlacement(sensor_frame_id_);
-  const compliance::Wrench6 grav = compliance::StaticGravityWrench(
-      sensor.rotation(), gravity_world_, conditioner_.config().payload_mass,
-      conditioner_.config().payload_com);
+  compliance::WrenchPipelineParams params;
+  params.timeout = gains.wrench_timeout;
+  params.fadeout_time = gains.wrench_fadeout_time;
+  params.contact_threshold = gains.contact_threshold;
+  params.contact_release_ratio = gains.contact_release_ratio;
 
-  if (bias_pending_ && bias_done_) {
-    // Data arrived after the gate was released above: re-enter BIAS_CALIBRATING
-    // and do the owed work now. The state machine refuses this while a SAFE_STOP
-    // is latched, so it cannot launder a fault (E-8).
-    bias_done_ = false;
+  compliance::WrenchPipelineStatus ws;
+  f_lwa = wrench_.Update(sensor.rotation(), sensor.translation(), tcp.translation(), gravity_world_,
+                         dt, params, ws);
+  // Routed out of the pipeline rather than done inside it so the E-8 SAFE_STOP
+  // latch (which refuses this transition) stays the state machine's business.
+  if (ws.begin_bias_calibration)
     sm_.BeginBiasCalibration();
-  }
+  bias_gate_ = ws.bias_gate_released;
 
-  if (!bias_done_) {
-    // BIAS_CALIBRATING: feed the average, emit nothing. Returning zero here is
-    // what keeps an uncalibrated offset out of the control law.
-    //
-    // Only NEW samples are folded in: §3.2.1 asks for an N-SAMPLE average, and at
-    // 500–5000 Hz RT against a 100–1000 Hz F/T source a per-tick count would fold
-    // each reading in rate-ratio times over — averaging 20 distinct readings while
-    // reporting 100, with the arrival jitter leaking in as a weight.
-    if (sample.is_new && conditioner_.AccumulateBias(sample.value, grav)) {
-      bias_done_ = true;
-      bias_pending_ = false;
-      diag.bias_calibrated = true;
-      conditioner_.SeedFromSample(sample.value, grav);  // §3.3: seed at the signal, not at 0
-    } else if (sample.stale) {
-      // The producer died part-way through the average. Release the gate so
-      // wrench_timeout reaches the FSM as DEGRADED instead of being masked by
-      // BIAS_CALIBRATING, but keep the debt: the partial sum is retained and the
-      // average resumes where it stopped once fresh samples return. (Restarting
-      // it instead would let a flaky producer prevent the bias forever.)
-      bias_done_ = true;
-    }
-    return f_lwa;
-  }
-
-  const compliance::Wrench6 w_sensor = conditioner_.Apply(sample.value, grav);
-
-  // Sensor body frame → LOCAL_WORLD_ALIGNED at the tip. The LWA frame is
-  // (identity rotation, p_tip), so ᴬT_S = (R_sensor, p_sensor − p_tip) and the
-  // wrench rides Ad^{-T} — NOT Ad^T (compliance-conventions.md §2; the direction
-  // is pinned by rtc_math's power-duality test, never assumed).
-  rtc::math::se3::Iso3 t_lwa_sensor = rtc::math::se3::Iso3::Identity();
-  t_lwa_sensor.linear() = sensor.rotation();
-  t_lwa_sensor.translation() = sensor.translation() - tcp.translation();
-  rtc::math::se3::Vec6 w_vec;
-  for (int i = 0; i < 6; ++i)
-    w_vec(i) = w_sensor[static_cast<std::size_t>(i)];
-  f_lwa = rtc::math::se3::transformWrench(t_lwa_sensor, w_vec);
-
-  // §10.6 MUST: an expired wrench fades linearly to ZERO — never held. Applied
-  // AFTER conditioning so bias/gravity removal cannot re-inject a constant on
-  // the way down (fading the raw sample would leave −f_grav behind).
-  f_lwa *= sample.fade;
-
+  diag.wrench_valid = ws.valid;
+  diag.wrench_age = ws.age;
+  diag.wrench_fade = ws.fade;
+  diag.wrench_stale = ws.stale;
+  diag.wrench_rejected = ws.rejected_samples;
+  diag.bias_calibrated = ws.bias_calibrated;
+  diag.in_contact = ws.in_contact;
   for (int i = 0; i < 6; ++i)
     diag.wrench_lwa[static_cast<std::size_t>(i)] = f_lwa(i);
-  if (gains.contact_threshold > 0.0) {
-    // Release ratio clamped strictly below 1 (the same bound LoadConfig applies,
-    // repeated here because set_gains bypasses LoadConfig) so the ⇄ transition
-    // always keeps a hysteresis band: equal enter/exit thresholds chatter at the
-    // boundary, which §10.6 forbids.
-    diag.in_contact = contact_.Update(
-        f_lwa.head<3>().norm(), gains.contact_threshold,
-        std::clamp(gains.contact_release_ratio, 0.0, 0.99) * gains.contact_threshold);
-  } else {
-    // A non-positive threshold makes enter == exit == 0, which is exactly the
-    // bare comparator the ratio clamp above exists to prevent — and it latches
-    // contact on any nonzero noise, since every real reading exceeds 0 N. The
-    // ratio cannot rescue it (it SCALES the threshold), so treat a zero threshold
-    // as "contact detection off" rather than as a hysteresis with no band.
-    contact_.Reset();
-    diag.in_contact = false;
-  }
   return f_lwa;
 }
 
@@ -454,20 +391,15 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     saturation_elapsed_ = 0.0;
     // The wrench path restarts with everything else: an activation must not
     // inherit an age accrued while the controller was not running, nor a bias /
-    // filter history from a previous grasp. With a source configured this enters
-    // BIAS_CALIBRATING (§3.2.1 "on_activate 시 자동 1회"); the state machine
-    // refuses the transition while a SAFE_STOP is latched, so re-seeding cannot
-    // launder a fault (E-8).
-    wrench_input_.ResetTiming();
-    contact_.Reset();
-    if (wrench_enabled_) {
-      conditioner_.Reset();
-      bias_done_ = false;
-      // Owed only when there is work: bias_calibration_samples == 0 means the
-      // operator declined the average, so the zero bias IS the calibration and
-      // the first sample must not be spent re-entering BIAS_CALIBRATING for it.
-      bias_pending_ = conditioner_.config().bias_samples > 0;
+    // filter history from a previous grasp, nor the SAMPLE ITSELF — the pipeline
+    // DISOWNS it (Invalidate) rather than re-dating it, so a producer that died
+    // before deactivation cannot come back as fresh data on the first tick of the
+    // next activation. With a source configured this enters BIAS_CALIBRATING
+    // (§3.2.1 "on_activate 시 자동 1회"); the state machine refuses the transition
+    // while a SAFE_STOP is latched, so re-seeding cannot launder a fault (E-8).
+    if (wrench_enabled_ && wrench_.ResetForActivation()) {
       sm_.BeginBiasCalibration();
+      bias_gate_ = false;
     }
     just_seeded = true;  // seed the rate-limit history to this tick's own
                          // command below, so activation is not slew-limited
@@ -652,7 +584,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   faults.wrench_timeout = diag.wrench_stale;
   const bool ramp_done = (alpha >= 1.0);
   const auto cstate =
-      sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_done_, diag.in_contact);
+      sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_gate_, diag.in_contact);
 
   diag.state = static_cast<std::uint8_t>(cstate);
   diag.sigma_min = sigma_min;
@@ -929,7 +861,7 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
   // have been swapped for a reduced one by MaybeSelectSubModel at the top of
   // this function, so the lookup has to run against the model actually in use.)
   const pinocchio::FrameIndex sensor_id = LookupSensorFrame(sensor_frame);
-  conditioner_.Configure(wc, 1.0 / GetDefaultDt());  // validates, then commits
+  wrench_.Configure(wc, 1.0 / GetDefaultDt());  // validates, then commits
 
   // Commit. Nothing below throws, so a rejected reconfigure leaves the live
   // gains and the live wrench path exactly as they were.
