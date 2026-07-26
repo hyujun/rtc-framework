@@ -172,6 +172,20 @@ if(BUILD_TESTING)
     ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_joint_pd_core PRIVATE -Wno-mismatched-new-delete)
 
+  # #236 S2a golden-vector suite for the task-space acceleration core: bitwise
+  # against a literal copy of the pre-extraction inline form (durable oracle)
+  # AND against the live OperationalSpaceController driven through a shim that
+  # owns the model and the trajectory. The OSC exposes no a_task, so the shim
+  # reproduces the whole Λ/τ/Nᵀ tail to observe the core through the emitted
+  # torque — hence the URDF fixture resolver for serial_7dof (non-zero gravity,
+  # redundant so Nᵀ is not inert). Same global-operator-new gate as S1, with the
+  # same program-wide -Wmismatched-new-delete false positive.
+  ament_add_gtest(test_task_accel_core test/test_task_accel_core.cpp)
+  target_link_libraries(test_task_accel_core rtc_controllers)
+  target_include_directories(test_task_accel_core PRIVATE
+    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_task_accel_core PRIVATE -Wno-mismatched-new-delete)
+
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
   target_include_directories(test_task_impedance_controller PRIVATE ${rtc_urdf_bridge_test_include})

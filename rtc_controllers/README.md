@@ -22,7 +22,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 | PController | 관절 공간 | Position (indirect) | `indirect/` | 어댑터 (코어 미신설 — #236 D-Q1) |
 | JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 + `joint/joint_pd_law.hpp` 코어 |
 | ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 |
-| OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 |
+| OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `task/task_accel_law.hpp` 코어 (부분) |
 | TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
 | TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 |
 | CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
@@ -88,6 +88,8 @@ rtc_controllers/
 │   │   └── cascaded_compliance_controller.hpp -- §7.6 outer admittance + inner impedance (토크 출력)
 │   ├── joint/
 │   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
+│   ├── task/
+│   │   └── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
@@ -315,6 +317,8 @@ clik_controller:
 ### 4. OperationalSpaceController (태스크 공간 6-DOF 토크 OSC)
 
 전체 6-DOF 태스크 공간 **토크** 제어기입니다 (operational-space / Khatib 정식화). 태스크 공간 PD 가속도를 task inertia Λ 와 Jacobian transpose 로 관절 토크에 사상하고, joint-space Coriolis + 중력을 완전 보상합니다. **출력은 N·m** 이며 command_type 은 `torque` 로 고정됩니다 (다른 값은 LoadConfig 에서 거부 — position/velocity task 제어는 ClikController 사용). 이 전환은 #172 에서 진행되었으며, 이전 velocity-IK→position 계약을 대체합니다.
+
+> **코어 (#236 S2a — 부분):** 아래 `a_task` 식은 `task/task_accel_law.hpp` 의 `ComputeTaskAcceleration()` 으로 추출됐고 `OperationalSpaceController` 는 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_task_accel_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정합니다. 코어는 궤적도 pose error 정의도 소유하지 않습니다 — `e`·`ν_d`·`a_ff` 를 인자로 받을 뿐입니다. **아래 Λ / τ / Nᵀ 블록은 아직 어댑터 안에 있습니다** — `compliance/task_dynamics` 로의 흡수는 S2b 이며, 그 헬퍼의 현 형태(동적 크기 LLT + Λ 를 materialise 하는 구조)로는 bit-identical 이 성립하지 않아 분리됐습니다 (#236 D-S2).
 
 **제어 법칙:**
 
