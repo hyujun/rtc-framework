@@ -186,6 +186,22 @@ if(BUILD_TESTING)
     ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_task_accel_core PRIVATE -Wno-mismatched-new-delete)
 
+  # #236 S3a golden-vector suite for the task-space velocity core: bitwise
+  # against literal copies of BOTH pre-extraction inline forms (six-axis and
+  # translation-only are different expression shapes, so each needs its own
+  # durable oracle) AND against the live ClikController across all four
+  # (control_6dof × enable_null_space) modes plus the π-rotation split. CLIK's
+  # output IS the core's output pushed through J⁺, so the shim compares the
+  # velocity, feedforward and integrated-command lanes directly. Reuses
+  # test_task_accel_core's independent-handle premise via the same serial_7dof
+  # fixture. Same global-operator-new gate as S1/S2a, with the same program-wide
+  # -Wmismatched-new-delete false positive.
+  ament_add_gtest(test_task_vel_core test/test_task_vel_core.cpp)
+  target_link_libraries(test_task_vel_core rtc_controllers)
+  target_include_directories(test_task_vel_core PRIVATE
+    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_task_vel_core PRIVATE -Wno-mismatched-new-delete)
+
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
   target_include_directories(test_task_impedance_controller PRIVATE ${rtc_urdf_bridge_test_include})

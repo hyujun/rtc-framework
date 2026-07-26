@@ -3,6 +3,7 @@
 #include "rtc_controllers/indirect/clik_controller.hpp"
 
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <rclcpp/logging.hpp>
@@ -415,17 +416,15 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     JJt_inv_6d_.noalias() = ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
     Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
-    Eigen::Matrix<double, 6, 1> kp_vec_6d;
-    for (std::size_t i = 0; i < 3; ++i) {
-      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains.kp_translation[i];
-      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains.kp_rotation[i];
-    }
-
-    Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
     // Feedforward: trajectory local → world-aligned via R_trajectory (not
-    // R_current)
-    task_vel_6d.head<3>() += traj_state_.pose.rotation() * traj_state_.velocity.linear();
-    task_vel_6d.tail<3>() += traj_state_.pose.rotation() * traj_state_.velocity.angular();
+    // R_current). The transport stays HERE with the trajectory sample it belongs
+    // to; the law takes an already world-aligned twist (#236 S3a).
+    Eigen::Matrix<double, 6, 1> nu_ff_6d;
+    nu_ff_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    nu_ff_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
+
+    const Eigen::Matrix<double, 6, 1> task_vel_6d = rtc::task::ComputeTaskVelocity(
+        rtc::task::TaskVelParams{gains.kp_translation, gains.kp_rotation}, pos_error_6d_, nu_ff_6d);
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
   } else {
@@ -436,10 +435,9 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-    Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
-                           gains.kp_translation[2]);
-    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) +
-                               traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    const Eigen::Vector3d nu_ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    const Eigen::Vector3d task_vel = rtc::task::ComputeTranslationVelocity(
+        rtc::task::TaskVelParams{gains.kp_translation, gains.kp_rotation}, pos_error_, nu_ff_lin);
     dq_.noalias() = Jpinv_ * task_vel;
   }
 
