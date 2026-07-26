@@ -11,6 +11,7 @@
 #include "rtc_base/testing/no_malloc_scope.hpp"  // before any Eigen include
 #include "rtc_controllers/compliance/compliance_state_machine.hpp"
 #include "rtc_controllers/compliance/external_wrench.hpp"
+#include "rtc_controllers/compliance/impedance_law.hpp"
 #include "rtc_controllers/compliance/safety_limiter.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
@@ -19,7 +20,9 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <random>
 #include <span>
@@ -872,6 +875,185 @@ TEST(TorqueEstop, NonFiniteInputForcedToZero) {
   EXPECT_DOUBLE_EQ(tau(1), 0.0);  // NaN gravity → 0
   EXPECT_DOUBLE_EQ(tau(2), 0.0);  // NaN velocity → 0
   EXPECT_DOUBLE_EQ(tau(3), 0.0);  // ∞ gravity → 0 (not clamped to +100)
+}
+
+// ── impedance_law (§6.2 bracketed task force) ───────────────────────────────
+
+// The expression EXACTLY as it stood inline in TaskImpedanceController::Compute()
+// before #236 D18 lifted it into impedance_law.hpp (task_impedance_controller.cpp
+// :538-544 at 15bbf5e), with the ν_d = 0 the static setpoint implied. The
+// migration claim is BITWISE, so this reference is compared bit-for-bit: a
+// reassociation to α·kp·e + α·kd·ė is algebraically the same law and would sail
+// through any tolerance, while changing the torque a shipped robot emits.
+Eigen::Matrix<double, 6, 1> PreExtractionInlineForm(const ImpedanceParams& k,
+                                                    const Eigen::Matrix<double, 6, 1>& e,
+                                                    const Eigen::Matrix<double, 6, 1>& nu,
+                                                    double alpha, int m) {
+  const Eigen::Matrix<double, 6, 1> edot = -nu;
+  Eigen::Matrix<double, 6, 1> f = Eigen::Matrix<double, 6, 1>::Zero();
+  for (int i = 0; i < m; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double kp = (i < 3) ? k.kp_pos[ui] : k.kp_rot[ui - 3];
+    const double kd = (i < 3) ? k.kd_pos[ui] : k.kd_rot[ui - 3];
+    f(i) = alpha * (kp * e(i) + kd * edot(i));
+  }
+  return f;
+}
+
+bool BitsEqual(double a, double b) {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+// One random draw of (gains, e, ν, α) — shared by the equivalence test and the
+// mutation check below, so the two speak about the same inputs.
+struct LawDraw {
+  ImpedanceParams k;
+  Eigen::Matrix<double, 6, 1> e;
+  Eigen::Matrix<double, 6, 1> nu;
+  double alpha{1.0};
+};
+
+LawDraw RandomDraw(std::mt19937& rng) {
+  std::uniform_real_distribution<double> gain(1.0, 500.0);
+  std::normal_distribution<double> sig(0.0, 0.5);
+  std::uniform_real_distribution<double> ramp(0.05, 1.0);
+  LawDraw d;
+  for (std::size_t i = 0; i < 3; ++i) {
+    d.k.kp_pos[i] = gain(rng);
+    d.k.kd_pos[i] = gain(rng);
+    d.k.kp_rot[i] = gain(rng);
+    d.k.kd_rot[i] = gain(rng);
+  }
+  for (int i = 0; i < 6; ++i) {
+    d.e(i) = sig(rng);
+    d.nu(i) = sig(rng);
+  }
+  d.alpha = ramp(rng);
+  return d;
+}
+
+// The extraction is inert to the last bit, at both task dimensions.
+TEST(ImpedanceLaw, MatchesThePreExtractionInlineFormBitwise) {
+  auto rng = MakeRng();
+  const Eigen::Matrix<double, 6, 1> nu_d_zero = Eigen::Matrix<double, 6, 1>::Zero();
+  for (int trial = 0; trial < 400; ++trial) {
+    const LawDraw d = RandomDraw(rng);
+    const int m = (trial % 2 == 0) ? 6 : 3;
+    const auto got = ComputeImpedanceForce(d.k, d.e, d.nu, nu_d_zero, d.alpha, m);
+    const auto want = PreExtractionInlineForm(d.k, d.e, d.nu, d.alpha, m);
+    for (int i = 0; i < 6; ++i)
+      EXPECT_TRUE(BitsEqual(got(i), want(i)))
+          << "trial " << trial << " m=" << m << " row " << i << ": " << got(i) << " vs " << want(i);
+  }
+}
+
+// Non-vacuity: the bitwise comparison above must actually be able to fail. The
+// distributed form α·kp·e + α·kd·ė is the same law algebraically and the obvious
+// "harmless" edit; if bit equality could not tell it apart, the test above would
+// be pinning nothing.
+TEST(ImpedanceLaw, BitwiseComparisonRejectsAReassociatedLaw) {
+  auto rng = MakeRng();
+  const Eigen::Matrix<double, 6, 1> nu_d_zero = Eigen::Matrix<double, 6, 1>::Zero();
+  int differing_rows = 0;
+  for (int trial = 0; trial < 400; ++trial) {
+    const LawDraw d = RandomDraw(rng);
+    const auto got = ComputeImpedanceForce(d.k, d.e, d.nu, nu_d_zero, d.alpha, 6);
+    for (int i = 0; i < 6; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      const double kp = (i < 3) ? d.k.kp_pos[ui] : d.k.kp_rot[ui - 3];
+      const double kd = (i < 3) ? d.k.kd_pos[ui] : d.k.kd_rot[ui - 3];
+      const double distributed = d.alpha * kp * d.e(i) + d.alpha * kd * (-d.nu(i));
+      if (!BitsEqual(got(i), distributed))
+        ++differing_rows;
+      EXPECT_NEAR(got(i), distributed, 1e-9 * (1.0 + std::abs(got(i))))
+          << "the mutant must stay algebraically equivalent, else it proves nothing";
+    }
+  }
+  EXPECT_GT(differing_rows, 0)
+      << "bit comparison cannot distinguish a reassociated law — the equivalence test is vacuous";
+}
+
+// ν_d is the generalization the §7.6 cascade needs: the inner loop tracks the
+// compliant frame's VELOCITY, so ė = ν_d − ν and not −ν. Pinned as the exact
+// shift it produces — feeding ν_d = 0 there would damp the outer loop's own
+// motion with K_d·ν_c of torque that has no physical source.
+TEST(ImpedanceLaw, DesiredTwistEntersAsTheVelocityError) {
+  auto rng = MakeRng();
+  const LawDraw d = RandomDraw(rng);
+  const Eigen::Matrix<double, 6, 1> zero = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> nu_d;
+  nu_d << 0.3, -0.2, 0.15, 0.05, -0.4, 0.25;
+
+  const auto f_static = ComputeImpedanceForce(d.k, d.e, d.nu, zero, d.alpha, 6);
+  const auto f_moving = ComputeImpedanceForce(d.k, d.e, d.nu, nu_d, d.alpha, 6);
+  for (int i = 0; i < 6; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double kd = (i < 3) ? d.k.kd_pos[ui] : d.k.kd_rot[ui - 3];
+    EXPECT_NEAR(f_moving(i) - f_static(i), d.alpha * kd * nu_d(i), 1e-9)
+        << "row " << i << ": ν_d did not enter as +K_d·ν_d";
+  }
+  // ν_d = ν (the tip already moving with the compliant frame) leaves the pure
+  // stiffness term — no damping torque against motion the law is tracking.
+  const auto f_tracking = ComputeImpedanceForce(d.k, d.e, d.nu, d.nu, d.alpha, 6);
+  for (int i = 0; i < 6; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const double kp = (i < 3) ? d.k.kp_pos[ui] : d.k.kp_rot[ui - 3];
+    EXPECT_NEAR(f_tracking(i), d.alpha * kp * d.e(i), 1e-12);
+  }
+}
+
+// Selection matrix S: rows past the task dimension are left at zero, and an
+// out-of-range m cannot write past the fixed 6-vector.
+TEST(ImpedanceLaw, RowsBeyondTheTaskDimensionStayZero) {
+  auto rng = MakeRng();
+  const LawDraw d = RandomDraw(rng);
+  const Eigen::Matrix<double, 6, 1> zero = Eigen::Matrix<double, 6, 1>::Zero();
+
+  const auto f3 = ComputeImpedanceForce(d.k, d.e, d.nu, zero, d.alpha, 3);
+  for (int i = 3; i < 6; ++i)
+    EXPECT_EQ(f3(i), 0.0) << "TRANSLATION_ONLY leaked a rotation force on row " << i;
+  for (int i = 0; i < 3; ++i)
+    EXPECT_NE(f3(i), 0.0) << "translation row " << i << " went silent";
+
+  // Clamped, not UB: m > 6 fills exactly six rows, m < 0 fills none.
+  const auto f_over = ComputeImpedanceForce(d.k, d.e, d.nu, zero, d.alpha, 99);
+  const auto f6 = ComputeImpedanceForce(d.k, d.e, d.nu, zero, d.alpha, 6);
+  for (int i = 0; i < 6; ++i)
+    EXPECT_TRUE(BitsEqual(f_over(i), f6(i)));
+  EXPECT_EQ(ComputeImpedanceForce(d.k, d.e, d.nu, zero, d.alpha, -1).norm(), 0.0);
+}
+
+// The §10.7 ramp scales the WHOLE bracket (the caller's gravity term is what
+// stays unramped). α = 0.5 is exact in binary, so this is bitwise.
+TEST(ImpedanceLaw, ActivationRampScalesTheEntireForce) {
+  auto rng = MakeRng();
+  const LawDraw d = RandomDraw(rng);
+  const Eigen::Matrix<double, 6, 1> zero = Eigen::Matrix<double, 6, 1>::Zero();
+  const auto full = ComputeImpedanceForce(d.k, d.e, d.nu, zero, 1.0, 6);
+  const auto half = ComputeImpedanceForce(d.k, d.e, d.nu, zero, 0.5, 6);
+  for (int i = 0; i < 6; ++i)
+    EXPECT_TRUE(BitsEqual(half(i), 0.5 * full(i))) << "row " << i;
+  EXPECT_EQ(ComputeImpedanceForce(d.k, d.e, d.nu, zero, 0.0, 6).norm(), 0.0)
+      << "α = 0 must emit no task force at all";
+}
+
+TEST(ImpedanceLaw, ComputeIsAllocationFree) {
+  auto rng = MakeRng();
+  const LawDraw d = RandomDraw(rng);
+  const Eigen::Matrix<double, 6, 1> zero = Eigen::Matrix<double, 6, 1>::Zero();
+  // Both argument shapes a caller can bring: fixed 6-vectors, and the dynamic
+  // VectorXd(6) the controller keeps its task twist in. A Ref<const VectorXd>
+  // that fell back to a copy would heap-allocate on the second shape only.
+  Eigen::VectorXd e_dyn = d.e;
+  Eigen::VectorXd nu_dyn = d.nu;
+  {
+    rtc::testing::ScopedNoMalloc guard;
+    const auto a = ComputeImpedanceForce(d.k, d.e, d.nu, zero, d.alpha, 6);
+    const auto b = ComputeImpedanceForce(d.k, e_dyn, nu_dyn, zero, d.alpha, 3);
+    EXPECT_EQ(guard.violations(), 0u) << "ComputeImpedanceForce allocated on the RT path";
+    (void)a;
+    (void)b;
+  }
 }
 
 }  // namespace

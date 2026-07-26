@@ -50,6 +50,7 @@ frame mismatch** 이므로 (부호는 즉시 발산, frame 불일치는 특정 �
 | **Formulation** | `formulation:` YAML 로 명시 선택. `jacobian_transpose` (§6.2, **기본값**) \| `inertia_shaping` (§6.3). "wrench 가 설정됐으니 §6.3" 같은 암묵 추론 없음 | 두 법칙은 실패 모드와 특이점 노출이 다르다 — 센서 배선의 부작용으로 제어 법칙이 바뀌면 안 된다 |
 | **Pose error frame** | `SplitWorld` = `LOCAL_WORLD_ALIGNED`, `[p_d−p ; log3(R_d Rᵀ)]` | §1.3, `rtc_math/se3/pose_error.hpp` |
 | **Velocity error** | `ν_d − ν`; 정적 setpoint 는 `ν_d=0` ⇒ `ė = −J·q̇` | §1.4, SplitWorld = LWA |
+| **§6.2 법칙 위치** | `Compute()` 인라인 아님 — 공용 helper `compliance/impedance_law.hpp` (`α·[K_p·e + K_d·(ν_d−ν)]`), `ν_d` 는 **명시 인자** | D18. §7.6 cascade 의 inner loop 가 같은 법칙을 `ν_d = ν_c` 로 쓴다 (복제하면 §6.2 사본이 셋). 추출은 **bitwise 무변경** — `ImpedanceLaw.MatchesThePreExtractionInlineFormBitwise` 가 추출 전 인라인 형태의 사본과 비트 단위로 대조하고, 재결합(`α·kp·e + α·kd·ė`)이 그 비교를 실제로 깨뜨림을 같은 파일이 함께 고정한다 |
 | **Sign** | `+K_p·e` (desired−current) | §6.2 부호 규약 MUST |
 | **Selection (axis B)** | `FULL_SE3` (m=6) \| `TRANSLATION_ONLY` (m=3). `J_S = S·J`, linear rows first | §6.1 |
 | **Nullspace** | dynamically-consistent `Nᵀ = I − J_Sᵀ J̄_Sᵀ`, gate **`nv > task_dim`** (NOT `nv > 6`), 토크는 `Nᵀ` 투영 (가속도는 `N`) | §6.4 — 6-DoF+`TRANSLATION_ONLY` 는 dim-3 nullspace 가 **필수** |
@@ -134,7 +135,7 @@ Ad^{-T} 로 LOCAL_WORLD_ALIGNED(tip) 변환  →  staleness fade 곱
 | **동일 값 재전송** | **fresh 로 판정**. 값-변화 감지 방식이 아니다 | 일정한 접촉력을 유지 중인 살아있는 센서는 동일 벡터를 매 주기 재전송한다 — 값 변화로 판정하면 그 센서를 죽은 것으로 오판한다 |
 | **timeout 초과** | `wrench_fadeout_time` 동안 **0 으로 선형 fade**. **마지막 값 유지 절대 금지** | §10.6 MUST — 센서가 죽은 순간의 값이 영구 인가되면 로봇이 한 방향으로 계속 밀린다 |
 | **fault 등급** | `wrench_timeout` / `quality_low` 는 **DEGRADE**, critical 아님 → SAFE_STOP 으로 승격하지 않음 | §10.6: wrench 소실은 "정상과 치명적 사이의 중간 상태". 어느 한쪽으로 뭉개면 과잉 정지 또는 위험한 무시가 된다 |
-| **재활성화** | `WrenchPipeline::ResetForActivation()` 은 `Invalidate()` — 누적 age 를 지우고 **슬롯에 있던 샘플 자체를 disown** 한다 (producer 가 *다른* generation 을 낼 때까지 "아직 아무것도 안 왔음"으로 읽힌다) | 활성화가 "돌지 않던 동안 쌓인 age" 를 물려받으면 안 된다. 그런데 `ResetTiming()` 만 하면 **죽은 producer 의 마지막 판독이 age 0 으로 부활**한다 — 제어 재개 첫 tick 에 그 힘이 fresh 로 인가되므로 §10.6 "만료된 wrench 는 ZERO, 절대 hold 아님" 의 정확한 역이다. producer 가 살아있으면 차이는 다음 publish 까지의 몇 tick 뿐이고, 그 구간은 §3.1 의 bias 이중 래치("gate 해제 후 데이터 도착")가 이미 1급 경로로 처리한다. **대가는 그대로**: 비활성/E-STOP 중 죽은 producer 는 제어 재개 후 `wrench_timeout` 이내에 검출된다 (gap 중에는 아님). `TaskImpedanceController` 는 자체 `WrenchInput` 사본을 쓰며 아직 `ResetTiming()` (파이프라인 이전과 함께 후속) |
+| **재활성화** | `WrenchPipeline::ResetForActivation()` 은 `Invalidate()` — 누적 age 를 지우고 **슬롯에 있던 샘플 자체를 disown** 한다 (producer 가 *다른* generation 을 낼 때까지 "아직 아무것도 안 왔음"으로 읽힌다) | 활성화가 "돌지 않던 동안 쌓인 age" 를 물려받으면 안 된다. 그런데 `ResetTiming()` 만 하면 **죽은 producer 의 마지막 판독이 age 0 으로 부활**한다 — 제어 재개 첫 tick 에 그 힘이 fresh 로 인가되므로 §10.6 "만료된 wrench 는 ZERO, 절대 hold 아님" 의 정확한 역이다. producer 가 살아있으면 차이는 다음 publish 까지의 몇 tick 뿐이고, 그 구간은 §3.1 의 bias 이중 래치("gate 해제 후 데이터 도착")가 이미 1급 경로로 처리한다. **대가는 그대로**: 비활성/E-STOP 중 죽은 producer 는 제어 재개 후 `wrench_timeout` 이내에 검출된다 (gap 중에는 아님). `TaskImpedanceController` 도 슬라이스 4 에서 파이프라인으로 이전돼 같은 규칙을 따른다 (D22) — 그 전까지는 자체 사본에서 `ResetTiming()` 을 불렀으므로 이 결함이 shipped 상태였다. 이전의 관측 가능한 결과 하나: **활성화 직전에 발행된 샘플도 disown 된다**. 안에서는 1 µs 전 판독과 죽은 producer 의 마지막 판독을 구별할 수 없으므로 둘 다 신뢰하지 않으며, calibration 부채는 남아 다음 샘플이 BIAS_CALIBRATING 을 한 tick 늦게 재진입시킨다 (`BiasCalibrationSuppressesWrenchThenCommits` 가 이 순서를 고정). latched SAFE_STOP 은 매 held tick 재-seed 하므로 그 동안 wrench 는 계속 disown 되고, `ResetFault()` 이후 첫 신규 샘플부터 다시 유효하다 |
 | **비유한 샘플** | `WrenchInput::Set()` 진입점에서 6성분 `isfinite` 전수 검사, 하나라도 걸리면 **샘플 전체 드롭** + `rejected_samples()` 카운트 (진단 `wrench_rejected`) | 하위 어디도 이걸 못 거른다: conditioner 의 deadband·saturation 은 전부 비교연산이고 NaN 과의 비교는 모두 false 다. 그래서 garbage 1패킷이 compliant frame 까지 가서 `nan_inf` → **SAFE_STOP latch**, 그런데 그 latch 는 `ClearEstop()` 이 안 풀고 `~/reset_fault` 배선은 아직 없다 = 프로세스 재시작. 드롭하면 직전 샘플이 §10.6 정상 경로(fade → ZERO → DEGRADED)로 만료되며, 그게 garbage 를 내보내는 센서의 올바른 표현이다. 부분 채택(유한 성분만 반영)은 하지 않는다 — 조용히 다른 값이 된다 |
 | **contact split** | `‖f_LWA‖` 에 히스테리시스 (`contact_threshold` / `contact_release_ratio·threshold`, ratio 는 0.99 로 clamp) | §10.6 "히스테리시스 필수" — 동일 임계값은 경계에서 chatter |
 | **`contact_threshold ≤ 0`** | 접촉 감지 **비활성** (`in_contact` 항상 false) | ratio clamp 는 임계값을 *스케일* 하므로 임계값 0 에서는 enter = exit = 0 이 되어 clamp 가 막으려던 bare comparator 로 정확히 퇴화한다. 게다가 모든 실측값이 0 N 을 넘으므로 센서 노이즈에 latch 되어 영구히 RUNNING_CONTACT 가 된다 — "밴드 없는 히스테리시스" 보다 "감지 off" 가 정직하다 |
@@ -201,7 +202,27 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | **wrench 필수** | `external_wrench.enabled: false` 는 **configure 에러** | §7.1 축 A≠NONE. impedance 와 대칭이 아니다: 거기서는 A=NONE 이 1급 법칙이지만, 여기서는 힘이 곧 입력이라 없으면 비싼 위치 홀드로 퇴화한다 |
 | **task-space 텔레메트리** | `actual_task_positions` = 측정 TCP, `task_goal_positions` = **compliant frame** `X_c`. 둘 다 6-wide 전부 채운다 (translation + ZYX Euler RPY) | goal lane 이 `X_d` 가 아니라 `X_c` 인 이유: 실제로 명령하는 대상이 `X_c` 이고, `X_d` 만 보이면 지속적인 밀림 하에서 정지한 것처럼 보인다 — 조작자가 지켜보는 바로 그 상황이다. 0..2 만 채우면 FULL_SE3 컨트롤러인데 orientation 실험 로그가 "회전 없음" 으로 남는다 — "미측정" 과 구별 불가한 유일한 판독. 소비자(`device_state_log_pod` / `pod_fill`)는 6개를 전부 CSV 로 방출한다. 선례: `p_controller.cpp`, `operational_space_controller.cpp` |
 | **축 B (selection)** | **FULL_SE3 전용** — `TaskSelection` enum 없음 | `TRANSLATION_ONLY` 이면 어떤 task 도 규제하지 않는 회전을 토크로 적분하게 된다. §6.1 이 요구하는 nullspace posture 계약과 함께 후속 슬라이스에서 도입 |
-| **wrench 파이프라인** | 신규 `compliance/wrench_pipeline.hpp` 로 추출 (read → bias 이중 래치 → 조건화 → `Ad^{-T}` → fade → contact) | 조각들은 이미 분리돼 있었지만 **순서와 bias 이중 래치**는 공유되지 않았고 거기가 바로 미묘한 결함이 사는 자리다(§3.1). `TaskImpedanceController` 마이그레이션은 **유예** — helper 추출과 shipped 컨트롤러 이전은 회귀 표면이 다르다 (`task_dynamics.hpp` 가 OSC 를 안 건드린 D16 선례) |
+| **wrench 파이프라인** | 신규 `compliance/wrench_pipeline.hpp` 로 추출 (read → bias 이중 래치 → 조건화 → `Ad^{-T}` → fade → contact). **슬라이스 4 에서 `TaskImpedanceController` 도 이전 완료** (D22) | 조각들은 이미 분리돼 있었지만 **순서와 bias 이중 래치**는 공유되지 않았고 거기가 바로 미묘한 결함이 사는 자리다(§3.1). 슬라이스 3 은 이전을 유예했고(D16 선례) 그 사이 파이프라인만 F6(`Invalidate`)을 받아 §3.2 결함이 impedance 쪽에만 남았다 — 유예 비용이 실측된 셈이라 슬라이스 4 가 즉시 이전했다. 정상 경로(살아있는 producer)는 **byte-identical** 이 수용 조건이었고 τ·조건화 wrench·age·fade·상태 684 레코드로 확인했다 |
+
+## 3.6 §7.6 Cascaded compliance (슬라이스 4)
+
+명세가 "외력 추종의 **올바른** 구조" 로 지목한 형태. outer admittance 가 순응 거동을 정의하고
+(`X_c`, `ν_c`), inner §6.2 impedance 가 그 프레임을 추종한다. §6.3(측정 외력을 impedance 법칙에
+직접 가산)보다 안정적이라고 명세가 명시한 대안이다.
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| **wrench 소비 횟수** | **정확히 1회** — inner 는 `f_ext` 를 보지 않는다. `formulation` 축도 `inertia_shaping` 노브도 **만들지 않았다** | D19. §7.6 MUST-4 를 런타임 검사가 아니라 **타입 레벨**로 보장한다: outer 가 이미 `Ŵ_ext` 를 소비했으므로 inner 가 다시 쓰면 같은 힘을 두 번 세고 응답이 약 2배가 되는데, 모든 수가 유한하므로 fault 도 안 뜬다. 테스트는 단일가산·이중가산 두 후보 법칙을 **둘 다** 계산해 실제 출력이 전자와 일치하고 후자와 다름을 고정한다 (차이가 작으면 테스트 자체가 실패한다 — 공허한 단언 방지) |
+| **inner 의 `ν_d`** | `ν_d = ν_c` (0 아님). 공용 helper `compliance/impedance_law.hpp` 가 `ν_d` 를 명시 인자로 받는 이유 | inner 는 compliant frame 의 **운동까지** 추종해야 한다. `ν_d=0` 이면 outer 가 만든 운동을 `K_d^i·ν_c` 만큼 거꾸로 감쇠한다 — cascade 의 존재 이유와 정반대 |
+| **대역폭 분리 (MUST-1)** | `ω_i/ω_a` 를 **seeding tick 1회** `Λ_S(q₀)` 로 축별 계산 → 최악 축을 진단 `bandwidth_ratio` + 플래그 `bandwidth_ratio_low`. **fault 아님** | D20. 명세는 "on_configure 에서 경고" 라 하지만 configure 시점엔 `q` 가 없어 `Λ_S` 를 모른다. seeding tick 은 이미 `M(q)`·Cholesky 경로가 있고 사전할당이라 heap-free. RT 에서 `RCLCPP_*` 는 RT-3 위반이므로 로그가 아니라 플래그다. 낮은 비율은 두 게인 세트에 대한 **튜닝 진술**이지 런타임 실패가 아니므로 SAFE_STOP 으로 승격하지 않는다 (승격하면 "느린" 로봇을 세운다). `K_p^a = 0`(hand-guiding) 축은 분리할 대역 자체가 없으므로 비율에서 제외 — MUST-3 이 명시적으로 허용하는 설정을 플래그하면 플래그를 무시하도록 훈련시킨다 |
+| **복귀 vs hand-guiding (MUST-3)** | `K_p^a > 0` → 외력 제거 후 `X_c → X_d`. `K_p^a = 0` → 그 자리 유지 | `AdmittanceIntegrator` 의 성질이지만 cascade 수준에서 각각 테스트한다. hand-guiding 쪽은 "되돌아오지 않음" 을 고정하되 감쇠로 인한 잔여 coast 는 허용 (스프링백만 금지) |
+| **활성화 램프 α** | outer 로 들어가는 wrench 와 inner 에서 나오는 task force **양쪽**에 적용 | 각각 다른 불연속을 덮는다: 토크만 램프하면 팔이 부드러운 동안 `X_c` 가 정하중에서 멀어져 α=1 에 도달할 때 튀고, wrench 만 램프하면 inner 감쇠항 `−K_d^i·ν` 가 활성화 순간 토크 계단이 된다. 램프 구간에서 힘 구동 응답이 `α²` 인 것은 의도된 대가이며 `activation_ramp_time` 안에서만 단조 증가한다. 중력보상은 **절대 램프하지 않는다** |
+| **YAML 구조** | `outer:` / `inner:` **중첩 맵** (다른 컨트롤러의 flat 스타일과 다름) | 두 루프가 **각각** stiffness 와 damping 을 가진다. flat `stiffness:` 는 이 파일에서 가장 결과가 큰 모호성이 된다 — outer 는 로봇이 힘에 얼마나 양보하는지를, inner 는 얼마나 단단히 추종하는지를 정한다 |
+| **σ 특이점 fault** | `nullspace_active` 게이트에만 연동 | inner 는 Jacobian-transpose 라 `Λ` 를 형성하지 않아 task-space 특이점 노출이 없다(§6.5). seeding tick 의 `Λ_S` 계산은 **진단 목적**이므로 실패해도 대역폭 리포트만 잃고 활성화를 막지 않는다 |
+| **E-STOP** | torque hold `ĝ(q) − D·q̇` (`torque_estop.hpp` 재사용) | 토크 출력이므로 `TaskAdmittanceController` 의 position-hold latch 는 부적용. latch 가 없으므로 무효화 규칙(F1)도 대응물이 없다 — held tick 이 강제하는 **재-seed** 가 compliant frame·램프·rate 이력을 함께 되돌린다 |
+| **wrench 필수** | `external_wrench.enabled: false` 는 configure 에러 | outer 의 입력이 없으면 `X_c` 가 `X_d` 를 떠나지 않아 §6.2 impedance 컨트롤러와 동작이 같아진다 — 그건 이미 있고 더 잘 검증돼 있다 |
+| **`x̃_nom`(nominal offset)** | **0 고정, 미구현** | `AdmittanceIntegrator` 가 `K_p x̃` 형태이고 offset 소비자가 없다. 명세 대비 의도적 미구현으로 기록 |
+| **범위 밖** | arm-hand object-pull (virtual TCP = object/grasp frame) | §9 Virtual TCP 선행. `integrated_bringup` 배선(`RTC_REGISTER_CONTROLLER` / YAML / launch smoke)도 범위 계약 (1) 유지 — **따라서 S4 도 sim 에서 돌려볼 수 없고 단위 검증만 존재한다** |
 
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 
@@ -230,9 +251,9 @@ controller-private `SeqLock<POD>` 에 매 tick store 하나 LifecyclePublisher �
 - **축 B `TRANSLATION_ONLY`** — §3.5 참조. `TaskSelection` enum 자체를 만들지 않았다.
 - **S4 cascaded** (§7.6) · **JointAdmittance** (§5.4) · 동적 payload 보상 ·
   `CompositeWrenchSource`/fusion (§3.2.4).
-- **CLIK 을 `differential_ik.hpp` 로 마이그레이션** · **`TaskImpedanceController` 를
-  `wrench_pipeline.hpp` 로 마이그레이션** — 둘 다 helper 추출과는 회귀 표면이 다른 별건
-  (D16 선례). 후자를 할 때 두 경로가 **byte-identical** wrench 를 내는지가 수용 조건이다.
+- **CLIK 을 `differential_ik.hpp` 로 마이그레이션** — helper 추출과는 회귀 표면이 다른 별건
+  (D16 선례, 이슈 #258). 같이 유예했던 **`TaskImpedanceController` → `wrench_pipeline.hpp`**
+  는 슬라이스 4 가 흡수했다 (D22).
 
 슬라이스 2 가 명시적으로 **하지 않은** 것:
 

@@ -43,6 +43,7 @@ add_library(rtc_controllers STATIC
   src/controllers/direct/joint_pd_controller.cpp
   src/controllers/direct/operational_space_controller.cpp
   src/controllers/direct/task_impedance_controller.cpp
+  src/controllers/direct/cascaded_compliance_controller.cpp
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
   src/controller_registration.cpp
@@ -166,6 +167,20 @@ if(BUILD_TESTING)
   target_link_libraries(test_task_impedance_wrench rtc_controllers)
   target_include_directories(test_task_impedance_wrench PRIVATE ${rtc_urdf_bridge_test_include})
   target_compile_options(test_task_impedance_wrench PRIVATE -Wno-mismatched-new-delete)
+
+  # Slice-4 cascade surface (#236): outer admittance → inner impedance as a
+  # COMPOSITION — §7.6 MUST-4 (the wrench is spent once), MUST-1 (bandwidth
+  # report, never a fault), MUST-3 (return vs hand-guiding), plus the F5/F7/F8
+  # classes PR #256 found in the copied skeleton and the RT allocation gate.
+  # Same global operator-new interposition as the impedance suites, hence the
+  # same -Wmismatched-new-delete suppression.
+  ament_add_gtest(test_cascaded_compliance_controller
+    test/test_cascaded_compliance_controller.cpp)
+  target_link_libraries(test_cascaded_compliance_controller rtc_controllers)
+  target_include_directories(test_cascaded_compliance_controller
+    PRIVATE ${rtc_urdf_bridge_test_include})
+  target_compile_options(test_cascaded_compliance_controller
+    PRIVATE -Wno-mismatched-new-delete)
 
   # Off-RT config / registry-hook surface: LoadConfig YAML, OnDeviceConfigsSet
   # (tip_link / joint_limits / safe_position), bounds guards, multi-device

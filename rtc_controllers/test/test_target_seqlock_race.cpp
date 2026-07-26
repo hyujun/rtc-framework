@@ -10,6 +10,7 @@
 // p_controller / clik / osc) because it lives in the SeqLock<TargetSlot> +
 // SpscQueue<PendingTarget, N> idiom shared between them.
 
+#include "rtc_controllers/direct/cascaded_compliance_controller.hpp"
 #include "rtc_controllers/direct/joint_pd_controller.hpp"
 #include "rtc_controllers/direct/task_impedance_controller.hpp"
 #include "rtc_controllers/indirect/p_controller.hpp"
@@ -293,4 +294,58 @@ external_wrench:
       << "no snapshot was ever inspected — the race window was never opened";
   EXPECT_EQ(torn.load(std::memory_order_relaxed), 0)
       << "wrench snapshot mixed components from two samples — torn SeqLock read";
+}
+
+// Slice 4: the cascade carries the SAME marshal + drain idiom (SeqLock<TargetSlot>
+// + SpscQueue<PendingTarget>) as a THIRD copy (#236 D21 accepted the duplication;
+// #206 tracks unifying it). A copy is only as safe as its own coverage, so the
+// stress runs here too rather than being assumed from the impedance one.
+//
+// No wrench is published, so X_c ≡ X_d and diag.pose_error is e(X, X_d) — which
+// is what makes the goal reconstruction below the same one-line check.
+TEST(TargetSeqlockRace, CascadedComplianceSetDeviceTargetStress) {
+  rtc::CascadedComplianceController::Gains gains;
+  gains.pose_error_limit = 1e9;  // stress the marshal, not the pose-error fault
+  gains.max_torque_rate = 1e12;  // no slew latching under the far commanded steps
+  gains.activation_ramp_time = 0.0;
+  rtc::CascadedComplianceController ctrl(GetTestUrdfPath(), gains);
+  auto state = MakeState();
+  (void)ctrl.Compute(state);  // seed X_d = X_meas
+
+  constexpr int kIters = 100'000;
+  std::atomic<bool> producer_done{false};
+  std::atomic<int> compute_iters{0};
+
+  std::thread producer([&]() {
+    std::array<double, 6> tgt{};
+    for (int i = 0; i < kIters; ++i) {
+      const double v = 0.001 * static_cast<double>(i % 1024);
+      tgt = {v, v, v, 0.0, 0.0, 0.0};  // uniform translation, zero rotation
+      ctrl.SetDeviceTarget(0, tgt);
+    }
+    producer_done.store(true, std::memory_order_release);
+  });
+
+  std::thread consumer([&]() {
+    while (!producer_done.load(std::memory_order_acquire) ||
+           compute_iters.load(std::memory_order_relaxed) < kIters / 8) {
+      (void)ctrl.Compute(state);
+      compute_iters.fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+
+  producer.join();
+  consumer.join();
+
+  for (int i = 0; i < 16; ++i) {
+    (void)ctrl.Compute(state);
+  }
+
+  const auto final_out = ctrl.Compute(state);
+  const auto diag = ctrl.GetDiagnosticsForTesting();
+  const double gx = final_out.actual_task_positions[0] + diag.pose_error[0];
+  const double gy = final_out.actual_task_positions[1] + diag.pose_error[1];
+  const double gz = final_out.actual_task_positions[2] + diag.pose_error[2];
+  EXPECT_NEAR(gx, gy, 1e-9) << "torn task-target read (goal_t x vs y)";
+  EXPECT_NEAR(gx, gz, 1e-9) << "torn task-target read (goal_t x vs z)";
 }
