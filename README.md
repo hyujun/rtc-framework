@@ -26,7 +26,7 @@
 | [`rtc_math`](rtc_math/) | 헤더-전용 robot-agnostic 기하/제어 수학 (Eigen-only): SE(3) Lie-group 원시 연산(so3/se3 log/exp/Jacobian) + task-space pose/velocity(twist) error 정의(`rtc::math::se3`). Pinocchio 어댑터는 optional | ament_cmake |
 | [`rtc_communication`](rtc_communication/) | 헤더-전용 전송 계층 추상화: TransportInterface, UdpSocket/CanSocket/SerialPort RAII, UDP·CAN·CAN FD·RS485 transport (length-prefixed 프레이머), PacketCodec concept, Transceiver 템플릿 | ament_cmake |
 | [`rtc_controller_interface`](rtc_controller_interface/) | 추상 컨트롤러 인터페이스 (Strategy 패턴) + Singleton 레지스트리 (가변 DOF) | ament_cmake |
-| [`rtc_controllers`](rtc_controllers/) | 범용 제어기 4종 (P, JointPD, CLIK, OSC) + 퀸틱 궤적 생성기 | ament_cmake |
+| [`rtc_controllers`](rtc_controllers/) | 제어 알고리즘 라이브러리 — 관절/태스크 제어 법칙, compliance 공용 커널, Force-PI grasp, 퀸틱 궤적 생성기 (목록은 [rtc_controllers/README.md](rtc_controllers/) 가 SSoT) | ament_cmake |
 | [`rtc_tsid`](rtc_tsid/) | TSID QP 프레임워크: WQP/HQP formulation, PostureTask/SE3Task/CoMTask/ForceTask, EOM/Contact/FrictionCone/TorqueLimit/JointLimit 제약, ProxSuite 백엔드 | ament_cmake |
 | [`rtc_mpc`](rtc_mpc/) | MPC↔RT 인터페이스: zero-copy `TripleBuffer<T>` (single-atomic publish/acquire), cubic-Hermite `TrajectoryInterpolator`, `RiccatiFeedback`, `MPCSolutionManager` facade, `MPCThread`+`MockMPCThread` jthread skeleton (solver-agnostic; Aligator는 후속 패키지) | ament_cmake |
 | [`rtc_controller_manager`](rtc_controller_manager/) | 설정 가능한 RT 루프 (`control_rate`, default 500Hz, clock_nanosleep) + 컨트롤러 라이프사이클 + SPSC publish offload + E-STOP + `DeviceBackend` 추상 | ament_cmake |
@@ -96,7 +96,7 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 - **가변 DOF 실시간 제어**: `clock_nanosleep(TIMER_ABSTIME)` 기반 RT 루프 (`control_rate` YAML로 100Hz–5kHz 설정, default 500Hz), CPU 코어 자동 할당 (4/6/8/10/12/16코어)
 - **Lock-Free SPSC 아키텍처**: RT 스레드 → SPSC 버퍼 → 비-RT 퍼블리시/로깅 (wait-free push, cache-line 정렬)
 - **SeqLock 동기화**: 단일 Writer / 다중 Reader lock-free 상태 공유 (trivially copyable 타입 전용)
-- **컨트롤러 계층 분리**: `rtc_controller_interface` (추상) → `rtc_controllers` (범용 4종) → `integrated_bringup` (데모 2종)
+- **컨트롤러 계층 분리**: `rtc_controller_interface` (프레임워크 계약 + 공통 글루) → `rtc_controllers` (제어 법칙 라이브러리 — 노드도 `RTControllerInterface` 상속도 없음) → `integrated_bringup` (바인딩 + 등록 + production YAML). 배치 규칙·전이 상태는 [agent_docs/design-principles.md](agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms
 - **Lifecycle 관리**: 모든 C++ 노드가 `rclcpp_lifecycle::LifecycleNode` 기반 — `ros2 lifecycle` CLI로 런타임 상태 제어 (deactivate/activate), Launch event handler 기반 자동 configure→activate 체이닝
 
 ### 제어 알고리즘
@@ -104,6 +104,7 @@ integrated_bringup ← rtc_controller_manager, rtc_tsid, rtc_mpc,
 - **JointPDController**: PD + Pinocchio RNEA 중력/코리올리 보상, JointSpaceTrajectory 퀸틱 보간
 - **ClikController**: Damped Jacobian 역운동학 (3/6-DOF), 영공간 제어, TaskSpaceTrajectory SE3 퀸틱
 - **OperationalSpaceController**: 6-DOF Cartesian PD + SO(3) 회전 제어, Pinocchio log3 오차
+- **Compliance 계열** (`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`): §6.2 Jacobian-transpose impedance, §7 admittance (힘 입력 → 위치 출력), §7.6 두 루프 직렬. 규범·계약은 [rtc_controllers/docs/compliance-conventions.md](rtc_controllers/docs/compliance-conventions.md)
 - **DemoWbcController**: TSID QP 기반 16-DoF (arm + hand) 전신 제어, 6-state FSM (Idle→Approach→Closure→Hold→Release, 그리고 Fallback; enum slot 2·5 는 예약 — 과거 kPreGrasp 는 kApproach 에 병합, kRetreat 는 제거), ProxSuite Dense QP (Kinematic CLIK-QP position backbone + Dynamic TSID-ID τ_ff QP), RELEASE/abort 가 active grasp phase (`kApproach`/`kClosure`/`kHold`) 에서 즉시 preempt (`kIdle`/`kRelease`/`kFallback` 면제), **Phase 5에서 MPC reference 주입 경로 지원 — `rtc_mpc`의 MockMPCThread(20 Hz) → TripleBuffer → cubic-Hermite 보간 → TSID task `q_des/v_des/a_des + u_fb` 주입, MPC 비활성 시 Phase 4 고정-reference 동작 bit-identical 유지**
 
 ### 안전 시스템

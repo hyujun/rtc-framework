@@ -4,7 +4,9 @@
 
 ## 개요
 
-RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 레지스트리**를 제공하는 공유 C++ 라이브러리(`librtc_controller_interface.so`)입니다. Strategy 패턴을 사용하여 모든 제어 알고리즘이 구현해야 하는 추상 기반 클래스(`RTControllerInterface`)와, 정적 초기화 시점에 컨트롤러를 자동 등록하는 싱글톤 레지스트리(`ControllerRegistry`), 그리고 등록 매크로(`RTC_REGISTER_CONTROLLER`)를 제공합니다.
+RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 레지스트리**를 제공하는 공유 C++ 라이브러리(`librtc_controller_interface.so`)입니다. Strategy 패턴을 사용하여 CM 이 컨트롤러를 구동하기 위한 추상 기반 클래스(`RTControllerInterface`)와, 정적 초기화 시점에 컨트롤러를 자동 등록하는 싱글톤 레지스트리(`ControllerRegistry`), 그리고 등록 매크로(`RTC_REGISTER_CONTROLLER`)를 제공합니다.
+
+> **누가 이것을 구현하는가**: 제어 *알고리즘* 이 아니라 **바인딩**이다 — integration 패키지가 소유하는, 프레임워크 계약을 알고리즘에 이어 붙이는 클래스. `rtc_controllers` 의 제어 법칙은 이 인터페이스를 몰라야 한다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 가 SSoT — 3계층 배치·전이 상태 포함). 이 패키지는 그 3계층 중 **base 계층**이며, 모든 바인딩이 동일하게 필요로 하는 글루(target mailbox · submodel 선택 · device 한계값 · 판독가능성 게이트 · E-STOP scaffolding)를 여기로 모으는 것이 #206 → #236 S7 의 방향이다.
 
 ---
 
@@ -85,7 +87,9 @@ joint 목표는 디스패치 직전에 `device_name_configs_[group_name].joint_l
 | `IsCurrentGeneration(gen)` | base public | RT drain 측 판정 술어 |
 | `ResetTargetInitialization()` | base protected virtual | `on_activate` 가 매 활성화마다 호출. 파생 controller 는 여기서 `target_initialized_` 계열 latch 만 내려 첫 tick 재-seed 를 강제한다 |
 
-각 controller 의 `PendingTarget` 은 `generation` 필드를 갖고, off-RT `SetDeviceTarget`/`SetDeviceTaskTarget` 이 push 시점의 세대를 찍으며, RT `Compute()` drain 이 `IsCurrentGeneration` 이 아닌 entry 를 버린다. 활성화 latch reset 은 **base 가 소유**하므로 controller 는 `on_activate` override 없이도 재-seed 를 얻는다 (이전에는 `PController`/`ClikController`/`OperationalSpaceController`/`JointPDController` 4종이 override 자체가 없어 재활성화 시 이전 hold 를 그대로 유지했다).
+각 controller 의 `PendingTarget` 은 `generation` 필드를 갖고, off-RT `SetDeviceTarget`/`SetDeviceTaskTarget` 이 push 시점의 세대를 찍으며, RT `Compute()` drain 이 `IsCurrentGeneration` 이 아닌 entry 를 버린다. 활성화 latch reset 은 **base 가 소유**하므로 controller 는 `on_activate` override 없이도 재-seed 를 얻는다 (이 소유권 이전 전에는 `on_activate` override 가 없는 controller 들이 재활성화 시 이전 hold 를 그대로 유지했다).
+
+> **`PendingTarget` 자체는 아직 base 소유가 아니다** — `SpscQueue` + `SeqLock<TargetSlot>` + drain 루프는 구현체마다 복제돼 있고, base 가 소유하는 것은 generation 스탬프와 latch reset 뿐이다. 이 복제가 #206 의 내용이며, #236 이 그것을 슬라이스 S7 로 흡수해 mailbox 전체를 이 패키지로 올린다 (같은 글루 계층의 submodel 선택 · device 한계값 로드 · 판독가능성 게이트와 함께). 그때 이 절은 "각 controller 의" 가 아니라 "base 의" 로 다시 쓰인다. 배치 규칙의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 의 3계층 표다.
 
 CM 이 아닌 단위 테스트가 직접 `Compute()` 를 도는 경로는 양쪽 모두 세대 0 이라 아무것도 드롭되지 않는다.
 
@@ -261,29 +265,31 @@ RTC_REGISTER_CONTROLLER(config_key, config_subdir, config_package, FactoryExpr)
 
 | 파라미터 | 타입 | 예시 |
 |---------|------|------|
-| `config_key` | 식별자 (따옴표 없음) | `p_controller` |
-| `config_subdir` | 문자열 리터럴 | `"indirect/"` |
-| `config_package` | 문자열 리터럴 | `"rtc_controllers"` |
-| `FactoryExpr` | 코드 표현식 | `std::make_unique<PController>(urdf)` |
+| `config_key` | 식별자 (따옴표 없음) | `demo_joint_controller` |
+| `config_subdir` | 문자열 리터럴 | `""` (production 은 flat) |
+| `config_package` | 문자열 리터럴 | `"integrated_bringup"` |
+| `FactoryExpr` | 코드 표현식 | `std::make_unique<DemoJointController>(urdf)` |
 
 > `urdf` 변수는 매크로가 생성하는 람다의 파라미터 `(const std::string& urdf)`로 자동 제공됩니다.
+>
+> **등록 대상은 항상 downstream 의 클래스다.** `config_package` 에 `rtc_*` 패키지 이름을 넣는 형태는 ARCH-1 위반이며, 등록되는 클래스 자체도 integration 패키지가 소유하는 바인딩이어야 한다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms). `rtc_controllers` 에는 아직 `RTControllerInterface` 를 상속한 어댑터가 남아 있어 기술적으로 등록 가능하지만, 그 어댑터들은 #236 S1–S7 에서 삭제되므로 새 등록의 대상으로 삼지 않는다.
 
 ### 매크로 전개 예시
 
 ```cpp
-// 입력
-RTC_REGISTER_CONTROLLER(p_controller, "indirect/", "rtc_controllers",
-    std::make_unique<PController>(urdf))
+// 입력 (integrated_bringup/src/controllers/controller_registration.cpp)
+RTC_REGISTER_CONTROLLER(demo_joint_controller, "", "integrated_bringup",
+    std::make_unique<DemoJointController>(urdf))
 
 // 전개 결과
 namespace {
-  [[maybe_unused]] const bool rtc_reg_p_controller = [] {
+  [[maybe_unused]] const bool rtc_reg_demo_joint_controller = [] {
     ::rtc::ControllerRegistry::Instance().Register({
-      "p_controller",           // config_key (문자열화)
-      "indirect/",              // config_subdir
-      "rtc_controllers",        // config_package
+      "demo_joint_controller",  // config_key (문자열화)
+      "",                       // config_subdir
+      "integrated_bringup",     // config_package
       [](const std::string& urdf) {  // factory 람다
-        return std::make_unique<PController>(urdf);
+        return std::make_unique<DemoJointController>(urdf);
       }
     });
     return true;
@@ -311,11 +317,14 @@ device-group 키로 치환해 복제하세요)
 
 ```cpp
 // 방법 1: Force 함수 정의 후 main()에서 호출
-namespace rtc { void ForcePControllerRegistration() {} }
+//   실제 사용처: integrated_bringup/src/integrated_rt_controller_main.cpp 가
+//   rtc::ForceBuiltinControllerRegistration() 를 호출한다 (현재 no-op — 등록은
+//   bringup 자신의 TU 에 있고, 링크 호환성을 위해 심볼만 남아 있다)
+namespace rtc { void ForceBuiltinControllerRegistration() {} }
 
-// 방법 2: --whole-archive 링커 플래그
+// 방법 2: --whole-archive 링커 플래그 — 등록 TU 를 담은 정적 라이브러리에 건다
 target_link_libraries(my_exe
-  PRIVATE -Wl,--whole-archive rtc_controllers -Wl,--no-whole-archive)
+  PRIVATE -Wl,--whole-archive <registration_lib> -Wl,--no-whole-archive)
 ```
 
 ---

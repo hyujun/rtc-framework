@@ -7,22 +7,26 @@
 
 ## 개요
 
-RTC 프레임워크의 **내장 제어 알고리즘 구현체** 패키지입니다. `RTControllerInterface`를 상속하는 7개의 로봇 컨트롤러, 적응형 PI 힘 제어 그래스프 컨트롤러, 그리고 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
+RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니다. 관절/태스크 공간 제어 법칙, compliance 계열 법칙과 그 공용 커널(`compliance/`), 적응형 PI 힘 제어 그래스프 컨트롤러, 5차 다항식 기반 궤적 생성기(기본/블렌드/스플라인)를 제공합니다.
+
+> **계약 (issue #236, 2026-07-26)**: 이 패키지는 **제어 법칙만** 소유합니다 — 노드·publisher·subscription 을 만들지 않고, `RTControllerInterface` 를 상속하지도 않습니다. 프레임워크 계약을 구현하는 클래스(= 바인딩)는 downstream integration 패키지가 소유합니다. 규칙·3계층 배치·경계 판정의 SSoT 는 [agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms 이며, 여기서 반복하지 않습니다.
+>
+> **전이 상태 — 오늘 코드는 아직 그 형태가 아닙니다.** `RTControllerInterface` 를 상속한 어댑터 클래스가 `include/rtc_controllers/{direct,indirect}/` 에 남아 있고 (`grep -rn "public RTControllerInterface" include/`), `package.xml` 의 `<depend>rtc_controller_interface</depend>` 도 그대로입니다. 규칙은 **새 코드에 즉시** 적용되며, 기존 어댑터는 #236 슬라이스 S1–S7 에서 코어 추출 후 삭제됩니다. 이미 목표 형태로 서 있는 것은 `compliance/*` 커널과 `grasp/`·`trajectory/` 이며, 새 법칙은 처음부터 그 형태로 씁니다.
 
 > **사용 모델 (ARCH-1)**: rtc_controllers 는 **라이브러리 심볼만** 제공합니다. `RTC_REGISTER_CONTROLLER` 자동 등록은 *하지 않습니다* — 다운스트림 `<robot>_bringup` 패키지가 (1) 자체 `controller_registration.cpp` 에서 `RTC_REGISTER_CONTROLLER(<key>, <subdir>, "<robot>_bringup", <factory>)` 로 등록하고, (2) `config/controllers/<subdir>/<key>.yaml` 을 자체 보유합니다. `rtc_controllers/examples/controllers/` 의 4개 YAML 은 **참고용 example** 로만 동봉되며 (`share/rtc_controllers/examples/` 에 설치), robot identity (device-group 키 `<robot>`, 토픽 경로, 관절 게인 등) 부분을 바꿔 복제해 사용하세요. `examples/` 의 YAML 은 그대로 로드할 수 없습니다 — placeholder `<robot>` 가 CM `devices.*` 키와 매칭되지 않아 의도적으로 실패합니다.
 
-**컨트롤러 분류:**
+**제어 법칙 분류** ("형태" 열이 *어댑터* 인 행은 전이 중 — 위 계약 참조. `GraspController` 는 이미 상속하지 않는 코어입니다):
 
-| 컨트롤러 | 공간 | 출력 모드 | 카테고리 |
-|---------|------|----------|----------|
-| PController | 관절 공간 | Position (indirect) | `indirect/` |
-| JointPDController | 관절 공간 | Torque (direct) | `direct/` |
-| ClikController | 태스크 공간 | Position (indirect) | `indirect/` |
-| OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` |
-| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` |
-| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` |
-| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` |
-| GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` |
+| 제어 법칙 | 공간 | 출력 모드 | 카테고리 | 형태 |
+|---------|------|----------|----------|------|
+| PController | 관절 공간 | Position (indirect) | `indirect/` | 어댑터 (코어 미신설 — #236 D-Q1) |
+| JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 |
+| ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 |
+| OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 |
+| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
+| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 |
+| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
+| GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` | **코어** (상위 컨트롤러가 멤버로 소유) |
 
 > `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러다. 기본 법칙은
 > `formulation: jacobian_transpose` (§6.2 A=NONE,
@@ -135,6 +139,8 @@ rtc_controllers/
 ---
 
 ## 컨트롤러 상세
+
+아래 5절은 비-compliance 계열입니다. compliance 3종(`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`)의 법칙·계약·근거는 §개요의 서술과 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 이므로 여기서 반복하지 않습니다.
 
 ### 1. PController (관절 공간 P 제어)
 
@@ -642,7 +648,9 @@ auto state = traj.compute(time);
 
 ## 컨트롤러 등록
 
-`rtc_controllers`의 4개 컨트롤러(`PController`, `JointPDController`, `ClikController`, `OperationalSpaceController`)는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry`에 **자동 등록되지 않습니다**. 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (예: `integrated_bringup`은 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
+`rtc_controllers`의 어댑터 클래스는 **라이브러리 심볼로만 제공**되며 `ControllerRegistry`에 **자동 등록되지 않습니다** — 즉 이 저장소에서 실제로 런타임 노출을 갖는 어댑터는 **0개**입니다. 런타임에 선택 가능한 컨트롤러 집합은 각 로봇의 `<robot>_bringup` 패키지가 결정합니다 (이 저장소에서는 `integrated_bringup`이 `DemoJointController`, `DemoTaskController`, `DemoWbcController` 3종을 등록).
+
+> 목표 형태에서는 아래처럼 `rtc_controllers` 클래스를 직접 등록하는 대신, downstream 이 **바인딩 클래스**를 자기 패키지에 만들고 그 안에서 `rtc_controllers` 의 코어를 멤버로 소유해 호출합니다 — `integrated_bringup` 의 데모 컨트롤러가 `trajectory/*`·`grasp/*` 를 쓰는 방식 그대로입니다. 아래 예시는 어댑터가 살아 있는 동안의 경로입니다 ([agent_docs/design-principles.md](../agent_docs/design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
 
 필요 시 downstream 패키지에서 다음과 같이 직접 등록할 수 있습니다.
 
@@ -661,6 +669,8 @@ RTC_REGISTER_CONTROLLER(
 
 ## 컨트롤러 비교
 
+아래는 **비-compliance 4종**의 대조표입니다. compliance 3종(`TaskImpedance` / `TaskAdmittance` / `CascadedCompliance`)은 게인 단위·부호 규약·wrench 계약이 달라 같은 축으로 비교되지 않으므로 §개요의 서술과 [docs/compliance-conventions.md](docs/compliance-conventions.md) 가 SSoT 입니다.
+
 | | PController | JointPDController | ClikController | OperationalSpaceController |
 |---|---|---|---|---|
 | **제어 공간** | 관절 | 관절 | 태스크 (3/6-DOF) | 태스크 (6-DOF) |
@@ -676,9 +686,9 @@ RTC_REGISTER_CONTROLLER(
 
 ### 게인 채널 (per-controller ROS 2 parameter)
 
-핵심 `rtc_controllers` 4개(P/JointPD/Clik/OSC)는 게인을 `LoadConfig` 시점에 YAML에서 로드해 고정한다 — 런타임 채널 없음. 데모 컨트롤러(`DemoJointController`/`DemoTaskController`/`DemoWbcController`)는 자기 LifecycleNode(`/<config_key>`)에서 게인을 `declare_parameter`로 노출하며 `add_on_set_parameters_callback`이 SeqLock writer로 mutate→Store 한다 ([agent_docs/controllers.md](../agent_docs/controllers.md) §Gains, Phase A~F migration 2026-04-26). 옛 `~/controller_gains` 토픽 + `UpdateGainsFromMsg` / `GetCurrentGains` 가상 메서드는 모두 제거.
+`rtc_controllers` 의 컨트롤러는 **하나도** 런타임 게인 채널을 갖지 않는다 — 게인을 `LoadConfig` 시점에 YAML 에서 로드해 고정한다. 이는 누락이 아니라 계약이다: 파라미터 채널은 LifecycleNode 를 요구하고 이 패키지는 노드를 만들지 않는다. 데모 컨트롤러(`DemoJointController`/`DemoTaskController`/`DemoWbcController`)는 integration 패키지에 있어 자기 LifecycleNode(`/<config_key>`)에서 게인을 `declare_parameter`로 노출하며 `add_on_set_parameters_callback`이 SeqLock writer로 mutate→Store 한다 ([agent_docs/controllers.md](../agent_docs/controllers.md) §Gains, Phase A~F migration 2026-04-26). 옛 `~/controller_gains` 토픽 + `UpdateGainsFromMsg` / `GetCurrentGains` 가상 메서드는 모두 제거.
 
-`set_gains`/`get_gains` public accessor는 4개 컨트롤러 모두 보존 (테스트와 데모 컨트롤러 내부 작성 시 사용).
+`set_gains`/`get_gains` public accessor는 모든 컨트롤러에 보존 (테스트와 데모 컨트롤러 내부 작성 시 사용).
 
 `Gains` struct 레이아웃은 [include/rtc_controllers/{direct,indirect}/*.hpp](./include/rtc_controllers/) 참조.
 
@@ -714,7 +724,7 @@ RTC_REGISTER_CONTROLLER(
 | 의존성 | 용도 |
 |--------|------|
 | `ament_cmake` | 빌드 시스템 |
-| `rtc_controller_interface` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) + 레지스트리 |
+| `rtc_controller_interface` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) + 레지스트리. **전이 중 — 목표 형태에서는 이 의존이 제거된다** (#236: 이 패키지는 프레임워크 계약을 모르는 알고리즘만 남는다) |
 | `rtc_base` | 공유 데이터 타입 (`ControllerState`, `ControllerOutput`, `DeviceState`), 상수 (`kDefaultMaxJointVelocity`, `kDefaultMaxJointTorque`), RT-safe 유틸리티 (`utils/clamp_commands.hpp::ClampSymmetric`, `utils/device_passthrough.hpp::PassthroughSecondaryDevices`) |
 | `rtc_msgs` | RTC 프레임워크 커스텀 ROS2 메시지 |
 | `eigen` | 선형 대수 연산 (Eigen3) |
@@ -743,11 +753,11 @@ source install/setup.bash
 rtc_base + pinocchio + yaml-cpp + eigen
     |
 rtc_controller_interface  -- 추상 인터페이스 + 레지스트리
-    |
-rtc_controllers  -- 4개 내장 컨트롤러 구현
+    |                        (전이 중 — 목표 형태에서는 이 화살표가 사라진다, #236)
+rtc_controllers  -- 제어 법칙 라이브러리 (+ 전이 중인 어댑터)
     ^
     |-- rtc_controller_manager  (컨트롤러 인스턴스화 + Compute 호출)
-    |-- integrated_bringup            (launch에서 컨트롤러 선택)
+    |-- integrated_bringup            (바인딩 소유 + launch에서 컨트롤러 선택)
 ```
 
 ---
