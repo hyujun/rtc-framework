@@ -23,7 +23,7 @@
 6. Verify   → 본 문서 Completion Checklist 8항목 통과
 ```
 
-**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용. Hook 한계: 변경 패키지만 빌드, 60s timeout per package, README/CMake만 검사 (package.xml/YAML은 미검). 또한 **무한 차단이 아니다** — 8회 연속 `exit 2` 후 Claude Code 가 hook 을 override 하고 turn 을 종료하므로 (code.claude.com/docs best-practices), 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다. Pure-format commit (모든 변경 .cpp/.hpp/.py 가 `clang-format`/`ruff format` round-trip 결과와 동일) 은 ARCH grep + README/CMake co-update 단계만 자동 skip 되고 build/test 는 그대로 돈다.**
+**※ 4·5·6은 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook이 turn 종료 시 자동 실행/차단한다 — 사전 수동 실행은 빠른 피드백용.** hook 이 *무엇을* 검사하고 무엇이 blocking 인지는 [CLAUDE.md](../CLAUDE.md) §4 가 SSoT (변경 집합 산정 · blocking vs non-blocking checklist · pure-format skip 포함), hook 이 검사하지 **않는** 항목은 아래 §Completion Checklist. 여기엔 그 둘 어디에도 없는 한 가지만 둔다 — **무한 차단이 아니다**: 8회 연속 `exit 2` 후 Claude Code 가 hook 을 override 하고 turn 을 종료하므로 (code.claude.com/docs best-practices), 지속 실패 시 에이전트가 주입된 리포트에 직접 대응해야 한다.
 
 ### Workflow Fail-Safe
 
@@ -35,7 +35,7 @@
 | 2. Read | 컨텍스트 불충분 (호출자 / 테스트 미확인) | 인접 파일 + 테스트 추가 읽기. 추측하지 말 것 |
 | 3. Edit | Invariant 위반 유혹 | [invariants.md](invariants.md) 확인 후 [CLAUDE.md](../CLAUDE.md) §6 Escalate. 우회로 찾지 말 것 |
 | 4. Build | 빌드 실패 | 에러 메시지를 **먼저** 기록. 원인 파악 전 재시도 금지 |
-| 5. Test | 테스트 실패 | assertion 을 통과시키려 약화 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-4 / [invariants.md](invariants.md) PROC-6). 새 코드를 고칠 것 — 단 test 가 진짜 틀렸으면 별도 commit + 근거 + E-6 |
+| 5. Test | 테스트 실패 | **새 코드를 고친다.** assertion 쪽을 손대야 할 것 같으면 그 자체가 신호이므로 착수 전 [invariants.md](invariants.md) PROC-6 을 편다 — 회귀 은폐 vs 정당한 변경 판정, 별도 commit·E-6 절차, 탐지 패턴이 거기 있다 |
 | 6. Verify | Checklist 항목 실패 | 해당 항목까지 rollback, 재실행. 부분 완료 주장 금지 ([anti-patterns.md](anti-patterns.md) AP-PROC-1) |
 
 ## Sprint Contract & Spec (착수 전 성공 기준)
@@ -65,25 +65,25 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 
 1. **코어 헤더** — `rtc_controllers/include/rtc_controllers/<family>/` 에 법칙만. 입출력은 Eigen / `std::span` 이고 `ControllerState`/`ControllerOutput`·lifecycle·mailbox 를 모른다. `Resize()`(off-RT, 할당 허용) / `Compute()`(`noexcept`, heap-free) 분리. 참조 구현은 `rtc_controllers/include/rtc_controllers/compliance/` 의 `task_dynamics.hpp`·`impedance_law.hpp`.
 2. **코어 파라미터** — 코어 옆에 `Params` POD + `ParseXxxParams(YAML::Node)` 자유 함수 (yaml-cpp 만 의존, 비-RT). 프레임워크 타입을 참조하지 않으므로 코어와 같은 층에 남는다.
-3. **바인딩 클래스** — integration 패키지(`integrated_bringup/`)에서 `RTControllerInterface` 를 상속하고 코어를 멤버로 소유한다. `Compute()`, `SetDeviceTarget()`, `Name()` (all `noexcept`) 구현 + `ControllerState` 해체 → 코어 호출 → `ControllerOutput` 조립. **`Name()` 은 전역 유일해야 한다** — CM 은 `Name()` 과 `config_key` 를 하나의 lookup 네임스페이스에 넣으므로, 컨트롤러 클래스를 복사하고 `Name()` 문자열을 안 고치면 bring-up 전체가 거부된다 (경고 아님; [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §식별자 충돌 가드). 같은 이유로 **한 클래스를 두 `config_key` 로 등록할 수 없다**. **Layering rule** ([design-principles.md](design-principles.md) §Backend / Controller Layering): 바인딩은 자기가 소비하는 `DeviceStateCache` 슬롯만 읽고, 파생량(`force_magnitude`, `in_contact`, slip, ...) 은 backend 가 아니라 코어/바인딩이 계산하며 `DeviceStateCache` 에 넣지 않는다.
+3. **바인딩 클래스** — integration 패키지(`integrated_bringup/`)에서 `RTControllerInterface` 를 상속하고 코어를 멤버로 소유한다. `Compute()`, `SetDeviceTarget()`, `Name()` (all `noexcept`) 구현 + `ControllerState` 해체 → 코어 호출 → `ControllerOutput` 조립. **`Name()` 은 전역 유일해야 한다** — CM 은 `Name()` 과 `config_key` 를 하나의 lookup 네임스페이스에 넣으므로, 컨트롤러 클래스를 복사하고 `Name()` 문자열을 안 고치면 bring-up 전체가 거부된다 (경고 아님; [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) §식별자 충돌 가드). 같은 이유로 **한 클래스를 두 `config_key` 로 등록할 수 없다**. `DeviceStateCache` 에서 무엇을 읽고 무엇을 스스로 계산해야 하는지는 [design-principles.md](design-principles.md) §Backend / Controller Layering.
 4. **Runtime gains** — 바인딩의 LifecycleNode (`/<config_key>`) ROS 2 parameter 로 노출: `on_configure` 에서 `DeclareGainParameters()` + `add_on_set_parameters_callback(OnGainParametersSet)`. Read-only 캡(`*_max_traj_velocity`)은 `ParameterDescriptor::read_only=true`. Force-PI 같은 one-shot 이벤트는 [rtc_msgs/srv/GraspCommand](../rtc_msgs/srv/GraspCommand.srv) 같은 srv 채널을 별도로 마련하고 `~/grasp_command`로 advertise (active controller만 server를 띄움). **코어는 파라미터 채널을 갖지 않는다** — 노드를 만들지 않기 때문이며, 스냅샷을 인자로 받는다.
-5. Gains struct must be trivially copyable (plain arrays/bools/doubles/floats/ints; no `std::string`/`std::vector`/virtuals). Store as `rtc::SeqLock<Gains> gains_lock_` — RT path snapshots once with `const auto gains = gains_lock_.Load();` at method entry; aux-thread writers (parameter callback / srv handler) use Load/mutate/Store. `set_gains`/`get_gains` accessors delegate to the SeqLock and are used by tests.
-6. YAML in `integrated_bringup/config/<robot>/controllers/` (production — 바인딩과 같은 패키지가 소유한다; `rtc_controllers/examples/controllers/` 는 전이 잔여 어댑터용 reference 이므로 새 컨트롤러가 여기 파일을 추가하지 않는다) -- must include `topics:` section. **Subscribe roles** (`role: target`) 와 **publish role** (`role: robot_transforms` — #196 Phase 5 에서 publisher 가 없던 `robot_target` / `joint_goal` / `digital_twin_state` 는 제거, 이제 configure 실패) 은 전부 controller-owned 이므로 (issue #138: `ownership:` field 없음) **relative path** 를 쓰면 노드 namespace `/<config_key>/` 아래로 해석됩니다 (`<group>/joint_goal`, not `/<group>/joint_goal`). Device-wire lane 은 controller YAML 이 아니라 `devices.<group>.backend:` 에 선언합니다. **Controller-owned non-RT topics that are NOT in PublishRole** (`grasp_state` / `wbc_state` / `tof_snapshot`): controller 가 자체 `SeqLock<{Grasp,Wbc,ToF}StateData>` writer 소유 + `integrated_bringup/support/owned_topics.hpp` 의 `Setup{Grasp,Wbc,ToF}*Publisher` 헬퍼 호출 — `topics:` entry 없음, PublishRole 없음; topic name 은 helper 에 hardcoded.
-7. If the binding owns any topics: override `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` / `PublishNonRtSnapshot` and delegate to the `owned_topics` helper (or inline the equivalent). Always call the base `RTControllerInterface::on_configure` / `on_cleanup` first, and `on_activate` 오버라이드는 반드시 base 를 호출해야 한다 — base 가 activation generation 증분 + `ResetTargetInitialization()` 을 수행하므로 (#196 §3), 누락 시 비활성 구간에 쌓인 stale target 이 재활성화 첫 tick 에 적용된다. target-init latch reset 은 `on_activate` 안에 직접 쓰지 말고 `ResetTargetInitialization()` 오버라이드에 둔다. **CM bring-up 은 3-pass** (`PreConfigure` → `SetDeviceNameConfigs` → `on_configure`) 라서 `on_configure` 안에서 `RegisterLog<>(...)` 의 람다가 `joint_state_names`/`motor_state_names` 등을 capture할 때 `OnDeviceConfigsSet()` 가 이미 실행됐음이 보장됩니다 — 별도 시점 조정 불필요. `PreConfigure` 는 base 전용이므로 override 금지.
+5. Gains struct must be trivially copyable (plain arrays/bools/doubles/floats/ints; no `std::string`/`std::vector`/virtuals — `rtc::SeqLock` 의 타입 요구, [rtc_base/README.md](../rtc_base/README.md)). Store as `rtc::SeqLock<Gains> gains_lock_` — RT path snapshots once with `const auto gains = gains_lock_.Load();` at method entry; aux-thread writers (parameter callback / srv handler) use Load/mutate/Store. `set_gains`/`get_gains` accessors delegate to the SeqLock and are used by tests.
+6. **YAML** — production 은 `integrated_bringup/config/<robot>/controllers/` (바인딩과 같은 패키지가 소유한다; `rtc_controllers/examples/controllers/` 는 전이 잔여 어댑터용 reference 이므로 새 컨트롤러가 여기 파일을 추가하지 않는다). `topics:` 섹션을 반드시 포함한다. 어떤 `role:` 문자열이 유효하고 어느 lane 이 controller YAML 밖에 사는지(device-wire → `devices.<group>.backend:`)는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §토픽 소유권 · §구독 역할 · §퍼블리시 역할 이 SSoT — **거기 없는 문자열은 오타와 동일하게 configure 를 실패시키므로 추측하지 말고 표를 본다.**
+7. **바인딩이 토픽을 소유한다면** — `on_configure` / `on_activate` / `on_deactivate` / `on_cleanup` / `PublishNonRtSnapshot` 을 override 하고 `owned_topics` 헬퍼에 위임한다 (또는 동등 코드를 인라인). 훅별 기본 동작 · 3-pass bring-up 계약 · `on_configure` override 규약은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §Lifecycle 훅 이 SSoT. **그 문서가 다루지 않는 한 가지**: `on_activate` override 도 반드시 base 를 먼저 호출해야 한다 — base 가 activation generation 증분 + `ResetTargetInitialization()` 을 수행하므로 (#196 §3), 누락하면 비활성 구간에 쌓인 stale target 이 재활성화 첫 tick 에 적용된다. target-init latch reset 은 `on_activate` 안에 직접 쓰지 말고 `ResetTargetInitialization()` override 에 둔다.
 8. Register via `RTC_REGISTER_CONTROLLER()` macro — `config_key` 는 링크되는 모든 TU 에 걸쳐 유일해야 하고, 어떤 컨트롤러의 `Name()` 과도 겹치면 안 된다 (3번 항목의 `Name()` 유일성과 같은 네임스페이스). 등록 대상은 항상 바인딩이며 `integrated_bringup/src/controllers/controller_registration.cpp` 에 둔다 (`config_package` 는 자기 패키지 — `rtc_*` 패키지 이름을 넣으면 ARCH-1 위반)
 
 ## Adding a New Message Type
 
 1. Create `rtc_msgs/msg/MyMessage.msg`, add to `CMakeLists.txt` `rosidl_generate_interfaces()`
-2. **Decide ownership before adding a PublishRole.** PublishRole is reserved for controller-owned YAML-declared output streams that actually have a publisher wired up — after #196 Phase 5 that is `kRobotTransforms` alone. Controller-owned non-RT topics (Grasp/Wbc/ToF 스타일) 는 PublishRole 추가 금지 — 대신: controller 에 `SeqLock<MyData>` 멤버 선언, `integrated_bringup/support/owned_topics.hpp` 에 `SetupMyDataPublisher()` 헬퍼 작성, controller 가 `on_configure`/`on_activate` 에서 호출 (RT loop pushes via the SeqLock writer; aux thread reads + publishes). 기존 Grasp/Wbc/ToF wiring 이 canonical pattern.
-3. If you genuinely need a new PublishRole: add it to `rtc_base/types/types.hpp` `PublishRole` enum + `PublishRoleToString()` + YAML mapping in `rtc_controller_interface/src/rt_controller_interface.cpp` parser, **그리고 같은 변경 안에서 `integrated_bringup/src/support/owned_topics.cpp` 의 switch 에 실제 publisher 를 만든다** — 매핑만 추가하고 소비자를 빠뜨리면 선언한 컨트롤러가 에러 없이 죽은 토픽을 얻는다 (#196 Phase 5 가 그렇게 방치돼 있던 role 2개를 제거했다). Add a `GroupCommandSlot` field if it's per-device.
+2. **`PublishRole` 을 늘리기 전에 소유 형태부터 정한다.** 기본 답은 **추가하지 않는 것** 이다 — controller-owned non-RT 토픽은 controller 에 `SeqLock<MyData>` 멤버를 두고 `integrated_bringup/include/integrated_bringup/support/owned_topics.hpp` 에 `SetupMyDataPublisher()` 헬퍼를 작성해 `on_configure`/`on_activate` 에서 호출한다 (RT loop 이 SeqLock writer 로 push, aux thread 가 읽어서 발행). 기존 Grasp/Wbc/ToF wiring 이 canonical pattern 이다. 왜 이 경로가 기본값이고 `PublishRole` 에 무엇이 남아 있는지는 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §퍼블리시 역할, 소유권 규칙 자체는 [design-principles.md](design-principles.md) §Controller-YAML Topics Are Controller-Owned.
+3. 그래도 새 `PublishRole` 이 필요하다면 **네 곳을 같은 변경 안에서** 고친다 — `rtc_base/types/types.hpp` 의 enum, `PublishRoleToString()`, `rtc_controller_interface/src/rt_controller_interface.cpp` 의 YAML 파서 매핑, 그리고 `integrated_bringup/src/support/owned_topics.cpp` 의 switch 에 **실제 publisher**. 앞의 셋만 하면 선언한 컨트롤러가 에러 없이 죽은 토픽을 얻는다 (#196 Phase 5 가 그 상태로 방치돼 있던 role 을 제거한 경위는 위 §퍼블리시 역할). per-device 면 `GroupCommandSlot` 필드를 추가한다. **E-11 이므로 착수 전 `[CONCERN]`** ([CLAUDE.md](../CLAUDE.md) §6).
 
 ## Adding a New Device Group
 
 1. Add device entry in `integrated_bringup/config/<robot>/{sim,robot}.yaml` under `devices:`. **`devices.<group>.backend:` is the SSoT** — declare `backend.type:` (registered tags: step 3) + backend-specific config (topics, transport endpoints). CM 은 더 이상 controller YAML 에서 device-wire role 을 읽지 않으며 backend 구현체가 read/write lane 소유.
 2. Optionally add a timeout entry in `device_timeout_names`/`values`. 설정된 모든 device group 은 자동으로 준비 게이트 + 워치독 대상이 되며, 목록에 없으면 `device_timeout_default_ms` 가 적용된다 (#198) — 목록 누락이 감시 누락을 뜻하지는 않는다.
 3. 현재 등록된 backend type 은 3종이다 — `mujoco_native` (sim), `ur_driver_native` (UR RTDE), `udp_hand_native` (hand UDP). 전부 `integrated_bringup/src/backends/` 에 있고 `RTC_REGISTER_DEVICE_BACKEND` 로 등록되며, `devices.<group>.backend.type` (sim.yaml / robot.yaml) 이 이 tag 로 dispatch 한다. 기존 backend 에 새 설정 키만 필요하면 backend 를 추가하지 말고 그 키를 먼저 검토한다.
-4. If a new backend type is needed: implement the `DeviceBackend` interface (`rtc_controller_manager/include/rtc_controller_manager/device_backend.hpp`) + register via `RTC_REGISTER_DEVICE_BACKEND(my_backend)` macro. Override `ReadState()` / `WriteCommand()` (RT-safe) and the `OnConfigure*` / `OnActivate*` lifecycle hooks as needed (base provides default no-op impls). **Layering rule** ([design-principles.md](design-principles.md) §Backend / Controller Layering): backend packs all raw HW values into `DeviceStateCache` (zero-fill unused stride slots — do not skip), never derived quantities. Derived values (`force_magnitude`, `in_contact`, slip rate, ...) belong in the controller.
+4. If a new backend type is needed: implement the `DeviceBackend` interface (`rtc_controller_manager/include/rtc_controller_manager/device_backend.hpp`) + register via `RTC_REGISTER_DEVICE_BACKEND(my_backend)` macro. Override `ReadState()` / `WriteCommand()` (RT-safe) and the `OnConfigure*` / `OnActivate*` lifecycle hooks as needed (base provides default no-op impls). `DeviceStateCache` 에 무엇을 채우고 무엇을 채우지 않아야 하는지는 [design-principles.md](design-principles.md) §Backend / Controller Layering — 위 §Adding a New Controller 3번이 가리키는 것과 **같은 규칙의 반대편**이다.
 5. If the controller needs to consume the new group: add subscribe topic routing in the controller's YAML `topics:` section (`role: target` typical), and handle the new device index in controller `Compute()` / `SetDeviceTarget()`.
 6. If kinematics needed: add `sub_models` or `tree_models` entry under `urdf:`.
 
@@ -117,7 +117,7 @@ README 패키지 표·count, [architecture.md](architecture.md) dependency graph
 
 코드 변경은 *대응 문서·메타데이터 동기화*를 포함해야 완료 ([invariants.md](invariants.md) PROC-1). 동기화 대상은:
 
-- **Tests** — `<package>/test/` 의 affected suite 갱신 + 신규 동작에 대한 test 추가 (PROC-6: 기존 assertion 을 통과시키려 약화 금지 — 새 코드를 고치되, test 가 진짜 틀렸으면 별도 commit + 근거 + E-6)
+- **Tests** — `<package>/test/` 의 affected suite 갱신 + 신규 동작에 대한 test 추가 (기존 assertion 을 건드려야 한다면 [invariants.md](invariants.md) PROC-6 을 먼저 편다)
 - **CMakeLists.txt** — source / install / `find_package` / `ament_add_gtest` / `rosidl_generate_interfaces` 일관성
 - **package.xml** — deps · version. `CMakeLists.txt` `find_package` 와 1:1 매칭
 - **YAML config** — 추가/제거/이름변경된 parameter, `topics:` 섹션, valid range·unit 주석. Robot-specific 값은 `integrated_bringup/config/<robot>/...`, 기본값은 agnostic 패키지에
@@ -135,11 +135,9 @@ colcon test-result --verbose
 
 ## Completion Checklist
 
-[.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 turn 종료 시 자동 수행: build (변경 패키지) · test · README/CMake co-update · ARCH grep. Hook 차단 ≠ "build 실패" — `package.xml` / YAML / Doxygen 은 hook 가 검증하지 않으므로 에이전트가 직접 확인해야 한다.
+turn 종료 시 [.claude/hooks/verify-changes.sh](../.claude/hooks/verify-changes.sh) Stop hook 이 자동 수행하는 범위는 [CLAUDE.md](../CLAUDE.md) §4 가 SSoT. 이 절은 그 **여집합** — hook 이 검사하지 않으므로 에이전트가 직접 확인해야 하는 항목만 둔다.
 
-수동 self-check (hook 미커버 항목):
-
-- [ ] `package.xml` deps · version (CMake `find_package` 와 일치)
-- [ ] YAML default · 범위·unit 주석
-- [ ] Doxygen public header 갱신
+- [ ] `package.xml` 의 **deps 의미·version** — hook 은 `find_package` 추가 시 `package.xml` co-update 여부만 blocking 으로 보고, 선언된 dep 이 실제로 맞는지는 보지 않는다
+- [ ] YAML 의 **default 값·유효 범위·unit 주석** — hook 은 parse 성공 여부만 본다
+- [ ] **Doxygen** public header 갱신 — hook 이 명시적으로 다루지 않는 항목이다 (cross-package doc 일관성도 동일)
 - [ ] RT path 변경 시 [invariants.md](invariants.md) §위반 탐지 패턴 의 `detect` 블록으로 자가검사 (RT-1~RT-10, RT-7 은 은퇴)
