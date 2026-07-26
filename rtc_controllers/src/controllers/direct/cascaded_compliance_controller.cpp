@@ -675,10 +675,20 @@ ControllerOutput CascadedComplianceController::ComputeEstop(const ControllerStat
   out0.num_channels = nc0;
   output.command_type = command_type_;
 
-  // Without a readable joint state there is no ĝ(q) to hold with. Zero torque is
-  // the honest command: a torque backend with no drive signal is a free joint,
-  // which is what an unknown configuration already is.
+  // Without a readable joint state there is no ĝ(q) to hold with, so this path
+  // emits the same zero-length "no update" ComputeNoJointState does — one
+  // controller, one answer to "the device is unreadable" (#236 E-8).
+  //
+  // What this replaced: `out0.num_channels = nc0` with value-initialised
+  // commands, i.e. a REAL 0 N·m write. The comment justifying it ("a torque
+  // backend with no drive signal is a free joint") described zero-LENGTH, which
+  // is silence — every backend early-returns on it — not zero torque. On a
+  // torque-mode arm the two are opposites: silence leaves the drive on its last
+  // setpoint, a real 0 N·m drops the arm. The branch has never driven hardware
+  // (it is reachable only under a global E-STOP, where CM substitutes
+  // BuildHoldOutput wholesale), so this is a latent-inconsistency fix.
   if (!dev0.valid || dev0.num_channels < nv) {
+    out0.num_channels = 0;
     target_initialized_.store(false, std::memory_order_release);
     Diagnostics d = diag;
     d.control_valid = false;
