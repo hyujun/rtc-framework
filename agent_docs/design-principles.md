@@ -72,6 +72,7 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 - **입출력은 Eigen / `std::span` 등 프레임워크-중립 타입.** `ControllerState` / `ControllerOutput` 의 해체·조립은 바인딩 몫이다. 참조 구현은 `rtc_controllers/include/rtc_controllers/compliance/` 의 `task_dynamics.hpp` · `impedance_law.hpp` — 이 규칙이 명문화되기 전에 이미 이 형태로 추출됐고, 그래서 규칙의 예시가 아니라 **기준**이다.
 - **`Resize()`(off-RT, 할당 허용) / `Compute()`(`noexcept`, heap-free) 분리**를 유지한다 ([invariants.md](invariants.md) §RT Path).
 - YAML 스키마는 코어 옆의 `Params` POD + `ParseXxxParams(YAML::Node)` 자유 함수로 둔다 (yaml-cpp 만 의존, 비-RT). 프레임워크 타입을 참조하지 않으므로 코어와 같은 층에 남는다.
+- **제어 법칙은 궤적 생성기를 소유하지 않는다.** 둘 다 코어(위 3계층 표)지만 서로 다른 코어이고, 법칙은 궤적 **샘플**(`ref_pos` / `ref_vel`)을 인자로 받는다. *어느* 궤적이 *어느* 법칙을 먹이는지, 몇 개인지는 **구조 결정**이라 바인딩 몫이다 — `demo_joint_controller` 는 하나의 관절 법칙에 `JointSpaceTrajectory` 2개(arm+hand)를, `demo_wbc_controller` 는 3개를 붙인다. 궤적을 멤버로 든 법칙은 이 구성을 표현할 수 없다. 같은 이유로 duration 휴리스틱(`max_dist / speed`)과 `*_trajectory_speed` 파라미터는 궤적 파라미터화이지 법칙의 게인이 아니다. 참조 구현 `joint/joint_pd_law.hpp`.
 
 ### 3계층 배치 (issue #236 D3)
 
