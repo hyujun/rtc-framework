@@ -10,11 +10,13 @@
 //   1. PreExtractionInlineForm6 / …3 — literal, rename-only copies of
 //      clik_controller.cpp:418-428 and :439-443 at 59284d14. DURABLE: they
 //      outlive the adapter, so they still pin the core after S7 deletes
-//      ClikController. They keep the UN-HOISTED `+= R·ν` form the adapter had,
-//      which is what makes them pin the S3a boundary decision (the caller now
-//      rotates the feedforward and hands the core a world-aligned twist) instead
-//      of merely assuming that hoisting a product into a named temporary is
-//      bitwise inert.
+//      ClikController. They keep the UN-HOISTED `+= R·ν` form the adapter had —
+//      and with it the half-by-half accumulation into head<3>()/tail<3>() —
+//      which is what makes them pin the two S3a shape decisions instead of
+//      merely arguing them: the caller now rotates the feedforward and hands the
+//      core a world-aligned twist, and the core adds that twist as one
+//      whole-vector `+= ν_ff`. Both are claimed to be bitwise inert; these
+//      oracles are where that is measured.
 //
 //   2. The live ClikController. TRANSIENT (dies with S7). Its job is the one
 //      thing oracle 1 structurally cannot do: catch a CORRELATED transcription
@@ -33,21 +35,36 @@
 // asked for.
 //
 // The shim reads J from a SECOND, independently built RtModelHandle. That
-// assumption is measured, not assumed, by
-// ReferenceDynamics.IndependentHandlesAgreeBitwise in test_task_accel_core.cpp:
-// same fixture (serial_7dof.urdf), same handle path (ComputeJacobians →
-// GetFrameJacobian / GetFramePlacement, plus the identity-order Reorder*), and
-// that test pins J, M, h and the frame placement bit for bit. Per plan §S3 R6
-// this slice REUSES that measurement rather than repeating it; if the fixture or
-// the handle path here ever diverges from that test's, the premise has to be
-// re-measured rather than re-tuned.
+// assumption is measured, not assumed — in two places, because the two files
+// exercise different halves of the handle:
+//
+//   • The DYNAMICS half (ComputeJacobians → GetFrameJacobian / GetFramePlacement,
+//     plus M and h) is pinned bit for bit by
+//     ReferenceDynamics.IndependentHandlesAgreeBitwise in
+//     test_task_accel_core.cpp, on this same serial_7dof.urdf fixture. Per plan
+//     §S3 R6 this slice REUSES that measurement rather than repeating it.
+//
+//   • The REORDER half is NOT covered there — that test never calls Reorder* —
+//     and this shim does: it gathers the null-space posture error with
+//     ReorderInput and scatters both q̇ lanes with ReorderOutput. So it is
+//     measured here, in the file that depends on it, by
+//     ReferenceHandles.IndependentHandlesAgreeOnTheReorderPathBitwise.
+//
+// If the fixture or the handle path ever diverges from either measurement, the
+// premise has to be re-measured rather than re-tuned.
 //
 // Every bitwise suite carries a non-vacuity partner
 // (BitwiseComparisonRejectsAFusedAccumulation) proving the comparison can
 // actually reject an algebraically equivalent regrouping.
 
+// no_malloc_scope.hpp MUST precede every Eigen header — it installs the Eigen
+// allocation tripwire by defining EIGEN_RUNTIME_NO_MALLOC and its own
+// eigen_assert, and a later include would be silently ignored (its own #error
+// enforces the ordering). Everything below pulls Eigen, so it comes first.
+#include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/indirect/clik_controller.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
+#include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
@@ -68,52 +85,23 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdlib>
+#include <cstdint>
 #include <memory>
-#include <new>
 #include <random>
 #include <span>
 #include <string>
 #include <vector>
 
-// ── Allocation counter (global new/delete interposition) ────────────────────
-// The core returns fixed-size vectors and Eigen never touches its allocator for
-// fixed-size expressions, so rtc_base/testing/no_malloc_scope.hpp (an Eigen
-// allocation tripwire) would be vacuous here. Global interposition sees every
-// heap touch, including one from a header-inline helper.
-namespace {
-thread_local bool g_alloc_active = false;
-thread_local std::size_t g_alloc_count = 0;
-}  // namespace
-
-void* operator new(std::size_t n) {
-  if (g_alloc_active)
-    ++g_alloc_count;
-  void* p = std::malloc(n != 0 ? n : 1);
-  if (p == nullptr)
-    throw std::bad_alloc();
-  return p;
-}
-
-void* operator new[](std::size_t n) {
-  return ::operator new(n);
-}
-
-void operator delete(void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete(void* p, std::size_t) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p, std::size_t) noexcept {
-  std::free(p);
-}
+// The allocation gate is TWO complementary sensors, and this core needs both:
+//   • rtc::testing::ScopedAllocGate (rtc_controllers/testing/alloc_gate.hpp)
+//     counts `operator new`, so it sees a std::vector or a header-inline helper.
+//   • rtc::testing::ScopedNoMalloc (rtc_base/testing/no_malloc_scope.hpp) rides
+//     eigen_assert, so it sees EIGEN allocation — which the first gate CANNOT:
+//     Eigen's internal::aligned_malloc calls std::malloc directly and never
+//     routes through operator new. An Eigen-only law's most likely RT-1
+//     regression (a parameter or temporary becoming runtime-sized) is therefore
+//     invisible to operator-new interposition alone.
+// IsAllocationFree arms both.
 
 namespace {
 
@@ -190,8 +178,7 @@ Vec6 RunCore6(const CoreDraw& d) {
 
 Eigen::Vector3d RunCore3(const CoreDraw& d) {
   const Eigen::Vector3d nu_ff_lin = d.R_traj * d.nu_lin;
-  return ComputeTranslationVelocity(TaskVelParams{d.kp_pos, d.kp_rot},
-                                    Eigen::Vector3d(d.task_err.head<3>()), nu_ff_lin);
+  return ComputeTranslationVelocity(d.kp_pos, Eigen::Vector3d(d.task_err.head<3>()), nu_ff_lin);
 }
 
 // Draws sweep the magnitude space the law actually sees: CLIK gains are
@@ -240,9 +227,15 @@ CoreDraw RandomDraw(std::mt19937& rng, int trial) {
     case 4:
       // Near-cancelling: the feedforward almost exactly opposes the P term, so
       // the sum is a catastrophic subtraction and the ORDER of the surrounding
-      // operations matters most.
+      // operations matters most. Applied to BOTH halves — ν_ff is R_traj·ν, so
+      // pre-rotating by R_trajᵀ makes the transported twist land on −K_p⊙e on
+      // all six axes. Doing only the linear half would leave axes 3-5
+      // permanently dominated by one term, i.e. exactly the regime where a
+      // regrouping of the ANGULAR accumulation is least likely to show up.
       d.nu_lin = -d.R_traj.transpose() * (Eigen::Vector3d(d.kp_pos[0], d.kp_pos[1], d.kp_pos[2])
                                               .cwiseProduct(Eigen::Vector3d(d.task_err.head<3>())));
+      d.nu_ang = -d.R_traj.transpose() * (Eigen::Vector3d(d.kp_rot[0], d.kp_rot[1], d.kp_rot[2])
+                                              .cwiseProduct(Eigen::Vector3d(d.task_err.tail<3>())));
       break;
     default:
       break;
@@ -486,7 +479,15 @@ class ClikShim {
     for (int i = 0; i < 3; ++i)
       pos_error_[i] = p_err[i];
 
-    // ── Damped pseudoinverse + THE CORE (adapter :411-442) ─────────────────
+    // ── Feedforward frame transport (adapter :411-418): trajectory local →
+    //     world-aligned via R_trajectory, computed ONCE and shared by the
+    //     primary task and the feedforward-only logging lane. ────────────────
+    const Eigen::Matrix3d& R_traj = traj_state_.pose.rotation();
+    const Eigen::Vector3d nu_ff_lin = R_traj * traj_state_.velocity.linear();
+
+    // ── Damped pseudoinverse + THE CORE (adapter :420-451). The trailing
+    //     traj_dq_ line in each branch is the feedforward-only logging lane —
+    //     NOT routed through the core: it has no P term, so it is not this law.
     if (use_6dof) {
       JJt_6d_.noalias() = J_full_ * J_full_.transpose();
       JJt_6d_.diagonal().array() += g.damping * g.damping;
@@ -495,13 +496,14 @@ class ClikShim {
       Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
       Eigen::Matrix<double, 6, 1> nu_ff_6d;
-      nu_ff_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
-      nu_ff_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
+      nu_ff_6d.head<3>() = nu_ff_lin;
+      nu_ff_6d.tail<3>() = R_traj * traj_state_.velocity.angular();
 
       const Eigen::Matrix<double, 6, 1> task_vel_6d = ComputeTaskVelocity(
           TaskVelParams{g.kp_translation, g.kp_rotation}, pos_error_6d_, nu_ff_6d);
 
       dq_.noalias() = Jpinv_6d_ * task_vel_6d;
+      traj_dq_.noalias() = Jpinv_6d_ * nu_ff_6d;
     } else {
       JJt_.noalias() = J_pos_ * J_pos_.transpose();
       JJt_.diagonal().array() += g.damping * g.damping;
@@ -509,22 +511,11 @@ class ClikShim {
       JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
       Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-      const Eigen::Vector3d nu_ff_lin = traj_state_.pose.rotation() * traj_state_.velocity.linear();
-      const Eigen::Vector3d task_vel = ComputeTranslationVelocity(
-          TaskVelParams{g.kp_translation, g.kp_rotation}, pos_error_, nu_ff_lin);
+      const Eigen::Vector3d task_vel =
+          ComputeTranslationVelocity(g.kp_translation, pos_error_, nu_ff_lin);
 
       dq_.noalias() = Jpinv_ * task_vel;
-    }
-
-    // ── Feedforward-only trajectory velocity, logging lane (adapter :444-452).
-    //     NOT routed through the core: it has no P term, so it is not this law.
-    if (use_6dof) {
-      Eigen::Matrix<double, 6, 1> ff_vel_6d;
-      ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
-      ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
-      traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
-    } else {
-      traj_dq_.noalias() = Jpinv_ * (traj_state_.pose.rotation() * traj_state_.velocity.linear());
+      traj_dq_.noalias() = Jpinv_ * nu_ff_lin;
     }
 
     // ── Null-space secondary task (adapter :454-472) — 3-DOF mode only ──────
@@ -747,6 +738,67 @@ TEST(TaskVelLaw, BitwiseComparisonRejectsAFusedAccumulation) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Shim premise — the reorder half of the independent-handle assumption
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ReferenceDynamics.IndependentHandlesAgreeBitwise (test_task_accel_core.cpp)
+// pins J / M / h / placement across two independently built handles on this same
+// fixture, and this slice reuses that (plan §S3 R6). It does NOT touch Reorder*,
+// though — and the shim does, on three lanes: the null-space posture error is
+// gathered device → Pinocchio with ReorderInput, and both q̇ lanes are scattered
+// back with ReorderOutput. A non-identity default order or a lazily built
+// permutation would change the shim's basis while that test stayed green, so the
+// missing half is measured HERE rather than assumed.
+TEST(ReferenceHandles, IndependentHandlesAgreeOnTheReorderPathBitwise) {
+  std::shared_ptr<const pinocchio::Model> model_a;
+  std::shared_ptr<const pinocchio::Model> model_b;
+  auto a = MakeHandle(model_a);
+  auto b = MakeHandle(model_b);
+  ASSERT_EQ(a->nv(), b->nv());
+  const int nv = a->nv();
+
+  // MakeHandle never calls SetJointOrder, so both handles must be in the
+  // memcpy-fallback (identity) regime the adapter's "Identity order → memcpy"
+  // comment and the shim's device-order arithmetic both assume.
+  ASSERT_FALSE(a->HasJointReorder()) << "fixture handle has a joint reorder map — the shim's "
+                                        "device-order posture error would need re-deriving";
+  ASSERT_FALSE(b->HasJointReorder()) << "second handle disagrees with the first on reorder state";
+
+  auto rng = MakeRng();
+  std::normal_distribution<double> draw(0.0, 0.7);
+
+  double peak = 0.0;
+  for (int trial = 0; trial < 16; ++trial) {
+    std::vector<double> ext(static_cast<std::size_t>(nv));
+    for (int i = 0; i < nv; ++i)
+      ext[static_cast<std::size_t>(i)] = draw(rng);
+
+    Eigen::VectorXd pin_a = Eigen::VectorXd::Zero(nv);
+    Eigen::VectorXd pin_b = Eigen::VectorXd::Zero(nv);
+    a->ReorderInput(std::span<const double>(ext), pin_a);
+    b->ReorderInput(std::span<const double>(ext), pin_b);
+
+    std::vector<double> out_a(static_cast<std::size_t>(nv));
+    std::vector<double> out_b(static_cast<std::size_t>(nv));
+    a->ReorderOutput(pin_a, std::span<double>(out_a));
+    b->ReorderOutput(pin_b, std::span<double>(out_b));
+
+    for (int i = 0; i < nv; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      ASSERT_TRUE(BitsEqual(pin_a[i], pin_b[i])) << "trial " << trial << " ReorderInput idx " << i;
+      ASSERT_TRUE(BitsEqual(out_a[ui], out_b[ui]))
+          << "trial " << trial << " ReorderOutput idx " << i;
+      // Round-trip: scatter∘gather is the identity, so the shim's device-order
+      // formation and the adapter's agree on more than just "both handles do the
+      // same thing".
+      ASSERT_TRUE(BitsEqual(out_a[ui], ext[ui])) << "reorder round-trip lost bits at idx " << i;
+      peak = std::max(peak, std::abs(ext[ui]));
+    }
+  }
+  EXPECT_GT(peak, 1e-6) << "every reordered value was ~0 — the draw generator degenerated";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Cross-check against the live adapter (transient — dies with S7)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -827,8 +879,14 @@ void RunCrossCheck(rtc::ClikController& ctrl, ClikShim& shim, const rtc::ClikCon
 
 rtc::ClikController::Gains CrossCheckGains(bool use_6dof, bool use_null_space) {
   rtc::ClikController::Gains g;
-  g.kp_translation = {{2.0, 2.0, 2.0}};
-  g.kp_rotation = {{1.5, 1.5, 1.5}};
+  // Six PAIRWISE-DISTINCT gains, not two isotropic blocks. Oracle 2 exists to
+  // catch WIRING errors, and a permutation inside one block — kp_translation
+  // marshalled as {y,x,z} into TaskVelParams — is bit-for-bit invisible when all
+  // three values are equal. Kept at or below the old 2.0 / 1.5 maxima so the
+  // adapter's kDefaultMaxJointVelocity clamp stays as inert as before (the
+  // per-channel ASSERT_LT in RunCrossCheck still proves it, never assumes it).
+  g.kp_translation = {{2.0, 1.4, 1.7}};
+  g.kp_rotation = {{1.5, 0.9, 1.2}};
   g.damping = 0.05;
   g.null_kp = 0.5;
   g.enable_null_space = use_null_space;
@@ -956,8 +1014,21 @@ TEST(TaskVelLaw, CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // RT-1: the law runs on the tick. Both forms are fixed-size Eigen throughout, so
-// this gate is a structural regression guard — mutation-verified by inserting a
-// runtime-sized allocation (a `new`+immediate-`delete` pair would be elided).
+// this gate is a structural regression guard, and it takes BOTH sensors to be one
+// (see the note above the fixtures):
+//   • the operator-new counter — sees a std::vector or a header-inline helper
+//     (a bare `new`+immediate-`delete` pair would be elided, so the mutation has
+//     to be a real runtime-sized allocation reaching an external sink);
+//   • the Eigen tripwire — the only one that can see a fixed-size argument or
+//     temporary regressing to a runtime-sized Eigen type, which is this law's
+//     most plausible RT-1 regression.
+// That neither is vacuous AND that neither substitutes for the other is
+// MEASURED, not argued: a `std::vector<double>` inserted into the region below
+// trips only the first counter, an `Eigen::VectorXd` trips only the second.
+// Eigen's internal::aligned_malloc calls std::malloc directly and never reaches
+// operator new, so dropping either sensor leaves a live blind spot.
+// Both are armed by RAII, so an early return out of the region cannot leave a
+// live gate behind for the rest of the binary.
 TEST(TaskVelLaw, IsAllocationFree) {
   auto rng = MakeRng();
 
@@ -970,15 +1041,21 @@ TEST(TaskVelLaw, IsAllocationFree) {
   for (int trial = 1; trial <= 64; ++trial)
     draws.push_back(RandomDraw(rng, trial));
 
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  for (const auto& d : draws) {
-    sink6 += RunCore6(d);
-    sink3 += RunCore3(d);
+  std::size_t new_calls = 0;
+  std::uint64_t eigen_allocs = 0;
+  {
+    rtc::testing::ScopedAllocGate heap_gate;
+    rtc::testing::ScopedNoMalloc eigen_gate;
+    for (const auto& d : draws) {
+      sink6 += RunCore6(d);
+      sink3 += RunCore3(d);
+    }
+    new_calls = heap_gate.count();
+    eigen_allocs = eigen_gate.violations();
   }
-  g_alloc_active = false;
 
-  EXPECT_EQ(g_alloc_count, 0u) << "the task-velocity law allocated on the RT path (RT-1)";
+  EXPECT_EQ(new_calls, 0u) << "the task-velocity law reached operator new on the RT path (RT-1)";
+  EXPECT_EQ(eigen_allocs, 0u) << "the task-velocity law made Eigen allocate on the RT path (RT-1)";
   EXPECT_TRUE(std::isfinite(sink6.norm()) && std::isfinite(sink3.norm()))
       << "sink kept the calls from being optimised away";
 }

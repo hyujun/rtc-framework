@@ -50,18 +50,28 @@
 // ── Extraction note (#236 S3a) ──────────────────────────────────────────────
 // These two expressions lived inline in ClikController::Compute()
 // (59284d14, clik_controller.cpp:418-428 for the six-axis form and :439-443 for
-// the translation-only form). They were lifted here verbatim — same operation
-// order, same association, same Eigen expression shape — so the migration is
-// bit-for-bit inert; TaskVelLaw.MatchesThePreExtractionInlineFormBitwise and
+// the translation-only form). They were lifted here with the same operation
+// order and the same association, so the migration is bit-for-bit inert;
+// TaskVelLaw.MatchesThePreExtractionInlineFormBitwise and
 // .MatchesThePreExtractionInlineFormBitwiseTranslationOnly pin that against
 // literal copies of the pre-extraction forms, and the CoreDrivenShim* suite pins
 // it against the live adapter while the adapter still exists.
 //
-// The two forms are deliberately NOT collapsed into one another: the six-axis
-// branch materialises `K_p ⊙ e` and then accumulates the feedforward into the
-// head/tail halves, while the translation-only branch is a single sum
-// expression. That is how each stood inline, and preserving each shape is what
-// makes the bitwise claim true rather than merely plausible.
+// One shape DID change: the inline six-axis form accumulated the feedforward
+// into the two halves separately (`head<3>() += …; tail<3>() += …`) because each
+// half needed its own rotation product. With the transport hoisted to the caller
+// (above) there is no longer anything to split, and `task_vel += ν_ff` is the
+// same six element-wise adds — no reassociation is possible in an element-wise
+// sum, so the collapse is bitwise inert. That is MEASURED rather than asserted:
+// the literal oracle keeps the original half-by-half form and the comparison is
+// still bit-for-bit.
+//
+// The two FUNCTIONS are not collapsed into one another, though. Their expression
+// shapes genuinely differ — the six-axis form materialises `K_p ⊙ e` and then
+// accumulates, the translation-only form is a single sum expression — and the
+// bitwise claim is per-shape. Routing a position-only CLIK through the six-axis
+// form would also cost it an angular rotation product per tick that it then
+// discards, on the RT path.
 //
 // NOTE (D-S3): the damped pseudoinverse that consumes this twist is deliberately
 // NOT here. Migrating it to compliance/differential_ik.hpp is S3b (#258), and it
@@ -77,15 +87,17 @@
 
 namespace rtc::task {
 
-/// Per-axis velocity-form task gains. K_p is [1/s] — NOT the [1/s²] of
-/// task::TaskAccelParams and not the [N/m] of compliance::ImpedanceParams.
-/// Trivially copyable so a controller can hold it inside a SeqLock'd Gains POD.
+/// @brief Per-axis velocity-form task gains for the six-axis law.
+///
+/// K_p is [1/s] — NOT the [1/s²] of task::TaskAccelParams and not the [N/m] of
+/// compliance::ImpedanceParams. Trivially copyable so a controller can hold it
+/// inside a SeqLock'd Gains POD.
 struct TaskVelParams {
   std::array<double, 3> kp_pos{{1.0, 1.0, 1.0}};  ///< translation gain [1/s]
   std::array<double, 3> kp_rot{{1.0, 1.0, 1.0}};  ///< rotation gain    [1/s]
 };
 
-/// task_vel = K_p ⊙ e + ν_ff, on all six task axes.
+/// @brief task_vel = K_p ⊙ e + ν_ff, on all six task axes.
 ///
 /// @param k      velocity-form gains, task-axis order [x,y,z, rx,ry,rz]
 /// @param e      pose error CURRENT → DESIRED (6) — [linear; angular], the
@@ -93,13 +105,15 @@ struct TaskVelParams {
 ///               both use
 /// @param nu_ff  feedforward task twist from the trajectory sample (6), ALREADY
 ///               rotated into the same frame as @p e (see the header note)
+/// @return desired task twist (6), [linear; angular], in the frame @p e and
+///         @p nu_ff share — the twist a pseudoinverse maps to joint velocity.
 ///
-/// Sign convention: e runs CURRENT → DESIRED, so +K_p·e drives the tip TOWARD
-/// the setpoint (compliance-conventions.md §3.3).
-///
-/// RT-safe: fixed-size return (stack), no heap, no branch on data, no divide —
-/// nothing here for NUM-2 to guard. Six fixed axes, so unlike the joint-space
-/// law there is no channel bound to apply: a task twist is always 6D.
+/// @note Sign convention: e runs CURRENT → DESIRED, so +K_p·e drives the tip
+///       TOWARD the setpoint (compliance-conventions.md §3.3).
+/// @note RT-safe: fixed-size return (stack), no heap, no branch on data, no
+///       divide — nothing here for NUM-2 to guard. Six fixed axes, so unlike the
+///       joint-space law there is no channel bound to apply: a task twist is
+///       always 6D.
 [[nodiscard]] inline Eigen::Matrix<double, 6, 1> ComputeTaskVelocity(
     const TaskVelParams& k, const Eigen::Matrix<double, 6, 1>& e,
     const Eigen::Matrix<double, 6, 1>& nu_ff) noexcept {
@@ -110,30 +124,35 @@ struct TaskVelParams {
   }
 
   Eigen::Matrix<double, 6, 1> task_vel = kp_vec.cwiseProduct(e);
-  task_vel.head<3>() += nu_ff.head<3>();
-  task_vel.tail<3>() += nu_ff.tail<3>();
+  task_vel += nu_ff;
   return task_vel;
 }
 
-/// task_vel = K_p ⊙ e + ν_ff on the three TRANSLATION axes only — the law a
-/// position-only CLIK runs, where the orientation is left to the null space of
-/// the translational Jacobian rather than commanded.
+/// @brief task_vel = K_p ⊙ e + ν_ff on the three TRANSLATION axes only.
 ///
-/// A separate function rather than an overload or a dimension template: the two
-/// forms differ in expression shape, not just in size, and the bitwise claim is
-/// per-shape. Only @p k.kp_pos is read; the rotation gains are not part of this
-/// law.
+/// The law a position-only CLIK runs, where the orientation is left to the null
+/// space of the translational Jacobian rather than commanded. A separate
+/// function rather than an overload or a dimension template: the two forms
+/// differ in expression shape, not just in size, and the bitwise claim is
+/// per-shape.
 ///
-/// @param k          velocity-form gains — kp_pos only
+/// Takes the translation gains DIRECTLY rather than a TaskVelParams, so the
+/// signature states what the law reads. Handing it the rotation gains would
+/// invite the reader to conclude that tuning `kp_rotation` changes a
+/// position-only command; it does not.
+///
+/// @param kp_pos     translation gains [1/s], axis order [x,y,z]
 /// @param e_pos      translation error CURRENT → DESIRED (3)
 /// @param nu_ff_lin  feedforward linear velocity (3), ALREADY rotated into the
 ///                   same frame as @p e_pos
+/// @return desired linear velocity (3), in the frame @p e_pos and @p nu_ff_lin
+///         share.
 ///
-/// RT-safe on the same terms as ComputeTaskVelocity.
+/// @note RT-safe on the same terms as ComputeTaskVelocity.
 [[nodiscard]] inline Eigen::Vector3d ComputeTranslationVelocity(
-    const TaskVelParams& k, const Eigen::Vector3d& e_pos,
+    const std::array<double, 3>& kp_pos, const Eigen::Vector3d& e_pos,
     const Eigen::Vector3d& nu_ff_lin) noexcept {
-  Eigen::Vector3d kp_vec(k.kp_pos[0], k.kp_pos[1], k.kp_pos[2]);
+  Eigen::Vector3d kp_vec(kp_pos[0], kp_pos[1], kp_pos[2]);
   return kp_vec.cwiseProduct(e_pos) + nu_ff_lin;
 }
 

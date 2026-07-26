@@ -251,13 +251,18 @@ Closed-Loop Inverse Kinematics -- 감쇠 의사역행렬과 영공간 보조 태
 **제어 법칙 (3-DOF 모드):**
 
 ```
-pos_error  = traj_pos - FK(q)
-J_pos      = J[0:3, :]                     (병진 자코비안, 3xnv)
-J_pos^#    = J_pos^T (J_pos J_pos^T + lambda^2 I)^{-1}   (감쇠 의사역행렬, LDLT 분해)
-N          = I - J_pos^# J_pos             (영공간 투영)
+e_body     = log6(T_current^{-1} * T_traj)          (body-frame screw error, LOCAL)
+e_lwa      = blockdiag(R_current, R_current) * e_body   (LOCAL -> LOCAL_WORLD_ALIGNED)
+pos_error  = e_lwa[0:3]                             (log6 의 병진-회전 결합 포함)
+nu_ff      = R_traj * v_traj.linear                 (궤적 프레임 -> world-aligned)
 
-dq = kp * J_pos^# * pos_error + ff_vel
-   + null_kp * N * (q_null - q)            (enable_null_space = true)
+J_pos      = J[0:3, :]                              (병진 자코비안, 3xnv)
+J_pos^#    = J_pos^T (J_pos J_pos^T + lambda^2 I)^{-1}   (감쇠 의사역행렬, LDLT 분해)
+N          = I - J_pos^# J_pos                      (영공간 투영)
+
+task_vel = kp_translation ⊙ pos_error + nu_ff       (task/task_vel_law.hpp)
+dq       = J_pos^# * task_vel
+         + null_kp * N * (q_null - q)               (enable_null_space = true)
 
 q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
 q_cmd  = q_des
@@ -266,25 +271,35 @@ q_cmd  = q_des
 **제어 법칙 (6-DOF 모드):**
 
 ```
-pos_error_6d[0:3] = traj_pos - FK(q)
-pos_error_6d[3:6] = R_current * log6(T_current^{-1} * T_traj).angular   (SO(3) 로그)
+e_body      = log6(T_current^{-1} * T_traj)         (SE(3) 로그, LOCAL)
+e_lwa       = blockdiag(R_current, R_current) * e_body   (병진·회전 양쪽 절반 모두 회전)
+nu_ff[0:3]  = R_traj * v_traj.linear
+nu_ff[3:6]  = R_traj * v_traj.angular
 
-J_full^#   = J_full^T (J_full J_full^T + lambda^2 I_6)^{-1}   (6x6 LDLT)
+J_full^#    = J_full^T (J_full J_full^T + lambda^2 I_6)^{-1}   (6x6 LDLT)
 
-dq = kp * J_full^# * pos_error_6d + ff_vel_6d
+task_vel = [kp_translation; kp_rotation] ⊙ e_lwa + nu_ff   (task/task_vel_law.hpp)
+dq       = J_full^# * task_vel
+
 q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
 q_cmd  = q_des
 ```
+
+두 모드 공통으로 주의할 두 가지 — 게인은 축별 원소곱(`⊙`)이며 스칼라가 아니고, **피드포워드 `nu_ff` 는 `J^#` *앞*(태스크 공간)에서 더해진다**. 관절 공간에서 `J^# * pos_error` 에 더하는 형태가 아니므로, 이 법칙을 재구현할 때 `nu_ff` 를 역행렬 뒤로 옮기면 이동 궤적 추종이 조용히 열화된다. `trajectory_velocities` 로 퍼블리시되는 값은 P 항을 뺀 `J^# * nu_ff` 레인이다.
 
 **파라미터:**
 
 | 파라미터 | 타입 | 기본값 | 설명 |
 |---------|------|--------|------|
-| `kp` | `double[6]` | `[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]` | 태스크 공간 비례 게인 |
-| `damping` | `double` | `0.01` | 의사역행렬 감쇠 계수 (lambda) |
-| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 |
-| `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 |
-| `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 최대 병진 속도 (m/s) |
+| `kp_translation` | `double[3]` | `[1.0, 1.0, 1.0]` | 병진 비례 게인 (x, y, z) [1/s] |
+| `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
+| `damping` | `double` | `0.01` | 의사역행렬 감쇠 계수 (lambda) — 로더가 `1e-4` 로 floor (NUM-1) |
+| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] |
+| `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
+| `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
+| `trajectory_angular_speed` | `double` | `0.5` | 태스크 공간 궤적 회전 속도 (rad/s, 6-DOF 모드) |
+| `max_traj_velocity` | `double` | `0.5` | 궤적 중 최대 TCP 병진 속도 (m/s) |
+| `max_traj_angular_velocity` | `double` | `1.0` | 궤적 중 최대 TCP 회전 속도 (rad/s) |
 | `control_6dof` | `bool` | `false` | 6-DOF (위치+자세) 제어 활성화 |
 | `command_type` | `string` | `"position"` | 출력 명령 타입 |
 
@@ -306,14 +321,20 @@ q_cmd  = q_des
 ```yaml
 # examples/controllers/indirect/clik_controller.yaml
 clik_controller:
-  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  kp_translation: [1.0, 1.0, 1.0]
+  kp_rotation: [1.0, 1.0, 1.0]
   damping: 0.01
   trajectory_speed: 0.1
+  trajectory_angular_speed: 0.5
+  max_traj_velocity: 0.5
+  max_traj_angular_velocity: 1.0
   enable_null_space: true
   null_kp: 0.5
   control_6dof: false
   command_type: "position"
 ```
+
+> 게인 키는 `kp_translation` / `kp_rotation` 이다 — 단일 `kp:` 6원소 배열이 아니다. 로더는 모르는 키를 조용히 무시하므로 `kp:` 로 적으면 게인이 기본값 `1.0` 에 머문 채 빌드·실행이 모두 성공한다.
 
 ---
 

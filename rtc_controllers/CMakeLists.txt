@@ -194,12 +194,16 @@ if(BUILD_TESTING)
   # output IS the core's output pushed through J⁺, so the shim compares the
   # velocity, feedforward and integrated-command lanes directly. Reuses
   # test_task_accel_core's independent-handle premise via the same serial_7dof
-  # fixture. Same global-operator-new gate as S1/S2a, with the same program-wide
-  # -Wmismatched-new-delete false positive.
+  # fixture (the reorder half of that premise is measured here). The RT gate is
+  # two complementary sensors: the shared global-operator-new gate as in S1/S2a
+  # (hence ${rtc_controllers_test_include} and the same program-wide
+  # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen allocation
+  # tripwire (${rtc_base_test_include}) — operator-new counting cannot see Eigen's
+  # allocator, which calls std::malloc directly.
   ament_add_gtest(test_task_vel_core test/test_task_vel_core.cpp)
   target_link_libraries(test_task_vel_core rtc_controllers)
   target_include_directories(test_task_vel_core PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_task_vel_core PRIVATE -Wno-mismatched-new-delete)
 
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
