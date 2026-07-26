@@ -5,6 +5,7 @@
 #include "rtc_controllers/compliance/compliance_state_machine.hpp"
 #include "rtc_controllers/compliance/external_wrench.hpp"
 #include "rtc_controllers/compliance/impedance_law.hpp"
+#include "rtc_controllers/compliance/inertia_shaping.hpp"
 #include "rtc_controllers/compliance/safety_limiter.hpp"
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
@@ -67,7 +68,7 @@ namespace rtc {
 /// two laws. The wrench term carries `+(B − I)` and not the spec's `(B − I)(−·)`
 /// because `f_ext` here is the ENVIRONMENT-ON-ROBOT wrench of this package's input
 /// contract, the opposite sign to the one that expression is written in; the
-/// bridge is derived at the substitution site in ApplyInertiaShaping(). With
+/// bridge is derived where the law lives, compliance/inertia_shaping.hpp. With
 /// `Λ_d = Λ_S` (the `desired_inertia: natural` configuration) `B = I` and the
 /// second term vanishes, so the law collapses **exactly** onto §6.2 — that
 /// identity is the A=NONE ↔ A≠NONE boundary check (§11.4 T4.1) and is asserted
@@ -308,15 +309,6 @@ class TaskImpedanceController final : public RTControllerInterface {
   Eigen::Matrix<double, 6, 1> UpdateExternalWrench(const pinocchio::SE3& tcp, double dt,
                                                    const Gains& gains, Diagnostics& diag) noexcept;
 
-  // RT: overwrite f_cmd.head(m_) with the §6.3 bracket
-  //   B(K_p·S·e + K_d·S·ė) + (B − I)·S·f_ext,   B = Λ_S Λ_d⁻¹,
-  // with f_ext in this package's environment-on-robot sign (see the sign bridge
-  // derived at the implementation).
-  // Requires a successful dyn_.Compute() this tick (Λ_S must be valid).
-  void ApplyInertiaShaping(const Gains& gains, const Eigen::Matrix<double, 6, 1>& f_task,
-                           const Eigen::Matrix<double, 6, 1>& f_ext,
-                           Eigen::Matrix<double, 6, 1>& f_cmd, Diagnostics& diag) noexcept;
-
   // ── Model ──────────────────────────────────────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
@@ -365,10 +357,10 @@ class TaskImpedanceController final : public RTControllerInterface {
   Eigen::VectorXd q_null_;  ///< nv posture setpoint (Pinocchio order), seeded on activate
   Eigen::LLT<Eigen::MatrixXd> llt_M_;
 
-  // §6.3 inertia shaping (all m×m, sized in InitFromModel ⇒ RT alloc-free).
-  Eigen::MatrixXd lambda_d_;  ///< Λ_d — diag(desired_inertia) or Λ_S ("natural")
-  Eigen::MatrixXd b_transp_;  ///< Bᵀ = Λ_d⁻¹Λ_S (both SPD ⇒ B = Λ_SΛ_d⁻¹ = Bᵀᵀ)
-  Eigen::LLT<Eigen::MatrixXd> llt_lambda_d_;
+  // No §6.3 scratch members: compliance::ComputeShapedTaskForce owns its own,
+  // and it is heap-free because the storage is compile-time bounded at 6×6
+  // (D-S4a). A member buffer here would only re-create the coupling the
+  // extraction removed.
 
   // Device-order safety buffers.
   Eigen::VectorXd tau_dev_;       ///< nv command in device order

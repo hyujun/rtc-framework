@@ -23,7 +23,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 | JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 + `joint/joint_pd_law.hpp` 코어 |
 | ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `task/task_vel_law.hpp` 코어 (부분) |
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `task/task_accel_law.hpp` 코어 (부분) |
-| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
+| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§6.2 `impedance_law` · §6.3 `inertia_shaping`) |
 | TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 |
 | CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
 | GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` | **코어** (상위 컨트롤러가 멤버로 소유) |
@@ -36,7 +36,13 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > posture 가 담당한다.
 >
 > 외부 F/T 를 쓰면 `formulation: inertia_shaping` (§6.3) 으로 목표 관성 `Λ_d` 를 성형할 수
-> 있다 (기본 비활성 — §5.2 MUST). wrench 는 **비-RT setter `SetExternalWrench()`** 로 받는다:
+> 있다 (기본 비활성 — §5.2 MUST). **코어 (#236 S4):** 그 성형 법칙
+> `f_cmd = B·f_task + (B − I)·f_ext`, `B = Λ_S Λ_d⁻¹` 는 `compliance/inertia_shaping.hpp` 의
+> `ComputeShapedTaskForce()` 로 추출됐고 어댑터는 그것을 호출한다. 추출은 **bit-for-bit
+> inert** 이며 `test_inertia_shaping_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴
+> 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정한다 (어댑터 대조는
+> selection × Λ_d × clamp 조합 + 활성화 램프). 코어는 `Λ_S` 를 **인자로** 받으므로
+> `TaskDynamics` 를 모른다 — Λ 블록의 수렴점 판정은 S2b 몫이다. wrench 는 **비-RT setter `SetExternalWrench()`** 로 받는다:
 > 컨트롤러는 순수 제어 알고리즘이라 노드·구독·메시지 타입을 만들지 않으며, 호출자는
 > `sensor_frame` 기준 raw `[f;τ]` 를 그대로 넘기면 된다 (bias·중력보상·`Ad^{-T}` 변환·필터는
 > 모두 컨트롤러가 수행). 입력 계약·조건화 순서·staleness 정책·`Λ_d` clamp·하드웨어 부호
@@ -94,6 +100,7 @@ rtc_controllers/
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
+│   │   ├── inertia_shaping.hpp               -- §6.3 관성 성형 코어 (header-only, 무상태) f_cmd = B·f_task + (B−I)·f_ext, B = Λ_S Λ_d⁻¹ + §5.2 편차 clamp. **Λ_S 를 인자로** 받는다 (TaskDynamics 를 모른다 — S2b 수렴점 선점 금지). 스크래치는 max-size `Matrix<double,Dyn,Dyn,0,6,6>` 라 m<6 에서도 heap-free
 │   │   ├── differential_ik.hpp               -- §7.3 운동학 DLS J⁺ + 속도공간 nullspace N (task_dynamics 의 §6.5 λ 규칙 재사용)
 │   │   ├── admittance_integrator.hpp         -- §7.2 semi-implicit Euler + exp3 retract, §7.5 변위/속도 가드
 │   │   ├── safety_limiter.hpp                -- §10.5 4단계 (관절한계 반발 → saturation → rate → non-finite)
