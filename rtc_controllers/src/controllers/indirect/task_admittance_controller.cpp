@@ -212,14 +212,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   const auto gains = gains_lock_.Load();
 
   if (diag.estopped) {
-    // Drain & discard targets queued during the global E-STOP: ClearEstop() does
-    // not bump the activation generation, so they would pass IsCurrentGeneration
-    // on the first recovery tick and overwrite the measured-pose re-seed. The RT
-    // thread is the sole SPSC consumer, so draining here keeps that invariant.
-    PendingTarget discarded{};
-    while (pending_targets_.Pop(discarded)) {
-      // discard: a command issued during E-STOP must not survive recovery
-    }
+    DrainPendingTargets();
     return ComputeEstop(state, gains, /*control_valid=*/false, diag);
   }
 
@@ -624,9 +617,23 @@ ControllerOutput TaskAdmittanceController::ComputeEstop(const ControllerState& s
   return output;
 }
 
+void TaskAdmittanceController::DrainPendingTargets() noexcept {
+  PendingTarget discarded{};
+  while (pending_targets_.Pop(discarded)) {
+    // discard: a command issued while held must not survive recovery
+  }
+}
+
 ControllerOutput TaskAdmittanceController::ComputeNoJointState(const ControllerState& state,
                                                                const Gains& gains,
                                                                Diagnostics& diag) noexcept {
+  // Same contract as the E-STOP path: this tick forces a re-seed below, so any
+  // target queued while the device was unreadable must not outlive the outage.
+  // The producer keeps publishing through a backend dropout, so without this the
+  // depth-4 queue holds the OLDEST commands of the outage (SpscQueue drops the
+  // newest when full) and the first recovered tick jumps to one of them instead
+  // of the measured pose.
+  DrainPendingTargets();
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   compliance::ComplianceFaults faults;
   faults.device_state_invalid = true;

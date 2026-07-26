@@ -336,7 +336,12 @@ class TaskImpedanceController final : public RTControllerInterface {
   Eigen::VectorXd tau_posture_;      ///< nv posture torque (Pinocchio order)
   Eigen::VectorXd tau_null_;         ///< nv projected nullspace torque
   Eigen::VectorXd tcp_vel_;          ///< 6 current task twist J·q̇ (LWA)
-  Eigen::VectorXd q_null_;           ///< nv posture setpoint (Pinocchio order), seeded on activate
+  /// nv measured joint velocity gathered into PINOCCHIO order. J_full_ is a
+  /// Pinocchio-order matrix (ComputeJacobians reorders q on the way in), so the
+  /// q̇ multiplied by it must be gathered too — feeding the device-order vector
+  /// permutes the task twist silently, with every number finite.
+  Eigen::VectorXd qdot_;
+  Eigen::VectorXd q_null_;  ///< nv posture setpoint (Pinocchio order), seeded on activate
   Eigen::LLT<Eigen::MatrixXd> llt_M_;
 
   // §6.3 inertia shaping (all m×m, sized in InitFromModel ⇒ RT alloc-free).

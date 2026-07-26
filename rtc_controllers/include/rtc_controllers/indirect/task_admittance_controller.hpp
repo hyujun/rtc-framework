@@ -248,6 +248,15 @@ class TaskAdmittanceController final : public RTControllerInterface {
                                                      const Gains& gains,
                                                      Diagnostics& diag) noexcept;
 
+  /// Discard every queued off-RT target. Both held paths (E-STOP, unusable joint
+  /// state) force a measured-pose re-seed on the next controllable tick, and
+  /// neither bumps the activation generation — so a target pushed DURING the hold
+  /// still passes IsCurrentGeneration and would overwrite that re-seed on the
+  /// tick right after it. The RT thread is the sole SPSC consumer, so draining
+  /// here is what keeps "a command issued while held does not survive recovery"
+  /// true for both paths rather than only for E-STOP.
+  void DrainPendingTargets() noexcept;
+
   /// Ask the RT thread to retire the hold latch on its next tick. Callable from
   /// any thread; `estop_hold_*` itself stays RT-owned (RT-4 — no lock, and no
   /// off-RT writer to race with).

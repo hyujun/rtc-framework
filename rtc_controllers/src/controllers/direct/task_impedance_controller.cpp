@@ -66,6 +66,7 @@ void TaskImpedanceController::InitFromModel(std::shared_ptr<const pinocchio::Mod
   tau_posture_ = Eigen::VectorXd::Zero(nv);
   tau_null_ = Eigen::VectorXd::Zero(nv);
   tcp_vel_ = Eigen::VectorXd::Zero(6);
+  qdot_ = Eigen::VectorXd::Zero(nv);
   q_null_ = Eigen::VectorXd::Zero(nv);
   tau_dev_ = Eigen::VectorXd::Zero(nv);
   tau_prev_dev_ = Eigen::VectorXd::Zero(nv);
@@ -360,21 +361,25 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   // ── Copy joint state (device order) ─────────────────────────────────────
   const auto& dev0 = state.devices[0];
   std::array<double, kMaxDeviceChannels> q_buf{};
-  std::array<double, kMaxDeviceChannels> v_buf{};
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
     q_buf[ui] = dev0.positions[ui];
-    v_buf[ui] = dev0.velocities[ui];
     q_dev_(i) = dev0.positions[ui];
     qdot_dev_(i) = dev0.velocities[ui];
   }
   std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
 
   // ── FK + Jacobian + current task twist ──────────────────────────────────
+  // ComputeJacobians gathers q into Pinocchio order internally, so J_full_ has
+  // PINOCCHIO column order. q̇ therefore has to be gathered the same way before
+  // the product: the device-order vector would pair each column with another
+  // joint's velocity, which is a permuted task twist — a wrong −K_d·ν damping
+  // torque, with nothing non-finite to fault on. Identity order → memcpy.
   handle_->ComputeJacobians(q_span);
   handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
-  Eigen::Map<const Eigen::VectorXd> v_eigen(v_buf.data(), nv);
-  tcp_vel_.noalias() = J_full_ * v_eigen;
+  handle_->ReorderInput(std::span<const double>(qdot_dev_.data(), static_cast<std::size_t>(nv)),
+                        qdot_);
+  tcp_vel_.noalias() = J_full_ * qdot_;
   const pinocchio::SE3& tcp = handle_->GetFramePlacement(tip_frame_id_);
 
   // ── Target slot: seed X_d/q_null from measured on (re)activation (§10.7) ──
@@ -397,10 +402,13 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     // next activation. With a source configured this enters BIAS_CALIBRATING
     // (§3.2.1 "on_activate 시 자동 1회"); the state machine refuses the transition
     // while a SAFE_STOP is latched, so re-seeding cannot launder a fault (E-8).
-    if (wrench_enabled_ && wrench_.ResetForActivation()) {
+    // No `bias_gate_ = false` here: this branch requires wrench_enabled_, so
+    // UpdateExternalWrench() below unconditionally assigns bias_gate_ =
+    // ws.bias_gate_released on this very tick with no return in between. Writing
+    // it here reads like the latch that HOLDS BIAS_CALIBRATING, is not one, and
+    // no test can tell.
+    if (wrench_enabled_ && wrench_.ResetForActivation())
       sm_.BeginBiasCalibration();
-      bias_gate_ = false;
-    }
     just_seeded = true;  // seed the rate-limit history to this tick's own
                          // command below, so activation is not slew-limited
     for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
