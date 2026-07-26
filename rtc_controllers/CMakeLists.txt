@@ -114,9 +114,18 @@ if(BUILD_TESTING)
   # by source-tree path — the same sibling-package layout used for the
   # rtc_urdf_bridge/test fixture headers above.
   set(rtc_base_test_include "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_base/test/include")
+
+  # This package's own test-only headers (bitwise-comparison primitives shared
+  # by the #236 extraction golden-vector suites). Same never-installed,
+  # source-tree-path idiom as the sibling-package includes above: ament's
+  # symlink install ignores install(PATTERN EXCLUDE), so a test header placed
+  # under include/ would ship.
+  set(rtc_controllers_test_include "${CMAKE_CURRENT_SOURCE_DIR}/test/include")
+
   ament_add_gtest(test_compliance_core test/test_compliance_core.cpp)
   target_link_libraries(test_compliance_core rtc_controllers)
-  target_include_directories(test_compliance_core PRIVATE ${rtc_base_test_include})
+  target_include_directories(test_compliance_core PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
 
   # Slice-3 numerical core (#236): §7.2 semi-implicit integration + exp3 retract,
   # §7.5 workspace/velocity guards, §7.3 DLS + nullspace algebra. Model-free —
@@ -148,6 +157,20 @@ if(BUILD_TESTING)
   ament_add_gtest(test_core_controllers test/test_core_controllers.cpp)
   target_link_libraries(test_core_controllers rtc_controllers)
   target_include_directories(test_core_controllers PRIVATE ${rtc_urdf_bridge_test_include})
+
+  # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
+  # against a literal copy of the pre-extraction inline form (durable oracle)
+  # AND against the live JointPDController driven through a shim that owns the
+  # trajectory (transient oracle — it dies with the adapter at S7, and until
+  # then it is what catches a correlated transcription error). Needs the URDF
+  # fixture resolver for planar_3r (non-zero gravity) and the shared bitwise
+  # helpers. The RT allocation gate replaces global operator new/delete, which
+  # makes GCC false-positive -Wmismatched-new-delete program-wide.
+  ament_add_gtest(test_joint_pd_core test/test_joint_pd_core.cpp)
+  target_link_libraries(test_joint_pd_core rtc_controllers)
+  target_include_directories(test_joint_pd_core PRIVATE
+    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_joint_pd_core PRIVATE -Wno-mismatched-new-delete)
 
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
