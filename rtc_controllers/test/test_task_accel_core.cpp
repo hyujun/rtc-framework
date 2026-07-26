@@ -38,12 +38,18 @@
 // reject an algebraically equivalent regrouping. Without it the equivalence test
 // pins nothing.
 
+// no_malloc_scope.hpp MUST precede every Eigen header — it installs the Eigen
+// allocation tripwire by defining EIGEN_RUNTIME_NO_MALLOC and its own
+// eigen_assert, and a later include would be silently ignored (its own #error
+// enforces the ordering). Everything below pulls Eigen, so it comes first.
+#include "rtc_base/testing/no_malloc_scope.hpp"
 #include "rtc_controllers/direct/operational_space_controller.hpp"
 #include "rtc_controllers/task/task_accel_law.hpp"
+#include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
+#include "rtc_controllers/testing/serial7dof_fixture.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
-#include "test_urdf_path.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -59,52 +65,23 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdlib>
+#include <cstdint>
 #include <memory>
-#include <new>
 #include <random>
 #include <span>
 #include <string>
 #include <vector>
 
-// ── Allocation counter (global new/delete interposition) ────────────────────
-// The core returns a fixed-size 6-vector and Eigen never touches its allocator
-// for fixed-size expressions, so rtc_base/testing/no_malloc_scope.hpp (an Eigen
-// allocation tripwire) would be vacuous here. Global interposition sees every
-// heap touch, including one from a header-inline helper.
-namespace {
-thread_local bool g_alloc_active = false;
-thread_local std::size_t g_alloc_count = 0;
-}  // namespace
-
-void* operator new(std::size_t n) {
-  if (g_alloc_active)
-    ++g_alloc_count;
-  void* p = std::malloc(n != 0 ? n : 1);
-  if (p == nullptr)
-    throw std::bad_alloc();
-  return p;
-}
-
-void* operator new[](std::size_t n) {
-  return ::operator new(n);
-}
-
-void operator delete(void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete(void* p, std::size_t) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p, std::size_t) noexcept {
-  std::free(p);
-}
+// The RT allocation gate is TWO complementary sensors (shared with the S1/S3a
+// suites via rtc_controllers/testing/alloc_gate.hpp):
+//   • rtc::testing::ScopedAllocGate counts `operator new`, so it sees a
+//     std::vector or a header-inline helper.
+//   • rtc::testing::ScopedNoMalloc rides eigen_assert, so it sees EIGEN
+//     allocation — which the first gate CANNOT: Eigen's internal::aligned_malloc
+//     calls std::malloc directly and never routes through operator new. This
+//     core is pure Eigen, so its most likely RT-1 regression (a fixed-size
+//     argument or temporary becoming runtime-sized) would otherwise pass green.
+// IsAllocationFree arms both.
 
 namespace {
 
@@ -115,6 +92,16 @@ using rtc::task::ComputeTaskAcceleration;
 using rtc::task::TaskAccelParams;
 using rtc::testing::BitsEqual;
 using rtc::testing::MakeRng;
+
+// The serial_7dof fixture and the measured-state sweep, shared with
+// test_task_vel_core.cpp (serial7dof_fixture.hpp). S3a reuses this file's
+// independent-handle measurement (plan §S3 R6), which is only valid while both
+// files use the SAME fixture — sharing the definition is what makes that
+// structural rather than a pair of copies that happen to still agree.
+using rtc::testing::FillSweep;
+using rtc::testing::MakeHandle;
+using rtc::testing::MakeState;
+using rtc::testing::Serial7dof;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Oracle 1 — literal pre-extraction form
@@ -218,26 +205,8 @@ CoreDraw RandomDraw(std::mt19937& rng, int trial) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Fixture + reference dynamics for the cross-check
+// Reference dynamics for the cross-check (fixture: serial7dof_fixture.hpp)
 // ═══════════════════════════════════════════════════════════════════════════
-
-// serial_7dof.urdf: alternating Z/Y joint axes, so g(q) ≢ 0 and the Jacobian is
-// well-conditioned (serial_6dof.urdf is all-Z — g ≡ 0 and σ_min ≡ 0, the fixture
-// trap recorded in the plan's §제약·함정). nv = 7 > 6 also makes Λ⁻¹ full rank
-// and the dynamically-consistent null-space branch meaningful rather than inert.
-std::string Serial7dof() {
-  return rtc::test::TestUrdfPath("serial_7dof.urdf");
-}
-
-std::unique_ptr<rtc_urdf_bridge::RtModelHandle> MakeHandle(
-    std::shared_ptr<const pinocchio::Model>& model_out) {
-  rtc_urdf_bridge::ModelConfig config;
-  config.urdf_path = Serial7dof();
-  config.root_joint_type = "fixed";
-  rtc_urdf_bridge::PinocchioModelBuilder builder(config);
-  model_out = builder.GetFullModel();
-  return std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_out);
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Oracle 2 — the shim (prototype of the S7 integration-layer binding)
@@ -490,29 +459,6 @@ class OscShim {
   int splits_{0};
   int transitions_{0};
 };
-
-// The measured-state sweep both sides are driven with: slow enough that the
-// adapter's output clamp stays inert (asserted per channel, never assumed) but
-// moving, so the Jacobian, the Coriolis term and the finite pose error are all
-// non-trivial. Shared with the goal-derivation helper below so a test can ask
-// "what is the TCP orientation at tick N" without duplicating the formula.
-void FillSweep(rtc::ControllerState& state, int nv, int tick, double dt) {
-  constexpr double kStep = 0.0004;
-  for (int j = 0; j < nv; ++j) {
-    const auto uj = static_cast<std::size_t>(j);
-    state.devices[0].positions[uj] = 0.12 * (1.0 + 0.2 * j) + kStep * tick * (1.0 + 0.3 * j);
-    state.devices[0].velocities[uj] = kStep * (1.0 + 0.3 * j) / dt;
-  }
-}
-
-rtc::ControllerState MakeState(int nc0, double dt) {
-  rtc::ControllerState state{};
-  state.num_devices = 1;
-  state.dt = dt;
-  state.devices[0].num_channels = nc0;
-  state.devices[0].valid = true;
-  return state;
-}
 
 // A goal pose sitting exactly `angle` radians of rotation away from the TCP
 // orientation at `tick`, returned as the [x,y,z, r,p,y] vector SetDeviceTarget
@@ -830,8 +776,14 @@ TEST(TaskAccelLaw, CoreDrivenShimMatchesTheAdapterAcrossAPiRotationSplit) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // RT-1: the law runs on the tick. It is fixed-size Eigen throughout, so this
-// gate is a structural regression guard — mutation-verified by inserting a
-// runtime-sized allocation (a `new`+immediate-`delete` pair would be elided).
+// gate is a structural regression guard, and it takes both sensors to be one:
+// a `std::vector<double>` inserted into the region trips only the operator-new
+// counter, an `Eigen::VectorXd` trips only the Eigen tripwire (measured in the
+// S3a suite, same gate). A bare `new`+immediate-`delete` pair would be elided,
+// so a mutation has to be a real allocation reaching an external sink. Both are
+// armed by RAII: an ASSERT_* added inside the region returns from the test, and
+// a bare disarm line would then never run — leaving counting on for every later
+// test in the binary, where nothing reads it.
 TEST(TaskAccelLaw, IsAllocationFree) {
   auto rng = MakeRng();
 
@@ -843,12 +795,20 @@ TEST(TaskAccelLaw, IsAllocationFree) {
   for (int trial = 1; trial <= 64; ++trial)
     draws.push_back(RandomDraw(rng, trial));
 
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  for (const auto& d : draws)
-    sink += RunCore(d);
-  g_alloc_active = false;
+  std::size_t new_calls = 0;
+  std::uint64_t eigen_allocs = 0;
+  {
+    rtc::testing::ScopedAllocGate heap_gate;
+    rtc::testing::ScopedNoMalloc eigen_gate;
+    for (const auto& d : draws)
+      sink += RunCore(d);
+    new_calls = heap_gate.count();
+    eigen_allocs = eigen_gate.violations();
+  }
 
-  EXPECT_EQ(g_alloc_count, 0u) << "the task-acceleration law allocated on the RT path (RT-1)";
+  EXPECT_EQ(new_calls, 0u)
+      << "the task-acceleration law reached operator new on the RT path (RT-1)";
+  EXPECT_EQ(eigen_allocs, 0u)
+      << "the task-acceleration law made Eigen allocate on the RT path (RT-1)";
   EXPECT_TRUE(std::isfinite(sink.norm())) << "sink kept the calls from being optimised away";
 }

@@ -32,6 +32,7 @@
 
 #include "rtc_controllers/direct/joint_pd_controller.hpp"
 #include "rtc_controllers/joint/joint_pd_law.hpp"
+#include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "test_urdf_path.hpp"
@@ -43,50 +44,17 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdlib>
-#include <new>
 #include <random>
 #include <span>
 #include <string>
 #include <vector>
 
-// ── Allocation counter (global new/delete interposition) ────────────────────
-// The core is Eigen-free, so rtc_base/testing/no_malloc_scope.hpp (an Eigen
-// allocation tripwire) would be vacuous here. Global interposition sees every
-// heap touch, including one from a header-inline helper.
-namespace {
-thread_local bool g_alloc_active = false;
-thread_local std::size_t g_alloc_count = 0;
-}  // namespace
-
-void* operator new(std::size_t n) {
-  if (g_alloc_active)
-    ++g_alloc_count;
-  void* p = std::malloc(n != 0 ? n : 1);
-  if (p == nullptr)
-    throw std::bad_alloc();
-  return p;
-}
-
-void* operator new[](std::size_t n) {
-  return ::operator new(n);
-}
-
-void operator delete(void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete(void* p, std::size_t) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p, std::size_t) noexcept {
-  std::free(p);
-}
+// The RT allocation gate (rtc::testing::ScopedAllocGate, shared with the S2a/S3a
+// suites via rtc_controllers/testing/alloc_gate.hpp) counts `operator new`, so it
+// sees a std::vector or a header-inline helper. Unlike the task-space cores, this
+// one does NOT also arm rtc_base's Eigen tripwire — the joint-space law is
+// Eigen-free, so an Eigen allocation sensor here really would be vacuous rather
+// than merely redundant.
 
 namespace {
 
@@ -625,11 +593,16 @@ TEST(JointPdLaw, IsAllocationFree) {
   for (int trial = 1; trial <= 64; ++trial)
     draws.push_back(RandomDraw(rng, trial));
 
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  for (const auto& d : draws)
-    RunCore(d, std::span<double>(prev), std::span<double>(cmd));
-  g_alloc_active = false;
+  std::size_t new_calls = 0;
+  {
+    // RAII rather than a bare flag: an ASSERT_* added inside the region returns
+    // from the test, and a bare disarm line would then never run — leaving
+    // counting on for every later test in the binary, where nothing reads it.
+    rtc::testing::ScopedAllocGate heap_gate;
+    for (const auto& d : draws)
+      RunCore(d, std::span<double>(prev), std::span<double>(cmd));
+    new_calls = heap_gate.count();
+  }
 
-  EXPECT_EQ(g_alloc_count, 0u) << "the PD law allocated on the RT path (RT-1)";
+  EXPECT_EQ(new_calls, 0u) << "the PD law allocated on the RT path (RT-1)";
 }

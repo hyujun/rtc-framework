@@ -17,6 +17,7 @@
 // as the other controller suites: Compute() lives in another TU, so a same-TU
 // Eigen guard would observe nothing).
 #include "rtc_controllers/direct/cascaded_compliance_controller.hpp"
+#include "rtc_controllers/testing/alloc_gate.hpp"
 #include "test_urdf_path.hpp"
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
@@ -27,46 +28,13 @@
 
 #include <array>
 #include <cmath>
-#include <cstdlib>
-#include <new>
 #include <span>
 #include <string>
 #include <vector>
 
-// ── Allocation counter (global new/delete interposition) ────────────────────
-namespace {
-thread_local bool g_alloc_active = false;
-thread_local std::size_t g_alloc_count = 0;
-}  // namespace
-
-void* operator new(std::size_t n) {
-  if (g_alloc_active)
-    ++g_alloc_count;
-  void* p = std::malloc(n != 0 ? n : 1);
-  if (p == nullptr)
-    throw std::bad_alloc();
-  return p;
-}
-
-void* operator new[](std::size_t n) {
-  return ::operator new(n);
-}
-
-void operator delete(void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete(void* p, std::size_t) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p, std::size_t) noexcept {
-  std::free(p);
-}
+// That interposition is rtc::testing::ScopedAllocGate
+// (rtc_controllers/testing/alloc_gate.hpp) — shared with every other suite that
+// gates an RT path, rather than a per-file copy of the operator-new replacement.
 
 namespace {
 
@@ -999,16 +967,20 @@ TEST(CascadedCompliance, ComputeIsAllocationFree) {
   // last stage of the pipeline — takes its state-changing branch too.
   const Wrench6 push{40.0, -5.0, 3.0, 0.2, -0.1, 0.05};
 
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  Send(ctrl, push);                         // SetExternalWrench is a SeqLock store
-  const auto out = ctrl.Compute(state);     // seeding tick: disowns the sample
-  Send(ctrl, push);                         // ...so republish for the seeded tick
-  const auto second = ctrl.Compute(state);  // full pipeline: condition → Ad^{-T} → contact
-  g_alloc_active = false;
-  EXPECT_EQ(g_alloc_count, 0u) << "Compute() allocated on the RT path";
-  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
-  EXPECT_EQ(second.command_type, rtc::CommandType::kTorque);
+  // RAII rather than a bare arm/disarm pair: an ASSERT_* added inside the
+  // measured region returns from the test, and a bare disarm line would then
+  // never run — leaving counting on for every later test in the binary, where
+  // nothing reads it.
+  {
+    rtc::testing::ScopedAllocGate gate;
+    Send(ctrl, push);                         // SetExternalWrench is a SeqLock store
+    const auto out = ctrl.Compute(state);     // seeding tick: disowns the sample
+    Send(ctrl, push);                         // ...so republish for the seeded tick
+    const auto second = ctrl.Compute(state);  // full pipeline: condition → Ad^{-T} → contact
+    EXPECT_EQ(gate.count(), 0u) << "Compute() allocated on the RT path";
+    EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+    EXPECT_EQ(second.command_type, rtc::CommandType::kTorque);
+  }
 
   // The gate is only worth its assertion if the branch it guards actually ran.
   const auto d = ctrl.GetDiagnosticsForTesting();

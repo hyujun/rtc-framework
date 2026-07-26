@@ -13,6 +13,7 @@
 // as test_task_impedance_controller.cpp: Compute() lives in another TU, so a
 // same-TU Eigen guard would observe nothing).
 #include "rtc_controllers/direct/task_impedance_controller.hpp"
+#include "rtc_controllers/testing/alloc_gate.hpp"
 #include "test_urdf_path.hpp"
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
@@ -23,47 +24,14 @@
 
 #include <array>
 #include <cmath>
-#include <cstdlib>
 #include <limits>
-#include <new>
 #include <span>
 #include <string>
 #include <vector>
 
-// ── Allocation counter (global new/delete interposition) ────────────────────
-namespace {
-thread_local bool g_alloc_active = false;
-thread_local std::size_t g_alloc_count = 0;
-}  // namespace
-
-void* operator new(std::size_t n) {
-  if (g_alloc_active)
-    ++g_alloc_count;
-  void* p = std::malloc(n != 0 ? n : 1);
-  if (p == nullptr)
-    throw std::bad_alloc();
-  return p;
-}
-
-void* operator new[](std::size_t n) {
-  return ::operator new(n);
-}
-
-void operator delete(void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete(void* p, std::size_t) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p, std::size_t) noexcept {
-  std::free(p);
-}
+// That interposition is rtc::testing::ScopedAllocGate
+// (rtc_controllers/testing/alloc_gate.hpp) — shared with every other suite that
+// gates an RT path, rather than a per-file copy of the operator-new replacement.
 
 namespace {
 
@@ -956,12 +924,14 @@ external_wrench:
   Send(ctrl, Wrench6{1.0, 2.0, 3.0, 0.1, 0.2, 0.3});
 
   // The FIRST Compute (spec T7.1) — which is also the seed + BIAS_CALIBRATING
-  // entry tick, the heaviest one.
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  (void)ctrl.Compute(state);
-  g_alloc_active = false;
-  EXPECT_EQ(g_alloc_count, 0u) << "first Compute() with the wrench path allocated";
+  // entry tick, the heaviest one. RAII rather than a bare arm/disarm pair: an
+  // ASSERT_* added inside the region returns from the test, and a bare disarm
+  // line would then never run.
+  {
+    rtc::testing::ScopedAllocGate gate;
+    (void)ctrl.Compute(state);
+    EXPECT_EQ(gate.count(), 0u) << "first Compute() with the wrench path allocated";
+  }
 
   // Then a steady-state tick that runs conditioning, the filter and §6.3.
   for (int k = 0; k < 5; ++k) {
@@ -969,11 +939,11 @@ external_wrench:
     (void)ctrl.Compute(state);
   }
   Send(ctrl, Wrench6{4.0, 5.0, 6.0, 0.4, 0.5, 0.6});
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  (void)ctrl.Compute(state);
-  g_alloc_active = false;
-  EXPECT_EQ(g_alloc_count, 0u) << "steady-state Compute() with conditioning + §6.3 allocated";
+  {
+    rtc::testing::ScopedAllocGate gate;
+    (void)ctrl.Compute(state);
+    EXPECT_EQ(gate.count(), 0u) << "steady-state Compute() with conditioning + §6.3 allocated";
+  }
   EXPECT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
 }
 

@@ -3,6 +3,7 @@
 #include "rtc_controllers/indirect/clik_controller.hpp"
 
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <rclcpp/logging.hpp>
@@ -407,7 +408,18 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     pos_error_[i] = p_err[i];
   }
 
+  // Feedforward: trajectory local → world-aligned via R_trajectory (not
+  // R_current). The transport stays HERE with the trajectory sample it belongs
+  // to; the law takes an already world-aligned twist (#236 S3a). Computed ONCE
+  // per tick — the primary task and the feedforward-only logging lane below both
+  // read it off the same unchanged traj_state_, so the rotation products are not
+  // repeated on the RT path.
+  const Eigen::Matrix3d& R_traj = traj_state_.pose.rotation();
+  const Eigen::Vector3d nu_ff_lin = R_traj * traj_state_.velocity.linear();
+
   // ── Step 4 & 5: Damped pseudoinverse & Primary task ──────────────────────
+  //     The trailing traj_dq_ assignment in each branch is the feedforward-only
+  //     lane (for logging): the same ν_ff through J⁺, with no P term.
   if (use_6dof) {
     JJt_6d_.noalias() = J_full_ * J_full_.transpose();
     JJt_6d_.diagonal().array() += gains.damping * gains.damping;
@@ -415,19 +427,15 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     JJt_inv_6d_.noalias() = ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
     Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
 
-    Eigen::Matrix<double, 6, 1> kp_vec_6d;
-    for (std::size_t i = 0; i < 3; ++i) {
-      kp_vec_6d[static_cast<Eigen::Index>(i)] = gains.kp_translation[i];
-      kp_vec_6d[static_cast<Eigen::Index>(i + 3)] = gains.kp_rotation[i];
-    }
+    Eigen::Matrix<double, 6, 1> nu_ff_6d;
+    nu_ff_6d.head<3>() = nu_ff_lin;
+    nu_ff_6d.tail<3>() = R_traj * traj_state_.velocity.angular();
 
-    Eigen::Matrix<double, 6, 1> task_vel_6d = kp_vec_6d.cwiseProduct(pos_error_6d_);
-    // Feedforward: trajectory local → world-aligned via R_trajectory (not
-    // R_current)
-    task_vel_6d.head<3>() += traj_state_.pose.rotation() * traj_state_.velocity.linear();
-    task_vel_6d.tail<3>() += traj_state_.pose.rotation() * traj_state_.velocity.angular();
+    const Eigen::Matrix<double, 6, 1> task_vel_6d = rtc::task::ComputeTaskVelocity(
+        rtc::task::TaskVelParams{gains.kp_translation, gains.kp_rotation}, pos_error_6d_, nu_ff_6d);
 
     dq_.noalias() = Jpinv_6d_ * task_vel_6d;
+    traj_dq_.noalias() = Jpinv_6d_ * nu_ff_6d;
   } else {
     // 3D version
     JJt_.noalias() = J_pos_ * J_pos_.transpose();
@@ -436,21 +444,10 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
     Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
 
-    Eigen::Vector3d kp_vec(gains.kp_translation[0], gains.kp_translation[1],
-                           gains.kp_translation[2]);
-    Eigen::Vector3d task_vel = kp_vec.cwiseProduct(pos_error_) +
-                               traj_state_.pose.rotation() * traj_state_.velocity.linear();
+    const Eigen::Vector3d task_vel =
+        rtc::task::ComputeTranslationVelocity(gains.kp_translation, pos_error_, nu_ff_lin);
     dq_.noalias() = Jpinv_ * task_vel;
-  }
-
-  // ── Feedforward-only trajectory velocity (for logging) ────────────────
-  if (use_6dof) {
-    Eigen::Matrix<double, 6, 1> ff_vel_6d;
-    ff_vel_6d.head<3>() = traj_state_.pose.rotation() * traj_state_.velocity.linear();
-    ff_vel_6d.tail<3>() = traj_state_.pose.rotation() * traj_state_.velocity.angular();
-    traj_dq_.noalias() = Jpinv_6d_ * ff_vel_6d;
-  } else {
-    traj_dq_.noalias() = Jpinv_ * (traj_state_.pose.rotation() * traj_state_.velocity.linear());
+    traj_dq_.noalias() = Jpinv_ * nu_ff_lin;
   }
 
   // ── Step 6: Null-space secondary task ────────────────────────────────────

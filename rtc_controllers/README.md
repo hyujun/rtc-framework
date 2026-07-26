@@ -21,7 +21,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 |---------|------|----------|----------|------|
 | PController | 관절 공간 | Position (indirect) | `indirect/` | 어댑터 (코어 미신설 — #236 D-Q1) |
 | JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 + `joint/joint_pd_law.hpp` 코어 |
-| ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 |
+| ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `task/task_vel_law.hpp` 코어 (부분) |
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `task/task_accel_law.hpp` 코어 (부분) |
 | TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
 | TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 |
@@ -89,7 +89,8 @@ rtc_controllers/
 │   ├── joint/
 │   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
 │   ├── task/
-│   │   └── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
+│   │   ├── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
+│   │   └── task_vel_law.hpp                  -- 태스크 공간 속도 법칙 코어 (header-only, 무상태) task_vel = K_p ⊙ e + ν_ff. 게인은 **속도형** `[1/s]` 이고 미분항이 없다 (CLIK 이 닫는 플랜트가 적분기이므로). 6축·병진전용 두 형태. pose error 정의·궤적·**ν_ff 의 프레임 전송**은 바인딩 몫
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
@@ -245,16 +246,23 @@ joint_pd_controller:
 
 Closed-Loop Inverse Kinematics -- 감쇠 의사역행렬과 영공간 보조 태스크를 사용하는 태스크 공간 위치 제어기입니다. 3-DOF (위치만) 또는 6-DOF (위치+자세) 모드를 지원합니다.
 
+> **코어 (#236 S3a — 부분):** 아래 두 모드의 **태스크 속도 법칙** `task_vel = K_p ⊙ e + ν_ff` 는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` (6축) · `ComputeTranslationVelocity()` (병진 전용) 으로 추출됐고 `ClikController` 는 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_task_vel_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정합니다 (어댑터 대조는 `control_6dof` × `enable_null_space` 네 조합 + π-회전 split 전이 전부). 코어는 궤적도 pose error 정의도 **피드포워드의 프레임 전송도** 소유하지 않습니다 — 이미 world-aligned 로 회전된 `ν_ff` 를 인자로 받을 뿐이며, `R_trajectory` 로 회전할지 `R_current` 로 회전할지는 프레임을 소유한 바인딩이 정합니다. **아래 감쇠 의사역행렬(J^#)과 영공간 블록은 아직 어댑터 안에 있습니다** — `compliance/differential_ik` 로의 흡수는 S3b (#258) 이며, 그 헬퍼는 σ_min-적응형 감쇠를 쓰고 CLIK 인라인은 상수 λ 라 현 형태로는 bit-identical 이 성립하지 않아 분리됐습니다 (#236 D-S3).
+
 **제어 법칙 (3-DOF 모드):**
 
 ```
-pos_error  = traj_pos - FK(q)
-J_pos      = J[0:3, :]                     (병진 자코비안, 3xnv)
-J_pos^#    = J_pos^T (J_pos J_pos^T + lambda^2 I)^{-1}   (감쇠 의사역행렬, LDLT 분해)
-N          = I - J_pos^# J_pos             (영공간 투영)
+e_body     = log6(T_current^{-1} * T_traj)          (body-frame screw error, LOCAL)
+e_lwa      = blockdiag(R_current, R_current) * e_body   (LOCAL -> LOCAL_WORLD_ALIGNED)
+pos_error  = e_lwa[0:3]                             (log6 의 병진-회전 결합 포함)
+nu_ff      = R_traj * v_traj.linear                 (궤적 프레임 -> world-aligned)
 
-dq = kp * J_pos^# * pos_error + ff_vel
-   + null_kp * N * (q_null - q)            (enable_null_space = true)
+J_pos      = J[0:3, :]                              (병진 자코비안, 3xnv)
+J_pos^#    = J_pos^T (J_pos J_pos^T + lambda^2 I)^{-1}   (감쇠 의사역행렬, LDLT 분해)
+N          = I - J_pos^# J_pos                      (영공간 투영)
+
+task_vel = kp_translation ⊙ pos_error + nu_ff       (task/task_vel_law.hpp)
+dq       = J_pos^# * task_vel
+         + null_kp * N * (q_null - q)               (enable_null_space = true)
 
 q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
 q_cmd  = q_des
@@ -263,25 +271,35 @@ q_cmd  = q_des
 **제어 법칙 (6-DOF 모드):**
 
 ```
-pos_error_6d[0:3] = traj_pos - FK(q)
-pos_error_6d[3:6] = R_current * log6(T_current^{-1} * T_traj).angular   (SO(3) 로그)
+e_body      = log6(T_current^{-1} * T_traj)         (SE(3) 로그, LOCAL)
+e_lwa       = blockdiag(R_current, R_current) * e_body   (병진·회전 양쪽 절반 모두 회전)
+nu_ff[0:3]  = R_traj * v_traj.linear
+nu_ff[3:6]  = R_traj * v_traj.angular
 
-J_full^#   = J_full^T (J_full J_full^T + lambda^2 I_6)^{-1}   (6x6 LDLT)
+J_full^#    = J_full^T (J_full J_full^T + lambda^2 I_6)^{-1}   (6x6 LDLT)
 
-dq = kp * J_full^# * pos_error_6d + ff_vel_6d
+task_vel = [kp_translation; kp_rotation] ⊙ e_lwa + nu_ff   (task/task_vel_law.hpp)
+dq       = J_full^# * task_vel
+
 q_des += clamp(dq, +/-v_max) * dt          (trajectory 갱신 시 q_des = q_actual로 초기화)
 q_cmd  = q_des
 ```
+
+두 모드 공통으로 주의할 두 가지 — 게인은 축별 원소곱(`⊙`)이며 스칼라가 아니고, **피드포워드 `nu_ff` 는 `J^#` *앞*(태스크 공간)에서 더해진다**. 관절 공간에서 `J^# * pos_error` 에 더하는 형태가 아니므로, 이 법칙을 재구현할 때 `nu_ff` 를 역행렬 뒤로 옮기면 이동 궤적 추종이 조용히 열화된다. `trajectory_velocities` 로 퍼블리시되는 값은 P 항을 뺀 `J^# * nu_ff` 레인이다.
 
 **파라미터:**
 
 | 파라미터 | 타입 | 기본값 | 설명 |
 |---------|------|--------|------|
-| `kp` | `double[6]` | `[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]` | 태스크 공간 비례 게인 |
-| `damping` | `double` | `0.01` | 의사역행렬 감쇠 계수 (lambda) |
-| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 |
-| `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 |
-| `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 최대 병진 속도 (m/s) |
+| `kp_translation` | `double[3]` | `[1.0, 1.0, 1.0]` | 병진 비례 게인 (x, y, z) [1/s] |
+| `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
+| `damping` | `double` | `0.01` | 의사역행렬 감쇠 계수 (lambda) — 로더가 `1e-4` 로 floor (NUM-1) |
+| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] |
+| `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
+| `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
+| `trajectory_angular_speed` | `double` | `0.5` | 태스크 공간 궤적 회전 속도 (rad/s, 6-DOF 모드) |
+| `max_traj_velocity` | `double` | `0.5` | 궤적 중 최대 TCP 병진 속도 (m/s) |
+| `max_traj_angular_velocity` | `double` | `1.0` | 궤적 중 최대 TCP 회전 속도 (rad/s) |
 | `control_6dof` | `bool` | `false` | 6-DOF (위치+자세) 제어 활성화 |
 | `command_type` | `string` | `"position"` | 출력 명령 타입 |
 
@@ -303,14 +321,20 @@ q_cmd  = q_des
 ```yaml
 # examples/controllers/indirect/clik_controller.yaml
 clik_controller:
-  kp: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  kp_translation: [1.0, 1.0, 1.0]
+  kp_rotation: [1.0, 1.0, 1.0]
   damping: 0.01
   trajectory_speed: 0.1
+  trajectory_angular_speed: 0.5
+  max_traj_velocity: 0.5
+  max_traj_angular_velocity: 1.0
   enable_null_space: true
   null_kp: 0.5
   control_6dof: false
   command_type: "position"
 ```
+
+> 게인 키는 `kp_translation` / `kp_rotation` 이다 — 단일 `kp:` 6원소 배열이 아니다. 로더는 모르는 키를 조용히 무시하므로 `kp:` 로 적으면 게인이 기본값 `1.0` 에 머문 채 빌드·실행이 모두 성공한다.
 
 ---
 

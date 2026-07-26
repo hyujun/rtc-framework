@@ -73,7 +73,8 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 - **`Resize()`(off-RT, 할당 허용) / `Compute()`(`noexcept`, heap-free) 분리**를 유지한다 ([invariants.md](invariants.md) §RT Path).
 - YAML 스키마는 코어 옆의 `Params` POD + `ParseXxxParams(YAML::Node)` 자유 함수로 둔다 (yaml-cpp 만 의존, 비-RT). 프레임워크 타입을 참조하지 않으므로 코어와 같은 층에 남는다.
 - **제어 법칙은 궤적 생성기를 소유하지 않는다.** 둘 다 코어(위 3계층 표)지만 서로 다른 코어이고, 법칙은 궤적 **샘플**(`ref_pos` / `ref_vel`)을 인자로 받는다. *어느* 궤적이 *어느* 법칙을 먹이는지, 몇 개인지는 **구조 결정**이라 바인딩 몫이다 — `demo_joint_controller` 는 하나의 관절 법칙에 `JointSpaceTrajectory` 2개(arm+hand)를, `demo_wbc_controller` 는 3개를 붙인다. 궤적을 멤버로 든 법칙은 이 구성을 표현할 수 없다. 같은 이유로 duration 휴리스틱(`max_dist / speed`)과 `*_trajectory_speed` 파라미터는 궤적 파라미터화이지 법칙의 게인이 아니다. 참조 구현 `joint/joint_pd_law.hpp`.
-- **태스크 공간 법칙은 오차의 *정의* 를 소유하지 않는다.** 6D pose error `e` 를 인자로 받을 뿐, 어느 `rtc::math::se3::ErrorType` 으로 계산할지는 프레임을 소유한 바인딩이 정한다 — 법칙을 Eigen 만으로 유지하고(`rtc_math`·pinocchio 불포함), 같은 선택을 echo 하는 텔레메트리 lane 옆에 결정을 남겨 둔다. 참조 구현 `compliance/impedance_law.hpp` · `task/task_accel_law.hpp`.
+- **태스크 공간 법칙은 오차의 *정의* 를 소유하지 않는다.** 6D pose error `e` 를 인자로 받을 뿐, 어느 `rtc::math::se3::ErrorType` 으로 계산할지는 프레임을 소유한 바인딩이 정한다 — 법칙을 Eigen 만으로 유지하고(`rtc_math`·pinocchio 불포함), 같은 선택을 echo 하는 텔레메트리 lane 옆에 결정을 남겨 둔다. 참조 구현 `compliance/impedance_law.hpp` · `task/task_accel_law.hpp` · `task/task_vel_law.hpp`.
+- **같은 이유로 프레임 *전송* 도 소유하지 않는다.** 궤적 샘플의 twist 를 어느 회전으로 world-aligned 프레임에 옮길지(`R_trajectory` 인가 `R_current` 인가)는 오차 정의와 같은 범주의 **프레임 결정**이므로, 법칙은 이미 회전된 `ν_ff` 를 받는다. 법칙이 회전행렬을 아예 보지 않으면 잘못된 회전을 조용히 적용할 수 없고, 그 선택은 궤적을 샘플링하는 바인딩 옆에 남는다 (#236 S3a). 곱을 named temporary 로 hoist 하는 것은 비트 단위로 inert 하며 — 누산에 접어 넣는 것은 **아니다** — `test_task_vel_core.cpp` 의 리터럴 oracle 이 hoist 이전 형태를 그대로 들고 그것을 고정한다.
 
 ### 3계층 배치 (issue #236 D3)
 
