@@ -4,6 +4,7 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/task/task_accel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <rclcpp/logging.hpp>
@@ -375,8 +376,6 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   // computed via rtc_math (rtc::math::se3).
   task_err_ = rtc::math::se3::computePoseError(tcp, traj_state_.pose,
                                                rtc::math::se3::ErrorType::SplitWorld);
-  const Eigen::Vector3d pos_err = task_err_.head<3>();
-  const Eigen::Vector3d rot_err = task_err_.tail<3>();
   tcp_position_ = {tcp.translation()[0], tcp.translation()[1], tcp.translation()[2]};
 
   // Cache for diagnostics (non-RT reads via pose_error())
@@ -386,17 +385,14 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
 
   // ── Step 5: desired task-space acceleration (task PD + feedforward) ────────
   //   a_task = kp·e_pose + kd·(ẋ_d − ẋ) + a_ff
-  const Eigen::Vector3d kp_p(gains.kp_pos[0], gains.kp_pos[1], gains.kp_pos[2]);
-  const Eigen::Vector3d kd_p(gains.kd_pos[0], gains.kd_pos[1], gains.kd_pos[2]);
-  const Eigen::Vector3d kp_r(gains.kp_rot[0], gains.kp_rot[1], gains.kp_rot[2]);
-  const Eigen::Vector3d kd_r(gains.kd_rot[0], gains.kd_rot[1], gains.kd_rot[2]);
-
-  a_task_.head<3>() = kp_p.cwiseProduct(pos_err) +
-                      kd_p.cwiseProduct(traj_state_.velocity.linear() - tcp_vel_.head<3>()) +
-                      traj_state_.acceleration.linear();
-  a_task_.tail<3>() = kp_r.cwiseProduct(rot_err) +
-                      kd_r.cwiseProduct(traj_state_.velocity.angular() - tcp_vel_.tail<3>()) +
-                      traj_state_.acceleration.angular();
+  // The law itself lives in task/task_accel_law.hpp (#236 S2a); everything
+  // around it here — the model, the trajectory that produced ν_d/a_ff, the pose
+  // error definition, and the Λ weighting below — is this binding's business.
+  // Motion stores [linear; angular] contiguously, so toVector() is the same six
+  // doubles the inline form read through .linear()/.angular(), not a repack.
+  a_task_ = task::ComputeTaskAcceleration(
+      task::TaskAccelParams{gains.kp_pos, gains.kd_pos, gains.kp_rot, gains.kd_rot}, task_err_,
+      tcp_vel_, traj_state_.velocity.toVector(), traj_state_.acceleration.toVector());
 
   // ── Step 6: joint-space dynamics  M(q),  h = C(q,v)·v + g(q) ──────────────
   // GetMassMatrix() already returns a full symmetric M (the handle symmetrises
