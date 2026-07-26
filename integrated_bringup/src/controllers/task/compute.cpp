@@ -699,14 +699,29 @@ ControllerOutput DemoTaskController::WriteJointCommand(const ControllerState& st
   out0.num_channels = nc0;
   out0.goal_type = GoalType::kTask;
 
+  // Model-dimension bound. dq_ / desired_q_ / traj_dq_ are nv-wide Eigen
+  // vectors while nc0 is whatever the device reported on the wire
+  // (WriteJointStateToCache sets num_channels from the JointState message
+  // length, not from joint_state_names) — a device reporting more channels
+  // than the model DOF must never index past them (issue #172 OOB; the
+  // sibling JointPDController guards the same hazard with `nq`).
+  const std::size_t nq = ArmCommandBound(nc0);
   // Clamp dq_ in-place so log + publish read the same canonical clamped value.
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+  for (std::size_t i = 0; i < nq; ++i) {
     const double lim = (i < device_max_velocity_[0].size()) ? device_max_velocity_[0][i] : 2.0;
     dq_[static_cast<Eigen::Index>(i)] = std::clamp(dq_[static_cast<Eigen::Index>(i)], -lim, lim);
   }
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+  for (std::size_t i = 0; i < nq; ++i) {
     desired_q_[static_cast<Eigen::Index>(i)] += dq_[static_cast<Eigen::Index>(i)] * dt;
     out0.commands[i] = desired_q_[static_cast<Eigen::Index>(i)];
+  }
+  // Channels in [nq, nc0) have no model joint behind them. Hold them at the
+  // measured position rather than leaving the fresh-zero init: on a position
+  // lane 0.0 is "go to the origin", not "stay put" (JointPDController's E-STOP
+  // tail makes the same distinction, and the backends' WriteSafeCommand
+  // comments call out the identical trap).
+  for (std::size_t i = nq; i < static_cast<std::size_t>(nc0); ++i) {
+    out0.commands[i] = dev0.positions[i];
   }
 
   if (state.num_devices > 1 && state.devices[1].valid) {
@@ -741,14 +756,20 @@ void DemoTaskController::FillLogOutput(const ControllerState& state, ControllerO
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+  // Same model-dimension bound as WriteJointCommand — these read the identical
+  // nv-wide buffers, so the telemetry lane must not index further than the wire
+  // lane does (issue #172).
+  const std::size_t nq = ArmCommandBound(nc0);
+  for (std::size_t i = 0; i < nq; ++i) {
     out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
     out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.goal_positions[i] = current_target_slot_.tcp_target[i];
   }
-  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
+  const std::size_t ngoal =
+      std::min(static_cast<std::size_t>(nc0), current_target_slot_.null_target.size());
+  for (std::size_t i = 3; i < ngoal; ++i) {
     out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
@@ -878,21 +899,25 @@ void DemoTaskController::FillPublishOutput(const ControllerState& state, Control
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+  // Model-dimension bound, as in WriteJointCommand / FillLogOutput (issue #172).
+  const std::size_t nq = ArmCommandBound(nc0);
+  for (std::size_t i = 0; i < nq; ++i) {
     out0.target_velocities[i] = dq_[static_cast<Eigen::Index>(i)];
     out0.trajectory_positions[i] = desired_q_[static_cast<Eigen::Index>(i)];
     out0.trajectory_velocities[i] = traj_dq_[static_cast<Eigen::Index>(i)];
   }
+  const std::size_t nnull =
+      std::min(static_cast<std::size_t>(nc0), current_target_slot_.null_target.size());
   for (std::size_t i = 0; i < 3; ++i) {
     out0.target_positions[i] = traj_state_.pose.translation()[static_cast<Eigen::Index>(i)];
   }
-  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
+  for (std::size_t i = 3; i < nnull; ++i) {
     out0.target_positions[i] = current_target_slot_.null_target[i];
   }
   for (std::size_t i = 0; i < 3; ++i) {
     out0.goal_positions[i] = current_target_slot_.tcp_target[i];
   }
-  for (std::size_t i = 3; i < static_cast<std::size_t>(nc0); ++i) {
+  for (std::size_t i = 3; i < nnull; ++i) {
     out0.goal_positions[i] = current_target_slot_.null_target[i];
   }
 
