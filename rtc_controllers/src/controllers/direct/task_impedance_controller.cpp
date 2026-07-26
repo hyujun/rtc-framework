@@ -348,10 +348,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     // on the first recovery tick and overwrite the measured-pose re-seed. The RT
     // thread is the sole SPSC consumer, so draining here keeps the single-
     // consumer invariant.
-    PendingTarget discarded{};
-    while (pending_targets_.Pop(discarded)) {
-      // discard: a command issued during E-STOP must not survive recovery
-    }
+    DrainPendingTargets();
     return ComputeEstop(state, /*control_valid=*/false, diag, gains);
   }
 
@@ -360,6 +357,14 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
 
   // ── Copy joint state (device order) ─────────────────────────────────────
   const auto& dev0 = state.devices[0];
+  // Everything below is evaluated at q read from this device (F5): on a device
+  // narrower than the model, or one that has not reported, the unread channels
+  // read as a default-constructed 0, FK/Jacobian run at the ZERO configuration,
+  // and the emitted torque is a full-arm pull toward the origin — with no fault
+  // raised, because every number involved is finite.
+  if (!dev0.valid || dev0.num_channels < nv)
+    return ComputeNoJointState(state, gains, diag);
+
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
@@ -641,6 +646,26 @@ ControllerOutput TaskImpedanceController::ComputeEstop(const ControllerState& st
   // SeqLock load on the hold path.
   const int nv = handle_->nv();
   const auto& dev0 = state.devices[0];
+
+  // F5 on the hold path too: ĝ(q) − D·q̇ is only a hold if q and q̇ are real.
+  // With an unreadable device the unread channels are 0, so this would emit the
+  // gravity load of the ZERO configuration and call it a hold. There is no
+  // honest torque here, and the answer is the same one ComputeNoJointState
+  // gives — a zero-length "no update" rather than a fabricated value. Note the
+  // alternative that was rejected (#236 E-8): emitting nc0 zeros is a REAL
+  // 0 N·m command, which on a torque-mode arm is a drop, not a stop.
+  if (!dev0.valid || dev0.num_channels < nv) {
+    ControllerOutput no_state_output;
+    no_state_output.num_devices = state.num_devices;
+    no_state_output.devices[0].num_channels = 0;
+    no_state_output.command_type = command_type_;
+    target_initialized_.store(false, std::memory_order_release);
+    Diagnostics dn = diag;
+    dn.control_valid = false;
+    diag_lock_.Store(dn);
+    return no_state_output;
+  }
+
   std::array<double, kMaxDeviceChannels> q_buf{};
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
@@ -674,6 +699,66 @@ ControllerOutput TaskImpedanceController::ComputeEstop(const ControllerState& st
   Diagnostics d = diag;
   d.control_valid = control_valid;  // false: the pose-error/σ fields are stale
   diag_lock_.Store(d);
+  return output;
+}
+
+void TaskImpedanceController::DrainPendingTargets() noexcept {
+  PendingTarget discarded{};
+  while (pending_targets_.Pop(discarded)) {
+    // discard: a command issued while held must not survive recovery
+  }
+}
+
+ControllerOutput TaskImpedanceController::ComputeNoJointState(const ControllerState& state,
+                                                              const Gains& gains,
+                                                              Diagnostics& diag) noexcept {
+  // Same contract as the E-STOP path: this tick forces a re-seed below, so any
+  // target queued while the device was unreadable must not outlive the outage.
+  // The producer keeps publishing through a backend dropout, so without this the
+  // depth-4 queue holds the OLDEST commands of the outage (SpscQueue drops the
+  // newest when full) and the first recovered tick jumps to one of them instead
+  // of the measured pose — braked only by max_torque_rate.
+  DrainPendingTargets();
+  const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
+  compliance::ComplianceFaults faults;
+  faults.device_state_invalid = true;
+  // The same ramp predicate the clean path derives from alpha. Not fabricated as
+  // `true`: a controller that has never had a readable joint state has not
+  // finished activating, and §10.6's lattice honours a degrade cause at the
+  // HOLDING→RUNNING edge. A device that fails mid-run is already RUNNING, so it
+  // degrades on this tick regardless.
+  const double ramp = gains.activation_ramp_time;
+  const bool ramp_done = (ramp <= 0.0) || (activation_elapsed_ >= ramp);
+  diag.state = static_cast<std::uint8_t>(
+      sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_gate_, false));
+
+  ControllerOutput output;
+  output.num_devices = state.num_devices;
+  // Zero-length = "no update" to every backend. Secondary devices keep their own
+  // passthrough: a hand does not stop being commandable because the arm's state
+  // went missing.
+  //
+  // Why this stays a ride-through instead of escalating on a timer (#236 E-8,
+  // decided against options (a)/(b)): the realistic failure — a backend that
+  // stops publishing mid-run — never reaches this gate at all. `valid` latches
+  // true on the first state message and is never cleared, so a dropout leaves
+  // the stamp stale, not the flag, and CM's 50 Hz device watchdog trips a global
+  // E-STOP after `device_timeout` (1 s on real HW), after which CM substitutes
+  // BuildHoldOutput wholesale. What actually reaches this gate is a device
+  // narrower than the model — a startup configuration fault, where the backend
+  // has published nothing yet, so "no update" means the drive was never
+  // commanded rather than "hold the last torque". A timer here would turn that
+  // into "drop the arm N seconds after every misconfigured startup".
+  output.devices[0].num_channels = 0;
+  rtc::utils::PassthroughSecondaryDevices(state, output, target_seqlock_.Load().targets);
+  output.command_type = command_type_;
+
+  // Whatever X_d / posture state exists was seeded from a joint state this tick
+  // could not read, so the next controllable tick re-seeds from measurement.
+  target_initialized_.store(false, std::memory_order_release);
+
+  diag.control_valid = false;
+  diag_lock_.Store(diag);
   return output;
 }
 

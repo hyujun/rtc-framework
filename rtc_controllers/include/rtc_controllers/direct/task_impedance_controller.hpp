@@ -271,6 +271,27 @@ class TaskImpedanceController final : public RTControllerInterface {
   [[nodiscard]] ControllerOutput ComputeEstop(const ControllerState& state, bool control_valid,
                                               const Diagnostics& diag, const Gains& gains) noexcept;
 
+  /// The primary device's joint state is unusable this tick. Emits a zero-length
+  /// command for device 0 (the CM's own "no update" idiom), keeps secondary
+  /// passthrough, steps the FSM into DEGRADED and forces a re-seed. Without this
+  /// gate the unread channels read as 0 and the whole law runs at the ZERO
+  /// configuration — a full-arm move to the origin with every number finite and
+  /// no fault raised. Mirrors CascadedComplianceController's gate of the same
+  /// name; see that class for why the torque domain keeps riding through rather
+  /// than escalating on a timer (issue #236 E-8).
+  [[nodiscard]] ControllerOutput ComputeNoJointState(const ControllerState& state,
+                                                     const Gains& gains,
+                                                     Diagnostics& diag) noexcept;
+
+  /// Discard every queued off-RT target. Both held paths (E-STOP, unusable joint
+  /// state) force a measured-pose re-seed on the next controllable tick, and
+  /// neither bumps the activation generation — so a target pushed DURING the hold
+  /// still passes IsCurrentGeneration and would overwrite that re-seed on the
+  /// tick right after it. The RT thread is the sole SPSC consumer, so draining
+  /// here is what keeps "a command issued while held does not survive recovery"
+  /// true for both paths rather than only for E-STOP.
+  void DrainPendingTargets() noexcept;
+
   // Frame name → index against the CURRENT model; empty name ⇒ the tip frame.
   // Off-RT. Throws when a configured frame name is absent (fail-fast at
   // configure) — LoadConfig calls it into a local so a bad name cannot leave the

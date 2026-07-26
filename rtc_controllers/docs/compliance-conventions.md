@@ -224,6 +224,41 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 | **`x̃_nom`(nominal offset)** | **0 고정, 미구현** | `AdmittanceIntegrator` 가 `K_p x̃` 형태이고 offset 소비자가 없다. 명세 대비 의도적 미구현으로 기록 |
 | **범위 밖** | arm-hand object-pull (virtual TCP = object/grasp frame) | §9 Virtual TCP 선행. `integrated_bringup` 배선(`RTC_REGISTER_CONTROLLER` / YAML / launch smoke)도 범위 계약 (1) 유지 — **따라서 S4 도 sim 에서 돌려볼 수 없고 단위 검증만 존재한다** |
 
+## 3.7 F5 device-validity 게이트 · 판독 불가 시의 출력 (#236 E-8)
+
+`ControllerState::devices[0]` 이 이번 tick 에 쓸 수 없는 상태 —`valid == false` 또는
+`num_channels < nv`— 일 때 세 compliance 컨트롤러가 무엇을 내보내는가. 세 곳에 흩어지면
+서로 다른 답을 내므로 여기가 SSoT 다.
+
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| **게이트 위치** | `Compute()` 의 조인트 상태 복사 **직전** — 세 컨트롤러 모두. `ComputeEstop()` 의 `ĝ(q)` 계산 직전 — **토크 도메인 둘** (`TaskImpedanceController`, `CascadedComplianceController`) | 미보고 채널은 `0` 으로 읽히므로 게이트 없이는 FK·Jacobian·법칙 전체가 **ZERO configuration** 에서 돌고 전 관절을 원점으로 당기는 토크가 나간다. 모든 수가 유한해 CM 의 actuator-boundary validator 도 거르지 않는다. `TaskImpedanceController` 는 `Compute()` 게이트조차 없이 출하됐었다 (#236 E-8 에서 신설) |
+| **미적용 — `TaskAdmittanceController::ComputeEstop`** | position-hold latch 를 `dev0.positions` 에서 seed 하는데 **게이트가 없다**. 이번 범위에서 손대지 않음 | 판독 불가 tick 에 latch 되면 미보고 채널의 hold 가 `0` 으로 굳어 "원점으로 servo" 가 되고, `estop_hold_valid_` 가 latch 라 이후 tick 까지 남는다. 다만 이 경로는 global E-STOP 하에서만 도달하고 그때 CM 이 `BuildHoldOutput` 으로 출력을 치환하므로 현재 하드웨어에 도달하지 않는다. position 도메인 hold 의 무효화 규칙(F1)과 얽히므로 별도 E-8 판단 사안으로 남긴다 |
+| **출력** | **zero-length** (`devices[0].num_channels = 0`) — 값이 아니라 "이번 tick 은 갱신 없음". secondary device passthrough 는 유지 | 알 수 없는 관절 위치의 정직한 대체값은 없다. CM 자신의 `BuildHoldOutput` 도 같은 idiom 을 쓴다. 팔 상태가 사라졌다고 손이 명령 불가가 되지는 않으므로 secondary 는 통과시킨다 |
+| **`ComputeEstop` 도 동일** | 같은 zero-length. **`nc0` 길이의 0 커맨드를 내보내지 않는다** | 둘은 반대다: zero-length 는 전 백엔드가 early-return 하는 **침묵**(드라이브는 직전 setpoint 유지), `nc0` 길이의 0 은 **진짜 0 N·m** 이고 토크 모드 팔에서는 정지가 아니라 **낙하**다. `ĝ(q) − D·q̇` 는 q·q̇ 가 실측일 때만 hold 이므로 판독 불가 상태에서는 hold 자체가 성립하지 않는다 |
+| **fault 등급** | `device_state_invalid` 는 **DEGRADE**, critical 아님 → SAFE_STOP 승격 없음 | 백엔드 복구가 정상 경로이고, "명령을 내지 않는다" 는 축소된 권한의 답이 존재한다 (발산한 명령과 달리) |
+| **시간 상한 없음** | 지속되는 판독 불가에 타이머를 두지 **않는다**. DEGRADED 에 머문 채 ride-through | #236 E-8 에서 (a)상한+에스컬레이션 / (b)CM 이 컨트롤러발 zero-length 에도 `WriteSafeCommand()` 를 검토하고 **둘 다 기각**했다. 아래 참조 |
+
+**왜 타이머를 두지 않는가 (실측 근거)**
+
+- 현실적 실패인 **런중 백엔드 dropout 은 이 게이트에 도달하지 않는다.** 출하된 백엔드에서
+  `valid` 는 첫 state 메시지에 `true` 로 서고 **다시 내려가지 않는다** (`joint_state_reorder.hpp`).
+  dropout 은 플래그가 아니라 **stamp** 를 멈추므로, CM 의 50 Hz device watchdog 이
+  `device_timeout` (실기 1000 ms) 후 **global E-STOP** 을 걸고 그때부터 CM 이 `BuildHoldOutput`
+  으로 출력을 전량 치환한다. 즉 ride-through 는 이미 bounded 다.
+- 게이트에 실제로 도달하는 것은 **`num_channels < nv`, 곧 기동시 설정 불일치**다. CM 의
+  startup gate 가 모든 device 가 보고하기 전엔 `Compute()` 를 돌리지 않으므로 `!valid` 는
+  백엔드가 아예 없는 그룹에서만 나오고 그건 init timeout 이 잡는다. 설정 불일치 시점에는
+  백엔드가 아직 아무것도 publish 하지 않았으므로 **zero-length = 드라이브가 명령된 적 없음**
+  이지 "직전 토크 유지" 가 아니다. 여기에 타이머를 걸면 *잘못 설정된 모든 기동이 N 초 뒤
+  팔을 떨어뜨리는* 동작이 된다.
+- (b) 는 **오늘 물리적으로 no-op** 이다. 출하된 세 백엔드의 `WriteSafeCommand()` 는 전부
+  "마지막으로 나간 명령 재발행" 이라 침묵과 물리 결과가 같다 (`device_backend.hpp` 가 명시).
+  토크 유지 시간을 줄이지 못하면서 #198 Phase 4 계약만 바꾼다.
+
+남은 실제 구멍은 토크 정책이 아니라 **진단**이다 — `num_channels < nv` 는 낫지 않는 영구
+DEGRADED 인데 이를 알리는 경로가 없다 (issue #261).
+
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 
 - **A=NONE 은 열등한 fallback 이 아니다** (§6.2). 폐루프는 `Λ(q)ë + [μ+K_d]ė + K_p e = f_ext`

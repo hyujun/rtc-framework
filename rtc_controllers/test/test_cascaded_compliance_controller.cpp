@@ -718,6 +718,33 @@ TEST(CascadedCompliance, InvalidDeviceStateEmitsNoCommandAndDegrades) {
   EXPECT_EQ(d.state, static_cast<std::uint8_t>(ComplianceState::kDegraded));
 }
 
+// The E-STOP hold answers "the device is unreadable" the same way
+// ComputeNoJointState does — zero-length silence, not a value (#236 E-8). It
+// used to emit nc0 channels of value-initialised zeros, which is a REAL 0 N·m
+// write: on a torque-mode arm that is a drop, not a stop. The comment that
+// justified it ("a torque backend with no drive signal is a free joint")
+// described zero-LENGTH, which every backend early-returns on.
+TEST(CascadedCompliance, EstopHoldWithUnreadableDeviceEmitsNoCommand) {
+  const std::vector<double> q(6, 0.3);
+  CascadedComplianceController ctrl(Urdf6(), InertSafetyGains());
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+
+  // Positive control: the hold on a READABLE device still commands, so the
+  // zero-length below is the gate and not a dead E-STOP path.
+  ctrl.TriggerEstop();
+  const auto held = ctrl.Compute(state);
+  ASSERT_EQ(held.devices[0].num_channels, 6);
+
+  state.devices[0].valid = false;
+  const auto out = ctrl.Compute(state);
+  EXPECT_EQ(out.devices[0].num_channels, 0)
+      << "a real 0 N·m command was emitted for an arm whose state could not be read";
+  EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().control_valid);
+}
+
 TEST(CascadedCompliance, TooFewDeviceChannelsIsTreatedAsNoJointState) {
   const std::vector<double> q(6, 0.3);
   CascadedComplianceController ctrl(Urdf6(), InertSafetyGains());

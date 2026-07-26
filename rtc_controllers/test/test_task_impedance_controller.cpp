@@ -19,6 +19,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <span>
@@ -461,6 +463,157 @@ TEST(TaskImpedance, NonRedundantPathValidAndAllocationFree) {
       << "non-redundant path must stay valid without the M factorization";
   for (int i = 0; i < 6; ++i)
     EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]));
+}
+
+// ── F5 (#236 E-8): the primary device's joint state must be checked ──────────
+//
+// This controller shipped without the gate its two siblings carry
+// (TaskAdmittanceController, CascadedComplianceController). Unread channels
+// default to 0, so an unchecked tick evaluates FK, the Jacobian and the whole
+// §6.2 law at the ZERO configuration and emits a full-arm pull toward the
+// origin — every number finite, no fault raised, nothing for the CM's
+// actuator-boundary validator to reject.
+
+// Gains that retire the ramp so the FSM reaches DEGRADED on the first degrading
+// tick rather than sitting in HOLDING (the lattice honours a degrade cause at
+// the HOLDING→RUNNING edge, which needs ramp_done).
+TaskImpedanceController::Gains NoRampGains() {
+  TaskImpedanceController::Gains g;
+  g.activation_ramp_time = 0.0;
+  return g;
+}
+
+TEST(TaskImpedance, InvalidDeviceStateEmitsNoCommandAndDegrades) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController ctrl(Urdf6(), NoRampGains(), Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+
+  // Positive control: the healthy tick DOES command, so the zero-length below is
+  // the gate firing and not an inert fixture.
+  const auto healthy = ctrl.Compute(state);
+  ASSERT_EQ(healthy.devices[0].num_channels, 6);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
+
+  state.devices[0].valid = false;
+  g_alloc_count = 0;
+  g_alloc_active = true;
+  const auto out = ctrl.Compute(state);  // RT tick like any other — no heap
+  g_alloc_active = false;
+  EXPECT_EQ(g_alloc_count, 0u) << "the device-invalid path touched the heap";
+  EXPECT_EQ(out.devices[0].num_channels, 0) << "commanded an arm whose state it could not read";
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  EXPECT_FALSE(d.control_valid);
+  EXPECT_EQ(d.state, static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kDegraded));
+}
+
+// The half of the gate that is actually reachable in production: a device
+// narrower than the model. `valid` latches true on a backend's first state
+// message and is never cleared, and CM's startup gate refuses to run Compute()
+// until every group has reported — so `!valid` needs a group with no backend at
+// all, while a channel-count mismatch is a plain configuration fault that never
+// heals.
+TEST(TaskImpedance, TooFewDeviceChannelsIsTreatedAsNoJointState) {
+  const std::vector<double> q(6, 0.3);
+  TaskImpedanceController ctrl(Urdf6(), NoRampGains(), Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+
+  state.devices[0].num_channels = 4;  // model has 6
+  const auto out = ctrl.Compute(state);
+  EXPECT_EQ(out.devices[0].num_channels, 0);
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kDegraded));
+
+  // Non-vacuity: reconstruct what the UNGATED path would have emitted, so this
+  // test cannot pass against a gate that merely truncated the command. The two
+  // unreported channels read as 0, so the law would run at [0.3,0.3,0.3,0.3,0,0]
+  // while X_d was seeded at [0.3]*6. Fed as a VALID state to an identically
+  // seeded controller, that is a materially different torque — and every number
+  // in it is finite, which is why nothing downstream rejects it.
+  //
+  // The observable here is ORIENTATION, not gravity: serial_6dof.urdf is a
+  // coaxial z-axis stack, so ĝ(q) ≡ 0 and the TCP translation is the same point
+  // on the z axis at every configuration. Only the TCP yaw moves with q (by the
+  // 0.6 rad the two zeroed joints carry, well inside pose_error_limit).
+  TaskImpedanceController ungated(Urdf6(), NoRampGains(), Sel::kFullSe3);
+  auto seed_state = MakeState(6, q, std::vector<double>(6, 0.0));
+  const auto seeded = ungated.Compute(seed_state);  // X_d := the true pose
+  std::vector<double> q_partial_zero(q);
+  q_partial_zero[4] = 0.0;
+  q_partial_zero[5] = 0.0;
+  auto zero_tail = MakeState(6, q_partial_zero, std::vector<double>(6, 0.0));
+  const auto pulled = ungated.Compute(zero_tail);
+  double delta = 0.0;
+  for (std::size_t i = 0; i < 6; ++i)
+    delta += std::abs(pulled.devices[0].commands[i] - seeded.devices[0].commands[i]);
+  EXPECT_GT(delta, 1e-3) << "fixture cannot distinguish the ZERO-configuration evaluation";
+}
+
+// The E-STOP hold reads the same device the control law does, so it needs the
+// same gate: ĝ(q) − D·q̇ is a hold only when q and q̇ are real. The rejected
+// alternative (#236 E-8) was emitting nc0 zeros — that is a REAL 0 N·m write,
+// which on a torque-mode arm is a drop, not a stop. Silence is the one answer
+// this controller gives to "the device is unreadable", on both paths.
+TEST(TaskImpedance, EstopHoldWithUnreadableDeviceEmitsNoCommand) {
+  const std::vector<double> q(6, 0.25);
+  TaskImpedanceController ctrl(Urdf6(), NoRampGains(), Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  (void)ctrl.Compute(state);
+
+  // Positive control: the E-STOP hold on a READABLE device still emits ĝ(q), so
+  // the zero-length below is the new gate and not a dead E-STOP path.
+  ctrl.TriggerEstop();
+  const auto held = ctrl.Compute(state);
+  ASSERT_EQ(held.devices[0].num_channels, 6);
+  const auto grav = GravityAt(Urdf6(), q);
+  ASSERT_NEAR(held.devices[0].commands[0], grav[0], 1e-6);
+
+  state.devices[0].valid = false;
+  const auto out = ctrl.Compute(state);
+  EXPECT_EQ(out.devices[0].num_channels, 0)
+      << "the E-STOP hold emitted a torque derived from a joint state it could not read";
+  EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().control_valid);
+}
+
+// A target pushed while the joint state was unreadable must not outlive the
+// outage. The device-invalid path inherits the E-STOP path's re-seed contract,
+// and neither bumps the activation generation — so without the drain a queued
+// command still passes IsCurrentGeneration and overwrites the measured-pose
+// re-seed on the first recovered tick. Detection is on diag.pose_error for the
+// same reason the E-STOP drain test uses it: the recovery re-seed sets
+// X_d = X_meas ⇒ e = 0, so a leak shows up directly, while a torque assertion
+// would be masked by the gravity-comp hold a large enough leak latches into.
+TEST(TaskImpedance, TargetsQueuedWhileTheDeviceIsInvalidDoNotSurviveRecovery) {
+  const std::vector<double> q(6, 0.25);
+  TaskImpedanceController ctrl(Urdf6(), NoRampGains(), Sel::kFullSe3);
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  const auto seed = ctrl.Compute(state);  // X_d := the measured pose ⇒ e = 0
+
+  const std::array<double, 6> far{seed.actual_task_positions[0] + 0.1,
+                                  seed.actual_task_positions[1],
+                                  seed.actual_task_positions[2],
+                                  0.0,
+                                  0.0,
+                                  0.0};
+  state.devices[0].valid = false;
+  for (int k = 0; k < 8; ++k)  // more than kPendingTargetDepth
+    ctrl.SetDeviceTarget(0, std::span<const double>(far.data(), far.size()));
+  (void)ctrl.Compute(state);  // device-invalid tick: must drain
+
+  state.devices[0].valid = true;
+  const auto recovered = ctrl.Compute(state);
+  ASSERT_GT(recovered.devices[0].num_channels, 0) << "the recovery tick emitted nothing";
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  for (int i = 0; i < 6; ++i)
+    EXPECT_NEAR(d.pose_error[static_cast<std::size_t>(i)], 0.0, 1e-6)
+        << "axis " << i << ": a target queued during the outage overwrote the re-seed";
+
+  // Positive control: the very same target, pushed while the device is healthy,
+  // DOES move the setpoint — so the equality above is a drain and not an inert
+  // SetDeviceTarget or an unobservable offset.
+  ctrl.SetDeviceTarget(0, std::span<const double>(far.data(), far.size()));
+  (void)ctrl.Compute(state);
+  EXPECT_GT(std::abs(ctrl.GetDiagnosticsForTesting().pose_error[0]), 1e-3);
 }
 
 }  // namespace
