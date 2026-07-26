@@ -535,6 +535,47 @@ TEST_F(TaskControllerUrdfTest, SingleDeviceStateSkipsHandPaths) {
   }
 }
 
+// ── Over-reported device channels (#265 S-A / #172) ──────────────────────────
+
+// `num_channels` is wire-derived — WriteJointStateToCache sets it from the
+// JointState message length, not from the device config's joint_state_names —
+// so it is independent of the arm model's nv. A state topic carrying extra
+// joints (the exact regression the sim configs' `state_joint_names` comments
+// warn about) makes nc0 > nv, and every arm loop that indexes desired_q_ / dq_
+// / traj_dq_ (nv-wide Eigen vectors) by a device channel index must intersect
+// the two. Channels past the model carry no model joint: they hold at the
+// measured position, never the fresh-zero that means "go to the origin" on a
+// position lane.
+TEST_F(TaskControllerUrdfTest, OverReportedChannelsHoldMeasuredAndStayInModelBounds) {
+  constexpr int kExtra = 3;
+  constexpr std::array<double, kExtra> kSpare = {0.31, -0.42, 0.53};
+  state_.devices[0].num_channels = kArmDof + kExtra;
+  for (int k = 0; k < kExtra; ++k) {
+    state_.devices[0].positions[static_cast<std::size_t>(kArmDof + k)] =
+        kSpare[static_cast<std::size_t>(k)];
+  }
+
+  // RunTicks feeds back only the first kArmDof channels, so the spare slots keep
+  // the measured values written above.
+  auto out = RunTicks(5);
+
+  EXPECT_TRUE(out.valid);
+  EXPECT_EQ(out.devices[0].num_channels, kArmDof + kExtra);
+  // Model-backed channels are unaffected: the arm still holds its measured pose,
+  // exactly as in SelfInitHoldsMeasuredPoseAndPublishesTf (nc0 == nv).
+  for (int i = 0; i < kArmDof; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[static_cast<std::size_t>(i)],
+                kArmHome[static_cast<std::size_t>(i)], 1e-6)
+        << "arm joint " << i << " drifted once the device over-reported channels";
+  }
+  // Channels beyond the model hold at measured — not 0.0.
+  for (int k = 0; k < kExtra; ++k) {
+    EXPECT_DOUBLE_EQ(out.devices[0].commands[static_cast<std::size_t>(kArmDof + k)],
+                     kSpare[static_cast<std::size_t>(k)])
+        << "spare channel " << k << " was not held at its measured position";
+  }
+}
+
 // ── Model-less tier ──────────────────────────────────────────────────────────
 
 // Without LoadConfig/model the E-STOP wire path must still produce a safe
@@ -627,7 +668,6 @@ TEST(TaskControllerLoadConfigTest, OversizedSafePositionThrows) {
   cfg["estop"]["arm_safe_position"] = big;
   EXPECT_THROW(ctrl.LoadConfig(cfg), std::runtime_error);
 }
-
 
 // ── E-STOP telemetry freshness (#234 P-1) ──────────────────────────────────
 //

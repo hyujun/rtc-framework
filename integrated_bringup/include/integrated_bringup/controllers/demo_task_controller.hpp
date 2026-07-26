@@ -36,8 +36,10 @@
 #include <Eigen/Cholesky>  // LDLT
 #include <Eigen/Core>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -353,6 +355,15 @@ class DemoTaskController final : public RTControllerInterface {
 
   void InitArmModel(const rtc_urdf_bridge::ModelConfig& config);
   void InitHandModel(const rtc_urdf_bridge::ModelConfig& config);
+
+  // Model-dimension bound for arm-device channel loops (issue #172 pattern).
+  // The device's reported channel count is wire-derived and independent of the
+  // model DOF, so every loop that indexes an nv-wide Eigen buffer by a device
+  // channel index has to intersect the two. Returns min(nc0, nv).
+  [[nodiscard]] std::size_t ArmCommandBound(int nc0) const noexcept {
+    return std::min(static_cast<std::size_t>(std::max(nc0, 0)),
+                    static_cast<std::size_t>(desired_q_.size()));
+  }
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
   Eigen::VectorXd q_;
