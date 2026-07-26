@@ -81,15 +81,30 @@ namespace rtc {
 /// SAFE_STOP for it would stop a robot that is merely sluggish (D20). RT ticks
 /// cannot log (RT-3), which is why this is a flag and not a warning.
 ///
-/// ### Activation ramp α
+/// ### Activation ramp α — two clocks, not one
 /// α ramps the wrench into the OUTER loop and the task force out of the INNER
 /// one. Both, because each covers a different discontinuity: ramping only the
 /// torque lets X_c drift away under a standing load while the arm is still
 /// soft, so it lunges when α reaches 1; ramping only the wrench leaves the
-/// inner damping term −K_d^i·ν as a torque step at activation. During the ramp
-/// the force-driven response is therefore ~α², which is monotone and confined
-/// to `activation_ramp_time`. Gravity compensation is never ramped (the arm
-/// must not sag).
+/// inner damping term −K_d^i·ν as a torque step at activation. Gravity
+/// compensation is never ramped (the arm must not sag).
+///
+/// The two share `activation_ramp_time` but NOT a clock. `α_track` (inner) runs
+/// from the seeding tick, as the tracking discontinuity is present from that
+/// tick. `α_wrench` (outer) runs only from the first tick the pipeline actually
+/// emits a force — i.e. once a sample has arrived AND the §3.2.1 bias average is
+/// committed. A single clock silently defeats the ramp on the path that needs it
+/// most: BIAS_CALIBRATING returns a ZERO wrench for `bias_calibration_samples`
+/// producer samples (100 at 100 Hz ≈ 1 s, and it re-runs on every re-seed —
+/// including after each E-STOP), which is longer than the default 0.5 s ramp, so
+/// α would already be 1 when the first real force arrives and the outer loop
+/// would take it as a step. Freezing the SHARED clock instead is worse than the
+/// bug: it also zeroes the inner force, leaving the arm on gravity comp alone —
+/// free-floating — for that same second.
+///
+/// Both clocks advance only on clean control ticks, so the force-driven response
+/// is still ~α_track·α_wrench, monotone, and each factor is confined to
+/// `activation_ramp_time` from the moment its own discontinuity begins.
 ///
 /// ### Scope
 /// FULL_SE3 only (no `TaskSelection` axis — same reasoning as
@@ -183,7 +198,13 @@ class CascadedComplianceController final : public RTControllerInterface {
   void ResetFault() noexcept { reset_fault_requested_.store(true, std::memory_order_release); }
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
-  void set_gains(const Gains& g) noexcept { gains_lock_.Store(g); }
+  void set_gains(const Gains& g) noexcept {
+    gains_lock_.Store(g);
+    // The §7.6 MUST-1 ratio compares TWO gain sets; a new POD retires the
+    // published figure. Re-armed rather than recomputed here because Λ_S(q) only
+    // exists on the RT side (D20) — the next tick with a valid Cholesky does it.
+    bandwidth_eval_pending_.store(true, std::memory_order_release);
+  }
 
   [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
 
@@ -267,10 +288,26 @@ class CascadedComplianceController final : public RTControllerInterface {
                                                      const Gains& gains,
                                                      Diagnostics& diag) noexcept;
 
+  /// Discard every queued off-RT target. Both held paths (E-STOP, unusable joint
+  /// state) force a measured-pose re-seed on the next controllable tick, and
+  /// neither bumps the activation generation — so a target pushed DURING the hold
+  /// still passes IsCurrentGeneration and would overwrite that re-seed on the
+  /// tick right after it. The RT thread is the sole SPSC consumer, so draining
+  /// here is what keeps "a command issued while held does not survive recovery"
+  /// true for both paths rather than only for E-STOP.
+  void DrainPendingTargets() noexcept;
+
   /// §7.6 MUST-1, evaluated on the seeding tick from Λ_S(q₀) (RT, no logging).
   /// Writes bandwidth_ratio_ / bandwidth_ratio_low_.
   void EvaluateBandwidthSeparation(const Gains& gains) noexcept;
 
+  /// Resolve `name` against an ARBITRARY handle/tip pair. Taking them as
+  /// parameters is what lets InitFromModel validate the incoming model before it
+  /// replaces the live one — the lookup is the only step there that can throw.
+  /// @throws std::runtime_error  if `name` is not a frame of that model.
+  [[nodiscard]] static pinocchio::FrameIndex LookupSensorFrame(
+      const rtc_urdf_bridge::RtModelHandle& handle, pinocchio::FrameIndex tip,
+      const std::string& name);
   [[nodiscard]] pinocchio::FrameIndex LookupSensorFrame(const std::string& name) const;
   void ResolveSensorFrame();
 
@@ -301,7 +338,12 @@ class CascadedComplianceController final : public RTControllerInterface {
   Eigen::VectorXd tau_posture_;      ///< nv posture torque (Pinocchio order)
   Eigen::VectorXd tau_null_;         ///< nv projected nullspace torque
   Eigen::VectorXd tcp_vel_;          ///< 6 current task twist ν = J·q̇ (LWA)
-  Eigen::VectorXd q_null_;           ///< nv posture setpoint (Pinocchio order)
+  /// nv measured joint velocity gathered into PINOCCHIO order. J_full_ is a
+  /// Pinocchio-order matrix (ComputeJacobians reorders q on the way in), so the
+  /// q̇ multiplied by it must be gathered too — feeding the device-order vector
+  /// permutes ν silently, with every number finite.
+  Eigen::VectorXd qdot_;
+  Eigen::VectorXd q_null_;  ///< nv posture setpoint (Pinocchio order)
   Eigen::LLT<Eigen::MatrixXd> llt_M_;
 
   // Device-order buffers.
@@ -342,10 +384,19 @@ class CascadedComplianceController final : public RTControllerInterface {
   std::atomic<bool> estopped_{false};
   std::atomic<bool> hand_estopped_{false};
   std::atomic<bool> reset_fault_requested_{false};
+  /// Set off-RT by set_gains() / LoadConfig, consumed by the RT tick: the §7.6
+  /// MUST-1 ratio must be recomputed for the gains actually in force, not only
+  /// on the seeding tick. Cleared only once an evaluation succeeds, so a
+  /// rank-deficient pose retries instead of publishing a retired figure.
+  std::atomic<bool> bandwidth_eval_pending_{false};
 
-  pinocchio::SE3 goal_pose_{pinocchio::SE3::Identity()};             // X_d, RT working copy
-  pinocchio::SE3 compliant_pose_{pinocchio::SE3::Identity()};        // X_c, RT working copy
-  double activation_elapsed_{0.0};                                   // RT-only: ramp accumulator
+  pinocchio::SE3 goal_pose_{pinocchio::SE3::Identity()};       // X_d, RT working copy
+  pinocchio::SE3 compliant_pose_{pinocchio::SE3::Identity()};  // X_c, RT working copy
+  double activation_elapsed_{0.0};  // RT-only: inner (α_track) ramp accumulator
+  /// RT-only: outer (α_wrench) ramp accumulator. Separate from the above because
+  /// it starts when the pipeline first emits a force, not when the controller
+  /// activates — see "Activation ramp α" in the class note.
+  double wrench_elapsed_{0.0};
   double saturation_elapsed_{0.0};                                   // RT-only: saturation-persist
   double bandwidth_ratio_{std::numeric_limits<double>::infinity()};  // RT-only (§7.6 MUST-1)
   bool bandwidth_ratio_low_{false};                                  // RT-only

@@ -21,8 +21,10 @@
 // Reference dynamics come from a freshly-built RtModelHandle (bridge = model
 // provider, controller = consumer), never from the controller under test.
 
+#include "rtc_controllers/direct/cascaded_compliance_controller.hpp"
 #include "rtc_controllers/direct/joint_pd_controller.hpp"
 #include "rtc_controllers/direct/operational_space_controller.hpp"
+#include "rtc_controllers/direct/task_impedance_controller.hpp"
 #include "rtc_controllers/indirect/clik_controller.hpp"
 #include "rtc_controllers/indirect/p_controller.hpp"
 #include "test_urdf_path.hpp"
@@ -563,6 +565,120 @@ TEST(JointOrder, OscTorqueReorderedToDeviceOrder) {
   }
   EXPECT_GT(std::abs(out.devices[0].commands[0] - g_pin[0]), 1e-2)
       << "channel 0 must receive joint_3's gravity, not joint_1's (positional)";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// (3c) Phase 3 (A2) hard-correctness — permuted device order → task twist ν
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The three tests above cover terms formed in DEVICE order and scattered out
+// (gravity, Coriolis, τ). The opposite direction — a device-order vector that
+// must be GATHERED before it meets a Pinocchio-order matrix — has one consumer
+// nothing pinned: the task twist ν = J·q̇. GetFrameJacobian returns J in
+// Pinocchio COLUMN order (ComputeJacobians gathers q on the way in), so feeding
+// it the device-order q̇ pairs every column with another joint's velocity. The
+// product stays finite and the pose error is untouched, so the only symptom is a
+// wrong −K_d·ν damping torque — silent, and worse the faster the arm moves.
+//
+// Both §6.2-law controllers are pinned because they share the expression
+// (compliance/impedance_law.hpp). At the seeding tick e ≡ 0 (X_d := the measured
+// pose) and ν_d = 0, so with K_p = 0 the emitted command collapses to one
+// analytic term:  τ_dev[i] = (−Jᵀ K_d J q̇ + g)[pin(i)].
+
+namespace {
+
+constexpr double kRefKd = 12.0;  // one damping value on all six task axes
+
+// −Jᵀ K_d J q̇ + g in PINOCCHIO order, from an independent handle.
+Eigen::VectorXd RefDampingPlusGravity(const std::string& urdf, const std::vector<double>& q_pin,
+                                      const std::vector<double>& qd_pin) {
+  auto h = MakeHandle(urdf);
+  const auto nv = static_cast<Eigen::Index>(q_pin.size());
+  h->ComputeJacobians(q_pin);
+  Eigen::MatrixXd J = Eigen::MatrixXd::Zero(6, nv);
+  h->GetFrameJacobian(static_cast<pinocchio::FrameIndex>(h->GetModel().nframes - 1),
+                      pinocchio::LOCAL_WORLD_ALIGNED, J);
+  Eigen::Map<const Eigen::VectorXd> qd(qd_pin.data(), nv);
+  const Eigen::Matrix<double, 6, 1> f_task = -kRefKd * (J * qd);
+  return J.transpose() * f_task + RefGravity(urdf, q_pin);
+}
+
+// Pinocchio-order q̇ (asymmetric, so a permutation is observable) and its
+// device-order presentation.
+const std::vector<double> kQPin{0.3, -0.6, 0.4};
+const std::vector<double> kQdPin{0.7, -0.4, 0.9};
+
+void FillPermutedState(rtc::ControllerState& st) {
+  for (std::size_t i = 0; i < 3; ++i) {
+    const auto p = static_cast<std::size_t>(kDeviceToPin[i]);
+    st.devices[0].positions[i] = kQPin[p];
+    st.devices[0].velocities[i] = kQdPin[p];
+  }
+}
+
+}  // namespace
+
+TEST(JointOrder, TaskImpedanceTaskTwistUsesReorderedVelocity) {
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const Eigen::VectorXd ref = RefDampingPlusGravity(urdf, kQPin, kQdPin);
+
+  rtc::TaskImpedanceController::Gains g;
+  g.kp_pos = {0.0, 0.0, 0.0};
+  g.kp_rot = {0.0, 0.0, 0.0};
+  g.kd_pos = {kRefKd, kRefKd, kRefKd};
+  g.kd_rot = {kRefKd, kRefKd, kRefKd};
+  g.activation_ramp_time = 0.0;  // α ≡ 1
+  g.max_torque_rate = 1.0e12;    // §10.5 inert: the command IS the control law
+  g.joint_limit_kp = 0.0;
+  g.joint_limit_kd = 0.0;
+  g.joint_limit_margin = 0.0;
+  rtc::TaskImpedanceController ctrl(urdf, g);
+  ctrl.SetDeviceNameConfigs(PermutedDeviceConfig());
+
+  auto st = MakeState(3);
+  FillPermutedState(st);
+  (void)ctrl.Compute(st);  // seeds X_d from the measured pose ⇒ e ≡ 0
+  const auto out = ctrl.Compute(st);
+
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], ref[kDeviceToPin[i]], 1e-6)
+        << "device channel " << i << " (" << kPermutedNames[i] << ")";
+  }
+  // Mutation check: with the device-order q̇ fed straight to J the command is a
+  // materially different vector, so this test cannot pass vacuously.
+  const Eigen::VectorXd ref_unreordered = RefDampingPlusGravity(urdf, kQPin, {0.9, 0.7, -0.4});
+  EXPECT_GT((ref - ref_unreordered).norm(), 1e-2) << "fixture must make the permutation observable";
+}
+
+TEST(JointOrder, CascadedComplianceTaskTwistUsesReorderedVelocity) {
+  // Same law, same reference — the cascade's inner loop. Its outer loop is inert
+  // here (no wrench published ⇒ f_ext = 0 ⇒ X_c ≡ X_d, ν_c = 0), so the inner
+  // impedance term is again the only live one.
+  const std::string urdf = UrdfPath("planar_3r.urdf");
+  const Eigen::VectorXd ref = RefDampingPlusGravity(urdf, kQPin, kQdPin);
+
+  rtc::CascadedComplianceController::Gains g;
+  g.impedance.kp_pos = {0.0, 0.0, 0.0};
+  g.impedance.kp_rot = {0.0, 0.0, 0.0};
+  g.impedance.kd_pos = {kRefKd, kRefKd, kRefKd};
+  g.impedance.kd_rot = {kRefKd, kRefKd, kRefKd};
+  g.activation_ramp_time = 0.0;
+  g.max_torque_rate = 1.0e12;
+  g.joint_limit_kp = 0.0;
+  g.joint_limit_kd = 0.0;
+  g.joint_limit_margin = 0.0;
+  rtc::CascadedComplianceController ctrl(urdf, g);
+  ctrl.SetDeviceNameConfigs(PermutedDeviceConfig());
+
+  auto st = MakeState(3);
+  FillPermutedState(st);
+  (void)ctrl.Compute(st);
+  const auto out = ctrl.Compute(st);
+
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_NEAR(out.devices[0].commands[i], ref[kDeviceToPin[i]], 1e-6)
+        << "device channel " << i << " (" << kPermutedNames[i] << ")";
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

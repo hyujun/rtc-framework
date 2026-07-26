@@ -59,9 +59,29 @@ CascadedComplianceController::CascadedComplianceController(std::string_view urdf
     : CascadedComplianceController(urdf_path, Gains{}) {}
 
 void CascadedComplianceController::InitFromModel(std::shared_ptr<const pinocchio::Model> model) {
+  // Build and VALIDATE against the incoming model before any member moves. The
+  // sensor-frame lookup is the one step here that can throw, and the only caller
+  // that catches (MaybeSelectSubModel) logs "keeping full" — a claim the previous
+  // order could not honour: model_ptr_/handle_ were replaced first, so a throw
+  // left the reduced model live with the PREVIOUS model's limit-vector lengths
+  // and a stale sensor_frame_id_, i.e. the RT tick transforming the wrench by the
+  // wrong link's rotation and lever arm, with no fault raised.
+  //
+  // Structural, not a live bug fix: GetReducedModel currently carries the locked
+  // subtree's FRAMES over, so a sensor_frame that resolved against the full model
+  // still resolves against the reduced one and this lookup does not actually
+  // throw today (verified — a `sensor_frame: finger_left` reduction succeeds).
+  // The ordering is what keeps that an implementation detail of the builder
+  // rather than a silent correctness dependency of this controller.
+  auto handle = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model);
+  const auto tip = static_cast<pinocchio::FrameIndex>(model->nframes - 1);
+  const pinocchio::FrameIndex sensor = LookupSensorFrame(*handle, tip, sensor_frame_name_);
+
+  // ── Commit ────────────────────────────────────────────────────────────────
   model_ptr_ = std::move(model);
-  handle_ = std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_ptr_);
-  tip_frame_id_ = static_cast<pinocchio::FrameIndex>(model_ptr_->nframes - 1);
+  handle_ = std::move(handle);
+  tip_frame_id_ = tip;
+  sensor_frame_id_ = sensor;  // the model just moved — any resolved index is stale
 
   // No kMaxRobotDOF capacity check, deliberately — the same call the OSC and both
   // sibling compliance controllers make. Every work buffer here is a dynamic
@@ -78,6 +98,7 @@ void CascadedComplianceController::InitFromModel(std::shared_ptr<const pinocchio
   tau_posture_ = Eigen::VectorXd::Zero(nv);
   tau_null_ = Eigen::VectorXd::Zero(nv);
   tcp_vel_ = Eigen::VectorXd::Zero(kTaskDim);
+  qdot_ = Eigen::VectorXd::Zero(nv);
   q_null_ = Eigen::VectorXd::Zero(nv);
   tau_dev_ = Eigen::VectorXd::Zero(nv);
   tau_prev_dev_ = Eigen::VectorXd::Zero(nv);
@@ -91,7 +112,6 @@ void CascadedComplianceController::InitFromModel(std::shared_ptr<const pinocchio
   // decides which axis gravity points along, and the payload compensation term
   // would silently point the wrong way in a non-Z-gravity model.
   gravity_world_ = model_ptr_->gravity.linear();
-  ResolveSensorFrame();  // the model just moved — any resolved index is stale
 
   // Inert defaults so the RT path has valid bounds even if OnDeviceConfigsSet is
   // never called (e.g. a direct unit-test construction).
@@ -103,16 +123,22 @@ void CascadedComplianceController::InitFromModel(std::shared_ptr<const pinocchio
 }
 
 pinocchio::FrameIndex CascadedComplianceController::LookupSensorFrame(
-    const std::string& name) const {
+    const rtc_urdf_bridge::RtModelHandle& handle, pinocchio::FrameIndex tip,
+    const std::string& name) {
   // Empty name ⇒ the wrench is expressed in the TIP body frame. That is NOT an
   // identity transform into LWA: the Ad^{-T} still rotates by R_tip.
   if (name.empty())
-    return tip_frame_id_;
-  const auto fid = handle_->GetFrameId(name);
+    return tip;
+  const auto fid = handle.GetFrameId(name);
   if (fid == 0)  // 0 == universe == "not found" (RtModelHandle contract)
     throw std::runtime_error("CascadedComplianceController: sensor_frame '" + name +
                              "' is not a frame of the loaded model");
   return fid;
+}
+
+pinocchio::FrameIndex CascadedComplianceController::LookupSensorFrame(
+    const std::string& name) const {
+  return LookupSensorFrame(*handle_, tip_frame_id_, name);
 }
 
 void CascadedComplianceController::ResolveSensorFrame() {
@@ -218,8 +244,21 @@ void CascadedComplianceController::EvaluateBandwidthSeparation(const Gains& gain
                  (i < 3) ? gains.admittance.min_inertia_lin : gains.admittance.min_inertia_ang);
     const double lambda_i = lambda_s(i, i);
     const double kp_i = (i < 3) ? gains.impedance.kp_pos[ui] : gains.impedance.kp_rot[ui - 3];
-    if (!(lambda_d > 0.0) || !(lambda_i > 0.0) || !(kp_i > 0.0))
-      continue;  // not evaluable — a zero inner stiffness is its own problem
+    // Λ_d ≤ 0 or a non-positive Λ_S diagonal means the RATIO cannot be formed —
+    // a degenerate seeding pose or a gain the floor above should have caught —
+    // so the axis carries no verdict.
+    if (!(lambda_d > 0.0) || !(lambda_i > 0.0))
+      continue;
+    // K_p^i = 0 is NOT "not evaluable": ω_i = 0 against a positive ω_a is the
+    // WORST possible separation, an inner loop with no restoring bandwidth under
+    // an outer loop that has one. Skipping it removed the single most coupled
+    // axis from a min() whose whole job is to report the most coupled axis, and
+    // `inner.kp_pos: [0,0,0]` passes LoadConfig (>= 0), so the flag read "fine"
+    // for exactly the configuration it exists to catch.
+    if (!(kp_i > 0.0)) {
+      worst = 0.0;
+      continue;
+    }
     const double omega_a = std::sqrt(kp_a / lambda_d);
     const double omega_i = std::sqrt(kp_i / lambda_i);
     if (!(omega_a > 0.0))
@@ -254,14 +293,7 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   const auto gains = gains_lock_.Load();
 
   if (diag.estopped) {
-    // Drain & discard targets queued during the global E-STOP: ClearEstop() does
-    // not bump the activation generation, so they would pass IsCurrentGeneration
-    // on the first recovery tick and overwrite the measured-pose re-seed. The RT
-    // thread is the sole SPSC consumer, so draining here keeps that invariant.
-    PendingTarget discarded{};
-    while (pending_targets_.Pop(discarded)) {
-      // discard: a command issued during E-STOP must not survive recovery
-    }
+    DrainPendingTargets();
     return ComputeEstop(state, /*control_valid=*/false, diag, gains);
   }
 
@@ -279,21 +311,26 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
     return ComputeNoJointState(state, gains, diag);
 
   std::array<double, kMaxDeviceChannels> q_buf{};
-  std::array<double, kMaxDeviceChannels> v_buf{};
   for (int i = 0; i < nv; ++i) {
     const auto ui = static_cast<std::size_t>(i);
     q_buf[ui] = dev0.positions[ui];
-    v_buf[ui] = dev0.velocities[ui];
     q_dev_(i) = dev0.positions[ui];
     qdot_dev_(i) = dev0.velocities[ui];
   }
   std::span<const double> q_span(q_buf.data(), static_cast<std::size_t>(nv));
 
   // ── FK + Jacobian + current task twist ν ──────────────────────────────────
+  // ComputeJacobians gathers q into Pinocchio order internally, so J_full_ has
+  // PINOCCHIO column order. q̇ therefore has to be gathered the same way before
+  // the product: the device-order vector would pair each column with another
+  // joint's velocity, which is a permuted ν — a wrong TCP velocity and a wrong
+  // −K_d^i·ν damping torque, with nothing non-finite to fault on. Identity order
+  // → memcpy, so this costs nothing on the common path.
   handle_->ComputeJacobians(q_span);
   handle_->GetFrameJacobian(tip_frame_id_, pinocchio::LOCAL_WORLD_ALIGNED, J_full_);
-  Eigen::Map<const Eigen::VectorXd> v_eigen(v_buf.data(), nv);
-  tcp_vel_.noalias() = J_full_ * v_eigen;
+  handle_->ReorderInput(std::span<const double>(qdot_dev_.data(), static_cast<std::size_t>(nv)),
+                        qdot_);
+  tcp_vel_.noalias() = J_full_ * qdot_;
   const pinocchio::SE3& tcp = handle_->GetFramePlacement(tip_frame_id_);
 
   // ── Target slot: seed X_d / q_null from measured on (re)activation (§10.7) ─
@@ -310,7 +347,8 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
     // inherit a deviation (or a velocity) accrued while the controller was not
     // running, which would command a torque toward a frame the arm never left.
     integrator_.Reset();
-    activation_elapsed_ = 0.0;  // restart the ramp
+    activation_elapsed_ = 0.0;  // restart the inner (α_track) ramp
+    wrench_elapsed_ = 0.0;      // ...and the outer one, which re-arms below
     saturation_elapsed_ = 0.0;
     tau_prev_dev_.setZero();
     // The wrench path restarts with everything else — including DISOWNING the
@@ -318,10 +356,12 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
     // back as fresh data on the first tick of this activation (§10.6). The state
     // machine refuses BIAS_CALIBRATING while a SAFE_STOP is latched, so re-seeding
     // cannot launder a fault (E-8).
-    if (wrench_enabled_ && wrench_.ResetForActivation()) {
+    // No `bias_gate_ = false` here: this branch requires wrench_enabled_, so the
+    // OUTER block below unconditionally assigns bias_gate_ = ws.bias_gate_released
+    // on this very tick with no return in between. Writing it here reads like the
+    // latch that HOLDS BIAS_CALIBRATING, is not one, and no test can tell.
+    if (wrench_enabled_ && wrench_.ResetForActivation())
       sm_.BeginBiasCalibration();
-      bias_gate_ = false;
-    }
     just_seeded = true;
     for (std::size_t d = 1; d < static_cast<std::size_t>(state.num_devices); ++d) {
       const auto& dev = state.devices[d];
@@ -368,14 +408,22 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   if (slot_dirty)
     target_seqlock_.Store(slot);
 
-  // Gain ramp α (§10.7): 0→1 over activation_ramp_time; ≤0 disables. Applied to
-  // BOTH the wrench entering the outer loop and the task force leaving the inner
-  // one — see the class comment for why neither alone is enough.
+  // Gain ramps (§10.7): 0→1 over activation_ramp_time; ≤0 disables. TWO clocks
+  // over one duration — α_track from the seeding tick for the inner loop,
+  // α_wrench from the first tick the pipeline emits a force for the outer one.
+  // See the class comment: a shared clock is consumed by BIAS_CALIBRATING and
+  // hands the outer loop a step, and freezing the shared clock instead would
+  // leave the arm on gravity comp alone for the same interval.
   const double ramp = gains.activation_ramp_time;
   const double alpha = (ramp <= 0.0) ? 1.0 : std::min(1.0, activation_elapsed_ / ramp);
+  const double alpha_wrench = (ramp <= 0.0) ? 1.0 : std::min(1.0, wrench_elapsed_ / ramp);
 
   // ── OUTER: external wrench → compliant frame (X_c, ν_c) ───────────────────
   Eigen::Matrix<double, 6, 1> f_ext = Eigen::Matrix<double, 6, 1>::Zero();
+  // "The pipeline is emitting" — a sample has arrived AND the §3.2.1 average is
+  // committed. Until then Update() returns zero by construction, so advancing
+  // α_wrench would spend the ramp on a force that does not exist yet.
+  bool wrench_live = true;
   if (wrench_enabled_) {
     const pinocchio::SE3& sensor = handle_->GetFramePlacement(sensor_frame_id_);
     compliance::WrenchPipelineStatus ws;
@@ -396,7 +444,8 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
     diag.wrench_stale = ws.stale;
     diag.bias_calibrated = ws.bias_calibrated;
     diag.in_contact = ws.in_contact;
-    f_ext = alpha * f_lwa;
+    wrench_live = ws.valid && ws.bias_calibrated;
+    f_ext = alpha_wrench * f_lwa;
   } else {
     bias_gate_ = true;
   }
@@ -448,7 +497,21 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   double lambda_sq = 0.0;
   const bool nullspace_active =
       (nv > kTaskDim) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
-  if (nullspace_active || just_seeded) {
+  // Re-evaluate the MUST-1 ratio whenever the gains it compares have CHANGED, not
+  // only on activation: set_gains() / a re-LoadConfig write a new POD into the
+  // SeqLock, and the published figure would otherwise keep describing the gain
+  // set that was just retired — a "3.4, separated" reading for a cascade that is
+  // no longer tuned that way.
+  const bool bw_pending = bandwidth_eval_pending_.exchange(false, std::memory_order_acq_rel);
+  const bool bw_evaluate = just_seeded || bw_pending;
+  if (bw_evaluate) {
+    // Clear BEFORE attempting: if the Cholesky below fails at this pose the
+    // controller must publish "not evaluable" (∞, flag clear) rather than the
+    // previous activation's number under the new gains.
+    bandwidth_ratio_ = std::numeric_limits<double>::infinity();
+    bandwidth_ratio_low_ = false;
+  }
+  if (nullspace_active || bw_evaluate) {
     handle_->ComputeMassMatrix(q_span);
     M_ = handle_->GetMassMatrix();
     M_.triangularView<Eigen::StrictlyLower>() =
@@ -457,14 +520,18 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
     if (llt_M_.info() != Eigen::Success) {
       if (nullspace_active)
         dyn_ok = false;
+      if (bw_evaluate)
+        bandwidth_eval_pending_.store(true, std::memory_order_release);  // retry next tick
     } else {
       // NUM-1 at the point of use: LoadConfig floors max_damping too, but
       // set_gains() writes the POD straight into the SeqLock and bypasses it.
       const compliance::TaskDynamics::Result r =
           dyn_.Compute(J_full_, llt_M_, gains.singularity_threshold,
                        std::max(kMinMaxDamping, gains.max_damping));
-      if (just_seeded && r.ok)
+      if (bw_evaluate && r.ok)
         EvaluateBandwidthSeparation(gains);
+      else if (bw_evaluate)
+        bandwidth_eval_pending_.store(true, std::memory_order_release);  // retry next tick
       if (nullspace_active) {
         dyn_ok = r.ok;
         sigma_min = r.sigma_min;
@@ -526,6 +593,11 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   // returns to X_d under K_p^a — or stays where it is when K_p^a = 0, which is
   // the intended hand-guiding behaviour and not a failure to stop.
   faults.wrench_timeout = diag.wrench_stale;
+  // HOLDING→RUNNING follows α_track alone, NOT α_wrench: with no producer yet,
+  // α_wrench never advances (there is nothing to ramp in), and gating the FSM on
+  // it would park a controller whose tracking loop is fully engaged in HOLDING
+  // for as long as the F/T driver is late. BIAS_CALIBRATING already covers the
+  // "wrench not usable yet" state, via bias_gate_.
   const bool ramp_done = (alpha >= 1.0);
   const auto cstate =
       sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_gate_, diag.in_contact);
@@ -542,7 +614,12 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   if (sm_.in_safe_stop() || !safety.finite || !dyn_ok)
     return ComputeEstop(state, /*control_valid=*/false, diag, gains);
 
-  activation_elapsed_ += dt;  // advance the ramp only on a clean control tick
+  // Advance the ramps only on a clean control tick. α_wrench additionally waits
+  // for the pipeline to have something to ramp IN — otherwise the whole ramp is
+  // spent while f_ext ≡ 0 and the first real sample arrives at full gain.
+  activation_elapsed_ += dt;
+  if (wrench_live)
+    wrench_elapsed_ += dt;
   diag.control_valid = true;
 
   // ── Emit ──────────────────────────────────────────────────────────────────
@@ -644,9 +721,23 @@ ControllerOutput CascadedComplianceController::ComputeEstop(const ControllerStat
   return output;
 }
 
+void CascadedComplianceController::DrainPendingTargets() noexcept {
+  PendingTarget discarded{};
+  while (pending_targets_.Pop(discarded)) {
+    // discard: a command issued while held must not survive recovery
+  }
+}
+
 ControllerOutput CascadedComplianceController::ComputeNoJointState(const ControllerState& state,
                                                                    const Gains& gains,
                                                                    Diagnostics& diag) noexcept {
+  // Same contract as the E-STOP path: this tick forces a re-seed below, so any
+  // target queued while the device was unreadable must not outlive the outage.
+  // The producer keeps publishing through a backend dropout, so without this the
+  // depth-4 queue holds the OLDEST commands of the outage (SpscQueue drops the
+  // newest when full) and the first recovered tick jumps to one of them instead
+  // of the measured pose — braked only by max_torque_rate.
+  DrainPendingTargets();
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
   compliance::ComplianceFaults faults;
   faults.device_state_invalid = true;
@@ -731,30 +822,54 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   // otherwise, and nothing downstream can tell the two apart. No scalar
   // broadcast (D5) — a shorthand would re-introduce "quietly a different value"
   // in a new shape.
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr, const char* what,
-                  bool require_non_negative) {
+  // Every scalar read goes through this. NaN and ±inf are NOT tuning mistakes
+  // that a clamp can absorb: `std::max(0.0, NaN)` returns 0.0 — silently a
+  // different value, the exact failure mode the shape check above exists to
+  // prevent — and an infinite gain reaches the admittance state on the first
+  // tick, so the controller latches SAFE_STOP with `nan_inf` and nothing points
+  // at the config line that caused it.
+  auto num = [](const YAML::Node& n, const char* what) {
+    const double v = n.as<double>();
+    if (!std::isfinite(v))
+      throw std::runtime_error(std::string("CascadedComplianceController: ") + what +
+                               " must be a finite number");
+    return v;
+  };
+  // A section that is ABSENT is legal (the defaults apply, which is the
+  // documented behaviour); a section that is PRESENT but not a map is a config
+  // error. Silently skipping the latter leaves the defaults running under a file
+  // that says otherwise — the F7 failure class, one level up from the leaves.
+  auto require_map = [](const YAML::Node& n, const char* what) {
+    if (n && !n.IsMap())
+      throw std::runtime_error(std::string("CascadedComplianceController: ") + what +
+                               " must be a map of keys");
+  };
+  auto load3 = [&num](const YAML::Node& n, std::array<double, 3>& arr, const char* what,
+                      bool require_non_negative) {
     if (!n)
       return;
     if (!n.IsSequence() || n.size() != 3)
       throw std::runtime_error(std::string("CascadedComplianceController: ") + what +
                                " must be a 3-entry sequence [x,y,z]");
     for (std::size_t i = 0; i < 3; ++i) {
-      const double v = n[i].as<double>();
+      const double v = num(n[i], what);
       if (require_non_negative && !(v >= 0.0))
         throw std::runtime_error(std::string("CascadedComplianceController: ") + what +
                                  " entries must be >= 0");
       arr[i] = v;
     }
   };
-  auto load6 = [](const YAML::Node& n, std::array<double, 6>& arr, const char* what,
-                  bool require_positive) {
+  auto load6 = [&num](const YAML::Node& n, std::array<double, 6>& arr, const char* what,
+                      bool require_positive) {
     if (!n)
       return;
     if (!n.IsSequence() || n.size() != 6)
       throw std::runtime_error(std::string("CascadedComplianceController: ") + what +
                                " must be a 6-entry sequence [x,y,z,rx,ry,rz]");
     for (std::size_t i = 0; i < 6; ++i) {
-      const double v = n[i].as<double>();
+      // NaN is rejected by `num` above, not here: `v < 0.0` is FALSE for NaN, so
+      // the non-negative branch would pass it straight into the admittance state.
+      const double v = num(n[i], what);
       // NUM-2: Λ_d is inverted every tick. A zero or negative entry is not a
       // soft-clamped tuning mistake, it is a divide.
       if (require_positive && !(v > 0.0))
@@ -772,7 +887,8 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   // stiffness and a damping, and a flat `stiffness:` key would be the single
   // most consequential ambiguity in this file — the outer one defines how the
   // robot yields to force, the inner one only how tightly it tracks.
-  if (const YAML::Node& o = cfg["outer"]; o && o.IsMap()) {
+  require_map(cfg["outer"], "outer");
+  if (const YAML::Node& o = cfg["outer"]; o) {
     load6(o["desired_inertia"], g.admittance.inertia, "outer.desired_inertia", true);
     load6(o["damping"], g.admittance.damping, "outer.damping", false);
     load6(o["stiffness"], g.admittance.stiffness, "outer.stiffness", false);
@@ -781,39 +897,44 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
         throw std::runtime_error(
             "CascadedComplianceController: outer.min_desired_inertia must be [translation, "
             "rotation]");
-      g.admittance.min_inertia_lin = std::max(0.0, n[0].as<double>());
-      g.admittance.min_inertia_ang = std::max(0.0, n[1].as<double>());
+      g.admittance.min_inertia_lin = std::max(0.0, num(n[0], "outer.min_desired_inertia"));
+      g.admittance.min_inertia_ang = std::max(0.0, num(n[1], "outer.min_desired_inertia"));
     }
     if (const YAML::Node& n = o["max_compliant_displacement"]; n) {
       if (!n.IsSequence() || n.size() != 2)
         throw std::runtime_error(
             "CascadedComplianceController: outer.max_compliant_displacement must be [metres, "
             "radians]");
-      g.admittance.max_displacement_lin = n[0].as<double>();
-      g.admittance.max_displacement_ang = n[1].as<double>();
+      g.admittance.max_displacement_lin = num(n[0], "outer.max_compliant_displacement");
+      g.admittance.max_displacement_ang = num(n[1], "outer.max_compliant_displacement");
     }
     if (o["max_compliant_linear_velocity"])
-      g.admittance.max_velocity_lin = o["max_compliant_linear_velocity"].as<double>();
+      g.admittance.max_velocity_lin =
+          num(o["max_compliant_linear_velocity"], "outer.max_compliant_linear_velocity");
     if (o["max_compliant_angular_velocity"])
-      g.admittance.max_velocity_ang = o["max_compliant_angular_velocity"].as<double>();
+      g.admittance.max_velocity_ang =
+          num(o["max_compliant_angular_velocity"], "outer.max_compliant_angular_velocity");
     // Separate keys from the two above on purpose (PR #256 F2) — see
     // AdmittanceParams. Not floored here: the floor lives at the point of use so
     // set_gains() cannot bypass it (NUM-1).
     if (o["max_return_linear_velocity"])
-      g.admittance.max_return_velocity_lin = o["max_return_linear_velocity"].as<double>();
+      g.admittance.max_return_velocity_lin =
+          num(o["max_return_linear_velocity"], "outer.max_return_linear_velocity");
     if (o["max_return_angular_velocity"])
-      g.admittance.max_return_velocity_ang = o["max_return_angular_velocity"].as<double>();
+      g.admittance.max_return_velocity_ang =
+          num(o["max_return_angular_velocity"], "outer.max_return_angular_velocity");
     if (const YAML::Node& n = o["barrier_stiffness"]; n) {
       if (!n.IsSequence() || n.size() != 2)
         throw std::runtime_error(
             "CascadedComplianceController: outer.barrier_stiffness must be [linear, angular]");
-      g.admittance.barrier_stiffness_lin = std::max(0.0, n[0].as<double>());
-      g.admittance.barrier_stiffness_ang = std::max(0.0, n[1].as<double>());
+      g.admittance.barrier_stiffness_lin = std::max(0.0, num(n[0], "outer.barrier_stiffness"));
+      g.admittance.barrier_stiffness_ang = std::max(0.0, num(n[1], "outer.barrier_stiffness"));
     }
   }
 
   // ── INNER loop (§6.2) ────────────────────────────────────────────────────
-  if (const YAML::Node& in = cfg["inner"]; in && in.IsMap()) {
+  require_map(cfg["inner"], "inner");
+  if (const YAML::Node& in = cfg["inner"]; in) {
     load3(in["kp_pos"], g.impedance.kp_pos, "inner.kp_pos", true);
     load3(in["kd_pos"], g.impedance.kd_pos, "inner.kd_pos", true);
     load3(in["kp_rot"], g.impedance.kp_rot, "inner.kp_rot", true);
@@ -822,21 +943,23 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
 
   // ── Nullspace / DLS / safety / activation ────────────────────────────────
   if (cfg["nullspace_stiffness"])
-    g.nullspace_kp = std::max(0.0, cfg["nullspace_stiffness"].as<double>());
+    g.nullspace_kp = std::max(0.0, num(cfg["nullspace_stiffness"], "nullspace_stiffness"));
   if (cfg["nullspace_damping"])
-    g.nullspace_kd = std::max(0.0, cfg["nullspace_damping"].as<double>());
+    g.nullspace_kd = std::max(0.0, num(cfg["nullspace_damping"], "nullspace_damping"));
   if (cfg["singularity_threshold"])
-    g.singularity_threshold = std::max(1e-6, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold =
+        std::max(1e-6, num(cfg["singularity_threshold"], "singularity_threshold"));
   if (cfg["singularity_critical"])
-    g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
+    g.singularity_critical =
+        std::max(0.0, num(cfg["singularity_critical"], "singularity_critical"));
   if (cfg["max_damping"])
-    g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
+    g.max_damping = std::max(kMinMaxDamping, num(cfg["max_damping"], "max_damping"));
   if (cfg["joint_limit_margin"])
-    g.joint_limit_margin = std::max(0.0, cfg["joint_limit_margin"].as<double>());
+    g.joint_limit_margin = std::max(0.0, num(cfg["joint_limit_margin"], "joint_limit_margin"));
   if (cfg["joint_limit_stiffness"])
-    g.joint_limit_kp = std::max(0.0, cfg["joint_limit_stiffness"].as<double>());
+    g.joint_limit_kp = std::max(0.0, num(cfg["joint_limit_stiffness"], "joint_limit_stiffness"));
   if (cfg["joint_limit_damping"])
-    g.joint_limit_kd = std::max(0.0, cfg["joint_limit_damping"].as<double>());
+    g.joint_limit_kd = std::max(0.0, num(cfg["joint_limit_damping"], "joint_limit_damping"));
   // F8 — every threshold that a first tick compares against must be incapable of
   // latching SAFE_STOP by being 0 or negative.
   //
@@ -844,7 +967,7 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   // rate-limit history forever (the arm stops responding while every fault stays
   // clear), so it is rejected rather than clamped.
   if (const YAML::Node& n = cfg["max_torque_rate"]; n) {
-    const double v = n.as<double>();
+    const double v = num(n, "max_torque_rate");
     if (!(v > 0.0))
       throw std::runtime_error("CascadedComplianceController: max_torque_rate must be > 0");
     g.max_torque_rate = v;
@@ -855,72 +978,78 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   // the config. The `<= 0 disables` idiom is deliberately NOT offered — this is
   // the guard (D6).
   if (const YAML::Node& n = cfg["pose_error_limit"]; n) {
-    const double v = n.as<double>();
+    const double v = num(n, "pose_error_limit");
     if (!(v > 0.0))
       throw std::runtime_error("CascadedComplianceController: pose_error_limit must be > 0");
     g.pose_error_limit = v;
   }
   if (cfg["activation_ramp_time"])
-    g.activation_ramp_time = cfg["activation_ramp_time"].as<double>();
+    g.activation_ramp_time = num(cfg["activation_ramp_time"], "activation_ramp_time");
   if (cfg["estop_damping"])
-    g.estop_damping = std::max(0.0, cfg["estop_damping"].as<double>());
+    g.estop_damping = std::max(0.0, num(cfg["estop_damping"], "estop_damping"));
   // saturation_persist_time == 0 would degrade on the FIRST saturated tick.
   // That is a legitimate (if twitchy) setting — DEGRADED is recoverable and
   // carries no latch — so it is clamped at 0 rather than rejected.
   if (cfg["saturation_persist_time"])
-    g.saturation_persist_time = std::max(0.0, cfg["saturation_persist_time"].as<double>());
+    g.saturation_persist_time =
+        std::max(0.0, num(cfg["saturation_persist_time"], "saturation_persist_time"));
   // 0 silences the §7.6 MUST-1 flag; negative is meaningless, not a disable.
   if (cfg["min_bandwidth_ratio"])
-    g.min_bandwidth_ratio = std::max(0.0, cfg["min_bandwidth_ratio"].as<double>());
+    g.min_bandwidth_ratio = std::max(0.0, num(cfg["min_bandwidth_ratio"], "min_bandwidth_ratio"));
 
   // ── External wrench source (§3.2.1) — REQUIRED (the outer loop's input) ───
   bool wrench_enabled = true;
   std::string sensor_frame;
   compliance::WrenchConditioningConfig wc;
-  if (const YAML::Node& ew = cfg["external_wrench"]; ew && ew.IsMap()) {
+  require_map(cfg["external_wrench"], "external_wrench");
+  if (const YAML::Node& ew = cfg["external_wrench"]; ew) {
     if (ew["enabled"])
       wrench_enabled = ew["enabled"].as<bool>();
     if (ew["sensor_frame"])
       sensor_frame = ew["sensor_frame"].as<std::string>();
-    auto load_w6 = [](const YAML::Node& n, compliance::Wrench6& arr, const char* what) {
+    auto load_w6 = [&num](const YAML::Node& n, compliance::Wrench6& arr, const char* what) {
       if (!n)
         return;
       if (!n.IsSequence() || n.size() != 6)
         throw std::runtime_error(std::string("CascadedComplianceController: ") + what +
                                  " must be a 6-entry sequence [fx,fy,fz,tx,ty,tz]");
       for (std::size_t i = 0; i < 6; ++i)
-        arr[i] = n[i].as<double>();
+        arr[i] = num(n[i], what);
     };
     load_w6(ew["deadband"], wc.deadband, "external_wrench.deadband");
     load_w6(ew["max"], wc.max_abs, "external_wrench.max");
     if (ew["payload_mass"])
-      wc.payload_mass = ew["payload_mass"].as<double>();
+      wc.payload_mass = num(ew["payload_mass"], "external_wrench.payload_mass");
     if (const YAML::Node& com = ew["payload_com"]; com && com.IsSequence()) {
       if (com.size() != 3)
         throw std::runtime_error(
             "CascadedComplianceController: external_wrench.payload_com must have 3 entries");
       for (std::size_t i = 0; i < 3; ++i)
-        wc.payload_com(static_cast<Eigen::Index>(i)) = com[i].as<double>();
+        wc.payload_com(static_cast<Eigen::Index>(i)) = num(com[i], "external_wrench.payload_com");
     }
     if (ew["filter_enabled"])
       wc.filter_enabled = ew["filter_enabled"].as<bool>();
     if (ew["filter_cutoff_force"])
-      wc.filter_cutoff_force_hz = ew["filter_cutoff_force"].as<double>();
+      wc.filter_cutoff_force_hz =
+          num(ew["filter_cutoff_force"], "external_wrench.filter_cutoff_force");
     if (ew["filter_cutoff_torque"])
-      wc.filter_cutoff_torque_hz = ew["filter_cutoff_torque"].as<double>();
+      wc.filter_cutoff_torque_hz =
+          num(ew["filter_cutoff_torque"], "external_wrench.filter_cutoff_torque");
     if (ew["bias_calibration_samples"])
       wc.bias_samples = ew["bias_calibration_samples"].as<int>();
     if (ew["timeout"])
-      g.wrench.timeout = std::max(0.0, ew["timeout"].as<double>());
+      g.wrench.timeout = std::max(0.0, num(ew["timeout"], "external_wrench.timeout"));
     if (ew["fadeout_time"])
-      g.wrench.fadeout_time = std::max(0.0, ew["fadeout_time"].as<double>());
+      g.wrench.fadeout_time =
+          std::max(0.0, num(ew["fadeout_time"], "external_wrench.fadeout_time"));
     if (ew["contact_threshold"])
-      g.wrench.contact_threshold = std::max(0.0, ew["contact_threshold"].as<double>());
+      g.wrench.contact_threshold =
+          std::max(0.0, num(ew["contact_threshold"], "external_wrench.contact_threshold"));
     if (ew["contact_release_ratio"])
       // Clamped strictly below 1 so the ⇄ transition always keeps a hysteresis
       // band (§10.6 MUST): equal thresholds chatter at the boundary.
-      g.wrench.contact_release_ratio =
-          std::clamp(ew["contact_release_ratio"].as<double>(), 0.0, 0.99);
+      g.wrench.contact_release_ratio = std::clamp(
+          num(ew["contact_release_ratio"], "external_wrench.contact_release_ratio"), 0.0, 0.99);
   }
 
   // §7.6: the cascade exists to turn a MEASURED force into motion. With no
@@ -953,6 +1082,8 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   sensor_frame_id_ = sensor_id;
   wrench_enabled_ = wrench_enabled;
   gains_lock_.Store(g);
+  // Same reason as set_gains(): a reconfigure retires the published MUST-1 ratio.
+  bandwidth_eval_pending_.store(true, std::memory_order_release);
   command_type_ = CommandType::kTorque;
 }
 

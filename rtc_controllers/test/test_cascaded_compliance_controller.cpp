@@ -358,6 +358,64 @@ TEST(CascadedCompliance, BandwidthFlagIsSilentForHandGuiding) {
   EXPECT_FALSE(std::isfinite(d.bandwidth_ratio));
 }
 
+// A zero inner stiffness is the WORST separation there is — ω_i = 0 under an
+// outer loop that has a restoring frequency — and `inner.kp_pos: [0,0,0]` passes
+// LoadConfig (>= 0). Excluding those axes as "not evaluable" removed the most
+// coupled axis from a min() whose entire job is to report the most coupled axis,
+// so the cascade this diagnostic exists to catch reported ∞ / not-low.
+TEST(CascadedCompliance, BandwidthFlagRisesForAZeroInnerStiffnessAxis) {
+  const std::vector<double> q(7, 0.25);
+  auto gains = InertSafetyGains();
+  // Five axes deliberately well separated; only Z has no inner stiffness.
+  gains.impedance.kp_pos = {800.0, 800.0, 0.0};
+  gains.impedance.kp_rot = {80.0, 80.0, 80.0};
+  gains.admittance.stiffness = {20.0, 20.0, 20.0, 1.0, 1.0, 1.0};
+  gains.admittance.inertia = {4.0, 4.0, 4.0, 0.2, 0.2, 0.2};
+  CascadedComplianceController ctrl(Urdf7(), gains);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  (void)ctrl.Compute(state);
+
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  EXPECT_EQ(d.bandwidth_ratio, 0.0) << "the ω_i = 0 axis did not reach the worst-axis min()";
+  EXPECT_TRUE(d.bandwidth_ratio_low);
+  EXPECT_NE(d.state, static_cast<std::uint8_t>(ComplianceState::kSafeStop))
+      << "still a diagnostic, not a fault (D20)";
+}
+
+// The ratio compares two GAIN SETS, so it has to follow a runtime retune. It was
+// written on the seeding tick and never again, so `set_gains()` left a figure
+// describing gains that no longer ran — and the operator reading it has no way
+// to tell.
+TEST(CascadedCompliance, BandwidthReportFollowsARuntimeRetune) {
+  const std::vector<double> q(7, 0.25);
+  auto gains = InertSafetyGains();
+  gains.impedance.kp_pos = {800.0, 800.0, 800.0};
+  gains.impedance.kp_rot = {80.0, 80.0, 80.0};
+  gains.admittance.stiffness = {20.0, 20.0, 20.0, 1.0, 1.0, 1.0};
+  gains.admittance.inertia = {4.0, 4.0, 4.0, 0.2, 0.2, 0.2};
+  CascadedComplianceController ctrl(Urdf7(), gains);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  (void)ctrl.Compute(state);
+  ASSERT_FALSE(ctrl.GetDiagnosticsForTesting().bandwidth_ratio_low);
+
+  // Retune into a coupled cascade WITHOUT re-activating — no re-seed happens.
+  auto coupled = gains;
+  coupled.impedance.kp_pos = {5.0, 5.0, 5.0};
+  coupled.impedance.kp_rot = {0.5, 0.5, 0.5};
+  coupled.admittance.stiffness = {4000.0, 4000.0, 4000.0, 200.0, 200.0, 200.0};
+  ctrl.set_gains(coupled);
+  (void)ctrl.Compute(state);
+
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  EXPECT_TRUE(d.bandwidth_ratio_low)
+      << "the report still describes the retired gains (ratio = " << d.bandwidth_ratio << ")";
+  EXPECT_LT(d.bandwidth_ratio, coupled.min_bandwidth_ratio);
+}
+
 // ── §7.6 MUST-3: what the compliant frame does when the force stops ─────────
 
 TEST(CascadedCompliance, StiffOuterLoopReturnsTheFrameToTheDesiredPose) {
@@ -542,6 +600,103 @@ TEST(CascadedCompliance, ReactivationReseedsTheDesiredPoseAndTheFrame) {
   EXPECT_FALSE(d.wrench_valid) << "a pre-activation sample was consumed as fresh";
 }
 
+// ── §10.7 activation ramp: the outer loop keeps its own clock ───────────────
+
+// BIAS_CALIBRATING emits a ZERO wrench for `bias_calibration_samples` producer
+// samples — 100 by default, ≈1 s at 100 Hz, and it re-runs on every re-seed
+// including after each E-STOP. On one shared clock that interval spends the
+// whole activation ramp on a force that does not exist yet, so the first real
+// sample enters the outer loop at α = 1: exactly the step the ramp exists to
+// prevent, on the path where an operator's hand is on the arm.
+TEST(CascadedCompliance, TheWrenchRampSurvivesALongBiasCalibration) {
+  constexpr int kBiasSamples = 40;
+  constexpr int kRampTicks = 10;  // deliberately shorter than the bias average
+  constexpr int kForceTicks = 3;  // ticks of real force to compare over
+  const std::vector<double> q(6, 0.3);
+  const std::string yaml = R"(
+external_wrench:
+  enabled: true
+  filter_enabled: false
+  bias_calibration_samples: 40
+  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  max: [1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6]
+)";
+
+  // Deviation of the compliant frame after the bias average has committed and
+  // `kForceTicks` ticks of real force have gone through the outer loop.
+  auto deviation_after_calibration = [&](double ramp_time) {
+    auto gains = InertSafetyGains();
+    gains.activation_ramp_time = ramp_time;
+    CascadedComplianceController ctrl(Urdf6(), gains);
+    ctrl.SetControlRate(kRateHz);
+    ctrl.LoadConfig(YAML::Load(yaml));
+    auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+    // Calibrate at rest — a force present THROUGHOUT the average is what the
+    // average subtracts, so it would be indistinguishable from a zero wrench.
+    for (int k = 0; k < kBiasSamples; ++k) {
+      Send(ctrl, Wrench6{0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+      (void)ctrl.Compute(state);
+    }
+    for (int k = 0; k < kForceTicks; ++k) {
+      Send(ctrl, Wrench6{30.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+      (void)ctrl.Compute(state);
+    }
+    const auto d = ctrl.GetDiagnosticsForTesting();
+    EXPECT_TRUE(d.bias_calibrated) << "the bias average did not commit — fixture is wrong";
+    return ToVec6(d.compliant_deviation).norm();
+  };
+
+  const double unramped = deviation_after_calibration(0.0);
+  const double ramped = deviation_after_calibration(kRampTicks * kDt);
+
+  ASSERT_GT(unramped, 1e-9) << "the outer loop never responded — nothing to ramp";
+  // With one clock these are EQUAL: activation_elapsed_ is already past the ramp
+  // by the time the first force arrives.
+  EXPECT_LT(ramped, 0.5 * unramped)
+      << "the activation ramp was spent during BIAS_CALIBRATING (ramped=" << ramped
+      << " unramped=" << unramped << ")";
+  EXPECT_GT(ramped, 0.0) << "the ramp suppressed the outer loop entirely";
+}
+
+// The inner loop must NOT wait for the bias average: freezing one shared clock
+// would leave the arm on gravity compensation alone — free-floating — for the
+// whole averaging window, which is worse than the step it would prevent.
+TEST(CascadedCompliance, TheInnerLoopEngagesDuringBiasCalibration) {
+  const std::vector<double> q(6, 0.3);
+  const std::string yaml = R"(
+external_wrench:
+  enabled: true
+  filter_enabled: false
+  bias_calibration_samples: 40
+  deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  max: [1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6]
+)";
+  auto gains = InertSafetyGains();
+  gains.activation_ramp_time = 10.0 * kDt;
+  CascadedComplianceController ctrl(Urdf6(), gains);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(yaml));
+
+  // Moving joints while the bias is still averaging: the §6.2 damping term is
+  // the only thing resisting, and it is inside α_track.
+  auto state = MakeState(6, q, std::vector<double>(6, 0.4));
+  for (int k = 0; k < 20; ++k) {  // still well inside the 40-sample average
+    Send(ctrl, Wrench6{30.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+    (void)ctrl.Compute(state);
+  }
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  ASSERT_FALSE(d.bias_calibrated) << "the average finished early — fixture is wrong";
+  const auto out = ctrl.Compute(state);
+
+  Reference ref(Urdf6());
+  const Eigen::VectorXd g = ref.Gravity(q);
+  double delta = 0.0;
+  for (int i = 0; i < 6; ++i)
+    delta += std::abs(out.devices[0].commands[static_cast<std::size_t>(i)] - g(i));
+  EXPECT_GT(delta, 1e-3) << "only gravity compensation was emitted while the bias averaged — the "
+                            "arm is free-floating for the whole window";
+}
+
 // ── F5 (PR #256): the primary device's joint state must be checked ──────────
 
 // Unread channels default to 0, so an unchecked tick evaluates FK, the Jacobian
@@ -578,7 +733,121 @@ TEST(CascadedCompliance, TooFewDeviceChannelsIsTreatedAsNoJointState) {
             static_cast<std::uint8_t>(ComplianceState::kDegraded));
 }
 
+// A target pushed while the joint state was unreadable must not outlive the
+// outage. The E-STOP path drains for exactly this reason — ClearEstop() does not
+// bump the activation generation, so a queued command still passes
+// IsCurrentGeneration — and the device-invalid path inherits the same re-seed
+// contract without (until now) the same drain. The producer is off-RT and keeps
+// publishing through a backend dropout, so the depth-4 queue ends up holding the
+// OLDEST commands of the outage (SpscQueue drops the newest when full) and the
+// first recovered tick would jump to one of them instead of the measured pose,
+// braked only by max_torque_rate.
+TEST(CascadedCompliance, TargetsQueuedWhileTheDeviceIsInvalidDoNotSurviveRecovery) {
+  const std::vector<double> q(6, 0.3);
+  CascadedComplianceController ctrl(Urdf6(), InertSafetyGains());
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(6, q, std::vector<double>(6, 0.0));
+  const auto seeded = ctrl.Compute(state);  // X_d := the measured pose
+
+  // Offset small enough to stay inside pose_error_limit, so the recovery tick is
+  // a normal emitting tick and not a SAFE_STOP hold.
+  std::array<double, 6> away{};
+  for (std::size_t i = 0; i < 6; ++i)
+    away[i] = seeded.actual_task_positions[i];
+  away[0] += 0.05;
+
+  state.devices[0].valid = false;
+  for (int k = 0; k < 8; ++k)  // more than kPendingTargetDepth
+    ctrl.SetDeviceTarget(0, std::span<const double>(away.data(), away.size()));
+  (void)ctrl.Compute(state);
+
+  state.devices[0].valid = true;
+  const auto recovered = ctrl.Compute(state);
+  ASSERT_GT(recovered.devices[0].num_channels, 0) << "the recovery tick emitted nothing";
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_NEAR(recovered.task_goal_positions[i], seeded.task_goal_positions[i], 1e-9)
+        << "axis " << i << ": a target queued during the outage overwrote the re-seed";
+  }
+
+  // Positive control: the very same target, pushed while the device is healthy,
+  // DOES move the frame — so the equality above is a drain and not an inert
+  // SetDeviceTarget or an unobservable offset.
+  ctrl.SetDeviceTarget(0, std::span<const double>(away.data(), away.size()));
+  const auto commanded = ctrl.Compute(state);
+  EXPECT_NEAR(commanded.task_goal_positions[0], away[0], 1e-9);
+  EXPECT_GT(std::abs(commanded.task_goal_positions[0] - seeded.task_goal_positions[0]), 1e-3);
+}
+
 // ── F7 (PR #256): a mis-shaped gain node must not be silently dropped ───────
+
+namespace {
+// The message of whatever LoadConfig throws, or "" if it accepts the file.
+// Matching on the message matters here: yaml-cpp's own conversion failure also
+// derives from std::runtime_error, so a bare EXPECT_THROW would pass even when
+// the value never reached the check under test.
+std::string ConfigureError(const std::string& yaml) {
+  CascadedComplianceController ctrl(Urdf6(), InertSafetyGains());
+  ctrl.SetControlRate(kRateHz);
+  try {
+    ctrl.LoadConfig(YAML::Load(yaml));
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return {};
+}
+
+bool Mentions(const std::string& msg, const std::string& needle) {
+  return msg.find(needle) != std::string::npos;
+}
+}  // namespace
+
+// One level up from the leaf shape check: a section that is PRESENT but not a
+// map was skipped whole, so every key under it silently kept its default while
+// the file said otherwise — the same class of failure F7 fixed for the leaves,
+// and the one that turns `outer.stiffness: [0,...]` (hand-guiding) back into the
+// 200 N/m default that pushes an operator's hand away.
+TEST(CascadedCompliance, ConfigureRejectsASectionThatIsPresentButNotAMap) {
+  EXPECT_TRUE(
+      Mentions(ConfigureError(TransparentWrenchYaml("outer: 3.0\n")), "outer must be a map"))
+      << "a scalar `outer:` was accepted";
+  EXPECT_TRUE(
+      Mentions(ConfigureError(TransparentWrenchYaml("inner: [1.0, 2.0]\n")), "inner must be a map"))
+      << "a sequence `inner:` was accepted";
+  EXPECT_TRUE(Mentions(ConfigureError("external_wrench: 3.0\n"), "external_wrench must be a map"))
+      << "a scalar `external_wrench:` was accepted";
+
+  // ...but an ABSENT section stays legal — the defaults ARE the documented
+  // behaviour, and rejecting that would break every minimal config file.
+  EXPECT_EQ(ConfigureError(TransparentWrenchYaml()), "");
+}
+
+// `v < 0.0` is FALSE for NaN, so the non-negative branch of load6 passed NaN
+// straight through, and every clamped scalar hid it differently: std::max(0.0,
+// NaN) returns 0.0 — silently a third value. A NaN stiffness poisons the
+// admittance state on the first tick and latches SAFE_STOP with `nan_inf`, with
+// nothing pointing at the config line.
+TEST(CascadedCompliance, ConfigureRejectsNonFiniteGains) {
+  const auto nan_stiffness =
+      ConfigureError(TransparentWrenchYaml("outer:\n  stiffness: [.nan, 0, 0, 0, 0, 0]\n"));
+  EXPECT_TRUE(Mentions(nan_stiffness, "outer.stiffness")) << nan_stiffness;
+  EXPECT_TRUE(Mentions(nan_stiffness, "finite")) << nan_stiffness;
+
+  // `.inf` rather than an overflowing literal such as 1e400: yaml-cpp rejects
+  // the latter itself ("bad conversion"), which would make the assertion below
+  // pass without our check ever running.
+  const auto inf_damping =
+      ConfigureError(TransparentWrenchYaml("outer:\n  damping: [.inf, 1, 1, 1, 1, 1]\n"));
+  EXPECT_TRUE(Mentions(inf_damping, "outer.damping")) << inf_damping;
+  EXPECT_TRUE(Mentions(inf_damping, "finite")) << inf_damping;
+
+  const auto nan_ramp = ConfigureError(TransparentWrenchYaml("activation_ramp_time: .nan\n"));
+  EXPECT_TRUE(Mentions(nan_ramp, "activation_ramp_time")) << nan_ramp;
+
+  // A clamped scalar must not launder it into the clamp bound either.
+  const auto nan_clamped = ConfigureError(TransparentWrenchYaml("estop_damping: .nan\n"));
+  EXPECT_TRUE(Mentions(nan_clamped, "estop_damping")) << nan_clamped;
+}
 
 TEST(CascadedCompliance, ConfigureRejectsMisshapedGainSequences) {
   auto make = [] {
@@ -682,8 +951,15 @@ TEST(CascadedCompliance, ConfigureRejectsUnknownSensorFrame) {
 
 // T7.1 — the FIRST Compute() must already be allocation-free (a warm-up tick
 // outside the guard would hide exactly the sizing bug this catches). Both loops
-// are live: a wrench is queued, so the pipeline, the integrator and the task
-// dynamics all run inside the guard.
+// must be LIVE inside the guard, which takes some care: the seeding tick calls
+// WrenchPipeline::ResetForActivation(), and that DISOWNS whatever sample is in
+// the slot (§10.6 — an expired wrench goes to zero, never held). A wrench queued
+// before the guard is therefore gone by the time Update() runs, every tick takes
+// the `!sample.valid` early return, and WrenchConditioner::Apply /
+// transformWrench / ContactHysteresis::Update never execute under the counter —
+// the gate passes while covering nothing. So the sample is published AFTER the
+// seeding tick, inside the guard, and the diagnostics below assert that the
+// pipeline really did run rather than trusting the layout.
 TEST(CascadedCompliance, ComputeIsAllocationFree) {
   const std::vector<double> q(7, 0.25);
   auto gains = InertSafetyGains();
@@ -692,16 +968,28 @@ TEST(CascadedCompliance, ComputeIsAllocationFree) {
   ctrl.SetControlRate(kRateHz);
   ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
   auto state = MakeState(7, q, std::vector<double>(7, 0.05));
-  Send(ctrl, Wrench6{10.0, -5.0, 3.0, 0.2, -0.1, 0.05});
+  // Force above the default 5 N contact threshold so the hysteresis latch — the
+  // last stage of the pipeline — takes its state-changing branch too.
+  const Wrench6 push{40.0, -5.0, 3.0, 0.2, -0.1, 0.05};
 
   g_alloc_count = 0;
   g_alloc_active = true;
-  const auto out = ctrl.Compute(state);
-  const auto second = ctrl.Compute(state);  // the seeded path, with the frame live
+  Send(ctrl, push);                         // SetExternalWrench is a SeqLock store
+  const auto out = ctrl.Compute(state);     // seeding tick: disowns the sample
+  Send(ctrl, push);                         // ...so republish for the seeded tick
+  const auto second = ctrl.Compute(state);  // full pipeline: condition → Ad^{-T} → contact
   g_alloc_active = false;
   EXPECT_EQ(g_alloc_count, 0u) << "Compute() allocated on the RT path";
   EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
   EXPECT_EQ(second.command_type, rtc::CommandType::kTorque);
+
+  // The gate is only worth its assertion if the branch it guards actually ran.
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  ASSERT_TRUE(d.wrench_valid) << "no sample reached the pipeline inside the guard";
+  ASSERT_TRUE(d.bias_calibrated) << "the pipeline stopped at BIAS_CALIBRATING and emitted zero";
+  EXPECT_GT(ToVec6(d.wrench_lwa).norm(), 1e-9)
+      << "the conditioning / frame-transform stages never executed under the counter";
+  EXPECT_TRUE(d.in_contact) << "ContactHysteresis::Update never took its latching branch";
 }
 
 TEST(CascadedCompliance, OutputAlwaysFinite) {
