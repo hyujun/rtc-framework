@@ -15,6 +15,14 @@
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/math.hpp>
+#pragma GCC diagnostic pop
+
 #include <Eigen/Dense>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -57,6 +65,20 @@ rtc::ControllerState MakeState(int nj, const std::vector<double>& q, const std::
         (i < static_cast<int>(qd.size())) ? qd[static_cast<std::size_t>(i)] : 0.0;
   }
   return state;
+}
+
+// Independent measured TCP for the same URDF, for the task-space telemetry
+// lanes. Like GravityAt, this must not be the controller's own numbers — a
+// reference that shares the object under test cannot contradict it.
+pinocchio::SE3 TcpAt(const std::string& urdf, const std::vector<double>& q) {
+  rtc_urdf_bridge::ModelConfig cfg;
+  cfg.urdf_path = urdf;
+  cfg.root_joint_type = "fixed";
+  rtc_urdf_bridge::PinocchioModelBuilder builder(cfg);
+  rtc_urdf_bridge::RtModelHandle handle(builder.GetFullModel());
+  handle.ComputeJacobians(std::span<const double>(q.data(), q.size()));
+  const auto tip = static_cast<pinocchio::FrameIndex>(builder.GetFullModel()->nframes - 1);
+  return handle.GetFramePlacement(tip);
 }
 
 // Independent ĝ(q) for the same URDF, for τ = g(q) comparison.
@@ -613,6 +635,140 @@ TEST(TaskImpedance, TargetsQueuedWhileTheDeviceIsInvalidDoNotSurviveRecovery) {
   ctrl.SetDeviceTarget(0, std::span<const double>(far.data(), far.size()));
   (void)ctrl.Compute(state);
   EXPECT_GT(std::abs(ctrl.GetDiagnosticsForTesting().pose_error[0]), 1e-3);
+}
+
+// ── #262: both task-space lanes are 6-wide and both are filled ──────────────
+// Consumers (pod_fill, device_state_log_pod) emit all six slots of each lane to
+// CSV unconditionally, so a partly-filled lane is a WRONG reading, not an empty
+// one: zeros in 3..5 log "no rotation" where the honest answer is "not
+// measured", and an all-zero goal lane under goal_type == kTask reads as "the
+// TCP is being commanded to the world origin at identity attitude".
+
+// A goal near the seeded pose: the setpoint has to stay inside pose_error_limit
+// so the tick is a real control tick (a SAFE_STOP hands off to ComputeEstop,
+// which fills neither lane) — derived from the fixture rather than a literal.
+std::array<double, 6> GoalOffsetFrom(const rtc::ControllerOutput& seeded) {
+  return {seeded.actual_task_positions[0] + 0.01,  seeded.actual_task_positions[1] - 0.02,
+          seeded.actual_task_positions[2] + 0.015, seeded.actual_task_positions[3] + 0.05,
+          seeded.actual_task_positions[4] - 0.07,  seeded.actual_task_positions[5] + 0.09};
+}
+
+TEST(TaskImpedance, TaskSpaceTelemetryReportsMeasuredPoseAndCommandedGoal) {
+  // A bent posture, so the measured TCP actually HAS an orientation to report.
+  const std::vector<double> q{0.3, -0.5, 0.7, 0.4, -0.6, 0.2, 0.9};
+  TaskImpedanceController ctrl(Urdf7(), NoRampGains(), Sel::kFullSe3);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+
+  const auto seeded = ctrl.Compute(state);  // seeds X_d := X_meas
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
+
+  // The actual lane is the measured TCP — checked against an independent model
+  // handle, all six slots.
+  const pinocchio::SE3 tcp = TcpAt(Urdf7(), q);
+  const Eigen::Vector3d rpy_ref = pinocchio::rpy::matrixToRpy(tcp.rotation());
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_NEAR(seeded.actual_task_positions[static_cast<std::size_t>(i)], tcp.translation()(i),
+                1e-9)
+        << "actual translation slot " << i;
+    EXPECT_NEAR(seeded.actual_task_positions[static_cast<std::size_t>(3 + i)], rpy_ref(i), 1e-9)
+        << "actual RPY slot " << i;
+  }
+  // Non-vacuity: an upright fixture would make the RPY assertions pass on the
+  // all-zero default the defect emitted.
+  ASSERT_GT(rpy_ref.norm(), 1e-2) << "this posture has no orientation to report";
+
+  // On the seeding tick X_d == X_meas, so the goal lane must echo the same pose
+  // — including 3..5, which is exactly what was missing.
+  for (int i = 0; i < 6; ++i)
+    EXPECT_NEAR(seeded.task_goal_positions[static_cast<std::size_t>(i)],
+                seeded.actual_task_positions[static_cast<std::size_t>(i)], 1e-12)
+        << "goal slot " << i << " does not echo the seeded X_d";
+
+  // A commanded goal shows up in the goal lane VERBATIM (this is X_d, not the
+  // measurement and not a compliant frame — the impedance law has none).
+  const auto target = GoalOffsetFrom(seeded);
+  ctrl.SetDeviceTarget(0, std::span<const double>(target.data(), target.size()));
+  const auto out = ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
+  ASSERT_EQ(out.devices[0].goal_type, rtc::GoalType::kTask);
+  for (int i = 0; i < 6; ++i)
+    EXPECT_NEAR(out.task_goal_positions[static_cast<std::size_t>(i)],
+                target[static_cast<std::size_t>(i)], 1e-9)
+        << "goal slot " << i << " is not the commanded X_d";
+  // ...while the actual lane still reports the (unchanged) measurement, so the
+  // two lanes are not cross-wired.
+  for (int i = 0; i < 6; ++i)
+    EXPECT_NEAR(out.actual_task_positions[static_cast<std::size_t>(i)],
+                seeded.actual_task_positions[static_cast<std::size_t>(i)], 1e-12)
+        << "actual slot " << i << " moved without the joint state moving";
+}
+
+TEST(TaskImpedance, TaskGoalLaneSeparatesGoalsThatDifferOnlyInRotation) {
+  // The reading an orientation experiment is run from: two goals that share a
+  // position must not land on the same row in the log.
+  const std::vector<double> q{0.3, -0.5, 0.7, 0.4, -0.6, 0.2, 0.9};
+  TaskImpedanceController ctrl(Urdf7(), NoRampGains(), Sel::kFullSe3);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  const auto seeded = ctrl.Compute(state);
+
+  auto goal_at = [&](double roll, double pitch, double yaw) {
+    const std::array<double, 6> t{seeded.actual_task_positions[0],
+                                  seeded.actual_task_positions[1],
+                                  seeded.actual_task_positions[2],
+                                  roll,
+                                  pitch,
+                                  yaw};
+    ctrl.SetDeviceTarget(0, std::span<const double>(t.data(), t.size()));
+    const auto o = ctrl.Compute(state);
+    EXPECT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
+    return o;
+  };
+
+  const double r0 = seeded.actual_task_positions[3];
+  const double p0 = seeded.actual_task_positions[4];
+  const double y0 = seeded.actual_task_positions[5];
+  const auto a = goal_at(r0 + 0.05, p0, y0);
+  const auto b = goal_at(r0, p0, y0 + 0.05);
+
+  for (int i = 0; i < 3; ++i)
+    EXPECT_NEAR(a.task_goal_positions[static_cast<std::size_t>(i)],
+                b.task_goal_positions[static_cast<std::size_t>(i)], 1e-12)
+        << "translation slot " << i << " moved, so the contrast is not rotation-only";
+  EXPECT_NEAR(a.task_goal_positions[3], r0 + 0.05, 1e-9);
+  EXPECT_NEAR(b.task_goal_positions[5], y0 + 0.05, 1e-9);
+  const Eigen::Vector3d rpy_a(a.task_goal_positions[3], a.task_goal_positions[4],
+                              a.task_goal_positions[5]);
+  const Eigen::Vector3d rpy_b(b.task_goal_positions[3], b.task_goal_positions[4],
+                              b.task_goal_positions[5]);
+  EXPECT_GT((rpy_a - rpy_b).norm(), 1e-3) << "the two orientations log identically";
+}
+
+TEST(TaskImpedance, TranslationOnlyStillReportsTheCommandedGoalRotation) {
+  // m_ is a controller configuration, not a property of the goal being reported:
+  // the rotation of X_d is what the operator commanded whether or not the law
+  // regulates it. Zeroing it here would reintroduce the unreadable lane.
+  const std::vector<double> q(7, 0.2);
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 50.0;  // required for TRANSLATION_ONLY (§6.1)
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kTranslationOnly);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  const auto seeded = ctrl.Compute(state);
+
+  const auto target = GoalOffsetFrom(seeded);
+  ctrl.SetDeviceTarget(0, std::span<const double>(target.data(), target.size()));
+  const auto out = ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
+  for (int i = 3; i < 6; ++i)
+    EXPECT_NEAR(out.task_goal_positions[static_cast<std::size_t>(i)],
+                target[static_cast<std::size_t>(i)], 1e-9)
+        << "goal RPY slot " << i << " was dropped under TRANSLATION_ONLY";
+  // The actual lane keeps reporting the measured rotation for the same reason.
+  const Eigen::Vector3d rpy_ref = pinocchio::rpy::matrixToRpy(TcpAt(Urdf7(), q).rotation());
+  ASSERT_GT(rpy_ref.norm(), 1e-2) << "this posture has no orientation to report";
+  for (int i = 0; i < 3; ++i)
+    EXPECT_NEAR(out.actual_task_positions[static_cast<std::size_t>(3 + i)], rpy_ref(i), 1e-9)
+        << "actual RPY slot " << i;
 }
 
 }  // namespace

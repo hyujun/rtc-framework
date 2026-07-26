@@ -21,6 +21,7 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/math.hpp>
 #include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
@@ -636,9 +637,34 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
                              kDefaultMaxJointTorque);
   rtc::utils::PassthroughSecondaryDevices(state, output, slot.targets);
 
+  // Both lanes are 6-wide (x,y,z,r,p,y) and every consumer reads all six —
+  // device_state_log_pod / pod_fill emit them straight to CSV. Filling only the
+  // translation logs "no rotation" where the honest reading is "not measured",
+  // the one reading an operator cannot tell apart from a real result (§3.5 of
+  // docs/compliance-conventions.md; 43fd96e closed the same defect on the
+  // admittance controller). ZYX Euler at the boundary, as §10 Style requires.
+  const Eigen::Vector3d rpy_actual = pinocchio::rpy::matrixToRpy(tcp.rotation());
   output.actual_task_positions[0] = tcp.translation().x();
   output.actual_task_positions[1] = tcp.translation().y();
   output.actual_task_positions[2] = tcp.translation().z();
+  output.actual_task_positions[3] = rpy_actual.x();
+  output.actual_task_positions[4] = rpy_actual.y();
+  output.actual_task_positions[5] = rpy_actual.z();
+  // The goal lane carries X_d. Admittance/cascade report the COMPLIANT frame X_c
+  // for the same underlying reason — the lane must show the thing the controller
+  // actually commands — and this controller has no X_c: §6.2/§6.3 regulate toward
+  // the setpoint itself. Leaving the lane at zero while claiming goal_type ==
+  // kTask reads as "commanding the world origin at identity attitude", which is a
+  // pose the arm can be nowhere near. Under TRANSLATION_ONLY the rotation of X_d
+  // is still what was commanded (the law simply does not regulate it) — `m_` is a
+  // controller configuration, not a property of the goal being reported.
+  const Eigen::Vector3d rpy_goal = pinocchio::rpy::matrixToRpy(goal_pose_.rotation());
+  output.task_goal_positions[0] = goal_pose_.translation().x();
+  output.task_goal_positions[1] = goal_pose_.translation().y();
+  output.task_goal_positions[2] = goal_pose_.translation().z();
+  output.task_goal_positions[3] = rpy_goal.x();
+  output.task_goal_positions[4] = rpy_goal.y();
+  output.task_goal_positions[5] = rpy_goal.z();
   output.command_type = command_type_;
 
   diag_lock_.Store(diag);
