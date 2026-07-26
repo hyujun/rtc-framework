@@ -2,32 +2,63 @@
 
 ## Controller Table
 
-| Controller | Type | Space | Key Feature |
-|------------|------|-------|-------------|
-| PController | Position | Joint | `q + kp*error*dt` incremental |
-| JointPDController | Torque | Joint | PD + Pinocchio RNEA + quintic trajectory |
-| ClikController | Position | Cartesian 3/6-DOF | Damped Jacobian pseudoinverse + null-space |
-| OSC | Torque | Cartesian 6-DOF | Full pose PD + SE3 quintic trajectory; gravity-comp damped torque E-STOP (`ĝ(q)−D·q̇`, #184) |
-| TaskImpedanceController | Torque | Cartesian 3/6-DOF | §6.2 A=NONE Jacobian-transpose compliance `Jᵀ Sᵀ[Kp·Se+Kd·Sė]+τ_null+ĝ`; Λ 미사용(특이점 자유), σ_min-adaptive DLS nullspace (`nv>task_dim`), gravity-comp torque E-STOP, MuJoCo-only. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) |
-| TaskAdmittanceController | Position | Cartesian 6-DOF | §7 Rule 3 — 힘 **입력** → 운동 출력. compliant frame `Λ_d ẍ̃+K_d ẋ̃+K_p x̃ = f_ext` 를 semi-implicit Euler + `exp3` retract 로 적분하고 §7.3 DLS 미분 IK 로 `q_cmd` 생성. 외부 wrench **필수** (A≠NONE, `enabled: false` 는 configure 에러), `min_desired_inertia` 하한(§7.4) · `max_compliant_displacement`/velocity(§7.5, `≤0`=off) · `max_return_{linear,angular}_velocity`(경계 밖 복귀 속도 상한, **상시**), E-STOP 은 position-hold(latch, 재활성화·`ClearEstop`·`ResetFault` 경계에서 무효화). impedance 와 **반대 부호**(§11.4.1 P2/P3). 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.5 |
-| CascadedComplianceController | Torque | Cartesian 6-DOF | §7.6 — outer admittance(느린 대역, 순응 정의) 가 만든 compliant frame `(X_c, ν_c)` 를 inner §6.2 impedance(빠른 대역)가 추종. `τ = Jᵀ·α[K_p^i·e(X,X_c) + K_d^i·(ν_c−ν)] + α·Nᵀτ_posture + ĝ`. 외부 wrench **필수** (outer 의 입력). **wrench 는 정확히 한 번만 소비** — inner 에 `f_ext` 항이 없다(§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로, D19). 대역폭 분리 `ω_i/ω_a`(MUST-1) 는 seeding tick 에 `Λ_S(q₀)` 로 1회 평가해 **진단 플래그** `bandwidth_ratio_low` 로만 보고(fault 아님, D20). YAML 은 `outer:` / `inner:` 로 분리(양쪽 다 stiffness·damping 을 가진다). E-STOP 은 torque hold `ĝ−D·q̇`. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.6 |
-| GraspController | Internal | Hand 3x3-DOF | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
+이 표의 축은 **제어 법칙 (알고리즘 코어)** 이지 클래스가 아니다. `rtc_controllers` 는 순수 알고리즘
+라이브러리이고 `RTControllerInterface` 구체 구현 (= 바인딩) 은 integration 패키지가 소유한다.
+규칙 · 3계층 배치 · 경계 판정의 SSoT 는
+[design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control
+Algorithms 이며, 여기서는 반복하지 않는다 (AP-DOC-1).
+
+> **전이 상태 (issue #236)** — "코어 위치" 가 *어댑터 내부* 인 행은 법칙이 아직
+> `RTControllerInterface` 를 상속한 클래스 안에 인라인으로 들어 있다. 실제 개수는
+> `grep -rn "public RTControllerInterface" rtc_controllers/include` 로 확인한다 (여기 박제하지
+> 않는다). 그 어댑터들은 **어디에도 등록돼 있지 않아 런타임 노출이 0** 이며 — 배포된 것은 아래
+> §배선된 컨트롤러 3종뿐이다 — #236 S1–S7 에서 코어 추출 후 삭제된다.
+
+### 알고리즘 코어 (`rtc_controllers`)
+
+| 제어 법칙 | Type | Space | 코어 위치 | Key Feature |
+|---|---|---|---|---|
+| P (관절 증분) | Position | Joint | 어댑터 내부 — **코어 미신설** (#236 D-Q1: 법칙이 `q + kp·e·dt` + 클램프라 파일 하나 값어치가 없다. S7 에서 삭제) | `q + kp*error*dt` incremental |
+| Joint PD | Torque | Joint | 어댑터 내부 (S1 에서 추출 예정 — 첫 대상) | PD + Pinocchio RNEA + quintic trajectory |
+| CLIK | Position | Cartesian 3/6-DOF | 어댑터 내부 (S3, #258 흡수) | Damped Jacobian pseudoinverse + null-space |
+| OSC | Torque | Cartesian 6-DOF | 어댑터 내부 (S2 — `Λ`/`Nᵀ` 는 `compliance/task_dynamics` 에 상수-λ 모드를 추가해 흡수, #236 D-Q2) | Full pose PD + SE3 quintic trajectory; gravity-comp damped torque E-STOP (`ĝ(q)−D·q̇`, #184) |
+| Task impedance | Torque | Cartesian 3/6-DOF | **부분 추출됨** — `compliance/{impedance_law, task_dynamics, wrench_pipeline, safety_limiter, compliance_state_machine, torque_estop}`. 잔여(`ApplyInertiaShaping`·selection matrix)는 S4 | §6.2 A=NONE Jacobian-transpose compliance `Jᵀ Sᵀ[Kp·Se+Kd·Sė]+τ_null+ĝ`; Λ 미사용(특이점 자유), σ_min-adaptive DLS nullspace (`nv>task_dim`), gravity-comp torque E-STOP, MuJoCo-only. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) |
+| Task admittance | Position | Cartesian 6-DOF | **부분 추출됨** — `compliance/{admittance_integrator, differential_ik, wrench_pipeline}`. 잔여는 S5 | §7 Rule 3 — 힘 **입력** → 운동 출력. compliant frame `Λ_d ẍ̃+K_d ẋ̃+K_p x̃ = f_ext` 를 semi-implicit Euler + `exp3` retract 로 적분하고 §7.3 DLS 미분 IK 로 `q_cmd` 생성. 외부 wrench **필수** (A≠NONE, `enabled: false` 는 configure 에러), `min_desired_inertia` 하한(§7.4) · `max_compliant_displacement`/velocity(§7.5, `≤0`=off) · `max_return_{linear,angular}_velocity`(경계 밖 복귀 속도 상한, **상시**), E-STOP 은 position-hold(latch, 재활성화·`ClearEstop`·`ResetFault` 경계에서 무효화). impedance 와 **반대 부호**(§11.4.1 P2/P3). 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.5 |
+| Cascaded compliance | Torque | Cartesian 6-DOF | **부분 추출됨** — 위 두 행의 `compliance/*` 조합. 잔여(`EvaluateBandwidthSeparation`)는 S6 | §7.6 — outer admittance(느린 대역, 순응 정의) 가 만든 compliant frame `(X_c, ν_c)` 를 inner §6.2 impedance(빠른 대역)가 추종. `τ = Jᵀ·α[K_p^i·e(X,X_c) + K_d^i·(ν_c−ν)] + α·Nᵀτ_posture + ĝ`. 외부 wrench **필수** (outer 의 입력). **wrench 는 정확히 한 번만 소비** — inner 에 `f_ext` 항이 없다(§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로, D19). 대역폭 분리 `ω_i/ω_a`(MUST-1) 는 seeding tick 에 `Λ_S(q₀)` 로 1회 평가해 **진단 플래그** `bandwidth_ratio_low` 로만 보고(fault 아님, D20). YAML 은 `outer:` / `inner:` 로 분리(양쪽 다 stiffness·damping 을 가진다). E-STOP 은 torque hold `ĝ−D·q̇`. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) §3.6 |
+| Grasp (Force-PI) | Internal | Hand 3x3-DOF | **코어** — `grasp/grasp_controller.hpp`. `RTControllerInterface` 를 상속하지 않고 상위 컨트롤러가 멤버로 소유한다 (규칙이 명문화되기 전부터 이미 목표 형태) | Adaptive PI force, 6-state FSM, per-finger stiffness EMA |
+
+`compliance/*` 는 규칙의 예시가 아니라 **기준**이다 — Eigen/span in-out, `Resize()`/`Compute()` 분리,
+프레임워크 타입 무지. 새 법칙은 처음부터 그 형태로 쓴다.
+
+### 배선된 컨트롤러 (`integrated_bringup`)
+
+`RTControllerInterface` 구체 구현 + `RTC_REGISTER_CONTROLLER` 등록 + production YAML 을 갖는, 실제로
+도는 것들이다.
+
+| 컨트롤러 | Type | Space | Key Feature |
+|---|---|---|---|
 | DemoJointController | Position | Joint + Hand | Quintic trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoTaskController | Position | Cartesian + Hand | CLIK + trajectory, `grasp_controller_type: "contact_stop"\|"force_pi"\|"none"` |
 | DemoWbcController | Position | TSID QP + Hand | `initial_controller` default — **`ur5e_p1a`·`iiwa7_leap` 만**. `ur5e_p1b` 는 sim·robot 둘 다 `demo_joint_controller` 다 (robot profile 별 `{sim,robot}.yaml` 이 SSoT). 6-phase FSM (Idle->Approach->Closure->Hold->Release; slots 2 & 5 reserved, RELEASE preempts from any non-terminal phase), TSID QP -> accel -> position integration across all phases, contact-aware ForceTask + FrictionCone, sensor-driven contact / slip / deformation guards, combined 16-DoF model. MPC default: `engine: "handler"` + `enabled: false` (structural gate; MPC thread inert and TSID self-holds until YAML `mpc.enabled: true` AND runtime `mpc_enable` — see line below) |
 
 ### Base controller joint order & submodel selection (#172 Phase 3)
 
-Base `rtc_controllers`(P/JointPD/CLIK/OSC)는 데모 컨트롤러의 `CombinedModelCache` 와 별개로, 자체
-`RtModelHandle` 위에서 **device joint order** 와 **primary-device submodel** 를 처리한다.
+`rtc_controllers` 어댑터는 데모 컨트롤러의 `CombinedModelCache` 와 별개로, 자체
+`RtModelHandle` 위에서 **device joint order** 와 **primary-device submodel** 를 처리한다. 아래
+동작은 어댑터 **전체**에 있다 (`grep -rln "MaybeSelectSubModel" rtc_controllers/src` 로 확인) —
+법칙과 무관한 boilerplate 라 컨트롤러마다 복제돼 있으며, 그래서 #236 은 이것을 G1(프레임워크 공통
+글루)으로 분류해 **S7 에서 `rtc_controller_interface` 로 상향**한다. 아래 서술은 그때까지의 현황이다.
 
 - **Joint reorder (A2)**: `OnDeviceConfigsSet` 에서 `js==nv` 이면 `handle_->SetJointOrder(joint_state_names)`.
   device 순서 == URDF 순서면 `HasJointReorder()==false` → memcpy fallback(zero-overhead, 기존 로봇 불변).
   다르면 모델은 device 순서 입력을 correct 하게 소비하고, model 파생 항을 device channel 순서로 되돌린다:
-  JointPD `g`/`C·v`, OSC `τ`(주경로)+null-space `tau0`, CLIK `dq`/`traj_dq`+null-space `null_err`.
-  device 순서로 형성한 항(null-space·Coriolis)을 Pinocchio 순서 행렬과 곱하기 직전 `RtModelHandle::ReorderInput`
-  (device→Pinocchio scatter, `ReorderOutput` 의 역방향)으로 1회 gather 한다. P 는 FK 입력만 reorder(joint
-  command 은 device-order native, task 출력은 order-invariant → 출력 reorder 불요).
+  JointPD `g`/`C·v`, OSC `τ`(주경로)+null-space `tau0`, CLIK `dq`/`traj_dq`+null-space `null_err`,
+  TaskImpedance·Cascaded `τ`+`ĝ`, TaskAdmittance `dq`.
+  device 순서로 형성한 항(null-space·Coriolis·관절속도 `q̇`)을 Pinocchio 순서 행렬과 곱하기 직전
+  `RtModelHandle::ReorderInput` (device→Pinocchio scatter, `ReorderOutput` 의 역방향)으로 1회 gather
+  한다 — `ν = J·q̇` 의 `q̇` 를 빠뜨리면 감쇠 토크가 틀리면서 모든 수가 유한해 fault 도 안 뜬다 (#236
+  슬라이스 4 리뷰에서 실제로 발현). P 는 FK 입력만 reorder(joint command 은 device-order native, task
+  출력은 order-invariant → 출력 reorder 불요).
 - **Submodel selection (A1)**: `LoadConfig`(base LoadConfig 가 `topic_config_` 채운 직후)에서
   `MaybeSelectSubModel` — `GetSystemModelConfig().sub_models` 중 `GetPrimaryDeviceName()` 과 이름이 일치하는
   sub_model 이 있으면 `GetReducedModel(primary)` 로 handle_ 교체(`InitFromModel` 이 nv-크기 버퍼 재할당). system
@@ -76,7 +107,7 @@ ros2 param describe /demo_wbc_controller <param>
 
 `mpc_enable`은 빌드타임 `mpc_enabled_` (YAML `mpc.enabled`) 와 AND 결합 — YAML이 false면 런타임 1은 무시된다. `riccati_gain_scale`은 `[0,1]`로 자동 clamp.
 
-PController / JointPDController / ClikController / OSC 등 핵심 `rtc_controllers`는 게인 채널을 노출하지 않는다 (게인은 controller-specific YAML로 로드 후 `LoadConfig` 시점에 고정).
+`rtc_controllers` 어댑터는 **하나도** 게인 채널을 노출하지 않는다 (게인은 controller-specific YAML 로 로드 후 `LoadConfig` 시점에 고정, 이후 `set_gains` 로만 변경). 노출할 수 없는 것이 정상이다 — 파라미터 채널은 LifecycleNode 를 요구하고, 컨트롤러는 노드를 만들지 않기 때문이다 ([design-principles.md](design-principles.md) §`rtc_controllers` Controllers Are Pure Control Algorithms).
 
 런타임 튜닝 예:
 

@@ -27,6 +27,7 @@
 | Belongs in `rtc_*` | Belongs in an integration package |
 |--------------------|---------------------|
 | Abstract interfaces, concepts, base classes | Concrete implementations via `RTC_REGISTER_CONTROLLER` |
+| **제어 법칙 코어** — Eigen/span in-out, `RTControllerInterface` 를 모름 | **바인딩** — `RTControllerInterface` 구체 구현, mailbox 소비, `ControllerOutput` 조립, 등록 (아래 §`rtc_controllers` Controllers Are Pure Control Algorithms 가 이 행의 SSoT — 3계층 배치표·전이 상태 포함) |
 | DOF-generic algorithms (variable `n_joints`) | Fixed-DOF launch files, URDF, MJCF, meshes |
 | Transport/codec templates (`Transceiver<T,C>`) | Robot-specific packet structs as template args |
 | YAML-driven parameter schemas | YAML files with actual robot values |
@@ -54,17 +55,51 @@ CM's publish thread drains the SPSC snapshot and calls `controllers_[active]->Pu
 
 ## `rtc_controllers` Controllers Are Pure Control Algorithms
 
-바로 위 규칙이 controller-owned 토픽이 **어디에 사는가**를 정한다면, 이 규칙은 **누가 그것을 만드는가**를 정한다: `rtc_controllers` 의 컨트롤러는 **자기 노드도, publisher 도, subscription 도 만들지 않는다.** 컨트롤러는 `ControllerState` 를 받아 `ControllerOutput` 을 내는 순수 함수에 가깝게 남고, ROS 배선은 전적으로 integration 패키지(`integrated_bringup/src/support/owned_topics.cpp` 의 `CreateOwnedTopics()`)가 소유한다. 현재 `rtc_controllers` 의 `create_publisher` / `create_subscription` / `get_lifecycle_node()` 사용은 **0건이며, 이는 우회할 제약이 아니라 지켜야 할 성질이다.**
+바로 위 규칙이 controller-owned 토픽이 **어디에 사는가**를 정한다면, 이 규칙은 **누가 그것을 만드는가**를 정한다: `rtc_controllers` 는 **제어 법칙(알고리즘)만** 소유한다. 자기 노드도, publisher 도, subscription 도 만들지 않으며 — 2026-07-26 결정으로 — **`RTControllerInterface` 를 상속하지도 않는다.** ROS 배선은 전적으로 integration 패키지(`integrated_bringup/src/support/owned_topics.cpp` 의 `CreateOwnedTopics()`)가 소유한다.
 
-- **금지되는 것**: 컨트롤러가 `RTControllerInterface::get_lifecycle_node()` 로 노드를 받아 자기 pub/sub 을 만드는 것. 인터페이스가 노드 접근을 *제공한다*는 사실은 컨트롤러가 그것을 *써도 된다*는 뜻이 아니다 — 그 접근자는 integration 계층(`CreateOwnedTopics`)을 위한 것이다.
-- **금지되지 않는 것**: `rclcpp/logging.hpp` (컨트롤러 5종이 `RCLCPP_*` 로그에 이미 사용). 로깅은 노드를 만들지 않는다.
-- **부가 입력은 인자로 받는다.** 외부 F/T wrench 처럼 device lane 에 없는 입력은 컨트롤러가 구독하는 것이 아니라 **비-RT setter** 로 주입한다 (`SetDeviceTarget` 과 동일 idiom, RT 와의 교환은 `SeqLock`/SPSC 로만 — RT-4). 전송 계층(누가 센서를 읽어 넣어주는가)은 컨트롤러 밖의 관심사다. 값에 딸린 freshness 는 ROS 타임스탬프가 아니라 **generation 카운터 + tick 카운팅**으로 표현한다 (RT 에서 clock 을 읽지 않기 위함; `ControllerState::dt` 사용).
+### 금지되는 것
 
-**ARCH-7 과의 구별**: ARCH-7 은 *exec / 런타임 정체성* 소유를 금지한다 (위 Boundary Rules). 이 규칙은 그보다 안쪽으로, **exec 를 안 만들더라도 컨트롤러가 노드·구독을 만드는 것**을 금지한다. 두 규칙은 별개이며 ARCH-7 의 standalone-node 예외(`mujoco_simulator_node` 등)는 여기에 적용되지 않는다 — 그 예외는 robot-agnostic *노드* 패키지에 대한 것이지 컨트롤러에 대한 것이 아니다.
+- **`rtc_controllers` 안의 `RTControllerInterface` 구체 구현.** `class X … : public RTControllerInterface` 가 이 패키지에 **새로** 생기면 안 된다. 프레임워크 계약을 구현하는 클래스 — lifecycle 훅, `Compute(ControllerState) → ControllerOutput`, target mailbox, E-STOP 훅, `Name()` / `config_key` 등록 — 는 **바인딩**이며 integration 패키지가 소유한다. `rtc_controllers` 의 `trajectory/*` · `grasp/*` 를 `integrated_bringup` 의 데모 컨트롤러가 멤버로 들고 쓰는 방식이 그 참조 형태다.
+- **컨트롤러가 `RTControllerInterface::get_lifecycle_node()` 로 노드를 받아 자기 pub/sub 을 만드는 것.** 위 상속 금지의 따름정리이지만 별도로 유지한다 — 바인딩 계층에서도 노드 접근은 `CreateOwnedTopics` 경로로만 쓴다. 인터페이스가 노드 접근을 *제공한다*는 사실은 그것을 *써도 된다*는 뜻이 아니다.
 
-**근거**: 컨트롤러를 순수 알고리즘으로 유지하면 (a) 단위 테스트가 ROS 컨텍스트 없이 성립하고, (b) 같은 컨트롤러가 sim / 실기 / 오프라인 재생에서 배선만 갈아끼워 재사용되며, (c) 배선 결정(QoS, 네임스페이스, 메시지 타입)이 robot bringup 한 곳에 모인다. 컨트롤러에 구독을 넣으려는 충동은 대개 "이 입력을 어떻게 넣지?" 에서 나오는데, 답은 setter 이지 구독이 아니다.
+### 금지되지 않는 것
 
-위반이 필요해 보이면 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN]` (E-1 / Critical) 로 보고한다. *(결정 2026-07-25, issue #236 — impedance/admittance 슬라이스 2의 wrench 입력 경로를 정하며 명문화. 그 전까지 이 규칙은 코드에만 존재했고 문서에 없어 "컨트롤러가 자기 구독을 만든다"가 유효한 선택지로 검토된 적이 있다.)*
+- `rclcpp/logging.hpp`. 로깅은 노드를 만들지 않는다.
+- 패키지 차원의 `rtc_base` 의존. 코어의 **인자**는 프레임워크-중립 타입이지만, `rtc_base` 까지 끊는 "강" 안은 채택하지 않았다 (issue #236 D-A).
+
+### 코어의 형태
+
+- **입출력은 Eigen / `std::span` 등 프레임워크-중립 타입.** `ControllerState` / `ControllerOutput` 의 해체·조립은 바인딩 몫이다. 참조 구현은 `rtc_controllers/include/rtc_controllers/compliance/` 의 `task_dynamics.hpp` · `impedance_law.hpp` — 이 규칙이 명문화되기 전에 이미 이 형태로 추출됐고, 그래서 규칙의 예시가 아니라 **기준**이다.
+- **`Resize()`(off-RT, 할당 허용) / `Compute()`(`noexcept`, heap-free) 분리**를 유지한다 ([invariants.md](invariants.md) §RT Path).
+- YAML 스키마는 코어 옆의 `Params` POD + `ParseXxxParams(YAML::Node)` 자유 함수로 둔다 (yaml-cpp 만 의존, 비-RT). 프레임워크 타입을 참조하지 않으므로 코어와 같은 층에 남는다.
+
+### 3계층 배치 (issue #236 D3)
+
+| 계층 | 무엇이 사는가 | 어디에 |
+|---|---|---|
+| **코어 — 알고리즘** | 제어 법칙, 수치 커널, 궤적 생성기, 상태기계, 파라미터 스키마. Eigen/span in-out | `rtc_controllers` |
+| **base — 프레임워크 공통 글루** | 모든 바인딩이 *동일하게* 필요로 하는 것: target mailbox (SPSC + SeqLock + generation), submodel 선택, device 한계값 로드, device 판독가능성 게이트, E-STOP scaffolding | `rtc_controller_interface` |
+| **바인딩 — 배치 고유** | `RTControllerInterface` 구체 구현, `ControllerOutput` 조립, `goal_type` 해석, E-STOP 정책, 텔레메트리, `RTC_REGISTER_CONTROLLER`, production YAML | integration 패키지 (`integrated_bringup` 등) |
+
+경계 판정 한 줄: **"이 코드가 `RTControllerInterface` 의 존재를 알아야 하는가?"** — 아니오면 코어, 예이고 모든 컨트롤러에서 같으면 base, 예이고 배치마다 다르면 바인딩.
+
+### 부가 입력은 인자로 받는다
+
+외부 F/T wrench 처럼 device lane 에 없는 입력은 컨트롤러가 구독하는 것이 아니라 **비-RT setter** 로 주입한다 (`SetDeviceTarget` 과 동일 idiom, RT 와의 교환은 `SeqLock`/SPSC 로만 — RT-4). 전송 계층(누가 센서를 읽어 넣어주는가)은 컨트롤러 밖의 관심사다. 값에 딸린 freshness 는 ROS 타임스탬프가 아니라 **generation 카운터 + tick 카운팅**으로 표현한다 (RT 에서 clock 을 읽지 않기 위함; `ControllerState::dt` 사용).
+
+### 현황 — 이 규칙은 전이 중이다
+
+**오늘 코드는 아직 이 규칙을 만족하지 않는다.** `rtc_controllers` 에는 `RTControllerInterface` 구체 구현이 남아 있고 `package.xml` 의 `<depend>rtc_controller_interface</depend>` 도 그대로다. 현재 수는 여기 박제하지 않는다 — `grep -rn "public RTControllerInterface" rtc_controllers/include` 로 확인한다 (AP-DOC-1).
+
+- 규칙은 **새 코드에 즉시 구속**된다. 새 제어 법칙은 코어로 쓰고, 필요하면 바인딩을 integration 패키지에 만든다.
+- 기존 구현의 해소는 issue #236 의 슬라이스 S1–S7 이 담당한다 (법칙별 코어 추출 → G1 글루 base 상향 → 상속 클래스 삭제).
+- 그때까지 어떤 문서도 **"`rtc_controllers` 는 순수하다 / 더 이상 상속하지 않는다"를 완료형으로 서술하지 않는다.** 그것은 문서-코드 불일치를 새로 만드는 것이다 ([CLAUDE.md](../CLAUDE.md) §6 E-9).
+
+**ARCH-7 과의 구별**: ARCH-7 은 *exec / 런타임 정체성* 소유를 금지한다 (위 Boundary Rules). 이 규칙은 그보다 안쪽으로, exec 를 안 만들더라도 **노드·구독을 만드는 것**과 **프레임워크 인터페이스를 상속하는 것**을 금지한다. 세 규칙은 별개이며 ARCH-7 의 standalone-node 예외(`mujoco_simulator_node` 등)는 여기에 적용되지 않는다 — 그 예외는 robot-agnostic *노드* 패키지에 대한 것이지 컨트롤러에 대한 것이 아니다.
+
+**근거**: 컨트롤러를 순수 알고리즘으로 유지하면 (a) 단위 테스트가 ROS 컨텍스트 없이 성립하고, (b) 같은 법칙이 sim / 실기 / 오프라인 재생에서 배선만 갈아끼워 재사용되며, (c) 배선 결정(QoS, 네임스페이스, 메시지 타입)이 robot bringup 한 곳에 모인다. 상속 금지가 추가된 근거는 (d) — 프레임워크 계약을 구현하는 순간 글루가 법칙과 같은 파일에 들어오고, 그 글루의 대부분은 컨트롤러마다 **동일한 boilerplate** 라서 구현체 수만큼 복제된다. 실제로 mailbox 스켈레톤은 그렇게 복제됐고 (#206), 그 복제본들의 검증 공백에서 결함이 반복해 나왔다. 컨트롤러에 구독을 넣으려는 충동은 대개 "이 입력을 어떻게 넣지?" 에서 나오는데 답은 setter 이지 구독이며, 인터페이스를 상속하려는 충동은 "CM 이 이걸 어떻게 부르지?" 에서 나오는데 답은 바인딩이지 상속이 아니다.
+
+위반이 필요해 보이면 [CLAUDE.md](../CLAUDE.md) §6 `[CONCERN]` (E-1 / Critical) 로 보고한다. *(결정 2026-07-25, issue #236 — impedance/admittance 슬라이스 2의 wrench 입력 경로를 정하며 노드·구독 금지를 명문화. 그 전까지 이 규칙은 코드에만 존재했고 문서에 없어 "컨트롤러가 자기 구독을 만든다"가 유효한 선택지로 검토된 적이 있다. 2026-07-26 개정 — 같은 issue 에서 상속 금지 + 3계층 배치로 강화. 노드 금지만으로는 글루 복제를 막지 못한다는 것이 기존 구현체 전반에서 실측됐기 때문이다.)*
 
 ## Backend / Controller Layering
 
