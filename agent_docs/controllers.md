@@ -19,7 +19,7 @@ Algorithms 이며, 여기서는 반복하지 않는다 (AP-DOC-1).
 | 제어 법칙 | Type | Space | 코어 위치 | Key Feature |
 |---|---|---|---|---|
 | P (관절 증분) | Position | Joint | 어댑터 내부 — **코어 미신설** (#236 D-Q1: 법칙이 `q + kp·e·dt` + 클램프라 파일 하나 값어치가 없다. S7 에서 삭제) | `q + kp*error*dt` incremental |
-| Joint PD | Torque | Joint | 어댑터 내부 (S1 에서 추출 예정 — 첫 대상) | PD + Pinocchio RNEA + quintic trajectory |
+| Joint PD | Torque | Joint | **추출됨** — `joint/joint_pd_law.hpp` (S1). 무상태 free function: 궤적 **샘플**을 받고 생성기를 소유하지 않으며 (배선은 integration 계층), 오차 이력은 in/out span (E-STOP hold 정책과 공유). 잔여(mailbox·모델 바운드·궤적 배선·텔레메트리·클램프)는 어댑터에 남아 S7 에서 base/바인딩으로 | PD + Pinocchio RNEA + quintic trajectory |
 | CLIK | Position | Cartesian 3/6-DOF | 어댑터 내부 (S3, #258 흡수) | Damped Jacobian pseudoinverse + null-space |
 | OSC | Torque | Cartesian 6-DOF | 어댑터 내부 (S2 — `Λ`/`Nᵀ` 는 `compliance/task_dynamics` 에 상수-λ 모드를 추가해 흡수, #236 D-Q2) | Full pose PD + SE3 quintic trajectory; gravity-comp damped torque E-STOP (`ĝ(q)−D·q̇`, #184) |
 | Task impedance | Torque | Cartesian 3/6-DOF | **부분 추출됨** — `compliance/{impedance_law, task_dynamics, wrench_pipeline, safety_limiter, compliance_state_machine, torque_estop}`. 잔여(`ApplyInertiaShaping`·selection matrix)는 S4 | §6.2 A=NONE Jacobian-transpose compliance `Jᵀ Sᵀ[Kp·Se+Kd·Sė]+τ_null+ĝ`; Λ 미사용(특이점 자유), σ_min-adaptive DLS nullspace (`nv>task_dim`), gravity-comp torque E-STOP, MuJoCo-only. 규범: [rtc_controllers/docs/compliance-conventions.md](../rtc_controllers/docs/compliance-conventions.md) |

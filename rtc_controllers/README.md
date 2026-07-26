@@ -20,7 +20,7 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 | 제어 법칙 | 공간 | 출력 모드 | 카테고리 | 형태 |
 |---------|------|----------|----------|------|
 | PController | 관절 공간 | Position (indirect) | `indirect/` | 어댑터 (코어 미신설 — #236 D-Q1) |
-| JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 |
+| JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 + `joint/joint_pd_law.hpp` 코어 |
 | ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 |
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 |
 | TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
@@ -86,6 +86,8 @@ rtc_controllers/
 │   │   ├── operational_space_controller.hpp -- 태스크 공간 OSC
 │   │   ├── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
 │   │   └── cascaded_compliance_controller.hpp -- §7.6 outer admittance + inner impedance (토크 출력)
+│   ├── joint/
+│   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
@@ -182,6 +184,8 @@ p_controller:
 ### 2. JointPDController (관절 공간 PD + 중력/코리올리 피드포워드)
 
 5차 다항식 궤적 생성과 선택적 중력/코리올리 **피드포워드**를 포함하는 관절 공간 PD 토크 제어기입니다.
+
+> **코어 (#236 S1):** 아래 제어 법칙 자체는 `joint/joint_pd_law.hpp` 의 `ComputeJointPdCommand()` 로 추출됐고 `JointPDController` 는 그것을 호출합니다. 추출은 **bit-for-bit inert** 이며 `test_joint_pd_core.cpp` 가 (1) 추출 이전 인라인 형태의 리터럴 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정합니다. 코어는 궤적을 소유하지 않습니다 — 궤적 생성·재타겟은 어댑터(장차 바인딩) 몫이고, 코어는 `ref_pos`/`ref_vel` 샘플만 받습니다.
 
 > **명명 주의 (#172):** 이 제어기는 표준 computed-torque 가 **아닙니다** — 질량행렬 `M(q)` 나 desired acceleration `ddq_d` 를 사용하지 않고, PD 항에 `g(q)`·`C(q,v)·v` 를 피드포워드로 더할 뿐입니다 (즉 `M·ddq_ref + h` 형태가 아님). 정식 computed-torque 가 필요하면 별도 제어기로 추가해야 합니다.
 

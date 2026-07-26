@@ -16,6 +16,7 @@
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/compliance/wrench_conditioning.hpp"
+#include "rtc_controllers/testing/bit_compare.hpp"
 
 #include <gtest/gtest.h>
 
@@ -31,9 +32,11 @@ namespace {
 
 using namespace rtc::compliance;
 
-std::mt19937 MakeRng() {
-  return std::mt19937(0xC0FFEEu);
-}
+// Shared with the #236 extraction golden-vector suites (test_joint_pd_core and
+// the S2–S6 cores to come), so the whole refactor speaks one definition of
+// "bit-identical" and one seeding discipline.
+using rtc::testing::BitsEqual;
+using rtc::testing::MakeRng;
 
 // Random symmetric positive-definite nv×nv matrix (M = A Aᵀ + n·I).
 Eigen::MatrixXd RandomSpd(int n, std::mt19937& rng) {
@@ -898,10 +901,6 @@ Eigen::Matrix<double, 6, 1> PreExtractionInlineForm(const ImpedanceParams& k,
     f(i) = alpha * (kp * e(i) + kd * edot(i));
   }
   return f;
-}
-
-bool BitsEqual(double a, double b) {
-  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
 
 // One random draw of (gains, e, ν, α) — shared by the equivalence test and the

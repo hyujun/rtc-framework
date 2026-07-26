@@ -2,12 +2,14 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/joint/joint_pd_law.hpp"
 
 #include <rclcpp/logging.hpp>
 
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -255,33 +257,19 @@ ControllerOutput JointPDController::Compute(const ControllerState& state) noexce
   auto& out0 = output.devices[0];
   out0.num_channels = nc0;
 
-  for (std::size_t i = 0; i < nq; ++i) {
-    const double e = traj_state.positions[i] - dev0.positions[i];
-    const double de = (e - prev_error_[i]) / dt;
-
-    out0.commands[i] = gains.kp[i] * e + gains.kd[i] * de;
-    if (command_type_ == CommandType::kTorque) {
-      // Torque mode (N·m): PD torque + optional gravity/Coriolis feedforward.
-      if (use_gravity) {
-        out0.commands[i] += gravity_torques_[i];
-      }
-      if (use_coriolis) {
-        out0.commands[i] += coriolis_forces_[static_cast<Eigen::Index>(i)];
-      }
-    } else {
-      // Position/velocity mode: trajectory velocity feedforward only. N·m
-      // dynamics terms (g, C·v) must NOT be mixed into a non-torque command
-      // (issue #172): they are gated out here and rejected in LoadConfig.
-      out0.commands[i] += traj_state.velocities[i];
-    }
-
-    prev_error_[i] = e;
-  }
-  // Channels past the model DOF (nc0 > nv) carry no PD/dynamics term: zero
-  // torque (passive) or hold the current position in a non-torque command.
-  for (std::size_t i = nq; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.commands[i] = (command_type_ == CommandType::kTorque) ? 0.0 : dev0.positions[i];
-  }
+  // The control law itself (#236 S1). Everything above is integration —
+  // mailbox, model bound, trajectory — and everything below is output assembly;
+  // this call is the whole algorithm, and it knows nothing about either.
+  joint::ComputeJointPdCommand(
+      joint::JointPdGainsView{std::span<const double>(gains.kp), std::span<const double>(gains.kd),
+                              use_gravity, use_coriolis},
+      joint::JointPdInputs{
+          std::span<const double>(dev0.positions), std::span<const double>(traj_state.positions),
+          std::span<const double>(traj_state.velocities), std::span<const double>(gravity_torques_),
+          std::span<const double>(coriolis_forces_.data(),
+                                  static_cast<std::size_t>(coriolis_forces_.size()))},
+      dt, nq, static_cast<std::size_t>(nc0), command_type_, std::span<double>(prev_error_),
+      std::span<double>(out0.commands));
 
   for (std::size_t i = 0; i < nq; ++i) {
     out0.target_positions[i] = traj_state.positions[i];
