@@ -465,6 +465,34 @@ TEST(TaskImpedance, NonRedundantPathValidAndAllocationFree) {
     EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]));
 }
 
+// ── NUM-1 (#257): the λ_max floor has to sit where the DLS solve USES it ─────
+TEST(TaskImpedance, MaxDampingFloorSurvivesSetGains) {
+  // set_gains() writes the Gains POD straight into the SeqLock, so a
+  // configure-time-only floor is bypassable by every caller holding the handle —
+  // the same hole 0a61aaf closed for the operational-space controller and
+  // 2ee9662 for the admittance one.
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 30.0;  // nv(7) > m(6) with a live nullspace ⇒ Λ_S and the DLS run
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+
+  ctrl.LoadConfig(YAML::Load("max_damping: 0.0\n"));
+  ASSERT_GT(ctrl.get_gains().max_damping, 0.0) << "LoadConfig must floor λ_max as well";
+
+  auto g = ctrl.get_gains();
+  g.singularity_threshold = 10.0;  // σ₀ above this arm's σ_min → the DLS ramp is always armed
+  g.max_damping = 0.0;             // exactly what LoadConfig just floored away
+  ctrl.set_gains(g);
+
+  const std::vector<double> q(7, 0.2);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  (void)ctrl.Compute(state);
+
+  const auto d = ctrl.GetDiagnosticsForTesting();
+  ASSERT_LT(d.sigma_min, g.singularity_threshold) << "σ₀ must be armed for λ² to be observable";
+  ASSERT_GT(d.sigma_min, g.singularity_critical) << "posture must stay out of SAFE_STOP";
+  EXPECT_GT(d.lambda_sq, 0.0) << "λ_max = 0 reached the DLS solve — Λ_S⁻¹ is left unregularised";
+}
+
 // ── F5 (#236 E-8): the primary device's joint state must be checked ──────────
 //
 // This controller shipped without the gate its two siblings carry

@@ -30,6 +30,12 @@ namespace {
 // DEGRADED → RUNNING recovery dwell (§10.6 default). Not a per-robot tuning knob
 // in slice 1 — promoted to a Gains field only if a deployment needs it.
 constexpr double kDegradedRecoveryTime = 0.5;  // s
+// NUM-1: the DLS damping guard must not be removable. λ_max = 0 leaves Λ_S⁻¹
+// undamped at a rank-deficient pose, so the Cholesky fails and both the inertia
+// shaping and the nullspace projector die at exactly the configuration §6.5
+// exists to survive. Floored at the point of USE, not only in LoadConfig —
+// set_gains() writes the POD straight into the SeqLock and bypasses configure.
+constexpr double kMinMaxDamping = 1e-4;
 }  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -522,8 +528,10 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     if (llt_M_.info() != Eigen::Success) {
       dyn_ok = false;
     } else {
-      const compliance::TaskDynamics::Result r =
-          dyn_.Compute(J_S_, llt_M_, gains.singularity_threshold, gains.max_damping);
+      // NUM-1 at the point of use: LoadConfig floors max_damping too, but
+      // set_gains() writes the POD straight into the SeqLock and bypasses it.
+      const compliance::TaskDynamics::Result r = dyn_.Compute(
+          J_S_, llt_M_, gains.singularity_threshold, std::max(kMinMaxDamping, gains.max_damping));
       dyn_ok = r.ok;
       sigma_min = r.sigma_min;
       lambda_sq = r.lambda_sq;
@@ -831,7 +839,7 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["singularity_critical"])
     g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   if (cfg["max_damping"])
-    g.max_damping = std::max(0.0, cfg["max_damping"].as<double>());
+    g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
   if (cfg["joint_limit_margin"])
     g.joint_limit_margin = cfg["joint_limit_margin"].as<double>();
   if (cfg["joint_limit_stiffness"])
