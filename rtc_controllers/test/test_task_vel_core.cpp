@@ -66,6 +66,7 @@
 #include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
+#include "rtc_controllers/testing/serial7dof_fixture.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 #include "rtc_math/se3/velocity_error.hpp"
@@ -114,6 +115,15 @@ using rtc::task::ComputeTranslationVelocity;
 using rtc::task::TaskVelParams;
 using rtc::testing::BitsEqual;
 using rtc::testing::MakeRng;
+
+// The serial_7dof fixture and the measured-state sweep, shared with
+// test_task_accel_core.cpp (serial7dof_fixture.hpp) — sharing them is what keeps
+// this file's reuse of that file's independent-handle measurement valid, rather
+// than dependent on two byte-identical copies staying that way.
+using rtc::testing::FillSweep;
+using rtc::testing::MakeHandle;
+using rtc::testing::MakeState;
+using rtc::testing::Serial7dof;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Oracle 1 — literal pre-extraction forms
@@ -241,30 +251,6 @@ CoreDraw RandomDraw(std::mt19937& rng, int trial) {
       break;
   }
   return d;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Fixture
-// ═══════════════════════════════════════════════════════════════════════════
-
-// serial_7dof.urdf: alternating Z/Y joint axes, so the Jacobian is
-// well-conditioned (serial_6dof.urdf is all-Z — σ_min ≡ 0, the fixture trap
-// recorded in the plan's §제약·함정). nv = 7 > 6 also leaves a non-trivial null
-// space in BOTH modes, so the secondary task is meaningful rather than inert.
-// Same fixture as test_task_accel_core.cpp, which is what lets this file reuse
-// that file's independent-handle measurement (plan §S3 R6).
-std::string Serial7dof() {
-  return rtc::test::TestUrdfPath("serial_7dof.urdf");
-}
-
-std::unique_ptr<rtc_urdf_bridge::RtModelHandle> MakeHandle(
-    std::shared_ptr<const pinocchio::Model>& model_out) {
-  rtc_urdf_bridge::ModelConfig config;
-  config.urdf_path = Serial7dof();
-  config.root_joint_type = "fixed";
-  rtc_urdf_bridge::PinocchioModelBuilder builder(config);
-  model_out = builder.GetFullModel();
-  return std::make_unique<rtc_urdf_bridge::RtModelHandle>(model_out);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -600,30 +586,6 @@ class ClikShim {
   int null_hits_{0};
   double peak_null_{0.0};
 };
-
-// The measured-state sweep both sides are driven with: slow enough that the
-// adapter's velocity clamp stays inert (asserted per channel, never assumed) but
-// moving, so the Jacobian, the null-space posture error and the finite pose
-// error are all non-trivial. Shared with the goal-derivation helper below so a
-// test can ask "what is the TCP orientation at tick N" without duplicating the
-// formula. CLIK reads only positions — velocities never reach the law.
-void FillSweep(rtc::ControllerState& state, int nv, int tick, double dt) {
-  constexpr double kStep = 0.0004;
-  for (int j = 0; j < nv; ++j) {
-    const auto uj = static_cast<std::size_t>(j);
-    state.devices[0].positions[uj] = 0.12 * (1.0 + 0.2 * j) + kStep * tick * (1.0 + 0.3 * j);
-    state.devices[0].velocities[uj] = kStep * (1.0 + 0.3 * j) / dt;
-  }
-}
-
-rtc::ControllerState MakeState(int nc0, double dt) {
-  rtc::ControllerState state{};
-  state.num_devices = 1;
-  state.dt = dt;
-  state.devices[0].num_channels = nc0;
-  state.devices[0].valid = true;
-  return state;
-}
 
 // A goal pose sitting exactly `angle` radians of rotation away from the TCP
 // orientation at `tick`, returned as the [x,y,z, r,p,y] vector SetDeviceTarget

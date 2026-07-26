@@ -10,6 +10,7 @@
 // the linked library too, and is NDEBUG-independent — the "malloc 인터포지션"
 // path §11.7 T7.1 explicitly permits.
 #include "rtc_controllers/direct/task_impedance_controller.hpp"
+#include "rtc_controllers/testing/alloc_gate.hpp"
 #include "test_urdf_path.hpp"
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
 #include <rtc_urdf_bridge/rt_model_handle.hpp>
@@ -21,46 +22,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
-#include <new>
 #include <span>
 #include <string>
 #include <vector>
 
-// ── Allocation counter (global new/delete interposition) ────────────────────
-namespace {
-thread_local bool g_alloc_active = false;
-thread_local std::size_t g_alloc_count = 0;
-}  // namespace
-
-void* operator new(std::size_t n) {
-  if (g_alloc_active)
-    ++g_alloc_count;
-  void* p = std::malloc(n != 0 ? n : 1);
-  if (p == nullptr)
-    throw std::bad_alloc();
-  return p;
-}
-
-void* operator new[](std::size_t n) {
-  return ::operator new(n);
-}
-
-void operator delete(void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p) noexcept {
-  std::free(p);
-}
-
-void operator delete(void* p, std::size_t) noexcept {
-  std::free(p);
-}
-
-void operator delete[](void* p, std::size_t) noexcept {
-  std::free(p);
-}
+// That interposition is rtc::testing::ScopedAllocGate
+// (rtc_controllers/testing/alloc_gate.hpp) — shared with every other suite that
+// gates an RT path, rather than a per-file copy of the operator-new replacement.
 
 namespace {
 
@@ -272,13 +240,16 @@ TEST(TaskImpedance, ComputeIsAllocationFree) {
   gains.nullspace_kp = 40.0;  // exercise the nullspace / DLS path too
   TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
   auto state = MakeState(7, q, std::vector<double>(7, 0.02));
-  // Measure the FIRST Compute (spec T7.1: from the first call).
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  const auto out = ctrl.Compute(state);
-  g_alloc_active = false;
-  EXPECT_EQ(g_alloc_count, 0u) << "Compute() touched the heap on the RT path";
-  EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+  // Measure the FIRST Compute (spec T7.1: from the first call). RAII rather than
+  // a bare arm/disarm pair: an ASSERT_* added inside the region returns from the
+  // test, and a bare disarm line would then never run — leaving counting on for
+  // every later test in the binary, where nothing reads it.
+  {
+    rtc::testing::ScopedAllocGate gate;
+    const auto out = ctrl.Compute(state);
+    EXPECT_EQ(gate.count(), 0u) << "Compute() touched the heap on the RT path";
+    EXPECT_EQ(out.command_type, rtc::CommandType::kTorque);
+  }
 }
 
 // ── Sign of the stiffness law: +K_p·e restores TOWARD the goal (§6.2) ────────
@@ -454,15 +425,15 @@ TEST(TaskImpedance, NonRedundantPathValidAndAllocationFree) {
   TaskImpedanceController::Gains gains;  // default nullspace gains ⇒ inactive at nv == m
   TaskImpedanceController ctrl(Urdf6(), gains, Sel::kFullSe3);
   auto state = MakeState(6, q, std::vector<double>(6, 0.02));
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  const auto out = ctrl.Compute(state);  // first call, from the very first tick
-  g_alloc_active = false;
-  EXPECT_EQ(g_alloc_count, 0u) << "non-redundant Compute() touched the heap";
-  EXPECT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid)
-      << "non-redundant path must stay valid without the M factorization";
-  for (int i = 0; i < 6; ++i)
-    EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]));
+  {
+    rtc::testing::ScopedAllocGate gate;
+    const auto out = ctrl.Compute(state);  // first call, from the very first tick
+    EXPECT_EQ(gate.count(), 0u) << "non-redundant Compute() touched the heap";
+    EXPECT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid)
+        << "non-redundant path must stay valid without the M factorization";
+    for (int i = 0; i < 6; ++i)
+      EXPECT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(i)]));
+  }
 }
 
 // ── NUM-1 (#257): the λ_max floor has to sit where the DLS solve USES it ─────
@@ -523,12 +494,12 @@ TEST(TaskImpedance, InvalidDeviceStateEmitsNoCommandAndDegrades) {
   ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().control_valid);
 
   state.devices[0].valid = false;
-  g_alloc_count = 0;
-  g_alloc_active = true;
-  const auto out = ctrl.Compute(state);  // RT tick like any other — no heap
-  g_alloc_active = false;
-  EXPECT_EQ(g_alloc_count, 0u) << "the device-invalid path touched the heap";
-  EXPECT_EQ(out.devices[0].num_channels, 0) << "commanded an arm whose state it could not read";
+  {
+    rtc::testing::ScopedAllocGate gate;
+    const auto out = ctrl.Compute(state);  // RT tick like any other — no heap
+    EXPECT_EQ(gate.count(), 0u) << "the device-invalid path touched the heap";
+    EXPECT_EQ(out.devices[0].num_channels, 0) << "commanded an arm whose state it could not read";
+  }
   const auto d = ctrl.GetDiagnosticsForTesting();
   EXPECT_FALSE(d.control_valid);
   EXPECT_EQ(d.state, static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kDegraded));

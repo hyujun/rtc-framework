@@ -178,12 +178,16 @@ if(BUILD_TESTING)
   # owns the model and the trajectory. The OSC exposes no a_task, so the shim
   # reproduces the whole Λ/τ/Nᵀ tail to observe the core through the emitted
   # torque — hence the URDF fixture resolver for serial_7dof (non-zero gravity,
-  # redundant so Nᵀ is not inert). Same global-operator-new gate as S1, with the
-  # same program-wide -Wmismatched-new-delete false positive.
+  # redundant so Nᵀ is not inert; the fixture itself is shared with S3a via
+  # test/include/rtc_controllers/testing/serial7dof_fixture.hpp). Same shared
+  # global-operator-new gate as S1 with the same program-wide
+  # -Wmismatched-new-delete false positive, PLUS rtc_base's Eigen allocation
+  # tripwire (${rtc_base_test_include}) — operator-new counting cannot see Eigen's
+  # allocator, which calls std::malloc directly.
   ament_add_gtest(test_task_accel_core test/test_task_accel_core.cpp)
   target_link_libraries(test_task_accel_core rtc_controllers)
   target_include_directories(test_task_accel_core PRIVATE
-    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_task_accel_core PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S3a golden-vector suite for the task-space velocity core: bitwise
@@ -208,7 +212,8 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
-  target_include_directories(test_task_impedance_controller PRIVATE ${rtc_urdf_bridge_test_include})
+  target_include_directories(test_task_impedance_controller PRIVATE
+    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   # The zero-allocation gate replaces global operator new/delete (new→malloc,
   # delete→free). GCC's -Wmismatched-new-delete then false-positives on every
   # delete site program-wide; suppress it for this target only.
@@ -222,7 +227,8 @@ if(BUILD_TESTING)
   # suppression.
   ament_add_gtest(test_task_impedance_wrench test/test_task_impedance_wrench.cpp)
   target_link_libraries(test_task_impedance_wrench rtc_controllers)
-  target_include_directories(test_task_impedance_wrench PRIVATE ${rtc_urdf_bridge_test_include})
+  target_include_directories(test_task_impedance_wrench PRIVATE
+    ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_task_impedance_wrench PRIVATE -Wno-mismatched-new-delete)
 
   # Slice-4 cascade surface (#236): outer admittance → inner impedance as a
@@ -235,7 +241,7 @@ if(BUILD_TESTING)
     test/test_cascaded_compliance_controller.cpp)
   target_link_libraries(test_cascaded_compliance_controller rtc_controllers)
   target_include_directories(test_cascaded_compliance_controller
-    PRIVATE ${rtc_urdf_bridge_test_include})
+    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_cascaded_compliance_controller
     PRIVATE -Wno-mismatched-new-delete)
 
@@ -250,7 +256,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_task_admittance_controller test/test_task_admittance_controller.cpp)
   target_link_libraries(test_task_admittance_controller rtc_controllers)
   target_include_directories(test_task_admittance_controller
-    PRIVATE ${rtc_urdf_bridge_test_include})
+    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_task_admittance_controller PRIVATE -Wno-mismatched-new-delete)
 
   ament_add_gtest(test_controller_config test/test_controller_config.cpp)
