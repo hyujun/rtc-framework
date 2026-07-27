@@ -33,7 +33,6 @@
 #include "test_urdf_path.hpp"
 
 #include <gtest/gtest.h>
-#include <yaml-cpp/yaml.h>
 
 #include <array>
 #include <cstdint>
@@ -48,7 +47,6 @@ using rtc::CascadedComplianceController;
 using rtc::TaskAdmittanceController;
 using rtc::TaskImpedanceController;
 using rtc::compliance::ComplianceState;
-using rtc::compliance::kWrenchDim;
 
 std::string Urdf6() {
   return rtc::test::TestUrdfPath("serial_6dof.urdf");
@@ -81,6 +79,16 @@ void ExpectResetFaultContract(rtc::RTControllerInterface& base, const std::funct
       << "precondition: the controller was expected to be latched in SAFE_STOP";
 
   // (3a) A global E-STOP clear must not release the controller-local latch.
+  // Run the E-STOP for real rather than clearing one that was never set: the
+  // production path is TriggerEstop() → ticks that take the estop early return
+  // (a different Compute() exit, with its own diagnostic store) → ClearEstop().
+  // Clearing false over false would exercise none of that, and for the
+  // admittance controller ClearEstop() additionally interacts with the hold the
+  // SAFE_STOP path re-seeds every tick.
+  base.TriggerEstop();
+  tick();
+  ASSERT_TRUE(base.HasLatchedFault())
+      << "the E-STOP tick published a state that hides the SAFE_STOP latch";
   base.ClearEstop();
   tick();
   EXPECT_TRUE(base.HasLatchedFault()) << "ClearEstop() released a controller-local SAFE_STOP (E-8)";
@@ -225,8 +233,11 @@ TEST(ComplianceFaultRecovery, BaseDefaultReportsNoLatchedFault) {
   (void)ctrl.Compute(state);
   EXPECT_FALSE(base.HasLatchedFault()) << "a nominal tick reported a latched fault";
 
-  // ResetFault() on an unlatched controller is a harmless no-op, not a state
-  // change the next tick has to undo.
+  // ResetFault() on an unlatched controller must not latch one. What it must
+  // not do to the FSM state underneath (demote a running controller to HOLDING,
+  // restart the DEGRADED dwell) HasLatchedFault() cannot see — that is pinned
+  // where it is observable, at the state machine itself:
+  // test_compliance_core.cpp `ResetFaultOnAnUnlatchedStateIsANoOp`.
   base.ResetFault();
   (void)ctrl.Compute(state);
   EXPECT_FALSE(base.HasLatchedFault());

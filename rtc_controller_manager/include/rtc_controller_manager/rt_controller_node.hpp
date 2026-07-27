@@ -278,6 +278,26 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
     return global_estop_.load(std::memory_order_acquire);
   }
 
+  /// One configured control period. Every aux-thread wait that has to let the
+  /// RT loop observe an off-RT store sizes itself from this, so the period has
+  /// a single definition and the margin each caller adds is visible at its own
+  /// call site (switch: 1.5 × this; reset_fault: a tick-counter deadline).
+  [[nodiscard]] std::chrono::microseconds ControlPeriod() const noexcept {
+    const double rate_hz = (control_rate_ > 0.0) ? control_rate_ : rtc::kDefaultControlRateHz;
+    return std::chrono::microseconds(static_cast<long>(1'000'000.0 / rate_hz));
+  }
+
+  /// Completed RT ticks (loop_count_). Advances only at the END of a
+  /// ControlLoop() that ran the full tick body, so an aux thread that sees it
+  /// advance knows Compute() ran AND everything Compute() published this tick
+  /// (the controllers' diagnostic SeqLock included) is visible to it — that is
+  /// what the release/acquire pair on loop_count_ buys. Reading it is how
+  /// /rtc_cm/reset_fault tells "nothing consumed the request" apart from "the
+  /// fault cause is still present" (#260).
+  [[nodiscard]] std::uint64_t RtTickCount() const noexcept {
+    return loop_count_.load(std::memory_order_acquire);
+  }
+
   /// Total ticks whose ControllerOutput failed actuator-boundary validation
   /// and was replaced by a hold command (issue #196 Phase 4). Monotonic for
   /// the node's lifetime — never reset, including across E-STOP clear.
@@ -558,7 +578,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   std::uint32_t watchdog_check_divisor_{
       static_cast<std::uint32_t>(rtc::kDefaultControlRateHz / kWatchdogCheckHz)};
 
-  std::size_t loop_count_{0};
+  // Completed RT ticks. Written only by the RT thread (one relaxed-cost
+  // release store per tick, wait-free), but read off-RT by RtTickCount() —
+  // hence atomic rather than a plain counter. The release side is what makes
+  // everything the tick published before the increment visible to an aux
+  // thread that observes the new value.
+  std::atomic<std::uint64_t> loop_count_{0};
 
   // ── Initialization timeout
   // ──────────────────────────────────────────────────

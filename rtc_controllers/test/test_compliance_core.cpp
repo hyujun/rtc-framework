@@ -297,6 +297,34 @@ TEST(StateMachine, SafeStopLatchedUntilResetFault) {
   EXPECT_EQ(sm.state(), ComplianceState::kHolding);
 }
 
+// The other half of that latch rule: a reset aimed at SAFE_STOP must do
+// NOTHING to a state that is not latched. #260 made ResetFault() a public
+// base-interface virtual reachable from the CM, so it is no longer only the
+// controller's own Compute() that can call it — and an unconditional
+// `state_ = HOLDING` would demote a running controller for a tick and restart
+// the DEGRADED dwell, extending a recovery nobody asked to extend. The dwell is
+// what makes this observable: state alone would look identical.
+TEST(StateMachine, ResetFaultOnAnUnlatchedStateIsANoOp) {
+  ComplianceStateMachine sm;
+  ComplianceFaults f;
+  sm.Step(f, true, 0.002, 0.5);  // → RUNNING
+  sm.ResetFault();
+  EXPECT_EQ(sm.state(), ComplianceState::kRunning) << "a reset demoted a RUNNING controller";
+
+  f.wrench_timeout = true;
+  ASSERT_EQ(sm.Step(f, true, 0.002, 0.5), ComplianceState::kDegraded);
+  f.wrench_timeout = false;
+  EXPECT_EQ(sm.Step(f, true, 0.3, 0.5), ComplianceState::kDegraded);  // 0.3 of 0.5 accrued
+
+  sm.ResetFault();
+  EXPECT_EQ(sm.state(), ComplianceState::kDegraded) << "a reset demoted a DEGRADED controller";
+  // The accrued dwell survived: one more 0.3 s step reaches 0.6 ≥ 0.5 and
+  // recovers. Had the reset zeroed degraded_elapsed_, this step would be at
+  // 0.3 and still DEGRADED.
+  EXPECT_EQ(sm.Step(f, true, 0.3, 0.5), ComplianceState::kRunning)
+      << "a reset laundered the DEGRADED recovery timer";
+}
+
 TEST(StateMachine, CriticalFromDegradedGoesSafeStop) {
   ComplianceStateMachine sm;
   ComplianceFaults f;

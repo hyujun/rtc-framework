@@ -9,7 +9,9 @@
 //     an inactive controller would be consumed on its next activation, which is
 //     the laundering the controller side also refuses.
 //   - The response reports what HAPPENED, not what was sent: cleared, no-op,
-//     or re-latched because the fault cause is still present.
+//     re-latched because the fault cause is still present, or not consumed at
+//     all because the RT loop never completed a tick. The last two are
+//     different faults with different fixes, so they are different answers.
 //   - E-8 separation in both directions: reset_fault does not clear the global
 //     E-STOP, and a global E-STOP does not block or clear a controller fault.
 //
@@ -27,6 +29,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <span>
@@ -132,6 +135,15 @@ class ControllerLifecycleTestAccess {
 
   static double ControlRate(const RtControllerNode& node) { return node.control_rate_; }
 
+  // What ControlLoop() does at the END of a completed tick. The fixture's
+  // stand-in loop calls it in the same place for the same reason: the service
+  // waits on this counter, not on the clock, so a stand-in that ticked the
+  // controller without publishing the tick would look exactly like a stalled
+  // RT loop.
+  static void MarkRtTick(RtControllerNode& node) {
+    node.loop_count_.fetch_add(1, std::memory_order_release);
+  }
+
   static void BringServicesOnline(RtControllerNode& node) {
     if (!node.cb_group_nrt_callback_) {
       node.cb_group_nrt_callback_ =
@@ -183,19 +195,30 @@ class ResetFaultServiceTest : public ::testing::Test {
     spin_thread_ = std::thread([this]() { executor_->spin(); });
 
     // Stand-in for the RT loop: the service's outcome depends on a Compute()
-    // running while it waits, so something has to supply those ticks. One
-    // period at the CM's configured rate, the same clock the service sizes its
-    // wait against.
+    // running while it waits, so something has to supply those ticks — and on
+    // the tick counter advancing, so it publishes those too.
+    //
+    // A QUARTER period, on an ABSOLUTE schedule. sleep_for only guarantees a
+    // lower bound, so a loop that slept one full period per iteration would
+    // have a real period of dt + wakeup latency + Compute() — larger than dt,
+    // against a service deadline measured in dt. Under gcov or a loaded runner
+    // the margin the tests depend on would then be smaller than the fixture's
+    // own scheduling error, and the outcome tests would flake for a reason
+    // that has nothing to do with the code under test.
     const double rate_hz = ControllerLifecycleTestAccess::ControlRate(*node_);
-    tick_period_ = std::chrono::microseconds(static_cast<long>(1'000'000.0 / rate_hz));
+    control_period_ = std::chrono::microseconds(static_cast<long>(1'000'000.0 / rate_hz));
+    tick_period_ = control_period_ / 4;
     ticking_.store(true, std::memory_order_release);
     tick_thread_ = std::thread([this]() {
       ControllerState st{};
+      auto next = std::chrono::steady_clock::now();
       while (ticking_.load(std::memory_order_acquire)) {
         if (ctrl_a_) {
           (void)ctrl_a_->Compute(st);
         }
-        std::this_thread::sleep_for(tick_period_);
+        ControllerLifecycleTestAccess::MarkRtTick(*node_);
+        next += tick_period_;
+        std::this_thread::sleep_until(next);
       }
     });
 
@@ -203,11 +226,17 @@ class ResetFaultServiceTest : public ::testing::Test {
         << "reset_fault service did not appear";
   }
 
-  void TearDown() override {
+  // Stall the stand-in RT loop, mid-test, the way a real one stalls: no more
+  // Compute() calls and no more tick-counter increments.
+  void StopTicking() {
     ticking_.store(false, std::memory_order_release);
     if (tick_thread_.joinable()) {
       tick_thread_.join();
     }
+  }
+
+  void TearDown() override {
+    StopTicking();
     if (executor_) {
       executor_->cancel();
     }
@@ -233,7 +262,8 @@ class ResetFaultServiceTest : public ::testing::Test {
   std::thread spin_thread_;
   std::thread tick_thread_;
   std::atomic<bool> ticking_{false};
-  std::chrono::microseconds tick_period_{2000};
+  std::chrono::microseconds control_period_{2000};  // 1 / control_rate_
+  std::chrono::microseconds tick_period_{500};      // stand-in loop cadence
   FaultyMockController* ctrl_a_{nullptr};
   FaultyMockController* ctrl_b_{nullptr};
 };
@@ -269,6 +299,27 @@ TEST_F(ResetFaultServiceTest, NonActiveControllerIsRefusedRatherThanQueued) {
       << "a request was queued on the inactive controller and consumed on its next tick";
 }
 
+// active_controller_idx_ defaults to 1, and the services are created in
+// on_configure — so between configure and activate the index names a
+// controller that has never run. Neither name refusal may advertise it as
+// "the active controller": a caller who believed that would re-issue the
+// request with that name and get the contradictory "is not the active
+// controller" back.
+TEST_F(ResetFaultServiceTest, NeverActivatedControllerIsNotAdvertisedAsActive) {
+  ControllerLifecycleTestAccess::SetState(*node_, 0, 0);  // configured, not activated
+  ctrl_a_->LatchFault();
+
+  for (const char* name : {"", "ctrl_a"}) {
+    auto resp = CallReset(name);
+    ASSERT_NE(nullptr, resp) << "request '" << name << "' timed out";
+    EXPECT_FALSE(resp->ok);
+    EXPECT_EQ(std::string::npos, resp->message.find("active controller: "))
+        << "a controller that was never activated was named as the active one: " << resp->message;
+    EXPECT_NE(std::string::npos, resp->message.find("Inactive")) << resp->message;
+    EXPECT_TRUE(ctrl_a_->HasLatchedFault()) << "a refused request cleared the latch";
+  }
+}
+
 TEST_F(ResetFaultServiceTest, UnknownControllerNameIsRefused) {
   ctrl_a_->LatchFault();
   auto resp = CallReset("no_such_controller");
@@ -283,11 +334,18 @@ TEST_F(ResetFaultServiceTest, LatchedFaultIsClearedAndReportedAsCleared) {
   ctrl_a_->LatchFault();
   ASSERT_TRUE(ctrl_a_->HasLatchedFault());
 
+  const std::uint64_t ticks_before = ctrl_a_->Ticks();
   auto resp = CallReset("ctrl_a");
   ASSERT_NE(nullptr, resp);
   EXPECT_TRUE(resp->ok) << "reset refused: " << resp->message;
   EXPECT_NE(std::string::npos, resp->message.find("cleared"));
   EXPECT_FALSE(ctrl_a_->HasLatchedFault());
+  // The point of the stand-in loop: a service that never waited for a tick
+  // would pass every assertion above. Pinning the tick delta is also what
+  // makes a CI failure here self-diagnosing — "0 ticks" is a fixture problem,
+  // a wrong `ok` with ticks > 0 is a service problem.
+  EXPECT_GE(ctrl_a_->Ticks() - ticks_before, std::uint64_t{2})
+      << "the service replied without waiting for the RT loop to consume the request";
 }
 
 TEST_F(ResetFaultServiceTest, NoLatchedFaultIsReportedAsNoOp) {
@@ -317,6 +375,45 @@ TEST_F(ResetFaultServiceTest, PersistentCauseReLatchesAndIsReportedAsFailure) {
   ASSERT_NE(nullptr, resp2);
   EXPECT_TRUE(resp2->ok) << resp2->message;
   EXPECT_FALSE(ctrl_a_->HasLatchedFault());
+}
+
+// A stalled RT loop and a persisting fault cause both leave the latch up, and
+// they need different answers: one sends the operator after the fault, the
+// other after the loop. "controller is Active" says nothing about the loop
+// ticking, so the service keys on the tick counter rather than on the clock.
+TEST_F(ResetFaultServiceTest, StalledRtLoopIsReportedAsSuchAndNotAsAPersistingFault) {
+  ctrl_a_->LatchFault();
+  StopTicking();  // the controller stays Active; nothing ticks it
+
+  auto resp = CallReset("ctrl_a");
+  ASSERT_NE(nullptr, resp);
+  EXPECT_FALSE(resp->ok) << "a request nothing consumed was reported as a recovery";
+  EXPECT_NE(std::string::npos, resp->message.find("did not complete a tick")) << resp->message;
+  EXPECT_EQ(std::string::npos, resp->message.find("still present"))
+      << "a stalled RT loop was blamed on the fault cause: " << resp->message;
+  EXPECT_TRUE(ctrl_a_->HasLatchedFault());
+}
+
+// The reply describes the state at REPLY time, not at request time. A global
+// E-STOP that latches while the service is waiting — the 50 Hz device watchdog
+// and the actuator-boundary escalation both do exactly that — must appear in
+// it: an operator told "recovered", with no mention of a latch that went up
+// two milliseconds ago, would walk up to a globally stopped arm.
+TEST_F(ResetFaultServiceTest, EstopLatchedDuringTheWaitIsReportedInTheReply) {
+  ctrl_a_->LatchFault();
+  StopTicking();  // no ticks → the service waits out its full observation deadline
+
+  auto req = std::make_shared<rtc_msgs::srv::ResetFault::Request>();
+  req->controller_name = "ctrl_a";
+  auto fut = reset_client_->async_send_request(req).share();
+
+  std::this_thread::sleep_for(control_period_);
+  ControllerLifecycleTestAccess::SetEstopFlag(*node_, true);
+
+  ASSERT_EQ(std::future_status::ready, fut.wait_for(std::chrono::seconds(3)));
+  const auto& resp = fut.get();
+  EXPECT_NE(std::string::npos, resp->message.find("E-STOP"))
+      << "an E-STOP that latched during the wait was omitted from the reply: " << resp->message;
 }
 
 // ── E-8: the two latches are separate, in both directions ───────────────

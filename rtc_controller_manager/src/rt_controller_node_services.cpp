@@ -15,12 +15,15 @@
 //   auto-recovers, and until this service existed the only way out was a
 //   process restart. Targets the ACTIVE controller only and requires the caller
 //   to name it (operator confirmation); see ResetFault.srv for why an inactive
-//   target is refused rather than queued. Confirms the outcome by re-reading
-//   HasLatchedFault() after one control period, the same sleep_for(1.5×dt) the
-//   switch path uses to let the RT loop observe an off-RT store.
+//   target is refused rather than queued. Confirms the outcome by waiting on
+//   RtTickCount() — not on the clock — and re-reading HasLatchedFault(), so
+//   "the fault cause is still present" and "nothing consumed the request" are
+//   distinguishable answers rather than one ambiguous timeout.
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <thread>
 
@@ -133,6 +136,22 @@ void RtControllerNode::CreateServices() {
         auto& active = *controllers_[uidx];
         const std::string active_name(active.Name());
 
+        // Liveness FIRST. Only a ticking controller can consume the request,
+        // and refusing here is what keeps the flag from sitting on an inactive
+        // controller until its next activation launders the latch (see
+        // ResetFault.srv). It has to precede the two name refusals below
+        // because both of them quote active_name as "the active controller" —
+        // a claim the index alone does not support: active_controller_idx_
+        // starts at 1, not -1, so between on_configure (which creates this
+        // service) and the first activation it names a controller that has
+        // never run.
+        if (controller_states_[uidx].load(std::memory_order_acquire) != 1) {
+          resp->ok = false;
+          resp->message = "no controller is active (the CM's active index names '" + active_name +
+                          "', which is Inactive) — nothing is consuming reset requests";
+          return;
+        }
+
         // The name is the operator confirmation step, so an empty request is a
         // refusal and not a convenience default — the reply names the active
         // controller so the caller can re-issue it deliberately.
@@ -147,52 +166,86 @@ void RtControllerNode::CreateServices() {
                           active_name + "') — reset_fault targets the active controller only";
           return;
         }
-        // Only a ticking controller can consume the request. Refusing here is
-        // what keeps the flag from sitting on an inactive controller until its
-        // next activation launders the latch (see ResetFault.srv).
-        if (controller_states_[uidx].load(std::memory_order_acquire) != 1) {
-          resp->ok = false;
-          resp->message = "controller '" + active_name +
-                          "' is not active — nothing is consuming reset requests";
-          return;
-        }
 
         // A global E-STOP does NOT block the reset: the RT loop keeps calling
         // Compute() while estopped and only substitutes the output, and the
         // flag is consumed ahead of the controller's own E-STOP early return.
         // The two latches are separate (E-8), so say plainly when the other one
-        // is still up rather than implying the arm is free to move.
-        const bool estopped = IsGlobalEstopped();
-        const char* const estop_note =
-            estopped ? " (global E-STOP still latched — clear it separately)" : "";
+        // is still up rather than implying the arm is free to move. Read at
+        // REPLY time, never snapshotted before a wait: the watchdog and the
+        // actuator-boundary escalation can latch it while we wait, and a reply
+        // that omitted it would tell the operator the arm recovered at the
+        // moment it stopped.
+        const auto estop_note = [this]() -> const char* {
+          return IsGlobalEstopped() ? " (global E-STOP still latched — clear it separately)" : "";
+        };
 
         if (!active.HasLatchedFault()) {
           resp->ok = true;
-          resp->message = "no latched fault on '" + active_name + "' (no-op)" + estop_note;
+          resp->message = "no latched fault on '" + active_name + "' (no-op)" + estop_note();
           return;
         }
 
+        // Wait for the RT loop to CONSUME the request, then report what
+        // actually happened. Not a fixed sleep: the request is consumed at the
+        // HEAD of a tick but the snapshot HasLatchedFault() reads is stored at
+        // its END, so the switch path's 1.5 × dt — sized to observe a store
+        // made at the START of a tick — leaves only 0.5 × dt for Compute(),
+        // and a pinocchio-heavy compliance tick can exceed that.
+        //
+        // TWO completed ticks are what proves the answer: the tick that
+        // produces the first increment may have read the flag before our
+        // store, but the next one cannot have started before it, and its
+        // increment is released after its diagnostics are published.
+        static constexpr std::uint64_t kTicksProvingObservation = 2;
+        // Deadline, not a bound on the RT loop: 8 periods leaves room for the
+        // two ticks plus overrun/jitter, and expiring is itself a diagnosis.
+        static constexpr int kObservationDeadlinePeriods = 8;
+        const auto period = ControlPeriod();
+        const auto poll_interval = std::max(period / 4, std::chrono::microseconds(100));
+        const std::uint64_t ticks_before = RtTickCount();
+
         active.ResetFault();
 
-        // Let one RT tick consume the flag, then report what actually happened.
-        // Same bound as the switch path: 1.5 × dt at the configured rate.
-        const double rate_hz = (control_rate_ > 0.0) ? control_rate_ : rtc::kDefaultControlRateHz;
-        std::this_thread::sleep_for(
-            std::chrono::microseconds(static_cast<long>(1'500'000.0 / rate_hz)));
+        const auto deadline =
+            std::chrono::steady_clock::now() + period * kObservationDeadlinePeriods;
+        bool rt_observed = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(poll_interval);
+          if (RtTickCount() - ticks_before >= kTicksProvingObservation) {
+            rt_observed = true;
+            break;
+          }
+        }
 
-        // Still latched means the state machine re-latched on the same tick it
-        // was reset — the fault cause has not gone away. Reporting ok=true here
-        // would tell an operator the arm is recovered when it is not.
+        // Nothing ticked. The latch is untouched and the fault cause is NOT
+        // what this reply is about — an RT loop that is stalled, overrunning,
+        // or still behind the startup gate produces exactly this, and blaming
+        // the fault cause would send the operator after the wrong thing.
+        if (!rt_observed) {
+          resp->ok = false;
+          resp->message = "'" + active_name +
+                          "' — the RT loop did not complete a tick while the request was "
+                          "pending, so nothing consumed it (loop stalled, overrunning, or not "
+                          "running). The latch is unchanged; the request is not queued." +
+                          estop_note();
+          return;
+        }
+
+        // Still latched after a tick that observed the request means the state
+        // machine re-latched on the same tick it was reset — the fault cause
+        // has not gone away. Reporting ok=true here would tell an operator the
+        // arm is recovered when it is not.
         if (active.HasLatchedFault()) {
           resp->ok = false;
           resp->message = "'" + active_name +
                           "' re-latched within one control period — the fault cause is still "
                           "present" +
-                          std::string(estop_note);
+                          estop_note();
           return;
         }
         resp->ok = true;
-        resp->message = "fault latch cleared on '" + active_name + "'" + estop_note;
+        resp->message = "fault latch cleared on '" + active_name + "'" + estop_note();
       },
       srv_qos, cb_group_nrt_callback_);
 

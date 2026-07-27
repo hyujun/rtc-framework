@@ -384,9 +384,9 @@ CM 자체는 고정 게인 토픽을 더 이상 구독하지 않는다 (게인 �
 
 compliance 계열은 critical fault (`nan_inf` · `pose_error_exceeded` · `sigma_below_critical` · `command_divergence`) 에서 `SAFE_STOP` 을 래치하고 **자동 복귀하지 않는다** (§10.6). 이 서비스가 그 래치의 유일한 외부 탈출구이며, 이전에는 프로세스 재시작 외에 방법이 없었다.
 
-- **권한** — `controller_name` **필수**이고 현재 **active 컨트롤러**와 일치해야 한다. 이름 명시가 오퍼레이터 확인 단계이므로 빈 요청은 편의 기본값이 아니라 거부이고, wildcard 는 없다. 비활성 컨트롤러 대상 요청은 큐잉하지 않고 거부한다 — 큐에 남은 요청은 그 컨트롤러가 다음에 활성화되는 첫 tick 에 소비돼 아무도 그 시점에 재승인하지 않은 fault 를 푼다 (`BeginBiasCalibration()` 이 이미 거부하는 세탁 경로).
-- **응답** — "전달됨"이 아니라 **실제 결과**를 보고한다. 요청 후 `1.5 × dt` 대기하고 `HasLatchedFault()` 를 다시 읽어, 해제 / no-op(원래 래치 없음) / 재래치(원인 잔존)를 구분한다. `switch_controller` 가 RT tick 관측에 쓰는 것과 같은 대기다.
-- **E-8 분리** — global E-STOP 과 **서로를 풀지 않는다**. global E-STOP 이 걸린 상태에서도 reset 은 성립하며 (RT 루프는 E-STOP 중에도 `Compute()` 를 계속 호출하고 출력만 치환한다), 그 경우 응답 message 가 global latch 가 아직 남아 있음을 명시한다.
+- **권한** — `controller_name` **필수**이고 현재 **active 컨트롤러**와 일치해야 한다. 이름 명시가 오퍼레이터 확인 단계이므로 빈 요청은 편의 기본값이 아니라 거부이고, wildcard 는 없다. 비활성 컨트롤러 대상 요청은 큐잉하지 않고 거부한다 — 큐에 남은 요청은 그 컨트롤러가 다음에 활성화되는 첫 tick 에 소비돼 아무도 그 시점에 재승인하지 않은 fault 를 푼다 (`BeginBiasCalibration()` 이 이미 거부하는 세탁 경로). liveness 검사가 이름 검사보다 **먼저** 온다: `active_controller_idx_` 의 초기값은 `-1` 이 아니라 `1` 이라, 아직 아무것도 활성화되지 않은 구간에서 이름 거부 메시지가 한 번도 돈 적 없는 컨트롤러를 "active" 로 지목하게 된다.
+- **응답** — "전달됨"이 아니라 **실제 결과**를 보고한다. 요청은 tick **머리**에서 소비되지만 `HasLatchedFault()` 가 읽는 스냅샷은 tick **끝**에서 저장되므로, `switch_controller` 의 고정 `1.5 × dt` (tick *시작* 시점의 store 를 관측하도록 잡힌 값) 는 여기 쓸 수 없다 — `Compute()` 에 `0.5 × dt` 밖에 남지 않는다. 대신 **RT tick 카운터**를 관측한다: 첫 증가를 만든 tick 은 우리 store 이전에 플래그를 읽었을 수 있으므로 **2회 증가**가 "store 이후에 시작해 진단까지 저장한 tick" 의 증거다 (관측 deadline `8 × dt`). 결과는 해제 / no-op(원래 래치 없음) / 재래치(원인 잔존) / **tick 미관측**(RT 루프 정지·overrun·startup gate — 아무것도 요청을 소비하지 않음) 4가지로 구분된다. 마지막 둘은 조치가 다르므로 같은 메시지로 뭉치지 않는다.
+- **E-8 분리** — global E-STOP 과 **서로를 풀지 않는다**. global E-STOP 이 걸린 상태에서도 reset 은 성립하며 (RT 루프는 E-STOP 중에도 `Compute()` 를 계속 호출하고 출력만 치환한다), 그 경우 응답 message 가 global latch 가 아직 남아 있음을 명시한다. 이 확인은 **응답 시점**에 다시 읽는다 — 대기 중에 device watchdog (50 Hz) 이나 actuator-boundary escalation 이 global latch 를 걸 수 있고, 요청 시점 스냅샷을 그대로 실으면 방금 정지한 팔을 "복구됨" 으로 보고하게 된다.
 
 ### 고정 퍼블리셔
 

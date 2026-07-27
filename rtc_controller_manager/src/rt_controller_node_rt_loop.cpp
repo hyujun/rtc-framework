@@ -303,13 +303,17 @@ void RtControllerNode::ControlLoop() {
     // SPSC marshal). CM no longer mirrors them — Compute() reads its own
     // SeqLock snapshot internally.
     state.dt = 1.0 / control_rate_;
-    state.iteration = loop_count_;
+    // The RT thread is loop_count_'s only writer, so a relaxed load is all it
+    // needs of its own counter; the release side of the increment below is for
+    // the off-RT readers (RtTickCount()).
+    const std::uint64_t iteration = loop_count_.load(std::memory_order_relaxed);
+    state.iteration = iteration;
 
     // Session origin (captured once on the very first tick — independent
     // of enable_logging_, never reset on controller switch). Controllers
     // read state.t_relative_s for any timestamp embedded in their own
     // logs/telemetry instead of calling chrono::*::now().
-    if (loop_count_ == 0) {
+    if (iteration == 0) {
       log_start_time_ = t0;
     }
     state.t_relative_s = std::chrono::duration<double>(t0 - log_start_time_).count();
@@ -561,10 +565,14 @@ void RtControllerNode::ControlLoop() {
   // wired through SetTimingProducer<> in StartRtLoop. Controller-owned data CSVs
   // are drained by each controller's own ControllerLogSet timer (Phase C).
 
-  ++loop_count_;
+  // Release: an aux thread that observes this new value (RtTickCount()) is
+  // entitled to everything this tick published before it — the controllers'
+  // diagnostic SeqLock above all, which is what /rtc_cm/reset_fault reads to
+  // decide whether the latch actually cleared (#260).
+  const std::uint64_t completed = loop_count_.fetch_add(1, std::memory_order_release) + 1;
   // Signal the log thread to print timing summary every 1 000 iterations.
-  static constexpr std::size_t kTimingSummaryInterval = 1000;
-  if (loop_count_ % kTimingSummaryInterval == 0) {
+  static constexpr std::uint64_t kTimingSummaryInterval = 1000;
+  if (completed % kTimingSummaryInterval == 0) {
     print_timing_summary_.store(true, std::memory_order_relaxed);
   }
 }

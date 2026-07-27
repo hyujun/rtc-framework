@@ -188,10 +188,20 @@ class ComplianceStateMachine {
     degraded_elapsed_ = 0.0;
   }
 
-  // The ONLY exit from SAFE_STOP (~/reset_fault). Returns to HOLDING so the
-  // controller re-seeds and re-ramps from the current measured state. (With a
-  // wrench source the following re-seed pushes it on to BIAS_CALIBRATING.)
+  // The ONLY exit from SAFE_STOP (/rtc_cm/reset_fault). Returns to HOLDING so
+  // the controller re-seeds and re-ramps from the current measured state. (With
+  // a wrench source the following re-seed pushes it on to BIAS_CALIBRATING.)
+  //
+  // A reset on a state that is NOT latched is a no-op, the same guard shape
+  // BeginBiasCalibration() uses in the other direction. Unconditionally forcing
+  // HOLDING here would let a reset aimed at SAFE_STOP demote a RUNNING
+  // controller for a tick and — worse — restart the DEGRADED dwell, laundering
+  // recovery time nobody asked to extend. #260 made this reachable from outside
+  // the controller (RTControllerInterface::ResetFault is public and virtual),
+  // so the state machine, not the caller, has to hold that line.
   void ResetFault() noexcept {
+    if (state_ != ComplianceState::kSafeStop)
+      return;
     state_ = ComplianceState::kHolding;
     degraded_elapsed_ = 0.0;
   }

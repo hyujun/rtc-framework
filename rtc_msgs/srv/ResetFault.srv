@@ -28,14 +28,21 @@ string controller_name
 
 ---
 
-# True iff the latch is confirmed gone — the request was delivered AND the
-# controller was observed out of SAFE_STOP one control period later. Also true
-# for the no-op case (the named controller had no latched fault).
+# True iff the latch is confirmed gone — the request was delivered AND a
+# completed RT tick was observed AND the controller read out of SAFE_STOP
+# afterwards. Also true for the no-op case (the named controller had no latched
+# fault).
 #
-# False means the latch is still up: the fault cause is still present (the
-# state machine re-latches on the same tick it is reset), the named controller
-# is not the active one, or the name was empty.
+# False means the latch is still up, and `message` says which of these it is:
+#   - the fault cause is still present (the state machine re-latches on the
+#     same tick it is reset);
+#   - the RT loop completed no tick while the request was pending, so nothing
+#     consumed it — a stalled or overrunning loop, or one still behind the
+#     startup gate. The latch is untouched and the request is NOT queued;
+#   - no controller is active, the named controller is not the active one, or
+#     the name was empty.
 bool ok
 
-# Human-readable outcome, including whether the global E-STOP is still latched.
+# Human-readable outcome, including whether the global E-STOP is still latched
+# AT REPLY TIME (it can latch while the service waits for the RT loop).
 string message
