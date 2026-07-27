@@ -21,10 +21,16 @@
 // ── Why the scratch is Matrix<double, Dynamic, Dynamic, 0, 6, 6> (D-S4a) ────
 // A task is at most 6-dimensional, so the temptation is a fixed 6×6. That does
 // not work: under TRANSLATION_ONLY m = 3, and feeding a 3×3 block to an
-// LLT<Matrix<double,6,6>> ABORTS at run time (PlainObjectBase::resize assert)
-// while compiling cleanly. The max-size dynamic type keeps the logical size
-// dynamic and the storage fixed — heap-free like the fixed type, sized like
-// MatrixXd. That it is also BIT-identical to the MatrixXd the adapter used was
+// LLT<Matrix<double,6,6>> is a size mismatch that ONLY eigen_assert catches. In
+// a build that keeps assertions it aborts; in the build this ships (-O3
+// -DNDEBUG, see the repo's compile flags) the assert is compiled out,
+// PlainObjectBase::resize no-ops on fixed storage, the assignment then runs at
+// the DESTINATION's 6×6 size, and the solve proceeds over rows that were never
+// written — wrong torque, nothing faulted, compiling cleanly the whole way. The
+// loud failure is the lucky case, not the contract. The max-size dynamic type
+// keeps the logical size dynamic and the storage fixed — heap-free like the
+// fixed type, sized like MatrixXd. That it is also BIT-identical to the
+// MatrixXd the adapter used was
 // measured before the extraction (20k trials × 720k doubles, -O0 and -O2, m =
 // 3..6, zero mismatch; the control group — materialising Λ_d⁻¹ and multiplying —
 // differed on 364,699 of them, which is what makes the zero meaningful). The
@@ -58,6 +64,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>  // std::abs — the §5.2 deviation norm; NOT transitively guaranteed by Eigen
 #include <cstddef>
 
 namespace rtc::compliance {
@@ -83,10 +90,12 @@ struct InertiaShapingResult {
   /// Shaped task force. Rows ≥ m carry @p f_task unchanged, which is what the
   /// selection matrix leaves them as.
   Eigen::Matrix<double, 6, 1> f_cmd{Eigen::Matrix<double, 6, 1>::Zero()};
-  /// Λ_d could not be factorised ⇒ degraded to B = I (the §6.2 law) and @p f_cmd
-  /// is @p f_task. Its OWN flag: a numerical breakdown and the safety clamp below
-  /// call for different operator responses, and sharing one flag would let the
-  /// clamp test pass on a factorisation failure.
+  /// The shaping could not be evaluated ⇒ degraded to B = I (the §6.2 law) and
+  /// @p f_cmd is @p f_task. Two causes reach it: Λ_d would not factorise, and a
+  /// Λ_S too small for the requested m (the caller-error guard below). Its OWN
+  /// flag, kept apart from the clamp: a breakdown and the safety clamp call for
+  /// different operator responses, and sharing one flag would let the clamp test
+  /// pass on a factorisation failure.
   bool solve_failed{false};
   /// The §5.2 deviation clamp engaged this tick (a tuning bound doing its job).
   bool clamped{false};
@@ -95,14 +104,22 @@ struct InertiaShapingResult {
 /// @brief f_cmd = B_c·f_task + (B_c − I)·f_ext with B = Λ_S Λ_d⁻¹ (spec §6.3).
 ///
 /// @param p         Λ_d specification and the §5.2 ratio bound
-/// @param lambda_s  task inertia Λ_S (at least m×m; SPD in the regime this is
-///                  used — the DLS in the caller is what keeps it so)
+/// @param lambda_s  task inertia Λ_S, at least m×m — a SMALLER one degrades
+///                  through @c solve_failed instead of reading past it; SPD in
+///                  the regime this is used, which the caller's DLS is what
+///                  keeps it. Pass a plain column-major matrix or a block of
+///                  one: Ref's default OuterStride<> binds both with no copy,
+///                  but a transpose, a row-major operand or an arithmetic
+///                  expression is materialised into a HEAP temporary on every
+///                  tick (RT-1) — and IsAllocationFree cannot see that, because
+///                  every call site hands over a plain MatrixXd
 /// @param f_task    §6.2 task force, already ramped by α (6; rows ≥ m ignored
 ///                  except that they pass through to the result)
 /// @param f_ext     external wrench in the SAME frame as @p f_task, sign =
 ///                  environment ON robot, already ramped by α (6)
-/// @param m         task dimension; clamped to [0,6] so a mis-sized caller
-///                  cannot walk past the fixed 6-vectors
+/// @param m         task dimension. Clamped to [0,6] so a mis-sized caller
+///                  cannot walk past the fixed 6-vectors — that clamp bounds the
+///                  VECTORS only, which is why @p lambda_s carries its own check
 /// @return the shaped force and the two condition flags.
 ///
 /// @note RT-safe: the only storage is max-size-fixed (above), so there is no
@@ -116,12 +133,26 @@ struct InertiaShapingResult {
     const Eigen::Matrix<double, 6, 1>& f_task, const Eigen::Matrix<double, 6, 1>& f_ext,
     int m) noexcept {
   // Storage is compile-time bounded at 6×6, the logical size is m×m. See the
-  // header note: the purely fixed type aborts at m < 6.
+  // header note: the purely fixed type mis-sizes at m < 6, silently under NDEBUG.
   using ScratchMatrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, 6, 6>;
 
   InertiaShapingResult out;
   out.f_cmd = f_task;  // the degraded answer, and the rows ≥ m answer
   const int rows = std::clamp(m, 0, 6);
+
+  // The clamp above bounds `rows` against the fixed 6-VECTORS; it says nothing
+  // about the matrix. A caller pairing m = 6 with a 3×3 Λ_S would have
+  // topLeftCorner read 27 doubles past the buffer, and the eigen_assert that
+  // catches that is compiled out everywhere this ships (-DNDEBUG; only the test
+  // TU keeps it live, via no_malloc_scope.hpp's own eigen_assert). So check the
+  // precondition here and degrade exactly as a non-factorable Λ_d does — the
+  // caller gets solve_failed and f_cmd == f_task, i.e. the §6.2 law, instead of
+  // a force shaped from whatever follows Λ_S in memory. RT-safe: two Index
+  // compares, no allocation, no throw.
+  if (lambda_s.rows() < rows || lambda_s.cols() < rows) {
+    out.solve_failed = true;
+    return out;
+  }
 
   // Λ_d. "natural" means Λ_d := Λ_S, which drives B to the identity through the
   // real solve rather than by short-circuiting it.
