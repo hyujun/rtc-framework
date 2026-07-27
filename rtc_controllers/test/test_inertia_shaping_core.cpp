@@ -121,6 +121,7 @@ using rtc::testing::MakeState;
 using rtc::testing::Serial7dof;
 
 using Sel = TaskImpedanceController::TaskSelection;
+using Form = TaskImpedanceController::Formulation;
 
 constexpr double kDt = 0.002;
 
@@ -404,6 +405,54 @@ TEST(InertiaShaping, BitwiseComparisonRejectsAMaterialisedInverse) {
                              "equivalence test is vacuous";
 }
 
+// The m argument is clamped to [0,6], which bounds the fixed 6-VECTORS and
+// nothing else: Λ_S arrives as a Ref and carries its own size. Pairing m = 6
+// with a 3×3 Λ_S therefore used to have topLeftCorner(6,6) read 27 doubles past
+// the buffer, and eigen_assert cannot be the sensor for it — the library ships
+// -DNDEBUG, where that assert is compiled out and the shaped force is built from
+// whatever follows Λ_S in memory, with every number finite and no fault raised.
+//
+// Note the two failure modes if the guard is removed, because they differ by TU:
+// here eigen_assert is live (no_malloc_scope.hpp installs its own, which aborts
+// outside a ScopedNoMalloc region), so this test CRASHES rather than fails; in
+// the shipped library the same defect is silent. That asymmetry is the reason
+// the guard is a runtime check and not an assertion.
+TEST(InertiaShaping, UndersizedLambdaSDegradesInsteadOfReadingPastIt) {
+  auto rng = MakeRng();
+  const Eigen::MatrixXd lambda_s3 = RandomSpd(rng, 3);
+
+  Vec6 f_task;
+  f_task << 11.0, -7.0, 3.5, 0.9, -0.4, 0.2;
+  Vec6 f_ext;
+  f_ext << -2.0, 1.5, 0.5, 0.1, 0.05, -0.2;
+
+  const InertiaShapingParams p{{{0.4, 0.4, 0.4, 0.03, 0.03, 0.03}}, /*natural=*/false, 3.0};
+
+  // m = 6 against a 3×3 Λ_S: the caller error. Degrades exactly as a
+  // non-factorable Λ_d does, so the caller's existing handling covers it.
+  const InertiaShapingResult undersized = ComputeShapedTaskForce(p, lambda_s3, f_task, f_ext, 6);
+  EXPECT_TRUE(undersized.solve_failed) << "an undersized Λ_S must degrade, not be shaped";
+  EXPECT_FALSE(undersized.clamped) << "the §5.2 clamp cannot have run — the law never reached it";
+  for (int i = 0; i < 6; ++i)
+    EXPECT_TRUE(BitsEqual(undersized.f_cmd(i), f_task(i)))
+        << "row " << i << ": the degrade must pass the §6.2 force through untouched";
+
+  // Non-vacuity: the SAME Λ_S at the m it actually fits must shape normally, or
+  // the assertions above would also hold for a law that degraded unconditionally.
+  const InertiaShapingResult fitted = ComputeShapedTaskForce(p, lambda_s3, f_task, f_ext, 3);
+  EXPECT_FALSE(fitted.solve_failed) << "a Λ_S of exactly m×m is not undersized";
+  bool any_shaped = false;
+  for (int i = 0; i < 3; ++i)
+    any_shaped = any_shaped || !BitsEqual(fitted.f_cmd(i), f_task(i));
+  EXPECT_TRUE(any_shaped) << "the fitted draw produced f_task unchanged — the contrast is vacuous";
+
+  // An OVERSIZED Λ_S stays legal: the doc contract is "at least m×m", and the
+  // adapter relies on it the moment a task narrower than Λ_S is selected.
+  const Eigen::MatrixXd lambda_s6 = RandomSpd(rng, 6);
+  const InertiaShapingResult oversized = ComputeShapedTaskForce(p, lambda_s6, f_task, f_ext, 3);
+  EXPECT_FALSE(oversized.solve_failed) << "an Λ_S larger than m×m must still be shaped";
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Cross-check against the live adapter (transient — dies with S7)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -439,6 +488,12 @@ class ImpedanceShim {
   }
 
   [[nodiscard]] int nv() const { return nv_; }
+
+  // The REGULATED task rows. The cross-check bounds its non-vacuity guards by
+  // this rather than by 6: under TRANSLATION_ONLY the rotation rows of `e` are
+  // left to the posture task and drift by design, so a guard that reads all six
+  // can be satisfied by drift alone while the branch it claims to prove is inert.
+  [[nodiscard]] int task_dim() const { return m_; }
 
   [[nodiscard]] int clamps() const { return clamps_; }
 
@@ -607,16 +662,20 @@ class ImpedanceShim {
 // slice is about the §6.3 law, so every upstream stage that could re-shape
 // f_ext is switched off rather than replicated (each has its own test in
 // test_task_impedance_wrench.cpp).
-std::string CrossCheckYaml(const std::string& extra) {
-  return R"(
-formulation: inertia_shaping
+//
+// `formulation` is a PARAMETER because the §6.3 binding is a gated one: the
+// suite has to run the gate closed as well as open, or a regression that drops
+// `&& inertia_shaping` from the adapter would shape a jacobian_transpose tick
+// with nothing to notice.
+std::string CrossCheckYaml(const std::string& formulation) {
+  return "formulation: " + formulation + R"(
 external_wrench:
   enabled: true
   filter_enabled: false
   bias_calibration_samples: 0
   deadband: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   max: [1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6, 1.0e6]
-)" + extra;
+)";
 }
 
 TaskImpedanceController::Gains CrossCheckGains() {
@@ -647,9 +706,12 @@ struct CrossCheckStats {
 };
 
 // Drive adapter and shim through the same tick sequence and compare every
-// device-0 torque bit for bit.
+// device-0 torque bit for bit. `inertia_shaping` is the GATE, not a constant:
+// the shim is told to shape exactly when the adapter's formulation says to, so
+// the comparison pins the gate itself and not merely the shaped arithmetic.
 void RunCrossCheck(TaskImpedanceController& ctrl, ImpedanceShim& shim,
-                   const TaskImpedanceController::Gains& g, int ticks, CrossCheckStats* stats) {
+                   const TaskImpedanceController::Gains& g, bool inertia_shaping, int ticks,
+                   CrossCheckStats* stats) {
   const int nv = shim.nv();
   auto state = MakeState(nv, kDt);
 
@@ -674,7 +736,7 @@ void RunCrossCheck(TaskImpedanceController& ctrl, ImpedanceShim& shim,
     if (diag.inertia_clamped)
       ++stats->adapter_clamps;
 
-    const Eigen::VectorXd shim_tau = shim.Step(g, /*inertia_shaping=*/true, state, diag.wrench_lwa);
+    const Eigen::VectorXd shim_tau = shim.Step(g, inertia_shaping, state, diag.wrench_lwa);
 
     for (int j = 0; j < nv; ++j) {
       const auto uj = static_cast<std::size_t>(j);
@@ -687,19 +749,31 @@ void RunCrossCheck(TaskImpedanceController& ctrl, ImpedanceShim& shim,
       stats->peak_tau = std::max(stats->peak_tau, std::abs(adapter));
     }
 
-    for (int i = 0; i < 6; ++i)
+    // REGULATED rows only. `e` is published in full, but under TRANSLATION_ONLY
+    // (m = 3) rows 3..5 feed nothing in the §6.2 law — they are the posture
+    // task's to drift. Reading all six would let rotational drift alone satisfy
+    // "the K_p branch was not inert" while it was inert on every axis the law
+    // actually regulates. Same bound the adapter's own §10.6 fault uses
+    // (e.head(m), task_impedance_controller.cpp).
+    for (int i = 0; i < shim.task_dim(); ++i)
       stats->peak_err =
           std::max(stats->peak_err, std::abs(diag.pose_error[static_cast<std::size_t>(i)]));
   }
 }
 
-// One (selection × Λ_d) combination end to end. `ratio` picks whether the §5.2
-// clamp is inert or engaged, and the caller says which it expects — a clamp that
-// fires when the test thought it was inert (or the reverse) means the case is
-// not the case it claims to be.
-void RunModeCombination(Sel selection, bool natural, double ratio, bool expect_clamp,
-                        const std::array<double, 6>& desired_inertia) {
+// One (selection × formulation × Λ_d) combination end to end. `ratio` picks
+// whether the §5.2 clamp is inert or engaged, and the caller says which it
+// expects — a clamp that fires when the test thought it was inert (or the
+// reverse) means the case is not the case it claims to be.
+//
+// `formulation` runs the GATE. Under kJacobianTranspose the adapter must reach
+// §6.2 and stop, so the shim is driven with shaping OFF while the gains still
+// carry a Λ_d that would clamp hard: an adapter that shaped anyway diverges from
+// the shim bitwise AND trips the clamp count, and neither is silent.
+void RunModeCombination(Sel selection, Form formulation, bool natural, double ratio,
+                        bool expect_clamp, const std::array<double, 6>& desired_inertia) {
   const int m = (selection == Sel::kFullSe3) ? 6 : 3;
+  const bool inertia_shaping = (formulation == Form::kInertiaShaping);
   auto g = CrossCheckGains();
   g.desired_inertia_natural = natural;
   g.max_inertia_ratio = ratio;
@@ -707,17 +781,18 @@ void RunModeCombination(Sel selection, bool natural, double ratio, bool expect_c
 
   TaskImpedanceController ctrl(Serial7dof(), g, selection);
   ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml("")));
+  ctrl.LoadConfig(
+      YAML::Load(CrossCheckYaml(inertia_shaping ? "inertia_shaping" : "jacobian_transpose")));
   ctrl.OnDeviceConfigsSet();
   ctrl.set_gains(g);  // LoadConfig owns the wiring; the POD under test comes from here
-  ASSERT_EQ(ctrl.formulation(), TaskImpedanceController::Formulation::kInertiaShaping);
+  ASSERT_EQ(ctrl.formulation(), formulation);
   ASSERT_TRUE(ctrl.external_wrench_enabled());
 
   ImpedanceShim shim(m);
   ASSERT_EQ(shim.nv(), 7) << "fixture must be redundant (nv > m) for the null-space branch";
 
   CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/60, &stats);
+  RunCrossCheck(ctrl, shim, g, inertia_shaping, /*ticks=*/60, &stats);
 
   EXPECT_GT(stats.peak_tau, 1e-3) << "every compared torque was ~0 — the cross-check is vacuous";
   EXPECT_GT(stats.peak_err, 1e-6) << "the pose error never left zero — the K_p branch was inert";
@@ -747,27 +822,44 @@ constexpr std::array<double, 6> kFarInertia{{0.35, 0.35, 0.35, 0.02, 0.02, 0.02}
 constexpr std::array<double, 6> kMildInertia{{1.5, 1.5, 1.5, 0.08, 0.08, 0.08}};
 
 TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseFullSe3Natural) {
-  RunModeCombination(Sel::kFullSe3, /*natural=*/true, /*ratio=*/3.0, /*expect_clamp=*/false,
-                     kFarInertia);
+  RunModeCombination(Sel::kFullSe3, Form::kInertiaShaping, /*natural=*/true, /*ratio=*/3.0,
+                     /*expect_clamp=*/false, kFarInertia);
 }
 
 TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseFullSe3Shaped) {
-  RunModeCombination(Sel::kFullSe3, /*natural=*/false, /*ratio=*/1.0e9, /*expect_clamp=*/false,
-                     kMildInertia);
+  RunModeCombination(Sel::kFullSe3, Form::kInertiaShaping, /*natural=*/false, /*ratio=*/1.0e9,
+                     /*expect_clamp=*/false, kMildInertia);
 }
 
 TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseFullSe3ShapedAndClamped) {
-  RunModeCombination(Sel::kFullSe3, /*natural=*/false, /*ratio=*/1.05, /*expect_clamp=*/true,
-                     kFarInertia);
-}
-
-TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseTranslationOnlyShaped) {
-  RunModeCombination(Sel::kTranslationOnly, /*natural=*/false, /*ratio=*/1.05,
+  RunModeCombination(Sel::kFullSe3, Form::kInertiaShaping, /*natural=*/false, /*ratio=*/1.05,
                      /*expect_clamp=*/true, kFarInertia);
 }
 
+TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseTranslationOnlyShaped) {
+  RunModeCombination(Sel::kTranslationOnly, Form::kInertiaShaping, /*natural=*/false,
+                     /*ratio=*/1.05, /*expect_clamp=*/true, kFarInertia);
+}
+
 TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseTranslationOnlyNatural) {
-  RunModeCombination(Sel::kTranslationOnly, /*natural=*/true, /*ratio=*/3.0,
+  RunModeCombination(Sel::kTranslationOnly, Form::kInertiaShaping, /*natural=*/true, /*ratio=*/3.0,
+                     /*expect_clamp=*/false, kFarInertia);
+}
+
+// The GATE, run closed. Every case above configures kInertiaShaping, so the
+// suite's claim that "the shaping is skipped exactly when the adapter skips it"
+// (file header) rested on a branch it never took: with `inertia_shaping` pinned
+// true at the only call site, an adapter that lost the `&& inertia_shaping`
+// conjunct would shape a §6.2 tick and no case here would move.
+//
+// The gains carry kFarInertia at ratio 1.05 — the very combination the
+// FullSe3ShapedAndClamped case uses to force the §5.2 clamp — so a regressed
+// gate does not produce a subtle numerical drift but a torque built from a
+// hard-clamped B. Two independent assertions catch it: the bitwise comparison
+// against a shim that was told NOT to shape, and adapter_clamps, which must stay
+// zero because a skipped §6.3 never reaches the clamp at all.
+TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseJacobianTransposeSkipsTheShaping) {
+  RunModeCombination(Sel::kFullSe3, Form::kJacobianTranspose, /*natural=*/false, /*ratio=*/1.05,
                      /*expect_clamp=*/false, kFarInertia);
 }
 
@@ -785,18 +877,74 @@ TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationR
 
   TaskImpedanceController ctrl(Serial7dof(), g, Sel::kFullSe3);
   ctrl.SetControlRate(1.0 / kDt);
-  ctrl.LoadConfig(YAML::Load(CrossCheckYaml("")));
+  ctrl.LoadConfig(YAML::Load(CrossCheckYaml("inertia_shaping")));
   ctrl.OnDeviceConfigsSet();
   ctrl.set_gains(g);
 
   ImpedanceShim shim(6);
   CrossCheckStats stats;
-  RunCrossCheck(ctrl, shim, g, /*ticks=*/40, &stats);
+  RunCrossCheck(ctrl, shim, g, /*inertia_shaping=*/true, /*ticks=*/40, &stats);
 
   EXPECT_GT(stats.peak_tau, 1e-3) << "every compared torque was ~0 — the cross-check is vacuous";
   EXPECT_GT(shim.ramped_ticks(), 0)
       << "α was never strictly between 0 and 1 — the ramp wiring is not being pinned";
   EXPECT_DOUBLE_EQ(shim.alpha(), 1.0) << "the ramp never completed — the run is too short";
+}
+
+// `diag.inertia_solve_failed = shaped.solve_failed` is the ONLY path by which an
+// operator learns a tick silently ran §6.2 in place of §6.3, and
+// docs/compliance-conventions.md makes that distinction normative precisely so a
+// numerical breakdown and the §5.2 tuning clamp can be acted on differently.
+// Before this case every reference to the field in the repo was an EXPECT_FALSE,
+// so deleting the assignment left the whole suite green — the flag stopped being
+// reported and nothing moved.
+//
+// Λ_d is driven non-factorable through set_gains(), which writes the POD
+// straight into the SeqLock and bypasses LoadConfig's validation — the same
+// bypass the adapter's own NUM-1 floor comment calls out. A negative diagonal
+// entry fails the Cholesky at the first pivot.
+TEST(InertiaShaping, AdapterReportsTheDegradeWhenLambdaDCannotFactorise) {
+  auto g = CrossCheckGains();
+  g.desired_inertia_natural = false;
+  g.max_inertia_ratio = 3.0;
+  g.desired_inertia = {{-1.0, 0.4, 0.4, 0.03, 0.03, 0.03}};  // not positive definite
+
+  TaskImpedanceController ctrl(Serial7dof(), g, Sel::kFullSe3);
+  ctrl.SetControlRate(1.0 / kDt);
+  ctrl.LoadConfig(YAML::Load(CrossCheckYaml("inertia_shaping")));
+  ctrl.OnDeviceConfigsSet();
+  ctrl.set_gains(g);
+
+  constexpr int kNv = 7;
+  constexpr int kTicks = 20;
+  auto state = MakeState(kNv, kDt);
+  int degraded_ticks = 0;
+  for (int tick = 0; tick < kTicks; ++tick) {
+    FillSweep(state, kNv, tick, kDt);
+    const auto out = ctrl.Compute(state);
+    const auto diag = ctrl.GetDiagnosticsForTesting();
+    ASSERT_TRUE(diag.control_valid) << "tick " << tick << ": the degrade must keep the law running";
+    EXPECT_FALSE(diag.inertia_clamped)
+        << "tick " << tick
+        << ": the clamp cannot fire on a tick whose solve never finished — the "
+           "two flags have merged";
+    if (diag.inertia_solve_failed)
+      ++degraded_ticks;
+    for (int j = 0; j < kNv; ++j)
+      ASSERT_TRUE(std::isfinite(out.devices[0].commands[static_cast<std::size_t>(j)]))
+          << "tick " << tick << " ch " << j << ": the degrade emitted a non-finite torque";
+  }
+  EXPECT_EQ(degraded_ticks, kTicks) << "the adapter never reported the §6.3 degrade — either Λ_d "
+                                       "factorised after all, or the flag is not wired";
+
+  // Non-vacuity: the same controller with a factorable Λ_d must CLEAR the flag,
+  // or the assertion above would pass just as well on a field wired to a constant.
+  g.desired_inertia = {{0.4, 0.4, 0.4, 0.03, 0.03, 0.03}};
+  ctrl.set_gains(g);
+  FillSweep(state, kNv, kTicks, kDt);
+  static_cast<void>(ctrl.Compute(state));  // the flag, not the torque, is the subject here
+  EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().inertia_solve_failed)
+      << "a factorable Λ_d still reported the degrade — the flag is stuck, not wired";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
