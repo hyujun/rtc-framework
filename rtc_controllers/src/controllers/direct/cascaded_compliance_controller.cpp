@@ -34,11 +34,6 @@ namespace {
 // DEGRADED → RUNNING recovery dwell (§10.6 default), the same value the other
 // two compliance controllers use.
 constexpr double kDegradedRecoveryTime = 0.5;  // s
-// NUM-1: the DLS damping guard must not be removable. λ_max = 0 leaves Λ_S⁻¹
-// undamped at a rank-deficient pose, so the Cholesky fails and the nullspace
-// projector dies at exactly the configuration it exists to survive. Floored at
-// the point of USE, not only in LoadConfig — set_gains() bypasses configure.
-constexpr double kMinMaxDamping = 1e-4;
 }  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -494,7 +489,7 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
       // set_gains() writes the POD straight into the SeqLock and bypasses it.
       const compliance::TaskDynamics::Result r =
           dyn_.Compute(J_full_, llt_M_, gains.singularity_threshold,
-                       std::max(kMinMaxDamping, gains.max_damping));
+                       std::max(compliance::kMinMaxDamping, gains.max_damping));
       if (bw_evaluate && r.ok)
         EvaluateBandwidthSeparation(gains);
       else if (bw_evaluate)
@@ -931,12 +926,13 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
     g.nullspace_kd = std::max(0.0, num(cfg["nullspace_damping"], "nullspace_damping"));
   if (cfg["singularity_threshold"])
     g.singularity_threshold =
-        std::max(1e-6, num(cfg["singularity_threshold"], "singularity_threshold"));
+        std::max(compliance::kMinSigma0,
+                 num(cfg["singularity_threshold"], "singularity_threshold"));
   if (cfg["singularity_critical"])
     g.singularity_critical =
         std::max(0.0, num(cfg["singularity_critical"], "singularity_critical"));
   if (cfg["max_damping"])
-    g.max_damping = std::max(kMinMaxDamping, num(cfg["max_damping"], "max_damping"));
+    g.max_damping = std::max(compliance::kMinMaxDamping, num(cfg["max_damping"], "max_damping"));
   if (cfg["joint_limit_margin"])
     g.joint_limit_margin = std::max(0.0, num(cfg["joint_limit_margin"], "joint_limit_margin"));
   if (cfg["joint_limit_stiffness"])

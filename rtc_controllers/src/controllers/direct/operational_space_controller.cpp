@@ -28,20 +28,6 @@
 #pragma GCC diagnostic pop
 
 namespace rtc {
-namespace {
-
-// NUM-1 floor for the §6.5 DLS ramp: λ_max = 0 would remove the singularity
-// guard entirely. Same constant, same name and same reason as the impedance /
-// admittance / cascade controllers (#257).
-constexpr double kMinMaxDamping = 1e-4;
-
-// NUM-2 floor for the same ramp's other end: AdaptiveDampingSquared returns
-// exactly 0 for σ₀ ≤ 0, so a zero threshold disarms §6.5 rather than narrowing
-// it. Same value the impedance / admittance / cascade loaders clamp with.
-constexpr double kMinSigma0 = 1e-6;
-
-}  // namespace
-
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 OperationalSpaceController::OperationalSpaceController(std::string_view urdf_path, Gains gains)
@@ -453,7 +439,7 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     // of how the gains were set (LoadConfig floors too, but set_gains()/the ctor
     // default bypass it) — NUM-1.
     const compliance::TaskDynamics::Result r = dyn_.Compute(
-        J_full_, llt_M_, gains.singularity_threshold, std::max(kMinMaxDamping, gains.max_damping));
+        J_full_, llt_M_, gains.singularity_threshold, std::max(compliance::kMinMaxDamping, gains.max_damping));
     dyn_ok = r.ok;
   }
 
@@ -725,7 +711,7 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
     // same role in the law (the DLS damping magnitude), now the ceiling of the
     // §6.5 ramp rather than a constant, and the same key the other three
     // task-space controllers already use.
-    g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
+    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
   }
   if (cfg["singularity_threshold"]) {
     // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
@@ -734,7 +720,7 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
     // provide unconditionally. The other three task-space controllers clamp this
     // key identically; the migration's "same names, same defaults" claim only
     // holds if the VALIDATION converges too.
-    g.singularity_threshold = std::max(kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   }
   if (cfg["damping"]) {
     // Retired in #236 S2b. LoadConfig ignores unknown keys, so without this an

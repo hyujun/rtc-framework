@@ -27,20 +27,6 @@
 #pragma GCC diagnostic pop
 
 namespace rtc {
-namespace {
-
-// NUM-1 floor for the §6.5 DLS ramp: λ_max = 0 would remove the singularity
-// guard entirely. Same constant, same name and same reason as the impedance /
-// admittance / cascade controllers (#257).
-constexpr double kMinMaxDamping = 1e-4;
-
-// NUM-2 floor for the same ramp's other end: AdaptiveDampingSquared returns
-// exactly 0 for σ₀ ≤ 0, so a zero threshold disarms §6.5 rather than narrowing
-// it. Same value the impedance / admittance / cascade loaders clamp with.
-constexpr double kMinSigma0 = 1e-6;
-
-}  // namespace
-
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_lock_(gains) {
@@ -473,7 +459,7 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   // Floor λ_max at the point of use so the singularity guard holds regardless of
   // how the gains were set (LoadConfig floors too, but set_gains() bypasses
   // it) — NUM-1.
-  const double max_damping = std::max(kMinMaxDamping, gains.max_damping);
+  const double max_damping = std::max(compliance::kMinMaxDamping, gains.max_damping);
   if (use_6dof) {
     const compliance::DifferentialIk::Result r =
         ik_6d_.Compute(J_full_, gains.singularity_threshold, max_damping);
@@ -705,7 +691,7 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
     // in #236 S3b — same role in the law, now the ceiling of the §6.5 ramp rather
     // than a constant, and the same key the other three task-space controllers
     // already use. Mirrors the OperationalSpaceController floor.
-    g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
+    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
   }
   if (cfg["singularity_threshold"]) {
     // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
@@ -713,7 +699,7 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
     // it — and with λ² ≡ 0 a singular pose makes DifferentialIk report !ok, which
     // this controller answers by holding at zero velocity every tick. Clamped the
     // same way by the other three task-space controllers.
-    g.singularity_threshold = std::max(kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   }
   if (cfg["damping"]) {
     // Retired in #236 S3b (#258). LoadConfig ignores unknown keys, so without

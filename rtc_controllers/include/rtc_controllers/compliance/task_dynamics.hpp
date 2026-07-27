@@ -31,6 +31,24 @@
 
 namespace rtc::compliance {
 
+// ── The two bounds that keep §6.5 armed ─────────────────────────────────────
+// They live next to the law they protect, not in five anonymous namespaces. All
+// five task-space controllers apply the same two, and invariants.md NUM-1 names
+// them as ONE thing across all five — so five private copies means five edits to
+// change one documented invariant, and any single miss leaves a controller whose
+// singularity guard silently differs from the doc that describes it.
+//
+// λ_max (NUM-1) is floored at the point of USE as well as in LoadConfig, because
+// set_gains() writes the Gains POD straight into the SeqLock and bypasses
+// configure entirely. σ₀ (NUM-2) is floored in LoadConfig only: it parameterises
+// where the ramp starts rather than how hard it damps, and every set_gains()
+// caller in the repo is a test that supplies it explicitly.
+inline constexpr double kMinMaxDamping = 1e-4;
+
+// σ₀ ≤ 0 does not narrow the shell — AdaptiveDampingSquared short-circuits and
+// returns λ² = 0 for EVERY σ_min, i.e. no damping anywhere.
+inline constexpr double kMinSigma0 = 1e-6;
+
 // σ_min-adaptive DLS damping λ² (spec §6.5):
 //   λ² = 0                              if σ_min ≥ σ₀        (no damping)
 //   λ² = λ_max²·(1 − (σ_min/σ₀)²)       if σ_min < σ₀        (grows into shell)

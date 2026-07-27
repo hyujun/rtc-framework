@@ -32,10 +32,6 @@ namespace {
 // DEGRADED → RUNNING recovery dwell (§10.6 default), same value the impedance
 // controller uses. Promoted to a Gains field only if a deployment needs it.
 constexpr double kDegradedRecoveryTime = 0.5;  // s
-// NUM-1: the DLS damping guard must not be removable from YAML. λ_max = 0 makes
-// J J^T singular at a rank-deficient pose, the Cholesky fails and the IK stops
-// producing a command at exactly the configuration it exists to survive.
-constexpr double kMinMaxDamping = 1e-4;
 }  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -403,7 +399,7 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
 
   // Floor λ_max at the point of use so the singularity guard holds regardless of
   // how the gains were set (LoadConfig floors too, but set_gains() bypasses it) — NUM-1.
-  const double max_damping = std::max(kMinMaxDamping, gains.max_damping);
+  const double max_damping = std::max(compliance::kMinMaxDamping, gains.max_damping);
   const compliance::DifferentialIk::Result ik =
       ik_.Compute(J_full_, gains.singularity_threshold, max_damping);
   if (ik.ok) {
@@ -824,11 +820,11 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["integrate_from_measured"])
     g.integrate_from_measured = cfg["integrate_from_measured"].as<bool>();
   if (cfg["singularity_threshold"])
-    g.singularity_threshold = std::max(1e-6, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   if (cfg["singularity_critical"])
     g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   if (cfg["max_damping"])
-    g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
+    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
 
   // ── Safety / activation ──────────────────────────────────────────────────
   // Strictly positive, and rejected rather than clamped (D6). `e.norm() > limit`
