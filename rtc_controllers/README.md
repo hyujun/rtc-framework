@@ -63,6 +63,19 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > 별도 키 `max_return_{linear,angular}_velocity` 가 **상시** 담당한다. 규범·근거는 위와 같은
 > [docs/compliance-conventions.md](docs/compliance-conventions.md) §3.5.
 >
+> **코어 (#236 S5 — 재사용):** §7.3 의 IK 속도항 `ν = ν_c + K^ik ⊙ e` 는 **새 코어를 만들지 않고**
+> `ClikController` 가 이미 쓰는 `task/task_vel_law.hpp` 의 `ComputeTaskVelocity()` 를 호출한다 —
+> 같은 속도형 법칙에 같은 `[1/s]` 게인 규약이므로 두 번째 사본을 만드는 대신 일반화한 것이다
+> (design-principles P5). 여기서 `ν_ff` 자리에 들어가는 것이 CLIK 의 궤적 twist 가 아니라 §7.2
+> compliant frame 의 속도 `ν_c` 라는 점만 다르며, 법칙은 그 출처를 알지 않는다. 재사용은
+> **bit-for-bit inert** 이고 `test_admittance_task_vel_reuse.cpp` 가 (1) 이 컨트롤러 고유의 추출
+> 이전 인라인 형태(`ν_c` 사본에 per-element 누산 — 코어와 피연산자 순서가 반대다) 리터럴
+> 복사본과 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정한다 (어댑터 대조는
+> `integrate_from_measured` × `nullspace_kp` × `ik_kp` 조합 + 활성화 램프). `ik_kp_* = 0` 은 §7.3
+> 을 문자 그대로 읽은 순수 피드포워드 형태이며 별도 케이스로 고정된다. 속도 클램프→적분→관절한계
+> clamp→rate 재바운드로 이어지는 **관절 tail 은 법칙이 아니라 한계·정책**이라 어댑터에 남아 있고,
+> DLS `J⁺`·영공간은 이미 `compliance/differential_ik` 다.
+>
 > `CascadedComplianceController` 는 그 둘을 **직렬로** 잇는다 (§7.6): outer admittance 가
 > compliant frame `(X_c, ν_c)` 를 만들고, inner §6.2 impedance 가 그것을 추종하는 **토크**를
 > 낸다. 명세가 "외력 추종의 올바른 구조" 로 지목한 형태이며 §6.3(측정 외력을 impedance
