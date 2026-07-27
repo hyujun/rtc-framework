@@ -137,13 +137,14 @@ class TaskImpedanceController final : public RTControllerInterface {
     double saturation_persist_time{0.1};  ///< [s] saturation held longer → DEGRADED
 
     // ── §6.3 inertia shaping (only read when formulation == kInertiaShaping) ─
-    /// Λ_d diagonal [kg | kg·m²], task-axis order [x,y,z, rx,ry,rz]. Ignored when
-    /// `desired_inertia_natural` is set, where Λ_d := Λ_S ⇒ B = I exactly.
-    std::array<double, 6> desired_inertia{{1.0, 1.0, 1.0, 0.1, 0.1, 0.1}};
-    bool desired_inertia_natural{true};  ///< Λ_d := Λ_S (neutral shaping, §11.4 T4.1)
-    /// §5.2 MUST: bound on ‖Λ_S Λ_d⁻¹‖. Enforced as ‖B − I‖∞ ≤ ratio − 1, which
-    /// blends B toward I continuously and is exactly inert at B = I.
-    double max_inertia_ratio{3.0};
+    /// Λ_d and the §5.2 ratio bound, held as the CORE's own struct rather than
+    /// as three loose fields. Held this way for the reason
+    /// TaskAdmittanceController::Gains holds compliance::AdmittanceParams: the
+    /// defaults and the §5.2 bound then have ONE definition instead of a copy
+    /// here that nothing compares against, and Compute() passes `gains.inertia`
+    /// straight through instead of re-assembling the struct positionally on
+    /// every RT tick — an aggregate init that silently depends on field order.
+    compliance::InertiaShapingParams inertia{};
 
     // ── External wrench staleness / contact (§10.6) ──────────────────────────
     double wrench_timeout{0.05};        ///< [s] older than this → fade + DEGRADED

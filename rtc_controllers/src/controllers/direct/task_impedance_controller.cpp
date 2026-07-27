@@ -459,10 +459,8 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
         // hands it Λ_S rather than the TaskDynamics that produced it, so the law
         // stays free of the S2b convergence decision. Λ_S is valid here by the
         // dyn_ok gate, which is that helper's precondition.
-        const compliance::InertiaShapingResult shaped = compliance::ComputeShapedTaskForce(
-            compliance::InertiaShapingParams{gains.desired_inertia, gains.desired_inertia_natural,
-                                             gains.max_inertia_ratio},
-            dyn_.LambdaS(), f_task, f_ext, m);
+        const compliance::InertiaShapingResult shaped =
+            compliance::ComputeShapedTaskForce(gains.inertia, dyn_.LambdaS(), f_task, f_ext, m);
         f_cmd = shaped.f_cmd;
         diag.inertia_solve_failed = shaped.solve_failed;
         diag.inertia_clamped = shaped.clamped;
@@ -847,12 +845,12 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
       if (!(v > 0.0))
         throw std::runtime_error(
             "TaskImpedanceController: desired_inertia entries must be > 0 (Λ_d must be SPD)");
-      g.desired_inertia[i] = v;
+      g.inertia.desired_inertia[i] = v;
     }
-    g.desired_inertia_natural = false;
+    g.inertia.desired_inertia_natural = false;
   }
   if (cfg["max_inertia_ratio"])
-    g.max_inertia_ratio = std::max(1.0, cfg["max_inertia_ratio"].as<double>());
+    g.inertia.max_inertia_ratio = std::max(1.0, cfg["max_inertia_ratio"].as<double>());
 
   // ── External wrench source (§3.2.1). Disabled ⇒ A=NONE, slice-1 behaviour ──
   bool wrench_enabled = false;

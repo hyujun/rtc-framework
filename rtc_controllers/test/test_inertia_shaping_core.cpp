@@ -586,10 +586,8 @@ class ImpedanceShim {
             J_S_, llt_M_, g.singularity_threshold, std::max(kMinMaxDamping, g.max_damping));
         dyn_ok = r.ok;
         if (dyn_ok && inertia_shaping) {
-          const InertiaShapingResult shaped = ComputeShapedTaskForce(
-              InertiaShapingParams{g.desired_inertia, g.desired_inertia_natural,
-                                   g.max_inertia_ratio},
-              dyn_.LambdaS(), f_task, f_ext, m);
+          const InertiaShapingResult shaped =
+              ComputeShapedTaskForce(g.inertia, dyn_.LambdaS(), f_task, f_ext, m);
           f_cmd = shaped.f_cmd;
           if (shaped.clamped)
             ++clamps_;
@@ -775,9 +773,9 @@ void RunModeCombination(Sel selection, Form formulation, bool natural, double ra
   const int m = (selection == Sel::kFullSe3) ? 6 : 3;
   const bool inertia_shaping = (formulation == Form::kInertiaShaping);
   auto g = CrossCheckGains();
-  g.desired_inertia_natural = natural;
-  g.max_inertia_ratio = ratio;
-  g.desired_inertia = desired_inertia;
+  g.inertia.desired_inertia_natural = natural;
+  g.inertia.max_inertia_ratio = ratio;
+  g.inertia.desired_inertia = desired_inertia;
 
   TaskImpedanceController ctrl(Serial7dof(), g, selection);
   ctrl.SetControlRate(1.0 / kDt);
@@ -871,9 +869,9 @@ TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseJacobianTransposeSkip
 TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationRamp) {
   auto g = CrossCheckGains();
   g.activation_ramp_time = 0.05;  // 25 ticks at 2 ms — partway on most of the run
-  g.desired_inertia_natural = false;
-  g.desired_inertia = kFarInertia;
-  g.max_inertia_ratio = 3.0;
+  g.inertia.desired_inertia_natural = false;
+  g.inertia.desired_inertia = kFarInertia;
+  g.inertia.max_inertia_ratio = 3.0;
 
   TaskImpedanceController ctrl(Serial7dof(), g, Sel::kFullSe3);
   ctrl.SetControlRate(1.0 / kDt);
@@ -905,9 +903,9 @@ TEST(InertiaShaping, CoreDrivenShimMatchesTheAdapterBitwiseThroughTheActivationR
 // entry fails the Cholesky at the first pivot.
 TEST(InertiaShaping, AdapterReportsTheDegradeWhenLambdaDCannotFactorise) {
   auto g = CrossCheckGains();
-  g.desired_inertia_natural = false;
-  g.max_inertia_ratio = 3.0;
-  g.desired_inertia = {{-1.0, 0.4, 0.4, 0.03, 0.03, 0.03}};  // not positive definite
+  g.inertia.desired_inertia_natural = false;
+  g.inertia.max_inertia_ratio = 3.0;
+  g.inertia.desired_inertia = {{-1.0, 0.4, 0.4, 0.03, 0.03, 0.03}};  // not positive definite
 
   TaskImpedanceController ctrl(Serial7dof(), g, Sel::kFullSe3);
   ctrl.SetControlRate(1.0 / kDt);
@@ -939,7 +937,7 @@ TEST(InertiaShaping, AdapterReportsTheDegradeWhenLambdaDCannotFactorise) {
 
   // Non-vacuity: the same controller with a factorable Λ_d must CLEAR the flag,
   // or the assertion above would pass just as well on a field wired to a constant.
-  g.desired_inertia = {{0.4, 0.4, 0.4, 0.03, 0.03, 0.03}};
+  g.inertia.desired_inertia = {{0.4, 0.4, 0.4, 0.03, 0.03, 0.03}};
   ctrl.set_gains(g);
   FillSweep(state, kNv, kTicks, kDt);
   static_cast<void>(ctrl.Compute(state));  // the flag, not the torque, is the subject here
