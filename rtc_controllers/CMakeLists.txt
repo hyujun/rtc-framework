@@ -269,6 +269,17 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_posture_core PRIVATE -Wno-mismatched-new-delete)
 
+  # #236 S2b+S3b — the two-tier convergence harness for the constant-λ DLS
+  # outliers (OSC's Λ/τ/Nᵀ, CLIK's damped pseudoinverse). Needs the Eigen
+  # tripwire include as well: the migration's specific RT-1 risk is an
+  # Eigen::Ref argument silently heap-copying, which operator-new interposition
+  # alone cannot see.
+  ament_add_gtest(test_dls_convergence test/test_dls_convergence.cpp)
+  target_link_libraries(test_dls_convergence rtc_controllers)
+  target_include_directories(test_dls_convergence PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_dls_convergence PRIVATE -Wno-mismatched-new-delete)
+
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
   target_include_directories(test_task_impedance_controller PRIVATE
