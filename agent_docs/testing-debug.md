@@ -60,6 +60,8 @@ colcon test --packages-select rtc_digital_twin --pytest-args -k test_urdf_parser
 
 **두 번째 false green — 관측 채널이 fallback 에 가려질 때.** 가드를 원복(mutation-check)해도, 테스트가 assert 하는 값이 다른 경로로도 같은 값을 내면 vacuous 다 — 이때는 가드가 아니라 *관측 지점*이 잘못된 것이다. E-STOP recovery drain(#242)이 그 예: OSC/TaskImpedance 는 gravity-comp 컨트롤러라 정지(q̇=0) 시 hold torque ≈ ĝ(q) 인데, E-STOP 중 큐잉돼 leak 된 target 이 충분히 멀면 recovery tick 에서 SAFE_STOP 을 latch 시키고 그 hold 역시 ĝ(q) 를 내므로 **joint torque 로 assert 하면 leak 유무와 무관하게 통과**한다. 관측을 fallback 이 건드리지 않는 채널로 옮겨야 pin 이 성립한다 — OSC 는 goal echo(`task_goal_positions`, drain 이 쓰는 slot 을 직접 반영), TaskImpedance 는 `diag.pose_error`(SAFE_STOP step *이전에* 기록되고 `ComputeEstop` handoff 로 보존). 실측(#242): torque assertion 으로 두 번 vacuous 를 거친 뒤 채널을 옮겨 pin.
 
+**세 번째 false green — 게이트가 닫힌 쪽에서 *수치적으로 inert* 할 때.** "게이트를 닫은 케이스를 넣었다" 는 것만으로는 그 게이트가 고정되지 않는다. 게이트를 지웠을 때 실행되는 경로가 **닫힌 것과 같은 값**을 내면 출력 대조는 원복해도 통과한다. 실측 (#236 S5): `nullspace_active = (nv > 6) && (nullspace_kp != 0.0)` 에서 `&& nullspace_kp != 0.0` 을 지워도 비트 레인 **전부 green** — `nullspace_kp = 0` 이면 게이트 없는 경로가 `0.0·Δq` 의 signed zero 를 만들고, 그것을 사영해 더하는 것은 exact no-op 이기 때문이다. 게이트 자체를 관측하는 출력 (여기서는 `diag.nullspace_active`) 을 tick 마다 대조하도록 옮겨야 pin 이 성립한다. **곱셈으로 꺼지는 게인·플래그 (`k = 0`, `α = 0`) 는 전부 이 형태**이므로, 그런 게이트는 출력이 아니라 진단 플래그로 pin 한다 — 그리고 그 플래그는 `EXPECT_FALSE` 만으로는 배선이 고정되지 않으니 양성 케이스를 함께 둔다.
+
 원복은 **파일 단위 restore** 로 되돌린다 — `git checkout -- .` 은 아직 커밋하지 않은 작업까지 함께 날린다 (#204 에서 실제 발생).
 
 단 **검증 대상 파일 자체가 미커밋일 때** (가드를 방금 썼고 아직 커밋 전 — revert-verification 의 표준 상황) 는 `git checkout -- <file>` 도 그 작업을 날린다. 명시적 백업 사본에서 복구해야 하는데, 여기에 함정이 하나 더 있다:

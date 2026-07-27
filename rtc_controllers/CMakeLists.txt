@@ -228,6 +228,26 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_inertia_shaping_core PRIVATE -Wno-mismatched-new-delete)
 
+  # #236 S5 golden-vector suite for the §7.3 task-velocity REUSE. No new core:
+  # TaskAdmittanceController now calls S3a's task::ComputeTaskVelocity, so the
+  # suite pins that the call is inert — bitwise against a literal copy of THIS
+  # controller's inline shape (ν_c copied, K⊙e accumulated into it, i.e. the
+  # operands the other way round from the core) and against the live adapter
+  # across integrate_from_measured × nullspace_kp × ik_kp, plus the activation
+  # ramp that feeds the §7.2 integrator. The shim instantiates the adapter's own
+  # AdmittanceIntegrator / DifferentialIk instead of re-deriving them, and
+  # compares target_velocities and commands directly. Same two-sensor RT gate as
+  # S1/S2a/S3a/S4 — the shared global operator-new gate (hence
+  # ${rtc_controllers_test_include} and the program-wide
+  # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen tripwire
+  # (${rtc_base_test_include}), which is the only one that can see a fixed-size
+  # marshalling argument regressing to a dynamic Eigen type.
+  ament_add_gtest(test_admittance_task_vel_reuse test/test_admittance_task_vel_reuse.cpp)
+  target_link_libraries(test_admittance_task_vel_reuse rtc_controllers)
+  target_include_directories(test_admittance_task_vel_reuse PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_admittance_task_vel_reuse PRIVATE -Wno-mismatched-new-delete)
+
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
   target_include_directories(test_task_impedance_controller PRIVATE

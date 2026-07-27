@@ -2,6 +2,7 @@
 #include "rtc_controllers/indirect/task_admittance_controller.hpp"
 
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <rclcpp/logging.hpp>
@@ -368,12 +369,18 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   for (int i = 0; i < 6; ++i)
     diag.pose_error[static_cast<std::size_t>(i)] = e(i);
 
-  Eigen::Matrix<double, 6, 1> nu = nu_c;
-  for (int i = 0; i < 3; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    nu(i) += gains.ik_kp_pos[ui] * e(i);
-    nu(i + 3) += gains.ik_kp_rot[ui] * e(i + 3);
-  }
+  // ν = ν_c + K^ik ⊙ e — the SAME velocity-form task law CLIK runs, so it is the
+  // shared core rather than a second copy (#236 S5, design-principles P5). ν_c is
+  // the feedforward here where CLIK's is a trajectory twist; the law does not
+  // care which, and the gains are the same [1/s] convention.
+  //
+  // The pre-extraction form copied ν_c and accumulated K⊙e into it per element,
+  // where the core materialises K⊙e and adds ν_c — the operands are the other way
+  // round. IEEE addition is commutative, so that is bitwise inert, and
+  // AdmittanceTaskVelReuse.MatchesThePreExtractionInlineFormBitwise measures it on
+  // every run against a literal copy of the old loop rather than asserting it.
+  const Eigen::Matrix<double, 6, 1> nu = rtc::task::ComputeTaskVelocity(
+      rtc::task::TaskVelParams{gains.ik_kp_pos, gains.ik_kp_rot}, e, nu_c);
 
   const bool nullspace_active = (nv > kTaskDim) && (gains.nullspace_kp != 0.0);
   if (nullspace_active) {
