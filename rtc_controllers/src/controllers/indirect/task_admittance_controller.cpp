@@ -820,7 +820,8 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["integrate_from_measured"])
     g.integrate_from_measured = cfg["integrate_from_measured"].as<bool>();
   if (cfg["singularity_threshold"])
-    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   if (cfg["singularity_critical"])
     g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   if (cfg["max_damping"])

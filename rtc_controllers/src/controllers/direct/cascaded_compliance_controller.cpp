@@ -925,9 +925,8 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["nullspace_damping"])
     g.nullspace_kd = std::max(0.0, num(cfg["nullspace_damping"], "nullspace_damping"));
   if (cfg["singularity_threshold"])
-    g.singularity_threshold =
-        std::max(compliance::kMinSigma0,
-                 num(cfg["singularity_threshold"], "singularity_threshold"));
+    g.singularity_threshold = std::max(compliance::kMinSigma0,
+                                       num(cfg["singularity_threshold"], "singularity_threshold"));
   if (cfg["singularity_critical"])
     g.singularity_critical =
         std::max(0.0, num(cfg["singularity_critical"], "singularity_critical"));

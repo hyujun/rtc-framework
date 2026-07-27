@@ -446,8 +446,9 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     } else {
       // NUM-1 at the point of use: LoadConfig floors max_damping too, but
       // set_gains() writes the POD straight into the SeqLock and bypasses it.
-      const compliance::TaskDynamics::Result r = dyn_.Compute(
-          J_S_, llt_M_, gains.singularity_threshold, std::max(compliance::kMinMaxDamping, gains.max_damping));
+      const compliance::TaskDynamics::Result r =
+          dyn_.Compute(J_S_, llt_M_, gains.singularity_threshold,
+                       std::max(compliance::kMinMaxDamping, gains.max_damping));
       dyn_ok = r.ok;
       sigma_min = r.sigma_min;
       lambda_sq = r.lambda_sq;
@@ -792,7 +793,8 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["nullspace_damping"])
     g.nullspace_kd = cfg["nullspace_damping"].as<double>();
   if (cfg["singularity_threshold"])
-    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   if (cfg["singularity_critical"])
     g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   if (cfg["max_damping"])
