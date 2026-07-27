@@ -147,6 +147,16 @@ class TaskDynamics {
       return r;  // r.ok stays false — caller must treat output as invalid
 
     // Λ_S = A⁻¹, then J̄_S = M⁻¹ J_Sᵀ Λ_S  (nv×m).
+    //
+    // Unconditional, including for a caller whose posture gate is shut. That was
+    // measured rather than assumed before being left alone: the impedance and
+    // cascade controllers gate this whole call, so only OSC pays, and OSC needs
+    // Λ_S every tick regardless (F = Λ_S·a_task) — the skippable part is J̄_S and
+    // Nᵀ alone. OSC's gate is `nv > 6`, so the skip could only ever fire on a
+    // non-redundant arm, where Nᵀ is nv×nv = 6×6 and the products cost O(400)
+    // flops against a 6×6 SelfAdjointEigenSolver that §6.5 makes unavoidable.
+    // A `with_nullspace` mode parameter on a shared RT helper is not worth that,
+    // and it would leave J̄_S/Nᵀ silently stale behind the accessors.
     FormJbarAndLambda();
 
     // Nᵀ = I − J_Sᵀ J̄_Sᵀ = I − J_Sᵀ (M⁻¹ J_Sᵀ Λ_S)ᵀ.  J̄_Sᵀ is m×nv.
