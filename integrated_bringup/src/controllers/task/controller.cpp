@@ -5,6 +5,7 @@
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -686,6 +687,14 @@ void DemoTaskController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["null_kp"]) {
     g.null_kp = cfg["null_kp"].as<double>();
   }
+  // NUM-6 (#277), unconditionally rather than inside the parse above: when the
+  // key is ABSENT the value still arrives from the constructor or a previous
+  // `ros2 param set` / BT SetGains, which is where a negative gain actually
+  // reaches this controller. q̇₀ = K_p·(q_null − q) with K_p < 0 drives the
+  // posture away from its target and (I − J⁺J) hides that from the Cartesian
+  // task, so it is a silent drift and not a fault. ComputeControl floors it
+  // again at the point of use.
+  g.null_kp = rtc::joint::FloorPostureGain(g.null_kp);
   if (cfg["enable_null_space"]) {
     g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }

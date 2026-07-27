@@ -87,6 +87,17 @@ struct ComplianceFaults {
   /// normal case, and there is a reduced-authority answer (emit no command)
   /// that a lost joint state does not rule out the way a diverged command does.
   bool device_state_invalid{false};
+  /// The selection mode delegates a task DoF to the null-space posture task, and
+  /// the posture gate is closed this tick — TRANSLATION_ONLY with a non-positive
+  /// K_pⁿ (§6.1). Configure REFUSES that combination outright; `set_gains()`
+  /// writes the Gains POD straight into the SeqLock and reaches it anyway, and
+  /// #277's floor makes a negative gain read exactly as zero, which is the right
+  /// answer for the posture task and leaves orientation regulated by nothing.
+  /// DEGRADED and not critical: unlike a diverged command the arm is still
+  /// tracking everything it is being asked to track, and the reduced-authority
+  /// answer (keep the translation task, announce the lost orientation authority)
+  /// is real — but it must not be SILENT, which is what it was before.
+  bool posture_authority_lost{false};
 
   [[nodiscard]] bool AnyCritical() const noexcept {
     return nan_inf || pose_error_exceeded || sigma_below_critical || command_divergence;
@@ -94,7 +105,7 @@ struct ComplianceFaults {
 
   [[nodiscard]] bool AnyDegrade() const noexcept {
     return saturation_persist || sigma_below_threshold || wrench_timeout || quality_low ||
-           device_state_invalid;
+           device_state_invalid || posture_authority_lost;
   }
 };
 

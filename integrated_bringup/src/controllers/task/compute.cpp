@@ -3,6 +3,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <algorithm>
@@ -412,7 +413,14 @@ void DemoTaskController::ComputeControl(const ControllerState& state, double dt)
     const Eigen::Vector3d j_nerr = J_pos_ * null_err_;
     null_dq_.noalias() = Jpinv_ * j_nerr;
     null_dq_ = null_err_ - null_dq_;
-    null_dq_ *= gains.null_kp;
+    // NUM-6 at the point of use (#277). This gate is `enable_null_space &&
+    // !control_6dof` and never reads the gain, so — like ClikController, the
+    // other velocity-domain consumer — the floor goes straight on the gain
+    // rather than before the gate. LoadConfig and the `null_kp` parameter
+    // callback floor it too; this half covers neither, because the gain reaches
+    // the SeqLock POD from both and a negative K_p drives the posture AWAY from
+    // its target while (I − J⁺J) hides that from the Cartesian task.
+    null_dq_ *= rtc::joint::FloorPostureGain(gains.null_kp);
     dq_ += null_dq_;
   }
 

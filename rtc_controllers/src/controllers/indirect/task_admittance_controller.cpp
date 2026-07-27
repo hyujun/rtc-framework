@@ -379,16 +379,27 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
   const Eigen::Matrix<double, 6, 1> nu = rtc::task::ComputeTaskVelocity(
       rtc::task::TaskVelParams{gains.ik_kp_pos, gains.ik_kp_rot}, e, nu_c);
 
-  const bool nullspace_active = (nv > kTaskDim) && (gains.nullspace_kp != 0.0);
+  // NUM-1 at the point of use (#277): LoadConfig floors nullspace_kp, but
+  // set_gains() writes the POD straight into the SeqLock and bypasses it. The
+  // floor goes BEFORE the gate, not just on the law's argument — the gate tests
+  // `!= 0.0`, so flooring the law alone would hold the gate open on a negative
+  // gain and then push an all-zero q̇₀ through N. A negative K_p drives the
+  // posture AWAY from its target, and N keeps that away from the task, so it
+  // must behave exactly as 0 does: gate closed. `FloorPostureGain` and not
+  // `std::max(0.0, ·)` — the latter returns 0.0 for NaN, which would close the
+  // gate on a corrupt gain instead of letting it reach the finite-output check.
+  const double nullspace_kp = joint::FloorPostureGain(gains.nullspace_kp);
+  const bool nullspace_active = (nv > kTaskDim) && (nullspace_kp != 0.0);
   if (nullspace_active) {
     // Posture task — joint/posture_law.hpp (#236 S6). The P form is its OWN core
     // function, not the PD one with K_d = 0: that reduction flips the sign of a
-    // zero (x = −0.0 arises here whenever the arm holds at its seed under a
-    // negative K_p, which LoadConfig below accepts), so it is not bitwise inert.
+    // zero, so it is not bitwise inert. The most reachable −0.0 source used to be
+    // «seed tick × negative K_p», which the floor above now retires; the split
+    // stands on the reduction not being bitwise inert, not on that one path.
     const auto nvu = static_cast<std::size_t>(nv);
     joint::ComputePostureVelocity(
-        gains.nullspace_kp, joint::PostureInputs{{q_null_.data(), nvu}, {q_dev_.data(), nvu}, {}},
-        nvu, {qdot_null_dev_.data(), nvu});
+        nullspace_kp, joint::PostureInputs{{q_null_.data(), nvu}, {q_dev_.data(), nvu}, {}}, nvu,
+        {qdot_null_dev_.data(), nvu});
     // Posture is device-order; gather to Pinocchio order before the (Pinocchio)
     // projector N. Identity order → memcpy (unchanged).
     handle_->ReorderInput(
@@ -727,8 +738,15 @@ void TaskAdmittanceController::SetHandEstop(bool active) noexcept {
 void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   MaybeSelectSubModel();
-  if (!cfg)
+  if (!cfg) {
+    // NUM-6's loader half is "regardless of whether the key is present", and an
+    // absent NODE is the widest case of that: the gain here came from the
+    // constructor or a previous set_gains(), the two paths the floor exists for.
+    auto g0 = gains_lock_.Load();
+    g0.nullspace_kp = joint::FloorPostureGain(g0.nullspace_kp);
+    gains_lock_.Store(g0);
     return;
+  }
 
   auto g = gains_lock_.Load();
 
@@ -817,10 +835,18 @@ void TaskAdmittanceController::LoadConfig(const YAML::Node& cfg) {
   load3(cfg["ik_kp_rot"], g.ik_kp_rot, "ik_kp_rot");
   if (cfg["nullspace_kp"])
     g.nullspace_kp = cfg["nullspace_kp"].as<double>();
+  // Floored at 0 (#277): a negative posture gain drives q̇₀ away from the
+  // null-space target, and N hides that from the task so it shows up only as a
+  // slow silent drift. Unconditional rather than folded into the parse above —
+  // when the key is ABSENT the value still arrives from the constructor or a
+  // previous set_gains(). Compute() floors it again at the point of use because
+  // set_gains() bypasses configure (NUM-1) — the same treatment max_damping gets.
+  g.nullspace_kp = joint::FloorPostureGain(g.nullspace_kp);
   if (cfg["integrate_from_measured"])
     g.integrate_from_measured = cfg["integrate_from_measured"].as<bool>();
   if (cfg["singularity_threshold"])
-    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   if (cfg["singularity_critical"])
     g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   if (cfg["max_damping"])

@@ -384,6 +384,69 @@ TEST(CascadedCompliance, BandwidthReportFollowsARuntimeRetune) {
   EXPECT_LT(d.bandwidth_ratio, coupled.min_bandwidth_ratio);
 }
 
+// ── #277: the posture floor this controller already had, now at the point of
+// use as well ──────────────────────────────────────────────────────────────
+//
+// LoadConfig has floored both posture gains since the controller shipped — it
+// was the one of the five that got this right, and #277 converged the other
+// four onto it. What no controller had was the other half of NUM-1: set_gains()
+// writes the Gains POD straight into the SeqLock, so configure-time clamping
+// alone is bypassable by every caller holding the handle. τ₀ with K_pⁿ < 0
+// pushes away from the posture reference and K_dⁿ < 0 injects energy, and Nᵀ
+// keeps both off the Cartesian task, so neither raises a fault.
+TEST(CascadedCompliance, PostureFloorSurvivesSetGains) {
+  const std::vector<double> q(7, 0.25);
+  auto gains = InertSafetyGains();
+  gains.nullspace_kp = 5.0;  // nv(7) > 6 ⇒ a genuinely redundant null space
+  gains.nullspace_kd = 1.0;
+  CascadedComplianceController ctrl(Urdf7(), gains);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+
+  // Non-vacuity: the fixture opens the gate on positive gains, so a false below
+  // means the floor closed it and not that it was never open.
+  (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "the fixture never opens the posture gate — the negative case proves nothing";
+
+  // The configure-time floor, pinned here because the other four controllers'
+  // tests now assert against this one as the reference form.
+  ctrl.LoadConfig(
+      YAML::Load(TransparentWrenchYaml("nullspace_stiffness: -5.0\nnullspace_damping: -1.0\n")));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kp, 0.0);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kd, 0.0);
+
+  // The bypass. The gate is `nv > 6 && (kp != 0 || kd != 0)`, so flooring only
+  // the law's arguments would hold it open and pay for the Λ/Nᵀ block every
+  // tick to project an all-zero τ₀.
+  // Built from get_gains() and NOT from the local `gains`: the two LoadConfig
+  // calls above wrote a whole gain set into the POD, and re-sending the
+  // constructor's would silently revert every one of them (singularity_threshold,
+  // max_damping, pose_error_limit, saturation_persist_time, …). They coincide
+  // today, so the test would still pass — and stop pinning "the floor holds on
+  // top of the CONFIGURED gain set" the first time TransparentWrenchYaml() names
+  // a key the constructor defaults differently.
+  auto negative = ctrl.get_gains();
+  negative.nullspace_kp = -5.0;
+  negative.nullspace_kd = -1.0;
+  ctrl.set_gains(negative);
+  (void)ctrl.Compute(state);
+  EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "a negative posture gain held the gate open — the floor is configure-only";
+
+  // The absent NODE — the widest form of "the key is absent", and the one the
+  // controller manager hands a controller with no YAML. LoadConfig returns early
+  // there, so a floor placed only after that return never runs and get_gains()
+  // keeps reporting a gain Compute() refuses to use. `YAML::Node()` would NOT
+  // reach it: a default-constructed node is a DEFINED Null.
+  ASSERT_DOUBLE_EQ(ctrl.get_gains().nullspace_kp, -5.0) << "the bypass above did not take";
+  ctrl.LoadConfig(YAML::Node(YAML::NodeType::Undefined));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kp, 0.0)
+      << "the `if (!cfg)` early return skipped the loader floor";
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kd, 0.0);
+}
+
 // ── §7.6 MUST-3: what the compliant frame does when the force stops ─────────
 
 TEST(CascadedCompliance, StiffOuterLoopReturnsTheFrameToTheDesiredPose) {

@@ -428,8 +428,18 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   bool dyn_ok = true;
   double sigma_min = std::numeric_limits<double>::infinity();
   double lambda_sq = 0.0;
-  const bool nullspace_active =
-      (nv > m) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
+  // NUM-1 at the point of use (#277): LoadConfig floors both posture gains, but
+  // set_gains() writes the POD straight into the SeqLock and bypasses it. Before
+  // the gate rather than only on the law's arguments — the gate tests `!= 0.0`,
+  // so flooring the law alone would hold the gate open on a negative gain and
+  // drag the whole Λ_S/Nᵀ block in (`need_task_dynamics` below) to project an
+  // all-zero τ₀. A negative gain must behave exactly as 0 does: gate closed.
+  // `FloorPostureGain` and not `std::max(0.0, ·)` — the latter returns 0.0 for
+  // NaN, which would close the gate on a corrupt gain instead of letting it
+  // reach the law and latch `faults.nan_inf` through `safety.finite` below.
+  const double nullspace_kp = joint::FloorPostureGain(gains.nullspace_kp);
+  const double nullspace_kd = joint::FloorPostureGain(gains.nullspace_kd);
+  const bool nullspace_active = (nv > m) && (nullspace_kp != 0.0 || nullspace_kd != 0.0);
   const bool inertia_shaping = (formulation_ == Formulation::kInertiaShaping);
   const bool need_task_dynamics = nullspace_active || inertia_shaping;
   // f_cmd is the bracketed task force of §6.2 / §6.3; only head(m) is used and
@@ -446,8 +456,9 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
     } else {
       // NUM-1 at the point of use: LoadConfig floors max_damping too, but
       // set_gains() writes the POD straight into the SeqLock and bypasses it.
-      const compliance::TaskDynamics::Result r = dyn_.Compute(
-          J_S_, llt_M_, gains.singularity_threshold, std::max(compliance::kMinMaxDamping, gains.max_damping));
+      const compliance::TaskDynamics::Result r =
+          dyn_.Compute(J_S_, llt_M_, gains.singularity_threshold,
+                       std::max(compliance::kMinMaxDamping, gains.max_damping));
       dyn_ok = r.ok;
       sigma_min = r.sigma_min;
       lambda_sq = r.lambda_sq;
@@ -469,7 +480,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
         // measured seed here and the OSC's configured posture are one law.
         const auto nvu = static_cast<std::size_t>(nv);
         joint::ComputePostureTorque(
-            gains.nullspace_kp, gains.nullspace_kd,
+            nullspace_kp, nullspace_kd,
             joint::PostureInputs{
                 {q_null_.data(), nvu}, {q_dev_.data(), nvu}, {qdot_dev_.data(), nvu}},
             nvu, {tau_posture_dev_.data(), nvu});
@@ -535,6 +546,16 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   // and fatal). The fade above has already ramped f_ext to zero, so DEGRADED
   // here means "running the A=NONE law with reduced trust", not "stopped".
   faults.wrench_timeout = diag.wrench_stale;
+  // §6.1 at RUNTIME. LoadConfig refuses TRANSLATION_ONLY with a non-positive
+  // K_pⁿ, but set_gains() writes the POD straight into the SeqLock and never
+  // passes configure, so the one mode that hands orientation to the posture task
+  // could reach a tick with the posture gate closed and nothing would say so —
+  // the floor above is what makes a negative gain read as zero here, and zero is
+  // precisely the value §6.1 exists to reject. Read from the FLOORED gain, not
+  // from `nullspace_active`, so a non-redundant arm (nv ≤ m, gate closed for a
+  // reason configure already accepts) is not accused of a gain fault.
+  faults.posture_authority_lost =
+      (selection_ == TaskSelection::kTranslationOnly) && !(nullspace_kp > 0.0);
   const bool ramp_done = (alpha >= 1.0);
   const auto cstate =
       sm_.Step(faults, ramp_done, dt, kDegradedRecoveryTime, bias_gate_, diag.in_contact);
@@ -769,9 +790,21 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   MaybeSelectSubModel();
   if (!cfg) {
-    // Even without YAML, enforce the §6.1 selection/nullspace invariant.
-    const auto g0 = gains_lock_.Load();
-    if (selection_ == TaskSelection::kTranslationOnly && g0.nullspace_kp == 0.0)
+    // Even without YAML this is a CONFIGURE, so it runs the same three steps the
+    // YAML path does — floor, §6.4, §6.1 — on the gains it has. NUM-6's loader
+    // half is "regardless of whether the key is present", and an absent NODE is
+    // the widest case of that: these gains come from the constructor or a
+    // previous set_gains(), i.e. exactly the two paths the floor exists for. The
+    // floor is also STORED and not just evaluated for the guard — otherwise
+    // get_gains() would keep reporting a gain Compute() refuses to run, on the
+    // one path where nothing else rewrites the POD.
+    auto g0 = gains_lock_.Load();
+    g0.nullspace_kp = joint::FloorPostureGain(g0.nullspace_kp);
+    g0.nullspace_kd = joint::FloorPostureGain(g0.nullspace_kd);
+    if (g0.nullspace_kp > 0.0)
+      g0.nullspace_kd = std::max(g0.nullspace_kd, 2.0 * std::sqrt(g0.nullspace_kp));
+    gains_lock_.Store(g0);
+    if (selection_ == TaskSelection::kTranslationOnly && !(g0.nullspace_kp > 0.0))
       throw std::runtime_error(
           "TaskImpedanceController: TRANSLATION_ONLY requires nullspace_stiffness > 0 (§6.1) — "
           "orientation is otherwise uncontrolled");
@@ -792,7 +825,8 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["nullspace_damping"])
     g.nullspace_kd = cfg["nullspace_damping"].as<double>();
   if (cfg["singularity_threshold"])
-    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   if (cfg["singularity_critical"])
     g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   if (cfg["max_damping"])
@@ -812,13 +846,44 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["estop_damping"])
     g.estop_damping = std::max(0.0, cfg["estop_damping"].as<double>());
 
+  // Posture gains floored at 0 (#277), HERE — after the parse and before the two
+  // rules below, because the order is what makes those two mean what they read
+  // as, and unconditionally rather than inside the `if (cfg[…])` above, because
+  // when the key is ABSENT the value still arrives from the constructor or a
+  // previous set_gains() and both rules must judge the gain Compute() will run:
+  //   • §6.4's correction is `if (kp > 0.0)`, so a negative K_pⁿ skipped the
+  //     damping floor entirely — the configuration that most needs damping was
+  //     the one that never got it.
+  //   • §6.1's guard tests `kp == 0.0` while its message claims `> 0`, so a
+  //     negative K_pⁿ walked straight through the check that exists precisely
+  //     because TRANSLATION_ONLY leaves orientation to the null space.
+  // Compute() floors again at the point of use because set_gains() bypasses
+  // configure entirely (NUM-1) — the same treatment max_damping gets. The two
+  // rules below do NOT get that second half; see §6.4's note.
+  g.nullspace_kp = joint::FloorPostureGain(g.nullspace_kp);
+  g.nullspace_kd = joint::FloorPostureGain(g.nullspace_kd);
+
   // §6.4 nullspace damping floor K_dⁿ ≥ 2√K_pⁿ (also allows K_pⁿ=0 pure damping).
+  //
+  // CONFIGURE-TIME ONLY, deliberately — σ₀'s side of the NUM-1 split, not
+  // λ_max's. This is not a bound on the gain being read but a REWRITE of a
+  // different gain, so putting it on the tick would (a) make get_gains() and
+  // Compute() disagree about K_dⁿ for every positive K_pⁿ and (b) oblige every
+  // literal oracle of this posture block to mirror a configure-time rule. It
+  // also buys less than the floor does: `set_gains({kp, kd < 2√kp})` leaves an
+  // under-damped null space — oscillatory, bounded, and visible — where an
+  // unfloored negative gain leaves a DIVERGENT one that Nᵀ hides. If a caller
+  // ever needs the correction at runtime, the honest fix is to apply it where
+  // the POD is installed (set_gains), not to re-derive it every tick.
   if (g.nullspace_kp > 0.0)
     g.nullspace_kd = std::max(g.nullspace_kd, 2.0 * std::sqrt(g.nullspace_kp));
 
   // §6.1: TRANSLATION_ONLY leaves orientation to the nullspace, so zero nullspace
   // stiffness would let it drift uncontrolled — a configure error, not a warning.
-  if (selection_ == TaskSelection::kTranslationOnly && g.nullspace_kp == 0.0)
+  // `!(kp > 0.0)` and not `kp == 0.0`: the message claims `> 0`, and after the
+  // floor above the only remaining way to fail it while comparing equal to
+  // nothing is a NaN gain, which is exactly the value that must not configure.
+  if (selection_ == TaskSelection::kTranslationOnly && !(g.nullspace_kp > 0.0))
     throw std::runtime_error(
         "TaskImpedanceController: TRANSLATION_ONLY requires nullspace_stiffness > 0 (§6.1)");
 

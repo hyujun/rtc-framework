@@ -333,7 +333,7 @@ q_cmd  = q_des
 | `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
 | `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max — 로더·사용 지점 모두 `1e-4` 로 floor (NUM-1) |
 | `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `1e-6` 로 floor (σ₀≤0 은 감쇠를 상시 0 으로 만든다) |
-| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] |
+| `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] — 로더·사용 지점 모두 `joint::FloorPostureGain` floor (#277). 음수는 posture 를 목표에서 **멀어지는** 방향으로 몰고 `N` 이 그걸 task 로부터 가려 조용한 drift 가 된다 |
 | `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
 | `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
 | `trajectory_angular_speed` | `double` | `0.5` | 태스크 공간 궤적 회전 속도 (rad/s, 6-DOF 모드) |
@@ -414,8 +414,8 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 | `kd_rot` | `double[3]` | `[10, 10, 10]` | 자세 미분 게인 [1/s] |
 | `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max (Λ⁻¹ 정칙화) — 로더·사용 지점 모두 `max(1e-4, ·)` floor (NUM-1) |
 | `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `max(1e-6, ·)` floor |
-| `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) |
-| `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] |
+| `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) — 로더·사용 지점 모두 `joint::FloorPostureGain` floor (#277). 음수 `K_pⁿ` 는 τ₀ 를 발산 방향으로 만들고 `Nᵀ` 가 그걸 task 로부터 가린다 |
+| `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] — 같은 floor. 음수 감쇠는 여유자유도에 에너지를 **주입**한다 |
 | `trajectory_speed` | `double` | `0.1` | 위치 궤적 최대 병진 속도 (m/s) |
 | `trajectory_angular_speed` | `double` | `0.5` | 자세 궤적 최대 회전 속도 (rad/s) |
 | `command_type` | `string` | `"torque"` | **torque 고정** (다른 값 거부) |

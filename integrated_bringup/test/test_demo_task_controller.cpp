@@ -615,6 +615,39 @@ TEST(TaskControllerLoadConfigTest, MinimalYamlLoads) {
   EXPECT_NO_THROW(ctrl.LoadConfig(MinimalValidYaml()));
 }
 
+// ── #277 / NUM-6: the sixth posture-gain consumer ───────────────────────────
+//
+// q̇₀ = K_p·(q_null − q) with K_p < 0 drives the null-space posture AWAY from its
+// target, and the (I − J⁺J) projector keeps that off the Cartesian task — so it
+// is a silent drift, never a fault. This controller is the most exposed of the
+// six: `null_kp` is a declared ROS parameter, so `ros2 param set` and the BT
+// SetGains node reach it at runtime, where the five rtc_controllers siblings are
+// only reachable through a YAML reload or a direct set_gains() handle.
+TEST(TaskControllerLoadConfigTest, NegativeNullKpIsFlooredByTheLoader) {
+  DemoTaskController ctrl{"", DemoTaskController::Gains{}};
+  auto cfg = MinimalValidYaml();
+  cfg["null_kp"] = -0.5;
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.0)
+      << "a divergent posture gain reached the gains POD";
+
+  // A floor, not a rewrite.
+  cfg["null_kp"] = 0.5;
+  ASSERT_NO_THROW(ctrl.LoadConfig(cfg));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.5);
+
+  // Unconditional, so an ABSENT key cannot leave a negative value from the
+  // constructor or a previous `ros2 param set` in the POD.
+  auto g = ctrl.get_gains();
+  g.null_kp = -0.5;
+  ctrl.set_gains(g);
+  auto no_key = MinimalValidYaml();
+  ASSERT_FALSE(no_key["null_kp"]);
+  ASSERT_NO_THROW(ctrl.LoadConfig(no_key));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.0)
+      << "an absent key left a negative posture gain in the POD";
+}
+
 TEST(TaskControllerLoadConfigTest, MissingEstopThrows) {
   DemoTaskController ctrl{"", DemoTaskController::Gains{}};
   auto cfg = MinimalValidYaml();

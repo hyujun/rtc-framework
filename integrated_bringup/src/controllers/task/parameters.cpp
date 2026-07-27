@@ -1,4 +1,5 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
@@ -155,7 +156,12 @@ rcl_interfaces::msg::SetParametersResult DemoTaskController::OnGainParametersSet
         g.damping = p.as_double();
         gains_dirty = true;
       } else if (name == "null_kp") {
-        g.null_kp = p.as_double();
+        // NUM-6 (#277) — the same floor LoadConfig applies, here because this is
+        // the ONLY surface that reaches this gain at runtime (`ros2 param set`
+        // and the BT SetGains node both land here). A negative K_p drives the
+        // null-space posture away from its target and (I − J⁺J) keeps that off
+        // the Cartesian task, so nothing downstream would report it.
+        g.null_kp = rtc::joint::FloorPostureGain(p.as_double());
         gains_dirty = true;
       } else if (name == "enable_null_space") {
         g.enable_null_space = p.as_bool();

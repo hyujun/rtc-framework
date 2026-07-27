@@ -30,6 +30,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -49,6 +50,15 @@ std::string Urdf6() {
 
 std::string Urdf7() {
   return rtc::test::TestUrdfPath("serial_7dof.urdf");
+}
+
+// An *undefined* node — the "no YAML config" case the controller manager hands a
+// controller, i.e. the only input that takes LoadConfig's `if (!cfg)` early-out.
+// A default-constructed `YAML::Node` does NOT: it is a DEFINED Null (`IsDefined()`
+// returns true when `m_pNode` is null), so it walks the full YAML path with every
+// key absent. Same helper, same reason, as test_controller_config.cpp.
+YAML::Node UndefinedNode() {
+  return YAML::Node(YAML::NodeType::Undefined);
 }
 
 rtc::ControllerState MakeState(int nj, const std::vector<double>& q, const std::vector<double>& qd,
@@ -163,6 +173,190 @@ TEST(TaskImpedance, ConfigureRejectsTranslationOnlyZeroNullspace) {
   ok.nullspace_kp = 30.0;
   TaskImpedanceController ctrl_ok(Urdf6(), ok, Sel::kTranslationOnly);
   EXPECT_NO_THROW(ctrl_ok.LoadConfig(YAML::Node()));
+}
+
+// ── #277: the posture gains are floored, and the ORDER is what makes the two
+// rules downstream of them mean what they read as ──────────────────────────
+//
+// τ₀ = K_pⁿ·(q_ref − q) − K_dⁿ·q̇ with K_pⁿ < 0 pushes AWAY from the reference,
+// and Nᵀ keeps that away from the Cartesian task — so the arm's posture drifts
+// with every number finite and no fault raised. Two later steps read these
+// gains, and both used to read a negative one as something other than "less
+// than zero":
+//   • §6.4's correction is `if (kp > 0.0)`, so a negative K_pⁿ skipped the
+//     damping floor entirely — the configuration that most needs damping was
+//     the one that never got it.
+//   • §6.1's guard tests `kp == 0.0` while its message claims `> 0`, so a
+//     negative K_pⁿ walked through the check that exists precisely because
+//     TRANSLATION_ONLY leaves orientation to the null space.
+TEST(TaskImpedance, NegativeNullspaceGainsAreFlooredBeforeTheDampingAndSelectionRules) {
+  TaskImpedanceController::Gains gains;
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+  ctrl.LoadConfig(YAML::Load(R"(
+nullspace_stiffness: -30.0
+nullspace_damping: -1.0
+)"));
+  const auto g = ctrl.get_gains();
+  EXPECT_DOUBLE_EQ(g.nullspace_kp, 0.0) << "a divergent posture stiffness reached the gains POD";
+  EXPECT_DOUBLE_EQ(g.nullspace_kd, 0.0) << "negative damping injects energy into the null space";
+
+  // A positive pair is untouched — the floor must not be a rewrite. The §6.4
+  // correction is what proves the clamp runs BEFORE it: K_dⁿ is raised to
+  // 2√K_pⁿ, which only happens on the `kp > 0.0` branch.
+  ctrl.LoadConfig(YAML::Load(R"(
+nullspace_stiffness: 25.0
+nullspace_damping: 0.1
+)"));
+  const auto pos = ctrl.get_gains();
+  EXPECT_DOUBLE_EQ(pos.nullspace_kp, 25.0);
+  EXPECT_DOUBLE_EQ(pos.nullspace_kd, 2.0 * std::sqrt(25.0)) << "§6.4 floor K_dⁿ ≥ 2√K_pⁿ";
+
+  // §6.1, YAML path: negative → 0.0 → the guard fires, which is what §6.1 asked
+  // for all along. Before the floor this configure returned cleanly and left
+  // the only orientation authority TRANSLATION_ONLY has pointing the wrong way.
+  TaskImpedanceController::Gains zero;
+  zero.nullspace_kp = 0.0;
+  TaskImpedanceController trans(Urdf6(), zero, Sel::kTranslationOnly);
+  EXPECT_THROW(trans.LoadConfig(YAML::Load("nullspace_stiffness: -30.0")), std::runtime_error);
+
+  // §6.1, no-YAML path (`if (!cfg)`): same rule, and the gains it reads come
+  // from the constructor or set_gains(), neither of which passes the YAML floor.
+  // UndefinedNode() and not YAML::Node() — the latter is a DEFINED Null and
+  // walks the full YAML path instead, so this line would have been pinning the
+  // OTHER guard and the branch it names would have had no coverage at all.
+  TaskImpedanceController::Gains negative;
+  negative.nullspace_kp = -30.0;
+  TaskImpedanceController trans_no_cfg(Urdf6(), negative, Sel::kTranslationOnly);
+  EXPECT_THROW(trans_no_cfg.LoadConfig(UndefinedNode()), std::runtime_error);
+
+  // The same branch, non-throwing half: the floor is STORED there, not merely
+  // evaluated for the guard. FULL_SE3 so the §6.1 guard cannot fire, and the
+  // §6.4 correction applies on that path too — the two configure entry points
+  // run the identical three steps.
+  TaskImpedanceController::Gains no_cfg_gains;
+  no_cfg_gains.nullspace_kp = -30.0;
+  no_cfg_gains.nullspace_kd = -1.0;
+  TaskImpedanceController full_no_cfg(Urdf7(), no_cfg_gains, Sel::kFullSe3);
+  EXPECT_NO_THROW(full_no_cfg.LoadConfig(UndefinedNode()));
+  EXPECT_DOUBLE_EQ(full_no_cfg.get_gains().nullspace_kp, 0.0)
+      << "the `if (!cfg)` branch judged the floored gain but stored the raw one";
+  EXPECT_DOUBLE_EQ(full_no_cfg.get_gains().nullspace_kd, 0.0);
+
+  no_cfg_gains.nullspace_kp = 25.0;
+  no_cfg_gains.nullspace_kd = 0.1;
+  TaskImpedanceController damped_no_cfg(Urdf7(), no_cfg_gains, Sel::kFullSe3);
+  EXPECT_NO_THROW(damped_no_cfg.LoadConfig(UndefinedNode()));
+  EXPECT_DOUBLE_EQ(damped_no_cfg.get_gains().nullspace_kd, 2.0 * std::sqrt(25.0))
+      << "§6.4 K_dⁿ ≥ 2√K_pⁿ skipped the no-YAML configure path";
+}
+
+// ── #277 follow-up: the floor must not LAUNDER a non-finite gain ────────────
+//
+// `std::max(0.0, NaN)` is 0.0 — `std::max` is `a < b ? b : a` and `0.0 < NaN` is
+// false — so spelling the floor that way would read a corrupt gain as "posture
+// off", close the gate, and discard it in silence. Before any floor existed a
+// NaN gain reached the law, made τ non-finite and LATCHED SAFE_STOP through
+// `faults.nan_inf`; that is the louder answer and #277 must not retire it.
+TEST(TaskImpedance, NonFinitePostureGainStillLatchesInsteadOfBeingFlooredAway) {
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 30.0;  // nv(7) > m(6) ⇒ a genuinely redundant null space
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+
+  const std::vector<double> q(7, 0.2);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "the fixture never opens the posture gate — the NaN case proves nothing";
+  ASSERT_NE(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kSafeStop))
+      << "the fixture is already latched — the assertion below would be vacuous";
+
+  auto g = ctrl.get_gains();
+  g.nullspace_kp = std::numeric_limits<double>::quiet_NaN();
+  ctrl.set_gains(g);
+  (void)ctrl.Compute(state);
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kSafeStop))
+      << "a NaN posture gain was floored to 0 and silently discarded — the fault it used to "
+         "latch is gone";
+}
+
+// ── #277 follow-up: §6.1 has a RUNTIME equivalent, not only a configure one ──
+//
+// LoadConfig refuses TRANSLATION_ONLY with a non-positive K_pⁿ, but set_gains()
+// writes the POD straight into the SeqLock and never passes configure. With the
+// floor in place a negative gain reads exactly as zero — correct for the posture
+// task, and precisely the state §6.1 exists to reject: orientation is then
+// regulated by nothing at all (m = 3), which the conventions call a hazard.
+TEST(TaskImpedance, TranslationOnlyReportsLostPostureAuthorityWhenSetGainsClosesTheGate) {
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 50.0;
+  gains.activation_ramp_time = 0.0;
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kTranslationOnly);
+
+  const std::vector<double> q(7, 0.2);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+  for (int i = 0; i < 5; ++i)
+    (void)ctrl.Compute(state);
+  ASSERT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kRunning))
+      << "a legal TRANSLATION_ONLY configuration did not reach RUNNING — the case below would "
+         "not be measuring the gain";
+
+  auto g = ctrl.get_gains();
+  g.nullspace_kp = -50.0;  // divergent, straight past configure → floored to 0
+  ctrl.set_gains(g);
+  (void)ctrl.Compute(state);
+  // NOT observable as a closed gate: `nullspace_kd` is still positive, so the
+  // gate's second disjunct keeps the posture task running as PURE DAMPING. That
+  // is the whole reason this needs its own report — a damping-only null space
+  // resists orientation motion but restores nothing, so `nullspace_active` reads
+  // true while the authority §6.1 requires is gone.
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kDegraded))
+      << "TRANSLATION_ONLY lost its only orientation authority and said nothing";
+
+  // Recoverable, not latched: restoring the gain restores the posture task, so
+  // this reports a reduced-authority tick rather than stopping the arm.
+  g.nullspace_kp = 50.0;
+  ctrl.set_gains(g);
+  for (int i = 0; i < 400; ++i)  // > kDegradedRecoveryTime (0.5 s) at dt = 2 ms
+    (void)ctrl.Compute(state);
+  EXPECT_EQ(ctrl.GetDiagnosticsForTesting().state,
+            static_cast<std::uint8_t>(rtc::compliance::ComplianceState::kRunning))
+      << "the DEGRADED report never cleared after the gain came back";
+}
+
+TEST(TaskImpedance, PostureFloorSurvivesSetGains) {
+  // set_gains() writes the Gains POD straight into the SeqLock, so a
+  // configure-time-only floor is bypassable by every caller holding the handle
+  // — the same hole MaxDampingFloorSurvivesSetGains pins for λ_max (#277).
+  //
+  // The posture GATE is what makes it observable. `kp != 0 || kd != 0` reads a
+  // negative gain as "posture requested", so flooring only the law's arguments
+  // would leave the gate open and drag the whole Λ_S/Nᵀ block in to project an
+  // all-zero τ₀. Floored before the gate, a negative gain reads exactly as 0.
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 30.0;  // nv(7) > m(6) ⇒ a genuinely redundant null space
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+
+  const std::vector<double> q(7, 0.2);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+
+  // Non-vacuity: this fixture DOES open the gate on a positive gain. Without
+  // this the negative case below would pass on a fixture that can never open it.
+  (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "the fixture never opens the posture gate — the negative case proves nothing";
+
+  auto g = ctrl.get_gains();
+  g.nullspace_kp = -30.0;  // divergent stiffness, straight past configure
+  g.nullspace_kd = -1.0;   // negative damping — energy INTO the redundant DOFs
+  ctrl.set_gains(g);
+  (void)ctrl.Compute(state);
+  EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "a negative posture gain held the gate open — the floor is configure-only";
 }
 
 // ── Activation: re-seeds the desired pose to the measured state ─────────────

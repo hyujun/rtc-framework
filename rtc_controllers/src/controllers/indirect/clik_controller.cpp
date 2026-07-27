@@ -444,9 +444,15 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     // device-order here, so the law runs in device order and the gather to
     // Pinocchio order happens on the RESULT — the projector N is Pinocchio-
     // ordered (#172 A2). Identity order → memcpy (unchanged).
+    // Floor Kp at the point of use (#277). Unlike the four torque-domain
+    // siblings this gate is `enable_null_space && !control_6dof` and never reads
+    // the gain, so the floor has nothing to reorder around — it goes straight on
+    // the law's argument. LoadConfig floors it too; set_gains() bypasses that
+    // (NUM-1), and a negative Kp would drive q̇₀ = Kp·(q_target − q) AWAY from
+    // the posture target, which N then hides from the Cartesian task.
     const auto nvu = static_cast<std::size_t>(nv);
     joint::ComputePostureVelocity(
-        gains.null_kp,
+        joint::FloorPostureGain(gains.null_kp),
         joint::PostureInputs{{slot.null_target.data(), slot.null_target.size()},
                              {dev0.positions.data(), dev0.positions.size()},
                              {}},
@@ -671,6 +677,12 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   // LoadConfig above). All later Compute() FK/Jacobian use the submodel.
   MaybeSelectSubModel();
   if (!cfg) {
+    // NUM-6's loader half is "regardless of whether the key is present", and an
+    // absent NODE is the widest case of that: the gain here came from the
+    // constructor or a previous set_gains(), the two paths the floor exists for.
+    auto g0 = gains_lock_.Load();
+    g0.null_kp = joint::FloorPostureGain(g0.null_kp);
+    gains_lock_.Store(g0);
     return;
   }
 
@@ -721,6 +733,13 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["null_kp"]) {
     g.null_kp = cfg["null_kp"].as<double>();
   }
+  // Floored at 0 (#277): a negative posture gain drives q̇₀ away from the
+  // null-space target instead of toward it, and N hides that from the task.
+  // Unconditional rather than folded into the parse above — when the key is
+  // ABSENT the value still arrives from the constructor or a previous
+  // set_gains(). Compute() floors it again at the point of use (set_gains()
+  // bypasses configure — NUM-1), the same treatment max_damping gets below.
+  g.null_kp = joint::FloorPostureGain(g.null_kp);
   if (cfg["enable_null_space"]) {
     g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }

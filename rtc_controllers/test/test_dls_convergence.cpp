@@ -262,6 +262,15 @@ OscInline PreExtractionOscBlock(const Snapshot& s, const Vec6& a_task, double la
 /// mirrors operational_space_controller.cpp's Steps 7-9 — the identity-order
 /// reorders the adapter performs are omitted because they are memcpy on this
 /// fixture and belong to the binding, not to the law.
+///
+/// #277's posture floor is deliberately NOT mirrored here, in either oracle. It
+/// sits one line ABOVE Step 7 in the controller (`FloorPostureGain` before the
+/// gate), so it belongs to the binding the same way the reorders do — and the
+/// oracle above is a frozen literal of the PRE-#236-S2b code, which cannot grow
+/// a 2026 clamp without ceasing to be the thing it witnesses. Both oracles are
+/// driven with non-negative gains only, where the floor is the identity, so the
+/// pair still compares like for like. Feed this file a negative gain and you
+/// must floor at the CALL SITE, not in here.
 OscInline MigratedOscBlock(compliance::TaskDynamics& dyn, const Snapshot& s, const Vec6& a_task,
                            double sigma0, double lambda_max, double null_kp, double null_kd,
                            const Eigen::VectorXd& q_ref, int nv, double* lambda_sq_out,
