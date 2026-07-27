@@ -331,7 +331,8 @@ q_cmd  = q_des
 |---------|------|--------|------|
 | `kp_translation` | `double[3]` | `[1.0, 1.0, 1.0]` | 병진 비례 게인 (x, y, z) [1/s] |
 | `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
-| `damping` | `double` | `0.01` | 의사역행렬 감쇠 계수 (lambda) — 로더가 `1e-4` 로 floor (NUM-1) |
+| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max — 로더·사용 지점 모두 `1e-4` 로 floor (NUM-1) |
+| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `1e-6` 로 floor (σ₀≤0 은 감쇠를 상시 0 으로 만든다) |
 | `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] |
 | `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
 | `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
@@ -349,7 +350,8 @@ q_cmd  = q_des
 | `control_6dof=true` | TCP 위치 (x, y, z) | TCP 자세 (roll, pitch, yaw, ZYX) |
 
 **핵심 기법:**
-- LDLT 분해 -- 수치 안정적 의사역행렬 계산 (3x3 또는 6x6)
+- §6.5 σ_min-적응형 DLS (`compliance/differential_ik.hpp`) -- 특이점에서 멀면 감쇠가 **정확히 0**, σ₀ 셸 안에서만 λ² 가 자란다. #236 S3b 이전의 상수-λ LDLT 인라인이 여기로 수렴했다
+- 비유한 J 게이트 -- NaN 관절 상태가 FK 를 타면 `ok=false` 로 직전 J⁺ 를 보존하고 홀드 (LLT 는 NaN 행렬에 Success 를 반환하므로 `.info()` 만으로는 못 잡는다)
 - SE(3) 궤적 보간 -- log6 기반 거리 계산 + TaskSpaceTrajectory
 - Pinocchio 자코비안 -- `computeJointJacobians()` + `getJointJacobian(LOCAL_WORLD_ALIGNED)`
 - 영공간 참조: `safe_position` (디바이스 설정에서 로드) 또는 기본값 `[0, -1.57, 1.57, -1.57, -1.57, 0]`
@@ -361,7 +363,8 @@ q_cmd  = q_des
 clik_controller:
   kp_translation: [1.0, 1.0, 1.0]
   kp_rotation: [1.0, 1.0, 1.0]
-  damping: 0.01
+  max_damping: 0.05             # λ_max — §6.5 램프의 상한
+  singularity_threshold: 0.02   # σ₀ — 이 아래에서 감쇠가 붙기 시작
   trajectory_speed: 0.1
   trajectory_angular_speed: 0.5
   max_traj_velocity: 0.5
@@ -409,7 +412,8 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 | `kd_pos` | `double[3]` | `[20, 20, 20]` | 위치 미분 게인 [1/s] |
 | `kp_rot` | `double[3]` | `[50, 50, 50]` | 자세 비례 게인 [1/s²] |
 | `kd_rot` | `double[3]` | `[10, 10, 10]` | 자세 미분 게인 [1/s] |
-| `damping` | `double` | `0.01` | Λ⁻¹ 감쇠 계수 λ (특이점 강건성, `max(1e-4, ·)` floor) |
+| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max (Λ⁻¹ 정칙화) — 로더·사용 지점 모두 `max(1e-4, ·)` floor (NUM-1) |
+| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `max(1e-6, ·)` floor |
 | `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) |
 | `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] |
 | `trajectory_speed` | `double` | `0.1` | 위치 궤적 최대 병진 속도 (m/s) |
@@ -417,14 +421,17 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 | `command_type` | `string` | `"torque"` | **torque 고정** (다른 값 거부) |
 
 > `enable_gravity_compensation` 은 YAML 하위 호환을 위해 파싱만 되고 **무시**됩니다 — 토크 OSC 는 g(q)+C·v 를 항상 보상합니다 (제어 법칙상 필수). 게인 단위·의미가 바뀌었으므로 (velocity-IK → 토크 가속도형) 로봇별 재튜닝이 필요합니다.
+>
+> **은퇴한 `damping` 키 (OSC·CLIK 공통, #236 S2b+S3b):** 상수 λ 를 지정하던 이 키는 §6.5 σ_min-적응형 램프로 대체됐습니다. 남아 있으면 **경고 후 무시**되며 `max_damping` 으로 매핑되지 않습니다 — 상수 λ 와 램프의 상한은 같은 양이 아니라 어떤 매핑도 추측이 되기 때문입니다. 기존 config 는 `damping: X` 를 지우고 `max_damping` / `singularity_threshold` 를 명시하십시오. 그대로 두면 두 값 모두 기본값(0.05 / 0.02)으로 돕니다.
 
 **타겟 해석 방식:**
 - `target[0:3]` = TCP 위치 (x, y, z) (m)
 - `target[3:6]` = TCP 자세 (roll, pitch, yaw) (rad, ZYX 오일러)
 
 **핵심 기법:**
-- In-place Cholesky (LLT) — M(q) (nv×nv) 및 Λ⁻¹ (6×6) 분해, `solveInPlace` 로 RT 동적 할당 없음
-- `.info()` 검사 — M/Λ⁻¹ 이 비-PD 이면 안전 fallback (τ = h, gravity+Coriolis hold) 으로 NaN 차단
+- In-place Cholesky (LLT) — M(q) (nv×nv) 분해 후 `compliance/task_dynamics.hpp` 가 Λ_S (6×6) 를 형성, 버퍼 선할당으로 RT 동적 할당 없음
+- `.info()` + `allFinite()` 이중 검사 — 비-PD 이면 안전 fallback (τ = h) 으로, 비유한 J 이면 `ok=false` 로 차단. `.info()` 만으로는 부족한 이유는 LLT 가 NaN 행렬에 Success 를 반환하고 σ_min 마저 깨끗한 0 으로 세탁되기 때문
+- 출력단 non-finite 스크럽 — 형성 불가한 채널은 **0** 을 명령 (E-STOP 경로의 `GravityCompDampedHold` 와 동일 정책). clamp 는 NaN 을 그대로 통과시키므로 clamp *앞*에 둔다
 - 동적 일관 널공간 사영 — 여유자유도(nv>6) posture 이차 태스크
 - SO(3) 로그 맵 / SE(3) 궤적 보간 / ZYX 오일러 규약
 
@@ -437,7 +444,8 @@ operational_space_controller:
   kd_pos: [20.0, 20.0, 20.0]
   kp_rot: [50.0, 50.0, 50.0]
   kd_rot: [10.0, 10.0, 10.0]
-  damping: 0.01
+  max_damping: 0.05       # λ_max — §6.5 램프의 상한
+  singularity_threshold: 0.02  # σ₀ — 이 아래에서 감쇠가 붙기 시작
   null_kd: 1.0            # nv>6 여유자유도 널공간 damping
   estop_damping: 5.0     # 토크 E-STOP 홀드 감쇠 D [N·m·s/rad] (τ=ĝ(q)−D·q̇)
   trajectory_speed: 0.1
@@ -781,9 +789,9 @@ RTC_REGISTER_CONTROLLER(
 | 파일 | 설명 |
 |------|------|
 | `examples/controllers/indirect/p_controller.yaml` | P 제어기: kp 게인, command_type, 토픽 매핑 |
-| `examples/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, damping, null_kp, 영공간/6DOF 설정, 토픽 매핑 |
+| `examples/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, §6.5 DLS (`max_damping`/`singularity_threshold`), null_kp, 영공간/6DOF 설정, 토픽 매핑 |
 | `examples/controllers/direct/joint_pd_controller.yaml` | JointPD 제어기: kp/kd 게인, 중력/코리올리 보상, 궤적 속도, 토픽 매핑 |
-| `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, damping, 중력 보상, 궤적 속도, 토픽 매핑 |
+| `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, §6.5 DLS (`max_damping`/`singularity_threshold`), 널공간 posture, 궤적 속도, 토픽 매핑 |
 
 각 YAML 파일은 `topics` 섹션에서 디바이스별 ROS2 토픽 구독/발행 매핑도 정의합니다. 이 매핑은 `RTControllerInterface::LoadConfig()`에서 공통 파싱됩니다.
 
