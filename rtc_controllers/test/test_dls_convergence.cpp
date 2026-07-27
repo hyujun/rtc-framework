@@ -99,8 +99,20 @@ constexpr double kStructuralTolerance = 1e-9;
 // component would report a huge "relative" error for a last-bit difference and
 // make the bound untestable. Scaling by ‖·‖_∞ (floored at 1) asks the question
 // that matters: is the disagreement small compared to what this lane carries?
+//
+// The size check must be FATAL, and it cannot be ASSERT_EQ because this returns
+// a double. A non-fatal EXPECT records the failure and then falls through into
+// `a - b`, whose only size check is an eigen_assert — compiled out under NDEBUG,
+// which is this repo's default build (design-principles.md §코어의 형태). The
+// subtraction would then read past the shorter buffer and report adjacent memory
+// as the "worst scaled difference". Returning infinity makes every downstream
+// tolerance comparison fail on purpose, so a mis-sized oracle is loud.
 [[nodiscard]] double MaxScaledDiff(const Eigen::VectorXd& a, const Eigen::VectorXd& b) {
-  EXPECT_EQ(a.size(), b.size());
+  if (a.size() != b.size()) {
+    ADD_FAILURE() << "MaxScaledDiff operands differ in size (" << a.size() << " vs " << b.size()
+                  << ") — the comparison below would read out of bounds under NDEBUG";
+    return std::numeric_limits<double>::infinity();
+  }
   const double scale = std::max({1.0, a.cwiseAbs().maxCoeff(), b.cwiseAbs().maxCoeff()});
   return (a - b).cwiseAbs().maxCoeff() / scale;
 }

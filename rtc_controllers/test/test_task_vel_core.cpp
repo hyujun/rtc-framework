@@ -284,6 +284,7 @@ class ClikShim {
     traj_dq_ = Eigen::VectorXd::Zero(nv_);
     null_dq_dev_ = Eigen::VectorXd::Zero(nv_);
     qdot_null_ = Eigen::VectorXd::Zero(nv_);
+    null_contrib_ = Eigen::VectorXd::Zero(nv_);  // instrumentation only, see peak_null_
     ik_6d_.Resize(nv_, 6);
     ik_3d_.Resize(nv_, 3);
   }
@@ -536,8 +537,20 @@ class ClikShim {
       }
     }
     last_nullspace_active_ = nullspace_active;
-    if (nullspace_active)
-      peak_null_ = std::max(peak_null_, qdot_null_.cwiseAbs().maxCoeff());
+    if (nullspace_active) {
+      // Measure the term that actually reaches dq_ — the PROJECTED posture
+      // velocity N·(kp·Δq) — not the pre-projection kp·Δq. The vacuity guard
+      // this feeds asserts "the branch fired but contributed ~0", and only the
+      // projected form can answer that: N annihilates whatever component of Δq
+      // lies in the row space of J_pos, so on a fixture where that is all of it
+      // the branch fires, contributes exactly nothing, and the pre-projection
+      // reading is still large. Before #236 S3b the gain multiplied AFTER the
+      // projection, so the adapter's own `null_dq_` WAS the projected term and
+      // sampling it was correct; moving the gain in front of N is what quietly
+      // turned this line into a different measurement.
+      null_contrib_.noalias() = ik_3d_.NullspaceProjector() * qdot_null_;
+      peak_null_ = std::max(peak_null_, null_contrib_.cwiseAbs().maxCoeff());
+    }
 
     // ── Scatter, integrate (adapter :476-504). nc0 == nv here, so nq == nc0
     //     and the [nq, nc0) tail policy is not exercised — that tail is binding
@@ -583,6 +596,7 @@ class ClikShim {
 
   Eigen::MatrixXd J_full_, J_pos_;
   Eigen::VectorXd dq_, desired_q_, traj_dq_, null_dq_dev_, qdot_null_;
+  Eigen::VectorXd null_contrib_;  ///< N·q̇_null — instrumentation, not part of the mirrored law
   rtc::compliance::DifferentialIk ik_6d_;
   rtc::compliance::DifferentialIk ik_3d_;
 
