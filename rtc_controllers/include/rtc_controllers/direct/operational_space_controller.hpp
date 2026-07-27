@@ -168,7 +168,18 @@ class OperationalSpaceController final : public RTControllerInterface {
   /// agent_docs/testing-debug.md §Revert-verification records as its third
   /// type, and the same answer TaskAdmittanceController reached with
   /// diag.nullspace_active). Non-RT reads only; dies with this adapter in S7.
-  [[nodiscard]] bool nullspace_active() const noexcept { return nullspace_active_; }
+  ///
+  /// Atomic because "non-RT reads only" still means TWO threads: the RT tick
+  /// writes it and an off-RT caller reads it, which on a plain bool is a data
+  /// race by the memory model even though every value it can hold is valid.
+  /// Relaxed is the right order — this flag orders nothing else, and a relaxed
+  /// load/store compiles to the same instruction the plain bool did, so the RT
+  /// path pays nothing. The sibling controllers publish the same gate through
+  /// their SeqLock diagnostics POD; this adapter has none and dies in S7, so it
+  /// gets the cheapest race-free spelling rather than new infrastructure.
+  [[nodiscard]] bool nullspace_active() const noexcept {
+    return nullspace_active_.load(std::memory_order_relaxed);
+  }
 
  private:
   // ── Pinocchio via rtc_urdf_bridge ──────────────────────────────────
@@ -213,8 +224,8 @@ class OperationalSpaceController final : public RTControllerInterface {
   Eigen::LLT<Eigen::MatrixXd> llt_M_;  ///< M(q) factor (nv×nv, SPD)
 
   /// Last tick's posture-gate state — see nullspace_active(). Written on the RT
-  /// tick, read non-RT by tests only.
-  bool nullspace_active_{false};
+  /// tick, read non-RT by tests only (hence atomic, relaxed on both sides).
+  std::atomic<bool> nullspace_active_{false};
 
   // RT-thread-only working copies materialised from the SeqLock POD at the
   // start of each Compute(). Not shared across threads.

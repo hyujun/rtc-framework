@@ -71,8 +71,10 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <map>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace {
@@ -724,6 +726,45 @@ TEST(OscAdapter, PostureGateIsWiredToTheGains) {
   rtc::testing::FillSweep(state, 7, 3, 0.001);
   (void)ctrl.Compute(state);
   EXPECT_FALSE(ctrl.nullspace_active()) << "the gate must close again";
+}
+
+TEST(OscAdapter, PostureGateReportsClosedOnAnEstoppedTick) {
+  // The window has to describe THIS tick or it is not a window. Compute() takes
+  // the E-STOP branch on an early return that sits BEFORE the reset feeding the
+  // gate, so a hold tick used to inherit the previous active tick's `true` and
+  // keep reporting it for the whole stop. The consequence is specific: this flag
+  // is the only observable for a gate that is numerically inert when closed, so
+  // a mutation that kept the posture task running through an E-STOP would leave
+  // both the torque lanes AND the flag looking exactly as they do now.
+  rtc::OperationalSpaceController::Gains gains;
+  gains.null_kp = 3.0;  // gate open on the redundant fixture
+  rtc::OperationalSpaceController ctrl(rtc::testing::Serial7dof(), gains);
+  // The hold path maps max_joint_torque_ as an exactly nv-sized Eigen vector and
+  // OnDeviceConfigsSet is what grows it to nv — the other tests here never reach
+  // ComputeEstop, so this is the first that needs the device configs wired.
+  {
+    rtc::DeviceNameConfig cfg;
+    cfg.device_name = "arm";
+    std::map<std::string, rtc::DeviceNameConfig> configs;
+    configs.emplace("arm", cfg);
+    ctrl.SetDeviceNameConfigs(configs);
+  }
+
+  rtc::ControllerState state = rtc::testing::MakeState(7, 0.001);
+  rtc::testing::FillSweep(state, 7, 0, 0.001);
+  (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.nullspace_active()) << "fixture must open the gate first, or this pins nothing";
+
+  ctrl.TriggerEstop();
+  rtc::testing::FillSweep(state, 7, 1, 0.001);
+  (void)ctrl.Compute(state);
+  EXPECT_FALSE(ctrl.nullspace_active())
+      << "an E-STOP tick runs no posture task — the gate observable must say so";
+
+  ctrl.ClearEstop();
+  rtc::testing::FillSweep(state, 7, 2, 0.001);
+  (void)ctrl.Compute(state);
+  EXPECT_TRUE(ctrl.nullspace_active()) << "recovery must reopen the gate, not latch it closed";
 }
 
 TEST(ClikAdapter, HoldsInsteadOfCommandingNaNWhenTheJacobianGoesNonFinite) {

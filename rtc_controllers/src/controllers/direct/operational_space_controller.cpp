@@ -194,6 +194,13 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     while (pending_targets_.Pop(discarded)) {
       // discard: a command issued during E-STOP must not survive recovery
     }
+    // The gate observable describes THIS tick, and this tick runs no posture
+    // task at all — the reset below sits after the early return, so without
+    // this the accessor keeps reporting the last active tick's `true` for the
+    // whole hold. That matters precisely because the flag is the only window on
+    // a gate that is numerically inert when closed: a mutation leaving the
+    // posture task running across an E-STOP would be invisible to it.
+    nullspace_active_.store(false, std::memory_order_relaxed);
     return ComputeEstop(state, gains);
   }
 
@@ -436,7 +443,7 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   // reports Success on a matrix full of NaN, so the helper's own allFinite() gate
   // on J_S is what actually turns a NaN joint state into r.ok == false here.
   bool dyn_ok = true;
-  nullspace_active_ = false;
+  nullspace_active_.store(false, std::memory_order_relaxed);
   llt_M_.compute(M_);
   dyn_ok = dyn_ok && (llt_M_.info() == Eigen::Success);
 
@@ -463,8 +470,9 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     // J M⁻¹ Jᵀ is rank-deficient and Nᵀ is NOT small — running the posture task
     // there would inject τ₀ into the primary Cartesian task (issue #172). Gate on
     // redundancy so a reduced-DOF arm on default null_kd is not coupled.
-    nullspace_active_ = (gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6;
-    if (nullspace_active_) {
+    const bool nullspace_active = (gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6;
+    nullspace_active_.store(nullspace_active, std::memory_order_relaxed);
+    if (nullspace_active) {
       // Materialise the reference with this binding's tail policy BEFORE the
       // law sees it: a channel with no configured safe_position centres on 0
       // rad, which is a posture reference, not "no posture task". The law's own
