@@ -105,12 +105,23 @@ class TaskImpedanceController final : public RTControllerInterface {
 
   // ── Gain / feature configuration (trivially copyable POD for SeqLock) ──────
   struct Gains {
-    // Cartesian stiffness/damping, per axis. K_p is a stiffness [N/m or N·m/rad],
-    // K_d a damping [N·s/m or N·m·s/rad] — NOT the OSC acceleration-form gains.
-    std::array<double, 3> kp_pos{{200.0, 200.0, 200.0}};  ///< translation stiffness
-    std::array<double, 3> kd_pos{{28.0, 28.0, 28.0}};     ///< translation damping (≈2√kp)
-    std::array<double, 3> kp_rot{{20.0, 20.0, 20.0}};     ///< rotation stiffness (FULL_SE3 only)
-    std::array<double, 3> kd_rot{{9.0, 9.0, 9.0}};        ///< rotation damping (FULL_SE3 only)
+    /// Cartesian stiffness/damping, per axis — the §6.2 law's OWN parameter POD,
+    /// nested rather than re-declared. K_p is a stiffness [N/m or N·m/rad], K_d a
+    /// damping [N·s/m or N·m·s/rad] — NOT the OSC acceleration-form gains.
+    ///
+    /// It used to be four loose arrays here carrying the SAME defaults as
+    /// compliance::ImpedanceParams (200 / 28 / 20 / 9), so the copy was a second
+    /// definition of one set of numbers, and every RT tick rebuilt the POD
+    /// POSITIONALLY — `ImpedanceParams{kp_pos, kd_pos, kp_rot, kd_rot}` — a
+    /// silent dependency on the core's field ORDER that no test could see.
+    /// Nesting removes both (#236 S6b), and the sibling
+    /// CascadedComplianceController::Gains was already written this way.
+    ///
+    /// Nesting is only a de-duplication when the defaults MATCH; where they do
+    /// not, it just renames the second definition (#236 D-S5b, and see
+    /// agent_docs/design-principles.md §코어의 형태). The YAML keys are unchanged
+    /// (`kp_pos:` …) — schema changes are G2/S8's business.
+    compliance::ImpedanceParams impedance{};
 
     // Nullspace posture task (bites only when nv > task DoF m). Kd ≥ 2√Kp is
     // enforced in LoadConfig (§6.4); Kp = 0 with Kd > 0 (pure damping) is allowed

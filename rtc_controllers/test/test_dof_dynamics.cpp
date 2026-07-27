@@ -623,10 +623,10 @@ TEST(JointOrder, TaskImpedanceTaskTwistUsesReorderedVelocity) {
   const Eigen::VectorXd ref = RefDampingPlusGravity(urdf, kQPin, kQdPin);
 
   rtc::TaskImpedanceController::Gains g;
-  g.kp_pos = {0.0, 0.0, 0.0};
-  g.kp_rot = {0.0, 0.0, 0.0};
-  g.kd_pos = {kRefKd, kRefKd, kRefKd};
-  g.kd_rot = {kRefKd, kRefKd, kRefKd};
+  g.impedance.kp_pos = {0.0, 0.0, 0.0};
+  g.impedance.kp_rot = {0.0, 0.0, 0.0};
+  g.impedance.kd_pos = {kRefKd, kRefKd, kRefKd};
+  g.impedance.kd_rot = {kRefKd, kRefKd, kRefKd};
   g.activation_ramp_time = 0.0;  // α ≡ 1
   g.max_torque_rate = 1.0e12;    // §10.5 inert: the command IS the control law
   g.joint_limit_kp = 0.0;

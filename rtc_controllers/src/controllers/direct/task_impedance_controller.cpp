@@ -411,9 +411,8 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   // The §6.2 law itself lives in compliance/impedance_law.hpp — shared with the
   // §7.6 cascade rather than copied into it (#236 D18, P5).
   J_S_ = J_full_.topRows(m);
-  const Eigen::Matrix<double, 6, 1> f_task = compliance::ComputeImpedanceForce(
-      compliance::ImpedanceParams{gains.kp_pos, gains.kd_pos, gains.kp_rot, gains.kd_rot}, e,
-      tcp_vel_, nu_d, alpha, m);
+  const Eigen::Matrix<double, 6, 1> f_task =
+      compliance::ComputeImpedanceForce(gains.impedance, e, tcp_vel_, nu_d, alpha, m);
 
   // ── Joint-space gravity ĝ(q) (always needed: comp + E-STOP hold) ─────────
   handle_->ComputeGeneralizedGravity(q_span);
@@ -790,10 +789,10 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
       for (std::size_t i = 0; i < 3; ++i)
         arr[i] = n[i].as<double>();
   };
-  load3(cfg["kp_pos"], g.kp_pos);
-  load3(cfg["kd_pos"], g.kd_pos);
-  load3(cfg["kp_rot"], g.kp_rot);
-  load3(cfg["kd_rot"], g.kd_rot);
+  load3(cfg["kp_pos"], g.impedance.kp_pos);
+  load3(cfg["kd_pos"], g.impedance.kd_pos);
+  load3(cfg["kp_rot"], g.impedance.kp_rot);
+  load3(cfg["kd_rot"], g.impedance.kd_rot);
   if (cfg["nullspace_stiffness"])
     g.nullspace_kp = cfg["nullspace_stiffness"].as<double>();
   if (cfg["nullspace_damping"])
