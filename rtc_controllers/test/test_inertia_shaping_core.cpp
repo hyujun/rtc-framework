@@ -514,9 +514,11 @@ class ImpedanceShim {
   // inert by the caller, which is what keeps the comparison meaningful).
   Eigen::VectorXd Step(const TaskImpedanceController::Gains& g, bool inertia_shaping,
                        const rtc::ControllerState& state, const std::array<double, 6>& f_lwa) {
-    // Mirrors the adapter's own local: identical to m_, stated so the compiler
-    // can see the bound the selection matrix guarantees (without it the fixed
-    // 6-vector head below draws a false -Warray-bounds on its vectorised load).
+    // Mirrors the adapter's own local, and for the same reason: a -Warray-bounds
+    // fix, NOT part of the contract this file compares. m_ is fixed at 3 or 6 by
+    // construction, so the clamp cannot bite in either place — it exists only so
+    // the compiler can see the bound across the inlined helper. Nothing in the
+    // bitwise comparison depends on it.
     const int m = std::clamp(m_, 0, 6);
     const auto& dev0 = state.devices[0];
     std::array<double, kMaxDeviceChannels> q_buf{};

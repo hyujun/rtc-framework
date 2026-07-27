@@ -273,10 +273,13 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   }
 
   const int nv = handle_->nv();
-  // The task dimension of THIS tick. Identical to m_ (the selection matrix
-  // fixes it at 3 or 6), stated locally because GCC cannot see that bound
-  // across the inlined §6.3 helper: without it the fixed 6-vector heads below
+  // The task dimension of THIS tick. Identical to m_ — the ctor fixes m_ at 3 or
+  // 6 from the selection and it is const — so this clamp can never bite. It is a
+  // WARNING FIX, not a bound anyone relies on: GCC cannot see m_'s range across
+  // the inlined §6.3 helper, and without the local the fixed 6-vector heads below
   // (f_cmd.head, e.head) draw a false -Warray-bounds on their vectorised load.
+  // Read it as such — an out-of-range m_ would be a construction bug, and
+  // truncating it here would hide that rather than diagnose it.
   const int m = std::clamp(m_, 0, 6);
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
 
@@ -403,7 +406,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   const double alpha = (ramp <= 0.0) ? 1.0 : std::min(1.0, activation_elapsed_ / ramp);
 
   // ── Selection: J_S = S·J (linear rows first in [linear;angular]) ─────────
-  // f_task is fixed-size (stack) so Compute stays heap-free; only head(m_) used.
+  // f_task is fixed-size (stack) so Compute stays heap-free; only head(m) used.
   // The §6.2 law itself lives in compliance/impedance_law.hpp — shared with the
   // §7.6 cascade rather than copied into it (#236 D18, P5).
   J_S_ = J_full_.topRows(m);
@@ -435,7 +438,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
       (nv > m) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
   const bool inertia_shaping = (formulation_ == Formulation::kInertiaShaping);
   const bool need_task_dynamics = nullspace_active || inertia_shaping;
-  // f_cmd is the bracketed task force of §6.2 / §6.3; only head(m_) is used and
+  // f_cmd is the bracketed task force of §6.2 / §6.3; only head(m) is used and
   // it is fixed-size (stack) so Compute stays heap-free.
   Eigen::Matrix<double, 6, 1> f_cmd = f_task;
   if (need_task_dynamics) {
@@ -514,11 +517,11 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   saturation_elapsed_ = safety.saturated ? (saturation_elapsed_ + dt) : 0.0;
   compliance::ComplianceFaults faults;
   faults.nan_inf = !safety.finite || !dyn_ok;
-  // Bound only the REGULATED task DoF: under TRANSLATION_ONLY (m_=3) the rotation
+  // Bound only the REGULATED task DoF: under TRANSLATION_ONLY (m = 3) the rotation
   // rows of `e` are left to the soft nullspace posture task and may drift by
   // design, so folding them into the norm would spuriously latch SAFE_STOP even
-  // while translation tracking is perfect. e.head(m_) == the full 6D norm for
-  // FULL_SE3 (m_=6), so this is a no-op there.
+  // while translation tracking is perfect. e.head(m) == the full 6D norm for
+  // FULL_SE3 (m = 6), so this is a no-op there.
   faults.pose_error_exceeded = e.head(m).norm() > gains.pose_error_limit;
   // The σ_min faults follow the SAME widened gate as Λ_S itself: §6.5's
   // singularity exposure is a property of USING Λ_S, and §6.3 uses it whether or
