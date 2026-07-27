@@ -210,6 +210,24 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_task_vel_core PRIVATE -Wno-mismatched-new-delete)
 
+  # #236 S4 golden-vector suite for the §6.3 inertia-shaping core: bitwise
+  # against a literal copy of the pre-extraction member (which keeps the
+  # Eigen::MatrixXd scratch, so the suite MEASURES that D-S4a's max-size scratch
+  # is bit-inert instead of inheriting the probe's claim) AND against the live
+  # TaskImpedanceController across selection × Λ_d × clamp, plus the activation
+  # ramp that scales the core's f_ext input. The adapter exposes no f_cmd, so the
+  # shim replicates the whole τ tail and compares the final joint torque. The RT
+  # gate is two complementary sensors as in S1/S2a/S3a — the shared global
+  # operator-new gate (hence ${rtc_controllers_test_include} and the same
+  # program-wide -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen
+  # tripwire (${rtc_base_test_include}), which is the only one that can see the
+  # max-size scratch regressing to a heap-allocating dynamic type.
+  ament_add_gtest(test_inertia_shaping_core test/test_inertia_shaping_core.cpp)
+  target_link_libraries(test_inertia_shaping_core rtc_controllers)
+  target_include_directories(test_inertia_shaping_core PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_inertia_shaping_core PRIVATE -Wno-mismatched-new-delete)
+
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
   target_include_directories(test_task_impedance_controller PRIVATE

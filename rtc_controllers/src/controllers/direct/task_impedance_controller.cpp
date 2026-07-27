@@ -81,9 +81,6 @@ void TaskImpedanceController::InitFromModel(std::shared_ptr<const pinocchio::Mod
   qdot_dev_ = Eigen::VectorXd::Zero(nv);
   grav_dev_ = Eigen::VectorXd::Zero(nv);
   llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv);
-  lambda_d_ = Eigen::MatrixXd::Identity(m_, m_);
-  b_transp_ = Eigen::MatrixXd::Identity(m_, m_);
-  llt_lambda_d_ = Eigen::LLT<Eigen::MatrixXd>(m_);
   dyn_.Resize(nv, m_);
 
   // Gravity comes from the model, never a hard-coded 9.81 down −Z: this package
@@ -242,90 +239,6 @@ Eigen::Matrix<double, 6, 1> TaskImpedanceController::UpdateExternalWrench(
   return f_lwa;
 }
 
-// ── §6.3 inertia shaping ─────────────────────────────────────────────────────
-
-void TaskImpedanceController::ApplyInertiaShaping(const Gains& gains,
-                                                  const Eigen::Matrix<double, 6, 1>& f_task,
-                                                  const Eigen::Matrix<double, 6, 1>& f_ext,
-                                                  Eigen::Matrix<double, 6, 1>& f_cmd,
-                                                  Diagnostics& diag) noexcept {
-  const Eigen::MatrixXd& lambda_s = dyn_.LambdaS();
-
-  // Λ_d. "natural" means Λ_d := Λ_S, which drives B to the identity through the
-  // real solve rather than by short-circuiting it — that is what makes T4.1 a
-  // test of this code path and not of an `if`.
-  if (gains.desired_inertia_natural) {
-    lambda_d_ = lambda_s;
-  } else {
-    lambda_d_.setZero();
-    for (int i = 0; i < m_; ++i)
-      lambda_d_(i, i) = gains.desired_inertia[static_cast<std::size_t>(i)];  // >0 (LoadConfig)
-  }
-
-  llt_lambda_d_.compute(lambda_d_);
-  if (llt_lambda_d_.info() != Eigen::Success) {
-    // Λ_d not factorable — Λ_S can lose definiteness at a singular pose even
-    // with the DLS. Degrade to B = I (i.e. the §6.2 law, which needs no Λ at
-    // all) instead of emitting a garbage shaping matrix; f_cmd already holds
-    // f_task. The σ_min faults below still fire on the underlying condition.
-    // Reported on its OWN flag: a numerical breakdown and the max_inertia_ratio
-    // clamp call for different operator responses.
-    diag.inertia_solve_failed = true;
-    return;
-  }
-
-  // Bᵀ = Λ_d⁻¹ Λ_S. Both operands are symmetric, so B = Λ_S Λ_d⁻¹ = (Bᵀ)ᵀ and
-  // B(i,j) reads as b_transp_(j,i) — no explicit transpose, no temporary.
-  b_transp_ = lambda_s;
-  llt_lambda_d_.solveInPlace(b_transp_);
-
-  // §5.2 MUST — bound ‖Λ_S Λ_d⁻¹‖. Enforced on the DEVIATION from identity:
-  // with s = (r_max − 1)/‖B − I‖∞ the clamped B_c = I + s(B − I) satisfies
-  // ‖B_c‖∞ ≤ ‖I‖∞ + s‖B − I‖∞ = r_max exactly. Clamping the deviation rather
-  // than scaling B keeps the map continuous AND leaves B = I untouched, so a
-  // neutral Λ_d = Λ_S can never be perturbed by the safety clamp (T4.1).
-  double dev_inf = 0.0;
-  for (int i = 0; i < m_; ++i) {
-    double row = 0.0;
-    for (int j = 0; j < m_; ++j)
-      row += std::abs(b_transp_(j, i) - (i == j ? 1.0 : 0.0));
-    dev_inf = std::max(dev_inf, row);
-  }
-  const double ratio_max = std::max(1.0, gains.max_inertia_ratio);
-  double s = 1.0;
-  if (dev_inf > ratio_max - 1.0) {
-    s = (ratio_max - 1.0) / dev_inf;  // dev_inf > ratio_max−1 ≥ 0 ⇒ dev_inf > 0
-    diag.inertia_clamped = true;
-  }
-
-  // f_cmd = B·f_task + (B − I)·f_ext, component-wise over the m_ task rows.
-  //
-  // SIGN BRIDGE — the design spec writes this term as (B − I)(−S·f_ext) because
-  // its f_ext is the wrench the ROBOT applies on the ENVIRONMENT. This package's
-  // input contract is the opposite convention (external_wrench.hpp: positive =
-  // the wrench the environment applies ON the robot, which is what an F/T sensor
-  // reads and what the whole conditioning chain is built on), so substituting our
-  // f_ext into the spec's expression flips it once. The physics fixes the answer
-  // without appealing to either convention: at Λ_d → ∞ (B → 0) the arm must be
-  // immovable under an external push, which needs f_cmd → −f_ext so that
-  // f_cmd + f_ext = 0 in Λν̇ = f_cmd + f_ext. Only the form below has that limit;
-  // the negated one yields +f_ext, i.e. twice the unshaped compliance exactly
-  // where the operator asked for none. Pinned by
-  // HeavyDesiredInertiaCancelsTheExternalWrench.
-  //
-  // Explicit loops (m_ ≤ 6) rather than an Eigen expression: fixed-size,
-  // provably heap-free, and no `auto`-aliasing trap (RT-1 / RT-5).
-  for (int i = 0; i < m_; ++i) {
-    double acc = 0.0;
-    for (int j = 0; j < m_; ++j) {
-      const double eye = (i == j) ? 1.0 : 0.0;
-      const double b_ij = eye + s * (b_transp_(j, i) - eye);
-      acc += b_ij * f_task(j) + (b_ij - eye) * f_ext(j);
-    }
-    f_cmd(i) = acc;
-  }
-}
-
 // ── RTControllerInterface ────────────────────────────────────────────────────
 
 ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) noexcept {
@@ -360,6 +273,14 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   }
 
   const int nv = handle_->nv();
+  // The task dimension of THIS tick. Identical to m_ — the ctor fixes m_ at 3 or
+  // 6 from the selection and it is const — so this clamp can never bite. It is a
+  // WARNING FIX, not a bound anyone relies on: GCC cannot see m_'s range across
+  // the inlined §6.3 helper, and without the local the fixed 6-vector heads below
+  // (f_cmd.head, e.head) draw a false -Warray-bounds on their vectorised load.
+  // Read it as such — an out-of-range m_ would be a construction bug, and
+  // truncating it here would hide that rather than diagnose it.
+  const int m = std::clamp(m_, 0, 6);
   const double dt = (state.dt > 0.0) ? state.dt : GetDefaultDt();
 
   // ── Copy joint state (device order) ─────────────────────────────────────
@@ -485,13 +406,13 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   const double alpha = (ramp <= 0.0) ? 1.0 : std::min(1.0, activation_elapsed_ / ramp);
 
   // ── Selection: J_S = S·J (linear rows first in [linear;angular]) ─────────
-  // f_task is fixed-size (stack) so Compute stays heap-free; only head(m_) used.
+  // f_task is fixed-size (stack) so Compute stays heap-free; only head(m) used.
   // The §6.2 law itself lives in compliance/impedance_law.hpp — shared with the
   // §7.6 cascade rather than copied into it (#236 D18, P5).
-  J_S_ = J_full_.topRows(m_);
+  J_S_ = J_full_.topRows(m);
   const Eigen::Matrix<double, 6, 1> f_task = compliance::ComputeImpedanceForce(
       compliance::ImpedanceParams{gains.kp_pos, gains.kd_pos, gains.kp_rot, gains.kd_rot}, e,
-      tcp_vel_, nu_d, alpha, m_);
+      tcp_vel_, nu_d, alpha, m);
 
   // ── Joint-space gravity ĝ(q) (always needed: comp + E-STOP hold) ─────────
   handle_->ComputeGeneralizedGravity(q_span);
@@ -514,10 +435,10 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   double sigma_min = std::numeric_limits<double>::infinity();
   double lambda_sq = 0.0;
   const bool nullspace_active =
-      (nv > m_) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
+      (nv > m) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
   const bool inertia_shaping = (formulation_ == Formulation::kInertiaShaping);
   const bool need_task_dynamics = nullspace_active || inertia_shaping;
-  // f_cmd is the bracketed task force of §6.2 / §6.3; only head(m_) is used and
+  // f_cmd is the bracketed task force of §6.2 / §6.3; only head(m) is used and
   // it is fixed-size (stack) so Compute stays heap-free.
   Eigen::Matrix<double, 6, 1> f_cmd = f_task;
   if (need_task_dynamics) {
@@ -536,8 +457,17 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
       dyn_ok = r.ok;
       sigma_min = r.sigma_min;
       lambda_sq = r.lambda_sq;
-      if (dyn_ok && inertia_shaping)
-        ApplyInertiaShaping(gains, f_task, f_ext, f_cmd, diag);
+      if (dyn_ok && inertia_shaping) {
+        // §6.3 itself is compliance/inertia_shaping.hpp (#236 S4) — the binding
+        // hands it Λ_S rather than the TaskDynamics that produced it, so the law
+        // stays free of the S2b convergence decision. Λ_S is valid here by the
+        // dyn_ok gate, which is that helper's precondition.
+        const compliance::InertiaShapingResult shaped =
+            compliance::ComputeShapedTaskForce(gains.inertia, dyn_.LambdaS(), f_task, f_ext, m);
+        f_cmd = shaped.f_cmd;
+        diag.inertia_solve_failed = shaped.solve_failed;
+        diag.inertia_clamped = shaped.clamped;
+      }
       if (dyn_ok && nullspace_active) {
         for (int i = 0; i < nv; ++i)
           tau_posture_dev_(i) =
@@ -557,7 +487,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   // stays free of task-space singularities (§6.5). Under kInertiaShaping f_cmd
   // carries the Λ_S Λ_d⁻¹ factor and that immunity is gone — which is exactly why
   // the σ_min faults below are re-armed for it.
-  tau_.noalias() = J_S_.transpose() * f_cmd.head(m_);
+  tau_.noalias() = J_S_.transpose() * f_cmd.head(m);
   if (dyn_ok && nullspace_active)
     tau_.noalias() += alpha * tau_null_;
 
@@ -587,12 +517,12 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   saturation_elapsed_ = safety.saturated ? (saturation_elapsed_ + dt) : 0.0;
   compliance::ComplianceFaults faults;
   faults.nan_inf = !safety.finite || !dyn_ok;
-  // Bound only the REGULATED task DoF: under TRANSLATION_ONLY (m_=3) the rotation
+  // Bound only the REGULATED task DoF: under TRANSLATION_ONLY (m = 3) the rotation
   // rows of `e` are left to the soft nullspace posture task and may drift by
   // design, so folding them into the norm would spuriously latch SAFE_STOP even
-  // while translation tracking is perfect. e.head(m_) == the full 6D norm for
-  // FULL_SE3 (m_=6), so this is a no-op there.
-  faults.pose_error_exceeded = e.head(m_).norm() > gains.pose_error_limit;
+  // while translation tracking is perfect. e.head(m) == the full 6D norm for
+  // FULL_SE3 (m = 6), so this is a no-op there.
+  faults.pose_error_exceeded = e.head(m).norm() > gains.pose_error_limit;
   // The σ_min faults follow the SAME widened gate as Λ_S itself: §6.5's
   // singularity exposure is a property of USING Λ_S, and §6.3 uses it whether or
   // not the robot is redundant. Under kJacobianTranspose the F2 narrowing is
@@ -918,12 +848,12 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
       if (!(v > 0.0))
         throw std::runtime_error(
             "TaskImpedanceController: desired_inertia entries must be > 0 (Λ_d must be SPD)");
-      g.desired_inertia[i] = v;
+      g.inertia.desired_inertia[i] = v;
     }
-    g.desired_inertia_natural = false;
+    g.inertia.desired_inertia_natural = false;
   }
   if (cfg["max_inertia_ratio"])
-    g.max_inertia_ratio = std::max(1.0, cfg["max_inertia_ratio"].as<double>());
+    g.inertia.max_inertia_ratio = std::max(1.0, cfg["max_inertia_ratio"].as<double>());
 
   // ── External wrench source (§3.2.1). Disabled ⇒ A=NONE, slice-1 behaviour ──
   bool wrench_enabled = false;
