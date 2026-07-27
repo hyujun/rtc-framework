@@ -987,6 +987,41 @@ TEST(TaskAdmittanceController, MaxDampingFloorSurvivesSetGains) {
   EXPECT_GT(d.lambda_sq, 0.0) << "λ_max = 0 reached the DLS solve — J Jᵀ is left unregularised";
 }
 
+// ── #277: the posture gain gets the λ_max treatment, not the σ₀ one ─────────
+//
+// q̇₀ = K_pⁿ·(q_null − q) with K_pⁿ < 0 drives the posture AWAY from its target,
+// and N keeps that away from the Cartesian task — so it shows up as a slow
+// silent drift rather than a fault. The floor therefore sits in BOTH places:
+// LoadConfig, and the point of use, because set_gains() writes the POD straight
+// into the SeqLock and bypasses configure entirely (NUM-1).
+TEST(TaskAdmittanceController, NegativePostureGainIsFlooredAndTheFloorSurvivesSetGains) {
+  TaskAdmittanceController c(Urdf7());
+  c.LoadConfig(YAML::Load(TransparentYaml("nullspace_kp: -2.0\n")));
+  EXPECT_DOUBLE_EQ(c.get_gains().nullspace_kp, 0.0)
+      << "a divergent posture gain reached the gains POD";
+
+  // Positive is untouched — a floor, not a rewrite — and it opens the gate, so
+  // the negative case below is measured against a fixture that CAN report true.
+  c.LoadConfig(YAML::Load(TransparentYaml("nullspace_kp: 2.0\n")));
+  ASSERT_DOUBLE_EQ(c.get_gains().nullspace_kp, 2.0);
+  auto state = MakeState(Posture());
+  Send(c, Wrench6{{20.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  (void)c.Compute(state);
+  ASSERT_TRUE(c.GetDiagnosticsForTesting().nullspace_active)
+      << "the fixture never opens the posture gate — the negative case proves nothing";
+
+  // The set_gains() bypass. The gate is `nv > 6 && kp != 0`, so a floor applied
+  // only to the law's argument would hold it OPEN on a negative gain and push
+  // an all-zero q̇₀ through N; floored before the gate, negative reads as zero.
+  auto g = c.get_gains();
+  g.nullspace_kp = -2.0;  // exactly what LoadConfig just floored away
+  c.set_gains(g);
+  Send(c, Wrench6{{20.0, 0.0, 0.0, 0.0, 0.0, 0.0}});
+  (void)c.Compute(state);
+  EXPECT_FALSE(c.GetDiagnosticsForTesting().nullspace_active)
+      << "a negative posture gain held the gate open — the floor is configure-only";
+}
+
 TEST(TaskAdmittanceController, BiasCalibrationSuppressesTheWrenchUntilItCommits) {
   TaskAdmittanceController c(Urdf7());
   c.LoadConfig(YAML::Load(R"(

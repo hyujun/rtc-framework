@@ -479,7 +479,22 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     // J M⁻¹ Jᵀ is rank-deficient and Nᵀ is NOT small — running the posture task
     // there would inject τ₀ into the primary Cartesian task (issue #172). Gate on
     // redundancy so a reduced-DOF arm on default null_kd is not coupled.
-    const bool nullspace_active = (gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6;
+    // NUM-1 at the point of use (#277): LoadConfig floors both posture gains,
+    // but set_gains() writes the POD straight into the SeqLock and bypasses it.
+    // The floor is applied BEFORE the gate rather than only on the law's
+    // arguments: the gate tests `!= 0.0`, so flooring the law alone would leave
+    // a negative gain holding the gate OPEN while projecting an all-zero τ₀
+    // through Nᵀ — a Λ/Nᵀ block computed every tick for nothing, and a
+    // nullspace_active() that reports a posture task nobody asked for. A
+    // negative gain must behave exactly as 0 does: gate closed.
+    //
+    // Why 0 and not "reject": τ₀ = Kp·(q_ref − q) − Kd·q̇ with Kp < 0 pushes
+    // AWAY from q_ref, and Nᵀ keeps that away from the Cartesian task, so the
+    // posture drifts with every number finite and no fault raised. Kd < 0 is
+    // worse — negative damping injects energy into the redundant DOFs.
+    const double null_kp = std::max(0.0, gains.null_kp);
+    const double null_kd = std::max(0.0, gains.null_kd);
+    const bool nullspace_active = (null_kp != 0.0 || null_kd != 0.0) && nv > 6;
     nullspace_active_.store(nullspace_active, std::memory_order_relaxed);
     if (nullspace_active) {
       // q_ref_null_ already holds the reference, tail policy and all —
@@ -493,7 +508,7 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
       // duplicate of this expression goes with it. `q_ref` is an argument for
       // exactly this reason — the configured safe posture and the other callers'
       // measured seed are one law with two bindings.
-      joint::ComputePostureTorque(gains.null_kp, gains.null_kd,
+      joint::ComputePostureTorque(null_kp, null_kd,
                                   joint::PostureInputs{{q_ref_null_.data(), nvu}, q_span, v_span},
                                   nvu, {tau0_dev_.data(), nvu});
       // safe_position_/q_span/v_span are device-order; gather the posture torque
@@ -761,6 +776,16 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["null_kd"]) {
     g.null_kd = cfg["null_kd"].as<double>();
   }
+  // Both floored at 0 (#277): a negative Kp makes τ₀ = Kp·(q_safe − q) push away
+  // from the configured posture and a negative Kd injects energy, and Nᵀ keeps
+  // either from disturbing the Cartesian task — so the posture drifts silently.
+  // Unconditional rather than folded into the two parses above: when a key is
+  // ABSENT the value still arrives from the constructor or a previous
+  // set_gains(), and get_gains() after configure should report the gain Compute()
+  // will actually run. Compute() floors again at the point of use because
+  // set_gains() bypasses configure entirely (NUM-1) — as max_damping does.
+  g.null_kp = std::max(0.0, g.null_kp);
+  g.null_kd = std::max(0.0, g.null_kd);
   if (cfg["estop_damping"]) {
     // D ≥ 0: the torque E-STOP hold (#184) subtracts D·q̇ to bleed kinetic energy;
     // a negative D would inject energy (destabilising a safety stop).

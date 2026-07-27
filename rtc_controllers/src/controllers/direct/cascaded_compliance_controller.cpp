@@ -457,8 +457,14 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   bool dyn_ok = true;
   double sigma_min = std::numeric_limits<double>::infinity();
   double lambda_sq = 0.0;
-  const bool nullspace_active =
-      (nv > kTaskDim) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
+  // NUM-1 at the point of use (#277). LoadConfig has floored these two since the
+  // controller shipped — this is the half set_gains() bypasses, and it goes
+  // BEFORE the gate rather than only on the law's arguments: the gate tests
+  // `!= 0.0`, so flooring the law alone would hold the gate open on a negative
+  // gain and pay for the Λ/Nᵀ block every tick to project an all-zero τ₀.
+  const double nullspace_kp = std::max(0.0, gains.nullspace_kp);
+  const double nullspace_kd = std::max(0.0, gains.nullspace_kd);
+  const bool nullspace_active = (nv > kTaskDim) && (nullspace_kp != 0.0 || nullspace_kd != 0.0);
   // Re-evaluate the MUST-1 ratio whenever the gains it compares have CHANGED, not
   // only on activation: set_gains() / a re-LoadConfig write a new POD into the
   // SeqLock, and the published figure would otherwise keep describing the gain
@@ -504,7 +510,7 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
           // posture the OSC uses are one law with two bindings.
           const auto nvu = static_cast<std::size_t>(nv);
           joint::ComputePostureTorque(
-              gains.nullspace_kp, gains.nullspace_kd,
+              nullspace_kp, nullspace_kd,
               joint::PostureInputs{
                   {q_null_.data(), nvu}, {q_dev_.data(), nvu}, {qdot_dev_.data(), nvu}},
               nvu, {tau_posture_dev_.data(), nvu});
@@ -920,10 +926,16 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   }
 
   // ── Nullspace / DLS / safety / activation ────────────────────────────────
+  // The posture floors this controller has carried since it shipped — #277
+  // converged the other four onto them. Re-applied unconditionally below so an
+  // ABSENT key cannot let a constructor / set_gains() value through, and floored
+  // once more at the point of use because set_gains() bypasses configure (NUM-1).
   if (cfg["nullspace_stiffness"])
     g.nullspace_kp = std::max(0.0, num(cfg["nullspace_stiffness"], "nullspace_stiffness"));
   if (cfg["nullspace_damping"])
     g.nullspace_kd = std::max(0.0, num(cfg["nullspace_damping"], "nullspace_damping"));
+  g.nullspace_kp = std::max(0.0, g.nullspace_kp);
+  g.nullspace_kd = std::max(0.0, g.nullspace_kd);
   if (cfg["singularity_threshold"])
     g.singularity_threshold = std::max(compliance::kMinSigma0,
                                        num(cfg["singularity_threshold"], "singularity_threshold"));

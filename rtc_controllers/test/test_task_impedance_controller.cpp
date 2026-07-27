@@ -165,6 +165,89 @@ TEST(TaskImpedance, ConfigureRejectsTranslationOnlyZeroNullspace) {
   EXPECT_NO_THROW(ctrl_ok.LoadConfig(YAML::Node()));
 }
 
+// ── #277: the posture gains are floored, and the ORDER is what makes the two
+// rules downstream of them mean what they read as ──────────────────────────
+//
+// τ₀ = K_pⁿ·(q_ref − q) − K_dⁿ·q̇ with K_pⁿ < 0 pushes AWAY from the reference,
+// and Nᵀ keeps that away from the Cartesian task — so the arm's posture drifts
+// with every number finite and no fault raised. Two later steps read these
+// gains, and both used to read a negative one as something other than "less
+// than zero":
+//   • §6.4's correction is `if (kp > 0.0)`, so a negative K_pⁿ skipped the
+//     damping floor entirely — the configuration that most needs damping was
+//     the one that never got it.
+//   • §6.1's guard tests `kp == 0.0` while its message claims `> 0`, so a
+//     negative K_pⁿ walked through the check that exists precisely because
+//     TRANSLATION_ONLY leaves orientation to the null space.
+TEST(TaskImpedance, NegativeNullspaceGainsAreFlooredBeforeTheDampingAndSelectionRules) {
+  TaskImpedanceController::Gains gains;
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+  ctrl.LoadConfig(YAML::Load(R"(
+nullspace_stiffness: -30.0
+nullspace_damping: -1.0
+)"));
+  const auto g = ctrl.get_gains();
+  EXPECT_DOUBLE_EQ(g.nullspace_kp, 0.0) << "a divergent posture stiffness reached the gains POD";
+  EXPECT_DOUBLE_EQ(g.nullspace_kd, 0.0) << "negative damping injects energy into the null space";
+
+  // A positive pair is untouched — the floor must not be a rewrite. The §6.4
+  // correction is what proves the clamp runs BEFORE it: K_dⁿ is raised to
+  // 2√K_pⁿ, which only happens on the `kp > 0.0` branch.
+  ctrl.LoadConfig(YAML::Load(R"(
+nullspace_stiffness: 25.0
+nullspace_damping: 0.1
+)"));
+  const auto pos = ctrl.get_gains();
+  EXPECT_DOUBLE_EQ(pos.nullspace_kp, 25.0);
+  EXPECT_DOUBLE_EQ(pos.nullspace_kd, 2.0 * std::sqrt(25.0)) << "§6.4 floor K_dⁿ ≥ 2√K_pⁿ";
+
+  // §6.1, YAML path: negative → 0.0 → the guard fires, which is what §6.1 asked
+  // for all along. Before the floor this configure returned cleanly and left
+  // the only orientation authority TRANSLATION_ONLY has pointing the wrong way.
+  TaskImpedanceController::Gains zero;
+  zero.nullspace_kp = 0.0;
+  TaskImpedanceController trans(Urdf6(), zero, Sel::kTranslationOnly);
+  EXPECT_THROW(trans.LoadConfig(YAML::Load("nullspace_stiffness: -30.0")), std::runtime_error);
+
+  // §6.1, no-YAML path (`if (!cfg)`): same rule, and the gains it reads come
+  // from the constructor or set_gains(), neither of which passes the YAML floor.
+  TaskImpedanceController::Gains negative;
+  negative.nullspace_kp = -30.0;
+  TaskImpedanceController trans_no_cfg(Urdf6(), negative, Sel::kTranslationOnly);
+  EXPECT_THROW(trans_no_cfg.LoadConfig(YAML::Node()), std::runtime_error);
+}
+
+TEST(TaskImpedance, PostureFloorSurvivesSetGains) {
+  // set_gains() writes the Gains POD straight into the SeqLock, so a
+  // configure-time-only floor is bypassable by every caller holding the handle
+  // — the same hole MaxDampingFloorSurvivesSetGains pins for λ_max (#277).
+  //
+  // The posture GATE is what makes it observable. `kp != 0 || kd != 0` reads a
+  // negative gain as "posture requested", so flooring only the law's arguments
+  // would leave the gate open and drag the whole Λ_S/Nᵀ block in to project an
+  // all-zero τ₀. Floored before the gate, a negative gain reads exactly as 0.
+  TaskImpedanceController::Gains gains;
+  gains.nullspace_kp = 30.0;  // nv(7) > m(6) ⇒ a genuinely redundant null space
+  TaskImpedanceController ctrl(Urdf7(), gains, Sel::kFullSe3);
+
+  const std::vector<double> q(7, 0.2);
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+
+  // Non-vacuity: this fixture DOES open the gate on a positive gain. Without
+  // this the negative case below would pass on a fixture that can never open it.
+  (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "the fixture never opens the posture gate — the negative case proves nothing";
+
+  auto g = ctrl.get_gains();
+  g.nullspace_kp = -30.0;  // divergent stiffness, straight past configure
+  g.nullspace_kd = -1.0;   // negative damping — energy INTO the redundant DOFs
+  ctrl.set_gains(g);
+  (void)ctrl.Compute(state);
+  EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "a negative posture gain held the gate open — the floor is configure-only";
+}
+
 // ── Activation: re-seeds the desired pose to the measured state ─────────────
 TEST(TaskImpedance, ReactivationHoldsMeasured) {
   TaskImpedanceController::Gains gains;

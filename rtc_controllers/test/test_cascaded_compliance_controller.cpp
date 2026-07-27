@@ -384,6 +384,51 @@ TEST(CascadedCompliance, BandwidthReportFollowsARuntimeRetune) {
   EXPECT_LT(d.bandwidth_ratio, coupled.min_bandwidth_ratio);
 }
 
+// ── #277: the posture floor this controller already had, now at the point of
+// use as well ──────────────────────────────────────────────────────────────
+//
+// LoadConfig has floored both posture gains since the controller shipped — it
+// was the one of the five that got this right, and #277 converged the other
+// four onto it. What no controller had was the other half of NUM-1: set_gains()
+// writes the Gains POD straight into the SeqLock, so configure-time clamping
+// alone is bypassable by every caller holding the handle. τ₀ with K_pⁿ < 0
+// pushes away from the posture reference and K_dⁿ < 0 injects energy, and Nᵀ
+// keeps both off the Cartesian task, so neither raises a fault.
+TEST(CascadedCompliance, PostureFloorSurvivesSetGains) {
+  const std::vector<double> q(7, 0.25);
+  auto gains = InertSafetyGains();
+  gains.nullspace_kp = 5.0;  // nv(7) > 6 ⇒ a genuinely redundant null space
+  gains.nullspace_kd = 1.0;
+  CascadedComplianceController ctrl(Urdf7(), gains);
+  ctrl.SetControlRate(kRateHz);
+  ctrl.LoadConfig(YAML::Load(TransparentWrenchYaml()));
+  auto state = MakeState(7, q, std::vector<double>(7, 0.0));
+
+  // Non-vacuity: the fixture opens the gate on positive gains, so a false below
+  // means the floor closed it and not that it was never open.
+  (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "the fixture never opens the posture gate — the negative case proves nothing";
+
+  // The configure-time floor, pinned here because the other four controllers'
+  // tests now assert against this one as the reference form.
+  ctrl.LoadConfig(
+      YAML::Load(TransparentWrenchYaml("nullspace_stiffness: -5.0\nnullspace_damping: -1.0\n")));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kp, 0.0);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kd, 0.0);
+
+  // The bypass. The gate is `nv > 6 && (kp != 0 || kd != 0)`, so flooring only
+  // the law's arguments would hold it open and pay for the Λ/Nᵀ block every
+  // tick to project an all-zero τ₀.
+  auto negative = gains;
+  negative.nullspace_kp = -5.0;
+  negative.nullspace_kd = -1.0;
+  ctrl.set_gains(negative);
+  (void)ctrl.Compute(state);
+  EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().nullspace_active)
+      << "a negative posture gain held the gate open — the floor is configure-only";
+}
+
 // ── §7.6 MUST-3: what the compliant frame does when the force stops ─────────
 
 TEST(CascadedCompliance, StiffOuterLoopReturnsTheFrameToTheDesiredPose) {

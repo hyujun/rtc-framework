@@ -428,8 +428,15 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   bool dyn_ok = true;
   double sigma_min = std::numeric_limits<double>::infinity();
   double lambda_sq = 0.0;
-  const bool nullspace_active =
-      (nv > m) && (gains.nullspace_kp != 0.0 || gains.nullspace_kd != 0.0);
+  // NUM-1 at the point of use (#277): LoadConfig floors both posture gains, but
+  // set_gains() writes the POD straight into the SeqLock and bypasses it. Before
+  // the gate rather than only on the law's arguments — the gate tests `!= 0.0`,
+  // so flooring the law alone would hold the gate open on a negative gain and
+  // drag the whole Λ_S/Nᵀ block in (`need_task_dynamics` below) to project an
+  // all-zero τ₀. A negative gain must behave exactly as 0 does: gate closed.
+  const double nullspace_kp = std::max(0.0, gains.nullspace_kp);
+  const double nullspace_kd = std::max(0.0, gains.nullspace_kd);
+  const bool nullspace_active = (nv > m) && (nullspace_kp != 0.0 || nullspace_kd != 0.0);
   const bool inertia_shaping = (formulation_ == Formulation::kInertiaShaping);
   const bool need_task_dynamics = nullspace_active || inertia_shaping;
   // f_cmd is the bracketed task force of §6.2 / §6.3; only head(m) is used and
@@ -470,7 +477,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
         // measured seed here and the OSC's configured posture are one law.
         const auto nvu = static_cast<std::size_t>(nv);
         joint::ComputePostureTorque(
-            gains.nullspace_kp, gains.nullspace_kd,
+            nullspace_kp, nullspace_kd,
             joint::PostureInputs{
                 {q_null_.data(), nvu}, {q_dev_.data(), nvu}, {qdot_dev_.data(), nvu}},
             nvu, {tau_posture_dev_.data(), nvu});
@@ -770,9 +777,14 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   MaybeSelectSubModel();
   if (!cfg) {
-    // Even without YAML, enforce the §6.1 selection/nullspace invariant.
+    // Even without YAML, enforce the §6.1 selection/nullspace invariant. Tested
+    // against the FLOORED gain (#277), because that is the one Compute() runs:
+    // these gains arrive from the constructor or set_gains(), neither of which
+    // passes the YAML path's floor, and a negative Kp is worth strictly less
+    // than zero here — it drives the only orientation authority TRANSLATION_ONLY
+    // has in the divergent direction.
     const auto g0 = gains_lock_.Load();
-    if (selection_ == TaskSelection::kTranslationOnly && g0.nullspace_kp == 0.0)
+    if (selection_ == TaskSelection::kTranslationOnly && std::max(0.0, g0.nullspace_kp) == 0.0)
       throw std::runtime_error(
           "TaskImpedanceController: TRANSLATION_ONLY requires nullspace_stiffness > 0 (§6.1) — "
           "orientation is otherwise uncontrolled");
@@ -813,6 +825,22 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
     g.activation_ramp_time = cfg["activation_ramp_time"].as<double>();
   if (cfg["estop_damping"])
     g.estop_damping = std::max(0.0, cfg["estop_damping"].as<double>());
+
+  // Posture gains floored at 0 (#277), HERE — after the parse and before the two
+  // rules below, because the order is what makes those two mean what they read
+  // as, and unconditionally rather than inside the `if (cfg[…])` above, because
+  // when the key is ABSENT the value still arrives from the constructor or a
+  // previous set_gains() and both rules must judge the gain Compute() will run:
+  //   • §6.4's correction is `if (kp > 0.0)`, so a negative K_pⁿ skipped the
+  //     damping floor entirely — the configuration that most needs damping was
+  //     the one that never got it.
+  //   • §6.1's guard tests `kp == 0.0` while its message claims `> 0`, so a
+  //     negative K_pⁿ walked straight through the check that exists precisely
+  //     because TRANSLATION_ONLY leaves orientation to the null space.
+  // Compute() floors again at the point of use because set_gains() bypasses
+  // configure entirely (NUM-1) — the same treatment max_damping gets.
+  g.nullspace_kp = std::max(0.0, g.nullspace_kp);
+  g.nullspace_kd = std::max(0.0, g.nullspace_kd);
 
   // §6.4 nullspace damping floor K_dⁿ ≥ 2√K_pⁿ (also allows K_pⁿ=0 pure damping).
   if (g.nullspace_kp > 0.0)

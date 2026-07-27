@@ -530,6 +530,72 @@ singularity_threshold: 0.0
   EXPECT_GT(ctrl.get_gains().singularity_threshold, 0.0);
 }
 
+// ── #277: the null-space posture gain is floored at 0, in both places ───────
+//
+// q̇₀ = K_pⁿ·(q_target − q) with K_pⁿ < 0 drives the posture AWAY from its
+// target, and N keeps that off the Cartesian task — so it is a silent drift,
+// not a fault. This controller's gate is `enable_null_space && !control_6dof`
+// and never reads the gain, so unlike its four siblings there is no gate to
+// observe: the point-of-use floor is pinned by the OUTPUT instead, against an
+// explicit zero gain.
+TEST(ClikConfig, NegativePostureGainIsFlooredAndTheFloorSurvivesSetGains) {
+  const std::string urdf7 = rtc::test::TestUrdfPath("serial_7dof.urdf");
+  rtc::ClikController::Gains init;
+  init.enable_null_space = true;
+  init.control_6dof = false;  // the posture branch only runs on the 3-DOF task
+
+  rtc::ClikController cfg_only(urdf7, init);
+  cfg_only.LoadConfig(YAML::Load("null_kp: -0.8\n"));
+  EXPECT_DOUBLE_EQ(cfg_only.get_gains().null_kp, 0.0)
+      << "a divergent posture gain reached the gains POD";
+  cfg_only.LoadConfig(YAML::Load("null_kp: 0.8\n"));
+  EXPECT_DOUBLE_EQ(cfg_only.get_gains().null_kp, 0.8) << "a floor, not a rewrite";
+
+  // Three identical histories differing only in the gain written straight into
+  // the SeqLock — the path set_gains() opens past configure (NUM-1). The seed
+  // tick self-initialises null_target ← q, so the arm has to MOVE afterwards for
+  // the posture error to be nonzero; otherwise every gain gives the same output
+  // and the comparison below would hold for a controller with no floor at all.
+  auto run = [&](double null_kp) {
+    rtc::ClikController c(urdf7, init);
+    auto seed = MakeState(7);
+    for (std::size_t i = 0; i < 7; ++i) {
+      seed.devices[0].positions[i] = 0.1;
+    }
+    (void)c.Compute(seed);
+
+    auto g = c.get_gains();
+    g.null_kp = null_kp;
+    c.set_gains(g);
+
+    auto moved = MakeState(7);
+    for (std::size_t i = 0; i < 7; ++i) {
+      moved.devices[0].positions[i] = 0.3;  // q_target − q = −0.2 on every channel
+    }
+    return c.Compute(moved);
+  };
+
+  const auto zero = run(0.0);
+  const auto negative = run(-0.8);
+  const auto positive = run(0.8);
+
+  for (std::size_t i = 0; i < 7; ++i) {
+    EXPECT_DOUBLE_EQ(negative.devices[0].commands[i], zero.devices[0].commands[i])
+        << "ch " << i << ": a negative posture gain reached the law";
+  }
+
+  // Non-vacuity: the posture term DOES move this output, so the equality above
+  // is the floor doing its job and not a branch that never ran.
+  bool positive_differs = false;
+  for (std::size_t i = 0; i < 7; ++i) {
+    if (positive.devices[0].commands[i] != zero.devices[0].commands[i]) {
+      positive_differs = true;
+    }
+  }
+  EXPECT_TRUE(positive_differs)
+      << "a positive posture gain changed nothing — the comparison pins nothing";
+}
+
 TEST(ClikConfig, RetiredDampingKeyIsIgnoredNotMapped) {
   // `damping` set the CONSTANT λ that #236 S3b deleted. LoadConfig ignores keys
   // it does not know, so the risk this pins is silence: an old config parses
@@ -752,6 +818,67 @@ command_type: torque
 
   ctrl.LoadConfig(YAML::Load("singularity_threshold: -1.0"));
   EXPECT_GT(ctrl.get_gains().singularity_threshold, 0.0);
+}
+
+// ── #277: both posture gains floored, in LoadConfig and at the point of use ──
+//
+// τ₀ = K_pⁿ·(q_safe − q) − K_dⁿ·q̇ projected through Nᵀ. A negative K_pⁿ pushes
+// away from the configured safe posture and a negative K_dⁿ injects energy into
+// the redundant DOFs, and Nᵀ keeps either from disturbing the Cartesian task —
+// so the posture drifts with every number finite and no fault raised.
+//
+// The redundant fixture is mandatory here: the gate is `nv > 6`, so on
+// serial_6dof it can never open and the second half would be vacuous.
+TEST(OscConfig, PostureGainsAreFlooredAndTheFloorSurvivesSetGains) {
+  rtc::OperationalSpaceController::Gains init;
+  rtc::OperationalSpaceController ctrl(rtc::test::TestUrdfPath("serial_7dof.urdf"), init);
+
+  ctrl.LoadConfig(YAML::Load(R"(
+null_kp: -8.0
+null_kd: -1.0
+command_type: torque
+)"));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.0)
+      << "a divergent posture stiffness reached the gains POD";
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kd, 0.0)
+      << "negative damping injects energy into the null space";
+
+  // A key the YAML never mentions is floored too. The value then comes from the
+  // constructor or a previous set_gains(), and a floor folded into the parse
+  // would skip it entirely — leaving get_gains() reporting a gain Compute()
+  // refuses to run. (TaskImpedanceController is where that gap actually bites:
+  // its §6.1 TRANSLATION_ONLY guard reads the gain on exactly this path.)
+  auto bypassed = ctrl.get_gains();
+  bypassed.null_kp = -8.0;
+  ctrl.set_gains(bypassed);
+  ctrl.LoadConfig(YAML::Load("command_type: torque\n"));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.0)
+      << "an absent key left a negative posture gain in the POD";
+
+  // A floor, not a rewrite — and this pair is what opens the gate below.
+  ctrl.LoadConfig(YAML::Load("null_kp: 8.0\nnull_kd: 1.0\n"));
+  ASSERT_DOUBLE_EQ(ctrl.get_gains().null_kp, 8.0);
+  ASSERT_DOUBLE_EQ(ctrl.get_gains().null_kd, 1.0);
+
+  auto state = MakeState(7);
+  for (std::size_t i = 0; i < 7; ++i) {
+    state.devices[0].positions[i] = 0.2;  // away from the singular zero posture
+  }
+  (void)ctrl.Compute(state);
+  ASSERT_TRUE(ctrl.nullspace_active())
+      << "the fixture never opens the posture gate — the negative case proves nothing";
+
+  // The set_gains() bypass (NUM-1). The gate is `kp != 0 || kd != 0`, so a floor
+  // applied only to the law's arguments would hold it OPEN on a negative gain
+  // and project an all-zero τ₀ through Nᵀ; floored before the gate, a negative
+  // gain reads exactly as zero does.
+  auto g = ctrl.get_gains();
+  g.null_kp = -8.0;
+  g.null_kd = -1.0;
+  ctrl.set_gains(g);
+  (void)ctrl.Compute(state);
+  EXPECT_FALSE(ctrl.nullspace_active())
+      << "a negative posture gain held the gate open — the floor is configure-only";
 }
 
 TEST(OscConfig, RetiredDampingKeyIsIgnoredNotMapped) {

@@ -444,9 +444,15 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     // device-order here, so the law runs in device order and the gather to
     // Pinocchio order happens on the RESULT — the projector N is Pinocchio-
     // ordered (#172 A2). Identity order → memcpy (unchanged).
+    // Floor Kp at the point of use (#277). Unlike the four torque-domain
+    // siblings this gate is `enable_null_space && !control_6dof` and never reads
+    // the gain, so the floor has nothing to reorder around — it goes straight on
+    // the law's argument. LoadConfig floors it too; set_gains() bypasses that
+    // (NUM-1), and a negative Kp would drive q̇₀ = Kp·(q_target − q) AWAY from
+    // the posture target, which N then hides from the Cartesian task.
     const auto nvu = static_cast<std::size_t>(nv);
     joint::ComputePostureVelocity(
-        gains.null_kp,
+        std::max(0.0, gains.null_kp),
         joint::PostureInputs{{slot.null_target.data(), slot.null_target.size()},
                              {dev0.positions.data(), dev0.positions.size()},
                              {}},
@@ -721,6 +727,13 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   if (cfg["null_kp"]) {
     g.null_kp = cfg["null_kp"].as<double>();
   }
+  // Floored at 0 (#277): a negative posture gain drives q̇₀ away from the
+  // null-space target instead of toward it, and N hides that from the task.
+  // Unconditional rather than folded into the parse above — when the key is
+  // ABSENT the value still arrives from the constructor or a previous
+  // set_gains(). Compute() floors it again at the point of use (set_gains()
+  // bypasses configure — NUM-1), the same treatment max_damping gets below.
+  g.null_kp = std::max(0.0, g.null_kp);
   if (cfg["enable_null_space"]) {
     g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }

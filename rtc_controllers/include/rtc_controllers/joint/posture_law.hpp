@@ -26,15 +26,18 @@
 // form with Kd = 0. That is NOT bitwise inert. `x − 0.0·q̇` equals `x` for every
 // finite non-zero x, but for x = −0.0 and q̇ < 0 it evaluates to +0.0: IEEE 754
 // gives 0.0·q̇ = −0.0 there, and (−0.0) − (−0.0) = +0.0. The sign of a zero is
-// not academic here — x = Kp·(q_ref − q) is EXACTLY −0.0 on a reachable and in
-// fact ordinary state: q_ref is seeded from the measurement, so q_ref − q is
-// exactly +0.0 while the arm holds still, and a negative Kp (which
-// TaskAdmittanceController::LoadConfig and TaskImpedanceController::LoadConfig
-// both accept — neither floors nullspace_kp, and set_gains() bypasses every
-// floor) turns that into −0.0 on every channel. A pre-extraction probe measured
-// the flip on 50% of draws in that state at -O0/-O2/-O3. Two shapes, two
-// functions, two literal oracles — the same call this repo made for
-// task/task_vel_law.hpp's six-axis and translation-only forms.
+// not academic here — x = Kp·(q_ref − q) is EXACTLY −0.0 whenever the arm holds
+// at a seeded reference (q_ref − q is exactly +0.0 there) under a negative Kp,
+// and a pre-extraction probe measured the flip on 50% of draws in that state at
+// -O0/-O2/-O3. #277 has since floored Kp at 0 in all five shipping consumers,
+// at the point of use as well as in LoadConfig, so THAT route to −0.0 is closed
+// for them — but the argument for two functions never rested on it. This law
+// takes Kp as a plain argument and floors nothing (the floor belongs to the
+// consumer, which is also where the activation gate lives), so a direct caller
+// still reaches the sign flip, and `x − 0.0·q̇` is not bitwise `x` for any −0.0
+// x however it arose. Two shapes, two functions, two literal oracles — the same
+// call this repo made for task/task_vel_law.hpp's six-axis and translation-only
+// forms.
 //
 // ── Extraction note (#236 S6) ───────────────────────────────────────────────
 // These expressions lived inline in TaskImpedanceController::Compute()

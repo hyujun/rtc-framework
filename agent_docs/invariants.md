@@ -287,6 +287,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 | NUM-3 | Quaternion 정규화 매 곱 후 | Drift → non-unit | SE3 trajectory, orientation PD |
 | NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | `ClikController` 의 gains 로더 (`clik_controller.cpp`, `cfg["trajectory_speed"]` 파싱부) |
 | NUM-5 | 폐쇄 체인 사영: seed 증분 제한 필수. residual 로 조립 분기를 판정하지 말 것 | 점 구속 loop 은 조립 분기가 여럿이고 **모두 φ=0 을 만족** → ‖φ‖ 검사를 통과한 채 반대편 분기 착지, warm-start 로 영구 고정 | `loop_projection` (`ProjectPassiveWithContinuation`), `RtClosedChainHandle` (tick 당 seed clamp) |
+| NUM-6 | 영공간 자세 게인은 `max(0.0, ·)` 하한을 **로더와 사용 지점 양쪽**에서 받고, 사용 지점 하한은 활성 게이트 **판정 앞**에 둔다 | `K_pⁿ < 0` 은 복원이 아니라 발산 방향 (τ₀ = K_pⁿ·(q_ref − q) − K_dⁿ·q̇), `K_dⁿ < 0` 은 에너지 주입. `Nᵀ`/`N` 사영이 이를 task 로부터 가려 **fault 없이 조용히 자세가 밀린다**. 게이트가 `!= 0.0` 이라 법칙에만 걸면 *게이트는 열린 채 값만 0* 인 조합이 생긴다 | 다섯 task-space 컨트롤러 전부 (#277): `LoadConfig` 는 **키 유무와 무관하게 무조건** (키가 없으면 생성자·`set_gains()` 값이 그대로 남는다), `Compute()` 는 게이트 판정 앞. `TaskImpedanceController` 는 §6.4 임계감쇠 보정과 §6.1 `TRANSLATION_ONLY` 가드가 이 값을 읽으므로 **floor 가 그 둘보다 앞**이어야 두 규칙이 문서대로 동작한다 |
 
 ### NUM-5 세부 스펙
 
