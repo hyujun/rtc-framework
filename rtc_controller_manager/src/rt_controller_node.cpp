@@ -268,7 +268,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_deactivate(
   // Reset initialization state for clean re-activate
   init_complete_ = false;
   init_wait_ticks_ = 0;
-  loop_count_ = 0;
+  loop_count_.store(0, std::memory_order_release);
   last_summary_wall_ = {};
   // Base PeriodicRtThread counters (overrun_count / skip_count /
   // consecutive_overruns) reset implicitly when StartRtLoop spawns a fresh

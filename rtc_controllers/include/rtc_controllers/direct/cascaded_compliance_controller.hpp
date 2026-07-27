@@ -193,9 +193,22 @@ class CascadedComplianceController final : public RTControllerInterface {
 
   [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
 
-  /// Clear a LATCHED controller-local SAFE_STOP (the ~/reset_fault service;
-  /// wiring deferred, issue #260). Deliberately SEPARATE from ClearEstop (E-8).
-  void ResetFault() noexcept { reset_fault_requested_.store(true, std::memory_order_release); }
+  /// Clear a LATCHED controller-local SAFE_STOP (the /rtc_cm/reset_fault
+  /// service). Deliberately SEPARATE from ClearEstop (E-8). The flag is consumed
+  /// at the head of the next Compute(), ahead of the E-STOP early return, so a
+  /// controller fault can be cleared while the global latch is up.
+  void ResetFault() noexcept override {
+    reset_fault_requested_.store(true, std::memory_order_release);
+  }
+
+  /// SAFE_STOP is the only latch this controller keeps (§10.6). Read off-RT from
+  /// the per-tick diagnostic snapshot rather than from sm_, which the RT thread
+  /// owns; every Compute() exit path stores it. A controller that has not ticked
+  /// yet reads as not latched.
+  [[nodiscard]] bool HasLatchedFault() const noexcept override {
+    return diag_lock_.Load().state ==
+           static_cast<std::uint8_t>(compliance::ComplianceState::kSafeStop);
+  }
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
   void set_gains(const Gains& g) noexcept {
@@ -403,6 +416,9 @@ class CascadedComplianceController final : public RTControllerInterface {
 
   void ResetTargetInitialization() noexcept override {
     target_initialized_.store(false, std::memory_order_release);
+    // An UNCONSUMED reset request must not cross an activation boundary (#260) —
+    // see TaskImpedanceController for the full rationale (E-8 laundering).
+    reset_fault_requested_.store(false, std::memory_order_release);
   }
 
   // Per-device limits (device channel order).

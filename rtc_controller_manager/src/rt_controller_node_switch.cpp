@@ -64,9 +64,13 @@ bool RtControllerNode::SwitchActiveController(const std::string& name, std::stri
   // Sleep 1.5 × dt at the *configured* rate (≈ 3 ms at the default rate;
   // 0.75 ms at 2 kHz, 15 ms at 100 Hz). PREEMPT_RT missed deadlines surface
   // as overrun_count_ regression, not as a wrong-controller dispatch.
-  const double rate_hz = (control_rate_ > 0.0) ? control_rate_ : rtc::kDefaultControlRateHz;
-  const auto dt_us = static_cast<long>(1'500'000.0 / rate_hz);
-  std::this_thread::sleep_for(std::chrono::microseconds(dt_us));
+  //
+  // Half a period of margin is enough HERE because active_controller_idx_ is
+  // read at the very START of a tick: the worst case is a store that just
+  // missed tick N, and tick N+1 reads it before doing any work. A wait that
+  // has to observe something a tick STORES cannot use this bound —
+  // /rtc_cm/reset_fault waits on RtTickCount() for that reason (#260).
+  std::this_thread::sleep_for(ControlPeriod() * 3 / 2);
 
   // Step 5: deactivate prev (only if it was Active — defensive against
   // CM startup state where prev_idx may be the initial controller that

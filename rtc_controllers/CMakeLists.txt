@@ -329,6 +329,15 @@ if(BUILD_TESTING)
     PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_task_admittance_controller PRIVATE -Wno-mismatched-new-delete)
 
+  # #260 external fault recovery: ResetFault() / HasLatchedFault() reached
+  # through the BASE interface (all the CM ever holds), E-8 separation in both
+  # directions, and the activation boundary that must not launder a stale reset.
+  # Drives all three compliance controllers through one shared contract check.
+  ament_add_gtest(test_compliance_fault_recovery test/test_compliance_fault_recovery.cpp)
+  target_link_libraries(test_compliance_fault_recovery rtc_controllers)
+  target_include_directories(test_compliance_fault_recovery
+    PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+
   ament_add_gtest(test_controller_config test/test_controller_config.cpp)
   target_link_libraries(test_controller_config rtc_controllers)
   target_include_directories(test_controller_config PRIVATE ${rtc_urdf_bridge_test_include})
