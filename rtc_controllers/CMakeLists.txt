@@ -248,6 +248,27 @@ if(BUILD_TESTING)
     ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_admittance_task_vel_reuse PRIVATE -Wno-mismatched-new-delete)
 
+  # #236 S6 golden-vector suite for the two cores lifted out of the cascade: the
+  # null-space posture law (joint/posture_law.hpp, PD and P — two functions
+  # because the K_d = 0 reduction flips the sign of a zero on a reachable state)
+  # and the §7.6 MUST-1 verdict (compliance/bandwidth_separation.hpp). Literal
+  # oracles pin all three pre-extraction shapes; a shim composed from S4's
+  # ImpedanceShim and S5's AdmittanceShim pins the live cascade across the four
+  # posture-gate corners plus the activation ramp. Both gates are numerically
+  # INERT when closed, so the suite compares diag.nullspace_active and
+  # diag.bandwidth_ratio every tick and exercises both ways the §7.6 gate reopens
+  # (set_gains, and a retry after a failed factorisation). Same two-sensor RT
+  # gate as S1–S5 — the shared global operator-new gate (hence
+  # ${rtc_controllers_test_include} and the program-wide
+  # -Wmismatched-new-delete false positive) PLUS rtc_base's Eigen tripwire
+  # (${rtc_base_test_include}), which is the only one that can see the Λ_S Ref
+  # acquiring a stride it has to heap-copy.
+  ament_add_gtest(test_posture_core test/test_posture_core.cpp)
+  target_link_libraries(test_posture_core rtc_controllers)
+  target_include_directories(test_posture_core PRIVATE
+    ${rtc_base_test_include} ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_posture_core PRIVATE -Wno-mismatched-new-delete)
+
   ament_add_gtest(test_task_impedance_controller test/test_task_impedance_controller.cpp)
   target_link_libraries(test_task_impedance_controller rtc_controllers)
   target_include_directories(test_task_impedance_controller PRIVATE

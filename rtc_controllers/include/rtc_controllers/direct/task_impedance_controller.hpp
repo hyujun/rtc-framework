@@ -355,7 +355,7 @@ class TaskImpedanceController final : public RTControllerInterface {
   /// q̇ multiplied by it must be gathered too — feeding the device-order vector
   /// permutes the task twist silently, with every number finite.
   Eigen::VectorXd qdot_;
-  Eigen::VectorXd q_null_;  ///< nv posture setpoint (Pinocchio order), seeded on activate
+  Eigen::VectorXd q_null_;  ///< nv posture setpoint (DEVICE order), seeded on activate
   Eigen::LLT<Eigen::MatrixXd> llt_M_;
 
   // No §6.3 scratch members: compliance::ComputeShapedTaskForce owns its own,

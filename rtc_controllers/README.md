@@ -23,9 +23,9 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 | JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 + `joint/joint_pd_law.hpp` 코어 |
 | ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `task/task_vel_law.hpp` 코어 (부분) |
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `task/task_accel_law.hpp` 코어 (부분) |
-| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§6.2 `impedance_law` · §6.3 `inertia_shaping`) |
-| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 |
-| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
+| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§6.2 `impedance_law` · §6.3 `inertia_shaping`) + `joint/posture_law.hpp` |
+| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 + `task/task_vel_law.hpp` + `joint/posture_law.hpp` (P 형) |
+| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§7.6 `bandwidth_separation` 포함) + `joint/posture_law.hpp` |
 | GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` | **코어** (상위 컨트롤러가 멤버로 소유) |
 
 > `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러다. 기본 법칙은
@@ -85,7 +85,23 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > **정확히 한 번만** 소비된다: outer 가 이미 썼으므로 inner 에는 `f_ext` 항 자체가 없다
 > (§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로). 대역폭 분리 `ω_i/ω_a ≥ 3` (MUST-1) 은
 > `Λ_S(q₀)` 가 필요해 configure 시점에 계산할 수 없으므로 **첫 seeding tick 에 1회** 평가해
-> 진단 플래그로만 보고한다 (fault 아님). 규범은 같은 문서 §3.6.
+> 진단 플래그로만 보고한다 (fault 아님). 게인이 바뀌면(`set_gains()` / 재-`LoadConfig`) 다시
+> 평가하고, 그 자세에서 Cholesky 가 실패하면 이전 수치를 남기지 않고 "평가 불가"(∞)를 발행한
+> 뒤 다음 tick 에 재시도한다. 규범은 같은 문서 §3.6.
+>
+> **코어 (#236 S6):** 그 판정식 자체는 `compliance/bandwidth_separation.hpp` 의 무상태 free
+> function `EvaluateBandwidthSeparation()` 이고 어댑터는 그것을 호출한다 — §7.6 MUST-1 은 두
+> 게인 세트와 관성에 대한 **명세의 진술**이지 이 클래스의 사정이 아니며, `Λ_S` 를 인자로 받으므로
+> 그것을 누가 만드는가(S2b 수렴점)를 선점하지 않는다. 같은 슬라이스에서 영공간 **자세 법칙**
+> `τ₀ = Kp·(q_null−q) − Kd·q̇` 도 `joint/posture_law.hpp` 로 나갔다: 이 컨트롤러와
+> `TaskImpedanceController` 의 인라인 루프가 **문자 그대로 동일**했으므로 ARCH-3 의 정확한
+> 발동 조건이었다 (`TaskAdmittanceController` 는 같은 법칙의 속도형 P — 별도 함수인 이유는
+> [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태).
+> 추출은 **bit-for-bit inert** 이며 `test_posture_core.cpp` 가 (1) 추출 이전 인라인 형태의
+> 리터럴 복사본 3개와 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정한다. 두 게이트가 닫힐
+> 때 **수치적으로 inert** 하므로(자세 게이트는 부호 있는 0 만 흘리고, §7.6 게이트는 이전 값을
+> 그대로 남긴다) 토크 비교만으로는 배선이 고정되지 않는다 — 그래서 `diag.nullspace_active` 와
+> `diag.bandwidth_ratio` 를 **매 tick** 대조한다.
 
 ---
 
@@ -106,6 +122,7 @@ rtc_controllers/
 │   │   ├── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
 │   │   └── cascaded_compliance_controller.hpp -- §7.6 outer admittance + inner impedance (토크 출력)
 │   ├── joint/
+│   │   ├── posture_law.hpp                   -- 영공간 자세 법칙 코어 (header-only, 무상태) — 토크형 PD `Kp·(q_ref−q) − Kd·q̇` 와 속도형 P `Kp·(q_ref−q)` **두 함수**. 레퍼런스 `q_ref` 를 인자로 받으므로 측정 seed(impedance·cascade)와 config `safe_position`(OSC)이 한 법칙이다. P 를 PD 의 `Kd=0` 으로 흡수하지 않는 이유는 비트 동치가 깨지기 때문 (부호 있는 0 — [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태). 채널 순서·사영 Nᵀ·활성화 램프는 바인딩 몫
 │   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
 │   ├── task/
 │   │   ├── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
@@ -113,6 +130,7 @@ rtc_controllers/
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
+│   │   ├── bandwidth_separation.hpp          -- §7.6 MUST-1 판정식 (header-only, 무상태) `min_axis ω_i/ω_a`, ω = √(K_p/Λ). **Λ_S 를 행렬 인자로** 받아 대각만 읽는다 (`.diagonal()` 을 Ref 로 받으면 stride 때문에 힙 복사가 난다 — RT-1). 언제 평가할지·어디에 발행할지는 바인딩 몫
 │   │   ├── inertia_shaping.hpp               -- §6.3 관성 성형 코어 (header-only, 무상태) f_cmd = B·f_task + (B−I)·f_ext, B = Λ_S Λ_d⁻¹ + §5.2 편차 clamp. **Λ_S 를 인자로** 받는다 (TaskDynamics 를 모른다 — S2b 수렴점 선점 금지). 스크래치는 max-size `Matrix<double,Dyn,Dyn,0,6,6>` 라 m<6 에서도 heap-free
 │   │   ├── differential_ik.hpp               -- §7.3 운동학 DLS J⁺ + 속도공간 nullspace N (task_dynamics 의 §6.5 λ 규칙 재사용)
 │   │   ├── admittance_integrator.hpp         -- §7.2 semi-implicit Euler + exp3 retract, §7.5 변위/속도 가드

@@ -3,6 +3,7 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 #include "rtc_math/se3/wrench.hpp"
 
@@ -469,9 +470,16 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
         diag.inertia_clamped = shaped.clamped;
       }
       if (dyn_ok && nullspace_active) {
-        for (int i = 0; i < nv; ++i)
-          tau_posture_dev_(i) =
-              gains.nullspace_kp * (q_null_(i) - q_dev_(i)) - gains.nullspace_kd * qdot_dev_(i);
+        // Posture task — joint/posture_law.hpp (#236 S6). This loop and the
+        // cascade's were character-for-character identical, which is the ARCH-3
+        // trigger the extraction resolves; the reference is an argument so the
+        // measured seed here and the OSC's configured posture are one law.
+        const auto nvu = static_cast<std::size_t>(nv);
+        joint::ComputePostureTorque(
+            gains.nullspace_kp, gains.nullspace_kd,
+            joint::PostureInputs{
+                {q_null_.data(), nvu}, {q_dev_.data(), nvu}, {qdot_dev_.data(), nvu}},
+            nvu, {tau_posture_dev_.data(), nvu});
         // Posture is device-order; gather to Pinocchio order before the (Pinocchio)
         // projector Nᵀ. Identity order → memcpy (unchanged).
         handle_->ReorderInput(

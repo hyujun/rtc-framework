@@ -2,6 +2,7 @@
 #include "rtc_controllers/indirect/task_admittance_controller.hpp"
 
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
@@ -384,8 +385,14 @@ ControllerOutput TaskAdmittanceController::Compute(const ControllerState& state)
 
   const bool nullspace_active = (nv > kTaskDim) && (gains.nullspace_kp != 0.0);
   if (nullspace_active) {
-    for (int i = 0; i < nv; ++i)
-      qdot_null_dev_(i) = gains.nullspace_kp * (q_null_(i) - q_dev_(i));
+    // Posture task — joint/posture_law.hpp (#236 S6). The P form is its OWN core
+    // function, not the PD one with K_d = 0: that reduction flips the sign of a
+    // zero (x = −0.0 arises here whenever the arm holds at its seed under a
+    // negative K_p, which LoadConfig below accepts), so it is not bitwise inert.
+    const auto nvu = static_cast<std::size_t>(nv);
+    joint::ComputePostureVelocity(
+        gains.nullspace_kp, joint::PostureInputs{{q_null_.data(), nvu}, {q_dev_.data(), nvu}, {}},
+        nvu, {qdot_null_dev_.data(), nvu});
     // Posture is device-order; gather to Pinocchio order before the (Pinocchio)
     // projector N. Identity order → memcpy (unchanged).
     handle_->ReorderInput(

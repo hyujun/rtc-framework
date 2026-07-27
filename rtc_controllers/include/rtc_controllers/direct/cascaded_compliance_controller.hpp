@@ -343,7 +343,7 @@ class CascadedComplianceController final : public RTControllerInterface {
   /// q̇ multiplied by it must be gathered too — feeding the device-order vector
   /// permutes ν silently, with every number finite.
   Eigen::VectorXd qdot_;
-  Eigen::VectorXd q_null_;  ///< nv posture setpoint (Pinocchio order)
+  Eigen::VectorXd q_null_;  ///< nv posture setpoint (DEVICE order, like q_dev_)
   Eigen::LLT<Eigen::MatrixXd> llt_M_;
 
   // Device-order buffers.
