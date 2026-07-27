@@ -4,6 +4,7 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/task/task_accel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
@@ -27,7 +28,6 @@
 #pragma GCC diagnostic pop
 
 namespace rtc {
-
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 OperationalSpaceController::OperationalSpaceController(std::string_view urdf_path, Gains gains)
@@ -56,26 +56,45 @@ void OperationalSpaceController::InitFromModel(std::shared_ptr<const pinocchio::
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
   Jt_ = Eigen::MatrixXd::Zero(nv, 6);
   M_ = Eigen::MatrixXd::Zero(nv, nv);
-  MinvJt_ = Eigen::MatrixXd::Zero(nv, 6);
   h_ = Eigen::VectorXd::Zero(nv);
   tau_out_ = Eigen::VectorXd::Zero(nv);
   gravity_estop_ = Eigen::VectorXd::Zero(nv);
   grav_dev_ = Eigen::VectorXd::Zero(nv);
   qdot_dev_ = Eigen::VectorXd::Zero(nv);
   tau_dev_ = Eigen::VectorXd::Zero(nv);
-  JbarT_ = Eigen::MatrixXd::Zero(6, nv);
-  NT_ = Eigen::MatrixXd::Zero(nv, nv);
+  q_ref_null_ = Eigen::VectorXd::Zero(nv);
   tau0_ = Eigen::VectorXd::Zero(nv);
   tau0_dev_ = Eigen::VectorXd::Zero(nv);
   null_tmp_ = Eigen::VectorXd::Zero(nv);
-  LambdaInv_.setZero();
   task_err_.setZero();
   a_task_.setZero();
-  F_.setZero();
   tcp_vel_.setZero();
 
-  // Pre-size the Cholesky factorisations (allocates storage once, here).
+  // Pre-size the Cholesky factorisation and the task-dynamics work buffers
+  // (both allocate their storage once, here — off-RT).
   llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv);
+  dyn_.Resize(nv, 6);
+
+  // The model may have changed size (submodel selection), so the posture
+  // reference is re-materialised against the new nv. Called from here AND from
+  // OnDeviceConfigsSet because either can run last: the ctor reaches this with
+  // safe_position_ still empty, and LoadConfig can re-enter InitFromModel long
+  // after the device configs were set.
+  RebuildPostureReference();
+}
+
+void OperationalSpaceController::RebuildPostureReference() {
+  // Off-RT materialisation of q_ref with this binding's tail policy: a channel
+  // with no configured safe_position centres on 0 rad, which is a posture
+  // reference, not "no posture task" (the law's own short-span policy is to zero
+  // the torque, so the fallback cannot be expressed by handing it a shorter
+  // span). safe_position_ changes only in OnDeviceConfigsSet, so the RT tick was
+  // rebuilding an identical vector every period.
+  const auto nvu = static_cast<std::size_t>(handle_->nv());
+  for (std::size_t ui = 0; ui < nvu; ++ui) {
+    q_ref_null_[static_cast<Eigen::Index>(ui)] =
+        (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
+  }
 }
 
 void OperationalSpaceController::MaybeSelectSubModel() {
@@ -160,6 +179,7 @@ void OperationalSpaceController::OnDeviceConfigsSet() {
   if (const auto nvz = static_cast<std::size_t>(handle_->nv()); max_joint_torque_.size() < nvz) {
     max_joint_torque_.resize(nvz, kDefaultMaxJointTorque);
   }
+  RebuildPostureReference();  // safe_position_ is final here
 }
 
 // ── RTControllerInterface implementation ────────────────────────────────────
@@ -182,6 +202,13 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     while (pending_targets_.Pop(discarded)) {
       // discard: a command issued during E-STOP must not survive recovery
     }
+    // The gate observable describes THIS tick, and this tick runs no posture
+    // task at all — the reset below sits after the early return, so without
+    // this the accessor keeps reporting the last active tick's `true` for the
+    // whole hold. That matters precisely because the flag is the only window on
+    // a gate that is numerically inert when closed: a mutation leaving the
+    // posture task running across an E-STOP would be invisible to it.
+    nullspace_active_.store(false, std::memory_order_relaxed);
     return ComputeEstop(state, gains);
   }
 
@@ -404,67 +431,86 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   handle_->ComputeNonLinearEffects(q_span, v_span);
   h_ = handle_->GetNonLinearEffects();
 
-  // ── Step 7: task inertia inverse  Λ⁻¹ = J M⁻¹ Jᵀ + λ²I ────────────────────
-  // In-place Cholesky solves keep the RT path allocation-free. M is provably SPD
-  // for a physical fixed-base manipulator — that assumption is load-bearing: the
-  // λ² floor regularises Λ⁻¹ (kinematic/Jacobian singularities) but NOT M itself
-  // (an ill-conditioned URDF inertia would need M-side regularisation). Both
-  // factorisations are checked via .info(); on failure we fall back to a safe
-  // gravity/Coriolis-hold torque (τ = h) rather than emit NaN (issue #172 review).
+  // ── Step 7: task inertia Λ, J̄ and Nᵀ via compliance::TaskDynamics ─────────
+  // #236 S2b: this used to be an inline 6×6 factorisation with a CONSTANT
+  // λ = max(1e-4, damping). It is now the shared §6.4–§6.5 helper — the same
+  // object the impedance and cascade controllers call. Two deliberate changes,
+  // neither of them rounding (D-S2b, option (b)):
+  //   • λ² is σ_min-adaptive, so a well-conditioned pose adds ZERO damping
+  //     instead of damping². That is the convergence this migration exists for;
+  //     the constant-λ spelling here was the outlier.
+  //   • Λ_S is materialised and multiplied (Λ·a_task) rather than solved for
+  //     in place, and Nᵀ comes from J̄_S rather than a second 6×6 solve. Pure
+  //     reassociation: measured max relative difference ≤ 1.7e-12.
+  // M is provably SPD for a physical fixed-base manipulator — that assumption is
+  // load-bearing: λ² regularises Λ⁻¹ (kinematic/Jacobian singularities) but NOT M
+  // itself (an ill-conditioned URDF inertia would need M-side regularisation).
+  // Both factorisations are checked (.info() here, r.ok in the helper); on failure
+  // we fall back to a safe gravity/Coriolis-hold torque (τ = h) rather than emit
+  // NaN (issue #172 review). The .info() half is NOT sufficient on its own: LLT
+  // reports Success on a matrix full of NaN, so the helper's own allFinite() gate
+  // on J_S is what actually turns a NaN joint state into r.ok == false here.
   bool dyn_ok = true;
+  nullspace_active_.store(false, std::memory_order_relaxed);
   llt_M_.compute(M_);
   dyn_ok = dyn_ok && (llt_M_.info() == Eigen::Success);
 
   if (dyn_ok) {
     Jt_.noalias() = J_full_.transpose();
-    MinvJt_ = Jt_;
-    llt_M_.solveInPlace(MinvJt_);  // MinvJt_ = M⁻¹ Jᵀ   (nv×6)
-
-    LambdaInv_.noalias() = J_full_ * MinvJt_;
-    // Floor λ at the point of use so the singularity guard holds regardless of
-    // how the gains were set (LoadConfig floors too, but set_gains()/the ctor
+    // Floor λ_max at the point of use so the singularity guard holds regardless
+    // of how the gains were set (LoadConfig floors too, but set_gains()/the ctor
     // default bypass it) — NUM-1.
-    const double lambda = std::max(1e-4, gains.damping);
-    LambdaInv_.diagonal().array() += lambda * lambda;
-    llt6_.compute(LambdaInv_);
-    dyn_ok = (llt6_.info() == Eigen::Success);
+    const compliance::TaskDynamics::Result r =
+        dyn_.Compute(J_full_, llt_M_, gains.singularity_threshold,
+                     std::max(compliance::kMinMaxDamping, gains.max_damping));
+    dyn_ok = r.ok;
   }
 
   if (dyn_ok) {
     // ── Step 8: task force  F = Λ a_task,  joint torque  τ = Jᵀ F + h ───────
-    F_ = a_task_;
-    llt6_.solveInPlace(F_);  // solve Λ⁻¹ F = a_task  ⇒  F = Λ a_task
-    tau_out_.noalias() = Jt_ * F_;
+    const Eigen::Matrix<double, 6, 1> F = dyn_.LambdaS() * a_task_;
+    tau_out_.noalias() = Jt_ * F;
     tau_out_ += h_;
 
     // ── Step 9: dynamically-consistent null-space posture task ──────────────
-    // Redundancy resolution: project τ₀ through Nᵀ = I − Jᵀ J̄ᵀ (J̄ᵀ = Λ J M⁻¹).
+    // Redundancy resolution: project τ₀ through Nᵀ = I − J_Sᵀ J̄_Sᵀ.
     // Only meaningful for a genuinely redundant arm (nv > 6 task DOF): for nv==6
     // Nᵀ ≈ 0 (contributes nothing), and for nv < 6 the task is over-determined so
     // J M⁻¹ Jᵀ is rank-deficient and Nᵀ is NOT small — running the posture task
     // there would inject τ₀ into the primary Cartesian task (issue #172). Gate on
     // redundancy so a reduced-DOF arm on default null_kd is not coupled.
-    if ((gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6) {
-      JbarT_ = MinvJt_.transpose();  // (M⁻¹ Jᵀ)ᵀ = J M⁻¹   (6×nv)
-      llt6_.solveInPlace(JbarT_);    // J̄ᵀ = Λ J M⁻¹
-      NT_.setIdentity();
-      NT_.noalias() -= Jt_ * JbarT_;  // Nᵀ = I − Jᵀ J̄ᵀ
-      for (int i = 0; i < nv; ++i) {
-        const auto ui = static_cast<std::size_t>(i);
-        const double q_ref = (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
-        tau0_dev_[i] = gains.null_kp * (q_ref - q_buf[ui]) - gains.null_kd * v_buf[ui];
-      }
-      // safe_position_/q_buf/v_buf are device-order; gather the posture torque to
-      // Pinocchio order before the null-space projection Nᵀ (Pinocchio) (#172 A2).
-      // Identity order → memcpy (tau0_dev_ ≡ tau0_), so non-reordered arms are
-      // byte-for-byte unchanged.
-      handle_->ReorderInput(std::span<const double>(tau0_dev_.data(), static_cast<std::size_t>(nv)),
-                            tau0_);
-      null_tmp_.noalias() = NT_ * tau0_;
+    const bool nullspace_active = (gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6;
+    nullspace_active_.store(nullspace_active, std::memory_order_relaxed);
+    if (nullspace_active) {
+      // q_ref_null_ already holds the reference, tail policy and all —
+      // RebuildPostureReference() materialises it off-RT because safe_position_
+      // changes only in OnDeviceConfigsSet, so rebuilding it here produced an
+      // identical vector every tick.
+      const auto nvu = static_cast<std::size_t>(nv);
+      // The law itself is joint/posture_law.hpp (#236 S6). S6 deliberately left
+      // OSC on its inline copy because migrating it meant touching the Λ/Nᵀ
+      // block whose convergence point was undecided; S2b decides it, so the last
+      // duplicate of this expression goes with it. `q_ref` is an argument for
+      // exactly this reason — the configured safe posture and the other callers'
+      // measured seed are one law with two bindings.
+      joint::ComputePostureTorque(gains.null_kp, gains.null_kd,
+                                  joint::PostureInputs{{q_ref_null_.data(), nvu}, q_span, v_span},
+                                  nvu, {tau0_dev_.data(), nvu});
+      // safe_position_/q_span/v_span are device-order; gather the posture torque
+      // to Pinocchio order before the null-space projection Nᵀ (Pinocchio)
+      // (#172 A2). Identity order → memcpy (tau0_dev_ ≡ tau0_), so non-reordered
+      // arms are byte-for-byte unchanged.
+      handle_->ReorderInput(std::span<const double>(tau0_dev_.data(), nvu), tau0_);
+      dyn_.ProjectNullspace(tau0_, null_tmp_);
       tau_out_ += null_tmp_;
     }
   } else {
-    // Degenerate M / Λ⁻¹: hold against gravity + Coriolis only (finite, safe).
+    // Degenerate M / Λ⁻¹: hold against gravity + Coriolis only. NOT finite by
+    // construction — the reachable way to land here is a non-finite joint state
+    // (that is what the helper's allFinite() gate rejects), and h = C(q,v)v +
+    // g(q) is computed from the SAME state, so on exactly the tick this branch
+    // exists for h is itself NaN. The scrub in Step 10 is what makes the hold
+    // safe; this line only chooses the best available hold.
     tau_out_ = h_;
   }
 
@@ -481,6 +527,21 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   // drives its own joint (#172 A2). Identity order → memcpy (unchanged).
   handle_->ReorderOutput(tau_out_,
                          std::span<double>(out0.commands.data(), static_cast<std::size_t>(ncmd)));
+  // Non-finite scrub BEFORE the clamp, because the clamp cannot do it: every
+  // comparison against a NaN is false, so std::clamp returns the NaN unchanged
+  // and a torque backend receives it. A channel whose torque could not be formed
+  // is commanded ZERO — the same policy, and the same wording, as
+  // compliance::GravityCompDampedHold on the E-STOP path. Two reachable sources,
+  // and the dyn_ok gate above catches only the first: a non-finite joint
+  // POSITION (→ the τ = h fallback, whose h carries the same NaN), and a
+  // non-finite joint VELOCITY, which leaves J and M finite — both depend on q
+  // alone — so dyn_ok stays true while h and tcp_vel_ carry the NaN into τ.
+  for (int i = 0; i < ncmd; ++i) {
+    double& cmd = out0.commands[static_cast<std::size_t>(i)];
+    if (!std::isfinite(cmd)) {
+      cmd = 0.0;
+    }
+  }
   rtc::utils::ClampSymmetric(out0.commands, nc0, std::span<const double>(max_joint_torque_),
                              kDefaultMaxJointTorque);
 
@@ -661,10 +722,37 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   load3(cfg["kd_pos"], g.kd_pos);
   load3(cfg["kp_rot"], g.kp_rot);
   load3(cfg["kd_rot"], g.kd_rot);
+  if (cfg["max_damping"]) {
+    // Floor λ_max > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic
+    // singularities. A zero/negative λ_max would remove that guard and admit NaN
+    // torque. `max_damping` replaced the constant-λ `damping` key in #236 S2b —
+    // same role in the law (the DLS damping magnitude), now the ceiling of the
+    // §6.5 ramp rather than a constant, and the same key the other three
+    // task-space controllers already use.
+    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
+  }
+  if (cfg["singularity_threshold"]) {
+    // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
+    // σ₀ ≤ 0, so a zero here does not merely widen the shell — it removes the
+    // §6.5 ramp entirely, which is the one guard the constant-λ form used to
+    // provide unconditionally. The other three task-space controllers clamp this
+    // key identically; the migration's "same names, same defaults" claim only
+    // holds if the VALIDATION converges too.
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+  }
   if (cfg["damping"]) {
-    // Floor λ > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic singularities.
-    // A zero/negative damping would remove that guard and admit NaN torque.
-    g.damping = std::max(1e-4, cfg["damping"].as<double>());
+    // Retired in #236 S2b. LoadConfig ignores unknown keys, so without this an
+    // existing deployment config would keep parsing clean while its singularity
+    // behaviour silently changed (λ_max defaulting to 0.05 — 5× the number the
+    // operator typed — plus a σ₀ shell they never configured). Warned and
+    // ignored rather than mapped onto max_damping: a constant λ and the ceiling
+    // of a σ_min-adaptive ramp are not the same quantity, so any mapping would
+    // be a guess. Same treatment as enable_gravity_compensation below.
+    RCLCPP_WARN(rclcpp::get_logger("OperationalSpaceController"),
+                "[OperationalSpaceController] 'damping' is retired (#236 S2b) and IGNORED — use "
+                "'max_damping' (λ_max, default 0.05) and 'singularity_threshold' (σ₀, default "
+                "0.02); see rtc_controllers/README.md");
   }
   // Dynamically-consistent null-space posture gains (only bite when nv > 6).
   if (cfg["null_kp"]) {

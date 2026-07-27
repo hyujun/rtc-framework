@@ -3,6 +3,8 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/compliance/bandwidth_separation.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
 #include <rclcpp/logging.hpp>
@@ -32,11 +34,6 @@ namespace {
 // DEGRADED → RUNNING recovery dwell (§10.6 default), the same value the other
 // two compliance controllers use.
 constexpr double kDegradedRecoveryTime = 0.5;  // s
-// NUM-1: the DLS damping guard must not be removable. λ_max = 0 leaves Λ_S⁻¹
-// undamped at a rank-deficient pose, so the Cholesky fails and the nullspace
-// projector dies at exactly the configuration it exists to survive. Floored at
-// the point of USE, not only in LoadConfig — set_gains() bypasses configure.
-constexpr double kMinMaxDamping = 1e-4;
 }  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -223,53 +220,18 @@ void CascadedComplianceController::OnDeviceConfigsSet() {
 // ── §7.6 MUST-1 bandwidth separation ─────────────────────────────────────────
 
 void CascadedComplianceController::EvaluateBandwidthSeparation(const Gains& gains) noexcept {
-  // ω_i = √(K_p^i / Λ_S)  (inner, per task axis, at the seeding pose)
-  // ω_a = √(K_p^a / Λ_d)  (outer, per task axis)
-  // The comparison is per-axis and the reported figure is the WORST axis: a
-  // cascade separated on five axes and coupled on the sixth is coupled.
-  const Eigen::MatrixXd& lambda_s = dyn_.LambdaS();
-  double worst = std::numeric_limits<double>::infinity();
-  for (int i = 0; i < kTaskDim; ++i) {
-    const auto ui = static_cast<std::size_t>(i);
-    const double kp_a = gains.admittance.stiffness[ui];
-    // K_p^a = 0 is hand-guiding: the outer loop has no restoring frequency to be
-    // separated FROM, so the axis carries no ratio rather than an infinite one
-    // that would silently dominate the min in the other direction.
-    if (!(kp_a > 0.0))
-      continue;
-    // The same floor Step()/Energy() apply, so the ratio cannot disagree with the
-    // Λ_d the integrator actually runs (NUM-2: Λ_d is inverted every tick).
-    const double lambda_d =
-        std::max(gains.admittance.inertia[ui],
-                 (i < 3) ? gains.admittance.min_inertia_lin : gains.admittance.min_inertia_ang);
-    const double lambda_i = lambda_s(i, i);
-    const double kp_i = (i < 3) ? gains.impedance.kp_pos[ui] : gains.impedance.kp_rot[ui - 3];
-    // Λ_d ≤ 0 or a non-positive Λ_S diagonal means the RATIO cannot be formed —
-    // a degenerate seeding pose or a gain the floor above should have caught —
-    // so the axis carries no verdict.
-    if (!(lambda_d > 0.0) || !(lambda_i > 0.0))
-      continue;
-    // K_p^i = 0 is NOT "not evaluable": ω_i = 0 against a positive ω_a is the
-    // WORST possible separation, an inner loop with no restoring bandwidth under
-    // an outer loop that has one. Skipping it removed the single most coupled
-    // axis from a min() whose whole job is to report the most coupled axis, and
-    // `inner.kp_pos: [0,0,0]` passes LoadConfig (>= 0), so the flag read "fine"
-    // for exactly the configuration it exists to catch.
-    if (!(kp_i > 0.0)) {
-      worst = 0.0;
-      continue;
-    }
-    const double omega_a = std::sqrt(kp_a / lambda_d);
-    const double omega_i = std::sqrt(kp_i / lambda_i);
-    if (!(omega_a > 0.0))
-      continue;
-    worst = std::min(worst, omega_i / omega_a);
-  }
-  bandwidth_ratio_ = worst;
+  // The verdict itself is compliance/bandwidth_separation.hpp (#236 S6) — a
+  // statement about two gain sets and an inertia, not a circumstance of this
+  // class. The binding hands it Λ_S rather than the TaskDynamics that produced
+  // it, so the law stays clear of the S2b convergence decision (the same
+  // boundary compliance/inertia_shaping.hpp draws).
+  const compliance::BandwidthSeparation bw = compliance::EvaluateBandwidthSeparation(
+      gains.admittance, gains.impedance, dyn_.LambdaS(), gains.min_bandwidth_ratio);
+  bandwidth_ratio_ = bw.ratio;
   // Diagnostic, never a fault (D20): a sluggish inner loop is a tuning statement
   // about two gain sets, and latching SAFE_STOP for it would stop a robot that
   // is merely soft. RT ticks cannot log (RT-3), hence a flag.
-  bandwidth_ratio_low_ = std::isfinite(worst) && (worst < gains.min_bandwidth_ratio);
+  bandwidth_ratio_low_ = bw.low;
 }
 
 // ── RTControllerInterface ────────────────────────────────────────────────────
@@ -527,7 +489,7 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
       // set_gains() writes the POD straight into the SeqLock and bypasses it.
       const compliance::TaskDynamics::Result r =
           dyn_.Compute(J_full_, llt_M_, gains.singularity_threshold,
-                       std::max(kMinMaxDamping, gains.max_damping));
+                       std::max(compliance::kMinMaxDamping, gains.max_damping));
       if (bw_evaluate && r.ok)
         EvaluateBandwidthSeparation(gains);
       else if (bw_evaluate)
@@ -537,9 +499,15 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
         sigma_min = r.sigma_min;
         lambda_sq = r.lambda_sq;
         if (dyn_ok) {
-          for (int i = 0; i < nv; ++i)
-            tau_posture_dev_(i) =
-                gains.nullspace_kp * (q_null_(i) - q_dev_(i)) - gains.nullspace_kd * qdot_dev_(i);
+          // §7.6 posture task — joint/posture_law.hpp (#236 S6). The reference is
+          // an argument, so the measured seed here and the configured safe
+          // posture the OSC uses are one law with two bindings.
+          const auto nvu = static_cast<std::size_t>(nv);
+          joint::ComputePostureTorque(
+              gains.nullspace_kp, gains.nullspace_kd,
+              joint::PostureInputs{
+                  {q_null_.data(), nvu}, {q_dev_.data(), nvu}, {qdot_dev_.data(), nvu}},
+              nvu, {tau_posture_dev_.data(), nvu});
           // Posture is device-order; gather to Pinocchio order before the
           // (Pinocchio) projector Nᵀ. Identity order → memcpy (unchanged).
           handle_->ReorderInput(
@@ -958,12 +926,13 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
     g.nullspace_kd = std::max(0.0, num(cfg["nullspace_damping"], "nullspace_damping"));
   if (cfg["singularity_threshold"])
     g.singularity_threshold =
-        std::max(1e-6, num(cfg["singularity_threshold"], "singularity_threshold"));
+        std::max(compliance::kMinSigma0,
+                 num(cfg["singularity_threshold"], "singularity_threshold"));
   if (cfg["singularity_critical"])
     g.singularity_critical =
         std::max(0.0, num(cfg["singularity_critical"], "singularity_critical"));
   if (cfg["max_damping"])
-    g.max_damping = std::max(kMinMaxDamping, num(cfg["max_damping"], "max_damping"));
+    g.max_damping = std::max(compliance::kMinMaxDamping, num(cfg["max_damping"], "max_damping"));
   if (cfg["joint_limit_margin"])
     g.joint_limit_margin = std::max(0.0, num(cfg["joint_limit_margin"], "joint_limit_margin"));
   if (cfg["joint_limit_stiffness"])

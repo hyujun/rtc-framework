@@ -557,9 +557,8 @@ class ImpedanceShim {
       ++ramped_ticks_;
 
     J_S_ = J_full_.topRows(m);
-    const Vec6 f_task = rtc::compliance::ComputeImpedanceForce(
-        rtc::compliance::ImpedanceParams{g.kp_pos, g.kd_pos, g.kp_rot, g.kd_rot}, e, tcp_vel_, nu_d,
-        alpha_, m);
+    const Vec6 f_task =
+        rtc::compliance::ComputeImpedanceForce(g.impedance, e, tcp_vel_, nu_d, alpha_, m);
 
     handle_->ComputeGeneralizedGravity(q_span);
     gravity_ = handle_->GetGeneralizedGravity();
@@ -680,10 +679,10 @@ external_wrench:
 
 TaskImpedanceController::Gains CrossCheckGains() {
   TaskImpedanceController::Gains g;
-  g.kp_pos = {{120.0, 120.0, 120.0}};
-  g.kd_pos = {{18.0, 18.0, 18.0}};
-  g.kp_rot = {{12.0, 12.0, 12.0}};
-  g.kd_rot = {{4.0, 4.0, 4.0}};
+  g.impedance.kp_pos = {{120.0, 120.0, 120.0}};
+  g.impedance.kd_pos = {{18.0, 18.0, 18.0}};
+  g.impedance.kp_rot = {{12.0, 12.0, 12.0}};
+  g.impedance.kd_rot = {{4.0, 4.0, 4.0}};
   g.nullspace_kp = 2.0;  // nv = 7 > m ⇒ Nᵀ is non-trivial on both selections
   g.nullspace_kd = 0.5;
   g.activation_ramp_time = 0.0;  // α = 1 unless a case says otherwise

@@ -282,7 +282,7 @@ RT 계열은 반대다 — hook 은 RT 검사를 **구현하지 않는다**. RT 
 
 | # | 규칙 | 이유 | 구현 위치 |
 |---|------|------|-----------|
-| NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`damping` YAML 주입). 하한(λ 바닥)은 **값을 쓰는 지점**에 건다 — `LoadConfig` 에만 두면 `set_gains()` / ctor default 가 우회한다 | Unbounded magnification | ClikController, OSC (`0a61aaf`), TaskAdmittanceController (`Compute()` 의 `std::max(kMinMaxDamping, …)`) |
+| NUM-1 | 특이점 근처: damped pseudoinverse 필수 (`max_damping` / `singularity_threshold` YAML 주입). 램프의 **양 끝단이 모두** 하한을 받는다 — λ_max 바닥 `kMinMaxDamping` 은 **값을 쓰는 지점**에 (`LoadConfig` 에만 두면 `set_gains()` / ctor default 가 우회), σ₀ 바닥 `kMinSigma0` 은 `LoadConfig` 에. σ₀ ≤ 0 은 셸을 좁히는 게 아니라 `AdaptiveDampingSquared` 를 short-circuit 시켜 λ²=0 을 상시 반환한다 | Unbounded magnification | 두 상수의 **정의는 [compliance/task_dynamics.hpp](../rtc_controllers/include/rtc_controllers/compliance/task_dynamics.hpp) 한 곳** (지키는 법칙 옆; 사본을 컨트롤러마다 두면 이 표 한 줄을 바꾸는 데 5회 편집이 필요했다). 다섯 task-space 컨트롤러 전부 `Compute()` 에서 `std::max(compliance::kMinMaxDamping, …)`, `LoadConfig` 에서 `std::max(compliance::kMinSigma0, …)`. λ 규약은 §6.5 하나뿐 — OSC·CLIK 의 상수 λ 는 #236 S2b+S3b 에서 수렴했다 |
 | NUM-2 | `dt` near-zero guard | `1/dt` 발산 | 모든 trajectory generator |
 | NUM-3 | Quaternion 정규화 매 곱 후 | Drift → non-unit | SE3 trajectory, orientation PD |
 | NUM-4 | `trajectory_speed`: `std::max(1e-6, val)` 클램프 | IEEE 754 `1/0 = INF` → hang | `ClikController` 의 gains 로더 (`clik_controller.cpp`, `cfg["trajectory_speed"]` 파싱부) |

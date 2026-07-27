@@ -742,10 +742,10 @@ TEST(TaskImpedanceWrench, HeavyDesiredInertiaCancelsTheExternalWrench) {
   gains.activation_ramp_time = 0.0;
   gains.nullspace_kp = 0.0;
   gains.nullspace_kd = 0.0;        // no τ_null on either side
-  gains.kp_pos = {1.0, 1.0, 1.0};  // unit stiffness ⇒ f_task == e_trans exactly
-  gains.kd_pos = {0.0, 0.0, 0.0};
-  gains.kp_rot = {0.0, 0.0, 0.0};  // the oracle's target rotation must not bite
-  gains.kd_rot = {0.0, 0.0, 0.0};
+  gains.impedance.kp_pos = {1.0, 1.0, 1.0};  // unit stiffness ⇒ f_task == e_trans exactly
+  gains.impedance.kd_pos = {0.0, 0.0, 0.0};
+  gains.impedance.kp_rot = {0.0, 0.0, 0.0};  // the oracle's target rotation must not bite
+  gains.impedance.kd_rot = {0.0, 0.0, 0.0};
   gains.pose_error_limit = 1e9;  // the oracle's target is metres away by design
   gains.max_torque_rate = 1e12;  // measure the law, not the slew limiter
 

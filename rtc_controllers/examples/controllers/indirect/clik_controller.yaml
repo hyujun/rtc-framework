@@ -16,7 +16,12 @@ clik_controller:
   # ── CLIK 게인 ─────────────────────────────────────────────────────────────
   kp_translation: [1.0, 1.0, 1.0]   # 병진 비례 게인 (x, y, z) [1/s]
   kp_rotation: [1.0, 1.0, 1.0]      # 회전 비례 게인 (rx, ry, rz) [1/s]
-  damping: 0.01                           # 감쇠 유사역행렬 λ (특이점 근처 안정화)
+  # ── 특이점 감쇠 (§6.5 σ_min-적응형 DLS — impedance/admittance/cascade 와 동일) ─
+  # λ² = 0 (σ_min ≥ σ₀) / λ_max²·(1 − (σ_min/σ₀)²) (σ_min < σ₀).
+  # #236 S3b (#258) 이전에는 상수 λ 인 `damping` 키였다 — 그 상수가 아웃라이어였고
+  # 여기로 수렴시키는 것이 이관의 목적이다 (특이점에서 멀면 감쇠가 정확히 0).
+  max_damping: 0.05                       # λ_max (max(1e-4, ·) floor 적용)
+  singularity_threshold: 0.02             # σ₀: 이 아래에서 DLS 감쇠가 붙기 시작
 
   # ── 영공간 (null-space) 설정 ──────────────────────────────────────────────
   enable_null_space: true                 # 영공간 관절 센터링 활성화

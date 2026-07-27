@@ -468,7 +468,8 @@ TEST(ClikConfig, LoadConfigParsesAllGains) {
   YAML::Node cfg = YAML::Load(R"(
 kp_translation: [2.0, 3.0, 4.0]
 kp_rotation: [1.1, 1.2, 1.3]
-damping: 0.02
+max_damping: 0.02
+singularity_threshold: 0.03
 null_kp: 0.8
 enable_null_space: true
 control_6dof: true
@@ -484,7 +485,8 @@ command_type: position
   EXPECT_NEAR(g.kp_translation[0], 2.0, 1e-12);
   EXPECT_NEAR(g.kp_translation[2], 4.0, 1e-12);
   EXPECT_NEAR(g.kp_rotation[1], 1.2, 1e-12);
-  EXPECT_NEAR(g.damping, 0.02, 1e-12);
+  EXPECT_NEAR(g.max_damping, 0.02, 1e-12);
+  EXPECT_NEAR(g.singularity_threshold, 0.03, 1e-12);
   EXPECT_NEAR(g.null_kp, 0.8, 1e-12);
   EXPECT_TRUE(g.enable_null_space);
   EXPECT_TRUE(g.control_6dof);
@@ -499,7 +501,48 @@ TEST(ClikConfig, LoadConfigNullNodeKeepsDefaults) {
   rtc::ClikController ctrl(GetTestUrdfPath(), init);
   const auto before = ctrl.get_gains();
   ctrl.LoadConfig(UndefinedNode());
-  EXPECT_DOUBLE_EQ(ctrl.get_gains().damping, before.damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().max_damping, before.max_damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().singularity_threshold, before.singularity_threshold);
+}
+
+// Both ends of the §6.5 ramp are floored, and the retired key is inert.
+//
+// σ₀ is the half the migration left unclamped: `max_damping` was floored from
+// the start, but a `singularity_threshold: 0` sails through into
+// AdaptiveDampingSquared, whose `sigma0 <= 0` short-circuit returns λ² = 0 for
+// EVERY σ_min. That is not a wider or narrower shell — it is no shell, i.e. the
+// one guard the pre-migration constant λ provided unconditionally. The other
+// three task-space controllers already clamped this key, so this is a
+// convergence defect and not a new rule.
+TEST(ClikConfig, LoadConfigFloorsBothEndsOfTheDlsRamp) {
+  rtc::ClikController::Gains init;
+  rtc::ClikController ctrl(GetTestUrdfPath(), init);
+  ctrl.LoadConfig(YAML::Load(R"(
+max_damping: 0.0
+singularity_threshold: 0.0
+)"));
+  const auto g = ctrl.get_gains();
+  EXPECT_GT(g.max_damping, 0.0) << "λ_max = 0 removes the damping the ramp ramps TO";
+  EXPECT_GT(g.singularity_threshold, 0.0) << "σ₀ = 0 makes AdaptiveDampingSquared return 0 always";
+
+  // Negative is the same failure with a sign — the short-circuit is `<= 0`.
+  ctrl.LoadConfig(YAML::Load("singularity_threshold: -1.0"));
+  EXPECT_GT(ctrl.get_gains().singularity_threshold, 0.0);
+}
+
+TEST(ClikConfig, RetiredDampingKeyIsIgnoredNotMapped) {
+  // `damping` set the CONSTANT λ that #236 S3b deleted. LoadConfig ignores keys
+  // it does not know, so the risk this pins is silence: an old config parses
+  // clean and the controller runs on defaults the operator never chose. It must
+  // not be mapped onto max_damping either — a constant and the ceiling of a
+  // σ_min-adaptive ramp are different quantities.
+  rtc::ClikController::Gains init;
+  rtc::ClikController ctrl(GetTestUrdfPath(), init);
+  const auto before = ctrl.get_gains();
+  ctrl.LoadConfig(YAML::Load("damping: 0.01"));
+  const auto after = ctrl.get_gains();
+  EXPECT_DOUBLE_EQ(after.max_damping, before.max_damping);
+  EXPECT_DOUBLE_EQ(after.singularity_threshold, before.singularity_threshold);
 }
 
 TEST(ClikConfig, OnDeviceConfigsSetResolvesTipAndSafePosition) {
@@ -660,7 +703,8 @@ kp_pos: [3.0, 3.0, 3.0]
 kd_pos: [0.2, 0.2, 0.2]
 kp_rot: [1.0, 1.0, 1.0]
 kd_rot: [0.1, 0.1, 0.1]
-damping: 0.05
+max_damping: 0.05
+singularity_threshold: 0.03
 enable_gravity_compensation: true
 trajectory_speed: 0.15
 trajectory_angular_speed: 0.7
@@ -675,7 +719,8 @@ command_type: torque
   EXPECT_NEAR(g.kd_pos[1], 0.2, 1e-12);
   EXPECT_NEAR(g.kp_rot[2], 1.0, 1e-12);
   EXPECT_NEAR(g.kd_rot[0], 0.1, 1e-12);
-  EXPECT_NEAR(g.damping, 0.05, 1e-12);
+  EXPECT_NEAR(g.max_damping, 0.05, 1e-12);
+  EXPECT_NEAR(g.singularity_threshold, 0.03, 1e-12);
   EXPECT_TRUE(g.enable_gravity_compensation);
   EXPECT_NEAR(g.trajectory_speed, 0.15, 1e-12);
   EXPECT_NEAR(g.max_traj_angular_velocity, 1.2, 1e-12);
@@ -687,7 +732,36 @@ TEST(OscConfig, LoadConfigNullNodeKeepsDefaults) {
   rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), init);
   const auto before = ctrl.get_gains();
   ctrl.LoadConfig(UndefinedNode());
-  EXPECT_DOUBLE_EQ(ctrl.get_gains().damping, before.damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().max_damping, before.max_damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().singularity_threshold, before.singularity_threshold);
+}
+
+// Same two guarantees as the CLIK pair above — the two controllers #236 S2b+S3b
+// migrated share the defect and share the fix.
+TEST(OscConfig, LoadConfigFloorsBothEndsOfTheDlsRamp) {
+  rtc::OperationalSpaceController::Gains init;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), init);
+  ctrl.LoadConfig(YAML::Load(R"(
+max_damping: 0.0
+singularity_threshold: 0.0
+command_type: torque
+)"));
+  const auto g = ctrl.get_gains();
+  EXPECT_GT(g.max_damping, 0.0) << "λ_max = 0 removes the damping the ramp ramps TO";
+  EXPECT_GT(g.singularity_threshold, 0.0) << "σ₀ = 0 makes AdaptiveDampingSquared return 0 always";
+
+  ctrl.LoadConfig(YAML::Load("singularity_threshold: -1.0"));
+  EXPECT_GT(ctrl.get_gains().singularity_threshold, 0.0);
+}
+
+TEST(OscConfig, RetiredDampingKeyIsIgnoredNotMapped) {
+  rtc::OperationalSpaceController::Gains init;
+  rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), init);
+  const auto before = ctrl.get_gains();
+  ctrl.LoadConfig(YAML::Load("damping: 0.01"));
+  const auto after = ctrl.get_gains();
+  EXPECT_DOUBLE_EQ(after.max_damping, before.max_damping);
+  EXPECT_DOUBLE_EQ(after.singularity_threshold, before.singularity_threshold);
 }
 
 TEST(OscConfig, OnDeviceConfigsSetResolvesTipLink) {

@@ -454,7 +454,8 @@ TEST(Clik, SetGetGainsRoundTrip) {
   rtc::ClikController::Gains gains;
   gains.kp_translation = {2.0, 3.0, 4.0};
   gains.kp_rotation = {1.5, 1.5, 1.5};
-  gains.damping = 0.02;
+  gains.max_damping = 0.02;
+  gains.singularity_threshold = 0.03;
   gains.null_kp = 0.8;
   gains.enable_null_space = true;
   gains.control_6dof = false;
@@ -467,7 +468,8 @@ TEST(Clik, SetGetGainsRoundTrip) {
   const auto rb = ctrl.get_gains();
   EXPECT_NEAR(rb.kp_translation[0], 2.0, 1e-12);
   EXPECT_NEAR(rb.kp_rotation[2], 1.5, 1e-12);
-  EXPECT_NEAR(rb.damping, 0.02, 1e-12);
+  EXPECT_NEAR(rb.max_damping, 0.02, 1e-12);
+  EXPECT_NEAR(rb.singularity_threshold, 0.03, 1e-12);
   EXPECT_TRUE(rb.enable_null_space);
   EXPECT_FALSE(rb.control_6dof);
   EXPECT_NEAR(rb.trajectory_speed, 0.2, 1e-12);
@@ -719,7 +721,8 @@ TEST(OSC, SetGetGainsRoundTrip) {
   gains.kd_pos = {0.2, 0.2, 0.2};
   gains.kp_rot = {1.0, 1.0, 1.0};
   gains.kd_rot = {0.1, 0.1, 0.1};
-  gains.damping = 0.05;
+  gains.max_damping = 0.05;
+  gains.singularity_threshold = 0.03;
   gains.enable_gravity_compensation = true;
   gains.trajectory_speed = 0.15;
   gains.trajectory_angular_speed = 0.7;
@@ -731,7 +734,8 @@ TEST(OSC, SetGetGainsRoundTrip) {
   EXPECT_NEAR(rb.kp_pos[0], 3.0, 1e-12);
   EXPECT_NEAR(rb.kd_pos[1], 0.2, 1e-12);
   EXPECT_NEAR(rb.kp_rot[2], 1.0, 1e-12);
-  EXPECT_NEAR(rb.damping, 0.05, 1e-12);
+  EXPECT_NEAR(rb.max_damping, 0.05, 1e-12);
+  EXPECT_NEAR(rb.singularity_threshold, 0.03, 1e-12);
   EXPECT_TRUE(rb.enable_gravity_compensation);
   EXPECT_DOUBLE_EQ(rb.trajectory_speed, 0.15);
 }

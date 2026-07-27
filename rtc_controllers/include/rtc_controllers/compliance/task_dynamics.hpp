@@ -4,11 +4,15 @@
 // σ_min-adaptive damped-least-squares (DLS) singularity handling. Pure Eigen,
 // RT-safe (fixed after Resize(): noexcept, no heap, no throw).
 //
-// This is NOT the OSC controller's inline block. OSC uses a *constant* damping
-// λ = max(1e-4, gains.damping); the compliance spec (§6.5) instead adapts λ²
-// to σ_min(J_S) so a well-conditioned pose adds zero damping (exact nullspace
-// orthogonality) and damping only grows inside the singular shell. OSC's
-// migration onto this helper is deferred (E-6/PROC-6 — do not touch OSC now).
+// This WAS not the OSC controller's inline block: OSC used a *constant* damping
+// λ = max(1e-4, gains.damping), where the compliance spec (§6.5) adapts λ² to
+// σ_min(J_S) so a well-conditioned pose adds zero damping (exact nullspace
+// orthogonality) and damping only grows inside the singular shell. #236 S2b
+// converged OSC onto this class; the constant-λ spelling is gone. That migration
+// is deliberately NOT bit-identical — the λ change is a law change (tier 1) and
+// materialising Λ_S rather than solving in place is rounding (tier 2, max
+// relative difference ≤ 1.7e-12). It was acceptable because the OSC adapter is
+// not wired into any bringup: runtime exposure was zero (#236 D-S2b).
 //
 // Ordering / symbols follow spec §6.4–§6.5:
 //   J_S = S·J        selected task Jacobian            (m×nv, m = task DoF)
@@ -26,6 +30,24 @@
 #include <cmath>
 
 namespace rtc::compliance {
+
+// ── The two bounds that keep §6.5 armed ─────────────────────────────────────
+// They live next to the law they protect, not in five anonymous namespaces. All
+// five task-space controllers apply the same two, and invariants.md NUM-1 names
+// them as ONE thing across all five — so five private copies means five edits to
+// change one documented invariant, and any single miss leaves a controller whose
+// singularity guard silently differs from the doc that describes it.
+//
+// λ_max (NUM-1) is floored at the point of USE as well as in LoadConfig, because
+// set_gains() writes the Gains POD straight into the SeqLock and bypasses
+// configure entirely. σ₀ (NUM-2) is floored in LoadConfig only: it parameterises
+// where the ramp starts rather than how hard it damps, and every set_gains()
+// caller in the repo is a test that supplies it explicitly.
+inline constexpr double kMinMaxDamping = 1e-4;
+
+// σ₀ ≤ 0 does not narrow the shell — AdaptiveDampingSquared short-circuits and
+// returns λ² = 0 for EVERY σ_min, i.e. no damping anywhere.
+inline constexpr double kMinSigma0 = 1e-6;
 
 // σ_min-adaptive DLS damping λ² (spec §6.5):
 //   λ² = 0                              if σ_min ≥ σ₀        (no damping)
@@ -87,10 +109,27 @@ class TaskDynamics {
   // pre-factored joint inertia M (its LLT). `llt_M` must already hold a
   // successful factorisation of the SPD matrix M(q) (nv×nv). sigma0/lambda_max
   // parameterise the §6.5 DLS. RT-safe: noexcept, no allocation.
+  //
+  // A false `ok` means Λ_S / J̄_S / Nᵀ are STALE and the caller must fall back
+  // (every caller holds a safe torque, τ = ĝ + C·v). Note what does NOT trigger
+  // it: J_S M⁻¹ J_Sᵀ is positive SEMI-definite, and Eigen's LLT accepts a
+  // singular one, so a rank-deficient pose reports ok WITH σ_min ≈ 0 — the σ_min
+  // faults are what catch that. The reachable failure is a non-finite J_S.
   [[nodiscard]] Result Compute(const Eigen::Ref<const Eigen::MatrixXd>& J_S,
                                const Eigen::LLT<Eigen::MatrixXd>& llt_M, double sigma0,
                                double lambda_max) noexcept {
     Result r;
+    // Checked explicitly because NOTHING downstream does, and every individual
+    // step launders the NaN into something that looks healthy: LLT reports
+    // Success on a matrix full of NaN (every "is this pivot positive" test is a
+    // comparison, and comparisons against NaN are false), and σ_min comes back
+    // as a clean 0.0 because std::max(0.0, NaN) returns the FIRST argument. So
+    // without this the result is r.ok == true, a finite-looking σ_min, and a
+    // Λ_S of NaN — i.e. the caller's τ = h fallback never fires and the NaN is
+    // published as a torque command. Same guard, same reason, as the kinematic
+    // sibling DifferentialIk::Compute.
+    if (!J_S.allFinite())
+      return r;  // r.ok stays false; Λ_S/J̄_S/Nᵀ keep the last good contents
     J_S_ = J_S;
 
     r.sigma_min = SmallestSingularValue(J_S_, JJt_, saes_);
@@ -108,6 +147,16 @@ class TaskDynamics {
       return r;  // r.ok stays false — caller must treat output as invalid
 
     // Λ_S = A⁻¹, then J̄_S = M⁻¹ J_Sᵀ Λ_S  (nv×m).
+    //
+    // Unconditional, including for a caller whose posture gate is shut. That was
+    // measured rather than assumed before being left alone: the impedance and
+    // cascade controllers gate this whole call, so only OSC pays, and OSC needs
+    // Λ_S every tick regardless (F = Λ_S·a_task) — the skippable part is J̄_S and
+    // Nᵀ alone. OSC's gate is `nv > 6`, so the skip could only ever fire on a
+    // non-redundant arm, where Nᵀ is nv×nv = 6×6 and the products cost O(400)
+    // flops against a 6×6 SelfAdjointEigenSolver that §6.5 makes unavoidable.
+    // A `with_nullspace` mode parameter on a shared RT helper is not worth that,
+    // and it would leave J̄_S/Nᵀ silently stale behind the accessors.
     FormJbarAndLambda();
 
     // Nᵀ = I − J_Sᵀ J̄_Sᵀ = I − J_Sᵀ (M⁻¹ J_Sᵀ Λ_S)ᵀ.  J̄_Sᵀ is m×nv.

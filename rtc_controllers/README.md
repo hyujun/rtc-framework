@@ -23,9 +23,9 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 | JointPDController | 관절 공간 | Torque (direct) | `direct/` | 어댑터 + `joint/joint_pd_law.hpp` 코어 |
 | ClikController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `task/task_vel_law.hpp` 코어 (부분) |
 | OperationalSpaceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `task/task_accel_law.hpp` 코어 (부분) |
-| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§6.2 `impedance_law` · §6.3 `inertia_shaping`) |
-| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 |
-| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 |
+| TaskImpedanceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§6.2 `impedance_law` · §6.3 `inertia_shaping`) + `joint/posture_law.hpp` |
+| TaskAdmittanceController | 태스크 공간 | Position (indirect) | `indirect/` | 어댑터 + `compliance/*` 코어 + `task/task_vel_law.hpp` + `joint/posture_law.hpp` (P 형) |
+| CascadedComplianceController | 태스크 공간 | Torque (direct) | `direct/` | 어댑터 + `compliance/*` 코어 (§7.6 `bandwidth_separation` 포함) + `joint/posture_law.hpp` |
 | GraspController | 핸드 내부 | 적응형 PI 힘 제어 | `grasp/` | **코어** (상위 컨트롤러가 멤버로 소유) |
 
 > `TaskImpedanceController` 는 Cartesian **compliance** 컨트롤러다. 기본 법칙은
@@ -85,7 +85,23 @@ RTC 프레임워크의 **제어 알고리즘 라이브러리** 패키지입니�
 > **정확히 한 번만** 소비된다: outer 가 이미 썼으므로 inner 에는 `f_ext` 항 자체가 없다
 > (§7.6 MUST-4 를 런타임 검사가 아니라 타입 레벨로). 대역폭 분리 `ω_i/ω_a ≥ 3` (MUST-1) 은
 > `Λ_S(q₀)` 가 필요해 configure 시점에 계산할 수 없으므로 **첫 seeding tick 에 1회** 평가해
-> 진단 플래그로만 보고한다 (fault 아님). 규범은 같은 문서 §3.6.
+> 진단 플래그로만 보고한다 (fault 아님). 게인이 바뀌면(`set_gains()` / 재-`LoadConfig`) 다시
+> 평가하고, 그 자세에서 Cholesky 가 실패하면 이전 수치를 남기지 않고 "평가 불가"(∞)를 발행한
+> 뒤 다음 tick 에 재시도한다. 규범은 같은 문서 §3.6.
+>
+> **코어 (#236 S6):** 그 판정식 자체는 `compliance/bandwidth_separation.hpp` 의 무상태 free
+> function `EvaluateBandwidthSeparation()` 이고 어댑터는 그것을 호출한다 — §7.6 MUST-1 은 두
+> 게인 세트와 관성에 대한 **명세의 진술**이지 이 클래스의 사정이 아니며, `Λ_S` 를 인자로 받으므로
+> 그것을 누가 만드는가(S2b 수렴점)를 선점하지 않는다. 같은 슬라이스에서 영공간 **자세 법칙**
+> `τ₀ = Kp·(q_null−q) − Kd·q̇` 도 `joint/posture_law.hpp` 로 나갔다: 이 컨트롤러와
+> `TaskImpedanceController` 의 인라인 루프가 **문자 그대로 동일**했으므로 ARCH-3 의 정확한
+> 발동 조건이었다 (`TaskAdmittanceController` 는 같은 법칙의 속도형 P — 별도 함수인 이유는
+> [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태).
+> 추출은 **bit-for-bit inert** 이며 `test_posture_core.cpp` 가 (1) 추출 이전 인라인 형태의
+> 리터럴 복사본 3개와 (2) 살아 있는 어댑터 양쪽에 대해 비트 단위로 고정한다. 두 게이트가 닫힐
+> 때 **수치적으로 inert** 하므로(자세 게이트는 부호 있는 0 만 흘리고, §7.6 게이트는 이전 값을
+> 그대로 남긴다) 토크 비교만으로는 배선이 고정되지 않는다 — 그래서 `diag.nullspace_active` 와
+> `diag.bandwidth_ratio` 를 **매 tick** 대조한다.
 
 ---
 
@@ -106,6 +122,7 @@ rtc_controllers/
 │   │   ├── task_impedance_controller.hpp -- 태스크 공간 impedance (§6.2 / §6.3)
 │   │   └── cascaded_compliance_controller.hpp -- §7.6 outer admittance + inner impedance (토크 출력)
 │   ├── joint/
+│   │   ├── posture_law.hpp                   -- 영공간 자세 법칙 코어 (header-only, 무상태) — 토크형 PD `Kp·(q_ref−q) − Kd·q̇` 와 속도형 P `Kp·(q_ref−q)` **두 함수**. 레퍼런스 `q_ref` 를 인자로 받으므로 측정 seed(impedance·cascade)와 config `safe_position`(OSC)이 한 법칙이다. P 를 PD 의 `Kd=0` 으로 흡수하지 않는 이유는 비트 동치가 깨지기 때문 (부호 있는 0 — [agent_docs/design-principles.md](../agent_docs/design-principles.md) §코어의 형태). 채널 순서·사영 Nᵀ·활성화 램프는 바인딩 몫
 │   │   └── joint_pd_law.hpp                  -- 관절 공간 PD 법칙 코어 (header-only, 무상태). 궤적 **샘플**을 받고 생성기를 소유하지 않는다 — 어느 궤적이 어느 법칙을 먹이는지는 integration 계층의 구조 결정
 │   ├── task/
 │   │   ├── task_accel_law.hpp                -- 태스크 공간 가속도 법칙 코어 (header-only, 무상태) a_task = K_p·e + K_d·(ν_d−ν) + a_ff. 게인은 **가속도형** `[1/s²]` — `impedance_law` 의 힘형과 Λ 배 차이. pose error 정의·궤적·모델은 바인딩 몫
@@ -113,6 +130,7 @@ rtc_controllers/
 │   ├── compliance/                           -- compliance 컨트롤러 공용 helper (header-only)
 │   │   ├── task_dynamics.hpp                 -- Λ_S · 동역학 일관 nullspace Nᵀ · σ_min-adaptive DLS · σ_min 정의
 │   │   ├── impedance_law.hpp                 -- §6.2 task force α·[K_p·e + K_d·(ν_d − ν)] (ν_d 명시 인자 — cascade 는 ν_c)
+│   │   ├── bandwidth_separation.hpp          -- §7.6 MUST-1 판정식 (header-only, 무상태) `min_axis ω_i/ω_a`, ω = √(K_p/Λ). **Λ_S 를 행렬 인자로** 받아 대각만 읽는다 (`.diagonal()` 을 Ref 로 받으면 stride 때문에 힙 복사가 난다 — RT-1). 언제 평가할지·어디에 발행할지는 바인딩 몫
 │   │   ├── inertia_shaping.hpp               -- §6.3 관성 성형 코어 (header-only, 무상태) f_cmd = B·f_task + (B−I)·f_ext, B = Λ_S Λ_d⁻¹ + §5.2 편차 clamp. **Λ_S 를 인자로** 받는다 (TaskDynamics 를 모른다 — S2b 수렴점 선점 금지). 스크래치는 max-size `Matrix<double,Dyn,Dyn,0,6,6>` 라 m<6 에서도 heap-free
 │   │   ├── differential_ik.hpp               -- §7.3 운동학 DLS J⁺ + 속도공간 nullspace N (task_dynamics 의 §6.5 λ 규칙 재사용)
 │   │   ├── admittance_integrator.hpp         -- §7.2 semi-implicit Euler + exp3 retract, §7.5 변위/속도 가드
@@ -313,7 +331,8 @@ q_cmd  = q_des
 |---------|------|--------|------|
 | `kp_translation` | `double[3]` | `[1.0, 1.0, 1.0]` | 병진 비례 게인 (x, y, z) [1/s] |
 | `kp_rotation` | `double[3]` | `[1.0, 1.0, 1.0]` | 회전 비례 게인 (rx, ry, rz) [1/s] — 6-DOF 모드에서만 법칙에 들어간다 |
-| `damping` | `double` | `0.01` | 의사역행렬 감쇠 계수 (lambda) — 로더가 `1e-4` 로 floor (NUM-1) |
+| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max — 로더·사용 지점 모두 `1e-4` 로 floor (NUM-1) |
+| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `1e-6` 로 floor (σ₀≤0 은 감쇠를 상시 0 으로 만든다) |
 | `null_kp` | `double` | `0.5` | 영공간 보조 태스크 게인 [1/s] |
 | `enable_null_space` | `bool` | `true` | 영공간 관절 센터링 활성화 (3-DOF 모드에서만 발동) |
 | `trajectory_speed` | `double` | `0.1` | 태스크 공간 궤적 병진 속도 (m/s) |
@@ -331,7 +350,8 @@ q_cmd  = q_des
 | `control_6dof=true` | TCP 위치 (x, y, z) | TCP 자세 (roll, pitch, yaw, ZYX) |
 
 **핵심 기법:**
-- LDLT 분해 -- 수치 안정적 의사역행렬 계산 (3x3 또는 6x6)
+- §6.5 σ_min-적응형 DLS (`compliance/differential_ik.hpp`) -- 특이점에서 멀면 감쇠가 **정확히 0**, σ₀ 셸 안에서만 λ² 가 자란다. #236 S3b 이전의 상수-λ LDLT 인라인이 여기로 수렴했다
+- 비유한 J 게이트 -- NaN 관절 상태가 FK 를 타면 `ok=false` 로 직전 J⁺ 를 보존하고 홀드 (LLT 는 NaN 행렬에 Success 를 반환하므로 `.info()` 만으로는 못 잡는다)
 - SE(3) 궤적 보간 -- log6 기반 거리 계산 + TaskSpaceTrajectory
 - Pinocchio 자코비안 -- `computeJointJacobians()` + `getJointJacobian(LOCAL_WORLD_ALIGNED)`
 - 영공간 참조: `safe_position` (디바이스 설정에서 로드) 또는 기본값 `[0, -1.57, 1.57, -1.57, -1.57, 0]`
@@ -343,7 +363,8 @@ q_cmd  = q_des
 clik_controller:
   kp_translation: [1.0, 1.0, 1.0]
   kp_rotation: [1.0, 1.0, 1.0]
-  damping: 0.01
+  max_damping: 0.05             # λ_max — §6.5 램프의 상한
+  singularity_threshold: 0.02   # σ₀ — 이 아래에서 감쇠가 붙기 시작
   trajectory_speed: 0.1
   trajectory_angular_speed: 0.5
   max_traj_velocity: 0.5
@@ -391,7 +412,8 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 | `kd_pos` | `double[3]` | `[20, 20, 20]` | 위치 미분 게인 [1/s] |
 | `kp_rot` | `double[3]` | `[50, 50, 50]` | 자세 비례 게인 [1/s²] |
 | `kd_rot` | `double[3]` | `[10, 10, 10]` | 자세 미분 게인 [1/s] |
-| `damping` | `double` | `0.01` | Λ⁻¹ 감쇠 계수 λ (특이점 강건성, `max(1e-4, ·)` floor) |
+| `max_damping` | `double` | `0.05` | §6.5 DLS 램프의 상한 λ_max (Λ⁻¹ 정칙화) — 로더·사용 지점 모두 `max(1e-4, ·)` floor (NUM-1) |
+| `singularity_threshold` | `double` | `0.02` | σ₀: `σ_min(J) < σ₀` 에서만 감쇠가 붙기 시작 — 로더가 `max(1e-6, ·)` floor |
 | `null_kp` | `double` | `0.0` | 널공간 posture 강성 [N·m/rad] (nv>6 에서만 유효) |
 | `null_kd` | `double` | `1.0` | 널공간 관절 damping [N·m·s/rad] |
 | `trajectory_speed` | `double` | `0.1` | 위치 궤적 최대 병진 속도 (m/s) |
@@ -399,14 +421,17 @@ tau       = J^T * F + h + N^T * tau0            (nv joint torque, N·m)
 | `command_type` | `string` | `"torque"` | **torque 고정** (다른 값 거부) |
 
 > `enable_gravity_compensation` 은 YAML 하위 호환을 위해 파싱만 되고 **무시**됩니다 — 토크 OSC 는 g(q)+C·v 를 항상 보상합니다 (제어 법칙상 필수). 게인 단위·의미가 바뀌었으므로 (velocity-IK → 토크 가속도형) 로봇별 재튜닝이 필요합니다.
+>
+> **은퇴한 `damping` 키 (OSC·CLIK 공통, #236 S2b+S3b):** 상수 λ 를 지정하던 이 키는 §6.5 σ_min-적응형 램프로 대체됐습니다. 남아 있으면 **경고 후 무시**되며 `max_damping` 으로 매핑되지 않습니다 — 상수 λ 와 램프의 상한은 같은 양이 아니라 어떤 매핑도 추측이 되기 때문입니다. 기존 config 는 `damping: X` 를 지우고 `max_damping` / `singularity_threshold` 를 명시하십시오. 그대로 두면 두 값 모두 기본값(0.05 / 0.02)으로 돕니다.
 
 **타겟 해석 방식:**
 - `target[0:3]` = TCP 위치 (x, y, z) (m)
 - `target[3:6]` = TCP 자세 (roll, pitch, yaw) (rad, ZYX 오일러)
 
 **핵심 기법:**
-- In-place Cholesky (LLT) — M(q) (nv×nv) 및 Λ⁻¹ (6×6) 분해, `solveInPlace` 로 RT 동적 할당 없음
-- `.info()` 검사 — M/Λ⁻¹ 이 비-PD 이면 안전 fallback (τ = h, gravity+Coriolis hold) 으로 NaN 차단
+- In-place Cholesky (LLT) — M(q) (nv×nv) 분해 후 `compliance/task_dynamics.hpp` 가 Λ_S (6×6) 를 형성, 버퍼 선할당으로 RT 동적 할당 없음
+- `.info()` + `allFinite()` 이중 검사 — 비-PD 이면 안전 fallback (τ = h) 으로, 비유한 J 이면 `ok=false` 로 차단. `.info()` 만으로는 부족한 이유는 LLT 가 NaN 행렬에 Success 를 반환하고 σ_min 마저 깨끗한 0 으로 세탁되기 때문
+- 출력단 non-finite 스크럽 — 형성 불가한 채널은 **0** 을 명령 (E-STOP 경로의 `GravityCompDampedHold` 와 동일 정책). clamp 는 NaN 을 그대로 통과시키므로 clamp *앞*에 둔다
 - 동적 일관 널공간 사영 — 여유자유도(nv>6) posture 이차 태스크
 - SO(3) 로그 맵 / SE(3) 궤적 보간 / ZYX 오일러 규약
 
@@ -419,7 +444,8 @@ operational_space_controller:
   kd_pos: [20.0, 20.0, 20.0]
   kp_rot: [50.0, 50.0, 50.0]
   kd_rot: [10.0, 10.0, 10.0]
-  damping: 0.01
+  max_damping: 0.05       # λ_max — §6.5 램프의 상한
+  singularity_threshold: 0.02  # σ₀ — 이 아래에서 감쇠가 붙기 시작
   null_kd: 1.0            # nv>6 여유자유도 널공간 damping
   estop_damping: 5.0     # 토크 E-STOP 홀드 감쇠 D [N·m·s/rad] (τ=ĝ(q)−D·q̇)
   trajectory_speed: 0.1
@@ -763,9 +789,9 @@ RTC_REGISTER_CONTROLLER(
 | 파일 | 설명 |
 |------|------|
 | `examples/controllers/indirect/p_controller.yaml` | P 제어기: kp 게인, command_type, 토픽 매핑 |
-| `examples/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, damping, null_kp, 영공간/6DOF 설정, 토픽 매핑 |
+| `examples/controllers/indirect/clik_controller.yaml` | CLIK 제어기: kp, §6.5 DLS (`max_damping`/`singularity_threshold`), null_kp, 영공간/6DOF 설정, 토픽 매핑 |
 | `examples/controllers/direct/joint_pd_controller.yaml` | JointPD 제어기: kp/kd 게인, 중력/코리올리 보상, 궤적 속도, 토픽 매핑 |
-| `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, damping, 중력 보상, 궤적 속도, 토픽 매핑 |
+| `examples/controllers/direct/operational_space_controller.yaml` | OSC 제어기: 위치/자세 PD 게인, §6.5 DLS (`max_damping`/`singularity_threshold`), 널공간 posture, 궤적 속도, 토픽 매핑 |
 
 각 YAML 파일은 `topics` 섹션에서 디바이스별 ROS2 토픽 구독/발행 매핑도 정의합니다. 이 매핑은 `RTControllerInterface::LoadConfig()`에서 공통 파싱됩니다.
 

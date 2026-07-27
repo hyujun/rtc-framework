@@ -17,6 +17,7 @@
 #include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
@@ -63,8 +64,10 @@ namespace rtc {
 ///           τ₀ = null_kp·(q_safe − q) − null_kd·v   [posture secondary task]
 /// @endcode
 ///
-/// Λ carries λ² damping on its inverse for singularity robustness. All linear
-/// solves use pre-sized in-place Cholesky factorisations (RT alloc-free).
+/// Λ, J̄ and Nᵀ are formed by `compliance::TaskDynamics` (#236 S2b), which is the
+/// same object the impedance and cascade controllers use — including its §6.5
+/// σ_min-adaptive λ². All linear solves use pre-sized in-place Cholesky
+/// factorisations (RT alloc-free).
 ///
 /// ### Target convention (`SetRobotTarget` / `/target_joint_positions` topic)
 /// The 6 values are **NOT** joint angles; they represent a full TCP pose:
@@ -81,7 +84,15 @@ class OperationalSpaceController final : public RTControllerInterface {
     std::array<double, 3> kd_pos{{20.0, 20.0, 20.0}};     ///< Cartesian position damping  [1/s]
     std::array<double, 3> kp_rot{{50.0, 50.0, 50.0}};     ///< Cartesian orientation gain  [1/s²]
     std::array<double, 3> kd_rot{{10.0, 10.0, 10.0}};     ///< Cartesian orientation damp  [1/s]
-    double damping{0.01};  ///< Damping factor λ on Λ⁻¹  (singularity robustness)
+    // §6.5 σ_min-adaptive DLS damping — the same two parameters, with the same
+    // names and defaults, the impedance/admittance/cascade controllers use. This
+    // replaced a CONSTANT λ = max(1e-4, damping) in #236 S2b: that constant was
+    // the outlier, and converging it onto compliance/task_dynamics.hpp is the
+    // point of the migration, not a side effect. Behavioural consequence, stated
+    // plainly: away from singularities λ² is now exactly 0 (it was damping²), so
+    // Λ is undamped there and the nullspace orthogonality J M⁻¹ Nᵀ = 0 is exact.
+    double max_damping{0.05};            ///< λ_max for the DLS ramp
+    double singularity_threshold{0.02};  ///< σ₀: DLS engages below this
 
     // Dynamically-consistent null-space posture task (only meaningful when
     // nv > 6; for a non-redundant 6-DOF arm Nᵀ ≈ 0 so these are inert).
@@ -126,10 +137,10 @@ class OperationalSpaceController final : public RTControllerInterface {
   void SetHandEstop(bool active) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, damping,
-  // enable_gravity(0/1),
+  // gains layout: [kp_pos×3, kd_pos×3, kp_rot×3, kd_rot×3, max_damping,
+  //                singularity_threshold, enable_gravity(0/1),
   //                trajectory_speed, trajectory_angular_speed,
-  //                max_traj_velocity, max_traj_angular_velocity] = 18 values
+  //                max_traj_velocity, max_traj_angular_velocity] = 19 values
   void LoadConfig(const YAML::Node& cfg) override;
   void OnDeviceConfigsSet() override;
 
@@ -146,6 +157,30 @@ class OperationalSpaceController final : public RTControllerInterface {
   /// Cached 6D pose error [pos; rot] from the most recent Compute().
   [[nodiscard]] std::array<double, 6> pose_error() const noexcept { return pose_error_cache_; }
 
+  /// Whether the most recent Compute() ran the null-space posture task.
+  ///
+  /// This exists because the gate is NUMERICALLY INERT when closed: with
+  /// null_kp = null_kd = 0 the posture torque is a signed zero, so Nᵀτ₀ adds
+  /// nothing and every torque lane is bit-identical whether the gate is
+  /// evaluated or not. A mutation that deletes the gain half of the condition is
+  /// therefore invisible to any output comparison — measured, not assumed
+  /// (#236 S2b, mutation M2; the same false-green
+  /// agent_docs/testing-debug.md §Revert-verification records as its third
+  /// type, and the same answer TaskAdmittanceController reached with
+  /// diag.nullspace_active). Non-RT reads only; dies with this adapter in S7.
+  ///
+  /// Atomic because "non-RT reads only" still means TWO threads: the RT tick
+  /// writes it and an off-RT caller reads it, which on a plain bool is a data
+  /// race by the memory model even though every value it can hold is valid.
+  /// Relaxed is the right order — this flag orders nothing else, and a relaxed
+  /// load/store compiles to the same instruction the plain bool did, so the RT
+  /// path pays nothing. The sibling controllers publish the same gate through
+  /// their SeqLock diagnostics POD; this adapter has none and dies in S7, so it
+  /// gets the cheapest race-free spelling rather than new infrastructure.
+  [[nodiscard]] bool nullspace_active() const noexcept {
+    return nullspace_active_.load(std::memory_order_relaxed);
+  }
+
  private:
   // ── Pinocchio via rtc_urdf_bridge ──────────────────────────────────
   std::shared_ptr<const pinocchio::Model> model_ptr_;
@@ -154,11 +189,10 @@ class OperationalSpaceController final : public RTControllerInterface {
 
   // ── Pre-allocated Eigen work buffers (all sized in the ctor; RT alloc-free) ─
   Eigen::MatrixXd J_full_;  ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
-  Eigen::MatrixXd Jt_;      ///< nv×6: Jᵀ (materialised for products / RHS)
+  Eigen::MatrixXd Jt_;      ///< nv×6: Jᵀ (materialised for the τ = Jᵀ F product)
 
   // Joint-space dynamics
   Eigen::MatrixXd M_;        ///< nv×nv: symmetrised joint-space inertia M(q)
-  Eigen::MatrixXd MinvJt_;   ///< nv×6: M⁻¹ Jᵀ (via in-place Cholesky solve)
   Eigen::VectorXd h_;        ///< nv: nonlinear effects h = C·v + g
   Eigen::VectorXd tau_out_;  ///< nv: joint torque command [N·m]
 
@@ -168,24 +202,30 @@ class OperationalSpaceController final : public RTControllerInterface {
   Eigen::VectorXd qdot_dev_;       ///< nv: measured velocity in device order
   Eigen::VectorXd tau_dev_;        ///< nv: E-STOP hold torque in device order
 
-  // Task-space quantities — fixed 6×1 / 6×6, stack-allocated
-  Eigen::Matrix<double, 6, 6> LambdaInv_;  ///< J M⁻¹ Jᵀ + λ²I  (task inertia inverse)
-  Eigen::Matrix<double, 6, 1> task_err_;   ///< [pos_error(3); rot_error(3)]
-  Eigen::Matrix<double, 6, 1> a_task_;     ///< desired task-space acceleration
-  Eigen::Matrix<double, 6, 1> F_;          ///< task-space force  F = Λ a_task
-  Eigen::Matrix<double, 6, 1> tcp_vel_;    ///< current TCP velocity = J · v
+  // Task-space quantities — fixed 6×1, stack-allocated
+  Eigen::Matrix<double, 6, 1> task_err_;  ///< [pos_error(3); rot_error(3)]
+  Eigen::Matrix<double, 6, 1> a_task_;    ///< desired task-space acceleration
+  Eigen::Matrix<double, 6, 1> tcp_vel_;   ///< current TCP velocity = J · v
+
+  // Λ_S, J̄_S and Nᵀ all come from the shared §6.4–§6.5 helper (#236 S2b); the
+  // inline 6×6 factorisation and projector this class used to own are gone.
+  compliance::TaskDynamics dyn_;
 
   // Dynamically-consistent null-space posture task
-  Eigen::MatrixXd JbarT_;  ///< 6×nv: dynamically-consistent inverse transpose Λ J M⁻¹
-  Eigen::MatrixXd NT_;     ///< nv×nv: null-space projector transpose I − Jᵀ J̄ᵀ
-  Eigen::VectorXd tau0_;   ///< nv: raw posture torque (Pinocchio order, pre-projection)
+  Eigen::VectorXd
+      q_ref_null_;  ///< nv: posture reference in DEVICE order (safe_position_, 0 past its end)
+  Eigen::VectorXd tau0_;  ///< nv: raw posture torque (Pinocchio order, pre-projection)
   Eigen::VectorXd
       tau0_dev_;  ///< nv: posture torque formed in DEVICE order (#172 A2), gathered → tau0_
   Eigen::VectorXd null_tmp_;  ///< nv: projected null-space torque
 
-  // In-place Cholesky factorisations — pre-sized, RT alloc-free.
-  Eigen::LLT<Eigen::MatrixXd> llt_M_;             ///< M(q) factor (nv×nv, SPD)
-  Eigen::LLT<Eigen::Matrix<double, 6, 6>> llt6_;  ///< Λ⁻¹ factor (6×6, SPD)
+  // In-place Cholesky factorisation of M — pre-sized, RT alloc-free. TaskDynamics
+  // takes the factor rather than M so the nv×nv work happens exactly once.
+  Eigen::LLT<Eigen::MatrixXd> llt_M_;  ///< M(q) factor (nv×nv, SPD)
+
+  /// Last tick's posture-gate state — see nullspace_active(). Written on the RT
+  /// tick, read non-RT by tests only (hence atomic, relaxed on both sides).
+  std::atomic<bool> nullspace_active_{false};
 
   // RT-thread-only working copies materialised from the SeqLock POD at the
   // start of each Compute(). Not shared across threads.
@@ -274,6 +314,11 @@ class OperationalSpaceController final : public RTControllerInterface {
   // model. Called by the ctor (full model) and by MaybeSelectSubModel (reduced
   // submodel) — off-RT only (#172 Phase 3 A1). OSC has no fixed-capacity cap.
   void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
+
+  /// Materialise `q_ref_null_` from `safe_position_`. Off-RT: both inputs change
+  /// only in InitFromModel / OnDeviceConfigsSet, so the RT tick reads the result
+  /// instead of rebuilding an identical vector every period.
+  void RebuildPostureReference();
 
   // Switch handle_ to the primary device's reduced submodel when the injected
   // system model config declares it. No system config / no match → keep the full

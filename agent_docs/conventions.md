@@ -16,7 +16,7 @@
 - **Jacobian**: Body Jacobian 기본. Spatial은 `_spatial` suffix
 - **Dynamics**: $M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = \tau$. Pinocchio RNEA 기반
 - **Variable naming**: Paper notation — `J_b` (body Jacobian), `q_d` (desired joint), `x_e` (EE pose), `K_d` (stiffness)
-- **Singularity**: Damped pseudoinverse (`damping` via YAML), near-zero division guard ([invariants.md](invariants.md) NUM-1)
+- **Singularity**: §6.5 σ_min-적응형 damped pseudoinverse (`max_damping` = λ_max, `singularity_threshold` = σ₀ via YAML — 다섯 task-space 컨트롤러 공통 키), near-zero division guard ([invariants.md](invariants.md) NUM-1)
 
 ## Code Conventions
 

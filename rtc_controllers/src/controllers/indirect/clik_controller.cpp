@@ -3,6 +3,7 @@
 #include "rtc_controllers/indirect/clik_controller.hpp"
 
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
@@ -26,7 +27,6 @@
 #pragma GCC diagnostic pop
 
 namespace rtc {
-
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 ClikController::ClikController(std::string_view urdf_path, Gains gains) : gains_lock_(gains) {
@@ -60,22 +60,18 @@ void ClikController::InitFromModel(std::shared_ptr<const pinocchio::Model> model
   // re-sized whenever the model changes, e.g. submodel selection — #172 A1).
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
   J_pos_ = Eigen::MatrixXd::Zero(3, nv);
-  JJt_ = Eigen::Matrix3d::Zero();
-  JJt_inv_ = Eigen::Matrix3d::Zero();
-  Jpinv_ = Eigen::MatrixXd::Zero(nv, 3);
-  N_ = Eigen::MatrixXd::Identity(nv, nv);
   dq_ = Eigen::VectorXd::Zero(nv);
   desired_q_ = Eigen::VectorXd::Zero(nv);
   traj_dq_ = Eigen::VectorXd::Zero(nv);
-  null_err_ = Eigen::VectorXd::Zero(nv);
-  null_err_dev_ = Eigen::VectorXd::Zero(nv);
-  null_dq_ = Eigen::VectorXd::Zero(nv);
+  null_dq_dev_ = Eigen::VectorXd::Zero(nv);
+  qdot_null_ = Eigen::VectorXd::Zero(nv);
   pos_error_ = Eigen::Vector3d::Zero();
-
-  JJt_6d_ = Eigen::Matrix<double, 6, 6>::Zero();
-  JJt_inv_6d_ = Eigen::Matrix<double, 6, 6>::Zero();
-  Jpinv_6d_ = Eigen::MatrixXd::Zero(nv, 6);
   pos_error_6d_ = Eigen::Matrix<double, 6, 1>::Zero();
+
+  // Both task dimensions are sized here, off-RT: `control_6dof` is a SeqLock
+  // gain, so which one a tick uses is not known until that tick reads it.
+  ik_6d_.Resize(nv, 6);
+  ik_3d_.Resize(nv, 3);
 }
 
 void ClikController::MaybeSelectSubModel() {
@@ -417,15 +413,56 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
   const Eigen::Matrix3d& R_traj = traj_state_.pose.rotation();
   const Eigen::Vector3d nu_ff_lin = R_traj * traj_state_.velocity.linear();
 
-  // ── Step 4 & 5: Damped pseudoinverse & Primary task ──────────────────────
+  // ── Step 4, 5 & 6: DLS pseudoinverse, primary task, null-space task ───────
+  // #236 S3b (issue #258): these two branches used to inline a constant-λ DLS
+  // each — LDLT of J Jᵀ + λ²I, the inverse materialised, then Jᵀ·(J Jᵀ)⁻¹. They
+  // are now compliance::DifferentialIk, the same helper TaskAdmittanceController
+  // uses. Three deliberate changes, only the first of which is a law change
+  // (D-S2b, option (b) — the convergence is the point of the migration):
+  //   • λ² is σ_min-adaptive (§6.5) instead of a constant damping². Away from
+  //     singularities the damping is now exactly 0.
+  //   • LLT of a solve, not LDLT of a materialised inverse, at dynamic rather
+  //     than fixed size. Pure reassociation: max relative difference ≤ 1.7e-12.
+  //   • the posture gain multiplies BEFORE the projection (N·(kp·Δq)) rather
+  //     than after (kp·(N·Δq)). Algebraically identical, bitwise not — a probe
+  //     measured 68.36% of doubles differing at the last bits. Multiplying first
+  //     is what lets the posture term be joint::ComputePostureVelocity, the same
+  //     law the other four consumers call; #236 S6 measured this difference and
+  //     deferred the choice to this slice rather than pre-empt it.
+  // `ok == false` means J⁺/N are STALE (a non-finite J, i.e. a NaN joint state
+  // reaching FK). This controller integrates its output into a position command,
+  // so a stale inverse would be latched forever: hold instead, exactly as
+  // TaskAdmittanceController does. The inline LDLT never checked .info() at all.
+  //
   //     The trailing traj_dq_ assignment in each branch is the feedforward-only
   //     lane (for logging): the same ν_ff through J⁺, with no P term.
+  const bool nullspace_active = use_null_space && !use_6dof;
+  if (nullspace_active) {
+    // Posture task — joint/posture_law.hpp (#236 S6). The P form is its OWN core
+    // function, not the PD one with K_d = 0: that reduction flips the sign of a
+    // zero, so it is not bitwise inert. Reference and measurement are both
+    // device-order here, so the law runs in device order and the gather to
+    // Pinocchio order happens on the RESULT — the projector N is Pinocchio-
+    // ordered (#172 A2). Identity order → memcpy (unchanged).
+    const auto nvu = static_cast<std::size_t>(nv);
+    joint::ComputePostureVelocity(
+        gains.null_kp,
+        joint::PostureInputs{{slot.null_target.data(), slot.null_target.size()},
+                             {dev0.positions.data(), dev0.positions.size()},
+                             {}},
+        nvu, {null_dq_dev_.data(), nvu});
+    handle_->ReorderInput(std::span<const double>(null_dq_dev_.data(), nvu), qdot_null_);
+  } else {
+    qdot_null_.setZero();
+  }
+
+  // Floor λ_max at the point of use so the singularity guard holds regardless of
+  // how the gains were set (LoadConfig floors too, but set_gains() bypasses
+  // it) — NUM-1.
+  const double max_damping = std::max(compliance::kMinMaxDamping, gains.max_damping);
   if (use_6dof) {
-    JJt_6d_.noalias() = J_full_ * J_full_.transpose();
-    JJt_6d_.diagonal().array() += gains.damping * gains.damping;
-    ldlt_6d_.compute(JJt_6d_);
-    JJt_inv_6d_.noalias() = ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
-    Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
+    const compliance::DifferentialIk::Result r =
+        ik_6d_.Compute(J_full_, gains.singularity_threshold, max_damping);
 
     Eigen::Matrix<double, 6, 1> nu_ff_6d;
     nu_ff_6d.head<3>() = nu_ff_lin;
@@ -434,40 +471,33 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     const Eigen::Matrix<double, 6, 1> task_vel_6d = rtc::task::ComputeTaskVelocity(
         rtc::task::TaskVelParams{gains.kp_translation, gains.kp_rotation}, pos_error_6d_, nu_ff_6d);
 
-    dq_.noalias() = Jpinv_6d_ * task_vel_6d;
-    traj_dq_.noalias() = Jpinv_6d_ * nu_ff_6d;
+    if (r.ok) {
+      // No posture term in this mode — the gate above is `!use_6dof`, so
+      // qdot_null_ is identically zero here. The two-argument overload is what
+      // the pre-migration 6-DOF branch was (its null-space block sat outside the
+      // branch entirely); routing it through the three-argument form added an
+      // nv×nv product against a zero vector on every tick, forever.
+      ik_6d_.Solve(task_vel_6d, dq_);
+      traj_dq_.noalias() = ik_6d_.PseudoInverse() * nu_ff_6d;
+    } else {
+      dq_.setZero();
+      traj_dq_.setZero();
+    }
   } else {
     // 3D version
-    JJt_.noalias() = J_pos_ * J_pos_.transpose();
-    JJt_.diagonal().array() += gains.damping * gains.damping;
-    ldlt_.compute(JJt_);
-    JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
-    Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
+    const compliance::DifferentialIk::Result r =
+        ik_3d_.Compute(J_pos_, gains.singularity_threshold, max_damping);
 
     const Eigen::Vector3d task_vel =
         rtc::task::ComputeTranslationVelocity(gains.kp_translation, pos_error_, nu_ff_lin);
-    dq_.noalias() = Jpinv_ * task_vel;
-    traj_dq_.noalias() = Jpinv_ * nu_ff_lin;
-  }
 
-  // ── Step 6: Null-space secondary task ────────────────────────────────────
-  if (use_null_space && !use_6dof) {
-    N_.setIdentity();
-    N_.noalias() -= Jpinv_ * J_pos_;
-
-    // null_target/dev positions are device-order; N_ is Pinocchio-order (Jpinv_/
-    // J_pos_ have Pinocchio columns). Form the posture error in device order, then
-    // gather to Pinocchio order before the N_ product so the projection is
-    // consistent (#172 A2). Identity order → memcpy (unchanged).
-    for (int i = 0; i < nv; ++i) {
-      null_err_dev_[static_cast<Eigen::Index>(i)] = slot.null_target[static_cast<std::size_t>(i)] -
-                                                    dev0.positions[static_cast<std::size_t>(i)];
+    if (r.ok) {
+      ik_3d_.Solve(task_vel, qdot_null_, dq_);
+      traj_dq_.noalias() = ik_3d_.PseudoInverse() * nu_ff_lin;
+    } else {
+      dq_.setZero();
+      traj_dq_.setZero();
     }
-    handle_->ReorderInput(
-        std::span<const double>(null_err_dev_.data(), static_cast<std::size_t>(nv)), null_err_);
-    null_dq_.noalias() = N_ * null_err_;
-    null_dq_ *= gains.null_kp;
-    dq_ += null_dq_;
   }
 
   // ── Step 7: Clamp joint velocity and integrate ────────────────────────────
@@ -659,11 +689,34 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   load3(cfg["kp_translation"], g.kp_translation);
   load3(cfg["kp_rotation"], g.kp_rotation);
 
+  if (cfg["max_damping"]) {
+    // Floor the damped-least-squares λ_max so a zero/negative value cannot remove
+    // the singularity guard (NUM-1); a singular J Jᵀ would otherwise yield a NaN
+    // joint-velocity command. `max_damping` replaced the constant-λ `damping` key
+    // in #236 S3b — same role in the law, now the ceiling of the §6.5 ramp rather
+    // than a constant, and the same key the other three task-space controllers
+    // already use. Mirrors the OperationalSpaceController floor.
+    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
+  }
+  if (cfg["singularity_threshold"]) {
+    // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
+    // σ₀ ≤ 0, so a zero here removes the §6.5 ramp entirely instead of narrowing
+    // it — and with λ² ≡ 0 a singular pose makes DifferentialIk report !ok, which
+    // this controller answers by holding at zero velocity every tick. Clamped the
+    // same way by the other three task-space controllers.
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+  }
   if (cfg["damping"]) {
-    // Floor the damped-least-squares λ so a zero/negative value cannot remove
-    // the singularity guard (NUM-1); a singular JJt_ would otherwise yield a
-    // NaN joint-velocity command. Mirrors the OperationalSpaceController floor.
-    g.damping = std::max(1e-4, cfg["damping"].as<double>());
+    // Retired in #236 S3b (#258). LoadConfig ignores unknown keys, so without
+    // this an existing deployment config would keep parsing clean while its
+    // singularity behaviour silently changed. Warned and ignored rather than
+    // mapped onto max_damping: a constant λ and the ceiling of a σ_min-adaptive
+    // ramp are not the same quantity, so any mapping would be a guess.
+    RCLCPP_WARN(rclcpp::get_logger("ClikController"),
+                "[ClikController] 'damping' is retired (#236 S3b) and IGNORED — use 'max_damping' "
+                "(λ_max, default 0.05) and 'singularity_threshold' (σ₀, default 0.02); see "
+                "rtc_controllers/README.md");
   }
   if (cfg["null_kp"]) {
     g.null_kp = cfg["null_kp"].as<double>();

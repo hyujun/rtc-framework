@@ -3,6 +3,7 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 #include "rtc_math/se3/wrench.hpp"
 
@@ -31,12 +32,6 @@ namespace {
 // DEGRADED → RUNNING recovery dwell (§10.6 default). Not a per-robot tuning knob
 // in slice 1 — promoted to a Gains field only if a deployment needs it.
 constexpr double kDegradedRecoveryTime = 0.5;  // s
-// NUM-1: the DLS damping guard must not be removable. λ_max = 0 leaves Λ_S⁻¹
-// undamped at a rank-deficient pose, so the Cholesky fails and both the inertia
-// shaping and the nullspace projector die at exactly the configuration §6.5
-// exists to survive. Floored at the point of USE, not only in LoadConfig —
-// set_gains() writes the POD straight into the SeqLock and bypasses configure.
-constexpr double kMinMaxDamping = 1e-4;
 }  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -410,9 +405,8 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
   // The §6.2 law itself lives in compliance/impedance_law.hpp — shared with the
   // §7.6 cascade rather than copied into it (#236 D18, P5).
   J_S_ = J_full_.topRows(m);
-  const Eigen::Matrix<double, 6, 1> f_task = compliance::ComputeImpedanceForce(
-      compliance::ImpedanceParams{gains.kp_pos, gains.kd_pos, gains.kp_rot, gains.kd_rot}, e,
-      tcp_vel_, nu_d, alpha, m);
+  const Eigen::Matrix<double, 6, 1> f_task =
+      compliance::ComputeImpedanceForce(gains.impedance, e, tcp_vel_, nu_d, alpha, m);
 
   // ── Joint-space gravity ĝ(q) (always needed: comp + E-STOP hold) ─────────
   handle_->ComputeGeneralizedGravity(q_span);
@@ -453,7 +447,7 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
       // NUM-1 at the point of use: LoadConfig floors max_damping too, but
       // set_gains() writes the POD straight into the SeqLock and bypasses it.
       const compliance::TaskDynamics::Result r = dyn_.Compute(
-          J_S_, llt_M_, gains.singularity_threshold, std::max(kMinMaxDamping, gains.max_damping));
+          J_S_, llt_M_, gains.singularity_threshold, std::max(compliance::kMinMaxDamping, gains.max_damping));
       dyn_ok = r.ok;
       sigma_min = r.sigma_min;
       lambda_sq = r.lambda_sq;
@@ -469,9 +463,16 @@ ControllerOutput TaskImpedanceController::Compute(const ControllerState& state) 
         diag.inertia_clamped = shaped.clamped;
       }
       if (dyn_ok && nullspace_active) {
-        for (int i = 0; i < nv; ++i)
-          tau_posture_dev_(i) =
-              gains.nullspace_kp * (q_null_(i) - q_dev_(i)) - gains.nullspace_kd * qdot_dev_(i);
+        // Posture task — joint/posture_law.hpp (#236 S6). This loop and the
+        // cascade's were character-for-character identical, which is the ARCH-3
+        // trigger the extraction resolves; the reference is an argument so the
+        // measured seed here and the OSC's configured posture are one law.
+        const auto nvu = static_cast<std::size_t>(nv);
+        joint::ComputePostureTorque(
+            gains.nullspace_kp, gains.nullspace_kd,
+            joint::PostureInputs{
+                {q_null_.data(), nvu}, {q_dev_.data(), nvu}, {qdot_dev_.data(), nvu}},
+            nvu, {tau_posture_dev_.data(), nvu});
         // Posture is device-order; gather to Pinocchio order before the (Pinocchio)
         // projector Nᵀ. Identity order → memcpy (unchanged).
         handle_->ReorderInput(
@@ -782,20 +783,20 @@ void TaskImpedanceController::LoadConfig(const YAML::Node& cfg) {
       for (std::size_t i = 0; i < 3; ++i)
         arr[i] = n[i].as<double>();
   };
-  load3(cfg["kp_pos"], g.kp_pos);
-  load3(cfg["kd_pos"], g.kd_pos);
-  load3(cfg["kp_rot"], g.kp_rot);
-  load3(cfg["kd_rot"], g.kd_rot);
+  load3(cfg["kp_pos"], g.impedance.kp_pos);
+  load3(cfg["kd_pos"], g.impedance.kd_pos);
+  load3(cfg["kp_rot"], g.impedance.kp_rot);
+  load3(cfg["kd_rot"], g.impedance.kd_rot);
   if (cfg["nullspace_stiffness"])
     g.nullspace_kp = cfg["nullspace_stiffness"].as<double>();
   if (cfg["nullspace_damping"])
     g.nullspace_kd = cfg["nullspace_damping"].as<double>();
   if (cfg["singularity_threshold"])
-    g.singularity_threshold = std::max(1e-6, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   if (cfg["singularity_critical"])
     g.singularity_critical = std::max(0.0, cfg["singularity_critical"].as<double>());
   if (cfg["max_damping"])
-    g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
+    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
   if (cfg["joint_limit_margin"])
     g.joint_limit_margin = cfg["joint_limit_margin"].as<double>();
   if (cfg["joint_limit_stiffness"])
