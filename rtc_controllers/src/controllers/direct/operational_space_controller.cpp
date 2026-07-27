@@ -74,6 +74,27 @@ void OperationalSpaceController::InitFromModel(std::shared_ptr<const pinocchio::
   // (both allocate their storage once, here — off-RT).
   llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv);
   dyn_.Resize(nv, 6);
+
+  // The model may have changed size (submodel selection), so the posture
+  // reference is re-materialised against the new nv. Called from here AND from
+  // OnDeviceConfigsSet because either can run last: the ctor reaches this with
+  // safe_position_ still empty, and LoadConfig can re-enter InitFromModel long
+  // after the device configs were set.
+  RebuildPostureReference();
+}
+
+void OperationalSpaceController::RebuildPostureReference() {
+  // Off-RT materialisation of q_ref with this binding's tail policy: a channel
+  // with no configured safe_position centres on 0 rad, which is a posture
+  // reference, not "no posture task" (the law's own short-span policy is to zero
+  // the torque, so the fallback cannot be expressed by handing it a shorter
+  // span). safe_position_ changes only in OnDeviceConfigsSet, so the RT tick was
+  // rebuilding an identical vector every period.
+  const auto nvu = static_cast<std::size_t>(handle_->nv());
+  for (std::size_t ui = 0; ui < nvu; ++ui) {
+    q_ref_null_[static_cast<Eigen::Index>(ui)] =
+        (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
+  }
 }
 
 void OperationalSpaceController::MaybeSelectSubModel() {
@@ -158,6 +179,7 @@ void OperationalSpaceController::OnDeviceConfigsSet() {
   if (const auto nvz = static_cast<std::size_t>(handle_->nv()); max_joint_torque_.size() < nvz) {
     max_joint_torque_.resize(nvz, kDefaultMaxJointTorque);
   }
+  RebuildPostureReference();  // safe_position_ is final here
 }
 
 // ── RTControllerInterface implementation ────────────────────────────────────
@@ -438,8 +460,9 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     // Floor λ_max at the point of use so the singularity guard holds regardless
     // of how the gains were set (LoadConfig floors too, but set_gains()/the ctor
     // default bypass it) — NUM-1.
-    const compliance::TaskDynamics::Result r = dyn_.Compute(
-        J_full_, llt_M_, gains.singularity_threshold, std::max(compliance::kMinMaxDamping, gains.max_damping));
+    const compliance::TaskDynamics::Result r =
+        dyn_.Compute(J_full_, llt_M_, gains.singularity_threshold,
+                     std::max(compliance::kMinMaxDamping, gains.max_damping));
     dyn_ok = r.ok;
   }
 
@@ -459,16 +482,11 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     const bool nullspace_active = (gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6;
     nullspace_active_.store(nullspace_active, std::memory_order_relaxed);
     if (nullspace_active) {
-      // Materialise the reference with this binding's tail policy BEFORE the
-      // law sees it: a channel with no configured safe_position centres on 0
-      // rad, which is a posture reference, not "no posture task". The law's own
-      // short-span policy is to zero the torque, so the fallback cannot be
-      // expressed by simply handing it a shorter span.
+      // q_ref_null_ already holds the reference, tail policy and all —
+      // RebuildPostureReference() materialises it off-RT because safe_position_
+      // changes only in OnDeviceConfigsSet, so rebuilding it here produced an
+      // identical vector every tick.
       const auto nvu = static_cast<std::size_t>(nv);
-      for (std::size_t ui = 0; ui < nvu; ++ui) {
-        q_ref_null_[static_cast<Eigen::Index>(ui)] =
-            (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
-      }
       // The law itself is joint/posture_law.hpp (#236 S6). S6 deliberately left
       // OSC on its inline copy because migrating it meant touching the Λ/Nᵀ
       // block whose convergence point was undecided; S2b decides it, so the last
@@ -720,7 +738,8 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
     // provide unconditionally. The other three task-space controllers clamp this
     // key identically; the migration's "same names, same defaults" claim only
     // holds if the VALIDATION converges too.
-    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   }
   if (cfg["damping"]) {
     // Retired in #236 S2b. LoadConfig ignores unknown keys, so without this an

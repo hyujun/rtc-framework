@@ -512,7 +512,9 @@ class ClikShim {
           TaskVelParams{g.kp_translation, g.kp_rotation}, pos_error_6d_, nu_ff_6d);
 
       if (r.ok) {
-        ik_6d_.Solve(task_vel_6d, qdot_null_, dq_);
+        // Mirrors the adapter: no posture term exists in 6-DOF mode, so the
+        // two-argument overload (the pre-migration shape) is what runs.
+        ik_6d_.Solve(task_vel_6d, dq_);
         traj_dq_.noalias() = ik_6d_.PseudoInverse() * nu_ff_6d;
       } else {
         dq_.setZero();

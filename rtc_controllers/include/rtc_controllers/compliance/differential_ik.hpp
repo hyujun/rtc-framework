@@ -125,6 +125,21 @@ class DifferentialIk {
     qdot_out.noalias() += N_ * qdot_null;
   }
 
+  /// q̇ = J⁺·twist — the form for a caller with NO posture task at all.
+  ///
+  /// Not a micro-optimisation of `Solve(twist, zero, out)`, and not equivalent to
+  /// it: `+= N·0` is a full nv×nv product against a known-zero vector on the RT
+  /// path, and adding its result is not the identity on a signed zero
+  /// (−0.0 + 0.0 = +0.0), so the two spellings differ bitwise. This overload is
+  /// the shape CLIK's 6-DOF branch had before #236 S3b — that branch never had a
+  /// posture term (the null-space block was gated on `!use_6dof` and sat outside
+  /// it), so routing it through the three-argument form was an artefact of the
+  /// migration rather than a property of the law.
+  void Solve(const Eigen::Ref<const Eigen::VectorXd>& twist,
+             Eigen::Ref<Eigen::VectorXd> qdot_out) const noexcept {
+    qdot_out.noalias() = Jpinv_ * twist;
+  }
+
   [[nodiscard]] const Eigen::MatrixXd& PseudoInverse() const noexcept { return Jpinv_; }
 
   [[nodiscard]] const Eigen::MatrixXd& NullspaceProjector() const noexcept { return N_; }

@@ -472,7 +472,12 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
         rtc::task::TaskVelParams{gains.kp_translation, gains.kp_rotation}, pos_error_6d_, nu_ff_6d);
 
     if (r.ok) {
-      ik_6d_.Solve(task_vel_6d, qdot_null_, dq_);
+      // No posture term in this mode — the gate above is `!use_6dof`, so
+      // qdot_null_ is identically zero here. The two-argument overload is what
+      // the pre-migration 6-DOF branch was (its null-space block sat outside the
+      // branch entirely); routing it through the three-argument form added an
+      // nv×nv product against a zero vector on every tick, forever.
+      ik_6d_.Solve(task_vel_6d, dq_);
       traj_dq_.noalias() = ik_6d_.PseudoInverse() * nu_ff_6d;
     } else {
       dq_.setZero();
@@ -699,7 +704,8 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
     // it — and with λ² ≡ 0 a singular pose makes DifferentialIk report !ok, which
     // this controller answers by holding at zero velocity every tick. Clamped the
     // same way by the other three task-space controllers.
-    g.singularity_threshold = std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
+    g.singularity_threshold =
+        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
   }
   if (cfg["damping"]) {
     // Retired in #236 S3b (#258). LoadConfig ignores unknown keys, so without

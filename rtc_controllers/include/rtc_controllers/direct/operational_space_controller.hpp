@@ -315,6 +315,11 @@ class OperationalSpaceController final : public RTControllerInterface {
   // submodel) — off-RT only (#172 Phase 3 A1). OSC has no fixed-capacity cap.
   void InitFromModel(std::shared_ptr<const pinocchio::Model> model);
 
+  /// Materialise `q_ref_null_` from `safe_position_`. Off-RT: both inputs change
+  /// only in InitFromModel / OnDeviceConfigsSet, so the RT tick reads the result
+  /// instead of rebuilding an identical vector every period.
+  void RebuildPostureReference();
+
   // Switch handle_ to the primary device's reduced submodel when the injected
   // system model config declares it. No system config / no match → keep the full
   // model from the ctor (no regression).

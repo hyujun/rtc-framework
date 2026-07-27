@@ -958,6 +958,7 @@ TEST(MigratedRtSafety, IsAllocationFree) {
 
     // CLIK's migrated Steps 4-6, both branches.
     const compliance::DifferentialIk::Result r6 = ik_6d.Compute(s.J_full, 0.02, 0.05);
+    ik_6d.Solve(twist6, dq);  // 6-DOF mode: the no-posture overload, as the adapter calls it
     ik_6d.Solve(twist6, qdot_null, dq);
     traj_dq.noalias() = ik_6d.PseudoInverse() * twist6;
 
