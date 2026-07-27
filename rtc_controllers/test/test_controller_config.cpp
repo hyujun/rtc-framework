@@ -468,7 +468,8 @@ TEST(ClikConfig, LoadConfigParsesAllGains) {
   YAML::Node cfg = YAML::Load(R"(
 kp_translation: [2.0, 3.0, 4.0]
 kp_rotation: [1.1, 1.2, 1.3]
-damping: 0.02
+max_damping: 0.02
+singularity_threshold: 0.03
 null_kp: 0.8
 enable_null_space: true
 control_6dof: true
@@ -484,7 +485,8 @@ command_type: position
   EXPECT_NEAR(g.kp_translation[0], 2.0, 1e-12);
   EXPECT_NEAR(g.kp_translation[2], 4.0, 1e-12);
   EXPECT_NEAR(g.kp_rotation[1], 1.2, 1e-12);
-  EXPECT_NEAR(g.damping, 0.02, 1e-12);
+  EXPECT_NEAR(g.max_damping, 0.02, 1e-12);
+  EXPECT_NEAR(g.singularity_threshold, 0.03, 1e-12);
   EXPECT_NEAR(g.null_kp, 0.8, 1e-12);
   EXPECT_TRUE(g.enable_null_space);
   EXPECT_TRUE(g.control_6dof);
@@ -499,7 +501,8 @@ TEST(ClikConfig, LoadConfigNullNodeKeepsDefaults) {
   rtc::ClikController ctrl(GetTestUrdfPath(), init);
   const auto before = ctrl.get_gains();
   ctrl.LoadConfig(UndefinedNode());
-  EXPECT_DOUBLE_EQ(ctrl.get_gains().damping, before.damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().max_damping, before.max_damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().singularity_threshold, before.singularity_threshold);
 }
 
 TEST(ClikConfig, OnDeviceConfigsSetResolvesTipAndSafePosition) {
@@ -660,7 +663,8 @@ kp_pos: [3.0, 3.0, 3.0]
 kd_pos: [0.2, 0.2, 0.2]
 kp_rot: [1.0, 1.0, 1.0]
 kd_rot: [0.1, 0.1, 0.1]
-damping: 0.05
+max_damping: 0.05
+singularity_threshold: 0.03
 enable_gravity_compensation: true
 trajectory_speed: 0.15
 trajectory_angular_speed: 0.7
@@ -675,7 +679,8 @@ command_type: torque
   EXPECT_NEAR(g.kd_pos[1], 0.2, 1e-12);
   EXPECT_NEAR(g.kp_rot[2], 1.0, 1e-12);
   EXPECT_NEAR(g.kd_rot[0], 0.1, 1e-12);
-  EXPECT_NEAR(g.damping, 0.05, 1e-12);
+  EXPECT_NEAR(g.max_damping, 0.05, 1e-12);
+  EXPECT_NEAR(g.singularity_threshold, 0.03, 1e-12);
   EXPECT_TRUE(g.enable_gravity_compensation);
   EXPECT_NEAR(g.trajectory_speed, 0.15, 1e-12);
   EXPECT_NEAR(g.max_traj_angular_velocity, 1.2, 1e-12);
@@ -687,7 +692,8 @@ TEST(OscConfig, LoadConfigNullNodeKeepsDefaults) {
   rtc::OperationalSpaceController ctrl(GetTestUrdfPath(), init);
   const auto before = ctrl.get_gains();
   ctrl.LoadConfig(UndefinedNode());
-  EXPECT_DOUBLE_EQ(ctrl.get_gains().damping, before.damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().max_damping, before.max_damping);
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().singularity_threshold, before.singularity_threshold);
 }
 
 TEST(OscConfig, OnDeviceConfigsSetResolvesTipLink) {

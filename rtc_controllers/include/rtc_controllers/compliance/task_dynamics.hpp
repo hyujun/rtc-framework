@@ -4,11 +4,15 @@
 // σ_min-adaptive damped-least-squares (DLS) singularity handling. Pure Eigen,
 // RT-safe (fixed after Resize(): noexcept, no heap, no throw).
 //
-// This is NOT the OSC controller's inline block. OSC uses a *constant* damping
-// λ = max(1e-4, gains.damping); the compliance spec (§6.5) instead adapts λ²
-// to σ_min(J_S) so a well-conditioned pose adds zero damping (exact nullspace
-// orthogonality) and damping only grows inside the singular shell. OSC's
-// migration onto this helper is deferred (E-6/PROC-6 — do not touch OSC now).
+// This WAS not the OSC controller's inline block: OSC used a *constant* damping
+// λ = max(1e-4, gains.damping), where the compliance spec (§6.5) adapts λ² to
+// σ_min(J_S) so a well-conditioned pose adds zero damping (exact nullspace
+// orthogonality) and damping only grows inside the singular shell. #236 S2b
+// converged OSC onto this class; the constant-λ spelling is gone. That migration
+// is deliberately NOT bit-identical — the λ change is a law change (tier 1) and
+// materialising Λ_S rather than solving in place is rounding (tier 2, max
+// relative difference ≤ 1.7e-12). It was acceptable because the OSC adapter is
+// not wired into any bringup: runtime exposure was zero (#236 D-S2b).
 //
 // Ordering / symbols follow spec §6.4–§6.5:
 //   J_S = S·J        selected task Jacobian            (m×nv, m = task DoF)

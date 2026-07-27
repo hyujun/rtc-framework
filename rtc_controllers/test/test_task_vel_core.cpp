@@ -62,7 +62,9 @@
 // eigen_assert, and a later include would be silently ignored (its own #error
 // enforces the ordering). Everything below pulls Eigen, so it comes first.
 #include "rtc_base/testing/no_malloc_scope.hpp"
+#include "rtc_controllers/compliance/differential_ik.hpp"
 #include "rtc_controllers/indirect/clik_controller.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/task/task_vel_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
@@ -277,15 +279,13 @@ class ClikShim {
 
     J_full_ = Eigen::MatrixXd::Zero(6, nv_);
     J_pos_ = Eigen::MatrixXd::Zero(3, nv_);
-    Jpinv_ = Eigen::MatrixXd::Zero(nv_, 3);
-    Jpinv_6d_ = Eigen::MatrixXd::Zero(nv_, 6);
-    N_ = Eigen::MatrixXd::Identity(nv_, nv_);
     dq_ = Eigen::VectorXd::Zero(nv_);
     desired_q_ = Eigen::VectorXd::Zero(nv_);
     traj_dq_ = Eigen::VectorXd::Zero(nv_);
-    null_err_ = Eigen::VectorXd::Zero(nv_);
-    null_err_dev_ = Eigen::VectorXd::Zero(nv_);
-    null_dq_ = Eigen::VectorXd::Zero(nv_);
+    null_dq_dev_ = Eigen::VectorXd::Zero(nv_);
+    qdot_null_ = Eigen::VectorXd::Zero(nv_);
+    ik_6d_.Resize(nv_, 6);
+    ik_3d_.Resize(nv_, 3);
   }
 
   [[nodiscard]] int nv() const { return nv_; }
@@ -471,15 +471,37 @@ class ClikShim {
     const Eigen::Matrix3d& R_traj = traj_state_.pose.rotation();
     const Eigen::Vector3d nu_ff_lin = R_traj * traj_state_.velocity.linear();
 
-    // ── Damped pseudoinverse + THE CORE (adapter :420-451). The trailing
-    //     traj_dq_ line in each branch is the feedforward-only logging lane —
-    //     NOT routed through the core: it has no P term, so it is not this law.
+    // ── Null-space secondary task — 3-DOF mode only. Since #236 S3b the gain
+    //     multiplies BEFORE the projection, so the posture term is formed here
+    //     and handed to DifferentialIk::Solve rather than scaled after N.
+    const auto nvu = static_cast<std::size_t>(nv_);
+    const bool nullspace_active = use_null_space && !use_6dof;
+    if (nullspace_active) {
+      rtc::joint::ComputePostureVelocity(
+          g.null_kp,
+          rtc::joint::PostureInputs{{null_target_.data(), null_target_.size()},
+                                    {dev0.positions.data(), dev0.positions.size()},
+                                    {}},
+          nvu, {null_dq_dev_.data(), nvu});
+      handle_->ReorderInput(std::span<const double>(null_dq_dev_.data(), nvu), qdot_null_);
+      ++null_hits_;
+    } else {
+      qdot_null_.setZero();
+    }
+
+    // ── Damped pseudoinverse + THE CORE. Since #236 S3b the DLS is
+    //     compliance::DifferentialIk, so this mirrors the adapter's CALLS; the
+    //     literal pre-extraction spelling lives in the tier-2 oracle in
+    //     test_dls_convergence.cpp. The trailing traj_dq_ line in each branch is
+    //     the feedforward-only logging lane — NOT routed through the core: it
+    //     has no P term, so it is not this law.
+    const double max_damping = std::max(1e-4, g.max_damping);
     if (use_6dof) {
-      JJt_6d_.noalias() = J_full_ * J_full_.transpose();
-      JJt_6d_.diagonal().array() += g.damping * g.damping;
-      ldlt_6d_.compute(JJt_6d_);
-      JJt_inv_6d_.noalias() = ldlt_6d_.solve(Eigen::Matrix<double, 6, 6>::Identity());
-      Jpinv_6d_.noalias() = J_full_.transpose() * JJt_inv_6d_;
+      const rtc::compliance::DifferentialIk::Result r =
+          ik_6d_.Compute(J_full_, g.singularity_threshold, max_damping);
+      last_ok_ = r.ok;
+      last_sigma_min_ = r.sigma_min;
+      last_lambda_sq_ = r.lambda_sq;
 
       Eigen::Matrix<double, 6, 1> nu_ff_6d;
       nu_ff_6d.head<3>() = nu_ff_lin;
@@ -488,40 +510,34 @@ class ClikShim {
       const Eigen::Matrix<double, 6, 1> task_vel_6d = ComputeTaskVelocity(
           TaskVelParams{g.kp_translation, g.kp_rotation}, pos_error_6d_, nu_ff_6d);
 
-      dq_.noalias() = Jpinv_6d_ * task_vel_6d;
-      traj_dq_.noalias() = Jpinv_6d_ * nu_ff_6d;
+      if (r.ok) {
+        ik_6d_.Solve(task_vel_6d, qdot_null_, dq_);
+        traj_dq_.noalias() = ik_6d_.PseudoInverse() * nu_ff_6d;
+      } else {
+        dq_.setZero();
+        traj_dq_.setZero();
+      }
     } else {
-      JJt_.noalias() = J_pos_ * J_pos_.transpose();
-      JJt_.diagonal().array() += g.damping * g.damping;
-      ldlt_.compute(JJt_);
-      JJt_inv_.noalias() = ldlt_.solve(Eigen::Matrix3d::Identity());
-      Jpinv_.noalias() = J_pos_.transpose() * JJt_inv_;
+      const rtc::compliance::DifferentialIk::Result r =
+          ik_3d_.Compute(J_pos_, g.singularity_threshold, max_damping);
+      last_ok_ = r.ok;
+      last_sigma_min_ = r.sigma_min;
+      last_lambda_sq_ = r.lambda_sq;
 
       const Eigen::Vector3d task_vel =
           ComputeTranslationVelocity(g.kp_translation, pos_error_, nu_ff_lin);
 
-      dq_.noalias() = Jpinv_ * task_vel;
-      traj_dq_.noalias() = Jpinv_ * nu_ff_lin;
-    }
-
-    // ── Null-space secondary task (adapter :454-472) — 3-DOF mode only ──────
-    if (use_null_space && !use_6dof) {
-      N_.setIdentity();
-      N_.noalias() -= Jpinv_ * J_pos_;
-
-      for (int i = 0; i < nv_; ++i) {
-        null_err_dev_[static_cast<Eigen::Index>(i)] =
-            null_target_[static_cast<std::size_t>(i)] - dev0.positions[static_cast<std::size_t>(i)];
+      if (r.ok) {
+        ik_3d_.Solve(task_vel, qdot_null_, dq_);
+        traj_dq_.noalias() = ik_3d_.PseudoInverse() * nu_ff_lin;
+      } else {
+        dq_.setZero();
+        traj_dq_.setZero();
       }
-      handle_->ReorderInput(
-          std::span<const double>(null_err_dev_.data(), static_cast<std::size_t>(nv_)), null_err_);
-      null_dq_.noalias() = N_ * null_err_;
-      null_dq_ *= g.null_kp;
-      dq_ += null_dq_;
-
-      ++null_hits_;
-      peak_null_ = std::max(peak_null_, null_dq_.cwiseAbs().maxCoeff());
     }
+    last_nullspace_active_ = nullspace_active;
+    if (nullspace_active)
+      peak_null_ = std::max(peak_null_, qdot_null_.cwiseAbs().maxCoeff());
 
     // ── Scatter, integrate (adapter :476-504). nc0 == nv here, so nq == nc0
     //     and the [nq, nc0) tail policy is not exercised — that tail is binding
@@ -551,20 +567,32 @@ class ClikShim {
 
   [[nodiscard]] double peak_null() const { return peak_null_; }
 
+  [[nodiscard]] bool last_ok() const { return last_ok_; }
+
+  [[nodiscard]] bool last_nullspace_active() const { return last_nullspace_active_; }
+
+  [[nodiscard]] double last_sigma_min() const { return last_sigma_min_; }
+
+  [[nodiscard]] double last_lambda_sq() const { return last_lambda_sq_; }
+
  private:
   std::shared_ptr<const pinocchio::Model> model_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_{0};
   int nv_{0};
 
-  Eigen::MatrixXd J_full_, J_pos_, Jpinv_, Jpinv_6d_, N_;
-  Eigen::VectorXd dq_, desired_q_, traj_dq_, null_err_, null_err_dev_, null_dq_;
-  Eigen::Matrix3d JJt_{Eigen::Matrix3d::Zero()};
-  Eigen::Matrix3d JJt_inv_{Eigen::Matrix3d::Zero()};
-  Eigen::Matrix<double, 6, 6> JJt_6d_{Eigen::Matrix<double, 6, 6>::Zero()};
-  Eigen::Matrix<double, 6, 6> JJt_inv_6d_{Eigen::Matrix<double, 6, 6>::Zero()};
-  Eigen::LDLT<Eigen::Matrix3d> ldlt_;
-  Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt_6d_;
+  Eigen::MatrixXd J_full_, J_pos_;
+  Eigen::VectorXd dq_, desired_q_, traj_dq_, null_dq_dev_, qdot_null_;
+  rtc::compliance::DifferentialIk ik_6d_;
+  rtc::compliance::DifferentialIk ik_3d_;
+
+  // Gate / diagnostic windows. The CLIK adapter publishes no diagnostics, so
+  // these are the only place a gate that is NUMERICALLY INERT when closed can be
+  // observed at all (the S5 M4 lesson). Compared bitwise, tick by tick.
+  bool last_ok_{false};
+  bool last_nullspace_active_{false};
+  double last_sigma_min_{0.0};
+  double last_lambda_sq_{0.0};
 
   Eigen::Vector3d pos_error_{Eigen::Vector3d::Zero()};
   Vec6 pos_error_6d_{Vec6::Zero()};
@@ -849,7 +877,8 @@ rtc::ClikController::Gains CrossCheckGains(bool use_6dof, bool use_null_space) {
   // per-channel ASSERT_LT in RunCrossCheck still proves it, never assumes it).
   g.kp_translation = {{2.0, 1.4, 1.7}};
   g.kp_rotation = {{1.5, 0.9, 1.2}};
-  g.damping = 0.05;
+  g.max_damping = 0.05;
+  g.singularity_threshold = 0.02;
   g.null_kp = 0.5;
   g.enable_null_space = use_null_space;
   g.control_6dof = use_6dof;

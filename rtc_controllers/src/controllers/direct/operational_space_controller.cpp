@@ -4,6 +4,7 @@
 
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_base/utils/device_passthrough.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/task/task_accel_law.hpp"
 #include "rtc_math/se3/pinocchio_adapter.hpp"
 
@@ -27,6 +28,14 @@
 #pragma GCC diagnostic pop
 
 namespace rtc {
+namespace {
+
+// NUM-1 floor for the §6.5 DLS ramp: λ_max = 0 would remove the singularity
+// guard entirely. Same constant, same name and same reason as the impedance /
+// admittance / cascade controllers (#257).
+constexpr double kMinMaxDamping = 1e-4;
+
+}  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
@@ -56,26 +65,24 @@ void OperationalSpaceController::InitFromModel(std::shared_ptr<const pinocchio::
   J_full_ = Eigen::MatrixXd::Zero(6, nv);
   Jt_ = Eigen::MatrixXd::Zero(nv, 6);
   M_ = Eigen::MatrixXd::Zero(nv, nv);
-  MinvJt_ = Eigen::MatrixXd::Zero(nv, 6);
   h_ = Eigen::VectorXd::Zero(nv);
   tau_out_ = Eigen::VectorXd::Zero(nv);
   gravity_estop_ = Eigen::VectorXd::Zero(nv);
   grav_dev_ = Eigen::VectorXd::Zero(nv);
   qdot_dev_ = Eigen::VectorXd::Zero(nv);
   tau_dev_ = Eigen::VectorXd::Zero(nv);
-  JbarT_ = Eigen::MatrixXd::Zero(6, nv);
-  NT_ = Eigen::MatrixXd::Zero(nv, nv);
+  q_ref_null_ = Eigen::VectorXd::Zero(nv);
   tau0_ = Eigen::VectorXd::Zero(nv);
   tau0_dev_ = Eigen::VectorXd::Zero(nv);
   null_tmp_ = Eigen::VectorXd::Zero(nv);
-  LambdaInv_.setZero();
   task_err_.setZero();
   a_task_.setZero();
-  F_.setZero();
   tcp_vel_.setZero();
 
-  // Pre-size the Cholesky factorisations (allocates storage once, here).
+  // Pre-size the Cholesky factorisation and the task-dynamics work buffers
+  // (both allocate their storage once, here — off-RT).
   llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv);
+  dyn_.Resize(nv, 6);
 }
 
 void OperationalSpaceController::MaybeSelectSubModel() {
@@ -404,63 +411,78 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   handle_->ComputeNonLinearEffects(q_span, v_span);
   h_ = handle_->GetNonLinearEffects();
 
-  // ── Step 7: task inertia inverse  Λ⁻¹ = J M⁻¹ Jᵀ + λ²I ────────────────────
-  // In-place Cholesky solves keep the RT path allocation-free. M is provably SPD
-  // for a physical fixed-base manipulator — that assumption is load-bearing: the
-  // λ² floor regularises Λ⁻¹ (kinematic/Jacobian singularities) but NOT M itself
-  // (an ill-conditioned URDF inertia would need M-side regularisation). Both
-  // factorisations are checked via .info(); on failure we fall back to a safe
-  // gravity/Coriolis-hold torque (τ = h) rather than emit NaN (issue #172 review).
+  // ── Step 7: task inertia Λ, J̄ and Nᵀ via compliance::TaskDynamics ─────────
+  // #236 S2b: this used to be an inline 6×6 factorisation with a CONSTANT
+  // λ = max(1e-4, damping). It is now the shared §6.4–§6.5 helper — the same
+  // object the impedance and cascade controllers call. Two deliberate changes,
+  // neither of them rounding (D-S2b, option (b)):
+  //   • λ² is σ_min-adaptive, so a well-conditioned pose adds ZERO damping
+  //     instead of damping². That is the convergence this migration exists for;
+  //     the constant-λ spelling here was the outlier.
+  //   • Λ_S is materialised and multiplied (Λ·a_task) rather than solved for
+  //     in place, and Nᵀ comes from J̄_S rather than a second 6×6 solve. Pure
+  //     reassociation: measured max relative difference ≤ 1.7e-12.
+  // M is provably SPD for a physical fixed-base manipulator — that assumption is
+  // load-bearing: λ² regularises Λ⁻¹ (kinematic/Jacobian singularities) but NOT M
+  // itself (an ill-conditioned URDF inertia would need M-side regularisation).
+  // Both factorisations are checked (.info() here, r.ok in the helper); on failure
+  // we fall back to a safe gravity/Coriolis-hold torque (τ = h) rather than emit
+  // NaN (issue #172 review).
   bool dyn_ok = true;
+  nullspace_active_ = false;
   llt_M_.compute(M_);
   dyn_ok = dyn_ok && (llt_M_.info() == Eigen::Success);
 
   if (dyn_ok) {
     Jt_.noalias() = J_full_.transpose();
-    MinvJt_ = Jt_;
-    llt_M_.solveInPlace(MinvJt_);  // MinvJt_ = M⁻¹ Jᵀ   (nv×6)
-
-    LambdaInv_.noalias() = J_full_ * MinvJt_;
-    // Floor λ at the point of use so the singularity guard holds regardless of
-    // how the gains were set (LoadConfig floors too, but set_gains()/the ctor
+    // Floor λ_max at the point of use so the singularity guard holds regardless
+    // of how the gains were set (LoadConfig floors too, but set_gains()/the ctor
     // default bypass it) — NUM-1.
-    const double lambda = std::max(1e-4, gains.damping);
-    LambdaInv_.diagonal().array() += lambda * lambda;
-    llt6_.compute(LambdaInv_);
-    dyn_ok = (llt6_.info() == Eigen::Success);
+    const compliance::TaskDynamics::Result r = dyn_.Compute(
+        J_full_, llt_M_, gains.singularity_threshold, std::max(kMinMaxDamping, gains.max_damping));
+    dyn_ok = r.ok;
   }
 
   if (dyn_ok) {
     // ── Step 8: task force  F = Λ a_task,  joint torque  τ = Jᵀ F + h ───────
-    F_ = a_task_;
-    llt6_.solveInPlace(F_);  // solve Λ⁻¹ F = a_task  ⇒  F = Λ a_task
-    tau_out_.noalias() = Jt_ * F_;
+    const Eigen::Matrix<double, 6, 1> F = dyn_.LambdaS() * a_task_;
+    tau_out_.noalias() = Jt_ * F;
     tau_out_ += h_;
 
     // ── Step 9: dynamically-consistent null-space posture task ──────────────
-    // Redundancy resolution: project τ₀ through Nᵀ = I − Jᵀ J̄ᵀ (J̄ᵀ = Λ J M⁻¹).
+    // Redundancy resolution: project τ₀ through Nᵀ = I − J_Sᵀ J̄_Sᵀ.
     // Only meaningful for a genuinely redundant arm (nv > 6 task DOF): for nv==6
     // Nᵀ ≈ 0 (contributes nothing), and for nv < 6 the task is over-determined so
     // J M⁻¹ Jᵀ is rank-deficient and Nᵀ is NOT small — running the posture task
     // there would inject τ₀ into the primary Cartesian task (issue #172). Gate on
     // redundancy so a reduced-DOF arm on default null_kd is not coupled.
-    if ((gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6) {
-      JbarT_ = MinvJt_.transpose();  // (M⁻¹ Jᵀ)ᵀ = J M⁻¹   (6×nv)
-      llt6_.solveInPlace(JbarT_);    // J̄ᵀ = Λ J M⁻¹
-      NT_.setIdentity();
-      NT_.noalias() -= Jt_ * JbarT_;  // Nᵀ = I − Jᵀ J̄ᵀ
-      for (int i = 0; i < nv; ++i) {
-        const auto ui = static_cast<std::size_t>(i);
-        const double q_ref = (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
-        tau0_dev_[i] = gains.null_kp * (q_ref - q_buf[ui]) - gains.null_kd * v_buf[ui];
+    nullspace_active_ = (gains.null_kp != 0.0 || gains.null_kd != 0.0) && nv > 6;
+    if (nullspace_active_) {
+      // Materialise the reference with this binding's tail policy BEFORE the
+      // law sees it: a channel with no configured safe_position centres on 0
+      // rad, which is a posture reference, not "no posture task". The law's own
+      // short-span policy is to zero the torque, so the fallback cannot be
+      // expressed by simply handing it a shorter span.
+      const auto nvu = static_cast<std::size_t>(nv);
+      for (std::size_t ui = 0; ui < nvu; ++ui) {
+        q_ref_null_[static_cast<Eigen::Index>(ui)] =
+            (ui < safe_position_.size()) ? safe_position_[ui] : 0.0;
       }
-      // safe_position_/q_buf/v_buf are device-order; gather the posture torque to
-      // Pinocchio order before the null-space projection Nᵀ (Pinocchio) (#172 A2).
-      // Identity order → memcpy (tau0_dev_ ≡ tau0_), so non-reordered arms are
-      // byte-for-byte unchanged.
-      handle_->ReorderInput(std::span<const double>(tau0_dev_.data(), static_cast<std::size_t>(nv)),
-                            tau0_);
-      null_tmp_.noalias() = NT_ * tau0_;
+      // The law itself is joint/posture_law.hpp (#236 S6). S6 deliberately left
+      // OSC on its inline copy because migrating it meant touching the Λ/Nᵀ
+      // block whose convergence point was undecided; S2b decides it, so the last
+      // duplicate of this expression goes with it. `q_ref` is an argument for
+      // exactly this reason — the configured safe posture and the other callers'
+      // measured seed are one law with two bindings.
+      joint::ComputePostureTorque(gains.null_kp, gains.null_kd,
+                                  joint::PostureInputs{{q_ref_null_.data(), nvu}, q_span, v_span},
+                                  nvu, {tau0_dev_.data(), nvu});
+      // safe_position_/q_span/v_span are device-order; gather the posture torque
+      // to Pinocchio order before the null-space projection Nᵀ (Pinocchio)
+      // (#172 A2). Identity order → memcpy (tau0_dev_ ≡ tau0_), so non-reordered
+      // arms are byte-for-byte unchanged.
+      handle_->ReorderInput(std::span<const double>(tau0_dev_.data(), nvu), tau0_);
+      dyn_.ProjectNullspace(tau0_, null_tmp_);
       tau_out_ += null_tmp_;
     }
   } else {
@@ -661,10 +683,17 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   load3(cfg["kd_pos"], g.kd_pos);
   load3(cfg["kp_rot"], g.kp_rot);
   load3(cfg["kd_rot"], g.kd_rot);
-  if (cfg["damping"]) {
-    // Floor λ > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic singularities.
-    // A zero/negative damping would remove that guard and admit NaN torque.
-    g.damping = std::max(1e-4, cfg["damping"].as<double>());
+  if (cfg["max_damping"]) {
+    // Floor λ_max > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic
+    // singularities. A zero/negative λ_max would remove that guard and admit NaN
+    // torque. `max_damping` replaced the constant-λ `damping` key in #236 S2b —
+    // same role in the law (the DLS damping magnitude), now the ceiling of the
+    // §6.5 ramp rather than a constant, and the same key the other three
+    // task-space controllers already use.
+    g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
+  }
+  if (cfg["singularity_threshold"]) {
+    g.singularity_threshold = cfg["singularity_threshold"].as<double>();
   }
   // Dynamically-consistent null-space posture gains (only bite when nv > 6).
   if (cfg["null_kp"]) {

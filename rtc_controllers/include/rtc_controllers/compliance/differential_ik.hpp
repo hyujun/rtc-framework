@@ -7,11 +7,12 @@
 // Pure Eigen, RT-safe after Resize() (noexcept, no heap, no throw).
 //
 // ── Why a new helper and not one of the two DLS blocks already in the repo ──
-// There are two, and they are DIFFERENT FAMILIES that must stay distinguishable
+// There were two, and they are DIFFERENT FAMILIES that must stay distinguishable
 // (issue #236 D16):
-//   • ClikController inlines a CONSTANT-λ DLS. Reusing it means copying it —
-//     it is not a callable unit — and a copy would be the THIRD variant, which
-//     is exactly the fork design-principles P5 forbids.
+//   • ClikController inlined a CONSTANT-λ DLS. Reusing it meant copying it —
+//     it was not a callable unit — and a copy would be the THIRD variant, which
+//     is exactly the fork design-principles P5 forbids. #236 S3b (issue #258)
+//     converged that block onto this class instead; see the migration note.
 //   • compliance/task_dynamics.hpp is the DYNAMICALLY-CONSISTENT inverse
 //     J̄_S = M⁻¹J_SᵀΛ_S. It needs the joint inertia M and produces a TORQUE-space
 //     nullspace projector Nᵀ. Admittance emits positions and has no business
@@ -21,10 +22,19 @@
 // So this class is the kinematic sibling: same §6.5 damping law, velocity-space
 // projector N = I − J⁺J (NOT the transpose form — that one projects torques).
 //
-// CLIK's migration onto this helper is deliberately NOT part of this slice, the
-// same call task_dynamics.hpp made about the OSC when it landed (#236 D16): a
-// helper extraction and a behavioural migration of a shipped controller are
-// separate commits with separate regression surfaces (PROC-6).
+// ── Migration note: ClikController (#236 S3b / issue #258) ──────────────────
+// CLIK's two inline DLS branches now call this class. That migration is NOT
+// bit-identical and was never going to be — its λ was a CONSTANT, and a constant
+// is not the §6.5 rule under any tolerance. The differences, by tier:
+//   tier 1 (a law change, and the point of the migration): λ² constant →
+//     σ_min-adaptive. Away from singularities the damping goes from damping² to
+//     exactly 0. CLIK and the OSC were the last two constant-λ outliers.
+//   tier 2 (rounding, max relative difference ≤ 1.7e-12): LLT of a solve rather
+//     than LDLT of a materialised inverse, at dynamic rather than fixed size.
+// What made that acceptable is that neither adapter is wired into any bringup —
+// runtime exposure was zero (#236 D-S2b). A migration of a SHIPPED controller
+// still gets the treatment this note used to prescribe: separate commits,
+// separate regression surfaces (PROC-6).
 #pragma once
 
 #include "rtc_controllers/compliance/task_dynamics.hpp"

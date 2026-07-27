@@ -23,10 +23,13 @@
 // adapter emits: τ = Jᵀ Λ a_task + h + Nᵀτ₀. OscShim below therefore replicates
 // the WHOLE remaining pipeline — its own model handle, its own TaskSpaceTrajectory
 // (D-T: the law takes a trajectory SAMPLE, so ownership sits in the binding),
-// the π-rotation split, the segment transition, and the Λ/τ/Nᵀ block that #236
-// D-S2 defers to S2b — and the comparison is on the adapter's device-order
-// command array. That makes this shim a prototype of the S7 binding, which is
-// exactly what S7 needs and what R5 of the plan asked for.
+// the π-rotation split, the segment transition, and the Λ/τ/Nᵀ tail — and the
+// comparison is on the adapter's device-order command array. That makes this
+// shim a prototype of the S7 binding, which is exactly what S7 needs and what R5
+// of the plan asked for. Since #236 S2b that tail is compliance::TaskDynamics
+// plus joint::ComputePostureTorque, so the shim mirrors the adapter's CALLS; the
+// literal pre-extraction spelling of that block lives in the tier-2 oracle in
+// test_dls_convergence.cpp, not here.
 //
 // The shim reading J/M/h from a SECOND, independently built RtModelHandle is an
 // assumption, not a given, so ReferenceDynamics.IndependentHandlesAgreeBitwise
@@ -43,7 +46,9 @@
 // eigen_assert, and a later include would be silently ignored (its own #error
 // enforces the ordering). Everything below pulls Eigen, so it comes first.
 #include "rtc_base/testing/no_malloc_scope.hpp"
+#include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/direct/operational_space_controller.hpp"
+#include "rtc_controllers/joint/posture_law.hpp"
 #include "rtc_controllers/task/task_accel_law.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 #include "rtc_controllers/testing/bit_compare.hpp"
@@ -225,15 +230,14 @@ class OscShim {
     J_ = Eigen::MatrixXd::Zero(6, nv_);
     Jt_ = Eigen::MatrixXd::Zero(nv_, 6);
     M_ = Eigen::MatrixXd::Zero(nv_, nv_);
-    MinvJt_ = Eigen::MatrixXd::Zero(nv_, 6);
     h_ = Eigen::VectorXd::Zero(nv_);
     tau_ = Eigen::VectorXd::Zero(nv_);
-    JbarT_ = Eigen::MatrixXd::Zero(6, nv_);
-    NT_ = Eigen::MatrixXd::Zero(nv_, nv_);
     tau0_ = Eigen::VectorXd::Zero(nv_);
     tau0_dev_ = Eigen::VectorXd::Zero(nv_);
     null_tmp_ = Eigen::VectorXd::Zero(nv_);
+    q_ref_null_ = Eigen::VectorXd::Zero(nv_);
     llt_M_ = Eigen::LLT<Eigen::MatrixXd>(nv_);
+    dyn_.Resize(nv_, 6);
   }
 
   [[nodiscard]] int nv() const { return nv_; }
@@ -365,8 +369,12 @@ class OscShim {
                                       task_err_, tcp_vel_, traj_state_.velocity.toVector(),
                                       traj_state_.acceleration.toVector());
 
-    // ── Steps 6-9: joint dynamics, Λ, τ, Nᵀ (S2b territory — replicated,
-    //     not extracted; see the D-S2 note in task_accel_law.hpp) ───────────
+    // ── Steps 6-9: joint dynamics, Λ, τ, Nᵀ. Since #236 S2b these are the
+    //     shared helpers, so this shim mirrors the adapter's CALLS rather than
+    //     a replicated inline block. The literal pre-extraction form now lives
+    //     in the tier-2 oracle in test_dls_convergence.cpp, which is where it
+    //     belongs: a cross-check shim that re-derives the law cannot also be
+    //     the witness that the law did not change. ────────────────────────────
     handle_->ComputeMassMatrix(q_span);
     M_ = handle_->GetMassMatrix();
     M_.triangularView<Eigen::StrictlyLower>() =
@@ -380,39 +388,35 @@ class OscShim {
 
     if (dyn_ok) {
       Jt_.noalias() = J_.transpose();
-      MinvJt_ = Jt_;
-      llt_M_.solveInPlace(MinvJt_);
-
-      LambdaInv_.noalias() = J_ * MinvJt_;
-      const double lambda = std::max(1e-4, g.damping);
-      LambdaInv_.diagonal().array() += lambda * lambda;
-      llt6_.compute(LambdaInv_);
-      dyn_ok = (llt6_.info() == Eigen::Success);
+      const rtc::compliance::TaskDynamics::Result r =
+          dyn_.Compute(J_, llt_M_, g.singularity_threshold, std::max(1e-4, g.max_damping));
+      dyn_ok = r.ok;
+      last_sigma_min_ = r.sigma_min;
+      last_lambda_sq_ = r.lambda_sq;
     }
+    last_dyn_ok_ = dyn_ok;
 
     if (dyn_ok) {
-      F_ = a_task_;
-      llt6_.solveInPlace(F_);
-      tau_.noalias() = Jt_ * F_;
+      const Vec6 F = dyn_.LambdaS() * a_task_;
+      tau_.noalias() = Jt_ * F;
       tau_ += h_;
 
-      if ((g.null_kp != 0.0 || g.null_kd != 0.0) && nv_ > 6) {
-        JbarT_ = MinvJt_.transpose();
-        llt6_.solveInPlace(JbarT_);
-        NT_.setIdentity();
-        NT_.noalias() -= Jt_ * JbarT_;
-        for (int i = 0; i < nv_; ++i) {
-          const auto ui = static_cast<std::size_t>(i);
-          // safe_position_ is empty on a controller with no device config, so
-          // the adapter's per-joint reference falls to 0.0 on every channel.
-          tau0_dev_[i] = g.null_kp * (0.0 - q_buf[ui]) - g.null_kd * v_buf[ui];
-        }
-        handle_->ReorderInput(
-            std::span<const double>(tau0_dev_.data(), static_cast<std::size_t>(nv_)), tau0_);
-        null_tmp_.noalias() = NT_ * tau0_;
+      last_nullspace_active_ = (g.null_kp != 0.0 || g.null_kd != 0.0) && nv_ > 6;
+      if (last_nullspace_active_) {
+        const auto nvu = static_cast<std::size_t>(nv_);
+        // safe_position_ is empty on a controller with no device config, so
+        // the adapter's per-joint reference falls to 0.0 on every channel.
+        q_ref_null_.setZero();
+        rtc::joint::ComputePostureTorque(
+            g.null_kp, g.null_kd,
+            rtc::joint::PostureInputs{{q_ref_null_.data(), nvu}, q_span, v_span}, nvu,
+            {tau0_dev_.data(), nvu});
+        handle_->ReorderInput(std::span<const double>(tau0_dev_.data(), nvu), tau0_);
+        dyn_.ProjectNullspace(tau0_, null_tmp_);
         tau_ += null_tmp_;
       }
     } else {
+      last_nullspace_active_ = false;
       tau_ = h_;
     }
 
@@ -432,21 +436,36 @@ class OscShim {
 
   [[nodiscard]] int transitions() const { return transitions_; }
 
+  // Gate / diagnostic windows. The OSC adapter publishes no diagnostics, so
+  // these are the only place a gate that is NUMERICALLY INERT when closed can be
+  // observed at all — the S5 M4 lesson (a gate whose closed branch contributes a
+  // signed zero leaves every bit lane green). Compared bitwise, tick by tick.
+  [[nodiscard]] bool last_dyn_ok() const { return last_dyn_ok_; }
+
+  [[nodiscard]] bool last_nullspace_active() const { return last_nullspace_active_; }
+
+  [[nodiscard]] double last_sigma_min() const { return last_sigma_min_; }
+
+  [[nodiscard]] double last_lambda_sq() const { return last_lambda_sq_; }
+
  private:
   std::shared_ptr<const pinocchio::Model> model_;
   std::unique_ptr<rtc_urdf_bridge::RtModelHandle> handle_;
   pinocchio::FrameIndex tip_{0};
   int nv_{0};
 
-  Eigen::MatrixXd J_, Jt_, M_, MinvJt_, JbarT_, NT_;
-  Eigen::VectorXd h_, tau_, tau0_, tau0_dev_, null_tmp_;
-  Eigen::Matrix<double, 6, 6> LambdaInv_{Eigen::Matrix<double, 6, 6>::Zero()};
+  Eigen::MatrixXd J_, Jt_, M_;
+  Eigen::VectorXd h_, tau_, tau0_, tau0_dev_, null_tmp_, q_ref_null_;
+  rtc::compliance::TaskDynamics dyn_;
   Vec6 task_err_{Vec6::Zero()};
   Vec6 a_task_{Vec6::Zero()};
-  Vec6 F_{Vec6::Zero()};
   Vec6 tcp_vel_{Vec6::Zero()};
   Eigen::LLT<Eigen::MatrixXd> llt_M_;
-  Eigen::LLT<Eigen::Matrix<double, 6, 6>> llt6_;
+
+  bool last_dyn_ok_{false};
+  bool last_nullspace_active_{false};
+  double last_sigma_min_{0.0};
+  double last_lambda_sq_{0.0};
 
   rtc::trajectory::TaskSpaceTrajectory trajectory_;
   rtc::trajectory::TaskSpaceTrajectory::State traj_state_{};
@@ -685,7 +704,8 @@ rtc::OperationalSpaceController::Gains CrossCheckGains() {
   g.kd_pos = {{8.0, 8.0, 8.0}};
   g.kp_rot = {{20.0, 20.0, 20.0}};
   g.kd_rot = {{4.0, 4.0, 4.0}};
-  g.damping = 0.05;
+  g.max_damping = 0.05;
+  g.singularity_threshold = 0.02;
   g.trajectory_speed = 0.05;
   g.trajectory_angular_speed = 0.25;
   return g;

@@ -17,9 +17,9 @@
 #include <pinocchio/spatial.hpp>
 #pragma GCC diagnostic pop
 
+#include "rtc_controllers/compliance/differential_ik.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
-#include <Eigen/Cholesky>  // LDLT
 #include <Eigen/Core>
 
 #include <array>
@@ -51,7 +51,11 @@ namespace rtc {
 ///   N            = I − J_pos^# J_pos            [null-space projector, nv×nv]
 ///
 ///   dq           = kp      * J_pos^# * pos_error          [primary task]
-///              +   null_kp * N        * (q_null − q)       [secondary task]
+///              +             N        * null_kp * (q_null − q)   [secondary task]
+///
+/// J_pos^# and N are formed by `compliance::DifferentialIk` (#236 S3b / #258) —
+/// the same object TaskAdmittanceController uses, including its §6.5
+/// σ_min-adaptive λ². The posture term is `joint::ComputePostureVelocity`.
 ///
 ///   q_des       += clamp(dq, ±v_max) * dt        [q_des = q_actual at
 ///   trajectory init] q_cmd        = q_des
@@ -69,11 +73,19 @@ class ClikController final : public RTControllerInterface {
     std::array<double, 3> kp_translation{
         {1.0, 1.0, 1.0}};  ///< Translation proportional gain (x,y,z) [1/s]
     std::array<double, 3> kp_rotation{
-        {1.0, 1.0, 1.0}};          ///< Rotation proportional gain (rx,ry,rz) [1/s]
-    double damping{0.01};          ///< Damping factor λ for J^#  (singularity robustness)
-    double null_kp{0.5};           ///< Null-space joint-centering gain [1/s]
-    bool enable_null_space{true};  ///< Enable null-space secondary task
-    bool control_6dof{false};      ///< Enable 6-DOF (translation + orientation) control
+        {1.0, 1.0, 1.0}};  ///< Rotation proportional gain (rx,ry,rz) [1/s]
+    // §6.5 σ_min-adaptive DLS damping — the same two parameters, with the same
+    // names and defaults, the impedance/admittance/cascade controllers use. This
+    // replaced a CONSTANT λ in #236 S3b (issue #258): that constant was the
+    // outlier, and converging it onto compliance/differential_ik.hpp is the
+    // point of the migration, not a side effect. Behavioural consequence, stated
+    // plainly: away from singularities λ² is now exactly 0 (it was damping²), so
+    // J⁺ is the undamped pseudoinverse there and tracking is not biased.
+    double max_damping{0.05};            ///< λ_max for the DLS ramp
+    double singularity_threshold{0.02};  ///< σ₀: DLS engages below this
+    double null_kp{0.5};                 ///< Null-space joint-centering gain [1/s]
+    bool enable_null_space{true};        ///< Enable null-space secondary task
+    bool control_6dof{false};            ///< Enable 6-DOF (translation + orientation) control
 
     // Trajectory speed
     double trajectory_speed{0.1};  ///< TCP translational speed for trajectory duration [m/s]
@@ -102,10 +114,11 @@ class ClikController final : public RTControllerInterface {
   void SetHandEstop(bool active) noexcept override;
 
   // ── Controller registry hooks ────────────────────────────────────────────
-  // gains layout: [kp_translation×3, kp_rotation×3, damping, null_kp,
+  // gains layout: [kp_translation×3, kp_rotation×3, max_damping,
+  //                singularity_threshold, null_kp,
   //                enable_null_space(0/1), control_6dof(0/1),
   //                trajectory_speed, trajectory_angular_speed,
-  //                max_traj_velocity, max_traj_angular_velocity] = 14 values
+  //                max_traj_velocity, max_traj_angular_velocity] = 15 values
   void LoadConfig(const YAML::Node& cfg) override;
   void OnDeviceConfigsSet() override;
 
@@ -131,28 +144,23 @@ class ClikController final : public RTControllerInterface {
   pinocchio::FrameIndex tip_frame_id_{0};
 
   // ── Pre-allocated Eigen work buffers — zero heap alloc on the RT path ────
-  Eigen::MatrixXd J_full_;        ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
-  Eigen::MatrixXd J_pos_;         ///< 3×nv: translational part of J_full_
-  Eigen::Matrix3d JJt_;           ///< 3×3: J_pos * J_pos^T + λ²I
-  Eigen::Matrix3d JJt_inv_;       ///< 3×3: (J_pos * J_pos^T + λ²I)^{-1}
-  Eigen::MatrixXd Jpinv_;         ///< nv×3: damped pseudoinverse J_pos^#
-  Eigen::MatrixXd N_;             ///< nv×nv: null-space projector I − J_pos^# J_pos
-  Eigen::VectorXd dq_;            ///< nv: joint velocity command
-  Eigen::VectorXd desired_q_;     ///< nv: integrated desired joint position
-  Eigen::VectorXd traj_dq_;       ///< nv: feedforward-only trajectory velocity (for logging)
-  Eigen::VectorXd null_err_;      ///< nv: (q_null − q_current), Pinocchio order for N_ product
-  Eigen::VectorXd null_err_dev_;  ///< nv: (q_null − q_current) formed in DEVICE order (#172 A2)
-  Eigen::VectorXd null_dq_;       ///< nv: null-space contribution to dq
-  Eigen::Vector3d pos_error_;     ///< 3: Cartesian position error
-  Eigen::Matrix<double, 6, 6> JJt_6d_;        ///< 6x6: J_full * J_full^T + λ²I
-  Eigen::Matrix<double, 6, 6> JJt_inv_6d_;    ///< 6x6: (J_full * J_full^T + λ²I)^{-1}
-  Eigen::MatrixXd Jpinv_6d_;                  ///< nv×6: damped pseudoinverse J_full^#
+  Eigen::MatrixXd J_full_;     ///< 6×nv: full spatial Jacobian (LOCAL_WORLD_ALIGNED)
+  Eigen::MatrixXd J_pos_;      ///< 3×nv: translational part of J_full_
+  Eigen::VectorXd dq_;         ///< nv: joint velocity command
+  Eigen::VectorXd desired_q_;  ///< nv: integrated desired joint position
+  Eigen::VectorXd traj_dq_;    ///< nv: feedforward-only trajectory velocity (for logging)
+  Eigen::VectorXd null_dq_dev_;  ///< nv: posture velocity kp·(q_null − q) in DEVICE order (#172 A2)
+  Eigen::VectorXd qdot_null_;  ///< nv: the same, gathered to Pinocchio order for the N product
+  Eigen::Vector3d pos_error_;  ///< 3: Cartesian position error
   Eigen::Matrix<double, 6, 1> pos_error_6d_;  ///< 6: Cartesian position+orientation error
 
-  // LDLT decomposition of JJt_ (3×3) — fixed-size → lives on the stack,
-  // no dynamic allocation at construction or on the RT path.
-  Eigen::LDLT<Eigen::Matrix3d> ldlt_;
-  Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt_6d_;
+  // J⁺ and N come from the shared §6.5/§7.3 kinematic helper (#236 S3b / #258);
+  // the inline constant-λ LDLT blocks this class used to own are gone. TWO
+  // instances because `control_6dof` is a SeqLock gain that set_gains() may flip
+  // between ticks: both task dimensions must already be sized, since Resize()
+  // allocates and is off-RT only.
+  compliance::DifferentialIk ik_6d_;  ///< m = 6 (position + orientation)
+  compliance::DifferentialIk ik_3d_;  ///< m = 3 (position only)
 
   // ── Controller state ──────────────────────────────────────────────────────
   SeqLock<Gains> gains_lock_;

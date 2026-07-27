@@ -11,14 +11,15 @@
 // Nᵀ (or N), the activation ramp and the torque assembly.
 //
 // ── Why q_ref is an argument and not a policy ───────────────────────────────
-// The three shipping consumers disagree only on where the reference comes from:
+// The consumers disagree only on where the reference comes from:
 // TaskImpedanceController and CascadedComplianceController seed it from the
 // measured q on the activation tick, OperationalSpaceController takes it from
-// the configured `safe_position`. That is a difference in BINDING, not in law —
-// so the law takes the reference as an argument and stays the single definition
-// for all of them. (OSC still runs its own inline copy: migrating it would move
-// the Λ/Nᵀ block that #236 S2b has yet to decide a convergence point for, so it
-// is deliberately left for that slice.)
+// the configured `safe_position`, ClikController from its target mailbox slot.
+// That is a difference in BINDING, not in law — so the law takes the reference
+// as an argument and stays the single definition for all of them. All five
+// consumers call it as of #236 S2b+S3b, which migrated the last two (they were
+// held back only because moving them meant moving the Λ/Nᵀ and J⁺ blocks whose
+// convergence point that slice decides).
 //
 // ── Why the P form is a separate function and not Kd = 0 ────────────────────
 // It is tempting to serve TaskAdmittanceController's P form by calling the PD

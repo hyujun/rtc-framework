@@ -22,8 +22,12 @@ operational_space_controller:
   kp_rot: [50.0, 50.0, 50.0]            # 회전 비례 게인 [1/s²] (rx, ry, rz)
   kd_rot: [10.0, 10.0, 10.0]            # 회전 미분 게인 [1/s]  (rx, ry, rz)
 
-  # ── 특이점 감쇠 ───────────────────────────────────────────────────────────
-  damping: 0.01                           # Λ⁻¹ 감쇠 λ (max(1e-4, ·) floor 적용)
+  # ── 특이점 감쇠 (§6.5 σ_min-적응형 DLS — impedance/admittance/cascade 와 동일) ─
+  # λ² = 0 (σ_min ≥ σ₀) / λ_max²·(1 − (σ_min/σ₀)²) (σ_min < σ₀).
+  # #236 S2b 이전에는 상수 λ 인 `damping` 키였다 — 그 상수가 아웃라이어였고
+  # 여기로 수렴시키는 것이 이관의 목적이다 (특이점에서 멀면 감쇠가 정확히 0).
+  max_damping: 0.05                       # λ_max (max(1e-4, ·) floor 적용)
+  singularity_threshold: 0.02             # σ₀: 이 아래에서 DLS 감쇠가 붙기 시작
 
   # ── 널공간 posture 이차 태스크 (nv>6 여유자유도에서만 유효) ──────────────────
   null_kp: 0.0                            # safe_position 향한 posture 강성 [N·m/rad]
