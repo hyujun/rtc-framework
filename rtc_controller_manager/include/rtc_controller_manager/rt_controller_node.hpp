@@ -14,6 +14,7 @@
 // ── ROS2 ─────────────────────────────────────────────────────────────────────
 #include <rtc_msgs/msg/robot_target.hpp>
 #include <rtc_msgs/srv/list_controllers.hpp>
+#include <rtc_msgs/srv/reset_fault.hpp>
 #include <rtc_msgs/srv/switch_controller.hpp>
 
 #include <rclcpp/rclcpp.hpp>
@@ -319,12 +320,15 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_ctrl_name_pub_;
 
   // ── /rtc_cm/* services (Phase 3) ─────────────────────────────────────────
-  // Both callbacks run on cb_group_nrt_callback_ — never on the RT path. The switch
+  // All callbacks run on cb_group_nrt_callback_ — never on the RT path. The switch
   // service is a thin wrapper around SwitchActiveController(name, message);
   // list_controllers builds its response from controller_states_ +
-  // controller_topic_configs_ + controller_types_.
+  // controller_topic_configs_ + controller_types_; reset_fault clears a
+  // controller-local fault latch on the active controller (#260, E-8 — NOT the
+  // global E-STOP latch, which ClearGlobalEstop owns).
   rclcpp::Service<rtc_msgs::srv::ListControllers>::SharedPtr list_controllers_srv_;
   rclcpp::Service<rtc_msgs::srv::SwitchController>::SharedPtr switch_controller_srv_;
+  rclcpp::Service<rtc_msgs::srv::ResetFault>::SharedPtr reset_fault_srv_;
 
   // The controller-output publish role (kRobotTransforms — the only one left
   // after issue #196 Phase 5) is owned by each controller's LifecycleNode via

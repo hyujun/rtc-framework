@@ -44,6 +44,7 @@ rtc_msgs/
 └── srv/
     ├── GraspCommand.srv       <- Force-PI 그래스프 one-shot 이벤트 (start/release)
     ├── ListControllers.srv    <- 등록된 컨트롤러 lifecycle 상태 조회 (/rtc_cm/list_controllers)
+    ├── ResetFault.srv         <- latched controller-local fault 해제 (/rtc_cm/reset_fault)
     └── SwitchController.srv   <- 컨트롤러 activate/deactivate 요청 (/rtc_cm/switch_controller)
 ```
 
@@ -424,6 +425,29 @@ Server: 활성 데모 컨트롤러의 LifecycleNode aux thread.
 
 ---
 
+### `ResetFault.srv`
+
+`/rtc_cm/reset_fault` -- latched **controller-local** fault 를 해제합니다 (#260). compliance 계열은 critical fault 에서 `SAFE_STOP` 을 래치하고 자동 복귀하지 않으므로 (§10.6), 이 서비스가 유일한 외부 탈출구입니다. CM global E-STOP 과는 **의도적으로 분리**돼 있어 서로를 풀지 않습니다 (E-8).
+
+**Request:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `controller_name` | `string` | 대상 컨트롤러. **필수**이며 현재 active 컨트롤러와 일치해야 함 (이름 명시 = 오퍼레이터 확인) |
+
+**Response:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `ok` | `bool` | latch 가 실제로 사라졌음이 확인됐는지 (원래 latch 가 없던 no-op 도 `true`) |
+| `message` | `string` | 결과 설명. global E-STOP 이 아직 래치돼 있으면 그 사실을 함께 알림 |
+
+- 응답은 동기(sync)이고 **"전달됨"이 아니라 실제 결과**를 보고합니다 -- 요청 후 `1.5 × dt` 대기하고 latch 를 다시 읽어 해제 / no-op / 재래치(원인 잔존)를 구분합니다.
+- 빈 `controller_name`, active 가 아닌 이름, 알 수 없는 이름은 모두 `ok=false` 로 거부되며 latch 는 그대로입니다. wildcard 는 없습니다.
+- global E-STOP 활성 상태에서도 호출은 성립합니다 (RT 루프가 E-STOP 중에도 `Compute()` 를 계속 호출하므로) -- 다만 팔은 global latch 가 따로 풀릴 때까지 유지됩니다.
+
+---
+
 ## 빌드
 
 ```bash
@@ -461,7 +485,8 @@ source install/setup.bash
 컨트롤러 관리 (서비스)
 ├── ControllerState                 (list_controllers 응답 요소: name/state/type/is_active)
 ├── ListControllers.srv             /rtc_cm/list_controllers  → ControllerState[]
-└── SwitchController.srv            /rtc_cm/switch_controller → activate/deactivate
+├── SwitchController.srv            /rtc_cm/switch_controller → activate/deactivate
+└── ResetFault.srv                  /rtc_cm/reset_fault       → controller-local fault 해제
 
 로깅 (CSV 세션 기록)                ToF 스냅샷 (형상 추정용)
 ├── DeviceStateLog                  └── ToFSnapshot

@@ -168,6 +168,21 @@ if(BUILD_TESTING)
       rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
   endif()
 
+  # #260 /rtc_cm/reset_fault: the only external exit from a latched
+  # controller-local SAFE_STOP. Authority (name required, active-only), outcome
+  # reporting, and E-8 separation from the global E-STOP in both directions.
+  ament_add_gtest(test_reset_fault_service
+    test/test_reset_fault_service.cpp)
+  if(TARGET test_reset_fault_service)
+    target_include_directories(test_reset_fault_service PRIVATE include)
+    ament_target_dependencies(test_reset_fault_service
+      rclcpp rclcpp_lifecycle std_msgs sensor_msgs ament_index_cpp
+      rtc_controller_interface rtc_controllers rtc_base rtc_communication
+      rtc_msgs rtc_urdf_bridge)
+    target_link_libraries(test_reset_fault_service
+      rtc_controller_manager_lib yaml-cpp pinocchio::pinocchio)
+  endif()
+
   ament_add_gtest(test_device_backend_registry
     test/test_device_backend_registry.cpp)
   if(TARGET test_device_backend_registry)

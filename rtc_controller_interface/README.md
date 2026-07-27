@@ -130,8 +130,12 @@ CM 측 정책(호출부는 `rt_controller_node_rt_loop.cpp` 의 `Compute()` 반�
 | `ClearEstop()` | no-op | 비상 정지 해제 |
 | `IsEstopped()` | `false` 반환 | 비상 정지 상태 확인 |
 | `SetHandEstop(bool)` | no-op | 핸드 비상 정지 설정 |
+| `ResetFault()` | no-op | **controller-local** fault latch 해제 요청 (#260). 비-RT 에서 호출, wait-free (atomic flag store) — 실제 해제는 다음 `Compute()` tick 이 하고, 원인이 남아 있으면 거기서 거부된다 |
+| `HasLatchedFault()` | `false` 반환 | controller-local fault latch 가 올라가 있는가. 비-RT read, non-blocking |
 | `LoadConfig(const YAML::Node&)` | 디바이스 플래그 경고 + 토픽 파싱 | YAML 설정 로드. `noexcept`가 아님 (throw 가능) |
 | `GetCommandType()` | `CommandType::kPosition` | 커맨드 타입 (`kPosition` 또는 `kTorque`) |
+
+> **`ResetFault()` ↔ `ClearEstop()` 는 의도적으로 분리돼 있다 (E-8).** 전자는 컨트롤러가 스스로 건 latch (compliance 계열의 `SAFE_STOP`, §10.6 "자동 복구 금지") 를, 후자는 CM global E-STOP 을 푼다. **어느 쪽도 다른 쪽을 풀지 않는다** — 하나의 bool 로 합치면 global clear 가 지나가는 모든 컨트롤러 fault 를 세탁하게 되므로 #236 슬라이스 1 이 그 설계를 거부했다. 기본 구현이 둘 다 no-op / `false` 이므로, 자체 latch 가 없는 컨트롤러는 아무것도 override 하지 않고 `/rtc_cm/reset_fault` 에 "latch 없음" 으로 응답된다. `ResetFault()` 가 `void` 인 이유는 해제 판정이 RT tick 소유이기 때문이며, 결과는 `HasLatchedFault()` 로 확인한다.
 
 > **`LoadConfig()` 기본 구현 동작:**
 > 1. `cfg["enable_ur5e"]` / `cfg["enable_hand"]` 존재 시 deprecated 경고 출력 후 무시

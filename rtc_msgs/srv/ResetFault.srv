@@ -1,0 +1,41 @@
+# /rtc_cm/reset_fault — clear a LATCHED controller-local fault (issue #260).
+#
+# The compliance controllers latch SAFE_STOP on a critical fault (nan_inf,
+# pose_error_exceeded, sigma_below_critical, command_divergence) and never
+# auto-recover — §10.6 "자동 복구 금지". This service is the only external exit
+# from that latch.
+#
+# Deliberately SEPARATE from the CM global E-STOP (E-8): clearing a
+# controller-local fault does NOT clear the global E-STOP latch, and clearing
+# the global E-STOP does NOT clear a controller-local fault. Both may be
+# latched at once, and each needs its own clear. A reset issued while the
+# global E-STOP is latched succeeds on its own terms — the RT loop keeps
+# calling Compute() during E-STOP and only substitutes the output — but the
+# arm stays held until the global latch is cleared too; `message` says so.
+#
+# Authority: the request targets the ACTIVE controller only, and
+# `controller_name` must name it explicitly. Naming it is the operator
+# confirmation step — there is no wildcard and no implicit target, so a fault
+# can never be cleared on a controller the caller did not mean to name. A
+# request for a non-active controller is refused rather than queued, because a
+# pending request on an inactive controller would be consumed on the first tick
+# after it is activated, which is exactly the "activation launders a fault"
+# path that BeginBiasCalibration() already refuses.
+
+# Controller to reset. REQUIRED, and must equal the currently active
+# controller's name (as reported by /rtc_cm/list_controllers).
+string controller_name
+
+---
+
+# True iff the latch is confirmed gone — the request was delivered AND the
+# controller was observed out of SAFE_STOP one control period later. Also true
+# for the no-op case (the named controller had no latched fault).
+#
+# False means the latch is still up: the fault cause is still present (the
+# state machine re-latches on the same tick it is reset), the named controller
+# is not the active one, or the name was empty.
+bool ok
+
+# Human-readable outcome, including whether the global E-STOP is still latched.
+string message

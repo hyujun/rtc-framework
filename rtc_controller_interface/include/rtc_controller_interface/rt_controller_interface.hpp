@@ -259,6 +259,33 @@ class RTControllerInterface {
 
   virtual void SetHandEstop(bool /*enabled*/) noexcept {}
 
+  // ── Controller-local fault latch (issue #260) ────────────────────────────
+  //
+  // A controller may latch a fault of its own that no fault input can leave —
+  // the compliance family's SAFE_STOP (§10.6 "자동 복구 금지"). That latch is
+  // DELIBERATELY SEPARATE from the global E-STOP above (E-8): ClearEstop() must
+  // not release a controller fault and ResetFault() must not release the global
+  // latch. Merging them into one bool is the design #236 slice 1 rejected
+  // outright, because a global clear would then launder every controller fault
+  // it happens to pass over.
+  //
+  // Default no-ops, so a controller with no latch of its own needs neither
+  // override and reads as "never latched" to the CM's /rtc_cm/reset_fault.
+
+  // Request that a latched controller-local fault be cleared. Call OFF the RT
+  // thread (the CM service callback is the intended caller). Implementations
+  // must be wait-free — an atomic flag store consumed by the next Compute()
+  // tick is the intended body, which is why this returns void: the clear
+  // happens on the RT thread, one tick later, and can be refused there if the
+  // fault cause is still present. Poll HasLatchedFault() to find out.
+  virtual void ResetFault() noexcept {}
+
+  // True while a controller-local fault latch is up. Read OFF the RT thread;
+  // implementations must not block (a SeqLock load of the per-tick diagnostic
+  // snapshot is the intended body). This is the observable half of ResetFault:
+  // without it the reset service could only report "delivered", never "cleared".
+  [[nodiscard]] virtual bool HasLatchedFault() const noexcept { return false; }
+
   // ── Extensibility hooks for the controller registry ──────────────────────
   //
   // LoadConfig()

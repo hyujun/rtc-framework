@@ -162,7 +162,7 @@ PI gain / threshold / slip detection 상수 default 값은 `rtc_controllers/incl
 
 ## ROS2 Topics
 
-**Controller Manager**: switch via `/rtc_cm/switch_controller` (srv, sync, single-active), query via `/rtc_cm/list_controllers` (srv); `/rtc_cm/active_controller_name` (Pub, latched — rewire trigger for downstream nodes; namespace 템플릿이 아니라 `RtControllerNode` 가 박아 쓰는 절대 토픽명이다), `/system/estop_status` (Pub). Gain 채널은 더 이상 manager가 소유하지 않으며 컨트롤러별 LifecycleNode parameter로 이관 (위 §Gains 참조).
+**Controller Manager**: switch via `/rtc_cm/switch_controller` (srv, sync, single-active), query via `/rtc_cm/list_controllers` (srv), latched controller-local fault 해제는 `/rtc_cm/reset_fault` (srv, #260 — active 한정·이름 명시 필수, global E-STOP 과 **분리**된 별개 latch); `/rtc_cm/active_controller_name` (Pub, latched — rewire trigger for downstream nodes; namespace 템플릿이 아니라 `RtControllerNode` 가 박아 쓰는 절대 토픽명이다), `/system/estop_status` (Pub). Gain 채널은 더 이상 manager가 소유하지 않으며 컨트롤러별 LifecycleNode parameter로 이관 (위 §Gains 참조).
 
 **Dynamic** (per controller TopicConfig):
 - **DeviceBackend-owned (HW/sim ↔ controller boundary, Phase 4 SSoT)** — `state_topic` / `motor_topic` / `sensor_topic` (HW→controller) and `command_topic` (controller→HW/sim) are declared in `devices.<group>.backend:` (sim.yaml/robot.yaml) and owned by `DeviceBackend` impls (`mujoco_native` / `ur_driver_native` / `udp_hand_native`). CM no longer reads device-wire roles from controller YAML.

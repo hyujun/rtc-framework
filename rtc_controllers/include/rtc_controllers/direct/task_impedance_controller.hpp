@@ -201,10 +201,24 @@ class TaskImpedanceController final : public RTControllerInterface {
 
   [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
 
-  // Clear a LATCHED controller-local SAFE_STOP fault (the ~/reset_fault service;
-  // wiring deferred). Deliberately SEPARATE from ClearEstop (E-8): a global
-  // E-STOP clear must NOT release a controller fault, and vice versa.
-  void ResetFault() noexcept { reset_fault_requested_.store(true, std::memory_order_release); }
+  // Clear a LATCHED controller-local SAFE_STOP fault (the /rtc_cm/reset_fault
+  // service). Deliberately SEPARATE from ClearEstop (E-8): a global E-STOP
+  // clear must NOT release a controller fault, and vice versa. The flag is
+  // consumed at the head of the next Compute(), ahead of the E-STOP early
+  // return, so a controller fault can be cleared while the global latch is up.
+  void ResetFault() noexcept override {
+    reset_fault_requested_.store(true, std::memory_order_release);
+  }
+
+  // SAFE_STOP is the only latch this controller keeps (§10.6). Read off-RT from
+  // the per-tick diagnostic snapshot rather than from sm_, which the RT thread
+  // owns; every Compute() exit path stores it, including the E-STOP and
+  // no-joint-state paths, so the answer is never a tick stale for a running
+  // controller. A controller that has not ticked yet reads as not latched.
+  [[nodiscard]] bool HasLatchedFault() const noexcept override {
+    return diag_lock_.Load().state ==
+           static_cast<std::uint8_t>(compliance::ComplianceState::kSafeStop);
+  }
 
   // ── Accessors (non-RT reads only) ─────────────────────────────────────────
   void set_gains(const Gains& g) noexcept { gains_lock_.Store(g); }
@@ -419,6 +433,14 @@ class TaskImpedanceController final : public RTControllerInterface {
 
   void ResetTargetInitialization() noexcept override {
     target_initialized_.store(false, std::memory_order_release);
+    // An UNCONSUMED reset request must not cross an activation boundary (#260).
+    // Compute() runs only while active, so a request that arrived while this
+    // controller was inactive would be consumed on the first tick after
+    // activation and unlatch a SAFE_STOP nobody re-authorised at that moment —
+    // the exact laundering BeginBiasCalibration() refuses (E-8).
+    // /rtc_cm/reset_fault also refuses inactive targets; this closes the same
+    // door on the controller side, where the latch actually lives.
+    reset_fault_requested_.store(false, std::memory_order_release);
   }
 
   // Per-device limits (device channel order).

@@ -197,7 +197,7 @@ urdf.passive_joints      → [string, ...]                         (잠금 관�
 | 소유 lane | 생성 주체 | 역할 예시 | QoS 경로 |
 |-----------|-----------|-----------|---------|
 | DeviceBackend | `DeviceBackend` (CM이 group마다 1 instance 보유) | HW/sim ↔ controller 경계 트래픽: `state`, `motor_state`, `sensor_state`, `joint_command`, `ros2_command` (`devices.<group>.backend:` 선언) | Backend 자체 sub/pub + SeqLock state cache. RT loop → `WriteCommand(slot, cmd_type)` |
-| CM 고정 | `RtControllerNode` (hardcode, YAML 무관) | digital twin republish (`/rtc_cm/<group>/joint_states`), `/system/estop_status`, `/rtc_cm/active_controller_name`, `/rtc_cm/list_controllers`, `/rtc_cm/switch_controller` | CM 직접 publish / service |
+| CM 고정 | `RtControllerNode` (hardcode, YAML 무관) | digital twin republish (`/rtc_cm/<group>/joint_states`), `/system/estop_status`, `/rtc_cm/active_controller_name`, `/rtc_cm/list_controllers`, `/rtc_cm/switch_controller`, `/rtc_cm/reset_fault` | CM 직접 publish / service |
 | controller-owned | 컨트롤러별 `LifecycleNode` (YAML `topics:` entry 전부) | 컨트롤러 입력/출력: `target`, `grasp_state`, `wbc_state`, `tof_snapshot`, `robot_transforms` | 컨트롤러가 on_configure에서 sub/pub 생성, publish 스레드가 SPSC 소비 후 `controllers_[active]->PublishNonRtSnapshot(snap)` 호출 |
 
 원칙: CM은 **CM 고정 토픽** + **controller-node 관리** (switch / active / E-STOP) 만 소유하고, controller YAML 의 sub/pub 은 만들지 않는다 (issue #138: manager-target 경로 폐기). 컨트롤러가 생산하거나 소비하는 의미적 데이터(목표·GUI·grasp·wbc·tof) 는 컨트롤러 LifecycleNode가 직접 sub/pub. Target topic은 controller가 자체 sub하고 그 콜백에서 `DeliverTargetMessage` → `SetDeviceTarget`을 호출 — SetDeviceTarget은 SPSC 큐로 marshal한 뒤 RT thread가 `Compute()` 안에서 drain한다 (single-writer SeqLock invariant, 2026-05-17 RT-4 cleanup).
@@ -378,6 +378,15 @@ CM 자체는 고정 게인 토픽을 더 이상 구독하지 않는다 (게인 �
 |--------|------|-----------|------|
 | `/rtc_cm/switch_controller` | `rtc_msgs/srv/SwitchController` | aux | 활성 컨트롤러 전환 (sync, single-active, E-STOP guard) |
 | `/rtc_cm/list_controllers` | `rtc_msgs/srv/ListControllers` | aux | 모든 컨트롤러 lifecycle state 조회 |
+| `/rtc_cm/reset_fault` | `rtc_msgs/srv/ResetFault` | aux | latched **controller-local** fault 해제 (#260, sync, active 한정 + 이름 명시 필수) |
+
+#### `/rtc_cm/reset_fault` (#260)
+
+compliance 계열은 critical fault (`nan_inf` · `pose_error_exceeded` · `sigma_below_critical` · `command_divergence`) 에서 `SAFE_STOP` 을 래치하고 **자동 복귀하지 않는다** (§10.6). 이 서비스가 그 래치의 유일한 외부 탈출구이며, 이전에는 프로세스 재시작 외에 방법이 없었다.
+
+- **권한** — `controller_name` **필수**이고 현재 **active 컨트롤러**와 일치해야 한다. 이름 명시가 오퍼레이터 확인 단계이므로 빈 요청은 편의 기본값이 아니라 거부이고, wildcard 는 없다. 비활성 컨트롤러 대상 요청은 큐잉하지 않고 거부한다 — 큐에 남은 요청은 그 컨트롤러가 다음에 활성화되는 첫 tick 에 소비돼 아무도 그 시점에 재승인하지 않은 fault 를 푼다 (`BeginBiasCalibration()` 이 이미 거부하는 세탁 경로).
+- **응답** — "전달됨"이 아니라 **실제 결과**를 보고한다. 요청 후 `1.5 × dt` 대기하고 `HasLatchedFault()` 를 다시 읽어, 해제 / no-op(원래 래치 없음) / 재래치(원인 잔존)를 구분한다. `switch_controller` 가 RT tick 관측에 쓰는 것과 같은 대기다.
+- **E-8 분리** — global E-STOP 과 **서로를 풀지 않는다**. global E-STOP 이 걸린 상태에서도 reset 은 성립하며 (RT 루프는 E-STOP 중에도 `Compute()` 를 계속 호출하고 출력만 치환한다), 그 경우 응답 message 가 global latch 가 아직 남아 있음을 명시한다.
 
 ### 고정 퍼블리셔
 

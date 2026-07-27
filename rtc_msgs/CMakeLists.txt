@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ListControllers.srv"
   "srv/SwitchController.srv"
   "srv/GraspCommand.srv"
+  "srv/ResetFault.srv"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 
