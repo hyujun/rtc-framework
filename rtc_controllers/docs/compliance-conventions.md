@@ -54,7 +54,7 @@ frame mismatch** 이므로 (부호는 즉시 발산, frame 불일치는 특정 �
 | **Sign** | `+K_p·e` (desired−current) | §6.2 부호 규약 MUST |
 | **Selection (axis B)** | `FULL_SE3` (m=6) \| `TRANSLATION_ONLY` (m=3). `J_S = S·J`, linear rows first | §6.1 |
 | **Nullspace** | dynamically-consistent `Nᵀ = I − J_Sᵀ J̄_Sᵀ`, gate **`nv > task_dim`** (NOT `nv > 6`), 토크는 `Nᵀ` 투영 (가속도는 `N`) | §6.4 — 6-DoF+`TRANSLATION_ONLY` 는 dim-3 nullspace 가 **필수** |
-| **DLS (singularity)** | σ_min-adaptive: `λ²=0` (σ≥σ₀), `λ_max²(1−(σ/σ₀)²)` (σ<σ₀). OSC 의 상수 λ 와 다름 | §6.5. `singularity_threshold`=0.02, `max_damping`=0.05 |
+| **DLS (singularity)** | σ_min-adaptive: `λ²=0` (σ≥σ₀), `λ_max²(1−(σ/σ₀)²)` (σ<σ₀). **저장소 단일 규약** — OSC·CLIK 의 상수 λ 는 #236 S2b+S3b 에서 여기로 수렴했다 (아웃라이어였던 쪽이 흡수된 것이지 새 규약이 아니다) | §6.5. `singularity_threshold`=0.02, `max_damping`=0.05 — 다섯 컨트롤러 전부 같은 키·같은 기본값 |
 | **Safety layer order** | joint-limit repulsive (§5.3, 스프링+**댐핑**) → 절대 saturation → **`state.dt` 기반** rate limit → non-finite. non-finite 는 saturation *전에* 캡처 (∞ 마스킹 방지) | §10.5 (순서가 load-bearing) |
 | **Filter** | **`rtc_base` `BesselFilterN<3>` 2개** (force / torque 별도 cutoff). 명세의 2차 Butterworth **미도입 — deviation (D11)**: repo 필터는 4차 Bessel 이고 P5 가 동등 기능 fork 를 금지한다. §3.3 의 위상여유 우려는 admittance 루프(S3) 대상이며 impedance 에는 해당 없음. `Init()` 전 `Apply()` 는 **계수 0 을 조용히 반환**하므로 ctor·`LoadConfig` 양쪽에서 `Configure()` 하고 활성화 시 `Seed()` | §3.3, D11 |
 | **State machine** | 전체 §10.6: `BIAS_CALIBRATING→HOLDING→RUNNING ⇄ RUNNING_CONTACT→DEGRADED→SAFE_STOP`. enum 의 `kRunning` **이** spec 의 `RUNNING_FREE_SPACE` 다 (contact split 이전에 명명 — 슬라이스 1 assertion 을 그대로 두기 위해 rename 하지 않음, PROC-6). SAFE_STOP 은 `ResetFault()` 로만 탈출, CM global E-STOP latch 와 **분리**하며 `BeginBiasCalibration()` 도 latch 를 이기지 못한다 | §10.6, E-8 |
@@ -260,6 +260,39 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
 
 남은 실제 구멍은 토크 정책이 아니라 **진단**이다 — `num_channels < nv` 는 낫지 않는 영구
 DEGRADED 인데 이를 알리는 경로가 없다 (issue #261).
+
+## 3.8 §6.5 λ 규약 수렴 — OSC·CLIK 이관의 지점별 차이 (#236 S2b+S3b)
+
+`OperationalSpaceController` 와 `ClikController` 는 저장소에 남아 있던 마지막 **상수-λ** DLS
+구현이었고, 각각 `compliance/task_dynamics` 와 `compliance/differential_ik` 로 이관됐다. 이
+이관은 **비트 동일이 아니다** — `## 검증 전략` 이 요구하는 "발생 지점마다 (왜 / 차이 상한 /
+무해 근거)" 기록이 아래 표다. 감당 근거는 **두 어댑터 모두 bringup 배선이 0** 이라는 것이다
+(`integrated_bringup` 은 `demo_joint`/`demo_task`/`demo_wbc` 만 등록한다). 배선된 여섯 번째
+사본인 `demo_task_controller` 의 인라인 DLS 는 **바인딩이므로 S7 소관**이고 여기서 건드리지
+않았다.
+
+차이는 **두 티어**이고 섞으면 센서가 vacuous 해진다.
+
+| 티어 | 지점 | 왜 바뀌었나 | 차이 상한 | 무해 근거 |
+|---|---|---|---|---|
+| **1 (법칙)** | λ 규약: 상수 `max(1e-4, damping)` → §6.5 σ_min-적응형 | **이관의 목적 그 자체.** 상수 λ 인 두 컨트롤러가 아웃라이어였고 나머지 셋은 이미 §6.5 였다 | **없음 — O(1)** (특이점 밖에서 `λ²`: 0.0025 → 정확히 0) | 의도된 동작 변경. 배선 0. 오히려 특이점에서 멀 때 영공간 직교성 `J M⁻¹ Nᵀ = 0` 이 정확해진다 |
+| **2 (구조)** | 고정 `LLT<Matrix6d>` → 동적 `LLT<MatrixXd>` (**벡터** RHS 만 해당) | 헬퍼가 m=3/m=6 을 모두 받아야 한다 (고정 6×6 은 `TRANSLATION_ONLY` 불가) | 2.5e-14 | 반올림. 행렬 RHS 는 비트 동일 (probe 0/840,000) |
+| **2 (구조)** | LDLT → LLT (CLIK) | 헬퍼는 SPD 전제라 LLT 하나로 통일 | 1.7e-12 | 반올림. `J Jᵀ + λ²I` 는 SPD |
+| **2 (구조)** | 역행렬 materialise → solve | `LambdaS()` 는 §6.3·§7.6 소비자가 **행렬로** 받는 public 출력이라 어차피 materialise 가 남는다 | 5.0e-14 | 반올림 |
+| **2 (구조)** | CLIK 영공간 게인이 사영 **後 → 前** (`kp·(N·Δq)` → `N·(kp·Δq)`) | 그래야 `joint::ComputePostureVelocity` 를 부를 수 있고, 다섯 소비자가 한 법칙이 된다 | 4.2e-16 (비트 불일치율은 68% 지만 마지막 자리) | 스칼라 분배는 대수적 항등 |
+
+센서는 티어별로 다르다 (`test/test_dls_convergence.cpp`):
+
+- **티어 2** — 리터럴 pre-extraction oracle 을 유지하되 `BitsEqual` 대신 **상대오차 상한 1e-9**.
+  λ² 를 oracle 에 **인자로 넘겨** 양쪽을 일치시키므로 남는 차이는 구조뿐이다.
+  `RelativeBoundRejectsTheConstantLambdaLaw` 가 그 상한이 λ 변경을 실제로 **거부**함을 보여
+  비-vacuity 를 고정한다 (상한을 넓혀 티어 1 을 덮으려 드는 순간 무의미해진다는 증명).
+- **티어 1** — 법칙의 *성질* 로 고정한다: 셸 밖 `λ²=0` · 셸 안 단조증가 · `λ² ≤ λ_max²` ·
+  σ₀ ≤ 0 이면 램프 무장해제(NUM-2). 그리고 두 이관 경로가 **그 법칙을 쓰고 있는지**를 별도로.
+- **게이트·진단** — 여전히 비트 (bool 은 반올림이 없다). 수치 레인이 무뎌진 만큼 이쪽이 유일한
+  배선 센서다. mutation 11종 중 2종이 관측 창 없이는 **탐지되지 않았고**, 그 둘에만 창을 냈다:
+  OSC 의 `nullspace_active()` (게인 0 이면 게이트가 수치적으로 inert) 와 CLIK 의 비유한 J 강등
+  경로 (`ok == false` 가 평범한 draw 에서는 도달 불가). 나머지 9종은 창 없이 발화한다.
 
 ## 4. 슬라이스 1 설계 주석 (README 필수 설명)
 
