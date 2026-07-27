@@ -432,7 +432,9 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   // itself (an ill-conditioned URDF inertia would need M-side regularisation).
   // Both factorisations are checked (.info() here, r.ok in the helper); on failure
   // we fall back to a safe gravity/Coriolis-hold torque (τ = h) rather than emit
-  // NaN (issue #172 review).
+  // NaN (issue #172 review). The .info() half is NOT sufficient on its own: LLT
+  // reports Success on a matrix full of NaN, so the helper's own allFinite() gate
+  // on J_S is what actually turns a NaN joint state into r.ok == false here.
   bool dyn_ok = true;
   nullspace_active_ = false;
   llt_M_.compute(M_);
@@ -491,7 +493,12 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
       tau_out_ += null_tmp_;
     }
   } else {
-    // Degenerate M / Λ⁻¹: hold against gravity + Coriolis only (finite, safe).
+    // Degenerate M / Λ⁻¹: hold against gravity + Coriolis only. NOT finite by
+    // construction — the reachable way to land here is a non-finite joint state
+    // (that is what the helper's allFinite() gate rejects), and h = C(q,v)v +
+    // g(q) is computed from the SAME state, so on exactly the tick this branch
+    // exists for h is itself NaN. The scrub in Step 10 is what makes the hold
+    // safe; this line only chooses the best available hold.
     tau_out_ = h_;
   }
 
@@ -508,6 +515,21 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
   // drives its own joint (#172 A2). Identity order → memcpy (unchanged).
   handle_->ReorderOutput(tau_out_,
                          std::span<double>(out0.commands.data(), static_cast<std::size_t>(ncmd)));
+  // Non-finite scrub BEFORE the clamp, because the clamp cannot do it: every
+  // comparison against a NaN is false, so std::clamp returns the NaN unchanged
+  // and a torque backend receives it. A channel whose torque could not be formed
+  // is commanded ZERO — the same policy, and the same wording, as
+  // compliance::GravityCompDampedHold on the E-STOP path. Two reachable sources,
+  // and the dyn_ok gate above catches only the first: a non-finite joint
+  // POSITION (→ the τ = h fallback, whose h carries the same NaN), and a
+  // non-finite joint VELOCITY, which leaves J and M finite — both depend on q
+  // alone — so dyn_ok stays true while h and tcp_vel_ carry the NaN into τ.
+  for (int i = 0; i < ncmd; ++i) {
+    double& cmd = out0.commands[static_cast<std::size_t>(i)];
+    if (!std::isfinite(cmd)) {
+      cmd = 0.0;
+    }
+  }
   rtc::utils::ClampSymmetric(out0.commands, nc0, std::span<const double>(max_joint_torque_),
                              kDefaultMaxJointTorque);
 

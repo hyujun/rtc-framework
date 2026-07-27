@@ -91,10 +91,27 @@ class TaskDynamics {
   // pre-factored joint inertia M (its LLT). `llt_M` must already hold a
   // successful factorisation of the SPD matrix M(q) (nv×nv). sigma0/lambda_max
   // parameterise the §6.5 DLS. RT-safe: noexcept, no allocation.
+  //
+  // A false `ok` means Λ_S / J̄_S / Nᵀ are STALE and the caller must fall back
+  // (every caller holds a safe torque, τ = ĝ + C·v). Note what does NOT trigger
+  // it: J_S M⁻¹ J_Sᵀ is positive SEMI-definite, and Eigen's LLT accepts a
+  // singular one, so a rank-deficient pose reports ok WITH σ_min ≈ 0 — the σ_min
+  // faults are what catch that. The reachable failure is a non-finite J_S.
   [[nodiscard]] Result Compute(const Eigen::Ref<const Eigen::MatrixXd>& J_S,
                                const Eigen::LLT<Eigen::MatrixXd>& llt_M, double sigma0,
                                double lambda_max) noexcept {
     Result r;
+    // Checked explicitly because NOTHING downstream does, and every individual
+    // step launders the NaN into something that looks healthy: LLT reports
+    // Success on a matrix full of NaN (every "is this pivot positive" test is a
+    // comparison, and comparisons against NaN are false), and σ_min comes back
+    // as a clean 0.0 because std::max(0.0, NaN) returns the FIRST argument. So
+    // without this the result is r.ok == true, a finite-looking σ_min, and a
+    // Λ_S of NaN — i.e. the caller's τ = h fallback never fires and the NaN is
+    // published as a torque command. Same guard, same reason, as the kinematic
+    // sibling DifferentialIk::Compute.
+    if (!J_S.allFinite())
+      return r;  // r.ok stays false; Λ_S/J̄_S/Nᵀ keep the last good contents
     J_S_ = J_S;
 
     r.sigma_min = SmallestSingularValue(J_S_, JJt_, saes_);

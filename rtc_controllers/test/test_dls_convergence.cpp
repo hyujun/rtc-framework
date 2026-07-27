@@ -763,6 +763,91 @@ TEST(ClikAdapter, HoldsInsteadOfCommandingNaNWhenTheJacobianGoesNonFinite) {
   }
 }
 
+TEST(OscAdapter, HoldsGravityTorqueWhenTheJacobianGoesNonFinite) {
+  // The dynamic sibling of the CLIK test above, and it did NOT hold before this
+  // guard existed. The adapter's own defence is `dyn_ok`, fed by two .info()
+  // checks — and .info() cannot see a NaN, because every pivot test inside LLT
+  // is a comparison and comparisons against NaN are false. Worse, the one place
+  // a NaN would have to surface, σ_min = sqrt(max(0, λ_min)), LAUNDERS it:
+  // std::max(0.0, NaN) returns 0.0, so a NaN pose reports the same σ_min as a
+  // perfectly singular one and λ² is set from that clean number. The result was
+  // r.ok == true over an all-NaN Λ_S, i.e. τ = Jᵀ(Λ·a) + h published as a
+  // command with the τ = h fallback never taken. Only J_S.allFinite() catches it.
+  rtc::OperationalSpaceController::Gains gains;
+  gains.null_kp = 0.0;
+  gains.null_kd = 1.0;
+  rtc::OperationalSpaceController ctrl(rtc::testing::Serial7dof(), gains);
+
+  rtc::ControllerState state = rtc::testing::MakeState(7, 0.001);
+  for (int tick = 0; tick < 5; ++tick) {
+    rtc::testing::FillSweep(state, 7, tick, 0.001);
+    const rtc::ControllerOutput healthy = ctrl.Compute(state);
+    for (int i = 0; i < 7; ++i) {
+      ASSERT_TRUE(std::isfinite(healthy.devices[0].commands[static_cast<std::size_t>(i)]))
+          << "healthy tick " << tick << " channel " << i;
+    }
+  }
+
+  // (a) NaN POSITION — J and M both go non-finite, so the helper's gate fires
+  //     and the adapter takes its τ = h fallback. h is NaN too (same state), so
+  //     the fallback alone is not enough; the Step 10 scrub is what holds.
+  rtc::testing::FillSweep(state, 7, 5, 0.001);
+  state.devices[0].positions[2] = std::numeric_limits<double>::quiet_NaN();
+  const rtc::ControllerOutput bad_q = ctrl.Compute(state);
+  for (int i = 0; i < 7; ++i) {
+    EXPECT_TRUE(std::isfinite(bad_q.devices[0].commands[static_cast<std::size_t>(i)]))
+        << "a non-finite joint position must not reach the actuator as a torque; channel " << i;
+  }
+
+  // (b) NaN VELOCITY — the case the gate does NOT see: J(q) and M(q) depend on
+  //     q alone and stay finite, so dyn_ok is true and the fallback never runs,
+  //     yet h = C(q,v)v and tcp_vel_ = J·v both carry the NaN into τ. Without
+  //     the scrub this channel publishes NaN with every guard reporting healthy.
+  rtc::testing::FillSweep(state, 7, 6, 0.001);
+  state.devices[0].velocities[4] = std::numeric_limits<double>::quiet_NaN();
+  const rtc::ControllerOutput bad_v = ctrl.Compute(state);
+  for (int i = 0; i < 7; ++i) {
+    EXPECT_TRUE(std::isfinite(bad_v.devices[0].commands[static_cast<std::size_t>(i)]))
+        << "a non-finite joint velocity must not reach the actuator as a torque; channel " << i;
+  }
+}
+
+TEST(TaskDynamicsCore, ReportsNotOkOnANonFiniteJacobian) {
+  // The unit-level statement of the same thing, and the one that pins WHICH
+  // signal is load-bearing: without the allFinite() gate this call returns
+  // ok == true with sigma_min == 0.0 — a value indistinguishable from a
+  // genuinely singular pose, which is precisely why a σ_min fault threshold
+  // cannot substitute for the gate.
+  ModelRig rig;
+  const int nv = rig.nv();
+  compliance::TaskDynamics dyn;
+  dyn.Resize(nv, 6);
+
+  std::vector<double> q(static_cast<std::size_t>(nv), 0.0);
+  std::vector<double> v(static_cast<std::size_t>(nv), 0.0);
+  FillRegularPose(q, v, nv, 3);
+  const Snapshot s = rig.At(q, v);
+
+  Eigen::LLT<Eigen::MatrixXd> llt_M(nv);
+  llt_M.compute(s.M);
+  ASSERT_EQ(llt_M.info(), Eigen::Success);
+
+  const compliance::TaskDynamics::Result good = dyn.Compute(s.J_full, llt_M, 0.02, 0.05);
+  ASSERT_TRUE(good.ok);
+  const Eigen::MatrixXd lambda_good = dyn.LambdaS();
+
+  Eigen::MatrixXd J_nan = s.J_full;
+  J_nan(3, 1) = std::numeric_limits<double>::quiet_NaN();
+  const compliance::TaskDynamics::Result bad = dyn.Compute(J_nan, llt_M, 0.02, 0.05);
+  EXPECT_FALSE(bad.ok) << "a non-finite Jacobian must not report a usable factorisation";
+  EXPECT_TRUE(dyn.LambdaS().allFinite()) << "Λ_S must keep its last good contents, not become NaN";
+  EXPECT_TRUE(dyn.NullspaceProjectorTranspose().allFinite());
+  for (Eigen::Index i = 0; i < lambda_good.size(); ++i) {
+    EXPECT_TRUE(rtc::testing::BitsEqual(dyn.LambdaS()(i), lambda_good(i)))
+        << "a rejected call must leave Λ_S untouched, not partially written; element " << i;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // RT-1 — the migrated tick still allocates nothing
 // ═══════════════════════════════════════════════════════════════════════════
