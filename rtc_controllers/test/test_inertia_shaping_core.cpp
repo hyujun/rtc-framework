@@ -571,6 +571,11 @@ class ImpedanceShim {
     const Vec6 f_ext = alpha_ * f_ext_raw;
 
     bool dyn_ok = true;
+    // #277's `FloorPostureGain` sits immediately above this line in the adapter
+    // and is deliberately not mirrored: it is a binding-side clamp, and every
+    // gain this shim is driven with is non-negative, where the floor is the
+    // identity. A negative gain here would make the two sides disagree — floor
+    // at the CALL SITE if one is ever added.
     const bool nullspace_active = (nv_ > m) && (g.nullspace_kp != 0.0 || g.nullspace_kd != 0.0);
     const bool need_task_dynamics = nullspace_active || inertia_shaping;
     Vec6 f_cmd = f_task;

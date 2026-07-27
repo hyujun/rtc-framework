@@ -492,8 +492,12 @@ ControllerOutput OperationalSpaceController::Compute(const ControllerState& stat
     // AWAY from q_ref, and Nᵀ keeps that away from the Cartesian task, so the
     // posture drifts with every number finite and no fault raised. Kd < 0 is
     // worse — negative damping injects energy into the redundant DOFs.
-    const double null_kp = std::max(0.0, gains.null_kp);
-    const double null_kd = std::max(0.0, gains.null_kd);
+    //
+    // `FloorPostureGain` and not `std::max(0.0, ·)`: the latter returns 0.0 for
+    // a NaN gain, which would close the gate silently instead of letting the
+    // non-finite value reach the law and latch the existing fault.
+    const double null_kp = joint::FloorPostureGain(gains.null_kp);
+    const double null_kd = joint::FloorPostureGain(gains.null_kd);
     const bool nullspace_active = (null_kp != 0.0 || null_kd != 0.0) && nv > 6;
     nullspace_active_.store(nullspace_active, std::memory_order_relaxed);
     if (nullspace_active) {
@@ -723,6 +727,15 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   // LoadConfig above). All later Compute() dynamics use the submodel.
   MaybeSelectSubModel();
   if (!cfg) {
+    // NUM-6 says the loader floors the posture gains "regardless of whether the
+    // key is present", and an ABSENT NODE is the widest case of an absent key —
+    // the gains here come from the constructor or a previous set_gains(), i.e.
+    // exactly the two paths the floor exists for. Returning above this would
+    // leave get_gains() reporting a gain Compute() refuses to run.
+    auto g0 = gains_lock_.Load();
+    g0.null_kp = joint::FloorPostureGain(g0.null_kp);
+    g0.null_kd = joint::FloorPostureGain(g0.null_kd);
+    gains_lock_.Store(g0);
     return;
   }
   auto g = gains_lock_.Load();
@@ -784,8 +797,8 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   // set_gains(), and get_gains() after configure should report the gain Compute()
   // will actually run. Compute() floors again at the point of use because
   // set_gains() bypasses configure entirely (NUM-1) — as max_damping does.
-  g.null_kp = std::max(0.0, g.null_kp);
-  g.null_kd = std::max(0.0, g.null_kd);
+  g.null_kp = joint::FloorPostureGain(g.null_kp);
+  g.null_kd = joint::FloorPostureGain(g.null_kd);
   if (cfg["estop_damping"]) {
     // D ≥ 0: the torque E-STOP hold (#184) subtracts D·q̇ to bleed kinetic energy;
     // a negative D would inject energy (destabilising a safety stop).

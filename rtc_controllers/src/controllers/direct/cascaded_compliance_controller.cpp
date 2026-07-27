@@ -462,8 +462,11 @@ ControllerOutput CascadedComplianceController::Compute(const ControllerState& st
   // BEFORE the gate rather than only on the law's arguments: the gate tests
   // `!= 0.0`, so flooring the law alone would hold the gate open on a negative
   // gain and pay for the Λ/Nᵀ block every tick to project an all-zero τ₀.
-  const double nullspace_kp = std::max(0.0, gains.nullspace_kp);
-  const double nullspace_kd = std::max(0.0, gains.nullspace_kd);
+  // `FloorPostureGain` and not `std::max(0.0, ·)` — the latter returns 0.0 for
+  // NaN, closing the gate on a corrupt gain instead of letting it reach the
+  // finite-output check that latches `nan_inf`.
+  const double nullspace_kp = joint::FloorPostureGain(gains.nullspace_kp);
+  const double nullspace_kd = joint::FloorPostureGain(gains.nullspace_kd);
   const bool nullspace_active = (nv > kTaskDim) && (nullspace_kp != 0.0 || nullspace_kd != 0.0);
   // Re-evaluate the MUST-1 ratio whenever the gains it compares have CHANGED, not
   // only on activation: set_gains() / a re-LoadConfig write a new POD into the
@@ -796,8 +799,16 @@ void CascadedComplianceController::SetHandEstop(bool active) noexcept {
 void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
   RTControllerInterface::LoadConfig(cfg);
   MaybeSelectSubModel();
-  if (!cfg)
+  if (!cfg) {
+    // NUM-6's loader half is "regardless of whether the key is present", and an
+    // absent NODE is the widest case of that: the gains here came from the
+    // constructor or a previous set_gains(), the two paths the floor exists for.
+    auto g0 = gains_lock_.Load();
+    g0.nullspace_kp = joint::FloorPostureGain(g0.nullspace_kp);
+    g0.nullspace_kd = joint::FloorPostureGain(g0.nullspace_kd);
+    gains_lock_.Store(g0);
     return;
+  }
 
   auto g = gains_lock_.Load();
 
@@ -927,15 +938,18 @@ void CascadedComplianceController::LoadConfig(const YAML::Node& cfg) {
 
   // ── Nullspace / DLS / safety / activation ────────────────────────────────
   // The posture floors this controller has carried since it shipped — #277
-  // converged the other four onto them. Re-applied unconditionally below so an
-  // ABSENT key cannot let a constructor / set_gains() value through, and floored
-  // once more at the point of use because set_gains() bypasses configure (NUM-1).
+  // converged the other four onto them. Applied unconditionally AFTER the parse
+  // so an ABSENT key cannot let a constructor / set_gains() value through, and
+  // floored once more at the point of use because set_gains() bypasses configure
+  // (NUM-1). The parse itself no longer clamps: `max(0, max(0, x)) == max(0, x)`
+  // for every input, so a clamp inside the `if` could never change the stored
+  // value — two spellings of one bound, only one of which covers the absent key.
   if (cfg["nullspace_stiffness"])
-    g.nullspace_kp = std::max(0.0, num(cfg["nullspace_stiffness"], "nullspace_stiffness"));
+    g.nullspace_kp = num(cfg["nullspace_stiffness"], "nullspace_stiffness");
   if (cfg["nullspace_damping"])
-    g.nullspace_kd = std::max(0.0, num(cfg["nullspace_damping"], "nullspace_damping"));
-  g.nullspace_kp = std::max(0.0, g.nullspace_kp);
-  g.nullspace_kd = std::max(0.0, g.nullspace_kd);
+    g.nullspace_kd = num(cfg["nullspace_damping"], "nullspace_damping");
+  g.nullspace_kp = joint::FloorPostureGain(g.nullspace_kp);
+  g.nullspace_kd = joint::FloorPostureGain(g.nullspace_kd);
   if (cfg["singularity_threshold"])
     g.singularity_threshold = std::max(compliance::kMinSigma0,
                                        num(cfg["singularity_threshold"], "singularity_threshold"));

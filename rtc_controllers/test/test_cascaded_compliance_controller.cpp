@@ -420,13 +420,31 @@ TEST(CascadedCompliance, PostureFloorSurvivesSetGains) {
   // The bypass. The gate is `nv > 6 && (kp != 0 || kd != 0)`, so flooring only
   // the law's arguments would hold it open and pay for the Λ/Nᵀ block every
   // tick to project an all-zero τ₀.
-  auto negative = gains;
+  // Built from get_gains() and NOT from the local `gains`: the two LoadConfig
+  // calls above wrote a whole gain set into the POD, and re-sending the
+  // constructor's would silently revert every one of them (singularity_threshold,
+  // max_damping, pose_error_limit, saturation_persist_time, …). They coincide
+  // today, so the test would still pass — and stop pinning "the floor holds on
+  // top of the CONFIGURED gain set" the first time TransparentWrenchYaml() names
+  // a key the constructor defaults differently.
+  auto negative = ctrl.get_gains();
   negative.nullspace_kp = -5.0;
   negative.nullspace_kd = -1.0;
   ctrl.set_gains(negative);
   (void)ctrl.Compute(state);
   EXPECT_FALSE(ctrl.GetDiagnosticsForTesting().nullspace_active)
       << "a negative posture gain held the gate open — the floor is configure-only";
+
+  // The absent NODE — the widest form of "the key is absent", and the one the
+  // controller manager hands a controller with no YAML. LoadConfig returns early
+  // there, so a floor placed only after that return never runs and get_gains()
+  // keeps reporting a gain Compute() refuses to use. `YAML::Node()` would NOT
+  // reach it: a default-constructed node is a DEFINED Null.
+  ASSERT_DOUBLE_EQ(ctrl.get_gains().nullspace_kp, -5.0) << "the bypass above did not take";
+  ctrl.LoadConfig(YAML::Node(YAML::NodeType::Undefined));
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kp, 0.0)
+      << "the `if (!cfg)` early return skipped the loader floor";
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().nullspace_kd, 0.0);
 }
 
 // ── §7.6 MUST-3: what the compliant frame does when the force stops ─────────

@@ -452,7 +452,7 @@ ControllerOutput ClikController::Compute(const ControllerState& state) noexcept 
     // the posture target, which N then hides from the Cartesian task.
     const auto nvu = static_cast<std::size_t>(nv);
     joint::ComputePostureVelocity(
-        std::max(0.0, gains.null_kp),
+        joint::FloorPostureGain(gains.null_kp),
         joint::PostureInputs{{slot.null_target.data(), slot.null_target.size()},
                              {dev0.positions.data(), dev0.positions.size()},
                              {}},
@@ -677,6 +677,12 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   // LoadConfig above). All later Compute() FK/Jacobian use the submodel.
   MaybeSelectSubModel();
   if (!cfg) {
+    // NUM-6's loader half is "regardless of whether the key is present", and an
+    // absent NODE is the widest case of that: the gain here came from the
+    // constructor or a previous set_gains(), the two paths the floor exists for.
+    auto g0 = gains_lock_.Load();
+    g0.null_kp = joint::FloorPostureGain(g0.null_kp);
+    gains_lock_.Store(g0);
     return;
   }
 
@@ -733,7 +739,7 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   // ABSENT the value still arrives from the constructor or a previous
   // set_gains(). Compute() floors it again at the point of use (set_gains()
   // bypasses configure — NUM-1), the same treatment max_damping gets below.
-  g.null_kp = std::max(0.0, g.null_kp);
+  g.null_kp = joint::FloorPostureGain(g.null_kp);
   if (cfg["enable_null_space"]) {
     g.enable_null_space = cfg["enable_null_space"].as<bool>();
   }

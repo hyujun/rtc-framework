@@ -1020,6 +1020,16 @@ TEST(TaskAdmittanceController, NegativePostureGainIsFlooredAndTheFloorSurvivesSe
   (void)c.Compute(state);
   EXPECT_FALSE(c.GetDiagnosticsForTesting().nullspace_active)
       << "a negative posture gain held the gate open — the floor is configure-only";
+
+  // The absent NODE — the widest form of "the key is absent", and the one the
+  // controller manager hands a controller with no YAML. LoadConfig returns early
+  // there, so a floor placed only after that return never runs and get_gains()
+  // keeps reporting a gain Compute() refuses to use. `YAML::Node()` would NOT
+  // reach it: a default-constructed node is a DEFINED Null.
+  ASSERT_DOUBLE_EQ(c.get_gains().nullspace_kp, -2.0) << "the bypass above did not take";
+  c.LoadConfig(YAML::Node(YAML::NodeType::Undefined));
+  EXPECT_DOUBLE_EQ(c.get_gains().nullspace_kp, 0.0)
+      << "the `if (!cfg)` early return skipped the loader floor";
 }
 
 TEST(TaskAdmittanceController, BiasCalibrationSuppressesTheWrenchUntilItCommits) {

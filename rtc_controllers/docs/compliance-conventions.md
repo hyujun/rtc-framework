@@ -306,7 +306,11 @@ DEGRADED 인데 이를 알리는 경로가 없다 (issue #261).
   판정을 받는 이유는 #277 이 자세 게인을 로더·사용 지점 양쪽에서 `max(0.0, ·)` 로 floor 하기
   때문이다 — 음수 `K_pⁿ` 는 τ₀ 를 자세 오차가 **커지는** 방향으로 만들고 `Nᵀ` 가 그걸 task
   로부터 가리므로, 조용히 자세가 밀리는 대신 0 과 동일하게 취급돼 가드에 걸린다. floor 가
-  가드 **앞**에 있는 것이 이 정합성의 전부다.
+  가드 **앞**에 있는 것이 이 정합성의 전부다. configure 는 거부로 끝나지만 `set_gains()` 는
+  POD 를 SeqLock 에 직접 써 configure 를 통째로 우회하므로, 런타임에 같은 조합에 도달하면
+  `ComplianceFaults::posture_authority_lost` 가 **DEGRADED** 로 뜬다 — 여기서 SAFE_STOP 이
+  아닌 이유는 병진 task 는 여전히 정상 추종 중이고 잃은 것은 회전 *권한* 이라, 알리는 것이
+  멈추는 것보다 정확한 축소-권한 답이기 때문이다. 조용한 것만이 선택지가 아니었다.
 - **`J̇·v` (task-space Coriolis) 는 생략** — quasi-static 가정. 저속 compliance 에서 무시 가능하며
   provider surface 가 repo 에 없다. 고속 task 가 필요하면 별도 설계.
 - **MuJoCo-only** — 위 매트릭스 Backend scope 참조. YAML `command_type: "torque"` 이외 거부.

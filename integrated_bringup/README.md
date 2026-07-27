@@ -334,7 +334,7 @@ q_cmd  = q_des
 | `kp_translation` | `[5.0, 5.0, 5.0]` | 위치 비례 게인 (x, y, z) [1/s] |
 | `kp_rotation` | `[2.0, 2.0, 2.0]` | 자세 비례 게인 (rx, ry, rz) [1/s] |
 | `damping` | `0.01` | 의사역행렬 감쇠 계수 lambda |
-| `null_kp` | `0.5` | 영공간 관절 센터링 게인 |
+| `null_kp` | `0.5` | 영공간 관절 센터링 게인 — YAML 로더·`ros2 param` 콜백·사용 지점 모두 `joint::FloorPostureGain` floor (NUM-6, #277). 음수는 posture 를 목표에서 **멀어지는** 방향으로 몰고 `(I − J⁺J)` 가 그걸 task 로부터 가려 fault 없는 조용한 drift 가 된다 |
 | `enable_null_space` | `false` | 영공간 활성화 (3-DOF 모드에서만 동작) |
 | `control_6dof` | `true` | 6-DOF 제어 활성화 |
 | `trajectory_speed` | `0.1` m/s | TCP 병진 궤적 속도 |

@@ -594,6 +594,17 @@ TEST(ClikConfig, NegativePostureGainIsFlooredAndTheFloorSurvivesSetGains) {
   }
   EXPECT_TRUE(positive_differs)
       << "a positive posture gain changed nothing — the comparison pins nothing";
+
+  // The absent NODE — the widest form of "the key is absent", and the one the
+  // controller manager hands a controller with no YAML. LoadConfig returns early
+  // there, so a floor placed only after that return never runs and get_gains()
+  // keeps reporting a gain Compute() refuses to use.
+  auto bypassed = cfg_only.get_gains();
+  bypassed.null_kp = -0.8;
+  cfg_only.set_gains(bypassed);
+  cfg_only.LoadConfig(UndefinedNode());
+  EXPECT_DOUBLE_EQ(cfg_only.get_gains().null_kp, 0.0)
+      << "the `if (!cfg)` early return skipped the loader floor";
 }
 
 TEST(ClikConfig, RetiredDampingKeyIsIgnoredNotMapped) {
@@ -879,6 +890,17 @@ command_type: torque
   (void)ctrl.Compute(state);
   EXPECT_FALSE(ctrl.nullspace_active())
       << "a negative posture gain held the gate open — the floor is configure-only";
+
+  // The absent NODE — the widest form of "the key is absent", and the one the
+  // controller manager actually hands a controller with no YAML. LoadConfig
+  // returns early there, so a floor placed only after that return covers neither
+  // gain and get_gains() keeps reporting one Compute() refuses to run. The POD
+  // is still the negative pair set_gains() just wrote.
+  ASSERT_DOUBLE_EQ(ctrl.get_gains().null_kp, -8.0) << "the bypass above did not take";
+  ctrl.LoadConfig(UndefinedNode());
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kp, 0.0)
+      << "the `if (!cfg)` early return skipped the loader floor";
+  EXPECT_DOUBLE_EQ(ctrl.get_gains().null_kd, 0.0);
 }
 
 TEST(OscConfig, RetiredDampingKeyIsIgnoredNotMapped) {
