@@ -35,6 +35,11 @@ namespace {
 // admittance / cascade controllers (#257).
 constexpr double kMinMaxDamping = 1e-4;
 
+// NUM-2 floor for the same ramp's other end: AdaptiveDampingSquared returns
+// exactly 0 for σ₀ ≤ 0, so a zero threshold disarms §6.5 rather than narrowing
+// it. Same value the impedance / admittance / cascade loaders clamp with.
+constexpr double kMinSigma0 = 1e-6;
+
 }  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -693,7 +698,26 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
     g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
   }
   if (cfg["singularity_threshold"]) {
-    g.singularity_threshold = cfg["singularity_threshold"].as<double>();
+    // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
+    // σ₀ ≤ 0, so a zero here does not merely widen the shell — it removes the
+    // §6.5 ramp entirely, which is the one guard the constant-λ form used to
+    // provide unconditionally. The other three task-space controllers clamp this
+    // key identically; the migration's "same names, same defaults" claim only
+    // holds if the VALIDATION converges too.
+    g.singularity_threshold = std::max(kMinSigma0, cfg["singularity_threshold"].as<double>());
+  }
+  if (cfg["damping"]) {
+    // Retired in #236 S2b. LoadConfig ignores unknown keys, so without this an
+    // existing deployment config would keep parsing clean while its singularity
+    // behaviour silently changed (λ_max defaulting to 0.05 — 5× the number the
+    // operator typed — plus a σ₀ shell they never configured). Warned and
+    // ignored rather than mapped onto max_damping: a constant λ and the ceiling
+    // of a σ_min-adaptive ramp are not the same quantity, so any mapping would
+    // be a guess. Same treatment as enable_gravity_compensation below.
+    RCLCPP_WARN(rclcpp::get_logger("OperationalSpaceController"),
+                "[OperationalSpaceController] 'damping' is retired (#236 S2b) and IGNORED — use "
+                "'max_damping' (λ_max, default 0.05) and 'singularity_threshold' (σ₀, default "
+                "0.02); see rtc_controllers/README.md");
   }
   // Dynamically-consistent null-space posture gains (only bite when nv > 6).
   if (cfg["null_kp"]) {

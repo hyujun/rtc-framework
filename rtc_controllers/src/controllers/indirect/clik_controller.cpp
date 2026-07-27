@@ -34,6 +34,11 @@ namespace {
 // admittance / cascade controllers (#257).
 constexpr double kMinMaxDamping = 1e-4;
 
+// NUM-2 floor for the same ramp's other end: AdaptiveDampingSquared returns
+// exactly 0 for σ₀ ≤ 0, so a zero threshold disarms §6.5 rather than narrowing
+// it. Same value the impedance / admittance / cascade loaders clamp with.
+constexpr double kMinSigma0 = 1e-6;
+
 }  // namespace
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -703,7 +708,23 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
     g.max_damping = std::max(kMinMaxDamping, cfg["max_damping"].as<double>());
   }
   if (cfg["singularity_threshold"]) {
-    g.singularity_threshold = cfg["singularity_threshold"].as<double>();
+    // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
+    // σ₀ ≤ 0, so a zero here removes the §6.5 ramp entirely instead of narrowing
+    // it — and with λ² ≡ 0 a singular pose makes DifferentialIk report !ok, which
+    // this controller answers by holding at zero velocity every tick. Clamped the
+    // same way by the other three task-space controllers.
+    g.singularity_threshold = std::max(kMinSigma0, cfg["singularity_threshold"].as<double>());
+  }
+  if (cfg["damping"]) {
+    // Retired in #236 S3b (#258). LoadConfig ignores unknown keys, so without
+    // this an existing deployment config would keep parsing clean while its
+    // singularity behaviour silently changed. Warned and ignored rather than
+    // mapped onto max_damping: a constant λ and the ceiling of a σ_min-adaptive
+    // ramp are not the same quantity, so any mapping would be a guess.
+    RCLCPP_WARN(rclcpp::get_logger("ClikController"),
+                "[ClikController] 'damping' is retired (#236 S3b) and IGNORED — use 'max_damping' "
+                "(λ_max, default 0.05) and 'singularity_threshold' (σ₀, default 0.02); see "
+                "rtc_controllers/README.md");
   }
   if (cfg["null_kp"]) {
     g.null_kp = cfg["null_kp"].as<double>();
