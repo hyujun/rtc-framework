@@ -259,6 +259,40 @@ $$\Lambda_d\,\ddot{\tilde x}_c + K_d\,\dot{\tilde x}_c + K_p\,\tilde x_c = S f^{
   "마지막으로 나간 명령 재발행" 이라 침묵과 물리 결과가 같다 (`device_backend.hpp` 가 명시).
   토크 유지 시간을 줄이지 못하면서 #198 Phase 4 계약만 바꾼다.
 
+**게이트의 구현 위치 — base (#236 S7b)**
+
+위 계약은 더 이상 컨트롤러마다 복제되지 않는다. 판정·출력 형태·꼬리 정책은
+`rtc_controller_interface/include/rtc_controller_interface/device_readability.hpp` 가 소유하며
+(3계층표의 "device 판독가능성 게이트" 행 —
+[design-principles.md](../../agent_docs/design-principles.md) §3계층 배치), 그 헤더 주석이 아래
+표와 같은 내용을 코드 옆에서 반복한다. 노출되는 것은 **술어 2개 + 원시연산 2개**다.
+
+| 이름 | 무엇을 답하는가 | 언제 적용하는가 |
+|---|---|---|
+| `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어, 정책 없음 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 (`num_channels` 는 wire 길이) |
+| `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태를 읽기 **전**. false 면 아래 침묵 |
+| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 (`num_channels = 0`) | primary device 에만. secondary 는 그대로 둔다 |
+| `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 을 도메인별 중립값으로 (torque → 0.0 / position → 측정값) | 명령 조립 시. 미기입은 fresh-zero = "원점으로" |
+
+**두 술어의 이름을 분리한 이유** (#265 결정 B): `min(nc0, nv)` 는 좁은 device 를 안전하게
+만들어 주는 것처럼 보이지만 그렇지 않다. *지속* 버퍼에 scatter 하는 경로(`ExtractFullState`,
+`CopyToEigen`)에서 건너뛴 슬롯은 이전값(초기 0)을 유지하므로, 모델이 보는 configuration 은
+**bound 없이 읽은 것과 수치적으로 동일한** 부분 ZERO configuration 이다. bound 는 crash 만
+없애고 hazard 는 남긴다. 따라서 #172 의 `min(nc0, nv)` 는 OOB 방어로서 옳고 되돌리지 않되,
+F5 답으로 쓰면 안 된다. 이 성질은 계약 테스트
+`rtc_controller_interface/test/test_device_readability.cpp` 의 `GateVsBoundTest` 2건이 pin 한다.
+
+**한계 — `IsDeviceReadable` 은 필요조건만 판정한다 (#265 D1-a → issue #284)**
+
+판정식 `!dev.valid || dev.num_channels < nv` 는 **필요조건이지 충분조건이 아니다.** true 가
+"슬롯 `[0, nv)` 가 이번 tick 에 갱신됐다" 를 뜻하지 않기 때문이다 — `num_channels` 는 wire
+길이이고, reorder map 이 활성이면 실제로 써지는 슬롯은 *매칭된 ref 인덱스*라 `nc0 ≥ nv` 여도
+구멍이 남을 수 있다. 반례는 `integrated_bringup/test/test_joint_state_reorder.cpp` 가 의도된
+동작으로 이미 pin 하고 있고 (`{j2, ghost, j1}` → `num_channels == 3` 인데 슬롯 0 은 sentinel
+잔존), `num_channels` 의 의미를 좁히는 안은 기각됐다 (결정 B — 그 필드는
+`ValidateControllerOutput` 의 egress bound 로 이미 쓰이고 있다). 해법은 새 필드 또는 새 술어이며
+**issue #284** 가 소유한다. S7b 는 이 갭을 닫지 않는다.
+
 남은 실제 구멍은 토크 정책이 아니라 **진단**이다 — `num_channels < nv` 는 낫지 않는 영구
 DEGRADED 인데 이를 알리는 경로가 없다 (issue #261).
 

@@ -3,9 +3,17 @@
 
 // Shared types (constants, data structs) live in rtc_base.
 // This header re-exports them and adds the abstract Strategy interface.
+//
+// device_readability.hpp carries the other half of the base's per-tick
+// contract — the F5 gate that decides whether devices[0] may be used as this
+// tick's joint state at all. It is included here rather than left to each
+// binding so the gate is discoverable from the interface a binding already
+// implements; see its header comment for why the two predicates it exports
+// are deliberately named apart.
 #include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/types/types.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include <rtc_msgs/msg/robot_target.hpp>
 
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
