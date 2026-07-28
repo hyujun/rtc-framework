@@ -368,48 +368,11 @@ void JointPDController::LoadConfig(const YAML::Node& cfg) {
   // fail-fast capacity check). Used below to validate config array lengths.
   const int nv = handle_->nv();
   auto g = gains_lock_.Load();
-  // `kp`/`kd` length must equal the model DOF — no silent truncation (#172).
-  if (cfg["kp"]) {
-    if (!cfg["kp"].IsSequence() || cfg["kp"].size() != static_cast<std::size_t>(nv)) {
-      throw std::runtime_error("JointPDController: 'kp' must be a sequence of length nv=" +
-                               std::to_string(nv));
-    }
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nv); ++i) {
-      g.kp[i] = cfg["kp"][i].as<double>();
-    }
-  }
-  if (cfg["kd"]) {
-    if (!cfg["kd"].IsSequence() || cfg["kd"].size() != static_cast<std::size_t>(nv)) {
-      throw std::runtime_error("JointPDController: 'kd' must be a sequence of length nv=" +
-                               std::to_string(nv));
-    }
-    for (std::size_t i = 0; i < static_cast<std::size_t>(nv); ++i) {
-      g.kd[i] = cfg["kd"][i].as<double>();
-    }
-  }
-  if (cfg["enable_gravity_compensation"]) {
-    g.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
-  }
-  if (cfg["enable_coriolis_compensation"]) {
-    g.enable_coriolis_compensation = cfg["enable_coriolis_compensation"].as<bool>();
-  }
-  if (cfg["trajectory_speed"]) {
-    g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
-  }
-  if (cfg["command_type"]) {
-    const auto s = cfg["command_type"].as<std::string>();
-    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
-  }
-  // Dynamics compensation (g, C·v) produces N·m and is only valid on a torque
-  // command. Reject the mixed-unit configuration fail-fast rather than silently
-  // dropping the terms at runtime (issue #172).
-  if (command_type_ != CommandType::kTorque &&
-      (g.enable_gravity_compensation || g.enable_coriolis_compensation)) {
-    throw std::runtime_error(
-        "JointPDController: enable_gravity_compensation / enable_coriolis_compensation require "
-        "command_type: torque (dynamics compensation is N·m and cannot be added to a "
-        "position/velocity command)");
-  }
+  // The schema itself lives in params/joint_pd_params.hpp (#236 S7c-1, G2) —
+  // what stays here is the glue: which submodel nv to validate against, and the
+  // SeqLock publish. A throw leaves the previously published gains in force,
+  // exactly as it did when the parsing was inline.
+  params::ParseJointPdParams(cfg, nv, g, command_type_);
   gains_lock_.Store(g);
 }
 

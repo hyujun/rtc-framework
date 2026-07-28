@@ -3,6 +3,7 @@
 #pragma once
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/params/clik_params.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/threading/seqlock.hpp>
 #include <rtc_urdf_bridge/pinocchio_model_builder.hpp>
@@ -69,32 +70,10 @@ namespace rtc {
 class ClikController final : public RTControllerInterface {
  public:
   // ── Gain / feature configuration ─────────────────────────────────────────
-  struct Gains {
-    std::array<double, 3> kp_translation{
-        {1.0, 1.0, 1.0}};  ///< Translation proportional gain (x,y,z) [1/s]
-    std::array<double, 3> kp_rotation{
-        {1.0, 1.0, 1.0}};  ///< Rotation proportional gain (rx,ry,rz) [1/s]
-    // §6.5 σ_min-adaptive DLS damping — the same two parameters, with the same
-    // names and defaults, the impedance/admittance/cascade controllers use. This
-    // replaced a CONSTANT λ in #236 S3b (issue #258): that constant was the
-    // outlier, and converging it onto compliance/differential_ik.hpp is the
-    // point of the migration, not a side effect. Behavioural consequence, stated
-    // plainly: away from singularities λ² is now exactly 0 (it was damping²), so
-    // J⁺ is the undamped pseudoinverse there and tracking is not biased.
-    double max_damping{0.05};            ///< λ_max for the DLS ramp
-    double singularity_threshold{0.02};  ///< σ₀: DLS engages below this
-    double null_kp{0.5};                 ///< Null-space joint-centering gain [1/s]
-    bool enable_null_space{true};        ///< Enable null-space secondary task
-    bool control_6dof{false};            ///< Enable 6-DOF (translation + orientation) control
-
-    // Trajectory speed
-    double trajectory_speed{0.1};  ///< TCP translational speed for trajectory duration [m/s]
-    double trajectory_angular_speed{0.5};  ///< TCP rotational speed for trajectory duration [rad/s]
-
-    // Trajectory velocity limits
-    double max_traj_velocity{0.5};          ///< Max TCP velocity during task-space trajectory [m/s]
-    double max_traj_angular_velocity{1.0};  ///< Max TCP angular velocity during trajectory [rad/s]
-  };
+  /// The gains POD now lives beside the laws it parameterises, not inside this
+  /// adapter — see params/clik_params.hpp for why (#236 S7c-1, D-B/G2). This
+  /// alias keeps every existing `ClikController::Gains` spelling valid.
+  using Gains = params::ClikParams;
 
   /// @param urdf_path  Absolute path to the robot URDF file.
   /// @param gains      Gains and feature flags.

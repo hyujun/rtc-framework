@@ -676,99 +676,21 @@ void ClikController::LoadConfig(const YAML::Node& cfg) {
   // in the injected system model config (topic_config_ is populated by the base
   // LoadConfig above). All later Compute() FK/Jacobian use the submodel.
   MaybeSelectSubModel();
-  if (!cfg) {
-    // NUM-6's loader half is "regardless of whether the key is present", and an
-    // absent NODE is the widest case of that: the gain here came from the
-    // constructor or a previous set_gains(), the two paths the floor exists for.
-    auto g0 = gains_lock_.Load();
-    g0.null_kp = joint::FloorPostureGain(g0.null_kp);
-    gains_lock_.Store(g0);
-    return;
-  }
-
-  // nv <= kMaxRobotDOF is already guaranteed by the constructor's fail-fast
-  // capacity check.
+  // The schema itself lives in params/clik_params.hpp (#236 S7c-1, G2). What
+  // stays here is glue: the submodel switch above, the SeqLock publish, and
+  // turning a reported retired key into an operator-facing log line — the parse
+  // layer is deliberately rclcpp-free so a future binding can validate a config
+  // without the ROS logging stack.
   auto g = gains_lock_.Load();
-
-  // CLIK gains — translation / rotation separated
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
-    if (n && n.IsSequence() && n.size() >= 3) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        arr[i] = n[i].as<double>();
-      }
-    }
-  };
-  load3(cfg["kp_translation"], g.kp_translation);
-  load3(cfg["kp_rotation"], g.kp_rotation);
-
-  if (cfg["max_damping"]) {
-    // Floor the damped-least-squares λ_max so a zero/negative value cannot remove
-    // the singularity guard (NUM-1); a singular J Jᵀ would otherwise yield a NaN
-    // joint-velocity command. `max_damping` replaced the constant-λ `damping` key
-    // in #236 S3b — same role in the law, now the ceiling of the §6.5 ramp rather
-    // than a constant, and the same key the other three task-space controllers
-    // already use. Mirrors the OperationalSpaceController floor.
-    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
-  }
-  if (cfg["singularity_threshold"]) {
-    // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
-    // σ₀ ≤ 0, so a zero here removes the §6.5 ramp entirely instead of narrowing
-    // it — and with λ² ≡ 0 a singular pose makes DifferentialIk report !ok, which
-    // this controller answers by holding at zero velocity every tick. Clamped the
-    // same way by the other three task-space controllers.
-    g.singularity_threshold =
-        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
-  }
-  if (cfg["damping"]) {
-    // Retired in #236 S3b (#258). LoadConfig ignores unknown keys, so without
-    // this an existing deployment config would keep parsing clean while its
-    // singularity behaviour silently changed. Warned and ignored rather than
-    // mapped onto max_damping: a constant λ and the ceiling of a σ_min-adaptive
-    // ramp are not the same quantity, so any mapping would be a guess.
+  params::ClikRetiredKeys retired;
+  params::ParseClikParams(cfg, g, command_type_, &retired);
+  if (retired.damping) {
     RCLCPP_WARN(rclcpp::get_logger("ClikController"),
                 "[ClikController] 'damping' is retired (#236 S3b) and IGNORED — use 'max_damping' "
                 "(λ_max, default 0.05) and 'singularity_threshold' (σ₀, default 0.02); see "
                 "rtc_controllers/README.md");
   }
-  if (cfg["null_kp"]) {
-    g.null_kp = cfg["null_kp"].as<double>();
-  }
-  // Floored at 0 (#277): a negative posture gain drives q̇₀ away from the
-  // null-space target instead of toward it, and N hides that from the task.
-  // Unconditional rather than folded into the parse above — when the key is
-  // ABSENT the value still arrives from the constructor or a previous
-  // set_gains(). Compute() floors it again at the point of use (set_gains()
-  // bypasses configure — NUM-1), the same treatment max_damping gets below.
-  g.null_kp = joint::FloorPostureGain(g.null_kp);
-  if (cfg["enable_null_space"]) {
-    g.enable_null_space = cfg["enable_null_space"].as<bool>();
-  }
-  if (cfg["control_6dof"]) {
-    g.control_6dof = cfg["control_6dof"].as<bool>();
-  }
-
-  // Trajectory speed
-  if (cfg["trajectory_speed"]) {
-    g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
-  }
-  if (cfg["trajectory_angular_speed"]) {
-    g.trajectory_angular_speed = std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
-  }
-
-  // Trajectory velocity limits
-  if (cfg["max_traj_velocity"]) {
-    g.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
-  }
-  if (cfg["max_traj_angular_velocity"]) {
-    g.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
-  }
-
   gains_lock_.Store(g);
-
-  if (cfg["command_type"]) {
-    const auto s = cfg["command_type"].as<std::string>();
-    command_type_ = (s == "torque") ? CommandType::kTorque : CommandType::kPosition;
-  }
 }
 
 }  // namespace rtc

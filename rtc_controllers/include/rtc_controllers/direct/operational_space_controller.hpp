@@ -19,6 +19,7 @@
 
 #include "rtc_controllers/compliance/task_dynamics.hpp"
 #include "rtc_controllers/compliance/torque_estop.hpp"
+#include "rtc_controllers/params/osc_params.hpp"
 #include "rtc_controllers/trajectory/task_space_trajectory.hpp"
 
 #include <Eigen/Core>
@@ -76,48 +77,10 @@ namespace rtc {
 class OperationalSpaceController final : public RTControllerInterface {
  public:
   // ── Gain / feature configuration ─────────────────────────────────────────
-  struct Gains {
-    // Task-space PD (acceleration form): a = kp·e_pose + kd·(ẋ_d − ẋ) + a_ff.
-    // kp is a stiffness-like gain [1/s²], kd a derivative gain [1/s]. Defaults
-    // are sane torque-OSC starting points — retune per robot (examples only).
-    std::array<double, 3> kp_pos{{100.0, 100.0, 100.0}};  ///< Cartesian position gain     [1/s²]
-    std::array<double, 3> kd_pos{{20.0, 20.0, 20.0}};     ///< Cartesian position damping  [1/s]
-    std::array<double, 3> kp_rot{{50.0, 50.0, 50.0}};     ///< Cartesian orientation gain  [1/s²]
-    std::array<double, 3> kd_rot{{10.0, 10.0, 10.0}};     ///< Cartesian orientation damp  [1/s]
-    // §6.5 σ_min-adaptive DLS damping — the same two parameters, with the same
-    // names and defaults, the impedance/admittance/cascade controllers use. This
-    // replaced a CONSTANT λ = max(1e-4, damping) in #236 S2b: that constant was
-    // the outlier, and converging it onto compliance/task_dynamics.hpp is the
-    // point of the migration, not a side effect. Behavioural consequence, stated
-    // plainly: away from singularities λ² is now exactly 0 (it was damping²), so
-    // Λ is undamped there and the nullspace orthogonality J M⁻¹ Nᵀ = 0 is exact.
-    double max_damping{0.05};            ///< λ_max for the DLS ramp
-    double singularity_threshold{0.02};  ///< σ₀: DLS engages below this
-
-    // Dynamically-consistent null-space posture task (only meaningful when
-    // nv > 6; for a non-redundant 6-DOF arm Nᵀ ≈ 0 so these are inert).
-    // τ₀ is summed directly into joint torque (not through M), so these are
-    // stiffness/damping in TORQUE units, NOT the acceleration-form gains above.
-    double null_kp{0.0};  ///< Posture centering stiffness toward safe_position [N·m/rad]
-    double null_kd{1.0};  ///< Null-space joint damping                         [N·m·s/rad]
-
-    // Torque E-STOP hold (E-8, #184): τ = ĝ(q) − D·q̇ clamped to ±τ_max. D bleeds
-    // residual kinetic energy while ĝ(q) holds the arm against gravity. Same helper
-    // (compliance::GravityCompDampedHold) TaskImpedanceController::ComputeEstop uses.
-    double estop_damping{5.0};  ///< D for the torque E-STOP hold ĝ(q) − D·q̇ [N·m·s/rad]
-
-    // Retained for YAML back-compat; torque OSC always compensates g(q)+C·v
-    // (required for the control law). This flag is parsed but ignored.
-    bool enable_gravity_compensation{true};  ///< [deprecated] no-op in torque mode
-
-    // Trajectory speed
-    double trajectory_speed{0.1};          ///< Max translational speed for trajectory [m/s]
-    double trajectory_angular_speed{0.5};  ///< Max angular speed for trajectory [rad/s]
-
-    // Trajectory velocity limits
-    double max_traj_velocity{0.5};          ///< Max TCP velocity during task-space trajectory [m/s]
-    double max_traj_angular_velocity{1.0};  ///< Max TCP angular velocity during trajectory [rad/s]
-  };
+  /// The gains POD now lives beside the laws it parameterises, not inside this
+  /// adapter — see params/osc_params.hpp for why (#236 S7c-1, D-B/G2). This
+  /// alias keeps every existing `OperationalSpaceController::Gains` spelling valid.
+  using Gains = params::OscParams;
 
   /// @param urdf_path  Absolute path to the robot URDF file.
   /// @param gains      PD gains and feature flags.

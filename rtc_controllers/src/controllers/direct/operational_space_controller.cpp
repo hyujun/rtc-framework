@@ -726,115 +726,21 @@ void OperationalSpaceController::LoadConfig(const YAML::Node& cfg) {
   // in the injected system model config (topic_config_ is populated by the base
   // LoadConfig above). All later Compute() dynamics use the submodel.
   MaybeSelectSubModel();
-  if (!cfg) {
-    // NUM-6 says the loader floors the posture gains "regardless of whether the
-    // key is present", and an ABSENT NODE is the widest case of an absent key —
-    // the gains here come from the constructor or a previous set_gains(), i.e.
-    // exactly the two paths the floor exists for. Returning above this would
-    // leave get_gains() reporting a gain Compute() refuses to run.
-    auto g0 = gains_lock_.Load();
-    g0.null_kp = joint::FloorPostureGain(g0.null_kp);
-    g0.null_kd = joint::FloorPostureGain(g0.null_kd);
-    gains_lock_.Store(g0);
-    return;
-  }
+  // The schema itself lives in params/osc_params.hpp (#236 S7c-1, G2). What
+  // stays here is glue: the submodel switch above, the SeqLock publish, and
+  // turning a reported retired key into an operator-facing log line — the parse
+  // layer is deliberately rclcpp-free so a future binding can validate a config
+  // without the ROS logging stack.
   auto g = gains_lock_.Load();
-  auto load3 = [](const YAML::Node& n, std::array<double, 3>& arr) {
-    if (n && n.IsSequence() && n.size() == 3) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        arr[i] = n[i].as<double>();
-      }
-    }
-  };
-  load3(cfg["kp_pos"], g.kp_pos);
-  load3(cfg["kd_pos"], g.kd_pos);
-  load3(cfg["kp_rot"], g.kp_rot);
-  load3(cfg["kd_rot"], g.kd_rot);
-  if (cfg["max_damping"]) {
-    // Floor λ_max > 0 (NUM-1/NUM-4): λ² regularises Λ⁻¹ at kinematic
-    // singularities. A zero/negative λ_max would remove that guard and admit NaN
-    // torque. `max_damping` replaced the constant-λ `damping` key in #236 S2b —
-    // same role in the law (the DLS damping magnitude), now the ceiling of the
-    // §6.5 ramp rather than a constant, and the same key the other three
-    // task-space controllers already use.
-    g.max_damping = std::max(compliance::kMinMaxDamping, cfg["max_damping"].as<double>());
-  }
-  if (cfg["singularity_threshold"]) {
-    // Floor σ₀ > 0 (NUM-2). AdaptiveDampingSquared short-circuits to λ² = 0 when
-    // σ₀ ≤ 0, so a zero here does not merely widen the shell — it removes the
-    // §6.5 ramp entirely, which is the one guard the constant-λ form used to
-    // provide unconditionally. The other three task-space controllers clamp this
-    // key identically; the migration's "same names, same defaults" claim only
-    // holds if the VALIDATION converges too.
-    g.singularity_threshold =
-        std::max(compliance::kMinSigma0, cfg["singularity_threshold"].as<double>());
-  }
-  if (cfg["damping"]) {
-    // Retired in #236 S2b. LoadConfig ignores unknown keys, so without this an
-    // existing deployment config would keep parsing clean while its singularity
-    // behaviour silently changed (λ_max defaulting to 0.05 — 5× the number the
-    // operator typed — plus a σ₀ shell they never configured). Warned and
-    // ignored rather than mapped onto max_damping: a constant λ and the ceiling
-    // of a σ_min-adaptive ramp are not the same quantity, so any mapping would
-    // be a guess. Same treatment as enable_gravity_compensation below.
+  params::OscRetiredKeys retired;
+  params::ParseOscParams(cfg, g, command_type_, &retired);
+  if (retired.damping) {
     RCLCPP_WARN(rclcpp::get_logger("OperationalSpaceController"),
                 "[OperationalSpaceController] 'damping' is retired (#236 S2b) and IGNORED — use "
                 "'max_damping' (λ_max, default 0.05) and 'singularity_threshold' (σ₀, default "
                 "0.02); see rtc_controllers/README.md");
   }
-  // Dynamically-consistent null-space posture gains (only bite when nv > 6).
-  if (cfg["null_kp"]) {
-    g.null_kp = cfg["null_kp"].as<double>();
-  }
-  if (cfg["null_kd"]) {
-    g.null_kd = cfg["null_kd"].as<double>();
-  }
-  // Both floored at 0 (#277): a negative Kp makes τ₀ = Kp·(q_safe − q) push away
-  // from the configured posture and a negative Kd injects energy, and Nᵀ keeps
-  // either from disturbing the Cartesian task — so the posture drifts silently.
-  // Unconditional rather than folded into the two parses above: when a key is
-  // ABSENT the value still arrives from the constructor or a previous
-  // set_gains(), and get_gains() after configure should report the gain Compute()
-  // will actually run. Compute() floors again at the point of use because
-  // set_gains() bypasses configure entirely (NUM-1) — as max_damping does.
-  g.null_kp = joint::FloorPostureGain(g.null_kp);
-  g.null_kd = joint::FloorPostureGain(g.null_kd);
-  if (cfg["estop_damping"]) {
-    // D ≥ 0: the torque E-STOP hold (#184) subtracts D·q̇ to bleed kinetic energy;
-    // a negative D would inject energy (destabilising a safety stop).
-    g.estop_damping = std::max(0.0, cfg["estop_damping"].as<double>());
-  }
-  if (cfg["enable_gravity_compensation"]) {
-    // Deprecated: torque OSC always compensates g(q)+C·v. Parsed for YAML
-    // back-compat but has no effect on the control law.
-    g.enable_gravity_compensation = cfg["enable_gravity_compensation"].as<bool>();
-  }
-  if (cfg["trajectory_speed"]) {
-    g.trajectory_speed = std::max(1e-6, cfg["trajectory_speed"].as<double>());
-  }
-  if (cfg["trajectory_angular_speed"]) {
-    g.trajectory_angular_speed = std::max(1e-6, cfg["trajectory_angular_speed"].as<double>());
-  }
-  if (cfg["max_traj_velocity"]) {
-    g.max_traj_velocity = cfg["max_traj_velocity"].as<double>();
-  }
-  if (cfg["max_traj_angular_velocity"]) {
-    g.max_traj_angular_velocity = cfg["max_traj_angular_velocity"].as<double>();
-  }
-  // OSC is a torque controller (operational-space law outputs N·m). Reject any
-  // other command_type fail-fast instead of silently mislabelling the output.
-  // Position/velocity task control belongs to ClikController. Validate BEFORE
-  // committing the parsed gains, so a rejected reconfigure does not mutate the
-  // live RT gains (issue #172 — non-atomic config application).
-  if (cfg["command_type"]) {
-    const auto s = cfg["command_type"].as<std::string>();
-    if (s != "torque") {
-      throw std::runtime_error("OperationalSpaceController: command_type must be 'torque' (got '" +
-                               s + "'); use ClikController for position/velocity task control");
-    }
-  }
   gains_lock_.Store(g);
-  command_type_ = CommandType::kTorque;
 }
 
 }  // namespace rtc

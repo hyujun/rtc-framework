@@ -46,6 +46,11 @@ add_library(rtc_controllers STATIC
   src/controllers/direct/cascaded_compliance_controller.cpp
   src/controllers/grasp/grasp_controller.cpp
   src/controllers/grasp/pull_force_estimator.cpp
+  # G2 schema layer (#236 S7c-1): gains PODs + YAML parsers that outlive the
+  # adapters above. Non-RT, yaml-cpp only.
+  src/params/joint_pd_params.cpp
+  src/params/osc_params.cpp
+  src/params/clik_params.cpp
   src/controller_registration.cpp
 )
 target_include_directories(rtc_controllers PUBLIC
@@ -337,6 +342,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_compliance_fault_recovery rtc_controllers)
   target_include_directories(test_compliance_fault_recovery
     PRIVATE ${rtc_urdf_bridge_test_include} ${rtc_controllers_test_include})
+
+  # G2 schema layer contract (#236 S7c-1). Drives the ParseXxxParams free
+  # functions directly — no controller, no URDF — so these cases outlive the
+  # adapters. Also carries the over-long-sequence sensor that the adapter-driven
+  # config suite structurally could not provide; see the file header.
+  ament_add_gtest(test_params_schema test/test_params_schema.cpp)
+  target_link_libraries(test_params_schema rtc_controllers)
 
   ament_add_gtest(test_controller_config test/test_controller_config.cpp)
   target_link_libraries(test_controller_config rtc_controllers)

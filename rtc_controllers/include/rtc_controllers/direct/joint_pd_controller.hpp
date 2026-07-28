@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_controllers/params/joint_pd_params.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
 #include <rtc_base/threading/seqlock.hpp>
@@ -33,15 +34,10 @@ namespace rtc {
 /// (e.g. 6 for UR5e, determined at construction from URDF).
 class JointPDController final : public RTControllerInterface {
  public:
-  struct Gains {
-    std::array<double, kMaxRobotDOF> kp{
-        {100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-    std::array<double, kMaxRobotDOF> kd{
-        {20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0}};
-    bool enable_gravity_compensation{false};
-    bool enable_coriolis_compensation{false};
-    double trajectory_speed{1.0};
-  };
+  /// The gains POD now lives beside the law it parameterises, not inside this
+  /// adapter — see params/joint_pd_params.hpp for why (#236 S7c-1, D-B/G2).
+  /// This alias keeps every existing `JointPDController::Gains` spelling valid.
+  using Gains = params::JointPdParams;
 
   explicit JointPDController(std::string_view urdf_path);
   JointPDController(std::string_view urdf_path, Gains gains);
