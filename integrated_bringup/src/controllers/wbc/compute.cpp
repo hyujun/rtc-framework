@@ -977,11 +977,17 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
   const auto& dev0 = state.devices[0];
   auto& out0 = output.devices[0];
   const int nc0 = dev0.num_channels;
-  for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
-    out0.target_positions[i] = robot_computed_.positions[i];
-    out0.target_velocities[i] = robot_computed_.velocities[i];
+  // Telemetry follows the wire (#236 S7b): on a tick that issued no arm command
+  // robot_computed_ still holds the last readable tick's values, so publishing
+  // them would date-stamp stale numbers as this tick's reference.
+  // WriteJointCommand silenced device 0 for the same reason.
+  if (arm_readable_) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(nc0); ++i) {
+      out0.target_positions[i] = robot_computed_.positions[i];
+      out0.target_velocities[i] = robot_computed_.velocities[i];
+    }
+    FillDeviceTrajectoryPods(out0, nc0, robot_computed_, 0);
   }
-  FillDeviceTrajectoryPods(out0, nc0, robot_computed_, 0);
 
   // #unified-kindyn Phase 2: arm TCP from the shared cache oMf (clik_tcp/base),
   // not an arm_handle_ FK recompute. clik_tcp_frame_idx_ >= 0 ⇒ arm model present.
@@ -993,7 +999,9 @@ void DemoWbcController::FillPublishOutput(const ControllerState& state,
     const Eigen::Quaterniond quat(tcp.rotation());
     output.arm_tip_pose.position = {trans.x(), trans.y(), trans.z()};
     output.arm_tip_pose.quaternion = {quat.w(), quat.x(), quat.y(), quat.z()};
-    output.arm_tip_pose_valid = true;
+    // Withheld on a silenced tick: the cache was not refreshed from this tick's
+    // state, so the pose is history, not a measurement (#125 F1's rule).
+    output.arm_tip_pose_valid = arm_readable_;
 
     // #123 Phase 2: fingertip TF source — poses were computed + cached in
     // ComputeControl (fingertip_positions_/rotations_/pose_valid_) this tick; the
