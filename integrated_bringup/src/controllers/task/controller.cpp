@@ -356,6 +356,11 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
   // measurement (#125 F1). Only ComputeControl sets them back to true.
   fingertip_pose_valid_.fill(false);
   vtcp_valid_ = false;
+  // Same reason, one tick later in the story (#292): UpdateVirtualTcp is skipped
+  // outright when the hand FK produces nothing, so without this reset the frame
+  // identity ComputeControl compares against would carry a prior tick's
+  // participating fingertip set into a tick that measured none.
+  vtcp_member_mask_ = 0;
 
   // One gains snapshot for the whole tick (SeqLock: torn-read-free), shared by
   // the arm stage and the hand stage so the two halves cannot disagree.
@@ -449,31 +454,18 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
       }
     }
 
-    if (arm_handle_) {
-      for (int i = 0; i < arm_handle_->nv(); ++i) {
-        desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
-      }
-    }
+    // Tagged with the frame the seed was taken in (#292), reusing the same
+    // vtcp_valid_ decision that picked hold_pose above. ComputeControl compares
+    // that tag against the frame it controls in and re-seeds if they diverge,
+    // which is what makes the end of the hand-FK walk-in free of arm motion.
+    SeedHoldTarget(hold_pose, dev0, ControlFrameId{vtcp_valid_, vtcp_member_mask_, true});
 
-    tcp_target_pose_ = hold_pose;
-    current_target_slot_.tcp_target = {hold_pose.translation()[0], hold_pose.translation()[1],
-                                       hold_pose.translation()[2]};
-    std::memcpy(current_target_slot_.tcp_target_rot.data(), hold_pose.rotation().data(),
-                sizeof(current_target_slot_.tcp_target_rot));
-    std::memcpy(current_target_slot_.tcp_target_t.data(), hold_pose.translation().data(),
-                sizeof(current_target_slot_.tcp_target_t));
     for (int i = 0; i < arm_dof_; ++i) {
       const auto idx = static_cast<std::size_t>(i);
       // Prefer YAML seed (null_target_init_); fall back to current pose.
       current_target_slot_.null_target[idx] =
           (null_target_init_[idx] != 0.0) ? null_target_init_[idx] : dev0.positions[idx];
     }
-
-    trajectory_.initialize(hold_pose, pinocchio::Motion::Zero(), hold_pose,
-                           pinocchio::Motion::Zero(), 0.01);
-    trajectory_time_ = 0.0;
-    has_pending_segment_ = false;
-    new_target_pending_ = false;
 
     arm_target_initialized_.store(true, std::memory_order_release);
     slot_dirty = true;
@@ -560,6 +552,53 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
   }
 }
 
+// RT-thread-only (#292). Seeds the arm hold target at `pose` and tags it with
+// the control frame that pose was taken in, so ComputeControl's transition check
+// finds the goal and the control frame in agreement and CLIK sees zero task
+// error. Shared by the first-tick self-init above and ComputeControl's re-seed.
+//
+// The self-init's null_target loop is deliberately NOT part of this: the
+// nullspace posture goal is frame-independent, and re-running it on every frame
+// transition would silently discard an operator's posture goal.
+//
+// The caller owns the target_seqlock_ Store — the self-init batches it into its
+// existing slot_dirty publish, ComputeControl issues its own right after. Two
+// Store sites are safe because the RT thread is the SOLE writer of that seqlock.
+void DemoTaskController::SeedHoldTarget(const pinocchio::SE3& pose, const rtc::DeviceState& dev0,
+                                        ControlFrameId id) noexcept {
+  if (arm_handle_) {
+    // rtc::ModelChannelBound where the self-init this was extracted from looped
+    // to arm_handle_->nv() unbounded. Narrowing is not a weakening but alignment
+    // with the S7b contract (#265 decision B): on a device reporting fewer
+    // channels than the model has, the unbounded loop read dev0.positions past
+    // the device's own width to seed joints it never reported.
+    const int nseed = rtc::ModelChannelBound(
+        std::min(arm_handle_->nv(), static_cast<int>(desired_q_.size())), dev0.num_channels);
+    for (int i = 0; i < nseed; ++i) {
+      desired_q_[i] = dev0.positions[static_cast<std::size_t>(i)];
+    }
+  }
+
+  tcp_target_pose_ = pose;
+  current_target_slot_.tcp_target = {pose.translation()[0], pose.translation()[1],
+                                     pose.translation()[2]};
+  std::memcpy(current_target_slot_.tcp_target_rot.data(), pose.rotation().data(),
+              sizeof(current_target_slot_.tcp_target_rot));
+  std::memcpy(current_target_slot_.tcp_target_t.data(), pose.translation().data(),
+              sizeof(current_target_slot_.tcp_target_t));
+
+  // Rest-to-rest at the seed pose: start == goal, so the trajectory holds and
+  // computePoseError returns zero for as long as the frame does not move again.
+  trajectory_.initialize(pose, pinocchio::Motion::Zero(), pose, pinocchio::Motion::Zero(), 0.01);
+  trajectory_time_ = 0.0;
+  has_pending_segment_ = false;
+  new_target_pending_ = false;
+
+  target_frame_id_ = id;
+  target_is_hold_seed_.store(true, std::memory_order_release);
+  frame_wait_ticks_.store(0, std::memory_order_release);
+}
+
 // RT tick, called once per surviving mailbox entry from DrainTargetSlot().
 // Writes the RT working copy, which DrainTargetSlot publishes once at the end.
 void DemoTaskController::ApplyPendingTarget(int device_idx, std::span<const double> values,
@@ -580,7 +619,28 @@ void DemoTaskController::ApplyPendingTarget(int device_idx, std::span<const doub
   // pose assembled from three values would command an arbitrary orientation.
   // ZYX (yaw·pitch·roll) at the wire edge — CLAUDE.md §10, shared with DemoWbc
   // through rtc::math::se3::RpyToRotationZyx so the convention has one owner.
-  if (gains_lock_.Load().control_6dof) {
+  //
+  // One snapshot for the whole function (#292): the frame tagging below needs
+  // the vtcp mode, and re-Loading for it would let the goal be tagged with a
+  // different gains generation than the one that decided control_6dof.
+  const auto g = gains_lock_.Load();
+
+  // #292: an external goal is authored in the controller's *intended* control
+  // frame. It is NOT tagged with whatever frame happens to be live right now —
+  // during the hand-FK walk-in that is tool0, and reading a vtcp-authored goal
+  // as a tool0 goal is exactly the silent reinterpretation this fixes. The GUI
+  // upholds the other half of the contract by disabling task-target entry until
+  // the frame is settled, so authoring inside that window is not possible.
+  // Left unbound: the participating fingertip set cannot be known off-RT, so
+  // ComputeControl binds it on the first tick the frames agree.
+  const auto tag_external_goal = [this, &g]() noexcept {
+    target_is_hold_seed_.store(false, std::memory_order_release);
+    frame_wait_ticks_.store(0, std::memory_order_release);
+    target_frame_id_ = ControlFrameId{
+        (g.vtcp.mode != VirtualTcpMode::kDisabled) && (hand_handle_ != nullptr), 0, false};
+  };
+
+  if (g.control_6dof) {
     if (values.size() >= 6) {
       current_target_slot_.tcp_target[0] = values[0];
       current_target_slot_.tcp_target[1] = values[1];
@@ -595,6 +655,7 @@ void DemoTaskController::ApplyPendingTarget(int device_idx, std::span<const doub
       tcp_target_pose_.translation() = translation;
       tcp_target_pose_.rotation() = rotation;
       new_target_pending_ = true;
+      tag_external_goal();
     }
     return;
   }
@@ -617,6 +678,7 @@ void DemoTaskController::ApplyPendingTarget(int device_idx, std::span<const doub
     current_target_slot_.null_target[i] = values[i];
   }
   new_target_pending_ = true;
+  tag_external_goal();
 }
 
 std::string_view DemoTaskController::Name() const noexcept {

@@ -29,6 +29,90 @@ struct VirtualTcpConfig {
       {0.0, 0.0, 0.0}};  ///< RPY [rad] orientation of vtcp in TCP frame
 };
 
+/// Identity of the frame a task goal is expressed in.
+///
+/// `is_vtcp` alone does not identify the control frame. In centroid/weighted
+/// mode the virtual TCP is the mean over the *participating* fingertips, so a
+/// fingertip entering or leaving that set moves the control point while
+/// `vtcp_valid_` stays true — a test that only watches the valid edge misses
+/// that case (mixed hands; p1b keeps all four tips downstream of the loop and
+/// so never hits it).
+struct ControlFrameId {
+  bool is_vtcp{false};          ///< Control point is the virtual TCP, not tool0
+  std::uint8_t member_mask{0};  ///< bit f = fingertip f participates (vtcp only)
+  bool bound{false};            ///< member_mask has been bound to a real frame
+};
+
+/// What ComputeControl owes the current goal on this tick — see
+/// ClassifyFrameTransition.
+enum class FrameTransition : std::uint8_t {
+  kNone,            ///< Frames agree — run the existing CLIK unchanged
+  kReseed,          ///< Hold seed: re-seed the goal at the current control pose
+  kHoldExternal,    ///< External goal: hold the arm, keep the goal pending
+  kExpireExternal,  ///< External goal waited past the bound: expire it, hold
+  kReplanExternal,  ///< Same frame kind, control point jumped: replan from it
+  kBindExternal,    ///< First tick the external goal's frame can be bound
+};
+
+/// Decide what to do with the current task goal given this tick's control frame.
+///
+/// The single invariant this enforces: *run CLIK only when the frame the goal
+/// was authored in matches the frame being controlled this tick.* Otherwise the
+/// pose difference between the two frames is consumed as task error — which is
+/// exactly the arm jump seen when a closed-chain hand's FK walk-in ends and the
+/// control point moves from tool0 to the virtual TCP mid-flight.
+///
+/// Kept a pure free function so the six transitions can be tested exhaustively.
+/// The controller fixture can only reach four of them: its hand FK is serial, so
+/// every fingertip is valid from tick 1 and `member_mask` never moves. The
+/// controller tests pin the *wiring*; this function pins the *law*.
+///
+/// @param target       Frame the current goal was authored in
+/// @param current      Frame this tick controls in
+/// @param is_hold_seed Goal is still the self-init hold seed (no external goal)
+/// @param wait_ticks   Consecutive ticks an external goal has been held so far
+/// @param wait_bound   Tick budget before a held external goal expires
+[[nodiscard]] inline FrameTransition ClassifyFrameTransition(ControlFrameId target,
+                                                             ControlFrameId current,
+                                                             bool is_hold_seed,
+                                                             std::uint32_t wait_ticks,
+                                                             std::uint32_t wait_bound) noexcept {
+  const bool kind_differs = target.is_vtcp != current.is_vtcp;
+  // tool0 has no fingertip membership, so `member_mask` is part of the frame's
+  // identity only while the control point IS the virtual TCP. Comparing it
+  // unconditionally would let a stale mask fabricate a transition on a
+  // `virtual_tcp_mode: disabled` controller, whose behaviour must not change.
+  const bool members_differ = current.is_vtcp && target.member_mask != current.member_mask;
+
+  if (is_hold_seed) {
+    // The hold seed is ours to move. Re-seeding it at the current control pose
+    // leaves zero task error, so the arm stays put through any transition —
+    // including a frame that flickers valid/invalid every tick, which is why no
+    // latch or hysteresis is needed anywhere else in this path.
+    return (kind_differs || members_differ) ? FrameTransition::kReseed : FrameTransition::kNone;
+  }
+
+  // External goal: authored in the controller's *intended* frame. A frame-kind
+  // mismatch means the control point is not the one the goal speaks about, so
+  // hold rather than silently reinterpreting the goal in the frame that happens
+  // to be active — that reinterpretation is the defect being fixed here.
+  if (kind_differs) {
+    return (wait_ticks < wait_bound) ? FrameTransition::kHoldExternal
+                                     : FrameTransition::kExpireExternal;
+  }
+  // Same frame kind. The participating set could not be known off-RT when the
+  // goal was authored, so bind it the first tick the frames agree.
+  if (!target.bound) {
+    return FrameTransition::kBindExternal;
+  }
+  if (members_differ) {
+    // The goal is still valid — only the control point moved. Replan from the
+    // new one instead of holding: the goal survives and there is no jerk.
+    return FrameTransition::kReplanExternal;
+  }
+  return FrameTransition::kNone;
+}
+
 /// Per-fingertip input for virtual TCP computation.
 struct FingertipVtcpInput {
   Eigen::Vector3d position_in_tcp{Eigen::Vector3d::Zero()};  ///< Position in TCP/hand frame

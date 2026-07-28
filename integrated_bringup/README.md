@@ -375,6 +375,20 @@ J_vtcp_angular = J_tcp_angular
 
 > **주의:** Centroid/Weighted 모드는 `tree_models`가 활성화되어 있어야 합니다 (hand FK 필요).
 
+##### 제어 frame 계약 (#292)
+
+Virtual TCP 는 **매 tick 유효한 것이 아니다** — hand FK 가 fingertip pose 를 못 내는 tick (closed-chain walk-in, hand device invalid) 에는 제어점이 tool0 로 떨어진다. 이때 목표를 그대로 두면 두 frame 의 차이가 CLIK task error 로 소비되어 arm 이 튄다 (실측 p1b: 0.21 m + ~90°). 따라서 목표에는 **authoring 된 제어 frame** (`ControlFrameId` — vtcp 여부 + 참여 fingertip mask) 이 태깅되고, CLIK 는 그 frame 이 이번 tick 의 제어 frame 과 일치할 때만 돈다 ([support/virtual_tcp.hpp](include/integrated_bringup/support/virtual_tcp.hpp) `ClassifyFrameTransition`).
+
+| 상황 | 동작 |
+|---|---|
+| frame 일치 | 기존 CLIK 그대로 (`disabled` 모드는 항상 여기 — 동작 불변) |
+| frame 전환 + 외부 목표 없음 | hold seed 를 새 제어점으로 재-seed → 오차 0, arm 무동작 |
+| frame 전환 + 외부 목표 | 목표를 보존한 채 arm hold, frame 복귀 tick 에 그대로 실행 |
+| 외부 목표가 `kVtcpFrameWaitTicks`(1000 tick) 초과 대기 | 목표 만료 + WARN, 현재 frame 으로 hold 복귀 |
+| 참여 fingertip 집합 변화 (centroid/weighted) | hold seed 는 재-seed, 외부 목표는 새 제어점에서 재계획 |
+
+목표는 컨트롤러의 *의도된* frame (mode ≠ disabled) 에서 authoring 된 것으로 간주한다 — walk-in 중 잠깐 tool0 인 것을 tool0 목표로 재해석하지 않는다. GUI 는 frame 확정 전 task target 입력을 비활성화해 이 가정을 성립시킨다.
+
 #### Closed-chain hand FK (#121, extended-URDF 전용)
 
 hand URDF 가 **loop closure** 를 가지면 (`urdf.extended: true` + `<stem>.closure.yaml` sidecar; 예: 4-bar 손가락 링키지), loop-passive 관절 **하류**의 fingertip 은 tree 모델(passive 를 reference 형상에 동결)로 FK 하면 운영점 이탈 시 큰 오차가 난다 (#121 측정: ~5.6 mm/°). 이를 위해 task/joint 컨트롤러는 fingertip FK 를 **closed-chain-consistent** 로 계산하는 `ClosedChainHandFk` 헬퍼([support/closed_chain_hand_fk.hpp](include/integrated_bringup/support/closed_chain_hand_fk.hpp), `rtc_urdf_bridge::RtClosedChainHandle` 래핑)를 배선한다.
