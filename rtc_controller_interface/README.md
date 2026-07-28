@@ -19,6 +19,7 @@ RTC 프레임워크의 **컨트롤러 추상 인터페이스 및 플러그인 �
 | `include/rtc_controller_interface/rt_controller_interface.hpp` | 추상 컨트롤러 인터페이스 (`RTControllerInterface`) |
 | `include/rtc_controller_interface/controller_registry.hpp` | 싱글톤 레지스트리 (`ControllerRegistry`) + `RTC_REGISTER_CONTROLLER` 매크로 |
 | `include/rtc_controller_interface/controller_types.hpp` | `rtc_base/types/types.hpp` 재수출 (편의 헤더) |
+| `include/rtc_controller_interface/device_readability.hpp` | F5 device-readability 게이트 (#236 S7b) — 술어 `ModelChannelBound` / `IsDeviceReadable` + 원시연산 `SilenceDeviceOutput` / `FillCommandTail`. 헤더 전용, `rt_controller_interface.hpp` 가 재수출한다 |
 | `include/rtc_controller_interface/controller_log_set.hpp` | Controller-owned CSV 로그 집합 헬퍼 (`ControllerLogSet` + `LogHandle<PodT>`) — opt-in. `rtc::ThreadCsvProducer/Logger` 페어를 typed handle 로 묶어 `<session>/controllers/<config_key>/<instance>.csv` 에 기록. 같은 LogSet 안에서 동일 `instance` 를 두 번 등록하면 `RegisterLog` 가 unbound `LogHandle` 반환 (Q-MSG-3 path-uniqueness enforcement) |
 
 ### 소스 파일
@@ -139,6 +140,27 @@ CM 측 정책(호출부는 `rt_controller_node_rt_loop.cpp` 의 `Compute()` 반�
 > **`kTorque` hold 의 수용된 리스크**: CM 은 동역학 모델이 없어 중력보상 토크를 만들 수 없고, 0 N·m 는 중력 sag 를 뜻한다. 최대 노출은 `0.1 s` + E-STOP 전파 지연이다. 토크 모드 디바이스가 있는 구성은 이 window 를 낮추는 튜닝 여지가 있다.
 
 `rt_controller_node_rt_loop.cpp` 의 `BoundedCount` clamp 는 삭제되지 않고 defense-in-depth 로 남는다 — validator 를 통과한 출력과 hold 경로, 그리고 backend 가 보고한 state 쪽 count 에 계속 적용된다.
+
+### F5 device-readability 게이트 (#236 S7b)
+
+egress 검증이 "컨트롤러가 **낸** 것" 을 보는 것이라면, 이 게이트는 "컨트롤러가 **읽어도 되는가**" 를 본다. `ControllerState::devices[0]` 이 이번 tick 에 쓸 수 없는 상태 — `!valid` 또는 `num_channels < 모델 DOF` — 이면 미보고 채널이 **유한한 `0`** 으로 읽히고, FK·Jacobian·제어 법칙 전체가 부분 ZERO configuration 에서 돌아 전 관절을 원점으로 당기는 명령이 나간다. 모든 수가 유한하므로 위의 actuator-boundary validator 도 fault 도 이를 잡지 않는다.
+
+계약 SSoT 는 `rtc_controllers/docs/compliance-conventions.md` §3.7 이고, 구현은 헤더 전용 `device_readability.hpp` 다 (3계층 배치표의 "device 판독가능성 게이트" 행 — `agent_docs/design-principles.md`).
+
+| 이름 | 무엇을 답하는가 | 언제 |
+|---|---|---|
+| `ModelChannelBound(nc0, model_dim)` | "몇 채널까지 **인덱싱**해도 되는가" — 순수 OOB 방어 | **항상**. 과다보고(`nc0 > model_dim`)는 정상 입력이다 — `num_channels` 는 wire 길이 |
+| `IsDeviceReadable(dev, model_dim)` | "이 device 를 이번 tick 에 **써도 되는가**" — 게이트 | 조인트 상태 판독 **전** |
+| `SilenceDeviceOutput(dev_out)` | 게이트가 false 일 때의 유일한 답 — zero-length (`num_channels = 0`) | primary device 에만. secondary passthrough 는 유지 |
+| `FillCommandTail(cmds, bound, nc0, cmd, measured)` | `[bound, nc0)` 의 도메인별 중립값 (torque → `0.0` / position → 측정값) | 명령 조립 시 |
+
+**두 술어의 이름이 갈린 것이 핵심이다** (#265 결정 B). `min(nc0, nv)` 는 좁은 device 를 안전하게 만들어 주는 것처럼 보이지만 그렇지 않다 — *지속* 버퍼에 scatter 하는 경로에서 건너뛴 슬롯은 이전값(초기 0)을 유지하므로, 모델이 보는 configuration 은 **bound 없이 읽은 것과 수치적으로 동일**하다. bound 는 crash 만 없애고 hazard 는 남긴다. 따라서 #172 의 bound 는 OOB 방어로서 유지하되 F5 답으로 쓰면 안 된다.
+
+**침묵은 fail-safe 가 아니다.** zero-length 는 출하된 백엔드 전부에서 "no update" = 직전 setpoint 유지다 (`WriteSafeCommand` 와 같은 성질). `nc0` 길이의 0 을 대신 내보내는 것은 **진짜 0 커맨드**이고, 토크 모드 팔에서는 정지가 아니라 낙하다.
+
+**한계 — 필요조건만 판정한다** (#265 D1-a → **issue #284**). `num_channels` 는 wire 길이이므로 reorder map 이 활성이면 `nc0 >= model_dim` 이어도 매칭 안 된 슬롯에 구멍이 남을 수 있다. `num_channels` 재정의는 기각됐다 (그 필드는 위 egress bound 로 이미 쓰인다). 이 갭은 #284 가 소유한다.
+
+테스트: `test/test_device_readability.cpp` (계약 19건, URDF 없음) · `integrated_bringup/test/test_device_readability_gate.cpp` (바인딩 3종) · `integrated_bringup/test/test_combined_model_cache_gate.cpp` (공유 모델 scatter).
 
 ### 가상 메서드 (기본 구현 제공)
 
