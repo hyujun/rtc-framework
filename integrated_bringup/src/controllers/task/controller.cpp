@@ -372,20 +372,10 @@ ControllerOutput DemoTaskController::Compute(const ControllerState& state) noexc
 // ── Phase 3: Write output ────────────────────────────────────────────────────
 
 void DemoTaskController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
-    return;
-  }
-  PendingTarget pending{};
-  pending.device_idx = device_idx;
-  pending.generation = ActivationGeneration();
-  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-  pending.num_values = static_cast<int>(nch);
-  for (std::size_t i = 0; i < nch; ++i) {
-    pending.values[i] = target[i];
-  }
-  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
-  // and is the SOLE writer of target_seqlock_.
-  (void)pending_targets_.Push(pending);
+  // Off-RT marshal. The base stamps the activation generation, bounds the
+  // index and the width, and queues; the RT thread drains inside Compute() and
+  // is the SOLE writer of target_seqlock_.
+  PushPendingTarget(device_idx, target, /*is_task=*/false);
 }
 
 // RT-thread-only. Refreshes current_target_slot_, drains off-RT pending
@@ -513,66 +503,69 @@ void DemoTaskController::DrainTargetSlot(const ControllerState& state) noexcept 
     }
   }
 
-  PendingTarget pending{};
-  while (pending_targets_.Pop(pending)) {
-    // Drop targets queued before the current activation (#196 §3) — they were
-    // addressed to a controller that is no longer the one running.
-    if (!IsCurrentGeneration(pending.generation)) {
-      continue;
-    }
-    const auto didx = static_cast<std::size_t>(pending.device_idx);
-    if (didx >= ControllerState::kMaxDevices) {
-      continue;
-    }
-    if (didx == 0) {
-      if (gains_lock_.Load().control_6dof) {
-        if (pending.num_values >= 6) {
-          current_target_slot_.tcp_target[0] = pending.values[0];
-          current_target_slot_.tcp_target[1] = pending.values[1];
-          current_target_slot_.tcp_target[2] = pending.values[2];
-          Eigen::AngleAxisd rollAngle(pending.values[3], Eigen::Vector3d::UnitX());
-          Eigen::AngleAxisd pitchAngle(pending.values[4], Eigen::Vector3d::UnitY());
-          Eigen::AngleAxisd yawAngle(pending.values[5], Eigen::Vector3d::UnitZ());
-          const Eigen::Quaternion<double> qrot = yawAngle * pitchAngle * rollAngle;
-          const Eigen::Matrix3d rotation = qrot.matrix();
-          const Eigen::Vector3d translation(pending.values[0], pending.values[1],
-                                            pending.values[2]);
-          std::memcpy(current_target_slot_.tcp_target_rot.data(), rotation.data(),
-                      sizeof(current_target_slot_.tcp_target_rot));
-          std::memcpy(current_target_slot_.tcp_target_t.data(), translation.data(),
-                      sizeof(current_target_slot_.tcp_target_t));
-          tcp_target_pose_.translation() = translation;
-          tcp_target_pose_.rotation() = rotation;
-          new_target_pending_ = true;
-        }
-      } else {
-        const auto cap = (arm_dof_ > 0) ? static_cast<std::size_t>(arm_dof_)
-                                        : static_cast<std::size_t>(kDemoTaskMaxArmDof);
-        const std::size_t pn = std::min(static_cast<std::size_t>(pending.num_values), cap);
-        for (std::size_t i = 0; i < std::min(pn, std::size_t{3}); ++i) {
-          current_target_slot_.tcp_target[i] = pending.values[i];
-        }
-        for (std::size_t i = 3; i < pn; ++i) {
-          current_target_slot_.null_target[i] = pending.values[i];
-        }
-        new_target_pending_ = true;
-      }
-    } else {
-      const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
-                                       static_cast<std::size_t>(kMaxDeviceChannels));
-      for (std::size_t i = 0; i < nch; ++i) {
-        current_target_slot_.targets[didx][i] = pending.values[i];
-      }
-      if (didx == 1) {
-        hand_new_target_pending_ = true;
-      }
-    }
+  // Base drain: pops everything queued, drops what a later activation
+  // invalidated (#196 §3), and calls ApplyPendingTarget for each survivor.
+  if (DrainPendingTargets() > 0) {
     slot_dirty = true;
   }
 
   if (slot_dirty) {
     target_seqlock_.Store(current_target_slot_);
   }
+}
+
+// RT tick, called once per surviving mailbox entry from DrainTargetSlot().
+// Writes the RT working copy, which DrainTargetSlot publishes once at the end.
+void DemoTaskController::ApplyPendingTarget(int device_idx, std::span<const double> values,
+                                            bool /*is_task*/) noexcept {
+  const auto didx = static_cast<std::size_t>(device_idx);
+  if (didx != 0) {
+    for (std::size_t i = 0; i < values.size() && i < kMaxDeviceChannels; ++i) {
+      current_target_slot_.targets[didx][i] = values[i];
+    }
+    if (didx == 1) {
+      hand_new_target_pending_ = true;
+    }
+    return;
+  }
+
+  // Device 0 carries the task goal. Under control_6dof it is a full SE3 pose
+  // (x,y,z,r,p,y); a short goal is ignored rather than half-applied, since a
+  // pose assembled from three values would command an arbitrary orientation.
+  if (gains_lock_.Load().control_6dof) {
+    if (values.size() >= 6) {
+      current_target_slot_.tcp_target[0] = values[0];
+      current_target_slot_.tcp_target[1] = values[1];
+      current_target_slot_.tcp_target[2] = values[2];
+      Eigen::AngleAxisd rollAngle(values[3], Eigen::Vector3d::UnitX());
+      Eigen::AngleAxisd pitchAngle(values[4], Eigen::Vector3d::UnitY());
+      Eigen::AngleAxisd yawAngle(values[5], Eigen::Vector3d::UnitZ());
+      const Eigen::Quaternion<double> qrot = yawAngle * pitchAngle * rollAngle;
+      const Eigen::Matrix3d rotation = qrot.matrix();
+      const Eigen::Vector3d translation(values[0], values[1], values[2]);
+      std::memcpy(current_target_slot_.tcp_target_rot.data(), rotation.data(),
+                  sizeof(current_target_slot_.tcp_target_rot));
+      std::memcpy(current_target_slot_.tcp_target_t.data(), translation.data(),
+                  sizeof(current_target_slot_.tcp_target_t));
+      tcp_target_pose_.translation() = translation;
+      tcp_target_pose_.rotation() = rotation;
+      new_target_pending_ = true;
+    }
+    return;
+  }
+
+  // Position-only mode: the first three values are the TCP position, anything
+  // beyond them is a nullspace posture goal.
+  const auto cap = (arm_dof_ > 0) ? static_cast<std::size_t>(arm_dof_)
+                                  : static_cast<std::size_t>(kDemoTaskMaxArmDof);
+  const std::size_t pn = std::min(values.size(), cap);
+  for (std::size_t i = 0; i < std::min(pn, std::size_t{3}); ++i) {
+    current_target_slot_.tcp_target[i] = values[i];
+  }
+  for (std::size_t i = 3; i < pn; ++i) {
+    current_target_slot_.null_target[i] = values[i];
+  }
+  new_target_pending_ = true;
 }
 
 std::string_view DemoTaskController::Name() const noexcept {

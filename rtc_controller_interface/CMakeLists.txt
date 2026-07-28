@@ -105,6 +105,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_activation_generation test/test_activation_generation.cpp)
   target_link_libraries(test_activation_generation rtc_controller_interface)
 
+  ament_add_gtest(test_target_mailbox test/test_target_mailbox.cpp)
+  target_link_libraries(test_target_mailbox rtc_controller_interface)
+
+  ament_add_gtest(test_reset_fault_contract test/test_reset_fault_contract.cpp)
+  target_link_libraries(test_reset_fault_contract rtc_controller_interface)
+
   ament_add_gtest(test_output_validation test/test_output_validation.cpp)
   target_link_libraries(test_output_validation rtc_controller_interface)
 

@@ -373,20 +373,29 @@ ControllerOutput DemoJointController::Compute(const ControllerState& state) noex
 // live in demo_joint_controller_compute.cpp.
 
 void DemoJointController::SetDeviceTarget(int device_idx, std::span<const double> target) noexcept {
-  if (device_idx < 0 || device_idx >= ControllerState::kMaxDevices) {
-    return;
+  // Off-RT marshal. The base stamps the activation generation, bounds the
+  // index and the width, and queues; the RT thread drains inside Compute() and
+  // is the SOLE writer of target_seqlock_.
+  PushPendingTarget(device_idx, target, /*is_task=*/false);
+}
+
+// RT tick, called once per surviving mailbox entry from DrainTargetSlot().
+// Writes the RT working copy, which DrainTargetSlot publishes once at the end;
+// storing per entry would put a burst of goals through the SeqLock for no
+// reader benefit.
+void DemoJointController::ApplyPendingTarget(int device_idx, std::span<const double> values,
+                                             bool /*is_task*/) noexcept {
+  auto& row = current_target_slot_.targets[static_cast<std::size_t>(device_idx)];
+  for (std::size_t i = 0; i < values.size() && i < row.size(); ++i) {
+    row[i] = values[i];
   }
-  PendingTarget pending{};
-  pending.device_idx = device_idx;
-  pending.generation = ActivationGeneration();
-  const std::size_t nch = std::min(target.size(), static_cast<std::size_t>(kMaxDeviceChannels));
-  pending.num_values = static_cast<int>(nch);
-  for (std::size_t i = 0; i < nch; ++i) {
-    pending.values[i] = target[i];
+  // Device 0 is the arm, device 1 the hand: each has its own trajectory that
+  // must be re-planned from the new goal on this tick.
+  if (device_idx == 0) {
+    robot_new_target_pending_ = true;
+  } else if (device_idx == 1) {
+    hand_new_target_pending_ = true;
   }
-  // Off-RT marshal — the RT thread drains pending_targets_ inside Compute()
-  // and is the SOLE writer of target_seqlock_.
-  (void)pending_targets_.Push(pending);
 }
 
 // RT-thread-only. Refreshes current_target_slot_ from the SeqLock, drains any
@@ -461,27 +470,9 @@ void DemoJointController::DrainTargetSlot(const ControllerState& state) noexcept
     }
   }
 
-  PendingTarget pending{};
-  while (pending_targets_.Pop(pending)) {
-    // Drop targets queued before the current activation (#196 §3) — they were
-    // addressed to a controller that is no longer the one running.
-    if (!IsCurrentGeneration(pending.generation)) {
-      continue;
-    }
-    const auto didx = static_cast<std::size_t>(pending.device_idx);
-    if (didx >= ControllerState::kMaxDevices) {
-      continue;
-    }
-    const std::size_t nch = std::min(static_cast<std::size_t>(pending.num_values),
-                                     static_cast<std::size_t>(kMaxDeviceChannels));
-    for (std::size_t i = 0; i < nch; ++i) {
-      current_target_slot_.targets[didx][i] = pending.values[i];
-    }
-    if (pending.device_idx == 0) {
-      robot_new_target_pending_ = true;
-    } else if (pending.device_idx == 1) {
-      hand_new_target_pending_ = true;
-    }
+  // Base drain: pops everything queued, drops what a later activation
+  // invalidated (#196 §3), and calls ApplyPendingTarget for each survivor.
+  if (DrainPendingTargets() > 0) {
     slot_dirty = true;
   }
 

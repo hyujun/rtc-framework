@@ -3,6 +3,7 @@
 
 // Shared types (constants, data structs) live in rtc_base.
 // This header re-exports them and adds the abstract Strategy interface.
+#include "rtc_base/concurrency/spsc_queue.hpp"
 #include "rtc_base/threading/publish_buffer.hpp"
 #include "rtc_base/types/types.hpp"
 #include <rtc_msgs/msg/robot_target.hpp>
@@ -13,6 +14,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -20,6 +22,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 // Forward declaration — full definition only needed in .cpp
@@ -378,6 +381,20 @@ class RTControllerInterface {
     return target_reject_count_.load(std::memory_order_relaxed);
   }
 
+  // Number of accepted targets the mailbox itself dropped because the queue was
+  // full when PushPendingTarget ran, since construction. Monotonic; safe to read
+  // from any thread (the counter is relaxed-atomic inside SpscQueue).
+  //
+  // Distinct from GetTargetRejectCount(): that one counts messages DeliverTargetMessage
+  // refused as malformed, this one counts well-formed goals the RT thread never
+  // saw because the producer outran one control tick. Both were previously
+  // invisible on the drop side — every copy of the marshal discarded Push()'s
+  // bool return, so queue saturation could not be observed from outside the
+  // controller at all (#206 §4).
+  [[nodiscard]] std::uint64_t GetTargetDropCount() const noexcept {
+    return pending_targets_.drop_count();
+  }
+
   // ── Activation generation gate (fail-closed, issue #196 §3) ──────────────
   //
   // rclcpp_lifecycle gates publishers only — a controller's target
@@ -520,6 +537,99 @@ class RTControllerInterface {
   // block; a flag store is the intended body.
   virtual void ResetTargetInitialization() noexcept {}
 
+  // ── Target mailbox: off-RT ingress → RT drain (issue #206) ───────────────
+  //
+  // Every controller needs the same marshal: a target arriving on the
+  // controller's non-RT callback group cannot touch the RT-owned target slot
+  // directly, so it is copied into a bounded lock-free queue that the RT tick
+  // drains inside Compute(). That skeleton was reimplemented per controller and
+  // the copies drifted — the same defect had to be fixed once per controller
+  // and was missed in some (PR #256 F5/F7/F8/F9; PR #263's ComputeNoJointState
+  // drain omission). It lives here now because it is identical everywhere.
+  //
+  // The split follows the three-tier rule (design-principles.md §3계층 배치):
+  //   base    — ingress, generation gate, bounds, queue, drop accounting.
+  //   derived — what a target MEANS (its TargetSlot layout, the SeqLock it
+  //             publishes through, self-init seeding, trajectory re-arm flags).
+  // A canonical shared slot POD was considered and rejected: WBC keeps joint
+  // and task targets in independent slots and writes them from FSM phase
+  // transitions too, so a common slot would promote that controller's private
+  // semantics into this public contract (#206 §2).
+
+  struct PendingTarget {
+    int device_idx{0};
+    int num_values{0};
+    std::array<double, kMaxDeviceChannels> values{};
+    // Set by the SetDeviceTaskTarget ingress; base never interprets it, it is
+    // forwarded to ApplyPendingTarget so a controller with separate joint/task
+    // slots can route the entry. Controllers with one slot ignore it.
+    bool is_task{false};
+    // Activation generation observed by the off-RT pusher. The RT drain drops
+    // entries a later activation has invalidated — see ActivationGeneration().
+    std::uint32_t generation{0};
+  };
+
+  static_assert(std::is_trivially_copyable_v<PendingTarget>,
+                "PendingTarget must be trivially copyable for SpscQueue");
+
+  // Four slots, i.e. three usable (the ring keeps one empty to distinguish full
+  // from empty). Overflow is newest-drop, counted by GetTargetDropCount(): a
+  // producer that outruns one control tick loses the goals it could not queue,
+  // never the ones already accepted, and never blocks.
+  static constexpr std::size_t kPendingTargetDepth = 4;
+
+  // Off-RT producer. Stamps the current activation generation, bounds
+  // `device_idx` against ControllerState::kMaxDevices and `values` against
+  // kMaxDeviceChannels, then enqueues. An out-of-range device_idx returns
+  // silently (unchanged from the per-controller copies — it is unreachable via
+  // DeliverTargetMessage, whose device_idx is a topic_config_ group position).
+  //
+  // SINGLE PRODUCER. The queue is SPSC: in production the sole caller path is
+  // DeliverTargetMessage() → SetDevice{,Task}Target() on the controller's
+  // LifecycleNode default callback group (nrt_callback_executor, one thread).
+  // Out-of-tree callers that push from a second thread break the queue's
+  // contract — marshal onto that callback group instead.
+  void PushPendingTarget(int device_idx, std::span<const double> values, bool is_task) noexcept;
+
+  // RT consumer. Pops everything queued, discards entries invalidated by a
+  // later activation or addressed to a device out of range, and hands each
+  // survivor to ApplyPendingTarget(). Returns the number applied, so the caller
+  // can decide whether its slot changed this tick.
+  //
+  // RT tick path: no allocation, no logging, no locks (the virtual dispatch is
+  // an indirect branch, which is permitted — .claude/rules/rt-path.md).
+  [[nodiscard]] int DrainPendingTargets() noexcept;
+
+  // RT consumer, drop without applying. E-STOP and device-invalid early
+  // returns both need this: a controller that returns before draining leaves
+  // stale goals to land on the tick it resumes. PR #263 was exactly that —
+  // one controller's E-STOP path discarded while its device-invalid path did
+  // not, so the two diverged inside a single controller.
+  //
+  // WHEN to call is deliberately left to the derived controller. Only four of
+  // the ten pre-existing copies discard on E-STOP; discarding here on the
+  // base's own initiative would silently change the other six.
+  //
+  // NAME COLLISION, transitional: three not-yet-migrated controllers declare a
+  // private non-virtual DrainPendingTargets() of their own whose body is a
+  // discard — the opposite of the base pair above. Those declarations HIDE both
+  // of these inside those classes; nothing there calls the base versions, so
+  // behaviour is unchanged, but do not read a call site in one of them as this
+  // contract until it has been migrated (#206 / #236).
+  void DiscardPendingTargets() noexcept;
+
+  // Apply one drained target. Called once per surviving entry from
+  // DrainPendingTargets(), on the RT tick, with `values` already bounded to the
+  // device's channel capacity and `device_idx` already range-checked. `values`
+  // points at the drain's stack frame — copy what is needed, do not retain it.
+  //
+  // Default no-op rather than pure virtual, so a controller that does not use
+  // the mailbox needs no stub. The trade-off is recorded because it bites
+  // quietly: a controller that pushes but forgets to override loses its targets
+  // with no diagnostic — the drain pops them, so GetTargetDropCount() stays 0.
+  virtual void ApplyPendingTarget(int /*device_idx*/, std::span<const double> /*values*/,
+                                  bool /*is_task*/) noexcept {}
+
   // Called after SetDeviceNameConfigs(). Override to resolve URDF-based
   // kinematics (e.g. tip_link → end_id_).
   virtual void OnDeviceConfigsSet() {}
@@ -620,6 +730,12 @@ class RTControllerInterface {
   // would have to survive 2^32 activations to alias the current generation,
   // and the queue is four entries deep.
   std::atomic<std::uint32_t> activation_generation_{0};
+
+  // Private, not protected: SPSC holds only while Push and Pop each have
+  // exactly one caller, and that is provable only if the base owns both ends.
+  // Derived controllers reach it through PushPendingTarget (off-RT) and
+  // DrainPendingTargets / DiscardPendingTargets (RT).
+  SpscQueue<PendingTarget, kPendingTargetDepth> pending_targets_;
 
   // Private, not protected: the fail-closed guarantee only holds if the base
   // is the sole writer. Derived classes read it through GetConfigState().
