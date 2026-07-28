@@ -114,6 +114,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_output_validation test/test_output_validation.cpp)
   target_link_libraries(test_output_validation rtc_controller_interface)
 
+  ament_add_gtest(test_device_readability test/test_device_readability.cpp)
+  target_link_libraries(test_device_readability rtc_controller_interface)
+
   ament_add_gtest(test_controller_log_set test/test_controller_log_set.cpp)
   target_link_libraries(test_controller_log_set rtc_controller_interface)
 
